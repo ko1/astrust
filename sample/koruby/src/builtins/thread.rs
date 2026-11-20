@@ -88,6 +88,8 @@ fn run_pass(c: &mut Ctx) -> Result<bool, Esc> {
     }
     Ok(progressed)
 }
+/// Duration of a Ruby time interval (huge / NaN values mean "practically forever").
+fn secs(f: f64) -> Duration { Duration::from_secs_f64(if f.is_finite() { f.clamp(0.0, 1e9) } else { 1e9 }) }
 fn sleep_real(d: Duration) {
     let ts = crate::builtins::sys::Timespec { sec: d.as_secs() as i64, nsec: d.subsec_nanos() as i64 };
     unsafe { crate::builtins::sys::nanosleep(&ts, std::ptr::null_mut()); }
@@ -135,7 +137,7 @@ pub fn block_on(c: &mut Ctx, mut cond: impl FnMut(&mut Ctx) -> Result<bool, Esc>
 pub fn sleep(c: &mut Ctx, dur: Option<f64>) -> Result<(), Esc> {
     let me = cur();
     th(me).wake = false;
-    let deadline = dur.map(|d| Instant::now() + Duration::from_secs_f64(d));
+    let deadline = dur.map(|d| Instant::now() + secs(d));
     block_on(c, |_| Ok(std::mem::take(&mut th(me).wake)), deadline, false, false)?;
     Ok(())
 }
@@ -171,7 +173,7 @@ fn th_join(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     thr(c, slf)?;
     if slf == cur() { return err(c, vm().c_thread_error, "Target thread must not be current thread"); }
     if slf == unsafe { MAIN } { return err(c, vm().c_thread_error, "Target thread must not be main thread"); }
-    let deadline = match a.first() { Some(&t) if t != NIL => { let f = crate::builtins::numeric_methods::to_f(c, t)?; Some(Instant::now() + Duration::from_secs_f64(f.max(0.0))) } _ => None };
+    let deadline = match a.first() { Some(&t) if t != NIL => { let f = crate::builtins::numeric_methods::to_f(c, t)?; Some(Instant::now() + secs(f)) } _ => None };
     if !block_on(c, |_| Ok(th(slf).dead), deadline, true, false)? { return Ok(NIL); }
     let e = th(slf).exc;
     if e != NIL { return Err(raise_exc(c, e)); }
@@ -368,7 +370,7 @@ fn cv_waiters(cv: Value) -> Value {
     w
 }
 fn cv_wait_raw(c: &mut Ctx, cv: Value, timeout: Value) -> Result<bool, Esc> {
-    let deadline = if timeout == NIL { None } else { let f = crate::builtins::numeric_methods::to_f(c, timeout)?; Some(Instant::now() + Duration::from_secs_f64(f.max(0.0))) };
+    let deadline = if timeout == NIL { None } else { let f = crate::builtins::numeric_methods::to_f(c, timeout)?; Some(Instant::now() + secs(f)) };
     let token = ary_new_from(&[FALSE]);
     let w = cv_waiters(cv);
     ary_push(w, token);
@@ -432,7 +434,7 @@ fn q_opts(c: &mut Ctx, a: &[Value]) -> Result<(bool, Option<Instant>), Esc> {
     let mut deadline = None;
     if let Some(h) = opts { if let Some(t) = hash_get_opt(c, h, sym_value("timeout"))? { if t != NIL {
         if nb { return arg_err(c, "can't set a timeout if non_block is enabled"); }
-        let f = crate::builtins::numeric_methods::to_f(c, t)?; deadline = Some(Instant::now() + Duration::from_secs_f64(f.max(0.0)));
+        let f = crate::builtins::numeric_methods::to_f(c, t)?; deadline = Some(Instant::now() + secs(f));
     } } }
     Ok((nb, deadline))
 }
@@ -536,6 +538,7 @@ pub fn init() {
     }
     define_cfunc(mx, "lock", mx_lock, 0); define_cfunc(mx, "unlock", mx_unlock, 0); define_cfunc(mx, "try_lock", mx_try_lock, 0); define_cfunc(mx, "sleep", mx_sleep, -1);
     define_cfunc(mon, "enter", mx_lock, 0); define_cfunc(mon, "exit", mx_unlock, 0); define_cfunc(mon, "try_enter", mx_try_lock, 0);
+    define_cfunc(mon, "new_cond", |c, s, a, b| { let f = str_new(b"monitor"); crate::builtins::kernel::require_feature(c, f, false)?; funcall(c, s, intern(b"new_cond"), a, b) }, 0);
     define_cfunc(mon, "mon_synchronize", mx_sync, 0); define_cfunc(mon, "mon_check_owner", mon_check_owner, 0); define_cfunc(mon, "wait_for_cond", mon_wait_for_cond, 2);
     // Queue / SizedQueue / ConditionVariable
     let q = define_class_under(th, "Queue", ob);

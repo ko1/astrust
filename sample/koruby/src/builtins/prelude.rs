@@ -13,7 +13,7 @@ macro_rules! lib { ($n:literal) => { ($n, include_str!(concat!("../../prelude/li
 const LIBS: &[(&str, &str)] = &[lib!("etc"), lib!("timeout"), lib!("monitor")];
 /// Features whose implementation is native and always present (require is a no-op).
 const NATIVE: &[&str] = &["set", "stringio", "rbconfig", "thread", "fiber", "enumerator", "rational", "complex", "continuation",
-    "io/wait", "io/nonblock", "fcntl", "etc.so", "monitor.so", "strscan", "strscan.so"];
+    "io/wait", "io/nonblock", "fcntl", "etc.so", "monitor.so", "strscan", "strscan.so", "json", "json/ext"];
 
 pub fn has_feature(name: &str) -> bool { NATIVE.contains(&name) || LIBS.iter().any(|l| l.0 == name) }
 pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
@@ -23,6 +23,7 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
     }
     // native libraries whose classes are only built on first require
     if name == "strscan" || name == "strscan.so" { crate::builtins::strscan::init(); }
+    if name == "json" || name == "json/ext" { crate::builtins::json::init(); }
     Ok(NIL)
 }
 

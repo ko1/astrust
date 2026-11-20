@@ -16,6 +16,7 @@ pub mod pp;
 pub mod io;
 pub mod marshal;
 pub mod strscan;
+pub mod json;
 pub mod thread;
 pub mod sys;
 pub mod file;
