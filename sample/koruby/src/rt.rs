@@ -1,5 +1,4 @@
 // Out-of-line runtime support for the nodes in node.def (slow paths).
-use crate::array::*;
 use crate::compile::*;
 use crate::hash::*;
 use crate::node::*;

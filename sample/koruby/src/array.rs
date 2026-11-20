@@ -1,33 +1,65 @@
-// Array core API.  Methods are in builtins/array_methods.rs.
+// Array core API on the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
+// Methods are in builtins/array_methods.rs.
+#![forbid(unsafe_code)]
+pub use crate::heap::{obj_clear_flags, obj_flags, obj_klass, obj_set_flags, obj_set_klass};
+// the legacy accessors, for the modules not converted yet
 pub use crate::object::*;
+pub use imp::*;
+
+// a module of its own: `no_legacy` must not meet the re-export above
+mod imp {
+#[allow(unused_imports)]
+use crate::heap::no_legacy::*;   // the old accessors cannot be named here
+use crate::heap::obj_flags;
+use crate::object::*;
 use crate::value::*;
 use crate::vm::*;
 
-#[inline]
-pub fn ary_new() -> Value { crate::gc::alloc(vm().c_array, Body::Array(Vec::new())) }
-#[inline]
-pub fn ary_new_capa(n: usize) -> Value {
-    crate::gc::malloc_increase(n * 8);
-    crate::gc::alloc(vm().c_array, Body::Array(Vec::with_capacity(n)))
+impl Ctx {
+    #[inline]
+    pub fn ary_new(&mut self) -> Value { let k = self.vm().c_array; self.alloc(k, Body::Array(Vec::new())) }
+    #[inline]
+    pub fn ary_new_capa(&mut self, n: usize) -> Value {
+        self.malloc_increase(n * 8);
+        let k = self.vm().c_array;
+        self.alloc(k, Body::Array(Vec::with_capacity(n)))
+    }
+    #[inline]
+    pub fn ary_new_from(&mut self, v: &[Value]) -> Value {
+        self.malloc_increase(v.len() * 8);
+        let k = self.vm().c_array;
+        self.alloc(k, Body::Array(v.to_vec()))
+    }
+    /// The Vec becomes the Array's payload; its Values are roots during the allocation.
+    pub fn ary_from_vec(&mut self, v: Vec<Value>) -> Value {
+        self.malloc_increase(v.len() * 8);
+        let k = self.vm().c_array;
+        self.alloc(k, Body::Array(v))
+    }
+    #[inline]
+    pub fn ary_push(&mut self, a: Value, v: Value) {
+        let x = self.ary_mut(a);
+        let grow = if x.len() == x.capacity() { x.len() * 8 + 32 } else { 0 };
+        x.push(v);
+        if grow != 0 { self.malloc_increase(grow); }
+    }
+    #[inline]
+    pub fn ary_len(&self, a: Value) -> usize { self.ary(a).len() }
+    /// Element i, nil beyond the end.
+    #[inline]
+    pub fn ary_get(&self, a: Value, i: usize) -> Value { self.ary(a).get(i).copied().unwrap_or(NIL) }
+    /// Append the elements of `src` to `dst`; they may be the same Array.
+    pub fn ary_concat(&mut self, dst: Value, src: Value) {
+        let (d, others) = self.ary_mut_and(dst);
+        match others.ary(src) { Some(s) => d.extend_from_slice(s), None => d.extend_from_within(..) }
+    }
+    /// Array `v` for writing; FrozenError when frozen.
+    #[inline]
+    pub fn ary_modify(&mut self, v: Value) -> Result<&mut Vec<Value>, Esc> {
+        if obj_flags(v) & FL_FROZEN != 0 { return Err(raise_frozen(self, v)); }
+        Ok(self.ary_mut(v))
+    }
 }
-#[inline]
-pub fn ary_new_from(v: &[Value]) -> Value {
-    crate::gc::malloc_increase(v.len() * 8);
-    crate::gc::alloc(vm().c_array, Body::Array(v.to_vec()))
-}
-pub fn ary_from_vec(v: Vec<Value>) -> Value {
-    crate::gc::malloc_increase(v.len() * 8);
-    crate::gc::alloc(vm().c_array, Body::Array(v))
-}
-#[inline]
-pub fn ary_push(a: Value, v: Value) {
-    let x = rary(a);
-    if x.len() == x.capacity() { crate::gc::malloc_increase(x.len() * 8 + 32); }
-    x.push(v);
-}
-#[inline] pub fn ary_len(a: Value) -> usize { rary(a).len() }
-#[inline] pub fn ary_get(a: Value, i: usize) -> Value { rary(a).get(i).copied().unwrap_or(NIL) }
-pub fn ary_to_vec(a: Value) -> Vec<Value> { rary(a).clone() }
 
 /// Implicit conversion to Array (to_ary); None when not convertible.
 pub fn check_array(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
@@ -46,4 +78,5 @@ pub fn expect_array(c: &mut Ctx, v: Value) -> RV {
         Some(a) => Ok(a),
         None => type_err(c, format!("no implicit conversion of {} into Array", crate::builtins::kernel::class_name_for_err(v))),
     }
+}
 }

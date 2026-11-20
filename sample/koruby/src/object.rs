@@ -152,3 +152,30 @@ pub fn float_val(v: Value) -> f64 { if v.is_flonum() { v.flonum_val() } else { r
 
 pub fn str_bytes(v: Value) -> &'static [u8] { &rstr(v).b }
 
+
+// legacy Array API (no context); converted code uses the `Ctx` methods of array.rs
+#[inline]
+pub fn ary_new() -> Value { crate::gc::alloc(crate::vm::vm().c_array, Body::Array(Vec::new())) }
+#[inline]
+pub fn ary_new_capa(n: usize) -> Value {
+    crate::gc::malloc_increase(n * 8);
+    crate::gc::alloc(crate::vm::vm().c_array, Body::Array(Vec::with_capacity(n)))
+}
+#[inline]
+pub fn ary_new_from(v: &[Value]) -> Value {
+    crate::gc::malloc_increase(v.len() * 8);
+    crate::gc::alloc(crate::vm::vm().c_array, Body::Array(v.to_vec()))
+}
+pub fn ary_from_vec(v: Vec<Value>) -> Value {
+    crate::gc::malloc_increase(v.len() * 8);
+    crate::gc::alloc(crate::vm::vm().c_array, Body::Array(v))
+}
+#[inline]
+pub fn ary_push(a: Value, v: Value) {
+    let x = rary(a);
+    if x.len() == x.capacity() { crate::gc::malloc_increase(x.len() * 8 + 32); }
+    x.push(v);
+}
+#[inline] pub fn ary_len(a: Value) -> usize { rary(a).len() }
+#[inline] pub fn ary_get(a: Value, i: usize) -> Value { rary(a).get(i).copied().unwrap_or(NIL) }
+pub fn ary_to_vec(a: Value) -> Vec<Value> { rary(a).clone() }
