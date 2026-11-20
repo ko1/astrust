@@ -22,6 +22,7 @@ fn bo_initialize(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV 
 pub static mut BO_EQ_ME: *const MethodEntry = std::ptr::null();
 pub static mut BO_INIT_ME: *const MethodEntry = std::ptr::null();
 pub static mut C_NEW_ME: *const MethodEntry = std::ptr::null();
+pub static mut M_EQQ_ME: *const MethodEntry = std::ptr::null();
 pub static mut KERNEL_HASH_ME: *const MethodEntry = std::ptr::null();
 pub fn bo_eq(_c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(s == a[0] || (s.is_flonum() && false))) }
 fn bo_not(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(s.falsy())) }
@@ -1153,6 +1154,7 @@ pub fn init() {
     d("to_s", m_to_s, 0);
     d("inspect", m_to_s, 0);
     d("===", m_eqq, 1);
+    unsafe { M_EQQ_ME = *rclass(m).mtbl.get(&s::eqq).unwrap(); }
     d("<", m_lt, 1);
     d("<=", m_le, 1);
     d(">", m_gt, 1);

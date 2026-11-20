@@ -38,6 +38,17 @@ Vecs/Boxes owned by the slot.  Non-moving mark & sweep, as a backend of the ASTr
 (`../../runtime/gc`, `../../docs/gc.md`); `src/gc.rs` is koruby's binding.  `make GC=bitmap`
 builds with the other backend.  Native payloads report their Values with
 `RData::visit(&mut self, v: &mut gc::Visitor)` (`v.visit(&mut self.field)`).
+One fixed-size slot per object (`RObj { klass, flags, body: Body }`, 56 bytes, asserted in
+object.rs); variable data in Rust Vecs/Boxes owned by the slot.  Non-moving mark & sweep.
+
+* Instance variables (`src/ivbuf.rs`, no unsafe): a class numbers its ivars
+  (`ClassData.ivar_index`); slot i of every instance is that ivar, `UNDEF` when unset.  Slots
+  0..3 are in the GC slot, 3..8 in one block made with the 4th, the rest in that block's Vec.
+  `new_object` makes as many slots as the class has seen, so the site cache `{class, index}`
+  (`IvarCache`, attr reader/writer cache kinds) is one test for a read and for a write: there is
+  no append and no per-object shape.  Consequence kept from before: `instance_variables` lists
+  in the class's order, not the object's assignment order.
+* Short strings live in the slot too (`src/sbuf.rs`).
 
 **Rooting (important):** heap objects are traced precisely; the machine stack and registers
 are scanned conservatively, and the VM value stack too.  So Values in Rust locals are safe.

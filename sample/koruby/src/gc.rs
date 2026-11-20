@@ -121,7 +121,7 @@ unsafe impl GcLang for Koruby {
         v.visit(&mut o.klass);
         if o.flags & FL_EXIVAR != 0 { visit_gen_ivars(o, v); }
         match &mut o.body {
-            Body::Object(ivs) => for x in ivs { v.visit(x) },
+            Body::Object(ivs) => for x in ivs.iter_mut() { v.visit(x) },
             Body::Array(a) => for x in a { v.visit(x) },
             Body::Hash(h) => {
                 for e in &mut h.entries { v.visit(&mut e.key); v.visit(&mut e.val); }

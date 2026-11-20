@@ -609,6 +609,7 @@ fn DUMP_node_when(out: &mut String, n: NodePtr) {
     out.push(' '); out.push('['); for (i, x) in (*np).u.pats.iter().enumerate() { if i > 0 { out.push(' '); } dump_node(out, *x); } out.push(']');
     out.push(' '); out.push_str(&format!("{:?}", String::from_utf8_lossy((*np).u.kinds)));
     out.push(' '); out.push_str("<cc>");
+    out.push(' '); out.push_str("<km>");
     out.push(')');
     }
 }

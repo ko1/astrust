@@ -238,10 +238,7 @@ pub fn rt_ivar_set(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &mut IvarCa
         if let Body::Object(_) = &obj(slf).body {
             let k = real_class_of(slf);
             if obj(slf).klass == k {
-                let i = ivar_index_for(k, name);
-                let ivs = ivars_of(slf);
-                if ivs.len() < rclass(k).ivar_names.len() { ivs.resize(rclass(k).ivar_names.len(), UNDEF); }
-                ic.klass = k.raw(); ic.idx = i;
+                ic.klass = k.raw(); ic.idx = ivar_index_for(k, name);
             }
         }
     }
@@ -468,6 +465,19 @@ pub fn rt_eqq(c: &mut Ctx, p: Value, subj: Value, cc: &mut CallCache) -> Result<
     base[0].set(p); base[2].set(subj);
     let r = call_cached(c, cc, s::eqq, base, 1, std::ptr::null(), 0)?;
     Ok(r.truthy())
+}
+
+/// rt_eqq for a `when` site; an answer of the builtin Module#=== is kept in the site's memo.
+#[inline(never)]
+pub fn rt_eqq_class(c: &mut Ctx, p: Value, subj: Value, cc: &mut CallCache, km: &mut KindMemo) -> Result<bool, Esc> {
+    let r = rt_eqq(c, p, subj, cc)?;
+    // cc.me is what the call just ran when the cache is p's (a polymorphic site keeps others elsewhere)
+    if p.is_heap() && cc.klass == obj(p).klass.raw() && cc.me == unsafe { crate::builtins::object::M_EQQ_ME } as usize {
+        let (k, ser) = (class_of(subj).raw(), kind_serial());
+        if km.pat != p.raw() || km.ser != ser { *km = KindMemo { pat: p.raw(), ser, memo: [0; KIND_WAYS] }; }
+        km.memo[kind_way(k)] = k | r as u64;
+    }
+    Ok(r)
 }
 
 /// defined? answers are pooled frozen US-ASCII strings.

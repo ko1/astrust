@@ -367,7 +367,7 @@ pub fn EVAL_node_ivar(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, ic: &mut IvarC
         let o = obj(slf);
         if o.klass.raw() == ic.klass {
             if let Body::Object(ivs) = &o.body {
-                if let Some(&v) = ivs.get(ic.idx as usize) { return Ok(if v == UNDEF { NIL } else { v }); }
+                if let Some(v) = ivs.get(ic.idx as usize) { return Ok(if v == UNDEF { NIL } else { v }); }
                 return Ok(NIL);
             }
         }
@@ -384,9 +384,7 @@ pub fn EVAL_node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value, ic:
         let o = obj(slf);
         if o.klass.raw() == ic.klass && o.flags & FL_FROZEN == 0 {
             if let Body::Object(ivs) = &mut o.body {
-                let i = ic.idx as usize;
-                if let Some(x) = ivs.get_mut(i) { *x = v; return Ok(v); }
-                if i == ivs.len() { ivs.push(v); return Ok(v); }
+                if ivs.set(ic.idx as usize, v) { return Ok(v); }
             }
         }
     }
@@ -732,14 +730,23 @@ pub fn EVAL_node_ensure<D_body: Disp, D_ens: Disp>(c: &mut Ctx, n: NodePtr, fp: 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_when<D_pats: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, pats: NodeList, kinds: Str, cc: &mut CallCache) -> RV {
+pub fn EVAL_node_when<D_pats: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, pats: NodeList, kinds: Str, cc: &mut CallCache, km: &mut KindMemo) -> RV {
     let subj = slot(fp, subj_slot).get();
     for i in 0..<D_pats as DispList>::len(pats) {
         let p = <D_pats as DispList>::nth(c, pats, i, fp)?;
         if kinds[i] == 1 {
             if rt_when_splat(c, p, subj)? { return Ok(TRUE); }
         } else {
-            let hit = match eqq_imm(p, subj) { Some(b) => b, None => rt_eqq(c, p, subj, cc)? };
+            let hit = match eqq_imm(p, subj) {
+                Some(b) => b,
+                None => {
+                    // Module#=== asked of the same subject class again: d is 0 (no) or 1 (yes)
+                    let k = class_of(subj).raw();
+                    let d = km.memo[kind_way(k)] ^ k;
+                    // is_class: the slot of a dead pattern class may be another object by now (a new class would move the serial)
+                    if p.raw() == km.pat && d <= 1 && km.ser == kind_serial() && is_class_or_module(p) { d == 1 } else { rt_eqq_class(c, p, subj, cc, km)? }
+                }
+            };
             if hit { return Ok(TRUE); }
         }
     }
