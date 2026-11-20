@@ -3,11 +3,13 @@
 //
 // Names are leaked (`&'static [u8]` is literally true) and live in an append-only table of
 // chunks whose slots are `OnceLock`s, so `sym_bytes` reads without a lock (two acquire loads,
-// plain loads on x86). Only `intern` / `lookup` take the map's `Mutex`; writers are serialized
-// by it, so a slot is set once, before its id is handed out.
+// plain loads on x86). `intern` answers from a lock-free cache when it can; misses and
+// `lookup` take the map's `Mutex`. Writers are serialized by it, so a slot is set once,
+// before its id is handed out.
 #![forbid(unsafe_code)]
 use crate::value::Sym;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 const CHUNK_BITS: u32 = 12;
@@ -42,8 +44,32 @@ fn new_map() -> Map {
     m
 }
 
+// A direct-mapped cache in front of the map: slot = id + 1, verified against the name on a
+// hit, so a stale or overwritten slot only costs a miss. Release / Acquire make the name of
+// an id visible before the id is.
+const CACHE_BITS: u32 = 16;
+static CACHE: [AtomicU32; 1 << CACHE_BITS] = [const { AtomicU32::new(0) }; 1 << CACHE_BITS];
 #[inline]
-pub fn intern(b: &[u8]) -> Sym { with_map(|m| match m.ids.get(b) { Some(&i) => Sym(i), None => add(m, b) }) }
+fn cache_slot(b: &[u8]) -> &'static AtomicU32 {
+    use std::hash::Hasher;
+    let mut h = crate::fxhash::FxHasher::default();
+    h.write(b);
+    &CACHE[(h.finish() >> (64 - CACHE_BITS)) as usize]
+}
+
+#[inline]
+pub fn intern(b: &[u8]) -> Sym {
+    let slot = cache_slot(b);
+    let v = slot.load(Ordering::Acquire);
+    if v != 0 && sym_bytes(Sym(v - 1)) == b { return Sym(v - 1); }
+    intern_slow(b, slot)
+}
+#[inline(never)]
+fn intern_slow(b: &[u8], slot: &AtomicU32) -> Sym {
+    let s = with_map(|m| match m.ids.get(b) { Some(&i) => Sym(i), None => add(m, b) });
+    slot.store(s.0 + 1, Ordering::Release);
+    s
+}
 #[inline] pub fn intern_str(s: &str) -> Sym { intern(s.as_bytes()) }
 #[inline]
 pub fn sym_bytes(s: Sym) -> &'static [u8] {
