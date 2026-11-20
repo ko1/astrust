@@ -380,7 +380,8 @@ pub fn EVAL_node_ivar(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, ic: &mut IvarC
                     if let Some(v) = ivs.get(ic.idx as usize) { return Ok(if v == UNDEF { NIL } else { v }); }
                     return Ok(NIL);
                 } else if ic.idx == slot - 1 {
-                    if let Some(v) = ivs.get((slot - 1) as usize) { return Ok(if v == UNDEF { NIL } else { v }); }
+                    // an unset slot leaves through the miss path (a branch to code the site already has, not a select)
+                    if let Some(v) = ivs.get((slot - 1) as usize) { if v != UNDEF { return Ok(v); } }
                 }
             }
         }
