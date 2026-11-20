@@ -824,16 +824,19 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ct
     let r0 = if k == 0 { r0 } else { base[0].get() };
     if kind == SITE_INTERP { return call_cached(c, cc, mid, base, k as u32, std::ptr::null(), flags); }
     // baked code: one cache test, then the callee compiled into this site or the site's one fast path
+    if callee_hash != 0 {
+        // spec_klass is set only while the cache holds the compiled-in callee
+        if spec_hit(cc, r0, kind) {
+            // sp is where stage() left it: what the entry expects
+            let callee_fp = frame(c, base)?;
+            let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp, CallArgs { me: cc.me as *const MethodEntry, blk: std::ptr::null() });
+            c.set_sp(base, 0);
+            return r;
+        }
+        return call_spec_out(c, cc, mid, base, k as u32, std::ptr::null(), flags, callee_hash);
+    }
     if site_hit(cc, r0, kind) {
-        if callee_hash != 0 {
-            if cc.fast_hash == callee_hash {
-                // sp is where stage() left it: what the entry expects
-                let callee_fp = frame(c, base)?;
-                let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp, CallArgs { me: cc.me as *const MethodEntry, blk: std::ptr::null() });
-                c.set_sp(base, 0);
-                return r;
-            }
-        } else if let Some(r) = site_fast(c, cc, r0, base, k as u32, std::ptr::null(), kind) { return r; }
+        if let Some(r) = site_fast(c, cc, r0, base, k as u32, std::ptr::null(), kind) { return r; }
     }
     call_cached_out(c, cc, mid, base, k as u32, std::ptr::null(), flags)
 }
@@ -852,11 +855,13 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mu
     let r0 = if k == 0 { r0 } else { base[0].get() };
     let b = make_block(c, blk, fp);
     let r = if kind == SITE_INTERP { call_cached(c, cc, mid, base, k as u32, &b, flags) }
-    else if site_hit(cc, r0, kind) && callee_hash != 0 && cc.fast_hash == callee_hash {
-        let callee_fp = frame(c, base)?;
-        let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp, CallArgs { me: cc.me as *const MethodEntry, blk: &b });
-        c.set_sp(base, 0);
-        r
+    else if callee_hash != 0 {
+        if spec_hit(cc, r0, kind) {
+            let callee_fp = frame(c, base)?;
+            let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp, CallArgs { me: cc.me as *const MethodEntry, blk: &b });
+            c.set_sp(base, 0);
+            r
+        } else { call_spec_out(c, cc, mid, base, k as u32, &b, flags, callee_hash) }
     } else if site_hit(cc, r0, kind) && callee_hash == 0 {
         match site_fast(c, cc, r0, base, k as u32, &b, kind) { Some(r) => r, None => call_cached_out(c, cc, mid, base, k as u32, &b, flags) }
     } else { call_cached_out(c, cc, mid, base, k as u32, &b, flags) };

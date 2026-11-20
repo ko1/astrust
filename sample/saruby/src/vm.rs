@@ -140,7 +140,8 @@ pub fn method_serial() -> u64 { METHOD_SERIAL.load(std::sync::atomic::Ordering::
 pub fn bump_method_serial() { METHOD_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
 
 #[derive(Default)]
-pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize, pub fast_hash: u64, pub fast_argc: u32, pub poly_next: u32, pub poly: usize, pub cfunc: usize, pub arity: i32 }
+// spec_klass: cc.klass while the entry it holds is the one baked into the site (call_spec_out)
+pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize, pub fast_hash: u64, pub fast_argc: u32, pub poly_next: u32, pub poly: usize, pub cfunc: usize, pub arity: i32, pub spec_klass: u64 }
 /// A `yield` site: `seen` = the block iseq it ran (1: several), what the bake speculates on;
 /// `fast` = the iseq whose entry is compiled into the site, set once its hash was checked.
 #[derive(Default)]
@@ -1274,7 +1275,23 @@ fn class_of_imm(v: Value) -> u64 { class_of(v).raw() }
 /// Does the site's cache hold recv's class?  `kind` (baked) says which receivers the site saw,
 /// so only that test is in the baked code.
 #[inline(always)]
-pub fn site_hit(cc: &CallCache, recv: Value, kind: u32) -> bool {
+pub fn site_hit(cc: &CallCache, recv: Value, kind: u32) -> bool { klass_hit(cc.klass, cc, recv, kind) }
+
+/// site_hit for the callee compiled into the site: spec_klass also says the entry is that callee.
+#[inline(always)]
+pub fn spec_hit(cc: &CallCache, recv: Value, kind: u32) -> bool { klass_hit(cc.spec_klass, cc, recv, kind) }
+
+/// A call site whose compiled-in callee (entry hash h) was not hit: the call out of line (which
+/// refills the cache), then spec_klass from what the cache holds now.
+#[inline(never)]
+pub fn call_spec_out(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32, h: u64) -> RV {
+    let r = call_cached(c, cc, mid, base, argc, blk, flags);
+    cc.spec_klass = if cc.fast_hash == h && cc.fast_argc == argc { cc.klass } else { 0 };
+    r
+}
+
+#[inline(always)]
+fn klass_hit(ck: u64, cc: &CallCache, recv: Value, kind: u32) -> bool {
     if kind & 15 == SITE_OTHER { return false; }
     // Integer and Float receivers inline (n.even?, x.to_i ...; a Float may also be a heap object)
     let k = if kind & SITE_IMM != 0 {
@@ -1282,7 +1299,7 @@ pub fn site_hit(cc: &CallCache, recv: Value, kind: u32) -> bool {
         else if recv.is_heap() { obj(recv).klass.raw() } else { class_of_imm(recv) }
     }
             else { if !recv.is_heap() { return false; } obj(recv).klass.raw() };
-    cc.klass == k && cc.serial == method_serial()
+    ck == k && cc.serial == method_serial()
 }
 
 /// The one fast path of a site whose cache matched (site_hit); None: go out of line.
