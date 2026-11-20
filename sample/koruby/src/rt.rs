@@ -42,6 +42,7 @@ pub const R_INT_RSHIFT: u32 = 1 << 27;
 pub const R_INT_XOR: u32 = 1 << 28;
 pub const R_STR_LTLT: u32 = 1 << 29;
 pub const R_FLO_POW: u32 = 1 << 30;
+pub const R_IMM_EQ: u32 = 1 << 31;
 
 pub static mut REDEF: u32 = 0;
 pub static mut BOOTED: bool = false;
@@ -64,6 +65,7 @@ pub fn note_redefinition(klass: Value, mid: Sym) {
         (vm.c_array, s::ltlt, R_ARY_LTLT), (vm.c_array, s::aref, R_ARY_AREF), (vm.c_array, s::aset, R_ARY_ASET),
         (vm.c_integer, s::ltlt, R_INT_LSHIFT), (vm.c_integer, s::gtgt, R_INT_RSHIFT), (vm.c_integer, s::xor, R_INT_XOR),
         (vm.c_hash, s::aref, R_HASH_AREF), (vm.c_hash, s::aset, R_HASH_ASET), (vm.c_string, s::ltlt, R_STR_LTLT), (vm.c_float, s::pow, R_FLO_POW),
+        (vm.c_nil, s::eq, R_IMM_EQ), (vm.c_true, s::eq, R_IMM_EQ), (vm.c_false, s::eq, R_IMM_EQ), (vm.c_symbol, s::eq, R_IMM_EQ),
     ];
     for &(k, m, f) in table {
         if m == mid && (klass == k || ancestors(k).contains(&klass)) { unsafe { REDEF |= f; } }

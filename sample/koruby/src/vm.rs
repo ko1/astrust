@@ -393,7 +393,12 @@ pub fn include_module(klass: Value, m: Value) {
     let cd = rclass(klass);
     if cd.includes.contains(&m) { return; }
     if ancestors(klass).contains(&m) { return; }
-    cd.includes.push(m);
+    // an included method shadows an inherited one (e.g. NilClass's ==): operator fast paths must notice
+    for &am in ancestors(m).iter() {
+        let mids: Vec<Sym> = rclass(am).mtbl.keys().copied().collect();
+        for mid in mids { crate::rt::note_redefinition(klass, mid); }
+    }
+    rclass(klass).includes.push(m);
     bump_hierarchy();
 }
 pub fn prepend_module(klass: Value, m: Value) {

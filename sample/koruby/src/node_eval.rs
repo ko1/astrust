@@ -934,7 +934,8 @@ pub fn EVAL_node_opt_ge(c: &mut Ctx, n: NodePtr, fp: *mut Value, a: Value, b: Va
 pub fn EVAL_node_opt_eq(c: &mut Ctx, n: NodePtr, fp: *mut Value, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_EQ) { return Ok(Value::bool(a == b)); }
     if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { return Ok(Value::bool(x == y)); }
-    if a.is_sym() && b.is_sym() { return Ok(Value::bool(a == b)); }
+    // nil / true / false / Symbol receivers: == is identity
+    if a.is_special() && !redef(R_IMM_EQ) { return Ok(Value::bool(a == b)); }
     rt_eq(c, a, b, line, cc)
 }
 
