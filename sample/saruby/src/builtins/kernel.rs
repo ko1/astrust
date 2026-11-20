@@ -410,7 +410,7 @@ fn k_rand(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
 fn k_srand(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let old = vm().rand_state;
     let seed = match args.first() { Some(&v) => crate::builtins::numeric_methods::num_to_long(c, v)? as u64, None => 0x2545F4914F6CDD1D };
-    crate::builtins::random::seed(seed);
+    crate::builtins::random::seed(c, seed);
     Ok(int_or_big(old))
 }
 fn int_or_big(v: u64) -> Value { crate::bignum::int_from_i128(v as i128) }

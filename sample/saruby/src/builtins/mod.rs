@@ -191,7 +191,7 @@ pub fn boot() {
     io::init();
     process::init();
     marshal::init();
-    random::init();
+    (vm.c_random, vm.default_random) = random::init(vm);
     binding::init();
     thread::init();
     misc::init();
