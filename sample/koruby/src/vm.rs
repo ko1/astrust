@@ -849,8 +849,9 @@ pub fn backtrace_lines(c: &Ctx, skip: usize) -> Vec<String> {
         for (i, &fp) in frames.iter().enumerate() {
             let fr = &*fp;
             if fr.kind != FK_CFUNC && fr.iseq.is_null() { continue; }
-            // CRuby's send/__send__ do not push a frame
+            // CRuby's send/__send__ and Proc#call/yield/===/[] do not push a frame
             if fr.kind == FK_CFUNC && (fr.cfunc_name == s::send || fr.cfunc_name == s::__send__) { continue; }
+            if fr.kind == FK_CFUNC && is_proc(fr.cfunc_recv) && matches!(sym_str(fr.cfunc_name).as_ref(), "call" | "yield" | "===" | "[]") { continue; }
             let (file, line) = &info[i];
             out.push(format!("{}:{}:in '{}'", file, line, frame_label(fr)));
         }
@@ -1176,7 +1177,11 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: *mut Value, argc: u32, blk: *c
         let maxp = if p.rest.is_some() || p.forwarding { usize::MAX } else { required + opt };
         if given < required || given > maxp {
             if !(accepts_kw && kwh == NIL && given == required + opt + 1 && false) {
-                return argc_err(c, given, required as i32, if maxp == usize::MAX { -1 } else { maxp as i32 }).map(|_: ()| ());
+                let exp = if maxp == usize::MAX { format!("{}+", required) } else if required == maxp { format!("{}", required) } else { format!("{}..{}", required, maxp) };
+                // missing required keywords are reported along with the arity
+                let missing: Vec<String> = if kwh == NIL { p.kw.iter().filter(|k| k.required).map(|k| sym_str(k.name).to_string()).collect() } else { vec![] };
+                let extra = match missing.len() { 0 => String::new(), 1 => format!("; required keyword: {}", missing[0]), _ => format!("; required keywords: {}", missing.join(", ")) };
+                return arg_err(c, format!("wrong number of arguments (given {}, expected {}{})", given, exp, extra));
             }
         }
     }

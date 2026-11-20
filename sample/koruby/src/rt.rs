@@ -138,7 +138,12 @@ pub fn rt_hash_merge_kw(c: &mut Ctx, h: Value, v: Value) -> Result<(), Esc> {
         if !respond_to(v, s::to_hash, true) {
             return type_err(c, format!("no implicit conversion of {} into Hash", crate::builtins::kernel::class_name_for_err(v)));
         }
-        funcall(c, v, s::to_hash, &[], std::ptr::null())?
+        let r = funcall(c, v, s::to_hash, &[], std::ptr::null())?;
+        if !is_hash(r) {
+            let cls = class_path(real_class_of(v));
+            return type_err(c, format!("can't convert {} to Hash ({}#to_hash gives {})", cls, cls, class_path(real_class_of(r))));
+        }
+        r
     };
     for (k, x) in hash_pairs(src) { hash_aset(c, h, k, x)?; }
     Ok(())
