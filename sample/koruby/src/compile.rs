@@ -214,7 +214,9 @@ impl<'a> Compiler<'a> {
         for &l in locals {
             let nm = self.cst(l);
             if sc.vars.contains_key(&nm) { continue; }
-            let loc = if all || sc.captured.contains(&nm) { sc.env_size += 1; VarLoc::Env(sc.env_size - 1) }
+            // a frame has at most FRAME slots (stack.rs): the locals of a huge scope go to its env
+            let spill = sc.nslots as usize >= crate::stack::FRAME / 2;
+            let loc = if all || spill || sc.captured.contains(&nm) { sc.env_size += 1; VarLoc::Env(sc.env_size - 1) }
                       else { sc.nslots += 1; VarLoc::Slot(sc.nslots - 1) };
             sc.vars.insert(nm, loc);
             sc.names.push((nm, loc));
@@ -321,6 +323,10 @@ impl<'a> Compiler<'a> {
 
     fn finish_iseq(&mut self, body: NodePtr, mut params: Params, kind: IseqKind, label: String, line: u32, name: Sym) -> &'static Iseq {
         let mut sc = self.scopes.pop().unwrap();
+        // evaluators reach their frame through a FRAME-slot window (stack.rs)
+        if sc.nslots as usize > crate::stack::FRAME {
+            self.errors.push(format!("{}:{}: {} needs too many local slots ({}, max {})", self.file, line, label, sc.nslots, crate::stack::FRAME));
+        }
         params.slot_names = std::mem::take(&mut sc.param_names);
         let mut env_params = vec![];
         // a captured parameter has both a slot (filled by setup) and an env index
@@ -1990,7 +1996,8 @@ pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind,
         cm.tl_binding = true;
         cm.captures.entry(key(&pr.root)).or_default().insert(Sym(u32::MAX));
     }
-    Ok(cm.compile_program(&pr.root, kind))
+    let is = cm.compile_program(&pr.root, kind);
+    if cm.errors.is_empty() { Ok(is) } else { Err(cm.errors.join("\n")) }
 }
 
 /// The value of a single non-splat `when` pattern that is an immediate literal.
