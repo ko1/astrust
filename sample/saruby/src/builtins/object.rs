@@ -551,7 +551,7 @@ fn set_visibility(c: &mut Ctx, slf: Value, a: &[Value], visi: u8) -> RV {
         if p.kind == FK_CLASS || p.kind == FK_TOP || p.kind == FK_EVAL || (p.kind == FK_BLOCK && p.defined_class() == slf) { p.visi = visi; }
         return Ok(NIL);
     }
-    let list: Vec<Value> = if a.len() == 1 && is_array(a[0]) { rary(a[0]).clone() } else { a.to_vec() };
+    let list: Vec<Value> = if a.len() == 1 && is_array(a[0]) { rary(a[0]).to_vec() } else { a.to_vec() };
     for &x in &list {
         let m = to_sym_arg(c, x)?;
         let me = search_method(slf, m);
@@ -983,7 +983,7 @@ pub fn alloc_instance(c: &mut Ctx, klass: Value) -> RV {
     Ok(match cd.alloc {
         AllocKind::Object | AllocKind::Exception => new_object(klass),
         AllocKind::String => crate::gc::alloc(klass, Body::String(RString { b: crate::sbuf::SBuf::new(), enc: ENC_UTF8 })),
-        AllocKind::Array => crate::gc::alloc(klass, Body::Array(vec![])),
+        AllocKind::Array => crate::gc::alloc(klass, Body::Array(crate::avec::AVec::new())),
         AllocKind::Hash => { let h = hash_new(); obj(h).klass = klass; h }
         AllocKind::Range => crate::gc::alloc(klass, Body::Range(NIL, NIL, false)),
         AllocKind::Class => { let k = new_class(vm().c_object); k }

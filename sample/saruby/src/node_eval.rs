@@ -277,7 +277,7 @@ pub fn EVAL_node_ary<D_elems: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, elems: 
         let v = <D_elems as DispList>::nth(c, elems, i, fp)?;
         base[i].set(v);
     }
-    let a = c.ary_from_vec(to_vec(&base[0..k]));
+    let a = c.ary_from_slots(&base[0..k]);
     c.set_sp(base, 0);
     Ok(a)
 }

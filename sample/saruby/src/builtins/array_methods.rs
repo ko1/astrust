@@ -135,8 +135,8 @@ cfn!(a_initialize, |c, slf, a, blk| {
     check_argc(c, a, 0, 2)?;
     let v = c.ary_modify(slf)?; v.clear();
     if a.is_empty() { return Ok(slf); }
-    if a.len() == 1 && is_array(a[0]) { let src = c.ary(a[0]).to_vec(); *c.ary_mut(slf) = src; return Ok(slf); }
-    if a.len() == 1 && !a[0].is_fixnum() { if let Some(arr) = check_array(c, a[0])? { let src = c.ary(arr).to_vec(); *c.ary_mut(slf) = src; return Ok(slf); } }
+    if a.len() == 1 && is_array(a[0]) { let src = c.ary(a[0]).to_vec(); *c.ary_mut(slf) = src.into(); return Ok(slf); }
+    if a.len() == 1 && !a[0].is_fixnum() { if let Some(arr) = check_array(c, a[0])? { let src = c.ary(arr).to_vec(); *c.ary_mut(slf) = src.into(); return Ok(slf); } }
     let n = num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, "negative array size"); }
     if n > 1 << 32 { return arg_err(c, "array size too big"); }
@@ -144,7 +144,7 @@ cfn!(a_initialize, |c, slf, a, blk| {
         for i in 0..n { let x = yield1(c, blk, Value::fix(i))?; c.ary_push(slf, x); }
     } else {
         let fillv = if a.len() > 1 { a[1] } else { NIL };
-        *c.ary_mut(slf) = vec![fillv; n as usize];
+        *c.ary_mut(slf) = vec![fillv; n as usize].into();
     }
     Ok(slf)
 });
@@ -288,8 +288,8 @@ fn filter_in_place(c: &mut Ctx, slf: Value, blk: *const Block, keep_truthy: bool
         while let Some(&x) = c.ary(slf).get(i) { let t = yield1(c, blk, x)?.truthy(); if t == keep_truthy { keep.push(x); } else { changed = true; } i += 1; }
         Ok(())
     })();
-    if r.is_err() { let rest: Vec<Value> = c.ary(slf)[i.min(c.ary_len(slf))..].to_vec(); keep.extend(rest); *c.ary_mut(slf) = keep; return r.map(|_| false); }
-    *c.ary_mut(slf) = keep;
+    if r.is_err() { let rest: Vec<Value> = c.ary(slf)[i.min(c.ary_len(slf))..].to_vec(); keep.extend(rest); *c.ary_mut(slf) = keep.into(); return r.map(|_| false); }
+    *c.ary_mut(slf) = keep.into();
     Ok(changed)
 }
 cfn!(a_select_b, |c, slf, a, blk| enum_or(c, slf, "select!", a, blk, |c| { let ch = filter_in_place(c, slf, blk, true)?; Ok(if ch { slf } else { NIL }) }));
@@ -325,7 +325,7 @@ cfn!(a_delete, |c, slf, a, blk| {
     if found == NIL && !keep.len() == c.ary_len(slf) { }
     if keep.len() == c.ary_len(slf) { return if blk.is_null() { Ok(NIL) } else { yield1(c, blk, a[0]) }; }
     c.ary_modify(slf)?;
-    *c.ary_mut(slf) = keep;
+    *c.ary_mut(slf) = keep.into();
     Ok(if found == NIL { a[0] } else { found })
 });
 cfn!(a_delete_at, |c, slf, a, blk| {
@@ -367,7 +367,7 @@ cfn!(a_flatten_b, |c, slf, a, blk| {
     let out = c.ary_new();
     let mut st = vec![slf];
     let ch = flatten_into(c, slf, depth, out, &mut st)?;
-    *c.ary_mut(slf) = c.ary(out).to_vec();
+    *c.ary_mut(slf) = c.ary(out).to_vec().into();
     Ok(if ch { slf } else { NIL })
 });
 fn uniq_vec(c: &mut Ctx, slf: Value, blk: *const Block) -> Result<Vec<Value>, Esc> {
@@ -384,13 +384,13 @@ fn uniq_vec(c: &mut Ctx, slf: Value, blk: *const Block) -> Result<Vec<Value>, Es
     Ok(out)
 }
 cfn!(a_uniq, |c, slf, a, blk| { let v = uniq_vec(c, slf, blk)?; Ok(c.ary_from_vec(v)) });
-cfn!(a_uniq_b, |c, slf, a, blk| { c.ary_modify(slf)?; let v = uniq_vec(c, slf, blk)?; let ch = v.len() != c.ary_len(slf); *c.ary_mut(slf) = v; Ok(if ch { slf } else { NIL }) });
+cfn!(a_uniq_b, |c, slf, a, blk| { c.ary_modify(slf)?; let v = uniq_vec(c, slf, blk)?; let ch = v.len() != c.ary_len(slf); *c.ary_mut(slf) = v.into(); Ok(if ch { slf } else { NIL }) });
 cfn!(a_sort, |c, slf, a, blk| { let mut v = c.ary(slf).to_vec(); let keep = c.ary_from_vec(v.clone()); sort_array(c, &mut v, blk)?; std::hint::black_box(keep); Ok(c.ary_from_vec(v)) });
-cfn!(a_sort_b, |c, slf, a, blk| { c.ary_modify(slf)?; let mut v = c.ary(slf).to_vec(); let keep = c.ary_new_from(&v); sort_array(c, &mut v, blk)?; std::hint::black_box(keep); *c.ary_modify(slf)? = v; Ok(slf) });
+cfn!(a_sort_b, |c, slf, a, blk| { c.ary_modify(slf)?; let mut v = c.ary(slf).to_vec(); let keep = c.ary_new_from(&v); sort_array(c, &mut v, blk)?; std::hint::black_box(keep); *c.ary_modify(slf)? = v.into(); Ok(slf) });
 cfn!(a_sort_by_b, |c, slf, a, blk| enum_or(c, slf, "sort_by!", a, blk, |c| {
     c.ary_modify(slf)?;
     let r = funcall(c, slf, s::sort_by, &[], blk)?;
-    *c.ary_mut(slf) = c.ary(r).to_vec();
+    *c.ary_mut(slf) = c.ary(r).to_vec().into();
     Ok(slf)
 }));
 cfn!(a_reverse, |c, slf, a, blk| { let mut v = c.ary(slf).to_vec(); v.reverse(); Ok(c.ary_from_vec(v)) });
@@ -783,7 +783,7 @@ cfn!(a_shuffle, |c, slf, a, blk| {
     for i in (1..v.len()).rev() { let j = crate::builtins::random::rand_below(i as u64 + 1) as usize; v.swap(i, j); }
     Ok(c.ary_from_vec(v))
 });
-cfn!(a_shuffle_b, |c, slf, a, blk| { let r = a_shuffle(c, slf, a, blk)?; *c.ary_modify(slf)? = c.ary(r).to_vec(); Ok(slf) });
+cfn!(a_shuffle_b, |c, slf, a, blk| { let r = a_shuffle(c, slf, a, blk)?; *c.ary_modify(slf)? = c.ary(r).to_vec().into(); Ok(slf) });
 cfn!(a_cycle, |c, slf, a, blk| {
     check_argc(c, a, 0, 1)?;
     if blk.is_null() {

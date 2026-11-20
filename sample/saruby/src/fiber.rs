@@ -88,7 +88,7 @@ extern "C" fn fiber_main() -> ! {
         let mut top = Frame::empty(c.bottom());
         c.frame = &mut top.h;
         let args = d.xfer;
-        let argv: Vec<Value> = if is_array(args) { rary(args).clone() } else { vec![args] };
+        let argv: Vec<Value> = if is_array(args) { rary(args).to_vec() } else { vec![args] };
         let r = call_proc(c, d.proc_, &argv, std::ptr::null());
         let d = fd(f);
         match r {

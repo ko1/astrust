@@ -123,7 +123,7 @@ node_ary(c: &mut Ctx, n: NodePtr, fp: Fp, elems: NODES)
         let v = EVAL_NTH!(c, elems, i)?;
         base[i].set(v);
     }
-    let a = c.ary_from_vec(to_vec(&base[0..k]));
+    let a = c.ary_from_slots(&base[0..k]);
     c.set_sp(base, 0);
     Ok(a)
 }
