@@ -659,6 +659,7 @@ pub struct node_opt_plus_struct {
     pub b: NodePtr,
     pub line: u32,
     pub cc: CallCache,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -668,6 +669,7 @@ pub struct node_opt_minus_struct {
     pub b: NodePtr,
     pub line: u32,
     pub cc: CallCache,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -677,6 +679,7 @@ pub struct node_opt_mul_struct {
     pub b: NodePtr,
     pub line: u32,
     pub cc: CallCache,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -686,6 +689,7 @@ pub struct node_opt_div_struct {
     pub b: NodePtr,
     pub line: u32,
     pub cc: CallCache,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -713,6 +717,7 @@ pub struct node_opt_lt_struct {
     pub b: NodePtr,
     pub line: u32,
     pub cc: CallCache,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -722,6 +727,7 @@ pub struct node_opt_le_struct {
     pub b: NodePtr,
     pub line: u32,
     pub cc: CallCache,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -731,6 +737,7 @@ pub struct node_opt_gt_struct {
     pub b: NodePtr,
     pub line: u32,
     pub cc: CallCache,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -740,6 +747,7 @@ pub struct node_opt_ge_struct {
     pub b: NodePtr,
     pub line: u32,
     pub cc: CallCache,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -749,6 +757,7 @@ pub struct node_opt_eq_struct {
     pub b: NodePtr,
     pub line: u32,
     pub cc: CallCache,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -758,6 +767,7 @@ pub struct node_opt_neq_struct {
     pub b: NodePtr,
     pub line: u32,
     pub cc: CallCache,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -1269,22 +1279,22 @@ pub fn ALLOC_node_lambda(blk: IseqRef) -> NodePtr {
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_plus(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_plus, node_opt_plus_struct { a, b, line, cc: Default::default() })
+    node_allocate(&KIND_node_opt_plus, node_opt_plus_struct { a, b, line, cc: Default::default(), tf: Default::default() })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_minus(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_minus, node_opt_minus_struct { a, b, line, cc: Default::default() })
+    node_allocate(&KIND_node_opt_minus, node_opt_minus_struct { a, b, line, cc: Default::default(), tf: Default::default() })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_mul(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_mul, node_opt_mul_struct { a, b, line, cc: Default::default() })
+    node_allocate(&KIND_node_opt_mul, node_opt_mul_struct { a, b, line, cc: Default::default(), tf: Default::default() })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_div(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_div, node_opt_div_struct { a, b, line, cc: Default::default() })
+    node_allocate(&KIND_node_opt_div, node_opt_div_struct { a, b, line, cc: Default::default(), tf: Default::default() })
 }
 
 #[allow(non_snake_case)]
@@ -1299,32 +1309,32 @@ pub fn ALLOC_node_opt_mod(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_lt(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_lt, node_opt_lt_struct { a, b, line, cc: Default::default() })
+    node_allocate(&KIND_node_opt_lt, node_opt_lt_struct { a, b, line, cc: Default::default(), tf: Default::default() })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_le(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_le, node_opt_le_struct { a, b, line, cc: Default::default() })
+    node_allocate(&KIND_node_opt_le, node_opt_le_struct { a, b, line, cc: Default::default(), tf: Default::default() })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_gt(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_gt, node_opt_gt_struct { a, b, line, cc: Default::default() })
+    node_allocate(&KIND_node_opt_gt, node_opt_gt_struct { a, b, line, cc: Default::default(), tf: Default::default() })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_ge(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_ge, node_opt_ge_struct { a, b, line, cc: Default::default() })
+    node_allocate(&KIND_node_opt_ge, node_opt_ge_struct { a, b, line, cc: Default::default(), tf: Default::default() })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_eq(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_eq, node_opt_eq_struct { a, b, line, cc: Default::default() })
+    node_allocate(&KIND_node_opt_eq, node_opt_eq_struct { a, b, line, cc: Default::default(), tf: Default::default() })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_neq(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_neq, node_opt_neq_struct { a, b, line, cc: Default::default() })
+    node_allocate(&KIND_node_opt_neq, node_opt_neq_struct { a, b, line, cc: Default::default(), tf: Default::default() })
 }
 
 #[allow(non_snake_case)]

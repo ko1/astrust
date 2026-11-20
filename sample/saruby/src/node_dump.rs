@@ -785,6 +785,8 @@ fn DUMP_node_opt_plus(out: &mut String, n: NodePtr) {
     out.push(' '); dump_node(out, (*np).u.b);
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
     out.push(' '); out.push_str("<cc>");
+    out.push(' '); out.push_str("<tf>");
+    out.push(' '); 
     out.push(')');
     }
 }
@@ -798,6 +800,8 @@ fn DUMP_node_opt_minus(out: &mut String, n: NodePtr) {
     out.push(' '); dump_node(out, (*np).u.b);
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
     out.push(' '); out.push_str("<cc>");
+    out.push(' '); out.push_str("<tf>");
+    out.push(' '); 
     out.push(')');
     }
 }
@@ -811,6 +815,8 @@ fn DUMP_node_opt_mul(out: &mut String, n: NodePtr) {
     out.push(' '); dump_node(out, (*np).u.b);
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
     out.push(' '); out.push_str("<cc>");
+    out.push(' '); out.push_str("<tf>");
+    out.push(' '); 
     out.push(')');
     }
 }
@@ -824,6 +830,8 @@ fn DUMP_node_opt_div(out: &mut String, n: NodePtr) {
     out.push(' '); dump_node(out, (*np).u.b);
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
     out.push(' '); out.push_str("<cc>");
+    out.push(' '); out.push_str("<tf>");
+    out.push(' '); 
     out.push(')');
     }
 }
@@ -863,6 +871,8 @@ fn DUMP_node_opt_lt(out: &mut String, n: NodePtr) {
     out.push(' '); dump_node(out, (*np).u.b);
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
     out.push(' '); out.push_str("<cc>");
+    out.push(' '); out.push_str("<tf>");
+    out.push(' '); 
     out.push(')');
     }
 }
@@ -876,6 +886,8 @@ fn DUMP_node_opt_le(out: &mut String, n: NodePtr) {
     out.push(' '); dump_node(out, (*np).u.b);
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
     out.push(' '); out.push_str("<cc>");
+    out.push(' '); out.push_str("<tf>");
+    out.push(' '); 
     out.push(')');
     }
 }
@@ -889,6 +901,8 @@ fn DUMP_node_opt_gt(out: &mut String, n: NodePtr) {
     out.push(' '); dump_node(out, (*np).u.b);
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
     out.push(' '); out.push_str("<cc>");
+    out.push(' '); out.push_str("<tf>");
+    out.push(' '); 
     out.push(')');
     }
 }
@@ -902,6 +916,8 @@ fn DUMP_node_opt_ge(out: &mut String, n: NodePtr) {
     out.push(' '); dump_node(out, (*np).u.b);
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
     out.push(' '); out.push_str("<cc>");
+    out.push(' '); out.push_str("<tf>");
+    out.push(' '); 
     out.push(')');
     }
 }
@@ -915,6 +931,8 @@ fn DUMP_node_opt_eq(out: &mut String, n: NodePtr) {
     out.push(' '); dump_node(out, (*np).u.b);
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
     out.push(' '); out.push_str("<cc>");
+    out.push(' '); out.push_str("<tf>");
+    out.push(' '); 
     out.push(')');
     }
 }
@@ -928,6 +946,8 @@ fn DUMP_node_opt_neq(out: &mut String, n: NodePtr) {
     out.push(' '); dump_node(out, (*np).u.b);
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
     out.push(' '); out.push_str("<cc>");
+    out.push(' '); out.push_str("<tf>");
+    out.push(' '); 
     out.push(')');
     }
 }

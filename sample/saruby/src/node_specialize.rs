@@ -2116,6 +2116,8 @@ fn SPECIALIZE_node_opt_plus(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_b".to_string());
     a.push(format!("{}u32", (*np).u.line));
     a.push("&mut (*np).u.cc".to_string());
+    a.push("&mut (*np).u.tf".to_string());
+    a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
@@ -2150,6 +2152,8 @@ fn SPECIALIZE_node_opt_minus(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_b".to_string());
     a.push(format!("{}u32", (*np).u.line));
     a.push("&mut (*np).u.cc".to_string());
+    a.push("&mut (*np).u.tf".to_string());
+    a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
@@ -2184,6 +2188,8 @@ fn SPECIALIZE_node_opt_mul(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_b".to_string());
     a.push(format!("{}u32", (*np).u.line));
     a.push("&mut (*np).u.cc".to_string());
+    a.push("&mut (*np).u.tf".to_string());
+    a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
@@ -2218,6 +2224,8 @@ fn SPECIALIZE_node_opt_div(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_b".to_string());
     a.push(format!("{}u32", (*np).u.line));
     a.push("&mut (*np).u.cc".to_string());
+    a.push("&mut (*np).u.tf".to_string());
+    a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
@@ -2320,6 +2328,8 @@ fn SPECIALIZE_node_opt_lt(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_b".to_string());
     a.push(format!("{}u32", (*np).u.line));
     a.push("&mut (*np).u.cc".to_string());
+    a.push("&mut (*np).u.tf".to_string());
+    a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
@@ -2358,6 +2368,8 @@ fn SPECIALIZE_node_opt_le(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_b".to_string());
     a.push(format!("{}u32", (*np).u.line));
     a.push("&mut (*np).u.cc".to_string());
+    a.push("&mut (*np).u.tf".to_string());
+    a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
@@ -2396,6 +2408,8 @@ fn SPECIALIZE_node_opt_gt(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_b".to_string());
     a.push(format!("{}u32", (*np).u.line));
     a.push("&mut (*np).u.cc".to_string());
+    a.push("&mut (*np).u.tf".to_string());
+    a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
@@ -2434,6 +2448,8 @@ fn SPECIALIZE_node_opt_ge(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_b".to_string());
     a.push(format!("{}u32", (*np).u.line));
     a.push("&mut (*np).u.cc".to_string());
+    a.push("&mut (*np).u.tf".to_string());
+    a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
@@ -2472,6 +2488,8 @@ fn SPECIALIZE_node_opt_eq(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_b".to_string());
     a.push(format!("{}u32", (*np).u.line));
     a.push("&mut (*np).u.cc".to_string());
+    a.push("&mut (*np).u.tf".to_string());
+    a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
@@ -2510,6 +2528,8 @@ fn SPECIALIZE_node_opt_neq(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_b".to_string());
     a.push(format!("{}u32", (*np).u.line));
     a.push("&mut (*np).u.cc".to_string());
+    a.push("&mut (*np).u.tf".to_string());
+    a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
