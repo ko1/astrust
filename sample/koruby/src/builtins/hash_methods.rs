@@ -19,12 +19,17 @@ fn enum_or<F: FnOnce(&mut Ctx) -> RV>(c: &mut Ctx, slf: Value, mid: &str, a: &[V
 }
 /// Iterate live entries by slot index (tolerates mutation during iteration).
 fn each_entry(c: &mut Ctx, h: Value, mut f: impl FnMut(&mut Ctx, Value, Value) -> Result<bool, Esc>) -> Result<(), Esc> {
+    hash_iter_enter(h);
     let mut i = 0;
+    let mut r = Ok(());
     while i < hash_slots(h) {
-        if let Some((k, v)) = hash_entry_at(h, i) { if k != UNDEF && !f(c, k, v)? { break; } }
+        if let Some((k, v)) = hash_entry_at(h, i) {
+            if k != UNDEF { match f(c, k, v) { Ok(true) => {}, Ok(false) => break, Err(e) => { r = Err(e); break; } } }
+        }
         i += 1;
     }
-    Ok(())
+    hash_iter_leave(h);
+    r
 }
 fn yield_pair(c: &mut Ctx, blk: *const Block, k: Value, v: Value) -> RV {
     // |k, v| blocks receive two args; |pair| receives [k, v]
@@ -124,15 +129,21 @@ fn sel_b(c: &mut Ctx, slf: Value, blk: *const Block, want: bool) -> Result<bool,
     modify(c, slf)?;
     let mut changed = false;
     let mut i = 0;
-    while i < hash_slots(slf) {
-        if let Some((k, v)) = hash_entry_at(slf, i) {
-            if k != UNDEF && yield_block(c, blk, &[k, v])?.truthy() != want {
-                modify(c, slf)?;
-                if hash_entry_at(slf, i).map(|e| e.0) == Some(k) { hash_delete_slot(slf, i); changed = true; }
+    hash_iter_enter(slf);
+    let r: Result<(), Esc> = (|| {
+        while i < hash_slots(slf) {
+            if let Some((k, v)) = hash_entry_at(slf, i) {
+                if k != UNDEF && yield_block(c, blk, &[k, v])?.truthy() != want {
+                    modify(c, slf)?;
+                    if hash_entry_at(slf, i).map(|e| e.0) == Some(k) { hash_delete_slot(slf, i); changed = true; }
+                }
             }
+            i += 1;
         }
-        i += 1;
-    }
+        Ok(())
+    })();
+    hash_iter_leave(slf);
+    r?;
     Ok(changed)
 }
 cfn!(h_select_b, |c, slf, a, blk| enum_or(c, slf, "select!", a, blk, |c| Ok(if sel_b(c, slf, blk, true)? { slf } else { NIL })));
@@ -233,7 +244,8 @@ cfn!(h_update, |c, slf, a, blk| {
     for &x in a {
         let o = match check_hash(c, x)? { Some(o) => o, None => return type_err(c, format!("no implicit conversion of {} into Hash", class_name_for_err(x))) };
         each_entry(c, o, |c, k, v| {
-            let nv = if !blk.is_null() { match hash_get_opt(c, slf, k)? { Some(old) => yield_block(c, blk, &[k, old, v])?, None => v } } else { v };
+            let nv = if !blk.is_null() { match hash_get_opt(c, slf, k)? { Some(old) => { hash_iter_enter(slf); let r = yield_block(c, blk, &[k, old, v]); hash_iter_leave(slf); r? } None => v } } else { v };
+            modify(c, slf)?;
             hash_aset(c, slf, k, nv)?; Ok(true)
         })?;
     }
@@ -244,6 +256,7 @@ cfn!(h_replace, |c, slf, a, blk| {
     modify(c, slf)?;
     let o = match check_hash(c, a[0])? { Some(o) => o, None => return type_err(c, "no implicit conversion into Hash") };
     if o == slf { return Ok(slf); }
+    if hash_iterating(slf) { return err(c, vm().c_runtime_error, "can't replace hash during iteration"); }
     let pairs = hash_pairs(o);
     hash_clear(slf);
     for (k, v) in pairs { hash_set(c, slf, k, v)?; }
@@ -269,7 +282,7 @@ cfn!(h_set_default_proc, |c, slf, a, blk| {
 });
 cfn!(h_invert, |c, slf, a, blk| { let out = hash_new(); each_entry(c, slf, |c, k, v| { hash_aset(c, out, v, k)?; Ok(true) })?; Ok(out) });
 cfn!(h_transform_values, |c, slf, a, blk| enum_or(c, slf, "transform_values", a, blk, |c| { let out = hash_new(); each_entry(c, slf, |c, k, v| { let nv = yield1(c, blk, v)?; hash_set(c, out, k, nv)?; Ok(true) })?; Ok(out) }));
-cfn!(h_transform_values_b, |c, slf, a, blk| enum_or(c, slf, "transform_values!", a, blk, |c| { modify(c, slf)?; each_entry(c, slf, |c, k, v| { let nv = yield1(c, blk, v)?; hash_set(c, slf, k, nv)?; Ok(true) })?; Ok(slf) }));
+cfn!(h_transform_values_b, |c, slf, a, blk| enum_or(c, slf, "transform_values!", a, blk, |c| { modify(c, slf)?; each_entry(c, slf, |c, k, v| { let nv = yield1(c, blk, v)?; modify(c, slf)?; hash_set(c, slf, k, nv)?; Ok(true) })?; Ok(slf) }));
 cfn!(h_transform_keys, |c, slf, a, blk| {
     let map = a.first().copied().filter(|x| is_hash(*x));
     if blk.is_null() && map.is_none() { return crate::builtins::enumerator::enum_for_sized(c, slf, intern(b"transform_keys"), a); }

@@ -7,6 +7,14 @@ use crate::vm::*;
 const SMALL: usize = 8;
 const EMPTY: u32 = u32::MAX;
 
+// Hashes being iterated (CRuby's iter_lev): adding a key or rehashing then raises.
+thread_local!(static ITER: std::cell::RefCell<Vec<Value>> = const { std::cell::RefCell::new(Vec::new()) });
+pub fn hash_iter_enter(h: Value) { ITER.with(|v| v.borrow_mut().push(h)); }
+pub fn hash_iter_leave(h: Value) {
+    ITER.with(|v| { let mut v = v.borrow_mut(); if let Some(i) = v.iter().rposition(|x| *x == h) { v.remove(i); } });
+}
+pub fn hash_iterating(h: Value) -> bool { ITER.with(|v| { let v = v.borrow(); !v.is_empty() && v.contains(&h) }) }
+
 pub fn hash_new() -> Value {
     crate::gc::alloc(vm().c_hash, Body::Hash(Box::new(RHash { entries: Vec::new(), index: Vec::new(), live: 0, default: NIL, default_proc: NIL, identity: false })))
 }
@@ -49,7 +57,12 @@ pub fn key_hash(c: &mut Ctx, k: Value) -> Result<u64, Esc> {
     let r = funcall(c, k, s::hash, &[], std::ptr::null())?;
     if r.is_fixnum() { return Ok(mix(r.as_fix() as u64)); }
     if is_bignum(r) { return Ok(crate::astrust::hash_str(&rbig(r).to_string_radix(16))); }
-    type_err(c, "hash method must return an Integer")
+    if r.is_heap() && !is_float(r) && respond_to(r, s::to_int, true) {
+        let i = funcall(c, r, s::to_int, &[], std::ptr::null())?;
+        if i.is_fixnum() { return Ok(mix(i.as_fix() as u64)); }
+        if is_bignum(i) { return Ok(crate::astrust::hash_str(&rbig(i).to_string_radix(16))); }
+    }
+    type_err(c, format!("no implicit conversion of {} into Integer", crate::builtins::kernel::class_name_for_err(r)))
 }
 
 /// Ruby `eql?`.
@@ -162,6 +175,7 @@ pub fn hash_set(c: &mut Ctx, h: Value, k: Value, v: Value) -> Result<(), Esc> {
     let identity = rhash(h).identity;
     let hc = if identity { identity_hash(k) } else { key_hash(c, k)? };
     if let Some(i) = lookup_with_hash(c, h, k, hc)? { rhash(h).entries[i].val = v; return Ok(()); }
+    if hash_iterating(h) { return err(c, vm().c_runtime_error, "can't add a new key into hash during iteration"); }
     let r = rhash(h);
     r.entries.push(HEntry { key: k, val: v, hash: hc });
     r.live += 1;
@@ -207,6 +221,7 @@ pub fn hash_delete_slot(h: Value, i: usize) {
 pub fn hash_clear(h: Value) { let r = rhash(h); r.entries.clear(); r.index.clear(); r.live = 0; }
 
 pub fn hash_rehash(c: &mut Ctx, h: Value) -> Result<(), Esc> {
+    if hash_iterating(h) { return err(c, vm().c_runtime_error, "rehash during iteration"); }
     let pairs = hash_pairs(h);
     let keep = ary_new();
     for (k, v) in &pairs { ary_push(keep, *k); ary_push(keep, *v); }

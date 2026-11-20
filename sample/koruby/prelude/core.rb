@@ -109,7 +109,7 @@ module Enumerable
   end
   alias detect find
   def find_index(*args)
-    Enumerable.__argc(args.size, 0, 1) if args.size > 1
+    Enumerable.__argc(args.size, 1, 1) if args.size > 1
     if args.empty?
       return enum_for(:find_index) unless block_given?
       i = 0
@@ -167,8 +167,13 @@ module Enumerable
   end
   alias reduce inject
   def sum(init = 0, &b)
-    a = to_a
-    b ? a.sum(init, &b) : a.sum(init)
+    a = []
+    if b
+      each { |*x| a << b.call(x.size <= 1 ? x[0] : x) }
+    else
+      each { |*x| a << (x.size <= 1 ? x[0] : x) }
+    end
+    a.sum(init)
   end
   def count(*args)
     Enumerable.__argc(args.size, 0, 1) if args.size > 1
@@ -357,7 +362,7 @@ module Enumerable
     end
   end
   def tally(h = nil)
-    if h.nil?
+    if nil.equal?(h)
       h = {}
     else
       h = Enumerable.__hash(h)

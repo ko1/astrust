@@ -650,7 +650,7 @@ cfn!(a_zip, |c, slf, a, blk| {
     if len(slf) == 0 { return Ok(if blk.is_null() { ary_new() } else { NIL }); }
     let mut others = vec![];
     for &x in a {
-        let arr = if is_array(x) { x } else if let Some(arr) = check_array(c, x)? { arr } else if respond_to(x, s::each, true) { funcall(c, x, s::to_a, &[], std::ptr::null())? } else { return type_err(c, format!("wrong argument type {} (must respond to :each)", class_name_for_err(x))); };
+        let arr = if is_array(x) { x } else if let Some(arr) = check_array(c, x)? { arr } else if respond_to(x, s::each, true) { { let n = Value::fix(len(slf) as i64); if respond_to(x, intern(b"first"), true) { funcall(c, x, intern(b"first"), &[n], std::ptr::null())? } else { funcall(c, x, s::to_a, &[], std::ptr::null())? } } } else { return type_err(c, format!("wrong argument type {} (must respond to :each)", class_name_for_err(x))); };
         others.push(arr);
     }
     let keep = ary_from_vec(others.clone());
