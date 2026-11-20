@@ -35,7 +35,11 @@ impl Ctx {
     pub fn ary_from_vec(&mut self, v: Vec<Value>) -> Value {
         self.malloc_increase(v.len() * 8);
         let k = self.vm().c_array;
-        self.alloc_with(k, move || Body::Array(v))
+        // empty first, then the Vec stored field by field: moving a ready Body::Array into the slot
+        // is compiled as an unaligned copy from the stack that stalls on its own stores
+        let a = self.alloc_with(k, || Body::Array(Vec::new()));
+        std::mem::forget(std::mem::replace(self.ary_mut(a), v));
+        a
     }
     #[inline]
     pub fn ary_push(&mut self, a: Value, v: Value) {
