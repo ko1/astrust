@@ -1794,13 +1794,13 @@ pub fn block_to_proc(c: &mut Ctx, blk: *const Block) -> RV {
     let b = unsafe { &*blk };
     if b.proc_val != UNDEF { return Ok(b.proc_val); }
     if let BlockKind::Proc(p) = b.kind { return Ok(p); }
-    let mut copy = *b;
-    if !copy.outer_blk.is_null() {
-        let op = block_to_proc(c, copy.outer_blk)?;
-        copy.outer_blk = &rproc(op).blk;
-    }
+    let outer = if b.outer_blk.is_null() { std::ptr::null() } else { &rproc(block_to_proc(c, b.outer_blk)?).blk as *const Block };
     let is_lambda = matches!(b.kind, BlockKind::Iseq(is) if unsafe { (*is).kind } == IseqKind::Lambda) || matches!(b.kind, BlockKind::Method(_));
-    let p = gc::alloc_with(vm().c_proc, move || Body::Proc(Box::new(ProcData { blk: copy, is_lambda, from_method: NIL })));
+    // copied from *b into the box, then patched there: a Block patched on the stack first was
+    // read back with wide loads straddling the patch (a store-forwarding stall per Proc)
+    let mut pd = Box::new(ProcData { blk: *b, is_lambda, from_method: NIL });
+    pd.blk.outer_blk = outer;
+    let p = gc::alloc_with(vm().c_proc, move || Body::Proc(pd));
     let pd = rproc(p);
     pd.blk.proc_val = p;
     unsafe { (*(blk as *mut Block)).proc_val = p; }
