@@ -701,9 +701,20 @@ pub fn raise_exc(c: &mut Ctx, e: Value) -> Esc {
     if is_exception(e) && c.errinfo != NIL && c.errinfo != e && ivar_get(e, s::cause) == NIL && !ivar_defined(e, s::cause) {
         ivar_set_raw(e, s::cause, c.errinfo);
     }
+    if vm().debug_flag && is_exception(e) { debug_report(c, e); }
     c.esc = EscKind::Raise;
     c.esc_val = e;
     Esc
+}
+
+/// $DEBUG: "Exception 'X' at file:line - message" on every raise.
+#[cold]
+fn debug_report(c: &mut Ctx, e: Value) {
+    let at = match backtrace_lines(c, 0).first() { Some(l) => l.split(":in ").next().unwrap_or("").to_string(), None => String::new() };
+    let (esc, val) = (c.esc, c.esc_val);
+    let msg = crate::builtins::exception::exc_message_str(c, e).unwrap_or_default();
+    c.esc = esc; c.esc_val = val;
+    eprintln!("Exception '{}' at {} - {}", class_path(real_class_of(e)), at, msg);
 }
 
 pub fn is_exception(v: Value) -> bool {
@@ -1322,6 +1333,9 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: *mut Value, argc: u32, blk: *c
         // block given a trailing hash
         let h = *args.last().unwrap();
         if is_hash(h) && p.kw.iter().all(|k| !k.required) { kwh = h; args.pop(); }
+    }
+    if p.no_kw && flags & CF_KW != 0 && args.last().is_some_and(|&h| is_hash(h) && rhash(h).live > 0) {
+        return arg_err(c, "no keywords accepted");
     }
     let lead = p.lead.len();
     let post = p.post.len();

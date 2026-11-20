@@ -904,14 +904,3 @@ fn HASH_node_special(n: NodePtr) -> u64 {
     h = hash_merge(h, hash_node(u.arg));
     h
 }
-
-#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
-fn HASH_node_flipflop(n: NodePtr) -> u64 {
-    let u = unsafe { &(*(n as *mut NodeOf<node_flipflop_struct>)).u };
-    let mut h = hash_str("node_flipflop");
-    h = hash_merge(h, hash_node(u.a));
-    h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.excl as u64));
-    h = hash_merge(h, hash_u64(u.slot as u64));
-    h
-}

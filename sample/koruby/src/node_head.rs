@@ -853,15 +853,6 @@ pub struct node_special_struct {
     pub arg: NodePtr,
 }
 
-#[allow(non_camel_case_types)]
-#[repr(C)]
-pub struct node_flipflop_struct {
-    pub a: NodePtr,
-    pub b: NodePtr,
-    pub excl: bool,
-    pub slot: u32,
-}
-
 #[allow(non_snake_case)]
 pub fn ALLOC_node_nil() -> NodePtr {
     node_allocate(&KIND_node_nil, node_nil_struct {  })
@@ -1345,11 +1336,6 @@ pub fn ALLOC_node_unsupported(what: Str) -> NodePtr {
 #[allow(non_snake_case)]
 pub fn ALLOC_node_special(kind: u32, arg: NodePtr) -> NodePtr {
     node_allocate(&KIND_node_special, node_special_struct { kind, arg })
-}
-
-#[allow(non_snake_case)]
-pub fn ALLOC_node_flipflop(a: NodePtr, b: NodePtr, excl: bool, slot: u32) -> NodePtr {
-    node_allocate(&KIND_node_flipflop, node_flipflop_struct { a, b, excl, slot })
 }
 
 #[allow(non_upper_case_globals)]
@@ -2416,17 +2402,6 @@ pub static KIND_node_special: NodeKind = NodeKind {
     specializer: SPECIALIZE_node_special,
     dumper: DUMP_node_special,
     replacer: REPLACE_node_special,
-    no_inline: false,
-};
-
-#[allow(non_upper_case_globals)]
-pub static KIND_node_flipflop: NodeKind = NodeKind {
-    name: "node_flipflop",
-    default_dispatcher: DISPATCH_node_flipflop,
-    hash_func: HASH_node_flipflop,
-    specializer: SPECIALIZE_node_flipflop,
-    dumper: DUMP_node_flipflop,
-    replacer: REPLACE_node_flipflop,
     no_inline: false,
 };
 

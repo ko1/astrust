@@ -964,21 +964,3 @@ node_special(c: &mut Ctx, n: NodePtr, fp: *mut Value, kind: u32, arg: NODE)
 {
     rt_special::<D_arg>(c, n, fp, kind, arg)
 }
-
-NODE_DEF
-node_flipflop(c: &mut Ctx, n: NodePtr, fp: *mut Value, a: NODE, b: NODE, excl: bool, slot: u32)
-{
-    let st = unsafe { *fp.add(slot as usize) };
-    if st.falsy() {
-        if EVAL_ARG!(c, a)?.truthy() {
-            if !excl && EVAL_ARG!(c, b)?.truthy() { return Ok(TRUE); }
-            unsafe { *fp.add(slot as usize) = TRUE; }
-            return Ok(TRUE);
-        }
-        Ok(FALSE)
-    } else {
-        if EVAL_ARG!(c, b)?.truthy() { unsafe { *fp.add(slot as usize) = FALSE; } }
-        Ok(TRUE)
-    }
-}
-

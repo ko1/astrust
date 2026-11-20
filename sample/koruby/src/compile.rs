@@ -78,6 +78,7 @@ pub struct Compiler<'a> {
     captures: HashMap<usize, HashSet<Sym>>,
     pub eval_outer: Vec<Vec<(Sym, u32, u32)>>,  // eval: outer scopes' (name, hops, idx), innermost first
     in_def: u32,
+    pm_err: Option<u32>,          // single-pattern match: slot receiving the failure description
     pub errors: Vec<String>,
 }
 
@@ -103,7 +104,7 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        Compiler { pr, file, scopes: vec![], captures: HashMap::new(), eval_outer: vec![], in_def: 0, errors: vec![] }
+        Compiler { pr, file, scopes: vec![], captures: HashMap::new(), eval_outer: vec![], in_def: 0, pm_err: None, errors: vec![] }
     }
 
     fn cst(&self, c: u32) -> Sym { intern(&self.pr.constants[c as usize]) }
@@ -147,6 +148,10 @@ impl<'a> Compiler<'a> {
             }
         }
         match &n.kind {
+            Kind::FlipFlopNode { .. } if stack.len() > 1 => {
+                let nm = intern(format!("%ff{}", n.loc.start).as_bytes());
+                self.captures.entry(stack[0].0).or_default().insert(nm);
+            }
             Kind::BlockNode { .. } | Kind::LambdaNode { .. } => {
                 stack.push((key(n), false));
                 for ch in n.children() { self.analyze_rec(ch, stack, ub); }
@@ -199,6 +204,9 @@ impl<'a> Compiler<'a> {
             sc.vars.insert(nm, loc);
             sc.names.push((nm, loc));
         }
+        // flip-flop states used from blocks: env slots must exist before any block is compiled
+        let ffs: Vec<Sym> = sc.captured.iter().copied().filter(|s| s.0 != u32::MAX && crate::symbol::sym_bytes(*s).starts_with(b"%ff")).collect();
+        for nm in ffs { sc.env_size += 1; sc.vars.insert(nm, VarLoc::Env(sc.env_size - 1)); }
         self.scopes.push(sc);
     }
 
@@ -339,7 +347,7 @@ impl<'a> Compiler<'a> {
         ALLOC_node_unsupported(lstr(msg.as_bytes()))
     }
 
-    fn fstr(&self, b: &[u8]) -> NodePtr { ALLOC_node_fstr(lstr(b), 0) }
+    fn dconst(&self, kind: u32) -> NodePtr { ALLOC_node_defined(kind, Sym(0), ALLOC_node_nil()) }
 
     pub fn c(&mut self, n: &PNode) -> NodePtr {
         let line = self.line(n.loc);
@@ -437,7 +445,7 @@ impl<'a> Compiler<'a> {
             }
             // variables
             Kind::LocalVariableReadNode { name, depth } => { let nm = self.cst(*name); self.var_read(nm, *depth) }
-            Kind::ItLocalVariableReadNode => { let nm = intern(b"_it"); self.var_read(nm, 0) }
+            Kind::ItLocalVariableReadNode => { let nm = intern(b"__it"); self.var_read(nm, 0) }
             Kind::LocalVariableWriteNode { name, depth, value } => {
                 let v = self.c(value); let nm = self.cst(*name); self.var_write(nm, *depth, v)
             }
@@ -608,8 +616,7 @@ impl<'a> Compiler<'a> {
                 let sl = self.hidden_slot();
                 let v = self.c(value);
                 let set = ALLOC_node_lasgn(sl, v);
-                let p = self.pattern(pattern, sl);
-                let fail = ALLOC_node_special(SP_NOMATCH, ALLOC_node_lvar(sl));
+                let (p, fail) = self.single_pattern(pattern, sl);
                 let t = ALLOC_node_if(p, ALLOC_node_nil(), fail);
                 self.seq(vec![set, t])
             }
@@ -621,10 +628,23 @@ impl<'a> Compiler<'a> {
             }
             Kind::DefinedNode { value } => self.defined(value),
             Kind::FlipFlopNode { left, right } => {
-                let sl = self.hidden_slot();
+                // state lives in the enclosing hard scope so it survives block invocations
+                let nm = intern(format!("%ff{}", n.loc.start).as_bytes());
+                let depth = self.scopes.iter().rev().filter(|s| !s.transparent).take_while(|s| matches!(s.kind, SK::Block | SK::Lambda)).count() as u32;
+                if depth == 0 && !self.cur().vars.contains_key(&nm) { let sl = self.hidden_slot(); self.cur().vars.insert(nm, VarLoc::Slot(sl)); }
+                let excl = n.flags & pa::RANGE_FLAGS_EXCLUDE_END != 0;
                 let a = match left { Some(x) => self.cond(x), None => ALLOC_node_nil() };
-                let b = match right { Some(x) => self.cond(x), None => ALLOC_node_nil() };
-                ALLOC_node_flipflop(a, b, n.flags & pa::RANGE_FLAGS_EXCLUDE_END != 0, sl)
+                let b1 = match right { Some(x) => self.cond(x), None => ALLOC_node_nil() };
+                let off = self.var_write(nm, depth, ALLOC_node_false());
+                let on_state = self.seq(vec![ALLOC_node_if(b1, off, ALLOC_node_nil()), ALLOC_node_true()]);
+                let on = self.var_write(nm, depth, ALLOC_node_true());
+                let start = if excl { on } else {
+                    let b2 = match right { Some(x) => self.cond(x), None => ALLOC_node_nil() };
+                    ALLOC_node_if(b2, ALLOC_node_nil(), on)
+                };
+                let off_state = ALLOC_node_if(a, self.seq(vec![start, ALLOC_node_true()]), ALLOC_node_false());
+                let st = self.var_read(nm, depth);
+                ALLOC_node_if(st, on_state, off_state)
             }
             // calls
             Kind::CallNode { receiver, name, arguments, block, .. } => {
@@ -653,8 +673,7 @@ impl<'a> Compiler<'a> {
                 let v = self.c(value);
                 let e = self.binop(rd, self.cst(*binary_operator), v, line);
                 let w = ALLOC_node_attrasgn(ALLOC_node_lvar(sl), leak(vec![e]), self.cst(*write_name), flags, line);
-                let body = self.seq(vec![set, w]);
-                self.safe_nav(n, sl, body)
+                self.safe_nav(n, sl, set, w)
             }
             Kind::CallOrWriteNode { receiver, read_name, write_name, value } | Kind::CallAndWriteNode { receiver, read_name, write_name, value } => {
                 let is_or = matches!(n.kind, Kind::CallOrWriteNode { .. });
@@ -666,8 +685,7 @@ impl<'a> Compiler<'a> {
                 let v = self.c(value);
                 let w = ALLOC_node_attrasgn(ALLOC_node_lvar(sl), leak(vec![v]), self.cst(*write_name), flags, line);
                 let e = if is_or { ALLOC_node_or(rd, w) } else { ALLOC_node_and(rd, w) };
-                let body = self.seq(vec![set, e]);
-                self.safe_nav(n, sl, body)
+                self.safe_nav(n, sl, set, e)
             }
             Kind::IndexOperatorWriteNode { receiver, arguments, binary_operator, value, .. } => {
                 let (pre, rd, mk) = self.index_parts(receiver.as_deref(), arguments.as_deref(), line);
@@ -979,17 +997,13 @@ impl<'a> Compiler<'a> {
         (v, k)
     }
 
-    fn safe_nav(&mut self, n: &PNode, sl: u32, body: NodePtr) -> NodePtr {
+    /// `set` stores the receiver into `sl`; `recv&.x op= v` skips `rest` for a nil receiver.
+    fn safe_nav(&mut self, n: &PNode, sl: u32, set: NodePtr, rest: NodePtr) -> NodePtr {
         if n.flags & pa::CALL_NODE_FLAGS_SAFE_NAVIGATION != 0 {
-            // body begins with the receiver assignment into sl
-            let chk = ALLOC_node_special(SP_IS_NIL, ALLOC_node_lvar(sl));
-            let _ = chk;
-            if let Some((set, rest)) = split_first_stmt(body) {
-                let test = ALLOC_node_special(SP_IS_NIL, ALLOC_node_lvar(sl));
-                return self.seq(vec![set, ALLOC_node_if(test, ALLOC_node_nil(), rest)]);
-            }
+            let test = ALLOC_node_special(SP_IS_NIL, ALLOC_node_lvar(sl));
+            return self.seq(vec![set, ALLOC_node_if(test, ALLOC_node_nil(), rest)]);
         }
-        body
+        self.seq(vec![set, rest])
     }
 
     fn call(&mut self, n: &PNode, recv: Option<&PNode>, mid: Sym, args: Option<&PNode>, block: Option<&PNode>, line: u32) -> NodePtr {
@@ -1013,7 +1027,15 @@ impl<'a> Compiler<'a> {
         }
         // receiver
         let sl = if safe { Some(self.hidden_slot()) } else { None };
-        let recv_node = match recv { Some(r) => self.c(r), None => ALLOC_node_self() };
+        let recv_node = match recv {
+            // "lit".freeze / -"lit": the receiver is the interned literal
+            Some(PNode { kind: Kind::StringNode { unescaped }, flags: rf, .. }) if args.is_empty() && block.is_none() && (mid == s::freeze || mid == s::uminus) => {
+                let enc = if rf & pa::STRING_FLAGS_FORCED_BINARY_ENCODING != 0 { crate::object::ENC_BINARY as u32 } else { 0 };
+                ALLOC_node_fstr(lstr(unescaped), enc)
+            }
+            Some(r) => self.c(r),
+            None => ALLOC_node_self(),
+        };
         let (recv_node, pre) = match sl { Some(sl) => (ALLOC_node_lvar(sl), Some(ALLOC_node_lasgn(sl, recv_node))), None => (recv_node, None) };
         let blk_iseq = match block {
             Some(b @ PNode { kind: Kind::BlockNode { locals, parameters, body }, .. }) => {
@@ -1224,6 +1246,12 @@ impl<'a> Compiler<'a> {
         let sl = self.hidden_slot();
         let pv = match pred { Some(p) => self.c(p), None => ALLOC_node_nil() };
         let set = ALLOC_node_lasgn(sl, pv);
+        if let (None, [PNode { kind: Kind::InNode { pattern, statements }, .. }]) = (els, conds) {
+            // one clause, no else: the error says why it did not match
+            let (test, fail) = self.single_pattern(pattern, sl);
+            let body = self.stmts(statements.as_deref());
+            return self.seq(vec![set, ALLOC_node_if(test, body, fail)]);
+        }
         let mut tail = match els {
             Some(e) => self.else_body(e),
             None => ALLOC_node_special(SP_NOMATCH, ALLOC_node_lvar(sl)),
@@ -1236,6 +1264,34 @@ impl<'a> Compiler<'a> {
             }
         }
         self.seq(vec![set, tail])
+    }
+
+    /// (test, raise) for a pattern whose failure raises with CRuby's descriptive message.
+    fn single_pattern(&mut self, pattern: &PNode, sl: u32) -> (NodePtr, NodePtr) {
+        let esl = self.hidden_slot();
+        let saved = self.pm_err.replace(esl);
+        let p = self.pattern(pattern, sl);
+        self.pm_err = saved;
+        let test = self.seq(vec![ALLOC_node_lasgn(esl, ALLOC_node_nil()), p]);
+        let fail = ALLOC_node_special(SP_NOMATCH_MSG, ALLOC_node_ary(leak(vec![ALLOC_node_lvar(sl), ALLOC_node_lvar(esl)])));
+        (test, fail)
+    }
+
+    /// `test`, recording why it failed (PM_* kind + args) when compiling a single pattern.
+    fn pm_fail(&mut self, test: NodePtr, kind: i64, mut args: Vec<NodePtr>) -> NodePtr {
+        let Some(esl) = self.pm_err else { return test };
+        args.insert(0, ALLOC_node_lit(Value::fix(kind)));
+        let rec = ALLOC_node_lasgn(esl, ALLOC_node_special(SP_PM_MSG, ALLOC_node_ary(leak(args))));
+        ALLOC_node_or(test, self.seq(vec![rec, ALLOC_node_false()]))
+    }
+
+    /// `pat === subject` for a value pattern.
+    fn eqq_pattern(&mut self, p: &PNode, sl: u32) -> NodePtr {
+        let v = self.c(p);
+        let t = self.eqq_test(v, sl);
+        if self.pm_err.is_none() { return t; }
+        let again = self.c(p);
+        self.pm_fail(t, PM_EQQ, vec![again, ALLOC_node_lvar(sl)])
     }
 
     /// A pattern test against the value in slot `sl`; binds variables; evaluates to true/false.
@@ -1257,24 +1313,26 @@ impl<'a> Compiler<'a> {
                 let t = self.seq(vec![w, ALLOC_node_true()]);
                 ALLOC_node_and(a, t)
             }
-            Kind::PinnedVariableNode { variable } => { let v = self.c(variable); self.eqq_test(v, sl) }
-            Kind::PinnedExpressionNode { expression } => { let v = self.c(expression); self.eqq_test(v, sl) }
+            Kind::PinnedVariableNode { variable } => self.eqq_pattern(variable, sl),
+            Kind::PinnedExpressionNode { expression } => self.eqq_pattern(expression, sl),
             Kind::IfNode { predicate, statements, .. } => {
                 // pattern guard: `in pat if cond`
                 let pat = statements.as_deref().and_then(|s| match &s.kind { Kind::StatementsNode { body } => body.first(), _ => None });
                 let a = match pat { Some(pt) => self.pattern(pt, sl), None => ALLOC_node_true() };
                 let cnd = self.c(predicate);
+                let cnd = self.pm_fail(cnd, PM_GUARD, vec![]);
                 ALLOC_node_and(a, cnd)
             }
             Kind::UnlessNode { predicate, statements, .. } => {
                 let pat = statements.as_deref().and_then(|s| match &s.kind { Kind::StatementsNode { body } => body.first(), _ => None });
                 let a = match pat { Some(pt) => self.pattern(pt, sl), None => ALLOC_node_true() };
                 let cnd = self.c(predicate);
-                ALLOC_node_and(a, ALLOC_node_not(cnd))
+                let cnd = self.pm_fail(ALLOC_node_not(cnd), PM_GUARD, vec![]);
+                ALLOC_node_and(a, cnd)
             }
             Kind::ArrayPatternNode { constant, requireds, rest, posts } => {
                 let mut tests = vec![];
-                if let Some(k) = constant { let kv = self.c(k); tests.push(self.eqq_test(kv, sl)); }
+                if let Some(k) = constant { tests.push(self.eqq_pattern(k, sl)); }
                 // deconstruct → array slot
                 let asl = self.hidden_slot();
                 let dec = ALLOC_node_special(SP_DECONSTRUCT, ALLOC_node_lvar(sl));
@@ -1282,7 +1340,8 @@ impl<'a> Compiler<'a> {
                 let min = (requireds.len() + posts.len()) as i64;
                 let exact = rest.is_none();
                 let lenchk = ALLOC_node_special(if exact { SP_LEN_EQ } else { SP_LEN_GE }, ALLOC_node_ary(leak(vec![ALLOC_node_lvar(asl), ALLOC_node_lit(Value::fix(min))])));
-                tests.push(ALLOC_node_and(set, lenchk));
+                let lenchk = self.pm_fail(lenchk, PM_ARY, vec![ALLOC_node_lvar(sl), ALLOC_node_lvar(asl), ALLOC_node_lit(Value::fix(min)), if exact { ALLOC_node_true() } else { ALLOC_node_false() }]);
+                tests.push(self.seq(vec![set, lenchk]));
                 let post = posts.len() as u32;
                 for (i, r) in requireds.iter().enumerate() {
                     let esl = self.hidden_slot();
@@ -1308,10 +1367,17 @@ impl<'a> Compiler<'a> {
             }
             Kind::FindPatternNode { constant, left, requireds, right } => {
                 let mut tests = vec![];
-                if let Some(k) = constant { let kv = self.c(k); tests.push(self.eqq_test(kv, sl)); }
+                if let Some(k) = constant { tests.push(self.eqq_pattern(k, sl)); }
                 let asl = self.hidden_slot();
                 let dec = ALLOC_node_special(SP_DECONSTRUCT, ALLOC_node_lvar(sl));
-                tests.push(ALLOC_node_and(ALLOC_node_lasgn(asl, dec), ALLOC_node_true()));
+                let dec = self.pm_fail(ALLOC_node_lasgn(asl, dec), PM_DECON, vec![ALLOC_node_lvar(sl)]);
+                tests.push(dec);
+                if self.pm_err.is_some() {
+                    let nreq = ALLOC_node_lit(Value::fix(requireds.len() as i64));
+                    let ge = ALLOC_node_special(SP_LEN_GE, ALLOC_node_ary(leak(vec![ALLOC_node_lvar(asl), nreq])));
+                    let nreq = ALLOC_node_lit(Value::fix(requireds.len() as i64));
+                    tests.push(self.pm_fail(ge, PM_ARY, vec![ALLOC_node_lvar(sl), ALLOC_node_lvar(asl), nreq, ALLOC_node_false()]));
+                }
                 // try each offset: implemented by a runtime loop over offsets with sub-tests re-run
                 let isl = self.hidden_slot();
                 let mut sub = vec![];
@@ -1347,21 +1413,29 @@ impl<'a> Compiler<'a> {
                 }
                 binds.push(ALLOC_node_true());
                 let bind_all = self.seq(binds);
-                let res = ALLOC_node_and(ALLOC_node_lvar(found_sl), bind_all);
+                let found = self.pm_fail(ALLOC_node_lvar(found_sl), PM_FIND, vec![ALLOC_node_lvar(asl)]);
+                let res = ALLOC_node_and(found, bind_all);
                 tests.push(self.seq(vec![reset, init, lp, res]));
                 self.and_all(tests)
             }
             Kind::HashPatternNode { constant, elements, rest } => {
                 let mut tests = vec![];
-                if let Some(k) = constant { let kv = self.c(k); tests.push(self.eqq_test(kv, sl)); }
+                if let Some(k) = constant { tests.push(self.eqq_pattern(k, sl)); }
                 let hsl = self.hidden_slot();
                 let keys: Vec<NodePtr> = elements.iter().filter_map(|e| match &e.kind {
                     Kind::AssocNode { key, .. } => match &key.kind { Kind::SymbolNode { unescaped } => Some(ALLOC_node_lit(Value::sym(intern(unescaped)))), _ => None },
                     _ => None,
                 }).collect();
-                let keyarr = if matches!(rest.as_deref().map(|r| &r.kind), Some(Kind::AssocSplatNode { .. })) { ALLOC_node_nil() } else { ALLOC_node_ary(leak(keys)) };
+                // deconstruct_keys(nil): `**rest`, `**nil` and the empty pattern need every key
+                let all_keys = match rest.as_deref().map(|r| &r.kind) {
+                    Some(Kind::AssocSplatNode { value: Some(_) }) | Some(Kind::NoKeywordsParameterNode) => true,
+                    Some(_) => false,
+                    None => elements.is_empty(),
+                };
+                let keyarr = if all_keys { ALLOC_node_nil() } else { ALLOC_node_ary(leak(keys)) };
                 let dec = ALLOC_node_special(SP_DECONSTRUCT_KEYS, ALLOC_node_ary(leak(vec![ALLOC_node_lvar(sl), keyarr])));
-                tests.push(ALLOC_node_lasgn(hsl, dec));
+                let dec = self.pm_fail(ALLOC_node_lasgn(hsl, dec), PM_DECONK, vec![ALLOC_node_lvar(sl)]);
+                tests.push(dec);
                 let mut used = vec![];
                 for e in elements {
                     if let Kind::AssocNode { key, value } = &e.kind {
@@ -1369,6 +1443,7 @@ impl<'a> Compiler<'a> {
                             let k = Value::sym(intern(unescaped));
                             used.push(ALLOC_node_lit(k));
                             let has = ALLOC_node_special(SP_HASH_HAS, ALLOC_node_ary(leak(vec![ALLOC_node_lvar(hsl), ALLOC_node_lit(k)])));
+                            let has = self.pm_fail(has, PM_KEY, vec![ALLOC_node_lvar(hsl), ALLOC_node_lit(k)]);
                             let esl = self.hidden_slot();
                             let get = ALLOC_node_lasgn(esl, ALLOC_node_opt_aref(ALLOC_node_lvar(hsl), ALLOC_node_lit(k), 0));
                             let t = match &value.kind {
@@ -1392,15 +1467,22 @@ impl<'a> Compiler<'a> {
                         tests.push(self.seq(vec![w, ALLOC_node_true()]));
                     }
                     Some(Kind::NoKeywordsParameterNode) => {
+                        let rsl = self.hidden_slot();
                         let restv = ALLOC_node_special(SP_HASH_EXCEPT, ALLOC_node_ary(leak(vec![ALLOC_node_lvar(hsl), ALLOC_node_ary(leak(used))])));
-                        tests.push(ALLOC_node_special(SP_EMPTY_P, restv));
+                        let empty = ALLOC_node_special(SP_EMPTY_P, ALLOC_node_lasgn(rsl, restv));
+                        tests.push(self.pm_fail(empty, PM_REST, vec![ALLOC_node_lvar(rsl)]));
+                    }
+                    None if elements.is_empty() => {
+                        // `in {}` matches only an empty Hash
+                        let empty = ALLOC_node_special(SP_EMPTY_P, ALLOC_node_lvar(hsl));
+                        tests.push(self.pm_fail(empty, PM_NOT_EMPTY, vec![ALLOC_node_lvar(hsl)]));
                     }
                     _ => {}
                 }
                 self.and_all(tests)
             }
             Kind::SplatNode { .. } => ALLOC_node_true(),
-            _ => { let v = self.c(p); self.eqq_test(v, sl) }
+            _ => self.eqq_pattern(p, sl),
         }
     }
 
@@ -1436,41 +1518,76 @@ impl<'a> Compiler<'a> {
     fn defined(&mut self, v: &PNode) -> NodePtr {
         let nil = ALLOC_node_nil;
         match &v.kind {
-            Kind::LocalVariableReadNode { .. } | Kind::ItLocalVariableReadNode => self.fstr(b"local-variable"),
+            Kind::LocalVariableReadNode { .. } | Kind::ItLocalVariableReadNode => self.dconst(DEF_LOCALVAR),
             Kind::InstanceVariableReadNode { name } => ALLOC_node_defined(DEF_IVAR, self.cst(*name), nil()),
             Kind::GlobalVariableReadNode { name } => ALLOC_node_defined(DEF_GVAR, self.cst(*name), nil()),
             Kind::ClassVariableReadNode { name } => ALLOC_node_defined(DEF_CVAR, self.cst(*name), nil()),
             Kind::ConstantReadNode { name } => ALLOC_node_defined(DEF_CONST, self.cst(*name), nil()),
             Kind::ConstantPathNode { .. } => { let (p, nm) = self.cpath_parts(v); ALLOC_node_defined(DEF_CPATH, nm, p) }
-            Kind::CallNode { receiver, name, .. } => {
+            Kind::CallNode { block: Some(b), .. } if matches!(b.kind, Kind::BlockNode { .. }) => self.dconst(DEF_EXPR),
+            Kind::CallNode { receiver, name, arguments, block, .. } => {
                 let nm = self.cst(*name);
-                match receiver {
+                let call = match receiver {
                     None => ALLOC_node_defined(DEF_FCALL, nm, nil()),
                     Some(r) => {
                         let rv = self.defined_guard(r);
                         ALLOC_node_defined(DEF_METHOD, nm, rv)
                     }
+                };
+                // every argument must be defined too
+                let mut tests = vec![];
+                if let Some(PNode { kind: Kind::ArgumentsNode { arguments }, .. }) = arguments.as_deref() {
+                    for a in arguments { self.defined_parts(a, &mut tests); }
                 }
+                if let Some(b) = block { self.defined_parts(b, &mut tests); }
+                tests.push(call);
+                self.and_all(tests)
             }
+            Kind::ArrayNode { elements } | Kind::HashNode { elements } => {
+                let mut tests = vec![];
+                for e in elements { self.defined_parts(e, &mut tests); }
+                tests.push(self.dconst(DEF_EXPR));
+                self.and_all(tests)
+            }
+            Kind::ParenthesesNode { body: None } => self.dconst(DEF_NIL),
             Kind::YieldNode { .. } => ALLOC_node_defined(DEF_YIELD, Sym(0), nil()),
             Kind::SuperNode { .. } | Kind::ForwardingSuperNode { .. } => ALLOC_node_defined(DEF_SUPER, Sym(0), nil()),
-            Kind::SelfNode => self.fstr(b"self"),
-            Kind::NilNode => self.fstr(b"expression"),
-            Kind::TrueNode => self.fstr(b"expression"),
-            Kind::FalseNode => self.fstr(b"expression"),
+            Kind::SelfNode => self.dconst(DEF_SELF),
+            Kind::NilNode => self.dconst(DEF_NIL),
+            Kind::TrueNode => self.dconst(DEF_TRUE),
+            Kind::FalseNode => self.dconst(DEF_FALSE),
             Kind::BackReferenceReadNode { .. } | Kind::NumberedReferenceReadNode { .. } => {
                 let e = self.c(v);
-                ALLOC_node_if(e, self.fstr(b"global-variable"), ALLOC_node_nil())
+                ALLOC_node_if(e, self.dconst(DEF_BACKREF), ALLOC_node_nil())
             }
             Kind::LocalVariableWriteNode { .. } | Kind::InstanceVariableWriteNode { .. } | Kind::GlobalVariableWriteNode { .. }
             | Kind::ConstantWriteNode { .. } | Kind::MultiWriteNode { .. } | Kind::LocalVariableOperatorWriteNode { .. }
             | Kind::LocalVariableOrWriteNode { .. } | Kind::InstanceVariableOrWriteNode { .. } | Kind::ClassVariableWriteNode { .. }
-            | Kind::ConstantPathWriteNode { .. } | Kind::IndexOperatorWriteNode { .. } | Kind::CallOperatorWriteNode { .. } => self.fstr(b"assignment"),
+            | Kind::ConstantPathWriteNode { .. } | Kind::IndexOperatorWriteNode { .. } | Kind::CallOperatorWriteNode { .. }
+            | Kind::LocalVariableAndWriteNode { .. } | Kind::InstanceVariableOperatorWriteNode { .. } | Kind::InstanceVariableAndWriteNode { .. }
+            | Kind::ClassVariableOperatorWriteNode { .. } | Kind::ClassVariableOrWriteNode { .. } | Kind::ClassVariableAndWriteNode { .. }
+            | Kind::GlobalVariableOperatorWriteNode { .. } | Kind::GlobalVariableOrWriteNode { .. } | Kind::GlobalVariableAndWriteNode { .. }
+            | Kind::ConstantOperatorWriteNode { .. } | Kind::ConstantOrWriteNode { .. } | Kind::ConstantAndWriteNode { .. }
+            | Kind::ConstantPathOperatorWriteNode { .. } | Kind::ConstantPathOrWriteNode { .. } | Kind::ConstantPathAndWriteNode { .. }
+            | Kind::IndexOrWriteNode { .. } | Kind::IndexAndWriteNode { .. } | Kind::CallOrWriteNode { .. } | Kind::CallAndWriteNode { .. } => self.dconst(DEF_ASGN),
             Kind::ParenthesesNode { body: Some(b) } => {
                 if let Kind::StatementsNode { body } = &b.kind { if body.len() == 1 { return self.defined(&body[0]); } }
-                self.fstr(b"expression")
+                self.dconst(DEF_EXPR)
             }
-            _ => self.fstr(b"expression"),
+            _ => self.dconst(DEF_EXPR),
+        }
+    }
+
+    /// defined? tests for the parts of an argument / element (splats, pairs, &blk look inside).
+    fn defined_parts(&mut self, a: &PNode, tests: &mut Vec<NodePtr>) {
+        match &a.kind {
+            Kind::SplatNode { expression: Some(x) } | Kind::AssocSplatNode { value: Some(x) } => self.defined_parts(x, tests),
+            Kind::BlockArgumentNode { .. } => {}
+            Kind::KeywordHashNode { elements } => for e in elements { self.defined_parts(e, tests); },
+            Kind::AssocNode { key, value } => { self.defined_parts(key, tests); self.defined_parts(value, tests); }
+            Kind::IntegerNode { .. } | Kind::FloatNode { .. } | Kind::StringNode { .. } | Kind::SymbolNode { .. } | Kind::NilNode | Kind::TrueNode
+            | Kind::FalseNode | Kind::SelfNode | Kind::LocalVariableReadNode { .. } | Kind::ImplicitNode { .. } => {}
+            _ => tests.push(self.defined(a)),
         }
     }
 
@@ -1601,7 +1718,7 @@ impl<'a> Compiler<'a> {
             }
             Some(PNode { kind: Kind::ItParametersNode, .. }) => {
                 let mut p = Params::default();
-                let nm = intern(b"_it");
+                let nm = intern(b"__it");
                 self.declare(nm);
                 let sl = self.param_slot(nm);
                 p.lead.push(sl);
@@ -1757,8 +1874,6 @@ fn needs_line(n: &PNode) -> bool {
     }
 }
 
-fn split_first_stmt(_n: NodePtr) -> Option<(NodePtr, NodePtr)> { None }
-
 pub const CF_ATTR: u32 = 64;
 
 // node_special kinds
@@ -1777,6 +1892,19 @@ pub const SP_FIND_ELEM: u32 = 12;
 pub const SP_LEN: u32 = 13;
 pub const SP_FIND_PRE: u32 = 14;
 pub const SP_FIND_POST: u32 = 15;
+pub const SP_NOMATCH_MSG: u32 = 16;
+pub const SP_PM_MSG: u32 = 17;
+
+// SP_PM_MSG kinds: why a single pattern did not match
+pub const PM_EQQ: i64 = 0;
+pub const PM_GUARD: i64 = 1;
+pub const PM_ARY: i64 = 2;
+pub const PM_DECON: i64 = 3;
+pub const PM_FIND: i64 = 4;
+pub const PM_DECONK: i64 = 5;
+pub const PM_KEY: i64 = 6;
+pub const PM_REST: i64 = 7;
+pub const PM_NOT_EMPTY: i64 = 8;
 
 thread_local! {
     static METHOD_LABEL: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(vec![]);

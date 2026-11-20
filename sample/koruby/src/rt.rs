@@ -71,9 +71,17 @@ pub fn note_redefinition(klass: Value, mid: Sym) {
 // ---- literals ----------------------------------------------------------------------------
 
 pub fn rt_fstr(s: Str, enc: u32, lc: &mut LitCache) -> Value {
-    let v = crate::string::str_new_enc(s, enc as u8);
-    obj(v).flags |= FL_FROZEN;
-    vm().node_values.push(v);
+    // frozen literals share the -"str" pool, like CRuby's fstring table
+    let v = match vm().frozen_lits.get(s) {
+        Some(&v) if rstr(v).enc == enc as u8 => v,
+        other => {
+            let pooled = other.is_some();
+            let v = crate::string::str_new_enc(s, enc as u8);
+            obj(v).flags |= FL_FROZEN;
+            if pooled { vm().node_values.push(v); } else { vm().frozen_lits.insert(s.to_vec(), v); }
+            v
+        }
+    };
     lc.v = v.raw();
     v
 }
@@ -424,9 +432,27 @@ pub fn rt_eqq(c: &mut Ctx, p: Value, subj: Value, cc: &mut CallCache) -> Result<
     Ok(r.truthy())
 }
 
+/// defined? answers are pooled frozen US-ASCII strings.
+fn defined_str(s: &[u8]) -> Value {
+    let mut key = vec![0xff, b'd'];
+    key.extend_from_slice(s);
+    if let Some(&v) = vm().frozen_lits.get(&key) { return v; }
+    let v = crate::string::str_new_enc(s, ENC_ASCII);
+    obj(v).flags |= FL_FROZEN;
+    vm().frozen_lits.insert(key, v);
+    v
+}
+
 pub fn rt_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: *mut Value, kind: u32, name: Sym, recv: NodePtr) -> RV {
-    let yes = |s: &[u8]| -> RV { Ok(crate::string::str_new_frozen(s)) };
+    let yes = |s: &[u8]| -> RV { Ok(defined_str(s)) };
     match kind {
+        DEF_LOCALVAR => yes(b"local-variable"),
+        DEF_SELF => yes(b"self"),
+        DEF_NIL => yes(b"nil"),
+        DEF_TRUE => yes(b"true"),
+        DEF_FALSE => yes(b"false"),
+        DEF_ASGN => yes(b"assignment"),
+        DEF_BACKREF => yes(b"global-variable"),
         DEF_IVAR => if ivar_defined(unsafe { *fp }, name) { yes(b"instance-variable") } else { Ok(NIL) },
         DEF_GVAR => if crate::builtins::kernel::gvar_defined(c, name) { yes(b"global-variable") } else { Ok(NIL) },
         DEF_CVAR => {
@@ -447,7 +473,13 @@ pub fn rt_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: *mut Value, kind: u32, 
         }
         DEF_FCALL => {
             let slf = unsafe { *fp };
-            if respond_to(slf, name, true) { yes(b"method") } else { Ok(NIL) }
+            if respond_to(slf, name, true) { return yes(b"method"); }
+            let rm = lookup_method(class_of(slf), s::respond_to_missing_p);
+            if !rm.is_null() && unsafe { (*rm).owner } != vm().c_object && unsafe { (*rm).owner } != vm().m_kernel {
+                let t = funcall(c, slf, s::respond_to_missing_p, &[Value::sym(name), TRUE], std::ptr::null())?;
+                if t.truthy() { return yes(b"method"); }
+            }
+            Ok(NIL)
         }
         DEF_METHOD => {
             let r = match D::call(c, recv, fp) { Ok(v) => v, Err(_) => { c.esc = EscKind::None; return Ok(NIL); } };
@@ -873,7 +905,10 @@ pub fn rt_alias(c: &mut Ctx, newname: Value, oldname: Value) -> RV {
 }
 
 pub fn rt_undef(c: &mut Ctx, v: Value) -> Result<(), Esc> {
-    let klass = cref_class(c);
+    let klass = {
+        let f = c.frame();
+        if f.defined_class != NIL && f.kind != FK_CLASS { f.defined_class } else { cref_class(c) }
+    };
     let mid = if v.is_sym() { v.as_sym() } else { crate::string::str_to_sym(v).as_sym() };
     crate::builtins::object::undef_method(c, klass, mid)
 }
@@ -916,6 +951,12 @@ pub fn rt_unsupported(c: &mut Ctx, what: Str) -> RV {
     err(c, vm().c_not_impl_error, String::from_utf8_lossy(what))
 }
 
+/// Pattern matching asks `respond_to?` (so respond_to_missing? counts).
+fn pm_responds(c: &mut Ctx, v: Value, name: &[u8]) -> Result<bool, Esc> {
+    if respond_to(v, intern(name), false) { return Ok(true); }
+    Ok(funcall(c, v, intern(b"respond_to?"), &[Value::sym(intern(name))], std::ptr::null())?.truthy())
+}
+
 pub fn rt_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: *mut Value, kind: u32, arg: NodePtr) -> RV {
     let v = D::call(c, arg, fp)?;
     match kind {
@@ -924,6 +965,40 @@ pub fn rt_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: *mut Value, kind: u32, 
             let s = crate::builtins::kernel::inspect_str(c, v)?;
             err(c, vm().c_no_matching_pattern_error, s)
         }
+        SP_NOMATCH_MSG => {
+            let (subj, why) = (rary(v)[0], rary(v)[1]);
+            let s = crate::builtins::kernel::inspect_str(c, subj)?;
+            if is_array(why) {
+                // [message, matchee, key]: a missing Hash key
+                let msg = format!("{}: {}", s, String::from_utf8_lossy(str_bytes(rary(why)[0])));
+                let e = make_exception(vm().c_no_matching_pattern_key_error, &msg);
+                ivar_set_raw(e, s::receiver, rary(why)[1]);
+                ivar_set_raw(e, s::key, rary(why)[2]);
+                return Err(raise_exc(c, e));
+            }
+            let msg = if why == NIL { s } else { format!("{}: {}", s, String::from_utf8_lossy(str_bytes(why))) };
+            err(c, vm().c_no_matching_pattern_error, msg)
+        }
+        SP_PM_MSG => {
+            let a: Vec<Value> = rary(v).clone();
+            let insp = crate::builtins::kernel::inspect_str;
+            let msg = match a[0].as_fix() {
+                PM_EQQ => format!("{} === {} does not return true", insp(c, a[1])?, insp(c, a[2])?),
+                PM_GUARD => "guard clause does not return true".to_string(),
+                PM_ARY if a[2] == NIL => format!("{} does not respond to #deconstruct", insp(c, a[1])?),
+                PM_ARY => format!("{} length mismatch (given {}, expected {}{})", insp(c, a[2])?, rary(a[2]).len(), a[3].as_fix(), if a[4] == TRUE { "" } else { "+" }),
+                PM_DECON => format!("{} does not respond to #deconstruct", insp(c, a[1])?),
+                PM_FIND => format!("{} does not match to find pattern", insp(c, a[1])?),
+                PM_DECONK => format!("{} does not respond to #deconstruct_keys", insp(c, a[1])?),
+                PM_KEY => {
+                    let m = str_new(format!("key not found: {}", insp(c, a[2])?).as_bytes());
+                    return Ok(ary_new_from(&[m, a[1], a[2]]));
+                }
+                PM_REST => format!("rest of {} is not empty", insp(c, a[1])?),
+                _ => format!("{} is not empty", insp(c, a[1])?),
+            };
+            Ok(str_new(msg.as_bytes()))
+        }
         SP_NAMED_CAPTURE => {
             let m = c.last_match;
             if m == NIL { return Ok(NIL); }
@@ -931,7 +1006,7 @@ pub fn rt_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: *mut Value, kind: u32, 
         }
         SP_DECONSTRUCT => {
             if is_array(v) { return Ok(v); }
-            if respond_to(v, intern(b"deconstruct"), true) {
+            if pm_responds(c, v, b"deconstruct")? {
                 let r = funcall(c, v, intern(b"deconstruct"), &[], std::ptr::null())?;
                 if !is_array(r) { return type_err(c, "deconstruct must return Array"); }
                 return Ok(r);
@@ -947,7 +1022,7 @@ pub fn rt_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: *mut Value, kind: u32, 
         SP_DECONSTRUCT_KEYS => {
             let subj = rary(v)[0]; let keys = rary(v)[1];
             if is_hash(subj) { return Ok(subj); }
-            if respond_to(subj, intern(b"deconstruct_keys"), true) {
+            if pm_responds(c, subj, b"deconstruct_keys")? {
                 let r = funcall(c, subj, intern(b"deconstruct_keys"), &[keys], std::ptr::null())?;
                 if !is_hash(r) { return type_err(c, "deconstruct_keys must return Hash"); }
                 return Ok(r);

@@ -893,12 +893,3 @@ pub fn DISPATCH_node_special(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
     EVAL_node_special::<Dyn>(c, n, fp, (*np).u.kind, (*np).u.arg)
     }
 }
-
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
-pub fn DISPATCH_node_flipflop(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
-    let np = n as *mut NodeOf<node_flipflop_struct>;
-    unsafe {
-
-    EVAL_node_flipflop::<Dyn, Dyn>(c, n, fp, (*np).u.a, (*np).u.b, (*np).u.excl, (*np).u.slot)
-    }
-}

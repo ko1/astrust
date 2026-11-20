@@ -141,7 +141,7 @@ fn proc_compose_right(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) ->
     if !is_proc(g) && !is_method_obj(g) && !respond_to(g, s::call, true) { return type_err(c, "callable object is expected"); }
     let data = ary_new_from(&[slf, g, FALSE]);
     let b = Block::cfunc(c, compose_call, data);
-    let np = crate::gc::alloc(vm().c_proc, Body::Proc(Box::new(ProcData { blk: b, is_lambda: rproc(slf).is_lambda, from_method: NIL })));
+    let np = crate::gc::alloc(vm().c_proc, Body::Proc(Box::new(ProcData { blk: b, is_lambda: !is_proc(slf) || rproc(slf).is_lambda, from_method: NIL })));
     rproc(np).blk.proc_val = np;
     Ok(np)
 }
@@ -422,6 +422,8 @@ pub fn init() {
     }
     let m = vm.c_method;
     define_cfunc(m, "call", meth_call, -1);
+    define_cfunc(m, ">>", proc_compose_right, 1);
+    define_cfunc(m, "<<", proc_compose_left, 1);
     define_cfunc(m, "()", meth_call, -1);
     define_cfunc(m, "[]", meth_call, -1);
     define_cfunc(m, "===", meth_call, -1);
