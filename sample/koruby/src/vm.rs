@@ -245,6 +245,7 @@ pub struct Ctx {
     pub errinfo: Value,
     pub last_match: Value,
     pub in_ensure: u32,
+    pub tok: crate::heap::Token,   // makes this the heap token (heap.rs)
 }
 
 impl Ctx {

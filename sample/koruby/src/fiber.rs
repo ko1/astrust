@@ -120,6 +120,8 @@ fn new_fiber(klass: Value, proc_: Value) -> Value {
         sp: NO_SP, stk: NO_STACK, frame: std::ptr::null_mut(),
         esc: EscKind::None, esc_val: NIL, esc_tag: 0, esc_tag_v: NIL, serial: 1 << 40, errinfo: NIL, last_match: NIL,
         native_limit: stack as usize + (512 << 10), in_ensure: 0, call_me: std::ptr::null(), call_blk: std::ptr::null(),
+        // SAFETY: a fiber's context runs only while the one that resumed it is suspended in resume
+        tok: unsafe { crate::heap::Token::mint() },
     });
     ctx.attach_stack(vstack);
     // initial frame: six zero registers, then the return address fiber_start

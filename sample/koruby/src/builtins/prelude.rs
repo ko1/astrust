@@ -31,7 +31,7 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
     match name {
         "koruby/errno" => crate::builtins::exception::define_all_errnos(),
         "koruby/env" => crate::builtins::env::init(),
-        "koruby/rbconfig" | "rbconfig" => crate::builtins::misc::rbconfig_init(),
+        "koruby/rbconfig" | "rbconfig" => crate::builtins::misc::rbconfig_init(c),
         "koruby/filetest" => crate::builtins::file::init_filetest(),
         "koruby/stat" => crate::builtins::file::init_stat(),
         "koruby/sync" => crate::builtins::thread::init_sync(),

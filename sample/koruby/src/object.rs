@@ -20,6 +20,7 @@ pub struct RObj {
     pub body: Body,
 }
 
+#[repr(u8)]
 pub enum Body {
     Free(*mut RObj),
     Object(crate::ivbuf::IvBuf),
@@ -109,7 +110,9 @@ impl ClassData {
     }
 }
 
-// ---- raw accessors (callers guarantee the body kind) -----------------------
+// ---- legacy accessors (callers guarantee the body kind) --------------------
+// Unsound: unbounded `&'static mut` into GC objects.  Kept for modules not yet converted to the
+// context-borrowing accessors of heap.rs (docs/safe_heap.md); a converted module cannot name them.
 
 #[inline(always)] pub fn obj(v: Value) -> &'static mut RObj { unsafe { &mut *v.ptr() } }
 
@@ -142,21 +145,8 @@ pub fn rdata<T: 'static>(v: Value) -> Option<&'static mut T> {
     match &mut obj(v).body { Body::Data(d) => d.as_any_mut().downcast_mut::<T>(), _ => None }
 }
 
-#[inline(always)] pub fn is_string(v: Value) -> bool { v.is_heap() && matches!(obj(v).body, Body::String(_)) }
-#[inline(always)] pub fn is_array(v: Value) -> bool { v.is_heap() && matches!(obj(v).body, Body::Array(_)) }
-#[inline(always)] pub fn is_hash(v: Value) -> bool { v.is_heap() && matches!(obj(v).body, Body::Hash(_)) }
-#[inline(always)] pub fn is_class_or_module(v: Value) -> bool { v.is_heap() && matches!(obj(v).body, Body::Class(_)) }
-#[inline(always)] pub fn is_proc(v: Value) -> bool { v.is_heap() && matches!(obj(v).body, Body::Proc(_)) }
-#[inline(always)] pub fn is_range(v: Value) -> bool { v.is_heap() && matches!(obj(v).body, Body::Range(..)) }
-#[inline(always)] pub fn is_bignum(v: Value) -> bool { v.is_heap() && matches!(obj(v).body, Body::Bignum(_)) }
-#[inline(always)] pub fn is_float(v: Value) -> bool { v.is_flonum() || (v.is_heap() && matches!(obj(v).body, Body::Float(_))) }
+pub use crate::heap::{is_array, is_bignum, is_class_or_module, is_float, is_frozen, is_hash, is_method_obj, is_proc, is_range, is_string};
 #[inline(always)] pub fn is_integer(v: Value) -> bool { v.is_fixnum() || is_bignum(v) }
-#[inline(always)] pub fn is_method_obj(v: Value) -> bool { v.is_heap() && matches!(obj(v).body, Body::Method(_)) }
-#[inline(always)]
-pub fn is_frozen(v: Value) -> bool {
-    if !v.is_heap() { return true; }
-    obj(v).flags & FL_FROZEN != 0
-}
 #[inline(always)]
 pub fn float_val(v: Value) -> f64 { if v.is_flonum() { v.flonum_val() } else { rfloat_heap(v) } }
 
