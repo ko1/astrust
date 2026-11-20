@@ -1037,6 +1037,20 @@ fn DUMP_node_method_entry(out: &mut String, n: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_block_entry(out: &mut String, n: NodePtr) {
+    let np = n as *mut NodeOf<node_block_entry_struct>;
+    unsafe {
+    out.push_str("(node_block_entry");
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.nlocals));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.nparams));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.flags));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); dump_node(out, (*np).u.body);
+    out.push(')');
+    }
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_def(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_def_struct>;
     unsafe {

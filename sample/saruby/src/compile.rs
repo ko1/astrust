@@ -354,8 +354,11 @@ impl<'a> Compiler<'a> {
             if fl == 0 && sc.nslots as usize == 2 + params.lead.len() && leaf_body(body) { fl |= ME_LEAF; }
             ALLOC_node_method_entry(sc.nslots, params.lead.len() as u32, fl, line, body)
         } else { std::ptr::null_mut() };
+        let bentry = if kind == IseqKind::Block && lead_only {
+            ALLOC_node_block_entry(sc.nslots, params.lead.len() as u32, if sc.env_size > 0 { ME_ENV } else { 0 }, line, body)
+        } else { std::ptr::null_mut() };
         let is = Box::leak(Box::new(Iseq {
-            body, entry, nlocals: sc.nslots, params, env_size: sc.env_size, env_params,
+            body, entry, bentry, body_used: std::cell::Cell::new(false), nlocals: sc.nslots, params, env_size: sc.env_size, env_params,
             info: CodeInfo { file: self.file, label, line }, kind, simple, lead_only, name, local_names, arity, uses_block: false,
             parent: std::cell::Cell::new(std::ptr::null()), ruby2_keywords: std::cell::Cell::new(false),
             outer_names: if kind == IseqKind::Eval { self.eval_outer.iter().flatten().cloned().collect() } else { vec![] },

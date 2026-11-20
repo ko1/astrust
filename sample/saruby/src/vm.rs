@@ -51,6 +51,8 @@ pub struct Params {
 pub struct Iseq {
     pub body: NodePtr,
     pub entry: NodePtr,                 // node_method_entry over body (required-params-only methods), else null
+    pub bentry: NodePtr,                // node_block_entry over body (required-params-only blocks), else null
+    pub body_used: std::cell::Cell<bool>, // a block with bentry was also run through its body (lambda call, spread, ...): bake the body too
     pub nlocals: u32,                   // frame size including self (0) and env (1)
     pub params: Params,
     pub env_size: u32,
@@ -218,6 +220,8 @@ impl Frame {
     }
     #[inline] pub fn iseq(&self) -> *const Iseq {
         match self.full() {
+            // a frame made by node_block_entry leaves it to the block
+            Some(x) if x.iseq.is_null() && !x.self_blk.is_null() => match unsafe { (*x.self_blk).kind } { BlockKind::Iseq(is) => is, _ => std::ptr::null() },
             Some(x) => x.iseq,
             None if self.kind == FK_CFUNC => unsafe { (*self.prev).iseq() },
             None => match unsafe { (*self.me).kind } { MKind::Iseq(is) => is, _ => std::ptr::null() },
@@ -1857,34 +1861,21 @@ pub fn block_fast(b: &Block, argc: usize) -> Option<&'static Iseq> {
     if let BlockKind::Iseq(is) = b.kind {
         let is = unsafe { &*is };
         // extra args are dropped and missing ones are nil; one arg for 2+ params may be an Array to spread
-        if is.lead_only && is.kind != IseqKind::Lambda && !(argc == 1 && is.params.lead.len() >= 2)
+        if !is.bentry.is_null() && !(argc == 1 && is.params.lead.len() >= 2)
             && (b.proc_val == UNDEF || !rproc(b.proc_val).is_lambda) { return Some(is); }
     }
     None
 }
 
-/// Run a block_fast block with args already at base[2..].
+/// Run a block_fast block with args already at base[2..]; sp is at base.
 #[inline(always)]
 pub fn run_block_fast(c: &mut Ctx, b: &Block, is: &Iseq, base: Stk, argc: u32) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit_body("block_fast", is.body, is.env_size > 0, is.params.lead.len(), false);
-    let n = is.nlocals as usize;
-    let mut fr = FrameFull {
-        h: Frame { prev: c.frame, fp: head(base), me: b.me, blk: b.outer_blk, id: b.home_id, line: is.info.line, kind: FK_BLOCK, visi: VISI_PUBLIC, lite: false, pad: 0 },
-        cref: b.cref, iseq: is, self_blk: b, defined_class: b.defined_class,
-    };
-    base[0].set(b.self_);
-    base[1].set(b.env);
-    nil_fill(base, 2 + (argc as usize).min(is.params.lead.len()), n);
-    c.set_sp(base, n);
-    if is.env_size > 0 { make_env(is, base, b.env); }
-    c.frame = &mut fr.h;
-    let mut r = run_body(c, is.body, base);
-    while r.is_err() && c.esc == EscKind::Redo { c.esc = EscKind::None; r = run_body(c, is.body, base); }
-    c.frame = fr.prev;
-    match r {
-        Ok(v) => Ok(v),
-        Err(e) => if c.esc == EscKind::Next { c.esc = EscKind::None; Ok(c.esc_val) } else { Err(e) },
-    }
+    // missing arguments are nil; the entry node (frame setup, sizes baked) does the rest
+    let np = is.params.lead.len();
+    if (argc as usize) < np { nil_fill(base, 2 + argc as usize, 2 + np); }
+    c.call_blk = b;
+    run_body(c, is.bentry, base)
 }
 
 /// One out-of-line copy of the one-argument fast path (not left to yield_block's inlining luck).
@@ -1969,6 +1960,7 @@ pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const 
 
 pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &Iseq, base: Stk, argc: u32, blkarg: *const Block, lambda: bool, bme: *const MethodEntry, kw: bool) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit_body(if lambda { "block_full lambda" } else { "block_full" }, is.body, is.env_size > 0, is.params.lead.len(), false);
+    if !is.bentry.is_null() { is.body_used.set(true); }
     let mut fr = Frame::empty(base);
     fr.prev = c.frame;
     fr.me = if bme.is_null() { b.me } else { bme };

@@ -101,6 +101,10 @@ pub fn enter(c: &mut Ctx, fp: Fp, n: u32, _nparams: u32) -> Result<(), Esc> {
     Ok(())
 }
 
+/// Block entry: the same, from the frame's base.
+#[inline(always)]
+pub fn enter_base(c: &mut Ctx, fp: Fp, n: u32) -> Result<(), Esc> { enter(c, fp, n, 0) }
+
 #[inline(always)]
 pub fn put(st: Stk, at: usize, vals: &[Value]) {
     for (i, v) in vals.iter().enumerate() { st[at + i].set(*v); }

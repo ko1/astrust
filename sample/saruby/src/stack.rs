@@ -95,6 +95,13 @@ pub fn enter(c: &mut Ctx, _fp: Fp, n: u32, nparams: u32) -> Result<(), Esc> {
     Ok(())
 }
 
+/// Block entry: sp goes from the frame's base to above its n slots (the caller checked the room).
+#[inline(always)]
+pub fn enter_base(c: &mut Ctx, _fp: Fp, n: u32) -> Result<(), Esc> {
+    c.sp = c.sp.wrapping_sub(n as usize);
+    Ok(())
+}
+
 /// st[at..] = vals.
 #[inline(always)]
 pub fn put(st: Stk, at: usize, vals: &[Value]) {

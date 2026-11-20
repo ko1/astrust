@@ -130,6 +130,9 @@ use crate::symbol::s;
 // Entry of a required-params-only method: frame setup with its sizes baked in (me / block come in c.call_*).
 // flags: ME_* (vm.rs), decided by the compiler.
 
+// Entry of a block with only required params run as a plain block (run_block_fast): frame setup with
+// its sizes baked in.  The Block comes in c.call_blk, the arguments are at fp[2..], sp is at the base.
+
 
 
 
@@ -1212,6 +1215,33 @@ pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlo
     match r {
         Ok(v) => Ok(v),
         Err(e) => if c.esc == EscKind::Return && c.esc_tag == id { c.esc = EscKind::None; Ok(c.esc_val) } else { Err(e) },
+    }
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_block_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, flags: u32, line: u32, body: NodePtr) -> RV {
+    let b = unsafe { &*c.call_blk };
+    // iseq null: Frame::iseq() takes it from self_blk when asked
+    let mut fr = FrameFull {
+        h: Frame { prev: c.frame, fp: head(fp), me: b.me, blk: b.outer_blk, id: b.home_id, line, kind: FK_BLOCK, visi: VISI_PUBLIC, lite: false, pad: 0 },
+        cref: b.cref, iseq: std::ptr::null(), self_blk: b, defined_class: b.defined_class,
+    };
+    fp[0].set(b.self_);
+    fp[1].set(b.env);
+    let mut i = 2 + nparams;
+    while i < nlocals { slot(fp, i).set(NIL); i += 1; }
+    enter_base(c, fp, nlocals)?;
+    if flags & ME_ENV != 0 { make_env(unsafe { &*fr.h.iseq() }, fp, b.env); }
+    c.frame = &mut fr.h;
+    let mut r = <D_body as Disp>::call(c, body, fp);
+    // redo runs the body again out of line (a second inline copy would double the block's code)
+    if r.is_err() && c.esc == EscKind::Redo { r = srb_block_redo(c, body, fp); }
+    c.frame = fr.prev;
+    match r {
+        Ok(v) => Ok(v),
+        Err(e) => if c.esc == EscKind::Next { c.esc = EscKind::None; Ok(c.esc_val) } else { Err(e) },
     }
 }
 

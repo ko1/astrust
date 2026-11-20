@@ -902,6 +902,16 @@ pub fn DISPATCH_node_method_entry(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
 }
 
 #[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_block_entry(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_block_entry");
+    let np = n as *mut NodeOf<node_block_entry_struct>;
+    unsafe {
+
+    EVAL_node_block_entry::<Dyn>(c, n, fp, (*np).u.nlocals, (*np).u.nparams, (*np).u.flags, (*np).u.line, (*np).u.body)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
 pub fn DISPATCH_node_def(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_def");
     let np = n as *mut NodeOf<node_def_struct>;
