@@ -17,9 +17,10 @@ Plan, in order:
    the aliasing rule and the precise-GC rule become one borrow-checker rule, at no run-time cost.
    The deref inside the accessor stays `unsafe` in the core and is sound as long as a `Value` handle
    is live (see rooting below).
-2. **Value stack as slices.** Frames get `&mut [Value]` (locals) instead of `*mut Value`; call staging
-   through a stack API. Cost to measure first: bounds checks on local access in baked code
-   (indices are baked constants, the length is not).
+2. **Value stack as slices.** Done (2026-11-20) as two backends behind one API: `src/stack.rs`
+   (`FEATURES=safe_stack`, `#![forbid(unsafe_code)]`, frames are `&[Cell<Value>; FRAME]`) and
+   `src/stack_raw.rs` (default, raw pointers). The checked one costs too much on call-heavy code to be
+   the default; numbers, design and rejected alternatives: `docs/safe_stack.md`.
 3. **No `static mut`**: builtin method identities (`BO_EQ_ME`, ...) and the VM singleton go through the context.
 4. **Builtins become `forbid(unsafe_code)`** module by module once 1–3 exist (they are the bulk of the count).
 5. Remaining unsafe, each behind a safe API: GC allocator/sweeper, stack scanning (until precise),

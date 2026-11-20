@@ -15,12 +15,18 @@ source --prism (C, vendor/prism) --> serialized AST --src/prism.rs + prism_ast.r
 
 * `node.def` — node kinds with Rust bodies.  `ruby koruby_gen.rb` (via `make`) generates
   `src/node_*.rs`.  Never edit generated files.
-* Every dispatcher is `fn(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV` where
+* Every dispatcher is `fn(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV` where
   `RV = Result<Value, Esc>`.  `Esc` is a zero-sized error; the kind/payload of a non-local exit
   (raise, break, next, return, throw, ...) is in `c.esc`, `c.esc_val`, `c.esc_tag`.
-* `fp` = current frame's locals on the VM value stack: `fp[0]` = self, `fp[1]` = env
+* `fp` = current frame on the VM value stack: `fp[0]` = self, `fp[1]` = env
   (heap Env holding variables captured by blocks, or the outer env), then parameters/locals.
-* Calls stage `[recv, -, args...]` at `c.sp` and the callee frame starts there (no copying).
+  Slots are `Cell<Value>`: `fp[0].get()`, `slot(fp, i).set(v)`.
+* Calls stage `[recv, -, args...]` at sp (`stage(c, n)` gives a `Stk`) and the callee frame
+  starts there (no copying).
+* `Fp`, `Stk` and `c.sp` belong to the stack backend, chosen at build time: `src/stack_raw.rs`
+  (default: raw pointers, all of the value stack's `unsafe`) or `src/stack.rs`
+  (`make FEATURES=safe_stack`: every access checked, `#![forbid(unsafe_code)]`).  Code outside
+  them uses only their common API.  See docs/safe_stack.md.
 
 ## Values (src/value.rs)
 Fixnum (`...1`), Flonum (`..10`, CRuby encoding), heap pointer (`.000`), nil=0x04, false=0x0c,
@@ -40,6 +46,7 @@ index and re-fetch (`ary_get(v, i)` with `ary_len(v)` checked each iteration).
 ## Methods
 * Builtins are `CFunc = fn(&mut Ctx, self: Value, args: &[Value], blk: *const Block) -> RV`,
   registered with `define_cfunc(klass, "name", f, arity)` (arity -1 = variadic; checked).
+  `args` comes from `with_args`: the staged slots themselves, or a copy of them under `safe_stack`.
   Keyword args to a cfunc arrive as a trailing Hash; `kw_arg(args)` returns it if the caller
   passed keywords.
 * Call Ruby from Rust: `funcall(c, recv, sym, &args, blk)`, `yield1(c, blk, v)`,

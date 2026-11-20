@@ -43,6 +43,12 @@ decides hashing).  Embedders subclass `ASTrustGen::NodeDef::Node` for the common
 count, result type, how to unwrap a child's result (`e?` for `Result`), and opaque operands —
 see `sample/calc/calc_gen.rb` (minimal) and `sample/koruby/koruby_gen.rb`.
 
+The common parameters are copied through as written, so they can be any Rust types.  A frame
+of local variables does not have to be a raw pointer: koruby passes `fp: Fp`, which in its
+checked configuration is `&'static [Cell<Value>; N]`.  A slot index is a scalar operand and
+therefore a literal in specialized code, so `fp[i]` there is checked at compile time and costs
+nothing at run time (`sample/koruby/docs/safe_stack.md`).  No generator hook was needed.
+
 ## Code store
 
 `CodeStore` keeps one file per emitted item (`items/T_<hash>.rs`, `L_<hash>.rs`, `SD_<hash>.rs`,
