@@ -557,7 +557,7 @@ pub fn gvar_get(c: &mut Ctx, name: Sym) -> RV {
         b"$!" => return Ok(c.errinfo),
         b"$@" => { return Ok(if c.errinfo == NIL { NIL } else { exc_bt(c.errinfo) }); }
         b"$~" => return Ok(c.last_match),
-        b"$&" => return Ok(crate::regexp::nth_match(c.last_match, 0)),
+        b"$&" => return Ok(crate::regexp::nth_match(c, c.last_match, 0)),
         b"$0" | b"$PROGRAM_NAME" => return Ok(c.vm().dollar_zero),
         b"$:" | b"$LOAD_PATH" | b"$-I" => return Ok(c.vm().load_path),
         b"$\"" | b"$LOADED_FEATURES" => return Ok(c.vm().loaded_features),

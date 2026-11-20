@@ -201,7 +201,7 @@ pub fn boot() {
     prelude::lazy_const(ob, "RbConfig", "saruby/rbconfig");
     encoding::init(vm);
     stringio::init(vm);
-    regexp_methods::init();
+    (vm.c_regexp, vm.c_match_data) = regexp_methods::init(vm);
     vm.c_struct = structs::init(vm.c_object, vm.m_enumerable);
     vm.c_time = time::init(vm);
     math::init(vm.m_math);

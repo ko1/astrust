@@ -509,7 +509,7 @@ pub fn EVAL_node_errinfo(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_nth_ref(c: &mut Ctx, n: NodePtr, fp: Fp, nth: u32) -> RV {
-    Ok(crate::regexp::nth_match(c.last_match, nth as i64))
+    Ok(crate::regexp::nth_match(c, c.last_match, nth as i64))
 }
 
 

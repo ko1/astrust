@@ -165,7 +165,7 @@ impl Dumper {
             if hasiv { self.w_ivars(c, Some(enc), &ivs, limit)?; }
             return Ok(());
         }
-        if let Some(r) = crate::regexp::rregexp(v) {
+        if let Some(r) = crate::regexp::rregexp(c, v) {
             let (src, opts) = (r.src.clone(), r.opts);
             let enc = if is_ascii(&src) && !r.enc_fixed { ENC_ASCII } else { ENC_UTF8 };
             self.out.push(b'I');
@@ -407,7 +407,7 @@ impl Loader {
             let name = self.symbol(c)?;
             let val = self.object(c)?;
             let nb = sym_bytes(name);
-            if nb == b"E" && (is_string(v) || crate::regexp::is_regexp(v)) { if is_string(v) { rstr(v).enc = if val == TRUE { ENC_UTF8 } else { ENC_ASCII }; } continue; }
+            if nb == b"E" && (is_string(v) || crate::regexp::is_regexp(c, v)) { if is_string(v) { rstr(v).enc = if val == TRUE { ENC_UTF8 } else { ENC_ASCII }; } continue; }
             if nb == b"encoding" && is_string(v) { if is_string(val) { if let Some(e) = crate::builtins::encoding::find_enc(str_bytes(val)) { rstr(v).enc = e; } } continue; }
             if v.is_heap() { ivar_set_raw(v, name, val); }
         }

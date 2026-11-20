@@ -26,15 +26,16 @@ fn sym_cmp(_c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     if !a[0].is_sym() { return Ok(NIL); }
     Ok(Value::fix(sym_bytes(s.as_sym()).cmp(sym_bytes(a[0].as_sym())) as i64))
 }
+/// Symbol methods answered by the String method of the same name (dispatched).
 fn via_str(c: &mut Ctx, s: Value, m: &str, a: &[Value], b: *const Block) -> RV {
     let st = sym_str_v(c, s);
     funcall(c, st, intern(m.as_bytes()), a, b)
 }
-fn sym_upcase(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let r = via_str(c, s, "upcase", a, b)?; Ok(c.str_to_sym(r)) }
-fn sym_downcase(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let r = via_str(c, s, "downcase", a, b)?; Ok(c.str_to_sym(r)) }
-fn sym_capitalize(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let r = via_str(c, s, "capitalize", a, b)?; Ok(c.str_to_sym(r)) }
-fn sym_swapcase(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let r = via_str(c, s, "swapcase", a, b)?; Ok(c.str_to_sym(r)) }
-fn sym_succ(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let r = via_str(c, s, "succ", a, b)?; Ok(c.str_to_sym(r)) }
+fn sym_upcase(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let st = sym_str_v(c, s); let r = crate::builtins::string_methods::s_upcase(c, st, a, b)?; Ok(c.str_to_sym(r)) }
+fn sym_downcase(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let st = sym_str_v(c, s); let r = crate::builtins::string_methods::s_downcase(c, st, a, b)?; Ok(c.str_to_sym(r)) }
+fn sym_capitalize(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let st = sym_str_v(c, s); let r = crate::builtins::string_methods::s_capitalize(c, st, a, b)?; Ok(c.str_to_sym(r)) }
+fn sym_swapcase(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let st = sym_str_v(c, s); let r = crate::builtins::string_methods::s_swapcase(c, st, a, b)?; Ok(c.str_to_sym(r)) }
+fn sym_succ(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let st = sym_str_v(c, s); let r = crate::builtins::string_methods::s_succ(c, st, a, b)?; Ok(c.str_to_sym(r)) }
 fn sym_aref(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { via_str(c, s, "[]", a, b) }
 fn sym_start_with(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { via_str(c, s, "start_with?", a, b) }
 fn sym_end_with(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { via_str(c, s, "end_with?", a, b) }
