@@ -459,8 +459,8 @@ cfn!(int_s_sqrt, |c, _s, a| {
 });
 cfn!(int_ceildiv, |c, s, a| {
     let neg = int_arith(c, s, Value::fix(-1), Op::Mul)?;
-    let q = int_arith(c, neg, a[0], Op::Div)?;
-    int_arith(c, q, Value::fix(-1), Op::Mul)
+    let q = funcall(c, neg, intern(b"div"), &[a[0]], std::ptr::null())?;
+    funcall(c, q, s::uminus, &[], std::ptr::null())
 });
 cfn!(int_integer_p, |_c, _s, _a| Ok(TRUE));
 
@@ -534,12 +534,20 @@ cfn!(flo_zero, |_c, s, _a| Ok(Value::bool(float_val(s) == 0.0)));
 cfn!(flo_positive, |_c, s, _a| Ok(Value::bool(float_val(s) > 0.0)));
 cfn!(flo_negative, |_c, s, _a| Ok(Value::bool(float_val(s) < 0.0)));
 fn flo_divmod(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
-    let x = float_val(s); let y = to_f(c, a[0])?;
-    if y == 0.0 { return err(c, vm().c_zero_div_error, "divided by 0"); }
-    let m = fmod_ruby(x, y);
-    let q = ((x - m) / y).round();
+    let x = float_val(s);
+    let Some(y) = num_to_f64(a[0]) else { return coerce_bin(c, s, a[0], s::divmod, false) };
+    let (q, m) = flodivmod(c, x, y)?;
     check_finite(c, q)?;
     Ok(ary_new_from(&[f64_to_int(q), float_new(m)]))
+}
+/// CRuby's flodivmod
+fn flodivmod(c: &mut Ctx, x: f64, y: f64) -> Result<(f64, f64), Esc> {
+    if y.is_nan() { return Ok((y, y)); }
+    if y == 0.0 { return err(c, vm().c_zero_div_error, "divided by 0"); }
+    let mut m = if x == 0.0 || (y.is_infinite() && !x.is_infinite()) { x } else { x % y };
+    let mut d = if x.is_infinite() && !y.is_infinite() { x } else { ((x - m) / y).round() };
+    if y * m < 0.0 { m += y; d -= 1.0; }
+    Ok((d, m))
 }
 cfn!(flo_idiv, |c, s, a| {
     let x = float_val(s); let y = to_f(c, a[0])?;
@@ -813,8 +821,8 @@ pub fn init() {
     d("div", flo_idiv, 1); d("coerce", flo_coerce, 1); d("hash", flo_hash, 0); d("round", flo_round, -1); d("floor", flo_floor, -1);
     d("ceil", flo_ceil, -1); d("truncate", flo_truncate, -1); d("next_float", flo_next_float, 0); d("prev_float", flo_prev_float, 0);
     d("to_f", |_c, s, _a, _b| Ok(s), 0); d("integer?", flo_integer_p, 0);
-    d("fdiv", |c, s, a, _b| { let y = to_f(c, a[0])?; Ok(float_new(float_val(s) / y)) }, 1);
-    d("quo", |c, s, a, _b| { let y = to_f(c, a[0])?; Ok(float_new(float_val(s) / y)) }, 1);
+    d("fdiv", flo_div, 1);
+    d("quo", flo_div, 1);
     for (nm, v) in [("INFINITY", f64::INFINITY), ("NAN", f64::NAN), ("EPSILON", f64::EPSILON), ("MAX", f64::MAX), ("MIN", f64::MIN_POSITIVE)] {
         const_set(f, intern(nm.as_bytes()), float_new(v));
     }
