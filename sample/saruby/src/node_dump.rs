@@ -1026,6 +1026,8 @@ fn DUMP_node_opt_aref(out: &mut String, n: NodePtr) {
     out.push(' '); dump_node(out, (*np).u.b);
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
     out.push(' '); out.push_str("<cc>");
+    out.push(' '); out.push_str("<tf>");
+    out.push(' '); 
     out.push(')');
     }
 }
@@ -1040,6 +1042,8 @@ fn DUMP_node_opt_aset(out: &mut String, n: NodePtr) {
     out.push(' '); dump_node(out, (*np).u.v);
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
     out.push(' '); out.push_str("<cc>");
+    out.push(' '); out.push_str("<tf>");
+    out.push(' '); 
     out.push(')');
     }
 }

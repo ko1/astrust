@@ -39,10 +39,13 @@ pub fn flo2_cmp(a: Value, b: Value, rf: u32, ri: u32) -> Option<(f64, f64)> {
 #[derive(Default)]
 pub struct TyFb(pub u32);
 pub const TF_FLO: u32 = 1;
+pub const TF_HASH: u32 = 2;
 
 /// Does a site with the baked `ty` (0: interpreter, else 1 + TyFb) keep its Float paths inline?
 #[inline(always)]
 pub fn tf_flo(ty: u32) -> bool { ty == 0 || (ty - 1) & TF_FLO != 0 }
+#[inline(always)]
+pub fn tf_hash(ty: u32) -> bool { ty == 0 || (ty - 1) & TF_HASH != 0 }
 
 /// The rest of an operator at a baked site whose inline paths did not apply: Float, then the call.
 /// A site whose recorded kinds are stale or absent ends up here, slower but right.

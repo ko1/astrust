@@ -2738,6 +2738,8 @@ fn SPECIALIZE_node_opt_aref(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_b".to_string());
     a.push(format!("{}u32", (*np).u.line));
     a.push("&mut (*np).u.cc".to_string());
+    a.push("&mut (*np).u.tf".to_string());
+    a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
@@ -2774,6 +2776,8 @@ fn SPECIALIZE_node_opt_aset(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_v".to_string());
     a.push(format!("{}u32", (*np).u.line));
     a.push("&mut (*np).u.cc".to_string());
+    a.push("&mut (*np).u.tf".to_string());
+    a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));

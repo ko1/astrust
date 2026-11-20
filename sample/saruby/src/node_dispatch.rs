@@ -875,7 +875,7 @@ pub fn DISPATCH_node_opt_aref(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_aref(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc)
+    EVAL_node_opt_aref(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
     }
 }
 
@@ -887,7 +887,7 @@ pub fn DISPATCH_node_opt_aset(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
     let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
-    EVAL_node_opt_aset(c, n, fp, v_a, v_b, v_v, (*np).u.line, &mut (*np).u.cc)
+    EVAL_node_opt_aset(c, n, fp, v_a, v_b, v_v, (*np).u.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
     }
 }
 

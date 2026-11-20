@@ -127,6 +127,8 @@ use crate::symbol::s;
 
 
 
+// An Array indexed by an Integer in range is inline (fast_ary_*: the class and the redefinition in one
+// compare).  A Hash stays inline in the interpreter and at baked sites that saw one (TF_HASH).
 
 
 // ---- definitions -------------------------------------------------------------------
@@ -1211,29 +1213,29 @@ pub fn EVAL_node_opt_or(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, lin
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_aref(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
-    if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && !redef(R_ARY_AREF) {
-        let v = c.ary(a);
-        let i = b.as_fix();
-        // one unsigned compare for the common case; a negative index counts from the end
-        if let Some(&x) = v.get(i as usize) { return Ok(x); }
-        return Ok(if i < 0 { v.len().checked_sub(i.unsigned_abs() as usize).and_then(|j| v.get(j).copied()).unwrap_or(NIL) } else { NIL });
+pub fn EVAL_node_opt_aref(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> RV {
+    // the class load sits between the two tag tests, or they are merged into setcc / or
+    if a.is_heap() && obj(a).klass.raw() == fast_ary_aref() && b.is_fixnum() {
+        if let Some(&x) = c.ary(a).get(b.as_fix() as usize) { return Ok(x); }
+    } else if tf_hash(ty) && is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_AREF) {
+        if ty == 0 { tf.0 |= TF_HASH; }
+        return crate::hash::hash_aref(c, a, b);
     }
-    if is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_AREF) { return crate::hash::hash_aref(c, a, b); }
-    srb_binop(c, a, b, s::aref, line, cc)
+    srb_aref_out(c, a, b, line, cc)
 }
 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_aset(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, v: Value, line: u32, cc: &mut CallCache) -> RV {
-    if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && obj(a).flags & FL_FROZEN == 0 && !redef(R_ARY_ASET) {
-        let ary = c.ary_mut(a);
-        let i = b.as_fix();
-        if i >= 0 && (i as usize) < ary.len() { ary[i as usize] = v; return Ok(v); }
+pub fn EVAL_node_opt_aset(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, v: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> RV {
+    if a.is_heap() && obj(a).klass.raw() == fast_ary_aset() && b.is_fixnum() && obj(a).flags & FL_FROZEN == 0 {
+        if let Some(x) = c.ary_mut(a).get_mut(b.as_fix() as usize) { *x = v; return Ok(v); }
+    } else if tf_hash(ty) && is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_ASET) {
+        if ty == 0 { tf.0 |= TF_HASH; }
+        crate::hash::hash_aset(c, a, b, v)?;
+        return Ok(v);
     }
-    if is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_ASET) { crate::hash::hash_aset(c, a, b, v)?; return Ok(v); }
-    srb_aset(c, a, b, v, line, cc)
+    srb_aset_out(c, a, b, v, line, cc)
 }
 
 

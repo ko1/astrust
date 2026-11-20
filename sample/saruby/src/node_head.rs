@@ -822,6 +822,7 @@ pub struct node_opt_aref_struct {
     pub b: NodePtr,
     pub line: u32,
     pub cc: CallCache,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -832,6 +833,7 @@ pub struct node_opt_aset_struct {
     pub v: NodePtr,
     pub line: u32,
     pub cc: CallCache,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -1364,12 +1366,12 @@ pub fn ALLOC_node_opt_or(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_aref(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_aref, node_opt_aref_struct { a, b, line, cc: Default::default() })
+    node_allocate(&KIND_node_opt_aref, node_opt_aref_struct { a, b, line, cc: Default::default(), tf: Default::default() })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_aset(a: NodePtr, b: NodePtr, v: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_aset, node_opt_aset_struct { a, b, v, line, cc: Default::default() })
+    node_allocate(&KIND_node_opt_aset, node_opt_aset_struct { a, b, v, line, cc: Default::default(), tf: Default::default() })
 }
 
 #[allow(non_snake_case)]

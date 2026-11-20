@@ -7,6 +7,7 @@ use crate::string::*;
 use crate::symbol::{intern, s, sym_str};
 use crate::value::*;
 use crate::vm::*;
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 // ---- redefinition flags for operator fast paths -----------------------------------------
 
@@ -71,6 +72,44 @@ pub fn note_redefinition(klass: Value, mid: Sym) {
     for &(k, m, f) in table {
         if m == mid && (klass == k || ancestors(k).contains(&klass)) { unsafe { REDEF |= f; } }
     }
+    if redef(R_ARY_AREF) { FAST_ARY_AREF.store(0, Relaxed); }
+    if redef(R_ARY_ASET) { FAST_ARY_ASET.store(0, Relaxed); }
+}
+
+// The Array class while Array#[] / Array#[]= are the builtins, else 0 (no object's class): an index
+// site tests the receiver's class and the redefinition in one compare.  Set on the first miss after boot.
+pub static FAST_ARY_AREF: AtomicU64 = AtomicU64::new(0);
+pub static FAST_ARY_ASET: AtomicU64 = AtomicU64::new(0);
+#[inline(always)]
+pub fn fast_ary_aref() -> u64 { FAST_ARY_AREF.load(Relaxed) }
+#[inline(always)]
+pub fn fast_ary_aset() -> u64 { FAST_ARY_ASET.load(Relaxed) }
+
+/// `a[b]` when the site's inline path did not apply: everything, starting with the Array and Hash cases.
+#[inline(never)]
+pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
+    if unsafe { BOOTED } && !redef(R_ARY_AREF) { FAST_ARY_AREF.store(vm().c_array.raw(), Relaxed); }
+    if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && !redef(R_ARY_AREF) {
+        let v = c.ary(a);
+        let i = b.as_fix();
+        if let Some(&x) = v.get(i as usize) { return Ok(x); }
+        return Ok(if i < 0 { v.len().checked_sub(i.unsigned_abs() as usize).and_then(|j| v.get(j).copied()).unwrap_or(NIL) } else { NIL });
+    }
+    if is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_AREF) { return crate::hash::hash_aref(c, a, b); }
+    srb_binop(c, a, b, s::aref, line, cc)
+}
+
+/// `a[b] = v`, as srb_aref_out.
+#[inline(never)]
+pub fn srb_aset_out(c: &mut Ctx, a: Value, b: Value, v: Value, line: u32, cc: &mut CallCache) -> RV {
+    if unsafe { BOOTED } && !redef(R_ARY_ASET) { FAST_ARY_ASET.store(vm().c_array.raw(), Relaxed); }
+    if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && obj(a).flags & FL_FROZEN == 0 && !redef(R_ARY_ASET) {
+        let ary = c.ary_mut(a);
+        let i = b.as_fix();
+        if i >= 0 && (i as usize) < ary.len() { ary[i as usize] = v; return Ok(v); }
+    }
+    if is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_ASET) { crate::hash::hash_aset(c, a, b, v)?; return Ok(v); }
+    srb_aset(c, a, b, v, line, cc)
 }
 
 // ---- literals ----------------------------------------------------------------------------
