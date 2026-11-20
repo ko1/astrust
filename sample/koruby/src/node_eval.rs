@@ -356,7 +356,9 @@ pub fn EVAL_node_iasgn(c: &mut Ctx, n: NodePtr, fp: *mut Value, name: Sym, v: Va
         let o = obj(slf);
         if o.klass.raw() == ic.klass && o.flags & FL_FROZEN == 0 {
             if let Body::Object(ivs) = &mut o.body {
-                if let Some(x) = ivs.get_mut(ic.idx as usize) { *x = v; return Ok(v); }
+                let i = ic.idx as usize;
+                if let Some(x) = ivs.get_mut(i) { *x = v; return Ok(v); }
+                if i == ivs.len() { ivs.push(v); return Ok(v); }
             }
         }
     }

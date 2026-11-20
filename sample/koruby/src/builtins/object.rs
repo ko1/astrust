@@ -893,6 +893,21 @@ pub fn c_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
             return argc_err(c, a.len(), 0, 0);
         } return Ok(o); } }
     }
+    if !me.is_null() && !kw {
+        if let MKind::Iseq(is) = unsafe { (*me).kind } {
+            let is = unsafe { &*is };
+            if is.simple && is.params.lead.len() == a.len() {
+                // initialize with only required params: call it directly
+                let base = c.sp;
+                stack_check(c, a.len() + 4)?;
+                unsafe { for (i, x) in a.iter().enumerate() { *base.add(2 + i) = *x; } c.sp = base.add(2 + a.len()); }
+                let r = invoke_iseq_simple(c, me, is, o, base, a.len() as u32, b);
+                c.sp = base;
+                r?;
+                return Ok(o);
+            }
+        }
+    }
     funcall_kw(c, o, s::initialize, a, b, kw)?;
     Ok(o)
 }
