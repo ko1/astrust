@@ -172,7 +172,8 @@ pub fn boot() {
 
     exception::init_classes();
     object::init();
-    kernel::init();
+    kernel::init(vm);
+    rclass(vm.c_object).autoload.insert(crate::symbol::intern(b"ARGF"), crate::str_legacy::str_new_frozen(b"saruby/argf"));
     module::init();
     proc::init();
     exception::init();

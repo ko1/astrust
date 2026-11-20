@@ -10,7 +10,7 @@
 // (`no_legacy`).
 use crate::object::*;
 use crate::value::*;
-use crate::vm::{Block, BlockKind, Ctx, MethodEntry, Params, Vm};
+use crate::vm::{Block, BlockKind, Cref, Ctx, Frame, Iseq, MethodEntry, Params, Vm};
 
 /// What makes a `Ctx` the heap token: safe code cannot build one.
 pub struct Token(());
@@ -237,4 +237,30 @@ pub mod no_legacy_hn {
     macro_rules! ban { ($($n:ident)*) => { $(pub fn $n(_: super::Token) {})* }; }
     ban!(hash_new_capa hash_pairs hash_len hash_entry_at hash_clear hash_dup range_new range_parts
          num_to_f64 big_to_value to_big int_from_i64 int_from_i128 rfloat_heap);
+}
+
+// ---- third wave: frame chain (read-only), code objects ---------------------------------------
+// Reads of what a builtin's caller left on the frame chain (kernel.rs, proc.rs, object.rs).
+// H5: the frames from `c.frame` down are alive while the builtin reading them runs (each lives
+// on a caller's stack until that caller returns, and the builtin returns first).
+
+impl Ctx {
+    /// The frame of the code that called the running builtin; None at the bottom.
+    #[inline(always)]
+    pub fn caller_frame(&self) -> Option<&Frame> {
+        // SAFETY: H5 (c.frame and its prev are null or live frames)
+        unsafe { self.frame.as_ref().and_then(|f| f.prev.as_ref()) }
+    }
+    /// The frame below `f` on the chain.
+    #[inline(always)]
+    pub fn prev_frame<'a>(&'a self, f: &'a Frame) -> Option<&'a Frame> { unsafe { f.prev.as_ref() } }   // SAFETY: H5
+    /// A method entry by pointer: entries are leaked Boxes (vm::new_me) that nothing frees.
+    #[inline(always)]
+    pub fn me_ref(&self, me: *const MethodEntry) -> Option<&MethodEntry> { unsafe { me.as_ref() } }   // SAFETY: never freed
+    /// A lexical scope by pointer: crefs are leaked by vm::new_cref (listed in vm.crefs) and never freed.
+    #[inline(always)]
+    pub fn cref_ref(&self, cr: *const Cref) -> Option<&Cref> { unsafe { cr.as_ref() } }   // SAFETY: never freed
+    /// An iseq by pointer: iseqs are never freed.
+    #[inline(always)]
+    pub fn iseq_ref(&self, is: *const Iseq) -> Option<&Iseq> { unsafe { is.as_ref() } }   // SAFETY: never freed
 }
