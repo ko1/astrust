@@ -130,7 +130,7 @@ pub fn new_cref(klass: Value, prev: *const Cref) -> *const Cref {
 // ---- inline caches -------------------------------------------------------------------------
 
 #[derive(Default)]
-pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize, pub fast_hash: u64, pub fast_argc: u32, pub poly_next: u32, pub poly: usize }
+pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize, pub fast_hash: u64, pub fast_argc: u32, pub poly_next: u32, pub poly: usize, pub cfunc: usize, pub arity: i32 }
 #[derive(Default)]
 pub struct ConstCache { pub serial: u64, pub cref: usize, pub val: u64 }
 #[derive(Default)]
@@ -186,13 +186,24 @@ impl Frame {
     fn full(&self) -> Option<&FrameFull> {
         if self.lite { None } else { Some(unsafe { &*(self as *const Frame as *const FrameFull) }) }
     }
-    // a lite frame is a method's: these come from its entry
-    #[inline] pub fn cref(&self) -> *const Cref { match self.full() { Some(x) => x.cref, None => unsafe { (*self.me).cref } } }
+    // a lite frame is a method's (these come from its entry) or a cfunc's (its caller's)
+    #[inline] pub fn cref(&self) -> *const Cref {
+        match self.full() {
+            Some(x) => x.cref,
+            None => unsafe { if self.kind == FK_CFUNC { (*self.prev).cref() } else { (*self.me).cref } },
+        }
+    }
     #[inline] pub fn iseq(&self) -> *const Iseq {
         match self.full() {
             Some(x) => x.iseq,
+            None if self.kind == FK_CFUNC => unsafe { (*self.prev).iseq() },
             None => match unsafe { (*self.me).kind } { MKind::Iseq(is) => is, _ => std::ptr::null() },
         }
+    }
+    /// The frame of a cfunc called from frame `pf`.
+    #[inline(always)]
+    pub fn cfunc(pf: *mut Frame, me: *const MethodEntry, blk: *const Block) -> Frame {
+        unsafe { Frame { prev: pf, fp: (*pf).fp, me, blk, id: (*pf).id, line: (*pf).line, kind: FK_CFUNC, visi: (*pf).visi, lite: true, pad: 0 } }
     }
     #[inline] pub fn self_blk(&self) -> *const Block { match self.full() { Some(x) => x.self_blk, None => std::ptr::null() } }
     #[inline] pub fn defined_class(&self) -> Value { match self.full() { Some(x) => x.defined_class, None => NIL } }
@@ -1025,6 +1036,16 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: *mut Value, argc: u32
             _ => {}
         }
     }
+    if cc.cfunc != 0 && flags & CF_KW == 0 && (cc.arity < 0 || cc.arity == argc as i32) {
+        let f: CFunc = unsafe { std::mem::transmute::<usize, CFunc>(cc.cfunc) };
+        let pf = c.frame;
+        let mut fr = Frame::cfunc(pf, cc.me as *const MethodEntry, blk);
+        c.frame = &mut fr;
+        let r = f(c, recv, unsafe { std::slice::from_raw_parts(base.add(2), argc as usize) }, blk);
+        c.frame = pf;
+        c.sp = base;
+        return Some(r);
+    }
     None
 }
 
@@ -1150,14 +1171,15 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Valu
 
 #[inline(never)]
 fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry, serial: u64, flags: u32) {
-    cc.klass = klass.raw(); cc.serial = serial; cc.me = me as usize; cc.fast = 0; cc.fast_argc = u32::MAX; cc.fast_hash = 0;
+    cc.klass = klass.raw(); cc.serial = serial; cc.me = me as usize; cc.fast = 0; cc.fast_argc = u32::MAX; cc.fast_hash = 0; cc.cfunc = 0;
     if me.is_null() { return; }
     let m = unsafe { &*me };
     if m.visi != VISI_PUBLIC && flags & CF_FCALL == 0 { return; }
     match m.kind {
         MKind::Iseq(is) => { let is = unsafe { &*is }; if !is.entry.is_null() { cc.fast = is.entry as usize; cc.fast_argc = is.params.lead.len() as u32; cc.fast_hash = crate::node::hash_node(is.entry); } }
         MKind::Cfunc(..) if me == unsafe { crate::builtins::object::BO_EQ_ME } => { cc.fast = 3; }
-        MKind::Cfunc(..) if me == unsafe { crate::builtins::object::C_NEW_ME } => {
+        MKind::Cfunc(f, arity) if me == unsafe { crate::builtins::object::C_NEW_ME } => {
+            cc.cfunc = f as usize; cc.arity = arity;
             // Class#new of a plain-object class whose initialize has a method entry
             let cd = rclass(recv);
             if cd.alloc == AllocKind::Object && !cd.is_singleton && !cd.is_module {
@@ -1171,6 +1193,7 @@ fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry
                 }
             }
         }
+        MKind::Cfunc(f, arity) => { cc.cfunc = f as usize; cc.arity = arity; }
         MKind::AttrReader(name) | MKind::AttrWriter(name) => {
             let cd = rclass(klass);
             if !cd.is_singleton && cd.alloc == AllocKind::Object {
@@ -1301,14 +1324,9 @@ pub fn invoke_cfunc(c: &mut Ctx, me: *const MethodEntry, f: CFunc, arity: i32, r
     }
     if arity >= 0 && argc as i32 != arity { return argc_err(c, argc as usize, arity, arity); }
     let args = unsafe { std::slice::from_raw_parts(base.add(2), argc as usize) };
-    let mut fr = Frame::empty();
     let pf = c.frame;
-    unsafe {
-        fr.prev = pf; fr.fp = (*pf).fp; fr.me = me; fr.kind = FK_CFUNC; fr.cref = (*pf).cref();
-        fr.id = (*pf).id; fr.line = (*pf).line; fr.blk = blk;
-        fr.iseq = (*pf).iseq(); fr.visi = (*pf).visi;
-    }
-    c.frame = &mut fr.h;
+    let mut fr = Frame::cfunc(pf, me, blk);
+    c.frame = &mut fr;
     let r = f(c, recv, args, blk);
     c.frame = pf;
     if flags & CF_KW != 0 && argc > 0 {
