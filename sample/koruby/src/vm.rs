@@ -158,17 +158,14 @@ pub struct Frame {
     pub visi: u8,
     pub id: u64,          // return target: method frame id (blocks: the home method's; lambdas: own)
     pub self_blk: *const Block, // for block frames: the block being run
-    pub argc: u32,
     pub defined_class: Value,
-    pub cfunc_name: Sym,
-    pub cfunc_recv: Value,
 }
 
 impl Frame {
     pub fn empty() -> Frame {
         Frame { prev: std::ptr::null_mut(), fp: std::ptr::null_mut(), me: std::ptr::null(), blk: std::ptr::null(),
                 cref: std::ptr::null(), iseq: std::ptr::null(), line: 0, kind: FK_TOP, visi: VISI_PRIVATE, id: 0,
-                self_blk: std::ptr::null(), argc: 0, defined_class: NIL, cfunc_name: Sym(0), cfunc_recv: NIL }
+                self_blk: std::ptr::null(), defined_class: NIL, }
     }
 }
 
@@ -771,8 +768,8 @@ pub fn check_frozen(c: &mut Ctx, v: Value) -> Result<(), Esc> {
 pub fn frame_label(f: &Frame) -> String {
     unsafe {
         if f.kind == FK_CFUNC {
-            let k = real_class_of_for_label(f.cfunc_recv, f.me);
-            return format!("{}{}", k, sym_str(f.cfunc_name));
+            let k = real_class_of_for_label(NIL, f.me);
+            return format!("{}{}", k, sym_str((*f.me).name));
         }
         if f.iseq.is_null() { return "<main>".into(); }
         let is = &*f.iseq;
@@ -853,8 +850,8 @@ pub fn backtrace_lines(c: &Ctx, skip: usize) -> Vec<String> {
             let fr = &*fp;
             if fr.kind != FK_CFUNC && fr.iseq.is_null() { continue; }
             // CRuby's send/__send__ and Proc#call/yield/===/[] do not push a frame
-            if fr.kind == FK_CFUNC && (fr.cfunc_name == s::send || fr.cfunc_name == s::__send__) { continue; }
-            if fr.kind == FK_CFUNC && is_proc(fr.cfunc_recv) && matches!(sym_str(fr.cfunc_name).as_ref(), "call" | "yield" | "===" | "[]") { continue; }
+            if fr.kind == FK_CFUNC && (fr.me.is_null() == false && ((*fr.me).name == s::send || (*fr.me).name == s::__send__)) { continue; }
+            if fr.kind == FK_CFUNC && !fr.me.is_null() && (*fr.me).owner == vm().c_proc && matches!(sym_str((*fr.me).name).as_ref(), "call" | "yield" | "===" | "[]") { continue; }
             let (file, line) = &info[i];
             out.push(format!("{}:{}:in '{}'", file, line, frame_label(fr)));
         }
@@ -1034,8 +1031,7 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Valu
     let id = c.next_serial();
     let mut fr = Frame {
         prev: c.frame, fp: base, me, blk, cref: unsafe { (*me).cref }, iseq: is, line: is.info.line,
-        kind: FK_METHOD, visi: VISI_PUBLIC, id, self_blk: std::ptr::null(), argc: (npos + 1) as u32, defined_class: NIL,
-        cfunc_name: Sym(0), cfunc_recv: NIL,
+        kind: FK_METHOD, visi: VISI_PUBLIC, id, self_blk: std::ptr::null(), defined_class: NIL,
     };
     unsafe {
         *base = recv;
@@ -1111,8 +1107,7 @@ pub fn invoke_iseq_simple(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: 
     let id = c.next_serial();
     let mut fr = Frame {
         prev: c.frame, fp: base, me, blk, cref: unsafe { (*me).cref }, iseq: is, line: is.info.line,
-        kind: FK_METHOD, visi: VISI_PUBLIC, id, self_blk: std::ptr::null(), argc, defined_class: NIL,
-        cfunc_name: Sym(0), cfunc_recv: NIL,
+        kind: FK_METHOD, visi: VISI_PUBLIC, id, self_blk: std::ptr::null(), defined_class: NIL,
     };
     unsafe {
         *base = recv;
@@ -1225,7 +1220,7 @@ pub fn invoke_cfunc(c: &mut Ctx, me: *const MethodEntry, f: CFunc, arity: i32, r
     let pf = c.frame;
     unsafe {
         fr.prev = pf; fr.fp = (*pf).fp; fr.me = me; fr.kind = FK_CFUNC; fr.cref = (*pf).cref;
-        fr.id = (*pf).id; fr.cfunc_name = (*me).name; fr.cfunc_recv = recv; fr.line = (*pf).line; fr.blk = blk;
+        fr.id = (*pf).id; fr.line = (*pf).line; fr.blk = blk;
         fr.iseq = (*pf).iseq; fr.visi = (*pf).visi;
     }
     c.frame = &mut fr;
@@ -1255,7 +1250,6 @@ pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, 
     fr.kind = FK_METHOD;
     fr.visi = VISI_PUBLIC;
     fr.id = c.next_serial();
-    fr.argc = argc;
     fr.cref = unsafe { (*me).cref };
     fr.line = is.info.line;
     unsafe { *base = recv; }
@@ -1511,8 +1505,7 @@ pub fn run_block_fast(c: &mut Ctx, b: &Block, is: &Iseq, base: *mut Value, argc:
     let n = is.nlocals as usize;
     let mut fr = Frame {
         prev: c.frame, fp: base, me: b.me, blk: b.outer_blk, cref: b.cref, iseq: is, line: is.info.line,
-        kind: FK_BLOCK, visi: VISI_PUBLIC, id: b.home_id, self_blk: b, argc, defined_class: b.defined_class,
-        cfunc_name: Sym(0), cfunc_recv: NIL,
+        kind: FK_BLOCK, visi: VISI_PUBLIC, id: b.home_id, self_blk: b, defined_class: b.defined_class,
     };
     unsafe {
         *base = b.self_;
@@ -1610,7 +1603,6 @@ pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &Iseq, base: *mut Value, argc:
     fr.visi = VISI_PUBLIC;
     fr.id = if lambda { c.next_serial() } else { b.home_id };
     fr.self_blk = b;
-    fr.argc = argc;
     fr.line = is.info.line;
     fr.defined_class = b.defined_class;
     c.frame = &mut fr;
