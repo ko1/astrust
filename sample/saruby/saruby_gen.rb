@@ -35,7 +35,10 @@ class SarubyNodeDef < ASTrustGen::NodeDef
       else "{ let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
       end
     end
-    def spec_target_expr(op) = "{ let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) }"
+    # an entry's (me, blk): passed by a call that compiled the entry in, else in c.call_me / c.call_blk
+    def spec_in_load_expr(op) = "crate::vm::CallArgs::load(c)"
+    def spec_in_store_stmt(var) = "#{var}.store(c);"
+    def spec_target_expr(op) ="{ let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) }"
 
     def opaque_hash_expr(op, f)
       case op.type

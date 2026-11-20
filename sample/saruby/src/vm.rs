@@ -264,6 +264,15 @@ pub struct Ctx {
     pub tok: crate::heap::Token,   // makes this the heap token (heap.rs)
 }
 
+/// What an entry node takes from its caller: in registers when the caller compiled the entry in
+/// (EVAL_SPEC!), else through c.call_me / c.call_blk.
+#[derive(Clone, Copy)]
+pub struct CallArgs { pub me: *const MethodEntry, pub blk: *const Block }
+impl CallArgs {
+    #[inline(always)] pub fn load(c: &Ctx) -> CallArgs { CallArgs { me: c.call_me, blk: c.call_blk } }
+    #[inline(always)] pub fn store(self, c: &mut Ctx) { c.call_me = self.me; c.call_blk = self.blk; }
+}
+
 impl Ctx {
     #[inline(always)] pub fn next_serial(&mut self) -> u64 { self.serial += 1; self.serial }
     #[inline(always)] pub fn frame(&self) -> &'static mut Frame { unsafe { &mut *self.frame } }

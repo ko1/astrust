@@ -1075,6 +1075,7 @@ fn DUMP_node_method_entry(out: &mut String, n: NodePtr) {
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.flags));
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
     out.push(' '); dump_node(out, (*np).u.body);
+    out.push(' '); 
     out.push(')');
     }
 }
@@ -1089,6 +1090,7 @@ fn DUMP_node_block_entry(out: &mut String, n: NodePtr) {
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.flags));
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
     out.push(' '); dump_node(out, (*np).u.body);
+    out.push(' '); 
     out.push(')');
     }
 }

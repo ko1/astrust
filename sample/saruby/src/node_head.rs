@@ -129,7 +129,7 @@ pub trait Disp {
     fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV;
     /// call() across a speculation boundary (the embedder only speculates small callees, to a bounded depth).
     #[inline(always)]
-    fn spec(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV { Self::call(c, n, fp) }
+    fn spec(c: &mut Ctx, n: NodePtr, fp: Fp, a: CallArgs) -> RV { a.store(c); Self::call(c, n, fp) }
     #[inline(always)]
     fn test(c: &mut Ctx, n: NodePtr, fp: Fp) -> Result<bool, Esc> { Ok(Self::call(c, n, fp)?.truthy()) }
 }
