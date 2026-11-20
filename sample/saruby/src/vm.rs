@@ -1218,8 +1218,6 @@ pub fn site_kind(cc: &CallCache, argc: usize, flags: u32) -> u32 {
         else if cc.fast != 0 { match cc.fast & 3 { 1 if argc == 0 => SITE_ATTR_R, 2 if argc == 1 => SITE_ATTR_W,
             0 if cc.fast_argc == u32::MAX => SITE_NEW, _ => return SITE_OTHER } }
         else if cc.cfunc != 0 { SITE_CFUNC } else { return SITE_OTHER };
-    // a Float receiver may be a heap object or a flonum: leave those sites to the general path
-    if cc.klass == v.c_float.raw() { return SITE_OTHER; }
     k | if imm { SITE_IMM } else { 0 }
 }
 
@@ -1236,8 +1234,11 @@ fn class_of_imm(v: Value) -> u64 { class_of(v).raw() }
 #[inline(always)]
 pub fn site_hit(cc: &CallCache, recv: Value, kind: u32) -> bool {
     if kind & 15 == SITE_OTHER { return false; }
-    // Integer receivers inline (n.even?, n.times ...); other immediates out of line
-    let k = if kind & SITE_IMM != 0 { if recv.is_fixnum() { vm().c_integer.raw() } else if recv.is_heap() { return false } else { class_of_imm(recv) } }
+    // Integer and Float receivers inline (n.even?, x.to_i ...; a Float may also be a heap object)
+    let k = if kind & SITE_IMM != 0 {
+        if recv.is_fixnum() { vm().c_integer.raw() } else if recv.is_flonum() { vm().c_float.raw() }
+        else if recv.is_heap() { obj(recv).klass.raw() } else { class_of_imm(recv) }
+    }
             else { if !recv.is_heap() { return false; } obj(recv).klass.raw() };
     cc.klass == k && cc.serial == vm().method_serial
 }
