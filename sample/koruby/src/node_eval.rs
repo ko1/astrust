@@ -550,6 +550,7 @@ pub fn EVAL_node_next(c: &mut Ctx, n: NodePtr, fp: *mut Value, v: Value) -> RV {
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_return(c: &mut Ctx, n: NodePtr, fp: *mut Value, v: Value) -> RV {
+    if unsafe { (*c.frame).kind } == FK_BLOCK { return rt_block_return(c, v); }
     c.esc = EscKind::Return;
     c.esc_val = v;
     c.esc_tag = unsafe { (*c.frame).id };

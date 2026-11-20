@@ -437,6 +437,7 @@ node_next(c: &mut Ctx, n: NodePtr, fp: *mut Value, v@child: Value)
 NODE_DEF
 node_return(c: &mut Ctx, n: NodePtr, fp: *mut Value, v@child: Value)
 {
+    if unsafe { (*c.frame).kind } == FK_BLOCK { return rt_block_return(c, v); }
     c.esc = EscKind::Return;
     c.esc_val = v;
     c.esc_tag = unsafe { (*c.frame).id };

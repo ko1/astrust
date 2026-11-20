@@ -399,7 +399,7 @@ pub fn init() {
     define_cfunc(vm.c_uncaught_throw_error, "value", uncaught_value, 0);
     define_private_cfunc(vm.c_system_call_error, "initialize", syscallerr_init, -1);
     define_cfunc(vm.c_system_call_error, "errno", syscallerr_errno, 0);
-    define_cfunc(vm.c_local_jump_error, "reason", |_c, _s, _a, _b| Ok(sym_value("break")), 0);
-    define_cfunc(vm.c_local_jump_error, "exit_value", |_c, _s, _a, _b| Ok(NIL), 0);
+    define_cfunc(vm.c_local_jump_error, "reason", |_c, s, _a, _b| { let r = ivar_get(s, intern(b"__reason")); Ok(if r == NIL { sym_value("noreason") } else { r }) }, 0);
+    define_cfunc(vm.c_local_jump_error, "exit_value", |_c, s, _a, _b| Ok(ivar_get(s, intern(b"__exit_value"))), 0);
     let _ = sym_str;
 }

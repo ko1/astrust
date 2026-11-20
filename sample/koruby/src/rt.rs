@@ -326,10 +326,55 @@ pub fn rt_break(c: &mut Ctx, v: Value) -> RV {
     if f.self_blk.is_null() {
         return err(c, vm().c_local_jump_error, "break from proc-closure");
     }
+    let tag = unsafe { (*f.self_blk).tag };
+    // a proc's break needs the call that took the literal block to be still running
+    if f.kind == FK_BLOCK && !break_target_alive(c, tag) {
+        return Err(raise_local_jump(c, "break from proc-closure", "break", v));
+    }
     c.esc = EscKind::Break;
     c.esc_val = v;
-    c.esc_tag = unsafe { (*f.self_blk).tag };
+    c.esc_tag = tag;
     Err(Esc)
+}
+
+#[cold]
+fn break_target_alive(c: &Ctx, tag: u64) -> bool {
+    let mut g = c.frame;
+    while !g.is_null() {
+        let b = unsafe { (*g).blk };
+        if !b.is_null() {
+            let bb = unsafe { &*b };
+            if bb.tag == tag && (bb.proc_val == UNDEF || !is_proc(bb.proc_val) || b != proc_block(bb.proc_val)) { return true; }
+        }
+        g = unsafe { (*g).prev };
+    }
+    false
+}
+
+/// `return` inside a proc: its home method must still be running.
+#[cold]
+pub fn rt_block_return(c: &mut Ctx, v: Value) -> RV {
+    let id = unsafe { (*c.frame).id };
+    let mut g = c.frame;
+    let mut alive = false;
+    while !g.is_null() {
+        let k = unsafe { (*g).kind };
+        if unsafe { (*g).id } == id && k != FK_BLOCK && k != FK_CFUNC { alive = true; break; }
+        g = unsafe { (*g).prev };
+    }
+    if !alive { return Err(raise_local_jump(c, "unexpected return", "return", v)); }
+    c.esc = EscKind::Return;
+    c.esc_val = v;
+    c.esc_tag = id;
+    Err(Esc)
+}
+
+#[cold]
+pub fn raise_local_jump(c: &mut Ctx, msg: &str, reason: &str, v: Value) -> Esc {
+    let e = make_exception(vm().c_local_jump_error, msg);
+    ivar_set_raw(e, crate::symbol::intern(b"__reason"), sym_value(reason));
+    ivar_set_raw(e, crate::symbol::intern(b"__exit_value"), v);
+    raise_exc(c, e)
 }
 
 pub fn rt_rescuable(exc: Value) -> bool { is_exception(exc) }
@@ -601,7 +646,7 @@ pub fn rt_yield_staged(c: &mut Ctx, blk: *const Block, base: *mut Value, k: u32)
     if let BlockKind::Iseq(is) = b.kind {
         let is = unsafe { &*is };
         unsafe { *base = b.self_; }
-        let r = run_block_iseq(c, b, is, base, k, std::ptr::null(), false, std::ptr::null(), false);
+        let r = run_block_iseq(c, b, is, base, k, std::ptr::null(), is_lambda_block(blk), std::ptr::null(), false);
         c.sp = base;
         return r;
     }
