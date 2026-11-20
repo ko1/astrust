@@ -32,13 +32,19 @@ class SarubyNodeDef < ASTrustGen::NodeDef
       when 'node_ivar', 'node_iasgn', 'node_ivar_arith' then "{ let u = &(*np).u; if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }"
       # 1 + the operand kinds the interpreter recorded at an operator site (opt.rs TyFb)
       when /\Anode_opt_/ then "{ 1 + (*np).u.tf.0 }"
+      # 1 + the lead parameter count of the block compiled into a yield site
+      when 'node_yield' then "{ let u = &(*np).u; crate::vm::spec_block_np(&u.yc, u.args.len()) }"
       else "{ let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
       end
     end
     # an entry's (me, blk): passed by a call that compiled the entry in, else in c.call_me / c.call_blk
     def spec_in_load_expr(op) = "crate::vm::CallArgs::load(c)"
     def spec_in_store_stmt(var) = "#{var}.store(c);"
-    def spec_target_expr(op) ="{ let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) }"
+    def spec_target_expr(op)
+      if @name == %q(node_yield) then "{ let u = &(*np).u; crate::vm::spec_block(&u.yc, u.args.len()) }"
+      else "{ let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) }"
+      end
+    end
 
     def opaque_hash_expr(op, f)
       case op.type

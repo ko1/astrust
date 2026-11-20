@@ -758,6 +758,9 @@ fn DUMP_node_yield(out: &mut String, n: NodePtr) {
     unsafe {
     out.push_str("(node_yield");
     out.push(' '); out.push('['); for (i, x) in (*np).u.args.iter().enumerate() { if i > 0 { out.push(' '); } dump_node(out, *x); } out.push(']');
+    out.push(' '); out.push_str("<yc>");
+    out.push(' '); 
+    out.push(' '); 
     out.push(')');
     }
 }

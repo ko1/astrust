@@ -642,6 +642,7 @@ pub struct node_super_struct {
 #[repr(C)]
 pub struct node_yield_struct {
     pub args: NodeList,
+    pub yc: YieldCache,
 }
 
 #[allow(non_camel_case_types)]
@@ -1287,7 +1288,7 @@ pub fn ALLOC_node_super(args: NodeList, line: u32, ci: CiRef, zsuper: bool) -> N
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_yield(args: NodeList) -> NodePtr {
-    node_allocate(&KIND_node_yield, node_yield_struct { args })
+    node_allocate(&KIND_node_yield, node_yield_struct { args, yc: Default::default() })
 }
 
 #[allow(non_snake_case)]

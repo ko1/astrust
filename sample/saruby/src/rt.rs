@@ -815,6 +815,24 @@ pub fn srb_super(c: &mut Ctx, base: Stk, tmp: Value, kw: Value, blkv: Value, ci:
 
 pub fn srb_no_block(c: &mut Ctx) -> RV { err(c, vm().c_local_jump_error, "no block given (yield)") }
 
+/// A yield site's feedback: which block iseq it ran.
+#[inline(always)]
+pub fn srb_yield_note(yc: &mut YieldCache, blk: *const Block) {
+    if let BlockKind::Iseq(is) = unsafe { (*blk).kind } { yc.note(is as usize); } else { yc.seen = 1; }
+}
+
+/// A baked yield site whose compiled-in block (entry hash h) did not match: arm the site's
+/// guard if this block is that one, then yield out of line.
+#[inline(never)]
+pub fn srb_yield_miss(c: &mut Ctx, yc: &mut YieldCache, h: u64, blk: *const Block, base: Stk, k: u32) -> RV {
+    srb_yield_note(yc, blk);
+    if let BlockKind::Iseq(is) = unsafe { (*blk).kind } {
+        let bentry = unsafe { (*is).bentry };
+        if !bentry.is_null() && crate::node::hash_node(bentry) == h { yc.fast = is as usize; }
+    }
+    srb_yield_staged(c, blk, base, k)
+}
+
 #[inline(always)]
 pub fn srb_yield_staged(c: &mut Ctx, blk: *const Block, base: Stk, k: u32) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("yield: node_yield");

@@ -937,13 +937,27 @@ pub fn EVAL_node_super<D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, args: 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_yield<D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, args: NodeList) -> RV {
+pub fn EVAL_node_yield<D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, args: NodeList, yc: &mut YieldCache, callee_hash: u64, np: u32) -> RV {
     let k = <D_args as DispList>::len(args);
     let blk = unsafe { (*c.frame).blk };
     if blk.is_null() { return srb_no_block(c); }
     let base = stage(c, 2 + k)?;
     for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
-    srb_yield_staged(c, blk, base, k as u32)
+    if callee_hash == 0 { srb_yield_note(yc, blk); return srb_yield_staged(c, blk, base, k as u32); }
+    // baked, one block seen: its entry compiled in, guarded by the iseq (yc.fast is set once its hash matched)
+    let b = unsafe { &*blk };
+    if let BlockKind::Iseq(is) = b.kind {
+        if is as usize == yc.fast && (b.proc_val == UNDEF || !rproc(b.proc_val).is_lambda) {
+            // np = 1 + the block's lead parameter count: missing arguments are nil
+            if (k as u32) + 1 < np { nil_fill(base, 2 + k, 1 + np as usize); }
+            c.set_sp(base, 0);
+            let bfp = frame(c, base)?;
+            let r = <D_callee as Disp>::spec(c, unsafe { (*is).bentry }, bfp, CallArgs { me: std::ptr::null(), blk });
+            c.set_sp(base, 0);
+            return r;
+        }
+    }
+    srb_yield_miss(c, yc, callee_hash, blk, base, k as u32)
 }
 
 

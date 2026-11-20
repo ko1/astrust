@@ -141,6 +141,14 @@ pub fn bump_method_serial() { METHOD_SERIAL.fetch_add(1, std::sync::atomic::Orde
 
 #[derive(Default)]
 pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize, pub fast_hash: u64, pub fast_argc: u32, pub poly_next: u32, pub poly: usize, pub cfunc: usize, pub arity: i32 }
+/// A `yield` site: `seen` = the block iseq it ran (1: several), what the bake speculates on;
+/// `fast` = the iseq whose entry is compiled into the site, set once its hash was checked.
+#[derive(Default)]
+pub struct YieldCache { pub fast: usize, pub seen: usize }
+impl YieldCache {
+    #[inline(always)]
+    pub fn note(&mut self, is: usize) { if self.seen != is && self.seen != 1 { self.seen = if self.seen == 0 { is } else { 1 }; } }
+}
 #[derive(Default)]
 pub struct ConstCache { pub serial: u64, pub cref: usize, pub val: u64 }
 #[derive(Default)]
@@ -1497,6 +1505,21 @@ pub fn spec_callee(cc: &CallCache, argc: usize, flags: u32) -> NodePtr {
     let mut d = String::new();
     crate::node::dump_node(&mut d, cc.fast as NodePtr);
     if d.len() <= 600 { cc.fast as NodePtr } else { std::ptr::null_mut() }
+}
+
+/// The block entry a yield site has always run, as the callee to compile into it (null: none).
+/// Only where block_fast would take it with argc arguments; lambda-ness is tested at run time.
+pub fn spec_block(yc: &YieldCache, argc: usize) -> NodePtr {
+    if yc.seen <= 1 { return std::ptr::null_mut(); }
+    let is = unsafe { &*(yc.seen as *const Iseq) };
+    if is.bentry.is_null() || (argc == 1 && is.params.lead.len() >= 2) { return std::ptr::null_mut(); }
+    let mut d = String::new();
+    crate::node::dump_node(&mut d, is.bentry);
+    if d.len() <= 600 { is.bentry } else { std::ptr::null_mut() }
+}
+/// 1 + the lead parameter count of spec_block's block (0: none).
+pub fn spec_block_np(yc: &YieldCache, argc: usize) -> u32 {
+    if spec_block(yc, argc).is_null() { 0 } else { 1 + unsafe { (*(yc.seen as *const Iseq)).params.lead.len() as u32 } }
 }
 
 /// The heap Env of a frame whose variables are captured by blocks; params copied in.

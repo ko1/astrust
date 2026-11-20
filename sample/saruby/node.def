@@ -746,14 +746,28 @@ node_super(c: &mut Ctx, n: NodePtr, fp: Fp, args: NODES, line: u32, ci: CiRef, z
 }
 
 NODE_DEF
-node_yield(c: &mut Ctx, n: NodePtr, fp: Fp, args: NODES)
+node_yield(c: &mut Ctx, n: NodePtr, fp: Fp, args: NODES, yc@ref: YieldCache, callee@spec: NODE, np@bake: u32)
 {
     let k = EVAL_LEN!(args);
     let blk = unsafe { (*c.frame).blk };
     if blk.is_null() { return srb_no_block(c); }
     let base = stage(c, 2 + k)?;
     for i in 0..k { let v = EVAL_NTH!(c, args, i)?; base[2 + i].set(v); }
-    srb_yield_staged(c, blk, base, k as u32)
+    if SPEC_HASH!(callee) == 0 { srb_yield_note(yc, blk); return srb_yield_staged(c, blk, base, k as u32); }
+    // baked, one block seen: its entry compiled in, guarded by the iseq (yc.fast is set once its hash matched)
+    let b = unsafe { &*blk };
+    if let BlockKind::Iseq(is) = b.kind {
+        if is as usize == yc.fast && (b.proc_val == UNDEF || !rproc(b.proc_val).is_lambda) {
+            // np = 1 + the block's lead parameter count: missing arguments are nil
+            if (k as u32) + 1 < np { nil_fill(base, 2 + k, 1 + np as usize); }
+            c.set_sp(base, 0);
+            let bfp = frame(c, base)?;
+            let r = EVAL_SPEC!(c, callee, unsafe { (*is).bentry }, bfp, CallArgs { me: std::ptr::null(), blk });
+            c.set_sp(base, 0);
+            return r;
+        }
+    }
+    srb_yield_miss(c, yc, SPEC_HASH!(callee), blk, base, k as u32)
 }
 
 NODE_DEF
