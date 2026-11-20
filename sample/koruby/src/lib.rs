@@ -13,6 +13,7 @@ pub mod value;
 pub mod symbol;
 pub mod object;
 pub mod gc;
+pub mod kalloc;
 pub mod vm;
 pub mod compile;
 pub mod rt;
@@ -297,6 +298,7 @@ pub fn main_entry() {
     let o = parse_args();
     symbol::init();
     let child = std::thread::Builder::new().stack_size(STACK_BYTES).spawn(move || {
+        kalloc::adopt();
         let base = 0usize;
         gc::init(&base as *const usize as usize + 8);
         builtins::boot();
