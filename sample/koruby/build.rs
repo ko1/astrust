@@ -47,7 +47,10 @@ fn main() {
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=../../runtime/gc");
     let mut h: u64 = 0xcbf29ce484222325;
-    if std::env::var_os("CARGO_FEATURE_GC_BITMAP").is_some() { h = (h ^ 1).wrapping_mul(0x100000001b3); }
+    // every cargo feature changes the ABI of baked code (GC backend, stack backend)
+    let mut feats: Vec<String> = std::env::vars().map(|(k, _)| k).filter(|k| k.starts_with("CARGO_FEATURE_")).collect();
+    feats.sort();
+    for b in feats.join(",").bytes() { h = (h ^ b as u64).wrapping_mul(0x100000001b3); }
     let mut files: Vec<_> = walk(PathBuf::from("src"));
     files.extend(walk(PathBuf::from("../../runtime/gc")));
     files.sort();

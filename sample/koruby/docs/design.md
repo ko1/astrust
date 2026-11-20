@@ -25,7 +25,7 @@ source --prism (C, vendor/prism) --> serialized AST --src/prism.rs + prism_ast.r
   starts there (no copying).
 * `Fp`, `Stk` and `c.sp` belong to the stack backend, chosen at build time: `src/stack_raw.rs`
   (default: raw pointers, all of the value stack's `unsafe`) or `src/stack.rs`
-  (`make FEATURES=safe_stack`: every access checked, `#![forbid(unsafe_code)]`).  Code outside
+  (the default; `make FEATURES=raw_stack` swaps in the raw one: every access checked, `#![forbid(unsafe_code)]`).  Code outside
   them uses only their common API.  See docs/safe_stack.md.
 
 ## Values (src/value.rs)
@@ -60,7 +60,7 @@ index and re-fetch (`ary_get(v, i)` with `ary_len(v)` checked each iteration).
 ## Methods
 * Builtins are `CFunc = fn(&mut Ctx, self: Value, args: &[Value], blk: *const Block) -> RV`,
   registered with `define_cfunc(klass, "name", f, arity)` (arity -1 = variadic; checked).
-  `args` comes from `with_args`: the staged slots themselves, or a copy of them under `safe_stack`.
+  `args` comes from `with_args`: the staged slots themselves, or a copy of them with the checked stack.
   Keyword args to a cfunc arrive as a trailing Hash; `kw_arg(args)` returns it if the caller
   passed keywords.
 * Call Ruby from Rust: `funcall(c, recv, sym, &args, blk)`, `yield1(c, blk, v)`,

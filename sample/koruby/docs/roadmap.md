@@ -18,7 +18,7 @@ Plan, in order:
    The deref inside the accessor stays `unsafe` in the core and is sound as long as a `Value` handle
    is live (see rooting below).
 2. **Value stack as slices.** Done (2026-11-20) as two backends behind one API: `src/stack.rs`
-   (`FEATURES=safe_stack`, `#![forbid(unsafe_code)]`, frames are `&[Cell<Value>; FRAME]`) and
+   (the default since 2026-11-21; `FEATURES=raw_stack` is the raw one; `#![forbid(unsafe_code)]`, frames are `&[Cell<Value>; FRAME]`) and
    `src/stack_raw.rs` (default, raw pointers). The checked one costs too much on call-heavy code to be
    the default; numbers, design and rejected alternatives: `docs/safe_stack.md`.
 3. **No `static mut`**: builtin method identities (`BO_EQ_ME`, ...) and the VM singleton go through the context.

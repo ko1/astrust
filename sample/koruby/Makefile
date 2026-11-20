@@ -13,7 +13,7 @@ $(GEN): node.def koruby_gen.rb ../../lib/astrustgen.rb
 src/prism_ast.rs: tools/gen_prism_ast.rb vendor/prism/config.yml
 	ruby tools/gen_prism_ast.rb
 
-# cargo features, e.g. FEATURES=safe_stack; a change of FEATURES rebuilds
+# cargo features, e.g. FEATURES=raw_stack; a change of FEATURES rebuilds
 FEATURES ?=
 .features: FORCE
 	@echo '$(FEATURES)' | cmp -s - $@ || echo '$(FEATURES)' > $@

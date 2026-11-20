@@ -13,9 +13,9 @@ crate-type = ["dylib"]
 astrogre = { path = "../astrogre" }
 
 [features]
-# value stack with every access checked and no unsafe (src/stack.rs) instead of raw pointers
-# (src/stack_raw.rs); see docs/safe_stack.md.  make FEATURES=safe_stack
-safe_stack = []
+# The value stack is src/stack.rs by default: every access checked, no unsafe.  `raw_stack` swaps in
+# raw pointers (src/stack_raw.rs) for comparison; see docs/safe_stack.md.  make FEATURES=raw_stack
+raw_stack = []
 # GC backend (runtime/gc): default is "marksweep"; `make GC=bitmap`
 gc-marksweep = []
 gc-bitmap = []

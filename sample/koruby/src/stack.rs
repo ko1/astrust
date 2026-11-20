@@ -1,4 +1,4 @@
-// The VM value stack, checked backend (cargo feature `safe_stack`): no unsafe.
+// The VM value stack, checked backend (the default): no unsafe.
 // Design, measurements and the comparison with stack_raw.rs: docs/safe_stack.md.
 //
 // Every access is bounds-checked against the slice or array it goes through, so nothing here

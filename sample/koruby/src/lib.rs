@@ -19,9 +19,9 @@ pub mod object;
 pub mod gc;
 pub mod kalloc;
 pub mod slots;
-#[cfg(feature = "safe_stack")]
+#[cfg(not(feature = "raw_stack"))]
 pub mod stack;
-#[cfg(not(feature = "safe_stack"))]
+#[cfg(feature = "raw_stack")]
 #[path = "stack_raw.rs"]
 pub mod stack;
 pub mod vm;
