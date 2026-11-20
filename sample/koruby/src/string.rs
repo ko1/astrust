@@ -275,6 +275,143 @@ pub fn capitalize(b: &[u8], enc: u8) -> Vec<u8> {
     out
 }
 
+#[derive(PartialEq, Clone, Copy)]
+enum Nb { NotChar, Found, Wrapped }
+
+fn precise_full(enc: u8, p: &[u8]) -> Option<usize> { crate::builtins::encoding::precise_len(enc, p, 0) }
+
+/// enc_succ_char: next character of the same byte length (CRuby string.c).
+fn enc_succ_char(p: &mut [u8], enc: u8) -> Nb {
+    use crate::builtins::encoding as en;
+    let len = p.len();
+    if en::min_len(enc) > 1 {
+        if precise_full(enc, p) != Some(len) { return Nb::NotChar; }
+        let c = en::char_code(enc, p) + 1;
+        let Some(bs) = en::code_to_bytes(enc, c) else { return Nb::NotChar };
+        if bs.len() != len { return Nb::Wrapped; }
+        p.copy_from_slice(&bs);
+        return Nb::Found;
+    }
+    loop {
+        let mut i = len as isize - 1;
+        while i >= 0 && p[i as usize] == 0xff { p[i as usize] = 0; i -= 1; }
+        if i < 0 { return Nb::Wrapped; }
+        p[i as usize] += 1;
+        let l = precise_full(enc, p);
+        if let Some(l) = l { if l == len { return Nb::Found; } for x in &mut p[l..] { *x = 0xff; } }
+        if l.is_none() && !en::needmore(enc, p) && (i as usize) < len - 1 {
+            let mut len2 = len - 1;
+            while len2 > 0 { if precise_full(enc, &p[..len2]).is_some() || en::needmore(enc, &p[..len2]) { break; } len2 -= 1; }
+            for x in &mut p[len2 + 1..] { *x = 0xff; }
+        }
+    }
+}
+fn enc_pred_char(p: &mut [u8], enc: u8) -> Nb {
+    use crate::builtins::encoding as en;
+    let len = p.len();
+    if en::min_len(enc) > 1 {
+        if precise_full(enc, p) != Some(len) { return Nb::NotChar; }
+        let c = en::char_code(enc, p);
+        if c == 0 { return Nb::NotChar; }
+        let Some(bs) = en::code_to_bytes(enc, c - 1) else { return Nb::NotChar };
+        if bs.len() != len { return Nb::Wrapped; }
+        p.copy_from_slice(&bs);
+        return Nb::Found;
+    }
+    loop {
+        let mut i = len as isize - 1;
+        while i >= 0 && p[i as usize] == 0 { p[i as usize] = 0xff; i -= 1; }
+        if i < 0 { return Nb::Wrapped; }
+        p[i as usize] -= 1;
+        let l = precise_full(enc, p);
+        if let Some(l) = l { if l == len { return Nb::Found; } for x in &mut p[l..] { *x = 0; } }
+        if l.is_none() && !en::needmore(enc, p) && (i as usize) < len - 1 {
+            let mut len2 = len - 1;
+            while len2 > 0 { if precise_full(enc, &p[..len2]).is_some() || en::needmore(enc, &p[..len2]) { break; } len2 -= 1; }
+            for x in &mut p[len2 + 1..] { *x = 0; }
+        }
+    }
+}
+/// ctype of a character for succ: 1 = digit, 2 = alpha, 0 = neither.
+fn succ_ctype(enc: u8, p: &[u8]) -> u8 {
+    use crate::builtins::encoding as en;
+    let u = if en::is_unicode(enc) { Some(en::char_code(enc, p)) } else if p.len() == 1 && p[0] < 0x80 { Some(p[0] as u32) } else if en::is_single_byte(enc) { en::to_unicode(enc, p) } else { None };
+    let Some(u) = u else { return 0 };
+    let Some(ch) = char::from_u32(u) else { return 0 };
+    let digit = ch.is_ascii_digit() || matches!(u, 0x660..=0x669 | 0x6f0..=0x6f9 | 0x966..=0x96f | 0xff10..=0xff19);
+    if digit { 1 } else if ch.is_alphabetic() { 2 } else { 0 }
+}
+fn enc_succ_alnum_char(p: &mut [u8], enc: u8, carry: &mut Vec<u8>) -> Nb {
+    let ct = succ_ctype(enc, p);
+    if ct == 0 { return Nb::NotChar; }
+    let save = p.to_vec();
+    for _ in 0..=1 {
+        if enc_succ_char(p, enc) == Nb::Found && succ_ctype(enc, p) == ct { return Nb::Found; }
+    }
+    p.copy_from_slice(&save);
+    let mut range = 1;
+    loop {
+        let sv = p.to_vec();
+        if enc_pred_char(p, enc) == Nb::Found {
+            if succ_ctype(enc, p) != ct { p.copy_from_slice(&sv); break; }
+        } else { p.copy_from_slice(&sv); break; }
+        range += 1;
+    }
+    if range == 1 { return Nb::NotChar; }
+    *carry = p.to_vec();
+    if ct == 1 { enc_succ_char(carry, enc); }
+    Nb::Wrapped
+}
+
+/// String#succ honouring the string's encoding (CRuby str_succ).
+pub fn succ_enc(src: &[u8], enc: u8) -> Vec<u8> {
+    use crate::builtins::encoding as en;
+    if src.is_empty() { return vec![]; }
+    if en::ascii_compat(enc) && is_ascii(src) { return succ_bytes(src); }
+    let mut s = src.to_vec();
+    let off = char_offsets_of(src, enc);
+    let mut carry: Vec<u8> = vec![1];
+    let mut carry_pos = 0usize;
+    let mut found_alnum = false;
+    let mut neighbor = Nb::Found;
+    let mut last_alnum: Option<usize> = None;
+    for k in (0..off.len() - 1).rev() {
+        let (st, e) = (off[k], off[k + 1]);
+        if neighbor == Nb::NotChar {
+            if let Some(la) = last_alnum {
+                let (a, x) = (s[la], s[st]);
+                if if a.is_ascii_alphabetic() { x.is_ascii_digit() } else if a.is_ascii_digit() { x.is_ascii_alphabetic() } else { false } { break; }
+            }
+        }
+        if precise_full(enc, &s[st..]).map(|l| l == e - st) != Some(true) { continue; }
+        neighbor = enc_succ_alnum_char(&mut s[st..e], enc, &mut carry);
+        match neighbor {
+            Nb::NotChar => continue,
+            Nb::Found => return s,
+            Nb::Wrapped => last_alnum = Some(st),
+        }
+        found_alnum = true;
+        carry_pos = st;
+    }
+    if !found_alnum {
+        for k in (0..off.len() - 1).rev() {
+            let (st, e) = (off[k], off[k + 1]);
+            if precise_full(enc, &s[st..]).map(|l| l == e - st) != Some(true) { continue; }
+            let mut tmp = s[st..e].to_vec();
+            match enc_succ_char(&mut tmp, enc) {
+                Nb::Found => { s[st..e].copy_from_slice(&tmp); return s; }
+                Nb::Wrapped => { s[st..e].copy_from_slice(&tmp); }
+                Nb::NotChar => {}
+            }
+            if precise_full(enc, &s[st..e]) != Some(e - st) { enc_succ_char(&mut s[st..e], enc); }
+            if !en::ascii_compat(enc) { carry = s[st..e].to_vec(); }
+            carry_pos = st;
+        }
+    }
+    s.splice(carry_pos..carry_pos, carry);
+    s
+}
+
 /// Ruby's String#succ.
 pub fn succ_bytes(b: &[u8]) -> Vec<u8> {
     if b.is_empty() { return vec![]; }

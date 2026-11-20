@@ -276,6 +276,7 @@ pub fn needmore(enc: u8, p: &[u8]) -> bool {
 pub fn invalid_len(enc: u8, b: &[u8], i: usize) -> usize {
     let rest = &b[i..];
     if needmore(enc, rest) { return rest.len(); }
+    if min_len(enc) > 1 { return min_len(enc).min(rest.len()); }
     let mut clen = max_len(enc).min(rest.len());
     if clen <= 2 { return 1; }
     clen -= 1;

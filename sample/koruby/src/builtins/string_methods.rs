@@ -470,7 +470,7 @@ fn chomp_impl(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<Vec<u8>, Esc> {
     let suf = expect_str(c, a[0])?;
     let sb = b(suf);
     if sb.is_empty() { let mut e = v.len(); while e > 0 && v[e - 1] == b'\n' { e -= 1; if e > 0 && v[e - 1] == b'\r' { e -= 1; } } return Ok(v[..e].to_vec()); }
-    if v.ends_with(sb) { Ok(v[..v.len() - sb.len()].to_vec()) } else { Ok(v.to_vec()) }
+    if v.ends_with(sb) && crate::builtins::encoding::is_valid(rstr(suf).enc, sb) && char_offsets(slf).binary_search(&(v.len() - sb.len())).is_ok() { compat(c, slf, suf)?; Ok(v[..v.len() - sb.len()].to_vec()) } else { Ok(v.to_vec()) }
 }
 cfn!(s_chomp, |c, slf, a, b_| { let v = chomp_impl(c, slf, a)?; Ok(new_like(slf, v)) });
 cfn!(s_chomp_b, |c, slf, a, b_| { check_frozen(c, slf)?; let v = chomp_impl(c, slf, a)?; if v.len() == b(slf).len() { return Ok(NIL); } modify(c, slf)?.b = v; Ok(slf) });
@@ -626,7 +626,7 @@ fn get_pat(c: &mut Ctx, p: Value) -> RV {
     type_err(c, format!("wrong argument type {} (expected Regexp)", class_name_for_err(p)))
 }
 /// Expand a replacement string with \1 \0 \& \k<name> \` \' \\
-fn expand_repl(rep: &[u8], m_bytes: &[u8], groups: &[Option<(usize, usize)>], re: Value) -> Vec<u8> {
+fn expand_repl(c: &mut Ctx, rep: &[u8], m_bytes: &[u8], groups: &[Option<(usize, usize)>], re: Value) -> Result<Vec<u8>, Esc> {
     let mut out = vec![];
     let mut i = 0;
     while i < rep.len() {
@@ -643,15 +643,17 @@ fn expand_repl(rep: &[u8], m_bytes: &[u8], groups: &[Option<(usize, usize)>], re
                 b'k' if i + 2 < rep.len() && rep[i + 2] == b'<' => {
                     if let Some(e) = rep[i + 3..].iter().position(|&z| z == b'>') {
                         let name = String::from_utf8_lossy(&rep[i + 3..i + 3 + e]).into_owned();
-                        if let Some(r) = regexp::rregexp(re) { for &gi in r.re.as_ref().unwrap().group_index(&name).iter().rev() { if groups.get(gi).map(|g| g.is_some()).unwrap_or(false) { grp(gi, &mut out); break; } } }
+                        let idx = regexp::rregexp(re).map(|r| r.re.as_ref().unwrap().group_index(&name)).unwrap_or_default();
+                        if idx.is_empty() { return err(c, vm().c_index_error, format!("undefined group name reference: {}", name)); }
+                        for &gi in idx.iter().rev() { if groups.get(gi).map(|g| g.is_some()).unwrap_or(false) { grp(gi, &mut out); break; } }
                         i += 4 + e;
-                    } else { out.push(x); i += 1; }
+                    } else { return err(c, vm().c_runtime_error, "invalid group name reference format"); }
                 }
                 _ => { out.push(x); out.push(y); i += 2; }
             }
         } else { out.push(x); i += 1; }
     }
-    out
+    Ok(out)
 }
 
 /// sub/gsub core: returns (new bytes, changed)
@@ -688,7 +690,7 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool, 
             let sv = crate::rt::rt_tostr(c, v)?;
             out.extend_from_slice(b(sv));
         } else if let Some(r) = str_rep {
-            out.extend(expand_repl(b(r), &src, &g, re));
+            let ex = expand_repl(c, b(r), &src, &g, re)?; out.extend(ex);
         } else {
             let mstr = str_new_like(slf, src[ms..me].to_vec());
             let v = yield1(c, blk, mstr)?;
@@ -771,6 +773,7 @@ fn tr_set(c: &mut Ctx, v: Value, allow_neg: bool) -> Result<TrSet, Esc> {
 fn code_to_bytes_lossy(enc: u8, cp: u32) -> Vec<u8> { crate::builtins::encoding::code_to_bytes(enc, cp).unwrap_or_default() }
 fn tr_impl(c: &mut Ctx, slf: Value, from: Value, to: Value, squeeze: bool) -> Result<Vec<u8>, Esc> {
     let from = expect_str(c, from)?; let to = expect_str(c, to)?;
+    compat(c, slf, from)?; compat(c, slf, to)?;
     let (neg, f) = tr_set(c, from, true)?;
     let (_, t) = tr_set(c, to, false)?;
     if b(slf).is_empty() { return Ok(vec![]); }
@@ -886,11 +889,12 @@ cfn!(s_ord, |c, slf, a, b_| {
     }
 });
 cfn!(s_sum, |c, slf, a, b_| { let bits = if a.is_empty() { 16 } else { num_to_long(c, a[0])? }; let s2: u64 = b(slf).iter().map(|&x| x as u64).sum(); Ok(Value::fix(if bits > 0 && bits < 63 { (s2 & ((1 << bits) - 1)) as i64 } else { s2 as i64 })) });
-cfn!(s_succ, |c, slf, a, b_| Ok(new_like(slf, succ_bytes(b(slf)))));
-cfn!(s_succ_b, |c, slf, a, b_| { let v = succ_bytes(b(slf)); modify(c, slf)?.b = v; Ok(slf) });
+cfn!(s_succ, |c, slf, a, b_| Ok(new_like(slf, succ_enc(b(slf), rstr(slf).enc))));
+cfn!(s_succ_b, |c, slf, a, b_| { let v = succ_enc(b(slf), rstr(slf).enc); modify(c, slf)?.b = v; Ok(slf) });
 cfn!(s_upto, |c, slf, a, blk| {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, s::upto, a, NIL); }
     let last = expect_str(c, a[0])?;
+    compat(c, slf, last)?;
     let excl = a.len() > 1 && a[1].truthy();
     let lb = b(last).to_vec();
     // numeric strings iterate numerically
@@ -902,6 +906,13 @@ cfn!(s_upto, |c, slf, a, blk| {
         while if excl { i < y } else { i <= y } { let s2 = str_new(format!("{:0w$}", i, w = w).as_bytes()); yield1(c, blk, s2)?; i += 1; }
         return Ok(slf);
     }
+    if b(slf).len() == 1 && lb.len() == 1 && b(slf)[0] < 0x80 && lb[0] < 0x80 {
+        let (x, y) = (b(slf)[0], lb[0]);
+        if x > y || (excl && x == y) { return Ok(slf); }
+        let mut ch = x;
+        loop { if excl && ch == y { break; } let s2 = new_like(slf, vec![ch]); yield1(c, blk, s2)?; if ch == y { break; } ch += 1; }
+        return Ok(slf);
+    }
     let mut cur = b(slf).to_vec();
     if cur.len() > lb.len() { return Ok(slf); }
     loop {
@@ -909,7 +920,7 @@ cfn!(s_upto, |c, slf, a, blk| {
         let s2 = new_like(slf, cur.clone());
         yield1(c, blk, s2)?;
         if cur == lb || cur.len() > lb.len() { break; }
-        cur = succ_bytes(&cur);
+        cur = succ_enc(&cur, rstr(slf).enc);
         if cur.len() > lb.len() { break; }
     }
     Ok(slf)
@@ -1090,7 +1101,59 @@ cfn!(s_byteslice, |c, slf, a, b_| {
 cfn!(s_unpack, |c, slf, a, b_| crate::builtins::misc::unpack(c, slf, a));
 cfn!(s_unpack1, |c, slf, a, b_| { let r = crate::builtins::misc::unpack(c, slf, a)?; Ok(ary_get(r, 0)) });
 cfn!(s_crypt, |c, slf, a, b_| Ok(new_like(slf, b(slf).to_vec())));
-cfn!(s_each_grapheme, |c, slf, a, blk| s_each_char(c, slf, a, blk));
+/// Extended grapheme clusters (approximation of UAX #29: CRLF, combining marks, ZWJ
+/// sequences, variation selectors, emoji modifiers, regional-indicator pairs, Hangul).
+fn graphemes(v: Value) -> Vec<(usize, usize)> {
+    let r = rstr(v);
+    let off = char_offsets(v);
+    let n = off.len() - 1;
+    let uni = crate::builtins::encoding::is_unicode(r.enc);
+    let cp = |k: usize| if uni && crate::builtins::encoding::precise_len(r.enc, &r.b, off[k]) == Some(off[k + 1] - off[k]) { Some(str_char_code(v, off[k], off[k + 1])) } else { None };
+    let extend = |u: u32| matches!(u, 0x300..=0x36f | 0x483..=0x489 | 0x591..=0x5bd | 0x610..=0x61a | 0x64b..=0x65f | 0x900..=0x903 | 0x93a..=0x94f
+        | 0x1ab0..=0x1aff | 0x1dc0..=0x1dff | 0x200c | 0x20d0..=0x20ff | 0x302a..=0x302f | 0x3099 | 0x309a | 0xfe00..=0xfe0f | 0xfe20..=0xfe2f
+        | 0x1f3fb..=0x1f3ff | 0xe0020..=0xe007f | 0xe0100..=0xe01ef);
+    let hangul_l = |u: u32| (0x1100..=0x115f).contains(&u);
+    let hangul_vt = |u: u32| (0x1160..=0x11ff).contains(&u);
+    let mut out = vec![];
+    let mut k = 0;
+    while k < n {
+        let st = k;
+        let c0 = cp(k);
+        k += 1;
+        if c0 == Some(0x0d) && k < n && cp(k) == Some(0x0a) { k += 1; out.push((off[st], off[k])); continue; }
+        if matches!(c0, Some(0x0a) | Some(0x0d)) || c0.map(|u| u < 0x20 || u == 0x7f).unwrap_or(true) { out.push((off[st], off[k])); continue; }
+        if let Some(u) = c0 {
+            if (0x1f1e6..=0x1f1ff).contains(&u) && k < n && cp(k).map(|w| (0x1f1e6..=0x1f1ff).contains(&w)).unwrap_or(false) { k += 1; }
+            if hangul_l(u) { while k < n && cp(k).map(|w| hangul_l(w) || hangul_vt(w) || (0xac00..=0xd7a3).contains(&w)).unwrap_or(false) { k += 1; } }
+        }
+        loop {
+            if k >= n { break; }
+            match cp(k) {
+                Some(w) if extend(w) => k += 1,
+                Some(0x200d) => { k += 1; if k < n && cp(k).map(|w| w >= 0x2000).unwrap_or(false) { k += 1; } }
+                Some(w) if hangul_vt(w) => k += 1,
+                _ => break,
+            }
+        }
+        out.push((off[st], off[k]));
+    }
+    out
+}
+cfn!(s_grapheme_clusters, |c, slf, a, blk| {
+    let gs = graphemes(slf);
+    let arr = ary_new();
+    for (s0, e0) in gs { ary_push(arr, new_like(slf, b(slf)[s0..e0].to_vec())); }
+    if !blk.is_null() { for i in 0..ary_len(arr) { yield1(c, blk, ary_get(arr, i))?; } return Ok(slf); }
+    Ok(arr)
+});
+cfn!(s_each_grapheme, |c, slf, a, blk| {
+    if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"each_grapheme_cluster"), &[], NIL); }
+    s_grapheme_clusters(c, slf, a, blk)
+});
+cfn!(s_each_codepoint, |c, slf, a, blk| {
+    if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"each_codepoint"), &[], NIL); }
+    s_codepoints(c, slf, a, blk)
+});
 cfn!(s_codepoints, |c, slf, a, blk| {
     check_valid(c, slf)?;
     let out = ary_new();
@@ -1362,7 +1425,7 @@ pub fn init() {
     d("partition", s_partition, 1); d("rpartition", s_rpartition, 1); d("delete_prefix", s_delete_prefix, 1); d("delete_suffix", s_delete_suffix, 1);
     d("delete_prefix!", s_delete_prefix_b, 1); d("delete_suffix!", s_delete_suffix_b, 1); d("slice!", s_slice_b, -1); d("getbyte", s_getbyte, 1); d("setbyte", s_setbyte, 2);
     d("byteslice", s_byteslice, -1); d("unpack", s_unpack, -1); d("unpack1", s_unpack1, -1); d("crypt", s_crypt, 1); d("each_grapheme_cluster", s_each_grapheme, 0);
-    d("grapheme_clusters", s_chars, 0); d("codepoints", s_codepoints, 0); d("each_codepoint", s_codepoints, 0); d("dup", s_dup, 0); d("undump", s_undump, 0); d("to_r", s_to_r, 0); d("to_c", s_to_c, 0);
+    d("grapheme_clusters", s_grapheme_clusters, 0); d("codepoints", s_codepoints, 0); d("each_codepoint", s_each_codepoint, 0); d("dup", s_dup, 0); d("undump", s_undump, 0); d("to_r", s_to_r, 0); d("to_c", s_to_c, 0);
     define_singleton_cfunc(k, "try_convert", s_s_try_convert, 1);
     let _ = (s_squish, s_intern_frozen_p, s_between);
     define_singleton_cfunc(k, "new", s_s_new, -1);
