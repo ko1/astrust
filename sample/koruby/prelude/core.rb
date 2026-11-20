@@ -43,51 +43,8 @@ end
 module Enumerable
   # `each { |*x| v = x.size <= 1 ? x[0] : x }` packs a multi-value yield into one element
   # (CRuby's ENUM_WANT_SVALUE); methods that hand raw values to the block use yield(*x).
-  def to_a(*args)
-    a = []
-    each(*args) { |*x| a << (x.size <= 1 ? x[0] : x) }
-    a
-  end
-  alias entries to_a
   def __size = (respond_to?(:size) ? size : nil)
   private :__size
-  def map
-    return enum_for(:map) { __size } unless block_given?
-    a = []
-    each { |*x| a << yield(*x) }
-    a
-  end
-  alias collect map
-  def flat_map
-    return enum_for(:flat_map) { __size } unless block_given?
-    a = []
-    each do |*x|
-      r = yield(*x)
-      if (ra = Array.try_convert(r)) then a.concat(ra) else a << r end
-    end
-    a
-  end
-  alias collect_concat flat_map
-  def select
-    return enum_for(:select) { __size } unless block_given?
-    a = []
-    each { |*x| v = x.size <= 1 ? x[0] : x; a << v if yield(v) }
-    a
-  end
-  alias filter select
-  alias find_all select
-  def filter_map
-    return enum_for(:filter_map) { __size } unless block_given?
-    a = []
-    each { |*x| r = yield(*x); a << r if r }
-    a
-  end
-  def reject
-    return enum_for(:reject) { __size } unless block_given?
-    a = []
-    each { |*x| v = x.size <= 1 ? x[0] : x; a << v unless yield(v) }
-    a
-  end
   def grep(pat)
     a = []
     if block_given?
@@ -106,12 +63,6 @@ module Enumerable
     end
     a
   end
-  def find(ifnone = nil)
-    return enum_for(:find, ifnone) unless block_given?
-    each { |*x| v = x.size <= 1 ? x[0] : x; return v if yield(v) }
-    ifnone&.call
-  end
-  alias detect find
   def find_index(*args)
     Enumerable.__argc(args.size, 1, 1) if args.size > 1
     if args.empty?
@@ -125,51 +76,11 @@ module Enumerable
     end
     nil
   end
-  def each_with_index(*args)
-    return enum_for(:each_with_index, *args) { __size } unless block_given?
-    i = 0
-    each(*args) { |*x| yield((x.size <= 1 ? x[0] : x), i); i += 1 }
-    self
-  end
-  def each_with_object(memo)
-    return enum_for(:each_with_object, memo) { __size } unless block_given?
-    each { |*x| yield((x.size <= 1 ? x[0] : x), memo) }
-    memo
-  end
   def each_entry(*args)
     return enum_for(:each_entry, *args) { __size } unless block_given?
     each(*args) { |*x| yield(x.size <= 1 ? x[0] : x) }
     self
   end
-  def inject(*args)
-    if args.size > 2 || (args.empty? && !block_given?)
-      Enumerable.__argc(args.size, 1, 2)
-    end
-    op = nil
-    if args.size == 2
-      acc, op = args
-    elsif args.size == 1 && !block_given?
-      op = args[0]; first = true
-    elsif args.size == 1
-      acc = args[0]
-    else
-      first = true
-    end
-    if op && !op.is_a?(Symbol)
-      raise TypeError, "#{op.inspect} is not a symbol nor a string" unless op.is_a?(String)
-      op = op.to_sym
-    end
-    each do |*x|
-      v = x.size <= 1 ? x[0] : x
-      if first
-        acc = v; first = false
-      else
-        acc = op ? acc.public_send(op, v) : yield(acc, v)
-      end
-    end
-    acc
-  end
-  alias reduce inject
   def sum(init = 0, &b)
     return Enumerable.__range_sum(self, init) if !b && Range === self
     a = []
@@ -180,23 +91,6 @@ module Enumerable
     end
     a.sum(init)
   end
-  def count(*args)
-    Enumerable.__argc(args.size, 0, 1) if args.size > 1
-    n = 0
-    if !args.empty?
-      each { |*x| v = x.size <= 1 ? x[0] : x; n += 1 if v == args[0] }
-    elsif block_given?
-      each { |*x| n += 1 if yield(*x) }
-    else
-      each { n += 1 }
-    end
-    n
-  end
-  def include?(o)
-    each { |*x| v = x.size <= 1 ? x[0] : x; return true if v == o }
-    false
-  end
-  alias member? include?
   def first(*args)
     if args.empty?
       each { |*x| return x.size <= 1 ? x[0] : x }
@@ -271,12 +165,6 @@ module Enumerable
       end
     end
     [mn, mx]
-  end
-  def group_by
-    return enum_for(:group_by) { __size } unless block_given?
-    h = {}
-    each { |*x| v = x.size <= 1 ? x[0] : x; k = yield(v); (h.key?(k) ? h[k] : (h[k] = [])) << v }
-    h
   end
   def partition
     return enum_for(:partition) { __size } unless block_given?
@@ -380,27 +268,6 @@ module Enumerable
       h[v] = n + 1
     end
     h
-  end
-  def each_slice(n)
-    n = Enumerable.__int(n)
-    raise ArgumentError, "invalid slice size" if n <= 0
-    unless block_given?
-      return enum_for(:each_slice, n) { s = __size; s && (s.is_a?(Integer) ? (s + n - 1) / n : s) }
-    end
-    buf = []
-    each { |*x| buf << (x.size <= 1 ? x[0] : x); if buf.size == n then yield buf; buf = [] end }
-    yield buf unless buf.empty?
-    self
-  end
-  def each_cons(n)
-    n = Enumerable.__int(n)
-    raise ArgumentError, "invalid size" if n <= 0
-    unless block_given?
-      return enum_for(:each_cons, n) { s = __size; s && (s.is_a?(Integer) ? [s - n + 1, 0].max : s) }
-    end
-    buf = []
-    each { |*x| buf << (x.size <= 1 ? x[0] : x); buf.shift if buf.size > n; yield buf.dup if buf.size == n }
-    self
   end
   def all?(*pat)
     Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
