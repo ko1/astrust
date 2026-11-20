@@ -20,6 +20,8 @@ class KorubyNodeDef < ASTrustGen::NodeDef
     def unwrap_expr(e) = "#{e}?"
     def test_type = "Result<bool, Esc>"
     def test_default(e) = "Ok(#{e}?.truthy())"
+    # the method entry cached at this call site when the code is baked
+    def spec_target_expr(op) = "{ let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) }"
 
     def opaque_hash_expr(op, f)
       case op.type

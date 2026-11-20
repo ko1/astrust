@@ -37,12 +37,13 @@ pub fn hash_merge(h: u64, v: u64) -> u64 {
 pub struct SpecCtx {
     pub out: String,
     pub emitted: HashSet<String>,
+    pub open: HashSet<u64>,       // hashes of the nodes being specialized now (ancestors)
     pub comments: bool,
 }
 
 impl SpecCtx {
     pub fn new() -> Self {
-        SpecCtx { out: String::new(), emitted: HashSet::new(), comments: std::env::var_os("ASTRUST_SD_COMMENTS").is_some() }
+        SpecCtx { out: String::new(), emitted: HashSet::new(), open: HashSet::new(), comments: std::env::var_os("ASTRUST_SD_COMMENTS").is_some() }
     }
 }
 

@@ -89,6 +89,9 @@ pub fn {}(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ <{} as Disp>::call(c
 /// A dispatcher as a type: `Dyn` calls through the node head, an SD type statically.
 pub trait Disp {
     fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV;
+    /// call() across a speculation boundary: children are always inlined, this is the compiler's choice.
+    #[inline]
+    fn spec(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV { Self::call(c, n, fp) }
     #[inline(always)]
     fn test(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> Result<bool, Esc> { Ok(Self::call(c, n, fp)?.truthy()) }
 }

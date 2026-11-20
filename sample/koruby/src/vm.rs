@@ -130,7 +130,7 @@ pub fn new_cref(klass: Value, prev: *const Cref) -> *const Cref {
 // ---- inline caches -------------------------------------------------------------------------
 
 #[derive(Default)]
-pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize, pub fast_argc: u32 }
+pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize, pub fast_hash: u64, pub fast_argc: u32, pub poly_next: u32, pub poly: usize }
 #[derive(Default)]
 pub struct ConstCache { pub serial: u64, pub cref: usize, pub val: u64 }
 #[derive(Default)]
@@ -964,53 +964,89 @@ pub fn funcall_kw(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *cons
 pub fn call_cached(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> RV {
     let recv = unsafe { *base };
     let klass = class_of(recv);
-    let vm = vm();
-    let me = if cc.klass == klass.raw() && cc.serial == vm.method_serial {
-        // fast path: a public Iseq method with only required params (see fill_cc)
-        // fast_argc matches only when cc.fast is a method entry node (fill_cc)
-        if argc == cc.fast_argc && flags & CF_KW == 0 {
-            c.call_me = cc.me as *const MethodEntry; c.call_blk = blk;
-            let r = run_body(c, cc.fast as NodePtr, base);
-            c.sp = base;
-            return r;
-        }
-        if cc.fast != 0 && flags & CF_KW == 0 {
-            match cc.fast & 3 {
-                1 if argc == 0 => {
-                    // attr_reader on an Object whose class assigned the ivar index
-                    if let Body::Object(ivs) = &obj(recv).body {
-                        let v = ivs.get(cc.fast >> 2).copied().unwrap_or(UNDEF);
-                        c.sp = base;
-                        return Ok(if v == UNDEF { NIL } else { v });
-                    }
-                }
-                2 if argc == 1 => {
-                    let o = obj(recv);
-                    if o.flags & FL_FROZEN == 0 {
-                        if let Body::Object(ivs) = &mut o.body {
-                            let i = cc.fast >> 2;
-                            let v = unsafe { *base.add(2) };
-                            if ivs.len() <= i { ivs.resize(i + 1, UNDEF); }
-                            ivs[i] = v;
-                            c.sp = base;
-                            return Ok(v);
-                        }
-                    }
-                }
-                3 if argc == 1 => {
-                    // BasicObject#== / equal?: identity
-                    let r = Value::bool(recv == unsafe { *base.add(2) });
+    let hit = cc.klass == klass.raw() && cc.serial == vm().method_serial;
+    if hit {
+        if let Some(r) = cc_fast(c, cc, recv, base, argc, blk, flags) { return r; }
+    }
+    call_slow(c, cc, mid, base, argc, blk, flags, hit)
+}
+
+/// The inline fast paths of a cache entry that matches recv (see fill_cc); None: use invoke.
+#[inline(always)]
+fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> Option<RV> {
+    // fast_argc matches only when cc.fast is a method entry node
+    if argc == cc.fast_argc && flags & CF_KW == 0 {
+        c.call_me = cc.me as *const MethodEntry; c.call_blk = blk;
+        let r = run_body(c, cc.fast as NodePtr, base);
+        c.sp = base;
+        return Some(r);
+    }
+    if cc.fast != 0 && flags & CF_KW == 0 {
+        match cc.fast & 3 {
+            1 if argc == 0 => {
+                // attr_reader on an Object whose class assigned the ivar index
+                if let Body::Object(ivs) = &obj(recv).body {
+                    let v = ivs.get(cc.fast >> 2).copied().unwrap_or(UNDEF);
                     c.sp = base;
-                    return Ok(r);
+                    return Some(Ok(if v == UNDEF { NIL } else { v }));
                 }
-                _ => {}
             }
+            2 if argc == 1 => {
+                let o = obj(recv);
+                if o.flags & FL_FROZEN == 0 {
+                    if let Body::Object(ivs) = &mut o.body {
+                        let i = cc.fast >> 2;
+                        let v = unsafe { *base.add(2) };
+                        if ivs.len() <= i { ivs.resize(i + 1, UNDEF); }
+                        ivs[i] = v;
+                        c.sp = base;
+                        return Some(Ok(v));
+                    }
+                }
+            }
+            3 if argc == 1 => {
+                // BasicObject#== / equal?: identity
+                let r = Value::bool(recv == unsafe { *base.add(2) });
+                c.sp = base;
+                return Some(Ok(r));
+            }
+            _ => {}
         }
-        cc.me as *const MethodEntry
-    } else {
-        let me = lookup_method(klass, mid);
-        fill_cc(cc, klass, me, vm.method_serial, flags);
-        me
+    }
+    None
+}
+
+const POLY_WAYS: usize = 4;
+
+/// The rest of call_cached: a hit without an inline fast path, or a miss.  A site that misses
+/// with a filled cache is polymorphic: its other classes go to a small table behind the cache.
+#[inline(never)]
+pub fn call_slow(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, argc: u32, blk: *const Block, flags: u32, hit: bool) -> RV {
+    let recv = unsafe { *base };
+    let me = if hit { cc.me as *const MethodEntry } else {
+        let klass = class_of(recv);
+        let serial = vm().method_serial;
+        let e: &mut CallCache = if cc.klass == 0 || cc.serial != serial {
+            if cc.poly != 0 { for w in unsafe { &mut *(cc.poly as *mut [CallCache; POLY_WAYS]) }.iter_mut() { w.klass = 0; } }
+            let me = lookup_method(klass, mid);
+            fill_cc(cc, klass, me, serial, flags);
+            cc
+        } else {
+            if cc.poly == 0 { cc.poly = Box::into_raw(Box::new(<[CallCache; POLY_WAYS]>::default())) as usize; }
+            let t = unsafe { &mut *(cc.poly as *mut [CallCache; POLY_WAYS]) };
+            match t.iter().position(|w| w.klass == klass.raw() && w.serial == serial) {
+                Some(i) => &mut t[i],
+                None => {
+                    let i = cc.poly_next as usize % POLY_WAYS;
+                    cc.poly_next = cc.poly_next.wrapping_add(1);
+                    let me = lookup_method(klass, mid);
+                    fill_cc(&mut t[i], klass, me, serial, flags);
+                    &mut t[i]
+                }
+            }
+        };
+        if let Some(r) = cc_fast(c, e, recv, base, argc, blk, flags) { return r; }
+        e.me as *const MethodEntry
     };
     if me.is_null() {
         let r = method_missing(c, recv, mid, base, argc, blk, flags);
@@ -1024,7 +1060,7 @@ pub fn call_cached(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, 
             return r;
         }
     }
-    let r = invoke(c, me, recv, base, argc, blk, flags);
+    let r = invoke_impl(c, me, recv, base, argc, blk, flags);
     c.sp = base;
     r
 }
@@ -1099,12 +1135,12 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Valu
 
 #[inline(never)]
 fn fill_cc(cc: &mut CallCache, klass: Value, me: *const MethodEntry, serial: u64, flags: u32) {
-    cc.klass = klass.raw(); cc.serial = serial; cc.me = me as usize; cc.fast = 0; cc.fast_argc = u32::MAX;
+    cc.klass = klass.raw(); cc.serial = serial; cc.me = me as usize; cc.fast = 0; cc.fast_argc = u32::MAX; cc.fast_hash = 0;
     if me.is_null() { return; }
     let m = unsafe { &*me };
     if m.visi != VISI_PUBLIC && flags & CF_FCALL == 0 { return; }
     match m.kind {
-        MKind::Iseq(is) => { let is = unsafe { &*is }; if !is.entry.is_null() { cc.fast = is.entry as usize; cc.fast_argc = is.params.lead.len() as u32; } }
+        MKind::Iseq(is) => { let is = unsafe { &*is }; if !is.entry.is_null() { cc.fast = is.entry as usize; cc.fast_argc = is.params.lead.len() as u32; cc.fast_hash = crate::node::hash_node(is.entry); } }
         MKind::Cfunc(..) if me == unsafe { crate::builtins::object::BO_EQ_ME } => { cc.fast = 3; }
         MKind::AttrReader(name) | MKind::AttrWriter(name) => {
             let cd = rclass(klass);
@@ -1115,6 +1151,11 @@ fn fill_cc(cc: &mut CallCache, klass: Value, me: *const MethodEntry, serial: u64
         }
         _ => {}
     }
+}
+
+/// The method entry node a call site's cache holds, as the callee to compile into the site (null: none).
+pub fn spec_callee(cc: &CallCache, argc: usize, flags: u32) -> NodePtr {
+    if cc.fast_argc as usize == argc && flags & CF_KW == 0 { cc.fast as NodePtr } else { std::ptr::null_mut() }
 }
 
 /// The heap Env of a frame whose variables are captured by blocks; params copied in.
@@ -1189,6 +1230,11 @@ pub fn no_method_error(c: &mut Ctx, recv: Value, mid: Sym, flags: u32) -> RV {
 
 #[inline]
 pub fn invoke(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> RV {
+    invoke_impl(c, me, recv, base, argc, blk, flags)
+}
+
+#[inline(always)]
+fn invoke_impl(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> RV {
     let mer = unsafe { &*me };
     match mer.kind {
         MKind::Iseq(is) => invoke_iseq(c, me, unsafe { &*is }, recv, base, argc, blk, flags),

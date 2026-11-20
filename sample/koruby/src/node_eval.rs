@@ -743,7 +743,7 @@ pub fn EVAL_node_defined<D_recv: Disp>(c: &mut Ctx, n: NodePtr, fp: *mut Value, 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_call<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: *mut Value, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, cc: &mut CallCache) -> RV {
+pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr, fp: *mut Value, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, cc: &mut CallCache, callee_hash: u64) -> RV {
     let k = <D_args as DispList>::len(args);
     let base = c.sp;
     unsafe {
@@ -752,13 +752,21 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr, f
         for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; *base.add(2 + i) = v; }
         (*c.frame).line = line;
     }
+    // the callee this site had when it was compiled, called statically while the cache still holds it
+    if callee_hash != 0 && cc.fast_hash == callee_hash
+        && cc.klass == class_of(unsafe { *base }).raw() && cc.serial == vm().method_serial {
+        c.call_me = cc.me as *const MethodEntry; c.call_blk = std::ptr::null();
+        let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, base);
+        c.sp = base;
+        return r;
+    }
     call_cached(c, cc, mid, base, k as u32, std::ptr::null(), flags)
 }
 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: *mut Value, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, blk: IseqRef, cc: &mut CallCache) -> RV {
+pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr, fp: *mut Value, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, blk: IseqRef, cc: &mut CallCache, callee_hash: u64) -> RV {
     let k = <D_args as DispList>::len(args);
     let base = c.sp;
     unsafe {
@@ -768,7 +776,13 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePt
         (*c.frame).line = line;
     }
     let b = make_block(c, blk, fp);
-    let r = call_cached(c, cc, mid, base, k as u32, &b, flags);
+    let r = if callee_hash != 0 && cc.fast_hash == callee_hash
+        && cc.klass == class_of(unsafe { *base }).raw() && cc.serial == vm().method_serial {
+        c.call_me = cc.me as *const MethodEntry; c.call_blk = &b;
+        let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, base);
+        c.sp = base;
+        r
+    } else { call_cached(c, cc, mid, base, k as u32, &b, flags) };
     match r {
         Err(e) if c.esc == EscKind::Break && c.esc_tag == b.tag => { c.esc = EscKind::None; Ok(c.esc_val) }
         r => r,

@@ -21,6 +21,10 @@ require 'optparse'
 # node.def syntax:
 #
 #   <Rust lines, copied to node_eval.rs>
+#   x@spec: NODE      speculated callee: not stored in the node.  At specialize time the embedder's
+#                     `spec_target_expr` names a node (or null; never an ancestor) to compile in; the body compares
+#                     SPEC_HASH!(x) (0 in the interpreter) with the runtime target's hash and then
+#                     calls it statically with EVAL_SPEC!(c, x, <node ptr>, <common args...>).
 #   NODE_TEST { ... }  (optional, right after a node's body) the node evaluated as a condition:
 #                     returns the embedder's `test_type` directly; children with EVAL_TEST!(c, x).
 #                     Nodes without one fall back to `test_default` over their value.
@@ -70,13 +74,15 @@ module ASTrustGen
         def initialize name, type
           @ref = name.end_with?('@ref')
           @child = name.end_with?('@child')
-          @name = name.sub(/@(ref|child)$/, '')
+          @spec = name.end_with?('@spec')
+          @name = name.sub(/@(ref|child|spec)$/, '')
           @type = type.strip
         end
 
         def ref? = @ref
         def child? = @child
-        def node? = !@ref && !@child && @type == 'NODE'
+        def spec? = @spec
+        def node? = !@ref && !@child && !@spec && @type == 'NODE'
         def nodes? = !@ref && @type == 'NODES'
         def any_node? = child? || node? || nodes?
         def scalar? = !ref? && SCALARS.key?(@type)
@@ -92,6 +98,7 @@ module ASTrustGen
         # Parameter(s) of EVAL_<name>.
         def eval_param
           if ref? then "#{@name}: &mut #{@type}"
+          elsif spec? then "#{@name}_hash: u64"
           elsif child? then "#{@name}: #{@type}"
           elsif node? then "#{@name}: NodePtr"
           elsif nodes? then "#{@name}: NodeList"
@@ -100,7 +107,7 @@ module ASTrustGen
         end
 
         def generic_param
-          if node? then "D_#{@name}: Disp"
+          if node? || spec? then "D_#{@name}: Disp"
           elsif nodes? then "D_#{@name}: DispList"
           end
         end
@@ -112,7 +119,7 @@ module ASTrustGen
           f = field(u)
           if child? || node? then "hash_node(#{f})"
           elsif nodes? then "hash_node_list(#{f})"
-          elsif ref? then nil
+          elsif ref? || spec? then nil
           elsif scalar? then "hash_u64(#{f} as u64)"
           elsif f64? then "hash_u64(#{f}.to_bits())"
           else @owner.opaque_hash_expr(self, f)
@@ -124,6 +131,7 @@ module ASTrustGen
         def specialize_arg
           f = "(*np).u.#{@name}"
           if ref? then "a.push(\"&mut (*np).u.#{@name}\".to_string());"
+          elsif spec? then "a.push(format!(\"{}u64\", h_#{@name}));"
           elsif child? then "a.push(\"v_#{@name}\".to_string());"
           elsif node? || nodes? then "a.push(\"(*np).u.#{@name}\".to_string());"
           elsif scalar? then "a.push(format!(\"#{SCALARS[@type]}\", #{f}));"
@@ -134,7 +142,8 @@ module ASTrustGen
 
         def dump_stmt
           f = "(*np).u.#{@name}"
-          if child? || node? then "dump_node(out, #{f});"
+          if spec? then ""
+          elsif child? || node? then "dump_node(out, #{f});"
           elsif nodes? then "out.push('['); for (i, x) in #{f}.iter().enumerate() { if i > 0 { out.push(' '); } dump_node(out, *x); } out.push(']');"
           elsif ref? then "out.push_str(\"<#{@name}>\");"
           elsif scalar? || f64? then "out.push_str(&format!(\"{:?}\", #{f}));"
@@ -166,6 +175,8 @@ module ASTrustGen
       def opaque_hash_expr(op, f) = "0u64"
       def opaque_specialize_arg(op, f) = "a.push(\"(*np).u.#{op.name}\".to_string());"
       def opaque_dump_stmt(op, f) = "out.push_str(\"<#{op.name}>\");"
+      # @spec operand: Rust expr (NodePtr, null = none) evaluated at specialize time with `np` in scope.
+      def spec_target_expr(op) = "std::ptr::null_mut()"
       def dispatch_prologue = ""
 
       def no_inline? = @option.include?('@noinline')
@@ -193,7 +204,7 @@ module ASTrustGen
         ps = split_params(str)
         @prefix_params = ps.shift(common_param_count)
         @operands = ps.map do |p|
-          raise "ill-formed operand: #{p}" unless /\A([a-zA-Z_][a-zA-Z0-9_]*(?:@ref|@child)?)\s*:\s*(.+)\z/ =~ p
+          raise "ill-formed operand: #{p}" unless /\A([a-zA-Z_][a-zA-Z0-9_]*(?:@ref|@child|@spec)?)\s*:\s*(.+)\z/ =~ p
           op = self.class::Operand.new($1, $2)
           op.owner = self
           op
@@ -234,7 +245,9 @@ module ASTrustGen
           c, xs, i, rest = $1, $2, $3, $4
           args = rest ? rest.sub(/\A,/, '').strip : extra.join(', ')
           "<D_#{xs} as DispList>::nth(#{c}, #{xs}, #{i}#{args.empty? ? '' : ", #{args}"})"
-        }.gsub(/EVAL_LEN!\(\s*(\w+)\s*\)/) { "<D_#{$1} as DispList>::len(#{$1})" }
+        }.gsub(/SPEC_HASH!\(\s*(\w+)\s*\)/) { "#{$1}_hash" }
+         .gsub(/EVAL_SPEC!\(\s*(\w+)\s*,\s*(\w+)\s*,/) { "<D_#{$2} as Disp>::spec(#{$1}," }
+         .gsub(/EVAL_LEN!\(\s*(\w+)\s*\)/) { "<D_#{$1} as DispList>::len(#{$1})" }
          .gsub(/EVAL_TEST!\(\s*(\w+)\s*,\s*(\w+)\s*\)/) { "<D_#{$2} as Disp>::test(#{$1}, #{$2}#{extra.empty? ? '' : ", #{extra.join(', ')}"})" }
       end
 
@@ -265,7 +278,7 @@ module ASTrustGen
       end
 
       def build_struct
-        fields = @operands.map { "    pub #{it.name}: #{it.storage_type}," }
+        fields = @operands.reject(&:spec?).map { "    pub #{it.name}: #{it.storage_type}," }
         <<~RS
         #[allow(non_camel_case_types)]
         #[repr(C)]
@@ -275,10 +288,10 @@ module ASTrustGen
         RS
       end
 
-      def alloc_params = @operands.reject(&:ref?).map { "#{it.name}: #{it.storage_type}" }.join(', ')
+      def alloc_params = @operands.reject { it.ref? || it.spec? }.map { "#{it.name}: #{it.storage_type}" }.join(', ')
 
       def build_alloc
-        inits = @operands.map { it.ref? ? "#{it.name}: Default::default()" : it.name }
+        inits = @operands.reject(&:spec?).map { it.ref? ? "#{it.name}: Default::default()" : it.name }
         <<~RS
         #[allow(non_snake_case)]
         pub fn ALLOC_#{@name}(#{alloc_params}) -> NodePtr {
@@ -307,6 +320,7 @@ module ASTrustGen
         args = prefix_names.dup
         @operands.each do |op|
           if op.ref? then args << "&mut (*np).u.#{op.name}"
+          elsif op.spec? then args << "0u64"
           elsif op.child? then args << "v_#{op.name}"
           else args << "(*np).u.#{op.name}"
           end
@@ -385,7 +399,7 @@ module ASTrustGen
       def build_specialize_test(params, child_glue, tf)
         return "" unless @test_body
         <<~RS.chomp
-            body.push_str(&format!("    #[inline#{always_inline? ? '(always)' : ''}]\\n    fn test(#{params}) -> #{test_type} {{ unsafe {{\\n"));
+            body.push_str(&format!("    #[inline(always)]\\n    fn test(#{params}) -> #{test_type} {{ unsafe {{\\n"));
             body.push_str(&format!("        let np = {} as *mut NodeOf<#{struct_name}>;\\n", "#{prefix_names[1]}"));
         #{child_glue.join("\n")}
             body.push_str(&format!("        EVAL_TEST_#{@name}{}({})\\n    }} }}\\n", #{tf}, a.join(", ")));
@@ -404,6 +418,8 @@ module ASTrustGen
             "    let t_#{op.name} = specialize_node(sc, u.#{op.name});"
           elsif op.nodes?
             "    let t_#{op.name} = specialize_list(sc, &u.#{op.name});"
+          elsif op.spec?
+            "    let (t_#{op.name}, h_#{op.name}) = { let np = n as *mut NodeOf<#{struct_name}>; let p: NodePtr = unsafe { #{spec_target_expr(op)} }; if p.is_null() || sc.open.contains(&hash_node(p)) { (\"Dyn\".to_string(), 0u64) } else { (specialize_node(sc, p), hash_node(p)) } };"
           end
         end.compact
         generic_names = @operands.select(&:generic_param).map { "t_#{it.name}" }
@@ -418,6 +434,9 @@ module ASTrustGen
         fn SPECIALIZE_#{@name}(sc: &mut SpecCtx, n: NodePtr) -> String {
             let name = format!("T_{:016x}", hash_node(n));
             if sc.emitted.contains(&name) { return name; }
+            sc.emitted.insert(name.clone());   // before the children: a speculated callee may be this very node
+            let own_hash = hash_node(n);
+            sc.open.insert(own_hash);
             let u = unsafe { &(*(n as *mut NodeOf<#{struct_name}>)).u };
         #{child_types.join("\n")}
             let np = n as *mut NodeOf<#{struct_name}>;
@@ -428,13 +447,13 @@ module ASTrustGen
             let mut body = String::new();
             body.push_str(&format!("pub struct {};\\n", name));
             if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\\n'); }
-            body.push_str(&format!("impl Disp for {} {{\\n    #[inline#{always_inline? ? '(always)' : ''}]\\n    fn call(#{params}) -> #{result_type} {{ unsafe {{\\n", name));
+            body.push_str(&format!("impl Disp for {} {{\\n    #[inline(always)]\\n    fn call(#{params}) -> #{result_type} {{ unsafe {{\\n", name));
             body.push_str(&format!("        let np = {} as *mut NodeOf<#{struct_name}>;\\n", "#{prefix_names[1]}"));
         #{child_glue.join("\n")}
             body.push_str(&format!("        EVAL_#{@name}{}({})\\n    }} }}\\n", #{tf}, a.join(", ")));
         #{build_specialize_test(params, child_glue, tf)}
             body.push_str("}\n");
-            sc.emitted.insert(name.clone());
+            sc.open.remove(&own_hash);
             sc.out.push_str(&body);
             name
         }
@@ -572,6 +591,9 @@ module ASTrustGen
       /// A dispatcher as a type: `Dyn` calls through the node head, an SD type statically.
       pub trait Disp {
           fn call(#{params.join(', ')}) -> #{n.result_type};
+          /// call() across a speculation boundary: children are always inlined, this is the compiler's choice.
+          #[inline]
+          fn spec(#{params.join(', ')}) -> #{n.result_type} { Self::call(#{pnames.join(', ')}) }
       #{n.test_type ? "    #[inline(always)]\n    fn test(#{params.join(', ')}) -> #{n.test_type} { #{n.test_default("Self::call(#{pnames.join(', ')})")} }" : ""}
       }
       /// A list of children: `DynList` loops over the heads, an SD list type is unrolled.

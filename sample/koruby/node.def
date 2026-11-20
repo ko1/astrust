@@ -568,7 +568,7 @@ node_defined(c: &mut Ctx, n: NodePtr, fp: *mut Value, kind: u32, name: Sym, recv
 // ---- calls ----------------------------------------------------------------------
 
 NODE_DEF
-node_call(c: &mut Ctx, n: NodePtr, fp: *mut Value, recv: NODE, args: NODES, mid: Sym, flags: u32, line: u32, cc@ref: CallCache)
+node_call(c: &mut Ctx, n: NodePtr, fp: *mut Value, recv: NODE, args: NODES, mid: Sym, flags: u32, line: u32, cc@ref: CallCache, callee@spec: NODE)
 {
     let k = EVAL_LEN!(args);
     let base = c.sp;
@@ -578,11 +578,19 @@ node_call(c: &mut Ctx, n: NodePtr, fp: *mut Value, recv: NODE, args: NODES, mid:
         for i in 0..k { let v = EVAL_NTH!(c, args, i)?; *base.add(2 + i) = v; }
         (*c.frame).line = line;
     }
+    // the callee this site had when it was compiled, called statically while the cache still holds it
+    if SPEC_HASH!(callee) != 0 && cc.fast_hash == SPEC_HASH!(callee)
+        && cc.klass == class_of(unsafe { *base }).raw() && cc.serial == vm().method_serial {
+        c.call_me = cc.me as *const MethodEntry; c.call_blk = std::ptr::null();
+        let r = EVAL_SPEC!(c, callee, cc.fast as NodePtr, base);
+        c.sp = base;
+        return r;
+    }
     call_cached(c, cc, mid, base, k as u32, std::ptr::null(), flags)
 }
 
 NODE_DEF
-node_call_blk(c: &mut Ctx, n: NodePtr, fp: *mut Value, recv: NODE, args: NODES, mid: Sym, flags: u32, line: u32, blk: IseqRef, cc@ref: CallCache)
+node_call_blk(c: &mut Ctx, n: NodePtr, fp: *mut Value, recv: NODE, args: NODES, mid: Sym, flags: u32, line: u32, blk: IseqRef, cc@ref: CallCache, callee@spec: NODE)
 {
     let k = EVAL_LEN!(args);
     let base = c.sp;
@@ -593,7 +601,13 @@ node_call_blk(c: &mut Ctx, n: NodePtr, fp: *mut Value, recv: NODE, args: NODES, 
         (*c.frame).line = line;
     }
     let b = make_block(c, blk, fp);
-    let r = call_cached(c, cc, mid, base, k as u32, &b, flags);
+    let r = if SPEC_HASH!(callee) != 0 && cc.fast_hash == SPEC_HASH!(callee)
+        && cc.klass == class_of(unsafe { *base }).raw() && cc.serial == vm().method_serial {
+        c.call_me = cc.me as *const MethodEntry; c.call_blk = &b;
+        let r = EVAL_SPEC!(c, callee, cc.fast as NodePtr, base);
+        c.sp = base;
+        r
+    } else { call_cached(c, cc, mid, base, k as u32, &b, flags) };
     match r {
         Err(e) if c.esc == EscKind::Break && c.esc_tag == b.tag => { c.esc = EscKind::None; Ok(c.esc_val) }
         r => r,
