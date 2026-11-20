@@ -89,6 +89,10 @@ pub fn enum_each_with(c: &mut Ctx, e: Value, blk: *const Block) -> RV {
         let g = en.gen;
         return call_proc(c, g, &[y], std::ptr::null());
     }
+    if en.recv == NIL && en.mid == s::each && ary_len(en.args) == 0 {
+        let me = lookup_method(class_of(e), s::each);
+        if !me.is_null() && !matches!(unsafe { (*me).kind }, MKind::Cfunc(..)) { return funcall(c, e, s::each, &[], blk); }
+    }
     let (recv, mid, args) = (en.recv, en.mid, ary_to_vec(en.args));
     let keep = en.args;
     let r = funcall_public(c, recv, mid, &args, blk);
@@ -227,13 +231,22 @@ fn e_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(str_new(format!("#<{}: {}:{}{}>", cls, r, sym_str(en.mid), a).as_bytes()))
 }
 fn is_range_origin(_v: Value) -> bool { false }
-fn e_s_new(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
-    if blk.is_null() { return arg_err(c, "no block given"); }
+fn e_initialize(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+    check_argc(c, a, 0, 1)?;
+    if blk.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
     let g = block_to_proc(c, blk)?;
     let size = a.first().copied().unwrap_or(NIL);
-    let e = new_enum(slf, NIL, s::each, &[], size);
-    renum(e).unwrap().gen = g;
-    Ok(e)
+    if size != NIL && !size.is_fixnum() && !is_float(size) && !is_bignum(size) && !is_proc(size) && !respond_to(size, s::call, true) {
+        crate::builtins::numeric_methods::num_to_long(c, size)?;
+    }
+    let Some(en) = renum(slf) else { return type_err(c, "wrong argument type (expected Enumerator)") };
+    en.gen = g; en.size = size; en.recv = NIL; en.mid = s::each; en.buf = NIL; en.pos = 0;
+    Ok(slf)
+}
+fn y_s_new(c: &mut Ctx, slf: Value, _a: &[Value], blk: *const Block) -> RV {
+    if blk.is_null() { return err(c, vm().c_local_jump_error, "no block given"); }
+    let p = block_to_proc(c, blk)?;
+    Ok(crate::gc::alloc(slf, Body::Data(Box::new(RYielder { blk: p }))))
 }
 fn y_yield(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let p = rdata::<RYielder>(slf).unwrap().blk;
@@ -272,16 +285,6 @@ fn e_take(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 fn e_first(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     if a.is_empty() { let r = e_take(c, slf, &[Value::fix(1)], b)?; return Ok(ary_get(r, 0)); }
     e_take(c, slf, a, b)
-}
-fn e_lazy(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let e = new_enum(vm().c_lazy, slf, s::each, &[], NIL);
-    renum(e).unwrap().lazy = true;
-    Ok(e)
-}
-fn e_plus(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    let parts = ary_new_from(&[slf, a[0]]);
-    let e = new_enum(vm().c_chain, parts, intern(b"__chain_each"), &[], NIL);
-    Ok(e)
 }
 fn arith_begin(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(renum(slf).unwrap().arith.unwrap().0) }
 fn arith_end(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(renum(slf).unwrap().arith.unwrap().1) }
@@ -324,7 +327,8 @@ pub fn init() {
     vm.c_lazy = define_class_under(e, "Lazy", e);
     vm.c_chain = define_class_under(e, "Chain", e);
     vm.c_arith_seq = define_class_under(e, "ArithmeticSequence", e);
-    define_singleton_cfunc(e, "new", e_s_new, -1);
+    define_singleton_cfunc(e, "new", crate::builtins::object::c_new, -1);
+    define_private_cfunc(e, "initialize", e_initialize, -1);
     define_cfunc(e, "each", e_each, -1);
     define_cfunc(e, "with_index", e_with_index, -1);
     define_cfunc(e, "each_with_index", e_each_with_index, 0);
@@ -338,9 +342,8 @@ pub fn init() {
     define_cfunc(e, "to_s", e_inspect, 0);
     define_cfunc(e, "take", e_take, 1);
     define_cfunc(e, "first", e_first, -1);
-    define_cfunc(e, "lazy", e_lazy, 0);
-    define_cfunc(e, "+", e_plus, 1);
     let y = vm.c_yielder;
+    define_singleton_cfunc(y, "new", y_s_new, 0);
     define_cfunc(y, "yield", y_yield, -1);
     define_cfunc(y, "call", y_yield, -1);
     define_cfunc(y, "<<", y_ltlt, -1);

@@ -122,12 +122,18 @@ cfn!(h_select, |c, slf, a, blk| enum_or(c, slf, "select", a, blk, |c| sel(c, slf
 cfn!(h_reject, |c, slf, a, blk| enum_or(c, slf, "reject", a, blk, |c| sel(c, slf, blk, false)));
 fn sel_b(c: &mut Ctx, slf: Value, blk: *const Block, want: bool) -> Result<bool, Esc> {
     modify(c, slf)?;
-    let mut dels = vec![];
-    each_entry(c, slf, |c, k, v| { if yield_pair(c, blk, k, v)?.truthy() != want { dels.push(k); } Ok(true) })?;
-    let keep = ary_from_vec(dels.clone());
-    for k in &dels { hash_delete(c, slf, *k)?; }
-    std::hint::black_box(keep);
-    Ok(!dels.is_empty())
+    let mut changed = false;
+    let mut i = 0;
+    while i < hash_slots(slf) {
+        if let Some((k, v)) = hash_entry_at(slf, i) {
+            if k != UNDEF && yield_pair(c, blk, k, v)?.truthy() != want {
+                modify(c, slf)?;
+                if hash_entry_at(slf, i).map(|e| e.0) == Some(k) { hash_delete_slot(slf, i); changed = true; }
+            }
+        }
+        i += 1;
+    }
+    Ok(changed)
 }
 cfn!(h_select_b, |c, slf, a, blk| enum_or(c, slf, "select!", a, blk, |c| Ok(if sel_b(c, slf, blk, true)? { slf } else { NIL })));
 cfn!(h_keep_if, |c, slf, a, blk| enum_or(c, slf, "keep_if", a, blk, |c| { sel_b(c, slf, blk, true)?; Ok(slf) }));

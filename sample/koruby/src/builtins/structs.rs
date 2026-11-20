@@ -21,7 +21,7 @@ fn kw_init(k: Value) -> Value {
 }
 
 fn st_s_new(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
-    if slf != vm().c_struct { return crate::builtins::object::c_new(c, slf, a, blk); }
+    let _ = vm().c_struct;
     let mut names = vec![];
     let mut kwinit = NIL;
     let mut cname = NIL;

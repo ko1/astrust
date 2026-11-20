@@ -194,6 +194,16 @@ pub fn hash_delete(c: &mut Ctx, h: Value, k: Value) -> Result<Option<Value>, Esc
     }
 }
 
+/// Delete the entry in slot i (found by iteration, so stale-hash keys go too).
+pub fn hash_delete_slot(h: Value, i: usize) {
+    let r = rhash(h);
+    if i >= r.entries.len() || r.entries[i].key == UNDEF { return; }
+    r.entries[i].key = UNDEF;
+    r.entries[i].val = NIL;
+    r.live -= 1;
+    if r.live == 0 { r.entries.clear(); r.index.clear(); }
+}
+
 pub fn hash_clear(h: Value) { let r = rhash(h); r.entries.clear(); r.index.clear(); r.live = 0; }
 
 pub fn hash_rehash(c: &mut Ctx, h: Value) -> Result<(), Esc> {

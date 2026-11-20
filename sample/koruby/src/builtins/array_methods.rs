@@ -61,7 +61,6 @@ pub fn cmp_result(c: &mut Ctx, r: Value, a: Value, b: Value) -> Result<i64, Esc>
 /// Stable merge sort with a fallible comparator.
 pub fn sort_values(c: &mut Ctx, v: &mut Vec<Value>, cmp: &mut dyn FnMut(&mut Ctx, Value, Value) -> Result<std::cmp::Ordering, Esc>) -> Result<(), Esc> {
     if v.len() < 2 { return Ok(()); }
-    if v.iter().all(|x| x.is_fixnum()) { v.sort_by_key(|x| x.as_fix()); return Ok(()); }
     let mut tmp = v.clone();
     let n = v.len();
     let mut w = 1;
@@ -98,6 +97,7 @@ pub fn sort_values(c: &mut Ctx, v: &mut Vec<Value>, cmp: &mut dyn FnMut(&mut Ctx
 
 pub fn sort_array(c: &mut Ctx, v: &mut Vec<Value>, blk: *const Block) -> Result<(), Esc> {
     if blk.is_null() {
+        if v.iter().all(|x| x.is_fixnum()) { v.sort_by_key(|x| x.as_fix()); return Ok(()); }
         if v.iter().all(|x| is_string(*x)) { v.sort_by(|a, b| str_bytes(*a).cmp(str_bytes(*b))); return Ok(()); }
         if v.iter().all(|x| x.is_flonum() && !x.flonum_val().is_nan()) { v.sort_by(|a, b| a.flonum_val().partial_cmp(&b.flonum_val()).unwrap()); return Ok(()); }
         sort_values(c, v, &mut |c, a, b| rb_cmp(c, a, b))
@@ -841,7 +841,8 @@ cfn!(a_sort_by_native, |c, slf, a, blk| enum_or(c, slf, "sort_by", a, blk, |c| {
     while i < len(slf) { let x = get(slf, i); let k = yield1(c, blk, x)?; ary_push(keys, k); i += 1; }
     let mut idx: Vec<Value> = (0..len(keys).min(len(slf))).map(|i| Value::fix(i as i64)).collect();
     let src = ary_from_vec(rary(slf).clone());
-    sort_values(c, &mut idx, &mut |c, x, y| rb_cmp(c, get(keys, x.as_fix() as usize), get(keys, y.as_fix() as usize)))?;
+    if rary(keys).iter().all(|k| k.is_fixnum()) { let ks = rary(keys); idx.sort_by_key(|i| ks[i.as_fix() as usize].as_fix()); }
+    else { sort_values(c, &mut idx, &mut |c, x, y| rb_cmp(c, get(keys, x.as_fix() as usize), get(keys, y.as_fix() as usize)))?; }
     Ok(ary_from_vec(idx.iter().map(|i| get(src, i.as_fix() as usize)).collect()))
 }));
 cfn!(a_each_cons, |c, slf, a, blk| enum_or(c, slf, "each_cons", a, blk, |c| {

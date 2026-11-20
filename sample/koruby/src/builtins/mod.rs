@@ -23,6 +23,7 @@ pub mod regexp_methods;
 pub mod structs;
 pub mod time;
 pub mod math;
+pub mod enum_native;
 
 use crate::object::*;
 use crate::symbol::intern_str;
@@ -171,6 +172,7 @@ pub fn boot() {
     structs::init();
     time::init();
     math::init();
+    enum_native::init();
 }
 
 /// dup/clone of built-in Data objects.

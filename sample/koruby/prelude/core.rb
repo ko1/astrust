@@ -33,73 +33,114 @@ module Comparable
 end
 
 module Enumerable
+  # `each { |*x| v = x.size <= 1 ? x[0] : x }` packs a multi-value yield into one element
+  # (CRuby's ENUM_WANT_SVALUE); methods that hand raw values to the block use yield(*x).
   def to_a(*args)
     a = []
-    each(*args) { |*x| a << (x.size == 1 ? x[0] : x) }
+    each(*args) { |*x| a << (x.size <= 1 ? x[0] : x) }
     a
   end
-  alias entries to_a
+  def entries(*args)
+    a = []
+    each(*args) { |*x| a << (x.size <= 1 ? x[0] : x) }
+    a
+  end
+  def __size = (respond_to?(:size) ? size : nil)
+  private :__size
   def map
-    return enum_for(:map) unless block_given?
+    return enum_for(:map) { __size } unless block_given?
     a = []
     each { |*x| a << yield(*x) }
     a
   end
   alias collect map
   def flat_map
-    return enum_for(:flat_map) unless block_given?
+    return enum_for(:flat_map) { __size } unless block_given?
     a = []
-    each { |*x| r = yield(*x); r.is_a?(Array) ? a.concat(r) : a << r }
+    each do |*x|
+      r = yield(*x)
+      if (ra = Array.try_convert(r)) then a.concat(ra) else a << r end
+    end
     a
   end
   alias collect_concat flat_map
   def select
-    return enum_for(:select) unless block_given?
+    return enum_for(:select) { __size } unless block_given?
     a = []
-    each { |*x| v = x.size == 1 ? x[0] : x; a << v if yield(*x) }
+    each { |*x| v = x.size <= 1 ? x[0] : x; a << v if yield(v) }
     a
   end
   alias filter select
+  alias find_all select
   def filter_map
-    return enum_for(:filter_map) unless block_given?
+    return enum_for(:filter_map) { __size } unless block_given?
     a = []
     each { |*x| r = yield(*x); a << r if r }
     a
   end
   def reject
-    return enum_for(:reject) unless block_given?
+    return enum_for(:reject) { __size } unless block_given?
     a = []
-    each { |*x| v = x.size == 1 ? x[0] : x; a << v unless yield(*x) }
+    each { |*x| v = x.size <= 1 ? x[0] : x; a << v unless yield(v) }
+    a
+  end
+  def grep(pat)
+    a = []
+    if block_given?
+      each { |*x| v = x.size <= 1 ? x[0] : x; a << yield(v) if pat === v }
+    else
+      each { |*x| v = x.size <= 1 ? x[0] : x; a << v if pat === v }
+    end
+    a
+  end
+  def grep_v(pat)
+    a = []
+    if block_given?
+      each { |*x| v = x.size <= 1 ? x[0] : x; a << yield(v) unless pat === v }
+    else
+      each { |*x| v = x.size <= 1 ? x[0] : x; a << v unless pat === v }
+    end
     a
   end
   def find(ifnone = nil)
     return enum_for(:find, ifnone) unless block_given?
-    each { |*x| v = x.size == 1 ? x[0] : x; return v if yield(*x) }
+    each { |*x| v = x.size <= 1 ? x[0] : x; return v if yield(v) }
     ifnone&.call
   end
   alias detect find
   def find_index(*args)
-    return enum_for(:find_index) if args.empty? && !block_given?
-    i = 0
+    Enumerable.__argc(args.size, 0, 1) if args.size > 1
     if args.empty?
+      return enum_for(:find_index) unless block_given?
+      i = 0
       each { |*x| return i if yield(*x); i += 1 }
     else
-      each { |*x| v = x.size == 1 ? x[0] : x; return i if v == args[0]; i += 1 }
+      warn("warning: given block not used", uplevel: 1) if block_given? && false
+      i = 0
+      each { |*x| v = x.size <= 1 ? x[0] : x; return i if v == args[0]; i += 1 }
     end
     nil
   end
   def each_with_index(*args)
-    return enum_for(:each_with_index, *args) unless block_given?
+    return enum_for(:each_with_index, *args) { __size } unless block_given?
     i = 0
-    each(*args) { |*x| yield((x.size == 1 ? x[0] : x), i); i += 1 }
+    each(*args) { |*x| yield((x.size <= 1 ? x[0] : x), i); i += 1 }
     self
   end
   def each_with_object(memo)
-    return enum_for(:each_with_object, memo) unless block_given?
-    each { |*x| yield((x.size == 1 ? x[0] : x), memo) }
+    return enum_for(:each_with_object, memo) { __size } unless block_given?
+    each { |*x| yield((x.size <= 1 ? x[0] : x), memo) }
     memo
   end
+  def each_entry(*args)
+    return enum_for(:each_entry, *args) { __size } unless block_given?
+    each(*args) { |*x| yield(x.size <= 1 ? x[0] : x) }
+    self
+  end
   def inject(*args)
+    if args.size > 2 || (args.empty? && !block_given?)
+      Enumerable.__argc(args.size, 1, 2)
+    end
     op = nil
     if args.size == 2
       acc, op = args
@@ -110,26 +151,30 @@ module Enumerable
     else
       first = true
     end
+    if op && !op.is_a?(Symbol)
+      raise TypeError, "#{op.inspect} is not a symbol nor a string" unless op.is_a?(String)
+      op = op.to_sym
+    end
     each do |*x|
-      v = x.size == 1 ? x[0] : x
+      v = x.size <= 1 ? x[0] : x
       if first
         acc = v; first = false
       else
-        acc = op ? acc.__send__(op, v) : yield(acc, v)
+        acc = op ? acc.public_send(op, v) : yield(acc, v)
       end
     end
     acc
   end
   alias reduce inject
-  def sum(init = 0)
-    acc = init
-    each { |*x| v = x.size == 1 ? x[0] : x; acc += block_given? ? yield(v) : v }
-    acc
+  def sum(init = 0, &b)
+    a = to_a
+    b ? a.sum(init, &b) : a.sum(init)
   end
   def count(*args)
+    Enumerable.__argc(args.size, 0, 1) if args.size > 1
     n = 0
     if !args.empty?
-      each { |*x| v = x.size == 1 ? x[0] : x; n += 1 if v == args[0] }
+      each { |*x| v = x.size <= 1 ? x[0] : x; n += 1 if v == args[0] }
     elsif block_given?
       each { |*x| n += 1 if yield(*x) }
     else
@@ -138,41 +183,48 @@ module Enumerable
     n
   end
   def include?(o)
-    each { |*x| v = x.size == 1 ? x[0] : x; return true if v == o }
+    each { |*x| v = x.size <= 1 ? x[0] : x; return true if v == o }
     false
   end
   alias member? include?
-  def first(n = nil)
-    if n.nil?
-      each { |*x| return x.size == 1 ? x[0] : x }
+  def first(*args)
+    if args.empty?
+      each { |*x| return x.size <= 1 ? x[0] : x }
       return nil
     end
+    Enumerable.__argc(args.size, 0, 1) if args.size > 1
+    n = Enumerable.__int(args[0])
     raise ArgumentError, "attempt to take negative size" if n < 0
     a = []
     return a if n == 0
-    each { |*x| a << (x.size == 1 ? x[0] : x); break if a.size >= n }
+    each { |*x| a << (x.size <= 1 ? x[0] : x); break if a.size >= n }
     a
   end
   def take(n)
+    n = Enumerable.__int(n)
     raise ArgumentError, "attempt to take negative size" if n < 0
-    first(n)
+    a = []
+    return a if n == 0
+    each { |*x| a << (x.size <= 1 ? x[0] : x); break if a.size >= n }
+    a
   end
   def take_while
     return enum_for(:take_while) unless block_given?
     a = []
-    each { |*x| v = x.size == 1 ? x[0] : x; break unless yield(*x); a << v }
+    each { |*x| break unless yield(*x); a << (x.size <= 1 ? x[0] : x) }
     a
   end
   def drop(n)
+    n = Enumerable.__int(n)
     raise ArgumentError, "attempt to drop negative size" if n < 0
     a = []; i = 0
-    each { |*x| a << (x.size == 1 ? x[0] : x) if i >= n; i += 1 }
+    each { |*x| a << (x.size <= 1 ? x[0] : x) if i >= n; i += 1 }
     a
   end
   def drop_while
     return enum_for(:drop_while) unless block_given?
     a = []; dropping = true
-    each { |*x| v = x.size == 1 ? x[0] : x; dropping = false if dropping && !yield(*x); a << v unless dropping }
+    each { |*x| v = x.size <= 1 ? x[0] : x; dropping = false if dropping && !yield(v); a << v unless dropping }
     a
   end
   def min(n = nil, &b) = to_a.min(n, &b)
@@ -180,149 +232,261 @@ module Enumerable
   def minmax(&b) = to_a.minmax(&b)
   def sort(&b) = to_a.sort(&b)
   def sort_by(&b)
-    return enum_for(:sort_by) unless b
+    return enum_for(:sort_by) { __size } unless b
     to_a.sort_by(&b)
   end
   def min_by(n = nil, &b)
-    return enum_for(:min_by, n) unless b
-    a = to_a
-    return a.sort_by(&b).first(n) if n
+    return enum_for(:min_by, *n) { __size } unless b
+    return sort_by(&b).first(Enumerable.__int(n)) if n
     best = nil; bk = nil; first = true
-    a.each { |v| k = b.call(v); if first || (k <=> bk) < 0 then best = v; bk = k; first = false end }
+    each { |*x| v = x.size <= 1 ? x[0] : x; k = b.call(v); if first || Enumerable.__cmp(k, bk) < 0 then best = v; bk = k; first = false end }
     best
   end
   def max_by(n = nil, &b)
-    return enum_for(:max_by, n) unless b
-    a = to_a
-    return a.sort_by(&b).reverse.first(n) if n
+    return enum_for(:max_by, *n) { __size } unless b
+    return sort_by(&b).reverse.first(Enumerable.__int(n)) if n
     best = nil; bk = nil; first = true
-    a.each { |v| k = b.call(v); if first || (k <=> bk) > 0 then best = v; bk = k; first = false end }
+    each { |*x| v = x.size <= 1 ? x[0] : x; k = b.call(v); if first || Enumerable.__cmp(k, bk) > 0 then best = v; bk = k; first = false end }
     best
   end
   def minmax_by(&b)
-    return enum_for(:minmax_by) unless b
-    [min_by(&b), max_by(&b)]
+    return enum_for(:minmax_by) { __size } unless b
+    mn = mx = nil; mnk = mxk = nil; first = true
+    each do |*x|
+      v = x.size <= 1 ? x[0] : x; k = b.call(v)
+      if first then mn = mx = v; mnk = mxk = k; first = false
+      else
+        if Enumerable.__cmp(k, mnk) < 0 then mn = v; mnk = k end
+        if Enumerable.__cmp(k, mxk) > 0 then mx = v; mxk = k end
+      end
+    end
+    [mn, mx]
   end
   def group_by
-    return enum_for(:group_by) unless block_given?
+    return enum_for(:group_by) { __size } unless block_given?
     h = {}
-    each { |*x| v = x.size == 1 ? x[0] : x; (h[yield(*x)] ||= []) << v }
+    each { |*x| v = x.size <= 1 ? x[0] : x; k = yield(v); (h.key?(k) ? h[k] : (h[k] = [])) << v }
     h
   end
   def partition
-    return enum_for(:partition) unless block_given?
+    return enum_for(:partition) { __size } unless block_given?
     t = []; f = []
-    each { |*x| v = x.size == 1 ? x[0] : x; (yield(*x) ? t : f) << v }
+    each { |*x| v = x.size <= 1 ? x[0] : x; (yield(v) ? t : f) << v }
     [t, f]
   end
   def chunk_while(&b)
-    res = []
-    cur = nil
-    each do |*x|
-      v = x.size == 1 ? x[0] : x
-      if cur.nil? then cur = [v]
-      elsif b.call(cur.last, v) then cur << v
-      else res << cur; cur = [v] end
+    raise ArgumentError, "tried to create Proc object without a block" unless b
+    src = self
+    Enumerator.new do |y|
+      cur = nil
+      src.each do |*x|
+        v = x.size <= 1 ? x[0] : x
+        if cur.nil? then cur = [v]
+        elsif b.call(cur.last, v) then cur << v
+        else y << cur; cur = [v] end
+      end
+      y << cur if cur
     end
-    res << cur if cur
-    res.each
   end
-  def slice_when(&b) = chunk_while { |a, c| !b.call(a, c) }
-  def chunk
-    return enum_for(:chunk) unless block_given?
-    res = []
-    each do |*x|
-      v = x.size == 1 ? x[0] : x
-      k = yield(v)
-      next if k.nil? || k == :_separator
-      if k == :_alone then res << [k, [v]]
-      elsif !res.empty? && res.last[0] == k then res.last[1] << v
-      else res << [k, [v]] end
+  def slice_when(&b)
+    raise ArgumentError, "tried to create Proc object without a block" unless b
+    chunk_while { |a, c| !b.call(a, c) }
+  end
+  def chunk(&b)
+    return enum_for(:chunk) { __size } unless b
+    src = self
+    Enumerator.new do |y|
+      ck = nil; cur = nil
+      src.each do |*x|
+        v = x.size <= 1 ? x[0] : x
+        k = b.call(v)
+        if k.nil? || k == :_separator
+          y << [ck, cur] if cur
+          ck = cur = nil
+        elsif k == :_alone
+          y << [ck, cur] if cur
+          y << [k, [v]]
+          ck = cur = nil
+        elsif k.is_a?(Symbol) && k.start_with?("_")
+          raise RuntimeError, "symbols beginning with an underscore are reserved"
+        elsif cur && ck == k
+          cur << v
+        else
+          y << [ck, cur] if cur
+          ck = k; cur = [v]
+        end
+      end
+      y << [ck, cur] if cur
     end
-    res.each
   end
-  def slice_before(pat = nil, &b)
-    res = []
-    each do |*x|
-      v = x.size == 1 ? x[0] : x
-      hit = b ? b.call(v) : (pat === v)
-      if res.empty? || hit then res << [v] else res.last << v end
+  def slice_before(*pat, &b)
+    if b
+      raise ArgumentError, "both pattern and block are given" unless pat.empty?
+    else
+      Enumerable.__argc(pat.size, 1, 1) if pat.size != 1
     end
-    res.each
-  end
-  def slice_after(pat = nil, &b)
-    res = []; cut = true
-    each do |*x|
-      v = x.size == 1 ? x[0] : x
-      if cut then res << [v] else res.last << v end
-      cut = b ? b.call(v) : (pat === v)
+    pat = pat[0]
+    src = self
+    Enumerator.new do |y|
+      cur = nil
+      src.each do |*x|
+        v = x.size <= 1 ? x[0] : x
+        hit = b ? b.call(v) : (pat === v)
+        if cur && hit then y << cur; cur = nil end
+        (cur ||= []) << v
+      end
+      y << cur if cur
     end
-    res.each
   end
-  def tally(h = {})
-    each { |*x| v = x.size == 1 ? x[0] : x; h[v] = (h[v] || 0) + 1 }
+  def slice_after(*pat, &b)
+    if b
+      raise ArgumentError, "both pattern and block are given" unless pat.empty?
+    else
+      Enumerable.__argc(pat.size, 1, 1) if pat.size != 1
+    end
+    pat = pat[0]
+    src = self
+    Enumerator.new do |y|
+      cur = nil
+      src.each do |*x|
+        v = x.size <= 1 ? x[0] : x
+        (cur ||= []) << v
+        if b ? b.call(v) : (pat === v) then y << cur; cur = nil end
+      end
+      y << cur if cur
+    end
+  end
+  def tally(h = nil)
+    if h.nil?
+      h = {}
+    else
+      h = Enumerable.__hash(h)
+      raise FrozenError.new("can't modify frozen #{h.class}: #{h.inspect}", receiver: h) if h.frozen?
+    end
+    each do |*x|
+      v = x.size <= 1 ? x[0] : x
+      n = h.key?(v) ? h[v] : 0
+      raise TypeError, "wrong argument type #{n.class} (expected Integer)" unless n.is_a?(Integer)
+      h[v] = n + 1
+    end
     h
   end
   def each_slice(n)
+    n = Enumerable.__int(n)
     raise ArgumentError, "invalid slice size" if n <= 0
-    return enum_for(:each_slice, n) unless block_given?
+    unless block_given?
+      return enum_for(:each_slice, n) { s = __size; s && (s.is_a?(Integer) ? (s + n - 1) / n : s) }
+    end
     buf = []
-    each { |*x| buf << (x.size == 1 ? x[0] : x); if buf.size == n then yield buf; buf = [] end }
+    each { |*x| buf << (x.size <= 1 ? x[0] : x); if buf.size == n then yield buf; buf = [] end }
     yield buf unless buf.empty?
     self
   end
   def each_cons(n)
+    n = Enumerable.__int(n)
     raise ArgumentError, "invalid size" if n <= 0
-    return enum_for(:each_cons, n) unless block_given?
+    unless block_given?
+      return enum_for(:each_cons, n) { s = __size; s && (s.is_a?(Integer) ? [s - n + 1, 0].max : s) }
+    end
     buf = []
-    each { |*x| buf << (x.size == 1 ? x[0] : x); buf.shift if buf.size > n; yield buf.dup if buf.size == n }
-    self
-  end
-  def each_entry(*args, &b)
-    return enum_for(:each_entry, *args) unless b
-    each(*args) { |*x| b.call(x.size == 1 ? x[0] : x) }
+    each { |*x| buf << (x.size <= 1 ? x[0] : x); buf.shift if buf.size > n; yield buf.dup if buf.size == n }
     self
   end
   def all?(*pat)
-    if !pat.empty? then each { |*x| v = x.size == 1 ? x[0] : x; return false unless pat[0] === v }
+    Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
+    if !pat.empty? then each { |*x| v = x.size <= 1 ? x[0] : x; return false unless pat[0] === v }
     elsif block_given? then each { |*x| return false unless yield(*x) }
-    else each { |*x| v = x.size == 1 ? x[0] : x; return false unless v } end
+    else each { |*x| v = x.size <= 1 ? x[0] : x; return false unless v } end
     true
   end
   def any?(*pat)
-    if !pat.empty? then each { |*x| v = x.size == 1 ? x[0] : x; return true if pat[0] === v }
+    Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
+    if !pat.empty? then each { |*x| v = x.size <= 1 ? x[0] : x; return true if pat[0] === v }
     elsif block_given? then each { |*x| return true if yield(*x) }
-    else each { |*x| v = x.size == 1 ? x[0] : x; return true if v } end
+    else each { |*x| v = x.size <= 1 ? x[0] : x; return true if v } end
     false
   end
   def none?(*pat)
-    if !pat.empty? then each { |*x| v = x.size == 1 ? x[0] : x; return false if pat[0] === v }
+    Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
+    if !pat.empty? then each { |*x| v = x.size <= 1 ? x[0] : x; return false if pat[0] === v }
     elsif block_given? then each { |*x| return false if yield(*x) }
-    else each { |*x| v = x.size == 1 ? x[0] : x; return false if v } end
+    else each { |*x| v = x.size <= 1 ? x[0] : x; return false if v } end
     true
   end
   def one?(*pat)
+    Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
     n = 0
-    if !pat.empty? then each { |*x| v = x.size == 1 ? x[0] : x; n += 1 if pat[0] === v; return false if n > 1 }
+    if !pat.empty? then each { |*x| v = x.size <= 1 ? x[0] : x; n += 1 if pat[0] === v; return false if n > 1 }
     elsif block_given? then each { |*x| n += 1 if yield(*x); return false if n > 1 }
-    else each { |*x| v = x.size == 1 ? x[0] : x; n += 1 if v; return false if n > 1 } end
+    else each { |*x| v = x.size <= 1 ? x[0] : x; n += 1 if v; return false if n > 1 } end
     n == 1
   end
-  def zip(*others, &b) = to_a.zip(*others, &b)
-  def uniq(&b) = to_a.uniq(&b)
-  def to_h(*args, &b) = to_a.to_h(&b)
-  def to_set = Set.new(self)
-  def reverse_each(&b)
-    return enum_for(:reverse_each) unless b
-    to_a.reverse_each(&b)
+  def zip(*others, &b)
+    a = to_a
+    others = others.map do |o|
+      if (oa = Array.try_convert(o)) then oa
+      elsif o.respond_to?(:each) then o.respond_to?(:first) ? o.first(a.size) : o.to_enum(:each).first(a.size)
+      else raise TypeError, "wrong argument type #{o.class} (must respond to :each)"
+      end
+    end
+    a.zip(*others, &b)
+  end
+  def uniq
+    h = {}
+    if block_given?
+      each { |*x| k = yield(*x); h[k] = (x.size <= 1 ? x[0] : x) unless h.key?(k) }
+    else
+      each { |*x| v = x.size <= 1 ? x[0] : x; h[v] = v unless h.key?(v) }
+    end
+    h.values
+  end
+  def to_h(*args, &b)
+    h = {}
+    i = 0
+    each(*args) do |*x|
+      pair = b ? yield(*x) : (x.size <= 1 ? x[0] : x)
+      ar = Array.try_convert(pair)
+      raise TypeError, "wrong element type #{pair.class} (expected array)" unless ar
+      raise ArgumentError, "element has wrong array length (expected 2, was #{ar.size})" if ar.size != 2
+      h[ar[0]] = ar[1]
+      i += 1
+    end
+    h
+  end
+  def to_set(*args, &b) = Set.new(self, *args, &b)
+  def reverse_each(*args, &b)
+    return enum_for(:reverse_each, *args) { __size } unless b
+    to_a(*args).reverse_each(&b)
     self
   end
-  def cycle(n = nil, &b)
-    return enum_for(:cycle, n) unless b
-    to_a.cycle(n, &b)
+  def cycle(n = nil)
+    unless block_given?
+      return enum_for(:cycle, n) do
+        if n.nil? then (s = __size) == 0 ? 0 : Float::INFINITY
+        else s = __size; k = Enumerable.__int(n); s && (k < 0 ? 0 : s * k) end
+      end
+    end
+    unless n.nil?
+      n = Enumerable.__int(n)
+      return nil if n <= 0
+    end
+    saved = []
+    each { |*x| v = x.size <= 1 ? x[0] : x; saved << v; yield v }
+    return nil if saved.empty?
+    if n.nil?
+      loop { saved.each { |v| yield v } }
+    else
+      (n - 1).times { saved.each { |v| yield v } }
+    end
+    nil
   end
-  def lazy = Enumerator::Lazy.new(self)
-  def compact = to_a.compact
+  def chain(*enums) = Enumerator::Chain.new(self, *enums)
+  def lazy = Enumerator::Lazy.__from(self)
+  def compact
+    a = []
+    each { |*x| v = x.size <= 1 ? x[0] : x; a << v unless v.nil? }
+    a
+  end
 end
 
 
@@ -393,152 +557,662 @@ class Exception
 end
 
 class Enumerator
-  class Lazy < Enumerator
-    def initialize(src, &blk)
-      @src = src
-      @ops = []
-    end
-    def __add(op, f) = (l = Lazy.new(@src); l.__ops = @ops + [[op, f]]; l)
-    def __ops=(o); @ops = o; end
-    def map(&f) = __add(:map, f)
-    alias collect map
-    def select(&f) = __add(:select, f)
-    alias filter select
-    def reject(&f) = __add(:reject, f)
-    def take_while(&f) = __add(:take_while, f)
-    def drop_while(&f) = __add(:drop_while, f)
-    def filter_map(&f) = __add(:filter_map, f)
-    def flat_map(&f) = __add(:flat_map, f)
-    def with_index(off = 0, &f) = __add(:with_index, [off, f])
-    def compact = __add(:select, proc { |x| !x.nil? })
-    def take(n) = __add(:take, n)
-    def drop(n) = __add(:drop, n)
-    def uniq = __add(:uniq, nil)
-    def lazy = self
-    def each(&blk)
-      return self unless blk
-      counts = Hash.new(0)
-      states = {}
-      catch(:__lazy_done) do
-        @src.each do |*xs|
-          x = xs.size == 1 ? xs[0] : xs
-          __feed(x, 0, counts, states, blk)
-        end
+  def +(other) = Enumerator::Chain.new(self, other)
+  def next_values
+    v = self.next
+    [v]
+  end
+  def peek_values = [peek]
+  def self.produce(*args, &b)
+    raise ArgumentError, "no block given" unless b
+    Enumerable.__argc(args.size, 0, 1) if args.size > 1
+    Enumerator.new(Float::INFINITY) do |y|
+      v = args.empty? ? b.call(nil) : args[0]
+      begin
+        loop { y << v; v = b.call(v) }
+      rescue StopIteration
       end
+    end
+  end
+  def self.product(*enums, **kw, &b)
+    unless kw.empty?
+      ks = kw.keys.map(&:inspect).join(", ")
+      raise ArgumentError, "unknown keyword#{kw.size > 1 ? 's' : ''}: #{ks}"
+    end
+    e = Enumerator::Product.new(*enums)
+    return e unless b
+    e.each(&b)
+    nil
+  end
+
+  class Generator
+    def initialize(&b)
+      raise ArgumentError, "no block given" unless b
+      @__b = b
+    end
+    def each(*args, &blk) = @__b.call(Enumerator::Yielder.new(&blk), *args)
+  end
+
+  class Product < Enumerator
+    def initialize(*enums)
+      @__enums = enums
+    end
+    def each(&b)
+      return self unless b
+      __each_rec(0, [], &b)
       self
     end
-    def __feed(x, i, counts, states, blk)
-      if i == @ops.size
-        blk.call(x)
-        return
+    def __each_rec(i, acc, &b)
+      if i == @__enums.size
+        b.call(acc.dup)
+      else
+        @__enums[i].each_entry { |v| acc.push(v); __each_rec(i + 1, acc, &b); acc.pop }
       end
-      op, f = @ops[i]
-      case op
-      when :map then __feed(f.call(x), i + 1, counts, states, blk)
-      when :select then __feed(x, i + 1, counts, states, blk) if f.call(x)
-      when :reject then __feed(x, i + 1, counts, states, blk) unless f.call(x)
-      when :filter_map then (r = f.call(x)) && __feed(r, i + 1, counts, states, blk)
-      when :flat_map then r = f.call(x); (r.is_a?(Array) ? r : [r]).each { |y| __feed(y, i + 1, counts, states, blk) }
-      when :take_while then f.call(x) ? __feed(x, i + 1, counts, states, blk) : throw(:__lazy_done)
+    end
+    private :__each_rec
+    def size
+      @__enums.inject(1) do |t, e|
+        return nil unless e.respond_to?(:size)
+        s = e.size
+        return s if s.nil?
+        t * s
+      end
+    end
+    def rewind = (@__enums.reverse_each { |e| e.rewind if e.respond_to?(:rewind) }; self)
+    def inspect = "#<Enumerator::Product: #{@__enums.inspect}>"
+    alias to_s inspect
+  end
+
+  class Chain < Enumerator
+    def initialize(*enums)
+      @__enums = enums.freeze
+    end
+    def each(*args, &b)
+      return self unless b
+      @__enums.each { |e| e.each(*args, &b) }
+      self
+    end
+    def size
+      @__enums.inject(0) do |t, e|
+        s = e.size
+        return s if s.nil? || (s.is_a?(Float) && s.infinite?)
+        t + s
+      end
+    end
+    def +(other) = Chain.new(self, other)
+    def rewind = (@__enums.reverse_each { |e| e.rewind if e.respond_to?(:rewind) }; self)
+    def inspect = "#<Enumerator::Chain: [#{@__enums.map(&:inspect).join(', ')}]>"
+    alias to_s inspect
+  end
+
+  class Lazy < Enumerator
+    # A Lazy is a source (@__src, iterated with @__meth/@__margs) or a parent Lazy plus one stage (@__op).
+    def initialize(obj, size = nil, &blk)
+      raise ArgumentError, "tried to call lazy new without a block" unless blk
+      @__src = obj; @__size = size; @__gen = blk; @__meth = :each; @__margs = []
+      @__parent = nil; @__op = nil; @__mid = :each; @__args = nil
+    end
+    def self.__from(src, meth = :each, margs = [], size = nil)
+      l = allocate
+      l.__init_src(src, meth, margs, size)
+      l
+    end
+    def __init_src(src, meth, margs, size)
+      @__src = src; @__meth = meth; @__margs = margs; @__size = size; @__gen = nil
+      @__parent = nil; @__op = nil; @__mid = nil; @__args = nil
+    end
+    def __init_op(parent, op, mid, args)
+      @__parent = parent; @__op = op; @__mid = mid; @__args = args
+    end
+    def __add(mid, args, *op)
+      l = Lazy.allocate
+      l.__init_op(self, op, mid, args)
+      l
+    end
+    def __stages
+      st = []; l = self
+      while l.instance_variable_get(:@__parent)
+        st.unshift(l.instance_variable_get(:@__op))
+        l = l.instance_variable_get(:@__parent)
+      end
+      [l, st]
+    end
+    def __src_each(&sink)
+      if @__gen
+        y = Enumerator::Yielder.new { |*v| sink.call(v.size <= 1 ? v[0] : v) }
+        @__src.each { |*x| @__gen.call(y, *x) }
+      else
+        @__src.__send__(@__meth, *@__margs) { |*x| sink.call(x.size <= 1 ? x[0] : x) }
+      end
+    end
+
+    def each(*args, &blk)
+      return self unless blk
+      root, ops = __stages
+      return self if ops.any? { |o| o[0] == :take && o[1] == 0 }
+      tag = Object.new
+      sink = blk
+      ops.reverse_each { |op| sink = Lazy.__stage(op, sink, tag) }
+      catch(tag) { root.__src_each(&sink) }
+      self
+    end
+
+    def self.__stage(op, nxt, tag)
+      kind, f, g = op
+      case kind
+      when :map then ->(x) { nxt.call(f.call(x)) }
+      when :select then ->(x) { nxt.call(x) if f.call(x) }
+      when :reject then ->(x) { nxt.call(x) unless f.call(x) }
+      when :grep then ->(x) { nxt.call(g ? g.call(x) : x) if f === x }
+      when :grep_v then ->(x) { nxt.call(g ? g.call(x) : x) unless f === x }
+      when :filter_map then ->(x) { r = f.call(x); nxt.call(r) if r }
+      when :compact then ->(x) { nxt.call(x) unless x.nil? }
+      when :flat_map
+        lambda do |x|
+          r = f.call(x)
+          if (ra = Array.try_convert(r)) then ra.each { |y| nxt.call(y) }
+          elsif r.respond_to?(:force) && r.respond_to?(:each) then r.each { |y| nxt.call(y) }
+          else nxt.call(r)
+          end
+        end
+      when :take_while then ->(x) { f.call(x) ? nxt.call(x) : throw(tag) }
       when :drop_while
-        states[i] = true unless states[i] || f.call(x)
-        __feed(x, i + 1, counts, states, blk) if states[i]
-      when :with_index
-        off, g = f
-        idx = counts[i] + off; counts[i] += 1
-        g ? (g.call(x, idx); __feed(x, i + 1, counts, states, blk)) : __feed([x, idx], i + 1, counts, states, blk)
+        dropping = true
+        ->(x) { dropping = false if dropping && !f.call(x); nxt.call(x) unless dropping }
       when :take
-        throw :__lazy_done if f == 0
-        counts[i] += 1
-        __feed(x, i + 1, counts, states, blk)
-        throw :__lazy_done if counts[i] >= f
+        n = 0
+        ->(x) { n += 1; nxt.call(x); throw(tag) if n >= f }
       when :drop
-        counts[i] += 1
-        __feed(x, i + 1, counts, states, blk) if counts[i] > f
+        n = 0
+        ->(x) { n += 1; nxt.call(x) if n > f }
+      when :with_index
+        i = f
+        if g then ->(x) { g.call(x, i); i += 1; nxt.call(x) }
+        else ->(x) { j = i; i += 1; nxt.call([x, j]) }
+        end
       when :uniq
-        states[i] ||= {}
-        unless states[i].key?(x)
-          states[i][x] = true
-          __feed(x, i + 1, counts, states, blk)
+        seen = {}
+        ->(x) { k = f ? f.call(x) : x; unless seen.key?(k) then seen[k] = true; nxt.call(x) end }
+      when :zip
+        i = 0
+        ->(x) { row = [x] + f.map { |o| o[i] }; i += 1; nxt.call(row) }
+      end
+    end
+
+    def __args_s = (@__args.nil? || @__args.empty? ? "" : "(#{@__args.map(&:inspect).join(', ')})")
+    def inspect
+      if @__parent
+        "#<#{self.class}: #{@__parent.inspect}:#{@__mid}#{__args_s}>"
+      elsif @__gen
+        "#<#{self.class}: #{@__src.inspect}:each>"
+      elsif @__meth == :each && @__margs.empty?
+        "#<#{self.class}: #{@__src.inspect}>"
+      else
+        "#<#{self.class}: #{@__src.inspect}:#{@__meth}#{@__margs.empty? ? '' : "(#{@__margs.map(&:inspect).join(', ')})"}>"
+      end
+    end
+    alias to_s inspect
+    private :__args_s
+
+    def size
+      if @__parent
+        ps = @__parent.size
+        case @__op[0]
+        when :map, :with_index, :zip then ps
+        when :take then ps.nil? ? nil : [ps, @__op[1]].min
+        when :drop then ps.nil? ? nil : [ps - @__op[1], 0].max
+        else nil
+        end
+      else
+        s = @__size
+        s.respond_to?(:call) ? s.call : s.nil? && !@__gen && @__meth == :each && @__src.respond_to?(:size) ? @__src.size : s
+      end
+    end
+
+    def map(&f)
+      raise ArgumentError, "tried to call lazy map without a block" unless f
+      __add(:map, nil, :map, f)
+    end
+    alias collect map
+    def select(&f)
+      raise ArgumentError, "tried to call lazy select without a block" unless f
+      __add(:select, nil, :select, f)
+    end
+    alias filter select
+    alias find_all select
+    def reject(&f)
+      raise ArgumentError, "tried to call lazy reject without a block" unless f
+      __add(:reject, nil, :reject, f)
+    end
+    def grep(pat, &f) = __add(:grep, [pat], :grep, pat, f)
+    def grep_v(pat, &f) = __add(:grep_v, [pat], :grep_v, pat, f)
+    def filter_map(&f)
+      raise ArgumentError, "tried to call lazy filter_map without a block" unless f
+      __add(:filter_map, nil, :filter_map, f)
+    end
+    def flat_map(&f)
+      raise ArgumentError, "tried to call lazy flat_map without a block" unless f
+      __add(:flat_map, nil, :flat_map, f)
+    end
+    alias collect_concat flat_map
+    def take_while(&f)
+      raise ArgumentError, "tried to call lazy take_while without a block" unless f
+      __add(:take_while, nil, :take_while, f)
+    end
+    def drop_while(&f)
+      raise ArgumentError, "tried to call lazy drop_while without a block" unless f
+      __add(:drop_while, nil, :drop_while, f)
+    end
+    def take(n)
+      n = Enumerable.__int(n)
+      raise ArgumentError, "attempt to take negative size" if n < 0
+      __add(:take, [n], :take, n)
+    end
+    def drop(n)
+      n = Enumerable.__int(n)
+      raise ArgumentError, "attempt to drop negative size" if n < 0
+      __add(:drop, [n], :drop, n)
+    end
+    def with_index(off = 0, &f)
+      off = off.nil? ? 0 : Enumerable.__int(off)
+      __add(:with_index, [off], :with_index, off, f)
+    end
+    def each_with_index(&f) = __add(:each_with_index, nil, :with_index, 0, f)
+    def compact = __add(:compact, nil, :compact)
+    def uniq(&f) = __add(:uniq, nil, :uniq, f)
+    def zip(*others, &b)
+      return super if b
+      arrs = others.map do |o|
+        if (oa = Array.try_convert(o)) then oa
+        elsif o.respond_to?(:each) then o
+        else raise TypeError, "wrong argument type #{o.class} (must respond to :each)"
         end
       end
-    end
-    def first(n = nil)
-      res = []
-      catch(:__lazy_first) do
-        each { |x| res << x; throw :__lazy_first if res.size >= (n || 1) }
+      if arrs.all? { |o| o.is_a?(Array) }
+        __add(:zip, others, :zip, arrs)
+      else
+        __add(:zip, others, :zip, arrs.map { |o| o.is_a?(Array) ? o : __zip_cache(o) })
       end
-      n ? res : res[0]
     end
+    def __zip_cache(o)
+      c = Object.new
+      c.instance_variable_set(:@e, o.each_entry.lazy)
+      c.instance_variable_set(:@buf, [])
+      def c.[](i)
+        while @buf.size <= i
+          more = @e.first(@buf.size + 1)
+          return nil if more.size <= @buf.size
+          @buf = more
+        end
+        @buf[i]
+      end
+      c
+    end
+    private :__zip_cache
+    def chunk(*a, &b) = super.lazy
+    def chunk_while(*a, &b) = super.lazy
+    def slice_after(*a, &b) = super.lazy
+    def slice_before(*a, &b) = super.lazy
+    def slice_when(*a, &b) = super.lazy
+    def to_enum(meth = :each, *args, &sz) = Lazy.__from(self, meth, args, sz)
+    alias enum_for to_enum
+    def lazy = self
+    def eager = Kernel.instance_method(:to_enum).bind_call(self, :each)
     def to_a = (a = []; each { |x| a << x }; a)
     alias force to_a
-    def eager = to_a.each
-    def inspect = "#<Enumerator::Lazy: ...>"
+    def first(*args)
+      if args.empty?
+        each { |x| return x }
+        return nil
+      end
+      super
+    end
+    def +(other) = Chain.new(self, other).lazy
   end
 end
 
 class Set
   include Enumerable
-  def initialize(enum = nil, &b)
-    @hash = {}
-    enum&.each { |x| @hash[b ? b.call(x) : x] = true }
-  end
   def self.[](*a) = new(a)
-  def add(x) = (@hash[x] = true; self)
-  alias << add
-  def add?(x) = (@hash.key?(x) ? nil : add(x))
-  def delete(x) = (@hash.delete(x); self)
-  def delete?(x) = (@hash.key?(x) ? delete(x) : nil)
-  def include?(x) = @hash.key?(x)
-  alias member? include?
-  alias === include?
-  alias contain? include?
-  def size = @hash.size
-  alias length size
-  alias count_fast size
-  def empty? = @hash.empty?
-  def each(&b)
-    return enum_for(:each) unless b
-    @hash.each_key(&b)
+  def initialize(enum = nil, &b)
+    Enumerable.__ivset(self, :__h, {})
+    return if enum.nil?
+    raise ArgumentError, "value must be enumerable" unless enum.respond_to?(:each_entry) || enum.respond_to?(:each)
+    if b
+      enum.each { |*x| add(b.call(x.size <= 1 ? x[0] : x)) }
+    else
+      enum.each { |*x| add(x.size <= 1 ? x[0] : x) }
+    end
+  end
+  def initialize_copy(o)
+    super
+    Enumerable.__ivset(self, :__h, o.__hash.dup)
+  end
+  def __enum(o)
+    return o if o.is_a?(Set)
+    raise ArgumentError, "value must be enumerable" unless o.respond_to?(:each_entry) || o.respond_to?(:each)
+    o
+  end
+  def __set(o)
+    raise ArgumentError, "value must be a set" unless o.is_a?(Set)
+    o
+  end
+  def __new_like = self.class.new
+  def __frozen! = (raise FrozenError.new("can't modify frozen #{self.class}: #{inspect}", receiver: self) if frozen?)
+  def __iterating? = Enumerable.__ivget(self, :__it).to_i > 0
+  private :__enum, :__set, :__new_like, :__frozen!, :__iterating?
+  def compare_by_identity
+    __frozen!
+    __hash.compare_by_identity
     self
   end
-  def to_a = @hash.keys
-  def dup = Set.new(to_a)
-  def |(o) = Set.new(to_a + o.to_a)
+  def compare_by_identity? = __hash.compare_by_identity?
+  def __hash = Enumerable.__ivget(self, :__h)
+  def add(x)
+    __frozen!
+    h = __hash
+    if __iterating? && !h.key?(x)
+      raise RuntimeError, "can't add a new item into set during iteration"
+    end
+    h[x] = true
+    self
+  end
+  alias << add
+  def add?(x) = (__hash.key?(x) ? nil : add(x))
+  def delete(x)
+    __frozen!
+    __hash.delete(x)
+    self
+  end
+  def delete?(x) = (__hash.key?(x) ? delete(x) : nil)
+  def include?(x) = __hash.key?(x)
+  alias member? include?
+  alias === include?
+  def size = __hash.size
+  alias length size
+  def empty? = __hash.empty?
+  def each(&b)
+    return enum_for(:each) { size } unless b
+    Enumerable.__ivset(self, :__it, Enumerable.__ivget(self, :__it).to_i + 1)
+    begin
+      __hash.each_key(&b)
+    ensure
+      Enumerable.__ivset(self, :__it, Enumerable.__ivget(self, :__it) - 1)
+    end
+    self
+  end
+  def to_a = __hash.keys
+  def to_set(*a, &b) = (a.empty? && !b && instance_of?(Set) ? self : Set.new(self, *a, &b))
+  def freeze = (super)
+  def |(o) = (s = dup; s.merge(__enum(o)); s)
   alias union |
   alias + |
-  def &(o) = Set.new(to_a.select { |x| o.include?(x) })
-  alias intersection &
-  def -(o) = Set.new(to_a.reject { |x| o.include?(x) })
+  def -(o) = (s = dup; s.subtract(__enum(o)); s)
   alias difference -
-  def ^(o) = (self | o) - (self & Set.new(o))
-  def subset?(o) = all? { |x| o.include?(x) }
+  def &(o)
+    s = __new_like
+    __enum(o).each { |x| s.add(x) if include?(x) }
+    s
+  end
+  alias intersection &
+  def ^(o)
+    s = dup
+    __enum(o).each { |x| s.add(x) unless s.delete?(x) }
+    s
+  end
+  def subset?(o) = (__set(o); size <= o.size && all? { |x| o.include?(x) })
   alias <= subset?
-  def superset?(o) = o.all? { |x| include?(x) }
+  def superset?(o) = (__set(o); size >= o.size && o.all? { |x| include?(x) })
   alias >= superset?
-  def proper_subset?(o) = subset?(o) && size < o.size
+  def proper_subset?(o) = (__set(o); size < o.size && all? { |x| o.include?(x) })
   alias < proper_subset?
-  def proper_superset?(o) = superset?(o) && size > o.size
+  def proper_superset?(o) = (__set(o); size > o.size && o.all? { |x| include?(x) })
   alias > proper_superset?
-  def disjoint?(o) = none? { |x| o.include?(x) }
-  def intersect?(o) = !disjoint?(o)
-  def merge(*es) = (es.each { |e| e.each { |x| add(x) } }; self)
-  def ==(o) = o.is_a?(Set) && size == o.size && subset?(o)
+  def <=>(o)
+    return nil unless o.is_a?(Set)
+    return 0 if self == o
+    return -1 if proper_subset?(o)
+    return 1 if proper_superset?(o)
+    nil
+  end
+  def disjoint?(o) = !intersect?(o)
+  def intersect?(o)
+    o = __enum(o)
+    if o.is_a?(Set) && o.size < size then o.any? { |x| include?(x) }
+    elsif o.is_a?(Set) then any? { |x| o.include?(x) }
+    else o.any? { |x| include?(x) }
+    end
+  end
+  def merge(*es)
+    raise RuntimeError, "cannot add to set during iteration" if __iterating?
+    es.each { |e| __enum(e).each { |x| add(x) } }
+    self
+  end
+  def subtract(e) = (__enum(e).each { |x| delete(x) }; self)
+  def replace(e)
+    e = __enum(e)
+    __frozen!
+    raise RuntimeError, "cannot replace set during iteration" if __iterating?
+    a = e.to_a
+    __hash.clear
+    a.each { |x| add(x) }
+    self
+  end
+  def ==(o)
+    return true if equal?(o)
+    return false unless o.is_a?(Set) && size == o.size
+    return false if compare_by_identity? != o.compare_by_identity?
+    oh = o.__hash
+    __hash.each_key { |x| return false unless oh.key?(x) }
+    true
+  end
   def hash = to_a.map(&:hash).sort.hash
-  def eql?(o) = self == o
-  def clear = (@hash.clear; self)
-  def map!(&b) = (a = to_a.map(&b); @hash = {}; a.each { |x| add(x) }; self)
-  def select!(&b) = (n = size; @hash.select! { |k, _| b.call(k) }; n == size ? nil : self)
+  def eql?(o) = o.is_a?(Set) && __hash.eql?(o.__hash)
+  def clear = (__frozen!; __hash.clear; self)
+  def reset = (__frozen!; __hash.rehash; self)
+  def map!(&b)
+    return enum_for(:map!) { size } unless b
+    a = to_a.map(&b)
+    __frozen!
+    Enumerable.__ivset(self, :__h, {})
+    a.each { |x| add(x) }
+    self
+  end
+  alias collect! map!
+  def select!(&b)
+    return enum_for(:select!) { size } unless b
+    n = size; __hash.select! { |k, _| b.call(k) }; n == size ? nil : self
+  end
   alias filter! select!
-  def reject!(&b) = (n = size; @hash.reject! { |k, _| b.call(k) }; n == size ? nil : self)
-  def delete_if(&b) = (reject!(&b); self)
-  def keep_if(&b) = (select!(&b); self)
-  def to_set = self
-  def freeze = (@hash.freeze; super)
-  def min(*a, &b) = to_a.min(*a, &b)
-  def max(*a, &b) = to_a.max(*a, &b)
-  def sort(&b) = to_a.sort(&b)
-  def group_by(&b) = to_a.group_by(&b)
-  def inspect = "#<Set: {#{to_a.map(&:inspect).join(', ')}}>"
+  def reject!(&b)
+    return enum_for(:reject!) { size } unless b
+    n = size; __hash.reject! { |k, _| b.call(k) }; n == size ? nil : self
+  end
+  def delete_if(&b) = (return enum_for(:delete_if) { size } unless b; reject!(&b); self)
+  def keep_if(&b) = (return enum_for(:keep_if) { size } unless b; select!(&b); self)
+  def classify
+    return enum_for(:classify) { size } unless block_given?
+    h = {}
+    each { |x| (h[yield(x)] ||= __new_like).add(x) }
+    h
+  end
+  def divide(&b)
+    return enum_for(:divide) { size } unless b
+    if b.arity == 2
+      items = to_a
+      parent = {}
+      find = ->(x) { x = parent[x] while parent[x] != x; x }
+      items.each { |x| parent[x] = x }
+      items.each { |a| items.each { |c| parent[find.(a)] = find.(c) if b.call(a, c) && find.(a) != find.(c) } }
+      groups = {}
+      items.each { |x| (groups[find.(x)] ||= __new_like).add(x) }
+      s = Set.new; groups.each_value { |g| s.add(g) }; s
+    else
+      s = Set.new; classify(&b).each_value { |g| s.add(g) }; s
+    end
+  end
+  def __flatten_into(out, seen)
+    each do |x|
+      if x.is_a?(Set)
+        raise ArgumentError, "tried to flatten recursive Set" if seen[x.object_id]
+        seen[x.object_id] = true
+        x.__flatten_into(out, seen)
+        seen.delete(x.object_id)
+      else
+        out.add(x)
+      end
+    end
+    out
+  end
+  def flatten = __flatten_into(__new_like, { object_id => true })
+  def flatten!
+    return nil unless any? { |x| x.is_a?(Set) }
+    replace(flatten)
+  end
+  def join(sep = nil) = to_a.join(sep)
+  def inspect
+    seen = (Enumerable.__ivget(Set, :__insp) || Enumerable.__ivset(Set, :__insp, {}))
+    sub = !instance_of?(Set)
+    if seen.key?(object_id)
+      return sub ? "#<#{self.class}: {...}>" : "#{self.class}[...]"
+    end
+    seen[object_id] = true
+    begin
+      body = to_a.map(&:inspect).join(", ")
+      sub ? "#<#{self.class}: {#{body}}>" : "#{self.class}[#{body}]"
+    ensure
+      seen.delete(object_id)
+    end
+  end
+  alias to_s inspect
+end
+
+class Data
+  class << self
+    undef_method :new
+    def define(*syms, &blk)
+      syms = syms.map do |s|
+        if s.is_a?(Symbol) then s
+        elsif s.is_a?(String) then s.to_sym
+        else raise TypeError, "#{s.inspect} is not a symbol nor a string"
+        end
+      end
+      seen = {}
+      syms.each do |s|
+        raise ArgumentError, "invalid data member: #{s}" if s.end_with?("=")
+        raise ArgumentError, "duplicate member: #{s}" if seen[s]
+        seen[s] = true
+      end
+      k = Class.new(self)
+      Enumerable.__ivset(k, :__members__, syms.freeze)
+      syms.each { |m| k.define_method(m) { Enumerable.__ivget(self, m) } }
+      class << k
+        define_method(:new) do |*args, **kw, &blk|
+          mem = members
+          if !args.empty?
+            raise ArgumentError, "wrong number of arguments (given #{args.size + 1}, expected 0)" unless kw.empty?
+            if args.size > mem.size
+              raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0#{mem.empty? ? '' : "..#{mem.size}"})"
+            end
+            args.each_with_index { |v, i| kw[mem[i]] = v }
+          end
+          o = allocate
+          o.__send__(:initialize, **kw, &blk)
+          o
+        end
+        alias_method :[], :new
+        def members
+          k = self
+          k = k.superclass while Enumerable.__ivget(k, :__members__).nil?
+          Enumerable.__ivget(k, :__members__)
+        end
+      end
+      k.class_eval(&blk) if blk
+      k
+    end
+  end
+  def initialize(**kw)
+    mem = self.class.members
+    missing = mem.reject { |m| kw.key?(m) }
+    unknown = kw.keys.reject { |m| mem.include?(m.is_a?(String) ? m.to_sym : m) }
+    unless unknown.empty?
+      raise ArgumentError, "unknown keyword#{unknown.size > 1 ? 's' : ''}: #{unknown.map(&:inspect).join(', ')}"
+    end
+    unless missing.empty?
+      raise ArgumentError, "missing keyword#{missing.size > 1 ? 's' : ''}: #{missing.map(&:inspect).join(', ')}"
+    end
+    kw.each { |k, v| Enumerable.__ivset(self, k.to_sym, v) }
+    freeze
+  end
+  private :initialize
+  def initialize_copy(o)
+    o.class.members.each { |m| Enumerable.__ivset(self, m, Enumerable.__ivget(o, m)) }
+    freeze
+  end
+  private :initialize_copy
+  def members = self.class.members
+  def to_h(&b)
+    h = {}
+    members.each do |m|
+      v = Enumerable.__ivget(self, m)
+      if b
+        pr = b.call(m, v)
+        ar = Array.try_convert(pr)
+        raise TypeError, "wrong element type #{pr.class} (expected array)" unless ar
+        raise ArgumentError, "element has wrong array length (expected 2, was #{ar.size})" if ar.size != 2
+        h[ar[0]] = ar[1]
+      else
+        h[m] = v
+      end
+    end
+    h
+  end
+  def deconstruct = members.map { |m| Enumerable.__ivget(self, m) }
+  def deconstruct_keys(keys)
+    return to_h if keys.nil?
+    raise TypeError, "wrong argument type #{keys.class} (expected Array or nil)" unless keys.is_a?(Array)
+    h = {}
+    mem = members
+    return h if keys.size > mem.size
+    keys.each do |k|
+      s = k.is_a?(String) ? k.to_sym : k
+      break unless s.is_a?(Symbol) && mem.include?(s)
+      h[k] = Enumerable.__ivget(self, s)
+    end
+    h
+  end
+  def with(*args, **kw)
+    raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0)" unless args.empty?
+    return self if kw.empty?
+    self.class.new(**to_h.merge(kw))
+  end
+  def ==(o)
+    return true if equal?(o)
+    return false unless o.class == self.class
+    members.all? { |m| Enumerable.__ivget(self, m) == Enumerable.__ivget(o, m) }
+  end
+  def eql?(o)
+    return true if equal?(o)
+    return false unless o.class == self.class
+    members.all? { |m| Enumerable.__ivget(self, m).eql?(Enumerable.__ivget(o, m)) }
+  end
+  def hash = [self.class, *deconstruct].hash
+  def inspect
+    name = self.class.name
+    seen = (Enumerable.__ivget(Data, :__insp) || Enumerable.__ivset(Data, :__insp, {}))
+    return "#<data #{name}:...>" if seen.key?(object_id)
+    seen[object_id] = true
+    begin
+      parts = members.map do |m|
+        v = Enumerable.__ivget(self, m)
+        "#{m}=#{v.inspect}"
+      end
+      s = "#<data "
+      s << name << (parts.empty? ? "" : " ") if name
+      s << parts.join(", ") << ">"
+    ensure
+      seen.delete(object_id)
+    end
+  end
   alias to_s inspect
 end
