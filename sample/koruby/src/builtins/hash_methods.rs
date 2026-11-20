@@ -19,12 +19,17 @@ fn enum_or<F: FnOnce(&mut Ctx) -> RV>(c: &mut Ctx, slf: Value, mid: &str, a: &[V
 }
 /// Iterate live entries by slot index (tolerates mutation during iteration).
 fn each_entry(c: &mut Ctx, h: Value, mut f: impl FnMut(&mut Ctx, Value, Value) -> Result<bool, Esc>) -> Result<(), Esc> {
+    hash_iter_enter(h);
     let mut i = 0;
+    let mut r = Ok(());
     while i < hash_slots(h) {
-        if let Some((k, v)) = hash_entry_at(h, i) { if k != UNDEF && !f(c, k, v)? { break; } }
+        if let Some((k, v)) = hash_entry_at(h, i) {
+            if k != UNDEF { match f(c, k, v) { Ok(true) => {}, Ok(false) => break, Err(e) => { r = Err(e); break; } } }
+        }
         i += 1;
     }
-    Ok(())
+    hash_iter_leave(h);
+    r
 }
 fn yield_pair(c: &mut Ctx, blk: *const Block, k: Value, v: Value) -> RV {
     // |k, v| blocks receive two args; |pair| receives [k, v]
@@ -107,33 +112,45 @@ cfn!(h_fetch_values, |c, slf, a, blk| { let out = ary_new(); for &k in a { let v
 cfn!(h_each, |c, slf, a, blk| enum_or(c, slf, "each", a, blk, |c| { each_entry(c, slf, |c, k, v| { yield_pair(c, blk, k, v)?; Ok(true) })?; Ok(slf) }));
 cfn!(h_each_key, |c, slf, a, blk| enum_or(c, slf, "each_key", a, blk, |c| { each_entry(c, slf, |c, k, _v| { yield1(c, blk, k)?; Ok(true) })?; Ok(slf) }));
 cfn!(h_each_value, |c, slf, a, blk| enum_or(c, slf, "each_value", a, blk, |c| { each_entry(c, slf, |c, _k, v| { yield1(c, blk, v)?; Ok(true) })?; Ok(slf) }));
-cfn!(h_each_with_index, |c, slf, a, blk| enum_or(c, slf, "each_with_index", a, blk, |c| {
+cfn!(h_each_with_index, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "each_with_index", a, blk) } else { enum_or(c, slf, "each_with_index", a, blk, |c| {
     let mut i = 0;
     each_entry(c, slf, |c, k, v| { let p = ary_new_from(&[k, v]); yield_block(c, blk, &[p, Value::fix(i)])?; i += 1; Ok(true) })?; Ok(slf)
-}));
-cfn!(h_map, |c, slf, a, blk| enum_or(c, slf, "map", a, blk, |c| { let out = ary_new(); each_entry(c, slf, |c, k, v| { let r = yield_pair(c, blk, k, v)?; ary_push(out, r); Ok(true) })?; Ok(out) }));
-cfn!(h_flat_map, |c, slf, a, blk| enum_or(c, slf, "flat_map", a, blk, |c| { let out = ary_new(); each_entry(c, slf, |c, k, v| { let r = yield_pair(c, blk, k, v)?; if is_array(r) { let x = rary(r).clone(); rary(out).extend(x); } else { ary_push(out, r); } Ok(true) })?; Ok(out) }));
+}) });
+cfn!(h_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "map", a, blk) } else { enum_or(c, slf, "map", a, blk, |c| { let out = ary_new(); each_entry(c, slf, |c, k, v| { let r = yield_pair(c, blk, k, v)?; ary_push(out, r); Ok(true) })?; Ok(out) }) });
+cfn!(h_flat_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "flat_map", a, blk) } else { enum_or(c, slf, "flat_map", a, blk, |c| { let out = ary_new(); each_entry(c, slf, |c, k, v| { let r = yield_pair(c, blk, k, v)?; if is_array(r) { let x = rary(r).clone(); rary(out).extend(x); } else { ary_push(out, r); } Ok(true) })?; Ok(out) }) });
 fn sel(c: &mut Ctx, slf: Value, blk: *const Block, want: bool) -> RV {
     let out = hash_new();
-    each_entry(c, slf, |c, k, v| { if yield_pair(c, blk, k, v)?.truthy() == want { hash_set(c, out, k, v)?; } Ok(true) })?;
+    each_entry(c, slf, |c, k, v| { if yield_block(c, blk, &[k, v])?.truthy() == want { hash_set(c, out, k, v)?; } Ok(true) })?;
     Ok(out)
 }
 cfn!(h_select, |c, slf, a, blk| enum_or(c, slf, "select", a, blk, |c| sel(c, slf, blk, true)));
 cfn!(h_reject, |c, slf, a, blk| enum_or(c, slf, "reject", a, blk, |c| sel(c, slf, blk, false)));
 fn sel_b(c: &mut Ctx, slf: Value, blk: *const Block, want: bool) -> Result<bool, Esc> {
     modify(c, slf)?;
-    let mut dels = vec![];
-    each_entry(c, slf, |c, k, v| { if yield_pair(c, blk, k, v)?.truthy() != want { dels.push(k); } Ok(true) })?;
-    let keep = ary_from_vec(dels.clone());
-    for k in &dels { hash_delete(c, slf, *k)?; }
-    std::hint::black_box(keep);
-    Ok(!dels.is_empty())
+    let mut changed = false;
+    let mut i = 0;
+    hash_iter_enter(slf);
+    let r: Result<(), Esc> = (|| {
+        while i < hash_slots(slf) {
+            if let Some((k, v)) = hash_entry_at(slf, i) {
+                if k != UNDEF && yield_block(c, blk, &[k, v])?.truthy() != want {
+                    modify(c, slf)?;
+                    if hash_entry_at(slf, i).map(|e| e.0) == Some(k) { hash_delete_slot(slf, i); changed = true; }
+                }
+            }
+            i += 1;
+        }
+        Ok(())
+    })();
+    hash_iter_leave(slf);
+    r?;
+    Ok(changed)
 }
 cfn!(h_select_b, |c, slf, a, blk| enum_or(c, slf, "select!", a, blk, |c| Ok(if sel_b(c, slf, blk, true)? { slf } else { NIL })));
 cfn!(h_keep_if, |c, slf, a, blk| enum_or(c, slf, "keep_if", a, blk, |c| { sel_b(c, slf, blk, true)?; Ok(slf) }));
 cfn!(h_reject_b, |c, slf, a, blk| enum_or(c, slf, "reject!", a, blk, |c| Ok(if sel_b(c, slf, blk, false)? { slf } else { NIL })));
 cfn!(h_delete_if, |c, slf, a, blk| enum_or(c, slf, "delete_if", a, blk, |c| { sel_b(c, slf, blk, false)?; Ok(slf) }));
-cfn!(h_filter_map, |c, slf, a, blk| enum_or(c, slf, "filter_map", a, blk, |c| { let out = ary_new(); each_entry(c, slf, |c, k, v| { let r = yield_pair(c, blk, k, v)?; if r.truthy() { ary_push(out, r); } Ok(true) })?; Ok(out) }));
+cfn!(h_filter_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "filter_map", a, blk) } else { enum_or(c, slf, "filter_map", a, blk, |c| { let out = ary_new(); each_entry(c, slf, |c, k, v| { let r = yield_pair(c, blk, k, v)?; if r.truthy() { ary_push(out, r); } Ok(true) })?; Ok(out) }) });
 cfn!(h_find, |c, slf, a, blk| enum_or(c, slf, "find", a, blk, |c| { let mut res = NIL; each_entry(c, slf, |c, k, v| { if yield_pair(c, blk, k, v)?.truthy() { res = ary_new_from(&[k, v]); return Ok(false); } Ok(true) })?; Ok(res) }));
 cfn!(h_any, |c, slf, a, blk| {
     if blk.is_null() && a.is_empty() { return Ok(Value::bool(hash_len(slf) > 0)); }
@@ -210,7 +227,10 @@ cfn!(h_eq, |c, slf, a, blk| {
 });
 cfn!(h_hash, |c, slf, a, blk| {
     let mut h: u64 = hash_len(slf) as u64;
-    each_entry(c, slf, |c, k, v| { let kh = key_hash(c, k)?; let vh = key_hash(c, v)?; h = h.wrapping_add(crate::astrust::hash_merge(kh, vh)); Ok(true) })?;
+    if !recursion_enter(slf, s::hash) { return Ok(Value::fix((h >> 2) as i64)); }
+    let r = each_entry(c, slf, |c, k, v| { let kh = key_hash(c, k)?; let vh = key_hash(c, v)?; h = h.wrapping_add(crate::astrust::hash_merge(kh, vh)); Ok(true) });
+    recursion_leave(slf, s::hash);
+    r?;
     Ok(Value::fix((h >> 2) as i64))
 });
 cfn!(h_merge, |c, slf, a, blk| {
@@ -224,7 +244,8 @@ cfn!(h_update, |c, slf, a, blk| {
     for &x in a {
         let o = match check_hash(c, x)? { Some(o) => o, None => return type_err(c, format!("no implicit conversion of {} into Hash", class_name_for_err(x))) };
         each_entry(c, o, |c, k, v| {
-            let nv = if !blk.is_null() { match hash_get_opt(c, slf, k)? { Some(old) => yield_block(c, blk, &[k, old, v])?, None => v } } else { v };
+            let nv = if !blk.is_null() { match hash_get_opt(c, slf, k)? { Some(old) => { hash_iter_enter(slf); let r = yield_block(c, blk, &[k, old, v]); hash_iter_leave(slf); r? } None => v } } else { v };
+            modify(c, slf)?;
             hash_aset(c, slf, k, nv)?; Ok(true)
         })?;
     }
@@ -235,6 +256,7 @@ cfn!(h_replace, |c, slf, a, blk| {
     modify(c, slf)?;
     let o = match check_hash(c, a[0])? { Some(o) => o, None => return type_err(c, "no implicit conversion into Hash") };
     if o == slf { return Ok(slf); }
+    if hash_iterating(slf) { return err(c, vm().c_runtime_error, "can't replace hash during iteration"); }
     let pairs = hash_pairs(o);
     hash_clear(slf);
     for (k, v) in pairs { hash_set(c, slf, k, v)?; }
@@ -249,14 +271,18 @@ cfn!(h_set_default, |c, slf, a, blk| { modify(c, slf)?; rhash(slf).default = a[0
 cfn!(h_default_proc, |c, slf, a, blk| Ok(rhash(slf).default_proc));
 cfn!(h_set_default_proc, |c, slf, a, blk| {
     modify(c, slf)?;
-    let p = a[0];
+    let mut p = a[0];
+    if p != NIL && !is_proc(p) && respond_to(p, intern(b"to_proc"), true) {
+        let q = funcall(c, p, intern(b"to_proc"), &[], std::ptr::null())?;
+        if is_proc(q) { p = q; }
+    }
     if p != NIL && !is_proc(p) { return type_err(c, format!("wrong default_proc type {} (expected Proc)", class_name_for_err(p))); }
     if p != NIL && rproc(p).is_lambda { let ar = crate::builtins::proc::proc_arity(p); if ar != 2 && !(ar < 0 && ar >= -3) { return type_err(c, format!("default_proc takes two arguments (2 for {})", ar)); } }
     rhash(slf).default_proc = p; rhash(slf).default = NIL; Ok(p)
 });
 cfn!(h_invert, |c, slf, a, blk| { let out = hash_new(); each_entry(c, slf, |c, k, v| { hash_aset(c, out, v, k)?; Ok(true) })?; Ok(out) });
 cfn!(h_transform_values, |c, slf, a, blk| enum_or(c, slf, "transform_values", a, blk, |c| { let out = hash_new(); each_entry(c, slf, |c, k, v| { let nv = yield1(c, blk, v)?; hash_set(c, out, k, nv)?; Ok(true) })?; Ok(out) }));
-cfn!(h_transform_values_b, |c, slf, a, blk| enum_or(c, slf, "transform_values!", a, blk, |c| { modify(c, slf)?; each_entry(c, slf, |c, k, v| { let nv = yield1(c, blk, v)?; hash_set(c, slf, k, nv)?; Ok(true) })?; Ok(slf) }));
+cfn!(h_transform_values_b, |c, slf, a, blk| enum_or(c, slf, "transform_values!", a, blk, |c| { modify(c, slf)?; each_entry(c, slf, |c, k, v| { let nv = yield1(c, blk, v)?; modify(c, slf)?; hash_set(c, slf, k, nv)?; Ok(true) })?; Ok(slf) }));
 cfn!(h_transform_keys, |c, slf, a, blk| {
     let map = a.first().copied().filter(|x| is_hash(*x));
     if blk.is_null() && map.is_none() { return crate::builtins::enumerator::enum_for_sized(c, slf, intern(b"transform_keys"), a); }
@@ -294,8 +320,10 @@ cfn!(h_sort_by, |c, slf, a, blk| { let arr = hash_to_a(c, slf)?; funcall(c, arr,
 cfn!(h_slice, |c, slf, a, blk| { let out = hash_new(); for &k in a { if let Some(v) = hash_get_opt(c, slf, k)? { hash_set(c, out, k, v)?; } } Ok(out) });
 cfn!(h_except, |c, slf, a, blk| { let out = hash_dup(slf); obj(out).klass = vm().c_hash; for &k in a { hash_delete(c, out, k)?; } Ok(out) });
 cfn!(h_filter_keys_dig, |c, slf, a, blk| {
+    if a.is_empty() { return argc_err(c, 0, 1, -1); }
     let v = hash_aref(c, slf, a[0])?;
     if a.len() == 1 || v == NIL { return Ok(v); }
+    if !respond_to(v, intern(b"dig"), true) { return type_err(c, format!("{} does not have #dig method", class_name_for_err(v))); }
     funcall(c, v, intern(b"dig"), &a[1..], std::ptr::null())
 });
 cfn!(h_shift, |c, slf, a, blk| {
@@ -344,6 +372,23 @@ cfn!(h_s_new, |c, slf, a, blk| {
 cfn!(h_initialize_copy, |c, slf, a, blk| h_replace(c, slf, a, blk));
 cfn!(h_store_kw, |c, slf, a, blk| { modify(c, slf)?; hash_aset(c, slf, a[0], a[1])?; Ok(a[1]) });
 
+cfn!(h_deconstruct_keys, |c, slf, a, blk| Ok(slf));
+cfn!(h_flatten, |c, slf, a, blk| {
+    check_argc(c, a, 0, 1)?;
+    let depth = if a.is_empty() { 1 } else { crate::builtins::numeric_methods::num_to_long(c, a[0])? };
+    let out = ary_new_capa(hash_len(slf) * 2);
+    if depth == 0 {
+        for (k, v) in hash_pairs(slf) { let p = ary_new_from(&[k, v]); ary_push(out, p); }
+        return Ok(out);
+    }
+    for (k, v) in hash_pairs(slf) { ary_push(out, k); ary_push(out, v); }
+    if depth > 1 || depth < 0 {
+        let d = if depth < 0 { NIL } else { Value::fix(depth - 1) };
+        return funcall(c, out, intern(b"flatten"), &[d], std::ptr::null());
+    }
+    Ok(out)
+});
+
 pub fn init() {
     let k = vm().c_hash;
     let d = |n: &str, f: CFunc, a: i32| define_cfunc(k, n, f, a);
@@ -351,23 +396,26 @@ pub fn init() {
     define_private_cfunc(k, "initialize_copy", h_initialize_copy, 1);
     define_singleton_cfunc(k, "[]", h_s_aref, -1);
     define_singleton_cfunc(k, "try_convert", h_s_try_convert, 1);
+    define_singleton_cfunc(k, "ruby2_keywords_hash?", |c, _s, a, _b| { if !is_hash(a[0]) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(a[0]))); } Ok(FALSE) }, 1);
+    define_singleton_cfunc(k, "ruby2_keywords_hash", |c, _s, a, _b| { if !is_hash(a[0]) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(a[0]))); } Ok(hash_dup(a[0])) }, 1);
     define_singleton_cfunc(k, "new", h_s_new, -1);
     d("[]", h_aref, 1); d("[]=", h_aset, 2); d("store", h_store_kw, 2); d("fetch", h_fetch, -1); d("key?", h_key_p, 1); d("has_key?", h_key_p, 1);
     d("include?", h_key_p, 1); d("member?", h_key_p, 1); d("value?", h_value_p, 1); d("has_value?", h_value_p, 1); d("key", h_key, 1);
-    d("delete", h_delete, 1); d("size", h_size, 0); d("length", h_size, 0); d("count", h_count, -1); d("empty?", h_empty, 0); d("keys", h_keys, 0);
+    d("delete", h_delete, 1); d("size", h_size, 0); d("length", h_size, 0); d("empty?", h_empty, 0); d("keys", h_keys, 0);
     d("values", h_values, 0); d("values_at", h_values_at, -1); d("fetch_values", h_fetch_values, -1); d("each", h_each, 0); d("each_pair", h_each, 0);
     d("each_key", h_each_key, 0); d("each_value", h_each_value, 0); d("each_with_index", h_each_with_index, 0); d("map", h_map, 0); d("collect", h_map, 0);
     d("flat_map", h_flat_map, 0); d("select", h_select, 0); d("filter", h_select, 0); d("reject", h_reject, 0); d("select!", h_select_b, 0);
     d("filter!", h_select_b, 0); d("keep_if", h_keep_if, 0); d("reject!", h_reject_b, 0); d("delete_if", h_delete_if, 0); d("filter_map", h_filter_map, 0);
-    d("find", h_find, -1); d("detect", h_find, -1); d("any?", h_any, -1); d("all?", h_all, -1); d("to_a", h_to_a, 0); d("entries", h_to_a, 0); d("to_h", h_to_h, 0);
+    d("any?", h_any, -1); d("to_a", h_to_a, 0); d("to_h", h_to_h, 0);
     d("to_hash", h_to_hash, 0); d("inspect", h_inspect, 0); d("to_s", h_inspect, 0); d("==", h_eq, 1); d("eql?", h_eq, 1); d("hash", h_hash, 0);
     d("merge", h_merge, -1); d("update", h_update, -1); d("merge!", h_update, -1); d("clear", h_clear, 0); d("replace", h_replace, 1);
     d("default", h_default, -1); d("default=", h_set_default, 1); d("default_proc", h_default_proc, 0); d("default_proc=", h_set_default_proc, 1);
     d("invert", h_invert, 0); d("transform_values", h_transform_values, 0); d("transform_values!", h_transform_values_b, 0);
-    d("transform_keys", h_transform_keys, -1); d("transform_keys!", h_transform_keys_b, -1); d("group_by", h_group_by, 0); d("partition", h_partition, 0);
-    d("sum", h_sum, -1); d("min_by", h_min_by, -1); d("sort_by", h_sort_by, 0); d("slice", h_slice, -1); d("except", h_except, -1); d("dig", h_filter_keys_dig, -1);
-    d("shift", h_shift, 0); d("first", h_first, -1); d("compare_by_identity", h_compare_by_identity, 0); d("compare_by_identity?", h_compare_by_identity_p, 0);
+    d("transform_keys", h_transform_keys, -1); d("transform_keys!", h_transform_keys_b, -1); 
+    d("slice", h_slice, -1); d("except", h_except, -1); d("dig", h_filter_keys_dig, -1);
+    d("shift", h_shift, 0); d("compare_by_identity", h_compare_by_identity, 0); d("compare_by_identity?", h_compare_by_identity_p, 0);
     d("rehash", h_rehash, 0); d("compact", h_compact, 0); d("compact!", h_compact_b, 0); d("assoc", h_assoc, 1); d("rassoc", h_rassoc, 1);
     d("<=", h_le, 1); d("<", h_lt, 1); d(">=", h_ge, 1); d(">", h_gt, 1); d("freeze", h_freeze, 0); d("to_proc", h_to_proc, 0);
-    let _ = (h_sort_by_fallback, h_min_by_fallback);
+    d("deconstruct_keys", h_deconstruct_keys, 1); d("flatten", h_flatten, -1);
+    let _ = (h_sort_by_fallback, h_min_by_fallback, h_find, h_all, h_count, h_group_by, h_partition, h_sum, h_min_by, h_sort_by, h_first);
 }

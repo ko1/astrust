@@ -55,17 +55,49 @@ pub fn arith_seq(_c: &mut Ctx, b: Value, e: Value, st: Value, excl: bool, mid: S
     renum(v).unwrap().arith = Some((b, e, st, excl));
     Ok(v)
 }
+/// ArithmeticSequence made by Range#step / Range#%: inspects as "((range).mid(args))".
+pub fn arith_seq_from(_c: &mut Ctx, range: Value, b: Value, e: Value, st: Value, excl: bool, mid: Sym, args: &[Value]) -> RV {
+    let v = new_enum(vm().c_arith_seq, range, mid, args, NIL);
+    renum(v).unwrap().arith = Some((b, e, st, excl));
+    Ok(v)
+}
 pub fn is_arith_seq(v: Value) -> bool { renum(v).map(|e| e.arith.is_some()).unwrap_or(false) }
 pub fn arith_seq_slice(c: &mut Ctx, seq: Value, ary: Value) -> RV {
-    let (b, e, st, excl) = renum(seq).unwrap().arith.unwrap();
-    let n = ary_len(ary) as i64;
-    let step = crate::builtins::numeric_methods::num_to_long(c, st)?;
-    let r = crate::range::range_new(b, e, excl);
-    let Some((start, len)) = crate::range::range_beg_len(c, r, n, 0)? else { return Ok(NIL) };
+    use crate::builtins::numeric_methods::num_to_long;
+    let (mut b, mut e, st, mut excl) = renum(seq).unwrap().arith.unwrap();
+    let alen = ary_len(ary) as i64;
+    let step = if st == NIL { 1 } else { num_to_long(c, st)? };
+    if step < 0 {
+        if excl && e != NIL { e = Value::fix(num_to_long(c, e)? + 1); excl = false; }
+        std::mem::swap(&mut b, &mut e);
+    }
+    let oor = |c: &mut Ctx| -> RV { let s2 = inspect_str(c, seq)?; err(c, vm().c_range_error, format!("{} out of range", s2)) };
+    // rb_range_component_beg_len
+    let mut beg = if b == NIL { 0 } else { num_to_long(c, b)? };
+    let mut end = if e == NIL { -1 } else { num_to_long(c, e)? };
+    let ex = if e == NIL { false } else { excl };
+    let strict = step < -1 || step > 1;
+    if beg < 0 { beg += alen; if beg < 0 { return if strict { oor(c) } else { Ok(NIL) }; } }
+    if end < 0 { end += alen; }
+    if !ex { end += 1; }
+    if !strict { if beg > alen { return Ok(NIL); } if end > alen { end = alen; } }
+    let mut len = (end - beg).max(0);
+    if strict && (beg > alen || len > alen) { return oor(c); }
+    // rb_ary_subseq_step
+    if beg > alen || beg < 0 || len < 0 { return Ok(NIL); }
+    if alen < len || alen < beg + len { len = alen - beg; }
     let out = ary_new();
-    if step > 0 { let mut i = start; while i < start + len { ary_push(out, ary_get(ary, i as usize)); i += step; } }
-    else if step < 0 { let mut i = start + len - 1; while i >= start { ary_push(out, ary_get(ary, i as usize)); i += step; } }
-    else { return arg_err(c, "step can't be 0"); }
+    if len == 0 { return Ok(out); }
+    if step == 0 { return arg_err(c, "slice step cannot be zero"); }
+    if step == 1 { for i in beg..beg + len { ary_push(out, ary_get(ary, i as usize)); } return Ok(out); }
+    let orig_len = len;
+    let mut step = step;
+    if step > 0 && step >= len { ary_push(out, ary_get(ary, beg as usize)); return Ok(out); }
+    if step < 0 && step < -len { step = -len; }
+    let ustep = step.abs();
+    let n = (len + ustep - 1) / ustep;
+    let mut j = beg + if step > 0 { 0 } else { orig_len - 1 };
+    for _ in 0..n { ary_push(out, ary_get(ary, j as usize)); j += step; }
     Ok(out)
 }
 
@@ -88,6 +120,10 @@ pub fn enum_each_with(c: &mut Ctx, e: Value, blk: *const Block) -> RV {
         let y = crate::gc::alloc(vm().c_yielder, Body::Data(Box::new(RYielder { blk: block_to_proc(c, blk)? })));
         let g = en.gen;
         return call_proc(c, g, &[y], std::ptr::null());
+    }
+    if en.recv == NIL && en.mid == s::each && ary_len(en.args) == 0 {
+        let me = lookup_method(class_of(e), s::each);
+        if !me.is_null() && !matches!(unsafe { (*me).kind }, MKind::Cfunc(..)) { return funcall(c, e, s::each, &[], blk); }
     }
     let (recv, mid, args) = (en.recv, en.mid, ary_to_vec(en.args));
     let keep = en.args;
@@ -113,20 +149,21 @@ fn e_each(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
 
 fn e_with_index(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     let off = if a.is_empty() || a[0] == NIL { 0 } else { crate::builtins::numeric_methods::num_to_long(c, a[0])? };
-    if blk.is_null() { return enum_for(c, slf, intern(b"with_index"), a, NIL); }
-    let data = ary_new_from(&[Value::fix(off), block_to_proc(c, blk)?]);
+    if blk.is_null() { return enum_for_sized(c, slf, intern(b"with_index"), a); }
+    let offv = if a.is_empty() || a[0] == NIL { Value::fix(0) } else if a[0].is_fixnum() || is_bignum(a[0]) { a[0] } else { Value::fix(off) };
+    let data = ary_new_from(&[offv, block_to_proc(c, blk)?]);
     let b = Block::cfunc(c, |c, d, args, _b| {
         let i = ary_get(d, 0); let p = ary_get(d, 1);
-        rary(d)[0] = Value::fix(i.as_fix() + 1);
+        let next = if i.is_fixnum() && Value::fixable(i.as_fix() + 1) { Value::fix(i.as_fix() + 1) } else { funcall(c, i, s::plus, &[Value::fix(1)], std::ptr::null())? };
+        rary(d)[0] = next;
         let v = if args.len() == 1 { args[0] } else { ary_new_from(args) };
         call_proc(c, p, &[v, i], std::ptr::null())
     }, data);
     enum_each_with(c, slf, &b)
 }
 fn e_each_with_index(c: &mut Ctx, slf: Value, _a: &[Value], blk: *const Block) -> RV {
-    if blk.is_null() { return enum_for(c, slf, intern(b"each_with_index"), &[], NIL); }
-    e_with_index(c, slf, &[], blk)?;
-    Ok(slf)
+    if blk.is_null() { return enum_for_sized(c, slf, intern(b"each_with_index"), &[]); }
+    e_with_index(c, slf, &[], blk)
 }
 fn e_with_object(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return enum_for(c, slf, intern(b"with_object"), a, NIL); }
@@ -146,6 +183,7 @@ fn collect_all(c: &mut Ctx, slf: Value) -> RV {
     Ok(out)
 }
 fn e_next(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    if obj(slf).flags & FL_FROZEN != 0 { return Err(raise_frozen(c, slf)); }
     if renum(slf).unwrap().buf == NIL {
         if let Some(r) = crate::fiber::enum_next(c, slf)? { return Ok(r); }
         let all = collect_all(c, slf)?;
@@ -161,6 +199,7 @@ fn e_next(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(v)
 }
 fn e_peek(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+    if obj(slf).flags & FL_FROZEN != 0 { return Err(raise_frozen(c, slf)); }
     if crate::fiber::enum_has_fiber(slf) { return crate::fiber::enum_peek(c, slf); }
     let v = e_next(c, slf, a, b)?;
     renum(slf).unwrap().pos -= 1;
@@ -181,6 +220,13 @@ fn e_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
             return Ok(Value::fix(n.max(0)));
         }
         if e == NIL { return Ok(crate::numeric::float_new(f64::INFINITY)); }
+        if is_float(b) || is_float(e) || is_float(st) {
+            if let (Some(bf), Some(ef), Some(sf)) = (crate::numeric::num_to_f64(b), crate::numeric::num_to_f64(e), crate::numeric::num_to_f64(st)) {
+                let n = float_step_size(bf, ef, sf, x);
+                if n.is_infinite() { return Ok(crate::numeric::float_new(n)); }
+                return Ok(Value::fix(n as i64));
+            }
+        }
         let a = collect_all(c, slf)?; return Ok(Value::fix(ary_len(a) as i64));
     }
     if en.size == TRUE {
@@ -206,11 +252,35 @@ fn e_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     }
     Ok(NIL)
 }
+/// CRuby's ruby_float_step_size.
+pub fn float_step_size(beg: f64, end: f64, unit: f64, excl: bool) -> f64 {
+    if unit == 0.0 { return f64::INFINITY; }
+    if unit.is_infinite() { return if unit > 0.0 { (beg <= end) as i32 as f64 } else { (beg >= end) as i32 as f64 }; }
+    let mut n = (end - beg) / unit;
+    let mut err = (beg.abs() + end.abs() + (end - beg).abs()) / unit.abs() * f64::EPSILON;
+    if err > 0.5 { err = 0.5; }
+    if excl {
+        if n <= 0.0 { return 0.0; }
+        if n < 1.0 { n = 0.0; } else { n = (n - err).floor(); }
+        let d = (n + 1.0) * unit + beg;
+        if beg < end { if d < end { n += 1.0; } } else if beg > end && d > end { n += 1.0; }
+        return n + 1.0;
+    }
+    if n < 0.0 { return 0.0; }
+    (n + err).floor() + 1.0
+}
 fn e_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let en = renum(slf).unwrap();
     if let Some((b, e, st, x)) = en.arith {
         let r = if en.mid == s::step && crate::numeric::is_numeric(b) && !is_range(en.recv) && false { String::new() } else { String::new() };
         let _ = r;
+        if is_range(en.recv) {
+            let rs = inspect_str(c, en.recv)?;
+            let args = ary_to_vec(en.args);
+            let mut a = String::new();
+            if !args.is_empty() { a.push('('); for (i, x) in args.iter().enumerate() { if i > 0 { a.push_str(", "); } a.push_str(&inspect_str(c, *x)?); } a.push(')'); }
+            return Ok(str_new(format!("(({}).{}{})", rs, sym_str(en.mid), a).as_bytes()));
+        }
         let bs = inspect_str(c, b)?; let es = if e == NIL { String::new() } else { inspect_str(c, e)? }; let ss = inspect_str(c, st)?;
         if en.mid == s::step && !en.recv.is_heap() && en.recv == b && crate::numeric::is_numeric(b) && is_range_origin(slf) == false {
             let args = if e == NIL { format!("(by: {})", ss) } else { format!("({}, {})", es, ss) };
@@ -227,13 +297,22 @@ fn e_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(str_new(format!("#<{}: {}:{}{}>", cls, r, sym_str(en.mid), a).as_bytes()))
 }
 fn is_range_origin(_v: Value) -> bool { false }
-fn e_s_new(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
-    if blk.is_null() { return arg_err(c, "no block given"); }
+fn e_initialize(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+    check_argc(c, a, 0, 1)?;
+    if blk.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
     let g = block_to_proc(c, blk)?;
     let size = a.first().copied().unwrap_or(NIL);
-    let e = new_enum(slf, NIL, s::each, &[], size);
-    renum(e).unwrap().gen = g;
-    Ok(e)
+    if size != NIL && !size.is_fixnum() && !is_float(size) && !is_bignum(size) && !is_proc(size) && !respond_to(size, s::call, true) {
+        crate::builtins::numeric_methods::num_to_long(c, size)?;
+    }
+    let Some(en) = renum(slf) else { return type_err(c, "wrong argument type (expected Enumerator)") };
+    en.gen = g; en.size = size; en.recv = NIL; en.mid = s::each; en.buf = NIL; en.pos = 0;
+    Ok(slf)
+}
+fn y_s_new(c: &mut Ctx, slf: Value, _a: &[Value], blk: *const Block) -> RV {
+    if blk.is_null() { return err(c, vm().c_local_jump_error, "no block given"); }
+    let p = block_to_proc(c, blk)?;
+    Ok(crate::gc::alloc(slf, Body::Data(Box::new(RYielder { blk: p }))))
 }
 fn y_yield(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let p = rdata::<RYielder>(slf).unwrap().blk;
@@ -272,16 +351,6 @@ fn e_take(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 fn e_first(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     if a.is_empty() { let r = e_take(c, slf, &[Value::fix(1)], b)?; return Ok(ary_get(r, 0)); }
     e_take(c, slf, a, b)
-}
-fn e_lazy(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let e = new_enum(vm().c_lazy, slf, s::each, &[], NIL);
-    renum(e).unwrap().lazy = true;
-    Ok(e)
-}
-fn e_plus(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    let parts = ary_new_from(&[slf, a[0]]);
-    let e = new_enum(vm().c_chain, parts, intern(b"__chain_each"), &[], NIL);
-    Ok(e)
 }
 fn arith_begin(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(renum(slf).unwrap().arith.unwrap().0) }
 fn arith_end(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(renum(slf).unwrap().arith.unwrap().1) }
@@ -324,7 +393,8 @@ pub fn init() {
     vm.c_lazy = define_class_under(e, "Lazy", e);
     vm.c_chain = define_class_under(e, "Chain", e);
     vm.c_arith_seq = define_class_under(e, "ArithmeticSequence", e);
-    define_singleton_cfunc(e, "new", e_s_new, -1);
+    define_singleton_cfunc(e, "new", crate::builtins::object::c_new, -1);
+    define_private_cfunc(e, "initialize", e_initialize, -1);
     define_cfunc(e, "each", e_each, -1);
     define_cfunc(e, "with_index", e_with_index, -1);
     define_cfunc(e, "each_with_index", e_each_with_index, 0);
@@ -338,9 +408,8 @@ pub fn init() {
     define_cfunc(e, "to_s", e_inspect, 0);
     define_cfunc(e, "take", e_take, 1);
     define_cfunc(e, "first", e_first, -1);
-    define_cfunc(e, "lazy", e_lazy, 0);
-    define_cfunc(e, "+", e_plus, 1);
     let y = vm.c_yielder;
+    define_singleton_cfunc(y, "new", y_s_new, 0);
     define_cfunc(y, "yield", y_yield, -1);
     define_cfunc(y, "call", y_yield, -1);
     define_cfunc(y, "<<", y_ltlt, -1);

@@ -25,6 +25,7 @@ pub mod time;
 pub mod math;
 pub mod rational;
 pub mod complex;
+pub mod enum_native;
 
 use crate::object::*;
 use crate::symbol::intern_str;
@@ -175,6 +176,7 @@ pub fn boot() {
     math::init();
     rational::init();
     complex::init();
+    enum_native::init();
     crate::fiber::init();
 }
 

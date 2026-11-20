@@ -28,7 +28,7 @@ pub fn range_beg_len(c: &mut Ctx, r: Value, len: i64, err: i32) -> Result<Option
     let (b, e, excl) = range_parts(r);
     let mut beg = if b == NIL { 0 } else { crate::builtins::numeric_methods::num_to_long(c, b)? };
     let mut end = if e == NIL { len } else { crate::builtins::numeric_methods::num_to_long(c, e)? };
-    let excl = if e == NIL { false } else { excl };
+    let excl = if e == NIL { true } else { excl };
     let ob = beg; let oe = end;
     if beg < 0 { beg += len; if beg < 0 { return out_of_range(c, r, err, ob, oe); } }
     if end < 0 { end += len; }
