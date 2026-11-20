@@ -151,3 +151,19 @@ ruby $H/tools/run_specs.rb --jobs 8 --timeout 15 --pattern 'string*.rb' --interp
 `./saruby --aot-compile x.rb` runs and then specializes every executed body into
 `code_store/all.so`; later runs load it and swap dispatchers by Merkle hash (`--plain`
 disables).  `SARUBY_AOT_VERBOSE=1` shows the rustc command.
+
+* **Bodies are contiguous.**  `finish_iseq` copies each finished body into one block with
+  `layout_tree` (parents before children), so a node sits at an offset from the body's root that
+  only the tree's shape decides.  Baked code addresses a node, and so its inline cache, as
+  `root + constant` (generator hook `contiguous?`); it never loads a child pointer.  Only laid-out
+  trees are specialized or given baked code (`NF_LAID`).  The original nodes are left alone
+  (about 1 MB and 0.6M instructions at boot).
+* **Baked facts are hints.**  A `@bake` operand records what the interpreter saw at a site: the
+  ivar slot (`slot`, node_ivar / node_iasgn / node_ivar_arith), the operand kinds of an operator
+  besides fixnums (`ty`, from the site's `TyFb`), the callee kind of a call.  Baked items are named
+  by the tree's hash and are not rewritten when another program reuses them, so the code tests
+  each fact at run time (the slot against the site's cache) or keeps a complete out-of-line path
+  for the other cases (`srb_arith_out`, `srb_aref_out`, `srb_ivar_get_out`): a stale or absent
+  fact costs time, never correctness.
+* An Array index site compares the receiver's class with `FAST_ARY_AREF` / `FAST_ARY_ASET` (rt.rs):
+  the Array class while `[]` / `[]=` are the builtins, 0 after a redefinition.

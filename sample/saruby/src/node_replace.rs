@@ -151,6 +151,12 @@ fn REPLACE_node_iasgn(n: NodePtr, old: NodePtr, new: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_ivar_arith(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_ivar_arith_struct>)).u };
+    if u.v == old { u.v = new; }
+}
+
+#[allow(non_snake_case, unused_variables)]
 fn REPLACE_node_gvar(n: NodePtr, old: NodePtr, new: NodePtr) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_gvar_struct>)).u };
 

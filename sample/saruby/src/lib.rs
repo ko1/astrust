@@ -51,6 +51,7 @@ pub mod node {
     use crate::compile::{IseqRef, CiRef, Str, LitCache};
     use crate::value::*;
     use crate::vm::*;
+    use crate::opt::TyFb;
     include!("node_head.rs");
     include!("node_dispatch.rs");
     include!("node_hash.rs");

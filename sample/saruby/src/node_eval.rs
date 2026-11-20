@@ -48,7 +48,12 @@ use crate::symbol::s;
 
 
 
+// slot (baked): 1 + the index the site's cache held, 0 none.  Baked code tests it against the cache,
+// so which tier holds the slot is known there; a stale one only sends the site out of line.
 
+
+// `@x += v` / `@x -= v` with a v that cannot change @x (compile.rs): one self / class / slot test for the
+// read and the write, fixnums inline.
 
 
 
@@ -105,6 +110,8 @@ use crate::symbol::s;
 
 // ---- specialized operators (fixnum / float fast paths) ---------------------------------
 
+// ty (baked): 1 + what the site's operands were besides fixnums (TyFb, recorded by the interpreter), 0 in the
+// interpreter.  Baked code keeps the Float paths inline only where Floats were seen; the rest is srb_arith_out.
 
 
 
@@ -123,6 +130,8 @@ use crate::symbol::s;
 
 
 
+// An Array indexed by an Integer in range is inline (fast_ary_*: the class and the redefinition in one
+// compare).  A Hash stays inline in the interpreter and at baked sites that saw one (TF_HASH).
 
 
 // ---- definitions -------------------------------------------------------------------
@@ -365,34 +374,61 @@ pub fn EVAL_node_dasgn(c: &mut Ctx, n: NodePtr, fp: Fp, hops: u32, idx: u32, v: 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_ivar(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, ic: &mut IvarCache) -> RV {
+pub fn EVAL_node_ivar(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, ic: &mut IvarCache, slot: u32) -> RV {
     let slf = fp[0].get();
     if slf.is_heap() {
         let o = obj(slf);
         if o.klass.raw() == ic.klass {
             if let Body::Object(ivs) = &o.body {
-                if let Some(v) = ivs.get(ic.idx as usize) { return Ok(if v == UNDEF { NIL } else { v }); }
-                return Ok(NIL);
+                if slot == 0 {
+                    if let Some(v) = ivs.get(ic.idx as usize) { return Ok(if v == UNDEF { NIL } else { v }); }
+                    return Ok(NIL);
+                } else if ic.idx == slot - 1 {
+                    // an unset slot leaves through the miss path (a branch to code the site already has, not a select)
+                    if let Some(v) = ivs.get((slot - 1) as usize) { if v != UNDEF { return Ok(v); } }
+                }
             }
         }
     }
-    Ok(srb_ivar_get(slf, name, ic))
+    Ok(srb_ivar_get_out(slf, name, ic))
 }
 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value, ic: &mut IvarCache) -> RV {
+pub fn EVAL_node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value, ic: &mut IvarCache, slot: u32) -> RV {
     let slf = fp[0].get();
     if slf.is_heap() {
         let o = obj(slf);
         if o.klass.raw() == ic.klass && o.flags & FL_FROZEN == 0 {
             if let Body::Object(ivs) = &mut o.body {
-                if ivs.set(ic.idx as usize, v) { return Ok(v); }
+                if slot == 0 { if ivs.set(ic.idx as usize, v) { return Ok(v); } }
+                else if ic.idx == slot - 1 && ivs.set((slot - 1) as usize, v) { return Ok(v); }
             }
         }
     }
-    srb_ivar_set(c, slf, name, v, ic)
+    srb_ivar_set_out(c, slf, name, v, ic)
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_ivar_arith(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, sub: bool, v: Value, line: u32, ic: &mut IvarCache, cc: &mut CallCache, slot: u32) -> RV {
+    let slf = fp[0].get();
+    if slf.is_heap() && v.is_fixnum() && !redef(if sub { R_INT_MINUS } else { R_INT_PLUS }) {
+        let o = obj(slf);
+        if o.klass.raw() == ic.klass && o.flags & FL_FROZEN == 0 && (slot == 0 || ic.idx == slot - 1) {
+            if let Body::Object(ivs) = &mut o.body {
+                let i = (if slot == 0 { ic.idx } else { slot - 1 }) as usize;
+                if let Some(cur) = ivs.get(i) {
+                    if cur.is_fixnum() {
+                        if let Some(r) = if sub { cur.fix_sub(v) } else { cur.fix_add(v) } { ivs.set(i, r); return Ok(r); }
+                    }
+                }
+            }
+        }
+    }
+    srb_ivar_arith_out(c, slf, name, sub, v, line, ic, cc)
 }
 
 
@@ -947,43 +983,53 @@ pub fn EVAL_node_lambda(c: &mut Ctx, n: NodePtr, fp: Fp, blk: IseqRef) -> RV {
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_plus(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
-    if a.both_fix(b) && !redef(R_INT_PLUS) { if let Some(r) = a.fix_add(b) { return Ok(r); } }
-    if let Some((x, y)) = flo2(a, b, R_FLO_PLUS, R_INT_PLUS) { return Ok(crate::numeric::float_new(x + y)); }
-    srb_binop(c, a, b, s::plus, line, cc)
-}
-
-
-#[inline(always)]
-#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_minus(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
-    if a.both_fix(b) && !redef(R_INT_MINUS) { if let Some(r) = a.fix_sub(b) { return Ok(r); } }
-    if let Some((x, y)) = flo2(a, b, R_FLO_MINUS, R_INT_MINUS) { return Ok(crate::numeric::float_new(x - y)); }
-    srb_binop(c, a, b, s::minus, line, cc)
-}
-
-
-#[inline(always)]
-#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_mul(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_MUL) {
-        if let Some(r) = a.as_fix().checked_mul(b.as_fix()) { if Value::fixable(r) { return Ok(Value::fix(r)); } }
+pub fn EVAL_node_opt_plus(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> RV {
+    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_PLUS) { if let Some(r) = a.fix_add(b) { return Ok(r); } }
+    if tf_flo(ty) {
+        if let Some((x, y)) = flo2(a, b, R_FLO_PLUS, R_INT_PLUS) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(crate::numeric::float_new(x + y)); }
+        return srb_binop(c, a, b, s::plus, line, cc);
     }
-    if let Some((x, y)) = flo2(a, b, R_FLO_MUL, R_INT_MUL) { return Ok(crate::numeric::float_new(x * y)); }
-    srb_binop(c, a, b, s::mul, line, cc)
+    srb_arith_out(c, a, b, s::plus, line, cc)
 }
 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_div(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
+pub fn EVAL_node_opt_minus(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> RV {
+    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_MINUS) { if let Some(r) = a.fix_sub(b) { return Ok(r); } }
+    if tf_flo(ty) {
+        if let Some((x, y)) = flo2(a, b, R_FLO_MINUS, R_INT_MINUS) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(crate::numeric::float_new(x - y)); }
+        return srb_binop(c, a, b, s::minus, line, cc);
+    }
+    srb_arith_out(c, a, b, s::minus, line, cc)
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_opt_mul(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> RV {
+    if a.both_fix(b) && !redef(R_INT_MUL) { if let Some(r) = a.fix_mul(b) { return Ok(r); } }
+    if tf_flo(ty) {
+        if let Some((x, y)) = flo2(a, b, R_FLO_MUL, R_INT_MUL) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(crate::numeric::float_new(x * y)); }
+        return srb_binop(c, a, b, s::mul, line, cc);
+    }
+    srb_arith_out(c, a, b, s::mul, line, cc)
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_opt_div(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> RV {
     if a.is_fixnum() && b.is_fixnum() && b.as_fix() != 0 && !redef(R_INT_DIV) {
         let (x, y) = (a.as_fix(), b.as_fix());
         let q = if (x % y != 0) && ((x < 0) != (y < 0)) { x / y - 1 } else { x / y };
         if Value::fixable(q) { return Ok(Value::fix(q)); }
     }
-    if let Some((x, y)) = flo2(a, b, R_FLO_DIV, R_INT_DIV) { return Ok(crate::numeric::float_new(x / y)); }
-    srb_binop(c, a, b, s::div, line, cc)
+    if tf_flo(ty) {
+        if let Some((x, y)) = flo2(a, b, R_FLO_DIV, R_INT_DIV) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(crate::numeric::float_new(x / y)); }
+        return srb_binop(c, a, b, s::div, line, cc);
+    }
+    srb_arith_out(c, a, b, s::div, line, cc)
 }
 
 
@@ -1013,100 +1059,132 @@ pub fn EVAL_node_opt_mod(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, li
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_lt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
+pub fn EVAL_node_opt_lt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> RV {
     if a.both_fix(b) && !redef(R_INT_LT) { return Ok(Value::bool(a.fix_ord() < b.fix_ord())); }
-    if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LT, R_INT_LT) { return Ok(Value::bool(x < y)); }
-    srb_binop(c, a, b, s::lt, line, cc)
+    if tf_flo(ty) {
+        if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LT, R_INT_LT) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x < y)); }
+        return srb_binop(c, a, b, s::lt, line, cc);
+    }
+    srb_arith_out(c, a, b, s::lt, line, cc)
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_TEST_node_opt_lt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> Result<bool, Esc> {
+pub fn EVAL_TEST_node_opt_lt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
     if a.both_fix(b) && !redef(R_INT_LT) { return Ok(a.fix_ord() < b.fix_ord()); }
-    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LT) { return Ok(a.flonum_val() < b.flonum_val()); }
-    Ok(srb_binop(c, a, b, s::lt, line, cc)?.truthy())
+    if tf_flo(ty) {
+        if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LT) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() < b.flonum_val()); }
+        if ty == 0 { return Ok(srb_binop(c, a, b, s::lt, line, cc)?.truthy()); }
+    }
+    Ok(srb_arith_out(c, a, b, s::lt, line, cc)?.truthy())
 }
 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_le(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
+pub fn EVAL_node_opt_le(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> RV {
     if a.both_fix(b) && !redef(R_INT_LE) { return Ok(Value::bool(a.fix_ord() <= b.fix_ord())); }
-    if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LE, R_INT_LE) { return Ok(Value::bool(x <= y)); }
-    srb_binop(c, a, b, s::le, line, cc)
+    if tf_flo(ty) {
+        if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LE, R_INT_LE) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x <= y)); }
+        return srb_binop(c, a, b, s::le, line, cc);
+    }
+    srb_arith_out(c, a, b, s::le, line, cc)
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_TEST_node_opt_le(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> Result<bool, Esc> {
+pub fn EVAL_TEST_node_opt_le(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
     if a.both_fix(b) && !redef(R_INT_LE) { return Ok(a.fix_ord() <= b.fix_ord()); }
-    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LE) { return Ok(a.flonum_val() <= b.flonum_val()); }
-    Ok(srb_binop(c, a, b, s::le, line, cc)?.truthy())
+    if tf_flo(ty) {
+        if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LE) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() <= b.flonum_val()); }
+        if ty == 0 { return Ok(srb_binop(c, a, b, s::le, line, cc)?.truthy()); }
+    }
+    Ok(srb_arith_out(c, a, b, s::le, line, cc)?.truthy())
 }
 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_gt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
+pub fn EVAL_node_opt_gt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> RV {
     if a.both_fix(b) && !redef(R_INT_GT) { return Ok(Value::bool(a.fix_ord() > b.fix_ord())); }
-    if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GT, R_INT_GT) { return Ok(Value::bool(x > y)); }
-    srb_binop(c, a, b, s::gt, line, cc)
+    if tf_flo(ty) {
+        if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GT, R_INT_GT) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x > y)); }
+        return srb_binop(c, a, b, s::gt, line, cc);
+    }
+    srb_arith_out(c, a, b, s::gt, line, cc)
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_TEST_node_opt_gt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> Result<bool, Esc> {
+pub fn EVAL_TEST_node_opt_gt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
     if a.both_fix(b) && !redef(R_INT_GT) { return Ok(a.fix_ord() > b.fix_ord()); }
-    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GT) { return Ok(a.flonum_val() > b.flonum_val()); }
-    Ok(srb_binop(c, a, b, s::gt, line, cc)?.truthy())
+    if tf_flo(ty) {
+        if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GT) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() > b.flonum_val()); }
+        if ty == 0 { return Ok(srb_binop(c, a, b, s::gt, line, cc)?.truthy()); }
+    }
+    Ok(srb_arith_out(c, a, b, s::gt, line, cc)?.truthy())
 }
 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_ge(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
+pub fn EVAL_node_opt_ge(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> RV {
     if a.both_fix(b) && !redef(R_INT_GE) { return Ok(Value::bool(a.fix_ord() >= b.fix_ord())); }
-    if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GE, R_INT_GE) { return Ok(Value::bool(x >= y)); }
-    srb_binop(c, a, b, s::ge, line, cc)
+    if tf_flo(ty) {
+        if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GE, R_INT_GE) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x >= y)); }
+        return srb_binop(c, a, b, s::ge, line, cc);
+    }
+    srb_arith_out(c, a, b, s::ge, line, cc)
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_TEST_node_opt_ge(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> Result<bool, Esc> {
+pub fn EVAL_TEST_node_opt_ge(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
     if a.both_fix(b) && !redef(R_INT_GE) { return Ok(a.fix_ord() >= b.fix_ord()); }
-    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GE) { return Ok(a.flonum_val() >= b.flonum_val()); }
-    Ok(srb_binop(c, a, b, s::ge, line, cc)?.truthy())
+    if tf_flo(ty) {
+        if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GE) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() >= b.flonum_val()); }
+        if ty == 0 { return Ok(srb_binop(c, a, b, s::ge, line, cc)?.truthy()); }
+    }
+    Ok(srb_arith_out(c, a, b, s::ge, line, cc)?.truthy())
 }
 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_eq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
+pub fn EVAL_node_opt_eq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> RV {
     if a.both_fix(b) && !redef(R_INT_EQ) { return Ok(Value::bool(a == b)); }
-    if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { return Ok(Value::bool(x == y)); }
+    if tf_flo(ty) { if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x == y)); } }
     // nil / true / false / Symbol receivers: == is identity
     if a.is_special() && !redef(R_IMM_EQ) { return Ok(Value::bool(a == b)); }
-    srb_eq(c, a, b, line, cc)
+    if ty == 0 { return srb_eq(c, a, b, line, cc); }
+    srb_arith_out(c, a, b, s::eq, line, cc)
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_TEST_node_opt_eq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> Result<bool, Esc> {
+pub fn EVAL_TEST_node_opt_eq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
     if a.both_fix(b) && !redef(R_INT_EQ) { return Ok(a == b); }
-    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { return Ok(a.flonum_val() == b.flonum_val()); }
+    if tf_flo(ty) { if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() == b.flonum_val()); } }
     if a.is_sym() && b.is_sym() { return Ok(a == b); }
-    Ok(srb_eq(c, a, b, line, cc)?.truthy())
+    if ty == 0 { return Ok(srb_eq(c, a, b, line, cc)?.truthy()); }
+    Ok(srb_arith_out(c, a, b, s::eq, line, cc)?.truthy())
 }
 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_neq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
+pub fn EVAL_node_opt_neq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> RV {
     if a.both_fix(b) && !redef(R_INT_EQ) { return Ok(Value::bool(a != b)); }
-    if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { return Ok(Value::bool(x != y)); }
-    srb_binop(c, a, b, s::neq, line, cc)
+    if tf_flo(ty) {
+        if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x != y)); }
+        return srb_binop(c, a, b, s::neq, line, cc);
+    }
+    srb_arith_out(c, a, b, s::neq, line, cc)
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_TEST_node_opt_neq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> Result<bool, Esc> {
+pub fn EVAL_TEST_node_opt_neq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
     if a.both_fix(b) && !redef(R_INT_EQ) { return Ok(a != b); }
-    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { return Ok(a.flonum_val() != b.flonum_val()); }
-    Ok(srb_binop(c, a, b, s::neq, line, cc)?.truthy())
+    if tf_flo(ty) {
+        if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() != b.flonum_val()); }
+        if ty == 0 { return Ok(srb_binop(c, a, b, s::neq, line, cc)?.truthy()); }
+    }
+    Ok(srb_arith_out(c, a, b, s::neq, line, cc)?.truthy())
 }
 
 
@@ -1171,29 +1249,29 @@ pub fn EVAL_node_opt_or(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, lin
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_aref(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
-    if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && !redef(R_ARY_AREF) {
-        let v = c.ary(a);
-        let i = b.as_fix();
-        // one unsigned compare for the common case; a negative index counts from the end
-        if let Some(&x) = v.get(i as usize) { return Ok(x); }
-        return Ok(if i < 0 { v.len().checked_sub(i.unsigned_abs() as usize).and_then(|j| v.get(j).copied()).unwrap_or(NIL) } else { NIL });
+pub fn EVAL_node_opt_aref(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> RV {
+    // the class load sits between the two tag tests, or they are merged into setcc / or
+    if a.is_heap() && obj(a).klass.raw() == fast_ary_aref() && b.is_fixnum() {
+        if let Some(&x) = c.ary(a).get(b.as_fix() as usize) { return Ok(x); }
+    } else if tf_hash(ty) && is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_AREF) {
+        if ty == 0 { tf.0 |= TF_HASH; }
+        return crate::hash::hash_aref(c, a, b);
     }
-    if is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_AREF) { return crate::hash::hash_aref(c, a, b); }
-    srb_binop(c, a, b, s::aref, line, cc)
+    srb_aref_out(c, a, b, line, cc)
 }
 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_aset(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, v: Value, line: u32, cc: &mut CallCache) -> RV {
-    if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && obj(a).flags & FL_FROZEN == 0 && !redef(R_ARY_ASET) {
-        let ary = c.ary_mut(a);
-        let i = b.as_fix();
-        if i >= 0 && (i as usize) < ary.len() { ary[i as usize] = v; return Ok(v); }
+pub fn EVAL_node_opt_aset(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, v: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> RV {
+    if a.is_heap() && obj(a).klass.raw() == fast_ary_aset() && b.is_fixnum() && obj(a).flags & FL_FROZEN == 0 {
+        if let Some(x) = c.ary_mut(a).get_mut(b.as_fix() as usize) { *x = v; return Ok(v); }
+    } else if tf_hash(ty) && is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_ASET) {
+        if ty == 0 { tf.0 |= TF_HASH; }
+        crate::hash::hash_aset(c, a, b, v)?;
+        return Ok(v);
     }
-    if is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_ASET) { crate::hash::hash_aset(c, a, b, v)?; return Ok(v); }
-    srb_aset(c, a, b, v, line, cc)
+    srb_aset_out(c, a, b, v, line, cc)
 }
 
 

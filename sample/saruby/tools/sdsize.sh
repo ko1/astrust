@@ -1,5 +1,7 @@
 #!/bin/bash
 # sdsize.sh [SARUBY] : bytes of baked code per occurrence of a construct (a method with 22 copies minus one with 2, / 20).
+# The copies are identical statements: since nodes are addressed as root + constant each copy is its own
+# code (as distinct statements are); before that LLVM merged them and the figures were too small.
 S=$(realpath ${1:-$(dirname $0)/../saruby}); W=$(mktemp -d); cd $W
 gen() { ruby -e 'name, line = ARGV; puts "class C; attr_accessor :p; def initialize; @a = 1; @b = [1,2,3]; @p = 2; @o = self; end; def h = 1; def h1(x) = x"; [2, 22].each { |n| puts "def m#{n}(x); s = 0; #{([line] * n).join("; ")}; s; end" }; puts "end; c = C.new; 3.times { c.m2(1); c.m22(1) }"' "$1" "$2" > $1.rb; }
 gen lvar 's = x'; gen ivar_get 's = @a'; gen ivar_set '@a = x'; gen opassign_ivar '@a += 1'; gen add 's = s + x'; gen cmp_if 's = 1 if x < s'

@@ -1,6 +1,8 @@
 // Inline fast-path helpers for node.def (operator nodes).
 use crate::rt::*;
+use crate::symbol::s;
 use crate::value::*;
+use crate::vm::{CallCache, Ctx, RV};
 
 /// Operands as doubles when Float op Float / Float op Integer / Integer op Float applies
 /// (flonum and fixnum only); `rf` / `ri` are the redefinition flags of Float#op / Integer#op.
@@ -31,6 +33,42 @@ pub fn flo2_cmp(a: Value, b: Value, rf: u32, ri: u32) -> Option<(f64, f64)> {
         return Some((a.as_fix() as f64, b.flonum_val()));
     }
     None
+}
+
+/// What an operator site's operands were besides fixnums; set by the interpreter, read when the site is baked.
+#[derive(Default)]
+pub struct TyFb(pub u32);
+pub const TF_FLO: u32 = 1;
+pub const TF_HASH: u32 = 2;
+
+/// Does a site with the baked `ty` (0: interpreter, else 1 + TyFb) keep its Float paths inline?
+#[inline(always)]
+pub fn tf_flo(ty: u32) -> bool { ty == 0 || (ty - 1) & TF_FLO != 0 }
+#[inline(always)]
+pub fn tf_hash(ty: u32) -> bool { ty == 0 || (ty - 1) & TF_HASH != 0 }
+
+/// The rest of an operator at a baked site whose inline paths did not apply: Float, then the call.
+/// A site whose recorded kinds are stale or absent ends up here, slower but right.
+#[inline(never)]
+pub fn srb_arith_out(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: u32, cc: &mut CallCache) -> RV {
+    let f = crate::numeric::float_new;
+    match mid {
+        s::plus => if let Some((x, y)) = flo2(a, b, R_FLO_PLUS, R_INT_PLUS) { return Ok(f(x + y)); }
+        s::minus => if let Some((x, y)) = flo2(a, b, R_FLO_MINUS, R_INT_MINUS) { return Ok(f(x - y)); }
+        s::mul => if let Some((x, y)) = flo2(a, b, R_FLO_MUL, R_INT_MUL) { return Ok(f(x * y)); }
+        s::div => if let Some((x, y)) = flo2(a, b, R_FLO_DIV, R_INT_DIV) { return Ok(f(x / y)); }
+        s::lt => if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LT, R_INT_LT) { return Ok(Value::bool(x < y)); }
+        s::le => if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LE, R_INT_LE) { return Ok(Value::bool(x <= y)); }
+        s::gt => if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GT, R_INT_GT) { return Ok(Value::bool(x > y)); }
+        s::ge => if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GE, R_INT_GE) { return Ok(Value::bool(x >= y)); }
+        s::neq => if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { return Ok(Value::bool(x != y)); }
+        s::eq => {
+            if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { return Ok(Value::bool(x == y)); }
+            return srb_eq(c, a, b, line, cc);
+        }
+        _ => {}
+    }
+    srb_binop(c, a, b, mid, line, cc)
 }
 
 /// `pat === subj` when identity alone decides it (immediate patterns).

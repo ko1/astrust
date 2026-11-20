@@ -357,6 +357,14 @@ impl<'a> Compiler<'a> {
         let bentry = if kind == IseqKind::Block && lead_only {
             ALLOC_node_block_entry(sc.nslots, params.lead.len() as u32, if sc.env_size > 0 { ME_ENV } else { 0 }, line, body)
         } else { std::ptr::null_mut() };
+        // one block per body: baked code addresses its nodes (and their caches) as root + constant
+        let (body, entry, bentry) = if !entry.is_null() {
+            let e = layout_tree(entry);
+            (unsafe { (*(e as *mut NodeOf<node_method_entry_struct>)).u.body }, e, bentry)
+        } else if !bentry.is_null() {
+            let e = layout_tree(bentry);
+            (unsafe { (*(e as *mut NodeOf<node_block_entry_struct>)).u.body }, entry, e)
+        } else { (layout_tree(body), entry, bentry) };
         let is = Box::leak(Box::new(Iseq {
             body, entry, bentry, body_used: std::cell::Cell::new(false), nlocals: sc.nslots, params, env_size: sc.env_size, env_params,
             info: CodeInfo { file: self.file, label, line }, kind, simple, lead_only, name, local_names, arity, uses_block: false,
@@ -509,9 +517,17 @@ impl<'a> Compiler<'a> {
             Kind::InstanceVariableWriteNode { name, value } => { let v = self.c(value); ALLOC_node_iasgn(self.cst(*name), v) }
             Kind::InstanceVariableOperatorWriteNode { name, value, binary_operator } => {
                 let nm = self.cst(*name);
-                let r = ALLOC_node_ivar(nm); let v = self.c(value);
-                let e = self.binop(r, self.cst(*binary_operator), v, line);
-                ALLOC_node_iasgn(nm, e)
+                let op = self.cst(*binary_operator);
+                // the fused node evaluates the right side before it reads the ivar: only for one that cannot change it
+                let pure = matches!(value.kind, Kind::IntegerNode { .. } | Kind::FloatNode { .. } | Kind::LocalVariableReadNode { .. } | Kind::InstanceVariableReadNode { .. });
+                if pure && (op == s::plus || op == s::minus) {
+                    let v = self.c(value);
+                    ALLOC_node_ivar_arith(nm, op == s::minus, v, line)
+                } else {
+                    let r = ALLOC_node_ivar(nm); let v = self.c(value);
+                    let e = self.binop(r, op, v, line);
+                    ALLOC_node_iasgn(nm, e)
+                }
             }
             Kind::InstanceVariableOrWriteNode { name, value } => {
                 let nm = self.cst(*name); let v = self.c(value);
