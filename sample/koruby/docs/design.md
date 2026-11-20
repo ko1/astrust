@@ -1,0 +1,62 @@
+# koruby (ASTrust) — design notes
+
+koruby is a Ruby implementation in Rust built on ASTrust (`../../lib/astrustgen.rb`,
+`../../runtime/astrust.rs`), the Rust port of ASTro.  It is a rewrite of
+`astro/sample/koruby_precise` (C) — same goals (CRuby drop-in, AOT by partial evaluation),
+different implementation language.
+
+## Pipeline
+
+```
+source --prism (C, vendor/prism) --> serialized AST --src/prism.rs + prism_ast.rs--> Rust AST
+       --src/compile.rs--> ASTrust nodes (node.def) --interpreter: DISPATCH_* (node_dispatch.rs)
+                                                    \-AOT: SPECIALIZE_* emit Rust --rustc--> code_store/all.so
+```
+
+* `node.def` — node kinds with Rust bodies.  `ruby koruby_gen.rb` (via `make`) generates
+  `src/node_*.rs`.  Never edit generated files.
+* Every dispatcher is `fn(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV` where
+  `RV = Result<Value, Esc>`.  `Esc` is a zero-sized error; the kind/payload of a non-local exit
+  (raise, break, next, return, throw, ...) is in `c.esc`, `c.esc_val`, `c.esc_tag`.
+* `fp` = current frame's locals on the VM value stack: `fp[0]` = self, `fp[1]` = env
+  (heap Env holding variables captured by blocks, or the outer env), then parameters/locals.
+* Calls stage `[recv, -, args...]` at `c.sp` and the callee frame starts there (no copying).
+
+## Values (src/value.rs)
+Fixnum (`...1`), Flonum (`..10`, CRuby encoding), heap pointer (`.000`), nil=0x04, false=0x0c,
+true=0x14, undef=0x1c, Symbol `(id<<8)|0x34`.  No value is 0 → `RV` fits in one register.
+
+## Objects (src/object.rs) and GC (src/gc.rs)
+One fixed-size slot per object (`RObj { klass, flags, body: Body }`); variable data in Rust
+Vecs/Boxes owned by the slot.  Non-moving mark & sweep.
+
+**Rooting (important):** heap objects are traced precisely; the machine stack and registers
+are scanned conservatively, and the VM value stack too.  So Values in Rust locals are safe.
+**Never keep a Value only inside a Rust heap buffer (Vec<Value>, Box) across an allocation or
+a Ruby call** — if needed, put it in a Ruby Array (`ary_new_from`) held in a local.  Don't hold
+`&mut` borrows into an object (e.g. `rary(v)`) across calls that can run Ruby code; iterate by
+index and re-fetch (`ary_get(v, i)` with `ary_len(v)` checked each iteration).
+
+## Methods
+* Builtins are `CFunc = fn(&mut Ctx, self: Value, args: &[Value], blk: *const Block) -> RV`,
+  registered with `define_cfunc(klass, "name", f, arity)` (arity -1 = variadic; checked).
+  Keyword args to a cfunc arrive as a trailing Hash; `kw_arg(args)` returns it if the caller
+  passed keywords.
+* Call Ruby from Rust: `funcall(c, recv, sym, &args, blk)`, `yield1(c, blk, v)`,
+  `yield_block(c, blk, &args)`, `call_proc(c, proc, &args, blk)`.
+* Raise: `return err(c, vm().c_argument_error, "msg")`, `arg_err`, `type_err`, or
+  `Err(raise_exc(c, exc_obj))`.
+* Ruby-level built-ins live in `prelude/core.rb` (loaded at boot).
+
+## Testing
+Differential tests against CRuby (oracle): `../../../astro/sample/rubyharness`.
+```
+H=../../../astro/sample/rubyharness
+ruby $H/tools/run_specs.rb --jobs 8 --timeout 15 --pattern 'string*.rb' --interp ./koruby --diff ruby --dir $H/t/hand
+```
+(`t/hand`, `t/method`, `t/syntax`, `t/spec`).  Single file: `diff <(./koruby f.rb 2>&1) <(ruby f.rb 2>&1)`.
+
+## AOT
+`./koruby --aot-compile x.rb` runs and then specializes every executed body into
+`code_store/all.so`; later runs load it and swap dispatchers by Merkle hash (`--plain`
+disables).  `KORUBY_AOT_VERBOSE=1` shows the rustc command.
