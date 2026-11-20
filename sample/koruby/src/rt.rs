@@ -50,6 +50,8 @@ pub fn redef(f: u32) -> bool { unsafe { REDEF & f != 0 } }
 /// Called when a method is (re)defined after boot: disable affected fast paths.
 pub fn note_redefinition(klass: Value, mid: Sym) {
     if unsafe { !BOOTED } { return; }
+    // a refinement of a basic operation turns its inline fast path off everywhere
+    let klass = if rclass(klass).refined { rclass(klass).attached } else { klass };
     let vm = vm();
     let table: &[(Value, Sym, u32)] = &[
         (vm.c_integer, s::plus, R_INT_PLUS), (vm.c_integer, s::minus, R_INT_MINUS), (vm.c_integer, s::mul, R_INT_MUL),
@@ -93,6 +95,9 @@ pub fn rt_dstr_append(c: &mut Ctx, acc: Value, v: Value) -> Result<(), Esc> {
 
 pub fn rt_tostr(c: &mut Ctx, v: Value) -> RV {
     if is_string(v) { return Ok(v); }
+    if unsafe { REFINEMENTS_ON } {
+        if let Some(r) = funcall_refined(c, v, s::to_s, &[], std::ptr::null(), CF_FCALL) { let r = r?; if is_string(r) { return Ok(r); } }
+    }
     if v.is_fixnum() { return Ok(str_new(v.as_fix().to_string().as_bytes())); }
     if v.is_sym() { return Ok(str_new(crate::symbol::sym_bytes(v.as_sym()))); }
     if v == NIL { return Ok(str_new(b"")); }
@@ -761,7 +766,7 @@ pub fn rt_def(c: &mut Ctx, mid: Sym, is: &'static Iseq, _fp: *mut Value) -> RV {
     if f.defined_class != NIL && f.kind != FK_CLASS { klass = f.defined_class; }
     let mut visi = if f.kind == FK_CLASS || f.kind == FK_TOP || (f.kind == FK_EVAL) { f.visi } else { VISI_PUBLIC };
     // eval at top level defines private methods; a def in a method body is public
-    if klass == vm().c_object && f.kind == FK_EVAL && f.cref == vm().top_cref { visi = VISI_PRIVATE; }
+    if klass == vm().c_object && f.kind == FK_EVAL && unsafe { (*f.cref).prev.is_null() } { visi = VISI_PRIVATE; }
     if mid == s::initialize || mid == s::initialize_copy || mid == s::respond_to_missing_p
         || mid == s::mid_initialize_dup || mid == s::mid_initialize_clone { visi = VISI_PRIVATE; }
     if visi == VISI_MODFUNC {
@@ -1072,7 +1077,7 @@ pub fn rt_call_kw(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, k
     let recv = unsafe { *base };
     let lit;
     let blk: *const Block = match ci.blk { Some(is) => { lit = make_block(c, is, fp); &lit } None => std::ptr::null() };
-    let me = lookup_cc(cc, recv, mid, flags);
+    let me = lookup_cc(c, cc, recv, mid, flags);
     let r = if !me.is_null() && kw_direct_ok(me, npos, &ci.kw_names, flags) {
         let is = match unsafe { (*me).kind } { MKind::Iseq(is) => unsafe { &*is }, _ => unreachable!() };
         let r = invoke_iseq_kw(c, me, is, recv, base, npos, &ci.kw_names, blk);

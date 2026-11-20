@@ -194,7 +194,7 @@ fn proc_ruby2kw(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV 
 // ---- Method / UnboundMethod -----------------------------------------------------------------
 
 pub fn method_object(c: &mut Ctx, recv: Value, mid: Sym, public_only: bool) -> RV {
-    let me = lookup_method(class_of(recv), mid);
+    let me = if unsafe { REFINEMENTS_ON } { lookup_method_refined(unsafe { (*c.frame).cref }, class_of(recv), mid) } else { lookup_method(class_of(recv), mid) };
     if me.is_null() || (public_only && unsafe { (*me).visi } != VISI_PUBLIC) {
         // respond_to_missing? → a method that goes through method_missing
         if respond_to(recv, s::respond_to_missing_p, true) {

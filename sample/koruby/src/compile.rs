@@ -148,6 +148,14 @@ impl<'a> Compiler<'a> {
             }
         }
         match &n.kind {
+            // anonymous *, **, &, ... used inside a block: the method's hidden params are captured
+            Kind::SplatNode { expression: None } | Kind::AssocSplatNode { value: None } | Kind::BlockArgumentNode { expression: None }
+            | Kind::ForwardingArgumentsNode if stack.len() > 1 => {
+                let e = self.captures.entry(stack[0].0).or_default();
+                for nm in [b"__fwd_rest" as &[u8], b"__fwd_kw", b"__fwd_blk"] { e.insert(intern(nm)); }
+            }
+            // bare `super` in a block re-reads every parameter of the method
+            Kind::ForwardingSuperNode { .. } if stack.len() > 1 => { self.captures.entry(stack[0].0).or_default().insert(Sym(u32::MAX)); }
             Kind::FlipFlopNode { .. } if stack.len() > 1 => {
                 let nm = intern(format!("%ff{}", n.loc.start).as_bytes());
                 self.captures.entry(stack[0].0).or_default().insert(nm);
@@ -877,7 +885,7 @@ impl<'a> Compiler<'a> {
             if sc.vars.contains_key(&s) { break; }
             if !sc.transparent { depth += 1; }
         }
-        if depth as usize >= self.scopes.len() { return ALLOC_node_nil(); }
+        if depth as usize >= self.scopes.len() && !self.eval_outer.iter().flatten().any(|x| x.0 == s) { return ALLOC_node_nil(); }
         self.var_read(s, depth)
     }
 

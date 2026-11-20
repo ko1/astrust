@@ -483,11 +483,52 @@ pub fn lookup_method(klass: Value, mid: Sym) -> *const MethodEntry {
     me
 }
 
+// ---- refinements ----------------------------------------------------------------------------
+// A refinement is a Module (ClassData.refined, attached = the refined class) outside every
+// ancestry.  `using` puts it on the caller's cref; call sites under that cref look there first.
+
+/// Set by the first `using`: call-site lookups consult the frame's cref from then on.
+pub static mut REFINEMENTS_ON: bool = false;
+
+/// The refinements active for a cref (Array, later entries win) or NIL.
+pub fn cref_refinements(mut cr: *const Cref) -> Value {
+    unsafe {
+        while !cr.is_null() {
+            if (*cr).refinements != NIL { return (*cr).refinements; }
+            cr = (*cr).prev;
+        }
+    }
+    NIL
+}
+
+/// Method lookup at a call site whose cref may have refinements activated.
+#[inline(never)]
+pub fn lookup_method_refined(cref: *const Cref, klass: Value, mid: Sym) -> *const MethodEntry {
+    let refs = cref_refinements(cref);
+    if refs == NIL { return lookup_method(klass, mid); }
+    let n = rary(refs).len();
+    for &k in ancestors(klass).iter() {
+        for i in (0..n).rev() {
+            let r = rary(refs)[i];
+            if rclass(r).attached != k { continue; }
+            let me = search_method(r, mid);
+            if me.is_null() { continue; }
+            // `undef` in the refine block hides the method
+            return if matches!(unsafe { (*me).kind }, MKind::Undef) { std::ptr::null() } else { me };
+        }
+        if rclass(k).mtbl.contains_key(&mid) { break; }
+    }
+    lookup_method(klass, mid)
+}
+
 /// Next method after `owner` in klass's ancestors (super).
 pub fn super_method(klass: Value, owner: Value, mid: Sym) -> *const MethodEntry {
     let anc = ancestors(klass);
     let mut found = false;
+    // super from a refined method: the refined class's own method comes next
+    let (owner, refined) = if rclass(owner).refined { (rclass(owner).attached, true) } else { (owner, false) };
     for &k in anc.iter() {
+        if refined && k == owner { found = true; }
         if found {
             if let Some(&me) = rclass(k).mtbl.get(&mid) {
                 if let MKind::ZSuper = unsafe { (*me).kind } { continue; }
@@ -930,6 +971,25 @@ pub fn funcall_flags(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *c
     r
 }
 
+/// send / public_send from a scope with refinements: a refined method is called directly.
+pub fn funcall_refined(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const Block, flags: u32) -> Option<RV> {
+    // a cfunc frame carries its caller's cref
+    let me = lookup_method_refined(unsafe { (*c.frame).cref }, class_of(recv), mid);
+    if me.is_null() || !rclass(unsafe { (*me).owner }).refined { return None; }
+    if unsafe { (*me).visi } != VISI_PUBLIC && flags & CF_FCALL == 0 { return None; }
+    let base = c.sp;
+    if unsafe { base.add(args.len() + 2) } >= c.stack_end { return Some(Err(raise_stack_overflow(c))); }
+    unsafe {
+        *base = recv;
+        *base.add(1) = NIL;
+        for (i, a) in args.iter().enumerate() { *base.add(2 + i) = *a; }
+        c.sp = base.add(2 + args.len());
+    }
+    let r = invoke(c, me, recv, base, args.len() as u32, blk, flags);
+    c.sp = base;
+    Some(r)
+}
+
 /// Public call from Rust (respects visibility).
 pub fn funcall_public(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const Block) -> RV {
     funcall_flags(c, recv, mid, args, blk, 0)
@@ -989,7 +1049,7 @@ pub fn call_cached(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, 
         }
         cc.me as *const MethodEntry
     } else {
-        let me = lookup_method(klass, mid);
+        let me = if unsafe { REFINEMENTS_ON } { lookup_method_refined(unsafe { (*c.frame).cref }, klass, mid) } else { lookup_method(klass, mid) };
         fill_cc(cc, klass, me, vm.method_serial, flags);
         me
     };
@@ -1012,11 +1072,11 @@ pub fn call_cached(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, 
 
 /// Method entry for recv.mid through the call cache (null: not found).
 #[inline(always)]
-pub fn lookup_cc(cc: &mut CallCache, recv: Value, mid: Sym, flags: u32) -> *const MethodEntry {
+pub fn lookup_cc(c: &Ctx, cc: &mut CallCache, recv: Value, mid: Sym, flags: u32) -> *const MethodEntry {
     let klass = class_of(recv);
     let serial = vm().method_serial;
     if cc.klass == klass.raw() && cc.serial == serial { return cc.me as *const MethodEntry; }
-    let me = lookup_method(klass, mid);
+    let me = if unsafe { REFINEMENTS_ON } { lookup_method_refined(unsafe { (*c.frame).cref }, klass, mid) } else { lookup_method(klass, mid) };
     fill_cc(cc, klass, me, serial, flags);
     me
 }
@@ -1580,6 +1640,9 @@ pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const 
         BlockKind::Sym(mid) => {
             if args.is_empty() { return arg_err(c, "no receiver given"); }
             let recv = args[0];
+            if unsafe { REFINEMENTS_ON } {
+                if let Some(r) = funcall_refined(c, recv, mid, &args[1..], blkarg, 0) { return r; }
+            }
             funcall_public(c, recv, mid, &args[1..], blkarg)
         }
         BlockKind::Method(m) => {
