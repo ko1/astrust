@@ -175,7 +175,14 @@ fn st_cmp_members(c: &mut Ctx, slf: Value, o: Value, eql: bool) -> RV {
 }
 fn st_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { st_cmp_members(c, slf, a[0], false) }
 fn st_eql(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { st_cmp_members(c, slf, a[0], true) }
-fn st_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let x = st_to_a(c, slf, &[], std::ptr::null())?; let h = key_hash(c, x)?; Ok(Value::fix(((h ^ real_class_of(slf).raw()) >> 2) as i64)) }
+fn st_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    let seed = real_class_of(slf).raw();
+    // a struct that contains itself: the inner occurrence hashes as its class alone
+    if !recursion_enter(slf, s::hash) { return Ok(Value::fix((seed >> 2) as i64)); }
+    let r = st_to_a(c, slf, &[], std::ptr::null()).and_then(|x| key_hash(c, x));
+    recursion_leave(slf, s::hash);
+    Ok(Value::fix(((r? ^ seed) >> 2) as i64))
+}
 fn st_members(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let m = members_of(c, real_class_of(slf)); Ok(c.ary_from_vec(c.ary(m).to_vec())) }
 fn st_each(c: &mut Ctx, slf: Value, _a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for_sized(c, slf, s::each, &[]); }
