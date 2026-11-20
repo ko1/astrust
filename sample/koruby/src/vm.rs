@@ -970,6 +970,12 @@ pub fn call_cached(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, 
                         }
                     }
                 }
+                3 if argc == 1 => {
+                    // BasicObject#== / equal?: identity
+                    let r = Value::bool(recv == unsafe { *base.add(2) });
+                    c.sp = base;
+                    return Ok(r);
+                }
                 _ => {}
             }
         }
@@ -1073,6 +1079,7 @@ fn fill_cc(cc: &mut CallCache, klass: Value, me: *const MethodEntry, serial: u64
     if m.visi != VISI_PUBLIC && flags & CF_FCALL == 0 { return; }
     match m.kind {
         MKind::Iseq(is) => { if unsafe { (*is).lead_only } { cc.fast = is as usize; } }
+        MKind::Cfunc(..) if me == unsafe { crate::builtins::object::BO_EQ_ME } => { cc.fast = 3; }
         MKind::AttrReader(name) | MKind::AttrWriter(name) => {
             let cd = rclass(klass);
             if !cd.is_singleton && cd.alloc == AllocKind::Object {

@@ -42,7 +42,8 @@ pub fn key_hash(c: &mut Ctx, k: Value) -> Result<u64, Esc> {
     let me = lookup_method(class_of(k), s::hash);
     if !me.is_null() {
         if let MKind::Cfunc(f, _) = unsafe { (*me).kind } {
-            if f as *const () as usize == crate::builtins::kernel::obj_hash as *const () as usize { return Ok(mix(k.raw())); }
+            let _ = f;
+            if me == unsafe { crate::builtins::object::KERNEL_HASH_ME } { return Ok(mix(k.raw())); }
         }
     }
     if is_array(k) && unsafe { (*me).owner } == vm().c_array {

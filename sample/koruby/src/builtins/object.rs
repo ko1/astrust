@@ -18,7 +18,11 @@ pub fn to_sym_arg(c: &mut Ctx, v: Value) -> Result<Sym, Esc> {
 // ---- BasicObject --------------------------------------------------------------------
 
 fn bo_initialize(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(NIL) }
-fn bo_eq(_c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(s == a[0] || (s.is_flonum() && false))) }
+/// BasicObject#== entry (function pointers are not reliably unique, so identify it by entry).
+pub static mut BO_EQ_ME: *const MethodEntry = std::ptr::null();
+pub static mut BO_INIT_ME: *const MethodEntry = std::ptr::null();
+pub static mut KERNEL_HASH_ME: *const MethodEntry = std::ptr::null();
+pub fn bo_eq(_c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(s == a[0] || (s.is_flonum() && false))) }
 fn bo_not(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(s.falsy())) }
 fn bo_neq(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let r = funcall(c, s, crate::symbol::s::eq, &[a[0]], std::ptr::null())?;
@@ -889,7 +893,7 @@ pub fn c_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     let kw = kw_arg(a).is_some();
     let me = lookup_method(class_of(o), s::initialize);
     if !me.is_null() {
-        if let MKind::Cfunc(f, _) = unsafe { (*me).kind } { if f as *const () as usize == bo_initialize as *const () as usize { if !a.is_empty() && rclass(slf).alloc == AllocKind::Object && unsafe { (*me).owner } == vm().c_basic_object {
+        if let MKind::Cfunc(..) = unsafe { (*me).kind } { if me == unsafe { BO_INIT_ME } { if !a.is_empty() && rclass(slf).alloc == AllocKind::Object && unsafe { (*me).owner } == vm().c_basic_object {
             return argc_err(c, a.len(), 0, 0);
         } return Ok(o); } }
     }
@@ -936,7 +940,9 @@ pub fn init() {
     let vm = vm();
     let bo = vm.c_basic_object;
     define_private_cfunc(bo, "initialize", bo_initialize, -1);
+    unsafe { BO_INIT_ME = *rclass(bo).mtbl.get(&s::initialize).unwrap(); }
     define_cfunc(bo, "==", bo_eq, 1);
+    unsafe { BO_EQ_ME = *rclass(bo).mtbl.get(&s::eq).unwrap(); }
     define_cfunc(bo, "equal?", bo_eq, 1);
     define_cfunc(bo, "!", bo_not, 0);
     define_cfunc(bo, "!=", bo_neq, 1);
@@ -985,6 +991,7 @@ pub fn init() {
     d("extend", k_extend, -1);
     d("display", k_display, -1);
     d("hash", k_hash, 0);
+    unsafe { KERNEL_HASH_ME = *rclass(k).mtbl.get(&s::hash).unwrap(); }
     d("object_id", bo_id, 0);
     d("send", bo_send, -1);
     d("public_send", k_public_send, -1);
