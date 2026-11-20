@@ -48,7 +48,7 @@ pub fn cmp_result(c: &mut Ctx, r: Value, a: Value, b: Value) -> Result<i64, Esc>
     if r.is_fixnum() { return Ok(r.as_fix().signum()); }
     if r == NIL {
         let an = class_path(real_class_of(a));
-        let bn = if b.is_heap() && !is_string(b) && !is_float(b) { class_path(real_class_of(b)) } else { inspect_str(c, b)? };
+        let bn = if b.is_heap() && !is_float(b) { class_path(real_class_of(b)) } else { inspect_str(c, b)? };
         return arg_err(c, format!("comparison of {} with {} failed", an, bn));
     }
     if is_bignum(r) { return Ok(if rbig(r).neg { -1 } else { 1 }); }

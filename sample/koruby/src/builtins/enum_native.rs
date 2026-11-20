@@ -64,6 +64,7 @@ pub fn init() {
     define_singleton_cfunc(m, "__hash", e_hash, 1);
     define_singleton_cfunc(m, "__argc", e_argc, 3);
     define_singleton_cfunc(m, "__cmp", e_cmp, 2);
+    define_singleton_cfunc(m, "__range_sum", |c, _s, a, b| crate::builtins::range_methods::r_sum(c, a[0], &a[1..], b), 2);
     define_singleton_cfunc(m, "__ivget", e_ivget, 2);
     define_singleton_cfunc(m, "__ivset", e_ivset, 3);
 }

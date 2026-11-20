@@ -149,18 +149,20 @@ fn e_each(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
 
 fn e_with_index(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     let off = if a.is_empty() || a[0] == NIL { 0 } else { crate::builtins::numeric_methods::num_to_long(c, a[0])? };
-    if blk.is_null() { return enum_for(c, slf, intern(b"with_index"), a, NIL); }
-    let data = ary_new_from(&[Value::fix(off), block_to_proc(c, blk)?]);
+    if blk.is_null() { return enum_for_sized(c, slf, intern(b"with_index"), a); }
+    let offv = if a.is_empty() || a[0] == NIL { Value::fix(0) } else if a[0].is_fixnum() || is_bignum(a[0]) { a[0] } else { Value::fix(off) };
+    let data = ary_new_from(&[offv, block_to_proc(c, blk)?]);
     let b = Block::cfunc(c, |c, d, args, _b| {
         let i = ary_get(d, 0); let p = ary_get(d, 1);
-        rary(d)[0] = Value::fix(i.as_fix() + 1);
+        let next = if i.is_fixnum() && Value::fixable(i.as_fix() + 1) { Value::fix(i.as_fix() + 1) } else { funcall(c, i, s::plus, &[Value::fix(1)], std::ptr::null())? };
+        rary(d)[0] = next;
         let v = if args.len() == 1 { args[0] } else { ary_new_from(args) };
         call_proc(c, p, &[v, i], std::ptr::null())
     }, data);
     enum_each_with(c, slf, &b)
 }
 fn e_each_with_index(c: &mut Ctx, slf: Value, _a: &[Value], blk: *const Block) -> RV {
-    if blk.is_null() { return enum_for(c, slf, intern(b"each_with_index"), &[], NIL); }
+    if blk.is_null() { return enum_for_sized(c, slf, intern(b"each_with_index"), &[]); }
     e_with_index(c, slf, &[], blk)
 }
 fn e_with_object(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
@@ -181,6 +183,7 @@ fn collect_all(c: &mut Ctx, slf: Value) -> RV {
     Ok(out)
 }
 fn e_next(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    if obj(slf).flags & FL_FROZEN != 0 { return Err(raise_frozen(c, slf)); }
     if renum(slf).unwrap().buf == NIL {
         if let Some(r) = crate::fiber::enum_next(c, slf)? { return Ok(r); }
         let all = collect_all(c, slf)?;
@@ -196,6 +199,7 @@ fn e_next(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(v)
 }
 fn e_peek(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+    if obj(slf).flags & FL_FROZEN != 0 { return Err(raise_frozen(c, slf)); }
     if crate::fiber::enum_has_fiber(slf) { return crate::fiber::enum_peek(c, slf); }
     let v = e_next(c, slf, a, b)?;
     renum(slf).unwrap().pos -= 1;

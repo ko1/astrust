@@ -48,11 +48,7 @@ module Enumerable
     each(*args) { |*x| a << (x.size <= 1 ? x[0] : x) }
     a
   end
-  def entries(*args)
-    a = []
-    each(*args) { |*x| a << (x.size <= 1 ? x[0] : x) }
-    a
-  end
+  alias entries to_a
   def __size = (respond_to?(:size) ? size : nil)
   private :__size
   def map
@@ -175,6 +171,7 @@ module Enumerable
   end
   alias reduce inject
   def sum(init = 0, &b)
+    return Enumerable.__range_sum(self, init) if !b && Range === self
     a = []
     if b
       each { |*x| a << b.call(x.size <= 1 ? x[0] : x) }
@@ -599,8 +596,13 @@ class Enumerator
   end
 
   class Generator
-    def initialize(&b)
-      raise ArgumentError, "no block given" unless b
+    def initialize(*args, &b)
+      Enumerable.__argc(args.size, 0, 1) if args.size > 1
+      unless args.empty?
+        raise TypeError, "wrong argument type #{args[0].class} (expected Proc)" unless args[0].is_a?(Proc)
+        b = args[0]
+      end
+      raise LocalJumpError, "no block given" unless b
       @__b = b
     end
     def each(*args, &blk) = @__b.call(Enumerator::Yielder.new(&blk), *args)
@@ -706,6 +708,7 @@ class Enumerator
         return blk ? l.each(&blk) : l
       end
       return self unless blk
+      return @__src.__send__(@__meth, *@__margs, &blk) if Enumerable.__ivget(self, :__blkmeth)
       root, ops = __stages
       return self if ops.any? { |o| o[0] == :take && o[1] == 0 }
       tag = Object.new
@@ -872,7 +875,12 @@ class Enumerator
       c
     end
     private :__zip_cache
-    def chunk(*a, &b) = super.lazy
+    def chunk(*a, &b)
+      return super.lazy if b
+      l = Lazy.__from(self, :chunk, a, :__src_size)
+      Enumerable.__ivset(l, :__blkmeth, true)
+      l
+    end
     def chunk_while(*a, &b) = super.lazy
     def slice_after(*a, &b) = super.lazy
     def slice_before(*a, &b) = super.lazy
