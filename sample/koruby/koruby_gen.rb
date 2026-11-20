@@ -1,7 +1,7 @@
 # koruby — ASTrustGen extension.
 #
-# Dispatcher signature: (c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV
-#   fp: the current frame's locals on the VM value stack (fp[0] = self, fp[1] = env).
+# Dispatcher signature: (c: &mut Ctx, n: NodePtr, fp: Fp) -> RV
+#   fp: the current frame on the VM value stack, a window of Cell slots (fp[0] = self, fp[1] = env).
 #   RV = Result<Value, Esc>; an eager (@child) operand propagates Err with `?`.
 #
 # Operand types beyond astrustgen's built-ins:

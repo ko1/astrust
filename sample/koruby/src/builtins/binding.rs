@@ -39,8 +39,8 @@ fn new_binding(slf: Value, env: Value, names: Vec<(Sym, u32, u32)>, cref: *const
 }
 
 pub fn binding_of_frame(_c: &mut Ctx, f: &Frame) -> RV {
-    let env = unsafe { *f.fp.add(1) };
-    Ok(new_binding(unsafe { *f.fp }, env, iseq_names(f.iseq(), true), f.cref(), f.me, frame_file(f), f.line))
+    let env = f.fp[1].get();
+    Ok(new_binding(f.fp[0].get(), env, iseq_names(f.iseq(), true), f.cref(), f.me, frame_file(f), f.line))
 }
 pub fn binding_of_caller(c: &mut Ctx) -> RV {
     let f = c.frame();
@@ -89,24 +89,22 @@ pub fn run_eval_iseq(c: &mut Ctx, is: &'static Iseq, slf: Value, env: Value, cre
 
 #[allow(clippy::too_many_arguments)]
 fn run_eval_iseq_env(c: &mut Ctx, is: &'static Iseq, slf: Value, env: Value, cref: *const Cref, me: *const MethodEntry, visi: u8, out_env: &mut Value) -> RV {
-    let base = c.sp;
+    let base = c.top();
     stack_check(c, is.nlocals as usize + 8)?;
-    let mut fr = Frame::empty();
-    fr.prev = c.frame; fr.fp = base; fr.iseq = is; fr.kind = FK_EVAL; fr.visi = visi;
+    let mut fr = Frame::empty(base);
+    fr.prev = c.frame; fr.iseq = is; fr.kind = FK_EVAL; fr.visi = visi;
     fr.id = unsafe { (*c.frame).id }; fr.cref = if cref.is_null() { vm().top_cref } else { cref }; fr.me = me;
     fr.blk = unsafe { (*c.frame).blk };
-    unsafe {
-        *base = slf;
-        for i in 1..is.nlocals as usize { *base.add(i) = NIL; }
-        c.sp = base.add(is.nlocals as usize);
-        let e = if is.env_size > 0 { crate::gc::alloc(vm().c_env, Body::Env(vec![NIL; is.env_size as usize], env)) } else { env };
-        *base.add(1) = if e == NIL { crate::gc::alloc(vm().c_env, Body::Env(vec![], NIL)) } else { e };
-        *out_env = *base.add(1);
-    }
+    base[0].set(slf);
+    nil_fill(base, 1, is.nlocals as usize);
+    c.set_sp(base, is.nlocals as usize);
+    let e = if is.env_size > 0 { crate::gc::alloc(vm().c_env, Body::Env(vec![NIL; is.env_size as usize], env)) } else { env };
+    base[1].set(if e == NIL { crate::gc::alloc(vm().c_env, Body::Env(vec![], NIL)) } else { e });
+    *out_env = base[1].get();
     c.frame = &mut fr.h;
     let r = run_body(c, is.body, base);
     c.frame = fr.prev;
-    c.sp = base;
+    c.set_sp(base, 0);
     r
 }
 
@@ -119,7 +117,7 @@ pub fn eval_with_self(c: &mut Ctx, slf: Value, src: &[u8], file: &'static str, l
 pub fn eval_in_class(c: &mut Ctx, k: Value, src: &[u8], file: &'static str, line: i32) -> RV {
     let is = match crate::compile::compile_source(src, file, line, IseqKind::Eval, vec![]) { Ok(is) => is, Err(m) => return err(c, vm().c_syntax_error, m) };
     let cref = new_cref(k, unsafe { (*c.frame).cref() });
-    let base = c.sp;
+    let base = c.top();
     let r = run_eval_iseq(c, is, k, NIL, cref, std::ptr::null(), VISI_PUBLIC);
     let _ = base;
     r

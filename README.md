@@ -69,6 +69,14 @@ language implements `GcLang` (roots, edges as mutable slots, finalization), a ba
 implements `GcBackend`, and `Gc<L, B>` joins them at compile time.  Two non-moving backends
 exist (`marksweep`, `bitmap`); koruby selects one with `make GC=<name>`.  See `docs/gc.md`.
 
+### Common parameters
+
+The common parameters are copied through as written, so they can be any Rust types.  A frame
+of local variables does not have to be a raw pointer: koruby passes `fp: Fp`, which in its
+checked configuration is `&'static [Cell<Value>; N]`.  A slot index is a scalar operand and
+therefore a literal in specialized code, so `fp[i]` there is checked at compile time and costs
+nothing at run time (`sample/koruby/docs/safe_stack.md`).  No generator hook was needed.
+
 ## Code store
 
 `CodeStore` keeps one file per emitted item (`items/T_<hash>.rs`, `L_<hash>.rs`, `SD_<hash>.rs`,

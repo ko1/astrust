@@ -45,16 +45,14 @@ pub fn call_enumerable(c: &mut Ctx, recv: Value, mid: &str, args: &[Value], blk:
     let mid = crate::symbol::intern(mid.as_bytes());
     let me = lookup_method(vm().m_enumerable, mid);
     if me.is_null() { return funcall(c, recv, mid, args, blk); }
-    let base = c.sp;
-    if unsafe { base.add(args.len() + 2) } >= c.stack_end { return funcall(c, recv, mid, args, blk); }
-    unsafe {
-        *base = recv;
-        *base.add(1) = NIL;
-        for (i, a) in args.iter().enumerate() { *base.add(2 + i) = *a; }
-        c.sp = base.add(2 + args.len());
-    }
+    let base = c.top();
+    if !c.has_room(args.len() + 2) { return funcall(c, recv, mid, args, blk); }
+    base[0].set(recv);
+    base[1].set(NIL);
+    for (i, a) in args.iter().enumerate() { base[2 + i].set(*a); }
+    c.set_sp(base, 2 + args.len());
     let r = invoke(c, me, recv, base, args.len() as u32, blk, CF_FCALL);
-    c.sp = base;
+    c.set_sp(base, 0);
     r
 }
 

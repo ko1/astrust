@@ -12,6 +12,14 @@ crate-type = ["dylib"]
 [dependencies]
 astrogre = { path = "../astrogre" }
 
+[features]
+# value stack with every access checked and no unsafe (src/stack.rs) instead of raw pointers
+# (src/stack_raw.rs); see docs/safe_stack.md.  make FEATURES=safe_stack
+safe_stack = []
+# GC backend (runtime/gc): default is "marksweep"; `make GC=bitmap`
+gc-marksweep = []
+gc-bitmap = []
+
 [[bin]]
 name = "koruby"
 path = "src/main.rs"
@@ -24,8 +32,3 @@ incremental = false
 
 [profile.dev]
 opt-level = 1
-
-[features]
-# GC backend (runtime/gc): default is "marksweep"; `make GC=bitmap`
-gc-marksweep = []
-gc-bitmap = []

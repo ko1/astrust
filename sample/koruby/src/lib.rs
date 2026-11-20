@@ -17,6 +17,12 @@ pub mod sbuf;
 pub mod object;
 pub mod gc;
 pub mod kalloc;
+pub mod slots;
+#[cfg(feature = "safe_stack")]
+pub mod stack;
+#[cfg(not(feature = "safe_stack"))]
+#[path = "stack_raw.rs"]
+pub mod stack;
 pub mod vm;
 pub mod compile;
 pub mod rt;
@@ -63,31 +69,28 @@ pub fn run_top_iseq(c: &mut Ctx, is: &'static Iseq, slf: Value) -> RV {
 }
 
 pub fn run_top_iseq_cref(c: &mut Ctx, is: &'static Iseq, slf: Value, cref: *const Cref) -> RV {
-    let base = c.sp;
+    let base = c.top();
     stack_check(c, is.nlocals as usize + 8)?;
-    let mut fr = Frame::empty();
+    let mut fr = Frame::empty(base);
     fr.prev = c.frame;
-    fr.fp = base;
     fr.iseq = is;
     fr.kind = FK_TOP;
     fr.visi = VISI_PRIVATE;
     fr.id = c.next_serial();
     fr.cref = cref;
     fr.line = 1;
-    unsafe {
-        *base = slf;
-        *base.add(1) = NIL;
-        for i in 2..is.nlocals as usize { *base.add(i) = NIL; }
-        c.sp = base.add(is.nlocals as usize);
-        if is.env_size > 0 {
-            let env = gc::alloc(vm().c_env, object::Body::Env(vec![NIL; is.env_size as usize], NIL));
-            *base.add(1) = env;
-        }
+    base[0].set(slf);
+    base[1].set(NIL);
+    nil_fill(base, 2, is.nlocals as usize);
+    c.set_sp(base, is.nlocals as usize);
+    if is.env_size > 0 {
+        let env = gc::alloc(vm().c_env, object::Body::Env(vec![NIL; is.env_size as usize], NIL));
+        base[1].set(env);
     }
     c.frame = &mut fr.h;
     let r = run_body(c, is.body, base);
     c.frame = fr.prev;
-    c.sp = base;
+    c.set_sp(base, 0);
     match r {
         Err(e) if c.esc == EscKind::Return && c.esc_tag == fr.id => { let _ = e; c.esc = EscKind::None; Ok(c.esc_val) }
         r => r,
@@ -175,20 +178,15 @@ pub fn report_exception(c: &mut Ctx, e: Value) {
 
 fn run_main(o: Opts) -> i32 {
     let mut c = Ctx {
-        sp: std::ptr::null_mut(), stack_base: std::ptr::null_mut(), stack_end: std::ptr::null_mut(), frame: std::ptr::null_mut(),
+        sp: NO_SP, stk: NO_STACK, frame: std::ptr::null_mut(),
         esc: EscKind::None, esc_val: NIL, esc_tag: 0, esc_tag_v: NIL, serial: 0, errinfo: NIL, last_match: NIL,
         native_limit: 0, in_ensure: 0, call_me: std::ptr::null(), call_blk: std::ptr::null(),
     };
-    let nvals = 8 << 20;
-    let stack: &'static mut [Value] = Box::leak(vec![NIL; nvals].into_boxed_slice());
-    c.stack_base = stack.as_mut_ptr();
-    c.sp = c.stack_base;
-    c.stack_end = unsafe { c.stack_base.add(nvals - 64) };
+    c.attach_stack(stack_new(8 << 20));
     let probe = 0u8;
     c.native_limit = (&probe as *const u8 as usize).saturating_sub(STACK_BYTES - (4 << 20));
     unsafe { MAIN_CTX = &mut c; }
-    let mut top = Frame::empty();
-    top.fp = c.sp;
+    let mut top = Frame::empty(c.bottom());
     c.frame = &mut top.h;
 
     let vm = vm();

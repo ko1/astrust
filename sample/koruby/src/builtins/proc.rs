@@ -232,16 +232,14 @@ pub fn unbound_method_object(c: &mut Ctx, klass: Value, mid: Sym, public_only: b
 fn meth_call(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     let m = rmethod(slf);
     let (recv, me) = (m.recv, m.me);
-    let base = c.sp;
+    let base = c.top();
     stack_check(c, a.len() + 4)?;
-    unsafe {
-        *base = recv; *base.add(1) = NIL;
-        for (i, x) in a.iter().enumerate() { *base.add(2 + i) = *x; }
-        c.sp = base.add(2 + a.len());
-    }
+    base[0].set(recv); base[1].set(NIL);
+    for (i, x) in a.iter().enumerate() { base[2 + i].set(*x); }
+    c.set_sp(base, 2 + a.len());
     let kw = kw_arg(a).is_some();
     let r = invoke(c, me, recv, base, a.len() as u32, b, CF_FCALL | if kw { CF_KW } else { 0 });
-    c.sp = base;
+    c.set_sp(base, 0);
     r
 }
 fn meth_to_proc(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {

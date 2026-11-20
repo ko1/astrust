@@ -9,14 +9,14 @@ use crate::value::*;
 use crate::vm::*;
 
 const STACK_SIZE: usize = 16 << 20;
-const VSTACK: usize = 1 << 18;
+const VSTACK: usize = (1 << 18) + FRAME;   // the last FRAME slots cannot start a frame
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FState { Created, Running, Suspended, Done }
 
 pub struct FiberData {
     pub ctx: Box<Ctx>,
-    pub vstack: Vec<Value>,
+    pub vstack: Stack,
     pub stack: *mut u8,
     pub sp: usize,
     pub state: FState,
@@ -85,8 +85,7 @@ extern "C" fn fiber_main() -> ! {
         let f = CUR;
         let d = fd(f);
         let c: &mut Ctx = &mut d.ctx;
-        let mut top = Frame::empty();
-        top.fp = c.sp;
+        let mut top = Frame::empty(c.bottom());
         c.frame = &mut top.h;
         let args = d.xfer;
         let argv: Vec<Value> = if is_array(args) { rary(args).clone() } else { vec![args] };
@@ -116,13 +115,13 @@ extern "C" fn fiber_main() -> ! {
 fn new_fiber(klass: Value, proc_: Value) -> Value {
     let stack = unsafe { mmap(std::ptr::null_mut(), STACK_SIZE, 3, 0x22 | 0x4000, -1, 0) };
     if stack as isize == -1 { panic!("koruby: cannot allocate fiber stack"); }
-    let mut vstack = vec![NIL; VSTACK];
-    let base = vstack.as_mut_ptr();
-    let ctx = Box::new(Ctx {
-        sp: base, stack_base: base, stack_end: unsafe { base.add(VSTACK - 64) }, frame: std::ptr::null_mut(),
+    let vstack = stack_new(VSTACK);
+    let mut ctx = Box::new(Ctx {
+        sp: NO_SP, stk: NO_STACK, frame: std::ptr::null_mut(),
         esc: EscKind::None, esc_val: NIL, esc_tag: 0, esc_tag_v: NIL, serial: 1 << 40, errinfo: NIL, last_match: NIL,
         native_limit: stack as usize + (512 << 10), in_ensure: 0, call_me: std::ptr::null(), call_blk: std::ptr::null(),
     });
+    ctx.attach_stack(vstack);
     // initial frame: six zero registers, then the return address fiber_start
     let top = (stack as usize + STACK_SIZE) & !15;
     let sp = top - 8 * 8;
@@ -180,7 +179,7 @@ pub fn thread_switch_out() {
 pub fn on_free(p: *mut RObj) {
     unsafe {
         if let Body::Data(d) = &(*p).body {
-            if let Some(f) = d.as_any().downcast_ref::<FiberData>() { munmap(f.stack, STACK_SIZE); }
+            if let Some(f) = d.as_any().downcast_ref::<FiberData>() { munmap(f.stack, STACK_SIZE); stack_release(f.vstack); }
         }
     }
 }

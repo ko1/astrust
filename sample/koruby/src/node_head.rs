@@ -1,6 +1,6 @@
 // This file is auto-generated from node.def by astrustgen. Do not edit.
 
-pub type DispatchFn = fn(&mut Ctx, NodePtr, *mut Value) -> RV;
+pub type DispatchFn = fn(&mut Ctx, NodePtr, Fp) -> RV;
 pub type NodePtr = *mut Node;
 pub type NodeList = &'static [NodePtr];
 
@@ -80,7 +80,7 @@ pub fn specialize_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     if sc.emitted.contains(&fname) { return fname; }
     let t = specialize_node(sc, n);
     sc.out.push_str(&format!("#[no_mangle]
-pub fn {}(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ <{} as Disp>::call(c, n, fp) }}
+pub fn {}(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ <{} as Disp>::call(c, n, fp) }}
 ", fname, t));
     sc.emitted.insert(fname.clone());
     fname
@@ -88,28 +88,28 @@ pub fn {}(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ <{} as Disp>::call(c
 
 /// A dispatcher as a type: `Dyn` calls through the node head, an SD type statically.
 pub trait Disp {
-    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV;
+    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV;
     /// call() across a speculation boundary (the embedder only speculates small callees, to a bounded depth).
     #[inline(always)]
-    fn spec(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV { Self::call(c, n, fp) }
+    fn spec(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV { Self::call(c, n, fp) }
     #[inline(always)]
-    fn test(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> Result<bool, Esc> { Ok(Self::call(c, n, fp)?.truthy()) }
+    fn test(c: &mut Ctx, n: NodePtr, fp: Fp) -> Result<bool, Esc> { Ok(Self::call(c, n, fp)?.truthy()) }
 }
 /// A list of children: `DynList` loops over the heads, an SD list type is unrolled.
 pub trait DispList {
     fn len(ns: NodeList) -> usize;
-    fn nth(c: &mut Ctx, ns: NodeList, i: usize, fp: *mut Value) -> RV;
+    fn nth(c: &mut Ctx, ns: NodeList, i: usize, fp: Fp) -> RV;
 }
 pub struct Dyn;
 impl Disp for Dyn {
     #[inline(always)]
-    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV { unsafe { ((*n).head.dispatcher)(c, n, fp) } }
+    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV { unsafe { ((*n).head.dispatcher)(c, n, fp) } }
 }
 pub struct DynList;
 impl DispList for DynList {
     #[inline(always)] fn len(ns: NodeList) -> usize { ns.len() }
     #[inline(always)]
-    fn nth(c: &mut Ctx, ns: NodeList, i: usize, fp: *mut Value) -> RV {
+    fn nth(c: &mut Ctx, ns: NodeList, i: usize, fp: Fp) -> RV {
         let x = ns[i];
         unsafe { ((*x).head.dispatcher)(c, x, fp) }
     }
