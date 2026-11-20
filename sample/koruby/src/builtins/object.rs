@@ -896,7 +896,7 @@ pub fn c_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     if !me.is_null() && !kw {
         if let MKind::Iseq(is) = unsafe { (*me).kind } {
             let is = unsafe { &*is };
-            if is.simple && is.params.lead.len() == a.len() {
+            if is.lead_only && is.params.lead.len() == a.len() {
                 // initialize with only required params: call it directly
                 let base = c.sp;
                 stack_check(c, a.len() + 4)?;

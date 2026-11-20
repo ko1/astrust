@@ -647,6 +647,12 @@ pub fn rt_no_block(c: &mut Ctx) -> RV { err(c, vm().c_local_jump_error, "no bloc
 #[inline(always)]
 pub fn rt_yield_staged(c: &mut Ctx, blk: *const Block, base: *mut Value, k: u32) -> RV {
     let b = unsafe { &*blk };
+    if let Some(is) = block_fast(b, k as usize) {
+        stack_check(c, is.nlocals as usize + 16)?;
+        let r = run_block_fast(c, b, is, base, k);
+        c.sp = base;
+        return r;
+    }
     if let BlockKind::Iseq(is) = b.kind {
         let is = unsafe { &*is };
         unsafe { *base = b.self_; }

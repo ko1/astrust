@@ -1072,7 +1072,7 @@ fn fill_cc(cc: &mut CallCache, klass: Value, me: *const MethodEntry, serial: u64
     let m = unsafe { &*me };
     if m.visi != VISI_PUBLIC && flags & CF_FCALL == 0 { return; }
     match m.kind {
-        MKind::Iseq(is) => { if unsafe { (*is).simple } { cc.fast = is as usize; } }
+        MKind::Iseq(is) => { if unsafe { (*is).lead_only } { cc.fast = is as usize; } }
         MKind::AttrReader(name) | MKind::AttrWriter(name) => {
             let cd = rclass(klass);
             if !cd.is_singleton && cd.alloc == AllocKind::Object {
@@ -1084,7 +1084,19 @@ fn fill_cc(cc: &mut CallCache, klass: Value, me: *const MethodEntry, serial: u64
     }
 }
 
-/// Call of an Iseq method with only required, slot-contiguous params and no env.
+/// The heap Env of a frame whose variables are captured by blocks; params copied in.
+#[inline(never)]
+pub fn make_env(is: &Iseq, base: *mut Value, parent: Value) {
+    let env = gc::alloc(vm().c_env, Body::Env(vec![NIL; is.env_size as usize], parent));
+    unsafe {
+        *base.add(1) = env;
+        if let Body::Env(vals, _) = &mut obj(env).body {
+            for &(sl, ei) in is.env_params.iter() { vals[ei as usize] = *base.add(sl as usize); }
+        }
+    }
+}
+
+/// Call of an Iseq method with only required, slot-contiguous params.
 #[inline(always)]
 pub fn invoke_iseq_simple(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: *mut Value, argc: u32, blk: *const Block) -> RV {
     let n = is.nlocals as usize;
@@ -1101,6 +1113,7 @@ pub fn invoke_iseq_simple(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: 
         let mut i = 2 + argc as usize;
         while i < n { *base.add(i) = NIL; i += 1; }
         c.sp = base.add(n);
+        if is.env_size > 0 { make_env(is, base, NIL); }
     }
     c.frame = &mut fr;
     let r = run_body(c, is.body, base);
@@ -1463,7 +1476,53 @@ pub fn is_lambda_block(b: *const Block) -> bool {
 pub fn yield_block(c: &mut Ctx, blk: *const Block, args: &[Value]) -> RV {
     if blk.is_null() { return err(c, vm().c_local_jump_error, "no block given (yield)"); }
     let b = unsafe { &*blk };
+    if let Some(is) = block_fast(b, args.len()) {
+        let base = c.sp;
+        stack_check(c, is.nlocals as usize + args.len() + 16)?;
+        unsafe { for (i, a) in args.iter().enumerate() { *base.add(2 + i) = *a; } }
+        let r = run_block_fast(c, b, is, base, args.len() as u32);
+        c.sp = base;
+        return r;
+    }
     invoke_block_full(c, b, args, std::ptr::null(), b.self_, false, std::ptr::null(), false)
+}
+
+/// The iseq of a non-lambda block whose params are exactly `argc` required ones (no destructuring).
+#[inline(always)]
+pub fn block_fast(b: &Block, argc: usize) -> Option<&'static Iseq> {
+    if let BlockKind::Iseq(is) = b.kind {
+        let is = unsafe { &*is };
+        if is.lead_only && is.kind != IseqKind::Lambda && argc == is.params.lead.len()
+            && (b.proc_val == UNDEF || !rproc(b.proc_val).is_lambda) { return Some(is); }
+    }
+    None
+}
+
+/// Run a block_fast block with args already at base[2..].
+#[inline]
+pub fn run_block_fast(c: &mut Ctx, b: &Block, is: &Iseq, base: *mut Value, argc: u32) -> RV {
+    let n = is.nlocals as usize;
+    let mut fr = Frame {
+        prev: c.frame, fp: base, me: b.me, blk: b.outer_blk, cref: b.cref, iseq: is, line: is.info.line,
+        kind: FK_BLOCK, visi: VISI_PUBLIC, id: b.home_id, self_blk: b, argc, defined_class: b.defined_class,
+        cfunc_name: Sym(0), cfunc_recv: NIL,
+    };
+    unsafe {
+        *base = b.self_;
+        *base.add(1) = b.env;
+        let mut i = 2 + argc as usize;
+        while i < n { *base.add(i) = NIL; i += 1; }
+        c.sp = base.add(n);
+        if is.env_size > 0 { make_env(is, base, b.env); }
+    }
+    c.frame = &mut fr;
+    let mut r = run_body(c, is.body, base);
+    while r.is_err() && c.esc == EscKind::Redo { c.esc = EscKind::None; r = run_body(c, is.body, base); }
+    c.frame = fr.prev;
+    match r {
+        Ok(v) => Ok(v),
+        Err(e) => if c.esc == EscKind::Next { c.esc = EscKind::None; Ok(c.esc_val) } else { Err(e) },
+    }
 }
 
 pub fn yield1(c: &mut Ctx, blk: *const Block, a: Value) -> RV { yield_block(c, blk, &[a]) }
