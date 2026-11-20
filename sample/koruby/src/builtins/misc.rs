@@ -57,7 +57,7 @@ pub fn pack(c: &mut Ctx, ary: Value, a: &[Value]) -> RV {
         let next = |c: &mut Ctx, idx: &mut usize| -> RV { let v = ary_get(ary, *idx); if *idx >= ary_len(ary) { return arg_err(c, "too few arguments"); } *idx += 1; Ok(v) };
         match ch {
             b'a' | b'A' | b'Z' => {
-                let v = next(c, &mut idx)?; let sv = expect_str(c, v)?; let bs = rstr(sv).b.clone();
+                let v = next(c, &mut idx)?; let sv = expect_str(c, v)?; let bs = rstr(sv).b.to_vec();
                 let n = match cnt { None => 1, Some(usize::MAX) => bs.len() + if ch == b'Z' { 1 } else { 0 }, Some(n) => n };
                 let pad = if ch == b'A' { b' ' } else { 0 };
                 for k in 0..n { out.push(*bs.get(k).unwrap_or(&pad)); }
@@ -87,7 +87,7 @@ pub fn pack(c: &mut Ctx, ary: Value, a: &[Value]) -> RV {
                 }
             }
             b'H' | b'h' => {
-                let v = next(c, &mut idx)?; let sv = expect_str(c, v)?; let hs = rstr(sv).b.clone();
+                let v = next(c, &mut idx)?; let sv = expect_str(c, v)?; let hs = rstr(sv).b.to_vec();
                 let n = match cnt { None => 1, Some(usize::MAX) => hs.len(), Some(n) => n };
                 let mut k = 0;
                 while k < n { let hi = hex_v(*hs.get(k).unwrap_or(&b'0')); let lo = hex_v(*hs.get(k + 1).unwrap_or(&b'0')); out.push(if ch == b'H' { hi << 4 | if k + 1 < n { lo } else { 0 } } else { lo << 4 | hi }); k += 2; }
@@ -132,7 +132,7 @@ pub fn unbase64(s2: &[u8]) -> Vec<u8> {
 pub fn unpack(c: &mut Ctx, sv: Value, a: &[Value]) -> RV {
     let t = expect_str(c, a[0])?;
     let tmpl = parse_tmpl(&rstr(t).b);
-    let b = rstr(sv).b.clone();
+    let b = rstr(sv).b.to_vec();
     let mut pos = 0;
     let out = ary_new();
     for (ch, cnt, big, _) in tmpl {

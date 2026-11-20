@@ -145,7 +145,7 @@ fn sio_read(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
         _ => (rest.to_vec(), read_enc(d)),
     };
     d.pos += data.len();
-    if let Some(bf) = buf { check_frozen(c, bf)?; let r = rstr(bf); r.b = data; if a.first().map(|v| *v != NIL).unwrap_or(false) { r.enc = ENC_BINARY; } return Ok(bf); }
+    if let Some(bf) = buf { check_frozen(c, bf)?; let r = rstr(bf); r.b = data.into(); if a.first().map(|v| *v != NIL).unwrap_or(false) { r.enc = ENC_BINARY; } return Ok(bf); }
     Ok(str_from_vec_enc(data, enc))
 }
 fn sio_readpartial(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
@@ -161,10 +161,10 @@ fn gets_impl(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<Option<Value>, Esc>
     let mut chomp = false;
     if let Some(h) = kw { if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("chomp"))? { chomp = v.truthy(); } }
     let rs_default = gvar_get(c, intern(b"$/"))?;
-    let (mut sep, mut limit): (Option<Vec<u8>>, Option<i64>) = (if rs_default == NIL { None } else { Some(rstr(rs_default).b.clone()) }, None);
+    let (mut sep, mut limit): (Option<Vec<u8>>, Option<i64>) = (if rs_default == NIL { None } else { Some(rstr(rs_default).b.to_vec()) }, None);
     match pos.len() {
-        1 => { let x = pos[0]; if x == NIL { sep = None; } else if is_string(x) || !(x.is_fixnum() || is_float(x)) { let s2 = expect_str(c, x)?; sep = Some(rstr(s2).b.clone()); } else { limit = Some(num_to_long(c, x)?); } }
-        2 => { let x = pos[0]; sep = if x == NIL { None } else { let s2 = expect_str(c, x)?; Some(rstr(s2).b.clone()) }; if pos[1] != NIL { limit = Some(num_to_long(c, pos[1])?); } }
+        1 => { let x = pos[0]; if x == NIL { sep = None; } else if is_string(x) || !(x.is_fixnum() || is_float(x)) { let s2 = expect_str(c, x)?; sep = Some(rstr(s2).b.to_vec()); } else { limit = Some(num_to_long(c, x)?); } }
+        2 => { let x = pos[0]; sep = if x == NIL { None } else { let s2 = expect_str(c, x)?; Some(rstr(s2).b.to_vec()) }; if pos[1] != NIL { limit = Some(num_to_long(c, pos[1])?); } }
         _ => {}
     }
     let d = readable(c, slf)?;
@@ -283,13 +283,13 @@ fn unget(c: &mut Ctx, slf: Value, bs: &[u8]) -> RV {
 fn sio_ungetc(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let x = a[0];
     if x == NIL { return Ok(NIL); }
-    let bs = if x.is_fixnum() { let enc = read_enc(sio(c, slf)?); en::code_to_bytes(enc, x.as_fix() as u32).unwrap_or(vec![x.as_fix() as u8]) } else { let s2 = expect_str(c, x)?; rstr(s2).b.clone() };
+    let bs = if x.is_fixnum() { let enc = read_enc(sio(c, slf)?); en::code_to_bytes(enc, x.as_fix() as u32).unwrap_or(vec![x.as_fix() as u8]) } else { let s2 = expect_str(c, x)?; rstr(s2).b.to_vec() };
     unget(c, slf, &bs)
 }
 fn sio_ungetbyte(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let x = a[0];
     if x == NIL { return Ok(NIL); }
-    let bs = if x.is_fixnum() { vec![x.as_fix() as u8] } else { let s2 = expect_str(c, x)?; rstr(s2).b.clone() };
+    let bs = if x.is_fixnum() { vec![x.as_fix() as u8] } else { let s2 = expect_str(c, x)?; rstr(s2).b.to_vec() };
     unget(c, slf, &bs)
 }
 
@@ -299,7 +299,7 @@ fn write_str(c: &mut Ctx, slf: Value, s2: Value) -> Result<usize, Esc> {
     let d = writable(c, slf)?;
     let target = d.string;
     check_frozen(c, target)?;
-    let mut data = rstr(s2).b.clone();
+    let mut data = rstr(s2).b.to_vec();
     if data.is_empty() { return Ok(0); }
     let (te, se) = (rstr(target).enc, rstr(s2).enc);
     if te != se && te != ENC_BINARY && !is_ascii(&data) {

@@ -175,7 +175,7 @@ fn k_putc(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
 fn k_printf(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     if args.is_empty() { return Ok(NIL); }
     let s = crate::builtins::sprintf::format(c, args[0], &args[1..])?;
-    let b = rstr(s).b.clone();
+    let b = rstr(s).b.to_vec();
     stdout_write(c, &b)?;
     Ok(NIL)
 }
@@ -358,7 +358,7 @@ fn k_exit_bang(_c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV 
 }
 
 fn k_abort(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
-    let msg = if let Some(&m) = args.first() { let mut b = rstr(m).b.clone(); b.push(b'\n'); err_write(&b); m } else { str_new(b"exit") };
+    let msg = if let Some(&m) = args.first() { let mut b = rstr(m).b.to_vec(); b.push(b'\n'); err_write(&b); m } else { str_new(b"exit") };
     let e = new_object(vm().c_system_exit);
     ivar_set_raw(e, s::mesg, msg);
     ivar_set_raw(e, s::status, Value::fix(1));
@@ -451,7 +451,7 @@ fn k_integer(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let base = if args.len() > 1 && args[1] != NIL { crate::builtins::numeric_methods::num_to_long(c, args[1])? as u32 } else { 0 };
     let r: RV = (|| {
         if is_string(v) {
-            let b = rstr(v).b.clone();
+            let b = rstr(v).b.to_vec();
             if b.contains(&0) { return arg_err(c, "string contains null byte"); }
             match str_to_inum(&b, base, true) {
                 Some(x) => Ok(x),
@@ -825,7 +825,7 @@ fn k_eval(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
     let bind = if args.len() > 1 { args[1] } else { NIL };
     let file: &'static str = if args.len() > 2 { Box::leak(to_rstring(c, args[2])?.into_boxed_str()) } else { "(eval)" };
     let line = if args.len() > 3 { args[3].as_fix() as i32 } else { 1 };
-    let srcb = rstr(src).b.clone();
+    let srcb = rstr(src).b.to_vec();
     if bind != NIL { return crate::builtins::binding::eval_in_binding(c, bind, &srcb, file, line); }
     let b = crate::builtins::binding::binding_of_caller(c)?;
     let _ = slf;

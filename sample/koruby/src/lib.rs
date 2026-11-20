@@ -11,6 +11,7 @@ pub mod prism_ast;
 pub mod fxhash;
 pub mod value;
 pub mod symbol;
+pub mod sbuf;
 pub mod object;
 pub mod gc;
 pub mod kalloc;

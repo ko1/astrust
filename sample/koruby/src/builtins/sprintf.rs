@@ -280,7 +280,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
     let fmts = expect_str(c, fmtv)?;
     let fenc = rstr(fmts).enc;
     if !en::ascii_compat(fenc) { return err(c, vm().c_compat_error, format!("ASCII incompatible encoding: {}", en::enc_name(fenc))); }
-    let fmt = rstr(fmts).b.clone();
+    let fmt = rstr(fmts).b.to_vec();
     let mut out: Vec<u8> = Vec::with_capacity(fmt.len() + 16);
     let mut renc = fenc;
     let mut st = Args { args, next: 0, posarg: 0, hash: None };

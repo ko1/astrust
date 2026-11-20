@@ -20,7 +20,7 @@ fn re_s_new(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
         else if is_string(o) { for &ch in str_bytes(o) { match ch { b'i' => opts |= 1, b'x' => opts |= 2, b'm' => opts |= 4, _ => return arg_err(c, format!("unknown regexp option: {}", String::from_utf8_lossy(str_bytes(o)))) } } }
         else if o.truthy() { opts = 1; }
     }
-    let b = rstr(src).b.clone();
+    let b = rstr(src).b.to_vec();
     regexp_new(c, &b, opts)
 }
 fn re_s_escape(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {

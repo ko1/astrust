@@ -807,7 +807,9 @@ impl<'a> Compiler<'a> {
         let cap: usize = v.iter().map(|&n| unsafe {
             if std::ptr::eq((*n).head.kind, &KIND_node_fstr) { let s: Str = (*(n as *mut NodeOf<node_fstr_struct>)).u.s; s.len() } else { 12 }
         }).sum();
-        ALLOC_node_dstr(leak(v), 0, cap.min(4096) as u32)
+        // short results start inside the object slot (spilling copies at most 23 bytes)
+        let cap = if cap <= 48 { 0 } else { cap.min(4096) };
+        ALLOC_node_dstr(leak(v), 0, cap as u32)
     }
     fn dstr_parts(&mut self, parts: &[PNode], v: &mut Vec<NodePtr>) {
         for p in parts {
