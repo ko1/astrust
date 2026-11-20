@@ -1147,16 +1147,3 @@ fn DUMP_node_special(out: &mut String, n: NodePtr) {
     out.push(')');
     }
 }
-
-#[allow(non_snake_case, unused_unsafe, unused_variables)]
-fn DUMP_node_flipflop(out: &mut String, n: NodePtr) {
-    let np = n as *mut NodeOf<node_flipflop_struct>;
-    unsafe {
-    out.push_str("(node_flipflop");
-    out.push(' '); dump_node(out, (*np).u.a);
-    out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.excl));
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.slot));
-    out.push(')');
-    }
-}

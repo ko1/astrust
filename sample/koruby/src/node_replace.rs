@@ -626,10 +626,3 @@ fn REPLACE_node_special(n: NodePtr, old: NodePtr, new: NodePtr) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_special_struct>)).u };
     if u.arg == old { u.arg = new; }
 }
-
-#[allow(non_snake_case, unused_variables)]
-fn REPLACE_node_flipflop(n: NodePtr, old: NodePtr, new: NodePtr) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_flipflop_struct>)).u };
-    if u.a == old { u.a = new; }
-    if u.b == old { u.b = new; }
-}

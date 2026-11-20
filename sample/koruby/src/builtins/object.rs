@@ -34,12 +34,18 @@ fn bo_send(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     if a.is_empty() { return arg_err(c, "no method name given"); }
     let mid = to_sym_arg(c, a[0])?;
     let kw = kw_arg(a).is_some();
+    if unsafe { REFINEMENTS_ON } {
+        if let Some(r) = funcall_refined(c, std::ptr::null(), slf, mid, &a[1..], b, CF_FCALL | if kw { CF_KW } else { 0 }) { return r; }
+    }
     funcall_kw(c, slf, mid, &a[1..], b, kw)
 }
 fn k_public_send(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     if a.is_empty() { return arg_err(c, "no method name given"); }
     let mid = to_sym_arg(c, a[0])?;
     let kw = kw_arg(a).is_some();
+    if unsafe { REFINEMENTS_ON } {
+        if let Some(r) = funcall_refined(c, std::ptr::null(), slf, mid, &a[1..], b, if kw { CF_KW } else { 0 }) { return r; }
+    }
     funcall_flags(c, slf, mid, &a[1..], b, if kw { CF_KW } else { 0 })
 }
 fn bo_instance_eval(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
@@ -133,6 +139,10 @@ fn k_respond_to(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let mid = to_sym_arg(c, a[0])?;
     let priv_ = a.len() > 1 && a[1].truthy();
     if respond_to(slf, mid, priv_) { return Ok(TRUE); }
+    if unsafe { REFINEMENTS_ON } {
+        let me = lookup_method_refined(unsafe { (*c.frame).cref() }, class_of(slf), mid);
+        if !me.is_null() && (priv_ || unsafe { (*me).visi } == VISI_PUBLIC) { return Ok(TRUE); }
+    }
     let rm = lookup_method(class_of(slf), s::respond_to_missing_p);
     if !rm.is_null() {
         let r = funcall(c, slf, s::respond_to_missing_p, &[Value::sym(mid), Value::bool(priv_)], std::ptr::null())?;
@@ -292,6 +302,7 @@ fn k_extend(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 fn m_extend_object(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if is_frozen(a[0]) && a[0].is_heap() { return Err(raise_frozen(c, a[0])); }
     let k = singleton_class(a[0]);
+    if k == NIL { return type_err(c, "can't define singleton"); }
     include_module(k, slf);
     rclass(slf).extended_by.push(a[0]);
     Ok(a[0])
@@ -328,7 +339,7 @@ fn k_methods(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if !all { return k_singleton_methods(_c, slf, &[], _b); }
     Ok(method_list(class_of(slf), |v| v != VISI_PRIVATE, true))
 }
-fn k_public_methods(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(method_list(class_of(slf), |v| v == VISI_PUBLIC, true)) }
+fn k_public_methods(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { Ok(method_list(class_of(slf), |v| v == VISI_PUBLIC, a.first().is_none_or(|v| v.truthy()))) }
 fn k_private_methods(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(method_list(class_of(slf), |v| v == VISI_PRIVATE, true)) }
 fn k_protected_methods(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(method_list(class_of(slf), |v| v == VISI_PROTECTED, true)) }
 fn k_singleton_methods(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
@@ -408,6 +419,13 @@ pub fn call_inherited(c: &mut Ctx, sup: Value, k: Value) -> Result<(), Esc> {
     Ok(())
 }
 
+/// Alias entries keep the original name; __callee__ finds the alias name here.
+static mut ALIAS_NAMES: Option<std::collections::HashMap<usize, Sym>> = None;
+pub fn callee_name(me: *const MethodEntry) -> Sym {
+    let t = unsafe { &*std::ptr::addr_of!(ALIAS_NAMES) };
+    match t.as_ref().and_then(|t| t.get(&(me as usize))) { Some(&n) => n, None => unsafe { (*me).name } }
+}
+
 pub fn alias_method(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) -> Result<(), Esc> {
     let mut me = search_method(klass, oldname);
     if (me.is_null() || matches!(unsafe { (*me).kind }, MKind::Undef)) && rclass(klass).is_module {
@@ -422,6 +440,7 @@ pub fn alias_method(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) -> Re
     let visi = if rclass(klass).is_singleton { o.visi } else { o.visi };
     let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: o.owner, visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
     let _ = visi;
+    if newname != o.name { unsafe { (*std::ptr::addr_of_mut!(ALIAS_NAMES)).get_or_insert_with(Default::default).insert(n as usize, newname); } }
     crate::rt::note_redefinition(klass, newname);
     define_method_me(klass, newname, n);
     call_method_added(c, klass, newname)?;
@@ -429,7 +448,9 @@ pub fn alias_method(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) -> Re
 }
 
 pub fn undef_method(c: &mut Ctx, klass: Value, mid: Sym) -> Result<(), Esc> {
-    let me = search_method(klass, mid);
+    let mut me = search_method(klass, mid);
+    // a refinement may undef a method of the class it refines
+    if me.is_null() && rclass(klass).refined { me = search_method(rclass(klass).attached, mid); }
     if me.is_null() || matches!(unsafe { (*me).kind }, MKind::Undef) {
         let msg = format!("undefined method '{}' for {} '{}'", sym_str(mid), if rclass(klass).is_module { "module" } else { "class" }, class_path(klass));
         let e = make_name_error(c, vm().c_name_error, &msg, Value::sym(mid), klass)?;
@@ -532,13 +553,16 @@ fn set_visibility(c: &mut Ctx, slf: Value, a: &[Value], visi: u8) -> RV {
     if a.is_empty() {
         let f = c.frame();
         let p = unsafe { &mut *f.prev };
-        if p.kind == FK_CLASS || p.kind == FK_TOP || p.kind == FK_EVAL { p.visi = visi; }
+        // a class_eval / Class.new body block keeps its default for the rest of that block
+        if p.kind == FK_CLASS || p.kind == FK_TOP || p.kind == FK_EVAL || (p.kind == FK_BLOCK && p.defined_class() == slf) { p.visi = visi; }
         return Ok(NIL);
     }
     let list: Vec<Value> = if a.len() == 1 && is_array(a[0]) { rary(a[0]).clone() } else { a.to_vec() };
     for &x in &list {
         let m = to_sym_arg(c, x)?;
         let me = search_method(slf, m);
+        // a refinement changes the visibility of the refined class's method
+        let me = if me.is_null() && rclass(slf).refined { search_method(rclass(slf).attached, m) } else { me };
         let me = if me.is_null() && rclass(slf).is_module { search_method(vm().c_object, m) } else { me };
         if me.is_null() || matches!(unsafe { (*me).kind }, MKind::Undef) {
             let msg = format!("undefined method '{}' for {} '{}'", sym_str(m), if rclass(slf).is_module { "module" } else { "class" }, class_path(slf));
@@ -588,7 +612,10 @@ pub fn m_define_method(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) ->
             if !rclass(o.owner).is_module && !is_kind_of_class(slf, o.owner) {
                 return type_err(c, format!("bind argument must be a subclass of {}", class_path(o.owner)));
             }
-            Box::into_raw(Box::new(MethodEntry { name: mid, owner: slf, visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref })) as *const MethodEntry
+            // like an alias: __method__ stays the original name, __callee__ is the new one
+            let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
+            if mid != o.name { unsafe { (*std::ptr::addr_of_mut!(ALIAS_NAMES)).get_or_insert_with(Default::default).insert(n as usize, mid); } }
+            n as *const MethodEntry
         } else {
             return type_err(c, format!("wrong argument type {} (expected Proc/Method/UnboundMethod)", class_name_for_err(body)));
         }
@@ -856,13 +883,99 @@ fn m_module_new(c: &mut Ctx, slf: Value, _a: &[Value], b: *const Block) -> RV {
 fn m_instance_variable_names(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ary_new()) }
 fn m_singleton_class_p(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(rclass(slf).is_singleton)) }
 fn m_hash(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix((crate::astrust::hash_u64(slf.raw()) >> 2) as i64)) }
-fn m_refine(c: &mut Ctx, _slf: Value, a: &[Value], b: *const Block) -> RV {
-    // refinements are applied globally (approximation)
-    let k = a[0];
-    if !b.is_null() { yield_with_self(c, b, &[k], k, k)?; }
-    Ok(k)
+fn refinements_of(m: Value) -> Value {
+    let key = intern(b"__refinements");
+    let l = ivar_get(m, key);
+    if l != NIL { return l; }
+    let l = ary_new();
+    ivar_set_raw(m, key, l);
+    l
 }
-fn m_using(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(slf) }
+fn m_refine(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+    let k = a[0];
+    if !is_class_or_module(k) { return type_err(c, format!("wrong argument type {} (expected Class or Module)", class_name_for_err(k))); }
+    if b.is_null() { return arg_err(c, "no block given"); }
+    let list = refinements_of(slf);
+    let found = rary(list).iter().copied().find(|&r| rclass(r).attached == k);
+    let r = match found {
+        Some(r) => r,
+        None => {
+            let r = new_module();
+            if let Some(rc) = const_get_at(vm().c_object, intern(b"Refinement")) { obj(r).klass = rc; }
+            let cd = rclass(r);
+            cd.refined = true; cd.attached = k;
+            cd.name = Some(str_new_frozen(format!("#<refinement:{}@{}>", class_path(k), class_path(slf)).as_bytes()));
+            ary_push(list, r);
+            r
+        }
+    };
+    // the body sees its module's refinements, this one included
+    let mut blk = unsafe { *b };
+    let active = ary_new();
+    let outer = cref_refinements(blk.cref);
+    if outer != NIL { for i in 0..ary_len(outer) { ary_push(active, ary_get(outer, i)); } }
+    for i in 0..ary_len(list) { let x = ary_get(list, i); if !rary(active).contains(&x) { ary_push(active, x); } }
+    let cr = new_cref(r, blk.cref);
+    unsafe { (*(cr as *mut Cref)).refinements = active; REFINEMENTS_ON = true; }
+    blk.cref = cr;
+    yield_with_self(c, &blk, &[r], r, r)?;
+    Ok(r)
+}
+/// `using mod`: the caller's cref is replaced by a copy that has mod's refinements activated.
+fn m_using(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+    let m = a[0];
+    if !is_class_or_module(m) || !rclass(m).is_module { return type_err(c, format!("wrong argument type {} (expected Module)", class_name_for_err(m))); }
+    let pf = unsafe { (*c.frame).prev };
+    if pf.is_null() { return Ok(slf); }
+    if unsafe { (*pf).kind } == FK_METHOD { return err(c, vm().c_runtime_error, "Module#using is not permitted in methods"); }
+    let old = unsafe { (*pf).cref() };
+    let active = ary_new();
+    let outer = cref_refinements(old);
+    if outer != NIL { for i in 0..ary_len(outer) { ary_push(active, ary_get(outer, i)); } }
+    for &anc in ancestors(m).iter().rev() {
+        let l = ivar_get(anc, intern(b"__refinements"));
+        if l == NIL { continue; }
+        for i in 0..ary_len(l) {
+            let x = ary_get(l, i);
+            rary(active).retain(|&y| y != x);
+            ary_push(active, x);
+        }
+    }
+    let (klass, prev) = if old.is_null() { (vm().c_object, std::ptr::null()) } else { unsafe { ((*old).klass, (*old).prev) } };
+    let cr = new_cref(klass, prev);
+    unsafe {
+        (*(cr as *mut Cref)).refinements = active;
+        (*pf).set_cref(cr);
+        REFINEMENTS_ON = true;
+    }
+    vm().method_serial += 1;
+    Ok(slf)
+}
+fn m_refinements(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    let l = ivar_get(slf, intern(b"__refinements"));
+    Ok(if l == NIL { ary_new() } else { ary_new_from(&rary(l).clone()) })
+}
+fn refinement_target(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(rclass(slf).attached) }
+/// Refinement#import_methods: copies of the modules' Ruby-defined methods.
+fn refinement_import_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+    for &m in a {
+        let mt: Vec<(Sym, *const MethodEntry)> = rclass(m).mtbl.iter().map(|(a, b)| (*a, *b)).collect();
+        for (name, me) in mt {
+            let me = unsafe { &*me };
+            match me.kind {
+                MKind::Iseq(_) | MKind::Bmethod(_) | MKind::AttrReader(_) | MKind::AttrWriter(_) => {
+                    // the copies run under the refine block's scope (its refinements are active)
+                    let pf = unsafe { (*c.frame).prev };
+                    let cref = if pf.is_null() { me.cref } else { unsafe { (*pf).cref() } };
+                    let n = new_me_cref(name, slf, me.visi, me.kind, cref);
+                    define_method_me(slf, name, n);
+                }
+                _ => return arg_err(c, format!("Can't import method which is not defined with Ruby code: {}#{}", class_path(m), sym_str(name))),
+            }
+        }
+    }
+    Ok(slf)
+}
 fn m_attached_object(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     if !rclass(slf).is_singleton { return type_err(c, format!("'{}' is not a singleton class", class_path(slf))); }
     Ok(rclass(slf).attached)
@@ -1080,6 +1193,10 @@ pub fn init() {
     d("singleton_class?", m_singleton_class_p, 0);
     d("refine", m_refine, 1);
     d("using", m_using, 1);
+    d("refinements", m_refinements, 0);
+    let rf = define_class("Refinement", vm.c_module);
+    define_cfunc(rf, "target", refinement_target, 0);
+    define_private_cfunc(rf, "import_methods", refinement_import_methods, -1);
     d("attached_object", m_attached_object, 0);
     d("instance_variable_names", m_instance_variable_names, 0);
     define_singleton_cfunc(m, "new", m_module_new, -1);
@@ -1101,5 +1218,5 @@ pub fn init() {
     define_private_cfunc(sk, "public", top_public, -1);
     define_private_cfunc(sk, "include", |c, _s, a, b| m_include(c, crate::vm::vm().c_object, a, b), -1);
     define_private_cfunc(sk, "define_method", |c, _s, a, b| m_define_method(c, crate::vm::vm().c_object, a, b), -1);
-    define_private_cfunc(sk, "using", |_c, s, _a, _b| Ok(s), 1);
+    define_private_cfunc(sk, "using", m_using, 1);
 }

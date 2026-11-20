@@ -126,7 +126,7 @@ fn curry_call(c: &mut Ctx, data: Value, args: &[Value], _blk: *const Block) -> R
 fn make_curry(c: &mut Ctx, p: Value, arity: i64, got: Value) -> RV {
     let data = ary_new_from(&[p, Value::fix(arity), got]);
     let b = Block::cfunc(c, curry_call, data);
-    let np = crate::gc::alloc(vm().c_proc, Body::Proc(Box::new(ProcData { blk: b, is_lambda: true, from_method: NIL })));
+    let np = crate::gc::alloc(vm().c_proc, Body::Proc(Box::new(ProcData { blk: b, is_lambda: rproc(p).is_lambda, from_method: NIL })));
     rproc(np).blk.proc_val = np;
     Ok(np)
 }
@@ -141,7 +141,7 @@ fn proc_compose_right(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) ->
     if !is_proc(g) && !is_method_obj(g) && !respond_to(g, s::call, true) { return type_err(c, "callable object is expected"); }
     let data = ary_new_from(&[slf, g, FALSE]);
     let b = Block::cfunc(c, compose_call, data);
-    let np = crate::gc::alloc(vm().c_proc, Body::Proc(Box::new(ProcData { blk: b, is_lambda: rproc(slf).is_lambda, from_method: NIL })));
+    let np = crate::gc::alloc(vm().c_proc, Body::Proc(Box::new(ProcData { blk: b, is_lambda: !is_proc(slf) || rproc(slf).is_lambda, from_method: NIL })));
     rproc(np).blk.proc_val = np;
     Ok(np)
 }
@@ -194,7 +194,7 @@ fn proc_ruby2kw(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV 
 // ---- Method / UnboundMethod -----------------------------------------------------------------
 
 pub fn method_object(c: &mut Ctx, recv: Value, mid: Sym, public_only: bool) -> RV {
-    let me = lookup_method(class_of(recv), mid);
+    let me = if unsafe { REFINEMENTS_ON } { lookup_method_refined(unsafe { (*c.frame).cref() }, class_of(recv), mid) } else { lookup_method(class_of(recv), mid) };
     if me.is_null() || (public_only && unsafe { (*me).visi } != VISI_PUBLIC) {
         // respond_to_missing? → a method that goes through method_missing
         if respond_to(recv, s::respond_to_missing_p, true) {
@@ -422,6 +422,8 @@ pub fn init() {
     }
     let m = vm.c_method;
     define_cfunc(m, "call", meth_call, -1);
+    define_cfunc(m, ">>", proc_compose_right, 1);
+    define_cfunc(m, "<<", proc_compose_left, 1);
     define_cfunc(m, "()", meth_call, -1);
     define_cfunc(m, "[]", meth_call, -1);
     define_cfunc(m, "===", meth_call, -1);

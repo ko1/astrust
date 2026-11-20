@@ -205,6 +205,11 @@ impl Frame {
     pub fn cfunc(pf: *mut Frame, me: *const MethodEntry, blk: *const Block) -> Frame {
         unsafe { Frame { prev: pf, fp: (*pf).fp, me, blk, id: (*pf).id, line: (*pf).line, kind: FK_CFUNC, visi: (*pf).visi, lite: true, pad: 0 } }
     }
+    /// Replace the lexical scope (`using`): of the frame that owns one.
+    pub fn set_cref(&mut self, cr: *const Cref) {
+        if !self.lite { unsafe { (*(self as *mut Frame as *mut FrameFull)).cref = cr; } }
+        else if self.kind == FK_CFUNC && !self.prev.is_null() { unsafe { (*self.prev).set_cref(cr) } }
+    }
     #[inline] pub fn self_blk(&self) -> *const Block { match self.full() { Some(x) => x.self_blk, None => std::ptr::null() } }
     #[inline] pub fn defined_class(&self) -> Value { match self.full() { Some(x) => x.defined_class, None => NIL } }
 }
@@ -459,7 +464,16 @@ fn module_chain(m: Value, out: &mut Vec<Value>) {
     let cd = rclass(m);
     for &p in cd.prepends.iter().rev() { module_chain(p, out); }
     out.push(m);
-    for &i in cd.includes.iter().rev() { module_chain(i, out); }
+    // in include order: a later include goes in front, minus what an earlier one already brought in
+    let mut chain: Vec<Value> = vec![];
+    for &i in cd.includes.iter() {
+        let mut new = vec![];
+        module_chain(i, &mut new);
+        new.retain(|x| !chain.contains(x));
+        new.extend(chain);
+        chain = new;
+    }
+    out.extend(chain);
 }
 
 /// Method resolution order (cached per class).
@@ -528,11 +542,52 @@ pub fn lookup_method(klass: Value, mid: Sym) -> *const MethodEntry {
     me
 }
 
+// ---- refinements ----------------------------------------------------------------------------
+// A refinement is a Module (ClassData.refined, attached = the refined class) outside every
+// ancestry.  `using` puts it on the caller's cref; call sites under that cref look there first.
+
+/// Set by the first `using`: call-site lookups consult the frame's cref from then on.
+pub static mut REFINEMENTS_ON: bool = false;
+
+/// The refinements active for a cref (Array, later entries win) or NIL.
+pub fn cref_refinements(mut cr: *const Cref) -> Value {
+    unsafe {
+        while !cr.is_null() {
+            if (*cr).refinements != NIL { return (*cr).refinements; }
+            cr = (*cr).prev;
+        }
+    }
+    NIL
+}
+
+/// Method lookup at a call site whose cref may have refinements activated.
+#[inline(never)]
+pub fn lookup_method_refined(cref: *const Cref, klass: Value, mid: Sym) -> *const MethodEntry {
+    let refs = cref_refinements(cref);
+    if refs == NIL { return lookup_method(klass, mid); }
+    let n = rary(refs).len();
+    for &k in ancestors(klass).iter() {
+        for i in (0..n).rev() {
+            let r = rary(refs)[i];
+            if rclass(r).attached != k { continue; }
+            let me = search_method(r, mid);
+            if me.is_null() { continue; }
+            // `undef` in the refine block hides the method
+            return if matches!(unsafe { (*me).kind }, MKind::Undef) { std::ptr::null() } else { me };
+        }
+        if rclass(k).mtbl.contains_key(&mid) { break; }
+    }
+    lookup_method(klass, mid)
+}
+
 /// Next method after `owner` in klass's ancestors (super).
 pub fn super_method(klass: Value, owner: Value, mid: Sym) -> *const MethodEntry {
     let anc = ancestors(klass);
     let mut found = false;
+    // super from a refined method: the refined class's own method comes next
+    let (owner, refined) = if rclass(owner).refined { (rclass(owner).attached, true) } else { (owner, false) };
     for &k in anc.iter() {
+        if refined && k == owner { found = true; }
         if found {
             if let Some(&me) = rclass(k).mtbl.get(&mid) {
                 if let MKind::ZSuper = unsafe { (*me).kind } { continue; }
@@ -746,9 +801,20 @@ pub fn raise_exc(c: &mut Ctx, e: Value) -> Esc {
     if is_exception(e) && c.errinfo != NIL && c.errinfo != e && ivar_get(e, s::cause) == NIL && !ivar_defined(e, s::cause) {
         ivar_set_raw(e, s::cause, c.errinfo);
     }
+    if vm().debug_flag && is_exception(e) { debug_report(c, e); }
     c.esc = EscKind::Raise;
     c.esc_val = e;
     Esc
+}
+
+/// $DEBUG: "Exception 'X' at file:line - message" on every raise.
+#[cold]
+fn debug_report(c: &mut Ctx, e: Value) {
+    let at = match backtrace_lines(c, 0).first() { Some(l) => l.split(":in ").next().unwrap_or("").to_string(), None => String::new() };
+    let (esc, val) = (c.esc, c.esc_val);
+    let msg = crate::builtins::exception::exc_message_str(c, e).unwrap_or_default();
+    c.esc = esc; c.esc_val = val;
+    eprintln!("Exception '{}' at {} - {}", class_path(real_class_of(e)), at, msg);
 }
 
 pub fn is_exception(v: Value) -> bool {
@@ -965,6 +1031,26 @@ pub fn funcall_flags(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *c
     r
 }
 
+/// send / public_send from a scope with refinements: a refined method is called directly.
+pub fn funcall_refined(c: &mut Ctx, cref: *const Cref, recv: Value, mid: Sym, args: &[Value], blk: *const Block, flags: u32) -> Option<RV> {
+    // null: the current frame's scope (a cfunc frame carries its caller's cref)
+    let cref = if cref.is_null() { unsafe { (*c.frame).cref() } } else { cref };
+    let me = lookup_method_refined(cref, class_of(recv), mid);
+    if me.is_null() || !rclass(unsafe { (*me).owner }).refined { return None; }
+    if unsafe { (*me).visi } != VISI_PUBLIC && flags & CF_FCALL == 0 { return None; }
+    let base = c.sp;
+    if unsafe { base.add(args.len() + 2) } >= c.stack_end { return Some(Err(raise_stack_overflow(c))); }
+    unsafe {
+        *base = recv;
+        *base.add(1) = NIL;
+        for (i, a) in args.iter().enumerate() { *base.add(2 + i) = *a; }
+        c.sp = base.add(2 + args.len());
+    }
+    let r = invoke(c, me, recv, base, args.len() as u32, blk, flags);
+    c.sp = base;
+    Some(r)
+}
+
 /// Public call from Rust (respects visibility).
 pub fn funcall_public(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const Block) -> RV {
     funcall_flags(c, recv, mid, args, blk, 0)
@@ -1068,7 +1154,7 @@ pub fn call_slow(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, ar
         let serial = vm().method_serial;
         let e: &mut CallCache = if cc.klass == 0 || cc.serial != serial {
             if cc.poly != 0 { for w in unsafe { &mut *(cc.poly as *mut [CallCache; POLY_WAYS]) }.iter_mut() { w.klass = 0; } }
-            let me = lookup_method(klass, mid);
+            let me = lookup_site(c, klass, mid);
             fill_cc(cc, recv, klass, me, serial, flags);
             cc
         } else {
@@ -1079,7 +1165,7 @@ pub fn call_slow(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, ar
                 None => {
                     let i = cc.poly_next as usize % POLY_WAYS;
                     cc.poly_next = cc.poly_next.wrapping_add(1);
-                    let me = lookup_method(klass, mid);
+                    let me = lookup_site(c, klass, mid);
                     fill_cc(&mut t[i], recv, klass, me, serial, flags);
                     &mut t[i]
                 }
@@ -1105,13 +1191,19 @@ pub fn call_slow(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, ar
     r
 }
 
+/// Method lookup for a call site: refinements active in the frame's cref come first.
+#[inline(always)]
+fn lookup_site(c: &Ctx, klass: Value, mid: Sym) -> *const MethodEntry {
+    if unsafe { REFINEMENTS_ON } { lookup_method_refined(unsafe { (*c.frame).cref() }, klass, mid) } else { lookup_method(klass, mid) }
+}
+
 /// Method entry for recv.mid through the call cache (null: not found).
 #[inline(always)]
-pub fn lookup_cc(cc: &mut CallCache, recv: Value, mid: Sym, flags: u32) -> *const MethodEntry {
+pub fn lookup_cc(c: &Ctx, cc: &mut CallCache, recv: Value, mid: Sym, flags: u32) -> *const MethodEntry {
     let klass = class_of(recv);
     let serial = vm().method_serial;
     if cc.klass == klass.raw() && cc.serial == serial { return cc.me as *const MethodEntry; }
-    let me = lookup_method(klass, mid);
+    let me = lookup_site(c, klass, mid);
     fill_cc(cc, recv, klass, me, serial, flags);
     me
 }
@@ -1435,6 +1527,9 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: *mut Value, argc: u32, blk: *c
         let h = *args.last().unwrap();
         if is_hash(h) && p.kw.iter().all(|k| !k.required) { kwh = h; args.pop(); }
     }
+    if p.no_kw && flags & CF_KW != 0 && args.last().is_some_and(|&h| is_hash(h) && rhash(h).live > 0) {
+        return arg_err(c, "no keywords accepted");
+    }
     let lead = p.lead.len();
     let post = p.post.len();
     let opt = p.opt.len();
@@ -1460,7 +1555,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: *mut Value, argc: u32, blk: *c
             if !(accepts_kw && kwh == NIL && given == required + opt + 1 && false) {
                 let exp = if maxp == usize::MAX { format!("{}+", required) } else if required == maxp { format!("{}", required) } else { format!("{}..{}", required, maxp) };
                 // missing required keywords are reported along with the arity
-                let missing: Vec<String> = if kwh == NIL { p.kw.iter().filter(|k| k.required).map(|k| sym_str(k.name).to_string()).collect() } else { vec![] };
+                let missing: Vec<String> = p.kw.iter().filter(|k| k.required).map(|k| sym_str(k.name).to_string()).collect();
                 let extra = match missing.len() { 0 => String::new(), 1 => format!("; required keyword: {}", missing[0]), _ => format!("; required keywords: {}", missing.join(", ")) };
                 return arg_err(c, format!("wrong number of arguments (given {}, expected {}{})", given, exp, extra));
             }
@@ -1637,7 +1732,22 @@ pub fn run_block_fast(c: &mut Ctx, b: &Block, is: &Iseq, base: *mut Value, argc:
     }
 }
 
-pub fn yield1(c: &mut Ctx, blk: *const Block, a: Value) -> RV { yield_block(c, blk, &[a]) }
+/// One out-of-line copy of the one-argument fast path (not left to yield_block's inlining luck).
+#[inline(never)]
+pub fn yield1(c: &mut Ctx, blk: *const Block, a: Value) -> RV {
+    if !blk.is_null() {
+        let b = unsafe { &*blk };
+        if let Some(is) = block_fast(b, 1) {
+            let base = c.sp;
+            stack_check(c, is.nlocals as usize + 17)?;
+            unsafe { *base.add(2) = a; }
+            let r = run_block_fast(c, b, is, base, 1);
+            c.sp = base;
+            return r;
+        }
+    }
+    yield_block(c, blk, &[a])
+}
 
 pub fn yield_with_self(c: &mut Ctx, blk: *const Block, args: &[Value], self_: Value, defined_class: Value) -> RV {
     let b = unsafe { &*blk };
@@ -1678,6 +1788,9 @@ pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const 
         BlockKind::Sym(mid) => {
             if args.is_empty() { return arg_err(c, "no receiver given"); }
             let recv = args[0];
+            if unsafe { REFINEMENTS_ON } {
+                if let Some(r) = funcall_refined(c, b.cref, recv, mid, &args[1..], blkarg, 0) { return r; }
+            }
             funcall_public(c, recv, mid, &args[1..], blkarg)
         }
         BlockKind::Method(m) => {

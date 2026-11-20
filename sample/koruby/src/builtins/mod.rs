@@ -122,6 +122,10 @@ pub fn boot() {
     vm.c_float = define_class("Float", num);
     vm.c_string = define_class("String", ob);
     rclass(vm.c_string).alloc = AllocKind::String;
+    // name strings made before String existed have no class yet
+    for k in [bo, ob, md, cl, vm.m_kernel, vm.m_comparable, vm.m_enumerable, num, vm.c_integer, vm.c_float, vm.c_string] {
+        if let Some(n) = rclass(k).name { obj(n).klass = vm.c_string; }
+    }
     include_module(vm.c_string, vm.m_comparable);
     vm.c_symbol = define_class("Symbol", ob);
     include_module(vm.c_symbol, vm.m_comparable);

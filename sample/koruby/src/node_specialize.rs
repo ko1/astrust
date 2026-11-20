@@ -3107,39 +3107,6 @@ fn SPECIALIZE_node_special(sc: &mut SpecCtx, n: NodePtr) -> String {
     name
 }
 
-#[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
-fn SPECIALIZE_node_flipflop(sc: &mut SpecCtx, n: NodePtr) -> String {
-    let name = format!("T_{:016x}", hash_node(n));
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());   // before the children: a speculated callee may be this very node
-    let own_hash = hash_node(n);
-    sc.open.insert(own_hash);
-    let u = unsafe { &(*(n as *mut NodeOf<node_flipflop_struct>)).u };
-    let t_a = specialize_node(sc, u.a);
-    let t_b = specialize_node(sc, u.b);
-    let np = n as *mut NodeOf<node_flipflop_struct>;
-    let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
-    unsafe {
-    a.push("(*np).u.a".to_string());
-    a.push("(*np).u.b".to_string());
-    a.push(format!("{}", (*np).u.excl));
-    a.push(format!("{}u32", (*np).u.slot));
-    }
-    let mut body = String::new();
-    body.push_str(&format!("pub struct {};\n", name));
-    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
-    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
-    body.push_str(&format!("        let np = {} as *mut NodeOf<node_flipflop_struct>;\n", "n"));
-
-    body.push_str(&format!("        EVAL_node_flipflop{}({})\n    }} }}\n", format!("::<{}, {}>", t_a, t_b), a.join(", ")));
-
-    body.push_str("}
-");
-    sc.open.remove(&own_hash);
-    sc.out.push_str(&body);
-    name
-}
-
 /// SD type for a NODES operand: a `DispList` whose nth() dispatches statically.
 pub fn specialize_list(sc: &mut SpecCtx, ns: &NodeList) -> String {
     let ts: Vec<String> = ns.iter().map(|x| specialize_node(sc, *x)).collect();

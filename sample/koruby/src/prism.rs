@@ -90,7 +90,10 @@ fn build_options(o: &ParseOpts) -> Vec<u8> {
     d.extend((o.scopes.len() as u32).to_le_bytes());
     for sc in &o.scopes {
         d.extend((sc.len() as u32).to_le_bytes());
-        d.push(0);
+        // forwarding flags: the scope's method took anonymous *, **, & (all three: `...`)
+        let has = |n: &[u8]| sc.iter().any(|l| l == n);
+        let f = has(b"__fwd_rest") as u8 | (has(b"__fwd_kw") as u8) << 1 | (has(b"__fwd_blk") as u8) << 2;
+        d.push(if f == 7 { 0xf } else { f });
         for l in sc { d.extend((l.len() as u32).to_le_bytes()); d.extend(l); }
     }
     d

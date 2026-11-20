@@ -142,8 +142,6 @@ use crate::symbol::s;
 // the value of a method-body-level `__method__`, etc. are cfuncs; this node evaluates an
 // arbitrary closure-free runtime helper by id (rarely used constructs)
 
-
-
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_nil(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
@@ -1261,23 +1259,5 @@ pub fn EVAL_node_unsupported(c: &mut Ctx, n: NodePtr, fp: *mut Value, what: Str)
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_special<D_arg: Disp>(c: &mut Ctx, n: NodePtr, fp: *mut Value, kind: u32, arg: NodePtr) -> RV {
     rt_special::<D_arg>(c, n, fp, kind, arg)
-}
-
-
-#[inline(always)]
-#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_flipflop<D_a: Disp, D_b: Disp>(c: &mut Ctx, n: NodePtr, fp: *mut Value, a: NodePtr, b: NodePtr, excl: bool, slot: u32) -> RV {
-    let st = unsafe { *fp.add(slot as usize) };
-    if st.falsy() {
-        if <D_a as Disp>::call(c, a, fp)?.truthy() {
-            if !excl && <D_b as Disp>::call(c, b, fp)?.truthy() { return Ok(TRUE); }
-            unsafe { *fp.add(slot as usize) = TRUE; }
-            return Ok(TRUE);
-        }
-        Ok(FALSE)
-    } else {
-        if <D_b as Disp>::call(c, b, fp)?.truthy() { unsafe { *fp.add(slot as usize) = FALSE; } }
-        Ok(TRUE)
-    }
 }
 

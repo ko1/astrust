@@ -48,6 +48,19 @@ index and re-fetch (`ary_get(v, i)` with `ary_len(v)` checked each iteration).
   `Err(raise_exc(c, exc_obj))`.
 * Ruby-level built-ins live in `prelude/core.rb` (loaded at boot).
 
+## Lexical scope (Cref) and refinements
+* A frame's `cref` is its lexical class scope (constants, `def` target, class variables).  A
+  cref whose `prev` is null is the top level.
+* `refine C do ... end` makes a Refinement module (`ClassData.refined`, `attached` = C) that is
+  in no ancestry; the module remembers its refinements in the `__refinements` ivar.
+* `using M` replaces the *caller frame's* cref with a copy whose `refinements` Array holds the
+  activated refinements (code defined earlier keeps the old cref, so it stays unrefined) and
+  bumps `method_serial`.  From the first `using` on (`REFINEMENTS_ON`), a call-cache miss
+  resolves through `lookup_method_refined(frame cref, klass, mid)`; a call site belongs to one
+  cref, so its inline cache stays valid.  `super` from a refined method continues at C.
+* Hidden compiler variables: `__fwd_rest/__fwd_kw/__fwd_blk` (anonymous `*`, `**`, `&`, `...`),
+  `__it`, `%ff<offset>` (flip-flop state, kept in the enclosing method/program scope).
+
 ## Testing
 Differential tests against CRuby (oracle): `../../../astro/sample/rubyharness`.
 ```

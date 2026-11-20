@@ -396,8 +396,6 @@ pub fn init() {
     define_private_cfunc(k, "initialize_copy", h_initialize_copy, 1);
     define_singleton_cfunc(k, "[]", h_s_aref, -1);
     define_singleton_cfunc(k, "try_convert", h_s_try_convert, 1);
-    define_singleton_cfunc(k, "ruby2_keywords_hash?", |c, _s, a, _b| { if !is_hash(a[0]) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(a[0]))); } Ok(FALSE) }, 1);
-    define_singleton_cfunc(k, "ruby2_keywords_hash", |c, _s, a, _b| { if !is_hash(a[0]) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(a[0]))); } Ok(hash_dup(a[0])) }, 1);
     define_singleton_cfunc(k, "new", h_s_new, -1);
     d("[]", h_aref, 1); d("[]=", h_aset, 2); d("store", h_store_kw, 2); d("fetch", h_fetch, -1); d("key?", h_key_p, 1); d("has_key?", h_key_p, 1);
     d("include?", h_key_p, 1); d("member?", h_key_p, 1); d("value?", h_value_p, 1); d("has_value?", h_value_p, 1); d("key", h_key, 1);
