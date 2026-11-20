@@ -40,6 +40,10 @@ impl Value {
     #[inline(always)] pub fn fix_sub(self, o: Value) -> Option<Value> {
         (self.raw() as i64).checked_sub(o.raw() as i64 - 1).and_then(|r| std::num::NonZeroU64::new(r as u64)).map(Value)
     }
+    // 2a * b overflows 64 bits exactly when a * b is not a fixnum; `| 1` retags (and shows a non-zero word)
+    #[inline(always)] pub fn fix_mul(self, o: Value) -> Option<Value> {
+        (self.raw() as i64 - 1).checked_mul(o.as_fix()).and_then(|r| std::num::NonZeroU64::new(r as u64 | 1)).map(Value)
+    }
     /// The tagged word as a signed integer: its order is the fixnums' order.
     #[inline(always)] pub fn fix_ord(self) -> i64 { self.raw() as i64 }
     #[inline(always)] pub fn is_flonum(self) -> bool { self.raw() & 3 == 2 }

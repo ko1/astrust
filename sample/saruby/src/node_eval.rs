@@ -946,7 +946,7 @@ pub fn EVAL_node_lambda(c: &mut Ctx, n: NodePtr, fp: Fp, blk: IseqRef) -> RV {
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_plus(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> RV {
-    if a.both_fix(b) && !redef(R_INT_PLUS) { if let Some(r) = a.fix_add(b) { return Ok(r); } }
+    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_PLUS) { if let Some(r) = a.fix_add(b) { return Ok(r); } }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2(a, b, R_FLO_PLUS, R_INT_PLUS) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(crate::numeric::float_new(x + y)); }
         return srb_binop(c, a, b, s::plus, line, cc);
@@ -958,7 +958,7 @@ pub fn EVAL_node_opt_plus(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, l
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_minus(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> RV {
-    if a.both_fix(b) && !redef(R_INT_MINUS) { if let Some(r) = a.fix_sub(b) { return Ok(r); } }
+    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_MINUS) { if let Some(r) = a.fix_sub(b) { return Ok(r); } }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2(a, b, R_FLO_MINUS, R_INT_MINUS) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(crate::numeric::float_new(x - y)); }
         return srb_binop(c, a, b, s::minus, line, cc);
@@ -970,9 +970,7 @@ pub fn EVAL_node_opt_minus(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_mul(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache, tf: &mut TyFb, ty: u32) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_MUL) {
-        if let Some(r) = a.as_fix().checked_mul(b.as_fix()) { if Value::fixable(r) { return Ok(Value::fix(r)); } }
-    }
+    if a.both_fix(b) && !redef(R_INT_MUL) { if let Some(r) = a.fix_mul(b) { return Ok(r); } }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2(a, b, R_FLO_MUL, R_INT_MUL) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(crate::numeric::float_new(x * y)); }
         return srb_binop(c, a, b, s::mul, line, cc);
