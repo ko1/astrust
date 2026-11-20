@@ -11,8 +11,14 @@ $(GEN): node.def koruby_gen.rb ../../lib/astrustgen.rb
 src/prism_ast.rs: tools/gen_prism_ast.rb vendor/prism/config.yml
 	ruby tools/gen_prism_ast.rb
 
-koruby: $(GEN) src/prism_ast.rs $(shell find src ../astrogre/src -name '*.rs') ../astrogre/node.def prelude/core.rb $(wildcard prelude/lib/*.rb) ../../runtime/astrust.rs
-	cargo build --$(PROFILE)
+# cargo features, e.g. FEATURES=safe_stack; a change of FEATURES rebuilds
+FEATURES ?=
+.features: FORCE
+	@echo '$(FEATURES)' | cmp -s - $@ || echo '$(FEATURES)' > $@
+FORCE:
+
+koruby: $(GEN) src/prism_ast.rs $(shell find src ../astrogre/src -name '*.rs') ../astrogre/node.def prelude/core.rb $(wildcard prelude/lib/*.rb) ../../runtime/astrust.rs .features
+	cargo build --$(PROFILE) $(if $(FEATURES),--features $(FEATURES))
 	cp target/$(PROFILE)/koruby target/$(PROFILE)/libkoruby.so .
 
 INTERP ?= ./koruby
@@ -20,4 +26,4 @@ ASTRO ?= $(HOME)/ruby/astro
 include $(ASTRO)/sample/rubyharness/harness.mk
 test bench: koruby
 
-.PHONY: all
+.PHONY: all FORCE

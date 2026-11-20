@@ -368,7 +368,7 @@ pub fn rbconfig_init() {
         ("libdir", &bindir), ("sitedir", ""), ("sitelibdir", ""), ("sitearchdir", ""), ("vendordir", ""), ("vendorlibdir", ""), ("vendorarchdir", ""),
         ("datadir", ""), ("mandir", ""), ("sysconfdir", "/etc"), ("localstatedir", "/var"), ("configure_args", ""), ("CFLAGS", ""), ("LDFLAGS", "")];
     // string keys never call back into Ruby, so a blank context is enough at boot
-    let mut bc = Ctx { sp: std::ptr::null_mut(), stack_base: std::ptr::null_mut(), stack_end: std::ptr::null_mut(), frame: std::ptr::null_mut(), esc: EscKind::None,
+    let mut bc = Ctx { sp: NO_SP, stk: NO_STACK, frame: std::ptr::null_mut(), esc: EscKind::None,
         esc_val: NIL, esc_tag: 0, esc_tag_v: NIL, serial: 0, errinfo: NIL, last_match: NIL, native_limit: 0, in_ensure: 0, call_me: std::ptr::null(), call_blk: std::ptr::null() };
     for (k, v) in entries { let (ks, vs) = (str_new_frozen(k.as_bytes()), str_new(v.as_bytes())); let _ = hash_set(&mut bc, cfg, ks, vs); }
     const_set(rbc, intern(b"CONFIG"), cfg);

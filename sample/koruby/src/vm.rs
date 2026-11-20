@@ -5,6 +5,7 @@ use crate::node::{NodePtr, DispatchFn};
 use crate::object::*;
 use crate::symbol::{intern, intern_str, s, sym_str};
 use crate::value::*;
+pub use crate::stack::*;
 use crate::fxhash::HashMap;
 
 // ---- non-local exits -----------------------------------------------------------
@@ -152,7 +153,7 @@ pub const FK_EVAL: u8 = 6;
 #[repr(C)]
 pub struct Frame {
     pub prev: *mut Frame,
-    pub fp: *mut Value,
+    pub fp: FpHead,       // the frame's self and env slots
     pub me: *const MethodEntry,
     pub blk: *const Block,
     pub id: u64,          // return target: method frame id (blocks: the home method's; lambdas: own)
@@ -175,9 +176,9 @@ impl std::ops::Deref for FrameFull { type Target = Frame; #[inline(always)] fn d
 impl std::ops::DerefMut for FrameFull { #[inline(always)] fn deref_mut(&mut self) -> &mut Frame { &mut self.h } }
 
 impl Frame {
-    pub fn empty() -> FrameFull {
+    pub fn empty(st: Stk) -> FrameFull {
         FrameFull {
-            h: Frame { prev: std::ptr::null_mut(), fp: std::ptr::null_mut(), me: std::ptr::null(), blk: std::ptr::null(),
+            h: Frame { prev: std::ptr::null_mut(), fp: head(st), me: std::ptr::null(), blk: std::ptr::null(),
                        id: 0, line: 0, kind: FK_TOP, visi: VISI_PRIVATE, lite: false, pad: 0 },
             cref: std::ptr::null(), iseq: std::ptr::null(), self_blk: std::ptr::null(), defined_class: NIL,
         }
@@ -218,16 +219,15 @@ impl Frame {
 
 #[repr(C)]
 pub struct Ctx {
-    pub sp: *mut Value,
+    pub sp: Sp,           // the stack pointer, as the stack backend keeps it (stack.rs / stack_raw.rs)
     pub frame: *mut Frame,
     pub serial: u64,
     // arguments of node_method_entry.  Not adjacent: written as two words and copied into a frame's
     // (me, blk) pair, they would be read back as one 16-byte load that cannot be store-forwarded.
     pub call_me: *const MethodEntry,
-    pub stack_end: *mut Value,
-    pub call_blk: *const Block,
     pub native_limit: usize,
-    pub stack_base: *mut Value,
+    pub call_blk: *const Block,
+    pub stk: StackRef,    // this context's value stack
     pub esc: EscKind,
     pub esc_val: Value,
     pub esc_tag: u64,
@@ -240,7 +240,7 @@ pub struct Ctx {
 impl Ctx {
     #[inline(always)] pub fn next_serial(&mut self) -> u64 { self.serial += 1; self.serial }
     #[inline(always)] pub fn frame(&self) -> &'static mut Frame { unsafe { &mut *self.frame } }
-    #[inline(always)] pub fn self_val(&self) -> Value { unsafe { *(*self.frame).fp } }
+    #[inline(always)] pub fn self_val(&self) -> Value { let fp = unsafe { (*self.frame).fp }; fp[0].get() }
 }
 
 // ---- global VM state ------------------------------------------------------------------------
@@ -1034,7 +1034,7 @@ pub const CF_KW_SPLAT: u32 = 32;   // keywords came from **h (an empty hash pass
 pub fn stack_check(c: &mut Ctx, need: usize) -> Result<(), Esc> {
     let probe = 0u8;
     let addr = &probe as *const u8 as usize;
-    if unsafe { c.sp.add(need) } >= c.stack_end || addr < c.native_limit {
+    if !c.has_room(need) || addr < c.native_limit {
         return Err(raise_stack_overflow(c));
     }
     Ok(())
@@ -1055,14 +1055,11 @@ pub fn funcall(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const B
 }
 
 pub fn funcall_flags(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const Block, flags: u32) -> RV {
-    let base = c.sp;
     stack_check(c, args.len() + 2)?;   // native depth too: cfunc -> funcall recursion uses little VM stack
-    unsafe {
-        *base = recv;
-        *base.add(1) = NIL;
-        for (i, a) in args.iter().enumerate() { *base.add(2 + i) = *a; }
-        c.sp = base.add(2 + args.len());
-    }
+    let base = stage(c, 2 + args.len())?;
+    base[0].set(recv);
+    base[1].set(NIL);
+    put(base, 2, args);
     let klass = class_of(recv);
     let me = lookup_method(klass, mid);
     let r = if me.is_null() {
@@ -1076,7 +1073,7 @@ pub fn funcall_flags(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *c
             }
         }
     };
-    c.sp = base;
+    c.set_sp(base, 0);
     r
 }
 
@@ -1087,16 +1084,12 @@ pub fn funcall_refined(c: &mut Ctx, cref: *const Cref, recv: Value, mid: Sym, ar
     let me = lookup_method_refined(cref, class_of(recv), mid);
     if me.is_null() || !rclass(unsafe { (*me).owner }).refined { return None; }
     if unsafe { (*me).visi } != VISI_PUBLIC && flags & CF_FCALL == 0 { return None; }
-    let base = c.sp;
-    if unsafe { base.add(args.len() + 2) } >= c.stack_end { return Some(Err(raise_stack_overflow(c))); }
-    unsafe {
-        *base = recv;
-        *base.add(1) = NIL;
-        for (i, a) in args.iter().enumerate() { *base.add(2 + i) = *a; }
-        c.sp = base.add(2 + args.len());
-    }
+    let base = match stage(c, 2 + args.len()) { Ok(b) => b, Err(e) => return Some(Err(e)) };
+    base[0].set(recv);
+    base[1].set(NIL);
+    put(base, 2, args);
     let r = invoke(c, me, recv, base, args.len() as u32, blk, flags);
-    c.sp = base;
+    c.set_sp(base, 0);
     Some(r)
 }
 
@@ -1109,10 +1102,10 @@ pub fn funcall_kw(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *cons
     funcall_flags(c, recv, mid, args, blk, CF_FCALL | if kw { CF_KW } else { 0 })
 }
 
-/// Call on a staged frame: base[0] = recv, base[2..2+argc] = args; c.sp is above them.
+/// Call on a staged frame: base[0] = recv, base[2..2+argc] = args; sp is above them.
 #[inline(always)]
-pub fn call_cached(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> RV {
-    let recv = unsafe { *base };
+pub fn call_cached(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
+    let recv = base[0].get();
     let klass = class_of(recv);
     let hit = cc.klass == klass.raw() && cc.serial == vm().method_serial;
     if hit {
@@ -1123,12 +1116,12 @@ pub fn call_cached(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, 
 
 /// The inline fast paths of a cache entry that matches recv (see fill_cc); None: use invoke.
 #[inline(always)]
-fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> Option<RV> {
+fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> Option<RV> {
     // fast_argc matches only when cc.fast is a method entry node
     if argc == cc.fast_argc && flags & CF_KW == 0 {
         c.call_me = cc.me as *const MethodEntry; c.call_blk = blk;
-        let r = run_body(c, cc.fast as NodePtr, base);
-        c.sp = base;
+        let r = run_entry(c, cc.fast as NodePtr, base);
+        c.set_sp(base, 0);
         return Some(r);
     }
     if cc.fast != 0 && flags & CF_KW == 0 {
@@ -1138,18 +1131,18 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: *mut Value, argc: u32
                 let ni = unsafe { &*(cc.fast as *const NewInfo) };
                 if argc == ni.init_argc {
                     let o = new_object(ni.klass);
-                    unsafe { *base = o; }   // self of initialize: keeps o alive and gives it back
+                    base[0].set(o);   // self of initialize: keeps o alive and gives it back
                     c.call_me = ni.init_me; c.call_blk = blk;
-                    let r = run_body(c, ni.init_entry, base);
-                    c.sp = base;
-                    return Some(match r { Ok(_) => Ok(unsafe { *base }), Err(e) => Err(e) });
+                    let r = run_entry(c, ni.init_entry, base);
+                    c.set_sp(base, 0);
+                    return Some(match r { Ok(_) => Ok(base[0].get()), Err(e) => Err(e) });
                 }
             }
             1 if argc == 0 => {
                 // attr_reader on an Object whose class assigned the ivar index
                 if let Body::Object(ivs) = &obj(recv).body {
                     let v = ivs.get(cc.fast >> 2).copied().unwrap_or(UNDEF);
-                    c.sp = base;
+                    c.set_sp(base, 0);
                     return Some(Ok(if v == UNDEF { NIL } else { v }));
                 }
             }
@@ -1158,18 +1151,18 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: *mut Value, argc: u32
                 if o.flags & FL_FROZEN == 0 {
                     if let Body::Object(ivs) = &mut o.body {
                         let i = cc.fast >> 2;
-                        let v = unsafe { *base.add(2) };
+                        let v = base[2].get();
                         if ivs.len() <= i { ivs.resize(i + 1, UNDEF); }
                         ivs[i] = v;
-                        c.sp = base;
+                        c.set_sp(base, 0);
                         return Some(Ok(v));
                     }
                 }
             }
             3 if argc == 1 => {
                 // BasicObject#== / equal?: identity
-                let r = Value::bool(recv == unsafe { *base.add(2) });
-                c.sp = base;
+                let r = Value::bool(recv == base[2].get());
+                c.set_sp(base, 0);
                 return Some(Ok(r));
             }
             _ => {}
@@ -1180,9 +1173,9 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: *mut Value, argc: u32
         let pf = c.frame;
         let mut fr = Frame::cfunc(pf, cc.me as *const MethodEntry, blk);
         c.frame = &mut fr;
-        let r = f(c, recv, unsafe { std::slice::from_raw_parts(base.add(2), argc as usize) }, blk);
+        let r = with_args(base, argc as usize, |a| f(c, recv, a, blk));
         c.frame = pf;
-        c.sp = base;
+        c.set_sp(base, 0);
         return Some(r);
     }
     None
@@ -1196,8 +1189,8 @@ const POLY_WAYS: usize = 4;
 /// The rest of call_cached: a hit without an inline fast path, or a miss.  A site that misses
 /// with a filled cache is polymorphic: its other classes go to a small table behind the cache.
 #[inline(never)]
-pub fn call_slow(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, argc: u32, blk: *const Block, flags: u32, hit: bool) -> RV {
-    let recv = unsafe { *base };
+pub fn call_slow(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32, hit: bool) -> RV {
+    let recv = base[0].get();
     let me = if hit { cc.me as *const MethodEntry } else {
         let klass = class_of(recv);
         let serial = vm().method_serial;
@@ -1225,18 +1218,18 @@ pub fn call_slow(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, ar
     };
     if me.is_null() {
         let r = method_missing(c, recv, mid, base, argc, blk, flags);
-        c.sp = base;
+        c.set_sp(base, 0);
         return r;
     }
     unsafe {
         if (*me).visi != VISI_PUBLIC && flags & CF_FCALL == 0 {
             let r = visibility_error(c, me, recv, base, argc, blk, flags);
-            c.sp = base;
+            c.set_sp(base, 0);
             return r;
         }
     }
     let r = invoke_impl(c, me, recv, base, argc, blk, flags);
-    c.sp = base;
+    c.set_sp(base, 0);
     r
 }
 
@@ -1270,28 +1263,25 @@ pub fn kw_direct_ok(me: *const MethodEntry, npos: usize, names: &[Sym], flags: u
     names.iter().all(|n| p.kw.iter().any(|k| k.name == *n))
 }
 
-pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: *mut Value, npos: usize, names: &[Sym], blk: *const Block) -> RV {
+pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: Stk, npos: usize, names: &[Sym], blk: *const Block) -> RV {
     let n = is.nlocals as usize;
     stack_check(c, n + 16)?;
     let mut vals = [NIL; 16];
-    for j in 0..names.len() { vals[j] = unsafe { *base.add(2 + npos + j) }; }
+    for j in 0..names.len() { vals[j] = base[2 + npos + j].get(); }
     let id = c.next_serial();
     let mut fr = FrameFull {
-        h: Frame { prev: c.frame, fp: base, me, blk, id, line: is.info.line, kind: FK_METHOD, visi: VISI_PUBLIC, lite: false, pad: 0 },
+        h: Frame { prev: c.frame, fp: head(base), me, blk, id, line: is.info.line, kind: FK_METHOD, visi: VISI_PUBLIC, lite: false, pad: 0 },
         cref: unsafe { (*me).cref }, iseq: is, self_blk: std::ptr::null(), defined_class: NIL,
     };
-    unsafe {
-        *base = recv;
-        *base.add(1) = NIL;
-        let mut i = 2 + npos;
-        while i < n { *base.add(i) = NIL; i += 1; }
-        c.sp = base.add(n);
-    }
+    base[0].set(recv);
+    base[1].set(NIL);
+    nil_fill(base, 2 + npos, n);
+    c.set_sp(base, n);
     c.frame = &mut fr.h;
     let mut missing: Vec<Sym> = vec![];
     for kp in is.params.kw.iter() {
         match names.iter().position(|x| *x == kp.name) {
-            Some(j) => unsafe { *base.add(kp.slot as usize) = vals[j]; },
+            Some(j) => { base[kp.slot as usize].set(vals[j]); },
             None => if kp.required { missing.push(kp.name); },
         }
     }
@@ -1361,27 +1351,25 @@ pub fn spec_callee(cc: &CallCache, argc: usize, flags: u32) -> NodePtr {
 
 /// The heap Env of a frame whose variables are captured by blocks; params copied in.
 #[inline(never)]
-pub fn make_env(is: &Iseq, base: *mut Value, parent: Value) {
+pub fn make_env(is: &Iseq, base: Stk, parent: Value) {
     let env = gc::alloc(vm().c_env, Body::Env(vec![NIL; is.env_size as usize], parent));
-    unsafe {
-        *base.add(1) = env;
-        if let Body::Env(vals, _) = &mut obj(env).body {
-            for &(sl, ei) in is.env_params.iter() { vals[ei as usize] = *base.add(sl as usize); }
-        }
+    base[1].set(env);
+    if let Body::Env(vals, _) = &mut obj(env).body {
+        for &(sl, ei) in is.env_params.iter() { vals[ei as usize] = base[sl as usize].get(); }
     }
 }
 
 /// Call of an Iseq method with only required, slot-contiguous params.
 #[inline(always)]
-pub fn invoke_iseq_simple(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: *mut Value, argc: u32, blk: *const Block) -> RV {
+pub fn invoke_iseq_simple(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: Stk, argc: u32, blk: *const Block) -> RV {
     if is.entry.is_null() { return invoke_iseq(c, me, is, recv, base, argc, blk, 0); }
-    unsafe { *base = recv; }
+    base[0].set(recv);
     c.call_me = me; c.call_blk = blk;
-    run_body(c, is.entry, base)
+    run_entry(c, is.entry, base)
 }
 
 #[cold]
-fn visibility_error(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> RV {
+fn visibility_error(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     let me_r = unsafe { &*me };
     if me_r.visi == VISI_PROTECTED {
         let slf = c.self_val();
@@ -1397,21 +1385,18 @@ fn visibility_error(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: *mut
     Err(raise_exc(c, e))
 }
 
-pub fn method_missing(c: &mut Ctx, recv: Value, mid: Sym, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> RV {
+pub fn method_missing(c: &mut Ctx, recv: Value, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     let klass = class_of(recv);
     let mm = lookup_method(klass, s::method_missing);
     if !mm.is_null() && unsafe { (*mm).owner } != vm().c_basic_object {
         // shift args up by one to insert the method name
-        unsafe {
-            let args = base.add(2);
-            let new_base = c.sp;
-            *new_base = recv; *new_base.add(1) = NIL; *new_base.add(2) = Value::sym(mid);
-            for i in 0..argc as usize { *new_base.add(3 + i) = *args.add(i); }
-            c.sp = new_base.add(3 + argc as usize);
-            let r = invoke(c, mm, recv, new_base, argc + 1, blk, (flags & CF_KW) | CF_FCALL);
-            c.sp = base;
-            return r;
-        }
+        let argc = argc as usize;
+        let new_base = stage(c, 3 + argc)?;
+        new_base[0].set(recv); new_base[1].set(NIL); new_base[2].set(Value::sym(mid));
+        for i in 0..argc { new_base[3 + i].set(base[2 + i].get()); }
+        let r = invoke(c, mm, recv, new_base, argc as u32 + 1, blk, (flags & CF_KW) | CF_FCALL);
+        c.set_sp(base, 0);
+        return r;
     }
     no_method_error(c, recv, mid, flags)
 }
@@ -1430,12 +1415,12 @@ pub fn no_method_error(c: &mut Ctx, recv: Value, mid: Sym, flags: u32) -> RV {
 }
 
 #[inline]
-pub fn invoke(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> RV {
+pub fn invoke(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     invoke_impl(c, me, recv, base, argc, blk, flags)
 }
 
 #[inline(always)]
-fn invoke_impl(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> RV {
+fn invoke_impl(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     let mer = unsafe { &*me };
     match mer.kind {
         MKind::Iseq(is) => invoke_iseq(c, me, unsafe { &*is }, recv, base, argc, blk, flags),
@@ -1446,7 +1431,7 @@ fn invoke_impl(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: *mut Valu
         }
         MKind::AttrWriter(id) => {
             if argc != 1 { return argc_err(c, argc as usize, 1, 1); }
-            let v = unsafe { *base.add(2) };
+            let v = base[2].get();
             ivar_set(c, recv, id, v)
         }
         MKind::Bmethod(p) => {
@@ -1454,7 +1439,7 @@ fn invoke_impl(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: *mut Valu
             let b = pd.blk;
             let mut fr_blk = b;
             fr_blk.self_ = recv;
-            let args: Vec<Value> = unsafe { std::slice::from_raw_parts(base.add(2), argc as usize).to_vec() };
+            let args = to_vec(&base[2..2 + argc as usize]);
             let r = invoke_block_full(c, &fr_blk, &args, blk, recv, true, me, flags & CF_KW != 0);
             r
         }
@@ -1463,23 +1448,22 @@ fn invoke_impl(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: *mut Valu
 }
 
 #[inline]
-pub fn invoke_cfunc(c: &mut Ctx, me: *const MethodEntry, f: CFunc, arity: i32, recv: Value, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> RV {
+pub fn invoke_cfunc(c: &mut Ctx, me: *const MethodEntry, f: CFunc, arity: i32, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     let mut argc = argc;
     if flags & CF_KW != 0 && argc > 0 {
         // keywords to a cfunc: an empty **h passes nothing
-        let last = unsafe { *base.add(1 + argc as usize) };
+        let last = base[1 + argc as usize].get();
         if flags & CF_KW_SPLAT != 0 && is_hash(last) && rhash(last).live == 0 { argc -= 1; }
         else if is_hash(last) { obj(last).flags |= FL_KWHASH; }
     }
     if arity >= 0 && argc as i32 != arity { return argc_err(c, argc as usize, arity, arity); }
-    let args = unsafe { std::slice::from_raw_parts(base.add(2), argc as usize) };
     let pf = c.frame;
     let mut fr = Frame::cfunc(pf, me, blk);
     c.frame = &mut fr;
-    let r = f(c, recv, args, blk);
+    let r = with_args(base, argc as usize, |a| f(c, recv, a, blk));
     c.frame = pf;
     if flags & CF_KW != 0 && argc > 0 {
-        let last = unsafe { *base.add(1 + argc as usize) };
+        let last = base[1 + argc as usize].get();
         if is_hash(last) { obj(last).flags &= !FL_KWHASH; }
     }
     r
@@ -1491,16 +1475,15 @@ pub fn kw_arg(args: &[Value]) -> Option<Value> {
     if is_hash(l) && obj(l).flags & FL_KWHASH != 0 { Some(l) } else { None }
 }
 
-pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> RV {
+pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     if !is.entry.is_null() && argc as usize == is.params.lead.len() && flags & CF_KW == 0 {
         let r = invoke_iseq_simple(c, me, is, recv, base, argc, blk);
-        c.sp = base;
+        c.set_sp(base, 0);
         return r;
     }
     stack_check(c, is.nlocals as usize + 16)?;
-    let mut fr = Frame::empty();
+    let mut fr = Frame::empty(base);
     fr.prev = c.frame;
-    fr.fp = base;
     fr.me = me;
     fr.blk = blk;
     fr.iseq = is;
@@ -1509,16 +1492,13 @@ pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, 
     fr.id = c.next_serial();
     fr.cref = unsafe { (*me).cref };
     fr.line = is.info.line;
-    unsafe { *base = recv; }
+    base[0].set(recv);
     c.frame = &mut fr.h;
     let r = if is.simple && argc as usize == is.params.lead.len() && flags & CF_KW == 0 {
-        unsafe {
-            *base.add(1) = NIL;
-            let n = is.nlocals as usize;
-            let mut i = 2 + argc as usize;
-            while i < n { *base.add(i) = NIL; i += 1; }
-            c.sp = base.add(n);
-        }
+        base[1].set(NIL);
+        let n = is.nlocals as usize;
+        nil_fill(base, 2 + argc as usize, n);
+        c.set_sp(base, n);
         run_body(c, is.body, base)
     } else {
         match setup_params(c, is, base, argc, blk, flags, false, NIL) {
@@ -1527,7 +1507,7 @@ pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, 
         }
     };
     c.frame = fr.prev;
-    c.sp = base;
+    c.set_sp(base, 0);
     match r {
         Ok(v) => Ok(v),
         Err(e) => {
@@ -1540,24 +1520,30 @@ pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, 
 }
 
 #[inline(always)]
-pub fn run_body(c: &mut Ctx, body: NodePtr, fp: *mut Value) -> RV {
+pub fn run_body(c: &mut Ctx, body: NodePtr, base: Stk) -> RV {
+    let fp = frame(c, base)?;
     unsafe { ((*body).head.dispatcher)(c, body, fp) }
+}
+
+/// run_body for a method entry node.
+#[inline(always)]
+pub fn run_entry(c: &mut Ctx, entry: NodePtr, base: Stk) -> RV {
+    at_entry(c, base);
+    run_body(c, entry, base)
 }
 
 /// Place arguments into parameter slots.  For blocks (`is_block`), non-lambda
 /// semantics apply: missing args are nil, extra args dropped, a lone Array is splatted.
-pub fn setup_params(c: &mut Ctx, is: &Iseq, base: *mut Value, argc: u32, blk: *const Block, flags: u32, is_block: bool, outer_env: Value) -> Result<(), Esc> {
+pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Block, flags: u32, is_block: bool, outer_env: Value) -> Result<(), Esc> {
     let p = &is.params;
     let n = is.nlocals as usize;
     let lambda = !is_block;
     // copy args out (they overlap the local area)
-    let mut args: Vec<Value> = unsafe { std::slice::from_raw_parts(base.add(2), argc as usize).to_vec() };
+    let mut args = to_vec(&base[2..2 + argc as usize]);
     // keep the args reachable while we allocate; made while they are still on the VM stack
     let tmp = crate::array::ary_new_from(&args);
-    unsafe {
-        for i in 1..n { *base.add(i) = NIL; }
-        c.sp = base.add(n.max(2));
-    }
+    nil_fill(base, 1, n);
+    c.set_sp(base, n.max(2));
     // keywords
     let mut kwh: Value = NIL;
     let accepts_kw = !p.kw.is_empty() || p.kwrest.is_some() || p.forwarding;
@@ -1616,91 +1602,89 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: *mut Value, argc: u32, blk: *c
         }
     }
     let mut ai = 0;
-    unsafe {
-        for &sl in p.lead.iter() { *base.add(sl as usize) = if ai < given { args[ai] } else { NIL }; ai += 1; }
-        let avail_for_opt = given.saturating_sub(required);
-        let nopt_given = avail_for_opt.min(opt);
-        for (k, (sl, _)) in p.opt.iter().enumerate() {
-            if k < nopt_given { *base.add(*sl as usize) = args[ai]; ai += 1; }
-        }
-        if let Some(rs) = p.rest {
-            let nrest = given.saturating_sub(ai + post);
-            let r = crate::array::ary_new_from(if nrest > 0 { &args[ai..ai + nrest] } else { &[] });
-            *base.add(rs as usize) = r;
-            ai += nrest;
-        } else if p.forwarding {
-            let nrest = given.saturating_sub(ai + post);
-            let r = crate::array::ary_new_from(if nrest > 0 { &args[ai..ai + nrest] } else { &[] });
-            ai += nrest;
-            // forwarding stores rest at the hidden slot recorded in kwrest position
-            if let Some(fs) = p.kwrest { *base.add(fs as usize) = r; }
-            if flags & CF_KW != 0 { obj(r).flags |= FL_KWHASH; }
-        }
-        for &sl in p.post.iter() { *base.add(sl as usize) = if ai < given { args[ai] } else { NIL }; ai += 1; }
-        // keywords
-        if !p.kw.is_empty() || (p.kwrest.is_some() && !p.forwarding) {
-            let mut seen = 0;
-            if kwh != NIL && !is_hash(kwh) { kwh = NIL; }
-            for k in p.kw.iter() {
-                let v = if kwh != NIL { crate::hash::hash_get_opt(c, kwh, Value::sym(k.name))? } else { None };
-                match v {
-                    Some(v) => { *base.add(k.slot as usize) = v; seen += 1; }
-                    None => { *base.add(k.slot as usize) = UNDEF; }
-                }
-            }
-            let missing: Vec<Sym> = p.kw.iter().filter(|k| k.required && *base.add(k.slot as usize) == UNDEF).map(|k| k.name).collect();
-            if !missing.is_empty() {
-                let names: Vec<String> = missing.iter().map(|m| format!(":{}", sym_str(*m))).collect();
-                return arg_err(c, format!("missing keyword{}: {}", if missing.len() > 1 { "s" } else { "" }, names.join(", ")));
-            }
-            if let Some(kr) = p.kwrest {
-                let h = crate::hash::hash_new();
-                if kwh != NIL {
-                    for e in crate::hash::hash_pairs(kwh) {
-                        if e.0.is_sym() && p.kw.iter().any(|k| k.name == e.0.as_sym()) { continue; }
-                        crate::hash::hash_set(c, h, e.0, e.1)?;
-                    }
-                }
-                *base.add(kr as usize) = h;
-            } else if kwh != NIL && seen < rhash(kwh).live {
-                let unknown: Vec<String> = crate::hash::hash_pairs(kwh).iter()
-                    .filter(|e| !(e.0.is_sym() && p.kw.iter().any(|k| k.name == e.0.as_sym())))
-                    .map(|e| crate::builtins::kernel::inspect_str(c, e.0).unwrap_or_default()).collect();
-                if !unknown.is_empty() {
-                    return arg_err(c, format!("unknown keyword{}: {}", if unknown.len() > 1 { "s" } else { "" }, unknown.join(", ")));
-                }
-            }
-        } else if kwh != NIL && is_hash(kwh) && rhash(kwh).live > 0 && p.no_kw {
-            return arg_err(c, "no keywords accepted");
-        }
-        if let Some(bs) = p.block {
-            *base.add(bs as usize) = if blk.is_null() { NIL } else { block_to_proc(c, blk)? };
-        }
-        // env
-        if is.env_size > 0 {
-            let env = gc::alloc(vm().c_env, Body::Env(vec![NIL; is.env_size as usize], outer_env));
-            *base.add(1) = env;
-            for &(sl, ei) in is.env_params.iter() {
-                if let Body::Env(vals, _) = &mut obj(env).body { vals[ei as usize] = *base.add(sl as usize); }
-            }
-        } else {
-            *base.add(1) = outer_env;
-        }
-        std::hint::black_box(tmp);
-        // defaults (run in the callee frame)
-        for (k, (sl, node)) in p.opt.iter().enumerate() {
-            if k >= nopt_given { let _ = sl; run_body(c, *node, base)?; }
-        }
-        for k in p.kw.iter() {
-            if *base.add(k.slot as usize) == UNDEF {
-                *base.add(k.slot as usize) = NIL;
-                if let Some(d) = k.default { run_body(c, d, base)?; }
-            } else if is.env_size > 0 {
-                // already copied to env by env_params
-            }
-        }
-        for d in p.destructure.iter() { run_body(c, *d, base)?; }
+    for &sl in p.lead.iter() { base[sl as usize].set(if ai < given { args[ai] } else { NIL }); ai += 1; }
+    let avail_for_opt = given.saturating_sub(required);
+    let nopt_given = avail_for_opt.min(opt);
+    for (k, (sl, _)) in p.opt.iter().enumerate() {
+        if k < nopt_given { base[*sl as usize].set(args[ai]); ai += 1; }
     }
+    if let Some(rs) = p.rest {
+        let nrest = given.saturating_sub(ai + post);
+        let r = crate::array::ary_new_from(if nrest > 0 { &args[ai..ai + nrest] } else { &[] });
+        base[rs as usize].set(r);
+        ai += nrest;
+    } else if p.forwarding {
+        let nrest = given.saturating_sub(ai + post);
+        let r = crate::array::ary_new_from(if nrest > 0 { &args[ai..ai + nrest] } else { &[] });
+        ai += nrest;
+        // forwarding stores rest at the hidden slot recorded in kwrest position
+        if let Some(fs) = p.kwrest { base[fs as usize].set(r); }
+        if flags & CF_KW != 0 { obj(r).flags |= FL_KWHASH; }
+    }
+    for &sl in p.post.iter() { base[sl as usize].set(if ai < given { args[ai] } else { NIL }); ai += 1; }
+    // keywords
+    if !p.kw.is_empty() || (p.kwrest.is_some() && !p.forwarding) {
+        let mut seen = 0;
+        if kwh != NIL && !is_hash(kwh) { kwh = NIL; }
+        for k in p.kw.iter() {
+            let v = if kwh != NIL { crate::hash::hash_get_opt(c, kwh, Value::sym(k.name))? } else { None };
+            match v {
+                Some(v) => { base[k.slot as usize].set(v); seen += 1; }
+                None => { base[k.slot as usize].set(UNDEF); }
+            }
+        }
+        let missing: Vec<Sym> = p.kw.iter().filter(|k| k.required && base[k.slot as usize].get() == UNDEF).map(|k| k.name).collect();
+        if !missing.is_empty() {
+            let names: Vec<String> = missing.iter().map(|m| format!(":{}", sym_str(*m))).collect();
+            return arg_err(c, format!("missing keyword{}: {}", if missing.len() > 1 { "s" } else { "" }, names.join(", ")));
+        }
+        if let Some(kr) = p.kwrest {
+            let h = crate::hash::hash_new();
+            if kwh != NIL {
+                for e in crate::hash::hash_pairs(kwh) {
+                    if e.0.is_sym() && p.kw.iter().any(|k| k.name == e.0.as_sym()) { continue; }
+                    crate::hash::hash_set(c, h, e.0, e.1)?;
+                }
+            }
+            base[kr as usize].set(h);
+        } else if kwh != NIL && seen < rhash(kwh).live {
+            let unknown: Vec<String> = crate::hash::hash_pairs(kwh).iter()
+                .filter(|e| !(e.0.is_sym() && p.kw.iter().any(|k| k.name == e.0.as_sym())))
+                .map(|e| crate::builtins::kernel::inspect_str(c, e.0).unwrap_or_default()).collect();
+            if !unknown.is_empty() {
+                return arg_err(c, format!("unknown keyword{}: {}", if unknown.len() > 1 { "s" } else { "" }, unknown.join(", ")));
+            }
+        }
+    } else if kwh != NIL && is_hash(kwh) && rhash(kwh).live > 0 && p.no_kw {
+        return arg_err(c, "no keywords accepted");
+    }
+    if let Some(bs) = p.block {
+        base[bs as usize].set(if blk.is_null() { NIL } else { block_to_proc(c, blk)? });
+    }
+    // env
+    if is.env_size > 0 {
+        let env = gc::alloc(vm().c_env, Body::Env(vec![NIL; is.env_size as usize], outer_env));
+        base[1].set(env);
+        for &(sl, ei) in is.env_params.iter() {
+            if let Body::Env(vals, _) = &mut obj(env).body { vals[ei as usize] = base[sl as usize].get(); }
+        }
+    } else {
+        base[1].set(outer_env);
+    }
+    std::hint::black_box(tmp);
+    // defaults (run in the callee frame)
+    for (k, (sl, node)) in p.opt.iter().enumerate() {
+        if k >= nopt_given { let _ = sl; run_body(c, *node, base)?; }
+    }
+    for k in p.kw.iter() {
+        if base[k.slot as usize].get() == UNDEF {
+            base[k.slot as usize].set(NIL);
+            if let Some(d) = k.default { run_body(c, d, base)?; }
+        } else if is.env_size > 0 {
+            // already copied to env by env_params
+        }
+    }
+    for d in p.destructure.iter() { run_body(c, *d, base)?; }
     Ok(())
 }
 
@@ -1739,11 +1723,11 @@ pub fn yield_block(c: &mut Ctx, blk: *const Block, args: &[Value]) -> RV {
     if blk.is_null() { return err(c, vm().c_local_jump_error, "no block given (yield)"); }
     let b = unsafe { &*blk };
     if let Some(is) = block_fast(b, args.len()) {
-        let base = c.sp;
+        let base = c.top();
         stack_check(c, is.nlocals as usize + args.len() + 16)?;
-        unsafe { for (i, a) in args.iter().enumerate() { *base.add(2 + i) = *a; } }
+        put(base, 2, args);
         let r = run_block_fast(c, b, is, base, args.len() as u32);
-        c.sp = base;
+        c.set_sp(base, 0);
         return r;
     }
     invoke_block_full(c, b, args, std::ptr::null(), b.self_, false, std::ptr::null(), false)
@@ -1762,20 +1746,17 @@ pub fn block_fast(b: &Block, argc: usize) -> Option<&'static Iseq> {
 
 /// Run a block_fast block with args already at base[2..].
 #[inline(always)]
-pub fn run_block_fast(c: &mut Ctx, b: &Block, is: &Iseq, base: *mut Value, argc: u32) -> RV {
+pub fn run_block_fast(c: &mut Ctx, b: &Block, is: &Iseq, base: Stk, argc: u32) -> RV {
     let n = is.nlocals as usize;
     let mut fr = FrameFull {
-        h: Frame { prev: c.frame, fp: base, me: b.me, blk: b.outer_blk, id: b.home_id, line: is.info.line, kind: FK_BLOCK, visi: VISI_PUBLIC, lite: false, pad: 0 },
+        h: Frame { prev: c.frame, fp: head(base), me: b.me, blk: b.outer_blk, id: b.home_id, line: is.info.line, kind: FK_BLOCK, visi: VISI_PUBLIC, lite: false, pad: 0 },
         cref: b.cref, iseq: is, self_blk: b, defined_class: b.defined_class,
     };
-    unsafe {
-        *base = b.self_;
-        *base.add(1) = b.env;
-        let mut i = 2 + argc as usize;
-        while i < n { *base.add(i) = NIL; i += 1; }
-        c.sp = base.add(n);
-        if is.env_size > 0 { make_env(is, base, b.env); }
-    }
+    base[0].set(b.self_);
+    base[1].set(b.env);
+    nil_fill(base, 2 + argc as usize, n);
+    c.set_sp(base, n);
+    if is.env_size > 0 { make_env(is, base, b.env); }
     c.frame = &mut fr.h;
     let mut r = run_body(c, is.body, base);
     while r.is_err() && c.esc == EscKind::Redo { c.esc = EscKind::None; r = run_body(c, is.body, base); }
@@ -1792,11 +1773,11 @@ pub fn yield1(c: &mut Ctx, blk: *const Block, a: Value) -> RV {
     if !blk.is_null() {
         let b = unsafe { &*blk };
         if let Some(is) = block_fast(b, 1) {
-            let base = c.sp;
+            let base = c.top();
             stack_check(c, is.nlocals as usize + 17)?;
-            unsafe { *base.add(2) = a; }
+            base[2].set(a);
             let r = run_block_fast(c, b, is, base, 1);
-            c.sp = base;
+            c.set_sp(base, 0);
             return r;
         }
     }
@@ -1828,15 +1809,13 @@ pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const 
     match b.kind {
         BlockKind::Iseq(is) => {
             let is = unsafe { &*is };
-            let base = c.sp;
+            let base = c.top();
             stack_check(c, is.nlocals as usize + args.len() + 16)?;
-            unsafe {
-                *base = self_;
-                for (i, a) in args.iter().enumerate() { *base.add(2 + i) = *a; }
-                c.sp = base.add(2 + args.len());
-            }
+            base[0].set(self_);
+            put(base, 2, args);
+            c.set_sp(base, 2 + args.len());
             let r = run_block_iseq(c, b, is, base, args.len() as u32, blkarg, lambda_call || is.kind == IseqKind::Lambda, bme, kw);
-            c.sp = base;
+            c.set_sp(base, 0);
             r
         }
         BlockKind::Sym(mid) => {
@@ -1851,14 +1830,11 @@ pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const 
             let mo = rmethod(m);
             let recv = mo.recv;
             let me = mo.me;
-            let base = c.sp;
-            unsafe {
-                *base = recv; *base.add(1) = NIL;
-                for (i, a) in args.iter().enumerate() { *base.add(2 + i) = *a; }
-                c.sp = base.add(2 + args.len());
-            }
+            let base = stage(c, 2 + args.len())?;
+            base[0].set(recv); base[1].set(NIL);
+            put(base, 2, args);
             let r = invoke(c, me, recv, base, args.len() as u32, blkarg, CF_FCALL | if kw { CF_KW } else { 0 });
-            c.sp = base;
+            c.set_sp(base, 0);
             r
         }
         BlockKind::Cfunc(f, data) => f(c, data, args, blkarg),
@@ -1870,10 +1846,9 @@ pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const 
     }
 }
 
-pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &Iseq, base: *mut Value, argc: u32, blkarg: *const Block, lambda: bool, bme: *const MethodEntry, kw: bool) -> RV {
-    let mut fr = Frame::empty();
+pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &Iseq, base: Stk, argc: u32, blkarg: *const Block, lambda: bool, bme: *const MethodEntry, kw: bool) -> RV {
+    let mut fr = Frame::empty(base);
     fr.prev = c.frame;
-    fr.fp = base;
     fr.me = if bme.is_null() { b.me } else { bme };
     fr.blk = if !bme.is_null() { blkarg } else { b.outer_blk };
     fr.cref = b.cref;
@@ -1887,13 +1862,10 @@ pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &Iseq, base: *mut Value, argc:
     c.frame = &mut fr.h;
     let fast = is.lead_only && is.env_size == 0 && argc as usize == is.params.lead.len() && (argc != 1 || is.params.lead.len() == 1) && !kw;
     let r = if fast {
-        unsafe {
-            *base.add(1) = b.env;
-            let n = is.nlocals as usize;
-            let mut i = 2 + argc as usize;
-            while i < n { *base.add(i) = NIL; i += 1; }
-            c.sp = base.add(n);
-        }
+        base[1].set(b.env);
+        let n = is.nlocals as usize;
+        nil_fill(base, 2 + argc as usize, n);
+        c.set_sp(base, n);
         run_body(c, is.body, base)
     } else {
         let flags = if kw { CF_KW } else { 0 };
@@ -1927,8 +1899,7 @@ pub fn mark_roots(m: &mut Marker) {
     let vm = vm();
     unsafe {
         let c = &*MAIN_CTX;
-        let mut p = c.stack_base;
-        while p < c.sp { m.mark_maybe((*p).raw() as usize); p = p.add(1); }
+        for s in c.live() { m.mark_maybe(s.get().raw() as usize); }
         m.mark(c.esc_val); m.mark(c.errinfo); m.mark(c.last_match); m.mark(c.esc_tag_v);
     }
     crate::fiber::mark_fibers(m);

@@ -1016,11 +1016,12 @@ pub fn c_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
             let is = unsafe { &*is };
             if is.lead_only && is.params.lead.len() == a.len() {
                 // initialize with only required params: call it directly
-                let base = c.sp;
+                let base = c.top();
                 stack_check(c, a.len() + 4)?;
-                unsafe { for (i, x) in a.iter().enumerate() { *base.add(2 + i) = *x; } c.sp = base.add(2 + a.len()); }
+                for (i, x) in a.iter().enumerate() { base[2 + i].set(*x); }
+                c.set_sp(base, 2 + a.len());
                 let r = invoke_iseq_simple(c, me, is, o, base, a.len() as u32, b);
-                c.sp = base;
+                c.set_sp(base, 0);
                 r?;
                 return Ok(o);
             }

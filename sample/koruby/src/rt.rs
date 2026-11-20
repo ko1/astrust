@@ -366,8 +366,8 @@ pub fn rt_has_custom_not(v: Value) -> bool {
 }
 
 pub fn rt_call0(c: &mut Ctx, v: Value, mid: Sym, cc: &mut CallCache) -> RV {
-    let base = c.sp;
-    unsafe { *base = v; c.sp = base.add(2); }
+    let base = stage(c, 2)?;
+    base[0].set(v);
     call_cached(c, cc, mid, base, 0, std::ptr::null(), 0)
 }
 
@@ -464,8 +464,8 @@ pub fn rt_eqq(c: &mut Ctx, p: Value, subj: Value, cc: &mut CallCache) -> Result<
     if p.is_sym() { return Ok(p == subj); }
     if p == NIL || p == TRUE || p == FALSE { return Ok(p == subj); }
     if is_string(p) && is_string(subj) && obj(p).klass == vm().c_string { return Ok(str_bytes(p) == str_bytes(subj)); }
-    let base = c.sp;
-    unsafe { *base = p; *base.add(2) = subj; c.sp = base.add(3); }
+    let base = stage(c, 3)?;
+    base[0].set(p); base[2].set(subj);
     let r = call_cached(c, cc, s::eqq, base, 1, std::ptr::null(), 0)?;
     Ok(r.truthy())
 }
@@ -481,7 +481,7 @@ fn defined_str(s: &[u8]) -> Value {
     v
 }
 
-pub fn rt_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: *mut Value, kind: u32, name: Sym, recv: NodePtr) -> RV {
+pub fn rt_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, name: Sym, recv: NodePtr) -> RV {
     let yes = |s: &[u8]| -> RV { Ok(defined_str(s)) };
     match kind {
         DEF_LOCALVAR => yes(b"local-variable"),
@@ -491,7 +491,7 @@ pub fn rt_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: *mut Value, kind: u32, 
         DEF_FALSE => yes(b"false"),
         DEF_ASGN => yes(b"assignment"),
         DEF_BACKREF => yes(b"global-variable"),
-        DEF_IVAR => if ivar_defined(unsafe { *fp }, name) { yes(b"instance-variable") } else { Ok(NIL) },
+        DEF_IVAR => if ivar_defined(fp[0].get(), name) { yes(b"instance-variable") } else { Ok(NIL) },
         DEF_GVAR => if crate::builtins::kernel::gvar_defined(c, name) { yes(b"global-variable") } else { Ok(NIL) },
         DEF_CVAR => {
             let k = cvar_base(c);
@@ -510,7 +510,7 @@ pub fn rt_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: *mut Value, kind: u32, 
                 || (rclass(p).is_module && rclass(vm().c_object).consts.contains_key(&name)) { yes(b"constant") } else { Ok(NIL) }
         }
         DEF_FCALL => {
-            let slf = unsafe { *fp };
+            let slf = fp[0].get();
             if respond_to(slf, name, true) { return yes(b"method"); }
             let rm = lookup_method(class_of(slf), s::respond_to_missing_p);
             if !rm.is_null() && unsafe { (*rm).owner } != vm().c_object && unsafe { (*rm).owner } != vm().m_kernel {
@@ -534,7 +534,7 @@ pub fn rt_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: *mut Value, kind: u32, 
             }
             let visi = unsafe { (*me).visi };
             if visi == VISI_PUBLIC { return yes(b"method"); }
-            if visi == VISI_PROTECTED && is_kind_of(unsafe { *fp }, unsafe { (*me).owner }) { return yes(b"method"); }
+            if visi == VISI_PROTECTED && is_kind_of(fp[0].get(), unsafe { (*me).owner }) { return yes(b"method"); }
             Ok(NIL)
         }
         DEF_YIELD => if unsafe { !(*c.frame).blk.is_null() } { yes(b"yield") } else { Ok(NIL) },
@@ -542,7 +542,7 @@ pub fn rt_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: *mut Value, kind: u32, 
             let f = c.frame();
             if f.me.is_null() { return Ok(NIL); }
             let me = unsafe { &*f.me };
-            let sm = super_method(class_of(unsafe { *fp }), me.owner, me.name);
+            let sm = super_method(class_of(fp[0].get()), me.owner, me.name);
             if sm.is_null() { Ok(NIL) } else { yes(b"super") }
         }
         _ => yes(b"expression"),
@@ -567,11 +567,11 @@ fn const_defined_lex(c: &mut Ctx, cref: *const Cref, name: Sym) -> bool {
 // ---- calls ---------------------------------------------------------------------------------
 
 #[inline(always)]
-pub fn make_block(c: &mut Ctx, is: &'static Iseq, fp: *mut Value) -> Block {
+pub fn make_block(c: &mut Ctx, is: &'static Iseq, fp: Fp) -> Block {
     let f = unsafe { &*c.frame };
     let tag = c.next_serial();
     Block {
-        kind: BlockKind::Iseq(is), self_: unsafe { *fp }, env: unsafe { *fp.add(1) }, me: f.me, outer_blk: f.blk,
+        kind: BlockKind::Iseq(is), self_: fp[0].get(), env: fp[1].get(), me: f.me, outer_blk: f.blk,
         cref: f.cref(), home_id: f.id, tag, proc_val: UNDEF, defined_class: f.defined_class(),
     }
 }
@@ -645,17 +645,15 @@ fn block_from_value(c: &mut Ctx, blkv: Value, holder: &mut Block) -> Result<*con
 }
 
 /// Stage tmp (+ kw) as arguments at base and call.
-pub fn rt_call_x(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, tmp: Value, kw: Value, blkv: Value, ci: CiRef, flags: u32, fp: *mut Value) -> RV {
+pub fn rt_call_x(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, tmp: Value, kw: Value, blkv: Value, ci: CiRef, flags: u32, fp: Fp) -> RV {
     let n = rary(tmp).len();
     let has_kw = kw != NIL && (rhash(kw).live > 0 || ci.kinds.contains(&AK_KW));
     let total = n + if has_kw { 1 } else { 0 };
     stack_check(c, total + 4)?;
-    unsafe {
-        *base.add(1) = tmp;
-        for i in 0..n { *base.add(2 + i) = rary(tmp)[i]; }
-        if has_kw { *base.add(2 + n) = kw; }
-        c.sp = base.add(2 + total);
-    }
+    base[1].set(tmp);
+    for i in 0..n { base[2 + i].set(rary(tmp)[i]); }
+    if has_kw { base[2 + n].set(kw); }
+    c.set_sp(base, 2 + total);
     let mut holder = Block::cfunc(c, |_c, _d, _a, _b| Ok(NIL), NIL);
     let mut lit;
     let blk: *const Block = if let Some(is) = ci.blk {
@@ -663,7 +661,7 @@ pub fn rt_call_x(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, tm
         &lit
     } else { block_from_value(c, blkv, &mut holder)? };
     let fl = flags & !CF_ATTR | if has_kw { CF_KW | if !ci.kinds.contains(&AK_KW) { CF_KW_SPLAT } else { 0 } } else { 0 };
-    let attr_val = if flags & CF_ATTR != 0 && total > 0 { unsafe { *base.add(1 + total) } } else { UNDEF };
+    let attr_val = if flags & CF_ATTR != 0 && total > 0 { base[1 + total].get() } else { UNDEF };
     let r = call_cached(c, cc, mid, base, total as u32, blk, fl);
     std::hint::black_box((&tmp, &kw, &blkv));
     let r = match r {
@@ -674,11 +672,11 @@ pub fn rt_call_x(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, tm
     if attr_val != UNDEF { r.map(|_| attr_val) } else { r }
 }
 
-pub fn rt_super(c: &mut Ctx, base: *mut Value, tmp: Value, kw: Value, blkv: Value, ci: CiRef, fp: *mut Value, _zsuper: bool) -> RV {
+pub fn rt_super(c: &mut Ctx, base: Stk, tmp: Value, kw: Value, blkv: Value, ci: CiRef, fp: Fp, _zsuper: bool) -> RV {
     let f = c.frame();
     if f.me.is_null() { return err(c, vm().c_runtime_error, "super called outside of method"); }
     let me = unsafe { &*f.me };
-    let slf = unsafe { *fp };
+    let slf = fp[0].get();
     let klass = class_of(slf);
     let owner = if f.defined_class() != NIL { f.defined_class() } else { me.owner };
     let sm = super_method(klass, owner, me.name);
@@ -686,13 +684,11 @@ pub fn rt_super(c: &mut Ctx, base: *mut Value, tmp: Value, kw: Value, blkv: Valu
     let has_kw = kw != NIL && (rhash(kw).live > 0 || ci.kinds.contains(&AK_KW));
     let total = n + if has_kw { 1 } else { 0 };
     stack_check(c, total + 4)?;
-    unsafe {
-        *base = slf;
-        *base.add(1) = tmp;
-        for i in 0..n { *base.add(2 + i) = rary(tmp)[i]; }
-        if has_kw { *base.add(2 + n) = kw; }
-        c.sp = base.add(2 + total);
-    }
+    base[0].set(slf);
+    base[1].set(tmp);
+    for i in 0..n { base[2 + i].set(rary(tmp)[i]); }
+    if has_kw { base[2 + n].set(kw); }
+    c.set_sp(base, 2 + total);
     let mut holder = Block::cfunc(c, |_c, _d, _a, _b| Ok(NIL), NIL);
     let lit;
     let blk: *const Block = if let Some(is) = ci.blk {
@@ -712,7 +708,7 @@ pub fn rt_super(c: &mut Ctx, base: *mut Value, tmp: Value, kw: Value, blkv: Valu
     } else {
         invoke(c, sm, slf, base, total as u32, blk, fl)
     };
-    c.sp = base;
+    c.set_sp(base, 0);
     std::hint::black_box((&tmp, &kw, &blkv));
     match r {
         Err(e) if ci.blk.is_some() && c.esc == EscKind::Break && c.esc_tag == unsafe { (*blk).tag } => { let _ = e; c.esc = EscKind::None; Ok(c.esc_val) }
@@ -723,24 +719,24 @@ pub fn rt_super(c: &mut Ctx, base: *mut Value, tmp: Value, kw: Value, blkv: Valu
 pub fn rt_no_block(c: &mut Ctx) -> RV { err(c, vm().c_local_jump_error, "no block given (yield)") }
 
 #[inline(always)]
-pub fn rt_yield_staged(c: &mut Ctx, blk: *const Block, base: *mut Value, k: u32) -> RV {
+pub fn rt_yield_staged(c: &mut Ctx, blk: *const Block, base: Stk, k: u32) -> RV {
     let b = unsafe { &*blk };
     if let Some(is) = block_fast(b, k as usize) {
         stack_check(c, is.nlocals as usize + 16)?;
         let r = run_block_fast(c, b, is, base, k);
-        c.sp = base;
+        c.set_sp(base, 0);
         return r;
     }
     if let BlockKind::Iseq(is) = b.kind {
         let is = unsafe { &*is };
-        unsafe { *base = b.self_; }
+        base[0].set(b.self_);
         let r = run_block_iseq(c, b, is, base, k, std::ptr::null(), is_lambda_block(blk), std::ptr::null(), false);
-        c.sp = base;
+        c.set_sp(base, 0);
         return r;
     }
-    let args: Vec<Value> = unsafe { std::slice::from_raw_parts(base.add(2), k as usize).to_vec() };
+    let args = to_vec(&base[2..2 + k as usize]);
     let r = invoke_block_full(c, b, &args, std::ptr::null(), b.self_, false, std::ptr::null(), false);
-    c.sp = base;
+    c.set_sp(base, 0);
     r
 }
 
@@ -755,7 +751,7 @@ pub fn rt_yield_x(c: &mut Ctx, tmp: Value, kw: Value) -> RV {
     invoke_block_full(c, b, &args, std::ptr::null(), b.self_, false, std::ptr::null(), has_kw)
 }
 
-pub fn rt_lambda(c: &mut Ctx, is: &'static Iseq, fp: *mut Value) -> RV {
+pub fn rt_lambda(c: &mut Ctx, is: &'static Iseq, fp: Fp) -> RV {
     let b = make_block(c, is, fp);
     let p = block_to_proc(c, &b)?;
     rproc(p).is_lambda = true;
@@ -763,11 +759,9 @@ pub fn rt_lambda(c: &mut Ctx, is: &'static Iseq, fp: *mut Value) -> RV {
 }
 
 pub fn rt_binop(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: u32, cc: &mut CallCache) -> RV {
-    let base = c.sp;
-    unsafe {
-        *base = a; *base.add(2) = b; c.sp = base.add(3);
-        (*c.frame).line = line;
-    }
+    let base = stage(c, 3)?;
+    base[0].set(a); base[2].set(b);
+    unsafe { (*c.frame).line = line; }
     call_cached(c, cc, mid, base, 1, std::ptr::null(), 0)
 }
 
@@ -777,11 +771,9 @@ pub fn rt_eq(c: &mut Ctx, a: Value, b: Value, line: u32, cc: &mut CallCache) -> 
 }
 
 pub fn rt_aset(c: &mut Ctx, a: Value, b: Value, v: Value, line: u32, cc: &mut CallCache) -> RV {
-    let base = c.sp;
-    unsafe {
-        *base = a; *base.add(2) = b; *base.add(3) = v; c.sp = base.add(4);
-        (*c.frame).line = line;
-    }
+    let base = stage(c, 4)?;
+    base[0].set(a); base[2].set(b); base[3].set(v);
+    unsafe { (*c.frame).line = line; }
     call_cached(c, cc, s::aset, base, 2, std::ptr::null(), 0)?;
     Ok(v)
 }
@@ -800,7 +792,7 @@ pub fn define_iseq_method(c: &mut Ctx, klass: Value, mid: Sym, is: &'static Iseq
     define_method_me(klass, mid, me);
 }
 
-pub fn rt_def(c: &mut Ctx, mid: Sym, is: &'static Iseq, _fp: *mut Value) -> RV {
+pub fn rt_def(c: &mut Ctx, mid: Sym, is: &'static Iseq, _fp: Fp) -> RV {
     let f = c.frame();
     let mut klass = cref_class(c);
     // `def` inside a method body defines on the cref class; inside instance_eval, on the singleton
@@ -836,30 +828,28 @@ pub fn rt_sdef(c: &mut Ctx, recv: Value, mid: Sym, is: &'static Iseq) -> RV {
 
 /// Run a class/module body: self = klass, cref pushed.
 pub fn run_class_body(c: &mut Ctx, klass: Value, is: &'static Iseq) -> RV {
-    let base = c.sp;
+    let base = c.top();
     stack_check(c, is.nlocals as usize + 8)?;
     let outer_cref = unsafe { (*c.frame).cref() };
     let cref = new_cref(klass, outer_cref);
-    let mut fr = Frame::empty();
-    fr.prev = c.frame; fr.fp = base; fr.iseq = is; fr.kind = FK_CLASS; fr.visi = VISI_PUBLIC;
+    let mut fr = Frame::empty(base);
+    fr.prev = c.frame; fr.iseq = is; fr.kind = FK_CLASS; fr.visi = VISI_PUBLIC;
     fr.id = c.next_serial(); fr.cref = cref; fr.line = is.info.line;
-    unsafe {
-        *base = klass; *base.add(1) = NIL;
-        for i in 2..is.nlocals as usize { *base.add(i) = NIL; }
-        c.sp = base.add(is.nlocals as usize);
-        if is.env_size > 0 {
-            let env = crate::gc::alloc(vm().c_env, Body::Env(vec![NIL; is.env_size as usize], NIL));
-            *base.add(1) = env;
-        }
+    base[0].set(klass); base[1].set(NIL);
+    nil_fill(base, 2, is.nlocals as usize);
+    c.set_sp(base, is.nlocals as usize);
+    if is.env_size > 0 {
+        let env = crate::gc::alloc(vm().c_env, Body::Env(vec![NIL; is.env_size as usize], NIL));
+        base[1].set(env);
     }
     c.frame = &mut fr.h;
     let r = run_body(c, is.body, base);
     c.frame = fr.prev;
-    c.sp = base;
+    c.set_sp(base, 0);
     r
 }
 
-pub fn rt_class(c: &mut Ctx, outer: Value, name: Sym, sup: Value, is: &'static Iseq, _fp: *mut Value) -> RV {
+pub fn rt_class(c: &mut Ctx, outer: Value, name: Sym, sup: Value, is: &'static Iseq, _fp: Fp) -> RV {
     let outer = if outer == UNDEF {
         let cr = unsafe { (*c.frame).cref() };
         if outer == UNDEF && false { vm().c_object } else if cr.is_null() { vm().c_object } else { unsafe { (*cr).klass } }
@@ -909,7 +899,7 @@ pub fn rt_class(c: &mut Ctx, outer: Value, name: Sym, sup: Value, is: &'static I
     run_class_body(c, klass, is)
 }
 
-pub fn rt_module(c: &mut Ctx, outer: Value, name: Sym, is: &'static Iseq, _fp: *mut Value) -> RV {
+pub fn rt_module(c: &mut Ctx, outer: Value, name: Sym, is: &'static Iseq, _fp: Fp) -> RV {
     let outer = if outer == UNDEF {
         let cr = unsafe { (*c.frame).cref() };
         if cr.is_null() { vm().c_object } else { unsafe { (*cr).klass } }
@@ -937,7 +927,7 @@ pub fn rt_module(c: &mut Ctx, outer: Value, name: Sym, is: &'static Iseq, _fp: *
     run_class_body(c, m, is)
 }
 
-pub fn rt_sclass(c: &mut Ctx, recv: Value, is: &'static Iseq, _fp: *mut Value) -> RV {
+pub fn rt_sclass(c: &mut Ctx, recv: Value, is: &'static Iseq, _fp: Fp) -> RV {
     if recv.is_fixnum() || recv.is_sym() || recv.is_flonum() {
         return type_err(c, "can't define singleton");
     }
@@ -1007,7 +997,7 @@ fn pm_responds(c: &mut Ctx, v: Value, name: &[u8]) -> Result<bool, Esc> {
     Ok(funcall(c, v, intern(b"respond_to?"), &[Value::sym(intern(name))], std::ptr::null())?.truthy())
 }
 
-pub fn rt_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: *mut Value, kind: u32, arg: NodePtr) -> RV {
+pub fn rt_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: NodePtr) -> RV {
     let v = D::call(c, arg, fp)?;
     match kind {
         SP_IS_NIL => Ok(Value::bool(v == NIL)),
@@ -1117,26 +1107,26 @@ pub fn rt_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: *mut Value, kind: u32, 
 
 /// Call with literal keywords staged as values: an Iseq callee taking only required +
 /// keyword params gets them directly in its slots; otherwise a keyword Hash is built.
-pub fn rt_call_kw(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, k: usize, ci: CiRef, flags: u32, fp: *mut Value) -> RV {
+pub fn rt_call_kw(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, k: usize, ci: CiRef, flags: u32, fp: Fp) -> RV {
     let nkw = ci.kw_names.len();
     let npos = k - nkw;
-    let recv = unsafe { *base };
+    let recv = base[0].get();
     let lit;
     let blk: *const Block = match ci.blk { Some(is) => { lit = make_block(c, is, fp); &lit } None => std::ptr::null() };
     let me = lookup_cc(c, cc, recv, mid, flags);
     let r = if !me.is_null() && kw_direct_ok(me, npos, &ci.kw_names, flags) {
         let is = match unsafe { (*me).kind } { MKind::Iseq(is) => unsafe { &*is }, _ => unreachable!() };
         let r = invoke_iseq_kw(c, me, is, recv, base, npos, &ci.kw_names, blk);
-        c.sp = base;
+        c.set_sp(base, 0);
         r
     } else {
         let h = hash_new_capa(nkw);
-        unsafe { *base.add(1) = h; }
+        base[1].set(h);
         for (j, &nm) in ci.kw_names.iter().enumerate() {
-            let v = unsafe { *base.add(2 + npos + j) };
+            let v = base[2 + npos + j].get();
             hash_set(c, h, Value::sym(nm), v)?;
         }
-        unsafe { *base.add(2 + npos) = h; c.sp = base.add(3 + npos); }
+        base[2 + npos].set(h); c.set_sp(base, 3 + npos);
         call_cached(c, cc, mid, base, npos as u32 + 1, blk, flags | CF_KW)
     };
     match r {
