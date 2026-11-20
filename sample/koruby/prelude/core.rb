@@ -2,7 +2,15 @@
 module Comparable
   def ==(o)
     return true if equal?(o)
-    r = (self <=> o)
+    seen = Enumerable.__ivget(Comparable, :__eqrec) || Enumerable.__ivset(Comparable, :__eqrec, {})
+    key = [__id__, o.__id__]
+    return false if seen.key?(key)
+    seen[key] = true
+    begin
+      r = (self <=> o)
+    ensure
+      seen.delete(key)
+    end
     r.nil? ? false : r == 0
   end
   def >(o)  = __cmp_or_fail(o) > 0
@@ -692,6 +700,11 @@ class Enumerator
     end
 
     def each(*args, &blk)
+      unless args.empty?
+        l = @__parent ? self : Lazy.__from(@__src, @__meth, @__margs + args, @__size)
+        l = Lazy.__from(self, :each, args) if @__parent || @__gen
+        return blk ? l.each(&blk) : l
+      end
       return self unless blk
       root, ops = __stages
       return self if ops.any? { |o| o[0] == :take && o[1] == 0 }
@@ -702,28 +715,30 @@ class Enumerator
       self
     end
 
+    # a packed multi-value element is spread for a lambda that takes several (rb_yield_force_blockarg)
+    def self.__fc(f, x) = (x.is_a?(Array) && f.lambda? && f.arity != 1 && f.arity != -1 ? f.call(*x) : f.call(x))
     def self.__stage(op, nxt, tag)
       kind, f, g = op
       case kind
-      when :map then ->(x) { nxt.call(f.call(x)) }
-      when :select then ->(x) { nxt.call(x) if f.call(x) }
-      when :reject then ->(x) { nxt.call(x) unless f.call(x) }
-      when :grep then ->(x) { nxt.call(g ? g.call(x) : x) if f === x }
-      when :grep_v then ->(x) { nxt.call(g ? g.call(x) : x) unless f === x }
-      when :filter_map then ->(x) { r = f.call(x); nxt.call(r) if r }
+      when :map then ->(x) { nxt.call(Lazy.__fc(f, x)) }
+      when :select then ->(x) { nxt.call(x) if Lazy.__fc(f, x) }
+      when :reject then ->(x) { nxt.call(x) unless Lazy.__fc(f, x) }
+      when :grep then ->(x) { nxt.call(g ? Lazy.__fc(g, x) : x) if f === x }
+      when :grep_v then ->(x) { nxt.call(g ? Lazy.__fc(g, x) : x) unless f === x }
+      when :filter_map then ->(x) { r = Lazy.__fc(f, x); nxt.call(r) if r }
       when :compact then ->(x) { nxt.call(x) unless x.nil? }
       when :flat_map
         lambda do |x|
-          r = f.call(x)
+          r = Lazy.__fc(f, x)
           if (ra = Array.try_convert(r)) then ra.each { |y| nxt.call(y) }
           elsif r.respond_to?(:force) && r.respond_to?(:each) then r.each { |y| nxt.call(y) }
           else nxt.call(r)
           end
         end
-      when :take_while then ->(x) { f.call(x) ? nxt.call(x) : throw(tag) }
+      when :take_while then ->(x) { Lazy.__fc(f, x) ? nxt.call(x) : throw(tag) }
       when :drop_while
         dropping = true
-        ->(x) { dropping = false if dropping && !f.call(x); nxt.call(x) unless dropping }
+        ->(x) { dropping = false if dropping && !Lazy.__fc(f, x); nxt.call(x) unless dropping }
       when :take
         n = 0
         ->(x) { n += 1; nxt.call(x); throw(tag) if n >= f }
@@ -737,7 +752,7 @@ class Enumerator
         end
       when :uniq
         seen = {}
-        ->(x) { k = f ? f.call(x) : x; unless seen.key?(k) then seen[k] = true; nxt.call(x) end }
+        ->(x) { k = f ? Lazy.__fc(f, x) : x; unless seen.key?(k) then seen[k] = true; nxt.call(x) end }
       when :zip
         i = 0
         ->(x) { row = [x] + f.map { |o| o[i] }; i += 1; nxt.call(row) }
@@ -862,7 +877,10 @@ class Enumerator
     def to_enum(meth = :each, *args, &sz) = Lazy.__from(self, meth, args, sz)
     alias enum_for to_enum
     def lazy = self
-    def eager = Kernel.instance_method(:to_enum).bind_call(self, :each)
+    def eager
+      lz = self
+      Kernel.instance_method(:to_enum).bind_call(self, :each) { lz.size }
+    end
     def to_a = (a = []; each { |x| a << x }; a)
     alias force to_a
     def first(*args)

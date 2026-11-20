@@ -30,7 +30,7 @@ pub fn rb_eq(c: &mut Ctx, a: Value, b: Value) -> Result<bool, Esc> {
     if a == b { return Ok(!(a.is_flonum() && a.flonum_val().is_nan())); }
     if a.is_fixnum() && b.is_fixnum() { return Ok(false); }
     if a.is_sym() || b.is_sym() { return Ok(false); }
-    if is_string(a) && is_string(b) { return Ok(str_eq(a, b)); }
+    if is_string(a) && is_string(b) && obj(a).klass == vm().c_string { return Ok(str_eq(a, b)); }
     let r = funcall(c, a, s::eq, &[b], std::ptr::null())?;
     Ok(r.truthy())
 }
@@ -733,8 +733,10 @@ cfn!(a_values_at, |c, slf, a, blk| {
     Ok(out)
 });
 cfn!(a_dig, |c, slf, a, blk| {
+    if a.is_empty() { return argc_err(c, 0, 1, -1); }
     let v = ary_aref(c, slf, &a[..1])?;
     if a.len() == 1 || v == NIL { return Ok(v); }
+    if !respond_to(v, intern(b"dig"), true) { return type_err(c, format!("{} does not have #dig method", class_name_for_err(v))); }
     funcall(c, v, intern(b"dig"), &a[1..], std::ptr::null())
 });
 cfn!(a_first_n_compat, |c, slf, a, blk| Ok(NIL));

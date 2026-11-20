@@ -320,8 +320,10 @@ cfn!(h_sort_by, |c, slf, a, blk| { let arr = hash_to_a(c, slf)?; funcall(c, arr,
 cfn!(h_slice, |c, slf, a, blk| { let out = hash_new(); for &k in a { if let Some(v) = hash_get_opt(c, slf, k)? { hash_set(c, out, k, v)?; } } Ok(out) });
 cfn!(h_except, |c, slf, a, blk| { let out = hash_dup(slf); obj(out).klass = vm().c_hash; for &k in a { hash_delete(c, out, k)?; } Ok(out) });
 cfn!(h_filter_keys_dig, |c, slf, a, blk| {
+    if a.is_empty() { return argc_err(c, 0, 1, -1); }
     let v = hash_aref(c, slf, a[0])?;
     if a.len() == 1 || v == NIL { return Ok(v); }
+    if !respond_to(v, intern(b"dig"), true) { return type_err(c, format!("{} does not have #dig method", class_name_for_err(v))); }
     funcall(c, v, intern(b"dig"), &a[1..], std::ptr::null())
 });
 cfn!(h_shift, |c, slf, a, blk| {
