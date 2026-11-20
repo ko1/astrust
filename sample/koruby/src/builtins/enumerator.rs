@@ -1,7 +1,6 @@
 // Enumerator / Enumerator::Yielder / ArithmeticSequence / Enumerator::Lazy (eager subset).
 use crate::array::*;
 use crate::builtins::kernel::*;
-use crate::object::*;
 use crate::string::*;
 use crate::symbol::{intern, s, sym_str};
 use crate::value::*;

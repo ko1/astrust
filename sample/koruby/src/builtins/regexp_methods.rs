@@ -1,7 +1,6 @@
 // Regexp / MatchData methods.
 use crate::array::*;
 use crate::builtins::kernel::*;
-use crate::object::*;
 use crate::regexp::*;
 use crate::string::*;
 use crate::symbol::{intern, s};

@@ -1,7 +1,6 @@
 // Binding / eval.  Locals of a scope that calls binding/eval live in its env
 // (compile.rs marks them captured), so a Binding is (self, env, names, cref).
 use crate::array::*;
-use crate::object::*;
 use crate::string::*;
 use crate::symbol::{intern, sym_str};
 use crate::value::*;

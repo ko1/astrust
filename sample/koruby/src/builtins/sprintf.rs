@@ -49,7 +49,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
     let mut ai = 0usize;
     let mut i = 0;
     let hash_arg = args.last().copied().filter(|v| is_hash(*v));
-    let mut next_arg = |c: &mut Ctx, ai: &mut usize| -> RV {
+    let next_arg = |c: &mut Ctx, ai: &mut usize| -> RV {
         if *ai >= args.len() { return arg_err(c, "too few arguments"); }
         let v = args[*ai]; *ai += 1; Ok(v)
     };

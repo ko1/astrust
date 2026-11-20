@@ -314,7 +314,7 @@ module ASTrustGen
       def build_hash
         hs = @operands.filter_map(&:hash_expr).map { "    h = hash_merge(h, #{it});" }
         <<~RS
-        #[allow(non_snake_case, unused_unsafe)]
+        #[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
         fn HASH_#{@name}(n: NodePtr) -> u64 {
             let u = unsafe { &(*(n as *mut NodeOf<#{struct_name}>)).u };
             let mut h = hash_str("#{canonical_name}");
@@ -327,7 +327,7 @@ module ASTrustGen
       def build_dump
         parts = @operands.map { "    out.push(' '); #{it.dump_stmt}" }
         <<~RS
-        #[allow(non_snake_case, unused_unsafe)]
+        #[allow(non_snake_case, unused_unsafe, unused_variables)]
         fn DUMP_#{@name}(out: &mut String, n: NodePtr) {
             let np = n as *mut NodeOf<#{struct_name}>;
             unsafe {

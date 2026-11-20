@@ -1,5 +1,4 @@
 // Process / Process::Status / clock.
-use crate::object::*;
 use crate::symbol::intern;
 use crate::value::*;
 use crate::vm::*;
@@ -80,5 +79,5 @@ pub fn init() {
     define_cfunc(tms, "utime", |_c, s, _a, _b| Ok(ivar_get(s, intern(b"@utime"))), 0);
     define_cfunc(tms, "stime", |_c, s, _a, _b| Ok(ivar_get(s, intern(b"@stime"))), 0);
     let _ = mono();
-    let _ = clock as usize;
+    let _ = clock as *const () as usize;
 }

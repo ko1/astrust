@@ -2,7 +2,6 @@
 use crate::array::*;
 use crate::builtins::kernel::*;
 use crate::hash::*;
-use crate::object::*;
 use crate::string::*;
 use crate::symbol::{intern, s, sym_bytes, sym_str};
 use crate::value::*;

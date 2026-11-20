@@ -2,7 +2,6 @@
 use crate::array::*;
 use crate::builtins::kernel::*;
 use crate::builtins::numeric_methods::num_to_long;
-use crate::object::*;
 use crate::regexp;
 use crate::string::*;
 use crate::symbol::{intern, s};
@@ -108,7 +107,7 @@ cfn!(s_initialize, |c, slf, a, _b| {
     if let Some(&v) = pos.first() { let sv = expect_str(c, v)?; let nb = b(sv).to_vec(); let e = rstr(sv).enc; let r = modify(c, slf)?; r.b = nb; r.enc = e; }
     Ok(NIL)
 });
-cfn!(s_s_new, |c, slf, a, blk| { crate::builtins::object::c_new(c, slf, a, blk) });
+cfn!(s_s_new, |c, slf, a, blk| crate::builtins::object::c_new(c, slf, a, blk));
 cfn!(s_length, |c, slf, a, b_| Ok(Value::fix(str_char_len(slf) as i64)));
 cfn!(s_bytesize, |c, slf, a, b_| Ok(Value::fix(b(slf).len() as i64)));
 cfn!(s_plus, |c, slf, a, b_| {
@@ -364,7 +363,7 @@ fn lines_of(v: &[u8], sep: &[u8], chomp: bool) -> Vec<Vec<u8>> {
         // paragraph mode
         let mut i = 0;
         while i < v.len() {
-            let mut j = i;
+            let j = i;
             loop {
                 match find_bytes(v, b"\n\n", j) {
                     Some(p) => { let mut e = p + 2; while e < v.len() && v[e] == b'\n' { e += 1; } out.push(if chomp { v[i..p].to_vec() } else { v[i..p + 2].to_vec() }); i = e; break; }
@@ -417,7 +416,7 @@ cfn!(s_split, |c, slf, a, blk| {
         let mut i = 0;
         while i < v.len() && is_ws(v[i]) { i += 1; }
         while i < v.len() {
-            if limit > 0 && out.len() as i64 == limit - 1 { out.push(v[i..].to_vec()); i = v.len(); break; }
+            if limit > 0 && out.len() as i64 == limit - 1 { out.push(v[i..].to_vec()); break; }
             let st = i;
             while i < v.len() && !is_ws(v[i]) { i += 1; }
             out.push(v[st..i].to_vec());
@@ -703,7 +702,7 @@ cfn!(s_oct, |c, slf, a, b_| {
     if neg { funcall(c, r, s::uminus, &[], std::ptr::null()) } else { Ok(r) }
 });
 cfn!(s_freeze, |c, slf, a, b_| { obj(slf).flags |= FL_FROZEN; Ok(slf) });
-cfn!(s_uplus, |c, slf, a, b_| { if is_frozen(slf) { Ok(str_new_enc(b(slf), rstr(slf).enc)) } else { Ok(slf) } });
+cfn!(s_uplus, |c, slf, a, b_| if is_frozen(slf) { Ok(str_new_enc(b(slf), rstr(slf).enc)) } else { Ok(slf) });
 cfn!(s_uminus, |c, slf, a, b_| {
     if is_frozen(slf) && obj(slf).klass == vm().c_string { return Ok(slf); }
     let key = b(slf).to_vec();

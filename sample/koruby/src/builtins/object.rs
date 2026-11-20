@@ -2,7 +2,6 @@
 use crate::array::*;
 use crate::builtins::kernel::*;
 use crate::hash::*;
-use crate::object::*;
 use crate::string::*;
 use crate::symbol::{intern, s, sym_bytes, sym_str};
 use crate::value::*;
@@ -890,7 +889,7 @@ pub fn c_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     let kw = kw_arg(a).is_some();
     let me = lookup_method(class_of(o), s::initialize);
     if !me.is_null() {
-        if let MKind::Cfunc(f, _) = unsafe { (*me).kind } { if f as usize == bo_initialize as usize { if !a.is_empty() && rclass(slf).alloc == AllocKind::Object && unsafe { (*me).owner } == vm().c_basic_object {
+        if let MKind::Cfunc(f, _) = unsafe { (*me).kind } { if f as *const () as usize == bo_initialize as *const () as usize { if !a.is_empty() && rclass(slf).alloc == AllocKind::Object && unsafe { (*me).owner } == vm().c_basic_object {
             return argc_err(c, a.len(), 0, 0);
         } return Ok(o); } }
     }

@@ -1,7 +1,6 @@
 // Range.
 use crate::array::*;
 use crate::builtins::kernel::*;
-use crate::object::*;
 use crate::range::*;
 use crate::string::*;
 use crate::symbol::{intern, s};

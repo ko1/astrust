@@ -1,7 +1,6 @@
 // Symbol.
 use crate::array::*;
 use crate::builtins::kernel::*;
-use crate::object::*;
 use crate::string::*;
 use crate::symbol::{intern, sym_bytes};
 use crate::value::*;

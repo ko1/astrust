@@ -1,5 +1,5 @@
 // This file is auto-generated from node.def by astrustgen. Do not edit.
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_nil(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_nil_struct>;
     unsafe {
@@ -9,7 +9,7 @@ fn DUMP_node_nil(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_true(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_true_struct>;
     unsafe {
@@ -19,7 +19,7 @@ fn DUMP_node_true(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_false(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_false_struct>;
     unsafe {
@@ -29,7 +29,7 @@ fn DUMP_node_false(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_self(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_self_struct>;
     unsafe {
@@ -39,7 +39,7 @@ fn DUMP_node_self(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_lit(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_lit_struct>;
     unsafe {
@@ -49,7 +49,7 @@ fn DUMP_node_lit(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_float(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_float_struct>;
     unsafe {
@@ -59,7 +59,7 @@ fn DUMP_node_float(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_str(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_str_struct>;
     unsafe {
@@ -70,7 +70,7 @@ fn DUMP_node_str(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_fstr(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_fstr_struct>;
     unsafe {
@@ -82,7 +82,7 @@ fn DUMP_node_fstr(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_dstr(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_dstr_struct>;
     unsafe {
@@ -93,7 +93,7 @@ fn DUMP_node_dstr(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_tostr(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_tostr_struct>;
     unsafe {
@@ -103,7 +103,7 @@ fn DUMP_node_tostr(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_dsym(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_dsym_struct>;
     unsafe {
@@ -113,7 +113,7 @@ fn DUMP_node_dsym(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_regex(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_regex_struct>;
     unsafe {
@@ -125,7 +125,7 @@ fn DUMP_node_regex(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_dregex(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_dregex_struct>;
     unsafe {
@@ -138,7 +138,7 @@ fn DUMP_node_dregex(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_biglit(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_biglit_struct>;
     unsafe {
@@ -149,7 +149,7 @@ fn DUMP_node_biglit(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_ary(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_ary_struct>;
     unsafe {
@@ -159,7 +159,7 @@ fn DUMP_node_ary(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_ary_build(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_ary_build_struct>;
     unsafe {
@@ -170,7 +170,7 @@ fn DUMP_node_ary_build(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_hash(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_hash_struct>;
     unsafe {
@@ -181,7 +181,7 @@ fn DUMP_node_hash(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_range(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_range_struct>;
     unsafe {
@@ -193,7 +193,7 @@ fn DUMP_node_range(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_range_lit(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_range_lit_struct>;
     unsafe {
@@ -206,7 +206,7 @@ fn DUMP_node_range_lit(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_lvar(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_lvar_struct>;
     unsafe {
@@ -216,7 +216,7 @@ fn DUMP_node_lvar(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_lasgn(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_lasgn_struct>;
     unsafe {
@@ -227,7 +227,7 @@ fn DUMP_node_lasgn(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_dvar(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_dvar_struct>;
     unsafe {
@@ -238,7 +238,7 @@ fn DUMP_node_dvar(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_dasgn(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_dasgn_struct>;
     unsafe {
@@ -250,7 +250,7 @@ fn DUMP_node_dasgn(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_ivar(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_ivar_struct>;
     unsafe {
@@ -261,7 +261,7 @@ fn DUMP_node_ivar(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_iasgn(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_iasgn_struct>;
     unsafe {
@@ -273,7 +273,7 @@ fn DUMP_node_iasgn(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_gvar(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_gvar_struct>;
     unsafe {
@@ -283,7 +283,7 @@ fn DUMP_node_gvar(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_gasgn(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_gasgn_struct>;
     unsafe {
@@ -294,7 +294,7 @@ fn DUMP_node_gasgn(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_cvar(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_cvar_struct>;
     unsafe {
@@ -304,7 +304,7 @@ fn DUMP_node_cvar(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_cvasgn(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_cvasgn_struct>;
     unsafe {
@@ -315,7 +315,7 @@ fn DUMP_node_cvasgn(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_const(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_const_struct>;
     unsafe {
@@ -326,7 +326,7 @@ fn DUMP_node_const(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_const_path(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_const_path_struct>;
     unsafe {
@@ -337,7 +337,7 @@ fn DUMP_node_const_path(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_top_const(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_top_const_struct>;
     unsafe {
@@ -347,7 +347,7 @@ fn DUMP_node_top_const(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_cdecl(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_cdecl_struct>;
     unsafe {
@@ -358,7 +358,7 @@ fn DUMP_node_cdecl(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_cdecl_path(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_cdecl_path_struct>;
     unsafe {
@@ -370,7 +370,7 @@ fn DUMP_node_cdecl_path(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_errinfo(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_errinfo_struct>;
     unsafe {
@@ -380,7 +380,7 @@ fn DUMP_node_errinfo(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_nth_ref(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_nth_ref_struct>;
     unsafe {
@@ -390,7 +390,7 @@ fn DUMP_node_nth_ref(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_back_ref(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_back_ref_struct>;
     unsafe {
@@ -400,7 +400,7 @@ fn DUMP_node_back_ref(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_block(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_block_struct>;
     unsafe {
@@ -410,7 +410,7 @@ fn DUMP_node_block(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_line(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_line_struct>;
     unsafe {
@@ -421,7 +421,7 @@ fn DUMP_node_line(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_if(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_if_struct>;
     unsafe {
@@ -433,7 +433,7 @@ fn DUMP_node_if(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_and(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_and_struct>;
     unsafe {
@@ -444,7 +444,7 @@ fn DUMP_node_and(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_or(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_or_struct>;
     unsafe {
@@ -455,7 +455,7 @@ fn DUMP_node_or(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_not(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_not_struct>;
     unsafe {
@@ -466,7 +466,7 @@ fn DUMP_node_not(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_while(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_while_struct>;
     unsafe {
@@ -478,7 +478,7 @@ fn DUMP_node_while(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_dowhile(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_dowhile_struct>;
     unsafe {
@@ -490,7 +490,7 @@ fn DUMP_node_dowhile(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_loop_break(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_loop_break_struct>;
     unsafe {
@@ -500,7 +500,7 @@ fn DUMP_node_loop_break(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_loop_next(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_loop_next_struct>;
     unsafe {
@@ -510,7 +510,7 @@ fn DUMP_node_loop_next(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_break(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_break_struct>;
     unsafe {
@@ -520,7 +520,7 @@ fn DUMP_node_break(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_next(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_next_struct>;
     unsafe {
@@ -530,7 +530,7 @@ fn DUMP_node_next(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_return(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_return_struct>;
     unsafe {
@@ -540,7 +540,7 @@ fn DUMP_node_return(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_retry(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_retry_struct>;
     unsafe {
@@ -550,7 +550,7 @@ fn DUMP_node_retry(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_redo(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_redo_struct>;
     unsafe {
@@ -560,7 +560,7 @@ fn DUMP_node_redo(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_rescue(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_rescue_struct>;
     unsafe {
@@ -573,7 +573,7 @@ fn DUMP_node_rescue(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_resbody(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_resbody_struct>;
     unsafe {
@@ -586,7 +586,7 @@ fn DUMP_node_resbody(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_ensure(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_ensure_struct>;
     unsafe {
@@ -597,7 +597,7 @@ fn DUMP_node_ensure(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_when(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_when_struct>;
     unsafe {
@@ -610,7 +610,7 @@ fn DUMP_node_when(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_defined(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_defined_struct>;
     unsafe {
@@ -622,7 +622,7 @@ fn DUMP_node_defined(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_call(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_call_struct>;
     unsafe {
@@ -637,7 +637,7 @@ fn DUMP_node_call(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_call_blk(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_call_blk_struct>;
     unsafe {
@@ -653,7 +653,7 @@ fn DUMP_node_call_blk(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_call_x(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_call_x_struct>;
     unsafe {
@@ -669,7 +669,7 @@ fn DUMP_node_call_x(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_attrasgn(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_attrasgn_struct>;
     unsafe {
@@ -684,7 +684,7 @@ fn DUMP_node_attrasgn(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_super(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_super_struct>;
     unsafe {
@@ -697,7 +697,7 @@ fn DUMP_node_super(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_yield(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_yield_struct>;
     unsafe {
@@ -707,7 +707,7 @@ fn DUMP_node_yield(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_yield_x(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_yield_x_struct>;
     unsafe {
@@ -718,7 +718,7 @@ fn DUMP_node_yield_x(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_block_given(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_block_given_struct>;
     unsafe {
@@ -728,7 +728,7 @@ fn DUMP_node_block_given(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_lambda(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_lambda_struct>;
     unsafe {
@@ -738,7 +738,7 @@ fn DUMP_node_lambda(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_opt_plus(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_opt_plus_struct>;
     unsafe {
@@ -751,7 +751,7 @@ fn DUMP_node_opt_plus(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_opt_minus(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_opt_minus_struct>;
     unsafe {
@@ -764,7 +764,7 @@ fn DUMP_node_opt_minus(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_opt_mul(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_opt_mul_struct>;
     unsafe {
@@ -777,7 +777,7 @@ fn DUMP_node_opt_mul(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_opt_div(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_opt_div_struct>;
     unsafe {
@@ -790,7 +790,7 @@ fn DUMP_node_opt_div(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_opt_mod(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_opt_mod_struct>;
     unsafe {
@@ -803,7 +803,7 @@ fn DUMP_node_opt_mod(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_opt_lt(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_opt_lt_struct>;
     unsafe {
@@ -816,7 +816,7 @@ fn DUMP_node_opt_lt(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_opt_le(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_opt_le_struct>;
     unsafe {
@@ -829,7 +829,7 @@ fn DUMP_node_opt_le(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_opt_gt(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_opt_gt_struct>;
     unsafe {
@@ -842,7 +842,7 @@ fn DUMP_node_opt_gt(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_opt_ge(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_opt_ge_struct>;
     unsafe {
@@ -855,7 +855,7 @@ fn DUMP_node_opt_ge(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_opt_eq(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_opt_eq_struct>;
     unsafe {
@@ -868,7 +868,7 @@ fn DUMP_node_opt_eq(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_opt_neq(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_opt_neq_struct>;
     unsafe {
@@ -881,7 +881,7 @@ fn DUMP_node_opt_neq(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_opt_ltlt(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_opt_ltlt_struct>;
     unsafe {
@@ -894,7 +894,7 @@ fn DUMP_node_opt_ltlt(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_opt_and(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_opt_and_struct>;
     unsafe {
@@ -907,7 +907,7 @@ fn DUMP_node_opt_and(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_opt_or(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_opt_or_struct>;
     unsafe {
@@ -920,7 +920,7 @@ fn DUMP_node_opt_or(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_opt_aref(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_opt_aref_struct>;
     unsafe {
@@ -933,7 +933,7 @@ fn DUMP_node_opt_aref(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_opt_aset(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_opt_aset_struct>;
     unsafe {
@@ -947,7 +947,7 @@ fn DUMP_node_opt_aset(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_def(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_def_struct>;
     unsafe {
@@ -958,7 +958,7 @@ fn DUMP_node_def(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_sdef(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_sdef_struct>;
     unsafe {
@@ -970,7 +970,7 @@ fn DUMP_node_sdef(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_class(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_class_struct>;
     unsafe {
@@ -985,7 +985,7 @@ fn DUMP_node_class(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_module(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_module_struct>;
     unsafe {
@@ -998,7 +998,7 @@ fn DUMP_node_module(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_sclass(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_sclass_struct>;
     unsafe {
@@ -1009,7 +1009,7 @@ fn DUMP_node_sclass(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_alias(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_alias_struct>;
     unsafe {
@@ -1020,7 +1020,7 @@ fn DUMP_node_alias(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_valias(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_valias_struct>;
     unsafe {
@@ -1031,7 +1031,7 @@ fn DUMP_node_valias(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_undef(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_undef_struct>;
     unsafe {
@@ -1041,7 +1041,7 @@ fn DUMP_node_undef(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_masgn(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_masgn_struct>;
     unsafe {
@@ -1054,7 +1054,7 @@ fn DUMP_node_masgn(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_masgn_elem(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_masgn_elem_struct>;
     unsafe {
@@ -1067,7 +1067,7 @@ fn DUMP_node_masgn_elem(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_unsupported(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_unsupported_struct>;
     unsafe {
@@ -1077,7 +1077,7 @@ fn DUMP_node_unsupported(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_special(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_special_struct>;
     unsafe {
@@ -1088,7 +1088,7 @@ fn DUMP_node_special(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_flipflop(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_flipflop_struct>;
     unsafe {

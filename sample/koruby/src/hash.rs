@@ -1,6 +1,5 @@
 // Hash: insertion-ordered entries + open-addressing index (built once the hash grows).
 use crate::array::*;
-use crate::object::*;
 use crate::symbol::s;
 use crate::value::*;
 use crate::vm::*;
@@ -35,7 +34,7 @@ pub fn key_hash(c: &mut Ctx, k: Value) -> Result<u64, Esc> {
     let me = lookup_method(class_of(k), s::hash);
     if !me.is_null() {
         if let MKind::Cfunc(f, _) = unsafe { (*me).kind } {
-            if f as usize == crate::builtins::kernel::obj_hash as usize { return Ok(mix(k.raw())); }
+            if f as *const () as usize == crate::builtins::kernel::obj_hash as *const () as usize { return Ok(mix(k.raw())); }
         }
     }
     if is_array(k) && unsafe { (*me).owner } == vm().c_array {

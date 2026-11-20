@@ -1,6 +1,5 @@
 // Time (local time via libc).
 use crate::array::*;
-use crate::object::*;
 use crate::string::*;
 use crate::symbol::intern;
 use crate::value::*;

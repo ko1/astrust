@@ -3,7 +3,6 @@ use crate::array::*;
 use crate::bignum::*;
 use crate::builtins::kernel::*;
 use crate::numeric::*;
-use crate::object::*;
 use crate::string::*;
 use crate::symbol::{intern, s};
 use crate::value::*;

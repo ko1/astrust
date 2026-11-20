@@ -3,7 +3,6 @@ use crate::array::*;
 use crate::builtins::kernel::*;
 use crate::builtins::numeric_methods::num_to_long;
 use crate::hash::*;
-use crate::object::*;
 use crate::string::*;
 use crate::symbol::{intern, s};
 use crate::value::*;
@@ -135,7 +134,7 @@ pub fn ary_aref(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
     Ok(norm_index(i, n).and_then(|i| rary(slf).get(i).copied()).unwrap_or(NIL))
 }
 
-cfn!(a_s_new, |c, slf, a, blk| { crate::builtins::object::c_new(c, slf, a, blk) });
+cfn!(a_s_new, |c, slf, a, blk| crate::builtins::object::c_new(c, slf, a, blk));
 cfn!(a_initialize, |c, slf, a, blk| {
     check_argc(c, a, 0, 2)?;
     let v = modify(c, slf)?; v.clear();
@@ -442,7 +441,7 @@ cfn!(a_join, |c, slf, a, blk| {
     ary_join(c, slf, &sep, &mut out, &mut enc)?;
     Ok(str_from_vec_enc(out, enc))
 });
-cfn!(a_to_a, |c, slf, a, blk| { if obj(slf).klass == vm().c_array { Ok(slf) } else { Ok(ary_from_vec(rary(slf).clone())) } });
+cfn!(a_to_a, |c, slf, a, blk| if obj(slf).klass == vm().c_array { Ok(slf) } else { Ok(ary_from_vec(rary(slf).clone())) });
 cfn!(a_to_ary, |c, slf, a, blk| Ok(slf));
 cfn!(a_to_h, |c, slf, a, blk| {
     let h = hash_new();

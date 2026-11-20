@@ -1,6 +1,5 @@
 // Regexp / MatchData objects and $~.  The matching engine is regex_engine.rs.
 use crate::array::*;
-use crate::object::*;
 use crate::regex_engine::{Regex, OPT_I, OPT_X, OPT_M};
 use crate::string::*;
 use crate::value::*;
