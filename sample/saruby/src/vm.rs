@@ -1205,6 +1205,7 @@ pub const SITE_ENTRY: u32 = 1;
 pub const SITE_ATTR_R: u32 = 2;
 pub const SITE_ATTR_W: u32 = 3;
 pub const SITE_CFUNC: u32 = 4;
+pub const SITE_NEW: u32 = 6;      // Klass.new with a plain initialize (NewInfo)
 pub const SITE_OTHER: u32 = 5;    // never run, Klass.new, keywords, ...: out of line
 
 pub const SITE_IMM: u32 = 16;      // flag: the cached receiver class is an immediate's (Integer, Symbol, nil, ...)
@@ -1214,7 +1215,8 @@ pub fn site_kind(cc: &CallCache, argc: usize, flags: u32) -> u32 {
     let v = vm();
     let imm = [v.c_integer, v.c_float, v.c_symbol, v.c_nil, v.c_true, v.c_false].iter().any(|k| k.raw() == cc.klass);
     let k = if cc.fast_argc as usize == argc { SITE_ENTRY }
-        else if cc.fast != 0 { match cc.fast & 3 { 1 if argc == 0 => SITE_ATTR_R, 2 if argc == 1 => SITE_ATTR_W, _ => return SITE_OTHER } }
+        else if cc.fast != 0 { match cc.fast & 3 { 1 if argc == 0 => SITE_ATTR_R, 2 if argc == 1 => SITE_ATTR_W,
+            0 if cc.fast_argc == u32::MAX => SITE_NEW, _ => return SITE_OTHER } }
         else if cc.cfunc != 0 { SITE_CFUNC } else { return SITE_OTHER };
     // a Float receiver may be a heap object or a flonum: leave those sites to the general path
     if cc.klass == v.c_float.raw() { return SITE_OTHER; }
@@ -1249,6 +1251,17 @@ pub fn site_fast(c: &mut Ctx, cc: &mut CallCache, recv: Value, base: Stk, argc: 
             let r = run_entry(c, cc.fast as NodePtr, base);
             c.set_sp(base, 0);
             return Some(r);
+        }
+        SITE_NEW => if cc.fast & 3 == 0 && cc.fast_argc == u32::MAX {
+            let ni = unsafe { &*(cc.fast as *const NewInfo) };
+            if argc == ni.init_argc {
+                let o = new_object(ni.klass);
+                base[0].set(o);   // self of initialize: keeps o alive and gives it back
+                c.call_me = ni.init_me; c.call_blk = blk;
+                let r = run_entry(c, ni.init_entry, base);
+                c.set_sp(base, 0);
+                return Some(match r { Ok(_) => Ok(base[0].get()), Err(e) => Err(e) });
+            }
         }
         SITE_ATTR_R => if cc.fast & 3 == 1 {
             if let Body::Object(ivs) = &obj(recv).body {
