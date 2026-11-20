@@ -1,4 +1,4 @@
-# ASTrust: ASTro in Rust
+# ASTrust: ASTro framework in Rust for trustworthy execution
 
 > Experimental. Interfaces change without notice.
 
