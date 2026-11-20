@@ -9,6 +9,9 @@ name = "koruby"
 path = "src/lib.rs"
 crate-type = ["dylib"]
 
+[dependencies]
+astrogre = { path = "../astrogre" }
+
 [[bin]]
 name = "koruby"
 path = "src/main.rs"

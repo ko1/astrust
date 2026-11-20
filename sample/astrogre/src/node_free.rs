@@ -1,0 +1,32 @@
+// This file is auto-generated from node.def by astrustgen. Do not edit.
+/// Frees one node allocated by ALLOC_* (patterns own their nodes).
+pub unsafe fn free_node(n: NodePtr) {
+    match (*n).head.kind.name {
+        "node_re_succ" => drop(Box::from_raw(n as *mut NodeOf<node_re_succ_struct>)),
+        "node_re_sub_succ" => drop(Box::from_raw(n as *mut NodeOf<node_re_sub_succ_struct>)),
+        "node_re_sub_succ_at" => drop(Box::from_raw(n as *mut NodeOf<node_re_sub_succ_at_struct>)),
+        "node_re_byte" => drop(Box::from_raw(n as *mut NodeOf<node_re_byte_struct>)),
+        "node_re_lit" => drop(Box::from_raw(n as *mut NodeOf<node_re_lit_struct>)),
+        "node_re_one" => drop(Box::from_raw(n as *mut NodeOf<node_re_one_struct>)),
+        "node_re_grapheme" => drop(Box::from_raw(n as *mut NodeOf<node_re_grapheme_struct>)),
+        "node_re_rep1" => drop(Box::from_raw(n as *mut NodeOf<node_re_rep1_struct>)),
+        "node_re_assert" => drop(Box::from_raw(n as *mut NodeOf<node_re_assert_struct>)),
+        "node_re_keep" => drop(Box::from_raw(n as *mut NodeOf<node_re_keep_struct>)),
+        "node_re_open" => drop(Box::from_raw(n as *mut NodeOf<node_re_open_struct>)),
+        "node_re_open_nr" => drop(Box::from_raw(n as *mut NodeOf<node_re_open_nr_struct>)),
+        "node_re_close" => drop(Box::from_raw(n as *mut NodeOf<node_re_close_struct>)),
+        "node_re_backref" => drop(Box::from_raw(n as *mut NodeOf<node_re_backref_struct>)),
+        "node_re_cond" => drop(Box::from_raw(n as *mut NodeOf<node_re_cond_struct>)),
+        "node_re_alt" => drop(Box::from_raw(n as *mut NodeOf<node_re_alt_struct>)),
+        "node_re_opt" => drop(Box::from_raw(n as *mut NodeOf<node_re_opt_struct>)),
+        "node_re_rep" => drop(Box::from_raw(n as *mut NodeOf<node_re_rep_struct>)),
+        "node_re_rep_cont" => drop(Box::from_raw(n as *mut NodeOf<node_re_rep_cont_struct>)),
+        "node_re_look" => drop(Box::from_raw(n as *mut NodeOf<node_re_look_struct>)),
+        "node_search" => drop(Box::from_raw(n as *mut NodeOf<node_search_struct>)),
+        "node_search_memchr" => drop(Box::from_raw(n as *mut NodeOf<node_search_memchr_struct>)),
+        "node_search_memmem" => drop(Box::from_raw(n as *mut NodeOf<node_search_memmem_struct>)),
+        "node_search_byteset" => drop(Box::from_raw(n as *mut NodeOf<node_search_byteset_struct>)),
+        "node_match_at" => drop(Box::from_raw(n as *mut NodeOf<node_match_at_struct>)),
+        _ => unreachable!(),
+    }
+}

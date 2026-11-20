@@ -1,10 +1,32 @@
-// Backtracking regex engine following Ruby (Onigmo) syntax and semantics.
-// Pattern -> AST -> instruction program; matching uses an explicit backtrack
-// stack so subject length never drives native recursion.
+// Ruby (Onigmo) regex front end and the iterative fallback matcher.
+// Pattern -> AST (parser, resolver, analyses) -> two back ends:
+//   * cps.rs: the ASTrust node tree (continuation-passing match nodes), the primary matcher;
+//   * the instruction VM below (explicit backtrack stack), used when the CPS recursion budget
+//     runs out, so subject length never drives native recursion.
+// Both implement exactly the same semantics.
 
 pub const OPT_I: u32 = 1;
 pub const OPT_X: u32 = 2;
 pub const OPT_M: u32 = 4;
+
+#[path = "cps.rs"]
+pub mod cps;
+pub mod node {
+    use super::cps::*;
+    use super::eval::*;
+    use crate::astrust::*;
+    include!("node_head.rs");
+    include!("node_dispatch.rs");
+    include!("node_hash.rs");
+    include!("node_specialize.rs");
+    include!("node_dump.rs");
+    include!("node_replace.rs");
+    include!("node_free.rs");
+}
+pub mod eval {
+    include!("node_eval.rs");
+}
+pub use cps::Regex;
 
 const NONE: usize = usize::MAX;
 const INF: u32 = u32::MAX;
@@ -360,7 +382,7 @@ enum CItem {
 }
 
 #[derive(Clone, Debug)]
-struct CClass {
+pub(crate) struct CClass {
     neg: bool,
     icase: bool,
     parts: Vec<Vec<CItem>>, // intersection of unions
@@ -457,22 +479,22 @@ enum BRef {
 }
 
 #[derive(Clone, Debug)]
-enum Node {
+enum Ast {
     Empty,
     Char(u32, bool),
     Any(bool),
     Class(Box<CClass>),
-    Seq(Vec<Node>),
-    Alt(Vec<Node>),
-    Group(usize, Box<Node>),
-    Repeat(Box<Node>, u32, u32, Kind),
+    Seq(Vec<Ast>),
+    Alt(Vec<Ast>),
+    Group(usize, Box<Ast>),
+    Repeat(Box<Ast>, u32, u32, Kind),
     Assert(As),
-    Look(bool, bool, Box<Node>), // (behind, negative, body)
-    Atomic(Box<Node>),
+    Look(bool, bool, Box<Ast>), // (behind, negative, body)
+    Atomic(Box<Ast>),
     Backref(BRef, bool),
     Keep,
     Grapheme,
-    Cond(BRef, Box<Node>, Box<Node>),
+    Cond(BRef, Box<Ast>, Box<Ast>),
 }
 
 // ---------------------------------------------------------------------------
@@ -487,7 +509,7 @@ struct Parser<'a> {
     ngroups: usize,
     group_names: Vec<Option<String>>, // by parse-order group number - 1
     pending_u_list: bool,             // \u{61 62}: more code points follow
-    u_list_prefix: Vec<Node>,         // leading code points of a \u{...} list, emitted before the atom
+    u_list_prefix: Vec<Ast>,         // leading code points of a \u{...} list, emitted before the atom
 }
 
 enum Lit {
@@ -532,17 +554,17 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_alt(&mut self) -> Result<Node, String> {
+    fn parse_alt(&mut self) -> Result<Ast, String> {
         let mut alts = vec![self.parse_seq()?];
         while self.peek() == Some(b'|') {
             self.i += 1;
             alts.push(self.parse_seq()?);
         }
-        Ok(if alts.len() == 1 { alts.pop().unwrap() } else { Node::Alt(alts) })
+        Ok(if alts.len() == 1 { alts.pop().unwrap() } else { Ast::Alt(alts) })
     }
 
-    fn parse_seq(&mut self) -> Result<Node, String> {
-        let mut items: Vec<Node> = Vec::new();
+    fn parse_seq(&mut self) -> Result<Ast, String> {
+        let mut items: Vec<Ast> = Vec::new();
         loop {
             self.skip_ext();
             let c = match self.peek() {
@@ -557,7 +579,7 @@ impl<'a> Parser<'a> {
                         return err("target of repeat operator is not specified");
                     }
                     self.i += 1;
-                    Node::Char(b'{' as u32, false)
+                    Ast::Char(b'{' as u32, false)
                 }
                 b'(' => {
                     if self.at(b"(?#") {
@@ -625,19 +647,19 @@ impl<'a> Parser<'a> {
                     self.i += 1;
                     let mut cc = self.parse_class()?;
                     cc.finalize(self.icase);
-                    Node::Class(Box::new(cc))
+                    Ast::Class(Box::new(cc))
                 }
                 b'.' => {
                     self.i += 1;
-                    Node::Any(self.ml)
+                    Ast::Any(self.ml)
                 }
                 b'^' => {
                     self.i += 1;
-                    Node::Assert(As::Bol)
+                    Ast::Assert(As::Bol)
                 }
                 b'$' => {
                     self.i += 1;
-                    Node::Assert(As::Eol)
+                    Ast::Assert(As::Eol)
                 }
                 b'\\' => {
                     self.i += 1;
@@ -657,9 +679,9 @@ impl<'a> Parser<'a> {
             items = fold_ss(items);
         }
         Ok(match items.len() {
-            0 => Node::Empty,
+            0 => Ast::Empty,
             1 => items.pop().unwrap(),
-            _ => Node::Seq(items),
+            _ => Ast::Seq(items),
         })
     }
 
@@ -672,11 +694,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn mk_char(&self, c: u32) -> Node {
+    fn mk_char(&self, c: u32) -> Ast {
         if self.icase && SHARP_S.contains(&c) {
             return sharp_s_node();
         }
-        Node::Char(c, self.icase && has_case(c))
+        Ast::Char(c, self.icase && has_case(c))
     }
 
     fn read_num(&mut self) -> Option<u32> {
@@ -735,7 +757,7 @@ impl<'a> Parser<'a> {
         Ok(Some((min, max)))
     }
 
-    fn parse_quant(&mut self, mut atom: Node) -> Result<Node, String> {
+    fn parse_quant(&mut self, mut atom: Ast) -> Result<Ast, String> {
         loop {
             self.skip_ext();
             let (min, max, brace) = match self.peek() {
@@ -763,7 +785,7 @@ impl<'a> Parser<'a> {
                     self.i += 1;
                     if brace && min == max {
                         // Ruby: a{n}? is (?:a{n})?, not a lazy repeat.
-                        atom = Node::Repeat(Box::new(Node::Repeat(Box::new(atom), min, max, Kind::Greedy)), 0, 1, Kind::Greedy);
+                        atom = Ast::Repeat(Box::new(Ast::Repeat(Box::new(atom), min, max, Kind::Greedy)), 0, 1, Kind::Greedy);
                         continue;
                     }
                     kind = Kind::Lazy;
@@ -795,7 +817,7 @@ impl<'a> Parser<'a> {
         Ok(name)
     }
 
-    fn parse_group(&mut self) -> Result<Node, String> {
+    fn parse_group(&mut self) -> Result<Ast, String> {
         self.i += 1; // '('
         let (ic, ex, ml) = (self.icase, self.ext, self.ml);
         enum G {
@@ -862,7 +884,7 @@ impl<'a> Parser<'a> {
                     self.ml = ml;
                     let mut r = r;
                     let (yes, no) = match body {
-                        Node::Alt(mut v) => {
+                        Ast::Alt(mut v) => {
                             if v.len() > 2 {
                                 r = BRef::BadCond(Box::new(r));
                                 v.truncate(2);
@@ -870,9 +892,9 @@ impl<'a> Parser<'a> {
                             let n = v.pop().unwrap();
                             (v.pop().unwrap(), n)
                         }
-                        b => (b, Node::Empty),
+                        b => (b, Ast::Empty),
                     };
-                    return Ok(Node::Cond(r, Box::new(yes), Box::new(no)));
+                    return Ok(Ast::Cond(r, Box::new(yes), Box::new(no)));
                 }
                 Some(b'<') if self.peek_at(1) == Some(b'=') => {
                     self.i += 2;
@@ -915,10 +937,10 @@ impl<'a> Parser<'a> {
         self.ext = ex;
         self.ml = ml;
         Ok(match g {
-            G::Cap(n) => Node::Group(n, Box::new(inner)),
+            G::Cap(n) => Ast::Group(n, Box::new(inner)),
             G::NonCap => inner,
-            G::Look(b, n) => Node::Look(b, n, Box::new(inner)),
-            G::Atomic => Node::Atomic(Box::new(inner)),
+            G::Look(b, n) => Ast::Look(b, n, Box::new(inner)),
+            G::Atomic => Ast::Atomic(Box::new(inner)),
         })
     }
 
@@ -1101,27 +1123,27 @@ impl<'a> Parser<'a> {
         }))
     }
 
-    fn parse_escape(&mut self) -> Result<Node, String> {
+    fn parse_escape(&mut self) -> Result<Ast, String> {
         let c = match self.peek() {
             None => return err("too short escape sequence"),
             Some(c) => c,
         };
         self.i += 1;
         Ok(match c {
-            b'A' => Node::Assert(As::StrBegin),
-            b'z' => Node::Assert(As::StrEnd),
-            b'Z' => Node::Assert(As::StrEndNl),
-            b'b' => Node::Assert(As::WordB),
-            b'B' => Node::Assert(As::NotWordB),
-            b'G' => Node::Assert(As::Gpos),
-            b'K' => Node::Keep,
-            b'X' => Node::Grapheme,
+            b'A' => Ast::Assert(As::StrBegin),
+            b'z' => Ast::Assert(As::StrEnd),
+            b'Z' => Ast::Assert(As::StrEndNl),
+            b'b' => Ast::Assert(As::WordB),
+            b'B' => Ast::Assert(As::NotWordB),
+            b'G' => Ast::Assert(As::Gpos),
+            b'K' => Ast::Keep,
+            b'X' => Ast::Grapheme,
             b'R' => {
                 let mut cc = CClass { neg: false, icase: false, parts: vec![vec![CItem::Range(0x0a, 0x0d), CItem::Range(0x85, 0x85), CItem::Range(0x2028, 0x2029)]], bits: [0; 2] };
                 cc.finalize(false);
-                Node::Atomic(Box::new(Node::Alt(vec![
-                    Node::Seq(vec![Node::Char(13, false), Node::Char(10, false)]),
-                    Node::Class(Box::new(cc)),
+                Ast::Atomic(Box::new(Ast::Alt(vec![
+                    Ast::Seq(vec![Ast::Char(13, false), Ast::Char(10, false)]),
+                    Ast::Class(Box::new(cc)),
                 ])))
             }
             b'k' if matches!(self.peek(), Some(b'<' | b'\'')) => {
@@ -1144,7 +1166,7 @@ impl<'a> Parser<'a> {
                     self.check_name_defined(&name)?;
                     BRef::Name(name)
                 };
-                Node::Backref(r, self.icase)
+                Ast::Backref(r, self.icase)
             }
             b'g' if matches!(self.peek(), Some(b'<' | b'\'')) => return err("subexpression call is not supported"),
             b'1'..=b'9' => {
@@ -1152,12 +1174,12 @@ impl<'a> Parser<'a> {
                 self.i = st;
                 let n = self.read_num().unwrap() as usize;
                 if n <= 9 || n <= self.ngroups {
-                    Node::Backref(BRef::Num(n), self.icase)
+                    Ast::Backref(BRef::Num(n), self.icase)
                 } else {
                     self.i = st;
                     if c >= b'8' {
                         self.i += 1;
-                        Node::Char(c as u32, false)
+                        Ast::Char(c as u32, false)
                     } else {
                         let v = self.octal(3, 0);
                         let v = if v >= 0x80 { self.finish_byte((v & 0xff) as u8) } else { v };
@@ -1197,7 +1219,7 @@ impl<'a> Parser<'a> {
                 Lit::Item(it) => {
                     let mut cc = CClass { neg: false, icase: false, parts: vec![vec![it]], bits: [0; 2] };
                     cc.finalize(self.icase);
-                    Node::Class(Box::new(cc))
+                    Ast::Class(Box::new(cc))
                 }
             },
         })
@@ -1331,15 +1353,15 @@ impl<'a> Parser<'a> {
 }
 
 /// Case-insensitive ß: matches ß, ẞ, or "ss" in any case.
-fn sharp_s_node() -> Node {
+fn sharp_s_node() -> Ast {
     let mut cc = CClass { neg: false, icase: false, parts: vec![vec![CItem::Range(0xDF, 0xDF), CItem::Range(0x1E9E, 0x1E9E)]], bits: [0; 2] };
     cc.finalize(false);
-    Node::Alt(vec![Node::Class(Box::new(cc)), Node::Seq(vec![Node::Char('s' as u32, true), Node::Char('s' as u32, true)])])
+    Ast::Alt(vec![Ast::Class(Box::new(cc)), Ast::Seq(vec![Ast::Char('s' as u32, true), Ast::Char('s' as u32, true)])])
 }
 
 /// Under /i a literal "ss" also matches ß (multi-char case folding).
-fn fold_ss(items: Vec<Node>) -> Vec<Node> {
-    let is_s = |n: &Node| matches!(n, Node::Char(c, true) if *c == 's' as u32 || *c == 'S' as u32);
+fn fold_ss(items: Vec<Ast>) -> Vec<Ast> {
+    let is_s = |n: &Ast| matches!(n, Ast::Char(c, true) if *c == 's' as u32 || *c == 'S' as u32);
     let mut out = Vec::with_capacity(items.len());
     let mut it = items.into_iter().peekable();
     while let Some(n) = it.next() {
@@ -1347,7 +1369,7 @@ fn fold_ss(items: Vec<Node>) -> Vec<Node> {
             let n2 = it.next().unwrap();
             let mut cc = CClass { neg: false, icase: false, parts: vec![vec![CItem::Range(0xDF, 0xDF), CItem::Range(0x1E9E, 0x1E9E)]], bits: [0; 2] };
             cc.finalize(false);
-            out.push(Node::Alt(vec![Node::Seq(vec![n, n2]), Node::Class(Box::new(cc))]));
+            out.push(Ast::Alt(vec![Ast::Seq(vec![n, n2]), Ast::Class(Box::new(cc))]));
         } else {
             out.push(n);
         }
@@ -1356,8 +1378,8 @@ fn fold_ss(items: Vec<Node>) -> Vec<Node> {
 }
 
 /// Onigmo-style reduction of nested simple quantifiers (e.g. (?:a?)* -> a*).
-fn reduce_repeat(atom: Node, min: u32, max: u32, kind: Kind) -> Node {
-    if let Node::Repeat(ref b, imin, imax, ik) = atom {
+fn reduce_repeat(atom: Ast, min: u32, max: u32, kind: Kind) -> Ast {
+    if let Ast::Repeat(ref b, imin, imax, ik) = atom {
         let simple = |a: u32, m: u32| (a == 0 || a == 1) && (m == 1 || m == INF) && !(a == 1 && m == 1);
         if ik == kind && kind != Kind::Possessive && simple(imin, imax) && simple(min, max) {
             let (nmin, nmax) = match ((imin, imax), (min, max)) {
@@ -1365,10 +1387,10 @@ fn reduce_repeat(atom: Node, min: u32, max: u32, kind: Kind) -> Node {
                 ((1, INF), (1, INF)) => (1, INF),
                 _ => (0, INF),
             };
-            return Node::Repeat(b.clone(), nmin, nmax, kind);
+            return Ast::Repeat(b.clone(), nmin, nmax, kind);
         }
     }
-    Node::Repeat(Box::new(atom), min, max, kind)
+    Ast::Repeat(Box::new(atom), min, max, kind)
 }
 
 impl<'a> Parser<'a> {
@@ -1398,35 +1420,35 @@ struct Resolver<'a> {
 }
 
 impl<'a> Resolver<'a> {
-    fn walk(&self, n: Node) -> Result<Node, String> {
+    fn walk(&self, n: Ast) -> Result<Ast, String> {
         Ok(match n {
-            Node::Seq(v) => Node::Seq(v.into_iter().map(|x| self.walk(x)).collect::<Result<_, _>>()?),
-            Node::Alt(v) => Node::Alt(v.into_iter().map(|x| self.walk(x)).collect::<Result<_, _>>()?),
-            Node::Group(g, b) => {
+            Ast::Seq(v) => Ast::Seq(v.into_iter().map(|x| self.walk(x)).collect::<Result<_, _>>()?),
+            Ast::Alt(v) => Ast::Alt(v.into_iter().map(|x| self.walk(x)).collect::<Result<_, _>>()?),
+            Ast::Group(g, b) => {
                 let inner = self.walk(*b)?;
                 match self.map[g - 1] {
-                    Some(k) => Node::Group(k, Box::new(inner)),
+                    Some(k) => Ast::Group(k, Box::new(inner)),
                     None => inner,
                 }
             }
-            Node::Repeat(b, a, m, k) => Node::Repeat(Box::new(self.walk(*b)?), a, m, k),
-            Node::Look(be, ne, b) => Node::Look(be, ne, Box::new(self.walk(*b)?)),
-            Node::Atomic(b) => Node::Atomic(Box::new(self.walk(*b)?)),
-            Node::Cond(r, y, n) => {
+            Ast::Repeat(b, a, m, k) => Ast::Repeat(Box::new(self.walk(*b)?), a, m, k),
+            Ast::Look(be, ne, b) => Ast::Look(be, ne, Box::new(self.walk(*b)?)),
+            Ast::Atomic(b) => Ast::Atomic(Box::new(self.walk(*b)?)),
+            Ast::Cond(r, y, n) => {
                 let (r, bad) = match r {
                     BRef::BadCond(b) => (*b, true),
                     r => (r, false),
                 };
-                let r = match self.walk(Node::Backref(r, false))? {
-                    Node::Backref(r, _) => r,
+                let r = match self.walk(Ast::Backref(r, false))? {
+                    Ast::Backref(r, _) => r,
                     _ => unreachable!(),
                 };
                 if bad {
                     return err("invalid conditional pattern");
                 }
-                Node::Cond(r, Box::new(self.walk(*y)?), Box::new(self.walk(*n)?))
+                Ast::Cond(r, Box::new(self.walk(*y)?), Box::new(self.walk(*n)?))
             }
-            Node::Backref(r, ic) => {
+            Ast::Backref(r, ic) => {
                 let gs = match r {
                     BRef::Num(k) => {
                         if self.has_named {
@@ -1444,7 +1466,7 @@ impl<'a> Resolver<'a> {
                     BRef::Groups(v) => v,
                     BRef::BadCond(_) => unreachable!(),
                 };
-                Node::Backref(BRef::Groups(gs), ic)
+                Ast::Backref(BRef::Groups(gs), ic)
             }
             other => other,
         })
@@ -1452,11 +1474,11 @@ impl<'a> Resolver<'a> {
 }
 
 /// Length range in chars; None when unbounded or not fixed-computable (backrefs, \X).
-fn len_range(n: &Node) -> Option<(u32, u32)> {
+fn len_range(n: &Ast) -> Option<(u32, u32)> {
     Some(match n {
-        Node::Empty | Node::Assert(_) | Node::Keep | Node::Look(..) => (0, 0),
-        Node::Char(..) | Node::Any(_) | Node::Class(_) => (1, 1),
-        Node::Seq(v) => {
+        Ast::Empty | Ast::Assert(_) | Ast::Keep | Ast::Look(..) => (0, 0),
+        Ast::Char(..) | Ast::Any(_) | Ast::Class(_) => (1, 1),
+        Ast::Seq(v) => {
             let (mut a, mut b) = (0u32, 0u32);
             for x in v {
                 let (p, q) = len_range(x)?;
@@ -1465,7 +1487,7 @@ fn len_range(n: &Node) -> Option<(u32, u32)> {
             }
             (a, b)
         }
-        Node::Alt(v) => {
+        Ast::Alt(v) => {
             let (mut a, mut b) = (u32::MAX, 0u32);
             for x in v {
                 let (p, q) = len_range(x)?;
@@ -1474,8 +1496,8 @@ fn len_range(n: &Node) -> Option<(u32, u32)> {
             }
             (a, b)
         }
-        Node::Group(_, b) | Node::Atomic(b) => len_range(b)?,
-        Node::Repeat(b, mn, mx, _) => {
+        Ast::Group(_, b) | Ast::Atomic(b) => len_range(b)?,
+        Ast::Repeat(b, mn, mx, _) => {
             if *mx == 0 {
                 return Some((0, 0));
             }
@@ -1488,8 +1510,8 @@ fn len_range(n: &Node) -> Option<(u32, u32)> {
             }
             (p.saturating_mul(*mn), q.saturating_mul(*mx))
         }
-        Node::Backref(..) | Node::Grapheme => return None,
-        Node::Cond(_, y, n) => {
+        Ast::Backref(..) | Ast::Grapheme => return None,
+        Ast::Cond(_, y, n) => {
             let (a, b) = len_range(y)?;
             let (c, d) = len_range(n)?;
             (a.min(c), b.max(d))
@@ -1549,13 +1571,13 @@ struct Compiler {
     backrefed: Vec<usize>,
 }
 
-fn single_of(n: &Node) -> Option<Single> {
+fn single_of(n: &Ast) -> Option<Single> {
     match n {
-        Node::Char(c, false) => Some(Single::Ch(*c)),
-        Node::Char(c, true) => Some(Single::ChIC(fold(*c))),
-        Node::Any(false) => Some(Single::Any),
-        Node::Any(true) => Some(Single::AnyNL),
-        Node::Class(cc) => Some(Single::Class(cc.clone())),
+        Ast::Char(c, false) => Some(Single::Ch(*c)),
+        Ast::Char(c, true) => Some(Single::ChIC(fold(*c))),
+        Ast::Any(false) => Some(Single::Any),
+        Ast::Any(true) => Some(Single::AnyNL),
+        Ast::Class(cc) => Some(Single::Class(cc.clone())),
         _ => None,
     }
 }
@@ -1574,29 +1596,29 @@ impl Compiler {
     }
 
     /// Emits `n` in a context where Onigmo uses backtrackable (push) captures.
-    fn emit_bt(&mut self, n: &Node) -> Result<(), String> {
+    fn emit_bt(&mut self, n: &Ast) -> Result<(), String> {
         self.bt_depth += 1;
         let r = self.emit(n);
         self.bt_depth -= 1;
         r
     }
 
-    fn emit(&mut self, n: &Node) -> Result<(), String> {
+    fn emit(&mut self, n: &Ast) -> Result<(), String> {
         match n {
-            Node::Empty => {}
-            Node::Char(c, false) => {
+            Ast::Empty => {}
+            Ast::Char(c, false) => {
                 let mut v = Vec::new();
                 push_char(&mut v, *c);
                 self.emit_i(Inst::Str(v.into_boxed_slice()));
             }
-            Node::Char(..) | Node::Any(_) | Node::Class(_) => {
+            Ast::Char(..) | Ast::Any(_) | Ast::Class(_) => {
                 let m = single_of(n).unwrap();
                 self.emit_i(Inst::One(m));
             }
-            Node::Seq(items) => {
+            Ast::Seq(items) => {
                 let mut buf: Vec<u8> = Vec::new();
                 for it in items {
-                    if let Node::Char(c, false) = it {
+                    if let Ast::Char(c, false) = it {
                         push_char(&mut buf, *c);
                         continue;
                     }
@@ -1609,7 +1631,7 @@ impl Compiler {
                     self.emit_i(Inst::Str(buf.into_boxed_slice()));
                 }
             }
-            Node::Alt(alts) => {
+            Ast::Alt(alts) => {
                 let mut jmps = Vec::new();
                 for (k, a) in alts.iter().enumerate() {
                     if k + 1 < alts.len() {
@@ -1627,7 +1649,7 @@ impl Compiler {
                     self.prog[j] = Inst::Jmp(end);
                 }
             }
-            Node::Group(g, b) => {
+            Ast::Group(g, b) => {
                 // Onigmo pushes (backtrackable) group starts only inside alternation, variable
                 // repeat or negative lookaround, or for groups referenced by backrefs.
                 if self.bt_depth > 0 || self.backrefed.contains(g) {
@@ -1640,11 +1662,11 @@ impl Compiler {
                     self.emit_i(Inst::SaveNR(2 * g + 1));
                 }
             }
-            Node::Repeat(b, mn, mx, k) => self.emit_repeat(b, *mn, *mx, *k)?,
-            Node::Assert(a) => {
+            Ast::Repeat(b, mn, mx, k) => self.emit_repeat(b, *mn, *mx, *k)?,
+            Ast::Assert(a) => {
                 self.emit_i(Inst::Assert(*a));
             }
-            Node::Look(behind, neg, b) => {
+            Ast::Look(behind, neg, b) => {
                 let (minlen, maxlen) = if *behind {
                     len_range(b).ok_or("invalid pattern in look-behind")?
                 } else {
@@ -1664,11 +1686,11 @@ impl Compiler {
                     self.bt_depth -= 1;
                 }
             }
-            Node::Atomic(b) => self.emit_sub(SubKind::Atomic, b, 0, 0)?,
-            Node::Backref(BRef::Groups(g), ic) => {
+            Ast::Atomic(b) => self.emit_sub(SubKind::Atomic, b, 0, 0)?,
+            Ast::Backref(BRef::Groups(g), ic) => {
                 self.emit_i(Inst::Backref { groups: g.clone().into_boxed_slice(), icase: *ic });
             }
-            Node::Cond(BRef::Groups(g), y, no) => {
+            Ast::Cond(BRef::Groups(g), y, no) => {
                 let cj = self.emit_i(Inst::CondJmp { groups: g.clone().into_boxed_slice(), no: 0 });
                 self.emit_bt(y)?;
                 let j = self.emit_i(Inst::Jmp(0));
@@ -1678,18 +1700,18 @@ impl Compiler {
                 self.prog[cj] = Inst::CondJmp { groups: g.clone().into_boxed_slice(), no: nopc };
                 self.prog[j] = Inst::Jmp(end);
             }
-            Node::Backref(..) | Node::Cond(..) => unreachable!(),
-            Node::Keep => {
+            Ast::Backref(..) | Ast::Cond(..) => unreachable!(),
+            Ast::Keep => {
                 self.emit_i(Inst::Keep);
             }
-            Node::Grapheme => {
+            Ast::Grapheme => {
                 self.emit_i(Inst::Grapheme);
             }
         }
         Ok(())
     }
 
-    fn emit_sub(&mut self, kind: SubKind, b: &Node, minlen: u32, maxlen: u32) -> Result<(), String> {
+    fn emit_sub(&mut self, kind: SubKind, b: &Ast, minlen: u32, maxlen: u32) -> Result<(), String> {
         let at = self.emit_i(Inst::Sub { kind, end: 0, minlen, maxlen });
         self.emit(b)?;
         self.emit_i(Inst::SubEnd);
@@ -1698,11 +1720,11 @@ impl Compiler {
         Ok(())
     }
 
-    fn emit_repeat(&mut self, b: &Node, min: u32, max: u32, kind: Kind) -> Result<(), String> {
+    fn emit_repeat(&mut self, b: &Ast, min: u32, max: u32, kind: Kind) -> Result<(), String> {
         if max == 0 {
             return Ok(());
         }
-        if len_range(b) == Some((0, 0)) && !has_any_group(b) {
+        if len_range(b) == Some((0, 0)) && !has_any_group(b) && !has_keep(b) {
             // Zero-width body without captures: iterating cannot change anything, so a loop
             // would only duplicate backtracking paths.
             return if min == 0 { Ok(()) } else { self.emit(b) };
@@ -1716,9 +1738,9 @@ impl Compiler {
         self.emit_repeat_inner(b, min, max, kind)
     }
 
-    fn emit_repeat_inner(&mut self, b: &Node, min: u32, max: u32, kind: Kind) -> Result<(), String> {
+    fn emit_repeat_inner(&mut self, b: &Ast, min: u32, max: u32, kind: Kind) -> Result<(), String> {
         if kind == Kind::Possessive {
-            let r = Node::Repeat(Box::new(b.clone()), min, max, Kind::Greedy);
+            let r = Ast::Repeat(Box::new(b.clone()), min, max, Kind::Greedy);
             return self.emit_sub(SubKind::Atomic, &r, 0, 0);
         }
         let greedy = kind == Kind::Greedy;
@@ -1793,23 +1815,23 @@ impl Compiler {
 const ONIG_EXPAND_LIMIT: usize = 50;
 
 /// Rough size in bytes of Onigmo's compiled code for `n` (compile_length_tree).
-fn onig_len(n: &Node) -> usize {
+fn onig_len(n: &Ast) -> usize {
     match n {
-        Node::Empty => 0,
-        Node::Char(c, _) => 1 + if *c < 0x80 { 1 } else if *c < 0x800 { 2 } else if *c < 0x10000 { 3 } else { 4 },
-        Node::Any(_) | Node::Assert(_) | Node::Keep | Node::Grapheme => 1,
-        Node::Class(cc) => {
+        Ast::Empty => 0,
+        Ast::Char(c, _) => 1 + if *c < 0x80 { 1 } else if *c < 0x800 { 2 } else if *c < 0x10000 { 3 } else { 4 },
+        Ast::Any(_) | Ast::Assert(_) | Ast::Keep | Ast::Grapheme => 1,
+        Ast::Class(cc) => {
             let simple_word = cc.parts.len() == 1 && cc.parts[0].len() == 1 && matches!(cc.parts[0][0], CItem::Prop(Prop::Word, _));
             let ascii_only = cc.parts.iter().flatten().all(|it| matches!(it, CItem::Range(_, hi) if *hi < 128)) && !cc.neg;
             let single = !cc.neg && cc.parts.len() == 1 && cc.parts[0].len() == 1 && matches!(cc.parts[0][0], CItem::Range(a, b) if a == b);
             if simple_word { 1 } else if single { 2 } else if ascii_only { 33 } else { 80 }
         }
-        Node::Seq(v) => {
+        Ast::Seq(v) => {
             let mut total = 0;
             let mut run = 0;
             for x in v {
-                if let Node::Char(c, false) = x {
-                    run += onig_len(&Node::Char(*c, false)) - 1;
+                if let Ast::Char(c, false) = x {
+                    run += onig_len(&Ast::Char(*c, false)) - 1;
                     continue;
                 }
                 if run > 0 {
@@ -1823,9 +1845,9 @@ fn onig_len(n: &Node) -> usize {
             }
             total
         }
-        Node::Alt(v) => v.iter().map(onig_len).sum::<usize>() + (v.len() - 1) * 10,
-        Node::Group(_, b) => 6 + onig_len(b),
-        Node::Repeat(b, mn, mx, _) => {
+        Ast::Alt(v) => v.iter().map(onig_len).sum::<usize>() + (v.len() - 1) * 10,
+        Ast::Group(_, b) => 6 + onig_len(b),
+        Ast::Repeat(b, mn, mx, _) => {
             let t = onig_len(b);
             if *mx == INF {
                 let copies = if *mn == 1 && t > ONIG_EXPAND_LIMIT { 0 } else { *mn as usize };
@@ -1835,23 +1857,23 @@ fn onig_len(n: &Node) -> usize {
                 t.saturating_mul(*mx as usize) + 5 * (*mx - *mn) as usize
             }
         }
-        Node::Look(behind, neg, b) => onig_len(b) + match (behind, neg) {
+        Ast::Look(behind, neg, b) => onig_len(b) + match (behind, neg) {
             (false, false) => 2,
             (false, true) => 6,
             (true, false) => 5,
             (true, true) => 10,
         },
-        Node::Atomic(b) => 2 + onig_len(b),
-        Node::Backref(..) => 3,
-        Node::Cond(_, y, n) => 10 + onig_len(y) + onig_len(n),
+        Ast::Atomic(b) => 2 + onig_len(b),
+        Ast::Backref(..) => 3,
+        Ast::Cond(_, y, n) => 10 + onig_len(y) + onig_len(n),
     }
 }
 
 // First-byte analysis: returns whether the node can match empty.
-fn first_set(n: &Node, set: &mut [bool; 256]) -> bool {
+fn first_set(n: &Ast, set: &mut [bool; 256]) -> bool {
     match n {
-        Node::Empty | Node::Assert(_) | Node::Keep | Node::Look(..) => true,
-        Node::Char(c, ic) => {
+        Ast::Empty | Ast::Assert(_) | Ast::Keep | Ast::Look(..) => true,
+        Ast::Char(c, ic) => {
             set[first_byte(*c) as usize] = true;
             if *ic {
                 for v in [fold(*c), lower1(*c), upper1(*c)] {
@@ -1863,7 +1885,7 @@ fn first_set(n: &Node, set: &mut [bool; 256]) -> bool {
             }
             false
         }
-        Node::Any(ml) => {
+        Ast::Any(ml) => {
             for b in 0..256 {
                 if *ml || b != b'\n' as usize {
                     set[b] = true;
@@ -1871,7 +1893,7 @@ fn first_set(n: &Node, set: &mut [bool; 256]) -> bool {
             }
             false
         }
-        Node::Class(cc) => {
+        Ast::Class(cc) => {
             for b in 0..128u8 {
                 if cc.bit(b) {
                     set[b as usize] = true;
@@ -1882,7 +1904,7 @@ fn first_set(n: &Node, set: &mut [bool; 256]) -> bool {
             }
             false
         }
-        Node::Seq(v) => {
+        Ast::Seq(v) => {
             for x in v {
                 if !first_set(x, set) {
                     return false;
@@ -1890,7 +1912,7 @@ fn first_set(n: &Node, set: &mut [bool; 256]) -> bool {
             }
             true
         }
-        Node::Alt(v) => {
+        Ast::Alt(v) => {
             let mut e = false;
             for x in v {
                 if first_set(x, set) {
@@ -1899,27 +1921,27 @@ fn first_set(n: &Node, set: &mut [bool; 256]) -> bool {
             }
             e
         }
-        Node::Group(_, b) | Node::Atomic(b) => first_set(b, set),
-        Node::Repeat(b, mn, mx, _) => {
+        Ast::Group(_, b) | Ast::Atomic(b) => first_set(b, set),
+        Ast::Repeat(b, mn, mx, _) => {
             if *mx == 0 {
                 return true;
             }
             let e = first_set(b, set);
             e || *mn == 0
         }
-        Node::Backref(..) => {
+        Ast::Backref(..) => {
             for b in 0..256 {
                 set[b] = true;
             }
             true
         }
-        Node::Grapheme => {
+        Ast::Grapheme => {
             for b in 0..256 {
                 set[b] = true;
             }
             false
         }
-        Node::Cond(_, y, n) => {
+        Ast::Cond(_, y, n) => {
             let a = first_set(y, set);
             let b = first_set(n, set);
             a || b
@@ -1927,12 +1949,12 @@ fn first_set(n: &Node, set: &mut [bool; 256]) -> bool {
     }
 }
 
-fn collect_backrefed(n: &Node, out: &mut Vec<usize>) {
+fn collect_backrefed(n: &Ast, out: &mut Vec<usize>) {
     match n {
-        Node::Backref(BRef::Groups(g), _) => out.extend_from_slice(g),
-        Node::Seq(v) | Node::Alt(v) => v.iter().for_each(|x| collect_backrefed(x, out)),
-        Node::Group(_, b) | Node::Repeat(b, ..) | Node::Look(_, _, b) | Node::Atomic(b) => collect_backrefed(b, out),
-        Node::Cond(_, y, n) => {
+        Ast::Backref(BRef::Groups(g), _) => out.extend_from_slice(g),
+        Ast::Seq(v) | Ast::Alt(v) => v.iter().for_each(|x| collect_backrefed(x, out)),
+        Ast::Group(_, b) | Ast::Repeat(b, ..) | Ast::Look(_, _, b) | Ast::Atomic(b) => collect_backrefed(b, out),
+        Ast::Cond(_, y, n) => {
             collect_backrefed(y, out);
             collect_backrefed(n, out);
         }
@@ -1940,41 +1962,51 @@ fn collect_backrefed(n: &Node, out: &mut Vec<usize>) {
     }
 }
 
-fn has_any_group(n: &Node) -> bool {
+fn has_keep(n: &Ast) -> bool {
     match n {
-        Node::Group(..) => true,
-        Node::Seq(v) | Node::Alt(v) => v.iter().any(has_any_group),
-        Node::Repeat(b, ..) | Node::Look(_, _, b) | Node::Atomic(b) => has_any_group(b),
-        Node::Cond(_, y, n) => has_any_group(y) || has_any_group(n),
+        Ast::Keep => true,
+        Ast::Seq(v) | Ast::Alt(v) => v.iter().any(has_keep),
+        Ast::Group(_, b) | Ast::Repeat(b, ..) | Ast::Look(_, _, b) | Ast::Atomic(b) => has_keep(b),
+        Ast::Cond(_, y, n) => has_keep(y) || has_keep(n),
         _ => false,
     }
 }
 
-fn has_group(n: &Node) -> bool {
+fn has_any_group(n: &Ast) -> bool {
     match n {
-        Node::Group(..) => true,
-        Node::Seq(v) | Node::Alt(v) => v.iter().any(has_group),
+        Ast::Group(..) => true,
+        Ast::Seq(v) | Ast::Alt(v) => v.iter().any(has_any_group),
+        Ast::Repeat(b, ..) | Ast::Look(_, _, b) | Ast::Atomic(b) => has_any_group(b),
+        Ast::Cond(_, y, n) => has_any_group(y) || has_any_group(n),
+        _ => false,
+    }
+}
+
+fn has_group(n: &Ast) -> bool {
+    match n {
+        Ast::Group(..) => true,
+        Ast::Seq(v) | Ast::Alt(v) => v.iter().any(has_group),
         // Like Onigmo's quantifiers_memory_node_info: captures inside lookarounds do not count.
-        Node::Repeat(b, _, mx, _) => *mx != 0 && has_group(b),
-        Node::Atomic(b) => has_group(b),
-        Node::Cond(_, y, n) => has_group(y) || has_group(n),
+        Ast::Repeat(b, _, mx, _) => *mx != 0 && has_group(b),
+        Ast::Atomic(b) => has_group(b),
+        Ast::Cond(_, y, n) => has_group(y) || has_group(n),
         _ => false,
     }
 }
 
 /// A literal every match must contain: bytes plus whether it compares ASCII-case-insensitively.
-type MustLit = (Vec<u8>, bool);
+pub type MustLit = (Vec<u8>, bool);
 
-fn lit_char(n: &Node) -> Option<(u32, bool)> {
+fn lit_char(n: &Ast) -> Option<(u32, bool)> {
     match n {
-        Node::Char(c, false) => Some((*c, false)),
-        Node::Char(c, true) if *c < 128 => Some(((*c as u8).to_ascii_lowercase() as u32, true)),
+        Ast::Char(c, false) => Some((*c, false)),
+        Ast::Char(c, true) if *c < 128 => Some(((*c as u8).to_ascii_lowercase() as u32, true)),
         _ => None,
     }
 }
 
 /// Collects literals every match must contain (lookarounds excluded).
-fn must_lits(n: &Node, out: &mut Vec<MustLit>) {
+fn must_lits(n: &Ast, out: &mut Vec<MustLit>) {
     if let Some((c, ic)) = lit_char(n) {
         let mut v = Vec::new();
         push_char(&mut v, c);
@@ -1982,7 +2014,7 @@ fn must_lits(n: &Node, out: &mut Vec<MustLit>) {
         return;
     }
     match n {
-        Node::Seq(items) => {
+        Ast::Seq(items) => {
             let mut run: MustLit = (Vec::new(), false);
             for it in items {
                 if let Some((c, ic)) = lit_char(it) {
@@ -2002,8 +2034,8 @@ fn must_lits(n: &Node, out: &mut Vec<MustLit>) {
                 out.push(run);
             }
         }
-        Node::Group(_, b) | Node::Atomic(b) => must_lits(b, out),
-        Node::Repeat(b, mn, _, _) if *mn >= 1 => must_lits(b, out),
+        Ast::Group(_, b) | Ast::Atomic(b) => must_lits(b, out),
+        Ast::Repeat(b, mn, _, _) if *mn >= 1 => must_lits(b, out),
         _ => {}
     }
 }
@@ -2029,11 +2061,11 @@ fn rfind_must(h: &[u8], m: &MustLit) -> Option<usize> {
     (0..(h.len() + 1).saturating_sub(n)).rev().find(|&i| lit_eq(&h[i..i + n], &m.0, true))
 }
 
-fn flatten_head<'a>(n: &'a Node, out: &mut Vec<&'a Node>, backrefed: &[usize]) {
+fn flatten_head<'a>(n: &'a Ast, out: &mut Vec<&'a Ast>, backrefed: &[usize]) {
     match n {
-        Node::Seq(v) => v.iter().for_each(|x| flatten_head(x, out, backrefed)),
-        Node::Group(g, b) if !backrefed.contains(g) => flatten_head(b, out, backrefed),
-        Node::Atomic(b) => flatten_head(b, out, backrefed),
+        Ast::Seq(v) => v.iter().for_each(|x| flatten_head(x, out, backrefed)),
+        Ast::Group(g, b) if !backrefed.contains(g) => flatten_head(b, out, backrefed),
+        Ast::Atomic(b) => flatten_head(b, out, backrefed),
         _ => out.push(n),
     }
 }
@@ -2041,21 +2073,21 @@ fn flatten_head<'a>(n: &'a Node, out: &mut Vec<&'a Node>, backrefed: &[usize]) {
 /// Where a match can start, from the pattern head. Also reproduces Onigmo's implicit /m `.*`
 /// anchor, which it keeps even after some zero-width prefixes (e.g. /(?=a).*/m only tries the
 /// search start).
-fn head_anchor(ast: &Node, backrefed: &[usize]) -> Anchor {
+fn head_anchor(ast: &Ast, backrefed: &[usize]) -> Anchor {
     let mut items = Vec::new();
     flatten_head(ast, &mut items, backrefed);
-    let star = |n: &Node| match n {
-        Node::Repeat(b, 0, INF, k) if *k != Kind::Lazy => match **b {
-            Node::Any(ml) => Some(ml),
+    let star = |n: &Ast| match n {
+        Ast::Repeat(b, 0, INF, k) if *k != Kind::Lazy => match **b {
+            Ast::Any(ml) => Some(ml),
             _ => None,
         },
         _ => None,
     };
     match items.first() {
         None => return Anchor::None,
-        Some(Node::Assert(As::StrBegin)) => return Anchor::StrBegin,
-        Some(Node::Assert(As::Gpos)) => return Anchor::Start,
-        Some(Node::Assert(As::Bol)) => return Anchor::Line,
+        Some(Ast::Assert(As::StrBegin)) => return Anchor::StrBegin,
+        Some(Ast::Assert(As::Gpos)) => return Anchor::Start,
+        Some(Ast::Assert(As::Bol)) => return Anchor::Line,
         Some(n) => {
             if let Some(ml) = star(n) {
                 return if ml { Anchor::Start } else { Anchor::Line };
@@ -2065,7 +2097,7 @@ fn head_anchor(ast: &Node, backrefed: &[usize]) -> Anchor {
     let (mut trigger, mut cancel) = (false, false);
     for n in &items {
         let n = match n {
-            Node::Repeat(b, mn, _, _) if matches!(**b, Node::Look(..) | Node::Assert(_)) => {
+            Ast::Repeat(b, mn, _, _) if matches!(**b, Ast::Look(..) | Ast::Assert(_)) => {
                 if *mn == 0 {
                     continue;
                 }
@@ -2074,9 +2106,9 @@ fn head_anchor(ast: &Node, backrefed: &[usize]) -> Anchor {
             n => *n,
         };
         match n {
-            Node::Look(false, false, _) | Node::Assert(As::Eol | As::StrEnd | As::StrEndNl) => trigger = true,
-            Node::Look(true, false, _) => cancel = true,
-            Node::Look(..) | Node::Assert(_) | Node::Keep | Node::Empty => {}
+            Ast::Look(false, false, _) | Ast::Assert(As::Eol | As::StrEnd | As::StrEndNl) => trigger = true,
+            Ast::Look(true, false, _) => cancel = true,
+            Ast::Look(..) | Ast::Assert(_) | Ast::Keep | Ast::Empty => {}
             _ => {
                 if star(n) == Some(true) && trigger && !cancel {
                     return Anchor::Start;
@@ -2096,7 +2128,7 @@ enum Anchor {
     Line,     // at the search start or after "\n"
 }
 
-pub struct Regex {
+pub struct Vm {
     prog: Vec<Inst>,
     ngroups: usize,
     nregs: usize,
@@ -2105,6 +2137,8 @@ pub struct Regex {
     prefix: Option<Box<[u8]>>,
     first: Option<Box<[bool; 256]>>,
     must: Vec<MustLit>,
+    ast: Ast,
+    backrefed: Vec<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -2117,7 +2151,7 @@ enum Bt {
     SprevBug { old: usize },
 }
 
-struct Ctx<'a> {
+struct VmCtx<'a> {
     s: &'a [u8],
     slots: Vec<usize>,
     regs: Vec<usize>,
@@ -2322,8 +2356,8 @@ fn grapheme(s: &[u8], pos: usize) -> Option<usize> {
     Some(p)
 }
 
-impl Regex {
-    pub fn new(pat: &[u8], opts: u32) -> Result<Regex, String> {
+impl Vm {
+    pub fn new(pat: &[u8], opts: u32) -> Result<Vm, String> {
         let mut ps = Parser::new(pat, opts);
         let ast = ps.parse_alt()?;
         if ps.i < pat.len() {
@@ -2397,7 +2431,7 @@ impl Regex {
         ml.sort_by_key(|m| std::cmp::Reverse(m.0.len()));
         ml.truncate(4);
         let must = ml;
-        Ok(Regex { prog, ngroups, nregs: c.nregs, names, anchor, prefix, first, must })
+        Ok(Vm { prog, ngroups, nregs: c.nregs, names, anchor, prefix, first, must, ast, backrefed: c_backrefed })
     }
 
     pub fn group_count(&self) -> usize {
@@ -2412,11 +2446,11 @@ impl Regex {
         self.names.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone()).unwrap_or_default()
     }
 
-    fn ctx<'a>(&self, s: &'a [u8], gpos: usize) -> Ctx<'a> {
-        Ctx { s, slots: vec![NONE; 2 * (self.ngroups + 1)], regs: vec![0; self.nregs], stack: Vec::new(), gpos, sprev_bug: NONE }
+    fn ctx<'a>(&self, s: &'a [u8], gpos: usize) -> VmCtx<'a> {
+        VmCtx { s, slots: vec![NONE; 2 * (self.ngroups + 1)], regs: vec![0; self.nregs], stack: Vec::new(), gpos, sprev_bug: NONE }
     }
 
-    fn try_at(&self, cx: &mut Ctx, p: usize) -> Option<Vec<Option<(usize, usize)>>> {
+    fn try_at(&self, cx: &mut VmCtx, p: usize) -> Option<Vec<Option<(usize, usize)>>> {
         for x in cx.slots.iter_mut() {
             *x = NONE;
         }
@@ -2435,6 +2469,10 @@ impl Regex {
             out.push(if a != NONE && b != NONE && a <= b { Some((a, b)) } else { None });
         }
         Some(out)
+    }
+
+    pub(crate) fn must_ok_from(&self, s: &[u8], pos: usize) -> bool {
+        self.must.iter().all(|m| find_must(s, m, pos).is_some())
     }
 
     pub fn match_at(&self, s: &[u8], pos: usize) -> Option<Vec<Option<(usize, usize)>>> {
@@ -2515,53 +2553,20 @@ impl Regex {
     }
 
     #[inline]
-    fn word_prev(&self, s: &[u8], pos: usize, sprev_bug: usize) -> bool {
-        if pos == sprev_bug && pos > 0 { word_at(s, pos) } else { word_before(s, pos) }
-    }
-
     fn assert(&self, a: As, s: &[u8], pos: usize, gpos: usize, sprev_bug: usize) -> bool {
-        let len = s.len();
-        match a {
-            As::Bol => pos == 0 || (pos < len && s[pos - 1] == b'\n'),
-            As::Eol => pos == len || s[pos] == b'\n',
-            As::StrBegin => pos == 0,
-            As::StrEnd => pos == len,
-            As::StrEndNl => pos == len || (pos + 1 == len && s[pos] == b'\n'),
-            As::WordB => self.word_prev(s, pos, sprev_bug) != word_at(s, pos),
-            As::NotWordB => self.word_prev(s, pos, sprev_bug) == word_at(s, pos),
-            As::Gpos => pos == gpos,
-        }
+        assert_at(a, s, pos, gpos, sprev_bug)
     }
 
-    /// Onigmo's NULL_CHECK_END_MEMST for an iteration that consumed nothing, judged by the span
-    /// each group had before being opened in it. 0: exit loop, 1: keep looping, 2: fail.
-    fn empty_iter_mem(&self, cx: &Ctx, reg: usize, pos: usize) -> u8 {
-        let ncommit = 2 * (self.ngroups + 1);
+    fn empty_iter_mem(&self, cx: &VmCtx, reg: usize, pos: usize) -> u8 {
         let st = cx.stack.iter().rposition(|e| matches!(*e, Bt::Reg { idx, .. } if idx == reg)).map_or(0, |k| k + 1);
-        let mut res = 0;
-        let mut k = st;
-        while k + 1 < cx.stack.len() {
-            if let (Bt::Slot { idx: i0, old: os }, Bt::Slot { idx: i1, old: oe }) = (cx.stack[k], cx.stack[k + 1]) {
-                if i0 >= 2 && i0 < ncommit && i0 & 1 == 0 && i1 == i0 + 1 {
-                    k += 2;
-                    if cx.slots[i0] == os && cx.slots[i1] == oe {
-                        continue; // unchanged (e.g. set inside a lookahead): treating it as progress could loop forever
-                    }
-                    if oe == NONE || os != oe {
-                        return 1;
-                    }
-                    if oe != pos {
-                        res = 2;
-                    }
-                    continue;
-                }
-            }
-            k += 1;
-        }
-        res
+        let entries: Vec<(usize, usize)> = cx.stack[st..].iter().map(|e| match *e {
+            Bt::Slot { idx, old } => (idx, old),
+            _ => (NONE - 1, 0),
+        }).collect();
+        empty_iter_verdict(&entries, &cx.slots, self.ngroups, pos)
     }
 
-    fn compact(cx: &mut Ctx, base: usize) {
+    fn compact(cx: &mut VmCtx, base: usize) {
         let mut w = base;
         for r in base..cx.stack.len() {
             if matches!(cx.stack[r], Bt::Slot { .. } | Bt::Reg { .. } | Bt::SprevBug { .. }) {
@@ -2572,7 +2577,7 @@ impl Regex {
         cx.stack.truncate(w);
     }
 
-    fn unwind(cx: &mut Ctx, base: usize) {
+    fn unwind(cx: &mut VmCtx, base: usize) {
         while cx.stack.len() > base {
             match cx.stack.pop().unwrap() {
                 Bt::Slot { idx, old } => cx.slots[idx] = old,
@@ -2583,7 +2588,7 @@ impl Regex {
         }
     }
 
-    fn run(&self, cx: &mut Ctx, mut pc: usize, mut pos: usize, target: usize) -> Option<usize> {
+    fn run(&self, cx: &mut VmCtx, mut pc: usize, mut pos: usize, target: usize) -> Option<usize> {
         let base = cx.stack.len();
         let s = cx.s;
         let len = s.len();
@@ -2745,12 +2750,17 @@ impl Regex {
                 }
                 Inst::Sub { kind, end, minlen, maxlen } => {
                     let b = cx.stack.len();
+                    let sprev0 = cx.sprev_bug;
                     match kind {
                         SubKind::Atomic | SubKind::Ahead => match self.run(cx, pc + 1, pos, NONE) {
                             Some(np) => {
                                 Self::compact(cx, b);
                                 if *kind == SubKind::Atomic {
                                     pos = np;
+                                } else if cx.sprev_bug != sprev0 {
+                                    // Onigmo's POP_POS restores the previous-char pointer too.
+                                    cx.stack.push(Bt::SprevBug { old: cx.sprev_bug });
+                                    cx.sprev_bug = sprev0;
                                 }
                                 pc = *end;
                                 true
@@ -2943,15 +2953,15 @@ fn match_ic(s: &[u8], pos: usize, sub: &[u8]) -> Option<usize> {
     Some(p)
 }
 
-fn check_lookbehind(n: &Node, inside: bool) -> Result<(), String> {
+fn check_lookbehind(n: &Ast, inside: bool) -> Result<(), String> {
     match n {
-        Node::Seq(v) | Node::Alt(v) => v.iter().try_for_each(|x| check_lookbehind(x, inside)),
-        Node::Group(_, b) | Node::Atomic(b) | Node::Repeat(b, ..) => check_lookbehind(b, inside),
-        Node::Cond(_, y, n) => {
+        Ast::Seq(v) | Ast::Alt(v) => v.iter().try_for_each(|x| check_lookbehind(x, inside)),
+        Ast::Group(_, b) | Ast::Atomic(b) | Ast::Repeat(b, ..) => check_lookbehind(b, inside),
+        Ast::Cond(_, y, n) => {
             check_lookbehind(y, inside)?;
             check_lookbehind(n, inside)
         }
-        Node::Look(behind, _, b) => {
+        Ast::Look(behind, _, b) => {
             if inside && !behind {
                 return err("invalid pattern in look-behind");
             }
@@ -2960,7 +2970,53 @@ fn check_lookbehind(n: &Node, inside: bool) -> Result<(), String> {
             }
             check_lookbehind(b, inside || *behind)
         }
-        Node::Backref(..) | Node::Keep if inside => err("invalid pattern in look-behind"),
+        Ast::Backref(..) | Ast::Keep if inside => err("invalid pattern in look-behind"),
         _ => Ok(()),
     }
+}
+
+#[inline]
+fn word_prev(s: &[u8], pos: usize, sprev_bug: usize) -> bool {
+    if pos == sprev_bug && pos > 0 { word_at(s, pos) } else { word_before(s, pos) }
+}
+
+fn assert_at(a: As, s: &[u8], pos: usize, gpos: usize, sprev_bug: usize) -> bool {
+    let len = s.len();
+    match a {
+        As::Bol => pos == 0 || (pos < len && s[pos - 1] == b'\n'),
+        As::Eol => pos == len || s[pos] == b'\n',
+        As::StrBegin => pos == 0,
+        As::StrEnd => pos == len,
+        As::StrEndNl => pos == len || (pos + 1 == len && s[pos] == b'\n'),
+        As::WordB => word_prev(s, pos, sprev_bug) != word_at(s, pos),
+        As::NotWordB => word_prev(s, pos, sprev_bug) == word_at(s, pos),
+        As::Gpos => pos == gpos,
+    }
+}
+
+/// Onigmo's NULL_CHECK_END_MEMST for an iteration that consumed nothing, judged by the span
+/// each group had before being opened in it (the (slot, old value) restore entries recorded
+/// since the iteration started, oldest first). 0: exit loop, 1: keep looping, 2: fail.
+fn empty_iter_verdict(entries: &[(usize, usize)], slots: &[usize], ngroups: usize, pos: usize) -> u8 {
+    let ncommit = 2 * (ngroups + 1);
+    let mut res = 0;
+    let mut k = 0;
+    while k + 1 < entries.len() {
+        let ((i0, os), (i1, oe)) = (entries[k], entries[k + 1]);
+        if i0 >= 2 && i0 < ncommit && i0 & 1 == 0 && i1 == i0 + 1 {
+            k += 2;
+            if slots[i0] == os && slots[i1] == oe {
+                continue; // unchanged (e.g. set inside a lookahead): treating it as progress could loop forever
+            }
+            if oe == NONE || os != oe {
+                return 1;
+            }
+            if oe != pos {
+                res = 2;
+            }
+            continue;
+        }
+        k += 1;
+    }
+    res
 }

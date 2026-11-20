@@ -446,6 +446,9 @@ t '((.(\p{L}*)+))+', 'c11あa1'
 t '(([b](([ab]*?))+)+)', 'bbc'
 t '(x(((?!\s)))+)+', 'aabaABcxx'
 t '(((()+.){3}))', 'BbbABcxB'
+t '.?(?i:\K)?', 'xA', 0, 1
+t '(?:\K)?a', 'ba'
+t '()(?=\1)\b', "\\nAb", I
 
 puts C.map { |pat, opts, subj, start, mode|
   re = begin
