@@ -716,6 +716,23 @@ fn k_require_relative(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) 
 fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let name = to_rstring(c, args[0])?;
     let p = resolve_feature(&name, None).map(|p| p.to_string_lossy().into_owned()).unwrap_or(name);
+    let wrap = args.get(1).copied().unwrap_or(FALSE);
+    if wrap.truthy() {
+        // load(file, true): run under an anonymous module, self = a fresh main extended with it
+        let m = if is_class_or_module(wrap) { wrap } else { new_module() };
+        let slf = new_object(vm().c_object);
+        let sk = singleton_class(slf);
+        include_module(sk, m);
+        let src = match std::fs::read(&p) {
+            Ok(s) => s,
+            Err(_) => { let e = make_exception(vm().c_load_error, &format!("cannot load such file -- {}", p)); return Err(raise_exc(c, e)); }
+        };
+        let file: &'static str = Box::leak(p.into_boxed_str());
+        let is = match crate::compile::compile_source(&src, file, 1, IseqKind::Top, vec![]) { Ok(is) => is, Err(msg) => return err(c, vm().c_syntax_error, msg) };
+        let cref = new_cref(m, vm().top_cref);
+        crate::run_top_iseq_cref(c, is, slf, cref)?;
+        return Ok(TRUE);
+    }
     load_file(c, &p)?;
     Ok(TRUE)
 }

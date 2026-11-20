@@ -673,7 +673,8 @@ pub fn rt_def(c: &mut Ctx, mid: Sym, is: &'static Iseq, _fp: *mut Value) -> RV {
     // `def` inside a method body defines on the cref class; inside instance_eval, on the singleton
     if f.defined_class != NIL && f.kind != FK_CLASS { klass = f.defined_class; }
     let mut visi = if f.kind == FK_CLASS || f.kind == FK_TOP || (f.kind == FK_EVAL) { f.visi } else { VISI_PUBLIC };
-    if klass == vm().c_object && (f.kind == FK_TOP || f.cref == vm().top_cref) && f.kind != FK_CLASS { visi = VISI_PRIVATE; }
+    // eval at top level defines private methods; a def in a method body is public
+    if klass == vm().c_object && f.kind == FK_EVAL && f.cref == vm().top_cref { visi = VISI_PRIVATE; }
     if mid == s::initialize || mid == s::initialize_copy || mid == s::respond_to_missing_p
         || mid == s::mid_initialize_dup || mid == s::mid_initialize_clone { visi = VISI_PRIVATE; }
     if visi == VISI_MODFUNC {
