@@ -1234,7 +1234,8 @@ fn class_of_imm(v: Value) -> u64 { class_of(v).raw() }
 #[inline(always)]
 pub fn site_hit(cc: &CallCache, recv: Value, kind: u32) -> bool {
     if kind & 15 == SITE_OTHER { return false; }
-    let k = if kind & SITE_IMM != 0 { if recv.is_heap() { return false; } class_of_imm(recv) }
+    // Integer receivers inline (n.even?, n.times ...); other immediates out of line
+    let k = if kind & SITE_IMM != 0 { if recv.is_fixnum() { vm().c_integer.raw() } else if recv.is_heap() { return false } else { class_of_imm(recv) } }
             else { if !recv.is_heap() { return false; } obj(recv).klass.raw() };
     cc.klass == k && cc.serial == vm().method_serial
 }
