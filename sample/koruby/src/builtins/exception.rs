@@ -178,7 +178,7 @@ fn exc_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     if m.contains('\n') { return Ok(str_new(format!("#<{}: {}>", cls, inspect_bytes(m.as_bytes(), ENC_UTF8)).as_bytes())); }
     Ok(str_new(format!("#<{}: {}>", cls, m).as_bytes()))
 }
-fn exc_backtrace(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(slf, s::bt)) }
+fn exc_backtrace(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(exc_bt(slf)) }
 fn exc_set_backtrace(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let v = a[0];
     let bt = if is_string(v) { ary_new_from(&[v]) } else if v == NIL || is_array(v) { v } else { return type_err(c, "backtrace must be an Array of String or an Array of Thread::Backtrace::Location"); };
@@ -197,7 +197,7 @@ fn exc_set_backtrace(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> 
 fn exc_backtrace_locations(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let locs = ivar_get(slf, intern(b"__bt_locs"));
     if locs != NIL { return Ok(locs); }
-    let bt = ivar_get(slf, s::bt);
+    let bt = exc_bt(slf);
     if bt == NIL || ivar_get(slf, intern(b"__bt_set")) == TRUE { return Ok(NIL); }
     let out = ary_new();
     for i in 0..ary_len(bt) {
@@ -304,13 +304,13 @@ fn exc_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let m2 = funcall(c, o, s::message, &[], std::ptr::null())?;
     let e = funcall(c, m1, s::eq, &[m2], std::ptr::null())?;
     if !e.truthy() { return Ok(FALSE); }
-    let b1 = ivar_get(slf, s::bt); let b2 = ivar_get(o, s::bt);
+    let b1 = exc_bt(slf); let b2 = exc_bt(o);
     let e2 = funcall(c, b1, s::eq, &[b2], std::ptr::null())?;
     Ok(Value::bool(e2.truthy()))
 }
 
 pub fn full_message(c: &mut Ctx, e: Value, _highlight: bool) -> Result<String, Esc> {
-    let bt = ivar_get(e, s::bt);
+    let bt = exc_bt(e);
     let mut lines: Vec<String> = vec![];
     if is_array(bt) { for i in 0..ary_len(bt) { let l = ary_get(bt, i); if is_string(l) { lines.push(String::from_utf8_lossy(str_bytes(l)).into_owned()); } } }
     let dm = funcall(c, e, s::detailed_message, &[], std::ptr::null())?;

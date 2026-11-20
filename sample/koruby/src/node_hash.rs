@@ -71,6 +71,7 @@ fn HASH_node_dstr(n: NodePtr) -> u64 {
     let mut h = hash_str("node_dstr");
     h = hash_merge(h, hash_node_list(u.parts));
     h = hash_merge(h, hash_u64(u.enc as u64));
+    h = hash_merge(h, hash_u64(u.cap as u64));
     h
 }
 
@@ -491,6 +492,15 @@ fn HASH_node_when(n: NodePtr) -> u64 {
 }
 
 #[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_when_lit(n: NodePtr) -> u64 {
+    let u = unsafe { &(*(n as *mut NodeOf<node_when_lit_struct>)).u };
+    let mut h = hash_str("node_when_lit");
+    h = hash_merge(h, hash_u64(u.subj_slot as u64));
+    h = hash_merge(h, crate::compile::value_hash(u.v));
+    h
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_defined(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_defined_struct>)).u };
     let mut h = hash_str("node_defined");
@@ -641,6 +651,16 @@ fn HASH_node_opt_mul(n: NodePtr) -> u64 {
 fn HASH_node_opt_div(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_div_struct>)).u };
     let mut h = hash_str("node_opt_div");
+    h = hash_merge(h, hash_node(u.a));
+    h = hash_merge(h, hash_node(u.b));
+    h = hash_merge(h, hash_u64(u.line as u64));
+    h
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_opt_pow(n: NodePtr) -> u64 {
+    let u = unsafe { &(*(n as *mut NodeOf<node_opt_pow_struct>)).u };
+    let mut h = hash_str("node_opt_pow");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
     h = hash_merge(h, hash_u64(u.line as u64));

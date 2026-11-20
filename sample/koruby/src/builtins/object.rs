@@ -52,7 +52,7 @@ fn bo_instance_eval(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV
     if b.is_null() {
         if a.is_empty() { return argc_err(c, 0, 1, 3); }
         let src = expect_str(c, a[0])?;
-        let bytes = rstr(src).b.clone();
+        let bytes = rstr(src).b.to_vec();
         let file: &'static str = if a.len() > 1 { Box::leak(to_rstring(c, a[1])?.into_boxed_str()) } else { "(eval)" };
         return crate::builtins::binding::eval_with_self(c, slf, &bytes, file, if a.len() > 2 { a[2].as_fix() as i32 } else { 1 });
     }
@@ -309,7 +309,7 @@ fn m_extend_object(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
 }
 fn k_display(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let s = to_s_value(c, slf)?;
-    let b = rstr(s).b.clone();
+    let b = rstr(s).b.to_vec();
     stdout_write(c, &b)?;
     Ok(NIL)
 }
@@ -750,7 +750,7 @@ fn m_class_eval(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     if b.is_null() {
         if a.is_empty() { return argc_err(c, 0, 1, 3); }
         let src = expect_str(c, a[0])?;
-        let bytes = rstr(src).b.clone();
+        let bytes = rstr(src).b.to_vec();
         let file: &'static str = if a.len() > 1 { Box::leak(to_rstring(c, a[1])?.into_boxed_str()) } else { "(eval)" };
         return crate::builtins::binding::eval_in_class(c, slf, &bytes, file, if a.len() > 2 { a[2].as_fix() as i32 } else { 1 });
     }
@@ -988,7 +988,7 @@ pub fn alloc_instance(c: &mut Ctx, klass: Value) -> RV {
     if cd.is_singleton { return type_err(c, "can't create instance of singleton class"); }
     Ok(match cd.alloc {
         AllocKind::Object | AllocKind::Exception => new_object(klass),
-        AllocKind::String => crate::gc::alloc(klass, Body::String(RString { b: vec![], enc: ENC_UTF8 })),
+        AllocKind::String => crate::gc::alloc(klass, Body::String(RString { b: crate::sbuf::SBuf::new(), enc: ENC_UTF8 })),
         AllocKind::Array => crate::gc::alloc(klass, Body::Array(vec![])),
         AllocKind::Hash => { let h = hash_new(); obj(h).klass = klass; h }
         AllocKind::Range => crate::gc::alloc(klass, Body::Range(NIL, NIL, false)),

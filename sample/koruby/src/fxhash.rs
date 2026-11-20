@@ -17,3 +17,4 @@ impl Hasher for FxHasher {
     #[inline] fn finish(&self) -> u64 { self.hash.rotate_left(26) }
 }
 pub type HashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<FxHasher>>;
+pub type HashSet<K> = std::collections::HashSet<K, BuildHasherDefault<FxHasher>>;

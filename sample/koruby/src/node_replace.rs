@@ -349,6 +349,12 @@ fn REPLACE_node_when(n: NodePtr, old: NodePtr, new: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_when_lit(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_when_lit_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
 fn REPLACE_node_defined(n: NodePtr, old: NodePtr, new: NodePtr) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_defined_struct>)).u };
     if u.recv == old { u.recv = new; }
@@ -443,6 +449,13 @@ fn REPLACE_node_opt_mul(n: NodePtr, old: NodePtr, new: NodePtr) {
 #[allow(non_snake_case, unused_variables)]
 fn REPLACE_node_opt_div(n: NodePtr, old: NodePtr, new: NodePtr) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_div_struct>)).u };
+    if u.a == old { u.a = new; }
+    if u.b == old { u.b = new; }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_opt_pow(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_pow_struct>)).u };
     if u.a == old { u.a = new; }
     if u.b == old { u.b = new; }
 }

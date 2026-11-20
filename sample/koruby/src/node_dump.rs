@@ -89,6 +89,7 @@ fn DUMP_node_dstr(out: &mut String, n: NodePtr) {
     out.push_str("(node_dstr");
     out.push(' '); out.push('['); for (i, x) in (*np).u.parts.iter().enumerate() { if i > 0 { out.push(' '); } dump_node(out, *x); } out.push(']');
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.enc));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.cap));
     out.push(')');
     }
 }
@@ -613,6 +614,18 @@ fn DUMP_node_when(out: &mut String, n: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_when_lit(out: &mut String, n: NodePtr) {
+    let np = n as *mut NodeOf<node_when_lit_struct>;
+    unsafe {
+    out.push_str("(node_when_lit");
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.subj_slot));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.v));
+    out.push(' '); out.push_str("<cc>");
+    out.push(')');
+    }
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_defined(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_defined_struct>;
     unsafe {
@@ -802,6 +815,19 @@ fn DUMP_node_opt_div(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_opt_div_struct>;
     unsafe {
     out.push_str("(node_opt_div");
+    out.push(' '); dump_node(out, (*np).u.a);
+    out.push(' '); dump_node(out, (*np).u.b);
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str("<cc>");
+    out.push(')');
+    }
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_opt_pow(out: &mut String, n: NodePtr) {
+    let np = n as *mut NodeOf<node_opt_pow_struct>;
+    unsafe {
+    out.push_str("(node_opt_pow");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));

@@ -140,7 +140,7 @@ cfn!(s_initialize, |c, slf, a, _b| {
     check_argc(c, pos, 0, 1)?;
     if let Some(&v) = pos.first() {
         let sv = expect_str(c, v)?;
-        if sv != slf { let nb = b(sv).to_vec(); let e = rstr(sv).enc; let r = modify(c, slf)?; r.b = nb; r.enc = e; }
+        if sv != slf { let nb = b(sv).to_vec(); let e = rstr(sv).enc; let r = modify(c, slf)?; r.b = nb.into(); r.enc = e; }
     }
     if let Some(h) = kw {
         if let Some(e) = crate::hash::hash_get_opt(c, h, sym_value("encoding"))? { let e = crate::builtins::encoding::to_enc(c, e)?; modify(c, slf)?.enc = e; }
@@ -386,7 +386,7 @@ fn case_apply(b: &[u8], enc: u8, which: u8, o: (bool, bool, bool)) -> Vec<u8> {
 }
 macro_rules! case_m { ($name:ident, $bang:ident, $w:expr) => {
     cfn!($name, |c, slf, a, b_| { let o = case_opts(c, a, $w == b'd')?; let r = rstr(slf); Ok(new_like(slf, case_apply(&r.b, r.enc, $w, o))) });
-    cfn!($bang, |c, slf, a, b_| { let o = case_opts(c, a, $w == b'd')?; check_frozen(c, slf)?; let r = rstr(slf); let nv = case_apply(&r.b, r.enc, $w, o); if nv == r.b { return Ok(NIL); } let r = modify(c, slf)?; r.b = nv; Ok(slf) });
+    cfn!($bang, |c, slf, a, b_| { let o = case_opts(c, a, $w == b'd')?; check_frozen(c, slf)?; let r = rstr(slf); let nv = case_apply(&r.b, r.enc, $w, o); if nv == r.b { return Ok(NIL); } let r = modify(c, slf)?; r.b = nv.into(); Ok(slf) });
 }; }
 case_m!(s_upcase, s_upcase_b, b'u');
 case_m!(s_downcase, s_downcase_b, b'd');
@@ -400,7 +400,7 @@ fn reverse_bytes(bv: &[u8], enc: u8) -> Vec<u8> {
     out
 }
 cfn!(s_reverse, |c, slf, a, b_| { let r = rstr(slf); Ok(new_like(slf, reverse_bytes(&r.b, r.enc))) });
-cfn!(s_reverse_b, |c, slf, a, b_| { let r = modify(c, slf)?; let nv = reverse_bytes(&r.b, r.enc); r.b = nv; Ok(slf) });
+cfn!(s_reverse_b, |c, slf, a, b_| { let r = modify(c, slf)?; let nv = reverse_bytes(&r.b, r.enc); r.b = nv.into(); Ok(slf) });
 cfn!(s_include, |c, slf, a, b_| { let o = expect_str(c, a[0])?; Ok(Value::bool(find_bytes(b(slf), b(o), 0).is_some())) });
 cfn!(s_start_with, |c, slf, a, b_| {
     for &x in a {
@@ -471,7 +471,7 @@ macro_rules! strip_m { ($name:ident, $bang:ident, $l:expr, $r:expr) => {
         let (s, e) = strip_range(slf, &sel, $l, $r);
         let r = modify(c, slf)?;
         if s == 0 && e == r.b.len() { return Ok(NIL); }
-        r.b.truncate(e); r.b.drain(..s);
+        r.b.truncate(e); r.b.remove_front(s);
         Ok(slf)
     });
 }; }
@@ -494,7 +494,7 @@ fn chomp_impl(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<Vec<u8>, Esc> {
     if v.ends_with(sb) && crate::builtins::encoding::is_valid(rstr(suf).enc, sb) && char_offsets(slf).binary_search(&(v.len() - sb.len())).is_ok() { compat(c, slf, suf)?; Ok(v[..v.len() - sb.len()].to_vec()) } else { Ok(v.to_vec()) }
 }
 cfn!(s_chomp, |c, slf, a, b_| { let v = chomp_impl(c, slf, a)?; Ok(new_like(slf, v)) });
-cfn!(s_chomp_b, |c, slf, a, b_| { check_frozen(c, slf)?; let v = chomp_impl(c, slf, a)?; if v.len() == b(slf).len() { return Ok(NIL); } modify(c, slf)?.b = v; Ok(slf) });
+cfn!(s_chomp_b, |c, slf, a, b_| { check_frozen(c, slf)?; let v = chomp_impl(c, slf, a)?; if v.len() == b(slf).len() { return Ok(NIL); } modify(c, slf)?.b = v.into(); Ok(slf) });
 fn chop_impl(v: &[u8], enc: u8) -> Vec<u8> {
     if v.is_empty() { return vec![]; }
     if v.ends_with(b"\r\n") { return v[..v.len() - 2].to_vec(); }
@@ -502,7 +502,7 @@ fn chop_impl(v: &[u8], enc: u8) -> Vec<u8> {
     v[..off[off.len() - 2]].to_vec()
 }
 cfn!(s_chop, |c, slf, a, b_| Ok(new_like(slf, chop_impl(b(slf), rstr(slf).enc))));
-cfn!(s_chop_b, |c, slf, a, b_| { if b(slf).is_empty() { return Ok(NIL); } let v = chop_impl(b(slf), rstr(slf).enc); modify(c, slf)?.b = v; Ok(slf) });
+cfn!(s_chop_b, |c, slf, a, b_| { if b(slf).is_empty() { return Ok(NIL); } let v = chop_impl(b(slf), rstr(slf).enc); modify(c, slf)?.b = v.into(); Ok(slf) });
 cfn!(s_chr, |c, slf, a, b_| { let v = b(slf); if v.is_empty() { return Ok(new_like(slf, vec![])); } let l = enc_char_len(v, 0, rstr(slf).enc); Ok(new_like(slf, v[..l].to_vec())) });
 cfn!(s_chars, |c, slf, a, blk| {
     let parts = chars_of(slf);
@@ -594,7 +594,35 @@ cfn!(s_split, |c, slf, a, blk| {
     let default_pat = a.is_empty() || a[0] == NIL;
     if is_string(pat) && !(default_pat && b(pat) == b" ") { compat(c, slf, pat)?; }
     let awk = is_string(pat) && ((default_pat && b(pat) == b" ") || { let cs = codes_of(pat); cs.len() == 1 && cs[0].0 == 32 });
-    if awk {
+    if awk && rstr(slf).enc <= ENC_ASCII {
+        // UTF-8 / binary / US-ASCII: whitespace bytes are whitespace characters
+        let sp = |x: u8| matches!(x, 9..=13 | 32);
+        let n = v.len();
+        let mut k = 0;
+        while k < n && sp(v[k]) { k += 1; }
+        if limit == 0 && blk.is_null() {
+            // the common call: build the result directly (short pieces need no malloc)
+            let enc = rstr(slf).enc;
+            let arr = ary_new();
+            while k < n {
+                let st = k;
+                while k < n && !sp(v[k]) { k += 1; }
+                let piece = str_new_enc(&v[st..k], enc);
+                ary_push(arr, piece);
+                while k < n && sp(v[k]) { k += 1; }
+            }
+            return Ok(arr);
+        }
+        while k < n {
+            if limit > 0 && out.len() as i64 == limit - 1 { out.push(v[k..].to_vec()); break; }
+            let st = k;
+            while k < n && !sp(v[k]) { k += 1; }
+            let en = k;
+            out.push(v[st..en].to_vec());
+            while k < n && sp(v[k]) { k += 1; }
+            if k >= n && en < n { out.push(vec![]); }
+        }
+    } else if awk {
         // awk mode: split on ASCII whitespace characters (code units for wide encodings)
         let cs = codes_of(slf);
         let sp = |x: u32| matches!(x, 9..=13 | 32);
@@ -755,8 +783,8 @@ cfn!(s_gsub, |c, slf, a, blk| {
     if a.len() == 1 && blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"gsub"), a, NIL); }
     let r = subst(c, slf, a, blk, true, false)?; Ok(sub_result(slf, r))
 });
-cfn!(s_sub_b, |c, slf, a, blk| { check_frozen(c, slf)?; if a.len() == 1 && blk.is_null() { return argc_err(c, 1, 2, 2); } match subst(c, slf, a, blk, false, true)? { Some((v, e)) => { let r = modify(c, slf)?; r.b = v; r.enc = e; Ok(slf) } None => Ok(NIL) } });
-cfn!(s_gsub_b, |c, slf, a, blk| { if a.len() == 1 && blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"gsub!"), a, NIL); } check_frozen(c, slf)?; match subst(c, slf, a, blk, true, true)? { Some((v, e)) => { let r = modify(c, slf)?; r.b = v; r.enc = e; Ok(slf) } None => Ok(NIL) } });
+cfn!(s_sub_b, |c, slf, a, blk| { check_frozen(c, slf)?; if a.len() == 1 && blk.is_null() { return argc_err(c, 1, 2, 2); } match subst(c, slf, a, blk, false, true)? { Some((v, e)) => { let r = modify(c, slf)?; r.b = v.into(); r.enc = e; Ok(slf) } None => Ok(NIL) } });
+cfn!(s_gsub_b, |c, slf, a, blk| { if a.len() == 1 && blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"gsub!"), a, NIL); } check_frozen(c, slf)?; match subst(c, slf, a, blk, true, true)? { Some((v, e)) => { let r = modify(c, slf)?; r.b = v.into(); r.enc = e; Ok(slf) } None => Ok(NIL) } });
 cfn!(s_scan, |c, slf, a, blk| {
     let p = a[0];
     if !regexp::is_regexp(p) && !is_string(p) && !(p.is_heap() && respond_to(p, s::to_str, true)) {
@@ -838,9 +866,9 @@ fn tr_impl(c: &mut Ctx, slf: Value, from: Value, to: Value, squeeze: bool) -> Re
     Ok(out)
 }
 cfn!(s_tr, |c, slf, a, b_| { let v = tr_impl(c, slf, a[0], a[1], false)?; Ok(new_like(slf, v)) });
-cfn!(s_tr_b, |c, slf, a, b_| { let v = tr_impl(c, slf, a[0], a[1], false)?; check_frozen(c, slf)?; if v == b(slf) { return Ok(NIL); } modify(c, slf)?.b = v; Ok(slf) });
+cfn!(s_tr_b, |c, slf, a, b_| { let v = tr_impl(c, slf, a[0], a[1], false)?; check_frozen(c, slf)?; if v == b(slf) { return Ok(NIL); } modify(c, slf)?.b = v.into(); Ok(slf) });
 cfn!(s_tr_s, |c, slf, a, b_| { let v = tr_impl(c, slf, a[0], a[1], true)?; Ok(new_like(slf, v)) });
-cfn!(s_tr_s_b, |c, slf, a, b_| { let v = tr_impl(c, slf, a[0], a[1], true)?; check_frozen(c, slf)?; if v == b(slf) { return Ok(NIL); } modify(c, slf)?.b = v; Ok(slf) });
+cfn!(s_tr_s_b, |c, slf, a, b_| { let v = tr_impl(c, slf, a[0], a[1], true)?; check_frozen(c, slf)?; if v == b(slf) { return Ok(NIL); } modify(c, slf)?.b = v.into(); Ok(slf) });
 fn in_sets(ch: u32, sets: &[TrSet]) -> bool { sets.iter().all(|(neg, s)| s.contains(&ch) != *neg) }
 fn sets_of(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<Vec<TrSet>, Esc> {
     let mut v = vec![];
@@ -867,7 +895,7 @@ cfn!(s_delete_b, |c, slf, a, b_| {
     let sets = sets_of(c, slf, a)?;
     let v = filter_chars(c, slf, &sets)?;
     if v.len() == b(slf).len() { return Ok(NIL); }
-    modify(c, slf)?.b = v; Ok(slf)
+    modify(c, slf)?.b = v.into(); Ok(slf)
 });
 cfn!(s_count, |c, slf, a, b_| {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
@@ -888,7 +916,7 @@ fn squeeze_impl(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<Vec<u8>, Esc> {
     Ok(out)
 }
 cfn!(s_squeeze, |c, slf, a, b_| { let v = squeeze_impl(c, slf, a)?; Ok(new_like(slf, v)) });
-cfn!(s_squeeze_b, |c, slf, a, b_| { let v = squeeze_impl(c, slf, a)?; check_frozen(c, slf)?; if v.len() == b(slf).len() { return Ok(NIL); } modify(c, slf)?.b = v; Ok(slf) });
+cfn!(s_squeeze_b, |c, slf, a, b_| { let v = squeeze_impl(c, slf, a)?; check_frozen(c, slf)?; if v.len() == b(slf).len() { return Ok(NIL); } modify(c, slf)?.b = v.into(); Ok(slf) });
 fn justify(c: &mut Ctx, slf: Value, a: &[Value], mode: u8) -> RV {
     let w = num_to_long(c, a[0])?;
     let pad = if a.len() > 1 { let p = expect_str(c, a[1])?; b(p).to_vec() } else { b" ".to_vec() };
@@ -906,7 +934,7 @@ cfn!(s_ljust, |c, slf, a, b_| justify(c, slf, a, b'l'));
 cfn!(s_rjust, |c, slf, a, b_| justify(c, slf, a, b'r'));
 cfn!(s_center, |c, slf, a, b_| justify(c, slf, a, b'c'));
 cfn!(s_empty, |c, slf, a, b_| Ok(Value::bool(b(slf).is_empty())));
-cfn!(s_replace, |c, slf, a, b_| { let o = expect_str(c, a[0])?; let nb = b(o).to_vec(); let e = rstr(o).enc; let r = modify(c, slf)?; r.b = nb; r.enc = e; Ok(slf) });
+cfn!(s_replace, |c, slf, a, b_| { let o = expect_str(c, a[0])?; let nb = b(o).to_vec(); let e = rstr(o).enc; let r = modify(c, slf)?; r.b = nb.into(); r.enc = e; Ok(slf) });
 cfn!(s_clear, |c, slf, a, b_| { modify(c, slf)?.b.clear(); Ok(slf) });
 cfn!(s_insert, |c, slf, a, b_| {
     let idx = num_to_long(c, a[0])?; let o = expect_str(c, a[1])?;
@@ -930,7 +958,7 @@ cfn!(s_ord, |c, slf, a, b_| {
 });
 cfn!(s_sum, |c, slf, a, b_| { let bits = if a.is_empty() { 16 } else { num_to_long(c, a[0])? }; let s2: u64 = b(slf).iter().map(|&x| x as u64).sum(); Ok(Value::fix(if bits > 0 && bits < 63 { (s2 & ((1 << bits) - 1)) as i64 } else { s2 as i64 })) });
 cfn!(s_succ, |c, slf, a, b_| Ok(new_like(slf, succ_enc(b(slf), rstr(slf).enc))));
-cfn!(s_succ_b, |c, slf, a, b_| { let v = succ_enc(b(slf), rstr(slf).enc); modify(c, slf)?.b = v; Ok(slf) });
+cfn!(s_succ_b, |c, slf, a, b_| { let v = succ_enc(b(slf), rstr(slf).enc); modify(c, slf)?.b = v.into(); Ok(slf) });
 cfn!(s_upto, |c, slf, a, blk| {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, s::upto, a, NIL); }
     let last = expect_str(c, a[0])?;
@@ -1038,7 +1066,7 @@ fn encode_impl(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<(Vec<u8>, u8), Es
     Ok((out, to))
 }
 cfn!(s_encode, |c, slf, a, b_| { let (v, e) = encode_impl(c, slf, a)?; Ok(str_from_vec_enc(v, e)) });
-cfn!(s_encode_b, |c, slf, a, b_| { check_frozen(c, slf)?; let (v, e) = encode_impl(c, slf, a)?; let r = rstr(slf); r.b = v; r.enc = e; Ok(slf) });
+cfn!(s_encode_b, |c, slf, a, b_| { check_frozen(c, slf)?; let (v, e) = encode_impl(c, slf, a)?; let r = rstr(slf); r.b = v.into(); r.enc = e; Ok(slf) });
 /// scrub core: None if the string is valid.
 fn scrub_impl(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> Result<Option<Vec<u8>>, Esc> {
     use crate::builtins::encoding as en;
@@ -1071,7 +1099,7 @@ fn scrub_impl(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> Result
     Ok(Some(out))
 }
 cfn!(s_scrub, |c, slf, a, blk| { let v = scrub_impl(c, slf, a, blk)?; Ok(new_like(slf, v.unwrap_or_else(|| b(slf).to_vec()))) });
-cfn!(s_scrub_b, |c, slf, a, blk| { check_frozen(c, slf)?; if let Some(v) = scrub_impl(c, slf, a, blk)? { modify(c, slf)?.b = v; } Ok(slf) });
+cfn!(s_scrub_b, |c, slf, a, blk| { check_frozen(c, slf)?; if let Some(v) = scrub_impl(c, slf, a, blk)? { modify(c, slf)?.b = v.into(); } Ok(slf) });
 /// to_str-convertible other string for casecmp, or None.
 fn casecmp_other(c: &mut Ctx, slf: Value, o: Value) -> Result<Option<Value>, Esc> {
     let o = if is_string(o) { o } else if o.is_heap() && respond_to(o, s::to_str, true) { expect_str(c, o)? } else { return type_err(c, format!("no implicit conversion of {} into String", class_name_for_err(o))) };
@@ -1121,7 +1149,7 @@ cfn!(s_rpartition, |c, slf, a, b_| {
 });
 cfn!(s_delete_prefix, |c, slf, a, b_| { let p = expect_str(c, a[0])?; let v = b(slf); Ok(new_like(slf, if v.starts_with(b(p)) { v[b(p).len()..].to_vec() } else { v.to_vec() })) });
 cfn!(s_delete_suffix, |c, slf, a, b_| { let p = expect_str(c, a[0])?; let v = b(slf); Ok(new_like(slf, if v.ends_with(b(p)) { v[..v.len() - b(p).len()].to_vec() } else { v.to_vec() })) });
-cfn!(s_delete_prefix_b, |c, slf, a, b_| { let p = expect_str(c, a[0])?; check_frozen(c, slf)?; let n = b(p).len(); if b(slf).starts_with(b(p)) { rstr(slf).b.drain(..n); Ok(slf) } else { Ok(NIL) } });
+cfn!(s_delete_prefix_b, |c, slf, a, b_| { let p = expect_str(c, a[0])?; check_frozen(c, slf)?; let n = b(p).len(); if b(slf).starts_with(b(p)) { rstr(slf).b.remove_front(n); Ok(slf) } else { Ok(NIL) } });
 cfn!(s_delete_suffix_b, |c, slf, a, b_| { let p = expect_str(c, a[0])?; check_frozen(c, slf)?; let n = b(p).len(); if b(slf).ends_with(b(p)) { let l = b(slf).len(); rstr(slf).b.truncate(l - n); Ok(slf) } else { Ok(NIL) } });
 cfn!(s_slice_b, |c, slf, a, b_| {
     let r = str_aref(c, slf, a)?;

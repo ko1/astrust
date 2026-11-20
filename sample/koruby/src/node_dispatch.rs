@@ -76,7 +76,7 @@ pub fn DISPATCH_node_dstr(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
     let np = n as *mut NodeOf<node_dstr_struct>;
     unsafe {
 
-    EVAL_node_dstr::<DynList>(c, n, fp, (*np).u.parts, (*np).u.enc)
+    EVAL_node_dstr::<DynList>(c, n, fp, (*np).u.parts, (*np).u.enc, (*np).u.cap)
     }
 }
 
@@ -506,6 +506,15 @@ pub fn DISPATCH_node_when(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
 }
 
 #[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_when_lit(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
+    let np = n as *mut NodeOf<node_when_lit_struct>;
+    unsafe {
+
+    EVAL_node_when_lit(c, n, fp, (*np).u.subj_slot, (*np).u.v, &mut (*np).u.cc)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
 pub fn DISPATCH_node_defined(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
     let np = n as *mut NodeOf<node_defined_struct>;
     unsafe {
@@ -641,6 +650,16 @@ pub fn DISPATCH_node_opt_div(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
     EVAL_node_opt_div(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_opt_pow(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
+    let np = n as *mut NodeOf<node_opt_pow_struct>;
+    unsafe {
+    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
+    EVAL_node_opt_pow(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc)
     }
 }
 

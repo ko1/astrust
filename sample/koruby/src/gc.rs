@@ -9,7 +9,7 @@
 // in a Rust heap buffer (Vec<Value> etc.) across an allocation — use a Ruby Array.
 use crate::object::*;
 use crate::value::*;
-use std::collections::HashSet;
+use crate::fxhash::HashSet;
 
 pub const PAGE_BYTES: usize = 64 * 1024;
 pub const SLOT: usize = std::mem::size_of::<RObj>();
@@ -45,7 +45,7 @@ pub fn heap() -> &'static mut Heap { unsafe { HEAP.as_mut().unwrap_unchecked() }
 pub fn init(stack_base: usize) {
     unsafe {
         HEAP = Some(Heap {
-            pages: vec![], page_set: HashSet::new(), free: std::ptr::null_mut(), free_count: 0, total: 0,
+            pages: vec![], page_set: HashSet::default(), free: std::ptr::null_mut(), free_count: 0, total: 0,
             live_after_gc: 0, allocs_since_gc: 0, malloc_since_gc: 0, malloc_limit: 64 << 20, gc_count: 0,
             gc_time: std::time::Duration::ZERO, stress: 0, stress_ctr: 0, disabled: false, stack_base: 0, extra_stacks: vec![],
             total_allocated: 0, total_freed: 0,
@@ -101,16 +101,18 @@ pub fn alloc(klass: Value, body: Body) -> Value {
 #[inline(never)]
 fn slow_path() {
     let h = heap();
-    if h.stress != 0 && !h.disabled {
+    // KORUBY_GC_STRESS=n: collect every n-th allocation once the VM has booted
+    if h.stress != 0 && !h.disabled && unsafe { crate::rt::BOOTED } {
         h.stress_ctr += 1;
         if h.stress_ctr >= h.stress { h.stress_ctr = 0; collect(); }
     }
     if h.malloc_since_gc > h.malloc_limit && !h.disabled { collect(); }
     if h.free.is_null() {
         if !h.disabled && h.allocs_since_gc > h.total / 4 { collect(); }
+        // keep the heap at >= 2x the live set: a full mark per cycle is paid by that many allocations
         let h = heap();
-        if h.free.is_null() || h.free_count < h.total / 5 {
-            let want = (h.total / 2).max(PER_PAGE) / PER_PAGE + 1;
+        if h.free.is_null() || h.free_count < h.live_after_gc {
+            let want = h.live_after_gc.saturating_sub(h.free_count).max(h.total / 8) / PER_PAGE + 1;
             for _ in 0..want { add_page(); }
         }
     }

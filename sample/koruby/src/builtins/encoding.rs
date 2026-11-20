@@ -494,8 +494,8 @@ pub fn transcode(c: &mut Ctx, src: &[u8], from: u8, to: u8, o: &TcOpts) -> Resul
     let rep_bytes = |c: &mut Ctx| -> Result<Vec<u8>, Esc> {
         if let Some(r) = o.replace {
             let rr = rstr(r);
-            if rr.enc == ro || (is_ascii(&rr.b) && ascii_compat(ro) && ascii_compat(rr.enc)) { return Ok(rr.b.clone()); }
-            let (b2, e2) = (rr.b.clone(), rr.enc);
+            if rr.enc == ro || (is_ascii(&rr.b) && ascii_compat(ro) && ascii_compat(rr.enc)) { return Ok(rr.b.to_vec()); }
+            let (b2, e2) = (rr.b.to_vec(), rr.enc);
             return transcode(c, &b2, e2, ro, &TcOpts::default());
         }
         Ok(if is_unicode(to) { from_unicode(ro, 0xfffd).unwrap() } else { from_unicode(ro, '?' as u32).unwrap_or(vec![b'?']) })
@@ -565,7 +565,7 @@ fn fallback(c: &mut Ctx, fb: Value, ch: &[u8], from: u8, to: u8) -> Result<Vec<u
         return Err(raise_msg(c, vm().c_undef_conv_error, &msg));
     }
     let s = expect_str(c, r)?;
-    let (b2, e2) = (rstr(s).b.clone(), rstr(s).enc);
+    let (b2, e2) = (rstr(s).b.to_vec(), rstr(s).enc);
     if e2 == to { return Ok(b2); }
     match transcode(c, &b2, e2, to, &TcOpts::default()) {
         Ok(v) => Ok(v),

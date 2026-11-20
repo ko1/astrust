@@ -251,7 +251,7 @@ fn io_readlines(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 /// Store `v` into the caller's buffer string (read(n, buf) forms).
 fn into_outbuf(c: &mut Ctx, buf: Option<Value>, v: Vec<u8>, enc: u8) -> RV {
     match buf {
-        Some(b) if b != NIL => { let b = expect_str(c, b)?; check_frozen(c, b)?; rstr(b).b = v; Ok(b) }
+        Some(b) if b != NIL => { let b = expect_str(c, b)?; check_frozen(c, b)?; rstr(b).b = v.into(); Ok(b) }
         _ => Ok(str_from_vec_enc(v, enc)),
     }
 }

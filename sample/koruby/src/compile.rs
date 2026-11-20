@@ -848,7 +848,13 @@ impl<'a> Compiler<'a> {
     fn dstr(&mut self, parts: &[PNode]) -> NodePtr {
         let mut v = vec![];
         self.dstr_parts(parts, &mut v);
-        ALLOC_node_dstr(leak(v), 0)
+        // buffer size guess: the literal bytes plus a little per interpolated value
+        let cap: usize = v.iter().map(|&n| unsafe {
+            if std::ptr::eq((*n).head.kind, &KIND_node_fstr) { let s: Str = (*(n as *mut NodeOf<node_fstr_struct>)).u.s; s.len() } else { 12 }
+        }).sum();
+        // short results start inside the object slot (spilling copies at most 23 bytes)
+        let cap = if cap <= 48 { 0 } else { cap.min(4096) };
+        ALLOC_node_dstr(leak(v), 0, cap as u32)
     }
     fn dstr_parts(&mut self, parts: &[PNode], v: &mut Vec<NodePtr>) {
         for p in parts {
@@ -858,9 +864,10 @@ impl<'a> Compiler<'a> {
                     v.push(ALLOC_node_fstr(lstr(unescaped), enc))
                 }
                 Kind::InterpolatedStringNode { parts } => self.dstr_parts(parts, v),
-                Kind::EmbeddedStatementsNode { statements } => { let e = self.stmts(statements.as_deref()); v.push(ALLOC_node_tostr(e)); }
-                Kind::EmbeddedVariableNode { variable } => { let e = self.c(variable); v.push(ALLOC_node_tostr(e)); }
-                _ => { let e = self.c(p); v.push(ALLOC_node_tostr(e)); }
+                // rt_dstr_append converts (no intermediate String for Integers)
+                Kind::EmbeddedStatementsNode { statements } => { let e = self.stmts(statements.as_deref()); v.push(e); }
+                Kind::EmbeddedVariableNode { variable } => { let e = self.c(variable); v.push(e); }
+                _ => { let e = self.c(p); v.push(e); }
             }
         }
     }
@@ -957,6 +964,7 @@ impl<'a> Compiler<'a> {
             x if x == s::mul => ALLOC_node_opt_mul(a, b, line),
             x if x == s::div => ALLOC_node_opt_div(a, b, line),
             x if x == s::modulo => ALLOC_node_opt_mod(a, b, line),
+            x if x == s::pow => ALLOC_node_opt_pow(a, b, line),
             x if x == s::lt => ALLOC_node_opt_lt(a, b, line),
             x if x == s::le => ALLOC_node_opt_le(a, b, line),
             x if x == s::gt => ALLOC_node_opt_gt(a, b, line),
@@ -1073,7 +1081,7 @@ impl<'a> Compiler<'a> {
         let has_blockarg = matches!(block.map(|b| &b.kind), Some(Kind::BlockArgumentNode { .. }));
         let simple = args.iter().all(|a| self.simple_arg(a)) && !has_blockarg;
         let node = if simple && blk_iseq.is_none() && !safe && recv.is_some() && !attr && args.len() == 1 && flags & CF_FCALL == 0
-            && [s::plus, s::minus, s::mul, s::div, s::modulo, s::lt, s::le, s::gt, s::ge, s::eq, s::neq, s::ltlt, s::gtgt, s::xor, s::and, s::or, s::aref].contains(&mid) {
+            && [s::plus, s::minus, s::mul, s::div, s::modulo, s::pow, s::lt, s::le, s::gt, s::ge, s::eq, s::neq, s::ltlt, s::gtgt, s::xor, s::and, s::or, s::aref].contains(&mid) {
             let a = self.c(args[0]);
             self.binop(recv_node, mid, a, line)
         } else if simple && blk_iseq.is_none() && recv.is_some() && args.is_empty() && mid == s::not && !safe {
@@ -1255,7 +1263,10 @@ impl<'a> Compiler<'a> {
                                 _ => { pats.push(self.c(cnd)); kinds.push(0); }
                             }
                         }
-                        let test = ALLOC_node_when(sl, leak(pats), lstr(&kinds));
+                        let test = match lit_imm(&pats, &kinds) {
+                            Some(v) => ALLOC_node_when_lit(sl, v),
+                            None => ALLOC_node_when(sl, leak(pats), lstr(&kinds)),
+                        };
                         let body = self.stmts(statements.as_deref());
                         tail = ALLOC_node_if(test, body, tail);
                     }
@@ -1980,4 +1991,13 @@ pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind,
         cm.captures.entry(key(&pr.root)).or_default().insert(Sym(u32::MAX));
     }
     Ok(cm.compile_program(&pr.root, kind))
+}
+
+/// The value of a single non-splat `when` pattern that is an immediate literal.
+fn lit_imm(pats: &[NodePtr], kinds: &[u8]) -> Option<Value> {
+    if pats.len() != 1 || kinds[0] != 0 { return None; }
+    let n = pats[0];
+    if !std::ptr::eq(unsafe { (*n).head.kind }, &KIND_node_lit) { return None; }
+    let v = unsafe { (*(n as *mut NodeOf<node_lit_struct>)).u.v };
+    if v.is_fixnum() || v.is_special() { Some(v) } else { None }
 }

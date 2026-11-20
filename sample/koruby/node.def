@@ -13,6 +13,7 @@ use crate::vm::*;
 use crate::value::*;
 use crate::object::*;
 use crate::rt::*;
+use crate::opt::*;
 use crate::node::*;
 use crate::compile::{IseqRef, CiRef, Str, LitCache, CallInfo};
 use crate::symbol::s;
@@ -69,9 +70,9 @@ node_fstr(c: &mut Ctx, n: NodePtr, fp: *mut Value, s: Str, enc: u32, lc@ref: Lit
 }
 
 NODE_DEF
-node_dstr(c: &mut Ctx, n: NodePtr, fp: *mut Value, parts: NODES, enc: u32)
+node_dstr(c: &mut Ctx, n: NodePtr, fp: *mut Value, parts: NODES, enc: u32, cap: u32)
 {
-    let acc = crate::string::str_new_enc(b"", enc as u8);
+    let acc = crate::string::str_with_capa(cap as usize, enc as u8);
     for i in 0..EVAL_LEN!(parts) {
         let v = EVAL_NTH!(c, parts, i)?;
         rt_dstr_append(c, acc, v)?;
@@ -147,7 +148,7 @@ node_ary_build(c: &mut Ctx, n: NodePtr, fp: *mut Value, elems: NODES, kinds: Str
 NODE_DEF
 node_hash(c: &mut Ctx, n: NodePtr, fp: *mut Value, items: NODES, kinds: Str)
 {
-    let h = crate::hash::hash_new();
+    let h = crate::hash::hash_new_capa(kinds.len());
     let base = c.sp;
     unsafe { *base = h; c.sp = base.add(2); }
     let mut i = 0;
@@ -327,8 +328,16 @@ node_back_ref(c: &mut Ctx, n: NodePtr, fp: *mut Value, kind: u32)
 NODE_DEF
 node_block(c: &mut Ctx, n: NodePtr, fp: *mut Value, stmts: NODES)
 {
+    // unrolled by hand: a loop over nth() stays a loop + switch in specialized code
     let k = EVAL_LEN!(stmts);
-    let mut i = 0;
+    if k > 1 { EVAL_NTH!(c, stmts, 0)?; }
+    if k > 2 { EVAL_NTH!(c, stmts, 1)?; }
+    if k > 3 { EVAL_NTH!(c, stmts, 2)?; }
+    if k > 4 { EVAL_NTH!(c, stmts, 3)?; }
+    if k > 5 { EVAL_NTH!(c, stmts, 4)?; }
+    if k > 6 { EVAL_NTH!(c, stmts, 5)?; }
+    if k > 7 { EVAL_NTH!(c, stmts, 6)?; }
+    let mut i = 7;
     while i + 1 < k { EVAL_NTH!(c, stmts, i)?; i += 1; }
     EVAL_NTH!(c, stmts, k - 1)
 }
@@ -554,9 +563,22 @@ node_when(c: &mut Ctx, n: NodePtr, fp: *mut Value, subj_slot: u32, pats: NODES, 
         let p = EVAL_NTH!(c, pats, i)?;
         if kinds[i] == 1 {
             if rt_when_splat(c, p, subj)? { return Ok(TRUE); }
-        } else if rt_eqq(c, p, subj, cc)? { return Ok(TRUE); }
+        } else {
+            let hit = match eqq_imm(p, subj) { Some(b) => b, None => rt_eqq(c, p, subj, cc)? };
+            if hit { return Ok(TRUE); }
+        }
     }
     Ok(FALSE)
+}
+
+// `when LIT` for one immediate literal (Integer / Symbol / nil / true / false)
+NODE_DEF
+node_when_lit(c: &mut Ctx, n: NodePtr, fp: *mut Value, subj_slot: u32, v: Value, cc@ref: CallCache)
+{
+    let subj = unsafe { *fp.add(subj_slot as usize) };
+    if subj == v { return Ok(TRUE); }
+    if !v.is_fixnum() || subj.is_fixnum() { return Ok(FALSE); }
+    Ok(Value::bool(rt_eqq(c, v, subj, cc)?))
 }
 
 NODE_DEF
@@ -733,7 +755,7 @@ node_opt_plus(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: 
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_PLUS) {
         if let Some(r) = a.as_fix().checked_add(b.as_fix()) { if Value::fixable(r) { return Ok(Value::fix(r)); } }
     }
-    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_PLUS) { return Ok(crate::numeric::float_new(a.flonum_val() + b.flonum_val())); }
+    if let Some((x, y)) = flo2(a, b, R_FLO_PLUS, R_INT_PLUS) { return Ok(crate::numeric::float_new(x + y)); }
     rt_binop(c, a, b, s::plus, line, cc)
 }
 
@@ -743,7 +765,7 @@ node_opt_minus(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child:
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_MINUS) {
         if let Some(r) = a.as_fix().checked_sub(b.as_fix()) { if Value::fixable(r) { return Ok(Value::fix(r)); } }
     }
-    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_MINUS) { return Ok(crate::numeric::float_new(a.flonum_val() - b.flonum_val())); }
+    if let Some((x, y)) = flo2(a, b, R_FLO_MINUS, R_INT_MINUS) { return Ok(crate::numeric::float_new(x - y)); }
     rt_binop(c, a, b, s::minus, line, cc)
 }
 
@@ -753,7 +775,7 @@ node_opt_mul(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: V
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_MUL) {
         if let Some(r) = a.as_fix().checked_mul(b.as_fix()) { if Value::fixable(r) { return Ok(Value::fix(r)); } }
     }
-    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_MUL) { return Ok(crate::numeric::float_new(a.flonum_val() * b.flonum_val())); }
+    if let Some((x, y)) = flo2(a, b, R_FLO_MUL, R_INT_MUL) { return Ok(crate::numeric::float_new(x * y)); }
     rt_binop(c, a, b, s::mul, line, cc)
 }
 
@@ -765,8 +787,19 @@ node_opt_div(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: V
         let q = if (x % y != 0) && ((x < 0) != (y < 0)) { x / y - 1 } else { x / y };
         if Value::fixable(q) { return Ok(Value::fix(q)); }
     }
-    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_DIV) { return Ok(crate::numeric::float_new(a.flonum_val() / b.flonum_val())); }
+    if let Some((x, y)) = flo2(a, b, R_FLO_DIV, R_INT_DIV) { return Ok(crate::numeric::float_new(x / y)); }
     rt_binop(c, a, b, s::div, line, cc)
+}
+
+// Float ** Float with a non-negative base (a negative one may give a Complex)
+NODE_DEF
+node_opt_pow(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Value, line: u32, cc@ref: CallCache)
+{
+    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_POW) {
+        let (x, y) = (a.flonum_val(), b.flonum_val());
+        if x >= 0.0 { return Ok(crate::numeric::float_new(crate::numeric::libm_pow(x, y))); }
+    }
+    rt_binop(c, a, b, s::pow, line, cc)
 }
 
 NODE_DEF
@@ -785,7 +818,7 @@ NODE_DEF
 node_opt_lt(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Value, line: u32, cc@ref: CallCache)
 {
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_LT) { return Ok(Value::bool(a.as_fix() < b.as_fix())); }
-    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LT) { return Ok(Value::bool(a.flonum_val() < b.flonum_val())); }
+    if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LT, R_INT_LT) { return Ok(Value::bool(x < y)); }
     rt_binop(c, a, b, s::lt, line, cc)
 }
 NODE_TEST
@@ -799,7 +832,7 @@ NODE_DEF
 node_opt_le(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Value, line: u32, cc@ref: CallCache)
 {
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_LE) { return Ok(Value::bool(a.as_fix() <= b.as_fix())); }
-    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LE) { return Ok(Value::bool(a.flonum_val() <= b.flonum_val())); }
+    if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LE, R_INT_LE) { return Ok(Value::bool(x <= y)); }
     rt_binop(c, a, b, s::le, line, cc)
 }
 NODE_TEST
@@ -813,7 +846,7 @@ NODE_DEF
 node_opt_gt(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Value, line: u32, cc@ref: CallCache)
 {
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_GT) { return Ok(Value::bool(a.as_fix() > b.as_fix())); }
-    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GT) { return Ok(Value::bool(a.flonum_val() > b.flonum_val())); }
+    if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GT, R_INT_GT) { return Ok(Value::bool(x > y)); }
     rt_binop(c, a, b, s::gt, line, cc)
 }
 NODE_TEST
@@ -827,7 +860,7 @@ NODE_DEF
 node_opt_ge(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Value, line: u32, cc@ref: CallCache)
 {
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_GE) { return Ok(Value::bool(a.as_fix() >= b.as_fix())); }
-    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GE) { return Ok(Value::bool(a.flonum_val() >= b.flonum_val())); }
+    if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GE, R_INT_GE) { return Ok(Value::bool(x >= y)); }
     rt_binop(c, a, b, s::ge, line, cc)
 }
 NODE_TEST
@@ -841,8 +874,9 @@ NODE_DEF
 node_opt_eq(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Value, line: u32, cc@ref: CallCache)
 {
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_EQ) { return Ok(Value::bool(a == b)); }
-    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { return Ok(Value::bool(a.flonum_val() == b.flonum_val())); }
-    if a.is_sym() && b.is_sym() { return Ok(Value::bool(a == b)); }
+    if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { return Ok(Value::bool(x == y)); }
+    // nil / true / false / Symbol receivers: == is identity
+    if a.is_special() && !redef(R_IMM_EQ) { return Ok(Value::bool(a == b)); }
     rt_eq(c, a, b, line, cc)
 }
 NODE_TEST
@@ -857,7 +891,7 @@ NODE_DEF
 node_opt_neq(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Value, line: u32, cc@ref: CallCache)
 {
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_EQ) { return Ok(Value::bool(a != b)); }
-    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { return Ok(Value::bool(a.flonum_val() != b.flonum_val())); }
+    if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { return Ok(Value::bool(x != y)); }
     rt_binop(c, a, b, s::neq, line, cc)
 }
 NODE_TEST
@@ -876,6 +910,15 @@ node_opt_ltlt(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: 
     }
     if is_array(a) && !redef(R_ARY_LTLT) && obj(a).flags & FL_FROZEN == 0 && obj(a).klass == vm().c_array {
         crate::array::ary_push(a, b);
+        return Ok(a);
+    }
+    if is_string(a) && is_string(b) && obj(a).klass == vm().c_string && !redef(R_STR_LTLT) {
+        if obj(a).flags & FL_FROZEN == 0 && rstr(a).enc == rstr(b).enc {
+            crate::string::str_append_same_enc(a, b);
+            return Ok(a);
+        }
+        unsafe { (*c.frame).line = line; }
+        crate::string::str_append_str(c, a, b)?;
         return Ok(a);
     }
     rt_binop(c, a, b, s::ltlt, line, cc)

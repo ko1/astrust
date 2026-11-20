@@ -280,8 +280,8 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
     let fmts = expect_str(c, fmtv)?;
     let fenc = rstr(fmts).enc;
     if !en::ascii_compat(fenc) { return err(c, vm().c_compat_error, format!("ASCII incompatible encoding: {}", en::enc_name(fenc))); }
-    let fmt = rstr(fmts).b.clone();
-    let mut out: Vec<u8> = vec![];
+    let fmt = rstr(fmts).b.to_vec();
+    let mut out: Vec<u8> = Vec::with_capacity(fmt.len() + 16);
     let mut renc = fenc;
     let mut st = Args { args, next: 0, posarg: 0, hash: None };
     let mut i = 0;
@@ -417,7 +417,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
             }
             b'd' | b'i' | b'u' => {
                 let iv = int_arg(c, v)?;
-                let s = crate::bignum::to_big(iv).to_string_radix(10);
+                let s = if iv.is_fixnum() { iv.as_fix().to_string() } else { crate::bignum::to_big(iv).to_string_radix(10) };
                 let (neg, mut digits) = if let Some(r) = s.strip_prefix('-') { (true, r.to_string()) } else { (false, s) };
                 let sign = if neg { "-" } else if flags & FPLUS != 0 { "+" } else if flags & FSPACE != 0 { " " } else { "" };
                 if let Some(p) = prec_o { if digits.len() < p { digits = format!("{}{}", "0".repeat(p - digits.len()), digits); } }
@@ -442,9 +442,14 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                 // x X o b B
                 let iv = int_arg(c, v)?;
                 let radix: u32 = match conv { b'x' | b'X' => 16, b'o' => 8, _ => 2 };
-                let big = crate::bignum::to_big(iv);
-                let dots = big.neg && flags & (FPLUS | FSPACE) == 0;
-                let mut digits = if dots {
+                // non-negative fixnums (the common case) skip the bignum conversion
+                let small = if iv.is_fixnum() && iv.as_fix() >= 0 { Some(iv.as_fix() as u64) } else { None };
+                let big = if small.is_none() { crate::bignum::to_big(iv) } else { crate::bignum::BigInt::from_i64(0) };
+                let (bneg, bzero) = if small.is_some() { (false, small == Some(0)) } else { (big.neg, big.is_zero()) };
+                let dots = bneg && flags & (FPLUS | FSPACE) == 0;
+                let mut digits = if let Some(n) = small {
+                    match radix { 16 => format!("{:x}", n), 8 => format!("{:o}", n), _ => format!("{:b}", n) }
+                } else if dots {
                     let per = match radix { 16 => 4, 8 => 3, _ => 1 };
                     let nb = (big.bit_length() / per + 2) as u64;
                     let m = crate::bignum::BigInt::from_i64(radix as i64).pow(nb);
@@ -457,8 +462,8 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                 if let Some(p) = prec_o { if digits.len() < p { digits = format!("{}{}", fill.to_string().repeat(p - digits.len()), digits); } }
                 else if dots && flags & FZERO != 0 && flags & FMINUS == 0 && w > digits.len() + 2 { digits = format!("{}{}", fill.to_string().repeat(w - digits.len() - 2), digits); }
                 if conv == b'X' { digits = digits.to_uppercase(); }
-                let mut sign = String::from(if big.neg && !dots { "-" } else if flags & FPLUS != 0 { "+" } else if flags & FSPACE != 0 { " " } else { "" });
-                if flags & FSHARP != 0 && !big.is_zero() {
+                let mut sign = String::from(if bneg && !dots { "-" } else if flags & FPLUS != 0 { "+" } else if flags & FSPACE != 0 { " " } else { "" });
+                if flags & FSHARP != 0 && !bzero {
                     let pre = match conv { b'x' => "0x", b'X' => "0X", b'o' => if digits.starts_with('0') { "" } else { "0" }, b'b' => "0b", _ => "0B" };
                     sign.push_str(pre);
                 }

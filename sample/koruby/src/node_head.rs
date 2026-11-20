@@ -171,6 +171,7 @@ pub struct node_fstr_struct {
 pub struct node_dstr_struct {
     pub parts: NodeList,
     pub enc: u32,
+    pub cap: u32,
 }
 
 #[allow(non_camel_case_types)]
@@ -506,6 +507,14 @@ pub struct node_when_struct {
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
+pub struct node_when_lit_struct {
+    pub subj_slot: u32,
+    pub v: Value,
+    pub cc: CallCache,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
 pub struct node_defined_struct {
     pub kind: u32,
     pub name: Sym,
@@ -634,6 +643,15 @@ pub struct node_opt_mul_struct {
 #[allow(non_camel_case_types)]
 #[repr(C)]
 pub struct node_opt_div_struct {
+    pub a: NodePtr,
+    pub b: NodePtr,
+    pub line: u32,
+    pub cc: CallCache,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct node_opt_pow_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
@@ -911,8 +929,8 @@ pub fn ALLOC_node_fstr(s: Str, enc: u32) -> NodePtr {
 }
 
 #[allow(non_snake_case)]
-pub fn ALLOC_node_dstr(parts: NodeList, enc: u32) -> NodePtr {
-    node_allocate(&KIND_node_dstr, node_dstr_struct { parts, enc })
+pub fn ALLOC_node_dstr(parts: NodeList, enc: u32, cap: u32) -> NodePtr {
+    node_allocate(&KIND_node_dstr, node_dstr_struct { parts, enc, cap })
 }
 
 #[allow(non_snake_case)]
@@ -1151,6 +1169,11 @@ pub fn ALLOC_node_when(subj_slot: u32, pats: NodeList, kinds: Str) -> NodePtr {
 }
 
 #[allow(non_snake_case)]
+pub fn ALLOC_node_when_lit(subj_slot: u32, v: Value) -> NodePtr {
+    node_allocate(&KIND_node_when_lit, node_when_lit_struct { subj_slot, v, cc: Default::default() })
+}
+
+#[allow(non_snake_case)]
 pub fn ALLOC_node_defined(kind: u32, name: Sym, recv: NodePtr) -> NodePtr {
     node_allocate(&KIND_node_defined, node_defined_struct { kind, name, recv })
 }
@@ -1223,6 +1246,11 @@ pub fn ALLOC_node_opt_mul(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_div(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
     node_allocate(&KIND_node_opt_div, node_opt_div_struct { a, b, line, cc: Default::default() })
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_opt_pow(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
+    node_allocate(&KIND_node_opt_pow, node_opt_pow_struct { a, b, line, cc: Default::default() })
 }
 
 #[allow(non_snake_case)]
@@ -1977,6 +2005,17 @@ pub static KIND_node_when: NodeKind = NodeKind {
 };
 
 #[allow(non_upper_case_globals)]
+pub static KIND_node_when_lit: NodeKind = NodeKind {
+    name: "node_when_lit",
+    default_dispatcher: DISPATCH_node_when_lit,
+    hash_func: HASH_node_when_lit,
+    specializer: SPECIALIZE_node_when_lit,
+    dumper: DUMP_node_when_lit,
+    replacer: REPLACE_node_when_lit,
+    no_inline: false,
+};
+
+#[allow(non_upper_case_globals)]
 pub static KIND_node_defined: NodeKind = NodeKind {
     name: "node_defined",
     default_dispatcher: DISPATCH_node_defined,
@@ -2138,6 +2177,17 @@ pub static KIND_node_opt_div: NodeKind = NodeKind {
     specializer: SPECIALIZE_node_opt_div,
     dumper: DUMP_node_opt_div,
     replacer: REPLACE_node_opt_div,
+    no_inline: false,
+};
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_opt_pow: NodeKind = NodeKind {
+    name: "node_opt_pow",
+    default_dispatcher: DISPATCH_node_opt_pow,
+    hash_func: HASH_node_opt_pow,
+    specializer: SPECIALIZE_node_opt_pow,
+    dumper: DUMP_node_opt_pow,
+    replacer: REPLACE_node_opt_pow,
     no_inline: false,
 };
 

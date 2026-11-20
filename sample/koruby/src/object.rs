@@ -41,7 +41,7 @@ pub const ENC_UTF8: u8 = 0;
 pub const ENC_BINARY: u8 = 1;
 pub const ENC_ASCII: u8 = 2;
 
-pub struct RString { pub b: Vec<u8>, pub enc: u8 }
+pub struct RString { pub b: crate::sbuf::SBuf, pub enc: u8 }
 
 #[derive(Clone, Copy)]
 pub struct HEntry { pub key: Value, pub val: Value, pub hash: u64 }

@@ -163,7 +163,7 @@ fn b_lvar_defined(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
 fn b_receiver(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(rbind(s).self_) }
 fn b_eval(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let src = expect_str(c, a[0])?;
-    let bytes = rstr(src).b.clone();
+    let bytes = rstr(src).b.to_vec();
     eval_in_binding(c, s, &bytes, "(eval)", 1)
 }
 fn b_local_variables(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { local_variables(c, s) }
