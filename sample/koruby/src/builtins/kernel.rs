@@ -616,6 +616,8 @@ pub const BUILTIN_FEATURES: &[&str] = &["set", "enumerator", "rational", "comple
     "erb", "cgi", "yaml", "psych", "abbrev", "matrix", "prime", "tsort", "weakref", "find", "pathname", "io/nonblock", "fcntl",
     "nkf", "racc", "racc/parser", "readline", "reline", "win32ole", "openssl", "mkmf", "rubygems", "bundler", "bundler/setup",
     "objspace", "did_you_mean", "error_highlight", "syntax_suggest", "-test-/memory_status", "random/formatter",
+    "date_core", "socket.so", "io/console/size", "digest/sha2", "digest/sha1", "digest/md5", "digest/rmd160", "digest/bubblebabble", "net/protocol", "net/https",
+    "open-uri", "resolv", "ipaddr", "pty", "fiddle", "syslog", "expect", "io/console", "yaml/store", "bigdecimal/util", "date/format", "psych/y",
 ];
 
 fn resolve_feature(name: &str, relative_to: Option<&str>) -> Option<std::path::PathBuf> {

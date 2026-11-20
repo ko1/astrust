@@ -14,7 +14,7 @@ pub static mut STDOUT_SYNC: bool = false;
 pub struct RIo {
     pub fd: i32, pub wfd: i32, pub path: String, pub rbuf: Vec<u8>, pub rpos: usize, pub eof: bool, pub wbuf: Vec<u8>,
     pub closed: bool, pub init: bool, pub lineno: i64, pub writable: bool, pub readable: bool, pub binmode: bool, pub sync: bool,
-    pub pid: i32, pub enc: u8, pub enc_set: bool, pub autoclose: bool, pub has_path: bool, pub data: bool,
+    pub pid: i32, pub enc: u8, pub enc_set: bool, pub autoclose: bool, pub has_path: bool, pub data: bool, pub rerr: i64,
 }
 impl RData for RIo {
     fn as_any(&self) -> &dyn std::any::Any { self }
@@ -27,7 +27,7 @@ pub fn rio(v: Value) -> Option<&'static mut RIo> { rdata::<RIo>(v) }
 
 fn blank() -> RIo {
     RIo { fd: -1, wfd: -1, path: String::new(), rbuf: vec![], rpos: 0, eof: false, wbuf: vec![], closed: false, init: false, lineno: 0, writable: false,
-          readable: false, binmode: false, sync: false, pid: 0, enc: ENC_UTF8, enc_set: false, autoclose: true, has_path: false, data: false }
+          readable: false, binmode: false, sync: false, pid: 0, enc: ENC_UTF8, enc_set: false, autoclose: true, has_path: false, data: false, rerr: 0 }
 }
 pub fn new_io(klass: Value, fd: i32, path: &str, r: bool, w: bool) -> Value {
     let mut io = blank();
@@ -68,6 +68,7 @@ fn readable(c: &mut Ctx, v: Value) -> Result<&'static mut RIo, Esc> {
     let io = get_io(c, v)?;
     if !io.readable { return err(c, vm().c_io_error, "not opened for reading"); }
     if !io.wbuf.is_empty() { io_flush_one(io); }
+    if io.rerr != 0 { let e = std::mem::take(&mut io.rerr); let p = io.path.clone(); return Err(raise_errno(c, e, &format!("io_fread - {}", p))); }
     if io.rpos >= io.rbuf.len() && !io.data && crate::builtins::thread::active() { let fd = io.fd; crate::builtins::thread::wait_readable(c, fd)?; return get_io(c, v); }
     Ok(io)
 }
@@ -96,7 +97,7 @@ fn fill(io: &mut RIo) -> bool {
     io.rbuf.clear(); io.rpos = 0;
     if io.fd == 0 { out_flush(); }
     io.rbuf.resize(65536, 0);
-    let n = sys::read_fd(io.fd, &mut io.rbuf).unwrap_or(0);
+    let n = match sys::read_fd(io.fd, &mut io.rbuf) { Ok(n) => n, Err(e) => { io.rerr = e; 0 } };
     io.rbuf.truncate(n);
     // pipes / ttys reach EOF only on a zero read; regular files may grow, so never latch eof
     n > 0
@@ -216,6 +217,7 @@ fn io_gets(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let la = line_args(c, a)?;
     let io = readable(c, slf)?;
     let v = gets_with(io, &la);
+    if io.rerr != 0 { let e = std::mem::take(&mut io.rerr); let p = io.path.clone(); return Err(raise_errno(c, e, &format!("io_fillbuf - fd:{} {}", io.fd, p))); }
     if v != NIL { global_set("$.", Value::fix(io.lineno)); }
     vm().globals.insert(intern(b"$_"), v);
     Ok(v)
@@ -268,6 +270,7 @@ fn io_read(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
         }
     }
     let v = read_all(io);
+    if io.rerr != 0 { let e = std::mem::take(&mut io.rerr); let p = io.path.clone(); return Err(raise_errno(c, e, &format!("io_fread - {}", p))); }
     let enc = if io.binmode && !io.enc_set { ENC_BINARY } else { io.enc };
     into_outbuf(c, a.get(1).copied(), v, enc)
 }
@@ -667,6 +670,15 @@ pub fn open_with_block(c: &mut Ctx, klass: Value, a: &[Value], blk: *const Block
     r
 }
 fn io_s_open(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV { open_with_block(c, slf, a, blk) }
+/// Kernel#open: a file, "|command", or anything with #to_open.
+fn k_open(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
+    if a.is_empty() { return argc_err(c, 0, 1, -1); }
+    if !is_string(a[0]) && respond_to(a[0], intern(b"to_open"), true) {
+        let r = funcall(c, a[0], intern(b"to_open"), &a[1..], std::ptr::null())?;
+        return if blk.is_null() { Ok(r) } else { yield1(c, blk, r) };
+    }
+    open_with_block(c, vm().c_file, a, blk)
+}
 fn io_s_sysopen(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
     let p = path_arg(c, a[0])?;
     let om = parse_mode(c, &a[1..])?;
@@ -936,6 +948,7 @@ pub fn init() {
     ds("select", io_s_select, -1); ds("read", io_s_read, -1); ds("binread", io_s_binread, -1); ds("readlines", io_s_readlines, -1); ds("foreach", io_s_foreach, -1);
     ds("write", io_s_write, -1); ds("binwrite", io_s_binwrite, -1); ds("copy_stream", io_s_copy_stream, -1); ds("try_convert", io_s_try_convert, 1);
     define_module_function(vm.m_kernel, "select", io_s_select, -1);
+    define_module_function(vm.m_kernel, "open", k_open, -1);
     for (n, v) in [("SEEK_SET", 0), ("SEEK_CUR", 1), ("SEEK_END", 2), ("SEEK_DATA", 3), ("SEEK_HOLE", 4), ("READABLE", 1), ("PRIORITY", 2), ("WRITABLE", 4)] { const_set(io, intern(n.as_bytes()), Value::fix(v)); }
     let wr = define_module_under(io, "WaitReadable");
     let ww = define_module_under(io, "WaitWritable");

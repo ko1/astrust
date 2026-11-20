@@ -377,7 +377,6 @@ module Kernel
   def respond_to_all?(*ms) = ms.all? { |m| respond_to?(m) }
   def pp_inspect = inspect
   def instance_variable_names = instance_variables.map(&:to_s)
-  def open(path, *args, &b) = File.open(path, *args, &b)
   def require_optional(f) = (require f rescue nil)
 end
 

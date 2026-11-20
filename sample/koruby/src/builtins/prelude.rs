@@ -48,7 +48,10 @@ pub fn stdlib_dirs() -> Option<(String, String)> {
 }
 /// Bundled gems that live outside rubylibdir.
 const BUNDLED: &[&str] = &["ostruct", "base64", "benchmark", "logger", "observer", "abbrev", "pstore", "csv", "matrix", "prime", "getoptlong", "mutex_m", "drb", "rinda", "racc", "bigdecimal", "nkf", "syslog", "rexml", "rss"];
+const EXT_BACKED: &[&str] = &["socket", "openssl", "date", "zlib", "ripper", "psych", "yaml", "bigdecimal", "digest", "pathname", "pty", "coverage",
+    "objspace", "readline", "reline", "nkf", "fiddle", "syslog", "net", "open-uri", "resolv", "ipaddr", "io"];
 pub fn stdlib_file(name: &str) -> Option<std::path::PathBuf> {
+    if EXT_BACKED.contains(&name.split('/').next().unwrap_or(name).trim_end_matches(".rb")) { return None; }
     let (lib, gem) = stdlib_dirs()?;
     let rb = if name.ends_with(".rb") { name.to_string() } else { format!("{}.rb", name) };
     let p = std::path::Path::new(&lib).join(&rb);
