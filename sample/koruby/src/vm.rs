@@ -1410,6 +1410,9 @@ pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &Iseq, base: *mut Value, argc:
             Err(e) => Err(e),
         }
     };
+    // redo: run the body again with the same arguments
+    let mut r = r;
+    while r.is_err() && c.esc == EscKind::Redo { c.esc = EscKind::None; r = run_body(c, is.body, base); }
     c.frame = fr.prev;
     match r {
         Ok(v) => Ok(v),

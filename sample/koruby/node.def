@@ -371,12 +371,15 @@ node_while(c: &mut Ctx, n: NodePtr, fp: *mut Value, cond: NODE, body: NODE, unti
     loop {
         let t = EVAL_ARG!(c, cond)?.truthy();
         if t == until { break; }
-        match EVAL_ARG!(c, body) {
-            Ok(_) => {}
-            Err(e) => match c.esc {
-                EscKind::LoopNext => { c.esc = EscKind::None; }
-                EscKind::LoopBreak => { c.esc = EscKind::None; return Ok(c.esc_val); }
-                _ => return Err(e),
+        loop {
+            match EVAL_ARG!(c, body) {
+                Ok(_) => break,
+                Err(e) => match c.esc {
+                    EscKind::LoopNext => { c.esc = EscKind::None; break; }
+                    EscKind::LoopBreak => { c.esc = EscKind::None; return Ok(c.esc_val); }
+                    EscKind::Redo => { c.esc = EscKind::None; }
+                    _ => return Err(e),
+                }
             }
         }
     }

@@ -484,12 +484,15 @@ pub fn EVAL_node_while<D_cond: Disp, D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: 
     loop {
         let t = <D_cond as Disp>::call(c, cond, fp)?.truthy();
         if t == until { break; }
-        match <D_body as Disp>::call(c, body, fp) {
-            Ok(_) => {}
-            Err(e) => match c.esc {
-                EscKind::LoopNext => { c.esc = EscKind::None; }
-                EscKind::LoopBreak => { c.esc = EscKind::None; return Ok(c.esc_val); }
-                _ => return Err(e),
+        loop {
+            match <D_body as Disp>::call(c, body, fp) {
+                Ok(_) => break,
+                Err(e) => match c.esc {
+                    EscKind::LoopNext => { c.esc = EscKind::None; break; }
+                    EscKind::LoopBreak => { c.esc = EscKind::None; return Ok(c.esc_val); }
+                    EscKind::Redo => { c.esc = EscKind::None; }
+                    _ => return Err(e),
+                }
             }
         }
     }
