@@ -118,6 +118,26 @@ fn exact_parts(v: Value) -> Option<(Value, Value)> {
 }
 pub fn rat_to_f(v: Value) -> f64 { let (n, d) = rat_parts(v); ratio_f64(n, d) }
 
+// ---- exact (Integer / Rational) helpers for other builtins; results canonical ----------------
+
+pub fn ex_canon(v: Value) -> Value { if is_rational(v) { let (n, d) = rat_parts(v); if d == Value::fix(1) { return n; } } v }
+fn ep(v: Value) -> (Value, Value) { exact_parts(v).expect("exact number") }
+pub fn ex_add(a: Value, b: Value) -> Value { if a.is_fixnum() && b.is_fixnum() { return iadd(a, b); } ex_canon(add_parts(ep(a), ep(b), false)) }
+pub fn ex_sub(a: Value, b: Value) -> Value { if a.is_fixnum() && b.is_fixnum() { return isub(a, b); } ex_canon(add_parts(ep(a), ep(b), true)) }
+pub fn ex_mul(a: Value, b: Value) -> Value { if a.is_fixnum() && b.is_fixnum() { return imul(a, b); } ex_canon(mul_parts(ep(a), ep(b))) }
+/// b != 0
+pub fn ex_div(a: Value, b: Value) -> Value { let (n, d) = ep(b); ex_canon(mul_parts(ep(a), (d, n))) }
+pub fn ex_cmp(a: Value, b: Value) -> Ordering {
+    if is_integer(a) && is_integer(b) { return icmp(a, b); }
+    let ((an, ad), (bn, bd)) = (ep(a), ep(b));
+    icmp(imul(an, bd), imul(bn, ad))
+}
+pub fn ex_floor(a: Value) -> Value { if is_integer(a) { a } else { let (n, d) = rat_parts(a); idiv(n, d) } }
+/// a mod m (m > 0 exact)
+pub fn ex_mod(a: Value, m: Value) -> Value { let q = ex_floor(ex_div(a, m)); ex_sub(a, ex_mul(q, m)) }
+pub fn ex_to_f(a: Value) -> f64 { if is_integer(a) { int_to_f(a) } else { rat_to_f(a) } }
+pub fn ex_to_s(a: Value) -> String { if is_integer(a) { istr(a) } else { let (n, d) = rat_parts(a); format!("{}/{}", istr(n), istr(d)) } }
+
 // ---- arithmetic ----------------------------------------------------------------------------
 
 fn add_parts(a: (Value, Value), b: (Value, Value), sub: bool) -> Value {
