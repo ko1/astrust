@@ -315,7 +315,7 @@ impl<'a> Compiler<'a> {
         let is = Box::leak(Box::new(Iseq {
             body, nlocals: sc.nslots, params, env_size: sc.env_size, env_params,
             info: CodeInfo { file: self.file, label, line }, kind, simple, lead_only, name, local_names, arity, uses_block: false,
-            parent: std::cell::Cell::new(std::ptr::null()),
+            parent: std::cell::Cell::new(std::ptr::null()), ruby2_keywords: std::cell::Cell::new(false),
             outer_names: if kind == IseqKind::Eval { self.eval_outer.iter().flatten().cloned().collect() } else { vec![] },
         }));
         for ch in &sc.children { ch.parent.set(is); }

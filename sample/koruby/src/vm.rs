@@ -63,6 +63,7 @@ pub struct Iseq {
     pub uses_block: bool,
     pub parent: std::cell::Cell<*const Iseq>,          // lexically enclosing iseq (set when it is finished)
     pub outer_names: Vec<(Sym, u32, u32)>,             // eval: the binding's names (name, hops, idx)
+    pub ruby2_keywords: std::cell::Cell<bool>,         // Module#ruby2_keywords: flag a trailing keyword Hash in *rest
 }
 
 // ---- blocks ---------------------------------------------------------------------------
@@ -1136,8 +1137,14 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: *mut Value, argc: u32, blk: *c
         let h = *args.last().unwrap();
         if accepts_kw && !p.forwarding {
             kwh = h; args.pop();
-        } else if flags & CF_KW_SPLAT != 0 && is_hash(h) && rhash(h).live == 0 {
+        } else if (flags & CF_KW_SPLAT != 0 || is_block) && is_hash(h) && rhash(h).live == 0 {
             args.pop();
+        } else if is.ruby2_keywords.get() && p.rest.is_some() && is_hash(h) {
+            let d = crate::hash::hash_new();
+            crate::array::ary_push(tmp, d);
+            for (k, x) in crate::hash::hash_pairs(h) { crate::hash::hash_aset(c, d, k, x)?; }
+            obj(d).flags |= FL_KWHASH;
+            *args.last_mut().unwrap() = d;
         } else if p.forwarding {
             // keep as positional for forwarding; remember it's keywords
         }
@@ -1150,7 +1157,9 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: *mut Value, argc: u32, blk: *c
     let post = p.post.len();
     let opt = p.opt.len();
     // block auto-splat
-    if is_block && args.len() == 1 && (lead + post + opt > 1 || (p.rest.is_some() && lead + post + opt > 0) || p.has_trailing_comma || (lead == 1 && p.rest.is_some()))
+    // a non-simple block given keywords (even an empty **h) does not auto-splat
+    let simple_block = opt == 0 && !p.no_kw && p.rest.is_none() && post == 0 && !accepts_kw && p.block.is_none() && p.destructure.is_empty();
+    if is_block && args.len() == 1 && (flags & CF_KW == 0 || simple_block) && (lead + post + opt > 1 || (p.rest.is_some() && lead + post + opt > 0) || p.has_trailing_comma || (lead == 1 && p.rest.is_some()))
         && !p.forwarding {
         let a = args[0];
         let arr = if is_array(a) { Some(a) } else if a.is_heap() && !is_hash(a) && respond_to(a, s::to_ary, true) {

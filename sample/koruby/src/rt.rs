@@ -600,7 +600,8 @@ pub fn rt_yield_x(c: &mut Ctx, tmp: Value, kw: Value) -> RV {
     let blk = unsafe { (*c.frame).blk };
     if blk.is_null() { return rt_no_block(c); }
     let mut args = rary(tmp).clone();
-    let has_kw = kw != NIL && rhash(kw).live > 0;
+    // an empty **h still counts as "keywords given" for an iseq block (no auto-splat for non-simple blocks)
+    let has_kw = kw != NIL && (rhash(kw).live > 0 || matches!(unsafe { (*blk).kind }, BlockKind::Iseq(_)) && !is_lambda_block(blk));
     if has_kw { args.push(kw); }
     let b = unsafe { &*blk };
     invoke_block_full(c, b, &args, std::ptr::null(), b.self_, false, std::ptr::null(), has_kw)
