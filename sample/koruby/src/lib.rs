@@ -79,7 +79,7 @@ pub fn run_top_iseq_cref(c: &mut Ctx, is: &'static Iseq, slf: Value, cref: *cons
             *base.add(1) = env;
         }
     }
-    c.frame = &mut fr;
+    c.frame = &mut fr.h;
     let r = run_body(c, is.body, base);
     c.frame = fr.prev;
     c.sp = base;
@@ -184,7 +184,7 @@ fn run_main(o: Opts) -> i32 {
     unsafe { MAIN_CTX = &mut c; }
     let mut top = Frame::empty();
     top.fp = c.sp;
-    c.frame = &mut top;
+    c.frame = &mut top.h;
 
     let vm = vm();
     vm.verbose = if o.warn { TRUE } else { FALSE };

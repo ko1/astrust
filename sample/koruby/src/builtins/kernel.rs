@@ -788,7 +788,7 @@ fn h_s_r2k_hash(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV 
 }
 fn m_s_nesting(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV {
     let out = ary_new();
-    let mut cr = unsafe { (*c.frame().prev).cref };
+    let mut cr = unsafe { (*c.frame().prev).cref() };
     while !cr.is_null() {
         let r = unsafe { &*cr };
         if r.prev.is_null() { break; }

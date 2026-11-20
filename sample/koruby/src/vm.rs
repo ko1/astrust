@@ -147,27 +147,55 @@ pub const FK_CFUNC: u8 = 5;
 pub const FK_EVAL: u8 = 6;
 
 #[repr(C)]
+/// The part of a frame every call writes.  A `lite` frame (node_method_entry) is only this;
+/// any other frame is the head of a FrameFull.
+#[repr(C)]
 pub struct Frame {
     pub prev: *mut Frame,
     pub fp: *mut Value,
     pub me: *const MethodEntry,
     pub blk: *const Block,
-    pub cref: *const Cref,
-    pub iseq: *const Iseq,
+    pub id: u64,          // return target: method frame id (blocks: the home method's; lambdas: own)
     pub line: u32,
     pub kind: u8,
     pub visi: u8,
-    pub id: u64,          // return target: method frame id (blocks: the home method's; lambdas: own)
+    pub lite: bool,
+    pub pad: u8,          // written with line..lite as one word
+}
+
+#[repr(C)]
+pub struct FrameFull {
+    pub h: Frame,
+    pub cref: *const Cref,
+    pub iseq: *const Iseq,
     pub self_blk: *const Block, // for block frames: the block being run
     pub defined_class: Value,
 }
+impl std::ops::Deref for FrameFull { type Target = Frame; #[inline(always)] fn deref(&self) -> &Frame { &self.h } }
+impl std::ops::DerefMut for FrameFull { #[inline(always)] fn deref_mut(&mut self) -> &mut Frame { &mut self.h } }
 
 impl Frame {
-    pub fn empty() -> Frame {
-        Frame { prev: std::ptr::null_mut(), fp: std::ptr::null_mut(), me: std::ptr::null(), blk: std::ptr::null(),
-                cref: std::ptr::null(), iseq: std::ptr::null(), line: 0, kind: FK_TOP, visi: VISI_PRIVATE, id: 0,
-                self_blk: std::ptr::null(), defined_class: NIL, }
+    pub fn empty() -> FrameFull {
+        FrameFull {
+            h: Frame { prev: std::ptr::null_mut(), fp: std::ptr::null_mut(), me: std::ptr::null(), blk: std::ptr::null(),
+                       id: 0, line: 0, kind: FK_TOP, visi: VISI_PRIVATE, lite: false, pad: 0 },
+            cref: std::ptr::null(), iseq: std::ptr::null(), self_blk: std::ptr::null(), defined_class: NIL,
+        }
     }
+    #[inline(always)]
+    fn full(&self) -> Option<&FrameFull> {
+        if self.lite { None } else { Some(unsafe { &*(self as *const Frame as *const FrameFull) }) }
+    }
+    // a lite frame is a method's: these come from its entry
+    #[inline] pub fn cref(&self) -> *const Cref { match self.full() { Some(x) => x.cref, None => unsafe { (*self.me).cref } } }
+    #[inline] pub fn iseq(&self) -> *const Iseq {
+        match self.full() {
+            Some(x) => x.iseq,
+            None => match unsafe { (*self.me).kind } { MKind::Iseq(is) => is, _ => std::ptr::null() },
+        }
+    }
+    #[inline] pub fn self_blk(&self) -> *const Block { match self.full() { Some(x) => x.self_blk, None => std::ptr::null() } }
+    #[inline] pub fn defined_class(&self) -> Value { match self.full() { Some(x) => x.defined_class, None => NIL } }
 }
 
 // ---- execution context ---------------------------------------------------------------------
@@ -774,8 +802,8 @@ pub fn frame_label(f: &Frame) -> String {
             let k = real_class_of_for_label(NIL, f.me);
             return format!("{}{}", k, sym_str((*f.me).name));
         }
-        if f.iseq.is_null() { return "<main>".into(); }
-        let is = &*f.iseq;
+        if f.iseq().is_null() { return "<main>".into(); }
+        let is = &*f.iseq();
         match is.kind {
             IseqKind::Method => {
                 if !f.me.is_null() {
@@ -823,7 +851,7 @@ fn method_owner_label(owner: Value, _fp: *mut Value) -> String {
 }
 
 pub fn frame_file(f: &Frame) -> &'static str {
-    unsafe { if f.iseq.is_null() { "-" } else { (*f.iseq).info.file } }
+    unsafe { if f.iseq().is_null() { "-" } else { (*f.iseq()).info.file } }
 }
 
 /// Backtrace as an Array of "file:line:in 'label'" strings.
@@ -851,7 +879,7 @@ pub fn backtrace_lines(c: &Ctx, skip: usize) -> Vec<String> {
         }
         for (i, &fp) in frames.iter().enumerate() {
             let fr = &*fp;
-            if fr.kind != FK_CFUNC && fr.iseq.is_null() { continue; }
+            if fr.kind != FK_CFUNC && fr.iseq().is_null() { continue; }
             // CRuby's send/__send__ and Proc#call/yield/===/[] do not push a frame
             if fr.kind == FK_CFUNC && (fr.me.is_null() == false && ((*fr.me).name == s::send || (*fr.me).name == s::__send__)) { continue; }
             if fr.kind == FK_CFUNC && !fr.me.is_null() && (*fr.me).owner == vm().c_proc && matches!(sym_str((*fr.me).name).as_ref(), "call" | "yield" | "===" | "[]") { continue; }
@@ -1031,9 +1059,9 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Valu
     let mut vals = [NIL; 16];
     for j in 0..names.len() { vals[j] = unsafe { *base.add(2 + npos + j) }; }
     let id = c.next_serial();
-    let mut fr = Frame {
-        prev: c.frame, fp: base, me, blk, cref: unsafe { (*me).cref }, iseq: is, line: is.info.line,
-        kind: FK_METHOD, visi: VISI_PUBLIC, id, self_blk: std::ptr::null(), defined_class: NIL,
+    let mut fr = FrameFull {
+        h: Frame { prev: c.frame, fp: base, me, blk, id, line: is.info.line, kind: FK_METHOD, visi: VISI_PUBLIC, lite: false, pad: 0 },
+        cref: unsafe { (*me).cref }, iseq: is, self_blk: std::ptr::null(), defined_class: NIL,
     };
     unsafe {
         *base = recv;
@@ -1042,7 +1070,7 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Valu
         while i < n { *base.add(i) = NIL; i += 1; }
         c.sp = base.add(n);
     }
-    c.frame = &mut fr;
+    c.frame = &mut fr.h;
     let mut missing: Vec<Sym> = vec![];
     for kp in is.params.kw.iter() {
         match names.iter().position(|x| *x == kp.name) {
@@ -1201,11 +1229,11 @@ pub fn invoke_cfunc(c: &mut Ctx, me: *const MethodEntry, f: CFunc, arity: i32, r
     let mut fr = Frame::empty();
     let pf = c.frame;
     unsafe {
-        fr.prev = pf; fr.fp = (*pf).fp; fr.me = me; fr.kind = FK_CFUNC; fr.cref = (*pf).cref;
+        fr.prev = pf; fr.fp = (*pf).fp; fr.me = me; fr.kind = FK_CFUNC; fr.cref = (*pf).cref();
         fr.id = (*pf).id; fr.line = (*pf).line; fr.blk = blk;
-        fr.iseq = (*pf).iseq; fr.visi = (*pf).visi;
+        fr.iseq = (*pf).iseq(); fr.visi = (*pf).visi;
     }
-    c.frame = &mut fr;
+    c.frame = &mut fr.h;
     let r = f(c, recv, args, blk);
     c.frame = pf;
     if flags & CF_KW != 0 && argc > 0 {
@@ -1240,7 +1268,7 @@ pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, 
     fr.cref = unsafe { (*me).cref };
     fr.line = is.info.line;
     unsafe { *base = recv; }
-    c.frame = &mut fr;
+    c.frame = &mut fr.h;
     let r = if is.simple && argc as usize == is.params.lead.len() && flags & CF_KW == 0 {
         unsafe {
             *base.add(1) = NIL;
@@ -1490,9 +1518,9 @@ pub fn block_fast(b: &Block, argc: usize) -> Option<&'static Iseq> {
 #[inline]
 pub fn run_block_fast(c: &mut Ctx, b: &Block, is: &Iseq, base: *mut Value, argc: u32) -> RV {
     let n = is.nlocals as usize;
-    let mut fr = Frame {
-        prev: c.frame, fp: base, me: b.me, blk: b.outer_blk, cref: b.cref, iseq: is, line: is.info.line,
-        kind: FK_BLOCK, visi: VISI_PUBLIC, id: b.home_id, self_blk: b, defined_class: b.defined_class,
+    let mut fr = FrameFull {
+        h: Frame { prev: c.frame, fp: base, me: b.me, blk: b.outer_blk, id: b.home_id, line: is.info.line, kind: FK_BLOCK, visi: VISI_PUBLIC, lite: false, pad: 0 },
+        cref: b.cref, iseq: is, self_blk: b, defined_class: b.defined_class,
     };
     unsafe {
         *base = b.self_;
@@ -1502,7 +1530,7 @@ pub fn run_block_fast(c: &mut Ctx, b: &Block, is: &Iseq, base: *mut Value, argc:
         c.sp = base.add(n);
         if is.env_size > 0 { make_env(is, base, b.env); }
     }
-    c.frame = &mut fr;
+    c.frame = &mut fr.h;
     let mut r = run_body(c, is.body, base);
     while r.is_err() && c.esc == EscKind::Redo { c.esc = EscKind::None; r = run_body(c, is.body, base); }
     c.frame = fr.prev;
@@ -1592,7 +1620,7 @@ pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &Iseq, base: *mut Value, argc:
     fr.self_blk = b;
     fr.line = is.info.line;
     fr.defined_class = b.defined_class;
-    c.frame = &mut fr;
+    c.frame = &mut fr.h;
     let fast = is.lead_only && is.env_size == 0 && argc as usize == is.params.lead.len() && (argc != 1 || is.params.lead.len() == 1) && !kw;
     let r = if fast {
         unsafe {

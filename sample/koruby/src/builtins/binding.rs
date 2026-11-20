@@ -40,7 +40,7 @@ fn new_binding(slf: Value, env: Value, names: Vec<(Sym, u32, u32)>, cref: *const
 
 pub fn binding_of_frame(_c: &mut Ctx, f: &Frame) -> RV {
     let env = unsafe { *f.fp.add(1) };
-    Ok(new_binding(unsafe { *f.fp }, env, iseq_names(f.iseq, true), f.cref, f.me, frame_file(f), f.line))
+    Ok(new_binding(unsafe { *f.fp }, env, iseq_names(f.iseq(), true), f.cref(), f.me, frame_file(f), f.line))
 }
 pub fn binding_of_caller(c: &mut Ctx) -> RV {
     let f = c.frame();
@@ -103,7 +103,7 @@ fn run_eval_iseq_env(c: &mut Ctx, is: &'static Iseq, slf: Value, env: Value, cre
         *base.add(1) = if e == NIL { crate::gc::alloc(vm().c_env, Body::Env(vec![], NIL)) } else { e };
         *out_env = *base.add(1);
     }
-    c.frame = &mut fr;
+    c.frame = &mut fr.h;
     let r = run_body(c, is.body, base);
     c.frame = fr.prev;
     c.sp = base;
@@ -113,12 +113,12 @@ fn run_eval_iseq_env(c: &mut Ctx, is: &'static Iseq, slf: Value, env: Value, cre
 pub fn eval_with_self(c: &mut Ctx, slf: Value, src: &[u8], file: &'static str, line: i32) -> RV {
     let is = match crate::compile::compile_source(src, file, line, IseqKind::Eval, vec![]) { Ok(is) => is, Err(m) => return err(c, vm().c_syntax_error, m) };
     let k = if slf.is_heap() { singleton_class(slf) } else { class_of(slf) };
-    let cref = new_cref(k, unsafe { (*c.frame).cref });
+    let cref = new_cref(k, unsafe { (*c.frame).cref() });
     run_eval_iseq(c, is, slf, NIL, cref, std::ptr::null(), VISI_PUBLIC)
 }
 pub fn eval_in_class(c: &mut Ctx, k: Value, src: &[u8], file: &'static str, line: i32) -> RV {
     let is = match crate::compile::compile_source(src, file, line, IseqKind::Eval, vec![]) { Ok(is) => is, Err(m) => return err(c, vm().c_syntax_error, m) };
-    let cref = new_cref(k, unsafe { (*c.frame).cref });
+    let cref = new_cref(k, unsafe { (*c.frame).cref() });
     let base = c.sp;
     let r = run_eval_iseq(c, is, k, NIL, cref, std::ptr::null(), VISI_PUBLIC);
     let _ = base;

@@ -423,7 +423,7 @@ pub fn EVAL_node_cvasgn(c: &mut Ctx, n: NodePtr, fp: *mut Value, name: Sym, v: V
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_const(c: &mut Ctx, n: NodePtr, fp: *mut Value, name: Sym, line: u32, cc: &mut ConstCache) -> RV {
-    let cref = unsafe { (*c.frame).cref };
+    let cref = unsafe { (*c.frame).cref() };
     if cc.serial == vm().const_serial && cc.cref == cref as usize { return Ok(unsafe { Value::from_raw(cc.val) }); }
     unsafe { (*c.frame).line = line; }
     rt_const_get(c, cref, name, cc)
@@ -1133,11 +1133,7 @@ pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: *mut Va
     let me = c.call_me;
     let blk = c.call_blk;
     let id = c.next_serial();
-    let is = match unsafe { (*me).kind } { MKind::Iseq(is) => is, _ => unsafe { std::hint::unreachable_unchecked() } };
-    let mut fr = Frame {
-        prev: c.frame, fp, me, blk, cref: unsafe { (*me).cref }, iseq: is, line,
-        kind: FK_METHOD, visi: VISI_PUBLIC, id, self_blk: std::ptr::null(), defined_class: NIL,
-    };
+    let mut fr = Frame { prev: c.frame, fp, me, blk, id, line, kind: FK_METHOD, visi: VISI_PUBLIC, lite: true, pad: 0 };
     // the frame's own address is the native stack probe
     if unsafe { fp.add(nlocals as usize + 16) } >= c.stack_end { return Err(raise_stack_overflow(c)); }
     if (&fr as *const Frame as usize) < c.native_limit { return Err(raise_stack_overflow(c)); }
@@ -1146,7 +1142,7 @@ pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: *mut Va
         let mut i = 2 + nparams as usize;
         while i < nlocals as usize { *fp.add(i) = NIL; i += 1; }
         c.sp = fp.add(nlocals as usize);
-        if has_env { make_env(&*is, fp, NIL); }
+        if has_env { make_env(&*fr.iseq(), fp, NIL); }
     }
     c.frame = &mut fr;
     let r = <D_body as Disp>::call(c, body, fp);

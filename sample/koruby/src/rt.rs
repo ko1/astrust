@@ -216,7 +216,7 @@ pub fn rt_gvar_set(c: &mut Ctx, name: Sym, v: Value) -> RV { crate::builtins::ke
 
 /// The class whose class variables the current code sees (lexical cref, skipping singletons).
 fn cvar_base(c: &Ctx) -> Value {
-    let mut cr = unsafe { (*c.frame).cref };
+    let mut cr = unsafe { (*c.frame).cref() };
     unsafe {
         while !cr.is_null() {
             let k = (*cr).klass;
@@ -290,7 +290,7 @@ pub fn rt_cdecl_path(c: &mut Ctx, parent: Value, name: Sym, v: Value) -> RV {
 
 pub fn rt_cdecl(c: &mut Ctx, parent: Value, name: Sym, v: Value) -> RV {
     let k = if parent == NIL {
-        let cr = unsafe { (*c.frame).cref };
+        let cr = unsafe { (*c.frame).cref() };
         if cr.is_null() { vm().c_object } else { unsafe { (*cr).klass } }
     } else if parent == UNDEF { vm().c_object } else { parent };
     if !is_class_or_module(k) {
@@ -327,10 +327,10 @@ pub fn rt_call0(c: &mut Ctx, v: Value, mid: Sym, cc: &mut CallCache) -> RV {
 
 pub fn rt_break(c: &mut Ctx, v: Value) -> RV {
     let f = c.frame();
-    if f.self_blk.is_null() {
+    if f.self_blk().is_null() {
         return err(c, vm().c_local_jump_error, "break from proc-closure");
     }
-    let tag = unsafe { (*f.self_blk).tag };
+    let tag = unsafe { (*f.self_blk()).tag };
     // a proc's break needs the call that took the literal block to be still running
     if f.kind == FK_BLOCK && !break_target_alive(c, tag) {
         return Err(raise_local_jump(c, "break from proc-closure", "break", v));
@@ -434,7 +434,7 @@ pub fn rt_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: *mut Value, kind: u32, 
             if cvar_lookup(k, name).is_some() { yes(b"class variable") } else { Ok(NIL) }
         }
         DEF_CONST => {
-            let cref = unsafe { (*c.frame).cref };
+            let cref = unsafe { (*c.frame).cref() };
             let saved = (c.esc, c.esc_val);
             match const_defined_lex(c, cref, name) { true => yes(b"constant"), false => { c.esc = saved.0; c.esc_val = saved.1; Ok(NIL) } }
         }
@@ -502,7 +502,7 @@ pub fn make_block(c: &mut Ctx, is: &'static Iseq, fp: *mut Value) -> Block {
     let tag = c.next_serial();
     Block {
         kind: BlockKind::Iseq(is), self_: unsafe { *fp }, env: unsafe { *fp.add(1) }, me: f.me, outer_blk: f.blk,
-        cref: f.cref, home_id: f.id, tag, proc_val: UNDEF, defined_class: f.defined_class,
+        cref: f.cref(), home_id: f.id, tag, proc_val: UNDEF, defined_class: f.defined_class(),
     }
 }
 
@@ -602,7 +602,7 @@ pub fn rt_super(c: &mut Ctx, base: *mut Value, tmp: Value, kw: Value, blkv: Valu
     let me = unsafe { &*f.me };
     let slf = unsafe { *fp };
     let klass = class_of(slf);
-    let owner = if f.defined_class != NIL { f.defined_class } else { me.owner };
+    let owner = if f.defined_class() != NIL { f.defined_class() } else { me.owner };
     let sm = super_method(klass, owner, me.name);
     let n = rary(tmp).len();
     let has_kw = kw != NIL && (rhash(kw).live > 0 || ci.kinds.contains(&AK_KW));
@@ -711,12 +711,12 @@ pub fn rt_aset(c: &mut Ctx, a: Value, b: Value, v: Value, line: u32, cc: &mut Ca
 // ---- definitions --------------------------------------------------------------------------
 
 fn cref_class(c: &Ctx) -> Value {
-    let cr = unsafe { (*c.frame).cref };
+    let cr = unsafe { (*c.frame).cref() };
     if cr.is_null() { vm().c_object } else { unsafe { (*cr).klass } }
 }
 
 pub fn define_iseq_method(c: &mut Ctx, klass: Value, mid: Sym, is: &'static Iseq, visi: u8) {
-    let cref = unsafe { (*c.frame).cref };
+    let cref = unsafe { (*c.frame).cref() };
     let me = new_me_cref(mid, klass, visi, MKind::Iseq(is), cref);
     note_redefinition(klass, mid);
     define_method_me(klass, mid, me);
@@ -726,10 +726,10 @@ pub fn rt_def(c: &mut Ctx, mid: Sym, is: &'static Iseq, _fp: *mut Value) -> RV {
     let f = c.frame();
     let mut klass = cref_class(c);
     // `def` inside a method body defines on the cref class; inside instance_eval, on the singleton
-    if f.defined_class != NIL && f.kind != FK_CLASS { klass = f.defined_class; }
+    if f.defined_class() != NIL && f.kind != FK_CLASS { klass = f.defined_class(); }
     let mut visi = if f.kind == FK_CLASS || f.kind == FK_TOP || (f.kind == FK_EVAL) { f.visi } else { VISI_PUBLIC };
     // eval at top level defines private methods; a def in a method body is public
-    if klass == vm().c_object && f.kind == FK_EVAL && f.cref == vm().top_cref { visi = VISI_PRIVATE; }
+    if klass == vm().c_object && f.kind == FK_EVAL && f.cref() == vm().top_cref { visi = VISI_PRIVATE; }
     if mid == s::initialize || mid == s::initialize_copy || mid == s::respond_to_missing_p
         || mid == s::mid_initialize_dup || mid == s::mid_initialize_clone { visi = VISI_PRIVATE; }
     if visi == VISI_MODFUNC {
@@ -760,7 +760,7 @@ pub fn rt_sdef(c: &mut Ctx, recv: Value, mid: Sym, is: &'static Iseq) -> RV {
 pub fn run_class_body(c: &mut Ctx, klass: Value, is: &'static Iseq) -> RV {
     let base = c.sp;
     stack_check(c, is.nlocals as usize + 8)?;
-    let outer_cref = unsafe { (*c.frame).cref };
+    let outer_cref = unsafe { (*c.frame).cref() };
     let cref = new_cref(klass, outer_cref);
     let mut fr = Frame::empty();
     fr.prev = c.frame; fr.fp = base; fr.iseq = is; fr.kind = FK_CLASS; fr.visi = VISI_PUBLIC;
@@ -774,7 +774,7 @@ pub fn run_class_body(c: &mut Ctx, klass: Value, is: &'static Iseq) -> RV {
             *base.add(1) = env;
         }
     }
-    c.frame = &mut fr;
+    c.frame = &mut fr.h;
     let r = run_body(c, is.body, base);
     c.frame = fr.prev;
     c.sp = base;
@@ -783,7 +783,7 @@ pub fn run_class_body(c: &mut Ctx, klass: Value, is: &'static Iseq) -> RV {
 
 pub fn rt_class(c: &mut Ctx, outer: Value, name: Sym, sup: Value, is: &'static Iseq, _fp: *mut Value) -> RV {
     let outer = if outer == UNDEF {
-        let cr = unsafe { (*c.frame).cref };
+        let cr = unsafe { (*c.frame).cref() };
         if outer == UNDEF && false { vm().c_object } else if cr.is_null() { vm().c_object } else { unsafe { (*cr).klass } }
     } else { outer };
     let outer = if outer == NIL { vm().c_object } else { outer };
@@ -833,7 +833,7 @@ pub fn rt_class(c: &mut Ctx, outer: Value, name: Sym, sup: Value, is: &'static I
 
 pub fn rt_module(c: &mut Ctx, outer: Value, name: Sym, is: &'static Iseq, _fp: *mut Value) -> RV {
     let outer = if outer == UNDEF {
-        let cr = unsafe { (*c.frame).cref };
+        let cr = unsafe { (*c.frame).cref() };
         if cr.is_null() { vm().c_object } else { unsafe { (*cr).klass } }
     } else { outer };
     if !is_class_or_module(outer) {
@@ -866,7 +866,7 @@ pub fn rt_sclass(c: &mut Ctx, recv: Value, is: &'static Iseq, _fp: *mut Value) -
 pub fn rt_alias(c: &mut Ctx, newname: Value, oldname: Value) -> RV {
     let klass = {
         let f = c.frame();
-        if f.defined_class != NIL && f.kind != FK_CLASS { f.defined_class } else { cref_class(c) }
+        if f.defined_class() != NIL && f.kind != FK_CLASS { f.defined_class() } else { cref_class(c) }
     };
     crate::builtins::object::alias_method(c, klass, newname.as_sym(), oldname.as_sym())?;
     Ok(NIL)
