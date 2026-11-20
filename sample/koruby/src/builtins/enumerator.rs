@@ -63,15 +63,41 @@ pub fn arith_seq_from(_c: &mut Ctx, range: Value, b: Value, e: Value, st: Value,
 }
 pub fn is_arith_seq(v: Value) -> bool { renum(v).map(|e| e.arith.is_some()).unwrap_or(false) }
 pub fn arith_seq_slice(c: &mut Ctx, seq: Value, ary: Value) -> RV {
-    let (b, e, st, excl) = renum(seq).unwrap().arith.unwrap();
-    let n = ary_len(ary) as i64;
-    let step = crate::builtins::numeric_methods::num_to_long(c, st)?;
-    let r = crate::range::range_new(b, e, excl);
-    let Some((start, len)) = crate::range::range_beg_len(c, r, n, 0)? else { return Ok(NIL) };
+    use crate::builtins::numeric_methods::num_to_long;
+    let (mut b, mut e, st, mut excl) = renum(seq).unwrap().arith.unwrap();
+    let alen = ary_len(ary) as i64;
+    let step = if st == NIL { 1 } else { num_to_long(c, st)? };
+    if step < 0 {
+        if excl && e != NIL { e = Value::fix(num_to_long(c, e)? + 1); excl = false; }
+        std::mem::swap(&mut b, &mut e);
+    }
+    let oor = |c: &mut Ctx| -> RV { let s2 = inspect_str(c, seq)?; err(c, vm().c_range_error, format!("{} out of range", s2)) };
+    // rb_range_component_beg_len
+    let mut beg = if b == NIL { 0 } else { num_to_long(c, b)? };
+    let mut end = if e == NIL { -1 } else { num_to_long(c, e)? };
+    let ex = if e == NIL { false } else { excl };
+    let strict = step < -1 || step > 1;
+    if beg < 0 { beg += alen; if beg < 0 { return if strict { oor(c) } else { Ok(NIL) }; } }
+    if end < 0 { end += alen; }
+    if !ex { end += 1; }
+    if !strict { if beg > alen { return Ok(NIL); } if end > alen { end = alen; } }
+    let mut len = (end - beg).max(0);
+    if strict && (beg > alen || len > alen) { return oor(c); }
+    // rb_ary_subseq_step
+    if beg > alen || beg < 0 || len < 0 { return Ok(NIL); }
+    if alen < len || alen < beg + len { len = alen - beg; }
     let out = ary_new();
-    if step > 0 { let mut i = start; while i < start + len { ary_push(out, ary_get(ary, i as usize)); i += step; } }
-    else if step < 0 { let mut i = start + len - 1; while i >= start { ary_push(out, ary_get(ary, i as usize)); i += step; } }
-    else { return arg_err(c, "step can't be 0"); }
+    if len == 0 { return Ok(out); }
+    if step == 0 { return arg_err(c, "slice step cannot be zero"); }
+    if step == 1 { for i in beg..beg + len { ary_push(out, ary_get(ary, i as usize)); } return Ok(out); }
+    let orig_len = len;
+    let mut step = step;
+    if step > 0 && step >= len { ary_push(out, ary_get(ary, beg as usize)); return Ok(out); }
+    if step < 0 && step < -len { step = -len; }
+    let ustep = step.abs();
+    let n = (len + ustep - 1) / ustep;
+    let mut j = beg + if step > 0 { 0 } else { orig_len - 1 };
+    for _ in 0..n { ary_push(out, ary_get(ary, j as usize)); j += step; }
     Ok(out)
 }
 
