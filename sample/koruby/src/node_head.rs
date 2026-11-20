@@ -503,6 +503,7 @@ pub struct node_when_struct {
     pub pats: NodeList,
     pub kinds: Str,
     pub cc: CallCache,
+    pub km: KindMemo,
 }
 
 #[allow(non_camel_case_types)]
@@ -1165,7 +1166,7 @@ pub fn ALLOC_node_ensure(body: NodePtr, ens: NodePtr) -> NodePtr {
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_when(subj_slot: u32, pats: NodeList, kinds: Str) -> NodePtr {
-    node_allocate(&KIND_node_when, node_when_struct { subj_slot, pats, kinds, cc: Default::default() })
+    node_allocate(&KIND_node_when, node_when_struct { subj_slot, pats, kinds, cc: Default::default(), km: Default::default() })
 }
 
 #[allow(non_snake_case)]

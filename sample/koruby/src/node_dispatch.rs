@@ -501,7 +501,7 @@ pub fn DISPATCH_node_when(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
     let np = n as *mut NodeOf<node_when_struct>;
     unsafe {
 
-    EVAL_node_when::<DynList>(c, n, fp, (*np).u.subj_slot, (*np).u.pats, (*np).u.kinds, &mut (*np).u.cc)
+    EVAL_node_when::<DynList>(c, n, fp, (*np).u.subj_slot, (*np).u.pats, (*np).u.kinds, &mut (*np).u.cc, &mut (*np).u.km)
     }
 }
 

@@ -135,6 +135,16 @@ pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast:
 pub struct ConstCache { pub serial: u64, pub cref: usize, pub val: u64 }
 #[derive(Default)]
 pub struct IvarCache { pub klass: u64, pub idx: u32 }
+/// `when Klass` site: the class tested (pat), kind_serial then, and subject classes asked with the answer in bit 0
+#[derive(Default)]
+pub struct KindMemo { pub pat: u64, pub ser: u64, pub memo: [u64; KIND_WAYS] }
+pub const KIND_WAYS: usize = 8;
+/// The memo entry of a subject class (classes sit 56 bytes apart: multiply to spread them).
+#[inline(always)]
+pub fn kind_way(k: u64) -> usize { (k.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 61) as usize }
+/// Changes whenever a method or an ancestry does (both counters only grow).
+#[inline(always)]
+pub fn kind_serial() -> u64 { let vm = vm(); vm.method_serial + vm.hierarchy_serial }
 
 // ---- frames ---------------------------------------------------------------------------------
 

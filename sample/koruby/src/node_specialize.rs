@@ -1685,6 +1685,7 @@ fn SPECIALIZE_node_when(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("(*np).u.pats".to_string());
     a.push("(*np).u.kinds".to_string());
     a.push("&mut (*np).u.cc".to_string());
+    a.push("&mut (*np).u.km".to_string());
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
