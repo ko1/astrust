@@ -656,6 +656,22 @@ fn DUMP_node_call_blk(out: &mut String, n: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_call_kw(out: &mut String, n: NodePtr) {
+    let np = n as *mut NodeOf<node_call_kw_struct>;
+    unsafe {
+    out.push_str("(node_call_kw");
+    out.push(' '); dump_node(out, (*np).u.recv);
+    out.push(' '); out.push('['); for (i, x) in (*np).u.args.iter().enumerate() { if i > 0 { out.push(' '); } dump_node(out, *x); } out.push(']');
+    out.push(' '); out.push(':'); out.push_str(&crate::symbol::sym_str((*np).u.mid));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.flags));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str("<ci>");
+    out.push(' '); out.push_str("<cc>");
+    out.push(')');
+    }
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_call_x(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_call_x_struct>;
     unsafe {
@@ -888,6 +904,32 @@ fn DUMP_node_opt_ltlt(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_opt_ltlt_struct>;
     unsafe {
     out.push_str("(node_opt_ltlt");
+    out.push(' '); dump_node(out, (*np).u.a);
+    out.push(' '); dump_node(out, (*np).u.b);
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str("<cc>");
+    out.push(')');
+    }
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_opt_gtgt(out: &mut String, n: NodePtr) {
+    let np = n as *mut NodeOf<node_opt_gtgt_struct>;
+    unsafe {
+    out.push_str("(node_opt_gtgt");
+    out.push(' '); dump_node(out, (*np).u.a);
+    out.push(' '); dump_node(out, (*np).u.b);
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str("<cc>");
+    out.push(')');
+    }
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_opt_xor(out: &mut String, n: NodePtr) {
+    let np = n as *mut NodeOf<node_opt_xor_struct>;
+    unsafe {
+    out.push_str("(node_opt_xor");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));

@@ -1440,6 +1440,36 @@ fn SPECIALIZE_node_call_blk(sc: &mut SpecCtx, n: NodePtr) -> String {
 }
 
 #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
+fn SPECIALIZE_node_call_kw(sc: &mut SpecCtx, n: NodePtr) -> String {
+    let name = format!("T_{:016x}", hash_node(n));
+    if sc.emitted.contains(&name) { return name; }
+    let u = unsafe { &(*(n as *mut NodeOf<node_call_kw_struct>)).u };
+    let t_recv = specialize_node(sc, u.recv);
+    let t_args = specialize_list(sc, &u.args);
+    let np = n as *mut NodeOf<node_call_kw_struct>;
+    let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
+    unsafe {
+    a.push("(*np).u.recv".to_string());
+    a.push("(*np).u.args".to_string());
+    a.push("(*np).u.mid".to_string());
+    a.push(format!("{}u32", (*np).u.flags));
+    a.push(format!("{}u32", (*np).u.line));
+    a.push("(*np).u.ci".to_string());
+    a.push("&mut (*np).u.cc".to_string());
+    }
+    let mut body = String::new();
+    body.push_str(&format!("pub struct {};\n", name));
+    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
+    body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_call_kw_struct>;\n", "n"));
+
+    body.push_str(&format!("        EVAL_node_call_kw{}({})\n    }} }}\n}}\n", format!("::<{}, {}>", t_recv, t_args), a.join(", ")));
+    sc.emitted.insert(name.clone());
+    sc.out.push_str(&body);
+    name
+}
+
+#[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
 fn SPECIALIZE_node_call_x(sc: &mut SpecCtx, n: NodePtr) -> String {
     let name = format!("T_{:016x}", hash_node(n));
     if sc.emitted.contains(&name) { return name; }
@@ -1948,6 +1978,62 @@ fn SPECIALIZE_node_opt_ltlt(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
     body.push_str(&format!("        EVAL_node_opt_ltlt{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    sc.emitted.insert(name.clone());
+    sc.out.push_str(&body);
+    name
+}
+
+#[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
+fn SPECIALIZE_node_opt_gtgt(sc: &mut SpecCtx, n: NodePtr) -> String {
+    let name = format!("T_{:016x}", hash_node(n));
+    if sc.emitted.contains(&name) { return name; }
+    let u = unsafe { &(*(n as *mut NodeOf<node_opt_gtgt_struct>)).u };
+    let t_a = specialize_node(sc, u.a);
+    let t_b = specialize_node(sc, u.b);
+    let np = n as *mut NodeOf<node_opt_gtgt_struct>;
+    let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
+    unsafe {
+    a.push("v_a".to_string());
+    a.push("v_b".to_string());
+    a.push(format!("{}u32", (*np).u.line));
+    a.push("&mut (*np).u.cc".to_string());
+    }
+    let mut body = String::new();
+    body.push_str(&format!("pub struct {};\n", name));
+    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
+    body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_gtgt_struct>;\n", "n"));
+    body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
+    body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
+    body.push_str(&format!("        EVAL_node_opt_gtgt{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    sc.emitted.insert(name.clone());
+    sc.out.push_str(&body);
+    name
+}
+
+#[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
+fn SPECIALIZE_node_opt_xor(sc: &mut SpecCtx, n: NodePtr) -> String {
+    let name = format!("T_{:016x}", hash_node(n));
+    if sc.emitted.contains(&name) { return name; }
+    let u = unsafe { &(*(n as *mut NodeOf<node_opt_xor_struct>)).u };
+    let t_a = specialize_node(sc, u.a);
+    let t_b = specialize_node(sc, u.b);
+    let np = n as *mut NodeOf<node_opt_xor_struct>;
+    let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
+    unsafe {
+    a.push("v_a".to_string());
+    a.push("v_b".to_string());
+    a.push(format!("{}u32", (*np).u.line));
+    a.push("&mut (*np).u.cc".to_string());
+    }
+    let mut body = String::new();
+    body.push_str(&format!("pub struct {};\n", name));
+    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
+    body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_xor_struct>;\n", "n"));
+    body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
+    body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
+    body.push_str(&format!("        EVAL_node_opt_xor{}({})\n    }} }}\n}}\n", "", a.join(", ")));
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name

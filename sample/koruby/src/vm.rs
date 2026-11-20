@@ -5,7 +5,7 @@ use crate::node::{NodePtr, DispatchFn};
 use crate::object::*;
 use crate::symbol::{intern, intern_str, s, sym_str};
 use crate::value::*;
-use std::collections::HashMap;
+use crate::fxhash::HashMap;
 
 // ---- non-local exits -----------------------------------------------------------
 
@@ -129,7 +129,7 @@ pub fn new_cref(klass: Value, prev: *const Cref) -> *const Cref {
 // ---- inline caches -------------------------------------------------------------------------
 
 #[derive(Default)]
-pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize }
+pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize }
 #[derive(Default)]
 pub struct ConstCache { pub serial: u64, pub cref: usize, pub val: u64 }
 #[derive(Default)]
@@ -671,7 +671,10 @@ pub fn const_missing(c: &mut Ctx, klass: Value, name: Sym) -> RV {
 // ---- object allocation helpers ------------------------------------------------------------
 
 #[inline]
-pub fn new_object(klass: Value) -> Value { gc::alloc(klass, Body::Object(Vec::new())) }
+pub fn new_object(klass: Value) -> Value {
+    let n = rclass(klass).ivar_names.len();
+    gc::alloc(klass, Body::Object(if n == 0 { Vec::new() } else { Vec::with_capacity(n) }))
+}
 
 pub fn object_id(v: Value) -> u64 {
     if v.is_fixnum() { return (v.as_fix() as u64).wrapping_mul(2).wrapping_add(1); }
@@ -935,10 +938,45 @@ pub fn call_cached(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, 
     let klass = class_of(recv);
     let vm = vm();
     let me = if cc.klass == klass.raw() && cc.serial == vm.method_serial {
+        // fast path: a public Iseq method with only required params (see fill_cc)
+        if cc.fast != 0 && flags & CF_KW == 0 {
+            match cc.fast & 3 {
+                0 => {
+                    let is = unsafe { &*(cc.fast as *const Iseq) };
+                    if argc as usize == is.params.lead.len() {
+                        let r = invoke_iseq_simple(c, cc.me as *const MethodEntry, is, recv, base, argc, blk);
+                        c.sp = base;
+                        return r;
+                    }
+                }
+                1 if argc == 0 => {
+                    // attr_reader on an Object whose class assigned the ivar index
+                    if let Body::Object(ivs) = &obj(recv).body {
+                        let v = ivs.get(cc.fast >> 2).copied().unwrap_or(UNDEF);
+                        c.sp = base;
+                        return Ok(if v == UNDEF { NIL } else { v });
+                    }
+                }
+                2 if argc == 1 => {
+                    let o = obj(recv);
+                    if o.flags & FL_FROZEN == 0 {
+                        if let Body::Object(ivs) = &mut o.body {
+                            let i = cc.fast >> 2;
+                            let v = unsafe { *base.add(2) };
+                            if ivs.len() <= i { ivs.resize(i + 1, UNDEF); }
+                            ivs[i] = v;
+                            c.sp = base;
+                            return Ok(v);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         cc.me as *const MethodEntry
     } else {
         let me = lookup_method(klass, mid);
-        cc.klass = klass.raw(); cc.serial = vm.method_serial; cc.me = me as usize;
+        fill_cc(cc, klass, me, vm.method_serial, flags);
         me
     };
     if me.is_null() {
@@ -956,6 +994,123 @@ pub fn call_cached(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, 
     let r = invoke(c, me, recv, base, argc, blk, flags);
     c.sp = base;
     r
+}
+
+/// Method entry for recv.mid through the call cache (null: not found).
+#[inline(always)]
+pub fn lookup_cc(cc: &mut CallCache, recv: Value, mid: Sym, flags: u32) -> *const MethodEntry {
+    let klass = class_of(recv);
+    let serial = vm().method_serial;
+    if cc.klass == klass.raw() && cc.serial == serial { return cc.me as *const MethodEntry; }
+    let me = lookup_method(klass, mid);
+    fill_cc(cc, klass, me, serial, flags);
+    me
+}
+
+/// Can the staged literal keywords go straight into the callee's slots?
+pub fn kw_direct_ok(me: *const MethodEntry, npos: usize, names: &[Sym], flags: u32) -> bool {
+    let m = unsafe { &*me };
+    if m.visi != VISI_PUBLIC && flags & CF_FCALL == 0 { return false; }
+    let MKind::Iseq(is) = m.kind else { return false };
+    let is = unsafe { &*is };
+    let p = &is.params;
+    if !p.opt.is_empty() || p.rest.is_some() || !p.post.is_empty() || p.kwrest.is_some() || p.block.is_some()
+        || !p.destructure.is_empty() || p.no_kw || p.kw.is_empty() || is.env_size != 0 || p.lead.len() != npos { return false; }
+    if !p.lead.iter().enumerate().all(|(i, &s)| s == 2 + i as u32) { return false; }
+    names.iter().all(|n| p.kw.iter().any(|k| k.name == *n))
+}
+
+pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: *mut Value, npos: usize, names: &[Sym], blk: *const Block) -> RV {
+    let n = is.nlocals as usize;
+    stack_check(c, n + 16)?;
+    let mut vals = [NIL; 16];
+    for j in 0..names.len() { vals[j] = unsafe { *base.add(2 + npos + j) }; }
+    let id = c.next_serial();
+    let mut fr = Frame {
+        prev: c.frame, fp: base, me, blk, cref: unsafe { (*me).cref }, iseq: is, line: is.info.line,
+        kind: FK_METHOD, visi: VISI_PUBLIC, id, self_blk: std::ptr::null(), argc: (npos + 1) as u32, defined_class: NIL,
+        cfunc_name: Sym(0), cfunc_recv: NIL,
+    };
+    unsafe {
+        *base = recv;
+        *base.add(1) = NIL;
+        let mut i = 2 + npos;
+        while i < n { *base.add(i) = NIL; i += 1; }
+        c.sp = base.add(n);
+    }
+    c.frame = &mut fr;
+    let mut missing: Vec<Sym> = vec![];
+    for kp in is.params.kw.iter() {
+        match names.iter().position(|x| *x == kp.name) {
+            Some(j) => unsafe { *base.add(kp.slot as usize) = vals[j]; },
+            None => if kp.required { missing.push(kp.name); },
+        }
+    }
+    let r = if !missing.is_empty() {
+        let ms: Vec<String> = missing.iter().map(|m| format!(":{}", crate::symbol::sym_str(*m))).collect();
+        arg_err(c, format!("missing keyword{}: {}", if missing.len() > 1 { "s" } else { "" }, ms.join(", ")))
+    } else {
+        let mut r = Ok(NIL);
+        for kp in is.params.kw.iter() {
+            if !names.contains(&kp.name) { if let Some(d) = kp.default { if let Err(e) = run_body(c, d, base) { r = Err(e); break; } } }
+        }
+        match r { Ok(_) => run_body(c, is.body, base), e => e }
+    };
+    c.frame = fr.prev;
+    match r {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            if c.esc == EscKind::Return && c.esc_tag == id { c.esc = EscKind::None; Ok(c.esc_val) } else { Err(e) }
+        }
+    }
+}
+
+#[inline(never)]
+fn fill_cc(cc: &mut CallCache, klass: Value, me: *const MethodEntry, serial: u64, flags: u32) {
+    cc.klass = klass.raw(); cc.serial = serial; cc.me = me as usize; cc.fast = 0;
+    if me.is_null() { return; }
+    let m = unsafe { &*me };
+    if m.visi != VISI_PUBLIC && flags & CF_FCALL == 0 { return; }
+    match m.kind {
+        MKind::Iseq(is) => { if unsafe { (*is).simple } { cc.fast = is as usize; } }
+        MKind::AttrReader(name) | MKind::AttrWriter(name) => {
+            let cd = rclass(klass);
+            if !cd.is_singleton && cd.alloc == AllocKind::Object {
+                let i = ivar_index_for(klass, name) as usize;
+                cc.fast = (i << 2) | if matches!(m.kind, MKind::AttrReader(_)) { 1 } else { 2 };
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Call of an Iseq method with only required, slot-contiguous params and no env.
+#[inline(always)]
+pub fn invoke_iseq_simple(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: *mut Value, argc: u32, blk: *const Block) -> RV {
+    let n = is.nlocals as usize;
+    stack_check(c, n + 16)?;
+    let id = c.next_serial();
+    let mut fr = Frame {
+        prev: c.frame, fp: base, me, blk, cref: unsafe { (*me).cref }, iseq: is, line: is.info.line,
+        kind: FK_METHOD, visi: VISI_PUBLIC, id, self_blk: std::ptr::null(), argc, defined_class: NIL,
+        cfunc_name: Sym(0), cfunc_recv: NIL,
+    };
+    unsafe {
+        *base = recv;
+        *base.add(1) = NIL;
+        let mut i = 2 + argc as usize;
+        while i < n { *base.add(i) = NIL; i += 1; }
+        c.sp = base.add(n);
+    }
+    c.frame = &mut fr;
+    let r = run_body(c, is.body, base);
+    c.frame = fr.prev;
+    match r {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            if c.esc == EscKind::Return && c.esc_tag == id { c.esc = EscKind::None; Ok(c.esc_val) } else { Err(e) }
+        }
+    }
 }
 
 #[cold]

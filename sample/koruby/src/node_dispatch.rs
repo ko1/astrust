@@ -533,6 +533,15 @@ pub fn DISPATCH_node_call_blk(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
 }
 
 #[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_call_kw(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
+    let np = n as *mut NodeOf<node_call_kw_struct>;
+    unsafe {
+
+    EVAL_node_call_kw::<Dyn, DynList>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, (*np).u.line, (*np).u.ci, &mut (*np).u.cc)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
 pub fn DISPATCH_node_call_x(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
     let np = n as *mut NodeOf<node_call_x_struct>;
     unsafe {
@@ -712,6 +721,26 @@ pub fn DISPATCH_node_opt_ltlt(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
     EVAL_node_opt_ltlt(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_opt_gtgt(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
+    let np = n as *mut NodeOf<node_opt_gtgt_struct>;
+    unsafe {
+    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
+    EVAL_node_opt_gtgt(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_opt_xor(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
+    let np = n as *mut NodeOf<node_opt_xor_struct>;
+    unsafe {
+    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
+    EVAL_node_opt_xor(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc)
     }
 }
 

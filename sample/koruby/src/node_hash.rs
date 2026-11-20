@@ -526,6 +526,19 @@ fn HASH_node_call_blk(n: NodePtr) -> u64 {
 }
 
 #[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_call_kw(n: NodePtr) -> u64 {
+    let u = unsafe { &(*(n as *mut NodeOf<node_call_kw_struct>)).u };
+    let mut h = hash_str("node_call_kw");
+    h = hash_merge(h, hash_node(u.recv));
+    h = hash_merge(h, hash_node_list(u.args));
+    h = hash_merge(h, hash_bytes(crate::symbol::sym_bytes(u.mid)));
+    h = hash_merge(h, hash_u64(u.flags as u64));
+    h = hash_merge(h, hash_u64(u.line as u64));
+    h = hash_merge(h, crate::compile::ci_hash(u.ci));
+    h
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_call_x(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_call_x_struct>)).u };
     let mut h = hash_str("node_call_x");
@@ -708,6 +721,26 @@ fn HASH_node_opt_neq(n: NodePtr) -> u64 {
 fn HASH_node_opt_ltlt(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_ltlt_struct>)).u };
     let mut h = hash_str("node_opt_ltlt");
+    h = hash_merge(h, hash_node(u.a));
+    h = hash_merge(h, hash_node(u.b));
+    h = hash_merge(h, hash_u64(u.line as u64));
+    h
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_opt_gtgt(n: NodePtr) -> u64 {
+    let u = unsafe { &(*(n as *mut NodeOf<node_opt_gtgt_struct>)).u };
+    let mut h = hash_str("node_opt_gtgt");
+    h = hash_merge(h, hash_node(u.a));
+    h = hash_merge(h, hash_node(u.b));
+    h = hash_merge(h, hash_u64(u.line as u64));
+    h
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_opt_xor(n: NodePtr) -> u64 {
+    let u = unsafe { &(*(n as *mut NodeOf<node_opt_xor_struct>)).u };
+    let mut h = hash_str("node_opt_xor");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
     h = hash_merge(h, hash_u64(u.line as u64));

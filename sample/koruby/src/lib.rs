@@ -8,6 +8,7 @@ pub mod astrust;
 
 pub mod prism;
 pub mod prism_ast;
+pub mod fxhash;
 pub mod value;
 pub mod symbol;
 pub mod object;

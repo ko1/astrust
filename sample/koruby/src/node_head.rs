@@ -530,6 +530,18 @@ pub struct node_call_blk_struct {
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
+pub struct node_call_kw_struct {
+    pub recv: NodePtr,
+    pub args: NodeList,
+    pub mid: Sym,
+    pub flags: u32,
+    pub line: u32,
+    pub ci: CiRef,
+    pub cc: CallCache,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
 pub struct node_call_x_struct {
     pub recv: NodePtr,
     pub args: NodeList,
@@ -687,6 +699,24 @@ pub struct node_opt_neq_struct {
 #[allow(non_camel_case_types)]
 #[repr(C)]
 pub struct node_opt_ltlt_struct {
+    pub a: NodePtr,
+    pub b: NodePtr,
+    pub line: u32,
+    pub cc: CallCache,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct node_opt_gtgt_struct {
+    pub a: NodePtr,
+    pub b: NodePtr,
+    pub line: u32,
+    pub cc: CallCache,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct node_opt_xor_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
@@ -1128,6 +1158,11 @@ pub fn ALLOC_node_call_blk(recv: NodePtr, args: NodeList, mid: Sym, flags: u32, 
 }
 
 #[allow(non_snake_case)]
+pub fn ALLOC_node_call_kw(recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, ci: CiRef) -> NodePtr {
+    node_allocate(&KIND_node_call_kw, node_call_kw_struct { recv, args, mid, flags, line, ci, cc: Default::default() })
+}
+
+#[allow(non_snake_case)]
 pub fn ALLOC_node_call_x(recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, ci: CiRef) -> NodePtr {
     node_allocate(&KIND_node_call_x, node_call_x_struct { recv, args, mid, flags, line, ci, cc: Default::default() })
 }
@@ -1220,6 +1255,16 @@ pub fn ALLOC_node_opt_neq(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_ltlt(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
     node_allocate(&KIND_node_opt_ltlt, node_opt_ltlt_struct { a, b, line, cc: Default::default() })
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_opt_gtgt(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
+    node_allocate(&KIND_node_opt_gtgt, node_opt_gtgt_struct { a, b, line, cc: Default::default() })
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_opt_xor(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
+    node_allocate(&KIND_node_opt_xor, node_opt_xor_struct { a, b, line, cc: Default::default() })
 }
 
 #[allow(non_snake_case)]
@@ -1957,6 +2002,17 @@ pub static KIND_node_call_blk: NodeKind = NodeKind {
 };
 
 #[allow(non_upper_case_globals)]
+pub static KIND_node_call_kw: NodeKind = NodeKind {
+    name: "node_call_kw",
+    default_dispatcher: DISPATCH_node_call_kw,
+    hash_func: HASH_node_call_kw,
+    specializer: SPECIALIZE_node_call_kw,
+    dumper: DUMP_node_call_kw,
+    replacer: REPLACE_node_call_kw,
+    no_inline: false,
+};
+
+#[allow(non_upper_case_globals)]
 pub static KIND_node_call_x: NodeKind = NodeKind {
     name: "node_call_x",
     default_dispatcher: DISPATCH_node_call_x,
@@ -2162,6 +2218,28 @@ pub static KIND_node_opt_ltlt: NodeKind = NodeKind {
     specializer: SPECIALIZE_node_opt_ltlt,
     dumper: DUMP_node_opt_ltlt,
     replacer: REPLACE_node_opt_ltlt,
+    no_inline: false,
+};
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_opt_gtgt: NodeKind = NodeKind {
+    name: "node_opt_gtgt",
+    default_dispatcher: DISPATCH_node_opt_gtgt,
+    hash_func: HASH_node_opt_gtgt,
+    specializer: SPECIALIZE_node_opt_gtgt,
+    dumper: DUMP_node_opt_gtgt,
+    replacer: REPLACE_node_opt_gtgt,
+    no_inline: false,
+};
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_opt_xor: NodeKind = NodeKind {
+    name: "node_opt_xor",
+    default_dispatcher: DISPATCH_node_opt_xor,
+    hash_func: HASH_node_opt_xor,
+    specializer: SPECIALIZE_node_opt_xor,
+    dumper: DUMP_node_opt_xor,
+    replacer: REPLACE_node_opt_xor,
     no_inline: false,
 };
 

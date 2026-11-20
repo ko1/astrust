@@ -26,7 +26,7 @@ pub const AK_KW: u8 = 2;      // a keyword Hash built by the call site
 pub const AK_KWSPLAT: u8 = 3; // **h
 pub const AK_BLOCK: u8 = 4;   // &blk
 
-pub struct CallInfo { pub kinds: Vec<u8>, pub blk: Option<&'static Iseq>, pub kw_splat_only: bool }
+pub struct CallInfo { pub kinds: Vec<u8>, pub blk: Option<&'static Iseq>, pub kw_splat_only: bool, pub kw_names: Vec<Sym> }
 
 pub fn value_hash(v: Value) -> u64 {
     if v.is_sym() { crate::astrust::hash_str("sym") } else { crate::astrust::hash_u64(v.raw()) }
@@ -640,7 +640,7 @@ impl<'a> Compiler<'a> {
                     ALLOC_node_line(line, ALLOC_node_yield(leak(v)))
                 } else {
                     let (v, kinds) = self.complex_args(&args);
-                    let ci = Box::leak(Box::new(CallInfo { kinds, blk: None, kw_splat_only: false }));
+                    let ci = Box::leak(Box::new(CallInfo { kinds, blk: None, kw_splat_only: false, kw_names: vec![] }));
                     ALLOC_node_line(line, ALLOC_node_yield_x(leak(v), ci))
                 }
             }
@@ -919,6 +919,8 @@ impl<'a> Compiler<'a> {
             x if x == s::eq => ALLOC_node_opt_eq(a, b, line),
             x if x == s::neq => ALLOC_node_opt_neq(a, b, line),
             x if x == s::ltlt => ALLOC_node_opt_ltlt(a, b, line),
+            x if x == s::gtgt => ALLOC_node_opt_gtgt(a, b, line),
+            x if x == s::xor => ALLOC_node_opt_xor(a, b, line),
             x if x == s::and => ALLOC_node_opt_and(a, b, line),
             x if x == s::or => ALLOC_node_opt_or(a, b, line),
             x if x == s::aref => ALLOC_node_opt_aref(a, b, line),
@@ -928,6 +930,25 @@ impl<'a> Compiler<'a> {
 
     fn simple_arg(&self, a: &PNode) -> bool {
         !matches!(a.kind, Kind::SplatNode { .. } | Kind::KeywordHashNode { .. } | Kind::BlockArgumentNode { .. } | Kind::ForwardingArgumentsNode)
+    }
+
+    /// Names of `k: v` literal keywords when the call is `f(simple args..., k1: v1, ...)`.
+    fn literal_kw_names(&self, args: &[&PNode], has_blockarg: bool, attr: bool) -> Option<Vec<Sym>> {
+        if has_blockarg || attr || args.is_empty() { return None; }
+        let (last, pos) = args.split_last().unwrap();
+        if !pos.iter().all(|a| self.simple_arg(a)) { return None; }
+        let Kind::KeywordHashNode { elements } = &last.kind else { return None };
+        let mut names = vec![];
+        for e in elements {
+            match &e.kind {
+                Kind::AssocNode { key, .. } => match &key.kind {
+                    Kind::SymbolNode { unescaped } => { let s = intern(unescaped); if names.contains(&s) { return None; } names.push(s); }
+                    _ => return None,
+                },
+                _ => return None,
+            }
+        }
+        if names.is_empty() || names.len() > 16 { None } else { Some(names) }
     }
 
     fn complex_args(&mut self, args: &[&PNode]) -> (Vec<NodePtr>, Vec<u8>) {
@@ -1003,7 +1024,7 @@ impl<'a> Compiler<'a> {
         let has_blockarg = matches!(block.map(|b| &b.kind), Some(Kind::BlockArgumentNode { .. }));
         let simple = args.iter().all(|a| self.simple_arg(a)) && !has_blockarg;
         let node = if simple && blk_iseq.is_none() && !safe && recv.is_some() && !attr && args.len() == 1 && flags & CF_FCALL == 0
-            && [s::plus, s::minus, s::mul, s::div, s::modulo, s::lt, s::le, s::gt, s::ge, s::eq, s::neq, s::ltlt, s::and, s::or, s::aref].contains(&mid) {
+            && [s::plus, s::minus, s::mul, s::div, s::modulo, s::lt, s::le, s::gt, s::ge, s::eq, s::neq, s::ltlt, s::gtgt, s::xor, s::and, s::or, s::aref].contains(&mid) {
             let a = self.c(args[0]);
             self.binop(recv_node, mid, a, line)
         } else if simple && blk_iseq.is_none() && recv.is_some() && args.is_empty() && mid == s::not && !safe {
@@ -1020,11 +1041,19 @@ impl<'a> Compiler<'a> {
                 Some(is) => ALLOC_node_call_blk(recv_node, leak(v), mid, flags, line, is),
                 None => ALLOC_node_call(recv_node, leak(v), mid, flags, line),
             }
+        } else if let Some(names) = self.literal_kw_names(&args, has_blockarg, attr) {
+            // f(a, k: v, ...): keywords staged positionally with their names (no Hash)
+            let mut v: Vec<NodePtr> = args[..args.len() - 1].iter().map(|a| self.c(a)).collect();
+            if let Kind::KeywordHashNode { elements } = &args[args.len() - 1].kind {
+                for e in elements { if let Kind::AssocNode { value, .. } = &e.kind { v.push(self.c(value)); } }
+            }
+            let ci = Box::leak(Box::new(CallInfo { kinds: vec![], blk: blk_iseq, kw_splat_only: false, kw_names: names }));
+            ALLOC_node_call_kw(recv_node, leak(v), mid, flags, line, ci)
         } else {
             let mut all = args.clone();
             if let Some(b) = block { if has_blockarg { all.push(b); } }
             let (v, kinds) = self.complex_args(&all);
-            let ci = Box::leak(Box::new(CallInfo { kinds, blk: blk_iseq, kw_splat_only: false }));
+            let ci = Box::leak(Box::new(CallInfo { kinds, blk: blk_iseq, kw_splat_only: false, kw_names: vec![] }));
             let call = ALLOC_node_call_x(recv_node, leak(v), mid, flags | if attr { CF_ATTR } else { 0 }, line, ci);
             call
         };
@@ -1072,7 +1101,7 @@ impl<'a> Compiler<'a> {
                 return self.unsupported("super outside of method", Loc::default());
             }
         }
-        let ci = Box::leak(Box::new(CallInfo { kinds, blk: blk_iseq, kw_splat_only: false }));
+        let ci = Box::leak(Box::new(CallInfo { kinds, blk: blk_iseq, kw_splat_only: false, kw_names: vec![] }));
         ALLOC_node_super(leak(v), line, ci, zsuper)
     }
 

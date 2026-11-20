@@ -369,6 +369,13 @@ fn REPLACE_node_call_blk(n: NodePtr, old: NodePtr, new: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_call_kw(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_call_kw_struct>)).u };
+    if u.recv == old { u.recv = new; }
+    { let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { if *p.add(i) == old { *p.add(i) = new; } } } }
+}
+
+#[allow(non_snake_case, unused_variables)]
 fn REPLACE_node_call_x(n: NodePtr, old: NodePtr, new: NodePtr) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_call_x_struct>)).u };
     if u.recv == old { u.recv = new; }
@@ -492,6 +499,20 @@ fn REPLACE_node_opt_neq(n: NodePtr, old: NodePtr, new: NodePtr) {
 #[allow(non_snake_case, unused_variables)]
 fn REPLACE_node_opt_ltlt(n: NodePtr, old: NodePtr, new: NodePtr) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_ltlt_struct>)).u };
+    if u.a == old { u.a = new; }
+    if u.b == old { u.b = new; }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_opt_gtgt(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_gtgt_struct>)).u };
+    if u.a == old { u.a = new; }
+    if u.b == old { u.b = new; }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_opt_xor(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_xor_struct>)).u };
     if u.a == old { u.a = new; }
     if u.b == old { u.b = new; }
 }

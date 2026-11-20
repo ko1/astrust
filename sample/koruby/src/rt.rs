@@ -37,6 +37,9 @@ pub const R_ARY_AREF: u32 = 1 << 22;
 pub const R_ARY_ASET: u32 = 1 << 23;
 pub const R_HASH_AREF: u32 = 1 << 24;
 pub const R_HASH_ASET: u32 = 1 << 25;
+pub const R_INT_LSHIFT: u32 = 1 << 26;
+pub const R_INT_RSHIFT: u32 = 1 << 27;
+pub const R_INT_XOR: u32 = 1 << 28;
 
 pub static mut REDEF: u32 = 0;
 pub static mut BOOTED: bool = false;
@@ -57,6 +60,7 @@ pub fn note_redefinition(klass: Value, mid: Sym) {
         (vm.c_float, s::div, R_FLO_DIV), (vm.c_float, s::lt, R_FLO_LT), (vm.c_float, s::le, R_FLO_LE),
         (vm.c_float, s::gt, R_FLO_GT), (vm.c_float, s::ge, R_FLO_GE), (vm.c_float, s::eq, R_FLO_EQ),
         (vm.c_array, s::ltlt, R_ARY_LTLT), (vm.c_array, s::aref, R_ARY_AREF), (vm.c_array, s::aset, R_ARY_ASET),
+        (vm.c_integer, s::ltlt, R_INT_LSHIFT), (vm.c_integer, s::gtgt, R_INT_RSHIFT), (vm.c_integer, s::xor, R_INT_XOR),
         (vm.c_hash, s::aref, R_HASH_AREF), (vm.c_hash, s::aset, R_HASH_ASET),
     ];
     for &(k, m, f) in table {
@@ -976,5 +980,35 @@ pub fn rt_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: *mut Value, kind: u32, 
             Ok(ary_new_from(&rary(a)[s..]))
         }
         _ => Ok(NIL),
+    }
+}
+
+/// Call with literal keywords staged as values: an Iseq callee taking only required +
+/// keyword params gets them directly in its slots; otherwise a keyword Hash is built.
+pub fn rt_call_kw(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, k: usize, ci: CiRef, flags: u32, fp: *mut Value) -> RV {
+    let nkw = ci.kw_names.len();
+    let npos = k - nkw;
+    let recv = unsafe { *base };
+    let lit;
+    let blk: *const Block = match ci.blk { Some(is) => { lit = make_block(c, is, fp); &lit } None => std::ptr::null() };
+    let me = lookup_cc(cc, recv, mid, flags);
+    let r = if !me.is_null() && kw_direct_ok(me, npos, &ci.kw_names, flags) {
+        let is = match unsafe { (*me).kind } { MKind::Iseq(is) => unsafe { &*is }, _ => unreachable!() };
+        let r = invoke_iseq_kw(c, me, is, recv, base, npos, &ci.kw_names, blk);
+        c.sp = base;
+        r
+    } else {
+        let h = hash_new_capa(nkw);
+        unsafe { *base.add(1) = h; }
+        for (j, &nm) in ci.kw_names.iter().enumerate() {
+            let v = unsafe { *base.add(2 + npos + j) };
+            hash_set(c, h, Value::sym(nm), v)?;
+        }
+        unsafe { *base.add(2 + npos) = h; c.sp = base.add(3 + npos); }
+        call_cached(c, cc, mid, base, npos as u32 + 1, blk, flags | CF_KW)
+    };
+    match r {
+        Err(_) if ci.blk.is_some() && c.esc == EscKind::Break && c.esc_tag == unsafe { (*blk).tag } => { c.esc = EscKind::None; Ok(c.esc_val) }
+        r => r,
     }
 }

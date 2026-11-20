@@ -90,6 +90,8 @@ use crate::symbol::s;
 
 
 
+// f(args..., k: v, ...) with literal symbol keywords: values staged after the positionals
+
 // general call: splats, keywords, block-pass (described by ci)
 
 
@@ -99,6 +101,8 @@ use crate::symbol::s;
 
 
 // ---- specialized operators (fixnum / float fast paths) ---------------------------------
+
+
 
 
 
@@ -695,6 +699,20 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePt
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_call_kw<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: *mut Value, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, ci: CiRef, cc: &mut CallCache) -> RV {
+    let k = <D_args as DispList>::len(args);
+    let base = c.sp;
+    unsafe {
+        c.sp = base.add(3 + k);
+        *base = <D_recv as Disp>::call(c, recv, fp)?;
+        for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; *base.add(2 + i) = v; }
+        (*c.frame).line = line;
+    }
+    rt_call_kw(c, cc, mid, base, k, ci, flags, fp)
+}
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_call_x<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: *mut Value, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, ci: CiRef, cc: &mut CallCache) -> RV {
     let base = c.sp;
     unsafe { c.sp = base.add(2); }
@@ -894,11 +912,32 @@ pub fn EVAL_node_opt_neq(c: &mut Ctx, n: NodePtr, fp: *mut Value, a: Value, b: V
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_ltlt(c: &mut Ctx, n: NodePtr, fp: *mut Value, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
+    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_LSHIFT) {
+        let (x, k) = (a.as_fix(), b.as_fix());
+        if (0..62).contains(&k) { let r = (x as i128) << k; if r >= FIXNUM_MIN as i128 && r <= FIXNUM_MAX as i128 { return Ok(Value::fix(r as i64)); } }
+    }
     if is_array(a) && !redef(R_ARY_LTLT) && obj(a).flags & FL_FROZEN == 0 && obj(a).klass == vm().c_array {
         crate::array::ary_push(a, b);
         return Ok(a);
     }
     rt_binop(c, a, b, s::ltlt, line, cc)
+}
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_opt_gtgt(c: &mut Ctx, n: NodePtr, fp: *mut Value, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
+    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_RSHIFT) {
+        let k = b.as_fix();
+        if k >= 0 { return Ok(Value::fix(if k >= 63 { if a.as_fix() < 0 { -1 } else { 0 } } else { a.as_fix() >> k })); }
+    }
+    rt_binop(c, a, b, s::gtgt, line, cc)
+}
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_opt_xor(c: &mut Ctx, n: NodePtr, fp: *mut Value, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
+    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_XOR) { return Ok(Value::fix(a.as_fix() ^ b.as_fix())); }
+    rt_binop(c, a, b, s::xor, line, cc)
 }
 
 #[inline(always)]

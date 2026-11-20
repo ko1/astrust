@@ -4,7 +4,7 @@
 use crate::value::*;
 use crate::vm::{Block, MethodEntry};
 use std::any::Any;
-use std::collections::HashMap;
+use crate::fxhash::HashMap;
 
 pub const FL_FROZEN: u32 = 1;
 pub const FL_MARK: u32 = 2;
@@ -99,8 +99,8 @@ impl ClassData {
     pub fn new(superclass: Value, is_module: bool, alloc: AllocKind) -> ClassData {
         ClassData {
             name: None, base_name: Sym(0), lexical_parent: NIL, superclass, is_module, is_singleton: false, attached: NIL,
-            mtbl: HashMap::new(), consts: HashMap::new(), const_order: vec![], autoload: HashMap::new(), cvars: HashMap::new(),
-            includes: vec![], prepends: vec![], extended_by: vec![], ivar_index: HashMap::new(), ivar_names: vec![],
+            mtbl: HashMap::default(), consts: HashMap::default(), const_order: vec![], autoload: HashMap::default(), cvars: HashMap::default(),
+            includes: vec![], prepends: vec![], extended_by: vec![], ivar_index: HashMap::default(), ivar_names: vec![],
             ancestors: None, ancestors_serial: 0, alloc, subclasses: vec![], private_consts: vec![], refined: false,
         }
     }

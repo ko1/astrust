@@ -585,6 +585,21 @@ node_call_blk(c: &mut Ctx, n: NodePtr, fp: *mut Value, recv: NODE, args: NODES, 
     }
 }
 
+// f(args..., k: v, ...) with literal symbol keywords: values staged after the positionals
+NODE_DEF
+node_call_kw(c: &mut Ctx, n: NodePtr, fp: *mut Value, recv: NODE, args: NODES, mid: Sym, flags: u32, line: u32, ci: CiRef, cc@ref: CallCache)
+{
+    let k = EVAL_LEN!(args);
+    let base = c.sp;
+    unsafe {
+        c.sp = base.add(3 + k);
+        *base = EVAL_ARG!(c, recv)?;
+        for i in 0..k { let v = EVAL_NTH!(c, args, i)?; *base.add(2 + i) = v; }
+        (*c.frame).line = line;
+    }
+    rt_call_kw(c, cc, mid, base, k, ci, flags, fp)
+}
+
 // general call: splats, keywords, block-pass (described by ci)
 NODE_DEF
 node_call_x(c: &mut Ctx, n: NodePtr, fp: *mut Value, recv: NODE, args: NODES, mid: Sym, flags: u32, line: u32, ci: CiRef, cc@ref: CallCache)
@@ -789,11 +804,32 @@ node_opt_neq(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: V
 NODE_DEF
 node_opt_ltlt(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Value, line: u32, cc@ref: CallCache)
 {
+    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_LSHIFT) {
+        let (x, k) = (a.as_fix(), b.as_fix());
+        if (0..62).contains(&k) { let r = (x as i128) << k; if r >= FIXNUM_MIN as i128 && r <= FIXNUM_MAX as i128 { return Ok(Value::fix(r as i64)); } }
+    }
     if is_array(a) && !redef(R_ARY_LTLT) && obj(a).flags & FL_FROZEN == 0 && obj(a).klass == vm().c_array {
         crate::array::ary_push(a, b);
         return Ok(a);
     }
     rt_binop(c, a, b, s::ltlt, line, cc)
+}
+
+NODE_DEF
+node_opt_gtgt(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Value, line: u32, cc@ref: CallCache)
+{
+    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_RSHIFT) {
+        let k = b.as_fix();
+        if k >= 0 { return Ok(Value::fix(if k >= 63 { if a.as_fix() < 0 { -1 } else { 0 } } else { a.as_fix() >> k })); }
+    }
+    rt_binop(c, a, b, s::gtgt, line, cc)
+}
+
+NODE_DEF
+node_opt_xor(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Value, line: u32, cc@ref: CallCache)
+{
+    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_XOR) { return Ok(Value::fix(a.as_fix() ^ b.as_fix())); }
+    rt_binop(c, a, b, s::xor, line, cc)
 }
 
 NODE_DEF

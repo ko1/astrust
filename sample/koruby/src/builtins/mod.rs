@@ -28,7 +28,7 @@ use crate::object::*;
 use crate::symbol::intern_str;
 use crate::value::*;
 use crate::vm::*;
-use std::collections::HashMap;
+use crate::fxhash::HashMap;
 
 fn blank_vm() -> Box<Vm> {
     // every Value field starts as NIL; the class fields are filled by boot()
@@ -42,13 +42,13 @@ fn blank_vm() -> Box<Vm> {
         std::ptr::write(&mut (*vp).stdout, NIL);
         std::ptr::write(&mut (*vp).stderr, NIL);
         std::ptr::write(&mut (*vp).stdin, NIL);
-        std::ptr::write(&mut (*vp).globals, HashMap::new());
-        std::ptr::write(&mut (*vp).global_aliases, HashMap::new());
+        std::ptr::write(&mut (*vp).globals, HashMap::default());
+        std::ptr::write(&mut (*vp).global_aliases, HashMap::default());
         std::ptr::write(&mut (*vp).method_serial, 1);
         std::ptr::write(&mut (*vp).const_serial, 1);
         std::ptr::write(&mut (*vp).hierarchy_serial, 1);
-        std::ptr::write(&mut (*vp).mcache, HashMap::new());
-        std::ptr::write(&mut (*vp).gen_ivars, HashMap::new());
+        std::ptr::write(&mut (*vp).mcache, HashMap::default());
+        std::ptr::write(&mut (*vp).gen_ivars, HashMap::default());
         std::ptr::write(&mut (*vp).node_values, vec![]);
         std::ptr::write(&mut (*vp).crefs, vec![]);
         std::ptr::write(&mut (*vp).top_cref, std::ptr::null());
@@ -56,7 +56,7 @@ fn blank_vm() -> Box<Vm> {
         std::ptr::write(&mut (*vp).load_path, NIL);
         std::ptr::write(&mut (*vp).script_name, String::new());
         std::ptr::write(&mut (*vp).at_exit, NIL);
-        std::ptr::write(&mut (*vp).object_ids, HashMap::new());
+        std::ptr::write(&mut (*vp).object_ids, HashMap::default());
         std::ptr::write(&mut (*vp).next_object_id, 0);
         std::ptr::write(&mut (*vp).sources, vec![]);
         std::ptr::write(&mut (*vp).verbose, FALSE);
@@ -65,8 +65,8 @@ fn blank_vm() -> Box<Vm> {
         std::ptr::write(&mut (*vp).aot_collect, false);
         std::ptr::write(&mut (*vp).code_store, None);
         std::ptr::write(&mut (*vp).sd_hits, 0);
-        std::ptr::write(&mut (*vp).frozen_lits, HashMap::new());
-        std::ptr::write(&mut (*vp).symproc_cache, HashMap::new());
+        std::ptr::write(&mut (*vp).frozen_lits, HashMap::default());
+        std::ptr::write(&mut (*vp).symproc_cache, HashMap::default());
         std::ptr::write(&mut (*vp).data_free_hooks, vec![]);
         std::ptr::write(&mut (*vp).pinned, vec![]);
         std::ptr::write(&mut (*vp).recursive_guard, vec![]);
