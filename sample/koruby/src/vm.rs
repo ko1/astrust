@@ -1707,7 +1707,7 @@ pub fn block_fast(b: &Block, argc: usize) -> Option<&'static Iseq> {
 }
 
 /// Run a block_fast block with args already at base[2..].
-#[inline]
+#[inline(always)]
 pub fn run_block_fast(c: &mut Ctx, b: &Block, is: &Iseq, base: *mut Value, argc: u32) -> RV {
     let n = is.nlocals as usize;
     let mut fr = FrameFull {
