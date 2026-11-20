@@ -337,6 +337,12 @@ fn k_method_name(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> R
     Ok(Value::sym(unsafe { (*p.me).name }))
 }
 
+fn k_callee_name(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV {
+    let p = unsafe { &*c.frame().prev };
+    if p.me.is_null() { return Ok(NIL); }
+    Ok(Value::sym(crate::builtins::object::callee_name(p.me)))
+}
+
 fn k_caller(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let (start, len) = crate::builtins::exception::caller_range(c, args)?;
     let lines = backtrace_lines(c, 1 + start);
@@ -861,6 +867,7 @@ pub fn init() {
     mf("lambda", k_lambda, 0);
     mf("proc", k_proc, 0);
     mf("__method__", k_method_name, 0);
+    mf("__callee__", k_callee_name, 0);
     mf("caller", k_caller, -1);
     mf("exit", k_exit, -1);
     mf("exit!", k_exit_bang, -1);

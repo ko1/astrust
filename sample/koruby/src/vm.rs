@@ -1422,7 +1422,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: *mut Value, argc: u32, blk: *c
             if !(accepts_kw && kwh == NIL && given == required + opt + 1 && false) {
                 let exp = if maxp == usize::MAX { format!("{}+", required) } else if required == maxp { format!("{}", required) } else { format!("{}..{}", required, maxp) };
                 // missing required keywords are reported along with the arity
-                let missing: Vec<String> = if kwh == NIL { p.kw.iter().filter(|k| k.required).map(|k| sym_str(k.name).to_string()).collect() } else { vec![] };
+                let missing: Vec<String> = p.kw.iter().filter(|k| k.required).map(|k| sym_str(k.name).to_string()).collect();
                 let extra = match missing.len() { 0 => String::new(), 1 => format!("; required keyword: {}", missing[0]), _ => format!("; required keywords: {}", missing.join(", ")) };
                 return arg_err(c, format!("wrong number of arguments (given {}, expected {}{})", given, exp, extra));
             }

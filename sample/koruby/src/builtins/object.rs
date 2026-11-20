@@ -338,7 +338,7 @@ fn k_methods(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if !all { return k_singleton_methods(_c, slf, &[], _b); }
     Ok(method_list(class_of(slf), |v| v != VISI_PRIVATE, true))
 }
-fn k_public_methods(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(method_list(class_of(slf), |v| v == VISI_PUBLIC, true)) }
+fn k_public_methods(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { Ok(method_list(class_of(slf), |v| v == VISI_PUBLIC, a.first().is_none_or(|v| v.truthy()))) }
 fn k_private_methods(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(method_list(class_of(slf), |v| v == VISI_PRIVATE, true)) }
 fn k_protected_methods(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(method_list(class_of(slf), |v| v == VISI_PROTECTED, true)) }
 fn k_singleton_methods(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
@@ -418,6 +418,13 @@ pub fn call_inherited(c: &mut Ctx, sup: Value, k: Value) -> Result<(), Esc> {
     Ok(())
 }
 
+/// Alias entries keep the original name; __callee__ finds the alias name here.
+static mut ALIAS_NAMES: Option<std::collections::HashMap<usize, Sym>> = None;
+pub fn callee_name(me: *const MethodEntry) -> Sym {
+    let t = unsafe { &*std::ptr::addr_of!(ALIAS_NAMES) };
+    match t.as_ref().and_then(|t| t.get(&(me as usize))) { Some(&n) => n, None => unsafe { (*me).name } }
+}
+
 pub fn alias_method(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) -> Result<(), Esc> {
     let mut me = search_method(klass, oldname);
     if (me.is_null() || matches!(unsafe { (*me).kind }, MKind::Undef)) && rclass(klass).is_module {
@@ -432,6 +439,7 @@ pub fn alias_method(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) -> Re
     let visi = if rclass(klass).is_singleton { o.visi } else { o.visi };
     let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: o.owner, visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
     let _ = visi;
+    if newname != o.name { unsafe { (*std::ptr::addr_of_mut!(ALIAS_NAMES)).get_or_insert_with(Default::default).insert(n as usize, newname); } }
     crate::rt::note_redefinition(klass, newname);
     define_method_me(klass, newname, n);
     call_method_added(c, klass, newname)?;
@@ -600,7 +608,10 @@ pub fn m_define_method(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) ->
             if !rclass(o.owner).is_module && !is_kind_of_class(slf, o.owner) {
                 return type_err(c, format!("bind argument must be a subclass of {}", class_path(o.owner)));
             }
-            Box::into_raw(Box::new(MethodEntry { name: mid, owner: slf, visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref })) as *const MethodEntry
+            // like an alias: __method__ stays the original name, __callee__ is the new one
+            let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
+            if mid != o.name { unsafe { (*std::ptr::addr_of_mut!(ALIAS_NAMES)).get_or_insert_with(Default::default).insert(n as usize, mid); } }
+            n as *const MethodEntry
         } else {
             return type_err(c, format!("wrong argument type {} (expected Proc/Method/UnboundMethod)", class_name_for_err(body)));
         }

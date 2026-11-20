@@ -903,7 +903,7 @@ impl<'a> Compiler<'a> {
     fn cpath_parent(&mut self, cp: &PNode) -> (NodePtr, bool) {
         match &cp.kind {
             Kind::ConstantPathNode { parent: Some(p), .. } => (self.c(p), true),
-            Kind::ConstantPathNode { parent: None, .. } => (ALLOC_node_lit(UNDEF), true),
+            Kind::ConstantPathNode { parent: None, .. } => (ALLOC_node_top_const(intern(b"Object")), true),
             _ => (ALLOC_node_nil(), false),
         }
     }
@@ -1126,7 +1126,9 @@ impl<'a> Compiler<'a> {
                         _ => {}
                     }
                 }
-                if !kwkinds.is_empty() { v.push(ALLOC_node_hash(leak(kwpairs), lstr(&kwkinds))); kinds.push(AK_KW); }
+                // only a forwarded **rest: an empty one passes nothing
+                let only_splat = kwkinds.iter().all(|&k| k == 1);
+                if !kwkinds.is_empty() { v.push(ALLOC_node_hash(leak(kwpairs), lstr(&kwkinds))); kinds.push(if only_splat { AK_KWSPLAT } else { AK_KW }); }
             } else {
                 return self.unsupported("super outside of method", Loc::default());
             }
@@ -1194,6 +1196,14 @@ impl<'a> Compiler<'a> {
             Kind::CallTargetNode { receiver, name } => {
                 let r = self.c(receiver);
                 let fl = if matches!(receiver.kind, Kind::SelfNode) { CF_FCALL } else { 0 };
+                if t.flags & pa::CALL_NODE_FLAGS_SAFE_NAVIGATION != 0 {
+                    // `a&.b = v` as a target: nothing happens for a nil receiver
+                    let sl = self.hidden_slot();
+                    let set = ALLOC_node_lasgn(sl, r);
+                    let w = ALLOC_node_attrasgn(ALLOC_node_lvar(sl), leak(vec![v]), self.cst(*name), fl, line);
+                    let test = ALLOC_node_special(SP_IS_NIL, ALLOC_node_lvar(sl));
+                    return self.seq(vec![set, ALLOC_node_if(test, ALLOC_node_nil(), w)]);
+                }
                 ALLOC_node_attrasgn(r, leak(vec![v]), self.cst(*name), fl, line)
             }
             Kind::IndexTargetNode { receiver, arguments, .. } => {
