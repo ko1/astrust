@@ -218,6 +218,17 @@ fn HASH_node_iasgn(n: NodePtr) -> u64 {
 }
 
 #[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_ivar_arith(n: NodePtr) -> u64 {
+    let u = unsafe { &(*(n as *mut NodeOf<node_ivar_arith_struct>)).u };
+    let mut h = hash_str("node_ivar_arith");
+    h = hash_merge(h, hash_bytes(crate::symbol::sym_bytes(u.name)));
+    h = hash_merge(h, hash_u64(u.sub as u64));
+    h = hash_merge(h, hash_node(u.v));
+    h = hash_merge(h, hash_u64(u.line as u64));
+    h
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_gvar(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_gvar_struct>)).u };
     let mut h = hash_str("node_gvar");

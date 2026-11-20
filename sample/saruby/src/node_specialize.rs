@@ -754,6 +754,41 @@ fn SPECIALIZE_node_iasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
 }
 
 #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
+fn SPECIALIZE_node_ivar_arith(sc: &mut SpecCtx, n: NodePtr) -> String {
+    let name = format!("T_{:016x}", hash_node(n));
+    if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());   // before the children: a speculated callee may be this very node
+    let own_hash = hash_node(n);
+    sc.open.insert(own_hash);
+    let u = unsafe { &(*(n as *mut NodeOf<node_ivar_arith_struct>)).u };
+    let t_v = specialize_node(sc, u.v);
+    let np = n as *mut NodeOf<node_ivar_arith_struct>;
+    let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
+    unsafe {
+    a.push("(*np).u.name".to_string());
+    a.push(format!("{}", (*np).u.sub));
+    a.push("v_v".to_string());
+    a.push(format!("{}u32", (*np).u.line));
+    a.push("&mut (*np).u.ic".to_string());
+    a.push("&mut (*np).u.cc".to_string());
+    a.push(format!("{}u32", { let u = &(*np).u; if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }));
+    }
+    let mut body = String::new();
+    body.push_str(&format!("pub struct {};\n", name));
+    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
+    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ unsafe {{\n", name));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_ivar_arith_struct>;\n", "n"));
+    body.push_str(&format!("        let v_v = <{} as Disp>::call(c, {}, fp)?;\n", t_v, child_ptr_expr(n, u.v)));
+    body.push_str(&format!("        EVAL_node_ivar_arith{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
+    sc.open.remove(&own_hash);
+    sc.out.push_str(&body);
+    name
+}
+
+#[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
 fn SPECIALIZE_node_gvar(sc: &mut SpecCtx, n: NodePtr) -> String {
     let name = format!("T_{:016x}", hash_node(n));
     if sc.emitted.contains(&name) { return name; }

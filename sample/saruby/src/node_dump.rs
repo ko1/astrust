@@ -277,6 +277,22 @@ fn DUMP_node_iasgn(out: &mut String, n: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_ivar_arith(out: &mut String, n: NodePtr) {
+    let np = n as *mut NodeOf<node_ivar_arith_struct>;
+    unsafe {
+    out.push_str("(node_ivar_arith");
+    out.push(' '); out.push(':'); out.push_str(&crate::symbol::sym_str((*np).u.name));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.sub));
+    out.push(' '); dump_node(out, (*np).u.v);
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str("<ic>");
+    out.push(' '); out.push_str("<cc>");
+    out.push(' '); 
+    out.push(')');
+    }
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_gvar(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_gvar_struct>;
     unsafe {

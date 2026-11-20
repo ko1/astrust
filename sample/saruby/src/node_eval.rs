@@ -52,6 +52,9 @@ use crate::symbol::s;
 // so which tier holds the slot is known there; a stale one only sends the site out of line.
 
 
+// `@x += v` / `@x -= v` with a v that cannot change @x (compile.rs): one self / class / slot test for the
+// read and the write, fixnums inline.
+
 
 
 
@@ -400,6 +403,27 @@ pub fn EVAL_node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value, ic:
         }
     }
     srb_ivar_set_out(c, slf, name, v, ic)
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_ivar_arith(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, sub: bool, v: Value, line: u32, ic: &mut IvarCache, cc: &mut CallCache, slot: u32) -> RV {
+    let slf = fp[0].get();
+    if slf.is_heap() && v.is_fixnum() && !redef(if sub { R_INT_MINUS } else { R_INT_PLUS }) {
+        let o = obj(slf);
+        if o.klass.raw() == ic.klass && o.flags & FL_FROZEN == 0 && (slot == 0 || ic.idx == slot - 1) {
+            if let Body::Object(ivs) = &mut o.body {
+                let i = (if slot == 0 { ic.idx } else { slot - 1 }) as usize;
+                if let Some(cur) = ivs.get(i) {
+                    if cur.is_fixnum() {
+                        if let Some(r) = if sub { cur.fix_sub(v) } else { cur.fix_add(v) } { ivs.set(i, r); return Ok(r); }
+                    }
+                }
+            }
+        }
+    }
+    srb_ivar_arith_out(c, slf, name, sub, v, line, ic, cc)
 }
 
 

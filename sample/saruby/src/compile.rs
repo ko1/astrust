@@ -506,9 +506,17 @@ impl<'a> Compiler<'a> {
             Kind::InstanceVariableWriteNode { name, value } => { let v = self.c(value); ALLOC_node_iasgn(self.cst(*name), v) }
             Kind::InstanceVariableOperatorWriteNode { name, value, binary_operator } => {
                 let nm = self.cst(*name);
-                let r = ALLOC_node_ivar(nm); let v = self.c(value);
-                let e = self.binop(r, self.cst(*binary_operator), v, line);
-                ALLOC_node_iasgn(nm, e)
+                let op = self.cst(*binary_operator);
+                // the fused node evaluates the right side before it reads the ivar: only for one that cannot change it
+                let pure = matches!(value.kind, Kind::IntegerNode { .. } | Kind::FloatNode { .. } | Kind::LocalVariableReadNode { .. } | Kind::InstanceVariableReadNode { .. });
+                if pure && (op == s::plus || op == s::minus) {
+                    let v = self.c(value);
+                    ALLOC_node_ivar_arith(nm, op == s::minus, v, line)
+                } else {
+                    let r = ALLOC_node_ivar(nm); let v = self.c(value);
+                    let e = self.binop(r, op, v, line);
+                    ALLOC_node_iasgn(nm, e)
+                }
             }
             Kind::InstanceVariableOrWriteNode { name, value } => {
                 let nm = self.cst(*name); let v = self.c(value);

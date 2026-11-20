@@ -251,6 +251,16 @@ pub fn DISPATCH_node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
 }
 
 #[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_ivar_arith(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_ivar_arith");
+    let np = n as *mut NodeOf<node_ivar_arith_struct>;
+    unsafe {
+    let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
+    EVAL_node_ivar_arith(c, n, fp, (*np).u.name, (*np).u.sub, v_v, (*np).u.line, &mut (*np).u.ic, &mut (*np).u.cc, 0)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
 pub fn DISPATCH_node_gvar(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_gvar");
     let np = n as *mut NodeOf<node_gvar_struct>;

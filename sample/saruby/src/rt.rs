@@ -299,6 +299,14 @@ pub fn srb_ivar_set_out(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &mut I
     srb_ivar_set(c, slf, name, v, ic)
 }
 
+/// `@x += v` / `@x -= v` outside node_ivar_arith's inline path: read, operate, write.
+#[inline(never)]
+pub fn srb_ivar_arith_out(c: &mut Ctx, slf: Value, name: Sym, sub: bool, v: Value, line: u32, ic: &mut IvarCache, cc: &mut CallCache) -> RV {
+    let cur = srb_ivar_get_out(slf, name, ic);
+    let r = crate::opt::srb_arith_out(c, cur, v, if sub { s::minus } else { s::plus }, line, cc)?;
+    srb_ivar_set_out(c, slf, name, r, ic)
+}
+
 pub fn srb_ivar_set(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &mut IvarCache) -> RV {
     ivar_set(c, slf, name, v)?;
     if slf.is_heap() {

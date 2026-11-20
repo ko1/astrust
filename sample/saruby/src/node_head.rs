@@ -330,6 +330,17 @@ pub struct node_iasgn_struct {
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
+pub struct node_ivar_arith_struct {
+    pub name: Sym,
+    pub sub: bool,
+    pub v: NodePtr,
+    pub line: u32,
+    pub ic: IvarCache,
+    pub cc: CallCache,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
 pub struct node_gvar_struct {
     pub name: Sym,
 }
@@ -1065,6 +1076,11 @@ pub fn ALLOC_node_iasgn(name: Sym, v: NodePtr) -> NodePtr {
 }
 
 #[allow(non_snake_case)]
+pub fn ALLOC_node_ivar_arith(name: Sym, sub: bool, v: NodePtr, line: u32) -> NodePtr {
+    node_allocate(&KIND_node_ivar_arith, node_ivar_arith_struct { name, sub, v, line, ic: Default::default(), cc: Default::default() })
+}
+
+#[allow(non_snake_case)]
 pub fn ALLOC_node_gvar(name: Sym) -> NodePtr {
     node_allocate(&KIND_node_gvar, node_gvar_struct { name })
 }
@@ -1587,6 +1603,12 @@ fn CHILDREN_node_ivar(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_iasgn(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_iasgn_struct>)).u };
+    f(&mut u.v);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_ivar_arith(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_ivar_arith_struct>)).u };
     f(&mut u.v);
 }
 
@@ -2429,6 +2451,20 @@ pub static KIND_node_iasgn: NodeKind = NodeKind {
     children: CHILDREN_node_iasgn,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_iasgn_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_iasgn_struct>>() <= 8);
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_ivar_arith: NodeKind = NodeKind {
+    name: "node_ivar_arith",
+    default_dispatcher: DISPATCH_node_ivar_arith,
+    hash_func: HASH_node_ivar_arith,
+    specializer: SPECIALIZE_node_ivar_arith,
+    dumper: DUMP_node_ivar_arith,
+    replacer: REPLACE_node_ivar_arith,
+    no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_ivar_arith_struct>>(),
+    children: CHILDREN_node_ivar_arith,
+};
+const _: () = assert!(std::mem::size_of::<NodeOf<node_ivar_arith_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_ivar_arith_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_gvar: NodeKind = NodeKind {

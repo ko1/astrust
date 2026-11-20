@@ -29,7 +29,7 @@ class SarubyNodeDef < ASTrustGen::NodeDef
     def bake_value_expr(op)
       case @name
       # 1 + the slot index in the site's cache (0: the site never ran)
-      when 'node_ivar', 'node_iasgn' then "{ let u = &(*np).u; if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }"
+      when 'node_ivar', 'node_iasgn', 'node_ivar_arith' then "{ let u = &(*np).u; if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }"
       # 1 + the operand kinds the interpreter recorded at an operator site (opt.rs TyFb)
       when /\Anode_opt_/ then "{ 1 + (*np).u.tf.0 }"
       else "{ let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
