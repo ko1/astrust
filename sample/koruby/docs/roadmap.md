@@ -58,7 +58,8 @@ Blocking assumptions in today's code are listed in section 4.
 Already ported: per-site class+serial cache, callee entry node, speculated callee inlining, 4-way
 polymorphic table, Klass.new fast path, attr / cfunc cache kinds, condition-mode compares, dense
 literal kwargs, native Enumerable, fast lead-only block yield, lite frames, size-class allocator,
-small strings in the slot, lazy backtraces.
+small strings in the slot, lazy backtraces, ivars in the slot (item 1 below, without shapes: the
+class is the shape and slots are prefilled), `when Klass` memo (item 7, 8 entries per site).
 
 Adopted in koruby_precise and not here yet (ledger slug; mechanism; their number):
 1. **Ivars embedded in the object + shape/transition cache** (`koruby-obj-ivar-embed-self`,
@@ -107,6 +108,25 @@ Lesson recorded many times in the ledger: instruction counts and cycles disagree
 - `Value` is `NonZeroU64` with nil = 0x04: zero-filled memory is not valid.
 
 ## Open measurements
+- **`gc::alloc` copies the body through the stack.** The caller's `Body` stays on the stack across
+  the may-GC `slow_path()` call and is copied into the slot with a 32-byte load right after its
+  1/8-byte stores: a store-forwarding stall per allocation of any kind. Returning into an
+  out-of-line `alloc_slow(klass, body)` on the slow condition, so that the fast path has no call
+  and stores the fields from registers, measured (cycles:u, AOT, instructions unchanged):
+  gcchurn 700M → 521M, nesteddata 292M → 231M, gen_gc 718M → 636M, object 676M → 563M,
+  binary_trees 532M → 483M. Not applied here (2026-11-20): gc.rs was being moved to the framework.
+- **Arrays of up to 3 elements in the slot** (branch `koruby-array-embed-a1d294`, `src/avec.rs`,
+  an enum `Inline(len, [Value; 3]) | Heap(Vec)`, no unsafe). Every array access pays the
+  Inline/Heap test. cycles:u AOT without / with the alloc change above: gcchurn 700M → 730M /
+  521M → 404M, nesteddata 292M → 267M / 231M → 214M, gen_gc 718M → 680M / 636M → 604M,
+  ary 467M → 531M / 487M → 516M. Take it together with the alloc change or not at all.
+- Tried for ivars and dropped: a combined "hit or append" store test on the Vec representation
+  (object AOT instructions 1978M → 2002M, ivar 4539M → 4827M); prefilled slots without embedding
+  (object 1978M → 1986M: the gain is the malloc, not the test); 4 packed slots with a
+  data-pointer select per read (ivar 4539M → 4763M, nbody 3071M → 3189M).
+- Interpreter (`--plain`) cycles move by several percent with code and node placement at equal
+  instruction counts (poly 1373M → 1494M when the `when` memo was added, which poly never runs;
+  +1% / +5% / +3% with 4 / 8 / 16 memo entries). Compare instruction counts first there.
 - tak / ackermann AOT instructions rose with the string/GC performance merge (tak 5413M → 5751M,
   ackermann 3874M → 4454M, fib unchanged); not the mixed Float/Integer inline path (4454M → 4372M
   with it removed). Cause not found yet.
