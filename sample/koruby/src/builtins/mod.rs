@@ -18,6 +18,7 @@ pub mod marshal;
 pub mod strscan;
 pub mod json;
 pub mod env;
+pub mod extras;
 pub mod thread;
 pub mod sys;
 pub mod file;
@@ -182,7 +183,8 @@ pub fn boot() {
     binding::init();
     thread::init();
     misc::init();
-    env::init();
+    prelude::lazy_const(ob, "ENV", "koruby/env");
+    prelude::lazy_const(ob, "RbConfig", "koruby/rbconfig");
     encoding::init();
     stringio::init();
     regexp_methods::init();
@@ -193,6 +195,7 @@ pub fn boot() {
     complex::init();
     enum_native::init();
     crate::fiber::init();
+    extras::init();
 }
 
 /// dup/clone of built-in Data objects.

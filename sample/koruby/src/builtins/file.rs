@@ -20,7 +20,7 @@ impl RData for RStat {
 fn io_errno(e: &std::io::Error) -> i64 { e.raw_os_error().map(|x| x as i64).unwrap_or(5) }
 fn os_err(c: &mut Ctx, e: &std::io::Error, detail: &str) -> Esc { raise_errno(c, io_errno(e), detail) }
 fn last_err(c: &mut Ctx, detail: &str) -> Esc { raise_errno(c, sys::errno(), detail) }
-fn new_stat(md: std::fs::Metadata) -> Value { crate::gc::alloc(vm().c_stat, Body::Data(Box::new(RStat { md: Some(md) }))) }
+fn new_stat(md: std::fs::Metadata) -> Value { init_stat(); crate::gc::alloc(vm().c_stat, Body::Data(Box::new(RStat { md: Some(md) }))) }
 fn fd_meta(fd: i32) -> std::io::Result<std::fs::Metadata> {
     let f = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
     f.metadata()
@@ -768,15 +768,27 @@ fn d_s_open(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     r
 }
 
-pub fn init() {
+// predicates shared by File and FileTest
+const TESTS: &[(&str, CFunc, i32)] = &[("exist?", f_s_exist, 1), ("file?", f_s_file_p, 1), ("directory?", f_s_dir_p, 1), ("symlink?", f_s_symlink_p, 1), ("pipe?", f_s_pipe_p, 1),
+        ("socket?", f_s_socket_p, 1), ("chardev?", f_s_chardev_p, 1), ("blockdev?", f_s_blockdev_p, 1), ("readable?", f_s_readable, 1), ("writable?", f_s_writable, 1),
+        ("executable?", f_s_executable, 1), ("readable_real?", f_s_readable_real, 1), ("writable_real?", f_s_writable_real, 1), ("executable_real?", f_s_executable_real, 1),
+        ("zero?", f_s_zero, 1), ("empty?", f_s_zero, 1), ("size?", f_s_size_p, 1), ("size", f_s_size, 1), ("setuid?", f_s_setuid, 1), ("setgid?", f_s_setgid, 1), ("sticky?", f_s_sticky, 1),
+        ("owned?", f_s_owned, 1), ("grpowned?", f_s_grpowned, 1), ("world_readable?", f_s_world_readable, 1), ("world_writable?", f_s_world_writable, 1), ("identical?", f_s_identical, 2)];
+pub fn init_filetest() {
     let vm = vm();
-    let (io, f) = (vm.c_io, vm.c_file);
+    if vm.m_file_test != NIL { return; }
+    let ft = define_module("FileTest");
+    vm.m_file_test = ft;
+    for &(n, fun, ar) in TESTS { define_module_function(ft, n, fun, ar); }
+}
+pub fn init_stat() {
+    let vm = vm();
+    if vm.c_stat != NIL { return; }
+    let f = vm.c_file;
     let st = define_class_under(f, "Stat", vm.c_object);
     rclass(st).alloc = AllocKind::None;
     include_module(st, vm.m_comparable);
     vm.c_stat = st;
-    let ft = define_module("FileTest");
-    vm.m_file_test = ft;
     let sd = |n: &str, fun: CFunc, a: i32| define_cfunc(st, n, fun, a);
     define_private_cfunc(st, "initialize", st_initialize, 1);
     define_private_cfunc(st, "initialize_copy", st_init_copy, 1);
@@ -789,13 +801,13 @@ pub fn init() {
     sd("executable_real?", st_executable_real, 0); sd("world_readable?", st_world_readable, 0); sd("world_writable?", st_world_writable, 0);
     sd("zero?", st_zero, 0); sd("size?", st_size_p, 0); sd("ftype", st_ftype, 0); sd("setuid?", st_setuid, 0); sd("setgid?", st_setgid, 0);
     sd("sticky?", st_sticky, 0); sd("owned?", st_owned, 0); sd("grpowned?", st_grpowned, 0); sd("<=>", st_cmp, 1); sd("inspect", st_inspect, 0);
-    // predicates shared by File and FileTest
-    let tests: &[(&str, CFunc, i32)] = &[("exist?", f_s_exist, 1), ("file?", f_s_file_p, 1), ("directory?", f_s_dir_p, 1), ("symlink?", f_s_symlink_p, 1), ("pipe?", f_s_pipe_p, 1),
-        ("socket?", f_s_socket_p, 1), ("chardev?", f_s_chardev_p, 1), ("blockdev?", f_s_blockdev_p, 1), ("readable?", f_s_readable, 1), ("writable?", f_s_writable, 1),
-        ("executable?", f_s_executable, 1), ("readable_real?", f_s_readable_real, 1), ("writable_real?", f_s_writable_real, 1), ("executable_real?", f_s_executable_real, 1),
-        ("zero?", f_s_zero, 1), ("empty?", f_s_zero, 1), ("size?", f_s_size_p, 1), ("size", f_s_size, 1), ("setuid?", f_s_setuid, 1), ("setgid?", f_s_setgid, 1), ("sticky?", f_s_sticky, 1),
-        ("owned?", f_s_owned, 1), ("grpowned?", f_s_grpowned, 1), ("world_readable?", f_s_world_readable, 1), ("world_writable?", f_s_world_writable, 1), ("identical?", f_s_identical, 2)];
-    for &(n, fun, ar) in tests { define_singleton_cfunc(f, n, fun, ar); define_module_function(ft, n, fun, ar); }
+}
+pub fn init() {
+    let vm = vm();
+    let (io, f) = (vm.c_io, vm.c_file);
+    crate::builtins::prelude::lazy_const(f, "Stat", "koruby/stat");
+    crate::builtins::prelude::lazy_const(vm.c_object, "FileTest", "koruby/filetest");
+    for &(n, fun, ar) in TESTS { define_singleton_cfunc(f, n, fun, ar); }
     let df = |n: &str, fun: CFunc, a: i32| define_singleton_cfunc(f, n, fun, a);
     df("open", f_s_open, -1); df("stat", f_s_stat, 1); df("lstat", f_s_lstat, 1); df("mtime", f_s_mtime, 1); df("atime", f_s_atime, 1); df("ctime", f_s_ctime, 1);
     df("birthtime", f_s_birthtime, 1); df("ftype", f_s_ftype, 1); df("delete", f_s_delete, -1); df("unlink", f_s_delete, -1); df("rename", f_s_rename, 2);

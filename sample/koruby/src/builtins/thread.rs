@@ -272,12 +272,14 @@ fn th_abort(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Va
 fn th_set_abort(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { thr(c, s)?.abort = a[0].truthy(); Ok(a[0]) }
 fn th_group(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     if thr(c, s)?.dead { return Ok(NIL); }
+    init_sync();
     Ok(const_get_at(const_get_at(vm().c_object, intern(b"ThreadGroup")).unwrap(), intern(b"Default")).unwrap())
 }
 fn tg_list(c: &mut Ctx, _s: Value, a: &[Value], b: *const Block) -> RV { th_list(c, NIL, a, b) }
 
 // ---- Mutex / Monitor --------------------------------------------------------------------------
 
+static mut HELD: usize = 0; // locks currently owned (skips the heap walk at thread exit)
 pub struct RLock { owner: Value, count: usize, monitor: bool }
 impl RData for RLock {
     fn mark(&self, m: &mut crate::gc::Marker) { m.mark(self.owner); }
@@ -293,7 +295,8 @@ pub fn alloc_lock(klass: Value) -> Option<Value> {
 }
 /// A dead thread gives its locks back.
 fn release_locks(t: Value) {
-    crate::gc::each_object(|v| { if let Some(l) = rdata::<RLock>(v) { if l.owner == t { l.owner = NIL; l.count = 0; } } });
+    if unsafe { HELD } == 0 { return; }
+    crate::gc::each_object(|v| { if let Some(l) = rdata::<RLock>(v) { if l.owner == t { l.owner = NIL; l.count = 0; unsafe { HELD = HELD.saturating_sub(1); } } } });
 }
 fn acquire(c: &mut Ctx, m: Value) -> Result<(), Esc> {
     let me = cur();
@@ -305,6 +308,7 @@ fn acquire(c: &mut Ctx, m: Value) -> Result<(), Esc> {
     block_on(c, |_| Ok(lk(m).owner == NIL || th(lk(m).owner).dead), None, true, false)?;
     let l = lk(m);
     l.owner = me; l.count = 1;
+    unsafe { HELD += 1; }
     Ok(())
 }
 fn release(c: &mut Ctx, m: Value) -> Result<(), Esc> {
@@ -312,7 +316,7 @@ fn release(c: &mut Ctx, m: Value) -> Result<(), Esc> {
     if l.owner == NIL { return err(c, vm().c_thread_error, if l.monitor { "current thread not owner" } else { "Attempt to unlock a mutex which is not locked" }); }
     if l.owner != cur() { return err(c, vm().c_thread_error, if l.monitor { "current thread not owner" } else { "Attempt to unlock a mutex which is locked by another thread/fiber" }); }
     l.count -= 1;
-    if l.count == 0 { l.owner = NIL; }
+    if l.count == 0 { l.owner = NIL; unsafe { HELD = HELD.saturating_sub(1); } }
     Ok(())
 }
 fn mx_lock(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { acquire(c, s)?; Ok(s) }
@@ -320,7 +324,7 @@ fn mx_unlock(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { rele
 fn mx_try_lock(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let l = lk(s);
     let me = cur();
-    if l.owner == NIL { l.owner = me; l.count = 1; return Ok(TRUE); }
+    if l.owner == NIL { l.owner = me; l.count = 1; unsafe { HELD += 1; } return Ok(TRUE); }
     if l.owner == me && l.monitor { l.count += 1; return Ok(TRUE); }
     Ok(FALSE)
 }
@@ -352,10 +356,12 @@ fn mon_check_owner(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV 
 fn mon_wait_for_cond(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let count = lk(s).count;
     lk(s).owner = NIL; lk(s).count = 0;
+    unsafe { HELD = HELD.saturating_sub(1); }
     let r = cv_wait_raw(c, a[0], a[1]);
     let me = cur();
     block_on(c, |_| Ok(lk(s).owner == NIL), None, true, false)?;
     lk(s).owner = me; lk(s).count = count;
+    unsafe { HELD += 1; }
     r?;
     Ok(TRUE)
 }
@@ -517,6 +523,15 @@ pub fn init() {
     d("native_thread_id", |_c, _s, _a, _b| Ok(Value::fix(unsafe { crate::builtins::sys::getpid() } as i64)), 0);
     d("pending_interrupt?", |_c, _s, _a, _b| Ok(FALSE), -1);
     d("fetch", |c, s, a, b| { let k = key_sym(c, a[0])?; let h = thr(c, s)?.locals; match hash_get_opt(c, h, k)? { Some(v) => Ok(v), None if !b.is_null() => yield1(c, b, a[0]), None if a.len() > 1 => Ok(a[1]), None => { let d = inspect_str(c, k)?; err(c, crate::vm::vm().c_key_error, format!("key not found: {}", d)) } } }, -1);
+    for n in ["Mutex", "Queue", "SizedQueue", "ConditionVariable"] { crate::builtins::prelude::lazy_const(th, n, "koruby/sync"); crate::builtins::prelude::lazy_const(ob, n, "koruby/sync"); }
+    crate::builtins::prelude::lazy_const(ob, "Monitor", "koruby/sync");
+    crate::builtins::prelude::lazy_const(ob, "ThreadGroup", "koruby/sync");
+}
+/// ThreadGroup, Mutex, Monitor, Queue, SizedQueue, ConditionVariable (the "koruby/sync" feature).
+pub fn init_sync() {
+    let vm = vm();
+    if vm.c_mutex != NIL { return; }
+    let (ob, th) = (vm.c_object, vm.c_thread);
     let tg = define_class("ThreadGroup", ob);
     let dg = new_object(tg);
     const_set(tg, intern(b"Default"), dg);

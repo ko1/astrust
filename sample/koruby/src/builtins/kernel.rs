@@ -796,7 +796,7 @@ fn m_autoload_p(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV
     let list: Vec<Value> = if inherit { ancestors(k).clone() } else { vec![k] };
     for kk in list {
         if const_get_at(kk, nm).is_some() { return Ok(NIL); }
-        if let Some(&p) = rclass(kk).autoload.get(&nm) { return Ok(p); }
+        if let Some(&p) = rclass(kk).autoload.get(&nm) { return Ok(if str_bytes(p).starts_with(b"koruby/") { NIL } else { p }); }
     }
     Ok(NIL)
 }

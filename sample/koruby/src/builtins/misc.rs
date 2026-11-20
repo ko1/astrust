@@ -270,7 +270,8 @@ fn rbconfig_ruby(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV 
     let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "koruby".into());
     Ok(str_new(exe.as_bytes()))
 }
-fn rbconfig_init() {
+pub fn rbconfig_init() {
+    if const_get_at(vm().c_object, intern(b"RbConfig")).is_some() { return; }
     let rbc = define_module("RbConfig");
     let cfg = hash_new_capa(32);
     let exe = std::env::current_exe().unwrap_or_else(|_| "koruby".into());
@@ -379,7 +380,6 @@ pub fn init() {
     set("RUBY_DESCRIPTION", str_new_frozen(crate::version().as_bytes()));
     set("ARGV", vm.argv);
     set("TOPLEVEL_BINDING", NIL);
-    rbconfig_init();
     let _ = (intern, num_to_long);
     crate::builtins::exception::init_location();
 }

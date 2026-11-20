@@ -840,6 +840,10 @@ pub fn rt_module(c: &mut Ctx, outer: Value, name: Sym, is: &'static Iseq, _fp: *
         let s = crate::builtins::kernel::inspect_str(c, outer)?;
         return type_err(c, format!("{} is not a class/module", s));
     }
+    // reopening an autoload constant loads it first (as rt_class does)
+    if const_get_at(outer, name).is_none() {
+        if let Some(path) = rclass(outer).autoload.remove(&name) { crate::builtins::kernel::require_feature(c, path, false)?; }
+    }
     let m = match const_get_at(outer, name) {
         Some(m) => {
             if !is_class_or_module(m) || !rclass(m).is_module { return type_err(c, format!("{} is not a module", sym_str(name))); }

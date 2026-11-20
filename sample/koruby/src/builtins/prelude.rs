@@ -13,8 +13,12 @@ macro_rules! lib { ($n:literal) => { ($n, include_str!(concat!("../../prelude/li
 const LIBS: &[(&str, &str)] = &[lib!("etc"), lib!("timeout"), lib!("monitor"), lib!("time"), ("koruby/argf", include_str!("../../prelude/lib/argf.rb"))];
 /// Features whose implementation is native and always present (require is a no-op).
 const NATIVE: &[&str] = &["set", "stringio", "rbconfig", "thread", "fiber", "enumerator", "rational", "complex", "continuation",
-    "io/wait", "io/nonblock", "fcntl", "etc.so", "monitor.so", "strscan", "strscan.so", "json", "json/ext"];
+    "io/wait", "io/nonblock", "fcntl", "etc.so", "monitor.so", "strscan", "strscan.so", "json", "json/ext", "koruby/errno", "koruby/env", "koruby/rbconfig", "koruby/filetest", "koruby/stat", "koruby/sync"];
 
+/// Constant `name` under `owner` whose native definition runs on first reference.
+pub fn lazy_const(owner: Value, name: &str, feature: &str) {
+    crate::object::rclass(owner).autoload.insert(crate::symbol::intern(name.as_bytes()), crate::string::str_new_frozen(feature.as_bytes()));
+}
 pub fn has_feature(name: &str) -> bool { NATIVE.contains(&name) || LIBS.iter().any(|l| l.0 == name) }
 pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
     if let Some(l) = LIBS.iter().find(|l| l.0 == name) {
@@ -24,6 +28,15 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
     // native libraries whose classes are only built on first require
     if name == "strscan" || name == "strscan.so" { crate::builtins::strscan::init(); }
     if name == "json" || name == "json/ext" { crate::builtins::json::init(); }
+    match name {
+        "koruby/errno" => crate::builtins::exception::define_all_errnos(),
+        "koruby/env" => crate::builtins::env::init(),
+        "koruby/rbconfig" | "rbconfig" => crate::builtins::misc::rbconfig_init(),
+        "koruby/filetest" => crate::builtins::file::init_filetest(),
+        "koruby/stat" => crate::builtins::file::init_stat(),
+        "koruby/sync" => crate::builtins::thread::init_sync(),
+        _ => {}
+    }
     Ok(NIL)
 }
 
