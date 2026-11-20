@@ -89,14 +89,15 @@ fn signal_trap(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
         let sname = if cmd.is_sym() { crate::symbol::sym_str(cmd.as_sym()) } else { String::from_utf8_lossy(str_bytes(cmd)).into_owned() };
         match sname.as_str() {
             "" | "IGNORE" | "SIG_IGN" => (str_new(b"IGNORE"), 1),
-            "DEFAULT" | "SIG_DFL" | "SYSTEM_DEFAULT" => (str_new(sname.replace("SIG_DFL", "DEFAULT").as_bytes()), 0),
+            "DEFAULT" | "SIG_DFL" => (UNDEF, 0),
+            "SYSTEM_DEFAULT" => (str_new(b"SYSTEM_DEFAULT"), 0),
             "EXIT" => (str_new(b"EXIT"), on_signal as *const () as usize),
             _ => return arg_err(c, format!("wrong trap - {}", sname)),
         }
     } else { (cmd, on_signal as *const () as usize) };
     let h = unsafe { HANDLERS };
-    let old = ary_get(h, sig as usize);
     while ary_len(h) <= sig as usize { ary_push(h, UNDEF); }
+    let old = ary_get(h, sig as usize);
     rary(h)[sig as usize] = store;
     if sig != 0 { unsafe { sys::signal(sig, action); } }
     Ok(if old == UNDEF { if sig == 0 { NIL } else { str_new(b"DEFAULT") } } else { old })

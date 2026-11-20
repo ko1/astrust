@@ -62,6 +62,30 @@ fn m_log1p(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     if f < -1.0 { return err(c, vm().c_math_domain_error, "Numerical argument is out of domain - \"log1p\""); }
     Ok(crate::numeric::float_new(f.ln_1p()))
 }
+extern "C" { fn erf(x: f64) -> f64; fn erfc(x: f64) -> f64; fn cbrt(x: f64) -> f64; fn tgamma(x: f64) -> f64; fn lgamma_r(x: f64, sign: *mut i32) -> f64; }
+fn m_gamma(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+    let f = crate::builtins::numeric_methods::rb_float(c, a[0])?;
+    if f == f64::NEG_INFINITY || (f < 0.0 && f == f.floor()) { return err(c, vm().c_math_domain_error, "Numerical argument is out of domain - \"gamma\""); }
+    if f == f.floor() && (1.0..=23.0).contains(&f) { let mut r = 1.0f64; let mut k = 2.0; while k < f { r *= k; k += 1.0; } return Ok(crate::numeric::float_new(r)); }
+    Ok(crate::numeric::float_new(unsafe { tgamma(f) }))
+}
+fn m_lgamma(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+    let f = crate::builtins::numeric_methods::rb_float(c, a[0])?;
+    if f == f64::NEG_INFINITY { return err(c, vm().c_math_domain_error, "Numerical argument is out of domain - \"lgamma\""); }
+    if f == 0.0 { return Ok(ary_new_from(&[crate::numeric::float_new(f64::INFINITY), Value::fix(if f.is_sign_negative() { -1 } else { 1 })])); }
+    let mut sign = 1i32;
+    let r = unsafe { lgamma_r(f, &mut sign) };
+    Ok(ary_new_from(&[crate::numeric::float_new(r), Value::fix(if sign < 0 { -1 } else { 1 })]))
+}
+fn m_erf(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; Ok(crate::numeric::float_new(unsafe { erf(f) })) }
+fn m_erfc(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; Ok(crate::numeric::float_new(unsafe { erfc(f) })) }
+fn m_cbrt(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; let mut r = unsafe { cbrt(f) }; if r.is_finite() && !(f == 0.0 && r == 0.0) { r = (2.0 * r + (f / r / r)) / 3.0; } Ok(crate::numeric::float_new(r)) }
+fn gc_config(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+    let h = hash_new();
+    hash_set(c, h, sym_value("rgengc_allow_full_mark"), TRUE)?;
+    hash_set(c, h, sym_value("implementation"), str_new(b"default"))?;
+    Ok(h)
+}
 fn k_global_variables(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     let out = ary_new();
     let mut names: Vec<Vec<u8>> = vm().globals.keys().map(|k| sym_bytes(*k).to_vec()).collect();
@@ -188,6 +212,17 @@ pub fn init() {
     define_cfunc(se, "signo", sig_signo, 0); define_cfunc(se, "signm", sig_signm, 0);
     define_module_function(vm.m_math, "expm1", m_expm1, 1);
     define_module_function(vm.m_math, "log1p", m_log1p, 1);
+    for (n, f) in [("erf", m_erf as CFunc), ("erfc", m_erfc), ("cbrt", m_cbrt), ("gamma", m_gamma), ("lgamma", m_lgamma)] { define_module_function(vm.m_math, n, f, 1); }
+    let gc = vm.m_gc;
+    define_module_function(gc, "auto_compact", |_c, _s, _a, _b| Ok(FALSE), 0);
+    define_module_function(gc, "auto_compact=", |_c, _s, a, _b| Ok(a[0]), 1);
+    define_module_function(gc, "measure_total_time", |_c, _s, _a, _b| Ok(TRUE), 0);
+    define_module_function(gc, "measure_total_time=", |_c, _s, a, _b| Ok(a[0]), 1);
+    define_module_function(gc, "total_time", |_c, _s, _a, _b| Ok(Value::fix(crate::gc::heap().gc_time.as_nanos() as i64)), 0);
+    define_module_function(gc, "config", gc_config, -1);
+    define_module_function(gc, "stat_heap", |_c, _s, _a, _b| Ok(hash_new()), -1);
+    define_module_function(gc, "latest_gc_info", |_c, _s, _a, _b| Ok(hash_new()), -1);
+    define_module_function(gc, "verify_internal_consistency", |_c, _s, _a, _b| Ok(NIL), 0);
     let k = vm.m_kernel;
     define_module_function(k, "global_variables", k_global_variables, 0);
     define_module_function(k, "__callee__", k_callee, 0);

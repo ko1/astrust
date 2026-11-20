@@ -270,7 +270,8 @@ fn f_s_basename(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
 fn dirname_of(p: &str) -> String {
     let t = p.trim_end_matches('/');
     let d = match t.rfind('/') { Some(i) => { let d = t[..i].trim_end_matches('/'); if d.is_empty() { "/" } else { d } } None => if p.starts_with('/') { "/" } else { "." } };
-    d.to_string()
+    // a run of leading slashes is one root
+    if d.starts_with("//") { format!("/{}", d.trim_start_matches('/')) } else { d.to_string() }
 }
 fn f_s_dirname(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 1, 2)?;
@@ -283,7 +284,7 @@ fn f_s_extname(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
     let p = path_arg(c, a[0])?;
     let base = p.trim_end_matches('/').rsplit('/').next().unwrap_or("");
     let stem = base.trim_start_matches('.');
-    let e = match stem.rfind('.') { Some(i) if i + 1 < stem.len() => stem[i..].to_string(), _ => String::new() };
+    let e = match stem.rfind('.') { Some(i) if i + 1 < stem.len() => stem[i..].to_string(), Some(i) if i > 0 => ".".to_string(), _ => String::new() };
     Ok(str_like(a[0], e.as_bytes()))
 }
 fn f_s_split(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
@@ -406,7 +407,6 @@ fn bracket<'a>(p: &'a [u8], ch: &[u8], flags: i64) -> Option<(bool, &'a [u8])> {
     let neg = matches!(p.first(), Some(b'!') | Some(b'^'));
     if neg { i += 1; }
     let mut ok = false;
-    let mut first = true;
     let next = |i: &mut usize| -> Option<&'a [u8]> {
         if *i >= p.len() { return None; }
         if p[*i] == b'\\' && flags & FNM_NOESCAPE == 0 && *i + 1 < p.len() { *i += 1; }
@@ -415,8 +415,7 @@ fn bracket<'a>(p: &'a [u8], ch: &[u8], flags: i64) -> Option<(bool, &'a [u8])> {
     };
     loop {
         if i >= p.len() { return None; }
-        if p[i] == b']' && !first { i += 1; break; }
-        first = false;
+        if p[i] == b']' { i += 1; break; }
         let lo = next(&mut i)?;
         let hi = if i + 1 < p.len() && p[i] == b'-' && p[i + 1] != b']' { i += 1; next(&mut i)? } else { lo };
         let inr = |x: &[u8]| -> bool { if x.len() == 1 && lo.len() == 1 && hi.len() == 1 { lo[0] <= x[0] && x[0] <= hi[0] } else { lo <= x && x <= hi } };
@@ -465,7 +464,7 @@ fn fnm(p: &[u8], s: &[u8], flags: i64, lead: bool) -> bool {
                         if !ok || (path && s[0] == b'/') || (lead && s[0] == b'.' && !dot) { return false; }
                         p = rest; s = &s[l..]; lead = false;
                     }
-                    None => { if s[0] != b'[' { return false; } p = &p[1..]; s = &s[1..]; lead = false; }
+                    None => return false,
                 }
             }
             _ => {

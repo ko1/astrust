@@ -57,7 +57,7 @@ fn env_delete(c: &mut Ctx, _s: Value, a: &[Value], b: *const Block) -> RV {
     }
 }
 fn env_key_p(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let k = name_arg(c, a[0], "name")?; Ok(Value::bool(get(&k).is_some())) }
-fn env_value_p(_c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { if !is_string(a[0]) { return Ok(FALSE); } let v = str_bytes(a[0]); Ok(Value::bool(pairs().iter().any(|p| p.1 == v))) }
+fn env_value_p(_c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { if !is_string(a[0]) { return Ok(NIL); } let v = str_bytes(a[0]); Ok(Value::bool(pairs().iter().any(|p| p.1 == v))) }
 fn env_key(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let v = name_arg(c, a[0], "value")?; Ok(pairs().into_iter().find(|p| p.1 == v).map(|p| env_str(&p.0)).unwrap_or(NIL)) }
 fn env_keys(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { let out = ary_new(); for (k, _) in pairs() { let s = env_str(&k); ary_push(out, s); } Ok(out) }
 fn env_values(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { let out = ary_new(); for (_, v) in pairs() { let s = env_str(&v); ary_push(out, s); } Ok(out) }
