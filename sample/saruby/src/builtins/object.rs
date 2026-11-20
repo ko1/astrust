@@ -61,11 +61,9 @@ fn bo_instance_exec(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV
     yield_with_self(c, b, a, slf, dc)
 }
 fn bo_method_missing(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    let mid = if a.is_empty() { s::method_missing } else { a[0].as_sym() };
-    let f = c.frame();
-    let vcall = false;
-    let _ = f;
-    no_method_error(c, slf, mid, if vcall { CF_VCALL } else { 0 })
+    if a.is_empty() { return arg_err(c, "no method name given"); }
+    if !a[0].is_sym() { return arg_err(c, format!("method name must be a Symbol but {} is given", class_name_for_err(a[0]))); }
+    no_method_error(c, slf, a[0].as_sym(), 0)
 }
 fn bo_singleton_method_added(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(NIL) }
 

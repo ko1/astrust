@@ -45,7 +45,7 @@ pub fn search(c: &mut Ctx, re: Value, s: Value, start: usize, set_last: bool) ->
         Some(g) => g,
         None => { if set_last { c.last_match = NIL; } return Ok(NIL); }
     };
-    let m = crate::gc::alloc(vm().c_match_data, Body::Data(Box::new(RMatch { regexp: re, str: s, groups })));
+    let m = match_new(re, s, groups);
     if set_last { c.last_match = m; }
     Ok(m)
 }
@@ -58,6 +58,8 @@ pub fn search_raw(re: Value, bytes: &[u8], start: usize) -> Option<Vec<Option<(u
 }
 
 pub fn match_new(re: Value, s: Value, groups: Vec<Option<(usize, usize)>>) -> Value {
+    // CRuby's MatchData keeps a frozen snapshot: a String changed after the match must not move its groups
+    let s = if is_frozen(s) { s } else { let d = crate::string::str_dup(s); obj(d).flags |= FL_FROZEN; d };
     crate::gc::alloc(vm().c_match_data, Body::Data(Box::new(RMatch { regexp: re, str: s, groups })))
 }
 

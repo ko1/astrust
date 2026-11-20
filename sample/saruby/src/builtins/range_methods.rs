@@ -344,8 +344,8 @@ cfn!(r_step, |c, slf, a, blk| {
         if neg.truthy() { return arg_err(c, "step can't be negative"); }
     }
     if is_float(b) || is_float(e) || is_float(st) {
-        let bf = c.num_to_f64(b).unwrap(); let sf = c.num_to_f64(st).unwrap();
-        let ef = if e == NIL { f64::INFINITY } else { c.num_to_f64(e).unwrap() };
+        let (Some(bf), Some(sf)) = (c.num_to_f64(b), c.num_to_f64(st)) else { return type_err(c, "no implicit conversion to float"); };
+        let ef = if e == NIL { f64::INFINITY } else { match c.num_to_f64(e) { Some(x) => x, None => return type_err(c, "no implicit conversion to float") } };
         let n = ((ef - bf) / sf + 1e-9).floor();
         let mut i = 0.0;
         loop {

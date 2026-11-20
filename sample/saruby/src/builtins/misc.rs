@@ -48,6 +48,7 @@ fn parse_tmpl(t: &[u8]) -> Vec<(u8, Option<usize>, bool, bool)> {
     out
 }
 pub fn pack(c: &mut Ctx, ary: Value, a: &[Value]) -> RV {
+    if a.is_empty() { return argc_err(c, 0, 1, 1); }
     let t = expect_str(c, a[0])?;
     let tmpl = parse_tmpl(&rstr(t).b);
     let mut out: Vec<u8> = vec![];
