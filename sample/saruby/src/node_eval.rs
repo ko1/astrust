@@ -1202,9 +1202,8 @@ pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlo
     // id 0: no block can return to this frame, and its own `return` is caught by the innermost entry
     let id = if flags & ME_ID != 0 { c.next_serial() } else { 0 };
     let mut fr = Frame { prev: c.frame, fp: head(fp), me, blk, id, line, kind: FK_METHOD, visi: VISI_PUBLIC, lite: true, pad: 0 };
+    // no native stack check here: whoever calls an entry out of line makes it (run_entry, site_fast)
     enter(c, fp, nlocals, nparams)?;
-    // the frame's own address is the native stack probe
-    if (&fr as *const Frame as usize) < c.native_limit { return Err(raise_stack_overflow(c)); }
     fp[1].set(NIL);
     let mut i = 2 + nparams;
     while i < nlocals { slot(fp, i).set(NIL); i += 1; }

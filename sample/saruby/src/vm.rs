@@ -1265,6 +1265,7 @@ pub fn site_fast(c: &mut Ctx, cc: &mut CallCache, recv: Value, base: Stk, argc: 
     match kind & 15 {
         SITE_ENTRY => if argc == cc.fast_argc {
             c.call_me = cc.me as *const MethodEntry; c.call_blk = blk;
+            if let Err(e) = native_check(c) { return Some(Err(e)); }
             // the site just staged: sp is where the entry expects it (no at_entry)
             let r = run_body(c, cc.fast as NodePtr, base);
             c.set_sp(base, 0);
@@ -1646,9 +1647,20 @@ pub fn run_body(c: &mut Ctx, body: NodePtr, base: Stk) -> RV {
     unsafe { ((*body).head.dispatcher)(c, body, fp) }
 }
 
+/// The native stack check of a method call, made where an entry is called out of line: an entry
+/// compiled into its call site adds no native frame, and every recursion passes an out-of-line call.
+#[inline(always)]
+pub fn native_check(c: &mut Ctx) -> Result<(), Esc> {
+    // only its address is used: no store
+    let probe = std::mem::MaybeUninit::<u8>::uninit();
+    if (probe.as_ptr() as usize) < c.native_limit { return Err(raise_stack_overflow(c)); }
+    Ok(())
+}
+
 /// run_body for a method entry node.
 #[inline(always)]
 pub fn run_entry(c: &mut Ctx, entry: NodePtr, base: Stk, argc: u32) -> RV {
+    native_check(c)?;
     at_entry(c, base, argc as usize);
     run_body(c, entry, base)
 }
