@@ -124,6 +124,7 @@ fn int_pow(c: &mut Ctx, a: Value, b: Value) -> RV {
     }
     if !is_integer(b) { return coerce_bin(c, a, b, s::pow, false); }
     let e = to_big(b);
+    if e.neg && (a == Value::fix(1) || a == Value::fix(-1)) { return Ok(Value::fix(if a == Value::fix(-1) && e.is_odd() { -1 } else { 1 })); }
     if e.neg {
         if let Some(_) = const_get_at(vm().c_object, intern(b"Rational")) {
             let r = funcall(c, vm().main_obj, intern(b"Rational"), &[a, Value::fix(1)], std::ptr::null())?;
