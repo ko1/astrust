@@ -260,8 +260,19 @@ cfn!(r_sum, |c, slf, a, blk| {
 });
 cfn!(r_step, |c, slf, a, blk| {
     let (b, e, x) = range_parts(slf);
+    check_argc(c, a, 0, 1)?;
     let st = if a.is_empty() { Value::fix(1) } else { a[0] };
-    if blk.is_null() { return crate::builtins::enumerator::arith_seq(c, b, e, st, x, s::step); }
+    if crate::numeric::is_numeric(st) && (b == NIL || crate::numeric::is_numeric(b)) {
+        let z = funcall(c, st, s::eq, &[Value::fix(0)], std::ptr::null())?;
+        if z.truthy() { return arg_err(c, "step can't be 0"); }
+    }
+    if blk.is_null() {
+        let num = |v: Value| v == NIL || crate::numeric::is_numeric(v);
+        if num(b) && num(e) && crate::numeric::is_numeric(st) && !(b == NIL && e == NIL) {
+            return crate::builtins::enumerator::arith_seq_from(c, slf, b, e, st, x, mid_of(a), a);
+        }
+        return crate::builtins::enumerator::enum_for(c, slf, mid_of(a), a, NIL);
+    }
     if crate::numeric::is_numeric(st) {
         let z = funcall(c, st, s::eq, &[Value::fix(0)], std::ptr::null())?;
         if z.truthy() { return arg_err(c, "step can't be 0"); }
@@ -301,7 +312,9 @@ cfn!(r_step, |c, slf, a, blk| {
     }
     Ok(slf)
 });
-cfn!(r_pct, |c, slf, a, blk| r_step(c, slf, a, blk));
+thread_local!(static PCT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+fn mid_of(_a: &[Value]) -> crate::value::Sym { if PCT.with(|p| p.get()) { intern(b"%") } else { s::step } }
+cfn!(r_pct, |c, slf, a, blk| { PCT.with(|p| p.set(true)); let r = r_step(c, slf, a, blk); PCT.with(|p| p.set(false)); r });
 cfn!(r_dup_frozen, |c, slf, a, blk| Ok(slf));
 cfn!(r_bsearch, |c, slf, a, blk| {
     let (b, e, x) = range_parts(slf);

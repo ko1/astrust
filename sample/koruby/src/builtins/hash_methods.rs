@@ -255,7 +255,11 @@ cfn!(h_set_default, |c, slf, a, blk| { modify(c, slf)?; rhash(slf).default = a[0
 cfn!(h_default_proc, |c, slf, a, blk| Ok(rhash(slf).default_proc));
 cfn!(h_set_default_proc, |c, slf, a, blk| {
     modify(c, slf)?;
-    let p = a[0];
+    let mut p = a[0];
+    if p != NIL && !is_proc(p) && respond_to(p, intern(b"to_proc"), true) {
+        let q = funcall(c, p, intern(b"to_proc"), &[], std::ptr::null())?;
+        if is_proc(q) { p = q; }
+    }
     if p != NIL && !is_proc(p) { return type_err(c, format!("wrong default_proc type {} (expected Proc)", class_name_for_err(p))); }
     if p != NIL && rproc(p).is_lambda { let ar = crate::builtins::proc::proc_arity(p); if ar != 2 && !(ar < 0 && ar >= -3) { return type_err(c, format!("default_proc takes two arguments (2 for {})", ar)); } }
     rhash(slf).default_proc = p; rhash(slf).default = NIL; Ok(p)
@@ -350,6 +354,23 @@ cfn!(h_s_new, |c, slf, a, blk| {
 cfn!(h_initialize_copy, |c, slf, a, blk| h_replace(c, slf, a, blk));
 cfn!(h_store_kw, |c, slf, a, blk| { modify(c, slf)?; hash_aset(c, slf, a[0], a[1])?; Ok(a[1]) });
 
+cfn!(h_deconstruct_keys, |c, slf, a, blk| Ok(slf));
+cfn!(h_flatten, |c, slf, a, blk| {
+    check_argc(c, a, 0, 1)?;
+    let depth = if a.is_empty() { 1 } else { crate::builtins::numeric_methods::num_to_long(c, a[0])? };
+    let out = ary_new_capa(hash_len(slf) * 2);
+    if depth == 0 {
+        for (k, v) in hash_pairs(slf) { let p = ary_new_from(&[k, v]); ary_push(out, p); }
+        return Ok(out);
+    }
+    for (k, v) in hash_pairs(slf) { ary_push(out, k); ary_push(out, v); }
+    if depth > 1 || depth < 0 {
+        let d = if depth < 0 { NIL } else { Value::fix(depth - 1) };
+        return funcall(c, out, intern(b"flatten"), &[d], std::ptr::null());
+    }
+    Ok(out)
+});
+
 pub fn init() {
     let k = vm().c_hash;
     let d = |n: &str, f: CFunc, a: i32| define_cfunc(k, n, f, a);
@@ -360,20 +381,21 @@ pub fn init() {
     define_singleton_cfunc(k, "new", h_s_new, -1);
     d("[]", h_aref, 1); d("[]=", h_aset, 2); d("store", h_store_kw, 2); d("fetch", h_fetch, -1); d("key?", h_key_p, 1); d("has_key?", h_key_p, 1);
     d("include?", h_key_p, 1); d("member?", h_key_p, 1); d("value?", h_value_p, 1); d("has_value?", h_value_p, 1); d("key", h_key, 1);
-    d("delete", h_delete, 1); d("size", h_size, 0); d("length", h_size, 0); d("count", h_count, -1); d("empty?", h_empty, 0); d("keys", h_keys, 0);
+    d("delete", h_delete, 1); d("size", h_size, 0); d("length", h_size, 0); d("empty?", h_empty, 0); d("keys", h_keys, 0);
     d("values", h_values, 0); d("values_at", h_values_at, -1); d("fetch_values", h_fetch_values, -1); d("each", h_each, 0); d("each_pair", h_each, 0);
     d("each_key", h_each_key, 0); d("each_value", h_each_value, 0); d("each_with_index", h_each_with_index, 0); d("map", h_map, 0); d("collect", h_map, 0);
     d("flat_map", h_flat_map, 0); d("select", h_select, 0); d("filter", h_select, 0); d("reject", h_reject, 0); d("select!", h_select_b, 0);
     d("filter!", h_select_b, 0); d("keep_if", h_keep_if, 0); d("reject!", h_reject_b, 0); d("delete_if", h_delete_if, 0); d("filter_map", h_filter_map, 0);
-    d("find", h_find, -1); d("detect", h_find, -1); d("any?", h_any, -1); d("all?", h_all, -1); d("to_a", h_to_a, 0); d("entries", h_to_a, 0); d("to_h", h_to_h, 0);
+    d("any?", h_any, -1); d("to_a", h_to_a, 0); d("to_h", h_to_h, 0);
     d("to_hash", h_to_hash, 0); d("inspect", h_inspect, 0); d("to_s", h_inspect, 0); d("==", h_eq, 1); d("eql?", h_eq, 1); d("hash", h_hash, 0);
     d("merge", h_merge, -1); d("update", h_update, -1); d("merge!", h_update, -1); d("clear", h_clear, 0); d("replace", h_replace, 1);
     d("default", h_default, -1); d("default=", h_set_default, 1); d("default_proc", h_default_proc, 0); d("default_proc=", h_set_default_proc, 1);
     d("invert", h_invert, 0); d("transform_values", h_transform_values, 0); d("transform_values!", h_transform_values_b, 0);
-    d("transform_keys", h_transform_keys, -1); d("transform_keys!", h_transform_keys_b, -1); d("group_by", h_group_by, 0); d("partition", h_partition, 0);
-    d("sum", h_sum, -1); d("min_by", h_min_by, -1); d("sort_by", h_sort_by, 0); d("slice", h_slice, -1); d("except", h_except, -1); d("dig", h_filter_keys_dig, -1);
-    d("shift", h_shift, 0); d("first", h_first, -1); d("compare_by_identity", h_compare_by_identity, 0); d("compare_by_identity?", h_compare_by_identity_p, 0);
+    d("transform_keys", h_transform_keys, -1); d("transform_keys!", h_transform_keys_b, -1); 
+    d("slice", h_slice, -1); d("except", h_except, -1); d("dig", h_filter_keys_dig, -1);
+    d("shift", h_shift, 0); d("compare_by_identity", h_compare_by_identity, 0); d("compare_by_identity?", h_compare_by_identity_p, 0);
     d("rehash", h_rehash, 0); d("compact", h_compact, 0); d("compact!", h_compact_b, 0); d("assoc", h_assoc, 1); d("rassoc", h_rassoc, 1);
     d("<=", h_le, 1); d("<", h_lt, 1); d(">=", h_ge, 1); d(">", h_gt, 1); d("freeze", h_freeze, 0); d("to_proc", h_to_proc, 0);
-    let _ = (h_sort_by_fallback, h_min_by_fallback);
+    d("deconstruct_keys", h_deconstruct_keys, 1); d("flatten", h_flatten, -1);
+    let _ = (h_sort_by_fallback, h_min_by_fallback, h_find, h_all, h_count, h_group_by, h_partition, h_sum, h_min_by, h_sort_by, h_first);
 }

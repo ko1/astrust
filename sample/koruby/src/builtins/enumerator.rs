@@ -55,6 +55,12 @@ pub fn arith_seq(_c: &mut Ctx, b: Value, e: Value, st: Value, excl: bool, mid: S
     renum(v).unwrap().arith = Some((b, e, st, excl));
     Ok(v)
 }
+/// ArithmeticSequence made by Range#step / Range#%: inspects as "((range).mid(args))".
+pub fn arith_seq_from(_c: &mut Ctx, range: Value, b: Value, e: Value, st: Value, excl: bool, mid: Sym, args: &[Value]) -> RV {
+    let v = new_enum(vm().c_arith_seq, range, mid, args, NIL);
+    renum(v).unwrap().arith = Some((b, e, st, excl));
+    Ok(v)
+}
 pub fn is_arith_seq(v: Value) -> bool { renum(v).map(|e| e.arith.is_some()).unwrap_or(false) }
 pub fn arith_seq_slice(c: &mut Ctx, seq: Value, ary: Value) -> RV {
     let (b, e, st, excl) = renum(seq).unwrap().arith.unwrap();
@@ -215,6 +221,13 @@ fn e_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     if let Some((b, e, st, x)) = en.arith {
         let r = if en.mid == s::step && crate::numeric::is_numeric(b) && !is_range(en.recv) && false { String::new() } else { String::new() };
         let _ = r;
+        if is_range(en.recv) {
+            let rs = inspect_str(c, en.recv)?;
+            let args = ary_to_vec(en.args);
+            let mut a = String::new();
+            if !args.is_empty() { a.push('('); for (i, x) in args.iter().enumerate() { if i > 0 { a.push_str(", "); } a.push_str(&inspect_str(c, *x)?); } a.push(')'); }
+            return Ok(str_new(format!("(({}).{}{})", rs, sym_str(en.mid), a).as_bytes()));
+        }
         let bs = inspect_str(c, b)?; let es = if e == NIL { String::new() } else { inspect_str(c, e)? }; let ss = inspect_str(c, st)?;
         if en.mid == s::step && !en.recv.is_heap() && en.recv == b && crate::numeric::is_numeric(b) && is_range_origin(slf) == false {
             let args = if e == NIL { format!("(by: {})", ss) } else { format!("({}, {})", es, ss) };

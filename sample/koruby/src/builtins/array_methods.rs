@@ -58,41 +58,32 @@ pub fn cmp_result(c: &mut Ctx, r: Value, a: Value, b: Value) -> Result<i64, Esc>
     Ok(if z.truthy() { -1 } else { 0 })
 }
 
-/// Stable merge sort with a fallible comparator.
+/// glibc msort (CRuby sorts through qsort_r): top-down merge, left wins unless cmp(l, r) > 0,
+/// so inconsistent comparators see the same call sequence as CRuby.
 pub fn sort_values(c: &mut Ctx, v: &mut Vec<Value>, cmp: &mut dyn FnMut(&mut Ctx, Value, Value) -> Result<std::cmp::Ordering, Esc>) -> Result<(), Esc> {
+    fn msort(c: &mut Ctx, v: &mut [Value], tmp: &mut [Value], cmp: &mut dyn FnMut(&mut Ctx, Value, Value) -> Result<std::cmp::Ordering, Esc>) -> Result<(), Esc> {
+        let n = v.len();
+        if n <= 1 { return Ok(()); }
+        let n1 = n / 2;
+        {
+            let (l, r) = v.split_at_mut(n1);
+            let (tl, tr) = tmp.split_at_mut(n1);
+            msort(c, l, tl, cmp)?;
+            msort(c, r, tr, cmp)?;
+        }
+        let (mut i, mut j, mut k) = (0, n1, 0);
+        while i < n1 && j < n {
+            if cmp(c, v[i], v[j])? != std::cmp::Ordering::Greater { tmp[k] = v[i]; i += 1; } else { tmp[k] = v[j]; j += 1; }
+            k += 1;
+        }
+        while i < n1 { tmp[k] = v[i]; i += 1; k += 1; }
+        // the rest of the right run is already in place
+        v[..k].copy_from_slice(&tmp[..k]);
+        Ok(())
+    }
     if v.len() < 2 { return Ok(()); }
     let mut tmp = v.clone();
-    let n = v.len();
-    let mut w = 1;
-    // insertion sort runs of 8
-    let run = 8;
-    let mut i = 0;
-    while i < n {
-        let e = (i + run).min(n);
-        for j in i + 1..e {
-            let mut k = j;
-            while k > i && cmp(c, v[k - 1], v[k])? == std::cmp::Ordering::Greater { v.swap(k - 1, k); k -= 1; }
-        }
-        i = e;
-    }
-    w = w.max(run);
-    while w < n {
-        let mut lo = 0;
-        while lo < n {
-            let mid = (lo + w).min(n); let hi = (lo + 2 * w).min(n);
-            let (mut a, mut b, mut k) = (lo, mid, lo);
-            while a < mid && b < hi {
-                if cmp(c, v[b], v[a])? == std::cmp::Ordering::Less { tmp[k] = v[b]; b += 1; } else { tmp[k] = v[a]; a += 1; }
-                k += 1;
-            }
-            while a < mid { tmp[k] = v[a]; a += 1; k += 1; }
-            while b < hi { tmp[k] = v[b]; b += 1; k += 1; }
-            lo = hi;
-        }
-        std::mem::swap(v, &mut tmp);
-        w *= 2;
-    }
-    Ok(())
+    msort(c, v, &mut tmp, cmp)
 }
 
 pub fn sort_array(c: &mut Ctx, v: &mut Vec<Value>, blk: *const Block) -> Result<(), Esc> {
@@ -435,6 +426,8 @@ fn check_str_conv(c: &mut Ctx, x: Value) -> Result<Option<Value>, Esc> {
     Ok(None)
 }
 cfn!(a_join, |c, slf, a, blk| {
+    check_argc(c, a, 0, 1)?;
+    if len(slf) == 0 { return Ok(str_new(b"")); }
     let sepv = if a.is_empty() || a[0] == NIL { gvar_get(c, intern(b"$,"))? } else { a[0] };
     let sep = if sepv == NIL { vec![] } else { let s2 = expect_str(c, sepv)?; str_bytes(s2).to_vec() };
     let mut out = vec![]; let mut enc = ENC_UTF8;
@@ -538,7 +531,7 @@ cfn!(a_and, |c, slf, a, blk| {
     while i < len(slf) { let x = get(slf, i); if hash_lookup(c, h, x)?.is_some() && hash_lookup(c, seen, x)?.is_none() { hash_set(c, seen, x, TRUE)?; ary_push(out, x); } i += 1; }
     Ok(out)
 });
-cfn!(a_intersection, |c, slf, a, blk| { let mut cur = ary_from_vec(rary(slf).clone()); for &x in a { cur = a_and(c, cur, &[x], blk)?; } if a.is_empty() { cur = a_uniq(c, cur, &[], std::ptr::null())?; } Ok(cur) });
+cfn!(a_intersection, |c, slf, a, blk| { let mut cur = ary_from_vec(rary(slf).clone()); for &x in a { cur = a_and(c, cur, &[x], blk)?; } Ok(cur) });
 cfn!(a_intersect_p, |c, slf, a, blk| { let r = a_and(c, slf, a, blk)?; Ok(Value::bool(len(r) > 0)) });
 cfn!(a_or, |c, slf, a, blk| {
     let o = expect_array(c, a[0])?;
@@ -601,6 +594,8 @@ fn minmax_impl(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, want_max
     };
     if !a.is_empty() && a[0] != NIL {
         let n = num_to_long(c, a[0])?;
+        if n < 0 { return arg_err(c, format!("negative size ({})", n)); }
+        if n == 0 { return Ok(ary_new()); }
         let mut v = rary(slf).clone();
         let keep = ary_from_vec(v.clone());
         let mut f = cmpf;
@@ -652,6 +647,7 @@ cfn!(a_drop, |c, slf, a, blk| { let n = num_to_long(c, a[0])?; if n < 0 { return
 cfn!(a_take_while, |c, slf, a, blk| enum_or(c, slf, "take_while", a, blk, |c| { let out = ary_new(); let mut i = 0; while i < len(slf) { let x = get(slf, i); if !yield1(c, blk, x)?.truthy() { break; } ary_push(out, x); i += 1; } Ok(out) }));
 cfn!(a_drop_while, |c, slf, a, blk| enum_or(c, slf, "drop_while", a, blk, |c| { let mut i = 0; while i < len(slf) { let x = get(slf, i); if !yield1(c, blk, x)?.truthy() { break; } i += 1; } Ok(ary_from_vec(rary(slf)[i.min(len(slf))..].to_vec())) }));
 cfn!(a_zip, |c, slf, a, blk| {
+    if len(slf) == 0 { return Ok(if blk.is_null() { ary_new() } else { NIL }); }
     let mut others = vec![];
     for &x in a {
         let arr = if is_array(x) { x } else if let Some(arr) = check_array(c, x)? { arr } else if respond_to(x, s::each, true) { funcall(c, x, s::to_a, &[], std::ptr::null())? } else { return type_err(c, format!("wrong argument type {} (must respond to :each)", class_name_for_err(x))); };
@@ -726,11 +722,12 @@ cfn!(a_values_at, |c, slf, a, blk| {
     for &x in a {
         if is_range(x) {
             let n = len(slf) as i64;
-            if let Some((st, l)) = crate::range::range_beg_len(c, x, n, 0)? {
-                let (_, e, excl) = crate::range::range_parts(x);
-                let want = if e == NIL { l } else { let e2 = num_to_long(c, e)?; let e2 = if e2 < 0 { e2 + n } else { e2 }; (e2 - st + if excl { 0 } else { 1 }).max(0) };
-                for i in 0..want { ary_push(out, get(slf, (st + i) as usize)); }
-            }
+            let (b, e, excl) = crate::range::range_parts(x);
+            let st0 = if b == NIL { 0 } else { num_to_long(c, b)? };
+            let st = if st0 < 0 { st0 + n } else { st0 };
+            if st < 0 { let s2 = inspect_str(c, x)?; return err(c, vm().c_range_error, format!("{} out of range", s2)); }
+            let en = if e == NIL { n } else { let e2 = num_to_long(c, e)?; let e2 = if e2 < 0 { e2 + n } else { e2 }; if excl { e2 } else { e2 + 1 } };
+            for i in st..en.max(st) { ary_push(out, get(slf, i as usize)); }
         } else { let i = num_to_long(c, x)?; ary_push(out, norm_index(i, len(slf)).map(|i| get(slf, i)).unwrap_or(NIL)); }
     }
     Ok(out)
@@ -854,7 +851,71 @@ cfn!(a_each_cons, |c, slf, a, blk| enum_or(c, slf, "each_cons", a, blk, |c| {
     Ok(slf)
 }));
 cfn!(a_filter_map, |c, slf, a, blk| enum_or(c, slf, "filter_map", a, blk, |c| { let out = ary_new(); let mut i = 0; while i < len(slf) { let x = get(slf, i); let y = yield1(c, blk, x)?; if y.truthy() { ary_push(out, y); } i += 1; } Ok(out) }));
-cfn!(a_minmax, |c, slf, a, blk| { let lo = minmax_impl(c, slf, &[], blk, false)?; let hi = minmax_impl(c, slf, &[], blk, true)?; Ok(ary_new_from(&[lo, hi])) });
+// CRuby's pairwise minmax (enum.c minmax_ii): the block sees the same call sequence.
+cfn!(a_minmax, |c, slf, a, blk| {
+    let cmp = |c: &mut Ctx, x: Value, y: Value| -> Result<i64, Esc> {
+        if blk.is_null() { Ok(rb_cmp(c, x, y)? as i64) } else { let r = yield_block(c, blk, &[x, y])?; cmp_result(c, r, x, y) }
+    };
+    let (mut mn, mut mx) = (UNDEF, UNDEF);
+    let mut last = UNDEF;
+    let mut i = 0;
+    while i < len(slf) {
+        let x = get(slf, i);
+        i += 1;
+        if last == UNDEF { last = x; continue; }
+        let (mut lo, mut hi) = (x, last);
+        last = UNDEF;
+        let n = cmp(c, hi, lo)?;
+        if n == 0 { lo = hi; } else if n < 0 { std::mem::swap(&mut lo, &mut hi); }
+        if mn == UNDEF { mn = lo; mx = hi; } else {
+            if cmp(c, lo, mn)? < 0 { mn = lo; }
+            if cmp(c, hi, mx)? > 0 { mx = hi; }
+        }
+    }
+    if last != UNDEF {
+        if mn == UNDEF { mn = last; mx = last; } else {
+            if cmp(c, last, mn)? < 0 { mn = last; }
+            if cmp(c, last, mx)? > 0 { mx = last; }
+        }
+    }
+    if mn == UNDEF { return Ok(ary_new_from(&[NIL, NIL])); }
+    Ok(ary_new_from(&[mn, mx]))
+});
+cfn!(a_fetch_values, |c, slf, a, blk| {
+    let out = ary_new_capa(a.len());
+    for &x in a { let v = a_fetch(c, slf, &[x], blk)?; ary_push(out, v); }
+    Ok(out)
+});
+cfn!(a_rfind, |c, slf, a, blk| {
+    check_argc(c, a, 0, 1)?;
+    if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"rfind"), a, NIL); }
+    let mut i = len(slf);
+    while i > 0 {
+        i -= 1;
+        if i >= len(slf) { i = len(slf); continue; }
+        let x = get(slf, i);
+        if yield1(c, blk, x)?.truthy() { return Ok(x); }
+    }
+    if let Some(&ifnone) = a.first() { if ifnone != NIL { return funcall(c, ifnone, s::call, &[], std::ptr::null()); } }
+    Ok(NIL)
+});
+cfn!(a_bsearch_index, |c, slf, a, blk| enum_or(c, slf, "bsearch_index", a, blk, |c| {
+    let (mut lo, mut hi) = (0usize, len(slf));
+    let mut found = NIL;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let x = get(slf, mid);
+        let r = yield1(c, blk, x)?;
+        if r == TRUE { found = Value::fix(mid as i64); hi = mid; }
+        else if r == FALSE || r == NIL { lo = mid + 1; }
+        else if r.is_fixnum() || is_float(r) || is_bignum(r) {
+            let v = crate::numeric::num_to_f64(r).unwrap_or(0.0);
+            if v == 0.0 { return Ok(Value::fix(mid as i64)); }
+            if v < 0.0 { hi = mid; } else { lo = mid + 1; }
+        } else { return type_err(c, format!("wrong argument type {} (must be numeric, true, false or nil)", class_name_for_err(r))); }
+    }
+    Ok(found)
+}));
 cfn!(a_freeze, |c, slf, a, blk| { obj(slf).flags |= FL_FROZEN; Ok(slf) });
 cfn!(a_s_try_convert, |c, slf, a, blk| Ok(check_array(c, a[0])?.unwrap_or(NIL)));
 
@@ -886,5 +947,6 @@ pub fn init() {
     d("pack", a_pack, -1); d("flat_map", a_flat_map, 0); d("collect_concat", a_flat_map, 0); d("any?", a_any, -1); d("all?", a_all, -1); d("none?", a_none, -1);
     d("find", a_find, -1); d("detect", a_find, -1); d("each_slice", a_each_slice, 1); d("inject", a_inject, -1); d("reduce", a_inject, -1);
     d("sort_by", a_sort_by_native, 0); d("each_cons", a_each_cons, 1); d("filter_map", a_filter_map, 0); d("minmax", a_minmax, 0); d("freeze", a_freeze, 0);
+    d("fetch_values", a_fetch_values, -1); d("rfind", a_rfind, -1); d("bsearch_index", a_bsearch_index, 0); d("deconstruct", a_to_ary, 0);
     let _ = (a_frozen_dup, a_first_n_compat, a_s_new);
 }
