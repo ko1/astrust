@@ -1,0 +1,333 @@
+// String: byte buffer + encoding tag (UTF-8 / ASCII-8BIT / US-ASCII).
+use crate::array::*;
+use crate::object::*;
+use crate::symbol::{intern, s};
+use crate::value::*;
+use crate::vm::*;
+
+#[inline]
+pub fn str_new(b: &[u8]) -> Value {
+    crate::gc::malloc_increase(b.len());
+    crate::gc::alloc(vm().c_string, Body::String(RString { b: b.to_vec(), enc: ENC_UTF8 }))
+}
+#[inline]
+pub fn str_new_enc(b: &[u8], enc: u8) -> Value {
+    crate::gc::malloc_increase(b.len());
+    crate::gc::alloc(vm().c_string, Body::String(RString { b: b.to_vec(), enc }))
+}
+pub fn str_from_vec(b: Vec<u8>) -> Value {
+    crate::gc::malloc_increase(b.len());
+    crate::gc::alloc(vm().c_string, Body::String(RString { b, enc: ENC_UTF8 }))
+}
+pub fn str_from_vec_enc(b: Vec<u8>, enc: u8) -> Value {
+    crate::gc::malloc_increase(b.len());
+    crate::gc::alloc(vm().c_string, Body::String(RString { b, enc }))
+}
+pub fn str_new_frozen(b: &[u8]) -> Value {
+    let v = str_new(b);
+    obj(v).flags |= FL_FROZEN;
+    v
+}
+pub fn str_from(s: &str) -> Value { str_new(s.as_bytes()) }
+/// Same class/encoding as `like`, new contents.
+pub fn str_new_like(like: Value, b: Vec<u8>) -> Value {
+    let enc = rstr(like).enc;
+    str_from_vec_enc(b, enc)
+}
+
+pub fn str_enc(v: Value) -> u8 { rstr(v).enc }
+pub fn str_eq(a: Value, b: Value) -> bool { rstr(a).b == rstr(b).b }
+
+pub fn str_hash(v: Value) -> u64 { crate::astrust::hash_bytes(&rstr(v).b) }
+
+pub fn str_to_sym(v: Value) -> Value { Value::sym(intern(&rstr(v).b)) }
+
+pub fn str_append_str(c: &mut Ctx, acc: Value, s: Value) -> Result<(), Esc> {
+    check_frozen(c, acc)?;
+    if acc == s { let b = rstr(s).b.clone(); rstr(acc).b.extend_from_slice(&b); }
+    else {
+        let (a, b) = (rstr(acc), rstr(s));
+        if b.enc == ENC_BINARY && a.enc != ENC_BINARY && !is_ascii(&b.b) && is_ascii(&a.b) { a.enc = ENC_BINARY; }
+        crate::gc::malloc_increase(b.b.len());
+        a.b.extend_from_slice(&b.b);
+    }
+    Ok(())
+}
+
+pub fn is_ascii(b: &[u8]) -> bool { b.iter().all(|&x| x < 0x80) }
+
+pub fn utf8_len(b: &[u8]) -> usize {
+    if is_ascii(b) { return b.len(); }
+    let mut n = 0; let mut i = 0;
+    while i < b.len() { i += char_len_at(b, i); n += 1; }
+    n
+}
+#[inline]
+pub fn char_len_at(b: &[u8], i: usize) -> usize {
+    let x = b[i];
+    let l = if x < 0x80 { 1 } else if x >> 5 == 6 { 2 } else if x >> 4 == 14 { 3 } else if x >> 3 == 30 { 4 } else { 1 };
+    if i + l > b.len() { return 1; }
+    for k in 1..l { if b[i + k] & 0xc0 != 0x80 { return 1; } }
+    l
+}
+/// Char boundaries (byte offsets) for a string, honoring its encoding.
+pub fn char_offsets(v: Value) -> Vec<usize> {
+    let r = rstr(v);
+    let mut out = Vec::with_capacity(r.b.len() + 1);
+    if r.enc != ENC_UTF8 || is_ascii(&r.b) { for i in 0..=r.b.len() { out.push(i); } return out; }
+    let mut i = 0;
+    while i < r.b.len() { out.push(i); i += char_len_at(&r.b, i); }
+    out.push(r.b.len());
+    out
+}
+pub fn str_char_len(v: Value) -> usize {
+    let r = rstr(v);
+    if r.enc != ENC_UTF8 { r.b.len() } else { utf8_len(&r.b) }
+}
+pub fn chars_of(v: Value) -> Vec<Vec<u8>> {
+    let off = char_offsets(v);
+    let b = &rstr(v).b;
+    (0..off.len() - 1).map(|i| b[off[i]..off[i + 1]].to_vec()).collect()
+}
+
+pub fn decode_utf8(b: &[u8], i: usize) -> (u32, usize) {
+    let l = char_len_at(b, i);
+    let x = b[i] as u32;
+    let cp = match l {
+        1 => x,
+        2 => ((x & 0x1f) << 6) | (b[i + 1] as u32 & 0x3f),
+        3 => ((x & 0x0f) << 12) | ((b[i + 1] as u32 & 0x3f) << 6) | (b[i + 2] as u32 & 0x3f),
+        _ => ((x & 0x07) << 18) | ((b[i + 1] as u32 & 0x3f) << 12) | ((b[i + 2] as u32 & 0x3f) << 6) | (b[i + 3] as u32 & 0x3f),
+    };
+    (cp, l)
+}
+pub fn encode_utf8(cp: u32, out: &mut Vec<u8>) {
+    if let Some(ch) = char::from_u32(cp) { let mut buf = [0u8; 4]; out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes()); }
+    else {
+        // surrogates etc: raw encoding
+        out.push((0xe0 | (cp >> 12)) as u8); out.push((0x80 | ((cp >> 6) & 0x3f)) as u8); out.push((0x80 | (cp & 0x3f)) as u8);
+    }
+}
+
+pub fn valid_utf8(b: &[u8]) -> bool { std::str::from_utf8(b).is_ok() }
+
+/// String#inspect body.
+pub fn inspect_bytes(b: &[u8], enc: u8) -> String {
+    let mut out = String::with_capacity(b.len() + 2);
+    out.push('"');
+    let mut i = 0;
+    while i < b.len() {
+        let x = b[i];
+        match x {
+            b'"' => out.push_str("\\\""),
+            b'\\' => out.push_str("\\\\"),
+            b'\n' => out.push_str("\\n"),
+            b'\t' => out.push_str("\\t"),
+            b'\r' => out.push_str("\\r"),
+            0x0c => out.push_str("\\f"),
+            0x0b => out.push_str("\\v"),
+            0x08 => out.push_str("\\b"),
+            0x07 => out.push_str("\\a"),
+            0x1b => out.push_str("\\e"),
+            b'#' => {
+                if i + 1 < b.len() && (b[i + 1] == b'{' || b[i + 1] == b'$' || b[i + 1] == b'@') { out.push_str("\\#"); } else { out.push('#'); }
+            }
+            0x20..=0x7e => out.push(x as char),
+            _ if x < 0x80 => out.push_str(&format!("\\x{:02X}", x)),
+            _ => {
+                if enc == ENC_UTF8 {
+                    let l = char_len_at(b, i);
+                    if l > 1 {
+                        if let Ok(s) = std::str::from_utf8(&b[i..i + l]) {
+                            let ch = s.chars().next().unwrap();
+                            if ch.is_control() || (ch as u32) == 0x85 { out.push_str(&format!("\\u{:04X}", ch as u32)); } else { out.push_str(s); }
+                            i += l; continue;
+                        }
+                    }
+                }
+                out.push_str(&format!("\\x{:02X}", x));
+            }
+        }
+        i += 1;
+    }
+    out.push('"');
+    out
+}
+
+pub fn sym_inspect(name: &[u8]) -> String {
+    if sym_is_simple(name) { format!(":{}", String::from_utf8_lossy(name)) } else { format!(":{}", inspect_bytes(name, ENC_UTF8)) }
+}
+
+pub fn sym_is_simple(n: &[u8]) -> bool {
+    if n.is_empty() { return false; }
+    let ops: &[&[u8]] = &[b"+", b"-", b"*", b"/", b"%", b"**", b"==", b"===", b"!=", b"<=>", b"<", b"<=", b">", b">=", b"<<", b">>",
+        b"!", b"~", b"+@", b"-@", b"[]", b"[]=", b"=~", b"!~", b"&", b"|", b"^", b"`"];
+    if ops.contains(&n) { return true; }
+    let s = match std::str::from_utf8(n) { Ok(s) => s, Err(_) => return false };
+    let body = if let Some(r) = s.strip_prefix("@@") { r } else if let Some(r) = s.strip_prefix('@') { r } else if let Some(r) = s.strip_prefix('$') {
+        if r.len() == 1 && "~*$?!@/\\;,.=:<>\"&`'+0123456789_".contains(r) { return true; }
+        r
+    } else { s };
+    if body.is_empty() { return false; }
+    let mut chars = body.chars().peekable();
+    let f = *chars.peek().unwrap();
+    if !(f.is_alphabetic() || f == '_' || (f as u32) >= 0x80) { return false; }
+    let b: Vec<char> = body.chars().collect();
+    for (i, &ch) in b.iter().enumerate() {
+        if ch.is_alphanumeric() || ch == '_' || (ch as u32) >= 0x80 { continue; }
+        if i == b.len() - 1 && (ch == '?' || ch == '!' || ch == '=') && s.len() == body.len() { continue; }
+        return false;
+    }
+    true
+}
+
+pub fn to_rstring(c: &mut Ctx, v: Value) -> Result<String, Esc> {
+    if is_string(v) { return Ok(String::from_utf8_lossy(&rstr(v).b).into_owned()); }
+    let s = crate::rt::rt_tostr(c, v)?;
+    Ok(String::from_utf8_lossy(&rstr(s).b).into_owned())
+}
+
+/// Implicit conversion to String (to_str).
+pub fn expect_str(c: &mut Ctx, v: Value) -> RV {
+    if is_string(v) { return Ok(v); }
+    if v.is_heap() && respond_to(v, s::to_str, true) {
+        let r = funcall(c, v, s::to_str, &[], std::ptr::null())?;
+        if is_string(r) { return Ok(r); }
+        let cls = class_path(real_class_of(v));
+        return type_err(c, format!("can't convert {} to String ({}#to_str gives {})", cls, cls, class_path(real_class_of(r))));
+    }
+    type_err(c, format!("no implicit conversion of {} into String", crate::builtins::kernel::class_name_for_err(v)))
+}
+
+pub fn str_dup(v: Value) -> Value {
+    let r = rstr(v);
+    let n = str_from_vec_enc(r.b.clone(), r.enc);
+    obj(n).klass = obj(v).klass;
+    n
+}
+
+// ---- case helpers -----------------------------------------------------------------------
+
+pub fn map_case(b: &[u8], enc: u8, f: impl Fn(char) -> String, ascii: impl Fn(u8) -> u8) -> Vec<u8> {
+    if enc != ENC_UTF8 || is_ascii(b) { return b.iter().map(|&x| ascii(x)).collect(); }
+    match std::str::from_utf8(b) {
+        Ok(s) => { let mut out = String::new(); for ch in s.chars() { out.push_str(&f(ch)); } out.into_bytes() }
+        Err(_) => b.iter().map(|&x| ascii(x)).collect(),
+    }
+}
+pub fn upcase(b: &[u8], enc: u8) -> Vec<u8> { map_case(b, enc, |c| c.to_uppercase().collect(), |x| x.to_ascii_uppercase()) }
+pub fn downcase(b: &[u8], enc: u8) -> Vec<u8> { map_case(b, enc, |c| c.to_lowercase().collect(), |x| x.to_ascii_lowercase()) }
+pub fn swapcase(b: &[u8], enc: u8) -> Vec<u8> {
+    map_case(b, enc, |c| if c.is_uppercase() { c.to_lowercase().collect() } else { c.to_uppercase().collect() },
+             |x| if x.is_ascii_uppercase() { x.to_ascii_lowercase() } else { x.to_ascii_uppercase() })
+}
+pub fn capitalize(b: &[u8], enc: u8) -> Vec<u8> {
+    if b.is_empty() { return vec![]; }
+    let l = if enc == ENC_UTF8 { char_len_at(b, 0) } else { 1 };
+    let mut out = upcase(&b[..l], enc);
+    out.extend(downcase(&b[l..], enc));
+    out
+}
+
+/// Ruby's String#succ.
+pub fn succ_bytes(b: &[u8]) -> Vec<u8> {
+    if b.is_empty() { return vec![]; }
+    let mut s = b.to_vec();
+    let alnum = s.iter().any(|x| x.is_ascii_alphanumeric());
+    let mut i = s.len() as i64 - 1;
+    if !alnum {
+        // increment last byte with carry
+        loop {
+            if i < 0 { s.insert(0, 1); break; }
+            let x = s[i as usize];
+            if x == 0xff { s[i as usize] = 0; i -= 1; } else { s[i as usize] = x + 1; break; }
+        }
+        return s;
+    }
+    // skip trailing non-alnum
+    while i >= 0 && !s[i as usize].is_ascii_alphanumeric() { i -= 1; }
+    loop {
+        let x = s[i as usize];
+        let (nx, carry, ins) = match x {
+            b'z' => (b'a', true, b'a'),
+            b'Z' => (b'A', true, b'A'),
+            b'9' => (b'0', true, b'1'),
+            _ => (x + 1, false, 0),
+        };
+        s[i as usize] = nx;
+        if !carry { break; }
+        // find next alnum to the left
+        let mut j = i - 1;
+        while j >= 0 && !s[j as usize].is_ascii_alphanumeric() { j -= 1; }
+        if j < 0 { s.insert(i as usize, ins); break; }
+        i = j;
+    }
+    s
+}
+
+pub fn str_to_inum(b: &[u8], base: u32, strict: bool) -> Option<Value> {
+    let s = String::from_utf8_lossy(b);
+    let t = if strict { s.trim().to_string() } else { s.trim_start().to_string() };
+    let (neg, mut body) = if let Some(r) = t.strip_prefix('-') { (true, r.to_string()) } else if let Some(r) = t.strip_prefix('+') { (false, r.to_string()) } else { (false, t.clone()) };
+    let mut base = base;
+    let lower = body.to_ascii_lowercase();
+    if (base == 16 || base == 0) && lower.starts_with("0x") { body = body[2..].to_string(); base = 16; }
+    else if (base == 2 || base == 0) && lower.starts_with("0b") { body = body[2..].to_string(); base = 2; }
+    else if (base == 8 || base == 0) && lower.starts_with("0o") { body = body[2..].to_string(); base = 8; }
+    else if (base == 10 || base == 0) && lower.starts_with("0d") { body = body[2..].to_string(); base = 10; }
+    else if base == 0 && lower.starts_with('0') && lower.len() > 1 { body = body[1..].to_string(); base = 8; }
+    if base == 0 { base = 10; }
+    // take the valid prefix
+    let mut digits = String::new();
+    let mut last_us = true;
+    for ch in body.chars() {
+        if ch == '_' { if last_us { if strict { return None; } break; } last_us = true; continue; }
+        if ch.is_digit(base) { digits.push(ch); last_us = false; } else { if strict { return None; } break; }
+    }
+    if strict && last_us && !digits.is_empty() { return None; }
+    if digits.is_empty() { return if strict { None } else { Some(Value::fix(0)) }; }
+    let b = crate::bignum::BigInt::parse(&digits, base)?;
+    let b = if neg { b.neg() } else { b };
+    Some(crate::bignum::big_to_value(b))
+}
+
+pub fn str_to_f(b: &[u8]) -> f64 {
+    let s = String::from_utf8_lossy(b);
+    let s = s.trim_start();
+    let mut end = 0;
+    let bytes = s.as_bytes();
+    let mut seen_digit = false; let mut seen_dot = false; let mut seen_e = false;
+    let mut i = 0;
+    if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') { i += 1; }
+    while i < bytes.len() {
+        let ch = bytes[i];
+        if ch.is_ascii_digit() { seen_digit = true; end = i + 1; }
+        else if ch == b'_' && seen_digit && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() { }
+        else if ch == b'.' && !seen_dot && !seen_e && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() { seen_dot = true; }
+        else if (ch == b'e' || ch == b'E') && seen_digit && !seen_e {
+            seen_e = true;
+            if i + 1 < bytes.len() && (bytes[i + 1] == b'+' || bytes[i + 1] == b'-') { i += 1; }
+        } else { break; }
+        i += 1;
+    }
+    let t: String = s[..end].chars().filter(|&c| c != '_').collect();
+    t.parse::<f64>().unwrap_or(0.0)
+}
+
+pub fn init() {
+    crate::builtins::string_methods::init();
+}
+
+pub fn str_cmp(a: Value, b: Value) -> std::cmp::Ordering { rstr(a).b.cmp(&rstr(b).b) }
+
+pub fn str_concat_values(parts: &[Value]) -> Value {
+    let mut out = vec![];
+    for p in parts { out.extend_from_slice(&rstr(*p).b); }
+    str_from_vec(out)
+}
+
+pub fn ary_of_strs(items: Vec<Vec<u8>>, enc: u8) -> Value {
+    let a = ary_new_capa(items.len());
+    for it in items { let s = str_from_vec_enc(it, enc); ary_push(a, s); }
+    a
+}

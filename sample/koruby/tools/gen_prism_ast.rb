@@ -60,8 +60,10 @@ out = +<<~RS
   #[derive(Debug)]
   pub enum Kind {
 RS
+LOCF = [T::LocationField, T::OptionalLocationField]
+def kept(n) = n.fields.select(&:should_be_serialized?).reject { LOCF.include?(it.class) }
 nodes.each do |n|
-  fs = n.fields.select(&:should_be_serialized?)
+  fs = kept(n)
   if fs.empty?
     out << "    #{n.name},\n"
   else
@@ -79,13 +81,14 @@ out << "pub const FLAG_NEWLINE: u32 = 1;\npub const FLAG_STATIC_LITERAL: u32 = 2
 
 out << "impl<'a> Reader<'a> {\n    pub fn node(&mut self) -> Node {\n        let r = self;\n        let ty = r.byte();\n        let id = r.varu();\n        let loc = r.loc();\n        match ty {\n"
 nodes.each.with_index(1) do |n, i|
-  fs = n.fields.select(&:should_be_serialized?)
+  all = n.fields.select(&:should_be_serialized?)
+  fs = kept(n)
   pre = n.needs_serialized_length? ? "r.skip(4); " : ""
-  if fs.empty?
+  if all.empty?
     out << "            #{i} => { #{pre}let flags = r.varu(); Node { id, loc, flags, kind: Kind::#{n.name} } }\n"
   else
     out << "            #{i} => { #{pre}let flags = r.varu();\n"
-    fs.each { out << "                let #{fname(it.name)} = #{freader(it)};\n" }
+    all.each { out << (LOCF.include?(it.class) ? "                let _ = #{freader(it)};\n" : "                let #{fname(it.name)} = #{freader(it)};\n") }
     out << "                Node { id, loc, flags, kind: Kind::#{n.name} { #{fs.map { fname(it.name) }.join(', ')} } } }\n"
   end
 end
@@ -93,9 +96,29 @@ out << "            _ => panic!(\"prism: unknown node type {}\", ty),\n        }
 
 out << "pub fn kind_name(k: &Kind) -> &'static str {\n    match k {\n"
 nodes.each do |n|
-  fs = n.fields.select(&:should_be_serialized?)
+  fs = kept(n)
   out << "        Kind::#{n.name}#{fs.empty? ? '' : ' { .. }'} => \"#{n.name}\",\n"
 end
 out << "    }\n}\n"
+
+out << "\nimpl Node {\n    /// Direct child nodes, in field order.\n    pub fn children(&self) -> Vec<&Node> {\n        let mut v: Vec<&Node> = vec![];\n        match &self.kind {\n"
+nodes.each do |n|
+  fs = kept(n)
+  nf = fs.select { [T::NodeField, T::OptionalNodeField, T::NodeListField].include?(it.class) }
+  if nf.empty?
+    out << "            Kind::#{n.name}#{fs.empty? ? '' : ' { .. }'} => {}\n"
+  else
+    out << "            Kind::#{n.name} { #{nf.map { fname(it.name) }.join(', ')}, .. } => {\n"
+    nf.each do |f|
+      case f
+      when T::NodeField then out << "                v.push(#{fname(f.name)});\n"
+      when T::OptionalNodeField then out << "                if let Some(x) = #{fname(f.name)} { v.push(x); }\n"
+      when T::NodeListField then out << "                for x in #{fname(f.name)} { v.push(x); }\n"
+      end
+    end
+    out << "            }\n"
+  end
+end
+out << "        }\n        v\n    }\n}\n"
 
 File.write(File.expand_path('../src/prism_ast.rs', __dir__), out)

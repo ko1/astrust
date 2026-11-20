@@ -7,158 +7,158 @@ pub struct Node { pub id: u32, pub loc: Loc, pub flags: u32, pub kind: Kind }
 
 #[derive(Debug)]
 pub enum Kind {
-    AliasGlobalVariableNode { new_name: Box<Node>, old_name: Box<Node>, keyword_loc: Loc },
-    AliasMethodNode { new_name: Box<Node>, old_name: Box<Node>, keyword_loc: Loc },
-    AlternationPatternNode { left: Box<Node>, right: Box<Node>, operator_loc: Loc },
-    AndNode { left: Box<Node>, right: Box<Node>, operator_loc: Loc },
+    AliasGlobalVariableNode { new_name: Box<Node>, old_name: Box<Node> },
+    AliasMethodNode { new_name: Box<Node>, old_name: Box<Node> },
+    AlternationPatternNode { left: Box<Node>, right: Box<Node> },
+    AndNode { left: Box<Node>, right: Box<Node> },
     ArgumentsNode { arguments: Vec<Node> },
-    ArrayNode { elements: Vec<Node>, opening_loc: Option<Loc>, closing_loc: Option<Loc> },
-    ArrayPatternNode { constant: Option<Box<Node>>, requireds: Vec<Node>, rest: Option<Box<Node>>, posts: Vec<Node>, opening_loc: Option<Loc>, closing_loc: Option<Loc> },
-    AssocNode { key: Box<Node>, value: Box<Node>, operator_loc: Option<Loc> },
-    AssocSplatNode { value: Option<Box<Node>>, operator_loc: Loc },
+    ArrayNode { elements: Vec<Node> },
+    ArrayPatternNode { constant: Option<Box<Node>>, requireds: Vec<Node>, rest: Option<Box<Node>>, posts: Vec<Node> },
+    AssocNode { key: Box<Node>, value: Box<Node> },
+    AssocSplatNode { value: Option<Box<Node>> },
     BackReferenceReadNode { name: Cst },
-    BeginNode { begin_keyword_loc: Option<Loc>, statements: Option<Box<Node>>, rescue_clause: Option<Box<Node>>, else_clause: Option<Box<Node>>, ensure_clause: Option<Box<Node>>, end_keyword_loc: Option<Loc> },
-    BlockArgumentNode { expression: Option<Box<Node>>, operator_loc: Loc },
+    BeginNode { statements: Option<Box<Node>>, rescue_clause: Option<Box<Node>>, else_clause: Option<Box<Node>>, ensure_clause: Option<Box<Node>> },
+    BlockArgumentNode { expression: Option<Box<Node>> },
     BlockLocalVariableNode { name: Cst },
-    BlockNode { locals: Vec<Cst>, parameters: Option<Box<Node>>, body: Option<Box<Node>>, opening_loc: Loc, closing_loc: Loc },
-    BlockParameterNode { name: Option<Cst>, name_loc: Option<Loc>, operator_loc: Loc },
-    BlockParametersNode { parameters: Option<Box<Node>>, locals: Vec<Node>, opening_loc: Option<Loc>, closing_loc: Option<Loc> },
-    BreakNode { arguments: Option<Box<Node>>, keyword_loc: Loc },
-    CallAndWriteNode { receiver: Option<Box<Node>>, call_operator_loc: Option<Loc>, message_loc: Option<Loc>, read_name: Cst, write_name: Cst, operator_loc: Loc, value: Box<Node> },
-    CallNode { receiver: Option<Box<Node>>, call_operator_loc: Option<Loc>, name: Cst, message_loc: Option<Loc>, opening_loc: Option<Loc>, arguments: Option<Box<Node>>, closing_loc: Option<Loc>, equal_loc: Option<Loc>, block: Option<Box<Node>> },
-    CallOperatorWriteNode { receiver: Option<Box<Node>>, call_operator_loc: Option<Loc>, message_loc: Option<Loc>, read_name: Cst, write_name: Cst, binary_operator: Cst, binary_operator_loc: Loc, value: Box<Node> },
-    CallOrWriteNode { receiver: Option<Box<Node>>, call_operator_loc: Option<Loc>, message_loc: Option<Loc>, read_name: Cst, write_name: Cst, operator_loc: Loc, value: Box<Node> },
-    CallTargetNode { receiver: Box<Node>, call_operator_loc: Loc, name: Cst, message_loc: Loc },
-    CapturePatternNode { value: Box<Node>, target: Box<Node>, operator_loc: Loc },
-    CaseMatchNode { predicate: Option<Box<Node>>, conditions: Vec<Node>, else_clause: Option<Box<Node>>, case_keyword_loc: Loc, end_keyword_loc: Loc },
-    CaseNode { predicate: Option<Box<Node>>, conditions: Vec<Node>, else_clause: Option<Box<Node>>, case_keyword_loc: Loc, end_keyword_loc: Loc },
-    ClassNode { locals: Vec<Cst>, class_keyword_loc: Loc, constant_path: Box<Node>, inheritance_operator_loc: Option<Loc>, superclass: Option<Box<Node>>, body: Option<Box<Node>>, end_keyword_loc: Loc, name: Cst },
-    ClassVariableAndWriteNode { name: Cst, name_loc: Loc, operator_loc: Loc, value: Box<Node> },
-    ClassVariableOperatorWriteNode { name: Cst, name_loc: Loc, binary_operator_loc: Loc, value: Box<Node>, binary_operator: Cst },
-    ClassVariableOrWriteNode { name: Cst, name_loc: Loc, operator_loc: Loc, value: Box<Node> },
+    BlockNode { locals: Vec<Cst>, parameters: Option<Box<Node>>, body: Option<Box<Node>> },
+    BlockParameterNode { name: Option<Cst> },
+    BlockParametersNode { parameters: Option<Box<Node>>, locals: Vec<Node> },
+    BreakNode { arguments: Option<Box<Node>> },
+    CallAndWriteNode { receiver: Option<Box<Node>>, read_name: Cst, write_name: Cst, value: Box<Node> },
+    CallNode { receiver: Option<Box<Node>>, name: Cst, arguments: Option<Box<Node>>, block: Option<Box<Node>> },
+    CallOperatorWriteNode { receiver: Option<Box<Node>>, read_name: Cst, write_name: Cst, binary_operator: Cst, value: Box<Node> },
+    CallOrWriteNode { receiver: Option<Box<Node>>, read_name: Cst, write_name: Cst, value: Box<Node> },
+    CallTargetNode { receiver: Box<Node>, name: Cst },
+    CapturePatternNode { value: Box<Node>, target: Box<Node> },
+    CaseMatchNode { predicate: Option<Box<Node>>, conditions: Vec<Node>, else_clause: Option<Box<Node>> },
+    CaseNode { predicate: Option<Box<Node>>, conditions: Vec<Node>, else_clause: Option<Box<Node>> },
+    ClassNode { locals: Vec<Cst>, constant_path: Box<Node>, superclass: Option<Box<Node>>, body: Option<Box<Node>>, name: Cst },
+    ClassVariableAndWriteNode { name: Cst, value: Box<Node> },
+    ClassVariableOperatorWriteNode { name: Cst, value: Box<Node>, binary_operator: Cst },
+    ClassVariableOrWriteNode { name: Cst, value: Box<Node> },
     ClassVariableReadNode { name: Cst },
     ClassVariableTargetNode { name: Cst },
-    ClassVariableWriteNode { name: Cst, name_loc: Loc, value: Box<Node>, operator_loc: Loc },
-    ConstantAndWriteNode { name: Cst, name_loc: Loc, operator_loc: Loc, value: Box<Node> },
-    ConstantOperatorWriteNode { name: Cst, name_loc: Loc, binary_operator_loc: Loc, value: Box<Node>, binary_operator: Cst },
-    ConstantOrWriteNode { name: Cst, name_loc: Loc, operator_loc: Loc, value: Box<Node> },
-    ConstantPathAndWriteNode { target: Box<Node>, operator_loc: Loc, value: Box<Node> },
-    ConstantPathNode { parent: Option<Box<Node>>, name: Option<Cst>, delimiter_loc: Loc, name_loc: Loc },
-    ConstantPathOperatorWriteNode { target: Box<Node>, binary_operator_loc: Loc, value: Box<Node>, binary_operator: Cst },
-    ConstantPathOrWriteNode { target: Box<Node>, operator_loc: Loc, value: Box<Node> },
-    ConstantPathTargetNode { parent: Option<Box<Node>>, name: Option<Cst>, delimiter_loc: Loc, name_loc: Loc },
-    ConstantPathWriteNode { target: Box<Node>, operator_loc: Loc, value: Box<Node> },
+    ClassVariableWriteNode { name: Cst, value: Box<Node> },
+    ConstantAndWriteNode { name: Cst, value: Box<Node> },
+    ConstantOperatorWriteNode { name: Cst, value: Box<Node>, binary_operator: Cst },
+    ConstantOrWriteNode { name: Cst, value: Box<Node> },
+    ConstantPathAndWriteNode { target: Box<Node>, value: Box<Node> },
+    ConstantPathNode { parent: Option<Box<Node>>, name: Option<Cst> },
+    ConstantPathOperatorWriteNode { target: Box<Node>, value: Box<Node>, binary_operator: Cst },
+    ConstantPathOrWriteNode { target: Box<Node>, value: Box<Node> },
+    ConstantPathTargetNode { parent: Option<Box<Node>>, name: Option<Cst> },
+    ConstantPathWriteNode { target: Box<Node>, value: Box<Node> },
     ConstantReadNode { name: Cst },
     ConstantTargetNode { name: Cst },
-    ConstantWriteNode { name: Cst, name_loc: Loc, value: Box<Node>, operator_loc: Loc },
-    DefNode { name: Cst, name_loc: Loc, receiver: Option<Box<Node>>, parameters: Option<Box<Node>>, body: Option<Box<Node>>, locals: Vec<Cst>, def_keyword_loc: Loc, operator_loc: Option<Loc>, lparen_loc: Option<Loc>, rparen_loc: Option<Loc>, equal_loc: Option<Loc>, end_keyword_loc: Option<Loc> },
-    DefinedNode { lparen_loc: Option<Loc>, value: Box<Node>, rparen_loc: Option<Loc>, keyword_loc: Loc },
-    ElseNode { else_keyword_loc: Loc, statements: Option<Box<Node>>, end_keyword_loc: Option<Loc> },
-    EmbeddedStatementsNode { opening_loc: Loc, statements: Option<Box<Node>>, closing_loc: Loc },
-    EmbeddedVariableNode { operator_loc: Loc, variable: Box<Node> },
-    EnsureNode { ensure_keyword_loc: Loc, statements: Option<Box<Node>>, end_keyword_loc: Loc },
+    ConstantWriteNode { name: Cst, value: Box<Node> },
+    DefNode { name: Cst, receiver: Option<Box<Node>>, parameters: Option<Box<Node>>, body: Option<Box<Node>>, locals: Vec<Cst> },
+    DefinedNode { value: Box<Node> },
+    ElseNode { statements: Option<Box<Node>> },
+    EmbeddedStatementsNode { statements: Option<Box<Node>> },
+    EmbeddedVariableNode { variable: Box<Node> },
+    EnsureNode { statements: Option<Box<Node>> },
     ErrorRecoveryNode { unexpected: Option<Box<Node>> },
     FalseNode,
-    FindPatternNode { constant: Option<Box<Node>>, left: Box<Node>, requireds: Vec<Node>, right: Box<Node>, opening_loc: Option<Loc>, closing_loc: Option<Loc> },
-    FlipFlopNode { left: Option<Box<Node>>, right: Option<Box<Node>>, operator_loc: Loc },
+    FindPatternNode { constant: Option<Box<Node>>, left: Box<Node>, requireds: Vec<Node>, right: Box<Node> },
+    FlipFlopNode { left: Option<Box<Node>>, right: Option<Box<Node>> },
     FloatNode { value: f64 },
-    ForNode { index: Box<Node>, collection: Box<Node>, statements: Option<Box<Node>>, for_keyword_loc: Loc, in_keyword_loc: Loc, do_keyword_loc: Option<Loc>, end_keyword_loc: Loc },
+    ForNode { index: Box<Node>, collection: Box<Node>, statements: Option<Box<Node>> },
     ForwardingArgumentsNode,
     ForwardingParameterNode,
-    ForwardingSuperNode { keyword_loc: Loc, block: Option<Box<Node>> },
-    GlobalVariableAndWriteNode { name: Cst, name_loc: Loc, operator_loc: Loc, value: Box<Node> },
-    GlobalVariableOperatorWriteNode { name: Cst, name_loc: Loc, binary_operator_loc: Loc, value: Box<Node>, binary_operator: Cst },
-    GlobalVariableOrWriteNode { name: Cst, name_loc: Loc, operator_loc: Loc, value: Box<Node> },
+    ForwardingSuperNode { block: Option<Box<Node>> },
+    GlobalVariableAndWriteNode { name: Cst, value: Box<Node> },
+    GlobalVariableOperatorWriteNode { name: Cst, value: Box<Node>, binary_operator: Cst },
+    GlobalVariableOrWriteNode { name: Cst, value: Box<Node> },
     GlobalVariableReadNode { name: Cst },
     GlobalVariableTargetNode { name: Cst },
-    GlobalVariableWriteNode { name: Cst, name_loc: Loc, value: Box<Node>, operator_loc: Loc },
-    HashNode { opening_loc: Loc, elements: Vec<Node>, closing_loc: Loc },
-    HashPatternNode { constant: Option<Box<Node>>, elements: Vec<Node>, rest: Option<Box<Node>>, opening_loc: Option<Loc>, closing_loc: Option<Loc> },
-    IfNode { if_keyword_loc: Option<Loc>, predicate: Box<Node>, then_keyword_loc: Option<Loc>, statements: Option<Box<Node>>, subsequent: Option<Box<Node>>, end_keyword_loc: Option<Loc> },
+    GlobalVariableWriteNode { name: Cst, value: Box<Node> },
+    HashNode { elements: Vec<Node> },
+    HashPatternNode { constant: Option<Box<Node>>, elements: Vec<Node>, rest: Option<Box<Node>> },
+    IfNode { predicate: Box<Node>, statements: Option<Box<Node>>, subsequent: Option<Box<Node>> },
     ImaginaryNode { numeric: Box<Node> },
     ImplicitNode { value: Box<Node> },
     ImplicitRestNode,
-    InNode { pattern: Box<Node>, statements: Option<Box<Node>>, in_keyword_loc: Loc, then_keyword_loc: Option<Loc> },
-    IndexAndWriteNode { receiver: Option<Box<Node>>, call_operator_loc: Option<Loc>, opening_loc: Loc, arguments: Option<Box<Node>>, closing_loc: Loc, block: Option<Box<Node>>, operator_loc: Loc, value: Box<Node> },
-    IndexOperatorWriteNode { receiver: Option<Box<Node>>, call_operator_loc: Option<Loc>, opening_loc: Loc, arguments: Option<Box<Node>>, closing_loc: Loc, block: Option<Box<Node>>, binary_operator: Cst, binary_operator_loc: Loc, value: Box<Node> },
-    IndexOrWriteNode { receiver: Option<Box<Node>>, call_operator_loc: Option<Loc>, opening_loc: Loc, arguments: Option<Box<Node>>, closing_loc: Loc, block: Option<Box<Node>>, operator_loc: Loc, value: Box<Node> },
-    IndexTargetNode { receiver: Box<Node>, opening_loc: Loc, arguments: Option<Box<Node>>, closing_loc: Loc, block: Option<Box<Node>> },
-    InstanceVariableAndWriteNode { name: Cst, name_loc: Loc, operator_loc: Loc, value: Box<Node> },
-    InstanceVariableOperatorWriteNode { name: Cst, name_loc: Loc, binary_operator_loc: Loc, value: Box<Node>, binary_operator: Cst },
-    InstanceVariableOrWriteNode { name: Cst, name_loc: Loc, operator_loc: Loc, value: Box<Node> },
+    InNode { pattern: Box<Node>, statements: Option<Box<Node>> },
+    IndexAndWriteNode { receiver: Option<Box<Node>>, arguments: Option<Box<Node>>, block: Option<Box<Node>>, value: Box<Node> },
+    IndexOperatorWriteNode { receiver: Option<Box<Node>>, arguments: Option<Box<Node>>, block: Option<Box<Node>>, binary_operator: Cst, value: Box<Node> },
+    IndexOrWriteNode { receiver: Option<Box<Node>>, arguments: Option<Box<Node>>, block: Option<Box<Node>>, value: Box<Node> },
+    IndexTargetNode { receiver: Box<Node>, arguments: Option<Box<Node>>, block: Option<Box<Node>> },
+    InstanceVariableAndWriteNode { name: Cst, value: Box<Node> },
+    InstanceVariableOperatorWriteNode { name: Cst, value: Box<Node>, binary_operator: Cst },
+    InstanceVariableOrWriteNode { name: Cst, value: Box<Node> },
     InstanceVariableReadNode { name: Cst },
     InstanceVariableTargetNode { name: Cst },
-    InstanceVariableWriteNode { name: Cst, name_loc: Loc, value: Box<Node>, operator_loc: Loc },
+    InstanceVariableWriteNode { name: Cst, value: Box<Node> },
     IntegerNode { value: PInt },
-    InterpolatedMatchLastLineNode { opening_loc: Loc, parts: Vec<Node>, closing_loc: Loc },
-    InterpolatedRegularExpressionNode { opening_loc: Loc, parts: Vec<Node>, closing_loc: Loc },
-    InterpolatedStringNode { opening_loc: Option<Loc>, parts: Vec<Node>, closing_loc: Option<Loc> },
-    InterpolatedSymbolNode { opening_loc: Option<Loc>, parts: Vec<Node>, closing_loc: Option<Loc> },
-    InterpolatedXStringNode { opening_loc: Loc, parts: Vec<Node>, closing_loc: Loc },
+    InterpolatedMatchLastLineNode { parts: Vec<Node> },
+    InterpolatedRegularExpressionNode { parts: Vec<Node> },
+    InterpolatedStringNode { parts: Vec<Node> },
+    InterpolatedSymbolNode { parts: Vec<Node> },
+    InterpolatedXStringNode { parts: Vec<Node> },
     ItLocalVariableReadNode,
     ItParametersNode,
     KeywordHashNode { elements: Vec<Node> },
-    KeywordRestParameterNode { name: Option<Cst>, name_loc: Option<Loc>, operator_loc: Loc },
-    LambdaNode { locals: Vec<Cst>, operator_loc: Loc, opening_loc: Loc, closing_loc: Loc, parameters: Option<Box<Node>>, body: Option<Box<Node>> },
-    LocalVariableAndWriteNode { name_loc: Loc, operator_loc: Loc, value: Box<Node>, name: Cst, depth: u32 },
-    LocalVariableOperatorWriteNode { name_loc: Loc, binary_operator_loc: Loc, value: Box<Node>, name: Cst, binary_operator: Cst, depth: u32 },
-    LocalVariableOrWriteNode { name_loc: Loc, operator_loc: Loc, value: Box<Node>, name: Cst, depth: u32 },
+    KeywordRestParameterNode { name: Option<Cst> },
+    LambdaNode { locals: Vec<Cst>, parameters: Option<Box<Node>>, body: Option<Box<Node>> },
+    LocalVariableAndWriteNode { value: Box<Node>, name: Cst, depth: u32 },
+    LocalVariableOperatorWriteNode { value: Box<Node>, name: Cst, binary_operator: Cst, depth: u32 },
+    LocalVariableOrWriteNode { value: Box<Node>, name: Cst, depth: u32 },
     LocalVariableReadNode { name: Cst, depth: u32 },
     LocalVariableTargetNode { name: Cst, depth: u32 },
-    LocalVariableWriteNode { name: Cst, depth: u32, name_loc: Loc, value: Box<Node>, operator_loc: Loc },
-    MatchLastLineNode { opening_loc: Loc, content_loc: Loc, closing_loc: Loc, unescaped: Vec<u8> },
-    MatchPredicateNode { value: Box<Node>, pattern: Box<Node>, keyword_loc: Loc },
-    MatchRequiredNode { value: Box<Node>, pattern: Box<Node>, operator_loc: Loc },
+    LocalVariableWriteNode { name: Cst, depth: u32, value: Box<Node> },
+    MatchLastLineNode { unescaped: Vec<u8> },
+    MatchPredicateNode { value: Box<Node>, pattern: Box<Node> },
+    MatchRequiredNode { value: Box<Node>, pattern: Box<Node> },
     MatchWriteNode { call: Box<Node>, targets: Vec<Node> },
-    ModuleNode { locals: Vec<Cst>, module_keyword_loc: Loc, constant_path: Box<Node>, body: Option<Box<Node>>, end_keyword_loc: Loc, name: Cst },
-    MultiTargetNode { lefts: Vec<Node>, rest: Option<Box<Node>>, rights: Vec<Node>, lparen_loc: Option<Loc>, rparen_loc: Option<Loc> },
-    MultiWriteNode { lefts: Vec<Node>, rest: Option<Box<Node>>, rights: Vec<Node>, lparen_loc: Option<Loc>, rparen_loc: Option<Loc>, operator_loc: Loc, value: Box<Node> },
-    NextNode { arguments: Option<Box<Node>>, keyword_loc: Loc },
+    ModuleNode { locals: Vec<Cst>, constant_path: Box<Node>, body: Option<Box<Node>>, name: Cst },
+    MultiTargetNode { lefts: Vec<Node>, rest: Option<Box<Node>>, rights: Vec<Node> },
+    MultiWriteNode { lefts: Vec<Node>, rest: Option<Box<Node>>, rights: Vec<Node>, value: Box<Node> },
+    NextNode { arguments: Option<Box<Node>> },
     NilNode,
-    NoBlockParameterNode { operator_loc: Loc, keyword_loc: Loc },
-    NoKeywordsParameterNode { operator_loc: Loc, keyword_loc: Loc },
+    NoBlockParameterNode,
+    NoKeywordsParameterNode,
     NumberedParametersNode { maximum: u8 },
     NumberedReferenceReadNode { number: u32 },
-    OptionalKeywordParameterNode { name: Cst, name_loc: Loc, value: Box<Node> },
-    OptionalParameterNode { name: Cst, name_loc: Loc, operator_loc: Loc, value: Box<Node> },
-    OrNode { left: Box<Node>, right: Box<Node>, operator_loc: Loc },
+    OptionalKeywordParameterNode { name: Cst, value: Box<Node> },
+    OptionalParameterNode { name: Cst, value: Box<Node> },
+    OrNode { left: Box<Node>, right: Box<Node> },
     ParametersNode { requireds: Vec<Node>, optionals: Vec<Node>, rest: Option<Box<Node>>, posts: Vec<Node>, keywords: Vec<Node>, keyword_rest: Option<Box<Node>>, block: Option<Box<Node>> },
-    ParenthesesNode { body: Option<Box<Node>>, opening_loc: Loc, closing_loc: Loc },
-    PinnedExpressionNode { expression: Box<Node>, operator_loc: Loc, lparen_loc: Loc, rparen_loc: Loc },
-    PinnedVariableNode { variable: Box<Node>, operator_loc: Loc },
-    PostExecutionNode { statements: Option<Box<Node>>, keyword_loc: Loc, opening_loc: Loc, closing_loc: Loc },
-    PreExecutionNode { statements: Option<Box<Node>>, keyword_loc: Loc, opening_loc: Loc, closing_loc: Loc },
+    ParenthesesNode { body: Option<Box<Node>> },
+    PinnedExpressionNode { expression: Box<Node> },
+    PinnedVariableNode { variable: Box<Node> },
+    PostExecutionNode { statements: Option<Box<Node>> },
+    PreExecutionNode { statements: Option<Box<Node>> },
     ProgramNode { locals: Vec<Cst>, statements: Box<Node> },
-    RangeNode { left: Option<Box<Node>>, right: Option<Box<Node>>, operator_loc: Loc },
+    RangeNode { left: Option<Box<Node>>, right: Option<Box<Node>> },
     RationalNode { numerator: PInt, denominator: PInt },
     RedoNode,
-    RegularExpressionNode { opening_loc: Loc, content_loc: Loc, closing_loc: Loc, unescaped: Vec<u8> },
-    RequiredKeywordParameterNode { name: Cst, name_loc: Loc },
+    RegularExpressionNode { unescaped: Vec<u8> },
+    RequiredKeywordParameterNode { name: Cst },
     RequiredParameterNode { name: Cst },
-    RescueModifierNode { expression: Box<Node>, keyword_loc: Loc, rescue_expression: Box<Node> },
-    RescueNode { keyword_loc: Loc, exceptions: Vec<Node>, operator_loc: Option<Loc>, reference: Option<Box<Node>>, then_keyword_loc: Option<Loc>, statements: Option<Box<Node>>, subsequent: Option<Box<Node>> },
-    RestParameterNode { name: Option<Cst>, name_loc: Option<Loc>, operator_loc: Loc },
+    RescueModifierNode { expression: Box<Node>, rescue_expression: Box<Node> },
+    RescueNode { exceptions: Vec<Node>, reference: Option<Box<Node>>, statements: Option<Box<Node>>, subsequent: Option<Box<Node>> },
+    RestParameterNode { name: Option<Cst> },
     RetryNode,
-    ReturnNode { keyword_loc: Loc, arguments: Option<Box<Node>> },
+    ReturnNode { arguments: Option<Box<Node>> },
     SelfNode,
     ShareableConstantNode { write: Box<Node> },
-    SingletonClassNode { locals: Vec<Cst>, class_keyword_loc: Loc, operator_loc: Loc, expression: Box<Node>, body: Option<Box<Node>>, end_keyword_loc: Loc },
+    SingletonClassNode { locals: Vec<Cst>, expression: Box<Node>, body: Option<Box<Node>> },
     SourceEncodingNode,
     SourceFileNode { filepath: Vec<u8> },
     SourceLineNode,
-    SplatNode { operator_loc: Loc, expression: Option<Box<Node>> },
+    SplatNode { expression: Option<Box<Node>> },
     StatementsNode { body: Vec<Node> },
-    StringNode { opening_loc: Option<Loc>, content_loc: Loc, closing_loc: Option<Loc>, unescaped: Vec<u8> },
-    SuperNode { keyword_loc: Loc, lparen_loc: Option<Loc>, arguments: Option<Box<Node>>, rparen_loc: Option<Loc>, block: Option<Box<Node>> },
-    SymbolNode { opening_loc: Option<Loc>, content_loc: Loc, closing_loc: Option<Loc>, unescaped: Vec<u8> },
+    StringNode { unescaped: Vec<u8> },
+    SuperNode { arguments: Option<Box<Node>>, block: Option<Box<Node>> },
+    SymbolNode { unescaped: Vec<u8> },
     TrueNode,
-    UndefNode { names: Vec<Node>, keyword_loc: Loc },
-    UnlessNode { unless_keyword_loc: Loc, predicate: Box<Node>, then_keyword_loc: Option<Loc>, statements: Option<Box<Node>>, else_clause: Option<Box<Node>>, end_keyword_loc: Option<Loc> },
-    UntilNode { until_keyword_loc: Loc, do_keyword_loc: Option<Loc>, end_keyword_loc: Option<Loc>, predicate: Box<Node>, statements: Option<Box<Node>> },
-    WhenNode { when_keyword_loc: Loc, conditions: Vec<Node>, then_keyword_loc: Option<Loc>, statements: Option<Box<Node>> },
-    WhileNode { while_keyword_loc: Loc, do_keyword_loc: Option<Loc>, end_keyword_loc: Option<Loc>, predicate: Box<Node>, statements: Option<Box<Node>> },
-    XStringNode { opening_loc: Loc, content_loc: Loc, closing_loc: Loc, unescaped: Vec<u8> },
-    YieldNode { keyword_loc: Loc, lparen_loc: Option<Loc>, arguments: Option<Box<Node>>, rparen_loc: Option<Loc> },
+    UndefNode { names: Vec<Node> },
+    UnlessNode { predicate: Box<Node>, statements: Option<Box<Node>>, else_clause: Option<Box<Node>> },
+    UntilNode { predicate: Box<Node>, statements: Option<Box<Node>> },
+    WhenNode { conditions: Vec<Node>, statements: Option<Box<Node>> },
+    WhileNode { predicate: Box<Node>, statements: Option<Box<Node>> },
+    XStringNode { unescaped: Vec<u8> },
+    YieldNode { arguments: Option<Box<Node>> },
 }
 
 pub const ARGUMENTS_NODE_FLAGS_CONTAINS_FORWARDING: u32 = 1 << 2;
@@ -218,63 +218,63 @@ impl<'a> Reader<'a> {
             1 => { let flags = r.varu();
                 let new_name = Box::new(r.node());
                 let old_name = Box::new(r.node());
-                let keyword_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::AliasGlobalVariableNode { new_name, old_name, keyword_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::AliasGlobalVariableNode { new_name, old_name } } }
             2 => { let flags = r.varu();
                 let new_name = Box::new(r.node());
                 let old_name = Box::new(r.node());
-                let keyword_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::AliasMethodNode { new_name, old_name, keyword_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::AliasMethodNode { new_name, old_name } } }
             3 => { let flags = r.varu();
                 let left = Box::new(r.node());
                 let right = Box::new(r.node());
-                let operator_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::AlternationPatternNode { left, right, operator_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::AlternationPatternNode { left, right } } }
             4 => { let flags = r.varu();
                 let left = Box::new(r.node());
                 let right = Box::new(r.node());
-                let operator_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::AndNode { left, right, operator_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::AndNode { left, right } } }
             5 => { let flags = r.varu();
                 let arguments = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
                 Node { id, loc, flags, kind: Kind::ArgumentsNode { arguments } } }
             6 => { let flags = r.varu();
                 let elements = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
-                let opening_loc = r.opt_loc();
-                let closing_loc = r.opt_loc();
-                Node { id, loc, flags, kind: Kind::ArrayNode { elements, opening_loc, closing_loc } } }
+                let _ = r.opt_loc();
+                let _ = r.opt_loc();
+                Node { id, loc, flags, kind: Kind::ArrayNode { elements } } }
             7 => { let flags = r.varu();
                 let constant = r.opt_node();
                 let requireds = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
                 let rest = r.opt_node();
                 let posts = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
-                let opening_loc = r.opt_loc();
-                let closing_loc = r.opt_loc();
-                Node { id, loc, flags, kind: Kind::ArrayPatternNode { constant, requireds, rest, posts, opening_loc, closing_loc } } }
+                let _ = r.opt_loc();
+                let _ = r.opt_loc();
+                Node { id, loc, flags, kind: Kind::ArrayPatternNode { constant, requireds, rest, posts } } }
             8 => { let flags = r.varu();
                 let key = Box::new(r.node());
                 let value = Box::new(r.node());
-                let operator_loc = r.opt_loc();
-                Node { id, loc, flags, kind: Kind::AssocNode { key, value, operator_loc } } }
+                let _ = r.opt_loc();
+                Node { id, loc, flags, kind: Kind::AssocNode { key, value } } }
             9 => { let flags = r.varu();
                 let value = r.opt_node();
-                let operator_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::AssocSplatNode { value, operator_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::AssocSplatNode { value } } }
             10 => { let flags = r.varu();
                 let name = r.varu() - 1;
                 Node { id, loc, flags, kind: Kind::BackReferenceReadNode { name } } }
             11 => { let flags = r.varu();
-                let begin_keyword_loc = r.opt_loc();
+                let _ = r.opt_loc();
                 let statements = r.opt_node();
                 let rescue_clause = r.opt_node();
                 let else_clause = r.opt_node();
                 let ensure_clause = r.opt_node();
-                let end_keyword_loc = r.opt_loc();
-                Node { id, loc, flags, kind: Kind::BeginNode { begin_keyword_loc, statements, rescue_clause, else_clause, ensure_clause, end_keyword_loc } } }
+                let _ = r.opt_loc();
+                Node { id, loc, flags, kind: Kind::BeginNode { statements, rescue_clause, else_clause, ensure_clause } } }
             12 => { let flags = r.varu();
                 let expression = r.opt_node();
-                let operator_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::BlockArgumentNode { expression, operator_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::BlockArgumentNode { expression } } }
             13 => { let flags = r.varu();
                 let name = r.varu() - 1;
                 Node { id, loc, flags, kind: Kind::BlockLocalVariableNode { name } } }
@@ -282,117 +282,117 @@ impl<'a> Reader<'a> {
                 let locals = { let k = r.varu(); (0..k).map(|_| r.varu() - 1).collect() };
                 let parameters = r.opt_node();
                 let body = r.opt_node();
-                let opening_loc = r.loc();
-                let closing_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::BlockNode { locals, parameters, body, opening_loc, closing_loc } } }
+                let _ = r.loc();
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::BlockNode { locals, parameters, body } } }
             15 => { let flags = r.varu();
                 let name = { let k = r.varu(); if k == 0 { None } else { Some(k - 1) } };
-                let name_loc = r.opt_loc();
-                let operator_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::BlockParameterNode { name, name_loc, operator_loc } } }
+                let _ = r.opt_loc();
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::BlockParameterNode { name } } }
             16 => { let flags = r.varu();
                 let parameters = r.opt_node();
                 let locals = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
-                let opening_loc = r.opt_loc();
-                let closing_loc = r.opt_loc();
-                Node { id, loc, flags, kind: Kind::BlockParametersNode { parameters, locals, opening_loc, closing_loc } } }
+                let _ = r.opt_loc();
+                let _ = r.opt_loc();
+                Node { id, loc, flags, kind: Kind::BlockParametersNode { parameters, locals } } }
             17 => { let flags = r.varu();
                 let arguments = r.opt_node();
-                let keyword_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::BreakNode { arguments, keyword_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::BreakNode { arguments } } }
             18 => { let flags = r.varu();
                 let receiver = r.opt_node();
-                let call_operator_loc = r.opt_loc();
-                let message_loc = r.opt_loc();
+                let _ = r.opt_loc();
+                let _ = r.opt_loc();
                 let read_name = r.varu() - 1;
                 let write_name = r.varu() - 1;
-                let operator_loc = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::CallAndWriteNode { receiver, call_operator_loc, message_loc, read_name, write_name, operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::CallAndWriteNode { receiver, read_name, write_name, value } } }
             19 => { let flags = r.varu();
                 let receiver = r.opt_node();
-                let call_operator_loc = r.opt_loc();
+                let _ = r.opt_loc();
                 let name = r.varu() - 1;
-                let message_loc = r.opt_loc();
-                let opening_loc = r.opt_loc();
+                let _ = r.opt_loc();
+                let _ = r.opt_loc();
                 let arguments = r.opt_node();
-                let closing_loc = r.opt_loc();
-                let equal_loc = r.opt_loc();
+                let _ = r.opt_loc();
+                let _ = r.opt_loc();
                 let block = r.opt_node();
-                Node { id, loc, flags, kind: Kind::CallNode { receiver, call_operator_loc, name, message_loc, opening_loc, arguments, closing_loc, equal_loc, block } } }
+                Node { id, loc, flags, kind: Kind::CallNode { receiver, name, arguments, block } } }
             20 => { let flags = r.varu();
                 let receiver = r.opt_node();
-                let call_operator_loc = r.opt_loc();
-                let message_loc = r.opt_loc();
+                let _ = r.opt_loc();
+                let _ = r.opt_loc();
                 let read_name = r.varu() - 1;
                 let write_name = r.varu() - 1;
                 let binary_operator = r.varu() - 1;
-                let binary_operator_loc = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::CallOperatorWriteNode { receiver, call_operator_loc, message_loc, read_name, write_name, binary_operator, binary_operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::CallOperatorWriteNode { receiver, read_name, write_name, binary_operator, value } } }
             21 => { let flags = r.varu();
                 let receiver = r.opt_node();
-                let call_operator_loc = r.opt_loc();
-                let message_loc = r.opt_loc();
+                let _ = r.opt_loc();
+                let _ = r.opt_loc();
                 let read_name = r.varu() - 1;
                 let write_name = r.varu() - 1;
-                let operator_loc = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::CallOrWriteNode { receiver, call_operator_loc, message_loc, read_name, write_name, operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::CallOrWriteNode { receiver, read_name, write_name, value } } }
             22 => { let flags = r.varu();
                 let receiver = Box::new(r.node());
-                let call_operator_loc = r.loc();
+                let _ = r.loc();
                 let name = r.varu() - 1;
-                let message_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::CallTargetNode { receiver, call_operator_loc, name, message_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::CallTargetNode { receiver, name } } }
             23 => { let flags = r.varu();
                 let value = Box::new(r.node());
                 let target = Box::new(r.node());
-                let operator_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::CapturePatternNode { value, target, operator_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::CapturePatternNode { value, target } } }
             24 => { let flags = r.varu();
                 let predicate = r.opt_node();
                 let conditions = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
                 let else_clause = r.opt_node();
-                let case_keyword_loc = r.loc();
-                let end_keyword_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::CaseMatchNode { predicate, conditions, else_clause, case_keyword_loc, end_keyword_loc } } }
+                let _ = r.loc();
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::CaseMatchNode { predicate, conditions, else_clause } } }
             25 => { let flags = r.varu();
                 let predicate = r.opt_node();
                 let conditions = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
                 let else_clause = r.opt_node();
-                let case_keyword_loc = r.loc();
-                let end_keyword_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::CaseNode { predicate, conditions, else_clause, case_keyword_loc, end_keyword_loc } } }
+                let _ = r.loc();
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::CaseNode { predicate, conditions, else_clause } } }
             26 => { let flags = r.varu();
                 let locals = { let k = r.varu(); (0..k).map(|_| r.varu() - 1).collect() };
-                let class_keyword_loc = r.loc();
+                let _ = r.loc();
                 let constant_path = Box::new(r.node());
-                let inheritance_operator_loc = r.opt_loc();
+                let _ = r.opt_loc();
                 let superclass = r.opt_node();
                 let body = r.opt_node();
-                let end_keyword_loc = r.loc();
+                let _ = r.loc();
                 let name = r.varu() - 1;
-                Node { id, loc, flags, kind: Kind::ClassNode { locals, class_keyword_loc, constant_path, inheritance_operator_loc, superclass, body, end_keyword_loc, name } } }
+                Node { id, loc, flags, kind: Kind::ClassNode { locals, constant_path, superclass, body, name } } }
             27 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
-                let operator_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::ClassVariableAndWriteNode { name, name_loc, operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::ClassVariableAndWriteNode { name, value } } }
             28 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
-                let binary_operator_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
                 let binary_operator = r.varu() - 1;
-                Node { id, loc, flags, kind: Kind::ClassVariableOperatorWriteNode { name, name_loc, binary_operator_loc, value, binary_operator } } }
+                Node { id, loc, flags, kind: Kind::ClassVariableOperatorWriteNode { name, value, binary_operator } } }
             29 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
-                let operator_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::ClassVariableOrWriteNode { name, name_loc, operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::ClassVariableOrWriteNode { name, value } } }
             30 => { let flags = r.varu();
                 let name = r.varu() - 1;
                 Node { id, loc, flags, kind: Kind::ClassVariableReadNode { name } } }
@@ -401,62 +401,62 @@ impl<'a> Reader<'a> {
                 Node { id, loc, flags, kind: Kind::ClassVariableTargetNode { name } } }
             32 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                let operator_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::ClassVariableWriteNode { name, name_loc, value, operator_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::ClassVariableWriteNode { name, value } } }
             33 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
-                let operator_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::ConstantAndWriteNode { name, name_loc, operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::ConstantAndWriteNode { name, value } } }
             34 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
-                let binary_operator_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
                 let binary_operator = r.varu() - 1;
-                Node { id, loc, flags, kind: Kind::ConstantOperatorWriteNode { name, name_loc, binary_operator_loc, value, binary_operator } } }
+                Node { id, loc, flags, kind: Kind::ConstantOperatorWriteNode { name, value, binary_operator } } }
             35 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
-                let operator_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::ConstantOrWriteNode { name, name_loc, operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::ConstantOrWriteNode { name, value } } }
             36 => { let flags = r.varu();
                 let target = Box::new(r.node());
-                let operator_loc = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::ConstantPathAndWriteNode { target, operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::ConstantPathAndWriteNode { target, value } } }
             37 => { let flags = r.varu();
                 let parent = r.opt_node();
                 let name = { let k = r.varu(); if k == 0 { None } else { Some(k - 1) } };
-                let delimiter_loc = r.loc();
-                let name_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::ConstantPathNode { parent, name, delimiter_loc, name_loc } } }
+                let _ = r.loc();
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::ConstantPathNode { parent, name } } }
             38 => { let flags = r.varu();
                 let target = Box::new(r.node());
-                let binary_operator_loc = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
                 let binary_operator = r.varu() - 1;
-                Node { id, loc, flags, kind: Kind::ConstantPathOperatorWriteNode { target, binary_operator_loc, value, binary_operator } } }
+                Node { id, loc, flags, kind: Kind::ConstantPathOperatorWriteNode { target, value, binary_operator } } }
             39 => { let flags = r.varu();
                 let target = Box::new(r.node());
-                let operator_loc = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::ConstantPathOrWriteNode { target, operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::ConstantPathOrWriteNode { target, value } } }
             40 => { let flags = r.varu();
                 let parent = r.opt_node();
                 let name = { let k = r.varu(); if k == 0 { None } else { Some(k - 1) } };
-                let delimiter_loc = r.loc();
-                let name_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::ConstantPathTargetNode { parent, name, delimiter_loc, name_loc } } }
+                let _ = r.loc();
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::ConstantPathTargetNode { parent, name } } }
             41 => { let flags = r.varu();
                 let target = Box::new(r.node());
-                let operator_loc = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::ConstantPathWriteNode { target, operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::ConstantPathWriteNode { target, value } } }
             42 => { let flags = r.varu();
                 let name = r.varu() - 1;
                 Node { id, loc, flags, kind: Kind::ConstantReadNode { name } } }
@@ -465,49 +465,49 @@ impl<'a> Reader<'a> {
                 Node { id, loc, flags, kind: Kind::ConstantTargetNode { name } } }
             44 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                let operator_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::ConstantWriteNode { name, name_loc, value, operator_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::ConstantWriteNode { name, value } } }
             45 => { r.skip(4); let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
+                let _ = r.loc();
                 let receiver = r.opt_node();
                 let parameters = r.opt_node();
                 let body = r.opt_node();
                 let locals = { let k = r.varu(); (0..k).map(|_| r.varu() - 1).collect() };
-                let def_keyword_loc = r.loc();
-                let operator_loc = r.opt_loc();
-                let lparen_loc = r.opt_loc();
-                let rparen_loc = r.opt_loc();
-                let equal_loc = r.opt_loc();
-                let end_keyword_loc = r.opt_loc();
-                Node { id, loc, flags, kind: Kind::DefNode { name, name_loc, receiver, parameters, body, locals, def_keyword_loc, operator_loc, lparen_loc, rparen_loc, equal_loc, end_keyword_loc } } }
+                let _ = r.loc();
+                let _ = r.opt_loc();
+                let _ = r.opt_loc();
+                let _ = r.opt_loc();
+                let _ = r.opt_loc();
+                let _ = r.opt_loc();
+                Node { id, loc, flags, kind: Kind::DefNode { name, receiver, parameters, body, locals } } }
             46 => { let flags = r.varu();
-                let lparen_loc = r.opt_loc();
+                let _ = r.opt_loc();
                 let value = Box::new(r.node());
-                let rparen_loc = r.opt_loc();
-                let keyword_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::DefinedNode { lparen_loc, value, rparen_loc, keyword_loc } } }
+                let _ = r.opt_loc();
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::DefinedNode { value } } }
             47 => { let flags = r.varu();
-                let else_keyword_loc = r.loc();
+                let _ = r.loc();
                 let statements = r.opt_node();
-                let end_keyword_loc = r.opt_loc();
-                Node { id, loc, flags, kind: Kind::ElseNode { else_keyword_loc, statements, end_keyword_loc } } }
+                let _ = r.opt_loc();
+                Node { id, loc, flags, kind: Kind::ElseNode { statements } } }
             48 => { let flags = r.varu();
-                let opening_loc = r.loc();
+                let _ = r.loc();
                 let statements = r.opt_node();
-                let closing_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::EmbeddedStatementsNode { opening_loc, statements, closing_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::EmbeddedStatementsNode { statements } } }
             49 => { let flags = r.varu();
-                let operator_loc = r.loc();
+                let _ = r.loc();
                 let variable = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::EmbeddedVariableNode { operator_loc, variable } } }
+                Node { id, loc, flags, kind: Kind::EmbeddedVariableNode { variable } } }
             50 => { let flags = r.varu();
-                let ensure_keyword_loc = r.loc();
+                let _ = r.loc();
                 let statements = r.opt_node();
-                let end_keyword_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::EnsureNode { ensure_keyword_loc, statements, end_keyword_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::EnsureNode { statements } } }
             51 => { let flags = r.varu();
                 let unexpected = r.opt_node();
                 Node { id, loc, flags, kind: Kind::ErrorRecoveryNode { unexpected } } }
@@ -517,14 +517,14 @@ impl<'a> Reader<'a> {
                 let left = Box::new(r.node());
                 let requireds = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
                 let right = Box::new(r.node());
-                let opening_loc = r.opt_loc();
-                let closing_loc = r.opt_loc();
-                Node { id, loc, flags, kind: Kind::FindPatternNode { constant, left, requireds, right, opening_loc, closing_loc } } }
+                let _ = r.opt_loc();
+                let _ = r.opt_loc();
+                Node { id, loc, flags, kind: Kind::FindPatternNode { constant, left, requireds, right } } }
             54 => { let flags = r.varu();
                 let left = r.opt_node();
                 let right = r.opt_node();
-                let operator_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::FlipFlopNode { left, right, operator_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::FlipFlopNode { left, right } } }
             55 => { let flags = r.varu();
                 let value = r.double();
                 Node { id, loc, flags, kind: Kind::FloatNode { value } } }
@@ -532,36 +532,36 @@ impl<'a> Reader<'a> {
                 let index = Box::new(r.node());
                 let collection = Box::new(r.node());
                 let statements = r.opt_node();
-                let for_keyword_loc = r.loc();
-                let in_keyword_loc = r.loc();
-                let do_keyword_loc = r.opt_loc();
-                let end_keyword_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::ForNode { index, collection, statements, for_keyword_loc, in_keyword_loc, do_keyword_loc, end_keyword_loc } } }
+                let _ = r.loc();
+                let _ = r.loc();
+                let _ = r.opt_loc();
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::ForNode { index, collection, statements } } }
             57 => { let flags = r.varu(); Node { id, loc, flags, kind: Kind::ForwardingArgumentsNode } }
             58 => { let flags = r.varu(); Node { id, loc, flags, kind: Kind::ForwardingParameterNode } }
             59 => { let flags = r.varu();
-                let keyword_loc = r.loc();
+                let _ = r.loc();
                 let block = r.opt_node();
-                Node { id, loc, flags, kind: Kind::ForwardingSuperNode { keyword_loc, block } } }
+                Node { id, loc, flags, kind: Kind::ForwardingSuperNode { block } } }
             60 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
-                let operator_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::GlobalVariableAndWriteNode { name, name_loc, operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::GlobalVariableAndWriteNode { name, value } } }
             61 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
-                let binary_operator_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
                 let binary_operator = r.varu() - 1;
-                Node { id, loc, flags, kind: Kind::GlobalVariableOperatorWriteNode { name, name_loc, binary_operator_loc, value, binary_operator } } }
+                Node { id, loc, flags, kind: Kind::GlobalVariableOperatorWriteNode { name, value, binary_operator } } }
             62 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
-                let operator_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::GlobalVariableOrWriteNode { name, name_loc, operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::GlobalVariableOrWriteNode { name, value } } }
             63 => { let flags = r.varu();
                 let name = r.varu() - 1;
                 Node { id, loc, flags, kind: Kind::GlobalVariableReadNode { name } } }
@@ -570,30 +570,30 @@ impl<'a> Reader<'a> {
                 Node { id, loc, flags, kind: Kind::GlobalVariableTargetNode { name } } }
             65 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                let operator_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::GlobalVariableWriteNode { name, name_loc, value, operator_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::GlobalVariableWriteNode { name, value } } }
             66 => { let flags = r.varu();
-                let opening_loc = r.loc();
+                let _ = r.loc();
                 let elements = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
-                let closing_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::HashNode { opening_loc, elements, closing_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::HashNode { elements } } }
             67 => { let flags = r.varu();
                 let constant = r.opt_node();
                 let elements = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
                 let rest = r.opt_node();
-                let opening_loc = r.opt_loc();
-                let closing_loc = r.opt_loc();
-                Node { id, loc, flags, kind: Kind::HashPatternNode { constant, elements, rest, opening_loc, closing_loc } } }
+                let _ = r.opt_loc();
+                let _ = r.opt_loc();
+                Node { id, loc, flags, kind: Kind::HashPatternNode { constant, elements, rest } } }
             68 => { let flags = r.varu();
-                let if_keyword_loc = r.opt_loc();
+                let _ = r.opt_loc();
                 let predicate = Box::new(r.node());
-                let then_keyword_loc = r.opt_loc();
+                let _ = r.opt_loc();
                 let statements = r.opt_node();
                 let subsequent = r.opt_node();
-                let end_keyword_loc = r.opt_loc();
-                Node { id, loc, flags, kind: Kind::IfNode { if_keyword_loc, predicate, then_keyword_loc, statements, subsequent, end_keyword_loc } } }
+                let _ = r.opt_loc();
+                Node { id, loc, flags, kind: Kind::IfNode { predicate, statements, subsequent } } }
             69 => { let flags = r.varu();
                 let numeric = Box::new(r.node());
                 Node { id, loc, flags, kind: Kind::ImaginaryNode { numeric } } }
@@ -604,66 +604,66 @@ impl<'a> Reader<'a> {
             72 => { let flags = r.varu();
                 let pattern = Box::new(r.node());
                 let statements = r.opt_node();
-                let in_keyword_loc = r.loc();
-                let then_keyword_loc = r.opt_loc();
-                Node { id, loc, flags, kind: Kind::InNode { pattern, statements, in_keyword_loc, then_keyword_loc } } }
+                let _ = r.loc();
+                let _ = r.opt_loc();
+                Node { id, loc, flags, kind: Kind::InNode { pattern, statements } } }
             73 => { let flags = r.varu();
                 let receiver = r.opt_node();
-                let call_operator_loc = r.opt_loc();
-                let opening_loc = r.loc();
+                let _ = r.opt_loc();
+                let _ = r.loc();
                 let arguments = r.opt_node();
-                let closing_loc = r.loc();
+                let _ = r.loc();
                 let block = r.opt_node();
-                let operator_loc = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::IndexAndWriteNode { receiver, call_operator_loc, opening_loc, arguments, closing_loc, block, operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::IndexAndWriteNode { receiver, arguments, block, value } } }
             74 => { let flags = r.varu();
                 let receiver = r.opt_node();
-                let call_operator_loc = r.opt_loc();
-                let opening_loc = r.loc();
+                let _ = r.opt_loc();
+                let _ = r.loc();
                 let arguments = r.opt_node();
-                let closing_loc = r.loc();
+                let _ = r.loc();
                 let block = r.opt_node();
                 let binary_operator = r.varu() - 1;
-                let binary_operator_loc = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::IndexOperatorWriteNode { receiver, call_operator_loc, opening_loc, arguments, closing_loc, block, binary_operator, binary_operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::IndexOperatorWriteNode { receiver, arguments, block, binary_operator, value } } }
             75 => { let flags = r.varu();
                 let receiver = r.opt_node();
-                let call_operator_loc = r.opt_loc();
-                let opening_loc = r.loc();
+                let _ = r.opt_loc();
+                let _ = r.loc();
                 let arguments = r.opt_node();
-                let closing_loc = r.loc();
+                let _ = r.loc();
                 let block = r.opt_node();
-                let operator_loc = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::IndexOrWriteNode { receiver, call_operator_loc, opening_loc, arguments, closing_loc, block, operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::IndexOrWriteNode { receiver, arguments, block, value } } }
             76 => { let flags = r.varu();
                 let receiver = Box::new(r.node());
-                let opening_loc = r.loc();
+                let _ = r.loc();
                 let arguments = r.opt_node();
-                let closing_loc = r.loc();
+                let _ = r.loc();
                 let block = r.opt_node();
-                Node { id, loc, flags, kind: Kind::IndexTargetNode { receiver, opening_loc, arguments, closing_loc, block } } }
+                Node { id, loc, flags, kind: Kind::IndexTargetNode { receiver, arguments, block } } }
             77 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
-                let operator_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::InstanceVariableAndWriteNode { name, name_loc, operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::InstanceVariableAndWriteNode { name, value } } }
             78 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
-                let binary_operator_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
                 let binary_operator = r.varu() - 1;
-                Node { id, loc, flags, kind: Kind::InstanceVariableOperatorWriteNode { name, name_loc, binary_operator_loc, value, binary_operator } } }
+                Node { id, loc, flags, kind: Kind::InstanceVariableOperatorWriteNode { name, value, binary_operator } } }
             79 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
-                let operator_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::InstanceVariableOrWriteNode { name, name_loc, operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::InstanceVariableOrWriteNode { name, value } } }
             80 => { let flags = r.varu();
                 let name = r.varu() - 1;
                 Node { id, loc, flags, kind: Kind::InstanceVariableReadNode { name } } }
@@ -672,38 +672,38 @@ impl<'a> Reader<'a> {
                 Node { id, loc, flags, kind: Kind::InstanceVariableTargetNode { name } } }
             82 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                let operator_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::InstanceVariableWriteNode { name, name_loc, value, operator_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::InstanceVariableWriteNode { name, value } } }
             83 => { let flags = r.varu();
                 let value = r.integer();
                 Node { id, loc, flags, kind: Kind::IntegerNode { value } } }
             84 => { let flags = r.varu();
-                let opening_loc = r.loc();
+                let _ = r.loc();
                 let parts = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
-                let closing_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::InterpolatedMatchLastLineNode { opening_loc, parts, closing_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::InterpolatedMatchLastLineNode { parts } } }
             85 => { let flags = r.varu();
-                let opening_loc = r.loc();
+                let _ = r.loc();
                 let parts = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
-                let closing_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::InterpolatedRegularExpressionNode { opening_loc, parts, closing_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::InterpolatedRegularExpressionNode { parts } } }
             86 => { let flags = r.varu();
-                let opening_loc = r.opt_loc();
+                let _ = r.opt_loc();
                 let parts = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
-                let closing_loc = r.opt_loc();
-                Node { id, loc, flags, kind: Kind::InterpolatedStringNode { opening_loc, parts, closing_loc } } }
+                let _ = r.opt_loc();
+                Node { id, loc, flags, kind: Kind::InterpolatedStringNode { parts } } }
             87 => { let flags = r.varu();
-                let opening_loc = r.opt_loc();
+                let _ = r.opt_loc();
                 let parts = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
-                let closing_loc = r.opt_loc();
-                Node { id, loc, flags, kind: Kind::InterpolatedSymbolNode { opening_loc, parts, closing_loc } } }
+                let _ = r.opt_loc();
+                Node { id, loc, flags, kind: Kind::InterpolatedSymbolNode { parts } } }
             88 => { let flags = r.varu();
-                let opening_loc = r.loc();
+                let _ = r.loc();
                 let parts = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
-                let closing_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::InterpolatedXStringNode { opening_loc, parts, closing_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::InterpolatedXStringNode { parts } } }
             89 => { let flags = r.varu(); Node { id, loc, flags, kind: Kind::ItLocalVariableReadNode } }
             90 => { let flags = r.varu(); Node { id, loc, flags, kind: Kind::ItParametersNode } }
             91 => { let flags = r.varu();
@@ -711,39 +711,39 @@ impl<'a> Reader<'a> {
                 Node { id, loc, flags, kind: Kind::KeywordHashNode { elements } } }
             92 => { let flags = r.varu();
                 let name = { let k = r.varu(); if k == 0 { None } else { Some(k - 1) } };
-                let name_loc = r.opt_loc();
-                let operator_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::KeywordRestParameterNode { name, name_loc, operator_loc } } }
+                let _ = r.opt_loc();
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::KeywordRestParameterNode { name } } }
             93 => { let flags = r.varu();
                 let locals = { let k = r.varu(); (0..k).map(|_| r.varu() - 1).collect() };
-                let operator_loc = r.loc();
-                let opening_loc = r.loc();
-                let closing_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let parameters = r.opt_node();
                 let body = r.opt_node();
-                Node { id, loc, flags, kind: Kind::LambdaNode { locals, operator_loc, opening_loc, closing_loc, parameters, body } } }
+                Node { id, loc, flags, kind: Kind::LambdaNode { locals, parameters, body } } }
             94 => { let flags = r.varu();
-                let name_loc = r.loc();
-                let operator_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
                 let name = r.varu() - 1;
                 let depth = r.varu();
-                Node { id, loc, flags, kind: Kind::LocalVariableAndWriteNode { name_loc, operator_loc, value, name, depth } } }
+                Node { id, loc, flags, kind: Kind::LocalVariableAndWriteNode { value, name, depth } } }
             95 => { let flags = r.varu();
-                let name_loc = r.loc();
-                let binary_operator_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
                 let name = r.varu() - 1;
                 let binary_operator = r.varu() - 1;
                 let depth = r.varu();
-                Node { id, loc, flags, kind: Kind::LocalVariableOperatorWriteNode { name_loc, binary_operator_loc, value, name, binary_operator, depth } } }
+                Node { id, loc, flags, kind: Kind::LocalVariableOperatorWriteNode { value, name, binary_operator, depth } } }
             96 => { let flags = r.varu();
-                let name_loc = r.loc();
-                let operator_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
                 let name = r.varu() - 1;
                 let depth = r.varu();
-                Node { id, loc, flags, kind: Kind::LocalVariableOrWriteNode { name_loc, operator_loc, value, name, depth } } }
+                Node { id, loc, flags, kind: Kind::LocalVariableOrWriteNode { value, name, depth } } }
             97 => { let flags = r.varu();
                 let name = r.varu() - 1;
                 let depth = r.varu();
@@ -755,67 +755,67 @@ impl<'a> Reader<'a> {
             99 => { let flags = r.varu();
                 let name = r.varu() - 1;
                 let depth = r.varu();
-                let name_loc = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                let operator_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::LocalVariableWriteNode { name, depth, name_loc, value, operator_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::LocalVariableWriteNode { name, depth, value } } }
             100 => { let flags = r.varu();
-                let opening_loc = r.loc();
-                let content_loc = r.loc();
-                let closing_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let unescaped = r.string();
-                Node { id, loc, flags, kind: Kind::MatchLastLineNode { opening_loc, content_loc, closing_loc, unescaped } } }
+                Node { id, loc, flags, kind: Kind::MatchLastLineNode { unescaped } } }
             101 => { let flags = r.varu();
                 let value = Box::new(r.node());
                 let pattern = Box::new(r.node());
-                let keyword_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::MatchPredicateNode { value, pattern, keyword_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::MatchPredicateNode { value, pattern } } }
             102 => { let flags = r.varu();
                 let value = Box::new(r.node());
                 let pattern = Box::new(r.node());
-                let operator_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::MatchRequiredNode { value, pattern, operator_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::MatchRequiredNode { value, pattern } } }
             103 => { let flags = r.varu();
                 let call = Box::new(r.node());
                 let targets = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
                 Node { id, loc, flags, kind: Kind::MatchWriteNode { call, targets } } }
             104 => { let flags = r.varu();
                 let locals = { let k = r.varu(); (0..k).map(|_| r.varu() - 1).collect() };
-                let module_keyword_loc = r.loc();
+                let _ = r.loc();
                 let constant_path = Box::new(r.node());
                 let body = r.opt_node();
-                let end_keyword_loc = r.loc();
+                let _ = r.loc();
                 let name = r.varu() - 1;
-                Node { id, loc, flags, kind: Kind::ModuleNode { locals, module_keyword_loc, constant_path, body, end_keyword_loc, name } } }
+                Node { id, loc, flags, kind: Kind::ModuleNode { locals, constant_path, body, name } } }
             105 => { let flags = r.varu();
                 let lefts = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
                 let rest = r.opt_node();
                 let rights = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
-                let lparen_loc = r.opt_loc();
-                let rparen_loc = r.opt_loc();
-                Node { id, loc, flags, kind: Kind::MultiTargetNode { lefts, rest, rights, lparen_loc, rparen_loc } } }
+                let _ = r.opt_loc();
+                let _ = r.opt_loc();
+                Node { id, loc, flags, kind: Kind::MultiTargetNode { lefts, rest, rights } } }
             106 => { let flags = r.varu();
                 let lefts = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
                 let rest = r.opt_node();
                 let rights = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
-                let lparen_loc = r.opt_loc();
-                let rparen_loc = r.opt_loc();
-                let operator_loc = r.loc();
+                let _ = r.opt_loc();
+                let _ = r.opt_loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::MultiWriteNode { lefts, rest, rights, lparen_loc, rparen_loc, operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::MultiWriteNode { lefts, rest, rights, value } } }
             107 => { let flags = r.varu();
                 let arguments = r.opt_node();
-                let keyword_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::NextNode { arguments, keyword_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::NextNode { arguments } } }
             108 => { let flags = r.varu(); Node { id, loc, flags, kind: Kind::NilNode } }
             109 => { let flags = r.varu();
-                let operator_loc = r.loc();
-                let keyword_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::NoBlockParameterNode { operator_loc, keyword_loc } } }
+                let _ = r.loc();
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::NoBlockParameterNode {  } } }
             110 => { let flags = r.varu();
-                let operator_loc = r.loc();
-                let keyword_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::NoKeywordsParameterNode { operator_loc, keyword_loc } } }
+                let _ = r.loc();
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::NoKeywordsParameterNode {  } } }
             111 => { let flags = r.varu();
                 let maximum = r.byte();
                 Node { id, loc, flags, kind: Kind::NumberedParametersNode { maximum } } }
@@ -824,20 +824,20 @@ impl<'a> Reader<'a> {
                 Node { id, loc, flags, kind: Kind::NumberedReferenceReadNode { number } } }
             113 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::OptionalKeywordParameterNode { name, name_loc, value } } }
+                Node { id, loc, flags, kind: Kind::OptionalKeywordParameterNode { name, value } } }
             114 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
-                let operator_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let value = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::OptionalParameterNode { name, name_loc, operator_loc, value } } }
+                Node { id, loc, flags, kind: Kind::OptionalParameterNode { name, value } } }
             115 => { let flags = r.varu();
                 let left = Box::new(r.node());
                 let right = Box::new(r.node());
-                let operator_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::OrNode { left, right, operator_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::OrNode { left, right } } }
             116 => { let flags = r.varu();
                 let requireds = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
                 let optionals = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
@@ -849,31 +849,31 @@ impl<'a> Reader<'a> {
                 Node { id, loc, flags, kind: Kind::ParametersNode { requireds, optionals, rest, posts, keywords, keyword_rest, block } } }
             117 => { let flags = r.varu();
                 let body = r.opt_node();
-                let opening_loc = r.loc();
-                let closing_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::ParenthesesNode { body, opening_loc, closing_loc } } }
+                let _ = r.loc();
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::ParenthesesNode { body } } }
             118 => { let flags = r.varu();
                 let expression = Box::new(r.node());
-                let operator_loc = r.loc();
-                let lparen_loc = r.loc();
-                let rparen_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::PinnedExpressionNode { expression, operator_loc, lparen_loc, rparen_loc } } }
+                let _ = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::PinnedExpressionNode { expression } } }
             119 => { let flags = r.varu();
                 let variable = Box::new(r.node());
-                let operator_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::PinnedVariableNode { variable, operator_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::PinnedVariableNode { variable } } }
             120 => { let flags = r.varu();
                 let statements = r.opt_node();
-                let keyword_loc = r.loc();
-                let opening_loc = r.loc();
-                let closing_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::PostExecutionNode { statements, keyword_loc, opening_loc, closing_loc } } }
+                let _ = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::PostExecutionNode { statements } } }
             121 => { let flags = r.varu();
                 let statements = r.opt_node();
-                let keyword_loc = r.loc();
-                let opening_loc = r.loc();
-                let closing_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::PreExecutionNode { statements, keyword_loc, opening_loc, closing_loc } } }
+                let _ = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::PreExecutionNode { statements } } }
             122 => { let flags = r.varu();
                 let locals = { let k = r.varu(); (0..k).map(|_| r.varu() - 1).collect() };
                 let statements = Box::new(r.node());
@@ -881,138 +881,138 @@ impl<'a> Reader<'a> {
             123 => { let flags = r.varu();
                 let left = r.opt_node();
                 let right = r.opt_node();
-                let operator_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::RangeNode { left, right, operator_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::RangeNode { left, right } } }
             124 => { let flags = r.varu();
                 let numerator = r.integer();
                 let denominator = r.integer();
                 Node { id, loc, flags, kind: Kind::RationalNode { numerator, denominator } } }
             125 => { let flags = r.varu(); Node { id, loc, flags, kind: Kind::RedoNode } }
             126 => { let flags = r.varu();
-                let opening_loc = r.loc();
-                let content_loc = r.loc();
-                let closing_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let unescaped = r.string();
-                Node { id, loc, flags, kind: Kind::RegularExpressionNode { opening_loc, content_loc, closing_loc, unescaped } } }
+                Node { id, loc, flags, kind: Kind::RegularExpressionNode { unescaped } } }
             127 => { let flags = r.varu();
                 let name = r.varu() - 1;
-                let name_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::RequiredKeywordParameterNode { name, name_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::RequiredKeywordParameterNode { name } } }
             128 => { let flags = r.varu();
                 let name = r.varu() - 1;
                 Node { id, loc, flags, kind: Kind::RequiredParameterNode { name } } }
             129 => { let flags = r.varu();
                 let expression = Box::new(r.node());
-                let keyword_loc = r.loc();
+                let _ = r.loc();
                 let rescue_expression = Box::new(r.node());
-                Node { id, loc, flags, kind: Kind::RescueModifierNode { expression, keyword_loc, rescue_expression } } }
+                Node { id, loc, flags, kind: Kind::RescueModifierNode { expression, rescue_expression } } }
             130 => { let flags = r.varu();
-                let keyword_loc = r.loc();
+                let _ = r.loc();
                 let exceptions = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
-                let operator_loc = r.opt_loc();
+                let _ = r.opt_loc();
                 let reference = r.opt_node();
-                let then_keyword_loc = r.opt_loc();
+                let _ = r.opt_loc();
                 let statements = r.opt_node();
                 let subsequent = r.opt_node();
-                Node { id, loc, flags, kind: Kind::RescueNode { keyword_loc, exceptions, operator_loc, reference, then_keyword_loc, statements, subsequent } } }
+                Node { id, loc, flags, kind: Kind::RescueNode { exceptions, reference, statements, subsequent } } }
             131 => { let flags = r.varu();
                 let name = { let k = r.varu(); if k == 0 { None } else { Some(k - 1) } };
-                let name_loc = r.opt_loc();
-                let operator_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::RestParameterNode { name, name_loc, operator_loc } } }
+                let _ = r.opt_loc();
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::RestParameterNode { name } } }
             132 => { let flags = r.varu(); Node { id, loc, flags, kind: Kind::RetryNode } }
             133 => { let flags = r.varu();
-                let keyword_loc = r.loc();
+                let _ = r.loc();
                 let arguments = r.opt_node();
-                Node { id, loc, flags, kind: Kind::ReturnNode { keyword_loc, arguments } } }
+                Node { id, loc, flags, kind: Kind::ReturnNode { arguments } } }
             134 => { let flags = r.varu(); Node { id, loc, flags, kind: Kind::SelfNode } }
             135 => { let flags = r.varu();
                 let write = Box::new(r.node());
                 Node { id, loc, flags, kind: Kind::ShareableConstantNode { write } } }
             136 => { let flags = r.varu();
                 let locals = { let k = r.varu(); (0..k).map(|_| r.varu() - 1).collect() };
-                let class_keyword_loc = r.loc();
-                let operator_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let expression = Box::new(r.node());
                 let body = r.opt_node();
-                let end_keyword_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::SingletonClassNode { locals, class_keyword_loc, operator_loc, expression, body, end_keyword_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::SingletonClassNode { locals, expression, body } } }
             137 => { let flags = r.varu(); Node { id, loc, flags, kind: Kind::SourceEncodingNode } }
             138 => { let flags = r.varu();
                 let filepath = r.string();
                 Node { id, loc, flags, kind: Kind::SourceFileNode { filepath } } }
             139 => { let flags = r.varu(); Node { id, loc, flags, kind: Kind::SourceLineNode } }
             140 => { let flags = r.varu();
-                let operator_loc = r.loc();
+                let _ = r.loc();
                 let expression = r.opt_node();
-                Node { id, loc, flags, kind: Kind::SplatNode { operator_loc, expression } } }
+                Node { id, loc, flags, kind: Kind::SplatNode { expression } } }
             141 => { let flags = r.varu();
                 let body = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
                 Node { id, loc, flags, kind: Kind::StatementsNode { body } } }
             142 => { let flags = r.varu();
-                let opening_loc = r.opt_loc();
-                let content_loc = r.loc();
-                let closing_loc = r.opt_loc();
+                let _ = r.opt_loc();
+                let _ = r.loc();
+                let _ = r.opt_loc();
                 let unescaped = r.string();
-                Node { id, loc, flags, kind: Kind::StringNode { opening_loc, content_loc, closing_loc, unescaped } } }
+                Node { id, loc, flags, kind: Kind::StringNode { unescaped } } }
             143 => { let flags = r.varu();
-                let keyword_loc = r.loc();
-                let lparen_loc = r.opt_loc();
+                let _ = r.loc();
+                let _ = r.opt_loc();
                 let arguments = r.opt_node();
-                let rparen_loc = r.opt_loc();
+                let _ = r.opt_loc();
                 let block = r.opt_node();
-                Node { id, loc, flags, kind: Kind::SuperNode { keyword_loc, lparen_loc, arguments, rparen_loc, block } } }
+                Node { id, loc, flags, kind: Kind::SuperNode { arguments, block } } }
             144 => { let flags = r.varu();
-                let opening_loc = r.opt_loc();
-                let content_loc = r.loc();
-                let closing_loc = r.opt_loc();
+                let _ = r.opt_loc();
+                let _ = r.loc();
+                let _ = r.opt_loc();
                 let unescaped = r.string();
-                Node { id, loc, flags, kind: Kind::SymbolNode { opening_loc, content_loc, closing_loc, unescaped } } }
+                Node { id, loc, flags, kind: Kind::SymbolNode { unescaped } } }
             145 => { let flags = r.varu(); Node { id, loc, flags, kind: Kind::TrueNode } }
             146 => { let flags = r.varu();
                 let names = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
-                let keyword_loc = r.loc();
-                Node { id, loc, flags, kind: Kind::UndefNode { names, keyword_loc } } }
+                let _ = r.loc();
+                Node { id, loc, flags, kind: Kind::UndefNode { names } } }
             147 => { let flags = r.varu();
-                let unless_keyword_loc = r.loc();
+                let _ = r.loc();
                 let predicate = Box::new(r.node());
-                let then_keyword_loc = r.opt_loc();
+                let _ = r.opt_loc();
                 let statements = r.opt_node();
                 let else_clause = r.opt_node();
-                let end_keyword_loc = r.opt_loc();
-                Node { id, loc, flags, kind: Kind::UnlessNode { unless_keyword_loc, predicate, then_keyword_loc, statements, else_clause, end_keyword_loc } } }
+                let _ = r.opt_loc();
+                Node { id, loc, flags, kind: Kind::UnlessNode { predicate, statements, else_clause } } }
             148 => { let flags = r.varu();
-                let until_keyword_loc = r.loc();
-                let do_keyword_loc = r.opt_loc();
-                let end_keyword_loc = r.opt_loc();
+                let _ = r.loc();
+                let _ = r.opt_loc();
+                let _ = r.opt_loc();
                 let predicate = Box::new(r.node());
                 let statements = r.opt_node();
-                Node { id, loc, flags, kind: Kind::UntilNode { until_keyword_loc, do_keyword_loc, end_keyword_loc, predicate, statements } } }
+                Node { id, loc, flags, kind: Kind::UntilNode { predicate, statements } } }
             149 => { let flags = r.varu();
-                let when_keyword_loc = r.loc();
+                let _ = r.loc();
                 let conditions = { let k = r.varu(); (0..k).map(|_| r.node()).collect() };
-                let then_keyword_loc = r.opt_loc();
+                let _ = r.opt_loc();
                 let statements = r.opt_node();
-                Node { id, loc, flags, kind: Kind::WhenNode { when_keyword_loc, conditions, then_keyword_loc, statements } } }
+                Node { id, loc, flags, kind: Kind::WhenNode { conditions, statements } } }
             150 => { let flags = r.varu();
-                let while_keyword_loc = r.loc();
-                let do_keyword_loc = r.opt_loc();
-                let end_keyword_loc = r.opt_loc();
+                let _ = r.loc();
+                let _ = r.opt_loc();
+                let _ = r.opt_loc();
                 let predicate = Box::new(r.node());
                 let statements = r.opt_node();
-                Node { id, loc, flags, kind: Kind::WhileNode { while_keyword_loc, do_keyword_loc, end_keyword_loc, predicate, statements } } }
+                Node { id, loc, flags, kind: Kind::WhileNode { predicate, statements } } }
             151 => { let flags = r.varu();
-                let opening_loc = r.loc();
-                let content_loc = r.loc();
-                let closing_loc = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
+                let _ = r.loc();
                 let unescaped = r.string();
-                Node { id, loc, flags, kind: Kind::XStringNode { opening_loc, content_loc, closing_loc, unescaped } } }
+                Node { id, loc, flags, kind: Kind::XStringNode { unescaped } } }
             152 => { let flags = r.varu();
-                let keyword_loc = r.loc();
-                let lparen_loc = r.opt_loc();
+                let _ = r.loc();
+                let _ = r.opt_loc();
                 let arguments = r.opt_node();
-                let rparen_loc = r.opt_loc();
-                Node { id, loc, flags, kind: Kind::YieldNode { keyword_loc, lparen_loc, arguments, rparen_loc } } }
+                let _ = r.opt_loc();
+                Node { id, loc, flags, kind: Kind::YieldNode { arguments } } }
             _ => panic!("prism: unknown node type {}", ty),
         }
     }
@@ -1128,8 +1128,8 @@ pub fn kind_name(k: &Kind) -> &'static str {
         Kind::MultiWriteNode { .. } => "MultiWriteNode",
         Kind::NextNode { .. } => "NextNode",
         Kind::NilNode => "NilNode",
-        Kind::NoBlockParameterNode { .. } => "NoBlockParameterNode",
-        Kind::NoKeywordsParameterNode { .. } => "NoKeywordsParameterNode",
+        Kind::NoBlockParameterNode => "NoBlockParameterNode",
+        Kind::NoKeywordsParameterNode => "NoKeywordsParameterNode",
         Kind::NumberedParametersNode { .. } => "NumberedParametersNode",
         Kind::NumberedReferenceReadNode { .. } => "NumberedReferenceReadNode",
         Kind::OptionalKeywordParameterNode { .. } => "OptionalKeywordParameterNode",
@@ -1172,5 +1172,467 @@ pub fn kind_name(k: &Kind) -> &'static str {
         Kind::WhileNode { .. } => "WhileNode",
         Kind::XStringNode { .. } => "XStringNode",
         Kind::YieldNode { .. } => "YieldNode",
+    }
+}
+
+impl Node {
+    /// Direct child nodes, in field order.
+    pub fn children(&self) -> Vec<&Node> {
+        let mut v: Vec<&Node> = vec![];
+        match &self.kind {
+            Kind::AliasGlobalVariableNode { new_name, old_name, .. } => {
+                v.push(new_name);
+                v.push(old_name);
+            }
+            Kind::AliasMethodNode { new_name, old_name, .. } => {
+                v.push(new_name);
+                v.push(old_name);
+            }
+            Kind::AlternationPatternNode { left, right, .. } => {
+                v.push(left);
+                v.push(right);
+            }
+            Kind::AndNode { left, right, .. } => {
+                v.push(left);
+                v.push(right);
+            }
+            Kind::ArgumentsNode { arguments, .. } => {
+                for x in arguments { v.push(x); }
+            }
+            Kind::ArrayNode { elements, .. } => {
+                for x in elements { v.push(x); }
+            }
+            Kind::ArrayPatternNode { constant, requireds, rest, posts, .. } => {
+                if let Some(x) = constant { v.push(x); }
+                for x in requireds { v.push(x); }
+                if let Some(x) = rest { v.push(x); }
+                for x in posts { v.push(x); }
+            }
+            Kind::AssocNode { key, value, .. } => {
+                v.push(key);
+                v.push(value);
+            }
+            Kind::AssocSplatNode { value, .. } => {
+                if let Some(x) = value { v.push(x); }
+            }
+            Kind::BackReferenceReadNode { .. } => {}
+            Kind::BeginNode { statements, rescue_clause, else_clause, ensure_clause, .. } => {
+                if let Some(x) = statements { v.push(x); }
+                if let Some(x) = rescue_clause { v.push(x); }
+                if let Some(x) = else_clause { v.push(x); }
+                if let Some(x) = ensure_clause { v.push(x); }
+            }
+            Kind::BlockArgumentNode { expression, .. } => {
+                if let Some(x) = expression { v.push(x); }
+            }
+            Kind::BlockLocalVariableNode { .. } => {}
+            Kind::BlockNode { parameters, body, .. } => {
+                if let Some(x) = parameters { v.push(x); }
+                if let Some(x) = body { v.push(x); }
+            }
+            Kind::BlockParameterNode { .. } => {}
+            Kind::BlockParametersNode { parameters, locals, .. } => {
+                if let Some(x) = parameters { v.push(x); }
+                for x in locals { v.push(x); }
+            }
+            Kind::BreakNode { arguments, .. } => {
+                if let Some(x) = arguments { v.push(x); }
+            }
+            Kind::CallAndWriteNode { receiver, value, .. } => {
+                if let Some(x) = receiver { v.push(x); }
+                v.push(value);
+            }
+            Kind::CallNode { receiver, arguments, block, .. } => {
+                if let Some(x) = receiver { v.push(x); }
+                if let Some(x) = arguments { v.push(x); }
+                if let Some(x) = block { v.push(x); }
+            }
+            Kind::CallOperatorWriteNode { receiver, value, .. } => {
+                if let Some(x) = receiver { v.push(x); }
+                v.push(value);
+            }
+            Kind::CallOrWriteNode { receiver, value, .. } => {
+                if let Some(x) = receiver { v.push(x); }
+                v.push(value);
+            }
+            Kind::CallTargetNode { receiver, .. } => {
+                v.push(receiver);
+            }
+            Kind::CapturePatternNode { value, target, .. } => {
+                v.push(value);
+                v.push(target);
+            }
+            Kind::CaseMatchNode { predicate, conditions, else_clause, .. } => {
+                if let Some(x) = predicate { v.push(x); }
+                for x in conditions { v.push(x); }
+                if let Some(x) = else_clause { v.push(x); }
+            }
+            Kind::CaseNode { predicate, conditions, else_clause, .. } => {
+                if let Some(x) = predicate { v.push(x); }
+                for x in conditions { v.push(x); }
+                if let Some(x) = else_clause { v.push(x); }
+            }
+            Kind::ClassNode { constant_path, superclass, body, .. } => {
+                v.push(constant_path);
+                if let Some(x) = superclass { v.push(x); }
+                if let Some(x) = body { v.push(x); }
+            }
+            Kind::ClassVariableAndWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::ClassVariableOperatorWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::ClassVariableOrWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::ClassVariableReadNode { .. } => {}
+            Kind::ClassVariableTargetNode { .. } => {}
+            Kind::ClassVariableWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::ConstantAndWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::ConstantOperatorWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::ConstantOrWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::ConstantPathAndWriteNode { target, value, .. } => {
+                v.push(target);
+                v.push(value);
+            }
+            Kind::ConstantPathNode { parent, .. } => {
+                if let Some(x) = parent { v.push(x); }
+            }
+            Kind::ConstantPathOperatorWriteNode { target, value, .. } => {
+                v.push(target);
+                v.push(value);
+            }
+            Kind::ConstantPathOrWriteNode { target, value, .. } => {
+                v.push(target);
+                v.push(value);
+            }
+            Kind::ConstantPathTargetNode { parent, .. } => {
+                if let Some(x) = parent { v.push(x); }
+            }
+            Kind::ConstantPathWriteNode { target, value, .. } => {
+                v.push(target);
+                v.push(value);
+            }
+            Kind::ConstantReadNode { .. } => {}
+            Kind::ConstantTargetNode { .. } => {}
+            Kind::ConstantWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::DefNode { receiver, parameters, body, .. } => {
+                if let Some(x) = receiver { v.push(x); }
+                if let Some(x) = parameters { v.push(x); }
+                if let Some(x) = body { v.push(x); }
+            }
+            Kind::DefinedNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::ElseNode { statements, .. } => {
+                if let Some(x) = statements { v.push(x); }
+            }
+            Kind::EmbeddedStatementsNode { statements, .. } => {
+                if let Some(x) = statements { v.push(x); }
+            }
+            Kind::EmbeddedVariableNode { variable, .. } => {
+                v.push(variable);
+            }
+            Kind::EnsureNode { statements, .. } => {
+                if let Some(x) = statements { v.push(x); }
+            }
+            Kind::ErrorRecoveryNode { unexpected, .. } => {
+                if let Some(x) = unexpected { v.push(x); }
+            }
+            Kind::FalseNode => {}
+            Kind::FindPatternNode { constant, left, requireds, right, .. } => {
+                if let Some(x) = constant { v.push(x); }
+                v.push(left);
+                for x in requireds { v.push(x); }
+                v.push(right);
+            }
+            Kind::FlipFlopNode { left, right, .. } => {
+                if let Some(x) = left { v.push(x); }
+                if let Some(x) = right { v.push(x); }
+            }
+            Kind::FloatNode { .. } => {}
+            Kind::ForNode { index, collection, statements, .. } => {
+                v.push(index);
+                v.push(collection);
+                if let Some(x) = statements { v.push(x); }
+            }
+            Kind::ForwardingArgumentsNode => {}
+            Kind::ForwardingParameterNode => {}
+            Kind::ForwardingSuperNode { block, .. } => {
+                if let Some(x) = block { v.push(x); }
+            }
+            Kind::GlobalVariableAndWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::GlobalVariableOperatorWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::GlobalVariableOrWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::GlobalVariableReadNode { .. } => {}
+            Kind::GlobalVariableTargetNode { .. } => {}
+            Kind::GlobalVariableWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::HashNode { elements, .. } => {
+                for x in elements { v.push(x); }
+            }
+            Kind::HashPatternNode { constant, elements, rest, .. } => {
+                if let Some(x) = constant { v.push(x); }
+                for x in elements { v.push(x); }
+                if let Some(x) = rest { v.push(x); }
+            }
+            Kind::IfNode { predicate, statements, subsequent, .. } => {
+                v.push(predicate);
+                if let Some(x) = statements { v.push(x); }
+                if let Some(x) = subsequent { v.push(x); }
+            }
+            Kind::ImaginaryNode { numeric, .. } => {
+                v.push(numeric);
+            }
+            Kind::ImplicitNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::ImplicitRestNode => {}
+            Kind::InNode { pattern, statements, .. } => {
+                v.push(pattern);
+                if let Some(x) = statements { v.push(x); }
+            }
+            Kind::IndexAndWriteNode { receiver, arguments, block, value, .. } => {
+                if let Some(x) = receiver { v.push(x); }
+                if let Some(x) = arguments { v.push(x); }
+                if let Some(x) = block { v.push(x); }
+                v.push(value);
+            }
+            Kind::IndexOperatorWriteNode { receiver, arguments, block, value, .. } => {
+                if let Some(x) = receiver { v.push(x); }
+                if let Some(x) = arguments { v.push(x); }
+                if let Some(x) = block { v.push(x); }
+                v.push(value);
+            }
+            Kind::IndexOrWriteNode { receiver, arguments, block, value, .. } => {
+                if let Some(x) = receiver { v.push(x); }
+                if let Some(x) = arguments { v.push(x); }
+                if let Some(x) = block { v.push(x); }
+                v.push(value);
+            }
+            Kind::IndexTargetNode { receiver, arguments, block, .. } => {
+                v.push(receiver);
+                if let Some(x) = arguments { v.push(x); }
+                if let Some(x) = block { v.push(x); }
+            }
+            Kind::InstanceVariableAndWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::InstanceVariableOperatorWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::InstanceVariableOrWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::InstanceVariableReadNode { .. } => {}
+            Kind::InstanceVariableTargetNode { .. } => {}
+            Kind::InstanceVariableWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::IntegerNode { .. } => {}
+            Kind::InterpolatedMatchLastLineNode { parts, .. } => {
+                for x in parts { v.push(x); }
+            }
+            Kind::InterpolatedRegularExpressionNode { parts, .. } => {
+                for x in parts { v.push(x); }
+            }
+            Kind::InterpolatedStringNode { parts, .. } => {
+                for x in parts { v.push(x); }
+            }
+            Kind::InterpolatedSymbolNode { parts, .. } => {
+                for x in parts { v.push(x); }
+            }
+            Kind::InterpolatedXStringNode { parts, .. } => {
+                for x in parts { v.push(x); }
+            }
+            Kind::ItLocalVariableReadNode => {}
+            Kind::ItParametersNode => {}
+            Kind::KeywordHashNode { elements, .. } => {
+                for x in elements { v.push(x); }
+            }
+            Kind::KeywordRestParameterNode { .. } => {}
+            Kind::LambdaNode { parameters, body, .. } => {
+                if let Some(x) = parameters { v.push(x); }
+                if let Some(x) = body { v.push(x); }
+            }
+            Kind::LocalVariableAndWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::LocalVariableOperatorWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::LocalVariableOrWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::LocalVariableReadNode { .. } => {}
+            Kind::LocalVariableTargetNode { .. } => {}
+            Kind::LocalVariableWriteNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::MatchLastLineNode { .. } => {}
+            Kind::MatchPredicateNode { value, pattern, .. } => {
+                v.push(value);
+                v.push(pattern);
+            }
+            Kind::MatchRequiredNode { value, pattern, .. } => {
+                v.push(value);
+                v.push(pattern);
+            }
+            Kind::MatchWriteNode { call, targets, .. } => {
+                v.push(call);
+                for x in targets { v.push(x); }
+            }
+            Kind::ModuleNode { constant_path, body, .. } => {
+                v.push(constant_path);
+                if let Some(x) = body { v.push(x); }
+            }
+            Kind::MultiTargetNode { lefts, rest, rights, .. } => {
+                for x in lefts { v.push(x); }
+                if let Some(x) = rest { v.push(x); }
+                for x in rights { v.push(x); }
+            }
+            Kind::MultiWriteNode { lefts, rest, rights, value, .. } => {
+                for x in lefts { v.push(x); }
+                if let Some(x) = rest { v.push(x); }
+                for x in rights { v.push(x); }
+                v.push(value);
+            }
+            Kind::NextNode { arguments, .. } => {
+                if let Some(x) = arguments { v.push(x); }
+            }
+            Kind::NilNode => {}
+            Kind::NoBlockParameterNode => {}
+            Kind::NoKeywordsParameterNode => {}
+            Kind::NumberedParametersNode { .. } => {}
+            Kind::NumberedReferenceReadNode { .. } => {}
+            Kind::OptionalKeywordParameterNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::OptionalParameterNode { value, .. } => {
+                v.push(value);
+            }
+            Kind::OrNode { left, right, .. } => {
+                v.push(left);
+                v.push(right);
+            }
+            Kind::ParametersNode { requireds, optionals, rest, posts, keywords, keyword_rest, block, .. } => {
+                for x in requireds { v.push(x); }
+                for x in optionals { v.push(x); }
+                if let Some(x) = rest { v.push(x); }
+                for x in posts { v.push(x); }
+                for x in keywords { v.push(x); }
+                if let Some(x) = keyword_rest { v.push(x); }
+                if let Some(x) = block { v.push(x); }
+            }
+            Kind::ParenthesesNode { body, .. } => {
+                if let Some(x) = body { v.push(x); }
+            }
+            Kind::PinnedExpressionNode { expression, .. } => {
+                v.push(expression);
+            }
+            Kind::PinnedVariableNode { variable, .. } => {
+                v.push(variable);
+            }
+            Kind::PostExecutionNode { statements, .. } => {
+                if let Some(x) = statements { v.push(x); }
+            }
+            Kind::PreExecutionNode { statements, .. } => {
+                if let Some(x) = statements { v.push(x); }
+            }
+            Kind::ProgramNode { statements, .. } => {
+                v.push(statements);
+            }
+            Kind::RangeNode { left, right, .. } => {
+                if let Some(x) = left { v.push(x); }
+                if let Some(x) = right { v.push(x); }
+            }
+            Kind::RationalNode { .. } => {}
+            Kind::RedoNode => {}
+            Kind::RegularExpressionNode { .. } => {}
+            Kind::RequiredKeywordParameterNode { .. } => {}
+            Kind::RequiredParameterNode { .. } => {}
+            Kind::RescueModifierNode { expression, rescue_expression, .. } => {
+                v.push(expression);
+                v.push(rescue_expression);
+            }
+            Kind::RescueNode { exceptions, reference, statements, subsequent, .. } => {
+                for x in exceptions { v.push(x); }
+                if let Some(x) = reference { v.push(x); }
+                if let Some(x) = statements { v.push(x); }
+                if let Some(x) = subsequent { v.push(x); }
+            }
+            Kind::RestParameterNode { .. } => {}
+            Kind::RetryNode => {}
+            Kind::ReturnNode { arguments, .. } => {
+                if let Some(x) = arguments { v.push(x); }
+            }
+            Kind::SelfNode => {}
+            Kind::ShareableConstantNode { write, .. } => {
+                v.push(write);
+            }
+            Kind::SingletonClassNode { expression, body, .. } => {
+                v.push(expression);
+                if let Some(x) = body { v.push(x); }
+            }
+            Kind::SourceEncodingNode => {}
+            Kind::SourceFileNode { .. } => {}
+            Kind::SourceLineNode => {}
+            Kind::SplatNode { expression, .. } => {
+                if let Some(x) = expression { v.push(x); }
+            }
+            Kind::StatementsNode { body, .. } => {
+                for x in body { v.push(x); }
+            }
+            Kind::StringNode { .. } => {}
+            Kind::SuperNode { arguments, block, .. } => {
+                if let Some(x) = arguments { v.push(x); }
+                if let Some(x) = block { v.push(x); }
+            }
+            Kind::SymbolNode { .. } => {}
+            Kind::TrueNode => {}
+            Kind::UndefNode { names, .. } => {
+                for x in names { v.push(x); }
+            }
+            Kind::UnlessNode { predicate, statements, else_clause, .. } => {
+                v.push(predicate);
+                if let Some(x) = statements { v.push(x); }
+                if let Some(x) = else_clause { v.push(x); }
+            }
+            Kind::UntilNode { predicate, statements, .. } => {
+                v.push(predicate);
+                if let Some(x) = statements { v.push(x); }
+            }
+            Kind::WhenNode { conditions, statements, .. } => {
+                for x in conditions { v.push(x); }
+                if let Some(x) = statements { v.push(x); }
+            }
+            Kind::WhileNode { predicate, statements, .. } => {
+                v.push(predicate);
+                if let Some(x) = statements { v.push(x); }
+            }
+            Kind::XStringNode { .. } => {}
+            Kind::YieldNode { arguments, .. } => {
+                if let Some(x) = arguments { v.push(x); }
+            }
+        }
+        v
     }
 }

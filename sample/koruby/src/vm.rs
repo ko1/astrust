@@ -1,0 +1,1467 @@
+// VM core: execution context, frames, blocks, methods, classes, calls, exceptions.
+#![allow(clippy::missing_safety_doc)]
+use crate::gc::{self, Marker};
+use crate::node::{NodePtr, DispatchFn};
+use crate::object::*;
+use crate::symbol::{intern, intern_str, s, sym_str};
+use crate::value::*;
+use std::collections::HashMap;
+
+// ---- non-local exits -----------------------------------------------------------
+
+/// The error side of RV carries no data: the kind and payload are in the Ctx, so
+/// `Result<Value, Esc>` is one register (Value is never 0, Err is the 0 niche).
+#[derive(Debug, Clone, Copy)]
+pub struct Esc;
+pub type RV = Result<Value, Esc>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum EscKind { None, Raise, Break, Next, Return, LoopBreak, LoopNext, Retry, Throw, Redo, Exit }
+
+// ---- code descriptors --------------------------------------------------------------
+
+pub struct CodeInfo { pub file: &'static str, pub label: String, pub line: u32 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum IseqKind { Method, Block, Lambda, Class, Top, Eval, Main }
+
+pub struct KwParam { pub name: Sym, pub slot: u32, pub default: Option<NodePtr>, pub required: bool }
+
+#[derive(Default)]
+pub struct Params {
+    pub lead: Vec<u32>,
+    pub opt: Vec<(u32, NodePtr)>,      // (slot, assignment node evaluated when the arg is missing)
+    pub rest: Option<u32>,
+    pub post: Vec<u32>,
+    pub kw: Vec<KwParam>,
+    pub kwrest: Option<u32>,
+    pub no_kw: bool,                    // **nil
+    pub block: Option<u32>,
+    pub destructure: Vec<NodePtr>,      // run after setup: ((a, b)) params
+    pub forwarding: bool,               // (...)
+    pub has_trailing_comma: bool,       // |a,| in blocks
+    pub anon_rest: bool,
+    pub anon_kwrest: bool,
+    pub anon_block: bool,
+}
+
+pub struct Iseq {
+    pub body: NodePtr,
+    pub nlocals: u32,                   // frame size including self (0) and env (1)
+    pub params: Params,
+    pub env_size: u32,
+    pub env_params: Vec<(u32, u32)>,    // captured params: (slot, env index)
+    pub info: CodeInfo,
+    pub kind: IseqKind,
+    pub simple: bool,                   // lead-only params at slots 2.. and no env
+    pub lead_only: bool,                // only lead params (env allowed)
+    pub name: Sym,
+    pub local_names: Vec<(Sym, i32, i32)>, // (name, slot or -1, env index or -1)
+    pub arity: i32,
+    pub uses_block: bool,
+}
+
+// ---- blocks ---------------------------------------------------------------------------
+
+pub type CBlockFn = fn(&mut Ctx, Value, &[Value], *const Block) -> RV;
+
+#[derive(Clone, Copy)]
+pub enum BlockKind { Iseq(*const Iseq), Sym(Sym), Method(Value), Cfunc(CBlockFn, Value), Proc(Value) }
+
+#[derive(Clone, Copy)]
+pub struct Block {
+    pub kind: BlockKind,
+    pub self_: Value,
+    pub env: Value,
+    pub me: *const MethodEntry,
+    pub outer_blk: *const Block,
+    pub cref: *const Cref,
+    pub home_id: u64,
+    pub tag: u64,
+    pub proc_val: Value,
+    pub defined_class: Value,
+}
+
+impl Block {
+    pub fn cfunc(c: &mut Ctx, f: CBlockFn, data: Value) -> Block {
+        let tag = c.next_serial();
+        Block { kind: BlockKind::Cfunc(f, data), self_: NIL, env: NIL, me: std::ptr::null(), outer_blk: std::ptr::null(),
+                cref: std::ptr::null(), home_id: 0, tag, proc_val: UNDEF, defined_class: NIL }
+    }
+}
+
+// ---- methods ------------------------------------------------------------------------------
+
+pub type CFunc = fn(&mut Ctx, Value, &[Value], *const Block) -> RV;
+
+pub const VISI_PUBLIC: u8 = 0;
+pub const VISI_PRIVATE: u8 = 1;
+pub const VISI_PROTECTED: u8 = 2;
+pub const VISI_MODFUNC: u8 = 3;
+
+#[derive(Clone, Copy)]
+pub enum MKind { Iseq(*const Iseq), Cfunc(CFunc, i32), AttrReader(Sym), AttrWriter(Sym), Bmethod(Value), Undef, ZSuper }
+
+pub struct MethodEntry { pub name: Sym, pub owner: Value, pub visi: u8, pub kind: MKind, pub orig_owner: Value, pub cref: *const Cref }
+
+pub fn new_me(name: Sym, owner: Value, visi: u8, kind: MKind) -> *const MethodEntry {
+    Box::into_raw(Box::new(MethodEntry { name, owner, visi, kind, orig_owner: owner, cref: std::ptr::null() }))
+}
+pub fn new_me_cref(name: Sym, owner: Value, visi: u8, kind: MKind, cref: *const Cref) -> *const MethodEntry {
+    Box::into_raw(Box::new(MethodEntry { name, owner, visi, kind, orig_owner: owner, cref }))
+}
+
+// ---- lexical scope -------------------------------------------------------------------------
+
+pub struct Cref { pub klass: Value, pub prev: *const Cref, pub refinements: Value }
+
+pub fn new_cref(klass: Value, prev: *const Cref) -> *const Cref {
+    let p = Box::into_raw(Box::new(Cref { klass, prev, refinements: NIL })) as *const Cref;
+    vm().crefs.push(p);
+    p
+}
+
+// ---- inline caches -------------------------------------------------------------------------
+
+#[derive(Default)]
+pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize }
+#[derive(Default)]
+pub struct ConstCache { pub serial: u64, pub cref: usize, pub val: u64 }
+#[derive(Default)]
+pub struct IvarCache { pub klass: u64, pub idx: u32 }
+
+// ---- frames ---------------------------------------------------------------------------------
+
+pub const FK_METHOD: u8 = 0;
+pub const FK_BLOCK: u8 = 1;
+pub const FK_LAMBDA: u8 = 2;
+pub const FK_TOP: u8 = 3;
+pub const FK_CLASS: u8 = 4;
+pub const FK_CFUNC: u8 = 5;
+pub const FK_EVAL: u8 = 6;
+
+#[repr(C)]
+pub struct Frame {
+    pub prev: *mut Frame,
+    pub fp: *mut Value,
+    pub me: *const MethodEntry,
+    pub blk: *const Block,
+    pub cref: *const Cref,
+    pub iseq: *const Iseq,
+    pub line: u32,
+    pub kind: u8,
+    pub visi: u8,
+    pub id: u64,          // return target: method frame id (blocks: the home method's; lambdas: own)
+    pub self_blk: *const Block, // for block frames: the block being run
+    pub argc: u32,
+    pub defined_class: Value,
+    pub cfunc_name: Sym,
+    pub cfunc_recv: Value,
+}
+
+impl Frame {
+    pub fn empty() -> Frame {
+        Frame { prev: std::ptr::null_mut(), fp: std::ptr::null_mut(), me: std::ptr::null(), blk: std::ptr::null(),
+                cref: std::ptr::null(), iseq: std::ptr::null(), line: 0, kind: FK_TOP, visi: VISI_PRIVATE, id: 0,
+                self_blk: std::ptr::null(), argc: 0, defined_class: NIL, cfunc_name: Sym(0), cfunc_recv: NIL }
+    }
+}
+
+// ---- execution context ---------------------------------------------------------------------
+
+pub struct Ctx {
+    pub sp: *mut Value,
+    pub stack_base: *mut Value,
+    pub stack_end: *mut Value,
+    pub frame: *mut Frame,
+    pub esc: EscKind,
+    pub esc_val: Value,
+    pub esc_tag: u64,
+    pub esc_tag_v: Value,
+    pub serial: u64,
+    pub errinfo: Value,
+    pub last_match: Value,
+    pub native_limit: usize,
+    pub in_ensure: u32,
+}
+
+impl Ctx {
+    #[inline(always)] pub fn next_serial(&mut self) -> u64 { self.serial += 1; self.serial }
+    #[inline(always)] pub fn frame(&self) -> &'static mut Frame { unsafe { &mut *self.frame } }
+    #[inline(always)] pub fn self_val(&self) -> Value { unsafe { *(*self.frame).fp } }
+}
+
+// ---- global VM state ------------------------------------------------------------------------
+
+pub struct Vm {
+    pub c_basic_object: Value, pub c_object: Value, pub c_module: Value, pub c_class: Value,
+    pub m_kernel: Value, pub m_comparable: Value, pub m_enumerable: Value,
+    pub c_nil: Value, pub c_true: Value, pub c_false: Value,
+    pub c_numeric: Value, pub c_integer: Value, pub c_float: Value,
+    pub c_string: Value, pub c_symbol: Value, pub c_array: Value, pub c_hash: Value, pub c_range: Value,
+    pub c_proc: Value, pub c_method: Value, pub c_unbound_method: Value, pub c_env: Value,
+    pub c_exception: Value, pub c_standard_error: Value, pub c_runtime_error: Value, pub c_argument_error: Value,
+    pub c_type_error: Value, pub c_name_error: Value, pub c_no_method_error: Value, pub c_zero_div_error: Value,
+    pub c_index_error: Value, pub c_key_error: Value, pub c_range_error: Value, pub c_stop_iteration: Value,
+    pub c_frozen_error: Value, pub c_local_jump_error: Value, pub c_float_domain_error: Value, pub c_io_error: Value,
+    pub c_eof_error: Value, pub c_system_exit: Value, pub c_script_error: Value, pub c_load_error: Value,
+    pub c_not_impl_error: Value, pub c_syntax_error: Value, pub c_system_stack_error: Value,
+    pub c_no_matching_pattern_error: Value, pub c_no_matching_pattern_key_error: Value, pub c_fiber_error: Value,
+    pub c_uncaught_throw_error: Value, pub c_regexp_error: Value, pub c_encoding_error: Value, pub c_math_domain_error: Value,
+    pub c_system_call_error: Value, pub c_interrupt: Value, pub c_signal_exception: Value, pub c_security_error: Value,
+    pub c_thread_error: Value, pub c_closed_queue_error: Value, pub c_no_memory_error: Value, pub c_compat_error: Value,
+    pub c_invalid_byte_seq_error: Value, pub c_undef_conv_error: Value, pub c_converter_not_found_error: Value,
+    pub c_struct: Value, pub c_regexp: Value, pub c_match_data: Value, pub c_time: Value, pub c_io: Value, pub c_file: Value,
+    pub c_enumerator: Value, pub c_lazy: Value, pub c_yielder: Value, pub c_generator: Value, pub c_random: Value, pub c_encoding: Value,
+    pub c_rational: Value, pub c_complex: Value, pub c_binding: Value, pub c_data: Value, pub c_set: Value,
+    pub c_fiber: Value, pub c_thread: Value, pub c_mutex: Value, pub c_queue: Value, pub c_arith_seq: Value, pub c_chain: Value,
+    pub c_object_space_weak_map: Value, pub c_string_io: Value, pub c_dir: Value, pub c_stat: Value, pub c_monitor: Value,
+    pub m_errno: Value, pub m_math: Value, pub m_process: Value, pub m_gc: Value, pub m_object_space: Value, pub m_marshal: Value,
+    pub m_signal: Value, pub m_warning: Value, pub m_file_test: Value,
+    pub main_obj: Value,
+    pub stdout: Value, pub stderr: Value, pub stdin: Value,
+    pub globals: HashMap<Sym, Value>,
+    pub global_aliases: HashMap<Sym, Sym>,
+    pub method_serial: u64,
+    pub const_serial: u64,
+    pub hierarchy_serial: u64,
+    pub mcache: HashMap<(u64, Sym), *const MethodEntry>,
+    pub gen_ivars: HashMap<usize, Vec<(Sym, Value)>>,
+    pub node_values: Vec<Value>,
+    pub crefs: Vec<*const Cref>,
+    pub top_cref: *const Cref,
+    pub loaded_features: Value,
+    pub load_path: Value,
+    pub script_name: String,
+    pub at_exit: Value,
+    pub object_ids: HashMap<u64, u64>,
+    pub next_object_id: u64,
+    pub sources: Vec<&'static str>,
+    pub verbose: Value,
+    pub debug_flag: bool,
+    pub aot_entries: Vec<NodePtr>,
+    pub aot_collect: bool,
+    pub code_store: Option<crate::astrust::CodeStore>,
+    pub sd_hits: usize,
+    pub frozen_lits: HashMap<Vec<u8>, Value>,
+    pub symproc_cache: HashMap<Sym, Value>,
+    pub data_free_hooks: Vec<fn(*mut RObj)>,
+    pub pinned: Vec<Value>,
+    pub recursive_guard: Vec<(u64, Sym)>,
+    pub argv: Value,
+    pub warn_disabled: bool,
+    pub exit_status: i32,
+    pub main_file: String,
+    pub dollar_zero: Value,
+    pub rand_state: u64,
+    pub fiber_roots: Vec<Value>,
+}
+
+pub static mut VM: Option<Box<Vm>> = None;
+
+#[allow(static_mut_refs)]
+#[inline(always)]
+pub fn vm() -> &'static mut Vm { unsafe { VM.as_mut().unwrap_unchecked() } }
+
+// ---- class model --------------------------------------------------------------------------
+
+#[inline]
+pub fn class_of(v: Value) -> Value {
+    if v.is_heap() { return obj(v).klass; }
+    let vm = vm();
+    if v.is_fixnum() { vm.c_integer }
+    else if v.is_flonum() { vm.c_float }
+    else if v.is_sym() { vm.c_symbol }
+    else if v == NIL { vm.c_nil }
+    else if v == TRUE { vm.c_true }
+    else { vm.c_false }
+}
+
+/// The non-singleton class of v.
+pub fn real_class_of(v: Value) -> Value {
+    let mut k = class_of(v);
+    while rclass(k).is_singleton { k = rclass(k).superclass; }
+    k
+}
+
+pub fn alloc_class(meta: Value, superclass: Value, is_module: bool, alloc: AllocKind) -> Value {
+    let k = gc::alloc(meta, Body::Class(Box::new(ClassData::new(superclass, is_module, alloc))));
+    vm().hierarchy_serial += 1;
+    k
+}
+
+/// Create a class with its metaclass (superclass's metaclass as the metaclass's super).
+pub fn new_class(superclass: Value) -> Value {
+    let vm = vm();
+    let alloc = if superclass == NIL { AllocKind::Object } else { rclass(superclass).alloc };
+    let k = alloc_class(vm.c_class, superclass, false, alloc);
+    if superclass != NIL {
+        rclass(superclass).subclasses.push(k);
+        let sm = singleton_class(superclass);
+        let meta = alloc_class(vm.c_class, sm, false, AllocKind::Class);
+        rclass(meta).is_singleton = true;
+        rclass(meta).attached = k;
+        obj(k).klass = meta;
+    }
+    k
+}
+
+pub fn new_module() -> Value { alloc_class(vm().c_module, NIL, true, AllocKind::None) }
+
+pub fn singleton_class(v: Value) -> Value {
+    if !v.is_heap() {
+        if v == NIL || v == TRUE || v == FALSE { return class_of(v); }
+        return NIL;
+    }
+    let k = obj(v).klass;
+    if rclass(k).is_singleton && rclass(k).attached == v { return k; }
+    let vm = vm();
+    let superclass = if is_class_or_module(v) && !rclass(v).is_module {
+        if rclass(v).is_singleton {
+            // metaclass of a metaclass
+            k
+        } else {
+            let sup = rclass(v).superclass;
+            if sup == NIL { vm.c_class } else { singleton_class(sup) }
+        }
+    } else { k };
+    let meta = alloc_class(vm.c_class, superclass, false, rclass(superclass).alloc);
+    rclass(meta).is_singleton = true;
+    rclass(meta).attached = v;
+    if is_class_or_module(v) && !rclass(v).is_module && !rclass(v).is_singleton {
+        // keep the metaclass chain consistent for classes created before this metaclass
+    }
+    obj(meta).klass = vm.c_class;
+    obj(v).klass = meta;
+    vm.method_serial += 1;
+    vm.mcache.clear();
+    meta
+}
+
+pub fn class_name_sym(k: Value) -> Option<Value> { rclass(k).name }
+
+pub fn define_class_under(outer: Value, name: &str, superclass: Value) -> Value {
+    let k = new_class(superclass);
+    name_class(k, outer, intern_str(name));
+    const_set(outer, intern_str(name), k);
+    k
+}
+pub fn define_class(name: &str, superclass: Value) -> Value { define_class_under(vm().c_object, name, superclass) }
+pub fn define_module_under(outer: Value, name: &str) -> Value {
+    let m = new_module();
+    name_class(m, outer, intern_str(name));
+    const_set(outer, intern_str(name), m);
+    m
+}
+pub fn define_module(name: &str) -> Value { define_module_under(vm().c_object, name) }
+
+pub fn name_class(k: Value, outer: Value, name: Sym) {
+    let cd = rclass(k);
+    if cd.name.is_some() { return; }
+    let vm = vm();
+    let path = if outer == vm.c_object || outer == NIL { sym_str(name) } else {
+        match rclass(outer).name { Some(n) => format!("{}::{}", String::from_utf8_lossy(str_bytes(n)), sym_str(name)), None => return }
+    };
+    let s = crate::string::str_new_frozen(path.as_bytes());
+    let cd = rclass(k);
+    cd.name = Some(s);
+    cd.base_name = name;
+    cd.lexical_parent = outer;
+    // name nested anonymous modules too
+    let consts: Vec<(Sym, Value)> = cd.consts.iter().map(|(a, b)| (*a, *b)).collect();
+    for (cn, cv) in consts {
+        if is_class_or_module(cv) && rclass(cv).name.is_none() { name_class(cv, k, cn); }
+    }
+}
+
+pub fn class_path(k: Value) -> String {
+    let cd = rclass(k);
+    if let Some(n) = cd.name { return String::from_utf8_lossy(str_bytes(n)).into_owned(); }
+    if cd.is_singleton {
+        let a = cd.attached;
+        let inner = if is_class_or_module(a) { class_path(a) } else { crate::builtins::kernel::any_to_s_str(a) };
+        return format!("#<Class:{}>", inner);
+    }
+    format!("#<{}:{:#018x}>", if cd.is_module { "Module" } else { "Class" }, k.raw())
+}
+
+pub fn include_module(klass: Value, m: Value) {
+    let cd = rclass(klass);
+    if cd.includes.contains(&m) { return; }
+    if ancestors(klass).contains(&m) { return; }
+    cd.includes.push(m);
+    bump_hierarchy();
+}
+pub fn prepend_module(klass: Value, m: Value) {
+    let cd = rclass(klass);
+    if cd.prepends.contains(&m) { return; }
+    cd.prepends.push(m);
+    bump_hierarchy();
+}
+pub fn bump_hierarchy() {
+    let vm = vm();
+    vm.hierarchy_serial += 1;
+    vm.method_serial += 1;
+    vm.const_serial += 1;
+    vm.mcache.clear();
+}
+
+fn module_chain(m: Value, out: &mut Vec<Value>) {
+    let cd = rclass(m);
+    for &p in cd.prepends.iter().rev() { module_chain(p, out); }
+    out.push(m);
+    for &i in cd.includes.iter().rev() { module_chain(i, out); }
+}
+
+/// Method resolution order (cached per class).
+pub fn ancestors(klass: Value) -> &'static Vec<Value> {
+    let ser = vm().hierarchy_serial;
+    let cd = rclass(klass);
+    if cd.ancestors_serial == ser && cd.ancestors.is_some() { return cd.ancestors.as_ref().unwrap(); }
+    let mut out = vec![];
+    let mut k = klass;
+    while k != NIL {
+        let mut part = vec![];
+        module_chain(k, &mut part);
+        for x in part {
+            if !out.contains(&x) { out.push(x); }
+        }
+        k = rclass(k).superclass;
+    }
+    let cd = rclass(klass);
+    cd.ancestors = Some(out);
+    cd.ancestors_serial = ser;
+    cd.ancestors.as_ref().unwrap()
+}
+
+pub fn define_method_me(klass: Value, name: Sym, me: *const MethodEntry) {
+    rclass(klass).mtbl.insert(name, me);
+    let vm = vm();
+    vm.method_serial += 1;
+    vm.mcache.clear();
+}
+
+pub fn define_cfunc(klass: Value, name: &str, f: CFunc, arity: i32) {
+    let s = intern_str(name);
+    define_method_me(klass, s, new_me(s, klass, VISI_PUBLIC, MKind::Cfunc(f, arity)));
+}
+pub fn define_private_cfunc(klass: Value, name: &str, f: CFunc, arity: i32) {
+    let s = intern_str(name);
+    define_method_me(klass, s, new_me(s, klass, VISI_PRIVATE, MKind::Cfunc(f, arity)));
+}
+pub fn define_singleton_cfunc(v: Value, name: &str, f: CFunc, arity: i32) {
+    let k = singleton_class(v);
+    define_cfunc(k, name, f, arity);
+}
+pub fn define_module_function(m: Value, name: &str, f: CFunc, arity: i32) {
+    define_private_cfunc(m, name, f, arity);
+    define_singleton_cfunc(m, name, f, arity);
+}
+
+pub fn search_method(klass: Value, mid: Sym) -> *const MethodEntry {
+    for &k in ancestors(klass).iter() {
+        if let Some(&me) = rclass(k).mtbl.get(&mid) {
+            if let MKind::ZSuper = unsafe { (*me).kind } { continue; }
+            return me;
+        }
+    }
+    std::ptr::null()
+}
+
+/// Lookup with the global method cache; undefined entries come back null.
+#[inline]
+pub fn lookup_method(klass: Value, mid: Sym) -> *const MethodEntry {
+    let vm = vm();
+    if let Some(&me) = vm.mcache.get(&(klass.raw(), mid)) { return me; }
+    let mut me = search_method(klass, mid);
+    if !me.is_null() { if let MKind::Undef = unsafe { (*me).kind } { me = std::ptr::null(); } }
+    vm.mcache.insert((klass.raw(), mid), me);
+    me
+}
+
+/// Next method after `owner` in klass's ancestors (super).
+pub fn super_method(klass: Value, owner: Value, mid: Sym) -> *const MethodEntry {
+    let anc = ancestors(klass);
+    let mut found = false;
+    for &k in anc.iter() {
+        if found {
+            if let Some(&me) = rclass(k).mtbl.get(&mid) {
+                if let MKind::ZSuper = unsafe { (*me).kind } { continue; }
+                if let MKind::Undef = unsafe { (*me).kind } { return std::ptr::null(); }
+                return me;
+            }
+        } else if k == owner { found = true; }
+    }
+    std::ptr::null()
+}
+
+pub fn respond_to(v: Value, mid: Sym, include_private: bool) -> bool {
+    let me = lookup_method(class_of(v), mid);
+    if me.is_null() { return false; }
+    include_private || unsafe { (*me).visi } == VISI_PUBLIC
+}
+
+// ---- instance variables --------------------------------------------------------------------
+
+pub fn ivar_get(v: Value, name: Sym) -> Value {
+    if v.is_heap() {
+        let o = obj(v);
+        if let Body::Object(ivs) = &o.body {
+            let k = real_class_of(v);
+            if let Some(&i) = rclass(k).ivar_index.get(&name) {
+                if let Some(&x) = ivs.get(i as usize) { if x != UNDEF { return x; } }
+            }
+            return NIL;
+        }
+        if o.flags & FL_EXIVAR != 0 {
+            if let Some(iv) = vm().gen_ivars.get(&(v.raw() as usize)) {
+                for (n, x) in iv { if *n == name { return *x; } }
+            }
+        }
+    }
+    NIL
+}
+
+pub fn ivar_defined(v: Value, name: Sym) -> bool {
+    if v.is_heap() {
+        let o = obj(v);
+        if let Body::Object(ivs) = &o.body {
+            let k = real_class_of(v);
+            if let Some(&i) = rclass(k).ivar_index.get(&name) {
+                return ivs.get(i as usize).map(|x| *x != UNDEF).unwrap_or(false);
+            }
+            return false;
+        }
+        if let Some(iv) = vm().gen_ivars.get(&(v.raw() as usize)) { return iv.iter().any(|(n, _)| *n == name); }
+    }
+    false
+}
+
+pub fn ivar_index_for(k: Value, name: Sym) -> u32 {
+    let cd = rclass(k);
+    if let Some(&i) = cd.ivar_index.get(&name) { return i; }
+    let i = cd.ivar_names.len() as u32;
+    cd.ivar_names.push(name);
+    cd.ivar_index.insert(name, i);
+    i
+}
+
+pub fn ivar_set(c: &mut Ctx, v: Value, name: Sym, val: Value) -> RV {
+    if !v.is_heap() { return Err(raise_frozen(c, v)); }
+    let o = obj(v);
+    if o.flags & FL_FROZEN != 0 { return Err(raise_frozen(c, v)); }
+    ivar_set_raw(v, name, val);
+    Ok(val)
+}
+
+pub fn ivar_set_raw(v: Value, name: Sym, val: Value) {
+    let o = obj(v);
+    if let Body::Object(_) = &o.body {
+        let k = real_class_of(v);
+        let i = ivar_index_for(k, name) as usize;
+        let ivs = ivars_of(v);
+        if ivs.len() <= i { ivs.resize(i + 1, UNDEF); }
+        ivs[i] = val;
+        return;
+    }
+    o.flags |= FL_EXIVAR;
+    let e = vm().gen_ivars.entry(v.raw() as usize).or_default();
+    for (n, x) in e.iter_mut() { if *n == name { *x = val; return; } }
+    e.push((name, val));
+}
+
+pub fn ivar_remove(v: Value, name: Sym) -> Option<Value> {
+    if !v.is_heap() { return None; }
+    let o = obj(v);
+    if let Body::Object(ivs) = &mut o.body {
+        let k = real_class_of(v);
+        if let Some(&i) = rclass(k).ivar_index.get(&name) {
+            if let Some(x) = ivs.get_mut(i as usize) { if *x != UNDEF { let old = *x; *x = UNDEF; return Some(old); } }
+        }
+        return None;
+    }
+    if let Some(iv) = vm().gen_ivars.get_mut(&(v.raw() as usize)) {
+        if let Some(p) = iv.iter().position(|(n, _)| *n == name) { return Some(iv.remove(p).1); }
+    }
+    None
+}
+
+/// (name, value) of the set ivars in definition order.
+pub fn ivar_list(v: Value) -> Vec<(Sym, Value)> {
+    let mut out = vec![];
+    if !v.is_heap() { return out; }
+    let o = obj(v);
+    if let Body::Object(ivs) = &o.body {
+        let k = real_class_of(v);
+        let names = &rclass(k).ivar_names;
+        for (i, x) in ivs.iter().enumerate() { if *x != UNDEF { out.push((names[i], *x)); } }
+        return out;
+    }
+    if let Some(iv) = vm().gen_ivars.get(&(v.raw() as usize)) { out.extend(iv.iter().cloned()); }
+    out
+}
+
+// ---- constants -----------------------------------------------------------------------------
+
+pub fn const_set(klass: Value, name: Sym, val: Value) {
+    let cd = rclass(klass);
+    if cd.consts.insert(name, val).is_none() { cd.const_order.push(name); }
+    cd.autoload.remove(&name);
+    vm().const_serial += 1;
+    if is_class_or_module(val) && rclass(val).name.is_none() { name_class(val, klass, name); }
+}
+
+pub fn const_get_at(klass: Value, name: Sym) -> Option<Value> { rclass(klass).consts.get(&name).copied() }
+
+pub fn const_get_inherit(c: &mut Ctx, klass: Value, name: Sym) -> Result<Option<Value>, Esc> {
+    for &k in ancestors(klass).iter() {
+        if let Some(v) = const_get_at(k, name) { return Ok(Some(v)); }
+        if let Some(&path) = rclass(k).autoload.get(&name) { return do_autoload(c, k, name, path); }
+    }
+    if rclass(klass).is_module {
+        let o = vm().c_object;
+        if let Some(v) = const_get_at(o, name) { return Ok(Some(v)); }
+        if let Some(&path) = rclass(o).autoload.get(&name) { return do_autoload(c, o, name, path); }
+    }
+    Ok(None)
+}
+
+fn do_autoload(c: &mut Ctx, k: Value, name: Sym, path: Value) -> Result<Option<Value>, Esc> {
+    rclass(k).autoload.remove(&name);
+    crate::builtins::kernel::require_feature(c, path, false)?;
+    Ok(const_get_at(k, name))
+}
+
+/// Lexical scope first (not including the top level), then the cref class's ancestors, then Object.
+pub fn const_lookup(c: &mut Ctx, cref: *const Cref, name: Sym) -> RV {
+    let vm = vm();
+    let mut cr = cref;
+    unsafe {
+        while !cr.is_null() && !(*cr).prev.is_null() {
+            let k = (*cr).klass;
+            if let Some(v) = const_get_at(k, name) { return Ok(v); }
+            if let Some(&path) = rclass(k).autoload.get(&name) { if let Some(v) = do_autoload(c, k, name, path)? { return Ok(v); } }
+            cr = (*cr).prev;
+        }
+    }
+    let start = if cref.is_null() { vm.c_object } else { unsafe { (*cref).klass } };
+    if let Some(v) = const_get_inherit(c, start, name)? { return Ok(v); }
+    if let Some(v) = const_get_inherit(c, vm.c_object, name)? { return Ok(v); }
+    const_missing(c, start, name)
+}
+
+pub fn const_missing(c: &mut Ctx, klass: Value, name: Sym) -> RV {
+    let me = lookup_method(class_of(klass), s::const_missing);
+    if !me.is_null() && !matches!(unsafe { (*me).kind }, MKind::Cfunc(..)) {
+        return funcall(c, klass, s::const_missing, &[Value::sym(name)], std::ptr::null());
+    }
+    let msg = if klass == vm().c_object { format!("uninitialized constant {}", sym_str(name)) }
+              else { format!("uninitialized constant {}::{}", class_path(klass), sym_str(name)) };
+    let e = make_name_error(c, vm().c_name_error, &msg, Value::sym(name), klass)?;
+    Err(raise_exc(c, e))
+}
+
+// ---- object allocation helpers ------------------------------------------------------------
+
+#[inline]
+pub fn new_object(klass: Value) -> Value { gc::alloc(klass, Body::Object(Vec::new())) }
+
+pub fn object_id(v: Value) -> u64 {
+    if v.is_fixnum() { return (v.as_fix() as u64).wrapping_mul(2).wrapping_add(1); }
+    if !v.is_heap() { return v.raw(); }
+    let vm = vm();
+    let key = v.raw();
+    if let Some(&id) = vm.object_ids.get(&key) { return id; }
+    vm.next_object_id += 8;
+    let id = vm.next_object_id;
+    vm.object_ids.insert(key, id);
+    id
+}
+
+pub fn on_free_data(p: *mut RObj) {
+    let vm = vm();
+    for f in vm.data_free_hooks.clone() { f(p); }
+}
+
+// ---- exceptions -----------------------------------------------------------------------------
+
+#[inline]
+pub fn raise_exc(c: &mut Ctx, e: Value) -> Esc {
+    if ivar_get(e, s::bt) == NIL && is_exception(e) {
+        let bt = make_backtrace(c, 0);
+        ivar_set_raw(e, s::bt, bt);
+    }
+    if is_exception(e) && c.errinfo != NIL && c.errinfo != e && ivar_get(e, s::cause) == NIL && !ivar_defined(e, s::cause) {
+        ivar_set_raw(e, s::cause, c.errinfo);
+    }
+    c.esc = EscKind::Raise;
+    c.esc_val = e;
+    Esc
+}
+
+pub fn is_exception(v: Value) -> bool {
+    v.is_heap() && is_kind_of(v, vm().c_exception)
+}
+
+pub fn is_kind_of(v: Value, k: Value) -> bool {
+    let kl = class_of(v);
+    if kl == k { return true; }
+    ancestors(kl).contains(&k)
+}
+
+pub fn make_exception(klass: Value, msg: &str) -> Value {
+    let e = new_object(klass);
+    let m = crate::string::str_new(msg.as_bytes());
+    ivar_set_raw(e, s::mesg, m);
+    e
+}
+
+pub fn make_name_error(c: &mut Ctx, klass: Value, msg: &str, name: Value, recv: Value) -> RV {
+    let e = make_exception(klass, msg);
+    ivar_set_raw(e, s::name, name);
+    ivar_set_raw(e, s::receiver, recv);
+    let _ = c;
+    Ok(e)
+}
+
+pub fn raise_msg(c: &mut Ctx, klass: Value, msg: &str) -> Esc {
+    let e = make_exception(klass, msg);
+    raise_exc(c, e)
+}
+
+pub fn err<T>(c: &mut Ctx, klass: Value, msg: impl AsRef<str>) -> Result<T, Esc> { Err(raise_msg(c, klass, msg.as_ref())) }
+pub fn arg_err<T>(c: &mut Ctx, msg: impl AsRef<str>) -> Result<T, Esc> { err(c, vm().c_argument_error, msg) }
+pub fn type_err<T>(c: &mut Ctx, msg: impl AsRef<str>) -> Result<T, Esc> { err(c, vm().c_type_error, msg) }
+
+pub fn argc_err<T>(c: &mut Ctx, given: usize, min: i32, max: i32) -> Result<T, Esc> {
+    let exp = if max < 0 { format!("{}+", min) } else if min == max { format!("{}", min) } else { format!("{}..{}", min, max) };
+    arg_err(c, format!("wrong number of arguments (given {}, expected {})", given, exp))
+}
+
+#[inline]
+pub fn check_argc(c: &mut Ctx, args: &[Value], min: usize, max: usize) -> Result<(), Esc> {
+    if args.len() < min || args.len() > max { return argc_err(c, args.len(), min as i32, max as i32); }
+    Ok(())
+}
+
+pub fn raise_frozen(c: &mut Ctx, v: Value) -> Esc {
+    let insp = crate::builtins::kernel::inspect_str(c, v).unwrap_or_else(|_| "?".into());
+    let msg = format!("can't modify frozen {}: {}", class_path(real_class_of(v)), insp);
+    let e = make_exception(vm().c_frozen_error, &msg);
+    ivar_set_raw(e, s::receiver, v);
+    raise_exc(c, e)
+}
+
+#[inline]
+pub fn check_frozen(c: &mut Ctx, v: Value) -> Result<(), Esc> {
+    if is_frozen(v) { return Err(raise_frozen(c, v)); }
+    Ok(())
+}
+
+pub fn frame_label(f: &Frame) -> String {
+    unsafe {
+        if f.kind == FK_CFUNC {
+            let k = real_class_of_for_label(f.cfunc_recv, f.me);
+            return format!("{}{}", k, sym_str(f.cfunc_name));
+        }
+        if f.iseq.is_null() { return "<main>".into(); }
+        let is = &*f.iseq;
+        match is.kind {
+            IseqKind::Method => {
+                if !f.me.is_null() {
+                    let me = &*f.me;
+                    let owner = me.owner;
+                    let pre = method_owner_label(owner, f.fp);
+                    return format!("{}{}", pre, sym_str(me.name));
+                }
+                is.info.label.clone()
+            }
+            _ => is.info.label.clone(),
+        }
+    }
+}
+
+fn real_class_of_for_label(recv: Value, me: *const MethodEntry) -> String {
+    let owner = if me.is_null() { real_class_of(recv) } else { unsafe { (*me).owner } };
+    let cd = rclass(owner);
+    if cd.is_singleton {
+        if is_class_or_module(cd.attached) { return format!("{}.", class_path(cd.attached)); }
+        return String::new();
+    }
+    format!("{}#", class_path(owner))
+}
+
+fn method_owner_label(owner: Value, _fp: *mut Value) -> String {
+    let cd = rclass(owner);
+    if cd.is_singleton {
+        if is_class_or_module(cd.attached) { return format!("{}.", class_path(cd.attached)); }
+        return String::new();
+    }
+    if cd.name.is_none() { return String::new(); }
+    if owner == vm().c_object { return "Object#".into(); }
+    format!("{}#", class_path(owner))
+}
+
+pub fn frame_file(f: &Frame) -> &'static str {
+    unsafe { if f.iseq.is_null() { "-" } else { (*f.iseq).info.file } }
+}
+
+/// Backtrace as an Array of "file:line:in 'label'" strings.
+pub fn make_backtrace(c: &mut Ctx, skip: usize) -> Value {
+    let lines = backtrace_lines(c, skip);
+    let a = crate::array::ary_new_capa(lines.len());
+    for l in lines { let s = crate::string::str_new(l.as_bytes()); crate::array::ary_push(a, s); }
+    a
+}
+
+pub fn backtrace_lines(c: &Ctx, skip: usize) -> Vec<String> {
+    let mut out = vec![];
+    let mut f = c.frame;
+    let mut last_file: &str = "-";
+    let mut last_line = 0;
+    unsafe {
+        // find the file/line for cfunc frames from the nearest Ruby caller
+        let mut frames = vec![];
+        while !f.is_null() { frames.push(f); f = (*f).prev; }
+        let mut info: Vec<(String, u32)> = vec![("-".into(), 0); frames.len()];
+        for i in (0..frames.len()).rev() {
+            let fr = &*frames[i];
+            if fr.kind == FK_CFUNC { info[i] = (last_file.to_string(), last_line); }
+            else { last_file = frame_file(fr); last_line = fr.line; info[i] = (last_file.to_string(), last_line); }
+        }
+        for (i, &fp) in frames.iter().enumerate() {
+            let fr = &*fp;
+            if fr.kind == FK_CLASS && false { continue; }
+            let (file, line) = &info[i];
+            out.push(format!("{}:{}:in '{}'", file, line, frame_label(fr)));
+        }
+    }
+    if skip < out.len() { out.drain(..skip); } else { out.clear(); }
+    out
+}
+
+// ---- calls -----------------------------------------------------------------------------------
+
+pub const CF_FCALL: u32 = 1;
+pub const CF_VCALL: u32 = 2;
+pub const CF_KW: u32 = 4;          // last arg is a keyword Hash
+pub const CF_SAFE: u32 = 8;
+pub const CF_SUPER: u32 = 16;
+pub const CF_KW_SPLAT: u32 = 32;   // keywords came from **h (an empty hash passes nothing)
+
+#[inline(always)]
+pub fn stack_check(c: &mut Ctx, need: usize) -> Result<(), Esc> {
+    let probe = 0u8;
+    let addr = &probe as *const u8 as usize;
+    if unsafe { c.sp.add(need) } >= c.stack_end || addr < c.native_limit {
+        return Err(raise_stack_overflow(c));
+    }
+    Ok(())
+}
+
+#[cold]
+#[inline(never)]
+pub fn raise_stack_overflow(c: &mut Ctx) -> Esc {
+    let e = make_exception(vm().c_system_stack_error, "stack level too deep");
+    let bt = crate::array::ary_new();
+    ivar_set_raw(e, s::bt, bt);
+    raise_exc(c, e)
+}
+
+/// Call a method from Rust.  args are copied into the VM stack.
+pub fn funcall(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const Block) -> RV {
+    funcall_flags(c, recv, mid, args, blk, CF_FCALL)
+}
+
+pub fn funcall_flags(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const Block, flags: u32) -> RV {
+    let base = c.sp;
+    if unsafe { base.add(args.len() + 2) } >= c.stack_end { return Err(raise_stack_overflow(c)); }
+    unsafe {
+        *base = recv;
+        *base.add(1) = NIL;
+        for (i, a) in args.iter().enumerate() { *base.add(2 + i) = *a; }
+        c.sp = base.add(2 + args.len());
+    }
+    let klass = class_of(recv);
+    let me = lookup_method(klass, mid);
+    let r = if me.is_null() {
+        method_missing(c, recv, mid, base, args.len() as u32, blk, flags)
+    } else {
+        unsafe {
+            if (*me).visi != VISI_PUBLIC && flags & CF_FCALL == 0 {
+                visibility_error(c, me, recv, base, args.len() as u32, blk, flags)
+            } else {
+                invoke(c, me, recv, base, args.len() as u32, blk, flags)
+            }
+        }
+    };
+    c.sp = base;
+    r
+}
+
+/// Public call from Rust (respects visibility).
+pub fn funcall_public(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const Block) -> RV {
+    funcall_flags(c, recv, mid, args, blk, 0)
+}
+
+pub fn funcall_kw(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const Block, kw: bool) -> RV {
+    funcall_flags(c, recv, mid, args, blk, CF_FCALL | if kw { CF_KW } else { 0 })
+}
+
+/// Call on a staged frame: base[0] = recv, base[2..2+argc] = args; c.sp is above them.
+#[inline(always)]
+pub fn call_cached(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> RV {
+    let recv = unsafe { *base };
+    let klass = class_of(recv);
+    let vm = vm();
+    let me = if cc.klass == klass.raw() && cc.serial == vm.method_serial {
+        cc.me as *const MethodEntry
+    } else {
+        let me = lookup_method(klass, mid);
+        cc.klass = klass.raw(); cc.serial = vm.method_serial; cc.me = me as usize;
+        me
+    };
+    if me.is_null() {
+        let r = method_missing(c, recv, mid, base, argc, blk, flags);
+        c.sp = base;
+        return r;
+    }
+    unsafe {
+        if (*me).visi != VISI_PUBLIC && flags & CF_FCALL == 0 {
+            let r = visibility_error(c, me, recv, base, argc, blk, flags);
+            c.sp = base;
+            return r;
+        }
+    }
+    let r = invoke(c, me, recv, base, argc, blk, flags);
+    c.sp = base;
+    r
+}
+
+#[cold]
+fn visibility_error(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> RV {
+    let me_r = unsafe { &*me };
+    if me_r.visi == VISI_PROTECTED {
+        let slf = c.self_val();
+        let owner = if rclass(me_r.owner).is_module { me_r.owner } else { me_r.owner };
+        if is_kind_of(slf, owner) { return invoke(c, me, recv, base, argc, blk, flags); }
+    }
+    // private setters may be called with self as explicit receiver
+    if me_r.visi == VISI_PRIVATE && flags & CF_SUPER != 0 { return invoke(c, me, recv, base, argc, blk, flags); }
+    let kind = if me_r.visi == VISI_PROTECTED { "protected" } else { "private" };
+    let desc = crate::builtins::kernel::nomethod_desc(c, recv)?;
+    let msg = format!("{} method '{}' called for {}", kind, sym_str(me_r.name), desc);
+    let e = make_name_error(c, vm().c_no_method_error, &msg, Value::sym(me_r.name), recv)?;
+    Err(raise_exc(c, e))
+}
+
+pub fn method_missing(c: &mut Ctx, recv: Value, mid: Sym, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> RV {
+    let klass = class_of(recv);
+    let mm = lookup_method(klass, s::method_missing);
+    if !mm.is_null() && unsafe { (*mm).owner } != vm().c_basic_object {
+        // shift args up by one to insert the method name
+        unsafe {
+            let args = base.add(2);
+            let new_base = c.sp;
+            *new_base = recv; *new_base.add(1) = NIL; *new_base.add(2) = Value::sym(mid);
+            for i in 0..argc as usize { *new_base.add(3 + i) = *args.add(i); }
+            c.sp = new_base.add(3 + argc as usize);
+            let r = invoke(c, mm, recv, new_base, argc + 1, blk, (flags & CF_KW) | CF_FCALL);
+            c.sp = base;
+            return r;
+        }
+    }
+    no_method_error(c, recv, mid, flags)
+}
+
+pub fn no_method_error(c: &mut Ctx, recv: Value, mid: Sym, flags: u32) -> RV {
+    let desc = crate::builtins::kernel::nomethod_desc(c, recv)?;
+    let (cls, msg) = if flags & CF_VCALL != 0 {
+        (vm().c_name_error, format!("undefined local variable or method '{}' for {}", sym_str(mid), desc))
+    } else if flags & CF_SUPER != 0 {
+        (vm().c_no_method_error, format!("super: no superclass method '{}' for {}", sym_str(mid), desc))
+    } else {
+        (vm().c_no_method_error, format!("undefined method '{}' for {}", sym_str(mid), desc))
+    };
+    let e = make_name_error(c, cls, &msg, Value::sym(mid), recv)?;
+    Err(raise_exc(c, e))
+}
+
+#[inline]
+pub fn invoke(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> RV {
+    let mer = unsafe { &*me };
+    match mer.kind {
+        MKind::Iseq(is) => invoke_iseq(c, me, unsafe { &*is }, recv, base, argc, blk, flags),
+        MKind::Cfunc(f, arity) => invoke_cfunc(c, me, f, arity, recv, base, argc, blk, flags),
+        MKind::AttrReader(id) => {
+            if argc != 0 { return argc_err(c, argc as usize, 0, 0); }
+            Ok(ivar_get(recv, id))
+        }
+        MKind::AttrWriter(id) => {
+            if argc != 1 { return argc_err(c, argc as usize, 1, 1); }
+            let v = unsafe { *base.add(2) };
+            ivar_set(c, recv, id, v)
+        }
+        MKind::Bmethod(p) => {
+            let pd = rproc(p);
+            let b = pd.blk;
+            let mut fr_blk = b;
+            fr_blk.self_ = recv;
+            let args: Vec<Value> = unsafe { std::slice::from_raw_parts(base.add(2), argc as usize).to_vec() };
+            let r = invoke_block_full(c, &fr_blk, &args, blk, recv, true, me, flags & CF_KW != 0);
+            r
+        }
+        MKind::Undef | MKind::ZSuper => no_method_error(c, recv, mer.name, flags),
+    }
+}
+
+#[inline]
+pub fn invoke_cfunc(c: &mut Ctx, me: *const MethodEntry, f: CFunc, arity: i32, recv: Value, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> RV {
+    let mut argc = argc;
+    if flags & CF_KW != 0 && argc > 0 {
+        // keywords to a cfunc: an empty **h passes nothing
+        let last = unsafe { *base.add(1 + argc as usize) };
+        if flags & CF_KW_SPLAT != 0 && is_hash(last) && rhash(last).live == 0 { argc -= 1; }
+        else if is_hash(last) { obj(last).flags |= FL_KWHASH; }
+    }
+    if arity >= 0 && argc as i32 != arity { return argc_err(c, argc as usize, arity, arity); }
+    let args = unsafe { std::slice::from_raw_parts(base.add(2), argc as usize) };
+    let mut fr = Frame::empty();
+    let pf = c.frame;
+    unsafe {
+        fr.prev = pf; fr.fp = (*pf).fp; fr.me = me; fr.kind = FK_CFUNC; fr.cref = (*pf).cref;
+        fr.id = (*pf).id; fr.cfunc_name = (*me).name; fr.cfunc_recv = recv; fr.line = (*pf).line; fr.blk = blk;
+        fr.iseq = (*pf).iseq; fr.visi = (*pf).visi;
+    }
+    c.frame = &mut fr;
+    let r = f(c, recv, args, blk);
+    c.frame = pf;
+    if flags & CF_KW != 0 && argc > 0 {
+        let last = unsafe { *base.add(1 + argc as usize) };
+        if is_hash(last) { obj(last).flags &= !FL_KWHASH; }
+    }
+    r
+}
+
+/// Is the last argument of a cfunc a keyword hash?
+pub fn kw_arg(args: &[Value]) -> Option<Value> {
+    let l = *args.last()?;
+    if is_hash(l) && obj(l).flags & FL_KWHASH != 0 { Some(l) } else { None }
+}
+
+pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> RV {
+    stack_check(c, is.nlocals as usize + 16)?;
+    let mut fr = Frame::empty();
+    fr.prev = c.frame;
+    fr.fp = base;
+    fr.me = me;
+    fr.blk = blk;
+    fr.iseq = is;
+    fr.kind = FK_METHOD;
+    fr.visi = VISI_PUBLIC;
+    fr.id = c.next_serial();
+    fr.argc = argc;
+    fr.cref = unsafe { (*me).cref };
+    fr.line = is.info.line;
+    unsafe { *base = recv; }
+    c.frame = &mut fr;
+    let r = if is.simple && argc as usize == is.params.lead.len() && flags & CF_KW == 0 {
+        unsafe {
+            *base.add(1) = NIL;
+            let n = is.nlocals as usize;
+            let mut i = 2 + argc as usize;
+            while i < n { *base.add(i) = NIL; i += 1; }
+            c.sp = base.add(n);
+        }
+        run_body(c, is.body, base)
+    } else {
+        match setup_params(c, is, base, argc, blk, flags, false, NIL) {
+            Ok(()) => run_body(c, is.body, base),
+            Err(e) => Err(e),
+        }
+    };
+    c.frame = fr.prev;
+    c.sp = base;
+    match r {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            if c.esc == EscKind::Return && c.esc_tag == fr.id {
+                c.esc = EscKind::None;
+                Ok(c.esc_val)
+            } else { Err(e) }
+        }
+    }
+}
+
+#[inline(always)]
+pub fn run_body(c: &mut Ctx, body: NodePtr, fp: *mut Value) -> RV {
+    unsafe { ((*body).head.dispatcher)(c, body, fp) }
+}
+
+/// Place arguments into parameter slots.  For blocks (`is_block`), non-lambda
+/// semantics apply: missing args are nil, extra args dropped, a lone Array is splatted.
+pub fn setup_params(c: &mut Ctx, is: &Iseq, base: *mut Value, argc: u32, blk: *const Block, flags: u32, is_block: bool, outer_env: Value) -> Result<(), Esc> {
+    let p = &is.params;
+    let n = is.nlocals as usize;
+    let lambda = !is_block;
+    // copy args out (they overlap the local area)
+    let mut args: Vec<Value> = unsafe { std::slice::from_raw_parts(base.add(2), argc as usize).to_vec() };
+    unsafe {
+        for i in 1..n { *base.add(i) = NIL; }
+        c.sp = base.add(n.max(2));
+    }
+    let tmp = crate::array::ary_new_from(&args); // keep the args reachable while we allocate
+    // keywords
+    let mut kwh: Value = NIL;
+    let accepts_kw = !p.kw.is_empty() || p.kwrest.is_some() || p.forwarding;
+    if flags & CF_KW != 0 && !args.is_empty() {
+        let h = *args.last().unwrap();
+        if accepts_kw && !p.forwarding {
+            kwh = h; args.pop();
+        } else if flags & CF_KW_SPLAT != 0 && is_hash(h) && rhash(h).live == 0 {
+            args.pop();
+        } else if p.forwarding {
+            // keep as positional for forwarding; remember it's keywords
+        }
+    } else if accepts_kw && !p.forwarding && is_block && args.len() > p.lead.len() + p.post.len() + p.opt.len() && p.rest.is_none() {
+        // block given a trailing hash
+        let h = *args.last().unwrap();
+        if is_hash(h) && p.kw.iter().all(|k| !k.required) { kwh = h; args.pop(); }
+    }
+    let lead = p.lead.len();
+    let post = p.post.len();
+    let opt = p.opt.len();
+    // block auto-splat
+    if is_block && args.len() == 1 && (lead + post + opt > 1 || (p.rest.is_some() && lead + post + opt > 0) || p.has_trailing_comma || (lead == 1 && p.rest.is_some()))
+        && !p.forwarding {
+        let a = args[0];
+        let arr = if is_array(a) { Some(a) } else if a.is_heap() && !is_hash(a) && respond_to(a, s::to_ary, true) {
+            let r = funcall(c, a, s::to_ary, &[], std::ptr::null())?;
+            if is_array(r) { Some(r) } else if r == NIL { None } else {
+                return type_err(c, format!("can't convert {} to Array ({}#to_ary gives {})", class_path(real_class_of(a)), class_path(real_class_of(a)), class_path(real_class_of(r))));
+            }
+        } else { None };
+        if let Some(arr) = arr { args = rary(arr).clone(); }
+    }
+    let given = args.len();
+    let required = lead + post;
+    if lambda {
+        let maxp = if p.rest.is_some() || p.forwarding { usize::MAX } else { required + opt };
+        if given < required || given > maxp {
+            if !(accepts_kw && kwh == NIL && given == required + opt + 1 && false) {
+                return argc_err(c, given, required as i32, if maxp == usize::MAX { -1 } else { maxp as i32 }).map(|_: ()| ());
+            }
+        }
+    }
+    let mut ai = 0;
+    unsafe {
+        for &sl in p.lead.iter() { *base.add(sl as usize) = if ai < given { args[ai] } else { NIL }; ai += 1; }
+        let avail_for_opt = given.saturating_sub(required);
+        let nopt_given = avail_for_opt.min(opt);
+        for (k, (sl, _)) in p.opt.iter().enumerate() {
+            if k < nopt_given { *base.add(*sl as usize) = args[ai]; ai += 1; }
+        }
+        if let Some(rs) = p.rest {
+            let nrest = given.saturating_sub(ai + post);
+            let r = crate::array::ary_new_from(if nrest > 0 { &args[ai..ai + nrest] } else { &[] });
+            *base.add(rs as usize) = r;
+            ai += nrest;
+        } else if p.forwarding {
+            let nrest = given.saturating_sub(ai + post);
+            let r = crate::array::ary_new_from(if nrest > 0 { &args[ai..ai + nrest] } else { &[] });
+            ai += nrest;
+            // forwarding stores rest at the hidden slot recorded in kwrest position
+            if let Some(fs) = p.kwrest { *base.add(fs as usize) = r; }
+            if flags & CF_KW != 0 { obj(r).flags |= FL_KWHASH; }
+        }
+        for &sl in p.post.iter() { *base.add(sl as usize) = if ai < given { args[ai] } else { NIL }; ai += 1; }
+        // keywords
+        if !p.kw.is_empty() || (p.kwrest.is_some() && !p.forwarding) {
+            let mut seen = 0;
+            if kwh != NIL && !is_hash(kwh) { kwh = NIL; }
+            for k in p.kw.iter() {
+                let v = if kwh != NIL { crate::hash::hash_get_opt(c, kwh, Value::sym(k.name))? } else { None };
+                match v {
+                    Some(v) => { *base.add(k.slot as usize) = v; seen += 1; }
+                    None => { *base.add(k.slot as usize) = UNDEF; }
+                }
+            }
+            let missing: Vec<Sym> = p.kw.iter().filter(|k| k.required && *base.add(k.slot as usize) == UNDEF).map(|k| k.name).collect();
+            if !missing.is_empty() {
+                let names: Vec<String> = missing.iter().map(|m| format!(":{}", sym_str(*m))).collect();
+                return arg_err(c, format!("missing keyword{}: {}", if missing.len() > 1 { "s" } else { "" }, names.join(", ")));
+            }
+            if let Some(kr) = p.kwrest {
+                let h = crate::hash::hash_new();
+                if kwh != NIL {
+                    for e in crate::hash::hash_pairs(kwh) {
+                        if e.0.is_sym() && p.kw.iter().any(|k| k.name == e.0.as_sym()) { continue; }
+                        crate::hash::hash_set(c, h, e.0, e.1)?;
+                    }
+                }
+                *base.add(kr as usize) = h;
+            } else if kwh != NIL && seen < rhash(kwh).live {
+                let unknown: Vec<String> = crate::hash::hash_pairs(kwh).iter()
+                    .filter(|e| !(e.0.is_sym() && p.kw.iter().any(|k| k.name == e.0.as_sym())))
+                    .map(|e| crate::builtins::kernel::inspect_str(c, e.0).unwrap_or_default()).collect();
+                if !unknown.is_empty() {
+                    return arg_err(c, format!("unknown keyword{}: {}", if unknown.len() > 1 { "s" } else { "" }, unknown.join(", ")));
+                }
+            }
+        } else if kwh != NIL && is_hash(kwh) && rhash(kwh).live > 0 && p.no_kw {
+            return arg_err(c, "no keywords accepted");
+        }
+        if let Some(bs) = p.block {
+            *base.add(bs as usize) = if blk.is_null() { NIL } else { block_to_proc(c, blk)? };
+        }
+        // env
+        if is.env_size > 0 {
+            let env = gc::alloc(vm().c_env, Body::Env(vec![NIL; is.env_size as usize], outer_env));
+            *base.add(1) = env;
+            for &(sl, ei) in is.env_params.iter() {
+                if let Body::Env(vals, _) = &mut obj(env).body { vals[ei as usize] = *base.add(sl as usize); }
+            }
+        } else {
+            *base.add(1) = outer_env;
+        }
+        std::hint::black_box(tmp);
+        // defaults (run in the callee frame)
+        for (k, (sl, node)) in p.opt.iter().enumerate() {
+            if k >= nopt_given { let _ = sl; run_body(c, *node, base)?; }
+        }
+        for k in p.kw.iter() {
+            if *base.add(k.slot as usize) == UNDEF {
+                *base.add(k.slot as usize) = NIL;
+                if let Some(d) = k.default { run_body(c, d, base)?; }
+            } else if is.env_size > 0 {
+                // already copied to env by env_params
+            }
+        }
+        for d in p.destructure.iter() { run_body(c, *d, base)?; }
+    }
+    Ok(())
+}
+
+// ---- blocks and procs ------------------------------------------------------------------------
+
+pub fn block_to_proc(c: &mut Ctx, blk: *const Block) -> RV {
+    if blk.is_null() { return Ok(NIL); }
+    let b = unsafe { &*blk };
+    if b.proc_val != UNDEF { return Ok(b.proc_val); }
+    if let BlockKind::Proc(p) = b.kind { return Ok(p); }
+    let mut copy = *b;
+    if !copy.outer_blk.is_null() {
+        let op = block_to_proc(c, copy.outer_blk)?;
+        copy.outer_blk = &rproc(op).blk;
+    }
+    let is_lambda = matches!(b.kind, BlockKind::Iseq(is) if unsafe { (*is).kind } == IseqKind::Lambda) || matches!(b.kind, BlockKind::Method(_));
+    let p = gc::alloc(vm().c_proc, Body::Proc(Box::new(ProcData { blk: copy, is_lambda, from_method: NIL })));
+    let pd = rproc(p);
+    pd.blk.proc_val = p;
+    unsafe { (*(blk as *mut Block)).proc_val = p; }
+    Ok(p)
+}
+
+/// A Block view of a Proc value (for passing a proc as &blk).
+pub fn proc_block(p: Value) -> *const Block { &rproc(p).blk }
+
+pub fn is_lambda_block(b: *const Block) -> bool {
+    let b = unsafe { &*b };
+    if b.proc_val != UNDEF && is_proc(b.proc_val) { return rproc(b.proc_val).is_lambda; }
+    matches!(b.kind, BlockKind::Iseq(is) if unsafe { (*is).kind } == IseqKind::Lambda)
+}
+
+/// yield: run the block with args (copied to the VM stack).
+#[inline]
+pub fn yield_block(c: &mut Ctx, blk: *const Block, args: &[Value]) -> RV {
+    if blk.is_null() { return err(c, vm().c_local_jump_error, "no block given (yield)"); }
+    let b = unsafe { &*blk };
+    invoke_block_full(c, b, args, std::ptr::null(), b.self_, false, std::ptr::null(), false)
+}
+
+pub fn yield1(c: &mut Ctx, blk: *const Block, a: Value) -> RV { yield_block(c, blk, &[a]) }
+
+pub fn yield_with_self(c: &mut Ctx, blk: *const Block, args: &[Value], self_: Value, defined_class: Value) -> RV {
+    let b = unsafe { &*blk };
+    let mut b2 = *b;
+    b2.self_ = self_;
+    if defined_class != NIL { b2.defined_class = defined_class; }
+    invoke_block_full(c, &b2, args, std::ptr::null(), self_, false, std::ptr::null(), false)
+}
+
+pub fn call_proc(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block) -> RV {
+    let pd = rproc(p);
+    let b = pd.blk;
+    invoke_block_full(c, &b, args, blk, b.self_, pd.is_lambda, std::ptr::null(), false)
+}
+
+pub fn call_proc_kw(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block, kw: bool) -> RV {
+    let pd = rproc(p);
+    let b = pd.blk;
+    invoke_block_full(c, &b, args, blk, b.self_, pd.is_lambda, std::ptr::null(), kw)
+}
+
+/// Run a block.  `lambda_call`: strict arity / own return target (lambda procs, bmethods).
+pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const Block, self_: Value, lambda_call: bool, bme: *const MethodEntry, kw: bool) -> RV {
+    match b.kind {
+        BlockKind::Iseq(is) => {
+            let is = unsafe { &*is };
+            let base = c.sp;
+            stack_check(c, is.nlocals as usize + args.len() + 16)?;
+            unsafe {
+                *base = self_;
+                for (i, a) in args.iter().enumerate() { *base.add(2 + i) = *a; }
+                c.sp = base.add(2 + args.len());
+            }
+            let r = run_block_iseq(c, b, is, base, args.len() as u32, blkarg, lambda_call || is.kind == IseqKind::Lambda, bme, kw);
+            c.sp = base;
+            r
+        }
+        BlockKind::Sym(mid) => {
+            if args.is_empty() { return arg_err(c, "no receiver given"); }
+            let recv = args[0];
+            funcall_public(c, recv, mid, &args[1..], blkarg)
+        }
+        BlockKind::Method(m) => {
+            let mo = rmethod(m);
+            let recv = mo.recv;
+            let me = mo.me;
+            let base = c.sp;
+            unsafe {
+                *base = recv; *base.add(1) = NIL;
+                for (i, a) in args.iter().enumerate() { *base.add(2 + i) = *a; }
+                c.sp = base.add(2 + args.len());
+            }
+            let r = invoke(c, me, recv, base, args.len() as u32, blkarg, CF_FCALL | if kw { CF_KW } else { 0 });
+            c.sp = base;
+            r
+        }
+        BlockKind::Cfunc(f, data) => f(c, data, args, blkarg),
+        BlockKind::Proc(p) => {
+            let pd = rproc(p);
+            let inner = pd.blk;
+            invoke_block_full(c, &inner, args, blkarg, if self_ == b.self_ { inner.self_ } else { self_ }, pd.is_lambda || lambda_call, bme, kw)
+        }
+    }
+}
+
+pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &Iseq, base: *mut Value, argc: u32, blkarg: *const Block, lambda: bool, bme: *const MethodEntry, kw: bool) -> RV {
+    let mut fr = Frame::empty();
+    fr.prev = c.frame;
+    fr.fp = base;
+    fr.me = if bme.is_null() { b.me } else { bme };
+    fr.blk = if !bme.is_null() { blkarg } else { b.outer_blk };
+    fr.cref = b.cref;
+    fr.iseq = is;
+    fr.kind = if lambda { FK_LAMBDA } else { FK_BLOCK };
+    fr.visi = VISI_PUBLIC;
+    fr.id = if lambda { c.next_serial() } else { b.home_id };
+    fr.self_blk = b;
+    fr.argc = argc;
+    fr.line = is.info.line;
+    fr.defined_class = b.defined_class;
+    c.frame = &mut fr;
+    let fast = is.lead_only && is.env_size == 0 && argc as usize == is.params.lead.len() && (argc != 1 || is.params.lead.len() == 1) && !kw;
+    let r = if fast {
+        unsafe {
+            *base.add(1) = b.env;
+            let n = is.nlocals as usize;
+            let mut i = 2 + argc as usize;
+            while i < n { *base.add(i) = NIL; i += 1; }
+            c.sp = base.add(n);
+        }
+        run_body(c, is.body, base)
+    } else {
+        let flags = if kw { CF_KW } else { 0 };
+        match setup_params(c, is, base, argc, blkarg, flags, !lambda, b.env) {
+            Ok(()) => run_body(c, is.body, base),
+            Err(e) => Err(e),
+        }
+    };
+    c.frame = fr.prev;
+    match r {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            match c.esc {
+                EscKind::Next => { c.esc = EscKind::None; Ok(c.esc_val) }
+                EscKind::Return if lambda && c.esc_tag == fr.id => { c.esc = EscKind::None; Ok(c.esc_val) }
+                EscKind::Break if lambda && (c.esc_tag == b.tag) => { c.esc = EscKind::None; Ok(c.esc_val) }
+                _ => Err(e),
+            }
+        }
+    }
+}
+
+// ---- GC roots -----------------------------------------------------------------------------------
+
+pub static mut MAIN_CTX: *mut Ctx = std::ptr::null_mut();
+
+pub fn mark_roots(m: &mut Marker) {
+    let vm = vm();
+    unsafe {
+        let c = &*MAIN_CTX;
+        let mut p = c.stack_base;
+        while p < c.sp { m.mark_maybe((*p).raw() as usize); p = p.add(1); }
+        m.mark(c.esc_val); m.mark(c.errinfo); m.mark(c.last_match); m.mark(c.esc_tag_v);
+    }
+    crate::fiber::mark_fibers(m);
+    let list = [vm.c_basic_object, vm.c_object, vm.main_obj, vm.stdout, vm.stderr, vm.stdin, vm.loaded_features,
+                vm.load_path, vm.at_exit, vm.verbose, vm.argv, vm.dollar_zero];
+    for v in list { m.mark(v); }
+    for (_, v) in vm.globals.iter() { m.mark(*v); }
+    for v in vm.node_values.iter() { m.mark(*v); }
+    for v in vm.pinned.iter() { m.mark(*v); }
+    for v in vm.fiber_roots.iter() { m.mark(*v); }
+    for (_, v) in vm.frozen_lits.iter() { m.mark(*v); }
+    for (_, v) in vm.symproc_cache.iter() { m.mark(*v); }
+    for &cr in vm.crefs.iter() { unsafe { m.mark((*cr).klass); m.mark((*cr).refinements); } }
+    // every builtin class field
+    let vp = vm as *const Vm as *const u64;
+    let nclass_fields = (std::mem::offset_of!(Vm, main_obj)) / 8;
+    for i in 0..nclass_fields { unsafe { let w = *vp.add(i); if w != 0 { m.mark(Value::from_raw(w)); } } }
+}
+
+pub fn mark_class(m: &mut Marker, cd: &ClassData) {
+    if let Some(n) = cd.name { m.mark(n); }
+    m.mark(cd.superclass); m.mark(cd.attached); m.mark(cd.lexical_parent);
+    for (_, &me) in cd.mtbl.iter() { mark_me(m, me); }
+    for (_, v) in cd.consts.iter() { m.mark(*v); }
+    for (_, v) in cd.autoload.iter() { m.mark(*v); }
+    for (_, v) in cd.cvars.iter() { m.mark(*v); }
+    for v in cd.includes.iter() { m.mark(*v); }
+    for v in cd.prepends.iter() { m.mark(*v); }
+    for v in cd.subclasses.iter() { m.mark(*v); }
+    for v in cd.extended_by.iter() { m.mark(*v); }
+    if let Some(a) = &cd.ancestors { for v in a { m.mark(*v); } }
+}
+
+pub fn mark_me(m: &mut Marker, me: *const MethodEntry) {
+    if me.is_null() { return; }
+    let me = unsafe { &*me };
+    m.mark(me.owner);
+    m.mark(me.orig_owner);
+    if let MKind::Bmethod(p) = me.kind { m.mark(p); }
+}
+
+pub fn mark_block(m: &mut Marker, b: &Block) {
+    m.mark(b.self_); m.mark(b.env); m.mark(b.proc_val); m.mark(b.defined_class);
+    match b.kind { BlockKind::Method(v) | BlockKind::Cfunc(_, v) | BlockKind::Proc(v) => m.mark(v), _ => {} }
+    if !b.outer_blk.is_null() {
+        let ob = unsafe { &*b.outer_blk };
+        if ob.proc_val != UNDEF { m.mark(ob.proc_val); }
+    }
+    if !b.me.is_null() { mark_me(m, b.me); }
+}
+
+// ---- misc helpers --------------------------------------------------------------------------
+
+pub fn sym_value(name: &str) -> Value { Value::sym(intern_str(name)) }
+pub fn global_get(name: &str) -> Value { *vm().globals.get(&intern_str(name)).unwrap_or(&NIL) }
+pub fn global_set(name: &str, v: Value) { vm().globals.insert(intern_str(name), v); }
+
+pub fn intern_value(b: &[u8]) -> Value { Value::sym(intern(b)) }
+
+pub fn current_line(c: &Ctx) -> u32 { unsafe { if c.frame.is_null() { 0 } else { (*c.frame).line } } }
+
+pub fn the_dispatch_type_check(_f: DispatchFn) {}

@@ -1,8 +1,307 @@
+// koruby — a Ruby implementation in Rust on ASTrust (AST interpreter + partial
+// evaluation to Rust, compiled by rustc and loaded with dlopen).
+#![allow(non_snake_case, non_camel_case_types, non_upper_case_globals, dead_code, static_mut_refs)]
+#![allow(clippy::all)]
+
+#[path = "../../../runtime/astrust.rs"]
+pub mod astrust;
+
 pub mod prism;
 pub mod prism_ast;
+pub mod value;
+pub mod symbol;
+pub mod object;
+pub mod gc;
+pub mod vm;
+pub mod compile;
+pub mod rt;
+pub mod bignum;
+pub mod string;
+pub mod array;
+pub mod hash;
+pub mod range;
+pub mod numeric;
+pub mod regexp;
+pub mod regex_engine;
+pub mod fiber;
+pub mod aot;
+pub mod builtins;
+
+#[allow(unused_imports)]
+pub mod node {
+    use crate::astrust::*;
+    use crate::compile::{IseqRef, CiRef, Str, LitCache};
+    use crate::value::*;
+    use crate::vm::*;
+    include!("node_head.rs");
+    include!("node_dispatch.rs");
+    include!("node_hash.rs");
+    include!("node_specialize.rs");
+    include!("node_dump.rs");
+    include!("node_replace.rs");
+    #[inline(always)]
+    pub fn node_allocated(_n: NodePtr) {}
+    pub use crate::eval::*;
+}
+#[allow(unused_imports)]
+pub mod eval {
+    include!("node_eval.rs");
+}
+
+use value::*;
+use vm::*;
+
+/// Run a top-level iseq with the given self.
+pub fn run_top_iseq(c: &mut Ctx, is: &'static Iseq, slf: Value) -> RV {
+    let base = c.sp;
+    stack_check(c, is.nlocals as usize + 8)?;
+    let mut fr = Frame::empty();
+    fr.prev = c.frame;
+    fr.fp = base;
+    fr.iseq = is;
+    fr.kind = FK_TOP;
+    fr.visi = VISI_PRIVATE;
+    fr.id = c.next_serial();
+    fr.cref = vm().top_cref;
+    fr.line = 1;
+    unsafe {
+        *base = slf;
+        *base.add(1) = NIL;
+        for i in 2..is.nlocals as usize { *base.add(i) = NIL; }
+        c.sp = base.add(is.nlocals as usize);
+        if is.env_size > 0 {
+            let env = gc::alloc(vm().c_env, object::Body::Env(vec![NIL; is.env_size as usize], NIL));
+            *base.add(1) = env;
+        }
+    }
+    c.frame = &mut fr;
+    let r = run_body(c, is.body, base);
+    c.frame = fr.prev;
+    c.sp = base;
+    match r {
+        Err(e) if c.esc == EscKind::Return && c.esc_tag == fr.id => { let _ = e; c.esc = EscKind::None; Ok(c.esc_val) }
+        r => r,
+    }
+}
+
+struct Opts {
+    e: Vec<String>,
+    script: Option<String>,
+    args: Vec<String>,
+    plain: bool,
+    aot: bool,
+    dump_ast: bool,
+    quiet: bool,
+    verbose_astro: bool,
+    warn: bool,
+    store: String,
+    compiled_only: bool,
+    requires: Vec<String>,
+    incdirs: Vec<String>,
+    check_syntax: bool,
+}
+
+fn usage() -> ! {
+    eprintln!("usage: koruby [options] [--] [script.rb] [args...]\n\
+  -e 'code'        run code\n\
+  -I dir           add to $LOAD_PATH\n\
+  -r lib           require lib before the script\n\
+  -w / -W          enable warnings\n\
+  -c               check syntax only\n\
+  --plain          pure interpreter (ignore the code store)\n\
+  --aot-compile    run, then specialize every executed body into code_store/all.so (rustc)\n\
+  --compiled-only  (accepted for harness compatibility; same as default)\n\
+  --code-store DIR code store directory (default: ./code_store)\n\
+  --dump-ast       print the ASTrust tree of the script and exit\n\
+  --astro-verbose  print AOT / GC statistics\n\
+  -q               quiet\n\
+  --version        print version");
+    std::process::exit(2);
+}
+
+fn parse_args() -> Opts {
+    let argv: Vec<String> = std::env::args().collect();
+    let mut o = Opts { e: vec![], script: None, args: vec![], plain: false, aot: false, dump_ast: false, quiet: false,
+        verbose_astro: false, warn: false, store: "code_store".into(), compiled_only: false, requires: vec![], incdirs: vec![], check_syntax: false };
+    let mut i = 1;
+    while i < argv.len() {
+        let a = &argv[i];
+        if o.script.is_some() || (!o.e.is_empty() && !a.starts_with('-')) { o.args.push(a.clone()); i += 1; continue; }
+        match a.as_str() {
+            "-e" => { i += 1; o.e.push(argv.get(i).cloned().unwrap_or_else(|| usage())); }
+            "--plain" => o.plain = true,
+            "--aot-compile" | "--pg-compile" => o.aot = true,
+            "--compiled-only" => o.compiled_only = true,
+            "--dump-ast" => o.dump_ast = true,
+            "-q" | "--quiet" => o.quiet = true,
+            "--astro-verbose" => o.verbose_astro = true,
+            "-w" | "-W" | "-W2" | "-v" | "--verbose" => { o.warn = true; if a == "-v" { println!("{}", version()); } }
+            "-W0" => {}
+            "-c" => o.check_syntax = true,
+            "--code-store" => { i += 1; o.store = argv.get(i).cloned().unwrap_or_else(|| usage()); }
+            "--version" => { println!("{}", version()); std::process::exit(0); }
+            "-h" | "--help" => usage(),
+            "--" => { i += 1; if i < argv.len() && o.e.is_empty() { o.script = Some(argv[i].clone()); } else if i < argv.len() { o.args.push(argv[i].clone()); } }
+            "--disable-gems" | "--disable=gems" | "--enable-frozen-string-literal" | "--yjit" | "--disable-all" => {}
+            s if s.starts_with("-I") => { if s.len() > 2 { o.incdirs.push(s[2..].into()); } else { i += 1; o.incdirs.push(argv.get(i).cloned().unwrap_or_else(|| usage())); } }
+            s if s.starts_with("-r") => { if s.len() > 2 { o.requires.push(s[2..].into()); } else { i += 1; o.requires.push(argv.get(i).cloned().unwrap_or_else(|| usage())); } }
+            s if s.starts_with("--disable") || s.starts_with("--enable") => {}
+            s if s.starts_with('-') && s.len() > 1 => { eprintln!("koruby: invalid option {}  (-h will show valid options)", s); std::process::exit(2); }
+            _ => { if o.e.is_empty() { o.script = Some(a.clone()); } else { o.args.push(a.clone()); } }
+        }
+        i += 1;
+    }
+    o
+}
+
+pub fn version() -> String { format!("koruby 0.1.0 (ASTrust; Ruby 3.4 compatible subset) [{}]", env!("KORUBY_TARGET")) }
+
+/// Print an uncaught exception CRuby-style.
+pub fn report_exception(c: &mut Ctx, e: Value) {
+    builtins::kernel::out_flush();
+    let msg = builtins::exception::full_message(c, e, true).unwrap_or_else(|_| "exception\n".into());
+    builtins::kernel::err_write(msg.as_bytes());
+}
+
+fn run_main(o: Opts) -> i32 {
+    let mut c = Ctx {
+        sp: std::ptr::null_mut(), stack_base: std::ptr::null_mut(), stack_end: std::ptr::null_mut(), frame: std::ptr::null_mut(),
+        esc: EscKind::None, esc_val: NIL, esc_tag: 0, esc_tag_v: NIL, serial: 0, errinfo: NIL, last_match: NIL,
+        native_limit: 0, in_ensure: 0,
+    };
+    let nvals = 8 << 20;
+    let stack: &'static mut [Value] = Box::leak(vec![NIL; nvals].into_boxed_slice());
+    c.stack_base = stack.as_mut_ptr();
+    c.sp = c.stack_base;
+    c.stack_end = unsafe { c.stack_base.add(nvals - 64) };
+    let probe = 0u8;
+    c.native_limit = (&probe as *const u8 as usize).saturating_sub(STACK_BYTES - (4 << 20));
+    unsafe { MAIN_CTX = &mut c; }
+    let mut top = Frame::empty();
+    top.fp = c.sp;
+    c.frame = &mut top;
+
+    let vm = vm();
+    vm.verbose = if o.warn { TRUE } else { FALSE };
+    for d in &o.incdirs { let s = string::str_new(d.as_bytes()); array::ary_push(vm.load_path, s); }
+    builtins::prelude::setup_load_path();
+    for a in &o.args { let s = string::str_new(a.as_bytes()); array::ary_push(vm.argv, s); }
+    if !o.plain {
+        let mut cs = astrust::CodeStore::new(&o.store);
+        cs.load(env!("KORUBY_BUILD_ID"));
+        vm.code_store = Some(cs);
+    }
+    vm.aot_collect = o.aot;
+
+    let (src, file): (Vec<u8>, String) = if !o.e.is_empty() {
+        (o.e.join("\n").into_bytes(), "-e".into())
+    } else if let Some(s) = &o.script {
+        match std::fs::read(s) {
+            Ok(b) => (b, s.clone()),
+            Err(_) => { eprintln!("koruby: No such file or directory -- {} (LoadError)", s); return 1; }
+        }
+    } else {
+        let mut b = vec![];
+        use std::io::Read;
+        let _ = std::io::stdin().read_to_end(&mut b);
+        (b, "-".into())
+    };
+    vm.main_file = file.clone();
+    vm.dollar_zero = string::str_new(file.as_bytes());
+    let file: &'static str = Box::leak(file.into_boxed_str());
+
+    // prelude (Ruby-level built-ins)
+    if let Err(_) = builtins::prelude::load_prelude(&mut c) {
+        let e = c.esc_val;
+        report_exception(&mut c, e);
+        return 1;
+    }
+    unsafe { rt::BOOTED = true; }
+
+    // DATA / __END__
+    let is = match compile::compile_source(&src, file, 1, IseqKind::Main, vec![]) {
+        Ok(is) => is,
+        Err(msg) => {
+            builtins::kernel::err_write(format!("{}\n", msg).as_bytes());
+            builtins::kernel::err_write(format!("{}: compile error (SyntaxError)\n", file).as_bytes());
+            return 1;
+        }
+    };
+    if o.check_syntax { println!("Syntax OK"); return 0; }
+    builtins::io::setup_data(&src, file);
+    if o.dump_ast {
+        let mut out = String::new();
+        node::dump_node(&mut out, is.body);
+        println!("{}", out);
+        return 0;
+    }
+    let mut status = 0;
+    for r in &o.requires {
+        let s = string::str_new(r.as_bytes());
+        if builtins::kernel::require_feature(&mut c, s, false).is_err() { let e = c.esc_val; report_exception(&mut c, e); return 1; }
+    }
+    let r = run_top_iseq(&mut c, is, vm.main_obj);
+    if r.is_err() { status = handle_toplevel_error(&mut c); }
+    // at_exit handlers (LIFO)
+    loop {
+        let ae = vm.at_exit;
+        let Some(p) = array::rary(ae).pop() else { break };
+        c.esc = EscKind::None;
+        if call_proc(&mut c, p, &[], std::ptr::null()).is_err() { status = handle_toplevel_error(&mut c); }
+    }
+    builtins::kernel::out_flush();
+    builtins::io::flush_all();
+    if o.aot {
+        match aot::bake(&o.store) {
+            Ok(n) => if o.verbose_astro || !o.quiet { eprintln!("koruby: baked {} new items into {}/all.so", n, o.store); },
+            Err(e) => { eprintln!("koruby: AOT bake failed:\n{}", e); }
+        }
+    }
+    if o.verbose_astro {
+        let h = gc::heap();
+        eprintln!("koruby: sd_hits={} gc_count={} gc_time={:?} heap_slots={} allocated={}", vm.sd_hits, h.gc_count, h.gc_time, h.total, h.total_allocated);
+    }
+    status
+}
+
+fn handle_toplevel_error(c: &mut Ctx) -> i32 {
+    match c.esc {
+        EscKind::Raise => {
+            let e = c.esc_val;
+            c.esc = EscKind::None;
+            if is_kind_of(e, vm().c_system_exit) {
+                let st = ivar_get(e, symbol::s::status);
+                return if st.is_fixnum() { st.as_fix() as i32 } else { 0 };
+            }
+            report_exception(c, e);
+            1
+        }
+        EscKind::Throw => {
+            let tag = c.esc_tag_v;
+            let s = builtins::kernel::inspect_str(c, tag).unwrap_or_default();
+            builtins::kernel::err_write(format!("uncaught throw {} (UncaughtThrowError)\n", s).as_bytes());
+            1
+        }
+        EscKind::Break | EscKind::Next | EscKind::Return | EscKind::LoopBreak | EscKind::LoopNext => {
+            c.esc = EscKind::None;
+            0
+        }
+        _ => { c.esc = EscKind::None; 1 }
+    }
+}
+
+const STACK_BYTES: usize = 1 << 30;
+
 pub fn main_entry() {
-    let a: Vec<String> = std::env::args().collect();
-    let src = std::fs::read(&a[1]).unwrap();
-    let r = prism::parse(&src, &prism::ParseOpts { filepath: a[1].as_bytes(), line: 1, scopes: vec![], main_script: true, frozen_string_literal: 0 });
-    println!("{:#?}", r.root);
+    let o = parse_args();
+    symbol::init();
+    let child = std::thread::Builder::new().stack_size(STACK_BYTES).spawn(move || {
+        let base = 0usize;
+        gc::init(&base as *const usize as usize + 8);
+        builtins::boot();
+        let st = run_main(o);
+        builtins::kernel::out_flush();
+        std::process::exit(st);
+    }).unwrap();
+    let _ = child.join();
 }
