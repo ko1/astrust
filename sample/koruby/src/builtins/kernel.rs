@@ -250,7 +250,7 @@ fn k_raise(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let e = make_exception_from_args(c, args)?;
     // the backtrace starts at the caller of raise
     if ivar_get(e, s::bt) == NIL {
-        let bt = make_backtrace(c, 1);
+        let bt = make_backtrace_lazy(c, 1);
         ivar_set_raw(e, s::bt, bt);
     }
     Err(raise_exc(c, e))
@@ -579,7 +579,7 @@ pub fn gvar_get(c: &mut Ctx, name: Sym) -> RV {
     let b = sym_bytes(name);
     match b {
         b"$!" => return Ok(c.errinfo),
-        b"$@" => { return Ok(if c.errinfo == NIL { NIL } else { ivar_get(c.errinfo, s::bt) }); }
+        b"$@" => { return Ok(if c.errinfo == NIL { NIL } else { exc_bt(c.errinfo) }); }
         b"$~" => return Ok(c.last_match),
         b"$&" => return Ok(crate::regexp::nth_match(c.last_match, 0)),
         b"$0" | b"$PROGRAM_NAME" => return Ok(vm().dollar_zero),

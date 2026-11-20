@@ -399,12 +399,12 @@ pub fn include_module(klass: Value, m: Value) {
 pub fn prepend_module(klass: Value, m: Value) {
     let cd = rclass(klass);
     if cd.prepends.contains(&m) { return; }
-    cd.prepends.push(m);
     // a prepended method overrides the class's own: operator fast paths must notice
     for &am in ancestors(m).iter() {
         let mids: Vec<Sym> = rclass(am).mtbl.keys().copied().collect();
         for mid in mids { crate::rt::note_redefinition(klass, mid); }
     }
+    rclass(klass).prepends.push(m);
     bump_hierarchy();
 }
 pub fn bump_hierarchy() {
@@ -700,7 +700,7 @@ pub fn on_free_data(p: *mut RObj) {
 #[inline]
 pub fn raise_exc(c: &mut Ctx, e: Value) -> Esc {
     if ivar_get(e, s::bt) == NIL && is_exception(e) {
-        let bt = make_backtrace(c, 0);
+        let bt = make_backtrace_lazy(c, 0);
         ivar_set_raw(e, s::bt, bt);
     }
     if is_exception(e) && c.errinfo != NIL && c.errinfo != e && ivar_get(e, s::cause) == NIL && !ivar_defined(e, s::cause) {
@@ -770,31 +770,33 @@ pub fn check_frozen(c: &mut Ctx, v: Value) -> Result<(), Esc> {
     Ok(())
 }
 
-pub fn frame_label(f: &Frame) -> String {
+pub fn frame_label(f: &Frame) -> String { frame_label_of(f.kind, f.me, f.iseq) }
+
+fn frame_label_of(kind: u8, fme: *const MethodEntry, iseq: *const Iseq) -> String {
     unsafe {
-        if f.kind == FK_CFUNC {
-            let k = real_class_of_for_label(NIL, f.me);
-            return format!("{}{}", k, sym_str((*f.me).name));
+        if kind == FK_CFUNC {
+            let k = real_class_of_for_label(NIL, fme);
+            return format!("{}{}", k, sym_str((*fme).name));
         }
-        if f.iseq.is_null() { return "<main>".into(); }
-        let is = &*f.iseq;
+        if iseq.is_null() { return "<main>".into(); }
+        let is = &*iseq;
         match is.kind {
             IseqKind::Method => {
-                if !f.me.is_null() {
-                    let me = &*f.me;
+                if !fme.is_null() {
+                    let me = &*fme;
                     let owner = me.owner;
-                    let pre = method_owner_label(owner, f.fp);
+                    let pre = method_owner_label(owner);
                     return format!("{}{}", pre, sym_str(me.name));
                 }
                 is.info.label.clone()
             }
-            IseqKind::Block | IseqKind::Lambda if !f.me.is_null() => {
+            IseqKind::Block | IseqKind::Lambda if !fme.is_null() => {
                 // "block in m" -> "block in Owner#m" when the block's home is that method
-                let me = &*f.me;
+                let me = &*fme;
                 let l = &is.info.label;
                 let mname = sym_str(me.name);
                 match l.find(" in ") {
-                    Some(p) if l[p + 4..] == *mname => format!("{}{}{}", &l[..p + 4], method_owner_label(me.owner, f.fp), mname),
+                    Some(p) if l[p + 4..] == *mname => format!("{}{}{}", &l[..p + 4], method_owner_label(me.owner), mname),
                     _ => l.clone(),
                 }
             }
@@ -813,7 +815,7 @@ fn real_class_of_for_label(recv: Value, me: *const MethodEntry) -> String {
     format!("{}#", class_path(owner))
 }
 
-fn method_owner_label(owner: Value, _fp: *mut Value) -> String {
+fn method_owner_label(owner: Value) -> String {
     let cd = rclass(owner);
     if cd.is_singleton {
         if is_class_or_module(cd.attached) { return format!("{}.", class_path(cd.attached)); }
@@ -831,39 +833,76 @@ pub fn frame_file(f: &Frame) -> &'static str {
 /// Backtrace as an Array of "file:line:in 'label'" strings.
 pub fn make_backtrace(c: &mut Ctx, skip: usize) -> Value {
     let lines = backtrace_lines(c, skip);
+    lines_to_array(lines)
+}
+fn lines_to_array(lines: Vec<String>) -> Value {
     let a = crate::array::ary_new_capa(lines.len());
     for l in lines { let s = crate::string::str_new(l.as_bytes()); crate::array::ary_push(a, s); }
     a
 }
 
-pub fn backtrace_lines(c: &Ctx, skip: usize) -> Vec<String> {
-    let mut out = vec![];
+/// One frame of a captured backtrace: what frame_label needs, plus the file/line.
+#[derive(Clone, Copy)]
+pub struct RawFrame { kind: u8, me: *const MethodEntry, iseq: *const Iseq, file: &'static str, line: u32 }
+
+/// An exception's backtrace kept as raw frames: formatted when first read (most never are).
+pub struct RawBt { frames: Vec<RawFrame>, skip: usize }
+impl RData for RawBt {
+    fn mark(&self, m: &mut crate::gc::Marker) { for f in &self.frames { mark_me(m, f.me); } }
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+}
+
+/// The backtrace at this point, unformatted (stored in an exception's `bt`).
+pub fn make_backtrace_lazy(c: &mut Ctx, skip: usize) -> Value {
+    let frames = capture_frames(c);
+    crate::gc::alloc(vm().c_object, Body::Data(Box::new(RawBt { frames, skip })))
+}
+
+/// An exception's backtrace (Array of String, or nil), formatting a captured one in place.
+pub fn exc_bt(e: Value) -> Value {
+    let v = ivar_get(e, s::bt);
+    let Some(raw) = rdata::<RawBt>(v) else { return v };
+    let a = lines_to_array(format_frames(&raw.frames, raw.skip));
+    ivar_set_raw(e, s::bt, a);
+    a
+}
+
+fn capture_frames(c: &Ctx) -> Vec<RawFrame> {
+    let mut frames: Vec<RawFrame> = Vec::with_capacity(16);
     let mut f = c.frame;
-    let mut last_file: &str = "-";
-    let mut last_line = 0;
     unsafe {
-        // find the file/line for cfunc frames from the nearest Ruby caller
-        let mut frames = vec![];
-        while !f.is_null() { frames.push(f); f = (*f).prev; }
-        let mut info: Vec<(String, u32)> = vec![("-".into(), 0); frames.len()];
-        for i in (0..frames.len()).rev() {
-            let fr = &*frames[i];
-            if fr.kind == FK_CFUNC { info[i] = (last_file.to_string(), last_line); }
-            else { last_file = frame_file(fr); last_line = fr.line; info[i] = (last_file.to_string(), last_line); }
+        while !f.is_null() {
+            let fr = &*f;
+            frames.push(RawFrame { kind: fr.kind, me: fr.me, iseq: fr.iseq, file: frame_file(fr), line: fr.line });
+            f = fr.prev;
         }
-        for (i, &fp) in frames.iter().enumerate() {
-            let fr = &*fp;
+    }
+    // cfunc frames take the file/line of the nearest Ruby caller
+    let mut last_file: &'static str = "-";
+    let mut last_line = 0;
+    for fr in frames.iter_mut().rev() {
+        if fr.kind == FK_CFUNC { fr.file = last_file; fr.line = last_line; } else { last_file = fr.file; last_line = fr.line; }
+    }
+    frames
+}
+
+fn format_frames(frames: &[RawFrame], skip: usize) -> Vec<String> {
+    let mut out = vec![];
+    unsafe {
+        for fr in frames {
             if fr.kind != FK_CFUNC && fr.iseq.is_null() { continue; }
             // CRuby's send/__send__ and Proc#call/yield/===/[] do not push a frame
             if fr.kind == FK_CFUNC && (fr.me.is_null() == false && ((*fr.me).name == s::send || (*fr.me).name == s::__send__)) { continue; }
             if fr.kind == FK_CFUNC && !fr.me.is_null() && (*fr.me).owner == vm().c_proc && matches!(sym_str((*fr.me).name).as_ref(), "call" | "yield" | "===" | "[]") { continue; }
-            let (file, line) = &info[i];
-            out.push(format!("{}:{}:in '{}'", file, line, frame_label(fr)));
+            out.push(format!("{}:{}:in '{}'", fr.file, fr.line, frame_label_of(fr.kind, fr.me, fr.iseq)));
         }
     }
     if skip < out.len() { out.drain(..skip); } else { out.clear(); }
     out
 }
+
+pub fn backtrace_lines(c: &Ctx, skip: usize) -> Vec<String> { format_frames(&capture_frames(c), skip) }
 
 // ---- calls -----------------------------------------------------------------------------------
 
@@ -900,7 +939,7 @@ pub fn funcall(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const B
 
 pub fn funcall_flags(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const Block, flags: u32) -> RV {
     let base = c.sp;
-    if unsafe { base.add(args.len() + 2) } >= c.stack_end { return Err(raise_stack_overflow(c)); }
+    stack_check(c, args.len() + 2)?;   // native depth too: cfunc -> funcall recursion uses little VM stack
     unsafe {
         *base = recv;
         *base.add(1) = NIL;

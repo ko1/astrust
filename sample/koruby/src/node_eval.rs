@@ -271,7 +271,7 @@ pub fn EVAL_node_ary_build<D_elems: DispList>(c: &mut Ctx, n: NodePtr, fp: *mut 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_hash<D_items: DispList>(c: &mut Ctx, n: NodePtr, fp: *mut Value, items: NodeList, kinds: Str) -> RV {
-    let h = crate::hash::hash_new();
+    let h = crate::hash::hash_new_capa(kinds.len());
     let base = c.sp;
     unsafe { *base = h; c.sp = base.add(2); }
     let mut i = 0;

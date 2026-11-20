@@ -8,20 +8,26 @@ const SMALL: usize = 8;
 const EMPTY: u32 = u32::MAX;
 
 // Hashes being iterated (CRuby's iter_lev): adding a key or rehashing then raises.
-thread_local!(static ITER: std::cell::RefCell<Vec<Value>> = const { std::cell::RefCell::new(Vec::new()) });
-pub fn hash_iter_enter(h: Value) { ITER.with(|v| v.borrow_mut().push(h)); }
+static mut ITER: Vec<Value> = Vec::new();
+#[allow(static_mut_refs)]
+fn iter_list() -> &'static mut Vec<Value> { unsafe { &mut ITER } }
+pub fn hash_iter_enter(h: Value) { iter_list().push(h); }
 pub fn hash_iter_leave(h: Value) {
-    ITER.with(|v| { let mut v = v.borrow_mut(); if let Some(i) = v.iter().rposition(|x| *x == h) { v.remove(i); } });
+    let v = iter_list();
+    if let Some(i) = v.iter().rposition(|x| *x == h) { v.remove(i); }
 }
-pub fn hash_iterating(h: Value) -> bool { ITER.with(|v| { let v = v.borrow(); !v.is_empty() && v.contains(&h) }) }
+#[inline]
+pub fn hash_iterating(h: Value) -> bool { let v = iter_list(); !v.is_empty() && v.contains(&h) }
+
+// keys whose eql? is identity (and whose hash is mix(raw)): small tables are scanned by key alone
+#[inline(always)]
+fn imm_key(k: Value) -> bool { k.is_fixnum() || (k.is_special() && k != UNDEF) }
 
 pub fn hash_new() -> Value {
     crate::gc::alloc(vm().c_hash, Body::Hash(Box::new(RHash { entries: Vec::new(), index: Vec::new(), live: 0, default: NIL, default_proc: NIL, identity: false })))
 }
 pub fn hash_new_capa(n: usize) -> Value {
-    let h = hash_new();
-    rhash(h).entries.reserve(n);
-    h
+    crate::gc::alloc(vm().c_hash, Body::Hash(Box::new(RHash { entries: Vec::with_capacity(n), index: Vec::new(), live: 0, default: NIL, default_proc: NIL, identity: false })))
 }
 
 fn mix(h: u64) -> u64 { crate::astrust::hash_u64(h) }
@@ -146,7 +152,11 @@ pub fn hash_default_value(c: &mut Ctx, h: Value, k: Value) -> RV {
 }
 
 pub fn hash_aref(c: &mut Ctx, h: Value, k: Value) -> RV {
-    match hash_lookup(c, h, k)? {
+    let found = if imm_key(k) && rhash(h).index.is_empty() {
+        let r = rhash(h);
+        match r.entries.iter().find(|e| e.key == k) { Some(e) => return Ok(e.val), None => None }
+    } else { hash_lookup(c, h, k)? };
+    match found {
         Some(i) => Ok(rhash(h).entries[i].val),
         None => {
             if obj(h).klass != vm().c_hash {
@@ -173,6 +183,15 @@ pub fn hash_aset(c: &mut Ctx, h: Value, k: Value, v: Value) -> Result<(), Esc> {
 
 /// Insert without key dup / frozen check.
 pub fn hash_set(c: &mut Ctx, h: Value, k: Value, v: Value) -> Result<(), Esc> {
+    if imm_key(k) && rhash(h).index.is_empty() {
+        let r = rhash(h);
+        if let Some(e) = r.entries.iter_mut().find(|e| e.key == k) { e.val = v; return Ok(()); }
+        if r.entries.len() < SMALL && !hash_iterating(h) {
+            r.entries.push(HEntry { key: k, val: v, hash: mix(k.raw()) });
+            r.live += 1;
+            return Ok(());
+        }
+    }
     let identity = rhash(h).identity;
     let hc = if identity { identity_hash(k) } else { key_hash(c, k)? };
     if let Some(i) = lookup_with_hash(c, h, k, hc)? { rhash(h).entries[i].val = v; return Ok(()); }

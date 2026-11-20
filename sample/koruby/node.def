@@ -148,7 +148,7 @@ node_ary_build(c: &mut Ctx, n: NodePtr, fp: *mut Value, elems: NODES, kinds: Str
 NODE_DEF
 node_hash(c: &mut Ctx, n: NodePtr, fp: *mut Value, items: NODES, kinds: Str)
 {
-    let h = crate::hash::hash_new();
+    let h = crate::hash::hash_new_capa(kinds.len());
     let base = c.sp;
     unsafe { *base = h; c.sp = base.add(2); }
     let mut i = 0;
