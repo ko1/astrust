@@ -186,11 +186,7 @@ fn run_main(o: Opts) -> i32 {
     for d in &o.incdirs { let s = string::str_new(d.as_bytes()); array::ary_push(vm.load_path, s); }
     builtins::prelude::setup_load_path();
     for a in &o.args { let s = string::str_new(a.as_bytes()); array::ary_push(vm.argv, s); }
-    if !o.plain {
-        let mut cs = astrust::CodeStore::new(&o.store);
-        cs.load(env!("KORUBY_BUILD_ID"));
-        vm.code_store = Some(cs);
-    }
+    aot::init(if o.plain { None } else { Some(&o.store) }, o.aot);
     vm.aot_collect = o.aot;
 
     let (src, file): (Vec<u8>, String) = if !o.e.is_empty() {
