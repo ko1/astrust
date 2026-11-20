@@ -54,6 +54,7 @@ extern "C" {
     fn dlerror() -> *const c_char;
 }
 const RTLD_NOW: c_int = 2;
+fn verbose() -> bool { std::env::var_os("ASTRUST_VERBOSE").is_some() }
 const RTLD_GLOBAL: c_int = 0x100;
 
 /// How to build a code store: the embedder's crate (a Rust dylib) that SD code links against.
@@ -85,12 +86,12 @@ impl CodeStore {
         let h = unsafe { dlopen(cs.as_ptr(), RTLD_NOW | RTLD_GLOBAL) };
         if h.is_null() {
             let e = unsafe { CStr::from_ptr(dlerror()) };
-            eprintln!("astrust: cannot load {}: {}", so.display(), e.to_string_lossy());
+            if verbose() { eprintln!("astrust: cannot load {}: {}", so.display(), e.to_string_lossy()); }
             return false;
         }
         let idp = unsafe { dlsym(h, b"ASTRUST_BUILD_ID\0".as_ptr() as *const c_char) } as *const [u8; 16];
         if idp.is_null() || unsafe { &*idp }[..] != build_id.as_bytes()[..16.min(build_id.len())] {
-            eprintln!("astrust: {} was baked against another build; ignored", so.display());
+            if verbose() { eprintln!("astrust: {} was baked against another build; ignored", so.display()); }
             return false;
         }
         self.handle = h;
@@ -176,4 +177,59 @@ fn split_items(src: &str) -> Vec<(String, String)> {
     }
     if let Some(c) = cur.take() { out.push(c); }
     out
+}
+
+// ---- two-tier store: shared preload (built once, next to the binary) + per-program --------
+
+/// Entry bookkeeping for AOT: bodies of the embedder's prelude go to a shared
+/// `preload` store (baked once per build), everything else to the program store.
+/// `register` swaps a body's dispatcher when a baked SD exists; `bake` writes both.
+pub struct TieredStore {
+    pub preload_dir: PathBuf,
+    pub program: Option<CodeStore>,
+    preload: Option<CodeStore>,
+    preload_tried: bool,
+    pub collect: bool,
+    pub prelude_entries: Vec<usize>,
+    pub program_entries: Vec<usize>,
+    pub hits: usize,
+}
+
+impl TieredStore {
+    pub fn new(preload_dir: PathBuf, program_dir: Option<PathBuf>, build_id: &str, collect: bool) -> Self {
+        let program = program_dir.map(|d| { let mut cs = CodeStore::new(d); cs.load(build_id); cs });
+        TieredStore { preload_dir, program, preload: None, preload_tried: false, collect, prelude_entries: vec![], program_entries: vec![], hits: 0 }
+    }
+    fn preload(&mut self, build_id: &str) -> Option<&CodeStore> {
+        if !self.preload_tried {
+            self.preload_tried = true;
+            let mut cs = CodeStore::new(&self.preload_dir);
+            if cs.load(build_id) { self.preload = Some(cs); }
+        }
+        self.preload.as_ref()
+    }
+    /// Record an entry (a node, as usize) and return the SD address to install, if baked.
+    pub fn register(&mut self, node: usize, hash: u64, is_prelude: bool, build_id: &str) -> Option<*const c_void> {
+        if self.program.is_none() { return None; }   // --plain
+        if self.collect { if is_prelude { self.prelude_entries.push(node) } else { self.program_entries.push(node) } }
+        let p = if is_prelude { self.preload(build_id).and_then(|cs| cs.lookup(hash)) }
+                else { self.program.as_ref().and_then(|cs| cs.lookup(hash)) };
+        if p.is_some() { self.hits += 1; }
+        p
+    }
+    /// Bake: `spec(entries)` returns the specializer output for a set of entries.
+    pub fn bake(&mut self, program_dir: &Path, cfg: &BakeConfig, spec: impl Fn(&[usize]) -> String) -> Result<usize, String> {
+        if self.preload(&cfg.build_id).is_none() {
+            let _ = std::fs::remove_dir_all(self.preload_dir.join("items"));
+            Self::bake_into(&self.preload_dir, &spec(&self.prelude_entries), cfg)?;
+        }
+        Self::bake_into(program_dir, &spec(&self.program_entries), cfg)
+    }
+    fn bake_into(dir: &Path, src: &str, cfg: &BakeConfig) -> Result<usize, String> {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let cs = CodeStore::new(dir);
+        let added = cs.add_items(src).map_err(|e| e.to_string())?;
+        if added > 0 || !dir.join("all.so").exists() { cs.build(cfg)?; }
+        Ok(added)
+    }
 }

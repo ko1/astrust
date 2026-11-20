@@ -173,6 +173,7 @@ pub fn boot() {
     time::init();
     math::init();
     enum_native::init();
+    crate::fiber::init();
 }
 
 /// dup/clone of built-in Data objects.
