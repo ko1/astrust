@@ -13,10 +13,11 @@ use std::cmp::Ordering;
 pub const LOCAL: u8 = 0;
 pub const UTC: u8 = 1;
 pub const FIXED: u8 = 2;
+pub const ZONE: u8 = 3;
 
-pub struct RTime { pub w: Value, pub mode: u8, pub off: Value }
+pub struct RTime { pub w: Value, pub mode: u8, pub off: Value, pub zone: Value, pub dst: bool }
 impl RData for RTime {
-    fn mark(&self, m: &mut crate::gc::Marker) { m.mark(self.w); m.mark(self.off); }
+    fn mark(&self, m: &mut crate::gc::Marker) { m.mark(self.w); m.mark(self.off); m.mark(self.zone); }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
@@ -24,14 +25,57 @@ impl RData for RTime {
 #[repr(C)]
 struct Tm { sec: i32, min: i32, hour: i32, mday: i32, mon: i32, year: i32, wday: i32, yday: i32, isdst: i32, gmtoff: i64, zone: *const std::os::raw::c_char }
 impl Default for Tm { fn default() -> Tm { Tm { sec: 0, min: 0, hour: 0, mday: 0, mon: 0, year: 0, wday: 0, yday: 0, isdst: 0, gmtoff: 0, zone: std::ptr::null() } } }
-extern "C" { fn localtime_r(t: *const i64, tm: *mut Tm) -> *mut Tm; fn mktime(tm: *mut Tm) -> i64; fn tzset(); }
+extern "C" { fn localtime_r(t: *const i64, tm: *mut Tm) -> *mut Tm; fn tzset(); }
 
 const NS: i64 = 1_000_000_000;
 fn ns() -> Value { Value::fix(NS) }
 fn rt(v: Value) -> &'static mut RTime { rdata::<RTime>(v).unwrap() }
 fn is_time(v: Value) -> bool { v.is_heap() && rdata::<RTime>(v).is_some() }
 fn new_time(klass: Value, w: Value, mode: u8, off: Value) -> Value {
-    crate::gc::alloc(klass, Body::Data(Box::new(RTime { w, mode, off })))
+    crate::gc::alloc(klass, Body::Data(Box::new(RTime { w, mode, off, zone: NIL, dst: false })))
+}
+/// a new Time at w in the same zone mode as src (zone objects are asked again)
+fn copy_time(c: &mut Ctx, klass: Value, src: Value, w: Value) -> RV {
+    let (mode, off, zone) = { let s = rt(src); (s.mode, s.off, s.zone) };
+    let t = new_time(klass, w, mode, off);
+    if mode == ZONE { zone_localtime(c, t, zone)?; }
+    Ok(t)
+}
+
+// ---- timezone objects (local_to_utc / utc_to_local protocol) ---------------------------------
+
+fn tzobj_p(z: Value) -> bool { z != NIL && respond_to(z, intern(b"local_to_utc"), true) && respond_to(z, intern(b"utc_to_local"), true) }
+/// seconds (wall clock for a Time) of a value returned by a zone object
+fn extract_secs(c: &mut Ctx, v: Value) -> RV {
+    if is_time(v) { let t = rt(v); let vt = vtm_of(t); return Ok(ex_add(ex_floor(ex_div(t.w, ns())), if t.mode == UTC { Value::fix(0) } else { ex_floor(vt.off) })); }
+    if is_integer(v) { return Ok(v); }
+    let r = funcall(c, v, s::to_i, &[], std::ptr::null())?;
+    if is_integer(r) { return Ok(r); }
+    type_err(c, format!("can't convert {} into an exact number", class_path(real_class_of(v))))
+}
+fn zone_dst(c: &mut Ctx, zone: Value, tm: Value) -> Result<bool, Esc> {
+    if !respond_to(zone, intern(b"dst?"), true) { return Ok(false); }
+    Ok(funcall(c, zone, intern(b"dst?"), &[tm], std::ptr::null())?.truthy())
+}
+/// set t (whose w is UTC) to zone mode, asking zone.utc_to_local
+fn zone_localtime(c: &mut Ctx, t: Value, zone: Value) -> Result<bool, Esc> {
+    if !respond_to(zone, intern(b"utc_to_local"), true) { return Ok(false); }
+    let secs = ex_floor(ex_div(rt(t).w, ns()));
+    let tm = new_time(vm().c_time, ex_mul(secs, ns()), UTC, NIL);
+    let local = funcall(c, zone, intern(b"utc_to_local"), &[tm], std::ptr::null())?;
+    let ls = extract_secs(c, local)?;
+    let dst = zone_dst(c, zone, tm)?;
+    let r = rt(t); r.mode = ZONE; r.off = ex_sub(ls, secs); r.zone = zone; r.dst = dst;
+    Ok(true)
+}
+/// local wall clock seconds l (+ subsec) in zone -> sets t
+fn zone_timelocal(c: &mut Ctx, t: Value, zone: Value, l: Value, sub: Value) -> Result<bool, Esc> {
+    let tm = new_time(vm().c_time, ex_mul(l, ns()), UTC, NIL);
+    let utc = funcall(c, zone, intern(b"local_to_utc"), &[tm], std::ptr::null())?;
+    let u = extract_secs(c, utc)?;
+    let dst = zone_dst(c, zone, tm)?;
+    let r = rt(t); r.w = ex_mul(ex_add(u, sub), ns()); r.mode = ZONE; r.off = ex_sub(l, u); r.zone = zone; r.dst = dst;
+    Ok(true)
 }
 pub fn time_at(c: &mut Ctx, f: f64) -> RV { let w = ex_mul(num_exact(c, float_new(f))?, ns()); Ok(new_time(vm().c_time, w, LOCAL, NIL)) }
 
@@ -84,6 +128,7 @@ fn vtm_of(t: &RTime) -> Vtm {
     let (off, isdst, zone) = match t.mode {
         UTC => (Value::fix(0), false, Some("UTC".to_string())),
         FIXED => (t.off, false, None),
+        ZONE => (t.off, t.dst, None),
         _ => { let (o, d, z) = local_info(secs_floor(t.w)); (Value::fix(o), d, Some(z)) }
     };
     let local = ex_floor(ex_add(secs, off));
@@ -99,21 +144,17 @@ fn timegm_fields(year: i128, mon: i64, mday: i64, hour: i64, min: i64, sec: i64)
 }
 /// local wall-clock seconds (as if UTC) -> UTC seconds
 fn local_to_utc(l: i128, isdst: Option<bool>) -> i128 {
-    if let Some(dst) = isdst {
-        // let the C library apply an explicit isdst
-        let shift = if !(-(1i128 << 40)..(1i128 << 40)).contains(&l) { (l - 946684800).div_euclid(CYCLE) * CYCLE } else { 0 };
-        let l2 = l - shift;
-        let days = l2.div_euclid(86400); let rem = l2.rem_euclid(86400);
-        let (y, m, d) = civil_from_days(days);
-        let mut tm = Tm { sec: (rem % 60) as i32, min: (rem / 60 % 60) as i32, hour: (rem / 3600) as i32, mday: d as i32, mon: m as i32 - 1, year: (y - 1900) as i32, isdst: dst as i32, ..Tm::default() };
-        let r = unsafe { tzset(); mktime(&mut tm) };
-        if r != -1 || (tm.year == 69) { return r as i128 + shift; }
-    }
     let a = local_info(l - 86400).0 as i128;
     let b = local_info(l + 86400).0 as i128;
     if a == b { return l - a; }
     let ta = l - a; let tb = l - b;
-    let va = local_info(ta).0 as i128 == a; let vb = local_info(tb).0 as i128 == b;
+    let (ia, ib) = (local_info(ta), local_info(tb));
+    let va = ia.0 as i128 == a; let vb = ib.0 as i128 == b;
+    if let Some(d) = isdst {
+        if va && ia.1 == d && !(vb && ib.1 == d) { return ta; }
+        if vb && ib.1 == d && !(va && ia.1 == d) { return tb; }
+        if va && vb { return if d { ta.min(tb) } else { ta.max(tb) }; }
+    }
     match (va, vb) { (true, true) => ta.max(tb), (true, false) => ta, (false, true) => tb, _ => ta }
 }
 
@@ -136,10 +177,15 @@ fn num_exact(c: &mut Ctx, v: Value) -> RV {
             if is_integer(r) { return Ok(r); }
         }
     }
-    let cn = class_name_for_err(v);
+    let cn = class_path(real_class_of(v));
     type_err(c, format!("can't convert {} into an exact number", cn))
 }
-fn str_to_inum(c: &mut Ctx, v: Value) -> RV { funcall(c, vm().main_obj, intern(b"Integer"), &[v, Value::fix(10)], std::ptr::null()) }
+fn str_to_inum(c: &mut Ctx, v: Value) -> RV {
+    let b = str_bytes(v).to_vec();
+    if !b.contains(&0) { if let Some(x) = crate::string::str_to_inum(&b, 10, true) { return Ok(x); } }
+    let ins = inspect_str(c, v)?;
+    arg_err(c, format!("invalid value for Integer(): {}", ins))
+}
 fn obj2int(c: &mut Ctx, v: Value) -> Result<i64, Esc> {
     let v = if is_string(v) { str_to_inum(c, v)? } else { v };
     let i = crate::builtins::numeric_methods::num_to_long(c, v)?;
@@ -267,7 +313,7 @@ fn utc_offset_arg(c: &mut Ctx, v: Value) -> Result<Option<Off>, Esc> {
         if b[0] == b'-' { if n == 0 { return Ok(Some(Off::Utc)); } n = -n; }
         return Ok(Some(Off::Fixed(Value::fix(n))));
     }
-    if v == NIL || v.is_sym() { return Ok(None); }
+    if v == NIL { return Ok(None); }
     Ok(Some(Off::Fixed(num_exact(c, v)?)))
 }
 fn invalid_utc_offset<T>(c: &mut Ctx, v: Value) -> Result<T, Esc> {
@@ -280,6 +326,7 @@ fn validate_off(c: &mut Ctx, o: Value) -> Result<(), Esc> {
 }
 /// apply an `in:` / zone argument to an existing time
 fn zonelocal(c: &mut Ctx, t: Value, zone: Value) -> Result<(), Esc> {
+    if tzobj_p(zone) { zone_localtime(c, t, zone)?; return Ok(()); }
     match utc_offset_arg(c, zone)? {
         Some(Off::Utc) => { rt(t).mode = UTC; rt(t).off = NIL; }
         Some(Off::Fixed(o)) => { validate_off(c, o)?; rt(t).mode = FIXED; rt(t).off = o; }
@@ -314,7 +361,7 @@ fn t_at(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
         let w = ex_add(ex_mul(x, ns()), ex_div(ex_mul(sub, ns()), Value::fix(scale)));
         new_time(slf, w, LOCAL, NIL)
     } else if is_time(a[0]) {
-        let o = rt(a[0]); new_time(slf, o.w, o.mode, o.off)
+        let w = rt(a[0]).w; copy_time(c, slf, a[0], w)?
     } else {
         let x = num_exact(c, a[0])?;
         new_time(slf, ex_mul(x, ns()), LOCAL, NIL)
@@ -329,6 +376,12 @@ fn init_vtm(c: &mut Ctx, slf: Value, mut a: Args, zone: Value) -> RV {
     if zone != NIL {
         if zone == sym_value("dst") { a.isdst = Some(true); }
         else if zone == sym_value("std") { a.isdst = Some(false); }
+        else if tzobj_p(zone) {
+            validate(c, &a)?;
+            let l = int_of(timegm_fields(a.year, a.mon, a.mday, a.hour, a.min, a.sec));
+            zone_timelocal(c, slf, zone, l, a.sub)?;
+            return Ok(slf);
+        }
         else {
             match utc_offset_arg(c, zone)? {
                 Some(Off::Utc) => utc = true,
@@ -426,7 +479,7 @@ fn t_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
             if zone != NIL { return arg_err(c, "timezone argument given as positional and keyword arguments"); }
             zone = z;
         }
-        if let Some(p) = crate::hash::hash_get_opt(c, h, sym_value("precision"))? { prec = if p == NIL { None } else { Some(crate::builtins::numeric_methods::num_to_long(c, p)?.max(0) as usize) }; }
+        if let Some(p) = crate::hash::hash_get_opt(c, h, sym_value("precision"))? { prec = if p == NIL { None } else { { let n = crate::builtins::numeric_methods::num_to_long(c, p)?; if n < 0 { None } else { Some(n as usize) } } }; }
     }
     if a.is_empty() {
         let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
@@ -461,6 +514,7 @@ vf!(t_utc_offset, |v: &Vtm| v.off);
 macro_rules! wd { ($n:ident, $d:expr) => { fn $n(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(vtm_of(rt(slf)).wday == $d)) } }; }
 wd!(t_sunday, 0); wd!(t_monday, 1); wd!(t_tuesday, 2); wd!(t_wednesday, 3); wd!(t_thursday, 4); wd!(t_friday, 5); wd!(t_saturday, 6);
 fn t_zone(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    if rt(slf).mode == ZONE { return Ok(rt(slf).zone); }
     let v = vtm_of(rt(slf));
     Ok(match v.zone { Some(z) => str_new_enc(z.as_bytes(), crate::object::ENC_ASCII), None => NIL })
 }
@@ -491,6 +545,7 @@ fn t_getutc(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { le
 fn t_localtime(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 0, 1)?;
     if let Some(&z) = a.first() { if z != NIL {
+        if tzobj_p(z) { modify(c, slf)?; zone_localtime(c, slf, z)?; return Ok(slf); }
         let off = utc_offset_arg(c, z)?;
         match off {
             Some(Off::Utc) => { modify(c, slf)?; let t = rt(slf); t.mode = UTC; t.off = NIL; }
@@ -503,8 +558,8 @@ fn t_localtime(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let t = rt(slf); t.mode = LOCAL; t.off = NIL; Ok(slf)
 }
 fn t_getlocal(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
-    let t = rt(slf);
-    let n = new_time(real_class_of(slf), t.w, t.mode, t.off);
+    let w = rt(slf).w;
+    let n = copy_time(c, real_class_of(slf), slf, w)?;
     t_localtime(c, n, a, b)
 }
 
@@ -515,7 +570,7 @@ fn time_add(c: &mut Ctx, slf: Value, o: Value, sign: i64) -> RV {
     let d = ex_mul(x, ns());
     let t = rt(slf);
     let w = if sign > 0 { ex_add(t.w, d) } else { ex_sub(t.w, d) };
-    Ok(new_time(real_class_of(slf), w, t.mode, t.off))
+    copy_time(c, real_class_of(slf), slf, w)
 }
 fn t_plus(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if is_time(a[0]) { return type_err(c, "time + time?"); }
@@ -621,7 +676,7 @@ fn strftime_into(c: &mut Ctx, out: &mut String, t: &RTime, v: &Vtm, fmt: &[u8]) 
         let mut tp: Option<String> = None;
         loop {
             i += 1;
-            if i >= fmt.len() { tp = Some(String::from_utf8_lossy(&fmt[sp..]).into_owned()); precision = -1; left = false; upper = false; lower = false; padding = 0; break; }
+            if i >= fmt.len() { return arg_err(c, format!("invalid format: {}", String::from_utf8_lossy(fmt))); }
             let ch = fmt[i];
             macro_rules! num { ($val:expr, $dp:expr, $prec:expr) => {{ fmt_num(out, $val as i128, $dp, $prec, left, padding, precision); break; }} }
             macro_rules! sub { ($f:expr) => {{
@@ -689,7 +744,7 @@ fn strftime_into(c: &mut Ctx, out: &mut String, t: &RTime, v: &Vtm, fmt: &[u8]) 
                 }
                 b'Z' => {
                     if chcase { upper = false; lower = true; }
-                    tp = Some(if gmt { "UTC".into() } else { v.zone.clone().unwrap_or_default() }); break;
+                    tp = Some(if gmt { "UTC".into() } else if t.mode == ZONE { zone_abbr(c, t)? } else { v.zone.clone().unwrap_or_default() }); break;
                 }
                 b'n' => { tp = Some("\n".into()); break; }
                 b't' => { tp = Some("\t".into()); break; }
@@ -745,6 +800,17 @@ fn strftime_into(c: &mut Ctx, out: &mut String, t: &RTime, v: &Vtm, fmt: &[u8]) 
         }
     }
     Ok(())
+}
+fn zone_abbr(c: &mut Ctx, t: &RTime) -> Result<String, Esc> {
+    let z = t.zone;
+    let r = if is_string(z) { z } else {
+        let tm = new_time(vm().c_time, t.w, UTC, NIL);
+        if respond_to(z, intern(b"abbr"), true) { funcall(c, z, intern(b"abbr"), &[tm], std::ptr::null())? }
+        else if respond_to(z, intern(b"strftime"), true) { funcall(c, z, intern(b"strftime"), &[str_new(b"%Z"), tm], std::ptr::null())? }
+        else if respond_to(z, s::name, true) { funcall(c, z, s::name, &[], std::ptr::null())? } else { NIL }
+    };
+    let sv = funcall(c, r, s::to_s, &[], std::ptr::null())?;
+    Ok(if is_string(sv) { String::from_utf8_lossy(str_bytes(sv)).into_owned() } else { String::new() })
 }
 fn strf(c: &mut Ctx, slf: Value, fmt: &[u8]) -> Result<String, Esc> {
     let t = rt(slf); let v = vtm_of(t);
@@ -833,12 +899,13 @@ fn t_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     modify(c, slf)?;
     let Some(o) = rdata::<RTime>(a[0]) else { return type_err(c, "initialize_copy should take same class object") };
     let (w, m, off) = (o.w, o.mode, o.off);
-    let t = rt(slf); t.w = w; t.mode = m; t.off = off;
+    let (z, dst) = (o.zone, o.dst);
+    let t = rt(slf); t.w = w; t.mode = m; t.off = off; t.zone = z; t.dst = dst;
     Ok(slf)
 }
 
 pub fn dup_data(_c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
-    if let Some(t) = rdata::<RTime>(v) { return Ok(Some(new_time(real_class_of(v), t.w, t.mode, t.off))); }
+    if let Some(t) = rdata::<RTime>(v) { let n = new_time(real_class_of(v), t.w, t.mode, t.off); let (z, d) = (t.zone, t.dst); rt(n).zone = z; rt(n).dst = d; return Ok(Some(n)); }
     Ok(None)
 }
 pub fn alloc_data(_c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
