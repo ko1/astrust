@@ -107,6 +107,9 @@ Lesson recorded many times in the ledger: instruction counts and cycles disagree
 - `Value` is `NonZeroU64` with nil = 0x04: zero-filled memory is not valid.
 
 ## Open measurements
-- tak / ackermann AOT instructions rose with the string/GC performance merge (tak 5413M → 5751M,
-  ackermann 3874M → 4454M, fib unchanged); not the mixed Float/Integer inline path (4454M → 4372M
-  with it removed). Cause not found yet.
+- tak / ackermann AOT instruction counts (local): 5413M / 3874M at a373e61, 5711M / 4377M at a358117,
+  5751M / 4454M after the merges. A bisect over the string/GC performance branch on its own base
+  shows it adds only ackermann +3〜5%, tak +0.6%; the rise happened earlier, with the shared
+  `cc_fast` / polymorphic table / cfunc cache kind in the call path (fib unchanged). sp4 wall time
+  over the same span still improved (tak 0.337 → 0.298 s), so this is a possible small win to
+  recover, not a regression in time. (An earlier note here blamed the merge; that was wrong.)
