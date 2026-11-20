@@ -31,7 +31,7 @@ pub fn bake_config() -> BakeConfig {
     let sys = std::path::PathBuf::from(env!("KORUBY_RUSTC_SYSROOT")).join("lib/rustlib").join(env!("KORUBY_TARGET")).join("lib");
     BakeConfig {
         crate_name: "koruby".into(), crate_path: dir.join("libkoruby.so"),
-        lib_dirs: vec![dir.clone(), dir.join("deps")], rpaths: vec![sys, dir],
+        lib_dirs: vec![dir.clone(), dir.join("deps"), dir.join("target/release/deps")], rpaths: vec![sys, dir],
         prelude: "extern crate koruby;\nuse koruby::*;\nuse koruby::node::*;\nuse koruby::value::*;\nuse koruby::vm::*;\n".into(),
         build_id: env!("KORUBY_BUILD_ID").into(), verbose: std::env::var_os("KORUBY_AOT_VERBOSE").is_some(),
     }
