@@ -180,6 +180,14 @@ Gc<Koruby, Backend>`, `gc::alloc(klass, body)`, `gc::collect()`, `gc::store`, `g
 * Backend: `make` (marksweep) or `make GC=bitmap`.  `KORUBY_GC_STRESS=n` arms stress mode once
   the VM has booted.
 
+State under `KORUBY_GC_STRESS=1` (t/hand `gc* array* hash* str*`, 246 files, output compared
+with a run without stress, 2026-11-20): marksweep 1 file differs (`gc_remset_overflow_1030.rb`,
+a timeout); bitmap 4 (`gc_remset_overflow_1030.rb` timeout, `string_misc_compat_2026_09_11.rb`,
+`string_partition_to_str.rb`, and a SEGV in `stringio.rb` at `sio_readlines`).  The bitmap
+backend reuses the lowest free slot first, so a stale reference aliases a new object sooner;
+whether the three extra files are rooting bugs in koruby shown by that order or a fault in the
+backend has not been determined.
+
 ### What still blocks precise roots or a moving backend
 
 Each item is an assumption in koruby's code, not in the framework (see also
