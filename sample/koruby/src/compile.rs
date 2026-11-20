@@ -79,6 +79,7 @@ pub struct Compiler<'a> {
     pub eval_outer: Vec<Vec<(Sym, u32, u32)>>,  // eval: outer scopes' (name, hops, idx), innermost first
     in_def: u32,
     pm_err: Option<u32>,          // single-pattern match: slot receiving the failure description
+    tl_binding: bool,
     pub errors: Vec<String>,
 }
 
@@ -104,7 +105,7 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        Compiler { pr, file, scopes: vec![], captures: HashMap::new(), eval_outer: vec![], in_def: 0, pm_err: None, errors: vec![] }
+        Compiler { pr, file, scopes: vec![], captures: HashMap::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, errors: vec![] }
     }
 
     fn cst(&self, c: u32) -> Sym { intern(&self.pr.constants[c as usize]) }
@@ -302,7 +303,12 @@ impl<'a> Compiler<'a> {
         self.analyze(root, &[stmts]);
         let sk = if kind == IseqKind::Eval { SK::Eval } else { SK::Top };
         self.push_scope(sk, root, &locals);
-        let body = self.c(stmts);
+        let mut body = self.c(stmts);
+        if self.tl_binding {
+            // the main script mentions TOPLEVEL_BINDING: bind it before anything runs
+            let b = self.fcall("binding", vec![], 1);
+            body = self.seq(vec![ALLOC_node_cdecl(intern(b"TOPLEVEL_BINDING"), b), body]);
+        }
         let label = if kind == IseqKind::Eval { "<main>".to_string() } else { "<main>".to_string() };
         self.finish_iseq(body, Params::default(), kind, label, 1, Sym(0))
     }
@@ -1954,5 +1960,9 @@ pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind,
     let mut cm = Compiler::new(&pr, file);
     if kind == IseqKind::Eval && !outer.is_empty() { cm.captures.entry(key(&pr.root)).or_default().insert(Sym(u32::MAX)); }
     cm.eval_outer = outer;
+    if kind == IseqKind::Main && src.windows(16).any(|w| w == b"TOPLEVEL_BINDING") {
+        cm.tl_binding = true;
+        cm.captures.entry(key(&pr.root)).or_default().insert(Sym(u32::MAX));
+    }
     Ok(cm.compile_program(&pr.root, kind))
 }

@@ -250,7 +250,15 @@ pub fn cvar_lookup(k: Value, name: Sym) -> Option<(Value, Value)> {
     None
 }
 
+/// @@x where the lexical scope is the top level (whatever self is) is an error.
+fn cvar_toplevel_check(c: &mut Ctx) -> Result<(), Esc> {
+    let cr = unsafe { (*c.frame).cref };
+    if cr.is_null() || unsafe { (*cr).prev.is_null() } { let r: RV = err(c, vm().c_runtime_error, "class variable access from toplevel"); return r.map(drop); }
+    Ok(())
+}
+
 pub fn rt_cvar_get(c: &mut Ctx, name: Sym) -> RV {
+    cvar_toplevel_check(c)?;
     let k = cvar_base(c);
     match cvar_lookup(k, name) {
         Some((_, v)) => Ok(v),
@@ -263,6 +271,7 @@ pub fn rt_cvar_get(c: &mut Ctx, name: Sym) -> RV {
 }
 
 pub fn rt_cvar_set(c: &mut Ctx, name: Sym, v: Value) -> RV {
+    cvar_toplevel_check(c)?;
     let k = cvar_base(c);
     match cvar_lookup(k, name) {
         Some((owner, _)) => { rclass(owner).cvars.insert(name, v); }
@@ -764,7 +773,7 @@ pub fn rt_def(c: &mut Ctx, mid: Sym, is: &'static Iseq, _fp: *mut Value) -> RV {
     let mut klass = cref_class(c);
     // `def` inside a method body defines on the cref class; inside instance_eval, on the singleton
     if f.defined_class != NIL && f.kind != FK_CLASS { klass = f.defined_class; }
-    let mut visi = if f.kind == FK_CLASS || f.kind == FK_TOP || (f.kind == FK_EVAL) { f.visi } else { VISI_PUBLIC };
+    let mut visi = if f.kind == FK_CLASS || f.kind == FK_TOP || f.kind == FK_EVAL || (f.kind == FK_BLOCK && f.defined_class == klass) { f.visi } else { VISI_PUBLIC };
     // eval at top level defines private methods; a def in a method body is public
     if klass == vm().c_object && f.kind == FK_EVAL && unsafe { (*f.cref).prev.is_null() } { visi = VISI_PRIVATE; }
     if mid == s::initialize || mid == s::initialize_copy || mid == s::respond_to_missing_p

@@ -552,13 +552,16 @@ fn set_visibility(c: &mut Ctx, slf: Value, a: &[Value], visi: u8) -> RV {
     if a.is_empty() {
         let f = c.frame();
         let p = unsafe { &mut *f.prev };
-        if p.kind == FK_CLASS || p.kind == FK_TOP || p.kind == FK_EVAL { p.visi = visi; }
+        // a class_eval / Class.new body block keeps its default for the rest of that block
+        if p.kind == FK_CLASS || p.kind == FK_TOP || p.kind == FK_EVAL || (p.kind == FK_BLOCK && p.defined_class == slf) { p.visi = visi; }
         return Ok(NIL);
     }
     let list: Vec<Value> = if a.len() == 1 && is_array(a[0]) { rary(a[0]).clone() } else { a.to_vec() };
     for &x in &list {
         let m = to_sym_arg(c, x)?;
         let me = search_method(slf, m);
+        // a refinement changes the visibility of the refined class's method
+        let me = if me.is_null() && rclass(slf).refined { search_method(rclass(slf).attached, m) } else { me };
         let me = if me.is_null() && rclass(slf).is_module { search_method(vm().c_object, m) } else { me };
         if me.is_null() || matches!(unsafe { (*me).kind }, MKind::Undef) {
             let msg = format!("undefined method '{}' for {} '{}'", sym_str(m), if rclass(slf).is_module { "module" } else { "class" }, class_path(slf));
