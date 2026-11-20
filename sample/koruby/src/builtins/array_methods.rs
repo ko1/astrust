@@ -712,7 +712,7 @@ fn perms(n: usize, k: usize) -> Vec<Vec<usize>> {
     rec(n, k, &mut cur, &mut used, &mut out); out
 }
 fn emit_index_lists(c: &mut Ctx, slf: Value, lists: Vec<Vec<usize>>, blk: *const Block, mid: &str, a: &[Value]) -> RV {
-    if blk.is_null() { let out = ary_new(); for l in lists { ary_push(out, ary_from_vec(l.iter().map(|&i| get(slf, i)).collect())); } return crate::builtins::enumerator::enum_from_array(c, slf, intern(mid.as_bytes()), a, out); }
+    if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(mid.as_bytes()), a, Value::fix(lists.len() as i64)); }
     let snapshot = ary_from_vec(rary(slf).clone());
     for l in lists { let row = ary_from_vec(l.iter().map(|&i| get(snapshot, i)).collect()); yield1(c, blk, row)?; }
     Ok(slf)
@@ -784,12 +784,19 @@ cfn!(a_shuffle, |c, slf, a, blk| {
     Ok(ary_from_vec(v))
 });
 cfn!(a_shuffle_b, |c, slf, a, blk| { let r = a_shuffle(c, slf, a, blk)?; *modify(c, slf)? = rary(r).clone(); Ok(slf) });
-cfn!(a_cycle, |c, slf, a, blk| enum_or(c, slf, "cycle", a, blk, |c| {
+cfn!(a_cycle, |c, slf, a, blk| {
+    check_argc(c, a, 0, 1)?;
+    if blk.is_null() {
+        let l = len(slf) as i64;
+        let size = if a.is_empty() || a[0] == NIL { if l == 0 { Value::fix(0) } else { crate::numeric::float_new(f64::INFINITY) } } else { Value::fix(l * num_to_long(c, a[0])?.max(0)) };
+        return crate::builtins::enumerator::enum_for(c, slf, intern(b"cycle"), a, size);
+    }
+    enum_or(c, slf, "cycle", a, blk, |c| {
     let n = if a.is_empty() || a[0] == NIL { -1 } else { num_to_long(c, a[0])? };
     let mut k = 0;
     while n < 0 || k < n { if len(slf) == 0 { break; } let mut i = 0; while i < len(slf) { yield1(c, blk, get(slf, i))?; i += 1; } k += 1; }
     Ok(NIL)
-}));
+}) });
 cfn!(a_bsearch, |c, slf, a, blk| enum_or(c, slf, "bsearch", a, blk, |c| {
     let (mut lo, mut hi) = (0usize, len(slf));
     let mut found = NIL;
