@@ -112,6 +112,15 @@ end
 The default suits an embedder with no GC or one that scans the machine stack. A precise-GC
 embedder stages the value in a root-scanned slot instead (`docs/gc.md`).
 
+### Contiguous trees
+
+By default specialized code reaches a child node by loading the pointer from its parent, one load
+per level of the tree.  An embedder that sets the hook `contiguous?` and passes every finished tree
+through `layout_tree(root)` (which copies it into one block, parents before children) gets
+specialized code that computes every node's address as `root + constant` instead: the offsets
+depend only on the tree's shape, which the hash covers.  Only laid-out trees are then specialized.
+saruby does this; an inline cache there is one addressing mode away from the body's root.
+
 ## Code store
 
 `CodeStore` keeps one file per emitted item (`items/T_<hash>.rs`, `L_<hash>.rs`, `SD_<hash>.rs`),
