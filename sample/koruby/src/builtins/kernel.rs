@@ -884,7 +884,7 @@ pub fn init() {
     mf("autoload?", m_autoload_p, -1);
     define_cfunc(vm.c_module, "autoload?", m_autoload_p, -1);
     define_private_cfunc(vm.c_module, "ruby2_keywords", m_ruby2_keywords, -1);
-    define_singleton_cfunc(vm.main_obj, "ruby2_keywords", m_ruby2_keywords, -1);
+    define_private_cfunc(singleton_class(vm.main_obj), "ruby2_keywords", m_ruby2_keywords, -1);
     define_singleton_cfunc(vm.c_module, "nesting", m_s_nesting, 0);
     define_singleton_cfunc(vm.c_hash, "ruby2_keywords_hash?", h_s_r2k_hash_p, 1);
     define_singleton_cfunc(vm.c_hash, "ruby2_keywords_hash", h_s_r2k_hash, 1);

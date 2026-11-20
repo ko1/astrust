@@ -54,7 +54,7 @@ pub fn method_arity(me: *const MethodEntry) -> i64 {
         MKind::Cfunc(_, a) => a as i64,
         MKind::AttrReader(_) => 0,
         MKind::AttrWriter(_) => 1,
-        MKind::Bmethod(p) => proc_arity(p),
+        MKind::Bmethod(p) => match rproc(p).blk.kind { BlockKind::Iseq(is) => iseq_arity(unsafe { &*is }, true), _ => proc_arity(p) },
         _ => -1,
     }
 }
@@ -299,6 +299,12 @@ fn meth_sig(c: &mut Ctx, slf: Value) -> Result<String, Esc> {
         return Ok(format!("({})", inner));
     }
     let is = iseq.unwrap();
+    // prelude methods look like C methods
+    if is.info.file.starts_with("<internal:") {
+        let a = iseq_arity(is, true);
+        let inner = if a < 0 { "*".to_string() } else { vec!["_"; a as usize].join(", ") };
+        return Ok(format!("({})", inner));
+    }
     if is.params.forwarding { return Ok(format!("(...) {}:{}", is.info.file, is.info.line)); }
     let ps = method_parameters(c, slf, &[], std::ptr::null())?;
     let mut parts = vec![];
