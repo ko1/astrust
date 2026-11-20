@@ -48,6 +48,8 @@ use crate::symbol::s;
 
 
 
+// slot (baked): 1 + the index the site's cache held, 0 none.  Baked code tests it against the cache,
+// so which tier holds the slot is known there; a stale one only sends the site out of line.
 
 
 
@@ -361,34 +363,39 @@ pub fn EVAL_node_dasgn(c: &mut Ctx, n: NodePtr, fp: Fp, hops: u32, idx: u32, v: 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_ivar(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, ic: &mut IvarCache) -> RV {
+pub fn EVAL_node_ivar(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, ic: &mut IvarCache, slot: u32) -> RV {
     let slf = fp[0].get();
     if slf.is_heap() {
         let o = obj(slf);
         if o.klass.raw() == ic.klass {
             if let Body::Object(ivs) = &o.body {
-                if let Some(v) = ivs.get(ic.idx as usize) { return Ok(if v == UNDEF { NIL } else { v }); }
-                return Ok(NIL);
+                if slot == 0 {
+                    if let Some(v) = ivs.get(ic.idx as usize) { return Ok(if v == UNDEF { NIL } else { v }); }
+                    return Ok(NIL);
+                } else if ic.idx == slot - 1 {
+                    if let Some(v) = ivs.get((slot - 1) as usize) { return Ok(if v == UNDEF { NIL } else { v }); }
+                }
             }
         }
     }
-    Ok(srb_ivar_get(slf, name, ic))
+    Ok(srb_ivar_get_out(slf, name, ic))
 }
 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value, ic: &mut IvarCache) -> RV {
+pub fn EVAL_node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value, ic: &mut IvarCache, slot: u32) -> RV {
     let slf = fp[0].get();
     if slf.is_heap() {
         let o = obj(slf);
         if o.klass.raw() == ic.klass && o.flags & FL_FROZEN == 0 {
             if let Body::Object(ivs) = &mut o.body {
-                if ivs.set(ic.idx as usize, v) { return Ok(v); }
+                if slot == 0 { if ivs.set(ic.idx as usize, v) { return Ok(v); } }
+                else if ic.idx == slot - 1 && ivs.set((slot - 1) as usize, v) { return Ok(v); }
             }
         }
     }
-    srb_ivar_set(c, slf, name, v, ic)
+    srb_ivar_set_out(c, slf, name, v, ic)
 }
 
 

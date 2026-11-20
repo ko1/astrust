@@ -231,6 +231,35 @@ pub fn srb_ivar_get(slf: Value, name: Sym, ic: &mut IvarCache) -> Value {
     ivar_get(slf, name)
 }
 
+/// A site's way out of its inline path: the cache without the baked slot first (a stale slot stays cheap), then the miss.
+#[cold]
+#[inline(never)]
+pub fn srb_ivar_get_out(slf: Value, name: Sym, ic: &mut IvarCache) -> Value {
+    if slf.is_heap() {
+        let o = obj(slf);
+        if o.klass.raw() == ic.klass {
+            if let Body::Object(ivs) = &o.body {
+                return match ivs.get(ic.idx as usize) { Some(v) if v != UNDEF => v, _ => NIL };
+            }
+        }
+    }
+    srb_ivar_get(slf, name, ic)
+}
+
+#[cold]
+#[inline(never)]
+pub fn srb_ivar_set_out(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &mut IvarCache) -> RV {
+    if slf.is_heap() {
+        let o = obj(slf);
+        if o.klass.raw() == ic.klass && o.flags & FL_FROZEN == 0 {
+            if let Body::Object(ivs) = &mut o.body {
+                if ivs.set(ic.idx as usize, v) { return Ok(v); }
+            }
+        }
+    }
+    srb_ivar_set(c, slf, name, v, ic)
+}
+
 pub fn srb_ivar_set(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &mut IvarCache) -> RV {
     ivar_set(c, slf, name, v)?;
     if slf.is_heap() {

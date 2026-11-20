@@ -704,6 +704,7 @@ fn SPECIALIZE_node_ivar(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("(*np).u.name".to_string());
     a.push("&mut (*np).u.ic".to_string());
+    a.push(format!("{}u32", { let u = &(*np).u; if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
@@ -735,6 +736,7 @@ fn SPECIALIZE_node_iasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("(*np).u.name".to_string());
     a.push("v_v".to_string());
     a.push("&mut (*np).u.ic".to_string());
+    a.push(format!("{}u32", { let u = &(*np).u; if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));

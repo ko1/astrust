@@ -26,7 +26,13 @@ class SarubyNodeDef < ASTrustGen::NodeDef
     def contiguous? = true
     # the method entry cached at this call site when the code is baked
     # what the call site's cache holds when the code is baked (vm.rs SITE_*)
-    def bake_value_expr(op) = "{ let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
+    def bake_value_expr(op)
+      case @name
+      # 1 + the slot index in the site's cache (0: the site never ran)
+      when 'node_ivar', 'node_iasgn' then "{ let u = &(*np).u; if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }"
+      else "{ let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
+      end
+    end
     def spec_target_expr(op) = "{ let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) }"
 
     def opaque_hash_expr(op, f)
