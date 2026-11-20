@@ -103,6 +103,43 @@ pub fn pack(c: &mut Ctx, ary: Value, a: &[Value]) -> RV {
                 let n = match cnt { None => 1, Some(usize::MAX) => ary_len(ary) - idx, Some(n) => n };
                 for _ in 0..n { let v = next(c, &mut idx)?; let mut x = num_to_long(c, v)? as u64; let mut tmp = vec![(x & 0x7f) as u8]; x >>= 7; while x > 0 { tmp.push((x & 0x7f) as u8 | 0x80); x >>= 7; } tmp.reverse(); out.extend(tmp); }
             }
+            b'M' => {
+                let v = next(c, &mut idx)?; let sv = crate::rt::rt_tostr(c, v)?;
+                let len = match cnt { Some(n) if n > 1 && n != usize::MAX => n, _ => 72 };
+                let (mut n, mut prev) = (0usize, 0u8);
+                for &x in str_bytes(sv) {
+                    if x > 126 || (x < 32 && x != b'\n' && x != b'\t') || x == b'=' { out.extend_from_slice(format!("={:02X}", x).as_bytes()); n += 3; prev = 0; }
+                    else if x == b'\n' { if prev == b' ' || prev == b'\t' { out.push(b'='); out.push(x); } out.push(x); n = 0; prev = x; }
+                    else { out.push(x); n += 1; prev = x; }
+                    if n > len { out.extend_from_slice(b"=\n"); n = 0; prev = b'\n'; }
+                }
+                if n > 0 { out.extend_from_slice(b"=\n"); }
+            }
+            b'u' => {
+                let v = next(c, &mut idx)?; let sv = expect_str(c, v)?;
+                let line = match cnt { Some(n) if n >= 3 && n != usize::MAX => n / 3 * 3, _ => 45 };
+                let enc = |v: u8| if v == 0 { b'`' } else { v + 32 };
+                for chunk in str_bytes(sv).chunks(line) {
+                    out.push(enc(chunk.len() as u8));
+                    for g in chunk.chunks(3) {
+                        let (a0, a1, a2) = (g[0], *g.get(1).unwrap_or(&0), *g.get(2).unwrap_or(&0));
+                        out.extend_from_slice(&[enc(a0 >> 2), enc((a0 << 4 | a1 >> 4) & 63), enc((a1 << 2 | a2 >> 6) & 63), enc(a2 & 63)]);
+                    }
+                    out.push(b'\n');
+                }
+            }
+            b'b' | b'B' => {
+                let v = next(c, &mut idx)?; let sv = expect_str(c, v)?; let bits = str_bytes(sv);
+                let n = match cnt { None => 1, Some(usize::MAX) => bits.len(), Some(n) => n };
+                let start = out.len();
+                // CRuby pads a short bit string with (missing + 1) / 2 NUL bytes
+                let m = n.min(bits.len());
+                out.resize(start + (m + 7) / 8 + (n - m + 1) / 2, 0);
+                for k in 0..m { if bits[k] & 1 == 1 { out[start + k / 8] |= if ch == b'B' { 0x80 >> (k % 8) } else { 1 << (k % 8) }; } }
+                binary = true;
+            }
+            b'X' => { let n = match cnt { None => 1, Some(usize::MAX) => 0, Some(n) => n }; if n > out.len() { return arg_err(c, "X outside of string"); } out.truncate(out.len() - n); }
+            b'@' => { let n = match cnt { None => 1, Some(usize::MAX) => 0, Some(n) => n }; out.resize(n, 0); }
             _ => return arg_err(c, format!("unknown pack directive '{}'", ch as char)),
         }
     }
@@ -189,6 +226,47 @@ pub fn unpack(c: &mut Ctx, sv: Value, a: &[Value]) -> RV {
                 let mut k = 0;
                 while k < n && pos < b.len() { let mut x: u64 = 0; loop { let byte = b[pos]; pos += 1; x = x << 7 | (byte & 0x7f) as u64; if byte & 0x80 == 0 || pos >= b.len() { break; } } ary_push(out, Value::fix(x as i64)); k += 1; }
             }
+            b'M' => {
+                let mut v = vec![]; let s2 = &b[pos.min(b.len())..]; let mut i = 0;
+                while i < s2.len() {
+                    if s2[i] == b'=' {
+                        if i + 1 >= s2.len() { v.extend_from_slice(&s2[i..]); break; }
+                        if s2[i + 1] == b'\n' { i += 2; continue; }
+                        if s2[i + 1] == b'\r' && s2.get(i + 2) == Some(&b'\n') { i += 3; continue; }
+                        if i + 2 < s2.len() && s2[i + 1].is_ascii_hexdigit() && s2[i + 2].is_ascii_hexdigit() { v.push(hex_v(s2[i + 1]) << 4 | hex_v(s2[i + 2])); i += 3; continue; }
+                        v.extend_from_slice(&s2[i..]);
+                        break;
+                    }
+                    v.push(s2[i]); i += 1;
+                }
+                pos = b.len();
+                ary_push(out, str_from_vec_enc(v, ENC_BINARY));
+            }
+            b'u' => {
+                let mut v = vec![]; let s2 = &b[pos.min(b.len())..];
+                for line in s2.split(|&x| x == b'\n') {
+                    if line.is_empty() { continue; }
+                    let n = ((line[0].wrapping_sub(32)) & 63) as usize;
+                    if n == 0 { continue; }
+                    let d: Vec<u8> = line[1..].iter().map(|&x| x.wrapping_sub(32) & 63).collect();
+                    let mut got = vec![];
+                    for g in d.chunks(4) { let q = [g[0], *g.get(1).unwrap_or(&0), *g.get(2).unwrap_or(&0), *g.get(3).unwrap_or(&0)]; got.extend_from_slice(&[q[0] << 2 | q[1] >> 4, q[1] << 4 | q[2] >> 2, q[2] << 6 | q[3]]); }
+                    got.truncate(n);
+                    v.extend(got);
+                }
+                pos = b.len();
+                ary_push(out, str_from_vec_enc(v, ENC_BINARY));
+            }
+            b'b' | b'B' => {
+                let avail = b.len().saturating_sub(pos) * 8;
+                let n = match cnt { None => 1, Some(usize::MAX) => avail, Some(n) => n.min(avail) };
+                let mut s2 = Vec::with_capacity(n);
+                for k in 0..n { let byte = b[pos + k / 8]; let bit = if ch == b'B' { byte >> (7 - k % 8) } else { byte >> (k % 8) } & 1; s2.push(b'0' + bit); }
+                pos += (n + 7) / 8;
+                ary_push(out, str_from_vec_enc(s2, ENC_ASCII));
+            }
+            b'X' => { let n = match cnt { None => 1, Some(usize::MAX) => 0, Some(n) => n }; if n > pos { return arg_err(c, "X outside of string"); } pos -= n; }
+            b'@' => { let n = match cnt { None => 1, Some(usize::MAX) => 0, Some(n) => n }; if n > b.len() { return arg_err(c, "@ outside of string"); } pos = n; }
             _ => return arg_err(c, format!("unknown unpack directive '{}'", ch as char)),
         }
     }
