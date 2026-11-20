@@ -475,7 +475,7 @@ fn m_remove_method(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
             let e = make_name_error(c, vm().c_name_error, &msg, Value::sym(m), slf)?;
             return Err(raise_exc(c, e));
         }
-        let vm = vm(); vm.method_serial += 1; vm.mcache.clear();
+        bump_method_serial(); vm().mcache.clear();
         crate::rt::note_redefinition(slf, m);
         if rclass(slf).is_singleton {
             let att = rclass(slf).attached;
@@ -574,7 +574,7 @@ fn set_visibility(c: &mut Ctx, slf: Value, a: &[Value], visi: u8) -> RV {
             define_method_me(sk, m, n2);
             continue;
         }
-        if o.owner == slf { unsafe { (*(me as *mut MethodEntry)).visi = visi; } let vm = vm(); vm.method_serial += 1; vm.mcache.clear(); }
+        if o.owner == slf { unsafe { (*(me as *mut MethodEntry)).visi = visi; } bump_method_serial(); vm().mcache.clear(); }
         else {
             let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
             define_method_me(slf, m, n);
@@ -944,7 +944,7 @@ fn m_using(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
         (*pf).set_cref(cr);
         REFINEMENTS_ON = true;
     }
-    vm().method_serial += 1;
+    bump_method_serial();
     Ok(slf)
 }
 fn m_refinements(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {

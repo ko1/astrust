@@ -130,6 +130,13 @@ pub fn new_cref(klass: Value, prev: *const Cref) -> *const Cref {
 
 // ---- inline caches -------------------------------------------------------------------------
 
+// Bumped when a method table, a visibility or the hierarchy changes; call caches compare it.
+// A static (not a Vm field): one load in baked code, and no `static mut` on the call path.
+static METHOD_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+#[inline(always)]
+pub fn method_serial() -> u64 { METHOD_SERIAL.load(std::sync::atomic::Ordering::Relaxed) }
+pub fn bump_method_serial() { METHOD_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+
 #[derive(Default)]
 pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize, pub fast_hash: u64, pub fast_argc: u32, pub poly_next: u32, pub poly: usize, pub cfunc: usize, pub arity: i32 }
 #[derive(Default)]
@@ -145,7 +152,7 @@ pub const KIND_WAYS: usize = 8;
 pub fn kind_way(k: u64) -> usize { (k.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 61) as usize }
 /// Changes whenever a method or an ancestry does (both counters only grow).
 #[inline(always)]
-pub fn kind_serial() -> u64 { let vm = vm(); vm.method_serial + vm.hierarchy_serial }
+pub fn kind_serial() -> u64 { method_serial() + vm().hierarchy_serial }
 
 // ---- frames ---------------------------------------------------------------------------------
 
@@ -292,7 +299,6 @@ pub struct Vm {
     pub stdout: Value, pub stderr: Value, pub stdin: Value,
     pub globals: HashMap<Sym, Value>,
     pub global_aliases: HashMap<Sym, Sym>,
-    pub method_serial: u64,
     pub const_serial: u64,
     pub hierarchy_serial: u64,
     pub mcache: HashMap<(u64, Sym), *const MethodEntry>,
@@ -411,7 +417,7 @@ pub fn singleton_class(v: Value) -> Value {
     }
     obj(meta).klass = vm.c_class;
     obj(v).klass = meta;
-    vm.method_serial += 1;
+    bump_method_serial();
     vm.mcache.clear();
     meta
 }
@@ -489,7 +495,7 @@ pub fn prepend_module(klass: Value, m: Value) {
 pub fn bump_hierarchy() {
     let vm = vm();
     vm.hierarchy_serial += 1;
-    vm.method_serial += 1;
+    bump_method_serial();
     vm.const_serial += 1;
     vm.mcache.clear();
 }
@@ -534,7 +540,7 @@ pub fn ancestors(klass: Value) -> &'static Vec<Value> {
 pub fn define_method_me(klass: Value, name: Sym, me: *const MethodEntry) {
     rclass(klass).mtbl.insert(name, me);
     let vm = vm();
-    vm.method_serial += 1;
+    bump_method_serial();
     vm.mcache.clear();
 }
 
@@ -1132,7 +1138,7 @@ pub fn funcall_kw(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *cons
 pub fn call_cached(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     let recv = base[0].get();
     let klass = class_of(recv);
-    let hit = cc.klass == klass.raw() && cc.serial == vm().method_serial;
+    let hit = cc.klass == klass.raw() && cc.serial == method_serial();
     if hit {
         if let Some(r) = cc_fast(c, cc, recv, base, argc, blk, flags) { return r; }
     }
@@ -1246,7 +1252,7 @@ pub fn site_hit(cc: &CallCache, recv: Value, kind: u32) -> bool {
     if kind & 15 == SITE_OTHER { return false; }
     let k = if kind & SITE_IMM != 0 { if recv.is_heap() { return false; } class_of_imm(recv) }
             else { if !recv.is_heap() { return false; } obj(recv).klass.raw() };
-    cc.klass == k && cc.serial == vm().method_serial
+    cc.klass == k && cc.serial == method_serial()
 }
 
 /// The one fast path of a site whose cache matched (site_hit); None: go out of line.
@@ -1302,7 +1308,7 @@ pub fn call_slow(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32
     let recv = base[0].get();
     let me = if hit { cc.me as *const MethodEntry } else {
         let klass = class_of(recv);
-        let serial = vm().method_serial;
+        let serial = method_serial();
         let e: &mut CallCache = if cc.klass == 0 || cc.serial != serial {
             if cc.poly != 0 { for w in unsafe { &mut *(cc.poly as *mut [CallCache; POLY_WAYS]) }.iter_mut() { w.klass = 0; } }
             let me = lookup_site(c, klass, mid);
@@ -1352,7 +1358,7 @@ fn lookup_site(c: &Ctx, klass: Value, mid: Sym) -> *const MethodEntry {
 #[inline(always)]
 pub fn lookup_cc(c: &Ctx, cc: &mut CallCache, recv: Value, mid: Sym, flags: u32) -> *const MethodEntry {
     let klass = class_of(recv);
-    let serial = vm().method_serial;
+    let serial = method_serial();
     if cc.klass == klass.raw() && cc.serial == serial { return cc.me as *const MethodEntry; }
     let me = lookup_site(c, klass, mid);
     fill_cc(cc, recv, klass, me, serial, flags);

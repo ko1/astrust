@@ -58,7 +58,6 @@ fn blank_vm() -> Box<Vm> {
         std::ptr::write(&mut (*vp).stdin, NIL);
         std::ptr::write(&mut (*vp).globals, HashMap::default());
         std::ptr::write(&mut (*vp).global_aliases, HashMap::default());
-        std::ptr::write(&mut (*vp).method_serial, 1);
         std::ptr::write(&mut (*vp).const_serial, 1);
         std::ptr::write(&mut (*vp).hierarchy_serial, 1);
         std::ptr::write(&mut (*vp).mcache, HashMap::default());
