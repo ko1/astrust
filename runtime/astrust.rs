@@ -45,7 +45,9 @@ pub struct SpecCtx {
 
 impl SpecCtx {
     pub fn new() -> Self {
-        SpecCtx { out: String::new(), emitted: HashSet::new(), open: HashSet::new(), spec_depth: 0, spec_max_depth: 2, comments: std::env::var_os("ASTRUST_SD_COMMENTS").is_some() }
+        SpecCtx { out: String::new(), emitted: HashSet::new(), open: HashSet::new(), spec_depth: 0,
+                  // ASTRUST_SPEC_DEPTH=n: how deep speculated callees nest (0: no speculation)
+                  spec_max_depth: std::env::var("ASTRUST_SPEC_DEPTH").ok().and_then(|v| v.parse().ok()).unwrap_or(2), comments: std::env::var_os("ASTRUST_SD_COMMENTS").is_some() }
     }
 }
 
