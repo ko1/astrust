@@ -179,7 +179,7 @@ pub fn boot() {
     exception::init();
     numeric_methods::init();
     string_methods::init(vm.c_string);
-    symbol_methods::init();
+    symbol_methods::init(vm.c_symbol);
     array_methods::init(vm.c_array);
     hash_methods::init();
     range_methods::init();
@@ -194,7 +194,7 @@ pub fn boot() {
     prelude::lazy_const(ob, "ENV", "saruby/env");
     prelude::lazy_const(ob, "RbConfig", "saruby/rbconfig");
     encoding::init(vm);
-    stringio::init();
+    stringio::init(vm);
     regexp_methods::init();
     structs::init();
     time::init();

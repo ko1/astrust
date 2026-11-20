@@ -1,18 +1,23 @@
 // Symbol.
+#![forbid(unsafe_code)]
 use crate::array::*;
 use crate::builtins::kernel::*;
+#[allow(unused_imports)]
+use crate::heap::no_legacy::*;   // the old accessors cannot be named here
+#[allow(unused_imports)]
+use crate::heap::no_legacy_str::*;
 use crate::string::*;
 use crate::symbol::{intern, sym_bytes};
 use crate::value::*;
 use crate::vm::*;
 
-fn sym_str_v(v: Value) -> Value { let b = sym_bytes(v.as_sym()); str_new_enc(b, if is_ascii(b) { ENC_ASCII } else { ENC_UTF8 }) }
+fn sym_str_v(c: &mut Ctx, v: Value) -> Value { let b = sym_bytes(v.as_sym()); c.str_new_enc(b, if is_ascii(b) { ENC_ASCII } else { ENC_UTF8 }) }
 
-fn sym_to_s(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(sym_str_v(s)) }
-fn sym_name(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let v = sym_str_v(s); obj(v).flags |= FL_FROZEN; Ok(v)
+fn sym_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(sym_str_v(c, s)) }
+fn sym_name(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+    let v = sym_str_v(c, s); obj_set_flags(v, FL_FROZEN); Ok(v)
 }
-fn sym_inspect(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(str_new(crate::string::sym_inspect(sym_bytes(s.as_sym())).as_bytes())) }
+fn sym_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.str_new(crate::string::sym_inspect(sym_bytes(s.as_sym())).as_bytes())) }
 fn sym_to_proc(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { crate::builtins::proc::sym_to_proc(c, s) }
 fn sym_eq(_c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(s == a[0])) }
 fn sym_to_sym(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(s) }
@@ -22,14 +27,14 @@ fn sym_cmp(_c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(Value::fix(sym_bytes(s.as_sym()).cmp(sym_bytes(a[0].as_sym())) as i64))
 }
 fn via_str(c: &mut Ctx, s: Value, m: &str, a: &[Value], b: *const Block) -> RV {
-    let st = sym_str_v(s);
+    let st = sym_str_v(c, s);
     funcall(c, st, intern(m.as_bytes()), a, b)
 }
-fn sym_upcase(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let r = via_str(c, s, "upcase", a, b)?; Ok(str_to_sym(r)) }
-fn sym_downcase(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let r = via_str(c, s, "downcase", a, b)?; Ok(str_to_sym(r)) }
-fn sym_capitalize(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let r = via_str(c, s, "capitalize", a, b)?; Ok(str_to_sym(r)) }
-fn sym_swapcase(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let r = via_str(c, s, "swapcase", a, b)?; Ok(str_to_sym(r)) }
-fn sym_succ(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let r = via_str(c, s, "succ", a, b)?; Ok(str_to_sym(r)) }
+fn sym_upcase(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let r = via_str(c, s, "upcase", a, b)?; Ok(c.str_to_sym(r)) }
+fn sym_downcase(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let r = via_str(c, s, "downcase", a, b)?; Ok(c.str_to_sym(r)) }
+fn sym_capitalize(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let r = via_str(c, s, "capitalize", a, b)?; Ok(c.str_to_sym(r)) }
+fn sym_swapcase(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let r = via_str(c, s, "swapcase", a, b)?; Ok(c.str_to_sym(r)) }
+fn sym_succ(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let r = via_str(c, s, "succ", a, b)?; Ok(c.str_to_sym(r)) }
 fn sym_aref(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { via_str(c, s, "[]", a, b) }
 fn sym_start_with(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { via_str(c, s, "start_with?", a, b) }
 fn sym_end_with(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { via_str(c, s, "end_with?", a, b) }
@@ -37,11 +42,11 @@ fn sym_match(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { via_st
 fn sym_match_m(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { via_str(c, s, "match", a, b) }
 fn sym_match_p(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { via_str(c, s, "match?", a, b) }
 fn sym_empty(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(sym_bytes(s.as_sym()).is_empty())) }
-fn sym_casecmp(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { if !a[0].is_sym() { return Ok(NIL); } let o = sym_str_v(a[0]); via_str(c, s, "casecmp", &[o], b) }
-fn sym_casecmp_p(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { if !a[0].is_sym() { return Ok(NIL); } let o = sym_str_v(a[0]); via_str(c, s, "casecmp?", &[o], b) }
-fn sym_all(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let a = ary_new();
-    for i in 1..crate::symbol::all_count() { ary_push(a, Value::sym(Sym(i as u32))); }
+fn sym_casecmp(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { if !a[0].is_sym() { return Ok(NIL); } let o = sym_str_v(c, a[0]); via_str(c, s, "casecmp", &[o], b) }
+fn sym_casecmp_p(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { if !a[0].is_sym() { return Ok(NIL); } let o = sym_str_v(c, a[0]); via_str(c, s, "casecmp?", &[o], b) }
+fn sym_all(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+    let a = c.ary_new();
+    for i in 1..crate::symbol::all_count() { c.ary_push(a, Value::sym(Sym(i as u32))); }
     Ok(a)
 }
 fn sym_encoding(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
@@ -49,8 +54,7 @@ fn sym_encoding(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     crate::builtins::misc::encoding_value(c, if is_ascii(b) { ENC_ASCII } else { ENC_UTF8 })
 }
 
-pub fn init() {
-    let k = vm().c_symbol;
+pub fn init(k: Value) {
     let d = |n: &str, f: CFunc, a: i32| define_cfunc(k, n, f, a);
     d("to_s", sym_to_s, 0); d("id2name", sym_to_s, 0); d("name", sym_name, 0); d("inspect", sym_inspect, 0);
     d("to_proc", sym_to_proc, 0); d("to_sym", sym_to_sym, 0); d("length", sym_length, 0); d("size", sym_length, 0);
