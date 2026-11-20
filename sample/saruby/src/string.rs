@@ -1,73 +1,138 @@
 // String: byte buffer + encoding tag (UTF-8 / ASCII-8BIT / US-ASCII).
+// Core API on the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
+// Methods are in builtins/string_methods.rs.
+#![forbid(unsafe_code)]
+// the context-free functions, for the modules not converted yet
+pub use crate::str_legacy::*;
+pub use imp::*;
+
+// a module of its own: the bans must not meet the re-export above
+mod imp {
+#[allow(unused_imports)]
+use crate::heap::no_legacy::*;   // the old accessors cannot be named here
+#[allow(unused_imports)]
+use crate::heap::no_legacy_str::*;
+use crate::heap::{obj_flags, obj_klass, obj_set_flags, obj_set_klass};
 use crate::object::*;
 use crate::sbuf::SBuf;
 use crate::symbol::{intern, s};
 use crate::value::*;
 use crate::vm::*;
 
-// bytes kept inside the slot are not malloc'ed: only longer strings count toward the GC trigger
-#[inline(always)]
-fn account(n: usize) { if n > crate::sbuf::INLINE { crate::gc::malloc_increase(n); } }
-#[inline]
-pub fn str_new(b: &[u8]) -> Value {
-    account(b.len());
-    crate::gc::alloc(vm().c_string, Body::String(RString { b: SBuf::from_slice(b), enc: ENC_UTF8 }))
-}
-#[inline]
-pub fn str_new_enc(b: &[u8], enc: u8) -> Value {
-    account(b.len());
-    crate::gc::alloc(vm().c_string, Body::String(RString { b: SBuf::from_slice(b), enc }))
-}
-#[inline]
-pub fn str_with_capa(n: usize, enc: u8) -> Value {
-    account(n);
-    crate::gc::alloc(vm().c_string, Body::String(RString { b: SBuf::with_capacity(n), enc }))
-}
-pub fn str_from_vec(b: Vec<u8>) -> Value {
-    account(b.len());
-    crate::gc::alloc(vm().c_string, Body::String(RString { b: SBuf::from_vec(b), enc: ENC_UTF8 }))
-}
-pub fn str_from_vec_enc(b: Vec<u8>, enc: u8) -> Value {
-    account(b.len());
-    crate::gc::alloc(vm().c_string, Body::String(RString { b: SBuf::from_vec(b), enc }))
-}
-pub fn str_new_frozen(b: &[u8]) -> Value {
-    let v = str_new(b);
-    obj(v).flags |= FL_FROZEN;
-    v
-}
-pub fn str_from(s: &str) -> Value { str_new(s.as_bytes()) }
-/// Same class/encoding as `like`, new contents.
-pub fn str_new_like(like: Value, b: Vec<u8>) -> Value {
-    let enc = rstr(like).enc;
-    str_from_vec_enc(b, enc)
-}
+impl Ctx {
+    // bytes kept inside the slot are not malloc'ed: only longer strings count toward the GC trigger
+    #[inline(always)]
+    fn str_account(&mut self, n: usize) { if n > crate::sbuf::INLINE { self.malloc_increase(n); } }
+    /// The buffer becomes the String's payload (class String).
+    #[inline]
+    pub fn str_from_sbuf(&mut self, b: SBuf, enc: u8) -> Value {
+        self.str_account(b.len());
+        let k = self.vm().c_string;
+        self.alloc(k, Body::String(RString { b, enc }))
+    }
+    #[inline]
+    pub fn str_new(&mut self, b: &[u8]) -> Value { self.str_from_sbuf(SBuf::from_slice(b), ENC_UTF8) }
+    #[inline]
+    pub fn str_new_enc(&mut self, b: &[u8], enc: u8) -> Value { self.str_from_sbuf(SBuf::from_slice(b), enc) }
+    #[inline]
+    pub fn str_with_capa(&mut self, n: usize, enc: u8) -> Value {
+        self.str_account(n);
+        let k = self.vm().c_string;
+        self.alloc(k, Body::String(RString { b: SBuf::with_capacity(n), enc }))
+    }
+    pub fn str_from_vec(&mut self, b: Vec<u8>) -> Value { self.str_from_sbuf(SBuf::from_vec(b), ENC_UTF8) }
+    pub fn str_from_vec_enc(&mut self, b: Vec<u8>, enc: u8) -> Value { self.str_from_sbuf(SBuf::from_vec(b), enc) }
+    pub fn str_new_frozen(&mut self, b: &[u8]) -> Value {
+        let v = self.str_new(b);
+        obj_set_flags(v, FL_FROZEN);
+        v
+    }
+    pub fn str_from(&mut self, s: &str) -> Value { self.str_new(s.as_bytes()) }
+    /// Encoding of `like`, new contents (class String).
+    pub fn str_new_like(&mut self, like: Value, b: Vec<u8>) -> Value {
+        let enc = self.str_enc(like);
+        self.str_from_vec_enc(b, enc)
+    }
+    /// A String with the bytes and the encoding of `v` (class String; short ones stay inline).
+    #[inline]
+    pub fn str_copy(&mut self, v: Value) -> Value {
+        let r = self.rstring(v);
+        let (b, enc) = (SBuf::from_slice(&r.b), r.enc);
+        self.str_from_sbuf(b, enc)
+    }
+    /// Bytes `r` of `v` as a String of v's encoding.
+    #[inline]
+    pub fn str_sub(&mut self, v: Value, r: std::ops::Range<usize>) -> Value {
+        let x = self.rstring(v);
+        let (b, enc) = (SBuf::from_slice(&x.b[r]), x.enc);
+        self.str_from_sbuf(b, enc)
+    }
 
-pub fn str_enc(v: Value) -> u8 { rstr(v).enc }
-pub fn str_eq(a: Value, b: Value) -> bool { rstr(a).b == rstr(b).b }
+    #[inline]
+    pub fn str_enc(&self, v: Value) -> u8 { self.rstring(v).enc }
+    #[inline]
+    pub fn str_len(&self, v: Value) -> usize { self.rstring(v).b.len() }
+    pub fn str_eq(&self, a: Value, b: Value) -> bool { self.rstring(a).b == self.rstring(b).b }
+    pub fn str_hash(&self, v: Value) -> u64 { crate::astrust::hash_bytes(&self.rstring(v).b) }
+    pub fn str_to_sym(&self, v: Value) -> Value { Value::sym(intern(&self.rstring(v).b)) }
+    pub fn str_cmp(&self, a: Value, b: Value) -> std::cmp::Ordering { self.rstring(a).b.cmp(&self.rstring(b).b) }
 
-pub fn str_hash(v: Value) -> u64 { crate::astrust::hash_bytes(&rstr(v).b) }
+    /// String `v` for writing; FrozenError when frozen.
+    #[inline]
+    pub fn str_modify(&mut self, v: Value) -> Result<&mut RString, Esc> {
+        if obj_flags(v) & FL_FROZEN != 0 { return Err(raise_frozen(self, v)); }
+        Ok(self.rstring_mut(v))
+    }
+    /// acc << s with the result encoding already decided; they may be the same String.
+    #[inline]
+    pub fn str_append_enc(&mut self, acc: Value, s: Value, enc: u8) {
+        let (a, others) = self.str_mut_and(acc);
+        let n = match others.str_bytes(s) {
+            Some(b) => { a.enc = enc; a.b.extend_from_slice(b); b.len() }
+            None => { let b = a.b.to_vec(); a.b.extend_from_slice(&b); 0 }
+        };
+        if n != 0 { self.malloc_increase(n); }
+    }
+    /// acc << s for a mutable acc of the same encoding (nothing to check).
+    #[inline]
+    pub fn str_append_same_enc(&mut self, acc: Value, s: Value) { let enc = self.str_enc(acc); self.str_append_enc(acc, s, enc); }
 
-pub fn str_to_sym(v: Value) -> Value { Value::sym(intern(&rstr(v).b)) }
+    /// Char boundaries (byte offsets) for a string, honoring its encoding.
+    pub fn char_offsets(&self, v: Value) -> Vec<usize> { let r = self.rstring(v); char_offsets_of(&r.b, r.enc) }
+    pub fn str_char_len(&self, v: Value) -> usize { let r = self.rstring(v); enc_strlen(&r.b, r.enc) }
+    /// Code of the character at b[s..e] of string v (Unicode scalar for Unicode encodings).
+    pub fn str_char_code(&self, v: Value, s: usize, e: usize) -> u32 { let r = self.rstring(v); crate::builtins::encoding::char_code(r.enc, &r.b[s..e]) }
+    pub fn chars_of(&self, v: Value) -> Vec<Vec<u8>> {
+        let r = self.rstring(v);
+        let off = char_offsets_of(&r.b, r.enc);
+        (0..off.len() - 1).map(|i| r.b[off[i]..off[i + 1]].to_vec()).collect()
+    }
+    /// A copy with the class of `v`.
+    pub fn str_dup(&mut self, v: Value) -> Value {
+        let r = self.rstring(v);
+        let (b, enc) = (r.b.to_vec(), r.enc);
+        let n = self.str_from_vec_enc(b, enc);
+        obj_set_klass(n, obj_klass(v));
+        n
+    }
+    pub fn str_concat_values(&mut self, parts: &[Value]) -> Value {
+        let mut out = vec![];
+        for p in parts { out.extend_from_slice(self.str_bytes(*p)); }
+        self.str_from_vec(out)
+    }
+    pub fn ary_of_strs(&mut self, items: Vec<Vec<u8>>, enc: u8) -> Value {
+        let a = self.ary_new_capa(items.len());
+        for it in items { let s = self.str_from_vec_enc(it, enc); self.ary_push(a, s); }
+        a
+    }
+}
 
 pub fn str_append_str(c: &mut Ctx, acc: Value, s: Value) -> Result<(), Esc> {
     check_frozen(c, acc)?;
-    if acc == s { let b = rstr(s).b.to_vec(); rstr(acc).b.extend_from_slice(&b); return Ok(()); }
-    let enc = if rstr(acc).enc == rstr(s).enc { rstr(acc).enc } else { crate::builtins::encoding::check_compatible(c, acc, s)? };
-    let (a, b) = (rstr(acc), rstr(s));
-    a.enc = enc;
-    crate::gc::malloc_increase(b.b.len());
-    a.b.extend_from_slice(&b.b);
+    let ea = c.str_enc(acc);
+    let enc = if acc == s || ea == c.str_enc(s) { ea } else { crate::builtins::encoding::check_compatible(c, acc, s)? };
+    c.str_append_enc(acc, s, enc);
     Ok(())
-}
-
-/// acc << s for a mutable acc of the same encoding (nothing to check).
-#[inline]
-pub fn str_append_same_enc(acc: Value, s: Value) {
-    if acc == s { let b = rstr(s).b.to_vec(); rstr(acc).b.extend_from_slice(&b); return; }
-    let (a, b) = (rstr(acc), rstr(s));
-    crate::gc::malloc_increase(b.b.len());
-    a.b.extend_from_slice(&b.b);
 }
 
 #[inline]
@@ -101,21 +166,11 @@ pub fn char_offsets_of(b: &[u8], enc: u8) -> Vec<usize> {
     out.push(b.len());
     out
 }
-/// Char boundaries (byte offsets) for a string, honoring its encoding.
-pub fn char_offsets(v: Value) -> Vec<usize> { let r = rstr(v); char_offsets_of(&r.b, r.enc) }
 pub fn enc_strlen(b: &[u8], enc: u8) -> usize {
     if enc_single(b, enc) { return b.len(); }
     let mut n = 0; let mut i = 0;
     while i < b.len() { i += enc_char_len(b, i, enc); n += 1; }
     n
-}
-pub fn str_char_len(v: Value) -> usize { let r = rstr(v); enc_strlen(&r.b, r.enc) }
-/// Code of the character at b[s..e] of string v (Unicode scalar for Unicode encodings).
-pub fn str_char_code(v: Value, s: usize, e: usize) -> u32 { let r = rstr(v); crate::builtins::encoding::char_code(r.enc, &r.b[s..e]) }
-pub fn chars_of(v: Value) -> Vec<Vec<u8>> {
-    let off = char_offsets(v);
-    let b = &rstr(v).b;
-    (0..off.len() - 1).map(|i| b[off[i]..off[i + 1]].to_vec()).collect()
 }
 
 pub fn decode_utf8(b: &[u8], i: usize) -> (u32, usize) {
@@ -234,9 +289,8 @@ pub fn sym_is_simple(n: &[u8]) -> bool {
 }
 
 pub fn to_rstring(c: &mut Ctx, v: Value) -> Result<String, Esc> {
-    if is_string(v) { return Ok(String::from_utf8_lossy(&rstr(v).b).into_owned()); }
-    let s = crate::rt::srb_tostr(c, v)?;
-    Ok(String::from_utf8_lossy(&rstr(s).b).into_owned())
+    let s = if is_string(v) { v } else { crate::rt::srb_tostr(c, v)? };
+    Ok(String::from_utf8_lossy(c.str_bytes(s)).into_owned())
 }
 
 /// Implicit conversion to String (to_str).
@@ -249,13 +303,6 @@ pub fn expect_str(c: &mut Ctx, v: Value) -> RV {
         return type_err(c, format!("can't convert {} to String ({}#to_str gives {})", cls, cls, class_path(real_class_of(r))));
     }
     type_err(c, format!("no implicit conversion of {} into String", crate::builtins::kernel::class_name_for_err(v)))
-}
-
-pub fn str_dup(v: Value) -> Value {
-    let r = rstr(v);
-    let n = str_from_vec_enc(r.b.to_vec(), r.enc);
-    obj(n).klass = obj(v).klass;
-    n
 }
 
 // ---- case helpers -----------------------------------------------------------------------
@@ -518,21 +565,4 @@ pub fn str_to_f(b: &[u8]) -> f64 {
     let t: String = s[..end].chars().filter(|&c| c != '_').collect();
     t.parse::<f64>().unwrap_or(0.0)
 }
-
-pub fn init() {
-    crate::builtins::string_methods::init();
-}
-
-pub fn str_cmp(a: Value, b: Value) -> std::cmp::Ordering { rstr(a).b.cmp(&rstr(b).b) }
-
-pub fn str_concat_values(parts: &[Value]) -> Value {
-    let mut out = vec![];
-    for p in parts { out.extend_from_slice(&rstr(*p).b); }
-    str_from_vec(out)
-}
-
-pub fn ary_of_strs(items: Vec<Vec<u8>>, enc: u8) -> Value {
-    let a = ary_new_capa(items.len());
-    for it in items { let s = str_from_vec_enc(it, enc); ary_push(a, s); }
-    a
 }

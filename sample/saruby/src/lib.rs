@@ -33,6 +33,7 @@ pub mod rt;
 pub mod opt;
 pub mod bignum;
 pub mod string;
+pub mod str_legacy;
 pub mod array;
 pub mod hash;
 pub mod range;
