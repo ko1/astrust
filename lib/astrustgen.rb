@@ -419,7 +419,7 @@ module ASTrustGen
           elsif op.nodes?
             "    let t_#{op.name} = specialize_list(sc, &u.#{op.name});"
           elsif op.spec?
-            "    let (t_#{op.name}, h_#{op.name}) = { let np = n as *mut NodeOf<#{struct_name}>; let p: NodePtr = unsafe { #{spec_target_expr(op)} }; if p.is_null() || sc.open.contains(&hash_node(p)) { (\"Dyn\".to_string(), 0u64) } else { (specialize_node(sc, p), hash_node(p)) } };"
+            "    let (t_#{op.name}, h_#{op.name}) = { let np = n as *mut NodeOf<#{struct_name}>; let p: NodePtr = unsafe { #{spec_target_expr(op)} }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth || sc.open.contains(&hash_node(p)) { (\"Dyn\".to_string(), 0u64) } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };"
           end
         end.compact
         generic_names = @operands.select(&:generic_param).map { "t_#{it.name}" }
@@ -591,8 +591,8 @@ module ASTrustGen
       /// A dispatcher as a type: `Dyn` calls through the node head, an SD type statically.
       pub trait Disp {
           fn call(#{params.join(', ')}) -> #{n.result_type};
-          /// call() across a speculation boundary: children are always inlined, this is the compiler's choice.
-          #[inline]
+          /// call() across a speculation boundary (the embedder only speculates small callees, to a bounded depth).
+          #[inline(always)]
           fn spec(#{params.join(', ')}) -> #{n.result_type} { Self::call(#{pnames.join(', ')}) }
       #{n.test_type ? "    #[inline(always)]\n    fn test(#{params.join(', ')}) -> #{n.test_type} { #{n.test_default("Self::call(#{pnames.join(', ')})")} }" : ""}
       }

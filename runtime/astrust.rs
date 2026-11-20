@@ -38,12 +38,14 @@ pub struct SpecCtx {
     pub out: String,
     pub emitted: HashSet<String>,
     pub open: HashSet<u64>,       // hashes of the nodes being specialized now (ancestors)
+    pub spec_depth: u32,          // nesting of speculated callees
+    pub spec_max_depth: u32,
     pub comments: bool,
 }
 
 impl SpecCtx {
     pub fn new() -> Self {
-        SpecCtx { out: String::new(), emitted: HashSet::new(), open: HashSet::new(), comments: std::env::var_os("ASTRUST_SD_COMMENTS").is_some() }
+        SpecCtx { out: String::new(), emitted: HashSet::new(), open: HashSet::new(), spec_depth: 0, spec_max_depth: 2, comments: std::env::var_os("ASTRUST_SD_COMMENTS").is_some() }
     }
 }
 

@@ -757,6 +757,7 @@ pub fn EVAL_node_when_lit(c: &mut Ctx, n: NodePtr, fp: *mut Value, subj_slot: u3
     Ok(Value::bool(rt_eqq(c, v, subj, cc)?))
 }
 
+
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_defined<D_recv: Disp>(c: &mut Ctx, n: NodePtr, fp: *mut Value, kind: u32, name: Sym, recv: NodePtr) -> RV {
@@ -985,6 +986,7 @@ pub fn EVAL_node_opt_pow(c: &mut Ctx, n: NodePtr, fp: *mut Value, a: Value, b: V
     }
     rt_binop(c, a, b, s::pow, line, cc)
 }
+
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]

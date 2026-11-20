@@ -1705,6 +1705,9 @@ fn SPECIALIZE_node_when(sc: &mut SpecCtx, n: NodePtr) -> String {
 fn SPECIALIZE_node_when_lit(sc: &mut SpecCtx, n: NodePtr) -> String {
     let name = format!("T_{:016x}", hash_node(n));
     if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());   // before the children: a speculated callee may be this very node
+    let own_hash = hash_node(n);
+    sc.open.insert(own_hash);
     let u = unsafe { &(*(n as *mut NodeOf<node_when_lit_struct>)).u };
 
     let np = n as *mut NodeOf<node_when_lit_struct>;
@@ -1717,11 +1720,14 @@ fn SPECIALIZE_node_when_lit(sc: &mut SpecCtx, n: NodePtr) -> String {
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
     if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
-    body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
+    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_when_lit_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_when_lit{}({})\n    }} }}\n}}\n", "", a.join(", ")));
-    sc.emitted.insert(name.clone());
+    body.push_str(&format!("        EVAL_node_when_lit{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
+    sc.open.remove(&own_hash);
     sc.out.push_str(&body);
     name
 }
@@ -1767,7 +1773,7 @@ fn SPECIALIZE_node_call(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_call_struct>)).u };
     let t_recv = specialize_node(sc, u.recv);
     let t_args = specialize_list(sc, &u.args);
-    let (t_callee, h_callee) = { let np = n as *mut NodeOf<node_call_struct>; let p: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) } }; if p.is_null() || sc.open.contains(&hash_node(p)) { ("Dyn".to_string(), 0u64) } else { (specialize_node(sc, p), hash_node(p)) } };
+    let (t_callee, h_callee) = { let np = n as *mut NodeOf<node_call_struct>; let p: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) } }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth || sc.open.contains(&hash_node(p)) { ("Dyn".to_string(), 0u64) } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };
     let np = n as *mut NodeOf<node_call_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
@@ -1804,7 +1810,7 @@ fn SPECIALIZE_node_call_blk(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_call_blk_struct>)).u };
     let t_recv = specialize_node(sc, u.recv);
     let t_args = specialize_list(sc, &u.args);
-    let (t_callee, h_callee) = { let np = n as *mut NodeOf<node_call_blk_struct>; let p: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) } }; if p.is_null() || sc.open.contains(&hash_node(p)) { ("Dyn".to_string(), 0u64) } else { (specialize_node(sc, p), hash_node(p)) } };
+    let (t_callee, h_callee) = { let np = n as *mut NodeOf<node_call_blk_struct>; let p: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) } }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth || sc.open.contains(&hash_node(p)) { ("Dyn".to_string(), 0u64) } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };
     let np = n as *mut NodeOf<node_call_blk_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
@@ -2228,6 +2234,9 @@ fn SPECIALIZE_node_opt_div(sc: &mut SpecCtx, n: NodePtr) -> String {
 fn SPECIALIZE_node_opt_pow(sc: &mut SpecCtx, n: NodePtr) -> String {
     let name = format!("T_{:016x}", hash_node(n));
     if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());   // before the children: a speculated callee may be this very node
+    let own_hash = hash_node(n);
+    sc.open.insert(own_hash);
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_pow_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
@@ -2242,12 +2251,15 @@ fn SPECIALIZE_node_opt_pow(sc: &mut SpecCtx, n: NodePtr) -> String {
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
     if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
-    body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
+    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_pow_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
-    body.push_str(&format!("        EVAL_node_opt_pow{}({})\n    }} }}\n}}\n", "", a.join(", ")));
-    sc.emitted.insert(name.clone());
+    body.push_str(&format!("        EVAL_node_opt_pow{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
+    sc.open.remove(&own_hash);
     sc.out.push_str(&body);
     name
 }

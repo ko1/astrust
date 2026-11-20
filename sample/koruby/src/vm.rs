@@ -1352,7 +1352,11 @@ fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry
 
 /// The method entry node a call site's cache holds, as the callee to compile into the site (null: none).
 pub fn spec_callee(cc: &CallCache, argc: usize, flags: u32) -> NodePtr {
-    if cc.fast_argc as usize == argc && flags & CF_KW == 0 { cc.fast as NodePtr } else { std::ptr::null_mut() }
+    if cc.fast_argc as usize != argc || flags & CF_KW != 0 { return std::ptr::null_mut(); }
+    // only small callees: the site inlines them (size by the length of the dump)
+    let mut d = String::new();
+    crate::node::dump_node(&mut d, cc.fast as NodePtr);
+    if d.len() <= 600 { cc.fast as NodePtr } else { std::ptr::null_mut() }
 }
 
 /// The heap Env of a frame whose variables are captured by blocks; params copied in.
