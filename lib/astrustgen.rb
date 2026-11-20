@@ -620,7 +620,7 @@ module ASTrustGen
           let mut s = format!("pub struct {};\\nimpl DispList for {} {{\\n    #[inline(always)] fn len(_ns: NodeList) -> usize {{ {} }}\\n", name, name, ts.len());
           s.push_str(&format!("    #[inline(always)]\\n    fn nth(#{first.prefix_params[0]}, ns: NodeList, i: usize#{first.prefix_params.drop(2).map { ", #{it}" }.join}) -> #{first.result_type} {{\\n        match i {{\\n"));
           for (i, t) in ts.iter().enumerate() {
-              s.push_str(&format!("            {} => <{} as Disp>::call(#{([first.prefix_names[0], 'ns[{}]'] + first.prefix_names.drop(2)).join(', ')}),\\n", i, t, i));
+              s.push_str(&format!("            {} => unsafe {{ <{} as Disp>::call(#{([first.prefix_names[0], '*ns.get_unchecked({})'] + first.prefix_names.drop(2)).join(', ')}) }},\\n", i, t, i));
           }
           s.push_str("            _ => unsafe { std::hint::unreachable_unchecked() },\\n        }\\n    }\\n}\\n");
           sc.emitted.insert(name.clone());

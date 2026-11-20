@@ -1110,16 +1110,6 @@ pub fn invoke_iseq_simple(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: 
     run_body(c, is.entry, base)
 }
 
-/// Stack check for a frame of `n` slots at `fp`.
-#[inline(always)]
-pub fn frame_check(c: &mut Ctx, fp: *mut Value, n: usize) -> Result<(), Esc> {
-    let probe = 0u8;
-    if unsafe { fp.add(n + 16) } >= c.stack_end || (&probe as *const u8 as usize) < c.native_limit {
-        return Err(raise_stack_overflow(c));
-    }
-    Ok(())
-}
-
 #[cold]
 fn visibility_error(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> RV {
     let me_r = unsafe { &*me };

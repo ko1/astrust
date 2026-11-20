@@ -2849,7 +2849,7 @@ pub fn specialize_list(sc: &mut SpecCtx, ns: &NodeList) -> String {
     let mut s = format!("pub struct {};\nimpl DispList for {} {{\n    #[inline(always)] fn len(_ns: NodeList) -> usize {{ {} }}\n", name, name, ts.len());
     s.push_str(&format!("    #[inline(always)]\n    fn nth(c: &mut Ctx, ns: NodeList, i: usize, fp: *mut Value) -> RV {{\n        match i {{\n"));
     for (i, t) in ts.iter().enumerate() {
-        s.push_str(&format!("            {} => <{} as Disp>::call(c, ns[{}], fp),\n", i, t, i));
+        s.push_str(&format!("            {} => unsafe {{ <{} as Disp>::call(c, *ns.get_unchecked({}), fp) }},\n", i, t, i));
     }
     s.push_str("            _ => unsafe { std::hint::unreachable_unchecked() },\n        }\n    }\n}\n");
     sc.emitted.insert(name.clone());

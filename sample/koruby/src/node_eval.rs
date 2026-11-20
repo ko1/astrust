@@ -1132,13 +1132,15 @@ pub fn EVAL_node_opt_aset(c: &mut Ctx, n: NodePtr, fp: *mut Value, a: Value, b: 
 pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: *mut Value, nlocals: u32, nparams: u32, has_env: bool, line: u32, body: NodePtr) -> RV {
     let me = c.call_me;
     let blk = c.call_blk;
-    frame_check(c, fp, nlocals as usize)?;
     let id = c.next_serial();
     let is = match unsafe { (*me).kind } { MKind::Iseq(is) => is, _ => unsafe { std::hint::unreachable_unchecked() } };
     let mut fr = Frame {
         prev: c.frame, fp, me, blk, cref: unsafe { (*me).cref }, iseq: is, line,
         kind: FK_METHOD, visi: VISI_PUBLIC, id, self_blk: std::ptr::null(), defined_class: NIL,
     };
+    // the frame's own address is the native stack probe
+    if unsafe { fp.add(nlocals as usize + 16) } >= c.stack_end { return Err(raise_stack_overflow(c)); }
+    if (&fr as *const Frame as usize) < c.native_limit { return Err(raise_stack_overflow(c)); }
     unsafe {
         *fp.add(1) = NIL;
         let mut i = 2 + nparams as usize;
