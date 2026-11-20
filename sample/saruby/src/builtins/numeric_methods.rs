@@ -189,6 +189,8 @@ cfn!(int_mod, |c, s, a| int_arith(c, s, a[0], Op::Mod));
 cfn!(int_pow_m, |c, s, a| {
     if a.len() == 2 {
         // modular exponentiation
+        let int = |v: Value| v.is_fixnum() || is_bignum(v);
+        if !int(a[0]) || !int(a[1]) { return type_err(c, "Integer#pow() 2nd argument not allowed unless all arguments are integers"); }
         let m = c.to_big(a[1]);
         if m.is_zero() { return err(c, c.vm().c_zero_div_error, "divided by 0"); }
         let mut base = c.to_big(s).divmod(&m).1;
