@@ -1,18 +1,41 @@
 // Numeric core helpers (Float boxing, conversions, formatting).
+// On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
+#![forbid(unsafe_code)]
+// the context-free API, for the modules not converted yet (bodies in object.rs)
+pub use crate::object::{float_new, num_to_f64};
+pub use imp::*;
+
+// a module of its own: `no_legacy` must not meet the re-export above
+mod imp {
+#[allow(unused_imports)]
+use crate::heap::no_legacy::*;   // the old accessors cannot be named here
+#[allow(unused_imports)]
+use crate::heap::no_legacy_hn::*;
+use crate::heap::obj_set_flags;
 use crate::object::*;
 use crate::value::*;
 use crate::vm::*;
 
-#[inline]
-pub fn float_new(d: f64) -> Value {
-    match Value::flonum(d) { Some(v) => v, None => float_new_heap(d) }
-}
-#[cold]
-#[inline(never)]
-fn float_new_heap(d: f64) -> Value {
-    let v = crate::gc::alloc(vm().c_float, Body::Float(d));
-    obj(v).flags |= FL_FROZEN;
-    v
+impl Ctx {
+    #[inline]
+    pub fn float_new(&mut self, d: f64) -> Value {
+        match Value::flonum(d) { Some(v) => v, None => self.float_new_heap(d) }
+    }
+    #[cold]
+    #[inline(never)]
+    fn float_new_heap(&mut self, d: f64) -> Value {
+        let k = self.vm().c_float;
+        let v = self.alloc(k, Body::Float(d));
+        obj_set_flags(v, FL_FROZEN);
+        v
+    }
+    /// Numeric value as f64 (Integer / Float), None otherwise.
+    pub fn num_to_f64(&self, v: Value) -> Option<f64> {
+        if v.is_fixnum() { Some(v.as_fix() as f64) }
+        else if is_float(v) { Some(float_val(v)) }
+        else if is_bignum(v) { Some(self.big(v).to_f64()) }
+        else { None }
+    }
 }
 
 // out of line: with a constant exponent LLVM turns powf(x, 0.5) into sqrt(x), which is not libm's pow bit for bit
@@ -49,12 +72,6 @@ pub fn float_to_s(d: f64) -> String {
     }
 }
 
-/// Numeric value as f64 (Integer / Float), None otherwise.
-pub fn num_to_f64(v: Value) -> Option<f64> {
-    if v.is_fixnum() { Some(v.as_fix() as f64) }
-    else if is_float(v) { Some(float_val(v)) }
-    else if is_bignum(v) { Some(rbig(v).to_f64()) }
-    else { None }
-}
 
 pub fn is_numeric(v: Value) -> bool { v.is_fixnum() || is_float(v) || is_bignum(v) }
+}

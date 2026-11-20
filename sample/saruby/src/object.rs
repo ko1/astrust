@@ -56,6 +56,7 @@ pub struct RHash {
     pub default: Value,
     pub default_proc: Value,
     pub identity: bool,
+    pub iter_lev: u32,             // running iterations (CRuby's iter_lev): no new key, no rehash meanwhile
 }
 
 pub struct ProcData { pub blk: Block, pub is_lambda: bool, pub from_method: Value }
@@ -145,10 +146,8 @@ pub fn rdata<T: 'static>(v: Value) -> Option<&'static mut T> {
     match &mut obj(v).body { Body::Data(d) => d.as_any_mut().downcast_mut::<T>(), _ => None }
 }
 
-pub use crate::heap::{is_array, is_bignum, is_class_or_module, is_float, is_frozen, is_hash, is_method_obj, is_proc, is_range, is_string};
+pub use crate::heap::{float_val, is_array, is_bignum, is_class_or_module, is_float, is_frozen, is_hash, is_method_obj, is_proc, is_range, is_string};
 #[inline(always)] pub fn is_integer(v: Value) -> bool { v.is_fixnum() || is_bignum(v) }
-#[inline(always)]
-pub fn float_val(v: Value) -> f64 { if v.is_flonum() { v.flonum_val() } else { rfloat_heap(v) } }
 
 pub fn str_bytes(v: Value) -> &'static [u8] { &rstr(v).b }
 
@@ -180,3 +179,16 @@ pub fn ary_push(a: Value, v: Value) {
 #[inline] pub fn ary_len(a: Value) -> usize { rary(a).len() }
 #[inline] pub fn ary_get(a: Value, i: usize) -> Value { rary(a).get(i).copied().unwrap_or(NIL) }
 pub fn ary_to_vec(a: Value) -> Vec<Value> { rary(a).clone() }
+
+// legacy Hash API (no context); converted code uses the `Ctx` methods of hash.rs
+pub fn hash_new() -> Value { hash_new_capa(0) }
+pub fn hash_new_capa(n: usize) -> Value {
+    crate::gc::alloc(crate::vm::vm().c_hash, Body::Hash(Box::new(RHash::with_capacity(n))))
+}
+pub fn hash_pairs(h: Value) -> Vec<(Value, Value)> { rhash(h).pairs() }
+pub fn hash_len(h: Value) -> usize { rhash(h).live }
+pub fn hash_entry_at(h: Value, i: usize) -> Option<(Value, Value)> { rhash(h).entries.get(i).map(|e| (e.key, e.val)) }
+pub fn hash_clear(h: Value) { rhash(h).clear(); }
+pub fn hash_dup(h: Value) -> Value { let d = rhash(h).dup(); crate::gc::alloc(obj(h).klass, Body::Hash(Box::new(d))) }
+
+pub use crate::legacy::*;

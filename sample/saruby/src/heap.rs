@@ -10,7 +10,7 @@
 // (`no_legacy`).
 use crate::object::*;
 use crate::value::*;
-use crate::vm::{Ctx, Vm};
+use crate::vm::{Block, BlockKind, Ctx, MethodEntry, Params, Vm};
 
 /// What makes a `Ctx` the heap token: safe code cannot build one.
 pub struct Token(());
@@ -139,14 +139,12 @@ impl<'a> Others<'a> {
 }
 
 // ---- allocators of unconverted modules, taking the token -----------------------------------
-// A converted module must not allocate behind the context's back; these go away as string.rs,
-// hash.rs and numeric.rs are converted and their own functions take `&mut Ctx`.
+// A converted module must not allocate behind the context's back; these go away as string.rs
+// is converted and its own functions take `&mut Ctx`.
 impl Ctx {
     #[inline(always)] pub fn str_new(&mut self, b: &[u8]) -> Value { crate::string::str_new(b) }
     #[inline(always)] pub fn str_from_vec(&mut self, b: Vec<u8>) -> Value { crate::string::str_from_vec(b) }
     #[inline(always)] pub fn str_from_vec_enc(&mut self, b: Vec<u8>, enc: u8) -> Value { crate::string::str_from_vec_enc(b, enc) }
-    #[inline(always)] pub fn hash_new(&mut self) -> Value { crate::hash::hash_new() }
-    #[inline(always)] pub fn float_new(&mut self, d: f64) -> Value { crate::numeric::float_new(d) }
 }
 
 /// `use crate::heap::no_legacy::*;` in a converted module: every name below then has two glob
@@ -157,4 +155,70 @@ pub mod no_legacy {
     ban!(obj rary rstr rhash rclass rproc rmethod rbig rdata ivars_of str_bytes vm
          ary_new ary_new_capa ary_new_from ary_from_vec ary_push ary_len ary_get ary_to_vec
          str_new str_from_vec str_from_vec_enc hash_new float_new);
+}
+
+// ---- hash / range / numeric / data ---------------------------------------------------------
+// Accessors of the second wave (hash.rs, range.rs, numeric.rs, bignum.rs and their builtins).
+
+/// Value of a Float (flonum or heap).  By value and without the token: a Float body is written
+/// by `gc::alloc` only, and no accessor hands out a reference into one.
+#[inline(always)]
+pub fn float_val(v: Value) -> f64 {
+    if v.is_flonum() { return v.flonum_val(); }
+    // SAFETY: H1; the reference ends in this expression and nothing else borrows a Float body
+    match unsafe { &(*robj(v)).body } { Body::Float(f) => *f, _ => wrong_kind(v, "a Float") }
+}
+
+impl Ctx {
+    /// Fields of Range `v`: (begin, end, exclusive).
+    #[inline(always)]
+    pub fn range(&self, v: Value) -> (Value, Value, bool) {
+        match body(self, v) { Body::Range(b, e, x) => (*b, *e, *x), _ => wrong_kind(v, "a Range") }
+    }
+    /// Overwrite the fields of Range `v` (Range#initialize); the kind stays.
+    pub fn range_set(&mut self, v: Value, b: Value, e: Value, excl: bool) {
+        match body_mut(self, v) { r @ Body::Range(..) => *r = Body::Range(b, e, excl), _ => wrong_kind(v, "a Range") }
+    }
+
+    /// Hash `v` for writing, and read access to every other object meanwhile.
+    #[inline(always)]
+    pub fn hash_mut_and(&mut self, v: Value) -> (&mut RHash, Others<'_>) {
+        let c: &Ctx = self;
+        // SAFETY: as `ary_mut_and`
+        match unsafe { &mut (*robj(v)).body } { Body::Hash(x) => (x, Others { except: v, c }), _ => wrong_kind(v, "a Hash") }
+    }
+    /// Native payload of `v` for writing, and read access to every other object meanwhile.
+    pub fn data_mut_and<T: 'static>(&mut self, v: Value) -> Option<(&mut T, Others<'_>)> {
+        if !v.is_heap() { return None; }
+        let c: &Ctx = self;
+        // SAFETY: as `ary_mut_and`
+        match unsafe { &mut (*robj(v)).body } { Body::Data(d) => d.as_any_mut().downcast_mut::<T>().map(|x| (x, Others { except: v, c })), _ => None }
+    }
+
+    /// Method `mid` as an instance of `klass` finds it; None when undefined.
+    #[inline(always)]
+    pub fn method_entry(&self, klass: Value, mid: Sym) -> Option<&MethodEntry> {
+        // SAFETY: lookup_method gives null or an entry made by vm::new_me, a leaked Box that is never freed
+        unsafe { crate::vm::lookup_method(klass, mid).as_ref() }
+    }
+    /// Parameters of the literal block a builtin was given; None for no block or a non-iseq one.
+    pub fn block_params(&self, blk: *const Block) -> Option<&Params> {
+        // SAFETY: a builtin's `blk` is null or its caller's Block, alive for the call (as `yield_block` assumes)
+        let b = unsafe { blk.as_ref() }?;
+        // SAFETY: iseqs are never freed
+        match b.kind { BlockKind::Iseq(is) => unsafe { is.as_ref() }.map(|is| &is.params), _ => None }
+    }
+}
+impl<'a> Others<'a> {
+    #[inline(always)]
+    pub fn hash(&self, v: Value) -> Option<&'a RHash> { if v == self.except { None } else { Some(self.c.hash(v)) } }
+    pub fn data<T: 'static>(&self, v: Value) -> Option<&'a T> { if v == self.except { None } else { self.c.data::<T>(v) } }
+}
+
+/// As `no_legacy`, for the context-free API of hash.rs, range.rs, numeric.rs and bignum.rs.
+#[allow(dead_code)]
+pub mod no_legacy_hn {
+    macro_rules! ban { ($($n:ident)*) => { $(pub fn $n(_: super::Token) {})* }; }
+    ban!(hash_new_capa hash_pairs hash_len hash_entry_at hash_clear hash_dup range_new range_parts
+         num_to_f64 big_to_value to_big int_from_i64 int_from_i128 rfloat_heap);
 }

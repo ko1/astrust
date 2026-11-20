@@ -125,7 +125,7 @@ pub fn ary_aref(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
             None => Ok(NIL),
         };
     }
-    if crate::builtins::enumerator::is_arith_seq(x) { return crate::builtins::enumerator::arith_seq_slice(c, x, slf); }
+    if crate::builtins::enumerator::is_arith_seq(c, x) { return crate::builtins::enumerator::arith_seq_slice(c, x, slf); }
     let i = num_to_long(c, x)?;
     Ok(norm_index(i, n).and_then(|i| c.ary(slf).get(i).copied()).unwrap_or(NIL))
 }
@@ -255,7 +255,7 @@ cfn!(a_each, |c, slf, a, blk| {
     Ok(slf)
 });
 cfn!(a_each_index, |c, slf, a, blk| enum_or(c, slf, "each_index", a, blk, |c| { let mut i = 0; while i < c.ary_len(slf) { yield1(c, blk, Value::fix(i as i64))?; i += 1; } Ok(slf) }));
-cfn!(a_each_with_index, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && crate::builtins::enum_native::each_overridden(slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "each_with_index", a, blk) } else { enum_or(c, slf, "each_with_index", a, blk, |c| { let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { yield_block(c, blk, &[x, Value::fix(i as i64)])?; i += 1; } Ok(slf) }) });
+cfn!(a_each_with_index, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && crate::builtins::enum_native::each_overridden(c, slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "each_with_index", a, blk) } else { enum_or(c, slf, "each_with_index", a, blk, |c| { let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { yield_block(c, blk, &[x, Value::fix(i as i64)])?; i += 1; } Ok(slf) }) });
 cfn!(a_reverse_each, |c, slf, a, blk| enum_or(c, slf, "reverse_each", a, blk, |c| { let mut i = c.ary_len(slf); while i > 0 { i -= 1; if i >= c.ary_len(slf) { i = c.ary_len(slf); continue; } let x = c.ary_get(slf, i); yield1(c, blk, x)?; } Ok(slf) }));
 cfn!(a_map, |c, slf, a, blk| enum_or(c, slf, "map", a, blk, |c| {
     let out = c.ary_new_capa(c.ary_len(slf));
@@ -816,7 +816,7 @@ cfn!(a_bsearch, |c, slf, a, blk| enum_or(c, slf, "bsearch", a, blk, |c| {
 }));
 cfn!(a_pack, |c, slf, a, blk| crate::builtins::misc::pack(c, slf, a));
 cfn!(a_frozen_dup, |c, slf, a, blk| Ok(slf));
-cfn!(a_flat_map, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && crate::builtins::enum_native::each_overridden(slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "flat_map", a, blk) } else { enum_or(c, slf, "flat_map", a, blk, |c| {
+cfn!(a_flat_map, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && crate::builtins::enum_native::each_overridden(c, slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "flat_map", a, blk) } else { enum_or(c, slf, "flat_map", a, blk, |c| {
     let out = c.ary_new(); let mut i = 0;
     while let Some(&x) = c.ary(slf).get(i) { let y = yield1(c, blk, x)?; if is_array(y) { c.ary_concat(out, y); } else if let Some(arr) = if y.is_heap() { check_array(c, y)? } else { None } { c.ary_concat(out, arr); } else { c.ary_push(out, y); } i += 1; }
     Ok(out)
@@ -843,7 +843,7 @@ cfn!(a_all, |c, slf, a, blk| {
 });
 cfn!(a_none, |c, slf, a, blk| { let r = a_any(c, slf, a, blk)?; Ok(Value::bool(r == FALSE)) });
 cfn!(a_find, |c, slf, a, blk| enum_or(c, slf, "find", a, blk, |c| { let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { if yield1(c, blk, x)?.truthy() { return Ok(x); } i += 1; } Ok(NIL) }));
-cfn!(a_each_slice, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && crate::builtins::enum_native::each_overridden(slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "each_slice", a, blk) } else { enum_or(c, slf, "each_slice", a, blk, |c| {
+cfn!(a_each_slice, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && crate::builtins::enum_native::each_overridden(c, slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "each_slice", a, blk) } else { enum_or(c, slf, "each_slice", a, blk, |c| {
     let n = num_to_long(c, a[0])?;
     if n <= 0 { return arg_err(c, "invalid slice size"); }
     let mut i = 0;
@@ -851,7 +851,7 @@ cfn!(a_each_slice, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && crate
     Ok(slf)
 }) });
 cfn!(a_inject, |c, slf, a, blk| {
-    if obj_klass(slf) != c.vm().c_array && crate::builtins::enum_native::each_overridden(slf, a_each) { return crate::builtins::enum_native::call_enumerable(c, slf, "inject", a, blk); }
+    if obj_klass(slf) != c.vm().c_array && crate::builtins::enum_native::each_overridden(c, slf, a_each) { return crate::builtins::enum_native::call_enumerable(c, slf, "inject", a, blk); }
     let (mut acc, mut i, op) = match (a.len(), blk.is_null()) {
         (0, _) => { if c.ary_len(slf) == 0 { return Ok(NIL); } (c.ary_get(slf, 0), 1, None) }
         (1, false) => (a[0], 0, None),
@@ -867,7 +867,7 @@ cfn!(a_inject, |c, slf, a, blk| {
     }
     Ok(acc)
 });
-cfn!(a_sort_by_native, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && crate::builtins::enum_native::each_overridden(slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "sort_by", a, blk) } else { enum_or(c, slf, "sort_by", a, blk, |c| {
+cfn!(a_sort_by_native, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && crate::builtins::enum_native::each_overridden(c, slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "sort_by", a, blk) } else { enum_or(c, slf, "sort_by", a, blk, |c| {
     let n = c.ary_len(slf);
     let keys = c.ary_new_capa(n);
     let mut i = 0;
@@ -878,7 +878,7 @@ cfn!(a_sort_by_native, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && c
     else { sort_values(c, &mut idx, &mut |c, x, y| rb_cmp(c, c.ary_get(keys, x.as_fix() as usize), c.ary_get(keys, y.as_fix() as usize)))?; }
     Ok(c.ary_from_vec(idx.iter().map(|i| c.ary_get(src, i.as_fix() as usize)).collect()))
 }) });
-cfn!(a_each_cons, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && crate::builtins::enum_native::each_overridden(slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "each_cons", a, blk) } else { enum_or(c, slf, "each_cons", a, blk, |c| {
+cfn!(a_each_cons, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && crate::builtins::enum_native::each_overridden(c, slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "each_cons", a, blk) } else { enum_or(c, slf, "each_cons", a, blk, |c| {
     let n = num_to_long(c, a[0])?;
     if n <= 0 { return arg_err(c, "invalid size"); }
     let n = n as usize;
@@ -886,7 +886,7 @@ cfn!(a_each_cons, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && crate:
     while i + n <= c.ary_len(slf) { let sl = c.ary_from_vec(c.ary(slf)[i..i + n].to_vec()); yield1(c, blk, sl)?; i += 1; }
     Ok(slf)
 }) });
-cfn!(a_filter_map, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && crate::builtins::enum_native::each_overridden(slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "filter_map", a, blk) } else { enum_or(c, slf, "filter_map", a, blk, |c| { let out = c.ary_new(); let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { let y = yield1(c, blk, x)?; if y.truthy() { c.ary_push(out, y); } i += 1; } Ok(out) }) });
+cfn!(a_filter_map, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && crate::builtins::enum_native::each_overridden(c, slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "filter_map", a, blk) } else { enum_or(c, slf, "filter_map", a, blk, |c| { let out = c.ary_new(); let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { let y = yield1(c, blk, x)?; if y.truthy() { c.ary_push(out, y); } i += 1; } Ok(out) }) });
 // CRuby's pairwise minmax (enum.c minmax_ii): the block sees the same call sequence.
 cfn!(a_minmax, |c, slf, a, blk| {
     let cmp = |c: &mut Ctx, x: Value, y: Value| -> Result<i64, Esc> {

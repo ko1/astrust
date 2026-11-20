@@ -265,14 +265,16 @@ fn enum_body(c: &mut Ctx, e: Value, _args: &[Value], _b: *const Block) -> RV {
     Ok(UNDEF)
 }
 
+// legacy view of an Enumerator's state (this module is not converted, docs/safe_heap.md)
+fn renum(v: Value) -> Option<&'static mut crate::builtins::enumerator::REnum> { rdata::<crate::builtins::enumerator::REnum>(v) }
 fn enum_fiber(c: &mut Ctx, e: Value) -> Value {
-    let en = crate::builtins::enumerator::renum(e).unwrap();
+    let en = renum(e).unwrap();
     if en.fiber != NIL { return en.fiber; }
     let blk = Block::cfunc(c, enum_body, e);
     let p = crate::gc::alloc(vm().c_proc, Body::Proc(Box::new(ProcData { blk, is_lambda: false, from_method: NIL })));
     rproc(p).blk.proc_val = p;
     let f = new_fiber(vm().c_fiber, p);
-    crate::builtins::enumerator::renum(e).unwrap().fiber = f;
+    renum(e).unwrap().fiber = f;
     f
 }
 
@@ -287,7 +289,7 @@ fn enum_pull(c: &mut Ctx, e: Value) -> Result<Option<Value>, Esc> {
 }
 
 fn stop_iteration(c: &mut Ctx, e: Value) -> Esc {
-    let en = crate::builtins::enumerator::renum(e).unwrap();
+    let en = renum(e).unwrap();
     let f = en.fiber;
     let res = if f != NIL { fd(f).enum_src } else { NIL };
     let ex = make_exception(vm().c_stop_iteration, "iteration reached an end");
@@ -301,7 +303,7 @@ pub fn enum_next(c: &mut Ctx, e: Value) -> Result<Option<Value>, Esc> {
 pub fn enum_has_fiber(_e: Value) -> bool { true }
 pub fn enum_peek(c: &mut Ctx, e: Value) -> RV {
     match enum_pull(c, e)? {
-        Some(v) => { let f = crate::builtins::enumerator::renum(e).unwrap().fiber; fd(f).peek = Some(v); Ok(v) }
+        Some(v) => { let f = renum(e).unwrap().fiber; fd(f).peek = Some(v); Ok(v) }
         None => Err(stop_iteration(c, e)),
     }
 }

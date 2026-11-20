@@ -9,6 +9,8 @@ ROOT = File.expand_path('..', __dir__)
 BODY = %w[obj rary rstr rhash rclass rproc rmethod rbig rdata ivars_of str_bytes]
 ARY  = %w[ary_new ary_new_capa ary_new_from ary_from_vec ary_push ary_len ary_get ary_to_vec]
 ALLOC = %w[str_new str_from_vec str_from_vec_enc hash_new float_new]
+# context-free API of hash.rs, range.rs, numeric.rs, bignum.rs (heap::no_legacy_hn)
+HN = %w[hash_new_capa hash_pairs hash_len hash_entry_at hash_clear hash_dup range_new range_parts num_to_f64 big_to_value to_big int_from_i64 int_from_i128 rfloat_heap]
 COLS = { 'obj' => %w[obj], 'rary' => %w[rary], 'rstr' => %w[rstr str_bytes], 'rhash' => %w[rhash], 'rclass' => %w[rclass],
          'rproc' => %w[rproc rmethod], 'rbig' => %w[rbig], 'rdata' => %w[rdata], 'ivars_of' => %w[ivars_of],
          'ary_*' => ARY, 'vm' => %w[vm] }
@@ -29,7 +31,9 @@ files.each do |f|
   converted = src =~ /^\s*use crate::heap::no_legacy::\*/ ? true : false
   helpers = src.scan(/\bfn\s+\w+[^{;]*->[^{;]*&'static mut/).size   # local accessors handing out &'static mut
   if converted
-    left = (BODY + ARY + ALLOC + %w[vm]).select { count(body, _1) > 0 || body =~ /::#{_1}\(/ }
+    banned = BODY + ARY + ALLOC + %w[vm]
+    banned += HN if src =~ /^\s*use crate::heap::no_legacy_hn::\*/
+    left = banned.select { count(body, _1) > 0 || body =~ /::#{_1}\(/ }
     bad << "#{rel}: #{left.join(' ')}" unless left.empty?
   end
   statics = src.scan(/\bstatic\s+mut\s+\w+\s*:/).size

@@ -176,13 +176,18 @@ pub fn boot() {
     module::init();
     proc::init();
     exception::init();
-    numeric_methods::init();
+    numeric_methods::init(vm.c_numeric, vm.c_integer, vm.c_float);
+    for (nm, v) in numeric_methods::FLOAT_CONSTS { const_set(vm.c_float, crate::symbol::intern(nm.as_bytes()), crate::numeric::float_new(v)); }
     string_methods::init();
     symbol_methods::init();
     array_methods::init(vm.c_array);
-    hash_methods::init();
-    range_methods::init();
-    enumerator::init();
+    hash_methods::init(vm.c_hash);
+    vm.ids.r_each = range_methods::init(vm.c_range);
+    let e = define_class("Enumerator", vm.c_object);
+    rclass(e).alloc = AllocKind::None;
+    let k = enumerator::init(e, vm.c_object, vm.m_enumerable);
+    vm.c_enumerator = k.enumerator; vm.c_yielder = k.yielder; vm.c_generator = k.generator;
+    vm.c_lazy = k.lazy; vm.c_chain = k.chain; vm.c_arith_seq = k.arith_seq;
     io::init();
     process::init();
     marshal::init();
@@ -195,12 +200,12 @@ pub fn boot() {
     encoding::init();
     stringio::init();
     regexp_methods::init();
-    structs::init();
+    vm.c_struct = structs::init(vm.c_object, vm.m_enumerable);
     time::init();
-    math::init();
+    math::init(vm.m_math);
     rational::init();
     complex::init();
-    enum_native::init();
+    enum_native::init(vm.m_enumerable);
     crate::fiber::init();
     extras::init();
 }

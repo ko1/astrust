@@ -1,7 +1,6 @@
 // pp: pretty_inspect (wraps long arrays/hashes like CRuby's pp).
 use crate::array::*;
 use crate::builtins::kernel::*;
-use crate::hash::*;
 use crate::value::*;
 use crate::vm::*;
 

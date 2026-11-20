@@ -258,7 +258,7 @@ fn int_arg(c: &mut Ctx, v: Value) -> RV {
     if is_float(v) {
         let f = float_val(v);
         if f.is_nan() || f.is_infinite() { return err(c, vm().c_float_domain_error, crate::numeric::float_to_s(f)); }
-        return Ok(crate::builtins::numeric_methods::f64_to_int(f.trunc()));
+        return Ok(crate::legacy::f64_to_int(f.trunc()));
     }
     if is_string(v) { return parse_int_for_format(c, v); }
     if v == NIL { return type_err(c, "can't convert nil into Integer"); }

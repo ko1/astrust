@@ -1,7 +1,21 @@
 // Arbitrary-precision integers: sign + magnitude (base 2^32 limbs, little-endian).
 // Values that fit in a Fixnum are always normalized back to Fixnum.
+// On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
+#![forbid(unsafe_code)]
+// the context-free API, for the modules not converted yet (bodies in object.rs)
+pub use crate::object::{big_to_value, int_from_i128, int_from_i64, to_big};
+pub use imp::*;
+
+// a module of its own: `no_legacy` must not meet the re-export above
+mod imp {
+#[allow(unused_imports)]
+use crate::heap::no_legacy::*;   // the old accessors cannot be named here
+#[allow(unused_imports)]
+use crate::heap::no_legacy_hn::*;
+use crate::heap::obj_set_flags;
 use crate::object::*;
 use crate::value::*;
+use crate::vm::Ctx;
 use std::cmp::Ordering;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -310,16 +324,13 @@ impl BigInt {
         let n = self.mag.len();
         let mut mag: Vec<u32> = Vec::with_capacity(n + 1);
         let mut carry = 0u64;
-        unsafe {
-            let p = mag.as_mut_ptr();
-            for (i, &x) in self.mag.iter().enumerate() {
-                let t = x as u64 * m as u64 + carry;
-                *p.add(i) = t as u32;
-                carry = t >> 32;
-            }
-            *p.add(n) = carry as u32;
-            mag.set_len(if carry != 0 { n + 1 } else { n });
-        }
+        // an exact-size iterator: `extend` writes the limbs without a capacity test each
+        mag.extend(self.mag.iter().map(|&x| {
+            let t = x as u64 * m as u64 + carry;
+            carry = t >> 32;
+            t as u32
+        }));
+        if carry != 0 { mag.push(carry as u32); }
         BigInt { neg: self.neg != neg, mag }
     }
     pub fn mul(&self, o: &BigInt) -> BigInt { BigInt { neg: self.neg != o.neg, mag: mul_mag(&self.mag, &o.mag) }.norm() }
@@ -453,19 +464,23 @@ impl std::fmt::Display for BigInt {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { write!(f, "{}", self.to_string_radix(10)) }
 }
 
-/// Normalize: Fixnum when it fits, else a Bignum object (frozen).
-pub fn big_to_value(b: BigInt) -> Value {
-    if let Some(i) = b.to_i64() { if Value::fixable(i) { return Value::fix(i); } }
-    let v = crate::gc::alloc(crate::vm::vm().c_integer, Body::Bignum(Box::new(b)));
-    obj(v).flags |= FL_FROZEN;
-    v
+impl Ctx {
+    /// Normalize: Fixnum when it fits, else a Bignum object (frozen).
+    pub fn big_to_value(&mut self, b: BigInt) -> Value {
+        if let Some(i) = b.to_i64() { if Value::fixable(i) { return Value::fix(i); } }
+        let k = self.vm().c_integer;
+        let v = self.alloc(k, Body::Bignum(Box::new(b)));
+        obj_set_flags(v, FL_FROZEN);
+        v
+    }
+    /// The value of Integer `v` as a BigInt (a copy).
+    pub fn to_big(&self, v: Value) -> BigInt {
+        if v.is_fixnum() { BigInt::from_i64(v.as_fix()) } else { self.big(v).clone() }
+    }
+    pub fn int_from_i128(&mut self, i: i128) -> Value {
+        if i >= FIXNUM_MIN as i128 && i <= FIXNUM_MAX as i128 { Value::fix(i as i64) } else { self.big_to_value(BigInt::from_i128(i)) }
+    }
+    #[inline]
+    pub fn int_from_i64(&mut self, i: i64) -> Value { if Value::fixable(i) { Value::fix(i) } else { self.big_to_value(BigInt::from_i64(i)) } }
 }
-
-pub fn to_big(v: Value) -> BigInt {
-    if v.is_fixnum() { BigInt::from_i64(v.as_fix()) } else { rbig(v).clone() }
 }
-
-pub fn int_from_i128(i: i128) -> Value {
-    if i >= crate::value::FIXNUM_MIN as i128 && i <= crate::value::FIXNUM_MAX as i128 { Value::fix(i as i64) } else { big_to_value(BigInt::from_i128(i)) }
-}
-pub fn int_from_i64(i: i64) -> Value { if Value::fixable(i) { Value::fix(i) } else { big_to_value(BigInt::from_i64(i)) } }
