@@ -1189,6 +1189,7 @@ pub fn EVAL_node_opt_aset(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, v
 pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, has_env: bool, line: u32, body: NodePtr) -> RV {
     let me = c.call_me;
     let blk = c.call_blk;
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit_body("entry", n, has_env, nparams as usize, !blk.is_null());
     let id = c.next_serial();
     let mut fr = Frame { prev: c.frame, fp: head(fp), me, blk, id, line, kind: FK_METHOD, visi: VISI_PUBLIC, lite: true, pad: 0 };
     enter(c, fp, nlocals)?;

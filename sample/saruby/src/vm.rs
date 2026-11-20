@@ -1139,6 +1139,7 @@ pub fn call_cached(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u
 fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> Option<RV> {
     // fast_argc matches only when cc.fast is a method entry node
     if argc == cc.fast_argc && flags & CF_KW == 0 {
+        #[cfg(feature = "nodeprof")] crate::nodeprof::hit("site: entry");
         c.call_me = cc.me as *const MethodEntry; c.call_blk = blk;
         let r = run_entry(c, cc.fast as NodePtr, base);
         c.set_sp(base, 0);
@@ -1150,6 +1151,7 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
             0 if cc.fast_argc == u32::MAX => {
                 let ni = unsafe { &*(cc.fast as *const NewInfo) };
                 if argc == ni.init_argc {
+                    #[cfg(feature = "nodeprof")] crate::nodeprof::hit("site: new");
                     let o = new_object(ni.klass);
                     base[0].set(o);   // self of initialize: keeps o alive and gives it back
                     c.call_me = ni.init_me; c.call_blk = blk;
@@ -1161,6 +1163,7 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
             1 if argc == 0 => {
                 // attr_reader on an Object whose class assigned the ivar index
                 if let Body::Object(ivs) = &obj(recv).body {
+                    #[cfg(feature = "nodeprof")] crate::nodeprof::hit("site: attr_reader");
                     let v = ivs.get(cc.fast >> 2).unwrap_or(UNDEF);
                     c.set_sp(base, 0);
                     return Some(Ok(if v == UNDEF { NIL } else { v }));
@@ -1172,6 +1175,7 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
                     if let Body::Object(ivs) = &mut o.body {
                         let i = cc.fast >> 2;
                         let v = base[2].get();
+                        #[cfg(feature = "nodeprof")] crate::nodeprof::hit("site: attr_writer");
                         if ivs.set(i, v) { c.set_sp(base, 0); return Some(Ok(v)); }
                     }
                 }
@@ -1186,6 +1190,7 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
         }
     }
     if cc.cfunc != 0 && flags & CF_KW == 0 && (cc.arity < 0 || cc.arity == argc as i32) {
+        #[cfg(feature = "nodeprof")] crate::nodeprof::hit(if blk.is_null() { "site: cfunc" } else { "site: cfunc +blk" });
         let f: CFunc = unsafe { std::mem::transmute::<usize, CFunc>(cc.cfunc) };
         let pf = c.frame;
         let mut fr = Frame::cfunc(pf, cc.me as *const MethodEntry, blk);
@@ -1288,6 +1293,7 @@ const POLY_WAYS: usize = 4;
 /// with a filled cache is polymorphic: its other classes go to a small table behind the cache.
 #[inline(never)]
 pub fn call_slow(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32, hit: bool) -> RV {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit(if hit { "site: slow (cache hit, no fast path)" } else { "site: slow (miss)" });
     let recv = base[0].get();
     let me = if hit { cc.me as *const MethodEntry } else {
         let klass = class_of(recv);
@@ -1580,6 +1586,7 @@ pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, 
         return r;
     }
     stack_check(c, is.nlocals as usize + 16)?;
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit("invoke_iseq: general (no entry node or argc mismatch)");
     let mut fr = Frame::empty(base);
     fr.prev = c.frame;
     fr.me = me;
@@ -1818,6 +1825,7 @@ pub fn is_lambda_block(b: *const Block) -> bool {
 /// yield: run the block with args (copied to the VM stack).
 #[inline]
 pub fn yield_block(c: &mut Ctx, blk: *const Block, args: &[Value]) -> RV {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit("yield: from a builtin (yield_block)");
     if blk.is_null() { return err(c, vm().c_local_jump_error, "no block given (yield)"); }
     let b = unsafe { &*blk };
     if let Some(is) = block_fast(b, args.len()) {
@@ -1846,6 +1854,7 @@ pub fn block_fast(b: &Block, argc: usize) -> Option<&'static Iseq> {
 /// Run a block_fast block with args already at base[2..].
 #[inline(always)]
 pub fn run_block_fast(c: &mut Ctx, b: &Block, is: &Iseq, base: Stk, argc: u32) -> RV {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit_body("block_fast", is.body, is.env_size > 0, is.params.lead.len(), false);
     let n = is.nlocals as usize;
     let mut fr = FrameFull {
         h: Frame { prev: c.frame, fp: head(base), me: b.me, blk: b.outer_blk, id: b.home_id, line: is.info.line, kind: FK_BLOCK, visi: VISI_PUBLIC, lite: false, pad: 0 },
@@ -1869,6 +1878,7 @@ pub fn run_block_fast(c: &mut Ctx, b: &Block, is: &Iseq, base: Stk, argc: u32) -
 /// One out-of-line copy of the one-argument fast path (not left to yield_block's inlining luck).
 #[inline(never)]
 pub fn yield1(c: &mut Ctx, blk: *const Block, a: Value) -> RV {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit("yield: from a builtin, 1 arg (yield1)");
     if !blk.is_null() {
         let b = unsafe { &*blk };
         if let Some(is) = block_fast(b, 1) {
@@ -1946,6 +1956,7 @@ pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const 
 }
 
 pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &Iseq, base: Stk, argc: u32, blkarg: *const Block, lambda: bool, bme: *const MethodEntry, kw: bool) -> RV {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit_body(if lambda { "block_full lambda" } else { "block_full" }, is.body, is.env_size > 0, is.params.lead.len(), false);
     let mut fr = Frame::empty(base);
     fr.prev = c.frame;
     fr.me = if bme.is_null() { b.me } else { bme };

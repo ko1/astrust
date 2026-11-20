@@ -986,6 +986,7 @@ node_method_entry(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, h
 {
     let me = c.call_me;
     let blk = c.call_blk;
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit_body("entry", n, has_env, nparams as usize, !blk.is_null());
     let id = c.next_serial();
     let mut fr = Frame { prev: c.frame, fp: head(fp), me, blk, id, line, kind: FK_METHOD, visi: VISI_PUBLIC, lite: true, pad: 0 };
     enter(c, fp, nlocals)?;
