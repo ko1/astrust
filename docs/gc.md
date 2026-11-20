@@ -212,7 +212,7 @@ Blocking precise roots (dropping the ambiguous machine-stack scan):
 Blocking a moving backend (in addition):
 
 * `&'static mut` borrows into bodies: the accessors in `src/object.rs` (`obj`, `rary`, `rstr`,
-  `rhash`, ...) and `modify` in `src/builtins/array_methods.rs`.
+  `rhash`, ...).  Array methods no longer use them: `sample/koruby/docs/safe_heap.md`.
 * Addresses as identity: `gen_ivars` keyed by address (`src/vm.rs` `ivar_set_raw`, and
   `gc.rs` `visit_gen_ivars` / `remove_gen_ivars`), `object_ids` keyed by address
   (`vm::object_id`), `Object#hash` and identity hashes from the raw word (`src/hash.rs`

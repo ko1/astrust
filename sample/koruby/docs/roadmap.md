@@ -17,11 +17,17 @@ Plan, in order:
    the aliasing rule and the precise-GC rule become one borrow-checker rule, at no run-time cost.
    The deref inside the accessor stays `unsafe` in the core and is sound as long as a `Value` handle
    is live (see rooting below).
+   Core done (2026-11-21, `src/heap.rs`) and piloted on Array: `array.rs` and
+   `builtins/array_methods.rs` are `forbid(unsafe_code)`. Cost: the run-time kind check, 0 to
+   +2.1 % instructions. Design, numbers, the conversion recipe and the per-file count of what
+   is left (2302 call sites): `docs/safe_heap.md`.
 2. **Value stack as slices.** Done (2026-11-20) as two backends behind one API: `src/stack.rs`
    (the default since 2026-11-21; `FEATURES=raw_stack` is the raw one; `#![forbid(unsafe_code)]`, frames are `&[Cell<Value>; FRAME]`) and
    `src/stack_raw.rs` (default, raw pointers). The checked one costs too much on call-heavy code to be
    the default; numbers, design and rejected alternatives: `docs/safe_stack.md`.
 3. **No `static mut`**: builtin method identities (`BO_EQ_ME`, ...) and the VM singleton go through the context.
+   Identities and `MAIN_CTX` are `Vm` fields now (`vm.ids`, `vm.main_ctx`); `c.vm()` exists; `static mut VM`
+   and 47 others remain (`docs/safe_heap.md`).
 4. **Builtins become `forbid(unsafe_code)`** module by module once 1–3 exist (they are the bulk of the count).
 5. Remaining unsafe, each behind a safe API: GC allocator/sweeper, stack scanning (until precise),
    node operand access in generated code, code store loading, fibers, FFI.
@@ -101,7 +107,7 @@ Lesson recorded many times in the ledger: instruction counts and cycles disagree
 
 - `Value`s in Rust locals are safe (conservative machine-stack scan): cfunc signature
   `fn(&mut Ctx, Value, &[Value], *const Block)`, generated `@child` locals.
-- `&'static mut` borrows into object bodies (`object.rs` accessors, `array_methods.rs` `modify`).
+- `&'static mut` borrows into object bodies (`object.rs` accessors; Array methods no longer, see `docs/safe_heap.md`).
 - Values copied into Rust heap buffers across calls (`args.to_vec()`), invisible to any scan.
 - Addresses as identity: `Object#hash`, `object_id`, inspect, `gen_ivars`, method cache keys,
   `CallCache.klass` / `IvarCache.klass` raw in nodes.

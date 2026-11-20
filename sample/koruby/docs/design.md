@@ -56,6 +56,10 @@ are scanned conservatively, and the VM value stack too.  So Values in Rust local
 a Ruby call** — if needed, put it in a Ruby Array (`ary_new_from`) held in a local.  Don't hold
 `&mut` borrows into an object (e.g. `rary(v)`) across calls that can run Ruby code; iterate by
 index and re-fetch (`ary_get(v, i)` with `ary_len(v)` checked each iteration).
+In converted modules (array.rs, builtins/array_methods.rs) the last rule is a compile error
+instead of a convention: bodies are reached through the context (`c.ary(v)`, `c.ary_mut(v)`,
+`src/heap.rs`), and a borrow of `c` cannot be held across a call that takes `c`.  New code
+uses that API; see docs/safe_heap.md (design, recipe, what is left).
 
 ## Methods
 * Builtins are `CFunc = fn(&mut Ctx, self: Value, args: &[Value], blk: *const Block) -> RV`,
