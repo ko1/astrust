@@ -3,8 +3,11 @@ code_store/
 preload_store/
 /sample/calc/calc
 /sample/calc/libcalc.so
-/sample/koruby/koruby
-/sample/koruby/libkoruby.so
-/sample/koruby/work/
-/sample/koruby/test/regex/target/
-/sample/koruby/.features
+/sample/saruby/saruby
+/sample/saruby/libsaruby.so
+/sample/saruby/work/
+/sample/saruby/test/regex/target/
+/sample/saruby/.features
+/.claude/
+/sample/astrogre/are
+/sample/astrogre/libastrogre.rlib

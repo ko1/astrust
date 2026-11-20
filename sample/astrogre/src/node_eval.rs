@@ -61,6 +61,7 @@ pub fn EVAL_node_re_succ(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {
     OK
 }
 
+
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_re_sub_succ(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {
@@ -68,11 +69,13 @@ pub fn EVAL_node_re_sub_succ(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {
     OK
 }
 
+
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_re_sub_succ_at(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {
     if pos == c.lb_target { OK } else { FAIL }
 }
+
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
@@ -85,6 +88,7 @@ pub fn EVAL_node_re_byte<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, b: u
         FAIL
     }
 }
+
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
@@ -99,6 +103,7 @@ pub fn EVAL_node_re_lit<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, bytes
     }
 }
 
+
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_re_one<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, kind: u32, ch: u32, cls: ClassRef, next: NodePtr) -> u32 {
@@ -108,6 +113,7 @@ pub fn EVAL_node_re_one<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, kind:
     }
 }
 
+
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_re_grapheme<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, next: NodePtr) -> u32 {
@@ -116,6 +122,7 @@ pub fn EVAL_node_re_grapheme<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, 
         None => FAIL,
     }
 }
+
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
@@ -163,11 +170,13 @@ pub fn EVAL_node_re_rep1<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, kind
     }
 }
 
+
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_re_assert<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, kind: u32, next: NodePtr) -> u32 {
     if assert_k(kind, c, pos) { <D_next as Disp>::call(c, next, pos) } else { FAIL }
 }
+
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
@@ -178,6 +187,7 @@ pub fn EVAL_node_re_keep<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, next
     if r == FAIL { c.undo(mark); }
     r
 }
+
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
@@ -191,6 +201,7 @@ pub fn EVAL_node_re_open<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, g: u
     r
 }
 
+
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_re_open_nr<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, g: u32, next: NodePtr) -> u32 {
@@ -200,12 +211,14 @@ pub fn EVAL_node_re_open_nr<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, g
     <D_next as Disp>::call(c, next, pos)
 }
 
+
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_re_close<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, g: u32, next: NodePtr) -> u32 {
     c.slots[2 * g as usize + 1] = pos;
     <D_next as Disp>::call(c, next, pos)
 }
+
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
@@ -222,11 +235,13 @@ pub fn EVAL_node_re_backref<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, g
     }
 }
 
+
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_re_cond<D_yes: Disp, D_no: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, groups: Groups, yes: NodePtr, no: NodePtr) -> u32 {
     if cond_k(c, groups) { <D_yes as Disp>::call(c, yes, pos) } else { <D_no as Disp>::call(c, no, pos) }
 }
+
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
@@ -235,6 +250,7 @@ pub fn EVAL_node_re_alt<D_a: Disp, D_b: Disp>(c: &mut Ctx, n: NodePtr, pos: usiz
     if r != FAIL { return r; }
     <D_b as Disp>::call(c, b, pos)
 }
+
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
@@ -250,17 +266,20 @@ pub fn EVAL_node_re_opt<D_body: Disp, D_skip: Disp>(c: &mut Ctx, n: NodePtr, pos
     }
 }
 
+
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_re_rep<D_body: Disp, D_outer: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, body: NodePtr, outer: NodePtr, min: u32, max: u32, greedy: bool, mem: bool, shape: u32, cost: u32) -> u32 {
     rep_enter(c, body, outer, min, max, greedy, mem, shape, cost, pos)
 }
 
+
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_re_rep_cont(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {
     rep_cont(c, pos)
 }
+
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
@@ -311,6 +330,7 @@ pub fn EVAL_node_re_look<D_body: Disp, D_next: Disp>(c: &mut Ctx, n: NodePtr, po
     }
 }
 
+
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_search<D_body: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, body: NodePtr, anchor: u32) -> u32 {
@@ -336,6 +356,7 @@ pub fn EVAL_node_search<D_body: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, body:
     }
 }
 
+
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_search_memchr<D_body: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, body: NodePtr, b: u8) -> u32 {
@@ -352,6 +373,7 @@ pub fn EVAL_node_search_memchr<D_body: Disp>(c: &mut Ctx, n: NodePtr, pos: usize
     }
 }
 
+
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_search_memmem<D_body: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, body: NodePtr, needle: Bytes) -> u32 {
@@ -367,6 +389,7 @@ pub fn EVAL_node_search_memmem<D_body: Disp>(c: &mut Ctx, n: NodePtr, pos: usize
         p += char_len(s, p);
     }
 }
+
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
@@ -386,9 +409,11 @@ pub fn EVAL_node_search_byteset<D_body: Disp>(c: &mut Ctx, n: NodePtr, pos: usiz
     }
 }
 
+
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_match_at<D_body: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, body: NodePtr) -> u32 {
     c.reset(pos);
     <D_body as Disp>::call(c, body, pos)
 }
+

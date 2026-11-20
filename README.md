@@ -11,7 +11,7 @@ lib/astrustgen.rb     the generator (node.def -> node_{head,eval,dispatch,hash,s
 runtime/astrust.rs    language-independent runtime: hashing, SpecCtx, CodeStore (rustc + dlopen), TieredStore
 runtime/gc/           GC framework: language binding + pluggable backends (docs/gc.md)
 sample/calc/          smallest example (integer calculator with loops)
-sample/koruby/        a Ruby implementation (rewrite of astro/sample/koruby_precise in Rust)
+sample/saruby/        a Ruby implementation (rewrite of astro/sample/koruby_precise in Rust)
 ```
 
 ## How it differs from ASTro (C)
@@ -42,7 +42,7 @@ Operands: `x: NODE` (lazy child, `EVAL_ARG!(c, x)`), `x@child: T` (evaluated by 
 anything else is opaque (read from the node at run time; the embedder's generator subclass
 decides hashing).  Embedders subclass `ASTrustGen::NodeDef::Node` for the common-parameter
 count, result type, how to unwrap a child's result (`e?` for `Result`), and opaque operands —
-see `sample/calc/calc_gen.rb` (minimal) and `sample/koruby/koruby_gen.rb`.
+see `sample/calc/calc_gen.rb` (minimal) and `sample/saruby/saruby_gen.rb`.
 
 ### @child storage
 
@@ -67,15 +67,15 @@ A precise-GC embedder (docs/gc.md) stages the value in a root-scanned slot inste
 `runtime/gc/` is a collector framework in the manner of ASTro's `runtime/precise_gc`: the
 language implements `GcLang` (roots, edges as mutable slots, finalization), a backend
 implements `GcBackend`, and `Gc<L, B>` joins them at compile time.  Two non-moving backends
-exist (`marksweep`, `bitmap`); koruby selects one with `make GC=<name>`.  See `docs/gc.md`.
+exist (`marksweep`, `bitmap`); saruby selects one with `make GC=<name>`.  See `docs/gc.md`.
 
 ### Common parameters
 
 The common parameters are copied through as written, so they can be any Rust types.  A frame
-of local variables does not have to be a raw pointer: koruby passes `fp: Fp`, which in its
+of local variables does not have to be a raw pointer: saruby passes `fp: Fp`, which in its
 checked configuration is `&'static [Cell<Value>; N]`.  A slot index is a scalar operand and
 therefore a literal in specialized code, so `fp[i]` there is checked at compile time and costs
-nothing at run time (`sample/koruby/docs/safe_stack.md`).  No generator hook was needed.
+nothing at run time (`sample/saruby/docs/safe_stack.md`).  No generator hook was needed.
 
 ## Code store
 

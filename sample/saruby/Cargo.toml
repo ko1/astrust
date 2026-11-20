@@ -1,0 +1,34 @@
+[package]
+name = "saruby"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[lib]
+name = "saruby"
+path = "src/lib.rs"
+crate-type = ["dylib"]
+
+[dependencies]
+astrogre = { path = "../astrogre" }
+
+[features]
+# The value stack is src/stack.rs by default: every access checked, no unsafe.  `raw_stack` swaps in
+# raw pointers (src/stack_raw.rs) for comparison; see docs/safe_stack.md.  make FEATURES=raw_stack
+raw_stack = []
+# GC backend (runtime/gc): default is "marksweep"; `make GC=bitmap`
+gc-marksweep = []
+gc-bitmap = []
+
+[[bin]]
+name = "saruby"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+debug = 1
+codegen-units = 16
+incremental = false
+
+[profile.dev]
+opt-level = 1

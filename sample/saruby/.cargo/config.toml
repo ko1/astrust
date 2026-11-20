@@ -1,0 +1,5 @@
+# The interpreter is a Rust dylib (libsaruby.so) so AOT-specialized code (a
+# cdylib built by rustc at bake time) can link against it and inline its
+# #[inline] evaluators.  std must be shared between the two, hence prefer-dynamic.
+[build]
+rustflags = ["-C", "prefer-dynamic", "-C", "target-cpu=native"]

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 build = "build.rs"
 
-# An rlib: koruby links it statically; `are` links it too, and AOT-specialized code
+# An rlib: saruby links it statically; `are` links it too, and AOT-specialized code
 # (a cdylib built at bake time) is compiled against the same rlib.
 [lib]
 name = "astrogre"

@@ -87,7 +87,13 @@ pub fn {}(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ <{} as Disp>::call(c, n
 }
 
 /// A dispatcher as a type: `Dyn` calls through the node head, an SD type statically.
-pub trait Disp { fn call(c: &mut Ctx, n: NodePtr, pos: usize) -> u32; }
+pub trait Disp {
+    fn call(c: &mut Ctx, n: NodePtr, pos: usize) -> u32;
+    /// call() across a speculation boundary (the embedder only speculates small callees, to a bounded depth).
+    #[inline(always)]
+    fn spec(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 { Self::call(c, n, pos) }
+
+}
 /// A list of children: `DynList` loops over the heads, an SD list type is unrolled.
 pub trait DispList {
     fn len(ns: NodeList) -> usize;

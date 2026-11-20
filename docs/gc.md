@@ -9,7 +9,7 @@ runtime/gc/pages.rs        fixed-size slot pages + "which slot does this word po
 runtime/gc/stack.rs        ambiguous roots from machine stacks (register dump, stack words)
 runtime/gc/mark_sweep.rs   backend "marksweep": mark/free bits in the object header, free list
 runtime/gc/mark_bitmap.rs  backend "bitmap":    mark/live bitmaps per page, header untouched
-sample/koruby/src/gc.rs    koruby's binding (the only user so far)
+sample/saruby/src/gc.rs    saruby's binding (the only user so far)
 ```
 
 An embedder includes the directory as a module, like `runtime/astrust.rs`:
@@ -68,10 +68,10 @@ impl Gc<L, B> {
 
 Points of the design:
 
-* **Static dispatch.** `Gc<L, B>` is a concrete type per build (koruby: `type Backend = ...` under a
+* **Static dispatch.** `Gc<L, B>` is a concrete type per build (saruby: `type Backend = ...` under a
   cargo feature).  `Gc::alloc` and `Gc::store` are `#[inline(always)]`, and a backend's `alloc`
   is expected to be: the common case of an allocation is inlined into the caller (and into baked
-  AOT code — so an embedder's build id must cover the backend, see `sample/koruby/build.rs`).
+  AOT code — so an embedder's build id must cover the backend, see `sample/saruby/build.rs`).
 * **Edges are slots.** Every visit is `visit(&mut Ref)`.  Marking only reads the slot; a moving
   backend forwards the object and writes `L::from_object(new)` back.  One enumeration
   (`visit_roots`, `scan_edges`) serves mark, forward and pointer update.
@@ -89,13 +89,13 @@ Points of the design:
   and the time spent.
 * **Write barrier.** `Gc::store(holder, slot, v)` writes the slot and calls the backend's
   `barrier`; `barrier_holder` is the barrier alone, for payloads written in bulk.  Both backends
-  have an empty barrier and **nothing calls `store` yet** (koruby exposes it as `gc::store`).  A
+  have an empty barrier and **nothing calls `store` yet** (saruby exposes it as `gc::store`).  A
   generational or incremental backend makes it mandatory for every store of a reference into a
   heap object; inserting those calls is future work.
 * **What is not there yet.** One fixed-size `Obj` per object: there is no variable-size or
   byte allocation, so payloads stay Rust-owned (`Vec`, `Box`) and are released by `finalize`.
   No weak references or ephemerons.  One heap per process is assumed by nothing in the framework,
-  but koruby keeps its heap in a global.
+  but saruby keeps its heap in a global.
 
 ## Writing a backend
 
@@ -121,7 +121,7 @@ Implement `GcBackend<L>` for a type generic over `L: GcLang` (see `mark_sweep.rs
 `pages.rs` gives slot-based backends their pages and the conservative lookup
 (`Pages::resolve(word)`); `R` bytes at the start of each page can be reserved for side tables.
 
-Add the backend to the embedder's type alias (koruby: `sample/koruby/src/gc.rs`, a cargo feature
+Add the backend to the embedder's type alias (saruby: `sample/saruby/src/gc.rs`, a cargo feature
 `gc-<name>` in `Cargo.toml`, `make GC=<name>`).
 
 ## Writing a binding (a new language)
@@ -157,15 +157,15 @@ ASTro (no stack maps):
 
 Soundness of the Rust API: every function of `Gc` is safe, and the framework itself never
 dereferences anything but what `GcLang` hands it.  What cannot be expressed is liveness: the
-`NonNull<Obj>` returned by `alloc` (koruby: a `Value`) is valid only while the object is
+`NonNull<Obj>` returned by `alloc` (saruby: a `Value`) is valid only while the object is
 reachable from the roots, and dereferencing it is the embedder's `unsafe`.  Today a `Value` held
-only in a Rust local stays alive because koruby reports the machine stack as an ambiguous root;
+only in a Rust local stays alive because saruby reports the machine stack as an ambiguous root;
 nothing in the type system says so.
 
-## koruby's binding today
+## saruby's binding today
 
-`sample/koruby/src/gc.rs`: `struct Koruby` (stateless; the roots are globals), `type Heap =
-Gc<Koruby, Backend>`, `gc::alloc(klass, body)`, `gc::collect()`, `gc::store`, `gc::each_object`.
+`sample/saruby/src/gc.rs`: `struct Saruby` (stateless; the roots are globals), `type Heap =
+Gc<Saruby, Backend>`, `gc::alloc(klass, body)`, `gc::collect()`, `gc::store`, `gc::each_object`.
 
 * Roots (`vm::visit_roots`, `vm::visit_ctx`, `fiber::visit_fibers`): exact — the `Vm` fields
   (builtin classes, globals, `node_values`, `pinned`, `frozen_lits`, `symproc_cache`, crefs),
@@ -174,24 +174,24 @@ Gc<Koruby, Backend>`, `gc::alloc(klass, body)`, `gc::collect()`, `gc::store`, `g
   VM value stack.
 * Edges (`GcLang::scan_edges`): the match over `Body`, `vm::visit_class` / `visit_me` /
   `visit_block`, and `RData::visit(&mut self, &mut gc::Visitor)` for native payloads
-  (`gc::Visitor` is `dyn EdgeVisitor<Koruby>`: one virtual call per edge of a Data object).
+  (`gc::Visitor` is `dyn EdgeVisitor<Saruby>`: one virtual call per edge of a Data object).
 * Finalization: generic ivars and `data_free_hooks`, then `drop_in_place` of the body; the slot
   is left holding `Body::Free` so a stale reference does not find a dropped payload.
-* Backend: `make` (marksweep) or `make GC=bitmap`.  `KORUBY_GC_STRESS=n` arms stress mode once
+* Backend: `make` (marksweep) or `make GC=bitmap`.  `SARUBY_GC_STRESS=n` arms stress mode once
   the VM has booted.
 
-State under `KORUBY_GC_STRESS=1` (t/hand `gc* array* hash* str*`, 246 files, output compared
+State under `SARUBY_GC_STRESS=1` (t/hand `gc* array* hash* str*`, 246 files, output compared
 with a run without stress, 2026-11-20): marksweep 1 file differs (`gc_remset_overflow_1030.rb`,
 a timeout); bitmap 4 (`gc_remset_overflow_1030.rb` timeout, `string_misc_compat_2026_09_11.rb`,
 `string_partition_to_str.rb`, and a SEGV in `stringio.rb` at `sio_readlines`).  The bitmap
 backend reuses the lowest free slot first, so a stale reference aliases a new object sooner;
-whether the three extra files are rooting bugs in koruby shown by that order or a fault in the
+whether the three extra files are rooting bugs in saruby shown by that order or a fault in the
 backend has not been determined.
 
 ### What still blocks precise roots or a moving backend
 
-Each item is an assumption in koruby's code, not in the framework (see also
-`sample/koruby/docs/roadmap.md` section 4).
+Each item is an assumption in saruby's code, not in the framework (see also
+`sample/saruby/docs/roadmap.md` section 4).
 
 Blocking precise roots (dropping the ambiguous machine-stack scan):
 
@@ -199,7 +199,7 @@ Blocking precise roots (dropping the ambiguous machine-stack scan):
   `fn(&mut Ctx, Value, &[Value], *const Block)` (`src/vm.rs`, `CFunc`), all of `src/builtins/`,
   the runtime helpers in `src/rt.rs`.
 * Generated code keeps `@child` values in Rust locals (`lib/astrustgen.rb`
-  `child_storage_stmt` default; koruby does not override it in `koruby_gen.rb`).
+  `child_storage_stmt` default; saruby does not override it in `saruby_gen.rb`).
 * `Block` and `Frame` structs live on the machine stack and hold Values (`self_`, `env`,
   `proc_val`, `defined_class`: `src/vm.rs` `struct Block`); they are reached only by the
   ambiguous scan, and `Block.outer_blk` points at such a stack copy (`vm::visit_block`).
@@ -212,7 +212,7 @@ Blocking precise roots (dropping the ambiguous machine-stack scan):
 Blocking a moving backend (in addition):
 
 * `&'static mut` borrows into bodies: the accessors in `src/object.rs` (`obj`, `rary`, `rstr`,
-  `rhash`, ...).  Array methods no longer use them: `sample/koruby/docs/safe_heap.md`.
+  `rhash`, ...).  Array methods no longer use them: `sample/saruby/docs/safe_heap.md`.
 * Addresses as identity: `gen_ivars` keyed by address (`src/vm.rs` `ivar_set_raw`, and
   `gc.rs` `visit_gen_ivars` / `remove_gen_ivars`), `object_ids` keyed by address
   (`vm::object_id`), `Object#hash` and identity hashes from the raw word (`src/hash.rs`
