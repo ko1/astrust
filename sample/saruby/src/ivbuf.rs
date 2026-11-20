@@ -22,6 +22,9 @@ impl IvBuf {
     pub fn filled(n: usize) -> IvBuf {
         IvBuf { w: [UNDEF; INLINE], ext: if n <= INLINE { None } else { Some(Ext::filled(n - INLINE)) } }
     }
+    /// True when every slot is in the GC slot (nothing to free).
+    #[inline(always)]
+    pub fn is_inline(&self) -> bool { self.ext.is_none() }
     #[inline]
     pub fn len(&self) -> usize {
         match &self.ext { None => INLINE, Some(e) => FIXED + e.more.len() }

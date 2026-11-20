@@ -106,6 +106,27 @@ fn visit_gen_ivars<V: EdgeVisitor<Saruby>>(o: *mut RObj, v: &mut V) {
 #[inline(never)]
 fn remove_gen_ivars(p: *mut RObj) { crate::vm::vm().gen_ivars.remove(&(p as usize)); }
 
+// The kinds that die most often own nothing when small; drop_in_place would dispatch through a jump table.
+#[inline(always)]
+fn owns_nothing(b: &Body) -> bool {
+    match b {
+        Body::Array(a) => !a.is_heap(),
+        Body::String(s) => !s.b.is_heap(),
+        Body::Object(iv) => iv.is_inline(),
+        Body::Float(_) | Body::Range(..) | Body::Free(_) => true,
+        _ => false,
+    }
+}
+
+// SAFETY (caller): p is a dead, initialized object, finalized exactly once
+#[inline(never)]
+unsafe fn drop_body(p: *mut RObj) {
+    unsafe {
+        if let Body::Data(_) = &(*p).body { crate::vm::on_free_data(p); }
+        std::ptr::drop_in_place(&mut (*p).body);
+    }
+}
+
 // SAFETY: RObj carries its GcHeader in `gc` and is 8-aligned; heap Values are made only by `alloc`.
 unsafe impl GcLang for Saruby {
     type Ref = Value;
@@ -154,8 +175,7 @@ unsafe impl GcLang for Saruby {
         // SAFETY: the collector hands us a dead, initialized object exactly once
         unsafe {
             if (*p).flags & FL_EXIVAR != 0 { remove_gen_ivars(p); }
-            if let Body::Data(_) = &(*p).body { crate::vm::on_free_data(p); }
-            std::ptr::drop_in_place(&mut (*p).body);
+            if !owns_nothing(&(*p).body) { drop_body(p); }
             // poison: a stale reference finds a Free body, not a dropped payload
             std::ptr::write(&mut (*p).body, Body::Free(std::ptr::null_mut()));
         }
