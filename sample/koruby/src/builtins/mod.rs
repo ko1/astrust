@@ -26,6 +26,9 @@ pub mod math;
 pub mod rational;
 pub mod complex;
 pub mod enum_native;
+pub mod encoding;
+pub mod stringio;
+pub mod enc_tables;
 
 use crate::object::*;
 use crate::symbol::intern_str;
@@ -170,6 +173,8 @@ pub fn boot() {
     random::init();
     binding::init();
     misc::init();
+    encoding::init();
+    stringio::init();
     regexp_methods::init();
     structs::init();
     time::init();

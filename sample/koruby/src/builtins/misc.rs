@@ -17,17 +17,8 @@ impl RData for REnc {
 }
 const ENC_NAMES: [&str; 3] = ["UTF-8", "ASCII-8BIT", "US-ASCII"];
 static mut ENC_OBJS: [u64; 3] = [0; 3];
-pub fn encoding_value(_c: &mut Ctx, id: u8) -> RV { Ok(unsafe { Value::from_raw(ENC_OBJS[id as usize]) }) }
-pub fn encoding_id(c: &mut Ctx, v: Value) -> Result<u8, Esc> {
-    if let Some(e) = rdata::<REnc>(v) { return Ok(e.id); }
-    let nm = to_rstring(c, v)?.to_ascii_uppercase();
-    Ok(match nm.as_str() {
-        "UTF-8" | "UTF8" | "CP65001" => ENC_UTF8,
-        "ASCII-8BIT" | "BINARY" => ENC_BINARY,
-        "US-ASCII" | "ASCII" | "ANSI_X3.4-1968" | "646" => ENC_ASCII,
-        _ => { if nm.starts_with("UTF-16") || nm.starts_with("UTF-32") || nm.starts_with("ISO-8859") || nm.starts_with("EUC") || nm.starts_with("SHIFT") || nm.starts_with("WINDOWS") || nm.starts_with("CP") { ENC_BINARY } else { return arg_err(c, format!("unknown encoding name - {}", nm)); } }
-    })
-}
+pub fn encoding_value(_c: &mut Ctx, id: u8) -> RV { Ok(crate::builtins::encoding::encoding_value(id)) }
+pub fn encoding_id(c: &mut Ctx, v: Value) -> Result<u8, Esc> { crate::builtins::encoding::to_enc(c, v) }
 fn enc_to_s(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(str_new(ENC_NAMES[rdata::<REnc>(slf).unwrap().id as usize].as_bytes())) }
 fn enc_inspect(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let id = rdata::<REnc>(slf).unwrap().id;
