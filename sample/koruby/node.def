@@ -596,7 +596,7 @@ node_defined(c: &mut Ctx, n: NodePtr, fp: Fp, kind: u32, name: Sym, recv: NODE)
 // ---- calls ----------------------------------------------------------------------
 
 NODE_DEF
-node_call(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, flags: u32, line: u32, cc@ref: CallCache, callee@spec: NODE)
+node_call(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, flags: u32, line: u32, cc@ref: CallCache, callee@spec: NODE, kind@bake: u32)
 {
     let k = EVAL_LEN!(args);
     let base = stage(c, 2 + k)?;
@@ -613,11 +613,11 @@ node_call(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, fl
         c.set_sp(base, 0);
         return r;
     }
-    call_cached(c, cc, mid, base, k as u32, std::ptr::null(), flags)
+    call_site(c, cc, mid, base, k as u32, std::ptr::null(), flags, kind)
 }
 
 NODE_DEF
-node_call_blk(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, flags: u32, line: u32, blk: IseqRef, cc@ref: CallCache, callee@spec: NODE)
+node_call_blk(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, flags: u32, line: u32, blk: IseqRef, cc@ref: CallCache, callee@spec: NODE, kind@bake: u32)
 {
     let k = EVAL_LEN!(args);
     let base = stage(c, 2 + k)?;
@@ -633,7 +633,7 @@ node_call_blk(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym
         let r = EVAL_SPEC!(c, callee, cc.fast as NodePtr, callee_fp);
         c.set_sp(base, 0);
         r
-    } else { call_cached(c, cc, mid, base, k as u32, &b, flags) };
+    } else { call_site(c, cc, mid, base, k as u32, &b, flags, kind) };
     match r {
         Err(e) if c.esc == EscKind::Break && c.esc_tag == b.tag => { c.esc = EscKind::None; Ok(c.esc_val) }
         r => r,

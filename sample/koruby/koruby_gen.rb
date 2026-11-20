@@ -21,6 +21,8 @@ class KorubyNodeDef < ASTrustGen::NodeDef
     def test_type = "Result<bool, Esc>"
     def test_default(e) = "Ok(#{e}?.truthy())"
     # the method entry cached at this call site when the code is baked
+    # what the call site's cache holds when the code is baked (vm.rs SITE_*)
+    def bake_value_expr(op) = "{ let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
     def spec_target_expr(op) = "{ let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) }"
 
     def opaque_hash_expr(op, f)

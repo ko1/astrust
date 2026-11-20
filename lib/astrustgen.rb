@@ -25,6 +25,9 @@ require 'optparse'
 #                     `spec_target_expr` names a node (or null; never an ancestor) to compile in; the body compares
 #                     SPEC_HASH!(x) (0 in the interpreter) with the runtime target's hash and then
 #                     calls it statically with EVAL_SPEC!(c, x, <node ptr>, <common args...>).
+#   x@bake: u32       a scalar that is not stored in the node: 0 in the interpreter, and in specialized
+#                     code the value the embedder's `bake_value_expr` computes at specialize time
+#                     (e.g. what kind of callee a call site has seen), so the body can keep one case inline.
 #   NODE_TEST { ... }  (optional, right after a node's body) the node evaluated as a condition:
 #                     returns the embedder's `test_type` directly; children with EVAL_TEST!(c, x).
 #                     Nodes without one fall back to `test_default` over their value.
@@ -75,17 +78,20 @@ module ASTrustGen
           @ref = name.end_with?('@ref')
           @child = name.end_with?('@child')
           @spec = name.end_with?('@spec')
-          @name = name.sub(/@(ref|child|spec)$/, '')
+          @bake = name.end_with?('@bake')
+          @name = name.sub(/@(ref|child|spec|bake)$/, '')
           @type = type.strip
         end
 
         def ref? = @ref
         def child? = @child
         def spec? = @spec
+        def bake? = @bake
+        def virtual? = @spec || @bake   # not a field of the node
         def node? = !@ref && !@child && !@spec && @type == 'NODE'
         def nodes? = !@ref && @type == 'NODES'
         def any_node? = child? || node? || nodes?
-        def scalar? = !ref? && SCALARS.key?(@type)
+        def scalar? = !ref? && !bake? && SCALARS.key?(@type)
         def f64? = !ref? && @type == 'f64'
 
         # Rust type of the field in the node's operand struct.
@@ -119,7 +125,7 @@ module ASTrustGen
           f = field(u)
           if child? || node? then "hash_node(#{f})"
           elsif nodes? then "hash_node_list(#{f})"
-          elsif ref? || spec? then nil
+          elsif ref? || virtual? then nil
           elsif scalar? then "hash_u64(#{f} as u64)"
           elsif f64? then "hash_u64(#{f}.to_bits())"
           else @owner.opaque_hash_expr(self, f)
@@ -132,6 +138,7 @@ module ASTrustGen
           f = "(*np).u.#{@name}"
           if ref? then "a.push(\"&mut (*np).u.#{@name}\".to_string());"
           elsif spec? then "a.push(format!(\"{}u64\", h_#{@name}));"
+          elsif bake? then "a.push(format!(\"#{SCALARS[@type]}\", #{@owner.bake_value_expr(self)}));"
           elsif child? then "a.push(\"#{ASTrustGen.rust_str(@owner.child_storage_expr(self))}\".to_string());"
           elsif node? || nodes? then "a.push(\"(*np).u.#{@name}\".to_string());"
           elsif scalar? then "a.push(format!(\"#{SCALARS[@type]}\", #{f}));"
@@ -142,7 +149,7 @@ module ASTrustGen
 
         def dump_stmt
           f = "(*np).u.#{@name}"
-          if spec? then ""
+          if virtual? then ""
           elsif child? || node? then "dump_node(out, #{f});"
           elsif nodes? then "out.push('['); for (i, x) in #{f}.iter().enumerate() { if i > 0 { out.push(' '); } dump_node(out, *x); } out.push(']');"
           elsif ref? then "out.push_str(\"<#{@name}>\");"
@@ -177,6 +184,8 @@ module ASTrustGen
       def opaque_dump_stmt(op, f) = "out.push_str(\"<#{op.name}>\");"
       # @spec operand: Rust expr (NodePtr, null = none) evaluated at specialize time with `np` in scope.
       def spec_target_expr(op) = "std::ptr::null_mut()"
+      # @bake operand: Rust expr of the operand's type, evaluated at specialize time with `np` in scope.
+      def bake_value_expr(op) = "0"
       def dispatch_prologue = ""
       # @child storage: where an eager child's value lives between its evaluation and the
       # node body (the counterpart of ASTroGen's child_storage_decl / child_storage_expr).
@@ -217,7 +226,7 @@ module ASTrustGen
         ps = split_params(str)
         @prefix_params = ps.shift(common_param_count)
         @operands = ps.map do |p|
-          raise "ill-formed operand: #{p}" unless /\A([a-zA-Z_][a-zA-Z0-9_]*(?:@ref|@child|@spec)?)\s*:\s*(.+)\z/ =~ p
+          raise "ill-formed operand: #{p}" unless /\A([a-zA-Z_][a-zA-Z0-9_]*(?:@ref|@child|@spec|@bake)?)\s*:\s*(.+)\z/ =~ p
           op = self.class::Operand.new($1, $2)
           op.owner = self
           op
@@ -291,7 +300,7 @@ module ASTrustGen
       end
 
       def build_struct
-        fields = @operands.reject(&:spec?).map { "    pub #{it.name}: #{it.storage_type}," }
+        fields = @operands.reject(&:virtual?).map { "    pub #{it.name}: #{it.storage_type}," }
         <<~RS
         #[allow(non_camel_case_types)]
         #[repr(C)]
@@ -301,10 +310,10 @@ module ASTrustGen
         RS
       end
 
-      def alloc_params = @operands.reject { it.ref? || it.spec? }.map { "#{it.name}: #{it.storage_type}" }.join(', ')
+      def alloc_params = @operands.reject { it.ref? || it.virtual? }.map { "#{it.name}: #{it.storage_type}" }.join(', ')
 
       def build_alloc
-        inits = @operands.reject(&:spec?).map { it.ref? ? "#{it.name}: Default::default()" : it.name }
+        inits = @operands.reject(&:virtual?).map { it.ref? ? "#{it.name}: Default::default()" : it.name }
         <<~RS
         #[allow(non_snake_case)]
         pub fn ALLOC_#{@name}(#{alloc_params}) -> NodePtr {
@@ -334,6 +343,7 @@ module ASTrustGen
         @operands.each do |op|
           if op.ref? then args << "&mut (*np).u.#{op.name}"
           elsif op.spec? then args << "0u64"
+          elsif op.bake? then args << "0"
           elsif op.child? then args << child_storage_expr(op)
           else args << "(*np).u.#{op.name}"
           end

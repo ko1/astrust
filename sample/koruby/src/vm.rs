@@ -1189,6 +1189,75 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
     None
 }
 
+// What a call site's cache held when its code was baked: only that case is inline in the baked
+// code (every case inline at every site made it too large for the instruction cache).
+pub const SITE_INTERP: u32 = 0;   // not baked: call_cached, all cases
+pub const SITE_ENTRY: u32 = 1;
+pub const SITE_ATTR_R: u32 = 2;
+pub const SITE_ATTR_W: u32 = 3;
+pub const SITE_CFUNC: u32 = 4;
+pub const SITE_OTHER: u32 = 5;    // never run, Klass.new, keywords, ...: out of line
+
+pub fn site_kind(cc: &CallCache, argc: usize, flags: u32) -> u32 {
+    if flags & CF_KW != 0 { return SITE_OTHER; }
+    if cc.fast_argc as usize == argc && cc.klass != 0 { return SITE_ENTRY; }
+    if cc.fast != 0 {
+        return match cc.fast & 3 { 1 if argc == 0 => SITE_ATTR_R, 2 if argc == 1 => SITE_ATTR_W, _ => SITE_OTHER };
+    }
+    if cc.cfunc != 0 { SITE_CFUNC } else { SITE_OTHER }
+}
+
+#[inline(never)]
+pub fn call_cached_out(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
+    call_cached(c, cc, mid, base, argc, blk, flags)
+}
+
+/// call_cached with only the site's baked kind inline.
+#[inline(always)]
+pub fn call_site(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32, kind: u32) -> RV {
+    if kind == SITE_INTERP { return call_cached(c, cc, mid, base, argc, blk, flags); }
+    if kind != SITE_OTHER {
+        let recv = base[0].get();
+        if cc.klass == class_of(recv).raw() && cc.serial == vm().method_serial {
+            match kind {
+                SITE_ENTRY => if argc == cc.fast_argc {
+                    c.call_me = cc.me as *const MethodEntry; c.call_blk = blk;
+                    let r = run_entry(c, cc.fast as NodePtr, base);
+                    c.set_sp(base, 0);
+                    return r;
+                }
+                SITE_ATTR_R => if cc.fast & 3 == 1 {
+                    if let Body::Object(ivs) = &obj(recv).body {
+                        let v = ivs.get(cc.fast >> 2).unwrap_or(UNDEF);
+                        c.set_sp(base, 0);
+                        return Ok(if v == UNDEF { NIL } else { v });
+                    }
+                }
+                SITE_ATTR_W => if cc.fast & 3 == 2 {
+                    let o = obj(recv);
+                    if o.flags & FL_FROZEN == 0 {
+                        if let Body::Object(ivs) = &mut o.body {
+                            let v = base[2].get();
+                            if ivs.set(cc.fast >> 2, v) { c.set_sp(base, 0); return Ok(v); }
+                        }
+                    }
+                }
+                _ => if cc.fast == 0 && cc.cfunc != 0 && (cc.arity < 0 || cc.arity == argc as i32) {
+                    let f: CFunc = unsafe { std::mem::transmute::<usize, CFunc>(cc.cfunc) };
+                    let pf = c.frame;
+                    let mut fr = Frame::cfunc(pf, cc.me as *const MethodEntry, blk);
+                    c.frame = &mut fr;
+                    let r = with_args(base, argc as usize, |a| f(c, recv, a, blk));
+                    c.frame = pf;
+                    c.set_sp(base, 0);
+                    return r;
+                }
+            }
+        }
+    }
+    call_cached_out(c, cc, mid, base, argc, blk, flags)
+}
+
 /// cc.fast of a `Klass.new` site (tag 0 with no fast_argc): allocate, then run initialize's entry.
 pub struct NewInfo { pub klass: Value, pub init_me: *const MethodEntry, pub init_entry: NodePtr, pub init_argc: u32 }
 

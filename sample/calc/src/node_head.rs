@@ -31,15 +31,12 @@ pub struct Node { pub head: NodeHead }
 #[repr(C)]
 pub struct NodeOf<T> { pub head: NodeHead, pub u: T }
 
-#[inline]
-pub fn node_alloc_boxed<T>(v: T) -> *mut T { Box::into_raw(Box::new(v)) }
-
 pub fn node_allocate<T>(kind: &'static NodeKind, u: T) -> NodePtr {
-    let n = node_alloc_boxed(NodeOf { head: NodeHead {
+    let n = Box::into_raw(Box::new(NodeOf { head: NodeHead {
         dispatcher: kind.default_dispatcher, kind, hash: 0,
         flags: if kind.no_inline { NF_NO_INLINE } else { 0 },
         
-    }, u }) as NodePtr;
+    }, u })) as NodePtr;
     node_allocated(n);
     n
 }
