@@ -24,6 +24,7 @@ pub mod structs;
 pub mod time;
 pub mod math;
 pub mod encoding;
+pub mod stringio;
 pub mod enc_tables;
 
 use crate::object::*;
@@ -170,6 +171,7 @@ pub fn boot() {
     binding::init();
     misc::init();
     encoding::init();
+    stringio::init();
     regexp_methods::init();
     structs::init();
     time::init();

@@ -108,6 +108,20 @@ pub fn find_bytes(h: &[u8], n: &[u8], from: usize) -> Option<usize> {
     }
     None
 }
+/// find_bytes, but only hits that start on a character boundary of `slf`.
+fn find_on_boundary(slf: Value, n: &[u8], from: usize) -> Option<usize> {
+    let r = rstr(slf);
+    if enc_single(&r.b, r.enc) || crate::builtins::encoding::kind(r.enc) == crate::builtins::encoding::EK::Utf8 && crate::builtins::encoding::is_valid(r.enc, n) {
+        return find_bytes(&r.b, n, from);
+    }
+    let off = char_offsets(slf);
+    let mut i = from;
+    loop {
+        let p = find_bytes(&r.b, n, i)?;
+        if off.binary_search(&p).is_ok() { return Some(p); }
+        i = p + 1;
+    }
+}
 fn rfind_bytes(h: &[u8], n: &[u8], upto: usize) -> Option<usize> {
     if n.len() > h.len() { return None; }
     let mut i = upto.min(h.len() - n.len()) as i64;
@@ -402,7 +416,8 @@ cfn!(s_index, |c, slf, a, b_| {
         return Ok(Value::fix(byte_to_char(slf, regexp::rmatch(m).unwrap().groups[0].unwrap().0) as i64));
     }
     let o = expect_str(c, a[0])?;
-    Ok(match find_bytes(b(slf), b(o), bs) { Some(p) => Value::fix(byte_to_char(slf, p) as i64), None => NIL })
+    compat(c, slf, o)?;
+    Ok(match find_on_boundary(slf, b(o), bs) { Some(p) => Value::fix(byte_to_char(slf, p) as i64), None => NIL })
 });
 cfn!(s_rindex, |c, slf, a, b_| {
     let n = str_char_len(slf) as i64;
@@ -1327,7 +1342,7 @@ cfn!(s_byteindex, |c, slf, a, b_| {
     }
     let o = expect_str(c, a[0])?;
     compat(c, slf, o)?;
-    Ok(match find_bytes(b(slf), b(o), st as usize) { Some(p) => Value::fix(p as i64), None => NIL })
+    Ok(match find_on_boundary(slf, b(o), st as usize) { Some(p) => Value::fix(p as i64), None => NIL })
 });
 cfn!(s_byterindex, |c, slf, a, b_| {
     check_argc(c, a, 1, 2)?;
