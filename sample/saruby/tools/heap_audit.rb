@@ -10,8 +10,7 @@ BODY = %w[obj rary rstr rhash rclass rproc rmethod rbig rdata ivars_of str_bytes
 ARY  = %w[ary_new ary_new_capa ary_new_from ary_from_vec ary_push ary_len ary_get ary_to_vec]
 ALLOC = %w[str_new str_from_vec str_from_vec_enc hash_new float_new]
 # context-free String API (str_legacy.rs), banned where heap::no_legacy_str is imported
-STR  = %w[str_new_enc str_with_capa str_new_frozen str_from str_new_like str_enc str_eq str_hash str_to_sym
-          str_append_same_enc char_offsets str_char_len str_char_code chars_of str_dup str_cmp str_concat_values ary_of_strs]
+STR  = %w[str_new_enc str_with_capa str_new_frozen str_enc str_eq str_to_sym str_append_same_enc char_offsets str_char_len str_dup ary_of_strs]
 COLS = { 'obj' => %w[obj], 'rary' => %w[rary], 'rstr' => %w[rstr str_bytes], 'rhash' => %w[rhash], 'rclass' => %w[rclass],
          'rproc' => %w[rproc rmethod], 'rbig' => %w[rbig], 'rdata' => %w[rdata], 'ivars_of' => %w[ivars_of],
          'ary_*' => ARY, 'vm' => %w[vm] }

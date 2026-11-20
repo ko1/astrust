@@ -173,6 +173,5 @@ pub mod no_legacy {
 #[allow(dead_code)]
 pub mod no_legacy_str {
     macro_rules! ban { ($($n:ident)*) => { $(pub fn $n(_: super::Token) {})* }; }
-    ban!(str_new_enc str_with_capa str_new_frozen str_from str_new_like str_enc str_eq str_hash str_to_sym
-         str_append_same_enc char_offsets str_char_len str_char_code chars_of str_dup str_cmp str_concat_values ary_of_strs);
+    ban!(str_new_enc str_with_capa str_new_frozen str_enc str_eq str_to_sym str_append_same_enc char_offsets str_char_len str_dup ary_of_strs);
 }

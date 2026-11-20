@@ -39,17 +39,8 @@ pub fn str_new_frozen(b: &[u8]) -> Value {
     obj(v).flags |= FL_FROZEN;
     v
 }
-pub fn str_from(s: &str) -> Value { str_new(s.as_bytes()) }
-/// Same class/encoding as `like`, new contents.
-pub fn str_new_like(like: Value, b: Vec<u8>) -> Value {
-    let enc = rstr(like).enc;
-    str_from_vec_enc(b, enc)
-}
-
 pub fn str_enc(v: Value) -> u8 { rstr(v).enc }
 pub fn str_eq(a: Value, b: Value) -> bool { rstr(a).b == rstr(b).b }
-
-pub fn str_hash(v: Value) -> u64 { crate::astrust::hash_bytes(&rstr(v).b) }
 
 pub fn str_to_sym(v: Value) -> Value { Value::sym(intern(&rstr(v).b)) }
 
@@ -65,27 +56,11 @@ pub fn str_append_same_enc(acc: Value, s: Value) {
 /// Char boundaries (byte offsets) for a string, honoring its encoding.
 pub fn char_offsets(v: Value) -> Vec<usize> { let r = rstr(v); char_offsets_of(&r.b, r.enc) }
 pub fn str_char_len(v: Value) -> usize { let r = rstr(v); enc_strlen(&r.b, r.enc) }
-/// Code of the character at b[s..e] of string v (Unicode scalar for Unicode encodings).
-pub fn str_char_code(v: Value, s: usize, e: usize) -> u32 { let r = rstr(v); crate::builtins::encoding::char_code(r.enc, &r.b[s..e]) }
-pub fn chars_of(v: Value) -> Vec<Vec<u8>> {
-    let off = char_offsets(v);
-    let b = &rstr(v).b;
-    (0..off.len() - 1).map(|i| b[off[i]..off[i + 1]].to_vec()).collect()
-}
-
 pub fn str_dup(v: Value) -> Value {
     let r = rstr(v);
     let n = str_from_vec_enc(r.b.to_vec(), r.enc);
     obj(n).klass = obj(v).klass;
     n
-}
-
-pub fn str_cmp(a: Value, b: Value) -> std::cmp::Ordering { rstr(a).b.cmp(&rstr(b).b) }
-
-pub fn str_concat_values(parts: &[Value]) -> Value {
-    let mut out = vec![];
-    for p in parts { out.extend_from_slice(&rstr(*p).b); }
-    str_from_vec(out)
 }
 
 pub fn ary_of_strs(items: Vec<Vec<u8>>, enc: u8) -> Value {
