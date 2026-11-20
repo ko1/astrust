@@ -34,7 +34,7 @@ fn meta_of(c: &mut Ctx, v: Value, follow: bool) -> Result<Result<std::fs::Metada
 fn stat_md(c: &mut Ctx, v: Value) -> Result<&'static std::fs::Metadata, Esc> {
     match rdata::<RStat>(v).and_then(|s| s.md.as_ref()) { Some(m) => Ok(m), None => type_err(c, "uninitialized File::Stat") }
 }
-fn time_of(sec: i64, nsec: i64) -> Value { crate::builtins::time::time_from_ns(sec, nsec) }
+fn time_of(sec: i64, nsec: i64) -> Value { crate::legacy::time_from_ns(sec, nsec) }
 fn access_ok(md: &std::fs::Metadata, bit: u32, effective: bool) -> bool {
     let (uid, gid) = unsafe { if effective { (sys::geteuid(), sys::getegid()) } else { (sys::getuid(), sys::getgid()) } };
     if uid == 0 { return bit != 1 || md.mode() & 0o111 != 0 || md.is_dir(); }
@@ -241,7 +241,7 @@ fn f_s_mkfifo(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
 }
 fn timespec_arg(c: &mut Ctx, v: Value) -> Result<sys::Timespec, Esc> {
     if v == NIL { return Ok(sys::Timespec { sec: 0, nsec: (1 << 30) - 1 }); } // UTIME_NOW
-    if let Some((s, ns)) = crate::builtins::time::time_to_ns(v) { return Ok(sys::Timespec { sec: s, nsec: ns }); }
+    if let Some((s, ns)) = crate::builtins::time::time_to_ns(c, v) { return Ok(sys::Timespec { sec: s, nsec: ns }); }
     let f = crate::builtins::numeric_methods::to_f(c, v)?;
     Ok(sys::Timespec { sec: f.floor() as i64, nsec: ((f - f.floor()) * 1e9) as i64 })
 }

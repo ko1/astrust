@@ -201,10 +201,10 @@ pub fn boot() {
     stringio::init(vm);
     regexp_methods::init();
     vm.c_struct = structs::init(vm.c_object, vm.m_enumerable);
-    time::init();
+    vm.c_time = time::init(vm);
     math::init(vm.m_math);
-    rational::init();
-    complex::init();
+    vm.c_rational = rational::init(vm);
+    vm.c_complex = complex::init(vm);
     enum_native::init(vm.m_enumerable);
     crate::fiber::init();
     extras::init();
@@ -212,7 +212,7 @@ pub fn boot() {
 
 /// dup/clone of built-in Data objects.
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
-    if rational::is_rational(v) || complex::is_complex(v) { return Ok(Some(v)); }
+    if rational::is_rational(c, v) || complex::is_complex(c, v) { return Ok(Some(v)); }
     if let Some(r) = misc::dup_data(c, v)? { return Ok(Some(r)); }
     if let Some(r) = regexp_methods::dup_data(c, v)? { return Ok(Some(r)); }
     if let Some(r) = time::dup_data(c, v)? { return Ok(Some(r)); }

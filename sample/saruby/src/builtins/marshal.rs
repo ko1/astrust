@@ -134,7 +134,7 @@ impl Dumper {
         let id = self.objs.len();
         self.objs.insert(v.raw(), id);
         if is_float(v) { self.out.push(b'f'); w_bytes(&mut self.out, float_repr(float_val(v)).as_bytes()); return Ok(()); }
-        if crate::builtins::inherits(real_class_of(v), vm().c_time) && crate::builtins::time::time_to_ns(v).is_some() { return self.time(c, v, limit); }
+        if crate::builtins::inherits(real_class_of(v), vm().c_time) && crate::builtins::time::time_to_ns(c, v).is_some() { return self.time(c, v, limit); }
         // user hooks first
         if respond_to(v, intern(b"marshal_dump"), true) && !is_class_or_module(v) {
             let d = funcall(c, v, intern(b"marshal_dump"), &[], std::ptr::null())?;
@@ -227,13 +227,13 @@ impl Dumper {
                 return Ok(());
             }
             Body::Data(_) => {
-                if crate::builtins::rational::is_rational(v) {
-                    let (n, d) = crate::builtins::rational::rat_parts(v);
+                if crate::builtins::rational::is_rational(c, v) {
+                    let (n, d) = crate::builtins::rational::rat_parts(c, v);
                     self.class_of_obj(c, v, b'U', false)?;
                     let k = self.objs.len(); self.objs.insert(u64::MAX - k as u64, k);
                     self.out.push(b'['); w_long(&mut self.out, 2); self.obj(c, n, limit)?; self.obj(c, d, limit)?;
-                } else if crate::builtins::complex::is_complex(v) {
-                    let (r, i) = crate::builtins::complex::cpx_parts(v);
+                } else if crate::builtins::complex::is_complex(c, v) {
+                    let (r, i) = crate::builtins::complex::cpx_parts(c, v);
                     self.class_of_obj(c, v, b'U', false)?;
                     let k = self.objs.len(); self.objs.insert(u64::MAX - k as u64, k);
                     self.out.push(b'['); w_long(&mut self.out, 2); self.obj(c, r, limit)?; self.obj(c, i, limit)?;
@@ -528,7 +528,7 @@ impl Loader {
                 if k == vm().c_rational || k == vm().c_complex {
                     let d = self.object(c)?;
                     if !is_array(d) || ary_len(d) != 2 { return arg_err(c, "marshaled rational must have an array whose length is 2 but 0"); }
-                    let v = if k == vm().c_rational { crate::builtins::rational::rat_new(ary_get(d, 0), ary_get(d, 1)) } else { crate::builtins::complex::cpx_raw(ary_get(d, 0), ary_get(d, 1)) };
+                    let v = if k == vm().c_rational { crate::builtins::rational::rat_new(c, ary_get(d, 0), ary_get(d, 1)) } else { crate::builtins::complex::cpx_raw(c, ary_get(d, 0), ary_get(d, 1)) };
                     rary(self.objs)[idx] = v;
                     v
                 } else {
