@@ -44,6 +44,7 @@ pub struct Params {
     pub anon_rest: bool,
     pub anon_kwrest: bool,
     pub anon_block: bool,
+    pub slot_names: Vec<(u32, Sym)>,    // parameter slot -> name
 }
 
 pub struct Iseq {

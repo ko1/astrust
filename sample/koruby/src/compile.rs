@@ -59,12 +59,14 @@ struct Scope {
     transparent: bool,            // `for` body: shares the enclosing scope's variables
     param_env: Vec<(Sym, u32)>,   // captured parameters: (name, setup slot)
     children: Vec<&'static Iseq>, // iseqs finished inside this scope (their parent is this scope's iseq)
+    params_seen: HashSet<Sym>,    // `|_, _|`: only the first duplicate binds the variable
+    param_names: Vec<(u32, Sym)>, // parameter slot -> name (for #parameters)
 }
 
 impl Scope {
     fn new(kind: SK, captured: HashSet<Sym>) -> Scope {
         Scope { kind, vars: HashMap::new(), names: vec![], nslots: 2, env_size: 0, captured, loop_depth: 0,
-                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![], children: vec![] }
+                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![], children: vec![], params_seen: HashSet::new(), param_names: vec![] }
     }
     fn has_env(&self) -> bool { self.env_size > 0 }
 }
@@ -289,8 +291,9 @@ impl<'a> Compiler<'a> {
         self.finish_iseq(body, Params::default(), kind, label, 1, Sym(0))
     }
 
-    fn finish_iseq(&mut self, body: NodePtr, params: Params, kind: IseqKind, label: String, line: u32, name: Sym) -> &'static Iseq {
-        let sc = self.scopes.pop().unwrap();
+    fn finish_iseq(&mut self, body: NodePtr, mut params: Params, kind: IseqKind, label: String, line: u32, name: Sym) -> &'static Iseq {
+        let mut sc = self.scopes.pop().unwrap();
+        params.slot_names = std::mem::take(&mut sc.param_names);
         let mut env_params = vec![];
         // a captured parameter has both a slot (filled by setup) and an env index
         for &(nm, sl) in sc.param_env.iter() {
@@ -1583,15 +1586,18 @@ impl<'a> Compiler<'a> {
     /// The frame slot that receives a parameter.  A captured parameter gets a hidden
     /// slot and is copied into the env after setup.
     fn param_slot(&mut self, nm: Sym) -> u32 {
+        if !self.cur().params_seen.insert(nm) { let sl = self.hidden_slot(); self.cur().param_names.push((sl, nm)); return sl; }
         let loc = match self.cur().vars.get(&nm) { Some(&l) => l, None => self.declare(nm) };
-        match loc {
+        let sl = match loc {
             VarLoc::Slot(i) => i,
             VarLoc::Env(_) => {
                 let sl = self.hidden_slot();
                 self.cur().param_env.push((nm, sl));
                 sl
             }
-        }
+        };
+        self.cur().param_names.push((sl, nm));
+        sl
     }
 
     fn params(&mut self, p: Option<&PNode>, is_block: bool) -> Params {

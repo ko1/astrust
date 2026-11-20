@@ -37,16 +37,14 @@ pub fn proc_arity(p: Value) -> i64 {
 }
 
 pub fn iseq_arity(is: &Iseq, lambda: bool) -> i64 {
+    // rb_iseq_min_max_arity + rb_proc_arity / method_def_arity
     let p = &is.params;
-    let req = (p.lead.len() + p.post.len()) as i64;
     let req_kw = p.kw.iter().any(|k| k.required);
-    let opt = !p.opt.is_empty() || p.rest.is_some() || (!lambda && !p.opt.is_empty());
-    if !lambda {
-        if p.rest.is_some() || !p.opt.is_empty() { return -(req + 1) - if req_kw { 0 } else { 0 }; }
-        if p.has_trailing_comma && req == 1 { return 1; }
-        return if req_kw { req + 1 } else { req };
-    }
-    if opt { -(req + if req_kw { 1 } else { 0 }) - 1 } else if req_kw { req + 1 } else { req }
+    let min = (p.lead.len() + p.post.len()) as i64 + if req_kw { 1 } else { 0 };
+    if p.rest.is_some() { return -min - 1; }
+    if !lambda { return min; }
+    let max = (p.lead.len() + p.opt.len() + p.post.len()) as i64 + if !p.kw.is_empty() || p.kwrest.is_some() { 1 } else { 0 };
+    if min == max { min } else { -min - 1 }
 }
 
 pub fn method_arity(me: *const MethodEntry) -> i64 {
@@ -65,6 +63,7 @@ fn params_list(is: &Iseq, lambda: bool) -> Value {
     let out = ary_new();
     let p = &is.params;
     let name_of = |slot: u32| -> Option<Sym> {
+        if let Some(&(_, n)) = p.slot_names.iter().find(|x| x.0 == slot) { return Some(n); }
         for (n, sl, _) in &is.local_names { if *sl == slot as i32 { return Some(*n); } }
         // captured params: env copy recorded in env_params
         for (sl, ei) in &is.env_params { if *sl == slot { for (n, _, e) in &is.local_names { if *e == *ei as i32 { return Some(*n); } } } }
