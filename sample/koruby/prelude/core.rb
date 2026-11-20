@@ -494,7 +494,7 @@ module Enumerable
     nil
   end
   def chain(*enums) = Enumerator::Chain.new(self, *enums)
-  def lazy = Enumerator::Lazy.__from(self)
+  def lazy = Enumerator::Lazy.__from(self, :each, [], :__src_size)
   def compact
     a = []
     each { |*x| v = x.size <= 1 ? x[0] : x; a << v unless v.nil? }
@@ -785,7 +785,10 @@ class Enumerator
         end
       else
         s = @__size
-        s.respond_to?(:call) ? s.call : s.nil? && !@__gen && @__meth == :each && @__src.respond_to?(:size) ? @__src.size : s
+        if s.equal?(:__src_size) then @__src.respond_to?(:size) ? @__src.size : nil
+        elsif s.respond_to?(:call) then s.call
+        else s
+        end
       end
     end
 

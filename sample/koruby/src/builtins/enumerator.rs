@@ -135,8 +135,7 @@ fn e_with_index(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
 }
 fn e_each_with_index(c: &mut Ctx, slf: Value, _a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return enum_for(c, slf, intern(b"each_with_index"), &[], NIL); }
-    e_with_index(c, slf, &[], blk)?;
-    Ok(slf)
+    e_with_index(c, slf, &[], blk)
 }
 fn e_with_object(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return enum_for(c, slf, intern(b"with_object"), a, NIL); }
@@ -191,6 +190,13 @@ fn e_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
             return Ok(Value::fix(n.max(0)));
         }
         if e == NIL { return Ok(crate::numeric::float_new(f64::INFINITY)); }
+        if is_float(b) || is_float(e) || is_float(st) {
+            if let (Some(bf), Some(ef), Some(sf)) = (crate::numeric::num_to_f64(b), crate::numeric::num_to_f64(e), crate::numeric::num_to_f64(st)) {
+                let n = float_step_size(bf, ef, sf, x);
+                if n.is_infinite() { return Ok(crate::numeric::float_new(n)); }
+                return Ok(Value::fix(n as i64));
+            }
+        }
         let a = collect_all(c, slf)?; return Ok(Value::fix(ary_len(a) as i64));
     }
     if en.size == TRUE {
@@ -215,6 +221,23 @@ fn e_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
         if recv.is_fixnum() && lim.is_fixnum() { let n = if mid == s::upto { lim.as_fix() - recv.as_fix() + 1 } else { recv.as_fix() - lim.as_fix() + 1 }; return Ok(Value::fix(n.max(0))); }
     }
     Ok(NIL)
+}
+/// CRuby's ruby_float_step_size.
+pub fn float_step_size(beg: f64, end: f64, unit: f64, excl: bool) -> f64 {
+    if unit == 0.0 { return f64::INFINITY; }
+    if unit.is_infinite() { return if unit > 0.0 { (beg <= end) as i32 as f64 } else { (beg >= end) as i32 as f64 }; }
+    let mut n = (end - beg) / unit;
+    let mut err = (beg.abs() + end.abs() + (end - beg).abs()) / unit.abs() * f64::EPSILON;
+    if err > 0.5 { err = 0.5; }
+    if excl {
+        if n <= 0.0 { return 0.0; }
+        if n < 1.0 { n = 0.0; } else { n = (n - err).floor(); }
+        let d = (n + 1.0) * unit + beg;
+        if beg < end { if d < end { n += 1.0; } } else if beg > end && d > end { n += 1.0; }
+        return n + 1.0;
+    }
+    if n < 0.0 { return 0.0; }
+    (n + err).floor() + 1.0
 }
 fn e_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let en = renum(slf).unwrap();

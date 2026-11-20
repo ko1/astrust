@@ -43,10 +43,36 @@ pub fn range_each(c: &mut Ctx, slf: Value, mut f: impl FnMut(&mut Ctx, Value) ->
         }
         return Ok(());
     }
+    if b.is_sym() && e.is_sym() {
+        // Symbol ranges iterate like their String forms (String#upto)
+        let (bb, eb) = (crate::symbol::sym_bytes(b.as_sym()).to_vec(), crate::symbol::sym_bytes(e.as_sym()).to_vec());
+        if bb.len() == 1 && eb.len() == 1 && bb[0] < 0x80 && eb[0] < 0x80 {
+            let (lo, hi) = (bb[0], if excl { eb[0] as i32 - 1 } else { eb[0] as i32 });
+            let mut ch = lo as i32;
+            while ch <= hi { if !f(c, Value::sym(intern(&[ch as u8])))? { break; } ch += 1; }
+            return Ok(());
+        }
+        let (bs, es) = (str_new(&bb), str_new(&eb));
+        let blk_data = ary_new();
+        let collect = Block::cfunc(c, |_c, d, args, _b| { ary_push(d, args[0]); Ok(NIL) }, blk_data);
+        let ev = if excl { TRUE } else { FALSE };
+        funcall(c, bs, s::upto, &[es, ev], &collect)?;
+        for i in 0..ary_len(blk_data) { let v = Value::sym(intern(str_bytes(ary_get(blk_data, i)))); if !f(c, v)? { break; } }
+        return Ok(());
+    }
     if is_string(b) && (is_string(e) || e == NIL) {
         if e == NIL {
             let mut cur = str_bytes(b).to_vec();
             loop { let s2 = str_new(&cur); if !f(c, s2)? { return Ok(()); } cur = succ_bytes(&cur); }
+        }
+        let o = str_bytes(b).cmp(str_bytes(e));
+        if o == std::cmp::Ordering::Greater || (excl && o == std::cmp::Ordering::Equal) { return Ok(()); }
+        let (bb, eb) = (str_bytes(b).to_vec(), str_bytes(e).to_vec());
+        if bb.len() == 1 && eb.len() == 1 && bb[0] < 0x80 && eb[0] < 0x80 {
+            let (lo, hi) = (bb[0] as i32, if excl { eb[0] as i32 - 1 } else { eb[0] as i32 });
+            let mut ch = lo;
+            while ch <= hi { if !f(c, str_new(&[ch as u8]))? { break; } ch += 1; }
+            return Ok(());
         }
         let blk_data = ary_new();
         let collect = Block::cfunc(c, |_c, d, args, _b| { ary_push(d, args[0]); Ok(NIL) }, blk_data);
@@ -83,7 +109,7 @@ cfn!(r_each, |c, slf, a, blk| {
     Ok(slf)
 });
 cfn!(r_reverse_each, |c, slf, a, blk| {
-    if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"reverse_each"), a, NIL); }
+    if blk.is_null() { return crate::builtins::enumerator::enum_for_sized(c, slf, intern(b"reverse_each"), a); }
     let (b, e, excl) = range_parts(slf);
     if e.is_fixnum() && (b.is_fixnum() || b == NIL) {
         let mut i = if excl { e.as_fix() - 1 } else { e.as_fix() };
@@ -196,6 +222,7 @@ cfn!(r_hash, |c, slf, a, blk| {
 fn range_to_s(c: &mut Ctx, slf: Value, insp: bool) -> RV {
     let (b, e, x) = range_parts(slf);
     let f = |c: &mut Ctx, v: Value| -> Result<String, Esc> { if insp { if v == NIL { Ok(String::new()) } else { inspect_str(c, v) } } else { to_rstring(c, v) } };
+    if insp && b == NIL && e == NIL { return Ok(str_new(if x { b"nil...nil" as &[u8] } else { b"nil..nil" })); }
     let bs = f(c, b)?; let es = f(c, e)?;
     Ok(str_new(format!("{}{}{}", bs, if x { "..." } else { ".." }, es).as_bytes()))
 }
@@ -227,6 +254,7 @@ cfn!(r_min, |c, slf, a, blk| {
     if !blk.is_null() || !a.is_empty() {
         check_argc(c, a, 0, 1)?;
         if let Some(&n) = a.first() { if n != NIL && crate::builtins::numeric_methods::num_to_long(c, n)? < 0 { return arg_err(c, "negative array size (or size too big)"); } }
+        if blk.is_null() && is_integer(b) { return r_first(c, slf, a, blk); }
         if e == NIL { return err(c, vm().c_range_error, "cannot get the minimum of endless range with custom comparison method"); }
         return crate::builtins::enum_native::call_enumerable(c, slf, "min", a, blk);
     }
@@ -241,6 +269,13 @@ cfn!(r_max, |c, slf, a, blk| {
     if !blk.is_null() || !a.is_empty() {
         check_argc(c, a, 0, 1)?;
         if let Some(&n) = a.first() { if n != NIL && crate::builtins::numeric_methods::num_to_long(c, n)? < 0 { return arg_err(c, "negative array size (or size too big)"); } }
+        if blk.is_null() && e.is_fixnum() && (b == NIL || b.is_fixnum()) {
+            let n = crate::builtins::numeric_methods::num_to_long(c, a[0])?;
+            let out = ary_new();
+            let mut i = if x { e.as_fix() - 1 } else { e.as_fix() };
+            while (ary_len(out) as i64) < n && (b == NIL || i >= b.as_fix()) { ary_push(out, Value::fix(i)); i -= 1; }
+            return Ok(out);
+        }
         if b == NIL { return err(c, vm().c_range_error, "cannot get the maximum of beginless range with custom comparison method"); }
         return crate::builtins::enum_native::call_enumerable(c, slf, "max", a, blk);
     }
@@ -337,20 +372,103 @@ thread_local!(static PCT: std::cell::Cell<bool> = const { std::cell::Cell::new(f
 fn mid_of(_a: &[Value]) -> crate::value::Sym { if PCT.with(|p| p.get()) { intern(b"%") } else { s::step } }
 cfn!(r_pct, |c, slf, a, blk| { PCT.with(|p| p.set(true)); let r = r_step(c, slf, a, blk); PCT.with(|p| p.set(false)); r });
 cfn!(r_dup_frozen, |c, slf, a, blk| Ok(slf));
-cfn!(r_bsearch, |c, slf, a, blk| {
-    let (b, e, x) = range_parts(slf);
-    if !b.is_fixnum() || !e.is_fixnum() { let arr = r_to_a(c, slf, &[], std::ptr::null())?; return funcall(c, arr, intern(b"bsearch"), a, blk); }
-    let (mut lo, mut hi) = (b.as_fix(), if x { e.as_fix() } else { e.as_fix() + 1 });
-    let mut found = NIL;
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        let r = yield1(c, blk, Value::fix(mid))?;
-        if r == TRUE { found = Value::fix(mid); hi = mid; }
-        else if r == FALSE || r == NIL { lo = mid + 1; }
-        else if r.is_fixnum() { if r.as_fix() == 0 { return Ok(Value::fix(mid)); } if r.as_fix() < 0 { hi = mid; } else { lo = mid + 1; } }
-        else { return type_err(c, "wrong argument type"); }
+// Range#bsearch after CRuby range.c (same probe order: BSEARCH / bsearch_integer_range / doubling for endless).
+enum Probe { Found(Value), Smaller(bool) }
+fn bs_check(c: &mut Ctx, blk: *const Block, val: Value, satisfied: &mut Value) -> Result<Probe, Esc> {
+    let v = yield1(c, blk, val)?;
+    if v.is_fixnum() {
+        if v.as_fix() == 0 { return Ok(Probe::Found(val)); }
+        return Ok(Probe::Smaller(v.as_fix() < 0));
     }
-    Ok(found)
+    if v == TRUE { *satisfied = val; return Ok(Probe::Smaller(true)); }
+    if v.falsy() { return Ok(Probe::Smaller(false)); }
+    if crate::numeric::is_numeric(v) {
+        let z = funcall(c, v, s::cmp, &[Value::fix(0)], std::ptr::null())?;
+        let n = crate::builtins::array_methods::cmp_result(c, z, v, Value::fix(0))?;
+        if n == 0 { return Ok(Probe::Found(val)); }
+        return Ok(Probe::Smaller(n < 0));
+    }
+    type_err(c, format!("wrong argument type {} (must be numeric, true, false or nil)", class_name_for_err(v)))
+}
+fn bs_i64(c: &mut Ctx, blk: *const Block, mut low: i64, mut high: i64, excl: bool, conv: &dyn Fn(i64) -> Value) -> RV {
+    let mut satisfied = NIL;
+    if !excl { high += 1; }
+    low -= 1;
+    while low + 1 < high {
+        let mid = if (high < 0) == (low < 0) { low + (high - low) / 2 } else { (low + high) / 2 };
+        match bs_check(c, blk, conv(mid), &mut satisfied)? {
+            Probe::Found(v) => return Ok(v),
+            Probe::Smaller(true) => high = mid,
+            Probe::Smaller(false) => low = mid,
+        }
+    }
+    Ok(satisfied)
+}
+fn bs_int_range(c: &mut Ctx, blk: *const Block, beg: Value, end: Value, excl: bool) -> RV {
+    if beg.is_fixnum() && end.is_fixnum() && end.as_fix() < i64::MAX / 4 && beg.as_fix() > i64::MIN / 4 {
+        return bs_i64(c, blk, beg.as_fix(), end.as_fix(), excl, &|i| Value::fix(i));
+    }
+    let one = Value::fix(1);
+    let mut satisfied = NIL;
+    let mut low = funcall(c, beg, s::minus, &[one], std::ptr::null())?;
+    let mut high = if excl { end } else { funcall(c, end, s::plus, &[one], std::ptr::null())? };
+    loop {
+        let l1 = funcall(c, low, s::plus, &[one], std::ptr::null())?;
+        if !funcall(c, l1, s::lt, &[high], std::ptr::null())?.truthy() { break; }
+        let sum = funcall(c, low, s::plus, &[high], std::ptr::null())?;
+        let mid = funcall(c, sum, intern(b"div"), &[Value::fix(2)], std::ptr::null())?;
+        match bs_check(c, blk, mid, &mut satisfied)? {
+            Probe::Found(v) => return Ok(v),
+            Probe::Smaller(true) => high = mid,
+            Probe::Smaller(false) => low = mid,
+        }
+    }
+    Ok(satisfied)
+}
+fn dbl_as_i64(d: f64) -> i64 { let i = d.abs().to_bits() as i64; if d < 0.0 { -i } else { i } }
+fn i64_as_dbl(i: i64) -> Value { if i < 0 { crate::numeric::float_new(-f64::from_bits((-i) as u64)) } else { crate::numeric::float_new(f64::from_bits(i as u64)) } }
+cfn!(r_bsearch, |c, slf, a, blk| {
+    if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"bsearch"), a, NIL); }
+    let (b, e, x) = range_parts(slf);
+    if b.is_fixnum() && e.is_fixnum() { return bs_int_range(c, blk, b, e, x); }
+    if is_float(b) || is_float(e) {
+        let tof = |c: &mut Ctx, v: Value, dflt: f64| -> Result<f64, Esc> {
+            if v == NIL { return Ok(dflt); }
+            if let Some(f) = crate::numeric::num_to_f64(v) { return Ok(f); }
+            let r = funcall(c, v, intern(b"to_f"), &[], std::ptr::null())?;
+            Ok(crate::numeric::num_to_f64(r).unwrap_or(0.0))
+        };
+        let lo = tof(c, b, f64::NEG_INFINITY)?; let hi = tof(c, e, f64::INFINITY)?;
+        return bs_i64(c, blk, dbl_as_i64(lo), dbl_as_i64(hi), x, &i64_as_dbl);
+    }
+    if is_integer(b) && is_integer(e) { return bs_int_range(c, blk, b, e, x); }
+    if is_integer(b) && e == NIL {
+        let mut diff = Value::fix(1);
+        let mut satisfied = NIL;
+        loop {
+            let mid = funcall(c, b, s::plus, &[diff], std::ptr::null())?;
+            match bs_check(c, blk, mid, &mut satisfied)? {
+                Probe::Found(v) => return Ok(v),
+                Probe::Smaller(true) => return bs_int_range(c, blk, b, mid, false),
+                Probe::Smaller(false) => {}
+            }
+            diff = funcall(c, diff, s::mul, &[Value::fix(2)], std::ptr::null())?;
+        }
+    }
+    if b == NIL && is_integer(e) {
+        let mut diff = Value::fix(-1);
+        let mut satisfied = NIL;
+        loop {
+            let mid = funcall(c, e, s::plus, &[diff], std::ptr::null())?;
+            match bs_check(c, blk, mid, &mut satisfied)? {
+                Probe::Found(v) => return Ok(v),
+                Probe::Smaller(false) => return bs_int_range(c, blk, mid, e, x),
+                Probe::Smaller(true) => {}
+            }
+            diff = funcall(c, diff, s::mul, &[Value::fix(2)], std::ptr::null())?;
+        }
+    }
+    type_err(c, format!("can't do binary search for {}", class_name_for_err(b)))
 });
 cfn!(r_overlap, |c, slf, a, blk| {
     if !is_range(a[0]) { return type_err(c, format!("wrong argument type {} (expected Range)", class_name_for_err(a[0]))); }
