@@ -309,15 +309,19 @@ fn rat_round_common(c: &mut Ctx, s: Value, a: &[Value], mode: u8) -> RV {
     let nd = pos[0];
     if !is_integer(nd) { return type_err(c, "not an integer"); }
     if !nd.is_fixnum() { return if isneg(nd) { Ok(Value::fix(0)) } else { Ok(s) }; }
-    let k = nd.as_fix();
+    Ok(rat_round_nd(s, nd.as_fix(), mode, half))
+}
+/// round/floor/ceil/truncate (mode r/f/c/t) of a Rational to k decimal digits
+pub fn rat_round_nd(s: Value, k: i64, mode: u8, half: u8) -> Value {
+    let f = |n: Value, d: Value| -> Value { match mode { b'f' => r_floor(n, d), b'c' => r_ceil(n, d), b't' => r_trunc(n, d), _ => r_round(n, d, half) } };
+    let (n, d) = rat_parts(s);
     let p = ipow(Value::fix(10), k.unsigned_abs());
-    // s * 10**k
     let sc = if k >= 0 { mul_parts((n, d), (p, Value::fix(1))) } else { mul_parts((n, d), (Value::fix(1), p)) };
     let (sn, sd) = rat_parts(sc);
     let r = f(sn, sd);
     let res = if k >= 0 { rat_new(r, p) } else { rat_raw(imul(r, p), Value::fix(1)) };
-    if k < 1 { let (rn, rd) = rat_parts(res); return Ok(r_trunc(rn, rd)); }
-    Ok(res)
+    if k < 1 { let (rn, rd) = rat_parts(res); return r_trunc(rn, rd); }
+    res
 }
 fn rat_floor(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { rat_round_common(c, s, a, b'f') }
 fn rat_ceil(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { rat_round_common(c, s, a, b'c') }

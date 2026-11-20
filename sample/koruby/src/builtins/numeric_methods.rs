@@ -428,8 +428,17 @@ pub fn round_half_mode(c: &mut Ctx, a: &[Value]) -> Result<u8, Esc> {
     if let Some(h) = a.iter().rev().find(|v| is_hash(**v)) {
         if let Some(v) = crate::hash::hash_get_opt(c, *h, crate::vm::sym_value("half"))? {
             if v == NIL { return Ok(0); }
-            let nm = if v.is_sym() { crate::symbol::sym_str(v.as_sym()) } else if is_string(v) { String::from_utf8_lossy(str_bytes(v)).into() } else { return arg_err(c, "invalid rounding mode"); };
-            return match nm.as_str() { "up" => Ok(0), "even" => Ok(1), "down" => Ok(2), _ => arg_err(c, format!("invalid rounding mode: {}", nm)) };
+            let sv = if v.is_sym() { Some(str_new(crate::symbol::sym_str(v.as_sym()).as_bytes())) } else if is_string(v) { Some(v) }
+                     else if v.is_heap() && respond_to(v, s::to_str, true) { let r = funcall(c, v, s::to_str, &[], std::ptr::null())?; if is_string(r) { Some(r) } else { None } } else { None };
+            if let Some(sv) = sv {
+                let b = str_bytes(sv).to_vec();
+                if b.eq_ignore_ascii_case(b"up") { return Ok(0); }
+                if b.eq_ignore_ascii_case(b"even") { return Ok(1); }
+                if b.eq_ignore_ascii_case(b"down") { return Ok(2); }
+            }
+            let t = funcall(c, v, s::to_s, &[], std::ptr::null())?;
+            let ts = if is_string(t) { String::from_utf8_lossy(str_bytes(t)).into_owned() } else { String::new() };
+            return arg_err(c, format!("invalid rounding mode: {}", ts));
         }
     }
     Ok(0)
@@ -567,80 +576,113 @@ cfn!(flo_idiv, |c, s, a| {
 cfn!(flo_coerce, |c, s, a| { let y = to_f(c, a[0])?; Ok(ary_new_from(&[float_new(y), s])) });
 cfn!(flo_hash, |_c, s, _a| { let f = float_val(s); let b = if f == 0.0 { 0 } else { f.to_bits() }; Ok(Value::fix((crate::astrust::hash_u64(b) >> 2) as i64)) });
 
-/// Decimal rounding of the shortest repr (CRuby-compatible for typical cases).
-pub fn round_float_digits(f: f64, nd: i64, mode: u8, half: u8) -> f64 {
-    if !f.is_finite() || nd > 17 { return f; }
-    let s = format!("{:e}", f.abs());
-    let (mant, exp) = s.split_once('e').unwrap();
-    let exp: i64 = exp.parse().unwrap();
-    let digits: Vec<u8> = mant.bytes().filter(|b| b.is_ascii_digit()).map(|b| b - b'0').collect();
-    // value = 0.d1d2d3... * 10^(exp+1); keep digits up to position exp+1+nd
-    let keep = exp + 1 + nd;
-    if keep < 0 { return match mode { b'c' if f > 0.0 => 10f64.powi(-nd as i32), b'f' if f < 0.0 => -(10f64.powi(-nd as i32)), _ => 0.0 * f.signum() }; }
-    let keep = keep as usize;
-    if keep >= digits.len() { return f; }
-    let mut kept: Vec<u8> = digits[..keep].to_vec();
-    let rest = &digits[keep..];
-    let rest_nonzero = rest.iter().any(|&d| d != 0);
-    let neg = f < 0.0;
-    let up = match mode {
-        b'f' => neg && rest_nonzero,
-        b'c' => !neg && rest_nonzero,
-        b't' => false,
-        _ => {
-            let first = rest[0];
-            if first > 5 || (first == 5 && rest[1..].iter().any(|&d| d != 0)) { true }
-            else if first == 5 { match half { 1 => kept.last().map(|d| d % 2 == 1).unwrap_or(false), 2 => false, _ => true } }
-            else { false }
-        }
-    };
-    let mut e10 = exp + 1;
-    if up {
-        let mut i = kept.len();
-        loop {
-            if i == 0 { kept.insert(0, 1); e10 += 1; break; }
-            i -= 1;
-            if kept[i] == 9 { kept[i] = 0; } else { kept[i] += 1; break; }
-        }
-    }
-    let mut txt = String::from("0.");
-    for d in &kept { txt.push((b'0' + d) as char); }
-    if kept.is_empty() { txt.push('0'); }
-    txt.push_str(&format!("e{}", e10));
-    let v: f64 = txt.parse().unwrap_or(0.0);
-    if neg { -v } else { v }
-}
+// ---- Float rounding: ports of CRuby's round_half_* / rb_float_floor / rb_float_ceil -------------
 
-fn flo_round_impl(c: &mut Ctx, s: Value, a: &[Value], mode: u8) -> RV {
-    let f = float_val(s);
-    let nd = match a.iter().find(|v| !is_hash(**v)) { Some(&d) => num_to_long(c, d)?, None => 0 };
-    let half = round_half_mode(c, a)?;
-    if nd > 0 {
-        if f.is_infinite() || f.is_nan() { return Ok(s); }
-        return Ok(float_new(round_float_digits(f, nd, mode, half)));
-    }
-    check_finite(c, f)?;
-    if nd == 0 {
-        let r = match mode {
-            b'f' => f.floor(), b'c' => f.ceil(), b't' => f.trunc(),
-            _ => {
-                let r = f.round();
-                if (f - f.trunc()).abs() == 0.5 {
-                    match half { 1 => { let t = f.trunc(); if (t as i64) % 2 == 0 { t } else { r } } 2 => f.trunc(), _ => r }
-                } else { round_float_digits(f, 0, b'r', half) }
-            }
-        };
-        return Ok(f64_to_int(r));
-    }
-    let i = f64_to_int(match mode { b'f' => f.floor(), b'c' => f.ceil(), b't' => f.trunc(), _ => f.round() });
-    let r = round_float_digits(f, nd, mode, half);
-    let _ = i;
-    Ok(f64_to_int(r))
+fn frexp_exp(x: f64) -> i32 { if x == 0.0 || !x.is_finite() { 0 } else { crate::builtins::rational::frexp(x).1 as i32 } }
+fn float_round_overflow(nd: i64, binexp: i32) -> bool { nd >= (15 + 2) - (if binexp > 0 { binexp / 4 } else { binexp / 3 - 1 }) as i64 }
+fn float_round_underflow(nd: i64, binexp: i32) -> bool { nd < -(if binexp > 0 { binexp / 3 + 1 } else { binexp / 4 }) as i64 }
+fn c_round(x: f64) -> f64 { x.round() }
+fn round_half_up(x: f64, s: f64) -> f64 {
+    let xs = x * s;
+    let mut f = c_round(xs);
+    if s == 1.0 { return f; }
+    if x > 0.0 { if (f + 0.5) / s <= x { f += 1.0; } f } else { if (f - 0.5) / s >= x { f -= 1.0; } f }
 }
-cfn!(flo_round, |c, s, a| flo_round_impl(c, s, a, b'r'));
-cfn!(flo_floor, |c, s, a| flo_round_impl(c, s, a, b'f'));
-cfn!(flo_ceil, |c, s, a| flo_round_impl(c, s, a, b'c'));
-cfn!(flo_truncate, |c, s, a| flo_round_impl(c, s, a, b't'));
+fn round_half_down(x: f64, s: f64) -> f64 {
+    let xs = x * s;
+    let mut f = c_round(xs);
+    if x > 0.0 { if (f - 0.5) / s >= x { f -= 1.0; } f } else { if (f + 0.5) / s <= x { f += 1.0; } f }
+}
+fn round_half_even(x: f64, s: f64) -> f64 {
+    let u = x.trunc(); let v = x - u;
+    let us = u * s; let vs = v * s;
+    let r;
+    if x > 0.0 {
+        let f = vs.floor(); let uf = us + f; let mut d = vs - f;
+        if d > 0.5 { d = 1.0; } else if d == 0.5 || (uf + 0.5) / s <= x { d = uf % 2.0; } else { d = 0.0; }
+        r = f + d;
+    } else if x < 0.0 {
+        let f = vs.ceil(); let uf = us + f; let mut d = f - vs;
+        if d > 0.5 { d = 1.0; } else if d == 0.5 || (uf - 0.5) / s >= x { d = (-uf) % 2.0; } else { d = 0.0; }
+        r = f - d;
+    } else { r = x; }
+    us + r
+}
+fn round_by_mode(x: f64, s: f64, half: u8) -> f64 { match half { 1 => round_half_even(x, s), 2 => round_half_down(x, s), _ => round_half_up(x, s) } }
+fn dbl2ival(c: &mut Ctx, f: f64) -> RV { check_finite(c, f)?; Ok(f64_to_int(f)) }
+fn flo_by_rational(c: &mut Ctx, f: f64, nd: i64, mode: u8, half: u8) -> RV {
+    let r = crate::builtins::rational::float_to_r(c, f)?;
+    let x = crate::builtins::rational::rat_round_nd(r, nd, mode, half);
+    Ok(float_new(if is_integer(x) { crate::builtins::rational::int_to_f(x) } else { crate::builtins::rational::rat_to_f(x) }))
+}
+fn flo_ndigits(c: &mut Ctx, a: &[Value]) -> Result<i64, Esc> {
+    let pos: Vec<Value> = a.iter().copied().filter(|v| !is_hash(*v)).collect();
+    if pos.len() > 1 { return arg_err(c, format!("wrong number of arguments (given {}, expected 0..1)", pos.len())); }
+    match pos.first() {
+        None => Ok(0),
+        Some(&v) => { let n = num_to_long(c, v)?; if n < i32::MIN as i64 || n > i32::MAX as i64 { return err(c, vm().c_range_error, format!("integer {} too {} to convert to 'int'", n, if n < 0 { "small" } else { "big" })); } Ok(n) }
+    }
+}
+fn flo_floor_nd(c: &mut Ctx, s: Value, nd: i64) -> RV {
+    let x = float_val(s);
+    if x == 0.0 { return Ok(if nd > 0 { s } else { Value::fix(0) }); }
+    if nd > 0 {
+        let be = frexp_exp(x);
+        if float_round_overflow(nd, be) { return Ok(s); }
+        if x > 0.0 && float_round_underflow(nd, be) { return Ok(float_new(0.0)); }
+        if nd >= 15 { return flo_by_rational(c, x, nd, b'f', 0); }
+        let f = 10f64.powi(nd as i32);
+        let mul = (x * f).floor();
+        let mut res = (mul + 1.0) / f;
+        if res > x { res = mul / f; }
+        return Ok(float_new(res));
+    }
+    let i = dbl2ival(c, x.floor())?;
+    if nd < 0 { return round_int(c, i, &[Value::fix(nd)], b'f'); }
+    Ok(i)
+}
+fn flo_ceil_nd(c: &mut Ctx, s: Value, nd: i64) -> RV {
+    let x = float_val(s);
+    if x == 0.0 { return Ok(if nd > 0 { s } else { Value::fix(0) }); }
+    if nd > 0 {
+        let be = frexp_exp(x);
+        if float_round_overflow(nd, be) { return Ok(s); }
+        if x < 0.0 && float_round_underflow(nd, be) { return Ok(float_new(0.0)); }
+        if nd >= 15 { return flo_by_rational(c, x, nd, b'c', 0); }
+        let f = 10f64.powi(nd as i32);
+        return Ok(float_new((x * f).ceil() / f));
+    }
+    let i = dbl2ival(c, x.ceil())?;
+    if nd < 0 { return round_int(c, i, &[Value::fix(nd)], b'c'); }
+    Ok(i)
+}
+cfn!(flo_round, |c, s, a| {
+    let nd = flo_ndigits(c, a)?;
+    let half = round_half_mode(c, a)?;
+    let x = float_val(s);
+    if x == 0.0 { return Ok(if nd > 0 { s } else { Value::fix(0) }); }
+    if nd < 0 {
+        let i = dbl2ival(c, x.trunc())?;
+        let h = if let Some(&hv) = a.iter().rev().find(|v| is_hash(**v)) { hv } else { crate::hash::hash_new() };
+        return round_int(c, i, &[Value::fix(nd), h], b'r');
+    }
+    if nd == 0 { return dbl2ival(c, round_by_mode(x, 1.0, half)); }
+    if x.is_finite() {
+        let be = frexp_exp(x);
+        if float_round_overflow(nd, be) { return Ok(s); }
+        if float_round_underflow(nd, be) { return Ok(Value::fix(0)); }
+        if nd >= 15 { return flo_by_rational(c, x, nd, b'r', half); }
+        let f = 10f64.powi(nd as i32);
+        return Ok(float_new(round_by_mode(x, f, half) / f));
+    }
+    Ok(s)
+});
+cfn!(flo_floor, |c, s, a| { let nd = flo_ndigits(c, a)?; flo_floor_nd(c, s, nd) });
+cfn!(flo_ceil, |c, s, a| { let nd = flo_ndigits(c, a)?; flo_ceil_nd(c, s, nd) });
+cfn!(flo_truncate, |c, s, a| {
+    let nd = flo_ndigits(c, a)?;
+    if float_val(s).is_sign_negative() { flo_ceil_nd(c, s, nd) } else { flo_floor_nd(c, s, nd) }
+});
 cfn!(flo_next_float, |_c, s, _a| { let f = float_val(s); Ok(float_new(next_after(f, f64::INFINITY))) });
 cfn!(flo_prev_float, |_c, s, _a| { let f = float_val(s); Ok(float_new(next_after(f, f64::NEG_INFINITY))) });
 fn next_after(f: f64, dir: f64) -> f64 {
