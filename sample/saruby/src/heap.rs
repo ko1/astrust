@@ -137,12 +137,11 @@ impl<'a> Others<'a> {
 
 // ---- allocators of unconverted modules, taking the token -----------------------------------
 // A converted module must not allocate behind the context's back; these go away as string.rs
-// and numeric.rs are converted and their own functions take `&mut Ctx`.
+// is converted and its own functions take `&mut Ctx`.
 impl Ctx {
     #[inline(always)] pub fn str_new(&mut self, b: &[u8]) -> Value { crate::string::str_new(b) }
     #[inline(always)] pub fn str_from_vec(&mut self, b: Vec<u8>) -> Value { crate::string::str_from_vec(b) }
     #[inline(always)] pub fn str_from_vec_enc(&mut self, b: Vec<u8>, enc: u8) -> Value { crate::string::str_from_vec_enc(b, enc) }
-    #[inline(always)] pub fn float_new(&mut self, d: f64) -> Value { crate::numeric::float_new(d) }
 }
 
 /// `use crate::heap::no_legacy::*;` in a converted module: every name below then has two glob

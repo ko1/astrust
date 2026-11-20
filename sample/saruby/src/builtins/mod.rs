@@ -181,7 +181,7 @@ pub fn boot() {
     symbol_methods::init();
     array_methods::init(vm.c_array);
     hash_methods::init(vm.c_hash);
-    range_methods::init();
+    vm.ids.r_each = range_methods::init(vm.c_range);
     enumerator::init();
     io::init();
     process::init();

@@ -15,6 +15,7 @@ pub mod value;
 pub mod symbol;
 pub mod sbuf;
 pub mod ivbuf;
+pub mod legacy;
 pub mod object;
 pub mod heap;
 pub mod gc;

@@ -190,3 +190,5 @@ pub fn hash_len(h: Value) -> usize { rhash(h).live }
 pub fn hash_entry_at(h: Value, i: usize) -> Option<(Value, Value)> { rhash(h).entries.get(i).map(|e| (e.key, e.val)) }
 pub fn hash_clear(h: Value) { rhash(h).clear(); }
 pub fn hash_dup(h: Value) -> Value { let d = rhash(h).dup(); crate::gc::alloc(obj(h).klass, Body::Hash(Box::new(d))) }
+
+pub use crate::legacy::*;

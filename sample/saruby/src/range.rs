@@ -1,10 +1,29 @@
 // Range core.  Methods in builtins/range_methods.rs.
+// On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
+#![forbid(unsafe_code)]
+// the context-free API, for the modules not converted yet (bodies in object.rs)
+pub use crate::object::{range_new, range_parts};
+pub use imp::*;
+
+// a module of its own: `no_legacy` must not meet the re-export above
+mod imp {
+#[allow(unused_imports)]
+use crate::heap::no_legacy::*;   // the old accessors cannot be named here
+#[allow(unused_imports)]
+use crate::heap::no_legacy_hn::*;
+use crate::heap::obj_set_flags;
 use crate::object::*;
 use crate::value::*;
 use crate::vm::*;
 
-pub fn range_new(b: Value, e: Value, excl: bool) -> Value {
-    crate::gc::alloc(vm().c_range, Body::Range(b, e, excl))
+impl Ctx {
+    pub fn range_new(&mut self, b: Value, e: Value, excl: bool) -> Value {
+        let k = self.vm().c_range;
+        self.alloc(k, Body::Range(b, e, excl))
+    }
+    /// (begin, end, exclusive) of a Range; (nil, nil, false) for anything else.
+    #[inline]
+    pub fn range_parts(&self, r: Value) -> (Value, Value, bool) { if is_range(r) { self.range(r) } else { (NIL, NIL, false) } }
 }
 pub fn range_new_checked(c: &mut Ctx, b: Value, e: Value, excl: bool) -> RV {
     let ok = (b.is_fixnum() && e.is_fixnum()) || b == NIL || e == NIL
@@ -14,18 +33,14 @@ pub fn range_new_checked(c: &mut Ctx, b: Value, e: Value, excl: bool) -> RV {
         let r = funcall(c, b, crate::symbol::s::cmp, &[e], std::ptr::null())?;
         if r == NIL { return arg_err(c, "bad value for range"); }
     }
-    let r = range_new(b, e, excl);
-    obj(r).flags |= FL_FROZEN;
+    let r = c.range_new(b, e, excl);
+    obj_set_flags(r, FL_FROZEN);
     Ok(r)
-}
-#[inline]
-pub fn range_parts(r: Value) -> (Value, Value, bool) {
-    match &obj(r).body { Body::Range(a, b, x) => (*a, *b, *x), _ => (NIL, NIL, false) }
 }
 
 /// Resolve a range against a length (for Array#[] / String#[]): (start, len), None if out of range.
 pub fn range_beg_len(c: &mut Ctx, r: Value, len: i64, err: i32) -> Result<Option<(i64, i64)>, Esc> {
-    let (b, e, excl) = range_parts(r);
+    let (b, e, excl) = c.range_parts(r);
     let mut beg = if b == NIL { 0 } else { crate::builtins::numeric_methods::num_to_long(c, b)? };
     let mut end = if e == NIL { len } else { crate::builtins::numeric_methods::num_to_long(c, e)? };
     let excl = if e == NIL { true } else { excl };
@@ -47,4 +62,5 @@ fn out_of_range(c: &mut Ctx, r: Value, err: i32, _b: i64, _e: i64) -> Result<Opt
     }
     Ok(None)
 }
-fn err_range<T>(c: &mut Ctx, m: String) -> Result<T, Esc> { crate::vm::err(c, vm().c_range_error, m) }
+fn err_range<T>(c: &mut Ctx, m: String) -> Result<T, Esc> { crate::vm::err(c, c.vm().c_range_error, m) }
+}

@@ -1,4 +1,9 @@
-// Range.
+// Range, on the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
+#![forbid(unsafe_code)]
+#[allow(unused_imports)]
+use crate::heap::no_legacy::*;   // the old accessors cannot be named here
+#[allow(unused_imports)]
+use crate::heap::no_legacy_hn::*;
 use crate::array::*;
 use crate::builtins::kernel::*;
 use crate::range::*;
@@ -14,16 +19,17 @@ macro_rules! cfn { ($name:ident, |$c:ident, $s:ident, $a:ident, $b:ident| $body:
 
 cfn!(r_initialize, |c, slf, a, blk| {
     check_argc(c, a, 2, 3)?;
-    if is_frozen(slf) && !matches!(obj(slf).body, Body::Range(b, e, _) if b == NIL && e == NIL) { return Err(raise_frozen(c, slf)); }
+    let (b0, e0, _) = c.range(slf);
+    if is_frozen(slf) && !(b0 == NIL && e0 == NIL) { return Err(raise_frozen(c, slf)); }
     let r = range_new_checked(c, a[0], a[1], a.len() > 2 && a[2].truthy())?;
-    let (b, e, x) = range_parts(r);
-    obj(slf).body = Body::Range(b, e, x);
-    obj(slf).flags |= FL_FROZEN;
+    let (b, e, x) = c.range(r);
+    c.range_set(slf, b, e, x);
+    obj_set_flags(slf, FL_FROZEN);
     Ok(NIL)
 });
-cfn!(r_begin, |c, slf, a, blk| Ok(range_parts(slf).0));
-cfn!(r_end, |c, slf, a, blk| Ok(range_parts(slf).1));
-cfn!(r_excl, |c, slf, a, blk| Ok(Value::bool(range_parts(slf).2)));
+cfn!(r_begin, |c, slf, a, blk| Ok(c.range_parts(slf).0));
+cfn!(r_end, |c, slf, a, blk| Ok(c.range_parts(slf).1));
+cfn!(r_excl, |c, slf, a, blk| Ok(Value::bool(c.range_parts(slf).2)));
 fn int_end(c: &mut Ctx, e: Value) -> Result<Option<i64>, Esc> {
     if e.is_fixnum() { return Ok(Some(e.as_fix())); }
     if is_float(e) { let f = float_val(e); if f.is_infinite() && f > 0.0 { return Ok(None); } return Ok(Some(f.floor() as i64)); }
@@ -31,7 +37,7 @@ fn int_end(c: &mut Ctx, e: Value) -> Result<Option<i64>, Esc> {
     Ok(Some(crate::builtins::numeric_methods::num_to_long(c, e)?))
 }
 pub fn range_each(c: &mut Ctx, slf: Value, mut f: impl FnMut(&mut Ctx, Value) -> Result<bool, Esc>) -> Result<(), Esc> {
-    let (b, e, excl) = range_parts(slf);
+    let (b, e, excl) = c.range_parts(slf);
     if b.is_fixnum() && (e.is_fixnum() || e == NIL || is_float(e)) {
         let mut i = b.as_fix();
         let last = int_end(c, e)?;
@@ -52,33 +58,33 @@ pub fn range_each(c: &mut Ctx, slf: Value, mut f: impl FnMut(&mut Ctx, Value) ->
             while ch <= hi { if !f(c, Value::sym(intern(&[ch as u8])))? { break; } ch += 1; }
             return Ok(());
         }
-        let (bs, es) = (str_new(&bb), str_new(&eb));
-        let blk_data = ary_new();
-        let collect = Block::cfunc(c, |_c, d, args, _b| { ary_push(d, args[0]); Ok(NIL) }, blk_data);
+        let (bs, es) = (c.str_new(&bb), c.str_new(&eb));
+        let blk_data = c.ary_new();
+        let collect = Block::cfunc(c, |c, d, args, _b| { c.ary_push(d, args[0]); Ok(NIL) }, blk_data);
         let ev = if excl { TRUE } else { FALSE };
         funcall(c, bs, s::upto, &[es, ev], &collect)?;
-        for i in 0..ary_len(blk_data) { let v = Value::sym(intern(str_bytes(ary_get(blk_data, i)))); if !f(c, v)? { break; } }
+        for i in 0..c.ary_len(blk_data) { let v = Value::sym(intern(c.str_bytes(c.ary_get(blk_data, i)))); if !f(c, v)? { break; } }
         return Ok(());
     }
     if is_string(b) && (is_string(e) || e == NIL) {
         if e == NIL {
-            let mut cur = str_bytes(b).to_vec();
-            loop { let s2 = str_new(&cur); if !f(c, s2)? { return Ok(()); } cur = succ_bytes(&cur); }
+            let mut cur = c.str_bytes(b).to_vec();
+            loop { let s2 = c.str_new(&cur); if !f(c, s2)? { return Ok(()); } cur = succ_bytes(&cur); }
         }
-        let o = str_bytes(b).cmp(str_bytes(e));
+        let o = c.str_bytes(b).cmp(c.str_bytes(e));
         if o == std::cmp::Ordering::Greater || (excl && o == std::cmp::Ordering::Equal) { return Ok(()); }
-        let (bb, eb) = (str_bytes(b).to_vec(), str_bytes(e).to_vec());
+        let (bb, eb) = (c.str_bytes(b).to_vec(), c.str_bytes(e).to_vec());
         if bb.len() == 1 && eb.len() == 1 && bb[0] < 0x80 && eb[0] < 0x80 {
             let (lo, hi) = (bb[0] as i32, if excl { eb[0] as i32 - 1 } else { eb[0] as i32 });
             let mut ch = lo;
-            while ch <= hi { if !f(c, str_new(&[ch as u8]))? { break; } ch += 1; }
+            while ch <= hi { let s1 = c.str_new(&[ch as u8]); if !f(c, s1)? { break; } ch += 1; }
             return Ok(());
         }
-        let blk_data = ary_new();
-        let collect = Block::cfunc(c, |_c, d, args, _b| { ary_push(d, args[0]); Ok(NIL) }, blk_data);
+        let blk_data = c.ary_new();
+        let collect = Block::cfunc(c, |c, d, args, _b| { c.ary_push(d, args[0]); Ok(NIL) }, blk_data);
         let ev = if excl { TRUE } else { FALSE };
         funcall(c, b, s::upto, &[e, ev], &collect)?;
-        for i in 0..ary_len(blk_data) { if !f(c, ary_get(blk_data, i))? { break; } }
+        for i in 0..c.ary_len(blk_data) { let v = c.ary_get(blk_data, i); if !f(c, v)? { break; } }
         return Ok(());
     }
     if b == NIL || is_float(b) { return type_err(c, format!("can't iterate from {}", class_name_for_err(b))); }
@@ -99,7 +105,7 @@ pub fn range_each(c: &mut Ctx, slf: Value, mut f: impl FnMut(&mut Ctx, Value) ->
 // Range#each is identified by its entry (vm.ids.r_each), not by function pointer
 cfn!(r_each, |c, slf, a, blk| {
     if blk.is_null() { return crate::builtins::enumerator::enum_for_sized(c, slf, s::each, a); }
-    let (b, e, excl) = range_parts(slf);
+    let (b, e, excl) = c.range_parts(slf);
     if b.is_fixnum() && e.is_fixnum() {
         let mut i = b.as_fix(); let l = e.as_fix();
         let l = if excl { l - 1 } else { l };
@@ -111,7 +117,7 @@ cfn!(r_each, |c, slf, a, blk| {
 });
 cfn!(r_reverse_each, |c, slf, a, blk| {
     if blk.is_null() { return crate::builtins::enumerator::enum_for_sized(c, slf, intern(b"reverse_each"), a); }
-    let (b, e, excl) = range_parts(slf);
+    let (b, e, excl) = c.range_parts(slf);
     if e.is_fixnum() && (b.is_fixnum() || b == NIL) {
         let mut i = if excl { e.as_fix() - 1 } else { e.as_fix() };
         loop { if b != NIL && i < b.as_fix() { break; } yield1(c, blk, Value::fix(i))?; i -= 1; }
@@ -119,47 +125,47 @@ cfn!(r_reverse_each, |c, slf, a, blk| {
     }
     if e == NIL { return type_err(c, format!("can't iterate from {}", class_name_for_err(e))); }
     let arr = r_to_a(c, slf, &[], std::ptr::null())?;
-    let n = ary_len(arr);
-    for i in (0..n).rev() { yield1(c, blk, ary_get(arr, i))?; }
+    let n = c.ary_len(arr);
+    for i in (0..n).rev() { let v = c.ary_get(arr, i); yield1(c, blk, v)?; }
     Ok(slf)
 });
 cfn!(r_to_a, |c, slf, a, blk| {
-    let (b, e, _) = range_parts(slf);
-    if e == NIL { return err(c, vm().c_range_error, "cannot convert endless range to an array"); }
-    let out = ary_new();
-    range_each(c, slf, |_c, v| { ary_push(out, v); Ok(true) })?;
+    let (b, e, _) = c.range_parts(slf);
+    if e == NIL { return err(c, c.vm().c_range_error, "cannot convert endless range to an array"); }
+    let out = c.ary_new();
+    range_each(c, slf, |c, v| { c.ary_push(out, v); Ok(true) })?;
     let _ = b;
     Ok(out)
 });
 cfn!(r_size, |c, slf, a, blk| {
-    let (b, e, excl) = range_parts(slf);
-    if !crate::numeric::is_numeric(b) { if b == NIL && (crate::numeric::is_numeric(e)) { return Ok(crate::numeric::float_new(f64::INFINITY)); } return Ok(NIL); }
-    if e == NIL { return Ok(crate::numeric::float_new(f64::INFINITY)); }
+    let (b, e, excl) = c.range_parts(slf);
+    if !crate::numeric::is_numeric(b) { if b == NIL && (crate::numeric::is_numeric(e)) { return Ok(c.float_new(f64::INFINITY)); } return Ok(NIL); }
+    if e == NIL { return Ok(c.float_new(f64::INFINITY)); }
     if !crate::numeric::is_numeric(e) { return Ok(NIL); }
     if is_float(b) { return type_err(c, "can't iterate from Float"); }
     if b.is_fixnum() && e.is_fixnum() { let n = e.as_fix() - b.as_fix() + if excl { 0 } else { 1 }; return Ok(Value::fix(n.max(0))); }
-    let ef = crate::numeric::num_to_f64(e).unwrap();
-    if ef.is_infinite() { return Ok(crate::numeric::float_new(f64::INFINITY)); }
-    let bf = crate::numeric::num_to_f64(b).unwrap();
+    let ef = c.num_to_f64(e).unwrap();
+    if ef.is_infinite() { return Ok(c.float_new(f64::INFINITY)); }
+    let bf = c.num_to_f64(b).unwrap();
     let mut n = (ef - bf).floor() + 1.0;
     if excl && (ef - bf).fract() == 0.0 { n -= 1.0; }
     if is_integer(b) && is_integer(e) {
-        let x = crate::bignum::to_big(e).sub(&crate::bignum::to_big(b)).add(&crate::bignum::BigInt::from_i64(if excl { 0 } else { 1 }));
-        return Ok(crate::bignum::big_to_value(if x.neg { crate::bignum::BigInt::zero() } else { x }));
+        let x = c.to_big(e).sub(&c.to_big(b)).add(&crate::bignum::BigInt::from_i64(if excl { 0 } else { 1 }));
+        return Ok(c.big_to_value(if x.neg { crate::bignum::BigInt::zero() } else { x }));
     }
     Ok(Value::fix(n.max(0.0) as i64))
 });
 cfn!(r_count, |c, slf, a, blk| {
     if a.is_empty() && blk.is_null() {
-        let (b, e, _) = range_parts(slf);
-        if e == NIL || (b == NIL && e != NIL) { return Ok(crate::numeric::float_new(f64::INFINITY)); }
+        let (b, e, _) = c.range_parts(slf);
+        if e == NIL || (b == NIL && e != NIL) { return Ok(c.float_new(f64::INFINITY)); }
         if is_integer(b) { return r_size(c, slf, a, blk); }
     }
     let arr = r_to_a(c, slf, &[], std::ptr::null())?;
     funcall(c, arr, intern(b"count"), a, blk)
 });
 fn cover(c: &mut Ctx, slf: Value, v: Value) -> Result<bool, Esc> {
-    let (b, e, excl) = range_parts(slf);
+    let (b, e, excl) = c.range_parts(slf);
     if b.is_fixnum() && e.is_fixnum() && v.is_fixnum() {
         let x = v.as_fix();
         return Ok(x >= b.as_fix() && if excl { x < e.as_fix() } else { x <= e.as_fix() });
@@ -176,7 +182,7 @@ fn cover(c: &mut Ctx, slf: Value, v: Value) -> Result<bool, Esc> {
     Ok(true)
 }
 cfn!(r_include, |c, slf, a, blk| {
-    let (b, e, _) = range_parts(slf);
+    let (b, e, _) = c.range_parts(slf);
     if crate::numeric::is_numeric(b) || crate::numeric::is_numeric(e) || (b == NIL && e == NIL) { return Ok(Value::bool(cover(c, slf, a[0])?)); }
     if is_string(b) || is_string(e) {
         if !is_string(a[0]) { return Ok(FALSE); }
@@ -192,8 +198,8 @@ cfn!(r_include, |c, slf, a, blk| {
 });
 cfn!(r_cover, |c, slf, a, blk| {
     if is_range(a[0]) {
-        let (b2, e2, x2) = range_parts(a[0]);
-        let (_, e, x) = range_parts(slf);
+        let (b2, e2, x2) = c.range_parts(a[0]);
+        let (_, e, x) = c.range_parts(slf);
         if b2 != NIL && !cover(c, slf, b2)? { return Ok(FALSE); }
         if e2 == NIL { return Ok(Value::bool(e == NIL)); }
         if e == NIL { return Ok(TRUE); }
@@ -207,41 +213,41 @@ cfn!(r_cover, |c, slf, a, blk| {
 cfn!(r_eqq, |c, slf, a, blk| Ok(Value::bool(cover(c, slf, a[0]).unwrap_or_else(|_| { c.esc = EscKind::None; false }))));
 cfn!(r_eq, |c, slf, a, blk| {
     if !is_range(a[0]) { return Ok(FALSE); }
-    let (b1, e1, x1) = range_parts(slf); let (b2, e2, x2) = range_parts(a[0]);
+    let (b1, e1, x1) = c.range_parts(slf); let (b2, e2, x2) = c.range_parts(a[0]);
     Ok(Value::bool(x1 == x2 && crate::builtins::array_methods::rb_eq(c, b1, b2)? && crate::builtins::array_methods::rb_eq(c, e1, e2)?))
 });
 cfn!(r_eql, |c, slf, a, blk| {
     if !is_range(a[0]) { return Ok(FALSE); }
-    let (b1, e1, x1) = range_parts(slf); let (b2, e2, x2) = range_parts(a[0]);
+    let (b1, e1, x1) = c.range_parts(slf); let (b2, e2, x2) = c.range_parts(a[0]);
     Ok(Value::bool(x1 == x2 && crate::hash::key_eql(c, b1, b2)? && crate::hash::key_eql(c, e1, e2)?))
 });
 cfn!(r_hash, |c, slf, a, blk| {
-    let (b, e, x) = range_parts(slf);
+    let (b, e, x) = c.range_parts(slf);
     let h = crate::astrust::hash_merge(crate::hash::key_hash(c, b)?, crate::hash::key_hash(c, e)?) ^ (x as u64);
     Ok(Value::fix((h >> 2) as i64))
 });
 fn range_to_s(c: &mut Ctx, slf: Value, insp: bool) -> RV {
-    let (b, e, x) = range_parts(slf);
+    let (b, e, x) = c.range_parts(slf);
     let f = |c: &mut Ctx, v: Value| -> Result<String, Esc> { if insp { if v == NIL { Ok(String::new()) } else { inspect_str(c, v) } } else { to_rstring(c, v) } };
-    if insp && b == NIL && e == NIL { return Ok(str_new(if x { b"nil...nil" as &[u8] } else { b"nil..nil" })); }
+    if insp && b == NIL && e == NIL { return Ok(c.str_new(if x { b"nil...nil" as &[u8] } else { b"nil..nil" })); }
     let bs = f(c, b)?; let es = f(c, e)?;
-    Ok(str_new(format!("{}{}{}", bs, if x { "..." } else { ".." }, es).as_bytes()))
+    Ok(c.str_new(format!("{}{}{}", bs, if x { "..." } else { ".." }, es).as_bytes()))
 }
 cfn!(r_to_s, |c, slf, a, blk| range_to_s(c, slf, false));
 cfn!(r_inspect, |c, slf, a, blk| range_to_s(c, slf, true));
 cfn!(r_first, |c, slf, a, blk| {
-    let (b, _, _) = range_parts(slf);
-    if a.is_empty() { if b == NIL { return err(c, vm().c_range_error, "cannot get the first element of beginless range"); } return Ok(b); }
+    let (b, _, _) = c.range_parts(slf);
+    if a.is_empty() { if b == NIL { return err(c, c.vm().c_range_error, "cannot get the first element of beginless range"); } return Ok(b); }
     let n = crate::builtins::numeric_methods::num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, "negative array size (or size too big)"); }
-    let out = ary_new();
+    let out = c.ary_new();
     if n == 0 { return Ok(out); }
-    range_each(c, slf, |_c, v| { ary_push(out, v); Ok((ary_len(out) as i64) < n) })?;
+    range_each(c, slf, |c, v| { c.ary_push(out, v); Ok((c.ary_len(out) as i64) < n) })?;
     Ok(out)
 });
 cfn!(r_last, |c, slf, a, blk| {
-    let (b, e, x) = range_parts(slf);
-    if e == NIL { return err(c, vm().c_range_error, "cannot get the last element of endless range"); }
+    let (b, e, x) = c.range_parts(slf);
+    if e == NIL { return err(c, c.vm().c_range_error, "cannot get the last element of endless range"); }
     if a.is_empty() {
         return Ok(e);
     }
@@ -250,13 +256,13 @@ cfn!(r_last, |c, slf, a, blk| {
     funcall(c, arr, intern(b"last"), a, std::ptr::null())
 });
 cfn!(r_min, |c, slf, a, blk| {
-    let (b, e, x) = range_parts(slf);
-    if b == NIL { return err(c, vm().c_range_error, "cannot get the minimum of beginless range"); }
+    let (b, e, x) = c.range_parts(slf);
+    if b == NIL { return err(c, c.vm().c_range_error, "cannot get the minimum of beginless range"); }
     if !blk.is_null() || !a.is_empty() {
         check_argc(c, a, 0, 1)?;
         if let Some(&n) = a.first() { if n != NIL && crate::builtins::numeric_methods::num_to_long(c, n)? < 0 { return arg_err(c, "negative array size (or size too big)"); } }
         if blk.is_null() && is_integer(b) { return r_first(c, slf, a, blk); }
-        if e == NIL { return err(c, vm().c_range_error, "cannot get the minimum of endless range with custom comparison method"); }
+        if e == NIL { return err(c, c.vm().c_range_error, "cannot get the minimum of endless range with custom comparison method"); }
         return crate::builtins::enum_native::call_enumerable(c, slf, "min", a, blk);
     }
     if e == NIL { return Ok(b); }
@@ -265,19 +271,19 @@ cfn!(r_min, |c, slf, a, blk| {
     Ok(b)
 });
 cfn!(r_max, |c, slf, a, blk| {
-    let (b, e, x) = range_parts(slf);
-    if e == NIL { return err(c, vm().c_range_error, "cannot get the maximum of endless range"); }
+    let (b, e, x) = c.range_parts(slf);
+    if e == NIL { return err(c, c.vm().c_range_error, "cannot get the maximum of endless range"); }
     if !blk.is_null() || !a.is_empty() {
         check_argc(c, a, 0, 1)?;
         if let Some(&n) = a.first() { if n != NIL && crate::builtins::numeric_methods::num_to_long(c, n)? < 0 { return arg_err(c, "negative array size (or size too big)"); } }
         if blk.is_null() && e.is_fixnum() && (b == NIL || b.is_fixnum()) {
             let n = crate::builtins::numeric_methods::num_to_long(c, a[0])?;
-            let out = ary_new();
+            let out = c.ary_new();
             let mut i = if x { e.as_fix() - 1 } else { e.as_fix() };
-            while (ary_len(out) as i64) < n && (b == NIL || i >= b.as_fix()) { ary_push(out, Value::fix(i)); i -= 1; }
+            while (c.ary_len(out) as i64) < n && (b == NIL || i >= b.as_fix()) { c.ary_push(out, Value::fix(i)); i -= 1; }
             return Ok(out);
         }
-        if b == NIL { return err(c, vm().c_range_error, "cannot get the maximum of beginless range with custom comparison method"); }
+        if b == NIL { return err(c, c.vm().c_range_error, "cannot get the maximum of beginless range with custom comparison method"); }
         return crate::builtins::enum_native::call_enumerable(c, slf, "max", a, blk);
     }
     if b != NIL {
@@ -294,29 +300,30 @@ cfn!(r_max, |c, slf, a, blk| {
 });
 cfn!(r_minmax, |c, slf, a, blk| {
     if !blk.is_null() {
-        let (b, e, _) = range_parts(slf);
-        if b == NIL { return err(c, vm().c_range_error, "cannot get the minimum of beginless range"); }
-        if e == NIL { return err(c, vm().c_range_error, "cannot get the maximum of endless range"); }
+        let (b, e, _) = c.range_parts(slf);
+        if b == NIL { return err(c, c.vm().c_range_error, "cannot get the minimum of beginless range"); }
+        if e == NIL { return err(c, c.vm().c_range_error, "cannot get the maximum of endless range"); }
         return crate::builtins::enum_native::call_enumerable(c, slf, "minmax", a, blk);
     }
     let lo = r_min(c, slf, &[], std::ptr::null())?;
     let hi = r_max(c, slf, &[], std::ptr::null())?;
-    Ok(ary_new_from(&[lo, hi]))
+    Ok(c.ary_new_from(&[lo, hi]))
 });
 cfn!(r_sum, |c, slf, a, blk| {
-    let (b, e, x) = range_parts(slf);
+    let (b, e, x) = c.range_parts(slf);
     if blk.is_null() && b.is_fixnum() && e.is_fixnum() {
         let lo = b.as_fix() as i128; let hi = (if x { e.as_fix() - 1 } else { e.as_fix() }) as i128;
         let init = if a.is_empty() { Value::fix(0) } else { a[0] };
         if hi < lo { return Ok(init); }
         let s2 = (lo + hi) * (hi - lo + 1) / 2;
-        return funcall(c, init, s::plus, &[crate::bignum::int_from_i128(s2)], std::ptr::null());
+        let n = c.int_from_i128(s2);
+        return funcall(c, init, s::plus, &[n], std::ptr::null());
     }
     let arr = r_to_a(c, slf, &[], std::ptr::null())?;
     crate::builtins::array_methods::a_sum(c, arr, a, blk)
 });
 cfn!(r_step, |c, slf, a, blk| {
-    let (b, e, x) = range_parts(slf);
+    let (b, e, x) = c.range_parts(slf);
     check_argc(c, a, 0, 1)?;
     let st = if a.is_empty() { Value::fix(1) } else { a[0] };
     if crate::numeric::is_numeric(st) && (b == NIL || crate::numeric::is_numeric(b)) {
@@ -337,15 +344,16 @@ cfn!(r_step, |c, slf, a, blk| {
         if neg.truthy() { return arg_err(c, "step can't be negative"); }
     }
     if is_float(b) || is_float(e) || is_float(st) {
-        let bf = crate::numeric::num_to_f64(b).unwrap(); let sf = crate::numeric::num_to_f64(st).unwrap();
-        let ef = if e == NIL { f64::INFINITY } else { crate::numeric::num_to_f64(e).unwrap() };
+        let bf = c.num_to_f64(b).unwrap(); let sf = c.num_to_f64(st).unwrap();
+        let ef = if e == NIL { f64::INFINITY } else { c.num_to_f64(e).unwrap() };
         let n = ((ef - bf) / sf + 1e-9).floor();
         let mut i = 0.0;
         loop {
             if !n.is_infinite() && i > n { break; }
             let v = bf + i * sf;
             if x && v >= ef { break; }
-            yield1(c, blk, crate::numeric::float_new(v))?;
+            let fv = c.float_new(v);
+            yield1(c, blk, fv)?;
             i += 1.0;
         }
         return Ok(slf);
@@ -391,13 +399,14 @@ fn bs_check(c: &mut Ctx, blk: *const Block, val: Value, satisfied: &mut Value) -
     }
     type_err(c, format!("wrong argument type {} (must be numeric, true, false or nil)", class_name_for_err(v)))
 }
-fn bs_i64(c: &mut Ctx, blk: *const Block, mut low: i64, mut high: i64, excl: bool, conv: &dyn Fn(i64) -> Value) -> RV {
+fn bs_i64(c: &mut Ctx, blk: *const Block, mut low: i64, mut high: i64, excl: bool, conv: &dyn Fn(&mut Ctx, i64) -> Value) -> RV {
     let mut satisfied = NIL;
     if !excl { high += 1; }
     low -= 1;
     while low + 1 < high {
         let mid = if (high < 0) == (low < 0) { low + (high - low) / 2 } else { (low + high) / 2 };
-        match bs_check(c, blk, conv(mid), &mut satisfied)? {
+        let probe = conv(c, mid);
+        match bs_check(c, blk, probe, &mut satisfied)? {
             Probe::Found(v) => return Ok(v),
             Probe::Smaller(true) => high = mid,
             Probe::Smaller(false) => low = mid,
@@ -407,7 +416,7 @@ fn bs_i64(c: &mut Ctx, blk: *const Block, mut low: i64, mut high: i64, excl: boo
 }
 fn bs_int_range(c: &mut Ctx, blk: *const Block, beg: Value, end: Value, excl: bool) -> RV {
     if beg.is_fixnum() && end.is_fixnum() && end.as_fix() < i64::MAX / 4 && beg.as_fix() > i64::MIN / 4 {
-        return bs_i64(c, blk, beg.as_fix(), end.as_fix(), excl, &|i| Value::fix(i));
+        return bs_i64(c, blk, beg.as_fix(), end.as_fix(), excl, &|_c, i| Value::fix(i));
     }
     let one = Value::fix(1);
     let mut satisfied = NIL;
@@ -427,17 +436,17 @@ fn bs_int_range(c: &mut Ctx, blk: *const Block, beg: Value, end: Value, excl: bo
     Ok(satisfied)
 }
 fn dbl_as_i64(d: f64) -> i64 { let i = d.abs().to_bits() as i64; if d < 0.0 { -i } else { i } }
-fn i64_as_dbl(i: i64) -> Value { if i < 0 { crate::numeric::float_new(-f64::from_bits((-i) as u64)) } else { crate::numeric::float_new(f64::from_bits(i as u64)) } }
+fn i64_as_dbl(c: &mut Ctx, i: i64) -> Value { if i < 0 { c.float_new(-f64::from_bits((-i) as u64)) } else { c.float_new(f64::from_bits(i as u64)) } }
 cfn!(r_bsearch, |c, slf, a, blk| {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"bsearch"), a, NIL); }
-    let (b, e, x) = range_parts(slf);
+    let (b, e, x) = c.range_parts(slf);
     if b.is_fixnum() && e.is_fixnum() { return bs_int_range(c, blk, b, e, x); }
     if is_float(b) || is_float(e) {
         let tof = |c: &mut Ctx, v: Value, dflt: f64| -> Result<f64, Esc> {
             if v == NIL { return Ok(dflt); }
-            if let Some(f) = crate::numeric::num_to_f64(v) { return Ok(f); }
+            if let Some(f) = c.num_to_f64(v) { return Ok(f); }
             let r = funcall(c, v, intern(b"to_f"), &[], std::ptr::null())?;
-            Ok(crate::numeric::num_to_f64(r).unwrap_or(0.0))
+            Ok(c.num_to_f64(r).unwrap_or(0.0))
         };
         let lo = tof(c, b, f64::NEG_INFINITY)?; let hi = tof(c, e, f64::INFINITY)?;
         return bs_i64(c, blk, dbl_as_i64(lo), dbl_as_i64(hi), x, &i64_as_dbl);
@@ -473,21 +482,23 @@ cfn!(r_bsearch, |c, slf, a, blk| {
 });
 cfn!(r_overlap, |c, slf, a, blk| {
     if !is_range(a[0]) { return type_err(c, format!("wrong argument type {} (expected Range)", class_name_for_err(a[0]))); }
-    let (b1, e1, x1) = range_parts(slf); let (b2, e2, x2) = range_parts(a[0]);
+    let (b1, e1, x1) = c.range_parts(slf); let (b2, e2, x2) = c.range_parts(a[0]);
     let lt = |c: &mut Ctx, p: Value, q: Value, excl: bool| -> Result<bool, Esc> { if p == NIL || q == NIL { return Ok(true); } let r = funcall(c, p, s::cmp, &[q], std::ptr::null())?; Ok(r.is_fixnum() && (r.as_fix() < 0 || (!excl && r.as_fix() == 0))) };
     let empty = |c: &mut Ctx, b: Value, e: Value, x: bool| -> Result<bool, Esc> { if b == NIL || e == NIL { return Ok(false); } let r = funcall(c, b, s::cmp, &[e], std::ptr::null())?; Ok(!r.is_fixnum() || r.as_fix() > 0 || (x && r.as_fix() == 0)) };
     if empty(c, b1, e1, x1)? || empty(c, b2, e2, x2)? { return Ok(FALSE); }
     Ok(Value::bool(lt(c, b2, e1, x1)? && lt(c, b1, e2, x2)?))
 });
 
-pub fn init() {
-    let k = vm().c_range;
+/// Defines the methods of Range `k`; the entry of Range#each, for `vm.ids`.
+pub fn init(k: Value) -> *const MethodEntry {
     let d = |n: &str, f: CFunc, a: i32| define_cfunc(k, n, f, a);
     define_private_cfunc(k, "initialize", r_initialize, -1);
     d("begin", r_begin, 0); d("first", r_first, -1); d("end", r_end, 0); d("last", r_last, -1); d("exclude_end?", r_excl, 0);
     d("each", r_each, 0);
-    crate::vm::vm().ids.r_each = *rclass(k).mtbl.get(&s::each).unwrap(); d("reverse_each", r_reverse_each, 0); d("to_a", r_to_a, 0); d("entries", r_to_a, 0); d("size", r_size, 0); d("count", r_count, -1);
+    let each = search_method(k, s::each);
+    d("reverse_each", r_reverse_each, 0); d("to_a", r_to_a, 0); d("entries", r_to_a, 0); d("size", r_size, 0); d("count", r_count, -1);
     d("include?", r_include, 1); d("member?", r_include, 1); d("cover?", r_cover, 1); d("===", r_eqq, 1); d("==", r_eq, 1); d("eql?", r_eql, 1);
     d("hash", r_hash, 0); d("to_s", r_to_s, 0); d("inspect", r_inspect, 0); d("min", r_min, -1); d("minmax", r_minmax, 0); d("max", r_max, -1); 
     d("step", r_step, -1); d("%", r_pct, 1); d("dup", r_dup_frozen, 0); d("bsearch", r_bsearch, 0); d("overlap?", r_overlap, 1);
+    each
 }
