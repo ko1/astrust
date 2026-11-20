@@ -17,6 +17,7 @@ pub mod io;
 pub mod marshal;
 pub mod strscan;
 pub mod json;
+pub mod env;
 pub mod thread;
 pub mod sys;
 pub mod file;
@@ -181,6 +182,7 @@ pub fn boot() {
     binding::init();
     thread::init();
     misc::init();
+    env::init();
     encoding::init();
     stringio::init();
     regexp_methods::init();

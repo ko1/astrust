@@ -373,10 +373,26 @@ fn k_at_exit(c: &mut Ctx, _s: Value, _args: &[Value], blk: *const Block) -> RV {
     Ok(p)
 }
 
+/// ARGF (a lazily loaded prelude library).
+pub fn argf(c: &mut Ctx) -> RV { const_lookup(c, vm().top_cref, intern(b"ARGF")) }
+fn argf_plain() -> bool { ary_len(vm().argv) == 0 && const_get_at(vm().c_object, intern(b"ARGF")).is_none() }
 fn k_gets(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     out_flush();
-    let si = *vm().globals.get(&intern(b"$stdin")).unwrap_or(&vm().stdin);
-    funcall(c, si, intern(b"gets"), args, std::ptr::null())
+    // no file arguments: plain stdin without loading ARGF
+    let src = if argf_plain() { *vm().globals.get(&intern(b"$stdin")).unwrap_or(&vm().stdin) } else { argf(c)? };
+    let v = funcall(c, src, intern(b"gets"), args, std::ptr::null())?;
+    vm().globals.insert(intern(b"$_"), v);
+    Ok(v)
+}
+fn k_readline(c: &mut Ctx, s: Value, args: &[Value], b: *const Block) -> RV {
+    let v = k_gets(c, s, args, b)?;
+    if v == NIL { return err(c, vm().c_eof_error, "end of file reached"); }
+    Ok(v)
+}
+fn k_readlines(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+    out_flush();
+    let src = if argf_plain() { *vm().globals.get(&intern(b"$stdin")).unwrap_or(&vm().stdin) } else { argf(c)? };
+    funcall(c, src, intern(b"readlines"), args, std::ptr::null())
 }
 
 /// Print a warning line unless $VERBOSE is nil.
@@ -547,6 +563,8 @@ pub fn gvar_get(c: &mut Ctx, name: Sym) -> RV {
         b"$\"" | b"$LOADED_FEATURES" => return Ok(vm().loaded_features),
         b"$$" => return Ok(Value::fix(std::process::id() as i64)),
         b"$*" => return Ok(vm().argv),
+        b"$<" => return argf(c),
+        b"$FILENAME" => { let a = argf(c)?; return funcall(c, a, intern(b"filename"), &[], std::ptr::null()); }
         b"$VERBOSE" | b"$-v" | b"$-w" => return Ok(vm().verbose),
         b"$DEBUG" | b"$-d" => return Ok(Value::bool(vm().debug_flag)),
         b"$?" => return Ok(crate::builtins::process::last_status()),
@@ -583,7 +601,7 @@ pub fn gvar_defined(c: &Ctx, name: Sym) -> bool {
     match sym_bytes(name) {
         b"$!" => c.errinfo != NIL,
         b"$~" => c.last_match != NIL,
-        b"$0" | b"$PROGRAM_NAME" | b"$:" | b"$LOAD_PATH" | b"$\"" | b"$LOADED_FEATURES" | b"$$" | b"$*" | b"$stdout" | b"$stderr" | b"$stdin" | b"$VERBOSE" | b"$DEBUG" | b"$," | b"$/" | b"$;" => true,
+        b"$0" | b"$PROGRAM_NAME" | b"$:" | b"$LOAD_PATH" | b"$\"" | b"$LOADED_FEATURES" | b"$$" | b"$*" | b"$<" | b"$FILENAME" | b"$stdout" | b"$stderr" | b"$stdin" | b"$VERBOSE" | b"$DEBUG" | b"$," | b"$/" | b"$;" => true,
         _ => vm().globals.contains_key(&name),
     }
 }
@@ -840,6 +858,9 @@ pub fn init() {
     mf("abort", k_abort, -1);
     mf("at_exit", k_at_exit, 0);
     mf("gets", k_gets, -1);
+    mf("readline", k_readline, -1);
+    mf("readlines", k_readlines, -1);
+    rclass(vm.c_object).autoload.insert(intern(b"ARGF"), str_new_frozen(b"koruby/argf"));
     mf("rand", k_rand, -1);
     mf("srand", k_srand, -1);
     mf("Integer", k_integer, -1);

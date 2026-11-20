@@ -1,6 +1,6 @@
 // Process / Process::Status / Signal, fork-exec-wait, Kernel#system/spawn/`/exec/fork/sleep.
 use crate::array::*;
-use crate::builtins::exception::raise_errno;
+use crate::builtins::exception::{raise_errno, raise_errno_plain};
 use crate::builtins::kernel::*;
 use crate::builtins::numeric_methods::num_to_long;
 use crate::builtins::sys;
@@ -82,7 +82,7 @@ fn signal_trap(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
     if a.is_empty() || a.len() > 2 || (a.len() == 1 && blk.is_null()) { if a.len() == 1 { return arg_err(c, "tried to create Proc object without a block"); } return argc_err(c, a.len(), 1, 2); }
     let sig = signo_arg(c, a[0])?;
     if matches!(sig, 4 | 7 | 8 | 11 | 26) { return arg_err(c, format!("can't trap reserved signal: SIG{}", signame(sig).unwrap())); }
-    if matches!(sig, 9 | 19) { return Err(raise_errno(c, 22, &format!("SIG{}", signame(sig).unwrap()))); }
+    if matches!(sig, 9 | 19) { return Err(raise_errno_plain(c, 22, &format!("SIG{}", signame(sig).unwrap()))); }
     let cmd = if a.len() == 2 { a[1] } else { block_to_proc(c, blk)? };
     // normalize: nil / "IGNORE" / "DEFAULT" strings or a callable
     let (store, action): (Value, usize) = if cmd == NIL { (NIL, 1) } else if is_string(cmd) || cmd.is_sym() {
@@ -222,7 +222,7 @@ pub fn spawn_spec(c: &mut Ctx, env: Option<Value>, args: &[Value], opts: Option<
         if needs_shell(&s) { sp.prog = CString::new("/bin/sh").unwrap(); sp.argv = vec![CString::new("sh").unwrap(), CString::new("-c").unwrap(), cmd]; }
         else {
             sp.argv = s.split_ascii_whitespace().map(|w| CString::new(w).unwrap()).collect();
-            if sp.argv.is_empty() { return Err(raise_errno(c, 2, &s)); }
+            if sp.argv.is_empty() { return Err(raise_errno_plain(c, 2, &s)); }
             sp.prog = sp.argv[0].clone();
         }
     } else {
@@ -322,7 +322,7 @@ pub fn spawn_exec(c: &mut Ctx, sp: &Spec) -> Result<i32, Esc> {
         let mut st = 0;
         unsafe { sys::waitpid(pid, &mut st, 0); }
         set_last_status(pid, 127 << 8);
-        return Err(raise_errno(c, i32::from_ne_bytes(eb) as i64, &sp.prog.to_string_lossy()));
+        return Err(raise_errno_plain(c, i32::from_ne_bytes(eb) as i64, &sp.prog.to_string_lossy()));
     }
     Ok(pid)
 }
@@ -386,7 +386,7 @@ fn k_exec(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let sp = spawn_spec(c, env, cmd, opts)?;
     crate::builtins::io::flush_all();
     unsafe { if child_setup(&sp) { do_exec(&sp); } }
-    Err(raise_errno(c, sys::errno(), &sp.prog.to_string_lossy()))
+    Err(raise_errno_plain(c, sys::errno(), &sp.prog.to_string_lossy()))
 }
 /// Block every signal in the calling (non-interpreter) thread.
 pub fn block_signals_in_this_thread() {

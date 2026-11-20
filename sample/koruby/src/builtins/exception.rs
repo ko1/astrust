@@ -93,6 +93,16 @@ pub fn raise_errno(c: &mut Ctx, no: i64, detail: &str) -> Esc {
     raise_exc(c, e)
 }
 
+/// Errno with CRuby's rb_sys_fail text: "<strerror> - <detail>".
+pub fn raise_errno_plain(c: &mut Ctx, no: i64, detail: &str) -> Esc {
+    let k = errno_class(no);
+    let base = ivar_get(k, intern(b"__errmsg"));
+    let base = if base == NIL { "Unknown error".to_string() } else { String::from_utf8_lossy(str_bytes(base)).into_owned() };
+    let e = make_exception(k, &format!("{} - {}", base, detail));
+    ivar_set_raw(e, s::errno, Value::fix(no));
+    raise_exc(c, e)
+}
+
 pub fn io_err_to_errno(e: &std::io::Error) -> i64 { e.raw_os_error().map(|x| x as i64).unwrap_or(5) }
 
 fn exc_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {

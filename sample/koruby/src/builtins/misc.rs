@@ -1,4 +1,4 @@
-// Assorted built-ins: Encoding, pack/unpack, GC, ObjectSpace, ENV, Thread (green, sequential), Mutex, Queue, Signal, constants.
+// Assorted built-ins: Encoding, pack/unpack, GC, ObjectSpace, Warning, RbConfig, constants.
 use crate::array::*;
 use crate::builtins::kernel::*;
 use crate::builtins::numeric_methods::num_to_long;
@@ -235,33 +235,6 @@ fn os_count_objects(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> R
 }
 fn os_garbage_collect(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { crate::gc::collect(); Ok(NIL) }
 
-// ---- ENV --------------------------------------------------------------------------------------
-
-fn env_aref(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
-    let k = to_rstring(c, a[0])?;
-    Ok(std::env::var_os(&k).map(|v| str_new_frozen(v.to_string_lossy().as_bytes())).unwrap_or(NIL))
-}
-fn env_fetch(c: &mut Ctx, s2: Value, a: &[Value], b: *const Block) -> RV {
-    let v = env_aref(c, s2, a, b)?;
-    if v != NIL { return Ok(v); }
-    if !b.is_null() { return yield1(c, b, a[0]); }
-    if a.len() > 1 { return Ok(a[1]); }
-    let e = make_exception(vm().c_key_error, &format!("key not found: {}", inspect_str(c, a[0])?));
-    Err(raise_exc(c, e))
-}
-fn env_aset(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
-    let k = to_rstring(c, a[0])?;
-    if a[1] == NIL { std::env::remove_var(&k); } else { let v = to_rstring(c, a[1])?; std::env::set_var(&k, v); }
-    Ok(a[1])
-}
-fn env_key_p(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let k = to_rstring(c, a[0])?; Ok(Value::bool(std::env::var_os(&k).is_some())) }
-fn env_to_h(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let h = hash_new();
-    for (k, v) in std::env::vars_os() { hash_set(c, h, str_new(k.to_string_lossy().as_bytes()), str_new(v.to_string_lossy().as_bytes()))?; }
-    Ok(h)
-}
-fn env_delete(c: &mut Ctx, s2: Value, a: &[Value], b: *const Block) -> RV { let v = env_aref(c, s2, a, b)?; let k = to_rstring(c, a[0])?; std::env::remove_var(&k); Ok(v) }
-
 fn warning_warn(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let b = to_rstring(c, a[0])?; err_write(b.as_bytes()); Ok(NIL) }
 fn objspace_wm_init(_c: &mut Ctx, s2: Value, _a: &[Value], _b: *const Block) -> RV { let h = hash_new(); rhash(h).identity = true; ivar_set_raw(s2, intern(b"@h"), h); Ok(NIL) }
 fn wm_aref(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(s2, intern(b"@h")); Ok(hash_get_opt(c, h, a[0])?.unwrap_or(NIL)) }
@@ -389,14 +362,6 @@ pub fn init() {
     define_cfunc(wm, "[]=", wm_aset, 2);
     define_cfunc(wm, "key?", wm_key, 1);
     define_cfunc(wm, "include?", wm_key, 1);
-    // ENV
-    let env = new_object(ob);
-    for (n, f, a) in [("[]", env_aref as CFunc, 1), ("fetch", env_fetch, -1), ("[]=", env_aset, 2), ("store", env_aset, 2), ("key?", env_key_p, 1), ("has_key?", env_key_p, 1),
-                      ("include?", env_key_p, 1), ("to_h", env_to_h, 0), ("to_hash", env_to_h, 0), ("delete", env_delete, 1)] {
-        define_singleton_cfunc(env, n, f, a);
-    }
-    define_singleton_cfunc(env, "inspect", |c, s2, a, b| { let h = env_to_h(c, s2, a, b)?; crate::builtins::hash_methods::hash_inspect(c, h) }, 0);
-    const_set(ob, intern(b"ENV"), env);
     let wn = define_module("Warning");
     vm.m_warning = wn;
     define_module_function(wn, "warn", warning_warn, -1);
