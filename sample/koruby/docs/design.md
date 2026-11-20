@@ -60,6 +60,28 @@ index and re-fetch (`ary_get(v, i)` with `ary_len(v)` checked each iteration).
   cref, so its inline cache stays valid.  `super` from a refined method continues at C.
 * Hidden compiler variables: `__fwd_rest/__fwd_kw/__fwd_blk` (anonymous `*`, `**`, `&`, `...`),
   `__it`, `%ff<offset>` (flip-flop state, kept in the enclosing method/program scope).
+## Library layout (boot cost vs. coverage)
+* Eager natives: everything `builtins::boot()` calls.
+* Lazy natives: a constant registered with `prelude::lazy_const(owner, "Name", "koruby/x")`
+  sits in the autoload table; first reference requires the internal feature, whose
+  `prelude::load_feature` arm runs the Rust `init` (ENV, RbConfig, FileTest, File::Stat,
+  Errno::*, Mutex/Queue/Monitor).  `require "strscan"` / `"json"` build their classes the same way.
+* Lazy Ruby: `prelude/lib/*.rb` are embedded and compiled on first `require`
+  (`etc`, `timeout`, `monitor`, `time`; ARGF is autoloaded from `koruby/argf`).
+* Everything else pure-Ruby comes from the reference ruby's stdlib: `build.rs` records
+  `rubylibdir` and the gem dir (override at run time with `KORUBY_STDLIB=libdir:gemdir`);
+  `require` falls back to it after `$LOAD_PATH`.  Libraries whose C half is missing
+  (`prelude::EXT_BACKED`: socket, date, zlib, openssl, ...) stay no-op requires.
+
+## IO, processes, threads
+* `RIo` (builtins/io.rs) is a raw fd plus read/write buffers; fd 1 writes go through the
+  global stdout buffer (`kernel::out_write`).  `flush_all` runs before fork/exec and at exit.
+* Process (builtins/process.rs) forks with libc directly; `Signal.trap` handlers set a pending
+  bit and run at blocking points (`sleep`, `Process.kill` to self, waits, `IO.select`).
+* Threads (builtins/thread.rs) are green: a Thread is a fiber chain entered from the main
+  thread's scheduler (`fiber::thread_switch_in/out`).  A thread runs until it blocks in
+  `thread::block_on` (join, Queue, Mutex, ConditionVariable, sleep, pipe read, `Thread.pass`);
+  there is no preemption.
 
 ## Testing
 Differential tests against CRuby (oracle): `../../../astro/sample/rubyharness`.

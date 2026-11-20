@@ -77,6 +77,14 @@ fn zone_timelocal(c: &mut Ctx, t: Value, zone: Value, l: Value, sub: Value) -> R
     let r = rt(t); r.w = ex_mul(ex_add(u, sub), ns()); r.mode = ZONE; r.off = ex_sub(l, u); r.zone = zone; r.dst = dst;
     Ok(true)
 }
+pub fn time_from_ns(sec: i64, nsec: i64) -> Value { new_time(vm().c_time, int_from_i128(sec as i128 * NS as i128 + nsec as i128), LOCAL, NIL) }
+/// (seconds, nanoseconds) of a Time (subnanosecond part dropped)
+pub fn time_to_ns(v: Value) -> Option<(i64, i64)> {
+    if !is_time(v) { return None; }
+    let w = ex_floor(rt(v).w);
+    let n: i128 = if w.is_fixnum() { w.as_fix() as i128 } else { return None };
+    Some((n.div_euclid(NS as i128) as i64, n.rem_euclid(NS as i128) as i64))
+}
 pub fn time_at(c: &mut Ctx, f: f64) -> RV { let w = ex_mul(num_exact(c, float_new(f))?, ns()); Ok(new_time(vm().c_time, w, LOCAL, NIL)) }
 
 // ---- calendar -------------------------------------------------------------------------------

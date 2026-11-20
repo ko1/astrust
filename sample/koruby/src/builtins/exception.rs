@@ -59,14 +59,43 @@ pub fn init_classes() {
     vm.c_undef_conv_error = define_class_under(enc, "UndefinedConversionError", vm.c_encoding_error);
     vm.c_converter_not_found_error = define_class_under(enc, "ConverterNotFoundError", vm.c_encoding_error);
     vm.m_errno = define_module("Errno");
-    for (name, no, msg) in ERRNOS {
-        let k = define_class_under(vm.m_errno, name, vm.c_system_call_error);
-        const_set(k, intern(b"Errno"), Value::fix(*no));
-        ivar_set_raw(k, intern(b"__errmsg"), str_new_frozen(msg.as_bytes()));
+    // Errno::* classes are built on first use (autoload of an internal feature) to keep boot short
+    let path = str_new_frozen(b"koruby/errno");
+    for name in ERRNOS.iter().map(|e| e.0).chain(ERRNO_ALIASES.iter().map(|a| a.0)) { rclass(vm.m_errno).autoload.insert(intern(name.as_bytes()), path); }
+}
+const ERRNO_ALIASES: &[(&str, &str)] = &[("EOPNOTSUPP", "ENOTSUP"), ("EDEADLOCK", "EDEADLK")];
+fn define_errno(name: &str, no: i64, msg: &str) -> Value {
+    let vm = vm();
+    if let Some(k) = const_get_at(vm.m_errno, intern(name.as_bytes())) { return k; }
+    let k = define_class_under(vm.m_errno, name, vm.c_system_call_error);
+    const_set(k, intern(b"Errno"), Value::fix(no));
+    ivar_set_raw(k, intern(b"__errmsg"), str_new_frozen(msg.as_bytes()));
+    k
+}
+/// Every Errno class (the "koruby/errno" feature).
+pub fn define_all_errnos() {
+    for (name, no, msg) in ERRNOS { define_errno(name, *no, msg); }
+    for (alias, name) in ERRNO_ALIASES {
+        let k = const_get_at(vm().m_errno, intern(name.as_bytes())).unwrap();
+        if const_get_at(vm().m_errno, intern(alias.as_bytes())).is_none() { const_set(vm().m_errno, intern(alias.as_bytes()), k); }
     }
 }
 
 pub const ERRNOS: &[(&str, i64, &str)] = &[
+    ("NOERROR", 0, "Success"), ("ENXIO", 6, "No such device or address"), ("E2BIG", 7, "Argument list too long"), ("ENOEXEC", 8, "Exec format error"),
+    ("EFAULT", 14, "Bad address"), ("ENOTBLK", 15, "Block device required"), ("EBUSY", 16, "Device or resource busy"), ("ENODEV", 19, "No such device"),
+    ("ENFILE", 23, "Too many open files in system"), ("ENOTTY", 25, "Inappropriate ioctl for device"), ("ETXTBSY", 26, "Text file busy"),
+    ("EFBIG", 27, "File too large"), ("EROFS", 30, "Read-only file system"), ("EMLINK", 31, "Too many links"), ("EDEADLK", 35, "Resource deadlock avoided"),
+    ("ENOLCK", 37, "No locks available"), ("ENOSYS", 38, "Function not implemented"), ("EPROTO", 71, "Protocol error"),
+    ("EOVERFLOW", 75, "Value too large for defined data type"), ("EILSEQ", 84, "Invalid or incomplete multibyte or wide character"),
+    ("ENOTSOCK", 88, "Socket operation on non-socket"), ("EDESTADDRREQ", 89, "Destination address required"), ("EMSGSIZE", 90, "Message too long"),
+    ("EPROTONOSUPPORT", 93, "Protocol not supported"), ("EAFNOSUPPORT", 97, "Address family not supported by protocol"),
+    ("EADDRINUSE", 98, "Address already in use"), ("EADDRNOTAVAIL", 99, "Cannot assign requested address"), ("ENETUNREACH", 101, "Network is unreachable"),
+    ("ECONNABORTED", 103, "Software caused connection abort"), ("ECONNRESET", 104, "Connection reset by peer"), ("ENOBUFS", 105, "No buffer space available"),
+    ("EISCONN", 106, "Transport endpoint is already connected"), ("ENOTCONN", 107, "Transport endpoint is not connected"),
+    ("ETIMEDOUT", 110, "Connection timed out"), ("EHOSTUNREACH", 113, "No route to host"), ("EALREADY", 114, "Operation already in progress"),
+    ("EINPROGRESS", 115, "Operation now in progress"), ("ESTALE", 116, "Stale file handle"), ("EDQUOT", 122, "Disk quota exceeded"),
+    ("ECANCELED", 125, "Operation canceled"),
     ("EPERM", 1, "Operation not permitted"), ("ENOENT", 2, "No such file or directory"), ("ESRCH", 3, "No such process"),
     ("EINTR", 4, "Interrupted system call"), ("EIO", 5, "Input/output error"), ("EBADF", 9, "Bad file descriptor"),
     ("ECHILD", 10, "No child processes"), ("EAGAIN", 11, "Resource temporarily unavailable"), ("ENOMEM", 12, "Cannot allocate memory"),
@@ -79,7 +108,8 @@ pub const ERRNOS: &[(&str, i64, &str)] = &[
 ];
 
 pub fn errno_class(no: i64) -> Value {
-    for (name, n, _) in ERRNOS { if *n == no { return const_get_at(vm().m_errno, intern(name.as_bytes())).unwrap(); } }
+    // ENOTSUP and friends share numbers: the first table entry names the class
+    for (name, n, msg) in ERRNOS { if *n == no { return define_errno(name, *n, msg); } }
     vm().c_system_call_error
 }
 
@@ -89,6 +119,16 @@ pub fn raise_errno(c: &mut Ctx, no: i64, detail: &str) -> Esc {
     let base = if base == NIL { "Unknown error".to_string() } else { String::from_utf8_lossy(str_bytes(base)).into_owned() };
     let msg = if detail.is_empty() { base } else { format!("{} @ {}", base, detail) };
     let e = make_exception(k, &msg);
+    ivar_set_raw(e, s::errno, Value::fix(no));
+    raise_exc(c, e)
+}
+
+/// Errno with CRuby's rb_sys_fail text: "<strerror> - <detail>".
+pub fn raise_errno_plain(c: &mut Ctx, no: i64, detail: &str) -> Esc {
+    let k = errno_class(no);
+    let base = ivar_get(k, intern(b"__errmsg"));
+    let base = if base == NIL { "Unknown error".to_string() } else { String::from_utf8_lossy(str_bytes(base)).into_owned() };
+    let e = make_exception(k, &format!("{} - {}", base, detail));
     ivar_set_raw(e, s::errno, Value::fix(no));
     raise_exc(c, e)
 }

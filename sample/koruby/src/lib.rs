@@ -196,7 +196,7 @@ fn run_main(o: Opts) -> i32 {
 
     let (src, file): (Vec<u8>, String) = if !o.e.is_empty() {
         (o.e.join("\n").into_bytes(), "-e".into())
-    } else if let Some(s) = &o.script {
+    } else if let Some(s) = o.script.as_ref().filter(|s| s.as_str() != "-") {
         match std::fs::read(s) {
             Ok(b) => (b, s.clone()),
             Err(_) => { eprintln!("koruby: No such file or directory -- {} (LoadError)", s); return 1; }
@@ -243,15 +243,7 @@ fn run_main(o: Opts) -> i32 {
     }
     let r = run_top_iseq(&mut c, is, vm.main_obj);
     if r.is_err() { status = handle_toplevel_error(&mut c); }
-    // at_exit handlers (LIFO)
-    loop {
-        let ae = vm.at_exit;
-        let Some(p) = array::rary(ae).pop() else { break };
-        c.esc = EscKind::None;
-        if call_proc(&mut c, p, &[], std::ptr::null()).is_err() { status = handle_toplevel_error(&mut c); }
-    }
-    builtins::kernel::out_flush();
-    builtins::io::flush_all();
+    status = run_exit_handlers(&mut c, status);
     if o.aot {
         match aot::bake(&o.store) {
             Ok(n) => if o.verbose_astro || !o.quiet { eprintln!("koruby: baked {} new items into {}/all.so", n, o.store); },
@@ -265,6 +257,27 @@ fn run_main(o: Opts) -> i32 {
     status
 }
 
+/// at_exit procs (LIFO), the EXIT trap, then flush every stream.
+pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
+    let vm = vm();
+    loop {
+        let ae = vm.at_exit;
+        let Some(p) = array::rary(ae).pop() else { break };
+        c.esc = EscKind::None;
+        if call_proc(c, p, &[], std::ptr::null()).is_err() { status = handle_toplevel_error(c); }
+    }
+    if builtins::process::run_exit_trap(c).is_err() { status = handle_toplevel_error(c); }
+    builtins::kernel::out_flush();
+    builtins::io::flush_all();
+    builtins::process::die_if_signaled();
+    status
+}
+/// End of a forked child's block: report an error, run the exit handlers.
+pub fn finish(c: &mut Ctx, errored: bool) -> i32 {
+    let st = if errored { handle_toplevel_error(c) } else { 0 };
+    run_exit_handlers(c, st)
+}
+
 fn handle_toplevel_error(c: &mut Ctx) -> i32 {
     match c.esc {
         EscKind::Raise => {
@@ -273,6 +286,13 @@ fn handle_toplevel_error(c: &mut Ctx) -> i32 {
             if is_kind_of(e, vm().c_system_exit) {
                 let st = ivar_get(e, symbol::s::status);
                 return if st.is_fixnum() { st.as_fix() as i32 } else { 0 };
+            }
+            if is_kind_of(e, vm().c_signal_exception) {
+                let no = ivar_get(e, symbol::intern(b"signo"));
+                if no.is_fixnum() {
+                    builtins::process::die_by_signal_at_exit(no.as_fix() as i32);
+                    if !is_kind_of(e, vm().c_interrupt) { return 128 + no.as_fix() as i32; }
+                }
             }
             report_exception(c, e);
             1
@@ -304,5 +324,6 @@ pub fn main_entry() {
         builtins::kernel::out_flush();
         std::process::exit(st);
     }).unwrap();
+    builtins::process::block_signals_in_this_thread();
     let _ = child.join();
 }

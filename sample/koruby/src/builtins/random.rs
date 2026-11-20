@@ -232,7 +232,7 @@ fn rand_int(c: &mut Ctx, obj: Value, rnd: Option<Value>, vmax: Value, restrictiv
 }
 
 fn domain_error<T>(c: &mut Ctx) -> Result<T, Esc> {
-    let k = const_get_at(vm().c_object, intern(b"Errno")).and_then(|e| const_get_at(e, intern(b"EDOM")));
+    let k = Some(crate::builtins::exception::errno_class(33));
     match k {
         Some(k) => { let e = funcall(c, k, s::new, &[], std::ptr::null())?; Err(raise_exc(c, e)) }
         None => err(c, vm().c_argument_error, "Numerical argument out of domain"),

@@ -138,6 +138,46 @@ fn new_fiber(klass: Value, proc_: Value) -> Value {
     v
 }
 
+// ---- green threads (builtins/thread.rs): a thread is a fiber chain entered from the scheduler ----
+
+static mut SCHED: Value = NIL;     // fiber the scheduler runs in (NIL = main stack)
+static mut LAST_OUT: Value = NIL;  // innermost fiber of the thread that just suspended
+
+pub fn new_thread_fiber(proc_: Value, args: Value) -> Value { let f = new_fiber(vm().c_fiber, proc_); fd(f).xfer = args; f }
+pub fn is_done(f: Value) -> bool { fd(f).state == FState::Done }
+pub fn take_result(f: Value) -> (bool, Value) { let d = fd(f); let r = (d.err, d.xfer); d.err = false; d.xfer = NIL; r }
+pub fn last_switched_out() -> Value { unsafe { LAST_OUT } }
+pub fn discard(f: Value) { unsafe { LIVE.retain(|&x| x != f); } fd(f).state = FState::Done; }
+/// Run a thread (root fiber `root`, resuming at `inner`) until it suspends or ends.
+pub fn thread_switch_in(root: Value, inner: Value) {
+    unsafe {
+        let prev = CUR;
+        fd(root).resumer = prev;
+        let d = fd(inner);
+        d.state = FState::Running;
+        let save: *mut usize = if prev == NIL { &raw mut MAIN_SP } else { fd(prev).state = FState::Suspended; &mut fd(prev).sp };
+        let old = SCHED;
+        SCHED = prev;
+        CUR = inner;
+        switch_stack(save, d.sp);
+        SCHED = old;
+        CUR = prev;
+        if prev != NIL { fd(prev).state = FState::Running; }
+    }
+}
+/// Suspend the running thread (whatever fiber it is in) back to the scheduler.
+pub fn thread_switch_out() {
+    unsafe {
+        let cur = CUR;
+        let d = fd(cur);
+        d.state = FState::Suspended;
+        LAST_OUT = cur;
+        let back = SCHED;
+        let to = if back == NIL { MAIN_SP } else { fd(back).sp };
+        switch_stack(&mut d.sp, to);
+    }
+}
+
 pub fn on_free(p: *mut RObj) {
     unsafe {
         if let Body::Data(d) = &(*p).body {

@@ -350,7 +350,7 @@ fn k_caller(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     Ok(ary_of_strs(lines.into_iter().map(|l| l.into_bytes()).collect(), ENC_UTF8))
 }
 
-fn k_exit(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+pub fn k_exit(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let st = match args.first() { None => 0, Some(&v) if v == TRUE => 0, Some(&v) if v == FALSE => 1, Some(&v) => crate::builtins::numeric_methods::num_to_long(c, v)? };
     let e = make_exception(vm().c_system_exit, "exit");
     ivar_set_raw(e, s::status, Value::fix(st));
@@ -363,7 +363,7 @@ fn k_exit_bang(_c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV 
     std::process::exit(st as i32);
 }
 
-fn k_abort(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+pub fn k_abort(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let msg = if let Some(&m) = args.first() { let mut b = rstr(m).b.clone(); b.push(b'\n'); err_write(&b); m } else { str_new(b"exit") };
     let e = new_object(vm().c_system_exit);
     ivar_set_raw(e, s::mesg, msg);
@@ -379,54 +379,30 @@ fn k_at_exit(c: &mut Ctx, _s: Value, _args: &[Value], blk: *const Block) -> RV {
     Ok(p)
 }
 
-fn k_sleep(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
-    let t0 = std::time::Instant::now();
-    if let Some(&v) = args.first() {
-        let secs = crate::numeric::num_to_f64(v).unwrap_or(0.0);
-        if secs < 0.0 { return arg_err(c, "time interval must not be negative"); }
-        out_flush();
-        std::thread::sleep(std::time::Duration::from_secs_f64(secs));
-    } else { out_flush(); loop { std::thread::sleep(std::time::Duration::from_secs(3600)); } }
-    Ok(Value::fix(t0.elapsed().as_secs_f64().round() as i64))
-}
-
-fn k_gets(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV {
+/// ARGF (a lazily loaded prelude library).
+pub fn argf(c: &mut Ctx) -> RV { const_lookup(c, vm().top_cref, intern(b"ARGF")) }
+fn argf_plain() -> bool { ary_len(vm().argv) == 0 && const_get_at(vm().c_object, intern(b"ARGF")).is_none() }
+fn k_gets(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     out_flush();
-    let mut line = String::new();
-    let n = std::io::stdin().read_line(&mut line).unwrap_or(0);
-    let v = if n == 0 { NIL } else { str_new(line.as_bytes()) };
-    let _ = c;
+    // no file arguments: plain stdin without loading ARGF
+    let src = if argf_plain() { *vm().globals.get(&intern(b"$stdin")).unwrap_or(&vm().stdin) } else { argf(c)? };
+    let v = funcall(c, src, intern(b"gets"), args, std::ptr::null())?;
     vm().globals.insert(intern(b"$_"), v);
     Ok(v)
 }
-
-fn k_system(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_readline(c: &mut Ctx, s: Value, args: &[Value], b: *const Block) -> RV {
+    let v = k_gets(c, s, args, b)?;
+    if v == NIL { return err(c, vm().c_eof_error, "end of file reached"); }
+    Ok(v)
+}
+fn k_readlines(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     out_flush();
-    let args: Vec<Value> = args.iter().copied().filter(|a| !is_hash(*a)).collect();
-    if args.is_empty() { return argc_err(c, 0, 1, -1); }
-    let st = if args.len() == 1 {
-        let cmd = to_rstring(c, args[0])?;
-        std::process::Command::new("/bin/sh").arg("-c").arg(cmd).status()
-    } else {
-        let prog = to_rstring(c, args[0])?;
-        let mut rest = vec![];
-        for a in &args[1..] { rest.push(to_rstring(c, *a)?); }
-        std::process::Command::new(prog).args(rest).status()
-    };
-    match st {
-        Ok(s) => { crate::builtins::process::set_last_status(s.code().unwrap_or(-1)); Ok(Value::bool(s.success())) }
-        Err(_) => { crate::builtins::process::set_last_status(127); Ok(NIL) }
-    }
+    let src = if argf_plain() { *vm().globals.get(&intern(b"$stdin")).unwrap_or(&vm().stdin) } else { argf(c)? };
+    funcall(c, src, intern(b"readlines"), args, std::ptr::null())
 }
 
-fn k_backtick(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
-    out_flush();
-    let cmd = to_rstring(c, args[0])?;
-    match std::process::Command::new("/bin/sh").arg("-c").arg(cmd).output() {
-        Ok(o) => { crate::builtins::process::set_last_status(o.status.code().unwrap_or(-1)); Ok(str_new(&o.stdout)) }
-        Err(_) => err(c, vm().c_runtime_error, "command failed"),
-    }
-}
+/// Print a warning line unless $VERBOSE is nil.
+pub fn warn_str(_c: &mut Ctx, msg: &str) { if vm().verbose != NIL { err_write(msg.as_bytes()); } }
 
 fn k_rand(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     crate::builtins::random::rand_value(c, args.first().copied().unwrap_or(NIL))
@@ -593,6 +569,8 @@ pub fn gvar_get(c: &mut Ctx, name: Sym) -> RV {
         b"$\"" | b"$LOADED_FEATURES" => return Ok(vm().loaded_features),
         b"$$" => return Ok(Value::fix(std::process::id() as i64)),
         b"$*" => return Ok(vm().argv),
+        b"$<" => return argf(c),
+        b"$FILENAME" => { let a = argf(c)?; return funcall(c, a, intern(b"filename"), &[], std::ptr::null()); }
         b"$VERBOSE" | b"$-v" | b"$-w" => return Ok(vm().verbose),
         b"$DEBUG" | b"$-d" => return Ok(Value::bool(vm().debug_flag)),
         b"$?" => return Ok(crate::builtins::process::last_status()),
@@ -629,7 +607,7 @@ pub fn gvar_defined(c: &Ctx, name: Sym) -> bool {
     match sym_bytes(name) {
         b"$!" => c.errinfo != NIL,
         b"$~" => c.last_match != NIL,
-        b"$0" | b"$PROGRAM_NAME" | b"$:" | b"$LOAD_PATH" | b"$\"" | b"$LOADED_FEATURES" | b"$$" | b"$*" | b"$stdout" | b"$stderr" | b"$stdin" | b"$VERBOSE" | b"$DEBUG" | b"$," | b"$/" | b"$;" => true,
+        b"$0" | b"$PROGRAM_NAME" | b"$:" | b"$LOAD_PATH" | b"$\"" | b"$LOADED_FEATURES" | b"$$" | b"$*" | b"$<" | b"$FILENAME" | b"$stdout" | b"$stderr" | b"$stdin" | b"$VERBOSE" | b"$DEBUG" | b"$," | b"$/" | b"$;" => true,
         _ => vm().globals.contains_key(&name),
     }
 }
@@ -644,6 +622,8 @@ pub const BUILTIN_FEATURES: &[&str] = &["set", "enumerator", "rational", "comple
     "erb", "cgi", "yaml", "psych", "abbrev", "matrix", "prime", "tsort", "weakref", "find", "pathname", "io/nonblock", "fcntl",
     "nkf", "racc", "racc/parser", "readline", "reline", "win32ole", "openssl", "mkmf", "rubygems", "bundler", "bundler/setup",
     "objspace", "did_you_mean", "error_highlight", "syntax_suggest", "-test-/memory_status", "random/formatter",
+    "date_core", "socket.so", "io/console/size", "digest/sha2", "digest/sha1", "digest/md5", "digest/rmd160", "digest/bubblebabble", "net/protocol", "net/https",
+    "open-uri", "resolv", "ipaddr", "pty", "fiddle", "syslog", "expect", "io/console", "yaml/store", "bigdecimal/util", "date/format", "psych/y",
 ];
 
 fn resolve_feature(name: &str, relative_to: Option<&str>) -> Option<std::path::PathBuf> {
@@ -676,19 +656,32 @@ pub fn require_feature(c: &mut Ctx, path: Value, relative: bool) -> RV {
     let caller_file = if relative { Some(frame_file(unsafe { &*(*c.frame).prev }).to_string()) } else { None };
     let caller_file = caller_file.map(|f| if f == "-" || f == "-e" { "./x".to_string() } else { f });
     let resolved = resolve_feature(&name, caller_file.as_deref());
-    let Some(file) = resolved else {
-        let base = name.trim_end_matches(".rb").trim_end_matches(".so");
-        if BUILTIN_FEATURES.contains(&base) || crate::builtins::prelude::has_feature(base) {
-            let key = str_new(base.as_bytes());
+    let file = match resolved {
+        Some(f) => f,
+        None => {
+            let is_rb = name.ends_with(".rb");
+            let is_so = name.ends_with(".so");
+            let base = name.trim_end_matches(".rb").trim_end_matches(".so");
             let lf = vm().loaded_features;
-            for i in 0..ary_len(lf) { if str_bytes(ary_get(lf, i)) == base.as_bytes() { return Ok(FALSE); } }
-            ary_push(lf, key);
-            crate::builtins::prelude::load_feature(c, base)?;
-            return Ok(TRUE);
+            let native = !is_rb && crate::builtins::prelude::has_feature(base);
+            // the reference ruby's pure-Ruby stdlib, unless koruby implements the feature itself
+            let std_file = if native || is_so || relative || name.starts_with('/') || name.starts_with('.') { None } else { crate::builtins::prelude::stdlib_file(&name) };
+            match std_file {
+                Some(f) => f,
+                None => {
+                    if native || BUILTIN_FEATURES.contains(&base) {
+                        for i in 0..ary_len(lf) { if str_bytes(ary_get(lf, i)) == base.as_bytes() { return Ok(FALSE); } }
+                        let key = str_new(base.as_bytes());
+                        ary_push(lf, key);
+                        crate::builtins::prelude::load_feature(c, base)?;
+                        return Ok(TRUE);
+                    }
+                    let e = make_exception(vm().c_load_error, &format!("cannot load such file -- {}", name));
+                    ivar_set_raw(e, intern(b"path"), str_new(name.as_bytes()));
+                    return Err(raise_exc(c, e));
+                }
+            }
         }
-        let e = make_exception(vm().c_load_error, &format!("cannot load such file -- {}", name));
-        ivar_set_raw(e, intern(b"path"), str_new(name.as_bytes()));
-        return Err(raise_exc(c, e));
     };
     let abs = std::fs::canonicalize(&file).unwrap_or(file.clone());
     let key = abs.to_string_lossy().into_owned();
@@ -811,7 +804,7 @@ fn m_autoload_p(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV
     let list: Vec<Value> = if inherit { ancestors(k).clone() } else { vec![k] };
     for kk in list {
         if const_get_at(kk, nm).is_some() { return Ok(NIL); }
-        if let Some(&p) = rclass(kk).autoload.get(&nm) { return Ok(p); }
+        if let Some(&p) = rclass(kk).autoload.get(&nm) { return Ok(if str_bytes(p).starts_with(b"koruby/") { NIL } else { p }); }
     }
     Ok(NIL)
 }
@@ -873,10 +866,10 @@ pub fn init() {
     mf("exit!", k_exit_bang, -1);
     mf("abort", k_abort, -1);
     mf("at_exit", k_at_exit, 0);
-    mf("sleep", k_sleep, -1);
     mf("gets", k_gets, -1);
-    mf("system", k_system, -1);
-    mf("`", k_backtick, 1);
+    mf("readline", k_readline, -1);
+    mf("readlines", k_readlines, -1);
+    rclass(vm.c_object).autoload.insert(intern(b"ARGF"), str_new_frozen(b"koruby/argf"));
     mf("rand", k_rand, -1);
     mf("srand", k_srand, -1);
     mf("Integer", k_integer, -1);
