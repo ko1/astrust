@@ -814,7 +814,19 @@ fn HASH_node_method_entry(n: NodePtr) -> u64 {
     let mut h = hash_str("node_method_entry");
     h = hash_merge(h, hash_u64(u.nlocals as u64));
     h = hash_merge(h, hash_u64(u.nparams as u64));
-    h = hash_merge(h, hash_u64(u.has_env as u64));
+    h = hash_merge(h, hash_u64(u.flags as u64));
+    h = hash_merge(h, hash_u64(u.line as u64));
+    h = hash_merge(h, hash_node(u.body));
+    h
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_block_entry(n: NodePtr) -> u64 {
+    let u = unsafe { &(*(n as *mut NodeOf<node_block_entry_struct>)).u };
+    let mut h = hash_str("node_block_entry");
+    h = hash_merge(h, hash_u64(u.nlocals as u64));
+    h = hash_merge(h, hash_u64(u.nparams as u64));
+    h = hash_merge(h, hash_u64(u.flags as u64));
     h = hash_merge(h, hash_u64(u.line as u64));
     h = hash_merge(h, hash_node(u.body));
     h

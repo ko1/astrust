@@ -147,12 +147,14 @@ base[0].set(EVAL_ARG!(c, recv)?);
 for i in 0..k { let v = EVAL_NTH!(c, args, i)?; base[2 + i].set(v); }
 ...
 let callee_fp = frame(c, base)?;             // no code: stage() proved it
-at_entry(c, base);                           // sp = base
 let r = EVAL_SPEC!(c, callee, cc.fast as NodePtr, callee_fp);
 c.set_sp(base, 0);
 ```
 
-and method entry does `enter(c, fp, nlocals)` (sp above its locals) and nil-fills. The zero-copy
+and method entry does `enter(c, fp, nlocals, nparams)` (sp goes from above the staged arguments
+to above its locals) and nil-fills.  A caller that did not just stage sets sp first with
+`at_entry(c, base, argc)` (2026-11-21; before, every call reset sp to the base and the entry
+lowered it by `nlocals`: one more store per call). The zero-copy
 overlap needs nothing special: `base` and the callee's `fp` are two shared views of the same Cells.
 
 **cfuncs** take `&[Value]`. A `&[Cell<Value>]` cannot be turned into one in safe code, and
@@ -173,9 +175,10 @@ SystemStackError or a panic, never an access outside the stack.
 
 What a wrong sp can still break is **liveness**, exactly as before: `live()` is the GC's view,
 and a live value above sp would not be scanned. That is the rooting discipline of the heap
-(roadmap item 1), not of the stack. The call protocol keeps it absolute rather than relative:
-`at_entry` sets sp from the callee's base and the caller sets it back from `base` after the call,
-so an unbalanced path cannot accumulate.
+(roadmap item 1), not of the stack. The call protocol keeps it absolute where it matters: the
+caller sets sp back from `base` after every call, so an unbalanced path cannot accumulate. (A
+baked call enters with the sp its own `stage` left; an imbalance in its argument evaluation
+could only leave sp lower, which keeps more slots live, never fewer.)
 
 A recycled stack is not cleared. Slots above sp are dead by definition and no evaluator reads a
 slot it has not written; `with_args` may copy such a slot but never exposes it.

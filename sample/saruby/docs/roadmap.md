@@ -79,12 +79,21 @@ Adopted in koruby_precise and not here yet (ledger slug; mechanism; their number
    → closures, iterators, gcchurn.
 3. **Block entry + inline yield** (`saruby-blk-entry-yield-inline`, `-invoke-blk-simple`,
    `-yield-frame-link`, `-uses-block-entry`): 383 → 195 insns; block -6.49%, iterators -6.52%.
+   Block entry done (2026-11-21, `node_block_entry`): block -7.1 %, iterators -6.9 %, mapreduce
+   -5.2 % instructions. Not done: compiling the block body into a `yield` of a callee that is
+   itself compiled into the site (needs the generator to pass the block's type into the callee).
 4. **Keyword entries** (`saruby-kw-dense-entry`, `-kw-dense-call`, `-kw-defaults-entry`): 254 → 105
    insns; defaults 370 → 63. → kwargs.
 5. **Call path leftovers** (`saruby-fib-call-path`, `-call-return-cold-tail`, `-entry-inline-return`):
    nothing live across the call, line recovered from the frame in a cold tail, stack check only when a
    high-water mark moves. fib 17.08 → 12.04 cycles/call. Also: cache validity without a serial
    compare (caches registered per method name, flushed on redefinition).
+   Done here (2026-11-21, `docs/design.md` "Calls, frames and blocks"): frames without an id, no
+   frame for leaf bodies, one sp store less per call, the native check out of compiled-in
+   entries, the serial as a static. A self call of `def f; @a; end` 96 → 72 instructions,
+   `def f(x); x + 1; end` 73 → 65; optcarrot 131.5M → 128.6M instructions per frame. Left: the
+   line store per call (2 instructions; every design found still needs a store), the stage
+   check of the checked stack (8), the cache test (11), the frame record (11).
 6. **Embedding for Array (<= 6) / Hash (<= 4 pairs)** (`saruby-object-embedding`), branch-free reads.
 7. **case/when class memo** (`saruby-kind-of-site-memo`): hit is `(memo ^ class) <= 1`. casecls 257 → 197.
 8. **Builtin sends inlined at the site** (`saruby-aot-inline-builtin-sends`, about 61 names):

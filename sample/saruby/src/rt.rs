@@ -367,6 +367,17 @@ pub fn srb_call0(c: &mut Ctx, v: Value, mid: Sym, cc: &mut CallCache) -> RV {
     call_cached(c, cc, mid, base, 0, std::ptr::null(), 0)
 }
 
+/// `redo` in a block entered through its entry node: run the body again until it ends otherwise.
+#[cold]
+#[inline(never)]
+pub fn srb_block_redo(c: &mut Ctx, body: NodePtr, fp: Fp) -> RV {
+    loop {
+        c.esc = EscKind::None;
+        let r = unsafe { ((*body).head.dispatcher)(c, body, fp) };
+        if !(r.is_err() && c.esc == EscKind::Redo) { return r; }
+    }
+}
+
 pub fn srb_break(c: &mut Ctx, v: Value) -> RV {
     let f = c.frame();
     if f.self_blk().is_null() {
@@ -577,6 +588,7 @@ fn const_defined_lex(c: &mut Ctx, cref: *const Cref, name: Sym) -> bool {
 
 #[inline(always)]
 pub fn make_block(c: &mut Ctx, is: &'static Iseq, fp: Fp) -> Block {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit("make_block");
     let f = unsafe { &*c.frame };
     let tag = c.next_serial();
     Block {
@@ -729,9 +741,11 @@ pub fn srb_no_block(c: &mut Ctx) -> RV { err(c, vm().c_local_jump_error, "no blo
 
 #[inline(always)]
 pub fn srb_yield_staged(c: &mut Ctx, blk: *const Block, base: Stk, k: u32) -> RV {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit("yield: node_yield");
     let b = unsafe { &*blk };
     if let Some(is) = block_fast(b, k as usize) {
         stack_check(c, is.nlocals as usize + 16)?;
+        c.set_sp(base, 0);
         let r = run_block_fast(c, b, is, base, k);
         c.set_sp(base, 0);
         return r;

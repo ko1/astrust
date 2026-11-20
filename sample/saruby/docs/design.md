@@ -73,6 +73,37 @@ uses that API; see docs/safe_heap.md (design, recipe, what is left).
   `Err(raise_exc(c, exc_obj))`.
 * Ruby-level built-ins live in `prelude/core.rb` (loaded at boot).
 
+## Calls, frames and blocks (the fast paths)
+Measurements and what was tried: `~/ruby/src/trials/2026-11-21-saruby-call-path/`.
+
+* A call site (`node_call`, `node_call_blk`, `node_attrasgn`) stages `[recv, -, args...]`, stores its
+  line in the caller's frame and tests its cache: receiver class and `method_serial()` (a static
+  counter, bumped by `bump_method_serial()` whenever a method table, a visibility or the hierarchy
+  changes).  Baked code keeps one path inline, chosen by the cache at bake time (`site_kind`): the
+  callee compiled into the site (`callee@spec`, checked by hash), or the site's entry / attr /
+  builtin path (`site_fast`); everything else is `call_cached_out`.
+* A method with only required parameters has a `node_method_entry` (`Iseq.entry`): it expects sp
+  just above the staged arguments (where `stage` left it), makes the 6-word `Frame` on the native
+  stack, nil-fills, links `c.frame`, runs the body and consumes its `return`.  Its flags (`ME_*`,
+  set in `compile.rs`):
+  * `ME_ID`: the frame gets a fresh id.  Only bodies with a block literal or an eval-like call
+    (`eval`, `binding`, `send`, `method`, ...) need one, as the target of a `return` inside a
+    block.  Other frames have id 0; their own `return` carries tag 0 and is consumed by the
+    innermost entry, which is theirs.
+  * `ME_LEAF`: the body only reads (nil / true / false / self / literal / local / ivar, and `if`,
+    `&&`, `||` of those).  It cannot call, raise or look at a frame, so the entry is just the body:
+    no `Frame`, no checks, no sp change.  Keep such node bodies free of `c.frame`.
+  * `ME_ENV`: locals captured by blocks live in a heap env.
+* The native stack check of a call is made where an entry is called through its dispatcher
+  (`run_entry`, `site_fast`), not in the entry: an entry compiled into its call site adds no native
+  frame, and every recursion passes a dispatcher call.
+* A block with only required parameters has a `node_block_entry` (`Iseq.bentry`), the block's baked
+  function.  `run_block_fast` (yield from a builtin: `yield1`, `yield_block`; from Ruby:
+  `node_yield`) puts the `Block` in `c.call_blk`, the arguments at `base[2..]` and dispatches it.
+  Other ways to run a block (lambda call, `define_method`, one Array spread over several
+  parameters) set up the frame in `run_block_iseq` and dispatch `Iseq.body`; that body is baked
+  separately only for blocks that ran this way before the bake (`Iseq.body_used`).
+
 ## Lexical scope (Cref) and refinements
 * A frame's `cref` is its lexical class scope (constants, `def` target, class variables).  A
   cref whose `prev` is null is the top level.

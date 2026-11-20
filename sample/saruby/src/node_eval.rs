@@ -128,6 +128,10 @@ use crate::symbol::s;
 // ---- definitions -------------------------------------------------------------------
 
 // Entry of a required-params-only method: frame setup with its sizes baked in (me / block come in c.call_*).
+// flags: ME_* (vm.rs), decided by the compiler.
+
+// Entry of a block with only required params run as a plain block (run_block_fast): frame setup with
+// its sizes baked in.  The Block comes in c.call_blk, the arguments are at fp[2..], sp is at the base.
 
 
 
@@ -776,18 +780,20 @@ pub fn EVAL_node_defined<D_recv: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, kind: u3
 pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, cc: &mut CallCache, callee_hash: u64, kind: u32) -> RV {
     let k = <D_args as DispList>::len(args);
     let base = stage(c, 2 + k)?;
-    base[0].set(<D_recv as Disp>::call(c, recv, fp)?);
+    let r0 = <D_recv as Disp>::call(c, recv, fp)?;
+    base[0].set(r0);
     for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
     unsafe { (*c.frame).line = line; }
+    // with arguments in between, reading the slot back is cheaper than keeping the receiver live
+    let r0 = if k == 0 { r0 } else { base[0].get() };
     if kind == SITE_INTERP { return call_cached(c, cc, mid, base, k as u32, std::ptr::null(), flags); }
     // baked code: one cache test, then the callee compiled into this site or the site's one fast path
-    let r0 = base[0].get();
     if site_hit(cc, r0, kind) {
         if callee_hash != 0 {
             if cc.fast_hash == callee_hash {
                 c.call_me = cc.me as *const MethodEntry; c.call_blk = std::ptr::null();
+                // sp is where stage() left it: what the entry expects
                 let callee_fp = frame(c, base)?;
-                at_entry(c, base);
                 let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp);
                 c.set_sp(base, 0);
                 return r;
@@ -803,16 +809,17 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ct
 pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, blk: IseqRef, cc: &mut CallCache, callee_hash: u64, kind: u32) -> RV {
     let k = <D_args as DispList>::len(args);
     let base = stage(c, 2 + k)?;
-    base[0].set(<D_recv as Disp>::call(c, recv, fp)?);
+    let r0 = <D_recv as Disp>::call(c, recv, fp)?;
+    base[0].set(r0);
     for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
     unsafe { (*c.frame).line = line; }
+    // with arguments in between, reading the slot back is cheaper than keeping the receiver live
+    let r0 = if k == 0 { r0 } else { base[0].get() };
     let b = make_block(c, blk, fp);
-    let r0 = base[0].get();
     let r = if kind == SITE_INTERP { call_cached(c, cc, mid, base, k as u32, &b, flags) }
     else if site_hit(cc, r0, kind) && callee_hash != 0 && cc.fast_hash == callee_hash {
         c.call_me = cc.me as *const MethodEntry; c.call_blk = &b;
         let callee_fp = frame(c, base)?;
-        at_entry(c, base);
         let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp);
         c.set_sp(base, 0);
         r
@@ -859,14 +866,20 @@ pub fn EVAL_node_call_x<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr,
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_attrasgn<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, cc: &mut CallCache) -> RV {
+pub fn EVAL_node_attrasgn<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, cc: &mut CallCache, kind: u32) -> RV {
     let k = <D_args as DispList>::len(args);
     let base = stage(c, 2 + k)?;
     base[0].set(<D_recv as Disp>::call(c, recv, fp)?);
     for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
     unsafe { (*c.frame).line = line; }
     let val = base[1 + k].get();
-    call_cached(c, cc, mid, base, k as u32, std::ptr::null(), flags)?;
+    if kind == SITE_INTERP { call_cached(c, cc, mid, base, k as u32, std::ptr::null(), flags)?; return Ok(val); }
+    // baked code: only the site's one fast path inline, as node_call
+    let r0 = base[0].get();
+    if site_hit(cc, r0, kind) {
+        if let Some(r) = site_fast(c, cc, r0, base, k as u32, std::ptr::null(), kind) { r?; return Ok(val); }
+    }
+    call_cached_out(c, cc, mid, base, k as u32, std::ptr::null(), flags)?;
     Ok(val)
 }
 
@@ -1186,24 +1199,54 @@ pub fn EVAL_node_opt_aset(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, v
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, has_env: bool, line: u32, body: NodePtr) -> RV {
+pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, flags: u32, line: u32, body: NodePtr) -> RV {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit_body("entry", n, flags & ME_ENV != 0, nparams as usize, !c.call_blk.is_null());
+    // nothing in a leaf body can call, raise or look at a frame
+    if flags & ME_LEAF != 0 { return <D_body as Disp>::call(c, body, fp); }
     let me = c.call_me;
     let blk = c.call_blk;
-    let id = c.next_serial();
+    // id 0: no block can return to this frame, and its own `return` is caught by the innermost entry
+    let id = if flags & ME_ID != 0 { c.next_serial() } else { 0 };
     let mut fr = Frame { prev: c.frame, fp: head(fp), me, blk, id, line, kind: FK_METHOD, visi: VISI_PUBLIC, lite: true, pad: 0 };
-    enter(c, fp, nlocals)?;
-    // the frame's own address is the native stack probe
-    if (&fr as *const Frame as usize) < c.native_limit { return Err(raise_stack_overflow(c)); }
+    // no native stack check here: whoever calls an entry out of line makes it (run_entry, site_fast)
+    enter(c, fp, nlocals, nparams)?;
     fp[1].set(NIL);
     let mut i = 2 + nparams;
     while i < nlocals { slot(fp, i).set(NIL); i += 1; }
-    if has_env { make_env(unsafe { &*fr.iseq() }, fp, NIL); }
+    if flags & ME_ENV != 0 { make_env(unsafe { &*fr.iseq() }, fp, NIL); }
     c.frame = &mut fr;
     let r = <D_body as Disp>::call(c, body, fp);
     c.frame = fr.prev;
     match r {
         Ok(v) => Ok(v),
         Err(e) => if c.esc == EscKind::Return && c.esc_tag == id { c.esc = EscKind::None; Ok(c.esc_val) } else { Err(e) },
+    }
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_block_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, flags: u32, line: u32, body: NodePtr) -> RV {
+    let b = unsafe { &*c.call_blk };
+    // iseq null: Frame::iseq() takes it from self_blk when asked
+    let mut fr = FrameFull {
+        h: Frame { prev: c.frame, fp: head(fp), me: b.me, blk: b.outer_blk, id: b.home_id, line, kind: FK_BLOCK, visi: VISI_PUBLIC, lite: false, pad: 0 },
+        cref: b.cref, iseq: std::ptr::null(), self_blk: b, defined_class: b.defined_class,
+    };
+    fp[0].set(b.self_);
+    fp[1].set(b.env);
+    let mut i = 2 + nparams;
+    while i < nlocals { slot(fp, i).set(NIL); i += 1; }
+    enter_base(c, fp, nlocals)?;
+    if flags & ME_ENV != 0 { make_env(unsafe { &*fr.h.iseq() }, fp, b.env); }
+    c.frame = &mut fr.h;
+    let mut r = <D_body as Disp>::call(c, body, fp);
+    // redo runs the body again out of line (a second inline copy would double the block's code)
+    if r.is_err() && c.esc == EscKind::Redo { r = srb_block_redo(c, body, fp); }
+    c.frame = fr.prev;
+    match r {
+        Ok(v) => Ok(v),
+        Err(e) => if c.esc == EscKind::Next { c.esc = EscKind::None; Ok(c.esc_val) } else { Err(e) },
     }
 }
 

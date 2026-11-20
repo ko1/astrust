@@ -791,7 +791,17 @@ pub struct node_opt_aset_struct {
 pub struct node_method_entry_struct {
     pub nlocals: u32,
     pub nparams: u32,
-    pub has_env: bool,
+    pub flags: u32,
+    pub line: u32,
+    pub body: NodePtr,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct node_block_entry_struct {
+    pub nlocals: u32,
+    pub nparams: u32,
+    pub flags: u32,
     pub line: u32,
     pub body: NodePtr,
 }
@@ -1325,8 +1335,13 @@ pub fn ALLOC_node_opt_aset(a: NodePtr, b: NodePtr, v: NodePtr, line: u32) -> Nod
 }
 
 #[allow(non_snake_case)]
-pub fn ALLOC_node_method_entry(nlocals: u32, nparams: u32, has_env: bool, line: u32, body: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_method_entry, node_method_entry_struct { nlocals, nparams, has_env, line, body })
+pub fn ALLOC_node_method_entry(nlocals: u32, nparams: u32, flags: u32, line: u32, body: NodePtr) -> NodePtr {
+    node_allocate(&KIND_node_method_entry, node_method_entry_struct { nlocals, nparams, flags, line, body })
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_block_entry(nlocals: u32, nparams: u32, flags: u32, line: u32, body: NodePtr) -> NodePtr {
+    node_allocate(&KIND_node_block_entry, node_block_entry_struct { nlocals, nparams, flags, line, body })
 }
 
 #[allow(non_snake_case)]
@@ -2354,6 +2369,17 @@ pub static KIND_node_method_entry: NodeKind = NodeKind {
     specializer: SPECIALIZE_node_method_entry,
     dumper: DUMP_node_method_entry,
     replacer: REPLACE_node_method_entry,
+    no_inline: false,
+};
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_block_entry: NodeKind = NodeKind {
+    name: "node_block_entry",
+    default_dispatcher: DISPATCH_node_block_entry,
+    hash_func: HASH_node_block_entry,
+    specializer: SPECIALIZE_node_block_entry,
+    dumper: DUMP_node_block_entry,
+    replacer: REPLACE_node_block_entry,
     no_inline: false,
 };
 
