@@ -338,9 +338,9 @@ fn k_method_name(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> R
 }
 
 fn k_caller(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
-    let start = if !args.is_empty() { args[0].as_fix().max(0) as usize } else { 1 };
+    let (start, len) = crate::builtins::exception::caller_range(c, args)?;
     let lines = backtrace_lines(c, 1 + start);
-    let lines = if args.len() > 1 && args[1].is_fixnum() { lines.into_iter().take(args[1].as_fix() as usize).collect() } else { lines };
+    let lines: Vec<String> = match len { Some(n) => lines.into_iter().take(n).collect(), None => lines };
     Ok(ary_of_strs(lines.into_iter().map(|l| l.into_bytes()).collect(), ENC_UTF8))
 }
 

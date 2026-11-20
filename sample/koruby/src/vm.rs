@@ -223,6 +223,7 @@ pub struct Vm {
     pub c_object_space_weak_map: Value, pub c_string_io: Value, pub c_dir: Value, pub c_stat: Value, pub c_monitor: Value,
     pub m_errno: Value, pub m_math: Value, pub m_process: Value, pub m_gc: Value, pub m_object_space: Value, pub m_marshal: Value,
     pub m_signal: Value, pub m_warning: Value, pub m_file_test: Value,
+    pub c_location: Value,
     pub main_obj: Value,
     pub stdout: Value, pub stderr: Value, pub stdin: Value,
     pub globals: HashMap<Sym, Value>,
@@ -847,6 +848,8 @@ pub fn backtrace_lines(c: &Ctx, skip: usize) -> Vec<String> {
         for (i, &fp) in frames.iter().enumerate() {
             let fr = &*fp;
             if fr.kind != FK_CFUNC && fr.iseq.is_null() { continue; }
+            // CRuby's send/__send__ do not push a frame
+            if fr.kind == FK_CFUNC && (fr.cfunc_name == s::send || fr.cfunc_name == s::__send__) { continue; }
             let (file, line) = &info[i];
             out.push(format!("{}:{}:in '{}'", file, line, frame_label(fr)));
         }

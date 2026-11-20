@@ -637,11 +637,11 @@ impl<'a> Compiler<'a> {
                 let args: Vec<&PNode> = match arguments.as_deref() { Some(PNode { kind: Kind::ArgumentsNode { arguments }, .. }) => arguments.iter().collect(), _ => vec![] };
                 if args.iter().all(|a| self.simple_arg(a)) {
                     let v: Vec<NodePtr> = args.iter().map(|a| self.c(a)).collect();
-                    ALLOC_node_yield(leak(v))
+                    ALLOC_node_line(line, ALLOC_node_yield(leak(v)))
                 } else {
                     let (v, kinds) = self.complex_args(&args);
                     let ci = Box::leak(Box::new(CallInfo { kinds, blk: None, kw_splat_only: false }));
-                    ALLOC_node_yield_x(leak(v), ci)
+                    ALLOC_node_line(line, ALLOC_node_yield_x(leak(v), ci))
                 }
             }
             Kind::CallOperatorWriteNode { receiver, read_name, write_name, binary_operator, value } => {
@@ -709,10 +709,11 @@ impl<'a> Compiler<'a> {
             Kind::DefNode { name, receiver, parameters, body, locals } => {
                 let nm = self.cst(*name);
                 let is = self.compile_def(n, nm, parameters.as_deref(), body.as_deref(), locals, line);
-                match receiver {
+                let d = match receiver {
                     Some(r) => { let rv = self.c(r); ALLOC_node_sdef(rv, nm, is) }
                     None => ALLOC_node_def(nm, is),
-                }
+                };
+                ALLOC_node_line(line, d)
             }
             Kind::ClassNode { locals, constant_path, superclass, body, name } => {
                 let nm = self.cst(*name);
@@ -720,21 +721,21 @@ impl<'a> Compiler<'a> {
                 let (sup, has_sup) = match superclass { Some(s) => (self.c(s), true), None => (ALLOC_node_nil(), false) };
                 let label = format!("<class:{}>", crate::symbol::sym_str(nm));
                 let is = self.compile_body(n, locals, body.as_deref(), IseqKind::Class, label, line);
-                ALLOC_node_class(cp, nm, sup, is, has_cp, has_sup)
+                ALLOC_node_line(line, ALLOC_node_class(cp, nm, sup, is, has_cp, has_sup))
             }
             Kind::ModuleNode { locals, constant_path, body, name } => {
                 let nm = self.cst(*name);
                 let (cp, has_cp) = self.cpath_parent(constant_path);
                 let label = format!("<module:{}>", crate::symbol::sym_str(nm));
                 let is = self.compile_body(n, locals, body.as_deref(), IseqKind::Class, label, line);
-                ALLOC_node_module(cp, nm, is, has_cp)
+                ALLOC_node_line(line, ALLOC_node_module(cp, nm, is, has_cp))
             }
             Kind::SingletonClassNode { locals, expression, body } => {
                 let e = self.c(expression);
                 let is = self.compile_body(n, locals, body.as_deref(), IseqKind::Class, "singleton class".into(), line);
-                ALLOC_node_sclass(e, is)
+                ALLOC_node_line(line, ALLOC_node_sclass(e, is))
             }
-            Kind::AliasMethodNode { new_name, old_name } => { let a = self.c(new_name); let b = self.c(old_name); ALLOC_node_alias(a, b) }
+            Kind::AliasMethodNode { new_name, old_name } => { let a = self.c(new_name); let b = self.c(old_name); ALLOC_node_line(line, ALLOC_node_alias(a, b)) }
             Kind::AliasGlobalVariableNode { new_name, old_name } => {
                 let g = |s: &Self, x: &PNode| match &x.kind {
                     Kind::GlobalVariableReadNode { name } => s.cst(*name),
@@ -743,7 +744,7 @@ impl<'a> Compiler<'a> {
                 };
                 ALLOC_node_valias(g(self, new_name), g(self, old_name))
             }
-            Kind::UndefNode { names } => { let v: Vec<NodePtr> = names.iter().map(|x| self.c(x)).collect(); ALLOC_node_undef(leak(v)) }
+            Kind::UndefNode { names } => { let v: Vec<NodePtr> = names.iter().map(|x| self.c(x)).collect(); ALLOC_node_line(line, ALLOC_node_undef(leak(v))) }
             Kind::LambdaNode { locals, parameters, body } => {
                 let is = self.compile_block(n, locals, parameters.as_deref(), body.as_deref(), IseqKind::Lambda, line);
                 ALLOC_node_lambda(is)

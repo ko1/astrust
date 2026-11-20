@@ -142,13 +142,118 @@ fn exc_backtrace(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV
 fn exc_set_backtrace(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let v = a[0];
     let bt = if is_string(v) { ary_new_from(&[v]) } else if v == NIL || is_array(v) { v } else { return type_err(c, "backtrace must be an Array of String or an Array of Thread::Backtrace::Location"); };
+    if is_array(bt) && ary_len(bt) > 0 && (0..ary_len(bt)).all(|i| is_kind_of(ary_get(bt, i), vm().c_location)) {
+        let strs = ary_new();
+        for i in 0..ary_len(bt) { let s = funcall(c, ary_get(bt, i), s::to_s, &[], std::ptr::null())?; ary_push(strs, s); }
+        ivar_set_raw(slf, s::bt, strs);
+        ivar_set_raw(slf, intern(b"__bt_locs"), bt);
+        return Ok(bt);
+    }
     ivar_set_raw(slf, s::bt, bt);
+    ivar_set_raw(slf, intern(b"__bt_locs"), NIL);
+    ivar_set_raw(slf, intern(b"__bt_set"), TRUE);
     Ok(bt)
 }
 fn exc_backtrace_locations(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    let locs = ivar_get(slf, intern(b"__bt_locs"));
+    if locs != NIL { return Ok(locs); }
     let bt = ivar_get(slf, s::bt);
-    if bt == NIL { return Ok(NIL); }
-    Ok(bt)
+    if bt == NIL || ivar_get(slf, intern(b"__bt_set")) == TRUE { return Ok(NIL); }
+    let out = ary_new();
+    for i in 0..ary_len(bt) {
+        let l = ary_get(bt, i);
+        if is_string(l) { let s = String::from_utf8_lossy(str_bytes(l)).into_owned(); let loc = location_from_str(&s); ary_push(out, loc); }
+        else { ary_push(out, l); }
+    }
+    ivar_set_raw(slf, intern(b"__bt_locs"), out);
+    Ok(out)
+}
+
+// ---- Thread::Backtrace::Location ----------------------------------------------------------
+
+/// "path:line:in 'label'" -> Location
+pub fn location_from_str(s: &str) -> Value {
+    let (head, label) = match s.rfind(":in '") { Some(p) => (&s[..p], s[p + 5..].trim_end_matches('\'')), None => (s, "") };
+    let (path, line) = match head.rsplit_once(':') { Some((p, l)) if l.parse::<i64>().is_ok() => (p, l.parse::<i64>().unwrap()), _ => (head, 0) };
+    let o = new_object(vm().c_location);
+    ivar_set_raw(o, intern(b"path"), str_new(path.as_bytes()));
+    ivar_set_raw(o, intern(b"lineno"), Value::fix(line));
+    ivar_set_raw(o, intern(b"label"), str_new(label.as_bytes()));
+    o
+}
+pub fn locations_from_lines(lines: Vec<String>) -> Value {
+    let out = ary_new();
+    for l in lines { let v = location_from_str(&l); ary_push(out, v); }
+    out
+}
+fn loc_path(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(slf, intern(b"path"))) }
+fn loc_abs_path(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    let p = ivar_get(slf, intern(b"path"));
+    let ps = String::from_utf8_lossy(str_bytes(p)).into_owned();
+    if ps.starts_with('<') || ps.starts_with('(') || ps == "-e" { return Ok(NIL); }
+    match std::fs::canonicalize(&ps) { Ok(a) => Ok(str_new(a.to_string_lossy().as_bytes())), Err(_) => Ok(p) }
+}
+fn loc_lineno(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(slf, intern(b"lineno"))) }
+fn loc_label(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(slf, intern(b"label"))) }
+fn loc_base_label(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    let l = ivar_get(slf, intern(b"label"));
+    let mut s = String::from_utf8_lossy(str_bytes(l)).into_owned();
+    if let Some(p) = s.find(" in ") { if s.starts_with("block") || s.starts_with("rescue") || s.starts_with("ensure") { s = s[p + 4..].to_string(); } }
+    if !s.starts_with('<') { if let Some(p) = s.rfind(['#', '.']) { s = s[p + 1..].to_string(); } }
+    Ok(str_new(s.as_bytes()))
+}
+fn loc_to_s(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    let p = ivar_get(slf, intern(b"path")); let l = ivar_get(slf, intern(b"label"));
+    let mut s = String::from_utf8_lossy(str_bytes(p)).into_owned();
+    s.push_str(&format!(":{}:in '{}'", ivar_get(slf, intern(b"lineno")).as_fix(), String::from_utf8_lossy(str_bytes(l))));
+    Ok(str_new(s.as_bytes()))
+}
+fn loc_inspect(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+    let s = loc_to_s(c, slf, a, b)?;
+    funcall(c, s, intern(b"inspect"), &[], std::ptr::null())
+}
+fn k_caller_locations(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+    let (start, len) = caller_range(c, args)?;
+    let lines = backtrace_lines(c, 1 + start);
+    let lines: Vec<String> = match len { Some(n) => lines.into_iter().take(n).collect(), None => lines };
+    Ok(locations_from_lines(lines))
+}
+/// caller / caller_locations arguments: (start = 1, length = nil) or (range)
+pub fn caller_range(c: &mut Ctx, args: &[Value]) -> Result<(usize, Option<usize>), Esc> {
+    if args.is_empty() { return Ok((1, None)); }
+    let a = args[0];
+    if a.is_fixnum() {
+        if a.as_fix() < 0 { return arg_err(c, format!("negative level ({})", a.as_fix())); }
+        let len = match args.get(1) { Some(&l) if l.is_fixnum() => { if l.as_fix() < 0 { return arg_err(c, format!("negative size ({})", l.as_fix())); } Some(l.as_fix() as usize) }, _ => None };
+        return Ok((a.as_fix() as usize, len));
+    }
+    if is_kind_of(a, vm().c_range) {
+        let b = funcall(c, a, intern(b"begin"), &[], std::ptr::null())?;
+        let e = funcall(c, a, intern(b"end"), &[], std::ptr::null())?;
+        let excl = funcall(c, a, intern(b"exclude_end?"), &[], std::ptr::null())?.truthy();
+        let b = if b == NIL { 0 } else { b.as_fix().max(0) as usize };
+        if e == NIL { return Ok((b, None)); }
+        let e = e.as_fix();
+        if e < 0 { return Ok((b, None)); }
+        let n = (e as usize + if excl { 0 } else { 1 }).saturating_sub(b);
+        return Ok((b, Some(n)));
+    }
+    Ok((crate::builtins::numeric_methods::num_to_long(c, a)?.max(0) as usize, None))
+}
+
+pub fn init_location() {
+    let vm = vm();
+    let bt = define_class_under(vm.c_thread, "Backtrace", vm.c_object);
+    let k = define_class_under(bt, "Location", vm.c_object);
+    vm.c_location = k;
+    define_cfunc(k, "path", loc_path, 0);
+    define_cfunc(k, "absolute_path", loc_abs_path, 0);
+    define_cfunc(k, "lineno", loc_lineno, 0);
+    define_cfunc(k, "label", loc_label, 0);
+    define_cfunc(k, "base_label", loc_base_label, 0);
+    define_cfunc(k, "to_s", loc_to_s, 0);
+    define_cfunc(k, "inspect", loc_inspect, 0);
+    define_module_function(vm.m_kernel, "caller_locations", k_caller_locations, -1);
 }
 fn exc_cause(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(slf, s::cause)) }
 fn exc_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
