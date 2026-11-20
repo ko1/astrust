@@ -33,6 +33,9 @@ class SarubyNodeDef < ASTrustGen::NodeDef
       # 1 + the operand kinds the interpreter recorded at an operator site (opt.rs TyFb)
       when /\Anode_opt_/ then "{ 1 + (*np).u.tf.0 }"
       # 1 + the lead parameter count of the block compiled into a yield site
+      when 'node_call' then op.name == 'shared' ?
+        "{ let u = &(*np).u; crate::vm::spec_shared(u.recv, u.args.len(), crate::vm::spec_callee(&u.cc, u.args.len(), u.flags)) }" :
+        "{ let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
       when 'node_yield' then "{ let u = &(*np).u; crate::vm::spec_block_np(&u.yc, u.args.len()) }"
       else "{ let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
       end

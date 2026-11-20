@@ -813,7 +813,15 @@ pub fn EVAL_node_defined<D_recv: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, kind: u3
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, cc: &mut CallCache, callee_hash: u64, kind: u32) -> RV {
+pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, cc: &mut CallCache, callee_hash: u64, kind: u32, shared: u32) -> RV {
+    // baked self call of a callee without parameters, locals, env or block literal: it runs in this frame
+    if shared != 0 && callee_hash != 0 {
+        let r0 = fp[0].get();
+        if spec_hit(cc, r0, kind) {
+            if shared == 1 { unsafe { (*c.frame).line = line; } }
+            return <D_callee as Disp>::spec(c, cc.fast as NodePtr, fp, CallArgs { me: cc.me as *const MethodEntry, blk: std::ptr::null(), shared: true });
+        }
+    }
     let k = <D_args as DispList>::len(args);
     let base = stage(c, 2 + k)?;
     let r0 = <D_recv as Disp>::call(c, recv, fp)?;
@@ -825,11 +833,11 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ct
     if kind == SITE_INTERP { return call_cached(c, cc, mid, base, k as u32, std::ptr::null(), flags); }
     // baked code: one cache test, then the callee compiled into this site or the site's one fast path
     if callee_hash != 0 {
-        // spec_klass is set only while the cache holds the compiled-in callee
-        if spec_hit(cc, r0, kind) {
+        // spec_klass is set only while the cache holds the compiled-in callee (a shared site tested it above)
+        if shared == 0 && spec_hit(cc, r0, kind) {
             // sp is where stage() left it: what the entry expects
             let callee_fp = frame(c, base)?;
-            let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp, CallArgs { me: cc.me as *const MethodEntry, blk: std::ptr::null() });
+            let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp, CallArgs::new(cc.me as *const MethodEntry, std::ptr::null()));
             c.set_sp(base, 0);
             return r;
         }
@@ -858,7 +866,7 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mu
     else if callee_hash != 0 {
         if spec_hit(cc, r0, kind) {
             let callee_fp = frame(c, base)?;
-            let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp, CallArgs { me: cc.me as *const MethodEntry, blk: &b });
+            let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp, CallArgs::new(cc.me as *const MethodEntry, &b));
             c.set_sp(base, 0);
             r
         } else { call_spec_out(c, cc, mid, base, k as u32, &b, flags, callee_hash) }
@@ -957,7 +965,7 @@ pub fn EVAL_node_yield<D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr
             if (k as u32) + 1 < np { nil_fill(base, 2 + k, 1 + np as usize); }
             c.set_sp(base, 0);
             let bfp = frame(c, base)?;
-            let r = <D_callee as Disp>::spec(c, unsafe { (*is).bentry }, bfp, CallArgs { me: std::ptr::null(), blk });
+            let r = <D_callee as Disp>::spec(c, unsafe { (*is).bentry }, bfp, CallArgs::new(std::ptr::null(), blk));
             c.set_sp(base, 0);
             return r;
         }
@@ -1304,8 +1312,11 @@ pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlo
     let id = if flags & ME_ID != 0 { c.next_serial() } else { 0 };
     let mut fr = Frame { prev: c.frame, fp: head(fp), me, blk, id, line, kind: FK_METHOD, visi: VISI_PUBLIC, lite: true, pad: 0 };
     // no native stack check here: whoever calls an entry out of line makes it (run_entry, site_fast)
-    enter(c, fp, nlocals, nparams)?;
-    fp[1].set(NIL);
+    // a shared frame (the caller's, CallArgs) has no slots of its own and keeps the caller's env
+    if !ca.shared {
+        enter(c, fp, nlocals, nparams)?;
+        fp[1].set(NIL);
+    }
     let mut i = 2 + nparams;
     while i < nlocals { slot(fp, i).set(NIL); i += 1; }
     if flags & ME_ENV != 0 { make_env(unsafe { &*fr.iseq() }, fp, NIL); }

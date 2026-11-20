@@ -274,12 +274,28 @@ pub struct Ctx {
 }
 
 /// What an entry node takes from its caller: in registers when the caller compiled the entry in
-/// (EVAL_SPEC!), else through c.call_me / c.call_blk.
+/// (EVAL_SPEC!), else through c.call_me / c.call_blk.  `shared`: the entry runs in its caller's
+/// frame (a compiled-in self call of a method without parameters, locals, env or block literal).
 #[derive(Clone, Copy)]
-pub struct CallArgs { pub me: *const MethodEntry, pub blk: *const Block }
+pub struct CallArgs { pub me: *const MethodEntry, pub blk: *const Block, pub shared: bool }
 impl CallArgs {
-    #[inline(always)] pub fn load(c: &Ctx) -> CallArgs { CallArgs { me: c.call_me, blk: c.call_blk } }
-    #[inline(always)] pub fn store(self, c: &mut Ctx) { c.call_me = self.me; c.call_blk = self.blk; }
+    #[inline(always)] pub fn new(me: *const MethodEntry, blk: *const Block) -> CallArgs { CallArgs { me, blk, shared: false } }
+    #[inline(always)] pub fn load(c: &Ctx) -> CallArgs { CallArgs::new(c.call_me, c.call_blk) }
+    #[inline(always)] pub fn store(self, c: &mut Ctx) {
+        // a shared frame cannot go through the context: spec_shared only offers it to specialized entries
+        assert!(!self.shared, "shared frame passed to an entry out of line");
+        c.call_me = self.me; c.call_blk = self.blk;
+    }
+}
+
+/// Can the self call at a site run its compiled-in callee `p` in the caller's frame?
+pub fn spec_shared(recv: NodePtr, argc: usize, p: NodePtr) -> u32 {
+    if argc != 0 || p.is_null() || recv.is_null() || !crate::node::node_laid(p) { return 0; }
+    if !std::ptr::eq(unsafe { (*recv).head.kind }, &crate::node::KIND_node_self) { return 0; }
+    if !std::ptr::eq(unsafe { (*p).head.kind }, &crate::node::KIND_node_method_entry) { return 0; }
+    let u = unsafe { &(*(p as *mut crate::node::NodeOf<crate::node::node_method_entry_struct>)).u };
+    // 2: a leaf, which cannot raise or look at a frame (no line needed)
+    if u.nparams != 0 || u.nlocals != 2 || u.flags & (ME_ID | ME_ENV) != 0 { 0 } else if u.flags & ME_LEAF != 0 { 2 } else { 1 }
 }
 
 impl Ctx {

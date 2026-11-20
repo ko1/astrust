@@ -1882,6 +1882,7 @@ fn SPECIALIZE_node_call(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("&mut (*np).u.cc".to_string());
     a.push(format!("{}u64", h_callee));
     a.push(format!("{}u32", { let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }));
+    a.push(format!("{}u32", { let u = &(*np).u; crate::vm::spec_shared(u.recv, u.args.len(), crate::vm::spec_callee(&u.cc, u.args.len(), u.flags)) }));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));

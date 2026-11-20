@@ -77,6 +77,7 @@ node_add(c: &mut Ctx, n: NodePtr, <common params...>, l: NODE, r: NODE) -> RESUL
 | `u32 i32 u64 i64 usize bool f64` | scalars, baked into specialized code as literals |
 | anything else | opaque: read from the node at run time; the embedder decides how it is hashed |
 | `x@spec: NODE` | a **speculated callee**, not stored in the node. At specialize time the embedder names a node (for example the method entry a call site's cache holds) to compile into this site; the body compares `SPEC_HASH!(x)` with the run-time target's hash and calls it statically with `EVAL_SPEC!(c, x, ptr, ...)` |
+| `x@specin: T` | a value a speculating caller hands to the callee directly: `EVAL_SPEC!(c, x, ptr, ..., v)` passes `v` through `Disp::spec`, in registers. Reached any other way (interpreter, `call`), the body gets the embedder's `spec_in_load_expr` (a read from the context, say); a `spec` that cannot pass it on (`Dyn`) stores it first with `spec_in_store_stmt`. One type per node.def |
 | `x@bake: u32` | a scalar computed at specialize time (0 in the interpreter), e.g. what kind of callee a call site has seen, so the body keeps only that case inline |
 
 `NODE_TEST { ... }` after a node's body defines the node **evaluated as a condition**: it returns
