@@ -58,12 +58,13 @@ struct Scope {
     fwd: bool,
     transparent: bool,            // `for` body: shares the enclosing scope's variables
     param_env: Vec<(Sym, u32)>,   // captured parameters: (name, setup slot)
+    children: Vec<&'static Iseq>, // iseqs finished inside this scope (their parent is this scope's iseq)
 }
 
 impl Scope {
     fn new(kind: SK, captured: HashSet<Sym>) -> Scope {
         Scope { kind, vars: HashMap::new(), names: vec![], nslots: 2, env_size: 0, captured, loop_depth: 0,
-                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![] }
+                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![], children: vec![] }
     }
     fn has_env(&self) -> bool { self.env_size > 0 }
 }
@@ -311,7 +312,11 @@ impl<'a> Compiler<'a> {
         let is = Box::leak(Box::new(Iseq {
             body, nlocals: sc.nslots, params, env_size: sc.env_size, env_params,
             info: CodeInfo { file: self.file, label, line }, kind, simple, lead_only, name, local_names, arity, uses_block: false,
+            parent: std::cell::Cell::new(std::ptr::null()),
+            outer_names: if kind == IseqKind::Eval { self.eval_outer.iter().flatten().cloned().collect() } else { vec![] },
         }));
+        for ch in &sc.children { ch.parent.set(is); }
+        if let Some(p) = self.scopes.last_mut() { p.children.push(is); }
         crate::aot::register_iseq(is);
         is
     }
@@ -1116,6 +1121,7 @@ impl<'a> Compiler<'a> {
         match &t.kind {
             Kind::LocalVariableTargetNode { name, depth } => { let nm = self.cst(*name); self.var_write(nm, *depth, v) }
             Kind::LocalVariableReadNode { name, depth } => { let nm = self.cst(*name); self.var_write(nm, *depth, v) }
+            Kind::RequiredParameterNode { name } => { let nm = self.cst(*name); self.var_write(nm, 0, v) }
             Kind::InstanceVariableTargetNode { name } => ALLOC_node_iasgn(self.cst(*name), v),
             Kind::GlobalVariableTargetNode { name } => ALLOC_node_gasgn(self.cst(*name), v),
             Kind::ClassVariableTargetNode { name } => ALLOC_node_cvasgn(self.cst(*name), v),
@@ -1492,8 +1498,7 @@ impl<'a> Compiler<'a> {
             }
         }
         let base = self.method_label();
-        let _ = depth;
-        format!("block in {}", base)
+        if depth >= 1 { format!("block ({} levels) in {}", depth + 1, base) } else { format!("block in {}", base) }
     }
 
     fn method_label(&self) -> String {
@@ -1739,7 +1744,8 @@ pub fn regex_opts(flags: u32) -> u32 {
 
 /// Parse and compile a source file into a top-level iseq.  Err = SyntaxError message.
 pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, String> {
-    let scopes: Vec<Vec<Vec<u8>>> = outer.iter().map(|sc| sc.iter().map(|(n, _, _)| crate::symbol::sym_bytes(*n).to_vec()).collect()).collect();
+    let mut scopes: Vec<Vec<Vec<u8>>> = outer.iter().rev().map(|sc| sc.iter().map(|(n, _, _)| crate::symbol::sym_bytes(*n).to_vec()).collect()).collect();
+    if !scopes.is_empty() { scopes.push(vec![]); }
     let pr = prism::parse(src, &prism::ParseOpts { filepath: file.as_bytes(), line, scopes, main_script: kind == IseqKind::Main, frozen_string_literal: 0 });
     if !pr.errors.is_empty() {
         let mut msg = String::new();
@@ -1750,6 +1756,7 @@ pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind,
         return Err(msg);
     }
     let mut cm = Compiler::new(&pr, file);
+    if kind == IseqKind::Eval && !outer.is_empty() { cm.captures.entry(key(&pr.root)).or_default().insert(Sym(u32::MAX)); }
     cm.eval_outer = outer;
     Ok(cm.compile_program(&pr.root, kind))
 }

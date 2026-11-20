@@ -60,6 +60,8 @@ pub struct Iseq {
     pub local_names: Vec<(Sym, i32, i32)>, // (name, slot or -1, env index or -1)
     pub arity: i32,
     pub uses_block: bool,
+    pub parent: std::cell::Cell<*const Iseq>,          // lexically enclosing iseq (set when it is finished)
+    pub outer_names: Vec<(Sym, u32, u32)>,             // eval: the binding's names (name, hops, idx)
 }
 
 // ---- blocks ---------------------------------------------------------------------------
@@ -778,6 +780,16 @@ pub fn frame_label(f: &Frame) -> String {
                 }
                 is.info.label.clone()
             }
+            IseqKind::Block | IseqKind::Lambda if !f.me.is_null() => {
+                // "block in m" -> "block in Owner#m" when the block's home is that method
+                let me = &*f.me;
+                let l = &is.info.label;
+                let mname = sym_str(me.name);
+                match l.find(" in ") {
+                    Some(p) if l[p + 4..] == *mname => format!("{}{}{}", &l[..p + 4], method_owner_label(me.owner, f.fp), mname),
+                    _ => l.clone(),
+                }
+            }
             _ => is.info.label.clone(),
         }
     }
@@ -833,7 +845,7 @@ pub fn backtrace_lines(c: &Ctx, skip: usize) -> Vec<String> {
         }
         for (i, &fp) in frames.iter().enumerate() {
             let fr = &*fp;
-            if fr.kind == FK_CLASS && false { continue; }
+            if fr.kind != FK_CFUNC && fr.iseq.is_null() { continue; }
             let (file, line) = &info[i];
             out.push(format!("{}:{}:in '{}'", file, line, frame_label(fr)));
         }
