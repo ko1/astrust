@@ -44,13 +44,12 @@ pub fn str_to_sym(v: Value) -> Value { Value::sym(intern(&rstr(v).b)) }
 
 pub fn str_append_str(c: &mut Ctx, acc: Value, s: Value) -> Result<(), Esc> {
     check_frozen(c, acc)?;
-    if acc == s { let b = rstr(s).b.clone(); rstr(acc).b.extend_from_slice(&b); }
-    else {
-        let (a, b) = (rstr(acc), rstr(s));
-        if b.enc == ENC_BINARY && a.enc != ENC_BINARY && !is_ascii(&b.b) && is_ascii(&a.b) { a.enc = ENC_BINARY; }
-        crate::gc::malloc_increase(b.b.len());
-        a.b.extend_from_slice(&b.b);
-    }
+    if acc == s { let b = rstr(s).b.clone(); rstr(acc).b.extend_from_slice(&b); return Ok(()); }
+    let enc = if rstr(acc).enc == rstr(s).enc { rstr(acc).enc } else { crate::builtins::encoding::check_compatible(c, acc, s)? };
+    let (a, b) = (rstr(acc), rstr(s));
+    a.enc = enc;
+    crate::gc::malloc_increase(b.b.len());
+    a.b.extend_from_slice(&b.b);
     Ok(())
 }
 
@@ -62,28 +61,39 @@ pub fn utf8_len(b: &[u8]) -> usize {
     while i < b.len() { i += char_len_at(b, i); n += 1; }
     n
 }
+/// UTF-8 character length at b[i] (1 for an invalid byte).
 #[inline]
 pub fn char_len_at(b: &[u8], i: usize) -> usize {
-    let x = b[i];
-    let l = if x < 0x80 { 1 } else if x >> 5 == 6 { 2 } else if x >> 4 == 14 { 3 } else if x >> 3 == 30 { 4 } else { 1 };
-    if i + l > b.len() { return 1; }
-    for k in 1..l { if b[i + k] & 0xc0 != 0x80 { return 1; } }
-    l
+    if b[i] < 0x80 { return 1; }
+    crate::builtins::encoding::utf8_precise(&b[i..]).unwrap_or(1)
 }
-/// Char boundaries (byte offsets) for a string, honoring its encoding.
-pub fn char_offsets(v: Value) -> Vec<usize> {
-    let r = rstr(v);
-    let mut out = Vec::with_capacity(r.b.len() + 1);
-    if r.enc != ENC_UTF8 || is_ascii(&r.b) { for i in 0..=r.b.len() { out.push(i); } return out; }
+/// Character length at b[i] in encoding `enc`.
+#[inline]
+pub fn enc_char_len(b: &[u8], i: usize, enc: u8) -> usize { crate::builtins::encoding::mbclen(enc, b, i) }
+/// Every byte is one character (single-byte encoding, or ASCII-only in an ASCII-compatible one).
+#[inline]
+pub fn enc_single(b: &[u8], enc: u8) -> bool {
+    crate::builtins::encoding::is_single_byte(enc) || (crate::builtins::encoding::ascii_compat(enc) && is_ascii(b))
+}
+pub fn char_offsets_of(b: &[u8], enc: u8) -> Vec<usize> {
+    if enc_single(b, enc) { return (0..=b.len()).collect(); }
+    let mut out = Vec::with_capacity(b.len() + 1);
     let mut i = 0;
-    while i < r.b.len() { out.push(i); i += char_len_at(&r.b, i); }
-    out.push(r.b.len());
+    while i < b.len() { out.push(i); i += enc_char_len(b, i, enc); }
+    out.push(b.len());
     out
 }
-pub fn str_char_len(v: Value) -> usize {
-    let r = rstr(v);
-    if r.enc != ENC_UTF8 { r.b.len() } else { utf8_len(&r.b) }
+/// Char boundaries (byte offsets) for a string, honoring its encoding.
+pub fn char_offsets(v: Value) -> Vec<usize> { let r = rstr(v); char_offsets_of(&r.b, r.enc) }
+pub fn enc_strlen(b: &[u8], enc: u8) -> usize {
+    if enc_single(b, enc) { return b.len(); }
+    let mut n = 0; let mut i = 0;
+    while i < b.len() { i += enc_char_len(b, i, enc); n += 1; }
+    n
 }
+pub fn str_char_len(v: Value) -> usize { let r = rstr(v); enc_strlen(&r.b, r.enc) }
+/// Code of the character at b[s..e] of string v (Unicode scalar for Unicode encodings).
+pub fn str_char_code(v: Value, s: usize, e: usize) -> u32 { let r = rstr(v); crate::builtins::encoding::char_code(r.enc, &r.b[s..e]) }
 pub fn chars_of(v: Value) -> Vec<Vec<u8>> {
     let off = char_offsets(v);
     let b = &rstr(v).b;
@@ -113,45 +123,67 @@ pub fn valid_utf8(b: &[u8]) -> bool { std::str::from_utf8(b).is_ok() }
 
 /// String#inspect body.
 pub fn inspect_bytes(b: &[u8], enc: u8) -> String {
+    use crate::builtins::encoding as en;
     let mut out = String::with_capacity(b.len() + 2);
     out.push('"');
+    let uni = en::is_unicode(enc) && !en::is_dummy(enc);
+    let ac = en::ascii_compat(enc);
+    // result encoding is UTF-8: only UTF-8 strings may print non-ASCII characters raw
+    let same = en::kind(enc) == en::EK::Utf8;
+    let code_at = |i: usize| -> Option<u32> { en::precise_len(enc, b, i).map(|l| en::char_code(enc, &b[i..i + l])) };
     let mut i = 0;
     while i < b.len() {
-        let x = b[i];
-        match x {
-            b'"' => out.push_str("\\\""),
-            b'\\' => out.push_str("\\\\"),
-            b'\n' => out.push_str("\\n"),
-            b'\t' => out.push_str("\\t"),
-            b'\r' => out.push_str("\\r"),
-            0x0c => out.push_str("\\f"),
-            0x0b => out.push_str("\\v"),
-            0x08 => out.push_str("\\b"),
-            0x07 => out.push_str("\\a"),
-            0x1b => out.push_str("\\e"),
-            b'#' => {
-                if i + 1 < b.len() && (b[i + 1] == b'{' || b[i + 1] == b'$' || b[i + 1] == b'@') { out.push_str("\\#"); } else { out.push('#'); }
-            }
-            0x20..=0x7e => out.push(x as char),
-            _ if x < 0x80 => out.push_str(&format!("\\x{:02X}", x)),
-            _ => {
-                if enc == ENC_UTF8 {
-                    let l = char_len_at(b, i);
-                    if l > 1 {
-                        if let Ok(s) = std::str::from_utf8(&b[i..i + l]) {
-                            let ch = s.chars().next().unwrap();
-                            if ch.is_control() || (ch as u32) == 0x85 { out.push_str(&format!("\\u{:04X}", ch as u32)); } else { out.push_str(s); }
-                            i += l; continue;
-                        }
-                    }
+        let Some(l) = en::precise_len(enc, b, i) else {
+            let n = en::mbclen(enc, b, i);
+            for k in 0..n { out.push_str(&format!("\\x{:02X}", b[i + k])); }
+            i += n; continue;
+        };
+        let cp = en::char_code(enc, &b[i..i + l]);
+        let is_asc = (ac && l == 1 && cp < 0x80) || (uni && cp < 0x80);
+        if is_asc {
+            match cp as u8 {
+                b'"' => out.push_str("\\\""),
+                b'\\' => out.push_str("\\\\"),
+                b'\n' => out.push_str("\\n"),
+                b'\t' => out.push_str("\\t"),
+                b'\r' => out.push_str("\\r"),
+                0x0c => out.push_str("\\f"),
+                0x0b => out.push_str("\\v"),
+                0x08 => out.push_str("\\b"),
+                0x07 => out.push_str("\\a"),
+                0x1b => out.push_str("\\e"),
+                b'#' => {
+                    let nx = if i + l < b.len() { code_at(i + l) } else { None };
+                    if matches!(nx, Some(0x7b) | Some(0x24) | Some(0x40)) { out.push_str("\\#"); } else { out.push('#'); }
                 }
-                out.push_str(&format!("\\x{:02X}", x));
+                x @ 0x20..=0x7e => out.push(x as char),
+                x => if uni { out.push_str(&format!("\\u{:04X}", x)) } else { out.push_str(&format!("\\x{:02X}", x)) },
             }
+        } else if uni {
+            if same && uni_printable(cp) { out.push(char::from_u32(cp).unwrap_or('?')); }
+            else if cp > 0xffff { out.push_str(&format!("\\u{{{:X}}}", cp)); }
+            else { out.push_str(&format!("\\u{:04X}", cp)); }
+        } else if l == 1 {
+            out.push_str(&format!("\\x{:02X}", b[i]));
+        } else {
+            out.push_str(&format!("\\x{{{:X}}}", cp));
         }
-        i += 1;
+        i += l;
     }
     out.push('"');
     out
+}
+
+/// Is Unicode scalar `cp` printable (Onigmo print class; approximates "not Cc/Cn/Zl/Zp/Cs")?
+pub fn uni_printable(cp: u32) -> bool {
+    match cp {
+        0..=0x1f | 0x7f..=0x9f | 0x2028 | 0x2029 | 0xd800..=0xdfff | 0xfdd0..=0xfdef => false,
+        _ if cp & 0xfffe == 0xfffe => false,
+        0x0378 | 0x0379 | 0x0380..=0x0383 | 0x038b | 0x038d | 0x03a2 => false,
+        0x323b0..=0xdffff => false,
+        0xe0000 | 0xe0002..=0xe001f | 0xe0080..=0xe00ff | 0xe01f0..=0xeffff => false,
+        _ => cp <= 0x10ffff,
+    }
 }
 
 pub fn sym_inspect(name: &[u8]) -> String {
@@ -220,6 +252,20 @@ pub fn downcase(b: &[u8], enc: u8) -> Vec<u8> { map_case(b, enc, |c| c.to_lowerc
 pub fn swapcase(b: &[u8], enc: u8) -> Vec<u8> {
     map_case(b, enc, |c| if c.is_uppercase() { c.to_lowercase().collect() } else { c.to_uppercase().collect() },
              |x| if x.is_ascii_uppercase() { x.to_ascii_lowercase() } else { x.to_ascii_uppercase() })
+}
+/// Unicode simple+full case folding approximation (for casecmp?).
+pub fn fold_case(b: &[u8], enc: u8) -> Vec<u8> {
+    if enc != ENC_UTF8 || is_ascii(b) { return b.iter().map(|x| x.to_ascii_lowercase()).collect(); }
+    match std::str::from_utf8(b) {
+        Ok(s) => {
+            let mut out = String::new();
+            for ch in s.chars() {
+                match ch { 'ß' | 'ẞ' => out.push_str("ss"), 'ς' => out.push('σ'), _ => out.extend(ch.to_lowercase()) }
+            }
+            out.into_bytes()
+        }
+        Err(_) => b.iter().map(|x| x.to_ascii_lowercase()).collect(),
+    }
 }
 pub fn capitalize(b: &[u8], enc: u8) -> Vec<u8> {
     if b.is_empty() { return vec![]; }

@@ -23,6 +23,8 @@ pub mod regexp_methods;
 pub mod structs;
 pub mod time;
 pub mod math;
+pub mod encoding;
+pub mod enc_tables;
 
 use crate::object::*;
 use crate::symbol::intern_str;
@@ -167,6 +169,7 @@ pub fn boot() {
     random::init();
     binding::init();
     misc::init();
+    encoding::init();
     regexp_methods::init();
     structs::init();
     time::init();
