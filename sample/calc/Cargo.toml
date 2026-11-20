@@ -1,0 +1,17 @@
+[package]
+name = "calc"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[lib]
+name = "calc"
+path = "src/lib.rs"
+crate-type = ["dylib"]
+
+[[bin]]
+name = "calc"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3

@@ -1,0 +1,7 @@
+target/
+code_store/
+preload_store/
+/sample/calc/calc
+/sample/calc/libcalc.so
+/sample/koruby/koruby
+/sample/koruby/libkoruby.so

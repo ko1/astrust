@@ -1,0 +1,62 @@
+// calc — toy ASTrust sample: integer arithmetic with one accumulator variable.
+use crate::*;
+
+NODE_DEF
+node_num(c: &mut Ctx, n: NodePtr, v: i64) -> i64
+{
+    v
+}
+
+NODE_DEF
+node_add(c: &mut Ctx, n: NodePtr, l: NODE, r: NODE) -> i64
+{
+    EVAL_ARG!(c, l).wrapping_add(EVAL_ARG!(c, r))
+}
+
+NODE_DEF
+node_sub(c: &mut Ctx, n: NodePtr, l: NODE, r: NODE) -> i64
+{
+    EVAL_ARG!(c, l).wrapping_sub(EVAL_ARG!(c, r))
+}
+
+NODE_DEF
+node_mul(c: &mut Ctx, n: NodePtr, l: NODE, r: NODE) -> i64
+{
+    EVAL_ARG!(c, l).wrapping_mul(EVAL_ARG!(c, r))
+}
+
+NODE_DEF
+node_mod(c: &mut Ctx, n: NodePtr, l@child: i64, r@child: i64) -> i64
+{
+    if r == 0 { 0 } else { l % r }
+}
+
+NODE_DEF
+node_var(c: &mut Ctx, n: NodePtr, idx: u32) -> i64
+{
+    c.vars[idx as usize]
+}
+
+NODE_DEF
+node_set(c: &mut Ctx, n: NodePtr, idx: u32, v@child: i64) -> i64
+{
+    c.vars[idx as usize] = v;
+    v
+}
+
+NODE_DEF
+node_seq(c: &mut Ctx, n: NodePtr, xs: NODES) -> i64
+{
+    let mut v = 0;
+    for i in 0..EVAL_LEN!(xs) { v = EVAL_NTH!(c, xs, i); }
+    v
+}
+
+NODE_DEF
+node_times(c: &mut Ctx, n: NodePtr, cnt: NODE, body: NODE) -> i64
+{
+    let k = EVAL_ARG!(c, cnt);
+    let mut v = 0;
+    for _ in 0..k { v = EVAL_ARG!(c, body); }
+    v
+}

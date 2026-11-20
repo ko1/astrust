@@ -1,0 +1,314 @@
+// This file is auto-generated from node.def by astrustgen. Do not edit.
+
+pub type DispatchFn = fn(&mut Ctx, NodePtr) -> i64;
+pub type NodePtr = *mut Node;
+pub type NodeList = &'static [NodePtr];
+
+pub struct NodeKind {
+    pub name: &'static str,
+    pub default_dispatcher: DispatchFn,
+    pub hash_func: fn(NodePtr) -> u64,
+    pub specializer: fn(&mut SpecCtx, NodePtr) -> String,
+    pub dumper: fn(&mut String, NodePtr),
+    pub replacer: fn(NodePtr, NodePtr, NodePtr),
+    pub no_inline: bool,
+}
+
+pub const NF_HAS_HASH: u32 = 1;
+pub const NF_SPECIALIZING: u32 = 2;
+pub const NF_NO_INLINE: u32 = 4;
+
+#[repr(C)]
+pub struct NodeHead {
+    pub dispatcher: DispatchFn,
+    pub kind: &'static NodeKind,
+    pub hash: u64,
+    pub flags: u32,
+
+}
+#[repr(C)]
+pub struct Node { pub head: NodeHead }
+#[repr(C)]
+pub struct NodeOf<T> { pub head: NodeHead, pub u: T }
+
+pub fn node_allocate<T>(kind: &'static NodeKind, u: T) -> NodePtr {
+    let n = Box::into_raw(Box::new(NodeOf { head: NodeHead {
+        dispatcher: kind.default_dispatcher, kind, hash: 0,
+        flags: if kind.no_inline { NF_NO_INLINE } else { 0 },
+        
+    }, u })) as NodePtr;
+    node_allocated(n);
+    n
+}
+
+/// Structural (Merkle) hash, cached in the head.
+pub fn hash_node(n: NodePtr) -> u64 {
+    if n.is_null() { return hash_str("null"); }
+    unsafe {
+        if (*n).head.flags & NF_HAS_HASH != 0 { return (*n).head.hash; }
+        let h = ((*n).head.kind.hash_func)(n);
+        (*n).head.hash = h;
+        (*n).head.flags |= NF_HAS_HASH;
+        h
+    }
+}
+pub fn hash_node_list(ns: NodeList) -> u64 {
+    let mut h = hash_u64(ns.len() as u64);
+    for x in ns.iter() { h = hash_merge(h, hash_node(*x)); }
+    h
+}
+pub fn dump_node(out: &mut String, n: NodePtr) {
+    if n.is_null() { out.push_str("null"); return; }
+    unsafe { ((*n).head.kind.dumper)(out, n) }
+}
+pub fn node_replace_child(parent: NodePtr, old: NodePtr, new: NodePtr) {
+    unsafe { ((*parent).head.kind.replacer)(parent, old, new) }
+}
+/// SD type name for the subtree rooted at n ("Dyn" when it must stay dynamic).
+pub fn specialize_node(sc: &mut SpecCtx, n: NodePtr) -> String {
+    unsafe {
+        if n.is_null() || (*n).head.flags & (NF_NO_INLINE | NF_SPECIALIZING) != 0 { return "Dyn".to_string(); }
+        (*n).head.flags |= NF_SPECIALIZING;
+        let t = ((*n).head.kind.specializer)(sc, n);
+        (*n).head.flags &= !NF_SPECIALIZING;
+        t
+    }
+}
+/// Specialize n as a public entry: an exported `SD_<hash>` with the dispatcher's signature.
+pub fn specialize_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
+    let fname = format!("SD_{:016x}", hash_node(n));
+    if sc.emitted.contains(&fname) { return fname; }
+    let t = specialize_node(sc, n);
+    sc.out.push_str(&format!("#[no_mangle]
+pub fn {}(c: &mut Ctx, n: NodePtr) -> i64 {{ <{} as Disp>::call(c, n) }}
+", fname, t));
+    sc.emitted.insert(fname.clone());
+    fname
+}
+
+/// A dispatcher as a type: `Dyn` calls through the node head, an SD type statically.
+pub trait Disp { fn call(c: &mut Ctx, n: NodePtr) -> i64; }
+/// A list of children: `DynList` loops over the heads, an SD list type is unrolled.
+pub trait DispList {
+    fn len(ns: NodeList) -> usize;
+    fn nth(c: &mut Ctx, ns: NodeList, i: usize) -> i64;
+}
+pub struct Dyn;
+impl Disp for Dyn {
+    #[inline(always)]
+    fn call(c: &mut Ctx, n: NodePtr) -> i64 { unsafe { ((*n).head.dispatcher)(c, n) } }
+}
+pub struct DynList;
+impl DispList for DynList {
+    #[inline(always)] fn len(ns: NodeList) -> usize { ns.len() }
+    #[inline(always)]
+    fn nth(c: &mut Ctx, ns: NodeList, i: usize) -> i64 {
+        let x = ns[i];
+        unsafe { ((*x).head.dispatcher)(c, x) }
+    }
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct node_num_struct {
+    pub v: i64,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct node_add_struct {
+    pub l: NodePtr,
+    pub r: NodePtr,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct node_sub_struct {
+    pub l: NodePtr,
+    pub r: NodePtr,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct node_mul_struct {
+    pub l: NodePtr,
+    pub r: NodePtr,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct node_mod_struct {
+    pub l: NodePtr,
+    pub r: NodePtr,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct node_var_struct {
+    pub idx: u32,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct node_set_struct {
+    pub idx: u32,
+    pub v: NodePtr,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct node_seq_struct {
+    pub xs: NodeList,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct node_times_struct {
+    pub cnt: NodePtr,
+    pub body: NodePtr,
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_num(v: i64) -> NodePtr {
+    node_allocate(&KIND_node_num, node_num_struct { v })
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_add(l: NodePtr, r: NodePtr) -> NodePtr {
+    node_allocate(&KIND_node_add, node_add_struct { l, r })
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_sub(l: NodePtr, r: NodePtr) -> NodePtr {
+    node_allocate(&KIND_node_sub, node_sub_struct { l, r })
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_mul(l: NodePtr, r: NodePtr) -> NodePtr {
+    node_allocate(&KIND_node_mul, node_mul_struct { l, r })
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_mod(l: NodePtr, r: NodePtr) -> NodePtr {
+    node_allocate(&KIND_node_mod, node_mod_struct { l, r })
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_var(idx: u32) -> NodePtr {
+    node_allocate(&KIND_node_var, node_var_struct { idx })
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_set(idx: u32, v: NodePtr) -> NodePtr {
+    node_allocate(&KIND_node_set, node_set_struct { idx, v })
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_seq(xs: NodeList) -> NodePtr {
+    node_allocate(&KIND_node_seq, node_seq_struct { xs })
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_times(cnt: NodePtr, body: NodePtr) -> NodePtr {
+    node_allocate(&KIND_node_times, node_times_struct { cnt, body })
+}
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_num: NodeKind = NodeKind {
+    name: "node_num",
+    default_dispatcher: DISPATCH_node_num,
+    hash_func: HASH_node_num,
+    specializer: SPECIALIZE_node_num,
+    dumper: DUMP_node_num,
+    replacer: REPLACE_node_num,
+    no_inline: false,
+};
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_add: NodeKind = NodeKind {
+    name: "node_add",
+    default_dispatcher: DISPATCH_node_add,
+    hash_func: HASH_node_add,
+    specializer: SPECIALIZE_node_add,
+    dumper: DUMP_node_add,
+    replacer: REPLACE_node_add,
+    no_inline: false,
+};
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_sub: NodeKind = NodeKind {
+    name: "node_sub",
+    default_dispatcher: DISPATCH_node_sub,
+    hash_func: HASH_node_sub,
+    specializer: SPECIALIZE_node_sub,
+    dumper: DUMP_node_sub,
+    replacer: REPLACE_node_sub,
+    no_inline: false,
+};
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_mul: NodeKind = NodeKind {
+    name: "node_mul",
+    default_dispatcher: DISPATCH_node_mul,
+    hash_func: HASH_node_mul,
+    specializer: SPECIALIZE_node_mul,
+    dumper: DUMP_node_mul,
+    replacer: REPLACE_node_mul,
+    no_inline: false,
+};
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_mod: NodeKind = NodeKind {
+    name: "node_mod",
+    default_dispatcher: DISPATCH_node_mod,
+    hash_func: HASH_node_mod,
+    specializer: SPECIALIZE_node_mod,
+    dumper: DUMP_node_mod,
+    replacer: REPLACE_node_mod,
+    no_inline: false,
+};
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_var: NodeKind = NodeKind {
+    name: "node_var",
+    default_dispatcher: DISPATCH_node_var,
+    hash_func: HASH_node_var,
+    specializer: SPECIALIZE_node_var,
+    dumper: DUMP_node_var,
+    replacer: REPLACE_node_var,
+    no_inline: false,
+};
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_set: NodeKind = NodeKind {
+    name: "node_set",
+    default_dispatcher: DISPATCH_node_set,
+    hash_func: HASH_node_set,
+    specializer: SPECIALIZE_node_set,
+    dumper: DUMP_node_set,
+    replacer: REPLACE_node_set,
+    no_inline: false,
+};
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_seq: NodeKind = NodeKind {
+    name: "node_seq",
+    default_dispatcher: DISPATCH_node_seq,
+    hash_func: HASH_node_seq,
+    specializer: SPECIALIZE_node_seq,
+    dumper: DUMP_node_seq,
+    replacer: REPLACE_node_seq,
+    no_inline: false,
+};
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_times: NodeKind = NodeKind {
+    name: "node_times",
+    default_dispatcher: DISPATCH_node_times,
+    hash_func: HASH_node_times,
+    specializer: SPECIALIZE_node_times,
+    dumper: DUMP_node_times,
+    replacer: REPLACE_node_times,
+    no_inline: false,
+};
+

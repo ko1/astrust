@@ -1,0 +1,23 @@
+[package]
+name = "koruby"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[lib]
+name = "koruby"
+path = "src/lib.rs"
+crate-type = ["dylib"]
+
+[[bin]]
+name = "koruby"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+debug = 1
+codegen-units = 16
+incremental = false
+
+[profile.dev]
+opt-level = 1
