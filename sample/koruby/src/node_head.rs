@@ -312,6 +312,7 @@ pub struct node_cvasgn_struct {
 #[repr(C)]
 pub struct node_const_struct {
     pub name: Sym,
+    pub line: u32,
     pub cc: ConstCache,
 }
 
@@ -320,6 +321,7 @@ pub struct node_const_struct {
 pub struct node_const_path_struct {
     pub parent: NodePtr,
     pub name: Sym,
+    pub line: u32,
 }
 
 #[allow(non_camel_case_types)]
@@ -976,13 +978,13 @@ pub fn ALLOC_node_cvasgn(name: Sym, v: NodePtr) -> NodePtr {
 }
 
 #[allow(non_snake_case)]
-pub fn ALLOC_node_const(name: Sym) -> NodePtr {
-    node_allocate(&KIND_node_const, node_const_struct { name, cc: Default::default() })
+pub fn ALLOC_node_const(name: Sym, line: u32) -> NodePtr {
+    node_allocate(&KIND_node_const, node_const_struct { name, line, cc: Default::default() })
 }
 
 #[allow(non_snake_case)]
-pub fn ALLOC_node_const_path(parent: NodePtr, name: Sym) -> NodePtr {
-    node_allocate(&KIND_node_const_path, node_const_path_struct { parent, name })
+pub fn ALLOC_node_const_path(parent: NodePtr, name: Sym, line: u32) -> NodePtr {
+    node_allocate(&KIND_node_const_path, node_const_path_struct { parent, name, line })
 }
 
 #[allow(non_snake_case)]

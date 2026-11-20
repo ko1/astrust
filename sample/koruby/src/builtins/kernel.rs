@@ -338,9 +338,9 @@ fn k_method_name(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> R
 }
 
 fn k_caller(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
-    let start = if !args.is_empty() { args[0].as_fix().max(0) as usize } else { 1 };
+    let (start, len) = crate::builtins::exception::caller_range(c, args)?;
     let lines = backtrace_lines(c, 1 + start);
-    let lines = if args.len() > 1 && args[1].is_fixnum() { lines.into_iter().take(args[1].as_fix() as usize).collect() } else { lines };
+    let lines: Vec<String> = match len { Some(n) => lines.into_iter().take(n).collect(), None => lines };
     Ok(ary_of_strs(lines.into_iter().map(|l| l.into_bytes()).collect(), ENC_UTF8))
 }
 
@@ -716,6 +716,23 @@ fn k_require_relative(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) 
 fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let name = to_rstring(c, args[0])?;
     let p = resolve_feature(&name, None).map(|p| p.to_string_lossy().into_owned()).unwrap_or(name);
+    let wrap = args.get(1).copied().unwrap_or(FALSE);
+    if wrap.truthy() {
+        // load(file, true): run under an anonymous module, self = a fresh main extended with it
+        let m = if is_class_or_module(wrap) { wrap } else { new_module() };
+        let slf = new_object(vm().c_object);
+        let sk = singleton_class(slf);
+        include_module(sk, m);
+        let src = match std::fs::read(&p) {
+            Ok(s) => s,
+            Err(_) => { let e = make_exception(vm().c_load_error, &format!("cannot load such file -- {}", p)); return Err(raise_exc(c, e)); }
+        };
+        let file: &'static str = Box::leak(p.into_boxed_str());
+        let is = match crate::compile::compile_source(&src, file, 1, IseqKind::Top, vec![]) { Ok(is) => is, Err(msg) => return err(c, vm().c_syntax_error, msg) };
+        let cref = new_cref(m, vm().top_cref);
+        crate::run_top_iseq_cref(c, is, slf, cref)?;
+        return Ok(TRUE);
+    }
     load_file(c, &p)?;
     Ok(TRUE)
 }
@@ -725,6 +742,71 @@ fn k_autoload(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
     let k = if is_class_or_module(slf) { slf } else { vm().c_object };
     let nm = if args[0].is_sym() { args[0].as_sym() } else { str_to_sym(args[0]).as_sym() };
     rclass(k).autoload.insert(nm, args[1]);
+    Ok(NIL)
+}
+
+fn m_ruby2_keywords(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
+    let k = if is_class_or_module(slf) { slf } else { vm().c_object };
+    for &a in args {
+        let nm = crate::builtins::object::to_sym_arg(c, a)?;
+        let me = search_method(k, nm);
+        if me.is_null() {
+            let e = make_name_error(c, vm().c_name_error, &format!("undefined method '{}' for {} '{}'", sym_str(nm), if rclass(k).is_module { "module" } else { "class" }, class_path(k)), Value::sym(nm), k)?;
+            return Err(raise_exc(c, e));
+        }
+        let pf = unsafe { &*c.frame().prev };
+        let wloc = format!("{}:{}: warning: Skipping set of ruby2_keywords flag for {} ", frame_file(pf), pf.line, sym_str(nm));
+        if unsafe { (*me).owner } != k {
+            err_write(format!("{}(can only set in method defining module)\n", wloc).as_bytes());
+            continue;
+        }
+        let ok = match unsafe { (*me).kind } {
+            MKind::Iseq(is) => {
+                let is = unsafe { &*is };
+                let p = &is.params;
+                let ok = p.rest.is_some() && p.post.is_empty() && p.kw.is_empty() && p.kwrest.is_none() && !p.no_kw;
+                if ok { is.ruby2_keywords.set(true); }
+                ok
+            }
+            MKind::Cfunc(..) => { err_write(format!("{}(method not defined in Ruby)\n", wloc).as_bytes()); continue; }
+            _ => false,
+        };
+        if !ok { err_write(format!("{}(method accepts keywords or post arguments or method does not accept argument splat)\n", wloc).as_bytes()); }
+    }
+    Ok(NIL)
+}
+fn h_s_r2k_hash_p(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+    if !is_hash(args[0]) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(args[0]))); }
+    Ok(Value::bool(obj(args[0]).flags & FL_KWHASH != 0))
+}
+fn h_s_r2k_hash(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+    if !is_hash(args[0]) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(args[0]))); }
+    let d = crate::hash::hash_new();
+    for (k, x) in crate::hash::hash_pairs(args[0]) { crate::hash::hash_aset(c, d, k, x)?; }
+    obj(d).flags |= FL_KWHASH;
+    Ok(d)
+}
+fn m_s_nesting(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV {
+    let out = ary_new();
+    let mut cr = unsafe { (*c.frame().prev).cref };
+    while !cr.is_null() {
+        let r = unsafe { &*cr };
+        if r.prev.is_null() { break; }
+        ary_push(out, r.klass);
+        cr = r.prev;
+    }
+    Ok(out)
+}
+fn m_autoload_p(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
+    check_argc(c, args, 1, 2)?;
+    let k = if is_class_or_module(slf) { slf } else { vm().c_object };
+    let nm = crate::builtins::object::to_sym_arg(c, args[0])?;
+    let inherit = args.get(1).map(|v| v.truthy()).unwrap_or(true);
+    let list: Vec<Value> = if inherit { ancestors(k).clone() } else { vec![k] };
+    for kk in list {
+        if const_get_at(kk, nm).is_some() { return Ok(NIL); }
+        if let Some(&p) = rclass(kk).autoload.get(&nm) { return Ok(p); }
+    }
     Ok(NIL)
 }
 
@@ -799,6 +881,13 @@ pub fn init() {
     mf("require_relative", k_require_relative, -1);
     mf("load", k_load, -1);
     mf("autoload", k_autoload, -1);
+    mf("autoload?", m_autoload_p, -1);
+    define_cfunc(vm.c_module, "autoload?", m_autoload_p, -1);
+    define_private_cfunc(vm.c_module, "ruby2_keywords", m_ruby2_keywords, -1);
+    define_private_cfunc(singleton_class(vm.main_obj), "ruby2_keywords", m_ruby2_keywords, -1);
+    define_singleton_cfunc(vm.c_module, "nesting", m_s_nesting, 0);
+    define_singleton_cfunc(vm.c_hash, "ruby2_keywords_hash?", h_s_r2k_hash_p, 1);
+    define_singleton_cfunc(vm.c_hash, "ruby2_keywords_hash", h_s_r2k_hash, 1);
     mf("__dir__", k_dir, 0);
     mf("eval", k_eval, -1);
     mf("binding", k_binding, 0);

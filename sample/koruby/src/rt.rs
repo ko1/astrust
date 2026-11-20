@@ -138,7 +138,12 @@ pub fn rt_hash_merge_kw(c: &mut Ctx, h: Value, v: Value) -> Result<(), Esc> {
         if !respond_to(v, s::to_hash, true) {
             return type_err(c, format!("no implicit conversion of {} into Hash", crate::builtins::kernel::class_name_for_err(v)));
         }
-        funcall(c, v, s::to_hash, &[], std::ptr::null())?
+        let r = funcall(c, v, s::to_hash, &[], std::ptr::null())?;
+        if !is_hash(r) {
+            let cls = class_path(real_class_of(v));
+            return type_err(c, format!("can't convert {} to Hash ({}#to_hash gives {})", cls, cls, class_path(real_class_of(r))));
+        }
+        r
     };
     for (k, x) in hash_pairs(src) { hash_aset(c, h, k, x)?; }
     Ok(())
@@ -269,6 +274,16 @@ pub fn rt_const_path(c: &mut Ctx, parent: Value, name: Sym) -> RV {
     const_missing(c, parent, name)
 }
 
+/// `parent::Name = v` (parent UNDEF: `::Name = v`)
+pub fn rt_cdecl_path(c: &mut Ctx, parent: Value, name: Sym, v: Value) -> RV {
+    let k = if parent == UNDEF { vm().c_object } else { parent };
+    if !is_class_or_module(k) {
+        let s = crate::builtins::kernel::inspect_str(c, k)?;
+        return type_err(c, format!("{} is not a class/module", s));
+    }
+    rt_cdecl(c, k, name, v)
+}
+
 pub fn rt_cdecl(c: &mut Ctx, parent: Value, name: Sym, v: Value) -> RV {
     let k = if parent == NIL {
         let cr = unsafe { (*c.frame).cref };
@@ -311,10 +326,55 @@ pub fn rt_break(c: &mut Ctx, v: Value) -> RV {
     if f.self_blk.is_null() {
         return err(c, vm().c_local_jump_error, "break from proc-closure");
     }
+    let tag = unsafe { (*f.self_blk).tag };
+    // a proc's break needs the call that took the literal block to be still running
+    if f.kind == FK_BLOCK && !break_target_alive(c, tag) {
+        return Err(raise_local_jump(c, "break from proc-closure", "break", v));
+    }
     c.esc = EscKind::Break;
     c.esc_val = v;
-    c.esc_tag = unsafe { (*f.self_blk).tag };
+    c.esc_tag = tag;
     Err(Esc)
+}
+
+#[cold]
+fn break_target_alive(c: &Ctx, tag: u64) -> bool {
+    let mut g = c.frame;
+    while !g.is_null() {
+        let b = unsafe { (*g).blk };
+        if !b.is_null() {
+            let bb = unsafe { &*b };
+            if bb.tag == tag && (bb.proc_val == UNDEF || !is_proc(bb.proc_val) || b != proc_block(bb.proc_val)) { return true; }
+        }
+        g = unsafe { (*g).prev };
+    }
+    false
+}
+
+/// `return` inside a proc: its home method must still be running.
+#[cold]
+pub fn rt_block_return(c: &mut Ctx, v: Value) -> RV {
+    let id = unsafe { (*c.frame).id };
+    let mut g = c.frame;
+    let mut alive = false;
+    while !g.is_null() {
+        let k = unsafe { (*g).kind };
+        if unsafe { (*g).id } == id && k != FK_BLOCK && k != FK_CFUNC { alive = true; break; }
+        g = unsafe { (*g).prev };
+    }
+    if !alive { return Err(raise_local_jump(c, "unexpected return", "return", v)); }
+    c.esc = EscKind::Return;
+    c.esc_val = v;
+    c.esc_tag = id;
+    Err(Esc)
+}
+
+#[cold]
+pub fn raise_local_jump(c: &mut Ctx, msg: &str, reason: &str, v: Value) -> Esc {
+    let e = make_exception(vm().c_local_jump_error, msg);
+    ivar_set_raw(e, crate::symbol::intern(b"__reason"), sym_value(reason));
+    ivar_set_raw(e, crate::symbol::intern(b"__exit_value"), v);
+    raise_exc(c, e)
 }
 
 pub fn rt_rescuable(exc: Value) -> bool { is_exception(exc) }
@@ -586,7 +646,7 @@ pub fn rt_yield_staged(c: &mut Ctx, blk: *const Block, base: *mut Value, k: u32)
     if let BlockKind::Iseq(is) = b.kind {
         let is = unsafe { &*is };
         unsafe { *base = b.self_; }
-        let r = run_block_iseq(c, b, is, base, k, std::ptr::null(), false, std::ptr::null(), false);
+        let r = run_block_iseq(c, b, is, base, k, std::ptr::null(), is_lambda_block(blk), std::ptr::null(), false);
         c.sp = base;
         return r;
     }
@@ -600,7 +660,8 @@ pub fn rt_yield_x(c: &mut Ctx, tmp: Value, kw: Value) -> RV {
     let blk = unsafe { (*c.frame).blk };
     if blk.is_null() { return rt_no_block(c); }
     let mut args = rary(tmp).clone();
-    let has_kw = kw != NIL && rhash(kw).live > 0;
+    // an empty **h still counts as "keywords given" for an iseq block (no auto-splat for non-simple blocks)
+    let has_kw = kw != NIL && (rhash(kw).live > 0 || matches!(unsafe { (*blk).kind }, BlockKind::Iseq(_)) && !is_lambda_block(blk));
     if has_kw { args.push(kw); }
     let b = unsafe { &*blk };
     invoke_block_full(c, b, &args, std::ptr::null(), b.self_, false, std::ptr::null(), has_kw)
@@ -657,7 +718,8 @@ pub fn rt_def(c: &mut Ctx, mid: Sym, is: &'static Iseq, _fp: *mut Value) -> RV {
     // `def` inside a method body defines on the cref class; inside instance_eval, on the singleton
     if f.defined_class != NIL && f.kind != FK_CLASS { klass = f.defined_class; }
     let mut visi = if f.kind == FK_CLASS || f.kind == FK_TOP || (f.kind == FK_EVAL) { f.visi } else { VISI_PUBLIC };
-    if klass == vm().c_object && (f.kind == FK_TOP || f.cref == vm().top_cref) && f.kind != FK_CLASS { visi = VISI_PRIVATE; }
+    // eval at top level defines private methods; a def in a method body is public
+    if klass == vm().c_object && f.kind == FK_EVAL && f.cref == vm().top_cref { visi = VISI_PRIVATE; }
     if mid == s::initialize || mid == s::initialize_copy || mid == s::respond_to_missing_p
         || mid == s::mid_initialize_dup || mid == s::mid_initialize_clone { visi = VISI_PRIVATE; }
     if visi == VISI_MODFUNC {

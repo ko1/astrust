@@ -53,6 +53,10 @@ use vm::*;
 
 /// Run a top-level iseq with the given self.
 pub fn run_top_iseq(c: &mut Ctx, is: &'static Iseq, slf: Value) -> RV {
+    run_top_iseq_cref(c, is, slf, vm().top_cref)
+}
+
+pub fn run_top_iseq_cref(c: &mut Ctx, is: &'static Iseq, slf: Value, cref: *const Cref) -> RV {
     let base = c.sp;
     stack_check(c, is.nlocals as usize + 8)?;
     let mut fr = Frame::empty();
@@ -62,7 +66,7 @@ pub fn run_top_iseq(c: &mut Ctx, is: &'static Iseq, slf: Value) -> RV {
     fr.kind = FK_TOP;
     fr.visi = VISI_PRIVATE;
     fr.id = c.next_serial();
-    fr.cref = vm().top_cref;
+    fr.cref = cref;
     fr.line = 1;
     unsafe {
         *base = slf;

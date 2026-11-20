@@ -81,7 +81,7 @@ fn build_options(o: &ParseOpts) -> Vec<u8> {
     d.extend(0u32.to_le_bytes());          // encoding
     d.push(o.frozen_string_literal as u8); // frozen_string_literal
     d.push(0);                             // command_line
-    d.push(0);                             // version: latest
+    d.push(3);                             // version: CRuby 4.0 (the oracle; "latest" is 4.1 syntax)
     d.push(0);                             // encoding_locked
     d.push(o.main_script as u8);
     d.push(0);                             // partial_script

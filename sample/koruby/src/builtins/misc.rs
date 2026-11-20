@@ -460,4 +460,5 @@ pub fn init() {
     let cfg = hash_new_capa(4);
     const_set(rbc, intern(b"CONFIG"), cfg);
     let _ = (intern, num_to_long);
+    crate::builtins::exception::init_location();
 }

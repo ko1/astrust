@@ -44,6 +44,7 @@ pub struct Params {
     pub anon_rest: bool,
     pub anon_kwrest: bool,
     pub anon_block: bool,
+    pub slot_names: Vec<(u32, Sym)>,    // parameter slot -> name
 }
 
 pub struct Iseq {
@@ -60,6 +61,9 @@ pub struct Iseq {
     pub local_names: Vec<(Sym, i32, i32)>, // (name, slot or -1, env index or -1)
     pub arity: i32,
     pub uses_block: bool,
+    pub parent: std::cell::Cell<*const Iseq>,          // lexically enclosing iseq (set when it is finished)
+    pub outer_names: Vec<(Sym, u32, u32)>,             // eval: the binding's names (name, hops, idx)
+    pub ruby2_keywords: std::cell::Cell<bool>,         // Module#ruby2_keywords: flag a trailing keyword Hash in *rest
 }
 
 // ---- blocks ---------------------------------------------------------------------------
@@ -220,6 +224,7 @@ pub struct Vm {
     pub c_object_space_weak_map: Value, pub c_string_io: Value, pub c_dir: Value, pub c_stat: Value, pub c_monitor: Value,
     pub m_errno: Value, pub m_math: Value, pub m_process: Value, pub m_gc: Value, pub m_object_space: Value, pub m_marshal: Value,
     pub m_signal: Value, pub m_warning: Value, pub m_file_test: Value,
+    pub c_location: Value,
     pub main_obj: Value,
     pub stdout: Value, pub stderr: Value, pub stdin: Value,
     pub globals: HashMap<Sym, Value>,
@@ -778,6 +783,16 @@ pub fn frame_label(f: &Frame) -> String {
                 }
                 is.info.label.clone()
             }
+            IseqKind::Block | IseqKind::Lambda if !f.me.is_null() => {
+                // "block in m" -> "block in Owner#m" when the block's home is that method
+                let me = &*f.me;
+                let l = &is.info.label;
+                let mname = sym_str(me.name);
+                match l.find(" in ") {
+                    Some(p) if l[p + 4..] == *mname => format!("{}{}{}", &l[..p + 4], method_owner_label(me.owner, f.fp), mname),
+                    _ => l.clone(),
+                }
+            }
             _ => is.info.label.clone(),
         }
     }
@@ -833,7 +848,10 @@ pub fn backtrace_lines(c: &Ctx, skip: usize) -> Vec<String> {
         }
         for (i, &fp) in frames.iter().enumerate() {
             let fr = &*fp;
-            if fr.kind == FK_CLASS && false { continue; }
+            if fr.kind != FK_CFUNC && fr.iseq.is_null() { continue; }
+            // CRuby's send/__send__ and Proc#call/yield/===/[] do not push a frame
+            if fr.kind == FK_CFUNC && (fr.cfunc_name == s::send || fr.cfunc_name == s::__send__) { continue; }
+            if fr.kind == FK_CFUNC && is_proc(fr.cfunc_recv) && matches!(sym_str(fr.cfunc_name).as_ref(), "call" | "yield" | "===" | "[]") { continue; }
             let (file, line) = &info[i];
             out.push(format!("{}:{}:in '{}'", file, line, frame_label(fr)));
         }
@@ -1120,8 +1138,14 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: *mut Value, argc: u32, blk: *c
         let h = *args.last().unwrap();
         if accepts_kw && !p.forwarding {
             kwh = h; args.pop();
-        } else if flags & CF_KW_SPLAT != 0 && is_hash(h) && rhash(h).live == 0 {
+        } else if (flags & CF_KW_SPLAT != 0 || is_block) && is_hash(h) && rhash(h).live == 0 {
             args.pop();
+        } else if is.ruby2_keywords.get() && p.rest.is_some() && is_hash(h) {
+            let d = crate::hash::hash_new();
+            crate::array::ary_push(tmp, d);
+            for (k, x) in crate::hash::hash_pairs(h) { crate::hash::hash_aset(c, d, k, x)?; }
+            obj(d).flags |= FL_KWHASH;
+            *args.last_mut().unwrap() = d;
         } else if p.forwarding {
             // keep as positional for forwarding; remember it's keywords
         }
@@ -1134,7 +1158,9 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: *mut Value, argc: u32, blk: *c
     let post = p.post.len();
     let opt = p.opt.len();
     // block auto-splat
-    if is_block && args.len() == 1 && (lead + post + opt > 1 || (p.rest.is_some() && lead + post + opt > 0) || p.has_trailing_comma || (lead == 1 && p.rest.is_some()))
+    // a non-simple block given keywords (even an empty **h) does not auto-splat
+    let simple_block = opt == 0 && !p.no_kw && p.rest.is_none() && post == 0 && !accepts_kw && p.block.is_none() && p.destructure.is_empty();
+    if is_block && args.len() == 1 && (flags & CF_KW == 0 || simple_block) && (lead + post + opt > 1 || (p.rest.is_some() && lead + post + opt > 0) || p.has_trailing_comma || (lead == 1 && p.rest.is_some()))
         && !p.forwarding {
         let a = args[0];
         let arr = if is_array(a) { Some(a) } else if a.is_heap() && !is_hash(a) && respond_to(a, s::to_ary, true) {
@@ -1151,7 +1177,11 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: *mut Value, argc: u32, blk: *c
         let maxp = if p.rest.is_some() || p.forwarding { usize::MAX } else { required + opt };
         if given < required || given > maxp {
             if !(accepts_kw && kwh == NIL && given == required + opt + 1 && false) {
-                return argc_err(c, given, required as i32, if maxp == usize::MAX { -1 } else { maxp as i32 }).map(|_: ()| ());
+                let exp = if maxp == usize::MAX { format!("{}+", required) } else if required == maxp { format!("{}", required) } else { format!("{}..{}", required, maxp) };
+                // missing required keywords are reported along with the arity
+                let missing: Vec<String> = if kwh == NIL { p.kw.iter().filter(|k| k.required).map(|k| sym_str(k.name).to_string()).collect() } else { vec![] };
+                let extra = match missing.len() { 0 => String::new(), 1 => format!("; required keyword: {}", missing[0]), _ => format!("; required keywords: {}", missing.join(", ")) };
+                return arg_err(c, format!("wrong number of arguments (given {}, expected {}{})", given, exp, extra));
             }
         }
     }
@@ -1380,6 +1410,9 @@ pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &Iseq, base: *mut Value, argc:
             Err(e) => Err(e),
         }
     };
+    // redo: run the body again with the same arguments
+    let mut r = r;
+    while r.is_err() && c.esc == EscKind::Redo { c.esc = EscKind::None; r = run_body(c, is.body, base); }
     c.frame = fr.prev;
     match r {
         Ok(v) => Ok(v),

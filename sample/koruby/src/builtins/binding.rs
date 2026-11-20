@@ -14,32 +14,33 @@ impl RData for RBinding {
 }
 fn rbind(v: Value) -> &'static mut RBinding { rdata::<RBinding>(v).unwrap() }
 
-/// Names visible from frame f: (name, hops, env idx), innermost scope first.
-fn scope_names(f: &Frame) -> Vec<Vec<(Sym, u32, u32)>> {
+/// Names visible from code whose env (fp[1]) belongs to `is` (or to its parent when
+/// `is` has no env of its own), innermost first: (name, hops, env idx).
+fn iseq_names(mut is: *const Iseq, own: bool) -> Vec<(Sym, u32, u32)> {
     let mut out = vec![];
-    if f.iseq.is_null() { return out; }
-    let is = unsafe { &*f.iseq };
-    let mut lv = vec![];
-    for &(n, _sl, ei) in &is.local_names { if ei >= 0 { lv.push((n, 0, ei as u32)); } }
-    out.push(lv);
-    // outer scopes of a block
-    if !f.self_blk.is_null() {
-        let mut b = f.self_blk;
-        let mut hops = if is.env_size > 0 { 1 } else { 0 };
-        let _ = &mut b;
-        let mut env = unsafe { *f.fp.add(1) };
-        if is.env_size > 0 { env = match &obj(env).body { Body::Env(_, p) => *p, _ => NIL }; }
-        let _ = env;
-        let _ = &mut hops;
+    let mut hops = 0;
+    if !own { if is.is_null() { return out; } is = unsafe { (*is).parent.get() }; }
+    while !is.is_null() {
+        let i = unsafe { &*is };
+        for &(n, _sl, ei) in &i.local_names { if ei >= 0 && !out.iter().any(|x: &(Sym, u32, u32)| x.0 == n) { out.push((n, hops, ei as u32)); } }
+        let h = if i.env_size > 0 { 1 } else { 0 };
+        if i.kind == IseqKind::Eval {
+            for &(n, oh, ei) in &i.outer_names { if !out.iter().any(|x| x.0 == n) { out.push((n, oh + hops + h, ei)); } }
+        }
+        hops += h;
+        if !matches!(i.kind, IseqKind::Block | IseqKind::Lambda) { break; }
+        is = i.parent.get();
     }
     out
 }
 
+fn new_binding(slf: Value, env: Value, names: Vec<(Sym, u32, u32)>, cref: *const Cref, me: *const MethodEntry, file: &'static str, line: u32) -> Value {
+    crate::gc::alloc(vm().c_binding, Body::Data(Box::new(RBinding { self_: slf, env, names: vec![names], cref, me, file, line, extra: NIL })))
+}
+
 pub fn binding_of_frame(_c: &mut Ctx, f: &Frame) -> RV {
     let env = unsafe { *f.fp.add(1) };
-    let names = scope_names(f);
-    let file = frame_file(f);
-    Ok(crate::gc::alloc(vm().c_binding, Body::Data(Box::new(RBinding { self_: unsafe { *f.fp }, env, names, cref: f.cref, me: f.me, file, line: f.line, extra: NIL }))))
+    Ok(new_binding(unsafe { *f.fp }, env, iseq_names(f.iseq, true), f.cref, f.me, frame_file(f), f.line))
 }
 pub fn binding_of_caller(c: &mut Ctx) -> RV {
     let f = c.frame();
@@ -48,7 +49,11 @@ pub fn binding_of_caller(c: &mut Ctx) -> RV {
 }
 pub fn binding_of_proc(_c: &mut Ctx, p: Value) -> RV {
     let b = rproc(p).blk;
-    Ok(crate::gc::alloc(vm().c_binding, Body::Data(Box::new(RBinding { self_: b.self_, env: b.env, names: vec![], cref: b.cref, me: b.me, file: "(binding)", line: 0, extra: NIL }))))
+    let (names, file, line) = match b.kind {
+        BlockKind::Iseq(is) => (iseq_names(is, false), unsafe { (*is).info.file }, unsafe { (*is).info.line }),
+        _ => (vec![], "(binding)", 0),
+    };
+    Ok(new_binding(b.self_, b.env, names, b.cref, b.me, file, line))
 }
 
 fn env_names(env: Value, names: &[Vec<(Sym, u32, u32)>]) -> Vec<(Sym, u32, u32)> {
@@ -64,10 +69,26 @@ pub fn eval_in_binding(c: &mut Ctx, bind: Value, src: &[u8], file: &'static str,
         Err(m) => return err(c, vm().c_syntax_error, m),
     };
     let (slf, env, cref, me) = (b.self_, b.env, b.cref, b.me);
-    run_eval_iseq(c, is, slf, env, cref, me, VISI_PUBLIC)
+    let mut new_env = NIL;
+    let r = run_eval_iseq_env(c, is, slf, env, cref, me, VISI_PUBLIC, &mut new_env);
+    // locals the eval introduced stay visible through this Binding
+    if is.env_size > 0 && new_env != NIL {
+        let b = rbind(bind);
+        let mut names: Vec<(Sym, u32, u32)> = is.local_names.iter().filter(|x| x.2 >= 0).map(|&(n, _, ei)| (n, 0, ei as u32)).collect();
+        for &(n, h, i) in b.names.iter().flatten() { if !names.iter().any(|x| x.0 == n) { names.push((n, h + 1, i)); } }
+        b.names = vec![names];
+        b.env = new_env;
+    }
+    r
 }
 
 pub fn run_eval_iseq(c: &mut Ctx, is: &'static Iseq, slf: Value, env: Value, cref: *const Cref, me: *const MethodEntry, visi: u8) -> RV {
+    let mut e = NIL;
+    run_eval_iseq_env(c, is, slf, env, cref, me, visi, &mut e)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_eval_iseq_env(c: &mut Ctx, is: &'static Iseq, slf: Value, env: Value, cref: *const Cref, me: *const MethodEntry, visi: u8, out_env: &mut Value) -> RV {
     let base = c.sp;
     stack_check(c, is.nlocals as usize + 8)?;
     let mut fr = Frame::empty();
@@ -80,6 +101,7 @@ pub fn run_eval_iseq(c: &mut Ctx, is: &'static Iseq, slf: Value, env: Value, cre
         c.sp = base.add(is.nlocals as usize);
         let e = if is.env_size > 0 { crate::gc::alloc(vm().c_env, Body::Env(vec![NIL; is.env_size as usize], env)) } else { env };
         *base.add(1) = if e == NIL { crate::gc::alloc(vm().c_env, Body::Env(vec![], NIL)) } else { e };
+        *out_env = *base.add(1);
     }
     c.frame = &mut fr;
     let r = run_body(c, is.body, base);

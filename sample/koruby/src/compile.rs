@@ -58,12 +58,15 @@ struct Scope {
     fwd: bool,
     transparent: bool,            // `for` body: shares the enclosing scope's variables
     param_env: Vec<(Sym, u32)>,   // captured parameters: (name, setup slot)
+    children: Vec<&'static Iseq>, // iseqs finished inside this scope (their parent is this scope's iseq)
+    params_seen: HashSet<Sym>,    // `|_, _|`: only the first duplicate binds the variable
+    param_names: Vec<(u32, Sym)>, // parameter slot -> name (for #parameters)
 }
 
 impl Scope {
     fn new(kind: SK, captured: HashSet<Sym>) -> Scope {
         Scope { kind, vars: HashMap::new(), names: vec![], nslots: 2, env_size: 0, captured, loop_depth: 0,
-                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![] }
+                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![], children: vec![], params_seen: HashSet::new(), param_names: vec![] }
     }
     fn has_env(&self) -> bool { self.env_size > 0 }
 }
@@ -288,8 +291,9 @@ impl<'a> Compiler<'a> {
         self.finish_iseq(body, Params::default(), kind, label, 1, Sym(0))
     }
 
-    fn finish_iseq(&mut self, body: NodePtr, params: Params, kind: IseqKind, label: String, line: u32, name: Sym) -> &'static Iseq {
-        let sc = self.scopes.pop().unwrap();
+    fn finish_iseq(&mut self, body: NodePtr, mut params: Params, kind: IseqKind, label: String, line: u32, name: Sym) -> &'static Iseq {
+        let mut sc = self.scopes.pop().unwrap();
+        params.slot_names = std::mem::take(&mut sc.param_names);
         let mut env_params = vec![];
         // a captured parameter has both a slot (filled by setup) and an env index
         for &(nm, sl) in sc.param_env.iter() {
@@ -311,7 +315,11 @@ impl<'a> Compiler<'a> {
         let is = Box::leak(Box::new(Iseq {
             body, nlocals: sc.nslots, params, env_size: sc.env_size, env_params,
             info: CodeInfo { file: self.file, label, line }, kind, simple, lead_only, name, local_names, arity, uses_block: false,
+            parent: std::cell::Cell::new(std::ptr::null()), ruby2_keywords: std::cell::Cell::new(false),
+            outer_names: if kind == IseqKind::Eval { self.eval_outer.iter().flatten().cloned().collect() } else { vec![] },
         }));
+        for ch in &sc.children { ch.parent.set(is); }
+        if let Some(p) = self.scopes.last_mut() { p.children.push(is); }
         crate::aot::register_iseq(is);
         is
     }
@@ -337,7 +345,7 @@ impl<'a> Compiler<'a> {
         let line = self.line(n.loc);
         match &n.kind {
             Kind::StatementsNode { body } => {
-                let v: Vec<NodePtr> = body.iter().map(|x| self.c(x)).collect();
+                let v: Vec<NodePtr> = body.iter().map(|x| { let r = self.c(x); if needs_line(x) { ALLOC_node_line(self.line(x.loc), r) } else { r } }).collect();
                 self.seq(v)
             }
             Kind::ParenthesesNode { body } => self.stmts(body.as_deref()),
@@ -425,7 +433,7 @@ impl<'a> Compiler<'a> {
             Kind::SourceLineNode => ALLOC_node_lit(Value::fix(line as i64)),
             Kind::SourceEncodingNode => {
                 let e = ALLOC_node_top_const(intern(b"Encoding"));
-                ALLOC_node_const_path(e, intern(b"UTF_8"))
+                ALLOC_node_const_path(e, intern(b"UTF_8"), line)
             }
             // variables
             Kind::LocalVariableReadNode { name, depth } => { let nm = self.cst(*name); self.var_read(nm, *depth) }
@@ -502,25 +510,25 @@ impl<'a> Compiler<'a> {
                 let nm = self.cst(*name); let v = self.c(value);
                 ALLOC_node_and(ALLOC_node_cvar(nm), ALLOC_node_cvasgn(nm, v))
             }
-            Kind::ConstantReadNode { name } => ALLOC_node_const(self.cst(*name)),
+            Kind::ConstantReadNode { name } => ALLOC_node_const(self.cst(*name), line),
             Kind::ConstantWriteNode { name, value } => { let v = self.c(value); ALLOC_node_cdecl(self.cst(*name), v) }
             Kind::ConstantOrWriteNode { name, value } => {
                 let nm = self.cst(*name); let v = self.c(value);
                 let d = ALLOC_node_defined(DEF_CONST, nm, ALLOC_node_nil());
-                ALLOC_node_if(d, ALLOC_node_const(nm), ALLOC_node_cdecl(nm, v))
+                ALLOC_node_if(d, ALLOC_node_const(nm, line), ALLOC_node_cdecl(nm, v))
             }
             Kind::ConstantAndWriteNode { name, value } => {
                 let nm = self.cst(*name); let v = self.c(value);
-                ALLOC_node_and(ALLOC_node_const(nm), ALLOC_node_cdecl(nm, v))
+                ALLOC_node_and(ALLOC_node_const(nm, line), ALLOC_node_cdecl(nm, v))
             }
             Kind::ConstantOperatorWriteNode { name, value, binary_operator } => {
                 let nm = self.cst(*name); let v = self.c(value);
-                let e = self.binop(ALLOC_node_const(nm), self.cst(*binary_operator), v, line);
+                let e = self.binop(ALLOC_node_const(nm, line), self.cst(*binary_operator), v, line);
                 ALLOC_node_cdecl(nm, e)
             }
             Kind::ConstantPathNode { parent, name } => {
                 let nm = self.cst(name.unwrap_or(0));
-                match parent { None => ALLOC_node_top_const(nm), Some(p) => { let pv = self.c(p); ALLOC_node_const_path(pv, nm) } }
+                match parent { None => ALLOC_node_top_const(nm), Some(p) => { let pv = self.c(p); ALLOC_node_const_path(pv, nm, line) } }
             }
             Kind::ConstantPathWriteNode { target, value } => {
                 let v = self.c(value);
@@ -629,11 +637,11 @@ impl<'a> Compiler<'a> {
                 let args: Vec<&PNode> = match arguments.as_deref() { Some(PNode { kind: Kind::ArgumentsNode { arguments }, .. }) => arguments.iter().collect(), _ => vec![] };
                 if args.iter().all(|a| self.simple_arg(a)) {
                     let v: Vec<NodePtr> = args.iter().map(|a| self.c(a)).collect();
-                    ALLOC_node_yield(leak(v))
+                    ALLOC_node_line(line, ALLOC_node_yield(leak(v)))
                 } else {
                     let (v, kinds) = self.complex_args(&args);
                     let ci = Box::leak(Box::new(CallInfo { kinds, blk: None, kw_splat_only: false }));
-                    ALLOC_node_yield_x(leak(v), ci)
+                    ALLOC_node_line(line, ALLOC_node_yield_x(leak(v), ci))
                 }
             }
             Kind::CallOperatorWriteNode { receiver, read_name, write_name, binary_operator, value } => {
@@ -695,16 +703,18 @@ impl<'a> Compiler<'a> {
             Kind::MultiWriteNode { lefts, rest, rights, value } => {
                 let v = self.c(value);
                 let splat_rhs = matches!(value.kind, Kind::ArrayNode { .. });
-                self.masgn(lefts, rest.as_deref(), rights, v, splat_rhs)
+                let m = self.masgn(lefts, rest.as_deref(), rights, v, splat_rhs);
+                ALLOC_node_line(line, m)
             }
             // definitions
             Kind::DefNode { name, receiver, parameters, body, locals } => {
                 let nm = self.cst(*name);
                 let is = self.compile_def(n, nm, parameters.as_deref(), body.as_deref(), locals, line);
-                match receiver {
+                let d = match receiver {
                     Some(r) => { let rv = self.c(r); ALLOC_node_sdef(rv, nm, is) }
                     None => ALLOC_node_def(nm, is),
-                }
+                };
+                ALLOC_node_line(line, d)
             }
             Kind::ClassNode { locals, constant_path, superclass, body, name } => {
                 let nm = self.cst(*name);
@@ -712,21 +722,21 @@ impl<'a> Compiler<'a> {
                 let (sup, has_sup) = match superclass { Some(s) => (self.c(s), true), None => (ALLOC_node_nil(), false) };
                 let label = format!("<class:{}>", crate::symbol::sym_str(nm));
                 let is = self.compile_body(n, locals, body.as_deref(), IseqKind::Class, label, line);
-                ALLOC_node_class(cp, nm, sup, is, has_cp, has_sup)
+                ALLOC_node_line(line, ALLOC_node_class(cp, nm, sup, is, has_cp, has_sup))
             }
             Kind::ModuleNode { locals, constant_path, body, name } => {
                 let nm = self.cst(*name);
                 let (cp, has_cp) = self.cpath_parent(constant_path);
                 let label = format!("<module:{}>", crate::symbol::sym_str(nm));
                 let is = self.compile_body(n, locals, body.as_deref(), IseqKind::Class, label, line);
-                ALLOC_node_module(cp, nm, is, has_cp)
+                ALLOC_node_line(line, ALLOC_node_module(cp, nm, is, has_cp))
             }
             Kind::SingletonClassNode { locals, expression, body } => {
                 let e = self.c(expression);
                 let is = self.compile_body(n, locals, body.as_deref(), IseqKind::Class, "singleton class".into(), line);
-                ALLOC_node_sclass(e, is)
+                ALLOC_node_line(line, ALLOC_node_sclass(e, is))
             }
-            Kind::AliasMethodNode { new_name, old_name } => { let a = self.c(new_name); let b = self.c(old_name); ALLOC_node_alias(a, b) }
+            Kind::AliasMethodNode { new_name, old_name } => { let a = self.c(new_name); let b = self.c(old_name); ALLOC_node_line(line, ALLOC_node_alias(a, b)) }
             Kind::AliasGlobalVariableNode { new_name, old_name } => {
                 let g = |s: &Self, x: &PNode| match &x.kind {
                     Kind::GlobalVariableReadNode { name } => s.cst(*name),
@@ -735,7 +745,7 @@ impl<'a> Compiler<'a> {
                 };
                 ALLOC_node_valias(g(self, new_name), g(self, old_name))
             }
-            Kind::UndefNode { names } => { let v: Vec<NodePtr> = names.iter().map(|x| self.c(x)).collect(); ALLOC_node_undef(leak(v)) }
+            Kind::UndefNode { names } => { let v: Vec<NodePtr> = names.iter().map(|x| self.c(x)).collect(); ALLOC_node_line(line, ALLOC_node_undef(leak(v))) }
             Kind::LambdaNode { locals, parameters, body } => {
                 let is = self.compile_block(n, locals, parameters.as_deref(), body.as_deref(), IseqKind::Lambda, line);
                 ALLOC_node_lambda(is)
@@ -1116,6 +1126,7 @@ impl<'a> Compiler<'a> {
         match &t.kind {
             Kind::LocalVariableTargetNode { name, depth } => { let nm = self.cst(*name); self.var_write(nm, *depth, v) }
             Kind::LocalVariableReadNode { name, depth } => { let nm = self.cst(*name); self.var_write(nm, *depth, v) }
+            Kind::RequiredParameterNode { name } => { let nm = self.cst(*name); self.var_write(nm, 0, v) }
             Kind::InstanceVariableTargetNode { name } => ALLOC_node_iasgn(self.cst(*name), v),
             Kind::GlobalVariableTargetNode { name } => ALLOC_node_gasgn(self.cst(*name), v),
             Kind::ClassVariableTargetNode { name } => ALLOC_node_cvasgn(self.cst(*name), v),
@@ -1492,8 +1503,7 @@ impl<'a> Compiler<'a> {
             }
         }
         let base = self.method_label();
-        let _ = depth;
-        format!("block in {}", base)
+        if depth >= 1 { format!("block ({} levels) in {}", depth + 1, base) } else { format!("block in {}", base) }
     }
 
     fn method_label(&self) -> String {
@@ -1578,15 +1588,18 @@ impl<'a> Compiler<'a> {
     /// The frame slot that receives a parameter.  A captured parameter gets a hidden
     /// slot and is copied into the env after setup.
     fn param_slot(&mut self, nm: Sym) -> u32 {
+        if !self.cur().params_seen.insert(nm) { let sl = self.hidden_slot(); self.cur().param_names.push((sl, nm)); return sl; }
         let loc = match self.cur().vars.get(&nm) { Some(&l) => l, None => self.declare(nm) };
-        match loc {
+        let sl = match loc {
             VarLoc::Slot(i) => i,
             VarLoc::Env(_) => {
                 let sl = self.hidden_slot();
                 self.cur().param_env.push((nm, sl));
                 sl
             }
-        }
+        };
+        self.cur().param_names.push((sl, nm));
+        sl
     }
 
     fn params(&mut self, p: Option<&PNode>, is_block: bool) -> Params {
@@ -1702,6 +1715,19 @@ impl<'a> Compiler<'a> {
     }
 }
 
+/// Statements that can raise without passing through a node that records the line.
+fn needs_line(n: &PNode) -> bool {
+    match &n.kind {
+        Kind::ArrayNode { .. } | Kind::HashNode { .. } | Kind::KeywordHashNode { .. } | Kind::CaseMatchNode { .. } | Kind::MatchRequiredNode { .. }
+        | Kind::ClassVariableReadNode { .. } | Kind::ClassVariableWriteNode { .. } | Kind::ClassVariableOperatorWriteNode { .. }
+        | Kind::ClassVariableOrWriteNode { .. } | Kind::ClassVariableAndWriteNode { .. }
+        | Kind::ConstantPathWriteNode { .. } | Kind::ConstantPathOperatorWriteNode { .. } | Kind::ConstantPathOrWriteNode { .. }
+        | Kind::ConstantPathAndWriteNode { .. } | Kind::ConstantOperatorWriteNode { .. } | Kind::SplatNode { .. } => true,
+        Kind::LocalVariableWriteNode { value, .. } | Kind::InstanceVariableWriteNode { value, .. } | Kind::GlobalVariableWriteNode { value, .. } => needs_line(value),
+        _ => false,
+    }
+}
+
 fn split_first_stmt(_n: NodePtr) -> Option<(NodePtr, NodePtr)> { None }
 
 pub const CF_ATTR: u32 = 64;
@@ -1739,7 +1765,8 @@ pub fn regex_opts(flags: u32) -> u32 {
 
 /// Parse and compile a source file into a top-level iseq.  Err = SyntaxError message.
 pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, String> {
-    let scopes: Vec<Vec<Vec<u8>>> = outer.iter().map(|sc| sc.iter().map(|(n, _, _)| crate::symbol::sym_bytes(*n).to_vec()).collect()).collect();
+    let mut scopes: Vec<Vec<Vec<u8>>> = outer.iter().rev().map(|sc| sc.iter().map(|(n, _, _)| crate::symbol::sym_bytes(*n).to_vec()).collect()).collect();
+    if !scopes.is_empty() { scopes.push(vec![]); }
     let pr = prism::parse(src, &prism::ParseOpts { filepath: file.as_bytes(), line, scopes, main_script: kind == IseqKind::Main, frozen_string_literal: 0 });
     if !pr.errors.is_empty() {
         let mut msg = String::new();
@@ -1750,6 +1777,7 @@ pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind,
         return Err(msg);
     }
     let mut cm = Compiler::new(&pr, file);
+    if kind == IseqKind::Eval && !outer.is_empty() { cm.captures.entry(key(&pr.root)).or_default().insert(Sym(u32::MAX)); }
     cm.eval_outer = outer;
     Ok(cm.compile_program(&pr.root, kind))
 }

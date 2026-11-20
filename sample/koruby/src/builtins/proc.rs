@@ -37,16 +37,14 @@ pub fn proc_arity(p: Value) -> i64 {
 }
 
 pub fn iseq_arity(is: &Iseq, lambda: bool) -> i64 {
+    // rb_iseq_min_max_arity + rb_proc_arity / method_def_arity
     let p = &is.params;
-    let req = (p.lead.len() + p.post.len()) as i64;
     let req_kw = p.kw.iter().any(|k| k.required);
-    let opt = !p.opt.is_empty() || p.rest.is_some() || (!lambda && !p.opt.is_empty());
-    if !lambda {
-        if p.rest.is_some() || !p.opt.is_empty() { return -(req + 1) - if req_kw { 0 } else { 0 }; }
-        if p.has_trailing_comma && req == 1 { return 1; }
-        return if req_kw { req + 1 } else { req };
-    }
-    if opt { -(req + if req_kw { 1 } else { 0 }) - 1 } else if req_kw { req + 1 } else { req }
+    let min = (p.lead.len() + p.post.len()) as i64 + if req_kw { 1 } else { 0 };
+    if p.rest.is_some() { return -min - 1; }
+    if !lambda { return min; }
+    let max = (p.lead.len() + p.opt.len() + p.post.len()) as i64 + if !p.kw.is_empty() || p.kwrest.is_some() { 1 } else { 0 };
+    if min == max { min } else { -min - 1 }
 }
 
 pub fn method_arity(me: *const MethodEntry) -> i64 {
@@ -56,7 +54,7 @@ pub fn method_arity(me: *const MethodEntry) -> i64 {
         MKind::Cfunc(_, a) => a as i64,
         MKind::AttrReader(_) => 0,
         MKind::AttrWriter(_) => 1,
-        MKind::Bmethod(p) => proc_arity(p),
+        MKind::Bmethod(p) => match rproc(p).blk.kind { BlockKind::Iseq(is) => iseq_arity(unsafe { &*is }, true), _ => proc_arity(p) },
         _ => -1,
     }
 }
@@ -65,6 +63,7 @@ fn params_list(is: &Iseq, lambda: bool) -> Value {
     let out = ary_new();
     let p = &is.params;
     let name_of = |slot: u32| -> Option<Sym> {
+        if let Some(&(_, n)) = p.slot_names.iter().find(|x| x.0 == slot) { return Some(n); }
         for (n, sl, _) in &is.local_names { if *sl == slot as i32 { return Some(*n); } }
         // captured params: env copy recorded in env_params
         for (sl, ei) in &is.env_params { if *sl == slot { for (n, _, e) in &is.local_names { if *e == *ei as i32 { return Some(*n); } } } }
@@ -72,7 +71,10 @@ fn params_list(is: &Iseq, lambda: bool) -> Value {
     };
     let push = |kind: &str, slot: Option<u32>| {
         let mut items = vec![crate::vm::sym_value(kind)];
-        if let Some(sl) = slot { if let Some(n) = name_of(sl) { if !crate::symbol::sym_bytes(n).starts_with(b"__") { items.push(Value::sym(n)); } } }
+        let anon = match kind { "rest" => Some("*"), "keyrest" => Some("**"), "block" => Some("&"), _ => None };
+        let named = slot.and_then(name_of).filter(|n| !crate::symbol::sym_bytes(*n).starts_with(b"__"));
+        if let Some(n) = named { items.push(Value::sym(n)); }
+        else if let Some(a) = anon { if slot.is_none() || slot.and_then(name_of).is_some_and(|n| crate::symbol::sym_bytes(n).starts_with(b"__fwd")) { items.push(crate::vm::sym_value(a)); } }
         let e = ary_new_from(&items);
         ary_push(out, e);
     };
@@ -281,19 +283,65 @@ fn meth_source_location(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block
         _ => Ok(NIL),
     }
 }
+/// "(a, b=..., *r, k:, &blk) file:line" part of Method#inspect
+fn meth_sig(c: &mut Ctx, slf: Value) -> Result<String, Esc> {
+    let me = unsafe { &*rmethod(slf).me };
+    let (iseq, cfunc_arity): (Option<&Iseq>, Option<i32>) = match me.kind {
+        MKind::Iseq(is) => (Some(unsafe { &*is }), None),
+        MKind::Bmethod(p) => match rproc(p).blk.kind { BlockKind::Iseq(is) => (Some(unsafe { &*is }), None), _ => (None, Some(-1)) },
+        MKind::Cfunc(_, a) => (None, Some(a)),
+        MKind::AttrReader(_) => (None, Some(0)),
+        MKind::AttrWriter(_) => (None, Some(1)),
+        _ => (None, Some(-1)),
+    };
+    if let Some(a) = cfunc_arity {
+        let inner = if a < 0 { "*".to_string() } else { vec!["_"; a as usize].join(", ") };
+        return Ok(format!("({})", inner));
+    }
+    let is = iseq.unwrap();
+    // prelude methods look like C methods
+    if is.info.file.starts_with("<internal:") {
+        let a = iseq_arity(is, true);
+        let inner = if a < 0 { "*".to_string() } else { vec!["_"; a as usize].join(", ") };
+        return Ok(format!("({})", inner));
+    }
+    if is.params.forwarding { return Ok(format!("(...) {}:{}", is.info.file, is.info.line)); }
+    let ps = method_parameters(c, slf, &[], std::ptr::null())?;
+    let mut parts = vec![];
+    for i in 0..ary_len(ps) {
+        let e = ary_get(ps, i);
+        let kind = sym_str(ary_get(e, 0).as_sym()).to_string();
+        let name = if ary_len(e) > 1 { sym_str(ary_get(e, 1).as_sym()).to_string() } else { String::new() };
+        parts.push(match kind.as_str() {
+            "req" => if name.is_empty() { "_".into() } else { name },
+            "opt" => format!("{}=...", if name.is_empty() { "_" } else { &name }),
+            "rest" => if name == "*" { name } else { format!("*{}", name) },
+            "keyreq" => format!("{}:", name),
+            "key" => format!("{}: ...", name),
+            "keyrest" => if name == "**" { name } else { format!("**{}", name) },
+            "nokey" => "**nil".into(),
+            "block" => if name == "&" { name } else { format!("&{}", name) },
+            _ => name,
+        });
+    }
+    let inner = if parts == ["*", "**", "&"] { "...".to_string() } else { parts.join(", ") };
+    Ok(format!("({}) {}:{}", inner, is.info.file, is.info.line))
+}
 fn meth_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let m = rmethod(slf);
     let me = unsafe { &*m.me };
     let owner = me.owner;
+    let sig = meth_sig(c, slf)?;
+    let nm = if me.name != m.name { format!("{}({})", sym_str(m.name), sym_str(me.name)) } else { sym_str(m.name).to_string() };
     let s = if m.unbound {
-        format!("#<UnboundMethod: {}#{}(*)>", class_path(owner), sym_str(m.name))
+        format!("#<UnboundMethod: {}#{}{}>", class_path(owner), nm, sig)
     } else if rclass(owner).is_singleton {
         let r = inspect_str(c, m.recv)?;
-        format!("#<Method: {}.{}(*)>", r, sym_str(m.name))
+        format!("#<Method: {}.{}{}>", r, nm, sig)
     } else {
         let rc = real_class_of(m.recv);
-        if rc == owner { format!("#<Method: {}#{}(*)>", class_path(owner), sym_str(m.name)) }
-        else { format!("#<Method: {}({})#{}(*)>", class_path(rc), class_path(owner), sym_str(m.name)) }
+        if rc == owner { format!("#<Method: {}#{}{}>", class_path(owner), nm, sig) }
+        else { format!("#<Method: {}({})#{}{}>", class_path(rc), class_path(owner), nm, sig) }
     };
     Ok(str_new(s.as_bytes()))
 }

@@ -266,7 +266,7 @@ pub fn DISPATCH_node_const(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
     let np = n as *mut NodeOf<node_const_struct>;
     unsafe {
 
-    EVAL_node_const(c, n, fp, (*np).u.name, &mut (*np).u.cc)
+    EVAL_node_const(c, n, fp, (*np).u.name, (*np).u.line, &mut (*np).u.cc)
     }
 }
 
@@ -275,7 +275,7 @@ pub fn DISPATCH_node_const_path(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
     let np = n as *mut NodeOf<node_const_path_struct>;
     unsafe {
     let v_parent = <Dyn as Disp>::call(c, (*np).u.parent, fp)?;
-    EVAL_node_const_path(c, n, fp, v_parent, (*np).u.name)
+    EVAL_node_const_path(c, n, fp, v_parent, (*np).u.name, (*np).u.line)
     }
 }
 
