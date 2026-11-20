@@ -1281,7 +1281,7 @@ pub fn site_fast(c: &mut Ctx, cc: &mut CallCache, recv: Value, base: Stk, argc: 
                 let o = new_object(ni.klass);
                 base[0].set(o);   // self of initialize: keeps o alive and gives it back
                 c.call_me = ni.init_me; c.call_blk = blk;
-                let r = run_entry(c, ni.init_entry, base);
+                let r = run_entry(c, ni.init_entry, base, argc);
                 c.set_sp(base, 0);
                 return Some(match r { Ok(_) => Ok(base[0].get()), Err(e) => Err(e) });
             }
