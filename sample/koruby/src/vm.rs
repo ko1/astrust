@@ -1339,11 +1339,12 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: *mut Value, argc: u32, blk: *c
     let lambda = !is_block;
     // copy args out (they overlap the local area)
     let mut args: Vec<Value> = unsafe { std::slice::from_raw_parts(base.add(2), argc as usize).to_vec() };
+    // keep the args reachable while we allocate; made while they are still on the VM stack
+    let tmp = crate::array::ary_new_from(&args);
     unsafe {
         for i in 1..n { *base.add(i) = NIL; }
         c.sp = base.add(n.max(2));
     }
-    let tmp = crate::array::ary_new_from(&args); // keep the args reachable while we allocate
     // keywords
     let mut kwh: Value = NIL;
     let accepts_kw = !p.kw.is_empty() || p.kwrest.is_some() || p.forwarding;

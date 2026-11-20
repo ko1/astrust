@@ -101,7 +101,8 @@ pub fn alloc(klass: Value, body: Body) -> Value {
 #[inline(never)]
 fn slow_path() {
     let h = heap();
-    if h.stress != 0 && !h.disabled {
+    // KORUBY_GC_STRESS=n: collect every n-th allocation once the VM has booted
+    if h.stress != 0 && !h.disabled && unsafe { crate::rt::BOOTED } {
         h.stress_ctr += 1;
         if h.stress_ctr >= h.stress { h.stress_ctr = 0; collect(); }
     }
