@@ -1,4 +1,9 @@
-// Numeric / Integer / Float.
+// Numeric / Integer / Float, on the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
+#![forbid(unsafe_code)]
+#[allow(unused_imports)]
+use crate::heap::no_legacy::*;   // the old accessors cannot be named here
+#[allow(unused_imports)]
+use crate::heap::no_legacy_hn::*;
 use crate::array::*;
 use crate::bignum::*;
 use crate::builtins::kernel::*;
@@ -8,19 +13,19 @@ use crate::symbol::{intern, s};
 use crate::value::*;
 use crate::vm::*;
 
-pub fn f64_to_int(f: f64) -> Value {
+pub fn f64_to_int(c: &mut Ctx, f: f64) -> Value {
     let t = f.trunc();
-    if t.abs() < 4.0e18 { int_from_i64(t as i64) } else { big_to_value(BigInt::from_f64(t)) }
+    if t.abs() < 4.0e18 { c.int_from_i64(t as i64) } else { c.big_to_value(BigInt::from_f64(t)) }
 }
 
 /// Integer-like argument to i64 (to_int conversion; Float truncated).
 pub fn num_to_long(c: &mut Ctx, v: Value) -> Result<i64, Esc> {
     if v.is_fixnum() { return Ok(v.as_fix()); }
-    if is_bignum(v) { return match rbig(v).to_i64() { Some(i) => Ok(i), None => err(c, vm().c_range_error, format!("bignum too big to convert into 'long'")) }; }
+    if is_bignum(v) { return match c.big(v).to_i64() { Some(i) => Ok(i), None => err(c, c.vm().c_range_error, format!("bignum too big to convert into 'long'")) }; }
     if is_float(v) {
         let f = float_val(v);
-        if f.is_nan() || f.is_infinite() { return err(c, vm().c_float_domain_error, float_to_s(f)); }
-        if f.abs() > 9.2e18 { return err(c, vm().c_range_error, format!("float {} out of range of integer", float_to_s(f))); }
+        if f.is_nan() || f.is_infinite() { return err(c, c.vm().c_float_domain_error, float_to_s(f)); }
+        if f.abs() > 9.2e18 { return err(c, c.vm().c_range_error, format!("float {} out of range of integer", float_to_s(f))); }
         return Ok(f as i64);
     }
     if v == NIL { return type_err(c, "no implicit conversion from nil to integer"); }
@@ -36,7 +41,7 @@ pub fn num_to_long(c: &mut Ctx, v: Value) -> Result<i64, Esc> {
 
 pub fn to_integer(c: &mut Ctx, v: Value) -> RV {
     if is_integer(v) { return Ok(v); }
-    if is_float(v) { return Ok(f64_to_int(float_val(v))); }
+    if is_float(v) { return Ok(f64_to_int(c, float_val(v))); }
     if v.is_heap() && respond_to(v, s::to_int, true) {
         let r = funcall(c, v, s::to_int, &[], std::ptr::null())?;
         if is_integer(r) { return Ok(r); }
@@ -45,11 +50,11 @@ pub fn to_integer(c: &mut Ctx, v: Value) -> RV {
 }
 
 pub fn to_f(c: &mut Ctx, v: Value) -> Result<f64, Esc> {
-    if let Some(f) = num_to_f64(v) { return Ok(f); }
+    if let Some(f) = c.num_to_f64(v) { return Ok(f); }
     if v == NIL { return type_err(c, "can't convert nil into Float"); }
     if v.is_heap() && respond_to(v, s::to_f, true) && !is_string(v) {
         let r = funcall(c, v, s::to_f, &[], std::ptr::null())?;
-        if let Some(f) = num_to_f64(r) { return Ok(f); }
+        if let Some(f) = c.num_to_f64(r) { return Ok(f); }
     }
     type_err(c, format!("can't convert {} into Float", class_name_for_err(v)))
 }
@@ -65,8 +70,8 @@ pub fn coerce_bin(c: &mut Ctx, a: Value, b: Value, op: Sym, cmp: bool) -> RV {
     if b.is_heap() && respond_to(b, s::coerce, true) && !is_string(b) {
         let r = funcall(c, b, s::coerce, &[a], std::ptr::null())?;
         if cmp && r == NIL { return coerce_fail(c, a, b, true); }
-        if !is_array(r) || ary_len(r) != 2 { return type_err(c, "coerce must return [x, y]"); }
-        let x = ary_get(r, 0); let y = ary_get(r, 1);
+        if !is_array(r) || c.ary_len(r) != 2 { return type_err(c, "coerce must return [x, y]"); }
+        let x = c.ary_get(r, 0); let y = c.ary_get(r, 1);
         return funcall(c, x, op, &[y], std::ptr::null());
     }
     coerce_fail(c, a, b, cmp)
@@ -80,33 +85,33 @@ fn int_arith(c: &mut Ctx, a: Value, b: Value, op: Op) -> RV {
         let (x, y) = (a.as_fix() as i128, b.as_fix() as i128);
         let r = match op {
             Op::Add => x + y, Op::Sub => x - y, Op::Mul => x * y,
-            Op::Div => { if y == 0 { return err(c, vm().c_zero_div_error, "divided by 0"); } let q = x / y; if (x % y != 0) && ((x < 0) != (y < 0)) { q - 1 } else { q } }
-            Op::Mod => { if y == 0 { return err(c, vm().c_zero_div_error, "divided by 0"); } let m = x % y; if m != 0 && ((m < 0) != (y < 0)) { m + y } else { m } }
+            Op::Div => { if y == 0 { return err(c, c.vm().c_zero_div_error, "divided by 0"); } let q = x / y; if (x % y != 0) && ((x < 0) != (y < 0)) { q - 1 } else { q } }
+            Op::Mod => { if y == 0 { return err(c, c.vm().c_zero_div_error, "divided by 0"); } let m = x % y; if m != 0 && ((m < 0) != (y < 0)) { m + y } else { m } }
             Op::Pow => return int_pow(c, a, b),
         };
-        return Ok(int_from_i128(r));
+        return Ok(c.int_from_i128(r));
     }
     if op == Op::Mul {
         // Bignum * one-limb Integer (either order)
         let (big, small) = if is_bignum(a) && b.is_fixnum() { (a, b.as_fix()) } else if a.is_fixnum() && is_bignum(b) { (b, a.as_fix()) } else { (NIL, 0) };
         if big != NIL && small != 0 && small.unsigned_abs() <= u32::MAX as u64 {
-            return Ok(big_to_value(rbig(big).mul_small(small.unsigned_abs() as u32, small < 0)));
+            return Ok(c.big_to_value(c.big(big).mul_small(small.unsigned_abs() as u32, small < 0)));
         }
     }
     if is_integer(b) {
-        let (x, y) = (to_big(a), to_big(b));
+        let (x, y) = (c.to_big(a), c.to_big(b));
         return Ok(match op {
-            Op::Add => big_to_value(x.add(&y)), Op::Sub => big_to_value(x.sub(&y)), Op::Mul => big_to_value(x.mul(&y)),
-            Op::Div => { if y.is_zero() { return err(c, vm().c_zero_div_error, "divided by 0"); } big_to_value(x.divmod(&y).0) }
-            Op::Mod => { if y.is_zero() { return err(c, vm().c_zero_div_error, "divided by 0"); } big_to_value(x.divmod(&y).1) }
+            Op::Add => c.big_to_value(x.add(&y)), Op::Sub => c.big_to_value(x.sub(&y)), Op::Mul => c.big_to_value(x.mul(&y)),
+            Op::Div => { if y.is_zero() { return err(c, c.vm().c_zero_div_error, "divided by 0"); } c.big_to_value(x.divmod(&y).0) }
+            Op::Mod => { if y.is_zero() { return err(c, c.vm().c_zero_div_error, "divided by 0"); } c.big_to_value(x.divmod(&y).1) }
             Op::Pow => return int_pow(c, a, b),
         });
     }
     if is_float(b) {
         if op == Op::Pow { return int_pow(c, a, b); }
-        let x = num_to_f64(a).unwrap(); let y = float_val(b);
-        if op == Op::Mod && y == 0.0 { return err(c, vm().c_zero_div_error, "divided by 0"); }
-        return Ok(float_new(match op { Op::Add => x + y, Op::Sub => x - y, Op::Mul => x * y, Op::Div => x / y, Op::Mod => fmod_ruby(x, y), Op::Pow => unreachable!() }));
+        let x = c.num_to_f64(a).unwrap(); let y = float_val(b);
+        if op == Op::Mod && y == 0.0 { return err(c, c.vm().c_zero_div_error, "divided by 0"); }
+        return Ok(c.float_new(match op { Op::Add => x + y, Op::Sub => x - y, Op::Mul => x * y, Op::Div => x / y, Op::Mod => fmod_ruby(x, y), Op::Pow => unreachable!() }));
     }
     // fix_plus / fix_mul compute Complex op Fixnum directly (keeps exact parts)
     if a.is_fixnum() && (op == Op::Add || op == Op::Mul) && crate::builtins::complex::is_complex(b) {
@@ -124,22 +129,22 @@ pub fn fmod_ruby(x: f64, y: f64) -> f64 {
 
 fn int_pow(c: &mut Ctx, a: Value, b: Value) -> RV {
     if is_float(b) {
-        let x = num_to_f64(a).unwrap(); let y = float_val(b);
-        if y == 0.0 { return Ok(float_new(1.0)); }
+        let x = c.num_to_f64(a).unwrap(); let y = float_val(b);
+        if y == 0.0 { return Ok(c.float_new(1.0)); }
         if x < 0.0 && y != y.round() { return Ok(crate::builtins::complex::polar_pi((-x).powf(y), y)); }
-        return Ok(float_new(x.powf(y)));
+        return Ok(c.float_new(x.powf(y)));
     }
     if !is_integer(b) { return coerce_bin(c, a, b, s::pow, false); }
-    let e = to_big(b);
+    let e = c.to_big(b);
     if e.neg && (a == Value::fix(1) || a == Value::fix(-1)) { return Ok(Value::fix(if a == Value::fix(-1) && e.is_odd() { -1 } else { 1 })); }
     if e.neg {
-        if let Some(_) = const_get_at(vm().c_object, intern(b"Rational")) {
-            let r = funcall(c, vm().main_obj, intern(b"Rational"), &[a, Value::fix(1)], std::ptr::null())?;
+        if let Some(_) = const_get_at(c.vm().c_object, intern(b"Rational")) {
+            let r = funcall(c, c.vm().main_obj, intern(b"Rational"), &[a, Value::fix(1)], std::ptr::null())?;
             return funcall(c, r, s::pow, &[b], std::ptr::null());
         }
-        return Ok(float_new(num_to_f64(a).unwrap().powf(num_to_f64(b).unwrap())));
+        return Ok(c.float_new(c.num_to_f64(a).unwrap().powf(c.num_to_f64(b).unwrap())));
     }
-    let x = to_big(a);
+    let x = c.to_big(a);
     if x.mag.len() <= 1 && x.mag.first().copied().unwrap_or(0) <= 1 {
         if x.is_zero() { return Ok(Value::fix(if e.is_zero() { 1 } else { 0 })); }
         if !x.neg { return Ok(Value::fix(1)); }
@@ -150,28 +155,29 @@ fn int_pow(c: &mut Ctx, a: Value, b: Value) -> RV {
         return arg_err(c, "exponent is too large");
     }
     if a.is_fixnum() {
-        if let Ok(ei32) = u32::try_from(ei) { if let Some(r) = a.as_fix().checked_pow(ei32) { return Ok(int_from_i64(r)); } }
+        if let Ok(ei32) = u32::try_from(ei) { if let Some(r) = a.as_fix().checked_pow(ei32) { return Ok(c.int_from_i64(r)); } }
     }
-    Ok(big_to_value(x.pow(ei)))
+    Ok(c.big_to_value(x.pow(ei)))
 }
 
 fn int_cmp_val(c: &mut Ctx, a: Value, b: Value) -> Result<Option<std::cmp::Ordering>, Esc> {
     if a.is_fixnum() && b.is_fixnum() { return Ok(Some(a.as_fix().cmp(&b.as_fix()))); }
-    if is_integer(b) { return Ok(Some(to_big(a).cmp(&to_big(b)))); }
+    if is_integer(b) { return Ok(Some(c.to_big(a).cmp(&c.to_big(b)))); }
     if is_float(b) {
         let y = float_val(b);
         if y.is_nan() { return Ok(None); }
         if y.is_infinite() { return Ok(Some(if y > 0.0 { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater })); }
-        let x = num_to_f64(a).unwrap();
+        let x = c.num_to_f64(a).unwrap();
         if x != y { return Ok(x.partial_cmp(&y)); }
         // exact comparison for big values
-        return Ok(Some(to_big(a).cmp(&BigInt::from_f64(y)).then_with(|| if y.fract() > 0.0 { std::cmp::Ordering::Less } else if y.fract() < 0.0 { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Equal })));
+        return Ok(Some(c.to_big(a).cmp(&BigInt::from_f64(y)).then_with(|| if y.fract() > 0.0 { std::cmp::Ordering::Less } else if y.fract() < 0.0 { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Equal })));
     }
     let _ = c;
     Ok(None)
 }
 
 macro_rules! cfn { ($name:ident, |$c:ident, $s:ident, $a:ident| $body:expr) => {
+    #[allow(unused_variables)]
     fn $name($c: &mut Ctx, $s: Value, $a: &[Value], _b: *const Block) -> RV { $body }
 }; }
 
@@ -183,35 +189,35 @@ cfn!(int_mod, |c, s, a| int_arith(c, s, a[0], Op::Mod));
 cfn!(int_pow_m, |c, s, a| {
     if a.len() == 2 {
         // modular exponentiation
-        let m = to_big(a[1]);
-        if m.is_zero() { return err(c, vm().c_zero_div_error, "divided by 0"); }
-        let mut base = to_big(s).divmod(&m).1;
-        let mut e = to_big(a[0]);
-        if e.neg { return err(c, vm().c_range_error, "Integer#pow() 2nd argument not allowed to be negative when 3rd argument specified"); }
+        let m = c.to_big(a[1]);
+        if m.is_zero() { return err(c, c.vm().c_zero_div_error, "divided by 0"); }
+        let mut base = c.to_big(s).divmod(&m).1;
+        let mut e = c.to_big(a[0]);
+        if e.neg { return err(c, c.vm().c_range_error, "Integer#pow() 2nd argument not allowed to be negative when 3rd argument specified"); }
         let mut r = BigInt::from_i64(1).divmod(&m).1;
         while !e.is_zero() {
             if e.is_odd() { r = r.mul(&base).divmod(&m).1; }
             e = e.shr(1);
             base = base.mul(&base).divmod(&m).1;
         }
-        return Ok(big_to_value(r));
+        return Ok(c.big_to_value(r));
     }
     int_arith(c, s, a[0], Op::Pow)
 });
-cfn!(int_uminus, |_c, s, _a| Ok(if s.is_fixnum() { int_from_i128(-(s.as_fix() as i128)) } else { big_to_value(rbig(s).neg()) }));
-cfn!(int_uplus, |_c, s, _a| Ok(s));
-cfn!(int_not, |_c, s, _a| Ok(if s.is_fixnum() { Value::fix(!s.as_fix()) } else { big_to_value(rbig(s).not()) }));
+cfn!(int_uminus, |c, s, _a| Ok(if s.is_fixnum() { c.int_from_i128(-(s.as_fix() as i128)) } else { c.big_to_value(c.big(s).neg()) }));
+cfn!(int_uplus, |c, s, _a| Ok(s));
+cfn!(int_not, |c, s, _a| Ok(if s.is_fixnum() { Value::fix(!s.as_fix()) } else { c.big_to_value(c.big(s).not()) }));
 fn int_bitop(c: &mut Ctx, a: Value, b: Value, op: u8) -> RV {
     if a.is_fixnum() && b.is_fixnum() {
         let (x, y) = (a.as_fix(), b.as_fix());
         return Ok(Value::fix(match op { b'&' => x & y, b'|' => x | y, _ => x ^ y }));
     }
-    if is_integer(b) { return Ok(big_to_value(to_big(a).bitop(&to_big(b), op))); }
+    if is_integer(b) { return Ok(c.big_to_value(c.to_big(a).bitop(&c.to_big(b), op))); }
     let sym = match op { b'&' => s::and, b'|' => s::or, _ => s::xor };
     if b.is_heap() && respond_to(b, s::coerce, true) && !is_string(b) {
         let r = funcall(c, b, s::coerce, &[a], std::ptr::null())?;
-        if !is_array(r) || ary_len(r) != 2 { return type_err(c, "coerce must return [x, y]"); }
-        let (x, y) = (ary_get(r, 0), ary_get(r, 1));
+        if !is_array(r) || c.ary_len(r) != 2 { return type_err(c, "coerce must return [x, y]"); }
+        let (x, y) = (c.ary_get(r, 0), c.ary_get(r, 1));
         if is_integer(x) && is_integer(y) { return int_bitop(c, x, y, op); }
         if !is_integer(y) { return coerce_fail(c, a, y, false); }
         return funcall(c, x, sym, &[y], std::ptr::null());
@@ -225,14 +231,14 @@ fn int_shift(c: &mut Ctx, a: Value, n: i64) -> RV {
     if n >= 0 {
         if a.is_fixnum() && n < 62 {
             let x = a.as_fix() as i128;
-            return Ok(int_from_i128(x << n));
+            return Ok(c.int_from_i128(x << n));
         }
-        if n > 1 << 26 { return err(c, vm().c_range_error, "shift width too big"); }
-        Ok(big_to_value(to_big(a).shl(n as usize)))
+        if n > 1 << 26 { return err(c, c.vm().c_range_error, "shift width too big"); }
+        Ok(c.big_to_value(c.to_big(a).shl(n as usize)))
     } else {
         let m = (-n) as u64;
         if a.is_fixnum() { return Ok(Value::fix(if m >= 63 { if a.as_fix() < 0 { -1 } else { 0 } } else { a.as_fix() >> m })); }
-        Ok(big_to_value(to_big(a).shr(m.min(1 << 30) as usize)))
+        Ok(c.big_to_value(c.to_big(a).shr(m.min(1 << 30) as usize)))
     }
 }
 cfn!(int_lshift, |c, s, a| { let n = num_to_long(c, a[0])?; int_shift(c, s, n) });
@@ -240,38 +246,38 @@ cfn!(int_rshift, |c, s, a| { let n = num_to_long(c, a[0])?; int_shift(c, s, -n) 
 cfn!(int_aref, |c, s, a| {
     if a.len() == 2 || is_range(a[0]) {
         let (start, len) = if a.len() == 2 { (num_to_long(c, a[0])?, Some(num_to_long(c, a[1])?)) } else {
-            let (b, e, x) = crate::range::range_parts(a[0]);
+            let (b, e, x) = c.range_parts(a[0]);
             let b = if b == NIL { 0 } else { num_to_long(c, b)? };
             if e == NIL { (b, None) } else { let e = num_to_long(c, e)?; (b, Some(e - b + if x { 0 } else { 1 })) }
         };
         let shifted = int_shift(c, s, -start)?;
         return match len { None => Ok(shifted), Some(l) => {
             if l <= 0 { return Ok(Value::fix(0)); }
-            let mask = big_to_value(BigInt::from_i64(1).shl(l as usize).sub(&BigInt::from_i64(1)));
+            let mask = c.big_to_value(BigInt::from_i64(1).shl(l as usize).sub(&BigInt::from_i64(1)));
             int_bitop(c, shifted, mask, b'&')
         } };
     }
-    let i = if is_bignum(a[0]) { if rbig(a[0]).neg { return Ok(Value::fix(0)); } else { return Ok(Value::fix(if to_big(s).neg { 1 } else { 0 })); } } else { num_to_long(c, a[0])? };
+    let i = if is_bignum(a[0]) { if c.big(a[0]).neg { return Ok(Value::fix(0)); } else { return Ok(Value::fix(if c.to_big(s).neg { 1 } else { 0 })); } } else { num_to_long(c, a[0])? };
     if i < 0 { return Ok(Value::fix(0)); }
     if s.is_fixnum() { return Ok(Value::fix(if i >= 63 { if s.as_fix() < 0 { 1 } else { 0 } } else { (s.as_fix() >> i) & 1 })); }
-    Ok(Value::fix(rbig(s).bit(i as usize) as i64))
+    Ok(Value::fix(c.big(s).bit(i as usize) as i64))
 });
 cfn!(int_eq, |c, s, a| {
     let b = a[0];
     if s.is_fixnum() && b.is_fixnum() { return Ok(Value::bool(s == b)); }
-    if is_integer(b) { return Ok(Value::bool(to_big(s) == to_big(b))); }
+    if is_integer(b) { return Ok(Value::bool(c.to_big(s) == c.to_big(b))); }
     if is_float(b) { return Ok(Value::bool(int_cmp_val(c, s, b)? == Some(std::cmp::Ordering::Equal))); }
     let r = funcall(c, b, s::eq, &[s], std::ptr::null())?;
     Ok(Value::bool(r.truthy()))
 });
-cfn!(int_eql, |_c, s, a| Ok(Value::bool(is_integer(a[0]) && to_big(s) == to_big(a[0]))));
+cfn!(int_eql, |c, s, a| Ok(Value::bool(is_integer(a[0]) && c.to_big(s) == c.to_big(a[0]))));
 cfn!(int_cmp, |c, s, a| {
     match int_cmp_val(c, s, a[0])? {
         Some(o) => Ok(Value::fix(o as i64)),
         None => {
             if a[0].is_heap() && respond_to(a[0], s::coerce, true) && !is_string(a[0]) {
                 let r = funcall(c, a[0], s::coerce, &[s], std::ptr::null());
-                match r { Ok(r) if is_array(r) && ary_len(r) == 2 => { let x = ary_get(r, 0); return funcall(c, x, s::cmp, &[ary_get(r, 1)], std::ptr::null()); }
+                match r { Ok(r) if is_array(r) && c.ary_len(r) == 2 => { let x = c.ary_get(r, 0); return funcall(c, x, s::cmp, &[c.ary_get(r, 1)], std::ptr::null()); }
                           Ok(_) => return Ok(NIL), Err(_) => { c.esc = EscKind::None; return Ok(NIL); } }
             }
             Ok(NIL)
@@ -288,28 +294,28 @@ cfn!(int_lt, |c, s, a| int_rel(c, s, a[0], |o| o.is_lt(), s::lt));
 cfn!(int_le, |c, s, a| int_rel(c, s, a[0], |o| o.is_le(), s::le));
 cfn!(int_gt, |c, s, a| int_rel(c, s, a[0], |o| o.is_gt(), s::gt));
 cfn!(int_ge, |c, s, a| int_rel(c, s, a[0], |o| o.is_ge(), s::ge));
-cfn!(int_abs, |_c, s, _a| Ok(if s.is_fixnum() { int_from_i64(s.as_fix().abs()) } else { big_to_value(rbig(s).abs()) }));
+cfn!(int_abs, |c, s, _a| Ok(if s.is_fixnum() { c.int_from_i64(s.as_fix().abs()) } else { c.big_to_value(c.big(s).abs()) }));
 cfn!(int_to_s, |c, s, a| {
     let base = if a.is_empty() { 10 } else { num_to_long(c, a[0])? };
     if !(2..=36).contains(&base) { return arg_err(c, format!("invalid radix {}", base)); }
-    let st = if s.is_fixnum() && base == 10 { s.as_fix().to_string() } else { to_big(s).to_string_radix(base as u32) };
-    let v = str_new(st.as_bytes());
-    rstr(v).enc = ENC_ASCII;
+    let st = if s.is_fixnum() && base == 10 { s.as_fix().to_string() } else { c.to_big(s).to_string_radix(base as u32) };
+    let v = c.str_new(st.as_bytes());
+    c.rstring_mut(v).enc = ENC_ASCII;
     Ok(v)
 });
-cfn!(int_to_f, |_c, s, _a| Ok(float_new(num_to_f64(s).unwrap())));
-cfn!(int_to_i, |_c, s, _a| Ok(s));
+cfn!(int_to_f, |c, s, _a| Ok(c.float_new(c.num_to_f64(s).unwrap())));
+cfn!(int_to_i, |c, s, _a| Ok(s));
 cfn!(int_chr, |c, s, a| {
     let i = num_to_long(c, s)?;
     if !a.is_empty() || i > 255 {
-        if i < 0 || i > 0x10ffff { return err(c, vm().c_range_error, format!("{} out of char range", i)); }
+        if i < 0 || i > 0x10ffff { return err(c, c.vm().c_range_error, format!("{} out of char range", i)); }
         let mut b = vec![]; encode_utf8(i as u32, &mut b);
-        return Ok(str_from_vec(b));
+        return Ok(c.str_from_vec(b));
     }
-    if i < 0 { return err(c, vm().c_range_error, format!("{} out of char range", i)); }
+    if i < 0 { return err(c, c.vm().c_range_error, format!("{} out of char range", i)); }
     Ok(str_new_enc(&[i as u8], if i < 128 { ENC_ASCII } else { ENC_BINARY }))
 });
-cfn!(int_ord, |_c, s, _a| Ok(s));
+cfn!(int_ord, |c, s, _a| Ok(s));
 fn int_times(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
     if b.is_null() { return crate::builtins::enumerator::enum_for(c, s, s::times, &[], NIL); }
     if s.is_fixnum() {
@@ -335,7 +341,7 @@ fn int_upto(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     }
     if is_float(a[0]) {
         let e = float_val(a[0]); let mut i = s;
-        while num_to_f64(i).unwrap() <= e { yield1(c, b, i)?; i = int_arith(c, i, Value::fix(1), Op::Add)?; }
+        while c.num_to_f64(i).unwrap() <= e { yield1(c, b, i)?; i = int_arith(c, i, Value::fix(1), Op::Add)?; }
         return Ok(s);
     }
     let mut i = s;
@@ -363,41 +369,41 @@ fn int_downto(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
 }
 cfn!(int_succ, |c, s, _a| int_arith(c, s, Value::fix(1), Op::Add));
 cfn!(int_pred, |c, s, _a| int_arith(c, s, Value::fix(1), Op::Sub));
-cfn!(int_zero, |_c, s, _a| Ok(Value::bool(s == Value::fix(0))));
-cfn!(int_even, |_c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() & 1 == 0 } else { !rbig(s).is_odd() })));
-cfn!(int_odd, |_c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() & 1 == 1 } else { rbig(s).is_odd() })));
-cfn!(int_positive, |_c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() > 0 } else { !rbig(s).neg })));
-cfn!(int_negative, |_c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() < 0 } else { rbig(s).neg })));
+cfn!(int_zero, |c, s, _a| Ok(Value::bool(s == Value::fix(0))));
+cfn!(int_even, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() & 1 == 0 } else { !c.big(s).is_odd() })));
+cfn!(int_odd, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() & 1 == 1 } else { c.big(s).is_odd() })));
+cfn!(int_positive, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() > 0 } else { !c.big(s).neg })));
+cfn!(int_negative, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() < 0 } else { c.big(s).neg })));
 cfn!(int_divmod, |c, s, a| {
-    if is_float(a[0]) { return flo_divmod(c, float_new(num_to_f64(s).unwrap()), a, std::ptr::null()); }
+    if is_float(a[0]) { let f = c.float_new(c.num_to_f64(s).unwrap()); return flo_divmod(c, f, a, std::ptr::null()); }
     if !is_integer(a[0]) { return coerce_bin(c, s, a[0], s::divmod, false); }
     let q = int_arith(c, s, a[0], Op::Div)?; let m = int_arith(c, s, a[0], Op::Mod)?;
-    Ok(ary_new_from(&[q, m]))
+    Ok(c.ary_new_from(&[q, m]))
 });
 cfn!(int_idiv, |c, s, a| {
     if is_float(a[0]) {
         let y = float_val(a[0]);
-        if y == 0.0 { return err(c, vm().c_zero_div_error, "divided by 0"); }
-        return Ok(f64_to_int((num_to_f64(s).unwrap() / y).floor()));
+        if y == 0.0 { return err(c, c.vm().c_zero_div_error, "divided by 0"); }
+        return Ok(f64_to_int(c, (c.num_to_f64(s).unwrap() / y).floor()));
     }
     int_arith(c, s, a[0], Op::Div)
 });
 cfn!(int_fdiv, |c, s, a| {
     let y = a[0];
-    if is_integer(y) { return Ok(float_new(BigInt::ratio_to_f64(&to_big(s), &to_big(y)))); }
+    if is_integer(y) { return Ok(c.float_new(BigInt::ratio_to_f64(&c.to_big(s), &c.to_big(y)))); }
     if is_float(y) {
-        let (x, dy) = (num_to_f64(s).unwrap(), float_val(y));
+        let (x, dy) = (c.num_to_f64(s).unwrap(), float_val(y));
         if dy.is_nan() { return Ok(y); }
-        return Ok(float_new(if dy != 0.0 { x / dy } else if x == 0.0 { f64::NAN } else { x * dy.signum() * f64::INFINITY }));
+        return Ok(c.float_new(if dy != 0.0 { x / dy } else if x == 0.0 { f64::NAN } else { x * dy.signum() * f64::INFINITY }));
     }
     coerce_bin(c, s, y, intern(b"fdiv"), false)
 });
 cfn!(int_remainder, |c, s, a| {
-    if is_float(a[0]) { if float_val(a[0]) == 0.0 { return err(c, vm().c_zero_div_error, "divided by 0"); } return Ok(float_new(num_to_f64(s).unwrap() % float_val(a[0]))); }
+    if is_float(a[0]) { if float_val(a[0]) == 0.0 { return err(c, c.vm().c_zero_div_error, "divided by 0"); } return Ok(c.float_new(c.num_to_f64(s).unwrap() % float_val(a[0]))); }
     if !is_integer(a[0]) { return num_remainder(c, s, a, std::ptr::null()); }
-    let y = to_big(a[0]);
-    if y.is_zero() { return err(c, vm().c_zero_div_error, "divided by 0"); }
-    Ok(big_to_value(to_big(s).divrem_trunc(&y).1))
+    let y = c.to_big(a[0]);
+    if y.is_zero() { return err(c, c.vm().c_zero_div_error, "divided by 0"); }
+    Ok(c.big_to_value(c.to_big(s).divrem_trunc(&y).1))
 });
 fn gcd_big(a: BigInt, b: BigInt) -> BigInt {
     let (mut a, mut b) = (a.abs(), b.abs());
@@ -406,22 +412,22 @@ fn gcd_big(a: BigInt, b: BigInt) -> BigInt {
 }
 cfn!(int_gcd, |c, s, a| {
     if !is_integer(a[0]) { return type_err(c, "not an integer"); }
-    if s.is_fixnum() && a[0].is_fixnum() { let (mut x, mut y) = (s.as_fix().unsigned_abs(), a[0].as_fix().unsigned_abs()); while y != 0 { let r = x % y; x = y; y = r; } return Ok(int_from_i128(x as i128)); }
-    Ok(big_to_value(gcd_big(to_big(s), to_big(a[0]))))
+    if s.is_fixnum() && a[0].is_fixnum() { let (mut x, mut y) = (s.as_fix().unsigned_abs(), a[0].as_fix().unsigned_abs()); while y != 0 { let r = x % y; x = y; y = r; } return Ok(c.int_from_i128(x as i128)); }
+    Ok(c.big_to_value(gcd_big(c.to_big(s), c.to_big(a[0]))))
 });
 cfn!(int_lcm, |c, s, a| {
     if !is_integer(a[0]) { return type_err(c, "not an integer"); }
-    let (x, y) = (to_big(s), to_big(a[0]));
+    let (x, y) = (c.to_big(s), c.to_big(a[0]));
     if x.is_zero() || y.is_zero() { return Ok(Value::fix(0)); }
     let g = gcd_big(x.clone(), y.clone());
-    Ok(big_to_value(x.mul(&y).abs().divmod(&g).0))
+    Ok(c.big_to_value(x.mul(&y).abs().divmod(&g).0))
 });
 fn round_int(c: &mut Ctx, s: Value, a: &[Value], mode: u8) -> RV {
     let digits = match a.iter().find(|v| !is_hash(**v)) { Some(&d) => num_to_long(c, d)?, None => 0 };
     if digits >= 0 { return Ok(s); }
     let half = round_half_mode(c, a)?;
     let m = BigInt::from_i64(10).pow((-digits) as u64);
-    let x = to_big(s);
+    let x = c.to_big(s);
     let (q, r) = x.divmod(&m);
     let res = match mode {
         b'f' => q.mul(&m),
@@ -437,23 +443,23 @@ fn round_int(c: &mut Ctx, s: Value, a: &[Value], mode: u8) -> RV {
             if up { q.add(&BigInt::from_i64(1)).mul(&m) } else { q.mul(&m) }
         }
     };
-    Ok(big_to_value(res))
+    Ok(c.big_to_value(res))
 }
 /// half: mode from kw (0 = up (default), 1 = even, 2 = down)
 pub fn round_half_mode(c: &mut Ctx, a: &[Value]) -> Result<u8, Esc> {
     if let Some(h) = a.iter().rev().find(|v| is_hash(**v)) {
         if let Some(v) = crate::hash::hash_get_opt(c, *h, crate::vm::sym_value("half"))? {
             if v == NIL { return Ok(0); }
-            let sv = if v.is_sym() { Some(str_new(crate::symbol::sym_str(v.as_sym()).as_bytes())) } else if is_string(v) { Some(v) }
+            let sv = if v.is_sym() { Some(c.str_new(crate::symbol::sym_str(v.as_sym()).as_bytes())) } else if is_string(v) { Some(v) }
                      else if v.is_heap() && respond_to(v, s::to_str, true) { let r = funcall(c, v, s::to_str, &[], std::ptr::null())?; if is_string(r) { Some(r) } else { None } } else { None };
             if let Some(sv) = sv {
-                let b = str_bytes(sv).to_vec();
+                let b = c.str_bytes(sv).to_vec();
                 if b.eq_ignore_ascii_case(b"up") { return Ok(0); }
                 if b.eq_ignore_ascii_case(b"even") { return Ok(1); }
                 if b.eq_ignore_ascii_case(b"down") { return Ok(2); }
             }
             let t = funcall(c, v, s::to_s, &[], std::ptr::null())?;
-            let ts = if is_string(t) { String::from_utf8_lossy(str_bytes(t)).into_owned() } else { String::new() };
+            let ts = if is_string(t) { String::from_utf8_lossy(c.str_bytes(t)).into_owned() } else { String::new() };
             return arg_err(c, format!("invalid rounding mode: {}", ts));
         }
     }
@@ -466,42 +472,43 @@ cfn!(int_truncate, |c, s, a| round_int(c, s, a, b't'));
 cfn!(int_digits, |c, s, a| {
     let base = if a.is_empty() { 10 } else { num_to_long(c, a[0])? };
     if base < 2 { return arg_err(c, format!("invalid radix {}", base)); }
-    if to_big(s).neg { return err(c, vm().c_math_domain_error, "out of domain"); }
-    let out = ary_new();
-    let mut x = to_big(s);
+    if c.to_big(s).neg { return err(c, c.vm().c_math_domain_error, "out of domain"); }
+    let out = c.ary_new();
+    let mut x = c.to_big(s);
     let b = BigInt::from_i64(base);
-    if x.is_zero() { ary_push(out, Value::fix(0)); }
-    while !x.is_zero() { let (q, r) = x.divmod(&b); ary_push(out, big_to_value(r)); x = q; }
+    if x.is_zero() { c.ary_push(out, Value::fix(0)); }
+    while !x.is_zero() { let (q, r) = x.divmod(&b); let d = c.big_to_value(r); c.ary_push(out, d); x = q; }
     Ok(out)
 });
-cfn!(int_bit_length, |_c, s, _a| Ok(Value::fix(if s.is_fixnum() { let x = s.as_fix(); (64 - if x < 0 { (!x).leading_zeros() } else { x.leading_zeros() }) as i64 } else { rbig(s).bit_length() as i64 })));
-cfn!(int_size, |_c, s, _a| Ok(Value::fix(if s.is_fixnum() { 8 } else { ((rbig(s).mag.len() * 4 + 7) / 8 * 8) as i64 })));
-cfn!(int_hash, |_c, s, _a| Ok(Value::fix((crate::astrust::hash_str(&to_big(s).to_string_radix(16)) >> 2) as i64)));
+cfn!(int_bit_length, |c, s, _a| Ok(Value::fix(if s.is_fixnum() { let x = s.as_fix(); (64 - if x < 0 { (!x).leading_zeros() } else { x.leading_zeros() }) as i64 } else { c.big(s).bit_length() as i64 })));
+cfn!(int_size, |c, s, _a| Ok(Value::fix(if s.is_fixnum() { 8 } else { ((c.big(s).mag.len() * 4 + 7) / 8 * 8) as i64 })));
+cfn!(int_hash, |c, s, _a| Ok(Value::fix((crate::astrust::hash_str(&c.to_big(s).to_string_radix(16)) >> 2) as i64)));
 /// Kernel#Float semantics (rb_Float)
 pub fn rb_float(c: &mut Ctx, v: Value) -> Result<f64, Esc> {
-    if let Some(f) = num_to_f64(v) { return Ok(f); }
-    let r = funcall(c, vm().main_obj, intern(b"Float"), &[v], std::ptr::null())?;
+    if let Some(f) = c.num_to_f64(v) { return Ok(f); }
+    let r = funcall(c, c.vm().main_obj, intern(b"Float"), &[v], std::ptr::null())?;
     to_f(c, r)
 }
 cfn!(int_coerce, |c, s, a| {
-    if is_integer(a[0]) { return Ok(ary_new_from(&[a[0], s])); }
+    if is_integer(a[0]) { return Ok(c.ary_new_from(&[a[0], s])); }
     let x = rb_float(c, a[0])?;
-    Ok(ary_new_from(&[float_new(x), float_new(num_to_f64(s).unwrap())]))
+    let (x, y) = (c.float_new(x), c.float_new(c.num_to_f64(s).unwrap()));
+    Ok(c.ary_new_from(&[x, y]))
 });
 cfn!(int_gcdlcm, |c, s, a| {
     if !is_integer(a[0]) { return type_err(c, "not an integer"); }
     let g = int_gcd(c, s, a, std::ptr::null())?;
     let l = int_lcm(c, s, a, std::ptr::null())?;
-    Ok(ary_new_from(&[g, l]))
+    Ok(c.ary_new_from(&[g, l]))
 });
-cfn!(int_allbits, |c, s, a| { let m = to_integer(c, a[0])?; let r = int_bitop(c, s, m, b'&')?; Ok(Value::bool(to_big(r) == to_big(m))) });
+cfn!(int_allbits, |c, s, a| { let m = to_integer(c, a[0])?; let r = int_bitop(c, s, m, b'&')?; Ok(Value::bool(c.to_big(r) == c.to_big(m))) });
 cfn!(int_anybits, |c, s, a| { let m = to_integer(c, a[0])?; let r = int_bitop(c, s, m, b'&')?; Ok(Value::bool(r != Value::fix(0))) });
 cfn!(int_nobits, |c, s, a| { let m = to_integer(c, a[0])?; let r = int_bitop(c, s, m, b'&')?; Ok(Value::bool(r == Value::fix(0))) });
 cfn!(int_s_sqrt, |c, _s, a| {
     let v = to_integer(c, a[0])?;
-    let b = to_big(v);
-    if b.neg { return err(c, vm().c_math_domain_error, "Numerical argument is out of domain - \"isqrt\""); }
-    Ok(big_to_value(b.isqrt()))
+    let b = c.to_big(v);
+    if b.neg { return err(c, c.vm().c_math_domain_error, "Numerical argument is out of domain - \"isqrt\""); }
+    Ok(c.big_to_value(b.isqrt()))
 });
 cfn!(int_ceildiv, |c, s, a| {
     let neg = int_arith(c, s, Value::fix(-1), Op::Mul)?;
@@ -514,12 +521,12 @@ cfn!(int_integer_p, |_c, _s, _a| Ok(TRUE));
 
 fn flo_arith(c: &mut Ctx, a: Value, b: Value, op: Op) -> RV {
     let x = float_val(a);
-    let y = match num_to_f64(b) { Some(y) => y, None => {
+    let y = match c.num_to_f64(b) { Some(y) => y, None => {
         let sym = match op { Op::Add => s::plus, Op::Sub => s::minus, Op::Mul => s::mul, Op::Div => s::div, Op::Mod => s::modulo, Op::Pow => s::pow };
         return coerce_bin(c, a, b, sym, false);
     } };
-    if op == Op::Mod && y == 0.0 { return err(c, vm().c_zero_div_error, "divided by 0"); }
-    Ok(float_new(match op {
+    if op == Op::Mod && y == 0.0 { return err(c, c.vm().c_zero_div_error, "divided by 0"); }
+    Ok(c.float_new(match op {
         Op::Add => x + y, Op::Sub => x - y, Op::Mul => x * y, Op::Div => x / y,
         Op::Mod => fmod_ruby(x, y),
         Op::Pow => {
@@ -534,17 +541,17 @@ cfn!(flo_mul, |c, s, a| flo_arith(c, s, a[0], Op::Mul));
 cfn!(flo_div, |c, s, a| flo_arith(c, s, a[0], Op::Div));
 cfn!(flo_mod, |c, s, a| flo_arith(c, s, a[0], Op::Mod));
 cfn!(flo_pow, |c, s, a| flo_arith(c, s, a[0], Op::Pow));
-cfn!(flo_uminus, |_c, s, _a| Ok(float_new(-float_val(s))));
+cfn!(flo_uminus, |c, s, _a| Ok(c.float_new(-float_val(s))));
 fn flo_cmp_val(c: &mut Ctx, a: Value, b: Value) -> Result<Option<std::cmp::Ordering>, Esc> {
     let x = float_val(a);
     if is_integer(b) { return Ok(int_cmp_val(c, b, a)?.map(|o| o.reverse())); }
-    match num_to_f64(b) { Some(y) => Ok(x.partial_cmp(&y)), None => Ok(None) }
+    match c.num_to_f64(b) { Some(y) => Ok(x.partial_cmp(&y)), None => Ok(None) }
 }
 cfn!(flo_eq, |c, s, a| {
-    if let Some(_) = num_to_f64(a[0]) { return Ok(Value::bool(flo_cmp_val(c, s, a[0])? == Some(std::cmp::Ordering::Equal))); }
+    if let Some(_) = c.num_to_f64(a[0]) { return Ok(Value::bool(flo_cmp_val(c, s, a[0])? == Some(std::cmp::Ordering::Equal))); }
     let r = funcall(c, a[0], s::eq, &[s], std::ptr::null())?; Ok(Value::bool(r.truthy()))
 });
-cfn!(flo_eql, |_c, s, a| Ok(Value::bool(is_float(a[0]) && float_val(a[0]) == float_val(s))));
+cfn!(flo_eql, |c, s, a| Ok(Value::bool(is_float(a[0]) && float_val(a[0]) == float_val(s))));
 cfn!(flo_cmp, |c, s, a| {
     let x = float_val(s);
     if x.is_infinite() && a[0].is_heap() && !is_float(a[0]) && !is_bignum(a[0]) && respond_to(a[0], intern(b"infinite?"), true) {
@@ -553,43 +560,44 @@ cfn!(flo_cmp, |c, s, a| {
     }
     match flo_cmp_val(c, s, a[0])? {
         Some(o) => Ok(Value::fix(o as i64)),
-        None => if num_to_f64(a[0]).is_none() && a[0].is_heap() && respond_to(a[0], s::coerce, true) { coerce_bin(c, s, a[0], s::cmp, false) } else { Ok(NIL) },
+        None => if c.num_to_f64(a[0]).is_none() && a[0].is_heap() && respond_to(a[0], s::coerce, true) { coerce_bin(c, s, a[0], s::cmp, false) } else { Ok(NIL) },
     }
 });
 fn flo_rel(c: &mut Ctx, s: Value, b: Value, f: fn(std::cmp::Ordering) -> bool, op: Sym) -> RV {
     match flo_cmp_val(c, s, b)? {
         Some(o) => Ok(Value::bool(f(o))),
-        None => if num_to_f64(b).is_some() { Ok(FALSE) } else { coerce_bin(c, s, b, op, true) },
+        None => if c.num_to_f64(b).is_some() { Ok(FALSE) } else { coerce_bin(c, s, b, op, true) },
     }
 }
 cfn!(flo_lt, |c, s, a| flo_rel(c, s, a[0], |o| o.is_lt(), s::lt));
 cfn!(flo_le, |c, s, a| flo_rel(c, s, a[0], |o| o.is_le(), s::le));
 cfn!(flo_gt, |c, s, a| flo_rel(c, s, a[0], |o| o.is_gt(), s::gt));
 cfn!(flo_ge, |c, s, a| flo_rel(c, s, a[0], |o| o.is_ge(), s::ge));
-cfn!(flo_to_s, |_c, s, _a| { let v = str_new(float_to_s(float_val(s)).as_bytes()); rstr(v).enc = ENC_ASCII; Ok(v) });
+cfn!(flo_to_s, |c, s, _a| { let v = c.str_new(float_to_s(float_val(s)).as_bytes()); c.rstring_mut(v).enc = ENC_ASCII; Ok(v) });
 fn check_finite(c: &mut Ctx, f: f64) -> Result<(), Esc> {
-    if f.is_nan() || f.is_infinite() { return err(c, vm().c_float_domain_error, float_to_s(f)); }
+    if f.is_nan() || f.is_infinite() { return err(c, c.vm().c_float_domain_error, float_to_s(f)); }
     Ok(())
 }
-cfn!(flo_to_i, |c, s, _a| { let f = float_val(s); check_finite(c, f)?; Ok(f64_to_int(f)) });
-cfn!(flo_abs, |_c, s, _a| Ok(float_new(float_val(s).abs())));
-cfn!(flo_nan, |_c, s, _a| Ok(Value::bool(float_val(s).is_nan())));
-cfn!(flo_infinite, |_c, s, _a| { let f = float_val(s); Ok(if f.is_infinite() { Value::fix(if f > 0.0 { 1 } else { -1 }) } else { NIL }) });
-cfn!(flo_finite, |_c, s, _a| Ok(Value::bool(float_val(s).is_finite())));
-cfn!(flo_zero, |_c, s, _a| Ok(Value::bool(float_val(s) == 0.0)));
-cfn!(flo_positive, |_c, s, _a| Ok(Value::bool(float_val(s) > 0.0)));
-cfn!(flo_negative, |_c, s, _a| Ok(Value::bool(float_val(s) < 0.0)));
+cfn!(flo_to_i, |c, s, _a| { let f = float_val(s); check_finite(c, f)?; Ok(f64_to_int(c, f)) });
+cfn!(flo_abs, |c, s, _a| Ok(c.float_new(float_val(s).abs())));
+cfn!(flo_nan, |c, s, _a| Ok(Value::bool(float_val(s).is_nan())));
+cfn!(flo_infinite, |c, s, _a| { let f = float_val(s); Ok(if f.is_infinite() { Value::fix(if f > 0.0 { 1 } else { -1 }) } else { NIL }) });
+cfn!(flo_finite, |c, s, _a| Ok(Value::bool(float_val(s).is_finite())));
+cfn!(flo_zero, |c, s, _a| Ok(Value::bool(float_val(s) == 0.0)));
+cfn!(flo_positive, |c, s, _a| Ok(Value::bool(float_val(s) > 0.0)));
+cfn!(flo_negative, |c, s, _a| Ok(Value::bool(float_val(s) < 0.0)));
 fn flo_divmod(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let x = float_val(s);
-    let Some(y) = num_to_f64(a[0]) else { return coerce_bin(c, s, a[0], s::divmod, false) };
+    let Some(y) = c.num_to_f64(a[0]) else { return coerce_bin(c, s, a[0], s::divmod, false) };
     let (q, m) = flodivmod(c, x, y)?;
     check_finite(c, q)?;
-    Ok(ary_new_from(&[f64_to_int(q), float_new(m)]))
+    let (q, m) = (f64_to_int(c, q), c.float_new(m));
+    Ok(c.ary_new_from(&[q, m]))
 }
 /// CRuby's flodivmod
 fn flodivmod(c: &mut Ctx, x: f64, y: f64) -> Result<(f64, f64), Esc> {
     if y.is_nan() { return Ok((y, y)); }
-    if y == 0.0 { return err(c, vm().c_zero_div_error, "divided by 0"); }
+    if y == 0.0 { return err(c, c.vm().c_zero_div_error, "divided by 0"); }
     let mut m = if x == 0.0 || (y.is_infinite() && !x.is_infinite()) { x } else { x % y };
     let mut d = if x.is_infinite() && !y.is_infinite() { x } else { ((x - m) / y).round() };
     if y * m < 0.0 { m += y; d -= 1.0; }
@@ -597,12 +605,12 @@ fn flodivmod(c: &mut Ctx, x: f64, y: f64) -> Result<(f64, f64), Esc> {
 }
 cfn!(flo_idiv, |c, s, a| {
     let x = float_val(s); let y = to_f(c, a[0])?;
-    if y == 0.0 { return err(c, vm().c_zero_div_error, "divided by 0"); }
+    if y == 0.0 { return err(c, c.vm().c_zero_div_error, "divided by 0"); }
     let q = (x / y).floor(); check_finite(c, q)?;
-    Ok(f64_to_int(q))
+    Ok(f64_to_int(c, q))
 });
-cfn!(flo_coerce, |c, s, a| { let y = rb_float(c, a[0])?; Ok(ary_new_from(&[float_new(y), s])) });
-cfn!(flo_hash, |_c, s, _a| { let f = float_val(s); let b = if f == 0.0 { 0 } else { f.to_bits() }; Ok(Value::fix((crate::astrust::hash_u64(b) >> 2) as i64)) });
+cfn!(flo_coerce, |c, s, a| { let y = rb_float(c, a[0])?; let y = c.float_new(y); Ok(c.ary_new_from(&[y, s])) });
+cfn!(flo_hash, |c, s, _a| { let f = float_val(s); let b = if f == 0.0 { 0 } else { f.to_bits() }; Ok(Value::fix((crate::astrust::hash_u64(b) >> 2) as i64)) });
 
 // ---- Float rounding: ports of CRuby's round_half_* / rb_float_floor / rb_float_ceil -------------
 
@@ -637,18 +645,18 @@ fn round_half_even(x: f64, s: f64) -> f64 {
     us + r
 }
 fn round_by_mode(x: f64, s: f64, half: u8) -> f64 { match half { 1 => round_half_even(x, s), 2 => round_half_down(x, s), _ => round_half_up(x, s) } }
-fn dbl2ival(c: &mut Ctx, f: f64) -> RV { check_finite(c, f)?; Ok(f64_to_int(f)) }
+fn dbl2ival(c: &mut Ctx, f: f64) -> RV { check_finite(c, f)?; Ok(f64_to_int(c, f)) }
 fn flo_by_rational(c: &mut Ctx, f: f64, nd: i64, mode: u8, half: u8) -> RV {
     let r = crate::builtins::rational::float_to_r(c, f)?;
     let x = crate::builtins::rational::rat_round_nd(r, nd, mode, half);
-    Ok(float_new(if is_integer(x) { crate::builtins::rational::int_to_f(x) } else { crate::builtins::rational::rat_to_f(x) }))
+    Ok(c.float_new(if is_integer(x) { crate::builtins::rational::int_to_f(x) } else { crate::builtins::rational::rat_to_f(x) }))
 }
 fn flo_ndigits(c: &mut Ctx, a: &[Value]) -> Result<i64, Esc> {
     let pos: Vec<Value> = a.iter().copied().filter(|v| !is_hash(*v)).collect();
     if pos.len() > 1 { return arg_err(c, format!("wrong number of arguments (given {}, expected 0..1)", pos.len())); }
     match pos.first() {
         None => Ok(0),
-        Some(&v) => { let n = num_to_long(c, v)?; if n < i32::MIN as i64 || n > i32::MAX as i64 { return err(c, vm().c_range_error, format!("integer {} too {} to convert to 'int'", n, if n < 0 { "small" } else { "big" })); } Ok(n) }
+        Some(&v) => { let n = num_to_long(c, v)?; if n < i32::MIN as i64 || n > i32::MAX as i64 { return err(c, c.vm().c_range_error, format!("integer {} too {} to convert to 'int'", n, if n < 0 { "small" } else { "big" })); } Ok(n) }
     }
 }
 fn flo_floor_nd(c: &mut Ctx, s: Value, nd: i64) -> RV {
@@ -657,13 +665,13 @@ fn flo_floor_nd(c: &mut Ctx, s: Value, nd: i64) -> RV {
     if nd > 0 {
         let be = frexp_exp(x);
         if float_round_overflow(nd, be) { return Ok(s); }
-        if x > 0.0 && float_round_underflow(nd, be) { return Ok(float_new(0.0)); }
+        if x > 0.0 && float_round_underflow(nd, be) { return Ok(c.float_new(0.0)); }
         if nd >= 15 { return flo_by_rational(c, x, nd, b'f', 0); }
         let f = 10f64.powi(nd as i32);
         let mul = (x * f).floor();
         let mut res = (mul + 1.0) / f;
         if res > x { res = mul / f; }
-        return Ok(float_new(res));
+        return Ok(c.float_new(res));
     }
     let i = dbl2ival(c, x.floor())?;
     if nd < 0 { return round_int(c, i, &[Value::fix(nd)], b'f'); }
@@ -675,10 +683,10 @@ fn flo_ceil_nd(c: &mut Ctx, s: Value, nd: i64) -> RV {
     if nd > 0 {
         let be = frexp_exp(x);
         if float_round_overflow(nd, be) { return Ok(s); }
-        if x < 0.0 && float_round_underflow(nd, be) { return Ok(float_new(0.0)); }
+        if x < 0.0 && float_round_underflow(nd, be) { return Ok(c.float_new(0.0)); }
         if nd >= 15 { return flo_by_rational(c, x, nd, b'c', 0); }
         let f = 10f64.powi(nd as i32);
-        return Ok(float_new((x * f).ceil() / f));
+        return Ok(c.float_new((x * f).ceil() / f));
     }
     let i = dbl2ival(c, x.ceil())?;
     if nd < 0 { return round_int(c, i, &[Value::fix(nd)], b'c'); }
@@ -691,7 +699,7 @@ cfn!(flo_round, |c, s, a| {
     if x == 0.0 { return Ok(if nd > 0 { s } else { Value::fix(0) }); }
     if nd < 0 {
         let i = dbl2ival(c, x.trunc())?;
-        let h = if let Some(&hv) = a.iter().rev().find(|v| is_hash(**v)) { hv } else { crate::hash::hash_new() };
+        let h = if let Some(&hv) = a.iter().rev().find(|v| is_hash(**v)) { hv } else { c.hash_new() };
         return round_int(c, i, &[Value::fix(nd), h], b'r');
     }
     if nd == 0 { return dbl2ival(c, round_by_mode(x, 1.0, half)); }
@@ -701,7 +709,7 @@ cfn!(flo_round, |c, s, a| {
         if float_round_underflow(nd, be) { return Ok(Value::fix(0)); }
         if nd >= 15 { return flo_by_rational(c, x, nd, b'r', half); }
         let f = 10f64.powi(nd as i32);
-        return Ok(float_new(round_by_mode(x, f, half) / f));
+        return Ok(c.float_new(round_by_mode(x, f, half) / f));
     }
     Ok(s)
 });
@@ -711,8 +719,8 @@ cfn!(flo_truncate, |c, s, a| {
     let nd = flo_ndigits(c, a)?;
     if float_val(s).is_sign_negative() { flo_ceil_nd(c, s, nd) } else { flo_floor_nd(c, s, nd) }
 });
-cfn!(flo_next_float, |_c, s, _a| { let f = float_val(s); Ok(float_new(next_after(f, f64::INFINITY))) });
-cfn!(flo_prev_float, |_c, s, _a| { let f = float_val(s); Ok(float_new(next_after(f, f64::NEG_INFINITY))) });
+cfn!(flo_next_float, |c, s, _a| { let f = float_val(s); Ok(c.float_new(next_after(f, f64::INFINITY))) });
+cfn!(flo_prev_float, |c, s, _a| { let f = float_val(s); Ok(c.float_new(next_after(f, f64::NEG_INFINITY))) });
 fn next_after(f: f64, dir: f64) -> f64 {
     if f.is_nan() { return f; }
     if f == dir { return f; }
@@ -751,7 +759,7 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     let mut st = pos.get(1).copied().unwrap_or(NIL);
     if let Some(h) = kw {
         let mut unknown = vec![];
-        for (k, _) in crate::hash::hash_pairs(h) { if k != sym_value("to") && k != sym_value("by") { unknown.push(inspect_str(c, k)?); } }
+        for (k, _) in c.hash_pairs(h) { if k != sym_value("to") && k != sym_value("by") { unknown.push(inspect_str(c, k)?); } }
         if !unknown.is_empty() { return arg_err(c, format!("unknown keyword{}: {}", if unknown.len() > 1 { "s" } else { "" }, unknown.join(", "))); }
         if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("to"))? { if !pos.is_empty() { return arg_err(c, "to is given twice"); } lim = v; }
         if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("by"))? { if pos.len() > 1 { return arg_err(c, "step is given twice"); } st = v; }
@@ -763,7 +771,8 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
         let (mut i, d) = (s.as_fix(), st.as_fix());
         if lim == NIL {
             loop { yield1(c, b, Value::fix(i))?; i += d; if !Value::fixable(i) { break; } }
-            return num_step_generic(c, s, int_from_i64(i), lim, st, b);
+            let from = c.int_from_i64(i);
+            return num_step_generic(c, s, from, lim, st, b);
         }
         let e = lim.as_fix();
         if d > 0 { while i <= e { yield1(c, b, Value::fix(i))?; i += d; } } else { while i >= e { yield1(c, b, Value::fix(i))?; i += d; } }
@@ -777,7 +786,8 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
         while i < n {
             let mut v = i * d + x;
             if if d >= 0.0 { l < v } else { v < l } { v = l; }
-            yield1(c, b, float_new(v))?;
+            let fv = c.float_new(v);
+            yield1(c, b, fv)?;
             i += 1.0;
         }
         return Ok(s);
@@ -803,21 +813,22 @@ cfn!(num_nonzero_p, |c, s, _a| { let r = funcall(c, s, s::zero_p, &[], std::ptr:
 cfn!(num_positive_p, |c, s, _a| funcall(c, s, s::gt, &[Value::fix(0)], std::ptr::null()));
 cfn!(num_negative_p, |c, s, _a| funcall(c, s, s::lt, &[Value::fix(0)], std::ptr::null()));
 cfn!(num_abs, |c, s, _a| { let neg = funcall(c, s, s::lt, &[Value::fix(0)], std::ptr::null())?; if neg.truthy() { funcall(c, s, s::uminus, &[], std::ptr::null()) } else { Ok(s) } });
-cfn!(num_uplus, |_c, s, _a| Ok(s));
+cfn!(num_uplus, |c, s, _a| Ok(s));
 cfn!(num_uminus, |c, s, _a| {
     let r = funcall(c, Value::fix(0), s::coerce, &[s], std::ptr::null());
-    match r { Ok(r) if is_array(r) => { let x = ary_get(r, 0); funcall(c, x, s::minus, &[ary_get(r, 1)], std::ptr::null()) }
+    match r { Ok(r) if is_array(r) => { let x = c.ary_get(r, 0); funcall(c, x, s::minus, &[c.ary_get(r, 1)], std::ptr::null()) }
               _ => { c.esc = EscKind::None; let z = Value::fix(0); funcall(c, z, s::minus, &[s], std::ptr::null()) } }
 });
 cfn!(num_coerce, |c, s, a| {
-    if real_class_of(s) == real_class_of(a[0]) { return Ok(ary_new_from(&[a[0], s])); }
+    if real_class_of(s) == real_class_of(a[0]) { return Ok(c.ary_new_from(&[a[0], s])); }
     let x = rb_float(c, a[0])?; let y = rb_float(c, s)?;
-    Ok(ary_new_from(&[float_new(x), float_new(y)]))
+    let (x, y) = (c.float_new(x), c.float_new(y));
+    Ok(c.ary_new_from(&[x, y]))
 });
-cfn!(num_floor, |c, s, a| { let f = float_new(rb_float(c, s)?); flo_floor(c, f, a, std::ptr::null()) });
-cfn!(num_ceil, |c, s, a| { let f = float_new(rb_float(c, s)?); flo_ceil(c, f, a, std::ptr::null()) });
-cfn!(num_round, |c, s, a| { let f = float_new(rb_float(c, s)?); flo_round(c, f, a, std::ptr::null()) });
-cfn!(num_truncate, |c, s, a| { let f = float_new(rb_float(c, s)?); flo_truncate(c, f, a, std::ptr::null()) });
+cfn!(num_floor, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_floor(c, f, a, std::ptr::null()) });
+cfn!(num_ceil, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_ceil(c, f, a, std::ptr::null()) });
+cfn!(num_round, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_round(c, f, a, std::ptr::null()) });
+cfn!(num_truncate, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_truncate(c, f, a, std::ptr::null()) });
 cfn!(num_div, |c, s, a| {
     let q = funcall(c, s, s::div, &[a[0]], std::ptr::null())?;
     funcall(c, q, intern(b"floor"), &[], std::ptr::null())
@@ -830,27 +841,27 @@ cfn!(num_modulo, |c, s, a| {
 cfn!(num_divmod, |c, s, a| {
     let q = funcall(c, s, intern(b"div"), &[a[0]], std::ptr::null())?;
     let m = funcall(c, s, s::modulo, &[a[0]], std::ptr::null())?;
-    Ok(ary_new_from(&[q, m]))
+    Ok(c.ary_new_from(&[q, m]))
 });
 fn cmp_zero(c: &mut Ctx, v: Value, op: Sym) -> Result<bool, Esc> {
     if !respond_to(v, op, true) { return coerce_fail(c, v, Value::fix(0), true); }
     Ok(funcall(c, v, op, &[Value::fix(0)], std::ptr::null())?.truthy())
 }
 fn neg_int_p(c: &mut Ctx, v: Value) -> Result<bool, Esc> {
-    if is_integer(v) { return Ok(if v.is_fixnum() { v.as_fix() < 0 } else { rbig(v).neg }); }
+    if is_integer(v) { return Ok(if v.is_fixnum() { v.as_fix() < 0 } else { c.big(v).neg }); }
     cmp_zero(c, v, s::lt)
 }
 fn pos_int_p(c: &mut Ctx, v: Value) -> Result<bool, Esc> {
-    if is_integer(v) { return Ok(if v.is_fixnum() { v.as_fix() > 0 } else { !rbig(v).neg }); }
+    if is_integer(v) { return Ok(if v.is_fixnum() { v.as_fix() > 0 } else { !c.big(v).neg }); }
     cmp_zero(c, v, s::gt)
 }
 cfn!(num_remainder, |c, s, a| {
     let (mut x, mut y) = (s, a[0]);
-    if !is_kind_of(y, vm().c_numeric) && !is_numeric(y) {
+    if !is_kind_of(y, c.vm().c_numeric) && !is_numeric(y) {
         if !(y.is_heap() && respond_to(y, s::coerce, true)) { return coerce_fail(c, x, y, false); }
         let r = funcall(c, y, s::coerce, &[x], std::ptr::null())?;
-        if !is_array(r) || ary_len(r) != 2 { return type_err(c, "coerce must return [x, y]"); }
-        x = ary_get(r, 0); y = ary_get(r, 1);
+        if !is_array(r) || c.ary_len(r) != 2 { return type_err(c, "coerce must return [x, y]"); }
+        x = c.ary_get(r, 0); y = c.ary_get(r, 1);
     }
     let z = funcall(c, x, s::modulo, &[y], std::ptr::null())?;
     let zz = funcall(c, z, s::eq, &[Value::fix(0)], std::ptr::null())?.truthy();
@@ -861,10 +872,10 @@ cfn!(num_remainder, |c, s, a| {
     let _ = (&mut x, &mut y);
     Ok(z)
 });
-cfn!(num_fdiv, |c, s, a| { let x = to_f(c, s)?; let y = to_f(c, a[0])?; Ok(float_new(x / y)) });
+cfn!(num_fdiv, |c, s, a| { let x = to_f(c, s)?; let y = to_f(c, a[0])?; Ok(c.float_new(x / y)) });
 cfn!(num_quo, |c, s, a| {
     if crate::builtins::complex::is_complex(s) { return funcall(c, s, s::div, &[a[0]], std::ptr::null()); }
-    if is_float(a[0]) { let x = to_f(c, s)?; return Ok(float_new(x / float_val(a[0]))); }
+    if is_float(a[0]) { let x = to_f(c, s)?; return Ok(c.float_new(x / float_val(a[0]))); }
     let r = if is_integer(s) { crate::builtins::rational::rat_raw(s, Value::fix(1)) }
         else if crate::builtins::rational::is_rational(s) { s }
         else if respond_to(s, intern(b"to_r"), true) {
@@ -882,17 +893,18 @@ cfn!(num_eql, |c, s, a| {
     if real_class_of(s) != real_class_of(a[0]) { return Ok(FALSE); }
     funcall(c, s, s::eq, &[a[0]], std::ptr::null())
 });
-cfn!(num_i, |c, s, _a| funcall(c, vm().main_obj, intern(b"Complex"), &[Value::fix(0), s], std::ptr::null()));
-cfn!(num_to_c, |c, s, _a| funcall(c, vm().main_obj, intern(b"Complex"), &[s, Value::fix(0)], std::ptr::null()));
-cfn!(num_real, |_c, s, _a| Ok(s));
+cfn!(num_i, |c, s, _a| funcall(c, c.vm().main_obj, intern(b"Complex"), &[Value::fix(0), s], std::ptr::null()));
+cfn!(num_to_c, |c, s, _a| funcall(c, c.vm().main_obj, intern(b"Complex"), &[s, Value::fix(0)], std::ptr::null()));
+cfn!(num_real, |c, s, _a| Ok(s));
 cfn!(num_imag, |_c, _s, _a| Ok(Value::fix(0)));
-cfn!(num_conj, |_c, s, _a| Ok(s));
-cfn!(num_rect, |_c, s, _a| Ok(ary_new_from(&[s, Value::fix(0)])));
-cfn!(num_arg, |c, s, _a| { let neg = funcall(c, s, s::lt, &[Value::fix(0)], std::ptr::null())?; Ok(if neg.truthy() { float_new(std::f64::consts::PI) } else { Value::fix(0) }) });
+cfn!(num_conj, |c, s, _a| Ok(s));
+cfn!(num_rect, |c, s, _a| Ok(c.ary_new_from(&[s, Value::fix(0)])));
+cfn!(num_arg, |c, s, _a| { let neg = funcall(c, s, s::lt, &[Value::fix(0)], std::ptr::null())?; Ok(if neg.truthy() { c.float_new(std::f64::consts::PI) } else { Value::fix(0) }) });
 
-pub fn init() {
-    let vm = vm();
-    let n = vm.c_numeric;
+/// Float constants that are not flonums: defined by builtins::init, which may allocate at boot.
+pub const FLOAT_CONSTS: [(&str, f64); 5] = [("INFINITY", f64::INFINITY), ("NAN", f64::NAN), ("EPSILON", f64::EPSILON), ("MAX", f64::MAX), ("MIN", f64::MIN_POSITIVE)];
+/// Defines the methods of Numeric `n`, Integer `k` and Float `f`.
+pub fn init(n: Value, k: Value, f: Value) {
     define_cfunc(n, "step", num_step, -1);
     define_cfunc(n, "floor", num_floor, -1);
     define_cfunc(n, "ceil", num_ceil, -1);
@@ -933,7 +945,6 @@ pub fn init() {
     define_cfunc(n, "angle", num_arg, 0);
     define_cfunc(n, "phase", num_arg, 0);
 
-    let k = vm.c_integer;
     let d = |nm: &str, f: CFunc, a: i32| define_cfunc(k, nm, f, a);
     d("+", int_plus, 1); d("-", int_minus, 1); d("*", int_mul, 1); d("/", int_div, 1); d("%", int_mod, 1);
     d("modulo", int_mod, 1); d("**", int_pow_m, -1); d("pow", int_pow_m, -1); d("-@", int_uminus, 0); d("+@", int_uplus, 0);
@@ -951,7 +962,6 @@ pub fn init() {
     d("integer?", int_integer_p, 0); d("ceildiv", int_ceildiv, 1); d("gcdlcm", int_gcdlcm, 1);
     define_singleton_cfunc(k, "sqrt", int_s_sqrt, 1);
 
-    let f = vm.c_float;
     let d = |nm: &str, fun: CFunc, a: i32| define_cfunc(f, nm, fun, a);
     d("+", flo_plus, 1); d("-", flo_minus, 1); d("*", flo_mul, 1); d("/", flo_div, 1); d("%", flo_mod, 1); d("modulo", flo_mod, 1);
     d("**", flo_pow, 1); d("pow", flo_pow, 1); d("-@", flo_uminus, 0); d("==", flo_eq, 1); d("===", flo_eq, 1); d("eql?", flo_eql, 1);
@@ -964,9 +974,6 @@ pub fn init() {
     d("to_f", |_c, s, _a, _b| Ok(s), 0); d("integer?", flo_integer_p, 0);
     d("fdiv", flo_div, 1);
     d("quo", flo_div, 1);
-    for (nm, v) in [("INFINITY", f64::INFINITY), ("NAN", f64::NAN), ("EPSILON", f64::EPSILON), ("MAX", f64::MAX), ("MIN", f64::MIN_POSITIVE)] {
-        const_set(f, intern(nm.as_bytes()), float_new(v));
-    }
     for (nm, v) in [("DIG", 15), ("MANT_DIG", 53), ("MAX_EXP", 1024), ("MIN_EXP", -1021), ("MAX_10_EXP", 308), ("MIN_10_EXP", -307), ("RADIX", 2)] {
         const_set(f, intern(nm.as_bytes()), Value::fix(v));
     }

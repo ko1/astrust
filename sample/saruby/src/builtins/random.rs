@@ -355,7 +355,7 @@ pub fn rand_value(c: &mut Ctx, vmax: Value) -> RV {
         let vi = if is_float(vmax) {
             let f = float_val(vmax);
             if !f.is_finite() { return err(c, vm().c_float_domain_error, float_to_s(f)); }
-            crate::builtins::numeric_methods::f64_to_int(f)
+            crate::legacy::f64_to_int(f)
         } else { crate::builtins::numeric_methods::to_integer(c, vmax)? };
         if vi != Value::fix(0) { if let Some(v) = rand_int(c, NIL, rnd, vi, false)? { return Ok(v); } }
     }

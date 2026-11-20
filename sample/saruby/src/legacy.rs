@@ -40,3 +40,8 @@ pub fn int_from_i128(i: i128) -> Value {
     if i >= FIXNUM_MIN as i128 && i <= FIXNUM_MAX as i128 { Value::fix(i as i64) } else { big_to_value(crate::bignum::BigInt::from_i128(i)) }
 }
 pub fn int_from_i64(i: i64) -> Value { if Value::fixable(i) { Value::fix(i) } else { big_to_value(crate::bignum::BigInt::from_i64(i)) } }
+/// Float truncated to an Integer.
+pub fn f64_to_int(f: f64) -> Value {
+    let t = f.trunc();
+    if t.abs() < 4.0e18 { int_from_i64(t as i64) } else { big_to_value(crate::bignum::BigInt::from_f64(t)) }
+}

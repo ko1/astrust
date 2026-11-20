@@ -176,7 +176,8 @@ pub fn boot() {
     module::init();
     proc::init();
     exception::init();
-    numeric_methods::init();
+    numeric_methods::init(vm.c_numeric, vm.c_integer, vm.c_float);
+    for (nm, v) in numeric_methods::FLOAT_CONSTS { const_set(vm.c_float, crate::symbol::intern(nm.as_bytes()), crate::numeric::float_new(v)); }
     string_methods::init();
     symbol_methods::init();
     array_methods::init(vm.c_array);
@@ -201,7 +202,7 @@ pub fn boot() {
     regexp_methods::init();
     vm.c_struct = structs::init(vm.c_object, vm.m_enumerable);
     time::init();
-    math::init();
+    math::init(vm.m_math);
     rational::init();
     complex::init();
     enum_native::init(vm.m_enumerable);
