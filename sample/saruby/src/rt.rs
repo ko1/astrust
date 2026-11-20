@@ -848,7 +848,7 @@ pub fn run_class_body(c: &mut Ctx, klass: Value, is: &'static Iseq) -> RV {
     nil_fill(base, 2, is.nlocals as usize);
     c.set_sp(base, is.nlocals as usize);
     if is.env_size > 0 {
-        let env = crate::gc::alloc(vm().c_env, Body::Env(vec![NIL; is.env_size as usize], NIL));
+        let env = crate::gc::alloc(vm().c_env, Body::Env(vec![NIL; is.env_size as usize].into_boxed_slice(), NIL));
         base[1].set(env);
     }
     c.frame = &mut fr.h;

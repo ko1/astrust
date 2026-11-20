@@ -88,7 +88,7 @@ pub fn run_top_iseq_cref(c: &mut Ctx, is: &'static Iseq, slf: Value, cref: *cons
     nil_fill(base, 2, is.nlocals as usize);
     c.set_sp(base, is.nlocals as usize);
     if is.env_size > 0 {
-        let env = gc::alloc(vm().c_env, object::Body::Env(vec![NIL; is.env_size as usize], NIL));
+        let env = gc::alloc(vm().c_env, object::Body::Env(vec![NIL; is.env_size as usize].into_boxed_slice(), NIL));
         base[1].set(env);
     }
     c.frame = &mut fr.h;

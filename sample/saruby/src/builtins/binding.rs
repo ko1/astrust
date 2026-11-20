@@ -98,8 +98,8 @@ fn run_eval_iseq_env(c: &mut Ctx, is: &'static Iseq, slf: Value, env: Value, cre
     base[0].set(slf);
     nil_fill(base, 1, is.nlocals as usize);
     c.set_sp(base, is.nlocals as usize);
-    let e = if is.env_size > 0 { crate::gc::alloc(vm().c_env, Body::Env(vec![NIL; is.env_size as usize], env)) } else { env };
-    base[1].set(if e == NIL { crate::gc::alloc(vm().c_env, Body::Env(vec![], NIL)) } else { e });
+    let e = if is.env_size > 0 { crate::gc::alloc(vm().c_env, Body::Env(vec![NIL; is.env_size as usize].into_boxed_slice(), env)) } else { env };
+    base[1].set(if e == NIL { crate::gc::alloc(vm().c_env, Body::Env(Box::new([]), NIL)) } else { e });
     *out_env = base[1].get();
     c.frame = &mut fr.h;
     let r = run_body(c, is.body, base);

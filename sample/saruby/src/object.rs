@@ -32,7 +32,7 @@ pub enum Body {
     Bignum(Box<crate::bignum::BigInt>),
     Range(Value, Value, bool),
     Proc(Box<ProcData>),
-    Env(Vec<Value>, Value),
+    Env(Box<[Value]>, Value),   // fixed size: two words, so a new Env is built in registers
     Method(Box<MethodObj>),
     Data(Box<dyn RData>),
 }

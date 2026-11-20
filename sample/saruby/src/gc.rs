@@ -140,7 +140,7 @@ unsafe impl GcLang for Saruby {
             }
             Body::Range(a, b, _) => { v.visit(a); v.visit(b); }
             Body::Proc(pd) => { crate::vm::visit_block(v, &mut pd.blk); v.visit(&mut pd.from_method); }
-            Body::Env(vals, parent) => { for x in vals { v.visit(x) } v.visit(parent); }
+            Body::Env(vals, parent) => { for x in vals.iter_mut() { v.visit(x) } v.visit(parent); }
             Body::Method(m) => { v.visit(&mut m.recv); v.visit(&mut m.owner); crate::vm::visit_me(v, m.me); }
             Body::Class(cd) => crate::vm::visit_class(v, cd),
             Body::Data(d) => d.visit(v),
