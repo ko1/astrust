@@ -83,6 +83,7 @@ fn blank_vm() -> Box<Vm> {
         std::ptr::write(&mut (*vp).symproc_cache, HashMap::default());
         std::ptr::write(&mut (*vp).data_free_hooks, vec![]);
         std::ptr::write(&mut (*vp).pinned, vec![]);
+        std::ptr::write(&mut (*vp).enc_objs, vec![]);
         std::ptr::write(&mut (*vp).recursive_guard, vec![]);
         std::ptr::write(&mut (*vp).argv, NIL);
         std::ptr::write(&mut (*vp).warn_disabled, false);
@@ -192,7 +193,7 @@ pub fn boot() {
     misc::init();
     prelude::lazy_const(ob, "ENV", "saruby/env");
     prelude::lazy_const(ob, "RbConfig", "saruby/rbconfig");
-    encoding::init();
+    encoding::init(vm);
     stringio::init();
     regexp_methods::init();
     structs::init();

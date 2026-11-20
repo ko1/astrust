@@ -40,7 +40,9 @@ impl Ctx {
         let k = self.vm().c_string;
         self.alloc(k, Body::String(RString { b: SBuf::with_capacity(n), enc }))
     }
+    #[inline]
     pub fn str_from_vec(&mut self, b: Vec<u8>) -> Value { self.str_from_sbuf(SBuf::from_vec(b), ENC_UTF8) }
+    #[inline]
     pub fn str_from_vec_enc(&mut self, b: Vec<u8>, enc: u8) -> Value { self.str_from_sbuf(SBuf::from_vec(b), enc) }
     pub fn str_new_frozen(&mut self, b: &[u8]) -> Value {
         let v = self.str_new(b);
@@ -49,6 +51,7 @@ impl Ctx {
     }
     pub fn str_from(&mut self, s: &str) -> Value { self.str_new(s.as_bytes()) }
     /// Encoding of `like`, new contents (class String).
+    #[inline]
     pub fn str_new_like(&mut self, like: Value, b: Vec<u8>) -> Value {
         let enc = self.str_enc(like);
         self.str_from_vec_enc(b, enc)
@@ -71,13 +74,17 @@ impl Ctx {
         self.str_from_sbuf(b, enc)
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn str_enc(&self, v: Value) -> u8 { self.rstring(v).enc }
-    #[inline]
+    #[inline(always)]
     pub fn str_len(&self, v: Value) -> usize { self.rstring(v).b.len() }
+    #[inline(always)]
     pub fn str_eq(&self, a: Value, b: Value) -> bool { self.rstring(a).b == self.rstring(b).b }
+    #[inline(always)]
     pub fn str_hash(&self, v: Value) -> u64 { crate::astrust::hash_bytes(&self.rstring(v).b) }
+    #[inline(always)]
     pub fn str_to_sym(&self, v: Value) -> Value { Value::sym(intern(&self.rstring(v).b)) }
+    #[inline(always)]
     pub fn str_cmp(&self, a: Value, b: Value) -> std::cmp::Ordering { self.rstring(a).b.cmp(&self.rstring(b).b) }
 
     /// String `v` for writing; FrozenError when frozen.
@@ -102,6 +109,7 @@ impl Ctx {
 
     /// Char boundaries (byte offsets) for a string, honoring its encoding.
     pub fn char_offsets(&self, v: Value) -> Vec<usize> { let r = self.rstring(v); char_offsets_of(&r.b, r.enc) }
+    #[inline]
     pub fn str_char_len(&self, v: Value) -> usize { let r = self.rstring(v); enc_strlen(&r.b, r.enc) }
     /// Code of the character at b[s..e] of string v (Unicode scalar for Unicode encodings).
     pub fn str_char_code(&self, v: Value, s: usize, e: usize) -> u32 { let r = self.rstring(v); crate::builtins::encoding::char_code(r.enc, &r.b[s..e]) }
@@ -128,6 +136,23 @@ impl Ctx {
         for it in items { let s = self.str_from_vec_enc(it, enc); self.ary_push(a, s); }
         a
     }
+}
+
+/// A copy of a String's bytes that outlives the borrow of the context (on the stack when short).
+pub struct ByteSnap { buf: [u8; ByteSnap::INLINE], heap: Vec<u8>, n: usize }
+impl ByteSnap {
+    const INLINE: usize = 128;
+    #[inline]
+    pub fn new(b: &[u8]) -> ByteSnap {
+        let mut s = ByteSnap { buf: [0; ByteSnap::INLINE], heap: Vec::new(), n: b.len() };
+        if b.len() <= ByteSnap::INLINE { s.buf[..b.len()].copy_from_slice(b); } else { s.heap = b.to_vec(); }
+        s
+    }
+}
+impl std::ops::Deref for ByteSnap {
+    type Target = [u8];
+    #[inline]
+    fn deref(&self) -> &[u8] { if self.n <= ByteSnap::INLINE { &self.buf[..self.n] } else { &self.heap } }
 }
 
 pub fn str_append_str(c: &mut Ctx, acc: Value, s: Value) -> Result<(), Esc> {
@@ -159,6 +184,7 @@ pub fn enc_char_len(b: &[u8], i: usize, enc: u8) -> usize { crate::builtins::enc
 /// Every byte is one character (single-byte encoding, or ASCII-only in an ASCII-compatible one).
 #[inline]
 pub fn enc_single(b: &[u8], enc: u8) -> bool {
+    if enc == ENC_UTF8 { return is_ascii(b); }   // the common case, without the encoding table
     crate::builtins::encoding::is_single_byte(enc) || (crate::builtins::encoding::ascii_compat(enc) && is_ascii(b))
 }
 pub fn char_offsets_of(b: &[u8], enc: u8) -> Vec<usize> {

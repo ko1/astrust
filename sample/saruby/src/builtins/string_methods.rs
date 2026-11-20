@@ -598,23 +598,25 @@ cfn!(s_split, |c, slf, a, blk| {
     check_valid(c, slf)?;
     let default_pat = a.is_empty() || a[0] == NIL;
     if is_string(pat) && !(default_pat && c.str_bytes(pat) == b" ") { compat(c, slf, pat)?; }
-    let awk = is_string(pat) && ((default_pat && c.str_bytes(pat) == b" ") || { let cs = codes_of(c, pat); cs.len() == 1 && cs[0].0 == 32 });
+    // " " in an ASCII-compatible encoding is the one-space pattern without decoding it
+    let awk = is_string(pat) && (c.str_bytes(pat) == b" " && (default_pat || crate::builtins::encoding::ascii_compat(c.str_enc(pat))) || { let cs = codes_of(c, pat); cs.len() == 1 && cs[0].0 == 32 });
     let re = if is_string(pat) { NIL } else { regexp::to_regexp(c, pat)? };
     let sp = |x: u8| matches!(x, 9..=13 | 32);
     if awk && c.str_enc(slf) <= ENC_ASCII && limit == 0 && blk.is_null() {
         // the common call: build the result directly (short pieces need no malloc)
+        // the pieces are allocated while scanning, so scan a copy (on the stack when short)
+        let src = ByteSnap::new(c.str_bytes(slf));
+        let (v, enc): (&[u8], u8) = (&src, c.str_enc(slf));
+        let n = v.len();
         let arr = c.ary_new();
         let mut k = 0;
-        loop {
-            // one borrow per piece: the allocation below needs the context
-            let v = c.str_bytes(slf);
-            let n = v.len();
-            while k < n && sp(v[k]) { k += 1; }
-            if k >= n { break; }
+        while k < n && sp(v[k]) { k += 1; }
+        while k < n {
             let st = k;
             while k < n && !sp(v[k]) { k += 1; }
-            let piece = c.str_sub(slf, st..k);
+            let piece = c.str_new_enc(&v[st..k], enc);
             c.ary_push(arr, piece);
+            while k < n && sp(v[k]) { k += 1; }
         }
         return Ok(arr);
     }
@@ -1123,7 +1125,7 @@ cfn!(s_scrub_b, |c, slf, a, blk| { check_frozen(c, slf)?; if let Some(v) = scrub
 /// to_str-convertible other string for casecmp, or None.
 fn casecmp_other(c: &mut Ctx, slf: Value, o: Value) -> Result<Option<Value>, Esc> {
     let o = if is_string(o) { o } else if o.is_heap() && respond_to(o, s::to_str, true) { expect_str(c, o)? } else { return type_err(c, format!("no implicit conversion of {} into String", class_name_for_err(o))) };
-    if crate::builtins::encoding::compatible(slf, o).is_none() { return Ok(None); }
+    if crate::builtins::encoding::compatible(c, slf, o).is_none() { return Ok(None); }
     Ok(Some(o))
 }
 /// ASCII case folding for casecmp.

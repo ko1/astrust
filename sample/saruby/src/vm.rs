@@ -312,6 +312,8 @@ pub struct Vm {
     pub symproc_cache: HashMap<Sym, Value>,
     pub data_free_hooks: Vec<fn(*mut RObj)>,
     pub pinned: Vec<Value>,
+    /// Encoding objects by encoding id (kept alive by `pinned`).
+    pub enc_objs: Vec<Value>,
     pub recursive_guard: Vec<(u64, Sym)>,
     pub argv: Value,
     pub warn_disabled: bool,

@@ -400,7 +400,7 @@ fn sio_binmode(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     if !is_frozen(d.string) { rstr(d.string).enc = ENC_BINARY; }
     Ok(slf)
 }
-fn sio_external_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let d = sio(c, slf)?; Ok(en::encoding_value(read_enc(d))) }
+fn sio_external_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let e = read_enc(sio(c, slf)?); Ok(en::encoding_value(c, e)) }
 fn sio_set_encoding(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let e = match a.first() { Some(&v) if v != NIL => Some(en::to_enc(c, v)?), _ => None };
     let d = sio(c, slf)?;

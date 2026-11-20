@@ -17,7 +17,7 @@ impl RData for REnc {
 }
 const ENC_NAMES: [&str; 3] = ["UTF-8", "ASCII-8BIT", "US-ASCII"];
 static mut ENC_OBJS: [u64; 3] = [0; 3];
-pub fn encoding_value(_c: &mut Ctx, id: u8) -> RV { Ok(crate::builtins::encoding::encoding_value(id)) }
+pub fn encoding_value(c: &mut Ctx, id: u8) -> RV { Ok(crate::builtins::encoding::encoding_value(c, id)) }
 pub fn encoding_id(c: &mut Ctx, v: Value) -> Result<u8, Esc> { crate::builtins::encoding::to_enc(c, v) }
 fn enc_to_s(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(str_new(ENC_NAMES[rdata::<REnc>(slf).unwrap().id as usize].as_bytes())) }
 fn enc_inspect(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
