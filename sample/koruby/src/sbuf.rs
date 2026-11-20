@@ -15,6 +15,12 @@ const HEAP: usize = 1 << 63;
 #[repr(C)]
 pub struct SBuf { w: [usize; 3] }
 
+// one-byte strings ("x", " ", "\n") are common enough to skip the memcpy call
+#[inline(always)]
+unsafe fn copy(src: &[u8], dst: *mut u8) {
+    if src.len() == 1 { *dst = *src.as_ptr(); } else { std::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len()); }
+}
+
 impl SBuf {
     #[inline(always)]
     pub const fn new() -> SBuf { SBuf { w: [0; 3] } }
@@ -29,7 +35,7 @@ impl SBuf {
     pub fn from_slice(s: &[u8]) -> SBuf {
         if s.len() <= INLINE {
             let mut b = SBuf::new();
-            unsafe { std::ptr::copy_nonoverlapping(s.as_ptr(), b.inline_ptr(), s.len()); }
+            unsafe { copy(s, b.inline_ptr()); }
             b.set_inline_len(s.len());
             b
         } else { SBuf::adopt(s.to_vec()) }
@@ -75,7 +81,7 @@ impl SBuf {
             let n = self.w[2] >> 56;
             let m = n + s.len();
             if m <= INLINE {
-                unsafe { std::ptr::copy_nonoverlapping(s.as_ptr(), self.inline_ptr().add(n), s.len()); }
+                unsafe { copy(s, self.inline_ptr().add(n)); }
                 self.set_inline_len(m);
                 return;
             }
@@ -83,7 +89,7 @@ impl SBuf {
         }
         let (len, cap) = (self.w[1], self.w[2] & !HEAP);
         if len + s.len() <= cap {
-            unsafe { std::ptr::copy_nonoverlapping(s.as_ptr(), (self.w[0] as *mut u8).add(len), s.len()); }
+            unsafe { copy(s, (self.w[0] as *mut u8).add(len)); }
             self.w[1] = len + s.len();
             return;
         }
