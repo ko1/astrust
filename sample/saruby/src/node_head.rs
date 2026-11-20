@@ -12,11 +12,14 @@ pub struct NodeKind {
     pub dumper: fn(&mut String, NodePtr),
     pub replacer: fn(NodePtr, NodePtr, NodePtr),
     pub no_inline: bool,
+    pub size: usize,
+    pub children: fn(NodePtr, &mut dyn FnMut(&mut NodePtr)),
 }
 
 pub const NF_HAS_HASH: u32 = 1;
 pub const NF_SPECIALIZING: u32 = 2;
 pub const NF_NO_INLINE: u32 = 4;
+pub const NF_LAID: u32 = 8;        // part of a block made by layout_tree
 
 #[repr(C)]
 pub struct NodeHead {
@@ -40,6 +43,41 @@ pub fn node_allocate<T>(kind: &'static NodeKind, u: T) -> NodePtr {
     node_allocated(n);
     n
 }
+
+/// Copy the tree under `root` into one block, parents before children in operand order, and
+/// return the copy.  The original stays valid (other holders of its nodes are unaffected).
+pub fn layout_tree(root: NodePtr) -> NodePtr {
+    fn size(n: NodePtr) -> usize {
+        if n.is_null() { return 0; }
+        let k = unsafe { (*n).head.kind };
+        let mut s = k.size;
+        (k.children)(n, &mut |c| s += size(*c));
+        s
+    }
+    fn copy(n: NodePtr, at: &mut *mut u8) -> NodePtr {
+        unsafe {
+            let k = (*n).head.kind;
+            let d = *at;
+            std::ptr::copy_nonoverlapping(n as *const u8, d, k.size);
+            *at = d.add(k.size);
+            let d = d as NodePtr;
+            (*d).head.flags |= NF_LAID;
+            (k.children)(d, &mut |c| if !c.is_null() { *c = copy(*c, at); });
+            d
+        }
+    }
+    if root.is_null() { return root; }
+    let mut at = Box::leak(vec![0u64; size(root) / 8].into_boxed_slice()).as_mut_ptr() as *mut u8;
+    copy(root, &mut at)
+}
+pub fn node_laid(n: NodePtr) -> bool { !n.is_null() && unsafe { (*n).head.flags & NF_LAID != 0 } }
+/// Specialized code's pointer to child `c` of `n` (contiguous trees).
+pub fn child_ptr_expr(n: NodePtr, c: NodePtr) -> String {
+    if c.is_null() { "std::ptr::null_mut()".to_string() } else { format!("n.byte_offset({}isize)", c as isize - n as isize) }
+}
+/// A list operand in specialized code over a contiguous tree: no elements, the parent's address.
+#[inline(always)]
+pub fn list_base(n: NodePtr) -> NodeList { unsafe { std::slice::from_raw_parts(n as *const NodePtr, 0) } }
 
 /// Structural (Merkle) hash, cached in the head.
 pub fn hash_node(n: NodePtr) -> u64 {
@@ -67,7 +105,7 @@ pub fn node_replace_child(parent: NodePtr, old: NodePtr, new: NodePtr) {
 /// SD type name for the subtree rooted at n ("Dyn" when it must stay dynamic).
 pub fn specialize_node(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
-        if n.is_null() || (*n).head.flags & (NF_NO_INLINE | NF_SPECIALIZING) != 0 { return "Dyn".to_string(); }
+        if n.is_null() || (*n).head.flags & (NF_NO_INLINE | NF_SPECIALIZING) != 0 || (*n).head.flags & NF_LAID == 0 { return "Dyn".to_string(); }
         (*n).head.flags |= NF_SPECIALIZING;
         let t = ((*n).head.kind.specializer)(sc, n);
         (*n).head.flags &= !NF_SPECIALIZING;
@@ -77,7 +115,7 @@ pub fn specialize_node(sc: &mut SpecCtx, n: NodePtr) -> String {
 /// Specialize n as a public entry: an exported `SD_<hash>` with the dispatcher's signature.
 pub fn specialize_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     let fname = format!("SD_{:016x}", hash_node(n));
-    if sc.emitted.contains(&fname) { return fname; }
+    if sc.emitted.contains(&fname) || !node_laid(n) { return fname; }
     let t = specialize_node(sc, n);
     sc.out.push_str(&format!("#[no_mangle]
 pub fn {}(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ <{} as Disp>::call(c, n, fp) }}
@@ -1389,6 +1427,647 @@ pub fn ALLOC_node_special(kind: u32, arg: NodePtr) -> NodePtr {
     node_allocate(&KIND_node_special, node_special_struct { kind, arg })
 }
 
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_nil(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_nil_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_true(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_true_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_false(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_false_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_self(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_self_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_lit(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_lit_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_float(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_float_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_str(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_str_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_fstr(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_fstr_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_dstr(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_dstr_struct>)).u };
+    { let l = u.parts; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_tostr(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_tostr_struct>)).u };
+    f(&mut u.v);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_dsym(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_dsym_struct>)).u };
+    f(&mut u.s);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_regex(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_regex_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_dregex(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_dregex_struct>)).u };
+    f(&mut u.s);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_biglit(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_biglit_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_ary(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_ary_struct>)).u };
+    { let l = u.elems; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_ary_build(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_ary_build_struct>)).u };
+    { let l = u.elems; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_hash(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_hash_struct>)).u };
+    { let l = u.items; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_range(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_range_struct>)).u };
+    f(&mut u.b);
+    f(&mut u.e);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_range_lit(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_range_lit_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_lvar(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_lvar_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_lasgn(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_lasgn_struct>)).u };
+    f(&mut u.v);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_dvar(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_dvar_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_dasgn(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_dasgn_struct>)).u };
+    f(&mut u.v);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_ivar(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_ivar_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_iasgn(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_iasgn_struct>)).u };
+    f(&mut u.v);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_gvar(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_gvar_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_gasgn(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_gasgn_struct>)).u };
+    f(&mut u.v);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_cvar(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_cvar_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_cvasgn(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_cvasgn_struct>)).u };
+    f(&mut u.v);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_const(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_const_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_const_path(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_const_path_struct>)).u };
+    f(&mut u.parent);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_top_const(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_top_const_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_cdecl(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_cdecl_struct>)).u };
+    f(&mut u.v);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_cdecl_path(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_cdecl_path_struct>)).u };
+    f(&mut u.parent);
+    f(&mut u.v);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_errinfo(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_errinfo_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_nth_ref(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_nth_ref_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_back_ref(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_back_ref_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_block(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_block_struct>)).u };
+    { let l = u.stmts; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_line(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_line_struct>)).u };
+    f(&mut u.body);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_if(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_if_struct>)).u };
+    f(&mut u.cond);
+    f(&mut u.then_b);
+    f(&mut u.else_b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_and(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_and_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_or(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_or_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_not(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_not_struct>)).u };
+    f(&mut u.v);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_while(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_while_struct>)).u };
+    f(&mut u.cond);
+    f(&mut u.body);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_dowhile(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_dowhile_struct>)).u };
+    f(&mut u.cond);
+    f(&mut u.body);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_loop_break(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_loop_break_struct>)).u };
+    f(&mut u.v);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_loop_next(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_loop_next_struct>)).u };
+    f(&mut u.v);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_break(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_break_struct>)).u };
+    f(&mut u.v);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_next(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_next_struct>)).u };
+    f(&mut u.v);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_return(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_return_struct>)).u };
+    f(&mut u.v);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_retry(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_retry_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_redo(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_redo_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_rescue(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_rescue_struct>)).u };
+    f(&mut u.body);
+    { let l = u.clauses; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    f(&mut u.else_b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_resbody(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_resbody_struct>)).u };
+    { let l = u.classes; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    f(&mut u.assign);
+    f(&mut u.body);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_ensure(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_ensure_struct>)).u };
+    f(&mut u.body);
+    f(&mut u.ens);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_when(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_when_struct>)).u };
+    { let l = u.pats; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_when_lit(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_when_lit_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_defined(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_defined_struct>)).u };
+    f(&mut u.recv);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_call(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_call_struct>)).u };
+    f(&mut u.recv);
+    { let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_call_blk(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_call_blk_struct>)).u };
+    f(&mut u.recv);
+    { let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_call_kw(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_call_kw_struct>)).u };
+    f(&mut u.recv);
+    { let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_call_x(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_call_x_struct>)).u };
+    f(&mut u.recv);
+    { let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_attrasgn(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_attrasgn_struct>)).u };
+    f(&mut u.recv);
+    { let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_super(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_super_struct>)).u };
+    { let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_yield(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_yield_struct>)).u };
+    { let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_yield_x(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_yield_x_struct>)).u };
+    { let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_block_given(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_block_given_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_lambda(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_lambda_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_plus(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_plus_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_minus(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_minus_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_mul(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_mul_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_div(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_div_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_pow(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_pow_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_mod(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_mod_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_lt(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_lt_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_le(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_le_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_gt(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_gt_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_ge(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_ge_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_eq(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_eq_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_neq(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_neq_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_ltlt(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_ltlt_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_gtgt(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_gtgt_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_xor(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_xor_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_and(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_and_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_or(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_or_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_aref(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_aref_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_opt_aset(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_aset_struct>)).u };
+    f(&mut u.a);
+    f(&mut u.b);
+    f(&mut u.v);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_method_entry(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_method_entry_struct>)).u };
+    f(&mut u.body);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_def(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_def_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_sdef(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_sdef_struct>)).u };
+    f(&mut u.recv);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_class(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_class_struct>)).u };
+    f(&mut u.cpath);
+    f(&mut u.superclass);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_module(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_module_struct>)).u };
+    f(&mut u.cpath);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_sclass(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_sclass_struct>)).u };
+    f(&mut u.recv);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_alias(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_alias_struct>)).u };
+    f(&mut u.newname);
+    f(&mut u.oldname);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_valias(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_valias_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_undef(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_undef_struct>)).u };
+    { let l = u.names; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_masgn(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_masgn_struct>)).u };
+    f(&mut u.rhs);
+    { let l = u.targets; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_masgn_elem(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_masgn_elem_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_unsupported(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_unsupported_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_special(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_special_struct>)).u };
+    f(&mut u.arg);
+}
+
 #[allow(non_upper_case_globals)]
 pub static KIND_node_nil: NodeKind = NodeKind {
     name: "node_nil",
@@ -1398,7 +2077,10 @@ pub static KIND_node_nil: NodeKind = NodeKind {
     dumper: DUMP_node_nil,
     replacer: REPLACE_node_nil,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_nil_struct>>(),
+    children: CHILDREN_node_nil,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_nil_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_nil_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_true: NodeKind = NodeKind {
@@ -1409,7 +2091,10 @@ pub static KIND_node_true: NodeKind = NodeKind {
     dumper: DUMP_node_true,
     replacer: REPLACE_node_true,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_true_struct>>(),
+    children: CHILDREN_node_true,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_true_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_true_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_false: NodeKind = NodeKind {
@@ -1420,7 +2105,10 @@ pub static KIND_node_false: NodeKind = NodeKind {
     dumper: DUMP_node_false,
     replacer: REPLACE_node_false,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_false_struct>>(),
+    children: CHILDREN_node_false,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_false_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_false_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_self: NodeKind = NodeKind {
@@ -1431,7 +2119,10 @@ pub static KIND_node_self: NodeKind = NodeKind {
     dumper: DUMP_node_self,
     replacer: REPLACE_node_self,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_self_struct>>(),
+    children: CHILDREN_node_self,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_self_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_self_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_lit: NodeKind = NodeKind {
@@ -1442,7 +2133,10 @@ pub static KIND_node_lit: NodeKind = NodeKind {
     dumper: DUMP_node_lit,
     replacer: REPLACE_node_lit,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_lit_struct>>(),
+    children: CHILDREN_node_lit,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_lit_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_lit_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_float: NodeKind = NodeKind {
@@ -1453,7 +2147,10 @@ pub static KIND_node_float: NodeKind = NodeKind {
     dumper: DUMP_node_float,
     replacer: REPLACE_node_float,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_float_struct>>(),
+    children: CHILDREN_node_float,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_float_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_float_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_str: NodeKind = NodeKind {
@@ -1464,7 +2161,10 @@ pub static KIND_node_str: NodeKind = NodeKind {
     dumper: DUMP_node_str,
     replacer: REPLACE_node_str,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_str_struct>>(),
+    children: CHILDREN_node_str,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_str_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_str_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_fstr: NodeKind = NodeKind {
@@ -1475,7 +2175,10 @@ pub static KIND_node_fstr: NodeKind = NodeKind {
     dumper: DUMP_node_fstr,
     replacer: REPLACE_node_fstr,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_fstr_struct>>(),
+    children: CHILDREN_node_fstr,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_fstr_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_fstr_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_dstr: NodeKind = NodeKind {
@@ -1486,7 +2189,10 @@ pub static KIND_node_dstr: NodeKind = NodeKind {
     dumper: DUMP_node_dstr,
     replacer: REPLACE_node_dstr,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_dstr_struct>>(),
+    children: CHILDREN_node_dstr,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_dstr_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_dstr_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_tostr: NodeKind = NodeKind {
@@ -1497,7 +2203,10 @@ pub static KIND_node_tostr: NodeKind = NodeKind {
     dumper: DUMP_node_tostr,
     replacer: REPLACE_node_tostr,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_tostr_struct>>(),
+    children: CHILDREN_node_tostr,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_tostr_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_tostr_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_dsym: NodeKind = NodeKind {
@@ -1508,7 +2217,10 @@ pub static KIND_node_dsym: NodeKind = NodeKind {
     dumper: DUMP_node_dsym,
     replacer: REPLACE_node_dsym,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_dsym_struct>>(),
+    children: CHILDREN_node_dsym,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_dsym_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_dsym_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_regex: NodeKind = NodeKind {
@@ -1519,7 +2231,10 @@ pub static KIND_node_regex: NodeKind = NodeKind {
     dumper: DUMP_node_regex,
     replacer: REPLACE_node_regex,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_regex_struct>>(),
+    children: CHILDREN_node_regex,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_regex_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_regex_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_dregex: NodeKind = NodeKind {
@@ -1530,7 +2245,10 @@ pub static KIND_node_dregex: NodeKind = NodeKind {
     dumper: DUMP_node_dregex,
     replacer: REPLACE_node_dregex,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_dregex_struct>>(),
+    children: CHILDREN_node_dregex,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_dregex_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_dregex_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_biglit: NodeKind = NodeKind {
@@ -1541,7 +2259,10 @@ pub static KIND_node_biglit: NodeKind = NodeKind {
     dumper: DUMP_node_biglit,
     replacer: REPLACE_node_biglit,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_biglit_struct>>(),
+    children: CHILDREN_node_biglit,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_biglit_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_biglit_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_ary: NodeKind = NodeKind {
@@ -1552,7 +2273,10 @@ pub static KIND_node_ary: NodeKind = NodeKind {
     dumper: DUMP_node_ary,
     replacer: REPLACE_node_ary,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_ary_struct>>(),
+    children: CHILDREN_node_ary,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_ary_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_ary_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_ary_build: NodeKind = NodeKind {
@@ -1563,7 +2287,10 @@ pub static KIND_node_ary_build: NodeKind = NodeKind {
     dumper: DUMP_node_ary_build,
     replacer: REPLACE_node_ary_build,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_ary_build_struct>>(),
+    children: CHILDREN_node_ary_build,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_ary_build_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_ary_build_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_hash: NodeKind = NodeKind {
@@ -1574,7 +2301,10 @@ pub static KIND_node_hash: NodeKind = NodeKind {
     dumper: DUMP_node_hash,
     replacer: REPLACE_node_hash,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_hash_struct>>(),
+    children: CHILDREN_node_hash,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_hash_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_hash_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_range: NodeKind = NodeKind {
@@ -1585,7 +2315,10 @@ pub static KIND_node_range: NodeKind = NodeKind {
     dumper: DUMP_node_range,
     replacer: REPLACE_node_range,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_range_struct>>(),
+    children: CHILDREN_node_range,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_range_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_range_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_range_lit: NodeKind = NodeKind {
@@ -1596,7 +2329,10 @@ pub static KIND_node_range_lit: NodeKind = NodeKind {
     dumper: DUMP_node_range_lit,
     replacer: REPLACE_node_range_lit,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_range_lit_struct>>(),
+    children: CHILDREN_node_range_lit,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_range_lit_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_range_lit_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_lvar: NodeKind = NodeKind {
@@ -1607,7 +2343,10 @@ pub static KIND_node_lvar: NodeKind = NodeKind {
     dumper: DUMP_node_lvar,
     replacer: REPLACE_node_lvar,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_lvar_struct>>(),
+    children: CHILDREN_node_lvar,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_lvar_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_lvar_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_lasgn: NodeKind = NodeKind {
@@ -1618,7 +2357,10 @@ pub static KIND_node_lasgn: NodeKind = NodeKind {
     dumper: DUMP_node_lasgn,
     replacer: REPLACE_node_lasgn,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_lasgn_struct>>(),
+    children: CHILDREN_node_lasgn,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_lasgn_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_lasgn_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_dvar: NodeKind = NodeKind {
@@ -1629,7 +2371,10 @@ pub static KIND_node_dvar: NodeKind = NodeKind {
     dumper: DUMP_node_dvar,
     replacer: REPLACE_node_dvar,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_dvar_struct>>(),
+    children: CHILDREN_node_dvar,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_dvar_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_dvar_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_dasgn: NodeKind = NodeKind {
@@ -1640,7 +2385,10 @@ pub static KIND_node_dasgn: NodeKind = NodeKind {
     dumper: DUMP_node_dasgn,
     replacer: REPLACE_node_dasgn,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_dasgn_struct>>(),
+    children: CHILDREN_node_dasgn,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_dasgn_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_dasgn_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_ivar: NodeKind = NodeKind {
@@ -1651,7 +2399,10 @@ pub static KIND_node_ivar: NodeKind = NodeKind {
     dumper: DUMP_node_ivar,
     replacer: REPLACE_node_ivar,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_ivar_struct>>(),
+    children: CHILDREN_node_ivar,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_ivar_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_ivar_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_iasgn: NodeKind = NodeKind {
@@ -1662,7 +2413,10 @@ pub static KIND_node_iasgn: NodeKind = NodeKind {
     dumper: DUMP_node_iasgn,
     replacer: REPLACE_node_iasgn,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_iasgn_struct>>(),
+    children: CHILDREN_node_iasgn,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_iasgn_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_iasgn_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_gvar: NodeKind = NodeKind {
@@ -1673,7 +2427,10 @@ pub static KIND_node_gvar: NodeKind = NodeKind {
     dumper: DUMP_node_gvar,
     replacer: REPLACE_node_gvar,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_gvar_struct>>(),
+    children: CHILDREN_node_gvar,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_gvar_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_gvar_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_gasgn: NodeKind = NodeKind {
@@ -1684,7 +2441,10 @@ pub static KIND_node_gasgn: NodeKind = NodeKind {
     dumper: DUMP_node_gasgn,
     replacer: REPLACE_node_gasgn,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_gasgn_struct>>(),
+    children: CHILDREN_node_gasgn,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_gasgn_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_gasgn_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_cvar: NodeKind = NodeKind {
@@ -1695,7 +2455,10 @@ pub static KIND_node_cvar: NodeKind = NodeKind {
     dumper: DUMP_node_cvar,
     replacer: REPLACE_node_cvar,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_cvar_struct>>(),
+    children: CHILDREN_node_cvar,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_cvar_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_cvar_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_cvasgn: NodeKind = NodeKind {
@@ -1706,7 +2469,10 @@ pub static KIND_node_cvasgn: NodeKind = NodeKind {
     dumper: DUMP_node_cvasgn,
     replacer: REPLACE_node_cvasgn,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_cvasgn_struct>>(),
+    children: CHILDREN_node_cvasgn,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_cvasgn_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_cvasgn_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_const: NodeKind = NodeKind {
@@ -1717,7 +2483,10 @@ pub static KIND_node_const: NodeKind = NodeKind {
     dumper: DUMP_node_const,
     replacer: REPLACE_node_const,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_const_struct>>(),
+    children: CHILDREN_node_const,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_const_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_const_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_const_path: NodeKind = NodeKind {
@@ -1728,7 +2497,10 @@ pub static KIND_node_const_path: NodeKind = NodeKind {
     dumper: DUMP_node_const_path,
     replacer: REPLACE_node_const_path,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_const_path_struct>>(),
+    children: CHILDREN_node_const_path,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_const_path_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_const_path_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_top_const: NodeKind = NodeKind {
@@ -1739,7 +2511,10 @@ pub static KIND_node_top_const: NodeKind = NodeKind {
     dumper: DUMP_node_top_const,
     replacer: REPLACE_node_top_const,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_top_const_struct>>(),
+    children: CHILDREN_node_top_const,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_top_const_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_top_const_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_cdecl: NodeKind = NodeKind {
@@ -1750,7 +2525,10 @@ pub static KIND_node_cdecl: NodeKind = NodeKind {
     dumper: DUMP_node_cdecl,
     replacer: REPLACE_node_cdecl,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_cdecl_struct>>(),
+    children: CHILDREN_node_cdecl,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_cdecl_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_cdecl_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_cdecl_path: NodeKind = NodeKind {
@@ -1761,7 +2539,10 @@ pub static KIND_node_cdecl_path: NodeKind = NodeKind {
     dumper: DUMP_node_cdecl_path,
     replacer: REPLACE_node_cdecl_path,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_cdecl_path_struct>>(),
+    children: CHILDREN_node_cdecl_path,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_cdecl_path_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_cdecl_path_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_errinfo: NodeKind = NodeKind {
@@ -1772,7 +2553,10 @@ pub static KIND_node_errinfo: NodeKind = NodeKind {
     dumper: DUMP_node_errinfo,
     replacer: REPLACE_node_errinfo,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_errinfo_struct>>(),
+    children: CHILDREN_node_errinfo,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_errinfo_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_errinfo_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_nth_ref: NodeKind = NodeKind {
@@ -1783,7 +2567,10 @@ pub static KIND_node_nth_ref: NodeKind = NodeKind {
     dumper: DUMP_node_nth_ref,
     replacer: REPLACE_node_nth_ref,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_nth_ref_struct>>(),
+    children: CHILDREN_node_nth_ref,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_nth_ref_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_nth_ref_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_back_ref: NodeKind = NodeKind {
@@ -1794,7 +2581,10 @@ pub static KIND_node_back_ref: NodeKind = NodeKind {
     dumper: DUMP_node_back_ref,
     replacer: REPLACE_node_back_ref,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_back_ref_struct>>(),
+    children: CHILDREN_node_back_ref,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_back_ref_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_back_ref_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_block: NodeKind = NodeKind {
@@ -1805,7 +2595,10 @@ pub static KIND_node_block: NodeKind = NodeKind {
     dumper: DUMP_node_block,
     replacer: REPLACE_node_block,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_block_struct>>(),
+    children: CHILDREN_node_block,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_block_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_block_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_line: NodeKind = NodeKind {
@@ -1816,7 +2609,10 @@ pub static KIND_node_line: NodeKind = NodeKind {
     dumper: DUMP_node_line,
     replacer: REPLACE_node_line,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_line_struct>>(),
+    children: CHILDREN_node_line,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_line_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_line_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_if: NodeKind = NodeKind {
@@ -1827,7 +2623,10 @@ pub static KIND_node_if: NodeKind = NodeKind {
     dumper: DUMP_node_if,
     replacer: REPLACE_node_if,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_if_struct>>(),
+    children: CHILDREN_node_if,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_if_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_if_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_and: NodeKind = NodeKind {
@@ -1838,7 +2637,10 @@ pub static KIND_node_and: NodeKind = NodeKind {
     dumper: DUMP_node_and,
     replacer: REPLACE_node_and,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_and_struct>>(),
+    children: CHILDREN_node_and,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_and_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_and_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_or: NodeKind = NodeKind {
@@ -1849,7 +2651,10 @@ pub static KIND_node_or: NodeKind = NodeKind {
     dumper: DUMP_node_or,
     replacer: REPLACE_node_or,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_or_struct>>(),
+    children: CHILDREN_node_or,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_or_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_or_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_not: NodeKind = NodeKind {
@@ -1860,7 +2665,10 @@ pub static KIND_node_not: NodeKind = NodeKind {
     dumper: DUMP_node_not,
     replacer: REPLACE_node_not,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_not_struct>>(),
+    children: CHILDREN_node_not,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_not_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_not_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_while: NodeKind = NodeKind {
@@ -1871,7 +2679,10 @@ pub static KIND_node_while: NodeKind = NodeKind {
     dumper: DUMP_node_while,
     replacer: REPLACE_node_while,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_while_struct>>(),
+    children: CHILDREN_node_while,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_while_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_while_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_dowhile: NodeKind = NodeKind {
@@ -1882,7 +2693,10 @@ pub static KIND_node_dowhile: NodeKind = NodeKind {
     dumper: DUMP_node_dowhile,
     replacer: REPLACE_node_dowhile,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_dowhile_struct>>(),
+    children: CHILDREN_node_dowhile,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_dowhile_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_dowhile_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_loop_break: NodeKind = NodeKind {
@@ -1893,7 +2707,10 @@ pub static KIND_node_loop_break: NodeKind = NodeKind {
     dumper: DUMP_node_loop_break,
     replacer: REPLACE_node_loop_break,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_loop_break_struct>>(),
+    children: CHILDREN_node_loop_break,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_loop_break_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_loop_break_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_loop_next: NodeKind = NodeKind {
@@ -1904,7 +2721,10 @@ pub static KIND_node_loop_next: NodeKind = NodeKind {
     dumper: DUMP_node_loop_next,
     replacer: REPLACE_node_loop_next,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_loop_next_struct>>(),
+    children: CHILDREN_node_loop_next,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_loop_next_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_loop_next_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_break: NodeKind = NodeKind {
@@ -1915,7 +2735,10 @@ pub static KIND_node_break: NodeKind = NodeKind {
     dumper: DUMP_node_break,
     replacer: REPLACE_node_break,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_break_struct>>(),
+    children: CHILDREN_node_break,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_break_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_break_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_next: NodeKind = NodeKind {
@@ -1926,7 +2749,10 @@ pub static KIND_node_next: NodeKind = NodeKind {
     dumper: DUMP_node_next,
     replacer: REPLACE_node_next,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_next_struct>>(),
+    children: CHILDREN_node_next,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_next_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_next_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_return: NodeKind = NodeKind {
@@ -1937,7 +2763,10 @@ pub static KIND_node_return: NodeKind = NodeKind {
     dumper: DUMP_node_return,
     replacer: REPLACE_node_return,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_return_struct>>(),
+    children: CHILDREN_node_return,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_return_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_return_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_retry: NodeKind = NodeKind {
@@ -1948,7 +2777,10 @@ pub static KIND_node_retry: NodeKind = NodeKind {
     dumper: DUMP_node_retry,
     replacer: REPLACE_node_retry,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_retry_struct>>(),
+    children: CHILDREN_node_retry,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_retry_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_retry_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_redo: NodeKind = NodeKind {
@@ -1959,7 +2791,10 @@ pub static KIND_node_redo: NodeKind = NodeKind {
     dumper: DUMP_node_redo,
     replacer: REPLACE_node_redo,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_redo_struct>>(),
+    children: CHILDREN_node_redo,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_redo_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_redo_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_rescue: NodeKind = NodeKind {
@@ -1970,7 +2805,10 @@ pub static KIND_node_rescue: NodeKind = NodeKind {
     dumper: DUMP_node_rescue,
     replacer: REPLACE_node_rescue,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_rescue_struct>>(),
+    children: CHILDREN_node_rescue,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_rescue_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_rescue_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_resbody: NodeKind = NodeKind {
@@ -1981,7 +2819,10 @@ pub static KIND_node_resbody: NodeKind = NodeKind {
     dumper: DUMP_node_resbody,
     replacer: REPLACE_node_resbody,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_resbody_struct>>(),
+    children: CHILDREN_node_resbody,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_resbody_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_resbody_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_ensure: NodeKind = NodeKind {
@@ -1992,7 +2833,10 @@ pub static KIND_node_ensure: NodeKind = NodeKind {
     dumper: DUMP_node_ensure,
     replacer: REPLACE_node_ensure,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_ensure_struct>>(),
+    children: CHILDREN_node_ensure,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_ensure_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_ensure_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_when: NodeKind = NodeKind {
@@ -2003,7 +2847,10 @@ pub static KIND_node_when: NodeKind = NodeKind {
     dumper: DUMP_node_when,
     replacer: REPLACE_node_when,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_when_struct>>(),
+    children: CHILDREN_node_when,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_when_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_when_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_when_lit: NodeKind = NodeKind {
@@ -2014,7 +2861,10 @@ pub static KIND_node_when_lit: NodeKind = NodeKind {
     dumper: DUMP_node_when_lit,
     replacer: REPLACE_node_when_lit,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_when_lit_struct>>(),
+    children: CHILDREN_node_when_lit,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_when_lit_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_when_lit_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_defined: NodeKind = NodeKind {
@@ -2025,7 +2875,10 @@ pub static KIND_node_defined: NodeKind = NodeKind {
     dumper: DUMP_node_defined,
     replacer: REPLACE_node_defined,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_defined_struct>>(),
+    children: CHILDREN_node_defined,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_defined_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_defined_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_call: NodeKind = NodeKind {
@@ -2036,7 +2889,10 @@ pub static KIND_node_call: NodeKind = NodeKind {
     dumper: DUMP_node_call,
     replacer: REPLACE_node_call,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_call_struct>>(),
+    children: CHILDREN_node_call,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_call_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_call_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_call_blk: NodeKind = NodeKind {
@@ -2047,7 +2903,10 @@ pub static KIND_node_call_blk: NodeKind = NodeKind {
     dumper: DUMP_node_call_blk,
     replacer: REPLACE_node_call_blk,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_call_blk_struct>>(),
+    children: CHILDREN_node_call_blk,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_call_blk_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_call_blk_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_call_kw: NodeKind = NodeKind {
@@ -2058,7 +2917,10 @@ pub static KIND_node_call_kw: NodeKind = NodeKind {
     dumper: DUMP_node_call_kw,
     replacer: REPLACE_node_call_kw,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_call_kw_struct>>(),
+    children: CHILDREN_node_call_kw,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_call_kw_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_call_kw_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_call_x: NodeKind = NodeKind {
@@ -2069,7 +2931,10 @@ pub static KIND_node_call_x: NodeKind = NodeKind {
     dumper: DUMP_node_call_x,
     replacer: REPLACE_node_call_x,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_call_x_struct>>(),
+    children: CHILDREN_node_call_x,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_call_x_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_call_x_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_attrasgn: NodeKind = NodeKind {
@@ -2080,7 +2945,10 @@ pub static KIND_node_attrasgn: NodeKind = NodeKind {
     dumper: DUMP_node_attrasgn,
     replacer: REPLACE_node_attrasgn,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_attrasgn_struct>>(),
+    children: CHILDREN_node_attrasgn,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_attrasgn_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_attrasgn_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_super: NodeKind = NodeKind {
@@ -2091,7 +2959,10 @@ pub static KIND_node_super: NodeKind = NodeKind {
     dumper: DUMP_node_super,
     replacer: REPLACE_node_super,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_super_struct>>(),
+    children: CHILDREN_node_super,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_super_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_super_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_yield: NodeKind = NodeKind {
@@ -2102,7 +2973,10 @@ pub static KIND_node_yield: NodeKind = NodeKind {
     dumper: DUMP_node_yield,
     replacer: REPLACE_node_yield,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_yield_struct>>(),
+    children: CHILDREN_node_yield,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_yield_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_yield_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_yield_x: NodeKind = NodeKind {
@@ -2113,7 +2987,10 @@ pub static KIND_node_yield_x: NodeKind = NodeKind {
     dumper: DUMP_node_yield_x,
     replacer: REPLACE_node_yield_x,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_yield_x_struct>>(),
+    children: CHILDREN_node_yield_x,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_yield_x_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_yield_x_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_block_given: NodeKind = NodeKind {
@@ -2124,7 +3001,10 @@ pub static KIND_node_block_given: NodeKind = NodeKind {
     dumper: DUMP_node_block_given,
     replacer: REPLACE_node_block_given,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_block_given_struct>>(),
+    children: CHILDREN_node_block_given,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_block_given_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_block_given_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_lambda: NodeKind = NodeKind {
@@ -2135,7 +3015,10 @@ pub static KIND_node_lambda: NodeKind = NodeKind {
     dumper: DUMP_node_lambda,
     replacer: REPLACE_node_lambda,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_lambda_struct>>(),
+    children: CHILDREN_node_lambda,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_lambda_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_lambda_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_plus: NodeKind = NodeKind {
@@ -2146,7 +3029,10 @@ pub static KIND_node_opt_plus: NodeKind = NodeKind {
     dumper: DUMP_node_opt_plus,
     replacer: REPLACE_node_opt_plus,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_plus_struct>>(),
+    children: CHILDREN_node_opt_plus,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_plus_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_plus_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_minus: NodeKind = NodeKind {
@@ -2157,7 +3043,10 @@ pub static KIND_node_opt_minus: NodeKind = NodeKind {
     dumper: DUMP_node_opt_minus,
     replacer: REPLACE_node_opt_minus,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_minus_struct>>(),
+    children: CHILDREN_node_opt_minus,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_minus_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_minus_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_mul: NodeKind = NodeKind {
@@ -2168,7 +3057,10 @@ pub static KIND_node_opt_mul: NodeKind = NodeKind {
     dumper: DUMP_node_opt_mul,
     replacer: REPLACE_node_opt_mul,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_mul_struct>>(),
+    children: CHILDREN_node_opt_mul,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_mul_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_mul_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_div: NodeKind = NodeKind {
@@ -2179,7 +3071,10 @@ pub static KIND_node_opt_div: NodeKind = NodeKind {
     dumper: DUMP_node_opt_div,
     replacer: REPLACE_node_opt_div,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_div_struct>>(),
+    children: CHILDREN_node_opt_div,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_div_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_div_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_pow: NodeKind = NodeKind {
@@ -2190,7 +3085,10 @@ pub static KIND_node_opt_pow: NodeKind = NodeKind {
     dumper: DUMP_node_opt_pow,
     replacer: REPLACE_node_opt_pow,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_pow_struct>>(),
+    children: CHILDREN_node_opt_pow,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_pow_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_pow_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_mod: NodeKind = NodeKind {
@@ -2201,7 +3099,10 @@ pub static KIND_node_opt_mod: NodeKind = NodeKind {
     dumper: DUMP_node_opt_mod,
     replacer: REPLACE_node_opt_mod,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_mod_struct>>(),
+    children: CHILDREN_node_opt_mod,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_mod_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_mod_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_lt: NodeKind = NodeKind {
@@ -2212,7 +3113,10 @@ pub static KIND_node_opt_lt: NodeKind = NodeKind {
     dumper: DUMP_node_opt_lt,
     replacer: REPLACE_node_opt_lt,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_lt_struct>>(),
+    children: CHILDREN_node_opt_lt,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_lt_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_lt_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_le: NodeKind = NodeKind {
@@ -2223,7 +3127,10 @@ pub static KIND_node_opt_le: NodeKind = NodeKind {
     dumper: DUMP_node_opt_le,
     replacer: REPLACE_node_opt_le,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_le_struct>>(),
+    children: CHILDREN_node_opt_le,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_le_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_le_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_gt: NodeKind = NodeKind {
@@ -2234,7 +3141,10 @@ pub static KIND_node_opt_gt: NodeKind = NodeKind {
     dumper: DUMP_node_opt_gt,
     replacer: REPLACE_node_opt_gt,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_gt_struct>>(),
+    children: CHILDREN_node_opt_gt,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_gt_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_gt_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_ge: NodeKind = NodeKind {
@@ -2245,7 +3155,10 @@ pub static KIND_node_opt_ge: NodeKind = NodeKind {
     dumper: DUMP_node_opt_ge,
     replacer: REPLACE_node_opt_ge,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_ge_struct>>(),
+    children: CHILDREN_node_opt_ge,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_ge_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_ge_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_eq: NodeKind = NodeKind {
@@ -2256,7 +3169,10 @@ pub static KIND_node_opt_eq: NodeKind = NodeKind {
     dumper: DUMP_node_opt_eq,
     replacer: REPLACE_node_opt_eq,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_eq_struct>>(),
+    children: CHILDREN_node_opt_eq,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_eq_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_eq_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_neq: NodeKind = NodeKind {
@@ -2267,7 +3183,10 @@ pub static KIND_node_opt_neq: NodeKind = NodeKind {
     dumper: DUMP_node_opt_neq,
     replacer: REPLACE_node_opt_neq,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_neq_struct>>(),
+    children: CHILDREN_node_opt_neq,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_neq_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_neq_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_ltlt: NodeKind = NodeKind {
@@ -2278,7 +3197,10 @@ pub static KIND_node_opt_ltlt: NodeKind = NodeKind {
     dumper: DUMP_node_opt_ltlt,
     replacer: REPLACE_node_opt_ltlt,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_ltlt_struct>>(),
+    children: CHILDREN_node_opt_ltlt,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_ltlt_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_ltlt_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_gtgt: NodeKind = NodeKind {
@@ -2289,7 +3211,10 @@ pub static KIND_node_opt_gtgt: NodeKind = NodeKind {
     dumper: DUMP_node_opt_gtgt,
     replacer: REPLACE_node_opt_gtgt,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_gtgt_struct>>(),
+    children: CHILDREN_node_opt_gtgt,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_gtgt_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_gtgt_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_xor: NodeKind = NodeKind {
@@ -2300,7 +3225,10 @@ pub static KIND_node_opt_xor: NodeKind = NodeKind {
     dumper: DUMP_node_opt_xor,
     replacer: REPLACE_node_opt_xor,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_xor_struct>>(),
+    children: CHILDREN_node_opt_xor,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_xor_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_xor_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_and: NodeKind = NodeKind {
@@ -2311,7 +3239,10 @@ pub static KIND_node_opt_and: NodeKind = NodeKind {
     dumper: DUMP_node_opt_and,
     replacer: REPLACE_node_opt_and,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_and_struct>>(),
+    children: CHILDREN_node_opt_and,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_and_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_and_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_or: NodeKind = NodeKind {
@@ -2322,7 +3253,10 @@ pub static KIND_node_opt_or: NodeKind = NodeKind {
     dumper: DUMP_node_opt_or,
     replacer: REPLACE_node_opt_or,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_or_struct>>(),
+    children: CHILDREN_node_opt_or,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_or_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_or_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_aref: NodeKind = NodeKind {
@@ -2333,7 +3267,10 @@ pub static KIND_node_opt_aref: NodeKind = NodeKind {
     dumper: DUMP_node_opt_aref,
     replacer: REPLACE_node_opt_aref,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_aref_struct>>(),
+    children: CHILDREN_node_opt_aref,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_aref_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_aref_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_opt_aset: NodeKind = NodeKind {
@@ -2344,7 +3281,10 @@ pub static KIND_node_opt_aset: NodeKind = NodeKind {
     dumper: DUMP_node_opt_aset,
     replacer: REPLACE_node_opt_aset,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_opt_aset_struct>>(),
+    children: CHILDREN_node_opt_aset,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_opt_aset_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_opt_aset_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_method_entry: NodeKind = NodeKind {
@@ -2355,7 +3295,10 @@ pub static KIND_node_method_entry: NodeKind = NodeKind {
     dumper: DUMP_node_method_entry,
     replacer: REPLACE_node_method_entry,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_method_entry_struct>>(),
+    children: CHILDREN_node_method_entry,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_method_entry_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_method_entry_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_def: NodeKind = NodeKind {
@@ -2366,7 +3309,10 @@ pub static KIND_node_def: NodeKind = NodeKind {
     dumper: DUMP_node_def,
     replacer: REPLACE_node_def,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_def_struct>>(),
+    children: CHILDREN_node_def,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_def_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_def_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_sdef: NodeKind = NodeKind {
@@ -2377,7 +3323,10 @@ pub static KIND_node_sdef: NodeKind = NodeKind {
     dumper: DUMP_node_sdef,
     replacer: REPLACE_node_sdef,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_sdef_struct>>(),
+    children: CHILDREN_node_sdef,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_sdef_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_sdef_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_class: NodeKind = NodeKind {
@@ -2388,7 +3337,10 @@ pub static KIND_node_class: NodeKind = NodeKind {
     dumper: DUMP_node_class,
     replacer: REPLACE_node_class,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_class_struct>>(),
+    children: CHILDREN_node_class,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_class_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_class_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_module: NodeKind = NodeKind {
@@ -2399,7 +3351,10 @@ pub static KIND_node_module: NodeKind = NodeKind {
     dumper: DUMP_node_module,
     replacer: REPLACE_node_module,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_module_struct>>(),
+    children: CHILDREN_node_module,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_module_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_module_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_sclass: NodeKind = NodeKind {
@@ -2410,7 +3365,10 @@ pub static KIND_node_sclass: NodeKind = NodeKind {
     dumper: DUMP_node_sclass,
     replacer: REPLACE_node_sclass,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_sclass_struct>>(),
+    children: CHILDREN_node_sclass,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_sclass_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_sclass_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_alias: NodeKind = NodeKind {
@@ -2421,7 +3379,10 @@ pub static KIND_node_alias: NodeKind = NodeKind {
     dumper: DUMP_node_alias,
     replacer: REPLACE_node_alias,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_alias_struct>>(),
+    children: CHILDREN_node_alias,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_alias_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_alias_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_valias: NodeKind = NodeKind {
@@ -2432,7 +3393,10 @@ pub static KIND_node_valias: NodeKind = NodeKind {
     dumper: DUMP_node_valias,
     replacer: REPLACE_node_valias,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_valias_struct>>(),
+    children: CHILDREN_node_valias,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_valias_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_valias_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_undef: NodeKind = NodeKind {
@@ -2443,7 +3407,10 @@ pub static KIND_node_undef: NodeKind = NodeKind {
     dumper: DUMP_node_undef,
     replacer: REPLACE_node_undef,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_undef_struct>>(),
+    children: CHILDREN_node_undef,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_undef_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_undef_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_masgn: NodeKind = NodeKind {
@@ -2454,7 +3421,10 @@ pub static KIND_node_masgn: NodeKind = NodeKind {
     dumper: DUMP_node_masgn,
     replacer: REPLACE_node_masgn,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_masgn_struct>>(),
+    children: CHILDREN_node_masgn,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_masgn_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_masgn_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_masgn_elem: NodeKind = NodeKind {
@@ -2465,7 +3435,10 @@ pub static KIND_node_masgn_elem: NodeKind = NodeKind {
     dumper: DUMP_node_masgn_elem,
     replacer: REPLACE_node_masgn_elem,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_masgn_elem_struct>>(),
+    children: CHILDREN_node_masgn_elem,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_masgn_elem_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_masgn_elem_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_unsupported: NodeKind = NodeKind {
@@ -2476,7 +3449,10 @@ pub static KIND_node_unsupported: NodeKind = NodeKind {
     dumper: DUMP_node_unsupported,
     replacer: REPLACE_node_unsupported,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_unsupported_struct>>(),
+    children: CHILDREN_node_unsupported,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_unsupported_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_unsupported_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_special: NodeKind = NodeKind {
@@ -2487,5 +3463,8 @@ pub static KIND_node_special: NodeKind = NodeKind {
     dumper: DUMP_node_special,
     replacer: REPLACE_node_special,
     no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_special_struct>>(),
+    children: CHILDREN_node_special,
 };
+const _: () = assert!(std::mem::size_of::<NodeOf<node_special_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_special_struct>>() <= 8);
 

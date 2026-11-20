@@ -44,6 +44,11 @@ require 'optparse'
 #   x@ref: T          T stored inline in the node; the body receives `&mut T` (caches etc.); not hashed
 #   x: u32|i32|u64|i64|usize|bool|f64   scalars: hashed and baked into specialized code as literals
 #   x: <other T>      opaque: read from the node at run time; hashed through the embedder's hook
+#
+# Contiguous trees (embedder hook `contiguous?`): `layout_tree(root)` copies a finished tree into one block,
+# parents before children.  A descendant then sits at an offset from its ancestor that depends only on the
+# tree's shape (which the hash covers), so specialized code addresses every node, and so every inline cache,
+# as `root + constant` instead of loading child pointers level by level.  Only laid-out trees are specialized.
 module ASTrustGen
   class << self; attr_accessor :value_type; end
   self.value_type = 'Value'
@@ -140,7 +145,8 @@ module ASTrustGen
           elsif spec? then "a.push(format!(\"{}u64\", h_#{@name}));"
           elsif bake? then "a.push(format!(\"#{SCALARS[@type]}\", #{@owner.bake_value_expr(self)}));"
           elsif child? then "a.push(\"#{ASTrustGen.rust_str(@owner.child_storage_expr(self))}\".to_string());"
-          elsif node? || nodes? then "a.push(\"(*np).u.#{@name}\".to_string());"
+          elsif node? then @owner.contiguous? ? "a.push(child_ptr_expr(n, u.#{@name}));" : "a.push(\"(*np).u.#{@name}\".to_string());"
+          elsif nodes? then @owner.contiguous? ? "a.push(\"list_base(#{@owner.prefix_names[1]})\".to_string());" : "a.push(\"(*np).u.#{@name}\".to_string());"
           elsif scalar? then "a.push(format!(\"#{SCALARS[@type]}\", #{f}));"
           elsif f64? then "a.push(format!(\"f64::from_bits({}u64)\", #{f}.to_bits()));"
           else @owner.opaque_specialize_arg(self, f)
@@ -186,6 +192,8 @@ module ASTrustGen
       def spec_target_expr(op) = "std::ptr::null_mut()"
       # @bake operand: Rust expr of the operand's type, evaluated at specialize time with `np` in scope.
       def bake_value_expr(op) = "0"
+      # Trees are laid out by layout_tree and specialized code reaches children at constant offsets.
+      def contiguous? = false
       def dispatch_prologue = ""
       # @child storage: where an eager child's value lives between its evaluation and the
       # node body (the counterpart of ASTroGen's child_storage_decl / child_storage_expr).
@@ -333,7 +341,26 @@ module ASTrustGen
             dumper: DUMP_#{@name},
             replacer: REPLACE_#{@name},
             no_inline: #{no_inline?},
+            size: std::mem::size_of::<NodeOf<#{struct_name}>>(),
+            children: CHILDREN_#{@name},
         };
+        const _: () = assert!(std::mem::size_of::<NodeOf<#{struct_name}>>() % 8 == 0 && std::mem::align_of::<NodeOf<#{struct_name}>>() <= 8);
+        RS
+      end
+
+      # CHILDREN_<name>(n, f): f on every child pointer slot, in operand order (lists element by element).
+      def build_children
+        stmts = @operands.map do |op|
+          if op.child? || op.node? then "    f(&mut u.#{op.name});"
+          elsif op.nodes? then "    { let l = u.#{op.name}; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }"
+          end
+        end.compact
+        <<~RS
+        #[allow(non_snake_case, unused_variables)]
+        fn CHILDREN_#{@name}(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+            let u = unsafe { &mut (*(n as *mut NodeOf<#{struct_name}>)).u };
+        #{stmts.join("\n")}
+        }
         RS
       end
 
@@ -440,7 +467,7 @@ module ASTrustGen
           if op.child? || op.node?
             "    let t_#{op.name} = specialize_node(sc, u.#{op.name});"
           elsif op.nodes?
-            "    let t_#{op.name} = specialize_list(sc, &u.#{op.name});"
+            "    let t_#{op.name} = specialize_list(sc, &u.#{op.name}#{contiguous? ? ", n" : ""});"
           elsif op.spec?
             "    let (t_#{op.name}, h_#{op.name}) = { let np = n as *mut NodeOf<#{struct_name}>; let p: NodePtr = unsafe { #{spec_target_expr(op)} }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth || sc.open.contains(&hash_node(p)) { (\"Dyn\".to_string(), 0u64) } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };"
           end
@@ -448,9 +475,10 @@ module ASTrustGen
         generic_names = @operands.select(&:generic_param).map { "t_#{it.name}" }
         child_glue = @operands.select(&:child?).map do |op|
           # \u0001 stands for the child's dispatcher type until the statement is escaped for format!
-          disp = "<\u0001 as Disp>::call(#{(prefix_names.take(1) + ["(*np).u.#{op.name}"] + extra_call_args).join(', ')})"
-          stmt = ASTrustGen.rust_str(child_storage_stmt(op, unwrap_expr(disp))).gsub('{', '{{').gsub('}', '}}').sub("\u0001", '{}')
-          "    body.push_str(&format!(\"        #{stmt}\\n\", t_#{op.name}));"
+          # \u0002 stands for the child's node pointer (contiguous trees: an offset from this node)
+          disp = "<\u0001 as Disp>::call(#{(prefix_names.take(1) + [contiguous? ? "\u0002" : "(*np).u.#{op.name}"] + extra_call_args).join(', ')})"
+          stmt = ASTrustGen.rust_str(child_storage_stmt(op, unwrap_expr(disp))).gsub('{', '{{').gsub('}', '}}').sub("\u0001", '{}').sub("\u0002", '{}')
+          "    body.push_str(&format!(\"        #{stmt}\\n\", t_#{op.name}#{contiguous? ? ", child_ptr_expr(n, u.#{op.name})" : ""}));"
         end
         tf = generic_names.empty? ? '""'.dup : "format!(\"::<#{generic_names.map { '{}' }.join(', ')}>\", #{generic_names.join(', ')})"
         params = @prefix_params.join(', ')
@@ -541,11 +569,14 @@ module ASTrustGen
           pub dumper: fn(&mut String, NodePtr),
           pub replacer: fn(NodePtr, NodePtr, NodePtr),
           pub no_inline: bool,
+          pub size: usize,
+          pub children: fn(NodePtr, &mut dyn FnMut(&mut NodePtr)),
       }
 
       pub const NF_HAS_HASH: u32 = 1;
       pub const NF_SPECIALIZING: u32 = 2;
       pub const NF_NO_INLINE: u32 = 4;
+      pub const NF_LAID: u32 = 8;        // part of a block made by layout_tree
 
       #[repr(C)]
       pub struct NodeHead {
@@ -569,6 +600,41 @@ module ASTrustGen
           node_allocated(n);
           n
       }
+
+      /// Copy the tree under `root` into one block, parents before children in operand order, and
+      /// return the copy.  The original stays valid (other holders of its nodes are unaffected).
+      pub fn layout_tree(root: NodePtr) -> NodePtr {
+          fn size(n: NodePtr) -> usize {
+              if n.is_null() { return 0; }
+              let k = unsafe { (*n).head.kind };
+              let mut s = k.size;
+              (k.children)(n, &mut |c| s += size(*c));
+              s
+          }
+          fn copy(n: NodePtr, at: &mut *mut u8) -> NodePtr {
+              unsafe {
+                  let k = (*n).head.kind;
+                  let d = *at;
+                  std::ptr::copy_nonoverlapping(n as *const u8, d, k.size);
+                  *at = d.add(k.size);
+                  let d = d as NodePtr;
+                  (*d).head.flags |= NF_LAID;
+                  (k.children)(d, &mut |c| if !c.is_null() { *c = copy(*c, at); });
+                  d
+              }
+          }
+          if root.is_null() { return root; }
+          let mut at = Box::leak(vec![0u64; size(root) / 8].into_boxed_slice()).as_mut_ptr() as *mut u8;
+          copy(root, &mut at)
+      }
+      pub fn node_laid(n: NodePtr) -> bool { !n.is_null() && unsafe { (*n).head.flags & NF_LAID != 0 } }
+      /// Specialized code's pointer to child `c` of `n` (contiguous trees).
+      pub fn child_ptr_expr(n: NodePtr, c: NodePtr) -> String {
+          if c.is_null() { "std::ptr::null_mut()".to_string() } else { format!("#{pnames[1]}.byte_offset({}isize)", c as isize - n as isize) }
+      }
+      /// A list operand in specialized code over a contiguous tree: no elements, the parent's address.
+      #[inline(always)]
+      pub fn list_base(n: NodePtr) -> NodeList { unsafe { std::slice::from_raw_parts(n as *const NodePtr, 0) } }
 
       /// Structural (Merkle) hash, cached in the head.
       pub fn hash_node(n: NodePtr) -> u64 {
@@ -596,7 +662,7 @@ module ASTrustGen
       /// SD type name for the subtree rooted at n ("Dyn" when it must stay dynamic).
       pub fn specialize_node(sc: &mut SpecCtx, n: NodePtr) -> String {
           unsafe {
-              if n.is_null() || (*n).head.flags & (NF_NO_INLINE | NF_SPECIALIZING) != 0 { return "Dyn".to_string(); }
+              if n.is_null() || (*n).head.flags & (NF_NO_INLINE | NF_SPECIALIZING) != 0#{n.contiguous? ? ' || (*n).head.flags & NF_LAID == 0' : ''} { return "Dyn".to_string(); }
               (*n).head.flags |= NF_SPECIALIZING;
               let t = ((*n).head.kind.specializer)(sc, n);
               (*n).head.flags &= !NF_SPECIALIZING;
@@ -606,7 +672,7 @@ module ASTrustGen
       /// Specialize n as a public entry: an exported `SD_<hash>` with the dispatcher's signature.
       pub fn specialize_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
           let fname = format!("SD_{:016x}", hash_node(n));
-          if sc.emitted.contains(&fname) { return fname; }
+          if sc.emitted.contains(&fname)#{n.contiguous? ? ' || !node_laid(n)' : ''} { return fname; }
           let t = specialize_node(sc, n);
           sc.out.push_str(&format!("#[no_mangle]\npub fn {}(#{params.join(', ')}) -> #{n.result_type} {{ <{} as Disp>::call(#{pnames.join(', ')}) }}\n", fname, t));
           sc.emitted.insert(fname.clone());
@@ -643,6 +709,7 @@ module ASTrustGen
 
       #{@nodes.values.map(&:build_struct).join("\n")}
       #{@nodes.values.map(&:build_alloc).join("\n")}
+      #{@nodes.values.map(&:build_children).join("\n")}
       #{@nodes.values.map(&:build_kind).join("\n")}
       RS
     end
@@ -658,16 +725,18 @@ module ASTrustGen
       banner + @nodes.values.map(&:build_specialize).join("\n") + <<~RS
 
       /// SD type for a NODES operand: a `DispList` whose nth() dispatches statically.
-      pub fn specialize_list(sc: &mut SpecCtx, ns: &NodeList) -> String {
+      pub fn specialize_list(sc: &mut SpecCtx, ns: &NodeList#{first.contiguous? ? ', parent: NodePtr' : ''}) -> String {
           let ts: Vec<String> = ns.iter().map(|x| specialize_node(sc, *x)).collect();
           let mut h = hash_str("list");
           for x in ns.iter() { h = hash_merge(h, hash_node(*x)); }
+          #{first.contiguous? ? 'if let Some(x) = ns.first() { h = hash_merge(h, (*x as usize).wrapping_sub(parent as usize) as u64); }' : ''}
           let name = format!("L_{:016x}", h);
           if sc.emitted.contains(&name) { return name; }
           let mut s = format!("pub struct {};\\nimpl DispList for {} {{\\n    #[inline(always)] fn len(_ns: NodeList) -> usize {{ {} }}\\n", name, name, ts.len());
           s.push_str(&format!("    #[inline(always)]\\n    fn nth(#{first.prefix_params[0]}, ns: NodeList, i: usize#{first.prefix_params.drop(2).map { ", #{it}" }.join}) -> #{first.result_type} {{\\n        match i {{\\n"));
           for (i, t) in ts.iter().enumerate() {
-              s.push_str(&format!("            {} => unsafe {{ <{} as Disp>::call(#{([first.prefix_names[0], '*ns.get_unchecked({})'] + first.prefix_names.drop(2)).join(', ')}) }},\\n", i, t, i));
+              #{first.contiguous? ? 'let x = child_ptr_expr(parent, ns[i]).replacen("' + first.prefix_names[1] + '.", "(ns.as_ptr() as NodePtr).", 1);' : 'let x = format!("*ns.get_unchecked({})", i);'}
+              s.push_str(&format!("            {} => unsafe {{ <{} as Disp>::call(#{([first.prefix_names[0], '{}'] + first.prefix_names.drop(2)).join(', ')}) }},\\n", i, t, x));
           }
           s.push_str("            _ => unsafe { std::hint::unreachable_unchecked() },\\n        }\\n    }\\n}\\n");
           sc.emitted.insert(name.clone());

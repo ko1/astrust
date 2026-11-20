@@ -277,12 +277,14 @@ pub fn specialize_list(sc: &mut SpecCtx, ns: &NodeList) -> String {
     let ts: Vec<String> = ns.iter().map(|x| specialize_node(sc, *x)).collect();
     let mut h = hash_str("list");
     for x in ns.iter() { h = hash_merge(h, hash_node(*x)); }
+    
     let name = format!("L_{:016x}", h);
     if sc.emitted.contains(&name) { return name; }
     let mut s = format!("pub struct {};\nimpl DispList for {} {{\n    #[inline(always)] fn len(_ns: NodeList) -> usize {{ {} }}\n", name, name, ts.len());
     s.push_str(&format!("    #[inline(always)]\n    fn nth(c: &mut Ctx, ns: NodeList, i: usize) -> i64 {{\n        match i {{\n"));
     for (i, t) in ts.iter().enumerate() {
-        s.push_str(&format!("            {} => unsafe {{ <{} as Disp>::call(c, *ns.get_unchecked({})) }},\n", i, t, i));
+        let x = format!("*ns.get_unchecked({})", i);
+        s.push_str(&format!("            {} => unsafe {{ <{} as Disp>::call(c, {}) }},\n", i, t, x));
     }
     s.push_str("            _ => unsafe { std::hint::unreachable_unchecked() },\n        }\n    }\n}\n");
     sc.emitted.insert(name.clone());

@@ -349,6 +349,11 @@ impl<'a> Compiler<'a> {
         let entry = if kind == IseqKind::Method && lead_only {
             ALLOC_node_method_entry(sc.nslots, params.lead.len() as u32, sc.env_size > 0, line, body)
         } else { std::ptr::null_mut() };
+        // one block per body: baked code addresses its nodes (and their caches) as root + constant
+        let (body, entry) = if entry.is_null() { (layout_tree(body), entry) } else {
+            let e = layout_tree(entry);
+            (unsafe { (*(e as *mut NodeOf<node_method_entry_struct>)).u.body }, e)
+        };
         let is = Box::leak(Box::new(Iseq {
             body, entry, nlocals: sc.nslots, params, env_size: sc.env_size, env_params,
             info: CodeInfo { file: self.file, label, line }, kind, simple, lead_only, name, local_names, arity, uses_block: false,

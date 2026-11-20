@@ -22,6 +22,8 @@ class SarubyNodeDef < ASTrustGen::NodeDef
     def dispatch_prologue = "    #[cfg(feature = \"nodeprof\")] crate::nodeprof::hit(\"#{@name}\");\n"
     def test_type = "Result<bool, Esc>"
     def test_default(e) = "Ok(#{e}?.truthy())"
+    # bodies are laid out in one block each (compile.rs finish_iseq)
+    def contiguous? = true
     # the method entry cached at this call site when the code is baked
     # what the call site's cache holds when the code is baked (vm.rs SITE_*)
     def bake_value_expr(op) = "{ let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
