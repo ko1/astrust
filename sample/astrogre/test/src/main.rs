@@ -1,5 +1,4 @@
-mod regex_engine;
-use regex_engine::*;
+use astrogre::*;
 use std::io::Read;
 
 fn unhex(s: &str) -> Vec<u8> {
@@ -15,7 +14,8 @@ fn fmt(r: &Option<Vec<Option<(usize, usize)>>>) -> String {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 && args[1] == "stress" { stress(); return; }
+    // The stress run uses a 2 MB thread stack: CPS recursion must stay bounded by the pattern.
+    if args.len() > 1 && args[1] == "stress" { std::thread::Builder::new().stack_size(2 << 20).spawn(stress).unwrap().join().unwrap(); return; }
     if args.len() > 1 && args[1] == "bench" { bench(); return; }
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input).unwrap();
@@ -29,6 +29,10 @@ fn main() {
             Err(e) => format!("E:{}", e),
             Ok(re) => {
                 let r = if mode == "s" { re.search(&subj, start) } else { re.match_at(&subj, start) };
+                if mode == "s" {
+                    let rv = re.search_vm(&subj, start);
+                    if fmt(&rv) != fmt(&r) { println!("CPS/VM DIFFER /{}/ {:?}: cps={} vm={}", String::from_utf8_lossy(&pat), String::from_utf8_lossy(&subj), fmt(&r), fmt(&rv)); fail += 1; }
+                }
                 let mut g = fmt(&r);
                 assert!(re.group_count() + 1 == r.as_ref().map_or(re.group_count() + 1, |v| v.len()));
                 for (n, v) in re.names() { assert_eq!(re.group_index(&n), v); }

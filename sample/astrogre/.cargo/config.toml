@@ -1,0 +1,4 @@
+# `are` and the baked code store (all.so, built by rustc with -C prefer-dynamic) must share
+# one libstd (one allocator), hence prefer-dynamic here too.
+[build]
+rustflags = ["-C", "prefer-dynamic", "-C", "target-cpu=native"]
