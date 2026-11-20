@@ -128,6 +128,7 @@ use crate::symbol::s;
 // ---- definitions -------------------------------------------------------------------
 
 // Entry of a required-params-only method: frame setup with its sizes baked in (me / block come in c.call_*).
+// flags: ME_* (vm.rs), decided by the compiler.
 
 
 
@@ -1186,11 +1187,14 @@ pub fn EVAL_node_opt_aset(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, v
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, has_env: bool, line: u32, body: NodePtr) -> RV {
+pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, flags: u32, line: u32, body: NodePtr) -> RV {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit_body("entry", n, flags & ME_ENV != 0, nparams as usize, !c.call_blk.is_null());
+    // nothing in a leaf body can call, raise or look at a frame
+    if flags & ME_LEAF != 0 { return <D_body as Disp>::call(c, body, fp); }
     let me = c.call_me;
     let blk = c.call_blk;
-    #[cfg(feature = "nodeprof")] crate::nodeprof::hit_body("entry", n, has_env, nparams as usize, !blk.is_null());
-    let id = c.next_serial();
+    // id 0: no block can return to this frame, and its own `return` is caught by the innermost entry
+    let id = if flags & ME_ID != 0 { c.next_serial() } else { 0 };
     let mut fr = Frame { prev: c.frame, fp: head(fp), me, blk, id, line, kind: FK_METHOD, visi: VISI_PUBLIC, lite: true, pad: 0 };
     enter(c, fp, nlocals)?;
     // the frame's own address is the native stack probe
@@ -1198,7 +1202,7 @@ pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlo
     fp[1].set(NIL);
     let mut i = 2 + nparams;
     while i < nlocals { slot(fp, i).set(NIL); i += 1; }
-    if has_env { make_env(unsafe { &*fr.iseq() }, fp, NIL); }
+    if flags & ME_ENV != 0 { make_env(unsafe { &*fr.iseq() }, fp, NIL); }
     c.frame = &mut fr;
     let r = <D_body as Disp>::call(c, body, fp);
     c.frame = fr.prev;

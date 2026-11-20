@@ -791,7 +791,7 @@ pub struct node_opt_aset_struct {
 pub struct node_method_entry_struct {
     pub nlocals: u32,
     pub nparams: u32,
-    pub has_env: bool,
+    pub flags: u32,
     pub line: u32,
     pub body: NodePtr,
 }
@@ -1325,8 +1325,8 @@ pub fn ALLOC_node_opt_aset(a: NodePtr, b: NodePtr, v: NodePtr, line: u32) -> Nod
 }
 
 #[allow(non_snake_case)]
-pub fn ALLOC_node_method_entry(nlocals: u32, nparams: u32, has_env: bool, line: u32, body: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_method_entry, node_method_entry_struct { nlocals, nparams, has_env, line, body })
+pub fn ALLOC_node_method_entry(nlocals: u32, nparams: u32, flags: u32, line: u32, body: NodePtr) -> NodePtr {
+    node_allocate(&KIND_node_method_entry, node_method_entry_struct { nlocals, nparams, flags, line, body })
 }
 
 #[allow(non_snake_case)]

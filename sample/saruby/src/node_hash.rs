@@ -814,7 +814,7 @@ fn HASH_node_method_entry(n: NodePtr) -> u64 {
     let mut h = hash_str("node_method_entry");
     h = hash_merge(h, hash_u64(u.nlocals as u64));
     h = hash_merge(h, hash_u64(u.nparams as u64));
-    h = hash_merge(h, hash_u64(u.has_env as u64));
+    h = hash_merge(h, hash_u64(u.flags as u64));
     h = hash_merge(h, hash_u64(u.line as u64));
     h = hash_merge(h, hash_node(u.body));
     h

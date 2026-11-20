@@ -1029,7 +1029,7 @@ fn DUMP_node_method_entry(out: &mut String, n: NodePtr) {
     out.push_str("(node_method_entry");
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.nlocals));
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.nparams));
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.has_env));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.flags));
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
     out.push(' '); dump_node(out, (*np).u.body);
     out.push(')');

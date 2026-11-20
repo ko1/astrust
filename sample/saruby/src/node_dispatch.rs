@@ -897,7 +897,7 @@ pub fn DISPATCH_node_method_entry(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_method_entry_struct>;
     unsafe {
 
-    EVAL_node_method_entry::<Dyn>(c, n, fp, (*np).u.nlocals, (*np).u.nparams, (*np).u.has_env, (*np).u.line, (*np).u.body)
+    EVAL_node_method_entry::<Dyn>(c, n, fp, (*np).u.nlocals, (*np).u.nparams, (*np).u.flags, (*np).u.line, (*np).u.body)
     }
 }
 

@@ -2784,7 +2784,7 @@ fn SPECIALIZE_node_method_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push(format!("{}u32", (*np).u.nlocals));
     a.push(format!("{}u32", (*np).u.nparams));
-    a.push(format!("{}", (*np).u.has_env));
+    a.push(format!("{}u32", (*np).u.flags));
     a.push(format!("{}u32", (*np).u.line));
     a.push("(*np).u.body".to_string());
     }

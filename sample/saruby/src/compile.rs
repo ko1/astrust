@@ -61,12 +61,13 @@ struct Scope {
     children: Vec<&'static Iseq>, // iseqs finished inside this scope (their parent is this scope's iseq)
     params_seen: HashSet<Sym>,    // `|_, _|`: only the first duplicate binds the variable
     param_names: Vec<(u32, Sym)>, // parameter slot -> name (for #parameters)
+    needs_id: bool,               // a block literal or an eval-like call inside: its frame needs an id
 }
 
 impl Scope {
     fn new(kind: SK, captured: HashSet<Sym>) -> Scope {
         Scope { kind, vars: HashMap::new(), names: vec![], nslots: 2, env_size: 0, captured, loop_depth: 0,
-                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![], children: vec![], params_seen: HashSet::new(), param_names: vec![] }
+                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![], children: vec![], params_seen: HashSet::new(), param_names: vec![], needs_id: false }
     }
     fn has_env(&self) -> bool { self.env_size > 0 }
 }
@@ -347,7 +348,11 @@ impl<'a> Compiler<'a> {
         };
         let local_names = sc.names.iter().map(|(n, l)| match l { VarLoc::Slot(i) => (*n, *i as i32, -1), VarLoc::Env(i) => (*n, -1, *i as i32) }).collect();
         let entry = if kind == IseqKind::Method && lead_only {
-            ALLOC_node_method_entry(sc.nslots, params.lead.len() as u32, sc.env_size > 0, line, body)
+            let mut fl = 0;
+            if sc.env_size > 0 { fl |= ME_ENV; }
+            if sc.needs_id || sc.captured.contains(&Sym(u32::MAX)) { fl |= ME_ID; }
+            if fl == 0 && sc.nslots as usize == 2 + params.lead.len() && leaf_body(body) { fl |= ME_LEAF; }
+            ALLOC_node_method_entry(sc.nslots, params.lead.len() as u32, fl, line, body)
         } else { std::ptr::null_mut() };
         let is = Box::leak(Box::new(Iseq {
             body, entry, nlocals: sc.nslots, params, env_size: sc.env_size, env_params,
@@ -1056,6 +1061,9 @@ impl<'a> Compiler<'a> {
         if n.flags & pa::CALL_NODE_FLAGS_VARIABLE_CALL != 0 { flags |= CF_VCALL; }
         if n.flags & pa::CALL_NODE_FLAGS_IGNORE_VISIBILITY != 0 { flags |= CF_FCALL; }
         let attr = n.flags & pa::CALL_NODE_FLAGS_ATTRIBUTE_WRITE != 0;
+        // code from a string (or a method reached by name) may hold a block that returns to this frame
+        if matches!(crate::symbol::sym_str(mid).as_str(), "eval" | "instance_eval" | "class_eval" | "module_eval" | "binding"
+                    | "send" | "__send__" | "public_send" | "method" | "public_method" | "instance_method") { self.cur().needs_id = true; }
         // special forms
         if recv.is_none() && args.is_empty() {
             if mid == s::block_given_p && block.is_none() { return ALLOC_node_block_given(); }
@@ -1784,7 +1792,10 @@ impl<'a> Compiler<'a> {
             None => Params::default(),
         };
         let b = self.stmts(body);
-        self.finish_iseq(b, ps, kind, label, line, Sym(0))
+        let is = self.finish_iseq(b, ps, kind, label, line, Sym(0));
+        // the block's home frame: `return` in the block targets it by id
+        if let Some(p) = self.scopes.last_mut() { p.needs_id = true; }
+        is
     }
 
     /// The frame slot that receives a parameter.  A captured parameter gets a hidden
@@ -1915,6 +1926,15 @@ impl<'a> Compiler<'a> {
         if !is_block { self.cur().zsuper = zs; }
         ps
     }
+}
+
+/// Is every node of a method body one that cannot call, raise, allocate or look at its frame?
+/// (By the names in its dump: a nested body prints as an operand, a symbol literal only makes it stricter.)
+fn leaf_body(body: NodePtr) -> bool {
+    let mut d = String::new();
+    dump_node(&mut d, body);
+    d.split(|ch: char| !(ch.is_alphanumeric() || ch == '_')).filter(|w| w.starts_with("node_"))
+        .all(|w| matches!(w, "node_nil" | "node_true" | "node_false" | "node_self" | "node_lit" | "node_lvar" | "node_ivar" | "node_block" | "node_if" | "node_and" | "node_or"))
 }
 
 /// Statements that can raise without passing through a node that records the line.

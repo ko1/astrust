@@ -149,6 +149,11 @@ pub fn kind_serial() -> u64 { let vm = vm(); vm.method_serial + vm.hierarchy_ser
 
 // ---- frames ---------------------------------------------------------------------------------
 
+// node_method_entry flags
+pub const ME_ENV: u32 = 1;    // the frame has a heap env
+pub const ME_ID: u32 = 2;     // the frame needs an id: a block literal (or eval) in the body can return to it
+pub const ME_LEAF: u32 = 4;   // the body cannot call, raise or observe a frame: no frame is made
+
 pub const FK_METHOD: u8 = 0;
 pub const FK_BLOCK: u8 = 1;
 pub const FK_LAMBDA: u8 = 2;
