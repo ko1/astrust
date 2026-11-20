@@ -138,14 +138,22 @@ impl<'a> Others<'a> {
     pub fn str_bytes(&self, v: Value) -> Option<&'a [u8]> { if v == self.except { None } else { Some(self.c.str_bytes(v)) } }
 }
 
-// ---- allocators of unconverted modules, taking the token -----------------------------------
-// A converted module must not allocate behind the context's back; these go away as string.rs
-// is converted and its own functions take `&mut Ctx`.
+// ---- strings (string.rs builds its API on these) ---------------------------------------------
 impl Ctx {
-    #[inline(always)] pub fn str_new(&mut self, b: &[u8]) -> Value { crate::string::str_new(b) }
-    #[inline(always)] pub fn str_from_vec(&mut self, b: Vec<u8>) -> Value { crate::string::str_from_vec(b) }
-    #[inline(always)] pub fn str_from_vec_enc(&mut self, b: Vec<u8>, enc: u8) -> Value { crate::string::str_from_vec_enc(b, enc) }
+    /// String `v` for writing, and read access to every other object meanwhile.
+    #[inline(always)]
+    pub fn str_mut_and(&mut self, v: Value) -> (&mut RString, Others<'_>) {
+        let c: &Ctx = self;
+        // SAFETY: H1, H2; `Others` refuses `v`, and distinct objects own disjoint payloads
+        match unsafe { &mut (*robj(v)).body } { Body::String(x) => (x, Others { except: v, c }), _ => wrong_kind(v, "a String") }
+    }
 }
+impl<'a> Others<'a> {
+    /// Payload of String `v`; None when `v` is the object being written.
+    #[inline(always)]
+    pub fn rstring(&self, v: Value) -> Option<&'a RString> { if v == self.except { None } else { Some(self.c.rstring(v)) } }
+}
+
 
 /// `use crate::heap::no_legacy::*;` in a converted module: every name below then has two glob
 /// candidates, so using the unsound original is a compile error (E0659).
@@ -155,6 +163,14 @@ pub mod no_legacy {
     ban!(obj rary rstr rhash rclass rproc rmethod rbig rdata ivars_of str_bytes vm
          ary_new ary_new_capa ary_new_from ary_from_vec ary_push ary_len ary_get ary_to_vec
          str_new str_from_vec str_from_vec_enc hash_new float_new);
+}
+
+/// The same for the context-free String API (str_legacy.rs); a module of its own so that a
+/// converted module opts in once it no longer calls them.
+#[allow(dead_code)]
+pub mod no_legacy_str {
+    macro_rules! ban { ($($n:ident)*) => { $(pub fn $n(_: super::Token) {})* }; }
+    ban!(str_new_enc str_with_capa str_new_frozen str_enc str_eq str_to_sym str_append_same_enc char_offsets str_char_len str_dup ary_of_strs);
 }
 
 // ---- hash / range / numeric / data ---------------------------------------------------------

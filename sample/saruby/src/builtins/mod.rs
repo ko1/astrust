@@ -82,6 +82,7 @@ fn blank_vm() -> Box<Vm> {
         std::ptr::write(&mut (*vp).symproc_cache, HashMap::default());
         std::ptr::write(&mut (*vp).data_free_hooks, vec![]);
         std::ptr::write(&mut (*vp).pinned, vec![]);
+        std::ptr::write(&mut (*vp).enc_objs, vec![]);
         std::ptr::write(&mut (*vp).recursive_guard, vec![]);
         std::ptr::write(&mut (*vp).argv, NIL);
         std::ptr::write(&mut (*vp).warn_disabled, false);
@@ -177,8 +178,8 @@ pub fn boot() {
     exception::init();
     numeric_methods::init(vm.c_numeric, vm.c_integer, vm.c_float);
     for (nm, v) in numeric_methods::FLOAT_CONSTS { const_set(vm.c_float, crate::symbol::intern(nm.as_bytes()), crate::numeric::float_new(v)); }
-    string_methods::init();
-    symbol_methods::init();
+    string_methods::init(vm.c_string);
+    symbol_methods::init(vm.c_symbol);
     array_methods::init(vm.c_array);
     hash_methods::init(vm.c_hash);
     vm.ids.r_each = range_methods::init(vm.c_range);
@@ -196,8 +197,8 @@ pub fn boot() {
     misc::init();
     prelude::lazy_const(ob, "ENV", "saruby/env");
     prelude::lazy_const(ob, "RbConfig", "saruby/rbconfig");
-    encoding::init();
-    stringio::init();
+    encoding::init(vm);
+    stringio::init(vm);
     regexp_methods::init();
     vm.c_struct = structs::init(vm.c_object, vm.m_enumerable);
     time::init();

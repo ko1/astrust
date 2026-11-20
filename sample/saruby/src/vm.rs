@@ -298,6 +298,7 @@ pub struct Vm {
     pub c_object_space_weak_map: Value, pub c_string_io: Value, pub c_dir: Value, pub c_stat: Value, pub c_monitor: Value,
     pub m_errno: Value, pub m_math: Value, pub m_process: Value, pub m_gc: Value, pub m_object_space: Value, pub m_marshal: Value,
     pub m_signal: Value, pub m_warning: Value, pub m_file_test: Value,
+    pub c_string_scanner: Value, pub c_string_scanner_error: Value,
     pub c_location: Value,
     pub main_obj: Value,
     pub stdout: Value, pub stderr: Value, pub stdin: Value,
@@ -327,6 +328,8 @@ pub struct Vm {
     pub symproc_cache: HashMap<Sym, Value>,
     pub data_free_hooks: Vec<fn(*mut RObj)>,
     pub pinned: Vec<Value>,
+    /// Encoding objects by encoding id (kept alive by `pinned`).
+    pub enc_objs: Vec<Value>,
     pub recursive_guard: Vec<(u64, Sym)>,
     pub argv: Value,
     pub warn_disabled: bool,
@@ -434,6 +437,8 @@ pub fn define_class_under(outer: Value, name: &str, superclass: Value) -> Value 
     const_set(outer, intern_str(name), k);
     k
 }
+/// How instances of class `k` are allocated (boot-time setup of builtin classes).
+pub fn class_set_alloc(k: Value, a: AllocKind) { rclass(k).alloc = a; }
 pub fn define_class(name: &str, superclass: Value) -> Value { define_class_under(vm().c_object, name, superclass) }
 pub fn define_module_under(outer: Value, name: &str) -> Value {
     let m = new_module();

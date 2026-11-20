@@ -11,6 +11,8 @@ ARY  = %w[ary_new ary_new_capa ary_new_from ary_from_vec ary_push ary_len ary_ge
 ALLOC = %w[str_new str_from_vec str_from_vec_enc hash_new float_new]
 # context-free API of hash.rs, range.rs, numeric.rs, bignum.rs (heap::no_legacy_hn)
 HN = %w[hash_new_capa hash_pairs hash_len hash_entry_at hash_clear hash_dup range_new range_parts num_to_f64 big_to_value to_big int_from_i64 int_from_i128 rfloat_heap]
+# context-free String API (str_legacy.rs), banned where heap::no_legacy_str is imported
+STR  = %w[str_new_enc str_with_capa str_new_frozen str_enc str_eq str_to_sym str_append_same_enc char_offsets str_char_len str_dup ary_of_strs]
 COLS = { 'obj' => %w[obj], 'rary' => %w[rary], 'rstr' => %w[rstr str_bytes], 'rhash' => %w[rhash], 'rclass' => %w[rclass],
          'rproc' => %w[rproc rmethod], 'rbig' => %w[rbig], 'rdata' => %w[rdata], 'ivars_of' => %w[ivars_of],
          'ary_*' => ARY, 'vm' => %w[vm] }
@@ -33,6 +35,7 @@ files.each do |f|
   if converted
     banned = BODY + ARY + ALLOC + %w[vm]
     banned += HN if src =~ /^\s*use crate::heap::no_legacy_hn::\*/
+    banned += STR if src =~ /^\s*use crate::heap::no_legacy_str::\*/
     left = banned.select { count(body, _1) > 0 || body =~ /::#{_1}\(/ }
     bad << "#{rel}: #{left.join(' ')}" unless left.empty?
   end

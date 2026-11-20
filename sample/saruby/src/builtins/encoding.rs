@@ -1,10 +1,17 @@
 // Encodings: the table (CRuby's Encoding.list order), per-encoding character scanning,
 // code <-> Unicode mapping for transcoding, and the Encoding class.
+#![forbid(unsafe_code)]
 use crate::array::*;
 use crate::builtins::enc_tables as tb;
 use crate::builtins::misc::REnc;
+#[allow(unused_imports)]
+use crate::heap::no_legacy::*;   // the old accessors cannot be named here
+#[allow(unused_imports)]
+use crate::heap::no_legacy_str::*;
 use crate::string::*;
 use crate::symbol::intern;
+use std::sync::atomic::{AtomicI32, AtomicU8, Ordering::Relaxed};
+use std::sync::OnceLock;
 use crate::value::*;
 use crate::vm::*;
 
@@ -141,10 +148,10 @@ pub const ENC_UTF32: u8 = 8;
 pub const ENC_EUCJP: u8 = 10;
 pub const ENC_ISO_8859_1: u8 = 22;
 
-static mut ENC_OBJS: [u64; NENC] = [0; NENC];
-static mut SINGLE_IDX: [u8; NENC] = [255; NENC];
-static mut DEFAULT_EXTERNAL: u8 = ENC_UTF8;
-static mut DEFAULT_INTERNAL: i32 = -1;
+// index into tb::SINGLE per encoding (255: none), built on first use
+static SINGLE_IDX: OnceLock<[u8; NENC]> = OnceLock::new();
+static DEFAULT_EXTERNAL: AtomicU8 = AtomicU8::new(ENC_UTF8);
+static DEFAULT_INTERNAL: AtomicI32 = AtomicI32::new(-1);
 
 #[inline] pub fn kind(enc: u8) -> EK { ENCS.get(enc as usize).map(|d| d.kind).unwrap_or(Bin) }
 pub fn enc_name(enc: u8) -> &'static str { ENCS.get(enc as usize).map(|d| d.name).unwrap_or("ASCII-8BIT") }
@@ -159,7 +166,14 @@ pub fn min_len(enc: u8) -> usize { match kind(enc) { U16LE | U16BE => 2, U32LE |
 pub fn max_len(enc: u8) -> usize { match kind(enc) { Utf8 | U32LE | U32BE | U16LE | U16BE | Gb18030 | EucTw | EmacsMule => 4, EucJp(_) => 3, Sjis(_) | Dbcs | Big5 | Gbk => 2, _ => 1 } }
 
 fn single_table(enc: u8) -> Option<&'static [u16; 128]> {
-    let i = unsafe { SINGLE_IDX[enc as usize] };
+    let idx = SINGLE_IDX.get_or_init(|| {
+        let mut t = [255u8; NENC];
+        for (i, d) in ENCS.iter().enumerate() {
+            if d.kind == Single { if let Some(p) = tb::SINGLE_NAMES.iter().position(|n| *n == d.name) { t[i] = p as u8; } }
+        }
+        t
+    });
+    let i = idx[enc as usize];
     if i == 255 { None } else { Some(&tb::SINGLE[i as usize]) }
 }
 
@@ -377,37 +391,31 @@ pub fn to_unicode(enc: u8, ch: &[u8]) -> Option<u32> {
 }
 
 type RevMap = std::collections::HashMap<u32, Vec<u8>>;
-static mut REV: Vec<Option<Box<RevMap>>> = Vec::new();
-fn rev_map(enc: u8) -> &'static RevMap {
-    #[allow(static_mut_refs)]
-    unsafe {
-        if REV.is_empty() { REV.resize_with(NENC, || None); }
-        if REV[enc as usize].is_none() {
-            let mut m = RevMap::new();
-            let k = kind(enc);
-            match k {
-                Single => if let Some(t) = single_table(enc) { for (i, &u) in t.iter().enumerate() { if u != 0 { m.entry(u as u32).or_insert(vec![0x80 + i as u8]); } } },
-                EucJp(_) => {
-                    let (t, t3) = jis_tables(k);
-                    for (i, &u) in t.iter().enumerate() { if u != 0 { m.entry(u as u32).or_insert(vec![0xa1 + (i / 94) as u8, 0xa1 + (i % 94) as u8]); } }
-                    if let Some(t3) = t3 { for (i, &u) in t3.iter().enumerate() { if u != 0 { m.entry(u as u32).or_insert(vec![0x8f, 0xa1 + (i / 94) as u8, 0xa1 + (i % 94) as u8]); } } }
-                    for x in 0xa1..=0xdfu8 { m.entry(0xff61 + (x - 0xa1) as u32).or_insert(vec![0x8e, x]); }
-                }
-                Sjis(_) => {
-                    let (t, _) = jis_tables(k);
-                    for (i, &u) in t.iter().enumerate() {
-                        if u == 0 { continue; }
-                        let hi = (i / 189) as u8; let h = if hi < 31 { 0x81 + hi } else { 0xe0 + hi - 31 };
-                        m.entry(u as u32).or_insert(vec![h, 0x40 + (i % 189) as u8]);
-                    }
-                    for x in 0xa1..=0xdfu8 { m.entry(0xff61 + (x - 0xa1) as u32).or_insert(vec![x]); }
-                }
-                _ => {}
-            }
-            REV[enc as usize] = Some(Box::new(m));
+static REV: [OnceLock<RevMap>; NENC] = [const { OnceLock::new() }; NENC];
+fn rev_map(enc: u8) -> &'static RevMap { REV[enc as usize].get_or_init(|| build_rev_map(enc)) }
+fn build_rev_map(enc: u8) -> RevMap {
+    let mut m = RevMap::new();
+    let k = kind(enc);
+    match k {
+        Single => if let Some(t) = single_table(enc) { for (i, &u) in t.iter().enumerate() { if u != 0 { m.entry(u as u32).or_insert(vec![0x80 + i as u8]); } } },
+        EucJp(_) => {
+            let (t, t3) = jis_tables(k);
+            for (i, &u) in t.iter().enumerate() { if u != 0 { m.entry(u as u32).or_insert(vec![0xa1 + (i / 94) as u8, 0xa1 + (i % 94) as u8]); } }
+            if let Some(t3) = t3 { for (i, &u) in t3.iter().enumerate() { if u != 0 { m.entry(u as u32).or_insert(vec![0x8f, 0xa1 + (i / 94) as u8, 0xa1 + (i % 94) as u8]); } } }
+            for x in 0xa1..=0xdfu8 { m.entry(0xff61 + (x - 0xa1) as u32).or_insert(vec![0x8e, x]); }
         }
-        REV[enc as usize].as_ref().unwrap()
+        Sjis(_) => {
+            let (t, _) = jis_tables(k);
+            for (i, &u) in t.iter().enumerate() {
+                if u == 0 { continue; }
+                let hi = (i / 189) as u8; let h = if hi < 31 { 0x81 + hi } else { 0xe0 + hi - 31 };
+                m.entry(u as u32).or_insert(vec![h, 0x40 + (i % 189) as u8]);
+            }
+            for x in 0xa1..=0xdfu8 { m.entry(0xff61 + (x - 0xa1) as u32).or_insert(vec![x]); }
+        }
+        _ => {}
     }
+    m
 }
 
 /// Bytes for Unicode scalar `u` in `enc`, None if undefined there.
@@ -474,7 +482,7 @@ pub fn parse_tc_opts(c: &mut Ctx, h: Value) -> Result<TcOpts, Esc> {
 fn real_out(to: u8) -> u8 { if to == ENC_UTF16 { ENC_UTF16BE } else if to == ENC_UTF32 { ENC_UTF32BE } else { to } }
 
 pub fn converter_not_found(c: &mut Ctx, from: &str, to: &str) -> Esc {
-    raise_msg(c, vm().c_converter_not_found_error, &format!("code converter not found ({} to {})", from, to))
+    raise_msg(c, c.vm().c_converter_not_found_error, &format!("code converter not found ({} to {})", from, to))
 }
 
 /// Convert `src` (in `from`) to `to`.  `same` = from == to (only scrub/xml/newline apply).
@@ -493,7 +501,7 @@ pub fn transcode(c: &mut Ctx, src: &[u8], from: u8, to: u8, o: &TcOpts) -> Resul
     if o.xml == 2 { out.extend(from_unicode(ro, '"' as u32).unwrap_or_default()); }
     let rep_bytes = |c: &mut Ctx| -> Result<Vec<u8>, Esc> {
         if let Some(r) = o.replace {
-            let rr = rstr(r);
+            let rr = c.rstring(r);
             if rr.enc == ro || (is_ascii(&rr.b) && ascii_compat(ro) && ascii_compat(rr.enc)) { return Ok(rr.b.to_vec()); }
             let (b2, e2) = (rr.b.to_vec(), rr.enc);
             return transcode(c, &b2, e2, ro, &TcOpts::default());
@@ -512,7 +520,7 @@ pub fn transcode(c: &mut Ctx, src: &[u8], from: u8, to: u8, o: &TcOpts) -> Resul
             } else if n > 1 || (kind(from_r) == Utf8 && (0xc2..=0xf4).contains(&eb[0]) && i + n < src.len()) {
                 format!("{} followed by {} on {}", show_bytes(eb), show_bytes(&src[i + n..i + n + 1]), enc_name(from_r))
             } else { format!("{} on {}", show_bytes(eb), enc_name(from_r)) };
-            return Err(raise_msg(c, vm().c_invalid_byte_seq_error, &msg));
+            return Err(raise_msg(c, c.vm().c_invalid_byte_seq_error, &msg));
         };
         let ch = &src[i..i + l];
         i += l;
@@ -524,7 +532,7 @@ pub fn transcode(c: &mut Ctx, src: &[u8], from: u8, to: u8, o: &TcOpts) -> Resul
             if let Some(fb) = o.fallback { let r = fallback(c, fb, ch, from_r, ro)?; out.extend(r); continue; }
             let msg = if to == ENC_UTF8 || from_r == ENC_BINARY && false { format!("{} from {} to {}", show_bytes(ch), enc_name(from), enc_name(to)) }
                       else { format!("{} to UTF-8 in conversion from {} to UTF-8 to {}", show_bytes(ch), enc_name(from), enc_name(to)) };
-            return Err(raise_msg(c, vm().c_undef_conv_error, &msg));
+            return Err(raise_msg(c, c.vm().c_undef_conv_error, &msg));
         };
         // newline conversion
         if o.newline == 1 || o.newline == 4 {
@@ -547,7 +555,7 @@ pub fn transcode(c: &mut Ctx, src: &[u8], from: u8, to: u8, o: &TcOpts) -> Resul
                 if let Some(fb) = o.fallback { let r = fallback(c, fb, ch, from_r, ro)?; out.extend(r); continue; }
                 let msg = if from_r == ENC_UTF8 || kind(from_r) == Utf8 { format!("U+{:04X} from UTF-8 to {}", u, enc_name(to)) }
                           else { format!("U+{:04X} to {} in conversion from {} to UTF-8 to {}", u, enc_name(to), enc_name(from), enc_name(to)) };
-                return Err(raise_msg(c, vm().c_undef_conv_error, &msg));
+                return Err(raise_msg(c, c.vm().c_undef_conv_error, &msg));
             }
         }
     }
@@ -556,16 +564,16 @@ pub fn transcode(c: &mut Ctx, src: &[u8], from: u8, to: u8, o: &TcOpts) -> Resul
 }
 
 fn fallback(c: &mut Ctx, fb: Value, ch: &[u8], from: u8, to: u8) -> Result<Vec<u8>, Esc> {
-    let key = str_new_enc(ch, from);
+    let key = c.str_new_enc(ch, from);
     let r = if is_hash(fb) { crate::hash::hash_aref(c, fb, key)? }
             else if is_proc(fb) || is_method_obj(fb) { funcall(c, fb, intern(b"call"), &[key], std::ptr::null())? }
             else { funcall(c, fb, intern(b"[]"), &[key], std::ptr::null())? };
     if r == NIL {
         let msg = format!("{} from {} to {}", if from == ENC_UTF8 { format!("U+{:04X}", decode_utf8(ch, 0).0) } else { show_bytes(ch) }, enc_name(from), enc_name(to));
-        return Err(raise_msg(c, vm().c_undef_conv_error, &msg));
+        return Err(raise_msg(c, c.vm().c_undef_conv_error, &msg));
     }
     let s = expect_str(c, r)?;
-    let (b2, e2) = (rstr(s).b.to_vec(), rstr(s).enc);
+    let (b2, e2) = (c.str_bytes(s).to_vec(), c.str_enc(s));
     if e2 == to { return Ok(b2); }
     match transcode(c, &b2, e2, to, &TcOpts::default()) {
         Ok(v) => Ok(v),
@@ -589,33 +597,33 @@ pub fn find_enc(name: &[u8]) -> Option<u8> {
     }
     None
 }
-pub fn default_external() -> u8 { unsafe { DEFAULT_EXTERNAL } }
-pub fn default_internal() -> Option<u8> { let d = unsafe { DEFAULT_INTERNAL }; if d < 0 { None } else { Some(d as u8) } }
+pub fn default_external() -> u8 { DEFAULT_EXTERNAL.load(Relaxed) }
+pub fn default_internal() -> Option<u8> { let d = DEFAULT_INTERNAL.load(Relaxed); if d < 0 { None } else { Some(d as u8) } }
 
-pub fn encoding_value(id: u8) -> Value { unsafe { Value::from_raw(ENC_OBJS[id as usize]) } }
+pub fn encoding_value(c: &Ctx, id: u8) -> Value { c.vm().enc_objs[id as usize] }
 
 /// Encoding object, name string or object with to_str -> encoding id.
 pub fn to_enc(c: &mut Ctx, v: Value) -> Result<u8, Esc> {
-    if let Some(e) = rdata::<REnc>(v) { return Ok(e.id); }
+    if let Some(e) = c.data::<REnc>(v) { return Ok(e.id); }
     let s = if is_string(v) { v } else { expect_str(c, v)? };
-    match find_enc(&rstr(s).b) {
+    match find_enc(c.str_bytes(s)) {
         Some(e) => Ok(e),
-        None => arg_err(c, format!("unknown encoding name - {}", String::from_utf8_lossy(&rstr(s).b))),
+        None => { let nm = String::from_utf8_lossy(c.str_bytes(s)).into_owned(); arg_err(c, format!("unknown encoding name - {}", nm)) }
     }
 }
 /// Like to_enc but returns None for unknown names (encode's "converter not found" path).
 pub fn to_enc_opt(c: &mut Ctx, v: Value) -> Result<Result<u8, String>, Esc> {
-    if let Some(e) = rdata::<REnc>(v) { return Ok(Ok(e.id)); }
+    if let Some(e) = c.data::<REnc>(v) { return Ok(Ok(e.id)); }
     let s = expect_str(c, v)?;
-    let nm = String::from_utf8_lossy(&rstr(s).b).into_owned();
-    Ok(match find_enc(&rstr(s).b) { Some(e) => Ok(e), None => Err(nm) })
+    let nm = String::from_utf8_lossy(c.str_bytes(s)).into_owned();
+    Ok(match find_enc(c.str_bytes(s)) { Some(e) => Ok(e), None => Err(nm) })
 }
 
 // ---- compatibility --------------------------------------------------------------------------
 
 /// rb_enc_compatible for two strings; None if incompatible.
-pub fn compatible(a: Value, b: Value) -> Option<u8> {
-    let (ra, rb) = (rstr(a), rstr(b));
+pub fn compatible(c: &Ctx, a: Value, b: Value) -> Option<u8> {
+    let (ra, rb) = (c.rstring(a), c.rstring(b));
     let (ea, eb) = (ra.enc, rb.enc);
     if ea == eb { return Some(ea); }
     if rb.b.is_empty() { return Some(ea); }
@@ -627,109 +635,110 @@ pub fn compatible(a: Value, b: Value) -> Option<u8> {
     None
 }
 pub fn compat_error(c: &mut Ctx, ea: u8, eb: u8) -> Esc {
-    raise_msg(c, vm().c_compat_error, &format!("incompatible character encodings: {} and {}", enc_name_msg(ea), enc_name_msg(eb)))
+    raise_msg(c, c.vm().c_compat_error, &format!("incompatible character encodings: {} and {}", enc_name_msg(ea), enc_name_msg(eb)))
 }
 pub fn check_compatible(c: &mut Ctx, a: Value, b: Value) -> Result<u8, Esc> {
-    match compatible(a, b) { Some(e) => Ok(e), None => { let (ea, eb) = (rstr(a).enc, rstr(b).enc); Err(compat_error(c, ea, eb)) } }
+    match compatible(c, a, b) { Some(e) => Ok(e), None => { let (ea, eb) = (c.str_enc(a), c.str_enc(b)); Err(compat_error(c, ea, eb)) } }
 }
 
 // ---- Encoding class -------------------------------------------------------------------------
 
-fn id_of(v: Value) -> u8 { rdata::<REnc>(v).map(|e| e.id).unwrap_or(ENC_BINARY) }
-fn enc_to_s(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(str_new_enc(enc_name(id_of(slf)).as_bytes(), ENC_ASCII)) }
-fn enc_inspect(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let id = id_of(slf);
+fn push_name(c: &mut Ctx, out: Value, name: &str) { let s = c.str_new_enc(name.as_bytes(), ENC_ASCII); c.ary_push(out, s); }
+fn id_of(c: &Ctx, v: Value) -> u8 { c.data::<REnc>(v).map(|e| e.id).unwrap_or(ENC_BINARY) }
+fn enc_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.str_new_enc(enc_name(id_of(c, slf)).as_bytes(), ENC_ASCII)) }
+fn enc_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    let id = id_of(c, slf);
     let s = format!("#<Encoding:{}{}>", enc_name_msg(id), if is_dummy(id) { " (dummy)" } else { "" });
-    Ok(str_new_enc(s.as_bytes(), ENC_ASCII))
+    Ok(c.str_new_enc(s.as_bytes(), ENC_ASCII))
 }
-fn enc_names(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let id = id_of(slf);
+fn enc_names(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    let id = id_of(c, slf);
     let d = &ENCS[id as usize];
-    let out = ary_new();
-    ary_push(out, str_new_enc(d.name.as_bytes(), ENC_ASCII));
+    let out = c.ary_new();
+    push_name(c, out, d.name);
     for a in d.aliases {
         if (*a == "locale" || *a == "external" || *a == "filesystem") && id != default_external() { continue; }
-        ary_push(out, str_new_enc(a.as_bytes(), ENC_ASCII));
+        push_name(c, out, a);
     }
-    if id == default_external() && id != ENC_UTF8 { for a in ["locale", "external", "filesystem"] { ary_push(out, str_new_enc(a.as_bytes(), ENC_ASCII)); } }
+    if id == default_external() && id != ENC_UTF8 { for a in ["locale", "external", "filesystem"] { push_name(c, out, a); } }
     Ok(out)
 }
-fn enc_dummy_p(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(is_dummy(id_of(slf)))) }
-fn enc_ascii_compat_p(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(ascii_compat(id_of(slf)))) }
+fn enc_dummy_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(is_dummy(id_of(c, slf)))) }
+fn enc_ascii_compat_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(ascii_compat(id_of(c, slf)))) }
 fn enc_s_find(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
-    if rdata::<REnc>(a[0]).is_some() { return Ok(a[0]); }
+    if c.data::<REnc>(a[0]).is_some() { return Ok(a[0]); }
     let s = expect_str(c, a[0])?;
-    if rstr(s).b.eq_ignore_ascii_case(b"internal") { return Ok(match default_internal() { Some(e) => encoding_value(e), None => NIL }); }
+    if c.str_bytes(s).eq_ignore_ascii_case(b"internal") { return Ok(match default_internal() { Some(e) => encoding_value(c, e), None => NIL }); }
     let id = to_enc(c, s)?;
-    Ok(encoding_value(id))
+    Ok(encoding_value(c, id))
 }
 fn list_order() -> Vec<u8> { let mut v: Vec<u8> = (0..NENC as u8).collect(); v.swap(0, 1); v }
-fn enc_s_list(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let out = ary_new();
-    for i in list_order() { ary_push(out, encoding_value(i)); }
+fn enc_s_list(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+    let out = c.ary_new();
+    for i in list_order() { c.ary_push(out, encoding_value(c, i)); }
     Ok(out)
 }
-fn enc_s_name_list(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let out = ary_new();
+fn enc_s_name_list(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+    let out = c.ary_new();
     for i in list_order() {
         let d = &ENCS[i as usize];
-        ary_push(out, str_new_enc(d.name.as_bytes(), ENC_ASCII));
-        for a in d.aliases { ary_push(out, str_new_enc(a.as_bytes(), ENC_ASCII)); }
+        push_name(c, out, d.name);
+        for a in d.aliases { push_name(c, out, a); }
     }
-    ary_push(out, str_new_enc(b"internal", ENC_ASCII));
+    push_name(c, out, "internal");
     Ok(out)
 }
 fn enc_s_aliases(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let h = crate::hash::hash_new();
+    let h = c.hash_new();
     for i in list_order() {
         let d = &ENCS[i as usize];
         for a in d.aliases {
-            let k = str_new_enc(a.as_bytes(), ENC_ASCII);
+            let k = c.str_new_enc(a.as_bytes(), ENC_ASCII);
             let tgt = if matches!(*a, "locale" | "external" | "filesystem") { enc_name(default_external()) } else { d.name };
-            let v = str_new_enc(tgt.as_bytes(), ENC_ASCII);
+            let v = c.str_new_enc(tgt.as_bytes(), ENC_ASCII);
             crate::hash::hash_aset(c, h, k, v)?;
         }
     }
     Ok(h)
 }
-fn enc_s_default_external(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(encoding_value(default_external())) }
-fn enc_s_default_internal(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(match default_internal() { Some(e) => encoding_value(e), None => NIL }) }
+fn enc_s_default_external(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(encoding_value(c, default_external())) }
+fn enc_s_default_internal(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(match default_internal() { Some(e) => encoding_value(c, e), None => NIL }) }
 fn enc_s_set_default_external(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     if a[0] == NIL { return arg_err(c, "default external can not be nil"); }
     let e = to_enc(c, a[0])?;
-    unsafe { DEFAULT_EXTERNAL = e; }
+    DEFAULT_EXTERNAL.store(e, Relaxed);
     Ok(a[0])
 }
 fn enc_s_set_default_internal(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
-    if a[0] == NIL { unsafe { DEFAULT_INTERNAL = -1; } return Ok(NIL); }
+    if a[0] == NIL { DEFAULT_INTERNAL.store(-1, Relaxed); return Ok(NIL); }
     let e = to_enc(c, a[0])?;
-    unsafe { DEFAULT_INTERNAL = e as i32; }
+    DEFAULT_INTERNAL.store(e as i32, Relaxed);
     Ok(a[0])
 }
-fn enc_s_locale_charmap(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(str_new_enc(b"UTF-8", ENC_ASCII)) }
+fn enc_s_locale_charmap(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.str_new_enc(b"UTF-8", ENC_ASCII)) }
 /// Encoding of an object for compatible?: strings, symbols, regexps, encodings.
 fn obj_enc(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if is_string(v) { return Ok(Some(v)); }
-    if rdata::<REnc>(v).is_some() { return Ok(Some(str_new_enc(b"", id_of(v)))); }
-    if v.is_sym() { let b = crate::symbol::sym_bytes(v.as_sym()); return Ok(Some(str_new_enc(b, if is_ascii(b) { ENC_ASCII } else { ENC_UTF8 }))); }
+    if c.data::<REnc>(v).is_some() { return Ok(Some(c.str_new_enc(b"", id_of(c, v)))); }
+    if v.is_sym() { let b = crate::symbol::sym_bytes(v.as_sym()); return Ok(Some(c.str_new_enc(b, if is_ascii(b) { ENC_ASCII } else { ENC_UTF8 }))); }
     if crate::regexp::is_regexp(v) { let s = funcall(c, v, intern(b"source"), &[], std::ptr::null())?; return Ok(Some(s)); }
     Ok(None)
 }
 fn enc_s_compatible_p(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let (Some(x), Some(y)) = (obj_enc(c, a[0])?, obj_enc(c, a[1])?) else { return Ok(NIL) };
     // Encoding objects behave as empty strings that still need ASCII compatibility.
-    if rdata::<REnc>(a[0]).is_some() || rdata::<REnc>(a[1]).is_some() {
-        let (ex, ey) = (rstr(x).enc, rstr(y).enc);
-        if ex == ey { return Ok(encoding_value(ex)); }
+    if c.data::<REnc>(a[0]).is_some() || c.data::<REnc>(a[1]).is_some() {
+        let (ex, ey) = (c.str_enc(x), c.str_enc(y));
+        if ex == ey { return Ok(encoding_value(c, ex)); }
         if !ascii_compat(ex) || !ascii_compat(ey) { return Ok(NIL); }
-        if rdata::<REnc>(a[1]).is_some() { if is_string(a[0]) && is_ascii(&rstr(x).b) { return Ok(encoding_value(ey)); } return Ok(if rdata::<REnc>(a[0]).is_some() { NIL } else { encoding_value(ex) }); }
-        if is_ascii(&rstr(y).b) { return Ok(encoding_value(ex)); }
+        if c.data::<REnc>(a[1]).is_some() { if is_string(a[0]) && is_ascii(c.str_bytes(x)) { return Ok(encoding_value(c, ey)); } return Ok(if c.data::<REnc>(a[0]).is_some() { NIL } else { encoding_value(c, ex) }); }
+        if is_ascii(c.str_bytes(y)) { return Ok(encoding_value(c, ex)); }
         return Ok(NIL);
     }
-    Ok(match compatible(x, y) { Some(e) => encoding_value(e), None => NIL })
+    Ok(match compatible(c, x, y) { Some(e) => encoding_value(c, e), None => NIL })
 }
-fn enc_dump(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(str_new(enc_name(id_of(slf)).as_bytes())) }
-fn enc_s_load(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let e = to_enc(c, a[0])?; Ok(encoding_value(e)) }
+fn enc_dump(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.str_new(enc_name(id_of(c, slf)).as_bytes())) }
+fn enc_s_load(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let e = to_enc(c, a[0])?; Ok(encoding_value(c, e)) }
 
 /// Constant names for an encoding name (CRuby's set_encoding_const).
 fn const_names(n: &str) -> Vec<String> {
@@ -743,18 +752,17 @@ fn const_names(n: &str) -> Vec<String> {
     out
 }
 
-pub fn init() {
-    let vm = vm();
-    let ek = vm.c_encoding;
-    for (i, d) in ENCS.iter().enumerate() {
-        if d.kind == Single { if let Some(p) = tb::SINGLE_NAMES.iter().position(|n| *n == d.name) { unsafe { SINGLE_IDX[i] = p as u8; } } }
+/// Boot: no context runs yet, so the Encoding objects are allocated directly.
+pub fn init(vmr: &mut Vm) {
+    let ek = vmr.c_encoding;
+    for i in 0..NENC {
         let e = crate::gc::alloc(ek, Body::Data(Box::new(REnc { id: i as u8 })));
-        obj(e).flags |= FL_FROZEN;
-        unsafe { ENC_OBJS[i] = e.raw(); }
-        vm.pinned.push(e);
+        obj_set_flags(e, FL_FROZEN);
+        vmr.enc_objs.push(e);
+        vmr.pinned.push(e);
     }
     for (i, d) in ENCS.iter().enumerate() {
-        let ev = encoding_value(i as u8);
+        let ev = vmr.enc_objs[i];
         for n in std::iter::once(&d.name).chain(d.aliases.iter()) {
             if matches!(*n, "locale" | "external" | "filesystem") { continue; }
             for cn in const_names(n) { const_set(ek, intern(cn.as_bytes()), ev); }

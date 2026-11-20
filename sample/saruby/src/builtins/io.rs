@@ -501,7 +501,7 @@ fn enc_of(io: &RIo) -> u8 { if io.binmode && !io.enc_set { ENC_BINARY } else { i
 fn io_ext_enc(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let io = get_io(c, slf)?;
     if !io.readable && !io.enc_set { return Ok(NIL); }
-    Ok(crate::builtins::encoding::encoding_value(enc_of(io)))
+    Ok(crate::builtins::encoding::encoding_value(c, enc_of(io)))
 }
 fn io_int_enc(_c: &mut Ctx, _slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(NIL) }
 fn set_enc_name(c: &mut Ctx, io: &mut RIo, v: Value) -> Result<(), Esc> {

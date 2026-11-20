@@ -82,7 +82,7 @@ fn re_source(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let s = str_new_enc(&r.src, e); obj(s).flags |= FL_FROZEN; Ok(s)
 }
 fn re_fixed_encoding(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let r = rregexp(slf).unwrap(); Ok(Value::bool(r.enc_fixed || (!crate::string::is_ascii(&r.src) && r.opts & crate::regexp::RE_OPT_ENC_NONE == 0))) }
-fn re_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let e = re_enc(rregexp(slf).unwrap()); let _ = c; Ok(crate::builtins::encoding::encoding_value(e)) }
+fn re_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let e = re_enc(rregexp(slf).unwrap()); Ok(crate::builtins::encoding::encoding_value(c, e)) }
 fn re_inspect(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(str_new(regexp_source_inspect(rregexp(slf).unwrap()).as_bytes())) }
 fn re_to_s(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(str_new(regexp_to_s(rregexp(slf).unwrap()).as_bytes())) }
 fn re_options(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix((rregexp(slf).unwrap().opts & 0x27) as i64)) }

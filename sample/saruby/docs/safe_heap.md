@@ -24,6 +24,9 @@
 * `static mut` method identities (`BO_EQ_ME`, `BO_INIT_ME`, `C_NEW_ME`, `M_EQQ_ME`,
   `KERNEL_HASH_ME`, `R_EACH_ME`) and `MAIN_CTX` are gone: they are fields of `Vm`.
   `static mut VM` itself stays until the last `vm()` caller is converted (634 call sites).
+* The String side followed (section "The String side"): string.rs, string_methods.rs,
+  sprintf.rs, encoding.rs, stringio.rs, strscan.rs and symbol_methods.rs are converted and
+  `forbid(unsafe_code)`; heap.rs gained one `unsafe` (`str_mut_and`).
 * Not done, by design of a pilot: 2302 call sites of the old accessors in 50 files (table at the
   end), and the legacy allocators that do not take the context (see "What is still open").
 * **Second wave** (hash, range, struct, enumerable, numeric: 11 more files, 1842 call sites left):
@@ -74,7 +77,7 @@ RObj { klass: Value, flags: u32, gc: GcHeader,     header: read and written BY V
   | read (`&self`) | write (`&mut self`) | payload |
   |---|---|---|
   | `c.ary(v) -> &[Value]` (`c.ary_vec` for the `&Vec`) | `c.ary_mut(v) -> &mut Vec<Value>` | Array |
-  | `c.rstring(v) -> &RString`, `c.str_bytes(v) -> &[u8]` | `c.rstring_mut(v)` | String |
+  | `c.rstring(v) -> &RString`, `c.str_bytes(v) -> &[u8]`, `c.str_enc(v)`, `c.str_len(v)` | `c.rstring_mut(v)`; with the frozen check `c.str_modify(v)?` | String |
   | `c.hash(v) -> &RHash` | `c.hash_mut(v)` | Hash |
   | `c.class(v) -> &ClassData` | `c.class_mut(v)` | Class / Module |
   | `c.ivars(v) -> &IvBuf` | `c.ivars_mut(v)` | plain object |
@@ -113,7 +116,11 @@ a blank context `rbconfig_init` built while the real one was live, was removed.
   `Others` reads any object **except** `dst`: `others.ary(src) -> Option<&[Value]>` is `None`
   when `src == dst` (the caller then uses `extend_from_within` or the like). Sound because
   distinct objects own disjoint payloads. `c.ary_concat(dst, src)` in array.rs is the example.
-* Writing two: not needed in the pilot; the same construction with two exceptions when it is.
+  `c.str_mut_and(dst) -> (&mut RString, Others<'_>)` is the same for a String
+  (`others.rstring(src)`, `others.str_bytes(src)`); `c.str_append_enc(acc, s, enc)` in string.rs
+  is `acc << s` on it, `s << s` included.
+* Writing two: not needed so far (Array and String sides); the same construction with two
+  exceptions when it is.
 
 ### `vm()` and the method identities
 
@@ -145,7 +152,9 @@ fn body_mut(_c: &mut Ctx, v: Value) -> &mut Body { unsafe { &mut (*robj(v)).body
 
 (`robj` panics unless `v.is_heap()`.) The typed accessors are safe matches on their result.
 The rest: five header accessors and the kind tests (raw place reads / writes), `ary_mut_and`
-(one more `&mut` under a shared borrow, justified by `Others`), `vm` / `vm_mut`, `Token::mint`.
+and `str_mut_and` (one more `&mut` under a shared borrow, justified by `Others`), `vm` /
+`vm_mut`, `Token::mint`. 13 occurrences after the String side (12 in the pilot): `str_mut_and`
+is the one addition, and it is `ary_mut_and` for another body kind, not a new kind of accessor.
 
 Claim: under H1 to H3 below, a payload reference is never used after its payload was freed or
 moved, and no `&mut` to a payload coexists with another reference to it.
@@ -156,7 +165,9 @@ moved, and no `&mut` to a payload coexists with another reference to it.
   switch-out, and the context that resumed it is, for that time, mutably borrowed by the
   `resume` call on its stack. So at any moment every usable `&Ctx` / `&mut Ctx` is a reborrow
   of one context, and Rust's rules for that one value give "many readers or one writer" for the
-  whole heap. `Others` is the only refinement: one writer plus readers of other objects.
+  whole heap. `Others` is the only refinement: one writer plus readers of other objects
+  (`ary_mut_and`, `str_mut_and`: the writer's payload and a reader's are payloads of distinct
+  objects, hence disjoint allocations, and `Others` hands out nothing of the written one).
 * **Nothing frees or moves a payload behind a borrow.** A payload changes through a `&mut`
   accessor (needs `&mut Ctx`), or in the collector's finalizer, which runs only inside an
   allocation (needs `&mut Ctx`). Marking, which makes its own `&mut RObj`, is also only inside
@@ -227,7 +238,11 @@ moved, and no `&mut` to a payload coexists with another reference to it.
 
 A converted module adds `use crate::heap::no_legacy::*;`. That module defines dummies named
 `rary`, `obj`, `vm`, `ary_new`, `str_new`, ... so each of those names then has two glob
-candidates and using one is `error[E0659]: 'rary' is ambiguous`. `tools/heap_audit.rb` checks
+candidates and using one is `error[E0659]: 'rary' is ambiguous`. `heap::no_legacy_str` does
+the same for the context-free String functions (`str_new_enc`, `str_enc`, `str_eq`,
+`char_offsets`, ...: what is left of them lives in `str_legacy.rs`); it is a module of its own
+so that the files converted before the String side keep compiling, and is meant to be folded
+into `no_legacy` once they have switched to the `Ctx` methods. `tools/heap_audit.rb` checks
 the same by text (it also catches a path such as `crate::object::rary`) and prints the
 per-file counts used below.
 
@@ -624,6 +639,250 @@ methodchain +0.2 %). The same functions in a module of their own (`legacy.rs`) g
 numbers above. The build still depends on a ThinLTO threshold for this; see "The allocator
 accident".
 
+## The String side
+
+2026-11-21, on top of the pilot. Scripts, logs and the test programs:
+`~/ruby/src/trials/2026-11-21-saruby-safe-heap-string/`. `base` = 4a06252, `final` = 1c403de.
+
+### What was converted
+
+| file | old-accessor call sites | `fn -> &'static mut` | `static mut` | `unsafe` | state |
+|---|---|---|---|---|---|
+| src/string.rs | 37 -> 0 | 0 | 0 | 0 | `forbid(unsafe_code)` |
+| src/builtins/string_methods.rs | 146 -> 0 | 1 -> 0 | 0 | 0 | `forbid(unsafe_code)` |
+| src/builtins/sprintf.rs | 21 -> 0 | 0 | 0 | 0 | `forbid(unsafe_code)` |
+| src/builtins/encoding.rs | 43 -> 0 | 0 | 5 -> 0 | 10 -> 0 | `forbid(unsafe_code)` |
+| src/builtins/stringio.rs | 46 -> 0 | 3 -> 0 | 0 | 0 | `forbid(unsafe_code)` |
+| src/builtins/strscan.rs | 29 -> 0 | 1 -> 0 | 2 -> 0 | 3 -> 0 | `forbid(unsafe_code)` |
+| src/builtins/symbol_methods.rs | 4 -> 0 | 0 | 0 | 0 | `forbid(unsafe_code)` |
+| src/str_legacy.rs (new) | 21 | 0 | 0 | 0 | the context-free String functions other modules still call |
+| src/symbol.rs | 0 | 1 | 1 | 2 | not converted, see below |
+| src/sbuf.rs | 0 | 0 | 0 | 10 | not touched: the byte buffer itself (a `Vec<u8>` with 23 inline bytes), `unsafe` by nature as `Vec` is |
+| src/heap.rs | 0 | 0 | 0 | 12 -> 13 | `str_mut_and` |
+| all files (`heap_audit.rb` total) | 2305 -> 2001 | 32 -> 27 | 48 -> 41 | 570 -> 558 | |
+
+Added to heap.rs, in a block of its own: `Ctx::str_mut_and` (the one new `unsafe`) and
+`Others::rstring`. Everything else the String side needs is safe code in string.rs built on
+`rstring` / `rstring_mut` / `str_bytes`: `c.str_new`, `str_new_enc`, `str_from_vec[_enc]`,
+`str_from_sbuf`, `str_with_capa`, `str_new_frozen`, `str_new_like`, `str_copy[_enc]`,
+`str_sub`, `str_dup`, `str_enc`, `str_len`, `str_eq`, `str_cmp`, `str_hash`, `str_to_sym`,
+`str_modify`, `str_append_enc`, `str_append_same_enc`, `char_offsets`, `str_char_len`,
+`str_char_code`, `chars_of`, `str_concat_values`, `ary_of_strs`. The three allocator shims
+`str_new` / `str_from_vec` / `str_from_vec_enc` left heap.rs: string.rs allocates through
+`c.alloc`.
+
+Edits outside these files: `vm.rs` (`Vm.enc_objs`, `Vm.c_string_scanner`,
+`Vm.c_string_scanner_error`, `class_set_alloc`), `builtins/mod.rs` (the `init` calls, one
+`ptr::write` for `enc_objs`), `lib.rs` (`mod str_legacy`), `prelude.rs` (`strscan::init(c)`),
+`io.rs`, `misc.rs`, `regexp_methods.rs` (`encoding_value(c, ..)`), `array_methods.rs`
+(`c.str_eq`), `tools/heap_audit.rb` (the `no_legacy_str` names).
+
+`symbol.rs` keeps its table as a `static mut` behind `tab()`: `intern` / `sym_bytes` have 664
+call sites without a context, so the table cannot borrow one, and the safe alternative that
+needs no context, a `Mutex`, was measured and not taken: +8 % instructions on a loop of
+`String#to_sym` / `Symbol#to_s` / `Symbol#length` (about 35 instructions per table access).
+What it would take: the table owned by `Vm`, or names readable without a lock (chunks of
+`OnceLock`) with the lock only in `intern`.
+
+### What it costs
+
+The kind check, as in the pilot, and nothing else by design. Counted in the disassembly
+(`String#length`, `Ctx::str_eq`): `test $7,%dil; jne; cmpb $3,0x10(%rdi); jne`, four
+instructions in two compare-and-branch pairs, per access that the compiler cannot merge with
+an earlier test of the same value. `rstr` had none.
+
+Instructions and cycles, `tools/icount.sh`-style runs under `perf stat -e
+cycles:u,instructions:u`, 5 interleaved repetitions, minimum and (max-min)/min. Millions.
+Run 1 of 2 (`logs/perf.final3`), load average 14.5 at the start, 9.4 at the end.
+
+| interp | base ins | final ins | base cyc (spread) | final cyc (spread) |
+|---|---|---|---|---|
+| str | 4841 | 4841 (-0.0 %) | 1576 (13.0 %) | 1555 (15.1 %) -1.3 % |
+| strfmt | 3314 | 3308 (-0.2 %) | 1182 (3.7 %) | 1067 (2.8 %) -9.7 % |
+| strops | 2745 | 2657 (-3.2 %) | 864 (25.6 %) | 860 (14.4 %) -0.5 % |
+| strscan | 1722 | 1704 (-1.1 %) | 601 (8.3 %) | 588 (20.4 %) -2.3 % |
+| sprintfb | 3268 | 3259 (-0.3 %) | 1045 (10.7 %) | 1158 (10.8 %) +10.8 % |
+| strcmp | 676 | 677 (+0.2 %) | 219 (7.7 %) | 219 (20.9 %) -0.0 % |
+| render_span_kernel | 7256 | 7256 (+0.0 %) | 2014 (5.1 %) | 2032 (4.9 %) +0.9 % |
+| gen_gc | 2627 | 2626 (-0.0 %) | 969 (5.9 %) | 943 (8.5 %) -2.7 % |
+
+| AOT | base ins | final ins | base cyc (spread) | final cyc (spread) |
+|---|---|---|---|---|
+| str | 2849 | 2849 (-0.0 %) | 1042 (34.3 %) | 991 (13.3 %) -4.9 % |
+| strfmt | 2362 | 2355 (-0.3 %) | 881 (12.9 %) | 889 (13.5 %) +1.0 % |
+| strops | 2256 | 2168 (-3.9 %) | 765 (11.7 %) | 697 (12.4 %) -8.8 % |
+| strscan | 1720 | 1701 (-1.1 %) | 581 (38.8 %) | 584 (25.7 %) +0.5 % |
+| sprintfb | 2763 | 2754 (-0.3 %) | 931 (13.3 %) | 885 (14.4 %) -5.0 % |
+| strcmp | 523 | 524 (+0.2 %) | 196 (10.2 %) | 193 (23.0 %) -1.3 % |
+| render_span_kernel | 4249 | 4249 (-0.0 %) | 946 (4.0 %) | 956 (2.9 %) +1.1 % |
+| gen_gc | 1807 | 1805 (-0.1 %) | 764 (10.0 %) | 778 (6.9 %) +1.9 % |
+
+Every benchmark prints the same output with both builds, interpreter and AOT
+(`scripts/benchout.sh`).
+
+* Instructions: at or below the baseline on seven benchmarks (strops -3.2 %, strscan -1.1 %),
+  +0.2 % on strcmp (5 instructions per iteration; the candidate is the kind check of its two
+  `String#length` calls, not broken down further).
+* Cycles: the machine ran at a load average of 8 to 40 during the whole session and the
+  spread of five runs is as large as the differences, in both directions and differently for
+  the interpreter and the baked code of the same benchmark. Two full runs
+  (`logs/perf.final3`, above, and `perf.final3b`) disagree with each other by more than the
+  builds differ: sprintfb interp +10.8 % then +4.2 % with its AOT at -5.0 % and -7.3 %,
+  strfmt interp -9.7 % then -0.1 %. Run alone with more repetitions (interleaved; minimum /
+  median, M cycles): sprintfb 1028 / 1065 -> 1031 / 1064 (11 runs), strfmt 1059 / 1098 ->
+  1017 / 1070 (9 runs), strscan 543 / 602 -> 548 / 579 (15 runs). No cycle regression is
+  visible; one under about 5 % could not have been seen here.
+  One cycle difference was large enough to stand out of this noise earlier in the work, and
+  was real: "Fewer instructions, more cycles" below.
+
+Where the numbers come from, in the order the work went (`logs/ic.*`, instruction counts,
+interp):
+
+| step | str | strfmt | strops | strscan | sprintfb | strcmp | render_span_kernel | gen_gc |
+|---|---|---|---|---|---|---|---|---|
+| base | 4841 | 3314 | 2744 | 1722 | 3268 | 675 | 7256 | 2626 |
+| string.rs + string_methods.rs converted as they stood (b92b160) | 4841 | 3322 | 2834 | 1872 | 3262 | 690 | 7256 | 2630 |
+| + `split` scans a stack copy instead of re-borrowing per piece, sprintf.rs, encoding.rs | 4840 | 3322 | 2798 | 1671 | 3285 | 692 | 7256 | 2630 |
+| + thin accessors `inline(always)`, `" "` recognized without decoding the pattern | 4841 | 3322 | 2680 | 1671 | 3286 | 679 | 7256 | 2630 |
+| + `format` reads each String once | 4840 | 3322 | 2680 | 1671 | 3282 | 679 | 7256 | 2630 |
+| + `enc_single` answers UTF-8 without the encoding table (ed1be64) | 4840 | 3307 | 2650 | 1671 | 3267 | 676 | 7256 | 2625 |
+| + stringio, strscan, symbol_methods, the CRuby fixes (b767946) | 4841 | 3307 | 2650 | 1671 | 3265 | 676 | 7256 | 2625 |
+| + a new String's buffer is built where it is allocated (1c403de) | 4841 | 3307 | 2656 | 1703 | 3259 | 676 | 7256 | 2625 |
+
+So the conversion itself, before anything was tuned, cost +0.2 % (strfmt, gen_gc: one check in
+`String#length` per iteration), +2.2 % (strcmp: `str_eq` out of line, 8 instructions per
+element of `include?`), +3.3 % (strops) and +8.7 % (strscan: `split` re-borrowing the string
+for every piece, about 19 instructions per piece). The last two were how the code was written,
+not the design (recipe patterns 12 and 17). What remains of the design after that is the
+`+0.2 %` class; the row "`enc_single`" is an unrelated saving on the same paths (the encoding
+table lookup in `String#length`, `index`, `[]`), kept as a separate step so that it does not
+pass for the design being free.
+
+A difference under about 0.5 % is also what an unrelated change does to these numbers: a
+build with a change confined to symbol.rs moved sprintfb by +0.5 % and gen_gc by +2.0 %, and
+per-function counts (`callgrind`) put all of it outside symbol.rs (`hash_aset` no longer
+inlined into the hash literal node; `sprintf::format` 14 instructions per call longer). With
+16 codegen units the inlining decisions of ThinLTO depend on what else is in the crate, as the
+pilot found with the allocator. The control, both trees built with
+`CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1`:
+
+| one codegen unit, M instructions | base interp | final interp | base AOT | final AOT |
+|---|---|---|---|---|
+| str | 4949 | 4949 (+0.0 %) | 2872 | 2872 (+0.0 %) |
+| strfmt | 3332 | 3325 (-0.2 %) | 2370 | 2363 (-0.3 %) |
+| strops | 2734 | 2670 (-2.3 %) | 2242 | 2179 (-2.8 %) |
+| strscan | 1731 | 1705 (-1.5 %) | 1729 | 1702 (-1.6 %) |
+| sprintfb | 3288 | 3267 (-0.6 %) | 2773 | 2751 (-0.8 %) |
+| strcmp | 688 | 689 (+0.1 %) | 534 | 535 (+0.2 %) |
+| render_span_kernel | 7247 | 7247 (+0.0 %) | 4239 | 4239 (+0.0 %) |
+| gen_gc | 2617 | 2616 (-0.0 %) | 1798 | 1797 (-0.1 %) |
+
+### Fewer instructions, more cycles: a store-forwarding stall
+
+The tuned build ran `String#split` (benchmark strscan) in 3 % fewer instructions than the
+baseline and 30 % more cycles: 705 M against 543 M, minimum of 15 interleaved runs, with the
+slower build never under 675 M in any of about 50 runs. `perf annotate` put 41 % of the
+samples of `Ctx::str_from_sbuf` on one `vmovups 0x10(%rsp),%xmm1`.
+
+`c.str_new_enc(b, enc)` was `self.str_from_sbuf(SBuf::from_slice(b), enc)`. `SBuf` is three
+words with the short-string bytes inline; `from_slice` was inlined into the caller, which
+wrote a few bytes and the length byte into its stack slot and passed the slot to the
+out-of-line `str_from_sbuf`; that reloaded the three words as wide loads to move them into
+the object. A wide load that overlaps narrower stores still in the store buffer cannot be
+forwarded and waits for them to retire (the likely mechanism: it was not confirmed with a
+counter; the evidence is where the samples sit and that they are gone after the change). Now
+`str_from_sbuf` is `inline(always)` and
+`str_new_enc` takes the length from the slice and builds the buffer in the function that
+allocates, as the context-free original did: 547 M cycles (minimum of 15, baseline 543 M in
+the same run), 1703 M instructions (baseline 1722 M).
+
+A by-value buffer handed to an out-of-line allocator is the natural way to write "build the
+payload while the source is borrowed, then allocate" under the borrow rule (recipe step 2:
+`c.str_from_sbuf(SBuf::from_slice(..), enc)`), so this is a cost of the design's idiom, and
+the instruction count does not show it. Keep the constructor and the allocation in one
+function (`str_new_enc`, `str_copy`, `str_sub` do), and measure cycles on whatever allocates
+in a loop.
+
+### Verification
+
+* `make` and `make FEATURES=raw_stack` without warnings and `ruby tools/heap_audit.rb` exit 0
+  at each of the seven commits (built at each one; `scripts/snap.sh`).
+* The guard rails fire: `rstr(v)`, `str_enc(v)` and `str_new_enc(b"x", 0)` appended to
+  string_methods.rs are three `E0659`; `let b = c.str_bytes(v); let x = c.str_new(b"y"); .. b ..`
+  and the same with `expect_str(c, v)?` in the middle are two `E0502`.
+* Differential tests against CRuby 4.0.2, `run_specs.rb --jobs 4 --timeout 15 --diff ruby`,
+  TOTAL rows (PASS / FAIL / CRASH / WCRASH / TIMEO / REFTO), the two builds alternately, twice,
+  at load averages of 14 to 27 (`logs/totals.final3`). All four runs give the same rows:
+
+  | directory, pattern | base | final |
+  |---|---|---|
+  | t/hand `str*` (`string*`, `stringio*`, `strscan*` included) | 2350 / 195 / 0 / 0 / 0 / 0 | 2350 / 195 / 0 / 0 / 0 / 0 |
+  | t/hand `sym*` (`symbol*` included) | 118 / 2 / 0 / 0 / 0 / 0 | 118 / 2 / 0 / 0 / 0 / 0 |
+  | t/hand `sprintf*` | 42 / 20 / 0 / 0 / 0 / 0 | 42 / 20 / 0 / 0 / 0 / 0 |
+  | t/hand `format*` | 73 / 0 / 0 / 0 / 0 / 0 | 73 / 0 / 0 / 0 / 0 / 0 |
+  | t/hand `encoding*` | 72 / 5 / 0 / 0 / 0 / 0 | 72 / 5 / 0 / 0 / 0 / 0 |
+  | t/hand `regexp*` | 490 / 1304 / 0 / 0 / 1 / 0 | 490 / 1304 / 0 / 0 / 1 / 0 |
+  | t/method `string*` | 17080 / 31 / 0 / 0 / 0 / 0 | 17080 / 31 / 0 / 0 / 0 / 0 |
+  | t/method `symbol*` | 1601 / 0 / 0 / 0 / 0 / 0 | 1601 / 0 / 0 / 0 / 0 / 0 |
+
+  (An earlier pair of runs had `regexp*` FAIL 1301 for the baseline once and 1304 otherwise:
+  the directory is shared and one timeout-sensitive file moves.)
+* Per-file output (stdout, stderr, exit status; 60 s limit) of the 191 files `t/hand/`
+  `{str,sym,sprintf,format,encoding,regexp}*.rb` and the 235 files `t/method/{string,symbol}*.rb`
+  (`str*` covers `string*`, `stringio*`, `strscan*`; `sym*` covers `symbol*`): identical to the
+  baseline's for the four commits that convert (d43563c, b92b160, ed1be64, f1ecd68); two runs of
+  the baseline are identical to each other, so no file here is nondeterministic. From 1d4f2cb on,
+  one line of one file differs, on purpose:
+  `string_fixes_1018.rb` line 6, `s.split { s.prepend("xxx" * 100) }`, printed `:ok` and now
+  prints `RuntimeError: string modified`, which is what CRuby prints for that line run alone
+  (in the file CRuby 4.0.2 itself dies with SIGSEGV three lines earlier, at
+  `"AB".force_encoding(Encoding::UTF_32LE).lines(sep)`, so the harness never compared it).
+* The same for the 126 files `t/hand/str*.rb` under `SARUBY_GC_STRESS=1`: identical to the
+  baseline under stress but for the same line, at every commit.
+* `repro/alias.rb` and `repro/splitmod.rb`, 146 one-line programs about self-aliasing
+  (`s << s`, `s.replace(s)`, `s.concat(s, s)`, `s[1, 2] = s`, ...), frozen and encoding checks,
+  and callbacks (`to_str`, `to_int`, `to_s`, blocks, a Hash default proc) that clear, grow or
+  replace the receiver, each run in its own process: the baseline differs from CRuby on 65 of
+  them, the final build on 7.
+
+### Bugs found
+
+In the baseline, each with the shortest program that shows it; "fixed" means the final build
+prints what CRuby prints.
+
+* **Stale buffer after `to_str`** (a `&'static [u8]` read before the conversion, used after):
+  `s = +"abc"; o = Object.new; o.define_singleton_method(:to_str) { s << "y" * 300; "c" }; s.chomp(o).size`
+  gave 3 (bytes of a buffer that had moved), CRuby 303. Same in `chomp!` and in `split` with a
+  pattern that needs `to_str`. Fixed: self is read after the conversion.
+* **`StringIO#read(n)` with a `to_int` that replaces the string** read the old string
+  (`io.read(o)` with `o.to_int` doing `io.string = "x"`: `"lo w"`, CRuby `"x"`). Fixed.
+* **Uninitialized StringIO**: `Class.new(StringIO) { def initialize; end }.new.read`
+  dereferenced nil as a String (SIGSEGV). Fixed: IOError "uninitialized stream", as CRuby.
+* **Panics on a length read before a conversion**:
+  `s = +"abc" * 50; o = Object.new; o.define_singleton_method(:to_int) { s.clear; 100 }` and then
+  `s[o, 2] = "x"`, `s.byteslice(o, 5)`, `s.bytesplice(o, 5, "x")` each panicked (index out of
+  range in Rust; not undefined behaviour, but the process dies). Fixed: IndexError / nil.
+* **`each_byte` yielded bytes that were gone**: `s.each_byte { s.clear }` ran 150 times with
+  0 for every byte after the first; `each_codepoint` iterated a list made up front. Fixed:
+  both re-read the string at every step (1 iteration, as CRuby).
+* **"string modified" was raised only by `sub!` / `gsub!` with a block.** CRuby also raises
+  it from `split`, `scan`, `gsub`, `scrub`, `scrub!` with a block and from `gsub` / `sub!` with
+  a Hash whose default proc changes the receiver. Fixed for changes of length (CRuby compares
+  the buffer pointer and the length).
+* **`sub` and `partition` read the receiver at the wrong moment**: CRuby's `sub` works on a
+  copy taken before its arguments are converted, `partition` / `rpartition` convert the
+  separator first. Fixed.
+
+Not fixed, differences from CRuby that were there before and are not safety matters:
+`tr` / `tr_s` / `squeeze` / `delete` read the receiver after converting their arguments
+(CRuby dups first, like `sub`); `gsub!` / `sub!` with a block compare contents, so an in-place
+change of the same length (`setbyte`) raises "string modified" where CRuby does not;
+`bytesplice` accepts an index that needs `to_int`; `s.bytesplice(0, 2, s, 2, 3)` gives the
+expected `"cdecdef"` where CRuby 4.0.2 gives `"ccdcdef"`.
+
+Not a bug of saruby: `t/hand/string_fixes_1018.rb` crashes CRuby 4.0.2 (above), so everything
+after its line 17 has never been compared.
+
 ## Recipe: converting one module
 
 `ruby tools/heap_audit.rb` shows what a file still uses. For a module `m.rs`:
@@ -647,7 +906,9 @@ accident".
    | `rary(v)` write | `c.ary_mut(v)`; with the frozen check `c.ary_modify(v)?` |
    | `ary_len(v)`, `ary_get(v, i)`, `ary_push(a, x)`, `ary_new()`, `ary_new_from(s)`, `ary_from_vec(v)`, `ary_new_capa(n)` | the same names as methods: `c.ary_len(v)`, ... |
    | `ary_to_vec(v)`, `rary(v).clone()` | `c.ary(v).to_vec()` |
-   | `rstr(v)`, `str_bytes(v)` | `c.rstring(v)` / `c.rstring_mut(v)`, `c.str_bytes(v)` |
+   | `rstr(v)`, `str_bytes(v)` | `c.rstring(v)` / `c.rstring_mut(v)`, `c.str_bytes(v)`; `rstr(v).enc` is `c.str_enc(v)`; frozen check and write: `c.str_modify(v)?` |
+   | `str_new_enc(b, e)`, `str_new_like(s, vec)`, `str_dup(s)`, `str_char_len(s)`, `char_offsets(s)`, `str_eq(a, b)`, `str_to_sym(s)`, `ary_of_strs(v, e)`, ... | the same names as methods of `c` (string.rs); add `use crate::heap::no_legacy_str::*;` so the free ones cannot come back |
+   | `str_new_enc(str_bytes(s), enc)` (a copy), `str_new_like(s, b(s)[i..j].to_vec())` (a piece) | `c.str_copy(s)` / `c.str_copy_enc(s, enc)`, `c.str_sub(s, i..j)`: the bytes go straight into the new body (inline when short), no `Vec` in between; in general `c.str_from_sbuf(SBuf::from_slice(&c.str_bytes(s)[..]), enc)` |
    | `rhash(v)`, `rclass(v)`, `rproc(v)`, `rmethod(v)`, `rbig(v)`, `ivars_of(v)` | `c.hash(v)` / `c.hash_mut(v)`, `c.class(v)` / `c.class_mut(v)`, `c.proc_data(v)`, `c.method_obj(v)`, `c.big(v)`, `c.ivars(v)` / `c.ivars_mut(v)` |
    | `rdata::<T>(v)` and local helpers `fn th(v) -> &'static mut T` | `c.data::<T>(v)` / `c.data_mut::<T>(v)`; helpers become `fn th(c: &Ctx, v: Value) -> &T` and `fn th_mut(c: &mut Ctx, v: Value) -> &mut T` |
    | `obj(v).klass`, `obj(v).klass = k` | `obj_klass(v)`, `obj_set_klass(v, k)` |
@@ -791,6 +1052,54 @@ Patterns met in the second wave (hash, range, struct, enumerable, numeric):
     node: +3 % on nesteddata until it was split into an `#[inline]` front and an
     `#[inline(never)]` String-key part). Compare instruction counts per commit, not at the end.
 
+Met on the String side (string.rs, string_methods.rs, sprintf.rs, encoding.rs, stringio.rs,
+strscan.rs, symbol_methods.rs):
+
+12. **Bytes needed across a call that takes the context.** A `&[u8]` cannot cross it, and three
+    shapes cover what was there:
+    * *Read after.* When the call is a conversion (`expect_str`, `num_to_long`: `to_str` /
+      `to_int` run Ruby code), convert first and read the receiver after. This is not only what
+      compiles: CRuby reads after the conversion too, and the old code read a stale buffer
+      (`chomp`, `split`; see "Bugs found"). `let suf = expect_str(c, a[0])?; let (v, sb) =
+      (c.str_bytes(slf), c.str_bytes(suf));`.
+    * *Copy what is needed.* `let src = c.str_bytes(slf).to_vec();` before a loop that yields
+      (`gsub`, `scan`, `scrub`: CRuby iterates over the contents it started with and raises
+      "string modified" when the block changes the receiver). For a scan that allocates per
+      piece and never calls out, `ByteSnap::new(c.str_bytes(slf))` copies to the stack when
+      the string is short (128 bytes) and to a `Vec` otherwise (`String#split` fast path).
+    * *Re-borrow per step*, when CRuby re-reads at every step:
+      `while let Some(&x) = c.str_bytes(slf).get(i) { yield1(c, blk, Value::fix(x as i64))?; i += 1; }`
+      (`each_byte`; `each_codepoint` decodes at the current offset the same way).
+13. **A function that reads bytes in place and can raise.** `expand_repl(c, rep_bytes, ..)`
+    took the context only to raise, which forbade passing it `c.str_bytes(rep)`. It now returns
+    its errors by value (`Result<Vec<u8>, ReplErr>`) and the caller raises:
+    `match expand_repl(c.str_bytes(r), ..) { Ok(x) => .., Err(e) => return Err(e.raise(c)) }`.
+    The alternative, copying the replacement at every match, costs a malloc per match.
+14. **Native payloads (`RData`) with several small fields** (`StrIO`, `RScan`). The old helper
+    `fn sio(c, v) -> Result<&'static mut StrIO, Esc>` cannot become
+    `-> Result<&StrIO, Esc>`: the error arm needs `&mut Ctx` while the Ok arm would keep it
+    borrowed (a conditional return of a borrow, which today's borrow checker rejects). Read
+    the state **by value** and write through one accessor:
+    `fn sio(c: &mut Ctx, v: Value) -> Result<StrIO, Esc>` (`StrIO` is `Copy`; for `RScan`,
+    whose match groups are a `Vec`, a `Copy` snapshot `Sc` of what the methods read) and
+    `fn sio_mut(c: &mut Ctx, v: Value) -> &mut StrIO`. A method then reads `let d = readable(c, slf)?;`,
+    computes, and ends with `sio_mut(c, slf).pos += n;`. Arguments are converted before the
+    snapshot is taken (`io.read(n)` with a `to_int` that replaces the string read the old one).
+15. **Module state.** Class values (`StringScanner`, its `Error`) and the table of Encoding
+    objects are `Vm` fields (`c.vm().c_string_scanner`, `c.vm().enc_objs`). Plain data that is
+    not a `Value` and is read by functions without a context (the default external encoding,
+    lazily built conversion tables) is a safe static: `AtomicU8`, `OnceLock<[u8; N]>`,
+    `[OnceLock<RevMap>; N]`.
+16. **Boot-time `init()`.** No context exists while `builtins::boot` runs, and nothing else
+    does either, so no payload borrow can be alive: `init(vm: &Vm)` allocates with
+    `crate::gc::alloc` directly and sets up classes through functions of vm.rs
+    (`define_class`, `class_set_alloc`, `const_set`). An `init` that runs later (strscan, at
+    the first `require`) takes the context like any other code.
+17. **Thin accessors are `#[inline(always)]`** (`str_enc`, `str_len`, `str_eq`, `str_cmp`,
+    `str_hash`). After `if is_string(a) && is_string(b)` the kind check of `c.str_eq(a, b)` is
+    dead code, but only if the accessor is inlined into that function; out of line,
+    `Array#include?` paid 8 instructions per element for it (benchmark strcmp).
+
 ## What is still open
 
 * `builtins/rational.rs`, `builtins/complex.rs`: both are written on a layer of context-free
@@ -811,6 +1120,15 @@ Patterns met in the second wave (hash, range, struct, enumerable, numeric):
   `*const Cref` graph: the frame chain, a separate surface (safe_stack.md lists it too).
 * cfunc arguments `&[Value]`, `rdata` payloads holding Values, `Vec<Value>` scratch buffers:
   rooting, roadmap section 2.
+* String side: 238 call sites of the context-free functions of str_legacy.rs are left in
+  unconverted modules (`str_new` 135, `str_new_frozen` 21, `str_new_enc` 19,
+  `str_from_vec_enc` 19, ...; `heap_audit.rb` does not count them as a column). They go with
+  their own modules, after which `no_legacy_str` folds into `no_legacy`. Converted String code still calls into
+  unconverted modules while holding no borrow: `regexp::*` (`rregexp` / `rmatch` hand out
+  `&'static mut`; `search_raw(re, c.str_bytes(s), ..)` is called under a String borrow and
+  touches only the Regexp), `hash_aref` / `hash_get_opt`, `funcall`, `big_to_value`
+  (allocates without the context). `symbol.rs` (the table) and `sbuf.rs` (the buffer) keep
+  their `unsafe`.
 
 ## Remaining work per file
 
@@ -819,6 +1137,14 @@ Patterns met in the second wave (hash, range, struct, enumerable, numeric):
 functions of object.rs); `sum`; functions of the file that return `&'static mut`; `static mut`
 declarations; `unsafe` occurrences (comments excluded). Generated `src/node_*.rs` and
 `src/prism_ast.rs` are not counted; `node.def`, their source, is.
+
+`ruby tools/heap_audit.rb --md` at 1c403de (the String side; regenerate after a merge). Columns:
+call sites of each old accessor (`rstr` includes `str_bytes`, `rproc` includes `rmethod`,
+`ary_*` are the context-free array functions of object.rs); `sum`; functions of the file that
+return `&'static mut`; `static mut` declarations; `unsafe` occurrences (comments excluded).
+Generated `src/node_*.rs` and `src/prism_ast.rs` are not counted; `node.def`, their source, is.
+The context-free String functions of str_legacy.rs (`str_new_enc`, `str_enc`, ...) are not
+among the columns; a file that imports `heap::no_legacy_str` is checked for them.
 
 | file |    obj |   rary |   rstr |  rhash | rclass |  rproc |   rbig |  rdata | ivars_of |  ary_* |     vm |   sum | fn->&'static mut | static mut | unsafe | state |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -831,6 +1157,10 @@ declarations; `unsafe` occurrences (comments excluded). Generated `src/node_*.rs
 | src/builtins/encoding.rs |      1 |      0 |     16 |      0 |      0 |      0 |      0 |      9 |      0 |     10 |      7 |    43 |                0 |          5 |     10 |  |
 | src/builtins/enum_native.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/enumerator.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
+
+| src/builtins/encoding.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
+| src/builtins/enum_native.rs |      1 |     10 |      1 |      0 |      0 |      0 |      0 |      0 |      0 |     63 |      7 |    82 |                0 |          0 |      1 |  |
+| src/builtins/enumerator.rs |      3 |      1 |      0 |      0 |      1 |      3 |      0 |      2 |      0 |     41 |     13 |    64 |                1 |          0 |      1 |  |
 | src/builtins/env.rs |      1 |      0 |      3 |      0 |      0 |      0 |      0 |      0 |      0 |      4 |      2 |    10 |                0 |          0 |      4 |  |
 | src/builtins/exception.rs |      0 |      0 |     12 |      0 |      2 |      0 |      0 |      0 |      0 |     14 |     15 |    43 |                0 |          0 |      0 |  |
 | src/builtins/extras.rs |      0 |      0 |      1 |      0 |      3 |      0 |      0 |      0 |      0 |      9 |     13 |    26 |                0 |          0 |     13 |  |
@@ -860,6 +1190,13 @@ declarations; `unsafe` occurrences (comments excluded). Generated `src/node_*.rs
 | src/builtins/strscan.rs |      0 |      0 |     17 |      0 |      1 |      0 |      0 |      4 |      0 |      4 |      3 |    29 |                1 |          2 |      3 |  |
 | src/builtins/structs.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/symbol_methods.rs |      1 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      2 |      1 |     4 |                0 |          0 |      0 |  |
+
+| src/builtins/sprintf.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
+| src/builtins/string_methods.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
+| src/builtins/stringio.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
+| src/builtins/strscan.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
+| src/builtins/structs.rs |      1 |      6 |      7 |      0 |      7 |      0 |      0 |      0 |      0 |     31 |      7 |    59 |                0 |          0 |      0 |  |
+| src/builtins/symbol_methods.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/sys.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      6 |  |
 | src/builtins/thread.rs |      0 |     10 |      1 |      0 |      4 |      0 |      0 |      6 |      0 |     29 |     25 |    75 |                4 |          8 |     40 |  |
 | src/builtins/time.rs |      0 |      0 |      7 |      0 |      1 |      0 |      0 |      4 |      0 |      2 |     10 |    24 |                1 |          0 |      2 |  |
@@ -868,6 +1205,9 @@ declarations; `unsafe` occurrences (comments excluded). Generated `src/node_*.rs
 | src/gc.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      2 |     2 |                1 |          3 |     13 |  |
 | src/hash.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/heap.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |     18 |  |
+
+| src/hash.rs |      9 |      2 |      2 |     25 |      0 |      0 |      2 |      0 |      0 |      7 |      7 |    54 |                1 |          1 |      4 |  |
+| src/heap.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |     13 |  |
 | src/kalloc.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          5 |     12 |  |
 | src/legacy.rs |      3 |      0 |      0 |      0 |      0 |      0 |      2 |      0 |      0 |      0 |      3 |     8 |                0 |          0 |      0 |  |
 | src/lib.rs |      0 |      1 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      2 |      8 |    11 |                0 |          0 |      2 |  |
@@ -879,9 +1219,14 @@ declarations; `unsafe` occurrences (comments excluded). Generated `src/node_*.rs
 | src/rt.rs |     15 |     50 |      9 |      4 |     30 |      1 |      0 |      0 |      0 |     14 |     52 |   175 |                0 |          2 |     62 |  |
 | src/sbuf.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |     10 |  |
 | src/stack_raw.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      5 |  |
-| src/string.rs |      3 |      0 |     27 |      0 |      0 |      0 |      0 |      0 |      0 |      2 |      5 |    37 |                0 |          0 |      0 |  |
+| src/str_legacy.rs |      3 |      0 |     11 |      0 |      0 |      0 |      0 |      0 |      0 |      2 |      5 |    21 |                0 |          0 |      0 |  |
+| src/string.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/symbol.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                1 |          1 |      2 |  |
 | src/value.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |     11 |  |
 | src/vm.rs |     23 |      3 |      2 |      5 |     60 |     10 |      0 |      1 |      1 |      7 |     55 |   167 |                2 |          2 |     68 |  |
 | node.def |     11 |      0 |      2 |      0 |      0 |      0 |      0 |      0 |      0 |      3 |      9 |    25 |                0 |          0 |     22 |  |
 | total |    135 |     90 |    321 |     18 |    231 |     52 |     13 |     55 |      1 |    380 |    546 |  1842 |               31 |         48 |    567 |  |
+
+| src/vm.rs |     23 |      3 |      2 |      5 |     61 |     10 |      0 |      1 |      1 |      7 |     55 |   168 |                2 |          2 |     68 |  |
+| node.def |     11 |      0 |      2 |      0 |      0 |      0 |      0 |      0 |      0 |      3 |      9 |    25 |                0 |          0 |     22 |  |
+| total |    150 |    110 |    193 |     52 |    238 |     57 |     28 |     41 |      1 |    569 |    562 |  2001 |               27 |         41 |    558 |  |

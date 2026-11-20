@@ -28,7 +28,7 @@ pub fn rb_eq(c: &mut Ctx, a: Value, b: Value) -> Result<bool, Esc> {
     if a == b { return Ok(!(a.is_flonum() && a.flonum_val().is_nan())); }
     if a.is_fixnum() && b.is_fixnum() { return Ok(false); }
     if a.is_sym() || b.is_sym() { return Ok(false); }
-    if is_string(a) && is_string(b) && obj_klass(a) == c.vm().c_string { return Ok(str_eq(a, b)); }
+    if is_string(a) && is_string(b) && obj_klass(a) == c.vm().c_string { return Ok(c.str_eq(a, b)); }
     let r = funcall(c, a, s::eq, &[b], std::ptr::null())?;
     Ok(r.truthy())
 }

@@ -26,7 +26,7 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
         return crate::builtins::kernel::run_source(c, l.1.as_bytes(), file, 1);
     }
     // native libraries whose classes are only built on first require
-    if name == "strscan" || name == "strscan.so" { crate::builtins::strscan::init(); }
+    if name == "strscan" || name == "strscan.so" { crate::builtins::strscan::init(c); }
     if name == "json" || name == "json/ext" { crate::builtins::json::init(); }
     match name {
         "saruby/errno" => crate::builtins::exception::define_all_errnos(),
