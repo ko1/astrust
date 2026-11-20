@@ -24,16 +24,22 @@ impl Ctx {
     #[inline(always)]
     fn str_account(&mut self, n: usize) { if n > crate::sbuf::INLINE { self.malloc_increase(n); } }
     /// The buffer becomes the String's payload (class String).
-    #[inline]
+    // always inlined: handing the 3-word buffer to an out-of-line copy costs a store-forwarding stall
+    #[inline(always)]
     pub fn str_from_sbuf(&mut self, b: SBuf, enc: u8) -> Value {
         self.str_account(b.len());
         let k = self.vm().c_string;
         self.alloc(k, Body::String(RString { b, enc }))
     }
     #[inline]
-    pub fn str_new(&mut self, b: &[u8]) -> Value { self.str_from_sbuf(SBuf::from_slice(b), ENC_UTF8) }
+    pub fn str_new(&mut self, b: &[u8]) -> Value { self.str_new_enc(b, ENC_UTF8) }
+    // the length comes from the slice: reading it back from the buffer just built would wait on its bytes
     #[inline]
-    pub fn str_new_enc(&mut self, b: &[u8], enc: u8) -> Value { self.str_from_sbuf(SBuf::from_slice(b), enc) }
+    pub fn str_new_enc(&mut self, b: &[u8], enc: u8) -> Value {
+        self.str_account(b.len());
+        let k = self.vm().c_string;
+        self.alloc(k, Body::String(RString { b: SBuf::from_slice(b), enc }))
+    }
     #[inline]
     pub fn str_with_capa(&mut self, n: usize, enc: u8) -> Value {
         self.str_account(n);

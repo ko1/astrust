@@ -392,35 +392,30 @@ pub fn to_unicode(enc: u8, ch: &[u8]) -> Option<u32> {
 
 type RevMap = std::collections::HashMap<u32, Vec<u8>>;
 static REV: [OnceLock<RevMap>; NENC] = [const { OnceLock::new() }; NENC];
-fn rev_map(enc: u8) -> &'static RevMap {
-    {
-        {
-            REV[enc as usize].get_or_init(|| {
-            let mut m = RevMap::new();
-            let k = kind(enc);
-            match k {
-                Single => if let Some(t) = single_table(enc) { for (i, &u) in t.iter().enumerate() { if u != 0 { m.entry(u as u32).or_insert(vec![0x80 + i as u8]); } } },
-                EucJp(_) => {
-                    let (t, t3) = jis_tables(k);
-                    for (i, &u) in t.iter().enumerate() { if u != 0 { m.entry(u as u32).or_insert(vec![0xa1 + (i / 94) as u8, 0xa1 + (i % 94) as u8]); } }
-                    if let Some(t3) = t3 { for (i, &u) in t3.iter().enumerate() { if u != 0 { m.entry(u as u32).or_insert(vec![0x8f, 0xa1 + (i / 94) as u8, 0xa1 + (i % 94) as u8]); } } }
-                    for x in 0xa1..=0xdfu8 { m.entry(0xff61 + (x - 0xa1) as u32).or_insert(vec![0x8e, x]); }
-                }
-                Sjis(_) => {
-                    let (t, _) = jis_tables(k);
-                    for (i, &u) in t.iter().enumerate() {
-                        if u == 0 { continue; }
-                        let hi = (i / 189) as u8; let h = if hi < 31 { 0x81 + hi } else { 0xe0 + hi - 31 };
-                        m.entry(u as u32).or_insert(vec![h, 0x40 + (i % 189) as u8]);
-                    }
-                    for x in 0xa1..=0xdfu8 { m.entry(0xff61 + (x - 0xa1) as u32).or_insert(vec![x]); }
-                }
-                _ => {}
-            }
-            m
-            })
+fn rev_map(enc: u8) -> &'static RevMap { REV[enc as usize].get_or_init(|| build_rev_map(enc)) }
+fn build_rev_map(enc: u8) -> RevMap {
+    let mut m = RevMap::new();
+    let k = kind(enc);
+    match k {
+        Single => if let Some(t) = single_table(enc) { for (i, &u) in t.iter().enumerate() { if u != 0 { m.entry(u as u32).or_insert(vec![0x80 + i as u8]); } } },
+        EucJp(_) => {
+            let (t, t3) = jis_tables(k);
+            for (i, &u) in t.iter().enumerate() { if u != 0 { m.entry(u as u32).or_insert(vec![0xa1 + (i / 94) as u8, 0xa1 + (i % 94) as u8]); } }
+            if let Some(t3) = t3 { for (i, &u) in t3.iter().enumerate() { if u != 0 { m.entry(u as u32).or_insert(vec![0x8f, 0xa1 + (i / 94) as u8, 0xa1 + (i % 94) as u8]); } } }
+            for x in 0xa1..=0xdfu8 { m.entry(0xff61 + (x - 0xa1) as u32).or_insert(vec![0x8e, x]); }
         }
+        Sjis(_) => {
+            let (t, _) = jis_tables(k);
+            for (i, &u) in t.iter().enumerate() {
+                if u == 0 { continue; }
+                let hi = (i / 189) as u8; let h = if hi < 31 { 0x81 + hi } else { 0xe0 + hi - 31 };
+                m.entry(u as u32).or_insert(vec![h, 0x40 + (i % 189) as u8]);
+            }
+            for x in 0xa1..=0xdfu8 { m.entry(0xff61 + (x - 0xa1) as u32).or_insert(vec![x]); }
+        }
+        _ => {}
     }
+    m
 }
 
 /// Bytes for Unicode scalar `u` in `enc`, None if undefined there.
