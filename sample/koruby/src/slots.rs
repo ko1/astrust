@@ -26,4 +26,9 @@ pub fn slots_release(s: &'static [Slot]) {
     if !s.is_empty() { POOL.with(|p| p.borrow_mut().push(s)); }
 }
 
-pub fn to_vec(st: &[Slot]) -> Vec<Value> { st.iter().map(Cell::get).collect() }
+#[inline(always)]
+pub fn to_vec(st: &[Slot]) -> Vec<Value> {
+    let mut v = Vec::with_capacity(st.len());
+    v.extend(st.iter().map(Cell::get));
+    v
+}
