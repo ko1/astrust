@@ -683,7 +683,7 @@ node_call_x(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, 
 }
 
 NODE_DEF
-node_attrasgn(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, flags: u32, line: u32, cc@ref: CallCache)
+node_attrasgn(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, flags: u32, line: u32, cc@ref: CallCache, kind@bake: u32)
 {
     let k = EVAL_LEN!(args);
     let base = stage(c, 2 + k)?;
@@ -691,7 +691,13 @@ node_attrasgn(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym
     for i in 0..k { let v = EVAL_NTH!(c, args, i)?; base[2 + i].set(v); }
     unsafe { (*c.frame).line = line; }
     let val = base[1 + k].get();
-    call_cached(c, cc, mid, base, k as u32, std::ptr::null(), flags)?;
+    if kind == SITE_INTERP { call_cached(c, cc, mid, base, k as u32, std::ptr::null(), flags)?; return Ok(val); }
+    // baked code: only the site's one fast path inline, as node_call
+    let r0 = base[0].get();
+    if site_hit(cc, r0, kind) {
+        if let Some(r) = site_fast(c, cc, r0, base, k as u32, std::ptr::null(), kind) { r?; return Ok(val); }
+    }
+    call_cached_out(c, cc, mid, base, k as u32, std::ptr::null(), flags)?;
     Ok(val)
 }
 

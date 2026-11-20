@@ -716,6 +716,7 @@ fn DUMP_node_attrasgn(out: &mut String, n: NodePtr) {
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.flags));
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
     out.push(' '); out.push_str("<cc>");
+    out.push(' '); 
     out.push(')');
     }
 }

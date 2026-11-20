@@ -866,14 +866,20 @@ pub fn EVAL_node_call_x<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr,
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_attrasgn<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, cc: &mut CallCache) -> RV {
+pub fn EVAL_node_attrasgn<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, cc: &mut CallCache, kind: u32) -> RV {
     let k = <D_args as DispList>::len(args);
     let base = stage(c, 2 + k)?;
     base[0].set(<D_recv as Disp>::call(c, recv, fp)?);
     for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
     unsafe { (*c.frame).line = line; }
     let val = base[1 + k].get();
-    call_cached(c, cc, mid, base, k as u32, std::ptr::null(), flags)?;
+    if kind == SITE_INTERP { call_cached(c, cc, mid, base, k as u32, std::ptr::null(), flags)?; return Ok(val); }
+    // baked code: only the site's one fast path inline, as node_call
+    let r0 = base[0].get();
+    if site_hit(cc, r0, kind) {
+        if let Some(r) = site_fast(c, cc, r0, base, k as u32, std::ptr::null(), kind) { r?; return Ok(val); }
+    }
+    call_cached_out(c, cc, mid, base, k as u32, std::ptr::null(), flags)?;
     Ok(val)
 }
 

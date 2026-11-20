@@ -1932,6 +1932,7 @@ fn SPECIALIZE_node_attrasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push(format!("{}u32", (*np).u.flags));
     a.push(format!("{}u32", (*np).u.line));
     a.push("&mut (*np).u.cc".to_string());
+    a.push(format!("{}u32", { let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
