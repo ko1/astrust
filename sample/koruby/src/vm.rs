@@ -981,9 +981,10 @@ pub fn funcall_flags(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *c
 }
 
 /// send / public_send from a scope with refinements: a refined method is called directly.
-pub fn funcall_refined(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const Block, flags: u32) -> Option<RV> {
-    // a cfunc frame carries its caller's cref
-    let me = lookup_method_refined(unsafe { (*c.frame).cref }, class_of(recv), mid);
+pub fn funcall_refined(c: &mut Ctx, cref: *const Cref, recv: Value, mid: Sym, args: &[Value], blk: *const Block, flags: u32) -> Option<RV> {
+    // null: the current frame's scope (a cfunc frame carries its caller's cref)
+    let cref = if cref.is_null() { unsafe { (*c.frame).cref } } else { cref };
+    let me = lookup_method_refined(cref, class_of(recv), mid);
     if me.is_null() || !rclass(unsafe { (*me).owner }).refined { return None; }
     if unsafe { (*me).visi } != VISI_PUBLIC && flags & CF_FCALL == 0 { return None; }
     let base = c.sp;
@@ -1665,7 +1666,7 @@ pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const 
             if args.is_empty() { return arg_err(c, "no receiver given"); }
             let recv = args[0];
             if unsafe { REFINEMENTS_ON } {
-                if let Some(r) = funcall_refined(c, recv, mid, &args[1..], blkarg, 0) { return r; }
+                if let Some(r) = funcall_refined(c, b.cref, recv, mid, &args[1..], blkarg, 0) { return r; }
             }
             funcall_public(c, recv, mid, &args[1..], blkarg)
         }

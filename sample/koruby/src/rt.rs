@@ -96,7 +96,7 @@ pub fn rt_dstr_append(c: &mut Ctx, acc: Value, v: Value) -> Result<(), Esc> {
 pub fn rt_tostr(c: &mut Ctx, v: Value) -> RV {
     if is_string(v) { return Ok(v); }
     if unsafe { REFINEMENTS_ON } {
-        if let Some(r) = funcall_refined(c, v, s::to_s, &[], std::ptr::null(), CF_FCALL) { let r = r?; if is_string(r) { return Ok(r); } }
+        if let Some(r) = funcall_refined(c, std::ptr::null(), v, s::to_s, &[], std::ptr::null(), CF_FCALL) { let r = r?; if is_string(r) { return Ok(r); } }
     }
     if v.is_fixnum() { return Ok(str_new(v.as_fix().to_string().as_bytes())); }
     if v.is_sym() { return Ok(str_new(crate::symbol::sym_bytes(v.as_sym()))); }
@@ -595,6 +595,14 @@ fn block_from_value(c: &mut Ctx, blkv: Value, holder: &mut Block) -> Result<*con
     if blkv == NIL { return Ok(std::ptr::null()); }
     if is_proc(blkv) { return Ok(proc_block(blkv)); }
     if blkv.is_sym() {
+        // &:sym under refinements remembers the scope it was written in
+        let cref = unsafe { (*c.frame).cref };
+        if unsafe { REFINEMENTS_ON } && cref_refinements(cref) != NIL {
+            *holder = Block::cfunc(c, |_c, _d, _a, _b| Ok(NIL), NIL);
+            holder.kind = BlockKind::Sym(blkv.as_sym());
+            holder.cref = cref;
+            return Ok(holder as *const Block);
+        }
         let p = crate::builtins::proc::sym_to_proc(c, blkv)?;
         return Ok(proc_block(p));
     }

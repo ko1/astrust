@@ -1322,10 +1322,11 @@ impl<'a> Compiler<'a> {
     /// `pat === subject` for a value pattern.
     fn eqq_pattern(&mut self, p: &PNode, sl: u32) -> NodePtr {
         let v = self.c(p);
-        let t = self.eqq_test(v, sl);
-        if self.pm_err.is_none() { return t; }
-        let again = self.c(p);
-        self.pm_fail(t, PM_EQQ, vec![again, ALLOC_node_lvar(sl)])
+        if self.pm_err.is_none() { return self.eqq_test(v, sl); }
+        // keep the pattern value for the message (evaluated once)
+        let psl = self.hidden_slot();
+        let t = self.eqq_test(ALLOC_node_lasgn(psl, v), sl);
+        self.pm_fail(t, PM_EQQ, vec![ALLOC_node_lvar(psl), ALLOC_node_lvar(sl)])
     }
 
     /// A pattern test against the value in slot `sl`; binds variables; evaluates to true/false.

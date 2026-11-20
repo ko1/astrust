@@ -34,7 +34,7 @@ fn bo_send(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     let mid = to_sym_arg(c, a[0])?;
     let kw = kw_arg(a).is_some();
     if unsafe { REFINEMENTS_ON } {
-        if let Some(r) = funcall_refined(c, slf, mid, &a[1..], b, CF_FCALL | if kw { CF_KW } else { 0 }) { return r; }
+        if let Some(r) = funcall_refined(c, std::ptr::null(), slf, mid, &a[1..], b, CF_FCALL | if kw { CF_KW } else { 0 }) { return r; }
     }
     funcall_kw(c, slf, mid, &a[1..], b, kw)
 }
@@ -43,7 +43,7 @@ fn k_public_send(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     let mid = to_sym_arg(c, a[0])?;
     let kw = kw_arg(a).is_some();
     if unsafe { REFINEMENTS_ON } {
-        if let Some(r) = funcall_refined(c, slf, mid, &a[1..], b, if kw { CF_KW } else { 0 }) { return r; }
+        if let Some(r) = funcall_refined(c, std::ptr::null(), slf, mid, &a[1..], b, if kw { CF_KW } else { 0 }) { return r; }
     }
     funcall_flags(c, slf, mid, &a[1..], b, if kw { CF_KW } else { 0 })
 }
