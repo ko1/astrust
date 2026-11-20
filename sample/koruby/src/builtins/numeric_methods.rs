@@ -95,8 +95,14 @@ fn int_arith(c: &mut Ctx, a: Value, b: Value, op: Op) -> RV {
         });
     }
     if is_float(b) {
+        if op == Op::Pow { return int_pow(c, a, b); }
         let x = num_to_f64(a).unwrap(); let y = float_val(b);
-        return Ok(float_new(match op { Op::Add => x + y, Op::Sub => x - y, Op::Mul => x * y, Op::Div => x / y, Op::Mod => fmod_ruby(x, y), Op::Pow => x.powf(y) }));
+        if op == Op::Mod && y == 0.0 { return err(c, vm().c_zero_div_error, "divided by 0"); }
+        return Ok(float_new(match op { Op::Add => x + y, Op::Sub => x - y, Op::Mul => x * y, Op::Div => x / y, Op::Mod => fmod_ruby(x, y), Op::Pow => unreachable!() }));
+    }
+    // fix_plus / fix_mul compute Complex op Fixnum directly (keeps exact parts)
+    if a.is_fixnum() && (op == Op::Add || op == Op::Mul) && crate::builtins::complex::is_complex(b) {
+        return funcall(c, b, if op == Op::Add { s::plus } else { s::mul }, &[a], std::ptr::null());
     }
     let sym = match op { Op::Add => s::plus, Op::Sub => s::minus, Op::Mul => s::mul, Op::Div => s::div, Op::Mod => s::modulo, Op::Pow => s::pow };
     coerce_bin(c, a, b, sym, false)
@@ -111,10 +117,8 @@ pub fn fmod_ruby(x: f64, y: f64) -> f64 {
 fn int_pow(c: &mut Ctx, a: Value, b: Value) -> RV {
     if is_float(b) {
         let x = num_to_f64(a).unwrap(); let y = float_val(b);
-        if x < 0.0 && y.fract() != 0.0 {
-            let k = const_get_at(vm().c_object, intern(b"Complex"));
-            if k.is_some() { let ca = funcall(c, vm().main_obj, intern(b"Complex"), &[a, Value::fix(0)], std::ptr::null())?; return funcall(c, ca, s::pow, &[b], std::ptr::null()); }
-        }
+        if y == 0.0 { return Ok(float_new(1.0)); }
+        if x < 0.0 && y != y.round() { return Ok(crate::builtins::complex::polar_pi((-x).powf(y), y)); }
         return Ok(float_new(x.powf(y)));
     }
     if !is_integer(b) { return coerce_bin(c, a, b, s::pow, false); }
@@ -132,9 +136,9 @@ fn int_pow(c: &mut Ctx, a: Value, b: Value) -> RV {
         if !x.neg { return Ok(Value::fix(1)); }
         return Ok(Value::fix(if e.is_odd() { -1 } else { 1 }));
     }
-    let ei = match e.to_i64() { Some(i) => i as u64, None => { return Ok(float_new(f64::INFINITY)); } };
-    if (x.bit_length() as u64) * ei > 32 * 1024 * 1024 * 8 {
-        return Ok(float_new(f64::INFINITY));
+    let ei = match e.to_i64() { Some(i) => i as u64, None => { return arg_err(c, "exponent is too large"); } };
+    if (x.bit_length() as u64).saturating_mul(ei) > 1u64 << 34 {
+        return arg_err(c, "exponent is too large");
     }
     if a.is_fixnum() {
         if let Ok(ei32) = u32::try_from(ei) { if let Some(r) = a.as_fix().checked_pow(ei32) { return Ok(int_from_i64(r)); } }
@@ -364,7 +368,7 @@ cfn!(int_idiv, |c, s, a| {
 });
 cfn!(int_fdiv, |c, s, a| { let y = to_f(c, a[0])?; Ok(float_new(num_to_f64(s).unwrap() / y)) });
 cfn!(int_remainder, |c, s, a| {
-    if is_float(a[0]) { return Ok(float_new(num_to_f64(s).unwrap() % float_val(a[0]))); }
+    if is_float(a[0]) { if float_val(a[0]) == 0.0 { return err(c, vm().c_zero_div_error, "divided by 0"); } return Ok(float_new(num_to_f64(s).unwrap() % float_val(a[0]))); }
     if !is_integer(a[0]) { return coerce_bin(c, s, a[0], intern(b"remainder"), false); }
     let y = to_big(a[0]);
     if y.is_zero() { return err(c, vm().c_zero_div_error, "divided by 0"); }
@@ -411,7 +415,7 @@ fn round_int(c: &mut Ctx, s: Value, a: &[Value], mode: u8) -> RV {
     Ok(big_to_value(res))
 }
 /// half: mode from kw (0 = up (default), 1 = even, 2 = down)
-fn round_half_mode(c: &mut Ctx, a: &[Value]) -> Result<u8, Esc> {
+pub fn round_half_mode(c: &mut Ctx, a: &[Value]) -> Result<u8, Esc> {
     if let Some(h) = a.iter().rev().find(|v| is_hash(**v)) {
         if let Some(v) = crate::hash::hash_get_opt(c, *h, crate::vm::sym_value("half"))? {
             if v == NIL { return Ok(0); }
@@ -468,14 +472,12 @@ fn flo_arith(c: &mut Ctx, a: Value, b: Value, op: Op) -> RV {
         let sym = match op { Op::Add => s::plus, Op::Sub => s::minus, Op::Mul => s::mul, Op::Div => s::div, Op::Mod => s::modulo, Op::Pow => s::pow };
         return coerce_bin(c, a, b, sym, false);
     } };
+    if op == Op::Mod && y == 0.0 { return err(c, vm().c_zero_div_error, "divided by 0"); }
     Ok(float_new(match op {
         Op::Add => x + y, Op::Sub => x - y, Op::Mul => x * y, Op::Div => x / y,
         Op::Mod => fmod_ruby(x, y),
         Op::Pow => {
-            if x < 0.0 && y.fract() != 0.0 && const_get_at(vm().c_object, intern(b"Complex")).is_some() {
-                let ca = funcall(c, vm().main_obj, intern(b"Complex"), &[a, Value::fix(0)], std::ptr::null())?;
-                return funcall(c, ca, s::pow, &[b], std::ptr::null());
-            }
+            if x < 0.0 && y != y.round() { return Ok(crate::builtins::complex::polar_pi((-x).powf(y), y)); }
             x.powf(y)
         }
     }))
@@ -647,7 +649,7 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     if pos.len() > 1 { st = pos[1]; }
     if b.is_null() { return crate::builtins::enumerator::arith_seq(c, s, lim, st, false, s::step); }
     if st == Value::fix(0) { return arg_err(c, "step can't be 0"); }
-    if is_float(s) || is_float(lim) || is_float(st) {
+    if (is_float(s) || is_float(lim) || is_float(st)) && !crate::builtins::complex::is_complex(st) {
         let (x, l, d) = (to_f(c, s)?, if lim == NIL { if to_f(c, st)? > 0.0 { f64::INFINITY } else { f64::NEG_INFINITY } } else { to_f(c, lim)? }, to_f(c, st)?);
         let n = ((l - x) / d + 1e-9).floor();
         if n.is_infinite() { let mut i = 0.0; loop { yield1(c, b, float_new(x + i * d))?; i += 1.0; } }
@@ -655,7 +657,7 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
         while i <= n { yield1(c, b, float_new(x + i * d))?; i += 1.0; }
         return Ok(s);
     }
-    let neg = funcall(c, st, s::lt, &[Value::fix(0)], std::ptr::null())?.truthy();
+    let neg = lim != NIL && funcall(c, st, s::lt, &[Value::fix(0)], std::ptr::null())?.truthy();
     let mut i = s;
     loop {
         if lim != NIL {
@@ -698,6 +700,29 @@ cfn!(num_divmod, |c, s, a| {
     let m = funcall(c, s, s::modulo, &[a[0]], std::ptr::null())?;
     Ok(ary_new_from(&[q, m]))
 });
+fn neg_int_p(c: &mut Ctx, v: Value) -> Result<bool, Esc> {
+    if is_integer(v) { return Ok(if v.is_fixnum() { v.as_fix() < 0 } else { rbig(v).neg }); }
+    Ok(funcall(c, v, s::lt, &[Value::fix(0)], std::ptr::null())?.truthy())
+}
+fn pos_int_p(c: &mut Ctx, v: Value) -> Result<bool, Esc> {
+    if is_integer(v) { return Ok(if v.is_fixnum() { v.as_fix() > 0 } else { !rbig(v).neg }); }
+    Ok(funcall(c, v, s::gt, &[Value::fix(0)], std::ptr::null())?.truthy())
+}
+cfn!(num_remainder, |c, s, a| {
+    let (mut x, mut y) = (s, a[0]);
+    if !is_kind_of(y, vm().c_numeric) && !is_numeric(y) {
+        let r = coerce_bin(c, x, y, intern(b"remainder"), false)?;
+        return Ok(r);
+    }
+    let z = funcall(c, x, s::modulo, &[y], std::ptr::null())?;
+    let zz = funcall(c, z, s::eq, &[Value::fix(0)], std::ptr::null())?.truthy();
+    if !zz && ((neg_int_p(c, x)? && pos_int_p(c, y)?) || (pos_int_p(c, x)? && neg_int_p(c, y)?)) {
+        if is_float(y) && float_val(y).is_infinite() { return Ok(x); }
+        return funcall(c, z, s::minus, &[y], std::ptr::null());
+    }
+    let _ = (&mut x, &mut y);
+    Ok(z)
+});
 cfn!(num_fdiv, |c, s, a| { let x = to_f(c, s)?; let y = to_f(c, a[0])?; Ok(float_new(x / y)) });
 cfn!(num_quo, |c, s, a| {
     if is_float(s) || is_float(a[0]) { let x = to_f(c, s)?; let y = to_f(c, a[0])?; return Ok(float_new(x / y)); }
@@ -739,6 +764,7 @@ pub fn init() {
     define_cfunc(n, "%", num_modulo, 1);
     define_cfunc(n, "divmod", num_divmod, 1);
     define_cfunc(n, "fdiv", num_fdiv, 1);
+    define_cfunc(n, "remainder", num_remainder, 1);
     define_cfunc(n, "quo", num_quo, 1);
     define_cfunc(n, "to_int", num_to_int, 0);
     define_cfunc(n, "real?", num_real_p, 0);

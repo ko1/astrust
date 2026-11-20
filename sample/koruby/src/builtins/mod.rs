@@ -23,6 +23,8 @@ pub mod regexp_methods;
 pub mod structs;
 pub mod time;
 pub mod math;
+pub mod rational;
+pub mod complex;
 
 use crate::object::*;
 use crate::symbol::intern_str;
@@ -171,10 +173,13 @@ pub fn boot() {
     structs::init();
     time::init();
     math::init();
+    rational::init();
+    complex::init();
 }
 
 /// dup/clone of built-in Data objects.
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
+    if rational::is_rational(v) || complex::is_complex(v) { return Ok(Some(v)); }
     if let Some(r) = misc::dup_data(c, v)? { return Ok(Some(r)); }
     if let Some(r) = regexp_methods::dup_data(c, v)? { return Ok(Some(r)); }
     if let Some(r) = time::dup_data(c, v)? { return Ok(Some(r)); }

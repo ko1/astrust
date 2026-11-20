@@ -334,8 +334,6 @@ module Kernel
   def frozen_string? = false
   def then_if = self
   def respond_to_all?(*ms) = ms.all? { |m| respond_to?(m) }
-  def Rational(a, b = 1) = Rational.__new(a, b)
-  def Complex(a, b = 0) = Complex.__new(a, b)
   def pp_inspect = inspect
   def instance_variable_names = instance_variables.map(&:to_s)
   def open(path, *args, &b) = File.open(path, *args, &b)
@@ -353,7 +351,6 @@ class NilClass
   def nil? = true
   def to_i = 0
   def to_f = 0.0
-  def to_r = Rational(0, 1)
   def =~(o) = nil
 end
 class TrueClass
@@ -374,15 +371,8 @@ class FalseClass
 end
 
 class Integer
-  def to_c = Complex(self, 0)
-  def to_r = Rational(self, 1)
-  def rationalize(eps = nil) = Rational(self, 1)
   def numerator = self
   def denominator = 1
-end
-class Float
-  def to_r = Rational.__from_float(self)
-  def rationalize(eps = nil) = Rational.__from_float(self)
 end
 
 class Struct

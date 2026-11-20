@@ -192,10 +192,62 @@ impl BigInt {
         if self.neg { if u <= 1u64 << 63 { Some((u as i64).wrapping_neg()) } else { None } }
         else if u <= i64::MAX as u64 { Some(u as i64) } else { None }
     }
+    /// Correctly rounded (round-half-even) conversion.
     pub fn to_f64(&self) -> f64 {
-        let mut r = 0.0f64;
-        for &w in self.mag.iter().rev() { r = r * 4294967296.0 + w as f64; }
+        let bl = self.bit_length_mag();
+        if bl <= 64 {
+            let u = self.mag.first().copied().unwrap_or(0) as u64 | (self.mag.get(1).copied().unwrap_or(0) as u64) << 32;
+            let r = u as f64;
+            return if self.neg { -r } else { r };
+        }
+        if bl > 1100 { return if self.neg { f64::NEG_INFINITY } else { f64::INFINITY }; }
+        // keep the top 64 bits; fold the rest into a sticky bit
+        let sh = bl - 64;
+        let top = shr_mag(&self.mag, sh);
+        let mut u = top.first().copied().unwrap_or(0) as u64 | (top.get(1).copied().unwrap_or(0) as u64) << 32;
+        if self.low_bits_nonzero(sh) { u |= 1; }
+        let r = ldexp(u as f64, sh as i32);
         if self.neg { -r } else { r }
+    }
+    fn bit_length_mag(&self) -> usize {
+        match self.mag.last() { None => 0, Some(&top) => (self.mag.len() - 1) * 32 + (32 - top.leading_zeros() as usize) }
+    }
+    fn low_bits_nonzero(&self, n: usize) -> bool {
+        let w = n / 32;
+        if self.mag[..w.min(self.mag.len())].iter().any(|&x| x != 0) { return true; }
+        let b = n % 32;
+        b > 0 && w < self.mag.len() && self.mag[w] & ((1u32 << b) - 1) != 0
+    }
+    pub fn trailing_zeros(&self) -> usize {
+        let mut n = 0;
+        for &w in &self.mag { if w == 0 { n += 32; } else { return n + w.trailing_zeros() as usize; } }
+        n
+    }
+    pub fn gcd(&self, o: &BigInt) -> BigInt {
+        let (mut a, mut b) = (self.abs(), o.abs());
+        while !b.is_zero() {
+            if let (Some(x), Some(y)) = (a.to_i64(), b.to_i64()) {
+                let (mut x, mut y) = (x as u64, y as u64);
+                while y != 0 { let r = x % y; x = y; y = r; }
+                return BigInt::from_u64(x);
+            }
+            let r = a.divmod(&b).1; a = b; b = r;
+        }
+        a
+    }
+    /// n/d (d > 0) correctly rounded to f64.
+    pub fn ratio_to_f64(n: &BigInt, d: &BigInt) -> f64 {
+        if n.is_zero() { return 0.0; }
+        let (bn, bd) = (n.bit_length_mag() as i64, d.bit_length_mag() as i64);
+        if bn <= 53 && bd <= 53 { return n.to_f64() / d.to_f64(); }
+        // q = floor(|n| * 2^k / d) has 63..64 bits
+        let k = 63 + bd - bn;
+        let (a, b) = if k >= 0 { (n.abs().shl(k as usize), d.clone()) } else { (n.abs(), d.shl((-k) as usize)) };
+        let (q, r) = divmod_mag(&a.mag, &b.mag);
+        let mut u = q.first().copied().unwrap_or(0) as u64 | (q.get(1).copied().unwrap_or(0) as u64) << 32;
+        if !r.is_empty() { u |= 1; }
+        let f = ldexp(u as f64, (-k) as i32);
+        if n.neg { -f } else { f }
     }
     pub fn from_f64(f: f64) -> BigInt {
         let neg = f < 0.0;
@@ -332,6 +384,13 @@ impl BigInt {
         }
     }
     pub fn is_odd(&self) -> bool { self.mag.first().map(|x| x & 1 == 1).unwrap_or(false) }
+}
+
+/// x * 2^e without intermediate overflow/underflow.
+pub fn ldexp(mut x: f64, mut e: i32) -> f64 {
+    while e > 1000 { x *= 2f64.powi(1000); e -= 1000; if x.is_infinite() { return x; } }
+    while e < -1000 { x *= 2f64.powi(-1000); e += 1000; if x == 0.0 { return x; } }
+    x * 2f64.powi(e)
 }
 
 impl std::fmt::Display for BigInt {
