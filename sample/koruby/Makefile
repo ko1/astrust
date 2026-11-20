@@ -16,7 +16,8 @@ koruby: $(GEN) src/prism_ast.rs $(shell find src ../astrogre/src -name '*.rs') .
 	cp target/$(PROFILE)/koruby target/$(PROFILE)/libkoruby.so .
 
 INTERP ?= ./koruby
-include ../../../astro/sample/rubyharness/harness.mk
+ASTRO ?= $(HOME)/ruby/astro
+include $(ASTRO)/sample/rubyharness/harness.mk
 test bench: koruby
 
 .PHONY: all
