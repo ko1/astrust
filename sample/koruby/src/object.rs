@@ -23,7 +23,7 @@ pub struct RObj {
 
 pub enum Body {
     Free(*mut RObj),
-    Object(Vec<Value>),
+    Object(crate::ivbuf::IvBuf),
     Class(Box<ClassData>),
     String(RString),
     Array(Vec<Value>),
@@ -36,6 +36,9 @@ pub enum Body {
     Method(Box<MethodObj>),
     Data(Box<dyn RData>),
 }
+
+// ivars and short strings live in the slot: growing it costs every object
+const _: () = assert!(std::mem::size_of::<Body>() == 40 && std::mem::size_of::<RObj>() == 56);
 
 pub const ENC_UTF8: u8 = 0;
 pub const ENC_BINARY: u8 = 1;
@@ -120,7 +123,7 @@ macro_rules! body_accessor {
 }
 body_accessor!(rstr, String, RString);
 body_accessor!(rary, Array, Vec<Value>);
-body_accessor!(ivars_of, Object, Vec<Value>);
+body_accessor!(ivars_of, Object, crate::ivbuf::IvBuf);
 #[inline(always)]
 pub fn rhash(v: Value) -> &'static mut RHash { match &mut obj(v).body { Body::Hash(h) => h, _ => unsafe { std::hint::unreachable_unchecked() } } }
 #[inline(always)]
@@ -158,3 +161,4 @@ pub fn is_frozen(v: Value) -> bool {
 pub fn float_val(v: Value) -> f64 { if v.is_flonum() { v.flonum_val() } else { rfloat_heap(v) } }
 
 pub fn str_bytes(v: Value) -> &'static [u8] { &rstr(v).b }
+

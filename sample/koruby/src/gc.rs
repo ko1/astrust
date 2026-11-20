@@ -165,7 +165,7 @@ impl Marker {
                 }
             }
             match &o.body {
-                Body::Object(ivs) => for v in ivs { self.mark(*v) },
+                Body::Object(ivs) => for v in ivs.iter() { self.mark(v) },
                 Body::Array(a) => for v in a { self.mark(*v) },
                 Body::Hash(h) => {
                     for e in &h.entries { self.mark(e.key); self.mark(e.val); }

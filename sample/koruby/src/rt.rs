@@ -238,10 +238,7 @@ pub fn rt_ivar_set(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &mut IvarCa
         if let Body::Object(_) = &obj(slf).body {
             let k = real_class_of(slf);
             if obj(slf).klass == k {
-                let i = ivar_index_for(k, name);
-                let ivs = ivars_of(slf);
-                if ivs.len() < rclass(k).ivar_names.len() { ivs.resize(rclass(k).ivar_names.len(), UNDEF); }
-                ic.klass = k.raw(); ic.idx = i;
+                ic.klass = k.raw(); ic.idx = ivar_index_for(k, name);
             }
         }
     }

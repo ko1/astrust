@@ -368,7 +368,7 @@ pub fn EVAL_node_ivar(c: &mut Ctx, n: NodePtr, fp: *mut Value, name: Sym, ic: &m
         let o = obj(slf);
         if o.klass.raw() == ic.klass {
             if let Body::Object(ivs) = &o.body {
-                if let Some(&v) = ivs.get(ic.idx as usize) { return Ok(if v == UNDEF { NIL } else { v }); }
+                if let Some(v) = ivs.get(ic.idx as usize) { return Ok(if v == UNDEF { NIL } else { v }); }
                 return Ok(NIL);
             }
         }
@@ -385,9 +385,7 @@ pub fn EVAL_node_iasgn(c: &mut Ctx, n: NodePtr, fp: *mut Value, name: Sym, v: Va
         let o = obj(slf);
         if o.klass.raw() == ic.klass && o.flags & FL_FROZEN == 0 {
             if let Body::Object(ivs) = &mut o.body {
-                let i = ic.idx as usize;
-                if let Some(x) = ivs.get_mut(i) { *x = v; return Ok(v); }
-                if i == ivs.len() { ivs.push(v); return Ok(v); }
+                if ivs.set(ic.idx as usize, v) { return Ok(v); }
             }
         }
     }

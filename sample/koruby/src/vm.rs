@@ -623,7 +623,7 @@ pub fn ivar_get(v: Value, name: Sym) -> Value {
         if let Body::Object(ivs) = &o.body {
             let k = real_class_of(v);
             if let Some(&i) = rclass(k).ivar_index.get(&name) {
-                if let Some(&x) = ivs.get(i as usize) { if x != UNDEF { return x; } }
+                if let Some(x) = ivs.get(i as usize) { if x != UNDEF { return x; } }
             }
             return NIL;
         }
@@ -642,7 +642,7 @@ pub fn ivar_defined(v: Value, name: Sym) -> bool {
         if let Body::Object(ivs) = &o.body {
             let k = real_class_of(v);
             if let Some(&i) = rclass(k).ivar_index.get(&name) {
-                return ivs.get(i as usize).map(|x| *x != UNDEF).unwrap_or(false);
+                return ivs.get(i as usize).map(|x| x != UNDEF).unwrap_or(false);
             }
             return false;
         }
@@ -674,8 +674,9 @@ pub fn ivar_set_raw(v: Value, name: Sym, val: Value) {
         let k = real_class_of(v);
         let i = ivar_index_for(k, name) as usize;
         let ivs = ivars_of(v);
-        if ivs.len() <= i { ivs.resize(i + 1, UNDEF); }
-        ivs[i] = val;
+        // room for every ivar the class knows: later sets of this object hit
+        if ivs.len() <= i { ivs.resize(rclass(k).ivar_names.len()); }
+        ivs.set(i, val);
         return;
     }
     o.flags |= FL_EXIVAR;
@@ -690,7 +691,7 @@ pub fn ivar_remove(v: Value, name: Sym) -> Option<Value> {
     if let Body::Object(ivs) = &mut o.body {
         let k = real_class_of(v);
         if let Some(&i) = rclass(k).ivar_index.get(&name) {
-            if let Some(x) = ivs.get_mut(i as usize) { if *x != UNDEF { let old = *x; *x = UNDEF; return Some(old); } }
+            if let Some(old) = ivs.get(i as usize) { if old != UNDEF { ivs.set(i as usize, UNDEF); return Some(old); } }
         }
         return None;
     }
@@ -708,7 +709,7 @@ pub fn ivar_list(v: Value) -> Vec<(Sym, Value)> {
     if let Body::Object(ivs) = &o.body {
         let k = real_class_of(v);
         let names = &rclass(k).ivar_names;
-        for (i, x) in ivs.iter().enumerate() { if *x != UNDEF { out.push((names[i], *x)); } }
+        for (i, x) in ivs.iter().enumerate() { if x != UNDEF { out.push((names[i], x)); } }
         return out;
     }
     if let Some(iv) = vm().gen_ivars.get(&(v.raw() as usize)) { out.extend(iv.iter().cloned()); }
@@ -779,8 +780,8 @@ pub fn const_missing(c: &mut Ctx, klass: Value, name: Sym) -> RV {
 
 #[inline]
 pub fn new_object(klass: Value) -> Value {
-    let n = rclass(klass).ivar_names.len();
-    gc::alloc(klass, Body::Object(if n == 0 { Vec::new() } else { Vec::with_capacity(n) }))
+    // slots for every ivar an instance of the class has had: initialize never grows it
+    gc::alloc(klass, Body::Object(crate::ivbuf::IvBuf::filled(rclass(klass).ivar_names.len())))
 }
 
 pub fn object_id(v: Value) -> u64 {
@@ -1148,7 +1149,7 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: *mut Value, argc: u32
             1 if argc == 0 => {
                 // attr_reader on an Object whose class assigned the ivar index
                 if let Body::Object(ivs) = &obj(recv).body {
-                    let v = ivs.get(cc.fast >> 2).copied().unwrap_or(UNDEF);
+                    let v = ivs.get(cc.fast >> 2).unwrap_or(UNDEF);
                     c.sp = base;
                     return Some(Ok(if v == UNDEF { NIL } else { v }));
                 }
@@ -1159,10 +1160,7 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: *mut Value, argc: u32
                     if let Body::Object(ivs) = &mut o.body {
                         let i = cc.fast >> 2;
                         let v = unsafe { *base.add(2) };
-                        if ivs.len() <= i { ivs.resize(i + 1, UNDEF); }
-                        ivs[i] = v;
-                        c.sp = base;
-                        return Some(Ok(v));
+                        if ivs.set(i, v) { c.sp = base; return Some(Ok(v)); }
                     }
                 }
             }
