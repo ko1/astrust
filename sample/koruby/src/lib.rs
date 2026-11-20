@@ -16,6 +16,7 @@ pub mod symbol;
 pub mod sbuf;
 pub mod ivbuf;
 pub mod object;
+pub mod heap;
 pub mod gc;
 pub mod kalloc;
 pub mod slots;
@@ -182,11 +183,13 @@ fn run_main(o: Opts) -> i32 {
         sp: NO_SP, stk: NO_STACK, frame: std::ptr::null_mut(),
         esc: EscKind::None, esc_val: NIL, esc_tag: 0, esc_tag_v: NIL, serial: 0, errinfo: NIL, last_match: NIL,
         native_limit: 0, in_ensure: 0, call_me: std::ptr::null(), call_blk: std::ptr::null(),
+        // SAFETY: the main context; fibers run instead of it, never beside it
+        tok: unsafe { heap::Token::mint() },
     };
     c.attach_stack(stack_new(8 << 20));
     let probe = 0u8;
     c.native_limit = (&probe as *const u8 as usize).saturating_sub(STACK_BYTES - (4 << 20));
-    unsafe { MAIN_CTX = &mut c; }
+    vm().main_ctx = &mut c;
     let mut top = Frame::empty(c.bottom());
     c.frame = &mut top.h;
 

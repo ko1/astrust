@@ -90,6 +90,9 @@ fn blank_vm() -> Box<Vm> {
         std::ptr::write(&mut (*vp).main_file, String::new());
         std::ptr::write(&mut (*vp).dollar_zero, NIL);
         std::ptr::write(&mut (*vp).rand_state, 0x2545F4914F6CDD1D);
+        let n = std::ptr::null();
+        std::ptr::write(&mut (*vp).ids, MethodIds { bo_eq: n, bo_init: n, c_new: n, m_eqq: n, kernel_hash: n, r_each: n });
+        std::ptr::write(&mut (*vp).main_ctx, std::ptr::null_mut());
         std::ptr::write(&mut (*vp).fiber_roots, vec![]);
         Box::new(v.assume_init())
     }
@@ -176,7 +179,7 @@ pub fn boot() {
     numeric_methods::init();
     string_methods::init();
     symbol_methods::init();
-    array_methods::init();
+    array_methods::init(vm.c_array);
     hash_methods::init();
     range_methods::init();
     enumerator::init();

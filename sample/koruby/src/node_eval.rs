@@ -264,7 +264,7 @@ pub fn EVAL_node_ary<D_elems: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, elems: 
         let v = <D_elems as DispList>::nth(c, elems, i, fp)?;
         base[i].set(v);
     }
-    let a = crate::array::ary_from_vec(to_vec(&base[0..k]));
+    let a = c.ary_from_vec(to_vec(&base[0..k]));
     c.set_sp(base, 0);
     Ok(a)
 }
@@ -273,12 +273,12 @@ pub fn EVAL_node_ary<D_elems: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, elems: 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_ary_build<D_elems: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, elems: NodeList, kinds: Str) -> RV {
-    let a = crate::array::ary_new();
+    let a = c.ary_new();
     let base = stage(c, 1)?;
     base[0].set(a);
     for i in 0..<D_elems as DispList>::len(elems) {
         let v = <D_elems as DispList>::nth(c, elems, i, fp)?;
-        if kinds[i] == 1 { rt_splat_into(c, a, v)?; } else { crate::array::ary_push(a, v); }
+        if kinds[i] == 1 { rt_splat_into(c, a, v)?; } else { c.ary_push(a, v); }
     }
     c.set_sp(base, 0);
     Ok(a)
@@ -1101,7 +1101,7 @@ pub fn EVAL_node_opt_ltlt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, l
         if (0..62).contains(&k) { let r = (x as i128) << k; if r >= FIXNUM_MIN as i128 && r <= FIXNUM_MAX as i128 { return Ok(Value::fix(r as i64)); } }
     }
     if is_array(a) && !redef(R_ARY_LTLT) && obj(a).flags & FL_FROZEN == 0 && obj(a).klass == vm().c_array {
-        crate::array::ary_push(a, b);
+        c.ary_push(a, b);
         return Ok(a);
     }
     if is_string(a) && is_string(b) && obj(a).klass == vm().c_string && !redef(R_STR_LTLT) {
@@ -1156,10 +1156,11 @@ pub fn EVAL_node_opt_or(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, lin
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_aref(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
     if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && !redef(R_ARY_AREF) {
-        let v = rary(a);
-        let mut i = b.as_fix();
-        if i < 0 { i += v.len() as i64; }
-        return Ok(if i >= 0 && (i as usize) < v.len() { v[i as usize] } else { NIL });
+        let v = c.ary(a);
+        let i = b.as_fix();
+        // one unsigned compare for the common case; a negative index counts from the end
+        if let Some(&x) = v.get(i as usize) { return Ok(x); }
+        return Ok(if i < 0 { v.len().checked_sub(i.unsigned_abs() as usize).and_then(|j| v.get(j).copied()).unwrap_or(NIL) } else { NIL });
     }
     if is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_AREF) { return crate::hash::hash_aref(c, a, b); }
     rt_binop(c, a, b, s::aref, line, cc)
@@ -1170,7 +1171,7 @@ pub fn EVAL_node_opt_aref(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, l
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_aset(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, v: Value, line: u32, cc: &mut CallCache) -> RV {
     if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && obj(a).flags & FL_FROZEN == 0 && !redef(R_ARY_ASET) {
-        let ary = rary(a);
+        let ary = c.ary_mut(a);
         let i = b.as_fix();
         if i >= 0 && (i as usize) < ary.len() { ary[i as usize] = v; return Ok(v); }
     }

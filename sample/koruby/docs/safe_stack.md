@@ -203,7 +203,7 @@ memory, it does not detect them).
   chain of `Frame` records on the native stack linked by raw `prev` pointers. That is the frame
   chain, a separate surface; the value stack no longer contributes to it (`Frame.fp` is a safe
   `&[Slot; 2]` in the checked backend).
-* `MAIN_CTX` in `mark_roots` and the fiber list: how the GC finds contexts.
+* `vm.main_ctx` (was `static mut MAIN_CTX`) in `visit_roots` and the fiber list: how the GC finds contexts.
 * `Value::from_raw` on literal caches, `&*fr.iseq()`: unrelated to the stack.
 
 ## Alternatives, with their cost

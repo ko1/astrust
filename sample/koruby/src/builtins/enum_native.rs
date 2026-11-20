@@ -97,7 +97,7 @@ fn run_each(c: &mut Ctx, recv: Value, f: CBlockFn, data: Value, args: &[Value]) 
 }
 fn range_each_redefined() -> bool {
     let me = lookup_method(vm().c_range, s::each);
-    me.is_null() || me != unsafe { crate::builtins::range_methods::R_EACH_ME }
+    me.is_null() || me != vm().ids.r_each
 }
 fn enum_stop(c: &mut Ctx, data: Value) -> RV { c.esc = EscKind::Throw; c.esc_tag_v = data; c.esc_val = NIL; Err(Esc) }
 

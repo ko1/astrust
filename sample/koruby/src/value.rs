@@ -43,7 +43,9 @@ impl Value {
     #[inline(always)] pub fn sym(s: Sym) -> Value { unsafe { Value::from_raw(((s.0 as u64) << 8) | SYM_TAG) } }
     #[inline(always)] pub fn as_sym(self) -> Sym { Sym((self.raw() >> 8) as u32) }
     #[inline(always)] pub fn ptr(self) -> *mut crate::object::RObj { self.raw() as *mut crate::object::RObj }
-    #[inline(always)] pub fn from_ptr(p: *const crate::object::RObj) -> Value { unsafe { Value::from_raw(p as u64) } }
+    /// # Safety
+    /// `p` is an object of the GC heap: heap.rs dereferences every heap Value (rule H1).
+    #[inline(always)] pub unsafe fn from_ptr(p: *const crate::object::RObj) -> Value { unsafe { Value::from_raw(p as u64) } }
 
     /// Flonum encoding (CRuby's rb_float_new_inline); None when the double needs a heap Float.
     #[inline(always)]

@@ -20,6 +20,7 @@ pub struct RObj {
     pub body: Body,
 }
 
+#[repr(u8)]
 pub enum Body {
     Free(*mut RObj),
     Object(crate::ivbuf::IvBuf),
@@ -109,7 +110,9 @@ impl ClassData {
     }
 }
 
-// ---- raw accessors (callers guarantee the body kind) -----------------------
+// ---- legacy accessors (callers guarantee the body kind) --------------------
+// Unsound: unbounded `&'static mut` into GC objects.  Kept for modules not yet converted to the
+// context-borrowing accessors of heap.rs (docs/safe_heap.md); a converted module cannot name them.
 
 #[inline(always)] pub fn obj(v: Value) -> &'static mut RObj { unsafe { &mut *v.ptr() } }
 
@@ -142,23 +145,38 @@ pub fn rdata<T: 'static>(v: Value) -> Option<&'static mut T> {
     match &mut obj(v).body { Body::Data(d) => d.as_any_mut().downcast_mut::<T>(), _ => None }
 }
 
-#[inline(always)] pub fn is_string(v: Value) -> bool { v.is_heap() && matches!(obj(v).body, Body::String(_)) }
-#[inline(always)] pub fn is_array(v: Value) -> bool { v.is_heap() && matches!(obj(v).body, Body::Array(_)) }
-#[inline(always)] pub fn is_hash(v: Value) -> bool { v.is_heap() && matches!(obj(v).body, Body::Hash(_)) }
-#[inline(always)] pub fn is_class_or_module(v: Value) -> bool { v.is_heap() && matches!(obj(v).body, Body::Class(_)) }
-#[inline(always)] pub fn is_proc(v: Value) -> bool { v.is_heap() && matches!(obj(v).body, Body::Proc(_)) }
-#[inline(always)] pub fn is_range(v: Value) -> bool { v.is_heap() && matches!(obj(v).body, Body::Range(..)) }
-#[inline(always)] pub fn is_bignum(v: Value) -> bool { v.is_heap() && matches!(obj(v).body, Body::Bignum(_)) }
-#[inline(always)] pub fn is_float(v: Value) -> bool { v.is_flonum() || (v.is_heap() && matches!(obj(v).body, Body::Float(_))) }
+pub use crate::heap::{is_array, is_bignum, is_class_or_module, is_float, is_frozen, is_hash, is_method_obj, is_proc, is_range, is_string};
 #[inline(always)] pub fn is_integer(v: Value) -> bool { v.is_fixnum() || is_bignum(v) }
-#[inline(always)] pub fn is_method_obj(v: Value) -> bool { v.is_heap() && matches!(obj(v).body, Body::Method(_)) }
-#[inline(always)]
-pub fn is_frozen(v: Value) -> bool {
-    if !v.is_heap() { return true; }
-    obj(v).flags & FL_FROZEN != 0
-}
 #[inline(always)]
 pub fn float_val(v: Value) -> f64 { if v.is_flonum() { v.flonum_val() } else { rfloat_heap(v) } }
 
 pub fn str_bytes(v: Value) -> &'static [u8] { &rstr(v).b }
 
+
+// legacy Array API (no context); converted code uses the `Ctx` methods of array.rs
+#[inline]
+pub fn ary_new() -> Value { crate::gc::alloc(crate::vm::vm().c_array, Body::Array(Vec::new())) }
+#[inline]
+pub fn ary_new_capa(n: usize) -> Value {
+    crate::gc::malloc_increase(n * 8);
+    crate::gc::alloc(crate::vm::vm().c_array, Body::Array(Vec::with_capacity(n)))
+}
+#[inline]
+pub fn ary_new_from(v: &[Value]) -> Value {
+    crate::gc::malloc_increase(v.len() * 8);
+    crate::gc::alloc(crate::vm::vm().c_array, Body::Array(v.to_vec()))
+}
+#[inline]
+pub fn ary_from_vec(v: Vec<Value>) -> Value {
+    crate::gc::malloc_increase(v.len() * 8);
+    crate::gc::alloc(crate::vm::vm().c_array, Body::Array(v))
+}
+#[inline]
+pub fn ary_push(a: Value, v: Value) {
+    let x = rary(a);
+    if x.len() == x.capacity() { crate::gc::malloc_increase(x.len() * 8 + 32); }
+    x.push(v);
+}
+#[inline] pub fn ary_len(a: Value) -> usize { rary(a).len() }
+#[inline] pub fn ary_get(a: Value, i: usize) -> Value { rary(a).get(i).copied().unwrap_or(NIL) }
+pub fn ary_to_vec(a: Value) -> Vec<Value> { rary(a).clone() }

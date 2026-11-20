@@ -96,8 +96,7 @@ pub fn range_each(c: &mut Ctx, slf: Value, mut f: impl FnMut(&mut Ctx, Value) ->
     }
     Ok(())
 }
-/// Range#each entry (identify builtins by entry, not by function pointer).
-pub static mut R_EACH_ME: *const MethodEntry = std::ptr::null();
+// Range#each is identified by its entry (vm.ids.r_each), not by function pointer
 cfn!(r_each, |c, slf, a, blk| {
     if blk.is_null() { return crate::builtins::enumerator::enum_for_sized(c, slf, s::each, a); }
     let (b, e, excl) = range_parts(slf);
@@ -487,7 +486,7 @@ pub fn init() {
     define_private_cfunc(k, "initialize", r_initialize, -1);
     d("begin", r_begin, 0); d("first", r_first, -1); d("end", r_end, 0); d("last", r_last, -1); d("exclude_end?", r_excl, 0);
     d("each", r_each, 0);
-    unsafe { R_EACH_ME = *rclass(k).mtbl.get(&s::each).unwrap(); } d("reverse_each", r_reverse_each, 0); d("to_a", r_to_a, 0); d("entries", r_to_a, 0); d("size", r_size, 0); d("count", r_count, -1);
+    crate::vm::vm().ids.r_each = *rclass(k).mtbl.get(&s::each).unwrap(); d("reverse_each", r_reverse_each, 0); d("to_a", r_to_a, 0); d("entries", r_to_a, 0); d("size", r_size, 0); d("count", r_count, -1);
     d("include?", r_include, 1); d("member?", r_include, 1); d("cover?", r_cover, 1); d("===", r_eqq, 1); d("==", r_eq, 1); d("eql?", r_eql, 1);
     d("hash", r_hash, 0); d("to_s", r_to_s, 0); d("inspect", r_inspect, 0); d("min", r_min, -1); d("minmax", r_minmax, 0); d("max", r_max, -1); 
     d("step", r_step, -1); d("%", r_pct, 1); d("dup", r_dup_frozen, 0); d("bsearch", r_bsearch, 0); d("overlap?", r_overlap, 1);

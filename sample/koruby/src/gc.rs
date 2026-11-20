@@ -58,7 +58,8 @@ pub fn malloc_increase(n: usize) { heap().account_external(n); }
 #[inline]
 pub fn alloc(klass: Value, body: Body) -> Value {
     let p = heap().alloc(&mut Koruby, move || RObj { klass, flags: 0, gc: GcHeader::new(), body });
-    Value::from_ptr(p.as_ptr())
+    // SAFETY: the object just allocated
+    unsafe { Value::from_ptr(p.as_ptr()) }
 }
 
 /// GC.start: a full collection, unless GC.disable is in effect.
@@ -79,7 +80,8 @@ pub fn store(holder: Value, slot: &mut Value, v: Value) {
 
 /// Iterate live objects (ObjectSpace.each_object).  `f` must not allocate objects.
 pub fn each_object(mut f: impl FnMut(Value)) {
-    heap().each_object(|p| f(Value::from_ptr(p.as_ptr())));
+    // SAFETY: the backend enumerates allocated objects
+    heap().each_object(|p| f(unsafe { Value::from_ptr(p.as_ptr()) }));
 }
 
 // Generic ivars (objects without an ivar table of their own) live in a side table keyed by
@@ -108,7 +110,7 @@ unsafe impl GcLang for Koruby {
         if v.is_heap() { Some(unsafe { NonNull::new_unchecked(v.ptr()) }) } else { None }
     }
     #[inline(always)]
-    fn from_object(p: NonNull<RObj>) -> Value { Value::from_ptr(p.as_ptr()) }
+    fn from_object(p: NonNull<RObj>) -> Value { unsafe { Value::from_ptr(p.as_ptr()) } }   // SAFETY: an object of this heap (GcLang contract)
 
     fn visit_roots<V: RootVisitor<Self>>(&mut self, v: &mut V) {
         // SAFETY: current_stack_top() is the end of the stack this code runs on

@@ -1,5 +1,4 @@
 // String: byte buffer + encoding tag (UTF-8 / ASCII-8BIT / US-ASCII).
-use crate::array::*;
 use crate::object::*;
 use crate::sbuf::SBuf;
 use crate::symbol::{intern, s};

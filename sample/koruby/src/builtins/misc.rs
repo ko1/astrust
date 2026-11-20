@@ -348,7 +348,7 @@ fn rbconfig_ruby(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV 
     let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "koruby".into());
     Ok(str_new(exe.as_bytes()))
 }
-pub fn rbconfig_init() {
+pub fn rbconfig_init(c: &mut Ctx) {
     if const_get_at(vm().c_object, intern(b"RbConfig")).is_some() { return; }
     let rbc = define_module("RbConfig");
     let cfg = hash_new_capa(32);
@@ -367,10 +367,7 @@ pub fn rbconfig_init() {
         ("build_os", "linux"), ("build_cpu", arch), ("build", &archname), ("LIBRUBY_SO", "libkoruby.so"), ("prefix", &bindir), ("exec_prefix", &bindir),
         ("libdir", &bindir), ("sitedir", ""), ("sitelibdir", ""), ("sitearchdir", ""), ("vendordir", ""), ("vendorlibdir", ""), ("vendorarchdir", ""),
         ("datadir", ""), ("mandir", ""), ("sysconfdir", "/etc"), ("localstatedir", "/var"), ("configure_args", ""), ("CFLAGS", ""), ("LDFLAGS", "")];
-    // string keys never call back into Ruby, so a blank context is enough at boot
-    let mut bc = Ctx { sp: NO_SP, stk: NO_STACK, frame: std::ptr::null_mut(), esc: EscKind::None,
-        esc_val: NIL, esc_tag: 0, esc_tag_v: NIL, serial: 0, errinfo: NIL, last_match: NIL, native_limit: 0, in_ensure: 0, call_me: std::ptr::null(), call_blk: std::ptr::null() };
-    for (k, v) in entries { let (ks, vs) = (str_new_frozen(k.as_bytes()), str_new(v.as_bytes())); let _ = hash_set(&mut bc, cfg, ks, vs); }
+    for (k, v) in entries { let (ks, vs) = (str_new_frozen(k.as_bytes()), str_new(v.as_bytes())); let _ = hash_set(c, cfg, ks, vs); }
     const_set(rbc, intern(b"CONFIG"), cfg);
     const_set(rbc, intern(b"MAKEFILE_CONFIG"), cfg);
     const_set(rbc, intern(b"TOPDIR"), str_new(bindir.as_bytes()));
