@@ -68,6 +68,7 @@ fn readable(c: &mut Ctx, v: Value) -> Result<&'static mut RIo, Esc> {
     let io = get_io(c, v)?;
     if !io.readable { return err(c, vm().c_io_error, "not opened for reading"); }
     if !io.wbuf.is_empty() { io_flush_one(io); }
+    if io.rpos >= io.rbuf.len() && !io.data && crate::builtins::thread::active() { let fd = io.fd; crate::builtins::thread::wait_readable(c, fd)?; return get_io(c, v); }
     Ok(io)
 }
 fn discard_rbuf(io: &mut RIo) {

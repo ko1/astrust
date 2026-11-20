@@ -262,54 +262,6 @@ fn env_to_h(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
 }
 fn env_delete(c: &mut Ctx, s2: Value, a: &[Value], b: *const Block) -> RV { let v = env_aref(c, s2, a, b)?; let k = to_rstring(c, a[0])?; std::env::remove_var(&k); Ok(v) }
 
-// ---- Thread / Mutex / Queue (sequential) ----------------------------------------------------
-
-fn th_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
-    let t = new_object(slf);
-    ivar_set_raw(t, intern(b"__locals"), hash_new());
-    let r = yield_block(c, b, a);
-    match r {
-        Ok(v) => { ivar_set_raw(t, intern(b"__value"), v); }
-        Err(_) => { if c.esc == EscKind::Raise { ivar_set_raw(t, intern(b"__error"), c.esc_val); c.esc = EscKind::None; } else { c.esc = EscKind::None; } }
-    }
-    Ok(t)
-}
-fn th_join(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let e = ivar_get(slf, intern(b"__error"));
-    if e != NIL { ivar_set_raw(slf, intern(b"__error"), NIL); return Err(raise_exc(c, e)); }
-    Ok(slf)
-}
-fn th_value(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { th_join(c, slf, a, b)?; Ok(ivar_get(slf, intern(b"__value"))) }
-fn th_current(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let key = intern(b"__main_thread");
-    let mut t = ivar_get(slf, key);
-    if t == NIL { t = new_object(slf); ivar_set_raw(t, intern(b"__locals"), hash_new()); ivar_set_raw(slf, key, t); }
-    Ok(t)
-}
-fn th_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    let h = ivar_get(slf, intern(b"__locals"));
-    let k = if is_string(a[0]) { str_to_sym(a[0]) } else { a[0] };
-    Ok(hash_get_opt(c, h, k)?.unwrap_or(NIL))
-}
-fn th_aset(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    let h = ivar_get(slf, intern(b"__locals"));
-    let k = if is_string(a[0]) { str_to_sym(a[0]) } else { a[0] };
-    hash_set(c, h, k, a[1])?;
-    Ok(a[1])
-}
-fn th_alive(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(FALSE) }
-fn mutex_sync(c: &mut Ctx, _s: Value, _a: &[Value], b: *const Block) -> RV { yield_block(c, b, &[]) }
-fn noop_self(_c: &mut Ctx, s2: Value, _a: &[Value], _b: *const Block) -> RV { Ok(s2) }
-fn q_init(_c: &mut Ctx, s2: Value, _a: &[Value], _b: *const Block) -> RV { ivar_set_raw(s2, intern(b"@q"), ary_new()); Ok(NIL) }
-fn q_push(_c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { ary_push(ivar_get(s2, intern(b"@q")), a[0]); Ok(s2) }
-fn q_pop(c: &mut Ctx, s2: Value, _a: &[Value], _b: *const Block) -> RV {
-    let q = ivar_get(s2, intern(b"@q"));
-    if ary_len(q) == 0 { return err(c, vm().c_thread_error, "queue empty"); }
-    Ok(rary(q).remove(0))
-}
-fn q_size(_c: &mut Ctx, s2: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(ary_len(ivar_get(s2, intern(b"@q"))) as i64)) }
-fn q_empty(_c: &mut Ctx, s2: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(ary_len(ivar_get(s2, intern(b"@q"))) == 0)) }
-
 fn warning_warn(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let b = to_rstring(c, a[0])?; err_write(b.as_bytes()); Ok(NIL) }
 fn objspace_wm_init(_c: &mut Ctx, s2: Value, _a: &[Value], _b: *const Block) -> RV { let h = hash_new(); rhash(h).identity = true; ivar_set_raw(s2, intern(b"@h"), h); Ok(NIL) }
 fn wm_aref(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(s2, intern(b"@h")); Ok(hash_get_opt(c, h, a[0])?.unwrap_or(NIL)) }
@@ -445,62 +397,6 @@ pub fn init() {
     }
     define_singleton_cfunc(env, "inspect", |c, s2, a, b| { let h = env_to_h(c, s2, a, b)?; crate::builtins::hash_methods::hash_inspect(c, h) }, 0);
     const_set(ob, intern(b"ENV"), env);
-    // Thread & co.
-    let th = define_class("Thread", ob);
-    vm.c_thread = th;
-    define_singleton_cfunc(th, "new", th_s_new, -1);
-    define_singleton_cfunc(th, "start", th_s_new, -1);
-    define_singleton_cfunc(th, "current", th_current, 0);
-    define_singleton_cfunc(th, "main", th_current, 0);
-    define_singleton_cfunc(th, "pass", |_c, _s, _a, _b| Ok(NIL), 0);
-    define_cfunc(th, "join", th_join, -1);
-    define_cfunc(th, "value", th_value, 0);
-    define_cfunc(th, "[]", th_aref, 1);
-    define_cfunc(th, "[]=", th_aset, 2);
-    define_cfunc(th, "thread_variable_get", th_aref, 1);
-    define_cfunc(th, "thread_variable_set", th_aset, 2);
-    define_cfunc(th, "alive?", th_alive, 0);
-    define_cfunc(th, "name=", |_c, _s, a, _b| Ok(a[0]), 1);
-    define_cfunc(th, "report_on_exception=", |_c, _s, a, _b| Ok(a[0]), 1);
-    define_cfunc(th, "abort_on_exception=", |_c, _s, a, _b| Ok(a[0]), 1);
-    define_singleton_cfunc(th, "abort_on_exception=", |_c, _s, a, _b| Ok(a[0]), 1);
-    define_singleton_cfunc(th, "report_on_exception=", |_c, _s, a, _b| Ok(a[0]), 1);
-    let mx = define_class_under(th, "Mutex", ob);
-    const_set(ob, intern(b"Mutex"), mx);
-    vm.c_mutex = mx;
-    define_cfunc(mx, "synchronize", mutex_sync, 0);
-    define_cfunc(mx, "lock", noop_self, 0);
-    define_cfunc(mx, "unlock", noop_self, 0);
-    define_cfunc(mx, "try_lock", |_c, _s, _a, _b| Ok(TRUE), 0);
-    define_cfunc(mx, "locked?", |_c, _s, _a, _b| Ok(FALSE), 0);
-    define_cfunc(mx, "owned?", |_c, _s, _a, _b| Ok(FALSE), 0);
-    let mon = define_class("Monitor", ob);
-    vm.c_monitor = mon;
-    define_cfunc(mon, "synchronize", mutex_sync, 0);
-    define_cfunc(mon, "mon_synchronize", mutex_sync, 0);
-    define_cfunc(mon, "enter", noop_self, 0);
-    define_cfunc(mon, "exit", noop_self, 0);
-    define_cfunc(mon, "try_enter", |_c, _s, _a, _b| Ok(TRUE), 0);
-    define_cfunc(mon, "mon_locked?", |_c, _s, _a, _b| Ok(FALSE), 0);
-    define_cfunc(mon, "mon_owned?", |_c, _s, _a, _b| Ok(FALSE), 0);
-    define_cfunc(mon, "mon_check_owner", |_c, _s, _a, _b| Ok(NIL), 0);
-    define_cfunc(mon, "wait_for_cond", |_c, _s, _a, _b| Ok(TRUE), 2);
-    let q = define_class_under(th, "Queue", ob);
-    const_set(ob, intern(b"Queue"), q);
-    vm.c_queue = q;
-    define_private_cfunc(q, "initialize", q_init, -1);
-    for n in ["push", "<<", "enq"] { define_cfunc(q, n, q_push, 1); }
-    for n in ["pop", "shift", "deq"] { define_cfunc(q, n, q_pop, -1); }
-    define_cfunc(q, "size", q_size, 0);
-    define_cfunc(q, "length", q_size, 0);
-    define_cfunc(q, "empty?", q_empty, 0);
-    define_cfunc(q, "close", noop_self, 0);
-    let cv = define_class_under(th, "ConditionVariable", ob);
-    const_set(ob, intern(b"ConditionVariable"), cv);
-    define_cfunc(cv, "signal", noop_self, 0);
-    define_cfunc(cv, "broadcast", noop_self, 0);
-    define_cfunc(cv, "wait", noop_self, -1);
-    // Signal / Warning
     let wn = define_module("Warning");
     vm.m_warning = wn;
     define_module_function(wn, "warn", warning_warn, -1);

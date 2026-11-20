@@ -16,6 +16,7 @@ pub mod pp;
 pub mod io;
 pub mod marshal;
 pub mod strscan;
+pub mod thread;
 pub mod sys;
 pub mod file;
 pub mod process;
@@ -177,6 +178,7 @@ pub fn boot() {
     marshal::init();
     random::init();
     binding::init();
+    thread::init();
     misc::init();
     encoding::init();
     stringio::init();
@@ -211,6 +213,9 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     if let Some(r) = file::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = io::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = strscan::alloc_data(c, klass)? { return Ok(Some(r)); }
+    if let Some(r) = thread::alloc_data(c, klass)? { return Ok(Some(r)); }
+    if let Some(r) = thread::alloc_lock(klass) { return Ok(Some(r)); }
+    if let Some(r) = thread::alloc_queue(klass) { return Ok(Some(r)); }
     Ok(None)
 }
 
