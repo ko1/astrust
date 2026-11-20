@@ -1,4 +1,10 @@
 // Native helpers for the Ruby-level Enumerable / Set / Data in prelude/core.rb.
+// On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
+#![forbid(unsafe_code)]
+#[allow(unused_imports)]
+use crate::heap::no_legacy::*;   // the old accessors cannot be named here
+#[allow(unused_imports)]
+use crate::heap::no_legacy_hn::*;
 use crate::builtins::numeric_methods::num_to_long;
 use crate::value::*;
 use crate::vm::*;
@@ -34,16 +40,17 @@ fn e_ivset(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 }
 
 /// Does recv's #each differ from `native` (a subclass or singleton overrode it)?
-pub fn each_overridden(recv: Value, native: CFunc) -> bool {
-    let me = lookup_method(class_of(recv), crate::symbol::s::each);
-    if me.is_null() { return true; }
-    match unsafe { (*me).kind } { MKind::Cfunc(f, _) => f as *const () as usize != native as *const () as usize, _ => true }
+pub fn each_overridden(c: &Ctx, recv: Value, native: CFunc) -> bool {
+    match c.method_entry(class_of(recv), crate::symbol::s::each) {
+        Some(me) => match me.kind { MKind::Cfunc(f, _) => f as *const () as usize != native as *const () as usize, _ => true },
+        None => true,
+    }
 }
 
 /// Call Enumerable's own implementation of mid on recv (for natives whose #each was overridden).
 pub fn call_enumerable(c: &mut Ctx, recv: Value, mid: &str, args: &[Value], blk: *const Block) -> RV {
     let mid = crate::symbol::intern(mid.as_bytes());
-    let me = lookup_method(vm().m_enumerable, mid);
+    let me = lookup_method(c.vm().m_enumerable, mid);
     if me.is_null() { return funcall(c, recv, mid, args, blk); }
     let base = c.top();
     if !c.has_room(args.len() + 2) { return funcall(c, recv, mid, args, blk); }
@@ -63,26 +70,20 @@ use crate::array::*;
 use crate::symbol::s;
 
 #[inline]
-fn pack(args: &[Value]) -> Value { match args.len() { 0 => NIL, 1 => args[0], _ => ary_new_from(args) } }
+fn pack(c: &mut Ctx, args: &[Value]) -> Value { match args.len() { 0 => NIL, 1 => args[0], _ => c.ary_new_from(args) } }
 #[inline]
-fn ublk(d: Value, i: usize) -> *const Block { ary_get(d, i).as_fix() as usize as *const Block }
+fn ublk(c: &Ctx, d: Value, i: usize) -> *const Block { c.ary_get(d, i).as_fix() as usize as *const Block }
 #[inline]
 fn bptr(b: *const Block) -> Value { Value::fix(b as usize as i64) }
 
 /// Run recv.each with a Rust block; Ok(true) if it was stopped early by `enum_stop`.
 fn run_each(c: &mut Ctx, recv: Value, f: CBlockFn, data: Value, args: &[Value]) -> Result<bool, Esc> {
-    let r = if args.is_empty() && is_range(recv) && obj(recv).klass == vm().c_range && !range_each_redefined() {
+    let r = if let (true, Some((lo, hi))) = (args.is_empty(), int_range(c, recv)) {
         // Integer ranges: no #each dispatch, no Ruby block frames
-        match crate::range::range_parts(recv) {
-            (b, e, x) if b.is_fixnum() && e.is_fixnum() => {
-                let hi = if x { e.as_fix() - 1 } else { e.as_fix() };
-                let mut i = b.as_fix();
-                let mut r = Ok(NIL);
-                while i <= hi { if let Err(e) = f(c, data, &[Value::fix(i)], std::ptr::null()) { r = Err(e); break; } i += 1; }
-                r
-            }
-            _ => { let b = Block::cfunc(c, f, data); funcall(c, recv, s::each, args, &b) }
-        }
+        let mut i = lo;
+        let mut r = Ok(NIL);
+        while i <= hi { if let Err(e) = f(c, data, &[Value::fix(i)], std::ptr::null()) { r = Err(e); break; } i += 1; }
+        r
     } else {
         let b = Block::cfunc(c, f, data);
         funcall(c, recv, s::each, args, &b)
@@ -95,9 +96,16 @@ fn run_each(c: &mut Ctx, recv: Value, f: CBlockFn, data: Value, args: &[Value]) 
         }
     }
 }
-fn range_each_redefined() -> bool {
-    let me = lookup_method(vm().c_range, s::each);
-    me.is_null() || me != vm().ids.r_each
+/// First and last element of an Integer Range whose #each is Range's own.
+fn int_range(c: &Ctx, recv: Value) -> Option<(i64, i64)> {
+    if !is_range(recv) || obj_klass(recv) != c.vm().c_range || range_each_redefined(c) { return None; }
+    match c.range(recv) {
+        (b, e, x) if b.is_fixnum() && e.is_fixnum() => Some((b.as_fix(), if x { e.as_fix() - 1 } else { e.as_fix() })),
+        _ => None,
+    }
+}
+fn range_each_redefined(c: &Ctx) -> bool {
+    !matches!(c.method_entry(c.vm().c_range, s::each), Some(me) if std::ptr::eq(me, c.vm().ids.r_each))
 }
 fn enum_stop(c: &mut Ctx, data: Value) -> RV { c.esc = EscKind::Throw; c.esc_tag_v = data; c.esc_val = NIL; Err(Esc) }
 
@@ -107,35 +115,46 @@ fn no_blk(c: &mut Ctx, slf: Value, mid: &str, a: &[Value]) -> RV {
 
 fn en_map(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return no_blk(c, slf, "map", a); }
-    let d = ary_new_from(&[ary_new(), bptr(blk)]);
-    run_each(c, slf, |c, d, args, _| { let r = yield_block(c, ublk(d, 1), args)?; ary_push(ary_get(d, 0), r); Ok(NIL) }, d, &[])?;
-    Ok(ary_get(d, 0))
+    if let Some((lo, hi)) = int_range(c, slf) {
+        // the result in a local: the generic path reads it and the block out of `d` at every element
+        let out = c.ary_new();
+        let mut i = lo;
+        while i <= hi { let r = yield_block(c, blk, &[Value::fix(i)])?; c.ary_push(out, r); i += 1; }
+        return Ok(out);
+    }
+    let acc0 = c.ary_new();
+    let d = c.ary_new_from(&[acc0, bptr(blk)]);
+    run_each(c, slf, |c, d, args, _| { let r = yield_block(c, ublk(c, d, 1), args)?; c.ary_push(c.ary_get(d, 0), r); Ok(NIL) }, d, &[])?;
+    Ok(c.ary_get(d, 0))
 }
 fn en_flat_map(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return no_blk(c, slf, "flat_map", a); }
-    let d = ary_new_from(&[ary_new(), bptr(blk)]);
+    let acc0 = c.ary_new();
+    let d = c.ary_new_from(&[acc0, bptr(blk)]);
     run_each(c, slf, |c, d, args, _| {
-        let r = yield_block(c, ublk(d, 1), args)?;
-        let out = ary_get(d, 0);
-        match if r.is_heap() { check_array(c, r)? } else { None } { Some(ra) => { let v = rary(ra).clone(); rary(out).extend(v); } None => ary_push(out, r) }
+        let r = yield_block(c, ublk(c, d, 1), args)?;
+        let out = c.ary_get(d, 0);
+        match if r.is_heap() { check_array(c, r)? } else { None } { Some(ra) => c.ary_concat(out, ra), None => c.ary_push(out, r) }
         Ok(NIL)
     }, d, &[])?;
-    Ok(ary_get(d, 0))
+    Ok(c.ary_get(d, 0))
 }
 fn en_filter_map(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return no_blk(c, slf, "filter_map", a); }
-    let d = ary_new_from(&[ary_new(), bptr(blk)]);
-    run_each(c, slf, |c, d, args, _| { let r = yield_block(c, ublk(d, 1), args)?; if r.truthy() { ary_push(ary_get(d, 0), r); } Ok(NIL) }, d, &[])?;
-    Ok(ary_get(d, 0))
+    let acc0 = c.ary_new();
+    let d = c.ary_new_from(&[acc0, bptr(blk)]);
+    run_each(c, slf, |c, d, args, _| { let r = yield_block(c, ublk(c, d, 1), args)?; if r.truthy() { c.ary_push(c.ary_get(d, 0), r); } Ok(NIL) }, d, &[])?;
+    Ok(c.ary_get(d, 0))
 }
 fn select_impl(c: &mut Ctx, slf: Value, blk: *const Block, want: bool) -> RV {
-    let d = ary_new_from(&[ary_new(), bptr(blk), Value::bool(want)]);
+    let acc0 = c.ary_new();
+    let d = c.ary_new_from(&[acc0, bptr(blk), Value::bool(want)]);
     run_each(c, slf, |c, d, args, _| {
-        let v = pack(args);
-        if yield1(c, ublk(d, 1), v)?.truthy() == ary_get(d, 2).truthy() { ary_push(ary_get(d, 0), v); }
+        let v = pack(c, args);
+        if yield1(c, ublk(c, d, 1), v)?.truthy() == c.ary_get(d, 2).truthy() { c.ary_push(c.ary_get(d, 0), v); }
         Ok(NIL)
     }, d, &[])?;
-    Ok(ary_get(d, 0))
+    Ok(c.ary_get(d, 0))
 }
 fn en_select(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return no_blk(c, slf, "select", a); }
@@ -146,33 +165,34 @@ fn en_reject(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     select_impl(c, slf, blk, false)
 }
 fn en_to_a(c: &mut Ctx, slf: Value, a: &[Value], _blk: *const Block) -> RV {
-    let d = ary_new_from(&[ary_new()]);
-    run_each(c, slf, |_c, d, args, _| { let v = pack(args); ary_push(ary_get(d, 0), v); Ok(NIL) }, d, a)?;
-    Ok(ary_get(d, 0))
+    let acc0 = c.ary_new();
+    let d = c.ary_new_from(&[acc0]);
+    run_each(c, slf, |c, d, args, _| { let v = pack(c, args); c.ary_push(c.ary_get(d, 0), v); Ok(NIL) }, d, a)?;
+    Ok(c.ary_get(d, 0))
 }
 fn en_each_with_index(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return no_blk(c, slf, "each_with_index", a); }
-    let d = ary_new_from(&[Value::fix(0), bptr(blk)]);
+    let d = c.ary_new_from(&[Value::fix(0), bptr(blk)]);
     run_each(c, slf, |c, d, args, _| {
-        let i = ary_get(d, 0);
-        rary(d)[0] = Value::fix(i.as_fix() + 1);
-        let v = pack(args);
-        yield_block(c, ublk(d, 1), &[v, i])?;
+        let i = c.ary_get(d, 0);
+        c.ary_mut(d)[0] = Value::fix(i.as_fix() + 1);
+        let v = pack(c, args);
+        yield_block(c, ublk(c, d, 1), &[v, i])?;
         Ok(NIL)
     }, d, a)?;
     Ok(slf)
 }
 fn en_each_with_object(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return no_blk(c, slf, "each_with_object", a); }
-    let d = ary_new_from(&[a[0], bptr(blk)]);
-    run_each(c, slf, |c, d, args, _| { let v = pack(args); yield_block(c, ublk(d, 1), &[v, ary_get(d, 0)])?; Ok(NIL) }, d, &[])?;
+    let d = c.ary_new_from(&[a[0], bptr(blk)]);
+    run_each(c, slf, |c, d, args, _| { let v = pack(c, args); yield_block(c, ublk(c, d, 1), &[v, c.ary_get(d, 0)])?; Ok(NIL) }, d, &[])?;
     Ok(a[0])
 }
 fn en_include(c: &mut Ctx, slf: Value, a: &[Value], _blk: *const Block) -> RV {
-    let d = ary_new_from(&[a[0]]);
+    let d = c.ary_new_from(&[a[0]]);
     let hit = run_each(c, slf, |c, d, args, _| {
-        let v = pack(args);
-        if crate::builtins::array_methods::rb_eq(c, v, ary_get(d, 0))? { return enum_stop(c, d); }
+        let v = pack(c, args);
+        if crate::builtins::array_methods::rb_eq(c, v, c.ary_get(d, 0))? { return enum_stop(c, d); }
         Ok(NIL)
     }, d, &[])?;
     Ok(Value::bool(hit))
@@ -180,44 +200,45 @@ fn en_include(c: &mut Ctx, slf: Value, a: &[Value], _blk: *const Block) -> RV {
 fn en_find(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     check_argc(c, a, 0, 1)?;
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, crate::symbol::intern(b"find"), a, NIL); }
-    let d = ary_new_from(&[NIL, bptr(blk)]);
+    let d = c.ary_new_from(&[NIL, bptr(blk)]);
     let hit = run_each(c, slf, |c, d, args, _| {
-        let v = pack(args);
-        if yield1(c, ublk(d, 1), v)?.truthy() { rary(d)[0] = v; return enum_stop(c, d); }
+        let v = pack(c, args);
+        if yield1(c, ublk(c, d, 1), v)?.truthy() { c.ary_mut(d)[0] = v; return enum_stop(c, d); }
         Ok(NIL)
     }, d, &[])?;
-    if hit { return Ok(ary_get(d, 0)); }
+    if hit { return Ok(c.ary_get(d, 0)); }
     match a.first() { Some(&ifnone) if ifnone != NIL => funcall(c, ifnone, s::call, &[], std::ptr::null()), _ => Ok(NIL) }
 }
 fn en_count(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     check_argc(c, a, 0, 1)?;
     let mode = if !a.is_empty() { 1 } else if !blk.is_null() { 2 } else { 0 };
-    let d = ary_new_from(&[Value::fix(0), bptr(blk), Value::fix(mode), a.first().copied().unwrap_or(NIL)]);
+    let d = c.ary_new_from(&[Value::fix(0), bptr(blk), Value::fix(mode), a.first().copied().unwrap_or(NIL)]);
     run_each(c, slf, |c, d, args, _| {
-        let hit = match ary_get(d, 2).as_fix() {
+        let hit = match c.ary_get(d, 2).as_fix() {
             0 => true,
-            1 => { let v = pack(args); crate::builtins::array_methods::rb_eq(c, v, ary_get(d, 3))? }
-            _ => yield_block(c, ublk(d, 1), args)?.truthy(),
+            1 => { let v = pack(c, args); crate::builtins::array_methods::rb_eq(c, v, c.ary_get(d, 3))? }
+            _ => yield_block(c, ublk(c, d, 1), args)?.truthy(),
         };
-        if hit { rary(d)[0] = Value::fix(ary_get(d, 0).as_fix() + 1); }
+        if hit { c.ary_mut(d)[0] = Value::fix(c.ary_get(d, 0).as_fix() + 1); }
         Ok(NIL)
     }, d, &[])?;
-    Ok(ary_get(d, 0))
+    Ok(c.ary_get(d, 0))
 }
 fn en_group_by(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return no_blk(c, slf, "group_by", a); }
-    let d = ary_new_from(&[crate::hash::hash_new(), bptr(blk)]);
+    let acc0 = c.hash_new();
+    let d = c.ary_new_from(&[acc0, bptr(blk)]);
     run_each(c, slf, |c, d, args, _| {
-        let v = pack(args);
-        let k = yield1(c, ublk(d, 1), v)?;
-        let h = ary_get(d, 0);
+        let v = pack(c, args);
+        let k = yield1(c, ublk(c, d, 1), v)?;
+        let h = c.ary_get(d, 0);
         match crate::hash::hash_get_opt(c, h, k)? {
-            Some(arr) => ary_push(arr, v),
-            None => { let arr = ary_new_from(&[v]); crate::hash::hash_aset(c, h, k, arr)?; }
+            Some(arr) => c.ary_push(arr, v),
+            None => { let arr = c.ary_new_from(&[v]); crate::hash::hash_aset(c, h, k, arr)?; }
         }
         Ok(NIL)
     }, d, &[])?;
-    Ok(ary_get(d, 0))
+    Ok(c.ary_get(d, 0))
 }
 fn en_inject(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if a.len() > 2 || (a.is_empty() && blk.is_null()) { return argc_err(c, a.len(), 1, 2); }
@@ -228,26 +249,26 @@ fn en_inject(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
         (1, false) => (a[0], NIL),
         _ => (UNDEF, NIL),
     };
-    let op = if op == NIL || op.is_sym() { op } else if is_string(op) { Value::sym(crate::symbol::intern(&rstr(op).b)) } else {
+    let op = if op == NIL || op.is_sym() { op } else if is_string(op) { Value::sym(crate::symbol::intern(c.str_bytes(op))) } else {
         let ins = crate::builtins::kernel::inspect_str(c, op)?;
         return type_err(c, format!("{} is not a symbol nor a string", ins));
     };
-    let d = ary_new_from(&[acc, bptr(blk), op]);
+    let d = c.ary_new_from(&[acc, bptr(blk), op]);
     run_each(c, slf, |c, d, args, _| {
-        let v = pack(args);
-        let acc = ary_get(d, 0);
-        if acc == UNDEF { rary(d)[0] = v; return Ok(NIL); }
-        let op = ary_get(d, 2);
-        let r = if op == NIL { yield_block(c, ublk(d, 1), &[acc, v])? } else {
+        let v = pack(c, args);
+        let acc = c.ary_get(d, 0);
+        if acc == UNDEF { c.ary_mut(d)[0] = v; return Ok(NIL); }
+        let op = c.ary_get(d, 2);
+        let r = if op == NIL { yield_block(c, ublk(c, d, 1), &[acc, v])? } else {
             let m = op.as_sym();
             if m == s::plus && acc.is_fixnum() && v.is_fixnum() {
                 match acc.as_fix().checked_add(v.as_fix()) { Some(x) if Value::fixable(x) => Value::fix(x), _ => funcall_public(c, acc, m, &[v], std::ptr::null())? }
             } else { funcall_public(c, acc, m, &[v], std::ptr::null())? }
         };
-        rary(d)[0] = r;
+        c.ary_mut(d)[0] = r;
         Ok(NIL)
     }, d, &[])?;
-    let r = ary_get(d, 0);
+    let r = c.ary_get(d, 0);
     Ok(if r == UNDEF { NIL } else { r })
 }
 
@@ -263,32 +284,31 @@ fn slice_cons(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, cons: boo
         }
         return crate::builtins::enumerator::enum_for(c, slf, crate::symbol::intern(mid.as_bytes()), &[Value::fix(n)], size);
     }
-    let d = ary_new_from(&[ary_new(), bptr(blk), Value::fix(n), Value::bool(cons)]);
+    let acc0 = c.ary_new();
+    let d = c.ary_new_from(&[acc0, bptr(blk), Value::fix(n), Value::bool(cons)]);
     run_each(c, slf, |c, d, args, _| {
-        let v = pack(args);
-        let buf = ary_get(d, 0);
-        let n = ary_get(d, 2).as_fix() as usize;
-        ary_push(buf, v);
-        if ary_get(d, 3).truthy() {
-            if ary_len(buf) > n { rary(buf).remove(0); }
-            if ary_len(buf) == n { let cp = ary_new_from(rary(buf)); yield1(c, ublk(d, 1), cp)?; }
-        } else if ary_len(buf) == n {
-            rary(d)[0] = ary_new();
-            yield1(c, ublk(d, 1), buf)?;
+        let v = pack(c, args);
+        let buf = c.ary_get(d, 0);
+        let n = c.ary_get(d, 2).as_fix() as usize;
+        c.ary_push(buf, v);
+        if c.ary_get(d, 3).truthy() {
+            if c.ary_len(buf) > n { c.ary_mut(buf).remove(0); }
+            if c.ary_len(buf) == n { let cp = c.ary_from_vec(c.ary(buf).to_vec()); yield1(c, ublk(c, d, 1), cp)?; }
+        } else if c.ary_len(buf) == n {
+            c.ary_mut(d)[0] = c.ary_new();
+            yield1(c, ublk(c, d, 1), buf)?;
         }
         Ok(NIL)
     }, d, &[])?;
-    let buf = ary_get(d, 0);
-    if !cons && ary_len(buf) > 0 { yield1(c, blk, buf)?; }
+    let buf = c.ary_get(d, 0);
+    if !cons && c.ary_len(buf) > 0 { yield1(c, blk, buf)?; }
     Ok(slf)
 }
 fn en_each_slice(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV { slice_cons(c, slf, a, blk, false) }
 fn en_each_cons(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV { slice_cons(c, slf, a, blk, true) }
 
-fn define_enumerable_natives() {
-    let m0 = vm().m_enumerable;
-    define_cfunc(m0, "each_slice", en_each_slice, 1); define_cfunc(m0, "each_cons", en_each_cons, 1);
-    let m = vm().m_enumerable;
+fn define_enumerable_natives(m: Value) {
+    define_cfunc(m, "each_slice", en_each_slice, 1); define_cfunc(m, "each_cons", en_each_cons, 1);
     define_cfunc(m, "map", en_map, 0); define_cfunc(m, "collect", en_map, 0);
     define_cfunc(m, "flat_map", en_flat_map, 0); define_cfunc(m, "collect_concat", en_flat_map, 0);
     define_cfunc(m, "filter_map", en_filter_map, 0);
@@ -304,9 +324,9 @@ fn define_enumerable_natives() {
     define_cfunc(m, "inject", en_inject, -1); define_cfunc(m, "reduce", en_inject, -1);
 }
 
-pub fn init() {
-    define_enumerable_natives();
-    let m = vm().m_enumerable;
+/// Defines the native methods of Enumerable `m`.
+pub fn init(m: Value) {
+    define_enumerable_natives(m);
     define_singleton_cfunc(m, "__int", e_int, 1);
     define_singleton_cfunc(m, "__hash", e_hash, 1);
     define_singleton_cfunc(m, "__argc", e_argc, 3);
