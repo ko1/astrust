@@ -366,7 +366,16 @@ cfn!(int_idiv, |c, s, a| {
     }
     int_arith(c, s, a[0], Op::Div)
 });
-cfn!(int_fdiv, |c, s, a| { let y = to_f(c, a[0])?; Ok(float_new(num_to_f64(s).unwrap() / y)) });
+cfn!(int_fdiv, |c, s, a| {
+    let y = a[0];
+    if is_integer(y) { return Ok(float_new(BigInt::ratio_to_f64(&to_big(s), &to_big(y)))); }
+    if is_float(y) {
+        let (x, dy) = (num_to_f64(s).unwrap(), float_val(y));
+        if dy.is_nan() { return Ok(y); }
+        return Ok(float_new(if dy != 0.0 { x / dy } else if x == 0.0 { f64::NAN } else { x * dy.signum() * f64::INFINITY }));
+    }
+    coerce_bin(c, s, y, intern(b"fdiv"), false)
+});
 cfn!(int_remainder, |c, s, a| {
     if is_float(a[0]) { if float_val(a[0]) == 0.0 { return err(c, vm().c_zero_div_error, "divided by 0"); } return Ok(float_new(num_to_f64(s).unwrap() % float_val(a[0]))); }
     if !is_integer(a[0]) { return coerce_bin(c, s, a[0], intern(b"remainder"), false); }
