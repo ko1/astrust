@@ -36,6 +36,9 @@ impl AVec {
             _ => AVec::Heap(s.to_vec()),
         }
     }
+    /// The first n (<= INLINE) of `w`; the rest of `w` is ignored.
+    #[inline(always)]
+    pub fn small(n: usize, w: [Value; INLINE]) -> AVec { AVec::Inline(Len::of(n), w) }
     /// The values of stack slots (an Array literal).
     #[inline(always)]
     pub fn from_slots(s: &[std::cell::Cell<Value>]) -> AVec {

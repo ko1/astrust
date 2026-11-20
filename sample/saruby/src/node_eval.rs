@@ -272,6 +272,13 @@ pub fn EVAL_node_biglit(c: &mut Ctx, n: NodePtr, fp: Fp, digits: Str, lc: &mut L
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_ary<D_elems: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, elems: NodeList) -> RV {
     let k = <D_elems as DispList>::len(elems);
+    // in locals, stored from registers: staged slots are read back with a wide load that stalls on their stores
+    if k <= crate::avec::INLINE {
+        let x0 = if k > 0 { <D_elems as DispList>::nth(c, elems, 0, fp)? } else { NIL };
+        let x1 = if k > 1 { <D_elems as DispList>::nth(c, elems, 1, fp)? } else { NIL };
+        let x2 = if k > 2 { <D_elems as DispList>::nth(c, elems, 2, fp)? } else { NIL };
+        return Ok(c.ary_new_small(k, [x0, x1, x2]));
+    }
     let base = stage(c, k)?;
     for i in 0..k {
         let v = <D_elems as DispList>::nth(c, elems, i, fp)?;

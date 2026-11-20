@@ -31,6 +31,12 @@ impl Ctx {
         let k = self.vm().c_array;
         self.alloc_with(k, move || Body::Array(AVec::from_slice(v)))
     }
+    /// An Array of the first n (<= avec::INLINE) of `w`.
+    #[inline(always)]
+    pub fn ary_new_small(&mut self, n: usize, w: [Value; crate::avec::INLINE]) -> Value {
+        let k = self.vm().c_array;
+        self.alloc_with(k, move || Body::Array(AVec::small(n, w)))
+    }
     /// An Array of the values of stack slots (which keep them rooted meanwhile).
     #[inline]
     pub fn ary_from_slots(&mut self, s: &[std::cell::Cell<Value>]) -> Value {
