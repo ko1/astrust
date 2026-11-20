@@ -192,10 +192,101 @@ impl BigInt {
         if self.neg { if u <= 1u64 << 63 { Some((u as i64).wrapping_neg()) } else { None } }
         else if u <= i64::MAX as u64 { Some(u as i64) } else { None }
     }
+    /// CRuby's big2dbl (bit-for-bit, including its rounding).
     pub fn to_f64(&self) -> f64 {
-        let mut r = 0.0f64;
-        for &w in self.mag.iter().rev() { r = r * 4294967296.0 + w as f64; }
-        if self.neg { -r } else { r }
+        let ds = &self.mag;
+        let mut i = ds.len();
+        let mut d = 0.0f64;
+        if i > 0 {
+            let mut bits = self.bit_length_mag();
+            if bits > 53 + 1024 { d = f64::INFINITY; } else {
+                let mut lo = 0;
+                if bits > 54 { bits -= 54; lo = bits / 32; } else { bits = 0; }
+                loop { i -= 1; if i <= lo { break; } d = ds[i] as f64 + 4294967296.0 * d; }
+                let mut dl = ds[i];
+                let round = bits != 0;
+                bits %= 32;
+                if round && (dl & (1u32 << bits)) != 0 {
+                    let mut carry = (dl & !(u32::MAX << bits)) != 0;
+                    if !carry { let mut k = i; while k > 0 { k -= 1; if ds[k] != 0 { carry = true; break; } } }
+                    if carry {
+                        dl &= u32::MAX << bits;
+                        let (s, ov) = dl.overflowing_add(1u32 << bits);
+                        dl = s;
+                        if ov && dl == 0 { d += 1.0; }
+                    }
+                }
+                d = dl as f64 + 4294967296.0 * d;
+                if lo > 0 { d = ldexp(d, (lo * 32) as i32); }
+            }
+        }
+        if self.neg { -d } else { d }
+    }
+    fn bit_length_mag(&self) -> usize {
+        match self.mag.last() { None => 0, Some(&top) => (self.mag.len() - 1) * 32 + (32 - top.leading_zeros() as usize) }
+    }
+    fn low_bits_nonzero(&self, n: usize) -> bool {
+        let w = n / 32;
+        if self.mag[..w.min(self.mag.len())].iter().any(|&x| x != 0) { return true; }
+        let b = n % 32;
+        b > 0 && w < self.mag.len() && self.mag[w] & ((1u32 << b) - 1) != 0
+    }
+    pub fn trailing_zeros(&self) -> usize {
+        let mut n = 0;
+        for &w in &self.mag { if w == 0 { n += 32; } else { return n + w.trailing_zeros() as usize; } }
+        n
+    }
+    pub fn gcd(&self, o: &BigInt) -> BigInt {
+        let (mut a, mut b) = (self.abs(), o.abs());
+        while !b.is_zero() {
+            if let (Some(x), Some(y)) = (a.to_i64(), b.to_i64()) {
+                let (mut x, mut y) = (x as u64, y as u64);
+                while y != 0 { let r = x % y; x = y; y = r; }
+                return BigInt::from_u64(x);
+            }
+            let r = a.divmod(&b).1; a = b; b = r;
+        }
+        a
+    }
+    fn fixable(&self) -> bool { self.to_i64().map(crate::value::Value::fixable).unwrap_or(false) }
+    fn accurate_in_double(&self) -> bool { self.bit_length_mag() <= 53 }
+    /// floor shift: n > 0 right, n < 0 left
+    fn shift(&self, n: i64) -> BigInt { if n > 0 { self.shr(n as usize) } else if n < 0 { self.shl((-n) as usize) } else { self.clone() } }
+    fn big_fdiv(x: &BigInt, y: &BigInt, ey: i64) -> f64 {
+        let mut ex = x.bit_length_mag() as i64 - 128;
+        if ex > 32 { ex -= 32; } else if ex > 0 { ex = 0; }
+        let x = x.shift(ex);
+        let z = x.divrem_trunc(y).0;
+        let l = ex - ey;
+        if l > i32::MAX as i64 { return f64::INFINITY; }
+        if l < i32::MIN as i64 { return 0.0; }
+        ldexp(z.to_f64(), l as i32)
+    }
+    fn big_fdiv_int(x: &BigInt, y: &BigInt) -> f64 {
+        let ey = y.bit_length_mag() as i64 - 64;
+        let y = y.shift(ey);
+        BigInt::big_fdiv(x, &y, ey)
+    }
+    fn ddiv(x: f64, y: f64) -> f64 {
+        if y != 0.0 { x / y } else if x == 0.0 { f64::NAN } else { x * (if y.is_sign_negative() { -1.0 } else { 1.0 }) * f64::INFINITY }
+    }
+    /// CRuby's rb_int_fdiv_double (Integer#fdiv(Integer), Rational#to_f).
+    pub fn ratio_to_f64(n: &BigInt, d: &BigInt) -> f64 {
+        let (mut x, mut y) = (n.clone(), d.clone());
+        if !y.is_zero() && !(x.accurate_in_double() && y.accurate_in_double()) {
+            let g = x.gcd(&y);
+            if !g.is_zero() && g != BigInt::from_i64(1) { x = x.divrem_trunc(&g).0; y = y.divrem_trunc(&g).0; }
+        }
+        if x.fixable() {
+            if y.fixable() && y.accurate_in_double() { return BigInt::ddiv(x.to_i64().unwrap() as f64, y.to_i64().unwrap() as f64); }
+            return BigInt::big_fdiv_int(&x, &y);
+        }
+        let dx = x.to_f64();
+        if y.fixable() {
+            if dx.is_infinite() { return BigInt::big_fdiv_int(&x, &y); }
+            return BigInt::ddiv(dx, y.to_i64().unwrap() as f64);
+        }
+        BigInt::big_fdiv_int(&x, &y)
     }
     pub fn from_f64(f: f64) -> BigInt {
         let neg = f < 0.0;
@@ -332,6 +423,13 @@ impl BigInt {
         }
     }
     pub fn is_odd(&self) -> bool { self.mag.first().map(|x| x & 1 == 1).unwrap_or(false) }
+}
+
+/// x * 2^e without intermediate overflow/underflow.
+pub fn ldexp(mut x: f64, mut e: i32) -> f64 {
+    while e > 1000 { x *= 2f64.powi(1000); e -= 1000; if x.is_infinite() { return x; } }
+    while e < -1000 { x *= 2f64.powi(-1000); e += 1000; if x == 0.0 { return x; } }
+    x * 2f64.powi(e)
 }
 
 impl std::fmt::Display for BigInt {

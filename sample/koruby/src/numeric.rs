@@ -24,7 +24,8 @@ pub fn float_to_s(d: f64) -> String {
     let neg = mant.starts_with('-');
     let digits: String = mant.chars().filter(|c| c.is_ascii_digit()).collect();
     let sign = if neg { "-" } else { "" };
-    if (-4..15).contains(&exp) {
+    let decpt = exp + 1;
+    if decpt > -4 && (decpt <= 0 || (decpt as usize) < digits.len() || decpt <= 15) {
         // fixed notation
         let decpt = exp + 1;
         let s = if decpt <= 0 {
