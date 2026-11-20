@@ -180,7 +180,7 @@ pub fn boot() {
     string_methods::init();
     symbol_methods::init();
     array_methods::init(vm.c_array);
-    hash_methods::init();
+    hash_methods::init(vm.c_hash);
     range_methods::init();
     enumerator::init();
     io::init();

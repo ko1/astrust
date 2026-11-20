@@ -1,4 +1,16 @@
 // Hash: insertion-ordered entries + open-addressing index (built once the hash grows).
+// On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).  Methods are in builtins/hash_methods.rs.
+#![forbid(unsafe_code)]
+// the context-free API, for the modules not converted yet (bodies in object.rs)
+pub use crate::object::{hash_clear, hash_dup, hash_entry_at, hash_len, hash_new, hash_new_capa, hash_pairs};
+pub use imp::*;
+
+// a module of its own: `no_legacy` must not meet the re-export above
+mod imp {
+#[allow(unused_imports)]
+use crate::heap::no_legacy::*;   // the old accessors cannot be named here
+#[allow(unused_imports)]
+use crate::heap::no_legacy_hn::*;
 use crate::array::*;
 use crate::symbol::s;
 use crate::value::*;
@@ -7,30 +19,146 @@ use crate::vm::*;
 const SMALL: usize = 8;
 const EMPTY: u32 = u32::MAX;
 
-// Hashes being iterated (CRuby's iter_lev): adding a key or rehashing then raises.
-static mut ITER: Vec<Value> = Vec::new();
-#[allow(static_mut_refs)]
-fn iter_list() -> &'static mut Vec<Value> { unsafe { &mut ITER } }
-pub fn hash_iter_enter(h: Value) { iter_list().push(h); }
-pub fn hash_iter_leave(h: Value) {
-    let v = iter_list();
-    if let Some(i) = v.iter().rposition(|x| *x == h) { v.remove(i); }
-}
-#[inline]
-pub fn hash_iterating(h: Value) -> bool { let v = iter_list(); !v.is_empty() && v.contains(&h) }
-
 // keys whose eql? is identity (and whose hash is mix(raw)): small tables are scanned by key alone
 #[inline(always)]
 fn imm_key(k: Value) -> bool { k.is_fixnum() || (k.is_special() && k != UNDEF) }
 
-pub fn hash_new() -> Value {
-    crate::gc::alloc(vm().c_hash, Body::Hash(Box::new(RHash { entries: Vec::new(), index: Vec::new(), live: 0, default: NIL, default_proc: NIL, identity: false })))
-}
-pub fn hash_new_capa(n: usize) -> Value {
-    crate::gc::alloc(vm().c_hash, Body::Hash(Box::new(RHash { entries: Vec::with_capacity(n), index: Vec::new(), live: 0, default: NIL, default_proc: NIL, identity: false })))
+fn mix(h: u64) -> u64 { crate::astrust::hash_u64(h) }
+fn identity_hash(k: Value) -> u64 { mix(k.raw()) }
+
+/// What one scan of the table under a shared borrow ends with.
+enum Probe { Found(usize), Miss, Ask(usize, Value) }
+
+impl RHash {
+    pub fn with_capacity(n: usize) -> RHash {
+        RHash { entries: Vec::with_capacity(n), index: Vec::new(), live: 0, default: NIL, default_proc: NIL, identity: false, iter_lev: 0 }
+    }
+    pub fn pairs(&self) -> Vec<(Value, Value)> { self.entries.iter().filter(|e| e.key != UNDEF).map(|e| (e.key, e.val)).collect() }
+    pub fn clear(&mut self) { self.entries.clear(); self.index.clear(); self.live = 0; }
+    /// A compacted copy: same entries, defaults and identity flag, not being iterated.
+    pub fn dup(&self) -> RHash {
+        let mut d = RHash { entries: self.entries.iter().filter(|e| e.key != UNDEF).copied().collect(), index: vec![], live: self.live,
+                            default: self.default, default_proc: self.default_proc, identity: self.identity, iter_lev: 0 };
+        d.rebuild_index();
+        d
+    }
+    pub fn rebuild_index(&mut self) {
+        // compact deleted entries first when many; never under an iteration, which walks the slots by number
+        if self.entries.len() > self.live * 2 + 8 && self.iter_lev == 0 {
+            self.entries.retain(|e| e.key != UNDEF);
+        }
+        if self.entries.len() <= SMALL { self.index.clear(); return; }
+        let mut cap = 16;
+        while cap < self.entries.len() * 2 { cap <<= 1; }
+        self.index.clear();
+        self.index.resize(cap, EMPTY);
+        let mask = cap - 1;
+        for (i, e) in self.entries.iter().enumerate() {
+            if e.key == UNDEF { continue; }
+            let mut p = (e.hash as usize) & mask;
+            while self.index[p] != EMPTY { p = (p + 1) & mask; }
+            self.index[p] = i as u32;
+        }
+    }
+    /// Scan on from step `*st` for hash code `hc`: the slot holding `k` itself, or the next one whose key needs `eql?`.
+    #[inline]
+    fn probe(&self, k: Value, hc: u64, st: &mut usize) -> Probe {
+        if self.index.is_empty() {
+            while let Some(e) = self.entries.get(*st) {
+                let i = *st;
+                *st += 1;
+                if e.key == UNDEF || e.hash != hc { continue; }
+                if e.key == k { return Probe::Found(i); }
+                if !self.identity { return Probe::Ask(i, e.key); }
+            }
+            return Probe::Miss;
+        }
+        let mask = self.index.len() - 1;
+        loop {
+            let ix = self.index[(hc as usize).wrapping_add(*st) & mask];
+            if ix == EMPTY { return Probe::Miss; }
+            *st += 1;
+            let e = &self.entries[ix as usize];
+            if e.key == UNDEF || e.hash != hc { continue; }
+            if e.key == k { return Probe::Found(ix as usize); }
+            if !self.identity { return Probe::Ask(ix as usize, e.key); }
+        }
+    }
+    /// Slot of an immediate key: it is its own hash and `eql?` is identity, so no Ruby code runs.
+    #[inline]
+    fn find_imm(&self, k: Value) -> Option<usize> {
+        if self.index.is_empty() { return self.entries.iter().position(|e| e.key == k); }
+        let mask = self.index.len() - 1;
+        let mut p = (mix(k.raw()) as usize) & mask;
+        loop {
+            let ix = self.index[p];
+            if ix == EMPTY { return None; }
+            if self.entries[ix as usize].key == k { return Some(ix as usize); }
+            p = (p + 1) & mask;
+        }
+    }
+    /// Value of an immediate key.
+    #[inline]
+    fn get_imm(&self, k: Value) -> Option<Value> {
+        if self.index.is_empty() { return self.entries.iter().find(|e| e.key == k).map(|e| e.val); }
+        self.find_imm(k).map(|i| self.entries[i].val)
+    }
+    /// Append a key known to be absent; the new number of slots.
+    fn insert_new(&mut self, k: Value, v: Value, hc: u64) -> usize {
+        self.entries.push(HEntry { key: k, val: v, hash: hc });
+        self.live += 1;
+        if self.entries.len() > SMALL {
+            if self.index.is_empty() || self.entries.len() * 2 > self.index.len() { self.rebuild_index(); }
+            else {
+                let mask = self.index.len() - 1;
+                let mut p = (hc as usize) & mask;
+                while self.index[p] != EMPTY { p = (p + 1) & mask; }
+                self.index[p] = (self.entries.len() - 1) as u32;
+            }
+        }
+        self.entries.len()
+    }
+    /// Empty slot i (a live one).
+    fn remove_slot(&mut self, i: usize) -> Value {
+        let v = self.entries[i].val;
+        self.entries[i].key = UNDEF;
+        self.entries[i].val = NIL;
+        self.live -= 1;
+        if self.live == 0 { self.entries.clear(); self.index.clear(); }
+        v
+    }
 }
 
-fn mix(h: u64) -> u64 { crate::astrust::hash_u64(h) }
+impl Ctx {
+    pub fn hash_new(&mut self) -> Value { self.hash_new_capa(0) }
+    pub fn hash_new_capa(&mut self, n: usize) -> Value {
+        let k = self.vm().c_hash;
+        self.alloc(k, Body::Hash(Box::new(RHash::with_capacity(n))))
+    }
+    pub fn hash_len(&self, h: Value) -> usize { self.hash(h).live }
+    /// Number of slots, deleted ones included: the bound of an iteration by slot number.
+    pub fn hash_slots(&self, h: Value) -> usize { self.hash(h).entries.len() }
+    /// Slot i (key UNDEF when deleted), for index-based iteration robust to mutation.
+    pub fn hash_entry_at(&self, h: Value, i: usize) -> Option<(Value, Value)> { self.hash(h).entries.get(i).map(|e| (e.key, e.val)) }
+    pub fn hash_pairs(&self, h: Value) -> Vec<(Value, Value)> { self.hash(h).pairs() }
+    pub fn hash_clear(&mut self, h: Value) { self.hash_mut(h).clear(); }
+    pub fn hash_dup(&mut self, h: Value) -> Value {
+        let d = self.hash(h).dup();
+        self.alloc(obj_klass(h), Body::Hash(Box::new(d)))
+    }
+    /// Delete the entry in slot i (found by iteration, so stale-hash keys go too).
+    pub fn hash_delete_slot(&mut self, h: Value, i: usize) {
+        let r = self.hash_mut(h);
+        if i < r.entries.len() && r.entries[i].key != UNDEF { r.remove_slot(i); }
+    }
+    // CRuby's iter_lev: while a hash is iterated, adding a key or rehashing raises
+    pub fn hash_iter_enter(&mut self, h: Value) { self.hash_mut(h).iter_lev += 1; }
+    pub fn hash_iter_leave(&mut self, h: Value) { let r = self.hash_mut(h); r.iter_lev = r.iter_lev.saturating_sub(1); }
+    #[inline]
+    pub fn hash_iterating(&self, h: Value) -> bool { self.hash(h).iter_lev != 0 }
+}
+
+fn big_hash(c: &Ctx, v: Value) -> u64 { crate::astrust::hash_str(&c.big(v).to_string_radix(16)) }
 
 /// Ruby `hash` of a key.
 pub fn key_hash(c: &mut Ctx, k: Value) -> Result<u64, Esc> {
@@ -38,36 +166,35 @@ pub fn key_hash(c: &mut Ctx, k: Value) -> Result<u64, Esc> {
         if k.is_flonum() { let f = k.flonum_val(); return Ok(mix(if f == 0.0 { 0 } else { f.to_bits() })); }
         return Ok(mix(k.raw()));
     }
-    let o = obj(k);
-    match &o.body {
-        Body::String(s) => return Ok(crate::astrust::hash_bytes(&s.b)),
-        Body::Float(f) => return Ok(mix(if *f == 0.0 { 0 } else { f.to_bits() })),
-        Body::Bignum(b) => return Ok(crate::astrust::hash_str(&b.to_string_radix(16))),
-        _ => {}
-    }
-    let me = lookup_method(class_of(k), s::hash);
-    if !me.is_null() {
-        if let MKind::Cfunc(f, _) = unsafe { (*me).kind } {
-            let _ = f;
-            if me == vm().ids.kernel_hash { return Ok(mix(k.raw())); }
-        }
-    }
-    if is_array(k) && unsafe { (*me).owner } == vm().c_array {
-        let mut h: u64 = 0x345678 ^ rary(k).len() as u64;
-        let n = rary(k).len();
+    if is_string(k) { return Ok(crate::astrust::hash_bytes(c.str_bytes(k))); }
+    if is_float(k) { let f = float_val(k); return Ok(mix(if f == 0.0 { 0 } else { f.to_bits() })); }
+    if is_bignum(k) { return Ok(big_hash(c, k)); }
+    let (kernel, array) = match c.method_entry(class_of(k), s::hash) {
+        Some(me) => (std::ptr::eq(me, c.vm().ids.kernel_hash), me.owner == c.vm().c_array),
+        None => (false, false),
+    };
+    if kernel { return Ok(mix(k.raw())); }
+    if is_array(k) && array {
+        let n = c.ary_len(k);
+        let mut h: u64 = 0x345678 ^ n as u64;
         if crate::builtins::kernel::recursion_enter(k, s::hash) {
-            for i in 0..n { let x = ary_get(k, i); let xh = key_hash(c, x)?; h = crate::astrust::hash_merge(h, xh); }
+            let mut r = Ok(());
+            for i in 0..n {
+                let x = c.ary_get(k, i);
+                match key_hash(c, x) { Ok(xh) => h = crate::astrust::hash_merge(h, xh), Err(e) => { r = Err(e); break; } }
+            }
             crate::builtins::kernel::recursion_leave(k, s::hash);
+            r?;
         }
         return Ok(h);
     }
     let r = funcall(c, k, s::hash, &[], std::ptr::null())?;
     if r.is_fixnum() { return Ok(mix(r.as_fix() as u64)); }
-    if is_bignum(r) { return Ok(crate::astrust::hash_str(&rbig(r).to_string_radix(16))); }
+    if is_bignum(r) { return Ok(big_hash(c, r)); }
     if r.is_heap() && !is_float(r) && respond_to(r, s::to_int, true) {
         let i = funcall(c, r, s::to_int, &[], std::ptr::null())?;
         if i.is_fixnum() { return Ok(mix(i.as_fix() as u64)); }
-        if is_bignum(i) { return Ok(crate::astrust::hash_str(&rbig(i).to_string_radix(16))); }
+        if is_bignum(i) { return Ok(big_hash(c, i)); }
     }
     type_err(c, format!("no implicit conversion of {} into Integer", crate::builtins::kernel::class_name_for_err(r)))
 }
@@ -79,203 +206,132 @@ pub fn key_eql(c: &mut Ctx, a: Value, b: Value) -> Result<bool, Esc> {
         if a.is_flonum() && is_float(b) { return Ok(a.flonum_val() == float_val(b)); }
         return Ok(false);
     }
-    match (&obj(a).body, b.is_heap()) {
-        (Body::String(x), true) => if let Body::String(y) = &obj(b).body { return Ok(x.b == y.b); } else { return Ok(false); },
-        (Body::Float(x), _) => return Ok(is_float(b) && *x == float_val(b)),
-        (Body::Bignum(x), true) => if let Body::Bignum(y) = &obj(b).body { return Ok(x == y); } else { return Ok(false); },
-        _ => {}
-    }
+    if is_string(a) { return Ok(is_string(b) && c.rstring(a).b == c.rstring(b).b); }
+    if is_float(a) { return Ok(is_float(b) && float_val(a) == float_val(b)); }
+    if is_bignum(a) && b.is_heap() { return Ok(is_bignum(b) && c.big(a) == c.big(b)); }
     let r = funcall(c, a, s::eql_p, &[b], std::ptr::null())?;
     Ok(r.truthy())
 }
 
-fn identity_hash(k: Value) -> u64 { mix(k.raw()) }
-
-fn rebuild_index(h: &mut RHash) {
-    // compact deleted entries first when many
-    if h.entries.len() > h.live * 2 + 8 {
-        h.entries.retain(|e| e.key != UNDEF);
-    }
-    if h.entries.len() <= SMALL { h.index.clear(); return; }
-    let mut cap = 16;
-    while cap < h.entries.len() * 2 { cap <<= 1; }
-    h.index.clear();
-    h.index.resize(cap, EMPTY);
-    let mask = cap - 1;
-    for (i, e) in h.entries.iter().enumerate() {
-        if e.key == UNDEF { continue; }
-        let mut p = (e.hash as usize) & mask;
-        while h.index[p] != EMPTY { p = (p + 1) & mask; }
-        h.index[p] = i as u32;
-    }
-}
-
 /// Entry index of key k.
 pub fn hash_lookup(c: &mut Ctx, hv: Value, k: Value) -> Result<Option<usize>, Esc> {
-    let identity = rhash(hv).identity;
-    let hc = if identity { identity_hash(k) } else { key_hash(c, k)? };
+    if imm_key(k) { return Ok(c.hash(hv).find_imm(k)); }
+    let hc = if c.hash(hv).identity { identity_hash(k) } else { key_hash(c, k)? };
     lookup_with_hash(c, hv, k, hc)
 }
 
 fn lookup_with_hash(c: &mut Ctx, hv: Value, k: Value, hc: u64) -> Result<Option<usize>, Esc> {
-    let identity = rhash(hv).identity;
-    let h = rhash(hv);
-    if h.index.is_empty() {
-        let n = h.entries.len();
-        for i in 0..n {
-            let e = rhash(hv).entries[i];
-            if e.key == UNDEF || e.hash != hc { continue; }
-            if e.key == k || (!identity && key_eql(c, k, e.key)?) { return Ok(Some(i)); }
-        }
-        return Ok(None);
-    }
-    let mask = h.index.len() - 1;
-    let mut p = (hc as usize) & mask;
+    let mut st = 0;
     loop {
-        let h = rhash(hv);
-        let ix = h.index[p];
-        if ix == EMPTY { return Ok(None); }
-        let e = h.entries[ix as usize];
-        if e.key != UNDEF && e.hash == hc && (e.key == k || (!identity && key_eql(c, k, e.key)?)) { return Ok(Some(ix as usize)); }
-        p = (p + 1) & mask;
+        // one borrow up to the next key that has to be asked; `eql?` is Ruby code and may change the table
+        let h = c.hash(hv);
+        let (i, key) = match h.probe(k, hc, &mut st) { Probe::Found(i) => return Ok(Some(i)), Probe::Miss => return Ok(None), Probe::Ask(i, key) => (i, key) };
+        let shape = (h.entries.len(), h.index.len());
+        let eq = key_eql(c, k, key)?;
+        let h = c.hash(hv);
+        let moved = (h.entries.len(), h.index.len()) != shape || h.entries[i].key != key;
+        if moved { st = 0; } else if eq { return Ok(Some(i)); }
     }
 }
 
 pub fn hash_get_opt(c: &mut Ctx, h: Value, k: Value) -> Result<Option<Value>, Esc> {
-    Ok(hash_lookup(c, h, k)?.map(|i| rhash(h).entries[i].val))
+    Ok(hash_lookup(c, h, k)?.map(|i| c.hash(h).entries[i].val))
 }
 
 pub fn hash_default_value(c: &mut Ctx, h: Value, k: Value) -> RV {
-    let r = rhash(h);
-    if r.default_proc != NIL { let p = r.default_proc; return call_proc(c, p, &[h, k], std::ptr::null()); }
-    Ok(r.default)
+    let r = c.hash(h);
+    let (p, d) = (r.default_proc, r.default);
+    if p != NIL { return call_proc(c, p, &[h, k], std::ptr::null()); }
+    Ok(d)
 }
 
 pub fn hash_aref(c: &mut Ctx, h: Value, k: Value) -> RV {
-    let found = if imm_key(k) && rhash(h).index.is_empty() {
-        let r = rhash(h);
-        match r.entries.iter().find(|e| e.key == k) { Some(e) => return Ok(e.val), None => None }
+    let r = c.hash(h);
+    let found = if imm_key(k) {
+        match r.get_imm(k) { Some(v) => return Ok(v), None => None }
     } else { hash_lookup(c, h, k)? };
     match found {
-        Some(i) => Ok(rhash(h).entries[i].val),
+        Some(i) => Ok(c.hash(h).entries[i].val),
         None => {
-            if obj(h).klass != vm().c_hash {
-                let me = lookup_method(class_of(h), s::default);
-                if !me.is_null() && !matches!(unsafe { (*me).kind }, MKind::Cfunc(..)) {
-                    return funcall(c, h, s::default, &[k], std::ptr::null());
-                }
+            if obj_klass(h) != c.vm().c_hash {
+                let user = matches!(c.method_entry(class_of(h), s::default), Some(me) if !matches!(me.kind, MKind::Cfunc(..)));
+                if user { return funcall(c, h, s::default, &[k], std::ptr::null()); }
             }
             hash_default_value(c, h, k)
         }
     }
 }
 
+#[inline]
 pub fn hash_aset(c: &mut Ctx, h: Value, k: Value, v: Value) -> Result<(), Esc> {
-    if obj(h).flags & FL_FROZEN != 0 { return Err(raise_frozen(c, h)); }
-    let identity = rhash(h).identity;
-    let k = if !identity && is_string(k) && obj(k).flags & FL_FROZEN == 0 {
-        let d = crate::string::str_new_enc(&rstr(k).b, rstr(k).enc);
-        obj(d).flags |= FL_FROZEN;
-        d
-    } else { k };
+    if obj_flags(h) & FL_FROZEN != 0 { return Err(raise_frozen(c, h)); }
+    let k = if is_string(k) { str_key(c, h, k) } else { k };
     hash_set(c, h, k, v)
+}
+/// A String key is stored as a frozen copy (unless frozen already, or compared by identity).
+#[inline(never)]
+fn str_key(c: &mut Ctx, h: Value, k: Value) -> Value {
+    if obj_flags(k) & FL_FROZEN != 0 || c.hash(h).identity { return k; }
+    let r = c.rstring(k);
+    let (b, enc) = (r.b.to_vec(), r.enc);
+    let d = c.str_from_vec_enc(b, enc);
+    obj_set_flags(d, FL_FROZEN);
+    d
 }
 
 /// Insert without key dup / frozen check.
 pub fn hash_set(c: &mut Ctx, h: Value, k: Value, v: Value) -> Result<(), Esc> {
-    if imm_key(k) && rhash(h).index.is_empty() {
-        let r = rhash(h);
-        if let Some(e) = r.entries.iter_mut().find(|e| e.key == k) { e.val = v; return Ok(()); }
-        if r.entries.len() < SMALL && !hash_iterating(h) {
-            r.entries.push(HEntry { key: k, val: v, hash: mix(k.raw()) });
-            r.live += 1;
-            return Ok(());
-        }
-    }
-    let identity = rhash(h).identity;
-    let hc = if identity { identity_hash(k) } else { key_hash(c, k)? };
-    if let Some(i) = lookup_with_hash(c, h, k, hc)? { rhash(h).entries[i].val = v; return Ok(()); }
-    if hash_iterating(h) { return err(c, vm().c_runtime_error, "can't add a new key into hash during iteration"); }
-    let r = rhash(h);
-    r.entries.push(HEntry { key: k, val: v, hash: hc });
-    r.live += 1;
-    if r.entries.len() > SMALL {
-        if r.index.is_empty() || r.entries.len() * 2 > r.index.len() { rebuild_index(r); }
-        else {
-            let mask = r.index.len() - 1;
-            let mut p = (hc as usize) & mask;
-            while r.index[p] != EMPTY { p = (p + 1) & mask; }
-            r.index[p] = (r.entries.len() - 1) as u32;
-        }
-    }
-    if r.entries.len() % 64 == 0 { crate::gc::malloc_increase(64 * 24); }
+    let hc = if imm_key(k) {
+        // the whole update under one borrow
+        let r = c.hash_mut(h);
+        if let Some(i) = r.find_imm(k) { r.entries[i].val = v; return Ok(()); }
+        mix(k.raw())
+    } else {
+        let hc = if c.hash(h).identity { identity_hash(k) } else { key_hash(c, k)? };
+        if let Some(i) = lookup_with_hash(c, h, k, hc)? { c.hash_mut(h).entries[i].val = v; return Ok(()); }
+        hc
+    };
+    let r = c.hash_mut(h);
+    if r.iter_lev != 0 { return err(c, c.vm().c_runtime_error, "can't add a new key into hash during iteration"); }
+    if r.insert_new(k, v, hc) % 64 == 0 { c.malloc_increase(64 * 24); }
     Ok(())
 }
 
 pub fn hash_delete(c: &mut Ctx, h: Value, k: Value) -> Result<Option<Value>, Esc> {
     match hash_lookup(c, h, k)? {
         Some(i) => {
-            let r = rhash(h);
-            let v = r.entries[i].val;
-            r.entries[i].key = UNDEF;
-            r.entries[i].val = NIL;
-            r.live -= 1;
-            if r.live == 0 { r.entries.clear(); r.index.clear(); }
-            else if r.entries.len() > r.live * 2 + 16 { rebuild_index(r); }
+            let r = c.hash_mut(h);
+            let v = r.remove_slot(i);
+            if r.live != 0 && r.entries.len() > r.live * 2 + 16 { r.rebuild_index(); }
             Ok(Some(v))
         }
         None => Ok(None),
     }
 }
 
-/// Delete the entry in slot i (found by iteration, so stale-hash keys go too).
-pub fn hash_delete_slot(h: Value, i: usize) {
-    let r = rhash(h);
-    if i >= r.entries.len() || r.entries[i].key == UNDEF { return; }
-    r.entries[i].key = UNDEF;
-    r.entries[i].val = NIL;
-    r.live -= 1;
-    if r.live == 0 { r.entries.clear(); r.index.clear(); }
-}
-
-pub fn hash_clear(h: Value) { let r = rhash(h); r.entries.clear(); r.index.clear(); r.live = 0; }
-
 pub fn hash_rehash(c: &mut Ctx, h: Value) -> Result<(), Esc> {
-    if hash_iterating(h) { return err(c, vm().c_runtime_error, "rehash during iteration"); }
-    let pairs = hash_pairs(h);
-    let keep = ary_new();
-    for (k, v) in &pairs { ary_push(keep, *k); ary_push(keep, *v); }
-    hash_clear(h);
-    for (k, v) in pairs { hash_set(c, h, k, v)?; }
-    std::hint::black_box(keep);
+    if c.hash_iterating(h) { return err(c, c.vm().c_runtime_error, "rehash during iteration"); }
+    // the pairs move to a Ruby Array: `hash` of a key is Ruby code, and the emptied table roots nothing
+    let flat: Vec<Value> = c.hash(h).entries.iter().filter(|e| e.key != UNDEF).flat_map(|e| [e.key, e.val]).collect();
+    let keep = c.ary_from_vec(flat);
+    c.hash_clear(h);
+    let mut i = 0;
+    while i + 1 < c.ary_len(keep) {
+        let (k, v) = (c.ary_get(keep, i), c.ary_get(keep, i + 1));
+        hash_set(c, h, k, v)?;
+        i += 2;
+    }
     Ok(())
 }
 
-pub fn hash_pairs(h: Value) -> Vec<(Value, Value)> {
-    rhash(h).entries.iter().filter(|e| e.key != UNDEF).map(|e| (e.key, e.val)).collect()
-}
-pub fn hash_len(h: Value) -> usize { rhash(h).live }
-
-/// The i-th live entry (i counts all slots), for index-based iteration robust to mutation.
-pub fn hash_entry_at(h: Value, i: usize) -> Option<(Value, Value)> {
-    let r = rhash(h);
-    r.entries.get(i).map(|e| (e.key, e.val))
-}
-pub fn hash_slots(h: Value) -> usize { rhash(h).entries.len() }
-
-pub fn hash_to_a(_c: &mut Ctx, h: Value) -> RV {
-    let a = ary_new_capa(hash_len(h));
-    for (k, v) in hash_pairs(h) { let p = ary_new_from(&[k, v]); ary_push(a, p); }
+pub fn hash_to_a(c: &mut Ctx, h: Value) -> RV {
+    let a = c.ary_new_capa(c.hash_len(h));
+    let mut i = 0;
+    while let Some((k, v)) = c.hash_entry_at(h, i) {
+        if k != UNDEF { let p = c.ary_new_from(&[k, v]); c.ary_push(a, p); }
+        i += 1;
+    }
     Ok(a)
-}
-
-pub fn hash_dup(h: Value) -> Value {
-    let r = rhash(h);
-    let n = crate::gc::alloc(obj(h).klass, Body::Hash(Box::new(RHash {
-        entries: r.entries.iter().filter(|e| e.key != UNDEF).copied().collect(), index: vec![], live: r.live,
-        default: r.default, default_proc: r.default_proc, identity: r.identity })));
-    rebuild_index(rhash(n));
-    n
 }
 
 /// Implicit conversion to Hash (to_hash).
@@ -287,4 +343,5 @@ pub fn check_hash(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
         return type_err(c, "can't convert to Hash");
     }
     Ok(None)
+}
 }
