@@ -124,10 +124,12 @@ pub fn run_pending_signals_nothrow() {}
 /// trap("EXIT") handler, run after the at_exit procs.
 pub fn run_exit_trap(c: &mut Ctx) -> Result<(), Esc> {
     let h = ary_get(unsafe { HANDLERS }, 0);
-    if h == NIL || h == UNDEF || is_string(h) { return Ok(()); }
-    rary(unsafe { HANDLERS })[0] = NIL;
-    funcall(c, h, intern(b"call"), &[Value::fix(0)], std::ptr::null())?;
-    Ok(())
+    let r = if h == NIL || h == UNDEF || is_string(h) { Ok(()) } else {
+        rary(unsafe { HANDLERS })[0] = NIL;
+        funcall(c, h, intern(b"call"), &[Value::fix(0)], std::ptr::null()).map(|_| ())
+    };
+    if r.is_ok() { crate::builtins::misc::run_finalizers(c); }
+    r
 }
 fn signal_list(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     let h = crate::hash::hash_new();

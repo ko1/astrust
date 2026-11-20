@@ -316,6 +316,31 @@ fn wm_aref(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h 
 fn wm_aset(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(s2, intern(b"@h")); hash_set(c, h, a[0], a[1])?; Ok(a[1]) }
 fn wm_key(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(s2, intern(b"@h")); Ok(Value::bool(hash_lookup(c, h, a[0])?.is_some())) }
 
+static mut FINALIZERS: Value = NIL; // Array of [object, callable]; run at exit
+fn os_define_finalizer(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
+    check_argc(c, a, 1, 2)?;
+    let o = a[0];
+    if !o.is_heap() || is_float(o) || is_bignum(o) { return arg_err(c, format!("cannot define finalizer for {}", class_path(real_class_of(o)))); }
+    if is_frozen(o) { return Err(raise_frozen(c, o)); }
+    let p = if a.len() > 1 { a[1] } else if !blk.is_null() { block_to_proc(c, blk)? } else { return arg_err(c, "tried to create Proc object without a block"); };
+    if !respond_to(p, intern(b"call"), true) { let d = inspect_str(c, p)?; return arg_err(c, format!("wrong type argument {} (should be callable)", d)); }
+    let pair = ary_new_from(&[o, p]);
+    ary_push(unsafe { FINALIZERS }, pair);
+    Ok(ary_new_from(&[Value::fix(0), p]))
+}
+fn os_undefine_finalizer(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+    if a[0].is_heap() && is_frozen(a[0]) { return Err(raise_frozen(c, a[0])); }
+    rary(unsafe { FINALIZERS }).retain(|&p| ary_get(p, 0) != a[0]);
+    Ok(a[0])
+}
+/// Finalizers of objects still registered at exit.
+pub fn run_finalizers(c: &mut Ctx) {
+    loop {
+        let Some(pair) = rary(unsafe { FINALIZERS }).pop() else { break };
+        let id = Value::fix(object_id(ary_get(pair, 0)) as i64);
+        if funcall(c, ary_get(pair, 1), intern(b"call"), &[id], std::ptr::null()).is_err() { c.esc = EscKind::None; }
+    }
+}
 fn rbconfig_ruby(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "koruby".into());
     Ok(str_new(exe.as_bytes()))
@@ -400,6 +425,11 @@ pub fn init() {
     define_module_function(os, "each_object", os_each_object, -1);
     define_module_function(os, "count_objects", os_count_objects, -1);
     define_module_function(os, "garbage_collect", os_garbage_collect, -1);
+    define_module_function(os, "define_finalizer", os_define_finalizer, -1);
+    define_module_function(os, "undefine_finalizer", os_undefine_finalizer, 1);
+    let fin = ary_new();
+    unsafe { FINALIZERS = fin; }
+    vm.pinned.push(fin);
     let wm = define_class_under(os, "WeakMap", ob);
     vm.c_object_space_weak_map = wm;
     define_private_cfunc(wm, "initialize", objspace_wm_init, 0);

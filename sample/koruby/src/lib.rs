@@ -196,7 +196,7 @@ fn run_main(o: Opts) -> i32 {
 
     let (src, file): (Vec<u8>, String) = if !o.e.is_empty() {
         (o.e.join("\n").into_bytes(), "-e".into())
-    } else if let Some(s) = &o.script {
+    } else if let Some(s) = o.script.as_ref().filter(|s| s.as_str() != "-") {
         match std::fs::read(s) {
             Ok(b) => (b, s.clone()),
             Err(_) => { eprintln!("koruby: No such file or directory -- {} (LoadError)", s); return 1; }
