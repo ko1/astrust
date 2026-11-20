@@ -21,6 +21,7 @@ fn bo_initialize(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV 
 /// BasicObject#== entry (function pointers are not reliably unique, so identify it by entry).
 pub static mut BO_EQ_ME: *const MethodEntry = std::ptr::null();
 pub static mut BO_INIT_ME: *const MethodEntry = std::ptr::null();
+pub static mut C_NEW_ME: *const MethodEntry = std::ptr::null();
 pub static mut KERNEL_HASH_ME: *const MethodEntry = std::ptr::null();
 pub fn bo_eq(_c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(s == a[0] || (s.is_flonum() && false))) }
 fn bo_not(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(s.falsy())) }
@@ -1086,6 +1087,7 @@ pub fn init() {
     let c = vm.c_class;
     define_cfunc(c, "allocate", c_allocate, 0);
     define_cfunc(c, "new", c_new, -1);
+    unsafe { C_NEW_ME = *rclass(c).mtbl.get(&crate::symbol::intern_str("new")).unwrap(); }
     define_cfunc(c, "superclass", c_superclass, 0);
     define_cfunc(c, "subclasses", c_subclasses, 0);
     define_private_cfunc(c, "inherited", c_inherited, 1);

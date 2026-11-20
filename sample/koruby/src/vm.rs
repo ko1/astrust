@@ -882,6 +882,7 @@ pub fn backtrace_lines(c: &Ctx, skip: usize) -> Vec<String> {
             if fr.kind != FK_CFUNC && fr.iseq().is_null() { continue; }
             // CRuby's send/__send__ and Proc#call/yield/===/[] do not push a frame
             if fr.kind == FK_CFUNC && (fr.me.is_null() == false && ((*fr.me).name == s::send || (*fr.me).name == s::__send__)) { continue; }
+            if fr.kind == FK_CFUNC && fr.me == crate::builtins::object::C_NEW_ME { continue; }   // CRuby 4.0 has no Class#new frame
             if fr.kind == FK_CFUNC && !fr.me.is_null() && (*fr.me).owner == vm().c_proc && matches!(sym_str((*fr.me).name).as_ref(), "call" | "yield" | "===" | "[]") { continue; }
             let (file, line) = &info[i];
             out.push(format!("{}:{}:in '{}'", file, line, frame_label(fr)));
@@ -983,6 +984,17 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: *mut Value, argc: u32
     }
     if cc.fast != 0 && flags & CF_KW == 0 {
         match cc.fast & 3 {
+            0 => {
+                let ni = unsafe { &*(cc.fast as *const NewInfo) };
+                if argc == ni.init_argc {
+                    let o = new_object(ni.klass);
+                    unsafe { *base = o; }   // self of initialize: keeps o alive and gives it back
+                    c.call_me = ni.init_me; c.call_blk = blk;
+                    let r = run_body(c, ni.init_entry, base);
+                    c.sp = base;
+                    return Some(match r { Ok(_) => Ok(unsafe { *base }), Err(e) => Err(e) });
+                }
+            }
             1 if argc == 0 => {
                 // attr_reader on an Object whose class assigned the ivar index
                 if let Body::Object(ivs) = &obj(recv).body {
@@ -1016,6 +1028,9 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: *mut Value, argc: u32
     None
 }
 
+/// cc.fast of a `Klass.new` site (tag 0 with no fast_argc): allocate, then run initialize's entry.
+pub struct NewInfo { pub klass: Value, pub init_me: *const MethodEntry, pub init_entry: NodePtr, pub init_argc: u32 }
+
 const POLY_WAYS: usize = 4;
 
 /// The rest of call_cached: a hit without an inline fast path, or a miss.  A site that misses
@@ -1029,7 +1044,7 @@ pub fn call_slow(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, ar
         let e: &mut CallCache = if cc.klass == 0 || cc.serial != serial {
             if cc.poly != 0 { for w in unsafe { &mut *(cc.poly as *mut [CallCache; POLY_WAYS]) }.iter_mut() { w.klass = 0; } }
             let me = lookup_method(klass, mid);
-            fill_cc(cc, klass, me, serial, flags);
+            fill_cc(cc, recv, klass, me, serial, flags);
             cc
         } else {
             if cc.poly == 0 { cc.poly = Box::into_raw(Box::new(<[CallCache; POLY_WAYS]>::default())) as usize; }
@@ -1040,7 +1055,7 @@ pub fn call_slow(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, ar
                     let i = cc.poly_next as usize % POLY_WAYS;
                     cc.poly_next = cc.poly_next.wrapping_add(1);
                     let me = lookup_method(klass, mid);
-                    fill_cc(&mut t[i], klass, me, serial, flags);
+                    fill_cc(&mut t[i], recv, klass, me, serial, flags);
                     &mut t[i]
                 }
             }
@@ -1072,7 +1087,7 @@ pub fn lookup_cc(cc: &mut CallCache, recv: Value, mid: Sym, flags: u32) -> *cons
     let serial = vm().method_serial;
     if cc.klass == klass.raw() && cc.serial == serial { return cc.me as *const MethodEntry; }
     let me = lookup_method(klass, mid);
-    fill_cc(cc, klass, me, serial, flags);
+    fill_cc(cc, recv, klass, me, serial, flags);
     me
 }
 
@@ -1134,7 +1149,7 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Valu
 }
 
 #[inline(never)]
-fn fill_cc(cc: &mut CallCache, klass: Value, me: *const MethodEntry, serial: u64, flags: u32) {
+fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry, serial: u64, flags: u32) {
     cc.klass = klass.raw(); cc.serial = serial; cc.me = me as usize; cc.fast = 0; cc.fast_argc = u32::MAX; cc.fast_hash = 0;
     if me.is_null() { return; }
     let m = unsafe { &*me };
@@ -1142,6 +1157,20 @@ fn fill_cc(cc: &mut CallCache, klass: Value, me: *const MethodEntry, serial: u64
     match m.kind {
         MKind::Iseq(is) => { let is = unsafe { &*is }; if !is.entry.is_null() { cc.fast = is.entry as usize; cc.fast_argc = is.params.lead.len() as u32; cc.fast_hash = crate::node::hash_node(is.entry); } }
         MKind::Cfunc(..) if me == unsafe { crate::builtins::object::BO_EQ_ME } => { cc.fast = 3; }
+        MKind::Cfunc(..) if me == unsafe { crate::builtins::object::C_NEW_ME } => {
+            // Class#new of a plain-object class whose initialize has a method entry
+            let cd = rclass(recv);
+            if cd.alloc == AllocKind::Object && !cd.is_singleton && !cd.is_module {
+                let im = lookup_method(recv, s::initialize);
+                if let Some(MKind::Iseq(is)) = (!im.is_null()).then(|| unsafe { (*im).kind }) {
+                    let is = unsafe { &*is };
+                    if !is.entry.is_null() {
+                        let ni = Box::new(NewInfo { klass: recv, init_me: im, init_entry: is.entry, init_argc: is.params.lead.len() as u32 });
+                        cc.fast = Box::into_raw(ni) as usize;
+                    }
+                }
+            }
+        }
         MKind::AttrReader(name) | MKind::AttrWriter(name) => {
             let cd = rclass(klass);
             if !cd.is_singleton && cd.alloc == AllocKind::Object {
