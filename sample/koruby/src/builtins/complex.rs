@@ -10,7 +10,7 @@ use crate::vm::*;
 
 pub struct RComplex { pub re: Value, pub im: Value }
 impl RData for RComplex {
-    fn mark(&self, m: &mut crate::gc::Marker) { m.mark(self.re); m.mark(self.im); }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) { m.visit(&mut self.re); m.visit(&mut self.im); }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }

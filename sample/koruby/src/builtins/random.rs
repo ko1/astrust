@@ -67,7 +67,7 @@ fn pair_to_real_incl(a: u32, b: u32) -> f64 {
 
 pub struct RRandom { pub mt: Mt, pub seed: Value }
 impl RData for RRandom {
-    fn mark(&self, m: &mut crate::gc::Marker) { m.mark(self.seed); }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) { m.visit(&mut self.seed); }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }

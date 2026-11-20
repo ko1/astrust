@@ -5,6 +5,8 @@
 
 #[path = "../../../runtime/astrust.rs"]
 pub mod astrust;
+#[path = "../../../runtime/gc/mod.rs"]
+pub mod astrust_gc;
 
 pub mod prism;
 pub mod prism_ast;
@@ -221,6 +223,7 @@ fn run_main(o: Opts) -> i32 {
         return 1;
     }
     unsafe { rt::BOOTED = true; }
+    gc::booted();
 
     // DATA / __END__
     let is = match compile::compile_source(&src, file, 1, IseqKind::Main, vec![]) {
@@ -255,7 +258,8 @@ fn run_main(o: Opts) -> i32 {
     }
     if o.verbose_astro {
         let h = gc::heap();
-        eprintln!("koruby: sd_hits={} gc_count={} gc_time={:?} heap_slots={} allocated={}", vm.sd_hits, h.gc_count, h.gc_time, h.total, h.total_allocated);
+        let st = h.stats();
+        eprintln!("koruby: sd_hits={} gc={} gc_count={} gc_time={:?} heap_slots={} allocated={}", vm.sd_hits, h.backend_name(), h.ctl.collections(), h.ctl.time(), st.slots, st.allocated);
     }
     status
 }

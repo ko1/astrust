@@ -24,3 +24,8 @@ incremental = false
 
 [profile.dev]
 opt-level = 1
+
+[features]
+# GC backend (runtime/gc): default is "marksweep"; `make GC=bitmap`
+gc-marksweep = []
+gc-bitmap = []

@@ -9,7 +9,7 @@ use crate::vm::*;
 
 pub struct RScan { str: Value, pos: usize, prev: usize, groups: Option<Vec<Option<(usize, usize)>>>, re: Value, fixed: bool, base: usize }
 impl RData for RScan {
-    fn mark(&self, m: &mut crate::gc::Marker) { m.mark(self.str); m.mark(self.re); }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) { m.visit(&mut self.str); m.visit(&mut self.re); }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }

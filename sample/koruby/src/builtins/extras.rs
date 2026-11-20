@@ -218,7 +218,7 @@ pub fn init() {
     define_module_function(gc, "auto_compact=", |_c, _s, a, _b| Ok(a[0]), 1);
     define_module_function(gc, "measure_total_time", |_c, _s, _a, _b| Ok(TRUE), 0);
     define_module_function(gc, "measure_total_time=", |_c, _s, a, _b| Ok(a[0]), 1);
-    define_module_function(gc, "total_time", |_c, _s, _a, _b| Ok(Value::fix(crate::gc::heap().gc_time.as_nanos() as i64)), 0);
+    define_module_function(gc, "total_time", |_c, _s, _a, _b| Ok(Value::fix(crate::gc::heap().ctl.time().as_nanos() as i64)), 0);
     define_module_function(gc, "config", gc_config, -1);
     define_module_function(gc, "stat_heap", |_c, _s, _a, _b| Ok(hash_new()), -1);
     define_module_function(gc, "latest_gc_info", |_c, _s, _a, _b| Ok(hash_new()), -1);

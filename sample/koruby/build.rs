@@ -42,10 +42,14 @@ fn main() {
     println!("cargo:rustc-link-arg=-ldl");
     println!("cargo:rustc-env=KORUBY_RUSTC_SYSROOT={}", sysroot.trim());
     println!("cargo:rustc-env=KORUBY_TARGET={}", target);
-    // Build id = hash of the Rust sources: AOT code baked against another build is refused.
+    // Build id = hash of the Rust sources and the GC backend (its allocation path is inlined
+    // into baked code): AOT code baked against another build is refused.
     println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=../../runtime/gc");
     let mut h: u64 = 0xcbf29ce484222325;
+    if std::env::var_os("CARGO_FEATURE_GC_BITMAP").is_some() { h = (h ^ 1).wrapping_mul(0x100000001b3); }
     let mut files: Vec<_> = walk(PathBuf::from("src"));
+    files.extend(walk(PathBuf::from("../../runtime/gc")));
     files.sort();
     for f in files { for b in std::fs::read(&f).unwrap() { h = (h ^ b as u64).wrapping_mul(0x100000001b3); } }
     let id = format!("{:016x}", h);

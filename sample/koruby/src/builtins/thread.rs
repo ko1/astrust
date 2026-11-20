@@ -17,7 +17,7 @@ pub struct RThread {
     report: Value, abort: bool, loc: String,
 }
 impl RData for RThread {
-    fn mark(&self, m: &mut crate::gc::Marker) { for v in [self.fiber, self.inner, self.value, self.exc, self.locals, self.tvars, self.name, self.pending, self.report] { m.mark(v); } }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) { for v in [&mut self.fiber, &mut self.inner, &mut self.value, &mut self.exc, &mut self.locals, &mut self.tvars, &mut self.name, &mut self.pending, &mut self.report] { m.visit(v); } }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
@@ -282,7 +282,7 @@ fn tg_list(c: &mut Ctx, _s: Value, a: &[Value], b: *const Block) -> RV { th_list
 static mut HELD: usize = 0; // locks currently owned (skips the heap walk at thread exit)
 pub struct RLock { owner: Value, count: usize, monitor: bool }
 impl RData for RLock {
-    fn mark(&self, m: &mut crate::gc::Marker) { m.mark(self.owner); }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) { m.visit(&mut self.owner); }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
@@ -409,7 +409,7 @@ fn cv_broadcast(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
 
 pub struct RQueue { items: Value, closed: bool, max: usize, waiting: usize }
 impl RData for RQueue {
-    fn mark(&self, m: &mut crate::gc::Marker) { m.mark(self.items); }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) { m.visit(&mut self.items); }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }

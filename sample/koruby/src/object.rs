@@ -7,8 +7,7 @@ use std::any::Any;
 use crate::fxhash::HashMap;
 
 pub const FL_FROZEN: u32 = 1;
-pub const FL_MARK: u32 = 2;
-pub const FL_FREE: u32 = 4;
+// bits 2 and 4 are unused (GC state is in RObj::gc)
 pub const FL_EXIVAR: u32 = 8;
 pub const FL_CHILLED: u32 = 16;   // string literal: frozen-on-write warning semantics (treated as mutable)
 pub const FL_KWHASH: u32 = 32;    // ruby2_keywords flagged hash
@@ -17,7 +16,7 @@ pub const FL_KWHASH: u32 = 32;    // ruby2_keywords flagged hash
 pub struct RObj {
     pub klass: Value,
     pub flags: u32,
-    pub _pad: u32,
+    pub gc: crate::gc::GcHeader,      // owned by the GC backend
     pub body: Body,
 }
 
@@ -61,7 +60,8 @@ pub struct MethodObj { pub recv: Value, pub me: *const MethodEntry, pub name: Sy
 
 /// Built-in objects with Rust-defined payloads (Regexp, MatchData, Time, ...).
 pub trait RData: Any {
-    fn mark(&self, _m: &mut crate::gc::Marker) {}
+    /// Visit every Value slot the payload holds.
+    fn visit(&mut self, _v: &mut crate::gc::Visitor) {}
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
