@@ -348,7 +348,7 @@ pub fn str_to_f(b: &[u8]) -> f64 {
     while i < bytes.len() {
         let ch = bytes[i];
         if ch.is_ascii_digit() { seen_digit = true; end = i + 1; }
-        else if ch == b'_' && seen_digit && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() { }
+        else if ch == b'_' && seen_digit && i > 0 && bytes[i - 1].is_ascii_digit() && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() { }
         else if ch == b'.' && !seen_dot && !seen_e && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() { seen_dot = true; }
         else if ch == b'.' && !seen_dot && !seen_e && seen_digit && i + 2 < bytes.len() && (bytes[i + 1] | 0x20) == b'e'
             && (bytes[i + 2].is_ascii_digit() || (i + 3 < bytes.len() && (bytes[i + 2] == b'+' || bytes[i + 2] == b'-') && bytes[i + 3].is_ascii_digit())) { seen_dot = true; }

@@ -182,7 +182,9 @@ cfn!(s_cmp, |c, slf, a, b_| {
     if a[0].is_heap() && respond_to(a[0], s::cmp, true) {
         let r = funcall(c, a[0], s::cmp, &[slf], std::ptr::null())?;
         if r == NIL { return Ok(NIL); }
-        return funcall(c, Value::fix(0), intern(b"-"), &[r], std::ptr::null());
+        let pos = if r.is_fixnum() { r.as_fix() > 0 } else if is_bignum(r) { !rbig(r).neg } else { funcall(c, r, intern(b">"), &[Value::fix(0)], std::ptr::null())?.truthy() };
+        let neg = !pos && if r.is_fixnum() { r.as_fix() < 0 } else if is_bignum(r) { rbig(r).neg } else { funcall(c, r, intern(b"<"), &[Value::fix(0)], std::ptr::null())?.truthy() };
+        return Ok(Value::fix(if pos { -1 } else if neg { 1 } else { 0 }));
     }
     Ok(NIL)
 });
@@ -230,8 +232,8 @@ cfn!(s_aset, |c, slf, a, b_| {
     } else if a[0].is_fixnum() {
         let mut i = a[0].as_fix();
         if i < 0 { i += n; }
-        if i < 0 || i >= n { return err(c, vm().c_index_error, format!("index {} out of string", a[0].as_fix())); }
-        (char_to_byte(slf, i as usize).unwrap(), char_to_byte(slf, i as usize + 1).unwrap())
+        if i < 0 || i > n { return err(c, vm().c_index_error, format!("index {} out of string", a[0].as_fix())); }
+        let bs = char_to_byte(slf, i as usize).unwrap(); (bs, char_to_byte(slf, i as usize + 1).unwrap_or(bs))
     } else if is_range(a[0]) {
         match crate::range::range_beg_len(c, a[0], n, 1)? { Some((st, ln)) => (char_to_byte(slf, st as usize).unwrap(), char_to_byte(slf, (st + ln).min(n) as usize).unwrap()), None => return Ok(val) }
     } else if is_string(a[0]) {
@@ -322,14 +324,54 @@ cfn!(s_dump, |c, slf, a, b_| {
     if !en::ascii_compat(enc) { out.push_str(&format!(".dup.force_encoding(\"{}\")", en::enc_name(enc))); return Ok(str_new(out.as_bytes())); }
     Ok(str_new_enc(out.as_bytes(), enc))
 });
-macro_rules! case_m { ($name:ident, $bang:ident, $f:expr) => {
-    cfn!($name, |c, slf, a, b_| { let r = rstr(slf); Ok(new_like(slf, $f(&r.b, r.enc))) });
-    cfn!($bang, |c, slf, a, b_| { let r = rstr(slf); let nv = $f(&r.b, r.enc); if nv == r.b { return Ok(NIL); } let r = modify(c, slf)?; r.b = nv; Ok(slf) });
+/// Case-mapping options (:ascii / :turkic / :lithuanian / :fold): returns (ascii, turkic, fold).
+fn case_opts(c: &mut Ctx, a: &[Value], fold_ok: bool) -> Result<(bool, bool, bool), Esc> {
+    if a.len() > 2 { return arg_err(c, "too many options"); }
+    let name = |v: Value| if v.is_sym() { String::from_utf8_lossy(crate::symbol::sym_bytes(v.as_sym())).into_owned() } else { String::new() };
+    let mut r = (false, false, false);
+    for (i, &v) in a.iter().enumerate() {
+        if !v.is_sym() { return type_err(c, format!("no implicit conversion of {} into Symbol", class_name_for_err(v))); }
+        match name(v).as_str() {
+            "ascii" if a.len() == 1 => r.0 = true,
+            "turkic" | "lithuanian" if a.len() == 1 || i == 0 || name(a[0]) == "turkic" || name(a[0]) == "lithuanian" => { if name(v) == "turkic" { r.1 = true; } }
+            "fold" if fold_ok && a.len() == 1 => r.2 = true,
+            "ascii" | "fold" if a.len() > 1 => return arg_err(c, "too many options"),
+            "fold" => return arg_err(c, "option :fold only allowed for downcasing"),
+            _ => { let s = crate::builtins::kernel::inspect_str(c, v)?; return arg_err(c, format!("invalid option: {}", s)); }
+        }
+    }
+    Ok(r)
+}
+fn case_apply(b: &[u8], enc: u8, which: u8, o: (bool, bool, bool)) -> Vec<u8> {
+    if o.0 || enc != ENC_UTF8 {
+        return match which {
+            b'u' => b.iter().map(|x| x.to_ascii_uppercase()).collect(),
+            b'd' => b.iter().map(|x| x.to_ascii_lowercase()).collect(),
+            b's' => b.iter().map(|&x| if x.is_ascii_uppercase() { x.to_ascii_lowercase() } else { x.to_ascii_uppercase() }).collect(),
+            _ => { let mut v: Vec<u8> = b.iter().map(|x| x.to_ascii_lowercase()).collect(); if let Some(f) = v.first_mut() { *f = f.to_ascii_uppercase(); } v }
+        };
+    }
+    if o.2 { return fold_case(b, enc); }
+    if o.1 {
+        // Turkic dotted/dotless i
+        let s = String::from_utf8_lossy(b);
+        let m: String = match which {
+            b'u' => s.chars().map(|ch| if ch == 'i' { "İ".to_string() } else { ch.to_uppercase().collect() }).collect(),
+            b'd' => s.chars().map(|ch| if ch == 'I' { "ı".to_string() } else if ch == 'İ' { "i".to_string() } else { ch.to_lowercase().collect() }).collect(),
+            _ => return case_apply(b, enc, which, (false, false, false)),
+        };
+        return m.into_bytes();
+    }
+    match which { b'u' => upcase(b, enc), b'd' => downcase(b, enc), b's' => swapcase(b, enc), _ => capitalize(b, enc) }
+}
+macro_rules! case_m { ($name:ident, $bang:ident, $w:expr) => {
+    cfn!($name, |c, slf, a, b_| { let o = case_opts(c, a, $w == b'd')?; let r = rstr(slf); Ok(new_like(slf, case_apply(&r.b, r.enc, $w, o))) });
+    cfn!($bang, |c, slf, a, b_| { let o = case_opts(c, a, $w == b'd')?; check_frozen(c, slf)?; let r = rstr(slf); let nv = case_apply(&r.b, r.enc, $w, o); if nv == r.b { return Ok(NIL); } let r = modify(c, slf)?; r.b = nv; Ok(slf) });
 }; }
-case_m!(s_upcase, s_upcase_b, upcase);
-case_m!(s_downcase, s_downcase_b, downcase);
-case_m!(s_swapcase, s_swapcase_b, swapcase);
-case_m!(s_capitalize, s_capitalize_b, capitalize);
+case_m!(s_upcase, s_upcase_b, b'u');
+case_m!(s_downcase, s_downcase_b, b'd');
+case_m!(s_swapcase, s_swapcase_b, b's');
+case_m!(s_capitalize, s_capitalize_b, b'c');
 fn reverse_bytes(bv: &[u8], enc: u8) -> Vec<u8> {
     if enc_single(bv, enc) { let mut v = bv.to_vec(); v.reverse(); return v; }
     let off = char_offsets_of(bv, enc);
@@ -496,6 +538,7 @@ fn lines_args(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<(Vec<u8>, bool), E
     let pos: &[Value] = if kw.is_some() { &a[..a.len() - 1] } else { a };
     check_argc(c, pos, 0, 1)?;
     if let Some(h) = kw { if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("chomp"))? { chomp = v.truthy(); } }
+    if pos.first() == Some(&NIL) { return Ok((vec![0xff, 0xfe, 0xfd], chomp)); }
     if b(slf).is_empty() { return Ok((sep, chomp)); }
     if let Some(&x) = pos.first() {
         if x == NIL { sep = vec![0xff, 0xfe, 0xfd]; } else { let s2 = expect_str(c, x)?; compat(c, slf, s2)?; sep = b(s2).to_vec(); }
@@ -524,6 +567,10 @@ cfn!(s_split, |c, slf, a, blk| {
     let v = b(slf);
     let mut out: Vec<Vec<u8>> = vec![];
     let pat = if a.is_empty() || a[0] == NIL { let fs = gvar_get(c, intern(b"$;"))?; if fs == NIL { str_new(b" ") } else { fs } } else { a[0] };
+    let pat = get_pat(c, pat)?;
+    if is_string(pat) { check_valid(c, pat)?; }
+    check_valid(c, slf)?;
+    if is_string(pat) { compat(c, slf, pat)?; }
     if is_string(pat) && b(pat) == b" " {
         // awk-style
         let mut i = 0;
@@ -549,6 +596,7 @@ cfn!(s_split, |c, slf, a, blk| {
             }
         }
     } else {
+        let pat = get_pat(c, pat)?;
         let re = regexp::to_regexp(c, pat)?;
         let mut i = 0; let mut start = 0;
         loop {
@@ -571,6 +619,12 @@ cfn!(s_split, |c, slf, a, blk| {
     Ok(arr)
 });
 
+/// Pattern argument of sub/gsub/split: a Regexp or a String (via to_str).
+fn get_pat(c: &mut Ctx, p: Value) -> RV {
+    if regexp::is_regexp(p) || is_string(p) { return Ok(p); }
+    if p.is_heap() && respond_to(p, s::to_str, true) { return expect_str(c, p); }
+    type_err(c, format!("wrong argument type {} (expected Regexp)", class_name_for_err(p)))
+}
 /// Expand a replacement string with \1 \0 \& \k<name> \` \' \\
 fn expand_repl(rep: &[u8], m_bytes: &[u8], groups: &[Option<(usize, usize)>], re: Value) -> Vec<u8> {
     let mut out = vec![];
@@ -601,15 +655,19 @@ fn expand_repl(rep: &[u8], m_bytes: &[u8], groups: &[Option<(usize, usize)>], re
 }
 
 /// sub/gsub core: returns (new bytes, changed)
-fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool) -> Result<Option<Vec<u8>>, Esc> {
+fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool, bang: bool) -> Result<Option<Vec<u8>>, Esc> {
     if a.is_empty() || a.len() > 2 { return argc_err(c, a.len(), 1, 2); }
     let pat = a[0];
     let hash_rep = if a.len() == 2 && is_hash(a[1]) { Some(a[1]) } else { None };
     let str_rep = if a.len() == 2 && hash_rep.is_none() { Some(expect_str(c, a[1])?) } else { None };
     if a.len() == 1 && blk.is_null() { return arg_err(c, "wrong number of arguments (given 1, expected 2)"); }
     let src = b(slf).to_vec();
+    let pat = get_pat(c, pat)?;
     let lit = if is_string(pat) { Some(b(pat).to_vec()) } else { None };
-    let re = if lit.is_none() { regexp::to_regexp(c, pat)? } else { NIL };
+    let mut re = if lit.is_none() { regexp::to_regexp(c, pat)? } else { NIL };
+    if lit.is_some() { compat(c, slf, pat)?; } else { check_valid(c, slf)?; }
+    let enc = rstr(slf).enc;
+    let mut srcv = NIL; // frozen copy of the source shared by every MatchData
     let mut out = vec![];
     let mut i = 0; let mut last = 0; let mut changed = false;
     loop {
@@ -620,7 +678,10 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool) 
         };
         let (ms, me) = g[0].unwrap();
         out.extend_from_slice(&src[last..ms]);
-        let mval = if lit.is_none() { let srcv = str_new_like(slf, src.clone()); let m = regexp::match_new(re, srcv, g.clone()); c.last_match = m; m } else { NIL };
+        if re == NIL { re = regexp::to_regexp(c, pat)?; }
+        if srcv == NIL { srcv = str_new_like(slf, src.clone()); obj(srcv).flags |= FL_FROZEN; }
+        let mval = regexp::match_new(re, srcv, g.clone());
+        c.last_match = mval;
         if let Some(h) = hash_rep {
             let key = str_new_like(slf, src[ms..me].to_vec());
             let v = crate::hash::hash_aref(c, h, key)?;
@@ -630,32 +691,39 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool) 
             out.extend(expand_repl(b(r), &src, &g, re));
         } else {
             let mstr = str_new_like(slf, src[ms..me].to_vec());
-            if lit.is_some() { let m = regexp::match_new(NIL, str_new_like(slf, src.clone()), g.clone()); let _ = m; }
             let v = yield1(c, blk, mstr)?;
-            if mval != NIL { c.last_match = mval; }
+            if bang && b(slf) != &src[..] { return err(c, vm().c_runtime_error, "string modified"); }
+            c.last_match = mval;
             let sv = crate::rt::rt_tostr(c, v)?;
             out.extend_from_slice(b(sv));
         }
         changed = true;
         last = me;
         if me == ms {
-            if ms < src.len() { let l = char_len_at(&src, ms); out.extend_from_slice(&src[ms..ms + l]); last = ms + l; i = ms + l; } else { i = ms + 1; }
+            if ms < src.len() { let l = enc_char_len(&src, ms, enc); out.extend_from_slice(&src[ms..ms + l]); last = ms + l; i = ms + l; } else { i = ms + 1; }
         } else { i = me; }
         if !global || i > src.len() { break; }
     }
-    if !changed { if lit.is_none() { c.last_match = NIL; } return Ok(None); }
+    if !changed { c.last_match = NIL; return Ok(None); }
     if last < src.len() { out.extend_from_slice(&src[last..]); }
     Ok(Some(out))
 }
-cfn!(s_sub, |c, slf, a, blk| Ok(new_like(slf, subst(c, slf, a, blk, false)?.unwrap_or_else(|| b(slf).to_vec()))));
+cfn!(s_sub, |c, slf, a, blk| Ok(new_like(slf, subst(c, slf, a, blk, false, false)?.unwrap_or_else(|| b(slf).to_vec()))));
 cfn!(s_gsub, |c, slf, a, blk| {
     if a.len() == 1 && blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"gsub"), a, NIL); }
-    Ok(new_like(slf, subst(c, slf, a, blk, true)?.unwrap_or_else(|| b(slf).to_vec())))
+    Ok(new_like(slf, subst(c, slf, a, blk, true, false)?.unwrap_or_else(|| b(slf).to_vec())))
 });
-cfn!(s_sub_b, |c, slf, a, blk| { check_frozen(c, slf)?; match subst(c, slf, a, blk, false)? { Some(v) => { modify(c, slf)?.b = v; Ok(slf) } None => Ok(NIL) } });
-cfn!(s_gsub_b, |c, slf, a, blk| { check_frozen(c, slf)?; match subst(c, slf, a, blk, true)? { Some(v) => { modify(c, slf)?.b = v; Ok(slf) } None => Ok(NIL) } });
+cfn!(s_sub_b, |c, slf, a, blk| { check_frozen(c, slf)?; if a.len() == 1 && blk.is_null() { return argc_err(c, 1, 2, 2); } match subst(c, slf, a, blk, false, true)? { Some(v) => { modify(c, slf)?.b = v; Ok(slf) } None => Ok(NIL) } });
+cfn!(s_gsub_b, |c, slf, a, blk| { if a.len() == 1 && blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"gsub!"), a, NIL); } check_frozen(c, slf)?; match subst(c, slf, a, blk, true, true)? { Some(v) => { modify(c, slf)?.b = v; Ok(slf) } None => Ok(NIL) } });
 cfn!(s_scan, |c, slf, a, blk| {
-    let re = regexp::to_regexp(c, a[0])?;
+    let p = a[0];
+    if !regexp::is_regexp(p) && !is_string(p) && !(p.is_heap() && respond_to(p, s::to_str, true)) {
+        return type_err(c, format!("wrong argument type {} (expected Regexp)", class_name_for_err(p)));
+    }
+    let p = if regexp::is_regexp(p) { p } else { expect_str(c, p)? };
+    if is_string(p) { compat(c, slf, p)?; }
+    check_valid(c, slf)?;
+    let re = regexp::to_regexp(c, p)?;
     let src = b(slf).to_vec();
     let out = ary_new();
     let mut i = 0;
@@ -857,10 +925,15 @@ cfn!(s_oct, |c, slf, a, b_| {
 cfn!(s_freeze, |c, slf, a, b_| { obj(slf).flags |= FL_FROZEN; Ok(slf) });
 cfn!(s_uplus, |c, slf, a, b_| if is_frozen(slf) { Ok(str_new_enc(b(slf), rstr(slf).enc)) } else { Ok(slf) });
 cfn!(s_uminus, |c, slf, a, b_| {
-    if is_frozen(slf) && obj(slf).klass == vm().c_string { return Ok(slf); }
+    let has_iv = vm().gen_ivars.get(&(slf.raw() as usize)).map(|v| !v.is_empty()).unwrap_or(false);
+    if obj(slf).klass != vm().c_string || has_iv {
+        if is_frozen(slf) && !has_iv { return Ok(slf); }
+        let v = str_new_enc(b(slf), rstr(slf).enc); obj(v).klass = obj(slf).klass; obj(v).flags |= FL_FROZEN; return Ok(v);
+    }
     let key = b(slf).to_vec();
-    if let Some(&v) = vm().frozen_lits.get(&key) { return Ok(v); }
-    let v = str_new_enc(&key, rstr(slf).enc); obj(v).flags |= FL_FROZEN;
+    if let Some(&v) = vm().frozen_lits.get(&key) { if rstr(v).enc == rstr(slf).enc { return Ok(v); } }
+    // a bare frozen receiver becomes the pool entry itself
+    let v = if is_frozen(slf) { slf } else { let v = str_new_enc(&key, rstr(slf).enc); obj(v).flags |= FL_FROZEN; v };
     vm().frozen_lits.insert(key, v);
     Ok(v)
 });
@@ -992,8 +1065,14 @@ cfn!(s_delete_suffix_b, |c, slf, a, b_| { let p = expect_str(c, a[0])?; check_fr
 cfn!(s_slice_b, |c, slf, a, b_| {
     let r = str_aref(c, slf, a)?;
     if r == NIL { return Ok(NIL); }
+    let lm = c.last_match;
+    if regexp::is_regexp(a[0]) {
+        // $~ keeps the pre-mutation text
+        if let Some(md) = regexp::rmatch(lm) { if md.str == slf { let cp = str_new_enc(b(slf), rstr(slf).enc); obj(cp).flags |= FL_FROZEN; md.str = cp; } }
+    }
     let mut args: Vec<Value> = a.to_vec(); args.push(str_new(b""));
     s_aset(c, slf, &args, b_)?;
+    if regexp::is_regexp(a[0]) { c.last_match = lm; }
     Ok(r)
 });
 cfn!(s_getbyte, |c, slf, a, b_| { let i = num_to_long(c, a[0])?; let n = b(slf).len() as i64; let i = if i < 0 { i + n } else { i }; Ok(if i >= 0 && i < n { Value::fix(b(slf)[i as usize] as i64) } else { NIL }) });

@@ -36,6 +36,10 @@ pub fn is_regexp(v: Value) -> bool { rregexp(v).is_some() }
 pub fn search(c: &mut Ctx, re: Value, s: Value, start: usize, set_last: bool) -> RV {
     let r = rregexp(re).unwrap();
     let bytes = &rstr(s).b;
+    let enc = rstr(s).enc;
+    if !crate::string::is_ascii(bytes) && !crate::builtins::encoding::is_valid(enc, bytes) {
+        return arg_err(c, format!("invalid byte sequence in {}", crate::builtins::encoding::enc_name(enc)));
+    }
     if start > bytes.len() { if set_last { c.last_match = NIL; } return Ok(NIL); }
     let groups = match r.re.as_ref().unwrap().search(bytes, start) {
         Some(g) => g,
