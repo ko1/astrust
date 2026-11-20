@@ -19,6 +19,8 @@ pub mod object;
 pub mod heap;
 pub mod gc;
 pub mod kalloc;
+#[cfg(feature = "nodeprof")]
+pub mod nodeprof;
 pub mod slots;
 #[cfg(not(feature = "raw_stack"))]
 pub mod stack;
@@ -252,6 +254,7 @@ fn run_main(o: Opts) -> i32 {
     let r = run_top_iseq(&mut c, is, vm.main_obj);
     if r.is_err() { status = handle_toplevel_error(&mut c); }
     status = run_exit_handlers(&mut c, status);
+    #[cfg(feature = "nodeprof")] nodeprof::report();
     if o.aot {
         match aot::bake(&o.store) {
             Ok(n) => if o.verbose_astro || !o.quiet { eprintln!("saruby: baked {} new items into {}/all.so", n, o.store); },

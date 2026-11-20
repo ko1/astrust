@@ -16,6 +16,8 @@ astrogre = { path = "../astrogre" }
 # The value stack is src/stack.rs by default: every access checked, no unsafe.  `raw_stack` swaps in
 # raw pointers (src/stack_raw.rs) for comparison; see docs/safe_stack.md.  make FEATURES=raw_stack
 raw_stack = []
+# count node executions per kind in the interpreter (SARUBY_NODEPROF=1 prints the table at exit)
+nodeprof = []
 # GC backend (runtime/gc): default is "marksweep"; `make GC=bitmap`
 gc-marksweep = []
 gc-bitmap = []

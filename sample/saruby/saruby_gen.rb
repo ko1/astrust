@@ -18,6 +18,8 @@ class SarubyNodeDef < ASTrustGen::NodeDef
     def common_param_count = 3
     def result_type = @ret || 'RV'
     def unwrap_expr(e) = "#{e}?"
+    # cargo feature `nodeprof`: count executions per node kind (interpreter only; SARUBY_NODEPROF=1 prints them)
+    def dispatch_prologue = "    #[cfg(feature = \"nodeprof\")] crate::nodeprof::hit(\"#{@name}\");\n"
     def test_type = "Result<bool, Esc>"
     def test_default(e) = "Ok(#{e}?.truthy())"
     # the method entry cached at this call site when the code is baked
