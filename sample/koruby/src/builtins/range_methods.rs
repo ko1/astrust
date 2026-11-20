@@ -223,8 +223,13 @@ cfn!(r_last, |c, slf, a, blk| {
 });
 cfn!(r_min, |c, slf, a, blk| {
     let (b, e, x) = range_parts(slf);
-    if !blk.is_null() || !a.is_empty() { let arr = r_to_a(c, slf, &[], std::ptr::null())?; return funcall(c, arr, s::min, a, blk); }
     if b == NIL { return err(c, vm().c_range_error, "cannot get the minimum of beginless range"); }
+    if !blk.is_null() || !a.is_empty() {
+        check_argc(c, a, 0, 1)?;
+        if let Some(&n) = a.first() { if n != NIL && crate::builtins::numeric_methods::num_to_long(c, n)? < 0 { return arg_err(c, "negative array size (or size too big)"); } }
+        if e == NIL { return err(c, vm().c_range_error, "cannot get the minimum of endless range with custom comparison method"); }
+        return crate::builtins::enum_native::call_enumerable(c, slf, "min", a, blk);
+    }
     if e == NIL { return Ok(b); }
     let r = funcall(c, b, s::cmp, &[e], std::ptr::null())?;
     if r == NIL || r.as_fix() > 0 || (x && r.as_fix() == 0) { return Ok(NIL); }
@@ -232,8 +237,13 @@ cfn!(r_min, |c, slf, a, blk| {
 });
 cfn!(r_max, |c, slf, a, blk| {
     let (b, e, x) = range_parts(slf);
-    if !blk.is_null() || !a.is_empty() { let arr = r_to_a(c, slf, &[], std::ptr::null())?; return funcall(c, arr, s::max, a, blk); }
     if e == NIL { return err(c, vm().c_range_error, "cannot get the maximum of endless range"); }
+    if !blk.is_null() || !a.is_empty() {
+        check_argc(c, a, 0, 1)?;
+        if let Some(&n) = a.first() { if n != NIL && crate::builtins::numeric_methods::num_to_long(c, n)? < 0 { return arg_err(c, "negative array size (or size too big)"); } }
+        if b == NIL { return err(c, vm().c_range_error, "cannot get the maximum of beginless range with custom comparison method"); }
+        return crate::builtins::enum_native::call_enumerable(c, slf, "max", a, blk);
+    }
     if b != NIL {
         let r = funcall(c, b, s::cmp, &[e], std::ptr::null())?;
         if r == NIL || r.as_fix() > 0 || (x && r.as_fix() == 0) { return Ok(NIL); }
@@ -245,6 +255,17 @@ cfn!(r_max, |c, slf, a, blk| {
         return funcall(c, e, s::minus, &[Value::fix(1)], std::ptr::null());
     }
     Ok(e)
+});
+cfn!(r_minmax, |c, slf, a, blk| {
+    if !blk.is_null() {
+        let (b, e, _) = range_parts(slf);
+        if b == NIL { return err(c, vm().c_range_error, "cannot get the minimum of beginless range"); }
+        if e == NIL { return err(c, vm().c_range_error, "cannot get the maximum of endless range"); }
+        return crate::builtins::enum_native::call_enumerable(c, slf, "minmax", a, blk);
+    }
+    let lo = r_min(c, slf, &[], std::ptr::null())?;
+    let hi = r_max(c, slf, &[], std::ptr::null())?;
+    Ok(ary_new_from(&[lo, hi]))
 });
 cfn!(r_sum, |c, slf, a, blk| {
     let (b, e, x) = range_parts(slf);
@@ -347,6 +368,6 @@ pub fn init() {
     d("begin", r_begin, 0); d("first", r_first, -1); d("end", r_end, 0); d("last", r_last, -1); d("exclude_end?", r_excl, 0);
     d("each", r_each, 0); d("reverse_each", r_reverse_each, 0); d("to_a", r_to_a, 0); d("entries", r_to_a, 0); d("size", r_size, 0); d("count", r_count, -1);
     d("include?", r_include, 1); d("member?", r_include, 1); d("cover?", r_cover, 1); d("===", r_eqq, 1); d("==", r_eq, 1); d("eql?", r_eql, 1);
-    d("hash", r_hash, 0); d("to_s", r_to_s, 0); d("inspect", r_inspect, 0); d("min", r_min, -1); d("max", r_max, -1); d("sum", r_sum, -1);
+    d("hash", r_hash, 0); d("to_s", r_to_s, 0); d("inspect", r_inspect, 0); d("min", r_min, -1); d("minmax", r_minmax, 0); d("max", r_max, -1); d("sum", r_sum, -1);
     d("step", r_step, -1); d("%", r_pct, 1); d("dup", r_dup_frozen, 0); d("bsearch", r_bsearch, 0); d("overlap?", r_overlap, 1);
 }

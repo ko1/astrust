@@ -106,7 +106,7 @@ pub fn ary_aref(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
     check_argc(c, a, 1, 2)?;
     let n = len(slf);
     if a.len() == 2 {
-        let st = num_to_long(c, a[0])?; let l = num_to_long(c, a[1])?;
+        let st = num_to_long(c, a[0])?; let l = num_to_long(c, a[1])?; let n = len(slf);
         let st = if st < 0 { st + n as i64 } else { st };
         if st < 0 || st as usize > n || l < 0 { return Ok(NIL); }
         let e = (st as usize + l as usize).min(n);
@@ -116,7 +116,7 @@ pub fn ary_aref(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
     if x.is_fixnum() { return Ok(norm_index(x.as_fix(), n).and_then(|i| rary(slf).get(i).copied()).unwrap_or(NIL)); }
     if is_range(x) {
         return match crate::range::range_beg_len(c, x, n as i64, 0)? {
-            Some((st, l)) => Ok(new_sub(slf, rary(slf)[st as usize..(st + l).min(n as i64) as usize].to_vec())),
+            Some((st, l)) => { let n = len(slf) as i64; if st > n { return Ok(NIL); } Ok(new_sub(slf, rary(slf)[st as usize..(st + l).min(n) as usize].to_vec())) }
             None => Ok(NIL),
         };
     }
@@ -150,7 +150,7 @@ cfn!(a_aset, |c, slf, a, blk| {
     modify(c, slf)?;
     let n = len(slf);
     let (st, l, val) = if a.len() == 3 {
-        let st = num_to_long(c, a[0])?; let l = num_to_long(c, a[1])?;
+        let st = num_to_long(c, a[0])?; let l = num_to_long(c, a[1])?; let n = len(slf);
         if l < 0 { return err(c, vm().c_index_error, format!("negative length ({})", l)); }
         let st2 = if st < 0 { st + n as i64 } else { st };
         if st2 < 0 { return err(c, vm().c_index_error, format!("index {} too small for array; minimum: -{}", st, n)); }
@@ -572,7 +572,7 @@ cfn!(a_slice_b, |c, slf, a, blk| {
     modify(c, slf)?;
     let n = len(slf);
     if a.len() == 2 {
-        let st = num_to_long(c, a[0])?; let l = num_to_long(c, a[1])?;
+        let st = num_to_long(c, a[0])?; let l = num_to_long(c, a[1])?; let n = len(slf);
         let st = if st < 0 { st + n as i64 } else { st };
         if st < 0 || st as usize > n || l < 0 { return Ok(NIL); }
         let e = (st as usize + l as usize).min(n);
@@ -581,7 +581,7 @@ cfn!(a_slice_b, |c, slf, a, blk| {
     }
     if is_range(a[0]) {
         return match crate::range::range_beg_len(c, a[0], n as i64, 0)? {
-            Some((st, l)) => { let e = (st + l).min(n as i64) as usize; let removed: Vec<Value> = rary(slf).drain(st as usize..e).collect(); Ok(ary_from_vec(removed)) }
+            Some((st, l)) => { let n = len(slf) as i64; if st > n { return Ok(NIL); } let e = (st + l).min(n) as usize; let removed: Vec<Value> = rary(slf).drain(st as usize..e).collect(); Ok(ary_from_vec(removed)) }
             None => Ok(NIL),
         };
     }

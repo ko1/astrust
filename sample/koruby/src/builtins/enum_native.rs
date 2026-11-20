@@ -33,6 +33,31 @@ fn e_ivset(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(a[2])
 }
 
+/// Does recv's #each differ from `native` (a subclass or singleton overrode it)?
+pub fn each_overridden(recv: Value, native: CFunc) -> bool {
+    let me = lookup_method(class_of(recv), crate::symbol::s::each);
+    if me.is_null() { return true; }
+    match unsafe { (*me).kind } { MKind::Cfunc(f, _) => f as *const () as usize != native as *const () as usize, _ => true }
+}
+
+/// Call Enumerable's own implementation of mid on recv (for natives whose #each was overridden).
+pub fn call_enumerable(c: &mut Ctx, recv: Value, mid: &str, args: &[Value], blk: *const Block) -> RV {
+    let mid = crate::symbol::intern(mid.as_bytes());
+    let me = lookup_method(vm().m_enumerable, mid);
+    if me.is_null() { return funcall(c, recv, mid, args, blk); }
+    let base = c.sp;
+    if unsafe { base.add(args.len() + 2) } >= c.stack_end { return funcall(c, recv, mid, args, blk); }
+    unsafe {
+        *base = recv;
+        *base.add(1) = NIL;
+        for (i, a) in args.iter().enumerate() { *base.add(2 + i) = *a; }
+        c.sp = base.add(2 + args.len());
+    }
+    let r = invoke(c, me, recv, base, args.len() as u32, blk, CF_FCALL);
+    c.sp = base;
+    r
+}
+
 pub fn init() {
     let m = vm().m_enumerable;
     define_singleton_cfunc(m, "__int", e_int, 1);
