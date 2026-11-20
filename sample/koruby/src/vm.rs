@@ -211,22 +211,25 @@ impl Frame {
 
 // ---- execution context ---------------------------------------------------------------------
 
+#[repr(C)]
 pub struct Ctx {
     pub sp: *mut Value,
-    pub stack_base: *mut Value,
-    pub stack_end: *mut Value,
     pub frame: *mut Frame,
+    pub serial: u64,
+    // arguments of node_method_entry.  Not adjacent: written as two words and copied into a frame's
+    // (me, blk) pair, they would be read back as one 16-byte load that cannot be store-forwarded.
+    pub call_me: *const MethodEntry,
+    pub stack_end: *mut Value,
+    pub call_blk: *const Block,
+    pub native_limit: usize,
+    pub stack_base: *mut Value,
     pub esc: EscKind,
     pub esc_val: Value,
     pub esc_tag: u64,
     pub esc_tag_v: Value,
-    pub serial: u64,
     pub errinfo: Value,
     pub last_match: Value,
-    pub native_limit: usize,
     pub in_ensure: u32,
-    pub call_me: *const MethodEntry,    // arguments of node_method_entry
-    pub call_blk: *const Block,
 }
 
 impl Ctx {
