@@ -25,6 +25,10 @@ fn main() {
     let st = Command::new("ar").arg("crs").arg(&lib).args(&objs).status().unwrap();
     assert!(st.success());
     }
+    // the reference ruby's stdlib: pure-Ruby libraries are loaded from there on require
+    if let Ok(o) = Command::new("ruby").args(["-e", "print RbConfig::CONFIG['rubylibdir'], ':', Gem.default_dir"]).output() {
+        if o.status.success() { println!("cargo:rustc-env=KORUBY_STDLIB={}", String::from_utf8_lossy(&o.stdout)); }
+    }
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=prism");
     println!("cargo:rerun-if-changed=vendor/prism/src");

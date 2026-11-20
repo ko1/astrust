@@ -310,12 +310,43 @@ fn q_pop(c: &mut Ctx, s2: Value, _a: &[Value], _b: *const Block) -> RV {
 fn q_size(_c: &mut Ctx, s2: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(ary_len(ivar_get(s2, intern(b"@q"))) as i64)) }
 fn q_empty(_c: &mut Ctx, s2: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(ary_len(ivar_get(s2, intern(b"@q"))) == 0)) }
 
-fn signal_trap(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(str_new(b"DEFAULT")) }
 fn warning_warn(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let b = to_rstring(c, a[0])?; err_write(b.as_bytes()); Ok(NIL) }
 fn objspace_wm_init(_c: &mut Ctx, s2: Value, _a: &[Value], _b: *const Block) -> RV { let h = hash_new(); rhash(h).identity = true; ivar_set_raw(s2, intern(b"@h"), h); Ok(NIL) }
 fn wm_aref(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(s2, intern(b"@h")); Ok(hash_get_opt(c, h, a[0])?.unwrap_or(NIL)) }
 fn wm_aset(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(s2, intern(b"@h")); hash_set(c, h, a[0], a[1])?; Ok(a[1]) }
 fn wm_key(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(s2, intern(b"@h")); Ok(Value::bool(hash_lookup(c, h, a[0])?.is_some())) }
+
+fn rbconfig_ruby(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+    let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "koruby".into());
+    Ok(str_new(exe.as_bytes()))
+}
+fn rbconfig_init() {
+    let rbc = define_module("RbConfig");
+    let cfg = hash_new_capa(32);
+    let exe = std::env::current_exe().unwrap_or_else(|_| "koruby".into());
+    let bindir = exe.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
+    let name = exe.file_name().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "koruby".into());
+    let (lib, _gem) = crate::builtins::prelude::stdlib_dirs().unwrap_or_default();
+    let arch = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" };
+    let archname = format!("{}-linux", arch);
+    let archdir = format!("{}/{}", lib, archname);
+    let entries: &[(&str, &str)] = &[("ruby_install_name", &name), ("RUBY_INSTALL_NAME", &name), ("RUBY_BASE_NAME", "ruby"), ("bindir", &bindir), ("EXEEXT", ""),
+        ("host_os", "linux"), ("target_os", "linux"), ("host_cpu", arch), ("target_cpu", arch), ("arch", &archname), ("host", &archname),
+        ("MAJOR", "3"), ("MINOR", "4"), ("TEENY", "0"), ("PATCHLEVEL", "0"), ("ruby_version", "3.4.0"), ("RUBY_PROGRAM_VERSION", "3.4.0"),
+        ("RUBY_API_VERSION", "3.4"), ("rubylibdir", &lib), ("archdir", &archdir), ("rubyarchdir", &archdir), ("DLEXT", "so"), ("SOEXT", "so"),
+        ("LIBEXT", "a"), ("OBJEXT", "o"), ("PATH_SEPARATOR", ":"), ("SHELL", "/bin/sh"), ("CC", "gcc"), ("CPP", "gcc -E"), ("ENABLE_SHARED", "yes"),
+        ("build_os", "linux"), ("build_cpu", arch), ("build", &archname), ("LIBRUBY_SO", "libkoruby.so"), ("prefix", &bindir), ("exec_prefix", &bindir),
+        ("libdir", &bindir), ("sitedir", ""), ("sitelibdir", ""), ("sitearchdir", ""), ("vendordir", ""), ("vendorlibdir", ""), ("vendorarchdir", ""),
+        ("datadir", ""), ("mandir", ""), ("sysconfdir", "/etc"), ("localstatedir", "/var"), ("configure_args", ""), ("CFLAGS", ""), ("LDFLAGS", "")];
+    // string keys never call back into Ruby, so a blank context is enough at boot
+    let mut bc = Ctx { sp: std::ptr::null_mut(), stack_base: std::ptr::null_mut(), stack_end: std::ptr::null_mut(), frame: std::ptr::null_mut(), esc: EscKind::None,
+        esc_val: NIL, esc_tag: 0, esc_tag_v: NIL, serial: 0, errinfo: NIL, last_match: NIL, native_limit: 0, in_ensure: 0 };
+    for (k, v) in entries { let (ks, vs) = (str_new_frozen(k.as_bytes()), str_new(v.as_bytes())); let _ = hash_set(&mut bc, cfg, ks, vs); }
+    const_set(rbc, intern(b"CONFIG"), cfg);
+    const_set(rbc, intern(b"MAKEFILE_CONFIG"), cfg);
+    const_set(rbc, intern(b"TOPDIR"), str_new(bindir.as_bytes()));
+    define_singleton_cfunc(rbc, "ruby", rbconfig_ruby, 0);
+}
 
 pub fn dup_data(_c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if let Some(e) = rdata::<REnc>(v) { let _ = e; return Ok(Some(v)); }
@@ -419,6 +450,11 @@ pub fn init() {
     define_cfunc(mon, "mon_synchronize", mutex_sync, 0);
     define_cfunc(mon, "enter", noop_self, 0);
     define_cfunc(mon, "exit", noop_self, 0);
+    define_cfunc(mon, "try_enter", |_c, _s, _a, _b| Ok(TRUE), 0);
+    define_cfunc(mon, "mon_locked?", |_c, _s, _a, _b| Ok(FALSE), 0);
+    define_cfunc(mon, "mon_owned?", |_c, _s, _a, _b| Ok(FALSE), 0);
+    define_cfunc(mon, "mon_check_owner", |_c, _s, _a, _b| Ok(NIL), 0);
+    define_cfunc(mon, "wait_for_cond", |_c, _s, _a, _b| Ok(TRUE), 2);
     let q = define_class_under(th, "Queue", ob);
     const_set(ob, intern(b"Queue"), q);
     vm.c_queue = q;
@@ -435,10 +471,6 @@ pub fn init() {
     define_cfunc(cv, "broadcast", noop_self, 0);
     define_cfunc(cv, "wait", noop_self, -1);
     // Signal / Warning
-    let sg = define_module("Signal");
-    vm.m_signal = sg;
-    define_module_function(sg, "trap", signal_trap, -1);
-    define_module_function(vm.m_kernel, "trap", signal_trap, -1);
     let wn = define_module("Warning");
     vm.m_warning = wn;
     define_module_function(wn, "warn", warning_warn, -1);
@@ -456,9 +488,7 @@ pub fn init() {
     set("RUBY_DESCRIPTION", str_new_frozen(crate::version().as_bytes()));
     set("ARGV", vm.argv);
     set("TOPLEVEL_BINDING", NIL);
-    let rbc = define_module("RbConfig");
-    let cfg = hash_new_capa(4);
-    const_set(rbc, intern(b"CONFIG"), cfg);
+    rbconfig_init();
     let _ = (intern, num_to_long);
     crate::builtins::exception::init_location();
 }

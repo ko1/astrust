@@ -14,6 +14,8 @@ pub mod enumerator;
 pub mod sprintf;
 pub mod pp;
 pub mod io;
+pub mod sys;
+pub mod file;
 pub mod process;
 pub mod random;
 pub mod binding;
@@ -203,6 +205,8 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     if let Some(r) = random::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = enumerator::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = regexp_methods::alloc_data(c, klass)? { return Ok(Some(r)); }
+    if let Some(r) = file::alloc_data(c, klass)? { return Ok(Some(r)); }
+    if let Some(r) = io::alloc_data(c, klass)? { return Ok(Some(r)); }
     Ok(None)
 }
 

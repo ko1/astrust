@@ -243,15 +243,7 @@ fn run_main(o: Opts) -> i32 {
     }
     let r = run_top_iseq(&mut c, is, vm.main_obj);
     if r.is_err() { status = handle_toplevel_error(&mut c); }
-    // at_exit handlers (LIFO)
-    loop {
-        let ae = vm.at_exit;
-        let Some(p) = array::rary(ae).pop() else { break };
-        c.esc = EscKind::None;
-        if call_proc(&mut c, p, &[], std::ptr::null()).is_err() { status = handle_toplevel_error(&mut c); }
-    }
-    builtins::kernel::out_flush();
-    builtins::io::flush_all();
+    status = run_exit_handlers(&mut c, status);
     if o.aot {
         match aot::bake(&o.store) {
             Ok(n) => if o.verbose_astro || !o.quiet { eprintln!("koruby: baked {} new items into {}/all.so", n, o.store); },
@@ -263,6 +255,26 @@ fn run_main(o: Opts) -> i32 {
         eprintln!("koruby: sd_hits={} gc_count={} gc_time={:?} heap_slots={} allocated={}", vm.sd_hits, h.gc_count, h.gc_time, h.total, h.total_allocated);
     }
     status
+}
+
+/// at_exit procs (LIFO), the EXIT trap, then flush every stream.
+pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
+    let vm = vm();
+    loop {
+        let ae = vm.at_exit;
+        let Some(p) = array::rary(ae).pop() else { break };
+        c.esc = EscKind::None;
+        if call_proc(c, p, &[], std::ptr::null()).is_err() { status = handle_toplevel_error(c); }
+    }
+    if builtins::process::run_exit_trap(c).is_err() { status = handle_toplevel_error(c); }
+    builtins::kernel::out_flush();
+    builtins::io::flush_all();
+    status
+}
+/// End of a forked child's block: report an error, run the exit handlers.
+pub fn finish(c: &mut Ctx, errored: bool) -> i32 {
+    let st = if errored { handle_toplevel_error(c) } else { 0 };
+    run_exit_handlers(c, st)
 }
 
 fn handle_toplevel_error(c: &mut Ctx) -> i32 {
@@ -304,5 +316,6 @@ pub fn main_entry() {
         builtins::kernel::out_flush();
         std::process::exit(st);
     }).unwrap();
+    builtins::process::block_signals_in_this_thread();
     let _ = child.join();
 }

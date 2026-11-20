@@ -11,7 +11,7 @@ $(GEN): node.def koruby_gen.rb ../../lib/astrustgen.rb
 src/prism_ast.rs: tools/gen_prism_ast.rb vendor/prism/config.yml
 	ruby tools/gen_prism_ast.rb
 
-koruby: $(GEN) src/prism_ast.rs $(shell find src ../astrogre/src -name '*.rs') ../astrogre/node.def prelude/core.rb ../../runtime/astrust.rs
+koruby: $(GEN) src/prism_ast.rs $(shell find src ../astrogre/src -name '*.rs') ../astrogre/node.def prelude/core.rb $(wildcard prelude/lib/*.rb) ../../runtime/astrust.rs
 	cargo build --$(PROFILE)
 	cp target/$(PROFILE)/koruby target/$(PROFILE)/libkoruby.so .
 
