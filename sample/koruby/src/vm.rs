@@ -319,6 +319,14 @@ pub struct Vm {
     pub dollar_zero: Value,
     pub rand_state: u64,
     pub fiber_roots: Vec<Value>,
+    pub ids: MethodIds,
+    pub main_ctx: *mut Ctx,   // the main thread's context, for the root scan
+}
+
+/// Builtin methods the VM recognizes by identity (set once at boot).
+pub struct MethodIds {
+    pub bo_eq: *const MethodEntry, pub bo_init: *const MethodEntry, pub c_new: *const MethodEntry,
+    pub m_eqq: *const MethodEntry, pub kernel_hash: *const MethodEntry, pub r_each: *const MethodEntry,
 }
 
 pub static mut VM: Option<Box<Vm>> = None;
@@ -1021,7 +1029,7 @@ fn format_frames(frames: &[RawFrame], skip: usize) -> Vec<String> {
             if fr.kind != FK_CFUNC && fr.iseq.is_null() { continue; }
             // CRuby's send/__send__ and Proc#call/yield/===/[] do not push a frame
             if fr.kind == FK_CFUNC && (fr.me.is_null() == false && ((*fr.me).name == s::send || (*fr.me).name == s::__send__)) { continue; }
-            if fr.kind == FK_CFUNC && fr.me == crate::builtins::object::C_NEW_ME { continue; }   // CRuby 4.0 has no Class#new frame
+            if fr.kind == FK_CFUNC && fr.me == vm().ids.c_new { continue; }   // CRuby 4.0 has no Class#new frame
             if fr.kind == FK_CFUNC && !fr.me.is_null() && (*fr.me).owner == vm().c_proc && matches!(sym_str((*fr.me).name).as_ref(), "call" | "yield" | "===" | "[]") { continue; }
             out.push(format!("{}:{}:in '{}'", fr.file, fr.line, frame_label_of(fr.kind, fr.me, fr.iseq)));
         }
@@ -1320,8 +1328,8 @@ fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry
     if m.visi != VISI_PUBLIC && flags & CF_FCALL == 0 { return; }
     match m.kind {
         MKind::Iseq(is) => { let is = unsafe { &*is }; if !is.entry.is_null() { cc.fast = is.entry as usize; cc.fast_argc = is.params.lead.len() as u32; cc.fast_hash = crate::node::hash_node(is.entry); } }
-        MKind::Cfunc(..) if me == unsafe { crate::builtins::object::BO_EQ_ME } => { cc.fast = 3; }
-        MKind::Cfunc(f, arity) if me == unsafe { crate::builtins::object::C_NEW_ME } => {
+        MKind::Cfunc(..) if me == vm().ids.bo_eq => { cc.fast = 3; }
+        MKind::Cfunc(f, arity) if me == vm().ids.c_new => {
             cc.cfunc = f as usize; cc.arity = arity;
             // Class#new of a plain-object class whose initialize has a method entry
             let cd = rclass(recv);
@@ -1901,12 +1909,11 @@ pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &Iseq, base: Stk, argc: u32, b
 
 // ---- GC roots -----------------------------------------------------------------------------------
 
-pub static mut MAIN_CTX: *mut Ctx = std::ptr::null_mut();
-
 /// The exact root slots of the VM, and the value stacks (ambiguous).
 pub fn visit_roots<V: RootVisitor<Koruby>>(m: &mut V) {
     let vm = vm();
-    unsafe { visit_ctx(m, &mut *MAIN_CTX); }
+    // SAFETY: run_main's context outlives every collection
+    unsafe { visit_ctx(m, &mut *vm.main_ctx); }
     crate::fiber::visit_fibers(m);
     for v in [&mut vm.c_basic_object, &mut vm.c_object, &mut vm.main_obj, &mut vm.stdout, &mut vm.stderr, &mut vm.stdin, &mut vm.loaded_features,
               &mut vm.load_path, &mut vm.at_exit, &mut vm.verbose, &mut vm.argv, &mut vm.dollar_zero] { m.visit(v); }

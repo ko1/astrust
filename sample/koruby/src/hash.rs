@@ -49,7 +49,7 @@ pub fn key_hash(c: &mut Ctx, k: Value) -> Result<u64, Esc> {
     if !me.is_null() {
         if let MKind::Cfunc(f, _) = unsafe { (*me).kind } {
             let _ = f;
-            if me == unsafe { crate::builtins::object::KERNEL_HASH_ME } { return Ok(mix(k.raw())); }
+            if me == vm().ids.kernel_hash { return Ok(mix(k.raw())); }
         }
     }
     if is_array(k) && unsafe { (*me).owner } == vm().c_array {

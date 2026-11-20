@@ -186,7 +186,7 @@ fn run_main(o: Opts) -> i32 {
     c.attach_stack(stack_new(8 << 20));
     let probe = 0u8;
     c.native_limit = (&probe as *const u8 as usize).saturating_sub(STACK_BYTES - (4 << 20));
-    unsafe { MAIN_CTX = &mut c; }
+    vm().main_ctx = &mut c;
     let mut top = Frame::empty(c.bottom());
     c.frame = &mut top.h;
 
