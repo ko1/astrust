@@ -17,7 +17,7 @@ pub const ZONE: u8 = 3;
 
 pub struct RTime { pub w: Value, pub mode: u8, pub off: Value, pub zone: Value, pub dst: bool }
 impl RData for RTime {
-    fn mark(&self, m: &mut crate::gc::Marker) { m.mark(self.w); m.mark(self.off); m.mark(self.zone); }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) { m.visit(&mut self.w); m.visit(&mut self.off); m.visit(&mut self.zone); }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }

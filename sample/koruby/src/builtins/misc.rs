@@ -276,14 +276,14 @@ pub fn unpack(c: &mut Ctx, sv: Value, a: &[Value]) -> RV {
 // ---- GC / ObjectSpace -----------------------------------------------------------------------
 
 fn gc_start(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { crate::gc::collect(); Ok(NIL) }
-fn gc_count(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(crate::gc::heap().gc_count as i64)) }
-fn gc_disable(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { let h = crate::gc::heap(); let old = h.disabled; h.disabled = true; Ok(Value::bool(old)) }
-fn gc_enable(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { let h = crate::gc::heap(); let old = h.disabled; h.disabled = false; Ok(Value::bool(old)) }
+fn gc_count(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(crate::gc::heap().ctl.collections() as i64)) }
+fn gc_disable(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(crate::gc::heap().set_disabled(true))) }
+fn gc_enable(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(crate::gc::heap().set_disabled(false))) }
 fn gc_stat(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
-    let h = crate::gc::heap();
+    let (n, h) = (crate::gc::heap().ctl.collections() as i64, crate::gc::heap().stats());
     let st = hash_new();
-    for (k, v) in [("count", h.gc_count as i64), ("heap_live_slots", (h.total - h.free_count) as i64), ("heap_free_slots", h.free_count as i64),
-                   ("total_allocated_objects", h.total_allocated as i64), ("total_freed_objects", h.total_freed as i64), ("heap_available_slots", h.total as i64), ("major_gc_count", h.gc_count as i64), ("minor_gc_count", 0)] {
+    for (k, v) in [("count", n), ("heap_live_slots", (h.slots - h.free) as i64), ("heap_free_slots", h.free as i64),
+                   ("total_allocated_objects", h.allocated as i64), ("total_freed_objects", h.freed as i64), ("heap_available_slots", h.slots as i64), ("major_gc_count", n), ("minor_gc_count", 0)] {
         hash_set(c, st, sym_value(k), Value::fix(v))?;
     }
     if let Some(&k) = a.first() { if k.is_sym() { return Ok(hash_get_opt(c, st, k)?.unwrap_or(Value::fix(0))); } }
@@ -305,10 +305,10 @@ fn os_each_object(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV 
     Ok(Value::fix(n as i64))
 }
 fn os_count_objects(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let h = crate::gc::heap();
+    let h = crate::gc::heap().stats();
     let st = hash_new();
-    hash_set(c, st, sym_value("TOTAL"), Value::fix(h.total as i64))?;
-    hash_set(c, st, sym_value("FREE"), Value::fix(h.free_count as i64))?;
+    hash_set(c, st, sym_value("TOTAL"), Value::fix(h.slots as i64))?;
+    hash_set(c, st, sym_value("FREE"), Value::fix(h.free as i64))?;
     Ok(st)
 }
 fn os_garbage_collect(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { crate::gc::collect(); Ok(NIL) }

@@ -27,8 +27,11 @@ Fixnum (`...1`), Flonum (`..10`, CRuby encoding), heap pointer (`.000`), nil=0x0
 true=0x14, undef=0x1c, Symbol `(id<<8)|0x34`.  No value is 0 → `RV` fits in one register.
 
 ## Objects (src/object.rs) and GC (src/gc.rs)
-One fixed-size slot per object (`RObj { klass, flags, body: Body }`); variable data in Rust
-Vecs/Boxes owned by the slot.  Non-moving mark & sweep.
+One fixed-size slot per object (`RObj { klass, flags, gc, body: Body }`); variable data in Rust
+Vecs/Boxes owned by the slot.  Non-moving mark & sweep, as a backend of the ASTrust GC framework
+(`../../runtime/gc`, `../../docs/gc.md`); `src/gc.rs` is koruby's binding.  `make GC=bitmap`
+builds with the other backend.  Native payloads report their Values with
+`RData::visit(&mut self, v: &mut gc::Visitor)` (`v.visit(&mut self.field)`).
 
 **Rooting (important):** heap objects are traced precisely; the machine stack and registers
 are scanned conservatively, and the VM value stack too.  So Values in Rust locals are safe.

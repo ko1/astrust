@@ -13,16 +13,16 @@ pub struct REnum {
     pub lazy: bool,
 }
 impl RData for REnum {
-    fn mark(&self, m: &mut crate::gc::Marker) {
-        m.mark(self.recv); m.mark(self.args); m.mark(self.size); m.mark(self.gen); m.mark(self.buf); m.mark(self.fiber);
-        if let Some((a, b, c, _)) = self.arith { m.mark(a); m.mark(b); m.mark(c); }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) {
+        m.visit(&mut self.recv); m.visit(&mut self.args); m.visit(&mut self.size); m.visit(&mut self.gen); m.visit(&mut self.buf); m.visit(&mut self.fiber);
+        if let Some((a, b, c, _)) = &mut self.arith { m.visit(a); m.visit(b); m.visit(c); }
     }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
 pub struct RYielder { pub blk: Value }
 impl RData for RYielder {
-    fn mark(&self, m: &mut crate::gc::Marker) { m.mark(self.blk); }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) { m.visit(&mut self.blk); }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }

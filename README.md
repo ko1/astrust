@@ -9,6 +9,7 @@ shared object that is `dlopen`ed and swapped in for the interpreter's dispatcher
 ```
 lib/astrustgen.rb     the generator (node.def -> node_{head,eval,dispatch,hash,specialize,dump,replace}.rs)
 runtime/astrust.rs    language-independent runtime: hashing, SpecCtx, CodeStore (rustc + dlopen), TieredStore
+runtime/gc/           GC framework: language binding + pluggable backends (docs/gc.md)
 sample/calc/          smallest example (integer calculator with loops)
 sample/koruby/        a Ruby implementation (rewrite of astro/sample/koruby_precise in Rust)
 ```
@@ -42,6 +43,31 @@ anything else is opaque (read from the node at run time; the embedder's generato
 decides hashing).  Embedders subclass `ASTrustGen::NodeDef::Node` for the common-parameter
 count, result type, how to unwrap a child's result (`e?` for `Result`), and opaque operands —
 see `sample/calc/calc_gen.rb` (minimal) and `sample/koruby/koruby_gen.rb`.
+
+### @child storage
+
+Where an `@child` operand's value lives between its evaluation and the node body is a generator
+hook, the counterpart of ASTroGen's `child_storage_decl` / `child_storage_expr`:
+
+```ruby
+class Node < ASTrustGen::NodeDef::Node
+  def child_storage_stmt(op, value) = "let v_#{op.name} = #{value};"   # default: a Rust local
+  def child_storage_expr(op) = "v_#{op.name}"                          # the argument given to EVAL
+end
+```
+
+`child_storage_stmt` is emitted once per `@child`, in operand order, in both the interpreter
+dispatcher and the specialized code; `child_index(op)` is the operand's position among the
+node's `@child`s.  The default suits an embedder with no GC or one that scans the machine stack.
+A precise-GC embedder (docs/gc.md) stages the value in a root-scanned slot instead, e.g.
+`"*fp.add(#{base + child_index(op)}) = #{value};"` and `"*fp.add(#{base + child_index(op)})"`.
+
+## GC
+
+`runtime/gc/` is a collector framework in the manner of ASTro's `runtime/precise_gc`: the
+language implements `GcLang` (roots, edges as mutable slots, finalization), a backend
+implements `GcBackend`, and `Gc<L, B>` joins them at compile time.  Two non-moving backends
+exist (`marksweep`, `bitmap`); koruby selects one with `make GC=<name>`.  See `docs/gc.md`.
 
 ## Code store
 

@@ -12,7 +12,7 @@ use std::cmp::Ordering;
 
 pub struct RRational { pub num: Value, pub den: Value }
 impl RData for RRational {
-    fn mark(&self, m: &mut crate::gc::Marker) { m.mark(self.num); m.mark(self.den); }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) { m.visit(&mut self.num); m.visit(&mut self.den); }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }

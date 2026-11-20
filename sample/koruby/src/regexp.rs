@@ -13,7 +13,7 @@ impl RData for RRegexp {
 
 pub struct RMatch { pub regexp: Value, pub str: Value, pub groups: Vec<Option<(usize, usize)>> }
 impl RData for RMatch {
-    fn mark(&self, m: &mut crate::gc::Marker) { m.mark(self.regexp); m.mark(self.str); }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) { m.visit(&mut self.regexp); m.visit(&mut self.str); }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }

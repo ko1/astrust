@@ -132,7 +132,7 @@ module ASTrustGen
           f = "(*np).u.#{@name}"
           if ref? then "a.push(\"&mut (*np).u.#{@name}\".to_string());"
           elsif spec? then "a.push(format!(\"{}u64\", h_#{@name}));"
-          elsif child? then "a.push(\"v_#{@name}\".to_string());"
+          elsif child? then "a.push(\"#{ASTrustGen.rust_str(@owner.child_storage_expr(self))}\".to_string());"
           elsif node? || nodes? then "a.push(\"(*np).u.#{@name}\".to_string());"
           elsif scalar? then "a.push(format!(\"#{SCALARS[@type]}\", #{f}));"
           elsif f64? then "a.push(format!(\"f64::from_bits({}u64)\", #{f}.to_bits()));"
@@ -178,6 +178,19 @@ module ASTrustGen
       # @spec operand: Rust expr (NodePtr, null = none) evaluated at specialize time with `np` in scope.
       def spec_target_expr(op) = "std::ptr::null_mut()"
       def dispatch_prologue = ""
+      # @child storage: where an eager child's value lives between its evaluation and the
+      # node body (the counterpart of ASTroGen's child_storage_decl / child_storage_expr).
+      #   child_storage_stmt(op, value)  the statement that evaluates and keeps it; emitted once
+      #                                  per @child, in operand order, in DISPATCH and SD glue
+      #   child_storage_expr(op)         the argument passed to EVAL
+      # Default: a Rust local — right with no GC, or with one that scans the machine stack.
+      # A precise-GC embedder stages the value in a root-scanned slot instead, e.g.
+      #   def child_storage_stmt(op, value) = "*fp.add(#{base + child_index(op)}) = #{value};"
+      #   def child_storage_expr(op) = "*fp.add(#{base + child_index(op)})"
+      def child_storage_stmt(op, value) = "let v_#{op.name} = #{value};"
+      def child_storage_expr(op) = "v_#{op.name}"
+      # Position of `op` among this node's @child operands.
+      def child_index(op) = @operands.select(&:child?).index(op)
 
       def no_inline? = @option.include?('@noinline')
       def always_inline? = @option.include?('@always_inline')
@@ -321,7 +334,7 @@ module ASTrustGen
         @operands.each do |op|
           if op.ref? then args << "&mut (*np).u.#{op.name}"
           elsif op.spec? then args << "0u64"
-          elsif op.child? then args << "v_#{op.name}"
+          elsif op.child? then args << child_storage_expr(op)
           else args << "(*np).u.#{op.name}"
           end
         end
@@ -332,7 +345,7 @@ module ASTrustGen
 
       def child_eval_stmts(disp_of)
         @operands.select(&:child?).map do |op|
-          "    let v_#{op.name} = #{unwrap_expr("<#{disp_of.(op)} as Disp>::call(#{(prefix_names.take(1) + ["(*np).u.#{op.name}"] + extra_call_args).join(', ')})")};"
+          "    #{child_storage_stmt(op, unwrap_expr("<#{disp_of.(op)} as Disp>::call(#{(prefix_names.take(1) + ["(*np).u.#{op.name}"] + extra_call_args).join(', ')})"))}"
         end
       end
 
@@ -424,8 +437,10 @@ module ASTrustGen
         end.compact
         generic_names = @operands.select(&:generic_param).map { "t_#{it.name}" }
         child_glue = @operands.select(&:child?).map do |op|
-          disp = "<{} as Disp>::call(#{(prefix_names.take(1) + ["(*np).u.#{op.name}"] + extra_call_args).join(', ')})"
-          "    body.push_str(&format!(\"        let v_#{op.name} = #{unwrap_expr(disp).gsub('"', '\\"')};\\n\", t_#{op.name}));"
+          # \u0001 stands for the child's dispatcher type until the statement is escaped for format!
+          disp = "<\u0001 as Disp>::call(#{(prefix_names.take(1) + ["(*np).u.#{op.name}"] + extra_call_args).join(', ')})"
+          stmt = ASTrustGen.rust_str(child_storage_stmt(op, unwrap_expr(disp))).gsub('{', '{{').gsub('}', '}}').sub("\u0001", '{}')
+          "    body.push_str(&format!(\"        #{stmt}\\n\", t_#{op.name}));"
         end
         tf = generic_names.empty? ? '""'.dup : "format!(\"::<#{generic_names.map { '{}' }.join(', ')}>\", #{generic_names.join(', ')})"
         params = @prefix_params.join(', ')
@@ -660,6 +675,9 @@ module ASTrustGen
       File.write(File.join(dir, "#{@opt[:output_prefix]}_head.rs"), build_head)
     end
   end
+
+  # `s` as the inside of a Rust string literal.
+  def self.rust_str(s) = s.gsub('\\') { '\\\\' }.gsub('"') { '\\"' }
 
   def self.parse_opt argv
     opt = { input: 'node.def', output_prefix: 'node', output_dir: Dir.pwd }

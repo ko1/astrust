@@ -8,7 +8,7 @@ use crate::vm::*;
 
 pub struct RBinding { pub self_: Value, pub env: Value, pub names: Vec<Vec<(Sym, u32, u32)>>, pub cref: *const Cref, pub me: *const MethodEntry, pub file: &'static str, pub line: u32, pub extra: Value }
 impl RData for RBinding {
-    fn mark(&self, m: &mut crate::gc::Marker) { m.mark(self.self_); m.mark(self.env); m.mark(self.extra); }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) { m.visit(&mut self.self_); m.visit(&mut self.env); m.visit(&mut self.extra); }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }

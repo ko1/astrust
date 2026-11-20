@@ -1,6 +1,6 @@
 // VM core: execution context, frames, blocks, methods, classes, calls, exceptions.
 #![allow(clippy::missing_safety_doc)]
-use crate::gc::{self, Marker};
+use crate::gc::{self, EdgeVisitor, Koruby, RootVisitor};
 use crate::node::{NodePtr, DispatchFn};
 use crate::object::*;
 use crate::symbol::{intern, intern_str, s, sym_str};
@@ -964,7 +964,7 @@ pub struct RawFrame { kind: u8, me: *const MethodEntry, iseq: *const Iseq, file:
 /// An exception's backtrace kept as raw frames: formatted when first read (most never are).
 pub struct RawBt { frames: Vec<RawFrame>, skip: usize }
 impl RData for RawBt {
-    fn mark(&self, m: &mut crate::gc::Marker) { for f in &self.frames { mark_me(m, f.me); } }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) { for f in &self.frames { visit_me(m, f.me); } }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
@@ -1923,61 +1923,63 @@ pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &Iseq, base: *mut Value, argc:
 
 pub static mut MAIN_CTX: *mut Ctx = std::ptr::null_mut();
 
-pub fn mark_roots(m: &mut Marker) {
+/// The exact root slots of the VM, and the value stacks (ambiguous).
+pub fn visit_roots<V: RootVisitor<Koruby>>(m: &mut V) {
     let vm = vm();
-    unsafe {
-        let c = &*MAIN_CTX;
-        let mut p = c.stack_base;
-        while p < c.sp { m.mark_maybe((*p).raw() as usize); p = p.add(1); }
-        m.mark(c.esc_val); m.mark(c.errinfo); m.mark(c.last_match); m.mark(c.esc_tag_v);
-    }
-    crate::fiber::mark_fibers(m);
-    let list = [vm.c_basic_object, vm.c_object, vm.main_obj, vm.stdout, vm.stderr, vm.stdin, vm.loaded_features,
-                vm.load_path, vm.at_exit, vm.verbose, vm.argv, vm.dollar_zero];
-    for v in list { m.mark(v); }
-    for (_, v) in vm.globals.iter() { m.mark(*v); }
-    for v in vm.node_values.iter() { m.mark(*v); }
-    for v in vm.pinned.iter() { m.mark(*v); }
-    for v in vm.fiber_roots.iter() { m.mark(*v); }
-    for (_, v) in vm.frozen_lits.iter() { m.mark(*v); }
-    for (_, v) in vm.symproc_cache.iter() { m.mark(*v); }
-    for &cr in vm.crefs.iter() { unsafe { m.mark((*cr).klass); m.mark((*cr).refinements); } }
-    // every builtin class field
-    let vp = vm as *const Vm as *const u64;
+    unsafe { visit_ctx(m, &mut *MAIN_CTX); }
+    crate::fiber::visit_fibers(m);
+    for v in [&mut vm.c_basic_object, &mut vm.c_object, &mut vm.main_obj, &mut vm.stdout, &mut vm.stderr, &mut vm.stdin, &mut vm.loaded_features,
+              &mut vm.load_path, &mut vm.at_exit, &mut vm.verbose, &mut vm.argv, &mut vm.dollar_zero] { m.visit(v); }
+    for v in vm.globals.values_mut() { m.visit(v); }
+    for v in vm.node_values.iter_mut() { m.visit(v); }
+    for v in vm.pinned.iter_mut() { m.visit(v); }
+    for v in vm.fiber_roots.iter_mut() { m.visit(v); }
+    for v in vm.frozen_lits.values_mut() { m.visit(v); }
+    for v in vm.symproc_cache.values_mut() { m.visit(v); }
+    for &cr in vm.crefs.iter() { let cr = unsafe { &mut *(cr as *mut Cref) }; m.visit(&mut cr.klass); m.visit(&mut cr.refinements); }
+    // every builtin class field (zero until boot fills it in)
+    let vp = vm as *mut Vm as *mut u64;
     let nclass_fields = (std::mem::offset_of!(Vm, main_obj)) / 8;
-    for i in 0..nclass_fields { unsafe { let w = *vp.add(i); if w != 0 { m.mark(Value::from_raw(w)); } } }
+    for i in 0..nclass_fields { unsafe { let p = vp.add(i); if *p != 0 { m.visit(&mut *(p as *mut Value)); } } }
 }
 
-pub fn mark_class(m: &mut Marker, cd: &ClassData) {
-    if let Some(n) = cd.name { m.mark(n); }
-    m.mark(cd.superclass); m.mark(cd.attached); m.mark(cd.lexical_parent);
-    for (_, &me) in cd.mtbl.iter() { mark_me(m, me); }
-    for (_, v) in cd.consts.iter() { m.mark(*v); }
-    for (_, v) in cd.autoload.iter() { m.mark(*v); }
-    for (_, v) in cd.cvars.iter() { m.mark(*v); }
-    for v in cd.includes.iter() { m.mark(*v); }
-    for v in cd.prepends.iter() { m.mark(*v); }
-    for v in cd.subclasses.iter() { m.mark(*v); }
-    for v in cd.extended_by.iter() { m.mark(*v); }
-    if let Some(a) = &cd.ancestors { for v in a { m.mark(*v); } }
+/// One execution context: its value stack and the values it holds.
+pub fn visit_ctx<V: RootVisitor<Koruby>>(m: &mut V, c: &mut Ctx) {
+    // ambiguous, as before the framework: slots below sp that no frame wrote yet hold stale Values
+    unsafe { m.visit_ambiguous(std::slice::from_raw_parts(c.stack_base as *const usize, c.sp.offset_from(c.stack_base) as usize)); }
+    m.visit(&mut c.esc_val); m.visit(&mut c.errinfo); m.visit(&mut c.last_match); m.visit(&mut c.esc_tag_v);
 }
 
-pub fn mark_me(m: &mut Marker, me: *const MethodEntry) {
+pub fn visit_class<V: EdgeVisitor<Koruby> + ?Sized>(m: &mut V, cd: &mut ClassData) {
+    if let Some(n) = &mut cd.name { m.visit(n); }
+    m.visit(&mut cd.superclass); m.visit(&mut cd.attached); m.visit(&mut cd.lexical_parent);
+    for (_, &me) in cd.mtbl.iter() { visit_me(m, me); }
+    for v in cd.consts.values_mut() { m.visit(v); }
+    for v in cd.autoload.values_mut() { m.visit(v); }
+    for v in cd.cvars.values_mut() { m.visit(v); }
+    for v in cd.includes.iter_mut() { m.visit(v); }
+    for v in cd.prepends.iter_mut() { m.visit(v); }
+    for v in cd.subclasses.iter_mut() { m.visit(v); }
+    for v in cd.extended_by.iter_mut() { m.visit(v); }
+    if let Some(a) = &mut cd.ancestors { for v in a { m.visit(v); } }
+}
+
+pub fn visit_me<V: EdgeVisitor<Koruby> + ?Sized>(m: &mut V, me: *const MethodEntry) {
     if me.is_null() { return; }
-    let me = unsafe { &*me };
-    m.mark(me.owner);
-    m.mark(me.orig_owner);
-    if let MKind::Bmethod(p) = me.kind { m.mark(p); }
+    let me = unsafe { &mut *(me as *mut MethodEntry) };
+    m.visit(&mut me.owner);
+    m.visit(&mut me.orig_owner);
+    if let MKind::Bmethod(p) = &mut me.kind { m.visit(p); }
 }
 
-pub fn mark_block(m: &mut Marker, b: &Block) {
-    m.mark(b.self_); m.mark(b.env); m.mark(b.proc_val); m.mark(b.defined_class);
-    match b.kind { BlockKind::Method(v) | BlockKind::Cfunc(_, v) | BlockKind::Proc(v) => m.mark(v), _ => {} }
+pub fn visit_block<V: EdgeVisitor<Koruby> + ?Sized>(m: &mut V, b: &mut Block) {
+    m.visit(&mut b.self_); m.visit(&mut b.env); m.visit(&mut b.proc_val); m.visit(&mut b.defined_class);
+    match &mut b.kind { BlockKind::Method(v) | BlockKind::Cfunc(_, v) | BlockKind::Proc(v) => m.visit(v), _ => {} }
     if !b.outer_blk.is_null() {
-        let ob = unsafe { &*b.outer_blk };
-        if ob.proc_val != UNDEF { m.mark(ob.proc_val); }
+        let ob = unsafe { &mut *(b.outer_blk as *mut Block) };
+        if ob.proc_val != UNDEF { m.visit(&mut ob.proc_val); }
     }
-    if !b.me.is_null() { mark_me(m, b.me); }
+    if !b.me.is_null() { visit_me(m, b.me); }
 }
 
 // ---- misc helpers --------------------------------------------------------------------------

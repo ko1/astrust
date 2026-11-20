@@ -3,7 +3,8 @@
 // stack and swaps rsp (x86-64 System V).  The GC scans the running stack
 // conservatively up to its top, and every suspended stack from its saved rsp.
 use crate::array::*;
-use crate::gc::Marker;
+use crate::astrust_gc::stack;
+use crate::gc::{Koruby, RootVisitor};
 use crate::value::*;
 use crate::vm::*;
 
@@ -27,7 +28,7 @@ pub struct FiberData {
     pub enum_src: Value,
 }
 impl RData for FiberData {
-    fn mark(&self, m: &mut Marker) { m.mark(self.proc_); m.mark(self.xfer); m.mark(self.resumer); m.mark(self.enum_src); if let Some(p) = self.peek { m.mark(p); } }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) { m.visit(&mut self.proc_); m.visit(&mut self.xfer); m.visit(&mut self.resumer); m.visit(&mut self.enum_src); if let Some(p) = &mut self.peek { m.visit(p); } }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
@@ -60,23 +61,21 @@ extern "C" { fn mmap(a: *mut u8, l: usize, p: i32, f: i32, fd: i32, o: i64) -> *
 
 /// Top (highest address) of the stack the CPU is running on.
 pub fn current_stack_top() -> usize {
-    unsafe { if CUR == NIL { crate::gc::heap().stack_base } else { fd(CUR).stack as usize + STACK_SIZE } }
+    unsafe { if CUR == NIL { crate::gc::stack_base() } else { fd(CUR).stack as usize + STACK_SIZE } }
 }
 
-pub fn mark_fibers(m: &mut Marker) {
+/// Roots held by fibers: every suspended machine stack (ambiguous), each fiber's Ctx.
+pub fn visit_fibers<V: RootVisitor<Koruby>>(m: &mut V) {
     unsafe {
         if CUR != NIL {
-            m.mark_range(MAIN_SP, crate::gc::heap().stack_base);
-            m.mark(CUR);
+            m.visit_ambiguous(stack::words(MAIN_SP, crate::gc::stack_base()));
+            m.visit(&mut *(&raw mut CUR));
         }
-        for &f in LIVE.iter() {
-            m.mark(f);
-            let d = fd(f);
-            let c = &d.ctx;
-            let mut p = c.stack_base;
-            while p < c.sp { m.mark_maybe((*p).raw() as usize); p = p.add(1); }
-            m.mark(c.esc_val); m.mark(c.errinfo); m.mark(c.last_match); m.mark(c.esc_tag_v);
-            if d.state == FState::Suspended && d.sp != 0 { m.mark_range(d.sp, d.stack as usize + STACK_SIZE); }
+        for f in (*(&raw mut LIVE)).iter_mut() {
+            m.visit(f);
+            let d = fd(*f);
+            visit_ctx(m, &mut d.ctx);
+            if d.state == FState::Suspended && d.sp != 0 { m.visit_ambiguous(stack::words(d.sp, d.stack as usize + STACK_SIZE)); }
         }
     }
 }
