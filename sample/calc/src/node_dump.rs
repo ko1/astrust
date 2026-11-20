@@ -1,5 +1,5 @@
 // This file is auto-generated from node.def by astrustgen. Do not edit.
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_num(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_num_struct>;
     unsafe {
@@ -9,7 +9,7 @@ fn DUMP_node_num(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_add(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_add_struct>;
     unsafe {
@@ -20,7 +20,7 @@ fn DUMP_node_add(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_sub(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_sub_struct>;
     unsafe {
@@ -31,7 +31,7 @@ fn DUMP_node_sub(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_mul(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_mul_struct>;
     unsafe {
@@ -42,7 +42,7 @@ fn DUMP_node_mul(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_mod(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_mod_struct>;
     unsafe {
@@ -53,7 +53,7 @@ fn DUMP_node_mod(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_var(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_var_struct>;
     unsafe {
@@ -63,7 +63,7 @@ fn DUMP_node_var(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_set(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_set_struct>;
     unsafe {
@@ -74,7 +74,7 @@ fn DUMP_node_set(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_seq(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_seq_struct>;
     unsafe {
@@ -84,7 +84,7 @@ fn DUMP_node_seq(out: &mut String, n: NodePtr) {
     }
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_times(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_times_struct>;
     unsafe {

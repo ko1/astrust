@@ -343,7 +343,7 @@ node_line(c: &mut Ctx, n: NodePtr, fp: *mut Value, line: u32, body: NODE)
 NODE_DEF
 node_if(c: &mut Ctx, n: NodePtr, fp: *mut Value, cond: NODE, then_b: NODE, else_b: NODE)
 {
-    if EVAL_ARG!(c, cond)?.truthy() { EVAL_ARG!(c, then_b) } else { EVAL_ARG!(c, else_b) }
+    if EVAL_TEST!(c, cond)? { EVAL_ARG!(c, then_b) } else { EVAL_ARG!(c, else_b) }
 }
 
 NODE_DEF
@@ -352,12 +352,20 @@ node_and(c: &mut Ctx, n: NodePtr, fp: *mut Value, a: NODE, b: NODE)
     let v = EVAL_ARG!(c, a)?;
     if v.falsy() { Ok(v) } else { EVAL_ARG!(c, b) }
 }
+NODE_TEST
+{
+    if EVAL_TEST!(c, a)? { EVAL_TEST!(c, b) } else { Ok(false) }
+}
 
 NODE_DEF
 node_or(c: &mut Ctx, n: NodePtr, fp: *mut Value, a: NODE, b: NODE)
 {
     let v = EVAL_ARG!(c, a)?;
     if v.truthy() { Ok(v) } else { EVAL_ARG!(c, b) }
+}
+NODE_TEST
+{
+    if EVAL_TEST!(c, a)? { Ok(true) } else { EVAL_TEST!(c, b) }
 }
 
 NODE_DEF
@@ -366,12 +374,17 @@ node_not(c: &mut Ctx, n: NodePtr, fp: *mut Value, v@child: Value, cc@ref: CallCa
     if v.is_heap() && rt_has_custom_not(v) { return rt_call0(c, v, s::not, cc); }
     Ok(Value::bool(v.falsy()))
 }
+NODE_TEST
+{
+    if v.is_heap() && rt_has_custom_not(v) { return Ok(rt_call0(c, v, s::not, cc)?.truthy()); }
+    Ok(v.falsy())
+}
 
 NODE_DEF
 node_while(c: &mut Ctx, n: NodePtr, fp: *mut Value, cond: NODE, body: NODE, until: bool)
 {
     loop {
-        let t = EVAL_ARG!(c, cond)?.truthy();
+        let t = EVAL_TEST!(c, cond)?;
         if t == until { break; }
         loop {
             match EVAL_ARG!(c, body) {
@@ -400,7 +413,7 @@ node_dowhile(c: &mut Ctx, n: NodePtr, fp: *mut Value, cond: NODE, body: NODE, un
                 _ => return Err(e),
             }
         }
-        let t = EVAL_ARG!(c, cond)?.truthy();
+        let t = EVAL_TEST!(c, cond)?;
         if t == until { break; }
     }
     Ok(NIL)
@@ -761,6 +774,12 @@ node_opt_lt(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Va
     if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LT) { return Ok(Value::bool(a.flonum_val() < b.flonum_val())); }
     rt_binop(c, a, b, s::lt, line, cc)
 }
+NODE_TEST
+{
+    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_LT) { return Ok(a.as_fix() < b.as_fix()); }
+    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LT) { return Ok(a.flonum_val() < b.flonum_val()); }
+    Ok(rt_binop(c, a, b, s::lt, line, cc)?.truthy())
+}
 
 NODE_DEF
 node_opt_le(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Value, line: u32, cc@ref: CallCache)
@@ -768,6 +787,12 @@ node_opt_le(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Va
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_LE) { return Ok(Value::bool(a.as_fix() <= b.as_fix())); }
     if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LE) { return Ok(Value::bool(a.flonum_val() <= b.flonum_val())); }
     rt_binop(c, a, b, s::le, line, cc)
+}
+NODE_TEST
+{
+    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_LE) { return Ok(a.as_fix() <= b.as_fix()); }
+    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LE) { return Ok(a.flonum_val() <= b.flonum_val()); }
+    Ok(rt_binop(c, a, b, s::le, line, cc)?.truthy())
 }
 
 NODE_DEF
@@ -777,6 +802,12 @@ node_opt_gt(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Va
     if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GT) { return Ok(Value::bool(a.flonum_val() > b.flonum_val())); }
     rt_binop(c, a, b, s::gt, line, cc)
 }
+NODE_TEST
+{
+    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_GT) { return Ok(a.as_fix() > b.as_fix()); }
+    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GT) { return Ok(a.flonum_val() > b.flonum_val()); }
+    Ok(rt_binop(c, a, b, s::gt, line, cc)?.truthy())
+}
 
 NODE_DEF
 node_opt_ge(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Value, line: u32, cc@ref: CallCache)
@@ -784,6 +815,12 @@ node_opt_ge(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Va
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_GE) { return Ok(Value::bool(a.as_fix() >= b.as_fix())); }
     if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GE) { return Ok(Value::bool(a.flonum_val() >= b.flonum_val())); }
     rt_binop(c, a, b, s::ge, line, cc)
+}
+NODE_TEST
+{
+    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_GE) { return Ok(a.as_fix() >= b.as_fix()); }
+    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GE) { return Ok(a.flonum_val() >= b.flonum_val()); }
+    Ok(rt_binop(c, a, b, s::ge, line, cc)?.truthy())
 }
 
 NODE_DEF
@@ -794,6 +831,13 @@ node_opt_eq(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Va
     if a.is_sym() && b.is_sym() { return Ok(Value::bool(a == b)); }
     rt_eq(c, a, b, line, cc)
 }
+NODE_TEST
+{
+    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_EQ) { return Ok(a == b); }
+    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { return Ok(a.flonum_val() == b.flonum_val()); }
+    if a.is_sym() && b.is_sym() { return Ok(a == b); }
+    Ok(rt_eq(c, a, b, line, cc)?.truthy())
+}
 
 NODE_DEF
 node_opt_neq(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Value, line: u32, cc@ref: CallCache)
@@ -801,6 +845,12 @@ node_opt_neq(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: V
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_EQ) { return Ok(Value::bool(a != b)); }
     if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { return Ok(Value::bool(a.flonum_val() != b.flonum_val())); }
     rt_binop(c, a, b, s::neq, line, cc)
+}
+NODE_TEST
+{
+    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_EQ) { return Ok(a != b); }
+    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { return Ok(a.flonum_val() != b.flonum_val()); }
+    Ok(rt_binop(c, a, b, s::neq, line, cc)?.truthy())
 }
 
 NODE_DEF
@@ -874,6 +924,35 @@ node_opt_aset(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: 
 }
 
 // ---- definitions -------------------------------------------------------------------
+
+// Entry of a required-params-only method: frame setup with its sizes baked in (me / block come in c.call_*).
+NODE_DEF
+node_method_entry(c: &mut Ctx, n: NodePtr, fp: *mut Value, nlocals: u32, nparams: u32, has_env: bool, line: u32, body: NODE)
+{
+    let me = c.call_me;
+    let blk = c.call_blk;
+    frame_check(c, fp, nlocals as usize)?;
+    let id = c.next_serial();
+    let is = match unsafe { (*me).kind } { MKind::Iseq(is) => is, _ => unsafe { std::hint::unreachable_unchecked() } };
+    let mut fr = Frame {
+        prev: c.frame, fp, me, blk, cref: unsafe { (*me).cref }, iseq: is, line,
+        kind: FK_METHOD, visi: VISI_PUBLIC, id, self_blk: std::ptr::null(), defined_class: NIL,
+    };
+    unsafe {
+        *fp.add(1) = NIL;
+        let mut i = 2 + nparams as usize;
+        while i < nlocals as usize { *fp.add(i) = NIL; i += 1; }
+        c.sp = fp.add(nlocals as usize);
+        if has_env { make_env(&*is, fp, NIL); }
+    }
+    c.frame = &mut fr;
+    let r = EVAL_ARG!(c, body);
+    c.frame = fr.prev;
+    match r {
+        Ok(v) => Ok(v),
+        Err(e) => if c.esc == EscKind::Return && c.esc_tag == id { c.esc = EscKind::None; Ok(c.esc_val) } else { Err(e) },
+    }
+}
 
 NODE_DEF
 node_def(c: &mut Ctx, n: NodePtr, fp: *mut Value, mid: Sym, body: IseqRef)

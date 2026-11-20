@@ -312,8 +312,11 @@ impl<'a> Compiler<'a> {
             else if req_kw { req + 1 } else { req }
         };
         let local_names = sc.names.iter().map(|(n, l)| match l { VarLoc::Slot(i) => (*n, *i as i32, -1), VarLoc::Env(i) => (*n, -1, *i as i32) }).collect();
+        let entry = if kind == IseqKind::Method && lead_only {
+            ALLOC_node_method_entry(sc.nslots, params.lead.len() as u32, sc.env_size > 0, line, body)
+        } else { std::ptr::null_mut() };
         let is = Box::leak(Box::new(Iseq {
-            body, nlocals: sc.nslots, params, env_size: sc.env_size, env_params,
+            body, entry, nlocals: sc.nslots, params, env_size: sc.env_size, env_params,
             info: CodeInfo { file: self.file, label, line }, kind, simple, lead_only, name, local_names, arity, uses_block: false,
             parent: std::cell::Cell::new(std::ptr::null()), ruby2_keywords: std::cell::Cell::new(false),
             outer_names: if kind == IseqKind::Eval { self.eval_outer.iter().flatten().cloned().collect() } else { vec![] },

@@ -49,6 +49,7 @@ pub struct Params {
 
 pub struct Iseq {
     pub body: NodePtr,
+    pub entry: NodePtr,                 // node_method_entry over body (required-params-only methods), else null
     pub nlocals: u32,                   // frame size including self (0) and env (1)
     pub params: Params,
     pub env_size: u32,
@@ -129,7 +130,7 @@ pub fn new_cref(klass: Value, prev: *const Cref) -> *const Cref {
 // ---- inline caches -------------------------------------------------------------------------
 
 #[derive(Default)]
-pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize }
+pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize, pub fast_argc: u32 }
 #[derive(Default)]
 pub struct ConstCache { pub serial: u64, pub cref: usize, pub val: u64 }
 #[derive(Default)]
@@ -185,6 +186,8 @@ pub struct Ctx {
     pub last_match: Value,
     pub native_limit: usize,
     pub in_ensure: u32,
+    pub call_me: *const MethodEntry,    // arguments of node_method_entry
+    pub call_blk: *const Block,
 }
 
 impl Ctx {
@@ -936,16 +939,15 @@ pub fn call_cached(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: *mut Value, 
     let vm = vm();
     let me = if cc.klass == klass.raw() && cc.serial == vm.method_serial {
         // fast path: a public Iseq method with only required params (see fill_cc)
+        // fast_argc matches only when cc.fast is a method entry node (fill_cc)
+        if argc == cc.fast_argc && flags & CF_KW == 0 {
+            c.call_me = cc.me as *const MethodEntry; c.call_blk = blk;
+            let r = run_body(c, cc.fast as NodePtr, base);
+            c.sp = base;
+            return r;
+        }
         if cc.fast != 0 && flags & CF_KW == 0 {
             match cc.fast & 3 {
-                0 => {
-                    let is = unsafe { &*(cc.fast as *const Iseq) };
-                    if argc as usize == is.params.lead.len() {
-                        let r = invoke_iseq_simple(c, cc.me as *const MethodEntry, is, recv, base, argc, blk);
-                        c.sp = base;
-                        return r;
-                    }
-                }
                 1 if argc == 0 => {
                     // attr_reader on an Object whose class assigned the ivar index
                     if let Body::Object(ivs) = &obj(recv).body {
@@ -1069,12 +1071,12 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Valu
 
 #[inline(never)]
 fn fill_cc(cc: &mut CallCache, klass: Value, me: *const MethodEntry, serial: u64, flags: u32) {
-    cc.klass = klass.raw(); cc.serial = serial; cc.me = me as usize; cc.fast = 0;
+    cc.klass = klass.raw(); cc.serial = serial; cc.me = me as usize; cc.fast = 0; cc.fast_argc = u32::MAX;
     if me.is_null() { return; }
     let m = unsafe { &*me };
     if m.visi != VISI_PUBLIC && flags & CF_FCALL == 0 { return; }
     match m.kind {
-        MKind::Iseq(is) => { if unsafe { (*is).lead_only } { cc.fast = is as usize; } }
+        MKind::Iseq(is) => { let is = unsafe { &*is }; if !is.entry.is_null() { cc.fast = is.entry as usize; cc.fast_argc = is.params.lead.len() as u32; } }
         MKind::Cfunc(..) if me == unsafe { crate::builtins::object::BO_EQ_ME } => { cc.fast = 3; }
         MKind::AttrReader(name) | MKind::AttrWriter(name) => {
             let cd = rclass(klass);
@@ -1102,30 +1104,20 @@ pub fn make_env(is: &Iseq, base: *mut Value, parent: Value) {
 /// Call of an Iseq method with only required, slot-contiguous params.
 #[inline(always)]
 pub fn invoke_iseq_simple(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: *mut Value, argc: u32, blk: *const Block) -> RV {
-    let n = is.nlocals as usize;
-    stack_check(c, n + 16)?;
-    let id = c.next_serial();
-    let mut fr = Frame {
-        prev: c.frame, fp: base, me, blk, cref: unsafe { (*me).cref }, iseq: is, line: is.info.line,
-        kind: FK_METHOD, visi: VISI_PUBLIC, id, self_blk: std::ptr::null(), defined_class: NIL,
-    };
-    unsafe {
-        *base = recv;
-        *base.add(1) = NIL;
-        let mut i = 2 + argc as usize;
-        while i < n { *base.add(i) = NIL; i += 1; }
-        c.sp = base.add(n);
-        if is.env_size > 0 { make_env(is, base, NIL); }
+    if is.entry.is_null() { return invoke_iseq(c, me, is, recv, base, argc, blk, 0); }
+    unsafe { *base = recv; }
+    c.call_me = me; c.call_blk = blk;
+    run_body(c, is.entry, base)
+}
+
+/// Stack check for a frame of `n` slots at `fp`.
+#[inline(always)]
+pub fn frame_check(c: &mut Ctx, fp: *mut Value, n: usize) -> Result<(), Esc> {
+    let probe = 0u8;
+    if unsafe { fp.add(n + 16) } >= c.stack_end || (&probe as *const u8 as usize) < c.native_limit {
+        return Err(raise_stack_overflow(c));
     }
-    c.frame = &mut fr;
-    let r = run_body(c, is.body, base);
-    c.frame = fr.prev;
-    match r {
-        Ok(v) => Ok(v),
-        Err(e) => {
-            if c.esc == EscKind::Return && c.esc_tag == id { c.esc = EscKind::None; Ok(c.esc_val) } else { Err(e) }
-        }
-    }
+    Ok(())
 }
 
 #[cold]
@@ -1240,6 +1232,11 @@ pub fn kw_arg(args: &[Value]) -> Option<Value> {
 }
 
 pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: *mut Value, argc: u32, blk: *const Block, flags: u32) -> RV {
+    if !is.entry.is_null() && argc as usize == is.params.lead.len() && flags & CF_KW == 0 {
+        let r = invoke_iseq_simple(c, me, is, recv, base, argc, blk);
+        c.sp = base;
+        return r;
+    }
     stack_check(c, is.nlocals as usize + 16)?;
     let mut fr = Frame::empty();
     fr.prev = c.frame;

@@ -1,5 +1,5 @@
 // This file is auto-generated from node.def by astrustgen. Do not edit.
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_num(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_num_struct>)).u };
     let mut h = hash_str("node_num");
@@ -7,7 +7,7 @@ fn HASH_node_num(n: NodePtr) -> u64 {
     h
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_add(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_add_struct>)).u };
     let mut h = hash_str("node_add");
@@ -16,7 +16,7 @@ fn HASH_node_add(n: NodePtr) -> u64 {
     h
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_sub(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_sub_struct>)).u };
     let mut h = hash_str("node_sub");
@@ -25,7 +25,7 @@ fn HASH_node_sub(n: NodePtr) -> u64 {
     h
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_mul(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_mul_struct>)).u };
     let mut h = hash_str("node_mul");
@@ -34,7 +34,7 @@ fn HASH_node_mul(n: NodePtr) -> u64 {
     h
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_mod(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_mod_struct>)).u };
     let mut h = hash_str("node_mod");
@@ -43,7 +43,7 @@ fn HASH_node_mod(n: NodePtr) -> u64 {
     h
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_var(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_var_struct>)).u };
     let mut h = hash_str("node_var");
@@ -51,7 +51,7 @@ fn HASH_node_var(n: NodePtr) -> u64 {
     h
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_set(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_set_struct>)).u };
     let mut h = hash_str("node_set");
@@ -60,7 +60,7 @@ fn HASH_node_set(n: NodePtr) -> u64 {
     h
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_seq(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_seq_struct>)).u };
     let mut h = hash_str("node_seq");
@@ -68,7 +68,7 @@ fn HASH_node_seq(n: NodePtr) -> u64 {
     h
 }
 
-#[allow(non_snake_case, unused_unsafe)]
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_times(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_times_struct>)).u };
     let mut h = hash_str("node_times");

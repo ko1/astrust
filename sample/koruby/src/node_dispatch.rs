@@ -786,6 +786,15 @@ pub fn DISPATCH_node_opt_aset(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
 }
 
 #[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_method_entry(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
+    let np = n as *mut NodeOf<node_method_entry_struct>;
+    unsafe {
+
+    EVAL_node_method_entry::<Dyn>(c, n, fp, (*np).u.nlocals, (*np).u.nparams, (*np).u.has_env, (*np).u.line, (*np).u.body)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
 pub fn DISPATCH_node_def(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
     let np = n as *mut NodeOf<node_def_struct>;
     unsafe {

@@ -122,7 +122,7 @@ fn new_fiber(klass: Value, proc_: Value) -> Value {
     let ctx = Box::new(Ctx {
         sp: base, stack_base: base, stack_end: unsafe { base.add(VSTACK - 64) }, frame: std::ptr::null_mut(),
         esc: EscKind::None, esc_val: NIL, esc_tag: 0, esc_tag_v: NIL, serial: 1 << 40, errinfo: NIL, last_match: NIL,
-        native_limit: stack as usize + (512 << 10), in_ensure: 0,
+        native_limit: stack as usize + (512 << 10), in_ensure: 0, call_me: std::ptr::null(), call_blk: std::ptr::null(),
     });
     // initial frame: six zero registers, then the return address fiber_start
     let top = (stack as usize + STACK_SIZE) & !15;

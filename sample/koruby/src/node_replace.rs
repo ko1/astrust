@@ -547,6 +547,12 @@ fn REPLACE_node_opt_aset(n: NodePtr, old: NodePtr, new: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_method_entry(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_method_entry_struct>)).u };
+    if u.body == old { u.body = new; }
+}
+
+#[allow(non_snake_case, unused_variables)]
 fn REPLACE_node_def(n: NodePtr, old: NodePtr, new: NodePtr) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_def_struct>)).u };
 

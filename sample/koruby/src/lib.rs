@@ -172,7 +172,7 @@ fn run_main(o: Opts) -> i32 {
     let mut c = Ctx {
         sp: std::ptr::null_mut(), stack_base: std::ptr::null_mut(), stack_end: std::ptr::null_mut(), frame: std::ptr::null_mut(),
         esc: EscKind::None, esc_val: NIL, esc_tag: 0, esc_tag_v: NIL, serial: 0, errinfo: NIL, last_match: NIL,
-        native_limit: 0, in_ensure: 0,
+        native_limit: 0, in_ensure: 0, call_me: std::ptr::null(), call_blk: std::ptr::null(),
     };
     let nvals = 8 << 20;
     let stack: &'static mut [Value] = Box::leak(vec![NIL; nvals].into_boxed_slice());

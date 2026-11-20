@@ -21,6 +21,9 @@ require 'optparse'
 # node.def syntax:
 #
 #   <Rust lines, copied to node_eval.rs>
+#   NODE_TEST { ... }  (optional, right after a node's body) the node evaluated as a condition:
+#                     returns the embedder's `test_type` directly; children with EVAL_TEST!(c, x).
+#                     Nodes without one fall back to `test_default` over their value.
 #   NODE_DEF [@noinline] [@always_inline] [@canonical=BASE]
 #   node_name(c: &mut Ctx, n: *mut Node, <common...>, op: TYPE, ...) -> RESULT?
 #   {
@@ -156,6 +159,9 @@ module ASTrustGen
       # Extract the value from a child dispatcher's result inside DISPATCH/SD glue
       # (e.g. `e?` when the result is a Result).
       def unwrap_expr(e) = e
+      # Condition mode (NODE_TEST / EVAL_TEST!): its result type, and how a value result becomes one. nil = off.
+      def test_type = nil
+      def test_default(e) = e
       # Opaque (non-scalar, non-node) operands: hash / specialize / dump.
       def opaque_hash_expr(op, f) = "0u64"
       def opaque_specialize_arg(op, f) = "a.push(\"(*np).u.#{op.name}\".to_string());"
@@ -210,6 +216,13 @@ module ASTrustGen
         end
       end
 
+      attr_reader :test_body
+      def parse_test_body lines
+        main, @body = @body, nil
+        parse_body(lines)
+        @test_body, @body = @body, main
+      end
+
       # EVAL_ARG!(c, x) / EVAL_ARG!(c, x, extra...) / EVAL_NTH!(c, xs, i) / EVAL_LEN!(xs)
       def substitute_body(body)
         extra = extra_call_args
@@ -222,6 +235,7 @@ module ASTrustGen
           args = rest ? rest.sub(/\A,/, '').strip : extra.join(', ')
           "<D_#{xs} as DispList>::nth(#{c}, #{xs}, #{i}#{args.empty? ? '' : ", #{args}"})"
         }.gsub(/EVAL_LEN!\(\s*(\w+)\s*\)/) { "<D_#{$1} as DispList>::len(#{$1})" }
+         .gsub(/EVAL_TEST!\(\s*(\w+)\s*,\s*(\w+)\s*\)/) { "<D_#{$2} as Disp>::test(#{$1}, #{$2}#{extra.empty? ? '' : ", #{extra.join(', ')}"})" }
       end
 
       def generics
@@ -236,6 +250,17 @@ module ASTrustGen
         #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
         pub fn EVAL_#{@name}#{generics}(#{params}) -> #{result_type} {
         #{substitute_body(@body)}}
+        #{build_eval_test(params)}
+        RS
+      end
+
+      def build_eval_test(params)
+        return "" unless @test_body
+        <<~RS
+        #[inline(always)]
+        #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+        pub fn EVAL_TEST_#{@name}#{generics}(#{params}) -> #{test_type} {
+        #{substitute_body(@test_body)}}
         RS
       end
 
@@ -357,6 +382,16 @@ module ASTrustGen
       # SPECIALIZE_<name>(sc, n) -> String: emits (once per hash) a zero-sized type
       # `T_<hash>` implementing Disp whose call() is EVAL_<name> instantiated with the
       # children's SD types and the scalar operands baked in; returns the type name.
+      def build_specialize_test(params, child_glue, tf)
+        return "" unless @test_body
+        <<~RS.chomp
+            body.push_str(&format!("    #[inline#{always_inline? ? '(always)' : ''}]\\n    fn test(#{params}) -> #{test_type} {{ unsafe {{\\n"));
+            body.push_str(&format!("        let np = {} as *mut NodeOf<#{struct_name}>;\\n", "#{prefix_names[1]}"));
+        #{child_glue.join("\n")}
+            body.push_str(&format!("        EVAL_TEST_#{@name}{}({})\\n    }} }}\\n", #{tf}, a.join(", ")));
+        RS
+      end
+
       def build_specialize
         if no_inline?
           return <<~RS
@@ -396,7 +431,9 @@ module ASTrustGen
             body.push_str(&format!("impl Disp for {} {{\\n    #[inline#{always_inline? ? '(always)' : ''}]\\n    fn call(#{params}) -> #{result_type} {{ unsafe {{\\n", name));
             body.push_str(&format!("        let np = {} as *mut NodeOf<#{struct_name}>;\\n", "#{prefix_names[1]}"));
         #{child_glue.join("\n")}
-            body.push_str(&format!("        EVAL_#{@name}{}({})\\n    }} }}\\n}}\\n", #{tf}, a.join(", ")));
+            body.push_str(&format!("        EVAL_#{@name}{}({})\\n    }} }}\\n", #{tf}, a.join(", ")));
+        #{build_specialize_test(params, child_glue, tf)}
+            body.push_str("}\n");
             sc.emitted.insert(name.clone());
             sc.out.push_str(&body);
             name
@@ -423,6 +460,10 @@ module ASTrustGen
           raise "duplicate node #{node.name}" if @nodes[node.name]
           @nodes[node.name] = node
           node.parse_body(lines)
+        elsif line.chomp == "NODE_TEST"
+          node = @nodes.values.last or raise "NODE_TEST without a node"
+          raise "NODE_TEST needs the embedder's test_type (#{node.name})" unless node.test_type
+          node.parse_test_body(lines)
         else
           @header << line.chomp
         end
@@ -529,7 +570,10 @@ module ASTrustGen
       }
 
       /// A dispatcher as a type: `Dyn` calls through the node head, an SD type statically.
-      pub trait Disp { fn call(#{params.join(', ')}) -> #{n.result_type}; }
+      pub trait Disp {
+          fn call(#{params.join(', ')}) -> #{n.result_type};
+      #{n.test_type ? "    #[inline(always)]\n    fn test(#{params.join(', ')}) -> #{n.test_type} { #{n.test_default("Self::call(#{pnames.join(', ')})")} }" : ""}
+      }
       /// A list of children: `DynList` loops over the heads, an SD list type is unrolled.
       pub trait DispList {
           fn len(ns: NodeList) -> usize;

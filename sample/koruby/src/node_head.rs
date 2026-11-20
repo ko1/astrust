@@ -87,7 +87,11 @@ pub fn {}(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ <{} as Disp>::call(c
 }
 
 /// A dispatcher as a type: `Dyn` calls through the node head, an SD type statically.
-pub trait Disp { fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV; }
+pub trait Disp {
+    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV;
+    #[inline(always)]
+    fn test(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> Result<bool, Esc> { Ok(Self::call(c, n, fp)?.truthy()) }
+}
 /// A list of children: `DynList` loops over the heads, an SD list type is unrolled.
 pub trait DispList {
     fn len(ns: NodeList) -> usize;
@@ -762,6 +766,16 @@ pub struct node_opt_aset_struct {
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
+pub struct node_method_entry_struct {
+    pub nlocals: u32,
+    pub nparams: u32,
+    pub has_env: bool,
+    pub line: u32,
+    pub body: NodePtr,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
 pub struct node_def_struct {
     pub mid: Sym,
     pub body: IseqRef,
@@ -1285,6 +1299,11 @@ pub fn ALLOC_node_opt_aref(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_aset(a: NodePtr, b: NodePtr, v: NodePtr, line: u32) -> NodePtr {
     node_allocate(&KIND_node_opt_aset, node_opt_aset_struct { a, b, v, line, cc: Default::default() })
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_method_entry(nlocals: u32, nparams: u32, has_env: bool, line: u32, body: NodePtr) -> NodePtr {
+    node_allocate(&KIND_node_method_entry, node_method_entry_struct { nlocals, nparams, has_env, line, body })
 }
 
 #[allow(non_snake_case)]
@@ -2284,6 +2303,17 @@ pub static KIND_node_opt_aset: NodeKind = NodeKind {
     specializer: SPECIALIZE_node_opt_aset,
     dumper: DUMP_node_opt_aset,
     replacer: REPLACE_node_opt_aset,
+    no_inline: false,
+};
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_method_entry: NodeKind = NodeKind {
+    name: "node_method_entry",
+    default_dispatcher: DISPATCH_node_method_entry,
+    hash_func: HASH_node_method_entry,
+    specializer: SPECIALIZE_node_method_entry,
+    dumper: DUMP_node_method_entry,
+    replacer: REPLACE_node_method_entry,
     no_inline: false,
 };
 

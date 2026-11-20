@@ -18,6 +18,8 @@ class KorubyNodeDef < ASTrustGen::NodeDef
     def common_param_count = 3
     def result_type = @ret || 'RV'
     def unwrap_expr(e) = "#{e}?"
+    def test_type = "Result<bool, Esc>"
+    def test_default(e) = "Ok(#{e}?.truthy())"
 
     def opaque_hash_expr(op, f)
       case op.type

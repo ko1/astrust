@@ -87,7 +87,10 @@ pub fn {}(c: &mut Ctx, n: NodePtr) -> i64 {{ <{} as Disp>::call(c, n) }}
 }
 
 /// A dispatcher as a type: `Dyn` calls through the node head, an SD type statically.
-pub trait Disp { fn call(c: &mut Ctx, n: NodePtr) -> i64; }
+pub trait Disp {
+    fn call(c: &mut Ctx, n: NodePtr) -> i64;
+
+}
 /// A list of children: `DynList` loops over the heads, an SD list type is unrolled.
 pub trait DispList {
     fn len(ns: NodeList) -> usize;

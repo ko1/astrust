@@ -19,7 +19,7 @@ pub fn init(program_dir: Option<&str>, collect: bool) {
 #[allow(static_mut_refs)]
 pub fn register_iseq(is: &'static Iseq) {
     let Some(st) = (unsafe { STORE.as_mut() }) else { return };
-    let body = is.body;
+    let body = if is.entry.is_null() { is.body } else { is.entry };
     if let Some(p) = st.register(body as usize, hash_node(body), is.info.file == PRELUDE_FILE, env!("KORUBY_BUILD_ID")) {
         unsafe { (*body).head.dispatcher = std::mem::transmute::<*const std::os::raw::c_void, DispatchFn>(p); }
         vm().sd_hits += 1;

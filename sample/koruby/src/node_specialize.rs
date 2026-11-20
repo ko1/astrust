@@ -16,7 +16,10 @@ fn SPECIALIZE_node_nil(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_nil_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_nil{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_nil{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -39,7 +42,10 @@ fn SPECIALIZE_node_true(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_true_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_true{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_true{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -62,7 +68,10 @@ fn SPECIALIZE_node_false(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_false_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_false{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_false{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -85,7 +94,10 @@ fn SPECIALIZE_node_self(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_self_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_self{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_self{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -108,7 +120,10 @@ fn SPECIALIZE_node_lit(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_lit_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_lit{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_lit{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -131,7 +146,10 @@ fn SPECIALIZE_node_float(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_float_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_float{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_float{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -155,7 +173,10 @@ fn SPECIALIZE_node_str(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_str_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_str{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_str{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -180,7 +201,10 @@ fn SPECIALIZE_node_fstr(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_fstr_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_fstr{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_fstr{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -204,7 +228,10 @@ fn SPECIALIZE_node_dstr(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_dstr_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_dstr{}({})\n    }} }}\n}}\n", format!("::<{}>", t_parts), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_dstr{}({})\n    }} }}\n", format!("::<{}>", t_parts), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -227,7 +254,10 @@ fn SPECIALIZE_node_tostr(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_tostr_struct>;\n", "n"));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, (*np).u.v, fp)?;\n", t_v));
-    body.push_str(&format!("        EVAL_node_tostr{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_tostr{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -250,7 +280,10 @@ fn SPECIALIZE_node_dsym(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_dsym_struct>;\n", "n"));
     body.push_str(&format!("        let v_s = <{} as Disp>::call(c, (*np).u.s, fp)?;\n", t_s));
-    body.push_str(&format!("        EVAL_node_dsym{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_dsym{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -275,7 +308,10 @@ fn SPECIALIZE_node_regex(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_regex_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_regex{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_regex{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -301,7 +337,10 @@ fn SPECIALIZE_node_dregex(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_dregex_struct>;\n", "n"));
     body.push_str(&format!("        let v_s = <{} as Disp>::call(c, (*np).u.s, fp)?;\n", t_s));
-    body.push_str(&format!("        EVAL_node_dregex{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_dregex{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -325,7 +364,10 @@ fn SPECIALIZE_node_biglit(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_biglit_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_biglit{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_biglit{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -348,7 +390,10 @@ fn SPECIALIZE_node_ary(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_ary_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_ary{}({})\n    }} }}\n}}\n", format!("::<{}>", t_elems), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_ary{}({})\n    }} }}\n", format!("::<{}>", t_elems), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -372,7 +417,10 @@ fn SPECIALIZE_node_ary_build(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_ary_build_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_ary_build{}({})\n    }} }}\n}}\n", format!("::<{}>", t_elems), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_ary_build{}({})\n    }} }}\n", format!("::<{}>", t_elems), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -396,7 +444,10 @@ fn SPECIALIZE_node_hash(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_hash_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_hash{}({})\n    }} }}\n}}\n", format!("::<{}>", t_items), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_hash{}({})\n    }} }}\n", format!("::<{}>", t_items), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -423,7 +474,10 @@ fn SPECIALIZE_node_range(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_range_struct>;\n", "n"));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
     body.push_str(&format!("        let v_e = <{} as Disp>::call(c, (*np).u.e, fp)?;\n", t_e));
-    body.push_str(&format!("        EVAL_node_range{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_range{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -449,7 +503,10 @@ fn SPECIALIZE_node_range_lit(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_range_lit_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_range_lit{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_range_lit{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -472,7 +529,10 @@ fn SPECIALIZE_node_lvar(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_lvar_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_lvar{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_lvar{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -496,7 +556,10 @@ fn SPECIALIZE_node_lasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_lasgn_struct>;\n", "n"));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, (*np).u.v, fp)?;\n", t_v));
-    body.push_str(&format!("        EVAL_node_lasgn{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_lasgn{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -520,7 +583,10 @@ fn SPECIALIZE_node_dvar(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_dvar_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_dvar{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_dvar{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -545,7 +611,10 @@ fn SPECIALIZE_node_dasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_dasgn_struct>;\n", "n"));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, (*np).u.v, fp)?;\n", t_v));
-    body.push_str(&format!("        EVAL_node_dasgn{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_dasgn{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -569,7 +638,10 @@ fn SPECIALIZE_node_ivar(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_ivar_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_ivar{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_ivar{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -594,7 +666,10 @@ fn SPECIALIZE_node_iasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_iasgn_struct>;\n", "n"));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, (*np).u.v, fp)?;\n", t_v));
-    body.push_str(&format!("        EVAL_node_iasgn{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_iasgn{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -617,7 +692,10 @@ fn SPECIALIZE_node_gvar(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_gvar_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_gvar{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_gvar{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -641,7 +719,10 @@ fn SPECIALIZE_node_gasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_gasgn_struct>;\n", "n"));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, (*np).u.v, fp)?;\n", t_v));
-    body.push_str(&format!("        EVAL_node_gasgn{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_gasgn{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -664,7 +745,10 @@ fn SPECIALIZE_node_cvar(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_cvar_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_cvar{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_cvar{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -688,7 +772,10 @@ fn SPECIALIZE_node_cvasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_cvasgn_struct>;\n", "n"));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, (*np).u.v, fp)?;\n", t_v));
-    body.push_str(&format!("        EVAL_node_cvasgn{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_cvasgn{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -713,7 +800,10 @@ fn SPECIALIZE_node_const(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_const_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_const{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_const{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -738,7 +828,10 @@ fn SPECIALIZE_node_const_path(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_const_path_struct>;\n", "n"));
     body.push_str(&format!("        let v_parent = <{} as Disp>::call(c, (*np).u.parent, fp)?;\n", t_parent));
-    body.push_str(&format!("        EVAL_node_const_path{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_const_path{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -761,7 +854,10 @@ fn SPECIALIZE_node_top_const(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_top_const_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_top_const{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_top_const{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -785,7 +881,10 @@ fn SPECIALIZE_node_cdecl(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_cdecl_struct>;\n", "n"));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, (*np).u.v, fp)?;\n", t_v));
-    body.push_str(&format!("        EVAL_node_cdecl{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_cdecl{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -812,7 +911,10 @@ fn SPECIALIZE_node_cdecl_path(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_cdecl_path_struct>;\n", "n"));
     body.push_str(&format!("        let v_parent = <{} as Disp>::call(c, (*np).u.parent, fp)?;\n", t_parent));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, (*np).u.v, fp)?;\n", t_v));
-    body.push_str(&format!("        EVAL_node_cdecl_path{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_cdecl_path{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -835,7 +937,10 @@ fn SPECIALIZE_node_errinfo(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_errinfo_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_errinfo{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_errinfo{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -858,7 +963,10 @@ fn SPECIALIZE_node_nth_ref(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_nth_ref_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_nth_ref{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_nth_ref{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -881,7 +989,10 @@ fn SPECIALIZE_node_back_ref(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_back_ref_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_back_ref{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_back_ref{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -904,7 +1015,10 @@ fn SPECIALIZE_node_block(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_block_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_block{}({})\n    }} }}\n}}\n", format!("::<{}>", t_stmts), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_block{}({})\n    }} }}\n", format!("::<{}>", t_stmts), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -928,7 +1042,10 @@ fn SPECIALIZE_node_line(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_line_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_line{}({})\n    }} }}\n}}\n", format!("::<{}>", t_body), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_line{}({})\n    }} }}\n", format!("::<{}>", t_body), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -955,7 +1072,10 @@ fn SPECIALIZE_node_if(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_if_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_if{}({})\n    }} }}\n}}\n", format!("::<{}, {}, {}>", t_cond, t_then_b, t_else_b), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_if{}({})\n    }} }}\n", format!("::<{}, {}, {}>", t_cond, t_then_b, t_else_b), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -980,7 +1100,13 @@ fn SPECIALIZE_node_and(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_and_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_and{}({})\n    }} }}\n}}\n", format!("::<{}, {}>", t_a, t_b), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_and{}({})\n    }} }}\n", format!("::<{}, {}>", t_a, t_b), a.join(", ")));
+    body.push_str(&format!("    #[inline]\n    fn test(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> Result<bool, Esc> {{ unsafe {{\n"));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_and_struct>;\n", "n"));
+
+    body.push_str(&format!("        EVAL_TEST_node_and{}({})\n    }} }}\n", format!("::<{}, {}>", t_a, t_b), a.join(", ")));
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1005,7 +1131,13 @@ fn SPECIALIZE_node_or(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_or_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_or{}({})\n    }} }}\n}}\n", format!("::<{}, {}>", t_a, t_b), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_or{}({})\n    }} }}\n", format!("::<{}, {}>", t_a, t_b), a.join(", ")));
+    body.push_str(&format!("    #[inline]\n    fn test(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> Result<bool, Esc> {{ unsafe {{\n"));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_or_struct>;\n", "n"));
+
+    body.push_str(&format!("        EVAL_TEST_node_or{}({})\n    }} }}\n", format!("::<{}, {}>", t_a, t_b), a.join(", ")));
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1029,7 +1161,13 @@ fn SPECIALIZE_node_not(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_not_struct>;\n", "n"));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, (*np).u.v, fp)?;\n", t_v));
-    body.push_str(&format!("        EVAL_node_not{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_not{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("    #[inline]\n    fn test(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> Result<bool, Esc> {{ unsafe {{\n"));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_not_struct>;\n", "n"));
+    body.push_str(&format!("        let v_v = <{} as Disp>::call(c, (*np).u.v, fp)?;\n", t_v));
+    body.push_str(&format!("        EVAL_TEST_node_not{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1055,7 +1193,10 @@ fn SPECIALIZE_node_while(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_while_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_while{}({})\n    }} }}\n}}\n", format!("::<{}, {}>", t_cond, t_body), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_while{}({})\n    }} }}\n", format!("::<{}, {}>", t_cond, t_body), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1081,7 +1222,10 @@ fn SPECIALIZE_node_dowhile(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_dowhile_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_dowhile{}({})\n    }} }}\n}}\n", format!("::<{}, {}>", t_cond, t_body), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_dowhile{}({})\n    }} }}\n", format!("::<{}, {}>", t_cond, t_body), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1104,7 +1248,10 @@ fn SPECIALIZE_node_loop_break(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_loop_break_struct>;\n", "n"));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, (*np).u.v, fp)?;\n", t_v));
-    body.push_str(&format!("        EVAL_node_loop_break{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_loop_break{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1127,7 +1274,10 @@ fn SPECIALIZE_node_loop_next(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_loop_next_struct>;\n", "n"));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, (*np).u.v, fp)?;\n", t_v));
-    body.push_str(&format!("        EVAL_node_loop_next{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_loop_next{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1150,7 +1300,10 @@ fn SPECIALIZE_node_break(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_break_struct>;\n", "n"));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, (*np).u.v, fp)?;\n", t_v));
-    body.push_str(&format!("        EVAL_node_break{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_break{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1173,7 +1326,10 @@ fn SPECIALIZE_node_next(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_next_struct>;\n", "n"));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, (*np).u.v, fp)?;\n", t_v));
-    body.push_str(&format!("        EVAL_node_next{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_next{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1196,7 +1352,10 @@ fn SPECIALIZE_node_return(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_return_struct>;\n", "n"));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, (*np).u.v, fp)?;\n", t_v));
-    body.push_str(&format!("        EVAL_node_return{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_return{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1219,7 +1378,10 @@ fn SPECIALIZE_node_retry(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_retry_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_retry{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_retry{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1242,7 +1404,10 @@ fn SPECIALIZE_node_redo(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_redo_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_redo{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_redo{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1270,7 +1435,10 @@ fn SPECIALIZE_node_rescue(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_rescue_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_rescue{}({})\n    }} }}\n}}\n", format!("::<{}, {}, {}>", t_body, t_clauses, t_else_b), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_rescue{}({})\n    }} }}\n", format!("::<{}, {}, {}>", t_body, t_clauses, t_else_b), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1298,7 +1466,10 @@ fn SPECIALIZE_node_resbody(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_resbody_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_resbody{}({})\n    }} }}\n}}\n", format!("::<{}, {}, {}>", t_classes, t_assign, t_body), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_resbody{}({})\n    }} }}\n", format!("::<{}, {}, {}>", t_classes, t_assign, t_body), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1323,7 +1494,10 @@ fn SPECIALIZE_node_ensure(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_ensure_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_ensure{}({})\n    }} }}\n}}\n", format!("::<{}, {}>", t_body, t_ens), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_ensure{}({})\n    }} }}\n", format!("::<{}, {}>", t_body, t_ens), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1349,7 +1523,10 @@ fn SPECIALIZE_node_when(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_when_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_when{}({})\n    }} }}\n}}\n", format!("::<{}>", t_pats), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_when{}({})\n    }} }}\n", format!("::<{}>", t_pats), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1374,7 +1551,10 @@ fn SPECIALIZE_node_defined(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_defined_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_defined{}({})\n    }} }}\n}}\n", format!("::<{}>", t_recv), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_defined{}({})\n    }} }}\n", format!("::<{}>", t_recv), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1403,7 +1583,10 @@ fn SPECIALIZE_node_call(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_call_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_call{}({})\n    }} }}\n}}\n", format!("::<{}, {}>", t_recv, t_args), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_call{}({})\n    }} }}\n", format!("::<{}, {}>", t_recv, t_args), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1433,7 +1616,10 @@ fn SPECIALIZE_node_call_blk(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_call_blk_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_call_blk{}({})\n    }} }}\n}}\n", format!("::<{}, {}>", t_recv, t_args), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_call_blk{}({})\n    }} }}\n", format!("::<{}, {}>", t_recv, t_args), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1463,7 +1649,10 @@ fn SPECIALIZE_node_call_kw(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_call_kw_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_call_kw{}({})\n    }} }}\n}}\n", format!("::<{}, {}>", t_recv, t_args), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_call_kw{}({})\n    }} }}\n", format!("::<{}, {}>", t_recv, t_args), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1493,7 +1682,10 @@ fn SPECIALIZE_node_call_x(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_call_x_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_call_x{}({})\n    }} }}\n}}\n", format!("::<{}, {}>", t_recv, t_args), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_call_x{}({})\n    }} }}\n", format!("::<{}, {}>", t_recv, t_args), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1522,7 +1714,10 @@ fn SPECIALIZE_node_attrasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_attrasgn_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_attrasgn{}({})\n    }} }}\n}}\n", format!("::<{}, {}>", t_recv, t_args), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_attrasgn{}({})\n    }} }}\n", format!("::<{}, {}>", t_recv, t_args), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1548,7 +1743,10 @@ fn SPECIALIZE_node_super(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_super_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_super{}({})\n    }} }}\n}}\n", format!("::<{}>", t_args), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_super{}({})\n    }} }}\n", format!("::<{}>", t_args), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1571,7 +1769,10 @@ fn SPECIALIZE_node_yield(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_yield_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_yield{}({})\n    }} }}\n}}\n", format!("::<{}>", t_args), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_yield{}({})\n    }} }}\n", format!("::<{}>", t_args), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1595,7 +1796,10 @@ fn SPECIALIZE_node_yield_x(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_yield_x_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_yield_x{}({})\n    }} }}\n}}\n", format!("::<{}>", t_args), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_yield_x{}({})\n    }} }}\n", format!("::<{}>", t_args), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1618,7 +1822,10 @@ fn SPECIALIZE_node_block_given(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_block_given_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_block_given{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_block_given{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1641,7 +1848,10 @@ fn SPECIALIZE_node_lambda(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_lambda_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_lambda{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_lambda{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1669,7 +1879,10 @@ fn SPECIALIZE_node_opt_plus(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_plus_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
-    body.push_str(&format!("        EVAL_node_opt_plus{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_plus{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1697,7 +1910,10 @@ fn SPECIALIZE_node_opt_minus(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_minus_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
-    body.push_str(&format!("        EVAL_node_opt_minus{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_minus{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1725,7 +1941,10 @@ fn SPECIALIZE_node_opt_mul(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_mul_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
-    body.push_str(&format!("        EVAL_node_opt_mul{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_mul{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1753,7 +1972,10 @@ fn SPECIALIZE_node_opt_div(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_div_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
-    body.push_str(&format!("        EVAL_node_opt_div{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_div{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1781,7 +2003,10 @@ fn SPECIALIZE_node_opt_mod(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_mod_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
-    body.push_str(&format!("        EVAL_node_opt_mod{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_mod{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1809,7 +2034,14 @@ fn SPECIALIZE_node_opt_lt(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_lt_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
-    body.push_str(&format!("        EVAL_node_opt_lt{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_lt{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("    #[inline]\n    fn test(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> Result<bool, Esc> {{ unsafe {{\n"));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_lt_struct>;\n", "n"));
+    body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
+    body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
+    body.push_str(&format!("        EVAL_TEST_node_opt_lt{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1837,7 +2069,14 @@ fn SPECIALIZE_node_opt_le(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_le_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
-    body.push_str(&format!("        EVAL_node_opt_le{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_le{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("    #[inline]\n    fn test(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> Result<bool, Esc> {{ unsafe {{\n"));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_le_struct>;\n", "n"));
+    body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
+    body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
+    body.push_str(&format!("        EVAL_TEST_node_opt_le{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1865,7 +2104,14 @@ fn SPECIALIZE_node_opt_gt(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_gt_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
-    body.push_str(&format!("        EVAL_node_opt_gt{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_gt{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("    #[inline]\n    fn test(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> Result<bool, Esc> {{ unsafe {{\n"));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_gt_struct>;\n", "n"));
+    body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
+    body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
+    body.push_str(&format!("        EVAL_TEST_node_opt_gt{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1893,7 +2139,14 @@ fn SPECIALIZE_node_opt_ge(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_ge_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
-    body.push_str(&format!("        EVAL_node_opt_ge{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_ge{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("    #[inline]\n    fn test(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> Result<bool, Esc> {{ unsafe {{\n"));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_ge_struct>;\n", "n"));
+    body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
+    body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
+    body.push_str(&format!("        EVAL_TEST_node_opt_ge{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1921,7 +2174,14 @@ fn SPECIALIZE_node_opt_eq(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_eq_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
-    body.push_str(&format!("        EVAL_node_opt_eq{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_eq{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("    #[inline]\n    fn test(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> Result<bool, Esc> {{ unsafe {{\n"));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_eq_struct>;\n", "n"));
+    body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
+    body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
+    body.push_str(&format!("        EVAL_TEST_node_opt_eq{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1949,7 +2209,14 @@ fn SPECIALIZE_node_opt_neq(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_neq_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
-    body.push_str(&format!("        EVAL_node_opt_neq{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_neq{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("    #[inline]\n    fn test(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> Result<bool, Esc> {{ unsafe {{\n"));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_neq_struct>;\n", "n"));
+    body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
+    body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
+    body.push_str(&format!("        EVAL_TEST_node_opt_neq{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -1977,7 +2244,10 @@ fn SPECIALIZE_node_opt_ltlt(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_ltlt_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
-    body.push_str(&format!("        EVAL_node_opt_ltlt{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_ltlt{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2005,7 +2275,10 @@ fn SPECIALIZE_node_opt_gtgt(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_gtgt_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
-    body.push_str(&format!("        EVAL_node_opt_gtgt{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_gtgt{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2033,7 +2306,10 @@ fn SPECIALIZE_node_opt_xor(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_xor_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
-    body.push_str(&format!("        EVAL_node_opt_xor{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_xor{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2061,7 +2337,10 @@ fn SPECIALIZE_node_opt_and(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_and_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
-    body.push_str(&format!("        EVAL_node_opt_and{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_and{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2089,7 +2368,10 @@ fn SPECIALIZE_node_opt_or(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_or_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
-    body.push_str(&format!("        EVAL_node_opt_or{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_or{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2117,7 +2399,10 @@ fn SPECIALIZE_node_opt_aref(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_aref_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
-    body.push_str(&format!("        EVAL_node_opt_aref{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_aref{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2148,7 +2433,40 @@ fn SPECIALIZE_node_opt_aset(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, (*np).u.a, fp)?;\n", t_a));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, (*np).u.b, fp)?;\n", t_b));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, (*np).u.v, fp)?;\n", t_v));
-    body.push_str(&format!("        EVAL_node_opt_aset{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_aset{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
+    sc.emitted.insert(name.clone());
+    sc.out.push_str(&body);
+    name
+}
+
+#[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
+fn SPECIALIZE_node_method_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
+    let name = format!("T_{:016x}", hash_node(n));
+    if sc.emitted.contains(&name) { return name; }
+    let u = unsafe { &(*(n as *mut NodeOf<node_method_entry_struct>)).u };
+    let t_body = specialize_node(sc, u.body);
+    let np = n as *mut NodeOf<node_method_entry_struct>;
+    let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
+    unsafe {
+    a.push(format!("{}u32", (*np).u.nlocals));
+    a.push(format!("{}u32", (*np).u.nparams));
+    a.push(format!("{}", (*np).u.has_env));
+    a.push(format!("{}u32", (*np).u.line));
+    a.push("(*np).u.body".to_string());
+    }
+    let mut body = String::new();
+    body.push_str(&format!("pub struct {};\n", name));
+    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
+    body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_method_entry_struct>;\n", "n"));
+
+    body.push_str(&format!("        EVAL_node_method_entry{}({})\n    }} }}\n", format!("::<{}>", t_body), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2172,7 +2490,10 @@ fn SPECIALIZE_node_def(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_def_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_def{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_def{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2197,7 +2518,10 @@ fn SPECIALIZE_node_sdef(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_sdef_struct>;\n", "n"));
     body.push_str(&format!("        let v_recv = <{} as Disp>::call(c, (*np).u.recv, fp)?;\n", t_recv));
-    body.push_str(&format!("        EVAL_node_sdef{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_sdef{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2226,7 +2550,10 @@ fn SPECIALIZE_node_class(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_class_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_class{}({})\n    }} }}\n}}\n", format!("::<{}, {}>", t_cpath, t_superclass), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_class{}({})\n    }} }}\n", format!("::<{}, {}>", t_cpath, t_superclass), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2252,7 +2579,10 @@ fn SPECIALIZE_node_module(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_module_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_module{}({})\n    }} }}\n}}\n", format!("::<{}>", t_cpath), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_module{}({})\n    }} }}\n", format!("::<{}>", t_cpath), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2276,7 +2606,10 @@ fn SPECIALIZE_node_sclass(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_sclass_struct>;\n", "n"));
     body.push_str(&format!("        let v_recv = <{} as Disp>::call(c, (*np).u.recv, fp)?;\n", t_recv));
-    body.push_str(&format!("        EVAL_node_sclass{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_sclass{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2302,7 +2635,10 @@ fn SPECIALIZE_node_alias(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_alias_struct>;\n", "n"));
     body.push_str(&format!("        let v_newname = <{} as Disp>::call(c, (*np).u.newname, fp)?;\n", t_newname));
     body.push_str(&format!("        let v_oldname = <{} as Disp>::call(c, (*np).u.oldname, fp)?;\n", t_oldname));
-    body.push_str(&format!("        EVAL_node_alias{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_alias{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2326,7 +2662,10 @@ fn SPECIALIZE_node_valias(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_valias_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_valias{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_valias{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2349,7 +2688,10 @@ fn SPECIALIZE_node_undef(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_undef_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_undef{}({})\n    }} }}\n}}\n", format!("::<{}>", t_names), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_undef{}({})\n    }} }}\n", format!("::<{}>", t_names), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2376,7 +2718,10 @@ fn SPECIALIZE_node_masgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_masgn_struct>;\n", "n"));
     body.push_str(&format!("        let v_rhs = <{} as Disp>::call(c, (*np).u.rhs, fp)?;\n", t_rhs));
-    body.push_str(&format!("        EVAL_node_masgn{}({})\n    }} }}\n}}\n", format!("::<{}>", t_targets), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_masgn{}({})\n    }} }}\n", format!("::<{}>", t_targets), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2402,7 +2747,10 @@ fn SPECIALIZE_node_masgn_elem(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_masgn_elem_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_masgn_elem{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_masgn_elem{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2425,7 +2773,10 @@ fn SPECIALIZE_node_unsupported(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_unsupported_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_unsupported{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_unsupported{}({})\n    }} }}\n", "", a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2449,7 +2800,10 @@ fn SPECIALIZE_node_special(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_special_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_special{}({})\n    }} }}\n}}\n", format!("::<{}>", t_arg), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_special{}({})\n    }} }}\n", format!("::<{}>", t_arg), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
@@ -2476,7 +2830,10 @@ fn SPECIALIZE_node_flipflop(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_flipflop_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_flipflop{}({})\n    }} }}\n}}\n", format!("::<{}, {}>", t_a, t_b), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_flipflop{}({})\n    }} }}\n", format!("::<{}, {}>", t_a, t_b), a.join(", ")));
+
+    body.push_str("}
+");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&body);
     name
