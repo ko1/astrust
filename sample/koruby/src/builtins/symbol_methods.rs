@@ -14,6 +14,7 @@ fn sym_name(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
 }
 fn sym_inspect(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(str_new(crate::string::sym_inspect(sym_bytes(s.as_sym())).as_bytes())) }
 fn sym_to_proc(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { crate::builtins::proc::sym_to_proc(c, s) }
+fn sym_eq(_c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(s == a[0])) }
 fn sym_to_sym(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(s) }
 fn sym_length(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(utf8_len(sym_bytes(s.as_sym())) as i64)) }
 fn sym_cmp(_c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
@@ -57,7 +58,7 @@ pub fn init() {
     d("swapcase", sym_swapcase, -1); d("succ", sym_succ, 0); d("next", sym_succ, 0); d("[]", sym_aref, -1); d("slice", sym_aref, -1);
     d("start_with?", sym_start_with, -1); d("end_with?", sym_end_with, -1); d("=~", sym_match, 1); d("match", sym_match_m, -1);
     d("match?", sym_match_p, -1); d("empty?", sym_empty, 0); d("casecmp", sym_casecmp, 1); d("casecmp?", sym_casecmp_p, 1);
-    d("encoding", sym_encoding, 0);
+    d("encoding", sym_encoding, 0); d("==", sym_eq, 1); d("===", sym_eq, 1); d("intern", sym_to_sym, 0);
     define_singleton_cfunc(k, "all_symbols", sym_all, 0);
     let _ = inspect_str;
 }

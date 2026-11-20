@@ -17,6 +17,7 @@ pub enum EK {
     Sjis(bool),      // true = Windows-31J table
     Dbcs,            // generic EUC-style double byte (A1-FE A1-FE)
     Big5, Gbk, Gb18030, EucTw,
+    EmacsMule,
     Dummy,           // byte-wise, not ASCII compatible
 }
 
@@ -43,7 +44,7 @@ pub static ENCS: [EncDef; 103] = [
     e!("Big5-UAO", [], Big5),
     e!("CESU-8", [], Utf8),
     e!("CP949", [], Gbk),
-    e!("Emacs-Mule", [], Single),
+    e!("Emacs-Mule", [], EmacsMule),
     e!("EUC-KR", ["eucKR"], Dbcs),
     e!("EUC-TW", ["eucTW"], EucTw),
     e!("GB18030", [], Gb18030),
@@ -155,7 +156,7 @@ pub fn is_unicode(enc: u8) -> bool { matches!(kind(enc), Utf8 | U16LE | U16BE | 
 /// Every byte is one character.
 #[inline] pub fn is_single_byte(enc: u8) -> bool { matches!(kind(enc), Bin | Ascii | Single | Dummy) }
 pub fn min_len(enc: u8) -> usize { match kind(enc) { U16LE | U16BE => 2, U32LE | U32BE => 4, _ => 1 } }
-pub fn max_len(enc: u8) -> usize { match kind(enc) { Utf8 | U32LE | U32BE | U16LE | U16BE | Gb18030 | EucTw => 4, EucJp(_) => 3, Sjis(_) | Dbcs | Big5 | Gbk => 2, _ => 1 } }
+pub fn max_len(enc: u8) -> usize { match kind(enc) { Utf8 | U32LE | U32BE | U16LE | U16BE | Gb18030 | EucTw | EmacsMule => 4, EucJp(_) => 3, Sjis(_) | Dbcs | Big5 | Gbk => 2, _ => 1 } }
 
 fn single_table(enc: u8) -> Option<&'static [u16; 128]> {
     let i = unsafe { SINGLE_IDX[enc as usize] };
@@ -209,6 +210,10 @@ pub fn precise_len(enc: u8, b: &[u8], i: usize) -> Option<usize> {
                 else { None }
             } else { None }
         }
+        EmacsMule => {
+            let n = match x { 0..=0x7f => return Some(1), 0x81..=0x8f => 2, 0x90..=0x99 => 3, 0x9a..=0x9b => 3, 0x9c..=0x9d => 4, _ => return None };
+            if (1..n).all(|k| tr(k, 0xa0, 0xff)) { Some(n) } else { None }
+        }
         EucTw => {
             if x < 0x80 { Some(1) }
             else if x == 0x8e { if tr(1, 0xa1, 0xb0) && tr(2, 0xa1, 0xfe) && tr(3, 0xa1, 0xfe) { Some(4) } else { None } }
@@ -234,38 +239,48 @@ pub fn mbclen(enc: u8, b: &[u8], i: usize) -> usize {
     match precise_len(enc, b, i) { Some(l) => l, None => min_len(enc).min(b.len() - i).max(1) }
 }
 
-/// Number of bytes a broken sequence at b[i] spans (for scrub): longest invalid prefix that could
-/// start a character, at least 1.
-pub fn invalid_len(enc: u8, b: &[u8], i: usize) -> usize {
-    let r = &b[i..];
+/// Is `p` a valid but incomplete prefix of a character (Onigmo's NEEDMORE)?
+pub fn needmore(enc: u8, p: &[u8]) -> bool {
+    let n = p.len();
+    if n == 0 { return true; }
+    let r = |k: usize, lo: u8, hi: u8| p[k] >= lo && p[k] <= hi;
     match kind(enc) {
         Utf8 => {
-            let x = r[0];
-            let l = if (0xc2..=0xdf).contains(&x) { 2 } else if (0xe0..=0xef).contains(&x) { 3 } else if (0xf0..=0xf4).contains(&x) { 4 } else { return 1 };
+            let x = p[0];
+            let l = if (0xc2..=0xdf).contains(&x) { 2 } else if (0xe0..=0xef).contains(&x) { 3 } else if (0xf0..=0xf4).contains(&x) { 4 } else { return false };
+            if n >= l { return false; }
             let (lo, hi) = match x { 0xe0 => (0xa0, 0xbf), 0xed => (0x80, 0x9f), 0xf0 => (0x90, 0xbf), 0xf4 => (0x80, 0x8f), _ => (0x80, 0xbf) };
-            let mut k = 1;
-            while k < l && k < r.len() && (if k == 1 { r[k] >= lo && r[k] <= hi } else { r[k] & 0xc0 == 0x80 }) { k += 1; }
-            k
+            (1..n).all(|k| if k == 1 { r(1, lo, hi) } else { r(k, 0x80, 0xbf) })
         }
         U16LE | U16BE => {
-            if r.len() < 2 { return r.len(); }
-            let w = if kind(enc) == U16LE { u16::from_le_bytes([r[0], r[1]]) } else { u16::from_be_bytes([r[0], r[1]]) };
-            if (0xd800..0xdc00).contains(&w) && r.len() < 4 { return r.len().min(2).max(r.len()); }
-            2
+            if n == 1 { return true; }
+            let w = if kind(enc) == U16LE { u16::from_le_bytes([p[0], p[1]]) } else { u16::from_be_bytes([p[0], p[1]]) };
+            (0xd800..0xdc00).contains(&w) && (n == 2 || (n == 3 && (kind(enc) == U16LE || (0xdc..=0xdf).contains(&p[2]))))
         }
-        U32LE | U32BE => r.len().min(4),
-        _ => {
-            // multi-byte legacy: a valid lead with a bad/missing trail counts as one unit
-            let ml = max_len(enc);
-            if ml > 1 && r[0] >= 0x80 && r.len() >= 2 && precise_len(enc, &r[..1], 0).is_none() {
-                // check whether the first byte alone is a valid lead (needs more bytes)
-                let mut k = 1;
-                while k < ml && k < r.len() && r[k] >= 0x80 { k += 1; if precise_len(enc, &r[..k], 0).is_some() { return 1; } }
-                return 1;
-            }
-            1
+        U32LE | U32BE => n < 4,
+        EucJp(_) => match p[0] { 0x8e | 0xa1..=0xfe => n == 1, 0x8f => n == 1 || (n == 2 && r(1, 0xa1, 0xfe)), _ => false },
+        Sjis(_) => n == 1 && ((0x81..=0x9f).contains(&p[0]) || (0xe0..=0xfc).contains(&p[0])),
+        Dbcs => n == 1 && (0xa1..=0xfe).contains(&p[0]),
+        Big5 | Gbk => n == 1 && (0x81..=0xfe).contains(&p[0]),
+        Gb18030 => r(0, 0x81, 0xfe) && match n { 1 => true, 2 => r(1, 0x30, 0x39), 3 => r(1, 0x30, 0x39) && r(2, 0x81, 0xfe), _ => false },
+        EucTw => match p[0] { 0x8e => match n { 1 => true, 2 => r(1, 0xa1, 0xb0), 3 => r(1, 0xa1, 0xb0) && r(2, 0xa1, 0xfe), _ => false }, 0xa1..=0xfe => n == 1, _ => false },
+        EmacsMule => {
+            let l = match p[0] { 0x81..=0x8f => 2, 0x90..=0x9b => 3, 0x9c..=0x9d => 4, _ => return false };
+            n < l && (1..n).all(|k| r(k, 0xa0, 0xff))
         }
+        _ => false,
     }
+}
+
+/// Bytes covered by one invalid unit at b[i] (CRuby's str_scrub / transcoder rules).
+pub fn invalid_len(enc: u8, b: &[u8], i: usize) -> usize {
+    let rest = &b[i..];
+    if needmore(enc, rest) { return rest.len(); }
+    let mut clen = max_len(enc).min(rest.len());
+    if clen <= 2 { return 1; }
+    clen -= 1;
+    while clen > 1 { if needmore(enc, &rest[..clen]) { break; } clen -= 1; }
+    clen
 }
 
 pub fn is_valid(enc: u8, b: &[u8]) -> bool {
@@ -603,7 +618,7 @@ pub fn compatible(a: Value, b: Value) -> Option<u8> {
     let (ea, eb) = (ra.enc, rb.enc);
     if ea == eb { return Some(ea); }
     if rb.b.is_empty() { return Some(ea); }
-    if ra.b.is_empty() { return Some(if ascii_compat(ea) && is_ascii(&rb.b) { ea } else { eb }); }
+    if ra.b.is_empty() { return Some(if ascii_compat(ea) && ascii_compat(eb) && is_ascii(&rb.b) { ea } else { eb }); }
     if !ascii_compat(ea) || !ascii_compat(eb) { return None; }
     let (a7, b7) = (is_ascii(&ra.b), is_ascii(&rb.b));
     if b7 { return Some(ea); }
@@ -712,7 +727,6 @@ fn enc_s_compatible_p(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> 
     }
     Ok(match compatible(x, y) { Some(e) => encoding_value(e), None => NIL })
 }
-fn enc_eq(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(slf == a[0])) }
 fn enc_dump(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(str_new(enc_name(id_of(slf)).as_bytes())) }
 fn enc_s_load(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let e = to_enc(c, a[0])?; Ok(encoding_value(e)) }
 
@@ -751,7 +765,6 @@ pub fn init() {
     define_cfunc(ek, "names", enc_names, 0);
     define_cfunc(ek, "dummy?", enc_dummy_p, 0);
     define_cfunc(ek, "ascii_compatible?", enc_ascii_compat_p, 0);
-    define_cfunc(ek, "==", enc_eq, 1);
     define_cfunc(ek, "_dump", enc_dump, -1);
     define_singleton_cfunc(ek, "_load", enc_s_load, 1);
     define_singleton_cfunc(ek, "find", enc_s_find, 1);
