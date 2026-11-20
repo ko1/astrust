@@ -137,11 +137,12 @@ Lesson recorded many times in the ledger: instruction counts and cycles disagree
   and stores the fields from registers, measured (cycles:u, AOT, instructions unchanged):
   gcchurn 700M → 521M, nesteddata 292M → 231M, gen_gc 718M → 636M, object 676M → 563M,
   binary_trees 532M → 483M. Not applied here (2026-11-20): gc.rs was being moved to the framework.
-- **Arrays of up to 3 elements in the slot** (branch `saruby-array-embed-a1d294`, `src/avec.rs`,
-  an enum `Inline(len, [Value; 3]) | Heap(Vec)`, no unsafe). Every array access pays the
-  Inline/Heap test. cycles:u AOT without / with the alloc change above: gcchurn 700M → 730M /
-  521M → 404M, nesteddata 292M → 267M / 231M → 214M, gen_gc 718M → 680M / 636M → 604M,
-  ary 467M → 531M / 487M → 516M. Take it together with the alloc change or not at all.
+- **Arrays of up to 3 elements in the slot**: done (2026-11-21, `src/avec.rs`) on top of
+  `alloc_with`, with Array literals stored from registers and sweep skipping `Drop` for bodies
+  that own nothing. Measurements, the costs on index-heavy code (fannkuch / sieve AOT +5〜7 %
+  instructions, cycles within noise) and what did not help (lazy sweep: +1 % instructions, no
+  cycle gain at these heap sizes, the heap sits in L3): `~/ruby/src/trials/2026-11-21-saruby-alloc-sweep/`.
+  The marksweep heap is kept at 3x the live set (was 2x): gen_gc -11 % cycles for +15 % max RSS.
 - Tried for ivars and dropped: a combined "hit or append" store test on the Vec representation
   (object AOT instructions 1978M → 2002M, ivar 4539M → 4827M); prefilled slots without embedding
   (object 1978M → 1986M: the gain is the malloc, not the test); 4 packed slots with a

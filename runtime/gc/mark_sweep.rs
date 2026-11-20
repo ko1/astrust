@@ -4,7 +4,7 @@
 //
 // Policy: collect when the free list is empty and a quarter of the heap has been
 // allocated since the last collection, or when external memory passes its limit;
-// grow so that the heap stays at least twice the live set.
+// grow so that the heap stays at least three times the live set.
 use super::pages::Pages;
 use super::{header, Control, EdgeVisitor, GcBackend, GcLang, HeapStats, RootVisitor};
 use std::ptr::NonNull;
@@ -61,9 +61,9 @@ impl<L: GcLang> MarkSweep<L> {
         if self.external_since_gc > self.external_limit && !ctl.disabled() { ctl.collect(self, lang, Some(&mut obj)); }
         if self.free.is_null() {
             if !ctl.disabled() && self.allocs_since_gc > self.total / 4 { ctl.collect(self, lang, Some(&mut obj)); }
-            // keep the heap at >= 2x the live set: a full mark per cycle is paid by that many allocations
-            if self.free.is_null() || self.free_count < self.live_after_gc {
-                let want = self.live_after_gc.saturating_sub(self.free_count).max(self.total / 8) / Self::PER_PAGE + 1;
+            // heap >= 3x the live set: each full mark is paid by 2x live allocations (2x cost gen_gc 11% more cycles)
+            if self.free.is_null() || self.free_count < 2 * self.live_after_gc {
+                let want = (2 * self.live_after_gc).saturating_sub(self.free_count).max(self.total / 8) / Self::PER_PAGE + 1;
                 for _ in 0..want { self.add_page(); }
             }
         }
