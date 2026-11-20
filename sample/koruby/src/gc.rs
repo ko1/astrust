@@ -222,7 +222,7 @@ fn collect_inner(_regs_addr: usize) {
     let mut m = Marker { stack: Vec::with_capacity(4096) };
     let here = 0usize;
     let lo = &here as *const usize as usize;
-    m.mark_range(lo, h.stack_base);
+    m.mark_range(lo, crate::fiber::current_stack_top());
     for &(a, b) in h.extra_stacks.clone().iter() { m.mark_range(a, b); }
     crate::vm::mark_roots(&mut m);
     m.drain();

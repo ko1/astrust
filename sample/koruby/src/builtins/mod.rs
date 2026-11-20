@@ -171,6 +171,7 @@ pub fn boot() {
     structs::init();
     time::init();
     math::init();
+    crate::fiber::init();
 }
 
 /// dup/clone of built-in Data objects.
