@@ -34,6 +34,11 @@ fn byte_to_char(v: Value, off: usize) -> usize {
     if enc_single(&r.b, r.enc) { return off; }
     enc_strlen(&r.b[..off], r.enc)
 }
+fn need_ascii_compat(c: &mut Ctx, v: Value) -> Result<(), Esc> {
+    let e = rstr(v).enc;
+    if !crate::builtins::encoding::ascii_compat(e) { return err(c, vm().c_compat_error, format!("ASCII incompatible encoding: {}", crate::builtins::encoding::enc_name(e))); }
+    Ok(())
+}
 /// Encoding of `a + b` or CompatibilityError.
 fn compat(c: &mut Ctx, a: Value, x: Value) -> Result<u8, Esc> { crate::builtins::encoding::check_compatible(c, a, x) }
 /// Decode a string into (code, byte range) per character.
@@ -307,6 +312,7 @@ cfn!(s_to_s, |c, slf, a, b_| {
 });
 cfn!(s_to_sym, |c, slf, a, b_| Ok(str_to_sym(slf)));
 cfn!(s_to_i, |c, slf, a, b_| {
+    need_ascii_compat(c, slf)?;
     let base = if a.is_empty() { 10 } else { num_to_long(c, a[0])? };
     if base == 1 || base > 36 || base < 0 { return arg_err(c, format!("invalid radix {}", base)); }
     Ok(str_to_inum(b(slf), base as u32, false).unwrap_or(Value::fix(0)))
@@ -549,7 +555,7 @@ fn lines_of(v: &[u8], sep: &[u8], chomp: bool) -> Vec<Vec<u8>> {
 }
 fn lines_args(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<(Vec<u8>, bool), Esc> {
     let mut sep = b"\n".to_vec(); let mut chomp = false;
-    let kw = kw_arg(a);
+    let kw = kw_arg(a).or_else(|| a.last().copied().filter(|v| is_hash(*v)));
     let pos: &[Value] = if kw.is_some() { &a[..a.len() - 1] } else { a };
     check_argc(c, pos, 0, 1)?;
     if let Some(h) = kw { if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("chomp"))? { chomp = v.truthy(); } }
@@ -585,17 +591,23 @@ cfn!(s_split, |c, slf, a, blk| {
     let pat = get_pat(c, pat)?;
     if is_string(pat) { check_valid(c, pat)?; }
     check_valid(c, slf)?;
-    if is_string(pat) { compat(c, slf, pat)?; }
-    if is_string(pat) && b(pat) == b" " {
-        // awk-style
-        let mut i = 0;
-        while i < v.len() && is_ws(v[i]) { i += 1; }
-        while i < v.len() {
-            if limit > 0 && out.len() as i64 == limit - 1 { out.push(v[i..].to_vec()); break; }
-            let st = i;
-            while i < v.len() && !is_ws(v[i]) { i += 1; }
-            out.push(v[st..i].to_vec());
-            while i < v.len() && is_ws(v[i]) { i += 1; }
+    let default_pat = a.is_empty() || a[0] == NIL;
+    if is_string(pat) && !(default_pat && b(pat) == b" ") { compat(c, slf, pat)?; }
+    let awk = is_string(pat) && ((default_pat && b(pat) == b" ") || { let cs = codes_of(pat); cs.len() == 1 && cs[0].0 == 32 });
+    if awk {
+        // awk mode: split on ASCII whitespace characters (code units for wide encodings)
+        let cs = codes_of(slf);
+        let sp = |x: u32| matches!(x, 9..=13 | 32);
+        let mut k = 0;
+        while k < cs.len() && sp(cs[k].0) { k += 1; }
+        while k < cs.len() {
+            if limit > 0 && out.len() as i64 == limit - 1 { out.push(v[cs[k].1..].to_vec()); break; }
+            let st = cs[k].1;
+            while k < cs.len() && !sp(cs[k].0) { k += 1; }
+            let en = if k < cs.len() { cs[k].1 } else { v.len() };
+            out.push(v[st..en].to_vec());
+            while k < cs.len() && sp(cs[k].0) { k += 1; }
+            if k >= cs.len() && en < v.len() { out.push(vec![]); }
         }
     } else if is_string(pat) {
         let p = b(pat);
@@ -940,8 +952,9 @@ cfn!(s_upto, |c, slf, a, blk| {
     }
     Ok(slf)
 });
-cfn!(s_hex, |c, slf, a, b_| Ok(str_to_inum(b(slf), 16, false).unwrap_or(Value::fix(0))));
+cfn!(s_hex, |c, slf, a, b_| { need_ascii_compat(c, slf)?; Ok(str_to_inum(b(slf), 16, false).unwrap_or(Value::fix(0))) });
 cfn!(s_oct, |c, slf, a, b_| {
+    need_ascii_compat(c, slf)?;
     let v = String::from_utf8_lossy(b(slf)).trim().to_ascii_lowercase();
     let (neg, body) = if let Some(r) = v.strip_prefix('-') { (true, r.to_string()) } else { (false, v.clone()) };
     let base = if body.starts_with("0x") { 16 } else if body.starts_with("0b") { 2 } else if body.starts_with("0o") || body.starts_with('0') { 8 } else { 8 };
@@ -1055,8 +1068,17 @@ fn casecmp_other(c: &mut Ctx, slf: Value, o: Value) -> Result<Option<Value>, Esc
 cfn!(s_casecmp, |c, slf, a, b_| {
     if !is_string(a[0]) && !(a[0].is_heap() && respond_to(a[0], s::to_str, true)) { return Ok(NIL); }
     let Some(o) = casecmp_other(c, slf, a[0])? else { return Ok(NIL) };
-    let x: Vec<u8> = b(slf).iter().map(|c| c.to_ascii_lowercase()).collect();
-    let y: Vec<u8> = b(o).iter().map(|c| c.to_ascii_lowercase()).collect();
+    let fold = |v: Value| -> Vec<u8> {
+        let r = rstr(v);
+        if crate::builtins::encoding::ascii_compat(r.enc) { return r.b.iter().map(|c| c.to_ascii_lowercase()).collect(); }
+        let mut out = vec![];
+        for (cp, s0, e0) in codes_of(v) {
+            if cp < 128 { out.extend(crate::builtins::encoding::code_to_bytes(r.enc, (cp as u8).to_ascii_lowercase() as u32).unwrap_or_default()); }
+            else { out.extend_from_slice(&r.b[s0..e0]); }
+        }
+        out
+    };
+    let (x, y) = (fold(slf), fold(o));
     Ok(Value::fix(x.cmp(&y) as i64))
 });
 cfn!(s_casecmp_p, |c, slf, a, b_| {
@@ -1113,8 +1135,8 @@ cfn!(s_byteslice, |c, slf, a, b_| {
     let e = (st + ln).min(n);
     Ok(new_like(slf, b(slf)[st as usize..e as usize].to_vec()))
 });
-cfn!(s_unpack, |c, slf, a, b_| crate::builtins::misc::unpack(c, slf, a));
-cfn!(s_unpack1, |c, slf, a, b_| { let r = crate::builtins::misc::unpack(c, slf, a)?; Ok(ary_get(r, 0)) });
+cfn!(s_unpack, |c, slf, a, b_| { if a.is_empty() || (a.len() == 1 && kw_arg(a).is_some()) { return argc_err(c, 0, 1, 1); } crate::builtins::misc::unpack(c, slf, a) });
+cfn!(s_unpack1, |c, slf, a, b_| { if a.is_empty() || (a.len() == 1 && kw_arg(a).is_some()) { return argc_err(c, 0, 1, 1); } let r = crate::builtins::misc::unpack(c, slf, a)?; Ok(ary_get(r, 0)) });
 cfn!(s_crypt, |c, slf, a, b_| Ok(new_like(slf, b(slf).to_vec())));
 /// Extended grapheme clusters (approximation of UAX #29: CRLF, combining marks, ZWJ
 /// sequences, variation selectors, emoji modifiers, regional-indicator pairs, Hangul).
@@ -1154,8 +1176,22 @@ fn graphemes(v: Value) -> Vec<(usize, usize)> {
     }
     out
 }
+/// Grapheme clusters of a UTF-8 string via the regex engine's \X.
+fn graphemes_re(c: &mut Ctx, v: Value) -> Result<Vec<(usize, usize)>, Esc> {
+    let re = regexp::regexp_new(c, b"\\X", 0)?;
+    let src = b(v).to_vec();
+    let mut out = vec![];
+    let mut i = 0;
+    while i < src.len() {
+        match regexp::search_raw(re, &src, i) {
+            Some(g) => { let (s0, e0) = g[0].unwrap(); if e0 <= i { break; } out.push((s0, e0)); i = e0; }
+            None => break,
+        }
+    }
+    Ok(out)
+}
 cfn!(s_grapheme_clusters, |c, slf, a, blk| {
-    let gs = graphemes(slf);
+    let gs = if rstr(slf).enc == ENC_UTF8 && crate::builtins::encoding::is_valid(ENC_UTF8, b(slf)) { graphemes_re(c, slf)? } else { graphemes(slf) };
     let arr = ary_new();
     for (s0, e0) in gs { ary_push(arr, new_like(slf, b(slf)[s0..e0].to_vec())); }
     if !blk.is_null() { for i in 0..ary_len(arr) { yield1(c, blk, ary_get(arr, i))?; } return Ok(slf); }
