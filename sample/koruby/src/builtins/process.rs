@@ -148,6 +148,16 @@ fn p_kill(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let mut to_self = false;
     for &p in &a[1..] {
         let pid = num_to_long(c, p)? as i32;
+        if pid == me && matches!(sig, 1 | 2 | 3 | 10 | 12 | 14 | 15) {
+            // untrapped: CRuby's own handler raises SignalException / Interrupt in the main thread
+            let h = ary_get(unsafe { HANDLERS }, sig as usize);
+            if h == UNDEF || (h == NIL && ary_len(unsafe { HANDLERS }) <= sig as usize) {
+                let name = format!("SIG{}", signame(sig).unwrap());
+                let e = make_exception(if sig == 2 { vm().c_interrupt } else { vm().c_signal_exception }, if sig == 2 { "" } else { &name });
+                ivar_set_raw(e, intern(b"signo"), Value::fix(sig as i64));
+                return Err(raise_exc(c, e));
+            }
+        }
         if pid == me { to_self = true; out_flush(); }
         let r = unsafe { if sig < 0 { sys::kill(-pid, -sig) } else { sys::kill(pid, sig) } };
         if r < 0 { return Err(raise_errno(c, sys::errno(), "")); }
@@ -401,6 +411,13 @@ fn p_itimer(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let v: [i64; 4] = [0, 0, f.floor() as i64, ((f - f.floor()) * 1e6) as i64];
     unsafe { setitimer(0, &v, std::ptr::null_mut()); }
     Ok(NIL)
+}
+static mut DIE_SIGNAL: i32 = 0;
+/// An uncaught SignalException ends the process by that signal once the exit handlers ran.
+pub fn die_by_signal_at_exit(sig: i32) { unsafe { DIE_SIGNAL = sig; } }
+pub fn die_if_signaled() {
+    let sig = unsafe { DIE_SIGNAL };
+    if sig > 0 { unsafe { sys::signal(sig, 0); sys::kill(sys::getpid(), sig); } }
 }
 pub fn after_fork_child() { PENDING.store(0, Ordering::SeqCst); }
 /// Finish a forked child that ran a block.

@@ -107,7 +107,8 @@ impl Gen {
         else if is_string(v) && real_class_of(v) == vm().c_string {
             let enc = str_enc(v);
             let b = if enc == ENC_UTF8 || enc == ENC_ASCII || enc == ENC_BINARY { str_bytes(v).to_vec() } else {
-                let o = crate::builtins::encoding::parse_tc_opts(c, NIL)?;
+                let oh = hash_new();
+                let o = crate::builtins::encoding::parse_tc_opts(c, oh)?;
                 crate::builtins::encoding::transcode(c, str_bytes(v), enc, ENC_UTF8, &o)?
             };
             self.string(c, &b, v)?;

@@ -269,6 +269,7 @@ pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
     if builtins::process::run_exit_trap(c).is_err() { status = handle_toplevel_error(c); }
     builtins::kernel::out_flush();
     builtins::io::flush_all();
+    builtins::process::die_if_signaled();
     status
 }
 /// End of a forked child's block: report an error, run the exit handlers.
@@ -285,6 +286,13 @@ fn handle_toplevel_error(c: &mut Ctx) -> i32 {
             if is_kind_of(e, vm().c_system_exit) {
                 let st = ivar_get(e, symbol::s::status);
                 return if st.is_fixnum() { st.as_fix() as i32 } else { 0 };
+            }
+            if is_kind_of(e, vm().c_signal_exception) {
+                let no = ivar_get(e, symbol::intern(b"signo"));
+                if no.is_fixnum() {
+                    builtins::process::die_by_signal_at_exit(no.as_fix() as i32);
+                    if !is_kind_of(e, vm().c_interrupt) { return 128 + no.as_fix() as i32; }
+                }
             }
             report_exception(c, e);
             1
