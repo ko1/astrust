@@ -20,13 +20,7 @@ impl IvBuf {
     /// At least n slots, all unset.
     #[inline(always)]
     pub fn filled(n: usize) -> IvBuf {
-        if n <= INLINE { IvBuf { w: [UNDEF; INLINE], ext: None } } else { IvBuf::filled_ext(n) }
-    }
-    // out of line: the allocation would cost the small case its registers
-    #[inline(never)]
-    fn filled_ext(n: usize) -> IvBuf {
-        let more = if n <= FIXED { Vec::new() } else { vec![UNDEF; n - FIXED] };
-        IvBuf { w: [UNDEF; INLINE], ext: Some(Box::new(Ext { w: [UNDEF; CHUNK], more })) }
+        IvBuf { w: [UNDEF; INLINE], ext: if n <= INLINE { None } else { Some(Ext::filled(n - INLINE)) } }
     }
     #[inline]
     pub fn len(&self) -> usize {
@@ -54,7 +48,7 @@ impl IvBuf {
     #[inline(never)]
     pub fn resize(&mut self, n: usize) {
         if n <= INLINE { return; }
-        let e = self.ext.get_or_insert_with(|| Box::new(Ext { w: [UNDEF; CHUNK], more: Vec::new() }));
+        let e = self.ext.get_or_insert_with(|| Ext::filled(0));
         if n > FIXED + e.more.len() { e.more.resize(n - FIXED, UNDEF); }
     }
     /// The slots in index order (unset ones as UNDEF).
@@ -69,6 +63,19 @@ impl IvBuf {
         let (a, b): (&mut [Value], &mut [Value]) = match &mut self.ext { None => (&mut [], &mut []), Some(e) => (&mut e.w, &mut e.more) };
         self.w.iter_mut().chain(a).chain(b)
     }
+}
+
+impl Ext {
+    // Allocated first and written in place: built on the stack, the block was copied to the heap
+    // by wide loads that stalled on the narrow stores (obj7 AOT +12% cycles).
+    #[inline(never)]
+    fn filled(k: usize) -> Box<Ext> {
+        if k > CHUNK { return Ext::filled_more(k - CHUNK); }
+        Box::write(Box::new_uninit(), Ext { w: [UNDEF; CHUNK], more: Vec::new() })
+    }
+    #[cold]
+    #[inline(never)]
+    fn filled_more(k: usize) -> Box<Ext> { Box::write(Box::new_uninit(), Ext { w: [UNDEF; CHUNK], more: vec![UNDEF; k] }) }
 }
 
 impl Clone for IvBuf {
