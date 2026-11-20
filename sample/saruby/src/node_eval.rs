@@ -935,9 +935,7 @@ pub fn EVAL_node_lambda(c: &mut Ctx, n: NodePtr, fp: Fp, blk: IseqRef) -> RV {
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_plus(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_PLUS) {
-        if let Some(r) = a.as_fix().checked_add(b.as_fix()) { if Value::fixable(r) { return Ok(Value::fix(r)); } }
-    }
+    if a.both_fix(b) && !redef(R_INT_PLUS) { if let Some(r) = a.fix_add(b) { return Ok(r); } }
     if let Some((x, y)) = flo2(a, b, R_FLO_PLUS, R_INT_PLUS) { return Ok(crate::numeric::float_new(x + y)); }
     srb_binop(c, a, b, s::plus, line, cc)
 }
@@ -946,9 +944,7 @@ pub fn EVAL_node_opt_plus(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, l
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_minus(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_MINUS) {
-        if let Some(r) = a.as_fix().checked_sub(b.as_fix()) { if Value::fixable(r) { return Ok(Value::fix(r)); } }
-    }
+    if a.both_fix(b) && !redef(R_INT_MINUS) { if let Some(r) = a.fix_sub(b) { return Ok(r); } }
     if let Some((x, y)) = flo2(a, b, R_FLO_MINUS, R_INT_MINUS) { return Ok(crate::numeric::float_new(x - y)); }
     srb_binop(c, a, b, s::minus, line, cc)
 }
@@ -1005,14 +1001,14 @@ pub fn EVAL_node_opt_mod(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, li
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_lt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_LT) { return Ok(Value::bool(a.as_fix() < b.as_fix())); }
+    if a.both_fix(b) && !redef(R_INT_LT) { return Ok(Value::bool(a.fix_ord() < b.fix_ord())); }
     if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LT, R_INT_LT) { return Ok(Value::bool(x < y)); }
     srb_binop(c, a, b, s::lt, line, cc)
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_TEST_node_opt_lt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> Result<bool, Esc> {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_LT) { return Ok(a.as_fix() < b.as_fix()); }
+    if a.both_fix(b) && !redef(R_INT_LT) { return Ok(a.fix_ord() < b.fix_ord()); }
     if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LT) { return Ok(a.flonum_val() < b.flonum_val()); }
     Ok(srb_binop(c, a, b, s::lt, line, cc)?.truthy())
 }
@@ -1021,14 +1017,14 @@ pub fn EVAL_TEST_node_opt_lt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_le(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_LE) { return Ok(Value::bool(a.as_fix() <= b.as_fix())); }
+    if a.both_fix(b) && !redef(R_INT_LE) { return Ok(Value::bool(a.fix_ord() <= b.fix_ord())); }
     if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LE, R_INT_LE) { return Ok(Value::bool(x <= y)); }
     srb_binop(c, a, b, s::le, line, cc)
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_TEST_node_opt_le(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> Result<bool, Esc> {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_LE) { return Ok(a.as_fix() <= b.as_fix()); }
+    if a.both_fix(b) && !redef(R_INT_LE) { return Ok(a.fix_ord() <= b.fix_ord()); }
     if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LE) { return Ok(a.flonum_val() <= b.flonum_val()); }
     Ok(srb_binop(c, a, b, s::le, line, cc)?.truthy())
 }
@@ -1037,14 +1033,14 @@ pub fn EVAL_TEST_node_opt_le(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_gt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_GT) { return Ok(Value::bool(a.as_fix() > b.as_fix())); }
+    if a.both_fix(b) && !redef(R_INT_GT) { return Ok(Value::bool(a.fix_ord() > b.fix_ord())); }
     if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GT, R_INT_GT) { return Ok(Value::bool(x > y)); }
     srb_binop(c, a, b, s::gt, line, cc)
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_TEST_node_opt_gt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> Result<bool, Esc> {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_GT) { return Ok(a.as_fix() > b.as_fix()); }
+    if a.both_fix(b) && !redef(R_INT_GT) { return Ok(a.fix_ord() > b.fix_ord()); }
     if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GT) { return Ok(a.flonum_val() > b.flonum_val()); }
     Ok(srb_binop(c, a, b, s::gt, line, cc)?.truthy())
 }
@@ -1053,14 +1049,14 @@ pub fn EVAL_TEST_node_opt_gt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_ge(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_GE) { return Ok(Value::bool(a.as_fix() >= b.as_fix())); }
+    if a.both_fix(b) && !redef(R_INT_GE) { return Ok(Value::bool(a.fix_ord() >= b.fix_ord())); }
     if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GE, R_INT_GE) { return Ok(Value::bool(x >= y)); }
     srb_binop(c, a, b, s::ge, line, cc)
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_TEST_node_opt_ge(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> Result<bool, Esc> {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_GE) { return Ok(a.as_fix() >= b.as_fix()); }
+    if a.both_fix(b) && !redef(R_INT_GE) { return Ok(a.fix_ord() >= b.fix_ord()); }
     if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GE) { return Ok(a.flonum_val() >= b.flonum_val()); }
     Ok(srb_binop(c, a, b, s::ge, line, cc)?.truthy())
 }
@@ -1069,7 +1065,7 @@ pub fn EVAL_TEST_node_opt_ge(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_eq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_EQ) { return Ok(Value::bool(a == b)); }
+    if a.both_fix(b) && !redef(R_INT_EQ) { return Ok(Value::bool(a == b)); }
     if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { return Ok(Value::bool(x == y)); }
     // nil / true / false / Symbol receivers: == is identity
     if a.is_special() && !redef(R_IMM_EQ) { return Ok(Value::bool(a == b)); }
@@ -1078,7 +1074,7 @@ pub fn EVAL_node_opt_eq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, lin
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_TEST_node_opt_eq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> Result<bool, Esc> {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_EQ) { return Ok(a == b); }
+    if a.both_fix(b) && !redef(R_INT_EQ) { return Ok(a == b); }
     if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { return Ok(a.flonum_val() == b.flonum_val()); }
     if a.is_sym() && b.is_sym() { return Ok(a == b); }
     Ok(srb_eq(c, a, b, line, cc)?.truthy())
@@ -1088,14 +1084,14 @@ pub fn EVAL_TEST_node_opt_eq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_neq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_EQ) { return Ok(Value::bool(a != b)); }
+    if a.both_fix(b) && !redef(R_INT_EQ) { return Ok(Value::bool(a != b)); }
     if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { return Ok(Value::bool(x != y)); }
     srb_binop(c, a, b, s::neq, line, cc)
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_TEST_node_opt_neq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: u32, cc: &mut CallCache) -> Result<bool, Esc> {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_EQ) { return Ok(a != b); }
+    if a.both_fix(b) && !redef(R_INT_EQ) { return Ok(a != b); }
     if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { return Ok(a.flonum_val() != b.flonum_val()); }
     Ok(srb_binop(c, a, b, s::neq, line, cc)?.truthy())
 }

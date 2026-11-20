@@ -30,6 +30,18 @@ impl Value {
     #[inline(always)] pub fn fix(i: i64) -> Value { unsafe { Value::from_raw(((i << 1) | 1) as u64) } }
     #[inline(always)] pub fn fixable(i: i64) -> bool { (FIXNUM_MIN..=FIXNUM_MAX).contains(&i) }
     #[inline(always)] pub fn as_fix(self) -> i64 { (self.raw() as i64) >> 1 }
+    /// Are both fixnums?
+    #[inline(always)] pub fn both_fix(self, o: Value) -> bool { self.raw() & o.raw() & 1 == 1 }
+    // Fixnum arithmetic on the tagged words (2n+1): one add with an overflow test instead of
+    // untag / add / range check / retag.  None: the result is not a fixnum.
+    #[inline(always)] pub fn fix_add(self, o: Value) -> Option<Value> {
+        (self.raw() as i64).checked_add(o.raw() as i64 - 1).and_then(|r| std::num::NonZeroU64::new(r as u64)).map(Value)
+    }
+    #[inline(always)] pub fn fix_sub(self, o: Value) -> Option<Value> {
+        (self.raw() as i64).checked_sub(o.raw() as i64 - 1).and_then(|r| std::num::NonZeroU64::new(r as u64)).map(Value)
+    }
+    /// The tagged word as a signed integer: its order is the fixnums' order.
+    #[inline(always)] pub fn fix_ord(self) -> i64 { self.raw() as i64 }
     #[inline(always)] pub fn is_flonum(self) -> bool { self.raw() & 3 == 2 }
     #[inline(always)] pub fn is_heap(self) -> bool { self.raw() & 7 == 0 }
     #[inline(always)] pub fn is_special(self) -> bool { self.raw() & 7 == 4 }
