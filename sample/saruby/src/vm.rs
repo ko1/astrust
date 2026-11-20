@@ -1152,7 +1152,7 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
     if argc == cc.fast_argc && flags & CF_KW == 0 {
         #[cfg(feature = "nodeprof")] crate::nodeprof::hit("site: entry");
         c.call_me = cc.me as *const MethodEntry; c.call_blk = blk;
-        let r = run_entry(c, cc.fast as NodePtr, base);
+        let r = run_entry(c, cc.fast as NodePtr, base, argc);
         c.set_sp(base, 0);
         return Some(r);
     }
@@ -1166,7 +1166,7 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
                     let o = new_object(ni.klass);
                     base[0].set(o);   // self of initialize: keeps o alive and gives it back
                     c.call_me = ni.init_me; c.call_blk = blk;
-                    let r = run_entry(c, ni.init_entry, base);
+                    let r = run_entry(c, ni.init_entry, base, argc);
                     c.set_sp(base, 0);
                     return Some(match r { Ok(_) => Ok(base[0].get()), Err(e) => Err(e) });
                 }
@@ -1261,7 +1261,8 @@ pub fn site_fast(c: &mut Ctx, cc: &mut CallCache, recv: Value, base: Stk, argc: 
     match kind & 15 {
         SITE_ENTRY => if argc == cc.fast_argc {
             c.call_me = cc.me as *const MethodEntry; c.call_blk = blk;
-            let r = run_entry(c, cc.fast as NodePtr, base);
+            // the site just staged: sp is where the entry expects it (no at_entry)
+            let r = run_body(c, cc.fast as NodePtr, base);
             c.set_sp(base, 0);
             return Some(r);
         }
@@ -1480,7 +1481,7 @@ pub fn invoke_iseq_simple(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: 
     if is.entry.is_null() { return invoke_iseq(c, me, is, recv, base, argc, blk, 0); }
     base[0].set(recv);
     c.call_me = me; c.call_blk = blk;
-    run_entry(c, is.entry, base)
+    run_entry(c, is.entry, base, argc)
 }
 
 #[cold]
@@ -1643,8 +1644,8 @@ pub fn run_body(c: &mut Ctx, body: NodePtr, base: Stk) -> RV {
 
 /// run_body for a method entry node.
 #[inline(always)]
-pub fn run_entry(c: &mut Ctx, entry: NodePtr, base: Stk) -> RV {
-    at_entry(c, base);
+pub fn run_entry(c: &mut Ctx, entry: NodePtr, base: Stk, argc: u32) -> RV {
+    at_entry(c, base, argc as usize);
     run_body(c, entry, base)
 }
 

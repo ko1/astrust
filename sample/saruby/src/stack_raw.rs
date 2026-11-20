@@ -90,11 +90,11 @@ pub fn stage(c: &mut Ctx, n: usize) -> Result<Stk, Esc> {
 }
 
 #[inline(always)]
-pub fn at_entry(_c: &mut Ctx, _st: Stk) {}
+pub fn at_entry(_c: &mut Ctx, _st: Stk, _argc: usize) {}
 
 /// Method entry: the overflow check, and sp goes above the frame's n slots.
 #[inline(always)]
-pub fn enter(c: &mut Ctx, fp: Fp, n: u32) -> Result<(), Esc> {
+pub fn enter(c: &mut Ctx, fp: Fp, n: u32, _nparams: u32) -> Result<(), Esc> {
     let top = fp.0.wrapping_add(n as usize);
     if top.wrapping_add(16) >= c.stk.end { return Err(raise_stack_overflow(c)); }
     c.sp = top;

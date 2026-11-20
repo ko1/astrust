@@ -83,14 +83,15 @@ pub fn stage(c: &mut Ctx, n: usize) -> Result<Stk, Esc> {
     Ok(&s[s.len() - room..])
 }
 
-/// Before running a method entry node on the frame at `st`: it expects sp at its base.
+/// Before running a method entry node on the frame at `st`: it expects sp just above the
+/// argc staged arguments, where stage() left it (so a baked call that just staged skips this).
 #[inline(always)]
-pub fn at_entry(c: &mut Ctx, st: Stk) { c.set_sp(st, 0); }
+pub fn at_entry(c: &mut Ctx, st: Stk, argc: usize) { c.sp = st.len().wrapping_sub(2 + argc); }
 
-/// Method entry: sp goes above the frame's n slots (frame() made sure they exist).
+/// Method entry: sp goes from above the params to above the frame's n slots (frame() made sure they exist).
 #[inline(always)]
-pub fn enter(c: &mut Ctx, _fp: Fp, n: u32) -> Result<(), Esc> {
-    c.sp = c.sp.wrapping_sub(n as usize);
+pub fn enter(c: &mut Ctx, _fp: Fp, n: u32, nparams: u32) -> Result<(), Esc> {
+    c.sp = c.sp.wrapping_sub(n.saturating_sub(2 + nparams) as usize);
     Ok(())
 }
 
