@@ -20,6 +20,8 @@ pub fn init(program_dir: Option<&str>, collect: bool) {
 pub fn register_iseq(is: &'static Iseq) {
     let Some(st) = (unsafe { STORE.as_mut() }) else { return };
     let body = if is.entry.is_null() { is.body } else { is.entry };
+    // KORUBY_SD_NAMES=1: which body each SD_<hash> is (to read a perf profile)
+    if std::env::var_os("KORUBY_SD_NAMES").is_some() { eprintln!("SD_{:016x} {} {}:{}", hash_node(body), is.info.label, is.info.file, is.info.line); }
     if let Some(p) = st.register(body as usize, hash_node(body), is.info.file == PRELUDE_FILE, env!("KORUBY_BUILD_ID")) {
         unsafe { (*body).head.dispatcher = std::mem::transmute::<*const std::os::raw::c_void, DispatchFn>(p); }
         vm().sd_hits += 1;

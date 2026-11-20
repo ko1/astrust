@@ -1741,12 +1741,13 @@ pub fn yield_block(c: &mut Ctx, blk: *const Block, args: &[Value]) -> RV {
     invoke_block_full(c, b, args, std::ptr::null(), b.self_, false, std::ptr::null(), false)
 }
 
-/// The iseq of a non-lambda block whose params are exactly `argc` required ones (no destructuring).
+/// The iseq of a non-lambda block with only required params that `argc` args bind to without spreading.
 #[inline(always)]
 pub fn block_fast(b: &Block, argc: usize) -> Option<&'static Iseq> {
     if let BlockKind::Iseq(is) = b.kind {
         let is = unsafe { &*is };
-        if is.lead_only && is.kind != IseqKind::Lambda && argc == is.params.lead.len()
+        // extra args are dropped and missing ones are nil; one arg for 2+ params may be an Array to spread
+        if is.lead_only && is.kind != IseqKind::Lambda && !(argc == 1 && is.params.lead.len() >= 2)
             && (b.proc_val == UNDEF || !rproc(b.proc_val).is_lambda) { return Some(is); }
     }
     None
@@ -1762,7 +1763,7 @@ pub fn run_block_fast(c: &mut Ctx, b: &Block, is: &Iseq, base: Stk, argc: u32) -
     };
     base[0].set(b.self_);
     base[1].set(b.env);
-    nil_fill(base, 2 + argc as usize, n);
+    nil_fill(base, 2 + (argc as usize).min(is.params.lead.len()), n);
     c.set_sp(base, n);
     if is.env_size > 0 { make_env(is, base, b.env); }
     c.frame = &mut fr.h;
