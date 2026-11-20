@@ -57,7 +57,7 @@ pub fn malloc_increase(n: usize) { heap().account_external(n); }
 /// machine stack, the VM value stack, the heap, or `body`.
 #[inline]
 pub fn alloc(klass: Value, body: Body) -> Value {
-    let p = heap().alloc(&mut Koruby, RObj { klass, flags: 0, gc: GcHeader::new(), body });
+    let p = heap().alloc(&mut Koruby, move || RObj { klass, flags: 0, gc: GcHeader::new(), body });
     Value::from_ptr(p.as_ptr())
 }
 

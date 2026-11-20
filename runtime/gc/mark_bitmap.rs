@@ -203,7 +203,8 @@ impl<L: GcLang> GcBackend<L> for MarkBitmap<L> {
     }
 
     #[inline(always)]
-    fn alloc(&mut self, lang: &mut L, ctl: &mut Control, mut obj: L::Obj) -> NonNull<L::Obj> {
+    fn alloc<F: FnOnce() -> L::Obj>(&mut self, lang: &mut L, ctl: &mut Control, make: F) -> NonNull<L::Obj> {
+        let mut obj = make();
         if self.cur_bits == 0 || self.external_since_gc > self.external_limit { obj = self.slow(lang, ctl, obj); }
         let p = (self.cur_slot0 + self.cur_bits.trailing_zeros() as usize * Self::SLOT) as *mut L::Obj;
         self.cur_bits &= self.cur_bits - 1;

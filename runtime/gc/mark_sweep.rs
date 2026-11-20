@@ -150,6 +150,30 @@ impl<L: GcLang> RootVisitor<L> for Marker<'_, L> {
     }
 }
 
+impl<L: GcLang> MarkSweep<L> {
+    #[cold]
+    #[inline(never)]
+    fn alloc_cold(&mut self, lang: &mut L, ctl: &mut Control, obj: L::Obj) -> NonNull<L::Obj> {
+        let obj = self.slow(lang, ctl, obj);
+        self.place(obj)
+    }
+
+    #[inline(always)]
+    fn place(&mut self, obj: L::Obj) -> NonNull<L::Obj> {
+        let p = self.free;
+        // SAFETY: after slow() the free list is not empty; p is a free slot: it holds a link and has room for an Obj
+        unsafe {
+            self.free = Self::link(p).read();
+            p.write(obj);
+        }
+        self.free_count -= 1;
+        self.allocs_since_gc += 1;
+        self.total_allocated += 1;
+        // SAFETY: slots are never null
+        unsafe { NonNull::new_unchecked(p) }
+    }
+}
+
 impl<L: GcLang> GcBackend<L> for MarkSweep<L> {
     const NAME: &'static str = "marksweep";
     const MOVING: bool = false;
@@ -165,19 +189,11 @@ impl<L: GcLang> GcBackend<L> for MarkSweep<L> {
     }
 
     #[inline(always)]
-    fn alloc(&mut self, lang: &mut L, ctl: &mut Control, mut obj: L::Obj) -> NonNull<L::Obj> {
-        if self.free.is_null() || self.external_since_gc > self.external_limit { obj = self.slow(lang, ctl, obj); }
-        let p = self.free;
-        // SAFETY: after slow() the free list is not empty; p is a free slot: it holds a link and has room for an Obj
-        unsafe {
-            self.free = Self::link(p).read();
-            p.write(obj);
-        }
-        self.free_count -= 1;
-        self.allocs_since_gc += 1;
-        self.total_allocated += 1;
-        // SAFETY: slots are never null
-        unsafe { NonNull::new_unchecked(p) }
+    fn alloc<F: FnOnce() -> L::Obj>(&mut self, lang: &mut L, ctl: &mut Control, make: F) -> NonNull<L::Obj> {
+        // no call between the caller building `obj` and the stores into the slot: an object kept on the
+        // stack across slow() is copied by a wide load that stalls on its narrow stores
+        if self.free.is_null() || self.external_since_gc > self.external_limit { return self.alloc_cold(lang, ctl, make()); }
+        self.place(make())
     }
 
     fn collect(&mut self, lang: &mut L, pending: Option<&mut L::Obj>) {

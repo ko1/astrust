@@ -88,7 +88,9 @@ pub trait GcBackend<L: GcLang>: Sized {
     fn new() -> Self;
     /// Put `obj` in the heap.  A collection, if one is due, goes through `ctl.collect`
     /// with `obj` as the pending object.  The common case must be inlinable.
-    fn alloc(&mut self, lang: &mut L, ctl: &mut Control, obj: L::Obj) -> NonNull<L::Obj>;
+    /// `make` builds the object: called after the fast-path check so it is written straight into the
+    /// slot (an object built first sits on the stack and is copied with loads its stores cannot forward to).
+    fn alloc<F: FnOnce() -> L::Obj>(&mut self, lang: &mut L, ctl: &mut Control, make: F) -> NonNull<L::Obj>;
     /// One full collection (called through `Control::collect` only).  `pending` is an
     /// object being allocated and not in the heap yet: its slots are roots.
     fn collect(&mut self, lang: &mut L, pending: Option<&mut L::Obj>);
@@ -159,9 +161,16 @@ impl<L: GcLang, B: GcBackend<L>> Gc<L, B> {
     /// reachable from the roots or from `obj` itself (its slots are roots during this call).
     /// The returned pointer is valid until a collection finds the object unreachable.
     #[inline(always)]
-    pub fn alloc(&mut self, lang: &mut L, mut obj: L::Obj) -> NonNull<L::Obj> {
-        if self.ctl.stress != 0 { obj = self.stress_alloc(lang, obj); }
-        self.backend.alloc(lang, &mut self.ctl, obj)
+    pub fn alloc<F: FnOnce() -> L::Obj>(&mut self, lang: &mut L, make: F) -> NonNull<L::Obj> {
+        if self.ctl.stress != 0 { return self.alloc_stressed(lang, make()); }
+        self.backend.alloc(lang, &mut self.ctl, make)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn alloc_stressed(&mut self, lang: &mut L, obj: L::Obj) -> NonNull<L::Obj> {
+        let obj = self.stress_alloc(lang, obj);
+        self.backend.alloc(lang, &mut self.ctl, move || obj)
     }
 
     #[cold]
