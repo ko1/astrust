@@ -1196,7 +1196,10 @@ impl<'a> Compiler<'a> {
                                 _ => { pats.push(self.c(cnd)); kinds.push(0); }
                             }
                         }
-                        let test = ALLOC_node_when(sl, leak(pats), lstr(&kinds));
+                        let test = match lit_imm(&pats, &kinds) {
+                            Some(v) => ALLOC_node_when_lit(sl, v),
+                            None => ALLOC_node_when(sl, leak(pats), lstr(&kinds)),
+                        };
                         let body = self.stmts(statements.as_deref());
                         tail = ALLOC_node_if(test, body, tail);
                     }
@@ -1809,4 +1812,13 @@ pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind,
     if kind == IseqKind::Eval && !outer.is_empty() { cm.captures.entry(key(&pr.root)).or_default().insert(Sym(u32::MAX)); }
     cm.eval_outer = outer;
     Ok(cm.compile_program(&pr.root, kind))
+}
+
+/// The value of a single non-splat `when` pattern that is an immediate literal.
+fn lit_imm(pats: &[NodePtr], kinds: &[u8]) -> Option<Value> {
+    if pats.len() != 1 || kinds[0] != 0 { return None; }
+    let n = pats[0];
+    if !std::ptr::eq(unsafe { (*n).head.kind }, &KIND_node_lit) { return None; }
+    let v = unsafe { (*(n as *mut NodeOf<node_lit_struct>)).u.v };
+    if v.is_fixnum() || v.is_special() { Some(v) } else { None }
 }

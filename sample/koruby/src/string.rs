@@ -53,6 +53,15 @@ pub fn str_append_str(c: &mut Ctx, acc: Value, s: Value) -> Result<(), Esc> {
     Ok(())
 }
 
+/// acc << s for a mutable acc of the same encoding (nothing to check).
+#[inline]
+pub fn str_append_same_enc(acc: Value, s: Value) {
+    if acc == s { let b = rstr(s).b.clone(); rstr(acc).b.extend_from_slice(&b); return; }
+    let (a, b) = (rstr(acc), rstr(s));
+    crate::gc::malloc_increase(b.b.len());
+    a.b.extend_from_slice(&b.b);
+}
+
 pub fn is_ascii(b: &[u8]) -> bool { b.iter().all(|&x| x < 0x80) }
 
 pub fn utf8_len(b: &[u8]) -> usize {

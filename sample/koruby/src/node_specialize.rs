@@ -1356,6 +1356,31 @@ fn SPECIALIZE_node_when(sc: &mut SpecCtx, n: NodePtr) -> String {
 }
 
 #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
+fn SPECIALIZE_node_when_lit(sc: &mut SpecCtx, n: NodePtr) -> String {
+    let name = format!("T_{:016x}", hash_node(n));
+    if sc.emitted.contains(&name) { return name; }
+    let u = unsafe { &(*(n as *mut NodeOf<node_when_lit_struct>)).u };
+
+    let np = n as *mut NodeOf<node_when_lit_struct>;
+    let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
+    unsafe {
+    a.push(format!("{}u32", (*np).u.subj_slot));
+    a.push(crate::compile::value_bake((*np).u.v).unwrap_or_else(|| "(*np).u.v".to_string()));
+    a.push("&mut (*np).u.cc".to_string());
+    }
+    let mut body = String::new();
+    body.push_str(&format!("pub struct {};\n", name));
+    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
+    body.push_str(&format!("impl Disp for {} {{\n    #[inline]\n    fn call(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {{ unsafe {{\n", name));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_when_lit_struct>;\n", "n"));
+
+    body.push_str(&format!("        EVAL_node_when_lit{}({})\n    }} }}\n}}\n", "", a.join(", ")));
+    sc.emitted.insert(name.clone());
+    sc.out.push_str(&body);
+    name
+}
+
+#[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
 fn SPECIALIZE_node_defined(sc: &mut SpecCtx, n: NodePtr) -> String {
     let name = format!("T_{:016x}", hash_node(n));
     if sc.emitted.contains(&name) { return name; }

@@ -5,11 +5,14 @@ use crate::vm::*;
 
 #[inline]
 pub fn float_new(d: f64) -> Value {
-    match Value::flonum(d) { Some(v) => v, None => {
-        let v = crate::gc::alloc(vm().c_float, Body::Float(d));
-        obj(v).flags |= FL_FROZEN;
-        v
-    } }
+    match Value::flonum(d) { Some(v) => v, None => float_new_heap(d) }
+}
+#[cold]
+#[inline(never)]
+fn float_new_heap(d: f64) -> Value {
+    let v = crate::gc::alloc(vm().c_float, Body::Float(d));
+    obj(v).flags |= FL_FROZEN;
+    v
 }
 
 /// Float#to_s

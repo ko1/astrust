@@ -400,6 +400,11 @@ pub fn prepend_module(klass: Value, m: Value) {
     let cd = rclass(klass);
     if cd.prepends.contains(&m) { return; }
     cd.prepends.push(m);
+    // a prepended method overrides the class's own: operator fast paths must notice
+    for &am in ancestors(m).iter() {
+        let mids: Vec<Sym> = rclass(am).mtbl.keys().copied().collect();
+        for mid in mids { crate::rt::note_redefinition(klass, mid); }
+    }
     bump_hierarchy();
 }
 pub fn bump_hierarchy() {

@@ -506,6 +506,15 @@ pub fn DISPATCH_node_when(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
 }
 
 #[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_when_lit(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
+    let np = n as *mut NodeOf<node_when_lit_struct>;
+    unsafe {
+
+    EVAL_node_when_lit(c, n, fp, (*np).u.subj_slot, (*np).u.v, &mut (*np).u.cc)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
 pub fn DISPATCH_node_defined(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
     let np = n as *mut NodeOf<node_defined_struct>;
     unsafe {

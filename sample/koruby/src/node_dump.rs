@@ -613,6 +613,18 @@ fn DUMP_node_when(out: &mut String, n: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_when_lit(out: &mut String, n: NodePtr) {
+    let np = n as *mut NodeOf<node_when_lit_struct>;
+    unsafe {
+    out.push_str("(node_when_lit");
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.subj_slot));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.v));
+    out.push(' '); out.push_str("<cc>");
+    out.push(')');
+    }
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_defined(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_defined_struct>;
     unsafe {

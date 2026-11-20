@@ -17,6 +17,7 @@ pub mod kalloc;
 pub mod vm;
 pub mod compile;
 pub mod rt;
+pub mod opt;
 pub mod bignum;
 pub mod string;
 pub mod array;

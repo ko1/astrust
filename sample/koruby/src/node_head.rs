@@ -499,6 +499,14 @@ pub struct node_when_struct {
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
+pub struct node_when_lit_struct {
+    pub subj_slot: u32,
+    pub v: Value,
+    pub cc: CallCache,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
 pub struct node_defined_struct {
     pub kind: u32,
     pub name: Sym,
@@ -1140,6 +1148,11 @@ pub fn ALLOC_node_ensure(body: NodePtr, ens: NodePtr) -> NodePtr {
 #[allow(non_snake_case)]
 pub fn ALLOC_node_when(subj_slot: u32, pats: NodeList, kinds: Str) -> NodePtr {
     node_allocate(&KIND_node_when, node_when_struct { subj_slot, pats, kinds, cc: Default::default() })
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_when_lit(subj_slot: u32, v: Value) -> NodePtr {
+    node_allocate(&KIND_node_when_lit, node_when_lit_struct { subj_slot, v, cc: Default::default() })
 }
 
 #[allow(non_snake_case)]
@@ -1965,6 +1978,17 @@ pub static KIND_node_when: NodeKind = NodeKind {
     specializer: SPECIALIZE_node_when,
     dumper: DUMP_node_when,
     replacer: REPLACE_node_when,
+    no_inline: false,
+};
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_when_lit: NodeKind = NodeKind {
+    name: "node_when_lit",
+    default_dispatcher: DISPATCH_node_when_lit,
+    hash_func: HASH_node_when_lit,
+    specializer: SPECIALIZE_node_when_lit,
+    dumper: DUMP_node_when_lit,
+    replacer: REPLACE_node_when_lit,
     no_inline: false,
 };
 

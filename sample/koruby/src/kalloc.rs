@@ -41,9 +41,14 @@ extern "C" { fn mmap(a: *mut u8, l: usize, p: i32, f: i32, fd: i32, o: i64) -> *
 pub fn adopt() {
     if std::env::var_os("KORUBY_NO_KALLOC").is_some() { return; }
     // PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE
-    let p = unsafe { mmap(std::ptr::null_mut(), ARENA, 3, 0x02 | 0x20 | 0x4000, -1, 0) } as usize;
-    if p == usize::MAX || p == 0 { return; }
-    unsafe { BASE = p; BUMP = p; LEN = ARENA; OWNER = thread_ptr(); }
+    let mut len = ARENA;
+    let p = loop {
+        let p = unsafe { mmap(std::ptr::null_mut(), len, 3, 0x02 | 0x20 | 0x4000, -1, 0) } as usize;
+        if p != usize::MAX && p != 0 { break p; }
+        len >>= 2;   // restricted address space (ulimit -v, valgrind): settle for less
+        if len < 1 << 26 { return; }
+    };
+    unsafe { BASE = p; BUMP = p; LEN = len; OWNER = thread_ptr(); }
 }
 
 #[inline(always)]

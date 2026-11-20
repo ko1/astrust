@@ -491,6 +491,15 @@ fn HASH_node_when(n: NodePtr) -> u64 {
 }
 
 #[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_when_lit(n: NodePtr) -> u64 {
+    let u = unsafe { &(*(n as *mut NodeOf<node_when_lit_struct>)).u };
+    let mut h = hash_str("node_when_lit");
+    h = hash_merge(h, hash_u64(u.subj_slot as u64));
+    h = hash_merge(h, crate::compile::value_hash(u.v));
+    h
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_defined(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_defined_struct>)).u };
     let mut h = hash_str("node_defined");
