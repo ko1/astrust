@@ -78,14 +78,22 @@ uses that API; see docs/safe_heap.md (design, recipe, what is left).
 * Ruby-level built-ins live in `prelude/core.rb` (loaded at boot).
 
 ## Calls, frames and blocks (the fast paths)
-Measurements and what was tried: `~/ruby/src/trials/2026-11-21-saruby-call-path/`.
+Measurements and what was tried: `~/ruby/src/trials/2026-11-21-saruby-call-path/` and `-call-path-2/`.
 
 * A call site (`node_call`, `node_call_blk`, `node_attrasgn`) stages `[recv, -, args...]`, stores its
   line in the caller's frame and tests its cache: receiver class and `method_serial()` (a static
   counter, bumped by `bump_method_serial()` whenever a method table, a visibility or the hierarchy
   changes).  Baked code keeps one path inline, chosen by the cache at bake time (`site_kind`): the
-  callee compiled into the site (`callee@spec`, checked by hash), or the site's entry / attr /
-  builtin path (`site_fast`); everything else is `call_cached_out`.
+  callee compiled into the site (`callee@spec`), or the site's entry / attr / builtin path
+  (`site_fast`); everything else is `call_cached_out`.  A compiled-in callee is guarded by
+  `CallCache.spec_klass` instead of `klass`: it is set by `call_spec_out` (the site's out-of-line
+  call, the only thing that refills its cache) when the entry the cache now holds has the baked hash,
+  so the per-call test is heap, class, serial.
+* A compiled-in entry gets its method entry and block as `CallArgs`, a `@specin` operand: in
+  registers through `EVAL_SPEC!`; called through a dispatcher it reads `c.call_me` / `c.call_blk`.
+* A compiled-in self call without arguments of a method without parameters, locals, env or block
+  literal (`spec_shared`, baked as `shared`) runs the callee in the caller's frame: no staging, no
+  frame check, no sp change; the entry (`CallArgs.shared`) skips `enter` and the env slot.
 * A method with only required parameters has a `node_method_entry` (`Iseq.entry`): it expects sp
   just above the staged arguments (where `stage` left it), makes the 6-word `Frame` on the native
   stack, nil-fills, links `c.frame`, runs the body and consumes its `return`.  Its flags (`ME_*`,
@@ -107,6 +115,11 @@ Measurements and what was tried: `~/ruby/src/trials/2026-11-21-saruby-call-path/
   Other ways to run a block (lambda call, `define_method`, one Array spread over several
   parameters) set up the frame in `run_block_iseq` and dispatch `Iseq.body`; that body is baked
   separately only for blocks that ran this way before the bake (`Iseq.body_used`).
+* A Ruby `yield` site records the block iseq it ran (`YieldCache.seen`).  When it saw one, the bake
+  compiles that block's entry into the site (`spec_block`, parameter count baked as `np`); the run
+  compares the block's iseq with `YieldCache.fast` (set by `srb_yield_miss` once that iseq's entry
+  hash equals the baked one) and that the block is not a lambda proc.  Blocks yielded by builtins
+  (`Integer#times`, `Array#each`, ...) are not compiled in: the yield is in Rust.
 
 ## Lexical scope (Cref) and refinements
 * A frame's `cref` is its lexical class scope (constants, `def` target, class variables).  A

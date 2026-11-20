@@ -597,7 +597,7 @@ pub fn DISPATCH_node_call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_call_struct>;
     unsafe {
 
-    EVAL_node_call::<Dyn, DynList, Dyn>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, (*np).u.line, &mut (*np).u.cc, 0u64, 0)
+    EVAL_node_call::<Dyn, DynList, Dyn>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, (*np).u.line, &mut (*np).u.cc, 0u64, 0, 0)
     }
 }
 
@@ -657,7 +657,7 @@ pub fn DISPATCH_node_yield(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_yield_struct>;
     unsafe {
 
-    EVAL_node_yield::<DynList>(c, n, fp, (*np).u.args)
+    EVAL_node_yield::<DynList, Dyn>(c, n, fp, (*np).u.args, &mut (*np).u.yc, 0u64, 0)
     }
 }
 
@@ -907,7 +907,7 @@ pub fn DISPATCH_node_method_entry(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_method_entry_struct>;
     unsafe {
 
-    EVAL_node_method_entry::<Dyn>(c, n, fp, (*np).u.nlocals, (*np).u.nparams, (*np).u.flags, (*np).u.line, (*np).u.body)
+    EVAL_node_method_entry::<Dyn>(c, n, fp, (*np).u.nlocals, (*np).u.nparams, (*np).u.flags, (*np).u.line, (*np).u.body, crate::vm::CallArgs::load(c))
     }
 }
 
@@ -917,7 +917,7 @@ pub fn DISPATCH_node_block_entry(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_block_entry_struct>;
     unsafe {
 
-    EVAL_node_block_entry::<Dyn>(c, n, fp, (*np).u.nlocals, (*np).u.nparams, (*np).u.flags, (*np).u.line, (*np).u.body)
+    EVAL_node_block_entry::<Dyn>(c, n, fp, (*np).u.nlocals, (*np).u.nparams, (*np).u.flags, (*np).u.line, (*np).u.body, crate::vm::CallArgs::load(c))
     }
 }
 

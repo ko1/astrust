@@ -129,7 +129,7 @@ pub trait Disp {
     fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV;
     /// call() across a speculation boundary (the embedder only speculates small callees, to a bounded depth).
     #[inline(always)]
-    fn spec(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV { Self::call(c, n, fp) }
+    fn spec(c: &mut Ctx, n: NodePtr, fp: Fp, a: CallArgs) -> RV { a.store(c); Self::call(c, n, fp) }
     #[inline(always)]
     fn test(c: &mut Ctx, n: NodePtr, fp: Fp) -> Result<bool, Esc> { Ok(Self::call(c, n, fp)?.truthy()) }
 }
@@ -642,6 +642,7 @@ pub struct node_super_struct {
 #[repr(C)]
 pub struct node_yield_struct {
     pub args: NodeList,
+    pub yc: YieldCache,
 }
 
 #[allow(non_camel_case_types)]
@@ -1287,7 +1288,7 @@ pub fn ALLOC_node_super(args: NodeList, line: u32, ci: CiRef, zsuper: bool) -> N
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_yield(args: NodeList) -> NodePtr {
-    node_allocate(&KIND_node_yield, node_yield_struct { args })
+    node_allocate(&KIND_node_yield, node_yield_struct { args, yc: Default::default() })
 }
 
 #[allow(non_snake_case)]

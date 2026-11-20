@@ -21,6 +21,7 @@ fn SPECIALIZE_node_num(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str(&format!("        EVAL_node_num{}({})\n    }} }}\n", "", a.join(", ")));
 
+
     body.push_str("}
 ");
     sc.open.remove(&own_hash);
@@ -51,6 +52,7 @@ fn SPECIALIZE_node_add(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_add_struct>;\n", "n"));
 
     body.push_str(&format!("        EVAL_node_add{}({})\n    }} }}\n", format!("::<{}, {}>", t_l, t_r), a.join(", ")));
+
 
     body.push_str("}
 ");
@@ -83,6 +85,7 @@ fn SPECIALIZE_node_sub(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str(&format!("        EVAL_node_sub{}({})\n    }} }}\n", format!("::<{}, {}>", t_l, t_r), a.join(", ")));
 
+
     body.push_str("}
 ");
     sc.open.remove(&own_hash);
@@ -113,6 +116,7 @@ fn SPECIALIZE_node_mul(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_mul_struct>;\n", "n"));
 
     body.push_str(&format!("        EVAL_node_mul{}({})\n    }} }}\n", format!("::<{}, {}>", t_l, t_r), a.join(", ")));
+
 
     body.push_str("}
 ");
@@ -146,6 +150,7 @@ fn SPECIALIZE_node_mod(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let v_r = <{} as Disp>::call(c, (*np).u.r);\n", t_r));
     body.push_str(&format!("        EVAL_node_mod{}({})\n    }} }}\n", "", a.join(", ")));
 
+
     body.push_str("}
 ");
     sc.open.remove(&own_hash);
@@ -174,6 +179,7 @@ fn SPECIALIZE_node_var(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_var_struct>;\n", "n"));
 
     body.push_str(&format!("        EVAL_node_var{}({})\n    }} }}\n", "", a.join(", ")));
+
 
     body.push_str("}
 ");
@@ -205,6 +211,7 @@ fn SPECIALIZE_node_set(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, (*np).u.v);\n", t_v));
     body.push_str(&format!("        EVAL_node_set{}({})\n    }} }}\n", "", a.join(", ")));
 
+
     body.push_str("}
 ");
     sc.open.remove(&own_hash);
@@ -233,6 +240,7 @@ fn SPECIALIZE_node_seq(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_seq_struct>;\n", "n"));
 
     body.push_str(&format!("        EVAL_node_seq{}({})\n    }} }}\n", format!("::<{}>", t_xs), a.join(", ")));
+
 
     body.push_str("}
 ");
@@ -264,6 +272,7 @@ fn SPECIALIZE_node_times(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_times_struct>;\n", "n"));
 
     body.push_str(&format!("        EVAL_node_times{}({})\n    }} }}\n", format!("::<{}, {}>", t_cnt, t_body), a.join(", ")));
+
 
     body.push_str("}
 ");

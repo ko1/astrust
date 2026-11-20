@@ -28,6 +28,11 @@ require 'optparse'
 #   x@bake: u32       a scalar that is not stored in the node: 0 in the interpreter, and in specialized
 #                     code the value the embedder's `bake_value_expr` computes at specialize time
 #                     (e.g. what kind of callee a call site has seen), so the body can keep one case inline.
+#   x@specin: T       a value a speculating caller hands to this node directly: EVAL_SPEC!(c, x, <node ptr>,
+#                     <common args...>, <value>) passes it through `Disp::spec`, with no memory in between.
+#                     Reached any other way (interpreter, `call`) the body gets the embedder's
+#                     `spec_in_load_expr` (e.g. a read from the context); a `spec` that cannot pass it on (Dyn,
+#                     a node without @specin) stores it with `spec_in_store_stmt` first.  One type per node.def.
 #   NODE_TEST { ... }  (optional, right after a node's body) the node evaluated as a condition:
 #                     returns the embedder's `test_type` directly; children with EVAL_TEST!(c, x).
 #                     Nodes without one fall back to `test_default` over their value.
@@ -84,7 +89,8 @@ module ASTrustGen
           @child = name.end_with?('@child')
           @spec = name.end_with?('@spec')
           @bake = name.end_with?('@bake')
-          @name = name.sub(/@(ref|child|spec|bake)$/, '')
+          @specin = name.end_with?('@specin')
+          @name = name.sub(/@(ref|child|specin|spec|bake)$/, '')
           @type = type.strip
         end
 
@@ -92,7 +98,8 @@ module ASTrustGen
         def child? = @child
         def spec? = @spec
         def bake? = @bake
-        def virtual? = @spec || @bake   # not a field of the node
+        def specin? = @specin
+        def virtual? = @spec || @bake || @specin   # not a field of the node
         def node? = !@ref && !@child && !@spec && @type == 'NODE'
         def nodes? = !@ref && @type == 'NODES'
         def any_node? = child? || node? || nodes?
@@ -144,6 +151,7 @@ module ASTrustGen
           if ref? then "a.push(\"&mut (*np).u.#{@name}\".to_string());"
           elsif spec? then "a.push(format!(\"{}u64\", h_#{@name}));"
           elsif bake? then "a.push(format!(\"#{SCALARS[@type]}\", #{@owner.bake_value_expr(self)}));"
+          elsif specin? then "a.push(\"#{ASTrustGen.rust_str(@owner.spec_in_load_expr(self))}\".to_string());"
           elsif child? then "a.push(\"#{ASTrustGen.rust_str(@owner.child_storage_expr(self))}\".to_string());"
           elsif node? then @owner.contiguous? ? "a.push(child_ptr_expr(n, u.#{@name}));" : "a.push(\"(*np).u.#{@name}\".to_string());"
           elsif nodes? then @owner.contiguous? ? "a.push(\"list_base(#{@owner.prefix_names[1]})\".to_string());" : "a.push(\"(*np).u.#{@name}\".to_string());"
@@ -192,6 +200,10 @@ module ASTrustGen
       def spec_target_expr(op) = "std::ptr::null_mut()"
       # @bake operand: Rust expr of the operand's type, evaluated at specialize time with `np` in scope.
       def bake_value_expr(op) = "0"
+      # @specin operand: the value when no speculating caller passed it, and how a `spec` that cannot
+      # pass it on leaves it where that expression reads it (`var` names the value).
+      def spec_in_load_expr(op) = "Default::default()"
+      def spec_in_store_stmt(var) = "let _ = #{var};"
       # Trees are laid out by layout_tree and specialized code reaches children at constant offsets.
       def contiguous? = false
       def dispatch_prologue = ""
@@ -234,7 +246,7 @@ module ASTrustGen
         ps = split_params(str)
         @prefix_params = ps.shift(common_param_count)
         @operands = ps.map do |p|
-          raise "ill-formed operand: #{p}" unless /\A([a-zA-Z_][a-zA-Z0-9_]*(?:@ref|@child|@spec|@bake)?)\s*:\s*(.+)\z/ =~ p
+          raise "ill-formed operand: #{p}" unless /\A([a-zA-Z_][a-zA-Z0-9_]*(?:@ref|@child|@specin|@spec|@bake)?)\s*:\s*(.+)\z/ =~ p
           op = self.class::Operand.new($1, $2)
           op.owner = self
           op
@@ -371,6 +383,7 @@ module ASTrustGen
           if op.ref? then args << "&mut (*np).u.#{op.name}"
           elsif op.spec? then args << "0u64"
           elsif op.bake? then args << "0"
+          elsif op.specin? then args << spec_in_load_expr(op)
           elsif op.child? then args << child_storage_expr(op)
           else args << "(*np).u.#{op.name}"
           end
@@ -456,6 +469,19 @@ module ASTrustGen
         RS
       end
 
+      # A node with a @specin operand: its `spec` takes the value as a parameter instead of loading it.
+      def build_specialize_spec(params, child_glue, tf)
+        op = @operands.find(&:specin?) or return ""
+        idx = @prefix_params.size + @operands.index(op)
+        <<~RS.chomp
+            let a_spec: Vec<String> = a.iter().enumerate().map(|(i, x)| if i == #{idx} { "#{op.name}".to_string() } else { x.clone() }).collect();
+            body.push_str(&format!("    #[inline(always)]\\n    fn spec(#{params}, #{op.name}: #{op.type}) -> #{result_type} {{ unsafe {{\\n"));
+            body.push_str(&format!("        let np = {} as *mut NodeOf<#{struct_name}>;\\n", "#{prefix_names[1]}"));
+        #{child_glue.join("\n")}
+            body.push_str(&format!("        EVAL_#{@name}{}({})\\n    }} }}\\n", #{tf}, a_spec.join(", ")));
+        RS
+      end
+
       def build_specialize
         if no_inline?
           return <<~RS
@@ -505,6 +531,7 @@ module ASTrustGen
         #{child_glue.join("\n")}
             body.push_str(&format!("        EVAL_#{@name}{}({})\\n    }} }}\\n", #{tf}, a.join(", ")));
         #{build_specialize_test(params, child_glue, tf)}
+        #{build_specialize_spec(params, child_glue, tf)}
             body.push_str("}\n");
             sc.open.remove(&own_hash);
             sc.out.push_str(&body);
@@ -555,6 +582,9 @@ module ASTrustGen
       params = n.prefix_params
       ptypes = params.map { it.split(':', 2).last.strip }
       pnames = n.prefix_names
+      sins = @nodes.values.flat_map(&:operands).select(&:specin?).map(&:type).uniq
+      raise "@specin operands of different types: #{sins.join(', ')}" if sins.size > 1
+      spec_in = sins.first
       <<~RS
       #{banner}
       pub type DispatchFn = fn(#{ptypes.join(', ')}) -> #{n.result_type};
@@ -684,7 +714,7 @@ module ASTrustGen
           fn call(#{params.join(', ')}) -> #{n.result_type};
           /// call() across a speculation boundary (the embedder only speculates small callees, to a bounded depth).
           #[inline(always)]
-          fn spec(#{params.join(', ')}) -> #{n.result_type} { Self::call(#{pnames.join(', ')}) }
+          fn spec(#{params.join(', ')}#{spec_in ? ", a: #{spec_in}" : ''}) -> #{n.result_type} { #{spec_in ? n.spec_in_store_stmt('a') + ' ' : ''}Self::call(#{pnames.join(', ')}) }
       #{n.test_type ? "    #[inline(always)]\n    fn test(#{params.join(', ')}) -> #{n.test_type} { #{n.test_default("Self::call(#{pnames.join(', ')})")} }" : ""}
       }
       /// A list of children: `DynList` loops over the heads, an SD list type is unrolled.

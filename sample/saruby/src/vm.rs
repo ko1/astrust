@@ -140,7 +140,16 @@ pub fn method_serial() -> u64 { METHOD_SERIAL.load(std::sync::atomic::Ordering::
 pub fn bump_method_serial() { METHOD_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
 
 #[derive(Default)]
-pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize, pub fast_hash: u64, pub fast_argc: u32, pub poly_next: u32, pub poly: usize, pub cfunc: usize, pub arity: i32 }
+// spec_klass: cc.klass while the entry it holds is the one baked into the site (call_spec_out)
+pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize, pub fast_hash: u64, pub fast_argc: u32, pub poly_next: u32, pub poly: usize, pub cfunc: usize, pub arity: i32, pub spec_klass: u64 }
+/// A `yield` site: `seen` = the block iseq it ran (1: several), what the bake speculates on;
+/// `fast` = the iseq whose entry is compiled into the site, set once its hash was checked.
+#[derive(Default)]
+pub struct YieldCache { pub fast: usize, pub seen: usize }
+impl YieldCache {
+    #[inline(always)]
+    pub fn note(&mut self, is: usize) { if self.seen != is && self.seen != 1 { self.seen = if self.seen == 0 { is } else { 1 }; } }
+}
 #[derive(Default)]
 pub struct ConstCache { pub serial: u64, pub cref: usize, pub val: u64 }
 #[derive(Default)]
@@ -262,6 +271,31 @@ pub struct Ctx {
     pub last_match: Value,
     pub in_ensure: u32,
     pub tok: crate::heap::Token,   // makes this the heap token (heap.rs)
+}
+
+/// What an entry node takes from its caller: in registers when the caller compiled the entry in
+/// (EVAL_SPEC!), else through c.call_me / c.call_blk.  `shared`: the entry runs in its caller's
+/// frame (a compiled-in self call of a method without parameters, locals, env or block literal).
+#[derive(Clone, Copy)]
+pub struct CallArgs { pub me: *const MethodEntry, pub blk: *const Block, pub shared: bool }
+impl CallArgs {
+    #[inline(always)] pub fn new(me: *const MethodEntry, blk: *const Block) -> CallArgs { CallArgs { me, blk, shared: false } }
+    #[inline(always)] pub fn load(c: &Ctx) -> CallArgs { CallArgs::new(c.call_me, c.call_blk) }
+    #[inline(always)] pub fn store(self, c: &mut Ctx) {
+        // a shared frame cannot go through the context: spec_shared only offers it to specialized entries
+        assert!(!self.shared, "shared frame passed to an entry out of line");
+        c.call_me = self.me; c.call_blk = self.blk;
+    }
+}
+
+/// Can the self call at a site run its compiled-in callee `p` in the caller's frame?
+pub fn spec_shared(recv: NodePtr, argc: usize, p: NodePtr) -> u32 {
+    if argc != 0 || p.is_null() || recv.is_null() || !crate::node::node_laid(p) { return 0; }
+    if !std::ptr::eq(unsafe { (*recv).head.kind }, &crate::node::KIND_node_self) { return 0; }
+    if !std::ptr::eq(unsafe { (*p).head.kind }, &crate::node::KIND_node_method_entry) { return 0; }
+    let u = unsafe { &(*(p as *mut crate::node::NodeOf<crate::node::node_method_entry_struct>)).u };
+    // 2: a leaf, which cannot raise or look at a frame (no line needed)
+    if u.nparams != 0 || u.nlocals != 2 || u.flags & (ME_ID | ME_ENV) != 0 { 0 } else if u.flags & ME_LEAF != 0 { 2 } else { 1 }
 }
 
 impl Ctx {
@@ -1257,7 +1291,23 @@ fn class_of_imm(v: Value) -> u64 { class_of(v).raw() }
 /// Does the site's cache hold recv's class?  `kind` (baked) says which receivers the site saw,
 /// so only that test is in the baked code.
 #[inline(always)]
-pub fn site_hit(cc: &CallCache, recv: Value, kind: u32) -> bool {
+pub fn site_hit(cc: &CallCache, recv: Value, kind: u32) -> bool { klass_hit(cc.klass, cc, recv, kind) }
+
+/// site_hit for the callee compiled into the site: spec_klass also says the entry is that callee.
+#[inline(always)]
+pub fn spec_hit(cc: &CallCache, recv: Value, kind: u32) -> bool { klass_hit(cc.spec_klass, cc, recv, kind) }
+
+/// A call site whose compiled-in callee (entry hash h) was not hit: the call out of line (which
+/// refills the cache), then spec_klass from what the cache holds now.
+#[inline(never)]
+pub fn call_spec_out(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32, h: u64) -> RV {
+    let r = call_cached(c, cc, mid, base, argc, blk, flags);
+    cc.spec_klass = if cc.fast_hash == h && cc.fast_argc == argc { cc.klass } else { 0 };
+    r
+}
+
+#[inline(always)]
+fn klass_hit(ck: u64, cc: &CallCache, recv: Value, kind: u32) -> bool {
     if kind & 15 == SITE_OTHER { return false; }
     // Integer and Float receivers inline (n.even?, x.to_i ...; a Float may also be a heap object)
     let k = if kind & SITE_IMM != 0 {
@@ -1265,7 +1315,7 @@ pub fn site_hit(cc: &CallCache, recv: Value, kind: u32) -> bool {
         else if recv.is_heap() { obj(recv).klass.raw() } else { class_of_imm(recv) }
     }
             else { if !recv.is_heap() { return false; } obj(recv).klass.raw() };
-    cc.klass == k && cc.serial == method_serial()
+    ck == k && cc.serial == method_serial()
 }
 
 /// The one fast path of a site whose cache matched (site_hit); None: go out of line.
@@ -1488,6 +1538,21 @@ pub fn spec_callee(cc: &CallCache, argc: usize, flags: u32) -> NodePtr {
     let mut d = String::new();
     crate::node::dump_node(&mut d, cc.fast as NodePtr);
     if d.len() <= 600 { cc.fast as NodePtr } else { std::ptr::null_mut() }
+}
+
+/// The block entry a yield site has always run, as the callee to compile into it (null: none).
+/// Only where block_fast would take it with argc arguments; lambda-ness is tested at run time.
+pub fn spec_block(yc: &YieldCache, argc: usize) -> NodePtr {
+    if yc.seen <= 1 { return std::ptr::null_mut(); }
+    let is = unsafe { &*(yc.seen as *const Iseq) };
+    if is.bentry.is_null() || (argc == 1 && is.params.lead.len() >= 2) { return std::ptr::null_mut(); }
+    let mut d = String::new();
+    crate::node::dump_node(&mut d, is.bentry);
+    if d.len() <= 600 { is.bentry } else { std::ptr::null_mut() }
+}
+/// 1 + the lead parameter count of spec_block's block (0: none).
+pub fn spec_block_np(yc: &YieldCache, argc: usize) -> u32 {
+    if spec_block(yc, argc).is_null() { 0 } else { 1 + unsafe { (*(yc.seen as *const Iseq)).params.lead.len() as u32 } }
 }
 
 /// The heap Env of a frame whose variables are captured by blocks; params copied in.
