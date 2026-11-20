@@ -62,6 +62,15 @@ pub fn alloc(klass: Value, body: Body) -> Value {
     unsafe { Value::from_ptr(p.as_ptr()) }
 }
 
+/// alloc, with the body built by `make` once the slot is known: a body built first and passed
+/// in sits on the stack and is copied with wide loads its narrow stores cannot forward to.
+#[inline(always)]
+pub fn alloc_with(klass: Value, make: impl FnOnce() -> Body) -> Value {
+    let p = heap().alloc(&mut Saruby, move || RObj { klass, flags: 0, gc: GcHeader::new(), body: make() });
+    // SAFETY: the object just allocated
+    unsafe { Value::from_ptr(p.as_ptr()) }
+}
+
 /// GC.start: a full collection, unless GC.disable is in effect.
 pub fn collect() {
     let h = heap();

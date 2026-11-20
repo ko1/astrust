@@ -17,24 +17,25 @@ use crate::vm::*;
 
 impl Ctx {
     #[inline]
-    pub fn ary_new(&mut self) -> Value { let k = self.vm().c_array; self.alloc(k, Body::Array(Vec::new())) }
+    pub fn ary_new(&mut self) -> Value { let k = self.vm().c_array; self.alloc_with(k, move || Body::Array(Vec::new())) }
     #[inline]
     pub fn ary_new_capa(&mut self, n: usize) -> Value {
         self.malloc_increase(n * 8);
         let k = self.vm().c_array;
-        self.alloc(k, Body::Array(Vec::with_capacity(n)))
+        self.alloc_with(k, move || Body::Array(Vec::with_capacity(n)))
     }
     #[inline]
     pub fn ary_new_from(&mut self, v: &[Value]) -> Value {
         self.malloc_increase(v.len() * 8);
         let k = self.vm().c_array;
-        self.alloc(k, Body::Array(v.to_vec()))
+        self.alloc_with(k, move || Body::Array(v.to_vec()))
     }
     /// The Vec becomes the Array's payload; its Values are roots during the allocation.
+    #[inline]
     pub fn ary_from_vec(&mut self, v: Vec<Value>) -> Value {
         self.malloc_increase(v.len() * 8);
         let k = self.vm().c_array;
-        self.alloc(k, Body::Array(v))
+        self.alloc_with(k, move || Body::Array(v))
     }
     #[inline]
     pub fn ary_push(&mut self, a: Value, v: Value) {

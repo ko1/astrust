@@ -800,7 +800,7 @@ pub fn const_missing(c: &mut Ctx, klass: Value, name: Sym) -> RV {
 #[inline]
 pub fn new_object(klass: Value) -> Value {
     // slots for every ivar an instance of the class has had: initialize never grows it
-    gc::alloc(klass, Body::Object(crate::ivbuf::IvBuf::filled(rclass(klass).ivar_names.len())))
+    gc::alloc_with(klass, move || Body::Object(crate::ivbuf::IvBuf::filled(rclass(klass).ivar_names.len())))
 }
 
 pub fn object_id(v: Value) -> u64 {
@@ -1451,7 +1451,7 @@ pub fn spec_callee(cc: &CallCache, argc: usize, flags: u32) -> NodePtr {
 /// The heap Env of a frame whose variables are captured by blocks; params copied in.
 #[inline(never)]
 pub fn make_env(is: &Iseq, base: Stk, parent: Value) {
-    let env = gc::alloc(vm().c_env, Body::Env(vec![NIL; is.env_size as usize], parent));
+    let env = gc::alloc_with(vm().c_env, move || Body::Env(vec![NIL; is.env_size as usize], parent));
     base[1].set(env);
     if let Body::Env(vals, _) = &mut obj(env).body {
         for &(sl, ei) in is.env_params.iter() { vals[ei as usize] = base[sl as usize].get(); }
@@ -1762,7 +1762,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
     }
     // env
     if is.env_size > 0 {
-        let env = gc::alloc(vm().c_env, Body::Env(vec![NIL; is.env_size as usize], outer_env));
+        let env = gc::alloc_with(vm().c_env, move || Body::Env(vec![NIL; is.env_size as usize], outer_env));
         base[1].set(env);
         for &(sl, ei) in is.env_params.iter() {
             if let Body::Env(vals, _) = &mut obj(env).body { vals[ei as usize] = base[sl as usize].get(); }
@@ -1800,7 +1800,7 @@ pub fn block_to_proc(c: &mut Ctx, blk: *const Block) -> RV {
         copy.outer_blk = &rproc(op).blk;
     }
     let is_lambda = matches!(b.kind, BlockKind::Iseq(is) if unsafe { (*is).kind } == IseqKind::Lambda) || matches!(b.kind, BlockKind::Method(_));
-    let p = gc::alloc(vm().c_proc, Body::Proc(Box::new(ProcData { blk: copy, is_lambda, from_method: NIL })));
+    let p = gc::alloc_with(vm().c_proc, move || Body::Proc(Box::new(ProcData { blk: copy, is_lambda, from_method: NIL })));
     let pd = rproc(p);
     pd.blk.proc_val = p;
     unsafe { (*(blk as *mut Block)).proc_val = p; }

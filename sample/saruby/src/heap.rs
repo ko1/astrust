@@ -112,6 +112,9 @@ impl Ctx {
     /// Allocate an object; may collect.
     #[inline(always)]
     pub fn alloc(&mut self, klass: Value, body: Body) -> Value { crate::gc::alloc(klass, body) }
+    /// alloc with the body built once the slot is known (see gc::alloc_with).
+    #[inline(always)]
+    pub fn alloc_with(&mut self, klass: Value, make: impl FnOnce() -> Body) -> Value { crate::gc::alloc_with(klass, make) }
     /// Account `n` bytes of payload memory to the collector's trigger.
     #[inline(always)]
     pub fn malloc_increase(&mut self, n: usize) { crate::gc::malloc_increase(n); }

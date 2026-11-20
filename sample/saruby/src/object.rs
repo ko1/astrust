@@ -155,21 +155,21 @@ pub fn str_bytes(v: Value) -> &'static [u8] { &rstr(v).b }
 
 // legacy Array API (no context); converted code uses the `Ctx` methods of array.rs
 #[inline]
-pub fn ary_new() -> Value { crate::gc::alloc(crate::vm::vm().c_array, Body::Array(Vec::new())) }
+pub fn ary_new() -> Value { crate::gc::alloc_with(crate::vm::vm().c_array, move || Body::Array(Vec::new())) }
 #[inline]
 pub fn ary_new_capa(n: usize) -> Value {
     crate::gc::malloc_increase(n * 8);
-    crate::gc::alloc(crate::vm::vm().c_array, Body::Array(Vec::with_capacity(n)))
+    crate::gc::alloc_with(crate::vm::vm().c_array, move || Body::Array(Vec::with_capacity(n)))
 }
 #[inline]
 pub fn ary_new_from(v: &[Value]) -> Value {
     crate::gc::malloc_increase(v.len() * 8);
-    crate::gc::alloc(crate::vm::vm().c_array, Body::Array(v.to_vec()))
+    crate::gc::alloc_with(crate::vm::vm().c_array, move || Body::Array(v.to_vec()))
 }
 #[inline]
 pub fn ary_from_vec(v: Vec<Value>) -> Value {
     crate::gc::malloc_increase(v.len() * 8);
-    crate::gc::alloc(crate::vm::vm().c_array, Body::Array(v))
+    crate::gc::alloc_with(crate::vm::vm().c_array, move || Body::Array(v))
 }
 #[inline]
 pub fn ary_push(a: Value, v: Value) {
