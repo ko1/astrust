@@ -213,7 +213,7 @@ cfn!(a_last, |c, slf, a, blk| {
     let n = (n as usize).min(l);
     Ok(new_sub(slf, rary(slf)[l - n..].to_vec()))
 });
-cfn!(a_push, |c, slf, a, blk| { let v = modify(c, slf)?; v.extend_from_slice(a); Ok(slf) });
+cfn!(a_push, |c, slf, a, blk| { let v = modify(c, slf)?; if a.len() == 1 { v.push(a[0]); } else { v.extend_from_slice(a); } Ok(slf) });
 cfn!(a_ltlt, |c, slf, a, blk| { modify(c, slf)?; ary_push(slf, a[0]); Ok(slf) });
 cfn!(a_pop, |c, slf, a, blk| {
     let v = modify(c, slf)?;

@@ -86,6 +86,13 @@ fn int_arith(c: &mut Ctx, a: Value, b: Value, op: Op) -> RV {
         };
         return Ok(int_from_i128(r));
     }
+    if op == Op::Mul {
+        // Bignum * one-limb Integer (either order)
+        let (big, small) = if is_bignum(a) && b.is_fixnum() { (a, b.as_fix()) } else if a.is_fixnum() && is_bignum(b) { (b, a.as_fix()) } else { (NIL, 0) };
+        if big != NIL && small != 0 && small.unsigned_abs() <= u32::MAX as u64 {
+            return Ok(big_to_value(rbig(big).mul_small(small.unsigned_abs() as u32, small < 0)));
+        }
+    }
     if is_integer(b) {
         let (x, y) = (to_big(a), to_big(b));
         return Ok(match op {

@@ -658,6 +658,16 @@ fn HASH_node_opt_div(n: NodePtr) -> u64 {
 }
 
 #[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_opt_pow(n: NodePtr) -> u64 {
+    let u = unsafe { &(*(n as *mut NodeOf<node_opt_pow_struct>)).u };
+    let mut h = hash_str("node_opt_pow");
+    h = hash_merge(h, hash_node(u.a));
+    h = hash_merge(h, hash_node(u.b));
+    h = hash_merge(h, hash_u64(u.line as u64));
+    h
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_opt_mod(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_mod_struct>)).u };
     let mut h = hash_str("node_opt_mod");

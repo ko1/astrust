@@ -15,6 +15,10 @@ fn float_new_heap(d: f64) -> Value {
     v
 }
 
+// out of line: with a constant exponent LLVM turns powf(x, 0.5) into sqrt(x), which is not libm's pow bit for bit
+#[inline(never)]
+pub fn libm_pow(x: f64, y: f64) -> f64 { x.powf(std::hint::black_box(y)) }
+
 /// Float#to_s
 pub fn float_to_s(d: f64) -> String {
     if d.is_nan() { return "NaN".into(); }

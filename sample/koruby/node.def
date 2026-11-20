@@ -764,6 +764,17 @@ node_opt_div(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: V
     rt_binop(c, a, b, s::div, line, cc)
 }
 
+// Float ** Float with a non-negative base (a negative one may give a Complex)
+NODE_DEF
+node_opt_pow(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Value, line: u32, cc@ref: CallCache)
+{
+    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_POW) {
+        let (x, y) = (a.flonum_val(), b.flonum_val());
+        if x >= 0.0 { return Ok(crate::numeric::float_new(crate::numeric::libm_pow(x, y))); }
+    }
+    rt_binop(c, a, b, s::pow, line, cc)
+}
+
 NODE_DEF
 node_opt_mod(c: &mut Ctx, n: NodePtr, fp: *mut Value, a@child: Value, b@child: Value, line: u32, cc@ref: CallCache)
 {

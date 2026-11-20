@@ -654,6 +654,16 @@ pub fn DISPATCH_node_opt_div(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
 }
 
 #[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_opt_pow(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
+    let np = n as *mut NodeOf<node_opt_pow_struct>;
+    unsafe {
+    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
+    EVAL_node_opt_pow(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
 pub fn DISPATCH_node_opt_mod(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
     let np = n as *mut NodeOf<node_opt_mod_struct>;
     unsafe {

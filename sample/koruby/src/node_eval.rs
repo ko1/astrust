@@ -109,6 +109,8 @@ use crate::symbol::s;
 
 
 
+// Float ** Float with a non-negative base (a negative one may give a Complex)
+
 
 
 
@@ -871,6 +873,16 @@ pub fn EVAL_node_opt_div(c: &mut Ctx, n: NodePtr, fp: *mut Value, a: Value, b: V
     }
     if let Some((x, y)) = flo2(a, b, R_FLO_DIV, R_INT_DIV) { return Ok(crate::numeric::float_new(x / y)); }
     rt_binop(c, a, b, s::div, line, cc)
+}
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_opt_pow(c: &mut Ctx, n: NodePtr, fp: *mut Value, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
+    if a.is_flonum() && b.is_flonum() && !redef(R_FLO_POW) {
+        let (x, y) = (a.flonum_val(), b.flonum_val());
+        if x >= 0.0 { return Ok(crate::numeric::float_new(crate::numeric::libm_pow(x, y))); }
+    }
+    rt_binop(c, a, b, s::pow, line, cc)
 }
 
 #[inline(always)]

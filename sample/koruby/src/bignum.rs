@@ -305,6 +305,23 @@ impl BigInt {
         }
     }
     pub fn sub(&self, o: &BigInt) -> BigInt { self.add(&o.neg()) }
+    /// self * (±m) for one non-zero limb m: a single pass, no temporary BigInt.
+    pub fn mul_small(&self, m: u32, neg: bool) -> BigInt {
+        let n = self.mag.len();
+        let mut mag: Vec<u32> = Vec::with_capacity(n + 1);
+        let mut carry = 0u64;
+        unsafe {
+            let p = mag.as_mut_ptr();
+            for (i, &x) in self.mag.iter().enumerate() {
+                let t = x as u64 * m as u64 + carry;
+                *p.add(i) = t as u32;
+                carry = t >> 32;
+            }
+            *p.add(n) = carry as u32;
+            mag.set_len(if carry != 0 { n + 1 } else { n });
+        }
+        BigInt { neg: self.neg != neg, mag }
+    }
     pub fn mul(&self, o: &BigInt) -> BigInt { BigInt { neg: self.neg != o.neg, mag: mul_mag(&self.mag, &o.mag) }.norm() }
     /// Truncating division
     pub fn divrem_trunc(&self, o: &BigInt) -> (BigInt, BigInt) {

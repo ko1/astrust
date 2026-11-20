@@ -917,6 +917,7 @@ impl<'a> Compiler<'a> {
             x if x == s::mul => ALLOC_node_opt_mul(a, b, line),
             x if x == s::div => ALLOC_node_opt_div(a, b, line),
             x if x == s::modulo => ALLOC_node_opt_mod(a, b, line),
+            x if x == s::pow => ALLOC_node_opt_pow(a, b, line),
             x if x == s::lt => ALLOC_node_opt_lt(a, b, line),
             x if x == s::le => ALLOC_node_opt_le(a, b, line),
             x if x == s::gt => ALLOC_node_opt_gt(a, b, line),
@@ -1029,7 +1030,7 @@ impl<'a> Compiler<'a> {
         let has_blockarg = matches!(block.map(|b| &b.kind), Some(Kind::BlockArgumentNode { .. }));
         let simple = args.iter().all(|a| self.simple_arg(a)) && !has_blockarg;
         let node = if simple && blk_iseq.is_none() && !safe && recv.is_some() && !attr && args.len() == 1 && flags & CF_FCALL == 0
-            && [s::plus, s::minus, s::mul, s::div, s::modulo, s::lt, s::le, s::gt, s::ge, s::eq, s::neq, s::ltlt, s::gtgt, s::xor, s::and, s::or, s::aref].contains(&mid) {
+            && [s::plus, s::minus, s::mul, s::div, s::modulo, s::pow, s::lt, s::le, s::gt, s::ge, s::eq, s::neq, s::ltlt, s::gtgt, s::xor, s::and, s::or, s::aref].contains(&mid) {
             let a = self.c(args[0]);
             self.binop(recv_node, mid, a, line)
         } else if simple && blk_iseq.is_none() && recv.is_some() && args.is_empty() && mid == s::not && !safe {

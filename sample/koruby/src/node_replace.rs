@@ -454,6 +454,13 @@ fn REPLACE_node_opt_div(n: NodePtr, old: NodePtr, new: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_opt_pow(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_pow_struct>)).u };
+    if u.a == old { u.a = new; }
+    if u.b == old { u.b = new; }
+}
+
+#[allow(non_snake_case, unused_variables)]
 fn REPLACE_node_opt_mod(n: NodePtr, old: NodePtr, new: NodePtr) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_mod_struct>)).u };
     if u.a == old { u.a = new; }
