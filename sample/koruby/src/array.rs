@@ -15,6 +15,7 @@ pub fn ary_new_from(v: &[Value]) -> Value {
     crate::gc::malloc_increase(v.len() * 8);
     crate::gc::alloc(vm().c_array, Body::Array(v.to_vec()))
 }
+#[inline]
 pub fn ary_from_vec(v: Vec<Value>) -> Value {
     crate::gc::malloc_increase(v.len() * 8);
     crate::gc::alloc(vm().c_array, Body::Array(v))
