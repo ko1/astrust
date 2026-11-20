@@ -274,6 +274,16 @@ pub fn rt_const_path(c: &mut Ctx, parent: Value, name: Sym) -> RV {
     const_missing(c, parent, name)
 }
 
+/// `parent::Name = v` (parent UNDEF: `::Name = v`)
+pub fn rt_cdecl_path(c: &mut Ctx, parent: Value, name: Sym, v: Value) -> RV {
+    let k = if parent == UNDEF { vm().c_object } else { parent };
+    if !is_class_or_module(k) {
+        let s = crate::builtins::kernel::inspect_str(c, k)?;
+        return type_err(c, format!("{} is not a class/module", s));
+    }
+    rt_cdecl(c, k, name, v)
+}
+
 pub fn rt_cdecl(c: &mut Ctx, parent: Value, name: Sym, v: Value) -> RV {
     let k = if parent == NIL {
         let cr = unsafe { (*c.frame).cref };

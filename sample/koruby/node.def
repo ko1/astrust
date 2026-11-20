@@ -269,16 +269,18 @@ node_cvasgn(c: &mut Ctx, n: NodePtr, fp: *mut Value, name: Sym, v@child: Value)
 }
 
 NODE_DEF
-node_const(c: &mut Ctx, n: NodePtr, fp: *mut Value, name: Sym, cc@ref: ConstCache)
+node_const(c: &mut Ctx, n: NodePtr, fp: *mut Value, name: Sym, line: u32, cc@ref: ConstCache)
 {
     let cref = unsafe { (*c.frame).cref };
     if cc.serial == vm().const_serial && cc.cref == cref as usize { return Ok(unsafe { Value::from_raw(cc.val) }); }
+    unsafe { (*c.frame).line = line; }
     rt_const_get(c, cref, name, cc)
 }
 
 NODE_DEF
-node_const_path(c: &mut Ctx, n: NodePtr, fp: *mut Value, parent@child: Value, name: Sym)
+node_const_path(c: &mut Ctx, n: NodePtr, fp: *mut Value, parent@child: Value, name: Sym, line: u32)
 {
+    unsafe { (*c.frame).line = line; }
     rt_const_path(c, parent, name)
 }
 
@@ -297,7 +299,7 @@ node_cdecl(c: &mut Ctx, n: NodePtr, fp: *mut Value, name: Sym, v@child: Value)
 NODE_DEF
 node_cdecl_path(c: &mut Ctx, n: NodePtr, fp: *mut Value, parent@child: Value, name: Sym, v@child: Value)
 {
-    rt_cdecl(c, parent, name, v)
+    rt_cdecl_path(c, parent, name, v)
 }
 
 NODE_DEF

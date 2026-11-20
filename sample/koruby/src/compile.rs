@@ -345,7 +345,7 @@ impl<'a> Compiler<'a> {
         let line = self.line(n.loc);
         match &n.kind {
             Kind::StatementsNode { body } => {
-                let v: Vec<NodePtr> = body.iter().map(|x| self.c(x)).collect();
+                let v: Vec<NodePtr> = body.iter().map(|x| { let r = self.c(x); if needs_line(x) { ALLOC_node_line(self.line(x.loc), r) } else { r } }).collect();
                 self.seq(v)
             }
             Kind::ParenthesesNode { body } => self.stmts(body.as_deref()),
@@ -433,7 +433,7 @@ impl<'a> Compiler<'a> {
             Kind::SourceLineNode => ALLOC_node_lit(Value::fix(line as i64)),
             Kind::SourceEncodingNode => {
                 let e = ALLOC_node_top_const(intern(b"Encoding"));
-                ALLOC_node_const_path(e, intern(b"UTF_8"))
+                ALLOC_node_const_path(e, intern(b"UTF_8"), line)
             }
             // variables
             Kind::LocalVariableReadNode { name, depth } => { let nm = self.cst(*name); self.var_read(nm, *depth) }
@@ -510,25 +510,25 @@ impl<'a> Compiler<'a> {
                 let nm = self.cst(*name); let v = self.c(value);
                 ALLOC_node_and(ALLOC_node_cvar(nm), ALLOC_node_cvasgn(nm, v))
             }
-            Kind::ConstantReadNode { name } => ALLOC_node_const(self.cst(*name)),
+            Kind::ConstantReadNode { name } => ALLOC_node_const(self.cst(*name), line),
             Kind::ConstantWriteNode { name, value } => { let v = self.c(value); ALLOC_node_cdecl(self.cst(*name), v) }
             Kind::ConstantOrWriteNode { name, value } => {
                 let nm = self.cst(*name); let v = self.c(value);
                 let d = ALLOC_node_defined(DEF_CONST, nm, ALLOC_node_nil());
-                ALLOC_node_if(d, ALLOC_node_const(nm), ALLOC_node_cdecl(nm, v))
+                ALLOC_node_if(d, ALLOC_node_const(nm, line), ALLOC_node_cdecl(nm, v))
             }
             Kind::ConstantAndWriteNode { name, value } => {
                 let nm = self.cst(*name); let v = self.c(value);
-                ALLOC_node_and(ALLOC_node_const(nm), ALLOC_node_cdecl(nm, v))
+                ALLOC_node_and(ALLOC_node_const(nm, line), ALLOC_node_cdecl(nm, v))
             }
             Kind::ConstantOperatorWriteNode { name, value, binary_operator } => {
                 let nm = self.cst(*name); let v = self.c(value);
-                let e = self.binop(ALLOC_node_const(nm), self.cst(*binary_operator), v, line);
+                let e = self.binop(ALLOC_node_const(nm, line), self.cst(*binary_operator), v, line);
                 ALLOC_node_cdecl(nm, e)
             }
             Kind::ConstantPathNode { parent, name } => {
                 let nm = self.cst(name.unwrap_or(0));
-                match parent { None => ALLOC_node_top_const(nm), Some(p) => { let pv = self.c(p); ALLOC_node_const_path(pv, nm) } }
+                match parent { None => ALLOC_node_top_const(nm), Some(p) => { let pv = self.c(p); ALLOC_node_const_path(pv, nm, line) } }
             }
             Kind::ConstantPathWriteNode { target, value } => {
                 let v = self.c(value);
@@ -703,7 +703,8 @@ impl<'a> Compiler<'a> {
             Kind::MultiWriteNode { lefts, rest, rights, value } => {
                 let v = self.c(value);
                 let splat_rhs = matches!(value.kind, Kind::ArrayNode { .. });
-                self.masgn(lefts, rest.as_deref(), rights, v, splat_rhs)
+                let m = self.masgn(lefts, rest.as_deref(), rights, v, splat_rhs);
+                ALLOC_node_line(line, m)
             }
             // definitions
             Kind::DefNode { name, receiver, parameters, body, locals } => {
@@ -1711,6 +1712,19 @@ impl<'a> Compiler<'a> {
         }
         if !is_block { self.cur().zsuper = zs; }
         ps
+    }
+}
+
+/// Statements that can raise without passing through a node that records the line.
+fn needs_line(n: &PNode) -> bool {
+    match &n.kind {
+        Kind::ArrayNode { .. } | Kind::HashNode { .. } | Kind::KeywordHashNode { .. } | Kind::CaseMatchNode { .. } | Kind::MatchRequiredNode { .. }
+        | Kind::ClassVariableReadNode { .. } | Kind::ClassVariableWriteNode { .. } | Kind::ClassVariableOperatorWriteNode { .. }
+        | Kind::ClassVariableOrWriteNode { .. } | Kind::ClassVariableAndWriteNode { .. }
+        | Kind::ConstantPathWriteNode { .. } | Kind::ConstantPathOperatorWriteNode { .. } | Kind::ConstantPathOrWriteNode { .. }
+        | Kind::ConstantPathAndWriteNode { .. } | Kind::ConstantOperatorWriteNode { .. } | Kind::SplatNode { .. } => true,
+        Kind::LocalVariableWriteNode { value, .. } | Kind::InstanceVariableWriteNode { value, .. } | Kind::GlobalVariableWriteNode { value, .. } => needs_line(value),
+        _ => false,
     }
 }
 

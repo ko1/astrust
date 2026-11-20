@@ -255,6 +255,7 @@ fn HASH_node_const(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_const_struct>)).u };
     let mut h = hash_str("node_const");
     h = hash_merge(h, hash_bytes(crate::symbol::sym_bytes(u.name)));
+    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -264,6 +265,7 @@ fn HASH_node_const_path(n: NodePtr) -> u64 {
     let mut h = hash_str("node_const_path");
     h = hash_merge(h, hash_node(u.parent));
     h = hash_merge(h, hash_bytes(crate::symbol::sym_bytes(u.name)));
+    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 

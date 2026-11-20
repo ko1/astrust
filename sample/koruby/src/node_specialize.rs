@@ -704,6 +704,7 @@ fn SPECIALIZE_node_const(sc: &mut SpecCtx, n: NodePtr) -> String {
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("(*np).u.name".to_string());
+    a.push(format!("{}u32", (*np).u.line));
     a.push("&mut (*np).u.cc".to_string());
     }
     let mut body = String::new();
@@ -729,6 +730,7 @@ fn SPECIALIZE_node_const_path(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_parent".to_string());
     a.push("(*np).u.name".to_string());
+    a.push(format!("{}u32", (*np).u.line));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));

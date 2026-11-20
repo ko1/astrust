@@ -385,15 +385,17 @@ pub fn EVAL_node_cvasgn(c: &mut Ctx, n: NodePtr, fp: *mut Value, name: Sym, v: V
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_const(c: &mut Ctx, n: NodePtr, fp: *mut Value, name: Sym, cc: &mut ConstCache) -> RV {
+pub fn EVAL_node_const(c: &mut Ctx, n: NodePtr, fp: *mut Value, name: Sym, line: u32, cc: &mut ConstCache) -> RV {
     let cref = unsafe { (*c.frame).cref };
     if cc.serial == vm().const_serial && cc.cref == cref as usize { return Ok(unsafe { Value::from_raw(cc.val) }); }
+    unsafe { (*c.frame).line = line; }
     rt_const_get(c, cref, name, cc)
 }
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_const_path(c: &mut Ctx, n: NodePtr, fp: *mut Value, parent: Value, name: Sym) -> RV {
+pub fn EVAL_node_const_path(c: &mut Ctx, n: NodePtr, fp: *mut Value, parent: Value, name: Sym, line: u32) -> RV {
+    unsafe { (*c.frame).line = line; }
     rt_const_path(c, parent, name)
 }
 
@@ -412,7 +414,7 @@ pub fn EVAL_node_cdecl(c: &mut Ctx, n: NodePtr, fp: *mut Value, name: Sym, v: Va
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_cdecl_path(c: &mut Ctx, n: NodePtr, fp: *mut Value, parent: Value, name: Sym, v: Value) -> RV {
-    rt_cdecl(c, parent, name, v)
+    rt_cdecl_path(c, parent, name, v)
 }
 
 #[inline(always)]
