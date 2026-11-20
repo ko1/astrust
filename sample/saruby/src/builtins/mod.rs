@@ -177,7 +177,7 @@ pub fn boot() {
     proc::init();
     exception::init();
     numeric_methods::init();
-    string_methods::init();
+    string_methods::init(vm.c_string);
     symbol_methods::init();
     array_methods::init(vm.c_array);
     hash_methods::init();

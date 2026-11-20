@@ -60,6 +60,9 @@ impl Ctx {
         let (b, enc) = (SBuf::from_slice(&r.b), r.enc);
         self.str_from_sbuf(b, enc)
     }
+    /// A String with the bytes of `v` and encoding `enc`.
+    #[inline]
+    pub fn str_copy_enc(&mut self, v: Value, enc: u8) -> Value { self.str_from_sbuf(SBuf::from_slice(self.str_bytes(v)), enc) }
     /// Bytes `r` of `v` as a String of v's encoding.
     #[inline]
     pub fn str_sub(&mut self, v: Value, r: std::ops::Range<usize>) -> Value {
