@@ -24,8 +24,17 @@ fn re_s_new(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     regexp_new(c, &b, opts)
 }
 fn re_s_escape(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
-    let v = if a[0].is_sym() { str_new(crate::symbol::sym_bytes(a[0].as_sym())) } else { expect_str(c, a[0])? };
-    Ok(str_from_vec(escape(str_bytes(v))))
+    use crate::builtins::encoding as en;
+    let v = if a[0].is_sym() { let b = crate::symbol::sym_bytes(a[0].as_sym()); str_new_enc(b, if crate::string::is_ascii(b) { ENC_ASCII } else { ENC_UTF8 }) } else { expect_str(c, a[0])? };
+    let enc = rstr(v).enc;
+    if !en::ascii_compat(enc) {
+        // escape the UTF-8 form, then convert back to the wide encoding
+        let src = str_bytes(v).to_vec();
+        let u = en::transcode(c, &src, enc, ENC_UTF8, &en::TcOpts::default())?;
+        let back = en::transcode(c, &escape(&u), ENC_UTF8, enc, &en::TcOpts::default())?;
+        return Ok(str_from_vec_enc(back, enc));
+    }
+    Ok(str_from_vec_enc(escape(str_bytes(v)), enc))
 }
 fn re_s_union(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let list: Vec<Value> = if a.len() == 1 && is_array(a[0]) { rary(a[0]).clone() } else { a.to_vec() };
@@ -64,7 +73,16 @@ fn re_eqq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let m = search(c, slf, sv, 0, true)?;
     Ok(Value::bool(m != NIL))
 }
-fn re_source(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(str_new_frozen(&rregexp(slf).unwrap().src)) }
+fn re_enc(r: &RRegexp) -> u8 {
+    if crate::string::is_ascii(&r.src) { if r.enc_fixed { ENC_UTF8 } else { ENC_ASCII } } else if r.opts & crate::regexp::RE_OPT_ENC_NONE != 0 { ENC_BINARY } else { ENC_UTF8 }
+}
+fn re_source(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    let r = rregexp(slf).unwrap();
+    let e = if crate::string::is_ascii(&r.src) { ENC_ASCII } else { re_enc(r) };
+    let s = str_new_enc(&r.src, e); obj(s).flags |= FL_FROZEN; Ok(s)
+}
+fn re_fixed_encoding(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let r = rregexp(slf).unwrap(); Ok(Value::bool(r.enc_fixed || (!crate::string::is_ascii(&r.src) && r.opts & crate::regexp::RE_OPT_ENC_NONE == 0))) }
+fn re_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let e = re_enc(rregexp(slf).unwrap()); let _ = c; Ok(crate::builtins::encoding::encoding_value(e)) }
 fn re_inspect(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(str_new(regexp_source_inspect(rregexp(slf).unwrap()).as_bytes())) }
 fn re_to_s(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(str_new(regexp_to_s(rregexp(slf).unwrap()).as_bytes())) }
 fn re_options(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix((rregexp(slf).unwrap().opts & 0x27) as i64)) }
@@ -211,7 +229,7 @@ pub fn init() {
     define_singleton_cfunc(r, "compile", re_s_new, -1);
     define_private_cfunc(r, "initialize", re_initialize, -1);
     let d = |n: &str, f: CFunc, a: i32| define_cfunc(r, n, f, a);
-    d("match", re_match, -1); d("match?", re_match_p, -1); d("=~", re_match_op, 1); d("===", re_eqq, 1); d("source", re_source, 0);
+    d("match", re_match, -1); d("match?", re_match_p, -1); d("=~", re_match_op, 1); d("===", re_eqq, 1); d("source", re_source, 0); d("encoding", re_encoding, 0); d("fixed_encoding?", re_fixed_encoding, 0);
     d("inspect", re_inspect, 0); d("to_s", re_to_s, 0); d("options", re_options, 0); d("casefold?", re_casefold, 0); d("==", re_eq, 1);
     d("eql?", re_eq, 1); d("hash", re_hash, 0); d("names", re_names, 0); d("named_captures", re_named_captures, 0); d("freeze", re_freeze, 0);
     let m = define_class("MatchData", vm.c_object);

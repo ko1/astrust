@@ -684,7 +684,7 @@ fn expand_repl(c: &mut Ctx, rep: &[u8], m_bytes: &[u8], groups: &[Option<(usize,
 }
 
 /// sub/gsub core: returns (new bytes, changed)
-fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool, bang: bool) -> Result<Option<Vec<u8>>, Esc> {
+fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool, bang: bool) -> Result<Option<(Vec<u8>, u8)>, Esc> {
     if a.is_empty() || a.len() > 2 { return argc_err(c, a.len(), 1, 2); }
     let pat = a[0];
     let hash_rep = if a.len() == 2 && is_hash(a[1]) { Some(a[1]) } else { None };
@@ -696,6 +696,8 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool, 
     let mut re = if lit.is_none() { regexp::to_regexp(c, pat)? } else { NIL };
     if lit.is_some() { compat(c, slf, pat)?; } else { check_valid(c, slf)?; }
     let enc = rstr(slf).enc;
+    let mut renc = enc;
+    let src_ascii = is_ascii(b(slf));
     let mut srcv = NIL; // frozen copy of the source shared by every MatchData
     let mut out = vec![];
     let mut i = 0; let mut last = 0; let mut changed = false;
@@ -715,16 +717,16 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool, 
             let key = str_new_like(slf, src[ms..me].to_vec());
             let v = crate::hash::hash_aref(c, h, key)?;
             let sv = crate::rt::rt_tostr(c, v)?;
-            out.extend_from_slice(b(sv));
+            renc = join_enc(c, renc, src_ascii, sv)?; out.extend_from_slice(b(sv));
         } else if let Some(r) = str_rep {
-            let ex = expand_repl(c, b(r), &src, &g, re)?; out.extend(ex);
+            renc = join_enc(c, renc, src_ascii, r)?; let ex = expand_repl(c, b(r), &src, &g, re)?; out.extend(ex);
         } else {
             let mstr = str_new_like(slf, src[ms..me].to_vec());
             let v = yield1(c, blk, mstr)?;
             if bang && b(slf) != &src[..] { return err(c, vm().c_runtime_error, "string modified"); }
             c.last_match = mval;
             let sv = crate::rt::rt_tostr(c, v)?;
-            out.extend_from_slice(b(sv));
+            renc = join_enc(c, renc, src_ascii, sv)?; out.extend_from_slice(b(sv));
         }
         changed = true;
         last = me;
@@ -735,15 +737,26 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool, 
     }
     if !changed { c.last_match = NIL; return Ok(None); }
     if last < src.len() { out.extend_from_slice(&src[last..]); }
-    Ok(Some(out))
+    Ok(Some((out, renc)))
 }
-cfn!(s_sub, |c, slf, a, blk| Ok(new_like(slf, subst(c, slf, a, blk, false, false)?.unwrap_or_else(|| b(slf).to_vec()))));
+/// Result encoding after splicing replacement `rv` into a subject (rb_enc_check rules).
+fn join_enc(c: &mut Ctx, renc: u8, src_ascii: bool, rv: Value) -> Result<u8, Esc> {
+    use crate::builtins::encoding as en;
+    let re = rstr(rv).enc;
+    if re == renc || (is_ascii(b(rv)) && en::ascii_compat(renc) && en::ascii_compat(re)) { return Ok(renc); }
+    if src_ascii && en::ascii_compat(renc) && en::ascii_compat(re) { return Ok(re); }
+    Err(en::compat_error(c, renc, re))
+}
+fn sub_result(slf: Value, r: Option<(Vec<u8>, u8)>) -> Value {
+    match r { Some((v, e)) => { let s2 = str_from_vec_enc(v, e); s2 } None => new_like(slf, b(slf).to_vec()) }
+}
+cfn!(s_sub, |c, slf, a, blk| { let r = subst(c, slf, a, blk, false, false)?; Ok(sub_result(slf, r)) });
 cfn!(s_gsub, |c, slf, a, blk| {
     if a.len() == 1 && blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"gsub"), a, NIL); }
-    Ok(new_like(slf, subst(c, slf, a, blk, true, false)?.unwrap_or_else(|| b(slf).to_vec())))
+    let r = subst(c, slf, a, blk, true, false)?; Ok(sub_result(slf, r))
 });
-cfn!(s_sub_b, |c, slf, a, blk| { check_frozen(c, slf)?; if a.len() == 1 && blk.is_null() { return argc_err(c, 1, 2, 2); } match subst(c, slf, a, blk, false, true)? { Some(v) => { modify(c, slf)?.b = v; Ok(slf) } None => Ok(NIL) } });
-cfn!(s_gsub_b, |c, slf, a, blk| { if a.len() == 1 && blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"gsub!"), a, NIL); } check_frozen(c, slf)?; match subst(c, slf, a, blk, true, true)? { Some(v) => { modify(c, slf)?.b = v; Ok(slf) } None => Ok(NIL) } });
+cfn!(s_sub_b, |c, slf, a, blk| { check_frozen(c, slf)?; if a.len() == 1 && blk.is_null() { return argc_err(c, 1, 2, 2); } match subst(c, slf, a, blk, false, true)? { Some((v, e)) => { let r = modify(c, slf)?; r.b = v; r.enc = e; Ok(slf) } None => Ok(NIL) } });
+cfn!(s_gsub_b, |c, slf, a, blk| { if a.len() == 1 && blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"gsub!"), a, NIL); } check_frozen(c, slf)?; match subst(c, slf, a, blk, true, true)? { Some((v, e)) => { let r = modify(c, slf)?; r.b = v; r.enc = e; Ok(slf) } None => Ok(NIL) } });
 cfn!(s_scan, |c, slf, a, blk| {
     let p = a[0];
     if !regexp::is_regexp(p) && !is_string(p) && !(p.is_heap() && respond_to(p, s::to_str, true)) {
