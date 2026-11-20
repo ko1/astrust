@@ -79,8 +79,28 @@ pub fn rt_fstr(s: Str, enc: u32, lc: &mut LitCache) -> Value {
     v
 }
 
+/// Append an interpolated value to the string being built (acc is fresh: mutable, unshared).
 pub fn rt_dstr_append(c: &mut Ctx, acc: Value, v: Value) -> Result<(), Esc> {
-    let s = if is_string(v) { v } else { rt_tostr(c, v)? };
+    if is_string(v) {
+        let (a, b) = (rstr(acc), rstr(v));
+        if a.enc == b.enc { crate::gc::malloc_increase(b.b.len()); a.b.extend_from_slice(&b.b); return Ok(()); }
+        return str_append_str(c, acc, v);
+    }
+    if v.is_fixnum() {
+        // an empty acc would take the Integer string's US-ASCII encoding: left to the slow path
+        let a = rstr(acc);
+        if !a.b.is_empty() && a.enc <= ENC_ASCII {
+            let mut buf = [0u8; 20];
+            let i = v.as_fix();
+            let mut u = i.unsigned_abs();
+            let mut k = buf.len();
+            loop { k -= 1; buf[k] = b'0' + (u % 10) as u8; u /= 10; if u == 0 { break; } }
+            if i < 0 { k -= 1; buf[k] = b'-'; }
+            a.b.extend_from_slice(&buf[k..]);
+            return Ok(());
+        }
+    }
+    let s = rt_tostr(c, v)?;
     str_append_str(c, acc, s)
 }
 

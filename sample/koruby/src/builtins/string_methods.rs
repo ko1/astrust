@@ -594,7 +594,22 @@ cfn!(s_split, |c, slf, a, blk| {
     let default_pat = a.is_empty() || a[0] == NIL;
     if is_string(pat) && !(default_pat && b(pat) == b" ") { compat(c, slf, pat)?; }
     let awk = is_string(pat) && ((default_pat && b(pat) == b" ") || { let cs = codes_of(pat); cs.len() == 1 && cs[0].0 == 32 });
-    if awk {
+    if awk && rstr(slf).enc <= ENC_ASCII {
+        // UTF-8 / binary / US-ASCII: whitespace bytes are whitespace characters
+        let sp = |x: u8| matches!(x, 9..=13 | 32);
+        let n = v.len();
+        let mut k = 0;
+        while k < n && sp(v[k]) { k += 1; }
+        while k < n {
+            if limit > 0 && out.len() as i64 == limit - 1 { out.push(v[k..].to_vec()); break; }
+            let st = k;
+            while k < n && !sp(v[k]) { k += 1; }
+            let en = k;
+            out.push(v[st..en].to_vec());
+            while k < n && sp(v[k]) { k += 1; }
+            if k >= n && en < n { out.push(vec![]); }
+        }
+    } else if awk {
         // awk mode: split on ASCII whitespace characters (code units for wide encodings)
         let cs = codes_of(slf);
         let sp = |x: u32| matches!(x, 9..=13 | 32);

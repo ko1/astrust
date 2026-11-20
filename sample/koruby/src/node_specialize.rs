@@ -197,6 +197,7 @@ fn SPECIALIZE_node_dstr(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("(*np).u.parts".to_string());
     a.push(format!("{}u32", (*np).u.enc));
+    a.push(format!("{}u32", (*np).u.cap));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));

@@ -70,9 +70,9 @@ node_fstr(c: &mut Ctx, n: NodePtr, fp: *mut Value, s: Str, enc: u32, lc@ref: Lit
 }
 
 NODE_DEF
-node_dstr(c: &mut Ctx, n: NodePtr, fp: *mut Value, parts: NODES, enc: u32)
+node_dstr(c: &mut Ctx, n: NodePtr, fp: *mut Value, parts: NODES, enc: u32, cap: u32)
 {
-    let acc = crate::string::str_new_enc(b"", enc as u8);
+    let acc = crate::string::str_with_capa(cap as usize, enc as u8);
     for i in 0..EVAL_LEN!(parts) {
         let v = EVAL_NTH!(c, parts, i)?;
         rt_dstr_append(c, acc, v)?;

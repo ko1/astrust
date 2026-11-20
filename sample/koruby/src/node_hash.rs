@@ -71,6 +71,7 @@ fn HASH_node_dstr(n: NodePtr) -> u64 {
     let mut h = hash_str("node_dstr");
     h = hash_merge(h, hash_node_list(u.parts));
     h = hash_merge(h, hash_u64(u.enc as u64));
+    h = hash_merge(h, hash_u64(u.cap as u64));
     h
 }
 

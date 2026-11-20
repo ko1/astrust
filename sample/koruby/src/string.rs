@@ -15,6 +15,11 @@ pub fn str_new_enc(b: &[u8], enc: u8) -> Value {
     crate::gc::malloc_increase(b.len());
     crate::gc::alloc(vm().c_string, Body::String(RString { b: b.to_vec(), enc }))
 }
+#[inline]
+pub fn str_with_capa(n: usize, enc: u8) -> Value {
+    crate::gc::malloc_increase(n);
+    crate::gc::alloc(vm().c_string, Body::String(RString { b: Vec::with_capacity(n), enc }))
+}
 pub fn str_from_vec(b: Vec<u8>) -> Value {
     crate::gc::malloc_increase(b.len());
     crate::gc::alloc(vm().c_string, Body::String(RString { b, enc: ENC_UTF8 }))
@@ -62,7 +67,8 @@ pub fn str_append_same_enc(acc: Value, s: Value) {
     a.b.extend_from_slice(&b.b);
 }
 
-pub fn is_ascii(b: &[u8]) -> bool { b.iter().all(|&x| x < 0x80) }
+#[inline]
+pub fn is_ascii(b: &[u8]) -> bool { b.is_ascii() }
 
 pub fn utf8_len(b: &[u8]) -> usize {
     if is_ascii(b) { return b.len(); }

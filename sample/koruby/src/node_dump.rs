@@ -89,6 +89,7 @@ fn DUMP_node_dstr(out: &mut String, n: NodePtr) {
     out.push_str("(node_dstr");
     out.push(' '); out.push('['); for (i, x) in (*np).u.parts.iter().enumerate() { if i > 0 { out.push(' '); } dump_node(out, *x); } out.push(']');
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.enc));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.cap));
     out.push(')');
     }
 }

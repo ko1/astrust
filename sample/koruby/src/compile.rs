@@ -803,7 +803,11 @@ impl<'a> Compiler<'a> {
     fn dstr(&mut self, parts: &[PNode]) -> NodePtr {
         let mut v = vec![];
         self.dstr_parts(parts, &mut v);
-        ALLOC_node_dstr(leak(v), 0)
+        // buffer size guess: the literal bytes plus a little per interpolated value
+        let cap: usize = v.iter().map(|&n| unsafe {
+            if std::ptr::eq((*n).head.kind, &KIND_node_fstr) { let s: Str = (*(n as *mut NodeOf<node_fstr_struct>)).u.s; s.len() } else { 12 }
+        }).sum();
+        ALLOC_node_dstr(leak(v), 0, cap.min(4096) as u32)
     }
     fn dstr_parts(&mut self, parts: &[PNode], v: &mut Vec<NodePtr>) {
         for p in parts {
@@ -813,9 +817,10 @@ impl<'a> Compiler<'a> {
                     v.push(ALLOC_node_fstr(lstr(unescaped), enc))
                 }
                 Kind::InterpolatedStringNode { parts } => self.dstr_parts(parts, v),
-                Kind::EmbeddedStatementsNode { statements } => { let e = self.stmts(statements.as_deref()); v.push(ALLOC_node_tostr(e)); }
-                Kind::EmbeddedVariableNode { variable } => { let e = self.c(variable); v.push(ALLOC_node_tostr(e)); }
-                _ => { let e = self.c(p); v.push(ALLOC_node_tostr(e)); }
+                // rt_dstr_append converts (no intermediate String for Integers)
+                Kind::EmbeddedStatementsNode { statements } => { let e = self.stmts(statements.as_deref()); v.push(e); }
+                Kind::EmbeddedVariableNode { variable } => { let e = self.c(variable); v.push(e); }
+                _ => { let e = self.c(p); v.push(e); }
             }
         }
     }

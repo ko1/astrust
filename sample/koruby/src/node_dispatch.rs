@@ -76,7 +76,7 @@ pub fn DISPATCH_node_dstr(c: &mut Ctx, n: NodePtr, fp: *mut Value) -> RV {
     let np = n as *mut NodeOf<node_dstr_struct>;
     unsafe {
 
-    EVAL_node_dstr::<DynList>(c, n, fp, (*np).u.parts, (*np).u.enc)
+    EVAL_node_dstr::<DynList>(c, n, fp, (*np).u.parts, (*np).u.enc, (*np).u.cap)
     }
 }
 

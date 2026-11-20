@@ -164,6 +164,7 @@ pub struct node_fstr_struct {
 pub struct node_dstr_struct {
     pub parts: NodeList,
     pub enc: u32,
+    pub cap: u32,
 }
 
 #[allow(non_camel_case_types)]
@@ -911,8 +912,8 @@ pub fn ALLOC_node_fstr(s: Str, enc: u32) -> NodePtr {
 }
 
 #[allow(non_snake_case)]
-pub fn ALLOC_node_dstr(parts: NodeList, enc: u32) -> NodePtr {
-    node_allocate(&KIND_node_dstr, node_dstr_struct { parts, enc })
+pub fn ALLOC_node_dstr(parts: NodeList, enc: u32, cap: u32) -> NodePtr {
+    node_allocate(&KIND_node_dstr, node_dstr_struct { parts, enc, cap })
 }
 
 #[allow(non_snake_case)]

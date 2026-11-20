@@ -196,8 +196,8 @@ pub fn EVAL_node_fstr(c: &mut Ctx, n: NodePtr, fp: *mut Value, s: Str, enc: u32,
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_dstr<D_parts: DispList>(c: &mut Ctx, n: NodePtr, fp: *mut Value, parts: NodeList, enc: u32) -> RV {
-    let acc = crate::string::str_new_enc(b"", enc as u8);
+pub fn EVAL_node_dstr<D_parts: DispList>(c: &mut Ctx, n: NodePtr, fp: *mut Value, parts: NodeList, enc: u32, cap: u32) -> RV {
+    let acc = crate::string::str_with_capa(cap as usize, enc as u8);
     for i in 0..<D_parts as DispList>::len(parts) {
         let v = <D_parts as DispList>::nth(c, parts, i, fp)?;
         rt_dstr_append(c, acc, v)?;
