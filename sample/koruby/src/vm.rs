@@ -1608,7 +1608,22 @@ pub fn run_block_fast(c: &mut Ctx, b: &Block, is: &Iseq, base: *mut Value, argc:
     }
 }
 
-pub fn yield1(c: &mut Ctx, blk: *const Block, a: Value) -> RV { yield_block(c, blk, &[a]) }
+/// One out-of-line copy of the one-argument fast path (not left to yield_block's inlining luck).
+#[inline(never)]
+pub fn yield1(c: &mut Ctx, blk: *const Block, a: Value) -> RV {
+    if !blk.is_null() {
+        let b = unsafe { &*blk };
+        if let Some(is) = block_fast(b, 1) {
+            let base = c.sp;
+            stack_check(c, is.nlocals as usize + 17)?;
+            unsafe { *base.add(2) = a; }
+            let r = run_block_fast(c, b, is, base, 1);
+            c.sp = base;
+            return r;
+        }
+    }
+    yield_block(c, blk, &[a])
+}
 
 pub fn yield_with_self(c: &mut Ctx, blk: *const Block, args: &[Value], self_: Value, defined_class: Value) -> RV {
     let b = unsafe { &*blk };
