@@ -175,6 +175,7 @@ pub fn boot() {
     math::init();
     rational::init();
     complex::init();
+    crate::fiber::init();
 }
 
 /// dup/clone of built-in Data objects.
