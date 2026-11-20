@@ -6,7 +6,7 @@ use crate::symbol::{intern, sym_bytes};
 use crate::value::*;
 use crate::vm::*;
 
-fn sym_str_v(v: Value) -> Value { str_new(sym_bytes(v.as_sym())) }
+fn sym_str_v(v: Value) -> Value { let b = sym_bytes(v.as_sym()); str_new_enc(b, if is_ascii(b) { ENC_ASCII } else { ENC_UTF8 }) }
 
 fn sym_to_s(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(sym_str_v(s)) }
 fn sym_name(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {

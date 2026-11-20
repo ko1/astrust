@@ -398,12 +398,12 @@ cfn!(s_reverse_b, |c, slf, a, b_| { let r = modify(c, slf)?; let nv = reverse_by
 cfn!(s_include, |c, slf, a, b_| { let o = expect_str(c, a[0])?; Ok(Value::bool(find_bytes(b(slf), b(o), 0).is_some())) });
 cfn!(s_start_with, |c, slf, a, b_| {
     for &x in a {
-        if regexp::is_regexp(x) { if let Some(g) = regexp::rregexp(x).unwrap().re.as_ref().unwrap().match_at(b(slf), 0) { let m = regexp::match_new(x, slf, g); c.last_match = m; return Ok(TRUE); } continue; }
-        let o = expect_str(c, x)?; if b(slf).starts_with(b(o)) { return Ok(TRUE); }
+        if regexp::is_regexp(x) { if let Some(g) = regexp::rregexp(x).unwrap().re.as_ref().unwrap().match_at(b(slf), 0) { let m = regexp::match_new(x, slf, g); c.last_match = m; return Ok(TRUE); } c.last_match = NIL; continue; }
+        let o = expect_str(c, x)?; compat(c, slf, o)?; if b(slf).starts_with(b(o)) && char_offsets(slf).binary_search(&b(o).len()).is_ok() { return Ok(TRUE); }
     }
     Ok(FALSE)
 });
-cfn!(s_end_with, |c, slf, a, b_| { for &x in a { let o = expect_str(c, x)?; if b(slf).ends_with(b(o)) { return Ok(TRUE); } } Ok(FALSE) });
+cfn!(s_end_with, |c, slf, a, b_| { for &x in a { let o = expect_str(c, x)?; compat(c, slf, o)?; if b(slf).ends_with(b(o)) && char_offsets(slf).binary_search(&(b(slf).len() - b(o).len())).is_ok() { return Ok(TRUE); } } Ok(FALSE) });
 cfn!(s_index, |c, slf, a, b_| {
     let n = str_char_len(slf) as i64;
     let mut st = if a.len() > 1 { num_to_long(c, a[1])? } else { 0 };

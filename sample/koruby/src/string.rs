@@ -198,6 +198,8 @@ pub fn sym_is_simple(n: &[u8]) -> bool {
     let s = match std::str::from_utf8(n) { Ok(s) => s, Err(_) => return false };
     let body = if let Some(r) = s.strip_prefix("@@") { r } else if let Some(r) = s.strip_prefix('@') { r } else if let Some(r) = s.strip_prefix('$') {
         if r.len() == 1 && "~*$?!@/\\;,.=:<>\"&`'+0123456789_".contains(r) { return true; }
+        if r.len() == 2 && r.starts_with('-') && r[1..].chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') { return true; }
+        if !r.is_empty() && r.bytes().all(|x| x.is_ascii_digit()) && !r.starts_with('0') { return true; }
         r
     } else { s };
     if body.is_empty() { return false; }
