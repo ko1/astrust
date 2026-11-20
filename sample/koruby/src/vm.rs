@@ -995,7 +995,8 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: *mut Value, argc: u32
     }
     if cc.fast != 0 && flags & CF_KW == 0 {
         match cc.fast & 3 {
-            0 => {
+            // tag 0 is also a method entry called with the wrong argc (fast_argc set): not ours
+            0 if cc.fast_argc == u32::MAX => {
                 let ni = unsafe { &*(cc.fast as *const NewInfo) };
                 if argc == ni.init_argc {
                     let o = new_object(ni.klass);
