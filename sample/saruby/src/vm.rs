@@ -1207,13 +1207,18 @@ pub const SITE_ATTR_W: u32 = 3;
 pub const SITE_CFUNC: u32 = 4;
 pub const SITE_OTHER: u32 = 5;    // never run, Klass.new, keywords, ...: out of line
 
+pub const SITE_IMM: u32 = 16;      // flag: the cached receiver class is an immediate's (Integer, Symbol, nil, ...)
+
 pub fn site_kind(cc: &CallCache, argc: usize, flags: u32) -> u32 {
-    if flags & CF_KW != 0 { return SITE_OTHER; }
-    if cc.fast_argc as usize == argc && cc.klass != 0 { return SITE_ENTRY; }
-    if cc.fast != 0 {
-        return match cc.fast & 3 { 1 if argc == 0 => SITE_ATTR_R, 2 if argc == 1 => SITE_ATTR_W, _ => SITE_OTHER };
-    }
-    if cc.cfunc != 0 { SITE_CFUNC } else { SITE_OTHER }
+    if flags & CF_KW != 0 || cc.klass == 0 { return SITE_OTHER; }
+    let v = vm();
+    let imm = [v.c_integer, v.c_float, v.c_symbol, v.c_nil, v.c_true, v.c_false].iter().any(|k| k.raw() == cc.klass);
+    let k = if cc.fast_argc as usize == argc { SITE_ENTRY }
+        else if cc.fast != 0 { match cc.fast & 3 { 1 if argc == 0 => SITE_ATTR_R, 2 if argc == 1 => SITE_ATTR_W, _ => return SITE_OTHER } }
+        else if cc.cfunc != 0 { SITE_CFUNC } else { return SITE_OTHER };
+    // a Float receiver may be a heap object or a flonum: leave those sites to the general path
+    if cc.klass == v.c_float.raw() { return SITE_OTHER; }
+    k | if imm { SITE_IMM } else { 0 }
 }
 
 #[inline(never)]
@@ -1221,50 +1226,57 @@ pub fn call_cached_out(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, arg
     call_cached(c, cc, mid, base, argc, blk, flags)
 }
 
-/// call_cached with only the site's baked kind inline.
+#[inline(never)]
+fn class_of_imm(v: Value) -> u64 { class_of(v).raw() }
+
+/// Does the site's cache hold recv's class?  `kind` (baked) says which receivers the site saw,
+/// so only that test is in the baked code.
 #[inline(always)]
-pub fn call_site(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32, kind: u32) -> RV {
-    if kind == SITE_INTERP { return call_cached(c, cc, mid, base, argc, blk, flags); }
-    if kind != SITE_OTHER {
-        let recv = base[0].get();
-        if cc.klass == class_of(recv).raw() && cc.serial == vm().method_serial {
-            match kind {
-                SITE_ENTRY => if argc == cc.fast_argc {
-                    c.call_me = cc.me as *const MethodEntry; c.call_blk = blk;
-                    let r = run_entry(c, cc.fast as NodePtr, base);
-                    c.set_sp(base, 0);
-                    return r;
-                }
-                SITE_ATTR_R => if cc.fast & 3 == 1 {
-                    if let Body::Object(ivs) = &obj(recv).body {
-                        let v = ivs.get(cc.fast >> 2).unwrap_or(UNDEF);
-                        c.set_sp(base, 0);
-                        return Ok(if v == UNDEF { NIL } else { v });
-                    }
-                }
-                SITE_ATTR_W => if cc.fast & 3 == 2 {
-                    let o = obj(recv);
-                    if o.flags & FL_FROZEN == 0 {
-                        if let Body::Object(ivs) = &mut o.body {
-                            let v = base[2].get();
-                            if ivs.set(cc.fast >> 2, v) { c.set_sp(base, 0); return Ok(v); }
-                        }
-                    }
-                }
-                _ => if cc.fast == 0 && cc.cfunc != 0 && (cc.arity < 0 || cc.arity == argc as i32) {
-                    let f: CFunc = unsafe { std::mem::transmute::<usize, CFunc>(cc.cfunc) };
-                    let pf = c.frame;
-                    let mut fr = Frame::cfunc(pf, cc.me as *const MethodEntry, blk);
-                    c.frame = &mut fr;
-                    let r = with_args(base, argc as usize, |a| f(c, recv, a, blk));
-                    c.frame = pf;
-                    c.set_sp(base, 0);
-                    return r;
+pub fn site_hit(cc: &CallCache, recv: Value, kind: u32) -> bool {
+    if kind & 15 == SITE_OTHER { return false; }
+    let k = if kind & SITE_IMM != 0 { if recv.is_heap() { return false; } class_of_imm(recv) }
+            else { if !recv.is_heap() { return false; } obj(recv).klass.raw() };
+    cc.klass == k && cc.serial == vm().method_serial
+}
+
+/// The one fast path of a site whose cache matched (site_hit); None: go out of line.
+#[inline(always)]
+pub fn site_fast(c: &mut Ctx, cc: &mut CallCache, recv: Value, base: Stk, argc: u32, blk: *const Block, kind: u32) -> Option<RV> {
+    match kind & 15 {
+        SITE_ENTRY => if argc == cc.fast_argc {
+            c.call_me = cc.me as *const MethodEntry; c.call_blk = blk;
+            let r = run_entry(c, cc.fast as NodePtr, base);
+            c.set_sp(base, 0);
+            return Some(r);
+        }
+        SITE_ATTR_R => if cc.fast & 3 == 1 {
+            if let Body::Object(ivs) = &obj(recv).body {
+                let v = ivs.get(cc.fast >> 2).unwrap_or(UNDEF);
+                c.set_sp(base, 0);
+                return Some(Ok(if v == UNDEF { NIL } else { v }));
+            }
+        }
+        SITE_ATTR_W => if cc.fast & 3 == 2 {
+            let o = obj(recv);
+            if o.flags & FL_FROZEN == 0 {
+                if let Body::Object(ivs) = &mut o.body {
+                    let v = base[2].get();
+                    if ivs.set(cc.fast >> 2, v) { c.set_sp(base, 0); return Some(Ok(v)); }
                 }
             }
         }
+        _ => if cc.fast == 0 && cc.cfunc != 0 && (cc.arity < 0 || cc.arity == argc as i32) {
+            let f: CFunc = unsafe { std::mem::transmute::<usize, CFunc>(cc.cfunc) };
+            let pf = c.frame;
+            let mut fr = Frame::cfunc(pf, cc.me as *const MethodEntry, blk);
+            c.frame = &mut fr;
+            let r = with_args(base, argc as usize, |a| f(c, recv, a, blk));
+            c.frame = pf;
+            c.set_sp(base, 0);
+            return Some(r);
+        }
     }
-    call_cached_out(c, cc, mid, base, argc, blk, flags)
+    None
 }
 
 /// cc.fast of a `Klass.new` site (tag 0 with no fast_argc): allocate, then run initialize's entry.

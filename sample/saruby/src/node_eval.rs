@@ -779,17 +779,22 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ct
     base[0].set(<D_recv as Disp>::call(c, recv, fp)?);
     for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
     unsafe { (*c.frame).line = line; }
-    // the callee this site had when it was compiled, called statically while the cache still holds it
-    if callee_hash != 0 && cc.fast_hash == callee_hash
-        && cc.klass == class_of(base[0].get()).raw() && cc.serial == vm().method_serial {
-        c.call_me = cc.me as *const MethodEntry; c.call_blk = std::ptr::null();
-        let callee_fp = frame(c, base)?;
-        at_entry(c, base);
-        let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp);
-        c.set_sp(base, 0);
-        return r;
+    if kind == SITE_INTERP { return call_cached(c, cc, mid, base, k as u32, std::ptr::null(), flags); }
+    // baked code: one cache test, then the callee compiled into this site or the site's one fast path
+    let r0 = base[0].get();
+    if site_hit(cc, r0, kind) {
+        if callee_hash != 0 {
+            if cc.fast_hash == callee_hash {
+                c.call_me = cc.me as *const MethodEntry; c.call_blk = std::ptr::null();
+                let callee_fp = frame(c, base)?;
+                at_entry(c, base);
+                let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp);
+                c.set_sp(base, 0);
+                return r;
+            }
+        } else if let Some(r) = site_fast(c, cc, r0, base, k as u32, std::ptr::null(), kind) { return r; }
     }
-    call_site(c, cc, mid, base, k as u32, std::ptr::null(), flags, kind)
+    call_cached_out(c, cc, mid, base, k as u32, std::ptr::null(), flags)
 }
 
 
@@ -802,15 +807,18 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mu
     for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
     unsafe { (*c.frame).line = line; }
     let b = make_block(c, blk, fp);
-    let r = if callee_hash != 0 && cc.fast_hash == callee_hash
-        && cc.klass == class_of(base[0].get()).raw() && cc.serial == vm().method_serial {
+    let r0 = base[0].get();
+    let r = if kind == SITE_INTERP { call_cached(c, cc, mid, base, k as u32, &b, flags) }
+    else if site_hit(cc, r0, kind) && callee_hash != 0 && cc.fast_hash == callee_hash {
         c.call_me = cc.me as *const MethodEntry; c.call_blk = &b;
         let callee_fp = frame(c, base)?;
         at_entry(c, base);
         let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp);
         c.set_sp(base, 0);
         r
-    } else { call_site(c, cc, mid, base, k as u32, &b, flags, kind) };
+    } else if site_hit(cc, r0, kind) && callee_hash == 0 {
+        match site_fast(c, cc, r0, base, k as u32, &b, kind) { Some(r) => r, None => call_cached_out(c, cc, mid, base, k as u32, &b, flags) }
+    } else { call_cached_out(c, cc, mid, base, k as u32, &b, flags) };
     match r {
         Err(e) if c.esc == EscKind::Break && c.esc_tag == b.tag => { c.esc = EscKind::None; Ok(c.esc_val) }
         r => r,
