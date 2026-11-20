@@ -118,12 +118,19 @@ NODE_DEF
 node_ary(c: &mut Ctx, n: NodePtr, fp: Fp, elems: NODES)
 {
     let k = EVAL_LEN!(elems);
+    // in locals, stored from registers: staged slots are read back with a wide load that stalls on their stores
+    if k <= crate::avec::INLINE {
+        let x0 = if k > 0 { EVAL_NTH!(c, elems, 0)? } else { NIL };
+        let x1 = if k > 1 { EVAL_NTH!(c, elems, 1)? } else { NIL };
+        let x2 = if k > 2 { EVAL_NTH!(c, elems, 2)? } else { NIL };
+        return Ok(c.ary_new_small(k, [x0, x1, x2]));
+    }
     let base = stage(c, k)?;
     for i in 0..k {
         let v = EVAL_NTH!(c, elems, i)?;
         base[i].set(v);
     }
-    let a = c.ary_from_vec(to_vec(&base[0..k]));
+    let a = c.ary_from_slots(&base[0..k]);
     c.set_sp(base, 0);
     Ok(a)
 }

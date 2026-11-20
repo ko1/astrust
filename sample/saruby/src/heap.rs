@@ -76,7 +76,7 @@ macro_rules! payload {
 }
 
 impl Ctx {
-    payload!(ary_vec, ary_mut, Array, Vec<Value>, "an Array");
+    payload!(ary_vec, ary_mut, Array, crate::avec::AVec, "an Array");
     payload!(rstring, rstring_mut, String, RString, "a String");
     payload!(ivars, ivars_mut, Object, crate::ivbuf::IvBuf, "a plain object");
     // boxed payloads: `&mut T`, not the Box
@@ -103,7 +103,7 @@ impl Ctx {
 
     /// Array `v` for writing, and read access to every other object meanwhile.
     #[inline(always)]
-    pub fn ary_mut_and(&mut self, v: Value) -> (&mut Vec<Value>, Others<'_>) {
+    pub fn ary_mut_and(&mut self, v: Value) -> (&mut crate::avec::AVec, Others<'_>) {
         let c: &Ctx = self;
         // SAFETY: H1, H2; `Others` refuses `v`, and distinct objects own disjoint payloads
         match unsafe { &mut (*robj(v)).body } { Body::Array(x) => (x, Others { except: v, c }), _ => wrong_kind(v, "an Array") }

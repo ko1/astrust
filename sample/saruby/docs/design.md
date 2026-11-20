@@ -49,6 +49,10 @@ object.rs); variable data in Rust Vecs/Boxes owned by the slot.  Non-moving mark
   no append and no per-object shape.  Consequence kept from before: `instance_variables` lists
   in the class's order, not the object's assignment order.
 * Short strings live in the slot too (`src/sbuf.rs`).
+* So do Arrays of up to 3 elements (`src/avec.rs`, no unsafe): `AVec` is `Inline(len, [Value; 3])`
+  or `Heap(Vec)`, derefs to `[Value]`, and an array stays out of line once it needed a general Vec
+  operation.  Every element access pays the Inline/Heap test (one compare and branch; the Heap path
+  falls through).  Sweep skips `Drop` for bodies that own nothing (`gc.rs`, `owns_nothing`).
 
 **Rooting (important):** heap objects are traced precisely; the machine stack and registers
 are scanned conservatively, and the VM value stack too.  So Values in Rust locals are safe.

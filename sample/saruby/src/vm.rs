@@ -1738,7 +1738,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
                 return type_err(c, format!("can't convert {} to Array ({}#to_ary gives {})", class_path(real_class_of(a)), class_path(real_class_of(a)), class_path(real_class_of(r))));
             }
         } else { None };
-        if let Some(arr) = arr { args = rary(arr).clone(); }
+        if let Some(arr) = arr { args = rary(arr).to_vec(); }
     }
     let given = args.len();
     let required = lead + post;

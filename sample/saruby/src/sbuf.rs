@@ -25,7 +25,7 @@ impl SBuf {
     #[inline(always)]
     pub const fn new() -> SBuf { SBuf { w: [0; 3] } }
     #[inline(always)]
-    fn is_heap(&self) -> bool { self.w[2] & HEAP != 0 }
+    pub fn is_heap(&self) -> bool { self.w[2] & HEAP != 0 }
     #[inline(always)]
     fn set_inline_len(&mut self, n: usize) { self.w[2] = (self.w[2] & !(0xff << 56)) | (n << 56); }
     #[inline(always)]

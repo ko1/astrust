@@ -37,7 +37,7 @@ fn re_s_escape(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(str_from_vec_enc(escape(str_bytes(v)), enc))
 }
 fn re_s_union(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
-    let list: Vec<Value> = if a.len() == 1 && is_array(a[0]) { rary(a[0]).clone() } else { a.to_vec() };
+    let list: Vec<Value> = if a.len() == 1 && is_array(a[0]) { rary(a[0]).to_vec() } else { a.to_vec() };
     if list.is_empty() { return regexp_new(c, b"(?!)", 0); }
     let mut src = vec![];
     for (i, &x) in list.iter().enumerate() {
