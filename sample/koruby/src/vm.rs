@@ -194,6 +194,7 @@ impl Ctx {
 
 // ---- global VM state ------------------------------------------------------------------------
 
+#[repr(C)]
 pub struct Vm {
     pub c_basic_object: Value, pub c_object: Value, pub c_module: Value, pub c_class: Value,
     pub m_kernel: Value, pub m_comparable: Value, pub m_enumerable: Value,
