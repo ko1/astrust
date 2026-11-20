@@ -54,6 +54,16 @@ fn check_valid(c: &mut Ctx, v: Value) -> Result<(), Esc> {
     Ok(())
 }
 
+/// char_to_byte for an index that was valid when the length was read; IndexError if a conversion
+/// shrank the string since.
+fn char_to_byte_at(c: &mut Ctx, v: Value, i: usize) -> Result<usize, Esc> {
+    match char_to_byte(c, v, i) { Some(x) => Ok(x), None => err(c, c.vm().c_index_error, format!("index {} out of string", i)) }
+}
+/// "string modified": a block or a conversion changed the receiver under an iteration.
+fn str_mod_check(c: &mut Ctx, v: Value, len: usize) -> Result<(), Esc> {
+    if c.str_len(v) != len { return err(c, c.vm().c_runtime_error, "string modified"); }
+    Ok(())
+}
 /// substring by char start/len
 fn substr(c: &mut Ctx, v: Value, start: i64, len: i64) -> Option<Value> {
     let n = c.str_char_len(v) as i64;
@@ -235,6 +245,8 @@ cfn!(s_aref, |c, slf, a, b_| str_aref(c, slf, a));
 cfn!(s_aset, |c, slf, a, b_| {
     check_argc(c, a, 2, 3)?;
     let val = expect_str(c, *a.last().unwrap())?;
+    // conversions first: to_int may change self, the length is read after it
+    let nums = if a.len() == 3 && !regexp::is_regexp(a[0]) { Some((num_to_long(c, a[0])?, num_to_long(c, a[1])?)) } else { None };
     let n = c.str_char_len(slf) as i64;
     let (bs, be) = if a.len() == 3 {
         if regexp::is_regexp(a[0]) {
@@ -243,19 +255,20 @@ cfn!(s_aset, |c, slf, a, b_| {
             let g = num_to_long(c, a[1])?;
             match regexp::rmatch(m).unwrap().groups.get(g as usize).copied().flatten() { Some(x) => x, None => return err(c, c.vm().c_index_error, format!("index {} out of regexp", g)) }
         } else {
-            let mut st = num_to_long(c, a[0])?; let ln = num_to_long(c, a[1])?;
+            let (st0, ln) = nums.unwrap();
+            let mut st = st0;
             if st < 0 { st += n; }
-            if st < 0 || st > n { let o = num_to_long(c, a[0])?; return err(c, c.vm().c_index_error, format!("index {} out of string", o)); }
+            if st < 0 || st > n { return err(c, c.vm().c_index_error, format!("index {} out of string", st0)); }
             if ln < 0 { return err(c, c.vm().c_index_error, format!("negative length {}", ln)); }
-            (char_to_byte(c, slf, st as usize).unwrap(), char_to_byte(c, slf, (st + ln).min(n) as usize).unwrap())
+            (char_to_byte_at(c, slf, st as usize)?, char_to_byte_at(c, slf, (st + ln).min(n) as usize)?)
         }
     } else if a[0].is_fixnum() {
         let mut i = a[0].as_fix();
         if i < 0 { i += n; }
         if i < 0 || i > n { return err(c, c.vm().c_index_error, format!("index {} out of string", a[0].as_fix())); }
-        let bs = char_to_byte(c, slf, i as usize).unwrap(); (bs, char_to_byte(c, slf, i as usize + 1).unwrap_or(bs))
+        let bs = char_to_byte_at(c, slf, i as usize)?; (bs, char_to_byte(c, slf, i as usize + 1).unwrap_or(bs))
     } else if is_range(a[0]) {
-        match crate::range::range_beg_len(c, a[0], n, 1)? { Some((st, ln)) => (char_to_byte(c, slf, st as usize).unwrap(), char_to_byte(c, slf, (st + ln).min(n) as usize).unwrap()), None => return Ok(val) }
+        match crate::range::range_beg_len(c, a[0], n, 1)? { Some((st, ln)) => (char_to_byte_at(c, slf, st as usize)?, char_to_byte_at(c, slf, (st + ln).min(n) as usize)?), None => return Ok(val) }
     } else if is_string(a[0]) {
         match find_bytes(c.str_bytes(slf), c.str_bytes(a[0]), 0) { Some(p) => (p, p + c.str_bytes(a[0]).len()), None => return err(c, c.vm().c_index_error, "string not matched") }
     } else if regexp::is_regexp(a[0]) {
@@ -264,6 +277,7 @@ cfn!(s_aset, |c, slf, a, b_| {
         regexp::rmatch(m).unwrap().groups[0].unwrap()
     } else { let i = num_to_long(c, a[0])?; return s_aset(c, slf, &[Value::fix(i), val], b_); };
     let vb = c.str_bytes(val).to_vec();
+    if bs > be || be > c.str_len(slf) { return err(c, c.vm().c_index_error, format!("index {} out of string", bs)); }
     let r = c.str_modify(slf)?;
     r.b.splice(bs..be, vb);
     Ok(val)
@@ -520,7 +534,7 @@ cfn!(s_each_char, |c, slf, a, blk| {
     s_chars(c, slf, a, blk)
 });
 cfn!(s_bytes, |c, slf, a, blk| {
-    if !blk.is_null() { let n = c.str_bytes(slf).len(); for i in 0..n { let x = *c.str_bytes(slf).get(i).unwrap_or(&0); yield1(c, blk, Value::fix(x as i64))?; } return Ok(slf); }
+    if !blk.is_null() { let mut i = 0; while let Some(&x) = c.str_bytes(slf).get(i) { yield1(c, blk, Value::fix(x as i64))?; i += 1; } return Ok(slf); }
     Ok(c.ary_from_vec(c.str_bytes(slf).iter().map(|&x| Value::fix(x as i64)).collect()))
 });
 cfn!(s_each_byte, |c, slf, a, blk| {
@@ -682,7 +696,7 @@ cfn!(s_split, |c, slf, a, blk| {
     }
     if limit == 0 { while out.last().map(|x| x.is_empty()).unwrap_or(false) { out.pop(); } }
     let arr = c.ary_of_strs(out, c.str_enc(slf));
-    if !blk.is_null() { let n = c.ary_len(arr); for i in 0..n { yield1(c, blk, c.ary_get(arr, i))?; } return Ok(slf); }
+    if !blk.is_null() { let (n, len) = (c.ary_len(arr), c.str_len(slf)); for i in 0..n { yield1(c, blk, c.ary_get(arr, i))?; str_mod_check(c, slf, len)?; } return Ok(slf); }
     Ok(arr)
 });
 
@@ -737,17 +751,21 @@ fn expand_repl(rep: &[u8], m_bytes: &[u8], groups: &[Option<(usize, usize)>], re
 fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool, bang: bool) -> Result<Option<(Vec<u8>, u8)>, Esc> {
     if a.is_empty() || a.len() > 2 { return argc_err(c, a.len(), 1, 2); }
     let pat = a[0];
+    // sub works on a copy taken before its arguments are converted (CRuby dups first)
+    let early = if !bang && !global { Some(c.str_bytes(slf).to_vec()) } else { None };
     let hash_rep = if a.len() == 2 && is_hash(a[1]) { Some(a[1]) } else { None };
     let str_rep = if a.len() == 2 && hash_rep.is_none() { Some(expect_str(c, a[1])?) } else { None };
     if a.len() == 1 && blk.is_null() { return arg_err(c, "wrong number of arguments (given 1, expected 2)"); }
-    let src = c.str_bytes(slf).to_vec();
     let pat = get_pat(c, pat)?;
     let lit = if is_string(pat) { Some(c.str_bytes(pat).to_vec()) } else { None };
     let mut re = if lit.is_none() { regexp::to_regexp(c, pat)? } else { NIL };
     if lit.is_some() { compat(c, slf, pat)?; } else { check_valid(c, slf)?; }
+    let src = match early { Some(v) => v, None => c.str_bytes(slf).to_vec() };
     let enc = c.str_enc(slf);
     let mut renc = enc;
-    let src_ascii = is_ascii(c.str_bytes(slf));
+    let src_ascii = is_ascii(&src);
+    // CRuby checks the receiver after a block or a hash lookup, except in sub (which works on its copy)
+    let watch = bang || global;
     let mut srcv = NIL; // frozen copy of the source shared by every MatchData
     let mut out = vec![];
     let mut i = 0; let mut last = 0; let mut changed = false;
@@ -767,6 +785,7 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool, 
             let key = c.str_new_like(slf, src[ms..me].to_vec());
             let v = crate::hash::hash_aref(c, h, key)?;
             let sv = crate::rt::srb_tostr(c, v)?;
+            if watch { str_mod_check(c, slf, src.len())?; }
             renc = join_enc(c, renc, src_ascii, sv)?; out.extend_from_slice(c.str_bytes(sv));
         } else if let Some(r) = str_rep {
             renc = join_enc(c, renc, src_ascii, r)?; match expand_repl(c.str_bytes(r), &src, &g, re) { Ok(ex) => out.extend(ex), Err(e) => return Err(e.raise(c)) }
@@ -774,6 +793,7 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool, 
             let mstr = c.str_new_like(slf, src[ms..me].to_vec());
             let v = yield1(c, blk, mstr)?;
             if bang && c.str_bytes(slf) != &src[..] { return err(c, c.vm().c_runtime_error, "string modified"); }
+            if watch { str_mod_check(c, slf, src.len())?; }
             c.last_match = mval;
             let sv = crate::rt::srb_tostr(c, v)?;
             renc = join_enc(c, renc, src_ascii, sv)?; out.extend_from_slice(c.str_bytes(sv));
@@ -829,7 +849,7 @@ cfn!(s_scan, |c, slf, a, blk| {
             for gi in g.iter().skip(1) { let it = match gi { Some((x, y)) => c.str_new_like(slf, src[*x..*y].to_vec()), None => NIL }; c.ary_push(arr, it); }
             arr
         };
-        if !blk.is_null() { yield1(c, blk, item)?; c.last_match = m; } else { c.ary_push(out, item); }
+        if !blk.is_null() { yield1(c, blk, item)?; str_mod_check(c, slf, src.len())?; c.last_match = m; } else { c.ary_push(out, item); }
         i = if me == ms { me + if me < src.len() { char_len_at(&src, me) } else { 1 } } else { me };
     }
     if !blk.is_null() { return Ok(slf); }
@@ -1113,6 +1133,7 @@ fn scrub_impl(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> Result
             let bad = c.str_new_enc(&src[i..i + n], enc);
             let v = yield1(c, blk, bad)?;
             let s2 = expect_str(c, v)?;
+            str_mod_check(c, slf, src.len())?;
             if !en::is_valid(c.str_enc(s2), c.str_bytes(s2)) { return arg_err(c, format!("replacement must be valid byte sequence '{}'", inspect_bytes(c.str_bytes(s2), c.str_enc(s2)))); }
             out.extend_from_slice(c.str_bytes(s2));
         } else { out.extend_from_slice(&default_rep); }
@@ -1156,20 +1177,22 @@ fn split3(c: &mut Ctx, slf: Value, v: &[u8], ms: usize, me: usize) -> Value {
     c.ary_from_vec(vec![x, y, z])
 }
 cfn!(s_partition, |c, slf, a, b_| {
+    let sep = if regexp::is_regexp(a[0]) { NIL } else { expect_str(c, a[0])? };
     let v = c.str_bytes(slf).to_vec();
     let (ms, me) = if regexp::is_regexp(a[0]) {
         match regexp::search(c, a[0], slf, 0, true)? { m if m == NIL => (usize::MAX, 0), m => regexp::rmatch(m).unwrap().groups[0].unwrap() }
-    } else { let p = expect_str(c, a[0])?; match find_bytes(&v, c.str_bytes(p), 0) { Some(i) => (i, i + c.str_bytes(p).len()), None => (usize::MAX, 0) } };
+    } else { let p = sep; match find_bytes(&v, c.str_bytes(p), 0) { Some(i) => (i, i + c.str_bytes(p).len()), None => (usize::MAX, 0) } };
     if ms == usize::MAX { let (x, y, z) = (c.str_new_like(slf, v), c.str_new(b""), c.str_new(b"")); return Ok(c.ary_from_vec(vec![x, y, z])); }
     Ok(split3(c, slf, &v, ms, me))
 });
 cfn!(s_rpartition, |c, slf, a, b_| {
+    let sep = if regexp::is_regexp(a[0]) { NIL } else { expect_str(c, a[0])? };
     let v = c.str_bytes(slf).to_vec();
     let found = if regexp::is_regexp(a[0]) {
         let mut p = v.len() as i64; let mut r = None;
         while p >= 0 { if let Some(g) = regexp::rregexp(a[0]).unwrap().re.as_ref().unwrap().match_at(&v, p as usize) { r = Some(g[0].unwrap()); break; } p -= 1; }
         r
-    } else { let p = expect_str(c, a[0])?; rfind_bytes(&v, c.str_bytes(p), v.len()).map(|i| (i, i + c.str_bytes(p).len())) };
+    } else { let p = sep; rfind_bytes(&v, c.str_bytes(p), v.len()).map(|i| (i, i + c.str_bytes(p).len())) };
     match found {
         None => { let (x, y, z) = (c.str_new(b""), c.str_new(b""), c.str_new_like(slf, v)); Ok(c.ary_from_vec(vec![x, y, z])) }
         Some((ms, me)) => Ok(split3(c, slf, &v, ms, me)),
@@ -1199,10 +1222,11 @@ cfn!(s_byteslice, |c, slf, a, b_| {
     check_argc(c, a, 1, 2)?;
     let single = a.len() == 1 && !is_range(a[0]);
     let (st, ln) = if a.len() == 2 { (num_to_long(c, a[0])?, num_to_long(c, a[1])?) } else if is_range(a[0]) { match crate::range::range_beg_len(c, a[0], n, 0)? { Some(x) => x, None => return Ok(NIL) } } else { (num_to_long(c, a[0])?, 1) };
+    let n = c.str_bytes(slf).len() as i64;   // again: a conversion may have changed self
     let st = if st < 0 { st + n } else { st };
     if st < 0 || st > n || ln < 0 || (single && st == n) { return Ok(NIL); }
     let e = (st + ln).min(n);
-    Ok(c.str_new_like(slf, c.str_bytes(slf)[st as usize..e as usize].to_vec()))
+    Ok(c.str_sub(slf, st as usize..e as usize))
 });
 cfn!(s_unpack, |c, slf, a, b_| { if a.is_empty() || (a.len() == 1 && kw_arg(a).is_some()) { return argc_err(c, 0, 1, 1); } crate::builtins::misc::unpack(c, slf, a) });
 cfn!(s_unpack1, |c, slf, a, b_| { if a.is_empty() || (a.len() == 1 && kw_arg(a).is_some()) { return argc_err(c, 0, 1, 1); } let r = crate::builtins::misc::unpack(c, slf, a)?; Ok(c.ary_get(r, 0)) });
@@ -1276,9 +1300,20 @@ cfn!(s_each_codepoint, |c, slf, a, blk| {
 });
 cfn!(s_codepoints, |c, slf, a, blk| {
     check_valid(c, slf)?;
+    if !blk.is_null() {
+        let mut i = 0;
+        loop {
+            let r = c.rstring(slf);
+            if i >= r.b.len() { break; }
+            let l = enc_char_len(&r.b, i, r.enc).min(r.b.len() - i);
+            let cp = crate::builtins::encoding::char_code(r.enc, &r.b[i..i + l]);
+            yield1(c, blk, Value::fix(cp as i64))?;
+            i += l;
+        }
+        return Ok(slf);
+    }
     let out = c.ary_new();
     for (cp, _, _) in codes_of(c, slf) { c.ary_push(out, Value::fix(cp as i64)); }
-    if !blk.is_null() { let n = c.ary_len(out); for k in 0..n { yield1(c, blk, c.ary_get(out, k))?; } return Ok(slf); }
     Ok(out)
 });
 cfn!(s_squish, |c, slf, a, b_| Ok(slf));
@@ -1506,7 +1541,9 @@ cfn!(s_bytesplice, |c, slf, a, b_| {
     let (ss, sl) = if srange.is_empty() { (0, c.str_bytes(s2).len()) } else { let m = c.str_bytes(s2).len() as i64; byte_range(c, s2, srange, m)? };
     let enc = compat(c, slf, s2)?;
     check_frozen(c, slf)?;
-    let piece = c.str_bytes(s2)[ss..ss + sl].to_vec();
+    // the index conversions above may have shrunk either string
+    let Some(piece) = c.str_bytes(s2).get(ss..ss + sl).map(|x| x.to_vec()) else { return err(c, c.vm().c_index_error, format!("index {} out of string", ss)) };
+    if ds + dl > c.str_len(slf) { return err(c, c.vm().c_index_error, format!("index {} out of string", ds)); }
     let r = c.rstring_mut(slf);
     r.b.splice(ds..ds + dl, piece);
     r.enc = enc;
