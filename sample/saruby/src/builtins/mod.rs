@@ -80,6 +80,7 @@ fn blank_vm() -> Box<Vm> {
         std::ptr::write(&mut (*vp).sd_hits, 0);
         std::ptr::write(&mut (*vp).frozen_lits, HashMap::default());
         std::ptr::write(&mut (*vp).symproc_cache, HashMap::default());
+        std::ptr::write(&mut (*vp).alias_names, HashMap::default());
         std::ptr::write(&mut (*vp).data_free_hooks, vec![]);
         std::ptr::write(&mut (*vp).pinned, vec![]);
         std::ptr::write(&mut (*vp).enc_objs, vec![]);
@@ -171,10 +172,10 @@ pub fn boot() {
     vm.top_cref = new_cref(ob, std::ptr::null());
 
     exception::init_classes();
-    object::init();
+    let ids = object::init(vm);
+    vm.ids.bo_init = ids.bo_init; vm.ids.bo_eq = ids.bo_eq; vm.ids.kernel_hash = ids.kernel_hash; vm.ids.m_eqq = ids.m_eqq; vm.ids.c_new = ids.c_new;
     kernel::init(vm);
     rclass(vm.c_object).autoload.insert(crate::symbol::intern(b"ARGF"), crate::str_legacy::str_new_frozen(b"saruby/argf"));
-    module::init();
     proc::init(vm);
     exception::init();
     numeric_methods::init(vm.c_numeric, vm.c_integer, vm.c_float);

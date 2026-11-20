@@ -1,4 +1,13 @@
 // BasicObject / Object (Kernel instance methods) / Module / Class.
+// On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
+#![forbid(unsafe_code)]
+#[allow(unused_imports)]
+use crate::heap::no_legacy::*;   // the old accessors cannot be named here
+#[allow(unused_imports)]
+use crate::heap::no_legacy_hn::*;
+#[allow(unused_imports)]
+use crate::heap::no_legacy_str::*;
+use crate::heap::{is_heap_float, obj_clear_flags, obj_flags, obj_klass, obj_set_flags, obj_set_klass};
 use crate::array::*;
 use crate::builtins::kernel::*;
 use crate::hash::*;
@@ -9,8 +18,8 @@ use crate::vm::*;
 
 pub fn to_sym_arg(c: &mut Ctx, v: Value) -> Result<Sym, Esc> {
     if v.is_sym() { return Ok(v.as_sym()); }
-    if is_string(v) { return Ok(intern(str_bytes(v))); }
-    if v.is_heap() && respond_to(v, s::to_str, true) { let s2 = expect_str(c, v)?; return Ok(intern(str_bytes(s2))); }
+    if is_string(v) { return Ok(intern(c.str_bytes(v))); }
+    if v.is_heap() && respond_to(v, s::to_str, true) { let s2 = expect_str(c, v)?; return Ok(intern(c.str_bytes(s2))); }
     let ins = inspect_str(c, v)?;
     type_err(c, format!("{} is not a symbol nor a string", ins))
 }
@@ -25,12 +34,12 @@ fn bo_neq(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let r = funcall(c, s, crate::symbol::s::eq, &[a[0]], std::ptr::null())?;
     Ok(Value::bool(r.falsy()))
 }
-fn bo_id(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(crate::bignum::int_from_i128(object_id(s) as i128)) }
+fn bo_id(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.int_from_i128(object_id(s) as i128)) }
 fn bo_send(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     if a.is_empty() { return arg_err(c, "no method name given"); }
     let mid = to_sym_arg(c, a[0])?;
     let kw = kw_arg(a).is_some();
-    if unsafe { REFINEMENTS_ON } {
+    if c.refinements_on() {
         if let Some(r) = funcall_refined(c, std::ptr::null(), slf, mid, &a[1..], b, CF_FCALL | if kw { CF_KW } else { 0 }) { return r; }
     }
     funcall_kw(c, slf, mid, &a[1..], b, kw)
@@ -39,7 +48,7 @@ fn k_public_send(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     if a.is_empty() { return arg_err(c, "no method name given"); }
     let mid = to_sym_arg(c, a[0])?;
     let kw = kw_arg(a).is_some();
-    if unsafe { REFINEMENTS_ON } {
+    if c.refinements_on() {
         if let Some(r) = funcall_refined(c, std::ptr::null(), slf, mid, &a[1..], b, if kw { CF_KW } else { 0 }) { return r; }
     }
     funcall_flags(c, slf, mid, &a[1..], b, if kw { CF_KW } else { 0 })
@@ -48,7 +57,7 @@ fn bo_instance_eval(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV
     if b.is_null() {
         if a.is_empty() { return argc_err(c, 0, 1, 3); }
         let src = expect_str(c, a[0])?;
-        let bytes = rstr(src).b.to_vec();
+        let bytes = c.str_bytes(src).to_vec();
         let file: &'static str = if a.len() > 1 { Box::leak(to_rstring(c, a[1])?.into_boxed_str()) } else { "(eval)" };
         return crate::builtins::binding::eval_with_self(c, slf, &bytes, file, if a.len() > 2 { a[2].as_fix() as i32 } else { 1 });
     }
@@ -56,7 +65,7 @@ fn bo_instance_eval(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV
     yield_with_self(c, b, &[slf], slf, dc)
 }
 fn bo_instance_exec(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
-    if b.is_null() { return err(c, vm().c_local_jump_error, "no block given (yield)"); }
+    if b.is_null() { return err(c, c.vm().c_local_jump_error, "no block given (yield)"); }
     let dc = if slf.is_heap() { singleton_class(slf) } else { NIL };
     yield_with_self(c, b, a, slf, dc)
 }
@@ -71,12 +80,12 @@ fn bo_singleton_method_added(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const B
 
 fn k_class(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(real_class_of(slf)) }
 fn k_singleton_class(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    if slf.is_fixnum() || slf.is_sym() || slf.is_flonum() || is_bignum(slf) || (slf.is_heap() && matches!(obj(slf).body, Body::Float(_))) { return type_err(c, "can't define singleton"); }
+    if slf.is_fixnum() || slf.is_sym() || slf.is_flonum() || is_bignum(slf) || is_heap_float(slf) { return type_err(c, "can't define singleton"); }
     Ok(singleton_class(slf))
 }
 fn k_frozen(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(is_frozen(slf))) }
 fn k_freeze(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    if slf.is_heap() { obj(slf).flags |= FL_FROZEN; obj(slf).flags &= !FL_CHILLED; }
+    if slf.is_heap() { obj_set_flags(slf, FL_FROZEN); obj_clear_flags(slf, FL_CHILLED); }
     Ok(slf)
 }
 fn k_nil_p(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(slf == NIL)) }
@@ -96,21 +105,21 @@ fn k_cmp(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(if r.truthy() { Value::fix(0) } else { NIL })
 }
 fn k_eql(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(slf == a[0])) }
-fn k_to_s(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    if slf == vm().main_obj { return Ok(str_new(b"main")); }
-    Ok(str_new(any_to_s_str(slf).as_bytes()))
+fn k_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    if slf == c.vm().main_obj { return Ok(c.str_new(b"main")); }
+    Ok(c.str_new(any_to_s_str(slf).as_bytes()))
 }
 pub fn k_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    if slf == vm().main_obj { return Ok(str_new(b"main")); }
+    if slf == c.vm().main_obj { return Ok(c.str_new(b"main")); }
     let ivs = ivar_list(slf);
     let ivs: Vec<(Sym, Value)> = ivs.into_iter().filter(|(n, _)| sym_bytes(*n).first() == Some(&b'@')).collect();
     let k = real_class_of(slf);
-    if ivs.is_empty() { return Ok(str_new(format!("#<{}:{:#018x}>", class_path(k), slf.raw()).as_bytes())); }
-    if !recursion_enter(slf, s::inspect) { return Ok(str_new(format!("#<{}:{:#018x} ...>", class_path(k), slf.raw()).as_bytes())); }
+    if ivs.is_empty() { return Ok(c.str_new(format!("#<{}:{:#018x}>", class_path(k), slf.raw()).as_bytes())); }
+    if !recursion_enter(slf, s::inspect) { return Ok(c.str_new(format!("#<{}:{:#018x} ...>", class_path(k), slf.raw()).as_bytes())); }
     let mut out = format!("#<{}:{:#018x}", class_path(k), slf.raw());
-    let keep = ary_new();
+    let keep = c.ary_new();
     for (i, (n, v)) in ivs.iter().enumerate() {
-        ary_push(keep, *v);
+        c.ary_push(keep, *v);
         let r = inspect_str(c, *v);
         let r = match r { Ok(r) => r, Err(e) => { recursion_leave(slf, s::inspect); return Err(e); } };
         out.push_str(if i == 0 { " " } else { ", " });
@@ -118,7 +127,7 @@ pub fn k_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV 
     }
     recursion_leave(slf, s::inspect);
     out.push('>');
-    Ok(str_new(out.as_bytes()))
+    Ok(c.str_new(out.as_bytes()))
 }
 fn k_is_a(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if !is_class_or_module(a[0]) { return type_err(c, "class or module required"); }
@@ -133,9 +142,9 @@ fn k_respond_to(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let mid = to_sym_arg(c, a[0])?;
     let priv_ = a.len() > 1 && a[1].truthy();
     if respond_to(slf, mid, priv_) { return Ok(TRUE); }
-    if unsafe { REFINEMENTS_ON } {
-        let me = lookup_method_refined(unsafe { (*c.frame).cref() }, class_of(slf), mid);
-        if !me.is_null() && (priv_ || unsafe { (*me).visi } == VISI_PUBLIC) { return Ok(TRUE); }
+    if c.refinements_on() {
+        let me = lookup_method_refined(cur_cref(c), class_of(slf), mid);
+        if !me.is_null() && (priv_ || me_visi(c, me) == VISI_PUBLIC) { return Ok(TRUE); }
     }
     let rm = lookup_method(class_of(slf), s::respond_to_missing_p);
     if !rm.is_null() {
@@ -153,7 +162,7 @@ fn k_ivar_get(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 fn check_ivar_name(c: &mut Ctx, n: Sym) -> Result<(), Esc> {
     let b = sym_bytes(n);
     if b.len() < 2 || b[0] != b'@' || b[1] == b'@' || b[1].is_ascii_digit() {
-        let e = make_name_error(c, vm().c_name_error, &format!("'{}' is not allowed as an instance variable name", sym_str(n)), Value::sym(n), NIL)?;
+        let e = make_name_error(c, c.vm().c_name_error, &format!("'{}' is not allowed as an instance variable name", sym_str(n)), Value::sym(n), NIL)?;
         return Err(raise_exc(c, e));
     }
     Ok(())
@@ -168,9 +177,9 @@ fn k_ivar_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV 
     check_ivar_name(c, n)?;
     Ok(Value::bool(ivar_defined(slf, n)))
 }
-fn k_ivars(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let a = ary_new();
-    for (n, _) in ivar_list(slf) { if sym_bytes(n).first() == Some(&b'@') { ary_push(a, Value::sym(n)); } }
+fn k_ivars(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    let a = c.ary_new();
+    for (n, _) in ivar_list(slf) { if sym_bytes(n).first() == Some(&b'@') { c.ary_push(a, Value::sym(n)); } }
     Ok(a)
 }
 fn k_remove_ivar(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -180,7 +189,7 @@ fn k_remove_ivar(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
         Some(v) => Ok(v),
         None => {
             let ins = inspect_str(c, slf)?;
-            let e = make_name_error(c, vm().c_name_error, &format!("instance variable {} not defined for {}", sym_str(n), ins), Value::sym(n), slf)?;
+            let e = make_name_error(c, c.vm().c_name_error, &format!("instance variable {} not defined for {}", sym_str(n), ins), Value::sym(n), slf)?;
             Err(raise_exc(c, e))
         }
     }
@@ -194,14 +203,14 @@ fn k_itself(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok
 
 pub fn obj_dup(c: &mut Ctx, slf: Value, clone: bool, freeze: Option<bool>) -> RV {
     if !slf.is_heap() { return Ok(slf); }
-    let o = obj(slf);
-    let body = match &o.body {
+    // the copied payload is built before the allocation; slf (a local) keeps its Values alive
+    let body = match c.body_of(slf) {
         Body::Object(iv) => Body::Object(iv.clone()),
         Body::String(s) => Body::String(RString { b: s.b.clone(), enc: s.enc }),
         Body::Array(a) => Body::Array(a.clone()),
         Body::Hash(_) => {
-            let n = hash_dup(slf);
-            obj(n).klass = real_class_of(slf);
+            let n = c.hash_dup(slf);
+            obj_set_klass(n, real_class_of(slf));
             return finish_dup(c, slf, n, clone, freeze);
         }
         Body::Float(f) => Body::Float(*f),
@@ -209,8 +218,8 @@ pub fn obj_dup(c: &mut Ctx, slf: Value, clone: bool, freeze: Option<bool>) -> RV
         Body::Range(a, b, x) => Body::Range(*a, *b, *x),
         Body::Proc(p) => Body::Proc(Box::new(ProcData { blk: p.blk, is_lambda: p.is_lambda, from_method: p.from_method })),
         Body::Method(m) => Body::Method(Box::new(MethodObj { recv: m.recv, me: m.me, name: m.name, unbound: m.unbound, owner: m.owner })),
-        Body::Class(cd) => {
-            let n = crate::builtins::module::clone_class(c, slf, cd)?;
+        Body::Class(_) => {
+            let n = crate::builtins::module::clone_class(c, slf)?;
             return finish_dup(c, slf, n, clone, freeze);
         }
         Body::Env(v, p) => Body::Env(v.clone(), *p),
@@ -220,30 +229,31 @@ pub fn obj_dup(c: &mut Ctx, slf: Value, clone: bool, freeze: Option<bool>) -> RV
         }
         Body::Free(_) => unreachable!(),
     };
-    let n = crate::gc::alloc(real_class_of(slf), body);
-    if let Body::Proc(p) = &mut obj(n).body { p.blk.proc_val = n; }
+    let n = c.alloc(real_class_of(slf), body);
+    if is_proc(n) { c.proc_data_mut(n).blk.proc_val = n; }
     finish_dup(c, slf, n, clone, freeze)
 }
 
 fn finish_dup(c: &mut Ctx, slf: Value, n: Value, clone: bool, freeze: Option<bool>) -> RV {
-    if obj(slf).flags & FL_EXIVAR != 0 { for (k, v) in ivar_list(slf) { ivar_set_raw(n, k, v); } }
+    if obj_flags(slf) & FL_EXIVAR != 0 { for (k, v) in ivar_list(slf) { ivar_set_raw(n, k, v); } }
     if clone {
         // singleton class copy
-        let k = obj(slf).klass;
-        if rclass(k).is_singleton && !is_class_or_module(slf) {
+        let k = obj_klass(slf);
+        if c.class(k).is_singleton && !is_class_or_module(slf) {
             let sk = singleton_class(n);
-            let mt: Vec<(Sym, *const MethodEntry)> = rclass(k).mtbl.iter().map(|(a, b)| (*a, *b)).collect();
-            for (m, me) in mt { rclass(sk).mtbl.insert(m, me); }
-            let inc = rclass(k).includes.clone();
+            let mt: Vec<(Sym, *const MethodEntry)> = c.class(k).mtbl.iter().map(|(a, b)| (*a, *b)).collect();
+            let nt = &mut c.class_mut(sk).mtbl;
+            for (m, me) in mt { nt.insert(m, me); }
+            let inc = c.class(k).includes.clone();
             for m in inc { include_module(sk, m); }
         }
     }
-    if obj(slf).flags & FL_KWHASH != 0 { obj(n).flags |= FL_KWHASH; }
+    if obj_flags(slf) & FL_KWHASH != 0 { obj_set_flags(n, FL_KWHASH); }
     let mid = if clone { s::mid_initialize_clone } else { s::mid_initialize_dup };
     let me = lookup_method(class_of(n), mid);
-    if !me.is_null() && !matches!(unsafe { (*me).kind }, MKind::Cfunc(..)) {
+    if !me.is_null() && !matches!(me_kind(c, me), Some(MKind::Cfunc(..))) {
         if clone && freeze.is_some() {
-            let h = hash_new();
+            let h = c.hash_new();
             hash_aset(c, h, crate::vm::sym_value("freeze"), Value::bool(freeze.unwrap()))?;
             funcall_kw(c, n, mid, &[slf, h], std::ptr::null(), true)?;
         } else { funcall(c, n, mid, &[slf], std::ptr::null())?; }
@@ -251,8 +261,8 @@ fn finish_dup(c: &mut Ctx, slf: Value, n: Value, clone: bool, freeze: Option<boo
         funcall(c, n, s::initialize_copy, &[slf], std::ptr::null())?;
     }
     if clone {
-        let fz = freeze.unwrap_or(obj(slf).flags & FL_FROZEN != 0);
-        if fz { obj(n).flags |= FL_FROZEN; } else { obj(n).flags &= !FL_FROZEN; }
+        let fz = freeze.unwrap_or(obj_flags(slf) & FL_FROZEN != 0);
+        if fz { obj_set_flags(n, FL_FROZEN); } else { obj_clear_flags(n, FL_FROZEN); }
     }
     Ok(n)
 }
@@ -266,7 +276,7 @@ fn k_clone(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
             if v != NIL { fz = Some(v == TRUE); }
         }
     }
-    if !slf.is_heap() || matches!(obj(slf).body, Body::Float(_) | Body::Bignum(_)) {
+    if !slf.is_heap() || is_heap_float(slf) || is_bignum(slf) {
         if fz == Some(false) { return arg_err(c, format!("can't unfreeze {}", class_path(real_class_of(slf)))); }
         return Ok(slf);
     }
@@ -285,7 +295,7 @@ fn k_init_dup(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 fn k_extend(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
     for &m in a.iter().rev() {
-        if !is_class_or_module(m) || !rclass(m).is_module {
+        if !is_class_or_module(m) || !c.class(m).is_module {
             return type_err(c, format!("wrong argument type {} (expected Module)", class_name_for_err(m)));
         }
         funcall(c, m, intern(b"extend_object"), &[slf], std::ptr::null())?;
@@ -298,62 +308,77 @@ fn m_extend_object(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
     let k = singleton_class(a[0]);
     if k == NIL { return type_err(c, "can't define singleton"); }
     include_module(k, slf);
-    rclass(slf).extended_by.push(a[0]);
+    c.class_mut(slf).extended_by.push(a[0]);
     Ok(a[0])
 }
 fn k_display(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let s = to_s_value(c, slf)?;
-    let b = rstr(s).b.to_vec();
+    let b = c.str_bytes(s).to_vec();
     stdout_write(c, &b)?;
     Ok(NIL)
 }
 fn k_hash(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { obj_hash(c, slf, a, b) }
 
-pub fn method_list(slf_class: Value, filter: impl Fn(u8) -> bool, inherit: bool) -> Value {
-    let a = ary_new();
+/// (name, visibility) of the defined (not undef'ed) entries of class `k`.
+fn mtbl_entries(c: &Ctx, k: Value) -> Vec<(Sym, u8)> {
+    c.class(k).mtbl.iter().filter_map(|(n, me)| c.me_ref(*me).filter(|m| !matches!(m.kind, MKind::Undef)).map(|m| (*n, m.visi))).collect()
+}
+fn me_kind(c: &Ctx, me: *const MethodEntry) -> Option<MKind> { c.me_ref(me).map(|m| m.kind) }
+fn me_owner(c: &Ctx, me: *const MethodEntry) -> Value { c.me_ref(me).map_or(NIL, |m| m.owner) }
+fn me_visi(c: &Ctx, me: *const MethodEntry) -> u8 { c.me_ref(me).map_or(VISI_PUBLIC, |m| m.visi) }
+/// A copy of an entry, to define under another owner / name.
+fn me_copy(c: &Ctx, me: *const MethodEntry) -> Option<MethodEntry> {
+    c.me_ref(me).map(|o| MethodEntry { name: o.name, owner: o.owner, visi: o.visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref })
+}
+/// The lexical scope the running builtin was called under.
+fn cur_cref(c: &Ctx) -> *const Cref { c.cur_frame().map_or(std::ptr::null(), |f| f.cref()) }
+fn caller_cref(c: &Ctx) -> *const Cref { c.caller_frame().map_or(std::ptr::null(), |f| f.cref()) }
+
+pub fn method_list(c: &mut Ctx, slf_class: Value, filter: impl Fn(u8) -> bool, inherit: bool) -> Value {
+    let a = c.ary_new();
     let mut seen = std::collections::HashSet::new();
     let anc = ancestors(slf_class).clone();
     for k in anc {
-        if !inherit && k != slf_class && !(rclass(k).is_singleton) && !rclass(slf_class).is_singleton { break; }
-        let mut names: Vec<(Sym, *const MethodEntry)> = rclass(k).mtbl.iter().map(|(a, b)| (*a, *b)).collect();
+        if !inherit && k != slf_class && !(c.class(k).is_singleton) && !c.class(slf_class).is_singleton { break; }
+        let mut names: Vec<(Sym, *const MethodEntry)> = c.class(k).mtbl.iter().map(|(a, b)| (*a, *b)).collect();
         names.sort_by_key(|x| x.0);
         for (n, me) in names {
             if !seen.insert(n) { continue; }
-            let me = unsafe { &*me };
+            let Some(me) = c.me_ref(me) else { continue };
             if matches!(me.kind, MKind::Undef) { continue; }
-            if filter(me.visi) { ary_push(a, Value::sym(n)); }
+            if filter(me.visi) { c.ary_push(a, Value::sym(n)); }
         }
         if !inherit && k == slf_class { break; }
     }
     a
 }
 
-fn k_methods(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn k_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let all = a.first().map(|v| v.truthy()).unwrap_or(true);
-    if !all { return k_singleton_methods(_c, slf, &[], _b); }
-    Ok(method_list(class_of(slf), |v| v != VISI_PRIVATE, true))
+    if !all { return k_singleton_methods(c, slf, &[], _b); }
+    Ok(method_list(c, class_of(slf), |v| v != VISI_PRIVATE, true))
 }
-fn k_public_methods(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { Ok(method_list(class_of(slf), |v| v == VISI_PUBLIC, a.first().is_none_or(|v| v.truthy()))) }
-fn k_private_methods(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(method_list(class_of(slf), |v| v == VISI_PRIVATE, true)) }
-fn k_protected_methods(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(method_list(class_of(slf), |v| v == VISI_PROTECTED, true)) }
-fn k_singleton_methods(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let a = ary_new();
+fn k_public_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { Ok(method_list(c, class_of(slf), |v| v == VISI_PUBLIC, a.first().is_none_or(|v| v.truthy()))) }
+fn k_private_methods(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(method_list(c, class_of(slf), |v| v == VISI_PRIVATE, true)) }
+fn k_protected_methods(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(method_list(c, class_of(slf), |v| v == VISI_PROTECTED, true)) }
+fn k_singleton_methods(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    let a = c.ary_new();
     if !slf.is_heap() { return Ok(a); }
-    let k = obj(slf).klass;
-    if !rclass(k).is_singleton { return Ok(a); }
-    let mut names: Vec<(Sym, *const MethodEntry)> = rclass(k).mtbl.iter().map(|(a, b)| (*a, *b)).collect();
+    let k = obj_klass(slf);
+    if !c.class(k).is_singleton { return Ok(a); }
+    let mut names: Vec<(Sym, *const MethodEntry)> = c.class(k).mtbl.iter().map(|(a, b)| (*a, *b)).collect();
     names.sort_by_key(|x| x.0);
-    for (n, me) in names { if unsafe { (*me).visi } != VISI_PRIVATE && !matches!(unsafe { (*me).kind }, MKind::Undef) { ary_push(a, Value::sym(n)); } }
-    for &m in rclass(k).includes.clone().iter() {
-        for (n, me) in rclass(m).mtbl.iter() { if unsafe { (**me).visi } == VISI_PUBLIC && !rary(a).contains(&Value::sym(*n)) { ary_push(a, Value::sym(*n)); } }
+    for (n, me) in names { if me_visi(c, me) != VISI_PRIVATE && !matches!(me_kind(c, me), Some(MKind::Undef)) { c.ary_push(a, Value::sym(n)); } }
+    for &m in c.class(k).includes.clone().iter() {
+        for (n, v) in mtbl_entries(c, m) { if v == VISI_PUBLIC && !c.ary(a).contains(&Value::sym(n)) { c.ary_push(a, Value::sym(n)); } }
     }
     if is_class_or_module(slf) {
         // class methods inherited through the metaclass chain
-        let mut sup = rclass(slf).superclass;
+        let mut sup = c.class(slf).superclass;
         while sup != NIL {
-            let mk = obj(sup).klass;
-            if rclass(mk).is_singleton { for (n, me) in rclass(mk).mtbl.iter() { if unsafe { (**me).visi } == VISI_PUBLIC && !rary(a).contains(&Value::sym(*n)) { ary_push(a, Value::sym(*n)); } } }
-            sup = rclass(sup).superclass;
+            let mk = obj_klass(sup);
+            if c.class(mk).is_singleton { for (n, v) in mtbl_entries(c, mk) { if v == VISI_PUBLIC && !c.ary(a).contains(&Value::sym(n)) { c.ary_push(a, Value::sym(n)); } } }
+            sup = c.class(sup).superclass;
         }
     }
     Ok(a)
@@ -369,11 +394,11 @@ fn k_public_method(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
 fn k_singleton_method(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let mid = to_sym_arg(c, a[0])?;
     if slf.is_heap() {
-        let k = obj(slf).klass;
-        if rclass(k).is_singleton && rclass(k).mtbl.contains_key(&mid) { return crate::builtins::proc::method_object(c, slf, mid, false); }
+        let k = obj_klass(slf);
+        if c.class(k).is_singleton && c.class(k).mtbl.contains_key(&mid) { return crate::builtins::proc::method_object(c, slf, mid, false); }
     }
     let ins = inspect_str(c, slf)?;
-    let e = make_name_error(c, vm().c_name_error, &format!("undefined singleton method '{}' for {}", sym_str(mid), ins), Value::sym(mid), slf)?;
+    let e = make_name_error(c, c.vm().c_name_error, &format!("undefined singleton method '{}' for {}", sym_str(mid), ins), Value::sym(mid), slf)?;
     Err(raise_exc(c, e))
 }
 fn k_define_singleton_method(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
@@ -390,16 +415,16 @@ fn k_enum_for(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
 // ---- Module --------------------------------------------------------------------------------
 
 pub fn call_method_added(c: &mut Ctx, klass: Value, mid: Sym) -> Result<(), Esc> {
-    if rclass(klass).is_singleton {
-        let att = rclass(klass).attached;
+    if c.class(klass).is_singleton {
+        let att = c.class(klass).attached;
         let me = lookup_method(class_of(att), s::singleton_method_added);
-        if !me.is_null() && unsafe { (*me).owner } != vm().c_basic_object {
+        if !me.is_null() && me_owner(c, me) != c.vm().c_basic_object {
             funcall(c, att, s::singleton_method_added, &[Value::sym(mid)], std::ptr::null())?;
         }
         return Ok(());
     }
     let me = lookup_method(class_of(klass), s::method_added);
-    if !me.is_null() && unsafe { (*me).owner } != vm().c_module {
+    if !me.is_null() && me_owner(c, me) != c.vm().c_module {
         funcall(c, klass, s::method_added, &[Value::sym(mid)], std::ptr::null())?;
     }
     Ok(())
@@ -407,34 +432,31 @@ pub fn call_method_added(c: &mut Ctx, klass: Value, mid: Sym) -> Result<(), Esc>
 
 pub fn call_inherited(c: &mut Ctx, sup: Value, k: Value) -> Result<(), Esc> {
     let me = lookup_method(class_of(sup), s::inherited);
-    if !me.is_null() && unsafe { (*me).owner } != vm().c_class {
+    if !me.is_null() && me_owner(c, me) != c.vm().c_class {
         funcall(c, sup, s::inherited, &[k], std::ptr::null())?;
     }
     Ok(())
 }
 
-/// Alias entries keep the original name; __callee__ finds the alias name here.
-static mut ALIAS_NAMES: Option<std::collections::HashMap<usize, Sym>> = None;
-pub fn callee_name(me: *const MethodEntry) -> Sym {
-    let t = unsafe { &*std::ptr::addr_of!(ALIAS_NAMES) };
-    match t.as_ref().and_then(|t| t.get(&(me as usize))) { Some(&n) => n, None => unsafe { (*me).name } }
+/// Alias entries keep the original name; __callee__ finds the alias name in Vm.alias_names.
+pub fn callee_name(c: &Ctx, me: *const MethodEntry) -> Sym {
+    match c.vm().alias_names.get(&(me as usize)) { Some(&n) => n, None => c.me_ref(me).map_or(Sym(0), |m| m.name) }
 }
 
 pub fn alias_method(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) -> Result<(), Esc> {
     let mut me = search_method(klass, oldname);
-    if (me.is_null() || matches!(unsafe { (*me).kind }, MKind::Undef)) && rclass(klass).is_module {
-        me = search_method(vm().c_object, oldname);
+    if (me.is_null() || matches!(me_kind(c, me), Some(MKind::Undef))) && c.class(klass).is_module {
+        me = search_method(c.vm().c_object, oldname);
     }
-    if me.is_null() || matches!(unsafe { (*me).kind }, MKind::Undef) {
-        let msg = format!("undefined method '{}' for {} '{}'", sym_str(oldname), if rclass(klass).is_module { "module" } else { "class" }, class_path(klass));
-        let e = make_name_error(c, vm().c_name_error, &msg, Value::sym(oldname), klass)?;
+    if me.is_null() || matches!(me_kind(c, me), Some(MKind::Undef)) {
+        let msg = format!("undefined method '{}' for {} '{}'", sym_str(oldname), if c.class(klass).is_module { "module" } else { "class" }, class_path(klass));
+        let e = make_name_error(c, c.vm().c_name_error, &msg, Value::sym(oldname), klass)?;
         return Err(raise_exc(c, e));
     }
-    let o = unsafe { &*me };
-    let visi = if rclass(klass).is_singleton { o.visi } else { o.visi };
-    let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: o.owner, visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
-    let _ = visi;
-    if newname != o.name { unsafe { (*std::ptr::addr_of_mut!(ALIAS_NAMES)).get_or_insert_with(Default::default).insert(n as usize, newname); } }
+    let Some(o) = me_copy(c, me) else { return Ok(()) };
+    let oname = o.name;
+    let n = Box::into_raw(Box::new(o)) as *const MethodEntry;
+    if newname != oname { c.vm_mut().alias_names.insert(n as usize, newname); }
     crate::rt::note_redefinition(klass, newname);
     define_method_me(klass, newname, n);
     call_method_added(c, klass, newname)?;
@@ -444,10 +466,10 @@ pub fn alias_method(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) -> Re
 pub fn undef_method(c: &mut Ctx, klass: Value, mid: Sym) -> Result<(), Esc> {
     let mut me = search_method(klass, mid);
     // a refinement may undef a method of the class it refines
-    if me.is_null() && rclass(klass).refined { me = search_method(rclass(klass).attached, mid); }
-    if me.is_null() || matches!(unsafe { (*me).kind }, MKind::Undef) {
-        let msg = format!("undefined method '{}' for {} '{}'", sym_str(mid), if rclass(klass).is_module { "module" } else { "class" }, class_path(klass));
-        let e = make_name_error(c, vm().c_name_error, &msg, Value::sym(mid), klass)?;
+    if me.is_null() && c.class(klass).refined { me = search_method(c.class(klass).attached, mid); }
+    if me.is_null() || matches!(me_kind(c, me), Some(MKind::Undef)) {
+        let msg = format!("undefined method '{}' for {} '{}'", sym_str(mid), if c.class(klass).is_module { "module" } else { "class" }, class_path(klass));
+        let e = make_name_error(c, c.vm().c_name_error, &msg, Value::sym(mid), klass)?;
         return Err(raise_exc(c, e));
     }
     define_method_me(klass, mid, new_me(mid, klass, VISI_PUBLIC, MKind::Undef));
@@ -468,15 +490,15 @@ fn m_undef_method(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV 
 fn m_remove_method(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     for &x in a {
         let m = to_sym_arg(c, x)?;
-        if rclass(slf).mtbl.remove(&m).is_none() {
+        if c.class_mut(slf).mtbl.remove(&m).is_none() {
             let msg = format!("method '{}' not defined in {}", sym_str(m), class_path(slf));
-            let e = make_name_error(c, vm().c_name_error, &msg, Value::sym(m), slf)?;
+            let e = make_name_error(c, c.vm().c_name_error, &msg, Value::sym(m), slf)?;
             return Err(raise_exc(c, e));
         }
-        bump_method_serial(); vm().mcache.clear();
+        bump_method_serial(); c.vm_mut().mcache.clear();
         crate::rt::note_redefinition(slf, m);
-        if rclass(slf).is_singleton {
-            let att = rclass(slf).attached;
+        if c.class(slf).is_singleton {
+            let att = c.class(slf).attached;
             if respond_to(att, intern(b"singleton_method_removed"), true) { funcall(c, att, intern(b"singleton_method_removed"), &[Value::sym(m)], std::ptr::null())?; }
         } else if respond_to(slf, intern(b"method_removed"), true) {
             funcall(c, slf, intern(b"method_removed"), &[Value::sym(m)], std::ptr::null())?;
@@ -492,7 +514,7 @@ fn attr_names(c: &mut Ctx, a: &[Value]) -> Result<Vec<Sym>, Esc> {
         let b = sym_bytes(n);
         let ok = !b.is_empty() && (b[0].is_ascii_alphabetic() || b[0] == b'_' || b[0] >= 0x80) && b.iter().all(|&x| x.is_ascii_alphanumeric() || x == b'_' || x >= 0x80 || x == b'?' || x == b'!');
         if !ok || b.ends_with(b"?") || b.ends_with(b"!") {
-            let e = make_name_error(c, vm().c_name_error, &format!("invalid attribute name '{}'", sym_str(n)), Value::sym(n), NIL)?;
+            let e = make_name_error(c, c.vm().c_name_error, &format!("invalid attribute name '{}'", sym_str(n)), Value::sym(n), NIL)?;
             return Err(raise_exc(c, e));
         }
         v.push(n);
@@ -511,33 +533,32 @@ fn def_attr(c: &mut Ctx, k: Value, n: Sym, reader: bool, writer: bool) -> Result
     Ok(())
 }
 fn cur_default_visi(c: &Ctx) -> u8 {
-    let f = c.frame();
-    let p = unsafe { &*f.prev };
+    let Some(p) = c.caller_frame() else { return VISI_PUBLIC };
     if p.kind == FK_CLASS { if p.visi == VISI_MODFUNC { VISI_PRIVATE } else { p.visi } } else { VISI_PUBLIC }
 }
 fn m_attr_reader(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let names = attr_names(c, a)?;
-    let out = ary_new();
-    for n in names { def_attr(c, slf, n, true, false)?; ary_push(out, Value::sym(n)); }
+    let out = c.ary_new();
+    for n in names { def_attr(c, slf, n, true, false)?; c.ary_push(out, Value::sym(n)); }
     Ok(out)
 }
 fn m_attr_writer(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let names = attr_names(c, a)?;
-    let out = ary_new();
-    for n in names { def_attr(c, slf, n, false, true)?; ary_push(out, Value::sym(intern(format!("{}=", sym_str(n)).as_bytes()))); }
+    let out = c.ary_new();
+    for n in names { def_attr(c, slf, n, false, true)?; c.ary_push(out, Value::sym(intern(format!("{}=", sym_str(n)).as_bytes()))); }
     Ok(out)
 }
 fn m_attr_accessor(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let names = attr_names(c, a)?;
-    let out = ary_new();
-    for n in names { def_attr(c, slf, n, true, true)?; ary_push(out, Value::sym(n)); ary_push(out, Value::sym(intern(format!("{}=", sym_str(n)).as_bytes()))); }
+    let out = c.ary_new();
+    for n in names { def_attr(c, slf, n, true, true)?; c.ary_push(out, Value::sym(n)); c.ary_push(out, Value::sym(intern(format!("{}=", sym_str(n)).as_bytes()))); }
     Ok(out)
 }
 fn m_attr(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     if a.len() == 2 && (a[1] == TRUE || a[1] == FALSE) {
         let n = to_sym_arg(c, a[0])?;
         def_attr(c, slf, n, true, a[1] == TRUE)?;
-        return Ok(ary_new_from(&[Value::sym(n)]));
+        return Ok(c.ary_new_from(&[Value::sym(n)]));
     }
     m_attr_reader(c, slf, a, b)
 }
@@ -545,25 +566,25 @@ fn m_attr(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
 /// private/public/protected/module_function with or without names.
 fn set_visibility(c: &mut Ctx, slf: Value, a: &[Value], visi: u8) -> RV {
     if a.is_empty() {
-        let f = c.frame();
-        let p = unsafe { &mut *f.prev };
         // a class_eval / Class.new body block keeps its default for the rest of that block
-        if p.kind == FK_CLASS || p.kind == FK_TOP || p.kind == FK_EVAL || (p.kind == FK_BLOCK && p.defined_class() == slf) { p.visi = visi; }
+        let set = c.caller_frame().is_some_and(|p| p.kind == FK_CLASS || p.kind == FK_TOP || p.kind == FK_EVAL || (p.kind == FK_BLOCK && p.defined_class() == slf));
+        if set { c.set_caller_visi(visi); }
         return Ok(NIL);
     }
-    let list: Vec<Value> = if a.len() == 1 && is_array(a[0]) { rary(a[0]).clone() } else { a.to_vec() };
+    let list: Vec<Value> = if a.len() == 1 && is_array(a[0]) { c.ary(a[0]).to_vec() } else { a.to_vec() };
+    let keep = c.ary_new_from(&list);   // to_sym_arg may run Ruby code; list is not scanned
     for &x in &list {
         let m = to_sym_arg(c, x)?;
         let me = search_method(slf, m);
         // a refinement changes the visibility of the refined class's method
-        let me = if me.is_null() && rclass(slf).refined { search_method(rclass(slf).attached, m) } else { me };
-        let me = if me.is_null() && rclass(slf).is_module { search_method(vm().c_object, m) } else { me };
-        if me.is_null() || matches!(unsafe { (*me).kind }, MKind::Undef) {
-            let msg = format!("undefined method '{}' for {} '{}'", sym_str(m), if rclass(slf).is_module { "module" } else { "class" }, class_path(slf));
-            let e = make_name_error(c, vm().c_name_error, &msg, Value::sym(m), slf)?;
+        let me = if me.is_null() && c.class(slf).refined { search_method(c.class(slf).attached, m) } else { me };
+        let me = if me.is_null() && c.class(slf).is_module { search_method(c.vm().c_object, m) } else { me };
+        if me.is_null() || matches!(me_kind(c, me), Some(MKind::Undef)) {
+            let msg = format!("undefined method '{}' for {} '{}'", sym_str(m), if c.class(slf).is_module { "module" } else { "class" }, class_path(slf));
+            let e = make_name_error(c, c.vm().c_name_error, &msg, Value::sym(m), slf)?;
             return Err(raise_exc(c, e));
         }
-        let o = unsafe { &*me };
+        let Some(o) = me_copy(c, me) else { continue };
         if visi == VISI_MODFUNC {
             let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi: VISI_PRIVATE, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
             define_method_me(slf, m, n);
@@ -572,23 +593,24 @@ fn set_visibility(c: &mut Ctx, slf: Value, a: &[Value], visi: u8) -> RV {
             define_method_me(sk, m, n2);
             continue;
         }
-        if o.owner == slf { unsafe { (*(me as *mut MethodEntry)).visi = visi; } bump_method_serial(); vm().mcache.clear(); }
+        if o.owner == slf { c.me_set_visi(me, visi); bump_method_serial(); c.vm_mut().mcache.clear(); }
         else {
             let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
             define_method_me(slf, m, n);
         }
     }
-    Ok(if a.len() == 1 { a[0] } else { ary_new_from(a) })
+    std::hint::black_box(keep);
+    Ok(if a.len() == 1 { a[0] } else { c.ary_new_from(a) })
 }
 fn m_private(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { set_visibility(c, slf, a, VISI_PRIVATE) }
 fn m_public(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { set_visibility(c, slf, a, VISI_PUBLIC) }
 fn m_protected(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { set_visibility(c, slf, a, VISI_PROTECTED) }
 fn m_module_function(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    if !rclass(slf).is_module { return type_err(c, "module_function must be called for modules"); }
+    if !c.class(slf).is_module { return type_err(c, "module_function must be called for modules"); }
     set_visibility(c, slf, a, VISI_MODFUNC)
 }
-fn top_private(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV { set_visibility(c, vm().c_object, a, VISI_PRIVATE) }
-fn top_public(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV { set_visibility(c, vm().c_object, a, VISI_PUBLIC) }
+fn top_private(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV { set_visibility(c, c.vm().c_object, a, VISI_PRIVATE) }
+fn top_public(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV { set_visibility(c, c.vm().c_object, a, VISI_PUBLIC) }
 fn m_private_class_method(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let k = singleton_class(slf); set_visibility(c, k, a, VISI_PRIVATE)?; Ok(NIL) }
 fn m_public_class_method(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let k = singleton_class(slf); set_visibility(c, k, a, VISI_PUBLIC)?; Ok(NIL) }
 
@@ -601,14 +623,13 @@ pub fn m_define_method(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) ->
         if is_proc(body) {
             new_me(mid, slf, visi, MKind::Bmethod(body))
         } else if is_method_obj(body) {
-            let m = rmethod(body);
-            let o = unsafe { &*m.me };
-            if !rclass(o.owner).is_module && !is_kind_of_class(slf, o.owner) {
+            let Some(o) = me_copy(c, c.method_obj(body).me) else { return type_err(c, "bad method object") };
+            if !c.class(o.owner).is_module && !is_kind_of_class(slf, o.owner) {
                 return type_err(c, format!("bind argument must be a subclass of {}", class_path(o.owner)));
             }
             // like an alias: __method__ stays the original name, __callee__ is the new one
             let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
-            if mid != o.name { unsafe { (*std::ptr::addr_of_mut!(ALIAS_NAMES)).get_or_insert_with(Default::default).insert(n as usize, mid); } }
+            if mid != o.name { c.vm_mut().alias_names.insert(n as usize, mid); }
             n as *const MethodEntry
         } else {
             return type_err(c, format!("wrong argument type {} (expected Proc/Method/UnboundMethod)", class_name_for_err(body)));
@@ -618,7 +639,7 @@ pub fn m_define_method(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) ->
         let p = block_to_proc(c, b)?;
         // define_method's block body runs with lambda semantics
         let np = obj_dup(c, p, false, None)?;
-        rproc(np).is_lambda = true;
+        c.proc_data_mut(np).is_lambda = true;
         new_me(mid, slf, visi, MKind::Bmethod(np))
     };
     crate::rt::note_redefinition(slf, mid);
@@ -640,42 +661,42 @@ fn m_public_instance_method(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Blo
 fn method_defined_impl(c: &mut Ctx, slf: Value, a: &[Value], f: impl Fn(u8) -> bool) -> RV {
     let mid = to_sym_arg(c, a[0])?;
     let inherit = a.len() < 2 || a[1].truthy();
-    let me = if inherit { search_method(slf, mid) } else { rclass(slf).mtbl.get(&mid).copied().unwrap_or(std::ptr::null()) };
-    if me.is_null() || matches!(unsafe { (*me).kind }, MKind::Undef) { return Ok(FALSE); }
-    Ok(Value::bool(f(unsafe { (*me).visi })))
+    let me = if inherit { search_method(slf, mid) } else { c.class(slf).mtbl.get(&mid).copied().unwrap_or(std::ptr::null()) };
+    if me.is_null() || matches!(me_kind(c, me), Some(MKind::Undef)) { return Ok(FALSE); }
+    Ok(Value::bool(f(me_visi(c, me))))
 }
 fn m_method_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { method_defined_impl(c, slf, a, |v| v != VISI_PRIVATE) }
 fn m_public_method_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { method_defined_impl(c, slf, a, |v| v == VISI_PUBLIC) }
 fn m_private_method_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { method_defined_impl(c, slf, a, |v| v == VISI_PRIVATE) }
 fn m_protected_method_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { method_defined_impl(c, slf, a, |v| v == VISI_PROTECTED) }
-fn m_instance_methods(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_instance_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let inherit = a.first().map(|v| v.truthy()).unwrap_or(true);
-    Ok(method_list(slf, |v| v != VISI_PRIVATE, inherit))
+    Ok(method_list(c, slf, |v| v != VISI_PRIVATE, inherit))
 }
-fn m_public_instance_methods(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_public_instance_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let inherit = a.first().map(|v| v.truthy()).unwrap_or(true);
-    Ok(method_list(slf, |v| v == VISI_PUBLIC, inherit))
+    Ok(method_list(c, slf, |v| v == VISI_PUBLIC, inherit))
 }
-fn m_private_instance_methods(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_private_instance_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let inherit = a.first().map(|v| v.truthy()).unwrap_or(true);
-    Ok(method_list(slf, |v| v == VISI_PRIVATE, inherit))
+    Ok(method_list(c, slf, |v| v == VISI_PRIVATE, inherit))
 }
-fn m_protected_instance_methods(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_protected_instance_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let inherit = a.first().map(|v| v.truthy()).unwrap_or(true);
-    Ok(method_list(slf, |v| v == VISI_PROTECTED, inherit))
+    Ok(method_list(c, slf, |v| v == VISI_PROTECTED, inherit))
 }
 
-fn m_name(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    match rclass(slf).name { Some(n) => Ok(n), None => Ok(NIL) }
+fn m_name(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    match c.class(slf).name { Some(n) => Ok(n), None => Ok(NIL) }
 }
 fn m_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let cd = rclass(slf);
+    let cd = c.class(slf);
     if cd.is_singleton {
         let att = cd.attached;
         let inner = if is_class_or_module(att) { inspect_str(c, att)? } else { inspect_str(c, att)? };
-        return Ok(str_new(format!("#<Class:{}>", inner).as_bytes()));
+        return Ok(c.str_new(format!("#<Class:{}>", inner).as_bytes()));
     }
-    Ok(str_new(class_path(slf).as_bytes()))
+    Ok(c.str_new(class_path(slf).as_bytes()))
 }
 fn m_eqq(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(is_kind_of(a[0], slf))) }
 fn m_lt(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -699,14 +720,14 @@ fn m_cmp(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if ancestors(o).contains(&slf) { return Ok(Value::fix(1)); }
     Ok(NIL)
 }
-fn m_ancestors(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let v: Vec<Value> = ancestors(slf).iter().copied().filter(|&k| !rclass(k).is_singleton || slf == k || true).collect();
-    Ok(ary_from_vec(v))
+fn m_ancestors(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    let v: Vec<Value> = ancestors(slf).iter().copied().filter(|&k| !c.class(k).is_singleton || slf == k || true).collect();
+    Ok(c.ary_from_vec(v))
 }
 fn m_include(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
     for &m in a.iter() {
-        if !is_class_or_module(m) || !rclass(m).is_module {
+        if !is_class_or_module(m) || !c.class(m).is_module {
             return type_err(c, format!("wrong argument type {} (expected Module)", class_name_for_err(m)));
         }
         if m == slf { return arg_err(c, "cyclic include detected"); }
@@ -720,7 +741,7 @@ fn m_include(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 fn m_append_features(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { include_module(a[0], slf); Ok(slf) }
 fn m_prepend(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     for &m in a.iter() {
-        if !is_class_or_module(m) || !rclass(m).is_module {
+        if !is_class_or_module(m) || !c.class(m).is_module {
             return type_err(c, format!("wrong argument type {} (expected Module)", class_name_for_err(m)));
         }
     }
@@ -733,25 +754,25 @@ fn m_prepend(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 fn m_prepend_features(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { prepend_module(a[0], slf); Ok(slf) }
 fn m_hook_noop(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(NIL) }
 fn m_include_p(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    if !is_class_or_module(a[0]) || !rclass(a[0]).is_module { return type_err(c, format!("wrong argument type {} (expected Module)", class_name_for_err(a[0]))); }
+    if !is_class_or_module(a[0]) || !c.class(a[0]).is_module { return type_err(c, format!("wrong argument type {} (expected Module)", class_name_for_err(a[0]))); }
     Ok(Value::bool(slf != a[0] && ancestors(slf).contains(&a[0])))
 }
-fn m_included_modules(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let v: Vec<Value> = ancestors(slf).iter().copied().filter(|&k| rclass(k).is_module).collect();
-    Ok(ary_from_vec(v))
+fn m_included_modules(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    let v: Vec<Value> = ancestors(slf).iter().copied().filter(|&k| c.class(k).is_module).collect();
+    Ok(c.ary_from_vec(v))
 }
 fn m_class_eval(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     if b.is_null() {
         if a.is_empty() { return argc_err(c, 0, 1, 3); }
         let src = expect_str(c, a[0])?;
-        let bytes = rstr(src).b.to_vec();
+        let bytes = c.str_bytes(src).to_vec();
         let file: &'static str = if a.len() > 1 { Box::leak(to_rstring(c, a[1])?.into_boxed_str()) } else { "(eval)" };
         return crate::builtins::binding::eval_in_class(c, slf, &bytes, file, if a.len() > 2 { a[2].as_fix() as i32 } else { 1 });
     }
     yield_with_self(c, b, &[slf], slf, slf)
 }
 fn m_class_exec(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
-    if b.is_null() { return err(c, vm().c_local_jump_error, "no block given (yield)"); }
+    if b.is_null() { return err(c, c.vm().c_local_jump_error, "no block given (yield)"); }
     yield_with_self(c, b, a, slf, slf)
 }
 fn m_const_get(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -761,9 +782,9 @@ fn m_const_get(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let mut cur = slf;
     let parts: Vec<&str> = name.split("::").collect();
     for (i, p) in parts.iter().enumerate() {
-        if p.is_empty() { if i == 0 { cur = vm().c_object; continue; } return err(c, vm().c_name_error, format!("wrong constant name {}", name)); }
+        if p.is_empty() { if i == 0 { cur = c.vm().c_object; continue; } return err(c, c.vm().c_name_error, format!("wrong constant name {}", name)); }
         if !p.chars().next().unwrap().is_uppercase() {
-            let e = make_name_error(c, vm().c_name_error, &format!("wrong constant name {}", p), Value::sym(intern(p.as_bytes())), slf)?;
+            let e = make_name_error(c, c.vm().c_name_error, &format!("wrong constant name {}", p), Value::sym(intern(p.as_bytes())), slf)?;
             return Err(raise_exc(c, e));
         }
         let sym = intern(p.as_bytes());
@@ -780,7 +801,7 @@ fn m_const_set(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let n = to_sym_arg(c, a[0])?;
     let b = sym_bytes(n);
     if b.is_empty() || !b[0].is_ascii_uppercase() || !b.iter().all(|x| x.is_ascii_alphanumeric() || *x == b'_' || *x >= 0x80) {
-        let e = make_name_error(c, vm().c_name_error, &format!("wrong constant name {}", sym_str(n)), Value::sym(n), slf)?;
+        let e = make_name_error(c, c.vm().c_name_error, &format!("wrong constant name {}", sym_str(n)), Value::sym(n), slf)?;
         return Err(raise_exc(c, e));
     }
     check_frozen(c, slf)?;
@@ -792,55 +813,55 @@ fn m_const_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
     let inherit = a.len() < 2 || a[1].truthy();
     let mut cur = slf;
     for p in name.split("::") {
-        if p.is_empty() { cur = vm().c_object; continue; }
+        if p.is_empty() { cur = c.vm().c_object; continue; }
         if !p.chars().next().unwrap().is_uppercase() {
-            let e = make_name_error(c, vm().c_name_error, &format!("wrong constant name {}", p), Value::sym(intern(p.as_bytes())), slf)?;
+            let e = make_name_error(c, c.vm().c_name_error, &format!("wrong constant name {}", p), Value::sym(intern(p.as_bytes())), slf)?;
             return Err(raise_exc(c, e));
         }
         let sym = intern(p.as_bytes());
         if !is_class_or_module(cur) { return Ok(FALSE); }
         let found = if inherit {
             let mut r = None;
-            for &k in ancestors(cur).iter() { if let Some(v) = const_get_at(k, sym) { r = Some(v); break; } if rclass(k).autoload.contains_key(&sym) { r = Some(NIL); break; } }
-            if r.is_none() && rclass(cur).is_module { r = const_get_at(vm().c_object, sym); }
+            for &k in ancestors(cur).iter() { if let Some(v) = const_get_at(k, sym) { r = Some(v); break; } if c.class(k).autoload.contains_key(&sym) { r = Some(NIL); break; } }
+            if r.is_none() && c.class(cur).is_module { r = const_get_at(c.vm().c_object, sym); }
             r
-        } else { const_get_at(cur, sym).or_else(|| rclass(cur).autoload.get(&sym).map(|_| NIL)) };
+        } else { const_get_at(cur, sym).or_else(|| c.class(cur).autoload.get(&sym).map(|_| NIL)) };
         match found { Some(v) => cur = v, None => return Ok(FALSE) }
     }
     Ok(TRUE)
 }
-fn m_constants(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_constants(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let inherit = a.first().map(|v| v.truthy()).unwrap_or(true);
-    let out = ary_new();
+    let out = c.ary_new();
     let mut seen = std::collections::HashSet::new();
     let list: Vec<Value> = if inherit { ancestors(slf).clone() } else { vec![slf] };
     for k in list {
-        if inherit && k == vm().c_object && slf != vm().c_object { break; }
-        for &n in rclass(k).const_order.clone().iter() {
-            if rclass(k).consts.contains_key(&n) && !rclass(k).private_consts.contains(&n) && seen.insert(n) { ary_push(out, Value::sym(n)); }
+        if inherit && k == c.vm().c_object && slf != c.vm().c_object { break; }
+        for &n in c.class(k).const_order.clone().iter() {
+            if c.class(k).consts.contains_key(&n) && !c.class(k).private_consts.contains(&n) && seen.insert(n) { c.ary_push(out, Value::sym(n)); }
         }
-        for (&n, _) in rclass(k).autoload.clone().iter() { if seen.insert(n) { ary_push(out, Value::sym(n)); } }
+        for (&n, _) in c.class(k).autoload.clone().iter() { if seen.insert(n) { c.ary_push(out, Value::sym(n)); } }
     }
     Ok(out)
 }
 fn m_remove_const(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let n = to_sym_arg(c, a[0])?;
-    match rclass(slf).consts.remove(&n) {
-        Some(v) => { rclass(slf).const_order.retain(|x| *x != n); vm().const_serial += 1; Ok(v) }
+    match c.class_mut(slf).consts.remove(&n) {
+        Some(v) => { c.class_mut(slf).const_order.retain(|x| *x != n); c.vm_mut().const_serial += 1; Ok(v) }
         None => {
-            let e = make_name_error(c, vm().c_name_error, &format!("constant {}::{} not defined", class_path(slf), sym_str(n)), Value::sym(n), slf)?;
+            let e = make_name_error(c, c.vm().c_name_error, &format!("constant {}::{} not defined", class_path(slf), sym_str(n)), Value::sym(n), slf)?;
             Err(raise_exc(c, e))
         }
     }
 }
 fn m_private_constant(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    for &x in a { let n = to_sym_arg(c, x)?; rclass(slf).private_consts.push(n); }
+    for &x in a { let n = to_sym_arg(c, x)?; c.class_mut(slf).private_consts.push(n); }
     Ok(NIL)
 }
 fn m_const_missing(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let n = a[0].as_sym();
-    let msg = if slf == vm().c_object { format!("uninitialized constant {}", sym_str(n)) } else { format!("uninitialized constant {}::{}", class_path(slf), sym_str(n)) };
-    let e = make_name_error(c, vm().c_name_error, &msg, Value::sym(n), slf)?;
+    let msg = if slf == c.vm().c_object { format!("uninitialized constant {}", sym_str(n)) } else { format!("uninitialized constant {}::{}", class_path(slf), sym_str(n)) };
+    let e = make_name_error(c, c.vm().c_name_error, &msg, Value::sym(n), slf)?;
     Err(raise_exc(c, e))
 }
 fn m_cvar_get(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -848,40 +869,43 @@ fn m_cvar_get(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     match crate::rt::cvar_lookup(slf, n) {
         Some((_, v)) => Ok(v),
         None => {
-            let e = make_name_error(c, vm().c_name_error, &format!("uninitialized class variable {} in {}", sym_str(n), class_path(slf)), Value::sym(n), slf)?;
+            let e = make_name_error(c, c.vm().c_name_error, &format!("uninitialized class variable {} in {}", sym_str(n), class_path(slf)), Value::sym(n), slf)?;
             Err(raise_exc(c, e))
         }
     }
 }
 fn m_cvar_set(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let n = to_sym_arg(c, a[0])?;
-    match crate::rt::cvar_lookup(slf, n) { Some((o, _)) => { rclass(o).cvars.insert(n, a[1]); } None => { rclass(slf).cvars.insert(n, a[1]); } }
+    match crate::rt::cvar_lookup(slf, n) { Some((o, _)) => { c.class_mut(o).cvars.insert(n, a[1]); } None => { c.class_mut(slf).cvars.insert(n, a[1]); } }
     Ok(a[1])
 }
 fn m_cvar_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let n = to_sym_arg(c, a[0])?;
     Ok(Value::bool(crate::rt::cvar_lookup(slf, n).is_some()))
 }
-fn m_cvars(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let out = ary_new();
-    for &k in ancestors(slf).clone().iter() { for (&n, _) in rclass(k).cvars.iter() { if !rary(out).contains(&Value::sym(n)) { ary_push(out, Value::sym(n)); } } }
+fn m_cvars(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    let out = c.ary_new();
+    for &k in ancestors(slf).clone().iter() {
+        let names: Vec<Sym> = c.class(k).cvars.keys().copied().collect();
+        for n in names { if !c.ary(out).contains(&Value::sym(n)) { c.ary_push(out, Value::sym(n)); } }
+    }
     Ok(out)
 }
-fn m_freeze(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { obj(slf).flags |= FL_FROZEN; Ok(slf) }
+fn m_freeze(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { obj_set_flags(slf, FL_FROZEN); Ok(slf) }
 fn m_module_new(c: &mut Ctx, slf: Value, _a: &[Value], b: *const Block) -> RV {
     let m = new_module();
-    obj(m).klass = if slf == vm().c_module { vm().c_module } else { slf };
+    obj_set_klass(m, if slf == c.vm().c_module { c.vm().c_module } else { slf });
     if !b.is_null() { yield_with_self(c, b, &[m], m, m)?; }
     Ok(m)
 }
-fn m_instance_variable_names(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ary_new()) }
-fn m_singleton_class_p(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(rclass(slf).is_singleton)) }
+fn m_instance_variable_names(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.ary_new()) }
+fn m_singleton_class_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(c.class(slf).is_singleton)) }
 fn m_hash(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix((crate::astrust::hash_u64(slf.raw()) >> 2) as i64)) }
-fn refinements_of(m: Value) -> Value {
+fn refinements_of(c: &mut Ctx, m: Value) -> Value {
     let key = intern(b"__refinements");
     let l = ivar_get(m, key);
     if l != NIL { return l; }
-    let l = ary_new();
+    let l = c.ary_new();
     ivar_set_raw(m, key, l);
     l
 }
@@ -889,28 +913,29 @@ fn m_refine(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     let k = a[0];
     if !is_class_or_module(k) { return type_err(c, format!("wrong argument type {} (expected Class or Module)", class_name_for_err(k))); }
     if b.is_null() { return arg_err(c, "no block given"); }
-    let list = refinements_of(slf);
-    let found = rary(list).iter().copied().find(|&r| rclass(r).attached == k);
+    let list = refinements_of(c, slf);
+    let found = c.ary(list).iter().copied().find(|&r| c.class(r).attached == k);
     let r = match found {
         Some(r) => r,
         None => {
             let r = new_module();
-            if let Some(rc) = const_get_at(vm().c_object, intern(b"Refinement")) { obj(r).klass = rc; }
-            let cd = rclass(r);
-            cd.refined = true; cd.attached = k;
-            cd.name = Some(str_new_frozen(format!("#<refinement:{}@{}>", class_path(k), class_path(slf)).as_bytes()));
-            ary_push(list, r);
+            if let Some(rc) = const_get_at(c.vm().c_object, intern(b"Refinement")) { obj_set_klass(r, rc); }
+            let nm = c.str_new_frozen(format!("#<refinement:{}@{}>", class_path(k), class_path(slf)).as_bytes());
+            let cd = c.class_mut(r);
+            cd.refined = true; cd.attached = k; cd.name = Some(nm);
+            c.ary_push(list, r);
             r
         }
     };
     // the body sees its module's refinements, this one included
-    let mut blk = unsafe { *b };
-    let active = ary_new();
+    let Some(mut blk) = c.block_copy(b) else { return arg_err(c, "no block given") };
     let outer = cref_refinements(blk.cref);
-    if outer != NIL { for i in 0..ary_len(outer) { ary_push(active, ary_get(outer, i)); } }
-    for i in 0..ary_len(list) { let x = ary_get(list, i); if !rary(active).contains(&x) { ary_push(active, x); } }
+    let mut v = if outer != NIL { c.ary(outer).to_vec() } else { vec![] };
+    for &x in c.ary(list) { if !v.contains(&x) { v.push(x); } }
+    let active = c.ary_from_vec(v);
     let cr = new_cref(r, blk.cref);
-    unsafe { (*(cr as *mut Cref)).refinements = active; REFINEMENTS_ON = true; }
+    c.cref_set_refinements(cr, active);
+    c.set_refinements_on();
     blk.cref = cr;
     yield_with_self(c, &blk, &[r], r, r)?;
     Ok(r)
@@ -918,49 +943,42 @@ fn m_refine(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
 /// `using mod`: the caller's cref is replaced by a copy that has mod's refinements activated.
 fn m_using(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let m = a[0];
-    if !is_class_or_module(m) || !rclass(m).is_module { return type_err(c, format!("wrong argument type {} (expected Module)", class_name_for_err(m))); }
-    let pf = unsafe { (*c.frame).prev };
-    if pf.is_null() { return Ok(slf); }
-    if unsafe { (*pf).kind } == FK_METHOD { return err(c, vm().c_runtime_error, "Module#using is not permitted in methods"); }
-    let old = unsafe { (*pf).cref() };
-    let active = ary_new();
+    if !is_class_or_module(m) || !c.class(m).is_module { return type_err(c, format!("wrong argument type {} (expected Module)", class_name_for_err(m))); }
+    let Some(pkind) = c.caller_frame().map(|f| f.kind) else { return Ok(slf) };
+    if pkind == FK_METHOD { return err(c, c.vm().c_runtime_error, "Module#using is not permitted in methods"); }
+    let old = caller_cref(c);
     let outer = cref_refinements(old);
-    if outer != NIL { for i in 0..ary_len(outer) { ary_push(active, ary_get(outer, i)); } }
+    let mut v = if outer != NIL && is_array(outer) { c.ary(outer).to_vec() } else { vec![] };
     for &anc in ancestors(m).iter().rev() {
         let l = ivar_get(anc, intern(b"__refinements"));
         if l == NIL { continue; }
-        for i in 0..ary_len(l) {
-            let x = ary_get(l, i);
-            rary(active).retain(|&y| y != x);
-            ary_push(active, x);
-        }
+        for &x in c.ary(l) { v.retain(|&y| y != x); v.push(x); }
     }
-    let (klass, prev) = if old.is_null() { (vm().c_object, std::ptr::null()) } else { unsafe { ((*old).klass, (*old).prev) } };
+    let active = c.ary_from_vec(v);
+    let (klass, prev) = match c.cref_ref(old) { None => (c.vm().c_object, std::ptr::null()), Some(o) => (o.klass, o.prev) };
     let cr = new_cref(klass, prev);
-    unsafe {
-        (*(cr as *mut Cref)).refinements = active;
-        (*pf).set_cref(cr);
-        REFINEMENTS_ON = true;
-    }
+    c.cref_set_refinements(cr, active);
+    c.set_caller_cref(cr);
+    c.set_refinements_on();
     bump_method_serial();
     Ok(slf)
 }
-fn m_refinements(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn m_refinements(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let l = ivar_get(slf, intern(b"__refinements"));
-    Ok(if l == NIL { ary_new() } else { ary_new_from(&rary(l).clone()) })
+    Ok(if l == NIL { c.ary_new() } else { c.ary_from_vec(c.ary(l).to_vec()) })
 }
-fn refinement_target(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(rclass(slf).attached) }
+fn refinement_target(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.class(slf).attached) }
 /// Refinement#import_methods: copies of the modules' Ruby-defined methods.
 fn refinement_import_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     for &m in a {
-        let mt: Vec<(Sym, *const MethodEntry)> = rclass(m).mtbl.iter().map(|(a, b)| (*a, *b)).collect();
+        if !is_class_or_module(m) || !c.class(m).is_module { return type_err(c, format!("wrong argument type {} (expected Module)", class_name_for_err(m))); }
+        let mt: Vec<(Sym, *const MethodEntry)> = c.class(m).mtbl.iter().map(|(a, b)| (*a, *b)).collect();
         for (name, me) in mt {
-            let me = unsafe { &*me };
+            let Some(me) = me_copy(c, me) else { continue };
             match me.kind {
                 MKind::Iseq(_) | MKind::Bmethod(_) | MKind::AttrReader(_) | MKind::AttrWriter(_) => {
                     // the copies run under the refine block's scope (its refinements are active)
-                    let pf = unsafe { (*c.frame).prev };
-                    let cref = if pf.is_null() { me.cref } else { unsafe { (*pf).cref() } };
+                    let cref = if c.caller_frame().is_none() { me.cref } else { caller_cref(c) };
                     let n = new_me_cref(name, slf, me.visi, me.kind, cref);
                     define_method_me(slf, name, n);
                 }
@@ -971,23 +989,23 @@ fn refinement_import_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Bl
     Ok(slf)
 }
 fn m_attached_object(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    if !rclass(slf).is_singleton { return type_err(c, format!("'{}' is not a singleton class", class_path(slf))); }
-    Ok(rclass(slf).attached)
+    if !c.class(slf).is_singleton { return type_err(c, format!("'{}' is not a singleton class", class_path(slf))); }
+    Ok(c.class(slf).attached)
 }
 
 // ---- Class ----------------------------------------------------------------------------------
 
 pub fn alloc_instance(c: &mut Ctx, klass: Value) -> RV {
-    let cd = rclass(klass);
+    let cd = c.class(klass);
     if cd.is_singleton { return type_err(c, "can't create instance of singleton class"); }
     Ok(match cd.alloc {
         AllocKind::Object | AllocKind::Exception => new_object(klass),
-        AllocKind::String => crate::gc::alloc(klass, Body::String(RString { b: crate::sbuf::SBuf::new(), enc: ENC_UTF8 })),
-        AllocKind::Array => crate::gc::alloc(klass, Body::Array(vec![])),
-        AllocKind::Hash => { let h = hash_new(); obj(h).klass = klass; h }
-        AllocKind::Range => crate::gc::alloc(klass, Body::Range(NIL, NIL, false)),
-        AllocKind::Class => { let k = new_class(vm().c_object); k }
-        AllocKind::Module => { let m = new_module(); obj(m).klass = klass; m }
+        AllocKind::String => c.alloc(klass, Body::String(RString { b: crate::sbuf::SBuf::new(), enc: ENC_UTF8 })),
+        AllocKind::Array => c.alloc(klass, Body::Array(vec![])),
+        AllocKind::Hash => { let h = c.hash_new(); obj_set_klass(h, klass); h }
+        AllocKind::Range => c.alloc(klass, Body::Range(NIL, NIL, false)),
+        AllocKind::Class => { let k = new_class(c.vm().c_object); k }
+        AllocKind::Module => { let m = new_module(); obj_set_klass(m, klass); m }
         AllocKind::Proc | AllocKind::None => {
             if let Some(v) = crate::builtins::alloc_data(c, klass)? { return Ok(v); }
             return type_err(c, format!("allocator undefined for {}", class_path(klass)));
@@ -1000,15 +1018,17 @@ pub fn c_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     let o = alloc_instance(c, slf)?;
     let kw = kw_arg(a).is_some();
     let me = lookup_method(class_of(o), s::initialize);
-    if !me.is_null() {
-        if let MKind::Cfunc(..) = unsafe { (*me).kind } { if me == vm().ids.bo_init { if !a.is_empty() && rclass(slf).alloc == AllocKind::Object && unsafe { (*me).owner } == vm().c_basic_object {
-            return argc_err(c, a.len(), 0, 0);
-        } return Ok(o); } }
-    }
-    if !me.is_null() && !kw {
-        if let MKind::Iseq(is) = unsafe { (*me).kind } {
-            let is = unsafe { &*is };
-            if is.lead_only && is.params.lead.len() == a.len() {
+    match me_kind(c, me) {
+        Some(MKind::Cfunc(..)) => if me == c.vm().ids.bo_init {
+            if !a.is_empty() && c.class(slf).alloc == AllocKind::Object && me_owner(c, me) == c.vm().c_basic_object {
+                return argc_err(c, a.len(), 0, 0);
+            }
+            return Ok(o);
+        },
+        Some(MKind::Iseq(is)) if !kw => {
+            let done = c.with_iseq(is, |c, is| -> Result<bool, Esc> {
+                let Some(is) = is else { return Ok(false) };
+                if !(is.lead_only && is.params.lead.len() == a.len()) { return Ok(false); }
                 // initialize with only required params: call it directly
                 let base = c.top();
                 stack_check(c, a.len() + 4)?;
@@ -1017,41 +1037,46 @@ pub fn c_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
                 let r = invoke_iseq_simple(c, me, is, o, base, a.len() as u32, b);
                 c.set_sp(base, 0);
                 r?;
-                return Ok(o);
-            }
+                Ok(true)
+            })?;
+            if done { return Ok(o); }
         }
+        _ => {}
     }
     funcall_kw(c, o, s::initialize, a, b, kw)?;
     Ok(o)
 }
 fn c_class_new(c: &mut Ctx, _slf: Value, a: &[Value], b: *const Block) -> RV {
-    let sup = if a.is_empty() { vm().c_object } else { a[0] };
-    if !is_class_or_module(sup) || rclass(sup).is_module { return type_err(c, format!("superclass must be an instance of Class (given an instance of {})", class_name_for_err(sup))); }
-    if rclass(sup).is_singleton { return type_err(c, "can't make subclass of singleton class"); }
-    if sup == vm().c_class { return type_err(c, "can't make subclass of Class"); }
+    let sup = if a.is_empty() { c.vm().c_object } else { a[0] };
+    if !is_class_or_module(sup) || c.class(sup).is_module { return type_err(c, format!("superclass must be an instance of Class (given an instance of {})", class_name_for_err(sup))); }
+    if c.class(sup).is_singleton { return type_err(c, "can't make subclass of singleton class"); }
+    if sup == c.vm().c_class { return type_err(c, "can't make subclass of Class"); }
     let k = new_class(sup);
     call_inherited(c, sup, k)?;
     if !b.is_null() { yield_with_self(c, b, &[k], k, k)?; }
     Ok(k)
 }
-fn c_superclass(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let mut s = rclass(slf).superclass;
-    while s != NIL && rclass(s).is_module { s = rclass(s).superclass; }
+fn c_superclass(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    let mut s = c.class(slf).superclass;
+    while s != NIL && c.class(s).is_module { s = c.class(s).superclass; }
     Ok(s)
 }
-fn c_subclasses(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let v: Vec<Value> = rclass(slf).subclasses.iter().rev().copied().filter(|&k| !rclass(k).is_singleton).collect();
-    Ok(ary_from_vec(v))
+fn c_subclasses(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    let v: Vec<Value> = c.class(slf).subclasses.iter().rev().copied().filter(|&k| !c.class(k).is_singleton).collect();
+    Ok(c.ary_from_vec(v))
 }
 fn c_inherited(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(NIL) }
 
-pub fn init() {
-    let vm = vm();
-    let bo = vm.c_basic_object;
+/// Method identities object::init records (Vm.ids).
+pub struct InitIds { pub bo_init: *const MethodEntry, pub bo_eq: *const MethodEntry, pub kernel_hash: *const MethodEntry, pub m_eqq: *const MethodEntry, pub c_new: *const MethodEntry }
+
+/// Boot: BasicObject / Kernel / Module / Class methods.
+pub fn init(vmr: &Vm) -> InitIds {
+    let bo = vmr.c_basic_object;
     define_private_cfunc(bo, "initialize", bo_initialize, -1);
-    crate::vm::vm().ids.bo_init = *rclass(bo).mtbl.get(&s::initialize).unwrap();
+    let id_bo_init = search_method(bo, s::initialize);
     define_cfunc(bo, "==", bo_eq, 1);
-    crate::vm::vm().ids.bo_eq = *rclass(bo).mtbl.get(&s::eq).unwrap();
+    let id_bo_eq = search_method(bo, s::eq);
     define_cfunc(bo, "equal?", bo_eq, 1);
     define_cfunc(bo, "!", bo_not, 0);
     define_cfunc(bo, "!=", bo_neq, 1);
@@ -1064,7 +1089,7 @@ pub fn init() {
     define_private_cfunc(bo, "singleton_method_removed", bo_singleton_method_added, -1);
     define_private_cfunc(bo, "singleton_method_undefined", bo_singleton_method_added, -1);
 
-    let k = vm.m_kernel;
+    let k = vmr.m_kernel;
     let d = |n: &str, f: CFunc, a: i32| define_cfunc(k, n, f, a);
     d("class", k_class, 0);
     d("singleton_class", k_singleton_class, 0);
@@ -1100,7 +1125,7 @@ pub fn init() {
     d("extend", k_extend, -1);
     d("display", k_display, -1);
     d("hash", k_hash, 0);
-    crate::vm::vm().ids.kernel_hash = *rclass(k).mtbl.get(&s::hash).unwrap();
+    let id_kernel_hash = search_method(k, s::hash);
     d("object_id", bo_id, 0);
     d("send", bo_send, -1);
     d("public_send", k_public_send, -1);
@@ -1117,7 +1142,7 @@ pub fn init() {
     d("to_enum", k_enum_for, -1);
     let _ = k_instance_variables_hash;
 
-    let m = vm.c_module;
+    let m = vmr.c_module;
     let d = |n: &str, f: CFunc, a: i32| define_cfunc(m, n, f, a);
     d("alias_method", m_alias_method, -1);
     d("undef_method", m_undef_method, -1);
@@ -1147,7 +1172,7 @@ pub fn init() {
     d("to_s", m_to_s, 0);
     d("inspect", m_to_s, 0);
     d("===", m_eqq, 1);
-    crate::vm::vm().ids.m_eqq = *rclass(m).mtbl.get(&s::eqq).unwrap();
+    let id_m_eqq = search_method(m, s::eqq);
     d("<", m_lt, 1);
     d("<=", m_le, 1);
     d(">", m_gt, 1);
@@ -1190,29 +1215,30 @@ pub fn init() {
     d("refine", m_refine, 1);
     d("using", m_using, 1);
     d("refinements", m_refinements, 0);
-    let rf = define_class("Refinement", vm.c_module);
+    let rf = define_class("Refinement", vmr.c_module);
     define_cfunc(rf, "target", refinement_target, 0);
     define_private_cfunc(rf, "import_methods", refinement_import_methods, -1);
     d("attached_object", m_attached_object, 0);
     d("instance_variable_names", m_instance_variable_names, 0);
     define_singleton_cfunc(m, "new", m_module_new, -1);
 
-    let c = vm.c_class;
+    let c = vmr.c_class;
     define_cfunc(c, "allocate", c_allocate, 0);
     define_cfunc(c, "new", c_new, -1);
-    crate::vm::vm().ids.c_new = *rclass(c).mtbl.get(&crate::symbol::intern_str("new")).unwrap();
+    let id_c_new = search_method(c, crate::symbol::intern_str("new"));
     define_cfunc(c, "superclass", c_superclass, 0);
     define_cfunc(c, "subclasses", c_subclasses, 0);
     define_private_cfunc(c, "inherited", c_inherited, 1);
     define_singleton_cfunc(c, "new", c_class_new, -1);
 
-    let main = vm.main_obj;
-    define_singleton_cfunc(main, "to_s", |_c, _s, _a, _b| Ok(str_new(b"main")), 0);
-    define_singleton_cfunc(main, "inspect", |_c, _s, _a, _b| Ok(str_new(b"main")), 0);
+    let main = vmr.main_obj;
+    define_singleton_cfunc(main, "to_s", |c, _s, _a, _b| Ok(c.str_new(b"main")), 0);
+    define_singleton_cfunc(main, "inspect", |c, _s, _a, _b| Ok(c.str_new(b"main")), 0);
     let sk = singleton_class(main);
     define_private_cfunc(sk, "private", top_private, -1);
     define_private_cfunc(sk, "public", top_public, -1);
-    define_private_cfunc(sk, "include", |c, _s, a, b| m_include(c, crate::vm::vm().c_object, a, b), -1);
-    define_private_cfunc(sk, "define_method", |c, _s, a, b| m_define_method(c, crate::vm::vm().c_object, a, b), -1);
+    define_private_cfunc(sk, "include", |c, _s, a, b| m_include(c, c.vm().c_object, a, b), -1);
+    define_private_cfunc(sk, "define_method", |c, _s, a, b| m_define_method(c, c.vm().c_object, a, b), -1);
     define_private_cfunc(sk, "using", m_using, 1);
+    InitIds { bo_init: id_bo_init, bo_eq: id_bo_eq, kernel_hash: id_kernel_hash, m_eqq: id_m_eqq, c_new: id_c_new }
 }

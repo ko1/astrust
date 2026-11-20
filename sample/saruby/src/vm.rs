@@ -328,6 +328,8 @@ pub struct Vm {
     pub sd_hits: usize,
     pub frozen_lits: HashMap<Vec<u8>, Value>,
     pub symproc_cache: HashMap<Sym, Value>,
+    /// __callee__ of entries made by alias / define_method(name, method): entry address -> name.
+    pub alias_names: HashMap<usize, Sym>,
     pub data_free_hooks: Vec<fn(*mut RObj)>,
     pub pinned: Vec<Value>,
     /// Encoding objects by encoding id (kept alive by `pinned`).

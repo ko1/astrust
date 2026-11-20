@@ -334,7 +334,7 @@ fn k_method_name(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> R
 fn k_callee_name(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV {
     let me = c.caller_frame().map_or(std::ptr::null(), |p| p.me);
     if me.is_null() { return Ok(NIL); }
-    Ok(Value::sym(crate::builtins::object::callee_name(me)))
+    Ok(Value::sym(crate::builtins::object::callee_name(c, me)))
 }
 
 fn k_caller(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
