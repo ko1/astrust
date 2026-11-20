@@ -175,7 +175,7 @@ pub fn boot() {
     kernel::init(vm);
     rclass(vm.c_object).autoload.insert(crate::symbol::intern(b"ARGF"), crate::str_legacy::str_new_frozen(b"saruby/argf"));
     module::init();
-    proc::init();
+    proc::init(vm);
     exception::init();
     numeric_methods::init(vm.c_numeric, vm.c_integer, vm.c_float);
     for (nm, v) in numeric_methods::FLOAT_CONSTS { const_set(vm.c_float, crate::symbol::intern(nm.as_bytes()), crate::numeric::float_new(v)); }

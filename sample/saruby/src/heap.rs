@@ -251,6 +251,9 @@ impl Ctx {
         // SAFETY: H5 (c.frame and its prev are null or live frames)
         unsafe { self.frame.as_ref().and_then(|f| f.prev.as_ref()) }
     }
+    /// The running builtin's own frame (its `me` is the entry being run).
+    #[inline(always)]
+    pub fn cur_frame(&self) -> Option<&Frame> { unsafe { self.frame.as_ref() } }   // SAFETY: H5
     /// The frame below `f` on the chain.
     #[inline(always)]
     pub fn prev_frame<'a>(&'a self, f: &'a Frame) -> Option<&'a Frame> { unsafe { f.prev.as_ref() } }   // SAFETY: H5
@@ -263,4 +266,7 @@ impl Ctx {
     /// An iseq by pointer: iseqs are never freed.
     #[inline(always)]
     pub fn iseq_ref(&self, is: *const Iseq) -> Option<&Iseq> { unsafe { is.as_ref() } }   // SAFETY: never freed
+    /// vm::REFINEMENTS_ON (a `static mut bool` of vm.rs), by value.
+    #[inline(always)]
+    pub fn refinements_on(&self) -> bool { unsafe { crate::vm::REFINEMENTS_ON } }   // SAFETY: one interpreter thread; read by value, no reference made
 }

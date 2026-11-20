@@ -289,7 +289,7 @@ cfn!(h_set_default_proc, |c, slf, a, blk| {
         if is_proc(q) { p = q; }
     }
     if p != NIL && !is_proc(p) { return type_err(c, format!("wrong default_proc type {} (expected Proc)", class_name_for_err(p))); }
-    if p != NIL && c.proc_data(p).is_lambda { let ar = crate::builtins::proc::proc_arity(p); if ar != 2 && !(ar < 0 && ar >= -3) { return type_err(c, format!("default_proc takes two arguments (2 for {})", ar)); } }
+    if p != NIL && c.proc_data(p).is_lambda { let ar = crate::builtins::proc::proc_arity(c, p); if ar != 2 && !(ar < 0 && ar >= -3) { return type_err(c, format!("default_proc takes two arguments (2 for {})", ar)); } }
     let r = c.hash_mut(slf); r.default_proc = p; r.default = NIL; Ok(p)
 });
 cfn!(h_invert, |c, slf, a, blk| { let out = c.hash_new(); each_entry(c, slf, |c, k, v| { hash_aset(c, out, v, k)?; Ok(true) })?; Ok(out) });
