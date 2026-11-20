@@ -26,6 +26,8 @@
   `static mut VM` itself stays until the last `vm()` caller is converted (634 call sites).
 * Not done, by design of a pilot: 2302 call sites of the old accessors in 50 files (table at the
   end), and the legacy allocators that do not take the context (see "What is still open").
+* **Second wave** (hash, range, struct, enumerable, numeric: 11 more files, 1842 call sites left):
+  the section of that name below.
 
 ## The problem
 
@@ -166,6 +168,32 @@ moved, and no `&mut` to a payload coexists with another reference to it.
   only by `gc::alloc`; the two places that assign a whole body (`Range#initialize`,
   `Marshal.load` of a Range) keep the kind.
 
+### Accessors added by the second wave (hash / range / numeric / data)
+
+`src/heap.rs`, the block "hash / range / numeric / data" (6 more `unsafe`, 18 in the file).
+
+* `c.hash_mut_and(v) -> (&mut RHash, Others)`, `c.data_mut_and::<T>(v) -> Option<(&mut T, Others)>`,
+  `others.hash(w)`, `others.data::<U>(w)`: the construction of `ary_mut_and`, same argument
+  (`Others` refuses the object being written; distinct objects own disjoint payloads).
+* `c.range(v) -> (Value, Value, bool)` and `c.range_set(v, b, e, excl)` are ordinary `body` /
+  `body_mut` matches. The fields come back by value, so a Range is never borrowed across a call;
+  `range_set` writes a `Body::Range` over a `Body::Range` (the kind stays).
+* `float_val(v) -> f64` is a free function without the token, like the header accessors: a
+  Float body is written by `gc::alloc` only (the object is frozen at birth), no accessor hands
+  out a reference into one, and the read ends inside the function. It checks the kind (it was
+  `unreachable_unchecked`).
+* `c.method_entry(klass, mid) -> Option<&MethodEntry>` dereferences what `vm::lookup_method`
+  returned. Sound because an entry is a leaked `Box` (`vm::new_me`) that nothing frees; the
+  borrow of `c` additionally keeps it from being held across Ruby code, which may change an
+  entry's visibility in place (`Module#private` does). Identity is compared with
+  `std::ptr::eq(me, c.vm().ids.kernel_hash)`, no dereference.
+* `c.block_params(blk) -> Option<&Params>` dereferences a `*const Block`. This one rests on a
+  new assumption, **H4: the `blk` a builtin receives is null or its caller's `Block`, alive for
+  the call** (and iseqs are never freed). It is the assumption `yield_block(c, blk, ..)`, a safe
+  function, already makes on every yield; the frame chain is the separate surface listed under
+  "What is still open". A builtin that manufactures a `*const Block` from an integer
+  (`enum_native::ublk`) is inside that same trust.
+
 ### What Rust cannot check (assumptions)
 
 * **H1, liveness.** `c.ary(v)` dereferences `v`. That `v` still names the object it was made
@@ -181,6 +209,7 @@ moved, and no `&mut` to a payload coexists with another reference to it.
   another valid object, but `obj_klass` of a freed slot reads the free-list link.
 * **H2, the mint contract**: the fiber switch (fiber.rs) and the collector's own access to
   contexts (`visit_ctx`) are trusted code.
+* **H4** (above): a builtin's `blk` argument.
 * **The old accessors still exist.** A converted module cannot name them, but it can call a
   function of an unconverted module that uses them. While a converted module holds a payload
   borrow it must only call header functions and `std`; see step 4 of the recipe.
@@ -201,6 +230,14 @@ A converted module adds `use crate::heap::no_legacy::*;`. That module defines du
 candidates and using one is `error[E0659]: 'rary' is ambiguous`. `tools/heap_audit.rb` checks
 the same by text (it also catches a path such as `crate::object::rary`) and prints the
 per-file counts used below.
+
+`heap::no_legacy_hn` does the same for the context-free API of hash.rs, range.rs, numeric.rs and
+bignum.rs (`hash_pairs`, `hash_len`, `range_parts`, `big_to_value`, `to_big`, `int_from_i64`,
+`num_to_f64`, ...). It is a second list, imported by the modules of that wave only, so that
+the modules converted earlier (and the string wave, in progress in parallel) do not have to
+give up those names in the same commit; the two lists merge when every importer of
+`no_legacy` is clean of both. The bodies of the context-free forms that unconverted modules
+still call live in `src/object.rs` (hash) and `src/legacy.rs` (range, numeric).
 
 ## Alternatives
 
@@ -414,6 +451,179 @@ At 9bfce1a against 5453803 (`base`); logs in the trials directory.
   stress, the same. No array file depends on the stress setting before or after.
 * The ten benchmarks print identical output in every variant measured, interpreter and AOT.
 
+## Second wave: hash, range, struct, enumerable, numeric (2026-11-21)
+
+Commits `af4b634..dc28c5a` on top of `4a06252` (`base` below). Raw data, scripts and logs:
+`~/ruby/src/trials/2026-11-21-saruby-safe-heap-hash-num/`.
+
+Converted, each `#![forbid(unsafe_code)]` with `heap::no_legacy` and `heap::no_legacy_hn`:
+`hash.rs`, `builtins/hash_methods.rs`, `range.rs`, `builtins/range_methods.rs`, `builtins/structs.rs`,
+`builtins/enum_native.rs`, `builtins/enumerator.rs`, `numeric.rs`, `bignum.rs`,
+`builtins/numeric_methods.rs`, `builtins/math.rs`. Not converted: `builtins/rational.rs`,
+`builtins/complex.rs`, `builtins/time.rs`, `builtins/random.rs` (why: "What is still open").
+
+| file | old-accessor call sites before -> after | `unsafe` before -> after |
+|---|---|---|
+| src/hash.rs | 54 -> 0 | 4 -> 0 |
+| src/builtins/hash_methods.rs | 89 -> 0 | 2 -> 0 |
+| src/range.rs | 4 -> 0 | 0 -> 0 |
+| src/builtins/range_methods.rs | 38 -> 0 | 0 -> 0 |
+| src/builtins/structs.rs | 59 -> 0 | 0 -> 0 |
+| src/builtins/enum_native.rs | 82 -> 0 | 1 -> 0 |
+| src/builtins/enumerator.rs | 64 -> 0 (and its `renum() -> &'static mut`) | 1 -> 0 |
+| src/numeric.rs | 3 -> 0 | 0 -> 0 |
+| src/bignum.rs | 3 -> 0 | 1 -> 0 |
+| src/builtins/numeric_methods.rs | 76 -> 0 | 0 -> 0 |
+| src/builtins/math.rs | 8 -> 0 | 0 -> 0 |
+| src/builtins/rational.rs | 31 -> 31 (not converted) | 0 |
+| src/builtins/complex.rs | 20 -> 20 (not converted) | 0 |
+| src/builtins/time.rs | 24 -> 24 (not converted) | 2 |
+| src/builtins/random.rs | 23 -> 23 (not converted) | 2 |
+
+`heap_audit.rb` totals: call sites 2305 -> 1842, `unsafe` 570 -> 567 (heap.rs 12 -> 18: the six
+blocks listed under "Accessors added by the second wave"), functions returning `&'static mut`
+32 -> 31, `static mut` 48 -> 47 (the list of hashes being iterated is gone; the tool prints 48
+because its pattern also matches the type `&'static mut crate::..` in fiber.rs).
+
+Edits outside the converted files: `object.rs` (`RHash.iter_lev`, the context-free hash API,
+`float_val` re-exported from heap.rs), new `legacy.rs` (context-free range / numeric API and
+`f64_to_int`), `builtins/mod.rs` (the `init` calls pass and receive classes), `lib.rs` (`mod legacy`),
+`fiber.rs` (a private `renum`), `array_methods.rs` (`each_overridden(c, ..)`, `is_arith_seq(c, ..)`),
+`kernel.rs`, `sprintf.rs`, `random.rs` (path of `f64_to_int`), `pp.rs`, `time.rs`, `complex.rs`
+(an import that became unused), `tools/heap_audit.rb` (the second list).
+
+### Bugs the conversion exposed
+
+Each is a place where the old code read a table through a reference that a callback could
+invalidate, or kept state that the borrow rules forced into the open. One-line repros;
+"before" is `base`.
+
+| repro | CRuby | before | now |
+|---|---|---|---|
+| `h = (1..100).to_h { [_1, _1] }; n = 0; h.each { \|k, _\| h.delete(k); n += 1 }; p [n, h.size]` | `[100, 0]` | `[59, 41]`: `hash_delete` compacted the slots under the iteration | fixed (no compaction while `iter_lev != 0`) |
+| `class K; def initialize(h) = @h = h; def hash = 7; def eql?(o) = (@h.clear if $go; false); end; h = {}; 12.times { h[K.new(h)] = 1 }; $go = true; p h[K.new(h)]` | `nil` | panic `index out of bounds` (hash.rs: the probe loop kept the index mask across `eql?`) | fixed (pattern 12) |
+| `o = Object.new; def o.hash = raise("boom"); a = [o]; 2.times { begin; a.hash; p :no; rescue => e; p e.message; end }` | `"boom"` twice | `"boom"`, then `:no`: the recursion guard stayed set after the raise | fixed |
+| `h = {"a" => 1}; begin; h.each { h.compare_by_identity }; rescue => e; p e.message; end; p h["a"]` | `"compare_by_identity during iteration"`, `1` | `"rehash during iteration"`, `nil`: the flag was set before the rehash failed | fixed |
+| `h = {}; h.replace({}.compare_by_identity); p h.compare_by_identity?` | `true` | `false` | fixed |
+| `S = Struct.new(:a); s = S.new(nil); s.a = s; p s.hash == s.hash` | `true` | the process dies (unbounded recursion) | fixed (recursion guard in `Struct#hash`) |
+| `class R < Range; def each; yield 9; end; end; p R.new(1, 3).to_a` | `[9]` | `[1, 2, 3]` | not fixed (`Range#to_a` does not look for an overriding `each`); unrelated to borrowing |
+
+Not reproduced but removed with the design: the old guard was a global `Vec<Value>` of hashes
+being iterated, compared by address. An iteration abandoned in a fiber left its entry there, and
+a hash allocated later at the same address would have refused new keys.
+
+### Verification
+
+* `make` and `make FEATURES=raw_stack` without warnings at each commit (the second
+  configuration by `cargo check` for the last three), `ruby tools/heap_audit.rb` exit 0.
+* Differential tests against CRuby, the task's patterns (`run_specs.rb --jobs 4 --timeout 15`),
+  `base` and the new build alternately, twice. Cells are PASS/FAIL/CRASH/WCRASH/TIMEO/REFTO.
+
+| pattern | base1 | new1 | base2 | new2 |
+|---|---|---|---|---|
+| hand hash* | 851/38/0/0/1/0 | 851/38/0/0/1/0 | 851/38/0/0/1/0 | 851/38/0/0/1/0 |
+| hand range* | 350/122/0/0/0/0 | 350/122/0/0/0/0 | 350/122/0/0/0/0 | 350/122/0/0/0/0 |
+| hand struct* | 229/5/0/0/0/0 | 229/5/0/0/0/0 | 229/5/0/0/0/0 | 229/5/0/0/0/0 |
+| hand enum* | 735/34/0/0/0/0 | 735/34/0/0/0/0 | 735/34/0/0/0/0 | 735/34/0/0/0/0 |
+| hand lazy* | 139/16/0/0/0/0 | 139/16/0/0/0/0 | 139/16/0/0/0/0 | 139/16/0/0/0/0 |
+| hand set* | 178/42/0/0/0/0 | 178/42/0/0/0/0 | 178/42/0/0/0/0 | 178/42/0/0/0/0 |
+| hand data* | 54/0/0/0/0/0 | 54/0/0/0/0/0 | 54/0/0/0/0/0 | 54/0/0/0/0/0 |
+| hand comparable* | 34/0/0/0/0/0 | 34/0/0/0/0/0 | 34/0/0/0/0/0 | 34/0/0/0/0/0 |
+| hand integer* | 88/3/0/0/0/0 | 88/3/0/0/0/0 | 88/3/0/0/0/0 | 88/3/0/0/0/0 |
+| hand float* | 202/1/0/0/0/0 | 202/1/0/0/0/0 | 202/1/0/0/0/0 | 202/1/0/0/0/0 |
+| hand numeric* | 329/42/0/0/0/0 | 329/42/0/0/0/0 | 329/42/0/0/0/0 | 329/42/0/0/0/0 |
+| hand bignum* | 56/0/0/0/0/0 | 56/0/0/0/0/0 | 56/0/0/0/0/0 | 56/0/0/0/0/0 |
+| hand rational* | 119/6/0/0/0/0 | 119/6/0/0/0/0 | 119/6/0/0/0/0 | 119/6/0/0/0/0 |
+| hand complex* | 100/30/0/0/0/0 | 100/30/0/0/0/0 | 100/30/0/0/0/0 | 100/30/0/0/0/0 |
+| hand math* | 24/3/0/0/0/0 | 24/3/0/0/0/0 | 24/3/0/0/0/0 | 24/3/0/0/0/0 |
+| hand time* | 358/49/0/0/0/0 | 358/49/0/0/0/0 | 358/49/0/0/0/0 | 358/49/0/0/0/0 |
+| hand random* | 134/34/0/0/0/0 | 134/34/0/0/0/0 | 134/34/0/0/0/0 | 134/34/0/0/0/0 |
+| method hash* | 12452/0/0/0/0/0 | 12452/0/0/0/0/0 | 12452/0/0/0/0/0 | 12452/0/0/0/0/0 |
+| method range* | 5952/0/0/0/0/0 | 5952/0/0/0/0/0 | 5952/0/0/0/0/0 | 5952/0/0/0/0/0 |
+| method integer* | 14737/418/0/0/0/0 | 14737/418/0/0/0/0 | 14737/418/0/0/0/0 | 14737/418/0/0/0/0 |
+| method float* | 5778/235/0/0/0/0 | 5778/235/0/0/0/0 | 5778/235/0/0/0/0 | 5778/235/0/0/0/0 |
+| load average at start | 15.66 22.23 21.16 | 14.17 20.63 20.68 | 11.72 19.00 20.12 | 9.63 17.43 19.53 |
+| all patterns | 42899/1078/0/0/1/0 | 42899/1078/0/0/1/0 | 42899/1078/0/0/1/0 | 42899/1078/0/0/1/0 |
+
+* Per-file output (stdout, stderr, exit status; 60 s limit) of the 799 files those patterns
+  select, new build against `base`: 793 identical, 0 different, 6 nondeterministic
+  (they differ between two runs of `base` itself: object addresses, times, random numbers).
+  Checked after each of the four groups of commits.
+* The same under `SARUBY_GC_STRESS=1` for `hash*`, `struct*`, `enum*` (296 files): all 296 identical between `base` and the new build.
+  One file (`hash_value_semantics.rb`, 25 s alone under stress on either build) hit the 60 s limit
+  in one run while the machine's load average was above 12; the comparison runs such a file
+  again alone before calling it a difference.
+* The baseline was checked to be what it claims: the snapshot used for the comparisons and a
+  separate build of `4a06252` give the same instruction counts on all 13 benchmarks, both modes.
+  (The first benchmark run was thrown away: the snapshot of the new build could not bake, so its
+  "AOT" rows were interpreter runs. `bench.sh` now takes build trees and compares outputs.)
+
+### Cost
+
+`bench.sh` (trials directory): per benchmark each build bakes once, then the two builds run
+interleaved in each of 5 repetitions under `perf stat -e cycles:u,instructions:u`. Minimum, in
+millions; spread is (max-min)/min. Load average during the run: 38 at the start, 15 to 33 afterwards (shared machine, so
+read the cycles with their spread).
+
+| interp | base ins | new ins | base cyc (spread) | new cyc (spread) | cyc |
+|---|---|---|---|---|---|
+| hash | 6797 | 5553 (-18.3 %) | 2321 (36.7 %) | 1958 (25.8 %) | -15.6 % |
+| hashiter | 2452 | 2372 (-3.3 %) | 924 (36.6 %) | 659 (91.1 %) | -28.7 % |
+| mapreduce | 4728 | 4594 (-2.8 %) | 2025 (8.0 %) | 1893 (20.3 %) | -6.5 % |
+| methodchain | 4662 | 4470 (-4.1 %) | 1435 (22.9 %) | 1236 (22.7 %) | -13.9 % |
+| rangeeach | 1391 | 1399 (+0.6 %) | 396 (60.7 %) | 388 (19.4 %) | -2.1 % |
+| nesteddata | 986 | 999 (+1.3 %) | 319 (9.8 %) | 325 (11.6 %) | +1.8 % |
+| structacc | 4400 | 4410 (+0.2 %) | 1126 (13.5 %) | 1154 (10.2 %) | +2.5 % |
+| cmpsort | 3364 | 3368 (+0.1 %) | 1040 (32.4 %) | 976 (49.5 %) | -6.1 % |
+| intdiv | 5464 | 5464 (-0.0 %) | 1894 (17.2 %) | 1851 (11.6 %) | -2.3 % |
+| bignum | 687 | 689 (+0.3 %) | 291 (13.2 %) | 286 (18.3 %) | -1.8 % |
+| mathfn | 4235 | 4238 (+0.1 %) | 1225 (9.8 %) | 1262 (9.8 %) | +3.0 % |
+| floatcalc | 4984 | 4984 (+0.0 %) | 1441 (10.4 %) | 1437 (6.7 %) | -0.3 % |
+| gc_wb | 1668 | 1668 (+0.0 %) | 577 (16.0 %) | 561 (18.0 %) | -2.8 % |
+
+| aot | base ins | new ins | base cyc (spread) | new cyc (spread) | cyc |
+|---|---|---|---|---|---|
+| hash | 3692 | 2358 (-36.1 %) | 1251 (24.5 %) | 891 (15.4 %) | -28.8 % |
+| hashiter | 1811 | 1731 (-4.4 %) | 500 (71.3 %) | 484 (78.4 %) | -3.2 % |
+| mapreduce | 3692 | 3558 (-3.6 %) | 1007 (66.3 %) | 966 (72.1 %) | -4.0 % |
+| methodchain | 3880 | 3688 (-4.9 %) | 1113 (35.1 %) | 1051 (31.8 %) | -5.5 % |
+| rangeeach | 1022 | 1030 (+0.8 %) | 289 (12.8 %) | 293 (29.7 %) | +1.5 % |
+| nesteddata | 714 | 730 (+2.4 %) | 252 (10.3 %) | 254 (9.9 %) | +1.0 % |
+| structacc | 2486 | 2496 (+0.4 %) | 604 (14.2 %) | 621 (6.8 %) | +2.9 % |
+| cmpsort | 2479 | 2484 (+0.2 %) | 775 (52.9 %) | 725 (61.5 %) | -6.5 % |
+| intdiv | 1649 | 1649 (+0.0 %) | 357 (46.1 %) | 376 (13.7 %) | +5.3 % |
+| bignum | 549 | 551 (+0.3 %) | 234 (11.5 %) | 231 (21.2 %) | -1.5 % |
+| mathfn | 2471 | 2474 (+0.1 %) | 734 (36.6 %) | 752 (9.4 %) | +2.4 % |
+| floatcalc | 1841 | 1841 (+0.0 %) | 408 (12.5 %) | 400 (12.2 %) | -2.0 % |
+| gc_wb | 842 | 842 (+0.0 %) | 348 (18.1 %) | 356 (17.4 %) | +2.1 % |
+
+Reading it, per benchmark:
+
+* **hash (-18 % / -36 % instructions)**: `h[i & 4095] = i`. An immediate key is now found and
+  stored under one borrow with a loop that compares keys only (`find_imm`); before, an indexed
+  table went through the generic path (`key_hash`, `lookup_with_hash`, `key_eql`). Converted
+  as it stood, it was +8 % / +11 %: six separate accessor calls per store (pattern 19).
+* **hashiter (-3 % / -4 %)**: the block's parameter list is examined once per `each`, not per pair.
+* **mapreduce, methodchain (-2.8 % to -4.9 %)**: `(a..b).map` keeps its result in a local. The generic
+  `run_each` path, converted mechanically, was +2.5 % and +1.5 % (three checked accesses per element).
+* **nesteddata (+1.3 % / +2.4 %)**: the kind checks themselves, 32 instructions per iteration for
+  four `hash_aset` and two `hash_aref` on literals. This is the design's cost where nothing was restructured.
+* **rangeeach (+0.6 % / +0.8 %), structacc, cmpsort, bignum, mathfn (within 0.4 %)**: no accessor
+  was added on these paths (`Range#each` reads the range once per call). One instruction per
+  iteration in rangeeach appeared with the numeric_methods commit, which does not touch
+  range_methods.rs: inlining across modules, not checks.
+* **intdiv, floatcalc, gc_wb**: unchanged.
+* **Cycles**: the spreads are 7 to 91 % under this load. Only hash moves by more than its spread
+  (-16 % / -29 %, the direction of its instruction count). For the rest the table shows no
+  regression and cannot show more; it wants a rerun on a quiet machine.
+
+The allocator accident of the pilot came back once, in the other direction: with the context-free
+range / numeric functions appended to `object.rs`, `__rust_alloc` and `__rust_dealloc` were
+separate symbols again (6.6 % + 4.1 % of nesteddata's instructions; nesteddata +5 %, gc_wb +1.3 %,
+methodchain +0.2 %). The same functions in a module of their own (`legacy.rs`) give the
+numbers above. The build still depends on a ThinLTO threshold for this; see "The allocator
+accident".
+
 ## Recipe: converting one module
 
 `ruby tools/heap_audit.rb` shows what a file still uses. For a module `m.rs`:
@@ -445,6 +655,11 @@ At 9bfce1a against 5453803 (`base`); logs in the trials directory.
    | `matches!(obj(v).body, Body::X(..))` | `is_x(v)` (add a line to `kind_test!` in heap.rs if missing) |
    | `vm().field` | `c.vm().field`; a write is `c.vm_mut().field = ..` |
    | `str_new(b)`, `str_from_vec(v)`, `hash_new()`, `float_new(d)`, `gc::alloc(k, body)` | `c.str_new(b)`, ..., `c.alloc(k, body)`. For an allocator not wrapped yet, add the `&mut self` form to the block at the end of heap.rs and the free name to `no_legacy`. |
+   | `hash_new()`, `hash_len(h)`, `hash_pairs(h)`, `hash_entry_at(h, i)`, `hash_clear(h)`, `hash_dup(h)` | the same names as methods of `c` (hash.rs) |
+   | `range_parts(r)`, `range_new(b, e, x)` | `c.range_parts(r)` (nil, nil, false for a non-Range), `c.range(r)` (must be a Range), `c.range_new(b, e, x)` |
+   | `rbig(v)`, `to_big(v)`, `big_to_value(b)`, `int_from_i64(i)`, `int_from_i128(i)`, `num_to_f64(v)`, `float_new(d)` | `c.big(v)`, `c.to_big(v)`, `c.big_to_value(b)`, ..., `c.float_new(d)`; `float_val(v)` stays a free function (by value) |
+   | `lookup_method(k, m)` + `unsafe { (*me).kind }` | `c.method_entry(k, m)` -> `Option<&MethodEntry>`; identity with `std::ptr::eq` |
+   | `unsafe { &*blk }` to look at the block's parameters | `c.block_params(blk)` |
    | a function without `c` that touches a payload | give it `c: &Ctx` (reads) or `c: &mut Ctx` (writes, allocates) and pass it from the callers; a boot-time `init()` takes what it needs as arguments (`array_methods::init(k)`) |
 
 3. **Fix what the borrow checker reports.** Each error is a place where a reference was held
@@ -526,8 +741,69 @@ At 9bfce1a against 5453803 (`base`); logs in the trials directory.
 11. **A closure that needs `c` and locals** (`let r: Result<(), Esc> = (|| { .. yield1(c, ..) .. })();`
     to run cleanup after): works unchanged, the closure borrows `c` for its own duration.
 
+Patterns met in the second wave (hash, range, struct, enumerable, numeric):
+
+12. **Lookup that may call out** (`eql?` on a key). Scan the table under one shared borrow up
+    to the first key that has to be asked, return what to ask as plain Values, drop the borrow,
+    call, then **re-validate** before trusting any index (`RHash::probe` and
+    `lookup_with_hash` in hash.rs): the callback may have emptied or rebuilt the table. A
+    changed shape restarts the scan. Keys that cannot call out (immediates) are served under a
+    single borrow (`find_imm`), which is also what makes them cheap: see 19.
+13. **Iterating a table while calling a block**: by slot number, re-reading the slot at each
+    step, `while let Some((k, v)) = c.hash_entry_at(h, i) { if k != UNDEF { .. f(c, k, v) .. } i += 1; }`,
+    inside `c.hash_iter_enter(h)` / `c.hash_iter_leave(h)`. The iteration level is a field of
+    the table (`RHash.iter_lev`, CRuby's `iter_lev`), not a global list; while it is non-zero a
+    new key and a rehash raise, and **the slots are not compacted** (a compaction renumbers
+    them under the iteration: that was a bug, see below).
+14. **Filling one table from another when hashing a key runs Ruby code**: slot by slot from the
+    source (`copy_entries` in hash_methods.rs), never from a `Vec` of pairs (the Vec is not a
+    root once the callback has emptied the source). When the source is the table being
+    refilled (`rehash`), the pairs move to a Ruby Array first and are read back by index.
+15. **Native payload state as a `Copy` snapshot.** When every field of the payload is `Copy`
+    (`REnum`), reading is `fn renum(c: &Ctx, v) -> REnum { *c.data::<REnum>(v).expect(..) }`
+    and writing is `renum_mut(c, v).pos += 1`. Code that kept `let en = renum(v).unwrap();`
+    across ten calls keeps its shape; what changes is that a field read after a call is the
+    value from before it, so each such read was checked against what the call can write.
+16. **Allocation inside an argument list**: `c.ary_new_from(&[c.float_new(x), y])` is E0499.
+    Name the temporaries (`let f = c.float_new(x); c.ary_new_from(&[f, y])`); the temporary was
+    an unrooted Value in a Rust array during the second allocation, now it is a local.
+17. **Boot-time `init`** has no context. It takes the classes it needs and returns the ones it
+    defines (`vm.c_struct = structs::init(vm.c_object, vm.m_enumerable)`,
+    `vm.ids.r_each = range_methods::init(vm.c_range)`); values that must be allocated at boot
+    (Float::INFINITY) are made by `builtins::init`, which is not converted. Order matters when
+    a subclass inherits state at creation: Enumerator is made, and marked "no allocator", by
+    `builtins::init` before `enumerator::init` defines its subclasses.
+18. **A context-free function with callers outside the module** (`hash_pairs(h)`,
+    `int_from_i64(i)`): the module gets the `Ctx` method; the old body moves to a module that
+    is not converted (`object.rs`, `legacy.rs`) and is re-exported from the converted module's
+    outer scope, next to `mod imp { .. }` as in array.rs, so that `crate::hash::hash_pairs`
+    still resolves for the callers that are left.
+19. **Count the accesses on a hot path.** Each accessor call is a kind check that the compiler
+    cannot merge across a call. Two shapes cost more than the pilot's "two instructions":
+    * a sequence of small accessors on one object (`hash_aset`: flags, identity, lookup, write
+      was +36 instructions per `h[i] = v`): take **one** borrow and do the whole operation on
+      it (`let r = c.hash_mut(h); r.find_imm(k) .. r.insert_new(..)`);
+    * a Rust block whose state is a Ruby Array (`run_each(c, recv, |c, d, args, _| ..)` reads
+      the result Array and the block out of `d` at every element: +9 per element): keep the
+      state in locals where the iteration can be written as a loop
+      (`Enumerable#map` on an Integer Range).
+20. **A function that got bigger stops being inlined** (`hash_aset` into the hash-literal
+    node: +3 % on nesteddata until it was split into an `#[inline]` front and an
+    `#[inline(never)]` String-key part). Compare instruction counts per commit, not at the end.
+
 ## What is still open
 
+* `builtins/rational.rs`, `builtins/complex.rs`: both are written on a layer of context-free
+  integer helpers (`iadd(a, b)`, `imul`, `idiv`, `igcd`, `rat_raw(n, d)`, `rat_parts(v)`: 108 lines
+  of rational.rs use them, nested as `isub(a, imul(idiv(a, b), b))`). Each helper allocates a
+  bignum without the context, so each needs `c`, and each nested use then needs its
+  intermediate named (pattern 16). That is a rewrite of the arithmetic, not a substitution; it
+  was started and backed out.
+* `builtins/time.rs` (`localtime_r` / `tzset`: external-interface `unsafe` that stays, plus
+  `rdata` payloads), `builtins/random.rs` (`static mut DEFAULT`, which wants a `Vm` field while
+  vm.rs is being changed elsewhere): not started.
+* A converted module still calls context-free functions of unconverted ones
+  (`rat_raw` from numeric_methods.rs, `ivar_get` / `ivar_set_raw`, `const_set`, `recursion_enter`).
 * The call sites below.
 * Allocation behind the context's back (71 `gc::alloc` sites), until `gc::alloc` is reachable
   only through `Ctx::alloc`.
@@ -538,7 +814,7 @@ At 9bfce1a against 5453803 (`base`); logs in the trials directory.
 
 ## Remaining work per file
 
-`ruby tools/heap_audit.rb --md` at 9bfce1a. Columns: call sites of each old accessor
+`ruby tools/heap_audit.rb --md` at dc28c5a (after the second wave). Columns: call sites of each old accessor
 (`rstr` includes `str_bytes`, `rproc` includes `rmethod`, `ary_*` are the context-free array
 functions of object.rs); `sum`; functions of the file that return `&'static mut`; `static mut`
 declarations; `unsafe` occurrences (comments excluded). Generated `src/node_*.rs` and
@@ -548,56 +824,57 @@ declarations; `unsafe` occurrences (comments excluded). Generated `src/node_*.rs
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | src/aot.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      1 |     1 |                0 |          1 |      4 |  |
 | src/array.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
-| src/bignum.rs |      1 |      0 |      0 |      0 |      0 |      0 |      1 |      0 |      0 |      0 |      1 |     3 |                0 |          0 |      1 |  |
+| src/bignum.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/array_methods.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/binding.rs |      0 |      0 |      1 |      0 |      0 |      1 |      0 |      1 |      0 |      3 |      9 |    15 |                1 |          0 |      9 |  |
 | src/builtins/complex.rs |      1 |      0 |      4 |      0 |      1 |      0 |      0 |      2 |      0 |      8 |      4 |    20 |                0 |          0 |      0 |  |
 | src/builtins/encoding.rs |      1 |      0 |     16 |      0 |      0 |      0 |      0 |      9 |      0 |     10 |      7 |    43 |                0 |          5 |     10 |  |
-| src/builtins/enum_native.rs |      1 |     10 |      1 |      0 |      0 |      0 |      0 |      0 |      0 |     63 |      7 |    82 |                0 |          0 |      1 |  |
-| src/builtins/enumerator.rs |      3 |      1 |      0 |      0 |      1 |      3 |      0 |      2 |      0 |     41 |     13 |    64 |                1 |          0 |      1 |  |
+| src/builtins/enum_native.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
+| src/builtins/enumerator.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/env.rs |      1 |      0 |      3 |      0 |      0 |      0 |      0 |      0 |      0 |      4 |      2 |    10 |                0 |          0 |      4 |  |
 | src/builtins/exception.rs |      0 |      0 |     12 |      0 |      2 |      0 |      0 |      0 |      0 |     14 |     15 |    43 |                0 |          0 |      0 |  |
 | src/builtins/extras.rs |      0 |      0 |      1 |      0 |      3 |      0 |      0 |      0 |      0 |      9 |     13 |    26 |                0 |          0 |     13 |  |
 | src/builtins/file.rs |      0 |      0 |      4 |      0 |      1 |      0 |      0 |      6 |      0 |     13 |     13 |    37 |                0 |          1 |     25 |  |
-| src/builtins/hash_methods.rs |     10 |      2 |      2 |     16 |      0 |      2 |      0 |      0 |      0 |     48 |      9 |    89 |                0 |          0 |      2 |  |
+| src/builtins/hash_methods.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/io.rs |      0 |      0 |     23 |      0 |      1 |      0 |      0 |      1 |      0 |     11 |     22 |    58 |                3 |          1 |     32 |  |
 | src/builtins/json.rs |      6 |      0 |     10 |      0 |      0 |      0 |      1 |      0 |      0 |      6 |     15 |    38 |                0 |          2 |      8 |  |
 | src/builtins/kernel.rs |      2 |      0 |     18 |      0 |      5 |      0 |      1 |      0 |      0 |     16 |     66 |   108 |                0 |          1 |     14 |  |
 | src/builtins/marshal.rs |      9 |      4 |     13 |      1 |     10 |      0 |      0 |      0 |      0 |     26 |     17 |    80 |                0 |          0 |      0 |  |
-| src/builtins/math.rs |      0 |      0 |      0 |      0 |      0 |      0 |      1 |      0 |      0 |      3 |      4 |     8 |                0 |          0 |      0 |  |
+| src/builtins/math.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/misc.rs |      1 |      2 |      9 |      1 |      1 |      0 |      1 |      4 |      0 |     31 |      3 |    53 |                0 |          2 |      6 |  |
-| src/builtins/mod.rs |      3 |      0 |      0 |      0 |     15 |      0 |      0 |      0 |      0 |      4 |      1 |    23 |                0 |          0 |      2 |  |
+| src/builtins/mod.rs |      3 |      0 |      0 |      0 |     16 |      0 |      0 |      0 |      0 |      4 |      1 |    24 |                0 |          0 |      2 |  |
 | src/builtins/module.rs |      4 |      0 |      0 |      0 |      4 |      0 |      0 |      0 |      0 |      0 |      0 |     8 |                0 |          0 |      1 |  |
-| src/builtins/numeric_methods.rs |      0 |      0 |      4 |      0 |      0 |      0 |     15 |      0 |      0 |     27 |     30 |    76 |                0 |          0 |      0 |  |
+| src/builtins/numeric_methods.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/object.rs |     22 |      8 |      5 |      0 |     79 |      2 |      0 |      0 |      0 |     42 |     54 |   212 |                0 |          1 |     44 |  |
 | src/builtins/pp.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      2 |      0 |     2 |                0 |          0 |      0 |  |
 | src/builtins/prelude.rs |      0 |      0 |      0 |      0 |      1 |      0 |      0 |      0 |      0 |      1 |      1 |     3 |                0 |          0 |      0 |  |
 | src/builtins/proc.rs |      4 |      2 |      0 |      0 |      4 |     37 |      0 |      0 |      0 |     39 |     16 |   102 |                0 |          0 |     30 |  |
 | src/builtins/process.rs |      0 |      3 |      5 |      0 |      0 |      0 |      0 |      0 |      0 |     25 |     10 |    43 |                0 |          3 |     54 |  |
 | src/builtins/random.rs |      1 |      0 |      2 |      0 |      2 |      0 |      0 |      9 |      0 |      0 |      9 |    23 |                1 |          1 |      2 |  |
-| src/builtins/range_methods.rs |      3 |      0 |      6 |      0 |      1 |      0 |      0 |      0 |      0 |     17 |     11 |    38 |                0 |          0 |      0 |  |
+| src/builtins/range_methods.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/rational.rs |      1 |      0 |      4 |      0 |      1 |      0 |      5 |      2 |      0 |      8 |     10 |    31 |                0 |          0 |      0 |  |
 | src/builtins/regexp_methods.rs |      4 |      1 |     15 |      0 |      2 |      0 |      0 |      0 |      0 |      7 |      5 |    34 |                1 |          0 |      0 |  |
 | src/builtins/sprintf.rs |      0 |      0 |      6 |      2 |      0 |      0 |      0 |      0 |      0 |      0 |     13 |    21 |                0 |          0 |      0 |  |
 | src/builtins/string_methods.rs |     10 |      1 |     66 |      0 |      0 |      0 |      3 |      0 |      0 |     30 |     36 |   146 |                1 |          0 |      0 |  |
 | src/builtins/stringio.rs |      0 |      0 |     29 |      0 |      1 |      0 |      0 |      2 |      0 |      2 |     12 |    46 |                3 |          0 |      0 |  |
 | src/builtins/strscan.rs |      0 |      0 |     17 |      0 |      1 |      0 |      0 |      4 |      0 |      4 |      3 |    29 |                1 |          2 |      3 |  |
-| src/builtins/structs.rs |      1 |      6 |      7 |      0 |      7 |      0 |      0 |      0 |      0 |     31 |      7 |    59 |                0 |          0 |      0 |  |
+| src/builtins/structs.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/symbol_methods.rs |      1 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      2 |      1 |     4 |                0 |          0 |      0 |  |
 | src/builtins/sys.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      6 |  |
 | src/builtins/thread.rs |      0 |     10 |      1 |      0 |      4 |      0 |      0 |      6 |      0 |     29 |     25 |    75 |                4 |          8 |     40 |  |
 | src/builtins/time.rs |      0 |      0 |      7 |      0 |      1 |      0 |      0 |      4 |      0 |      2 |     10 |    24 |                1 |          0 |      2 |  |
 | src/compile.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      4 |  |
-| src/fiber.rs |      0 |      1 |      0 |      0 |      1 |      1 |      0 |      1 |      0 |      2 |     10 |    16 |                1 |          5 |     21 |  |
+| src/fiber.rs |      0 |      1 |      0 |      0 |      1 |      1 |      0 |      2 |      0 |      2 |     10 |    17 |                2 |          6 |     21 |  |
 | src/gc.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      2 |     2 |                1 |          3 |     13 |  |
-| src/hash.rs |      9 |      2 |      2 |     25 |      0 |      0 |      2 |      0 |      0 |      7 |      7 |    54 |                1 |          1 |      4 |  |
-| src/heap.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |     12 |  |
+| src/hash.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
+| src/heap.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |     18 |  |
 | src/kalloc.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          5 |     12 |  |
+| src/legacy.rs |      3 |      0 |      0 |      0 |      0 |      0 |      2 |      0 |      0 |      0 |      3 |     8 |                0 |          0 |      0 |  |
 | src/lib.rs |      0 |      1 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      2 |      8 |    11 |                0 |          0 |      2 |  |
-| src/numeric.rs |      1 |      0 |      0 |      0 |      0 |      0 |      1 |      0 |      0 |      0 |      1 |     3 |                0 |          0 |      0 |  |
-| src/object.rs |      8 |      4 |      1 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      4 |    17 |                7 |          1 |      7 |  |
+| src/numeric.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
+| src/object.rs |      9 |      4 |      1 |      5 |      0 |      0 |      0 |      0 |      0 |      0 |      5 |    24 |                7 |          1 |      7 |  |
 | src/prism.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      1 |  |
-| src/range.rs |      2 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      2 |     4 |                0 |          0 |      0 |  |
+| src/range.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/regexp.rs |      0 |      0 |      9 |      0 |      0 |      0 |      0 |      2 |      0 |      2 |      4 |    17 |                2 |          0 |      0 |  |
 | src/rt.rs |     15 |     50 |      9 |      4 |     30 |      1 |      0 |      0 |      0 |     14 |     52 |   175 |                0 |          2 |     62 |  |
 | src/sbuf.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |     10 |  |
@@ -605,6 +882,6 @@ declarations; `unsafe` occurrences (comments excluded). Generated `src/node_*.rs
 | src/string.rs |      3 |      0 |     27 |      0 |      0 |      0 |      0 |      0 |      0 |      2 |      5 |    37 |                0 |          0 |      0 |  |
 | src/symbol.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                1 |          1 |      2 |  |
 | src/value.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |     11 |  |
-| src/vm.rs |     20 |      3 |      2 |      5 |     60 |     10 |      0 |      1 |      1 |      7 |     53 |   162 |                2 |          2 |     67 |  |
-| node.def |     11 |      0 |      2 |      0 |      0 |      0 |      0 |      0 |      0 |      3 |     11 |    27 |                0 |          0 |     22 |  |
-| total |    159 |    111 |    343 |     54 |    239 |     57 |     31 |     56 |      1 |    617 |    634 |  2302 |               32 |         48 |    569 |  |
+| src/vm.rs |     23 |      3 |      2 |      5 |     60 |     10 |      0 |      1 |      1 |      7 |     55 |   167 |                2 |          2 |     68 |  |
+| node.def |     11 |      0 |      2 |      0 |      0 |      0 |      0 |      0 |      0 |      3 |      9 |    25 |                0 |          0 |     22 |  |
+| total |    135 |     90 |    321 |     18 |    231 |     52 |     13 |     55 |      1 |    380 |    546 |  1842 |               31 |         48 |    567 |  |
