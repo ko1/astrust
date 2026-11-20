@@ -126,7 +126,7 @@ fn curry_call(c: &mut Ctx, data: Value, args: &[Value], _blk: *const Block) -> R
 fn make_curry(c: &mut Ctx, p: Value, arity: i64, got: Value) -> RV {
     let data = ary_new_from(&[p, Value::fix(arity), got]);
     let b = Block::cfunc(c, curry_call, data);
-    let np = crate::gc::alloc(vm().c_proc, Body::Proc(Box::new(ProcData { blk: b, is_lambda: true, from_method: NIL })));
+    let np = crate::gc::alloc(vm().c_proc, Body::Proc(Box::new(ProcData { blk: b, is_lambda: rproc(p).is_lambda, from_method: NIL })));
     rproc(np).blk.proc_val = np;
     Ok(np)
 }

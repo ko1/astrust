@@ -414,7 +414,16 @@ fn module_chain(m: Value, out: &mut Vec<Value>) {
     let cd = rclass(m);
     for &p in cd.prepends.iter().rev() { module_chain(p, out); }
     out.push(m);
-    for &i in cd.includes.iter().rev() { module_chain(i, out); }
+    // in include order: a later include goes in front, minus what an earlier one already brought in
+    let mut chain: Vec<Value> = vec![];
+    for &i in cd.includes.iter() {
+        let mut new = vec![];
+        module_chain(i, &mut new);
+        new.retain(|x| !chain.contains(x));
+        new.extend(chain);
+        chain = new;
+    }
+    out.extend(chain);
 }
 
 /// Method resolution order (cached per class).

@@ -175,6 +175,12 @@ impl<'a> Compiler<'a> {
                 stack.pop();
                 return;
             }
+            Kind::PostExecutionNode { statements } => {
+                stack.push((key(n), true));
+                if let Some(st) = statements { self.analyze_rec(st, stack, ub); }
+                stack.pop();
+                return;
+            }
             Kind::DefNode { receiver, .. } => { if let Some(r) = receiver { self.analyze_rec(r, stack, ub); } return; }
             Kind::ClassNode { constant_path, superclass, .. } => {
                 self.analyze_rec(constant_path, stack, ub);
@@ -785,8 +791,12 @@ impl<'a> Compiler<'a> {
             Kind::PreExecutionNode { statements } => self.stmts(statements.as_deref()),
             Kind::PostExecutionNode { statements } => {
                 // END { } → at_exit { }
-                let fake_locals: Vec<u32> = vec![];
-                let is = self.compile_block(n, &fake_locals, None, statements.as_deref(), IseqKind::Block, line);
+                // no scope of its own in prism: like a `for` body it shares the enclosing variables
+                let mut sc = Scope::new(SK::For, HashSet::new());
+                sc.transparent = true;
+                self.scopes.push(sc);
+                let b = self.stmts(statements.as_deref());
+                let is = self.finish_iseq(b, Params::default(), IseqKind::Block, self.block_label(), line, Sym(0));
                 ALLOC_node_call_blk(ALLOC_node_self(), leak(vec![]), intern(b"at_exit"), CF_FCALL, line, is)
             }
             Kind::EmbeddedStatementsNode { statements } => self.stmts(statements.as_deref()),
@@ -1642,13 +1652,14 @@ impl<'a> Compiler<'a> {
         let rd = ALLOC_node_lvar(p);
         let assign = match &index.kind {
             Kind::MultiTargetNode { lefts, rest, rights } => self.masgn(lefts, rest.as_deref(), rights, rd, false),
+            Kind::SplatNode { .. } => self.masgn(&[], Some(index), &[], rd, false),
             _ => self.target(index, rd),
         };
         let b = self.stmts(body);
         let full = self.seq(vec![assign, b]);
         let mut params = Params::default();
         params.lead.push(p);
-        if matches!(index.kind, Kind::MultiTargetNode { .. }) {
+        if matches!(index.kind, Kind::MultiTargetNode { .. } | Kind::SplatNode { .. }) {
             // |*args| semantics: pack into an array when several values are yielded
             params.lead.clear();
             params.rest = Some(p);

@@ -994,22 +994,23 @@ pub fn rt_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: *mut Value, kind: u32, 
             err(c, vm().c_no_matching_pattern_error, msg)
         }
         SP_PM_MSG => {
-            let a: Vec<Value> = rary(v).clone();
+            // elements stay in `v` (GC-visible) while inspect allocates
+            let a = |i: usize| rary(v)[i];
             let insp = crate::builtins::kernel::inspect_str;
-            let msg = match a[0].as_fix() {
-                PM_EQQ => format!("{} === {} does not return true", insp(c, a[1])?, insp(c, a[2])?),
+            let msg = match a(0).as_fix() {
+                PM_EQQ => format!("{} === {} does not return true", insp(c, a(1))?, insp(c, a(2))?),
                 PM_GUARD => "guard clause does not return true".to_string(),
-                PM_ARY if a[2] == NIL => format!("{} does not respond to #deconstruct", insp(c, a[1])?),
-                PM_ARY => format!("{} length mismatch (given {}, expected {}{})", insp(c, a[2])?, rary(a[2]).len(), a[3].as_fix(), if a[4] == TRUE { "" } else { "+" }),
-                PM_DECON => format!("{} does not respond to #deconstruct", insp(c, a[1])?),
-                PM_FIND => format!("{} does not match to find pattern", insp(c, a[1])?),
-                PM_DECONK => format!("{} does not respond to #deconstruct_keys", insp(c, a[1])?),
+                PM_ARY if a(2) == NIL => format!("{} does not respond to #deconstruct", insp(c, a(1))?),
+                PM_ARY => format!("{} length mismatch (given {}, expected {}{})", insp(c, a(2))?, rary(a(2)).len(), a(3).as_fix(), if a(4) == TRUE { "" } else { "+" }),
+                PM_DECON => format!("{} does not respond to #deconstruct", insp(c, a(1))?),
+                PM_FIND => format!("{} does not match to find pattern", insp(c, a(1))?),
+                PM_DECONK => format!("{} does not respond to #deconstruct_keys", insp(c, a(1))?),
                 PM_KEY => {
-                    let m = str_new(format!("key not found: {}", insp(c, a[2])?).as_bytes());
-                    return Ok(ary_new_from(&[m, a[1], a[2]]));
+                    let m = str_new(format!("key not found: {}", insp(c, a(2))?).as_bytes());
+                    return Ok(ary_new_from(&[m, a(1), a(2)]));
                 }
-                PM_REST => format!("rest of {} is not empty", insp(c, a[1])?),
-                _ => format!("{} is not empty", insp(c, a[1])?),
+                PM_REST => format!("rest of {} is not empty", insp(c, a(1))?),
+                _ => format!("{} is not empty", insp(c, a(1))?),
             };
             Ok(str_new(msg.as_bytes()))
         }
