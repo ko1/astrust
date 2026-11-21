@@ -10,7 +10,6 @@ use crate::symbol::intern;
 use crate::value::*;
 use crate::vm::*;
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::io::FromRawFd;
 
 pub struct RStat { pub md: Option<std::fs::Metadata> }
 impl RData for RStat {
@@ -22,8 +21,7 @@ fn os_err(c: &mut Ctx, e: &std::io::Error, detail: &str) -> Esc { raise_errno(c,
 fn last_err(c: &mut Ctx, detail: &str) -> Esc { raise_errno(c, sys::errno(), detail) }
 fn new_stat(md: std::fs::Metadata) -> Value { init_stat(); crate::gc::alloc(vm().c_stat, Body::Data(Box::new(RStat { md: Some(md) }))) }
 fn fd_meta(fd: i32) -> std::io::Result<std::fs::Metadata> {
-    let f = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
-    f.metadata()
+    sys::fd_metadata(fd)
 }
 /// Metadata of a path or an IO argument.
 fn meta_of(c: &mut Ctx, v: Value, follow: bool) -> Result<Result<std::fs::Metadata, (std::io::Error, String)>, Esc> {
@@ -36,7 +34,7 @@ fn stat_md(c: &mut Ctx, v: Value) -> Result<&'static std::fs::Metadata, Esc> {
 }
 fn time_of(sec: i64, nsec: i64) -> Value { crate::legacy::time_from_ns(sec, nsec) }
 fn access_ok(md: &std::fs::Metadata, bit: u32, effective: bool) -> bool {
-    let (uid, gid) = unsafe { if effective { (sys::geteuid(), sys::getegid()) } else { (sys::getuid(), sys::getgid()) } };
+    let (uid, gid) = if effective { (sys::geteuid(), sys::getegid()) } else { (sys::getuid(), sys::getgid()) };
     if uid == 0 { return bit != 1 || md.mode() & 0o111 != 0 || md.is_dir(); }
     let m = md.mode();
     if md.uid() == uid { m & (bit << 6) != 0 } else if md.gid() == gid { m & (bit << 3) != 0 } else { m & bit != 0 }
@@ -82,8 +80,8 @@ stat_fn!(st_ftype, |m| str_new(ftype(m).as_bytes()));
 stat_fn!(st_setuid, |m| Value::bool(m.mode() & 0o4000 != 0));
 stat_fn!(st_setgid, |m| Value::bool(m.mode() & 0o2000 != 0));
 stat_fn!(st_sticky, |m| Value::bool(m.mode() & 0o1000 != 0));
-stat_fn!(st_owned, |m| Value::bool(m.uid() == unsafe { sys::geteuid() }));
-stat_fn!(st_grpowned, |m| Value::bool(m.gid() == unsafe { sys::getegid() }));
+stat_fn!(st_owned, |m| Value::bool(m.uid() == sys::geteuid()));
+stat_fn!(st_grpowned, |m| Value::bool(m.gid() == sys::getegid()));
 fn st_birthtime(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let m = stat_md(c, s)?;
     match m.created().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()) { Some(d) => Ok(time_of(d.as_secs() as i64, d.subsec_nanos() as i64)), None => err(c, vm().c_not_impl_error, "birthtime() function is unimplemented on this machine") }
@@ -154,8 +152,8 @@ test_fn!(f_s_zero, true, |m| Value::bool(m.len() == 0));
 test_fn!(f_s_setuid, true, |m| Value::bool(m.mode() & 0o4000 != 0));
 test_fn!(f_s_setgid, true, |m| Value::bool(m.mode() & 0o2000 != 0));
 test_fn!(f_s_sticky, true, |m| Value::bool(m.mode() & 0o1000 != 0));
-test_fn!(f_s_owned, true, |m| Value::bool(m.uid() == unsafe { sys::geteuid() }));
-test_fn!(f_s_grpowned, true, |m| Value::bool(m.gid() == unsafe { sys::getegid() }));
+test_fn!(f_s_owned, true, |m| Value::bool(m.uid() == sys::geteuid()));
+test_fn!(f_s_grpowned, true, |m| Value::bool(m.gid() == sys::getegid()));
 fn f_s_size_p(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { Ok(match meta_of(c, a[0], true)? { Ok(m) if m.len() > 0 => Value::fix(m.len() as i64), _ => NIL }) }
 fn f_s_world_readable(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { Ok(match meta_of(c, a[0], true)? { Ok(m) if m.mode() & 4 != 0 => Value::fix((m.mode() & 0o777) as i64), _ => NIL }) }
 fn f_s_world_writable(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { Ok(match meta_of(c, a[0], true)? { Ok(m) if m.mode() & 2 != 0 => Value::fix((m.mode() & 0o777) as i64), _ => NIL }) }
@@ -204,39 +202,37 @@ fn mode_arg(c: &mut Ctx, v: Value) -> Result<u32, Esc> { Ok(num_to_long(c, v)? a
 fn f_s_chmod(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
     let m = mode_arg(c, a[0])?;
-    for &x in &a[1..] { let p = path_arg(c, x)?; if unsafe { sys::chmod(sys::cstr(p.as_bytes()).as_ptr(), m) } < 0 { return Err(last_err(c, &format!("rb_file_s_chmod - {}", p))); } }
+    for &x in &a[1..] { let p = path_arg(c, x)?; if sys::chmod(&sys::cstr(p.as_bytes()), m) < 0 { return Err(last_err(c, &format!("rb_file_s_chmod - {}", p))); } }
     Ok(Value::fix(a.len() as i64 - 1))
 }
 fn id_arg(c: &mut Ctx, v: Value) -> Result<u32, Esc> { if v == NIL { Ok(u32::MAX) } else { Ok(num_to_long(c, v)? as u32) } }
 fn f_s_chown(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
     if a.len() < 2 { return argc_err(c, a.len(), 2, -1); }
     let (u, g) = (id_arg(c, a[0])?, id_arg(c, a[1])?);
-    for &x in &a[2..] { let p = path_arg(c, x)?; if unsafe { sys::chown(sys::cstr(p.as_bytes()).as_ptr(), u, g) } < 0 { return Err(last_err(c, &format!("rb_file_s_chown - {}", p))); } }
+    for &x in &a[2..] { let p = path_arg(c, x)?; if sys::chown(&sys::cstr(p.as_bytes()), u, g) < 0 { return Err(last_err(c, &format!("rb_file_s_chown - {}", p))); } }
     Ok(Value::fix(a.len() as i64 - 2))
 }
 fn f_s_lchown(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
     if a.len() < 2 { return argc_err(c, a.len(), 2, -1); }
     let (u, g) = (id_arg(c, a[0])?, id_arg(c, a[1])?);
-    for &x in &a[2..] { let p = path_arg(c, x)?; if unsafe { sys::lchown(sys::cstr(p.as_bytes()).as_ptr(), u, g) } < 0 { return Err(last_err(c, &format!("rb_file_s_lchown - {}", p))); } }
+    for &x in &a[2..] { let p = path_arg(c, x)?; if sys::lchown(&sys::cstr(p.as_bytes()), u, g) < 0 { return Err(last_err(c, &format!("rb_file_s_lchown - {}", p))); } }
     Ok(Value::fix(a.len() as i64 - 2))
 }
 fn f_s_lchmod(c: &mut Ctx, _slf: Value, _a: &[Value], _b: *const Block) -> RV { err(c, vm().c_not_impl_error, "lchmod() function is unimplemented on this machine") }
 fn f_s_truncate(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
     let p = path_arg(c, a[0])?; let n = num_to_long(c, a[1])?;
-    if unsafe { sys::truncate(sys::cstr(p.as_bytes()).as_ptr(), n) } < 0 { return Err(last_err(c, &format!("rb_file_s_truncate - {}", p))); }
+    if sys::truncate(&sys::cstr(p.as_bytes()), n) < 0 { return Err(last_err(c, &format!("rb_file_s_truncate - {}", p))); }
     Ok(Value::fix(0))
 }
 fn f_s_umask(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
-    unsafe {
-        if let Some(&m) = a.first() { let m = mode_arg(c, m)?; return Ok(Value::fix(sys::umask(m) as i64)); }
-        let old = sys::umask(0); sys::umask(old);
-        Ok(Value::fix(old as i64))
-    }
+    if let Some(&m) = a.first() { let m = mode_arg(c, m)?; return Ok(Value::fix(sys::umask(m) as i64)); }
+    let old = sys::umask(0); sys::umask(old);
+    Ok(Value::fix(old as i64))
 }
 fn f_s_mkfifo(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
     let p = path_arg(c, a[0])?;
     let m = match a.get(1) { Some(&m) => mode_arg(c, m)?, None => 0o666 };
-    if unsafe { sys::mkfifo(sys::cstr(p.as_bytes()).as_ptr(), m) } < 0 { return Err(last_err(c, &format!("rb_file_s_mkfifo - {}", p))); }
+    if sys::mkfifo(&sys::cstr(p.as_bytes()), m) < 0 { return Err(last_err(c, &format!("rb_file_s_mkfifo - {}", p))); }
     Ok(Value::fix(0))
 }
 fn timespec_arg(c: &mut Ctx, v: Value) -> Result<sys::Timespec, Esc> {
@@ -248,7 +244,7 @@ fn timespec_arg(c: &mut Ctx, v: Value) -> Result<sys::Timespec, Esc> {
 fn utime_impl(c: &mut Ctx, a: &[Value], nofollow: bool) -> RV {
     if a.len() < 2 { return argc_err(c, a.len(), 2, -1); }
     let ts = [timespec_arg(c, a[0])?, timespec_arg(c, a[1])?];
-    for &x in &a[2..] { let p = path_arg(c, x)?; if unsafe { sys::utimensat(-100, sys::cstr(p.as_bytes()).as_ptr(), ts.as_ptr(), if nofollow { 0x100 } else { 0 }) } < 0 { return Err(last_err(c, &format!("rb_file_s_utime - {}", p))); } }
+    for &x in &a[2..] { let p = path_arg(c, x)?; if sys::utimensat_cwd(&sys::cstr(p.as_bytes()), &ts, if nofollow { 0x100 } else { 0 }) < 0 { return Err(last_err(c, &format!("rb_file_s_utime - {}", p))); } }
     Ok(Value::fix(a.len() as i64 - 2))
 }
 fn f_s_utime(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV { utime_impl(c, a, false) }
@@ -362,7 +358,7 @@ fn f_truncate(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     funcall(c, s, intern(b"flush"), &[], std::ptr::null())?;
     let io = crate::builtins::io::get_io(c, s)?;
     if !io.writable { return err(c, vm().c_io_error, "not opened for writing"); }
-    if unsafe { sys::ftruncate(io.fd, n) } < 0 { let p = io.path.clone(); return Err(last_err(c, &p)); }
+    if sys::ftruncate(io.fd, n) < 0 { let p = io.path.clone(); return Err(last_err(c, &p)); }
     Ok(Value::fix(0))
 }
 fn f_flock(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
@@ -370,20 +366,20 @@ fn f_flock(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     funcall(c, s, intern(b"flush"), &[], std::ptr::null())?;
     let io = crate::builtins::io::get_io(c, s)?;
     loop {
-        if unsafe { sys::flock(io.fd, op) } == 0 { return Ok(Value::fix(0)); }
+        if sys::flock(io.fd, op) == 0 { return Ok(Value::fix(0)); }
         match sys::errno() { 4 => continue, 11 if op & 4 != 0 => return Ok(FALSE), _ => { let p = io.path.clone(); return Err(last_err(c, &p)); } }
     }
 }
 fn f_chmod(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let m = mode_arg(c, a[0])?;
     let io = crate::builtins::io::get_io(c, s)?;
-    if unsafe { sys::fchmod(io.fd, m) } < 0 { let p = io.path.clone(); return Err(last_err(c, &p)); }
+    if sys::fchmod(io.fd, m) < 0 { let p = io.path.clone(); return Err(last_err(c, &p)); }
     Ok(Value::fix(0))
 }
 fn f_chown(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let (u, g) = (id_arg(c, a[0])?, id_arg(c, a[1])?);
     let io = crate::builtins::io::get_io(c, s)?;
-    if unsafe { sys::fchown(io.fd, u, g) } < 0 { let p = io.path.clone(); return Err(last_err(c, &p)); }
+    if sys::fchown(io.fd, u, g) < 0 { let p = io.path.clone(); return Err(last_err(c, &p)); }
     Ok(Value::fix(0))
 }
 macro_rules! fmeta_fn {
@@ -517,23 +513,8 @@ fn f_s_fnmatch(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(Value::bool(fnm(pat, s.as_bytes(), flags, true)))
 }
 
-#[repr(C)] struct Dirent { ino: u64, off: i64, reclen: u16, typ: u8, name: [u8; 256] }
-extern "C" { fn opendir(p: *const i8) -> *mut u8; fn readdir(d: *mut u8) -> *mut Dirent; fn closedir(d: *mut u8) -> i32; }
 /// Directory entries in readdir order (with "." and ".."), like CRuby.
-fn read_dir_raw(path: &str) -> Result<Vec<(Vec<u8>, u8)>, i64> {
-    let d = unsafe { opendir(sys::cstr(path.as_bytes()).as_ptr()) };
-    if d.is_null() { return Err(sys::errno()); }
-    let mut out = vec![];
-    loop {
-        let e = unsafe { readdir(d) };
-        if e.is_null() { break; }
-        let e = unsafe { &*e };
-        let n = e.name.iter().position(|&b| b == 0).unwrap_or(256);
-        out.push((e.name[..n].to_vec(), e.typ));
-    }
-    unsafe { closedir(d); }
-    Ok(out)
-}
+fn read_dir_raw(path: &str) -> Result<Vec<(Vec<u8>, u8)>, i64> { sys::read_dir_raw(&sys::cstr(path.as_bytes())) }
 fn has_magic(seg: &[u8]) -> bool { seg.iter().any(|&b| matches!(b, b'*' | b'?' | b'[')) }
 fn unescape(seg: &[u8], noescape: bool) -> Vec<u8> {
     if noescape { return seg.to_vec(); }
@@ -645,7 +626,7 @@ fn d_s_pwd(c: &mut Ctx, _slf: Value, _a: &[Value], _b: *const Block) -> RV {
 }
 static mut CHDIR_DEPTH: i32 = 0;
 fn chdir_to(c: &mut Ctx, p: &str) -> Result<(), Esc> {
-    if unsafe { sys::chdir(sys::cstr(p.as_bytes()).as_ptr()) } < 0 { return Err(last_err(c, &format!("rb_dir_s_chdir - {}", p))); }
+    if sys::chdir(&sys::cstr(p.as_bytes())) < 0 { return Err(last_err(c, &format!("rb_dir_s_chdir - {}", p))); }
     Ok(())
 }
 fn d_s_chdir(c: &mut Ctx, _slf: Value, a: &[Value], blk: *const Block) -> RV {

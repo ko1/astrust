@@ -62,24 +62,23 @@ fn m_log1p(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     if f < -1.0 { return err(c, vm().c_math_domain_error, "Numerical argument is out of domain - \"log1p\""); }
     Ok(crate::numeric::float_new(f.ln_1p()))
 }
-extern "C" { fn erf(x: f64) -> f64; fn erfc(x: f64) -> f64; fn cbrt(x: f64) -> f64; fn tgamma(x: f64) -> f64; fn lgamma_r(x: f64, sign: *mut i32) -> f64; }
 fn m_gamma(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let f = crate::builtins::numeric_methods::rb_float(c, a[0])?;
     if f == f64::NEG_INFINITY || (f < 0.0 && f == f.floor()) { return err(c, vm().c_math_domain_error, "Numerical argument is out of domain - \"gamma\""); }
     if f == f.floor() && (1.0..=23.0).contains(&f) { let mut r = 1.0f64; let mut k = 2.0; while k < f { r *= k; k += 1.0; } return Ok(crate::numeric::float_new(r)); }
-    Ok(crate::numeric::float_new(unsafe { tgamma(f) }))
+    Ok(crate::numeric::float_new(sys::tgamma(f)))
 }
 fn m_lgamma(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let f = crate::builtins::numeric_methods::rb_float(c, a[0])?;
     if f == f64::NEG_INFINITY { return err(c, vm().c_math_domain_error, "Numerical argument is out of domain - \"lgamma\""); }
     if f == 0.0 { return Ok(ary_new_from(&[crate::numeric::float_new(f64::INFINITY), Value::fix(if f.is_sign_negative() { -1 } else { 1 })])); }
     let mut sign = 1i32;
-    let r = unsafe { lgamma_r(f, &mut sign) };
+    let r = sys::lgamma_r(f, &mut sign);
     Ok(ary_new_from(&[crate::numeric::float_new(r), Value::fix(if sign < 0 { -1 } else { 1 })]))
 }
-fn m_erf(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; Ok(crate::numeric::float_new(unsafe { erf(f) })) }
-fn m_erfc(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; Ok(crate::numeric::float_new(unsafe { erfc(f) })) }
-fn m_cbrt(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; let mut r = unsafe { cbrt(f) }; if r.is_finite() && !(f == 0.0 && r == 0.0) { r = (2.0 * r + (f / r / r)) / 3.0; } Ok(crate::numeric::float_new(r)) }
+fn m_erf(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; Ok(crate::numeric::float_new(sys::erf(f))) }
+fn m_erfc(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; Ok(crate::numeric::float_new(sys::erfc(f))) }
+fn m_cbrt(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; let mut r = sys::cbrt(f); if r.is_finite() && !(f == 0.0 && r == 0.0) { r = (2.0 * r + (f / r / r)) / 3.0; } Ok(crate::numeric::float_new(r)) }
 fn gc_config(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     let h = hash_new();
     hash_set(c, h, sym_value("rgengc_allow_full_mark"), TRUE)?;
@@ -132,15 +131,15 @@ fn io_wait(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     }
     if events & 1 != 0 && buffered { return Ok(if int_form { Value::fix(1) } else { s }); }
     let ms = if timeout == NIL { -1 } else { (crate::builtins::numeric_methods::to_f(c, timeout)? * 1000.0).ceil() as i32 };
-    let mut p = sys::PollFd { fd, events: (if events & 1 != 0 { sys::POLLIN } else { 0 }) | (if events & 4 != 0 { sys::POLLOUT } else { 0 }) | (if events & 2 != 0 { 2 } else { 0 }), revents: 0 };
+    let mut p = [sys::PollFd { fd, events: (if events & 1 != 0 { sys::POLLIN } else { 0 }) | (if events & 4 != 0 { sys::POLLOUT } else { 0 }) | (if events & 2 != 0 { 2 } else { 0 }), revents: 0 }];
     out_flush();
-    let n = unsafe { sys::poll(&mut p, 1, ms) };
+    let n = sys::poll(&mut p, ms);
     if n < 0 { return Err(raise_errno(c, sys::errno(), "")); }
     if n == 0 { return Ok(NIL); }
     if !int_form { return Ok(s); }
     let mut r = 0;
-    if p.revents & (sys::POLLIN | sys::POLLHUP) != 0 { r |= 1; }
-    if p.revents & sys::POLLOUT != 0 { r |= 4; }
+    if p[0].revents & (sys::POLLIN | sys::POLLHUP) != 0 { r |= 1; }
+    if p[0].revents & sys::POLLOUT != 0 { r |= 4; }
     Ok(Value::fix(r & events.max(1)))
 }
 fn io_each_codepoint(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> RV {
@@ -190,7 +189,7 @@ fn p_setrlimit(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let lim = |c: &mut Ctx, v: Value| -> Result<u64, Esc> { if is_bignum(v) { Ok(u64::MAX) } else { Ok(num_to_long(c, v)? as u64) } };
     let cur = lim(c, a[1])?;
     let max = match a.get(2) { Some(&m) => lim(c, m)?, None => cur };
-    if unsafe { sys::setrlimit(res, &sys::Rlimit { cur, max }) } < 0 { return Err(raise_errno(c, sys::errno(), "setrlimit")); }
+    if sys::setrlimit(res, &sys::Rlimit { cur, max }) < 0 { return Err(raise_errno(c, sys::errno(), "setrlimit")); }
     Ok(NIL)
 }
 fn st_s_wait(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
@@ -243,9 +242,9 @@ pub fn init() {
     define_cfunc(wk, "delete", wm_delete, 1); define_cfunc(wk, "clear", wkm_clear, 0); define_cfunc(wk, "inspect", wkm_inspect, 0);
     let p = vm.m_process;
     define_module_function(p, "setrlimit", p_setrlimit, -1);
-    define_module_function(p, "getsid", |_c, _s, _a, _b| { extern "C" { fn getsid(p: i32) -> i32; } Ok(Value::fix(unsafe { getsid(0) } as i64)) }, -1);
+    define_module_function(p, "getsid", |_c, _s, _a, _b| Ok(Value::fix(sys::getsid(0) as i64)), -1);
     define_module_function(p, "getpriority", |_c, _s, _a, _b| Ok(Value::fix(0)), 2);
-    define_module_function(p, "setpgrp", |_c, _s, _a, _b| { unsafe { sys::setpgid(0, 0); } Ok(Value::fix(0)) }, 0);
+    define_module_function(p, "setpgrp", |_c, _s, _a, _b| { sys::setpgid(0, 0); Ok(Value::fix(0)) }, 0);
     define_module_function(p, "maxgroups", |_c, _s, _a, _b| Ok(Value::fix(65536)), 0);
     let st = const_get_at(p, intern(b"Status")).unwrap();
     define_singleton_cfunc(st, "wait", st_s_wait, -1);

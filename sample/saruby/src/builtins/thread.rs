@@ -92,7 +92,7 @@ fn run_pass(c: &mut Ctx) -> Result<bool, Esc> {
 fn secs(f: f64) -> Duration { Duration::from_secs_f64(if f.is_finite() { f.clamp(0.0, 1e9) } else { 1e9 }) }
 fn sleep_real(d: Duration) {
     let ts = crate::builtins::sys::Timespec { sec: d.as_secs() as i64, nsec: d.subsec_nanos() as i64 };
-    unsafe { crate::builtins::sys::nanosleep(&ts, std::ptr::null_mut()); }
+    crate::builtins::sys::nanosleep(&ts);
 }
 /// Block the current thread until cond holds (Ok(true)) or the deadline passes (Ok(false)).
 pub fn block_on(c: &mut Ctx, mut cond: impl FnMut(&mut Ctx) -> Result<bool, Esc>, deadline: Option<Instant>, deadlockable: bool, io: bool) -> Result<bool, Esc> {
@@ -143,7 +143,7 @@ pub fn sleep(c: &mut Ctx, dur: Option<f64>) -> Result<(), Esc> {
 }
 /// Wait until fd is readable, letting other threads run meanwhile.
 pub fn wait_readable(c: &mut Ctx, fd: i32) -> Result<(), Esc> {
-    let ready = |_: &mut Ctx| { let mut p = crate::builtins::sys::PollFd { fd, events: 1, revents: 0 }; Ok(unsafe { crate::builtins::sys::poll(&mut p, 1, 0) } != 0) };
+    let ready = |_: &mut Ctx| { let mut p = [crate::builtins::sys::PollFd { fd, events: 1, revents: 0 }]; Ok(crate::builtins::sys::poll(&mut p, 0) != 0) };
     block_on(c, ready, None, false, true)?;
     Ok(())
 }
@@ -520,7 +520,7 @@ pub fn init() {
     d("abort_on_exception", th_abort, 0); d("abort_on_exception=", th_set_abort, 1); d("group", th_group, 0);
     d("priority", |_c, _s, _a, _b| Ok(Value::fix(0)), 0); d("priority=", |_c, _s, a, _b| Ok(a[0]), 1);
     d("backtrace", |_c, _s, _a, _b| Ok(ary_new()), -1); d("backtrace_locations", |_c, _s, _a, _b| Ok(ary_new()), -1);
-    d("native_thread_id", |_c, _s, _a, _b| Ok(Value::fix(unsafe { crate::builtins::sys::getpid() } as i64)), 0);
+    d("native_thread_id", |_c, _s, _a, _b| Ok(Value::fix(crate::builtins::sys::getpid() as i64)), 0);
     d("pending_interrupt?", |_c, _s, _a, _b| Ok(FALSE), -1);
     d("fetch", |c, s, a, b| { let k = key_sym(c, a[0])?; let h = thr(c, s)?.locals; match hash_get_opt(c, h, k)? { Some(v) => Ok(v), None if !b.is_null() => yield1(c, b, a[0]), None if a.len() > 1 => Ok(a[1]), None => { let d = inspect_str(c, k)?; err(c, crate::vm::vm().c_key_error, format!("key not found: {}", d)) } } }, -1);
     for n in ["Mutex", "Queue", "SizedQueue", "ConditionVariable"] { crate::builtins::prelude::lazy_const(th, n, "saruby/sync"); crate::builtins::prelude::lazy_const(ob, n, "saruby/sync"); }

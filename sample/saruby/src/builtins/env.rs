@@ -22,7 +22,7 @@ fn set(c: &mut Ctx, name: &[u8], val: Option<&[u8]>) -> Result<(), Esc> {
         if val.is_none() { return Ok(()); }
         return Err(raise_errno_plain(c, 22, &format!("setenv({})", String::from_utf8_lossy(name))));
     }
-    unsafe { match val { Some(v) => { sys::setenv(sys::cstr(name).as_ptr(), sys::cstr(v).as_ptr(), 1); } None => { sys::unsetenv(sys::cstr(name).as_ptr()); } } }
+    match val { Some(v) => { sys::setenv(&sys::cstr(name), &sys::cstr(v)); } None => { sys::unsetenv(&sys::cstr(name)); } }
     Ok(())
 }
 fn pairs() -> Vec<(Vec<u8>, Vec<u8>)> { std::env::vars_os().map(|(k, v)| (k.into_vec(), v.into_vec())).collect() }
@@ -64,7 +64,7 @@ fn env_values(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { l
 fn env_to_h(c: &mut Ctx, _s: Value, _a: &[Value], b: *const Block) -> RV { let h = to_hash(c)?; if b.is_null() { Ok(h) } else { funcall(c, h, intern(b"to_h"), &[], b) } }
 fn env_size(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(pairs().len() as i64)) }
 fn env_empty(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(pairs().is_empty())) }
-fn env_clear(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { unsafe { sys::clearenv(); } Ok(s) }
+fn env_clear(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { sys::clearenv(); Ok(s) }
 fn env_inspect(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { let h = to_hash(c)?; crate::builtins::hash_methods::hash_inspect(c, h) }
 fn env_to_s(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(str_new(b"ENV")) }
 /// Iterators and queries answered by a snapshot Hash (the method keeps its own name).

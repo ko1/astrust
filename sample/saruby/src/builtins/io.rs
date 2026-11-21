@@ -41,7 +41,7 @@ pub fn alloc_data(_c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
 }
 
 fn close_fds(io: &mut RIo) {
-    unsafe { if io.fd >= 0 { sys::close(io.fd); } if io.wfd >= 0 && io.wfd != io.fd { sys::close(io.wfd); } }
+    if io.fd >= 0 { sys::close(io.fd); } if io.wfd >= 0 && io.wfd != io.fd { sys::close(io.wfd); }
     io.fd = -1; io.wfd = -1;
 }
 fn out_fd(io: &RIo) -> i32 { if io.wfd >= 0 { io.wfd } else { io.fd } }
@@ -75,7 +75,7 @@ fn readable(c: &mut Ctx, v: Value) -> Result<&'static mut RIo, Esc> {
 fn discard_rbuf(io: &mut RIo) {
     // give unread bytes back to the kernel offset before writing / seeking
     let unread = (io.rbuf.len() - io.rpos) as i64;
-    if unread > 0 && !io.data { unsafe { sys::lseek(io.fd, -unread, 1); } }
+    if unread > 0 && !io.data { sys::lseek(io.fd, -unread, 1); }
     if !io.data { io.rbuf.clear(); io.rpos = 0; }
 }
 
@@ -176,7 +176,7 @@ fn io_flush(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     if out_fd(io) == 1 { out_flush(); } else if let Some(e) = io_flush_one(io) { return Err(raise_errno(c, e, "")); }
     Ok(slf)
 }
-fn io_fsync(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { io_flush(c, slf, a, b)?; let io = get_io(c, slf)?; unsafe { sys::fsync(out_fd(io)); } Ok(Value::fix(0)) }
+fn io_fsync(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { io_flush(c, slf, a, b)?; let io = get_io(c, slf)?; sys::fsync(out_fd(io)); Ok(Value::fix(0)) }
 fn io_sync(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(io.sync || out_fd(io) == 2)) }
 fn io_set_sync(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let io = get_io(c, slf)?;
@@ -285,7 +285,7 @@ fn io_readpartial(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV 
     let v = io.rbuf[io.rpos..io.rpos + take].to_vec(); io.rpos += take;
     into_outbuf(c, a.get(1).copied(), v, ENC_BINARY)
 }
-fn wait_fd(fd: i32, ev: i16, ms: i32) -> bool { let mut p = sys::PollFd { fd, events: ev, revents: 0 }; unsafe { sys::poll(&mut p, 1, ms) > 0 } }
+fn wait_fd(fd: i32, ev: i16, ms: i32) -> bool { let mut p = [sys::PollFd { fd, events: ev, revents: 0 }]; sys::poll(&mut p, ms) > 0 }
 fn exception_opt(c: &mut Ctx, a: &[Value]) -> Result<bool, Esc> {
     if let Some(&l) = a.last() { if is_hash(l) { if let Some(v) = crate::hash::hash_get_opt(c, l, sym_value("exception"))? { return Ok(v.truthy()); } } }
     Ok(true)
@@ -320,7 +320,7 @@ fn io_write_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> 
         return Err(wait_error(c, "EAGAINWaitWritable", "write would block"));
     }
     let b = str_bytes(sv);
-    let n = unsafe { sys::write(fd, b.as_ptr(), b.len()) };
+    let n = sys::write(fd, b);
     if n < 0 { return Err(raise_errno(c, sys::errno(), "")); }
     Ok(Value::fix(n as i64))
 }
@@ -352,7 +352,7 @@ fn io_pread(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let n = num_to_long(c, a[0])? as usize; let off = num_to_long(c, a[1])?;
     let io = get_io(c, slf)?;
     let mut v = vec![0u8; n];
-    let k = unsafe { sys::pread(io.fd, v.as_mut_ptr(), n, off) };
+    let k = sys::pread(io.fd, &mut v, off);
     if k < 0 { return Err(raise_errno(c, sys::errno(), "")); }
     if k == 0 && n > 0 { return eof_err(c); }
     v.truncate(k as usize);
@@ -363,7 +363,7 @@ fn io_pwrite(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let io = get_io(c, slf)?;
     io_flush_one(io);
     let b = str_bytes(sv);
-    let k = unsafe { sys::pwrite(out_fd(io), b.as_ptr(), b.len(), off) };
+    let k = sys::pwrite(out_fd(io), b, off);
     if k < 0 { return Err(raise_errno(c, sys::errno(), "")); }
     Ok(Value::fix(k as i64))
 }
@@ -438,14 +438,14 @@ fn io_close(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { clo
 fn io_close_write(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let Some(io) = rio(slf) else { return Ok(NIL) };
     if io.closed || !io.writable { return Ok(NIL); }
-    if io.wfd >= 0 && io.wfd != io.fd { io_flush_one(io); unsafe { sys::close(io.wfd); } io.wfd = -1; io.writable = false; return Ok(NIL); }
+    if io.wfd >= 0 && io.wfd != io.fd { io_flush_one(io); sys::close(io.wfd); io.wfd = -1; io.writable = false; return Ok(NIL); }
     if io.readable { return err(c, vm().c_io_error, "closing non-duplex IO for writing"); }
     close_io(c, slf)
 }
 fn io_close_read(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let Some(io) = rio(slf) else { return Ok(NIL) };
     if io.closed || !io.readable { return Ok(NIL); }
-    if io.wfd >= 0 && io.wfd != io.fd { unsafe { sys::close(io.fd); } io.fd = io.wfd; io.readable = false; return Ok(NIL); }
+    if io.wfd >= 0 && io.wfd != io.fd { sys::close(io.fd); io.fd = io.wfd; io.readable = false; return Ok(NIL); }
     if io.writable { return err(c, vm().c_io_error, "closing non-duplex IO for reading"); }
     close_io(c, slf)
 }
@@ -455,7 +455,7 @@ fn io_closed(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(Value::bool(io.closed))
 }
 fn io_fileno(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; Ok(Value::fix(io.fd as i64)) }
-fn io_tty(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(unsafe { sys::isatty(io.fd) } == 1)) }
+fn io_tty(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(sys::isatty(io.fd) == 1)) }
 fn io_path(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     match rio(slf) { Some(i) if i.has_path => Ok(str_new(i.path.as_bytes())), _ => Ok(NIL) }
 }
@@ -476,7 +476,7 @@ fn do_seek(c: &mut Ctx, slf: Value, off: i64, whence: i32) -> Result<i64, Esc> {
     io_flush_one(io);
     let off = if whence == 1 { off - (io.rbuf.len() - io.rpos) as i64 } else { off };
     io.rbuf.clear(); io.rpos = 0; io.eof = false;
-    let r = unsafe { sys::lseek(io.fd, off, whence) };
+    let r = sys::lseek(io.fd, off, whence);
     if r < 0 { let p = io.path.clone(); return Err(raise_errno(c, sys::errno(), &p)); }
     Ok(r)
 }
@@ -491,7 +491,7 @@ fn io_pos(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let io = get_io(c, slf)?;
     if io.data { return Ok(Value::fix(io.rpos as i64)); }
     io_flush_one(io);
-    let r = unsafe { sys::lseek(io.fd, 0, 1) };
+    let r = sys::lseek(io.fd, 0, 1);
     if r < 0 { return Err(raise_errno(c, sys::errno(), "")); }
     Ok(Value::fix(r - (io.rbuf.len() - io.rpos) as i64))
 }
@@ -521,16 +521,16 @@ fn io_set_encoding(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
 }
 fn io_autoclose_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(io.autoclose)) }
 fn io_set_autoclose(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; io.autoclose = a[0].truthy(); Ok(a[0]) }
-fn io_cloexec_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(unsafe { sys::fcntl(io.fd, sys::F_GETFD, 0) } & sys::FD_CLOEXEC != 0)) }
+fn io_cloexec_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(sys::fcntl(io.fd, sys::F_GETFD, 0) & sys::FD_CLOEXEC != 0)) }
 fn io_set_cloexec(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let io = get_io(c, slf)?;
-    for fd in [io.fd, io.wfd] { if fd >= 0 { unsafe { let f = sys::fcntl(fd, sys::F_GETFD, 0); sys::fcntl(fd, sys::F_SETFD, if a[0].truthy() { f | sys::FD_CLOEXEC } else { f & !sys::FD_CLOEXEC }); } } }
+    for fd in [io.fd, io.wfd] { if fd >= 0 { let f = sys::fcntl(fd, sys::F_GETFD, 0); sys::fcntl(fd, sys::F_SETFD, if a[0].truthy() { f | sys::FD_CLOEXEC } else { f & !sys::FD_CLOEXEC }); } }
     Ok(a[0])
 }
 fn io_fcntl(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let cmd = num_to_long(c, a[0])? as i32; let arg = match a.get(1) { Some(&v) if v.is_fixnum() => v.as_fix() as i32, _ => 0 };
     let io = get_io(c, slf)?;
-    let r = unsafe { sys::fcntl(io.fd, cmd, arg) };
+    let r = sys::fcntl(io.fd, cmd, arg);
     if r < 0 { return Err(raise_errno(c, sys::errno(), "")); }
     Ok(Value::fix(r as i64))
 }
@@ -617,7 +617,7 @@ fn setup_io(c: &mut Ctx, v: Value, fd: i32, path: Option<&str>, om: &OpenMode) -
 pub fn sysopen(c: &mut Ctx, path: &str, om: &OpenMode) -> Result<i32, Esc> {
     let cp = sys::cstr(path.as_bytes());
     loop {
-        let fd = unsafe { sys::open(cp.as_ptr(), om.flags | sys::O_CLOEXEC, om.perm) };
+        let fd = sys::open(&cp, om.flags | sys::O_CLOEXEC, om.perm);
         if fd >= 0 { return Ok(fd); }
         let e = sys::errno();
         if e == sys::EINTR { continue; }
@@ -637,7 +637,7 @@ fn file_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
 fn io_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, 2); }
     let fd = num_to_long(c, a[0])? as i32;
-    let fl = unsafe { sys::fcntl(fd, sys::F_GETFL, 0) };
+    let fl = sys::fcntl(fd, sys::F_GETFL, 0);
     if fl < 0 { return Err(raise_errno(c, sys::errno(), "")); }
     let mut om = parse_mode(c, &a[1..])?;
     if a.len() < 2 || is_hash(a[1]) && crate::hash::hash_get_opt(c, a[1], sym_value("mode"))?.is_none() { om.flags = (om.flags & !sys::O_ACCMODE) | (fl & sys::O_ACCMODE); }
@@ -649,13 +649,13 @@ fn io_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 fn io_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let src = get_io(c, a[0])?;
     io_flush_one(src);
-    let fd = unsafe { sys::fcntl(src.fd, 1030, 3) }; // F_DUPFD_CLOEXEC
+    let fd = sys::fcntl(src.fd, 1030, 3); // F_DUPFD_CLOEXEC
     if fd < 0 { return Err(raise_errno(c, sys::errno(), "")); }
     let io = rio(slf).unwrap();
     *io = blank();
     io.fd = fd; io.init = true; io.readable = src.readable; io.writable = src.writable; io.binmode = src.binmode; io.enc = src.enc; io.enc_set = src.enc_set;
     io.path = src.path.clone(); io.has_path = src.has_path; io.lineno = src.lineno; io.sync = src.sync;
-    if src.wfd >= 0 && src.wfd != src.fd { io.wfd = unsafe { sys::fcntl(src.wfd, 1030, 3) }; }
+    if src.wfd >= 0 && src.wfd != src.fd { io.wfd = sys::fcntl(src.wfd, 1030, 3); }
     Ok(slf)
 }
 /// Class.open-style: new + yield + close.
@@ -686,7 +686,7 @@ fn io_s_sysopen(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
 }
 fn io_s_pipe(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     let mut fds = [0i32; 2];
-    if unsafe { sys::pipe2(fds.as_mut_ptr(), sys::O_CLOEXEC) } < 0 { return Err(raise_errno(c, sys::errno(), "")); }
+    if sys::pipe2(&mut fds, sys::O_CLOEXEC) < 0 { return Err(raise_errno(c, sys::errno(), "")); }
     let r = new_io(slf, fds[0], "", true, false);
     let w = new_io(slf, fds[1], "", false, true);
     rio(w).unwrap().sync = true;
@@ -709,13 +709,13 @@ fn io_s_popen(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     let acc = flags & sys::O_ACCMODE;
     let (rd, wr) = (acc != sys::O_WRONLY, acc != sys::O_RDONLY);
     let mut pr = [-1i32; 2]; let mut pw = [-1i32; 2];
-    unsafe { if rd { sys::pipe2(pr.as_mut_ptr(), sys::O_CLOEXEC); } if wr { sys::pipe2(pw.as_mut_ptr(), sys::O_CLOEXEC); } }
+    if rd { sys::pipe2(&mut pr, sys::O_CLOEXEC); } if wr { sys::pipe2(&mut pw, sys::O_CLOEXEC); }
     let fork_dash = is_string(cmd) && str_bytes(cmd) == b"-";
     let pid = if fork_dash {
         flush_all();
-        let pid = unsafe { sys::fork() };
+        let pid = sys::fork();
         if pid == 0 {
-            unsafe { if rd { sys::dup2(pr[1], 1); } if wr { sys::dup2(pw[0], 0); } for fd in [pr[0], pr[1], pw[0], pw[1]] { if fd > 2 { sys::close(fd); } } }
+            if rd { sys::dup2(pr[1], 1); } if wr { sys::dup2(pw[0], 0); } for fd in [pr[0], pr[1], pw[0], pw[1]] { if fd > 2 { sys::close(fd); } }
             crate::builtins::process::after_fork_child();
             if blk.is_null() { return Ok(NIL); }
             let r = yield1(c, blk, NIL);
@@ -734,7 +734,7 @@ fn io_s_popen(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
         if wr { spec.redirect.push((0, pw[0])); }
         crate::builtins::process::spawn_exec(c, &spec)?
     };
-    unsafe { if rd { sys::close(pr[1]); } if wr { sys::close(pw[0]); } }
+    if rd { sys::close(pr[1]); } if wr { sys::close(pw[0]); }
     if pid < 0 { return Err(raise_errno(c, sys::errno(), "fork(2)")); }
     let io = new_io(slf, if rd { pr[0] } else { pw[1] }, "", rd, wr);
     { let r = rio(io).unwrap(); if rd && wr { r.wfd = pw[1]; } r.pid = pid; r.sync = true; r.binmode = bin; if bin { r.enc = ENC_BINARY; }
@@ -768,7 +768,7 @@ fn io_s_select(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
     }
     out_flush();
     let n = loop {
-        let n = unsafe { sys::poll(pfds.as_mut_ptr(), pfds.len() as u64, if ready_now { 0 } else { ms }) };
+        let n = sys::poll(&mut pfds, if ready_now { 0 } else { ms });
         if n < 0 && sys::errno() == sys::EINTR { crate::builtins::process::run_pending_signals(c)?; continue; }
         break n;
     };
@@ -882,17 +882,17 @@ fn io_reopen(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
         if !src.init || src.closed { return err(c, vm().c_io_error, "closed stream"); }
         io_flush_one(src);
         if src.fd == 1 { out_flush(); }
-        if io.init && !io.closed && io.fd >= 0 { unsafe { sys::dup2(src.fd, io.fd); } } else { io.fd = unsafe { sys::dup(src.fd) }; io.init = true; io.closed = false; }
+        if io.init && !io.closed && io.fd >= 0 { sys::dup2(src.fd, io.fd); } else { io.fd = sys::dup(src.fd); io.init = true; io.closed = false; }
         io.readable = src.readable; io.writable = src.writable; io.path = src.path.clone(); io.has_path = src.has_path; io.rbuf.clear(); io.rpos = 0;
-        let pos = unsafe { sys::lseek(src.fd, 0, 1) };
-        if pos >= 0 && src.rpos < src.rbuf.len() { unsafe { sys::lseek(io.fd, pos - (src.rbuf.len() - src.rpos) as i64, 0); } }
+        let pos = sys::lseek(src.fd, 0, 1);
+        if pos >= 0 && src.rpos < src.rbuf.len() { sys::lseek(io.fd, pos - (src.rbuf.len() - src.rpos) as i64, 0); }
         return Ok(slf);
     }
     let p = path_arg(c, a[0])?;
     let mut om = parse_mode(c, &a[1..])?;
     if a.len() < 2 && io.init { om.flags = if io.readable && io.writable { sys::O_RDWR } else if io.writable { sys::O_WRONLY | sys::O_CREAT | sys::O_TRUNC } else { 0 }; }
     let fd = sysopen(c, &p, &om)?;
-    if io.init && !io.closed && io.fd >= 0 { unsafe { sys::dup2(fd, io.fd); sys::close(fd); } } else { io.fd = fd; io.init = true; io.closed = false; }
+    if io.init && !io.closed && io.fd >= 0 { sys::dup2(fd, io.fd); sys::close(fd); } else { io.fd = fd; io.init = true; io.closed = false; }
     let acc = om.flags & sys::O_ACCMODE;
     io.readable = acc != sys::O_WRONLY; io.writable = acc != sys::O_RDONLY;
     io.path = p; io.has_path = true; io.rbuf.clear(); io.rpos = 0;
