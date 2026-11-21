@@ -48,7 +48,7 @@ fn new_map() -> Map {
 // A direct-mapped cache in front of the map: slot = id + 1, verified against the name on a
 // hit, so a stale or overwritten slot only costs a miss. Release / Acquire make the name of
 // an id visible before the id is.
-const CACHE_BITS: u32 = 16;
+const CACHE_BITS: u32 = 14;   // 64 KiB: each slot touched is a page fault at boot (16 bits: 64 of them)
 static CACHE: [AtomicU32; 1 << CACHE_BITS] = [const { AtomicU32::new(0) }; 1 << CACHE_BITS];
 #[inline]
 fn cache_slot(b: &[u8]) -> &'static AtomicU32 {
