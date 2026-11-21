@@ -202,7 +202,8 @@ fn ecflags_of(o: &crate::builtins::encoding::TcOpts) -> u8 {
 /// Convert `b` for an IO, or None where saruby has no converter for the pair (left as it is).
 fn io_transcode(c: &mut Ctx, b: &[u8], from: u8, to: u8, ec: u8) -> Result<Option<Vec<u8>>, Esc> {
     use crate::builtins::encoding as en;
-    if ec & EC_UNSUPPORTED != 0 || !en::can_convert(from, to) { return Ok(None); }
+    // a BINARY source goes through UTF-8 (its non-ASCII bytes are undefined there)
+    if ec & EC_UNSUPPORTED != 0 || (from != ENC_BINARY && !en::can_convert(from, to)) { return Ok(None); }
     let o = en::TcOpts { invalid_replace: ec & EC_INVALID != 0, undef_replace: ec & EC_UNDEF != 0, ..Default::default() };
     Ok(Some(en::transcode(c, b, from, to, &o)?))
 }
