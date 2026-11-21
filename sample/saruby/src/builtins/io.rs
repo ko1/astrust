@@ -1138,6 +1138,10 @@ pub fn boot_frozen_str(vmr: &Vm, b: &[u8]) -> Value {
 }
 
 pub fn init(vmr: &mut Vm) {
+    // CRuby holds two descriptors from boot (its timer thread's eventfd and epoll fd): taking two here
+    // gives a program the same fd numbers (IO.pipe is [5, 6] in both)
+    let mut held = [0; 2];
+    sys::pipe2(&mut held, sys::O_CLOEXEC);
     let io = define_class("IO", vmr.c_object);
     class_set_alloc(io, AllocKind::None);
     include_module(io, vmr.m_enumerable);
