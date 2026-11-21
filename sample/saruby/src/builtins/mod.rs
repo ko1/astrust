@@ -196,7 +196,7 @@ pub fn boot() {
     (vm.c_random, vm.default_random) = random::init(vm);
     binding::init();
     thread::init();
-    misc::init();
+    misc::init(vm);
     prelude::lazy_const(ob, "ENV", "saruby/env");
     prelude::lazy_const(ob, "RbConfig", "saruby/rbconfig");
     encoding::init(vm);
@@ -209,7 +209,7 @@ pub fn boot() {
     vm.c_complex = complex::init(vm);
     enum_native::init(vm.m_enumerable);
     crate::fiber::init();
-    extras::init();
+    extras::init(vm);
 }
 
 /// Constant `name` under `owner` whose native definition (`feature`) runs on first reference; boot time, no context.
