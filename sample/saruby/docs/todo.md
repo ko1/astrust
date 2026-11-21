@@ -12,18 +12,17 @@
 - [x] patch 束縛（初回ディスパッチで穴を即値に。koruby の既定に合わせ既定 ON、`SARUBY_PATCH=0` で無効）
 - [x] 再利用テスト `tools/reuse_test.sh`（別プログラムで焼いたストアが効くこと）
 - [x] 焼き込むプロファイル値をハッシュに混ぜる（ASTro の Hopt: SD_<Hopt>、`hopt_index.txt` に (Horg, ファイル・行・入口種別) → Hopt）。first bake wins は解消
-  - [ ] hopt_index のキーがファイルパスそのもの: 別パスから同じプログラムを走らせると最初に焼いた同形 SD（Horg）に落ちる
+  - [x] hopt_index のキー: ファイルパス → ソースの内容のハッシュ + 行 + 入口種別（別パス・コピーでも自分の Hopt。reuse_test.sh の copy ケース）
   - [ ] 起動 +2M 命令（索引の読み込み等、未分解）、bake 時間への影響未測定
   - ivar スロット番号（user: 「ノードのパラメータにして焼くだけなら原則を破らない」）
   - site kind、`shared`、組み込んだ呼び出し先・ブロック、演算子の型、イテレータの選択
 - [x] 組み込みメソッドの展開を名前で選ぶ（F4）。size/length/empty?/to_i/to_int は +6〜20 命令/呼び出し
 - [x] inline iterator / inline builtin を builtin 自身のループ・関数を呼ぶ形に（F2, F3。iterators −11% サイクル）
-- [ ] EVAL body の残りの手書き fast path を特殊化か parser-pass へ
-  - `node_block` の手展開、`node_ary` の小配列経路 → 生成器でリストを展開
-  - 呼び出しの最初の 3 引数の手展開
-  - `send` + リテラル Symbol → compile.rs で通常の呼び出しノードに書き換え（Kernel#send ガード付き）
-  - `<<` `[]` `[]=` の Array/String/Hash 経路 → builtin 自身の関数を呼ぶ
-- [ ] `yield_block` 系ヘルパを 1 コピーに固定（インタプリタの命令数が codegen unit の分割で動かないように）
+- [x] EVAL body の残りの手書き fast path を特殊化か parser-pass へ（Round 3）
+  - [x] `node_block` / `node_ary` / 呼び出し引数の手展開 → 生成器の `EVAL_EACH!`（特化でリストを展開、AOT 命令数は base と同じ）
+  - [x] `send` + リテラル Symbol → node_send_sym（compile.rs、Kernel#send ガード付き。u_send_lit 381 → 146 命令）
+  - [x] `<<` `[]` `[]=` → builtin 自身の関数。凍結時のバックトレースが CRuby と一致。String#<< は safe な追記経路で str +10% 命令、Hash#[]= は行の保存で hash +2%、Array#<< は ary +3%（判断待ち）
+- [x] `yield_block` を 1 コピーに（interp hashiter +7.9% / mapreduce +2.1%、AOT は同じ）。lookup_method / new_object / invoke / raise_exc は 1 コピーにすると nesteddata +9% なので残す
 
 ## 2. unsafe
 
