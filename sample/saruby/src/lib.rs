@@ -338,6 +338,7 @@ pub const STACK_BYTES: usize = 1 << 30;
 pub fn main_entry() {
     let o = parse_args();
     symbol::init();
+    fiber_os::nil_fd_init();
     let child = std::thread::Builder::new().stack_size(STACK_BYTES).spawn(move || {
         kalloc::adopt();
         let base = 0usize;
