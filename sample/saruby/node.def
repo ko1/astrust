@@ -701,13 +701,24 @@ node_call_blk(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym
 
 // f(args..., k: v, ...) with literal symbol keywords: values staged after the positionals
 NODE_DEF
-node_call_kw(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, flags: u32, line: u32, ci: CiRef, cc@ref: CallCache)
+node_call_kw(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, flags: u32, line: u32, ci: CiRef, cc@ref: CallCache, callee@spec: NODE, kind@bake: u32)
 {
     let k = EVAL_LEN!(args);
-    let base = stage(c, 3 + k)?;
+    let base = stage(c, 2 + k)?;
     base[0].set(EVAL_ARG!(c, recv)?);
     for i in 0..k { let v = EVAL_NTH!(c, args, i)?; base[2 + i].set(v); }
     unsafe { (*c.frame).line = line; }
+    // baked: the callee's kentry compiled in (every keyword passed in declared order, no block literal)
+    if SPEC_HASH!(callee) != 0 {
+        let r0 = base[0].get();
+        if spec_hit(cc, r0, kind) {
+            let callee_fp = frame(c, base)?;
+            let r = EVAL_SPEC!(c, callee, cc.fast as NodePtr, callee_fp, CallArgs::new(cc.me as *const MethodEntry, std::ptr::null()));
+            c.set_sp(base, 0);
+            return r;
+        }
+        return srb_call_kw_spec(c, cc, mid, base, k, ci, flags, fp, SPEC_HASH!(callee));
+    }
     srb_call_kw(c, cc, mid, base, k, ci, flags, fp)
 }
 

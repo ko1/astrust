@@ -52,7 +52,9 @@ pub struct Iseq {
     pub body: NodePtr,
     pub entry: NodePtr,                 // node_method_entry over body (required-params-only methods), else null
     pub bentry: NodePtr,                // node_block_entry over body (required-params-only blocks), else null
-    pub body_used: std::cell::Cell<bool>, // a block with bentry was also run through its body (lambda call, spread, ...): bake the body too
+    pub kentry: NodePtr,                // dense keyword method: entry taking lead + every keyword in order, else null
+    pub dentry: NodePtr,                // dense keyword method without required keywords: entry taking lead only (defaults run)
+    pub body_used: std::cell::Cell<bool>, // a block with bentry (method with kentry) was also run through its body: bake the body too
     pub nlocals: u32,                   // frame size including self (0) and env (1)
     pub params: Params,
     pub env_size: u32,
@@ -68,6 +70,12 @@ pub struct Iseq {
     pub parent: std::cell::Cell<*const Iseq>,          // lexically enclosing iseq (set when it is finished)
     pub outer_names: Vec<(Sym, u32, u32)>,             // eval: the binding's names (name, hops, idx)
     pub ruby2_keywords: std::cell::Cell<bool>,         // Module#ruby2_keywords: flag a trailing keyword Hash in *rest
+}
+
+impl Iseq {
+    /// The entry a call with lead positional arguments and no keywords may take (null: none).
+    #[inline(always)]
+    pub fn plain_entry(&self) -> NodePtr { if self.entry.is_null() { self.dentry } else { self.entry } }
 }
 
 // ---- blocks ---------------------------------------------------------------------------
@@ -1441,6 +1449,24 @@ pub fn lookup_cc(c: &Ctx, cc: &mut CallCache, recv: Value, mid: Sym, flags: u32)
     me
 }
 
+/// CallCache.fast_argc of a keyword site whose cache holds the callee's kentry (| the staged count).
+pub const KW_DENSE: u32 = 1 << 30;
+
+/// A keyword site passing `names` after npos positionals: if they are the callee's keywords in
+/// declared order, put its kentry in the cache (checked once per fill).
+#[inline(never)]
+pub fn kw_dense_fill(cc: &mut CallCache, me: *const MethodEntry, npos: usize, names: &[Sym], flags: u32) {
+    let m = unsafe { &*me };
+    if m.visi != VISI_PUBLIC && flags & CF_FCALL == 0 { return; }
+    let MKind::Iseq(is) = m.kind else { return };
+    let is = unsafe { &*is };
+    if is.kentry.is_null() || is.params.lead.len() != npos || is.params.kw.len() != names.len()
+        || !is.params.kw.iter().zip(names).all(|(k, n)| k.name == *n) { return; }
+    cc.fast = is.kentry as usize;
+    cc.fast_argc = KW_DENSE | (npos + names.len()) as u32;
+    cc.fast_hash = crate::node::hash_node(is.kentry);
+}
+
 /// Can the staged literal keywords go straight into the callee's slots?
 pub fn kw_direct_ok(me: *const MethodEntry, npos: usize, names: &[Sym], flags: u32) -> bool {
     let m = unsafe { &*me };
@@ -1457,6 +1483,7 @@ pub fn kw_direct_ok(me: *const MethodEntry, npos: usize, names: &[Sym], flags: u
 pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: Stk, npos: usize, names: &[Sym], blk: *const Block) -> RV {
     let n = is.nlocals as usize;
     stack_check(c, n + 16)?;
+    if !is.kentry.is_null() { is.body_used.set(true); }
     let mut vals = [NIL; 16];
     for j in 0..names.len() { vals[j] = base[2 + npos + j].get(); }
     let id = c.next_serial();
@@ -1502,7 +1529,10 @@ fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry
     let m = unsafe { &*me };
     if m.visi != VISI_PUBLIC && flags & CF_FCALL == 0 { return; }
     match m.kind {
-        MKind::Iseq(is) => { let is = unsafe { &*is }; if !is.entry.is_null() { cc.fast = is.entry as usize; cc.fast_argc = is.params.lead.len() as u32; cc.fast_hash = crate::node::hash_node(is.entry); } }
+        MKind::Iseq(is) => {
+            let e = unsafe { (*is).plain_entry() };
+            if !e.is_null() { cc.fast = e as usize; cc.fast_argc = unsafe { (*is).params.lead.len() } as u32; cc.fast_hash = crate::node::hash_node(e); }
+        }
         MKind::Cfunc(..) if me == vm().ids.bo_eq => { cc.fast = 3; }
         MKind::Cfunc(f, arity) if me == vm().ids.c_new => {
             cc.cfunc = f as usize; cc.arity = arity;
@@ -1512,8 +1542,8 @@ fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry
                 let im = lookup_method(recv, s::initialize);
                 if let Some(MKind::Iseq(is)) = (!im.is_null()).then(|| unsafe { (*im).kind }) {
                     let is = unsafe { &*is };
-                    if !is.entry.is_null() {
-                        let ni = Box::new(NewInfo { klass: recv, init_me: im, init_entry: is.entry, init_argc: is.params.lead.len() as u32 });
+                    if !is.plain_entry().is_null() {
+                        let ni = Box::new(NewInfo { klass: recv, init_me: im, init_entry: is.plain_entry(), init_argc: is.params.lead.len() as u32 });
                         cc.fast = Box::into_raw(ni) as usize;
                     }
                 }
@@ -1535,6 +1565,22 @@ fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry
 pub fn spec_callee(cc: &CallCache, argc: usize, flags: u32) -> NodePtr {
     if cc.fast_argc as usize != argc || flags & CF_KW != 0 { return std::ptr::null_mut(); }
     // only small callees: the site inlines them (size by the length of the dump)
+    let mut d = String::new();
+    crate::node::dump_node(&mut d, cc.fast as NodePtr);
+    if d.len() <= 600 { cc.fast as NodePtr } else { std::ptr::null_mut() }
+}
+
+/// site_kind of a literal keyword site: SITE_ENTRY when its cache holds a kentry it can compile in.
+pub fn site_kind_kw(cc: &CallCache, argc: usize, ci: &crate::compile::CallInfo) -> u32 {
+    if cc.klass == 0 || ci.blk.is_some() || cc.fast_argc != KW_DENSE | argc as u32 { return SITE_OTHER; }
+    let v = vm();
+    let imm = [v.c_integer, v.c_float, v.c_symbol, v.c_nil, v.c_true, v.c_false].iter().any(|k| k.raw() == cc.klass);
+    SITE_ENTRY | if imm { SITE_IMM } else { 0 }
+}
+
+/// spec_callee of a literal keyword site: the kentry its cache holds.
+pub fn spec_callee_kw(cc: &CallCache, argc: usize, ci: &crate::compile::CallInfo) -> NodePtr {
+    if site_kind_kw(cc, argc, ci) == SITE_OTHER { return std::ptr::null_mut(); }
     let mut d = String::new();
     crate::node::dump_node(&mut d, cc.fast as NodePtr);
     if d.len() <= 600 { cc.fast as NodePtr } else { std::ptr::null_mut() }
@@ -1568,10 +1614,10 @@ pub fn make_env(is: &Iseq, base: Stk, parent: Value) {
 /// Call of an Iseq method with only required, slot-contiguous params.
 #[inline(always)]
 pub fn invoke_iseq_simple(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: Stk, argc: u32, blk: *const Block) -> RV {
-    if is.entry.is_null() { return invoke_iseq(c, me, is, recv, base, argc, blk, 0); }
+    if is.plain_entry().is_null() { return invoke_iseq(c, me, is, recv, base, argc, blk, 0); }
     base[0].set(recv);
     c.call_me = me; c.call_blk = blk;
-    run_entry(c, is.entry, base, argc)
+    run_entry(c, is.plain_entry(), base, argc)
 }
 
 #[cold]
@@ -1682,13 +1728,14 @@ pub fn kw_arg(args: &[Value]) -> Option<Value> {
 }
 
 pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
-    if !is.entry.is_null() && argc as usize == is.params.lead.len() && flags & CF_KW == 0 {
+    if !is.plain_entry().is_null() && argc as usize == is.params.lead.len() && flags & CF_KW == 0 {
         let r = invoke_iseq_simple(c, me, is, recv, base, argc, blk);
         c.set_sp(base, 0);
         return r;
     }
     stack_check(c, is.nlocals as usize + 16)?;
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("invoke_iseq: general (no entry node or argc mismatch)");
+    if !is.kentry.is_null() { is.body_used.set(true); }
     let mut fr = Frame::empty(base);
     fr.prev = c.frame;
     fr.me = me;

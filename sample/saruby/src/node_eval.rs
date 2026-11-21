@@ -889,12 +889,23 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mu
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_call_kw<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, ci: CiRef, cc: &mut CallCache) -> RV {
+pub fn EVAL_node_call_kw<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, ci: CiRef, cc: &mut CallCache, callee_hash: u64, kind: u32) -> RV {
     let k = <D_args as DispList>::len(args);
-    let base = stage(c, 3 + k)?;
+    let base = stage(c, 2 + k)?;
     base[0].set(<D_recv as Disp>::call(c, recv, fp)?);
     for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
     unsafe { (*c.frame).line = line; }
+    // baked: the callee's kentry compiled in (every keyword passed in declared order, no block literal)
+    if callee_hash != 0 {
+        let r0 = base[0].get();
+        if spec_hit(cc, r0, kind) {
+            let callee_fp = frame(c, base)?;
+            let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp, CallArgs::new(cc.me as *const MethodEntry, std::ptr::null()));
+            c.set_sp(base, 0);
+            return r;
+        }
+        return srb_call_kw_spec(c, cc, mid, base, k, ci, flags, fp, callee_hash);
+    }
     srb_call_kw(c, cc, mid, base, k, ci, flags, fp)
 }
 

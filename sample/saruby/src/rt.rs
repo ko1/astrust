@@ -1231,7 +1231,15 @@ pub fn srb_call_kw(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, k: usiz
     let lit;
     let blk: *const Block = match ci.blk { Some(is) => { lit = make_block(c, is, fp); &lit } None => std::ptr::null() };
     let me = lookup_cc(c, cc, recv, mid, flags);
-    let r = if !me.is_null() && kw_direct_ok(me, npos, &ci.kw_names, flags) {
+    // every keyword in declared order to a dense method: its kentry with the staged values as params
+    if cc.fast_argc != KW_DENSE | k as u32 && !me.is_null() { kw_dense_fill(cc, me, npos, &ci.kw_names, flags); }
+    let r = if cc.fast_argc == KW_DENSE | k as u32 {
+        c.call_me = me; c.call_blk = blk;
+        native_check(c)?;
+        let r = run_body(c, cc.fast as NodePtr, base);
+        c.set_sp(base, 0);
+        r
+    } else if !me.is_null() && kw_direct_ok(me, npos, &ci.kw_names, flags) {
         let is = match unsafe { (*me).kind } { MKind::Iseq(is) => unsafe { &*is }, _ => unreachable!() };
         let r = invoke_iseq_kw(c, me, is, recv, base, npos, &ci.kw_names, blk);
         c.set_sp(base, 0);
@@ -1250,4 +1258,12 @@ pub fn srb_call_kw(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, k: usiz
         Err(_) if ci.blk.is_some() && c.esc == EscKind::Break && c.esc_tag == unsafe { (*blk).tag } => { c.esc = EscKind::None; Ok(c.esc_val) }
         r => r,
     }
+}
+
+/// A keyword site whose compiled-in callee (entry hash h) was not hit: srb_call_kw, then spec_klass.
+#[inline(never)]
+pub fn srb_call_kw_spec(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, k: usize, ci: CiRef, flags: u32, fp: Fp, h: u64) -> RV {
+    let r = srb_call_kw(c, cc, mid, base, k, ci, flags, fp);
+    cc.spec_klass = if cc.fast_hash == h && cc.fast_argc == KW_DENSE | k as u32 { cc.klass } else { 0 };
+    r
 }

@@ -17,7 +17,7 @@ pub fn init(program_dir: Option<&str>, collect: bool) {
 }
 
 thread_local! {
-    // a program's blocks that have an entry node: their bodies are baked only if they ran on their own
+    // a program's blocks and keyword methods that have an entry node over their body: the body is baked only if it ran on its own
     static BLOCKS: std::cell::RefCell<Vec<&'static Iseq>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -36,10 +36,11 @@ pub fn register_iseq(is: &'static Iseq) {
         }
     };
     reg(if is.entry.is_null() { is.body } else { is.entry }, "");
-    if !is.bentry.is_null() {
-        reg(is.bentry, " (entry)");
+    if !is.bentry.is_null() || !is.kentry.is_null() {
+        reg(if is.kentry.is_null() { is.bentry } else { is.kentry }, " (entry)");
         if !prelude { BLOCKS.with(|b| b.borrow_mut().push(is)); }
     }
+    if !is.dentry.is_null() { reg(is.dentry, " (defaults entry)"); }
 }
 
 pub fn bake_config() -> BakeConfig {
@@ -56,7 +57,7 @@ pub fn bake_config() -> BakeConfig {
 #[allow(static_mut_refs)]
 pub fn bake(store_dir: &str) -> Result<usize, String> {
     let st = unsafe { STORE.as_mut() }.ok_or("no code store")?;
-    // a block that only ran through its entry node needs no separate copy of its body
+    // a body that only ran through its entry node needs no separate copy
     let skip: Vec<usize> = BLOCKS.with(|b| b.borrow().iter().filter(|is| !is.body_used.get()).map(|is| is.body as usize).collect());
     st.program_entries.retain(|e| !skip.contains(e));
     st.bake(std::path::Path::new(store_dir), &bake_config(), |entries| {

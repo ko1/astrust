@@ -357,16 +357,44 @@ impl<'a> Compiler<'a> {
         let bentry = if kind == IseqKind::Block && lead_only {
             ALLOC_node_block_entry(sc.nslots, params.lead.len() as u32, if sc.env_size > 0 { ME_ENV } else { 0 }, line, body)
         } else { std::ptr::null_mut() };
+        // dense keyword layout: lead then keywords in declared order, nothing else.  kentry takes
+        // them all as plain params (a site passing every keyword in order); dentry takes none.
+        let dense = kind == IseqKind::Method && !params.kw.is_empty() && params.opt.is_empty() && params.rest.is_none()
+            && params.post.is_empty() && params.kwrest.is_none() && params.block.is_none() && params.destructure.is_empty()
+            && !params.no_kw && !params.forwarding && !params.has_trailing_comma
+            && params.lead.iter().chain(params.kw.iter().map(|k| &k.slot)).enumerate().all(|(i, &s)| s == 2 + i as u32);
+        let me_flags = |np: usize, b: NodePtr| {
+            let mut fl = 0;
+            if sc.env_size > 0 { fl |= ME_ENV; }
+            if sc.needs_id || sc.captured.contains(&Sym(u32::MAX)) { fl |= ME_ID; }
+            if fl == 0 && sc.nslots as usize == 2 + np && leaf_body(b) { fl |= ME_LEAF; }
+            fl
+        };
+        let kentry = if dense {
+            let np = params.lead.len() + params.kw.len();
+            ALLOC_node_method_entry(sc.nslots, np as u32, me_flags(np, body), line, body)
+        } else { std::ptr::null_mut() };
+        // dentry runs the defaults in its own copy of the body: not where a literal's identity is cached per node
+        let dentry = if dense && params.kw.iter().all(|k| !k.required) && !has_lit_cache(body) {
+            let mut v: Vec<NodePtr> = params.kw.iter().map(|k| k.default.unwrap()).collect();
+            v.push(body);
+            let b = self.seq(v);
+            ALLOC_node_method_entry(sc.nslots, params.lead.len() as u32, me_flags(params.lead.len(), b), line, b)
+        } else { std::ptr::null_mut() };
+        let dentry = if dentry.is_null() { dentry } else { layout_tree(dentry) };
         // one block per body: baked code addresses its nodes (and their caches) as root + constant
-        let (body, entry, bentry) = if !entry.is_null() {
+        let (body, entry, bentry, kentry) = if !entry.is_null() {
             let e = layout_tree(entry);
-            (unsafe { (*(e as *mut NodeOf<node_method_entry_struct>)).u.body }, e, bentry)
+            (unsafe { (*(e as *mut NodeOf<node_method_entry_struct>)).u.body }, e, bentry, kentry)
+        } else if !kentry.is_null() {
+            let e = layout_tree(kentry);
+            (unsafe { (*(e as *mut NodeOf<node_method_entry_struct>)).u.body }, entry, bentry, e)
         } else if !bentry.is_null() {
             let e = layout_tree(bentry);
-            (unsafe { (*(e as *mut NodeOf<node_block_entry_struct>)).u.body }, entry, e)
-        } else { (layout_tree(body), entry, bentry) };
+            (unsafe { (*(e as *mut NodeOf<node_block_entry_struct>)).u.body }, entry, e, kentry)
+        } else { (layout_tree(body), entry, bentry, kentry) };
         let is = Box::leak(Box::new(Iseq {
-            body, entry, bentry, body_used: std::cell::Cell::new(false), nlocals: sc.nslots, params, env_size: sc.env_size, env_params,
+            body, entry, bentry, kentry, dentry, body_used: std::cell::Cell::new(false), nlocals: sc.nslots, params, env_size: sc.env_size, env_params,
             info: CodeInfo { file: self.file, label, line }, kind, simple, lead_only, name, local_names, arity, uses_block: false,
             parent: std::cell::Cell::new(std::ptr::null()), ruby2_keywords: std::cell::Cell::new(false),
             outer_names: if kind == IseqKind::Eval { self.eval_outer.iter().flatten().cloned().collect() } else { vec![] },
@@ -1949,6 +1977,14 @@ impl<'a> Compiler<'a> {
 
 /// Is every node of a method body one that cannot call, raise, allocate or look at its frame?
 /// (By the names in its dump: a nested body prints as an operand, a symbol literal only makes it stricter.)
+/// Does the tree hold a node that caches a literal object (whose identity a second copy would change)?
+fn has_lit_cache(body: NodePtr) -> bool {
+    let mut d = String::new();
+    dump_node(&mut d, body);
+    d.split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+        .any(|w| matches!(w, "node_fstr" | "node_regex" | "node_dregex" | "node_biglit" | "node_range_lit"))
+}
+
 fn leaf_body(body: NodePtr) -> bool {
     let mut d = String::new();
     dump_node(&mut d, body);
