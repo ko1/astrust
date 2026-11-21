@@ -26,6 +26,7 @@ pub fn init(program_dir: Option<&str>, collect: bool) {
 extern "C" { fn atexit(f: extern "C" fn()) -> std::os::raw::c_int; }
 #[allow(static_mut_refs)]
 extern "C" fn print_patch_stats() {
+    // SAFETY: at exit no other access to STORE is live.
     if let Some(st) = unsafe { STORE.as_ref() } {
         let (n, failed, bytes) = st.patch_stats();
         eprintln!("saruby: patch bound={} failed={} bytes={}", n, failed, bytes);
@@ -35,10 +36,12 @@ extern "C" fn print_patch_stats() {
 /// A body's dispatcher until its first dispatch: bind its own copy (or keep the shared SD), then run it.
 #[allow(static_mut_refs)]
 fn first_dispatch(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
+    // SAFETY: STORE is set at startup; binding runs no Ruby code, so no other borrow of it is live.
     let p = unsafe { STORE.as_mut() }.and_then(|st| st.bind(n as usize, env!("SARUBY_BUILD_ID"), first_dispatch as DispatchFn as usize, hole_value));
     let Some(p) = p else { unreachable!("first_dispatch on a node that was not deferred") };
     // SAFETY: p is the entry of an SD for this node's shape, with the dispatcher's signature.
     let d = unsafe { std::mem::transmute::<*const std::os::raw::c_void, DispatchFn>(p) };
+    // SAFETY: n is the node this dispatcher was installed on (a live, never freed node).
     unsafe { (*n).head.dispatcher = d; }
     d(c, n, fp)
 }
