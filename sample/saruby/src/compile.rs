@@ -28,14 +28,53 @@ pub const AK_BLOCK: u8 = 4;   // &blk
 
 pub struct CallInfo { pub kinds: Vec<u8>, pub blk: Option<&'static Iseq>, pub kw_splat_only: bool, pub kw_names: Vec<Sym> }
 
+// Merkle hashes of the opaque operands: by content, never by an address or an id of this process,
+// so the same code in another program (or at another place) gets the same SD (Reusable).
+
+/// An immediate by its bits (value_bake bakes it), a Symbol by its name, a heap literal by content
+/// (it is read from the node at run time, so its content only keeps unlike sites apart).
 pub fn value_hash(v: Value) -> u64 {
-    if v.is_sym() { crate::astrust::hash_str("sym") } else { crate::astrust::hash_u64(v.raw()) }
+    use crate::astrust::{hash_bytes, hash_merge, hash_str, hash_u64};
+    if v.is_sym() { hash_merge(hash_str("sym"), hash_bytes(crate::symbol::sym_bytes(v.as_sym()))) }
+    else if !v.is_heap() { hash_u64(v.raw()) }
+    else if crate::heap::is_heap_float(v) { hash_merge(hash_str("float"), hash_u64(crate::heap::float_val(v).to_bits())) }
+    else if crate::object::is_string(v) { hash_merge(hash_str("str"), hash_bytes(crate::object::str_bytes(v))) }
+    else { hash_str("heap") }
 }
 pub fn value_bake(v: Value) -> Option<String> {
     if v.is_sym() || v.is_heap() { None } else { Some(format!("unsafe {{ Value::from_raw({:#x}) }}", v.raw())) }
 }
-pub fn iseq_hash(_i: IseqRef) -> u64 { crate::astrust::hash_str("iseq") }
-pub fn ci_hash(_c: CiRef) -> u64 { crate::astrust::hash_str("ci") }
+/// A method / block / class body by its structure: the body's tree and the parameters' shape (not the
+/// names, label or line: those are read from the iseq at run time).
+pub fn iseq_hash(i: IseqRef) -> u64 {
+    use crate::astrust::{hash_bytes, hash_merge as m, hash_str, hash_u64 as u};
+    let opt_u = |x: Option<u32>| x.map_or(0, |v| v as u64 + 1);
+    let list = |h: u64, xs: &[u32]| xs.iter().fold(m(h, u(xs.len() as u64)), |h, &x| m(h, u(x as u64)));
+    let p = &i.params;
+    let mut h = m(hash_str("iseq"), hash_node(i.body));
+    h = m(h, u(i.kind as u64));
+    h = m(h, u(i.nlocals as u64 | (i.env_size as u64) << 32));
+    for &(a, b) in i.env_params.iter() { h = m(h, u(a as u64 | (b as u64) << 32)); }
+    h = list(h, &p.lead);
+    h = list(h, &p.post);
+    for &(sl, d) in p.opt.iter() { h = m(m(h, u(sl as u64)), hash_node(d)); }
+    for k in p.kw.iter() {
+        h = m(h, hash_bytes(crate::symbol::sym_bytes(k.name)));
+        h = m(h, u(k.slot as u64 | (k.required as u64) << 32 | (k.static_default as u64) << 33));
+        h = m(h, k.default.map_or(0, hash_node));
+    }
+    for &d in p.destructure.iter() { h = m(h, hash_node(d)); }
+    h = m(h, u(opt_u(p.rest) | opt_u(p.kwrest) << 20 | opt_u(p.block) << 40));
+    let fl = [p.no_kw, p.forwarding, p.has_trailing_comma, p.anon_rest, p.anon_kwrest, p.anon_block];
+    m(h, u(fl.iter().enumerate().fold(0, |a, (j, &b)| a | (b as u64) << j)))
+}
+/// A call's argument description: kinds, keyword names (by name) and the block literal's body.
+pub fn ci_hash(c: CiRef) -> u64 {
+    use crate::astrust::{hash_bytes, hash_merge as m, hash_str, hash_u64 as u};
+    let mut h = m(m(hash_str("ci"), hash_bytes(&c.kinds)), u(c.kw_splat_only as u64));
+    for &k in c.kw_names.iter() { h = m(h, hash_bytes(crate::symbol::sym_bytes(k))); }
+    m(h, c.blk.map_or(0, iseq_hash))
+}
 
 fn leak<T>(v: Vec<T>) -> &'static [T] { Box::leak(v.into_boxed_slice()) }
 fn lstr(b: &[u8]) -> Str { Box::leak(b.to_vec().into_boxed_slice()) }

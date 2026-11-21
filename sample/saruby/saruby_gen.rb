@@ -6,9 +6,9 @@
 #
 # Operand types beyond astrustgen's built-ins:
 #   Sym       symbol id: per-process, so read from the node at run time; hashed by name
-#   Value     immediate literal: fixnum/flonum/nil/true/false baked, symbols read at run time
+#   Value     immediate literal: fixnum/flonum/nil/true/false baked, symbols read at run time (hashed by name)
 #   Str       &'static [u8] literal bytes: read from the node; hashed by content
-#   IseqRef   &'static Iseq (method/block/class body): read from the node; hashed by its body
+#   IseqRef   &'static Iseq (method/block/class body): read from the node; hashed by its body and parameters
 #   CiRef     &'static CallInfo: read from the node; hashed by content
 require_relative '../../lib/astrustgen'
 ASTrustGen.value_type = 'Value'

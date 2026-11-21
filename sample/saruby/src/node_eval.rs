@@ -895,7 +895,7 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, D_callee: Disp, D_body
     let r = if it != 0 && body_hash != 0 {
         // baked builtin iterator (inline_iter.rs): its loop here under its cfunc frame, the block's entry compiled in
         let bp: *const Block = &b;
-        // fast_hash: this site's block entry is the baked one (blk is not in the tree's hash; iter_refill)
+        // fast_hash: iter_refill checked this entry; the tree hash implies it now (iseq_hash), kept as one cheap compare
         let hit = (bi_hit(cc, r0, it & 0xff) && cc.fast_hash == body_hash) || iter_refill(c, cc, r0, mid, flags, it, blk, body_hash);
         match if hit { iter_begin(c, it, r0, base, k) } else { None } {
             Some(mut st) => {
