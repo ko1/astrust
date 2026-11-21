@@ -840,7 +840,7 @@ fn SPECIALIZE_node_ivar_arith(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("(*np).u.name".to_string());
     a.push(format!("{}", (*np).u.sub));
     a.push("v_v".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_ivar_arith_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.ic".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push(format!("{}u32", { let u = &(*np).u; if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }));
@@ -1006,7 +1006,7 @@ fn SPECIALIZE_node_const(sc: &mut SpecCtx, n: NodePtr) -> String {
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("(*np).u.name".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_const_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
@@ -1041,7 +1041,7 @@ fn SPECIALIZE_node_const_path(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_parent".to_string());
     a.push("(*np).u.name".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_const_path_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
     // named by what is baked too (children's types, @bake values), not by the hash alone:
@@ -1302,7 +1302,7 @@ fn SPECIALIZE_node_line(sc: &mut SpecCtx, n: NodePtr) -> String {
     let np = n as *mut NodeOf<node_line_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_line_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push(child_ptr_expr(n, u.body));
     }
     if !was_open { sc.open.remove(&own_hash); }
@@ -1993,7 +1993,7 @@ fn SPECIALIZE_node_call(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("list_base(n)".to_string());
     a.push("(*np).u.mid".to_string());
     a.push(format!("{}u32", (*np).u.flags));
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push(format!("{}u64", h_callee));
     a.push(format!("{}u32", { let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }));
@@ -2037,7 +2037,7 @@ fn SPECIALIZE_node_call_blk(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("list_base(n)".to_string());
     a.push("(*np).u.mid".to_string());
     a.push(format!("{}u32", (*np).u.flags));
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_blk_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("(*np).u.blk".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push(format!("{}u64", h_callee));
@@ -2081,7 +2081,7 @@ fn SPECIALIZE_node_call_kw(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("list_base(n)".to_string());
     a.push("(*np).u.mid".to_string());
     a.push(format!("{}u32", (*np).u.flags));
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_kw_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("(*np).u.ci".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push(format!("{}u64", h_callee));
@@ -2122,7 +2122,7 @@ fn SPECIALIZE_node_call_x(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("list_base(n)".to_string());
     a.push("(*np).u.mid".to_string());
     a.push(format!("{}u32", (*np).u.flags));
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_x_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("(*np).u.ci".to_string());
     a.push("&mut (*np).u.cc".to_string());
     }
@@ -2161,7 +2161,7 @@ fn SPECIALIZE_node_attrasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("list_base(n)".to_string());
     a.push("(*np).u.mid".to_string());
     a.push(format!("{}u32", (*np).u.flags));
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_attrasgn_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push(format!("{}u32", { let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }));
     }
@@ -2196,7 +2196,7 @@ fn SPECIALIZE_node_super(sc: &mut SpecCtx, n: NodePtr) -> String {
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("list_base(n)".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_super_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("(*np).u.ci".to_string());
     a.push(format!("{}", (*np).u.zsuper));
     }
@@ -2366,7 +2366,7 @@ fn SPECIALIZE_node_opt_plus(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_plus_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2405,7 +2405,7 @@ fn SPECIALIZE_node_opt_minus(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_minus_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2444,7 +2444,7 @@ fn SPECIALIZE_node_opt_mul(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_mul_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2483,7 +2483,7 @@ fn SPECIALIZE_node_opt_div(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_div_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2522,7 +2522,7 @@ fn SPECIALIZE_node_opt_pow(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_pow_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
@@ -2559,7 +2559,7 @@ fn SPECIALIZE_node_opt_mod(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_mod_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
@@ -2596,7 +2596,7 @@ fn SPECIALIZE_node_opt_lt(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_lt_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2639,7 +2639,7 @@ fn SPECIALIZE_node_opt_le(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_le_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2682,7 +2682,7 @@ fn SPECIALIZE_node_opt_gt(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_gt_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2725,7 +2725,7 @@ fn SPECIALIZE_node_opt_ge(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_ge_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2768,7 +2768,7 @@ fn SPECIALIZE_node_opt_eq(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_eq_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2811,7 +2811,7 @@ fn SPECIALIZE_node_opt_neq(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_neq_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2854,7 +2854,7 @@ fn SPECIALIZE_node_opt_ltlt(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_ltlt_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
@@ -2891,7 +2891,7 @@ fn SPECIALIZE_node_opt_gtgt(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_gtgt_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
@@ -2928,7 +2928,7 @@ fn SPECIALIZE_node_opt_xor(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_xor_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
@@ -2965,7 +2965,7 @@ fn SPECIALIZE_node_opt_and(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_and_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
@@ -3002,7 +3002,7 @@ fn SPECIALIZE_node_opt_or(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_or_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
@@ -3039,7 +3039,7 @@ fn SPECIALIZE_node_opt_aref(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_aref_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -3080,7 +3080,7 @@ fn SPECIALIZE_node_opt_aset(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     a.push("v_v".to_string());
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_aset_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -3120,7 +3120,7 @@ fn SPECIALIZE_node_method_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push(format!("{}u32", (*np).u.nlocals));
     a.push(format!("{}u32", (*np).u.nparams));
     a.push(format!("{}u32", (*np).u.flags));
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_method_entry_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push(child_ptr_expr(n, u.body));
     a.push("crate::vm::CallArgs::load(c)".to_string());
     }
@@ -3161,7 +3161,7 @@ fn SPECIALIZE_node_block_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push(format!("{}u32", (*np).u.nlocals));
     a.push(format!("{}u32", (*np).u.nparams));
     a.push(format!("{}u32", (*np).u.flags));
-    a.push(format!("{}u32", (*np).u.line));
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_block_entry_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
     a.push(child_ptr_expr(n, u.body));
     a.push("crate::vm::CallArgs::load(c)".to_string());
     }

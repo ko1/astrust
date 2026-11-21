@@ -206,7 +206,7 @@ fn th_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     let t = new_thread(c, slf);
     let args = c.ary_new_from(a);
     let start = c.ary_new_from(&[p, args]);
-    let loc = c.caller_frame().map(|f| format!("{}:{}", frame_file(f), f.line)).unwrap_or_default();
+    let loc = c.caller_frame().map(|f| format!("{}:{}", frame_file(f), f.line())).unwrap_or_default();
     let r = th_mut(c, t);
     r.start = start; r.loc = loc;
     let l = LIST.get(c);

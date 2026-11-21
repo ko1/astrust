@@ -40,7 +40,7 @@ fn new_binding(slf: Value, env: Value, names: Vec<(Sym, u32, u32)>, cref: *const
 
 pub fn binding_of_frame(_c: &mut Ctx, f: &Frame) -> RV {
     let env = f.fp[1].get();
-    Ok(new_binding(f.fp[0].get(), env, iseq_names(f.iseq(), true), f.cref(), f.me, frame_file(f), f.line))
+    Ok(new_binding(f.fp[0].get(), env, iseq_names(f.iseq(), true), f.cref(), f.me, frame_file(f), f.line()))
 }
 pub fn binding_of_caller(c: &mut Ctx) -> RV {
     let f = c.frame();

@@ -2,7 +2,7 @@
 use crate::rt::*;
 use crate::symbol::s;
 use crate::value::*;
-use crate::vm::{Ctx, OpCc, RV};
+use crate::vm::{Ctx, OpCc, Pos, RV};
 
 /// Operands as doubles when Float op Float / Float op Integer / Integer op Float applies
 /// (flonum and fixnum only); `rf` / `ri` are the redefinition flags of Float#op / Integer#op.
@@ -50,7 +50,7 @@ pub fn tf_hash(ty: u32) -> bool { ty == 0 || (ty - 1) & TF_HASH != 0 }
 /// The rest of an operator at a baked site whose inline paths did not apply: Float, then the call.
 /// A site whose recorded kinds are stale or absent ends up here, slower but right.
 #[inline(never)]
-pub fn srb_arith_out(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: u32, cc: &mut OpCc) -> RV {
+pub fn srb_arith_out(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: Pos, cc: &mut OpCc) -> RV {
     let f = crate::numeric::float_new;
     match mid {
         s::plus => if let Some((x, y)) = flo2(a, b, R_FLO_PLUS, R_INT_PLUS) { return Ok(f(x + y)); }

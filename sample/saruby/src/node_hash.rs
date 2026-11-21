@@ -224,7 +224,6 @@ fn HASH_node_ivar_arith(n: NodePtr) -> u64 {
     h = hash_merge(h, hash_bytes(crate::symbol::sym_bytes(u.name)));
     h = hash_merge(h, hash_u64(u.sub as u64));
     h = hash_merge(h, hash_node(u.v));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -267,7 +266,6 @@ fn HASH_node_const(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_const_struct>)).u };
     let mut h = hash_str("node_const");
     h = hash_merge(h, hash_bytes(crate::symbol::sym_bytes(u.name)));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -277,7 +275,6 @@ fn HASH_node_const_path(n: NodePtr) -> u64 {
     let mut h = hash_str("node_const_path");
     h = hash_merge(h, hash_node(u.parent));
     h = hash_merge(h, hash_bytes(crate::symbol::sym_bytes(u.name)));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -344,7 +341,6 @@ fn HASH_node_block(n: NodePtr) -> u64 {
 fn HASH_node_line(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_line_struct>)).u };
     let mut h = hash_str("node_line");
-    h = hash_merge(h, hash_u64(u.line as u64));
     h = hash_merge(h, hash_node(u.body));
     h
 }
@@ -529,7 +525,6 @@ fn HASH_node_call(n: NodePtr) -> u64 {
     h = hash_merge(h, hash_node_list(u.args));
     h = hash_merge(h, hash_bytes(crate::symbol::sym_bytes(u.mid)));
     h = hash_merge(h, hash_u64(u.flags as u64));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -541,7 +536,6 @@ fn HASH_node_call_blk(n: NodePtr) -> u64 {
     h = hash_merge(h, hash_node_list(u.args));
     h = hash_merge(h, hash_bytes(crate::symbol::sym_bytes(u.mid)));
     h = hash_merge(h, hash_u64(u.flags as u64));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h = hash_merge(h, crate::compile::iseq_hash(u.blk));
     h
 }
@@ -554,7 +548,6 @@ fn HASH_node_call_kw(n: NodePtr) -> u64 {
     h = hash_merge(h, hash_node_list(u.args));
     h = hash_merge(h, hash_bytes(crate::symbol::sym_bytes(u.mid)));
     h = hash_merge(h, hash_u64(u.flags as u64));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h = hash_merge(h, crate::compile::ci_hash(u.ci));
     h
 }
@@ -567,7 +560,6 @@ fn HASH_node_call_x(n: NodePtr) -> u64 {
     h = hash_merge(h, hash_node_list(u.args));
     h = hash_merge(h, hash_bytes(crate::symbol::sym_bytes(u.mid)));
     h = hash_merge(h, hash_u64(u.flags as u64));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h = hash_merge(h, crate::compile::ci_hash(u.ci));
     h
 }
@@ -580,7 +572,6 @@ fn HASH_node_attrasgn(n: NodePtr) -> u64 {
     h = hash_merge(h, hash_node_list(u.args));
     h = hash_merge(h, hash_bytes(crate::symbol::sym_bytes(u.mid)));
     h = hash_merge(h, hash_u64(u.flags as u64));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -589,7 +580,6 @@ fn HASH_node_super(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_super_struct>)).u };
     let mut h = hash_str("node_super");
     h = hash_merge(h, hash_node_list(u.args));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h = hash_merge(h, crate::compile::ci_hash(u.ci));
     h = hash_merge(h, hash_u64(u.zsuper as u64));
     h
@@ -634,7 +624,6 @@ fn HASH_node_opt_plus(n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_plus");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -644,7 +633,6 @@ fn HASH_node_opt_minus(n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_minus");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -654,7 +642,6 @@ fn HASH_node_opt_mul(n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_mul");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -664,7 +651,6 @@ fn HASH_node_opt_div(n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_div");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -674,7 +660,6 @@ fn HASH_node_opt_pow(n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_pow");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -684,7 +669,6 @@ fn HASH_node_opt_mod(n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_mod");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -694,7 +678,6 @@ fn HASH_node_opt_lt(n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_lt");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -704,7 +687,6 @@ fn HASH_node_opt_le(n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_le");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -714,7 +696,6 @@ fn HASH_node_opt_gt(n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_gt");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -724,7 +705,6 @@ fn HASH_node_opt_ge(n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_ge");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -734,7 +714,6 @@ fn HASH_node_opt_eq(n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_eq");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -744,7 +723,6 @@ fn HASH_node_opt_neq(n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_neq");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -754,7 +732,6 @@ fn HASH_node_opt_ltlt(n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_ltlt");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -764,7 +741,6 @@ fn HASH_node_opt_gtgt(n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_gtgt");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -774,7 +750,6 @@ fn HASH_node_opt_xor(n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_xor");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -784,7 +759,6 @@ fn HASH_node_opt_and(n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_and");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -794,7 +768,6 @@ fn HASH_node_opt_or(n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_or");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -804,7 +777,6 @@ fn HASH_node_opt_aref(n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_aref");
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -815,7 +787,6 @@ fn HASH_node_opt_aset(n: NodePtr) -> u64 {
     h = hash_merge(h, hash_node(u.a));
     h = hash_merge(h, hash_node(u.b));
     h = hash_merge(h, hash_node(u.v));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h
 }
 
@@ -826,7 +797,6 @@ fn HASH_node_method_entry(n: NodePtr) -> u64 {
     h = hash_merge(h, hash_u64(u.nlocals as u64));
     h = hash_merge(h, hash_u64(u.nparams as u64));
     h = hash_merge(h, hash_u64(u.flags as u64));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h = hash_merge(h, hash_node(u.body));
     h
 }
@@ -838,7 +808,6 @@ fn HASH_node_block_entry(n: NodePtr) -> u64 {
     h = hash_merge(h, hash_u64(u.nlocals as u64));
     h = hash_merge(h, hash_u64(u.nparams as u64));
     h = hash_merge(h, hash_u64(u.flags as u64));
-    h = hash_merge(h, hash_u64(u.line as u64));
     h = hash_merge(h, hash_node(u.body));
     h
 }

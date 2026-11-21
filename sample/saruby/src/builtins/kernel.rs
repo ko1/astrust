@@ -748,7 +748,7 @@ fn m_ruby2_keywords(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -
             let e = make_name_error(c, c.vm().c_name_error, &format!("undefined method '{}' for {} '{}'", sym_str(nm), if c.class(k).is_module { "module" } else { "class" }, class_path(k)), Value::sym(nm), k)?;
             return Err(raise_exc(c, e));
         }
-        let wloc = match c.caller_frame() { Some(pf) => format!("{}:{}: warning: Skipping set of ruby2_keywords flag for {} ", frame_file(pf), pf.line, sym_str(nm)), None => String::new() };
+        let wloc = match c.caller_frame() { Some(pf) => format!("{}:{}: warning: Skipping set of ruby2_keywords flag for {} ", frame_file(pf), pf.line(), sym_str(nm)), None => String::new() };
         let Some(me) = c.me_ref(me) else { continue };
         if me.owner != k {
             err_write(format!("{}(can only set in method defining module)\n", wloc).as_bytes());

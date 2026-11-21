@@ -208,12 +208,19 @@ pub struct Frame {
     pub me: *const MethodEntry,
     pub blk: *const Block,
     pub id: u64,          // return target: method frame id (blocks: the home method's; lambdas: own)
-    pub line: u32,
+    pub pos: Pos,         // the current line: where it is kept (a node's), read only when it is needed
     pub kind: u8,
     pub visi: u8,
     pub lite: bool,
-    pub pad: u8,          // written with line..lite as one word
+    pub pad: u8,          // written with kind..lite as one word
 }
+
+/// A source line as a frame keeps it: a reference to the line operand of the node being run (or of an
+/// iseq), not the number.  A site then stores its own address, which specialized code shared by sites
+/// at other lines computes from the tree's root, and no line number enters specialized code or its hash.
+pub type Pos = &'static u32;
+pub static LINE_0: u32 = 0;
+pub static LINE_1: u32 = 1;
 
 #[repr(C)]
 pub struct FrameFull {
@@ -227,10 +234,11 @@ impl std::ops::Deref for FrameFull { type Target = Frame; #[inline(always)] fn d
 impl std::ops::DerefMut for FrameFull { #[inline(always)] fn deref_mut(&mut self) -> &mut Frame { &mut self.h } }
 
 impl Frame {
+    #[inline] pub fn line(&self) -> u32 { *self.pos }
     pub fn empty(st: Stk) -> FrameFull {
         FrameFull {
             h: Frame { prev: std::ptr::null_mut(), fp: head(st), me: std::ptr::null(), blk: std::ptr::null(),
-                       id: 0, line: 0, kind: FK_TOP, visi: VISI_PRIVATE, lite: false, pad: 0 },
+                       id: 0, pos: &LINE_0, kind: FK_TOP, visi: VISI_PRIVATE, lite: false, pad: 0 },
             cref: std::ptr::null(), iseq: std::ptr::null(), self_blk: std::ptr::null(), defined_class: NIL,
         }
     }
@@ -257,7 +265,7 @@ impl Frame {
     /// The frame of a cfunc called from frame `pf`.
     #[inline(always)]
     pub fn cfunc(pf: *mut Frame, me: *const MethodEntry, blk: *const Block) -> Frame {
-        unsafe { Frame { prev: pf, fp: (*pf).fp, me, blk, id: (*pf).id, line: (*pf).line, kind: FK_CFUNC, visi: (*pf).visi, lite: true, pad: 0 } }
+        unsafe { Frame { prev: pf, fp: (*pf).fp, me, blk, id: (*pf).id, pos: (*pf).pos, kind: FK_CFUNC, visi: (*pf).visi, lite: true, pad: 0 } }
     }
     /// Replace the lexical scope (`using`): of the frame that owns one.
     pub fn set_cref(&mut self, cr: *const Cref) {
@@ -1099,7 +1107,7 @@ fn capture_frames(c: &Ctx) -> Vec<RawFrame> {
     unsafe {
         while !f.is_null() {
             let fr = &*f;
-            frames.push(RawFrame { kind: fr.kind, me: fr.me, iseq: fr.iseq(), file: frame_file(fr), line: fr.line });
+            frames.push(RawFrame { kind: fr.kind, me: fr.me, iseq: fr.iseq(), file: frame_file(fr), line: fr.line() });
             f = fr.prev;
         }
     }
@@ -1576,7 +1584,7 @@ pub fn kw_direct_ok(me: *const MethodEntry, npos: usize, names: &[Sym], flags: u
     names.iter().all(|n| p.kw.iter().any(|k| k.name == *n))
 }
 
-pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: Stk, npos: usize, names: &[Sym], blk: *const Block) -> RV {
+pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, recv: Value, base: Stk, npos: usize, names: &[Sym], blk: *const Block) -> RV {
     let n = is.nlocals as usize;
     stack_check(c, n + 16)?;
     if !is.kentry.is_null() { is.body_used.set(true); }
@@ -1584,7 +1592,7 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Valu
     for j in 0..names.len() { vals[j] = base[2 + npos + j].get(); }
     let id = c.next_serial();
     let mut fr = FrameFull {
-        h: Frame { prev: c.frame, fp: head(base), me, blk, id, line: is.info.line, kind: FK_METHOD, visi: VISI_PUBLIC, lite: false, pad: 0 },
+        h: Frame { prev: c.frame, fp: head(base), me, blk, id, pos: &is.info.line, kind: FK_METHOD, visi: VISI_PUBLIC, lite: false, pad: 0 },
         cref: unsafe { (*me).cref }, iseq: is, self_blk: std::ptr::null(), defined_class: NIL,
     };
     base[0].set(recv);
@@ -1721,7 +1729,7 @@ pub fn make_env(is: &Iseq, base: Stk, parent: Value) {
 
 /// Call of an Iseq method with only required, slot-contiguous params.
 #[inline(always)]
-pub fn invoke_iseq_simple(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: Stk, argc: u32, blk: *const Block) -> RV {
+pub fn invoke_iseq_simple(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, recv: Value, base: Stk, argc: u32, blk: *const Block) -> RV {
     if is.plain_entry().is_null() { return invoke_iseq(c, me, is, recv, base, argc, blk, 0); }
     base[0].set(recv);
     c.call_me = me; c.call_blk = blk;
@@ -1835,7 +1843,7 @@ pub fn kw_arg(args: &[Value]) -> Option<Value> {
     if is_hash(l) && obj(l).flags & FL_KWHASH != 0 { Some(l) } else { None }
 }
 
-pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
+pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     if !is.plain_entry().is_null() && argc as usize == is.params.lead.len() && flags & CF_KW == 0 {
         let r = invoke_iseq_simple(c, me, is, recv, base, argc, blk);
         c.set_sp(base, 0);
@@ -1853,7 +1861,7 @@ pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, 
     fr.visi = VISI_PUBLIC;
     fr.id = c.next_serial();
     fr.cref = unsafe { (*me).cref };
-    fr.line = is.info.line;
+    fr.pos = &is.info.line;
     base[0].set(recv);
     c.frame = &mut fr.h;
     let r = if is.simple && argc as usize == is.params.lead.len() && flags & CF_KW == 0 {
@@ -2220,7 +2228,7 @@ pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const 
     }
 }
 
-pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &Iseq, base: Stk, argc: u32, blkarg: *const Block, lambda: bool, bme: *const MethodEntry, kw: bool) -> RV {
+pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &'static Iseq, base: Stk, argc: u32, blkarg: *const Block, lambda: bool, bme: *const MethodEntry, kw: bool) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit_body(if lambda { "block_full lambda" } else { "block_full" }, is.body, is.env_size > 0, is.params.lead.len(), false);
     if !is.bentry.is_null() { is.body_used.set(true); }
     let mut fr = Frame::empty(base);
@@ -2233,7 +2241,7 @@ pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &Iseq, base: Stk, argc: u32, b
     fr.visi = VISI_PUBLIC;
     fr.id = if lambda { c.next_serial() } else { b.home_id };
     fr.self_blk = b;
-    fr.line = is.info.line;
+    fr.pos = &is.info.line;
     fr.defined_class = b.defined_class;
     c.frame = &mut fr.h;
     let fast = is.lead_only && is.env_size == 0 && argc as usize == is.params.lead.len() && (argc != 1 || is.params.lead.len() == 1) && !kw;
@@ -2339,6 +2347,6 @@ pub fn global_set(name: &str, v: Value) { vm().globals.insert(intern_str(name), 
 
 pub fn intern_value(b: &[u8]) -> Value { Value::sym(intern(b)) }
 
-pub fn current_line(c: &Ctx) -> u32 { unsafe { if c.frame.is_null() { 0 } else { (*c.frame).line } } }
+pub fn current_line(c: &Ctx) -> u32 { unsafe { if c.frame.is_null() { 0 } else { (*c.frame).line() } } }
 
 pub fn the_dispatch_type_check(_f: DispatchFn) {}

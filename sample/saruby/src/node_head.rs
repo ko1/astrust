@@ -13,7 +13,7 @@ pub struct NodeKind {
     pub replacer: fn(NodePtr, NodePtr, NodePtr),
     pub no_inline: bool,
     pub size: usize,
-    pub children: fn(NodePtr, &mut dyn FnMut(&mut NodePtr)),
+    pub children: fn(NodePtr, bool, &mut dyn FnMut(&mut NodePtr)),
 }
 
 pub const NF_HAS_HASH: u32 = 1;
@@ -23,11 +23,12 @@ pub const NF_LAID: u32 = 8;        // part of a block made by layout_tree
 
 #[repr(C)]
 pub struct NodeHead {
+    pub line: u32,
+    pub flags: u32,
     pub dispatcher: DispatchFn,
     pub kind: &'static NodeKind,
     pub hash: u64,
-    pub flags: u32,
-    pub line: u32,
+
 }
 #[repr(C)]
 pub struct Node { pub head: NodeHead }
@@ -51,7 +52,7 @@ pub fn layout_tree(root: NodePtr) -> NodePtr {
         if n.is_null() { return 0; }
         let k = unsafe { (*n).head.kind };
         let mut s = k.size;
-        (k.children)(n, &mut |c| s += size(*c));
+        (k.children)(n, false, &mut |c| s += size(*c));
         s
     }
     fn copy(n: NodePtr, at: &mut *mut u8) -> NodePtr {
@@ -62,7 +63,7 @@ pub fn layout_tree(root: NodePtr) -> NodePtr {
             *at = d.add(k.size);
             let d = d as NodePtr;
             (*d).head.flags |= NF_LAID;
-            (k.children)(d, &mut |c| if !c.is_null() { *c = copy(*c, at); });
+            (k.children)(d, true, &mut |c| if !c.is_null() { *c = copy(*c, at); });
             d
         }
     }
@@ -125,6 +126,7 @@ pub fn specialize_open(sc: &mut SpecCtx, n: NodePtr) -> String {
 pub fn specialize_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     let fname = format!("SD_{:016x}", hash_node(n));
     if sc.emitted.contains(&fname) || !node_laid(n) { return fname; }
+    sc.holes.clear();
     let t = specialize_node(sc, n);
     let s = format!("S_{:016x}", hash_node(n));
     if sc.emitted.contains(&format!("R_{:016x}", hash_node(n))) && !sc.emitted.contains(&s) {
@@ -137,6 +139,13 @@ pub fn {}(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ {}::run(c, n, fp, crate::vm:
         sc.out.push_str(&format!("#[no_mangle]
 pub fn {}(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ <{} as Disp>::call(c, n, fp) }}
 ", fname, t));
+    }
+    // binding descriptor: (offset from n, size) of each bound operand the entry reads
+    if !sc.holes.is_empty() {
+        let d: Vec<String> = sc.holes.iter().map(|&(p, sz)| format!("{},{}", p - n as usize, sz)).collect();
+        sc.out.push_str(&format!("#[no_mangle]
+pub static {}_HOLES: [u32; {}] = [{}];
+", fname, 2 * d.len(), d.join(",")));
     }
     sc.emitted.insert(fname.clone());
     fname
@@ -377,7 +386,6 @@ pub struct node_ivar_arith_struct {
     pub name: Sym,
     pub sub: bool,
     pub v: NodePtr,
-    pub line: u32,
     pub ic: IvarCache,
     pub cc: OpCc,
 }
@@ -412,7 +420,6 @@ pub struct node_cvasgn_struct {
 #[repr(C)]
 pub struct node_const_struct {
     pub name: Sym,
-    pub line: u32,
     pub cc: ConstCache,
 }
 
@@ -421,7 +428,6 @@ pub struct node_const_struct {
 pub struct node_const_path_struct {
     pub parent: NodePtr,
     pub name: Sym,
-    pub line: u32,
 }
 
 #[allow(non_camel_case_types)]
@@ -472,7 +478,6 @@ pub struct node_block_struct {
 #[allow(non_camel_case_types)]
 #[repr(C)]
 pub struct node_line_struct {
-    pub line: u32,
     pub body: NodePtr,
 }
 
@@ -621,7 +626,6 @@ pub struct node_call_struct {
     pub args: NodeList,
     pub mid: Sym,
     pub flags: u32,
-    pub line: u32,
     pub cc: CallCache,
 }
 
@@ -632,7 +636,6 @@ pub struct node_call_blk_struct {
     pub args: NodeList,
     pub mid: Sym,
     pub flags: u32,
-    pub line: u32,
     pub blk: IseqRef,
     pub cc: CallCache,
 }
@@ -644,7 +647,6 @@ pub struct node_call_kw_struct {
     pub args: NodeList,
     pub mid: Sym,
     pub flags: u32,
-    pub line: u32,
     pub ci: CiRef,
     pub cc: CallCache,
 }
@@ -656,7 +658,6 @@ pub struct node_call_x_struct {
     pub args: NodeList,
     pub mid: Sym,
     pub flags: u32,
-    pub line: u32,
     pub ci: CiRef,
     pub cc: CallCache,
 }
@@ -668,7 +669,6 @@ pub struct node_attrasgn_struct {
     pub args: NodeList,
     pub mid: Sym,
     pub flags: u32,
-    pub line: u32,
     pub cc: CallCache,
 }
 
@@ -676,7 +676,6 @@ pub struct node_attrasgn_struct {
 #[repr(C)]
 pub struct node_super_struct {
     pub args: NodeList,
-    pub line: u32,
     pub ci: CiRef,
     pub zsuper: bool,
 }
@@ -712,7 +711,6 @@ pub struct node_lambda_struct {
 pub struct node_opt_plus_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
     pub tf: TyFb,
 }
@@ -722,7 +720,6 @@ pub struct node_opt_plus_struct {
 pub struct node_opt_minus_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
     pub tf: TyFb,
 }
@@ -732,7 +729,6 @@ pub struct node_opt_minus_struct {
 pub struct node_opt_mul_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
     pub tf: TyFb,
 }
@@ -742,7 +738,6 @@ pub struct node_opt_mul_struct {
 pub struct node_opt_div_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
     pub tf: TyFb,
 }
@@ -752,7 +747,6 @@ pub struct node_opt_div_struct {
 pub struct node_opt_pow_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
 }
 
@@ -761,7 +755,6 @@ pub struct node_opt_pow_struct {
 pub struct node_opt_mod_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
 }
 
@@ -770,7 +763,6 @@ pub struct node_opt_mod_struct {
 pub struct node_opt_lt_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
     pub tf: TyFb,
 }
@@ -780,7 +772,6 @@ pub struct node_opt_lt_struct {
 pub struct node_opt_le_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
     pub tf: TyFb,
 }
@@ -790,7 +781,6 @@ pub struct node_opt_le_struct {
 pub struct node_opt_gt_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
     pub tf: TyFb,
 }
@@ -800,7 +790,6 @@ pub struct node_opt_gt_struct {
 pub struct node_opt_ge_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
     pub tf: TyFb,
 }
@@ -810,7 +799,6 @@ pub struct node_opt_ge_struct {
 pub struct node_opt_eq_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
     pub tf: TyFb,
 }
@@ -820,7 +808,6 @@ pub struct node_opt_eq_struct {
 pub struct node_opt_neq_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
     pub tf: TyFb,
 }
@@ -830,7 +817,6 @@ pub struct node_opt_neq_struct {
 pub struct node_opt_ltlt_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
 }
 
@@ -839,7 +825,6 @@ pub struct node_opt_ltlt_struct {
 pub struct node_opt_gtgt_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
 }
 
@@ -848,7 +833,6 @@ pub struct node_opt_gtgt_struct {
 pub struct node_opt_xor_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
 }
 
@@ -857,7 +841,6 @@ pub struct node_opt_xor_struct {
 pub struct node_opt_and_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
 }
 
@@ -866,7 +849,6 @@ pub struct node_opt_and_struct {
 pub struct node_opt_or_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
 }
 
@@ -875,7 +857,6 @@ pub struct node_opt_or_struct {
 pub struct node_opt_aref_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
     pub tf: TyFb,
 }
@@ -886,7 +867,6 @@ pub struct node_opt_aset_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub v: NodePtr,
-    pub line: u32,
     pub cc: OpCc,
     pub tf: TyFb,
 }
@@ -897,7 +877,6 @@ pub struct node_method_entry_struct {
     pub nlocals: u32,
     pub nparams: u32,
     pub flags: u32,
-    pub line: u32,
     pub body: NodePtr,
 }
 
@@ -907,7 +886,6 @@ pub struct node_block_entry_struct {
     pub nlocals: u32,
     pub nparams: u32,
     pub flags: u32,
-    pub line: u32,
     pub body: NodePtr,
 }
 
@@ -1006,758 +984,860 @@ pub struct node_special_struct {
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_nil() -> NodePtr {
-    node_allocate(&KIND_node_nil, node_nil_struct {  })
+    let n = node_allocate(&KIND_node_nil, node_nil_struct {  });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_true() -> NodePtr {
-    node_allocate(&KIND_node_true, node_true_struct {  })
+    let n = node_allocate(&KIND_node_true, node_true_struct {  });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_false() -> NodePtr {
-    node_allocate(&KIND_node_false, node_false_struct {  })
+    let n = node_allocate(&KIND_node_false, node_false_struct {  });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_self() -> NodePtr {
-    node_allocate(&KIND_node_self, node_self_struct {  })
+    let n = node_allocate(&KIND_node_self, node_self_struct {  });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_lit(v: Value) -> NodePtr {
-    node_allocate(&KIND_node_lit, node_lit_struct { v })
+    let n = node_allocate(&KIND_node_lit, node_lit_struct { v });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_float(v: f64) -> NodePtr {
-    node_allocate(&KIND_node_float, node_float_struct { v })
+    let n = node_allocate(&KIND_node_float, node_float_struct { v });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_str(s: Str, enc: u32) -> NodePtr {
-    node_allocate(&KIND_node_str, node_str_struct { s, enc })
+    let n = node_allocate(&KIND_node_str, node_str_struct { s, enc });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_fstr(s: Str, enc: u32) -> NodePtr {
-    node_allocate(&KIND_node_fstr, node_fstr_struct { s, enc, lc: Default::default() })
+    let n = node_allocate(&KIND_node_fstr, node_fstr_struct { s, enc, lc: Default::default() });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_dstr(parts: NodeList, enc: u32, cap: u32) -> NodePtr {
-    node_allocate(&KIND_node_dstr, node_dstr_struct { parts, enc, cap })
+    let n = node_allocate(&KIND_node_dstr, node_dstr_struct { parts, enc, cap });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_tostr(v: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_tostr, node_tostr_struct { v })
+    let n = node_allocate(&KIND_node_tostr, node_tostr_struct { v });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_dsym(s: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_dsym, node_dsym_struct { s })
+    let n = node_allocate(&KIND_node_dsym, node_dsym_struct { s });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_regex(src: Str, opts: u32) -> NodePtr {
-    node_allocate(&KIND_node_regex, node_regex_struct { src, opts, lc: Default::default() })
+    let n = node_allocate(&KIND_node_regex, node_regex_struct { src, opts, lc: Default::default() });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_dregex(s: NodePtr, opts: u32, once: bool) -> NodePtr {
-    node_allocate(&KIND_node_dregex, node_dregex_struct { s, opts, once, lc: Default::default() })
+    let n = node_allocate(&KIND_node_dregex, node_dregex_struct { s, opts, once, lc: Default::default() });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_biglit(digits: Str) -> NodePtr {
-    node_allocate(&KIND_node_biglit, node_biglit_struct { digits, lc: Default::default() })
+    let n = node_allocate(&KIND_node_biglit, node_biglit_struct { digits, lc: Default::default() });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_ary(elems: NodeList) -> NodePtr {
-    node_allocate(&KIND_node_ary, node_ary_struct { elems })
+    let n = node_allocate(&KIND_node_ary, node_ary_struct { elems });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_ary_build(elems: NodeList, kinds: Str) -> NodePtr {
-    node_allocate(&KIND_node_ary_build, node_ary_build_struct { elems, kinds })
+    let n = node_allocate(&KIND_node_ary_build, node_ary_build_struct { elems, kinds });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_hash(items: NodeList, kinds: Str) -> NodePtr {
-    node_allocate(&KIND_node_hash, node_hash_struct { items, kinds })
+    let n = node_allocate(&KIND_node_hash, node_hash_struct { items, kinds });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_range(b: NodePtr, e: NodePtr, excl: bool) -> NodePtr {
-    node_allocate(&KIND_node_range, node_range_struct { b, e, excl })
+    let n = node_allocate(&KIND_node_range, node_range_struct { b, e, excl });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_range_lit(b: Value, e: Value, excl: bool) -> NodePtr {
-    node_allocate(&KIND_node_range_lit, node_range_lit_struct { b, e, excl, lc: Default::default() })
+    let n = node_allocate(&KIND_node_range_lit, node_range_lit_struct { b, e, excl, lc: Default::default() });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_lvar(idx: u32) -> NodePtr {
-    node_allocate(&KIND_node_lvar, node_lvar_struct { idx })
+    let n = node_allocate(&KIND_node_lvar, node_lvar_struct { idx });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_lasgn(idx: u32, v: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_lasgn, node_lasgn_struct { idx, v })
+    let n = node_allocate(&KIND_node_lasgn, node_lasgn_struct { idx, v });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_dvar(hops: u32, idx: u32) -> NodePtr {
-    node_allocate(&KIND_node_dvar, node_dvar_struct { hops, idx })
+    let n = node_allocate(&KIND_node_dvar, node_dvar_struct { hops, idx });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_dasgn(hops: u32, idx: u32, v: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_dasgn, node_dasgn_struct { hops, idx, v })
+    let n = node_allocate(&KIND_node_dasgn, node_dasgn_struct { hops, idx, v });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_ivar(name: Sym) -> NodePtr {
-    node_allocate(&KIND_node_ivar, node_ivar_struct { name, ic: Default::default() })
+    let n = node_allocate(&KIND_node_ivar, node_ivar_struct { name, ic: Default::default() });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_iasgn(name: Sym, v: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_iasgn, node_iasgn_struct { name, v, ic: Default::default() })
+    let n = node_allocate(&KIND_node_iasgn, node_iasgn_struct { name, v, ic: Default::default() });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_ivar_arith(name: Sym, sub: bool, v: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_ivar_arith, node_ivar_arith_struct { name, sub, v, line, ic: Default::default(), cc: Default::default() })
+    let n = node_allocate(&KIND_node_ivar_arith, node_ivar_arith_struct { name, sub, v, ic: Default::default(), cc: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_gvar(name: Sym) -> NodePtr {
-    node_allocate(&KIND_node_gvar, node_gvar_struct { name })
+    let n = node_allocate(&KIND_node_gvar, node_gvar_struct { name });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_gasgn(name: Sym, v: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_gasgn, node_gasgn_struct { name, v })
+    let n = node_allocate(&KIND_node_gasgn, node_gasgn_struct { name, v });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_cvar(name: Sym) -> NodePtr {
-    node_allocate(&KIND_node_cvar, node_cvar_struct { name })
+    let n = node_allocate(&KIND_node_cvar, node_cvar_struct { name });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_cvasgn(name: Sym, v: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_cvasgn, node_cvasgn_struct { name, v })
+    let n = node_allocate(&KIND_node_cvasgn, node_cvasgn_struct { name, v });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_const(name: Sym, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_const, node_const_struct { name, line, cc: Default::default() })
+    let n = node_allocate(&KIND_node_const, node_const_struct { name, cc: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_const_path(parent: NodePtr, name: Sym, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_const_path, node_const_path_struct { parent, name, line })
+    let n = node_allocate(&KIND_node_const_path, node_const_path_struct { parent, name });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_top_const(name: Sym) -> NodePtr {
-    node_allocate(&KIND_node_top_const, node_top_const_struct { name })
+    let n = node_allocate(&KIND_node_top_const, node_top_const_struct { name });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_cdecl(name: Sym, v: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_cdecl, node_cdecl_struct { name, v })
+    let n = node_allocate(&KIND_node_cdecl, node_cdecl_struct { name, v });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_cdecl_path(parent: NodePtr, name: Sym, v: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_cdecl_path, node_cdecl_path_struct { parent, name, v })
+    let n = node_allocate(&KIND_node_cdecl_path, node_cdecl_path_struct { parent, name, v });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_errinfo() -> NodePtr {
-    node_allocate(&KIND_node_errinfo, node_errinfo_struct {  })
+    let n = node_allocate(&KIND_node_errinfo, node_errinfo_struct {  });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_nth_ref(nth: u32) -> NodePtr {
-    node_allocate(&KIND_node_nth_ref, node_nth_ref_struct { nth })
+    let n = node_allocate(&KIND_node_nth_ref, node_nth_ref_struct { nth });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_back_ref(kind: u32) -> NodePtr {
-    node_allocate(&KIND_node_back_ref, node_back_ref_struct { kind })
+    let n = node_allocate(&KIND_node_back_ref, node_back_ref_struct { kind });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_block(stmts: NodeList) -> NodePtr {
-    node_allocate(&KIND_node_block, node_block_struct { stmts })
+    let n = node_allocate(&KIND_node_block, node_block_struct { stmts });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_line(line: u32, body: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_line, node_line_struct { line, body })
+    let n = node_allocate(&KIND_node_line, node_line_struct { body });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_if(cond: NodePtr, then_b: NodePtr, else_b: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_if, node_if_struct { cond, then_b, else_b })
+    let n = node_allocate(&KIND_node_if, node_if_struct { cond, then_b, else_b });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_and(a: NodePtr, b: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_and, node_and_struct { a, b })
+    let n = node_allocate(&KIND_node_and, node_and_struct { a, b });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_or(a: NodePtr, b: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_or, node_or_struct { a, b })
+    let n = node_allocate(&KIND_node_or, node_or_struct { a, b });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_not(v: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_not, node_not_struct { v, cc: Default::default() })
+    let n = node_allocate(&KIND_node_not, node_not_struct { v, cc: Default::default() });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_while(cond: NodePtr, body: NodePtr, until: bool) -> NodePtr {
-    node_allocate(&KIND_node_while, node_while_struct { cond, body, until })
+    let n = node_allocate(&KIND_node_while, node_while_struct { cond, body, until });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_dowhile(cond: NodePtr, body: NodePtr, until: bool) -> NodePtr {
-    node_allocate(&KIND_node_dowhile, node_dowhile_struct { cond, body, until })
+    let n = node_allocate(&KIND_node_dowhile, node_dowhile_struct { cond, body, until });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_loop_break(v: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_loop_break, node_loop_break_struct { v })
+    let n = node_allocate(&KIND_node_loop_break, node_loop_break_struct { v });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_loop_next(v: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_loop_next, node_loop_next_struct { v })
+    let n = node_allocate(&KIND_node_loop_next, node_loop_next_struct { v });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_break(v: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_break, node_break_struct { v })
+    let n = node_allocate(&KIND_node_break, node_break_struct { v });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_next(v: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_next, node_next_struct { v })
+    let n = node_allocate(&KIND_node_next, node_next_struct { v });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_return(v: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_return, node_return_struct { v })
+    let n = node_allocate(&KIND_node_return, node_return_struct { v });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_retry() -> NodePtr {
-    node_allocate(&KIND_node_retry, node_retry_struct {  })
+    let n = node_allocate(&KIND_node_retry, node_retry_struct {  });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_redo() -> NodePtr {
-    node_allocate(&KIND_node_redo, node_redo_struct {  })
+    let n = node_allocate(&KIND_node_redo, node_redo_struct {  });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_rescue(body: NodePtr, clauses: NodeList, else_b: NodePtr, has_else: bool) -> NodePtr {
-    node_allocate(&KIND_node_rescue, node_rescue_struct { body, clauses, else_b, has_else })
+    let n = node_allocate(&KIND_node_rescue, node_rescue_struct { body, clauses, else_b, has_else });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_resbody(classes: NodeList, kinds: Str, assign: NodePtr, body: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_resbody, node_resbody_struct { classes, kinds, assign, body })
+    let n = node_allocate(&KIND_node_resbody, node_resbody_struct { classes, kinds, assign, body });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_ensure(body: NodePtr, ens: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_ensure, node_ensure_struct { body, ens })
+    let n = node_allocate(&KIND_node_ensure, node_ensure_struct { body, ens });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_when(subj_slot: u32, pats: NodeList, kinds: Str) -> NodePtr {
-    node_allocate(&KIND_node_when, node_when_struct { subj_slot, pats, kinds, cc: Default::default(), km: Default::default() })
+    let n = node_allocate(&KIND_node_when, node_when_struct { subj_slot, pats, kinds, cc: Default::default(), km: Default::default() });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_when_lit(subj_slot: u32, v: Value) -> NodePtr {
-    node_allocate(&KIND_node_when_lit, node_when_lit_struct { subj_slot, v, cc: Default::default() })
+    let n = node_allocate(&KIND_node_when_lit, node_when_lit_struct { subj_slot, v, cc: Default::default() });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_defined(kind: u32, name: Sym, recv: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_defined, node_defined_struct { kind, name, recv })
+    let n = node_allocate(&KIND_node_defined, node_defined_struct { kind, name, recv });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_call(recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_call, node_call_struct { recv, args, mid, flags, line, cc: Default::default() })
+    let n = node_allocate(&KIND_node_call, node_call_struct { recv, args, mid, flags, cc: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_call_blk(recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, blk: IseqRef) -> NodePtr {
-    node_allocate(&KIND_node_call_blk, node_call_blk_struct { recv, args, mid, flags, line, blk, cc: Default::default() })
+    let n = node_allocate(&KIND_node_call_blk, node_call_blk_struct { recv, args, mid, flags, blk, cc: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_call_kw(recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, ci: CiRef) -> NodePtr {
-    node_allocate(&KIND_node_call_kw, node_call_kw_struct { recv, args, mid, flags, line, ci, cc: Default::default() })
+    let n = node_allocate(&KIND_node_call_kw, node_call_kw_struct { recv, args, mid, flags, ci, cc: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_call_x(recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, ci: CiRef) -> NodePtr {
-    node_allocate(&KIND_node_call_x, node_call_x_struct { recv, args, mid, flags, line, ci, cc: Default::default() })
+    let n = node_allocate(&KIND_node_call_x, node_call_x_struct { recv, args, mid, flags, ci, cc: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_attrasgn(recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_attrasgn, node_attrasgn_struct { recv, args, mid, flags, line, cc: Default::default() })
+    let n = node_allocate(&KIND_node_attrasgn, node_attrasgn_struct { recv, args, mid, flags, cc: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_super(args: NodeList, line: u32, ci: CiRef, zsuper: bool) -> NodePtr {
-    node_allocate(&KIND_node_super, node_super_struct { args, line, ci, zsuper })
+    let n = node_allocate(&KIND_node_super, node_super_struct { args, ci, zsuper });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_yield(args: NodeList) -> NodePtr {
-    node_allocate(&KIND_node_yield, node_yield_struct { args, yc: Default::default() })
+    let n = node_allocate(&KIND_node_yield, node_yield_struct { args, yc: Default::default() });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_yield_x(args: NodeList, ci: CiRef) -> NodePtr {
-    node_allocate(&KIND_node_yield_x, node_yield_x_struct { args, ci })
+    let n = node_allocate(&KIND_node_yield_x, node_yield_x_struct { args, ci });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_block_given() -> NodePtr {
-    node_allocate(&KIND_node_block_given, node_block_given_struct {  })
+    let n = node_allocate(&KIND_node_block_given, node_block_given_struct {  });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_lambda(blk: IseqRef) -> NodePtr {
-    node_allocate(&KIND_node_lambda, node_lambda_struct { blk })
+    let n = node_allocate(&KIND_node_lambda, node_lambda_struct { blk });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_plus(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_plus, node_opt_plus_struct { a, b, line, cc: Default::default(), tf: Default::default() })
+    let n = node_allocate(&KIND_node_opt_plus, node_opt_plus_struct { a, b, cc: Default::default(), tf: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_minus(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_minus, node_opt_minus_struct { a, b, line, cc: Default::default(), tf: Default::default() })
+    let n = node_allocate(&KIND_node_opt_minus, node_opt_minus_struct { a, b, cc: Default::default(), tf: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_mul(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_mul, node_opt_mul_struct { a, b, line, cc: Default::default(), tf: Default::default() })
+    let n = node_allocate(&KIND_node_opt_mul, node_opt_mul_struct { a, b, cc: Default::default(), tf: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_div(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_div, node_opt_div_struct { a, b, line, cc: Default::default(), tf: Default::default() })
+    let n = node_allocate(&KIND_node_opt_div, node_opt_div_struct { a, b, cc: Default::default(), tf: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_pow(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_pow, node_opt_pow_struct { a, b, line, cc: Default::default() })
+    let n = node_allocate(&KIND_node_opt_pow, node_opt_pow_struct { a, b, cc: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_mod(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_mod, node_opt_mod_struct { a, b, line, cc: Default::default() })
+    let n = node_allocate(&KIND_node_opt_mod, node_opt_mod_struct { a, b, cc: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_lt(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_lt, node_opt_lt_struct { a, b, line, cc: Default::default(), tf: Default::default() })
+    let n = node_allocate(&KIND_node_opt_lt, node_opt_lt_struct { a, b, cc: Default::default(), tf: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_le(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_le, node_opt_le_struct { a, b, line, cc: Default::default(), tf: Default::default() })
+    let n = node_allocate(&KIND_node_opt_le, node_opt_le_struct { a, b, cc: Default::default(), tf: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_gt(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_gt, node_opt_gt_struct { a, b, line, cc: Default::default(), tf: Default::default() })
+    let n = node_allocate(&KIND_node_opt_gt, node_opt_gt_struct { a, b, cc: Default::default(), tf: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_ge(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_ge, node_opt_ge_struct { a, b, line, cc: Default::default(), tf: Default::default() })
+    let n = node_allocate(&KIND_node_opt_ge, node_opt_ge_struct { a, b, cc: Default::default(), tf: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_eq(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_eq, node_opt_eq_struct { a, b, line, cc: Default::default(), tf: Default::default() })
+    let n = node_allocate(&KIND_node_opt_eq, node_opt_eq_struct { a, b, cc: Default::default(), tf: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_neq(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_neq, node_opt_neq_struct { a, b, line, cc: Default::default(), tf: Default::default() })
+    let n = node_allocate(&KIND_node_opt_neq, node_opt_neq_struct { a, b, cc: Default::default(), tf: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_ltlt(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_ltlt, node_opt_ltlt_struct { a, b, line, cc: Default::default() })
+    let n = node_allocate(&KIND_node_opt_ltlt, node_opt_ltlt_struct { a, b, cc: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_gtgt(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_gtgt, node_opt_gtgt_struct { a, b, line, cc: Default::default() })
+    let n = node_allocate(&KIND_node_opt_gtgt, node_opt_gtgt_struct { a, b, cc: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_xor(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_xor, node_opt_xor_struct { a, b, line, cc: Default::default() })
+    let n = node_allocate(&KIND_node_opt_xor, node_opt_xor_struct { a, b, cc: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_and(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_and, node_opt_and_struct { a, b, line, cc: Default::default() })
+    let n = node_allocate(&KIND_node_opt_and, node_opt_and_struct { a, b, cc: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_or(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_or, node_opt_or_struct { a, b, line, cc: Default::default() })
+    let n = node_allocate(&KIND_node_opt_or, node_opt_or_struct { a, b, cc: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_aref(a: NodePtr, b: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_aref, node_opt_aref_struct { a, b, line, cc: Default::default(), tf: Default::default() })
+    let n = node_allocate(&KIND_node_opt_aref, node_opt_aref_struct { a, b, cc: Default::default(), tf: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_opt_aset(a: NodePtr, b: NodePtr, v: NodePtr, line: u32) -> NodePtr {
-    node_allocate(&KIND_node_opt_aset, node_opt_aset_struct { a, b, v, line, cc: Default::default(), tf: Default::default() })
+    let n = node_allocate(&KIND_node_opt_aset, node_opt_aset_struct { a, b, v, cc: Default::default(), tf: Default::default() });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_method_entry(nlocals: u32, nparams: u32, flags: u32, line: u32, body: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_method_entry, node_method_entry_struct { nlocals, nparams, flags, line, body })
+    let n = node_allocate(&KIND_node_method_entry, node_method_entry_struct { nlocals, nparams, flags, body });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_block_entry(nlocals: u32, nparams: u32, flags: u32, line: u32, body: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_block_entry, node_block_entry_struct { nlocals, nparams, flags, line, body })
+    let n = node_allocate(&KIND_node_block_entry, node_block_entry_struct { nlocals, nparams, flags, body });
+    unsafe { (*n).head.line = line; } n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_def(mid: Sym, body: IseqRef) -> NodePtr {
-    node_allocate(&KIND_node_def, node_def_struct { mid, body })
+    let n = node_allocate(&KIND_node_def, node_def_struct { mid, body });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_sdef(recv: NodePtr, mid: Sym, body: IseqRef) -> NodePtr {
-    node_allocate(&KIND_node_sdef, node_sdef_struct { recv, mid, body })
+    let n = node_allocate(&KIND_node_sdef, node_sdef_struct { recv, mid, body });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_class(cpath: NodePtr, name: Sym, superclass: NodePtr, body: IseqRef, has_cpath: bool, has_super: bool) -> NodePtr {
-    node_allocate(&KIND_node_class, node_class_struct { cpath, name, superclass, body, has_cpath, has_super })
+    let n = node_allocate(&KIND_node_class, node_class_struct { cpath, name, superclass, body, has_cpath, has_super });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_module(cpath: NodePtr, name: Sym, body: IseqRef, has_cpath: bool) -> NodePtr {
-    node_allocate(&KIND_node_module, node_module_struct { cpath, name, body, has_cpath })
+    let n = node_allocate(&KIND_node_module, node_module_struct { cpath, name, body, has_cpath });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_sclass(recv: NodePtr, body: IseqRef) -> NodePtr {
-    node_allocate(&KIND_node_sclass, node_sclass_struct { recv, body })
+    let n = node_allocate(&KIND_node_sclass, node_sclass_struct { recv, body });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_alias(newname: NodePtr, oldname: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_alias, node_alias_struct { newname, oldname })
+    let n = node_allocate(&KIND_node_alias, node_alias_struct { newname, oldname });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_valias(newname: Sym, oldname: Sym) -> NodePtr {
-    node_allocate(&KIND_node_valias, node_valias_struct { newname, oldname })
+    let n = node_allocate(&KIND_node_valias, node_valias_struct { newname, oldname });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_undef(names: NodeList) -> NodePtr {
-    node_allocate(&KIND_node_undef, node_undef_struct { names })
+    let n = node_allocate(&KIND_node_undef, node_undef_struct { names });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_masgn(rhs: NodePtr, tmp: u32, targets: NodeList, splat_rhs: bool) -> NodePtr {
-    node_allocate(&KIND_node_masgn, node_masgn_struct { rhs, tmp, targets, splat_rhs })
+    let n = node_allocate(&KIND_node_masgn, node_masgn_struct { rhs, tmp, targets, splat_rhs });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_masgn_elem(tmp: u32, idx: u32, kind: u32, post: u32) -> NodePtr {
-    node_allocate(&KIND_node_masgn_elem, node_masgn_elem_struct { tmp, idx, kind, post })
+    let n = node_allocate(&KIND_node_masgn_elem, node_masgn_elem_struct { tmp, idx, kind, post });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_unsupported(what: Str) -> NodePtr {
-    node_allocate(&KIND_node_unsupported, node_unsupported_struct { what })
+    let n = node_allocate(&KIND_node_unsupported, node_unsupported_struct { what });
+    n
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_special(kind: u32, arg: NodePtr) -> NodePtr {
-    node_allocate(&KIND_node_special, node_special_struct { kind, arg })
+    let n = node_allocate(&KIND_node_special, node_special_struct { kind, arg });
+    n
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_nil(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_nil(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_nil_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_true(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_true(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_true_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_false(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_false(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_false_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_self(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_self(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_self_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_lit(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_lit(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_lit_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_float(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_float(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_float_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_str(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_str(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_str_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_fstr(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_fstr(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_fstr_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_dstr(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_dstr(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_dstr_struct>)).u };
-    { let l = u.parts; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    { if own { u.parts = Box::leak(u.parts.to_vec().into_boxed_slice()); } let l = u.parts; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_tostr(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_tostr(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_tostr_struct>)).u };
     f(&mut u.v);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_dsym(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_dsym(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_dsym_struct>)).u };
     f(&mut u.s);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_regex(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_regex(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_regex_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_dregex(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_dregex(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_dregex_struct>)).u };
     f(&mut u.s);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_biglit(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_biglit(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_biglit_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_ary(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_ary(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_ary_struct>)).u };
-    { let l = u.elems; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    { if own { u.elems = Box::leak(u.elems.to_vec().into_boxed_slice()); } let l = u.elems; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_ary_build(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_ary_build(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_ary_build_struct>)).u };
-    { let l = u.elems; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    { if own { u.elems = Box::leak(u.elems.to_vec().into_boxed_slice()); } let l = u.elems; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_hash(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_hash(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_hash_struct>)).u };
-    { let l = u.items; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    { if own { u.items = Box::leak(u.items.to_vec().into_boxed_slice()); } let l = u.items; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_range(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_range(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_range_struct>)).u };
     f(&mut u.b);
     f(&mut u.e);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_range_lit(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_range_lit(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_range_lit_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_lvar(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_lvar(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_lvar_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_lasgn(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_lasgn(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_lasgn_struct>)).u };
     f(&mut u.v);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_dvar(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_dvar(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_dvar_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_dasgn(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_dasgn(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_dasgn_struct>)).u };
     f(&mut u.v);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_ivar(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_ivar(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_ivar_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_iasgn(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_iasgn(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_iasgn_struct>)).u };
     f(&mut u.v);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_ivar_arith(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_ivar_arith(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_ivar_arith_struct>)).u };
     f(&mut u.v);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_gvar(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_gvar(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_gvar_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_gasgn(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_gasgn(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_gasgn_struct>)).u };
     f(&mut u.v);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_cvar(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_cvar(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_cvar_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_cvasgn(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_cvasgn(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_cvasgn_struct>)).u };
     f(&mut u.v);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_const(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_const(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_const_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_const_path(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_const_path(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_const_path_struct>)).u };
     f(&mut u.parent);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_top_const(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_top_const(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_top_const_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_cdecl(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_cdecl(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_cdecl_struct>)).u };
     f(&mut u.v);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_cdecl_path(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_cdecl_path(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_cdecl_path_struct>)).u };
     f(&mut u.parent);
     f(&mut u.v);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_errinfo(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_errinfo(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_errinfo_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_nth_ref(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_nth_ref(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_nth_ref_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_back_ref(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_back_ref(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_back_ref_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_block(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_block(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_block_struct>)).u };
-    { let l = u.stmts; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    { if own { u.stmts = Box::leak(u.stmts.to_vec().into_boxed_slice()); } let l = u.stmts; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_line(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_line(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_line_struct>)).u };
     f(&mut u.body);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_if(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_if(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_if_struct>)).u };
     f(&mut u.cond);
     f(&mut u.then_b);
@@ -1765,315 +1845,315 @@ fn CHILDREN_node_if(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_and(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_and(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_and_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_or(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_or(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_or_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_not(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_not(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_not_struct>)).u };
     f(&mut u.v);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_while(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_while(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_while_struct>)).u };
     f(&mut u.cond);
     f(&mut u.body);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_dowhile(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_dowhile(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_dowhile_struct>)).u };
     f(&mut u.cond);
     f(&mut u.body);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_loop_break(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_loop_break(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_loop_break_struct>)).u };
     f(&mut u.v);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_loop_next(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_loop_next(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_loop_next_struct>)).u };
     f(&mut u.v);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_break(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_break(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_break_struct>)).u };
     f(&mut u.v);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_next(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_next(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_next_struct>)).u };
     f(&mut u.v);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_return(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_return(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_return_struct>)).u };
     f(&mut u.v);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_retry(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_retry(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_retry_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_redo(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_redo(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_redo_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_rescue(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_rescue(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_rescue_struct>)).u };
     f(&mut u.body);
-    { let l = u.clauses; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    { if own { u.clauses = Box::leak(u.clauses.to_vec().into_boxed_slice()); } let l = u.clauses; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
     f(&mut u.else_b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_resbody(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_resbody(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_resbody_struct>)).u };
-    { let l = u.classes; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    { if own { u.classes = Box::leak(u.classes.to_vec().into_boxed_slice()); } let l = u.classes; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
     f(&mut u.assign);
     f(&mut u.body);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_ensure(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_ensure(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_ensure_struct>)).u };
     f(&mut u.body);
     f(&mut u.ens);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_when(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_when(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_when_struct>)).u };
-    { let l = u.pats; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    { if own { u.pats = Box::leak(u.pats.to_vec().into_boxed_slice()); } let l = u.pats; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_when_lit(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_when_lit(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_when_lit_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_defined(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_defined(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_defined_struct>)).u };
     f(&mut u.recv);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_call(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_call(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_call_struct>)).u };
     f(&mut u.recv);
-    { let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    { if own { u.args = Box::leak(u.args.to_vec().into_boxed_slice()); } let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_call_blk(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_call_blk(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_call_blk_struct>)).u };
     f(&mut u.recv);
-    { let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    { if own { u.args = Box::leak(u.args.to_vec().into_boxed_slice()); } let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_call_kw(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_call_kw(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_call_kw_struct>)).u };
     f(&mut u.recv);
-    { let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    { if own { u.args = Box::leak(u.args.to_vec().into_boxed_slice()); } let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_call_x(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_call_x(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_call_x_struct>)).u };
     f(&mut u.recv);
-    { let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    { if own { u.args = Box::leak(u.args.to_vec().into_boxed_slice()); } let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_attrasgn(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_attrasgn(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_attrasgn_struct>)).u };
     f(&mut u.recv);
-    { let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    { if own { u.args = Box::leak(u.args.to_vec().into_boxed_slice()); } let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_super(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_super(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_super_struct>)).u };
-    { let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    { if own { u.args = Box::leak(u.args.to_vec().into_boxed_slice()); } let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_yield(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_yield(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_yield_struct>)).u };
-    { let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    { if own { u.args = Box::leak(u.args.to_vec().into_boxed_slice()); } let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_yield_x(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_yield_x(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_yield_x_struct>)).u };
-    { let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    { if own { u.args = Box::leak(u.args.to_vec().into_boxed_slice()); } let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_block_given(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_block_given(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_block_given_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_lambda(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_lambda(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_lambda_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_plus(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_plus(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_plus_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_minus(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_minus(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_minus_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_mul(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_mul(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_mul_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_div(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_div(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_div_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_pow(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_pow(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_pow_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_mod(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_mod(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_mod_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_lt(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_lt(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_lt_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_le(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_le(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_le_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_gt(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_gt(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_gt_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_ge(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_ge(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_ge_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_eq(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_eq(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_eq_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_neq(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_neq(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_neq_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_ltlt(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_ltlt(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_ltlt_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_gtgt(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_gtgt(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_gtgt_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_xor(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_xor(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_xor_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_and(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_and(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_and_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_or(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_or(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_or_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_aref(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_aref(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_aref_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_opt_aset(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_opt_aset(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_opt_aset_struct>)).u };
     f(&mut u.a);
     f(&mut u.b);
@@ -2081,88 +2161,88 @@ fn CHILDREN_node_opt_aset(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_method_entry(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_method_entry(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_method_entry_struct>)).u };
     f(&mut u.body);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_block_entry(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_block_entry(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_block_entry_struct>)).u };
     f(&mut u.body);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_def(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_def(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_def_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_sdef(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_sdef(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_sdef_struct>)).u };
     f(&mut u.recv);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_class(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_class(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_class_struct>)).u };
     f(&mut u.cpath);
     f(&mut u.superclass);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_module(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_module(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_module_struct>)).u };
     f(&mut u.cpath);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_sclass(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_sclass(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_sclass_struct>)).u };
     f(&mut u.recv);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_alias(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_alias(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_alias_struct>)).u };
     f(&mut u.newname);
     f(&mut u.oldname);
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_valias(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_valias(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_valias_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_undef(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_undef(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_undef_struct>)).u };
-    { let l = u.names; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    { if own { u.names = Box::leak(u.names.to_vec().into_boxed_slice()); } let l = u.names; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_masgn(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_masgn(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_masgn_struct>)).u };
     f(&mut u.rhs);
-    { let l = u.targets; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    { if own { u.targets = Box::leak(u.targets.to_vec().into_boxed_slice()); } let l = u.targets; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_masgn_elem(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_masgn_elem(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_masgn_elem_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_unsupported(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_unsupported(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_unsupported_struct>)).u };
 
 }
 
 #[allow(non_snake_case, unused_variables)]
-fn CHILDREN_node_special(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+fn CHILDREN_node_special(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_special_struct>)).u };
     f(&mut u.arg);
 }

@@ -24,6 +24,7 @@ class SarubyNodeDef < ASTrustGen::NodeDef
     def test_default(e) = "Ok(#{e}?.truthy())"
     # bodies are laid out in one block each (compile.rs finish_iseq)
     def contiguous? = true
+    def head_hole?(op) = op.name == 'line'
     # the method entry cached at this call site when the code is baked
     # what the call site's cache holds when the code is baked (vm.rs SITE_*)
     def bake_value_expr(op)
@@ -106,7 +107,8 @@ class SarubyNodeDef < ASTrustGen::NodeDef
     end
   end
 
-  def head_extra_fields = "    pub line: u32,"
+  # a node's line (@hole `line`), at offset 0: a frame's Pos to a node is the node's address
+  def head_lead_fields = "    pub line: u32,"
   def head_extra_inits = "line: 0,"
 end
 

@@ -284,7 +284,7 @@ fn DUMP_node_ivar_arith(out: &mut String, n: NodePtr) {
     out.push(' '); out.push(':'); out.push_str(&crate::symbol::sym_str((*np).u.name));
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.sub));
     out.push(' '); dump_node(out, (*np).u.v);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<ic>");
     out.push(' '); out.push_str("<cc>");
     out.push(' '); 
@@ -340,7 +340,7 @@ fn DUMP_node_const(out: &mut String, n: NodePtr) {
     unsafe {
     out.push_str("(node_const");
     out.push(' '); out.push(':'); out.push_str(&crate::symbol::sym_str((*np).u.name));
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(')');
     }
@@ -353,7 +353,7 @@ fn DUMP_node_const_path(out: &mut String, n: NodePtr) {
     out.push_str("(node_const_path");
     out.push(' '); dump_node(out, (*np).u.parent);
     out.push(' '); out.push(':'); out.push_str(&crate::symbol::sym_str((*np).u.name));
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(')');
     }
 }
@@ -436,7 +436,7 @@ fn DUMP_node_line(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_line_struct>;
     unsafe {
     out.push_str("(node_line");
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); dump_node(out, (*np).u.body);
     out.push(')');
     }
@@ -665,7 +665,7 @@ fn DUMP_node_call(out: &mut String, n: NodePtr) {
     out.push(' '); out.push('['); for (i, x) in (*np).u.args.iter().enumerate() { if i > 0 { out.push(' '); } dump_node(out, *x); } out.push(']');
     out.push(' '); out.push(':'); out.push_str(&crate::symbol::sym_str((*np).u.mid));
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.flags));
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(' '); 
     out.push(' '); 
@@ -684,7 +684,7 @@ fn DUMP_node_call_blk(out: &mut String, n: NodePtr) {
     out.push(' '); out.push('['); for (i, x) in (*np).u.args.iter().enumerate() { if i > 0 { out.push(' '); } dump_node(out, *x); } out.push(']');
     out.push(' '); out.push(':'); out.push_str(&crate::symbol::sym_str((*np).u.mid));
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.flags));
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<blk>");
     out.push(' '); out.push_str("<cc>");
     out.push(' '); 
@@ -704,7 +704,7 @@ fn DUMP_node_call_kw(out: &mut String, n: NodePtr) {
     out.push(' '); out.push('['); for (i, x) in (*np).u.args.iter().enumerate() { if i > 0 { out.push(' '); } dump_node(out, *x); } out.push(']');
     out.push(' '); out.push(':'); out.push_str(&crate::symbol::sym_str((*np).u.mid));
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.flags));
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<ci>");
     out.push(' '); out.push_str("<cc>");
     out.push(' '); 
@@ -722,7 +722,7 @@ fn DUMP_node_call_x(out: &mut String, n: NodePtr) {
     out.push(' '); out.push('['); for (i, x) in (*np).u.args.iter().enumerate() { if i > 0 { out.push(' '); } dump_node(out, *x); } out.push(']');
     out.push(' '); out.push(':'); out.push_str(&crate::symbol::sym_str((*np).u.mid));
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.flags));
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<ci>");
     out.push(' '); out.push_str("<cc>");
     out.push(')');
@@ -738,7 +738,7 @@ fn DUMP_node_attrasgn(out: &mut String, n: NodePtr) {
     out.push(' '); out.push('['); for (i, x) in (*np).u.args.iter().enumerate() { if i > 0 { out.push(' '); } dump_node(out, *x); } out.push(']');
     out.push(' '); out.push(':'); out.push_str(&crate::symbol::sym_str((*np).u.mid));
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.flags));
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(' '); 
     out.push(')');
@@ -751,7 +751,7 @@ fn DUMP_node_super(out: &mut String, n: NodePtr) {
     unsafe {
     out.push_str("(node_super");
     out.push(' '); out.push('['); for (i, x) in (*np).u.args.iter().enumerate() { if i > 0 { out.push(' '); } dump_node(out, *x); } out.push(']');
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<ci>");
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.zsuper));
     out.push(')');
@@ -809,7 +809,7 @@ fn DUMP_node_opt_plus(out: &mut String, n: NodePtr) {
     out.push_str("(node_opt_plus");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(' '); out.push_str("<tf>");
     out.push(' '); 
@@ -824,7 +824,7 @@ fn DUMP_node_opt_minus(out: &mut String, n: NodePtr) {
     out.push_str("(node_opt_minus");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(' '); out.push_str("<tf>");
     out.push(' '); 
@@ -839,7 +839,7 @@ fn DUMP_node_opt_mul(out: &mut String, n: NodePtr) {
     out.push_str("(node_opt_mul");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(' '); out.push_str("<tf>");
     out.push(' '); 
@@ -854,7 +854,7 @@ fn DUMP_node_opt_div(out: &mut String, n: NodePtr) {
     out.push_str("(node_opt_div");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(' '); out.push_str("<tf>");
     out.push(' '); 
@@ -869,7 +869,7 @@ fn DUMP_node_opt_pow(out: &mut String, n: NodePtr) {
     out.push_str("(node_opt_pow");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(')');
     }
@@ -882,7 +882,7 @@ fn DUMP_node_opt_mod(out: &mut String, n: NodePtr) {
     out.push_str("(node_opt_mod");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(')');
     }
@@ -895,7 +895,7 @@ fn DUMP_node_opt_lt(out: &mut String, n: NodePtr) {
     out.push_str("(node_opt_lt");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(' '); out.push_str("<tf>");
     out.push(' '); 
@@ -910,7 +910,7 @@ fn DUMP_node_opt_le(out: &mut String, n: NodePtr) {
     out.push_str("(node_opt_le");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(' '); out.push_str("<tf>");
     out.push(' '); 
@@ -925,7 +925,7 @@ fn DUMP_node_opt_gt(out: &mut String, n: NodePtr) {
     out.push_str("(node_opt_gt");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(' '); out.push_str("<tf>");
     out.push(' '); 
@@ -940,7 +940,7 @@ fn DUMP_node_opt_ge(out: &mut String, n: NodePtr) {
     out.push_str("(node_opt_ge");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(' '); out.push_str("<tf>");
     out.push(' '); 
@@ -955,7 +955,7 @@ fn DUMP_node_opt_eq(out: &mut String, n: NodePtr) {
     out.push_str("(node_opt_eq");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(' '); out.push_str("<tf>");
     out.push(' '); 
@@ -970,7 +970,7 @@ fn DUMP_node_opt_neq(out: &mut String, n: NodePtr) {
     out.push_str("(node_opt_neq");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(' '); out.push_str("<tf>");
     out.push(' '); 
@@ -985,7 +985,7 @@ fn DUMP_node_opt_ltlt(out: &mut String, n: NodePtr) {
     out.push_str("(node_opt_ltlt");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(')');
     }
@@ -998,7 +998,7 @@ fn DUMP_node_opt_gtgt(out: &mut String, n: NodePtr) {
     out.push_str("(node_opt_gtgt");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(')');
     }
@@ -1011,7 +1011,7 @@ fn DUMP_node_opt_xor(out: &mut String, n: NodePtr) {
     out.push_str("(node_opt_xor");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(')');
     }
@@ -1024,7 +1024,7 @@ fn DUMP_node_opt_and(out: &mut String, n: NodePtr) {
     out.push_str("(node_opt_and");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(')');
     }
@@ -1037,7 +1037,7 @@ fn DUMP_node_opt_or(out: &mut String, n: NodePtr) {
     out.push_str("(node_opt_or");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(')');
     }
@@ -1050,7 +1050,7 @@ fn DUMP_node_opt_aref(out: &mut String, n: NodePtr) {
     out.push_str("(node_opt_aref");
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(' '); out.push_str("<tf>");
     out.push(' '); 
@@ -1066,7 +1066,7 @@ fn DUMP_node_opt_aset(out: &mut String, n: NodePtr) {
     out.push(' '); dump_node(out, (*np).u.a);
     out.push(' '); dump_node(out, (*np).u.b);
     out.push(' '); dump_node(out, (*np).u.v);
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<cc>");
     out.push(' '); out.push_str("<tf>");
     out.push(' '); 
@@ -1082,7 +1082,7 @@ fn DUMP_node_method_entry(out: &mut String, n: NodePtr) {
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.nlocals));
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.nparams));
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.flags));
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); dump_node(out, (*np).u.body);
     out.push(' '); 
     out.push(')');
@@ -1097,7 +1097,7 @@ fn DUMP_node_block_entry(out: &mut String, n: NodePtr) {
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.nlocals));
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.nparams));
     out.push(' '); out.push_str(&format!("{:?}", (*np).u.flags));
-    out.push(' '); out.push_str(&format!("{:?}", (*np).u.line));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); dump_node(out, (*np).u.body);
     out.push(' '); 
     out.push(')');
