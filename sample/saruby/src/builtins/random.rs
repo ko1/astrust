@@ -92,12 +92,23 @@ fn get_rnd(c: &Ctx, ob: Value) -> Option<Value> {
 
 fn fill_random_words(n: usize) -> Vec<u32> {
     let mut buf = vec![0u8; n * 4];
-    thread_local! { static URANDOM: std::cell::RefCell<Option<std::fs::File>> = const { std::cell::RefCell::new(None) }; }
-    // kept open: SecureRandom asks for a few bytes at a time
-    let ok = URANDOM.with(|u| {
-        let mut u = u.borrow_mut();
-        if u.is_none() { *u = std::fs::File::open("/dev/urandom").ok(); }
-        u.as_mut().is_some_and(|f| { use std::io::Read; f.read_exact(&mut buf).is_ok() })
+    // SecureRandom asks for a few bytes at a time: read 4 KiB per open (no fd kept, so fd numbers stay CRuby's);
+    // the pool is per process, never shared with a forked child
+    thread_local! { static POOL: std::cell::RefCell<(i32, Vec<u8>)> = const { std::cell::RefCell::new((0, Vec::new())) }; }
+    let ok = POOL.with(|p| {
+        let mut p = p.borrow_mut();
+        let pid = crate::builtins::sys::getpid();
+        if p.0 != pid { *p = (pid, Vec::new()); }
+        if p.1.len() < buf.len() {
+            let mut more = vec![0u8; buf.len().max(4096)];
+            let read = std::fs::File::open("/dev/urandom").and_then(|mut f| { use std::io::Read; f.read_exact(&mut more) }).is_ok();
+            if !read { return false; }
+            p.1.extend_from_slice(&more);
+        }
+        let k = p.1.len() - buf.len();
+        buf.copy_from_slice(&p.1[k..]);
+        p.1.truncate(k);
+        true
     });
     if !ok {
         let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(1);
