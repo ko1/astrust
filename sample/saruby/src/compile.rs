@@ -82,7 +82,9 @@ pub struct Compiler<'a> {
     pm_err: Option<u32>,          // single-pattern match: slot receiving the failure description
     tl_binding: bool,
     pub errors: Vec<String>,
+    csyms: Vec<std::cell::Cell<Sym>>,   // pr.constants interned, on first use (NOSYM: not yet)
 }
+const NOSYM: Sym = Sym(u32::MAX);
 
 fn key(n: &PNode) -> usize { n as *const PNode as usize }
 
@@ -106,10 +108,17 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        Compiler { pr, file, scopes: vec![], captures: HashMap::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, errors: vec![] }
+        Compiler { pr, file, scopes: vec![], captures: HashMap::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, errors: vec![],
+                   csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()] }
     }
 
-    fn cst(&self, c: u32) -> Sym { intern(&self.pr.constants[c as usize]) }
+    fn cst(&self, c: u32) -> Sym {
+        let s = self.csyms[c as usize].get();
+        if s != NOSYM { return s; }
+        let s = intern(&self.pr.constants[c as usize]);
+        self.csyms[c as usize].set(s);
+        s
+    }
     fn line(&self, l: Loc) -> u32 { self.pr.line_of(l.start) }
     fn cur(&mut self) -> &mut Scope { self.scopes.last_mut().unwrap() }
 
