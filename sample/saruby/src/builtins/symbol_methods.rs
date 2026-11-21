@@ -15,7 +15,11 @@ fn sym_str_v(c: &mut Ctx, v: Value) -> Value { let b = sym_bytes(v.as_sym()); c.
 
 fn sym_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(sym_str_v(c, s)) }
 fn sym_name(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let v = sym_str_v(c, s); obj_set_flags(v, FL_FROZEN); Ok(v)
+    let k = s.as_sym();
+    if let Some(&v) = c.vm().sym_names.get(&k) { return Ok(v); }
+    let v = sym_str_v(c, s); obj_set_flags(v, FL_FROZEN);
+    c.vm_mut().sym_names.insert(k, v);
+    Ok(v)
 }
 fn sym_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.str_new(crate::string::sym_inspect(sym_bytes(s.as_sym())).as_bytes())) }
 fn sym_to_proc(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { crate::builtins::proc::sym_to_proc(c, s) }

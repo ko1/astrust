@@ -372,6 +372,8 @@ pub struct Vm {
     pub sd_hits: usize,
     pub frozen_lits: HashMap<Vec<u8>, Value>,
     pub symproc_cache: HashMap<Sym, Value>,
+    /// Symbol#name: one frozen String per symbol, as in CRuby.
+    pub sym_names: HashMap<Sym, Value>,
     /// __callee__ of entries made by alias / define_method(name, method): entry address -> name.
     pub alias_names: HashMap<usize, Sym>,
     pub data_free_hooks: Vec<fn(*mut RObj)>,
@@ -2183,6 +2185,7 @@ pub fn visit_roots<V: RootVisitor<Saruby>>(m: &mut V) {
     for v in vm.fiber_roots.iter_mut() { m.visit(v); }
     for v in vm.frozen_lits.values_mut() { m.visit(v); }
     for v in vm.symproc_cache.values_mut() { m.visit(v); }
+    for v in vm.sym_names.values_mut() { m.visit(v); }
     for &cr in vm.crefs.iter() { let cr = unsafe { &mut *(cr as *mut Cref) }; m.visit(&mut cr.klass); m.visit(&mut cr.refinements); }
     // every builtin class field (zero until boot fills it in)
     let vp = vm as *mut Vm as *mut u64;
