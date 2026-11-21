@@ -567,7 +567,7 @@ pub fn gvar_get(c: &mut Ctx, name: Sym) -> RV {
         b"$FILENAME" => { let a = argf(c)?; return funcall(c, a, intern(b"filename"), &[], std::ptr::null()); }
         b"$VERBOSE" | b"$-v" | b"$-w" => return Ok(c.vm().verbose),
         b"$DEBUG" | b"$-d" => return Ok(Value::bool(c.vm().debug_flag)),
-        b"$?" => return Ok(crate::builtins::process::last_status()),
+        b"$?" => return Ok(crate::builtins::process::last_status(c)),
         _ => {}
     }
     Ok(*c.vm().globals.get(&name).unwrap_or(&NIL))

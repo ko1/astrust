@@ -191,7 +191,7 @@ pub fn boot() {
     vm.c_enumerator = k.enumerator; vm.c_yielder = k.yielder; vm.c_generator = k.generator;
     vm.c_lazy = k.lazy; vm.c_chain = k.chain; vm.c_arith_seq = k.arith_seq;
     io::init();
-    process::init();
+    process::init(vm);
     marshal::init();
     (vm.c_random, vm.default_random) = random::init(vm);
     binding::init();
