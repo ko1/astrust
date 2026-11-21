@@ -8,7 +8,7 @@
 // before its id is handed out.
 #![forbid(unsafe_code)]
 use crate::value::Sym;
-use std::collections::HashMap;
+use crate::fxhash::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -39,7 +39,8 @@ fn with_map<R>(f: impl FnOnce(&mut Map) -> R) -> R {
 }
 #[cold]
 fn new_map() -> Map {
-    let mut m = Map { ids: HashMap::new(), n: 0 };
+    // ~1600 symbols exist after boot; 1700 is what 2048 buckets hold
+    let mut m = Map { ids: HashMap::with_capacity_and_hasher(1700, Default::default()), n: 0 };
     for s in PREDEF { add(&mut m, s.as_bytes()); }
     m
 }
@@ -47,7 +48,7 @@ fn new_map() -> Map {
 // A direct-mapped cache in front of the map: slot = id + 1, verified against the name on a
 // hit, so a stale or overwritten slot only costs a miss. Release / Acquire make the name of
 // an id visible before the id is.
-const CACHE_BITS: u32 = 16;
+const CACHE_BITS: u32 = 14;   // 64 KiB: each slot touched is a page fault at boot (16 bits: 64 of them)
 static CACHE: [AtomicU32; 1 << CACHE_BITS] = [const { AtomicU32::new(0) }; 1 << CACHE_BITS];
 #[inline]
 fn cache_slot(b: &[u8]) -> &'static AtomicU32 {

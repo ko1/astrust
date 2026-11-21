@@ -1,19 +1,23 @@
 // Global allocator: per-size-class free lists for small blocks allocated on the
 // interpreter thread (String / Array / ivar / Hash buffers churn through malloc
 // otherwise).  Everything else (other threads, large or over-aligned blocks) goes
-// to the system allocator.  Arena memory is recycled per class, never unmapped.
+// to the system allocator.  Arena memory is recycled per class, never unmapped:
+// a class bumps through fresh memory, freed blocks go to its free list.
 use std::alloc::{GlobalAlloc, Layout, System};
 
 const MAX: usize = 1024;              // largest arena block
 const NCLASS: usize = MAX / 16 + 1;   // class c holds 16*c-byte blocks
 const ARENA: usize = 1 << 36;         // reserved address range
-const RUN: usize = 32 * 1024;         // carved from the arena per refill
+const RUN: usize = 32 * 1024;         // address range a class takes from the arena at a time
 
 static mut OWNER: usize = 0;          // thread pointer of the interpreter thread
 static mut BASE: usize = 0;
 static mut LEN: usize = 0;
 static mut BUMP: usize = 0;
 static mut FREE: [*mut u8; NCLASS] = [std::ptr::null_mut(); NCLASS];
+// per class, the part of its current run never handed out: bumped, so untouched pages stay untouched
+static mut CUR: [usize; NCLASS] = [0; NCLASS];
+static mut END: [usize; NCLASS] = [0; NCLASS];
 
 pub struct KAlloc;
 
@@ -58,18 +62,12 @@ unsafe fn free_slot(c: usize) -> *mut *mut u8 { (&raw mut FREE as *mut *mut u8).
 #[cold]
 unsafe fn refill(c: usize, l: Layout) -> *mut u8 {
     let sz = c * 16;
-    let n = RUN / sz;
-    if BUMP + n * sz > BASE + LEN { return System.alloc(l); }
+    let len = RUN / sz * sz;
+    if BUMP + len > BASE + LEN { return System.alloc(l); }
     let run = BUMP;
-    BUMP += n * sz;
-    // block 0 is returned; the rest are chained
-    let mut next: *mut u8 = std::ptr::null_mut();
-    for i in (1..n).rev() {
-        let p = (run + i * sz) as *mut u8;
-        *(p as *mut *mut u8) = next;
-        next = p;
-    }
-    *free_slot(c) = next;
+    BUMP += len;
+    CUR[c] = run + sz;
+    END[c] = run + len;
     run as *mut u8
 }
 
@@ -86,6 +84,8 @@ unsafe impl GlobalAlloc for KAlloc {
             let s = free_slot(c);
             let p = *s;
             if !p.is_null() { *s = *(p as *mut *mut u8); return p; }
+            let b = CUR[c];
+            if b + c * 16 <= END[c] { CUR[c] = b + c * 16; return b as *mut u8; }
             return refill(c, l);
         }
         System.alloc(l)

@@ -121,7 +121,9 @@ pub struct Compiler<'a> {
     pm_err: Option<u32>,          // single-pattern match: slot receiving the failure description
     tl_binding: bool,
     pub errors: Vec<String>,
+    csyms: Vec<std::cell::Cell<Sym>>,   // pr.constants interned, on first use (NOSYM: not yet)
 }
+const NOSYM: Sym = Sym(u32::MAX);
 
 fn key(n: &PNode) -> usize { n as *const PNode as usize }
 
@@ -145,10 +147,17 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        Compiler { pr, file, scopes: vec![], captures: HashMap::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, errors: vec![] }
+        Compiler { pr, file, scopes: vec![], captures: HashMap::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, errors: vec![],
+                   csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()] }
     }
 
-    fn cst(&self, c: u32) -> Sym { intern(&self.pr.constants[c as usize]) }
+    fn cst(&self, c: u32) -> Sym {
+        let s = self.csyms[c as usize].get();
+        if s != NOSYM { return s; }
+        let s = intern(&self.pr.constants[c as usize]);
+        self.csyms[c as usize].set(s);
+        s
+    }
     fn line(&self, l: Loc) -> u32 { self.pr.line_of(l.start) }
     fn cur(&mut self) -> &mut Scope { self.scopes.last_mut().unwrap() }
 
@@ -2109,6 +2118,11 @@ pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind,
     let mut scopes: Vec<Vec<Vec<u8>>> = outer.iter().rev().map(|sc| sc.iter().map(|(n, _, _)| crate::symbol::sym_bytes(*n).to_vec()).collect()).collect();
     if !scopes.is_empty() { scopes.push(vec![]); }
     let pr = prism::parse(src, &prism::ParseOpts { filepath: file.as_bytes(), line, scopes, main_script: kind == IseqKind::Main, frozen_string_literal: 0 });
+    compile_parsed(&pr, src, file, kind, outer)
+}
+
+/// compile_source of a parse already made (the prelude's is made at build time).
+pub fn compile_parsed(pr: &ParseResult, src: &[u8], file: &'static str, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, String> {
     if !pr.errors.is_empty() {
         let mut msg = String::new();
         for e in &pr.errors {
@@ -2117,7 +2131,7 @@ pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind,
         }
         return Err(msg);
     }
-    let mut cm = Compiler::new(&pr, file);
+    let mut cm = Compiler::new(pr, file);
     if kind == IseqKind::Eval && !outer.is_empty() { cm.captures.entry(key(&pr.root)).or_default().insert(Sym(u32::MAX)); }
     cm.eval_outer = outer;
     if kind == IseqKind::Main && src.windows(16).any(|w| w == b"TOPLEVEL_BINDING") {

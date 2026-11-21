@@ -4,7 +4,9 @@
 //
 // Policy: collect when the free list is empty and a quarter of the heap has been
 // allocated since the last collection, or when external memory passes its limit;
-// grow so that the heap stays at least three times the live set.
+// grow so that the heap stays at least three times the live set.  Pages the policy
+// grants are added only when the free list runs dry (`reserve`), so a short run
+// touches only what it uses; collections come at the same allocation counts.
 use super::pages::Pages;
 use super::{header, Control, EdgeVisitor, GcBackend, GcLang, HeapStats, RootVisitor};
 use std::ptr::NonNull;
@@ -16,7 +18,8 @@ const INITIAL_PAGES: usize = 32;
 pub struct MarkSweep<L: GcLang> {
     free: *mut L::Obj,
     free_count: usize,
-    total: usize,
+    total: usize,              // slots of the pages added
+    reserve: usize,            // pages granted and not added yet
     live_after_gc: usize,
     allocs_since_gc: usize,
     external_since_gc: usize,
@@ -59,12 +62,17 @@ impl<L: GcLang> MarkSweep<L> {
     #[inline(never)]
     fn slow(&mut self, lang: &mut L, ctl: &mut Control, mut obj: L::Obj) -> L::Obj {
         if self.external_since_gc > self.external_limit && !ctl.disabled() { ctl.collect(self, lang, Some(&mut obj)); }
+        if self.free.is_null() && self.reserve > 0 {
+            self.reserve -= 1;
+            self.add_page();
+        }
         if self.free.is_null() {
             if !ctl.disabled() && self.allocs_since_gc > self.total / 4 { ctl.collect(self, lang, Some(&mut obj)); }
             // heap >= 3x the live set: each full mark is paid by 2x live allocations (2x cost gen_gc 11% more cycles)
             if self.free.is_null() || self.free_count < 2 * self.live_after_gc {
                 let want = (2 * self.live_after_gc).saturating_sub(self.free_count).max(self.total / 8) / Self::PER_PAGE + 1;
-                for _ in 0..want { self.add_page(); }
+                self.reserve = want - 1;
+                self.add_page();
             }
         }
         obj
@@ -180,12 +188,10 @@ impl<L: GcLang> GcBackend<L> for MarkSweep<L> {
     const AMBIGUOUS_ROOTS: bool = true;
 
     fn new() -> Self {
-        let mut h = MarkSweep {
-            free: std::ptr::null_mut(), free_count: 0, total: 0, live_after_gc: 0, allocs_since_gc: 0,
+        MarkSweep {
+            free: std::ptr::null_mut(), free_count: 0, total: 0, reserve: INITIAL_PAGES, live_after_gc: 0, allocs_since_gc: 0,
             external_since_gc: 0, external_limit: 64 << 20, total_allocated: 0, total_freed: 0, pages: Pages::new(),
-        };
-        for _ in 0..INITIAL_PAGES { h.add_page(); }
-        h
+        }
     }
 
     #[inline(always)]
@@ -224,6 +230,7 @@ impl<L: GcLang> GcBackend<L> for MarkSweep<L> {
     }
 
     fn stats(&self) -> HeapStats {
-        HeapStats { slots: self.total, free: self.free_count, allocated: self.total_allocated, freed: self.total_freed }
+        let r = self.reserve * Self::PER_PAGE;
+        HeapStats { slots: self.total + r, free: self.free_count + r, allocated: self.total_allocated, freed: self.total_freed }
     }
 }

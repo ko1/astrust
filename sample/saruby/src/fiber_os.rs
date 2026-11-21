@@ -193,26 +193,33 @@ impl Drop for FiberCtx {
 // ---- value stacks that read as nil ----------------------------------------------------------
 
 /// Bytes of the nil file; a stack maps it as many times as its size needs.
-const CHUNK: usize = 4 << 20;
+const CHUNK: usize = 1 << 20;   // written at startup: 1 MiB balances that against one mmap per MiB of stack
+
+/// The nil file's descriptor (-2: not tried, -1: failed).
+static NILFD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-2);
 
 thread_local! {
-    static NILFD: std::cell::Cell<i32> = const { std::cell::Cell::new(-2) };   // -2: not tried
     static MAPPED: RefCell<std::collections::HashSet<usize>> = RefCell::new(Default::default());
 }
 
+/// Make the nil file now, before a second thread exists: growing the descriptor table to
+/// FD_MIN in a multi-threaded process waits for an RCU grace period (5-8 ms at startup).
+pub fn nil_fd_init() { let _ = nil_fd(); }
+
 fn nil_fd() -> Option<i32> {
-    let fd = NILFD.get();
+    use std::sync::atomic::Ordering::Relaxed;
+    let fd = NILFD.load(Relaxed);
     if fd != -2 { return if fd >= 0 { Some(fd) } else { None }; }
     // SAFETY: a NUL-terminated name; creates a new file descriptor
     let fd = unsafe { memfd_create(c"saruby-nil".as_ptr() as *const u8, MFD_CLOEXEC) };
     // out of the way of the descriptors a program sees (they match CRuby's)
     let fd = match crate::builtins::sys::fcntl(fd, F_DUPFD_CLOEXEC, FD_MIN) { -1 => fd, hi => { crate::builtins::sys::close(fd); hi } };
     let ok = fd >= 0 && crate::builtins::sys::ftruncate(fd, CHUNK as i64) == 0 && {
-        let buf: Vec<u8> = std::iter::repeat_n(NIL.raw().to_ne_bytes(), 8192).flatten().collect();
+        let buf = NIL.raw().to_ne_bytes().repeat(8192);
         (0..CHUNK / buf.len()).all(|i| crate::builtins::sys::pwrite(fd, &buf, (i * buf.len()) as i64) == buf.len() as isize)
     };
     if !ok && fd >= 0 { crate::builtins::sys::close(fd); }
-    NILFD.set(if ok { fd } else { -1 });
+    NILFD.store(if ok { fd } else { -1 }, Relaxed);
     if ok { Some(fd) } else { None }
 }
 
