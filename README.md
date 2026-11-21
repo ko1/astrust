@@ -129,6 +129,14 @@ saruby does this; an inline cache there is one addressing mode away from the bod
 content-addressed so that bakes accumulate (a `T_` name merges the node hash with the children's item
 names and the baked operands, so equal subtrees that saw different facts get separate items), and links them into `all.so`; `lookup(hash)` returns
 `SD_<hash>`. Each `.so` embeds the interpreter's build id and is ignored when it does not match.
+
+Horg / Hopt (as in ASTro, docs/idea.md §2.5): an entry's structural hash is **Horg**. What a bake folds in
+from the run (inline-cache contents: ivar slots, call-site kinds, compiled-in callees, operand types...) is
+mixed into the hash as well, giving **Hopt**, and the entry's code is `SD_<Hopt>`: same structure with a
+different profile is different code. A new process has no profile when it loads, so the store keeps
+`hopt_index.txt`, (Horg, program key) → Hopt, as ASTro's code store does; saruby's key is the body's
+file, line and kind of entry. An entry whose key is not in the index falls back to the first SD baked for
+its Horg (correct, guarded, possibly slower).
 `TieredStore` puts a shared preload store (the embedder's prelude, baked once per build) in front
 of the per-program store.
 

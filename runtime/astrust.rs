@@ -121,7 +121,7 @@ pub struct BakeConfig {
 
 /// A directory holding specialized code: `items/<name>.rs` (one per emitted item,
 /// content-addressed by its hash name, so bakes accumulate) and the linked `all.so`.
-/// `index.txt` maps an entry's structural hash and its program key (the embedder's: file and line, say)
+/// `hopt_index.txt` maps an entry's structural hash and its program key (the embedder's: file and line, say)
 /// to the name of the SD baked for it (SD_<hopt>: structure and profile).  An entry of another program
 /// (no such key) gets the first SD baked for its structure.
 pub struct CodeStore {
@@ -135,7 +135,7 @@ impl CodeStore {
     pub fn new(dir: impl AsRef<Path>) -> Self { CodeStore { dir: dir.as_ref().to_path_buf(), handle: std::ptr::null_mut(), has_patch: false, index: HashMap::new() } }
 
     fn read_index(dir: &Path) -> Vec<(u64, String, u64)> {
-        let Ok(s) = std::fs::read_to_string(dir.join("index.txt")) else { return vec![] };
+        let Ok(s) = std::fs::read_to_string(dir.join("hopt_index.txt")) else { return vec![] };
         s.lines().filter_map(|l| {
             let mut it = l.splitn(3, ' ');
             let h = u64::from_str_radix(it.next()?, 16).ok()?;
@@ -150,7 +150,7 @@ impl CodeStore {
             match all.iter_mut().find(|x| x.0 == r.0 && x.1 == r.1) { Some(x) => x.2 = r.2, None => all.push(r.clone()) }
         }
         let s: String = all.iter().map(|(h, k, o)| format!("{:016x} {:016x} {}\n", h, o, k)).collect();
-        std::fs::write(self.dir.join("index.txt"), s)
+        std::fs::write(self.dir.join("hopt_index.txt"), s)
     }
     /// The SD name for an entry of structure `h` and program key `key`: its own, else the first baked for h, else h.
     pub fn pick(&self, h: u64, key: &str) -> u64 {
@@ -352,7 +352,7 @@ impl TieredStore {
         self.preload.as_ref()
     }
     /// Record an entry (a node, as usize, of structural hash `hash` and program key `key`) and return the
-    /// SD address to install and its name's hash (index.txt), if baked.
+    /// SD address to install and its name's hash (hopt_index.txt), if baked.
     pub fn register(&mut self, node: usize, hash: u64, key: &str, is_prelude: bool, build_id: &str) -> Option<(*const c_void, u64)> {
         if self.program.is_none() { return None; }   // --plain
         if self.collect { if is_prelude { self.prelude_entries.push(node) } else { self.program_entries.push(node) } }
@@ -364,12 +364,12 @@ impl TieredStore {
     }
     /// Bake: `spec(entries, patch)` returns the specializer output for a set of entries (patch: for patch.o,
     /// built next to all.so where the loader runs).
-    /// `index(entry)`: (structural hash, program key, hopt) of an entry, for index.txt.
+    /// `index(entry)`: (structural hash, program key, hopt) of an entry, for hopt_index.txt.
     pub fn bake(&mut self, program_dir: &Path, cfg: &BakeConfig, spec: impl Fn(&[usize], bool) -> String, index: impl Fn(usize) -> (u64, String, u64)) -> Result<usize, String> {
         if self.preload(&cfg.build_id).is_none() {
             let _ = std::fs::remove_dir_all(self.preload_dir.join("items"));
             let _ = std::fs::remove_dir_all(self.preload_dir.join("pitems"));
-            let _ = std::fs::remove_file(self.preload_dir.join("index.txt"));
+            let _ = std::fs::remove_file(self.preload_dir.join("hopt_index.txt"));
             Self::bake_into(&self.preload_dir, &self.prelude_entries, &spec, &index, cfg)?;
         }
         Self::bake_into(program_dir, &self.program_entries, &spec, &index, cfg)

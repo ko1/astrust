@@ -58,7 +58,7 @@ fn hole_value(op: &str, root: usize, off: usize) -> Option<u64> {
 thread_local! {
     // a program's blocks and keyword methods that have an entry node over their body: the body is baked only if it ran on its own
     static BLOCKS: std::cell::RefCell<Vec<&'static Iseq>> = const { std::cell::RefCell::new(Vec::new()) };
-    // an entry's program key in index.txt: its body's file, line and kind of entry
+    // an entry's program key in hopt_index.txt: its body's file, line and kind of entry
     static KEYS: std::cell::RefCell<std::collections::HashMap<usize, String>> = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
