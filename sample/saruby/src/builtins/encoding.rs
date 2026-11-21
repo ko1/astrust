@@ -583,7 +583,7 @@ fn fallback(c: &mut Ctx, fb: Value, ch: &[u8], from: u8, to: u8) -> Result<Vec<u
 
 fn conv_ok(from: u8, to: u8) -> bool {
     let bad = |e: u8| matches!(enc_name(e), "UTF-7" | "ISO-2022-JP" | "ISO-2022-JP-2" | "CP50220" | "CP50221" | "IBM037" | "ISO-2022-JP-KDDI" | "Emacs-Mule");
-    !(bad(from) || bad(to)) && !(from == ENC_BINARY && !ascii_compat(to))
+    !(bad(from) || bad(to))
 }
 
 // ---- lookup ---------------------------------------------------------------------------------
