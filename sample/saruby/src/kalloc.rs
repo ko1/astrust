@@ -39,7 +39,18 @@ fn thread_ptr() -> usize {
 #[inline(always)]
 fn thread_ptr() -> usize { 1 }
 
-extern "C" { fn mmap(a: *mut u8, l: usize, p: i32, f: i32, fd: i32, o: i64) -> *mut u8; }
+extern "C" {
+    fn mmap(a: *mut u8, l: usize, p: i32, f: i32, fd: i32, o: i64) -> *mut u8;
+    fn mallopt(param: i32, value: i32) -> i32;
+}
+
+/// Before any other thread: the system allocator's arenas keep 64 MiB (M_TOP_PAD; the GC's external-memory
+/// cycle) above their top when they grow or trim, so buffers a collection frees are reused, not returned and
+/// faulted in again.
+pub fn pad_system() {
+    // SAFETY: mallopt only sets an allocator parameter
+    unsafe { mallopt(-2, 64 << 20); }
+}
 
 /// Make the calling thread the arena's owner (call once, on the interpreter thread).
 pub fn adopt() {

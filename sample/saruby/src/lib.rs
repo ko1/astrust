@@ -336,6 +336,7 @@ fn handle_toplevel_error(c: &mut Ctx) -> i32 {
 pub const STACK_BYTES: usize = 1 << 30;
 
 pub fn main_entry() {
+    kalloc::pad_system();
     let o = parse_args();
     symbol::init();
     fiber_os::nil_fd_init();
