@@ -143,6 +143,14 @@ pub fn bump_method_serial() { METHOD_SERIAL.fetch_add(1, std::sync::atomic::Orde
 // spec_klass: cc.klass while the entry it holds is the one baked into the site (call_spec_out)
 // bi: which inlinable builtin it holds, and for which receivers (inline_builtin::cache_key)
 pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize, pub fast_hash: u64, pub fast_argc: u32, pub poly_next: u32, pub poly: usize, pub cfunc: usize, pub arity: i32, pub bi: u32, pub spec_klass: u64 }
+/// An operator site's call cache, made when the site first calls a method: most sites stay on
+/// their Integer / Float / Array paths, and a node holding one word keeps the tree dense.
+#[derive(Default)]
+pub struct OpCc(Option<Box<CallCache>>);
+impl OpCc {
+    #[inline(always)] pub fn get(&mut self) -> &mut CallCache { self.0.get_or_insert_with(Default::default) }
+    #[inline(always)] pub fn peek(&self) -> Option<&CallCache> { self.0.as_deref() }
+}
 /// A `yield` site: `seen` = the block iseq it ran (1: several), what the bake speculates on;
 /// `fast` = the iseq whose entry is compiled into the site, set once its hash was checked.
 #[derive(Default)]

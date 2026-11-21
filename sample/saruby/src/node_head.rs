@@ -336,7 +336,7 @@ pub struct node_ivar_arith_struct {
     pub v: NodePtr,
     pub line: u32,
     pub ic: IvarCache,
-    pub cc: CallCache,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -459,7 +459,7 @@ pub struct node_or_struct {
 #[repr(C)]
 pub struct node_not_struct {
     pub v: NodePtr,
-    pub cc: CallCache,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -670,7 +670,7 @@ pub struct node_opt_plus_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
     pub tf: TyFb,
 }
 
@@ -680,7 +680,7 @@ pub struct node_opt_minus_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
     pub tf: TyFb,
 }
 
@@ -690,7 +690,7 @@ pub struct node_opt_mul_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
     pub tf: TyFb,
 }
 
@@ -700,7 +700,7 @@ pub struct node_opt_div_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
     pub tf: TyFb,
 }
 
@@ -710,7 +710,7 @@ pub struct node_opt_pow_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -719,7 +719,7 @@ pub struct node_opt_mod_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -728,7 +728,7 @@ pub struct node_opt_lt_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
     pub tf: TyFb,
 }
 
@@ -738,7 +738,7 @@ pub struct node_opt_le_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
     pub tf: TyFb,
 }
 
@@ -748,7 +748,7 @@ pub struct node_opt_gt_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
     pub tf: TyFb,
 }
 
@@ -758,7 +758,7 @@ pub struct node_opt_ge_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
     pub tf: TyFb,
 }
 
@@ -768,7 +768,7 @@ pub struct node_opt_eq_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
     pub tf: TyFb,
 }
 
@@ -778,7 +778,7 @@ pub struct node_opt_neq_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
     pub tf: TyFb,
 }
 
@@ -788,7 +788,7 @@ pub struct node_opt_ltlt_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -797,7 +797,7 @@ pub struct node_opt_gtgt_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -806,7 +806,7 @@ pub struct node_opt_xor_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -815,7 +815,7 @@ pub struct node_opt_and_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -824,7 +824,7 @@ pub struct node_opt_or_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -833,7 +833,7 @@ pub struct node_opt_aref_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
     pub tf: TyFb,
 }
 
@@ -844,7 +844,7 @@ pub struct node_opt_aset_struct {
     pub b: NodePtr,
     pub v: NodePtr,
     pub line: u32,
-    pub cc: CallCache,
+    pub cc: OpCc,
     pub tf: TyFb,
 }
 

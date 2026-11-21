@@ -87,7 +87,7 @@ pub fn fast_ary_aset() -> u64 { FAST_ARY_ASET.load(Relaxed) }
 
 /// `a[b]` when the site's inline path did not apply: everything, starting with the Array and Hash cases.
 #[inline(never)]
-pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
+pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: u32, cc: &mut OpCc) -> RV {
     if unsafe { BOOTED } && !redef(R_ARY_AREF) { FAST_ARY_AREF.store(vm().c_array.raw(), Relaxed); }
     if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && !redef(R_ARY_AREF) {
         let v = c.ary(a);
@@ -98,13 +98,13 @@ pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: u32, cc: &mut CallCac
     if is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_AREF) { return crate::hash::hash_aref(c, a, b); }
     // Integer#[] (optcarrot's bit tests): its body when the site's cache holds it, without the call
     use crate::inline_builtin::*;
-    if bi_hit(cc, a, BI_INT_AREF) { if let Some(v) = bi_body(c, BI_INT_AREF, a, b) { return Ok(v); } }
+    if cc.peek().is_some_and(|cc| bi_hit(cc, a, BI_INT_AREF)) { if let Some(v) = bi_body(c, BI_INT_AREF, a, b) { return Ok(v); } }
     srb_binop(c, a, b, s::aref, line, cc)
 }
 
 /// `a[b] = v`, as srb_aref_out.
 #[inline(never)]
-pub fn srb_aset_out(c: &mut Ctx, a: Value, b: Value, v: Value, line: u32, cc: &mut CallCache) -> RV {
+pub fn srb_aset_out(c: &mut Ctx, a: Value, b: Value, v: Value, line: u32, cc: &mut OpCc) -> RV {
     if unsafe { BOOTED } && !redef(R_ARY_ASET) { FAST_ARY_ASET.store(vm().c_array.raw(), Relaxed); }
     if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && obj(a).flags & FL_FROZEN == 0 && !redef(R_ARY_ASET) {
         let ary = c.ary_mut(a);
@@ -304,7 +304,7 @@ pub fn srb_ivar_set_out(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &mut I
 
 /// `@x += v` / `@x -= v` outside node_ivar_arith's inline path: read, operate, write.
 #[inline(never)]
-pub fn srb_ivar_arith_out(c: &mut Ctx, slf: Value, name: Sym, sub: bool, v: Value, line: u32, ic: &mut IvarCache, cc: &mut CallCache) -> RV {
+pub fn srb_ivar_arith_out(c: &mut Ctx, slf: Value, name: Sym, sub: bool, v: Value, line: u32, ic: &mut IvarCache, cc: &mut OpCc) -> RV {
     let cur = srb_ivar_get_out(slf, name, ic);
     let r = crate::opt::srb_arith_out(c, cur, v, if sub { s::minus } else { s::plus }, line, cc)?;
     srb_ivar_set_out(c, slf, name, r, ic)
@@ -440,10 +440,10 @@ pub fn srb_has_custom_not(v: Value) -> bool {
     !me.is_null() && unsafe { (*me).owner } != vm().c_basic_object
 }
 
-pub fn srb_call0(c: &mut Ctx, v: Value, mid: Sym, cc: &mut CallCache) -> RV {
+pub fn srb_call0(c: &mut Ctx, v: Value, mid: Sym, cc: &mut OpCc) -> RV {
     let base = stage(c, 2)?;
     base[0].set(v);
-    call_cached(c, cc, mid, base, 0, std::ptr::null(), 0)
+    call_cached(c, cc.get(), mid, base, 0, std::ptr::null(), 0)
 }
 
 /// `redo` in a block entered through its entry node: run the body again until it ends otherwise.
@@ -904,23 +904,23 @@ pub fn srb_lambda(c: &mut Ctx, is: &'static Iseq, fp: Fp) -> RV {
     Ok(p)
 }
 
-pub fn srb_binop(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: u32, cc: &mut CallCache) -> RV {
+pub fn srb_binop(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: u32, cc: &mut OpCc) -> RV {
     let base = stage(c, 3)?;
     base[0].set(a); base[2].set(b);
     unsafe { (*c.frame).line = line; }
-    call_cached(c, cc, mid, base, 1, std::ptr::null(), 0)
+    call_cached(c, cc.get(), mid, base, 1, std::ptr::null(), 0)
 }
 
-pub fn srb_eq(c: &mut Ctx, a: Value, b: Value, line: u32, cc: &mut CallCache) -> RV {
+pub fn srb_eq(c: &mut Ctx, a: Value, b: Value, line: u32, cc: &mut OpCc) -> RV {
     if is_string(a) && is_string(b) && obj(a).klass == vm().c_string { return Ok(Value::bool(crate::string::str_eq(a, b))); }
     srb_binop(c, a, b, s::eq, line, cc)
 }
 
-pub fn srb_aset(c: &mut Ctx, a: Value, b: Value, v: Value, line: u32, cc: &mut CallCache) -> RV {
+pub fn srb_aset(c: &mut Ctx, a: Value, b: Value, v: Value, line: u32, cc: &mut OpCc) -> RV {
     let base = stage(c, 4)?;
     base[0].set(a); base[2].set(b); base[3].set(v);
     unsafe { (*c.frame).line = line; }
-    call_cached(c, cc, s::aset, base, 2, std::ptr::null(), 0)?;
+    call_cached(c, cc.get(), s::aset, base, 2, std::ptr::null(), 0)?;
     Ok(v)
 }
 
