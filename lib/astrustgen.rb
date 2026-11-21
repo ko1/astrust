@@ -506,7 +506,9 @@ module ASTrustGen
           elsif op.spec?
             rec = spec_rec_target_expr(op)
             dyn = rec ? "{ let q: NodePtr = unsafe { #{rec} }; if sc.spec_max_depth > 0 && !q.is_null() && sc.open.contains(&hash_node(q)) { (specialize_rec(sc, q), hash_node(q)) } else { (\"Dyn\".to_string(), 0u64) } }" : "(\"Dyn\".to_string(), 0u64)"
-            "    let (t_#{op.name}, h_#{op.name}) = { let np = n as *mut NodeOf<#{struct_name}>; let p: NodePtr = unsafe { #{spec_target_expr(op)} }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth || sc.open.contains(&hash_node(p)) { #{dyn} } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };"
+            # a (small) recursion target is compiled into its own sites once; the copy's sites call it (R_)
+            open_case = rec ? "if sc.rec_unroll && sc.unrolled.insert(hash_node(p)) { sc.spec_depth += 1; let t = specialize_open(sc, p); sc.spec_depth -= 1; sc.unrolled.remove(&hash_node(p)); (t, hash_node(p)) } else #{dyn}" : dyn
+            "    let (t_#{op.name}, h_#{op.name}) = { let np = n as *mut NodeOf<#{struct_name}>; let p: NodePtr = unsafe { #{spec_target_expr(op)} }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth { #{dyn} } else if sc.open.contains(&hash_node(p)) { #{open_case} } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };"
           end
         end.compact
         generic_names = @operands.select(&:generic_param).map { "t_#{it.name}" }
@@ -713,12 +715,21 @@ module ASTrustGen
       /// SD type name for the subtree rooted at n ("Dyn" when it must stay dynamic).
       pub fn specialize_node(sc: &mut SpecCtx, n: NodePtr) -> String {
           unsafe {
-              if n.is_null() || (*n).head.flags & (NF_NO_INLINE | NF_SPECIALIZING) != 0#{n.contiguous? ? ' || (*n).head.flags & NF_LAID == 0' : ''} { return "Dyn".to_string(); }
+              if n.is_null() || (*n).head.flags & NF_NO_INLINE != 0 || ((*n).head.flags & NF_SPECIALIZING != 0 && sc.reenter == 0)#{n.contiguous? ? ' || (*n).head.flags & NF_LAID == 0' : ''} { return "Dyn".to_string(); }
               (*n).head.flags |= NF_SPECIALIZING;
               let t = ((*n).head.kind.specializer)(sc, n);
               (*n).head.flags &= !NF_SPECIALIZING;
               t
           }
+      }
+      /// specialize_node for a node being specialized already (a recursion target compiled into itself):
+      /// its subtree again; the copy's recursive sites see the target in sc.unrolled and call it instead.
+      pub fn specialize_open(sc: &mut SpecCtx, n: NodePtr) -> String {
+          sc.reenter += 1;
+          let t = specialize_node(sc, n);
+          sc.reenter -= 1;
+          unsafe { (*n).head.flags |= NF_SPECIALIZING; }
+          t
       }
       /// Specialize n as a public entry: an exported `SD_<hash>` with the dispatcher's signature.
       pub fn specialize_entry(sc: &mut SpecCtx, n: NodePtr) -> String {

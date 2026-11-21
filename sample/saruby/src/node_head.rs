@@ -105,12 +105,21 @@ pub fn node_replace_child(parent: NodePtr, old: NodePtr, new: NodePtr) {
 /// SD type name for the subtree rooted at n ("Dyn" when it must stay dynamic).
 pub fn specialize_node(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
-        if n.is_null() || (*n).head.flags & (NF_NO_INLINE | NF_SPECIALIZING) != 0 || (*n).head.flags & NF_LAID == 0 { return "Dyn".to_string(); }
+        if n.is_null() || (*n).head.flags & NF_NO_INLINE != 0 || ((*n).head.flags & NF_SPECIALIZING != 0 && sc.reenter == 0) || (*n).head.flags & NF_LAID == 0 { return "Dyn".to_string(); }
         (*n).head.flags |= NF_SPECIALIZING;
         let t = ((*n).head.kind.specializer)(sc, n);
         (*n).head.flags &= !NF_SPECIALIZING;
         t
     }
+}
+/// specialize_node for a node being specialized already (a recursion target compiled into itself):
+/// its subtree again; the copy's recursive sites see the target in sc.unrolled and call it instead.
+pub fn specialize_open(sc: &mut SpecCtx, n: NodePtr) -> String {
+    sc.reenter += 1;
+    let t = specialize_node(sc, n);
+    sc.reenter -= 1;
+    unsafe { (*n).head.flags |= NF_SPECIALIZING; }
+    t
 }
 /// Specialize n as a public entry: an exported `SD_<hash>` with the dispatcher's signature.
 pub fn specialize_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
