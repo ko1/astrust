@@ -41,3 +41,13 @@ pub fn report() {
         for (n, k) in v { eprintln!("{:>14} {}", n, k); }
     });
 }
+
+/// Count a builtin call (a cache hit on a cfunc) by owner#name/argc.
+pub fn hit_cfunc(c: &crate::vm::Ctx, klass: crate::value::Value, mid: crate::value::Sym, argc: u32) {
+    thread_local! { static NAMES: RefCell<HashMap<(u64, crate::value::Sym, u32), &'static str>> = RefCell::new(HashMap::new()); }
+    let s = NAMES.with(|m| *m.borrow_mut().entry((klass.raw(), mid, argc)).or_insert_with(|| {
+        let owner = c.method_entry(klass, mid).map_or(klass, |m| m.owner);
+        Box::leak(format!("cfunc {}#{}/{}", crate::vm::class_path(owner), crate::symbol::sym_str(mid), argc).into_boxed_str())
+    }));
+    hit(s);
+}

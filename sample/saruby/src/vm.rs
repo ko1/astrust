@@ -1182,6 +1182,7 @@ pub fn call_cached(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u
     let recv = base[0].get();
     let klass = class_of(recv);
     let hit = cc.klass == klass.raw() && cc.serial == method_serial();
+    #[cfg(feature = "nodeprof")] if hit && cc.cfunc != 0 { crate::nodeprof::hit_cfunc(c, klass, mid, argc); }
     if hit {
         if let Some(r) = cc_fast(c, cc, recv, base, argc, blk, flags) { return r; }
     }
