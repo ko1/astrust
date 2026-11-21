@@ -164,55 +164,87 @@ cfn!(r_count, |c, slf, a, blk| {
     let arr = r_to_a(c, slf, &[], std::ptr::null())?;
     funcall(c, arr, intern(b"count"), a, blk)
 });
+/// range.c r_less: <=> as -1/0/1, or i64::MAX when incomparable (nil).
+fn r_less(c: &mut Ctx, a: Value, b: Value) -> Result<i64, Esc> {
+    if a.is_fixnum() && b.is_fixnum() { return Ok(a.as_fix().cmp(&b.as_fix()) as i64); }
+    let r = funcall(c, a, s::cmp, &[b], std::ptr::null())?;
+    if r == NIL { return Ok(i64::MAX); }
+    crate::builtins::array_methods::cmp_result(c, r, a, b)
+}
+/// range.c r_cover_p.
+fn cover_in(c: &mut Ctx, b: Value, e: Value, excl: bool, v: Value) -> Result<bool, Esc> {
+    if b == NIL || r_less(c, b, v)? <= 0 {
+        if e == NIL || r_less(c, v, e)? <= -(excl as i64) { return Ok(true); }
+    }
+    Ok(false)
+}
 fn cover(c: &mut Ctx, slf: Value, v: Value) -> Result<bool, Esc> {
     let (b, e, excl) = c.range_parts(slf);
-    if b.is_fixnum() && e.is_fixnum() && v.is_fixnum() {
-        let x = v.as_fix();
-        return Ok(x >= b.as_fix() && if excl { x < e.as_fix() } else { x <= e.as_fix() });
-    }
-    if b != NIL {
-        let r = funcall(c, b, s::cmp, &[v], std::ptr::null())?;
-        if r == NIL || !r.is_fixnum() || r.as_fix() > 0 { return Ok(false); }
-    }
-    if e != NIL {
-        let r = funcall(c, v, s::cmp, &[e], std::ptr::null())?;
-        if r == NIL || !r.is_fixnum() { return Ok(false); }
-        if r.as_fix() > 0 || (excl && r.as_fix() == 0) { return Ok(false); }
-    }
-    Ok(true)
+    cover_in(c, b, e, excl, v)
 }
+/// range.c linear_object_p: Numeric or Time.
+fn linear(c: &Ctx, v: Value) -> bool { crate::numeric::is_numeric(v) || (v.is_heap() && (is_kind_of(v, c.vm().c_numeric) || is_kind_of(v, c.vm().c_time))) }
 cfn!(r_include, |c, slf, a, blk| {
-    let (b, e, _) = c.range_parts(slf);
-    if crate::numeric::is_numeric(b) || crate::numeric::is_numeric(e) || (b == NIL && e == NIL) { return Ok(Value::bool(cover(c, slf, a[0])?)); }
-    // range.c: an endpoint with to_int makes the range linear (mspec's SpecVersion)
-    if crate::builtins::random::check_to_int(c, b)?.is_some() || crate::builtins::random::check_to_int(c, e)?.is_some() { return Ok(Value::bool(cover(c, slf, a[0])?)); }
-    if is_string(b) || is_string(e) {
-        if !is_string(a[0]) { return Ok(FALSE); }
-        if b == NIL || e == NIL { return Ok(Value::bool(cover(c, slf, a[0])?)); }
+    check_argc(c, a, 1, 1)?;
+    let (b, e, excl) = c.range_parts(slf);
+    let v = a[0];
+    if b.is_fixnum() || e.is_fixnum() || linear(c, b) || linear(c, e)
+        || crate::builtins::random::check_to_int(c, b)?.is_some() || crate::builtins::random::check_to_int(c, e)?.is_some() {
+        return Ok(Value::bool(cover_in(c, b, e, excl, v)?));
+    }
+    if is_string(b) && is_string(e) {
+        // rb_str_include_range_p
+        if v == NIL { return Ok(FALSE); }
+        let v = if is_string(v) { v } else if v.is_heap() && respond_to(v, s::to_str, true) { expect_str(c, v)? } else { return Ok(FALSE); };
+        let (bb, eb, vb) = (c.str_bytes(b).to_vec(), c.str_bytes(e).to_vec(), c.str_bytes(v).to_vec());
+        if bb.len() == 1 && eb.len() == 1 {
+            if vb.len() != 1 { return Ok(FALSE); }
+            let (x, y, z) = (bb[0], eb[0], vb[0]);
+            if x.is_ascii() && y.is_ascii() && z.is_ascii() { return Ok(Value::bool((x <= z && z < y) || (!excl && z == y))); }
+        }
         let mut found = false;
-        range_each(c, slf, |c, v| { if crate::builtins::array_methods::rb_eq(c, v, a[0])? { found = true; return Ok(false); } Ok(true) })?;
+        range_each(c, slf, |c, x| { if crate::builtins::array_methods::rb_eq(c, x, v)? { found = true; return Ok(false); } Ok(true) })?;
         return Ok(Value::bool(found));
     }
+    if b == NIL && e == NIL && linear(c, v) { return Ok(TRUE); }
     if b == NIL || e == NIL { return type_err(c, "cannot determine inclusion in beginless/endless ranges"); }
+    // Enumerable#include?
     let mut found = false;
-    range_each(c, slf, |c, v| { if crate::builtins::array_methods::rb_eq(c, v, a[0])? { found = true; return Ok(false); } Ok(true) })?;
+    range_each(c, slf, |c, x| { if crate::builtins::array_methods::rb_eq(c, x, v)? { found = true; return Ok(false); } Ok(true) })?;
     Ok(Value::bool(found))
 });
+/// range.c r_cover_range_p.
+fn cover_range(c: &mut Ctx, slf: Value, val: Value) -> Result<bool, Esc> {
+    let (b, e, excl) = c.range_parts(slf);
+    let (vb, ve, vx) = c.range_parts(val);
+    if e != NIL && ve == NIL { return Ok(false); }
+    if b != NIL && vb == NIL { return Ok(false); }
+    if vb != NIL && ve != NIL && r_less(c, vb, ve)? > (if vx { -1 } else { 0 }) { return Ok(false); }
+    if vb != NIL && !cover_in(c, b, e, excl, vb)? { return Ok(false); }
+    let cmp_end = if ve != NIL && e != NIL {
+        let r = funcall(c, e, s::cmp, &[ve], std::ptr::null())?;
+        if r == NIL { return Ok(false); }
+        crate::builtins::array_methods::cmp_result(c, r, e, ve)?
+    } else { r_less(c, e, ve)? };
+    if excl == vx { return Ok(cmp_end >= 0); }
+    if excl { return Ok(cmp_end > 0); }
+    if cmp_end >= 0 { return Ok(true); }
+    // val.max, a TypeError counting as "no max"
+    let m = match funcall(c, val, intern(b"max"), &[], std::ptr::null()) {
+        Ok(m) => m,
+        Err(err) => {
+            if c.esc == EscKind::Raise && is_kind_of(c.esc_val, c.vm().c_type_error) { c.esc = EscKind::None; NIL } else { return Err(err); }
+        }
+    };
+    if m == NIL { return Ok(false); }
+    Ok(r_less(c, e, m)? >= 0)
+}
 cfn!(r_cover, |c, slf, a, blk| {
-    if is_range(a[0]) {
-        let (b2, e2, x2) = c.range_parts(a[0]);
-        let (_, e, x) = c.range_parts(slf);
-        if b2 != NIL && !cover(c, slf, b2)? { return Ok(FALSE); }
-        if e2 == NIL { return Ok(Value::bool(e == NIL)); }
-        if e == NIL { return Ok(TRUE); }
-        let r = funcall(c, e2, s::cmp, &[e], std::ptr::null())?;
-        if !r.is_fixnum() { return Ok(FALSE); }
-        let v = r.as_fix();
-        return Ok(Value::bool(v < 0 || (v == 0 && (!x || x2)) || (x2 && !x && false)));
-    }
+    check_argc(c, a, 1, 1)?;
+    if is_range(a[0]) { return Ok(Value::bool(cover_range(c, slf, a[0])?)); }
     Ok(Value::bool(cover(c, slf, a[0])?))
 });
-cfn!(r_eqq, |c, slf, a, blk| Ok(Value::bool(cover(c, slf, a[0]).unwrap_or_else(|_| { c.esc = EscKind::None; false }))));
+cfn!(r_eqq, |c, slf, a, blk| Ok(Value::bool(cover(c, slf, a[0])?)));
 cfn!(r_eq, |c, slf, a, blk| {
     if !is_range(a[0]) { return Ok(FALSE); }
     let (b1, e1, x1) = c.range_parts(slf); let (b2, e2, x2) = c.range_parts(a[0]);
