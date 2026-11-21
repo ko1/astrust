@@ -74,6 +74,7 @@ node_add(c: &mut Ctx, n: NodePtr, <common params...>, l: NODE, r: NODE) -> RESUL
 | `x@child: T` | child evaluated by the glue before the body runs |
 | `xs: NODES` | child list: `EVAL_LEN!(xs)`, `EVAL_NTH!(c, xs, i)` |
 | `x@ref: T` | stored inline in the node, the body gets `&mut T` (inline caches) |
+| `x@hole: T` | a bound operand: a site's own value (a line number, say), stored in the node and not hashed; the body gets `&'static T`, its address in the node. Every site of the shape shares the code, which reads the value only where it uses it; each `SD_<hash>` comes with `SD_<hash>_HOLES`, the (offset from the root, size) of the holes it reads, for a loader that binds them another way |
 | `u32 i32 u64 i64 usize bool f64` | scalars, baked into specialized code as literals |
 | anything else | opaque: read from the node at run time; the embedder decides how it is hashed |
 | `x@spec: NODE` | a **speculated callee**, not stored in the node. At specialize time the embedder names a node (for example the method entry a call site's cache holds) to compile into this site; the body compares `SPEC_HASH!(x)` with the run-time target's hash and calls it statically with `EVAL_SPEC!(c, x, ptr, ...)` |
