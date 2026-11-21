@@ -341,3 +341,19 @@ impl Global {
         }
     }
 }
+
+// ---- method layer: envs (binding.rs) -------------------------------------
+
+impl Ctx {
+    /// The env `hops` levels out from `env`.
+    pub fn env_up(&self, mut env: Value, hops: u32) -> Value {
+        for _ in 0..hops { env = match body(self, env) { Body::Env(_, p) => *p, _ => wrong_kind(env, "an env") }; }
+        env
+    }
+    pub fn env_get(&self, env: Value, i: u32) -> Value {
+        match body(self, env) { Body::Env(v, _) => v.get(i as usize), _ => wrong_kind(env, "an env") }
+    }
+    pub fn env_set(&mut self, env: Value, i: u32, x: Value) {
+        match body_mut(self, env) { Body::Env(v, _) => v.set(i as usize, x), _ => wrong_kind(env, "an env") }
+    }
+}

@@ -197,7 +197,7 @@ pub fn boot() {
     process::init(vm);
     vm.m_marshal = marshal::init();
     (vm.c_random, vm.default_random) = random::init(vm);
-    binding::init();
+    binding::init(vm);
     thread::init(vm);
     misc::init(vm);
     prelude::lazy_const(ob, "ENV", "saruby/env");
