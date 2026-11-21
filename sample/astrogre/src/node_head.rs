@@ -127,9 +127,11 @@ pub fn specialize_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     let fname = format!("SD_{:016x}", hash_node(n));
     if sc.emitted.contains(&fname) { return fname; }
     sc.holes.clear();
+    sc.begin_entry(n as usize, hash_node(n));
     let t = specialize_node(sc, n);
-    let s = format!("S_{:016x}", hash_node(n));
-    if sc.emitted.contains(&format!("R_{:016x}", hash_node(n))) && !sc.emitted.contains(&s) {
+    let p = sc.rec_suffix(hash_node(n));
+    let s = format!("S_{:016x}{}", hash_node(n), p);
+    if sc.emitted.contains(&format!("R_{:016x}{}", hash_node(n), p)) && !sc.emitted.contains(&s) {
         // n calls itself: its one body is S_<hash>::run (R_ calls it directly); SD_ passes the spec-in value on
         specialize_run(sc, &s, &t);
         sc.out.push_str(&format!("#[no_mangle]
@@ -147,6 +149,7 @@ pub fn {}(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ <{} as Disp>::call(c, n
 pub static {}_HOLES: [u32; {}] = [{}];
 ", fname, 2 * d.len(), d.join(",")));
     }
+    sc.begin_entry(0, 0);
     sc.emitted.insert(fname.clone());
     fname
 }
@@ -154,7 +157,15 @@ pub static {}_HOLES: [u32; {}] = [{}];
 /// `S_<hash>::run`, q's entry taking the spec-in value as a parameter (specialize_entry / _finish emit it).
 pub fn specialize_rec(sc: &mut SpecCtx, q: NodePtr) -> String {
     let h = hash_node(q);
-    let name = format!("R_{:016x}", h);
+    let p = sc.rec_suffix(h);
+    let name = format!("R_{:016x}{}", h, p);
+    if !p.is_empty() {
+        // the entry's patched body (S_<hash>P::run) holds the values of the one node it was bound to
+        if sc.emitted.insert(name.clone()) {
+            sc.out.push_str(&format!("pub struct {0};\nimpl Disp for {0} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ if n as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}P::run(c, n, pos) }} else {{ std::hint::cold_path(); <Dyn as Disp>::call(c, n, pos) }} }}\n    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ if n as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}P::run(c, n, pos) }} else {{ std::hint::cold_path(); <Dyn as Disp>::spec(c, n, pos) }} }}\n}}\n", name, h));
+        }
+        return name;
+    }
     if sc.emitted.insert(name.clone()) {
         sc.rec.push(q as usize);
         sc.out.push_str(&format!("pub struct {0};\nimpl Disp for {0} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ S_{1:016x}::run(c, n, pos) }}\n    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ S_{1:016x}::run(c, n, pos) }}\n}}\n", name, h));

@@ -14,6 +14,7 @@ fn SPECIALIZE_node_num(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -48,6 +49,7 @@ fn SPECIALIZE_node_add(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_l.as_str(), t_r.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -82,6 +84,7 @@ fn SPECIALIZE_node_sub(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_l.as_str(), t_r.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -116,6 +119,7 @@ fn SPECIALIZE_node_mul(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_l.as_str(), t_r.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -150,6 +154,7 @@ fn SPECIALIZE_node_mod(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_l.as_str(), t_r.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -183,6 +188,7 @@ fn SPECIALIZE_node_var(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -216,6 +222,7 @@ fn SPECIALIZE_node_set(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_v.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -248,6 +255,7 @@ fn SPECIALIZE_node_seq(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_xs.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -282,6 +290,7 @@ fn SPECIALIZE_node_times(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_cnt.as_str(), t_body.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -305,7 +314,9 @@ pub fn specialize_list(sc: &mut SpecCtx, ns: &NodeList) -> String {
     let mut h = hash_str("list");
     for x in ns.iter() { h = hash_merge(h, hash_node(*x)); }
     
-    let name = format!("L_{:016x}", h);
+    // patch crate: the elements' names too (one in a bound entry's copy may call its R_<hash>P)
+    if sc.patch { h = hash_merge(h, hash_str(&ts.join(","))); }
+    let name = sc.positional(format!("L_{:016x}", h), 0);
     if sc.emitted.contains(&name) { return name; }
     let mut s = format!("pub struct {};\nimpl DispList for {} {{\n    #[inline(always)] fn len(_ns: NodeList) -> usize {{ {} }}\n", name, name, ts.len());
     s.push_str(&format!("    #[inline(always)]\n    fn nth(c: &mut Ctx, ns: NodeList, i: usize) -> i64 {{\n        match i {{\n"));
