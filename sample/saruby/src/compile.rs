@@ -114,6 +114,8 @@ impl Scope {
 pub struct Compiler<'a> {
     pr: &'a ParseResult,
     file: &'static str,
+    src: &'a [u8],
+    src_key: std::cell::OnceCell<u64>,   // hash of src: the program key of its bodies in hopt_index.txt (aot.rs)
     scopes: Vec<Scope>,
     captures: HashMap<usize, HashSet<Sym>>,
     pub eval_outer: Vec<Vec<(Sym, u32, u32)>>,  // eval: outer scopes' (name, hops, idx), innermost first
@@ -147,7 +149,7 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        Compiler { pr, file, scopes: vec![], captures: HashMap::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, errors: vec![],
+        Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, errors: vec![],
                    csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()] }
     }
 
@@ -461,7 +463,7 @@ impl<'a> Compiler<'a> {
         }));
         for ch in &sc.children { ch.parent.set(is); }
         if let Some(p) = self.scopes.last_mut() { p.children.push(is); }
-        crate::aot::register_iseq(is);
+        crate::aot::register_iseq(is, &|| *self.src_key.get_or_init(|| crate::astrust::hash_bytes(self.src)));
         is
     }
 
@@ -2174,6 +2176,7 @@ pub fn compile_parsed(pr: &ParseResult, src: &[u8], file: &'static str, kind: Is
         return Err(msg);
     }
     let mut cm = Compiler::new(pr, file);
+    cm.src = src;
     if kind == IseqKind::Eval && !outer.is_empty() { cm.captures.entry(key(&pr.root)).or_default().insert(Sym(u32::MAX)); }
     cm.eval_outer = outer;
     if kind == IseqKind::Main && src.windows(16).any(|w| w == b"TOPLEVEL_BINDING") {

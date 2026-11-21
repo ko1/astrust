@@ -134,8 +134,10 @@ Horg / Hopt (as in ASTro, docs/idea.md §2.5): an entry's structural hash is **H
 from the run (inline-cache contents: ivar slots, call-site kinds, compiled-in callees, operand types...) is
 mixed into the hash as well, giving **Hopt**, and the entry's code is `SD_<Hopt>`: same structure with a
 different profile is different code. A new process has no profile when it loads, so the store keeps
-`hopt_index.txt`, (Horg, program key) → Hopt, as ASTro's code store does; saruby's key is the body's
-file, line and kind of entry. An entry whose key is not in the index falls back to the first SD baked for
+`hopt_index.txt`, (Horg, program key) → Hopt, as ASTro's code store does; saruby's key is a hash of
+the body's source text (the bytes the parser read) with its line and kind of entry, so the same program run
+from another path, or a copy of it, finds its own Hopt (the path differs between runs of one program; the
+top-level body's Horg is not known yet when the bodies inside it register). An entry whose key is not in the index falls back to the first SD baked for
 its Horg (correct, guarded, possibly slower).
 `TieredStore` puts a shared preload store (the embedder's prelude, baked once per build) in front
 of the per-program store.
