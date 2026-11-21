@@ -74,6 +74,18 @@ pub const F_GETFD: c_int = 1; pub const F_SETFD: c_int = 2; pub const F_GETFL: c
 pub const EINTR: i64 = 4; pub const EAGAIN: i64 = 11;
 pub const POLLIN: i16 = 1; pub const POLLOUT: i16 = 4; pub const POLLERR: i16 = 8; pub const POLLHUP: i16 = 16;
 
+#[repr(C)]
+struct Tm { sec: i32, min: i32, hour: i32, mday: i32, mon: i32, year: i32, wday: i32, yday: i32, isdst: i32, gmtoff: i64, zone: *const std::os::raw::c_char }
+extern "C" { fn localtime_r(t: *const i64, tm: *mut Tm) -> *mut Tm; fn tzset(); }
+/// (gmtoff, isdst, zone abbreviation) of the system zone at UTC second t (Time).
+pub fn local_tm(t: i64) -> (i64, bool, String) {
+    let mut tm = Tm { sec: 0, min: 0, hour: 0, mday: 0, mon: 0, year: 0, wday: 0, yday: 0, isdst: 0, gmtoff: 0, zone: std::ptr::null() };
+    unsafe { tzset(); localtime_r(&t, &mut tm); }
+    // SAFETY: tm_zone is null or a NUL-terminated name in libc's zone data
+    let z = if tm.zone.is_null() { String::new() } else { unsafe { std::ffi::CStr::from_ptr(tm.zone) }.to_string_lossy().into_owned() };
+    (tm.gmtoff, tm.isdst > 0, z)
+}
+
 pub fn errno() -> i64 { unsafe { *__errno_location() as i64 } }
 pub fn set_errno(e: i64) { unsafe { *__errno_location() = e as c_int; } }
 pub fn cstr(s: &[u8]) -> CString { CString::new(s.iter().copied().take_while(|&b| b != 0).collect::<Vec<u8>>()).unwrap() }

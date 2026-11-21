@@ -423,10 +423,10 @@ pub fn srb_back_ref(c: &mut Ctx, kind: u32) -> RV {
     let m = c.last_match;
     if m == NIL { return Ok(NIL); }
     Ok(match kind {
-        0 => crate::regexp::nth_match(m, 0),
-        1 => crate::regexp::match_pre(m),
-        2 => crate::regexp::match_post(m),
-        _ => crate::regexp::match_last_group(m),
+        0 => crate::regexp::nth_match(c, m, 0),
+        1 => crate::regexp::match_pre(c, m),
+        2 => crate::regexp::match_post(c, m),
+        _ => crate::regexp::match_last_group(c, m),
     })
 }
 
@@ -1160,7 +1160,7 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
         SP_NAMED_CAPTURE => {
             let m = c.last_match;
             if m == NIL { return Ok(NIL); }
-            Ok(crate::regexp::named_match(m, v.as_sym()))
+            Ok(crate::regexp::named_match(c, m, v.as_sym()))
         }
         SP_DECONSTRUCT => {
             if is_array(v) { return Ok(v); }

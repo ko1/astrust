@@ -178,7 +178,7 @@ fn k_sleep(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let t0 = std::time::Instant::now();
     let dur = match args.first() {
         Some(&v) if v != NIL => {
-            if !crate::numeric::is_numeric(v) && !crate::builtins::rational::is_rational(v) { return type_err(c, format!("can't convert {} into time interval", class_name_for_err(v))); }
+            if !crate::numeric::is_numeric(v) && !crate::builtins::rational::is_rational(c, v) { return type_err(c, format!("can't convert {} into time interval", class_name_for_err(v))); }
             let secs = crate::builtins::numeric_methods::to_f(c, v)?;
             if secs < 0.0 { return arg_err(c, "time interval must not be negative"); }
             Some(secs)

@@ -779,17 +779,17 @@ cfn!(a_first_n_compat, |c, slf, a, blk| Ok(NIL));
 cfn!(a_sample, |c, slf, a, blk| {
     let n = c.ary_len(slf);
     let pos: Vec<Value> = a.iter().copied().filter(|x| !is_hash(*x)).collect();
-    if pos.is_empty() { if n == 0 { return Ok(NIL); } let i = crate::builtins::random::rand_below(n as u64) as usize; return Ok(c.ary_get(slf, i)); }
+    if pos.is_empty() { if n == 0 { return Ok(NIL); } let i = crate::builtins::random::rand_below(c, n as u64) as usize; return Ok(c.ary_get(slf, i)); }
     let k = num_to_long(c, pos[0])?;
     if k < 0 { return arg_err(c, "negative sample number"); }
     let mut v = c.ary(slf).to_vec();
-    for i in 0..v.len() { let j = i + crate::builtins::random::rand_below((v.len() - i) as u64) as usize; v.swap(i, j); }
+    for i in 0..v.len() { let j = i + crate::builtins::random::rand_below(c, (v.len() - i) as u64) as usize; v.swap(i, j); }
     v.truncate(k as usize);
     Ok(c.ary_from_vec(v))
 });
 cfn!(a_shuffle, |c, slf, a, blk| {
     let mut v = c.ary(slf).to_vec();
-    for i in (1..v.len()).rev() { let j = crate::builtins::random::rand_below(i as u64 + 1) as usize; v.swap(i, j); }
+    for i in (1..v.len()).rev() { let j = crate::builtins::random::rand_below(c, i as u64 + 1) as usize; v.swap(i, j); }
     Ok(c.ary_from_vec(v))
 });
 cfn!(a_shuffle_b, |c, slf, a, blk| { let r = a_shuffle(c, slf, a, blk)?; *c.ary_modify(slf)? = c.ary(r).to_vec().into(); Ok(slf) });

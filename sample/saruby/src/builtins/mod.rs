@@ -80,6 +80,7 @@ fn blank_vm() -> Box<Vm> {
         std::ptr::write(&mut (*vp).sd_hits, 0);
         std::ptr::write(&mut (*vp).frozen_lits, HashMap::default());
         std::ptr::write(&mut (*vp).symproc_cache, HashMap::default());
+        std::ptr::write(&mut (*vp).alias_names, HashMap::default());
         std::ptr::write(&mut (*vp).data_free_hooks, vec![]);
         std::ptr::write(&mut (*vp).pinned, vec![]);
         std::ptr::write(&mut (*vp).enc_objs, vec![]);
@@ -171,10 +172,11 @@ pub fn boot() {
     vm.top_cref = new_cref(ob, std::ptr::null());
 
     exception::init_classes();
-    object::init();
-    kernel::init();
-    module::init();
-    proc::init();
+    let ids = object::init(vm);
+    vm.ids.bo_init = ids.bo_init; vm.ids.bo_eq = ids.bo_eq; vm.ids.kernel_hash = ids.kernel_hash; vm.ids.m_eqq = ids.m_eqq; vm.ids.c_new = ids.c_new;
+    kernel::init(vm);
+    rclass(vm.c_object).autoload.insert(crate::symbol::intern(b"ARGF"), crate::str_legacy::str_new_frozen(b"saruby/argf"));
+    proc::init(vm);
     exception::init();
     numeric_methods::init(vm.c_numeric, vm.c_integer, vm.c_float);
     for (nm, v) in numeric_methods::FLOAT_CONSTS { const_set(vm.c_float, crate::symbol::intern(nm.as_bytes()), crate::numeric::float_new(v)); }
@@ -191,7 +193,7 @@ pub fn boot() {
     io::init();
     process::init();
     marshal::init();
-    random::init();
+    (vm.c_random, vm.default_random) = random::init(vm);
     binding::init();
     thread::init();
     misc::init();
@@ -199,12 +201,12 @@ pub fn boot() {
     prelude::lazy_const(ob, "RbConfig", "saruby/rbconfig");
     encoding::init(vm);
     stringio::init(vm);
-    regexp_methods::init();
+    (vm.c_regexp, vm.c_match_data) = regexp_methods::init(vm);
     vm.c_struct = structs::init(vm.c_object, vm.m_enumerable);
-    time::init();
+    vm.c_time = time::init(vm);
     math::init(vm.m_math);
-    rational::init();
-    complex::init();
+    vm.c_rational = rational::init(vm);
+    vm.c_complex = complex::init(vm);
     enum_native::init(vm.m_enumerable);
     crate::fiber::init();
     extras::init();
@@ -212,7 +214,7 @@ pub fn boot() {
 
 /// dup/clone of built-in Data objects.
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
-    if rational::is_rational(v) || complex::is_complex(v) { return Ok(Some(v)); }
+    if rational::is_rational(c, v) || complex::is_complex(c, v) { return Ok(Some(v)); }
     if let Some(r) = misc::dup_data(c, v)? { return Ok(Some(r)); }
     if let Some(r) = regexp_methods::dup_data(c, v)? { return Ok(Some(r)); }
     if let Some(r) = time::dup_data(c, v)? { return Ok(Some(r)); }

@@ -721,7 +721,7 @@ fn obj_enc(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if is_string(v) { return Ok(Some(v)); }
     if c.data::<REnc>(v).is_some() { return Ok(Some(c.str_new_enc(b"", id_of(c, v)))); }
     if v.is_sym() { let b = crate::symbol::sym_bytes(v.as_sym()); return Ok(Some(c.str_new_enc(b, if is_ascii(b) { ENC_ASCII } else { ENC_UTF8 }))); }
-    if crate::regexp::is_regexp(v) { let s = funcall(c, v, intern(b"source"), &[], std::ptr::null())?; return Ok(Some(s)); }
+    if crate::regexp::is_regexp(c, v) { let s = funcall(c, v, intern(b"source"), &[], std::ptr::null())?; return Ok(Some(s)); }
     Ok(None)
 }
 fn enc_s_compatible_p(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {

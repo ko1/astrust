@@ -348,7 +348,7 @@ node_errinfo(c: &mut Ctx, n: NodePtr, fp: Fp)
 NODE_DEF
 node_nth_ref(c: &mut Ctx, n: NodePtr, fp: Fp, nth: u32)
 {
-    Ok(crate::regexp::nth_match(c.last_match, nth as i64))
+    Ok(crate::regexp::nth_match(c, c.last_match, nth as i64))
 }
 
 NODE_DEF

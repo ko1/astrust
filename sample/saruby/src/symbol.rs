@@ -1,35 +1,95 @@
 // Symbol table: interned byte strings, never collected.  Ids of the predefined
 // symbols below are fixed (interned first, in order).
+//
+// Names are leaked (`&'static [u8]` is literally true) and live in an append-only table of
+// chunks whose slots are `OnceLock`s, so `sym_bytes` reads without a lock (two acquire loads,
+// plain loads on x86). `intern` answers from a lock-free cache when it can; misses and
+// `lookup` take the map's `Mutex`. Writers are serialized by it, so a slot is set once,
+// before its id is handed out.
+#![forbid(unsafe_code)]
 use crate::value::Sym;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
 
-pub struct SymTab { pub names: Vec<&'static [u8]>, pub map: HashMap<&'static [u8], u32> }
+const CHUNK_BITS: u32 = 12;
+const CHUNK: usize = 1 << CHUNK_BITS;
+const NCHUNK: usize = 1 << 12;   // 16M symbols
+type Chunk = Box<[OnceLock<&'static [u8]>]>;
+static NAMES: [OnceLock<Chunk>; NCHUNK] = [const { OnceLock::new() }; NCHUNK];
+struct Map { ids: HashMap<&'static [u8], u32>, n: u32 }
+static MAP: Mutex<Option<Map>> = Mutex::new(None);
 
-static mut SYMTAB: Option<SymTab> = None;
-
-#[allow(static_mut_refs)]
-#[inline]
-fn tab() -> &'static mut SymTab {
-    unsafe {
-        if SYMTAB.is_none() { init(); }
-        SYMTAB.as_mut().unwrap_unchecked()
-    }
-}
-
-pub fn intern(b: &[u8]) -> Sym {
-    let t = tab();
-    if let Some(&i) = t.map.get(b) { return Sym(i); }
+#[inline(never)]
+fn add(m: &mut Map, b: &[u8]) -> Sym {
+    if let Some(&i) = m.ids.get(b) { return Sym(i); }
+    let i = m.n;
+    assert!((i as usize) < CHUNK * NCHUNK, "saruby: symbol table full");
     let s: &'static [u8] = Box::leak(b.to_vec().into_boxed_slice());
-    let i = t.names.len() as u32;
-    t.names.push(s);
-    t.map.insert(s, i);
+    let chunk = NAMES[i as usize >> CHUNK_BITS].get_or_init(|| (0..CHUNK).map(|_| OnceLock::new()).collect());
+    let _ = chunk[i as usize & (CHUNK - 1)].set(s);
+    m.ids.insert(s, i);
+    m.n = i + 1;
     Sym(i)
 }
+#[inline]
+fn with_map<R>(f: impl FnOnce(&mut Map) -> R) -> R {
+    let mut g = MAP.lock().unwrap_or_else(|e| e.into_inner());
+    match g.as_mut() { Some(m) => f(m), None => f(g.insert(new_map())) }
+}
+#[cold]
+fn new_map() -> Map {
+    let mut m = Map { ids: HashMap::new(), n: 0 };
+    for s in PREDEF { add(&mut m, s.as_bytes()); }
+    m
+}
+
+// A direct-mapped cache in front of the map: slot = id + 1, verified against the name on a
+// hit, so a stale or overwritten slot only costs a miss. Release / Acquire make the name of
+// an id visible before the id is.
+const CACHE_BITS: u32 = 16;
+static CACHE: [AtomicU32; 1 << CACHE_BITS] = [const { AtomicU32::new(0) }; 1 << CACHE_BITS];
+#[inline]
+fn cache_slot(b: &[u8]) -> &'static AtomicU32 {
+    use std::hash::Hasher;
+    let mut h = crate::fxhash::FxHasher::default();
+    h.write(b);
+    &CACHE[(h.finish() >> (64 - CACHE_BITS)) as usize]
+}
+
+// out of line: inlined into its 600-odd callers, bignum AOT ran 6 % more cycles on the same instructions
+#[inline(never)]
+pub fn intern(b: &[u8]) -> Sym {
+    let slot = cache_slot(b);
+    let v = slot.load(Ordering::Acquire);
+    if v != 0 && sym_bytes(Sym(v - 1)) == b { return Sym(v - 1); }
+    intern_slow(b, slot)
+}
+#[inline(never)]
+fn intern_slow(b: &[u8], slot: &AtomicU32) -> Sym {
+    let s = with_map(|m| match m.ids.get(b) { Some(&i) => Sym(i), None => add(m, b) });
+    slot.store(s.0 + 1, Ordering::Release);
+    s
+}
 #[inline] pub fn intern_str(s: &str) -> Sym { intern(s.as_bytes()) }
-#[inline] pub fn sym_bytes(s: Sym) -> &'static [u8] { tab().names[s.0 as usize] }
+#[inline]
+pub fn sym_bytes(s: Sym) -> &'static [u8] {
+    let i = s.0 as usize;
+    match NAMES.get(i >> CHUNK_BITS).and_then(|c| c.get()).and_then(|c| c[i & (CHUNK - 1)].get()) {
+        Some(b) => b,
+        None => sym_bytes_slow(s),
+    }
+}
+#[cold]
+#[inline(never)]
+fn sym_bytes_slow(s: Sym) -> &'static [u8] {
+    init();   // the predefined ids are valid before anything was interned
+    let i = s.0 as usize;
+    NAMES.get(i >> CHUNK_BITS).and_then(|c| c.get()).and_then(|c| c[i & (CHUNK - 1)].get()).copied().expect("saruby: not a symbol id")
+}
 pub fn sym_str(s: Sym) -> String { String::from_utf8_lossy(sym_bytes(s)).into_owned() }
-pub fn lookup(b: &[u8]) -> Option<Sym> { tab().map.get(b).map(|&i| Sym(i)) }
-pub fn all_count() -> usize { tab().names.len() }
+pub fn lookup(b: &[u8]) -> Option<Sym> { with_map(|m| m.ids.get(b).map(|&i| Sym(i))) }
+pub fn all_count() -> usize { with_map(|m| m.n as usize) }
 
 macro_rules! predefined_syms {
     ($($name:ident = $s:expr),* $(,)?) => {
@@ -85,11 +145,5 @@ predefined_syms! {
     mid_initialize_dup = "initialize_dup", mid_initialize_clone = "initialize_clone",
 }
 
-#[allow(static_mut_refs)]
-pub fn init() {
-    unsafe {
-        if SYMTAB.is_some() { return; }
-        SYMTAB = Some(SymTab { names: vec![], map: HashMap::new() });
-    }
-    for s in PREDEF { intern(s.as_bytes()); }
-}
+/// Build the table (the first intern does it too).
+pub fn init() { with_map(|_| ()); }

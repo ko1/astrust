@@ -1,4 +1,12 @@
 // Random: MT19937 with CRuby's seeding, real/int/range draws (same numbers for the same seed).
+// On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
+#![forbid(unsafe_code)]
+#[allow(unused_imports)]
+use crate::heap::no_legacy::*;   // the old accessors cannot be named here
+#[allow(unused_imports)]
+use crate::heap::no_legacy_hn::*;
+#[allow(unused_imports)]
+use crate::heap::no_legacy_str::*;
 use crate::bignum::*;
 use crate::builtins::kernel::*;
 use crate::numeric::*;
@@ -72,14 +80,13 @@ impl RData for RRandom {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
 
-static mut DEFAULT: u64 = 0;
-fn default_rnd() -> Value { unsafe { Value::from_raw(DEFAULT) } }
-fn rr(v: Value) -> &'static mut RRandom { rdata::<RRandom>(v).unwrap() }
+fn default_rnd(c: &Ctx) -> Value { c.vm().default_random }
+fn rr(c: &mut Ctx, v: Value) -> &mut RRandom { c.data_mut::<RRandom>(v).expect("a Random") }
 
-/// The generator behind obj: a Random instance, the Random class (default), or None.
-fn get_rnd(obj: Value) -> Option<Value> {
-    if obj == NIL || obj == vm().c_random { return Some(default_rnd()); }
-    if obj.is_heap() && rdata::<RRandom>(obj).is_some() { return Some(obj); }
+/// The generator behind ob: a Random instance, the Random class (default), or None.
+fn get_rnd(c: &Ctx, ob: Value) -> Option<Value> {
+    if ob == NIL || ob == c.vm().c_random { return Some(default_rnd(c)); }
+    if c.data::<RRandom>(ob).is_some() { return Some(ob); }
     None
 }
 
@@ -92,12 +99,14 @@ fn fill_random_words(n: usize) -> Vec<u32> {
     }
     buf.chunks(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
 }
-fn make_seed_value(mut w: Vec<u32>) -> Value {
+fn make_seed_value(c: &mut Ctx, mut w: Vec<u32>) -> Value {
     if *w.last().unwrap() <= 1 { w.push(1); }
-    big_to_value(BigInt::from_words(false, &w))
+    c.big_to_value(BigInt::from_words(false, &w))
 }
-fn rand_init(mt: &mut Mt, seed: Value) {
-    let b = to_big(seed);
+/// Seeds the generator of `r` with Integer `seed`.
+fn rand_init(c: &mut Ctx, r: Value, seed: Value) {
+    let b = c.to_big(seed);
+    let mt = &mut rr(c, r).mt;
     let mut w = b.mag.clone();
     if w.is_empty() { w.push(0); }
     if w.len() == 1 { mt.init_genrand(w[0]); }
@@ -106,34 +115,34 @@ fn rand_init(mt: &mut Mt, seed: Value) {
         mt.init_by_array(&w);
     }
 }
-fn rand_init_default(mt: &mut Mt) -> Value {
+fn rand_init_default(c: &mut Ctx, mt: &mut Mt) -> Value {
     let w = fill_random_words(4);
     mt.init_by_array(&w);
-    make_seed_value(w)
+    make_seed_value(c, w)
 }
 
 // ---- draws (rnd = Some(generator) or None for a duck-typed object using #bytes) ------------
 
-fn obj_bytes(c: &mut Ctx, obj: Value, n: usize) -> Result<Vec<u8>, Esc> {
-    let v = funcall_public(c, obj, intern(b"bytes"), &[Value::fix(n as i64)], std::ptr::null())?;
+fn obj_bytes(c: &mut Ctx, ob: Value, n: usize) -> Result<Vec<u8>, Esc> {
+    let v = funcall_public(c, ob, intern(b"bytes"), &[Value::fix(n as i64)], std::ptr::null())?;
     if !is_string(v) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(v))); }
-    let b = str_bytes(v).to_vec();
-    if b.len() < n { return err(c, vm().c_range_error, format!("random data too short {}", b.len())); }
-    if b.len() > n { return err(c, vm().c_range_error, format!("random data too long {}", b.len())); }
+    let b = c.str_bytes(v).to_vec();
+    if b.len() < n { return err(c, c.vm().c_range_error, format!("random data too short {}", b.len())); }
+    if b.len() > n { return err(c, c.vm().c_range_error, format!("random data too long {}", b.len())); }
     Ok(b)
 }
-fn int32(c: &mut Ctx, obj: Value, rnd: Option<Value>) -> Result<u32, Esc> {
-    match rnd { Some(r) => Ok(rr(r).mt.genrand_int32()), None => { let b = obj_bytes(c, obj, 4)?; Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]])) } }
+fn int32(c: &mut Ctx, ob: Value, rnd: Option<Value>) -> Result<u32, Esc> {
+    match rnd { Some(r) => Ok(rr(c, r).mt.genrand_int32()), None => { let b = obj_bytes(c, ob, 4)?; Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]])) } }
 }
-fn random_real(c: &mut Ctx, obj: Value, rnd: Option<Value>, excl: bool) -> Result<f64, Esc> {
+fn random_real(c: &mut Ctx, ob: Value, rnd: Option<Value>, excl: bool) -> Result<f64, Esc> {
     let (a, b) = match rnd {
-        Some(r) => { let m = &mut rr(r).mt; (m.genrand_int32(), m.genrand_int32()) }
-        None => { let x = obj_bytes(c, obj, 8)?; (u32::from_le_bytes([x[0], x[1], x[2], x[3]]), u32::from_le_bytes([x[4], x[5], x[6], x[7]])) }
+        Some(r) => { let m = &mut rr(c, r).mt; (m.genrand_int32(), m.genrand_int32()) }
+        None => { let x = obj_bytes(c, ob, 8)?; (u32::from_le_bytes([x[0], x[1], x[2], x[3]]), u32::from_le_bytes([x[4], x[5], x[6], x[7]])) }
     };
     Ok(if excl { pair_to_real_excl(a, b) } else { pair_to_real_incl(a, b) })
 }
 fn make_mask(mut x: u64) -> u64 { x |= x >> 1; x |= x >> 2; x |= x >> 4; x |= x >> 8; x |= x >> 16; x |= x >> 32; x }
-fn limited_rand(c: &mut Ctx, obj: Value, rnd: Option<Value>, limit: u64) -> Result<u64, Esc> {
+fn limited_rand(c: &mut Ctx, ob: Value, rnd: Option<Value>, limit: u64) -> Result<u64, Esc> {
     if limit == 0 { return Ok(0); }
     if rnd.is_none() {
         let w = 64 - limit.leading_zeros();
@@ -143,7 +152,7 @@ fn limited_rand(c: &mut Ctx, obj: Value, rnd: Option<Value>, limit: u64) -> Resu
         let (mut bits, mut rest) = (0u64, 0u64);
         loop {
             if mask & !rest != 0 {
-                let b = obj_bytes(c, obj, n)?;
+                let b = obj_bytes(c, ob, n)?;
                 let mut a = [0u8; 8]; a[..n].copy_from_slice(&b);
                 bits = u64::from_le_bytes(a); rest = full;
             }
@@ -152,7 +161,7 @@ fn limited_rand(c: &mut Ctx, obj: Value, rnd: Option<Value>, limit: u64) -> Resu
             if val <= limit { return Ok(val); }
         }
     }
-    Ok(limited_rand_mt(&mut rr(rnd.unwrap()).mt, limit))
+    Ok(limited_rand_mt(&mut rr(c, rnd.unwrap()).mt, limit))
 }
 fn limited_rand_mt(mt: &mut Mt, limit: u64) -> u64 {
     if limit == 0 { return 0; }
@@ -172,7 +181,7 @@ fn limited_rand_mt(mt: &mut Mt, limit: u64) -> u64 {
     }
     loop { let v = mt.genrand_int32() as u64 & mask; if v <= limit { return v; } }
 }
-fn limited_big_rand(c: &mut Ctx, obj: Value, rnd: Option<Value>, limit: &BigInt) -> RV {
+fn limited_big_rand(c: &mut Ctx, ob: Value, rnd: Option<Value>, limit: &BigInt) -> RV {
     let lim = &limit.mag;
     let len = lim.len();
     if rnd.is_none() {
@@ -180,13 +189,13 @@ fn limited_big_rand(c: &mut Ctx, obj: Value, rnd: Option<Value>, limit: &BigInt)
         let nlz = lim[len - 1].leading_zeros();
         let mask = u32::MAX >> nlz;
         loop {
-            let b = obj_bytes(c, obj, len * 4)?;
+            let b = obj_bytes(c, ob, len * 4)?;
             let mut r: Vec<u32> = b.chunks(4).map(|x| u32::from_le_bytes([x[0], x[1], x[2], x[3]])).collect();
             r[0] &= mask;
             let msw: Vec<u32> = lim.iter().rev().copied().collect();
             let mut ok = true;
             for i in 0..len { if msw[i] < r[i] { ok = false; break; } if r[i] < msw[i] { break; } }
-            if ok { r.reverse(); return Ok(big_to_value(BigInt::from_words(false, &r))); }
+            if ok { r.reverse(); return Ok(c.big_to_value(BigInt::from_words(false, &r))); }
         }
     }
     'retry: loop {
@@ -197,45 +206,46 @@ fn limited_big_rand(c: &mut Ctx, obj: Value, rnd: Option<Value>, limit: &BigInt)
             mask = if mask != 0 { u32::MAX } else { make_mask(l as u64) as u32 };
             let mut r = 0;
             if mask != 0 {
-                r = int32(c, obj, rnd)? & mask;
+                r = int32(c, ob, rnd)? & mask;
                 if boundary { if l < r { continue 'retry; } if r < l { boundary = false; } }
             }
             out[i] = r;
         }
-        return Ok(big_to_value(BigInt::from_words(false, &out)));
+        return Ok(c.big_to_value(BigInt::from_words(false, &out)));
     }
 }
 /// [0, n) for the default generator (Array#shuffle / #sample).
-pub fn rand_below(n: u64) -> u64 {
+pub fn rand_below(c: &mut Ctx, n: u64) -> u64 {
     if n == 0 { return 0; }
-    limited_rand_mt(&mut rr(default_rnd()).mt, n - 1)
+    let d = default_rnd(c);
+    limited_rand_mt(&mut rr(c, d).mt, n - 1)
 }
 
-fn rand_int(c: &mut Ctx, obj: Value, rnd: Option<Value>, vmax: Value, restrictive: bool) -> Result<Option<Value>, Esc> {
+fn rand_int(c: &mut Ctx, ob: Value, rnd: Option<Value>, vmax: Value, restrictive: bool) -> Result<Option<Value>, Esc> {
     if vmax.is_fixnum() {
         let mut max = vmax.as_fix();
         if max == 0 { return Ok(None); }
         if max < 0 { if restrictive { return Ok(None); } max = -max; }
-        let r = limited_rand(c, obj, rnd, (max - 1) as u64)?;
-        return Ok(Some(int_from_i128(r as i128)));
+        let r = limited_rand(c, ob, rnd, (max - 1) as u64)?;
+        return Ok(Some(c.int_from_i128(r as i128)));
     }
-    let mut b = to_big(vmax);
+    let mut b = c.to_big(vmax);
     if b.is_zero() { return Ok(None); }
     if b.neg { if restrictive { return Ok(None); } b = b.neg(); }
     let b = b.sub(&BigInt::from_i64(1));
     if let Some(m) = b.to_i64() { if Value::fixable(m) {
         if m == -1 { return Ok(None); }
-        let r = limited_rand(c, obj, rnd, m as u64)?;
-        return Ok(Some(int_from_i128(r as i128)));
+        let r = limited_rand(c, ob, rnd, m as u64)?;
+        return Ok(Some(c.int_from_i128(r as i128)));
     } }
-    Ok(Some(limited_big_rand(c, obj, rnd, &b)?))
+    Ok(Some(limited_big_rand(c, ob, rnd, &b)?))
 }
 
 fn domain_error<T>(c: &mut Ctx) -> Result<T, Esc> {
     let k = Some(crate::builtins::exception::errno_class(33));
     match k {
         Some(k) => { let e = funcall(c, k, s::new, &[], std::ptr::null())?; Err(raise_exc(c, e)) }
-        None => err(c, vm().c_argument_error, "Numerical argument out of domain"),
+        None => err(c, c.vm().c_argument_error, "Numerical argument out of domain"),
     }
 }
 fn float_value(c: &mut Ctx, f: f64) -> Result<f64, Esc> { if !f.is_finite() { return domain_error(c); } Ok(f) }
@@ -249,17 +259,17 @@ fn check_to_int(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
 }
 fn check_to_float(c: &mut Ctx, v: Value) -> Result<Option<f64>, Esc> {
     if is_float(v) { return Ok(Some(float_val(v))); }
-    if !is_kind_of(v, vm().c_numeric) && !v.is_fixnum() { return Ok(None); }
-    if let Some(f) = num_to_f64(v) { return Ok(Some(f)); }
+    if !is_kind_of(v, c.vm().c_numeric) && !v.is_fixnum() { return Ok(None); }
+    if let Some(f) = c.num_to_f64(v) { return Ok(Some(f)); }
     let r = funcall(c, v, s::to_f, &[], std::ptr::null())?;
     Ok(if is_float(r) { Some(float_val(r)) } else { None })
 }
 
 enum Draw { Val(Value), False }
 
-fn rand_range(c: &mut Ctx, obj: Value, rnd: Option<Value>, range: Value) -> Result<Draw, Esc> {
+fn rand_range(c: &mut Ctx, ob: Value, rnd: Option<Value>, range: Value) -> Result<Draw, Esc> {
     if !is_range(range) { return Ok(Draw::False); }
-    let (beg, end, excl) = crate::range::range_parts(range);
+    let (beg, end, excl) = c.range(range);
     if beg == NIL || end == NIL { return domain_error(c); }
     if !respond_to(end, s::minus, true) { return Ok(Draw::False); }
     let vmax = funcall(c, end, s::minus, &[beg], std::ptr::null())?;
@@ -270,15 +280,15 @@ fn rand_range(c: &mut Ctx, obj: Value, rnd: Option<Value>, range: Value) -> Resu
         loop {
             if vmax.is_fixnum() {
                 let max = vmax.as_fix() - excl as i64;
-                if max >= 0 { let r = limited_rand(c, obj, rnd, max as u64)?; v = int_from_i128(r as i128); }
+                if max >= 0 { let r = limited_rand(c, ob, rnd, max as u64)?; v = c.int_from_i128(r as i128); }
                 break;
             }
-            let b = to_big(vmax);
+            let b = c.to_big(vmax);
             if !b.neg && !b.is_zero() {
                 let b = if excl { b.sub(&BigInt::from_i64(1)) } else { b };
-                let bv = big_to_value(b.clone());
+                let bv = c.big_to_value(b.clone());
                 if bv.is_fixnum() { vmax = bv; excl = false; continue; }
-                v = limited_big_rand(c, obj, rnd, &b)?;
+                v = limited_big_rand(c, ob, rnd, &b)?;
             }
             break;
         }
@@ -292,38 +302,38 @@ fn rand_range(c: &mut Ctx, obj: Value, rnd: Option<Value>, range: Value) -> Resu
             scale = 2.0; mid = max + min; max -= min;
         } else if max.is_nan() { return domain_error(c); }
         if max > 0.0 {
-            let r = random_real(c, obj, rnd, excl)?;
-            if scale > 1.0 { return Ok(Draw::Val(float_new((r - 0.5) * max * scale + mid))); }
-            v = float_new(r * max);
-        } else if max == 0.0 && !excl { v = float_new(0.0); }
+            let r = random_real(c, ob, rnd, excl)?;
+            if scale > 1.0 { return Ok(Draw::Val(c.float_new((r - 0.5) * max * scale + mid))); }
+            v = c.float_new(r * max);
+        } else if max == 0.0 && !excl { v = c.float_new(0.0); }
     }
-    if beg.is_fixnum() && v.is_fixnum() { return Ok(Draw::Val(int_from_i64(beg.as_fix() + v.as_fix()))); }
+    if beg.is_fixnum() && v.is_fixnum() { return Ok(Draw::Val(c.int_from_i64(beg.as_fix() + v.as_fix()))); }
     if v == NIL { return Ok(Draw::Val(NIL)); }
     if is_bignum(v) { return Ok(Draw::Val(funcall(c, v, s::plus, &[beg], std::ptr::null())?)); }
-    if is_float(v) { if let Some(f) = check_to_float(c, beg)? { return Ok(Draw::Val(float_new(float_val(v) + f))); } }
+    if is_float(v) { if let Some(f) = check_to_float(c, beg)? { return Ok(Draw::Val(c.float_new(float_val(v) + f))); } }
     Ok(Draw::Val(funcall(c, beg, s::plus, &[v], std::ptr::null())?))
 }
 
-fn rand_random(c: &mut Ctx, obj: Value, rnd: Option<Value>, a: &[Value]) -> Result<Draw, Esc> {
+fn rand_random(c: &mut Ctx, ob: Value, rnd: Option<Value>, a: &[Value]) -> Result<Draw, Esc> {
     check_argc(c, a, 0, 1)?;
-    if a.is_empty() { return Ok(Draw::Val(float_new(random_real(c, obj, rnd, true)?))); }
+    if a.is_empty() { let r = random_real(c, ob, rnd, true)?; return Ok(Draw::Val(c.float_new(r))); }
     let vmax = a[0];
     if vmax == NIL { return Ok(Draw::Val(NIL)); }
     if !is_float(vmax) {
-        if let Some(v) = check_to_int(c, vmax)? { return Ok(Draw::Val(rand_int(c, obj, rnd, v, true)?.unwrap_or(NIL))); }
+        if let Some(v) = check_to_int(c, vmax)? { return Ok(Draw::Val(rand_int(c, ob, rnd, v, true)?.unwrap_or(NIL))); }
     }
     if let Some(f) = check_to_float(c, vmax)? {
         let max = float_value(c, f)?;
         if max < 0.0 { return Ok(Draw::Val(NIL)); }
-        let mut r = random_real(c, obj, rnd, true)?;
+        let mut r = random_real(c, ob, rnd, true)?;
         if max > 0.0 { r *= max; }
-        return Ok(Draw::Val(float_new(r)));
+        return Ok(Draw::Val(c.float_new(r)));
     }
-    rand_range(c, obj, rnd, vmax)
+    rand_range(c, ob, rnd, vmax)
 }
 fn invalid_argument<T>(c: &mut Ctx, v: Value) -> Result<T, Esc> {
     let s = funcall(c, v, s::to_s, &[], std::ptr::null())?;
-    let st = if is_string(s) { String::from_utf8_lossy(str_bytes(s)).into_owned() } else { String::new() };
+    let st = if is_string(s) { String::from_utf8_lossy(c.str_bytes(s)).into_owned() } else { String::new() };
     arg_err(c, format!("invalid argument - {}", st))
 }
 fn check_random_number(c: &mut Ctx, d: Draw, a: &[Value]) -> RV {
@@ -335,112 +345,121 @@ fn check_random_number(c: &mut Ctx, d: Draw, a: &[Value]) -> RV {
 }
 
 fn r_rand(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
-    let rnd = get_rnd(s);
+    let rnd = get_rnd(c, s);
     let d = rand_random(c, s, rnd, a)?;
     check_random_number(c, d, a)
 }
 fn r_random_number(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
-    let rnd = get_rnd(s);
+    let rnd = get_rnd(c, s);
     match rand_random(c, s, rnd, a)? {
-        Draw::Val(v) if v == NIL => Ok(float_new(random_real(c, s, rnd, true)?)),
+        Draw::Val(v) if v == NIL => { let r = random_real(c, s, rnd, true)?; Ok(c.float_new(r)) }
         Draw::Val(v) => Ok(v),
         Draw::False => invalid_argument(c, a[0]),
     }
 }
 /// Kernel#rand
 pub fn rand_value(c: &mut Ctx, vmax: Value) -> RV {
-    let rnd = Some(default_rnd());
+    let rnd = Some(default_rnd(c));
     if vmax != NIL {
         if let Draw::Val(v) = rand_range(c, NIL, rnd, vmax)? { return Ok(v); }
         let vi = if is_float(vmax) {
             let f = float_val(vmax);
-            if !f.is_finite() { return err(c, vm().c_float_domain_error, float_to_s(f)); }
-            crate::legacy::f64_to_int(f)
+            if !f.is_finite() { return err(c, c.vm().c_float_domain_error, float_to_s(f)); }
+            crate::builtins::numeric_methods::f64_to_int(c, f)
         } else { crate::builtins::numeric_methods::to_integer(c, vmax)? };
         if vi != Value::fix(0) { if let Some(v) = rand_int(c, NIL, rnd, vi, false)? { return Ok(v); } }
     }
-    Ok(float_new(random_real(c, NIL, rnd, true)?))
+    let r = random_real(c, NIL, rnd, true)?;
+    Ok(c.float_new(r))
 }
 fn k_rand(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { check_argc(c, a, 0, 1)?; rand_value(c, a.first().copied().unwrap_or(NIL)) }
 fn k_srand(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 0, 1)?;
-    let seed = if a.is_empty() { make_seed_value(fill_random_words(4)) } else { crate::builtins::numeric_methods::to_integer(c, a[0])? };
-    let d = rr(default_rnd());
-    let old = d.seed;
-    rand_init(&mut d.mt, seed);
-    d.seed = seed;
+    let seed = if a.is_empty() { make_seed_value(c, fill_random_words(4)) } else { crate::builtins::numeric_methods::to_integer(c, a[0])? };
+    let d = default_rnd(c);
+    let old = rr(c, d).seed;
+    rand_init(c, d, seed);
+    rr(c, d).seed = seed;
     Ok(old)
 }
 /// srand with a plain integer (internal use)
-pub fn seed(s: u64) { let d = rr(default_rnd()); let v = int_from_i128(s as i128); rand_init(&mut d.mt, v); d.seed = v; }
+pub fn seed(c: &mut Ctx, s: u64) { let d = default_rnd(c); let v = c.int_from_i128(s as i128); rand_init(c, d, v); rr(c, d).seed = v; }
 
 fn bytes_of(c: &mut Ctx, r: Value, n: Value) -> RV {
     let n = crate::builtins::numeric_methods::num_to_long(c, n)?;
     if n < 0 { return arg_err(c, format!("negative string size (or size too big)")); }
-    let mt = &mut rr(r).mt;
+    let mt = &mut rr(c, r).mt;
     let mut out = Vec::with_capacity(n as usize);
     let mut left = n as usize;
     while left > 0 { let mut x = mt.genrand_int32(); for _ in 0..left.min(4) { out.push(x as u8); x >>= 8; } left -= left.min(4); }
-    Ok(crate::string::str_from_vec_enc(out, ENC_BINARY))
+    Ok(c.str_from_vec_enc(out, ENC_BINARY))
 }
 fn r_bytes(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
-    let Some(r) = get_rnd(s) else { return type_err(c, "wrong argument type") };
+    let Some(r) = get_rnd(c, s) else { return type_err(c, "wrong argument type") };
     bytes_of(c, r, a[0])
 }
 fn r_init(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 0, 1)?;
-    if obj(s).flags & FL_FROZEN != 0 { let ins = inspect_str(c, s)?; return err(c, vm().c_frozen_error, format!("can't modify frozen Random: {}", ins)); }
-    let Some(_) = rdata::<RRandom>(s) else { return type_err(c, "undefined random interface") };
-    if a.is_empty() { let sd = rand_init_default(&mut rr(s).mt); rr(s).seed = sd; }
-    else { let sd = crate::builtins::numeric_methods::to_integer(c, a[0])?; rand_init(&mut rr(s).mt, sd); rr(s).seed = sd; }
+    if is_frozen(s) { let ins = inspect_str(c, s)?; return err(c, c.vm().c_frozen_error, format!("can't modify frozen Random: {}", ins)); }
+    if c.data::<RRandom>(s).is_none() { return type_err(c, "undefined random interface") }
+    if a.is_empty() {
+        let mut mt = Mt::new(); let sd = rand_init_default(c, &mut mt);
+        let r = rr(c, s); r.mt = mt; r.seed = sd;
+    } else {
+        let sd = crate::builtins::numeric_methods::to_integer(c, a[0])?;
+        // to_int may have run Ruby code: check the receiver again
+        if c.data::<RRandom>(s).is_none() { return type_err(c, "undefined random interface") }
+        rand_init(c, s, sd); rr(c, s).seed = sd;
+    }
     Ok(s)
 }
-fn r_seed(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(rdata::<RRandom>(s).map(|r| r.seed).unwrap_or(NIL)) }
-fn r_eq(_c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn r_seed(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.data::<RRandom>(s).map(|r| r.seed).unwrap_or(NIL)) }
+fn r_eq(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let o = a[0];
     if real_class_of(s) != real_class_of(o) { return Ok(FALSE); }
-    let (Some(x), Some(y)) = (rdata::<RRandom>(s), rdata::<RRandom>(o)) else { return Ok(FALSE) };
+    let (Some(x), Some(y)) = (c.data::<RRandom>(s), c.data::<RRandom>(o)) else { return Ok(FALSE) };
     if x.mt.state != y.mt.state || x.mt.next != y.mt.next || x.mt.left != y.mt.left { return Ok(FALSE); }
-    Ok(Value::bool(icmp_eq(x.seed, y.seed)))
+    Ok(Value::bool(icmp_eq(c, x.seed, y.seed)))
 }
-fn icmp_eq(a: Value, b: Value) -> bool { is_integer(a) && is_integer(b) && to_big(a) == to_big(b) }
-fn r_init_copy(_c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
-    if let (Some(_), Some(o)) = (rdata::<RRandom>(s), rdata::<RRandom>(a[0])) { let (mt, sd) = (o.mt.clone(), o.seed); rr(s).mt = mt; rr(s).seed = sd; }
+fn icmp_eq(c: &Ctx, a: Value, b: Value) -> bool { is_integer(a) && is_integer(b) && c.to_big(a) == c.to_big(b) }
+fn r_init_copy(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+    if let Some((r, others)) = c.data_mut_and::<RRandom>(s) {
+        if let Some(o) = others.data::<RRandom>(a[0]) { r.mt = o.mt.clone(); r.seed = o.seed; }
+    }
     Ok(s)
 }
-fn s_new_seed(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(make_seed_value(fill_random_words(4))) }
-fn s_seed(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(rr(default_rnd()).seed) }
-fn s_bytes(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { bytes_of(c, default_rnd(), a[0]) }
+fn s_new_seed(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(make_seed_value(c, fill_random_words(4))) }
+fn s_seed(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { let d = default_rnd(c); Ok(rr(c, d).seed) }
+fn s_bytes(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { bytes_of(c, default_rnd(c), a[0]) }
 fn s_urandom(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let n = crate::builtins::numeric_methods::num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, "negative string size (or size too big)"); }
     let w = fill_random_words((n as usize + 3) / 4);
     let b: Vec<u8> = w.iter().flat_map(|x| x.to_le_bytes()).take(n as usize).collect();
-    Ok(crate::string::str_from_vec_enc(b, ENC_BINARY))
+    Ok(c.str_from_vec_enc(b, ENC_BINARY))
 }
 
-pub fn alloc_data(_c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
-    if crate::builtins::inherits(klass, vm().c_random) {
+pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
+    if crate::builtins::inherits(klass, c.vm().c_random) {
         let mut mt = Mt::new(); mt.init_genrand(0);
-        return Ok(Some(crate::gc::alloc(klass, Body::Data(Box::new(RRandom { mt, seed: Value::fix(0) })))));
+        return Ok(Some(c.alloc(klass, Body::Data(Box::new(RRandom { mt, seed: Value::fix(0) })))));
     }
     Ok(None)
 }
-pub fn dup_data(_c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
-    if let Some(r) = rdata::<RRandom>(v) {
+pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
+    if let Some(r) = c.data::<RRandom>(v) {
         let (mt, seed) = (r.mt.clone(), r.seed);
-        return Ok(Some(crate::gc::alloc(real_class_of(v), Body::Data(Box::new(RRandom { mt, seed })))));
+        return Ok(Some(c.alloc_with(real_class_of(v), move || Body::Data(Box::new(RRandom { mt, seed })))));
     }
     Ok(None)
 }
 
-pub fn init() {
-    let vm = vm();
-    let base = new_class(vm.c_object);
-    rclass(base).alloc = AllocKind::None;
+/// Boot: defines Random; returns (Random, the default generator).
+pub fn init(vmr: &Vm) -> (Value, Value) {
+    let base = new_class(vmr.c_object);
+    class_set_alloc(base, AllocKind::None);
     let r = define_class("Random", base);
-    rclass(r).alloc = AllocKind::None;
-    vm.c_random = r;
+    class_set_alloc(r, AllocKind::None);
     const_set(r, intern(b"Base"), base);
     crate::vm::name_class(base, r, intern(b"Base"));
     define_private_cfunc(base, "initialize", r_init, -1);
@@ -460,11 +479,16 @@ pub fn init() {
     define_cfunc(fm, "rand", r_random_number, -1);
     include_module(base, fm);
     include_module(singleton_class(base), fm);
-    define_module_function(vm.m_kernel, "rand", k_rand, -1);
-    define_module_function(vm.m_kernel, "srand", k_srand, -1);
+    define_module_function(vmr.m_kernel, "rand", k_rand, -1);
+    define_module_function(vmr.m_kernel, "srand", k_srand, -1);
     let mut mt = Mt::new();
-    let sd = rand_init_default(&mut mt);
-    let d = crate::gc::alloc(r, Body::Data(Box::new(RRandom { mt, seed: sd })));
-    vm.pinned.push(d);
-    unsafe { DEFAULT = d.raw(); }
+    let w = fill_random_words(4);
+    mt.init_by_array(&w);
+    let mut w = w; if *w.last().unwrap() <= 1 { w.push(1); }
+    // no context at boot (nothing is borrowed yet)
+    // top word > 1: at least 2**96, a bignum
+    let sd = crate::gc::alloc(vmr.c_integer, Body::Bignum(Box::new(BigInt::from_words(false, &w))));
+    crate::heap::obj_set_flags(sd, FL_FROZEN);
+    let d = crate::gc::alloc_with(r, move || Body::Data(Box::new(RRandom { mt, seed: sd })));
+    (r, d)
 }

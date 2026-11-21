@@ -78,12 +78,12 @@ fn substr(c: &mut Ctx, v: Value, start: i64, len: i64) -> Option<Value> {
 pub fn str_aref(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
     check_argc(c, a, 1, 2)?;
     if a.len() == 2 {
-        if regexp::is_regexp(a[0]) {
+        if regexp::is_regexp(c, a[0]) {
             let m = regexp::search(c, a[0], slf, 0, true)?;
             if m == NIL { return Ok(NIL); }
-            if a[1].is_sym() || is_string(a[1]) { let nm = if a[1].is_sym() { a[1].as_sym() } else { intern(c.str_bytes(a[1])) }; return Ok(regexp::named_match(m, nm)); }
+            if a[1].is_sym() || is_string(a[1]) { let nm = if a[1].is_sym() { a[1].as_sym() } else { intern(c.str_bytes(a[1])) }; return Ok(regexp::named_match(c, m, nm)); }
             let i = num_to_long(c, a[1])?;
-            return Ok(regexp::nth_match(m, i));
+            return Ok(regexp::nth_match(c, m, i));
         }
         let st = num_to_long(c, a[0])?; let ln = num_to_long(c, a[1])?;
         return Ok(substr(c, slf, st, ln).unwrap_or(NIL));
@@ -103,9 +103,9 @@ pub fn str_aref(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
     if is_string(x) {
         return Ok(if find_bytes(c.str_bytes(slf), c.str_bytes(x), 0).is_some() { c.str_new_like(x, c.str_bytes(x).to_vec()) } else { NIL });
     }
-    if regexp::is_regexp(x) {
+    if regexp::is_regexp(c, x) {
         let m = regexp::search(c, x, slf, 0, true)?;
-        return Ok(if m == NIL { NIL } else { regexp::nth_match(m, 0) });
+        return Ok(if m == NIL { NIL } else { regexp::nth_match(c, m, 0) });
     }
     let i = num_to_long(c, x)?;
     str_aref(c, slf, &[Value::fix(i)])
@@ -220,10 +220,10 @@ cfn!(s_cmp, |c, slf, a, b_| {
 });
 cfn!(s_match_op, |c, slf, a, b_| {
     if is_string(a[0]) { return type_err(c, "wrong argument type String (expected Regexp)"); }
-    if regexp::is_regexp(a[0]) {
+    if regexp::is_regexp(c, a[0]) {
         let m = regexp::search(c, a[0], slf, 0, true)?;
         if m == NIL { return Ok(NIL); }
-        let (st, _) = regexp::rmatch(m).unwrap().groups[0].unwrap();
+        let (st, _) = regexp::rmatch(c, m).unwrap().groups[0].unwrap();
         return Ok(Value::fix(byte_to_char(c, slf, st) as i64));
     }
     funcall(c, a[0], s::match_op, &[slf], std::ptr::null())
@@ -239,21 +239,21 @@ cfn!(s_match, |c, slf, a, blk| {
 cfn!(s_match_p, |c, slf, a, b_| {
     let re = regexp::to_regexp(c, a[0])?;
     let pos = if a.len() > 1 { let p = num_to_long(c, a[1])?.max(0) as usize; char_to_byte(c, slf, p).unwrap_or(usize::MAX) } else { 0 };
-    Ok(Value::bool(regexp::search_raw(re, c.str_bytes(slf), pos).is_some()))
+    Ok(Value::bool(regexp::search_raw(c, re, c.str_bytes(slf), pos).is_some()))
 });
 cfn!(s_aref, |c, slf, a, b_| str_aref(c, slf, a));
 cfn!(s_aset, |c, slf, a, b_| {
     check_argc(c, a, 2, 3)?;
     let val = expect_str(c, *a.last().unwrap())?;
     // conversions first: to_int may change self, the length is read after it
-    let nums = if a.len() == 3 && !regexp::is_regexp(a[0]) { Some((num_to_long(c, a[0])?, num_to_long(c, a[1])?)) } else { None };
+    let nums = if a.len() == 3 && !regexp::is_regexp(c, a[0]) { Some((num_to_long(c, a[0])?, num_to_long(c, a[1])?)) } else { None };
     let n = c.str_char_len(slf) as i64;
     let (bs, be) = if a.len() == 3 {
-        if regexp::is_regexp(a[0]) {
+        if regexp::is_regexp(c, a[0]) {
             let m = regexp::search(c, a[0], slf, 0, true)?;
             if m == NIL { return err(c, c.vm().c_index_error, "regexp not matched"); }
             let g = num_to_long(c, a[1])?;
-            match regexp::rmatch(m).unwrap().groups.get(g as usize).copied().flatten() { Some(x) => x, None => return err(c, c.vm().c_index_error, format!("index {} out of regexp", g)) }
+            match regexp::rmatch(c, m).unwrap().groups.get(g as usize).copied().flatten() { Some(x) => x, None => return err(c, c.vm().c_index_error, format!("index {} out of regexp", g)) }
         } else {
             let (st0, ln) = nums.unwrap();
             let mut st = st0;
@@ -271,10 +271,10 @@ cfn!(s_aset, |c, slf, a, b_| {
         match crate::range::range_beg_len(c, a[0], n, 1)? { Some((st, ln)) => (char_to_byte_at(c, slf, st as usize)?, char_to_byte_at(c, slf, (st + ln).min(n) as usize)?), None => return Ok(val) }
     } else if is_string(a[0]) {
         match find_bytes(c.str_bytes(slf), c.str_bytes(a[0]), 0) { Some(p) => (p, p + c.str_bytes(a[0]).len()), None => return err(c, c.vm().c_index_error, "string not matched") }
-    } else if regexp::is_regexp(a[0]) {
+    } else if regexp::is_regexp(c, a[0]) {
         let m = regexp::search(c, a[0], slf, 0, true)?;
         if m == NIL { return err(c, c.vm().c_index_error, "regexp not matched"); }
-        regexp::rmatch(m).unwrap().groups[0].unwrap()
+        regexp::rmatch(c, m).unwrap().groups[0].unwrap()
     } else { let i = num_to_long(c, a[0])?; return s_aset(c, slf, &[Value::fix(i), val], b_); };
     let vb = c.str_bytes(val).to_vec();
     if bs > be || be > c.str_len(slf) { return err(c, c.vm().c_index_error, format!("index {} out of string", bs)); }
@@ -419,7 +419,7 @@ cfn!(s_reverse_b, |c, slf, a, b_| { let r = c.str_modify(slf)?; let nv = reverse
 cfn!(s_include, |c, slf, a, b_| { let o = expect_str(c, a[0])?; Ok(Value::bool(find_bytes(c.str_bytes(slf), c.str_bytes(o), 0).is_some())) });
 cfn!(s_start_with, |c, slf, a, b_| {
     for &x in a {
-        if regexp::is_regexp(x) { if let Some(g) = regexp::rregexp(x).unwrap().re.as_ref().unwrap().match_at(c.str_bytes(slf), 0) { let m = regexp::match_new(x, slf, g); c.last_match = m; return Ok(TRUE); } c.last_match = NIL; continue; }
+        if regexp::is_regexp(c, x) { if let Some(g) = regexp::rregexp(c, x).unwrap().re.as_ref().unwrap().match_at(c.str_bytes(slf), 0) { let m = regexp::match_new(c, x, slf, g); c.last_match = m; return Ok(TRUE); } c.last_match = NIL; continue; }
         let o = expect_str(c, x)?; compat(c, slf, o)?; if c.str_bytes(slf).starts_with(c.str_bytes(o)) && c.char_offsets(slf).binary_search(&c.str_bytes(o).len()).is_ok() { return Ok(TRUE); }
     }
     Ok(FALSE)
@@ -431,10 +431,10 @@ cfn!(s_index, |c, slf, a, b_| {
     if st < 0 { st += n; if st < 0 { return Ok(NIL); } }
     if st > n { return Ok(NIL); }
     let bs = char_to_byte(c, slf, st as usize).unwrap();
-    if regexp::is_regexp(a[0]) {
+    if regexp::is_regexp(c, a[0]) {
         let m = regexp::search(c, a[0], slf, bs, true)?;
         if m == NIL { return Ok(NIL); }
-        return Ok(Value::fix(byte_to_char(c, slf, regexp::rmatch(m).unwrap().groups[0].unwrap().0) as i64));
+        return Ok(Value::fix(byte_to_char(c, slf, regexp::rmatch(c, m).unwrap().groups[0].unwrap().0) as i64));
     }
     let o = expect_str(c, a[0])?;
     compat(c, slf, o)?;
@@ -446,11 +446,11 @@ cfn!(s_rindex, |c, slf, a, b_| {
     if st < 0 { st += n; if st < 0 { return Ok(NIL); } }
     if st > n { st = n; }
     let bs = char_to_byte(c, slf, st as usize).unwrap();
-    if regexp::is_regexp(a[0]) {
+    if regexp::is_regexp(c, a[0]) {
         let mut p = bs as i64;
         while p >= 0 {
-            if let Some(g) = regexp::rregexp(a[0]).unwrap().re.as_ref().unwrap().match_at(c.str_bytes(slf), p as usize) {
-                let m = regexp::match_new(a[0], slf, g); c.last_match = m;
+            if let Some(g) = regexp::rregexp(c, a[0]).unwrap().re.as_ref().unwrap().match_at(c.str_bytes(slf), p as usize) {
+                let m = regexp::match_new(c, a[0], slf, g); c.last_match = m;
                 return Ok(Value::fix(byte_to_char(c, slf, p as usize) as i64));
             }
             p -= 1;
@@ -682,7 +682,7 @@ cfn!(s_split, |c, slf, a, blk| {
         let mut i = 0; let mut start = 0;
         loop {
             if limit > 0 && out.len() as i64 == limit - 1 { out.push(v[start..].to_vec()); break; }
-            let Some(g) = regexp::search_raw(re, v, i) else { out.push(v[start..].to_vec()); break; };
+            let Some(g) = regexp::search_raw(c, re, v, i) else { out.push(v[start..].to_vec()); break; };
             let (ms, me) = g[0].unwrap();
             if me == ms {
                 if ms >= v.len() { out.push(v[start..].to_vec()); break; }
@@ -702,7 +702,7 @@ cfn!(s_split, |c, slf, a, blk| {
 
 /// Pattern argument of sub/gsub/split: a Regexp or a String (via to_str).
 fn get_pat(c: &mut Ctx, p: Value) -> RV {
-    if regexp::is_regexp(p) || is_string(p) { return Ok(p); }
+    if regexp::is_regexp(c, p) || is_string(p) { return Ok(p); }
     if p.is_heap() && respond_to(p, s::to_str, true) { return expect_str(c, p); }
     type_err(c, format!("wrong argument type {} (expected Regexp)", class_name_for_err(p)))
 }
@@ -717,7 +717,7 @@ impl ReplErr {
     }
 }
 /// Expand a replacement string with \1 \0 \& \k<name> \` \' \\
-fn expand_repl(rep: &[u8], m_bytes: &[u8], groups: &[Option<(usize, usize)>], re: Value) -> Result<Vec<u8>, ReplErr> {
+fn expand_repl(c: &Ctx, rep: &[u8], m_bytes: &[u8], groups: &[Option<(usize, usize)>], re: Value) -> Result<Vec<u8>, ReplErr> {
     let mut out = vec![];
     let mut i = 0;
     while i < rep.len() {
@@ -734,7 +734,7 @@ fn expand_repl(rep: &[u8], m_bytes: &[u8], groups: &[Option<(usize, usize)>], re
                 b'k' if i + 2 < rep.len() && rep[i + 2] == b'<' => {
                     if let Some(e) = rep[i + 3..].iter().position(|&z| z == b'>') {
                         let name = String::from_utf8_lossy(&rep[i + 3..i + 3 + e]).into_owned();
-                        let idx = regexp::rregexp(re).map(|r| r.re.as_ref().unwrap().group_index(&name)).unwrap_or_default();
+                        let idx = regexp::rregexp(c, re).map(|r| r.re.as_ref().unwrap().group_index(&name)).unwrap_or_default();
                         if idx.is_empty() { return Err(ReplErr::Undefined(name)); }
                         for &gi in idx.iter().rev() { if groups.get(gi).map(|g| g.is_some()).unwrap_or(false) { grp(gi, &mut out); break; } }
                         i += 4 + e;
@@ -773,13 +773,13 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool, 
         let g: Vec<Option<(usize, usize)>> = if let Some(l) = &lit {
             match find_bytes(&src, l, i) { Some(p) => vec![Some((p, p + l.len()))], None => break }
         } else {
-            match regexp::search_raw(re, &src, i) { Some(g) => g, None => break }
+            match regexp::search_raw(c, re, &src, i) { Some(g) => g, None => break }
         };
         let (ms, me) = g[0].unwrap();
         out.extend_from_slice(&src[last..ms]);
         if re == NIL { re = regexp::to_regexp(c, pat)?; }
         if srcv == NIL { srcv = c.str_new_like(slf, src.clone()); obj_set_flags(srcv, FL_FROZEN); }
-        let mval = regexp::match_new(re, srcv, g.clone());
+        let mval = regexp::match_new(c, re, srcv, g.clone());
         c.last_match = mval;
         if let Some(h) = hash_rep {
             let key = c.str_new_like(slf, src[ms..me].to_vec());
@@ -788,7 +788,7 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool, 
             if watch { str_mod_check(c, slf, src.len())?; }
             renc = join_enc(c, renc, src_ascii, sv)?; out.extend_from_slice(c.str_bytes(sv));
         } else if let Some(r) = str_rep {
-            renc = join_enc(c, renc, src_ascii, r)?; match expand_repl(c.str_bytes(r), &src, &g, re) { Ok(ex) => out.extend(ex), Err(e) => return Err(e.raise(c)) }
+            renc = join_enc(c, renc, src_ascii, r)?; match expand_repl(c, c.str_bytes(r), &src, &g, re) { Ok(ex) => out.extend(ex), Err(e) => return Err(e.raise(c)) }
         } else {
             let mstr = c.str_new_like(slf, src[ms..me].to_vec());
             let v = yield1(c, blk, mstr)?;
@@ -829,10 +829,10 @@ cfn!(s_sub_b, |c, slf, a, blk| { check_frozen(c, slf)?; if a.len() == 1 && blk.i
 cfn!(s_gsub_b, |c, slf, a, blk| { if a.len() == 1 && blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"gsub!"), a, NIL); } check_frozen(c, slf)?; match subst(c, slf, a, blk, true, true)? { Some((v, e)) => { let r = c.str_modify(slf)?; r.b = v.into(); r.enc = e; Ok(slf) } None => Ok(NIL) } });
 cfn!(s_scan, |c, slf, a, blk| {
     let p = a[0];
-    if !regexp::is_regexp(p) && !is_string(p) && !(p.is_heap() && respond_to(p, s::to_str, true)) {
+    if !regexp::is_regexp(c, p) && !is_string(p) && !(p.is_heap() && respond_to(p, s::to_str, true)) {
         return type_err(c, format!("wrong argument type {} (expected Regexp)", class_name_for_err(p)));
     }
-    let p = if regexp::is_regexp(p) { p } else { expect_str(c, p)? };
+    let p = if regexp::is_regexp(c, p) { p } else { expect_str(c, p)? };
     if is_string(p) { compat(c, slf, p)?; }
     check_valid(c, slf)?;
     let re = regexp::to_regexp(c, p)?;
@@ -840,9 +840,9 @@ cfn!(s_scan, |c, slf, a, blk| {
     let out = c.ary_new();
     let mut i = 0;
     while i <= src.len() {
-        let Some(g) = regexp::search_raw(re, &src, i) else { break };
+        let Some(g) = regexp::search_raw(c, re, &src, i) else { break };
         let (ms, me) = g[0].unwrap();
-        let m = regexp::match_new(re, slf, g.clone());
+        let m = regexp::match_new(c, re, slf, g.clone());
         c.last_match = m;
         let item = if g.len() == 1 { c.str_new_like(slf, src[ms..me].to_vec()) } else {
             let arr = c.ary_new();
@@ -1177,20 +1177,20 @@ fn split3(c: &mut Ctx, slf: Value, v: &[u8], ms: usize, me: usize) -> Value {
     c.ary_from_vec(vec![x, y, z])
 }
 cfn!(s_partition, |c, slf, a, b_| {
-    let sep = if regexp::is_regexp(a[0]) { NIL } else { expect_str(c, a[0])? };
+    let sep = if regexp::is_regexp(c, a[0]) { NIL } else { expect_str(c, a[0])? };
     let v = c.str_bytes(slf).to_vec();
-    let (ms, me) = if regexp::is_regexp(a[0]) {
-        match regexp::search(c, a[0], slf, 0, true)? { m if m == NIL => (usize::MAX, 0), m => regexp::rmatch(m).unwrap().groups[0].unwrap() }
+    let (ms, me) = if regexp::is_regexp(c, a[0]) {
+        match regexp::search(c, a[0], slf, 0, true)? { m if m == NIL => (usize::MAX, 0), m => regexp::rmatch(c, m).unwrap().groups[0].unwrap() }
     } else { let p = sep; match find_bytes(&v, c.str_bytes(p), 0) { Some(i) => (i, i + c.str_bytes(p).len()), None => (usize::MAX, 0) } };
     if ms == usize::MAX { let (x, y, z) = (c.str_new_like(slf, v), c.str_new(b""), c.str_new(b"")); return Ok(c.ary_from_vec(vec![x, y, z])); }
     Ok(split3(c, slf, &v, ms, me))
 });
 cfn!(s_rpartition, |c, slf, a, b_| {
-    let sep = if regexp::is_regexp(a[0]) { NIL } else { expect_str(c, a[0])? };
+    let sep = if regexp::is_regexp(c, a[0]) { NIL } else { expect_str(c, a[0])? };
     let v = c.str_bytes(slf).to_vec();
-    let found = if regexp::is_regexp(a[0]) {
+    let found = if regexp::is_regexp(c, a[0]) {
         let mut p = v.len() as i64; let mut r = None;
-        while p >= 0 { if let Some(g) = regexp::rregexp(a[0]).unwrap().re.as_ref().unwrap().match_at(&v, p as usize) { r = Some(g[0].unwrap()); break; } p -= 1; }
+        while p >= 0 { if let Some(g) = regexp::rregexp(c, a[0]).unwrap().re.as_ref().unwrap().match_at(&v, p as usize) { r = Some(g[0].unwrap()); break; } p -= 1; }
         r
     } else { let p = sep; rfind_bytes(&v, c.str_bytes(p), v.len()).map(|i| (i, i + c.str_bytes(p).len())) };
     match found {
@@ -1206,13 +1206,13 @@ cfn!(s_slice_b, |c, slf, a, b_| {
     let r = str_aref(c, slf, a)?;
     if r == NIL { return Ok(NIL); }
     let lm = c.last_match;
-    if regexp::is_regexp(a[0]) {
+    if regexp::is_regexp(c, a[0]) {
         // $~ keeps the pre-mutation text
-        if regexp::rmatch(lm).map(|md| md.str == slf).unwrap_or(false) { let cp = c.str_copy(slf); obj_set_flags(cp, FL_FROZEN); if let Some(md) = regexp::rmatch(lm) { md.str = cp; } }
+        if regexp::rmatch(c, lm).map(|md| md.str == slf).unwrap_or(false) { let cp = c.str_copy(slf); obj_set_flags(cp, FL_FROZEN); if let Some(md) = regexp::rmatch_mut(c, lm) { md.str = cp; } }
     }
     let mut args: Vec<Value> = a.to_vec(); args.push(c.str_new(b""));
     s_aset(c, slf, &args, b_)?;
-    if regexp::is_regexp(a[0]) { c.last_match = lm; }
+    if regexp::is_regexp(c, a[0]) { c.last_match = lm; }
     Ok(r)
 });
 cfn!(s_getbyte, |c, slf, a, b_| { let i = num_to_long(c, a[0])?; let n = c.str_bytes(slf).len() as i64; let i = if i < 0 { i + n } else { i }; Ok(if i >= 0 && i < n { Value::fix(c.str_bytes(slf)[i as usize] as i64) } else { NIL }) });
@@ -1276,7 +1276,7 @@ fn graphemes_re(c: &mut Ctx, v: Value) -> Result<Vec<(usize, usize)>, Esc> {
     let mut out = vec![];
     let mut i = 0;
     while i < src.len() {
-        match regexp::search_raw(re, &src, i) {
+        match regexp::search_raw(c, re, &src, i) {
             Some(g) => { let (s0, e0) = g[0].unwrap(); if e0 <= i { break; } out.push((s0, e0)); i = e0; }
             None => break,
         }
@@ -1472,13 +1472,13 @@ cfn!(s_byteindex, |c, slf, a, b_| {
     check_argc(c, a, 1, 2)?;
     let n = c.str_bytes(slf).len() as i64;
     let mut st = if a.len() > 1 { num_to_long(c, a[1])? } else { 0 };
-    if st < 0 { st += n; if st < 0 { if regexp::is_regexp(a[0]) { c.last_match = NIL; } return Ok(NIL); } }
-    if st > n { if regexp::is_regexp(a[0]) { c.last_match = NIL; } return Ok(NIL); }
+    if st < 0 { st += n; if st < 0 { if regexp::is_regexp(c, a[0]) { c.last_match = NIL; } return Ok(NIL); } }
+    if st > n { if regexp::is_regexp(c, a[0]) { c.last_match = NIL; } return Ok(NIL); }
     check_char_boundary(c, slf, st as usize, "offset")?;
-    if regexp::is_regexp(a[0]) {
+    if regexp::is_regexp(c, a[0]) {
         let m = regexp::search(c, a[0], slf, st as usize, true)?;
         if m == NIL { return Ok(NIL); }
-        return Ok(Value::fix(regexp::rmatch(m).unwrap().groups[0].unwrap().0 as i64));
+        return Ok(Value::fix(regexp::rmatch(c, m).unwrap().groups[0].unwrap().0 as i64));
     }
     let o = expect_str(c, a[0])?;
     compat(c, slf, o)?;
@@ -1488,14 +1488,14 @@ cfn!(s_byterindex, |c, slf, a, b_| {
     check_argc(c, a, 1, 2)?;
     let n = c.str_bytes(slf).len() as i64;
     let mut st = if a.len() > 1 { num_to_long(c, a[1])? } else { n };
-    if st < 0 { st += n; if st < 0 { if regexp::is_regexp(a[0]) { c.last_match = NIL; } return Ok(NIL); } }
+    if st < 0 { st += n; if st < 0 { if regexp::is_regexp(c, a[0]) { c.last_match = NIL; } return Ok(NIL); } }
     if st > n { st = n; }
     check_char_boundary(c, slf, st as usize, "offset")?;
-    if regexp::is_regexp(a[0]) {
+    if regexp::is_regexp(c, a[0]) {
         let mut p = st;
         while p >= 0 {
-            if let Some(g) = regexp::rregexp(a[0]).unwrap().re.as_ref().unwrap().match_at(c.str_bytes(slf), p as usize) {
-                let m = regexp::match_new(a[0], slf, g); c.last_match = m;
+            if let Some(g) = regexp::rregexp(c, a[0]).unwrap().re.as_ref().unwrap().match_at(c.str_bytes(slf), p as usize) {
+                let m = regexp::match_new(c, a[0], slf, g); c.last_match = m;
                 return Ok(Value::fix(p));
             }
             p -= 1;

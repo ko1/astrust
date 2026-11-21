@@ -65,11 +65,11 @@ fn sub(c: &mut Ctx, str: Value, a: usize, b: usize) -> Value { let n = c.str_len
 
 /// Core matcher: `head` anchors at the scan pointer, otherwise search forward.
 fn do_scan(c: &mut Ctx, slf: Value, pat: Value, advance: bool, want_str: bool, head: bool) -> RV {
-    let pat = if crate::regexp::is_regexp(pat) { pat } else { expect_str(c, pat)? };
+    let pat = if crate::regexp::is_regexp(c, pat) { pat } else { expect_str(c, pat)? };
     let mut s = sc(c, slf)?;
     let len = c.str_len(s.str);
     if s.pos > len { s.pos = len; sc_mut(c, slf).pos = len; }
-    let is_re = crate::regexp::is_regexp(pat);
+    let is_re = crate::regexp::is_regexp(c, pat);
     let src = c.rstring(s.str);
     let bytes: &[u8] = &src.b;
     if is_re && !is_ascii(bytes) && !crate::builtins::encoding::is_valid(src.enc, bytes) {
@@ -77,7 +77,7 @@ fn do_scan(c: &mut Ctx, slf: Value, pat: Value, advance: bool, want_str: bool, h
         return arg_err(c, format!("invalid byte sequence in {}", crate::builtins::encoding::enc_name(enc)));
     }
     // the string stays borrowed while matching: nothing below takes the context until `found` is known
-    let (found, base): (Option<Vec<Option<(usize, usize)>>>, usize) = if let Some(r) = crate::regexp::rregexp(pat) {
+    let (found, base): (Option<Vec<Option<(usize, usize)>>>, usize) = if let Some(r) = crate::regexp::rregexp(c, pat) {
         let re = r.re.as_ref().unwrap();
         let (hay, off) = if s.fixed { (bytes, 0) } else { (&bytes[s.pos..], s.pos) };
         let at = s.pos - off;
@@ -103,7 +103,7 @@ fn do_scan(c: &mut Ctx, slf: Value, pat: Value, advance: bool, want_str: bool, h
     if want_str { Ok(sub(c, s.str, start, e)) } else { Ok(Value::fix((e - start) as i64)) }
 }
 fn check_pat(c: &mut Ctx, v: Value) -> Result<(), Esc> {
-    if crate::regexp::is_regexp(v) || is_string(v) || respond_to(v, intern(b"to_str"), true) { return Ok(()); }
+    if crate::regexp::is_regexp(c, v) || is_string(v) || respond_to(v, intern(b"to_str"), true) { return Ok(()); }
     type_err(c, format!("wrong argument type {} (expected Regexp)", class_name_for_err(v)))
 }
 macro_rules! scan_fn { ($name:ident, $adv:expr, $str:expr, $head:expr) => { fn $name(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { check_pat(c, a[0])?; do_scan(c, s, a[0], $adv, $str, $head) } }; }
@@ -218,7 +218,7 @@ fn ss_post_match(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV 
     Ok(if s.ngroups.is_some() { sub(c, s.str, s.m0.1, usize::MAX) } else { NIL })
 }
 fn name_index(c: &mut Ctx, re: Value, name: &str) -> Result<i64, Esc> {
-    if let Some(r) = crate::regexp::rregexp(re) { if let Some(&i) = r.re.as_ref().unwrap().group_index(name).last() { return Ok(i as i64); } }
+    if let Some(r) = crate::regexp::rregexp(c, re) { if let Some(&i) = r.re.as_ref().unwrap().group_index(name).last() { return Ok(i as i64); } }
     err(c, c.vm().c_index_error, format!("undefined group name reference: {}", name))
 }
 fn ss_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -248,7 +248,7 @@ fn ss_values_at(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 fn ss_named_captures(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let s = sc(c, slf)?;
     let h = c.hash_new();
-    let names = match crate::regexp::rregexp(s.re) { Some(r) => r.re.as_ref().unwrap().names(), None => return Ok(h) };
+    let names = match crate::regexp::rregexp(c, s.re) { Some(r) => r.re.as_ref().unwrap().names(), None => return Ok(h) };
     for (name, idx) in names {
         let mut v = NIL;
         for &i in &idx { let g = group(c, slf, i as i64); if g != NIL { v = g; } }

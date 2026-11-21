@@ -10,7 +10,7 @@
 // (`no_legacy`).
 use crate::object::*;
 use crate::value::*;
-use crate::vm::{Block, BlockKind, Ctx, MethodEntry, Params, Vm};
+use crate::vm::{Block, BlockKind, Cref, Ctx, Frame, Iseq, MethodEntry, Params, Vm};
 
 /// What makes a `Ctx` the heap token: safe code cannot build one.
 pub struct Token(());
@@ -237,4 +237,75 @@ pub mod no_legacy_hn {
     macro_rules! ban { ($($n:ident)*) => { $(pub fn $n(_: super::Token) {})* }; }
     ban!(hash_new_capa hash_pairs hash_len hash_entry_at hash_clear hash_dup range_new range_parts
          num_to_f64 big_to_value to_big int_from_i64 int_from_i128 rfloat_heap);
+}
+
+// ---- third wave: frame chain (read-only), code objects ---------------------------------------
+// Reads of what a builtin's caller left on the frame chain (kernel.rs, proc.rs, object.rs).
+// H5: the frames from `c.frame` down are alive while the builtin reading them runs (each lives
+// on a caller's stack until that caller returns, and the builtin returns first).
+
+impl Ctx {
+    /// The whole body of `v`, any kind (Object#dup, Object#inspect dispatch on it); `body` made public.
+    #[inline(always)]
+    pub fn body_of(&self, v: Value) -> &Body { body(self, v) }
+    /// The frame of the code that called the running builtin; None at the bottom.
+    #[inline(always)]
+    pub fn caller_frame(&self) -> Option<&Frame> {
+        // SAFETY: H5 (c.frame and its prev are null or live frames)
+        unsafe { self.frame.as_ref().and_then(|f| f.prev.as_ref()) }
+    }
+    /// The running builtin's own frame (its `me` is the entry being run).
+    #[inline(always)]
+    pub fn cur_frame(&self) -> Option<&Frame> { unsafe { self.frame.as_ref() } }   // SAFETY: H5
+    /// The frame below `f` on the chain.
+    #[inline(always)]
+    pub fn prev_frame<'a>(&'a self, f: &'a Frame) -> Option<&'a Frame> { unsafe { f.prev.as_ref() } }   // SAFETY: H5
+    /// A method entry by pointer: entries are leaked Boxes (vm::new_me) that nothing frees.
+    #[inline(always)]
+    pub fn me_ref(&self, me: *const MethodEntry) -> Option<&MethodEntry> { unsafe { me.as_ref() } }   // SAFETY: never freed
+    /// A lexical scope by pointer: crefs are leaked by vm::new_cref (listed in vm.crefs) and never freed.
+    #[inline(always)]
+    pub fn cref_ref(&self, cr: *const Cref) -> Option<&Cref> { unsafe { cr.as_ref() } }   // SAFETY: never freed
+    /// An iseq by pointer: iseqs are never freed.
+    #[inline(always)]
+    pub fn iseq_ref(&self, is: *const Iseq) -> Option<&Iseq> { unsafe { is.as_ref() } }   // SAFETY: never freed
+    /// vm::REFINEMENTS_ON (a `static mut bool` of vm.rs), by value.
+    #[inline(always)]
+    pub fn refinements_on(&self) -> bool { unsafe { crate::vm::REFINEMENTS_ON } }   // SAFETY: one interpreter thread; read by value, no reference made
+    #[inline(always)]
+    pub fn set_refinements_on(&mut self) { unsafe { crate::vm::REFINEMENTS_ON = true; } }   // SAFETY: as refinements_on
+    /// `f(c, iseq)`: an iseq beside the context. Sound because nothing makes a `&mut Iseq`
+    /// (they are built, leaked and then only read, `Cell` fields included), so a shared
+    /// reference cannot conflict with anything `&mut Ctx` reaches; the closure scopes it.
+    #[inline(always)]
+    pub fn with_iseq<R>(&mut self, is: *const Iseq, f: impl FnOnce(&mut Ctx, Option<&Iseq>) -> R) -> R {
+        let r = unsafe { is.as_ref() };   // SAFETY: as above; iseqs are never freed
+        f(self, r)
+    }
+    /// The Block a builtin received, by value (H4).
+    #[inline(always)]
+    pub fn block_copy(&self, blk: *const Block) -> Option<Block> { unsafe { blk.as_ref().copied() } }   // SAFETY: H4
+    /// Change a method entry's visibility in place (Module#private on an owned method). A place
+    /// write: no reference is made; `me_ref` borrows are excluded by `&mut self`.
+    #[inline(always)]
+    pub fn me_set_visi(&mut self, me: *const MethodEntry, visi: u8) {
+        if !me.is_null() { unsafe { (*(me as *mut MethodEntry)).visi = visi; } }   // SAFETY: entries are never freed
+    }
+    /// Default visibility of the caller's frame (`private` with no arguments): a place write.
+    #[inline(always)]
+    pub fn set_caller_visi(&mut self, visi: u8) {
+        // SAFETY: H5
+        unsafe { if let Some(f) = self.frame.as_ref() { if !f.prev.is_null() { (*f.prev).visi = visi; } } }
+    }
+    /// Replace the caller frame's lexical scope (`using`).
+    #[inline(always)]
+    pub fn set_caller_cref(&mut self, cr: *const Cref) {
+        // SAFETY: H5
+        unsafe { if let Some(f) = self.frame.as_ref() { if let Some(p) = f.prev.as_mut() { p.set_cref(cr); } } }
+    }
+    /// Set the refinements of a cref (one just made by vm::new_cref): a place write.
+    #[inline(always)]
+    pub fn cref_set_refinements(&mut self, cr: *const Cref, refs: Value) {
+        if !cr.is_null() { unsafe { (*(cr as *mut Cref)).refinements = refs; } }   // SAFETY: crefs are never freed
+    }
 }

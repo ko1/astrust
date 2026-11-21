@@ -114,7 +114,7 @@ fn int_arith(c: &mut Ctx, a: Value, b: Value, op: Op) -> RV {
         return Ok(c.float_new(match op { Op::Add => x + y, Op::Sub => x - y, Op::Mul => x * y, Op::Div => x / y, Op::Mod => fmod_ruby(x, y), Op::Pow => unreachable!() }));
     }
     // fix_plus / fix_mul compute Complex op Fixnum directly (keeps exact parts)
-    if a.is_fixnum() && (op == Op::Add || op == Op::Mul) && crate::builtins::complex::is_complex(b) {
+    if a.is_fixnum() && (op == Op::Add || op == Op::Mul) && crate::builtins::complex::is_complex(c, b) {
         return funcall(c, b, if op == Op::Add { s::plus } else { s::mul }, &[a], std::ptr::null());
     }
     let sym = match op { Op::Add => s::plus, Op::Sub => s::minus, Op::Mul => s::mul, Op::Div => s::div, Op::Mod => s::modulo, Op::Pow => s::pow };
@@ -131,7 +131,7 @@ fn int_pow(c: &mut Ctx, a: Value, b: Value) -> RV {
     if is_float(b) {
         let x = c.num_to_f64(a).unwrap(); let y = float_val(b);
         if y == 0.0 { return Ok(c.float_new(1.0)); }
-        if x < 0.0 && y != y.round() { return Ok(crate::builtins::complex::polar_pi((-x).powf(y), y)); }
+        if x < 0.0 && y != y.round() { return Ok(crate::builtins::complex::polar_pi(c, (-x).powf(y), y)); }
         return Ok(c.float_new(x.powf(y)));
     }
     if !is_integer(b) { return coerce_bin(c, a, b, s::pow, false); }
@@ -532,7 +532,7 @@ fn flo_arith(c: &mut Ctx, a: Value, b: Value, op: Op) -> RV {
         Op::Add => x + y, Op::Sub => x - y, Op::Mul => x * y, Op::Div => x / y,
         Op::Mod => fmod_ruby(x, y),
         Op::Pow => {
-            if x < 0.0 && y != y.round() { return Ok(crate::builtins::complex::polar_pi((-x).powf(y), y)); }
+            if x < 0.0 && y != y.round() { return Ok(crate::builtins::complex::polar_pi(c, (-x).powf(y), y)); }
             x.powf(y)
         }
     }))
@@ -650,8 +650,8 @@ fn round_by_mode(x: f64, s: f64, half: u8) -> f64 { match half { 1 => round_half
 fn dbl2ival(c: &mut Ctx, f: f64) -> RV { check_finite(c, f)?; Ok(f64_to_int(c, f)) }
 fn flo_by_rational(c: &mut Ctx, f: f64, nd: i64, mode: u8, half: u8) -> RV {
     let r = crate::builtins::rational::float_to_r(c, f)?;
-    let x = crate::builtins::rational::rat_round_nd(r, nd, mode, half);
-    Ok(c.float_new(if is_integer(x) { crate::builtins::rational::int_to_f(x) } else { crate::builtins::rational::rat_to_f(x) }))
+    let x = crate::builtins::rational::rat_round_nd(c, r, nd, mode, half);
+    Ok(c.float_new(if is_integer(x) { crate::builtins::rational::int_to_f(c, x) } else { crate::builtins::rational::rat_to_f(c, x) }))
 }
 fn flo_ndigits(c: &mut Ctx, a: &[Value]) -> Result<i64, Esc> {
     let pos: Vec<Value> = a.iter().copied().filter(|v| !is_hash(*v)).collect();
@@ -780,7 +780,7 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
         if d > 0 { while i <= e { yield1(c, b, Value::fix(i))?; i += d; } } else { while i >= e { yield1(c, b, Value::fix(i))?; i += d; } }
         return Ok(s);
     }
-    if (is_float(s) || is_float(lim) || is_float(st)) && !crate::builtins::complex::is_complex(st) {
+    if (is_float(s) || is_float(lim) || is_float(st)) && !crate::builtins::complex::is_complex(c, st) {
         let x = to_f(c, s)?; let d = to_f(c, st)?;
         let l = if lim == NIL { if d < 0.0 { f64::NEG_INFINITY } else { f64::INFINITY } } else { to_f(c, lim)? };
         let n = float_step_size(x, l, d, false);
@@ -876,13 +876,13 @@ cfn!(num_remainder, |c, s, a| {
 });
 cfn!(num_fdiv, |c, s, a| { let x = to_f(c, s)?; let y = to_f(c, a[0])?; Ok(c.float_new(x / y)) });
 cfn!(num_quo, |c, s, a| {
-    if crate::builtins::complex::is_complex(s) { return funcall(c, s, s::div, &[a[0]], std::ptr::null()); }
+    if crate::builtins::complex::is_complex(c, s) { return funcall(c, s, s::div, &[a[0]], std::ptr::null()); }
     if is_float(a[0]) { let x = to_f(c, s)?; return Ok(c.float_new(x / float_val(a[0]))); }
-    let r = if is_integer(s) { crate::builtins::rational::rat_raw(s, Value::fix(1)) }
-        else if crate::builtins::rational::is_rational(s) { s }
+    let r = if is_integer(s) { crate::builtins::rational::rat_raw(c, s, Value::fix(1)) }
+        else if crate::builtins::rational::is_rational(c, s) { s }
         else if respond_to(s, intern(b"to_r"), true) {
             let r = funcall(c, s, intern(b"to_r"), &[], std::ptr::null())?;
-            if !crate::builtins::rational::is_rational(r) { let cn = class_path(real_class_of(s)); return type_err(c, format!("can't convert {} to Rational ({}#to_r gives {})", cn, cn, class_path(real_class_of(r)))); }
+            if !crate::builtins::rational::is_rational(c, r) { let cn = class_path(real_class_of(s)); return type_err(c, format!("can't convert {} to Rational ({}#to_r gives {})", cn, cn, class_path(real_class_of(r)))); }
             r
         } else { return type_err(c, format!("can't convert {} into Rational", class_path(real_class_of(s)))); };
     funcall(c, r, s::div, &[a[0]], std::ptr::null())

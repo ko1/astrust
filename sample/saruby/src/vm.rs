@@ -334,6 +334,8 @@ pub struct Vm {
     pub m_signal: Value, pub m_warning: Value, pub m_file_test: Value,
     pub c_string_scanner: Value, pub c_string_scanner_error: Value,
     pub c_location: Value,
+    /// Random::DEFAULT (the generator of Kernel#rand); a class-field root like the ones above.
+    pub default_random: Value,
     pub main_obj: Value,
     pub stdout: Value, pub stderr: Value, pub stdin: Value,
     pub globals: HashMap<Sym, Value>,
@@ -360,6 +362,8 @@ pub struct Vm {
     pub sd_hits: usize,
     pub frozen_lits: HashMap<Vec<u8>, Value>,
     pub symproc_cache: HashMap<Sym, Value>,
+    /// __callee__ of entries made by alias / define_method(name, method): entry address -> name.
+    pub alias_names: HashMap<usize, Sym>,
     pub data_free_hooks: Vec<fn(*mut RObj)>,
     pub pinned: Vec<Value>,
     /// Encoding objects by encoding id (kept alive by `pinned`).

@@ -9,7 +9,7 @@ use crate::symbol::{intern, s};
 use crate::value::*;
 use crate::vm::*;
 
-pub static mut STDOUT_SYNC: bool = false;
+pub static STDOUT_SYNC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub struct RIo {
     pub fd: i32, pub wfd: i32, pub path: String, pub rbuf: Vec<u8>, pub rpos: usize, pub eof: bool, pub wbuf: Vec<u8>,
@@ -181,7 +181,7 @@ fn io_sync(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let 
 fn io_set_sync(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let io = get_io(c, slf)?;
     io.sync = a[0].truthy();
-    if out_fd(io) == 1 { unsafe { STDOUT_SYNC = io.sync; } if io.sync { out_flush(); } } else if io.sync { io_flush_one(io); }
+    if out_fd(io) == 1 { STDOUT_SYNC.store(io.sync, std::sync::atomic::Ordering::Relaxed); if io.sync { out_flush(); } } else if io.sync { io_flush_one(io); }
     Ok(a[0])
 }
 

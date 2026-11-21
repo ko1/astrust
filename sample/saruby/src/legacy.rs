@@ -45,3 +45,20 @@ pub fn f64_to_int(f: f64) -> Value {
     let t = f.trunc();
     if t.abs() < 4.0e18 { int_from_i64(t as i64) } else { big_to_value(crate::bignum::BigInt::from_f64(t)) }
 }
+/// Recursion guard of inspect / hash / == (VM state only, no payload).
+pub fn recursion_enter(v: Value, tag: crate::value::Sym) -> bool {
+    let g = &mut crate::vm::vm().recursive_guard;
+    if g.iter().any(|&(x, t)| x == v.raw() && t == tag) { return false; }
+    g.push((v.raw(), tag));
+    true
+}
+pub fn recursion_leave(v: Value, tag: crate::value::Sym) {
+    let g = &mut crate::vm::vm().recursive_guard;
+    if let Some(p) = g.iter().rposition(|&(x, t)| x == v.raw() && t == tag) { g.remove(p); }
+}
+/// A Time at sec + nsec (File::Stat: its accessor macros have no context).
+pub fn time_from_ns(sec: i64, nsec: i64) -> Value {
+    use crate::builtins::time::{RTime, LOCAL};
+    let w = int_from_i128(sec as i128 * 1_000_000_000 + nsec as i128);
+    crate::gc::alloc_with(crate::vm::vm().c_time, move || Body::Data(Box::new(RTime { w, mode: LOCAL, off: NIL, zone: NIL, dst: false })))
+}
