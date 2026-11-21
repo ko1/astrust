@@ -595,6 +595,24 @@ pub fn obj_hash(_c: &mut Ctx, slf: Value, _args: &[Value], _b: *const Block) -> 
 
 fn resolve_gvar(c: &Ctx, name: Sym) -> Sym { *c.vm().global_aliases.get(&name).unwrap_or(&name) }
 
+/// Built-in synonyms ($> is $stdout, ...): one variable under several names, as in CRuby.
+pub const GVAR_SYNONYMS: &[(&str, &str)] = &[("$>", "$stdout"), ("$-0", "$/"), ("$-F", "$;"), ("$-d", "$DEBUG"),
+    ("$-v", "$VERBOSE"), ("$-w", "$VERBOSE"), ("$PROGRAM_NAME", "$0"), ("$LOAD_PATH", "$:"), ("$-I", "$:"), ("$LOADED_FEATURES", "$\"")];
+
+/// `alias $new $old`: an alias of an alias names the same variable.
+pub fn gvar_alias(c: &mut Ctx, new: Sym, old: Sym) {
+    let old = resolve_gvar(c, old);
+    c.vm_mut().global_aliases.insert(new, old);
+}
+
+/// "file:line: warning: msg" through Warning.warn, unless $VERBOSE is nil (or the category is off).
+fn gvar_warn(c: &mut Ctx, msg: &str, deprecated: bool) -> Result<(), Esc> {
+    if c.vm().verbose == NIL || (deprecated && !crate::builtins::misc::warning_category_enabled(0)) { return Ok(()); }
+    let loc = c.cur_frame().map(|f| format!("{}:{}: ", frame_file(f), f.line())).unwrap_or_default();
+    let m = format!("{}warning: {}\n", loc, msg);
+    if deprecated { warning_write_cat(c, m.as_bytes(), sym_value("deprecated")) } else { warning_write(c, m.as_bytes()) }
+}
+
 pub fn gvar_get(c: &mut Ctx, name: Sym) -> RV {
     let name = resolve_gvar(c, name);
     let b = sym_bytes(name);
@@ -603,38 +621,77 @@ pub fn gvar_get(c: &mut Ctx, name: Sym) -> RV {
         b"$@" => { return Ok(if c.errinfo == NIL { NIL } else { exc_bt(c.errinfo) }); }
         b"$~" => return Ok(c.last_match),
         b"$&" => return Ok(crate::regexp::nth_match(c, c.last_match, 0)),
-        b"$0" | b"$PROGRAM_NAME" => return Ok(c.vm().dollar_zero),
-        b"$:" | b"$LOAD_PATH" | b"$-I" => return Ok(c.vm().load_path),
-        b"$\"" | b"$LOADED_FEATURES" => return Ok(c.vm().loaded_features),
+        b"$`" => { let m = c.last_match; return Ok(if m == NIL { NIL } else { crate::regexp::match_pre(c, m) }); }
+        b"$'" => { let m = c.last_match; return Ok(if m == NIL { NIL } else { crate::regexp::match_post(c, m) }); }
+        b"$+" => { let m = c.last_match; return Ok(if m == NIL { NIL } else { crate::regexp::match_last_group(c, m) }); }
+        b"$0" => return Ok(c.vm().dollar_zero),
+        b"$:" => return Ok(c.vm().load_path),
+        b"$\"" => return Ok(c.vm().loaded_features),
         b"$$" => return Ok(Value::fix(std::process::id() as i64)),
         b"$*" => return Ok(c.vm().argv),
         b"$<" => return argf(c),
         b"$FILENAME" => { let a = argf(c)?; return funcall(c, a, intern(b"filename"), &[], std::ptr::null()); }
-        b"$VERBOSE" | b"$-v" | b"$-w" => return Ok(c.vm().verbose),
-        b"$DEBUG" | b"$-d" => return Ok(Value::bool(c.vm().debug_flag)),
+        b"$VERBOSE" => return Ok(c.vm().verbose),
+        b"$DEBUG" => return Ok(*c.vm().globals.get(&name).unwrap_or(&Value::bool(c.vm().debug_flag))),
         b"$?" => return Ok(crate::builtins::process::last_status(c)),
+        b"$=" => { gvar_warn(c, "variable $= is no longer effective", true)?; return Ok(FALSE); }
         _ => {}
     }
     Ok(*c.vm().globals.get(&name).unwrap_or(&NIL))
 }
 
-pub fn gvar_set(c: &mut Ctx, name: Sym, v: Value) -> RV {
-    let name = resolve_gvar(c, name);
-    match sym_bytes(name) {
-        b"$!" => { c.errinfo = v; return Ok(v); }
-        b"$~" => { c.last_match = v; return Ok(v); }
-        b"$VERBOSE" | b"$-v" | b"$-w" => { c.vm_mut().verbose = if v == NIL { NIL } else { Value::bool(v.truthy()) }; return Ok(v); }
-        b"$DEBUG" => { c.vm_mut().debug_flag = v.truthy(); return Ok(v); }
-        b"$0" | b"$PROGRAM_NAME" => { c.vm_mut().dollar_zero = v; return Ok(v); }
+/// $/ holds a plain frozen String: a subclass instance, an ivar holder or a mutable one is copied.
+fn gvar_frozen_str(c: &mut Ctx, v: Value) -> Value {
+    if is_frozen(v) && real_class_of(v) == c.vm().c_string && ivar_list(v).is_empty() { return v; }
+    let n = c.str_copy(v);
+    obj_set_flags(n, crate::object::FL_FROZEN);
+    n
+}
+
+pub fn gvar_set(c: &mut Ctx, shown: Sym, v: Value) -> RV {
+    let name = resolve_gvar(c, shown);
+    let nb = sym_bytes(name);
+    let read_only = matches!(nb, b"$!" | b"$&" | b"$`" | b"$'" | b"$+" | b"$:" | b"$\"" | b"$$" | b"$*" | b"$<" | b"$FILENAME"
+        | b"$?" | b"$-a" | b"$-l" | b"$-p" | b"$-W") || (nb.len() > 1 && (b'1'..=b'9').contains(&nb[1]));
+    if read_only {
+        let e = make_name_error(c, c.vm().c_name_error, &format!("{} is a read-only variable", sym_str(shown)), Value::sym(shown), NIL)?;
+        return Err(raise_exc(c, e));
+    }
+    let mut v = v;
+    match nb {
+        b"$~" => {
+            if v != NIL && !(v.is_heap() && is_kind_of(v, c.vm().c_match_data)) {
+                return type_err(c, format!("wrong argument type {} (expected MatchData)", class_name_for_err(v)));
+            }
+            c.last_match = v; return Ok(v);
+        }
+        b"$@" => {
+            if c.errinfo == NIL { return arg_err(c, "$! not set"); }
+            let e = c.errinfo;
+            funcall(c, e, intern(b"set_backtrace"), &[v], std::ptr::null())?;
+            return Ok(v);
+        }
+        b"$VERBOSE" => { c.vm_mut().verbose = if v == NIL { NIL } else { Value::bool(v.truthy()) }; return Ok(v); }
+        b"$DEBUG" => { c.vm_mut().debug_flag = v.truthy(); }
+        b"$0" => { let s = expect_str(c, v)?; c.vm_mut().dollar_zero = s; return Ok(v); }
         b"$stdout" | b"$stderr" => {
             if !respond_to(v, intern(b"write"), true) {
-                return type_err(c, format!("{} must have write method, {} given", sym_str(name), class_name_for_err(v)));
+                return type_err(c, format!("{} must have write method, {} given", sym_str(shown), class_path(real_class_of(v))));
             }
         }
-        b"$:" | b"$LOAD_PATH" | b"$\"" | b"$LOADED_FEATURES" | b"$$" => {
-            let e = make_name_error(c, c.vm().c_name_error, &format!("{} is a read-only variable", sym_str(name)), Value::sym(name), NIL)?;
-            return Err(raise_exc(c, e));
+        b"$/" | b"$\\" | b"$," | b"$;" => {
+            if v != NIL {
+                let re_ok = nb == b"$;" && crate::regexp::is_regexp(c, v);
+                if !is_string(v) && !re_ok {
+                    return type_err(c, format!("value of {} must be String{}", sym_str(shown), if nb == b"$;" { " or Regexp" } else { "" }));
+                }
+                gvar_warn(c, &format!("non-nil '{}' is deprecated", sym_str(shown)), true)?;
+                if nb == b"$/" { v = gvar_frozen_str(c, v); }
+            }
         }
+        b"$." => { let n = crate::builtins::numeric_methods::num_to_long(c, v)?; v = Value::fix(n as i32 as i64); }
+        b"$-i" => { if v != NIL { v = expect_str(c, v)?; } }
+        b"$=" => { gvar_warn(c, "variable $= is no longer effective; ignored", true)?; return Ok(v); }
         _ => {}
     }
     c.vm_mut().globals.insert(name, v);
@@ -646,7 +703,7 @@ pub fn gvar_defined(c: &Ctx, name: Sym) -> bool {
     match sym_bytes(name) {
         b"$!" => c.errinfo != NIL,
         b"$~" => c.last_match != NIL,
-        b"$0" | b"$PROGRAM_NAME" | b"$:" | b"$LOAD_PATH" | b"$\"" | b"$LOADED_FEATURES" | b"$$" | b"$*" | b"$<" | b"$FILENAME" | b"$stdout" | b"$stderr" | b"$stdin" | b"$VERBOSE" | b"$DEBUG" | b"$," | b"$/" | b"$;" => true,
+        b"$0" | b"$:" | b"$\"" | b"$$" | b"$*" | b"$<" | b"$FILENAME" | b"$stdout" | b"$stderr" | b"$stdin" | b"$VERBOSE" | b"$DEBUG" | b"$," | b"$/" | b"$;" | b"$=" => true,
         _ => c.vm().globals.contains_key(&name),
     }
 }

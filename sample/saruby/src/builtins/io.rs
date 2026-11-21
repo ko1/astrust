@@ -1198,7 +1198,7 @@ pub fn init(vmr: &mut Vm) {
     vmr.globals.insert(intern(b"$stdout"), so);
     vmr.globals.insert(intern(b"$stderr"), se);
     vmr.globals.insert(intern(b"$stdin"), si);
-    vmr.globals.insert(intern(b"$>"), so);
+    for (a, b) in crate::builtins::kernel::GVAR_SYNONYMS { vmr.global_aliases.insert(crate::symbol::intern_str(a), crate::symbol::intern_str(b)); }
     let rs = boot_frozen_str(vmr, b"\n");
     vmr.globals.insert(intern(b"$/"), rs);
     let _ = s::puts;

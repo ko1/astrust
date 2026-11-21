@@ -625,8 +625,11 @@ impl<'a> Compiler<'a> {
                 let nm = self.cst(*name); let v = self.c(value);
                 ALLOC_node_and(ALLOC_node_ivar(nm), ALLOC_node_iasgn(nm, v))
             }
-            Kind::GlobalVariableReadNode { name } => ALLOC_node_gvar(self.cst(*name)),
-            Kind::GlobalVariableWriteNode { name, value } => { let v = self.c(value); ALLOC_node_gasgn(self.cst(*name), v) }
+            Kind::GlobalVariableReadNode { name } => { let nm = self.cst(*name); let r = ALLOC_node_gvar(nm); if gvar_warns(nm) { ALLOC_node_line(line, r) } else { r } }
+            Kind::GlobalVariableWriteNode { name, value } => {
+                let nm = self.cst(*name); let v = self.c(value); let r = ALLOC_node_gasgn(nm, v);
+                if gvar_warns(nm) { ALLOC_node_line(line, r) } else { r }
+            }
             Kind::GlobalVariableOperatorWriteNode { name, value, binary_operator } => {
                 let nm = self.cst(*name);
                 let r = ALLOC_node_gvar(nm); let v = self.c(value);
@@ -2066,6 +2069,9 @@ fn nocall_body(body: NodePtr) -> bool {
 }
 
 /// Statements that can raise without passing through a node that records the line.
+/// Globals whose read or write can warn: the warning names the line.
+fn gvar_warns(nm: Sym) -> bool { matches!(crate::symbol::sym_bytes(nm), b"$/" | b"$-0" | b"$\\" | b"$," | b"$;" | b"$-F" | b"$=") }
+
 fn needs_line(n: &PNode) -> bool {
     match &n.kind {
         Kind::ArrayNode { .. } | Kind::HashNode { .. } | Kind::KeywordHashNode { .. } | Kind::CaseMatchNode { .. } | Kind::MatchRequiredNode { .. }

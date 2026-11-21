@@ -740,7 +740,7 @@ pub fn EVAL_node_rescue<D_body: Disp, D_clauses: DispList, D_else_b: Disp>(c: &m
                     return Err(e);
                 }
                 if result.is_err() && c.esc == EscKind::Retry { c.esc = EscKind::None; c.errinfo = saved_err; continue; }
-                if result.is_ok() { c.errinfo = saved_err; }
+                if result.is_ok() || c.esc != EscKind::Raise { c.errinfo = saved_err; }
                 return result;
             }
         }
@@ -1509,7 +1509,7 @@ pub fn EVAL_node_alias(c: &mut Ctx, n: NodePtr, fp: Fp, newname: Value, oldname:
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_valias(c: &mut Ctx, n: NodePtr, fp: Fp, newname: Sym, oldname: Sym) -> RV {
-    vm().global_aliases.insert(newname, oldname);
+    crate::builtins::kernel::gvar_alias(c, newname, oldname);
     Ok(NIL)
 }
 

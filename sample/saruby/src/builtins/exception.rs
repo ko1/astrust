@@ -197,7 +197,10 @@ fn exc_set_backtrace(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> 
     let v = a[0];
     let bt = if is_string(v) { c.ary_new_from(&[v]) } else if v == NIL || is_array(v) { v } else { return type_err(c, "backtrace must be an Array of String or an Array of Thread::Backtrace::Location"); };
     let loc = c.vm().c_location;
-    if is_array(bt) && c.ary_len(bt) > 0 && c.ary(bt).iter().all(|&x| is_kind_of(x, loc)) {
+    if is_array(bt) && !c.ary(bt).iter().all(|&x| is_string(x)) && !c.ary(bt).iter().all(|&x| x.is_heap() && is_kind_of(x, loc)) {
+        return type_err(c, "backtrace must be an Array of String or an Array of Thread::Backtrace::Location");
+    }
+    if is_array(bt) && c.ary_len(bt) > 0 && c.ary(bt).iter().all(|&x| x.is_heap() && is_kind_of(x, loc)) {
         let strs = c.ary_new();
         let mut i = 0;
         while let Some(&x) = c.ary(bt).get(i) { let s = funcall(c, x, s::to_s, &[], std::ptr::null())?; c.ary_push(strs, s); i += 1; }

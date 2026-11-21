@@ -116,7 +116,7 @@ fn k_global_variables(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) ->
     let mut user: Vec<Vec<u8>> = c.vm().globals.keys().map(|k| sym_bytes(*k).to_vec()).collect();
     user.sort();
     let mut names: Vec<Vec<u8>> = vec![];
-    for n in ["$0", "$PROGRAM_NAME", "$:", "$LOAD_PATH", "$\"", "$LOADED_FEATURES", "$$", "$*", "$?", "$!", "$@", "$~", "$&", "$`", "$'", "$+", "$VERBOSE", "$DEBUG", "$FILENAME", "$<", "$,", "$;", "$.", "$_", "$-w", "$-v", "$-d", "$-I", "$-0", "$-a", "$-i", "$-l", "$-p", "$stdin", "$stdout", "$stderr", "$>", "$/", "$\\"] {
+    for n in ["$0", "$PROGRAM_NAME", "$:", "$LOAD_PATH", "$\"", "$LOADED_FEATURES", "$$", "$*", "$?", "$!", "$@", "$~", "$&", "$`", "$'", "$+", "$VERBOSE", "$DEBUG", "$FILENAME", "$<", "$,", "$;", "$.", "$_", "$-w", "$-v", "$-d", "$-I", "$-0", "$-a", "$-i", "$-l", "$-p", "$stdin", "$stdout", "$stderr", "$>", "$/", "$\\", "$="] {
         names.push(n.as_bytes().to_vec());
     }
     for u in user { if !names.contains(&u) { names.push(u); } }
