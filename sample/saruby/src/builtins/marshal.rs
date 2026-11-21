@@ -457,7 +457,9 @@ impl Loader {
                 let t2 = self.byte(c)?;
                 // the wrapped object is built first, then re-classed; leave/ivars are handled by the inner call
                 let inner = self.object_of_raw(c, t2, ivar, ext)?;
-                if inner.is_heap() { obj_set_klass(inner, k); }
+                // marshal.c: the user class must be a subclass of what the data built
+                if !inner.is_heap() || !crate::builtins::boot::inherits(k, real_class_of(inner)) { return arg_err(c, "dump format error (user class)"); }
+                obj_set_klass(inner, k);
                 return self.leave(c, inner);
             }
             _ => self.object_of_raw(c, t, ivar, ext)?,

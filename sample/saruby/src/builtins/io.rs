@@ -516,7 +516,9 @@ fn io_syswrite(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 }
 fn io_pread(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 2, 3)?;
-    let n = num_to_long(c, a[0])? as usize; let off = num_to_long(c, a[1])?;
+    let n = num_to_long(c, a[0])?; let off = num_to_long(c, a[1])?;
+    if n < 0 { return arg_err(c, "negative string size (or size too big)"); }
+    let n = n as usize;
     let fd = get_io(c, slf)?.fd;
     let mut v = vec![0u8; n];
     let k = sys::pread(fd, &mut v, off);

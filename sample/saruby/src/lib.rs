@@ -110,9 +110,9 @@ pub fn run_top_iseq_cref(c: &mut Ctx, is: &'static Iseq, slf: Value, cref: *cons
 }
 
 struct Opts {
-    e: Vec<String>,
+    e: Vec<Vec<u8>>,
     script: Option<String>,
-    args: Vec<String>,
+    args: Vec<Vec<u8>>,
     plain: bool,
     aot: bool,
     dump_ast: bool,
@@ -145,15 +145,17 @@ fn usage() -> ! {
 }
 
 fn parse_args() -> Opts {
-    let argv: Vec<String> = std::env::args().collect();
+    // raw bytes: -e code and ARGV need not be UTF-8
+    let raw: Vec<Vec<u8>> = std::env::args_os().map(|a| std::os::unix::ffi::OsStrExt::as_bytes(a.as_os_str()).to_vec()).collect();
+    let argv: Vec<String> = raw.iter().map(|a| String::from_utf8_lossy(a).into_owned()).collect();
     let mut o = Opts { e: vec![], script: None, args: vec![], plain: false, aot: false, dump_ast: false, quiet: false,
         verbose_astro: false, warn: false, store: "code_store".into(), compiled_only: false, requires: vec![], incdirs: vec![], check_syntax: false };
     let mut i = 1;
     while i < argv.len() {
         let a = &argv[i];
-        if o.script.is_some() || (!o.e.is_empty() && !a.starts_with('-')) { o.args.push(a.clone()); i += 1; continue; }
+        if o.script.is_some() || (!o.e.is_empty() && !a.starts_with('-')) { o.args.push(raw[i].clone()); i += 1; continue; }
         match a.as_str() {
-            "-e" => { i += 1; o.e.push(argv.get(i).cloned().unwrap_or_else(|| usage())); }
+            "-e" => { i += 1; o.e.push(raw.get(i).cloned().unwrap_or_else(|| usage())); }
             "--plain" => o.plain = true,
             "--aot-compile" | "--pg-compile" => o.aot = true,
             "--compiled-only" => o.compiled_only = true,
@@ -166,13 +168,13 @@ fn parse_args() -> Opts {
             "--code-store" => { i += 1; o.store = argv.get(i).cloned().unwrap_or_else(|| usage()); }
             "--version" => { println!("{}", version()); std::process::exit(0); }
             "-h" | "--help" => usage(),
-            "--" => { i += 1; if i < argv.len() && o.e.is_empty() { o.script = Some(argv[i].clone()); } else if i < argv.len() { o.args.push(argv[i].clone()); } }
+            "--" => { i += 1; if i < argv.len() && o.e.is_empty() { o.script = Some(argv[i].clone()); } else if i < argv.len() { o.args.push(raw[i].clone()); } }
             "--disable-gems" | "--disable=gems" | "--enable-frozen-string-literal" | "--yjit" | "--disable-all" => {}
             s if s.starts_with("-I") => { if s.len() > 2 { o.incdirs.push(s[2..].into()); } else { i += 1; o.incdirs.push(argv.get(i).cloned().unwrap_or_else(|| usage())); } }
             s if s.starts_with("-r") => { if s.len() > 2 { o.requires.push(s[2..].into()); } else { i += 1; o.requires.push(argv.get(i).cloned().unwrap_or_else(|| usage())); } }
             s if s.starts_with("--disable") || s.starts_with("--enable") => {}
             s if s.starts_with('-') && s.len() > 1 => { eprintln!("saruby: invalid option {}  (-h will show valid options)", s); std::process::exit(2); }
-            _ => { if o.e.is_empty() { o.script = Some(a.clone()); } else { o.args.push(a.clone()); } }
+            _ => { if o.e.is_empty() { o.script = Some(a.clone()); } else { o.args.push(raw[i].clone()); } }
         }
         i += 1;
     }
@@ -208,12 +210,12 @@ fn run_main(o: Opts) -> i32 {
     if o.warn { builtins::misc::warning_enable_deprecated(); }
     for d in &o.incdirs { let s = string::str_new(d.as_bytes()); array::ary_push(vm.load_path, s); }
     builtins::prelude::setup_load_path(&mut c);
-    for a in &o.args { let s = string::str_new(a.as_bytes()); array::ary_push(vm.argv, s); }
+    for a in &o.args { let s = string::str_new(a); array::ary_push(vm.argv, s); }
     aot::init(if o.plain { None } else { Some(&o.store) }, o.aot);
     vm.aot_collect = o.aot;
 
     let (src, file): (Vec<u8>, String) = if !o.e.is_empty() {
-        (o.e.join("\n").into_bytes(), "-e".into())
+        (o.e.join(&b"\n"[..]), "-e".into())
     } else if let Some(s) = o.script.as_ref().filter(|s| s.as_str() != "-") {
         match std::fs::read(s) {
             Ok(b) => (b, s.clone()),

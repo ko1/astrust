@@ -859,9 +859,10 @@ fn m_private_constant(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) ->
     Ok(NIL)
 }
 fn m_const_missing(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    let n = a[0].as_sym();
-    let msg = if slf == c.vm().c_object { format!("uninitialized constant {}", sym_str(n)) } else { format!("uninitialized constant {}::{}", class_path(slf), sym_str(n)) };
-    let e = make_name_error(c, c.vm().c_name_error, &msg, Value::sym(n), slf)?;
+    // the name may be any object (rb_mod_const_missing formats it with %s)
+    let ns = if a[0].is_sym() { sym_str(a[0].as_sym()).to_string() } else { to_rstring(c, a[0])? };
+    let msg = if slf == c.vm().c_object { format!("uninitialized constant {}", ns) } else { format!("uninitialized constant {}::{}", class_path(slf), ns) };
+    let e = make_name_error(c, c.vm().c_name_error, &msg, a[0], slf)?;
     Err(raise_exc(c, e))
 }
 fn m_cvar_get(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {

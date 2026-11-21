@@ -460,11 +460,19 @@ fn k_integer(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let args = &args[..n];
     check_argc(c, args, 1, 2)?;
     let v = args[0];
-    let base = if args.len() > 1 && args[1] != NIL { crate::builtins::numeric_methods::num_to_long(c, args[1])? as u32 } else { 0 };
+    let base0 = if args.len() > 1 && args[1] != NIL { crate::builtins::numeric_methods::num_to_long(c, args[1])? } else { 0 };
     let r: RV = (|| {
         if is_string(v) {
             let b = c.str_bytes(v).to_vec();
             if b.contains(&0) { return arg_err(c, "string contains null byte"); }
+            // rb_int_parse_cstr: base <= 0 detects a prefix ("0..." included); below -1 the default is -base
+            let base = if base0 < -1 {
+                let t = b.trim_ascii_start();
+                let t = t.strip_prefix(b"+").or_else(|| t.strip_prefix(b"-")).unwrap_or(t);
+                if t.len() > 1 && t[0] == b'0' { 0 } else { -base0 }
+            } else if base0 <= 0 { 0 } else { base0 };
+            if base == 1 || base > 36 { return arg_err(c, format!("invalid radix {}", base)); }
+            let base = base as u32;
             match str_to_inum(&b, base, true) {
                 Some(x) => Ok(x),
                 None => { let ins = inspect_str(c, v)?; arg_err(c, format!("invalid value for Integer(): {}", ins)) }
@@ -884,8 +892,11 @@ fn k_eval(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
     check_argc(c, args, 1, 4)?;
     let src = expect_str(c, args[0])?;
     let bind = if args.len() > 1 { args[1] } else { NIL };
-    let file: &'static str = if args.len() > 2 { Box::leak(to_rstring(c, args[2])?.into_boxed_str()) } else { "(eval)" };
-    let line = if args.len() > 3 { args[3].as_fix() as i32 } else { 1 };
+    if bind != NIL && !crate::builtins::binding::is_binding(c, bind) {
+        return type_err(c, format!("wrong argument type {} (expected binding)", class_name_for_err(bind)));
+    }
+    let file: &'static str = if args.len() > 2 && args[2] != NIL { let f = expect_str(c, args[2])?; Box::leak(String::from_utf8_lossy(c.str_bytes(f)).into_owned().into_boxed_str()) } else { "(eval)" };
+    let line = if args.len() > 3 { crate::builtins::numeric_methods::num_to_long(c, args[3])? as i32 } else { 1 };
     let srcb = c.str_bytes(src).to_vec();
     if bind != NIL { return crate::builtins::binding::eval_in_binding(c, bind, &srcb, file, line); }
     let b = crate::builtins::binding::binding_of_caller(c)?;
