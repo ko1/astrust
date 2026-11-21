@@ -24,16 +24,27 @@ pub fn out_write(b: &[u8]) {
     let full = STDOUT_BUF.with_borrow_mut(|buf| { buf.extend_from_slice(b); buf.len() > 1 << 16 });
     if full || crate::builtins::io::STDOUT_SYNC.load(std::sync::atomic::Ordering::Relaxed) { out_flush(); }
 }
+// errno of a failed flush of STDOUT_BUF, raised by out_check where a context is at hand
+thread_local! { static STDOUT_ERR: std::cell::Cell<i32> = const { std::cell::Cell::new(0) }; }
 pub fn out_flush() {
     let _ = STDOUT_BUF.try_with(|cell| {
         let mut buf = cell.borrow_mut();
         if !buf.is_empty() {
             let mut so = std::io::stdout().lock();
-            let _ = so.write_all(&buf);
-            let _ = so.flush();
+            let r = so.write_all(&buf).and_then(|_| so.flush());
             buf.clear();
+            if let Err(e) = r { STDOUT_ERR.with(|x| x.set(e.raw_os_error().unwrap_or(5))); }
         }
     });
+}
+/// Raise what the last stdout flush hit (rb_sys_fail_on_write); an EPIPE carries SIGPIPE,
+/// which kills the process if nothing rescues it (raise_on_write).
+pub fn out_check(c: &mut Ctx) -> Result<(), Esc> {
+    let e = STDOUT_ERR.with(|x| x.replace(0));
+    if e == 0 { return Ok(()); }
+    let r = crate::builtins::io::raise_errno_at(c, e as i64, "rb_sys_fail_on_write - ", b"<STDOUT>");
+    if e == 32 { ivar_set_raw(c.esc_val, intern(b"signo"), Value::fix(13)); }
+    Err(r)
 }
 pub fn err_write(b: &[u8]) {
     out_flush();
@@ -45,7 +56,7 @@ pub fn err_write(b: &[u8]) {
 /// Write to $stdout (dispatching when it was reassigned).
 pub fn stdout_write(c: &mut Ctx, b: &[u8]) -> Result<(), Esc> {
     let so = *c.vm().globals.get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout);
-    if so == c.vm().stdout { out_write(b); return Ok(()); }
+    if so == c.vm().stdout { out_write(b); return out_check(c); }
     if so == c.vm().stderr { err_write(b); return Ok(()); }
     let st = c.str_new(b);
     funcall(c, so, intern(b"write"), &[st], std::ptr::null())?;
@@ -175,7 +186,7 @@ fn k_puts(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
         return funcall(c, so, s::puts, args, std::ptr::null());
     }
     let out = puts_bytes(c, args)?;
-    if so == c.vm().stderr { err_write(&out); } else { out_write(&out); }
+    if so == c.vm().stderr { err_write(&out); } else { out_write(&out); out_check(c)?; }
     Ok(NIL)
 }
 

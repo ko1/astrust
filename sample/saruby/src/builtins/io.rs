@@ -175,7 +175,7 @@ fn write_err(c: &mut Ctx, io_v: Value, e: Option<i64>) -> Esc {
 pub fn io_write_bytes(c: &mut Ctx, io_v: Value, b: &[u8]) -> Result<(), Esc> {
     // one payload lookup on the common path
     let coop = crate::builtins::thread::active(c);
-    let e = match c.data_mut::<RIo>(io_v) { Some(io) if writable(io) => match buffer_write(io, b, coop) { None => return Ok(()), e => e }, _ => None };
+    let e = match c.data_mut::<RIo>(io_v) { Some(io) if writable(io) => match buffer_write(io, b, coop) { None => return out_check(c), e => e }, _ => None };
     if e == Some(FLUSH_COOP) { return coop_flush(c, io_v); }
     Err(write_err(c, io_v, e))
 }
@@ -200,7 +200,7 @@ fn io_write_str(c: &mut Ctx, io_v: Value, sv: Value) -> Result<usize, Esc> {
         Some((io, o)) if writable(io) => {
             let b = o.str_bytes(sv).unwrap_or(&[]);   // sv is a String, never the IO
             let n = b.len();
-            match buffer_write(io, b, coop) { None => return Ok(n), Some(FLUSH_COOP) => Err(n), e => Ok(e) }
+            match buffer_write(io, b, coop) { None => { out_check(c)?; return Ok(n) } Some(FLUSH_COOP) => Err(n), e => Ok(e) }
         }
         _ => Ok(None),
     };
