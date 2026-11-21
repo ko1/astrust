@@ -25,7 +25,8 @@ pub fn num_to_long(c: &mut Ctx, v: Value) -> Result<i64, Esc> {
     if is_float(v) {
         let f = float_val(v);
         if f.is_nan() || f.is_infinite() { return err(c, c.vm().c_float_domain_error, float_to_s(f)); }
-        if f.abs() > 9.2e18 { return err(c, c.vm().c_range_error, format!("float {} out of range of integer", float_to_s(f))); }
+        // FIXABLE range of rb_num2long: -2**63 <= f < 2**63
+        if !(f >= -9223372036854775808.0 && f < 9223372036854775808.0) { return err(c, c.vm().c_range_error, format!("float {} out of range of integer", crate::builtins::sprintf::fmt_g10(f))); }
         return Ok(f as i64);
     }
     if v == NIL { return type_err(c, "no implicit conversion from nil to integer"); }

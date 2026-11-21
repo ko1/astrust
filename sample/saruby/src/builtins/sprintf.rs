@@ -145,6 +145,9 @@ fn bump(mut s: Vec<u8>, k: i32) -> (Vec<u8>, i32) {
     }
 }
 
+/// "%-.10g" of a finite value (CRuby's float-out-of-range messages).
+pub fn fmt_g10(f: f64) -> String { format!("{}{}", if f < 0.0 { "-" } else { "" }, fmt_float(f.abs(), b'g', Some(10), false)) }
+
 /// BSD vfprintf layout of a non-negative finite value for f/e/E/g/G.
 fn fmt_float(f: f64, conv: u8, prec: Option<usize>, alt: bool) -> String {
     let p = prec.unwrap_or(6) as i32;
