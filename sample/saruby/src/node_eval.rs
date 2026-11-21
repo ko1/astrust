@@ -277,16 +277,12 @@ pub fn EVAL_node_ary<D_elems: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, elems: 
     let k = <D_elems as DispList>::len(elems);
     // in locals, stored from registers: staged slots are read back with a wide load that stalls on their stores
     if k <= crate::avec::INLINE {
-        let x0 = if k > 0 { <D_elems as DispList>::nth(c, elems, 0, fp)? } else { NIL };
-        let x1 = if k > 1 { <D_elems as DispList>::nth(c, elems, 1, fp)? } else { NIL };
-        let x2 = if k > 2 { <D_elems as DispList>::nth(c, elems, 2, fp)? } else { NIL };
-        return Ok(c.ary_new_small(k, [x0, x1, x2]));
+        let mut x = [NIL; crate::avec::INLINE];
+        <D_elems as DispList>::each(c, elems, fp,  |c, i, v| { x[i] = v; Ok(()) })?;
+        return Ok(c.ary_new_small(k, x));
     }
     let base = stage(c, k)?;
-    for i in 0..k {
-        let v = <D_elems as DispList>::nth(c, elems, i, fp)?;
-        base[i].set(v);
-    }
+    <D_elems as DispList>::each(c, elems, fp,  |c, i, v| { base[i].set(v); Ok(()) })?;
     let a = c.ary_from_slots(&base[0..k]);
     c.set_sp(base, 0);
     Ok(a)
@@ -533,18 +529,9 @@ pub fn EVAL_node_back_ref(c: &mut Ctx, n: NodePtr, fp: Fp, kind: u32) -> RV {
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_block<D_stmts: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, stmts: NodeList) -> RV {
-    // unrolled by hand: a loop over nth() stays a loop + switch in specialized code
-    let k = <D_stmts as DispList>::len(stmts);
-    if k > 1 { <D_stmts as DispList>::nth(c, stmts, 0, fp)?; }
-    if k > 2 { <D_stmts as DispList>::nth(c, stmts, 1, fp)?; }
-    if k > 3 { <D_stmts as DispList>::nth(c, stmts, 2, fp)?; }
-    if k > 4 { <D_stmts as DispList>::nth(c, stmts, 3, fp)?; }
-    if k > 5 { <D_stmts as DispList>::nth(c, stmts, 4, fp)?; }
-    if k > 6 { <D_stmts as DispList>::nth(c, stmts, 5, fp)?; }
-    if k > 7 { <D_stmts as DispList>::nth(c, stmts, 6, fp)?; }
-    let mut i = 7;
-    while i + 1 < k { <D_stmts as DispList>::nth(c, stmts, i, fp)?; i += 1; }
-    <D_stmts as DispList>::nth(c, stmts, k - 1, fp)
+    let mut last = NIL;
+    <D_stmts as DispList>::each(c, stmts, fp,  |c, i, v| { last = v; Ok(()) })?;
+    Ok(last)
 }
 
 
@@ -859,11 +846,7 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, H_line: crate::vm::LineHol
         let base = stage(c, 2 + k)?;
         let r0 = <D_recv as Disp>::call(c, recv, fp)?;
         base[0].set(r0);
-        // the first three by hand: baked, LLVM keeps a loop over calls in arguments (tak) and spills around it
-        if k > 0 { let v = <D_args as DispList>::nth(c, args, 0, fp)?; base[2].set(v); }
-        if k > 1 { let v = <D_args as DispList>::nth(c, args, 1, fp)?; base[3].set(v); }
-        if k > 2 { let v = <D_args as DispList>::nth(c, args, 2, fp)?; base[4].set(v); }
-        for i in 3..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
+        <D_args as DispList>::each(c, args, fp,  |c, i, v| { base[2 + i].set(v); Ok(()) })?;
         (base, r0)
     };
     line.store(c.frame());

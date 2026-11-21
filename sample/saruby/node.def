@@ -122,16 +122,12 @@ node_ary(c: &mut Ctx, n: NodePtr, fp: Fp, elems: NODES)
     let k = EVAL_LEN!(elems);
     // in locals, stored from registers: staged slots are read back with a wide load that stalls on their stores
     if k <= crate::avec::INLINE {
-        let x0 = if k > 0 { EVAL_NTH!(c, elems, 0)? } else { NIL };
-        let x1 = if k > 1 { EVAL_NTH!(c, elems, 1)? } else { NIL };
-        let x2 = if k > 2 { EVAL_NTH!(c, elems, 2)? } else { NIL };
-        return Ok(c.ary_new_small(k, [x0, x1, x2]));
+        let mut x = [NIL; crate::avec::INLINE];
+        EVAL_EACH!(c, elems, |c, i, v| { x[i] = v; Ok(()) })?;
+        return Ok(c.ary_new_small(k, x));
     }
     let base = stage(c, k)?;
-    for i in 0..k {
-        let v = EVAL_NTH!(c, elems, i)?;
-        base[i].set(v);
-    }
+    EVAL_EACH!(c, elems, |c, i, v| { base[i].set(v); Ok(()) })?;
     let a = c.ary_from_slots(&base[0..k]);
     c.set_sp(base, 0);
     Ok(a)
@@ -365,18 +361,9 @@ node_back_ref(c: &mut Ctx, n: NodePtr, fp: Fp, kind: u32)
 NODE_DEF
 node_block(c: &mut Ctx, n: NodePtr, fp: Fp, stmts: NODES)
 {
-    // unrolled by hand: a loop over nth() stays a loop + switch in specialized code
-    let k = EVAL_LEN!(stmts);
-    if k > 1 { EVAL_NTH!(c, stmts, 0)?; }
-    if k > 2 { EVAL_NTH!(c, stmts, 1)?; }
-    if k > 3 { EVAL_NTH!(c, stmts, 2)?; }
-    if k > 4 { EVAL_NTH!(c, stmts, 3)?; }
-    if k > 5 { EVAL_NTH!(c, stmts, 4)?; }
-    if k > 6 { EVAL_NTH!(c, stmts, 5)?; }
-    if k > 7 { EVAL_NTH!(c, stmts, 6)?; }
-    let mut i = 7;
-    while i + 1 < k { EVAL_NTH!(c, stmts, i)?; i += 1; }
-    EVAL_NTH!(c, stmts, k - 1)
+    let mut last = NIL;
+    EVAL_EACH!(c, stmts, |c, i, v| { last = v; Ok(()) })?;
+    Ok(last)
 }
 
 NODE_DEF
@@ -672,11 +659,7 @@ node_call(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, fl
         let base = stage(c, 2 + k)?;
         let r0 = EVAL_ARG!(c, recv)?;
         base[0].set(r0);
-        // the first three by hand: baked, LLVM keeps a loop over calls in arguments (tak) and spills around it
-        if k > 0 { let v = EVAL_NTH!(c, args, 0)?; base[2].set(v); }
-        if k > 1 { let v = EVAL_NTH!(c, args, 1)?; base[3].set(v); }
-        if k > 2 { let v = EVAL_NTH!(c, args, 2)?; base[4].set(v); }
-        for i in 3..k { let v = EVAL_NTH!(c, args, i)?; base[2 + i].set(v); }
+        EVAL_EACH!(c, args, |c, i, v| { base[2 + i].set(v); Ok(()) })?;
         (base, r0)
     };
     line.store(c.frame());

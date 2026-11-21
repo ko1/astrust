@@ -48,7 +48,7 @@ NODE_DEF
 node_seq(c: &mut Ctx, n: NodePtr, xs: NODES) -> i64
 {
     let mut v = 0;
-    for i in 0..EVAL_LEN!(xs) { v = EVAL_NTH!(c, xs, i); }
+    EVAL_EACH!(c, xs, |c, i, r| v = r);
     v
 }
 

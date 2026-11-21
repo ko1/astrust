@@ -324,7 +324,16 @@ pub fn specialize_list(sc: &mut SpecCtx, ns: &NodeList) -> String {
         let x = format!("*ns.get_unchecked({})", i);
         s.push_str(&format!("            {} => unsafe {{ <{} as Disp>::call(c, {}) }},\n", i, t, x));
     }
-    s.push_str("            _ => unsafe { std::hint::unreachable_unchecked() },\n        }\n    }\n}\n");
+    s.push_str("            _ => unsafe { std::hint::unreachable_unchecked() },\n        }\n    }\n");
+    // EVAL_EACH!: the calls in a row
+    s.push_str("    #[inline(always)]\n    fn each<F: FnMut(&mut Ctx, usize, i64) -> ()>(c: &mut Ctx, ns: NodeList, mut f: F) -> () {\n");
+    for (i, t) in ts.iter().enumerate() {
+        let x = format!("*ns.get_unchecked({})", i);
+        let call = format!("<{} as Disp>::call(c, unsafe {{ {} }})", t, x);
+        let step = format!("{{ let r = {}; f(c, {}, r) }}", "@CALL@".replace("@CALL@", &call), i);
+        s.push_str(&format!("        {}\n", "@STEP@;".replace("@STEP@", &step)));
+    }
+    s.push_str("        ()\n    }\n}\n");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&s);
     name

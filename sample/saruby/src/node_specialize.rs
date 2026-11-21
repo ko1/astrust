@@ -3750,7 +3750,16 @@ pub fn specialize_list(sc: &mut SpecCtx, ns: &NodeList, parent: NodePtr) -> Stri
         let x = child_ptr_expr(parent, ns[i]).replacen("n.", "(ns.as_ptr() as NodePtr).", 1);
         s.push_str(&format!("            {} => unsafe {{ <{} as Disp>::call(c, {}, fp) }},\n", i, t, x));
     }
-    s.push_str("            _ => unsafe { std::hint::unreachable_unchecked() },\n        }\n    }\n}\n");
+    s.push_str("            _ => unsafe { std::hint::unreachable_unchecked() },\n        }\n    }\n");
+    // EVAL_EACH!: the calls in a row
+    s.push_str("    #[inline(always)]\n    fn each<F: FnMut(&mut Ctx, usize, Value) -> Result<(), Esc>>(c: &mut Ctx, ns: NodeList, fp: Fp, mut f: F) -> Result<(), Esc> {\n");
+    for (i, t) in ts.iter().enumerate() {
+        let x = child_ptr_expr(parent, ns[i]).replacen("n.", "(ns.as_ptr() as NodePtr).", 1);
+        let call = format!("<{} as Disp>::call(c, unsafe {{ {} }}, fp)", t, x);
+        let step = format!("{{ let r = {}; f(c, {}, r) }}", "@CALL@?".replace("@CALL@", &call), i);
+        s.push_str(&format!("        {}\n", "@STEP@?;".replace("@STEP@", &step)));
+    }
+    s.push_str("        Ok(())\n    }\n}\n");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&s);
     name

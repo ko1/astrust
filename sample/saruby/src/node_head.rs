@@ -206,6 +206,8 @@ pub trait Disp {
 pub trait DispList {
     fn len(ns: NodeList) -> usize;
     fn nth(c: &mut Ctx, ns: NodeList, i: usize, fp: Fp) -> RV;
+    /// Every child in order, its result to f (EVAL_EACH!).
+    fn each<F: FnMut(&mut Ctx, usize, Value) -> Result<(), Esc>>(c: &mut Ctx, ns: NodeList, fp: Fp, f: F) -> Result<(), Esc>;
 }
 pub struct Dyn;
 impl Disp for Dyn {
@@ -219,6 +221,19 @@ impl DispList for DynList {
     fn nth(c: &mut Ctx, ns: NodeList, i: usize, fp: Fp) -> RV {
         let x = ns[i];
         unsafe { ((*x).head.dispatcher)(c, x, fp) }
+    }
+    #[inline(always)]
+    fn each<F: FnMut(&mut Ctx, usize, Value) -> Result<(), Esc>>(c: &mut Ctx, ns: NodeList, fp: Fp, mut f: F) -> Result<(), Esc> {
+        // the first ones in a row, as ASTroGen's per-arity dispatchers (short lists are the common case)
+        if ns.len() > 0 { let x = ns[0]; let r = unsafe { ((*x).head.dispatcher)(c, x, fp) }?; f(c, 0, r)?; }
+        if ns.len() > 1 { let x = ns[1]; let r = unsafe { ((*x).head.dispatcher)(c, x, fp) }?; f(c, 1, r)?; }
+        if ns.len() > 2 { let x = ns[2]; let r = unsafe { ((*x).head.dispatcher)(c, x, fp) }?; f(c, 2, r)?; }
+        for i in 3..ns.len() {
+            let x = ns[i];
+            let r = unsafe { ((*x).head.dispatcher)(c, x, fp) }?;
+            f(c, i, r)?;
+        }
+        Ok(())
     }
 }
 

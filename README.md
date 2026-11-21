@@ -50,7 +50,7 @@ cd sample/saruby && make
 |---|---|---|
 | node bodies | C | Rust |
 | lazy child | `(NODE *, dispatcher fnptr)`; the C compiler must constant-fold the pointer | `EVAL_x<D: Disp>`: generic over the child's dispatcher **type**. The specializer instantiates it with the child's zero-sized type, so static dispatch is guaranteed by monomorphization |
-| child list (`NODES`) | `NODE **argv@children` | `D: DispList` (`len`, `nth`); specialized list types unroll `nth` |
+| child list (`NODES`) | `NODE **argv@children`; `FOR_EACH_NODE_ARG` per arity | `D: DispList` (`len`, `nth`, `each`); a specialized list type makes `each` the calls in a row |
 | specialized code | C → gcc → `.so` | Rust → rustc (`cdylib`, `--extern` the interpreter's own `dylib` crate, `-C prefer-dynamic`) → `.so` |
 | error propagation | `RESULT` struct | `Result<Value, Esc>` with a zero-sized `Esc` (the payload is in the context): one register |
 | frame of locals | raw pointer into the value stack | any Rust type; saruby's default is a checked `&[Cell<Value>; N]` |
@@ -72,7 +72,7 @@ node_add(c: &mut Ctx, n: NodePtr, <common params...>, l: NODE, r: NODE) -> RESUL
 |---|---|
 | `x: NODE` | lazy child; evaluate with `EVAL_ARG!(c, x)` |
 | `x@child: T` | child evaluated by the glue before the body runs |
-| `xs: NODES` | child list: `EVAL_LEN!(xs)`, `EVAL_NTH!(c, xs, i)` |
+| `xs: NODES` | child list: `EVAL_LEN!(xs)`, `EVAL_NTH!(c, xs, i)`, and `EVAL_EACH!(c, xs, \|c, i, v\| ...)`: every child in order (a plain loop in the body; specialized, the generator unrolls it, as ASTroGen's `FOR_EACH_NODE_ARG`). Hooks `each_arg` / `each_arg_type` / `each_type` / `each_stmt` / `each_ok` say what the closure gets and returns |
 | `x@ref: T` | stored inline in the node, the body gets `&mut T` (inline caches) |
 | `x@hole: T` | a bound operand: a site's own value (a line number, say), stored in the node and not hashed; the body gets `&'static T`, its address in the node. Every site of the shape shares the code, which reads the value only where it uses it; each `SD_<hash>` comes with `SD_<hash>_HOLES`, the (offset from the root, size) of the holes it reads, for a loader that binds them another way |
 | `u32 i32 u64 i64 usize bool f64` | scalars, baked into specialized code as literals |
