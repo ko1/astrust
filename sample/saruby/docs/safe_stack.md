@@ -121,7 +121,9 @@ shared references to Cells they are ordinary safe code, and LLVM is told the tru
 change across a call. That is also what a moving collector will need.
 
 **A stack is `&'static [Slot]`**, leaked. A finished fiber's stack goes to a pool and is reused,
-never freed, so `'static` is true and frames can be stored anywhere without lifetimes.
+never freed, so `'static` is true and frames can be stored anywhere without lifetimes.  Large
+stacks are mapped from a file of nils (`fiber_os::nil_slots`), so untouched pages cost nothing and
+a released stack's pages can be dropped (they read as nil again: still valid Values).
 
 **`Stk = &'static [Slot]`** is a position: the slots from there to the end of the stack.
 
@@ -162,7 +164,8 @@ rightly: the type would promise that nothing writes those slots. `with_args` cop
 arguments to the native stack (nothing for 0, a fixed 2 or 6 slots, a Vec beyond). The originals
 stay staged below sp, so the copies are rooted.
 
-**Fibers** each own a `Ctx` with its own stack from `stack_new`; `on_free` returns it to the pool.
+**Fibers** each own a `Ctx` with its own stack from `stack_new`, returned to the pool when the
+fiber ends or its Fiber is collected (`FiberData`'s `Drop`).
 
 **GC roots**: `c.live()` is `&stk[..len - room]`; `mark_roots` and `mark_fibers` iterate it.
 

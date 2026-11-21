@@ -211,7 +211,7 @@ pub fn boot() {
     vm.c_rational = rational::init(vm);
     vm.c_complex = complex::init(vm);
     enum_native::init(vm.m_enumerable);
-    crate::fiber::init();
+    crate::fiber::init(vm);
     extras::init(vm);
 }
 

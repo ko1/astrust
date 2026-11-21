@@ -2276,7 +2276,6 @@ pub fn visit_roots<V: RootVisitor<Saruby>>(m: &mut V) {
     let vm = vm();
     // SAFETY: run_main's context outlives every collection
     unsafe { visit_ctx(m, &mut *vm.main_ctx); }
-    crate::fiber::visit_fibers(m);
     for v in [&mut vm.c_basic_object, &mut vm.c_object, &mut vm.main_obj, &mut vm.stdout, &mut vm.stderr, &mut vm.stdin, &mut vm.loaded_features,
               &mut vm.load_path, &mut vm.at_exit, &mut vm.verbose, &mut vm.argv, &mut vm.dollar_zero] { m.visit(v); }
     for v in vm.globals.values_mut() { m.visit(v); }
@@ -2294,7 +2293,7 @@ pub fn visit_roots<V: RootVisitor<Saruby>>(m: &mut V) {
 }
 
 /// One execution context: its value stack and the values it holds.
-pub fn visit_ctx<V: RootVisitor<Saruby>>(m: &mut V, c: &mut Ctx) {
+pub fn visit_ctx<V: RootVisitor<Saruby> + ?Sized>(m: &mut V, c: &mut Ctx) {
     // ambiguous, as before the framework: slots below sp that no frame wrote yet hold stale Values
     let live = c.live();
     // SAFETY: a Slot is one Value word

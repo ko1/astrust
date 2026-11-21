@@ -46,6 +46,7 @@ pub mod numeric;
 pub mod regexp;
 pub mod regex_engine;
 pub mod fiber;
+pub mod fiber_os;
 pub mod aot;
 pub mod builtins;
 
@@ -331,7 +332,8 @@ fn handle_toplevel_error(c: &mut Ctx) -> i32 {
     }
 }
 
-const STACK_BYTES: usize = 1 << 30;
+/// The main thread's stack size (fiber.rs scans it while a fiber runs).
+pub const STACK_BYTES: usize = 1 << 30;
 
 pub fn main_entry() {
     let o = parse_args();

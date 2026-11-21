@@ -73,8 +73,8 @@ fn check_interrupt(c: &mut Ctx, t: Value) -> Result<(), Esc> {
 }
 /// A thread's root fiber returned: record value / exception.
 fn finish_thread(c: &mut Ctx, t: Value) -> Result<(), Esc> {
-    let (is_err, v) = crate::fiber::take_result(th(c, t).fiber);
-    crate::fiber::release_vstack(th(c, t).fiber);
+    let f = th(c, t).fiber;
+    let (is_err, v) = crate::fiber::take_result(c, f);
     let r = th_mut(c, t);
     r.dead = true; r.progress = true;
     list_remove(c, t);
@@ -109,17 +109,18 @@ fn run_pass(c: &mut Ctx) -> Result<bool, Esc> {
         if r.fiber == NIL {
             let st = std::mem::replace(&mut r.start, NIL);
             let (p, args) = (c.ary_get(st, 0), c.ary_get(st, 1));
-            let f = crate::fiber::new_thread_fiber(p, args);
+            let f = crate::fiber::new_thread_fiber(c, p, args);
             let r = th_mut(c, t);
             r.fiber = f; r.inner = f;
         }
         let r = th(c, t);
         let (f, inner) = (r.fiber, r.inner);
         CURRENT.set(c, t);
-        crate::fiber::thread_switch_in(f, inner);
+        let r = crate::fiber::thread_switch_in(c, f, inner);
         CURRENT.set(c, main);
+        r?;
         let f = th(c, t).fiber;
-        if crate::fiber::is_done(f) { finish_thread(c, t)?; } else { th_mut(c, t).inner = crate::fiber::last_switched_out(); }
+        if crate::fiber::is_done(c, f) { finish_thread(c, t)?; } else { let o = crate::fiber::last_switched_out(c); th_mut(c, t).inner = o; }
         progressed |= th(c, t).progress;
     }
     Ok(progressed)
@@ -140,7 +141,7 @@ pub fn block_on(c: &mut Ctx, mut cond: impl FnMut(&mut Ctx) -> Result<bool, Esc>
             if deadline.map(|d| Instant::now() >= d).unwrap_or(false) { th_mut(c, me).progress = true; return Ok(false); }
             let r = th_mut(c, me);
             r.waiting = true; r.deadline = deadline; r.io_wait = io;
-            crate::fiber::thread_switch_out();
+            crate::fiber::thread_switch_out(c);
             let r = th_mut(c, me);
             r.waiting = false; r.deadline = None; r.io_wait = false;
         }
@@ -263,7 +264,7 @@ fn kill_thread(c: &mut Ctx, t: Value) -> RV {
         let f = r.fiber;
         r.start = NIL;
         list_remove(c, t);
-        if f != NIL { crate::fiber::discard(f); }
+        if f != NIL { crate::fiber::discard(c, f); }
         return Ok(t);
     }
     let r = th_mut(c, t);

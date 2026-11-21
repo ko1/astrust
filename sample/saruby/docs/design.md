@@ -192,6 +192,15 @@ Measurements and what was tried: `~/ruby/src/trials/2026-11-21-saruby-call-path/
   global stdout buffer (`kernel::out_write`).  `flush_all` runs before fork/exec and at exit.
 * Process (builtins/process.rs) forks with libc directly; `Signal.trap` handlers set a pending
   bit and run at blocking points (`sleep`, `Process.kill` to self, waits, `IO.select`).
+* Fibers (fiber.rs, CRuby's resume / yield / transfer / raise / kill rules): a fiber gets a
+  16 MiB machine stack (mmap, guard page), a `Ctx` and a value stack at its first resume, and
+  gives them back when it ends (right after the switch away from it) or is collected.  The
+  machine side (stacks, the register switch, which also passes the value) is `fiber_os.rs`, the
+  only unsafe code of fibers but for the one call of the switch.  Value stacks of FRAME slots or
+  more are private views of a file of nils (`fiber_os::nil_slots`): a stack costs the pages it
+  touches, and a released one gives back all but its first 64 KiB.  Fibers that are started
+  trigger a collection once as many have started as held stacks after the last one, so dropped
+  suspended fibers come back without waiting for the object heap to fill.
 * Threads (builtins/thread.rs) are green: a Thread is a fiber chain entered from the main
   thread's scheduler (`fiber::thread_switch_in/out`).  A thread runs until it blocks in
   `thread::block_on` (join, Queue, Mutex, ConditionVariable, sleep, pipe read, `Thread.pass`);
