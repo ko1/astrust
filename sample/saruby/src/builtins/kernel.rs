@@ -734,7 +734,7 @@ fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
         let m = if is_class_or_module(wrap) { wrap } else { new_module() };
         let slf = new_object(c.vm().c_object);
         let sk = singleton_class(slf);
-        include_module(sk, m);
+        include_module_c(c, sk, m);
         let src = match std::fs::read(&p) {
             Ok(s) => s,
             Err(_) => { let e = make_exception(c.vm().c_load_error, &format!("cannot load such file -- {}", p)); return Err(raise_exc(c, e)); }

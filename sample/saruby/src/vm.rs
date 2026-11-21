@@ -325,6 +325,8 @@ pub struct Ctx {
     pub errinfo: Value,
     pub last_match: Value,
     pub in_ensure: u32,
+    // copy of rt::REDEF, so that baked code tests it from the (noalias) context: rt::note_redefinition, fiber::leave
+    pub redef: u32,
     pub tok: crate::heap::Token,   // makes this the heap token (heap.rs)
 }
 
@@ -367,6 +369,8 @@ pub fn shareable(nlocals: u32, nparams: u32, flags: u32) -> bool { nparams == 0 
 
 impl Ctx {
     #[inline(always)] pub fn next_serial(&mut self) -> u64 { self.serial += 1; self.serial }
+    /// Is any of Integer's basic operators redefined (rt::R_INT_ALL)?
+    #[inline(always)] pub fn int_redef(&self) -> bool { self.redef & crate::rt::R_INT_ALL != 0 }
     #[inline(always)] pub fn frame(&self) -> &'static mut Frame { unsafe { &mut *self.frame } }
     #[inline(always)] pub fn self_val(&self) -> Value { let fp = unsafe { (*self.frame).fp }; fp[0].get() }
 }
@@ -586,25 +590,34 @@ pub fn class_path(k: Value) -> String {
     format!("#<{}:{:#018x}>", if cd.is_module { "Module" } else { "Class" }, k.raw())
 }
 
+/// Include without a context (class setup): must not redefine a basic operation after boot.
 pub fn include_module(klass: Value, m: Value) {
+    assert!(!include_module_raw(klass, m), "include changed a basic operation without a context");
+}
+pub fn include_module_c(c: &mut Ctx, klass: Value, m: Value) {
+    if include_module_raw(klass, m) { c.redef = crate::rt::redef_word(); }
+}
+fn include_module_raw(klass: Value, m: Value) -> bool {
     let cd = rclass(klass);
-    if cd.includes.contains(&m) { return; }
-    if ancestors(klass).contains(&m) { return; }
+    if cd.includes.contains(&m) { return false; }
+    if ancestors(klass).contains(&m) { return false; }
     // an included method shadows an inherited one (e.g. NilClass's ==): operator fast paths must notice
+    let mut changed = false;
     for &am in ancestors(m).iter() {
         let mids: Vec<Sym> = rclass(am).mtbl.keys().copied().collect();
-        for mid in mids { crate::rt::note_redefinition(klass, mid); }
+        for mid in mids { changed |= crate::rt::redef_note(klass, mid); }
     }
     rclass(klass).includes.push(m);
     bump_hierarchy();
+    changed
 }
-pub fn prepend_module(klass: Value, m: Value) {
+pub fn prepend_module(c: &mut Ctx, klass: Value, m: Value) {
     let cd = rclass(klass);
     if cd.prepends.contains(&m) { return; }
     // a prepended method overrides the class's own: operator fast paths must notice
     for &am in ancestors(m).iter() {
         let mids: Vec<Sym> = rclass(am).mtbl.keys().copied().collect();
-        for mid in mids { crate::rt::note_redefinition(klass, mid); }
+        for mid in mids { crate::rt::note_redefinition(c, klass, mid); }
     }
     rclass(klass).prepends.push(m);
     bump_hierarchy();

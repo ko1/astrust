@@ -424,7 +424,7 @@ pub fn EVAL_node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value, ic:
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_ivar_arith<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, sub: bool, v: Value, line: H_line, ic: &mut IvarCache, cc: &mut OpCc, slot: u32) -> RV {
     let slf = fp[0].get();
-    if slf.is_heap() && v.is_fixnum() && !redef(if sub { R_INT_MINUS } else { R_INT_PLUS }) {
+    if slf.is_heap() && v.is_fixnum() && !c.int_redef() {
         let o = obj(slf);
         if o.klass.raw() == ic.klass && o.flags & FL_FROZEN == 0 && (slot == 0 || ic.idx == slot - 1) {
             if let Body::Object(ivs) = &mut o.body {
@@ -1084,7 +1084,7 @@ pub fn EVAL_node_lambda(c: &mut Ctx, n: NodePtr, fp: Fp, blk: IseqRef) -> RV {
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_plus<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_PLUS) { if let Some(r) = a.fix_add(b) { return Ok(r); } }
+    if a.is_fixnum() && b.is_fixnum() && !c.int_redef() { if let Some(r) = a.fix_add(b) { return Ok(r); } }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2(a, b, R_FLO_PLUS, R_INT_PLUS) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(crate::numeric::float_new(x + y)); }
         return srb_binop(c, a, b, s::plus, line.pos(), cc);
@@ -1096,7 +1096,7 @@ pub fn EVAL_node_opt_plus<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_minus<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_MINUS) { if let Some(r) = a.fix_sub(b) { return Ok(r); } }
+    if a.is_fixnum() && b.is_fixnum() && !c.int_redef() { if let Some(r) = a.fix_sub(b) { return Ok(r); } }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2(a, b, R_FLO_MINUS, R_INT_MINUS) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(crate::numeric::float_new(x - y)); }
         return srb_binop(c, a, b, s::minus, line.pos(), cc);
@@ -1108,7 +1108,7 @@ pub fn EVAL_node_opt_minus<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr,
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_mul<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
-    if a.both_fix(b) && !redef(R_INT_MUL) { if let Some(r) = a.fix_mul(b) { return Ok(r); } }
+    if a.both_fix(b) && !c.int_redef() { if let Some(r) = a.fix_mul(b) { return Ok(r); } }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2(a, b, R_FLO_MUL, R_INT_MUL) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(crate::numeric::float_new(x * y)); }
         return srb_binop(c, a, b, s::mul, line.pos(), cc);
@@ -1120,7 +1120,7 @@ pub fn EVAL_node_opt_mul<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, f
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_div<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && b.as_fix() != 0 && !redef(R_INT_DIV) {
+    if a.is_fixnum() && b.is_fixnum() && b.as_fix() != 0 && !c.int_redef() {
         let (x, y) = (a.as_fix(), b.as_fix());
         let q = if (x % y != 0) && ((x < 0) != (y < 0)) { x / y - 1 } else { x / y };
         if Value::fixable(q) { return Ok(Value::fix(q)); }
@@ -1147,7 +1147,7 @@ pub fn EVAL_node_opt_pow<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, f
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_mod<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && b.as_fix() != 0 && !redef(R_INT_MOD) {
+    if a.is_fixnum() && b.is_fixnum() && b.as_fix() != 0 && !c.int_redef() {
         let (x, y) = (a.as_fix(), b.as_fix());
         let m = x % y;
         let m = if m != 0 && ((m < 0) != (y < 0)) { m + y } else { m };
@@ -1160,7 +1160,7 @@ pub fn EVAL_node_opt_mod<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, f
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_lt<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
-    if a.both_fix(b) && !redef(R_INT_LT) { return Ok(Value::bool(a.fix_ord() < b.fix_ord())); }
+    if a.both_fix(b) && !c.int_redef() { return Ok(Value::bool(a.fix_ord() < b.fix_ord())); }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LT, R_INT_LT) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x < y)); }
         return srb_binop(c, a, b, s::lt, line.pos(), cc);
@@ -1170,7 +1170,7 @@ pub fn EVAL_node_opt_lt<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_TEST_node_opt_lt<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
-    if a.both_fix(b) && !redef(R_INT_LT) { return Ok(a.fix_ord() < b.fix_ord()); }
+    if a.both_fix(b) && !c.int_redef() { return Ok(a.fix_ord() < b.fix_ord()); }
     if tf_flo(ty) {
         if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LT) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() < b.flonum_val()); }
         if ty == 0 { return Ok(srb_binop(c, a, b, s::lt, line.pos(), cc)?.truthy()); }
@@ -1182,7 +1182,7 @@ pub fn EVAL_TEST_node_opt_lt<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePt
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_le<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
-    if a.both_fix(b) && !redef(R_INT_LE) { return Ok(Value::bool(a.fix_ord() <= b.fix_ord())); }
+    if a.both_fix(b) && !c.int_redef() { return Ok(Value::bool(a.fix_ord() <= b.fix_ord())); }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LE, R_INT_LE) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x <= y)); }
         return srb_binop(c, a, b, s::le, line.pos(), cc);
@@ -1192,7 +1192,7 @@ pub fn EVAL_node_opt_le<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_TEST_node_opt_le<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
-    if a.both_fix(b) && !redef(R_INT_LE) { return Ok(a.fix_ord() <= b.fix_ord()); }
+    if a.both_fix(b) && !c.int_redef() { return Ok(a.fix_ord() <= b.fix_ord()); }
     if tf_flo(ty) {
         if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LE) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() <= b.flonum_val()); }
         if ty == 0 { return Ok(srb_binop(c, a, b, s::le, line.pos(), cc)?.truthy()); }
@@ -1204,7 +1204,7 @@ pub fn EVAL_TEST_node_opt_le<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePt
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_gt<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
-    if a.both_fix(b) && !redef(R_INT_GT) { return Ok(Value::bool(a.fix_ord() > b.fix_ord())); }
+    if a.both_fix(b) && !c.int_redef() { return Ok(Value::bool(a.fix_ord() > b.fix_ord())); }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GT, R_INT_GT) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x > y)); }
         return srb_binop(c, a, b, s::gt, line.pos(), cc);
@@ -1214,7 +1214,7 @@ pub fn EVAL_node_opt_gt<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_TEST_node_opt_gt<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
-    if a.both_fix(b) && !redef(R_INT_GT) { return Ok(a.fix_ord() > b.fix_ord()); }
+    if a.both_fix(b) && !c.int_redef() { return Ok(a.fix_ord() > b.fix_ord()); }
     if tf_flo(ty) {
         if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GT) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() > b.flonum_val()); }
         if ty == 0 { return Ok(srb_binop(c, a, b, s::gt, line.pos(), cc)?.truthy()); }
@@ -1226,7 +1226,7 @@ pub fn EVAL_TEST_node_opt_gt<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePt
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_ge<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
-    if a.both_fix(b) && !redef(R_INT_GE) { return Ok(Value::bool(a.fix_ord() >= b.fix_ord())); }
+    if a.both_fix(b) && !c.int_redef() { return Ok(Value::bool(a.fix_ord() >= b.fix_ord())); }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GE, R_INT_GE) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x >= y)); }
         return srb_binop(c, a, b, s::ge, line.pos(), cc);
@@ -1236,7 +1236,7 @@ pub fn EVAL_node_opt_ge<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_TEST_node_opt_ge<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
-    if a.both_fix(b) && !redef(R_INT_GE) { return Ok(a.fix_ord() >= b.fix_ord()); }
+    if a.both_fix(b) && !c.int_redef() { return Ok(a.fix_ord() >= b.fix_ord()); }
     if tf_flo(ty) {
         if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GE) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() >= b.flonum_val()); }
         if ty == 0 { return Ok(srb_binop(c, a, b, s::ge, line.pos(), cc)?.truthy()); }
@@ -1248,7 +1248,7 @@ pub fn EVAL_TEST_node_opt_ge<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePt
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_eq<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
-    if a.both_fix(b) && !redef(R_INT_EQ) { return Ok(Value::bool(a == b)); }
+    if a.both_fix(b) && !c.int_redef() { return Ok(Value::bool(a == b)); }
     if tf_flo(ty) { if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x == y)); } }
     // nil / true / false / Symbol receivers: == is identity
     if a.is_special() && !redef(R_IMM_EQ) { return Ok(Value::bool(a == b)); }
@@ -1258,7 +1258,7 @@ pub fn EVAL_node_opt_eq<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_TEST_node_opt_eq<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
-    if a.both_fix(b) && !redef(R_INT_EQ) { return Ok(a == b); }
+    if a.both_fix(b) && !c.int_redef() { return Ok(a == b); }
     if tf_flo(ty) { if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() == b.flonum_val()); } }
     if a.is_sym() && b.is_sym() { return Ok(a == b); }
     if ty == 0 { return Ok(srb_eq(c, a, b, line.pos(), cc)?.truthy()); }
@@ -1269,7 +1269,7 @@ pub fn EVAL_TEST_node_opt_eq<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePt
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_neq<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
-    if a.both_fix(b) && !redef(R_INT_EQ) { return Ok(Value::bool(a != b)); }
+    if a.both_fix(b) && !c.int_redef() { return Ok(Value::bool(a != b)); }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x != y)); }
         return srb_binop(c, a, b, s::neq, line.pos(), cc);
@@ -1279,7 +1279,7 @@ pub fn EVAL_node_opt_neq<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, f
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_TEST_node_opt_neq<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
-    if a.both_fix(b) && !redef(R_INT_EQ) { return Ok(a != b); }
+    if a.both_fix(b) && !c.int_redef() { return Ok(a != b); }
     if tf_flo(ty) {
         if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() != b.flonum_val()); }
         if ty == 0 { return Ok(srb_binop(c, a, b, s::neq, line.pos(), cc)?.truthy()); }
@@ -1291,7 +1291,7 @@ pub fn EVAL_TEST_node_opt_neq<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodeP
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_ltlt<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_LSHIFT) {
+    if a.is_fixnum() && b.is_fixnum() && !c.int_redef() {
         let (x, k) = (a.as_fix(), b.as_fix());
         if (0..62).contains(&k) { let r = (x as i128) << k; if r >= FIXNUM_MIN as i128 && r <= FIXNUM_MAX as i128 { return Ok(Value::fix(r as i64)); } }
     }
@@ -1315,7 +1315,7 @@ pub fn EVAL_node_opt_ltlt<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_gtgt<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_RSHIFT) {
+    if a.is_fixnum() && b.is_fixnum() && !c.int_redef() {
         let k = b.as_fix();
         if k >= 0 { return Ok(Value::fix(if k >= 63 { if a.as_fix() < 0 { -1 } else { 0 } } else { a.as_fix() >> k })); }
     }
@@ -1326,7 +1326,7 @@ pub fn EVAL_node_opt_gtgt<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_xor<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_XOR) { return Ok(Value::fix(a.as_fix() ^ b.as_fix())); }
+    if a.is_fixnum() && b.is_fixnum() && !c.int_redef() { return Ok(Value::fix(a.as_fix() ^ b.as_fix())); }
     srb_binop(c, a, b, s::xor, line.pos(), cc)
 }
 
@@ -1334,7 +1334,7 @@ pub fn EVAL_node_opt_xor<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, f
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_and<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_AND) { return Ok(Value::fix(a.as_fix() & b.as_fix())); }
+    if a.is_fixnum() && b.is_fixnum() && !c.int_redef() { return Ok(Value::fix(a.as_fix() & b.as_fix())); }
     srb_binop(c, a, b, s::and, line.pos(), cc)
 }
 
@@ -1342,7 +1342,7 @@ pub fn EVAL_node_opt_and<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, f
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_or<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_OR) { return Ok(Value::fix(a.as_fix() | b.as_fix())); }
+    if a.is_fixnum() && b.is_fixnum() && !c.int_redef() { return Ok(Value::fix(a.as_fix() | b.as_fix())); }
     srb_binop(c, a, b, s::or, line.pos(), cc)
 }
 

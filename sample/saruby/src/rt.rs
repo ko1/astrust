@@ -47,12 +47,25 @@ pub const R_IMM_EQ: u32 = 1 << 31;
 pub static mut REDEF: u32 = 0;
 pub static mut BOOTED: bool = false;
 
+// Integer#+ - * / % < <= > >= == & | << >> ^: the fixnum paths of operator nodes test all of them at once
+// (c.int_redef()), so that one test covers every operator of a straight run of baked code
+pub const R_INT_ALL: u32 = R_INT_PLUS | R_INT_MINUS | R_INT_MUL | R_INT_DIV | R_INT_MOD | R_INT_LT | R_INT_LE | R_INT_GT
+    | R_INT_GE | R_INT_EQ | R_INT_AND | R_INT_OR | R_INT_LSHIFT | R_INT_RSHIFT | R_INT_XOR;
+
 #[inline(always)]
 pub fn redef(f: u32) -> bool { unsafe { REDEF & f != 0 } }
+pub fn redef_word() -> u32 { unsafe { REDEF } }
 
 /// Called when a method is (re)defined after boot: disable affected fast paths.
-pub fn note_redefinition(klass: Value, mid: Sym) {
-    if unsafe { !BOOTED } { return; }
+pub fn note_redefinition(c: &mut Ctx, klass: Value, mid: Sym) {
+    redef_note(klass, mid);
+    c.redef = redef_word();
+}
+
+/// REDEF for (klass, mid); true if it changed.  The running context must then copy it (note_redefinition).
+pub fn redef_note(klass: Value, mid: Sym) -> bool {
+    if unsafe { !BOOTED } { return false; }
+    let before = redef_word();
     // a refinement of a basic operation turns its inline fast path off everywhere
     let klass = if rclass(klass).refined { rclass(klass).attached } else { klass };
     let vm = vm();
@@ -72,8 +85,10 @@ pub fn note_redefinition(klass: Value, mid: Sym) {
     for &(k, m, f) in table {
         if m == mid && (klass == k || ancestors(k).contains(&klass)) { unsafe { REDEF |= f; } }
     }
+    if redef_word() == before { return false; }
     if redef(R_ARY_AREF) { FAST_ARY_AREF.store(0, Relaxed); }
     if redef(R_ARY_ASET) { FAST_ARY_ASET.store(0, Relaxed); }
+    true
 }
 
 // The Array class while Array#[] / Array#[]= are the builtins, else 0 (no object's class): an index
@@ -934,7 +949,7 @@ fn cref_class(c: &Ctx) -> Value {
 pub fn define_iseq_method(c: &mut Ctx, klass: Value, mid: Sym, is: &'static Iseq, visi: u8) {
     let cref = unsafe { (*c.frame).cref() };
     let me = new_me_cref(mid, klass, visi, MKind::Iseq(is), cref);
-    note_redefinition(klass, mid);
+    note_redefinition(c, klass, mid);
     define_method_me(klass, mid, me);
 }
 

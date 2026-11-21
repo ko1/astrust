@@ -192,7 +192,7 @@ fn run_main(o: Opts) -> i32 {
     let mut c = Ctx {
         sp: NO_SP, stk: NO_STACK, frame: std::ptr::null_mut(),
         esc: EscKind::None, esc_val: NIL, esc_tag: 0, esc_tag_v: NIL, serial: 0, errinfo: NIL, last_match: NIL,
-        native_limit: 0, in_ensure: 0, call_me: std::ptr::null(), call_blk: std::ptr::null(),
+        native_limit: 0, in_ensure: 0, redef: 0, call_me: std::ptr::null(), call_blk: std::ptr::null(),
         // SAFETY: the main context; fibers run instead of it, never beside it
         tok: unsafe { heap::Token::mint() },
     };

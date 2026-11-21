@@ -245,7 +245,7 @@ fn finish_dup(c: &mut Ctx, slf: Value, n: Value, clone: bool, freeze: Option<boo
             let nt = &mut c.class_mut(sk).mtbl;
             for (m, me) in mt { nt.insert(m, me); }
             let inc = c.class(k).includes.clone();
-            for m in inc { include_module(sk, m); }
+            for m in inc { include_module_c(c, sk, m); }
         }
     }
     if obj_flags(slf) & FL_KWHASH != 0 { obj_set_flags(n, FL_KWHASH); }
@@ -307,7 +307,7 @@ fn m_extend_object(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
     if is_frozen(a[0]) && a[0].is_heap() { return Err(raise_frozen(c, a[0])); }
     let k = singleton_class(a[0]);
     if k == NIL { return type_err(c, "can't define singleton"); }
-    include_module(k, slf);
+    include_module_c(c, k, slf);
     c.class_mut(slf).extended_by.push(a[0]);
     Ok(a[0])
 }
@@ -457,7 +457,7 @@ pub fn alias_method(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) -> Re
     let oname = o.name;
     let n = Box::into_raw(Box::new(o)) as *const MethodEntry;
     if newname != oname { c.vm_mut().alias_names.insert(n as usize, newname); }
-    crate::rt::note_redefinition(klass, newname);
+    crate::rt::note_redefinition(c, klass, newname);
     define_method_me(klass, newname, n);
     call_method_added(c, klass, newname)?;
     Ok(())
@@ -473,7 +473,7 @@ pub fn undef_method(c: &mut Ctx, klass: Value, mid: Sym) -> Result<(), Esc> {
         return Err(raise_exc(c, e));
     }
     define_method_me(klass, mid, new_me(mid, klass, VISI_PUBLIC, MKind::Undef));
-    crate::rt::note_redefinition(klass, mid);
+    crate::rt::note_redefinition(c, klass, mid);
     Ok(())
 }
 
@@ -496,7 +496,7 @@ fn m_remove_method(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
             return Err(raise_exc(c, e));
         }
         bump_method_serial(); c.vm_mut().mcache.clear();
-        crate::rt::note_redefinition(slf, m);
+        crate::rt::note_redefinition(c, slf, m);
         if c.class(slf).is_singleton {
             let att = c.class(slf).attached;
             if respond_to(att, intern(b"singleton_method_removed"), true) { funcall(c, att, intern(b"singleton_method_removed"), &[Value::sym(m)], std::ptr::null())?; }
@@ -642,7 +642,7 @@ pub fn m_define_method(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) ->
         c.proc_data_mut(np).is_lambda = true;
         new_me(mid, slf, visi, MKind::Bmethod(np))
     };
-    crate::rt::note_redefinition(slf, mid);
+    crate::rt::note_redefinition(c, slf, mid);
     define_method_me(slf, mid, me);
     call_method_added(c, slf, mid)?;
     Ok(Value::sym(mid))
@@ -738,7 +738,7 @@ fn m_include(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     }
     Ok(slf)
 }
-fn m_append_features(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { include_module(a[0], slf); Ok(slf) }
+fn m_append_features(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { include_module_c(c, a[0], slf); Ok(slf) }
 fn m_prepend(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     for &m in a.iter() {
         if !is_class_or_module(m) || !c.class(m).is_module {
@@ -751,7 +751,7 @@ fn m_prepend(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     }
     Ok(slf)
 }
-fn m_prepend_features(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { prepend_module(a[0], slf); Ok(slf) }
+fn m_prepend_features(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { prepend_module(c, a[0], slf); Ok(slf) }
 fn m_hook_noop(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(NIL) }
 fn m_include_p(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if !is_class_or_module(a[0]) || !c.class(a[0]).is_module { return type_err(c, format!("wrong argument type {} (expected Module)", class_name_for_err(a[0]))); }

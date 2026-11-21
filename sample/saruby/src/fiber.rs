@@ -160,6 +160,7 @@ fn leave(c: &mut Ctx, to: Value, (to_sp, top): (usize, usize), save: *mut usize,
     #[allow(unsafe_code)]
     let r = unsafe { os::switch(save, to_sp, v, exc) };
     reap(c);
+    c.redef = crate::rt::redef_word();   // the others may have redefined an operator meanwhile
     r
 }
 
@@ -180,6 +181,7 @@ fn received(c: &mut Ctx, (v, exc): (Value, bool)) -> RV {
 
 pub(crate) fn fiber_main(c: &mut Ctx, args: Value, exc: bool) -> ! {
     reap(c);
+    c.redef = crate::rt::redef_word();
     let f = CUR.get(c);
     let mut top = Frame::empty(c.bottom());
     c.frame = &mut top.h;
