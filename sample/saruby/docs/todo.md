@@ -27,7 +27,7 @@
 
 ## 2. unsafe
 
-「メソッド実装で使っていなければだいぶいい」（user）。src/builtins/ は sys.rs（OS インターフェース）以外 `forbid(unsafe_code)` 済み。
+「メソッド実装で使っていなければだいぶいい」「unsafe 外しは性能と見合い」（user）。外す前にコストを測り、遅くなる所は数字を添えて残す。src/builtins/ は sys.rs（OS インターフェース）以外 `forbid(unsafe_code)` 済み。
 crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md`。
 
 - [x] builtins（全波）、inline_builtin.rs / inline_iter.rs、string/array/hash/range/bignum/regexp 本体、binding.rs、boot.rs
