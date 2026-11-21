@@ -20,6 +20,7 @@ pub mod json;
 pub mod env;
 pub mod extras;
 pub mod thread;
+pub mod fiber_methods;
 pub mod sys;
 pub mod file;
 pub mod process;

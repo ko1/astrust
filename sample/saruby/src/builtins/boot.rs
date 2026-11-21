@@ -178,6 +178,7 @@ fn boot_classes(vmr: &mut Vm) {
     vmr.c_complex = complex::init(vmr);
     enum_native::init(vmr.m_enumerable);
     crate::fiber::init(vmr);
+    fiber_methods::init(vmr);
     extras::init(vmr);
 }
 

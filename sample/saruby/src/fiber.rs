@@ -40,11 +40,16 @@ pub struct FiberData {
     exc: bool,                      // the result is an exception
     pub peek: Option<Value>,
     pub enum_src: Value,
+    storage: Value,                 // Fiber[] / Fiber#storage: nil or a Hash
+    locals: Value,                  // fiber-local Thread#[] (a non-root fiber's; roots use RThread's)
+    owner: Value,                   // root fiber of the thread the fiber belongs to
+    blocking: bool,
 }
 impl FiberData {
     fn new(proc_: Value) -> FiberData {
         FiberData { ctx: None, stack: None, vstack: None, sp: 0, running: false, main: false, started: false, done: false, yielding: false,
-                    prev: NIL, resuming: NIL, proc_, xfer: NIL, exc: false, peek: None, enum_src: NIL }
+                    prev: NIL, resuming: NIL, proc_, xfer: NIL, exc: false, peek: None, enum_src: NIL,
+                    storage: NIL, locals: NIL, owner: NIL, blocking: false }
     }
     /// Becoming the running fiber: (saved stack pointer, stack top).
     fn enter(&mut self) -> (usize, usize) {
@@ -56,7 +61,7 @@ impl FiberData {
 }
 impl RData for FiberData {
     fn visit(&mut self, m: &mut crate::gc::Visitor) {
-        for v in [&mut self.proc_, &mut self.xfer, &mut self.prev, &mut self.resuming, &mut self.enum_src] { m.visit(v); }
+        for v in [&mut self.proc_, &mut self.xfer, &mut self.prev, &mut self.resuming, &mut self.enum_src, &mut self.storage, &mut self.locals, &mut self.owner] { m.visit(v); }
         if let Some(p) = &mut self.peek { m.visit(p); }
         if let Some(c) = &mut self.ctx { visit_ctx(m, c.get()); }
         if self.running || self.sp == 0 { return; }
@@ -98,7 +103,9 @@ pub fn current_stack_top() -> usize {
 }
 
 fn new_fiber(c: &mut Ctx, klass: Value, proc_: Value) -> Value {
-    c.alloc(klass, Body::Data(Box::new(FiberData::new(proc_))))
+    let mut d = FiberData::new(proc_);
+    d.owner = THREAD_ROOT.get(c);
+    c.alloc(klass, Body::Data(Box::new(d)))
 }
 
 /// Give a fiber its stacks and a first frame that runs fiber_main.
@@ -226,11 +233,14 @@ fn return_fiber(c: &mut Ctx, cur: Value) -> Value {
     f
 }
 
+fn owner_of(c: &Ctx, f: Value) -> Value { let d = fd(c, f); if d.main { MAIN_ROOT.get(c) } else { d.owner } }
+
 fn fiber_err<T>(c: &mut Ctx, msg: &str) -> Result<T, Esc> { let k = c.vm().c_fiber_error; err(c, k, msg) }
 
 /// Resume f passing `v`, or the arguments `a` when v is UNDEF.
 fn resume_kw(c: &mut Ctx, f: Value, v: Value, a: &[Value], exc: bool) -> RV {
     let cur = CUR.get(c);
+    let across = owner_of(c, f) != THREAD_ROOT.get(c);
     let d = fdm(c, f);
     let started = d.started;
     let e = if exc && !d.started { "cannot raise exception on unborn fiber" }
@@ -239,6 +249,7 @@ fn resume_kw(c: &mut Ctx, f: Value, v: Value, a: &[Value], exc: bool) -> RV {
         else if d.prev != NIL { "attempt to resume a resumed fiber (double resume)" }
         else if d.resuming != NIL { "attempt to resume a resuming fiber" }
         else if d.started && !d.yielding { "attempt to resume a transferring fiber" }
+        else if across { "fiber called across threads" }
         else { "" };
     if !e.is_empty() { return fiber_err(c, e); }
     let d = if started && (v != UNDEF || a.len() <= 1) { d } else {
@@ -276,6 +287,7 @@ fn transfer_kw(c: &mut Ctx, f: Value, v: Value, exc: bool) -> RV {
     if d.yielding { return fiber_err(c, "attempt to transfer to a yielding fiber"); }
     let cur = CUR.get(c);
     if f == cur { return received(c, (v, exc)); }
+    if owner_of(c, f) != THREAD_ROOT.get(c) { return fiber_err(c, "fiber called across threads"); }
     if fd(c, f).done { return fiber_err(c, "dead fiber called"); }
     let r = switch_to(c, cur, f, v, exc)?;
     received(c, r)
@@ -298,10 +310,11 @@ pub fn fiber_yield(c: &mut Ctx, v: Value) -> RV {
 
 // ---- green threads (builtins/thread.rs): a thread is a fiber chain entered from the scheduler ----
 
-pub fn new_thread_fiber(c: &mut Ctx, proc_: Value, args: Value) -> Value {
+pub fn new_thread_fiber(c: &mut Ctx, proc_: Value, args: Value, storage: Value) -> Value {
     let k = c.vm().c_fiber;
     let f = new_fiber(c, k, proc_);
-    fdm(c, f).xfer = args;
+    let d = fdm(c, f);
+    d.xfer = args; d.owner = f; d.storage = storage; d.blocking = true;
     f
 }
 pub fn is_done(c: &Ctx, f: Value) -> bool { fd(c, f).done }
@@ -338,11 +351,38 @@ fn args_value(c: &mut Ctx, a: &[Value]) -> Value { match a.len() { 0 => NIL, 1 =
 /// A fiber's first run gets its block's arguments as an Array.
 fn pass_args(c: &mut Ctx, f: Value, a: &[Value]) -> Value { if fd(c, f).started { args_value(c, a) } else { c.ary_new_from(a) } }
 
-fn f_s_new(c: &mut Ctx, slf: Value, _a: &[Value], b: *const Block) -> RV {
-    if b.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
-    let p = block_to_proc(c, b)?;
-    Ok(new_fiber(c, slf, p))
+/// Fiber.new (builtins/fiber_methods.rs): storage is nil or a Hash already copied.
+pub fn new_user_fiber(c: &mut Ctx, klass: Value, proc_: Value, blocking: bool, storage: Value) -> Value {
+    let f = new_fiber(c, klass, proc_);
+    let d = fdm(c, f);
+    d.blocking = blocking; d.storage = storage;
+    f
 }
+pub fn current(c: &Ctx) -> Value { CUR.get(c) }
+pub fn storage(c: &Ctx, f: Value) -> Value { fd(c, f).storage }
+pub fn set_storage(c: &mut Ctx, f: Value, h: Value) { fdm(c, f).storage = h; }
+pub fn is_blocking(c: &Ctx, f: Value) -> bool { fd(c, f).blocking }
+pub fn set_blocking(c: &mut Ctx, f: Value, b: bool) { fdm(c, f).blocking = b; }
+/// The fiber's proc (NIL for a thread's root fiber, whose inspect shows no location).
+pub fn first_proc(c: &Ctx, f: Value) -> Value { let d = fd(c, f); if d.main || d.owner == f { NIL } else { d.proc_ } }
+/// CRuby's fiber_status_name, plus whether it resumed another fiber.
+pub fn status(c: &Ctx, f: Value) -> (&'static str, bool) {
+    let d = fd(c, f);
+    let s = if d.done { "terminated" } else if !d.started { "created" } else if d.running { "resumed" } else { "suspended" };
+    (s, d.resuming != NIL)
+}
+/// A thread's root fiber (Thread#[] of those lives in the Thread).
+pub fn is_root(c: &Ctx, f: Value) -> bool { let d = fd(c, f); d.main || d.owner == f }
+/// Thread#[] storage of a non-root fiber, made on first use.
+pub fn locals(c: &mut Ctx, f: Value) -> Value {
+    let l = fd(c, f).locals;
+    if l != NIL { return l; }
+    let h = c.hash_new();
+    fdm(c, f).locals = h;
+    h
+}
+/// The main thread's running fiber while a green thread runs (the scheduler's), else the current one.
+pub fn main_thread_fiber(c: &Ctx) -> Value { if THREAD_ROOT.get(c) == MAIN_ROOT.get(c) { CUR.get(c) } else { SCHED.get(c) } }
 fn f_resume(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { resume_kw(c, slf, UNDEF, a, false) }
 fn f_transfer(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let v = pass_args(c, slf, a); transfer_kw(c, slf, v, false) }
 fn f_s_yield(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let v = args_value(c, a); fiber_yield(c, v) }
@@ -435,7 +475,6 @@ pub fn init(vmr: &mut Vm) {
     let k = define_class("Fiber", vmr.c_object);
     class_set_alloc(k, AllocKind::None);
     vmr.c_fiber = k;
-    define_singleton_cfunc(k, "new", f_s_new, -1);
     define_singleton_cfunc(k, "yield", f_s_yield, -1);
     define_singleton_cfunc(k, "current", f_s_current, 0);
     define_cfunc(k, "resume", f_resume, -1);
@@ -444,7 +483,7 @@ pub fn init(vmr: &mut Vm) {
     define_cfunc(k, "kill", f_kill, 0);
     define_cfunc(k, "alive?", f_alive, 0);
     let mut d = FiberData::new(NIL);
-    d.main = true; d.started = true; d.running = true;
+    d.main = true; d.started = true; d.running = true; d.blocking = true;
     let root = crate::gc::alloc(k, Body::Data(Box::new(d)));
     MAIN_ROOT.set_vm(vmr, root);
     THREAD_ROOT.set_vm(vmr, root);
