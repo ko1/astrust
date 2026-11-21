@@ -71,17 +71,11 @@ pub fn alloc_with(klass: Value, make: impl FnOnce() -> Body) -> Value {
     unsafe { Value::from_ptr(p.as_ptr()) }
 }
 
-/// GC.start: a full collection, unless GC.disable is in effect.
-pub fn collect() {
-    let h = heap();
-    if !h.ctl.disabled() { h.collect(&mut Saruby); }
-}
+/// GC.start: a full collection, GC.disable or not (as CRuby: GC.disable stops only the automatic ones).
+pub fn collect() { heap().collect(&mut Saruby); }
 
-/// GC.start(full_mark: false), unless GC.disable is in effect.
-pub fn collect_minor() {
-    let h = heap();
-    if !h.ctl.disabled() { h.collect_minor(&mut Saruby); }
-}
+/// GC.start(full_mark: false), GC.disable or not.
+pub fn collect_minor() { heap().collect_minor(&mut Saruby); }
 
 /// Store `v` into `slot`, a reference slot of heap object `holder`, with the write barrier.
 /// No backend needs the barrier yet and saruby's stores do not go through here; a
