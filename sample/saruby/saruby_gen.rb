@@ -71,6 +71,10 @@ class SarubyNodeDef < ASTrustGen::NodeDef
     end
     # that call adds a native frame (a compiled-in callee does not)
     def rec_call_stmt = "crate::vm::native_check(c)?;"
+    # CallArgs as two words: three would go through memory
+    def rec_spec_in_type(t) = "crate::vm::CallPass"
+    def rec_pass_expr(v) = "#{v}.pass()"
+    def rec_unpass_expr(v) = "#{v}.unpass()"
 
     def opaque_hash_expr(op, f)
       case op.type

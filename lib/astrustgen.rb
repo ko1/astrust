@@ -203,6 +203,10 @@ module ASTrustGen
       # (`S_<hash>::run`, with the @specin value as a parameter); `rec_call_stmt` runs before that call.
       def spec_rec_target_expr(op) = nil
       def rec_call_stmt = ""
+      # How S_<hash>::run takes the @specin value (default: as it is): its type, and the conversions to and from it.
+      def rec_spec_in_type(t) = t
+      def rec_pass_expr(v) = v
+      def rec_unpass_expr(v) = v
       # @bake operand: Rust expr of the operand's type, evaluated at specialize time with `np` in scope.
       def bake_value_expr(op) = "0"
       # @specin operand: the value when no speculating caller passed it, and how a `spec` that cannot
@@ -597,7 +601,10 @@ module ASTrustGen
       spec_in = sins.first
       sin_op = @nodes.values.lazy.map { |x| [x, x.operands.find(&:specin?)] }.find { it[1] }
       esc = ->(s) { ASTrustGen.rust_str(s).gsub('{', '{{').gsub('}', '}}') }
-      rec_load = sin_op ? ", #{esc.(sin_op[0].spec_in_load_expr(sin_op[1]))}" : ''
+      rec_load = sin_op ? ", #{esc.(n.rec_pass_expr(sin_op[0].spec_in_load_expr(sin_op[1])))}" : ''
+      rec_pass = spec_in ? ", #{esc.(n.rec_pass_expr('a'))}" : ''
+      rec_unpass = spec_in ? ", #{esc.(n.rec_unpass_expr('a'))}" : ''
+      rec_in = spec_in ? ", a: #{n.rec_spec_in_type(spec_in)}" : ''
       rec_stmt = n.rec_call_stmt.empty? ? '' : esc.(n.rec_call_stmt) + ' '
       <<~RS
       #{banner}
@@ -736,12 +743,12 @@ module ASTrustGen
           let name = format!("R_{:016x}", h);
           if sc.emitted.insert(name.clone()) {
               sc.rec.push(q as usize);
-              sc.out.push_str(&format!("pub struct {0};\\nimpl Disp for {0} {{\\n    #[inline(always)]\\n    fn call(#{params.join(', ')}) -> #{n.result_type} {{ #{rec_stmt}S_{1:016x}::run(#{pnames.join(', ')}#{rec_load}) }}\\n    #[inline(always)]\\n    fn spec(#{params.join(', ')}#{spec_in ? ", a: #{spec_in}" : ''}) -> #{n.result_type} {{ #{rec_stmt}S_{1:016x}::run(#{pnames.join(', ')}#{spec_in ? ', a' : ''}) }}\\n}}\\n", name, h));
+              sc.out.push_str(&format!("pub struct {0};\\nimpl Disp for {0} {{\\n    #[inline(always)]\\n    fn call(#{params.join(', ')}) -> #{n.result_type} {{ #{rec_stmt}S_{1:016x}::run(#{pnames.join(', ')}#{rec_load}) }}\\n    #[inline(always)]\\n    fn spec(#{params.join(', ')}#{spec_in ? ", a: #{spec_in}" : ''}) -> #{n.result_type} {{ #{rec_stmt}S_{1:016x}::run(#{pnames.join(', ')}#{rec_pass}) }}\\n}}\\n", name, h));
           }
           name
       }
       fn specialize_run(sc: &mut SpecCtx, s: &str, t: &str) {
-          sc.out.push_str(&format!("pub struct {0};\\nimpl {0} {{\\n    #[inline(never)]\\n    pub fn run(#{params.join(', ')}#{spec_in ? ", a: #{spec_in}" : ''}) -> #{n.result_type} {{ <{1} as Disp>::spec(#{pnames.join(', ')}#{spec_in ? ', a' : ''}) }}\\n}}\\n", s, t));
+          sc.out.push_str(&format!("pub struct {0};\\nimpl {0} {{\\n    #[inline(never)]\\n    pub fn run(#{params.join(', ')}#{rec_in}) -> #{n.result_type} {{ <{1} as Disp>::spec(#{pnames.join(', ')}#{rec_unpass}) }}\\n}}\\n", s, t));
           sc.emitted.insert(s.to_string());
       }
       /// After the entries: S_<hash>::run of the recursion targets whose SD_ was not the one to provide it.

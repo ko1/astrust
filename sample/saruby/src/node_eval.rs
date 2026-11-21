@@ -828,7 +828,7 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ct
         let r0 = fp[0].get();
         if spec_hit(cc, r0, kind) {
             if shared == 1 { unsafe { (*c.frame).line = line; } }
-            return <D_callee as Disp>::spec(c, cc.fast as NodePtr, fp, CallArgs::shared(cc.me as *const MethodEntry, std::ptr::null()));
+            return <D_callee as Disp>::spec(c, cc.fast as NodePtr, fp, CallArgs { me: cc.me as *const MethodEntry, blk: std::ptr::null(), shared: true });
         }
     }
     let k = <D_args as DispList>::len(args);
@@ -908,7 +908,7 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, D_callee: Disp, D_body
                 while iter_next(c, &mut st, it, r0) {
                     // through c.frame (the pointer the callees use): a step starts at the block's line
                     if share { c.frame().line = blk.info.line; }
-                    match <D_body as Disp>::spec(c, blk.bentry, st.bfp, if share { CallArgs::shared(std::ptr::null(), bp) } else { CallArgs::new(std::ptr::null(), bp) }) {
+                    match <D_body as Disp>::spec(c, blk.bentry, st.bfp, CallArgs { me: std::ptr::null(), blk: bp, shared: share }) {
                         Ok(y) => iter_step(c, &mut st, it, base, y),
                         Err(e) => { r = Err(e); break; }
                     }
@@ -1377,17 +1377,17 @@ pub fn EVAL_node_opt_aset(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, v
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, flags: u32, line: u32, body: NodePtr, ca: CallArgs) -> RV {
-    #[cfg(feature = "nodeprof")] crate::nodeprof::hit_body("entry", n, flags & ME_ENV != 0, nparams as usize, !ca.blk().is_null());
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit_body("entry", n, flags & ME_ENV != 0, nparams as usize, !ca.blk.is_null());
     // nothing in a leaf body can call, raise or look at a frame
     if flags & ME_LEAF != 0 { return <D_body as Disp>::call(c, body, fp); }
     let me = ca.me;
-    let blk = ca.blk();
+    let blk = ca.blk;
     // id 0: no block can return to this frame, and its own `return` is caught by the innermost entry
     let id = if flags & ME_ID != 0 { c.next_serial() } else { 0 };
     let mut fr = Frame { prev: c.frame, fp: head(fp), me, blk, id, line, kind: FK_METHOD, visi: VISI_PUBLIC, lite: true, pad: 0 };
     // no native stack check here: whoever calls an entry out of line makes it (run_entry, site_fast)
     // a shared frame (the caller's, CallArgs) has no slots of its own and keeps the caller's env
-    if !(shareable(nlocals, nparams, flags) && ca.is_shared()) {
+    if !(shareable(nlocals, nparams, flags) && ca.shared) {
         enter(c, fp, nlocals, nparams)?;
         fp[1].set(NIL);
     }
@@ -1407,11 +1407,11 @@ pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlo
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_block_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, flags: u32, line: u32, body: NodePtr, ca: CallArgs) -> RV {
-    let b = unsafe { &*ca.blk() };
+    let b = unsafe { &*ca.blk };
     // a lambda (ME_LAMBDA, called with its exact arity) is its own return target
     let lambda = flags & ME_LAMBDA != 0;
     // shared: an inline iterator (node_call_blk, IT_SHARE) made this frame, self and env once for its loop
-    let shared = ca.is_shared() && flags & (ME_LAMBDA | ME_ENV) == 0;
+    let shared = ca.shared && flags & (ME_LAMBDA | ME_ENV) == 0;
     let id = if lambda { c.next_serial() } else { b.home_id };
     // iseq null: Frame::iseq() takes it from self_blk when asked
     let mut fr = FrameFull {

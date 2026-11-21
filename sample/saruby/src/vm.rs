@@ -292,22 +292,26 @@ pub struct Ctx {
 }
 
 /// What an entry node takes from its caller: in registers when the caller compiled the entry in
-/// (EVAL_SPEC!) or calls it directly (a recursive site, R_<hash>), else through c.call_me / c.call_blk.
-/// shared (bit 0 of `bs`): the entry runs in its caller's frame (a compiled-in self call of a method
-/// without parameters, locals, env or block literal).  Two words: a call passes it in two registers.
+/// (EVAL_SPEC!) or calls it directly (a recursive site: as a CallPass), else through c.call_me / c.call_blk.
+/// `shared`: the entry runs in its caller's frame (a compiled-in self call of a method without
+/// parameters, locals, env or block literal).
 #[derive(Clone, Copy)]
-pub struct CallArgs { pub me: *const MethodEntry, bs: usize }
+pub struct CallArgs { pub me: *const MethodEntry, pub blk: *const Block, pub shared: bool }
 impl CallArgs {
-    #[inline(always)] pub fn new(me: *const MethodEntry, blk: *const Block) -> CallArgs { CallArgs { me, bs: blk as usize } }
-    #[inline(always)] pub fn shared(me: *const MethodEntry, blk: *const Block) -> CallArgs { CallArgs { me, bs: blk as usize | 1 } }
-    #[inline(always)] pub fn blk(self) -> *const Block { (self.bs & !1) as *const Block }
-    #[inline(always)] pub fn is_shared(self) -> bool { self.bs & 1 != 0 }
+    #[inline(always)] pub fn new(me: *const MethodEntry, blk: *const Block) -> CallArgs { CallArgs { me, blk, shared: false } }
     #[inline(always)] pub fn load(c: &Ctx) -> CallArgs { CallArgs::new(c.call_me, c.call_blk) }
     #[inline(always)] pub fn store(self, c: &mut Ctx) {
         // a shared frame cannot go through the context: spec_shared only offers it to specialized entries
-        assert!(!self.is_shared(), "shared frame passed to an entry out of line");
-        c.call_me = self.me; c.call_blk = self.blk();
+        assert!(!self.shared, "shared frame passed to an entry out of line");
+        c.call_me = self.me; c.call_blk = self.blk;
     }
+    #[inline(always)] pub fn pass(self) -> CallPass { CallPass { me: self.me, bs: self.blk as usize | self.shared as usize } }
+}
+/// CallArgs as two words (shared in bit 0 of the block's), for a call that is not inlined: S_<hash>::run.
+#[derive(Clone, Copy)]
+pub struct CallPass { me: *const MethodEntry, bs: usize }
+impl CallPass {
+    #[inline(always)] pub fn unpass(self) -> CallArgs { CallArgs { me: self.me, blk: (self.bs & !1) as *const Block, shared: self.bs & 1 != 0 } }
 }
 
 /// Can the self call at a site run its compiled-in callee `p` in the caller's frame?

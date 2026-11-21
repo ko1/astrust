@@ -122,7 +122,7 @@ pub fn specialize_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
         // n calls itself: its one body is S_<hash>::run (R_ calls it directly); SD_ passes the spec-in value on
         specialize_run(sc, &s, &t);
         sc.out.push_str(&format!("#[no_mangle]
-pub fn {}(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ {}::run(c, n, fp, crate::vm::CallArgs::load(c)) }}
+pub fn {}(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ {}::run(c, n, fp, crate::vm::CallArgs::load(c).pass()) }}
 ", fname, s));
     } else {
         sc.out.push_str(&format!("#[no_mangle]
@@ -139,12 +139,12 @@ pub fn specialize_rec(sc: &mut SpecCtx, q: NodePtr) -> String {
     let name = format!("R_{:016x}", h);
     if sc.emitted.insert(name.clone()) {
         sc.rec.push(q as usize);
-        sc.out.push_str(&format!("pub struct {0};\nimpl Disp for {0} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ crate::vm::native_check(c)?; S_{1:016x}::run(c, n, fp, crate::vm::CallArgs::load(c)) }}\n    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr, fp: Fp, a: CallArgs) -> RV {{ crate::vm::native_check(c)?; S_{1:016x}::run(c, n, fp, a) }}\n}}\n", name, h));
+        sc.out.push_str(&format!("pub struct {0};\nimpl Disp for {0} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ crate::vm::native_check(c)?; S_{1:016x}::run(c, n, fp, crate::vm::CallArgs::load(c).pass()) }}\n    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr, fp: Fp, a: CallArgs) -> RV {{ crate::vm::native_check(c)?; S_{1:016x}::run(c, n, fp, a.pass()) }}\n}}\n", name, h));
     }
     name
 }
 fn specialize_run(sc: &mut SpecCtx, s: &str, t: &str) {
-    sc.out.push_str(&format!("pub struct {0};\nimpl {0} {{\n    #[inline(never)]\n    pub fn run(c: &mut Ctx, n: NodePtr, fp: Fp, a: CallArgs) -> RV {{ <{1} as Disp>::spec(c, n, fp, a) }}\n}}\n", s, t));
+    sc.out.push_str(&format!("pub struct {0};\nimpl {0} {{\n    #[inline(never)]\n    pub fn run(c: &mut Ctx, n: NodePtr, fp: Fp, a: crate::vm::CallPass) -> RV {{ <{1} as Disp>::spec(c, n, fp, a.unpass()) }}\n}}\n", s, t));
     sc.emitted.insert(s.to_string());
 }
 /// After the entries: S_<hash>::run of the recursion targets whose SD_ was not the one to provide it.
