@@ -2105,10 +2105,11 @@ pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const 
         BlockKind::Sym(mid) => {
             if args.is_empty() { return arg_err(c, "no receiver given"); }
             let recv = args[0];
+            let fl = if kw && args.len() > 1 { CF_KW } else { 0 };   // :m.to_proc.(recv, k: v) passes keywords on
             if unsafe { REFINEMENTS_ON } {
-                if let Some(r) = funcall_refined(c, b.cref, recv, mid, &args[1..], blkarg, 0) { return r; }
+                if let Some(r) = funcall_refined(c, b.cref, recv, mid, &args[1..], blkarg, fl) { return r; }
             }
-            funcall_public(c, recv, mid, &args[1..], blkarg)
+            funcall_flags(c, recv, mid, &args[1..], blkarg, fl)
         }
         BlockKind::Method(m) => {
             let mo = rmethod(m);
