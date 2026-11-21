@@ -87,8 +87,8 @@ pub fn range_each(c: &mut Ctx, slf: Value, mut f: impl FnMut(&mut Ctx, Value) ->
         for i in 0..c.ary_len(blk_data) { let v = c.ary_get(blk_data, i); if !f(c, v)? { break; } }
         return Ok(());
     }
-    if b == NIL || is_float(b) { return type_err(c, format!("can't iterate from {}", class_name_for_err(b))); }
-    if !respond_to(b, s::succ, true) { return type_err(c, format!("can't iterate from {}", class_name_for_err(b))); }
+    if b == NIL || is_float(b) { return type_err(c, format!("can't iterate from {}", class_path(real_class_of(b)))); }
+    if !respond_to(b, s::succ, true) { return type_err(c, format!("can't iterate from {}", class_path(real_class_of(b)))); }
     let mut cur = b;
     loop {
         if e != NIL {
@@ -123,7 +123,7 @@ cfn!(r_reverse_each, |c, slf, a, blk| {
         loop { if b != NIL && i < b.as_fix() { break; } yield1(c, blk, Value::fix(i))?; i -= 1; }
         return Ok(slf);
     }
-    if e == NIL { return type_err(c, format!("can't iterate from {}", class_name_for_err(e))); }
+    if e == NIL { return type_err(c, format!("can't iterate from {}", class_path(real_class_of(e)))); }
     let arr = r_to_a(c, slf, &[], std::ptr::null())?;
     let n = c.ary_len(arr);
     for i in (0..n).rev() { let v = c.ary_get(arr, i); yield1(c, blk, v)?; }
