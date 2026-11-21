@@ -2070,6 +2070,11 @@ pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind,
     let mut scopes: Vec<Vec<Vec<u8>>> = outer.iter().rev().map(|sc| sc.iter().map(|(n, _, _)| crate::symbol::sym_bytes(*n).to_vec()).collect()).collect();
     if !scopes.is_empty() { scopes.push(vec![]); }
     let pr = prism::parse(src, &prism::ParseOpts { filepath: file.as_bytes(), line, scopes, main_script: kind == IseqKind::Main, frozen_string_literal: 0 });
+    compile_parsed(&pr, src, file, kind, outer)
+}
+
+/// compile_source of a parse already made (the prelude's is made at build time).
+pub fn compile_parsed(pr: &ParseResult, src: &[u8], file: &'static str, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, String> {
     if !pr.errors.is_empty() {
         let mut msg = String::new();
         for e in &pr.errors {
@@ -2078,7 +2083,7 @@ pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind,
         }
         return Err(msg);
     }
-    let mut cm = Compiler::new(&pr, file);
+    let mut cm = Compiler::new(pr, file);
     if kind == IseqKind::Eval && !outer.is_empty() { cm.captures.entry(key(&pr.root)).or_default().insert(Sym(u32::MAX)); }
     cm.eval_outer = outer;
     if kind == IseqKind::Main && src.windows(16).any(|w| w == b"TOPLEVEL_BINDING") {
