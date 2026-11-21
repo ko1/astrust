@@ -114,6 +114,8 @@ impl Scope {
 pub struct Compiler<'a> {
     pr: &'a ParseResult,
     file: &'static str,
+    src: &'a [u8],
+    src_key: std::cell::OnceCell<u64>,   // hash of src: the program key of its bodies in hopt_index.txt (aot.rs)
     scopes: Vec<Scope>,
     captures: HashMap<usize, HashSet<Sym>>,
     pub eval_outer: Vec<Vec<(Sym, u32, u32)>>,  // eval: outer scopes' (name, hops, idx), innermost first
@@ -147,7 +149,7 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        Compiler { pr, file, scopes: vec![], captures: HashMap::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, errors: vec![],
+        Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, errors: vec![],
                    csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()] }
     }
 
@@ -461,7 +463,7 @@ impl<'a> Compiler<'a> {
         }));
         for ch in &sc.children { ch.parent.set(is); }
         if let Some(p) = self.scopes.last_mut() { p.children.push(is); }
-        crate::aot::register_iseq(is);
+        crate::aot::register_iseq(is, &|| *self.src_key.get_or_init(|| crate::astrust::hash_bytes(self.src)));
         is
     }
 
@@ -1159,6 +1161,32 @@ impl<'a> Compiler<'a> {
         self.seq(vec![set, rest])
     }
 
+    /// `recv.send(:m, args...)`: recv.m(args...) as a private-allowed call while recv's #send is Kernel's (node_send_sym).
+    /// Receiver and arguments are evaluated first, into hidden slots unless reading them twice is the same.
+    fn send_sym(&mut self, recv: Option<&PNode>, smid: Sym, m: Sym, args: &[&PNode], flags: u32, line: u32) -> NodePtr {
+        let mut pre = vec![];
+        let mut twice = |this: &mut Self, a: Option<&PNode>| -> [NodePtr; 3] {
+            match a {
+                None => [ALLOC_node_self(), ALLOC_node_self(), ALLOC_node_self()],
+                Some(a) if matches!(a.kind, Kind::IntegerNode { .. } | Kind::FloatNode { .. } | Kind::SymbolNode { .. } | Kind::NilNode
+                    | Kind::TrueNode | Kind::FalseNode | Kind::SelfNode | Kind::LocalVariableReadNode { .. }) => [this.c(a), this.c(a), this.c(a)],
+                Some(a) => {
+                    let sl = this.hidden_slot();
+                    let v = this.c(a);
+                    pre.push(ALLOC_node_lasgn(sl, v));
+                    [ALLOC_node_lvar(sl), ALLOC_node_lvar(sl), ALLOC_node_lvar(sl)]
+                }
+            }
+        };
+        let [r0, r1, r2] = twice(self, recv);
+        let (mut direct, mut general) = (vec![], vec![ALLOC_node_lit(Value::sym(m))]);
+        for a in args { let [x, y, _] = twice(self, Some(a)); direct.push(x); general.push(y); }
+        let call = ALLOC_node_call(r1, leak(direct), m, (flags | CF_FCALL) & !CF_VCALL, line);
+        let gen = ALLOC_node_call(r2, leak(general), smid, flags, line);
+        pre.push(ALLOC_node_send_sym(r0, smid, call, gen));
+        if pre.len() == 1 { pre.pop().unwrap() } else { self.seq(pre) }
+    }
+
     fn call(&mut self, n: &PNode, recv: Option<&PNode>, mid: Sym, args: Option<&PNode>, block: Option<&PNode>, line: u32) -> NodePtr {
         let args: Vec<&PNode> = match args { Some(PNode { kind: Kind::ArgumentsNode { arguments }, .. }) => arguments.iter().collect(), _ => vec![] };
         let safe = n.flags & pa::CALL_NODE_FLAGS_SAFE_NAVIGATION != 0;
@@ -1179,6 +1207,11 @@ impl<'a> Compiler<'a> {
                     let is = self.compile_block(b, locals, parameters.as_deref(), body.as_deref(), IseqKind::Lambda, line);
                     return ALLOC_node_lambda(is);
                 }
+            }
+        }
+        if (mid == s::send || mid == s::__send__) && block.is_none() && !safe && !attr && args.iter().all(|a| self.simple_arg(a)) {
+            if let Some(Kind::SymbolNode { unescaped }) = args.first().map(|a| &a.kind) {
+                return self.send_sym(recv, mid, intern(unescaped), &args[1..], flags, line);
             }
         }
         // receiver
@@ -2143,6 +2176,7 @@ pub fn compile_parsed(pr: &ParseResult, src: &[u8], file: &'static str, kind: Is
         return Err(msg);
     }
     let mut cm = Compiler::new(pr, file);
+    cm.src = src;
     if kind == IseqKind::Eval && !outer.is_empty() { cm.captures.entry(key(&pr.root)).or_default().insert(Sym(u32::MAX)); }
     cm.eval_outer = outer;
     if kind == IseqKind::Main && src.windows(16).any(|w| w == b"TOPLEVEL_BINDING") {

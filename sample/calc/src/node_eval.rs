@@ -65,7 +65,7 @@ pub fn EVAL_node_set(c: &mut Ctx, n: NodePtr, idx: u32, v: i64) -> i64 {
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_seq<D_xs: DispList>(c: &mut Ctx, n: NodePtr, xs: NodeList) -> i64 {
     let mut v = 0;
-    for i in 0..<D_xs as DispList>::len(xs) { v = <D_xs as DispList>::nth(c, xs, i); }
+    <D_xs as DispList>::each(c, xs,  |c, i, r| v = r);
     v
 }
 

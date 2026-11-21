@@ -632,6 +632,16 @@ pub fn DISPATCH_node_call_x(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
 }
 
 #[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_send_sym(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_send_sym");
+    let np = n as *mut NodeOf<node_send_sym_struct>;
+    unsafe {
+    let v_recv = <Dyn as Disp>::call(c, (*np).u.recv, fp)?;
+    EVAL_node_send_sym::<Dyn, Dyn>(c, n, fp, v_recv, (*np).u.smid, (*np).u.call, (*np).u.general, &mut (*np).u.g)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
 pub fn DISPATCH_node_attrasgn(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_attrasgn");
     let np = n as *mut NodeOf<node_attrasgn_struct>;

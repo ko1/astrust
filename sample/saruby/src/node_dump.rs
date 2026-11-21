@@ -730,6 +730,20 @@ fn DUMP_node_call_x(out: &mut String, n: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_send_sym(out: &mut String, n: NodePtr) {
+    let np = n as *mut NodeOf<node_send_sym_struct>;
+    unsafe {
+    out.push_str("(node_send_sym");
+    out.push(' '); dump_node(out, (*np).u.recv);
+    out.push(' '); out.push(':'); out.push_str(&crate::symbol::sym_str((*np).u.smid));
+    out.push(' '); dump_node(out, (*np).u.call);
+    out.push(' '); dump_node(out, (*np).u.general);
+    out.push(' '); out.push_str("<g>");
+    out.push(')');
+    }
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_attrasgn(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_attrasgn_struct>;
     unsafe {

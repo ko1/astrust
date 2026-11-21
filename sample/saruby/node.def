@@ -122,16 +122,12 @@ node_ary(c: &mut Ctx, n: NodePtr, fp: Fp, elems: NODES)
     let k = EVAL_LEN!(elems);
     // in locals, stored from registers: staged slots are read back with a wide load that stalls on their stores
     if k <= crate::avec::INLINE {
-        let x0 = if k > 0 { EVAL_NTH!(c, elems, 0)? } else { NIL };
-        let x1 = if k > 1 { EVAL_NTH!(c, elems, 1)? } else { NIL };
-        let x2 = if k > 2 { EVAL_NTH!(c, elems, 2)? } else { NIL };
-        return Ok(c.ary_new_small(k, [x0, x1, x2]));
+        let mut x = [NIL; crate::avec::INLINE];
+        EVAL_EACH!(c, elems, |c, i, v| { x[i] = v; Ok(()) })?;
+        return Ok(c.ary_new_small(k, x));
     }
     let base = stage(c, k)?;
-    for i in 0..k {
-        let v = EVAL_NTH!(c, elems, i)?;
-        base[i].set(v);
-    }
+    EVAL_EACH!(c, elems, |c, i, v| { base[i].set(v); Ok(()) })?;
     let a = c.ary_from_slots(&base[0..k]);
     c.set_sp(base, 0);
     Ok(a)
@@ -365,18 +361,9 @@ node_back_ref(c: &mut Ctx, n: NodePtr, fp: Fp, kind: u32)
 NODE_DEF
 node_block(c: &mut Ctx, n: NodePtr, fp: Fp, stmts: NODES)
 {
-    // unrolled by hand: a loop over nth() stays a loop + switch in specialized code
-    let k = EVAL_LEN!(stmts);
-    if k > 1 { EVAL_NTH!(c, stmts, 0)?; }
-    if k > 2 { EVAL_NTH!(c, stmts, 1)?; }
-    if k > 3 { EVAL_NTH!(c, stmts, 2)?; }
-    if k > 4 { EVAL_NTH!(c, stmts, 3)?; }
-    if k > 5 { EVAL_NTH!(c, stmts, 4)?; }
-    if k > 6 { EVAL_NTH!(c, stmts, 5)?; }
-    if k > 7 { EVAL_NTH!(c, stmts, 6)?; }
-    let mut i = 7;
-    while i + 1 < k { EVAL_NTH!(c, stmts, i)?; i += 1; }
-    EVAL_NTH!(c, stmts, k - 1)
+    let mut last = NIL;
+    EVAL_EACH!(c, stmts, |c, i, v| { last = v; Ok(()) })?;
+    Ok(last)
 }
 
 NODE_DEF
@@ -674,11 +661,7 @@ node_call(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, fl
         let base = stage(c, 2 + k)?;
         let r0 = EVAL_ARG!(c, recv)?;
         base[0].set(r0);
-        // the first three by hand: baked, LLVM keeps a loop over calls in arguments (tak) and spills around it
-        if k > 0 { let v = EVAL_NTH!(c, args, 0)?; base[2].set(v); }
-        if k > 1 { let v = EVAL_NTH!(c, args, 1)?; base[3].set(v); }
-        if k > 2 { let v = EVAL_NTH!(c, args, 2)?; base[4].set(v); }
-        for i in 3..k { let v = EVAL_NTH!(c, args, i)?; base[2 + i].set(v); }
+        EVAL_EACH!(c, args, |c, i, v| { base[2 + i].set(v); Ok(()) })?;
         (base, r0)
     };
     line.store(c.frame());
@@ -712,7 +695,7 @@ node_call_blk(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym
     let base = stage(c, 2 + k)?;
     let r0 = EVAL_ARG!(c, recv)?;
     base[0].set(r0);
-    for i in 0..k { let v = EVAL_NTH!(c, args, i)?; base[2 + i].set(v); }
+    EVAL_EACH!(c, args, |c, i, v| { base[2 + i].set(v); Ok(()) })?;
     line.store(c.frame());
     // with arguments in between, reading the slot back is cheaper than keeping the receiver live
     let r0 = if k == 0 { r0 } else { base[0].get() };
@@ -774,7 +757,7 @@ node_call_kw(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym,
     let k = EVAL_LEN!(args);
     let base = stage(c, 2 + k)?;
     base[0].set(EVAL_ARG!(c, recv)?);
-    for i in 0..k { let v = EVAL_NTH!(c, args, i)?; base[2 + i].set(v); }
+    EVAL_EACH!(c, args, |c, i, v| { base[2 + i].set(v); Ok(()) })?;
     line.store(c.frame());
     // baked: the callee's kentry compiled in (every keyword passed in declared order, no block literal)
     if SPEC_HASH!(callee) != 0 {
@@ -815,13 +798,21 @@ node_call_x(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, 
     srb_call_x(c, cc, mid, base, tmp, kw, blkv, ci, flags, fp)
 }
 
+// recv.send(:m, args...) (or __send__) from compile.rs: `call` is recv.m(args...) allowing private methods, `general`
+// the call of send itself; recv and the arguments are evaluated before (CRuby's order), so both read them
+NODE_DEF
+node_send_sym(c: &mut Ctx, n: NodePtr, fp: Fp, recv@child: Value, smid: Sym, call: NODE, general: NODE, g@ref: SendGuard)
+{
+    if send_guard(c, g, recv, smid) { EVAL_ARG!(c, call) } else { EVAL_ARG!(c, general) }
+}
+
 NODE_DEF
 node_attrasgn(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, flags: u32, line@hole: u32, cc@ref: CallCache, kind@bake: u32)
 {
     let k = EVAL_LEN!(args);
     let base = stage(c, 2 + k)?;
     base[0].set(EVAL_ARG!(c, recv)?);
-    for i in 0..k { let v = EVAL_NTH!(c, args, i)?; base[2 + i].set(v); }
+    EVAL_EACH!(c, args, |c, i, v| { base[2 + i].set(v); Ok(()) })?;
     line.store(c.frame());
     let val = base[1 + k].get();
     if kind == SITE_INTERP { call_cached(c, cc, mid, base, k as u32, std::ptr::null(), flags)?; return Ok(val); }
@@ -857,7 +848,7 @@ node_yield(c: &mut Ctx, n: NodePtr, fp: Fp, args: NODES, yc@ref: YieldCache, cal
     let blk = unsafe { (*c.frame).blk };
     if blk.is_null() { return srb_no_block(c); }
     let base = stage(c, 2 + k)?;
-    for i in 0..k { let v = EVAL_NTH!(c, args, i)?; base[2 + i].set(v); }
+    EVAL_EACH!(c, args, |c, i, v| { base[2 + i].set(v); Ok(()) })?;
     if SPEC_HASH!(callee) == 0 { srb_yield_note(yc, blk); return srb_yield_staged(c, blk, base, k as u32); }
     // baked, one block seen: its entry compiled in, guarded by the iseq (yc.fast is set once its hash matched)
     let b = unsafe { &*blk };
@@ -1104,20 +1095,16 @@ node_opt_ltlt(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, l
     if a.is_fixnum() && b.is_fixnum() && !c.int_redef() {
         if let Some(r) = a.fix_shl(b.as_fix()) { return Ok(r); }
     }
-    if is_array(a) && !redef(R_ARY_LTLT) && obj(a).flags & FL_FROZEN == 0 && obj(a).klass == vm().c_array {
-        c.ary_push(a, b);
-        return Ok(a);
+    // Array#<< / String#<< themselves.  They raise with this node's line and no frame of their own, as CRuby;
+    // a frozen Array (the only raise of Array#<<) goes out of line, keeping the line's store off this path
+    if is_array(a) && obj(a).klass == vm().c_array && !redef(R_ARY_LTLT) && obj(a).flags & FL_FROZEN == 0 {
+        return crate::builtins::array_methods::a_ltlt(c, a, &[b], std::ptr::null());
     }
-    if is_string(a) && is_string(b) && obj(a).klass == vm().c_string && !redef(R_STR_LTLT) {
-        if obj(a).flags & FL_FROZEN == 0 && rstr(a).enc == rstr(b).enc {
-            crate::string::str_append_same_enc(a, b);
-            return Ok(a);
-        }
+    if is_string(a) && obj(a).klass == vm().c_string && !redef(R_STR_LTLT) {
         line.store(c.frame());
-        crate::string::str_append_str(c, a, b)?;
-        return Ok(a);
+        return crate::builtins::string_methods::s_ltlt(c, a, &[b], std::ptr::null());
     }
-    srb_binop(c, a, b, s::ltlt, line.pos(), cc)
+    srb_ltlt_out(c, a, b, line.pos(), cc)
 }
 
 NODE_DEF
@@ -1157,11 +1144,13 @@ NODE_DEF
 node_opt_aref(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, line@hole: u32, cc@ref: OpCc, tf@ref: TyFb, ty@bake: u32)
 {
     // the class load sits between the two tag tests, or they are merged into setcc / or
+    // Array#[] / Hash#[] themselves
     if a.is_heap() && obj(a).klass.raw() == fast_ary_aref() && b.is_fixnum() {
-        if let Some(&x) = c.ary(a).get(b.as_fix() as usize) { return Ok(x); }
+        return Ok(crate::builtins::array_methods::ary_entry(c, a, b.as_fix()));
     } else if tf_hash(ty) && is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_AREF) {
         if ty == 0 { tf.0 |= TF_HASH; }
-        return crate::hash::hash_aref(c, a, b);
+        line.store(c.frame());
+        return crate::builtins::hash_methods::h_aref(c, a, &[b], std::ptr::null());
     }
     srb_aref_out(c, a, b, line.pos(), cc)
 }
@@ -1169,12 +1158,13 @@ node_opt_aref(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, l
 NODE_DEF
 node_opt_aset(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, v@child: Value, line@hole: u32, cc@ref: OpCc, tf@ref: TyFb, ty@bake: u32)
 {
-    if a.is_heap() && obj(a).klass.raw() == fast_ary_aset() && b.is_fixnum() && obj(a).flags & FL_FROZEN == 0 {
-        if let Some(x) = c.ary_mut(a).get_mut(b.as_fix() as usize) { *x = v; return Ok(v); }
+    // Array#[]= (its in-place case here, the rest in srb_aset_out) / Hash#[]= themselves
+    if a.is_heap() && obj(a).klass.raw() == fast_ary_aset() && b.is_fixnum() {
+        if crate::builtins::array_methods::ary_set_in(c, a, b.as_fix(), v) { return Ok(v); }
     } else if tf_hash(ty) && is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_ASET) {
         if ty == 0 { tf.0 |= TF_HASH; }
-        crate::hash::hash_aset(c, a, b, v)?;
-        return Ok(v);
+        line.store(c.frame());
+        return crate::builtins::hash_methods::h_aset(c, a, &[b, v], std::ptr::null());
     }
     srb_aset_out(c, a, b, v, line.pos(), cc)
 }

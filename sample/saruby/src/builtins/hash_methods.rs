@@ -83,8 +83,8 @@ cfn!(h_s_aref, |c, slf, a, blk| {
     for i in (0..a.len()).step_by(2) { hash_aset(c, h, a[i], a[i + 1])?; }
     Ok(h)
 });
-cfn!(h_aref, |c, slf, a, blk| hash_aref(c, slf, a[0]));
-cfn!(h_aset, |c, slf, a, blk| { modify(c, slf)?; hash_aset(c, slf, a[0], a[1])?; Ok(a[1]) });
+cfn!(#[inline] h_aref, |c, slf, a, blk| hash_aref(c, slf, a[0]));
+cfn!(#[inline] h_aset, |c, slf, a, blk| { hash_aset(c, slf, a[0], a[1])?; Ok(a[1]) });   // hash_aset raises for a frozen Hash
 cfn!(h_fetch, |c, slf, a, blk| {
     check_argc(c, a, 1, 2)?;
     match hash_get_opt(c, slf, a[0])? {

@@ -58,22 +58,24 @@ fn hole_value(op: &str, root: usize, off: usize) -> Option<u64> {
 thread_local! {
     // a program's blocks and keyword methods that have an entry node over their body: the body is baked only if it ran on its own
     static BLOCKS: std::cell::RefCell<Vec<&'static Iseq>> = const { std::cell::RefCell::new(Vec::new()) };
-    // an entry's program key in hopt_index.txt: its body's file, line and kind of entry
+    // an entry's program key in hopt_index.txt: a hash of its source text, its line and kind of entry
     static KEYS: std::cell::RefCell<std::collections::HashMap<usize, String>> = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 static SD_NAMES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 #[allow(static_mut_refs)]
-pub fn register_iseq(is: &'static Iseq) {
+pub fn register_iseq(is: &'static Iseq, src_key: &dyn Fn() -> u64) {
     let Some(st) = (unsafe { STORE.as_mut() }) else { return };
     let prelude = is.info.file == PRELUDE_FILE;
+    let src_key = src_key();
     let mut reg = |body: NodePtr, what: &str| {
         // SARUBY_SD_NAMES=1: which body each SD_<hash> is (to read a perf profile)
         if *SD_NAMES.get_or_init(|| std::env::var_os("SARUBY_SD_NAMES").is_some()) { eprintln!("SD_{:016x} {}{} {}:{}", hash_node(body), is.info.label, what, is.info.file, is.info.line); }
         // baked code assumes the layout of layout_tree (finish_iseq)
         if !node_laid(body) { return; }
-        let key = format!("{}:{}{}", is.info.file, is.info.line, what.trim());
+        // by content, not path: the same file run from another path or as a copy finds its own Hopt
+        let key = format!("{:016x}:{}{}", src_key, is.info.line, what.trim());
         let found = st.register(body as usize, hash_node(body), &key, prelude, env!("SARUBY_BUILD_ID"));
         KEYS.with(|k| k.borrow_mut().insert(body as usize, key));
         if let Some((p, name)) = found {

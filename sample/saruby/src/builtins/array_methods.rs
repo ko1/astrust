@@ -118,7 +118,7 @@ pub fn ary_aref(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
         return Ok(c.ary_from_vec(c.ary(slf)[st as usize..e].to_vec()));
     }
     let x = a[0];
-    if x.is_fixnum() { return Ok(norm_index(x.as_fix(), n).and_then(|i| c.ary(slf).get(i).copied()).unwrap_or(NIL)); }
+    if x.is_fixnum() { return Ok(ary_entry(c, slf, x.as_fix())); }
     if is_range(x) {
         return match crate::range::range_beg_len(c, x, n as i64, 0)? {
             Some((st, l)) => { let n = c.ary_len(slf) as i64; if st > n { return Ok(NIL); } Ok(c.ary_from_vec(c.ary(slf)[st as usize..(st + l).min(n) as usize].to_vec())) }
@@ -127,7 +127,42 @@ pub fn ary_aref(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
     }
     if crate::builtins::enumerator::is_arith_seq(c, x) { return crate::builtins::enumerator::arith_seq_slice(c, x, slf); }
     let i = num_to_long(c, x)?;
-    Ok(norm_index(i, n).and_then(|i| c.ary(slf).get(i).copied()).unwrap_or(NIL))
+    Ok(ary_entry(c, slf, i))
+}
+
+/// Array#[] of an Integer index (also the operator node's).
+#[inline]
+pub fn ary_entry(c: &Ctx, slf: Value, i: i64) -> Value {
+    let v = c.ary(slf);
+    // a negative i is out of range as usize: from the end, off the common path
+    match v.get(i as usize) { Some(&x) => x, None => ary_entry_neg(v, i) }
+}
+fn ary_entry_neg(v: &[Value], i: i64) -> Value {
+    if i >= 0 { return NIL; }
+    v.get(i.wrapping_add(v.len() as i64) as usize).copied().unwrap_or(NIL)
+}
+
+/// Array#[]= of an Integer index inside the Array of a non-frozen one; false: ary_store.
+#[inline]
+pub fn ary_set_in(c: &mut Ctx, slf: Value, i: i64, v: Value) -> bool {
+    if obj_flags(slf) & FL_FROZEN != 0 { return false; }
+    match c.ary_mut(slf).get_mut(i as usize) { Some(x) => { *x = v; true } None => false }
+}
+
+/// Array#[]= of an Integer index (also the operator node's, which raises without a frame of its own, as CRuby).
+pub fn ary_store(c: &mut Ctx, slf: Value, i: i64, val: Value) -> RV {
+    if ary_set_in(c, slf, i, val) { return Ok(val); }
+    c.ary_modify(slf)?;
+    let n = c.ary_len(slf);
+    let i2 = if i < 0 { i + n as i64 } else { i };
+    if i2 < 0 { return err(c, c.vm().c_index_error, format!("index {} too small for array; minimum: -{}", i, n)); }
+    if i2 >= ARY_MAX { return err(c, c.vm().c_index_error, format!("index {} too big", i)); }
+    if i2 > n as i64 { alloc_check(c, i2 + 1)?; }
+    let i2 = i2 as usize;
+    let v = c.ary_mut(slf);
+    if i2 >= v.len() { v.resize(i2 + 1, NIL); }
+    v[i2] = val;
+    Ok(val)
 }
 
 cfn!(a_s_new, |c, slf, a, blk| crate::builtins::object::c_new(c, slf, a, blk));
@@ -164,15 +199,7 @@ cfn!(a_aset, |c, slf, a, blk| {
         match crate::range::range_beg_len(c, a[0], n as i64, 1)? { Some((st, l)) => (st as usize, l as usize, a[1]), None => return Ok(a[1]) }
     } else {
         let i = num_to_long(c, a[0])?;
-        let i2 = if i < 0 { i + n as i64 } else { i };
-        if i2 < 0 { return err(c, c.vm().c_index_error, format!("index {} too small for array; minimum: -{}", i, n)); }
-        if i2 >= ARY_MAX { return err(c, c.vm().c_index_error, format!("index {} too big", i)); }
-        if i2 > c.ary_len(slf) as i64 { alloc_check(c, i2 + 1)?; }
-        let i2 = i2 as usize;
-        let v = c.ary_mut(slf);
-        if i2 >= v.len() { v.resize(i2 + 1, NIL); }
-        v[i2] = a[1];
-        return Ok(a[1]);
+        return ary_store(c, slf, i, a[1]);
     };
     if st as i64 >= ARY_MAX { return err(c, c.vm().c_index_error, format!("index {} too big", st)); }
     if st > c.ary_len(slf) { alloc_check(c, st as i64 + 1)?; }
@@ -222,7 +249,7 @@ cfn!(#[inline] a_last, |c, slf, a, blk| {
 cfn!(#[inline] a_push, |c, slf, a, blk| { let v = c.ary_modify(slf)?; if a.len() == 1 { if !v.try_push(a[0]) { push_grow(v, a[0]); } } else { v.extend_from_slice(a); } Ok(slf) });
 #[inline(never)]
 fn push_grow(v: &mut crate::avec::AVec, x: Value) { v.push(x) }
-cfn!(a_ltlt, |c, slf, a, blk| { c.ary_modify(slf)?; c.ary_push(slf, a[0]); Ok(slf) });
+cfn!(#[inline] a_ltlt, |c, slf, a, blk| { c.ary_modify(slf)?; c.ary_push(slf, a[0]); Ok(slf) });
 cfn!(a_pop, |c, slf, a, blk| {
     let v = c.ary_modify(slf)?;
     if a.is_empty() { return Ok(v.pop().unwrap_or(NIL)); }

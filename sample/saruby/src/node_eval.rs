@@ -105,6 +105,9 @@ use crate::symbol::s;
 
 // general call: splats, keywords, block-pass (described by ci)
 
+// recv.send(:m, args...) (or __send__) from compile.rs: `call` is recv.m(args...) allowing private methods, `general`
+// the call of send itself; recv and the arguments are evaluated before (CRuby's order), so both read them
+
 
 
 
@@ -277,16 +280,12 @@ pub fn EVAL_node_ary<D_elems: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, elems: 
     let k = <D_elems as DispList>::len(elems);
     // in locals, stored from registers: staged slots are read back with a wide load that stalls on their stores
     if k <= crate::avec::INLINE {
-        let x0 = if k > 0 { <D_elems as DispList>::nth(c, elems, 0, fp)? } else { NIL };
-        let x1 = if k > 1 { <D_elems as DispList>::nth(c, elems, 1, fp)? } else { NIL };
-        let x2 = if k > 2 { <D_elems as DispList>::nth(c, elems, 2, fp)? } else { NIL };
-        return Ok(c.ary_new_small(k, [x0, x1, x2]));
+        let mut x = [NIL; crate::avec::INLINE];
+        <D_elems as DispList>::each(c, elems, fp,  |c, i, v| { x[i] = v; Ok(()) })?;
+        return Ok(c.ary_new_small(k, x));
     }
     let base = stage(c, k)?;
-    for i in 0..k {
-        let v = <D_elems as DispList>::nth(c, elems, i, fp)?;
-        base[i].set(v);
-    }
+    <D_elems as DispList>::each(c, elems, fp,  |c, i, v| { base[i].set(v); Ok(()) })?;
     let a = c.ary_from_slots(&base[0..k]);
     c.set_sp(base, 0);
     Ok(a)
@@ -533,18 +532,9 @@ pub fn EVAL_node_back_ref(c: &mut Ctx, n: NodePtr, fp: Fp, kind: u32) -> RV {
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_block<D_stmts: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, stmts: NodeList) -> RV {
-    // unrolled by hand: a loop over nth() stays a loop + switch in specialized code
-    let k = <D_stmts as DispList>::len(stmts);
-    if k > 1 { <D_stmts as DispList>::nth(c, stmts, 0, fp)?; }
-    if k > 2 { <D_stmts as DispList>::nth(c, stmts, 1, fp)?; }
-    if k > 3 { <D_stmts as DispList>::nth(c, stmts, 2, fp)?; }
-    if k > 4 { <D_stmts as DispList>::nth(c, stmts, 3, fp)?; }
-    if k > 5 { <D_stmts as DispList>::nth(c, stmts, 4, fp)?; }
-    if k > 6 { <D_stmts as DispList>::nth(c, stmts, 5, fp)?; }
-    if k > 7 { <D_stmts as DispList>::nth(c, stmts, 6, fp)?; }
-    let mut i = 7;
-    while i + 1 < k { <D_stmts as DispList>::nth(c, stmts, i, fp)?; i += 1; }
-    <D_stmts as DispList>::nth(c, stmts, k - 1, fp)
+    let mut last = NIL;
+    <D_stmts as DispList>::each(c, stmts, fp,  |c, i, v| { last = v; Ok(()) })?;
+    Ok(last)
 }
 
 
@@ -861,11 +851,7 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, H_line: crate::vm::LineHol
         let base = stage(c, 2 + k)?;
         let r0 = <D_recv as Disp>::call(c, recv, fp)?;
         base[0].set(r0);
-        // the first three by hand: baked, LLVM keeps a loop over calls in arguments (tak) and spills around it
-        if k > 0 { let v = <D_args as DispList>::nth(c, args, 0, fp)?; base[2].set(v); }
-        if k > 1 { let v = <D_args as DispList>::nth(c, args, 1, fp)?; base[3].set(v); }
-        if k > 2 { let v = <D_args as DispList>::nth(c, args, 2, fp)?; base[4].set(v); }
-        for i in 3..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
+        <D_args as DispList>::each(c, args, fp,  |c, i, v| { base[2 + i].set(v); Ok(()) })?;
         (base, r0)
     };
     line.store(c.frame());
@@ -900,7 +886,7 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, H_line: crate::vm::Lin
     let base = stage(c, 2 + k)?;
     let r0 = <D_recv as Disp>::call(c, recv, fp)?;
     base[0].set(r0);
-    for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
+    <D_args as DispList>::each(c, args, fp,  |c, i, v| { base[2 + i].set(v); Ok(()) })?;
     line.store(c.frame());
     // with arguments in between, reading the slot back is cheaper than keeping the receiver live
     let r0 = if k == 0 { r0 } else { base[0].get() };
@@ -962,7 +948,7 @@ pub fn EVAL_node_call_kw<D_recv: Disp, D_args: DispList, H_line: crate::vm::Line
     let k = <D_args as DispList>::len(args);
     let base = stage(c, 2 + k)?;
     base[0].set(<D_recv as Disp>::call(c, recv, fp)?);
-    for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
+    <D_args as DispList>::each(c, args, fp,  |c, i, v| { base[2 + i].set(v); Ok(()) })?;
     line.store(c.frame());
     // baked: the callee's kentry compiled in (every keyword passed in declared order, no block literal)
     if callee_hash != 0 {
@@ -1006,11 +992,18 @@ pub fn EVAL_node_call_x<D_recv: Disp, D_args: DispList, H_line: crate::vm::LineH
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_send_sym<D_call: Disp, D_general: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: Value, smid: Sym, call: NodePtr, general: NodePtr, g: &mut SendGuard) -> RV {
+    if send_guard(c, g, recv, smid) { <D_call as Disp>::call(c, call, fp) } else { <D_general as Disp>::call(c, general, fp) }
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_attrasgn<D_recv: Disp, D_args: DispList, H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: H_line, cc: &mut CallCache, kind: u32) -> RV {
     let k = <D_args as DispList>::len(args);
     let base = stage(c, 2 + k)?;
     base[0].set(<D_recv as Disp>::call(c, recv, fp)?);
-    for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
+    <D_args as DispList>::each(c, args, fp,  |c, i, v| { base[2 + i].set(v); Ok(()) })?;
     line.store(c.frame());
     let val = base[1 + k].get();
     if kind == SITE_INTERP { call_cached(c, cc, mid, base, k as u32, std::ptr::null(), flags)?; return Ok(val); }
@@ -1048,7 +1041,7 @@ pub fn EVAL_node_yield<D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr
     let blk = unsafe { (*c.frame).blk };
     if blk.is_null() { return srb_no_block(c); }
     let base = stage(c, 2 + k)?;
-    for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
+    <D_args as DispList>::each(c, args, fp,  |c, i, v| { base[2 + i].set(v); Ok(()) })?;
     if callee_hash == 0 { srb_yield_note(yc, blk); return srb_yield_staged(c, blk, base, k as u32); }
     // baked, one block seen: its entry compiled in, guarded by the iseq (yc.fast is set once its hash matched)
     let b = unsafe { &*blk };
@@ -1312,20 +1305,16 @@ pub fn EVAL_node_opt_ltlt<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, 
     if a.is_fixnum() && b.is_fixnum() && !c.int_redef() {
         if let Some(r) = a.fix_shl(b.as_fix()) { return Ok(r); }
     }
-    if is_array(a) && !redef(R_ARY_LTLT) && obj(a).flags & FL_FROZEN == 0 && obj(a).klass == vm().c_array {
-        c.ary_push(a, b);
-        return Ok(a);
+    // Array#<< / String#<< themselves.  They raise with this node's line and no frame of their own, as CRuby;
+    // a frozen Array (the only raise of Array#<<) goes out of line, keeping the line's store off this path
+    if is_array(a) && obj(a).klass == vm().c_array && !redef(R_ARY_LTLT) && obj(a).flags & FL_FROZEN == 0 {
+        return crate::builtins::array_methods::a_ltlt(c, a, &[b], std::ptr::null());
     }
-    if is_string(a) && is_string(b) && obj(a).klass == vm().c_string && !redef(R_STR_LTLT) {
-        if obj(a).flags & FL_FROZEN == 0 && rstr(a).enc == rstr(b).enc {
-            crate::string::str_append_same_enc(a, b);
-            return Ok(a);
-        }
+    if is_string(a) && obj(a).klass == vm().c_string && !redef(R_STR_LTLT) {
         line.store(c.frame());
-        crate::string::str_append_str(c, a, b)?;
-        return Ok(a);
+        return crate::builtins::string_methods::s_ltlt(c, a, &[b], std::ptr::null());
     }
-    srb_binop(c, a, b, s::ltlt, line.pos(), cc)
+    srb_ltlt_out(c, a, b, line.pos(), cc)
 }
 
 
@@ -1368,11 +1357,13 @@ pub fn EVAL_node_opt_or<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_aref<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
     // the class load sits between the two tag tests, or they are merged into setcc / or
+    // Array#[] / Hash#[] themselves
     if a.is_heap() && obj(a).klass.raw() == fast_ary_aref() && b.is_fixnum() {
-        if let Some(&x) = c.ary(a).get(b.as_fix() as usize) { return Ok(x); }
+        return Ok(crate::builtins::array_methods::ary_entry(c, a, b.as_fix()));
     } else if tf_hash(ty) && is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_AREF) {
         if ty == 0 { tf.0 |= TF_HASH; }
-        return crate::hash::hash_aref(c, a, b);
+        line.store(c.frame());
+        return crate::builtins::hash_methods::h_aref(c, a, &[b], std::ptr::null());
     }
     srb_aref_out(c, a, b, line.pos(), cc)
 }
@@ -1381,12 +1372,13 @@ pub fn EVAL_node_opt_aref<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_aset<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, v: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
-    if a.is_heap() && obj(a).klass.raw() == fast_ary_aset() && b.is_fixnum() && obj(a).flags & FL_FROZEN == 0 {
-        if let Some(x) = c.ary_mut(a).get_mut(b.as_fix() as usize) { *x = v; return Ok(v); }
+    // Array#[]= (its in-place case here, the rest in srb_aset_out) / Hash#[]= themselves
+    if a.is_heap() && obj(a).klass.raw() == fast_ary_aset() && b.is_fixnum() {
+        if crate::builtins::array_methods::ary_set_in(c, a, b.as_fix(), v) { return Ok(v); }
     } else if tf_hash(ty) && is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_ASET) {
         if ty == 0 { tf.0 |= TF_HASH; }
-        crate::hash::hash_aset(c, a, b, v)?;
-        return Ok(v);
+        line.store(c.frame());
+        return crate::builtins::hash_methods::h_aset(c, a, &[b, v], std::ptr::null());
     }
     srb_aset_out(c, a, b, v, line.pos(), cc)
 }

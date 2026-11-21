@@ -6,6 +6,8 @@
 #     bi_a.rb / bi_b.rb      the same `x.size` site, Array#size in A, Hash#size in B (the bodies follow from the name)
 #   shared (same shape, other profile): with one store baked by A and then B, each runs within 2% of its own store
 #   (an SD is named by its structure and its profile: B's SD does not replace A's, nor is A's taken for B's)
+#   and a copy of B at another path, run with that store, within 2% of B with its own store (hopt_index.txt is keyed
+#   by the source text, not the path)
 #     ivar_a.rb / ivar_b.rb  the same `sum` and `run`, the class's ivars created in the other order (other slots)
 #     poly_a.rb / poly_b.rb  the same `x.m` site, a class whose #m is another method in each
 # Every run must print what B (or A) prints with no store.  Prints the numbers either way.
@@ -45,6 +47,12 @@ pair() {  # A B MODE
     [ "$nb" = "$m0" ] && [ "$pa" = "$qa" ] && [ "$na" = "$qa" ] || { echo "FAIL: output differs between stores"; ok=0; }
     [ $((jb * 100)) -le $((ib * 102)) ] || { echo "FAIL: $b with the shared store more than 2% over its own store"; ok=0; }
     [ $((ka * 100)) -le $((ja * 102)) ] || { echo "FAIL: $a with the shared store more than 2% over its own store"; ok=0; }
+    # the program key is the source's content, not its path: a copy of B elsewhere finds B's SD, not A's
+    mkdir -p elsewhere; cp "$b" "elsewhere/copy_$b"
+    read -r _ jc nc <<< "$(run storeAB "elsewhere/copy_$b")"
+    printf "%s  a copy at elsewhere/copy_%s with that store: %dM\n" "$b" "$b" $((jc / 1000000))
+    [ "$nc" = "$m0" ] || { echo "FAIL: output differs for the copy"; ok=0; }
+    [ $((jc * 100)) -le $((ib * 102)) ] || { echo "FAIL: the copy of $b more than 2% over $b's own store"; ok=0; }
   fi
   [ $ok = 1 ] || all=0
 }

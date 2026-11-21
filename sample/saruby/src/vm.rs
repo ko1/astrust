@@ -1498,6 +1498,26 @@ pub fn send_fast(c: &mut Ctx, recv: Value, base: Stk, argc: u32, blk: *const Blo
     Some(r)
 }
 
+/// node_send_sym: the receiver class whose #send (or #__send__) was Kernel's, at a method serial.
+#[derive(Default)]
+pub struct SendGuard { klass: u64, serial: u64 }
+
+/// Is recv's `smid` (send / __send__) the builtin?  Refinements in scope: no (the call of send decides).
+#[inline(always)]
+pub fn send_guard(c: &Ctx, g: &mut SendGuard, recv: Value, smid: Sym) -> bool {
+    let k = class_of(recv);
+    if g.klass == k.raw() && g.serial == method_serial() && !c.refinements_on() { return true; }
+    send_guard_fill(c, g, k, smid)
+}
+
+#[inline(never)]
+fn send_guard_fill(c: &Ctx, g: &mut SendGuard, k: Value, smid: Sym) -> bool {
+    if c.refinements_on() { return false; }
+    let ok = crate::inline_builtin::cache_key(lookup_method(k, smid), k) == BI_SEND;
+    if ok { g.klass = k.raw(); g.serial = method_serial(); }
+    ok
+}
+
 /// (class, name) -> method of send_fast, direct-mapped; valid while the method serial is unchanged.
 #[derive(Clone, Copy)]
 pub struct SendWay { klass: u64, mid: u64, serial: u64, me: *const MethodEntry, entry: NodePtr, argc: u32 }
@@ -2144,8 +2164,9 @@ pub fn is_lambda_block(b: *const Block) -> bool {
     matches!(b.kind, BlockKind::Iseq(is) if unsafe { (*is).kind } == IseqKind::Lambda)
 }
 
-/// yield: run the block with args (copied to the VM stack).
-#[inline]
+/// yield: run the block with args (copied to the VM stack).  One copy: its callers are in every codegen unit,
+/// and an #[inline] copy per unit made a builtin's instruction count depend on how cargo split them.
+#[inline(never)]
 pub fn yield_block(c: &mut Ctx, blk: *const Block, args: &[Value]) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("yield: from a builtin (yield_block)");
     if blk.is_null() { return err(c, vm().c_local_jump_error, "no block given (yield)"); }

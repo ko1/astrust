@@ -2221,6 +2221,45 @@ fn SPECIALIZE_node_call_x(sc: &mut SpecCtx, n: NodePtr) -> String {
 }
 
 #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
+fn SPECIALIZE_node_send_sym(sc: &mut SpecCtx, n: NodePtr) -> String {
+    let own_hash = hash_node(n);
+    let was_open = !sc.open.insert(own_hash);
+    let u = unsafe { &(*(n as *mut NodeOf<node_send_sym_struct>)).u };
+    let t_recv = specialize_node(sc, u.recv);
+    let t_call = specialize_node(sc, u.call);
+    let t_general = specialize_node(sc, u.general);
+    let np = n as *mut NodeOf<node_send_sym_struct>;
+    let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
+    unsafe {
+    a.push("v_recv".to_string());
+    a.push("(*np).u.smid".to_string());
+    a.push(child_ptr_expr(n, u.call));
+    a.push(child_ptr_expr(n, u.general));
+    a.push("&mut (*np).u.g".to_string());
+    }
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by what is baked too (children's types, @bake values), not by the hash alone:
+    // two sites with one hash may have seen different things
+    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_recv.as_str(), t_call.as_str(), t_general.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
+    if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());
+    let mut body = String::new();
+    body.push_str(&format!("pub struct {};\n", name));
+    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
+    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ unsafe {{\n", name));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_send_sym_struct>;\n", "n"));
+    body.push_str(&format!("        let v_recv = <{} as Disp>::call(c, {}, fp)?;\n", t_recv, child_ptr_expr(n, u.recv)));
+    body.push_str(&format!("        EVAL_node_send_sym{}({})\n    }} }}\n", format!("::<{}, {}>", t_call, t_general), a.join(", ")));
+
+
+    body.push_str("}
+");
+    sc.out.push_str(&body);
+    name
+}
+
+#[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
 fn SPECIALIZE_node_attrasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     let own_hash = hash_node(n);
     let was_open = !sc.open.insert(own_hash);
@@ -3750,7 +3789,16 @@ pub fn specialize_list(sc: &mut SpecCtx, ns: &NodeList, parent: NodePtr) -> Stri
         let x = child_ptr_expr(parent, ns[i]).replacen("n.", "(ns.as_ptr() as NodePtr).", 1);
         s.push_str(&format!("            {} => unsafe {{ <{} as Disp>::call(c, {}, fp) }},\n", i, t, x));
     }
-    s.push_str("            _ => unsafe { std::hint::unreachable_unchecked() },\n        }\n    }\n}\n");
+    s.push_str("            _ => unsafe { std::hint::unreachable_unchecked() },\n        }\n    }\n");
+    // EVAL_EACH!: the calls in a row
+    s.push_str("    #[inline(always)]\n    fn each<F: FnMut(&mut Ctx, usize, Value) -> Result<(), Esc>>(c: &mut Ctx, ns: NodeList, fp: Fp, mut f: F) -> Result<(), Esc> {\n");
+    for (i, t) in ts.iter().enumerate() {
+        let x = child_ptr_expr(parent, ns[i]).replacen("n.", "(ns.as_ptr() as NodePtr).", 1);
+        let call = format!("<{} as Disp>::call(c, unsafe {{ {} }}, fp)", t, x);
+        let step = format!("{{ let r = {}; f(c, {}, r) }}", "@CALL@?".replace("@CALL@", &call), i);
+        s.push_str(&format!("        {}\n", "@STEP@?;".replace("@STEP@", &step)));
+    }
+    s.push_str("        Ok(())\n    }\n}\n");
     sc.emitted.insert(name.clone());
     sc.out.push_str(&s);
     name

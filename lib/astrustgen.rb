@@ -45,7 +45,11 @@ require 'optparse'
 # Operand forms:
 #   x: NODE           lazy child; evaluate with EVAL_ARG!(c, x) (optionally EVAL_ARG!(c, x, <common args...>))
 #   x@child: VALUE    eager child: evaluated by the generated glue, the body receives the value
-#   xs: NODES         a list of lazy children: EVAL_LEN!(xs), EVAL_NTH!(c, xs, i)
+#   xs: NODES         a list of lazy children: EVAL_LEN!(xs), EVAL_NTH!(c, xs, i), and
+#                     EVAL_EACH!(c, xs, |c, i, r| ...): every child in order, its result r to the closure.  A
+#                     specialized list (its length known) makes the calls in a row (ASTroGen's FOR_EACH_NODE_ARG):
+#                     the body keeps the plain loop and the generator unrolls it.  The closure returns the
+#                     embedder's `each_type`; `each_stmt` says how a step stops the walk (`?`, say).
 #   x@ref: T          T stored inline in the node; the body receives `&mut T` (caches etc.); not hashed
 #   x@hole: T         a bound operand (a site's own value: a line number, say): stored in the node, not hashed,
 #                     the body receives `&'static T`, its address in the node.  Code is then shared by every site
@@ -65,6 +69,8 @@ module ASTrustGen
   self.value_type = 'Value'
 
   class NodeDef
+    # DynList::each (the interpreter's EVAL_EACH!): this many children before the loop
+    DYN_EACH_UNROLL = 3
     GenTask = Struct.new(:name)
     def self.gen_tasks
       @gen_tasks ||= (superclass.respond_to?(:gen_tasks) ? superclass.gen_tasks.dup : [])
@@ -215,6 +221,13 @@ module ASTrustGen
       # Condition mode (NODE_TEST / EVAL_TEST!): its result type, and how a value result becomes one. nil = off.
       def test_type = nil
       def test_default(e) = e
+      # EVAL_EACH!: what the closure gets for a child's result `e` (`e?` passes the value and stops at an Err) and its
+      # type; what the closure and the walk return, one step as a statement (`e?;` stops at an Err), the end.
+      def each_arg_type = result_type
+      def each_arg(e) = e
+      def each_type = "()"
+      def each_stmt(e) = "#{e};"
+      def each_ok = "()"
       # Opaque (non-scalar, non-node) operands: hash / specialize / dump.
       def opaque_hash_expr(op, f) = "0u64"
       def opaque_specialize_arg(op, f) = "a.push(\"(*np).u.#{op.name}\".to_string());"
@@ -334,6 +347,7 @@ module ASTrustGen
           "<D_#{xs} as DispList>::nth(#{c}, #{xs}, #{i}#{args.empty? ? '' : ", #{args}"})"
         }.gsub(/SPEC_HASH!\(\s*(\w+)\s*\)/) { "#{$1}_hash" }
          .gsub(/EVAL_SPEC!\(\s*(\w+)\s*,\s*(\w+)\s*,/) { "<D_#{$2} as Disp>::spec(#{$1}," }
+         .gsub(/EVAL_EACH!\(\s*(\w+)\s*,\s*(\w+)\s*,/) { "<D_#{$2} as DispList>::each(#{$1}, #{$2}, #{extra.map { "#{it}, " }.join}" }
          .gsub(/EVAL_LEN!\(\s*(\w+)\s*\)/) { "<D_#{$1} as DispList>::len(#{$1})" }
          .gsub(/EVAL_TEST!\(\s*(\w+)\s*,\s*(\w+)\s*\)/) { "<D_#{$2} as Disp>::test(#{$1}, #{$2}#{extra.empty? ? '' : ", #{extra.join(', ')}"})" }
       end
@@ -882,6 +896,8 @@ module ASTrustGen
       pub trait DispList {
           fn len(ns: NodeList) -> usize;
           fn nth(#{params[0]}, ns: NodeList, i: usize#{params.drop(2).map { ", #{it}" }.join}) -> #{n.result_type};
+          /// Every child in order, its result to f (EVAL_EACH!).
+          fn each<F: FnMut(#{ptypes[0]}, usize, #{n.each_arg_type}) -> #{n.each_type}>(#{params[0]}, ns: NodeList#{params.drop(2).map { ", #{it}" }.join}, f: F) -> #{n.each_type};
       }
       pub struct Dyn;
       impl Disp for Dyn {
@@ -895,6 +911,17 @@ module ASTrustGen
           fn nth(#{params[0]}, ns: NodeList, i: usize#{params.drop(2).map { ", #{it}" }.join}) -> #{n.result_type} {
               let x = ns[i];
               unsafe { ((*x).head.dispatcher)(#{([pnames[0], 'x'] + pnames.drop(2)).join(', ')}) }
+          }
+          #[inline(always)]
+          fn each<F: FnMut(#{ptypes[0]}, usize, #{n.each_arg_type}) -> #{n.each_type}>(#{params[0]}, ns: NodeList#{params.drop(2).map { ", #{it}" }.join}, mut f: F) -> #{n.each_type} {
+              // the first ones in a row, as ASTroGen's per-arity dispatchers (short lists are the common case)
+              #{(0...DYN_EACH_UNROLL).map { |k| "if ns.len() > #{k} { let x = ns[#{k}]; let r = #{n.each_arg("unsafe { ((*x).head.dispatcher)(#{([pnames[0], 'x'] + pnames.drop(2)).join(', ')}) }")}; #{n.each_stmt("f(#{pnames[0]}, #{k}, r)")} }" }.join("\n        ")}
+              for i in #{DYN_EACH_UNROLL}..ns.len() {
+                  let x = ns[i];
+                  let r = #{n.each_arg("unsafe { ((*x).head.dispatcher)(#{([pnames[0], 'x'] + pnames.drop(2)).join(', ')}) }")};
+                  #{n.each_stmt("f(#{pnames[0]}, i, r)")}
+              }
+              #{n.each_ok}
           }
       }
 
@@ -931,7 +958,16 @@ module ASTrustGen
               #{first.contiguous? ? 'let x = child_ptr_expr(parent, ns[i]).replacen("' + first.prefix_names[1] + '.", "(ns.as_ptr() as NodePtr).", 1);' : 'let x = format!("*ns.get_unchecked({})", i);'}
               s.push_str(&format!("            {} => unsafe {{ <{} as Disp>::call(#{([first.prefix_names[0], '{}'] + first.prefix_names.drop(2)).join(', ')}) }},\\n", i, t, x));
           }
-          s.push_str("            _ => unsafe { std::hint::unreachable_unchecked() },\\n        }\\n    }\\n}\\n");
+          s.push_str("            _ => unsafe { std::hint::unreachable_unchecked() },\\n        }\\n    }\\n");
+          // EVAL_EACH!: the calls in a row
+          s.push_str("    #[inline(always)]\\n    fn each<F: FnMut(#{first.prefix_params[0].split(':', 2).last.strip}, usize, #{first.each_arg_type}) -> #{first.each_type}>(#{first.prefix_params[0]}, ns: NodeList#{first.prefix_params.drop(2).map { ", #{it}" }.join}, mut f: F) -> #{first.each_type} {\\n");
+          for (i, t) in ts.iter().enumerate() {
+              #{first.contiguous? ? 'let x = child_ptr_expr(parent, ns[i]).replacen("' + first.prefix_names[1] + '.", "(ns.as_ptr() as NodePtr).", 1);' : 'let x = format!("*ns.get_unchecked({})", i);'}
+              let call = format!("<{} as Disp>::call(#{([first.prefix_names[0], 'unsafe {{ {} }}'] + first.prefix_names.drop(2)).join(', ')})", t, x);
+              let step = format!("{{ let r = {}; f(#{first.prefix_names[0]}, {}, r) }}", "#{ASTrustGen.rust_str(first.each_arg('@CALL@'))}".replace("@CALL@", &call), i);
+              s.push_str(&format!("        {}\\n", "#{ASTrustGen.rust_str(first.each_stmt('@STEP@'))}".replace("@STEP@", &step)));
+          }
+          s.push_str("        #{ASTrustGen.rust_str(first.each_ok)}\\n    }\\n}\\n");
           sc.emitted.insert(name.clone());
           sc.out.push_str(&s);
           name
