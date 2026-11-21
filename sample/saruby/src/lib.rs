@@ -33,6 +33,7 @@ pub mod vm;
 pub mod compile;
 pub mod rt;
 pub mod opt;
+pub mod inline_builtin;
 pub mod bignum;
 pub mod string;
 pub mod str_legacy;
@@ -224,6 +225,7 @@ fn run_main(o: Opts) -> i32 {
     vm.dollar_zero = string::str_new(file.as_bytes());
     let file: &'static str = Box::leak(file.into_boxed_str());
 
+    inline_builtin::init(&c);
     // prelude (Ruby-level built-ins)
     if let Err(_) = builtins::prelude::load_prelude(&mut c) {
         let e = c.esc_val;

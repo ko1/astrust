@@ -141,7 +141,8 @@ pub fn bump_method_serial() { METHOD_SERIAL.fetch_add(1, std::sync::atomic::Orde
 
 #[derive(Default)]
 // spec_klass: cc.klass while the entry it holds is the one baked into the site (call_spec_out)
-pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize, pub fast_hash: u64, pub fast_argc: u32, pub poly_next: u32, pub poly: usize, pub cfunc: usize, pub arity: i32, pub spec_klass: u64 }
+// bi: which inlinable builtin it holds, and for which receivers (inline_builtin::cache_key)
+pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize, pub fast_hash: u64, pub fast_argc: u32, pub poly_next: u32, pub poly: usize, pub cfunc: usize, pub arity: i32, pub bi: u32, pub spec_klass: u64 }
 /// A `yield` site: `seen` = the block iseq it ran (1: several), what the bake speculates on;
 /// `fast` = the iseq whose entry is compiled into the site, set once its hash was checked.
 #[derive(Default)]
@@ -1498,7 +1499,7 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Valu
 
 #[inline(never)]
 fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry, serial: u64, flags: u32) {
-    cc.klass = klass.raw(); cc.serial = serial; cc.me = me as usize; cc.fast = 0; cc.fast_argc = u32::MAX; cc.fast_hash = 0; cc.cfunc = 0;
+    cc.klass = klass.raw(); cc.serial = serial; cc.me = me as usize; cc.fast = 0; cc.fast_argc = u32::MAX; cc.fast_hash = 0; cc.cfunc = 0; cc.bi = 0;
     if me.is_null() { return; }
     let m = unsafe { &*me };
     if m.visi != VISI_PUBLIC && flags & CF_FCALL == 0 { return; }
@@ -1520,7 +1521,7 @@ fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry
                 }
             }
         }
-        MKind::Cfunc(f, arity) => { cc.cfunc = f as usize; cc.arity = arity; }
+        MKind::Cfunc(f, arity) => { cc.cfunc = f as usize; cc.arity = arity; cc.bi = crate::inline_builtin::cache_key(me, klass); }
         MKind::AttrReader(name) | MKind::AttrWriter(name) => {
             let cd = rclass(klass);
             if !cd.is_singleton && cd.alloc == AllocKind::Object {

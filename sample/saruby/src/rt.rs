@@ -96,6 +96,9 @@ pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: u32, cc: &mut CallCac
         return Ok(if i < 0 { v.len().checked_sub(i.unsigned_abs() as usize).and_then(|j| v.get(j).copied()).unwrap_or(NIL) } else { NIL });
     }
     if is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_AREF) { return crate::hash::hash_aref(c, a, b); }
+    // Integer#[] (optcarrot's bit tests): its body when the site's cache holds it, without the call
+    use crate::inline_builtin::*;
+    if bi_hit(cc, a, BI_INT_AREF) { if let Some(v) = bi_body(c, BI_INT_AREF, a, b) { return Ok(v); } }
     srb_binop(c, a, b, s::aref, line, cc)
 }
 
