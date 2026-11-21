@@ -2164,8 +2164,9 @@ pub fn is_lambda_block(b: *const Block) -> bool {
     matches!(b.kind, BlockKind::Iseq(is) if unsafe { (*is).kind } == IseqKind::Lambda)
 }
 
-/// yield: run the block with args (copied to the VM stack).
-#[inline]
+/// yield: run the block with args (copied to the VM stack).  One copy: its callers are in every codegen unit,
+/// and an #[inline] copy per unit made a builtin's instruction count depend on how cargo split them.
+#[inline(never)]
 pub fn yield_block(c: &mut Ctx, blk: *const Block, args: &[Value]) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("yield: from a builtin (yield_block)");
     if blk.is_null() { return err(c, vm().c_local_jump_error, "no block given (yield)"); }
