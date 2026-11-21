@@ -1292,8 +1292,7 @@ pub fn EVAL_TEST_node_opt_neq<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodeP
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_ltlt<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc) -> RV {
     if a.is_fixnum() && b.is_fixnum() && !c.int_redef() {
-        let (x, k) = (a.as_fix(), b.as_fix());
-        if (0..62).contains(&k) { let r = (x as i128) << k; if r >= FIXNUM_MIN as i128 && r <= FIXNUM_MAX as i128 { return Ok(Value::fix(r as i64)); } }
+        if let Some(r) = a.fix_shl(b.as_fix()) { return Ok(r); }
     }
     if is_array(a) && !redef(R_ARY_LTLT) && obj(a).flags & FL_FROZEN == 0 && obj(a).klass == vm().c_array {
         c.ary_push(a, b);
@@ -1326,7 +1325,7 @@ pub fn EVAL_node_opt_gtgt<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_xor<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !c.int_redef() { return Ok(Value::fix(a.as_fix() ^ b.as_fix())); }
+    if a.is_fixnum() && b.is_fixnum() && !c.int_redef() { if let Some(r) = Value::odd(a.raw() ^ b.raw()) { return Ok(r); } }
     srb_binop(c, a, b, s::xor, line.pos(), cc)
 }
 
@@ -1334,7 +1333,7 @@ pub fn EVAL_node_opt_xor<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, f
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_and<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !c.int_redef() { return Ok(Value::fix(a.as_fix() & b.as_fix())); }
+    if a.is_fixnum() && b.is_fixnum() && !c.int_redef() { if let Some(r) = Value::odd(a.raw() & b.raw()) { return Ok(r); } }
     srb_binop(c, a, b, s::and, line.pos(), cc)
 }
 
@@ -1342,7 +1341,7 @@ pub fn EVAL_node_opt_and<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, f
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_opt_or<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc) -> RV {
-    if a.is_fixnum() && b.is_fixnum() && !c.int_redef() { return Ok(Value::fix(a.as_fix() | b.as_fix())); }
+    if a.is_fixnum() && b.is_fixnum() && !c.int_redef() { if let Some(r) = Value::odd(a.raw() | b.raw()) { return Ok(r); } }
     srb_binop(c, a, b, s::or, line.pos(), cc)
 }
 

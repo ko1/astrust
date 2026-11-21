@@ -40,6 +40,16 @@ impl Value {
     #[inline(always)] pub fn fix_sub(self, o: Value) -> Option<Value> {
         (self.raw() as i64).checked_sub(o.raw() as i64 - 1).and_then(|r| std::num::NonZeroU64::new(r as u64)).map(Value)
     }
+    /// A fixnum shifted left by 0 <= k < 64, if the result is a fixnum: on the tagged word, 2a << k
+    /// keeps its bits exactly when a << k is a fixnum.
+    #[inline(always)] pub fn fix_shl(self, k: i64) -> Option<Value> {
+        if !(0..64).contains(&k) { return None; }
+        let t = self.raw() as i64 - 1;
+        let r = t << k;
+        if r >> k == t { Value::odd(r as u64) } else { None }
+    }
+    /// A word with bit 0 set as a fixnum (never 0, so never None).
+    #[inline(always)] pub fn odd(r: u64) -> Option<Value> { NonZeroU64::new(r | 1).map(Value) }
     // 2a * b overflows 64 bits exactly when a * b is not a fixnum; `| 1` retags (and shows a non-zero word)
     #[inline(always)] pub fn fix_mul(self, o: Value) -> Option<Value> {
         (self.raw() as i64 - 1).checked_mul(o.as_fix()).and_then(|r| std::num::NonZeroU64::new(r as u64 | 1)).map(Value)
