@@ -411,7 +411,7 @@ fn uncaught_value(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> R
 fn syscallerr_init(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let k = real_class_of(slf);
     let mut no = NIL;
-    for &kk in ancestors(k).iter() { if let Some(v) = const_get_at(kk, intern(b"Errno")) { no = v; break; } }
+    for &kk in ancestors(k).iter() { if let Some(v) = const_get_at(kk, intern(b"Errno")) { if v.is_fixnum() { no = v; break; } } }
     let mut detail = a.first().copied().unwrap_or(NIL);
     if k == c.vm().c_system_call_error {
         if a.len() == 1 && detail.is_fixnum() { no = detail; detail = NIL; } else if a.len() >= 2 && a[1].is_fixnum() { no = a[1]; }
