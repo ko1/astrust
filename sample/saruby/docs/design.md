@@ -133,8 +133,18 @@ Measurements and what was tried: `~/ruby/src/trials/2026-11-21-saruby-call-path/
 * A Ruby `yield` site records the block iseq it ran (`YieldCache.seen`).  When it saw one, the bake
   compiles that block's entry into the site (`spec_block`, parameter count baked as `np`); the run
   compares the block's iseq with `YieldCache.fast` (set by `srb_yield_miss` once that iseq's entry
-  hash equals the baked one) and that the block is not a lambda proc.  Blocks yielded by builtins
-  (`Integer#times`, `Array#each`, ...) are not compiled in: the yield is in Rust.
+  hash equals the baked one) and that the block is not a lambda proc.
+* **Inline iterators** (`src/inline_iter.rs`).  A `node_call_blk` whose cache held one of the builtin
+  iterators (`Integer#times` / `upto` / `downto` / `step`, `Range#each` / `map`, `Array#each` / `map` /
+  `select` / `reject` / `inject` / `each_with_index`, `Hash#each`; identified by method entry as for
+  inline builtins, `CallCache.bi`, only for the class itself) is baked with the iterator's number and the
+  block's parameter count (`it`) and the block's entry compiled in (`body@spec`).  The site runs the loop
+  (`iter_begin` / `iter_next` / `iter_step` / `iter_end`) under the builtin's cfunc frame (backtraces
+  unchanged) and calls the entry directly each step.  A block without env (`IT_SHARE`) gets its frame,
+  self and env once per loop (`block_frame`; the entry with `CallArgs.shared` skips them), the line reset
+  per step.  Receivers or arguments the loop does not handle (Bignum, Float limit, endless Range, another
+  class) take the call out of line; an empty or stale cache is filled first (`iter_refill`) so a loop
+  run once at top level is inline too.  `SARUBY_NO_IT=1` at bake time turns it off.
 
 ## Lexical scope (Cref) and refinements
 * A frame's `cref` is its lexical class scope (constants, `def` target, class variables).  A

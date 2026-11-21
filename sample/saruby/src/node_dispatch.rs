@@ -607,7 +607,7 @@ pub fn DISPATCH_node_call_blk(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_call_blk_struct>;
     unsafe {
 
-    EVAL_node_call_blk::<Dyn, DynList, Dyn>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, (*np).u.line, (*np).u.blk, &mut (*np).u.cc, 0u64, 0)
+    EVAL_node_call_blk::<Dyn, DynList, Dyn, Dyn>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, (*np).u.line, (*np).u.blk, &mut (*np).u.cc, 0u64, 0, 0u64, 0)
     }
 }
 

@@ -1912,6 +1912,7 @@ fn SPECIALIZE_node_call_blk(sc: &mut SpecCtx, n: NodePtr) -> String {
     let t_recv = specialize_node(sc, u.recv);
     let t_args = specialize_list(sc, &u.args, n);
     let (t_callee, h_callee) = { let np = n as *mut NodeOf<node_call_blk_struct>; let p: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) } }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth || sc.open.contains(&hash_node(p)) { ("Dyn".to_string(), 0u64) } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };
+    let (t_body, h_body) = { let np = n as *mut NodeOf<node_call_blk_struct>; let p: NodePtr = unsafe { { let u = &(*np).u; crate::inline_iter::spec_iter_block(&u.cc, u.args.len(), crate::vm::site_kind(&u.cc, u.args.len(), u.flags), u.blk) } }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth || sc.open.contains(&hash_node(p)) { ("Dyn".to_string(), 0u64) } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };
     let np = n as *mut NodeOf<node_call_blk_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
@@ -1924,6 +1925,8 @@ fn SPECIALIZE_node_call_blk(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("&mut (*np).u.cc".to_string());
     a.push(format!("{}u64", h_callee));
     a.push(format!("{}u32", { let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }));
+    a.push(format!("{}u64", h_body));
+    a.push(format!("{}u32", { let u = &(*np).u; crate::inline_iter::site_iter(&u.cc, u.args.len(), crate::vm::site_kind(&u.cc, u.args.len(), u.flags), u.blk) }));
     }
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
@@ -1931,7 +1934,7 @@ fn SPECIALIZE_node_call_blk(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_call_blk_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_call_blk{}({})\n    }} }}\n", format!("::<{}, {}, {}>", t_recv, t_args, t_callee), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_call_blk{}({})\n    }} }}\n", format!("::<{}, {}, {}, {}>", t_recv, t_args, t_callee, t_body), a.join(", ")));
 
 
     body.push_str("}

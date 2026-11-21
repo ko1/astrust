@@ -41,6 +41,11 @@ class SarubyNodeDef < ASTrustGen::NodeDef
         else "{ let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
         end
       when 'node_yield' then "{ let u = &(*np).u; crate::vm::spec_block_np(&u.yc, u.args.len()) }"
+      # the builtin iterator the site's cache holds, with the block's parameter count (inline_iter.rs; 0: none)
+      when 'node_call_blk'
+        if op.name == 'it' then "{ let u = &(*np).u; crate::inline_iter::site_iter(&u.cc, u.args.len(), crate::vm::site_kind(&u.cc, u.args.len(), u.flags), u.blk) }"
+        else "{ let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
+        end
       when 'node_call_kw' then "{ let u = &(*np).u; crate::vm::site_kind_kw(&u.cc, u.args.len(), u.ci) }"
       else "{ let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
       end
@@ -50,6 +55,7 @@ class SarubyNodeDef < ASTrustGen::NodeDef
     def spec_in_store_stmt(var) = "#{var}.store(c);"
     def spec_target_expr(op)
       if @name == %q(node_yield) then "{ let u = &(*np).u; crate::vm::spec_block(&u.yc, u.args.len()) }"
+      elsif @name == %q(node_call_blk) && op.name == 'body' then "{ let u = &(*np).u; crate::inline_iter::spec_iter_block(&u.cc, u.args.len(), crate::vm::site_kind(&u.cc, u.args.len(), u.flags), u.blk) }"
       elsif @name == %q(node_call_kw) then "{ let u = &(*np).u; crate::vm::spec_callee_kw(&u.cc, u.args.len(), u.ci) }"
       else "{ let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) }"
       end

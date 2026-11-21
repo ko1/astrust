@@ -16,6 +16,7 @@ use crate::object::*;
 use crate::rt::*;
 use crate::opt::*;
 use crate::inline_builtin::*;
+use crate::inline_iter::*;
 use crate::node::*;
 use crate::compile::{IseqRef, CiRef, Str, LitCache, CallInfo};
 use crate::symbol::s;
@@ -876,7 +877,7 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ct
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, blk: IseqRef, cc: &mut CallCache, callee_hash: u64, kind: u32) -> RV {
+pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, D_callee: Disp, D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, blk: IseqRef, cc: &mut CallCache, callee_hash: u64, kind: u32, body_hash: u64, it: u32) -> RV {
     let k = <D_args as DispList>::len(args);
     let base = stage(c, 2 + k)?;
     let r0 = <D_recv as Disp>::call(c, recv, fp)?;
@@ -886,7 +887,33 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mu
     // with arguments in between, reading the slot back is cheaper than keeping the receiver live
     let r0 = if k == 0 { r0 } else { base[0].get() };
     let b = make_block(c, blk, fp);
-    let r = if kind == SITE_INTERP { call_cached(c, cc, mid, base, k as u32, &b, flags) }
+    let r = if it != 0 && body_hash != 0 {
+        // baked builtin iterator (inline_iter.rs): its loop here under its cfunc frame, the block's entry compiled in
+        let bp: *const Block = &b;
+        match if bi_hit(cc, r0, it & 0xff) || iter_refill(c, cc, r0, mid, flags, it) { iter_begin(c, it, r0, base, k) } else { None } {
+            Some(mut st) => {
+                let pf = c.frame;
+                let mut fr = Frame::cfunc(pf, cc.me as *const MethodEntry, bp);
+                // IT_SHARE: the block's frame made once, every step runs in it
+                let share = it & IT_SHARE != 0;
+                let mut bfr = block_frame(&b, st.bfp, &mut fr, blk);
+                c.frame = if share { &mut bfr.h } else { &mut fr };
+                let mut r = Ok(());
+                while iter_next(c, &mut st, it, r0) {
+                    // through c.frame (the pointer the callees use): a step starts at the block's line
+                    if share { c.frame().line = blk.info.line; }
+                    match <D_body as Disp>::spec(c, blk.bentry, st.bfp, CallArgs { me: std::ptr::null(), blk: bp, shared: share }) {
+                        Ok(y) => iter_step(c, &mut st, it, base, y),
+                        Err(e) => { r = Err(e); break; }
+                    }
+                }
+                c.frame = pf;
+                iter_end(c, &st, it, r0, base, r)
+            }
+            None => { std::hint::cold_path(); call_cached_out(c, cc, mid, base, k as u32, &b, flags) }
+        }
+    }
+    else if kind == SITE_INTERP { call_cached(c, cc, mid, base, k as u32, &b, flags) }
     else if callee_hash != 0 {
         if spec_hit(cc, r0, kind) {
             let callee_fp = frame(c, base)?;
@@ -1371,23 +1398,27 @@ pub fn EVAL_node_block_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nloc
     let b = unsafe { &*ca.blk };
     // a lambda (ME_LAMBDA, called with its exact arity) is its own return target
     let lambda = flags & ME_LAMBDA != 0;
+    // shared: an inline iterator (node_call_blk, IT_SHARE) made this frame, self and env once for its loop
+    let shared = ca.shared && flags & (ME_LAMBDA | ME_ENV) == 0;
     let id = if lambda { c.next_serial() } else { b.home_id };
     // iseq null: Frame::iseq() takes it from self_blk when asked
     let mut fr = FrameFull {
         h: Frame { prev: c.frame, fp: head(fp), me: b.me, blk: b.outer_blk, id, line, kind: if lambda { FK_LAMBDA } else { FK_BLOCK }, visi: VISI_PUBLIC, lite: false, pad: 0 },
         cref: b.cref, iseq: std::ptr::null(), self_blk: b, defined_class: b.defined_class,
     };
-    fp[0].set(b.self_);
-    fp[1].set(b.env);
+    if !shared {
+        fp[0].set(b.self_);
+        fp[1].set(b.env);
+    }
     let mut i = 2 + nparams;
     while i < nlocals { slot(fp, i).set(NIL); i += 1; }
     enter_base(c, fp, nlocals)?;
     if flags & ME_ENV != 0 { make_env(unsafe { &*fr.h.iseq() }, fp, b.env); }
-    c.frame = &mut fr.h;
+    if !shared { c.frame = &mut fr.h; }
     let mut r = <D_body as Disp>::call(c, body, fp);
     // redo runs the body again out of line (a second inline copy would double the block's code)
     if r.is_err() && c.esc == EscKind::Redo { r = srb_block_redo(c, body, fp); }
-    c.frame = fr.prev;
+    if !shared { c.frame = fr.prev; }
     match r {
         Ok(v) => Ok(v),
         Err(e) => if c.esc == EscKind::Next || (lambda && ((c.esc == EscKind::Return && c.esc_tag == id) || (c.esc == EscKind::Break && c.esc_tag == b.tag))) {

@@ -34,6 +34,7 @@ make                              # node.def -> src/node_*.rs (astrustgen) -> ca
 |---|---|
 | `SARUBY_GC_STRESS=n` | collect every n-th allocation (finds missing roots) |
 | `SARUBY_NO_BI=1` | bake without inline builtin bodies (`src/inline_builtin.rs`; for A/B) |
+| `SARUBY_NO_IT=1` | bake without inline builtin iterators (`src/inline_iter.rs`; for A/B) |
 | `SARUBY_SD_NAMES=1` | print which method or block each baked function `SD_<hash>` is (for reading profiles) |
 | `SARUBY_AOT_VERBOSE=1` | show rustc's output while baking |
 | `ASTRUST_SPEC_DEPTH=n` | how deep callees are compiled into their call sites (default 2; 0 turns it off) |
