@@ -385,6 +385,15 @@ module Kernel
   def require_optional(f) = (require f rescue nil)
 end
 
+module Kernel
+  # pathname_builtin.rb; class Pathname itself loads on first reference (boot.rs lazy_const)
+  def Pathname(path)
+    return path if Pathname === path
+    Pathname.new(path)
+  end
+  module_function :Pathname
+end
+
 class NilClass
   def to_a = []
   def to_h = {}

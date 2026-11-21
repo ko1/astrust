@@ -108,8 +108,8 @@ fn run_pass(c: &mut Ctx) -> Result<bool, Esc> {
         r.started = true;
         if r.fiber == NIL {
             let st = std::mem::replace(&mut r.start, NIL);
-            let (p, args) = (c.ary_get(st, 0), c.ary_get(st, 1));
-            let f = crate::fiber::new_thread_fiber(c, p, args);
+            let (p, args, storage) = (c.ary_get(st, 0), c.ary_get(st, 1), c.ary_get(st, 2));
+            let f = crate::fiber::new_thread_fiber(c, p, args, storage);
             let r = th_mut(c, t);
             r.fiber = f; r.inner = f;
         }
@@ -206,7 +206,9 @@ fn th_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     let p = block_to_proc(c, b)?;
     let t = new_thread(c, slf);
     let args = c.ary_new_from(a);
-    let start = c.ary_new_from(&[p, args]);
+    // the new thread gets a copy of the creating fiber's storage (rb_fiber_inherit_storage)
+    let storage = crate::builtins::fiber_methods::inherited_storage(c)?;
+    let start = c.ary_new_from(&[p, args, storage]);
     let loc = c.caller_frame().map(|f| format!("{}:{}", frame_file(f), f.line())).unwrap_or_default();
     let r = th_mut(c, t);
     r.start = start; r.loc = loc;
@@ -300,19 +302,38 @@ fn th_status(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(c.str_new(st.as_bytes()))
 }
 fn th_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { thr(c, s)?; let t = inspect_thread(c, s, status_str(c, s)); Ok(c.str_new(t.as_bytes())) }
-fn key_sym(c: &mut Ctx, k: Value) -> RV {
+/// rb_frozen_error_raise(thread, "can't modify frozen thread locals")
+fn frozen_locals(c: &mut Ctx, t: Value) -> Esc {
+    let e = make_exception(c.vm().c_frozen_error, "can't modify frozen thread locals");
+    ivar_set_raw(e, crate::symbol::s::receiver, t);
+    raise_exc(c, e)
+}
+/// rb_to_symbol: a Symbol, a String, or what #to_str makes a String.
+pub fn key_sym(c: &mut Ctx, k: Value) -> RV {
     if k.is_sym() { return Ok(k); }
     if is_string(k) { return Ok(c.str_to_sym(k)); }
+    if respond_to(k, intern(b"to_str"), true) {
+        let s = funcall(c, k, intern(b"to_str"), &[], std::ptr::null())?;
+        if is_string(s) { return Ok(c.str_to_sym(s)); }
+    }
     let d = inspect_str(c, k)?;
     type_err(c, format!("{} is not a symbol nor a string", d))
 }
-fn locals(c: &mut Ctx, t: Value) -> RV { thr(c, t)?; Ok(th(c, t).locals) }
+/// Thread#[] is fiber-local: the fiber the thread is running (a root fiber's are the Thread's own).
+fn locals(c: &mut Ctx, t: Value) -> RV {
+    thr(c, t)?;
+    let f = if t == cur(c) { crate::fiber::current(c) }
+        else if t == MAIN.get(c) { crate::fiber::main_thread_fiber(c) }
+        else { let r = th(c, t); if r.dead { NIL } else if r.inner != NIL { r.inner } else { r.fiber } };
+    if f == NIL || crate::fiber::is_root(c, f) { return Ok(th(c, t).locals); }
+    Ok(crate::fiber::locals(c, f))
+}
 fn tvars(c: &mut Ctx, t: Value) -> RV { thr(c, t)?; Ok(th(c, t).tvars) }
 fn hash_keys(c: &mut Ctx, h: Value) -> Value { let v: Vec<Value> = c.hash_pairs(h).into_iter().map(|p| p.0).collect(); c.ary_from_vec(v) }
 fn th_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let k = key_sym(c, a[0])?; let h = locals(c, slf)?; Ok(hash_get_opt(c, h, k)?.unwrap_or(NIL)) }
 fn th_aset(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let k = key_sym(c, a[0])?;
-    if is_frozen(slf) { return Err(raise_frozen(c, slf)); }
+    if is_frozen(slf) { return Err(frozen_locals(c, slf)); }
     let h = locals(c, slf)?;
     if a[1] == NIL { hash_delete(c, h, k)?; } else { hash_set(c, h, k, a[1])?; }
     Ok(a[1])
@@ -322,7 +343,7 @@ fn th_keys(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let 
 fn th_tv_get(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let k = key_sym(c, a[0])?; let h = tvars(c, slf)?; Ok(hash_get_opt(c, h, k)?.unwrap_or(NIL)) }
 fn th_tv_set(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let k = key_sym(c, a[0])?;
-    if is_frozen(slf) { return Err(raise_frozen(c, slf)); }
+    if is_frozen(slf) { return Err(frozen_locals(c, slf)); }
     let h = tvars(c, slf)?;
     if a[1] == NIL { hash_delete(c, h, k)?; } else { hash_set(c, h, k, a[1])?; }
     Ok(a[1])

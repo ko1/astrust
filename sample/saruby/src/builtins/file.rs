@@ -637,6 +637,14 @@ fn d_s_glob(c: &mut Ctx, _slf: Value, a: &[Value], blk: *const Block) -> RV {
     let mut base = String::new();
     let mut sort = true;
     if let Some(h) = opts {
+        let mut unknown = vec![];
+        let mut i = 0;
+        while let Some((k, _)) = c.hash_entry_at(h, i) {
+            i += 1;
+            if k == UNDEF || k == sym_value("base") || k == sym_value("flags") || k == sym_value("sort") { continue; }
+            unknown.push(inspect_str(c, k)?);
+        }
+        if !unknown.is_empty() { return arg_err(c, format!("unknown keyword{}: {}", if unknown.len() > 1 { "s" } else { "" }, unknown.join(", "))); }
         if let Some(b) = crate::hash::hash_get_opt(c, h, sym_value("base"))? { if b != NIL { base = String::from_utf8_lossy(path_arg(c, b)?.as_bytes()).into_owned(); } }
         if let Some(f) = crate::hash::hash_get_opt(c, h, sym_value("flags"))? { if f != NIL { flags |= num_to_long(c, f)?; } }
         if let Some(s) = crate::hash::hash_get_opt(c, h, sym_value("sort"))? { sort = s.truthy(); }
