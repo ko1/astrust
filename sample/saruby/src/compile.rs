@@ -406,6 +406,7 @@ impl<'a> Compiler<'a> {
             if sc.env_size > 0 { fl |= ME_ENV; }
             if sc.needs_id || sc.captured.contains(&Sym(u32::MAX)) { fl |= ME_ID; }
             if fl == 0 && sc.nslots as usize == 2 + params.lead.len() && leaf_body(body) { fl |= ME_LEAF; }
+            if nocall_body(body) { fl |= ME_NOCALL; }
             ALLOC_node_method_entry(sc.nslots, params.lead.len() as u32, fl, line, body)
         } else { std::ptr::null_mut() };
         let bentry = if (kind == IseqKind::Block || kind == IseqKind::Lambda) && lead_only {
@@ -423,6 +424,7 @@ impl<'a> Compiler<'a> {
             if sc.env_size > 0 { fl |= ME_ENV; }
             if sc.needs_id || sc.captured.contains(&Sym(u32::MAX)) { fl |= ME_ID; }
             if fl == 0 && sc.nslots as usize == 2 + np && leaf_body(b) { fl |= ME_LEAF; }
+            if nocall_body(b) { fl |= ME_NOCALL; }
             fl
         };
         let kentry = if dense {
@@ -2052,6 +2054,15 @@ fn leaf_body(body: NodePtr) -> bool {
     dump_node(&mut d, body);
     d.split(|ch: char| !(ch.is_alphanumeric() || ch == '_')).filter(|w| w.starts_with("node_"))
         .all(|w| matches!(w, "node_nil" | "node_true" | "node_false" | "node_self" | "node_lit" | "node_lvar" | "node_ivar" | "node_block" | "node_if" | "node_and" | "node_or"))
+}
+
+/// No call site in the body (operators call only on their slow path).
+fn nocall_body(body: NodePtr) -> bool {
+    let mut d = String::new();
+    dump_node(&mut d, body);
+    d.split(|ch: char| !(ch.is_alphanumeric() || ch == '_')).filter(|w| w.starts_with("node_"))
+        .all(|w| w.starts_with("node_opt_") || matches!(w, "node_nil" | "node_true" | "node_false" | "node_self" | "node_lit" | "node_lvar"
+            | "node_lasgn" | "node_ivar" | "node_iasgn" | "node_block" | "node_line" | "node_if" | "node_and" | "node_or"))
 }
 
 /// Statements that can raise without passing through a node that records the line.

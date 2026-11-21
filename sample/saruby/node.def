@@ -649,7 +649,7 @@ node_call(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, fl
         let r0 = fp[0].get();
         if spec_hit(cc, r0, kind) {
             if shared == 1 { line.store(c.frame()); }
-            return EVAL_SPEC!(c, callee, cc.fast as NodePtr, fp, CallArgs { me: cc.me as *const MethodEntry, blk: std::ptr::null(), shared: true });
+            return EVAL_SPEC!(c, callee, cc.fast as NodePtr, fp, CallArgs { me: cc.me as *const MethodEntry, blk: std::ptr::null(), shared: true, inl: true });
         }
     }
     let k = EVAL_LEN!(args);
@@ -687,7 +687,7 @@ node_call(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, fl
         if shared == 0 && spec_hit(cc, r0, kind) {
             // sp is where stage() left it: what the entry expects
             let callee_fp = frame(c, base)?;
-            let r = EVAL_SPEC!(c, callee, cc.fast as NodePtr, callee_fp, CallArgs::new(cc.me as *const MethodEntry, std::ptr::null()));
+            let r = EVAL_SPEC!(c, callee, cc.fast as NodePtr, callee_fp, CallArgs::inline(cc.me as *const MethodEntry, std::ptr::null()));
             c.set_sp(base, 0);
             return r;
         }
@@ -729,7 +729,7 @@ node_call_blk(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym
                 while iter_next(c, &mut st, it, r0) {
                     // through c.frame (the pointer the callees use): a step starts at the block's line
                     if share { c.frame().pos = Pos::at(&blk.info.line); }
-                    match EVAL_SPEC!(c, body, blk.bentry, st.bfp, CallArgs { me: std::ptr::null(), blk: bp, shared: share }) {
+                    match EVAL_SPEC!(c, body, blk.bentry, st.bfp, CallArgs { me: std::ptr::null(), blk: bp, shared: share, inl: true }) {
                         Ok(y) => iter_step(c, &mut st, it, base, y),
                         Err(e) => { r = Err(e); break; }
                     }
@@ -771,7 +771,7 @@ node_call_kw(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym,
         let r0 = base[0].get();
         if spec_hit(cc, r0, kind) {
             let callee_fp = frame(c, base)?;
-            let r = EVAL_SPEC!(c, callee, cc.fast as NodePtr, callee_fp, CallArgs::new(cc.me as *const MethodEntry, std::ptr::null()));
+            let r = EVAL_SPEC!(c, callee, cc.fast as NodePtr, callee_fp, CallArgs::inline(cc.me as *const MethodEntry, std::ptr::null()));
             c.set_sp(base, 0);
             return r;
         }
@@ -1183,7 +1183,8 @@ node_method_entry(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, f
     let blk = ca.blk;
     // id 0: no block can return to this frame, and its own `return` is caught by the innermost entry
     let id = if flags & ME_ID != 0 { c.next_serial() } else { 0 };
-    let mut fr = Frame { prev: c.frame, fp: head(fp), me, blk, id, pos: line.pos(), kind: FK_METHOD, visi: VISI_PUBLIC, lite: true, pad: 0 };
+    let prev = c.frame;
+    let mut fr = Frame { prev, fp: head(fp), me, blk, id, pos: line.pos(), kind: FK_METHOD, visi: VISI_PUBLIC, lite: true, pad: 0 };
     // no native stack check here: whoever calls an entry out of line makes it (run_entry, site_fast)
     // a shared frame (the caller's, CallArgs) has no slots of its own and keeps the caller's env
     if !(shareable(nlocals, nparams, flags) && ca.shared) {
@@ -1195,7 +1196,9 @@ node_method_entry(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, f
     if flags & ME_ENV != 0 { make_env(unsafe { &*fr.iseq() }, fp, NIL); }
     c.frame = &mut fr;
     let r = EVAL_ARG!(c, body);
-    c.frame = fr.prev;
+    // compiled in and no call in the body: `prev` stays in a register and the reload of fr.prev (a store-load
+    // round trip) goes; out of line it would cost a saved register
+    c.frame = if flags & ME_NOCALL != 0 && ca.inl { prev } else { fr.prev };
     match r {
         Ok(v) => Ok(v),
         Err(e) => if c.esc == EscKind::Return && c.esc_tag == id { c.esc = EscKind::None; Ok(c.esc_val) } else { Err(e) },
