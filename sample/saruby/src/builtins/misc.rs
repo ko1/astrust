@@ -12,7 +12,6 @@ use crate::array::*;
 use crate::builtins::kernel::*;
 use crate::builtins::numeric_methods::num_to_long;
 use crate::hash::*;
-use crate::string::*;
 use crate::symbol::{intern, s};
 use crate::value::*;
 use crate::vm::*;
@@ -28,7 +27,6 @@ pub fn encoding_value(c: &mut Ctx, id: u8) -> RV { Ok(crate::builtins::encoding:
 
 // ---- base64 (pack itself is pack.rs) ----------------------------------------------------------------------
 
-fn hex_v(x: u8) -> u8 { (x as char).to_digit(16).unwrap_or(0) as u8 }
 pub fn base64(b: &[u8]) -> String {
     const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
@@ -95,7 +93,23 @@ fn os_count_objects(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> R
 }
 fn os_garbage_collect(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { crate::gc::collect(); Ok(NIL) }
 
-fn warning_warn(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let b = to_rstring(c, a[0])?; err_write(b.as_bytes()); Ok(NIL) }
+// Warning[category] flags (bit = index in WARN_CAT_NAMES); experimental is on by default, -w turns on deprecated.
+static WARN_CATS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0b0010);
+const WARN_CAT_NAMES: [&str; 4] = ["deprecated", "experimental", "performance", "strict_unused_block"];
+use std::sync::atomic::Ordering::Relaxed;
+pub fn warning_enable_deprecated() { WARN_CATS.fetch_or(1, Relaxed); }
+/// rb_warning_category_from_name: a Symbol naming a category.
+pub fn warning_category(c: &mut Ctx, v: Value) -> Result<usize, Esc> {
+    if !v.is_sym() { return type_err(c, format!("wrong argument type {} (expected Symbol)", class_name_for_err(v))); }
+    let n = crate::symbol::sym_str(v.as_sym());
+    match WARN_CAT_NAMES.iter().position(|&x| x == n) { Some(i) => Ok(i), None => arg_err(c, format!("unknown category: {}", n)) }
+}
+pub fn warning_category_enabled(i: usize) -> bool { WARN_CATS.load(Relaxed) & (1 << i) != 0 }
+fn warning_warn(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+    check_argc(c, a, 1, 2)?;
+    if !is_string(a[0]) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(a[0]))); }
+    let b = c.str_bytes(a[0]).to_vec(); stderr_write(c, &b)?; Ok(NIL)
+}
 fn objspace_wm_init(c: &mut Ctx, s2: Value, _a: &[Value], _b: *const Block) -> RV { let h = c.hash_new(); c.hash_mut(h).identity = true; ivar_set_raw(s2, intern(b"@h"), h); Ok(NIL) }
 fn wm_aref(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(s2, intern(b"@h")); Ok(hash_get_opt(c, h, a[0])?.unwrap_or(NIL)) }
 fn wm_aset(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(s2, intern(b"@h")); hash_set(c, h, a[0], a[1])?; Ok(a[1]) }
@@ -211,8 +225,13 @@ pub fn init(vmr: &mut Vm) {
     let wn = define_module("Warning");
     vmr.m_warning = wn;
     define_module_function(wn, "warn", warning_warn, -1);
-    define_singleton_cfunc(wn, "[]", |_c, _s, _a, _b| Ok(FALSE), 1);
-    define_singleton_cfunc(wn, "[]=", |_c, _s, a, _b| Ok(a[1]), 2);
+    define_singleton_cfunc(wn, "[]", |c, _s, a, _b| { let i = warning_category(c, a[0])?; Ok(Value::bool(WARN_CATS.load(Relaxed) & (1 << i) != 0)) }, 1);
+    define_singleton_cfunc(wn, "[]=", |c, _s, a, _b| {
+        let i = warning_category(c, a[0])?;
+        if a[1].truthy() { WARN_CATS.fetch_or(1 << i, Relaxed); } else { WARN_CATS.fetch_and(!(1 << i), Relaxed); }
+        Ok(a[1])
+    }, 2);
+    define_singleton_cfunc(wn, "categories", |c, _s, _a, _b| { let v: Vec<Value> = WARN_CAT_NAMES.iter().map(|n| sym_value(n)).collect(); Ok(c.ary_new_from(&v)) }, 0);
     // constants
     let set = |n: &str, v: Value| const_set(ob, intern(n.as_bytes()), v);
     for (n, v) in [("RUBY_VERSION", "3.4.0"), ("RUBY_RELEASE_DATE", "2026-11-20"), ("RUBY_PLATFORM", "x86_64-linux"), ("RUBY_ENGINE", "saruby"),

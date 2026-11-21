@@ -51,6 +51,32 @@ pub fn stdout_write(c: &mut Ctx, b: &[u8]) -> Result<(), Esc> {
     funcall(c, so, intern(b"write"), &[st], std::ptr::null())?;
     Ok(())
 }
+/// Write to $stderr (dispatching when it was reassigned).
+pub fn stderr_write(c: &mut Ctx, b: &[u8]) -> Result<(), Esc> {
+    let se = *c.vm().globals.get(&intern(b"$stderr")).unwrap_or(&c.vm().stderr);
+    if se == c.vm().stderr { err_write(b); return Ok(()); }
+    let st = c.str_new(b);
+    funcall(c, se, intern(b"write"), &[st], std::ptr::null())?;
+    Ok(())
+}
+/// A warning goes through Warning.warn, as rb_warn does (so overrides and $stderr see it).
+pub fn warning_write(c: &mut Ctx, b: &[u8]) -> Result<(), Esc> {
+    let st = c.str_new(b);
+    let w = c.vm().m_warning;
+    funcall(c, w, intern(b"warn"), &[st], std::ptr::null())?;
+    Ok(())
+}
+/// rb_warn_category: Warning.warn(str, category: cat) unless Warning.warn takes exactly one argument.
+fn warning_write_cat(c: &mut Ctx, b: &[u8], cat: Value) -> Result<(), Esc> {
+    let w = c.vm().m_warning;
+    let me = search_method(singleton_class(w), intern(b"warn"));
+    if crate::builtins::proc::method_arity(c, me) == 1 { return warning_write(c, b); }
+    let st = c.str_new(b);
+    let h = c.hash_new();
+    hash_set(c, h, sym_value("category"), cat)?;
+    funcall_kw(c, w, intern(b"warn"), &[st, h], std::ptr::null(), true)?;
+    Ok(())
+}
 
 // ---- string conversion helpers ------------------------------------------------------------
 
@@ -172,6 +198,13 @@ fn k_putc(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
 
 fn k_printf(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     if args.is_empty() { return Ok(NIL); }
+    // printf(io, fmt, ...): a non-String first argument is the destination (io.write)
+    if !is_string(args[0]) {
+        if args.len() < 2 { return arg_err(c, "too few arguments"); }
+        let s = crate::builtins::sprintf::format(c, args[1], &args[2..])?;
+        funcall(c, args[0], intern(b"write"), &[s], std::ptr::null())?;
+        return Ok(NIL);
+    }
     let s = crate::builtins::sprintf::format(c, args[0], &args[1..])?;
     let b = c.str_bytes(s).to_vec();
     stdout_write(c, &b)?;
@@ -185,11 +218,20 @@ fn k_sprintf(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
 
 fn k_warn(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let (args, kw) = match kw_arg(args) { Some(h) => (&args[..args.len() - 1], Some(h)), None => (args, None) };
-    if c.vm().verbose == NIL { return Ok(NIL); }
     let mut uplevel = None;
+    let mut cat = NIL;
     if let Some(h) = kw {
         if let Some(u) = hash_get_opt(c, h, crate::vm::sym_value("uplevel"))? { if u != NIL { uplevel = Some(u.as_fix()); } }
+        if let Some(k) = hash_get_opt(c, h, crate::vm::sym_value("category"))? { cat = k; }
     }
+    // warning.rb: a category is a Symbol (or String) and the warning needs Warning[category]
+    if cat != NIL {
+        if is_string(cat) { cat = c.str_to_sym(cat); }
+        if !cat.is_sym() { return type_err(c, format!("no implicit conversion of {} into Symbol", class_name_for_err(cat))); }
+        let i = crate::builtins::misc::warning_category(c, cat)?;
+        if !crate::builtins::misc::warning_category_enabled(i) { return Ok(NIL); }
+    }
+    if c.vm().verbose == NIL { return Ok(NIL); }
     let mut out = puts_bytes(c, if args.is_empty() { return Ok(NIL) } else { args })?;
     if let Some(u) = uplevel {
         let lines = backtrace_lines(c, 1 + u as usize);
@@ -199,11 +241,7 @@ fn k_warn(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
             pre.extend(out); out = pre;
         }
     }
-    let se = *c.vm().globals.get(&intern(b"$stderr")).unwrap_or(&c.vm().stderr);
-    if se != c.vm().stderr {
-        let st = c.str_from_vec(out);
-        funcall(c, se, intern(b"write"), &[st], std::ptr::null())?;
-    } else { err_write(&out); }
+    warning_write_cat(c, &out, cat)?;
     Ok(NIL)
 }
 
@@ -771,7 +809,7 @@ fn m_ruby2_keywords(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -
         let wloc = match c.caller_frame() { Some(pf) => format!("{}:{}: warning: Skipping set of ruby2_keywords flag for {} ", frame_file(pf), pf.line(), sym_str(nm)), None => String::new() };
         let Some(me) = c.me_ref(me) else { continue };
         if me.owner != k {
-            err_write(format!("{}(can only set in method defining module)\n", wloc).as_bytes());
+            warning_write(c, format!("{}(can only set in method defining module)\n", wloc).as_bytes())?;
             continue;
         }
         // a define_method body is flagged on its block's iseq, as in CRuby
@@ -788,10 +826,10 @@ fn m_ruby2_keywords(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -
                 if ok { is.ruby2_keywords.set(true); }
                 ok
             }
-            MKind::Cfunc(..) => { err_write(format!("{}(method not defined in Ruby)\n", wloc).as_bytes()); continue; }
+            MKind::Cfunc(..) => { warning_write(c, format!("{}(method not defined in Ruby)\n", wloc).as_bytes())?; continue; }
             _ => false,
         };
-        if !ok { err_write(format!("{}(method accepts keywords or post arguments or method does not accept argument splat)\n", wloc).as_bytes()); }
+        if !ok { warning_write(c, format!("{}(method accepts keywords or post arguments or method does not accept argument splat)\n", wloc).as_bytes())?; }
     }
     Ok(NIL)
 }

@@ -205,6 +205,7 @@ fn run_main(o: Opts) -> i32 {
 
     let vm = vm();
     vm.verbose = if o.warn { TRUE } else { FALSE };
+    if o.warn { builtins::misc::warning_enable_deprecated(); }
     for d in &o.incdirs { let s = string::str_new(d.as_bytes()); array::ary_push(vm.load_path, s); }
     builtins::prelude::setup_load_path(&mut c);
     for a in &o.args { let s = string::str_new(a.as_bytes()); array::ary_push(vm.argv, s); }
