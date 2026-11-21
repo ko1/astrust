@@ -243,8 +243,16 @@ fn int_shift(c: &mut Ctx, a: Value, n: i64) -> RV {
         Ok(c.big_to_value(c.to_big(a).shr(m.min(1 << 30) as usize)))
     }
 }
-cfn!(int_lshift, |c, s, a| { let n = num_to_long(c, a[0])?; int_shift(c, s, n) });
-cfn!(int_rshift, |c, s, a| { let n = num_to_long(c, a[0])?; int_shift(c, s, -n) });
+// a Bignum width: right gives 0 / -1, left of 0 gives 0, any other left cannot be represented
+fn int_shift_big(c: &mut Ctx, a: Value, w: Value, left: bool) -> RV {
+    let right = left == c.big(w).neg;
+    let neg = if a.is_fixnum() { a.as_fix() < 0 } else { c.to_big(a).neg };
+    if right { return Ok(Value::fix(if neg { -1 } else { 0 })); }
+    if a == Value::fix(0) { return Ok(a); }
+    err(c, c.vm().c_range_error, "shift width too big")
+}
+cfn!(int_lshift, |c, s, a| { if is_bignum(a[0]) { return int_shift_big(c, s, a[0], true); } let n = num_to_long(c, a[0])?; int_shift(c, s, n) });
+cfn!(int_rshift, |c, s, a| { if is_bignum(a[0]) { return int_shift_big(c, s, a[0], false); } let n = num_to_long(c, a[0])?; int_shift(c, s, -n) });
 cfn!(int_aref, |c, s, a| {
     if a.len() == 2 || is_range(a[0]) {
         let (start, len) = if a.len() == 2 { (num_to_long(c, a[0])?, Some(num_to_long(c, a[1])?)) } else {
