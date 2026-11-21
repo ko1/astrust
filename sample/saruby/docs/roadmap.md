@@ -76,14 +76,20 @@ Adopted in koruby_precise and not here yet (ledger slug; mechanism; their number
 2. **Runtime closure escape** (design): a block reads outer locals from the definer's live frame; an
    Env is made only when a Proc is actually created, copied to the heap only if it escaped at frame
    exit. Our compile-time heap Env allocates on every call of a method with captured locals.
-   → closures, iterators, gcchurn.
+   → closures, iterators, gcchurn. Measured bound (2026-11-21, after small Envs moved into the slot):
+   a method with a block that captures a local and goes to `Array#each` costs 148 instructions /
+   ~36 cycles per call more than one without (`b_env_cap` / `b_env_nocap`); that is all a lazy Env
+   could save there. Not done (needs blocks to read the defining frame).
+   Small Envs in the slot done (2026-11-21, `src/envvals.rs`): b_env_cap 230 → 148 extra
+   instructions per call, closures -12 % instructions.
 3. **Block entry + inline yield** (`saruby-blk-entry-yield-inline`, `-invoke-blk-simple`,
    `-yield-frame-link`, `-uses-block-entry`): 383 → 195 insns; block -6.49%, iterators -6.52%.
    Block entry done (2026-11-21, `node_block_entry`): block -7.1 %, iterators -6.9 %, mapreduce
    -5.2 % instructions. Not done: compiling the block body into a `yield` of a callee that is
    itself compiled into the site (needs the generator to pass the block's type into the callee).
 4. **Keyword entries** (`saruby-kw-dense-entry`, `-kw-dense-call`, `-kw-defaults-entry`): 254 → 105
-   insns; defaults 370 → 63. → kwargs.
+   insns; defaults 370 → 63. → kwargs. Done (2026-11-21, kentry / dentry): a dense keyword call
+   435 → 67 instructions, kwargs 3978.8M → 1164.6M instructions.
 5. **Call path leftovers** (`saruby-fib-call-path`, `-call-return-cold-tail`, `-entry-inline-return`):
    nothing live across the call, line recovered from the frame in a cold tail, stack check only when a
    high-water mark moves. fib 17.08 → 12.04 cycles/call. Also: cache validity without a serial
@@ -102,6 +108,8 @@ Adopted in koruby_precise and not here yet (ledger slug; mechanism; their number
    strscan with String patterns as memcmp (`saruby-strscan-*`).
 10. **Same-method polymorphism** (`saruby-ic-same-method-poly`): keep the key when subclasses reach
     the same method. lambda.call inline (574 → 160), `&blk` forwarding without a Proc, baked `ensure`.
+    lambda.call done in part (2026-11-21): through the lambda's block entry, 306 → 219 instructions
+    (the `Proc#call` cfunc and `call_proc_kw` remain in the path).
 11. Bump allocation inline + adaptive nursery (`saruby-copy-gen-young-adaptive`): needs a moving GC (section 2).
 
 Rejected there (do not repeat without a new reason): caller-side invoker table (+15〜24% wall);
