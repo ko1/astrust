@@ -108,19 +108,22 @@ fn run_eval_iseq_env(c: &mut Ctx, is: &'static Iseq, slf: Value, env: Value, cre
     r
 }
 
-pub fn eval_with_self(c: &mut Ctx, slf: Value, src: &[u8], file: &'static str, line: i32) -> RV {
-    let is = match crate::compile::compile_source(src, file, line, IseqKind::Eval, vec![]) { Ok(is) => is, Err(m) => return err(c, vm().c_syntax_error, m) };
-    let k = if slf.is_heap() { singleton_class(slf) } else { class_of(slf) };
+/// instance_eval / module_eval with a String: self and the definee are given, locals are the caller's.
+fn eval_under(c: &mut Ctx, slf: Value, k: Value, src: &[u8], file: &'static str, line: i32) -> RV {
+    let bind = binding_of_caller(c)?;
+    let b = rbind(bind);
+    let outer = vec![env_names(b.env, &b.names)];
+    let env = b.env;
+    let is = match crate::compile::compile_source(src, file, line, IseqKind::Eval, outer) { Ok(is) => is, Err(m) => return err(c, vm().c_syntax_error, m) };
     let cref = new_cref(k, unsafe { (*c.frame).cref() });
-    run_eval_iseq(c, is, slf, NIL, cref, std::ptr::null(), VISI_PUBLIC)
+    run_eval_iseq(c, is, slf, env, cref, std::ptr::null(), VISI_PUBLIC)
+}
+pub fn eval_with_self(c: &mut Ctx, slf: Value, src: &[u8], file: &'static str, line: i32) -> RV {
+    let k = if slf.is_heap() { singleton_class(slf) } else { class_of(slf) };
+    eval_under(c, slf, k, src, file, line)
 }
 pub fn eval_in_class(c: &mut Ctx, k: Value, src: &[u8], file: &'static str, line: i32) -> RV {
-    let is = match crate::compile::compile_source(src, file, line, IseqKind::Eval, vec![]) { Ok(is) => is, Err(m) => return err(c, vm().c_syntax_error, m) };
-    let cref = new_cref(k, unsafe { (*c.frame).cref() });
-    let base = c.top();
-    let r = run_eval_iseq(c, is, k, NIL, cref, std::ptr::null(), VISI_PUBLIC);
-    let _ = base;
-    r
+    eval_under(c, k, k, src, file, line)
 }
 
 pub fn local_variables(_c: &mut Ctx, b: Value) -> RV {

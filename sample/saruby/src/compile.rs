@@ -190,8 +190,14 @@ impl<'a> Compiler<'a> {
             }
             Kind::ModuleNode { constant_path, .. } => { self.analyze_rec(constant_path, stack, ub); return; }
             Kind::SingletonClassNode { expression, .. } => { self.analyze_rec(expression, stack, ub); return; }
+            // module_eval / class_eval / instance_eval with a String see the caller's locals
+            Kind::CallNode { receiver: Some(_), name, arguments: Some(_), block: None, .. }
+                if matches!(&self.pr.constants[*name as usize][..], b"module_eval" | b"class_eval" | b"instance_eval") => {
+                *ub = true; self.mark_all_captured(stack);
+            }
             Kind::CallNode { receiver: None, name, arguments, block, .. } => {
                 let nm = &self.pr.constants[*name as usize];
+                if matches!(&nm[..], b"module_eval" | b"class_eval" | b"instance_eval") && arguments.is_some() && block.is_none() { *ub = true; self.mark_all_captured(stack); }
                 if (nm == b"binding" || nm == b"local_variables") && block.is_none() { *ub = true; self.mark_all_captured(stack); }
                 if nm == b"eval" && arguments.is_some() { *ub = true; self.mark_all_captured(stack); }
             }

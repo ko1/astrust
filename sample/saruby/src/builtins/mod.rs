@@ -80,6 +80,7 @@ fn blank_vm() -> Box<Vm> {
         std::ptr::write(&mut (*vp).sd_hits, 0);
         std::ptr::write(&mut (*vp).frozen_lits, HashMap::default());
         std::ptr::write(&mut (*vp).symproc_cache, HashMap::default());
+        std::ptr::write(&mut (*vp).sym_names, HashMap::default());
         std::ptr::write(&mut (*vp).alias_names, HashMap::default());
         std::ptr::write(&mut (*vp).data_free_hooks, vec![]);
         std::ptr::write(&mut (*vp).pinned, vec![]);
@@ -168,6 +169,7 @@ pub fn boot() {
     vm.main_obj = new_object(ob);
     vm.loaded_features = crate::array::ary_new();
     vm.load_path = crate::array::ary_new();
+    kernel::init_load_path(vm.load_path);
     vm.at_exit = crate::array::ary_new();
     vm.argv = crate::array::ary_new();
     vm.top_cref = new_cref(ob, std::ptr::null());

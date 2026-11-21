@@ -101,11 +101,27 @@ fn sync_from(c: &mut Ctx, h: Value) -> Result<(), Esc> {
 }
 fn env_mutate(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     let Some(name) = c.cur_method_name() else { return Ok(NIL) };
-    if b.is_null() && !matches!(crate::symbol::sym_bytes(name), b"update" | b"merge!" | b"replace") { return crate::builtins::enumerator::enum_for(c, s, name, a, NIL); }
+    if b.is_null() && !matches!(crate::symbol::sym_bytes(name), b"replace") { return crate::builtins::enumerator::enum_for(c, s, name, a, NIL); }
     let h = to_hash(c)?;
     let r = funcall(c, h, name, a, b)?;
     sync_from(c, h)?;
     Ok(if r == h { s } else { r })
+}
+/// ENV.update / merge!: like ENV[k] = v per pair (nil deletes), the block resolves existing names.
+fn env_update(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+    for &x in a {
+        let Some(h) = check_hash(c, x)? else { return type_err(c, format!("no implicit conversion of {} into Hash", crate::builtins::kernel::class_name_for_err(x))) };
+        let mut i = 0;
+        while let Some((k, v)) = c.hash_entry_at(h, i) {
+            i += 1;
+            if k == UNDEF { continue; }
+            let kb = name_arg(c, k, "name")?;
+            let mut v = v;
+            if !b.is_null() { if let Some(old) = get(&kb) { let o = env_str(c, &old); v = yield_block(c, b, &[k, o, v])?; } }
+            if v == NIL { set(c, &kb, None)?; } else { let vb = name_arg(c, v, "value")?; set(c, &kb, Some(&vb))?; }
+        }
+    }
+    Ok(s)
 }
 fn env_freeze(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { type_err(c, "cannot freeze ENV") }
 fn env_dup(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { type_err(c, "Cannot dup ENV, use ENV.to_h to get a copy of ENV as a hash") }
@@ -121,7 +137,8 @@ pub fn init(c: &mut Ctx) {
     d("key", env_key, 1); d("keys", env_keys, 0); d("values", env_values, 0); d("to_h", env_to_h, 0); d("to_hash", env_to_h, 0);
     d("size", env_size, 0); d("length", env_size, 0); d("empty?", env_empty, 0); d("clear", env_clear, 0); d("inspect", env_inspect, 0); d("to_s", env_to_s, 0);
     for n in ["each", "each_pair", "each_key", "each_value", "select", "filter", "reject", "slice", "except", "values_at", "assoc", "rassoc", "invert", "to_a", "filter_map"] { d(n, env_delegate, -1); }
-    for n in ["update", "merge!", "replace", "delete_if", "reject!", "keep_if", "select!", "filter!", "shift"] { d(n, env_mutate, -1); }
+    d("update", env_update, -1); d("merge!", env_update, -1);
+    for n in ["replace", "delete_if", "reject!", "keep_if", "select!", "filter!", "shift"] { d(n, env_mutate, -1); }
     d("freeze", env_freeze, 0); d("dup", env_dup, 0); d("clone", env_clone, -1); d("rehash", |_c, _s, _a, _b| Ok(NIL), 0);
     const_set(c.vm().c_object, intern(b"ENV"), env);
 }
