@@ -103,15 +103,19 @@ pub fn range_each(c: &mut Ctx, slf: Value, mut f: impl FnMut(&mut Ctx, Value) ->
     Ok(())
 }
 // Range#each is identified by its entry (vm.ids.r_each), not by function pointer
+/// The loop of Range#each over fixnums, yielding through `y` (inline_iter.rs); None: other bounds.
+#[inline(always)]
+pub fn r_each_loop(c: &mut Ctx, slf: Value, y: &mut impl FnMut(&mut Ctx, &[Value]) -> RV) -> Option<RV> {
+    let (b, e, excl) = c.range_parts(slf);
+    if !b.is_fixnum() || !e.is_fixnum() { return None; }
+    let mut i = b.as_fix(); let l = e.as_fix();
+    let l = if excl { l - 1 } else { l };
+    while i <= l { if let Err(e) = y(c, &[Value::fix(i)]) { return Some(Err(e)); } i += 1; }
+    Some(Ok(slf))
+}
 cfn!(r_each, |c, slf, a, blk| {
     if blk.is_null() { return crate::builtins::enumerator::enum_for_sized(c, slf, s::each, a); }
-    let (b, e, excl) = c.range_parts(slf);
-    if b.is_fixnum() && e.is_fixnum() {
-        let mut i = b.as_fix(); let l = e.as_fix();
-        let l = if excl { l - 1 } else { l };
-        while i <= l { yield1(c, blk, Value::fix(i))?; i += 1; }
-        return Ok(slf);
-    }
+    if let Some(r) = r_each_loop(c, slf, &mut |c, a| yield1(c, blk, a[0])) { return r; }
     range_each(c, slf, |c, v| { yield1(c, blk, v)?; Ok(true) })?;
     Ok(slf)
 });

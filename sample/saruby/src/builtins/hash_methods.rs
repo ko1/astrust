@@ -120,7 +120,13 @@ cfn!(h_keys, |c, slf, a, blk| Ok(c.ary_from_vec(c.hash(slf).entries.iter().filte
 cfn!(h_values, |c, slf, a, blk| Ok(c.ary_from_vec(c.hash(slf).entries.iter().filter(|e| e.key != UNDEF).map(|e| e.val).collect())));
 cfn!(h_values_at, |c, slf, a, blk| { let out = c.ary_new(); for &k in a { let v = hash_aref(c, slf, k)?; c.ary_push(out, v); } Ok(out) });
 cfn!(h_fetch_values, |c, slf, a, blk| { let out = c.ary_new(); for &k in a { let v = h_fetch(c, slf, &[k], blk)?; c.ary_push(out, v); } Ok(out) });
-cfn!(h_each, |c, slf, a, blk| enum_or(c, slf, "each", a, blk, |c| { let two = wants_two(c, blk); each_entry(c, slf, |c, k, v| { yield_kv(c, blk, two, k, v)?; Ok(true) })?; Ok(slf) }));
+/// Hash#each, yielding each pair as two values through `y` (inline_iter.rs: a block with 2+ parameters).
+#[inline(always)]
+pub fn h_each_loop(c: &mut Ctx, slf: Value, y: &mut impl FnMut(&mut Ctx, &[Value]) -> RV) -> RV {
+    each_entry(c, slf, |c, k, v| { y(c, &[k, v])?; Ok(true) })?;
+    Ok(slf)
+}
+cfn!(h_each, |c, slf, a, blk| enum_or(c, slf, "each", a, blk, |c| { let two = wants_two(c, blk); h_each_loop(c, slf, &mut |c, a| yield_kv(c, blk, two, a[0], a[1])) }));
 cfn!(h_each_key, |c, slf, a, blk| enum_or(c, slf, "each_key", a, blk, |c| { each_entry(c, slf, |c, k, _v| { yield1(c, blk, k)?; Ok(true) })?; Ok(slf) }));
 cfn!(h_each_value, |c, slf, a, blk| enum_or(c, slf, "each_value", a, blk, |c| { each_entry(c, slf, |c, _k, v| { yield1(c, blk, v)?; Ok(true) })?; Ok(slf) }));
 cfn!(h_each_with_index, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(c, slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "each_with_index", a, blk) } else { enum_or(c, slf, "each_with_index", a, blk, |c| {
