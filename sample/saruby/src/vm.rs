@@ -1605,10 +1605,10 @@ pub fn spec_block_np(yc: &YieldCache, argc: usize) -> u32 {
 /// The heap Env of a frame whose variables are captured by blocks; params copied in.
 #[inline(never)]
 pub fn make_env(is: &Iseq, base: Stk, parent: Value) {
-    let env = gc::alloc_with(vm().c_env, move || Body::Env(vec![NIL; is.env_size as usize].into_boxed_slice(), parent));
+    let env = gc::alloc_with(vm().c_env, move || Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), parent));
     base[1].set(env);
     if let Body::Env(vals, _) = &mut obj(env).body {
-        for &(sl, ei) in is.env_params.iter() { vals[ei as usize] = base[sl as usize].get(); }
+        for &(sl, ei) in is.env_params.iter() { vals.set(ei as usize, base[sl as usize].get()); }
     }
 }
 
@@ -1929,10 +1929,10 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
     }
     // env
     if is.env_size > 0 {
-        let env = gc::alloc_with(vm().c_env, move || Body::Env(vec![NIL; is.env_size as usize].into_boxed_slice(), outer_env));
+        let env = gc::alloc_with(vm().c_env, move || Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), outer_env));
         base[1].set(env);
         for &(sl, ei) in is.env_params.iter() {
-            if let Body::Env(vals, _) = &mut obj(env).body { vals[ei as usize] = base[sl as usize].get(); }
+            if let Body::Env(vals, _) = &mut obj(env).body { vals.set(ei as usize, base[sl as usize].get()); }
         }
     } else {
         base[1].set(outer_env);

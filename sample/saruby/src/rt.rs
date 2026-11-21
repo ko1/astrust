@@ -251,11 +251,11 @@ pub fn env_at(mut env: Value, hops: u32) -> Value {
 }
 #[inline(always)]
 pub fn env_get(env: Value, idx: u32) -> Value {
-    match &obj(env).body { Body::Env(v, _) => unsafe { *v.get_unchecked(idx as usize) }, _ => unsafe { std::hint::unreachable_unchecked() } }
+    match &obj(env).body { Body::Env(v, _) => v.get(idx as usize), _ => unsafe { std::hint::unreachable_unchecked() } }
 }
 #[inline(always)]
 pub fn env_set(env: Value, idx: u32, x: Value) {
-    match &mut obj(env).body { Body::Env(v, _) => unsafe { *v.get_unchecked_mut(idx as usize) = x }, _ => unsafe { std::hint::unreachable_unchecked() } }
+    match &mut obj(env).body { Body::Env(v, _) => v.set(idx as usize, x), _ => unsafe { std::hint::unreachable_unchecked() } }
 }
 
 pub fn srb_ivar_get(slf: Value, name: Sym, ic: &mut IvarCache) -> Value {
@@ -956,7 +956,7 @@ pub fn run_class_body(c: &mut Ctx, klass: Value, is: &'static Iseq) -> RV {
     nil_fill(base, 2, is.nlocals as usize);
     c.set_sp(base, is.nlocals as usize);
     if is.env_size > 0 {
-        let env = crate::gc::alloc(vm().c_env, Body::Env(vec![NIL; is.env_size as usize].into_boxed_slice(), NIL));
+        let env = crate::gc::alloc(vm().c_env, Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), NIL));
         base[1].set(env);
     }
     c.frame = &mut fr.h;
