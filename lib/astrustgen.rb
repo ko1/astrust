@@ -887,8 +887,8 @@ module ASTrustGen
           let mut h = hash_str("list");
           for x in ns.iter() { h = hash_merge(h, hash_node(*x)); }
           #{first.contiguous? ? 'if let Some(x) = ns.first() { h = hash_merge(h, (*x as usize).wrapping_sub(parent as usize) as u64); }' : ''}
-          // patch crate: the elements' names too (one in a bound entry's copy may call its R_<hash>P)
-          if sc.patch { h = hash_merge(h, hash_str(&ts.join(","))); }
+          // the elements' names too: one list node specialized twice (a site, its unrolled copy) is two lists
+          h = hash_merge(h, hash_str(&ts.join(",")));
           let name = sc.positional(format!("L_{:016x}", h), #{first.contiguous? ? 'parent as usize' : '0'});
           if sc.emitted.contains(&name) { return name; }
           let mut s = format!("pub struct {};\\nimpl DispList for {} {{\\n    #[inline(always)] fn len(_ns: NodeList) -> usize {{ {} }}\\n", name, name, ts.len());
