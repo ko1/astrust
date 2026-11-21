@@ -518,11 +518,23 @@ pub fn srb_block_return(c: &mut Ctx, v: Value) -> RV {
         if unsafe { (*g).id } == id && k != FK_BLOCK && k != FK_CFUNC { alive = true; break; }
         g = unsafe { (*g).prev };
     }
-    if !alive { return Err(raise_local_jump(c, "unexpected return", "return", v)); }
+    if !alive || home_is_class_body(c, id) { return Err(raise_local_jump(c, "unexpected return", "return", v)); }
     c.esc = EscKind::Return;
     c.esc_val = v;
     c.esc_tag = id;
     Err(Esc)
+}
+
+/// A block's `return` cannot leave a class/module body (it can leave `class << x`, see srb_sclass).
+fn home_is_class_body(c: &Ctx, id: u64) -> bool {
+    let mut g = c.cur_frame();
+    while let Some(f) = g {
+        if f.id == id && f.kind != FK_BLOCK && f.kind != FK_CFUNC {
+            return f.kind == FK_CLASS && c.iseq_ref(f.iseq()).is_some_and(|is| is.info.label != "singleton class");
+        }
+        g = c.prev_frame(f);
+    }
+    false
 }
 
 #[cold]
