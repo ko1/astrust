@@ -776,7 +776,7 @@ pub fn parse_mode(c: &mut Ctx, a: &[Value]) -> Result<OpenMode, Esc> {
 pub fn path_arg(c: &mut Ctx, v: Value) -> Result<PathArg, Esc> {
     let sv = if is_string(v) { v } else if respond_to(v, intern(b"to_path"), true) { let p = funcall(c, v, intern(b"to_path"), &[], std::ptr::null())?; expect_str(c, p)? } else { expect_str(c, v)? };
     let b = c.str_bytes(sv);
-    if b.contains(&0) { return arg_err(c, "string contains null byte"); }
+    if b.contains(&0) { return arg_err(c, "path name contains null byte"); }   // rb_get_path
     Ok(PathArg(b.to_vec()))
 }
 fn setup_io(c: &mut Ctx, v: Value, fd: i32, path: Option<&[u8]>, om: &OpenMode) -> Result<(), Esc> {
