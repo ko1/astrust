@@ -117,11 +117,45 @@ pub fn specialize_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     let fname = format!("SD_{:016x}", hash_node(n));
     if sc.emitted.contains(&fname) || !node_laid(n) { return fname; }
     let t = specialize_node(sc, n);
-    sc.out.push_str(&format!("#[no_mangle]
+    let s = format!("S_{:016x}", hash_node(n));
+    if sc.emitted.contains(&format!("R_{:016x}", hash_node(n))) && !sc.emitted.contains(&s) {
+        // n calls itself: its one body is S_<hash>::run (R_ calls it directly); SD_ passes the spec-in value on
+        specialize_run(sc, &s, &t);
+        sc.out.push_str(&format!("#[no_mangle]
+pub fn {}(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ {}::run(c, n, fp, crate::vm::CallArgs::load(c)) }}
+", fname, s));
+    } else {
+        sc.out.push_str(&format!("#[no_mangle]
 pub fn {}(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ <{} as Disp>::call(c, n, fp) }}
 ", fname, t));
+    }
     sc.emitted.insert(fname.clone());
     fname
+}
+/// A call from inside the specialization of q to q (recursion): `R_<hash>`, a direct call of
+/// `S_<hash>::run`, q's entry taking the spec-in value as a parameter (specialize_entry / _finish emit it).
+pub fn specialize_rec(sc: &mut SpecCtx, q: NodePtr) -> String {
+    let h = hash_node(q);
+    let name = format!("R_{:016x}", h);
+    if sc.emitted.insert(name.clone()) {
+        sc.rec.push(q as usize);
+        sc.out.push_str(&format!("pub struct {0};\nimpl Disp for {0} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ crate::vm::native_check(c)?; S_{1:016x}::run(c, n, fp, crate::vm::CallArgs::load(c)) }}\n    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr, fp: Fp, a: CallArgs) -> RV {{ crate::vm::native_check(c)?; S_{1:016x}::run(c, n, fp, a) }}\n}}\n", name, h));
+    }
+    name
+}
+fn specialize_run(sc: &mut SpecCtx, s: &str, t: &str) {
+    sc.out.push_str(&format!("pub struct {0};\nimpl {0} {{\n    #[inline(never)]\n    pub fn run(c: &mut Ctx, n: NodePtr, fp: Fp, a: CallArgs) -> RV {{ <{1} as Disp>::spec(c, n, fp, a) }}\n}}\n", s, t));
+    sc.emitted.insert(s.to_string());
+}
+/// After the entries: S_<hash>::run of the recursion targets whose SD_ was not the one to provide it.
+pub fn specialize_finish(sc: &mut SpecCtx) {
+    while let Some(q) = sc.rec.pop() {
+        let q = q as NodePtr;
+        let s = format!("S_{:016x}", hash_node(q));
+        if sc.emitted.contains(&s) { continue; }
+        let t = specialize_node(sc, q);
+        specialize_run(sc, &s, &t);
+    }
 }
 
 /// A dispatcher as a type: `Dyn` calls through the node head, an SD type statically.

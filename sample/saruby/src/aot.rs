@@ -63,6 +63,7 @@ pub fn bake(store_dir: &str) -> Result<usize, String> {
     st.bake(std::path::Path::new(store_dir), &bake_config(), |entries| {
         let mut sc = SpecCtx::new();
         for &e in entries { specialize_entry(&mut sc, e as NodePtr); }
+        specialize_finish(&mut sc);
         sc.out
     })
 }

@@ -198,6 +198,11 @@ module ASTrustGen
       def opaque_dump_stmt(op, f) = "out.push_str(\"<#{op.name}>\");"
       # @spec operand: Rust expr (NodePtr, null = none) evaluated at specialize time with `np` in scope.
       def spec_target_expr(op) = "std::ptr::null_mut()"
+      # @spec operand whose target is being specialized now (recursion): the target regardless of size, or nil
+      # (the call stays dynamic).  Such a site gets `R_<hash>`, a direct call of the target's specialized entry
+      # (`S_<hash>::run`, with the @specin value as a parameter); `rec_call_stmt` runs before that call.
+      def spec_rec_target_expr(op) = nil
+      def rec_call_stmt = ""
       # @bake operand: Rust expr of the operand's type, evaluated at specialize time with `np` in scope.
       def bake_value_expr(op) = "0"
       # @specin operand: the value when no speculating caller passed it, and how a `spec` that cannot
@@ -495,7 +500,9 @@ module ASTrustGen
           elsif op.nodes?
             "    let t_#{op.name} = specialize_list(sc, &u.#{op.name}#{contiguous? ? ", n" : ""});"
           elsif op.spec?
-            "    let (t_#{op.name}, h_#{op.name}) = { let np = n as *mut NodeOf<#{struct_name}>; let p: NodePtr = unsafe { #{spec_target_expr(op)} }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth || sc.open.contains(&hash_node(p)) { (\"Dyn\".to_string(), 0u64) } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };"
+            rec = spec_rec_target_expr(op)
+            dyn = rec ? "{ let q: NodePtr = unsafe { #{rec} }; if sc.spec_max_depth > 0 && !q.is_null() && sc.open.contains(&hash_node(q)) { (specialize_rec(sc, q), hash_node(q)) } else { (\"Dyn\".to_string(), 0u64) } }" : "(\"Dyn\".to_string(), 0u64)"
+            "    let (t_#{op.name}, h_#{op.name}) = { let np = n as *mut NodeOf<#{struct_name}>; let p: NodePtr = unsafe { #{spec_target_expr(op)} }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth || sc.open.contains(&hash_node(p)) { #{dyn} } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };"
           end
         end.compact
         generic_names = @operands.select(&:generic_param).map { "t_#{it.name}" }
@@ -588,6 +595,10 @@ module ASTrustGen
       sins = @nodes.values.flat_map(&:operands).select(&:specin?).map(&:type).uniq
       raise "@specin operands of different types: #{sins.join(', ')}" if sins.size > 1
       spec_in = sins.first
+      sin_op = @nodes.values.lazy.map { |x| [x, x.operands.find(&:specin?)] }.find { it[1] }
+      esc = ->(s) { ASTrustGen.rust_str(s).gsub('{', '{{').gsub('}', '}}') }
+      rec_load = sin_op ? ", #{esc.(sin_op[0].spec_in_load_expr(sin_op[1]))}" : ''
+      rec_stmt = n.rec_call_stmt.empty? ? '' : esc.(n.rec_call_stmt) + ' '
       <<~RS
       #{banner}
       pub type DispatchFn = fn(#{ptypes.join(', ')}) -> #{n.result_type};
@@ -707,9 +718,41 @@ module ASTrustGen
           let fname = format!("SD_{:016x}", hash_node(n));
           if sc.emitted.contains(&fname)#{n.contiguous? ? ' || !node_laid(n)' : ''} { return fname; }
           let t = specialize_node(sc, n);
-          sc.out.push_str(&format!("#[no_mangle]\npub fn {}(#{params.join(', ')}) -> #{n.result_type} {{ <{} as Disp>::call(#{pnames.join(', ')}) }}\n", fname, t));
+          let s = format!("S_{:016x}", hash_node(n));
+          if sc.emitted.contains(&format!("R_{:016x}", hash_node(n))) && !sc.emitted.contains(&s) {
+              // n calls itself: its one body is S_<hash>::run (R_ calls it directly); SD_ passes the spec-in value on
+              specialize_run(sc, &s, &t);
+              sc.out.push_str(&format!("#[no_mangle]\npub fn {}(#{params.join(', ')}) -> #{n.result_type} {{ {}::run(#{pnames.join(', ')}#{rec_load}) }}\n", fname, s));
+          } else {
+              sc.out.push_str(&format!("#[no_mangle]\npub fn {}(#{params.join(', ')}) -> #{n.result_type} {{ <{} as Disp>::call(#{pnames.join(', ')}) }}\n", fname, t));
+          }
           sc.emitted.insert(fname.clone());
           fname
+      }
+      /// A call from inside the specialization of q to q (recursion): `R_<hash>`, a direct call of
+      /// `S_<hash>::run`, q's entry taking the spec-in value as a parameter (specialize_entry / _finish emit it).
+      pub fn specialize_rec(sc: &mut SpecCtx, q: NodePtr) -> String {
+          let h = hash_node(q);
+          let name = format!("R_{:016x}", h);
+          if sc.emitted.insert(name.clone()) {
+              sc.rec.push(q as usize);
+              sc.out.push_str(&format!("pub struct {0};\\nimpl Disp for {0} {{\\n    #[inline(always)]\\n    fn call(#{params.join(', ')}) -> #{n.result_type} {{ #{rec_stmt}S_{1:016x}::run(#{pnames.join(', ')}#{rec_load}) }}\\n    #[inline(always)]\\n    fn spec(#{params.join(', ')}#{spec_in ? ", a: #{spec_in}" : ''}) -> #{n.result_type} {{ #{rec_stmt}S_{1:016x}::run(#{pnames.join(', ')}#{spec_in ? ', a' : ''}) }}\\n}}\\n", name, h));
+          }
+          name
+      }
+      fn specialize_run(sc: &mut SpecCtx, s: &str, t: &str) {
+          sc.out.push_str(&format!("pub struct {0};\\nimpl {0} {{\\n    #[inline(never)]\\n    pub fn run(#{params.join(', ')}#{spec_in ? ", a: #{spec_in}" : ''}) -> #{n.result_type} {{ <{1} as Disp>::spec(#{pnames.join(', ')}#{spec_in ? ', a' : ''}) }}\\n}}\\n", s, t));
+          sc.emitted.insert(s.to_string());
+      }
+      /// After the entries: S_<hash>::run of the recursion targets whose SD_ was not the one to provide it.
+      pub fn specialize_finish(sc: &mut SpecCtx) {
+          while let Some(q) = sc.rec.pop() {
+              let q = q as NodePtr;
+              let s = format!("S_{:016x}", hash_node(q));
+              if sc.emitted.contains(&s) { continue; }
+              let t = specialize_node(sc, q);
+              specialize_run(sc, &s, &t);
+          }
       }
 
       /// A dispatcher as a type: `Dyn` calls through the node head, an SD type statically.

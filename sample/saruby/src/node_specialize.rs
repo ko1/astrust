@@ -1985,7 +1985,7 @@ fn SPECIALIZE_node_call(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_call_struct>)).u };
     let t_recv = specialize_node(sc, u.recv);
     let t_args = specialize_list(sc, &u.args, n);
-    let (t_callee, h_callee) = { let np = n as *mut NodeOf<node_call_struct>; let p: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) } }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth || sc.open.contains(&hash_node(p)) { ("Dyn".to_string(), 0u64) } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };
+    let (t_callee, h_callee) = { let np = n as *mut NodeOf<node_call_struct>; let p: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) } }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth || sc.open.contains(&hash_node(p)) { { let q: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee_rec(&u.cc, u.args.len(), u.flags) } }; if sc.spec_max_depth > 0 && !q.is_null() && sc.open.contains(&hash_node(q)) { (specialize_rec(sc, q), hash_node(q)) } else { ("Dyn".to_string(), 0u64) } } } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };
     let np = n as *mut NodeOf<node_call_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
@@ -2028,7 +2028,7 @@ fn SPECIALIZE_node_call_blk(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_call_blk_struct>)).u };
     let t_recv = specialize_node(sc, u.recv);
     let t_args = specialize_list(sc, &u.args, n);
-    let (t_callee, h_callee) = { let np = n as *mut NodeOf<node_call_blk_struct>; let p: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) } }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth || sc.open.contains(&hash_node(p)) { ("Dyn".to_string(), 0u64) } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };
+    let (t_callee, h_callee) = { let np = n as *mut NodeOf<node_call_blk_struct>; let p: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) } }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth || sc.open.contains(&hash_node(p)) { { let q: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee_rec(&u.cc, u.args.len(), u.flags) } }; if sc.spec_max_depth > 0 && !q.is_null() && sc.open.contains(&hash_node(q)) { (specialize_rec(sc, q), hash_node(q)) } else { ("Dyn".to_string(), 0u64) } } } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };
     let (t_body, h_body) = { let np = n as *mut NodeOf<node_call_blk_struct>; let p: NodePtr = unsafe { { let u = &(*np).u; crate::inline_iter::spec_iter_block(&u.cc, u.args.len(), crate::vm::site_kind(&u.cc, u.args.len(), u.flags), u.blk) } }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth || sc.open.contains(&hash_node(p)) { ("Dyn".to_string(), 0u64) } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };
     let np = n as *mut NodeOf<node_call_blk_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
@@ -2073,7 +2073,7 @@ fn SPECIALIZE_node_call_kw(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_call_kw_struct>)).u };
     let t_recv = specialize_node(sc, u.recv);
     let t_args = specialize_list(sc, &u.args, n);
-    let (t_callee, h_callee) = { let np = n as *mut NodeOf<node_call_kw_struct>; let p: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee_kw(&u.cc, u.args.len(), u.ci) } }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth || sc.open.contains(&hash_node(p)) { ("Dyn".to_string(), 0u64) } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };
+    let (t_callee, h_callee) = { let np = n as *mut NodeOf<node_call_kw_struct>; let p: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee_kw(&u.cc, u.args.len(), u.ci) } }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth || sc.open.contains(&hash_node(p)) { { let q: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee_kw_rec(&u.cc, u.args.len(), u.ci) } }; if sc.spec_max_depth > 0 && !q.is_null() && sc.open.contains(&hash_node(q)) { (specialize_rec(sc, q), hash_node(q)) } else { ("Dyn".to_string(), 0u64) } } } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };
     let np = n as *mut NodeOf<node_call_kw_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {

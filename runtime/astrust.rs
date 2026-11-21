@@ -41,13 +41,14 @@ pub struct SpecCtx {
     pub spec_depth: u32,          // nesting of speculated callees
     pub spec_max_depth: u32,
     pub comments: bool,
+    pub rec: Vec<usize>,          // nodes a direct recursive call (R_<hash>) names; their S_<hash> is owed
 }
 
 impl SpecCtx {
     pub fn new() -> Self {
         SpecCtx { out: String::new(), emitted: HashSet::new(), open: HashSet::new(), spec_depth: 0,
                   // ASTRUST_SPEC_DEPTH=n: how deep speculated callees nest (0: no speculation)
-                  spec_max_depth: std::env::var("ASTRUST_SPEC_DEPTH").ok().and_then(|v| v.parse().ok()).unwrap_or(2), comments: std::env::var_os("ASTRUST_SD_COMMENTS").is_some() }
+                  spec_max_depth: std::env::var("ASTRUST_SPEC_DEPTH").ok().and_then(|v| v.parse().ok()).unwrap_or(2), comments: std::env::var_os("ASTRUST_SD_COMMENTS").is_some(), rec: vec![] }
     }
 }
 
