@@ -23,6 +23,7 @@ pub mod thread;
 pub mod sys;
 pub mod file;
 pub mod process;
+pub mod pack;
 pub mod random;
 pub mod binding;
 pub mod prelude;

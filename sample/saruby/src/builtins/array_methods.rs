@@ -927,7 +927,7 @@ cfn!(a_bsearch, |c, slf, a, blk| enum_or(c, slf, "bsearch", a, blk, |c| {
     }
     Ok(found)
 }));
-cfn!(a_pack, |c, slf, a, blk| crate::builtins::misc::pack(c, slf, a));
+cfn!(a_pack, |c, slf, a, blk| crate::builtins::pack::pack(c, slf, a));
 cfn!(a_frozen_dup, |c, slf, a, blk| Ok(slf));
 cfn!(a_flat_map, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && crate::builtins::enum_native::each_overridden(c, slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "flat_map", a, blk) } else { enum_or(c, slf, "flat_map", a, blk, |c| {
     let out = c.ary_new(); let mut i = 0;

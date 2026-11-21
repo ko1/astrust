@@ -1233,8 +1233,8 @@ cfn!(s_byteslice, |c, slf, a, b_| {
     let e = (st + ln).min(n);
     Ok(c.str_sub(slf, st as usize..e as usize))
 });
-cfn!(s_unpack, |c, slf, a, b_| { if a.is_empty() || (a.len() == 1 && kw_arg(a).is_some()) { return argc_err(c, 0, 1, 1); } crate::builtins::misc::unpack(c, slf, a) });
-cfn!(s_unpack1, |c, slf, a, b_| { if a.is_empty() || (a.len() == 1 && kw_arg(a).is_some()) { return argc_err(c, 0, 1, 1); } let r = crate::builtins::misc::unpack(c, slf, a)?; Ok(c.ary_get(r, 0)) });
+cfn!(s_unpack, |c, slf, a, b_| crate::builtins::pack::unpack(c, slf, a, b_, false));
+cfn!(s_unpack1, |c, slf, a, b_| crate::builtins::pack::unpack(c, slf, a, std::ptr::null(), true));
 cfn!(s_crypt, |c, slf, a, b_| Ok(c.str_new_like(slf, c.str_bytes(slf).to_vec())));
 /// Extended grapheme clusters (approximation of UAX #29: CRLF, combining marks, ZWJ
 /// sequences, variation selectors, emoji modifiers, regional-indicator pairs, Hangul).
