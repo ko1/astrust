@@ -155,6 +155,13 @@ fn group_index(c: &mut Ctx, m: Value, k: Value) -> Result<Option<usize>, Esc> {
     if i < 0 || i >= n { return Ok(None); }
     Ok(Some(i as usize))
 }
+/// match_backref_number + bounds check (begin/end/offset/byte*): no negative indices.
+fn group_index_strict(c: &mut Ctx, m: Value, k: Value) -> Result<usize, Esc> {
+    if k.is_sym() || is_string(k) { return Ok(group_index(c, m, k)?.unwrap_or(0)); }
+    let i = crate::builtins::numeric_methods::num_to_long(c, k)?;
+    if i < 0 || i >= md(c, m).groups.len() as i64 { return err(c, c.vm().c_index_error, format!("index {} out of matches", i)); }
+    Ok(i as usize)
+}
 fn md_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if a.len() == 2 || is_range(a[0]) { let all = md_to_a(c, slf, &[], std::ptr::null())?; return crate::builtins::array_methods::ary_aref(c, all, a); }
     match group_index(c, slf, a[0])? { Some(i) => Ok(nth_match(c, slf, i as i64)), None => Ok(NIL) }
@@ -181,7 +188,7 @@ fn md_named_captures(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> 
 fn md_names(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { let r = md(c, slf).regexp; if r == NIL { return Ok(c.ary_new()); } re_names(c, r, a, b) }
 /// Character offset of an end (0: begin, 1: end) of group a[0].
 fn md_edge(c: &mut Ctx, slf: Value, a: &[Value], end: bool) -> RV {
-    let i = group_index(c, slf, a[0])?.ok_or(()).or_else(|_| err(c, c.vm().c_index_error, "index out of matches"))?;
+    let i = group_index_strict(c, slf, a[0])?;
     let m = md(c, slf);
     Ok(match m.groups[i] { Some((s2, e)) => Value::fix(byte_to_char(c, m.str, if end { e } else { s2 })), None => NIL })
 }
@@ -189,10 +196,13 @@ fn md_begin(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { md_e
 fn md_end(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { md_edge(c, slf, a, true) }
 fn md_offset(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { let x = md_begin(c, slf, a, b)?; let y = md_end(c, slf, a, b)?; Ok(c.ary_new_from(&[x, y])) }
 fn md_byteoffset(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    let i = group_index(c, slf, a[0])?.unwrap_or(0);
+    let i = group_index_strict(c, slf, a[0])?;
     let pair = match md(c, slf).groups.get(i).copied().flatten() { Some((s2, e)) => [Value::fix(s2 as i64), Value::fix(e as i64)], None => [NIL, NIL] };
     Ok(c.ary_new_from(&pair))
 }
+/// MatchData#bytebegin / #byteend (3.4)
+fn md_bytebegin(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let i = group_index_strict(c, slf, a[0])?; Ok(md(c, slf).groups.get(i).copied().flatten().map_or(NIL, |(s2, _)| Value::fix(s2 as i64))) }
+fn md_byteend(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let i = group_index_strict(c, slf, a[0])?; Ok(md(c, slf).groups.get(i).copied().flatten().map_or(NIL, |(_, e)| Value::fix(e as i64))) }
 fn md_pre(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(match_pre(c, slf)) }
 fn md_post(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(match_post(c, slf)) }
 fn md_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(nth_match(c, slf, 0)) }
@@ -274,7 +284,7 @@ pub fn init(vmr: &Vm) -> (Value, Value) {
     class_set_alloc(m, AllocKind::None);
     let d = |n: &str, f: CFunc, a: i32| define_cfunc(m, n, f, a);
     d("[]", md_aref, -1); d("to_a", md_to_a, 0); d("captures", md_captures, 0); d("deconstruct", md_captures, 0); d("named_captures", md_named_captures, -1);
-    d("names", md_names, 0); d("begin", md_begin, 1); d("end", md_end, 1); d("offset", md_offset, 1); d("byteoffset", md_byteoffset, 1);
+    d("names", md_names, 0); d("begin", md_begin, 1); d("end", md_end, 1); d("offset", md_offset, 1); d("byteoffset", md_byteoffset, 1); d("bytebegin", md_bytebegin, 1); d("byteend", md_byteend, 1);
     d("pre_match", md_pre, 0); d("post_match", md_post, 0); d("to_s", md_to_s, 0); d("size", md_size, 0); d("length", md_size, 0);
     d("string", md_string, 0); d("regexp", md_regexp, 0); d("values_at", md_values_at, -1); d("inspect", md_inspect, 0); d("==", md_eq, 1);
     d("eql?", md_eq, 1); d("deconstruct_keys", md_deconstruct_keys, 1);
