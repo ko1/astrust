@@ -601,6 +601,7 @@ pub fn default_external() -> u8 { DEFAULT_EXTERNAL.load(Relaxed) }
 pub fn default_internal() -> Option<u8> { let d = DEFAULT_INTERNAL.load(Relaxed); if d < 0 { None } else { Some(d as u8) } }
 
 pub fn encoding_value(c: &Ctx, id: u8) -> Value { c.vm().enc_objs[id as usize] }
+pub fn is_encoding(c: &Ctx, v: Value) -> bool { c.data::<REnc>(v).is_some() }
 
 /// Encoding object, name string or object with to_str -> encoding id.
 pub fn to_enc(c: &mut Ctx, v: Value) -> Result<u8, Esc> {

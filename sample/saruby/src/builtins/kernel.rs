@@ -701,9 +701,9 @@ pub fn gvar_set(c: &mut Ctx, shown: Sym, v: Value) -> RV {
 pub fn gvar_defined(c: &Ctx, name: Sym) -> bool {
     let name = resolve_gvar(c, name);
     match sym_bytes(name) {
-        b"$!" => c.errinfo != NIL,
-        b"$~" => c.last_match != NIL,
-        b"$0" | b"$:" | b"$\"" | b"$$" | b"$*" | b"$<" | b"$FILENAME" | b"$stdout" | b"$stderr" | b"$stdin" | b"$VERBOSE" | b"$DEBUG" | b"$," | b"$/" | b"$;" | b"$=" => true,
+        // the built-in (virtual) variables are always defined
+        b"$!" | b"$@" | b"$~" | b"$_" | b"$." | b"$?" | b"$-a" | b"$-i" | b"$-l" | b"$-p" | b"$-W" | b"$\\"
+        | b"$0" | b"$:" | b"$\"" | b"$$" | b"$*" | b"$<" | b"$FILENAME" | b"$stdout" | b"$stderr" | b"$stdin" | b"$VERBOSE" | b"$DEBUG" | b"$," | b"$/" | b"$;" | b"$=" => true,
         _ => c.vm().globals.contains_key(&name),
     }
 }
