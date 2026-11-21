@@ -98,6 +98,12 @@ Measurements and what was tried: `~/ruby/src/trials/2026-11-21-saruby-call-path/
 * A compiled-in self call without arguments of a method without parameters, locals, env or block
   literal (`spec_shared`, baked as `shared`) runs the callee in the caller's frame: no staging, no
   frame check, no sp change; the entry (`CallArgs.shared`) skips `enter` and the env slot.
+* A call site inside its own callee (recursion: the target is being specialized) is baked with
+  `R_<hash>`: a direct call of the target's entry `S_<hash>::run` (CallArgs as a two-word `CallPass`,
+  the native stack check before it), under the compiled-in callee's guard; `SD_<hash>` of such a target
+  only passes `CallArgs::load(c)` on.  A small target is first compiled into its own sites once
+  (`specialize_open`), so every other level is inline; `ASTRUST_REC_UNROLL=0` at bake time turns that off.
+  Measurements: `~/ruby/src/trials/2026-11-21-saruby-recursion/`.
 * A method with only required parameters has a `node_method_entry` (`Iseq.entry`): it expects sp
   just above the staged arguments (where `stage` left it), makes the 6-word `Frame` on the native
   stack, nil-fills, links `c.frame`, runs the body and consumes its `return`.  Its flags (`ME_*`,

@@ -292,8 +292,9 @@ pub struct Ctx {
 }
 
 /// What an entry node takes from its caller: in registers when the caller compiled the entry in
-/// (EVAL_SPEC!), else through c.call_me / c.call_blk.  `shared`: the entry runs in its caller's
-/// frame (a compiled-in self call of a method without parameters, locals, env or block literal).
+/// (EVAL_SPEC!) or calls it directly (a recursive site: as a CallPass), else through c.call_me / c.call_blk.
+/// `shared`: the entry runs in its caller's frame (a compiled-in self call of a method without
+/// parameters, locals, env or block literal).
 #[derive(Clone, Copy)]
 pub struct CallArgs { pub me: *const MethodEntry, pub blk: *const Block, pub shared: bool }
 impl CallArgs {
@@ -304,6 +305,13 @@ impl CallArgs {
         assert!(!self.shared, "shared frame passed to an entry out of line");
         c.call_me = self.me; c.call_blk = self.blk;
     }
+    #[inline(always)] pub fn pass(self) -> CallPass { CallPass { me: self.me, bs: self.blk as usize | self.shared as usize } }
+}
+/// CallArgs as two words (shared in bit 0 of the block's), for a call that is not inlined: S_<hash>::run.
+#[derive(Clone, Copy)]
+pub struct CallPass { me: *const MethodEntry, bs: usize }
+impl CallPass {
+    #[inline(always)] pub fn unpass(self) -> CallArgs { CallArgs { me: self.me, blk: (self.bs & !1) as *const Block, shared: self.bs & 1 != 0 } }
 }
 
 /// Can the self call at a site run its compiled-in callee `p` in the caller's frame?
@@ -313,8 +321,12 @@ pub fn spec_shared(recv: NodePtr, argc: usize, p: NodePtr) -> u32 {
     if !std::ptr::eq(unsafe { (*p).head.kind }, &crate::node::KIND_node_method_entry) { return 0; }
     let u = unsafe { &(*(p as *mut crate::node::NodeOf<crate::node::node_method_entry_struct>)).u };
     // 2: a leaf, which cannot raise or look at a frame (no line needed)
-    if u.nparams != 0 || u.nlocals != 2 || u.flags & (ME_ID | ME_ENV) != 0 { 0 } else if u.flags & ME_LEAF != 0 { 2 } else { 1 }
+    if !shareable(u.nlocals, u.nparams, u.flags) { 0 } else if u.flags & ME_LEAF != 0 { 2 } else { 1 }
 }
+
+/// Can a method entry with these (baked) operands run in its caller's frame (spec_shared)?
+#[inline(always)]
+pub fn shareable(nlocals: u32, nparams: u32, flags: u32) -> bool { nparams == 0 && nlocals == 2 && flags & (ME_ID | ME_ENV) == 0 }
 
 impl Ctx {
     #[inline(always)] pub fn next_serial(&mut self) -> u64 { self.serial += 1; self.serial }
@@ -1656,6 +1668,11 @@ pub fn spec_callee(cc: &CallCache, argc: usize, flags: u32) -> NodePtr {
     if d.len() <= 600 { cc.fast as NodePtr } else { std::ptr::null_mut() }
 }
 
+/// spec_callee without the size limit: a recursive site calls its callee, it does not compile it in.
+pub fn spec_callee_rec(cc: &CallCache, argc: usize, flags: u32) -> NodePtr {
+    if cc.fast_argc as usize != argc || flags & CF_KW != 0 { std::ptr::null_mut() } else { cc.fast as NodePtr }
+}
+
 /// site_kind of a literal keyword site: SITE_ENTRY when its cache holds a kentry it can compile in.
 pub fn site_kind_kw(cc: &CallCache, argc: usize, ci: &crate::compile::CallInfo) -> u32 {
     if cc.klass == 0 || ci.blk.is_some() || cc.fast_argc != KW_DENSE | argc as u32 { return SITE_OTHER; }
@@ -1670,6 +1687,11 @@ pub fn spec_callee_kw(cc: &CallCache, argc: usize, ci: &crate::compile::CallInfo
     let mut d = String::new();
     crate::node::dump_node(&mut d, cc.fast as NodePtr);
     if d.len() <= 600 { cc.fast as NodePtr } else { std::ptr::null_mut() }
+}
+
+/// spec_callee_kw without the size limit (recursion).
+pub fn spec_callee_kw_rec(cc: &CallCache, argc: usize, ci: &crate::compile::CallInfo) -> NodePtr {
+    if site_kind_kw(cc, argc, ci) == SITE_OTHER { std::ptr::null_mut() } else { cc.fast as NodePtr }
 }
 
 /// The block entry a yield site has always run, as the callee to compile into it (null: none).

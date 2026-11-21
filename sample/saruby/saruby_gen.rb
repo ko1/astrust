@@ -61,6 +61,21 @@ class SarubyNodeDef < ASTrustGen::NodeDef
       end
     end
 
+    # a call site inside its own callee (recursion): a direct call, whatever the callee's size
+    def spec_rec_target_expr(op)
+      case @name
+      when 'node_call' then "{ let u = &(*np).u; crate::vm::spec_callee_rec(&u.cc, u.args.len(), u.flags) }"
+      when 'node_call_blk' then op.name == 'callee' ? "{ let u = &(*np).u; crate::vm::spec_callee_rec(&u.cc, u.args.len(), u.flags) }" : nil
+      when 'node_call_kw' then "{ let u = &(*np).u; crate::vm::spec_callee_kw_rec(&u.cc, u.args.len(), u.ci) }"
+      end
+    end
+    # that call adds a native frame (a compiled-in callee does not)
+    def rec_call_stmt = "crate::vm::native_check(c)?;"
+    # CallArgs as two words: three would go through memory
+    def rec_spec_in_type(t) = "crate::vm::CallPass"
+    def rec_pass_expr(v) = "#{v}.pass()"
+    def rec_unpass_expr(v) = "#{v}.unpass()"
+
     def opaque_hash_expr(op, f)
       case op.type
       when 'Sym' then "hash_bytes(crate::symbol::sym_bytes(#{f}))"

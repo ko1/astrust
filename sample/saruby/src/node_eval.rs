@@ -848,7 +848,11 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ct
         let base = stage(c, 2 + k)?;
         let r0 = <D_recv as Disp>::call(c, recv, fp)?;
         base[0].set(r0);
-        for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
+        // the first three by hand: baked, LLVM keeps a loop over calls in arguments (tak) and spills around it
+        if k > 0 { let v = <D_args as DispList>::nth(c, args, 0, fp)?; base[2].set(v); }
+        if k > 1 { let v = <D_args as DispList>::nth(c, args, 1, fp)?; base[3].set(v); }
+        if k > 2 { let v = <D_args as DispList>::nth(c, args, 2, fp)?; base[4].set(v); }
+        for i in 3..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
         (base, r0)
     };
     unsafe { (*c.frame).line = line; }
@@ -866,6 +870,7 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ct
             c.set_sp(base, 0);
             return r;
         }
+        std::hint::cold_path();
         return call_spec_out(c, cc, mid, base, k as u32, std::ptr::null(), flags, callee_hash);
     }
     if site_hit(cc, r0, kind) {
@@ -1383,7 +1388,7 @@ pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlo
     let mut fr = Frame { prev: c.frame, fp: head(fp), me, blk, id, line, kind: FK_METHOD, visi: VISI_PUBLIC, lite: true, pad: 0 };
     // no native stack check here: whoever calls an entry out of line makes it (run_entry, site_fast)
     // a shared frame (the caller's, CallArgs) has no slots of its own and keeps the caller's env
-    if !ca.shared {
+    if !(shareable(nlocals, nparams, flags) && ca.shared) {
         enter(c, fp, nlocals, nparams)?;
         fp[1].set(NIL);
     }
