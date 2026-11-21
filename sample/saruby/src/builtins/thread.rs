@@ -468,7 +468,7 @@ fn cv_broadcast(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
 // ---- Queue / SizedQueue -------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-pub struct RQueue { items: Value, closed: bool, max: usize, waiting: usize }
+pub struct RQueue { items: Value, head: usize, closed: bool, max: usize, waiting: usize }   // items[head..] are queued
 impl RData for RQueue {
     fn visit(&mut self, m: &mut crate::gc::Visitor) { m.visit(&mut self.items); }
     fn as_any(&self) -> &dyn std::any::Any { self }
@@ -476,12 +476,12 @@ impl RData for RQueue {
 }
 fn qu(c: &Ctx, v: Value) -> RQueue { *c.data::<RQueue>(v).expect("a Queue") }
 fn qu_mut(c: &mut Ctx, v: Value) -> &mut RQueue { c.data_mut::<RQueue>(v).expect("a Queue") }
-fn q_len(c: &Ctx, q: Value) -> usize { c.ary_len(qu(c, q).items) }
+fn q_len(c: &Ctx, q: Value) -> usize { let q = qu(c, q); c.ary_len(q.items) - q.head }
 pub fn alloc_queue(c: &mut Ctx, klass: Value) -> Option<Value> {
     let k = c.vm().c_queue;
     if k != NIL && crate::builtins::inherits(klass, k) {
         let items = c.ary_new();
-        return Some(c.alloc_with(klass, move || Body::Data(Box::new(RQueue { items, closed: false, max: 0, waiting: 0 }))));
+        return Some(c.alloc_with(klass, move || Body::Data(Box::new(RQueue { items, head: 0, closed: false, max: 0, waiting: 0 }))));
     }
     None
 }
@@ -493,7 +493,8 @@ fn q_init(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
         if !is_array(l) { return type_err(c, format!("can't convert {} to Array ({}#to_a gives {})", class_name_for_err(init), class_name_for_err(init), class_name_for_err(l))); }
         let v = c.ary(l).to_vec();
         let items = c.ary_from_vec(v);
-        qu_mut(c, s).items = items;
+        let q = qu_mut(c, s);
+        q.items = items; q.head = 0;
     }
     Ok(NIL)
 }
@@ -518,11 +519,11 @@ fn q_push(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, 2); }
     let q = qu(c, s);
     if q.closed { return q_closed_err(c); }
-    if q.max > 0 && c.ary_len(q.items) >= q.max {
+    if q.max > 0 && q_len(c, s) >= q.max {
         let (nb, deadline) = q_opts(c, &a[1..])?;
         if nb { return err(c, c.vm().c_thread_error, "queue full"); }
         qu_mut(c, s).waiting += 1;
-        let r = block_on(c, |c| { let q = qu(c, s); Ok(q.closed || c.ary_len(q.items) < q.max) }, deadline, true, false);
+        let r = block_on(c, |c| { let q = qu(c, s); Ok(q.closed || q_len(c, s) < q.max) }, deadline, true, false);
         qu_mut(c, s).waiting -= 1;
         if !r? { return Ok(NIL); }
         if qu(c, s).closed { return q_closed_err(c); }
@@ -541,12 +542,18 @@ fn q_pop(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
         qu_mut(c, s).waiting -= 1;
         if !r? || q_len(c, s) == 0 { return Ok(NIL); }
     }
-    let items = qu(c, s).items;
-    Ok(c.ary_mut(items).remove(0))
+    // O(1): advance head; the dead prefix is dropped once it is the larger half
+    let RQueue { items, head, .. } = qu(c, s);
+    let v = c.ary_mut(items);
+    let x = std::mem::replace(&mut v[head], NIL);
+    let head = head + 1;
+    let head = if head == v.len() { v.clear(); 0 } else if head >= 64 && head * 2 >= v.len() { v.drain(..head); 0 } else { head };
+    qu_mut(c, s).head = head;
+    Ok(x)
 }
 fn q_size(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(q_len(c, s) as i64)) }
 fn q_empty(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(q_len(c, s) == 0)) }
-fn q_clear(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let items = qu(c, s).items; c.ary_mut(items).clear(); Ok(s) }
+fn q_clear(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let items = qu(c, s).items; c.ary_mut(items).clear(); qu_mut(c, s).head = 0; Ok(s) }
 fn q_close(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { qu_mut(c, s).closed = true; Ok(s) }
 fn q_closed(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(qu(c, s).closed)) }
 fn q_num_waiting(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(qu(c, s).waiting as i64)) }
