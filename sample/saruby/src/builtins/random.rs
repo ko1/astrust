@@ -277,7 +277,7 @@ fn domain_error<T>(c: &mut Ctx) -> Result<T, Esc> {
     }
 }
 fn float_value(c: &mut Ctx, f: f64) -> Result<f64, Esc> { if !f.is_finite() { return domain_error(c); } Ok(f) }
-fn check_to_int(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
+pub(crate) fn check_to_int(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if is_integer(v) { return Ok(Some(v)); }
     if v.is_heap() && !is_float(v) && respond_to(v, s::to_int, true) {
         let r = funcall(c, v, s::to_int, &[], std::ptr::null())?;

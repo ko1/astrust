@@ -184,6 +184,8 @@ fn cover(c: &mut Ctx, slf: Value, v: Value) -> Result<bool, Esc> {
 cfn!(r_include, |c, slf, a, blk| {
     let (b, e, _) = c.range_parts(slf);
     if crate::numeric::is_numeric(b) || crate::numeric::is_numeric(e) || (b == NIL && e == NIL) { return Ok(Value::bool(cover(c, slf, a[0])?)); }
+    // range.c: an endpoint with to_int makes the range linear (mspec's SpecVersion)
+    if crate::builtins::random::check_to_int(c, b)?.is_some() || crate::builtins::random::check_to_int(c, e)?.is_some() { return Ok(Value::bool(cover(c, slf, a[0])?)); }
     if is_string(b) || is_string(e) {
         if !is_string(a[0]) { return Ok(FALSE); }
         if b == NIL || e == NIL { return Ok(Value::bool(cover(c, slf, a[0])?)); }
