@@ -56,9 +56,3 @@ pub fn recursion_leave(v: Value, tag: crate::value::Sym) {
     let g = &mut crate::vm::vm().recursive_guard;
     if let Some(p) = g.iter().rposition(|&(x, t)| x == v.raw() && t == tag) { g.remove(p); }
 }
-/// A Time at sec + nsec (File::Stat: its accessor macros have no context).
-pub fn time_from_ns(sec: i64, nsec: i64) -> Value {
-    use crate::builtins::time::{RTime, LOCAL};
-    let w = int_from_i128(sec as i128 * 1_000_000_000 + nsec as i128);
-    crate::gc::alloc_with(crate::vm::vm().c_time, move || Body::Data(Box::new(RTime { w, mode: LOCAL, off: NIL, zone: NIL, dst: false })))
-}
