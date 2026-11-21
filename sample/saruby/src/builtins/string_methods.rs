@@ -313,7 +313,7 @@ fn int_to_char_str(c: &mut Ctx, slf: Value, x: Value) -> RV {
         None => err(c, c.vm().c_range_error, format!("invalid codepoint 0x{:X} in {}", i, en::enc_name(enc))),
     }
 }
-cfn!(s_ltlt, |c, slf, a, b_| {
+cfn!(#[inline] s_ltlt, |c, slf, a, b_| {
     let x = a[0];
     if is_string(x) { str_append_str(c, slf, x)?; return Ok(slf); }
     if x.is_fixnum() || is_bignum(x) { check_frozen(c, slf)?; let s2 = int_to_char_str(c, slf, x)?; str_append_str(c, slf, s2)?; return Ok(slf); }

@@ -105,17 +105,27 @@ pub fn fast_ary_aset() -> u64 { FAST_ARY_ASET.load(Relaxed) }
 #[cold]
 pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -> RV {
     if unsafe { BOOTED } && !redef(R_ARY_AREF) { FAST_ARY_AREF.store(vm().c_array.raw(), Relaxed); }
-    if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && !redef(R_ARY_AREF) {
-        let v = c.ary(a);
-        let i = b.as_fix();
-        if let Some(&x) = v.get(i as usize) { return Ok(x); }
-        return Ok(if i < 0 { v.len().checked_sub(i.unsigned_abs() as usize).and_then(|j| v.get(j).copied()).unwrap_or(NIL) } else { NIL });
+    use crate::builtins::{array_methods as am, hash_methods as hm};
+    if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && !redef(R_ARY_AREF) { return Ok(am::ary_entry(c, a, b.as_fix())); }
+    if is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_AREF) {
+        c.frame().pos = line;
+        return hm::h_aref(c, a, &[b], std::ptr::null());
     }
-    if is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_AREF) { return crate::hash::hash_aref(c, a, b); }
     // Integer#[] (optcarrot's bit tests): its body when the site's cache holds it, without the call
     use crate::inline_builtin::*;
     if cc.peek().is_some_and(|cc| bi_hit(cc, a, BI_INT_AREF)) { if let Some(v) = bi_body(c, BI_INT_AREF, a, b) { return Ok(v); } }
     srb_binop(c, a, b, s::aref, line, cc)
+}
+
+/// `a << b` when the site's inline path did not apply: Array#<< of a frozen Array raises from this line, as CRuby.
+#[inline(never)]
+#[cold]
+pub fn srb_ltlt_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -> RV {
+    if is_array(a) && obj(a).klass == vm().c_array && !redef(R_ARY_LTLT) {
+        c.frame().pos = line;
+        return crate::builtins::array_methods::a_ltlt(c, a, &[b], std::ptr::null());
+    }
+    srb_binop(c, a, b, s::ltlt, line, cc)
 }
 
 /// `a[b] = v`, as srb_aref_out.
@@ -123,12 +133,16 @@ pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -
 #[cold]
 pub fn srb_aset_out(c: &mut Ctx, a: Value, b: Value, v: Value, line: Pos, cc: &mut OpCc) -> RV {
     if unsafe { BOOTED } && !redef(R_ARY_ASET) { FAST_ARY_ASET.store(vm().c_array.raw(), Relaxed); }
-    if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && obj(a).flags & FL_FROZEN == 0 && !redef(R_ARY_ASET) {
-        let ary = c.ary_mut(a);
-        let i = b.as_fix();
-        if i >= 0 && (i as usize) < ary.len() { ary[i as usize] = v; return Ok(v); }
+    use crate::builtins::{array_methods as am, hash_methods as hm};
+    // Array#[]= / Hash#[]= themselves: errors (frozen, index) with this line and no frame of their own, as CRuby
+    if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && !redef(R_ARY_ASET) {
+        c.frame().pos = line;
+        return am::ary_store(c, a, b.as_fix(), v);
     }
-    if is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_ASET) { crate::hash::hash_aset(c, a, b, v)?; return Ok(v); }
+    if is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_ASET) {
+        c.frame().pos = line;
+        return hm::h_aset(c, a, &[b, v], std::ptr::null());
+    }
     srb_aset(c, a, b, v, line, cc)
 }
 
