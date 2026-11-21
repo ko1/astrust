@@ -40,6 +40,10 @@
   498 -> 376 overall, `static mut` 36 -> 20): the section of that name below. Every libc call
   of those files goes through a safe wrapper in `builtins/sys.rs` (8 -> 67 `unsafe`, one
   justification each); heap.rs gains no `unsafe` (`Global` and `cur_method_name` are safe code).
+* **Method layer** (binding.rs, the boot sequence, enc_tables.rs): every file under
+  `src/builtins/` but sys.rs (the OS interface) is now `forbid(unsafe_code)`; `unsafe` 375 -> 366.
+  A safe `SBuf` was built and measured and is **not** merged (it costs time on short-string
+  workloads); it is on branch `sbuf-safe-rs29`. Section "Method layer" below.
 
 ## The problem
 
@@ -1366,6 +1370,144 @@ Every benchmark prints the same output with both builds. Reading it, per benchma
   wave on the path, the candidates are code placement in `libsaruby.so` (as the third wave's
   bignum case) or the load. A quiet machine (sp4) would decide it; here cycles cannot.
 
+## Method layer: binding, boot, enc_tables; the String buffer (2026-11-21)
+
+Commits `85a975f`, `61270f2`, `0059037` on top of `322b70f` (`base`); the SBuf experiment is `a7a1f7e` on branch `sbuf-safe-rs29`. Scripts, numbers, the SBuf variants:
+`~/ruby/src/trials/2026-11-21-saruby-unsafe-method-layer/`.
+
+### What is `forbid(unsafe_code)` now
+
+Every file under `src/builtins/` except `sys.rs` (the OS interface, fourth wave), and outside it
+array.rs, avec.rs, bignum.rs, envvals.rs, hash.rs, inline_builtin.rs, inline_iter.rs, numeric.rs,
+range.rs, regexp.rs, string.rs, symbol.rs (and the other files `heap_audit.rb` marks).
+`builtins/mod.rs` itself only declares the modules; it cannot carry the attribute, which would
+cover sys.rs.
+
+| file | old-accessor call sites | `fn -> &'static mut` | `unsafe` | state |
+|---|---|---|---|---|
+| src/builtins/binding.rs | 14 -> 0 | 1 -> 0 (`rbind`) | 8 -> 0 | `forbid(unsafe_code)` |
+| src/builtins/mod.rs | 26 -> 0 | 0 | 2 -> 0 | module list only |
+| src/builtins/boot.rs (new: the boot sequence, `dup_data`, `alloc_data`) | 0 | 0 | 0 | `forbid(unsafe_code)` |
+| src/builtins/enc_tables.rs (generated; generator too) | 0 | 0 | 0 | `forbid(unsafe_code)` |
+| src/legacy.rs | 10 -> 14 | 0 | 0 | three boot helpers (below) |
+| src/heap.rs | 0 | 0 | 33 -> 34 | `boot_vm` |
+| all files | 485 -> 449 | 11 -> 10 | 375 -> 366 | |
+
+* **binding.rs.** The iseq parent chain is walked with `c.iseq_ref`, the caller frame read with
+  `c.caller_frame()` / `c.cur_frame()` (H5), the Binding payload through `c.data` / `c.data_mut`;
+  a Binding is allocated with `alloc_with` (its Values stay in the closure on the stack until
+  the slot exists: pattern 23). Env slots: `Ctx::env_up` / `env_get` / `env_set`, safe code in
+  heap.rs on `body` / `body_mut`. `run_eval_iseq_env` still builds the eval frame itself and
+  sets `c.frame` (a raw pointer assignment, safe); that is the frame surface, not heap access.
+* **Boot.** `blank_vm` filled the class fields of a `MaybeUninit<Vm>` with nil words and
+  `ptr::write` the rest; a field added after `main_obj` and not listed there was left
+  uninitialized without a diagnostic. It is now a struct literal (a missing field is E0063).
+  The VM is installed by `heap::boot_vm(vm, |vmr| ..)`: the one `unsafe` of boot, guarded by an
+  atomic so that it runs once, before any `Ctx` exists. boot receives `&mut Vm` instead of calling
+  `vm()`; the boot-time code it calls (`define_class`, `const_set`, ..) still uses `vm()`
+  internally, which aliases that `&mut Vm` as it did before (the `vm()` item of "What is still
+  open"). Class setup without a vm.rs setter (metaclass link, subclass list, autoload entries)
+  is three helpers in legacy.rs (`boot_metaclass`, `boot_subclass`, `boot_autoload`): boot has no
+  context, so they stay context-free, as pattern 16 says.
+
+### What is left outside the method layer
+
+`heap_audit.rb` after these commits, `unsafe` per file, by category:
+
+| category | files (`unsafe`) |
+|---|---|
+| OS interface | builtins/sys.rs 67, kalloc.rs 12 (the allocator) |
+| fiber switch | fiber_os.rs 22, fiber.rs 1 |
+| loader / native code | aot.rs 11, prism.rs 1 (the parser FFI), compile.rs 7 (node tree built from raw node pointers) |
+| heap accessor base | heap.rs 34, value.rs 11, gc.rs 16, object.rs 7 (the legacy accessors), lib.rs 2 (`Token::mint`, `BOOTED`) |
+| call path / frames | vm.rs 80, rt.rs 64, node.def 16, stack_raw.rs 5 |
+| String buffer | sbuf.rs 10 (below) |
+
+### The String buffer: safe forms measured, not merged
+
+`SBuf` (sbuf.rs) is three words: 23 bytes inline with the length in the last byte, else a
+Vec-compatible heap block, with the tag in the top bit of the capacity; `RString` is `SBuf` +
+`enc` (32 bytes), `Body` 40. Three safe forms, each `forbid(unsafe_code)`, an enum whose
+inline-length type's unused values are the tag (as avec.rs):
+
+* `boxvec`: `Inline(Len, [u8; 22]) | Heap(Box<Vec<u8>>)`, 24 bytes, a drop-in; one more pointer
+  and one more malloc per long string.
+* `vec15`: `Inline(Len, [u8; 15]) | Heap(Vec<u8>)`, 24 bytes, a drop-in (the largest inline
+  array that keeps 24 bytes); strings of 16 to 23 bytes go to malloc.
+* `rs29` (branch `sbuf-safe-rs29`): `Inline { len, aux, [u8; 29] } | Heap { aux, Vec<u8> }`,
+  32 bytes, the encoding in `aux`, so `RString` stays 32 bytes and `Body` 40, with **29** bytes
+  inline. `RString`'s fields become private (`enc()`, `set_enc()`, `set_bytes()` keeps the
+  encoding, `Deref` to SBuf), which touches 22 files (node.def one line). `rs29b` adds a one-byte
+  fast path to the heap append (the first build called memcpy for `s << "x"`).
+
+M instructions (min of 5), interleaved runs, `perf stat -e cycles:u,instructions:u`, load average
+9 to 13 at the start, 5 at the end (`results/perf.r2.md` has every row with cycles and spread;
+`results/perf.r1.md` the first run with `boxvec`):
+
+| bench | mode | base | boxvec | vec15 | rs29b |
+|---|---|---|---|---|---|
+| str | interp | 4649 | +18.1 % | +8.5 % | +4.6 % |
+| str | AOT | 2600 | +29.5 % | +13.4 % | +6.0 % |
+| strfmt | AOT | 1921 | +10.0 % | +24.7 % | +0.5 % |
+| strscan | interp | 1614 | +14.3 % | +3.5 % | +9.4 % |
+| strops | AOT | 1630 | +7.4 % | +0.7 % | +3.3 % |
+| CRuby string_concat binary_concat_embedded | AOT | 1453 | +7.5 % | +21.3 % | -0.2 % |
+| CRuby string_concat interpolation_same_heap | AOT | 553 | +14.7 % | +2.4 % | +6.5 % |
+| CRuby string_split to_words_10 | AOT | 1583 | +20.2 % | +4.4 % | +7.9 % |
+| CRuby string_rpartition rpartition_10 | AOT | 1250 | +24.3 % | +3.2 % | +5.1 % |
+| CRuby string_dup uplus | AOT | 753 | +11.4 % | -0.5 % | +5.7 % |
+| gcchurn, gc_wb, nesteddata, hash | both | | -1.4 to +1.8 % | -0.6 to 0 % | -0.3 to +1.5 % |
+| optcarrot, per frame (N=5) | AOT | 84.72 | | 84.72 | 84.73 |
+
+Cycles (min of 5; spreads 1 to 15 % on most rows, worse on some): rs29b is slower than base on
+str (+5.1 % interp, +11.5 % AOT), interpolation_same_heap (+49 % / +62 %, spreads 1 % / 6 %),
+upcase_10 / downcase_10 / swapcase_10 AOT (+19 to +25 %), rpartition_10 (+14 % / +18 %),
+slice string_short (+13 %), dup (+20 % AOT), and faster where its 29 inline bytes keep a string
+out of malloc: strfmt (-12 % / -25 %), binary_concat_embedded (-27 % / -40 %). optcarrot: 25.01 M
+against 25.08 M cycles per frame (spread 2.6 %), the same. The cycle differences of several
+other rows are inside their spread or code placement:
+
+* **A placement effect, measured.** vec15 ran `String#include?` / `index` on a 4 KB haystack in
+  48 % fewer cycles than base with the same instruction count (3 repetitions each, 333 to 347 M
+  against 639 to 645 M), and boxvec did not. `perf annotate`: all of it is the byte loop of
+  `find_bytes`, identical code, at `0x490ff0..0x491001` in base (it straddles a 64-byte boundary)
+  and at `0x392680` in vec15. Not the buffer layout; such rows are read on instructions.
+
+Where rs29b's instructions go (str, AOT): `extend_from_slice` on the enum is a match on a tag
+byte that the compiler keeps in memory, with `Vec::push`'s own capacity check after the explicit
+one, and two more callee-saved registers in `str_append_same_enc`; on allocation, the 29-byte
+array is zeroed and the encoding is written through a second match (`RString::new`). The cost
+is the shape of safe code around an enum, not bounds checks; some of it can be tuned further
+(the first rs29 build was +9.8 % on str interp, rs29b +4.6 %).
+
+**Recommendation.** Keep the unsafe `SBuf` on master for now: `sbuf.rs` is 186 lines whose 10
+`unsafe` are `from_raw_parts` over a buffer it alone owns, and every String method above it is
+already safe code. If the 29-byte inline buffer is wanted for its own sake (strfmt, string
+building), take rs29 and tune its append and constructor paths first; boxvec and vec15 are not
+worth merging (boxvec costs most; vec15 moves 16-to-23-byte strings to malloc for nothing).
+Correctness of all three: the per-file outputs of `t/hand` `str*`, `sym*`, `encoding*`,
+`sprintf*`, `format*` and `t/method` `str*`, `sym*` (415 files) equal base's; rs29b also under
+`SARUBY_GC_STRESS=1` (400 files).
+
+### Verification
+
+* `make`, `make FEATURES=raw_stack`, `make GC=bitmap` without warnings and `heap_audit.rb`
+  exit 0 at each commit (`scripts/snap.sh` builds all three).
+* Per-file output (stdout, stderr, status; 60 s) of every file of `t/hand`, `t/spec`,
+  `t/method` (2991), base twice and the final build once: 2924 identical to base, 64 identical
+  after masking addresses and long numbers (base against itself: the same 64, plus 2 timing
+  files), 3 different (`io_fd_numbers_1121`, `io_wait_forms`, `realpath_magic_link_1021`): an
+  fd number one higher, because that snapshot directory had acquired a `preload_store/` from
+  the benchmark runs (aot.rs maps it at start, one more memfd); without it the three print
+  what base prints.
+* The binding / eval / instance_eval / module_eval / class_eval / kernel / proc files after
+  the binding.rs commit alone, and `str*` / `sym*` / `encoding*` / `sprintf*` / `format*` after
+  each SBuf variant: identical to base (modulo addresses).
+* `SARUBY_GC_STRESS=1` on `t/hand` + `t/method` + `t/spec` `str*`, `binding*`, `eval*`
+  (400 files): 398 identical to base under stress, 2 after masking addresses.
+* Panic scan (`panicked at` in the output) over the same 2991 files: base 0, final 0.
+
+
 ## Recipe: converting one module
 
 `ruby tools/heap_audit.rb` shows what a file still uses. For a module `m.rs`:
@@ -1588,10 +1730,10 @@ patterns 29 to 35 in "Fourth wave", above.
 
 ## What is still open
 
-* The call sites in the table below (498, after the fourth wave): rt.rs (188), vm.rs (167),
-  builtins/mod.rs (26, the boot sequence), object.rs (25), node.def (25), fiber.rs (17),
-  binding.rs (15), lib.rs (11), str_legacy.rs (11), legacy.rs (10), gc.rs (2), aot.rs (1). Every
-  module under `src/builtins/` but mod.rs and binding.rs is converted.
+* The call sites in the table below (498, after the fourth wave; 449 after the method layer,
+  `heap_audit.rb`): rt.rs, vm.rs, object.rs, node.def, lib.rs, str_legacy.rs, legacy.rs (which
+  now also holds the three boot helpers), gc.rs, aot.rs. Every module under `src/builtins/` is
+  converted (section "Method layer").
 * The OS interface: `builtins/sys.rs` (67 `unsafe`, each a wrapper with its justification). What
   the wrappers cannot discharge is listed in "Fourth wave": `fork`, the environment functions,
   `signal`.
@@ -1618,7 +1760,8 @@ patterns 29 to 35 in "Fourth wave", above.
   closed three latent ones by construction (pattern 23); the general hole remains.
 * String side: the context-free functions of str_legacy.rs are still called from unconverted
   modules; `no_legacy_str` and `no_legacy_hn` have not been folded into `no_legacy`.
-* `sbuf.rs` keeps its `unsafe` (the inline byte buffer).
+* `sbuf.rs` keeps its `unsafe` (the inline byte buffer): the safe forms measured in "Method
+  layer" cost up to +16 % instructions on short-string benchmarks; branch `sbuf-safe-rs29`.
 
 ## Remaining work per file
 
