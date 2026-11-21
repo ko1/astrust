@@ -495,6 +495,7 @@ enum Ast {
     Keep,
     Grapheme,
     Cond(BRef, Box<Ast>, Box<Ast>),
+    Call(BRef), // \g<..>: replaced by a copy of the group (Resolver::expand_calls)
 }
 
 // ---------------------------------------------------------------------------
@@ -1168,7 +1169,33 @@ impl<'a> Parser<'a> {
                 };
                 Ast::Backref(r, self.icase)
             }
-            b'g' if matches!(self.peek(), Some(b'<' | b'\'')) => return err("subexpression call is not supported"),
+            b'g' if matches!(self.peek(), Some(b'<' | b'\'')) => {
+                let close = if self.peek() == Some(b'<') { b'>' } else { b'\'' };
+                self.i += 1;
+                let name = self.read_name(close).map_err(|_| "invalid backref number/name".to_string())?;
+                if name.is_empty() {
+                    return err("group name is empty");
+                }
+                let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+                // relative numbers count from the groups opened so far (Onigmo)
+                let r = if let Some(rest) = name.strip_prefix('-') {
+                    let n: usize = if digits(rest) { rest.parse().unwrap() } else { return err("invalid backref number/name") };
+                    if n == 0 || n > self.ngroups {
+                        return err("invalid backref number/name");
+                    }
+                    BRef::Num(self.ngroups + 1 - n)
+                } else if let Some(rest) = name.strip_prefix('+') {
+                    let n: usize = if digits(rest) { rest.parse().unwrap() } else { return err("invalid backref number/name") };
+                    BRef::Num(self.ngroups + n)
+                } else if digits(&name) {
+                    BRef::Num(name.parse().unwrap())
+                } else if name.as_bytes()[0].is_ascii_digit() {
+                    return Err(format!("invalid group name <{}>>", name));
+                } else {
+                    BRef::Name(name)
+                };
+                Ast::Call(r)
+            }
             b'1'..=b'9' => {
                 let st = self.i - 1;
                 self.i = st;
@@ -1448,6 +1475,27 @@ impl<'a> Resolver<'a> {
                 }
                 Ast::Cond(r, Box::new(self.walk(*y)?), Box::new(self.walk(*n)?))
             }
+            Ast::Call(r) => {
+                let k = match r {
+                    BRef::Num(0) => return err("never ending recursion"),
+                    BRef::Num(k) => {
+                        if self.has_named {
+                            return err("numbered backref/call is not allowed. (use name)");
+                        }
+                        if k > self.total {
+                            return Err(format!("undefined group <{}> reference", k));
+                        }
+                        k
+                    }
+                    BRef::Name(nm) => match self.names.iter().find(|(x, _)| *x == nm) {
+                        Some((_, v)) if v.len() > 1 => return Err(format!("multiplex definition name <{}> call", nm)),
+                        Some((_, v)) => v[0],
+                        None => return Err(format!("undefined name <{}> reference", nm)),
+                    },
+                    _ => unreachable!(),
+                };
+                Ast::Call(BRef::Groups(vec![k]))
+            }
             Ast::Backref(r, ic) => {
                 let gs = match r {
                     BRef::Num(k) => {
@@ -1473,9 +1521,62 @@ impl<'a> Resolver<'a> {
     }
 }
 
+/// The body of every capture group, by final number (calls inside still unexpanded).
+fn collect_groups(n: &Ast, out: &mut Vec<Option<Ast>>) {
+    match n {
+        Ast::Group(k, b) => { if out.len() <= *k { out.resize(*k + 1, None); } out[*k] = Some((**b).clone()); collect_groups(b, out) }
+        Ast::Seq(v) | Ast::Alt(v) => v.iter().for_each(|x| collect_groups(x, out)),
+        Ast::Repeat(b, ..) | Ast::Look(_, _, b) | Ast::Atomic(b) => collect_groups(b, out),
+        Ast::Cond(_, y, n) => { collect_groups(y, out); collect_groups(n, out) }
+        _ => {}
+    }
+}
+fn has_call(n: &Ast) -> bool {
+    match n {
+        Ast::Call(_) => true,
+        Ast::Group(_, b) | Ast::Repeat(b, ..) | Ast::Look(_, _, b) | Ast::Atomic(b) => has_call(b),
+        Ast::Seq(v) | Ast::Alt(v) => v.iter().any(has_call),
+        Ast::Cond(_, y, n) => has_call(y) || has_call(n),
+        _ => false,
+    }
+}
+/// Replace each \g<k> by a copy of group k (capturing as k, as Onigmo's call sets the capture).
+/// Recursive calls are not supported; `budget` bounds the copies.
+fn expand_calls(n: Ast, groups: &[Option<Ast>], stack: &mut Vec<usize>, budget: &mut usize) -> Result<Ast, String> {
+    macro_rules! go { ($x:expr) => { expand_calls($x, groups, stack, budget)? } }
+    Ok(match n {
+        Ast::Call(BRef::Groups(g)) => {
+            let k = g[0];
+            if stack.contains(&k) {
+                return err("recursive subexpression call is not supported");
+            }
+            let body = groups.get(k).and_then(|b| b.clone()).ok_or("undefined group reference")?;
+            *budget = budget.checked_sub(1).ok_or("too many subexpression calls")?;
+            stack.push(k);
+            let b = go!(body);
+            stack.pop();
+            Ast::Group(k, Box::new(b))
+        }
+        Ast::Group(k, b) => {
+            stack.push(k);
+            let b = go!(*b);
+            stack.pop();
+            Ast::Group(k, Box::new(b))
+        }
+        Ast::Seq(v) => Ast::Seq(v.into_iter().map(|x| expand_calls(x, groups, stack, budget)).collect::<Result<_, _>>()?),
+        Ast::Alt(v) => Ast::Alt(v.into_iter().map(|x| expand_calls(x, groups, stack, budget)).collect::<Result<_, _>>()?),
+        Ast::Repeat(b, a, m, k) => Ast::Repeat(Box::new(go!(*b)), a, m, k),
+        Ast::Look(be, ne, b) => Ast::Look(be, ne, Box::new(go!(*b))),
+        Ast::Atomic(b) => Ast::Atomic(Box::new(go!(*b))),
+        Ast::Cond(r, y, n) => { let y = go!(*y); Ast::Cond(r, Box::new(y), Box::new(go!(*n))) }
+        other => other,
+    })
+}
+
 /// Length range in chars; None when unbounded or not fixed-computable (backrefs, \X).
 fn len_range(n: &Ast) -> Option<(u32, u32)> {
     Some(match n {
+        Ast::Call(_) => unreachable!("calls are expanded"),
         Ast::Empty | Ast::Assert(_) | Ast::Keep | Ast::Look(..) => (0, 0),
         Ast::Char(..) | Ast::Any(_) | Ast::Class(_) => (1, 1),
         Ast::Seq(v) => {
@@ -1700,7 +1801,7 @@ impl Compiler {
                 self.prog[cj] = Inst::CondJmp { groups: g.clone().into_boxed_slice(), no: nopc };
                 self.prog[j] = Inst::Jmp(end);
             }
-            Ast::Backref(..) | Ast::Cond(..) => unreachable!(),
+            Ast::Backref(..) | Ast::Cond(..) | Ast::Call(_) => unreachable!(),
             Ast::Keep => {
                 self.emit_i(Inst::Keep);
             }
@@ -1817,6 +1918,7 @@ const ONIG_EXPAND_LIMIT: usize = 50;
 /// Rough size in bytes of Onigmo's compiled code for `n` (compile_length_tree).
 fn onig_len(n: &Ast) -> usize {
     match n {
+        Ast::Call(_) => unreachable!("calls are expanded"),
         Ast::Empty => 0,
         Ast::Char(c, _) => 1 + if *c < 0x80 { 1 } else if *c < 0x800 { 2 } else if *c < 0x10000 { 3 } else { 4 },
         Ast::Any(_) | Ast::Assert(_) | Ast::Keep | Ast::Grapheme => 1,
@@ -1872,6 +1974,7 @@ fn onig_len(n: &Ast) -> usize {
 // First-byte analysis: returns whether the node can match empty.
 fn first_set(n: &Ast, set: &mut [bool; 256]) -> bool {
     match n {
+        Ast::Call(_) => unreachable!("calls are expanded"),
         Ast::Empty | Ast::Assert(_) | Ast::Keep | Ast::Look(..) => true,
         Ast::Char(c, ic) => {
             set[first_byte(*c) as usize] = true;
@@ -2389,7 +2492,12 @@ impl Vm {
             }
         }
         let ngroups = k;
-        let ast = Resolver { map, has_named, total: ngroups, names: &names }.walk(ast)?;
+        let mut ast = Resolver { map, has_named, total: ngroups, names: &names }.walk(ast)?;
+        if has_call(&ast) {
+            let mut groups = Vec::new();
+            collect_groups(&ast, &mut groups);
+            ast = expand_calls(ast, &groups, &mut Vec::new(), &mut 10_000)?;
+        }
         check_lookbehind(&ast, false)?;
 
         let mut backrefed = Vec::new();
