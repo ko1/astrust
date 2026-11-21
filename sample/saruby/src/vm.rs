@@ -151,6 +151,14 @@ pub fn bump_method_serial() { METHOD_SERIAL.fetch_add(1, std::sync::atomic::Orde
 // spec_klass: cc.klass while the entry it holds is the one baked into the site (call_spec_out)
 // bi: which inlinable builtin it holds, and for which receivers (inline_builtin::cache_key)
 pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize, pub fast_hash: u64, pub fast_argc: u32, pub poly_next: u32, pub poly: usize, pub cfunc: usize, pub arity: i32, pub bi: u32, pub spec_klass: u64 }
+/// An operator site's call cache, made when the site first calls a method: most sites stay on
+/// their Integer / Float / Array paths, and a node holding one word keeps the tree dense.
+#[derive(Default)]
+pub struct OpCc(Option<Box<CallCache>>);
+impl OpCc {
+    #[inline(always)] pub fn get(&mut self) -> &mut CallCache { self.0.get_or_insert_with(Default::default) }
+    #[inline(always)] pub fn peek(&self) -> Option<&CallCache> { self.0.as_deref() }
+}
 /// A `yield` site: `seen` = the block iseq it ran (1: several), what the bake speculates on;
 /// `fast` = the iseq whose entry is compiled into the site, set once its hash was checked.
 #[derive(Default)]
@@ -387,6 +395,7 @@ pub struct Vm {
     pub rand_state: u64,
     pub fiber_roots: Vec<Value>,
     pub ids: MethodIds,
+    pub send_cache: Box<[SendWay; SEND_WAYS]>,
     pub main_ctx: *mut Ctx,   // the main thread's context, for the root scan
 }
 
@@ -1259,6 +1268,7 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
         }
     }
     if cc.cfunc != 0 && flags & CF_KW == 0 && (cc.arity < 0 || cc.arity == argc as i32) {
+        if cc.bi >= BI_SEND { if let Some(r) = send_fast(c, recv, base, argc, blk) { return Some(r); } }
         #[cfg(feature = "nodeprof")] crate::nodeprof::hit(if blk.is_null() { "site: cfunc" } else { "site: cfunc +blk" });
         let f: CFunc = unsafe { std::mem::transmute::<usize, CFunc>(cc.cfunc) };
         let pf = c.frame;
@@ -1281,6 +1291,7 @@ pub const SITE_ATTR_W: u32 = 3;
 pub const SITE_CFUNC: u32 = 4;
 pub const SITE_NEW: u32 = 6;      // Klass.new with a plain initialize (NewInfo)
 pub const SITE_OTHER: u32 = 5;    // never run, Klass.new, keywords, ...: out of line
+pub const SITE_SEND: u32 = 7;     // Kernel#send / __send__ (send_fast)
 
 pub const SITE_IMM: u32 = 16;      // flag: the cached receiver class is an immediate's (Integer, Symbol, nil, ...)
 
@@ -1291,7 +1302,7 @@ pub fn site_kind(cc: &CallCache, argc: usize, flags: u32) -> u32 {
     let k = if cc.fast_argc as usize == argc { SITE_ENTRY }
         else if cc.fast != 0 { match cc.fast & 3 { 1 if argc == 0 => SITE_ATTR_R, 2 if argc == 1 => SITE_ATTR_W,
             0 if cc.fast_argc == u32::MAX => SITE_NEW, _ => return SITE_OTHER } }
-        else if cc.cfunc != 0 { SITE_CFUNC } else { return SITE_OTHER };
+        else if cc.cfunc != 0 { if cc.bi >= BI_SEND && argc >= 1 { SITE_SEND } else { SITE_CFUNC } } else { return SITE_OTHER };
     k | if imm { SITE_IMM } else { 0 }
 }
 
@@ -1356,6 +1367,7 @@ pub fn site_fast(c: &mut Ctx, cc: &mut CallCache, recv: Value, base: Stk, argc: 
                 return Some(match r { Ok(_) => Ok(base[0].get()), Err(e) => Err(e) });
             }
         }
+        SITE_SEND => if cc.bi >= BI_SEND { return send_fast(c, recv, base, argc, blk); }
         SITE_ATTR_R => if cc.fast & 3 == 1 {
             if let Body::Object(ivs) = &obj(recv).body {
                 let v = ivs.get(cc.fast >> 2).unwrap_or(UNDEF);
@@ -1384,6 +1396,61 @@ pub fn site_fast(c: &mut Ctx, cc: &mut CallCache, recv: Value, base: Stk, argc: 
         }
     }
     None
+}
+
+use crate::inline_builtin::BI_SEND;
+
+/// `recv.send(:name, args...)` at a site whose cache holds the builtin send (cc.bi): the call of
+/// `name` itself on the staged frame, the name taken out; no frame for send.  None: the builtin.
+#[inline(never)]
+pub fn send_fast(c: &mut Ctx, recv: Value, base: Stk, argc: u32, blk: *const Block) -> Option<RV> {
+    if argc == 0 { return None; }
+    let a0 = base[2].get();
+    // String names, refinements, method_missing: the builtin
+    if !a0.is_sym() || c.refinements_on() { return None; }
+    let w = send_way(c, class_of(recv), a0)?;
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit("site: send");
+    let n = argc as usize - 1;
+    for i in 0..n { base[2 + i].set(base[3 + i].get()); }
+    c.set_sp(base, 2 + n);
+    let r = if w.argc == n as u32 {
+        c.call_me = w.me; c.call_blk = blk;
+        match native_check(c) { Ok(()) => run_body(c, w.entry, base), Err(e) => Err(e) }
+    } else { invoke_impl(c, w.me, recv, base, n as u32, blk, CF_FCALL) };
+    c.set_sp(base, 0);
+    Some(r)
+}
+
+/// (class, name) -> method of send_fast, direct-mapped; valid while the method serial is unchanged.
+#[derive(Clone, Copy)]
+pub struct SendWay { klass: u64, mid: u64, serial: u64, me: *const MethodEntry, entry: NodePtr, argc: u32 }
+pub const SEND_WAYS: usize = 256;
+pub fn send_cache_new() -> Box<[SendWay; SEND_WAYS]> {
+    Box::new([SendWay { klass: 0, mid: 0, serial: 0, me: std::ptr::null(), entry: std::ptr::null_mut(), argc: u32::MAX }; SEND_WAYS])
+}
+
+/// The way for klass (a receiver's class, raw) and the Symbol mid; None: no such method.
+#[inline(always)]
+fn send_way(c: &Ctx, k: Value, mid: Value) -> Option<SendWay> {
+    let klass = k.raw();
+    let i = (klass.wrapping_add(mid.raw()).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56) as usize % SEND_WAYS;
+    let serial = method_serial();
+    let w = vm().send_cache[i];
+    if w.klass == klass && w.mid == mid.raw() && w.serial == serial { return Some(w); }
+    send_fill(c, i, k, mid, serial)
+}
+
+#[inline(never)]
+fn send_fill(c: &Ctx, i: usize, k: Value, mid: Value, serial: u64) -> Option<SendWay> {
+    let m = c.method_entry(k, mid.as_sym())?;
+    // an entry the staged frame can run directly: only required parameters (argc = their count)
+    let (entry, argc) = match m.kind {
+        MKind::Iseq(is) => match c.iseq_ref(is) { Some(is) if !is.entry.is_null() => (is.entry, is.params.lead.len() as u32), _ => (std::ptr::null_mut(), u32::MAX) },
+        _ => (std::ptr::null_mut(), u32::MAX),
+    };
+    let w = SendWay { klass: k.raw(), mid: mid.raw(), serial, me: m, entry, argc };
+    vm().send_cache[i] = w;
+    Some(w)
 }
 
 /// cc.fast of a `Klass.new` site (tag 0 with no fast_argc): allocate, then run initialize's entry.

@@ -506,16 +506,14 @@ module ASTrustGen
           stmt = ASTrustGen.rust_str(child_storage_stmt(op, unwrap_expr(disp))).gsub('{', '{{').gsub('}', '}}').sub("\u0001", '{}').sub("\u0002", '{}')
           "    body.push_str(&format!(\"        #{stmt}\\n\", t_#{op.name}#{contiguous? ? ", child_ptr_expr(n, u.#{op.name})" : ""}));"
         end
+        key_types = @operands.select { it.child? || it.node? || it.nodes? || it.spec? }.map { "t_#{it.name}.as_str()" }.join(', ')
         tf = generic_names.empty? ? '""'.dup : "format!(\"::<#{generic_names.map { '{}' }.join(', ')}>\", #{generic_names.join(', ')})"
         params = @prefix_params.join(', ')
         <<~RS
         #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
         fn SPECIALIZE_#{@name}(sc: &mut SpecCtx, n: NodePtr) -> String {
-            let name = format!("T_{:016x}", hash_node(n));
-            if sc.emitted.contains(&name) { return name; }
-            sc.emitted.insert(name.clone());   // before the children: a speculated callee may be this very node
             let own_hash = hash_node(n);
-            sc.open.insert(own_hash);
+            let was_open = !sc.open.insert(own_hash);
             let u = unsafe { &(*(n as *mut NodeOf<#{struct_name}>)).u };
         #{child_types.join("\n")}
             let np = n as *mut NodeOf<#{struct_name}>;
@@ -523,6 +521,12 @@ module ASTrustGen
             unsafe {
         #{@operands.map { "    " + it.specialize_arg }.join("\n")}
             }
+            if !was_open { sc.open.remove(&own_hash); }
+            // named by what is baked too (children's types, @bake values), not by the hash alone:
+            // two sites with one hash may have seen different things
+            let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[#{key_types}], ","), a.join(",")))));
+            if sc.emitted.contains(&name) { return name; }
+            sc.emitted.insert(name.clone());
             let mut body = String::new();
             body.push_str(&format!("pub struct {};\\n", name));
             if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\\n'); }
@@ -533,7 +537,6 @@ module ASTrustGen
         #{build_specialize_test(params, child_glue, tf)}
         #{build_specialize_spec(params, child_glue, tf)}
             body.push_str("}\n");
-            sc.open.remove(&own_hash);
             sc.out.push_str(&body);
             name
         }

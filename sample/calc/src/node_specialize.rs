@@ -1,11 +1,8 @@
 // This file is auto-generated from node.def by astrustgen. Do not edit.
 #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
 fn SPECIALIZE_node_num(sc: &mut SpecCtx, n: NodePtr) -> String {
-    let name = format!("T_{:016x}", hash_node(n));
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());   // before the children: a speculated callee may be this very node
     let own_hash = hash_node(n);
-    sc.open.insert(own_hash);
+    let was_open = !sc.open.insert(own_hash);
     let u = unsafe { &(*(n as *mut NodeOf<node_num_struct>)).u };
 
     let np = n as *mut NodeOf<node_num_struct>;
@@ -13,6 +10,12 @@ fn SPECIALIZE_node_num(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push(format!("{}i64", (*np).u.v));
     }
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by what is baked too (children's types, @bake values), not by the hash alone:
+    // two sites with one hash may have seen different things
+    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
     if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
@@ -24,18 +27,14 @@ fn SPECIALIZE_node_num(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str("}
 ");
-    sc.open.remove(&own_hash);
     sc.out.push_str(&body);
     name
 }
 
 #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
 fn SPECIALIZE_node_add(sc: &mut SpecCtx, n: NodePtr) -> String {
-    let name = format!("T_{:016x}", hash_node(n));
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());   // before the children: a speculated callee may be this very node
     let own_hash = hash_node(n);
-    sc.open.insert(own_hash);
+    let was_open = !sc.open.insert(own_hash);
     let u = unsafe { &(*(n as *mut NodeOf<node_add_struct>)).u };
     let t_l = specialize_node(sc, u.l);
     let t_r = specialize_node(sc, u.r);
@@ -45,6 +44,12 @@ fn SPECIALIZE_node_add(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("(*np).u.l".to_string());
     a.push("(*np).u.r".to_string());
     }
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by what is baked too (children's types, @bake values), not by the hash alone:
+    // two sites with one hash may have seen different things
+    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_l.as_str(), t_r.as_str()], ","), a.join(",")))));
+    if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
     if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
@@ -56,18 +61,14 @@ fn SPECIALIZE_node_add(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str("}
 ");
-    sc.open.remove(&own_hash);
     sc.out.push_str(&body);
     name
 }
 
 #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
 fn SPECIALIZE_node_sub(sc: &mut SpecCtx, n: NodePtr) -> String {
-    let name = format!("T_{:016x}", hash_node(n));
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());   // before the children: a speculated callee may be this very node
     let own_hash = hash_node(n);
-    sc.open.insert(own_hash);
+    let was_open = !sc.open.insert(own_hash);
     let u = unsafe { &(*(n as *mut NodeOf<node_sub_struct>)).u };
     let t_l = specialize_node(sc, u.l);
     let t_r = specialize_node(sc, u.r);
@@ -77,6 +78,12 @@ fn SPECIALIZE_node_sub(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("(*np).u.l".to_string());
     a.push("(*np).u.r".to_string());
     }
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by what is baked too (children's types, @bake values), not by the hash alone:
+    // two sites with one hash may have seen different things
+    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_l.as_str(), t_r.as_str()], ","), a.join(",")))));
+    if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
     if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
@@ -88,18 +95,14 @@ fn SPECIALIZE_node_sub(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str("}
 ");
-    sc.open.remove(&own_hash);
     sc.out.push_str(&body);
     name
 }
 
 #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
 fn SPECIALIZE_node_mul(sc: &mut SpecCtx, n: NodePtr) -> String {
-    let name = format!("T_{:016x}", hash_node(n));
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());   // before the children: a speculated callee may be this very node
     let own_hash = hash_node(n);
-    sc.open.insert(own_hash);
+    let was_open = !sc.open.insert(own_hash);
     let u = unsafe { &(*(n as *mut NodeOf<node_mul_struct>)).u };
     let t_l = specialize_node(sc, u.l);
     let t_r = specialize_node(sc, u.r);
@@ -109,6 +112,12 @@ fn SPECIALIZE_node_mul(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("(*np).u.l".to_string());
     a.push("(*np).u.r".to_string());
     }
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by what is baked too (children's types, @bake values), not by the hash alone:
+    // two sites with one hash may have seen different things
+    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_l.as_str(), t_r.as_str()], ","), a.join(",")))));
+    if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
     if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
@@ -120,18 +129,14 @@ fn SPECIALIZE_node_mul(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str("}
 ");
-    sc.open.remove(&own_hash);
     sc.out.push_str(&body);
     name
 }
 
 #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
 fn SPECIALIZE_node_mod(sc: &mut SpecCtx, n: NodePtr) -> String {
-    let name = format!("T_{:016x}", hash_node(n));
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());   // before the children: a speculated callee may be this very node
     let own_hash = hash_node(n);
-    sc.open.insert(own_hash);
+    let was_open = !sc.open.insert(own_hash);
     let u = unsafe { &(*(n as *mut NodeOf<node_mod_struct>)).u };
     let t_l = specialize_node(sc, u.l);
     let t_r = specialize_node(sc, u.r);
@@ -141,6 +146,12 @@ fn SPECIALIZE_node_mod(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_l".to_string());
     a.push("v_r".to_string());
     }
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by what is baked too (children's types, @bake values), not by the hash alone:
+    // two sites with one hash may have seen different things
+    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_l.as_str(), t_r.as_str()], ","), a.join(",")))));
+    if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
     if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
@@ -153,18 +164,14 @@ fn SPECIALIZE_node_mod(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str("}
 ");
-    sc.open.remove(&own_hash);
     sc.out.push_str(&body);
     name
 }
 
 #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
 fn SPECIALIZE_node_var(sc: &mut SpecCtx, n: NodePtr) -> String {
-    let name = format!("T_{:016x}", hash_node(n));
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());   // before the children: a speculated callee may be this very node
     let own_hash = hash_node(n);
-    sc.open.insert(own_hash);
+    let was_open = !sc.open.insert(own_hash);
     let u = unsafe { &(*(n as *mut NodeOf<node_var_struct>)).u };
 
     let np = n as *mut NodeOf<node_var_struct>;
@@ -172,6 +179,12 @@ fn SPECIALIZE_node_var(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push(format!("{}u32", (*np).u.idx));
     }
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by what is baked too (children's types, @bake values), not by the hash alone:
+    // two sites with one hash may have seen different things
+    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
     if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
@@ -183,18 +196,14 @@ fn SPECIALIZE_node_var(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str("}
 ");
-    sc.open.remove(&own_hash);
     sc.out.push_str(&body);
     name
 }
 
 #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
 fn SPECIALIZE_node_set(sc: &mut SpecCtx, n: NodePtr) -> String {
-    let name = format!("T_{:016x}", hash_node(n));
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());   // before the children: a speculated callee may be this very node
     let own_hash = hash_node(n);
-    sc.open.insert(own_hash);
+    let was_open = !sc.open.insert(own_hash);
     let u = unsafe { &(*(n as *mut NodeOf<node_set_struct>)).u };
     let t_v = specialize_node(sc, u.v);
     let np = n as *mut NodeOf<node_set_struct>;
@@ -203,6 +212,12 @@ fn SPECIALIZE_node_set(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push(format!("{}u32", (*np).u.idx));
     a.push("v_v".to_string());
     }
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by what is baked too (children's types, @bake values), not by the hash alone:
+    // two sites with one hash may have seen different things
+    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_v.as_str()], ","), a.join(",")))));
+    if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
     if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
@@ -214,18 +229,14 @@ fn SPECIALIZE_node_set(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str("}
 ");
-    sc.open.remove(&own_hash);
     sc.out.push_str(&body);
     name
 }
 
 #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
 fn SPECIALIZE_node_seq(sc: &mut SpecCtx, n: NodePtr) -> String {
-    let name = format!("T_{:016x}", hash_node(n));
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());   // before the children: a speculated callee may be this very node
     let own_hash = hash_node(n);
-    sc.open.insert(own_hash);
+    let was_open = !sc.open.insert(own_hash);
     let u = unsafe { &(*(n as *mut NodeOf<node_seq_struct>)).u };
     let t_xs = specialize_list(sc, &u.xs);
     let np = n as *mut NodeOf<node_seq_struct>;
@@ -233,6 +244,12 @@ fn SPECIALIZE_node_seq(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("(*np).u.xs".to_string());
     }
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by what is baked too (children's types, @bake values), not by the hash alone:
+    // two sites with one hash may have seen different things
+    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_xs.as_str()], ","), a.join(",")))));
+    if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
     if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
@@ -244,18 +261,14 @@ fn SPECIALIZE_node_seq(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str("}
 ");
-    sc.open.remove(&own_hash);
     sc.out.push_str(&body);
     name
 }
 
 #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
 fn SPECIALIZE_node_times(sc: &mut SpecCtx, n: NodePtr) -> String {
-    let name = format!("T_{:016x}", hash_node(n));
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());   // before the children: a speculated callee may be this very node
     let own_hash = hash_node(n);
-    sc.open.insert(own_hash);
+    let was_open = !sc.open.insert(own_hash);
     let u = unsafe { &(*(n as *mut NodeOf<node_times_struct>)).u };
     let t_cnt = specialize_node(sc, u.cnt);
     let t_body = specialize_node(sc, u.body);
@@ -265,6 +278,12 @@ fn SPECIALIZE_node_times(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("(*np).u.cnt".to_string());
     a.push("(*np).u.body".to_string());
     }
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by what is baked too (children's types, @bake values), not by the hash alone:
+    // two sites with one hash may have seen different things
+    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_cnt.as_str(), t_body.as_str()], ","), a.join(",")))));
+    if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());
     let mut body = String::new();
     body.push_str(&format!("pub struct {};\n", name));
     if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
@@ -276,7 +295,6 @@ fn SPECIALIZE_node_times(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str("}
 ");
-    sc.open.remove(&own_hash);
     sc.out.push_str(&body);
     name
 }

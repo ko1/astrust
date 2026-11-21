@@ -48,6 +48,9 @@ const K_INT: u32 = 1 << 8;
 const K_FLO: u32 = 2 << 8;
 /// Integer#[] (an index site's out-of-line path tests for it, srb_aref_out)
 pub const BI_INT_AREF: u32 = 21;
+/// cache_key of Kernel#send / BasicObject#__send__ (vm.rs send_fast); no body here.  Not public_send:
+/// CRuby keeps its frame on the backtrace.
+pub const BI_SEND: u32 = 1 << 10;
 
 /// The receivers body b expects: C_INT (fixnums), C_FLO (flonums), else any heap object.
 #[inline(always)]
@@ -57,6 +60,7 @@ const fn recv_of(b: u32) -> u8 { match b { 1..=9 | BI_INT_AREF | IT_TIMES..=IT_S
 /// redefinition or alias), with their bodies.  Function pointers are not compared: LLVM may merge
 /// identical functions, so the same builtin can have two addresses.
 static BI_ME: std::sync::OnceLock<Vec<(usize, u32, Value)>> = std::sync::OnceLock::new();
+static SEND_ME: std::sync::OnceLock<[(usize, u32); 2]> = std::sync::OnceLock::new();
 
 /// After the builtin classes are made, before the prelude runs.
 pub fn init(c: &Ctx) {
@@ -68,10 +72,13 @@ pub fn init(c: &Ctx) {
         (matches!(m.kind, MKind::Cfunc(..)) && (m.owner == klass || body >= IT_FIRST)).then_some((m as *const MethodEntry as usize, body, klass))
     }).collect();
     let _ = BI_ME.set(t);
+    let me = |k: Value, n: &str| c.method_entry(k, intern(n.as_bytes())).map_or(0, |m| m as *const MethodEntry as usize);
+    let _ = SEND_ME.set([(me(v.m_kernel, "send"), BI_SEND), (me(v.c_basic_object, "__send__"), BI_SEND)]);
 }
 
 /// CallCache.bi of a cache filled with entry me for class klass: its body and the mark of klass (0: none).
 pub fn cache_key(me: *const MethodEntry, klass: Value) -> u32 {
+    if let Some(&(_, k)) = SEND_ME.get().and_then(|t| t.iter().find(|&&(m, _)| m != 0 && m == me as usize)) { return k; }
     let Some(&(_, body, _)) = BI_ME.get().and_then(|t| t.iter().find(|&&(m, b, k)| m == me as usize && (k == klass || b < IT_FIRST))) else { return 0 };
     let v = vm();
     // an iterator on an Array / Range / Hash: only that class itself (a subclass may have its own #each),
