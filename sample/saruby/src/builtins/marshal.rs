@@ -1,4 +1,13 @@
 // Marshal (format 4.8): dump / load.
+// On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
+#![forbid(unsafe_code)]
+#[allow(unused_imports)]
+use crate::heap::no_legacy::*;   // the old accessors cannot be named here
+#[allow(unused_imports)]
+use crate::heap::no_legacy_hn::*;
+#[allow(unused_imports)]
+use crate::heap::no_legacy_str::*;
+use crate::heap::{obj_klass, obj_set_flags, obj_set_klass};
 use crate::array::*;
 use crate::bignum::BigInt;
 use crate::builtins::numeric_methods::num_to_long;
@@ -59,20 +68,17 @@ impl Dumper {
         if !ascii { w_long(&mut self.out, 1); self.sym(intern(b"E")); self.out.push(b'T'); }
     }
     fn class_name(&mut self, c: &mut Ctx, k: Value) -> Result<String, Esc> {
-        let cd = rclass(k);
-        if cd.name.is_none() { return type_err(c, format!("can't dump anonymous {} {}", if cd.is_module { "module" } else { "class" }, any_to_s_anon(k))); }
+        if c.class(k).name.is_none() { let a = any_to_s_anon(c, k); return type_err(c, format!("can't dump anonymous {} {}", if c.class(k).is_module { "module" } else { "class" }, a)); }
         Ok(class_path(k))
     }
     fn uniq_class(&mut self, c: &mut Ctx, k: Value) -> Result<(), Esc> { let n = self.class_name(c, k)?; self.sym(intern(n.as_bytes())); Ok(()) }
     /// 'e' markers for modules a singleton class includes; a singleton with state can't be dumped.
     fn extended(&mut self, c: &mut Ctx, v: Value, check: bool) -> Result<(), Esc> {
-        let mut k = obj(v).klass;
-        if k == NIL || !rclass(k).is_singleton { return Ok(()); }
-        if check && (!rclass(k).mtbl.is_empty() || !rclass(k).consts.is_empty() || ivar_list(k).iter().any(|(n, _)| sym_bytes(*n).starts_with(b"@"))) { return type_err(c, "singleton can't be dumped"); }
-        let mods: Vec<Value> = rclass(k).includes.iter().rev().copied().collect();
+        let k = obj_klass(v);
+        if k == NIL || !c.class(k).is_singleton { return Ok(()); }
+        if check && (!c.class(k).mtbl.is_empty() || !c.class(k).consts.is_empty() || ivar_list(k).iter().any(|(n, _)| sym_bytes(*n).starts_with(b"@"))) { return type_err(c, "singleton can't be dumped"); }
+        let mods: Vec<Value> = c.class(k).includes.iter().rev().copied().collect();
         for m in mods { self.out.push(b'e'); self.uniq_class(c, m)?; }
-        k = rclass(k).superclass;
-        let _ = k;
         Ok(())
     }
     fn class_of_obj(&mut self, c: &mut Ctx, v: Value, tag: u8, check: bool) -> Result<(), Esc> {
@@ -87,7 +93,6 @@ impl Dumper {
         if k != base { self.out.push(b'C'); self.uniq_class(c, k)?; }
         Ok(())
     }
-    fn enc_ivar_count(v: Value) -> usize { if is_string(v) && str_enc(v) != ENC_BINARY { 1 } else { 0 } }
     fn w_enc(&mut self, enc: u8) {
         match enc {
             ENC_BINARY => {}
@@ -96,7 +101,8 @@ impl Dumper {
             e => { self.sym(intern(b"encoding")); self.out.push(b'"'); w_bytes(&mut self.out, crate::builtins::encoding::enc_name(e).as_bytes()); }
         }
     }
-    fn user_ivars(v: Value) -> Vec<(Sym, Value)> {
+    /// The ivars Marshal writes; their values are kept alive in `keep` (a hook may drop them from `v`).
+    fn user_ivars(&mut self, c: &mut Ctx, v: Value) -> Vec<(Sym, Value)> {
         if !v.is_heap() || is_class_or_module(v) { return vec![]; }
         let exc = is_exception(v);
         let mut l: Vec<(Sym, Value)> = ivar_list(v).into_iter().filter(|(n, _)| { let b = sym_bytes(*n); b.starts_with(b"@") || (exc && b == b"mesg") }).collect();
@@ -106,6 +112,7 @@ impl Dumper {
             let at = l.iter().position(|(n, _)| sym_bytes(*n) == b"mesg").unwrap() + 1;
             l.insert(at, (intern(b"bt"), bt));
         }
+        for &(_, x) in &l { if x.is_heap() { c.ary_push(self.keep, x); } }
         l
     }
     fn w_ivars(&mut self, c: &mut Ctx, enc: Option<u8>, ivs: &[(Sym, Value)], limit: i64) -> Result<(), Esc> {
@@ -125,7 +132,7 @@ impl Dumper {
             if (-(1 << 30)..(1 << 30)).contains(&n) { self.out.push(b'i'); w_long(&mut self.out, n); return Ok(()); }
             let id = self.objs.len();
             self.objs.insert(u64::MAX - id as u64, id);
-            self.bignum(&BigInt::from_i64(n));
+            bignum(&mut self.out, &BigInt::from_i64(n));
             return Ok(());
         }
         if v.is_sym() { self.sym(v.as_sym()); return Ok(()); }
@@ -134,34 +141,35 @@ impl Dumper {
         let id = self.objs.len();
         self.objs.insert(v.raw(), id);
         if is_float(v) { self.out.push(b'f'); w_bytes(&mut self.out, float_repr(float_val(v)).as_bytes()); return Ok(()); }
-        if crate::builtins::inherits(real_class_of(v), vm().c_time) && crate::builtins::time::time_to_ns(c, v).is_some() { return self.time(c, v, limit); }
+        if crate::builtins::inherits(real_class_of(v), c.vm().c_time) && crate::builtins::time::time_to_ns(c, v).is_some() { return self.time(c, v, limit); }
         // user hooks first
         if respond_to(v, intern(b"marshal_dump"), true) && !is_class_or_module(v) {
             let d = funcall(c, v, intern(b"marshal_dump"), &[], std::ptr::null())?;
-            ary_push(self.keep, d);
+            c.ary_push(self.keep, d);
             self.class_of_obj(c, v, b'U', false)?;
             return self.obj(c, d, limit);
         }
         if respond_to(v, intern(b"_dump"), true) && !is_class_or_module(v) {
             let d = funcall(c, v, intern(b"_dump"), &[Value::fix(limit)], std::ptr::null())?;
             if !is_string(d) { return type_err(c, "_dump() must return string"); }
-            ary_push(self.keep, d);
-            let ivs = Self::user_ivars(d);
-            let hasiv = !ivs.is_empty() || str_enc(d) != ENC_BINARY;
+            c.ary_push(self.keep, d);
+            let ivs = self.user_ivars(c, d);
+            let hasiv = !ivs.is_empty() || c.str_enc(d) != ENC_BINARY;
             if hasiv { self.out.push(b'I'); }
             self.class_of_obj(c, v, b'u', false)?;
-            w_bytes(&mut self.out, str_bytes(d));
-            if hasiv { self.w_ivars(c, Some(str_enc(d)), &ivs, limit)?; }
+            w_bytes(&mut self.out, c.str_bytes(d));
+            if hasiv { let e = c.str_enc(d); self.w_ivars(c, Some(e), &ivs, limit)?; }
             return Ok(());
         }
-        let ivs = Self::user_ivars(v);
+        let ivs = self.user_ivars(c, v);
         if is_string(v) {
-            let enc = str_enc(v);
+            let enc = c.str_enc(v);
             let hasiv = !ivs.is_empty() || enc != ENC_BINARY;
             if hasiv { self.out.push(b'I'); }
-            self.uclass(c, v, vm().c_string)?;
+            let k = c.vm().c_string;
+            self.uclass(c, v, k)?;
             self.out.push(b'"');
-            w_bytes(&mut self.out, str_bytes(v));
+            w_bytes(&mut self.out, c.str_bytes(v));
             if hasiv { self.w_ivars(c, Some(enc), &ivs, limit)?; }
             return Ok(());
         }
@@ -169,56 +177,64 @@ impl Dumper {
             let (src, opts) = (r.src.clone(), r.opts);
             let enc = if is_ascii(&src) && !r.enc_fixed { ENC_ASCII } else { ENC_UTF8 };
             self.out.push(b'I');
-            self.uclass(c, v, vm().c_regexp)?;
+            let k = c.vm().c_regexp;
+            self.uclass(c, v, k)?;
             self.out.push(b'/');
             w_bytes(&mut self.out, &src);
             self.out.push((opts & 0xff) as u8);
             return self.w_ivars(c, Some(enc), &ivs, limit);
         }
-        if !ivs.is_empty() && !matches!(obj(v).body, Body::Object(_)) { self.out.push(b'I'); }
-        let has_iv_wrapper = !ivs.is_empty() && !matches!(obj(v).body, Body::Object(_));
-        match &obj(v).body {
-            Body::Bignum(b) => { let b = (**b).clone(); self.bignum(&b); }
-            Body::Class(cd) => {
-                if cd.is_singleton { return type_err(c, "singleton class can't be dumped"); }
-                let m = cd.is_module;
+        // the kind and the fields needed, by value: the arms below call out
+        enum K { Big, Class(bool, bool), Ary, Hash(Value, Value, bool), Range(Value, Value, bool), Obj, Data, Other }
+        let kind = match c.body_of(v) {
+            Body::Bignum(_) => K::Big, Body::Class(cd) => K::Class(cd.is_singleton, cd.is_module), Body::Array(_) => K::Ary,
+            Body::Hash(h) => K::Hash(h.default_proc, h.default, h.identity), Body::Range(b, e, x) => K::Range(*b, *e, *x),
+            Body::Object(_) => K::Obj, Body::Data(_) => K::Data, _ => K::Other,
+        };
+        let has_iv_wrapper = !ivs.is_empty() && !matches!(kind, K::Obj);
+        if has_iv_wrapper { self.out.push(b'I'); }
+        match kind {
+            K::Big => bignum(&mut self.out, c.big(v)),
+            K::Class(singleton, m) => {
+                if singleton { return type_err(c, "singleton class can't be dumped"); }
                 let n = self.class_name(c, v)?;
                 self.out.push(if m { b'm' } else { b'c' });
                 w_bytes(&mut self.out, n.as_bytes());
             }
-            Body::Array(_) => {
-                self.uclass(c, v, vm().c_array)?;
+            K::Ary => {
+                let k = c.vm().c_array;
+                self.uclass(c, v, k)?;
                 self.out.push(b'[');
-                w_long(&mut self.out, ary_len(v) as i64);
+                w_long(&mut self.out, c.ary_len(v) as i64);
                 let mut i = 0;
-                while i < ary_len(v) { let x = ary_get(v, i); self.obj(c, x, limit)?; i += 1; }
+                while let Some(&x) = c.ary(v).get(i) { self.obj(c, x, limit)?; i += 1; }
             }
-            Body::Hash(h) => {
-                if h.default_proc != NIL { return type_err(c, "can't dump hash with default proc"); }
-                let def = h.default;
-                if h.identity && real_class_of(v) == vm().c_hash { self.out.push(b'C'); self.uniq_class(c, vm().c_hash)?; } else { self.uclass(c, v, vm().c_hash)?; }
+            K::Hash(default_proc, def, identity) => {
+                if default_proc != NIL { return type_err(c, "can't dump hash with default proc"); }
+                let kh = c.vm().c_hash;
+                if identity && real_class_of(v) == kh { self.out.push(b'C'); self.uniq_class(c, kh)?; } else { self.uclass(c, v, kh)?; }
                 self.out.push(if def == NIL { b'{' } else { b'}' });
-                let pairs = hash_pairs(v);
-                w_long(&mut self.out, pairs.len() as i64);
-                for (k, x) in pairs { self.obj(c, k, limit)?; self.obj(c, x, limit)?; }
+                w_long(&mut self.out, c.hash_len(v) as i64);
+                each_pair(c, v, |c, k, x| { self.obj(c, k, limit)?; self.obj(c, x, limit) })?;
                 if def != NIL { self.obj(c, def, limit)?; }
             }
-            Body::Range(b, e, excl) => {
-                let (b, e, excl) = (*b, *e, *excl);
+            K::Range(b, e, excl) => {
                 self.class_of_obj(c, v, b'o', true)?;
                 w_long(&mut self.out, 3);
                 self.sym(intern(b"excl")); self.out.push(if excl { b'T' } else { b'F' });
                 self.sym(intern(b"begin")); self.obj(c, b, limit)?;
                 self.sym(intern(b"end")); self.obj(c, e, limit)?;
             }
-            Body::Object(_) => {
+            K::Obj => {
                 let k = real_class_of(v);
-                if crate::builtins::inherits(k, vm().c_struct) || (vm().c_data != NIL && crate::builtins::inherits(k, vm().c_data)) {
+                let (ks, kd) = (c.vm().c_struct, c.vm().c_data);
+                if crate::builtins::inherits(k, ks) || (kd != NIL && crate::builtins::inherits(k, kd)) {
                     let mem = funcall(c, k, intern(b"members"), &[], std::ptr::null())?;
                     if !ivs.is_empty() { self.out.push(b'I'); }
                     self.class_of_obj(c, v, b'S', true)?;
-                    w_long(&mut self.out, ary_len(mem) as i64);
-                    for i in 0..ary_len(mem) { let m = ary_get(mem, i).as_sym(); self.sym(m); let x = struct_get(v, m); self.obj(c, x, limit)?; }
+                    w_long(&mut self.out, c.ary_len(mem) as i64);
+                    let mut i = 0;
+                    while let Some(&m) = c.ary(mem).get(i) { let m = m.as_sym(); self.sym(m); let x = struct_get(v, m); self.obj(c, x, limit)?; i += 1; }
                     if !ivs.is_empty() { self.w_ivars(c, None, &ivs, limit)?; }
                 } else {
                     self.class_of_obj(c, v, b'o', true)?;
@@ -226,7 +242,7 @@ impl Dumper {
                 }
                 return Ok(());
             }
-            Body::Data(_) => {
+            K::Data => {
                 if crate::builtins::rational::is_rational(c, v) {
                     let (n, d) = crate::builtins::rational::rat_parts(c, v);
                     self.class_of_obj(c, v, b'U', false)?;
@@ -243,7 +259,7 @@ impl Dumper {
                     return type_err(c, format!("no _dump_data is defined for class {}", class_path(k)));
                 }
             }
-            _ => { let k = real_class_of(v); return type_err(c, format!("no _dump_data is defined for class {}", class_path(k))); }
+            K::Other => { let k = real_class_of(v); return type_err(c, format!("no _dump_data is defined for class {}", class_path(k))); }
         }
         if has_iv_wrapper { self.w_ivars(c, None, &ivs, limit)?; }
         Ok(())
@@ -260,39 +276,54 @@ impl Dumper {
         if !(1900..=1900 + 0xffff).contains(&f[0]) { return arg_err(c, format!("year too {} to marshal: {} UTC", if f[0] < 1900 { "small" } else { "big" }, f[0])); }
         let p: u32 = 1 << 31 | (utc as u32) << 30 | ((f[0] - 1900) as u32) << 14 | ((f[1] - 1) as u32) << 10 | (f[2] as u32) << 5 | f[3] as u32;
         let sw: u32 = (f[4] as u32) << 26 | (f[5] as u32) << 20 | usec as u32;
-        let zone = if utc { str_new_enc(b"UTC", ENC_ASCII) } else { call(c, v, "zone")? };
+        let zone = if utc { c.str_new_enc(b"UTC", ENC_ASCII) } else { call(c, v, "zone")? };
+        c.ary_push(self.keep, zone);
         let off = if utc { NIL } else { call(c, v, "utc_offset")? };
-        ary_push(self.keep, zone);
         self.out.push(b'I');
         self.class_of_obj(c, v, b'u', false)?;
         w_long(&mut self.out, 8);
         self.out.extend_from_slice(&p.to_le_bytes()); self.out.extend_from_slice(&sw.to_le_bytes());
-        let mut ivs = Self::user_ivars(v);
+        let mut ivs = self.user_ivars(c, v);
         if nano != 0 {
             ivs.push((intern(b"nano_num"), Value::fix(nano))); ivs.push((intern(b"nano_den"), Value::fix(1)));
             let b2 = ((nano % 10) << 4) as u8;
             let mut sm = vec![(((nano / 100) << 4) | (nano / 10 % 10)) as u8];
             if b2 != 0 { sm.push(b2); }
-            let smv = str_from_vec_enc(sm, ENC_BINARY);
-            ary_push(self.keep, smv);
+            let smv = c.str_from_vec_enc(sm, ENC_BINARY);
+            c.ary_push(self.keep, smv);
             ivs.push((intern(b"submicro"), smv));
         }
         if !utc { ivs.push((intern(b"offset"), off)); }
-        let zv = if zone != NIL && is_string(zone) { let z = str_new_enc(str_bytes(zone), ENC_ASCII); ary_push(self.keep, z); z } else { NIL };
+        let zv = if zone != NIL && is_string(zone) { let z = c.str_copy_enc(zone, ENC_ASCII); c.ary_push(self.keep, z); z } else { NIL };
         ivs.push((intern(b"zone"), zv));
         self.w_ivars(c, None, &ivs, limit)
     }
-    fn bignum(&mut self, b: &BigInt) {
-        self.out.push(b'l');
-        self.out.push(if b.neg { b'-' } else { b'+' });
-        let mut bytes: Vec<u8> = b.mag.iter().flat_map(|w| w.to_le_bytes()).collect();
-        while bytes.len() > 2 && bytes[bytes.len() - 1] == 0 && bytes[bytes.len() - 2] == 0 { bytes.truncate(bytes.len() - 2); }
-        if bytes.len() % 2 == 1 { bytes.push(0); }
-        w_long(&mut self.out, (bytes.len() / 2) as i64);
-        self.out.extend(bytes);
-    }
 }
-fn any_to_s_anon(k: Value) -> String { format!("#<{}:0x{:016x}>", if rclass(k).is_module { "Module" } else { "Class" }, k.raw()) }
+fn bignum(out: &mut Vec<u8>, b: &BigInt) {
+    out.push(b'l');
+    out.push(if b.neg { b'-' } else { b'+' });
+    let mut bytes: Vec<u8> = b.mag.iter().flat_map(|w| w.to_le_bytes()).collect();
+    while bytes.len() > 2 && bytes[bytes.len() - 1] == 0 && bytes[bytes.len() - 2] == 0 { bytes.truncate(bytes.len() - 2); }
+    if bytes.len() % 2 == 1 { bytes.push(0); }
+    w_long(out, (bytes.len() / 2) as i64);
+    out.extend(bytes);
+}
+/// Each live pair of Hash h, slot by slot (the callback may run Ruby code that changes h); new
+/// keys are refused meanwhile, as CRuby's rb_hash_foreach does.
+pub fn each_pair(c: &mut Ctx, h: Value, mut f: impl FnMut(&mut Ctx, Value, Value) -> Result<(), Esc>) -> Result<(), Esc> {
+    c.hash_iter_enter(h);
+    let mut i = 0;
+    let mut r = Ok(());
+    while let Some((k, x)) = c.hash_entry_at(h, i) {
+        i += 1;
+        if k == UNDEF { continue; }
+        r = f(c, k, x);
+        if r.is_err() { break; }
+    }
+    c.hash_iter_leave(h);
+    r
+}
+fn any_to_s_anon(c: &Ctx, k: Value) -> String { format!("#<{}:0x{:016x}>", if c.class(k).is_module { "Module" } else { "Class" }, k.raw()) }
 fn struct_get(v: Value, m: Sym) -> Value { ivar_get(v, m) }
 
 fn m_dump(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
@@ -301,9 +332,10 @@ fn m_dump(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     for &x in &a[1..] {
         if x.is_fixnum() { limit = x.as_fix(); } else if x == NIL { } else if respond_to(x, intern(b"write"), true) { io = x; } else { return type_err(c, "instance of IO needed"); }
     }
-    let mut d = Dumper { out: vec![4, 8], syms: HashMap::default(), objs: HashMap::default(), keep: ary_new() };
+    let keep = c.ary_new();
+    let mut d = Dumper { out: vec![4, 8], syms: HashMap::default(), objs: HashMap::default(), keep };
     d.obj(c, a[0], limit)?;
-    let out = str_from_vec_enc(std::mem::take(&mut d.out), ENC_BINARY);
+    let out = c.str_from_vec_enc(std::mem::take(&mut d.out), ENC_BINARY);
     if io != NIL {
         if respond_to(io, intern(b"binmode"), true) { funcall(c, io, intern(b"binmode"), &[], std::ptr::null())?; }
         funcall(c, io, intern(b"write"), &[out], std::ptr::null())?;
@@ -314,32 +346,29 @@ fn m_dump(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 
 // ---- load -------------------------------------------------------------------------------------
 
-struct Loader { src: Value, io: bool, pos: usize, syms: Vec<Sym>, objs: Value, proc_: Value, freeze: bool, symbolize: bool }
+// `data`: the source String's bytes, copied once (hooks run while reading may change the String)
+struct Loader { src: Value, data: Vec<u8>, io: bool, pos: usize, syms: Vec<Sym>, objs: Value, proc_: Value, freeze: bool, symbolize: bool }
 const TOO_SHORT: &str = "marshal data too short";
 
 impl Loader {
     fn byte(&mut self, c: &mut Ctx) -> Result<u8, Esc> {
         if self.io {
             let v = funcall(c, self.src, intern(b"getbyte"), &[], std::ptr::null())?;
-            if v == NIL { return err(c, vm().c_eof_error, "end of file reached"); }
+            if v == NIL { return err(c, c.vm().c_eof_error, "end of file reached"); }
             return Ok(num_to_long(c, v)? as u8);
         }
-        let b = str_bytes(self.src);
-        if self.pos >= b.len() { return arg_err(c, TOO_SHORT); }
-        self.pos += 1;
-        Ok(b[self.pos - 1])
+        match self.data.get(self.pos) { Some(&b) => { self.pos += 1; Ok(b) } None => arg_err(c, TOO_SHORT) }
     }
     fn bytes(&mut self, c: &mut Ctx, n: usize) -> Result<Vec<u8>, Esc> {
         if n == 0 { return Ok(vec![]); }
         if self.io {
             let v = funcall(c, self.src, intern(b"read"), &[Value::fix(n as i64)], std::ptr::null())?;
-            if v == NIL || !is_string(v) || str_bytes(v).len() != n { return arg_err(c, TOO_SHORT); }
-            return Ok(str_bytes(v).to_vec());
+            if v == NIL || !is_string(v) || c.str_bytes(v).len() != n { return arg_err(c, TOO_SHORT); }
+            return Ok(c.str_bytes(v).to_vec());
         }
-        let b = str_bytes(self.src);
-        if self.pos + n > b.len() { return arg_err(c, TOO_SHORT); }
+        if self.pos + n > self.data.len() { return arg_err(c, TOO_SHORT); }
         self.pos += n;
-        Ok(b[self.pos - n..self.pos].to_vec())
+        Ok(self.data[self.pos - n..self.pos].to_vec())
     }
     fn long(&mut self, c: &mut Ctx) -> Result<i64, Esc> {
         let b = self.byte(c)? as i8 as i64;
@@ -359,7 +388,7 @@ impl Loader {
     }
     fn len(&mut self, c: &mut Ctx) -> Result<usize, Esc> { let n = self.long(c)?; if n < 0 { return arg_err(c, "negative length"); } Ok(n as usize) }
     fn rbytes(&mut self, c: &mut Ctx) -> Result<Vec<u8>, Esc> { let n = self.len(c)?; self.bytes(c, n) }
-    fn entry(&mut self, v: Value) -> usize { ary_push(self.objs, v); ary_len(self.objs) - 1 }
+    fn entry(&mut self, c: &mut Ctx, v: Value) -> usize { c.ary_push(self.objs, v); c.ary_len(self.objs) - 1 }
     fn symbol(&mut self, c: &mut Ctx) -> Result<Sym, Esc> {
         let t = self.byte(c)?;
         self.symbol_of(c, t, false)
@@ -379,7 +408,7 @@ impl Loader {
         }
     }
     fn path2class(&mut self, c: &mut Ctx, name: &[u8]) -> RV {
-        let mut k = vm().c_object;
+        let mut k = c.vm().c_object;
         for part in String::from_utf8_lossy(name).split("::") {
             match const_get_inherit(c, k, intern(part.as_bytes())) {
                 Ok(Some(v)) => k = v,
@@ -392,11 +421,11 @@ impl Loader {
     fn class(&mut self, c: &mut Ctx) -> RV {
         let n = self.symbol(c)?;
         let k = self.path2class(c, sym_bytes(n))?;
-        if rclass(k).is_module { return type_err(c, format!("{} does not refer to class", String::from_utf8_lossy(sym_bytes(n)))); }
+        if c.class(k).is_module { return type_err(c, format!("{} does not refer to class", String::from_utf8_lossy(sym_bytes(n)))); }
         Ok(k)
     }
     fn leave(&mut self, c: &mut Ctx, v: Value) -> RV {
-        if self.freeze && v.is_heap() && !is_class_or_module(v) { obj(v).flags |= FL_FROZEN; }
+        if self.freeze && v.is_heap() && !is_class_or_module(v) { obj_set_flags(v, FL_FROZEN); }
         if self.proc_ != NIL { return funcall(c, self.proc_, intern(b"call"), &[v], std::ptr::null()); }
         Ok(v)
     }
@@ -407,8 +436,8 @@ impl Loader {
             let name = self.symbol(c)?;
             let val = self.object(c)?;
             let nb = sym_bytes(name);
-            if nb == b"E" && (is_string(v) || crate::regexp::is_regexp(c, v)) { if is_string(v) { rstr(v).enc = if val == TRUE { ENC_UTF8 } else { ENC_ASCII }; } continue; }
-            if nb == b"encoding" && is_string(v) { if is_string(val) { if let Some(e) = crate::builtins::encoding::find_enc(str_bytes(val)) { rstr(v).enc = e; } } continue; }
+            if nb == b"E" && (is_string(v) || crate::regexp::is_regexp(c, v)) { if is_string(v) { c.rstring_mut(v).enc = if val == TRUE { ENC_UTF8 } else { ENC_ASCII }; } continue; }
+            if nb == b"encoding" && is_string(v) { if is_string(val) { if let Some(e) = crate::builtins::encoding::find_enc(c.str_bytes(val)) { c.rstring_mut(v).enc = e; } } continue; }
             if v.is_heap() { ivar_set_raw(v, name, val); }
         }
         Ok(())
@@ -420,7 +449,7 @@ impl Loader {
     fn object_of(&mut self, c: &mut Ctx, t: u8, ivar: bool, ext: &mut Vec<Value>) -> RV {
         stack_check(c, 16)?;
         let v = match t {
-            b'@' => { let i = self.long(c)? as usize; if i >= ary_len(self.objs) { return arg_err(c, "dump format error (unlinked)"); } let v = ary_get(self.objs, i); if self.proc_ != NIL { return funcall(c, self.proc_, intern(b"call"), &[v], std::ptr::null()); } return Ok(v); }
+            b'@' => { let i = self.long(c)? as usize; let Some(&v) = c.ary(self.objs).get(i) else { return arg_err(c, "dump format error (unlinked)") }; if self.proc_ != NIL { return funcall(c, self.proc_, intern(b"call"), &[v], std::ptr::null()); } return Ok(v); }
             b'I' => { let t2 = self.byte(c)?; if t2 == b':' { let sy = self.symbol_of(c, t2, true)?; return self.leave(c, Value::sym(sy)); } return self.object_of(c, t2, true, ext); }
             b'e' => { let n = self.symbol(c)?; let m = self.path2class(c, sym_bytes(n))?; ext.push(m); let t2 = self.byte(c)?; return self.object_of(c, t2, ivar, ext); }
             b'C' => {
@@ -428,7 +457,7 @@ impl Loader {
                 let t2 = self.byte(c)?;
                 // the wrapped object is built first, then re-classed; leave/ivars are handled by the inner call
                 let inner = self.object_of_raw(c, t2, ivar, ext)?;
-                if inner.is_heap() { obj(inner).klass = k; }
+                if inner.is_heap() { obj_set_klass(inner, k); }
                 return self.leave(c, inner);
             }
             _ => self.object_of_raw(c, t, ivar, ext)?,
@@ -444,8 +473,8 @@ impl Loader {
             b'f' => {
                 let b = self.rbytes(c)?;
                 let f = match &b[..] { b"nan" => f64::NAN, b"inf" => f64::INFINITY, b"-inf" => f64::NEG_INFINITY, _ => { let n = b.iter().position(|&x| x == 0).unwrap_or(b.len()); String::from_utf8_lossy(&b[..n]).parse::<f64>().unwrap_or(0.0) } };
-                let v = crate::numeric::float_new(f);
-                self.entry(v); v
+                let v = c.float_new(f);
+                self.entry(c, v); v
             }
             b'l' => {
                 let sign = self.byte(c)?;
@@ -453,56 +482,58 @@ impl Loader {
                 let b = self.bytes(c, n * 2)?;
                 let mut mag: Vec<u32> = b.chunks(4).map(|ch| { let mut w = [0u8; 4]; w[..ch.len()].copy_from_slice(ch); u32::from_le_bytes(w) }).collect();
                 while mag.len() > 1 && *mag.last().unwrap() == 0 { mag.pop(); }
-                let v = crate::bignum::big_to_value(BigInt { neg: sign == b'-', mag });
-                self.entry(v); v
+                let v = c.big_to_value(BigInt { neg: sign == b'-', mag });
+                self.entry(c, v); v
             }
-            b'"' => { let b = self.rbytes(c)?; let v = str_from_vec_enc(b, ENC_BINARY); self.entry(v); v }
+            b'"' => { let b = self.rbytes(c)?; let v = c.str_from_vec_enc(b, ENC_BINARY); self.entry(c, v); v }
             b'/' => {
                 let src = self.rbytes(c)?;
                 let opts = self.byte(c)? as u32;
-                let idx = self.entry(NIL);
-                let tmp = str_from_vec_enc(src, ENC_BINARY);
+                let idx = self.entry(c, NIL);
+                let tmp = c.str_from_vec_enc(src, ENC_BINARY);
                 if ivar { self.ivars(c, tmp)?; ivar_done = true; }
-                let v = crate::regexp::regexp_new(c, str_bytes(tmp), opts)?;
-                rary(self.objs)[idx] = v; v
+                let b = c.str_bytes(tmp).to_vec();
+                let v = crate::regexp::regexp_new(c, &b, opts)?;
+                c.ary_mut(self.objs)[idx] = v; v
             }
             b'[' => {
                 let n = self.len(c)?;
-                let v = ary_new();
-                self.entry(v);
-                for _ in 0..n { let x = self.object(c)?; ary_push(v, x); }
+                let v = c.ary_new();
+                self.entry(c, v);
+                for _ in 0..n { let x = self.object(c)?; c.ary_push(v, x); }
                 v
             }
             b'{' | b'}' => {
                 let n = self.len(c)?;
-                let v = hash_new();
-                self.entry(v);
+                let v = c.hash_new();
+                self.entry(c, v);
                 for _ in 0..n {
                     let k = self.object(c)?;
                     let x = self.object(c)?;
-                    let k = if self.symbolize && is_string(k) { str_to_sym(k) } else { k };
+                    let k = if self.symbolize && is_string(k) { c.str_to_sym(k) } else { k };
                     hash_aset(c, v, k, x)?;
                 }
-                if t == b'}' { let d = self.object(c)?; rhash(v).default = d; }
+                if t == b'}' { let d = self.object(c)?; c.hash_mut(v).default = d; }
                 v
             }
             b'c' | b'm' | b'M' => {
                 let n = self.rbytes(c)?;
                 let k = self.path2class(c, &n)?;
-                if t == b'c' && rclass(k).is_module { return type_err(c, format!("{} does not refer to class", String::from_utf8_lossy(&n))); }
-                if t == b'm' && !rclass(k).is_module { return type_err(c, format!("{} does not refer to module", String::from_utf8_lossy(&n))); }
-                self.entry(k); k
+                if t == b'c' && c.class(k).is_module { return type_err(c, format!("{} does not refer to class", String::from_utf8_lossy(&n))); }
+                if t == b'm' && !c.class(k).is_module { return type_err(c, format!("{} does not refer to module", String::from_utf8_lossy(&n))); }
+                self.entry(c, k); k
             }
             b'S' => {
                 let k = self.class(c)?;
                 let n = self.len(c)?;
                 let mem = funcall(c, k, intern(b"members"), &[], std::ptr::null())?;
-                if !is_array(mem) || ary_len(mem) != n { return type_err(c, format!("struct {} not compatible (struct size differs)", class_path(k))); }
+                if !is_array(mem) || c.ary_len(mem) != n { return type_err(c, format!("struct {} not compatible (struct size differs)", class_path(k))); }
                 let v = new_object(k);
-                self.entry(v);
+                self.entry(c, v);
                 for i in 0..n {
                     let slot = self.symbol(c)?;
-                    if ary_get(mem, i) != Value::sym(slot) { return type_err(c, format!("struct {} not compatible (:{} for :{})", class_path(k), String::from_utf8_lossy(sym_bytes(slot)), String::from_utf8_lossy(sym_bytes(ary_get(mem, i).as_sym())))); }
+                    let want = c.ary_get(mem, i);
+                    if want != Value::sym(slot) { return type_err(c, format!("struct {} not compatible (:{} for :{})", class_path(k), String::from_utf8_lossy(sym_bytes(slot)), String::from_utf8_lossy(sym_bytes(want.as_sym())))); }
                     let x = self.object(c)?;
                     ivar_set_raw(v, slot, x);
                 }
@@ -511,32 +542,34 @@ impl Loader {
             b'u' => {
                 let k = self.class(c)?;
                 let b = self.rbytes(c)?;
-                let data = str_from_vec_enc(b, ENC_BINARY);
+                let data = c.str_from_vec_enc(b, ENC_BINARY);
                 if ivar { self.ivars(c, data)?; ivar_done = true; }
-                if crate::builtins::inherits(k, vm().c_time) && str_bytes(data).len() == 8 {
+                if crate::builtins::inherits(k, c.vm().c_time) && c.str_bytes(data).len() == 8 {
                     let v = load_time(c, k, data)?;
-                    self.entry(v);
+                    self.entry(c, v);
                     return Ok(v);
                 }
                 if !respond_to(k, intern(b"_load"), true) { return type_err(c, format!("class {} needs to have method '_load'", class_path(k))); }
                 let v = funcall(c, k, intern(b"_load"), &[data], std::ptr::null())?;
-                self.entry(v); v
+                self.entry(c, v); v
             }
             b'U' => {
                 let k = self.class(c)?;
-                let idx = self.entry(NIL);
-                if k == vm().c_rational || k == vm().c_complex {
+                let idx = self.entry(c, NIL);
+                let (kr, kc) = (c.vm().c_rational, c.vm().c_complex);
+                if k == kr || k == kc {
                     let d = self.object(c)?;
-                    if !is_array(d) || ary_len(d) != 2 { return arg_err(c, "marshaled rational must have an array whose length is 2 but 0"); }
-                    let v = if k == vm().c_rational { crate::builtins::rational::rat_new(c, ary_get(d, 0), ary_get(d, 1)) } else { crate::builtins::complex::cpx_raw(c, ary_get(d, 0), ary_get(d, 1)) };
-                    rary(self.objs)[idx] = v;
+                    if !is_array(d) || c.ary_len(d) != 2 { return arg_err(c, "marshaled rational must have an array whose length is 2 but 0"); }
+                    let (x, y) = (c.ary_get(d, 0), c.ary_get(d, 1));
+                    let v = if k == kr { crate::builtins::rational::rat_new(c, x, y) } else { crate::builtins::complex::cpx_raw(c, x, y) };
+                    c.ary_mut(self.objs)[idx] = v;
                     v
                 } else {
                     let v = crate::builtins::object::alloc_instance(c, k)?;
                     for &m in ext.iter().rev() { funcall(c, v, intern(b"extend"), &[m], std::ptr::null())?; }
                     ext.clear();
                     if !respond_to(v, intern(b"marshal_load"), true) { return type_err(c, format!("instance of {} needs to have method 'marshal_load'", class_path(k))); }
-                    rary(self.objs)[idx] = v;
+                    c.ary_mut(self.objs)[idx] = v;
                     let d = self.object(c)?;
                     funcall(c, v, intern(b"marshal_load"), &[d], std::ptr::null())?;
                     v
@@ -544,9 +577,9 @@ impl Loader {
             }
             b'o' => {
                 let k = self.class(c)?;
-                let idx = self.entry(NIL);
+                let idx = self.entry(c, NIL);
                 let v = crate::builtins::object::alloc_instance(c, k)?;
-                rary(self.objs)[idx] = v;
+                c.ary_mut(self.objs)[idx] = v;
                 if is_range(v) {
                     let n = self.len(c)?;
                     let (mut b, mut e, mut excl) = (NIL, NIL, false);
@@ -554,8 +587,8 @@ impl Loader {
                         let name = self.symbol(c)?; let x = self.object(c)?;
                         match sym_bytes(name) { b"begin" => b = x, b"end" => e = x, b"excl" => excl = x.truthy(), _ => { ivar_set_raw(v, name, x); } }
                     }
-                    obj(v).body = Body::Range(b, e, excl);
-                    obj(v).flags |= FL_FROZEN;
+                    c.range_set(v, b, e, excl);
+                    obj_set_flags(v, FL_FROZEN);
                 } else { self.ivars(c, v)?; }
                 v
             }
@@ -564,13 +597,13 @@ impl Loader {
         };
         if !ivar_done { self.ivars(c, v)?; }
         if !ext.is_empty() && v.is_heap() { for &m in ext.iter().rev() { funcall(c, v, intern(b"extend"), &[m], std::ptr::null())?; } ext.clear(); }
-        if self.freeze && is_string(v) { obj(v).flags |= FL_FROZEN; }
+        if self.freeze && is_string(v) { obj_set_flags(v, FL_FROZEN); }
         Ok(v)
     }
 }
 
 fn load_time(c: &mut Ctx, k: Value, data: Value) -> RV {
-    let b = str_bytes(data);
+    let b: [u8; 8] = c.str_bytes(data).try_into().expect("8 bytes");
     let p = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
     let sw = u32::from_le_bytes([b[4], b[5], b[6], b[7]]);
     let utc = p & (1 << 30) != 0;
@@ -594,7 +627,8 @@ fn load_time(c: &mut Ctx, k: Value, data: Value) -> RV {
 fn m_load(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let (pos, opts) = match a.last() { Some(&l) if is_hash(l) && a.len() > 1 => (&a[..a.len() - 1], Some(l)), _ => (a, None) };
     check_argc(c, pos, 1, 2)?;
-    let mut l = Loader { src: pos[0], io: false, pos: 0, syms: vec![], objs: ary_new(), proc_: pos.get(1).copied().unwrap_or(NIL), freeze: false, symbolize: false };
+    let objs = c.ary_new();
+    let mut l = Loader { src: pos[0], data: vec![], io: false, pos: 0, syms: vec![], objs, proc_: pos.get(1).copied().unwrap_or(NIL), freeze: false, symbolize: false };
     if let Some(h) = opts {
         if let Some(v) = hash_get_opt(c, h, sym_value("freeze"))? { l.freeze = v.truthy(); }
         if let Some(v) = hash_get_opt(c, h, sym_value("symbolize_names"))? { l.symbolize = v.truthy(); }
@@ -605,6 +639,7 @@ fn m_load(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
         else if respond_to(l.src, intern(b"getbyte"), true) && respond_to(l.src, intern(b"read"), true) { l.io = true; if respond_to(l.src, intern(b"binmode"), true) { funcall(c, l.src, intern(b"binmode"), &[], std::ptr::null())?; } }
         else { return type_err(c, "instance of IO needed"); }
     }
+    if !l.io { l.data = c.str_bytes(l.src).to_vec(); }
     let major = l.byte(c)?;
     let minor = l.byte(c)?;
     if major != 4 || minor > 8 {
@@ -613,14 +648,14 @@ fn m_load(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     l.object(c)
 }
 
-pub fn init() {
-    let vm = vm();
+/// Defines Marshal and returns it (boot).
+pub fn init() -> Value {
     let m = define_module("Marshal");
-    vm.m_marshal = m;
     define_module_function(m, "dump", m_dump, -1);
     define_module_function(m, "load", m_load, -1);
     define_module_function(m, "restore", m_load, -1);
     const_set(m, intern(b"MAJOR_VERSION"), Value::fix(4));
     const_set(m, intern(b"MINOR_VERSION"), Value::fix(8));
     let _ = s::mesg;
+    m
 }
