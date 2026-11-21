@@ -57,7 +57,8 @@ fn cache_slot(b: &[u8]) -> &'static AtomicU32 {
     &CACHE[(h.finish() >> (64 - CACHE_BITS)) as usize]
 }
 
-#[inline]
+// out of line: inlined into its 600-odd callers, bignum AOT ran 6 % more cycles on the same instructions
+#[inline(never)]
 pub fn intern(b: &[u8]) -> Sym {
     let slot = cache_slot(b);
     let v = slot.load(Ordering::Acquire);
