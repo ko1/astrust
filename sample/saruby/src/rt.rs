@@ -772,6 +772,32 @@ pub fn srb_call_x(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, tmp: Val
     if attr_val != UNDEF { r.map(|_| attr_val) } else { r }
 }
 
+/// A call whose only argument is a splat (no block, keywords or attribute assignment).
+#[inline(always)]
+pub fn srb_splat1(ci: CiRef, flags: u32) -> bool {
+    ci.kinds.len() == 1 && ci.kinds[0] == AK_SPLAT && ci.blk.is_none() && flags & CF_ATTR == 0
+}
+
+/// `f(*a)` (srb_splat1): an Array's elements staged directly; anything else as srb_call_x.
+#[inline(never)]
+pub fn srb_call_splat1(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, v: Value, ci: CiRef, flags: u32, fp: Fp) -> RV {
+    let n = if is_array(v) { c.ary_len(v) } else { usize::MAX };
+    // a ruby2_keywords hash at the end is passed as keywords: the general path
+    let kwh = n != usize::MAX && n > 0 && { let l = c.ary(v)[n - 1]; is_hash(l) && crate::heap::obj_flags(l) & FL_KWHASH != 0 };
+    if n == usize::MAX || kwh {
+        let tmp = crate::array::ary_new();
+        base[1].set(tmp);
+        let (mut kw, mut blkv) = (NIL, NIL);
+        srb_callx_arg(c, ci, 0, v, tmp, &mut kw, &mut blkv)?;
+        return srb_call_x(c, cc, mid, base, tmp, kw, blkv, ci, flags, fp);
+    }
+    stack_check(c, n + 4)?;
+    base[1].set(v);
+    for i in 0..n { base[2 + i].set(c.ary(v)[i]); }
+    c.set_sp(base, 2 + n);
+    call_cached(c, cc, mid, base, n as u32, std::ptr::null(), flags)
+}
+
 pub fn srb_super(c: &mut Ctx, base: Stk, tmp: Value, kw: Value, blkv: Value, ci: CiRef, fp: Fp, _zsuper: bool) -> RV {
     let f = c.frame();
     if f.me.is_null() { return err(c, vm().c_runtime_error, "super called outside of method"); }

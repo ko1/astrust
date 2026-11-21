@@ -94,6 +94,7 @@ fn blank_vm() -> Box<Vm> {
         let n = std::ptr::null();
         std::ptr::write(&mut (*vp).ids, MethodIds { bo_eq: n, bo_init: n, c_new: n, m_eqq: n, kernel_hash: n, r_each: n });
         std::ptr::write(&mut (*vp).main_ctx, std::ptr::null_mut());
+        std::ptr::write(&mut (*vp).send_cache, crate::vm::send_cache_new());
         std::ptr::write(&mut (*vp).fiber_roots, vec![]);
         Box::new(v.assume_init())
     }

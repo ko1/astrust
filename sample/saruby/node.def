@@ -735,6 +735,12 @@ node_call_x(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, 
     let base = stage(c, 2)?;
     let r0 = EVAL_ARG!(c, recv)?;
     base[0].set(r0);
+    // f(*a) alone: a's elements are staged as the arguments, no argument Array
+    if srb_splat1(ci, flags) {
+        let v = EVAL_NTH!(c, args, 0)?;
+        unsafe { (*c.frame).line = line; }
+        return srb_call_splat1(c, cc, mid, base, v, ci, flags, fp);
+    }
     let tmp = crate::array::ary_new();
     base[1].set(tmp);
     let mut blkv = NIL;
