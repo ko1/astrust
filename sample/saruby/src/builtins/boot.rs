@@ -167,6 +167,7 @@ fn boot_classes(vmr: &mut Vm) {
     misc::init(vmr);
     lazy_const(ob, "ENV", "saruby/env");
     lazy_const(ob, "RbConfig", "saruby/rbconfig");
+    lazy_const(ob, "Pathname", "saruby/pathname");
     encoding::init(vmr);
     stringio::init(vmr);
     (vmr.c_regexp, vmr.c_match_data) = regexp_methods::init(vmr);
