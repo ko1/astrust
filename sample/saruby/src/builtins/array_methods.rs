@@ -787,10 +787,36 @@ cfn!(a_sample, |c, slf, a, blk| {
     v.truncate(k as usize);
     Ok(c.ary_from_vec(v))
 });
+/// The `random:` keyword (the Random class when absent); no positional arguments.
+fn random_kw(c: &mut Ctx, a: &[Value]) -> RV {
+    let kw = kw_arg(a);
+    let npos = a.len() - kw.is_some() as usize;
+    if npos != 0 { return argc_err(c, npos, 0, 0); }
+    let Some(h) = kw else { return Ok(c.vm().c_random) };
+    let key = Value::sym(intern(b"random"));
+    let mut gen = c.vm().c_random;
+    let mut unknown = vec![];
+    let mut i = 0;
+    while let Some((k, v)) = c.hash_entry_at(h, i) {
+        i += 1;
+        if k == UNDEF { continue; }
+        if k == key { gen = v; } else { unknown.push(inspect_str(c, k)?); }
+    }
+    if !unknown.is_empty() { return arg_err(c, format!("unknown keyword{}: {}", if unknown.len() > 1 { "s" } else { "" }, unknown.join(", "))); }
+    Ok(gen)
+}
 cfn!(a_shuffle, |c, slf, a, blk| {
-    let mut v = c.ary(slf).to_vec();
-    for i in (1..v.len()).rev() { let j = crate::builtins::random::rand_below(c, i as u64 + 1) as usize; v.swap(i, j); }
-    Ok(c.ary_from_vec(v))
+    let gen = random_kw(c, a)?;
+    let v = c.ary(slf).to_vec();
+    let out = c.ary_from_vec(v);   // a #rand of gen may run Ruby: keep the elements in a Ruby Array
+    // CRuby's order: i from len down to 1, j = rand(i), swap(i - 1, j)
+    let mut i = c.ary_len(out);
+    while i > 0 {
+        let j = crate::builtins::random::ulong_limited(c, gen, i as u64 - 1)? as usize;
+        i -= 1;
+        c.ary_mut(out).swap(i, j);
+    }
+    Ok(out)
 });
 cfn!(a_shuffle_b, |c, slf, a, blk| { let r = a_shuffle(c, slf, a, blk)?; *c.ary_modify(slf)? = c.ary(r).to_vec().into(); Ok(slf) });
 cfn!(a_cycle, |c, slf, a, blk| {

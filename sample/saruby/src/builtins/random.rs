@@ -214,6 +214,17 @@ fn limited_big_rand(c: &mut Ctx, ob: Value, rnd: Option<Value>, limit: &BigInt) 
         return Ok(c.big_to_value(BigInt::from_words(false, &out)));
     }
 }
+/// rb_random_ulong_limited: [0, limit] from a Random, the Random class, or any object's public #rand(limit + 1).
+pub fn ulong_limited(c: &mut Ctx, ob: Value, limit: u64) -> Result<u64, Esc> {
+    if let Some(r) = get_rnd(c, ob) { return Ok(limited_rand_mt(&mut rr(c, r).mt, limit)); }
+    if limit == 0 { return Ok(0); }
+    let lim = c.int_from_i128(limit as i128 + 1);
+    let v = funcall_public(c, ob, intern(b"rand"), &[lim], std::ptr::null())?;
+    let r = crate::builtins::numeric_methods::num_to_long(c, v)?;
+    if r < 0 { return err(c, c.vm().c_range_error, format!("random number too small {}", r)); }
+    if r as u64 > limit { return err(c, c.vm().c_range_error, format!("random number too big {}", r)); }
+    Ok(r as u64)
+}
 /// [0, n) for the default generator (Array#shuffle / #sample).
 pub fn rand_below(c: &mut Ctx, n: u64) -> u64 {
     if n == 0 { return 0; }
