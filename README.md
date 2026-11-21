@@ -132,6 +132,13 @@ names and the baked operands, so equal subtrees that saw different facts get sep
 `TieredStore` puts a shared preload store (the embedder's prelude, baked once per build) in front
 of the per-program store.
 
+Patch binding (x86-64 Linux): the store also builds `patch.o`, the same SDs as a relocatable object
+in which, inside an entry's own tree, each `@hole` is a symbol `ASTRUST_HOLE_<op>_<offset>`.
+`runtime/astrust_loader.rs` copies an SD's sections per node and relocates the holes to that node's
+values (GOT references relaxed to immediates as ld does); `TieredStore::defer` / `bind` do it at a
+body's first dispatch, and any failure keeps the shared SD of `all.so`.  A hole may have a type that
+says where its value is (hook `hole_trait`): saruby's line is then one `mov $imm32` store.
+
 Specialization happens when code is baked, from what the run has observed (inline caches), not by
 rewriting nodes at run time: the only thing patched in a running interpreter is a node's
 dispatcher, when baked code for its hash is found.
