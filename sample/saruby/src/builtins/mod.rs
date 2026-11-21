@@ -171,13 +171,13 @@ pub fn boot() {
     vm.argv = crate::array::ary_new();
     vm.top_cref = new_cref(ob, std::ptr::null());
 
-    exception::init_classes();
+    exception::init_classes(vm);
     let ids = object::init(vm);
     vm.ids.bo_init = ids.bo_init; vm.ids.bo_eq = ids.bo_eq; vm.ids.kernel_hash = ids.kernel_hash; vm.ids.m_eqq = ids.m_eqq; vm.ids.c_new = ids.c_new;
     kernel::init(vm);
     rclass(vm.c_object).autoload.insert(crate::symbol::intern(b"ARGF"), crate::str_legacy::str_new_frozen(b"saruby/argf"));
     proc::init(vm);
-    exception::init();
+    exception::init(vm);
     numeric_methods::init(vm.c_numeric, vm.c_integer, vm.c_float);
     for (nm, v) in numeric_methods::FLOAT_CONSTS { const_set(vm.c_float, crate::symbol::intern(nm.as_bytes()), crate::numeric::float_new(v)); }
     string_methods::init(vm.c_string);
@@ -210,6 +210,16 @@ pub fn boot() {
     enum_native::init(vm.m_enumerable);
     crate::fiber::init();
     extras::init();
+}
+
+/// Constant `name` under `owner` whose native definition (`feature`) runs on first reference; boot time, no context.
+pub fn lazy_const(owner: Value, name: &str, feature: &str) {
+    lazy_consts(owner, &[name], feature);
+}
+/// lazy_const for several names of one feature.
+pub fn lazy_consts(owner: Value, names: &[&str], feature: &str) {
+    let path = crate::str_legacy::str_new_frozen(feature.as_bytes());
+    for n in names { rclass(owner).autoload.insert(crate::symbol::intern(n.as_bytes()), path); }
 }
 
 /// dup/clone of built-in Data objects.

@@ -952,7 +952,7 @@ pub fn init() {
     for (n, v) in [("SEEK_SET", 0), ("SEEK_CUR", 1), ("SEEK_END", 2), ("SEEK_DATA", 3), ("SEEK_HOLE", 4), ("READABLE", 1), ("PRIORITY", 2), ("WRITABLE", 4)] { const_set(io, intern(n.as_bytes()), Value::fix(v)); }
     let wr = define_module_under(io, "WaitReadable");
     let ww = define_module_under(io, "WaitWritable");
-    let eagain = crate::builtins::exception::errno_class(11);
+    let eagain = crate::builtins::exception::errno_class(vm, 11);
     const_set(vm.m_errno, intern(b"EWOULDBLOCK"), eagain);
     let e1 = define_class_under(io, "EAGAINWaitReadable", eagain); include_module(e1, wr);
     let e2 = define_class_under(io, "EAGAINWaitWritable", eagain); include_module(e2, ww);

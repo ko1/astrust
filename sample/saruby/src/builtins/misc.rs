@@ -457,5 +457,5 @@ pub fn init() {
     set("ARGV", vm.argv);
     set("TOPLEVEL_BINDING", NIL);
     let _ = (intern, num_to_long);
-    crate::builtins::exception::init_location();
+    vm.c_location = crate::builtins::exception::init_location(vm);
 }
