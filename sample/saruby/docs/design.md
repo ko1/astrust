@@ -121,6 +121,16 @@ Measurements and what was tried: `~/ruby/src/trials/2026-11-21-saruby-call-path/
   hash equals the baked one) and that the block is not a lambda proc.  Blocks yielded by builtins
   (`Integer#times`, `Array#each`, ...) are not compiled in: the yield is in Rust.
 
+* `recv.send(:name, args...)` / `__send__` at a site whose cache holds the builtin (`CallCache.bi =
+  BI_SEND`, baked as `SITE_SEND`) is the call of `name` itself (`send_fast`): the name is looked up
+  in a direct-mapped (class, name, method serial) table (`Vm.send_cache`), the arguments are shifted
+  down over it on the staged frame and the method runs there, with no frame for `send` (CRuby lists
+  none).  String names, refinements and missing methods take the builtin.  `public_send` keeps its
+  cfunc frame (CRuby lists it).  `f(*a)` with only a splat stages `a`'s elements directly
+  (`srb_call_splat1`, no argument Array).
+* Operator nodes (`node_opt_*`, `@x += v`, `!x`) keep their call cache behind a pointer (`OpCc`),
+  made when the site first calls a method.
+
 ## Lexical scope (Cref) and refinements
 * A frame's `cref` is its lexical class scope (constants, `def` target, class variables).  A
   cref whose `prev` is null is the top level.
@@ -175,6 +185,9 @@ disables).  `SARUBY_AOT_VERBOSE=1` shows the rustc command.
   `root + constant` (generator hook `contiguous?`); it never loads a child pointer.  Only laid-out
   trees are specialized or given baked code (`NF_LAID`).  The original nodes are left alone
   (about 1 MB and 0.6M instructions at boot).
+* **Items are named by what is baked into them.**  `T_<x>` is the node hash merged with its children's
+  item names and its baked operands (`@bake` values, speculated callees), so two sites with one hash
+  that saw different things get their own code; only `SD_<hash>` (the dispatcher swap) is by hash alone.
 * **Baked facts are hints.**  A `@bake` operand records what the interpreter saw at a site: the
   ivar slot (`slot`, node_ivar / node_iasgn / node_ivar_arith), the operand kinds of an operator
   besides fixnums (`ty`, from the site's `TyFb`), the callee kind of a call.  Baked items are named

@@ -125,7 +125,8 @@ saruby does this; an inline cache there is one addressing mode away from the bod
 ## Code store
 
 `CodeStore` keeps one file per emitted item (`items/T_<hash>.rs`, `L_<hash>.rs`, `SD_<hash>.rs`),
-content-addressed so that bakes accumulate, and links them into `all.so`; `lookup(hash)` returns
+content-addressed so that bakes accumulate (a `T_` name merges the node hash with the children's item
+names and the baked operands, so equal subtrees that saw different facts get separate items), and links them into `all.so`; `lookup(hash)` returns
 `SD_<hash>`. Each `.so` embeds the interpreter's build id and is ignored when it does not match.
 `TieredStore` puts a shared preload store (the embedder's prelude, baked once per build) in front
 of the per-program store.
