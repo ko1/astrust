@@ -570,7 +570,11 @@ cfn!(flo_cmp, |c, s, a| {
     let x = float_val(s);
     if x.is_infinite() && a[0].is_heap() && !is_float(a[0]) && !is_bignum(a[0]) && respond_to(a[0], intern(b"infinite?"), true) {
         let r = funcall(c, a[0], intern(b"infinite?"), &[], std::ptr::null())?;
-        if r == NIL { return Ok(Value::fix(if x > 0.0 { 1 } else { -1 })); }
+        if !r.truthy() { return Ok(Value::fix(if x > 0.0 { 1 } else { -1 })); }
+        // flo_cmp: both infinite; equal when the signs agree (rb_cmpint of infinite?)
+        let j = if r.is_fixnum() { r.as_fix().signum() } else if funcall(c, r, s::gt, &[Value::fix(0)], std::ptr::null())?.truthy() { 1 }
+            else if funcall(c, r, s::lt, &[Value::fix(0)], std::ptr::null())?.truthy() { -1 } else { 0 };
+        return Ok(Value::fix(if x > 0.0 { if j > 0 { 0 } else { 1 } } else if j < 0 { 0 } else { -1 }));
     }
     match flo_cmp_val(c, s, a[0])? {
         Some(o) => Ok(Value::fix(o as i64)),
