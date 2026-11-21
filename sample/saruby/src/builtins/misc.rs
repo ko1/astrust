@@ -275,14 +275,19 @@ pub fn unpack(c: &mut Ctx, sv: Value, a: &[Value]) -> RV {
 // ---- GC / ObjectSpace -----------------------------------------------------------------------
 
 fn gc_start(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { crate::gc::collect(); Ok(NIL) }
+// GC.__start(full_mark), behind the prelude's GC.start (keywords as in CRuby's gc.rb, no Hash)
+fn gc_start_full(_c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+    if a[0].truthy() { crate::gc::collect() } else { crate::gc::collect_minor() }
+    Ok(NIL)
+}
 fn gc_count(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(crate::gc::heap().ctl.collections() as i64)) }
 fn gc_disable(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(crate::gc::heap().set_disabled(true))) }
 fn gc_enable(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(crate::gc::heap().set_disabled(false))) }
 fn gc_stat(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
-    let (n, h) = (crate::gc::heap().ctl.collections() as i64, crate::gc::heap().stats());
+    let (n, m, h) = (crate::gc::heap().ctl.collections() as i64, crate::gc::heap().ctl.minor_collections() as i64, crate::gc::heap().stats());
     let st = c.hash_new();
     for (k, v) in [("count", n), ("heap_live_slots", (h.slots - h.free) as i64), ("heap_free_slots", h.free as i64),
-                   ("total_allocated_objects", h.allocated as i64), ("total_freed_objects", h.freed as i64), ("heap_available_slots", h.slots as i64), ("major_gc_count", n), ("minor_gc_count", 0)] {
+                   ("total_allocated_objects", h.allocated as i64), ("total_freed_objects", h.freed as i64), ("heap_available_slots", h.slots as i64), ("major_gc_count", n - m), ("minor_gc_count", m)] {
         hash_set(c, st, sym_value(k), Value::fix(v))?;
     }
     if let Some(&k) = a.first() { if k.is_sym() { return Ok(hash_get_opt(c, st, k)?.unwrap_or(Value::fix(0))); } }
@@ -404,6 +409,7 @@ pub fn init(vmr: &mut Vm) {
     let gc = define_module("GC");
     vmr.m_gc = gc;
     define_module_function(gc, "start", gc_start, -1);
+    define_singleton_cfunc(gc, "__start", gc_start_full, 1);
     define_module_function(gc, "count", gc_count, 0);
     define_module_function(gc, "disable", gc_disable, 0);
     define_module_function(gc, "enable", gc_enable, 0);
