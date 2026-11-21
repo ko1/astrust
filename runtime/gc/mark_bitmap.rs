@@ -1,7 +1,8 @@
 // Backend "bitmap": non-moving mark & sweep that never touches the object header.
 // Each page starts with two bitmaps (mark, live), one bit per slot.  Allocation takes
 // free slots straight from the live bitmap, a 64-slot word at a time; sweep is
-// `live = mark` per word, visiting only dead slots.  Same policy as "marksweep".
+// `live = mark` per word, visiting only dead slots.  Same policy as "marksweep"
+// (granted pages are added when every slot is taken, `reserve`).
 // It exists to show that a binding does not depend on a backend's object layout.
 use super::pages::Pages;
 use super::{Control, EdgeVisitor, GcBackend, GcLang, HeapStats, RootVisitor};
@@ -32,7 +33,8 @@ pub struct MarkBitmap<L: GcLang> {
     next_page: usize,             // where the search for free slots continues
     next_word: usize,
     free_count: usize,
-    total: usize,
+    total: usize,                 // slots of the pages added
+    reserve: usize,               // pages granted and not added yet
     live_after_gc: usize,
     allocs_since_gc: usize,
     external_since_gc: usize,
@@ -103,11 +105,13 @@ impl<L: GcLang> MarkBitmap<L> {
         if self.cur_bits != 0 { return obj; }
         while !self.refill() {
             // every slot is taken
+            if self.reserve > 0 { self.reserve -= 1; self.add_page(); continue; }
             let collect = !ctl.disabled() && self.allocs_since_gc > self.total / 4;
             if collect { ctl.collect(self, lang, Some(&mut obj)); }
             if !collect || self.free_count < self.live_after_gc.max(1) {
                 let want = self.live_after_gc.saturating_sub(self.free_count).max(self.total / 8) / Self::PER_PAGE + 1;
-                for _ in 0..want { self.add_page(); }
+                self.reserve = want - 1;
+                self.add_page();
             }
         }
         obj
@@ -193,13 +197,11 @@ impl<L: GcLang> GcBackend<L> for MarkBitmap<L> {
     const AMBIGUOUS_ROOTS: bool = true;
 
     fn new() -> Self {
-        let mut h = MarkBitmap {
+        MarkBitmap {
             cur_bits: 0, cur_slot0: 0, cur_page: 0, cur_word: 0, next_page: 0, next_word: 0,
-            free_count: 0, total: 0, live_after_gc: 0, allocs_since_gc: 0,
+            free_count: 0, total: 0, reserve: INITIAL_PAGES, live_after_gc: 0, allocs_since_gc: 0,
             external_since_gc: 0, external_limit: 64 << 20, total_allocated: 0, total_freed: 0, pages: Pages::new(),
-        };
-        for _ in 0..INITIAL_PAGES { h.add_page(); }
-        h
+        }
     }
 
     #[inline(always)]
@@ -253,6 +255,7 @@ impl<L: GcLang> GcBackend<L> for MarkBitmap<L> {
     }
 
     fn stats(&self) -> HeapStats {
-        HeapStats { slots: self.total, free: self.free_count, allocated: self.total_allocated, freed: self.total_freed }
+        let r = self.reserve * Self::PER_PAGE;
+        HeapStats { slots: self.total + r, free: self.free_count + r, allocated: self.total_allocated, freed: self.total_freed }
     }
 }
