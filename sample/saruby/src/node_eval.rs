@@ -870,6 +870,7 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ct
             c.set_sp(base, 0);
             return r;
         }
+        std::hint::cold_path();
         return call_spec_out(c, cc, mid, base, k as u32, std::ptr::null(), flags, callee_hash);
     }
     if site_hit(cc, r0, kind) {

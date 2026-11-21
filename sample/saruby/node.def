@@ -684,6 +684,7 @@ node_call(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, fl
             c.set_sp(base, 0);
             return r;
         }
+        std::hint::cold_path();
         return call_spec_out(c, cc, mid, base, k as u32, std::ptr::null(), flags, SPEC_HASH!(callee));
     }
     if site_hit(cc, r0, kind) {
