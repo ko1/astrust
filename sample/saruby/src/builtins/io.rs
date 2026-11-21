@@ -419,10 +419,20 @@ fn io_readpartial(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV 
     if n < 0 { return arg_err(c, format!("negative length {} given", n)); }
     let io = readable(c, slf)?;
     if n == 0 { return into_outbuf(c, a.get(1).copied(), vec![], ENC_BINARY); }
+    if let Some(r) = read_unbuffered(io, n as usize) {
+        return match r { Ok(v) if v.is_empty() => eof_err(c), Ok(v) => into_outbuf(c, a.get(1).copied(), v, ENC_BINARY), Err(e) => Err(raise_errno(c, e, "")) };
+    }
     if !fill(io) { return eof_err(c); }
     let take = (n as usize).min(io.rbuf.len() - io.rpos);
     let v = io.rbuf[io.rpos..io.rpos + take].to_vec(); io.rpos += take;
     into_outbuf(c, a.get(1).copied(), v, ENC_BINARY)
+}
+/// With nothing buffered, read up to n bytes straight from the fd (CRuby's io_getpartial; no 64 KiB fill).
+fn read_unbuffered(io: &mut RIo, n: usize) -> Option<Result<Vec<u8>, i64>> {
+    if io.rpos < io.rbuf.len() || io.data || io.eof { return None; }
+    if io.fd == 0 { out_flush(); }
+    let mut v = vec![0u8; n];
+    Some(sys::read_fd(io.fd, &mut v).map(|k| { v.truncate(k); v }))
 }
 fn wait_fd(fd: i32, ev: i16, ms: i32) -> bool { let mut p = [sys::PollFd { fd, events: ev, revents: 0 }]; sys::poll(&mut p, ms) > 0 }
 fn exception_opt(c: &mut Ctx, a: &[Value]) -> Result<bool, Esc> {
@@ -438,12 +448,30 @@ fn wait_error(c: &mut Ctx, name: &str, msg: &str) -> Esc {
 fn io_read_nonblock(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     let exc = exception_opt(c, a)?;
     let pos: Vec<Value> = a.iter().copied().filter(|x| !is_hash(*x)).collect();
-    let io = readable(c, slf)?;
-    if io.rpos >= io.rbuf.len() && !wait_fd(io.fd, sys::POLLIN, 0) {
+    let n = match pos.first() { Some(&n) => num_to_long(c, n)?, None => return argc_err(c, 0, 1, 2) };
+    if n < 0 { return arg_err(c, format!("negative length {} given", n)); }
+    // no wait for other threads here: this read must not block
+    check_open(c, slf, false)?;
+    if !io_mut(c, slf).readable { return err(c, c.vm().c_io_error, "not opened for reading"); }
+    if n == 0 { return into_outbuf(c, pos.get(1).copied(), vec![], ENC_BINARY); }
+    let io = io_mut(c, slf);
+    if !io.wbuf.is_empty() { io_flush_one(io); }
+    if io.rpos >= io.rbuf.len() && !io.data && !wait_fd(io.fd, sys::POLLIN, 0) {
         if !exc { return Ok(sym_value("wait_readable")); }
         return Err(wait_error(c, "EAGAINWaitReadable", "read would block"));
     }
-    if !fill(io) { if !exc { return Ok(NIL); } return eof_err(c); }
+    {
+        let io = io_mut(c, slf);
+        if let Some(r) = read_unbuffered(io, n as usize) {
+            return match r {
+                Ok(v) if v.is_empty() => if !exc { Ok(NIL) } else { eof_err(c) },
+                Ok(v) => into_outbuf(c, pos.get(1).copied(), v, ENC_BINARY),
+                Err(e) if e == sys::EAGAIN => if !exc { Ok(sym_value("wait_readable")) } else { Err(wait_error(c, "EAGAINWaitReadable", "read would block")) },
+                Err(e) => Err(raise_errno(c, e, "")),
+            };
+        }
+    }
+    if !fill(io_mut(c, slf)) { if !exc { return Ok(NIL); } return eof_err(c); }
     io_readpartial(c, slf, &pos, b)
 }
 fn io_write_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
