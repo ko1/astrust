@@ -272,7 +272,8 @@ cfn!(a_map_b, |c, slf, a, blk| enum_or(c, slf, "map!", a, blk, |c| {
 cfn!(a_select, |c, slf, a, blk| enum_or(c, slf, "select", a, blk, |c| {
     let out = c.ary_new();
     let mut i = 0;
-    while let Some(&x) = c.ary(slf).get(i) { if yield1(c, blk, x)?.truthy() { c.ary_push(out, x); } i += 1; }
+    // as CRuby: the element is read again after the block (rb_ary_elt), nil if it is gone
+    while let Some(&x) = c.ary(slf).get(i) { if yield1(c, blk, x)?.truthy() { let y = c.ary(slf).get(i).copied().unwrap_or(NIL); c.ary_push(out, y); } i += 1; }
     Ok(out)
 }));
 cfn!(a_reject, |c, slf, a, blk| enum_or(c, slf, "reject", a, blk, |c| {
