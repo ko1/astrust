@@ -167,6 +167,7 @@ pub fn boot() {
     vm.main_obj = new_object(ob);
     vm.loaded_features = crate::array::ary_new();
     vm.load_path = crate::array::ary_new();
+    kernel::init_load_path(vm.load_path);
     vm.at_exit = crate::array::ary_new();
     vm.argv = crate::array::ary_new();
     vm.top_cref = new_cref(ob, std::ptr::null());

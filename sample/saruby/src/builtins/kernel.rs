@@ -617,7 +617,7 @@ pub const BUILTIN_FEATURES: &[&str] = &["set", "enumerator", "rational", "comple
     "nkf", "racc", "racc/parser", "readline", "reline", "win32ole", "openssl", "mkmf", "rubygems", "bundler", "bundler/setup",
     "objspace", "did_you_mean", "error_highlight", "syntax_suggest", "-test-/memory_status", "random/formatter",
     "date_core", "socket.so", "io/console/size", "digest/sha2", "digest/sha1", "digest/md5", "digest/rmd160", "digest/bubblebabble", "net/protocol", "net/https",
-    "open-uri", "resolv", "ipaddr", "pty", "fiddle", "syslog", "expect", "io/console", "yaml/store", "bigdecimal/util", "date/format", "psych/y",
+    "open-uri", "resolv", "ipaddr", "pty", "syslog", "expect", "io/console", "yaml/store", "bigdecimal/util", "date/format", "psych/y",
 ];
 
 fn resolve_feature(c: &Ctx, name: &str, relative_to: Option<&str>) -> Option<std::path::PathBuf> {
@@ -645,36 +645,42 @@ fn resolve_feature(c: &Ctx, name: &str, relative_to: Option<&str>) -> Option<std
     None
 }
 
+enum Feature { File(std::path::PathBuf), Native(String), Missing }
+
+fn locate_feature(c: &Ctx, name: &str, caller_file: Option<&str>) -> Feature {
+    let relative = caller_file.is_some();
+    if let Some(f) = resolve_feature(c, name, caller_file) { return Feature::File(f); }
+    let is_rb = name.ends_with(".rb");
+    let is_so = name.ends_with(".so");
+    let base = name.trim_end_matches(".rb").trim_end_matches(".so");
+    let native = !is_rb && crate::builtins::prelude::has_feature(base);
+    // the reference ruby's pure-Ruby stdlib, unless saruby implements the feature itself
+    let std_file = if native || is_so || relative || name.starts_with('/') || name.starts_with('.') { None } else { crate::builtins::prelude::stdlib_file(name) };
+    match std_file {
+        Some(f) => Feature::File(f),
+        None if native || BUILTIN_FEATURES.contains(&base) => Feature::Native(base.to_string()),
+        None => Feature::Missing,
+    }
+}
+
 pub fn require_feature(c: &mut Ctx, path: Value, relative: bool) -> RV {
     let name = to_rstring(c, path)?;
     let caller_file = if relative { c.caller_frame().map(|f| frame_file(f).to_string()) } else { None };
     let caller_file = caller_file.map(|f| if f == "-" || f == "-e" { "./x".to_string() } else { f });
-    let resolved = resolve_feature(c, &name, caller_file.as_deref());
-    let file = match resolved {
-        Some(f) => f,
-        None => {
-            let is_rb = name.ends_with(".rb");
-            let is_so = name.ends_with(".so");
-            let base = name.trim_end_matches(".rb").trim_end_matches(".so");
+    let file = match locate_feature(c, &name, caller_file.as_deref()) {
+        Feature::File(f) => f,
+        Feature::Native(base) => {
             let lf = c.vm().loaded_features;
-            let native = !is_rb && crate::builtins::prelude::has_feature(base);
-            // the reference ruby's pure-Ruby stdlib, unless saruby implements the feature itself
-            let std_file = if native || is_so || relative || name.starts_with('/') || name.starts_with('.') { None } else { crate::builtins::prelude::stdlib_file(&name) };
-            match std_file {
-                Some(f) => f,
-                None => {
-                    if native || BUILTIN_FEATURES.contains(&base) {
-                        if c.ary(lf).iter().any(|&x| is_string(x) && c.str_bytes(x) == base.as_bytes()) { return Ok(FALSE); }
-                        let key = c.str_new(base.as_bytes());
-                        c.ary_push(lf, key);
-                        crate::builtins::prelude::load_feature(c, base)?;
-                        return Ok(TRUE);
-                    }
-                    let e = make_exception(c.vm().c_load_error, &format!("cannot load such file -- {}", name));
-                    ivar_set_raw(e, intern(b"path"), c.str_new(name.as_bytes()));
-                    return Err(raise_exc(c, e));
-                }
-            }
+            if c.ary(lf).iter().any(|&x| is_string(x) && c.str_bytes(x) == base.as_bytes()) { return Ok(FALSE); }
+            let key = c.str_new(base.as_bytes());
+            c.ary_push(lf, key);
+            crate::builtins::prelude::load_feature(c, &base)?;
+            return Ok(TRUE);
+        }
+        Feature::Missing => {
+            let e = make_exception(c.vm().c_load_error, &format!("cannot load such file -- {}", name));
+            ivar_set_raw(e, intern(b"path"), c.str_new(name.as_bytes()));
+            return Err(raise_exc(c, e));
         }
     };
     let abs = std::fs::canonicalize(&file).unwrap_or(file.clone());
@@ -685,6 +691,20 @@ pub fn require_feature(c: &mut Ctx, path: Value, relative: bool) -> RV {
     load_file(c, &key)?;
     Ok(TRUE)
 }
+
+/// $LOAD_PATH.resolve_feature_path: [:rb, path], [:so, "name.so"] for a feature saruby provides, or nil.
+fn lp_resolve_feature_path(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+    let sv = expect_str(c, a[0])?;
+    let name = String::from_utf8_lossy(c.str_bytes(sv)).into_owned();
+    let (kind, path) = match locate_feature(c, &name, None) {
+        Feature::File(f) => ("rb", std::path::absolute(&f).unwrap_or(f).to_string_lossy().into_owned()),
+        Feature::Native(base) => ("so", format!("{}.so", base)),
+        Feature::Missing => return Ok(NIL),
+    };
+    let ps = c.str_new(path.as_bytes());
+    Ok(c.ary_new_from(&[Value::sym(intern(kind.as_bytes())), ps]))
+}
+pub fn init_load_path(lp: Value) { define_singleton_cfunc(lp, "resolve_feature_path", lp_resolve_feature_path, 1); }
 
 pub fn load_file(c: &mut Ctx, path: &str) -> RV {
     let src = match std::fs::read(path) {
