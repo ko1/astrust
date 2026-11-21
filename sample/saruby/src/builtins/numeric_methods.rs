@@ -777,7 +777,15 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     }
     if st == NIL { st = Value::fix(1); }
     else if st == Value::fix(0) || (!st.is_fixnum() && funcall(c, st, s::eq, &[Value::fix(0)], std::ptr::null())?.truthy()) { return arg_err(c, "step can't be 0"); }
-    if b.is_null() { return crate::builtins::enumerator::arith_seq(c, s, lim, st, false, s::step); }
+    let numc = c.vm().c_numeric;
+    let numeric = |v: Value| v.is_fixnum() || is_float(v) || is_kind_of(v, numc);
+    if b.is_null() {
+        if (lim == NIL || numeric(lim)) && numeric(st) { return crate::builtins::enumerator::arith_seq(c, s, lim, st, false, s::step); }
+        // a non-Numeric limit or step: a plain Enumerator (numeric.c num_step)
+        return crate::builtins::enumerator::enum_for(c, s, s::step, &[lim, st], NIL);
+    }
+    // num_step_negative_p: `step > 0` decides the direction (and rejects e.g. a String step)
+    if !numeric(st) { funcall(c, st, s::gt, &[Value::fix(0)], std::ptr::null())?; }
     if s.is_fixnum() && st.is_fixnum() && (lim.is_fixnum() || lim == NIL) {
         let (mut i, d) = (s.as_fix(), st.as_fix());
         if lim == NIL {
@@ -793,6 +801,11 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
         let x = to_f(c, s)?; let d = to_f(c, st)?;
         let l = if lim == NIL { if d < 0.0 { f64::NEG_INFINITY } else { f64::INFINITY } } else { to_f(c, lim)? };
         let n = float_step_size(x, l, d, false);
+        // ruby_float_step: an infinite step yields self once
+        if d.is_infinite() {
+            if n != 0.0 { let fv = c.float_new(x); yield1(c, b, fv)?; }
+            return Ok(s);
+        }
         let mut i = 0.0;
         while i < n {
             let mut v = i * d + x;
