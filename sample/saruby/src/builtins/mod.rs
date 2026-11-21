@@ -191,11 +191,11 @@ pub fn boot() {
     vm.c_enumerator = k.enumerator; vm.c_yielder = k.yielder; vm.c_generator = k.generator;
     vm.c_lazy = k.lazy; vm.c_chain = k.chain; vm.c_arith_seq = k.arith_seq;
     io::init();
-    process::init();
+    process::init(vm);
     vm.m_marshal = marshal::init();
     (vm.c_random, vm.default_random) = random::init(vm);
     binding::init();
-    thread::init();
+    thread::init(vm);
     misc::init(vm);
     prelude::lazy_const(ob, "ENV", "saruby/env");
     prelude::lazy_const(ob, "RbConfig", "saruby/rbconfig");
@@ -244,8 +244,8 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     if let Some(r) = io::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = strscan::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = thread::alloc_data(c, klass)? { return Ok(Some(r)); }
-    if let Some(r) = thread::alloc_lock(klass) { return Ok(Some(r)); }
-    if let Some(r) = thread::alloc_queue(klass) { return Ok(Some(r)); }
+    if let Some(r) = thread::alloc_lock(c, klass) { return Ok(Some(r)); }
+    if let Some(r) = thread::alloc_queue(c, klass) { return Ok(Some(r)); }
     Ok(None)
 }
 

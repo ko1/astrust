@@ -1,29 +1,41 @@
 // Process / Process::Status / Signal, fork-exec-wait, Kernel#system/spawn/`/exec/fork/sleep.
+// On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
+#![forbid(unsafe_code)]
+#[allow(unused_imports)]
+use crate::heap::no_legacy::*;   // the old accessors cannot be named here
+#[allow(unused_imports)]
+use crate::heap::no_legacy_hn::*;
+#[allow(unused_imports)]
+use crate::heap::no_legacy_str::*;
+use crate::heap::Global;
 use crate::array::*;
 use crate::builtins::exception::{raise_errno, raise_errno_plain};
 use crate::builtins::kernel::*;
 use crate::builtins::numeric_methods::num_to_long;
+use crate::builtins::io::RIo;
 use crate::builtins::sys;
 use crate::string::*;
 use crate::symbol::intern;
 use crate::value::*;
 use crate::vm::*;
 use std::ffi::CString;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
-static mut LAST_STATUS: (i32, i32) = (-1, 0);
-pub fn set_last_status(pid: i32, raw: i32) { unsafe { LAST_STATUS = (pid, raw); } }
-fn new_status(pid: i32, raw: i32) -> Value {
-    let k = const_get_at(vm().m_process, intern(b"Status")).unwrap();
+// (pid << 32) | raw status; pid -1: none yet
+static LAST_STATUS: AtomicU64 = AtomicU64::new(0xffff_ffff_0000_0000);
+pub fn set_last_status(pid: i32, raw: i32) { LAST_STATUS.store(((pid as u32 as u64) << 32) | raw as u32 as u64, Ordering::Relaxed); }
+fn new_status(c: &mut Ctx, pid: i32, raw: i32) -> Value {
+    let k = const_get_at(c.vm().m_process, intern(b"Status")).unwrap();
     let o = new_object(k);
     ivar_set_raw(o, intern(b"@pid"), Value::fix(pid as i64));
     ivar_set_raw(o, intern(b"@st"), Value::fix(raw as i64));
     o
 }
-pub fn last_status() -> Value {
-    let (pid, raw) = unsafe { LAST_STATUS };
+pub fn last_status(c: &mut Ctx) -> Value {
+    let w = LAST_STATUS.load(Ordering::Relaxed);
+    let (pid, raw) = ((w >> 32) as u32 as i32, w as u32 as i32);
     if pid < 0 { return NIL; }
-    new_status(pid, raw)
+    new_status(c, pid, raw)
 }
 fn exited(st: i32) -> bool { st & 0x7f == 0 }
 fn exitstatus(st: i32) -> i32 { (st >> 8) & 0xff }
@@ -49,8 +61,8 @@ fn st_desc(s: Value) -> String {
     else { d.push_str(&format!(" exit {}", exitstatus(st))); }
     d
 }
-fn st_to_s(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(str_new(st_desc(s).as_bytes())) }
-fn st_inspect(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(str_new(format!("#<Process::Status: {}>", st_desc(s)).as_bytes())) }
+fn st_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.str_new(st_desc(s).as_bytes())) }
+fn st_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.str_new(format!("#<Process::Status: {}>", st_desc(s)).as_bytes())) }
 fn st_eq(_c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     if a[0].is_fixnum() { return Ok(Value::bool(st_raw(s) as i64 == a[0].as_fix())); }
     Ok(Value::bool(a[0].is_heap() && real_class_of(a[0]) == real_class_of(s) && st_raw(a[0]) == st_raw(s)))
@@ -63,12 +75,12 @@ const SIGNALS: &[(&str, i32)] = &[("EXIT", 0), ("HUP", 1), ("INT", 2), ("QUIT", 
     ("TTIN", 21), ("TTOU", 22), ("URG", 23), ("XCPU", 24), ("XFSZ", 25), ("VTALRM", 26), ("PROF", 27), ("WINCH", 28), ("IO", 29), ("POLL", 29), ("PWR", 30), ("SYS", 31)];
 pub fn signame(n: i32) -> Option<&'static str> { SIGNALS.iter().find(|s| s.1 == n).map(|s| s.0) }
 static PENDING: AtomicU64 = AtomicU64::new(0);
-static mut HANDLERS: Value = NIL; // Array indexed by signo: nil (default) / String / Proc
+static HANDLERS: Global = Global::new(); // Array indexed by signo: nil (default) / String / Proc
 extern "C" fn on_signal(sig: i32) { PENDING.fetch_or(1 << sig, Ordering::SeqCst); }
 
 pub fn signo_arg(c: &mut Ctx, v: Value) -> Result<i32, Esc> {
     if v.is_fixnum() { let n = v.as_fix(); if !(0..65).contains(&n) { return arg_err(c, format!("invalid signal number ({})", n)); } return Ok(n as i32); }
-    let name = if v.is_sym() { crate::symbol::sym_str(v.as_sym()) } else if is_string(v) { String::from_utf8_lossy(str_bytes(v)).into_owned() } else {
+    let name = if v.is_sym() { crate::symbol::sym_str(v.as_sym()) } else if is_string(v) { String::from_utf8_lossy(c.str_bytes(v)).into_owned() } else {
         return arg_err(c, format!("bad signal type {}", class_name_for_err(v)));
     };
     let (neg, n) = match name.strip_prefix('-') { Some(r) => (true, r), None => (false, name.as_str()) };
@@ -86,26 +98,26 @@ fn signal_trap(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
     let cmd = if a.len() == 2 { a[1] } else { block_to_proc(c, blk)? };
     // normalize: nil / "IGNORE" / "DEFAULT" strings or a callable
     let (store, action): (Value, sys::SigAction) = if cmd == NIL { (NIL, sys::SigAction::Ignore) } else if is_string(cmd) || cmd.is_sym() {
-        let sname = if cmd.is_sym() { crate::symbol::sym_str(cmd.as_sym()) } else { String::from_utf8_lossy(str_bytes(cmd)).into_owned() };
+        let sname = if cmd.is_sym() { crate::symbol::sym_str(cmd.as_sym()) } else { String::from_utf8_lossy(c.str_bytes(cmd)).into_owned() };
         match sname.as_str() {
-            "" | "IGNORE" | "SIG_IGN" => (str_new(b"IGNORE"), sys::SigAction::Ignore),
+            "" | "IGNORE" | "SIG_IGN" => (c.str_new(b"IGNORE"), sys::SigAction::Ignore),
             "DEFAULT" | "SIG_DFL" => (UNDEF, sys::SigAction::Default),
-            "SYSTEM_DEFAULT" => (str_new(b"SYSTEM_DEFAULT"), sys::SigAction::Default),
-            "EXIT" => (str_new(b"EXIT"), sys::SigAction::Catch(on_signal)),
+            "SYSTEM_DEFAULT" => (c.str_new(b"SYSTEM_DEFAULT"), sys::SigAction::Default),
+            "EXIT" => (c.str_new(b"EXIT"), sys::SigAction::Catch(on_signal)),
             _ => return arg_err(c, format!("wrong trap - {}", sname)),
         }
     } else { (cmd, sys::SigAction::Catch(on_signal)) };
-    let h = unsafe { HANDLERS };
-    while ary_len(h) <= sig as usize { ary_push(h, UNDEF); }
-    let old = ary_get(h, sig as usize);
-    rary(h)[sig as usize] = store;
+    let h = HANDLERS.get(c);
+    while c.ary_len(h) <= sig as usize { c.ary_push(h, UNDEF); }
+    let old = c.ary_get(h, sig as usize);
+    c.ary_mut(h)[sig as usize] = store;
     if sig != 0 { sys::signal(sig, action); }
-    Ok(if old == UNDEF { if sig == 0 { NIL } else { str_new(b"DEFAULT") } } else { old })
+    Ok(if old == UNDEF { if sig == 0 { NIL } else { c.str_new(b"DEFAULT") } } else { old })
 }
 fn run_handler(c: &mut Ctx, sig: i32) -> Result<(), Esc> {
-    let h = ary_get(unsafe { HANDLERS }, sig as usize);
+    let h = c.ary_get(HANDLERS.get(c), sig as usize);
     if is_string(h) {
-        if str_bytes(h) == b"EXIT" { let e = make_exception(vm().c_system_exit, "exit"); ivar_set_raw(e, crate::symbol::s::status, Value::fix(0)); return Err(raise_exc(c, e)); }
+        if c.str_bytes(h) == b"EXIT" { let e = make_exception(c.vm().c_system_exit, "exit"); ivar_set_raw(e, crate::symbol::s::status, Value::fix(0)); return Err(raise_exc(c, e)); }
         return Ok(());
     }
     if h == NIL || h == UNDEF { return Ok(()); }
@@ -124,22 +136,23 @@ pub fn run_pending_signals(c: &mut Ctx) -> Result<(), Esc> {
 pub fn run_pending_signals_nothrow() {}
 /// trap("EXIT") handler, run after the at_exit procs.
 pub fn run_exit_trap(c: &mut Ctx) -> Result<(), Esc> {
-    let h = ary_get(unsafe { HANDLERS }, 0);
+    let hs = HANDLERS.get(c);
+    let h = c.ary_get(hs, 0);
     let r = if h == NIL || h == UNDEF || is_string(h) { Ok(()) } else {
-        rary(unsafe { HANDLERS })[0] = NIL;
+        c.ary_mut(hs)[0] = NIL;
         funcall(c, h, intern(b"call"), &[Value::fix(0)], std::ptr::null()).map(|_| ())
     };
     if r.is_ok() { crate::builtins::misc::run_finalizers(c); }
     r
 }
 fn signal_list(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let h = crate::hash::hash_new();
-    for (n, v) in SIGNALS { crate::hash::hash_set(c, h, str_new(n.as_bytes()), Value::fix(*v as i64))?; }
+    let h = c.hash_new();
+    for (n, v) in SIGNALS { let k = c.str_new(n.as_bytes()); crate::hash::hash_set(c, h, k, Value::fix(*v as i64))?; }
     Ok(h)
 }
 fn signal_signame(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let n = num_to_long(c, a[0])? as i32;
-    Ok(match signame(n) { Some(s) => str_new(s.as_bytes()), None => NIL })
+    Ok(match signame(n) { Some(s) => c.str_new(s.as_bytes()), None => NIL })
 }
 fn p_kill(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     if a.len() < 2 { return argc_err(c, a.len(), 2, -1); }
@@ -150,10 +163,11 @@ fn p_kill(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
         let pid = num_to_long(c, p)? as i32;
         if pid == me && matches!(sig, 1 | 2 | 3 | 10 | 12 | 14 | 15) {
             // untrapped: CRuby's own handler raises SignalException / Interrupt in the main thread
-            let h = ary_get(unsafe { HANDLERS }, sig as usize);
-            if h == UNDEF || (h == NIL && ary_len(unsafe { HANDLERS }) <= sig as usize) {
+            let hs = HANDLERS.get(c);
+            let h = c.ary_get(hs, sig as usize);
+            if h == UNDEF || (h == NIL && c.ary_len(hs) <= sig as usize) {
                 let name = format!("SIG{}", signame(sig).unwrap());
-                let e = make_exception(if sig == 2 { vm().c_interrupt } else { vm().c_signal_exception }, if sig == 2 { "" } else { &name });
+                let e = make_exception(if sig == 2 { c.vm().c_interrupt } else { c.vm().c_signal_exception }, if sig == 2 { "" } else { &name });
                 ivar_set_raw(e, intern(b"signo"), Value::fix(sig as i64));
                 return Err(raise_exc(c, e));
             }
@@ -164,7 +178,7 @@ fn p_kill(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     }
     if to_self {
         // delivery is asynchronous: give a trapped signal a moment to arrive
-        let h = ary_get(unsafe { HANDLERS }, sig as usize);
+        let h = c.ary_get(HANDLERS.get(c), sig as usize);
         if h != NIL && h != UNDEF && sig > 0 { let t0 = std::time::Instant::now(); while PENDING.load(Ordering::SeqCst) & (1 << sig) == 0 && t0.elapsed().as_millis() < 100 { std::thread::yield_now(); } }
         run_pending_signals(c)?;
     }
@@ -187,7 +201,7 @@ fn k_sleep(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     };
     out_flush();
     run_pending_signals(c)?;
-    if crate::builtins::thread::active() { crate::builtins::thread::sleep(c, dur)?; return Ok(Value::fix(t0.elapsed().as_secs_f64().round() as i64)); }
+    if crate::builtins::thread::active(c) { crate::builtins::thread::sleep(c, dur)?; return Ok(Value::fix(t0.elapsed().as_secs_f64().round() as i64)); }
     loop {
         let left = match dur { Some(d) => { let l = d - t0.elapsed().as_secs_f64(); if l <= 0.0 { break; } l } None => 3600.0 };
         let ts = sys::Timespec { sec: left.floor() as i64, nsec: ((left - left.floor()) * 1e9) as i64 };
@@ -213,15 +227,26 @@ fn needs_shell(s: &str) -> bool {
 }
 fn cstring(c: &mut Ctx, v: Value) -> Result<CString, Esc> {
     let sv = if is_string(v) { v } else if respond_to(v, intern(b"to_path"), true) && !v.is_sym() { funcall(c, v, intern(b"to_path"), &[], std::ptr::null())? } else { expect_str(c, v)? };
-    if str_bytes(sv).contains(&0) { return arg_err(c, "string contains null byte"); }
-    Ok(CString::new(str_bytes(sv)).unwrap())
+    if c.str_bytes(sv).contains(&0) { return arg_err(c, "string contains null byte"); }
+    Ok(CString::new(c.str_bytes(sv)).unwrap())
 }
 fn fd_of(c: &mut Ctx, v: Value) -> Result<Option<i32>, Esc> {
     if v.is_fixnum() { return Ok(Some(v.as_fix() as i32)); }
     if v.is_sym() { return Ok(match crate::symbol::sym_str(v.as_sym()).as_str() { "in" => Some(0), "out" => Some(1), "err" => Some(2), _ => None }); }
-    if let Some(io) = crate::builtins::io::rio(v) { if io.fd == 1 { out_flush(); } let _ = funcall(c, v, intern(b"flush"), &[], std::ptr::null()); return Ok(Some(if io.wfd >= 0 && !io.readable { io.wfd } else { io.fd })); }
+    if let Some(io) = c.data::<RIo>(v) {
+        if io.fd == 1 { out_flush(); }
+        let _ = funcall(c, v, intern(b"flush"), &[], std::ptr::null());
+        let Some(io) = c.data::<RIo>(v) else { return Ok(None) };
+        return Ok(Some(if io.wfd >= 0 && !io.readable { io.wfd } else { io.fd }));
+    }
     if respond_to(v, intern(b"to_io"), true) { let io = funcall(c, v, intern(b"to_io"), &[], std::ptr::null())?; return fd_of(c, io); }
     Ok(None)
+}
+/// Pairs of Hash `h`, each also pushed to `keep` (a Vec is not scanned by the collector).
+fn pairs_kept(c: &mut Ctx, h: Value, keep: Value) -> Vec<(Value, Value)> {
+    let ps = c.hash_pairs(h);
+    for &(k, v) in &ps { c.ary_push(keep, k); c.ary_push(keep, v); }
+    ps
 }
 /// Build the child description from (env, cmd..., opts) as Kernel#spawn takes them.
 pub fn spawn_spec(c: &mut Ctx, env: Option<Value>, args: &[Value], opts: Option<Value>) -> Result<Spec, Esc> {
@@ -238,13 +263,16 @@ pub fn spawn_spec(c: &mut Ctx, env: Option<Value>, args: &[Value], opts: Option<
         }
     } else {
         if is_array(args[0]) {
-            if ary_len(args[0]) != 2 { return arg_err(c, "wrong first argument"); }
-            sp.prog = cstring(c, ary_get(args[0], 0))?; sp.argv.push(cstring(c, ary_get(args[0], 1))?);
+            if c.ary_len(args[0]) != 2 { return arg_err(c, "wrong first argument"); }
+            let (p0, a0) = (c.ary_get(args[0], 0), c.ary_get(args[0], 1));
+            sp.prog = cstring(c, p0)?; sp.argv.push(cstring(c, a0)?);
         } else { sp.prog = cstring(c, args[0])?; sp.argv.push(sp.prog.clone()); }
         for &x in &args[1..] { sp.argv.push(cstring(c, x)?); }
     }
+    // callbacks (to_str, to_path, to_io) may empty the Hashes: keep what was read from them
+    let keep = c.ary_new();
     if let Some(e) = env {
-        for (k, v) in crate::hash::hash_pairs(e) {
+        for (k, v) in pairs_kept(c, e, keep) {
             let k = cstring(c, k)?;
             if k.as_bytes().contains(&b'=') { return arg_err(c, format!("environment name contains a equal : {}", k.to_string_lossy())); }
             let v = if v == NIL { None } else { Some(cstring(c, v)?) };
@@ -253,7 +281,7 @@ pub fn spawn_spec(c: &mut Ctx, env: Option<Value>, args: &[Value], opts: Option<
     }
     let Some(h) = opts else { return Ok(sp) };
     let mut child_refs = vec![];
-    for (k, v) in crate::hash::hash_pairs(h) {
+    for (k, v) in pairs_kept(c, h, keep) {
         if k.is_sym() {
             match crate::symbol::sym_str(k.as_sym()).as_str() {
                 "chdir" => { sp.chdir = Some(cstring(c, v)?); continue; }
@@ -266,21 +294,24 @@ pub fn spawn_spec(c: &mut Ctx, env: Option<Value>, args: &[Value], opts: Option<
                 o => { if o.starts_with("rlimit_") { continue; } return arg_err(c, format!("wrong exec option symbol: {}", o)); }
             }
         }
-        let keys = if is_array(k) { ary_to_vec(k) } else { vec![k] };
+        let keys = if is_array(k) { c.ary(k).to_vec() } else { vec![k] };
+        for &x in &keys { c.ary_push(keep, x); }
         let mut dsts = vec![];
         for kk in keys { match fd_of(c, kk)? { Some(fd) => dsts.push(fd), None => return arg_err(c, "wrong exec redirect action") } }
         let reading = dsts.iter().all(|&d| d == 0);
         if v.is_sym() && v == sym_value("close") { sp.close.extend(dsts); continue; }
-        let src = if is_string(v) || (is_array(v) && ary_len(v) >= 1 && is_string(ary_get(v, 0))) {
-            let (path, rest): (Value, Vec<Value>) = if is_string(v) { (v, vec![]) } else { (ary_get(v, 0), rary(v)[1..].to_vec()) };
+        let src = if is_string(v) || (is_array(v) && c.ary_len(v) >= 1 && is_string(c.ary_get(v, 0))) {
+            let (path, rest): (Value, Vec<Value>) = if is_string(v) { (v, vec![]) } else { (c.ary_get(v, 0), c.ary(v)[1..].to_vec()) };
+            for &x in &rest { c.ary_push(keep, x); }
             let p = crate::builtins::io::path_arg(c, path)?;
             let mut om = crate::builtins::io::parse_mode(c, &rest)?;
             if rest.is_empty() { om.flags = if reading { 0 } else { sys::O_WRONLY | sys::O_CREAT | sys::O_TRUNC }; om.perm = 0o644; }
             let fd = crate::builtins::io::sysopen(c, &p, &om)?;
             sp.opened.push(fd);
             fd
-        } else if is_array(v) && ary_len(v) == 2 && ary_get(v, 0) == sym_value("child") {
-            let Some(s) = fd_of(c, ary_get(v, 1))? else { return arg_err(c, "wrong exec redirect action") };
+        } else if is_array(v) && c.ary_len(v) == 2 && c.ary_get(v, 0) == sym_value("child") {
+            let v1 = c.ary_get(v, 1);
+            let Some(s) = fd_of(c, v1)? else { return arg_err(c, "wrong exec redirect action") };
             for d in dsts { child_refs.push((d, s)); }
             continue;
         } else {
@@ -289,6 +320,7 @@ pub fn spawn_spec(c: &mut Ctx, env: Option<Value>, args: &[Value], opts: Option<
         for d in dsts { sp.redirect.push((d, src)); }
     }
     sp.redirect.extend(child_refs);
+    std::hint::black_box(keep);
     Ok(sp)
 }
 fn child_setup(sp: &Spec) -> bool {
@@ -366,8 +398,8 @@ fn k_system(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let (_, st) = waitpid_retry(c, pid, 0)?;
     set_last_status(pid, st);
     if exc && !(exited(st) && exitstatus(st) == 0) {
-        let d = st_desc(new_status(pid, st));
-        return err(c, vm().c_runtime_error, format!("Command failed with {}: {}", d.splitn(3, ' ').nth(2).unwrap_or(""), sp.argv.last().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default()));
+        let d = st_desc(new_status(c, pid, st));
+        return err(c, c.vm().c_runtime_error, format!("Command failed with {}: {}", d.splitn(3, ' ').nth(2).unwrap_or(""), sp.argv.last().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default()));
     }
     Ok(Value::bool(exited(st) && exitstatus(st) == 0))
 }
@@ -384,7 +416,7 @@ fn k_backtick(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     sys::close(p[0]);
     let (_, st) = waitpid_retry(c, pid, 0)?;
     set_last_status(pid, st);
-    Ok(str_from_vec_enc(out, crate::builtins::encoding::default_external()))
+    Ok(c.str_from_vec_enc(out, crate::builtins::encoding::default_external()))
 }
 fn k_exec(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let (env, cmd, opts) = split_args(a);
@@ -402,11 +434,11 @@ fn p_itimer(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     sys::set_itimer_real(f.floor() as i64, ((f - f.floor()) * 1e6) as i64);
     Ok(NIL)
 }
-static mut DIE_SIGNAL: i32 = 0;
+static DIE_SIGNAL: AtomicI32 = AtomicI32::new(0);
 /// An uncaught SignalException ends the process by that signal once the exit handlers ran.
-pub fn die_by_signal_at_exit(sig: i32) { unsafe { DIE_SIGNAL = sig; } }
+pub fn die_by_signal_at_exit(sig: i32) { DIE_SIGNAL.store(sig, Ordering::Relaxed); }
 pub fn die_if_signaled() {
-    let sig = unsafe { DIE_SIGNAL };
+    let sig = DIE_SIGNAL.load(Ordering::Relaxed);
     if sig > 0 { sys::signal(sig, sys::SigAction::Default); sys::kill(sys::getpid(), sig); }
 }
 pub fn after_fork_child() { PENDING.store(0, Ordering::SeqCst); }
@@ -439,35 +471,34 @@ fn wait_impl(c: &mut Ctx, a: &[Value]) -> Result<Option<(i32, i32)>, Esc> {
 }
 fn p_wait(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { Ok(match wait_impl(c, a)? { Some((p, _)) => Value::fix(p as i64), None => NIL }) }
 fn p_wait2(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
-    Ok(match wait_impl(c, a)? { Some((p, st)) => { let s = new_status(p, st); ary_new_from(&[Value::fix(p as i64), s]) } None => NIL })
+    Ok(match wait_impl(c, a)? { Some((p, st)) => { let s = new_status(c, p, st); c.ary_new_from(&[Value::fix(p as i64), s]) } None => NIL })
 }
 fn p_waitall(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let out = ary_new();
+    let out = c.ary_new();
     loop {
         let mut st = 0;
         let r = sys::waitpid(-1, &mut st, 0);
         if r < 0 { if sys::errno() == sys::EINTR { run_pending_signals(c)?; continue; } break; }
         set_last_status(r, st);
-        let s = new_status(r, st);
-        let pair = ary_new_from(&[Value::fix(r as i64), s]);
-        ary_push(out, pair);
+        let s = new_status(c, r, st);
+        let pair = c.ary_new_from(&[Value::fix(r as i64), s]);
+        c.ary_push(out, pair);
     }
     Ok(out)
 }
 fn p_detach(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     // no native threads: a Thread-like object whose value/join waits for the child
     let pid = a[0];
-    let k = const_get_at(vm().m_process, intern(b"Waiter")).unwrap();
+    let k = const_get_at(c.vm().m_process, intern(b"Waiter")).unwrap();
     let o = new_object(k);
     ivar_set_raw(o, intern(b"@pid"), pid);
-    let _ = c;
     Ok(o)
 }
 fn waiter_value(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let v = ivar_get(s, intern(b"@value"));
     if v != NIL { return Ok(v); }
     let pid = ivar_get(s, intern(b"@pid"));
-    let r = match wait_impl(c, &[pid]) { Ok(Some((p, st))) => new_status(p, st), Ok(None) => NIL, Err(_) => { c.esc = EscKind::None; NIL } };
+    let r = match wait_impl(c, &[pid]) { Ok(Some((p, st))) => new_status(c, p, st), Ok(None) => NIL, Err(_) => { c.esc = EscKind::None; NIL } };
     ivar_set_raw(s, intern(b"@value"), r);
     Ok(r)
 }
@@ -476,7 +507,7 @@ fn waiter_pid(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok
 fn waiter_alive(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     if ivar_get(s, intern(b"@value")) != NIL { return Ok(FALSE); }
     let pid = ivar_get(s, intern(b"@pid"));
-    match wait_impl(c, &[pid, Value::fix(1)]) { Ok(Some((p, st))) => { let v = new_status(p, st); ivar_set_raw(s, intern(b"@value"), v); Ok(FALSE) } Ok(None) => Ok(TRUE), Err(_) => { c.esc = EscKind::None; Ok(FALSE) } }
+    match wait_impl(c, &[pid, Value::fix(1)]) { Ok(Some((p, st))) => { let v = new_status(c, p, st); ivar_set_raw(s, intern(b"@value"), v); Ok(FALSE) } Ok(None) => Ok(TRUE), Err(_) => { c.esc = EscKind::None; Ok(FALSE) } }
 }
 
 // ---- clocks / ids -----------------------------------------------------------------------------
@@ -493,16 +524,16 @@ fn clock_id(c: &mut Ctx, v: Value) -> Result<i32, Esc> {
 fn timespec_value(c: &mut Ctx, t: &sys::Timespec, unit: Value) -> RV {
     let ns = t.sec as i128 * 1_000_000_000 + t.nsec as i128;
     let secs = t.sec as f64 + t.nsec as f64 * 1e-9;
-    if unit == NIL { return Ok(crate::numeric::float_new(secs)); }
+    if unit == NIL { return Ok(c.float_new(secs)); }
     if !unit.is_sym() { return arg_err(c, "unexpected unit"); }
     Ok(match crate::symbol::sym_str(unit.as_sym()).as_str() {
-        "nanosecond" => crate::bignum::int_from_i128(ns),
-        "microsecond" => crate::bignum::int_from_i128(ns / 1000),
-        "millisecond" => crate::bignum::int_from_i128(ns / 1_000_000),
+        "nanosecond" => c.int_from_i128(ns),
+        "microsecond" => c.int_from_i128(ns / 1000),
+        "millisecond" => c.int_from_i128(ns / 1_000_000),
         "second" => Value::fix(t.sec),
-        "float_millisecond" => crate::numeric::float_new(ns as f64 / 1e6),
-        "float_microsecond" => crate::numeric::float_new(ns as f64 / 1e3),
-        "float_second" => crate::numeric::float_new(secs),
+        "float_millisecond" => c.float_new(ns as f64 / 1e6),
+        "float_microsecond" => c.float_new(ns as f64 / 1e3),
+        "float_second" => c.float_new(secs),
         o => return arg_err(c, format!("unexpected unit: {}", o)),
     })
 }
@@ -520,20 +551,20 @@ fn clock_getres(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     if sys::clock_getres(id, &mut t) < 0 { return Err(raise_errno(c, sys::errno(), "clock_getres")); }
     timespec_value(c, &t, a.get(1).copied().unwrap_or(NIL))
 }
-fn p_times(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn p_times(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     let mut t = sys::Tms { utime: 0, stime: 0, cutime: 0, cstime: 0 };
     sys::times(&mut t);
-    let k = const_get_at(vm().m_process, intern(b"Tms")).unwrap();
+    let k = const_get_at(c.vm().m_process, intern(b"Tms")).unwrap();
     let o = new_object(k);
-    for (n, v) in [("@utime", t.utime), ("@stime", t.stime), ("@cutime", t.cutime), ("@cstime", t.cstime)] { ivar_set_raw(o, intern(n.as_bytes()), crate::numeric::float_new(v as f64 / 100.0)); }
+    for (n, v) in [("@utime", t.utime), ("@stime", t.stime), ("@cutime", t.cutime), ("@cstime", t.cstime)] { let f = c.float_new(v as f64 / 100.0); ivar_set_raw(o, intern(n.as_bytes()), f); }
     Ok(o)
 }
 fn p_getrlimit(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let r = num_to_long(c, a[0])? as i32;
     let mut l = sys::Rlimit { cur: 0, max: 0 };
     if sys::getrlimit(r, &mut l) < 0 { return Err(raise_errno(c, sys::errno(), "getrlimit")); }
-    let cv = crate::bignum::int_from_i128(l.cur as i128); let mv = crate::bignum::int_from_i128(l.max as i128);
-    Ok(ary_new_from(&[cv, mv]))
+    let cv = c.int_from_i128(l.cur as i128); let mv = c.int_from_i128(l.max as i128);
+    Ok(c.ary_new_from(&[cv, mv]))
 }
 fn p_exit_bang(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let st = match a.first() { None => 0, Some(&v) if v == TRUE => 0, Some(&v) if v == FALSE => 1, Some(&v) => num_to_long(c, v)? };
@@ -541,13 +572,12 @@ fn p_exit_bang(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     sys::_exit(st as i32)
 }
 
-pub fn init() {
-    let vm = vm();
+/// Boot (no context yet: allocates with gc::alloc directly).
+pub fn init(vmr: &mut Vm) {
     let p = define_module("Process");
-    vm.m_process = p;
-    let h = ary_new();
-    unsafe { HANDLERS = h; }
-    vm.pinned.push(h);
+    vmr.m_process = p;
+    let h = crate::gc::alloc(vmr.c_array, Body::Array(crate::avec::AVec::new()));
+    HANDLERS.set_vm(vmr, h);
     let mf = |n: &str, f: CFunc, a: i32| define_module_function(p, n, f, a);
     mf("clock_gettime", clock_gettime, -1); mf("clock_getres", clock_getres, -1); mf("times", p_times, 0);
     mf("pid", |_c, _s, _a, _b| Ok(Value::fix(sys::getpid() as i64)), 0);
@@ -563,32 +593,34 @@ pub fn init() {
     mf("kill", p_kill, -1); mf("wait", p_wait, -1); mf("waitpid", p_wait, -1); mf("wait2", p_wait2, -1); mf("waitpid2", p_wait2, -1); mf("waitall", p_waitall, 0);
     mf("detach", p_detach, 1); mf("fork", k_fork, 0); mf("spawn", k_spawn, -1); mf("exec", k_exec, -1); mf("exit!", p_exit_bang, -1); mf("exit", k_exit, -1);
     mf("abort", k_abort, -1);
-    mf("getrlimit", p_getrlimit, 1); mf("__itimer", p_itimer, 1); mf("setproctitle", |_c, _s, a, _b| Ok(a[0]), 1); mf("last_status", |_c, _s, _a, _b| Ok(last_status()), 0);
-    mf("argv0", |_c, _s, _a, _b| Ok(crate::vm::vm().dollar_zero), 0); mf("warmup", |_c, _s, _a, _b| Ok(TRUE), 0);
-    mf("groups", |_c, _s, _a, _b| Ok(ary_new_from(&[Value::fix(sys::getgid() as i64)])), 0);
-    mf("daemon", |c, _s, _a, _b| err(c, crate::vm::vm().c_not_impl_error, "daemon() function is unimplemented on this machine"), -1);
+    mf("getrlimit", p_getrlimit, 1); mf("__itimer", p_itimer, 1); mf("setproctitle", |_c, _s, a, _b| Ok(a[0]), 1); mf("last_status", |c, _s, _a, _b| Ok(last_status(c)), 0);
+    mf("argv0", |c, _s, _a, _b| Ok(c.vm().dollar_zero), 0); mf("warmup", |_c, _s, _a, _b| Ok(TRUE), 0);
+    mf("groups", |c, _s, _a, _b| Ok(c.ary_new_from(&[Value::fix(sys::getgid() as i64)])), 0);
+    mf("daemon", |c, _s, _a, _b| err(c, c.vm().c_not_impl_error, "daemon() function is unimplemented on this machine"), -1);
     for (n, v) in [("CLOCK_REALTIME", 0), ("CLOCK_MONOTONIC", 1), ("CLOCK_PROCESS_CPUTIME_ID", 2), ("CLOCK_THREAD_CPUTIME_ID", 3), ("CLOCK_MONOTONIC_RAW", 4),
                    ("CLOCK_REALTIME_COARSE", 5), ("CLOCK_MONOTONIC_COARSE", 6), ("CLOCK_BOOTTIME", 7), ("WNOHANG", 1), ("WUNTRACED", 2), ("PRIO_PROCESS", 0),
                    ("RLIMIT_CPU", 0), ("RLIMIT_FSIZE", 1), ("RLIMIT_DATA", 2), ("RLIMIT_STACK", 3), ("RLIMIT_CORE", 4), ("RLIMIT_RSS", 5), ("RLIMIT_NPROC", 6),
                    ("RLIMIT_NOFILE", 7), ("RLIMIT_MEMLOCK", 8), ("RLIMIT_AS", 9)] {
         const_set(p, intern(n.as_bytes()), Value::fix(v));
     }
-    const_set(p, intern(b"RLIM_INFINITY"), crate::bignum::int_from_i128(u64::MAX as i128));
-    let st = define_class_under(p, "Status", vm.c_object);
+    let inf = crate::gc::alloc(vmr.c_integer, Body::Bignum(Box::new(crate::bignum::BigInt::from_i128(u64::MAX as i128))));
+    crate::heap::obj_set_flags(inf, FL_FROZEN);
+    const_set(p, intern(b"RLIM_INFINITY"), inf);
+    let st = define_class_under(p, "Status", vmr.c_object);
     let sd = |n: &str, f: CFunc, a: i32| define_cfunc(st, n, f, a);
     sd("exitstatus", st_exitstatus, 0); sd("to_i", st_to_i, 0); sd("pid", st_pid, 0); sd("success?", st_success, 0); sd("exited?", st_exited, 0);
     sd("signaled?", st_signaled, 0); sd("stopped?", st_stopped, 0); sd("termsig", st_termsig, 0); sd("stopsig", st_stopsig, 0); sd("coredump?", st_coredump, 0);
     sd("to_s", st_to_s, 0); sd("inspect", st_inspect, 0); sd("==", st_eq, 1);
-    let tms = define_class_under(p, "Tms", vm.c_object);
+    let tms = define_class_under(p, "Tms", vmr.c_object);
     for n in ["utime", "stime", "cutime", "cstime"] { define_method_me(tms, intern(n.as_bytes()), new_me(intern(n.as_bytes()), tms, VISI_PUBLIC, MKind::AttrReader(intern(format!("@{}", n).as_bytes())))); }
-    let w = define_class_under(p, "Waiter", vm.c_object);
+    let w = define_class_under(p, "Waiter", vmr.c_object);
     define_cfunc(w, "value", waiter_value, 0); define_cfunc(w, "join", waiter_join, -1); define_cfunc(w, "pid", waiter_pid, 0); define_cfunc(w, "alive?", waiter_alive, 0);
     let sg = define_module("Signal");
-    vm.m_signal = sg;
+    vmr.m_signal = sg;
     define_module_function(sg, "trap", signal_trap, -1);
     define_module_function(sg, "list", signal_list, 0);
     define_module_function(sg, "signame", signal_signame, 1);
-    let k = vm.m_kernel;
+    let k = vmr.m_kernel;
     define_module_function(k, "trap", signal_trap, -1);
     define_module_function(k, "sleep", k_sleep, -1);
     define_module_function(k, "system", k_system, -1);
