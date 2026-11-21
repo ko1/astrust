@@ -90,7 +90,7 @@ pub fn run_top_iseq_cref(c: &mut Ctx, is: &'static Iseq, slf: Value, cref: *cons
     fr.visi = VISI_PRIVATE;
     fr.id = c.next_serial();
     fr.cref = cref;
-    fr.line = 1;
+    fr.pos = &LINE_1;
     base[0].set(slf);
     base[1].set(NIL);
     nil_fill(base, 2, is.nlocals as usize);

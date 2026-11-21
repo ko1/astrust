@@ -256,7 +256,7 @@ pub fn DISPATCH_node_ivar_arith(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_ivar_arith_struct>;
     unsafe {
     let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
-    EVAL_node_ivar_arith(c, n, fp, (*np).u.name, (*np).u.sub, v_v, (*np).u.line, &mut (*np).u.ic, &mut (*np).u.cc, 0)
+    EVAL_node_ivar_arith(c, n, fp, (*np).u.name, (*np).u.sub, v_v, &(*np).head.line, &mut (*np).u.ic, &mut (*np).u.cc, 0)
     }
 }
 
@@ -306,7 +306,7 @@ pub fn DISPATCH_node_const(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_const_struct>;
     unsafe {
 
-    EVAL_node_const(c, n, fp, (*np).u.name, (*np).u.line, &mut (*np).u.cc)
+    EVAL_node_const(c, n, fp, (*np).u.name, &(*np).head.line, &mut (*np).u.cc)
     }
 }
 
@@ -316,7 +316,7 @@ pub fn DISPATCH_node_const_path(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_const_path_struct>;
     unsafe {
     let v_parent = <Dyn as Disp>::call(c, (*np).u.parent, fp)?;
-    EVAL_node_const_path(c, n, fp, v_parent, (*np).u.name, (*np).u.line)
+    EVAL_node_const_path(c, n, fp, v_parent, (*np).u.name, &(*np).head.line)
     }
 }
 
@@ -397,7 +397,7 @@ pub fn DISPATCH_node_line(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_line_struct>;
     unsafe {
 
-    EVAL_node_line::<Dyn>(c, n, fp, (*np).u.line, (*np).u.body)
+    EVAL_node_line::<Dyn>(c, n, fp, &(*np).head.line, (*np).u.body)
     }
 }
 
@@ -597,7 +597,7 @@ pub fn DISPATCH_node_call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_call_struct>;
     unsafe {
 
-    EVAL_node_call::<Dyn, DynList, Dyn>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, (*np).u.line, &mut (*np).u.cc, 0u64, 0, 0, 0)
+    EVAL_node_call::<Dyn, DynList, Dyn>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, &(*np).head.line, &mut (*np).u.cc, 0u64, 0, 0, 0)
     }
 }
 
@@ -607,7 +607,7 @@ pub fn DISPATCH_node_call_blk(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_call_blk_struct>;
     unsafe {
 
-    EVAL_node_call_blk::<Dyn, DynList, Dyn, Dyn>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, (*np).u.line, (*np).u.blk, &mut (*np).u.cc, 0u64, 0, 0u64, 0)
+    EVAL_node_call_blk::<Dyn, DynList, Dyn, Dyn>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, &(*np).head.line, (*np).u.blk, &mut (*np).u.cc, 0u64, 0, 0u64, 0)
     }
 }
 
@@ -617,7 +617,7 @@ pub fn DISPATCH_node_call_kw(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_call_kw_struct>;
     unsafe {
 
-    EVAL_node_call_kw::<Dyn, DynList, Dyn>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, (*np).u.line, (*np).u.ci, &mut (*np).u.cc, 0u64, 0)
+    EVAL_node_call_kw::<Dyn, DynList, Dyn>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, &(*np).head.line, (*np).u.ci, &mut (*np).u.cc, 0u64, 0)
     }
 }
 
@@ -627,7 +627,7 @@ pub fn DISPATCH_node_call_x(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_call_x_struct>;
     unsafe {
 
-    EVAL_node_call_x::<Dyn, DynList>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, (*np).u.line, (*np).u.ci, &mut (*np).u.cc)
+    EVAL_node_call_x::<Dyn, DynList>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, &(*np).head.line, (*np).u.ci, &mut (*np).u.cc)
     }
 }
 
@@ -637,7 +637,7 @@ pub fn DISPATCH_node_attrasgn(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_attrasgn_struct>;
     unsafe {
 
-    EVAL_node_attrasgn::<Dyn, DynList>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, (*np).u.line, &mut (*np).u.cc, 0)
+    EVAL_node_attrasgn::<Dyn, DynList>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, &(*np).head.line, &mut (*np).u.cc, 0)
     }
 }
 
@@ -647,7 +647,7 @@ pub fn DISPATCH_node_super(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_super_struct>;
     unsafe {
 
-    EVAL_node_super::<DynList>(c, n, fp, (*np).u.args, (*np).u.line, (*np).u.ci, (*np).u.zsuper)
+    EVAL_node_super::<DynList>(c, n, fp, (*np).u.args, &(*np).head.line, (*np).u.ci, (*np).u.zsuper)
     }
 }
 
@@ -698,7 +698,7 @@ pub fn DISPATCH_node_opt_plus(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_plus(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
+    EVAL_node_opt_plus(c, n, fp, v_a, v_b, &(*np).head.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
     }
 }
 
@@ -709,7 +709,7 @@ pub fn DISPATCH_node_opt_minus(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_minus(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
+    EVAL_node_opt_minus(c, n, fp, v_a, v_b, &(*np).head.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
     }
 }
 
@@ -720,7 +720,7 @@ pub fn DISPATCH_node_opt_mul(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_mul(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
+    EVAL_node_opt_mul(c, n, fp, v_a, v_b, &(*np).head.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
     }
 }
 
@@ -731,7 +731,7 @@ pub fn DISPATCH_node_opt_div(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_div(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
+    EVAL_node_opt_div(c, n, fp, v_a, v_b, &(*np).head.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
     }
 }
 
@@ -742,7 +742,7 @@ pub fn DISPATCH_node_opt_pow(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_pow(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc)
+    EVAL_node_opt_pow(c, n, fp, v_a, v_b, &(*np).head.line, &mut (*np).u.cc)
     }
 }
 
@@ -753,7 +753,7 @@ pub fn DISPATCH_node_opt_mod(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_mod(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc)
+    EVAL_node_opt_mod(c, n, fp, v_a, v_b, &(*np).head.line, &mut (*np).u.cc)
     }
 }
 
@@ -764,7 +764,7 @@ pub fn DISPATCH_node_opt_lt(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_lt(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
+    EVAL_node_opt_lt(c, n, fp, v_a, v_b, &(*np).head.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
     }
 }
 
@@ -775,7 +775,7 @@ pub fn DISPATCH_node_opt_le(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_le(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
+    EVAL_node_opt_le(c, n, fp, v_a, v_b, &(*np).head.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
     }
 }
 
@@ -786,7 +786,7 @@ pub fn DISPATCH_node_opt_gt(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_gt(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
+    EVAL_node_opt_gt(c, n, fp, v_a, v_b, &(*np).head.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
     }
 }
 
@@ -797,7 +797,7 @@ pub fn DISPATCH_node_opt_ge(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_ge(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
+    EVAL_node_opt_ge(c, n, fp, v_a, v_b, &(*np).head.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
     }
 }
 
@@ -808,7 +808,7 @@ pub fn DISPATCH_node_opt_eq(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_eq(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
+    EVAL_node_opt_eq(c, n, fp, v_a, v_b, &(*np).head.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
     }
 }
 
@@ -819,7 +819,7 @@ pub fn DISPATCH_node_opt_neq(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_neq(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
+    EVAL_node_opt_neq(c, n, fp, v_a, v_b, &(*np).head.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
     }
 }
 
@@ -830,7 +830,7 @@ pub fn DISPATCH_node_opt_ltlt(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_ltlt(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc)
+    EVAL_node_opt_ltlt(c, n, fp, v_a, v_b, &(*np).head.line, &mut (*np).u.cc)
     }
 }
 
@@ -841,7 +841,7 @@ pub fn DISPATCH_node_opt_gtgt(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_gtgt(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc)
+    EVAL_node_opt_gtgt(c, n, fp, v_a, v_b, &(*np).head.line, &mut (*np).u.cc)
     }
 }
 
@@ -852,7 +852,7 @@ pub fn DISPATCH_node_opt_xor(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_xor(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc)
+    EVAL_node_opt_xor(c, n, fp, v_a, v_b, &(*np).head.line, &mut (*np).u.cc)
     }
 }
 
@@ -863,7 +863,7 @@ pub fn DISPATCH_node_opt_and(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_and(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc)
+    EVAL_node_opt_and(c, n, fp, v_a, v_b, &(*np).head.line, &mut (*np).u.cc)
     }
 }
 
@@ -874,7 +874,7 @@ pub fn DISPATCH_node_opt_or(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_or(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc)
+    EVAL_node_opt_or(c, n, fp, v_a, v_b, &(*np).head.line, &mut (*np).u.cc)
     }
 }
 
@@ -885,7 +885,7 @@ pub fn DISPATCH_node_opt_aref(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     unsafe {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_aref(c, n, fp, v_a, v_b, (*np).u.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
+    EVAL_node_opt_aref(c, n, fp, v_a, v_b, &(*np).head.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
     }
 }
 
@@ -897,7 +897,7 @@ pub fn DISPATCH_node_opt_aset(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
     let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
     let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
-    EVAL_node_opt_aset(c, n, fp, v_a, v_b, v_v, (*np).u.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
+    EVAL_node_opt_aset(c, n, fp, v_a, v_b, v_v, &(*np).head.line, &mut (*np).u.cc, &mut (*np).u.tf, 0)
     }
 }
 
@@ -907,7 +907,7 @@ pub fn DISPATCH_node_method_entry(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_method_entry_struct>;
     unsafe {
 
-    EVAL_node_method_entry::<Dyn>(c, n, fp, (*np).u.nlocals, (*np).u.nparams, (*np).u.flags, (*np).u.line, (*np).u.body, crate::vm::CallArgs::load(c))
+    EVAL_node_method_entry::<Dyn>(c, n, fp, (*np).u.nlocals, (*np).u.nparams, (*np).u.flags, &(*np).head.line, (*np).u.body, crate::vm::CallArgs::load(c))
     }
 }
 
@@ -917,7 +917,7 @@ pub fn DISPATCH_node_block_entry(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_block_entry_struct>;
     unsafe {
 
-    EVAL_node_block_entry::<Dyn>(c, n, fp, (*np).u.nlocals, (*np).u.nparams, (*np).u.flags, (*np).u.line, (*np).u.body, crate::vm::CallArgs::load(c))
+    EVAL_node_block_entry::<Dyn>(c, n, fp, (*np).u.nlocals, (*np).u.nparams, (*np).u.flags, &(*np).head.line, (*np).u.body, crate::vm::CallArgs::load(c))
     }
 }
 

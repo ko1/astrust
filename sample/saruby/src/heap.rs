@@ -268,7 +268,7 @@ impl Ctx {
     pub fn cref_ref(&self, cr: *const Cref) -> Option<&Cref> { unsafe { cr.as_ref() } }   // SAFETY: never freed
     /// An iseq by pointer: iseqs are never freed.
     #[inline(always)]
-    pub fn iseq_ref(&self, is: *const Iseq) -> Option<&Iseq> { unsafe { is.as_ref() } }   // SAFETY: never freed
+    pub fn iseq_ref(&self, is: *const Iseq) -> Option<&'static Iseq> { unsafe { is.as_ref() } }   // SAFETY: never freed
     /// vm::REFINEMENTS_ON (a `static mut bool` of vm.rs), by value.
     #[inline(always)]
     pub fn refinements_on(&self) -> bool { unsafe { crate::vm::REFINEMENTS_ON } }   // SAFETY: one interpreter thread; read by value, no reference made
@@ -278,7 +278,7 @@ impl Ctx {
     /// (they are built, leaked and then only read, `Cell` fields included), so a shared
     /// reference cannot conflict with anything `&mut Ctx` reaches; the closure scopes it.
     #[inline(always)]
-    pub fn with_iseq<R>(&mut self, is: *const Iseq, f: impl FnOnce(&mut Ctx, Option<&Iseq>) -> R) -> R {
+    pub fn with_iseq<R>(&mut self, is: *const Iseq, f: impl FnOnce(&mut Ctx, Option<&'static Iseq>) -> R) -> R {
         let r = unsafe { is.as_ref() };   // SAFETY: as above; iseqs are never freed
         f(self, r)
     }

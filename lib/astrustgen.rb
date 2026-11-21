@@ -47,6 +47,12 @@ require 'optparse'
 #   x@child: VALUE    eager child: evaluated by the generated glue, the body receives the value
 #   xs: NODES         a list of lazy children: EVAL_LEN!(xs), EVAL_NTH!(c, xs, i)
 #   x@ref: T          T stored inline in the node; the body receives `&mut T` (caches etc.); not hashed
+#   x@hole: T         a bound operand (a site's own value: a line number, say): stored in the node, not hashed,
+#                     the body receives `&'static T`, its address in the node.  Code is then shared by every site
+#                     of the shape (the node is the binding table: root + constant in a laid-out tree), and the
+#                     value is read only where it is used.  SPECIALIZE records each in sc.holes (offset, size).
+#                     The embedder may keep it in the node head instead (hook `head_hole?`, a field of
+#                     `head_lead_fields`): then the address of a head field at offset 0 is the node's own.
 #   x: u32|i32|u64|i64|usize|bool|f64   scalars: hashed and baked into specialized code as literals
 #   x: <other T>      opaque: read from the node at run time; hashed through the embedder's hook
 #
@@ -86,15 +92,20 @@ module ASTrustGen
 
         def initialize name, type
           @ref = name.end_with?('@ref')
+          @hole = name.end_with?('@hole')
           @child = name.end_with?('@child')
           @spec = name.end_with?('@spec')
           @bake = name.end_with?('@bake')
           @specin = name.end_with?('@specin')
-          @name = name.sub(/@(ref|child|specin|spec|bake)$/, '')
+          @name = name.sub(/@(ref|hole|child|specin|spec|bake)$/, '')
           @type = type.strip
         end
 
         def ref? = @ref
+        def hole? = @hole
+        def head_hole? = @hole && @owner.head_hole?(self)
+        # the place of a hole in the node, from `np`
+        def hole_place = head_hole? ? "head.#{@name}" : "u.#{@name}"
         def child? = @child
         def spec? = @spec
         def bake? = @bake
@@ -103,8 +114,8 @@ module ASTrustGen
         def node? = !@ref && !@child && !@spec && @type == 'NODE'
         def nodes? = !@ref && @type == 'NODES'
         def any_node? = child? || node? || nodes?
-        def scalar? = !ref? && !bake? && SCALARS.key?(@type)
-        def f64? = !ref? && @type == 'f64'
+        def scalar? = !ref? && !hole? && !bake? && SCALARS.key?(@type)
+        def f64? = !ref? && !hole? && @type == 'f64'
 
         # Rust type of the field in the node's operand struct.
         def storage_type
@@ -116,6 +127,7 @@ module ASTrustGen
         # Parameter(s) of EVAL_<name>.
         def eval_param
           if ref? then "#{@name}: &mut #{@type}"
+          elsif hole? then "#{@name}: &'static #{@type}"
           elsif spec? then "#{@name}_hash: u64"
           elsif child? then "#{@name}: #{@type}"
           elsif node? then "#{@name}: NodePtr"
@@ -137,7 +149,7 @@ module ASTrustGen
           f = field(u)
           if child? || node? then "hash_node(#{f})"
           elsif nodes? then "hash_node_list(#{f})"
-          elsif ref? || virtual? then nil
+          elsif ref? || hole? || virtual? then nil
           elsif scalar? then "hash_u64(#{f} as u64)"
           elsif f64? then "hash_u64(#{f}.to_bits())"
           else @owner.opaque_hash_expr(self, f)
@@ -149,6 +161,7 @@ module ASTrustGen
         def specialize_arg
           f = "(*np).u.#{@name}"
           if ref? then "a.push(\"&mut (*np).u.#{@name}\".to_string());"
+          elsif hole? then "if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<#{@owner.struct_name}>, #{hole_place}), std::mem::size_of::<#{@type}>())); } a.push(\"&(*np).#{hole_place}\".to_string());"
           elsif spec? then "a.push(format!(\"{}u64\", h_#{@name}));"
           elsif bake? then "a.push(format!(\"#{SCALARS[@type]}\", #{@owner.bake_value_expr(self)}));"
           elsif specin? then "a.push(\"#{ASTrustGen.rust_str(@owner.spec_in_load_expr(self))}\".to_string());"
@@ -167,6 +180,7 @@ module ASTrustGen
           elsif child? || node? then "dump_node(out, #{f});"
           elsif nodes? then "out.push('['); for (i, x) in #{f}.iter().enumerate() { if i > 0 { out.push(' '); } dump_node(out, *x); } out.push(']');"
           elsif ref? then "out.push_str(\"<#{@name}>\");"
+          elsif hole? then "out.push_str(&format!(\"{:?}\", (*np).#{hole_place}));"
           elsif scalar? || f64? then "out.push_str(&format!(\"{:?}\", #{f}));"
           else @owner.opaque_dump_stmt(self, f)
           end
@@ -213,6 +227,8 @@ module ASTrustGen
       # pass it on leaves it where that expression reads it (`var` names the value).
       def spec_in_load_expr(op) = "Default::default()"
       def spec_in_store_stmt(var) = "let _ = #{var};"
+      # @hole operand kept in the node head (a field of NodeDef#head_lead_fields) rather than the operand struct.
+      def head_hole?(op) = false
       # Trees are laid out by layout_tree and specialized code reaches children at constant offsets.
       def contiguous? = false
       def dispatch_prologue = ""
@@ -255,7 +271,7 @@ module ASTrustGen
         ps = split_params(str)
         @prefix_params = ps.shift(common_param_count)
         @operands = ps.map do |p|
-          raise "ill-formed operand: #{p}" unless /\A([a-zA-Z_][a-zA-Z0-9_]*(?:@ref|@child|@specin|@spec|@bake)?)\s*:\s*(.+)\z/ =~ p
+          raise "ill-formed operand: #{p}" unless /\A([a-zA-Z_][a-zA-Z0-9_]*(?:@ref|@hole|@child|@specin|@spec|@bake)?)\s*:\s*(.+)\z/ =~ p
           op = self.class::Operand.new($1, $2)
           op.owner = self
           op
@@ -329,7 +345,7 @@ module ASTrustGen
       end
 
       def build_struct
-        fields = @operands.reject(&:virtual?).map { "    pub #{it.name}: #{it.storage_type}," }
+        fields = @operands.reject { it.virtual? || it.head_hole? }.map { "    pub #{it.name}: #{it.storage_type}," }
         <<~RS
         #[allow(non_camel_case_types)]
         #[repr(C)]
@@ -342,11 +358,13 @@ module ASTrustGen
       def alloc_params = @operands.reject { it.ref? || it.virtual? }.map { "#{it.name}: #{it.storage_type}" }.join(', ')
 
       def build_alloc
-        inits = @operands.reject(&:virtual?).map { it.ref? ? "#{it.name}: Default::default()" : it.name }
+        inits = @operands.reject { it.virtual? || it.head_hole? }.map { it.ref? ? "#{it.name}: Default::default()" : it.name }
+        head = @operands.select(&:head_hole?).map { "unsafe { (*n).head.#{it.name} = #{it.name}; } " }.join
         <<~RS
         #[allow(non_snake_case)]
         pub fn ALLOC_#{@name}(#{alloc_params}) -> NodePtr {
-            node_allocate(&KIND_#{@name}, #{struct_name} { #{inits.join(', ')} })
+            let n = node_allocate(&KIND_#{@name}, #{struct_name} { #{inits.join(', ')} });
+            #{head}n
         }
         RS
       end
@@ -369,16 +387,17 @@ module ASTrustGen
         RS
       end
 
-      # CHILDREN_<name>(n, f): f on every child pointer slot, in operand order (lists element by element).
+      # CHILDREN_<name>(n, own, f): f on every child pointer slot, in operand order (lists element by element).
+      # own: first give n lists of its own (a copy made by layout_tree must not rewrite the original's lists).
       def build_children
         stmts = @operands.map do |op|
           if op.child? || op.node? then "    f(&mut u.#{op.name});"
-          elsif op.nodes? then "    { let l = u.#{op.name}; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }"
+          elsif op.nodes? then "    { if own { u.#{op.name} = Box::leak(u.#{op.name}.to_vec().into_boxed_slice()); } let l = u.#{op.name}; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }"
           end
         end.compact
         <<~RS
         #[allow(non_snake_case, unused_variables)]
-        fn CHILDREN_#{@name}(n: NodePtr, f: &mut dyn FnMut(&mut NodePtr)) {
+        fn CHILDREN_#{@name}(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
             let u = unsafe { &mut (*(n as *mut NodeOf<#{struct_name}>)).u };
         #{stmts.join("\n")}
         }
@@ -390,6 +409,7 @@ module ASTrustGen
         args = prefix_names.dup
         @operands.each do |op|
           if op.ref? then args << "&mut (*np).u.#{op.name}"
+          elsif op.hole? then args << "&(*np).#{op.hole_place}"
           elsif op.spec? then args << "0u64"
           elsif op.bake? then args << "0"
           elsif op.specin? then args << spec_in_load_expr(op)
@@ -592,6 +612,8 @@ module ASTrustGen
     # Embedder hooks: extra NodeHead fields (Rust field decls) and their initializers.
     def head_extra_fields = ""
     def head_extra_inits = ""
+    # head fields placed first (offset 0: see @hole); their initializers go in head_extra_inits
+    def head_lead_fields = ""
 
     def build_head
       n = first
@@ -623,7 +645,7 @@ module ASTrustGen
           pub replacer: fn(NodePtr, NodePtr, NodePtr),
           pub no_inline: bool,
           pub size: usize,
-          pub children: fn(NodePtr, &mut dyn FnMut(&mut NodePtr)),
+          pub children: fn(NodePtr, bool, &mut dyn FnMut(&mut NodePtr)),
       }
 
       pub const NF_HAS_HASH: u32 = 1;
@@ -633,10 +655,11 @@ module ASTrustGen
 
       #[repr(C)]
       pub struct NodeHead {
+      #{head_lead_fields}
+          pub flags: u32,
           pub dispatcher: DispatchFn,
           pub kind: &'static NodeKind,
           pub hash: u64,
-          pub flags: u32,
       #{head_extra_fields}
       }
       #[repr(C)]
@@ -661,7 +684,7 @@ module ASTrustGen
               if n.is_null() { return 0; }
               let k = unsafe { (*n).head.kind };
               let mut s = k.size;
-              (k.children)(n, &mut |c| s += size(*c));
+              (k.children)(n, false, &mut |c| s += size(*c));
               s
           }
           fn copy(n: NodePtr, at: &mut *mut u8) -> NodePtr {
@@ -672,7 +695,7 @@ module ASTrustGen
                   *at = d.add(k.size);
                   let d = d as NodePtr;
                   (*d).head.flags |= NF_LAID;
-                  (k.children)(d, &mut |c| if !c.is_null() { *c = copy(*c, at); });
+                  (k.children)(d, true, &mut |c| if !c.is_null() { *c = copy(*c, at); });
                   d
               }
           }
@@ -735,6 +758,7 @@ module ASTrustGen
       pub fn specialize_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
           let fname = format!("SD_{:016x}", hash_node(n));
           if sc.emitted.contains(&fname)#{n.contiguous? ? ' || !node_laid(n)' : ''} { return fname; }
+          sc.holes.clear();
           let t = specialize_node(sc, n);
           let s = format!("S_{:016x}", hash_node(n));
           if sc.emitted.contains(&format!("R_{:016x}", hash_node(n))) && !sc.emitted.contains(&s) {
@@ -743,6 +767,11 @@ module ASTrustGen
               sc.out.push_str(&format!("#[no_mangle]\npub fn {}(#{params.join(', ')}) -> #{n.result_type} {{ {}::run(#{pnames.join(', ')}#{rec_load}) }}\n", fname, s));
           } else {
               sc.out.push_str(&format!("#[no_mangle]\npub fn {}(#{params.join(', ')}) -> #{n.result_type} {{ <{} as Disp>::call(#{pnames.join(', ')}) }}\n", fname, t));
+          }
+          // binding descriptor: (offset from n, size) of each bound operand the entry reads
+          if !sc.holes.is_empty() {
+              let d: Vec<String> = sc.holes.iter().map(|&(p, sz)| format!("{},{}", p - n as usize, sz)).collect();
+              sc.out.push_str(&format!("#[no_mangle]\npub static {}_HOLES: [u32; {}] = [{}];\n", fname, 2 * d.len(), d.join(",")));
           }
           sc.emitted.insert(fname.clone());
           fname
