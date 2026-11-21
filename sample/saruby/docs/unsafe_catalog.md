@@ -139,7 +139,7 @@ fiber.rs went from 21 to 1 `unsafe` in that trial (`deny(unsafe_code)` on the fi
 | file:line | operation | why not safe Rust | safe alternative | cost |
 |---|---|---|---|---|
 | runtime/astrust.rs:168–191 (5) | `dlopen` the baked `all.so`, `dlerror`, `dlsym` the build id and each `SD_<hash>` | loading native code: what the symbol points to is trusted by construction (same rustc, same crate, build id checked) | no AOT (`--plain`) | M: the interpreter is the alternative; on sp4 at de58efd, fib 0.315 s interp vs 0.091 s AOT, tak 0.662 vs 0.211 (`results_sp4_all_de58efd.tsv`). |
-| runtime/astrust_loader.rs:207–310 (10) | patch binding: `memfd_create`, `ftruncate`, `mmap` ×3 (RW view, RX view placed near libsaruby, fallback), `munmap`, the RW window as `&mut [u8]`, `dlsym` of externals | writing and then executing code; the ELF reader and relocator themselves are safe Rust over byte slices | the shared SD without per-body copies (`SARUBY_PATCH=0`) | M (`2026-11-21-astrust-patch-binding`): optcarrot 84.74M vs 85.45M instructions per frame with / without (−0.83 %), cycles undecidable locally; tak −6.3 %, ackermann +3.0 % instructions; sp4 ackermann +7 % with patch binding (`2026-11-21-saruby-sp4-regressions`). |
+| runtime/astrust_loader.rs:207–310 (10) | patch binding: `memfd_create`, `ftruncate`, `mmap` ×3 (RW view, RX view placed near libsaruby, fallback), `munmap`, the RW window as `&mut [u8]` (one writer process: a forked child binds into a memfd of its own, see 2.4 "found later"), `dlsym` of externals | writing and then executing code; the ELF reader and relocator themselves are safe Rust over byte slices | the shared SD without per-body copies (`SARUBY_PATCH=0`) | M (`2026-11-21-astrust-patch-binding`): optcarrot 84.74M vs 85.45M instructions per frame with / without (−0.83 %), cycles undecidable locally; tak −6.3 %, ackermann +3.0 % instructions; sp4 ackermann +7 % with patch binding (`2026-11-21-saruby-sp4-regressions`). |
 | aot.rs:23, 30, 40, 69, 110 | `static mut STORE` (the loaded code store) | `static mut` | `OnceLock` / `Mutex` | A: one lock or one atomic load per first dispatch and per bake; off the steady-state path. Not measured. |
 | aot.rs:43, 84 | `transmute` of a `dlsym` address to `DispatchFn` | a data pointer to a function pointer | — (inherent to dlsym) | — |
 | aot.rs:45, 82, 84 | write of the dispatcher into a node head | the node is a raw `NodePtr` (see "node pointers" below) | — | — |
@@ -303,6 +303,12 @@ effects of the type system; (c) is a by-product of the work. A per-row "found by
 | 4 | 10 more compatibility differences fixed in the same files (`r.read(5, "x".freeze)`, `File.readlines(dir)`, `JSON.load` forms, `SystemCallError.new` forms, `SystemExit#message`, `RuntimeError#inspect`) | | found while re-reading each call |
 | fiber | `a` resumes `b` resumes `a` | panic "entered unreachable code" (stack corrupted) | |
 | method layer | a `Vm` field added after `main_obj` | left uninitialized (`MaybeUninit` + `ptr::write`), no diagnostic | **latent UB** removed by construction |
+
+Found later (not by removing `unsafe`; the `unsafe` named is the one whose SAFETY claim was false):
+
+| found | repro (one line) | before | unsafe / assumption | found by |
+|---|---|---|---|---|
+| 11-22 | AOT, patch binding on: `fork` a child, each side then first-dispatches new bodies (`tools/aot/fork_patch_arena_1122.rb`; ruby-bench knucleotide) | **SIGSEGV** / `memory allocation of 1.3e14 bytes failed` / a child killed (`SARUBY_PATCH=0`, `--plain` fine) | runtime/astrust_loader.rs `Arena::grow`: the RW window as `&'static mut [u8]`, "only this Arena uses it". The memfd is `MAP_SHARED`, so after `fork` the child's copy of the Arena (same `used`) wrote the parent's code pages: two processes held the one `&mut`. Fixed: an Arena records its pid; a child drops the inherited one unused and binds into a memfd of its own | backtrace (rsp truncated in patch-bound code outside every library), then a per-allocation pid trace: parent and child allocated the same addresses (`2026-11-22-saruby-knucleotide-segv`) |
 
 Closed by construction and not reproduced (wave 3 and 4 READMEs): `clone_class` read the source
 class through a `'static` alias while allocating; `Hash.ruby2_keywords_hash` iterated a `Vec` of

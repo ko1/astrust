@@ -270,7 +270,8 @@ fn free_near(near: usize, len: usize) -> Vec<usize> {
 /// A range of the memfd mapped twice: written through `rw`, run at `rx`.
 struct Window { rw: &'static mut [u8], rx: usize, used: usize }
 
-struct Arena { fd: i32, size: usize, near: usize, wins: Vec<Window>, pub bytes: usize }
+/// `pid`: the process that writes it; after fork both sides map the same memfd pages.
+struct Arena { fd: i32, size: usize, near: usize, wins: Vec<Window>, pub bytes: usize, pid: u32 }
 
 const WINDOW: usize = 16 << 20;   // address space only: pages are taken as copies are written
 
@@ -280,7 +281,7 @@ impl Arena {
         // SAFETY: a plain syscall; the name is a NUL-terminated literal.
         let fd = unsafe { memfd_create(b"astrust-code\0".as_ptr(), 1 /* MFD_CLOEXEC */) };
         if fd < 0 { return None; }
-        Some(Arena { fd, size: 0, near, wins: vec![], bytes: 0 })
+        Some(Arena { fd, size: 0, near, wins: vec![], bytes: 0, pid: std::process::id() })
     }
     /// A new window of at least `len` bytes: in reach of `near` if a free range allows, else anywhere
     /// (then the loader keeps GOT slots and stubs instead of relaxing to rel32).
@@ -306,7 +307,8 @@ impl Arena {
             rx = unsafe { mmap(std::ptr::null_mut(), len, PROT_READ | PROT_EXEC, MAP_SHARED, self.fd, off as i64) } as usize;
             if rx == MAP_FAILED { return Err("mmap".into()); }
         }
-        // SAFETY: rw..rw+len is mapped read-write for the rest of the process and only this Arena uses it.
+        // SAFETY: rw..rw+len is mapped read-write for the rest of the process and only this Arena uses it;
+        // a forked child drops its copy of the Arena unused (Loader::instantiate), as the parent keeps appending here.
         let rw = unsafe { std::slice::from_raw_parts_mut(rw as *mut u8, len) };
         self.wins.push(Window { rw, rx, used: 0 });
         Ok(())
@@ -352,6 +354,8 @@ impl Loader {
     /// A copy of SD_<hash> from the object at `path`, bound to node `root`: its exec address.
     pub fn instantiate(&mut self, path: &std::path::Path, build_id: &str, hash: u64, root: usize, hole: HoleFn) -> Result<usize, String> {
         let near = self.near;
+        // a forked child: the inherited windows are the parent's to write; copy into a memfd of its own
+        if matches!(&self.arena, Some(Some(a)) if a.pid != std::process::id()) { self.arena = None; }
         let arena = self.arena.get_or_insert_with(|| if SUPPORTED { Arena::new(near) } else { None });
         let obj = self.objs.entry(path.to_path_buf()).or_insert_with(|| PatchObj::open(path, build_id));
         let r = match (arena.as_mut(), obj.as_mut()) {
