@@ -1259,7 +1259,7 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
         }
     }
     if cc.cfunc != 0 && flags & CF_KW == 0 && (cc.arity < 0 || cc.arity == argc as i32) {
-        if cc.bi >= BI_SEND { if let Some(r) = send_fast(c, cc, recv, base, argc, blk) { return Some(r); } }
+        if cc.bi >= BI_SEND { if let Some(r) = send_fast(c, recv, base, argc, blk) { return Some(r); } }
         #[cfg(feature = "nodeprof")] crate::nodeprof::hit(if blk.is_null() { "site: cfunc" } else { "site: cfunc +blk" });
         let f: CFunc = unsafe { std::mem::transmute::<usize, CFunc>(cc.cfunc) };
         let pf = c.frame;
@@ -1282,7 +1282,7 @@ pub const SITE_ATTR_W: u32 = 3;
 pub const SITE_CFUNC: u32 = 4;
 pub const SITE_NEW: u32 = 6;      // Klass.new with a plain initialize (NewInfo)
 pub const SITE_OTHER: u32 = 5;    // never run, Klass.new, keywords, ...: out of line
-pub const SITE_SEND: u32 = 7;     // Kernel#send / __send__ / public_send (send_fast)
+pub const SITE_SEND: u32 = 7;     // Kernel#send / __send__ (send_fast)
 
 pub const SITE_IMM: u32 = 16;      // flag: the cached receiver class is an immediate's (Integer, Symbol, nil, ...)
 
@@ -1358,7 +1358,7 @@ pub fn site_fast(c: &mut Ctx, cc: &mut CallCache, recv: Value, base: Stk, argc: 
                 return Some(match r { Ok(_) => Ok(base[0].get()), Err(e) => Err(e) });
             }
         }
-        SITE_SEND => if cc.bi >= BI_SEND { return send_fast(c, cc, recv, base, argc, blk); }
+        SITE_SEND => if cc.bi >= BI_SEND { return send_fast(c, recv, base, argc, blk); }
         SITE_ATTR_R => if cc.fast & 3 == 1 {
             if let Body::Object(ivs) = &obj(recv).body {
                 let v = ivs.get(cc.fast >> 2).unwrap_or(UNDEF);
@@ -1389,18 +1389,17 @@ pub fn site_fast(c: &mut Ctx, cc: &mut CallCache, recv: Value, base: Stk, argc: 
     None
 }
 
-use crate::inline_builtin::{BI_PUBLIC_SEND, BI_SEND};
+use crate::inline_builtin::BI_SEND;
 
 /// `recv.send(:name, args...)` at a site whose cache holds the builtin send (cc.bi): the call of
 /// `name` itself on the staged frame, the name taken out; no frame for send.  None: the builtin.
 #[inline(never)]
-pub fn send_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: *const Block) -> Option<RV> {
+pub fn send_fast(c: &mut Ctx, recv: Value, base: Stk, argc: u32, blk: *const Block) -> Option<RV> {
     if argc == 0 { return None; }
     let a0 = base[2].get();
     // String names, refinements, method_missing: the builtin
     if !a0.is_sym() || c.refinements_on() { return None; }
     let w = send_way(c, class_of(recv), a0)?;
-    if cc.bi & BI_PUBLIC_SEND != 0 && !w.public { return None; }
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("site: send");
     let n = argc as usize - 1;
     for i in 0..n { base[2 + i].set(base[3 + i].get()); }
@@ -1415,10 +1414,10 @@ pub fn send_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32,
 
 /// (class, name) -> method of send_fast, direct-mapped; valid while the method serial is unchanged.
 #[derive(Clone, Copy)]
-pub struct SendWay { klass: u64, mid: u64, serial: u64, me: *const MethodEntry, entry: NodePtr, argc: u32, public: bool }
+pub struct SendWay { klass: u64, mid: u64, serial: u64, me: *const MethodEntry, entry: NodePtr, argc: u32 }
 pub const SEND_WAYS: usize = 256;
 pub fn send_cache_new() -> Box<[SendWay; SEND_WAYS]> {
-    Box::new([SendWay { klass: 0, mid: 0, serial: 0, me: std::ptr::null(), entry: std::ptr::null_mut(), argc: u32::MAX, public: false }; SEND_WAYS])
+    Box::new([SendWay { klass: 0, mid: 0, serial: 0, me: std::ptr::null(), entry: std::ptr::null_mut(), argc: u32::MAX }; SEND_WAYS])
 }
 
 /// The way for klass (a receiver's class, raw) and the Symbol mid; None: no such method.
@@ -1440,7 +1439,7 @@ fn send_fill(c: &Ctx, i: usize, k: Value, mid: Value, serial: u64) -> Option<Sen
         MKind::Iseq(is) => match c.iseq_ref(is) { Some(is) if !is.entry.is_null() => (is.entry, is.params.lead.len() as u32), _ => (std::ptr::null_mut(), u32::MAX) },
         _ => (std::ptr::null_mut(), u32::MAX),
     };
-    let w = SendWay { klass: k.raw(), mid: mid.raw(), serial, me: m, entry, argc, public: m.visi == VISI_PUBLIC };
+    let w = SendWay { klass: k.raw(), mid: mid.raw(), serial, me: m, entry, argc };
     vm().send_cache[i] = w;
     Some(w)
 }
