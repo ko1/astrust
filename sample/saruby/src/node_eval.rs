@@ -827,12 +827,14 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, H_line: crate::vm::LineHol
     }
     let k = <D_args as DispList>::len(args);
     let (base, r0) = if bi != 0 {
-        // baked site whose cache held a builtin of inline_builtin.rs: its body, staging only for the call
+        // baked C-method site named as builtins of inline_builtin.rs (bi: their bodies): the one the cache
+        // holds, staging only for the call
         let r0 = <D_recv as Disp>::call(c, recv, fp)?;
         let a0 = if k == 1 { <D_args as DispList>::nth(c, args, 0, fp)? } else { NIL };
-        if bi_hit(cc, r0, bi) {
-            if let Some(v) = bi_body(c, bi, r0, a0) { return Ok(v); }
-        }
+        if bi.is_power_of_two() {
+            let b = bi.trailing_zeros();
+            if bi_hit(cc, r0, b) { if let Some(v) = bi_body(c, b, r0, a0) { return Ok(v); } }
+        } else if let Some(v) = bi_run(c, cc, bi, r0, a0) { return Ok(v); }
         std::hint::cold_path();
         let base = stage(c, 2 + k)?;
         base[0].set(r0);

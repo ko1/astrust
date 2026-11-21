@@ -3,6 +3,7 @@
 # Each case is a pair in tools/reuse: A bakes a store, B runs with it.
 #   a.rb / b.rb          the same methods at other lines, other code around them
 #   ivar_a.rb / ivar_b.rb  the same `sum` and `run`, the class's ivars created in the other order (other slots)
+#   bi_a.rb / bi_b.rb      the same `x.size` site, Array#size in A, Hash#size in B
 # A case passes when B with A's store has program SD hits, prints what it prints with no store, and runs within
 # 2% of the instructions it takes with its own store.  Prints the numbers either way.
 K=$(realpath "${1:-$(dirname "$0")/../saruby}"); D=$(cd "$(dirname "$0")/reuse" && pwd)
@@ -34,5 +35,6 @@ pair() {  # A B
 }
 pair a.rb b.rb
 pair ivar_a.rb ivar_b.rb
+pair bi_a.rb bi_b.rb
 [ $all = 1 ] && echo PASS
 [ $all = 1 ]

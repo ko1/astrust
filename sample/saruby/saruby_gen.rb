@@ -51,7 +51,7 @@ class SarubyNodeDef < ASTrustGen::NodeDef
         case op.name
         when 'shared' then "{ let u = &(*np).u; crate::vm::spec_shared(u.recv, u.args.len(), crate::vm::spec_callee(&u.cc, u.args.len(), u.flags)) }"
         # 1 + the inline_builtin.rs table index of the builtin the site's cache holds (0: none)
-        when 'bi' then "{ let u = &(*np).u; crate::inline_builtin::site_builtin(&u.cc, u.args.len(), crate::vm::site_kind(&u.cc, u.args.len(), u.flags)) }"
+        when 'bi' then "{ let u = &(*np).u; crate::inline_builtin::site_builtin(u.args.len(), crate::vm::site_kind(&u.cc, u.args.len(), u.flags), u.mid) }"
         else "{ let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
         end
       when 'node_yield' then "{ let u = &(*np).u; crate::vm::spec_block_np(&u.yc, u.args.len()) }"

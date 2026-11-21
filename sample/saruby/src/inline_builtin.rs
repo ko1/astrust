@@ -1,9 +1,10 @@
 // Builtin method bodies inlined at baked call sites (node_call's `bi`).
 //
-// At bake time a site whose cache holds one of the builtins below (with the argument count it
-// takes) is baked with the number of its body; the baked site evaluates the receiver and the
-// argument into registers, and when the cache holds that builtin for the receiver's class (bi_hit:
-// CallCache.bi, set by fill_cc, and the method serial), runs the body here.  Anything else, including a
+// At bake time a C-method site whose name and argument count are those of builtins below is baked
+// with the set of their bodies (site_builtin: from the name, so a site that saw Hash#size and one
+// that saw Array#size share their code); the baked site evaluates the receiver and the argument
+// into registers, and when the cache holds one of those builtins for the receiver's class (bi_hit:
+// CallCache.bi, set by fill_cc, and the method serial), runs its body here.  Anything else, including a
 // body that declines (None: a Bignum, a frozen Array, ...), stages and takes the call out of line.
 // The bodies must not raise, call Ruby or look at a frame: there is no cfunc frame around them.
 #![forbid(unsafe_code)]
@@ -93,14 +94,22 @@ pub fn cache_key(me: *const MethodEntry, klass: Value) -> u32 {
 /// argc a body takes
 fn body_argc(b: u32) -> usize { if b == 15 || b == BI_INT_AREF { 1 } else { 0 } }
 
-/// Bake time: the builtin a site's cache holds, if it takes this argc (0: none).
-pub fn site_builtin(cc: &CallCache, argc: usize, kind: u32) -> u32 {
-    let b = cc.bi & 0xff;
-    if std::env::var_os("SARUBY_NO_BI").is_some() { return 0; }
-    if kind & 15 != SITE_CFUNC || b == 0 || b >= IT_FIRST || body_argc(b) != argc { return 0; }
-    // the receivers the body expects (Integer / Float / any heap object) are the cached class's
-    let ok = match recv_of(b) { C_INT => cc.bi & K_INT != 0, C_FLO => cc.bi & K_FLO != 0, _ => cc.bi & (K_INT | K_FLO) == 0 };
-    if ok { b } else { 0 }
+/// Bake time: the bodies (bit b for body b) of the builtins named `mid` taking argc arguments, at a site
+/// whose cache held a C method (0: none).  The set follows from the name and the argument count, which
+/// the tree's hash covers, not from which class the site saw: `x.size` gets Array's, Hash's and String's.
+pub fn site_builtin(argc: usize, kind: u32, mid: Sym) -> u32 {
+    if std::env::var_os("SARUBY_NO_BI").is_some() || kind & 15 != SITE_CFUNC { return 0; }
+    let name = crate::symbol::sym_bytes(mid);
+    TABLE.iter().filter(|&&(_, n, b)| b < IT_FIRST && n.as_bytes() == name && body_argc(b) == argc).fold(0, |m, &(_, _, b)| m | 1 << b)
+}
+
+/// For a site of several builtins (bi: their bodies, bit b for body b; node_call tests a single one with
+/// bi_hit): the body of the one the cache holds for r's class, if it applies.
+#[inline(always)]
+pub fn bi_run(c: &mut Ctx, cc: &CallCache, m: u32, r: Value, a0: Value) -> Option<Value> {
+    macro_rules! bodies { ($($b:literal)*) => { $( if m & 1 << $b != 0 && bi_hit(cc, r, $b) { return bi_body(c, $b, r, a0); } )* } }
+    bodies!(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21);
+    None
 }
 
 /// The cache holds builtin `bi` (a constant in baked code) for r's class: one tag test and one compare
