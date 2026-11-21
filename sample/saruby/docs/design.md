@@ -79,7 +79,9 @@ uses that API; see docs/safe_heap.md (design, recipe, what is left).
   `yield_block(c, blk, &args)`, `call_proc(c, proc, &args, blk)`.
 * Raise: `return err(c, vm().c_argument_error, "msg")`, `arg_err`, `type_err`, or
   `Err(raise_exc(c, exc_obj))`.
-* Ruby-level built-ins live in `prelude/core.rb` (loaded at boot).
+* Ruby-level built-ins live in `prelude/core.rb` (loaded at boot). build.rs parses it with prism
+  (`tools/prism_serialize.c`, options from `src/prism_opts.rs`) and embeds the serialization, so
+  boot only reads and compiles it (`prism::read_serialized`, `compile::compile_parsed`).
 
 ## Calls, frames and blocks (the fast paths)
 Measurements and what was tried: `~/ruby/src/trials/2026-11-21-saruby-call-path/` and `-call-path-2/`.

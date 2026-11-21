@@ -11,9 +11,16 @@ use crate::value::*;
 use crate::vm::*;
 
 const CORE: &str = include_str!("../../prelude/core.rb");
+/// prism's serialization of CORE, made by build.rs with the options `parse` would use.
+const CORE_AST: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/core.prism"));
 
 pub fn load_prelude(c: &mut Ctx) -> RV {
-    crate::builtins::kernel::run_source(c, CORE.as_bytes(), "<internal:prelude>", 1)
+    let pr = crate::prism::read_serialized(CORE_AST);
+    let is = match crate::compile::compile_parsed(&pr, CORE.as_bytes(), "<internal:prelude>", IseqKind::Top, vec![]) {
+        Ok(is) => is,
+        Err(msg) => return err(c, c.vm().c_syntax_error, msg),
+    };
+    crate::run_top_iseq(c, is, c.vm().main_obj)
 }
 
 macro_rules! lib { ($n:literal) => { ($n, include_str!(concat!("../../prelude/lib/", $n, ".rb"))) }; }

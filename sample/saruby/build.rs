@@ -33,6 +33,7 @@ fn main() {
     println!("cargo:rustc-link-lib=static=prism");
     println!("cargo:rerun-if-changed=vendor/prism/src");
     println!("cargo:rerun-if-changed=build.rs");
+    serialize_prelude(&out, &inc, &lib);
 
     let sysroot = String::from_utf8(Command::new(std::env::var("RUSTC").unwrap_or("rustc".into()))
         .args(["--print", "sysroot"]).output().unwrap().stdout).unwrap();
@@ -40,6 +41,8 @@ fn main() {
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}/lib/rustlib/{}/lib", sysroot.trim(), target);
     println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
     println!("cargo:rustc-link-arg=-ldl");
+    // libsaruby's references to its own symbols are bound at link time (RELATIVE, not looked up by name at startup)
+    println!("cargo:rustc-link-arg=-Wl,-Bsymbolic");
     println!("cargo:rustc-env=SARUBY_RUSTC_SYSROOT={}", sysroot.trim());
     println!("cargo:rustc-env=SARUBY_TARGET={}", target);
     // Build id = hash of the Rust sources and the GC backend (its allocation path is inlined
@@ -71,4 +74,21 @@ fn walk(d: PathBuf) -> Vec<PathBuf> {
         if p.is_dir() { v.extend(walk(p)); } else if p.extension().map(|x| x == "rs").unwrap_or(false) { v.push(p); }
     }
     v
+}
+
+include!("src/prism_opts.rs");
+
+/// OUT_DIR/core.prism: the prelude parsed as prism.rs `parse` would at startup (builtins/prelude.rs).
+fn serialize_prelude(out: &std::path::Path, inc: &std::path::Path, lib: &std::path::Path) {
+    let exe = out.join("prism_serialize");
+    let st = Command::new("gcc").args(["-O2", "-std=c99", "-w"]).arg("-I").arg(inc)
+        .arg("tools/prism_serialize.c").arg(lib).arg("-o").arg(&exe).status().unwrap();
+    assert!(st.success(), "tools/prism_serialize.c: compile failed");
+    let opts = out.join("core.options");
+    let o = ParseOpts { filepath: b"<internal:prelude>", line: 1, scopes: vec![], main_script: false, frozen_string_literal: 0 };
+    std::fs::write(&opts, build_options(&o)).unwrap();
+    let st = Command::new(&exe).arg("prelude/core.rb").arg(&opts).arg(out.join("core.prism")).status().unwrap();
+    assert!(st.success(), "prism_serialize prelude/core.rb failed");
+    println!("cargo:rerun-if-changed=prelude/core.rb");
+    println!("cargo:rerun-if-changed=tools/prism_serialize.c");
 }

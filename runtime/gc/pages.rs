@@ -9,6 +9,8 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::marker::PhantomData;
 
 pub const PAGE_BYTES: usize = 64 * 1024;
+/// Pages taken from the system allocator at a time (one mapping instead of one per page).
+const SLAB_PAGES: usize = 16;
 
 // multiply-rotate hash of one address (SipHash would dominate conservative scanning)
 #[derive(Default, Clone, Copy)]
@@ -22,6 +24,8 @@ impl Hasher for AddrHasher {
 pub struct Pages<T, const R: usize> {
     bases: Vec<usize>,
     set: HashSet<usize, BuildHasherDefault<AddrHasher>>,
+    slab: usize,               // the next page of the current slab not handed out
+    slab_left: usize,
     _t: PhantomData<*mut T>,
 }
 
@@ -33,15 +37,25 @@ impl<T, const R: usize> Pages<T, R> {
         (PAGE_BYTES - R) / std::mem::size_of::<T>()
     };
 
-    pub fn new() -> Self { Pages { bases: vec![], set: HashSet::default(), _t: PhantomData } }
+    pub fn new() -> Self { Pages { bases: vec![], set: HashSet::default(), slab: 0, slab_left: 0, _t: PhantomData } }
 
-    /// Map one more page and return its base.  Slot memory is uninitialized; the
+    /// One more page, and its base.  Slot memory is uninitialized (and untouched); the
     /// reserved bytes are zero.
     pub fn add(&mut self) -> usize {
-        let layout = Layout::from_size_align(PAGE_BYTES, PAGE_BYTES).unwrap();
-        // SAFETY: the layout has a non-zero size
-        let base = unsafe { if R == 0 { std::alloc::alloc(layout) } else { std::alloc::alloc_zeroed(layout) } } as usize;
-        if base == 0 { std::alloc::handle_alloc_error(layout); }
+        if self.slab_left == 0 {
+            let layout = Layout::from_size_align(PAGE_BYTES * SLAB_PAGES, PAGE_BYTES).unwrap();
+            // SAFETY: the layout has a non-zero size; each page's first R bytes are inside the block
+            self.slab = unsafe {
+                let p = std::alloc::alloc(layout);
+                if R != 0 && !p.is_null() { for i in 0..SLAB_PAGES { p.add(i * PAGE_BYTES).write_bytes(0, R); } }
+                p
+            } as usize;
+            if self.slab == 0 { std::alloc::handle_alloc_error(layout); }
+            self.slab_left = SLAB_PAGES;
+        }
+        let base = self.slab;
+        self.slab += PAGE_BYTES;
+        self.slab_left -= 1;
         self.bases.push(base);
         self.set.insert(base);
         base

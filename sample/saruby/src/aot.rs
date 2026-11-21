@@ -60,13 +60,15 @@ thread_local! {
     static BLOCKS: std::cell::RefCell<Vec<&'static Iseq>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+static SD_NAMES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
 #[allow(static_mut_refs)]
 pub fn register_iseq(is: &'static Iseq) {
     let Some(st) = (unsafe { STORE.as_mut() }) else { return };
     let prelude = is.info.file == PRELUDE_FILE;
     let mut reg = |body: NodePtr, what: &str| {
         // SARUBY_SD_NAMES=1: which body each SD_<hash> is (to read a perf profile)
-        if std::env::var_os("SARUBY_SD_NAMES").is_some() { eprintln!("SD_{:016x} {}{} {}:{}", hash_node(body), is.info.label, what, is.info.file, is.info.line); }
+        if *SD_NAMES.get_or_init(|| std::env::var_os("SARUBY_SD_NAMES").is_some()) { eprintln!("SD_{:016x} {}{} {}:{}", hash_node(body), is.info.label, what, is.info.file, is.info.line); }
         // baked code assumes the layout of layout_tree (finish_iseq)
         if !node_laid(body) { return; }
         if let Some(p) = st.register(body as usize, hash_node(body), prelude, env!("SARUBY_BUILD_ID")) {
