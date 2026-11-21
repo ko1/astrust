@@ -266,6 +266,12 @@ Each line is a defect of the code *before* the conversion that the conversion ei
 the open (a borrow error at a place that held a reference across a call) or that was found while
 re-checking that place. Repro files are in the trial named. "now" = CRuby's output.
 
+Attribution (to be completed per row): defects were found in three ways — (a) the safe accessors check the
+object's kind where the legacy ones did not ("unchecked kind" rows: the SIGSEGVs), (b) the borrow rule
+refused a reference held across a callback ("stale reference" rows: Ruby-level invalidation, not memory
+safety Rust could name), (c) re-reading or testing (GC stress) the converted code. Only (a) and (b) are
+effects of the type system; (c) is a by-product of the work. A per-row "found by" column is pending.
+
 | wave | repro (one line) | before | kind |
 |---|---|---|---|
 | 2 | `h = (1..100).to_h { [_1, _1] }; n = 0; h.each { \|k, _\| h.delete(k); n += 1 }; p [n, h.size]` | `[59, 41]` (slots compacted under the iteration) | iterator invalidation |
@@ -745,7 +751,7 @@ Measured, with the trial that holds the numbers:
    +2.4 % instructions per benchmark (pilot, wave 2). The interior-mutability alternative cost up to
    +96 % cycles (RefCell emulation). The forced restructuring was often a gain (hash −36 %, io_write
    −11 %, json −10 % instructions).
-2. **What the borrow checker found**: 39 behavioural defects across the waves (table 2.4), of which
+2. **What the conversion found** (not all by the borrow checker itself; see the attribution note under table 2.4): 39 behavioural defects across the waves (table 2.4), of which
    5 SIGSEGVs, 1 undefined behaviour (`from_utf8_unchecked`), 3 GC rooting / use-after-free defects
    (MatchData#to_a with its Strings only in a Rust `Vec` during an allocation, IO.readlines' options
    Hash, marshal_dump + GC.start), 1 latent uninitialized field (boot's `MaybeUninit<Vm>`), and many stale-reference-across-callback defects (a `&'static [u8]` used after

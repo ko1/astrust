@@ -32,6 +32,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 
 - [x] builtins（全波）、inline_builtin.rs / inline_iter.rs、string/array/hash/range/bignum/regexp 本体、binding.rs、boot.rs
 - [ ] **コスト 0 で外せる 25 か所を入れる**（目録で測定済み、patch は ~/ruby/src/trials/2026-11-22-saruby-unsafe-catalog/patches/）: Value 構築とリテラルキャッシュを NonZeroU64 / Option<Value> に（−13）、REFINEMENTS_ON・BOOTED を AtomicBool に（−10）、CallCache.cfunc を Option<fn> に（−2）。原則 3 回目のマージ後
+- [ ] unsafe_catalog.md 表 2.4 の 39 件に「どうやって見つかったか」列（型検査 / 借用規則 / 読み直し・テスト）。論文で safe 化の効果を主張する根拠（2026-11-22 user「safe 化のいい話」）
 - [ ] 安全なシグネチャで `&'static mut` を返す関数 10 個と、その呼び出し 449 か所（unsafe の数に出ない信頼の穴。docs/unsafe_catalog.md）
 - [ ] sbuf.rs（String のバッファ、10 か所）: safe 版はブランチ `sbuf-safe-rs29`（str AOT +6% 命令 / +11.5% サイクル）。採否未定
 - [ ] 呼び出し経路・フレーム連鎖（vm.rs 80、rt.rs 64、node.def 16、stack_raw.rs 5）。前提 H5（実行中の builtin の下のフレームは生きている）は未検証
