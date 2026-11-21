@@ -54,6 +54,10 @@ object.rs); variable data in Rust Vecs/Boxes owned by the slot.  Non-moving mark
   operation.  Every element access pays the Inline/Heap test (one compare and branch; the Heap path
   falls through).  Sweep skips `Drop` for bodies that own nothing (`gc.rs`, `owns_nothing`).
 
+* Env (`src/envvals.rs`, no unsafe): the first two values are in the slot, the rest in one boxed
+  Vec; an Env of up to two values needs no malloc and its sweep frees nothing.  Baked code indexes it
+  with a constant, so an access is one load.
+
 **Rooting (important):** heap objects are traced precisely; the machine stack and registers
 are scanned conservatively, and the VM value stack too.  So Values in Rust locals are safe.
 **Never keep a Value only inside a Rust heap buffer (Vec<Value>, Box) across an allocation or
@@ -106,13 +110,24 @@ Measurements and what was tried: `~/ruby/src/trials/2026-11-21-saruby-call-path/
     `&&`, `||` of those).  It cannot call, raise or look at a frame, so the entry is just the body:
     no `Frame`, no checks, no sp change.  Keep such node bodies free of `c.frame`.
   * `ME_ENV`: locals captured by blocks live in a heap env.
+* Keyword methods whose parameters are lead + keywords in declared order (nothing else) have two more
+  entries over the same frame layout: `Iseq.kentry` takes lead + every keyword as plain parameters,
+  `Iseq.dentry` (no required keywords) takes lead only and runs the defaults first.  A literal keyword
+  site (`node_call_kw`) checks once per cache fill that it passes exactly the callee's keywords in
+  order (`kw_dense_fill`; `CallCache.fast_argc = KW_DENSE | argc`) and then calls the kentry like any
+  entry; baked, the kentry is compiled into the site.  dentry is the cache's entry for calls without
+  keywords (`Iseq::plain_entry`).  dentry has its own copy of the body, so it is not made where a node
+  caches a literal object (`has_lit_cache`).  A body under a kentry is baked separately only if it
+  also ran through `invoke_iseq` (`body_used`).
 * The native stack check of a call is made where an entry is called through its dispatcher
   (`run_entry`, `site_fast`), not in the entry: an entry compiled into its call site adds no native
   frame, and every recursion passes a dispatcher call.
 * A block with only required parameters has a `node_block_entry` (`Iseq.bentry`), the block's baked
   function.  `run_block_fast` (yield from a builtin: `yield1`, `yield_block`; from Ruby:
   `node_yield`) puts the `Block` in `c.call_blk`, the arguments at `base[2..]` and dispatches it.
-  Other ways to run a block (lambda call, `define_method`, one Array spread over several
+  A `->` literal's entry has `ME_LAMBDA` (lambda frame: own return target, catches its `break`);
+  `call_proc_kw` runs it for a call with exactly its parameter count, no keywords and no block.
+  Other ways to run a block (other lambda calls, `define_method`, one Array spread over several
   parameters) set up the frame in `run_block_iseq` and dispatch `Iseq.body`; that body is baked
   separately only for blocks that ran this way before the bake (`Iseq.body_used`).
 * A Ruby `yield` site records the block iseq it ran (`YieldCache.seen`).  When it saw one, the bake

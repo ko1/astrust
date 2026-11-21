@@ -113,6 +113,7 @@ fn owns_nothing(b: &Body) -> bool {
         Body::Array(a) => !a.is_heap(),
         Body::String(s) => !s.b.is_heap(),
         Body::Object(iv) => iv.is_inline(),
+        Body::Env(e, _) => !e.is_heap(),
         Body::Float(_) | Body::Range(..) | Body::Free(_) => true,
         _ => false,
     }

@@ -254,11 +254,11 @@ pub fn env_at(mut env: Value, hops: u32) -> Value {
 }
 #[inline(always)]
 pub fn env_get(env: Value, idx: u32) -> Value {
-    match &obj(env).body { Body::Env(v, _) => unsafe { *v.get_unchecked(idx as usize) }, _ => unsafe { std::hint::unreachable_unchecked() } }
+    match &obj(env).body { Body::Env(v, _) => v.get(idx as usize), _ => unsafe { std::hint::unreachable_unchecked() } }
 }
 #[inline(always)]
 pub fn env_set(env: Value, idx: u32, x: Value) {
-    match &mut obj(env).body { Body::Env(v, _) => unsafe { *v.get_unchecked_mut(idx as usize) = x }, _ => unsafe { std::hint::unreachable_unchecked() } }
+    match &mut obj(env).body { Body::Env(v, _) => v.set(idx as usize, x), _ => unsafe { std::hint::unreachable_unchecked() } }
 }
 
 pub fn srb_ivar_get(slf: Value, name: Sym, ic: &mut IvarCache) -> Value {
@@ -959,7 +959,7 @@ pub fn run_class_body(c: &mut Ctx, klass: Value, is: &'static Iseq) -> RV {
     nil_fill(base, 2, is.nlocals as usize);
     c.set_sp(base, is.nlocals as usize);
     if is.env_size > 0 {
-        let env = crate::gc::alloc(vm().c_env, Body::Env(vec![NIL; is.env_size as usize].into_boxed_slice(), NIL));
+        let env = crate::gc::alloc(vm().c_env, Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), NIL));
         base[1].set(env);
     }
     c.frame = &mut fr.h;
@@ -1234,7 +1234,15 @@ pub fn srb_call_kw(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, k: usiz
     let lit;
     let blk: *const Block = match ci.blk { Some(is) => { lit = make_block(c, is, fp); &lit } None => std::ptr::null() };
     let me = lookup_cc(c, cc, recv, mid, flags);
-    let r = if !me.is_null() && kw_direct_ok(me, npos, &ci.kw_names, flags) {
+    // every keyword in declared order to a dense method: its kentry with the staged values as params
+    if cc.fast_argc != KW_DENSE | k as u32 && !me.is_null() { kw_dense_fill(cc, me, npos, &ci.kw_names, flags); }
+    let r = if cc.fast_argc == KW_DENSE | k as u32 {
+        c.call_me = me; c.call_blk = blk;
+        native_check(c)?;
+        let r = run_body(c, cc.fast as NodePtr, base);
+        c.set_sp(base, 0);
+        r
+    } else if !me.is_null() && kw_direct_ok(me, npos, &ci.kw_names, flags) {
         let is = match unsafe { (*me).kind } { MKind::Iseq(is) => unsafe { &*is }, _ => unreachable!() };
         let r = invoke_iseq_kw(c, me, is, recv, base, npos, &ci.kw_names, blk);
         c.set_sp(base, 0);
@@ -1253,4 +1261,12 @@ pub fn srb_call_kw(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, k: usiz
         Err(_) if ci.blk.is_some() && c.esc == EscKind::Break && c.esc_tag == unsafe { (*blk).tag } => { c.esc = EscKind::None; Ok(c.esc_val) }
         r => r,
     }
+}
+
+/// A keyword site whose compiled-in callee (entry hash h) was not hit: srb_call_kw, then spec_klass.
+#[inline(never)]
+pub fn srb_call_kw_spec(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, k: usize, ci: CiRef, flags: u32, fp: Fp, h: u64) -> RV {
+    let r = srb_call_kw(c, cc, mid, base, k, ci, flags, fp);
+    cc.spec_klass = if cc.fast_hash == h && cc.fast_argc == KW_DENSE | k as u32 { cc.klass } else { 0 };
+    r
 }

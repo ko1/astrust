@@ -27,7 +27,7 @@ pub struct CodeInfo { pub file: &'static str, pub label: String, pub line: u32 }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IseqKind { Method, Block, Lambda, Class, Top, Eval, Main }
 
-pub struct KwParam { pub name: Sym, pub slot: u32, pub default: Option<NodePtr>, pub required: bool }
+pub struct KwParam { pub name: Sym, pub slot: u32, pub default: Option<NodePtr>, pub required: bool, pub static_default: bool }
 
 #[derive(Default)]
 pub struct Params {
@@ -52,7 +52,9 @@ pub struct Iseq {
     pub body: NodePtr,
     pub entry: NodePtr,                 // node_method_entry over body (required-params-only methods), else null
     pub bentry: NodePtr,                // node_block_entry over body (required-params-only blocks), else null
-    pub body_used: std::cell::Cell<bool>, // a block with bentry was also run through its body (lambda call, spread, ...): bake the body too
+    pub kentry: NodePtr,                // dense keyword method: entry taking lead + every keyword in order, else null
+    pub dentry: NodePtr,                // dense keyword method without required keywords: entry taking lead only (defaults run)
+    pub body_used: std::cell::Cell<bool>, // a block with bentry (method with kentry) was also run through its body: bake the body too
     pub nlocals: u32,                   // frame size including self (0) and env (1)
     pub params: Params,
     pub env_size: u32,
@@ -68,6 +70,12 @@ pub struct Iseq {
     pub parent: std::cell::Cell<*const Iseq>,          // lexically enclosing iseq (set when it is finished)
     pub outer_names: Vec<(Sym, u32, u32)>,             // eval: the binding's names (name, hops, idx)
     pub ruby2_keywords: std::cell::Cell<bool>,         // Module#ruby2_keywords: flag a trailing keyword Hash in *rest
+}
+
+impl Iseq {
+    /// The entry a call with lead positional arguments and no keywords may take (null: none).
+    #[inline(always)]
+    pub fn plain_entry(&self) -> NodePtr { if self.entry.is_null() { self.dentry } else { self.entry } }
 }
 
 // ---- blocks ---------------------------------------------------------------------------
@@ -172,6 +180,7 @@ pub fn kind_serial() -> u64 { method_serial() + vm().hierarchy_serial }
 pub const ME_ENV: u32 = 1;    // the frame has a heap env
 pub const ME_ID: u32 = 2;     // the frame needs an id: a block literal (or eval) in the body can return to it
 pub const ME_LEAF: u32 = 4;   // the body cannot call, raise or observe a frame: no frame is made
+pub const ME_LAMBDA: u32 = 8; // node_block_entry of a `->` literal: lambda frame (own return target)
 
 pub const FK_METHOD: u8 = 0;
 pub const FK_BLOCK: u8 = 1;
@@ -1447,6 +1456,24 @@ pub fn lookup_cc(c: &Ctx, cc: &mut CallCache, recv: Value, mid: Sym, flags: u32)
     me
 }
 
+/// CallCache.fast_argc of a keyword site whose cache holds the callee's kentry (| the staged count).
+pub const KW_DENSE: u32 = 1 << 30;
+
+/// A keyword site passing `names` after npos positionals: if they are the callee's keywords in
+/// declared order, put its kentry in the cache (checked once per fill).
+#[inline(never)]
+pub fn kw_dense_fill(cc: &mut CallCache, me: *const MethodEntry, npos: usize, names: &[Sym], flags: u32) {
+    let m = unsafe { &*me };
+    if m.visi != VISI_PUBLIC && flags & CF_FCALL == 0 { return; }
+    let MKind::Iseq(is) = m.kind else { return };
+    let is = unsafe { &*is };
+    if is.kentry.is_null() || is.params.lead.len() != npos || is.params.kw.len() != names.len()
+        || !is.params.kw.iter().zip(names).all(|(k, n)| k.name == *n) { return; }
+    cc.fast = is.kentry as usize;
+    cc.fast_argc = KW_DENSE | (npos + names.len()) as u32;
+    cc.fast_hash = crate::node::hash_node(is.kentry);
+}
+
 /// Can the staged literal keywords go straight into the callee's slots?
 pub fn kw_direct_ok(me: *const MethodEntry, npos: usize, names: &[Sym], flags: u32) -> bool {
     let m = unsafe { &*me };
@@ -1463,6 +1490,7 @@ pub fn kw_direct_ok(me: *const MethodEntry, npos: usize, names: &[Sym], flags: u
 pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: Stk, npos: usize, names: &[Sym], blk: *const Block) -> RV {
     let n = is.nlocals as usize;
     stack_check(c, n + 16)?;
+    if !is.kentry.is_null() { is.body_used.set(true); }
     let mut vals = [NIL; 16];
     for j in 0..names.len() { vals[j] = base[2 + npos + j].get(); }
     let id = c.next_serial();
@@ -1487,7 +1515,8 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Valu
         arg_err(c, format!("missing keyword{}: {}", if missing.len() > 1 { "s" } else { "" }, ms.join(", ")))
     } else {
         let mut r = Ok(NIL);
-        for kp in is.params.kw.iter() {
+        // static (literal) defaults first, as CRuby
+        for kp in is.params.kw.iter().filter(|k| k.static_default).chain(is.params.kw.iter().filter(|k| !k.static_default)) {
             if !names.contains(&kp.name) { if let Some(d) = kp.default { if let Err(e) = run_body(c, d, base) { r = Err(e); break; } } }
         }
         match r { Ok(_) => run_body(c, is.body, base), e => e }
@@ -1508,7 +1537,11 @@ fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry
     let m = unsafe { &*me };
     if m.visi != VISI_PUBLIC && flags & CF_FCALL == 0 { return; }
     match m.kind {
-        MKind::Iseq(is) => { let is = unsafe { &*is }; if !is.entry.is_null() { cc.fast = is.entry as usize; cc.fast_argc = is.params.lead.len() as u32; cc.fast_hash = crate::node::hash_node(is.entry); } }
+        MKind::Iseq(is) => {
+            let is = unsafe { &*is };
+            let e = is.plain_entry();
+            if !e.is_null() { cc.fast = e as usize; cc.fast_argc = is.params.lead.len() as u32; cc.fast_hash = crate::node::hash_node(e); }
+        }
         MKind::Cfunc(..) if me == vm().ids.bo_eq => { cc.fast = 3; }
         MKind::Cfunc(f, arity) if me == vm().ids.c_new => {
             cc.cfunc = f as usize; cc.arity = arity;
@@ -1518,8 +1551,8 @@ fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry
                 let im = lookup_method(recv, s::initialize);
                 if let Some(MKind::Iseq(is)) = (!im.is_null()).then(|| unsafe { (*im).kind }) {
                     let is = unsafe { &*is };
-                    if !is.entry.is_null() {
-                        let ni = Box::new(NewInfo { klass: recv, init_me: im, init_entry: is.entry, init_argc: is.params.lead.len() as u32 });
+                    if !is.plain_entry().is_null() {
+                        let ni = Box::new(NewInfo { klass: recv, init_me: im, init_entry: is.plain_entry(), init_argc: is.params.lead.len() as u32 });
                         cc.fast = Box::into_raw(ni) as usize;
                     }
                 }
@@ -1546,12 +1579,28 @@ pub fn spec_callee(cc: &CallCache, argc: usize, flags: u32) -> NodePtr {
     if d.len() <= 600 { cc.fast as NodePtr } else { std::ptr::null_mut() }
 }
 
+/// site_kind of a literal keyword site: SITE_ENTRY when its cache holds a kentry it can compile in.
+pub fn site_kind_kw(cc: &CallCache, argc: usize, ci: &crate::compile::CallInfo) -> u32 {
+    if cc.klass == 0 || ci.blk.is_some() || cc.fast_argc != KW_DENSE | argc as u32 { return SITE_OTHER; }
+    let v = vm();
+    let imm = [v.c_integer, v.c_float, v.c_symbol, v.c_nil, v.c_true, v.c_false].iter().any(|k| k.raw() == cc.klass);
+    SITE_ENTRY | if imm { SITE_IMM } else { 0 }
+}
+
+/// spec_callee of a literal keyword site: the kentry its cache holds.
+pub fn spec_callee_kw(cc: &CallCache, argc: usize, ci: &crate::compile::CallInfo) -> NodePtr {
+    if site_kind_kw(cc, argc, ci) == SITE_OTHER { return std::ptr::null_mut(); }
+    let mut d = String::new();
+    crate::node::dump_node(&mut d, cc.fast as NodePtr);
+    if d.len() <= 600 { cc.fast as NodePtr } else { std::ptr::null_mut() }
+}
+
 /// The block entry a yield site has always run, as the callee to compile into it (null: none).
 /// Only where block_fast would take it with argc arguments; lambda-ness is tested at run time.
 pub fn spec_block(yc: &YieldCache, argc: usize) -> NodePtr {
     if yc.seen <= 1 { return std::ptr::null_mut(); }
     let is = unsafe { &*(yc.seen as *const Iseq) };
-    if is.bentry.is_null() || (argc == 1 && is.params.lead.len() >= 2) { return std::ptr::null_mut(); }
+    if is.bentry.is_null() || is.kind == IseqKind::Lambda || (argc == 1 && is.params.lead.len() >= 2) { return std::ptr::null_mut(); }
     let mut d = String::new();
     crate::node::dump_node(&mut d, is.bentry);
     if d.len() <= 600 { is.bentry } else { std::ptr::null_mut() }
@@ -1564,20 +1613,20 @@ pub fn spec_block_np(yc: &YieldCache, argc: usize) -> u32 {
 /// The heap Env of a frame whose variables are captured by blocks; params copied in.
 #[inline(never)]
 pub fn make_env(is: &Iseq, base: Stk, parent: Value) {
-    let env = gc::alloc_with(vm().c_env, move || Body::Env(vec![NIL; is.env_size as usize].into_boxed_slice(), parent));
+    let env = gc::alloc_with(vm().c_env, move || Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), parent));
     base[1].set(env);
     if let Body::Env(vals, _) = &mut obj(env).body {
-        for &(sl, ei) in is.env_params.iter() { vals[ei as usize] = base[sl as usize].get(); }
+        for &(sl, ei) in is.env_params.iter() { vals.set(ei as usize, base[sl as usize].get()); }
     }
 }
 
 /// Call of an Iseq method with only required, slot-contiguous params.
 #[inline(always)]
 pub fn invoke_iseq_simple(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: Stk, argc: u32, blk: *const Block) -> RV {
-    if is.entry.is_null() { return invoke_iseq(c, me, is, recv, base, argc, blk, 0); }
+    if is.plain_entry().is_null() { return invoke_iseq(c, me, is, recv, base, argc, blk, 0); }
     base[0].set(recv);
     c.call_me = me; c.call_blk = blk;
-    run_entry(c, is.entry, base, argc)
+    run_entry(c, is.plain_entry(), base, argc)
 }
 
 #[cold]
@@ -1688,13 +1737,14 @@ pub fn kw_arg(args: &[Value]) -> Option<Value> {
 }
 
 pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
-    if !is.entry.is_null() && argc as usize == is.params.lead.len() && flags & CF_KW == 0 {
+    if !is.plain_entry().is_null() && argc as usize == is.params.lead.len() && flags & CF_KW == 0 {
         let r = invoke_iseq_simple(c, me, is, recv, base, argc, blk);
         c.set_sp(base, 0);
         return r;
     }
     stack_check(c, is.nlocals as usize + 16)?;
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("invoke_iseq: general (no entry node or argc mismatch)");
+    if !is.kentry.is_null() { is.body_used.set(true); }
     let mut fr = Frame::empty(base);
     fr.prev = c.frame;
     fr.me = me;
@@ -1846,18 +1896,19 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
         if flags & CF_KW != 0 { obj(r).flags |= FL_KWHASH; }
     }
     for &sl in p.post.iter() { base[sl as usize].set(if ai < given { args[ai] } else { NIL }); ai += 1; }
-    // keywords
+    // keywords; kw_unset: not passed (their slots stay nil until their defaults run)
+    let mut kw_unset: Vec<bool> = vec![];
     if !p.kw.is_empty() || (p.kwrest.is_some() && !p.forwarding) {
         let mut seen = 0;
         if kwh != NIL && !is_hash(kwh) { kwh = NIL; }
         for k in p.kw.iter() {
             let v = if kwh != NIL { crate::hash::hash_get_opt(c, kwh, Value::sym(k.name))? } else { None };
             match v {
-                Some(v) => { base[k.slot as usize].set(v); seen += 1; }
-                None => { base[k.slot as usize].set(UNDEF); }
+                Some(v) => { base[k.slot as usize].set(v); seen += 1; kw_unset.push(false); }
+                None => { base[k.slot as usize].set(NIL); kw_unset.push(true); }
             }
         }
-        let missing: Vec<Sym> = p.kw.iter().filter(|k| k.required && base[k.slot as usize].get() == UNDEF).map(|k| k.name).collect();
+        let missing: Vec<Sym> = p.kw.iter().zip(&kw_unset).filter(|(k, u)| k.required && **u).map(|(k, _)| k.name).collect();
         if !missing.is_empty() {
             let names: Vec<String> = missing.iter().map(|m| format!(":{}", sym_str(*m))).collect();
             return arg_err(c, format!("missing keyword{}: {}", if missing.len() > 1 { "s" } else { "" }, names.join(", ")));
@@ -1887,26 +1938,24 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
     }
     // env
     if is.env_size > 0 {
-        let env = gc::alloc_with(vm().c_env, move || Body::Env(vec![NIL; is.env_size as usize].into_boxed_slice(), outer_env));
+        let env = gc::alloc_with(vm().c_env, move || Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), outer_env));
         base[1].set(env);
         for &(sl, ei) in is.env_params.iter() {
-            if let Body::Env(vals, _) = &mut obj(env).body { vals[ei as usize] = base[sl as usize].get(); }
+            if let Body::Env(vals, _) = &mut obj(env).body { vals.set(ei as usize, base[sl as usize].get()); }
         }
     } else {
         base[1].set(outer_env);
     }
     std::hint::black_box(tmp);
-    // defaults (run in the callee frame)
+    // defaults (run in the callee frame): static keyword defaults are in place before any other runs (CRuby)
+    for (k, u) in p.kw.iter().zip(&kw_unset) {
+        if *u && k.static_default { if let Some(d) = k.default { run_body(c, d, base)?; } }
+    }
     for (k, (sl, node)) in p.opt.iter().enumerate() {
         if k >= nopt_given { let _ = sl; run_body(c, *node, base)?; }
     }
-    for k in p.kw.iter() {
-        if base[k.slot as usize].get() == UNDEF {
-            base[k.slot as usize].set(NIL);
-            if let Some(d) = k.default { run_body(c, d, base)?; }
-        } else if is.env_size > 0 {
-            // already copied to env by env_params
-        }
+    for (k, u) in p.kw.iter().zip(&kw_unset) {
+        if *u && !k.static_default { if let Some(d) = k.default { run_body(c, d, base)?; } }
     }
     for d in p.destructure.iter() { run_body(c, *d, base)?; }
     Ok(())
@@ -1964,6 +2013,7 @@ pub fn block_fast(b: &Block, argc: usize) -> Option<&'static Iseq> {
     if let BlockKind::Iseq(is) = b.kind {
         let is = unsafe { &*is };
         // extra args are dropped and missing ones are nil; one arg for 2+ params may be an Array to spread
+        // a `->` block entry is only reached as a lambda proc, which the last test excludes
         if !is.bentry.is_null() && !(argc == 1 && is.params.lead.len() >= 2)
             && (b.proc_val == UNDEF || !rproc(b.proc_val).is_lambda) { return Some(is); }
     }
@@ -2007,15 +2057,24 @@ pub fn yield_with_self(c: &mut Ctx, blk: *const Block, args: &[Value], self_: Va
     invoke_block_full(c, &b2, args, std::ptr::null(), self_, false, std::ptr::null(), false)
 }
 
-pub fn call_proc(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block) -> RV {
-    let pd = rproc(p);
-    let b = pd.blk;
-    invoke_block_full(c, &b, args, blk, b.self_, pd.is_lambda, std::ptr::null(), false)
-}
+pub fn call_proc(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block) -> RV { call_proc_kw(c, p, args, blk, false) }
 
 pub fn call_proc_kw(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block, kw: bool) -> RV {
     let pd = rproc(p);
     let b = pd.blk;
+    // a `->` lambda called with its exact arity: its block entry (lambda frame, sizes baked)
+    if let BlockKind::Iseq(is) = b.kind {
+        let is = unsafe { &*is };
+        if is.kind == IseqKind::Lambda && !is.bentry.is_null() && !kw && blk.is_null() && args.len() == is.params.lead.len() {
+            let base = c.top();
+            stack_check(c, is.nlocals as usize + args.len() + 16)?;
+            put(base, 2, args);
+            c.call_blk = &b;
+            let r = run_body(c, is.bentry, base);
+            c.set_sp(base, 0);
+            return r;
+        }
+    }
     invoke_block_full(c, &b, args, blk, b.self_, pd.is_lambda, std::ptr::null(), kw)
 }
 

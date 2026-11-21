@@ -140,7 +140,7 @@ use crate::symbol::s;
 // Entry of a required-params-only method: frame setup with its sizes baked in.  me / block come in ca:
 // from a call that compiled the entry in, or from c.call_* (CallArgs).  flags: ME_* (vm.rs), decided by the compiler.
 
-// Entry of a block with only required params run as a plain block (run_block_fast): frame setup with
+// Entry of a block with only required params run as a plain block (run_block_fast; a `->` lambda: call_proc_kw): frame setup with
 // its sizes baked in.  The Block comes in ca.blk (CallArgs), the arguments are at fp[2..], sp is at the base.
 
 
@@ -906,12 +906,23 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mu
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_call_kw<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, ci: CiRef, cc: &mut CallCache) -> RV {
+pub fn EVAL_node_call_kw<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32, ci: CiRef, cc: &mut CallCache, callee_hash: u64, kind: u32) -> RV {
     let k = <D_args as DispList>::len(args);
-    let base = stage(c, 3 + k)?;
+    let base = stage(c, 2 + k)?;
     base[0].set(<D_recv as Disp>::call(c, recv, fp)?);
     for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
     unsafe { (*c.frame).line = line; }
+    // baked: the callee's kentry compiled in (every keyword passed in declared order, no block literal)
+    if callee_hash != 0 {
+        let r0 = base[0].get();
+        if spec_hit(cc, r0, kind) {
+            let callee_fp = frame(c, base)?;
+            let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp, CallArgs::new(cc.me as *const MethodEntry, std::ptr::null()));
+            c.set_sp(base, 0);
+            return r;
+        }
+        return srb_call_kw_spec(c, cc, mid, base, k, ci, flags, fp, callee_hash);
+    }
     srb_call_kw(c, cc, mid, base, k, ci, flags, fp)
 }
 
@@ -1358,9 +1369,12 @@ pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlo
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_block_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, flags: u32, line: u32, body: NodePtr, ca: CallArgs) -> RV {
     let b = unsafe { &*ca.blk };
+    // a lambda (ME_LAMBDA, called with its exact arity) is its own return target
+    let lambda = flags & ME_LAMBDA != 0;
+    let id = if lambda { c.next_serial() } else { b.home_id };
     // iseq null: Frame::iseq() takes it from self_blk when asked
     let mut fr = FrameFull {
-        h: Frame { prev: c.frame, fp: head(fp), me: b.me, blk: b.outer_blk, id: b.home_id, line, kind: FK_BLOCK, visi: VISI_PUBLIC, lite: false, pad: 0 },
+        h: Frame { prev: c.frame, fp: head(fp), me: b.me, blk: b.outer_blk, id, line, kind: if lambda { FK_LAMBDA } else { FK_BLOCK }, visi: VISI_PUBLIC, lite: false, pad: 0 },
         cref: b.cref, iseq: std::ptr::null(), self_blk: b, defined_class: b.defined_class,
     };
     fp[0].set(b.self_);
@@ -1376,7 +1390,9 @@ pub fn EVAL_node_block_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nloc
     c.frame = fr.prev;
     match r {
         Ok(v) => Ok(v),
-        Err(e) => if c.esc == EscKind::Next { c.esc = EscKind::None; Ok(c.esc_val) } else { Err(e) },
+        Err(e) => if c.esc == EscKind::Next || (lambda && ((c.esc == EscKind::Return && c.esc_tag == id) || (c.esc == EscKind::Break && c.esc_tag == b.tag))) {
+            c.esc = EscKind::None; Ok(c.esc_val)
+        } else { Err(e) },
     }
 }
 
