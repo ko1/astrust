@@ -95,10 +95,14 @@ fn gc_config(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
 }
 fn k_global_variables(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     let out = c.ary_new();
-    let mut names: Vec<Vec<u8>> = c.vm().globals.keys().map(|k| sym_bytes(*k).to_vec()).collect();
+    // the built-in names first (CRuby's order), then the others by name: the table's own order is a hash order
+    let mut user: Vec<Vec<u8>> = c.vm().globals.keys().map(|k| sym_bytes(*k).to_vec()).collect();
+    user.sort();
+    let mut names: Vec<Vec<u8>> = vec![];
     for n in ["$0", "$PROGRAM_NAME", "$:", "$LOAD_PATH", "$\"", "$LOADED_FEATURES", "$$", "$*", "$?", "$!", "$@", "$~", "$&", "$`", "$'", "$+", "$VERBOSE", "$DEBUG", "$FILENAME", "$<", "$,", "$;", "$.", "$_", "$-w", "$-v", "$-d", "$-I", "$-0", "$-a", "$-i", "$-l", "$-p", "$stdin", "$stdout", "$stderr", "$>", "$/", "$\\"] {
-        if !names.iter().any(|x| x == n.as_bytes()) { names.push(n.as_bytes().to_vec()); }
+        names.push(n.as_bytes().to_vec());
     }
+    for u in user { if !names.contains(&u) { names.push(u); } }
     for n in names { c.ary_push(out, Value::sym(intern(&n))); }
     Ok(out)
 }
