@@ -78,6 +78,12 @@ pub fn new_io(c: &mut Ctx, klass: Value, fd: i32, path: &[u8], r: bool, w: bool)
     let io = opened(fd, path, r, w);
     c.alloc(klass, Body::Data(Box::new(io)))
 }
+/// IO#dup / #clone: a blank IO of the class; initialize_copy dups the descriptor.
+pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
+    if !is_io(c, v) { return Ok(None); }
+    let k = real_class_of(v);
+    Ok(Some(c.alloc(k, Body::Data(Box::new(blank())))))
+}
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     if crate::builtins::inherits(klass, c.vm().c_io) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(blank()))))); }
     Ok(None)
@@ -518,12 +524,18 @@ fn io_write_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> 
     io_flush_one(io);
     let fd = out_fd(io);
     if fd == 1 { out_flush(); }
-    if !wait_fd(fd, sys::POLLOUT, 0) {
-        if !exc { return Ok(sym_value("wait_writable")); }
-        return Err(wait_error(c, "EAGAINWaitWritable", "write would block"));
-    }
+    // the fd stays in non-blocking mode, as rb_io_set_nonblock leaves it
+    let fl = sys::fcntl(fd, sys::F_GETFL, 0);
+    if fl >= 0 && fl & sys::O_NONBLOCK == 0 { sys::fcntl(fd, sys::F_SETFL, fl | sys::O_NONBLOCK); }
     let n = sys::write(fd, c.str_bytes(sv));
-    if n < 0 { return Err(raise_errno(c, sys::errno(), "")); }
+    if n < 0 {
+        let e = sys::errno();
+        if e == sys::EAGAIN {
+            if !exc { return Ok(sym_value("wait_writable")); }
+            return Err(wait_error(c, "EAGAINWaitWritable", "write would block"));
+        }
+        return Err(raise_errno(c, e, ""));
+    }
     Ok(Value::fix(n as i64))
 }
 fn io_sysread(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -1128,8 +1140,17 @@ fn io_s_popen(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if r.is_err() { c.esc = ek; c.esc_val = ev; }
     r
 }
+/// rb_time_interval for IO.select: milliseconds, -1 for none (nil) or an infinite one.
+fn select_timeout(c: &mut Ctx, v: Option<&Value>) -> Result<i32, Esc> {
+    let t = match v { Some(&t) if t != NIL => t, _ => return Ok(-1) };
+    if !crate::numeric::is_numeric(t) { return type_err(c, format!("can't convert {} into time interval", crate::builtins::kernel::class_name_for_err(t))); }
+    let f = crate::builtins::numeric_methods::to_f(c, t)?;
+    if f.is_nan() { return err(c, c.vm().c_range_error, "NaN out of Time range"); }
+    if f < 0.0 { return arg_err(c, "time interval must not be negative"); }
+    Ok(if f * 1000.0 >= i32::MAX as f64 { -1 } else { (f * 1000.0).ceil() as i32 })
+}
 fn io_s_select(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
-    let ms = timeout_ms(c, a.get(3))?;
+    let ms = select_timeout(c, a.get(3))?;
     let mut pfds: Vec<sys::PollFd> = vec![];
     let mut who: Vec<(usize, Value)> = vec![];
     let out = [c.ary_new(), c.ary_new(), c.ary_new()];
@@ -1150,6 +1171,16 @@ fn io_s_select(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
         }
     }
     out_flush();
+    // with other threads: they run while this one waits
+    if crate::builtins::thread::active(c) && !ready_now && ms != 0 {
+        let deadline = if ms < 0 { None } else { Some(std::time::Instant::now() + std::time::Duration::from_millis(ms as u64)) };
+        let mut got = 0;
+        crate::builtins::thread::block_on(c, |_| { got = sys::poll(&mut pfds, 0); Ok(got != 0) }, deadline, false, true)?;
+        if got < 0 { return Err(raise_errno(c, sys::errno(), "select(2)")); }
+        if got == 0 { return Ok(NIL); }
+        for (p, (k, v)) in pfds.iter().zip(who.iter()) { if p.revents != 0 { c.ary_push(out[*k], *v); } }
+        return Ok(res);
+    }
     let n = loop {
         let n = sys::poll(&mut pfds, if ready_now { 0 } else { ms });
         if n < 0 && sys::errno() == sys::EINTR { crate::builtins::process::run_pending_signals(c)?; continue; }
