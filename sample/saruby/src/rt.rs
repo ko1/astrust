@@ -7,7 +7,7 @@ use crate::string::*;
 use crate::symbol::{intern, s, sym_str};
 use crate::value::*;
 use crate::vm::*;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
 
 // ---- redefinition flags for operator fast paths -----------------------------------------
 
@@ -44,7 +44,7 @@ pub const R_STR_LTLT: u32 = 1 << 29;
 pub const R_FLO_POW: u32 = 1 << 30;
 pub const R_IMM_EQ: u32 = 1 << 31;
 
-pub static mut REDEF: u32 = 0;
+pub static REDEF: AtomicU32 = AtomicU32::new(0);
 pub static mut BOOTED: bool = false;
 
 // Integer#+ - * / % < <= > >= == & | << >> ^: the fixnum paths of operator nodes test all of them at once
@@ -53,8 +53,8 @@ pub const R_INT_ALL: u32 = R_INT_PLUS | R_INT_MINUS | R_INT_MUL | R_INT_DIV | R_
     | R_INT_GE | R_INT_EQ | R_INT_AND | R_INT_OR | R_INT_LSHIFT | R_INT_RSHIFT | R_INT_XOR;
 
 #[inline(always)]
-pub fn redef(f: u32) -> bool { unsafe { REDEF & f != 0 } }
-pub fn redef_word() -> u32 { unsafe { REDEF } }
+pub fn redef(f: u32) -> bool { REDEF.load(Relaxed) & f != 0 }
+pub fn redef_word() -> u32 { REDEF.load(Relaxed) }
 
 /// Called when a method is (re)defined after boot: disable affected fast paths.
 pub fn note_redefinition(c: &mut Ctx, klass: Value, mid: Sym) {
@@ -83,7 +83,7 @@ pub fn redef_note(klass: Value, mid: Sym) -> bool {
         (vm.c_nil, s::eq, R_IMM_EQ), (vm.c_true, s::eq, R_IMM_EQ), (vm.c_false, s::eq, R_IMM_EQ), (vm.c_symbol, s::eq, R_IMM_EQ),
     ];
     for &(k, m, f) in table {
-        if m == mid && (klass == k || ancestors(k).contains(&klass)) { unsafe { REDEF |= f; } }
+        if m == mid && (klass == k || ancestors(k).contains(&klass)) { REDEF.fetch_or(f, Relaxed); }
     }
     if redef_word() == before { return false; }
     if redef(R_ARY_AREF) { FAST_ARY_AREF.store(0, Relaxed); }
