@@ -178,7 +178,7 @@ fn int_cmp_val(c: &mut Ctx, a: Value, b: Value) -> Result<Option<std::cmp::Order
 
 macro_rules! cfn { ($name:ident, |$c:ident, $s:ident, $a:ident| $body:expr) => {
     #[allow(unused_variables)]
-    fn $name($c: &mut Ctx, $s: Value, $a: &[Value], _b: *const Block) -> RV { $body }
+    pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], _b: *const Block) -> RV { $body }
 }; }
 
 cfn!(int_plus, |c, s, a| int_arith(c, s, a[0], Op::Add));

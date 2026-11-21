@@ -98,6 +98,10 @@ Adopted in koruby_precise and not here yet (ledger slug; mechanism; their number
 7. **case/when class memo** (`saruby-kind-of-site-memo`): hit is `(memo ^ class) <= 1`. casecls 257 → 197.
 8. **Builtin sends inlined at the site** (`saruby-aot-inline-builtin-sends`, about 61 names):
    optcarrot AOT -5%, sudoku -44% instructions.
+   Done for 21 bodies (2026-11-21, `src/inline_builtin.rs`, `docs/design.md` "Calls"): collatz -62 %,
+   array_access -42 %, render_span_kernel -21 %, methodchain -19 % instructions; optcarrot -2.3 % per
+   frame (mostly Integer#[]). Not done: `send` (optcarrot's largest builtin call left, 20K per frame),
+   `a[i, n] = x`, `rotate!`, builtins taking a block (`times`, `each`), polymorphic sites.
 9. **String append / interpolation in place** (`saruby-str-shl-inplace`, `-interp-piece-inplace`),
    strscan with String patterns as memcmp (`saruby-strscan-*`).
 10. **Same-method polymorphism** (`saruby-ic-same-method-poly`): keep the key when subclasses reach

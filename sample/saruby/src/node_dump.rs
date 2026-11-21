@@ -670,6 +670,7 @@ fn DUMP_node_call(out: &mut String, n: NodePtr) {
     out.push(' '); 
     out.push(' '); 
     out.push(' '); 
+    out.push(' '); 
     out.push(')');
     }
 }
