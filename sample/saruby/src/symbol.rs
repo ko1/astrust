@@ -8,7 +8,7 @@
 // before its id is handed out.
 #![forbid(unsafe_code)]
 use crate::value::Sym;
-use std::collections::HashMap;
+use crate::fxhash::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -39,7 +39,8 @@ fn with_map<R>(f: impl FnOnce(&mut Map) -> R) -> R {
 }
 #[cold]
 fn new_map() -> Map {
-    let mut m = Map { ids: HashMap::new(), n: 0 };
+    // ~1600 symbols exist after boot; 1700 is what 2048 buckets hold
+    let mut m = Map { ids: HashMap::with_capacity_and_hasher(1700, Default::default()), n: 0 };
     for s in PREDEF { add(&mut m, s.as_bytes()); }
     m
 }
