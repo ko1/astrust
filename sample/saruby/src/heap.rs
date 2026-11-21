@@ -342,7 +342,7 @@ impl Global {
     }
 }
 
-// ---- method layer: envs (binding.rs) -------------------------------------
+// ---- method layer: envs (binding.rs), boot (builtins/mod.rs) -------------------------------------
 
 impl Ctx {
     /// The env `hops` levels out from `env`.
@@ -356,4 +356,13 @@ impl Ctx {
     pub fn env_set(&mut self, env: Value, i: u32, x: Value) {
         match body_mut(self, env) { Body::Env(v, _) => v.set(i as usize, x), _ => wrong_kind(env, "an env") }
     }
+}
+
+/// Install the VM and run the boot sequence on it: once, before any `Ctx` exists.
+pub fn boot_vm(v: Box<Vm>, boot: impl FnOnce(&mut Vm)) {
+    static BOOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    assert!(!BOOTED.swap(true, std::sync::atomic::Ordering::SeqCst), "saruby: VM booted twice");
+    // SAFETY: the only write of VM (flag above), before any Ctx; boot's legacy vm() calls alias it as before
+    let vm = unsafe { let p = &raw mut crate::vm::VM; *p = Some(v); (*p).as_deref_mut().unwrap() };
+    boot(vm);
 }
