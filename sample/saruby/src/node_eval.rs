@@ -884,7 +884,7 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, H_line: crate::vm::Lin
     let base = stage(c, 2 + k)?;
     let r0 = <D_recv as Disp>::call(c, recv, fp)?;
     base[0].set(r0);
-    for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
+    <D_args as DispList>::each(c, args, fp,  |c, i, v| { base[2 + i].set(v); Ok(()) })?;
     line.store(c.frame());
     // with arguments in between, reading the slot back is cheaper than keeping the receiver live
     let r0 = if k == 0 { r0 } else { base[0].get() };
@@ -946,7 +946,7 @@ pub fn EVAL_node_call_kw<D_recv: Disp, D_args: DispList, H_line: crate::vm::Line
     let k = <D_args as DispList>::len(args);
     let base = stage(c, 2 + k)?;
     base[0].set(<D_recv as Disp>::call(c, recv, fp)?);
-    for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
+    <D_args as DispList>::each(c, args, fp,  |c, i, v| { base[2 + i].set(v); Ok(()) })?;
     line.store(c.frame());
     // baked: the callee's kentry compiled in (every keyword passed in declared order, no block literal)
     if callee_hash != 0 {
@@ -1001,7 +1001,7 @@ pub fn EVAL_node_attrasgn<D_recv: Disp, D_args: DispList, H_line: crate::vm::Lin
     let k = <D_args as DispList>::len(args);
     let base = stage(c, 2 + k)?;
     base[0].set(<D_recv as Disp>::call(c, recv, fp)?);
-    for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
+    <D_args as DispList>::each(c, args, fp,  |c, i, v| { base[2 + i].set(v); Ok(()) })?;
     line.store(c.frame());
     let val = base[1 + k].get();
     if kind == SITE_INTERP { call_cached(c, cc, mid, base, k as u32, std::ptr::null(), flags)?; return Ok(val); }
@@ -1039,7 +1039,7 @@ pub fn EVAL_node_yield<D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr
     let blk = unsafe { (*c.frame).blk };
     if blk.is_null() { return srb_no_block(c); }
     let base = stage(c, 2 + k)?;
-    for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
+    <D_args as DispList>::each(c, args, fp,  |c, i, v| { base[2 + i].set(v); Ok(()) })?;
     if callee_hash == 0 { srb_yield_note(yc, blk); return srb_yield_staged(c, blk, base, k as u32); }
     // baked, one block seen: its entry compiled in, guarded by the iseq (yc.fast is set once its hash matched)
     let b = unsafe { &*blk };

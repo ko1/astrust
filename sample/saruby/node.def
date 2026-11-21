@@ -693,7 +693,7 @@ node_call_blk(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym
     let base = stage(c, 2 + k)?;
     let r0 = EVAL_ARG!(c, recv)?;
     base[0].set(r0);
-    for i in 0..k { let v = EVAL_NTH!(c, args, i)?; base[2 + i].set(v); }
+    EVAL_EACH!(c, args, |c, i, v| { base[2 + i].set(v); Ok(()) })?;
     line.store(c.frame());
     // with arguments in between, reading the slot back is cheaper than keeping the receiver live
     let r0 = if k == 0 { r0 } else { base[0].get() };
@@ -755,7 +755,7 @@ node_call_kw(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym,
     let k = EVAL_LEN!(args);
     let base = stage(c, 2 + k)?;
     base[0].set(EVAL_ARG!(c, recv)?);
-    for i in 0..k { let v = EVAL_NTH!(c, args, i)?; base[2 + i].set(v); }
+    EVAL_EACH!(c, args, |c, i, v| { base[2 + i].set(v); Ok(()) })?;
     line.store(c.frame());
     // baked: the callee's kentry compiled in (every keyword passed in declared order, no block literal)
     if SPEC_HASH!(callee) != 0 {
@@ -810,7 +810,7 @@ node_attrasgn(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym
     let k = EVAL_LEN!(args);
     let base = stage(c, 2 + k)?;
     base[0].set(EVAL_ARG!(c, recv)?);
-    for i in 0..k { let v = EVAL_NTH!(c, args, i)?; base[2 + i].set(v); }
+    EVAL_EACH!(c, args, |c, i, v| { base[2 + i].set(v); Ok(()) })?;
     line.store(c.frame());
     let val = base[1 + k].get();
     if kind == SITE_INTERP { call_cached(c, cc, mid, base, k as u32, std::ptr::null(), flags)?; return Ok(val); }
@@ -846,7 +846,7 @@ node_yield(c: &mut Ctx, n: NodePtr, fp: Fp, args: NODES, yc@ref: YieldCache, cal
     let blk = unsafe { (*c.frame).blk };
     if blk.is_null() { return srb_no_block(c); }
     let base = stage(c, 2 + k)?;
-    for i in 0..k { let v = EVAL_NTH!(c, args, i)?; base[2 + i].set(v); }
+    EVAL_EACH!(c, args, |c, i, v| { base[2 + i].set(v); Ok(()) })?;
     if SPEC_HASH!(callee) == 0 { srb_yield_note(yc, blk); return srb_yield_staged(c, blk, base, k as u32); }
     // baked, one block seen: its entry compiled in, guarded by the iseq (yc.fast is set once its hash matched)
     let b = unsafe { &*blk };
