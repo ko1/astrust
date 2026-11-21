@@ -1,4 +1,12 @@
 // Ruby-level prelude and lazily-loaded built-in features.
+// On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
+#![forbid(unsafe_code)]
+#[allow(unused_imports)]
+use crate::heap::no_legacy::*;   // the old accessors cannot be named here
+#[allow(unused_imports)]
+use crate::heap::no_legacy_hn::*;
+#[allow(unused_imports)]
+use crate::heap::no_legacy_str::*;
 use crate::value::*;
 use crate::vm::*;
 
@@ -15,10 +23,8 @@ const LIBS: &[(&str, &str)] = &[lib!("etc"), lib!("timeout"), lib!("monitor"), l
 const NATIVE: &[&str] = &["set", "stringio", "rbconfig", "thread", "fiber", "enumerator", "rational", "complex", "continuation",
     "io/wait", "io/nonblock", "fcntl", "etc.so", "monitor.so", "strscan", "strscan.so", "json", "json/ext", "saruby/errno", "saruby/env", "saruby/rbconfig", "saruby/filetest", "saruby/stat", "saruby/sync"];
 
-/// Constant `name` under `owner` whose native definition runs on first reference.
-pub fn lazy_const(owner: Value, name: &str, feature: &str) {
-    crate::object::rclass(owner).autoload.insert(crate::symbol::intern(name.as_bytes()), crate::string::str_new_frozen(feature.as_bytes()));
-}
+/// Constant `name` under `owner` whose native definition runs on first reference (boot time: builtins/mod.rs).
+pub use crate::builtins::lazy_const;
 pub fn has_feature(name: &str) -> bool { NATIVE.contains(&name) || LIBS.iter().any(|l| l.0 == name) }
 pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
     if let Some(l) = LIBS.iter().find(|l| l.0 == name) {
@@ -27,14 +33,14 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
     }
     // native libraries whose classes are only built on first require
     if name == "strscan" || name == "strscan.so" { crate::builtins::strscan::init(c); }
-    if name == "json" || name == "json/ext" { crate::builtins::json::init(); }
+    if name == "json" || name == "json/ext" { crate::builtins::json::init(c); }
     match name {
-        "saruby/errno" => crate::builtins::exception::define_all_errnos(),
-        "saruby/env" => crate::builtins::env::init(),
+        "saruby/errno" => crate::builtins::exception::define_all_errnos(c),
+        "saruby/env" => crate::builtins::env::init(c),
         "saruby/rbconfig" | "rbconfig" => crate::builtins::misc::rbconfig_init(c),
-        "saruby/filetest" => crate::builtins::file::init_filetest(),
-        "saruby/stat" => crate::builtins::file::init_stat(),
-        "saruby/sync" => crate::builtins::thread::init_sync(),
+        "saruby/filetest" => crate::builtins::file::init_filetest(c),
+        "saruby/stat" => crate::builtins::file::init_stat(c),
+        "saruby/sync" => crate::builtins::thread::init_sync(c),
         _ => {}
     }
     Ok(NIL)
@@ -70,8 +76,8 @@ pub fn stdlib_file(name: &str) -> Option<std::path::PathBuf> {
 }
 
 /// $LOAD_PATH: -I dirs (already added), RUBYLIB.
-pub fn setup_load_path() {
+pub fn setup_load_path(c: &mut Ctx) {
     if let Ok(p) = std::env::var("RUBYLIB") {
-        for d in p.split(':') { let s = crate::string::str_new(d.as_bytes()); crate::array::ary_push(vm().load_path, s); }
+        for d in p.split(':') { let s = c.str_new(d.as_bytes()); let lp = c.vm().load_path; c.ary_push(lp, s); }
     }
 }

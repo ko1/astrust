@@ -171,13 +171,13 @@ pub fn boot() {
     vm.argv = crate::array::ary_new();
     vm.top_cref = new_cref(ob, std::ptr::null());
 
-    exception::init_classes();
+    exception::init_classes(vm);
     let ids = object::init(vm);
     vm.ids.bo_init = ids.bo_init; vm.ids.bo_eq = ids.bo_eq; vm.ids.kernel_hash = ids.kernel_hash; vm.ids.m_eqq = ids.m_eqq; vm.ids.c_new = ids.c_new;
     kernel::init(vm);
     rclass(vm.c_object).autoload.insert(crate::symbol::intern(b"ARGF"), crate::str_legacy::str_new_frozen(b"saruby/argf"));
     proc::init(vm);
-    exception::init();
+    exception::init(vm);
     numeric_methods::init(vm.c_numeric, vm.c_integer, vm.c_float);
     for (nm, v) in numeric_methods::FLOAT_CONSTS { const_set(vm.c_float, crate::symbol::intern(nm.as_bytes()), crate::numeric::float_new(v)); }
     string_methods::init(vm.c_string);
@@ -190,13 +190,13 @@ pub fn boot() {
     let k = enumerator::init(e, vm.c_object, vm.m_enumerable);
     vm.c_enumerator = k.enumerator; vm.c_yielder = k.yielder; vm.c_generator = k.generator;
     vm.c_lazy = k.lazy; vm.c_chain = k.chain; vm.c_arith_seq = k.arith_seq;
-    io::init();
-    process::init();
-    marshal::init();
+    io::init(vm);
+    process::init(vm);
+    vm.m_marshal = marshal::init();
     (vm.c_random, vm.default_random) = random::init(vm);
     binding::init();
-    thread::init();
-    misc::init();
+    thread::init(vm);
+    misc::init(vm);
     prelude::lazy_const(ob, "ENV", "saruby/env");
     prelude::lazy_const(ob, "RbConfig", "saruby/rbconfig");
     encoding::init(vm);
@@ -209,7 +209,17 @@ pub fn boot() {
     vm.c_complex = complex::init(vm);
     enum_native::init(vm.m_enumerable);
     crate::fiber::init();
-    extras::init();
+    extras::init(vm);
+}
+
+/// Constant `name` under `owner` whose native definition (`feature`) runs on first reference; boot time, no context.
+pub fn lazy_const(owner: Value, name: &str, feature: &str) {
+    lazy_consts(owner, &[name], feature);
+}
+/// lazy_const for several names of one feature.
+pub fn lazy_consts(owner: Value, names: &[&str], feature: &str) {
+    let path = crate::str_legacy::str_new_frozen(feature.as_bytes());
+    for n in names { rclass(owner).autoload.insert(crate::symbol::intern(n.as_bytes()), path); }
 }
 
 /// dup/clone of built-in Data objects.
@@ -234,8 +244,8 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     if let Some(r) = io::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = strscan::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = thread::alloc_data(c, klass)? { return Ok(Some(r)); }
-    if let Some(r) = thread::alloc_lock(klass) { return Ok(Some(r)); }
-    if let Some(r) = thread::alloc_queue(klass) { return Ok(Some(r)); }
+    if let Some(r) = thread::alloc_lock(c, klass) { return Ok(Some(r)); }
+    if let Some(r) = thread::alloc_queue(c, klass) { return Ok(Some(r)); }
     Ok(None)
 }
 

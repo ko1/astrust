@@ -203,7 +203,7 @@ fn run_main(o: Opts) -> i32 {
     let vm = vm();
     vm.verbose = if o.warn { TRUE } else { FALSE };
     for d in &o.incdirs { let s = string::str_new(d.as_bytes()); array::ary_push(vm.load_path, s); }
-    builtins::prelude::setup_load_path();
+    builtins::prelude::setup_load_path(&mut c);
     for a in &o.args { let s = string::str_new(a.as_bytes()); array::ary_push(vm.argv, s); }
     aot::init(if o.plain { None } else { Some(&o.store) }, o.aot);
     vm.aot_collect = o.aot;
@@ -245,7 +245,7 @@ fn run_main(o: Opts) -> i32 {
         }
     };
     if o.check_syntax { println!("Syntax OK"); return 0; }
-    builtins::io::setup_data(&src, file);
+    builtins::io::setup_data(&mut c, &src, file);
     if o.dump_ast {
         let mut out = String::new();
         node::dump_node(&mut out, is.body);
@@ -286,7 +286,7 @@ pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
     }
     if builtins::process::run_exit_trap(c).is_err() { status = handle_toplevel_error(c); }
     builtins::kernel::out_flush();
-    builtins::io::flush_all();
+    builtins::io::flush_all(c);
     builtins::process::die_if_signaled();
     status
 }

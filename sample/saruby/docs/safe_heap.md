@@ -35,6 +35,11 @@
   regexp_methods, symbol: 11 more files under `forbid(unsafe_code)`, 974 call sites left,
   `unsafe` 565 -> 485 overall, heap.rs 19 -> 33): the section of that name below. It adds one
   assumption, H5 (the frames below a running builtin are alive), for the frame-chain reads.
+* **Fourth wave** (marshal, thread, io, misc, process, exception, json, file, extras, env,
+  prelude, pp: 12 more files under `forbid(unsafe_code)`, 976 -> 498 call sites left, `unsafe`
+  498 -> 376 overall, `static mut` 36 -> 20): the section of that name below. Every libc call
+  of those files goes through a safe wrapper in `builtins/sys.rs` (8 -> 67 `unsafe`, one
+  justification each); heap.rs gains no `unsafe` (`Global` and `cur_method_name` are safe code).
 
 ## The problem
 
@@ -1125,6 +1130,242 @@ Reading it, per benchmark:
   line did (190.9 against base 188.8 M). Not traced further; the working assumption is code
   placement in libsaruby.so, as the pilot's allocator accident.
 
+## Fourth wave: marshal, thread, io, misc, process, exception, json, file, extras, env, prelude, pp (2026-11-21)
+
+Commits `580e813..52842b4` on top of `e9ece96` (`base` below). Scripts, logs, repros and
+results: `~/ruby/src/trials/2026-11-21-saruby-safe-heap-4/`. The work ran as four parallel
+branches (thread/process, io/file, marshal/json, the rest) on top of two shared commits (sys.rs,
+heap.rs `Global`), merged here; the merge commits record the one-line conflicts.
+
+### What was converted
+
+`heap_audit.rb` columns, before (`e9ece96`) -> after. `unsafe` "before" is at `e9ece96`; the
+first commit (sys.rs wrappers) already moves the libc `unsafe` of these files into sys.rs.
+
+| file | old-accessor call sites | `fn -> &'static mut` | `static mut` | `unsafe` | state |
+|---|---|---|---|---|---|
+| src/builtins/marshal.rs | 80 -> 0 | 0 | 0 | 0 | `forbid(unsafe_code)` |
+| src/builtins/thread.rs | 75 -> 0 | 4 -> 0 (`th`, `thr`, `lk`, `qu`) | 8 -> 0 (LIST, MAIN, CURRENT, C_KILL, C_FATAL: `Global`; ABORT_ALL, REPORT_ALL, HELD: atomics) | 40 -> 0 | `forbid(unsafe_code)` |
+| src/builtins/io.rs | 58 -> 0 | 3 -> 0 (`rio`, `get_io`, `readable`) | 0 | 31 -> 0 | `forbid(unsafe_code)` |
+| src/builtins/misc.rs | 53 -> 0 | 0 | 2 -> 0 (ENC_OBJS removed with dead code, FINALIZERS: `Global`) | 6 -> 0 | `forbid(unsafe_code)` |
+| src/builtins/process.rs | 43 -> 0 | 0 | 3 -> 0 (HANDLERS: `Global`; LAST_STATUS, DIE_SIGNAL: atomics) | 54 -> 0 | `forbid(unsafe_code)` |
+| src/builtins/exception.rs | 43 -> 0 | 0 | 0 | 0 | `forbid(unsafe_code)` |
+| src/builtins/json.rs | 38 -> 0 | 0 | 2 -> 0 (M_JSON, C_STATE: `Global`) | 8 -> 0 | `forbid(unsafe_code)` |
+| src/builtins/file.rs | 37 -> 0 | 0 (`stat_md` returned a `&'static` without `mut`, not counted; gone too) | 1 -> 0 (CHDIR_DEPTH: atomic) | 25 -> 0 | `forbid(unsafe_code)` |
+| src/builtins/extras.rs | 26 -> 0 | 0 | 0 | 13 -> 0 | `forbid(unsafe_code)` |
+| src/builtins/env.rs | 10 -> 0 | 0 | 0 | 4 -> 0 | `forbid(unsafe_code)` |
+| src/builtins/prelude.rs | 3 -> 0 | 0 | 0 | 0 | `forbid(unsafe_code)` |
+| src/builtins/pp.rs | 2 -> 0 | 0 | 0 | 0 | `forbid(unsafe_code)` |
+| src/str_legacy.rs | 21 -> 11 | 0 | 0 | 0 | 7 functions lost their last caller and were removed |
+| src/legacy.rs | 11 -> 10 | 0 | 0 | 0 | `time_from_ns` removed |
+| src/builtins/sys.rs | 0 | 0 | 0 | 8 -> 67 | every libc call of the files above, one safe wrapper each |
+| src/heap.rs | 0 | 0 | 0 | 33 -> 33 | `Global`, `cur_method_name` (safe code) |
+| all files (`heap_audit.rb` total) | 976 -> 498 | 20 -> 13 | 36 -> 20 | 498 -> 376 | |
+
+Edits outside these files, each the smallest that keeps the callers compiling: `builtins/mod.rs`
+(the boot `init`s receive the Vm; `lazy_const` moved there from prelude.rs, which re-exports it,
+plus `lazy_consts`), `lib.rs` (`setup_load_path(&mut c)`, `setup_data(&mut c, ..)`,
+`flush_all(c)`), `random.rs` and `kernel.rs` (one call each: `errno_class(c.vm(), ..)`,
+`last_status(c)`).
+
+### sys.rs: the OS interface
+
+`builtins/sys.rs` was a list of `pub extern "C"` declarations called with `unsafe` from six
+modules. The declarations are now private (`mod ffi`) and each call has a safe wrapper that
+takes Rust types, so the pointers it passes are valid for the call by construction:
+
+* buffers as slices (`read(fd, &mut [u8])`, `write`, `pread`, `pwrite`), `pipe2(&mut [c_int; 2])`,
+  `poll(&mut [PollFd], ms)`, out-parameters as `&mut` (`waitpid`, `clock_gettime`, `getrlimit`,
+  `times`);
+* paths as `&CStr` (`open`, `chmod`, `chown`, `truncate`, `mkfifo`, `chdir`, `utimensat_cwd`);
+* `execvp(&CStr, &[CString])` builds the NULL-terminated array itself;
+* `signal(sig, SigAction::{Default, Ignore, Catch(extern "C" fn(c_int))})` instead of a `usize`
+  handler address;
+* what was open-coded in the callers: `fd_metadata(fd)` (`File::from_raw_fd` in a
+  `ManuallyDrop`, so the borrowed fd is never closed), `read_dir_raw(&CStr)` (opendir / readdir /
+  closedir, each entry copied out before the next readdir), `block_all_signals()`,
+  `set_itimer_real()`, the libm functions of Math (`erf`, `erfc`, `cbrt`, `tgamma`, `lgamma_r`).
+
+Each `unsafe` (67) has a one-line `SAFETY` comment; blocks of wrappers of one shape share a
+block comment that states the obligation once. What remains is the OS interface itself, which
+the wrappers cannot discharge and say so: `fork` (the child either execs at once or runs the
+interpreter thread alone), `setenv` / `unsetenv` / `clearenv` (race with `getenv` in another
+thread; only the interpreter thread touches the environment), `signal` (the handler's own
+contract: `process::on_signal` only sets an atomic), `_exit`.
+
+### Module globals: `heap::Global`
+
+A `static mut X: Value` was read and written with `unsafe` and kept alive by pushing it on
+`Vm.pinned` once. `heap::Global` replaces it without `unsafe`: the Value lives in a slot of
+`Vm.pinned` and the static holds only the slot index (an `AtomicUsize`). `g.get(c)` /
+`g.set(c, v)` go through `c.vm()` / `c.vm_mut()`, `g.set_vm(vm, v)` is the boot form. Since the
+collector visits `Vm.pinned` in place, a moving collector would also update the value, which
+the old statics did not allow. Plain data statics became atomics (`AtomicBool`, `AtomicI32`,
+`AtomicU64` for `LAST_STATUS` with pid and status packed). Cost: an index load and a bounds
+check per read; `thread::active(c)` (two reads and an Array length) is on the IO read path and
+`sleep`, not on any benchmark's hot path.
+
+### Recipe patterns met in this wave
+
+29. **`static mut` holding a Value** -> `static G: Global = Global::new();` set at boot with
+    `G.set_vm(vm, v)` or lazily on first use (`misc::finalizers(c)` makes its Array the first
+    time `define_finalizer` runs, so boot allocates nothing for it).
+30. **A native payload with a buffer** (`RIo`: `Vec<u8>` read and write buffers, a path). Not
+    `Copy`, so pattern 14's snapshot does not apply. The checks run first in a function that
+    returns `Result<(), Esc>` (`check_open`, `readable_check`), the accessor after it returns the
+    `&mut RIo` (`get_io(c, v)?` = check, then `io_mut(c, v)`). After anything that runs Ruby code
+    or lets another thread run (`to_int`, `thread::wait_readable`), the stream is checked again:
+    another thread may have closed it (a bug in base, below).
+31. **A data representation another module reads by name.** exception.rs used to keep each Errno
+    class's message in an ivar `__errmsg` (an allocation per class, which a context-free
+    `errno_class` could not make in a converted file); it now takes the text from the `ERRNOS`
+    table by number. io.rs, converted in parallel, had copied the old `ivar_get(k, "__errmsg")`
+    into its new `raise_errno_at`: it compiled, and would have printed "Unknown error" for every
+    errno. Found while merging, by grepping for the ivar name. Rule: when a conversion drops a
+    field, ivar or table, grep the whole tree for its name; the compiler only sees Rust names.
+32. **Iteration order that depends on symbol ids.** `global_variables` iterated an `FxHashMap`
+    keyed by Symbol; the merged build interns Symbols in another order (which change moved it was
+    not traced: it is a property of the hash, not of a change) and `$stderr` came before `$stdin`
+    in one test. Now the built-in names come first in a fixed order
+    and the rest sorted. Any output built from a Symbol-keyed hash map has this property.
+33. **Boot-time constant Strings without a context** (`RUBY_VERSION`, ...): a small helper that
+    allocates through `crate::gc::alloc` and freezes (pattern 16 of the String side): io.rs
+    `boot_frozen_str` and misc.rs `boot_str`, the same function twice (the two were written in
+    parallel; one can go). Lazy `init`s (`env::init`, `json::init`, `file::init_stat`, `thread::init_sync`,
+    `exception::define_all_errnos`, `misc::rbconfig_init`) run at `require` and take `c`.
+34. **Walking the heap** (`ObjectSpace.each_object`, a dead thread's locks): `gc::each_object`
+    does not allocate, so its closure may use `c` (`c.body_of(v)`, `c.data_mut::<RLock>(v)`); a
+    result is filtered into a `Vec<Value>` before anything allocates and becomes an Array in one
+    `c.ary_from_vec` (the pending body roots it).
+35. **Hash iteration that calls out** (Marshal.dump of a Hash, JSON generate, ENV write-back,
+    WeakMap#each, pp): slot by slot (`c.hash_entry_at(h, i)`), with `hash_iter_enter` /
+    `hash_iter_leave` where CRuby forbids adding keys meanwhile (`marshal::each_pair`); never
+    from a `Vec` of pairs taken up front (pattern 14).
+
+### Bugs found
+
+"base" is `e9ece96`. Each line run alone (`repro/{lead,io_file,marshal_json}.rb`,
+`repro/run.sh`, output in `results/repro.txt`); "now" prints what CRuby 4.0 prints in every row.
+
+| repro | base | now (= CRuby) |
+|---|---|---|
+| `r, w = IO.pipe; w.close; r.read(5, 123)` | SIGSEGV (an Integer read as a String) | TypeError |
+| `r.read(5, "x".freeze)` at EOF | nil | FrozenError |
+| `IO.read(path, -1.5)` | "negative length -9007199254740989 given" (a Float read as a Fixnum) | "negative length -1 given" |
+| a `to_int` that closes the stream during `r.read(o)` | nil (read through a stale reference) | "closed stream" |
+| `r.read(-1)` on a closed stream | "closed stream" | "negative length -1 given" |
+| `File.realpath` / `Dir.pwd` with a latin-1 byte in the name | bytes replaced by U+FFFD (`path_arg` used `from_utf8_unchecked`: undefined behaviour on such bytes) | bytes kept |
+| `File.readlines(dir)`, `File.foreach(dir)` | `[]`, nil | Errno::EISDIR |
+| `IO.readlines(path, chomp: true)` under `SARUBY_GC_STRESS=1` | TypeError (the options Hash was collected) | correct |
+| `JSON.load(src, proc)` | proc called on values only, result ignored | called on keys and values, its result used (json 3.1 `on_load`) |
+| `JSON.load("  ")`, `JSON.load("", nil, allow_blank: false)` | nil | JSON::ParserError |
+| `marshal_dump` / `to_json` that adds a key to the Hash being dumped | dumped silently | "can't add a new key into hash during iteration" |
+| `marshal_dump` that clears its Hash and runs `GC.start` | dumps a freed String (79 bytes) | 18 bytes |
+| `SystemCallError.new("x", 2)`, `SystemCallError.new(2)` | a SystemCallError | an Errno::ENOENT |
+| `SystemCallError.new("x", 9999).message` | "unknown error - x" | "Unknown error 9999 - x" |
+| `SystemCallError.new("message").errno` | the module `Errno` (found as `Object::Errno`) | nil |
+| `SystemExit.new.message`, `SystemExit.new(3).message` | "exit" | "SystemExit" |
+| `RuntimeError.new("a\nb").inspect` | `#<RuntimeError: "a\nb">` | `#<RuntimeError:"a\nb">` |
+
+Closed by construction, not reproduced: `thread::run_pass` iterated a Rust copy of the thread
+list while fibers ran (a thread killed before it started left the list and nothing rooted it);
+`spawn_spec` kept env / option pairs in a `Vec` across `to_str` / `to_path` callbacks; Marshal.dump
+dumped a Hash from a `Vec` of pairs across `marshal_dump`; the JSON parser held a `&'static [u8]`
+into the source String while running callbacks.
+
+Not fixed (differences from CRuby that were there before, outside the safety work):
+`__callee__` of an aliased method returns the original name; `ObjectSpace::WeakMap#inspect`
+inspects its keys; `Exception#detailed_message` / `full_message` formats for some arguments
+(`t/spec/exception_000.rb` lines 5 to 15); `Errno` messages of `Dir.mkdir` say `rb_dir_s_mkdir`
+where CRuby says `dir_s_mkdir`.
+
+### Verification
+
+* `make` and `make FEATURES=raw_stack` without warnings and `ruby tools/heap_audit.rb` exit 0 at
+  every commit (each branch built and audited per commit; merges rebuilt; `scripts/snap.sh`).
+* Per-file output (stdout, stderr, exit status; 60 s limit) of the 244 files of `t/hand`,
+  `t/method`, `t/spec` whose names match the wave's patterns (marshal thread mutex queue condvar
+  monitor io file dir stat process signal fork spawn system trap exception raise rescue ensure
+  retry throw catch json env pp kernel sleep at_exit print puts gets pipe popen select argf
+  pathname errno error objectspace object_space gc weak finaliz rbconfig math filetest warning),
+  base run twice: 227
+  identical; 15 differ between the two base runs (13 of them equal to base after masking hex
+  addresses, numbers of 4+ digits and /tmp paths: `scripts/ndmask.sh`; the other 2,
+  `exception_fixes_1017.rb` and `spec/exception_000.rb`, differ besides in the lines of the
+  exception.rs fixes above, which now print CRuby's output); 2 differ on purpose:
+  `file_read_dir_eisdir.rb` (EISDIR) and `json_object_to_json.rb` line 21 (`on_load`), both now
+  CRuby's output.
+* The same under `SARUBY_GC_STRESS=1` for marshal thread mutex queue io file dir process signal
+  exception raise json env pp objectspace gc weak finaliz (175 files): 159 identical; 11
+  nondeterministic (9 equal after masking, the same 2 exception files); 5 different: the same 2
+  intended changes, `io_class_methods.rb` and `io_universal_newline_read.rb` (the `chomp:`
+  rooting fix: their stress output now equals their normal output, the second up to the 60 s
+  limit it hits in both builds), and `thread_rep_reap_1120.rb` (base needs 57 s alone under
+  stress and timed out under load; final 44 s, the same output as without stress).
+* Panic scan, every file of `t/hand`, `t/spec`, `t/method` (2949), output grepped for
+  `panicked at`: base 0, final 0.
+
+### Cost
+
+`scripts/perf.sh` (trials directory): per benchmark each build bakes once, then the builds run
+interleaved in each of 7 repetitions under `perf stat -e cycles:u,instructions:u`; minimum, in
+millions, and spread (max-min)/min. `final` = 52842b4. Load average 4.6 at the start (18 and 24
+over 5 and 15 minutes: the machine had just come off a load of 40), 4.8 at the end
+(`results/perf.final.1`). object, exception, strfmt, str are rubyharness benchmarks; io_write
+(a File written with `write` / `print` / `<<` and `$stdout.write`), marshal (dump + load of a
+nested structure) and json (generate + parse) are in the trial's `scripts/`, since rubyharness
+has none of that name.
+
+| interp | base ins | final ins | base cyc (spread) | final cyc (spread) | cyc |
+|---|---|---|---|---|---|
+| object | 3509.2 | 3509.3 (0.0 %) | 935.5 (18.6 %) | 939.8 (7.3 %) | +0.5 % |
+| exception | 1419.0 | 1421.0 (+0.1 %) | 451.8 (19.1 %) | 442.7 (4.1 %) | -2.0 % |
+| strfmt | 3267.3 | 3267.4 (0.0 %) | 926.1 (5.7 %) | 990.5 (5.4 %) | +7.0 % |
+| str | 4711.2 | 4711.2 (0.0 %) | 1226.8 (2.8 %) | 1225.2 (9.3 %) | -0.1 % |
+| io_write | 3158.1 | 2874.7 (-9.0 %) | 911.1 (9.1 %) | 762.9 (3.3 %) | -16.3 % |
+| marshal | 8826.1 | 8696.1 (-1.5 %) | 2736.1 (4.3 %) | 2680.6 (2.0 %) | -2.0 % |
+| json | 9600.3 | 8618.9 (-10.2 %) | 2919.9 (91.6 %) | 2574.4 (91.1 %) | -11.8 % |
+
+| AOT | base ins | final ins | base cyc (spread) | final cyc (spread) | cyc |
+|---|---|---|---|---|---|
+| object | 1337.7 | 1337.7 (0.0 %) | 346.8 (2.3 %) | 337.6 (4.2 %) | -2.7 % |
+| exception | 626.4 | 628.5 (+0.3 %) | 199.2 (4.6 %) | 180.8 (11.8 %) | -9.2 % |
+| strfmt | 2216.1 | 2216.2 (0.0 %) | 706.3 (1.5 %) | 729.0 (2.9 %) | +3.2 % |
+| str | 2575.4 | 2575.4 (0.0 %) | 718.7 (3.2 %) | 695.9 (3.9 %) | -3.2 % |
+| io_write | 2622.8 | 2340.1 (-10.8 %) | 721.8 (6.2 %) | 637.3 (5.2 %) | -11.7 % |
+| marshal | 8821.0 | 8694.6 (-1.4 %) | 2780.0 (4.9 %) | 2677.2 (9.4 %) | -3.7 % |
+| json | 9597.0 | 8610.9 (-10.3 %) | 2898.4 (3.9 %) | 2579.8 (4.2 %) | -11.0 % |
+
+Every benchmark prints the same output with both builds. Reading it, per benchmark:
+
+* **io_write (-9 % / -11 % instructions)**: `IO#write` / `print` / `<<` look the IO up once and
+  write a String's bytes from the borrow, without copying them into a `Vec` first (the old code
+  copied them).
+  Cycles follow (-16 % / -12 %, beyond the spreads).
+* **json (-10 %)**: the generator writes each String's bytes under one borrow instead of copying
+  them, and no longer copies the indent / newline settings per value. Cycles follow in AOT
+  (spread 4 %); the interpreter's spread (91 %) says one repetition of each was disturbed, the
+  minimum is still the better estimate.
+* **marshal (-1.5 %)**: not broken down (dump now reads each body once by value and walks Hashes
+  slot by slot; load copies the source bytes once); cycles -2 % / -4 %, inside the spreads.
+* **object, str (equal instructions)**: nothing of this wave is on their paths. Cycles within
+  their spreads.
+* **exception (+2.0 M, +0.1 % / +0.3 % instructions)**: callgrind on a 2-iteration run
+  (`results/callgrind.exception.diff`): +12.5 instructions per raise, none of them in a
+  function of the converted files. `core::ptr::drop_glue::<Body>` is a separate function in the
+  final build (inlined into `gc::drop_body` in base) and `fiber::on_free` costs 8 more per
+  call; both are unchanged code, so this is inlining across codegen units moving, the effect
+  recorded for the pilot and the String side. Cycles: lower in both modes, inside the spreads.
+* **strfmt (equal instructions, more cycles)**: interp +7.0 % in the run above, then +0.6 % and
+  +0.9 % alone (11 and 15 repetitions, `results/perf.strfmt.{2,3}`): not reproducible. AOT
+  +3.2 %, +3.9 %, +2.2 % in the three runs, spreads 1.5 to 8 %: consistent in sign, at the size
+  of the spread. A `cycles:u` profile of both AOT builds has the same functions with the same
+  shares (`rt::srb_dstr_append` 46 %, memmove 16 to 17 %, the baked code 13 to 14 %,
+  `str_legacy::str_new_enc` 8 to 9 %): rt.rs and the baked code are untouched, `str_new_enc`
+  is unchanged (str_legacy.rs only lost other functions). Not resolved; with nothing of this
+  wave on the path, the candidates are code placement in `libsaruby.so` (as the third wave's
+  bignum case) or the load. A quiet machine (sp4) would decide it; here cycles cannot.
+
 ## Recipe: converting one module
 
 `ruby tools/heap_audit.rb` shows what a file still uses. For a module `m.rs`:
@@ -1342,12 +1583,20 @@ strscan.rs, symbol_methods.rs):
     dead code, but only if the accessor is inlined into that function; out of line,
     `Array#include?` paid 8 instructions per element for it (benchmark strcmp).
 
-Met in the third wave: patterns 21 to 28 in "Third wave", above.
+Met in the third wave: patterns 21 to 28 in "Third wave", above. Met in the fourth wave:
+patterns 29 to 35 in "Fourth wave", above.
 
 ## What is still open
 
-* The call sites in the table below: rt.rs (188), vm.rs (167), marshal.rs (80), thread.rs (75),
-  io.rs (58), misc.rs (53), process.rs (43), exception.rs (43), json.rs (38), file.rs (37), ...
+* The call sites in the table below (498, after the fourth wave): rt.rs (188), vm.rs (167),
+  builtins/mod.rs (26, the boot sequence), object.rs (25), node.def (25), fiber.rs (17),
+  binding.rs (15), lib.rs (11), str_legacy.rs (11), legacy.rs (10), gc.rs (2), aot.rs (1). Every
+  module under `src/builtins/` but mod.rs and binding.rs is converted.
+* The OS interface: `builtins/sys.rs` (67 `unsafe`, each a wrapper with its justification). What
+  the wrappers cannot discharge is listed in "Fourth wave": `fork`, the environment functions,
+  `signal`.
+* `heap::Global` values live in `Vm.pinned` slots, which nothing ever frees: fine for the module
+  globals it replaces, not a general handle mechanism.
 * The frame surface. Converted modules read the chain through `caller_frame` / `cur_frame` and
   write it only through `set_caller_visi` / `set_caller_cref`, but `Ctx::frame() -> &'static mut Frame`
   and the raw `*const Block` / `*const MethodEntry` / `*const Cref` graph stay as they are in
@@ -1355,7 +1604,7 @@ Met in the third wave: patterns 21 to 28 in "Third wave", above.
   (`me_set_visi`, the frame setters) assume the evaluator holds no Rust reference to the same
   frame or entry across the builtin's call; that is not checked.
 * `static mut VM` (`vm()`), `static mut REFINEMENTS_ON`, and the other `static mut` of vm.rs,
-  gc.rs, fiber.rs, thread.rs, process.rs (36 left).
+  gc.rs, fiber.rs, kalloc.rs, object.rs, rt.rs, aot.rs (20 left; the builtins have none).
 * A converted module still calls context-free functions of unconverted ones while holding no
   borrow: `ivar_get` / `ivar_set_raw`, `const_set`, `respond_to`, `new_module` / `new_class`
   (allocate without the context), `crate::string::str_to_inum` (may allocate a bignum: callers
@@ -1373,7 +1622,7 @@ Met in the third wave: patterns 21 to 28 in "Third wave", above.
 
 ## Remaining work per file
 
-`ruby tools/heap_audit.rb --md` at 866baed (after the third wave; regenerate after a merge).
+`ruby tools/heap_audit.rb --md` at 52842b4 (after the fourth wave; regenerate after a merge).
 Columns: call sites of each old accessor (`rstr` includes `str_bytes`, `rproc` includes
 `rmethod`, `ary_*` are the context-free array functions of object.rs); `sum`; functions of the
 file that return `&'static mut`; `static mut` declarations; `unsafe` occurrences (comments
@@ -1392,25 +1641,25 @@ file that imports `heap::no_legacy_str` is checked for them.
 | src/builtins/encoding.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/enum_native.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/enumerator.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
-| src/builtins/env.rs |      1 |      0 |      3 |      0 |      0 |      0 |      0 |      0 |      0 |      4 |      2 |    10 |                0 |          0 |      4 |  |
-| src/builtins/exception.rs |      0 |      0 |     12 |      0 |      2 |      0 |      0 |      0 |      0 |     14 |     15 |    43 |                0 |          0 |      0 |  |
-| src/builtins/extras.rs |      0 |      0 |      1 |      0 |      3 |      0 |      0 |      0 |      0 |      9 |     13 |    26 |                0 |          0 |     13 |  |
-| src/builtins/file.rs |      0 |      0 |      4 |      0 |      1 |      0 |      0 |      6 |      0 |     13 |     13 |    37 |                0 |          1 |     25 |  |
+| src/builtins/env.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
+| src/builtins/exception.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
+| src/builtins/extras.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
+| src/builtins/file.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/hash_methods.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
-| src/builtins/io.rs |      0 |      0 |     23 |      0 |      1 |      0 |      0 |      1 |      0 |     11 |     22 |    58 |                3 |          0 |     31 |  |
-| src/builtins/json.rs |      6 |      0 |     10 |      0 |      0 |      0 |      1 |      0 |      0 |      6 |     15 |    38 |                0 |          2 |      8 |  |
+| src/builtins/io.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
+| src/builtins/json.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/kernel.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
-| src/builtins/marshal.rs |      9 |      4 |     13 |      1 |     10 |      0 |      0 |      0 |      0 |     26 |     17 |    80 |                0 |          0 |      0 |  |
+| src/builtins/marshal.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/math.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
-| src/builtins/misc.rs |      1 |      2 |      9 |      1 |      1 |      0 |      1 |      4 |      0 |     31 |      3 |    53 |                0 |          2 |      6 |  |
-| src/builtins/mod.rs |      3 |      0 |      0 |      0 |     17 |      0 |      0 |      0 |      0 |      4 |      1 |    25 |                0 |          0 |      2 |  |
+| src/builtins/misc.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
+| src/builtins/mod.rs |      3 |      0 |      0 |      0 |     18 |      0 |      0 |      0 |      0 |      4 |      1 |    26 |                0 |          0 |      2 |  |
 | src/builtins/module.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/numeric_methods.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/object.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
-| src/builtins/pp.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      2 |      0 |     2 |                0 |          0 |      0 |  |
-| src/builtins/prelude.rs |      0 |      0 |      0 |      0 |      1 |      0 |      0 |      0 |      0 |      1 |      1 |     3 |                0 |          0 |      0 |  |
+| src/builtins/pp.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
+| src/builtins/prelude.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/proc.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
-| src/builtins/process.rs |      0 |      3 |      5 |      0 |      0 |      0 |      0 |      0 |      0 |     25 |     10 |    43 |                0 |          3 |     54 |  |
+| src/builtins/process.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/random.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/range_methods.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/rational.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
@@ -1421,28 +1670,28 @@ file that imports `heap::no_legacy_str` is checked for them.
 | src/builtins/strscan.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/structs.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/symbol_methods.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
-| src/builtins/sys.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      8 |  |
-| src/builtins/thread.rs |      0 |     10 |      1 |      0 |      4 |      0 |      0 |      6 |      0 |     29 |     25 |    75 |                4 |          8 |     40 |  |
+| src/builtins/sys.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |     67 |  |
+| src/builtins/thread.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/builtins/time.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/compile.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      6 |  |
 | src/fiber.rs |      0 |      1 |      0 |      0 |      1 |      1 |      0 |      2 |      0 |      2 |     10 |    17 |                2 |          6 |     21 |  |
-| src/gc.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      2 |     2 |                1 |          3 |     14 |  |
+| src/gc.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      2 |     2 |                1 |          3 |     16 |  |
 | src/hash.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/heap.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |     33 |  |
 | src/kalloc.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          5 |     12 |  |
-| src/legacy.rs |      3 |      0 |      0 |      0 |      0 |      0 |      2 |      0 |      0 |      0 |      6 |    11 |                0 |          0 |      0 |  |
+| src/legacy.rs |      3 |      0 |      0 |      0 |      0 |      0 |      2 |      0 |      0 |      0 |      5 |    10 |                0 |          0 |      0 |  |
 | src/lib.rs |      0 |      1 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      2 |      8 |    11 |                0 |          0 |      2 |  |
 | src/numeric.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
-| src/object.rs |      9 |      4 |      1 |      5 |      0 |      0 |      0 |      0 |      0 |      0 |      5 |    24 |                7 |          1 |      7 |  |
+| src/object.rs |      9 |      5 |      1 |      5 |      0 |      0 |      0 |      0 |      0 |      0 |      5 |    25 |                7 |          1 |      7 |  |
 | src/prism.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      1 |  |
 | src/range.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/regexp.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
-| src/rt.rs |     22 |     50 |      9 |      4 |     30 |      1 |      0 |      0 |      0 |     14 |     58 |   188 |                0 |          2 |     65 |  |
+| src/rt.rs |     22 |     50 |      9 |      4 |     30 |      1 |      0 |      0 |      0 |     14 |     58 |   188 |                0 |          2 |     68 |  |
 | src/sbuf.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |     10 |  |
 | src/stack_raw.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      5 |  |
-| src/str_legacy.rs |      3 |      0 |     11 |      0 |      0 |      0 |      0 |      0 |      0 |      2 |      5 |    21 |                0 |          0 |      0 |  |
+| src/str_legacy.rs |      1 |      0 |      7 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      3 |    11 |                0 |          0 |      0 |  |
 | src/string.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |      0 | converted, forbid(unsafe_code) |
 | src/value.rs |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |      0 |     0 |                0 |          0 |     11 |  |
-| src/vm.rs |     24 |      3 |      2 |      5 |     61 |     10 |      0 |      1 |      1 |      7 |     53 |   167 |                2 |          2 |     70 |  |
-| node.def |     12 |      0 |      2 |      0 |      0 |      0 |      0 |      0 |      0 |      3 |      7 |    24 |                0 |          0 |     24 |  |
-| total |     93 |     78 |    107 |     16 |    132 |     13 |      4 |     21 |      1 |    208 |    301 |   974 |               20 |         36 |    485 |  |
+| src/vm.rs |     24 |      3 |      2 |      5 |     61 |     10 |      0 |      1 |      1 |      7 |     53 |   167 |                2 |          2 |     75 |  |
+| node.def |     12 |      0 |      2 |      0 |      0 |      1 |      0 |      0 |      0 |      3 |      7 |    25 |                0 |          0 |     27 |  |
+| total |     74 |     60 |     22 |     14 |    110 |     14 |      2 |      4 |      1 |     35 |    162 |   498 |               13 |         20 |    376 |  |

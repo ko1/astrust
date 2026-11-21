@@ -309,3 +309,35 @@ impl Ctx {
         if !cr.is_null() { unsafe { (*(cr as *mut Cref)).refinements = refs; } }   // SAFETY: crefs are never freed
     }
 }
+
+// ---- fourth wave: module-global Values ----------------------------------------------------------
+
+impl Ctx {
+    /// Name of the method entry the running builtin was called as (one cfunc under several names).
+    #[inline]
+    pub fn cur_method_name(&self) -> Option<Sym> { self.cur_frame().and_then(|f| self.me_ref(f.me)).map(|m| m.name) }
+}
+
+/// A Value owned by a module for the life of the VM (a class it defines, a table): a slot of
+/// `Vm.pinned`, which the collector visits (and would update if it moved objects), found by an
+/// index kept in an atomic. Replaces `static mut X: Value`; no `unsafe`.
+pub struct Global(std::sync::atomic::AtomicUsize);   // index + 1; 0: not set (reads as nil)
+impl Global {
+    pub const fn new() -> Global { Global(std::sync::atomic::AtomicUsize::new(0)) }
+    #[inline(always)]
+    pub fn get(&self, c: &Ctx) -> Value { self.get_vm(c.vm()) }
+    #[inline]
+    pub fn get_vm(&self, vm: &Vm) -> Value {
+        match self.0.load(std::sync::atomic::Ordering::Relaxed) { 0 => NIL, i => vm.pinned[i - 1] }
+    }
+    #[inline]
+    pub fn set(&self, c: &mut Ctx, v: Value) { self.set_vm(c.vm_mut(), v) }
+    /// Boot-time form (no context yet; `builtins::boot` passes the Vm).
+    pub fn set_vm(&self, vm: &mut Vm, v: Value) {
+        use std::sync::atomic::Ordering::Relaxed;
+        match self.0.load(Relaxed) {
+            0 => { vm.pinned.push(v); self.0.store(vm.pinned.len(), Relaxed); }
+            i => vm.pinned[i - 1] = v,
+        }
+    }
+}
