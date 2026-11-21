@@ -834,12 +834,16 @@ cfn!(a_sample, |c, slf, a, blk| {
         for i in 0..n { let r = upto(c, len - i)? + i; max_idx = max_idx.max(r); picks.push(r); }
         len = c.ary_len(slf);
         if len <= max_idx { n = 0; } else { n = n.min(len); }
-        let mut memo: crate::fxhash::HashMap<usize, usize> = Default::default();
+        // open addressing (<= n keys, load <= 1/2): a HashMap instance here moved rustc's codegen split and slowed map/select
+        let cap = (2 * n + 2).next_power_of_two();
+        let (mut keys, mut vals) = (vec![usize::MAX; cap], vec![0usize; cap]);
+        let slot = |keys: &[usize], k: usize| { let mut p = (k.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 40) & (cap - 1); while keys[p] != usize::MAX && keys[p] != k { p = (p + 1) & (cap - 1); } p };
         let mut out = Vec::with_capacity(n);
         for (i, &j) in picks[..n].iter().enumerate() {
-            let i2 = memo.get(&i).copied().unwrap_or(i);
-            let j2 = memo.get(&j).copied().unwrap_or(j);
-            memo.insert(j, i2);
+            let (pi, pj) = (slot(&keys, i), slot(&keys, j));
+            let i2 = if keys[pi] == i { vals[pi] } else { i };
+            let j2 = if keys[pj] == j { vals[pj] } else { j };
+            keys[pj] = j; vals[pj] = i2;
             out.push(c.ary_get(slf, j2));
         }
         return Ok(c.ary_from_vec(out));
