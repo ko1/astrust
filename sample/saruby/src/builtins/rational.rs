@@ -582,7 +582,11 @@ fn conv_arg(c: &mut Ctx, v: Value, raise: bool) -> Result<Option<Value>, Esc> {
     }
     if !is_kind_of(v, c.vm().c_numeric) && v.is_heap() {
         if respond_to(v, intern(b"to_r"), true) {
-            let r = funcall(c, v, intern(b"to_r"), &[], std::ptr::null())?;
+            // exception: false also swallows what #to_r raises (rb_protect)
+            let r = match funcall(c, v, intern(b"to_r"), &[], std::ptr::null()) {
+                Err(_) if !raise && c.esc == EscKind::Raise => { c.esc = EscKind::None; return Ok(None); }
+                r => r?,
+            };
             if is_rational(c, r) { return Ok(Some(r)); }
             let cn = class_name_for_err(v);
             return type_err(c, format!("can't convert {} to Rational ({}#to_r gives {})", cn, cn, class_name_for_err(r)));
@@ -648,10 +652,7 @@ fn k_rational(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let (n, raise) = kw_exception(c, a)?;
     let a = &a[..n];
     check_argc(c, a, 1, 2)?;
-    match convert_rational(c, a[0], a.get(1).copied(), raise) {
-        Err(_) if !raise && c.esc == EscKind::Raise => { c.esc = EscKind::None; Ok(NIL) }
-        r => r,
-    }
+    convert_rational(c, a[0], a.get(1).copied(), raise)
 }
 
 fn int_to_r(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(rat_raw(c, s, Value::fix(1))) }
