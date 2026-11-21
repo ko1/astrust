@@ -176,6 +176,13 @@ cfn!(a_aset, |c, slf, a, blk| {
     };
     if st as i64 >= ARY_MAX { return err(c, c.vm().c_index_error, format!("index {} too big", st)); }
     if st > c.ary_len(slf) { alloc_check(c, st as i64 + 1)?; }
+    // a[st, l] = an Array of l elements inside a: in place (no Vec, a stays inline)
+    if is_array(val) && l <= 16 && c.ary_len(val) == l && st + l <= c.ary_len(slf) {
+        let mut buf = [NIL; 16];
+        buf[..l].copy_from_slice(c.ary(val));
+        c.ary_mut(slf)[st..st + l].copy_from_slice(&buf[..l]);
+        return Ok(val);
+    }
     let repl: Vec<Value> = if is_array(val) { c.ary(val).to_vec() } else { vec![val] };
     let v = c.ary_mut(slf);
     if st > v.len() { v.resize(st, NIL); }
