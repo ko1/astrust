@@ -105,6 +105,9 @@ use crate::symbol::s;
 
 // general call: splats, keywords, block-pass (described by ci)
 
+// recv.send(:m, args...) (or __send__) from compile.rs: `call` is recv.m(args...) allowing private methods, `general`
+// the call of send itself; recv and the arguments are evaluated before (CRuby's order), so both read them
+
 
 
 
@@ -982,6 +985,13 @@ pub fn EVAL_node_call_x<D_recv: Disp, D_args: DispList, H_line: crate::vm::LineH
     line.store(c.frame());
     if splat1 { return srb_call_splat1(c, cc, mid, base, tmp, ci, flags, fp); }
     srb_call_x(c, cc, mid, base, tmp, kw, blkv, ci, flags, fp)
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_send_sym<D_call: Disp, D_general: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: Value, smid: Sym, call: NodePtr, general: NodePtr, g: &mut SendGuard) -> RV {
+    if send_guard(c, g, recv, smid) { <D_call as Disp>::call(c, call, fp) } else { <D_general as Disp>::call(c, general, fp) }
 }
 
 

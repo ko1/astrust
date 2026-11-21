@@ -395,6 +395,14 @@ fn REPLACE_node_call_x(n: NodePtr, old: NodePtr, new: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_send_sym(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_send_sym_struct>)).u };
+    if u.recv == old { u.recv = new; }
+    if u.call == old { u.call = new; }
+    if u.general == old { u.general = new; }
+}
+
+#[allow(non_snake_case, unused_variables)]
 fn REPLACE_node_attrasgn(n: NodePtr, old: NodePtr, new: NodePtr) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_attrasgn_struct>)).u };
     if u.recv == old { u.recv = new; }

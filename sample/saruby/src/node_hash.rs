@@ -1164,6 +1164,28 @@ fn PROF_node_call_x(pc: &mut ProfCtx, n: NodePtr) -> u64 {
 
 
 #[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_send_sym(n: NodePtr) -> u64 {
+    let u = unsafe { &(*(n as *mut NodeOf<node_send_sym_struct>)).u };
+    let mut h = hash_str("node_send_sym");
+    h = hash_merge(h, hash_node(u.recv));
+    h = hash_merge(h, hash_bytes(crate::symbol::sym_bytes(u.smid)));
+    h = hash_merge(h, hash_node(u.call));
+    h = hash_merge(h, hash_node(u.general));
+    h
+}
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut, unused_braces)]
+fn PROF_node_send_sym(pc: &mut ProfCtx, n: NodePtr) -> u64 {
+    let np = n as *mut NodeOf<node_send_sym_struct>;
+    let u = unsafe { &(*np).u };
+    let mut h = hash_str("node_send_sym");
+    h = hash_merge(h, profile_node(pc, u.recv));
+    h = hash_merge(h, profile_node(pc, u.call));
+    h = hash_merge(h, profile_node(pc, u.general));
+    h
+}
+
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_attrasgn(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_attrasgn_struct>)).u };
     let mut h = hash_str("node_attrasgn");

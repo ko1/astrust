@@ -796,6 +796,14 @@ node_call_x(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, 
     srb_call_x(c, cc, mid, base, tmp, kw, blkv, ci, flags, fp)
 }
 
+// recv.send(:m, args...) (or __send__) from compile.rs: `call` is recv.m(args...) allowing private methods, `general`
+// the call of send itself; recv and the arguments are evaluated before (CRuby's order), so both read them
+NODE_DEF
+node_send_sym(c: &mut Ctx, n: NodePtr, fp: Fp, recv@child: Value, smid: Sym, call: NODE, general: NODE, g@ref: SendGuard)
+{
+    if send_guard(c, g, recv, smid) { EVAL_ARG!(c, call) } else { EVAL_ARG!(c, general) }
+}
+
 NODE_DEF
 node_attrasgn(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, flags: u32, line@hole: u32, cc@ref: CallCache, kind@bake: u32)
 {

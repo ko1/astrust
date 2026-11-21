@@ -696,6 +696,16 @@ pub struct node_call_x_struct {
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
+pub struct node_send_sym_struct {
+    pub recv: NodePtr,
+    pub smid: Sym,
+    pub call: NodePtr,
+    pub general: NodePtr,
+    pub g: SendGuard,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
 pub struct node_attrasgn_struct {
     pub recv: NodePtr,
     pub args: NodeList,
@@ -1393,6 +1403,12 @@ pub fn ALLOC_node_call_x(recv: NodePtr, args: NodeList, mid: Sym, flags: u32, li
 }
 
 #[allow(non_snake_case)]
+pub fn ALLOC_node_send_sym(recv: NodePtr, smid: Sym, call: NodePtr, general: NodePtr) -> NodePtr {
+    let n = node_allocate(&KIND_node_send_sym, node_send_sym_struct { recv, smid, call, general, g: Default::default() });
+    n
+}
+
+#[allow(non_snake_case)]
 pub fn ALLOC_node_attrasgn(recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: u32) -> NodePtr {
     let n = node_allocate(&KIND_node_attrasgn, node_attrasgn_struct { recv, args, mid, flags, cc: Default::default() });
     unsafe { (*n).head.line = line; } n
@@ -2019,6 +2035,14 @@ fn CHILDREN_node_call_x(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) 
     let u = unsafe { &mut (*(n as *mut NodeOf<node_call_x_struct>)).u };
     f(&mut u.recv);
     { if own { u.args = Box::leak(u.args.to_vec().into_boxed_slice()); } let l = u.args; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_send_sym(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_send_sym_struct>)).u };
+    f(&mut u.recv);
+    f(&mut u.call);
+    f(&mut u.general);
 }
 
 #[allow(non_snake_case, unused_variables)]
@@ -3223,6 +3247,21 @@ pub static KIND_node_call_x: NodeKind = NodeKind {
     children: CHILDREN_node_call_x,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_call_x_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_call_x_struct>>() <= 8);
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_send_sym: NodeKind = NodeKind {
+    name: "node_send_sym",
+    default_dispatcher: DISPATCH_node_send_sym,
+    hash_func: HASH_node_send_sym,
+    profile: PROF_node_send_sym,
+    specializer: SPECIALIZE_node_send_sym,
+    dumper: DUMP_node_send_sym,
+    replacer: REPLACE_node_send_sym,
+    no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_send_sym_struct>>(),
+    children: CHILDREN_node_send_sym,
+};
+const _: () = assert!(std::mem::size_of::<NodeOf<node_send_sym_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_send_sym_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_attrasgn: NodeKind = NodeKind {
