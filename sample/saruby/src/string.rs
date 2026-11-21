@@ -203,6 +203,8 @@ pub fn char_offsets_of(b: &[u8], enc: u8) -> Vec<usize> {
 }
 pub fn enc_strlen(b: &[u8], enc: u8) -> usize {
     if enc_single(b, enc) { return b.len(); }
+    // valid UTF-8: one character per non-continuation byte
+    if enc == ENC_UTF8 && std::str::from_utf8(b).is_ok() { return b.iter().filter(|&&x| (x as i8) >= -0x40).count(); }
     let mut n = 0; let mut i = 0;
     while i < b.len() { i += enc_char_len(b, i, enc); n += 1; }
     n

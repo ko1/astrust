@@ -426,10 +426,12 @@ cfn!(s_start_with, |c, slf, a, b_| {
 });
 cfn!(s_end_with, |c, slf, a, b_| { for &x in a { let o = expect_str(c, x)?; compat(c, slf, o)?; if c.str_bytes(slf).ends_with(c.str_bytes(o)) && c.char_offsets(slf).binary_search(&(c.str_bytes(slf).len() - c.str_bytes(o).len())).is_ok() { return Ok(TRUE); } } Ok(FALSE) });
 cfn!(s_index, |c, slf, a, b_| {
-    let n = c.str_char_len(slf) as i64;
     let mut st = if a.len() > 1 { num_to_long(c, a[1])? } else { 0 };
-    if st < 0 { st += n; if st < 0 { return Ok(NIL); } }
-    if st > n { return Ok(NIL); }
+    if st != 0 {
+        let n = c.str_char_len(slf) as i64;
+        if st < 0 { st += n; if st < 0 { return Ok(NIL); } }
+        if st > n { return Ok(NIL); }
+    }
     let bs = char_to_byte(c, slf, st as usize).unwrap();
     if regexp::is_regexp(c, a[0]) {
         let m = regexp::search(c, a[0], slf, bs, true)?;
