@@ -174,6 +174,13 @@ pub fn wait_readable(c: &mut Ctx, fd: i32) -> Result<(), Esc> {
     Ok(())
 }
 
+/// Wait until fd is writable, letting other threads run meanwhile.
+pub fn wait_writable(c: &mut Ctx, fd: i32) -> Result<(), Esc> {
+    let ready = |_: &mut Ctx| { let mut p = [crate::builtins::sys::PollFd { fd, events: crate::builtins::sys::POLLOUT, revents: 0 }]; Ok(crate::builtins::sys::poll(&mut p, 0) != 0) };
+    block_on(c, ready, None, false, true)?;
+    Ok(())
+}
+
 // ---- Thread ---------------------------------------------------------------------------------
 
 fn status_str(c: &Ctx, t: Value) -> &'static str { let r = th(c, t); if r.dead { "dead" } else if t == cur(c) { "run" } else if r.waiting || !r.started { if r.started { "sleep" } else { "run" } } else { "run" } }
