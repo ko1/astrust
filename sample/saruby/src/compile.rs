@@ -376,11 +376,14 @@ impl<'a> Compiler<'a> {
             ALLOC_node_method_entry(sc.nslots, np as u32, me_flags(np, body), line, body)
         } else { std::ptr::null_mut() };
         // dentry runs the defaults in its own copy of the body: not where a literal's identity is cached per node
-        let dentry = if dense && params.kw.iter().all(|k| !k.required) && !has_lit_cache(body) {
-            let mut v: Vec<NodePtr> = params.kw.iter().map(|k| k.default.unwrap()).collect();
+        let dentry = if dense && params.kw.iter().all(|k| !k.required) {
+            // static defaults first, as in setup_params
+            let mut v: Vec<NodePtr> = params.kw.iter().filter(|k| k.static_default).chain(params.kw.iter().filter(|k| !k.static_default))
+                .map(|k| k.default.unwrap()).collect();
             v.push(body);
             let b = self.seq(v);
-            ALLOC_node_method_entry(sc.nslots, params.lead.len() as u32, me_flags(params.lead.len(), b), line, b)
+            if has_lit_cache(b) { std::ptr::null_mut() }
+            else { ALLOC_node_method_entry(sc.nslots, params.lead.len() as u32, me_flags(params.lead.len(), b), line, b) }
         } else { std::ptr::null_mut() };
         let dentry = if dentry.is_null() { dentry } else { layout_tree(dentry) };
         // one block per body: baked code addresses its nodes (and their caches) as root + constant
@@ -1925,15 +1928,19 @@ impl<'a> Compiler<'a> {
                 Kind::RequiredKeywordParameterNode { name } => {
                     let nm = self.cst(*name);
                     let sl = self.param_slot(nm);
-                    ps.kw.push(KwParam { name: nm, slot: sl, default: None, required: true });
+                    ps.kw.push(KwParam { name: nm, slot: sl, default: None, required: true, static_default: false });
                     zs.push((AK_KW, nm));
                 }
                 Kind::OptionalKeywordParameterNode { name, value } => {
                     let nm = self.cst(*name);
                     let sl = self.param_slot(nm);
+                    // CRuby puts a literal default in place before any default expression runs
+                    let static_default = matches!(value.kind, Kind::IntegerNode { .. } | Kind::FloatNode { .. } | Kind::RationalNode { .. }
+                        | Kind::ImaginaryNode { .. } | Kind::SymbolNode { .. } | Kind::RegularExpressionNode { .. }
+                        | Kind::NilNode | Kind::TrueNode | Kind::FalseNode | Kind::SourceLineNode);
                     let v = self.c(value);
                     let asg = self.var_write(nm, 0, v);
-                    ps.kw.push(KwParam { name: nm, slot: sl, default: Some(asg), required: false });
+                    ps.kw.push(KwParam { name: nm, slot: sl, default: Some(asg), required: false, static_default });
                     zs.push((AK_KW, nm));
                 }
                 _ => {}

@@ -27,7 +27,7 @@ pub struct CodeInfo { pub file: &'static str, pub label: String, pub line: u32 }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IseqKind { Method, Block, Lambda, Class, Top, Eval, Main }
 
-pub struct KwParam { pub name: Sym, pub slot: u32, pub default: Option<NodePtr>, pub required: bool }
+pub struct KwParam { pub name: Sym, pub slot: u32, pub default: Option<NodePtr>, pub required: bool, pub static_default: bool }
 
 #[derive(Default)]
 pub struct Params {
@@ -1509,7 +1509,8 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &Iseq, recv: Valu
         arg_err(c, format!("missing keyword{}: {}", if missing.len() > 1 { "s" } else { "" }, ms.join(", ")))
     } else {
         let mut r = Ok(NIL);
-        for kp in is.params.kw.iter() {
+        // static (literal) defaults first, as CRuby
+        for kp in is.params.kw.iter().filter(|k| k.static_default).chain(is.params.kw.iter().filter(|k| !k.static_default)) {
             if !names.contains(&kp.name) { if let Some(d) = kp.default { if let Err(e) = run_body(c, d, base) { r = Err(e); break; } } }
         }
         match r { Ok(_) => run_body(c, is.body, base), e => e }
@@ -1889,18 +1890,19 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
         if flags & CF_KW != 0 { obj(r).flags |= FL_KWHASH; }
     }
     for &sl in p.post.iter() { base[sl as usize].set(if ai < given { args[ai] } else { NIL }); ai += 1; }
-    // keywords
+    // keywords; kw_unset: not passed (their slots stay nil until their defaults run)
+    let mut kw_unset: Vec<bool> = vec![];
     if !p.kw.is_empty() || (p.kwrest.is_some() && !p.forwarding) {
         let mut seen = 0;
         if kwh != NIL && !is_hash(kwh) { kwh = NIL; }
         for k in p.kw.iter() {
             let v = if kwh != NIL { crate::hash::hash_get_opt(c, kwh, Value::sym(k.name))? } else { None };
             match v {
-                Some(v) => { base[k.slot as usize].set(v); seen += 1; }
-                None => { base[k.slot as usize].set(UNDEF); }
+                Some(v) => { base[k.slot as usize].set(v); seen += 1; kw_unset.push(false); }
+                None => { base[k.slot as usize].set(NIL); kw_unset.push(true); }
             }
         }
-        let missing: Vec<Sym> = p.kw.iter().filter(|k| k.required && base[k.slot as usize].get() == UNDEF).map(|k| k.name).collect();
+        let missing: Vec<Sym> = p.kw.iter().zip(&kw_unset).filter(|(k, u)| k.required && **u).map(|(k, _)| k.name).collect();
         if !missing.is_empty() {
             let names: Vec<String> = missing.iter().map(|m| format!(":{}", sym_str(*m))).collect();
             return arg_err(c, format!("missing keyword{}: {}", if missing.len() > 1 { "s" } else { "" }, names.join(", ")));
@@ -1939,17 +1941,15 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
         base[1].set(outer_env);
     }
     std::hint::black_box(tmp);
-    // defaults (run in the callee frame)
+    // defaults (run in the callee frame): static keyword defaults are in place before any other runs (CRuby)
+    for (k, u) in p.kw.iter().zip(&kw_unset) {
+        if *u && k.static_default { if let Some(d) = k.default { run_body(c, d, base)?; } }
+    }
     for (k, (sl, node)) in p.opt.iter().enumerate() {
         if k >= nopt_given { let _ = sl; run_body(c, *node, base)?; }
     }
-    for k in p.kw.iter() {
-        if base[k.slot as usize].get() == UNDEF {
-            base[k.slot as usize].set(NIL);
-            if let Some(d) = k.default { run_body(c, d, base)?; }
-        } else if is.env_size > 0 {
-            // already copied to env by env_params
-        }
+    for (k, u) in p.kw.iter().zip(&kw_unset) {
+        if *u && !k.static_default { if let Some(d) = k.default { run_body(c, d, base)?; } }
     }
     for d in p.destructure.iter() { run_body(c, *d, base)?; }
     Ok(())
