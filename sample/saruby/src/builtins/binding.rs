@@ -1,8 +1,16 @@
 // Binding / eval.  Locals of a scope that calls binding/eval live in its env
 // (compile.rs marks them captured), so a Binding is (self, env, names, cref).
-use crate::array::*;
-use crate::string::*;
-use crate::symbol::{intern, sym_str};
+// On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
+#![forbid(unsafe_code)]
+#[allow(unused_imports)]
+use crate::heap::no_legacy::*;   // the old accessors cannot be named here
+#[allow(unused_imports)]
+use crate::heap::no_legacy_hn::*;
+#[allow(unused_imports)]
+use crate::heap::no_legacy_str::*;
+use crate::object::*;
+use crate::string::expect_str;
+use crate::symbol::sym_str;
 use crate::value::*;
 use crate::vm::*;
 
@@ -12,16 +20,17 @@ impl RData for RBinding {
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
-fn rbind(v: Value) -> &'static mut RBinding { rdata::<RBinding>(v).unwrap() }
+fn rbind(c: &Ctx, v: Value) -> &RBinding { c.data::<RBinding>(v).expect("not a Binding") }
+fn rbind_mut(c: &mut Ctx, v: Value) -> &mut RBinding { c.data_mut::<RBinding>(v).expect("not a Binding") }
 
 /// Names visible from code whose env (fp[1]) belongs to `is` (or to its parent when
 /// `is` has no env of its own), innermost first: (name, hops, env idx).
-fn iseq_names(mut is: *const Iseq, own: bool) -> Vec<(Sym, u32, u32)> {
+fn iseq_names(c: &Ctx, is: *const Iseq, own: bool) -> Vec<(Sym, u32, u32)> {
     let mut out = vec![];
     let mut hops = 0;
-    if !own { if is.is_null() { return out; } is = unsafe { (*is).parent.get() }; }
-    while !is.is_null() {
-        let i = unsafe { &*is };
+    let mut cur = c.iseq_ref(is);
+    if !own { cur = cur.and_then(|i| c.iseq_ref(i.parent.get())); }
+    while let Some(i) = cur {
         for &(n, _sl, ei) in &i.local_names { if ei >= 0 && !out.iter().any(|x: &(Sym, u32, u32)| x.0 == n) { out.push((n, hops, ei as u32)); } }
         let h = if i.env_size > 0 { 1 } else { 0 };
         if i.kind == IseqKind::Eval {
@@ -29,51 +38,50 @@ fn iseq_names(mut is: *const Iseq, own: bool) -> Vec<(Sym, u32, u32)> {
         }
         hops += h;
         if !matches!(i.kind, IseqKind::Block | IseqKind::Lambda) { break; }
-        is = i.parent.get();
+        cur = c.iseq_ref(i.parent.get());
     }
     out
 }
 
-fn new_binding(slf: Value, env: Value, names: Vec<(Sym, u32, u32)>, cref: *const Cref, me: *const MethodEntry, file: &'static str, line: u32) -> Value {
-    crate::gc::alloc(vm().c_binding, Body::Data(Box::new(RBinding { self_: slf, env, names: vec![names], cref, me, file, line, extra: NIL })))
+fn new_binding(c: &mut Ctx, b: RBinding) -> Value {
+    let k = c.vm().c_binding;
+    // the Values stay on the stack (in the closure) until the slot exists
+    c.alloc_with(k, move || Body::Data(Box::new(b)))
 }
 
-pub fn binding_of_frame(_c: &mut Ctx, f: &Frame) -> RV {
-    let env = f.fp[1].get();
-    Ok(new_binding(f.fp[0].get(), env, iseq_names(f.iseq(), true), f.cref(), f.me, frame_file(f), f.line()))
+fn frame_binding(c: &Ctx, f: &Frame) -> RBinding {
+    RBinding { self_: f.fp[0].get(), env: f.fp[1].get(), names: vec![iseq_names(c, f.iseq(), true)], cref: f.cref(), me: f.me, file: frame_file(f), line: f.line(), extra: NIL }
 }
 pub fn binding_of_caller(c: &mut Ctx) -> RV {
-    let f = c.frame();
-    let p = unsafe { &*f.prev };
-    binding_of_frame(c, p)
+    let b = frame_binding(c, c.caller_frame().expect("binding: no caller frame"));
+    Ok(new_binding(c, b))
 }
-pub fn binding_of_proc(_c: &mut Ctx, p: Value) -> RV {
-    let b = rproc(p).blk;
+pub fn binding_of_proc(c: &mut Ctx, p: Value) -> RV {
+    let b = c.proc_data(p).blk;
     let (names, file, line) = match b.kind {
-        BlockKind::Iseq(is) => (iseq_names(is, false), unsafe { (*is).info.file }, unsafe { (*is).info.line }),
+        BlockKind::Iseq(is) => match c.iseq_ref(is) { Some(i) => (iseq_names(c, is, false), i.info.file, i.info.line), None => (vec![], "(binding)", 0) },
         _ => (vec![], "(binding)", 0),
     };
-    Ok(new_binding(b.self_, b.env, names, b.cref, b.me, file, line))
+    Ok(new_binding(c, RBinding { self_: b.self_, env: b.env, names: vec![names], cref: b.cref, me: b.me, file, line, extra: NIL }))
 }
 
-fn env_names(env: Value, names: &[Vec<(Sym, u32, u32)>]) -> Vec<(Sym, u32, u32)> {
-    let _ = env;
+fn env_names(names: &[Vec<(Sym, u32, u32)>]) -> Vec<(Sym, u32, u32)> {
     names.iter().flatten().cloned().collect()
 }
 
 pub fn eval_in_binding(c: &mut Ctx, bind: Value, src: &[u8], file: &'static str, line: i32) -> RV {
-    let b = rbind(bind);
-    let outer = vec![env_names(b.env, &b.names)];
+    let b = rbind(c, bind);
+    let outer = vec![env_names(&b.names)];
+    let (slf, env, cref, me) = (b.self_, b.env, b.cref, b.me);
     let is = match crate::compile::compile_source(src, file, line, IseqKind::Eval, outer) {
         Ok(is) => is,
-        Err(m) => return err(c, vm().c_syntax_error, m),
+        Err(m) => return err(c, c.vm().c_syntax_error, m),
     };
-    let (slf, env, cref, me) = (b.self_, b.env, b.cref, b.me);
     let mut new_env = NIL;
     let r = run_eval_iseq_env(c, is, slf, env, cref, me, VISI_PUBLIC, &mut new_env);
     // locals the eval introduced stay visible through this Binding
     if is.env_size > 0 && new_env != NIL {
-        let b = rbind(bind);
+        let b = rbind_mut(c, bind);
         let mut names: Vec<(Sym, u32, u32)> = is.local_names.iter().filter(|x| x.2 >= 0).map(|&(n, _, ei)| (n, 0, ei as u32)).collect();
         for &(n, h, i) in b.names.iter().flatten() { if !names.iter().any(|x| x.0 == n) { names.push((n, h + 1, i)); } }
         b.names = vec![names];
@@ -91,15 +99,17 @@ pub fn run_eval_iseq(c: &mut Ctx, is: &'static Iseq, slf: Value, env: Value, cre
 fn run_eval_iseq_env(c: &mut Ctx, is: &'static Iseq, slf: Value, env: Value, cref: *const Cref, me: *const MethodEntry, visi: u8, out_env: &mut Value) -> RV {
     let base = c.top();
     stack_check(c, is.nlocals as usize + 8)?;
+    let (id, blk) = c.cur_frame().map_or((0, std::ptr::null()), |f| (f.id, f.blk));
     let mut fr = Frame::empty(base);
     fr.prev = c.frame; fr.iseq = is; fr.kind = FK_EVAL; fr.visi = visi;
-    fr.id = unsafe { (*c.frame).id }; fr.cref = if cref.is_null() { vm().top_cref } else { cref }; fr.me = me;
-    fr.blk = unsafe { (*c.frame).blk };
+    fr.id = id; fr.cref = if cref.is_null() { c.vm().top_cref } else { cref }; fr.me = me;
+    fr.blk = blk;
     base[0].set(slf);
     nil_fill(base, 1, is.nlocals as usize);
     c.set_sp(base, is.nlocals as usize);
-    let e = if is.env_size > 0 { crate::gc::alloc(vm().c_env, Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), env)) } else { env };
-    base[1].set(if e == NIL { crate::gc::alloc(vm().c_env, Body::Env(crate::envvals::EnvVals::new(0), NIL)) } else { e });
+    let ek = c.vm().c_env;
+    let e = if is.env_size > 0 { c.alloc(ek, Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), env)) } else { env };
+    base[1].set(if e == NIL { c.alloc(ek, Body::Env(crate::envvals::EnvVals::new(0), NIL)) } else { e });
     *out_env = base[1].get();
     c.frame = &mut fr.h;
     let r = run_body(c, is.body, base);
@@ -111,11 +121,12 @@ fn run_eval_iseq_env(c: &mut Ctx, is: &'static Iseq, slf: Value, env: Value, cre
 /// instance_eval / module_eval with a String: self and the definee are given, locals are the caller's.
 fn eval_under(c: &mut Ctx, slf: Value, k: Value, src: &[u8], file: &'static str, line: i32) -> RV {
     let bind = binding_of_caller(c)?;
-    let b = rbind(bind);
-    let outer = vec![env_names(b.env, &b.names)];
+    let b = rbind(c, bind);
+    let outer = vec![env_names(&b.names)];
     let env = b.env;
-    let is = match crate::compile::compile_source(src, file, line, IseqKind::Eval, outer) { Ok(is) => is, Err(m) => return err(c, vm().c_syntax_error, m) };
-    let cref = new_cref(k, unsafe { (*c.frame).cref() });
+    let is = match crate::compile::compile_source(src, file, line, IseqKind::Eval, outer) { Ok(is) => is, Err(m) => return err(c, c.vm().c_syntax_error, m) };
+    let cur = c.cur_frame().map_or(std::ptr::null(), |f| f.cref());
+    let cref = new_cref(k, cur);
     run_eval_iseq(c, is, slf, env, cref, std::ptr::null(), VISI_PUBLIC)
 }
 pub fn eval_with_self(c: &mut Ctx, slf: Value, src: &[u8], file: &'static str, line: i32) -> RV {
@@ -126,9 +137,13 @@ pub fn eval_in_class(c: &mut Ctx, k: Value, src: &[u8], file: &'static str, line
     eval_under(c, k, k, src, file, line)
 }
 
-pub fn local_variables(_c: &mut Ctx, b: Value) -> RV {
-    let out = ary_new();
-    for (n, _, _) in env_names(rbind(b).env, &rbind(b).names) { if !crate::symbol::sym_bytes(n).starts_with(b"_") || crate::symbol::sym_bytes(n).len() > 1 && !crate::symbol::sym_bytes(n).starts_with(b"__") { ary_push(out, Value::sym(n)); } }
+pub fn local_variables(c: &mut Ctx, b: Value) -> RV {
+    let names = env_names(&rbind(c, b).names);
+    let out = c.ary_new();
+    for (n, _, _) in names {
+        let s = crate::symbol::sym_bytes(n);
+        if !s.starts_with(b"_") || s.len() > 1 && !s.starts_with(b"__") { c.ary_push(out, Value::sym(n)); }
+    }
     Ok(out)
 }
 fn find_var(b: &RBinding, n: Sym) -> Option<(u32, u32)> {
@@ -137,41 +152,50 @@ fn find_var(b: &RBinding, n: Sym) -> Option<(u32, u32)> {
 }
 fn b_lvar_get(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let n = crate::builtins::object::to_sym_arg(c, a[0])?;
-    let b = rbind(s);
-    match find_var(b, n) {
-        Some((h, i)) => Ok(crate::rt::env_get(crate::rt::env_at(b.env, h), i)),
+    let b = rbind(c, s);
+    let (var, env, extra) = (find_var(b, n), b.env, b.extra);
+    match var {
+        Some((h, i)) => { let e = c.env_up(env, h); Ok(c.env_get(e, i)) }
         None => {
-            if b.extra != NIL { if let Some(v) = crate::hash::hash_get_opt(c, b.extra, Value::sym(n))? { return Ok(v); } }
+            if extra != NIL { if let Some(v) = crate::hash::hash_get_opt(c, extra, Value::sym(n))? { return Ok(v); } }
             let ins = crate::builtins::kernel::inspect_str(c, s)?;
-            let e = make_name_error(c, vm().c_name_error, &format!("local variable '{}' is not defined for {}", sym_str(n), ins), Value::sym(n), s)?;
+            let e = make_name_error(c, c.vm().c_name_error, &format!("local variable '{}' is not defined for {}", sym_str(n), ins), Value::sym(n), s)?;
             Err(raise_exc(c, e))
         }
     }
 }
 fn b_lvar_set(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let n = crate::builtins::object::to_sym_arg(c, a[0])?;
-    let b = rbind(s);
-    match find_var(b, n) {
-        Some((h, i)) => { crate::rt::env_set(crate::rt::env_at(b.env, h), i, a[1]); }
-        None => { if b.extra == NIL { b.extra = crate::hash::hash_new(); } let ex = b.extra; crate::hash::hash_set(c, ex, Value::sym(n), a[1])?; }
+    let b = rbind(c, s);
+    let (var, env, extra) = (find_var(b, n), b.env, b.extra);
+    match var {
+        Some((h, i)) => { let e = c.env_up(env, h); c.env_set(e, i, a[1]); }
+        None => {
+            let ex = if extra == NIL { let h = c.hash_new(); rbind_mut(c, s).extra = h; h } else { extra };
+            crate::hash::hash_set(c, ex, Value::sym(n), a[1])?;
+        }
     }
     Ok(a[1])
 }
 fn b_lvar_defined(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let n = crate::builtins::object::to_sym_arg(c, a[0])?;
-    Ok(Value::bool(find_var(rbind(s), n).is_some()))
+    Ok(Value::bool(find_var(rbind(c, s), n).is_some()))
 }
-fn b_receiver(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(rbind(s).self_) }
+fn b_receiver(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(rbind(c, s).self_) }
 fn b_eval(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let src = expect_str(c, a[0])?;
-    let bytes = rstr(src).b.to_vec();
+    let bytes = c.str_bytes(src).to_vec();
     eval_in_binding(c, s, &bytes, "(eval)", 1)
 }
 fn b_local_variables(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { local_variables(c, s) }
-fn b_source_location(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let b = rbind(s); Ok(ary_new_from(&[str_new(b.file.as_bytes()), Value::fix(b.line as i64)])) }
+fn b_source_location(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+    let (file, line) = { let b = rbind(c, s); (b.file, b.line) };
+    let f = c.str_new(file.as_bytes());
+    Ok(c.ary_new_from(&[f, Value::fix(line as i64)]))
+}
 
-pub fn init() {
-    let k = vm().c_binding;
+pub fn init(vmr: &Vm) {
+    let k = vmr.c_binding;
     define_cfunc(k, "local_variable_get", b_lvar_get, 1);
     define_cfunc(k, "local_variable_set", b_lvar_set, 2);
     define_cfunc(k, "local_variable_defined?", b_lvar_defined, 1);
@@ -179,5 +203,4 @@ pub fn init() {
     define_cfunc(k, "eval", b_eval, -1);
     define_cfunc(k, "local_variables", b_local_variables, 0);
     define_cfunc(k, "source_location", b_source_location, 0);
-    let _ = intern;
 }

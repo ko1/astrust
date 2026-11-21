@@ -56,3 +56,17 @@ pub fn recursion_leave(v: Value, tag: crate::value::Sym) {
     let g = &mut crate::vm::vm().recursive_guard;
     if let Some(p) = g.iter().rposition(|&(x, t)| x == v.raw() && t == tag) { g.remove(p); }
 }
+
+// ---- boot-time class setup for builtins/boot.rs (no context exists yet) ----
+/// `m` becomes the metaclass of `k`.
+pub fn boot_metaclass(k: Value, m: Value) {
+    let d = rclass(m);
+    d.is_singleton = true; d.attached = k;
+    obj(k).klass = m;
+}
+pub fn boot_subclass(sup: Value, k: Value) { rclass(sup).subclasses.push(k); }
+/// Constants `names` of `owner` autoload the native `feature`.
+pub fn boot_autoload(owner: Value, names: &[&str], feature: &str) {
+    let path = crate::str_legacy::str_new_frozen(feature.as_bytes());
+    for n in names { rclass(owner).autoload.insert(crate::symbol::intern(n.as_bytes()), path); }
+}
