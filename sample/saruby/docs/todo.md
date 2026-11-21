@@ -40,7 +40,11 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 
 ## 3. CRuby 互換性
 
-- [ ] **rubyspec を実 mspec で計測し、失敗の多い所から直す**（作業中）
+- [x] rubyspec を実 mspec で計測（runner: ~/ruby/src/trials/2026-11-22-saruby-rubyspec/bin/、SPEC_RUBY_VERSION=4.0.2）。core 19542/22373、language 2592/2933、library 1922/3188（CRuby 4.0.2: 23144/23155、2934/2934、6401/6402）
+- [ ] **AOT で knucleotide が segfault**（ruby-bench、base から。最優先で調べる）
+- [ ] rubyspec の大きな塊: IO::Buffer 180、Encoding::Converter 167、TracePoint 72、#inspect の違い 101、引数の型チェック 90、Array#== / #hash の端 90、NameError#receiver 60、language の非 UTF-8 マジックコメント 30・predefined_spec 79、core のタイムアウト 14 ファイル
+- [ ] library/: bigdecimal、socket（core/file の 124 も）、zlib、digest、net-*、yaml
+- [ ] RUBY_VERSION を 4.0.x にするか（いまは 3.4.0。mspec は SPEC_RUBY_VERSION で回避）
 - [x] CRuby benchmark/*.rb 148/148（yml は 228/236: IO::Buffer、RubyVM、irb、Pathname、fiber_chain）
 - [ ] ruby-bench 60/88。残り: Zlib、Psych(YAML)、json の C パーサ、Ractor、未インストール gem 18 本（liquid-* は Date の次に YAML で止まる）
 - [x] `Date` / `DateTime`（prelude/lib/date.rb、ext/date の Ruby 移植）、`Pathname`（CRuby 4.0 同様に組み込み、遅延ロード）、`require 'time'` は CRuby の time.rb
