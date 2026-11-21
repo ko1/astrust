@@ -588,8 +588,12 @@ fn conv_arg(c: &mut Ctx, v: Value, raise: bool) -> Result<Option<Value>, Esc> {
             return type_err(c, format!("can't convert {} to Rational ({}#to_r gives {})", cn, cn, class_name_for_err(r)));
         }
         if respond_to(v, s::to_int, true) {
-            let r = funcall(c, v, s::to_int, &[], std::ptr::null())?;
-            if is_integer(r) { return Ok(Some(r)); }
+            // rb_check_to_int: an exception from to_int means "not an Integer"
+            match funcall(c, v, s::to_int, &[], std::ptr::null()) {
+                Ok(r) if is_integer(r) => return Ok(Some(r)),
+                Ok(_) => {}
+                Err(_) => { c.esc = EscKind::None; }
+            }
         }
     }
     Ok(Some(v))
@@ -597,7 +601,7 @@ fn conv_arg(c: &mut Ctx, v: Value, raise: bool) -> Result<Option<Value>, Esc> {
 fn int_value(c: &mut Ctx, v: Value) -> RV {
     if is_integer(v) { return Ok(v); }
     if !is_numeric(v) && !is_rational(c, v) && v.is_heap() && respond_to(v, s::to_int, true) {
-        let r = funcall(c, v, s::to_int, &[], std::ptr::null())?; if is_integer(r) { return Ok(r); }
+        match funcall(c, v, s::to_int, &[], std::ptr::null()) { Ok(r) if is_integer(r) => return Ok(r), Ok(_) => {} Err(_) => c.esc = EscKind::None }
     }
     type_err(c, "not an integer")
 }
@@ -644,7 +648,10 @@ fn k_rational(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let (n, raise) = kw_exception(c, a)?;
     let a = &a[..n];
     check_argc(c, a, 1, 2)?;
-    convert_rational(c, a[0], a.get(1).copied(), raise)
+    match convert_rational(c, a[0], a.get(1).copied(), raise) {
+        Err(_) if !raise && c.esc == EscKind::Raise => { c.esc = EscKind::None; Ok(NIL) }
+        r => r,
+    }
 }
 
 fn int_to_r(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(rat_raw(c, s, Value::fix(1))) }

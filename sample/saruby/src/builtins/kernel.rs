@@ -472,13 +472,7 @@ fn k_srand(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
 
 // ---- conversion functions ----------------------------------------------------------------
 
-fn kw_exception(c: &mut Ctx, args: &[Value]) -> Result<(usize, bool), Esc> {
-    if let Some(h) = kw_arg(args) {
-        let ex = hash_get_opt(c, h, crate::vm::sym_value("exception"))?.map(|v| v.truthy()).unwrap_or(true);
-        return Ok((args.len() - 1, ex));
-    }
-    Ok((args.len(), true))
-}
+use crate::builtins::rational::kw_exception;
 
 fn k_integer(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let (n, exc) = kw_exception(c, args)?;
@@ -519,38 +513,70 @@ fn k_integer(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     match r { Err(e) if !exc && c.esc == EscKind::Raise => { let _ = e; c.esc = EscKind::None; Ok(NIL) } r => r }
 }
 
-pub fn parse_float_strict(c: &mut Ctx, b: &[u8]) -> Option<f64> {
-    let s = String::from_utf8_lossy(b);
-    let t = s.trim();
-    if t.is_empty() { return None; }
-    let tl = t.to_ascii_lowercase();
-    if tl.starts_with("0x") || tl.starts_with("-0x") || tl.starts_with("+0x") {
-        return str_to_inum(t.as_bytes(), 16, true).map(|v| c.num_to_f64(v).unwrap());
+/// Digits of `radix` with single underscores between them, from b[i]; (end, digits seen).
+fn scan_digits(b: &[u8], mut i: usize, hex: bool) -> (usize, usize) {
+    let is_d = |x: u8| if hex { x.is_ascii_hexdigit() } else { x.is_ascii_digit() };
+    let mut n = 0;
+    while i < b.len() {
+        if is_d(b[i]) { n += 1; i += 1; }
+        else if b[i] == b'_' && n > 0 && is_d(b[i - 1]) && i + 1 < b.len() && is_d(b[i + 1]) { i += 1; }
+        else { break; }
     }
-    // validate: digits with single underscores, optional fraction / exponent
-    let bytes = t.as_bytes();
+    (i, n)
+}
+/// Kernel#Float's strict string form (rb_cstr_to_dbl with badcheck, 4.0): decimal with
+/// optional "." / exponent ("1.", ".5" and "1.e5" included) or hexadecimal with "p" exponent.
+pub fn parse_float_strict(_c: &mut Ctx, b: &[u8]) -> Option<f64> {
+    let ws = |x: &u8| x.is_ascii_whitespace();
+    let s = b.iter().position(|x| !ws(x))?;
+    let e = b.iter().rposition(|x| !ws(x))? + 1;
+    let t = &b[s..e];
     let mut i = 0;
-    if bytes[i] == b'+' || bytes[i] == b'-' { i += 1; }
-    let start_digits = i;
-    let mut prev_digit = false;
-    while i < bytes.len() && (bytes[i].is_ascii_digit() || (bytes[i] == b'_' && prev_digit && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit())) { prev_digit = bytes[i] != b'_'; i += 1; }
-    if i == start_digits { return None; }
-    if i < bytes.len() && bytes[i] == b'.' {
-        i += 1;
-        let fs = i;
-        while i < bytes.len() && (bytes[i].is_ascii_digit() || (bytes[i] == b'_' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit())) { i += 1; }
-        if i == fs { return None; }
+    let neg = t[0] == b'-';
+    if t[0] == b'+' || t[0] == b'-' { i += 1; }
+    let hex = t.len() > i + 1 && t[i] == b'0' && (t[i + 1] == b'x' || t[i + 1] == b'X');
+    if hex { i += 2; }
+    let (j, int_n) = scan_digits(t, i, hex);
+    let int_part = &t[i..j];
+    i = j;
+    let mut frac_part: &[u8] = b"";
+    if i < t.len() && t[i] == b'.' {
+        let (j, _) = scan_digits(t, i + 1, hex);
+        frac_part = &t[i + 1..j];
+        i = j;
     }
-    if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
-        i += 1;
-        if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') { i += 1; }
-        let es = i;
-        while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; }
-        if i == es { return None; }
+    if int_n == 0 && frac_part.is_empty() { return None; }
+    let mut exp: i64 = 0;
+    let exp_ch = if hex { [b'p', b'P'] } else { [b'e', b'E'] };
+    let mut exp_txt: &[u8] = b"";
+    if i < t.len() && exp_ch.contains(&t[i]) {
+        let es = i + 1;
+        let mut k = es;
+        if k < t.len() && (t[k] == b'+' || t[k] == b'-') { k += 1; }
+        let (j, n) = scan_digits(t, k, false);
+        if n == 0 { return None; }
+        exp_txt = &t[es..j];
+        let digits: String = t[k..j].iter().filter(|&&x| x != b'_').map(|&x| x as char).collect();
+        exp = digits.parse::<i64>().unwrap_or(i64::MAX / 4).min(1 << 40);
+        if t[es] == b'-' { exp = -exp; }
+        i = j;
     }
-    if i != bytes.len() { return None; }
-    let clean: String = t.chars().filter(|&c| c != '_').collect();
-    clean.parse().ok()
+    if i != t.len() { return None; }
+    let clean = |p: &[u8]| -> String { p.iter().filter(|&&x| x != b'_').map(|&x| x as char).collect() };
+    let v = if hex {
+        let mut m = 0.0f64;
+        for ch in clean(int_part).chars() { m = m * 16.0 + ch.to_digit(16).unwrap() as f64; }
+        let mut scale = 1.0 / 16.0;
+        for ch in clean(frac_part).chars() { m += ch.to_digit(16).unwrap() as f64 * scale; scale /= 16.0; }
+        if m == 0.0 { 0.0 } else { m * 2f64.powi(exp.clamp(-2200, 2200) as i32) }
+    } else {
+        let ip = clean(int_part);
+        let fp = clean(frac_part);
+        let et = clean(exp_txt);
+        let txt = format!("{}.{}{}{}", if ip.is_empty() { "0" } else { &ip }, if fp.is_empty() { "0" } else { &fp }, if et.is_empty() { "" } else { "e" }, et);
+        txt.parse::<f64>().ok()?
+    };
+    Some(if neg { -v } else { v })
 }
 
 fn k_float(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
@@ -564,10 +590,16 @@ fn k_float(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
         if is_bignum(v) { return Ok(c.float_new(c.big(v).to_f64())); }
         if is_string(v) {
             let b = c.str_bytes(v).to_vec();
+            if b.contains(&0) { return arg_err(c, "string for Float contains null byte"); }
             match parse_float_strict(c, &b) { Some(f) => return Ok(c.float_new(f)), None => { let ins = inspect_str(c, v)?; return arg_err(c, format!("invalid value for Float(): {}", ins)); } }
         }
         if v == NIL { return type_err(c, "can't convert nil into Float"); }
-        if respond_to(v, s::to_f, true) { return funcall(c, v, s::to_f, &[], std::ptr::null()); }
+        if respond_to(v, s::to_f, true) {
+            let r = funcall(c, v, s::to_f, &[], std::ptr::null())?;
+            if is_float(r) { return Ok(r); }
+            let cn = class_name_for_err(v);
+            return type_err(c, format!("can't convert {} to Float ({}#to_f gives {})", cn, cn, class_name_for_err(r)));
+        }
         type_err(c, format!("can't convert {} into Float", class_name_for_err(v)))
     })();
     match r { Err(e) if !exc && c.esc == EscKind::Raise => { let _ = e; c.esc = EscKind::None; Ok(NIL) } r => r }

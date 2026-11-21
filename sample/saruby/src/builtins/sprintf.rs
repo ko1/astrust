@@ -491,7 +491,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
             }
         }
     }
-    if st.posarg >= 0 && st.next < args.len() && !(args.len() == 1 && st.hash.is_some()) {
+    if st.posarg >= 0 && st.next < args.len() && !(args.len() == 1 && is_hash(args[0])) {
         let dbg = gvar_get(c, intern(b"$DEBUG"))?;
         if dbg.truthy() { return arg_err(c, "too many arguments for format string"); }
         if c.vm().verbose == TRUE {
