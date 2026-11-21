@@ -654,9 +654,11 @@ cfn!(a_sum, |c, slf, a, blk| {
         }
         acc = Value::fix(sum);
     }
-    while let Some(&x0) = c.ary(slf).get(i) {
+    'elems: while let Some(&x0) = c.ary(slf).get(i) {
         let mut x = x0;
         if !blk.is_null() { x = yield1(c, blk, x)?; }
+        // the same x again after switching to the float sum: its block must not run twice
+        loop {
         if let Some((s2, comp)) = fsum.as_mut() {
             if let Some(f) = crate::numeric::num_to_f64(x) {
                 // CRuby's float_sum: NaN / Inf short-circuit the compensation
@@ -665,14 +667,16 @@ cfn!(a_sum, |c, slf, a, blk| {
                 else if f.is_infinite() { *s2 = if s2.is_infinite() && s2.is_sign_negative() != f.is_sign_negative() { f64::NAN } else { f }; }
                 else if s2.is_infinite() {}
                 else { let t = *s2 + f; if s2.abs() >= f.abs() { *comp += (*s2 - t) + f; } else { *comp += (f - t) + *s2; } *s2 = t; }
-                i += 1; continue;
+                i += 1; continue 'elems;
             }
             acc = c.float_new(*s2 + *comp); fsum = None;
         }
-        if acc.is_fixnum() && x.is_fixnum() { if let Some(r) = acc.as_fix().checked_add(x.as_fix()) { if Value::fixable(r) { acc = Value::fix(r); i += 1; continue; } } }
+        if acc.is_fixnum() && x.is_fixnum() { if let Some(r) = acc.as_fix().checked_add(x.as_fix()) { if Value::fixable(r) { acc = Value::fix(r); i += 1; continue 'elems; } } }
         if is_float(x) && crate::numeric::is_numeric(acc) && fsum.is_none() { fsum = Some((crate::numeric::num_to_f64(acc).unwrap(), 0.0)); continue; }
         acc = funcall(c, acc, s::plus, &[x], std::ptr::null())?;
         i += 1;
+        continue 'elems;
+        }
     }
     if let Some((s2, comp)) = fsum { return Ok(c.float_new(if s2.is_finite() { s2 + comp } else { s2 })); }
     Ok(acc)
