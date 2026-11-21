@@ -1531,8 +1531,9 @@ fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry
     if m.visi != VISI_PUBLIC && flags & CF_FCALL == 0 { return; }
     match m.kind {
         MKind::Iseq(is) => {
-            let e = unsafe { (*is).plain_entry() };
-            if !e.is_null() { cc.fast = e as usize; cc.fast_argc = unsafe { (*is).params.lead.len() } as u32; cc.fast_hash = crate::node::hash_node(e); }
+            let is = unsafe { &*is };
+            let e = is.plain_entry();
+            if !e.is_null() { cc.fast = e as usize; cc.fast_argc = is.params.lead.len() as u32; cc.fast_hash = crate::node::hash_node(e); }
         }
         MKind::Cfunc(..) if me == vm().ids.bo_eq => { cc.fast = 3; }
         MKind::Cfunc(f, arity) if me == vm().ids.c_new => {
