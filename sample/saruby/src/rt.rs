@@ -102,6 +102,7 @@ pub fn fast_ary_aset() -> u64 { FAST_ARY_ASET.load(Relaxed) }
 
 /// `a[b]` when the site's inline path did not apply: everything, starting with the Array and Hash cases.
 #[inline(never)]
+#[cold]
 pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -> RV {
     if unsafe { BOOTED } && !redef(R_ARY_AREF) { FAST_ARY_AREF.store(vm().c_array.raw(), Relaxed); }
     if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && !redef(R_ARY_AREF) {
@@ -119,6 +120,7 @@ pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -
 
 /// `a[b] = v`, as srb_aref_out.
 #[inline(never)]
+#[cold]
 pub fn srb_aset_out(c: &mut Ctx, a: Value, b: Value, v: Value, line: Pos, cc: &mut OpCc) -> RV {
     if unsafe { BOOTED } && !redef(R_ARY_ASET) { FAST_ARY_ASET.store(vm().c_array.raw(), Relaxed); }
     if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && obj(a).flags & FL_FROZEN == 0 && !redef(R_ARY_ASET) {
@@ -319,6 +321,7 @@ pub fn srb_ivar_set_out(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &mut I
 
 /// `@x += v` / `@x -= v` outside node_ivar_arith's inline path: read, operate, write.
 #[inline(never)]
+#[cold]
 pub fn srb_ivar_arith_out(c: &mut Ctx, slf: Value, name: Sym, sub: bool, v: Value, line: Pos, ic: &mut IvarCache, cc: &mut OpCc) -> RV {
     let cur = srb_ivar_get_out(slf, name, ic);
     let r = crate::opt::srb_arith_out(c, cur, v, if sub { s::minus } else { s::plus }, line, cc)?;
@@ -394,6 +397,7 @@ pub fn srb_cvar_set(c: &mut Ctx, name: Sym, v: Value) -> RV {
     Ok(v)
 }
 
+#[cold]
 pub fn srb_const_get(c: &mut Ctx, cref: *const Cref, name: Sym, cc: &mut ConstCache) -> RV {
     let v = const_lookup(c, cref, name)?;
     cc.serial = vm().const_serial;
@@ -455,6 +459,7 @@ pub fn srb_has_custom_not(v: Value) -> bool {
     !me.is_null() && unsafe { (*me).owner } != vm().c_basic_object
 }
 
+#[cold]
 pub fn srb_call0(c: &mut Ctx, v: Value, mid: Sym, cc: &mut OpCc) -> RV {
     let base = stage(c, 2)?;
     base[0].set(v);
@@ -560,6 +565,7 @@ pub fn srb_when_splat(c: &mut Ctx, p: Value, subj: Value) -> Result<bool, Esc> {
     Ok(false)
 }
 
+#[cold]
 pub fn srb_eqq(c: &mut Ctx, p: Value, subj: Value, cc: &mut CallCache) -> Result<bool, Esc> {
     if p.is_fixnum() && subj.is_fixnum() { return Ok(p == subj); }
     if p.is_sym() { return Ok(p == subj); }
@@ -573,6 +579,7 @@ pub fn srb_eqq(c: &mut Ctx, p: Value, subj: Value, cc: &mut CallCache) -> Result
 
 /// srb_eqq for a `when` site; an answer of the builtin Module#=== is kept in the site's memo.
 #[inline(never)]
+#[cold]
 pub fn srb_eqq_class(c: &mut Ctx, p: Value, subj: Value, cc: &mut CallCache, km: &mut KindMemo) -> Result<bool, Esc> {
     let r = srb_eqq(c, p, subj, cc)?;
     // cc.me is what the call just ran when the cache is p's (a polymorphic site keeps others elsewhere)
@@ -919,6 +926,7 @@ pub fn srb_lambda(c: &mut Ctx, is: &'static Iseq, fp: Fp) -> RV {
     Ok(p)
 }
 
+#[cold]
 pub fn srb_binop(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: Pos, cc: &mut OpCc) -> RV {
     let base = stage(c, 3)?;
     base[0].set(a); base[2].set(b);
@@ -926,6 +934,7 @@ pub fn srb_binop(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: Pos, cc: &mut 
     call_cached(c, cc.get(), mid, base, 1, std::ptr::null(), 0)
 }
 
+#[cold]
 pub fn srb_eq(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -> RV {
     if is_string(a) && is_string(b) && obj(a).klass == vm().c_string { return Ok(Value::bool(crate::string::str_eq(a, b))); }
     srb_binop(c, a, b, s::eq, line, cc)
