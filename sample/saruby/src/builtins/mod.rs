@@ -195,7 +195,7 @@ pub fn boot() {
     marshal::init();
     (vm.c_random, vm.default_random) = random::init(vm);
     binding::init();
-    thread::init();
+    thread::init(vm);
     misc::init();
     prelude::lazy_const(ob, "ENV", "saruby/env");
     prelude::lazy_const(ob, "RbConfig", "saruby/rbconfig");
@@ -234,8 +234,8 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     if let Some(r) = io::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = strscan::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = thread::alloc_data(c, klass)? { return Ok(Some(r)); }
-    if let Some(r) = thread::alloc_lock(klass) { return Ok(Some(r)); }
-    if let Some(r) = thread::alloc_queue(klass) { return Ok(Some(r)); }
+    if let Some(r) = thread::alloc_lock(c, klass) { return Ok(Some(r)); }
+    if let Some(r) = thread::alloc_queue(c, klass) { return Ok(Some(r)); }
     Ok(None)
 }
 

@@ -187,7 +187,7 @@ fn k_sleep(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     };
     out_flush();
     run_pending_signals(c)?;
-    if crate::builtins::thread::active() { crate::builtins::thread::sleep(c, dur)?; return Ok(Value::fix(t0.elapsed().as_secs_f64().round() as i64)); }
+    if crate::builtins::thread::active(c) { crate::builtins::thread::sleep(c, dur)?; return Ok(Value::fix(t0.elapsed().as_secs_f64().round() as i64)); }
     loop {
         let left = match dur { Some(d) => { let l = d - t0.elapsed().as_secs_f64(); if l <= 0.0 { break; } l } None => 3600.0 };
         let ts = sys::Timespec { sec: left.floor() as i64, nsec: ((left - left.floor()) * 1e9) as i64 };

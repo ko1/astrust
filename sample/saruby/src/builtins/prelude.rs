@@ -34,7 +34,7 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
         "saruby/rbconfig" | "rbconfig" => crate::builtins::misc::rbconfig_init(c),
         "saruby/filetest" => crate::builtins::file::init_filetest(),
         "saruby/stat" => crate::builtins::file::init_stat(),
-        "saruby/sync" => crate::builtins::thread::init_sync(),
+        "saruby/sync" => crate::builtins::thread::init_sync(c),
         _ => {}
     }
     Ok(NIL)
