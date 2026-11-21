@@ -182,5 +182,15 @@ disables).  `SARUBY_AOT_VERBOSE=1` shows the rustc command.
   each fact at run time (the slot against the site's cache) or keeps a complete out-of-line path
   for the other cases (`srb_arith_out`, `srb_aref_out`, `srb_ivar_get_out`): a stale or absent
   fact costs time, never correctness.
+* **Inline builtins** (`src/inline_builtin.rs`).  A `node_call` whose cache held one of a table of builtins
+  (Integer `even?` / `-@` / `succ` ..., Float `to_i`, Array `size` / `first` / `push`, Hash `size`, String
+  `length` ...) is baked with that body's number (`bi`).  It evaluates the receiver and argument into
+  registers; when `CallCache.bi` (set by `fill_cc`: the body of the cached entry, if it is the entry
+  boot defined for that name, and whether the cached class is Integer / Float) matches and the serial
+  is current, the body runs inline, with no staging, line store or cfunc frame.  Otherwise, or when the
+  body declines (Bignum, frozen or full Array, ...), the site stages and calls out of line.  Bodies must
+  not raise, call Ruby or look at a frame.  Builtins are recognised by method entry, never by function
+  pointer (LLVM merges identical functions, so one builtin can have two addresses).  `srb_aref_out`
+  answers Integer#[] the same way.
 * An Array index site compares the receiver's class with `FAST_ARY_AREF` / `FAST_ARY_ASET` (rt.rs):
   the Array class while `[]` / `[]=` are the builtins, 0 after a redefinition.
