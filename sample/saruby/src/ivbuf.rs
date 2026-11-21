@@ -47,6 +47,14 @@ impl IvBuf {
         // kept inline: an out-of-line call here cost the callers their leaf frames (object AOT +3% instructions)
         match e.more.get_mut(j - CHUNK) { Some(x) => { *x = v; true } None => false }
     }
+    /// Slot i in place (a read and a write with one tier test); None beyond len().
+    #[inline(always)]
+    pub fn slot_mut(&mut self, i: usize) -> Option<&mut Value> {
+        if i < INLINE { return Some(&mut self.w[i]); }
+        let e = self.ext.as_mut()?;
+        let j = i - INLINE;
+        if j < CHUNK { Some(&mut e.w[j]) } else { e.more.get_mut(j - CHUNK) }
+    }
     /// Make it at least n slots long (new slots unset).
     #[inline(never)]
     pub fn resize(&mut self, n: usize) {

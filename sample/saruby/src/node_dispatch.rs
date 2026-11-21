@@ -236,7 +236,7 @@ pub fn DISPATCH_node_ivar(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_ivar_struct>;
     unsafe {
 
-    EVAL_node_ivar(c, n, fp, (*np).u.name, &mut (*np).u.ic, 0)
+    EVAL_node_ivar(c, n, fp, (*np).u.name, &mut (*np).u.ic)
     }
 }
 
@@ -246,7 +246,7 @@ pub fn DISPATCH_node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_iasgn_struct>;
     unsafe {
     let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
-    EVAL_node_iasgn(c, n, fp, (*np).u.name, v_v, &mut (*np).u.ic, 0)
+    EVAL_node_iasgn(c, n, fp, (*np).u.name, v_v, &mut (*np).u.ic)
     }
 }
 
@@ -256,7 +256,7 @@ pub fn DISPATCH_node_ivar_arith(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let np = n as *mut NodeOf<node_ivar_arith_struct>;
     unsafe {
     let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
-    EVAL_node_ivar_arith::<crate::vm::LineAt>(c, n, fp, (*np).u.name, (*np).u.sub, v_v, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.ic, &mut (*np).u.cc, 0)
+    EVAL_node_ivar_arith::<crate::vm::LineAt>(c, n, fp, (*np).u.name, (*np).u.sub, v_v, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.ic, &mut (*np).u.cc)
     }
 }
 
