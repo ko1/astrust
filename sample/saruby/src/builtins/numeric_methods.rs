@@ -176,8 +176,8 @@ fn int_cmp_val(c: &mut Ctx, a: Value, b: Value) -> Result<Option<std::cmp::Order
     Ok(None)
 }
 
-macro_rules! cfn { ($name:ident, |$c:ident, $s:ident, $a:ident| $body:expr) => {
-    #[allow(unused_variables)]
+macro_rules! cfn { ($(#[$m:meta])* $name:ident, |$c:ident, $s:ident, $a:ident| $body:expr) => {
+    $(#[$m])* #[allow(unused_variables)]
     pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], _b: *const Block) -> RV { $body }
 }; }
 
@@ -206,7 +206,7 @@ cfn!(int_pow_m, |c, s, a| {
     }
     int_arith(c, s, a[0], Op::Pow)
 });
-cfn!(int_uminus, |c, s, _a| Ok(if s.is_fixnum() { c.int_from_i128(-(s.as_fix() as i128)) } else { c.big_to_value(c.big(s).neg()) }));
+cfn!(#[inline] int_uminus, |c, s, _a| Ok(if s.is_fixnum() { c.int_from_i128(-(s.as_fix() as i128)) } else { c.big_to_value(c.big(s).neg()) }));
 cfn!(int_uplus, |c, s, _a| Ok(s));
 cfn!(int_not, |c, s, _a| Ok(if s.is_fixnum() { Value::fix(!s.as_fix()) } else { c.big_to_value(c.big(s).not()) }));
 fn int_bitop(c: &mut Ctx, a: Value, b: Value, op: u8) -> RV {
@@ -304,7 +304,7 @@ cfn!(int_lt, |c, s, a| int_rel(c, s, a[0], |o| o.is_lt(), s::lt));
 cfn!(int_le, |c, s, a| int_rel(c, s, a[0], |o| o.is_le(), s::le));
 cfn!(int_gt, |c, s, a| int_rel(c, s, a[0], |o| o.is_gt(), s::gt));
 cfn!(int_ge, |c, s, a| int_rel(c, s, a[0], |o| o.is_ge(), s::ge));
-cfn!(int_abs, |c, s, _a| Ok(if s.is_fixnum() { c.int_from_i64(s.as_fix().abs()) } else { c.big_to_value(c.big(s).abs()) }));
+cfn!(#[inline] int_abs, |c, s, _a| Ok(if s.is_fixnum() { c.int_from_i64(s.as_fix().abs()) } else { c.big_to_value(c.big(s).abs()) }));
 cfn!(int_to_s, |c, s, a| {
     let base = if a.is_empty() { 10 } else { num_to_long(c, a[0])? };
     if !(2..=36).contains(&base) { return arg_err(c, format!("invalid radix {}", base)); }
@@ -313,8 +313,8 @@ cfn!(int_to_s, |c, s, a| {
     c.rstring_mut(v).enc = ENC_ASCII;
     Ok(v)
 });
-cfn!(int_to_f, |c, s, _a| Ok(c.float_new(c.num_to_f64(s).unwrap())));
-cfn!(int_to_i, |c, s, _a| Ok(s));
+cfn!(#[inline] int_to_f, |c, s, _a| Ok(c.float_new(c.num_to_f64(s).unwrap())));
+cfn!(#[inline] int_to_i, |c, s, _a| Ok(s));
 cfn!(int_chr, |c, s, a| {
     let i = num_to_long(c, s)?;
     if !a.is_empty() || i > 255 {
@@ -326,14 +326,26 @@ cfn!(int_chr, |c, s, a| {
     Ok(str_new_enc(&[i as u8], if i < 128 { ENC_ASCII } else { ENC_BINARY }))
 });
 cfn!(int_ord, |c, s, _a| Ok(s));
+/// The fixnum loop of Integer#times, yielding through `y` (inline_iter.rs: a baked site's block); None: not a fixnum.
+#[inline(always)]
+pub fn int_times_loop(c: &mut Ctx, s: Value, y: &mut impl FnMut(&mut Ctx, &[Value]) -> RV) -> Option<RV> {
+    if !s.is_fixnum() { return None; }
+    let n = s.as_fix();
+    let mut i = 0;
+    while i < n { if let Err(e) = y(c, &[Value::fix(i)]) { return Some(Err(e)); } i += 1; }
+    Some(Ok(s))
+}
+/// The fixnum loops of Integer#upto / #downto (dir 1 / -1); None: not two fixnums.
+#[inline(always)]
+pub fn int_upto_loop(c: &mut Ctx, s: Value, e: Value, dir: i64, y: &mut impl FnMut(&mut Ctx, &[Value]) -> RV) -> Option<RV> {
+    if !s.is_fixnum() || !e.is_fixnum() { return None; }
+    let mut i = s.as_fix(); let e = e.as_fix();
+    while if dir > 0 { i <= e } else { i >= e } { if let Err(e) = y(c, &[Value::fix(i)]) { return Some(Err(e)); } i += dir; }
+    Some(Ok(s))
+}
 fn int_times(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
     if b.is_null() { return crate::builtins::enumerator::enum_for(c, s, s::times, &[], NIL); }
-    if s.is_fixnum() {
-        let n = s.as_fix();
-        let mut i = 0;
-        while i < n { yield1(c, b, Value::fix(i))?; i += 1; }
-        return Ok(s);
-    }
+    if let Some(r) = int_times_loop(c, s, &mut |c, a| yield1(c, b, a[0])) { return r; }
     let mut i = Value::fix(0);
     loop {
         if int_cmp_val(c, i, s)? != Some(std::cmp::Ordering::Less) { break; }
@@ -344,11 +356,7 @@ fn int_times(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
 }
 fn int_upto(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     if b.is_null() { return crate::builtins::enumerator::enum_for(c, s, s::upto, a, NIL); }
-    if s.is_fixnum() && a[0].is_fixnum() {
-        let mut i = s.as_fix(); let e = a[0].as_fix();
-        while i <= e { yield1(c, b, Value::fix(i))?; i += 1; }
-        return Ok(s);
-    }
+    if let Some(r) = int_upto_loop(c, s, a[0], 1, &mut |c, a| yield1(c, b, a[0])) { return r; }
     if is_float(a[0]) {
         let e = float_val(a[0]); let mut i = s;
         while c.num_to_f64(i).unwrap() <= e { yield1(c, b, i)?; i = int_arith(c, i, Value::fix(1), Op::Add)?; }
@@ -364,11 +372,7 @@ fn int_upto(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
 }
 fn int_downto(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     if b.is_null() { return crate::builtins::enumerator::enum_for(c, s, s::downto, a, NIL); }
-    if s.is_fixnum() && a[0].is_fixnum() {
-        let mut i = s.as_fix(); let e = a[0].as_fix();
-        while i >= e { yield1(c, b, Value::fix(i))?; i -= 1; }
-        return Ok(s);
-    }
+    if let Some(r) = int_upto_loop(c, s, a[0], -1, &mut |c, a| yield1(c, b, a[0])) { return r; }
     let mut i = s;
     loop {
         match int_cmp_val(c, i, a[0])? { Some(o) if o.is_ge() => {} Some(_) => break, None => return coerce_fail(c, s, a[0], true) }
@@ -379,9 +383,9 @@ fn int_downto(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
 }
 cfn!(int_succ, |c, s, _a| int_arith(c, s, Value::fix(1), Op::Add));
 cfn!(int_pred, |c, s, _a| int_arith(c, s, Value::fix(1), Op::Sub));
-cfn!(int_zero, |c, s, _a| Ok(Value::bool(s == Value::fix(0))));
-cfn!(int_even, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() & 1 == 0 } else { !c.big(s).is_odd() })));
-cfn!(int_odd, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() & 1 == 1 } else { c.big(s).is_odd() })));
+cfn!(#[inline] int_zero, |c, s, _a| Ok(Value::bool(s == Value::fix(0))));
+cfn!(#[inline] int_even, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() & 1 == 0 } else { !c.big(s).is_odd() })));
+cfn!(#[inline] int_odd, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() & 1 == 1 } else { c.big(s).is_odd() })));
 cfn!(int_positive, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() > 0 } else { !c.big(s).neg })));
 cfn!(int_negative, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() < 0 } else { c.big(s).neg })));
 cfn!(int_divmod, |c, s, a| {
@@ -761,6 +765,16 @@ pub fn float_step_size(beg: f64, end: f64, unit: f64, excl: bool) -> f64 {
     }
     n + 1.0
 }
+/// The loop of `s.step(lim, st)` with three fixnums and st != 0; None: another case.
+#[inline(always)]
+pub fn num_step_loop(c: &mut Ctx, s: Value, lim: Value, st: Value, y: &mut impl FnMut(&mut Ctx, &[Value]) -> RV) -> Option<RV> {
+    if !s.is_fixnum() || !lim.is_fixnum() || !st.is_fixnum() || st == Value::fix(0) { return None; }
+    let (mut i, d, e) = (s.as_fix(), st.as_fix(), lim.as_fix());
+    // the count of steps first: one test per step, whichever the direction (|i|, |d|, |e| < 2^62: no overflow)
+    let mut n = if d > 0 { if i > e { 0 } else { (e - i) / d + 1 } } else if i < e { 0 } else { (i - e) / -d + 1 };
+    while n > 0 { if let Err(e) = y(c, &[Value::fix(i)]) { return Some(Err(e)); } i += d; n -= 1; }
+    Some(Ok(s))
+}
 fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     let kw = kw_arg(a);
     let pos = if kw.is_some() { &a[..a.len() - 1] } else { a };
@@ -784,9 +798,7 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
             let from = c.int_from_i64(i);
             return num_step_generic(c, s, from, lim, st, b);
         }
-        let e = lim.as_fix();
-        if d > 0 { while i <= e { yield1(c, b, Value::fix(i))?; i += d; } } else { while i >= e { yield1(c, b, Value::fix(i))?; i += d; } }
-        return Ok(s);
+        if let Some(r) = num_step_loop(c, s, lim, st, &mut |c, a| yield1(c, b, a[0])) { return r; }
     }
     if (is_float(s) || is_float(lim) || is_float(st)) && !crate::builtins::complex::is_complex(c, st) {
         let x = to_f(c, s)?; let d = to_f(c, st)?;

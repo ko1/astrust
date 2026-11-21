@@ -51,7 +51,8 @@ use crate::symbol::s;
 
 
 // slot (baked): 1 + the index the site's cache held, 0 none.  Baked code tests it against the cache,
-// so which tier holds the slot is known there; a stale one only sends the site out of line.
+// so which slot is known there; a stale one only sends the site out of line.  The slot is part of
+// the SD's name (profile_node): a program with another ivar order gets its own SD.
 
 
 // `@x += v` / `@x -= v` with a v that cannot change @x (compile.rs): one self / class / slot test for the
@@ -841,12 +842,14 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, H_line: crate::vm::LineHol
     }
     let k = <D_args as DispList>::len(args);
     let (base, r0) = if bi != 0 {
-        // baked site whose cache held a builtin of inline_builtin.rs: its body, staging only for the call
+        // baked C-method site named as builtins of inline_builtin.rs (bi: their bodies): the one the cache
+        // holds, staging only for the call
         let r0 = <D_recv as Disp>::call(c, recv, fp)?;
         let a0 = if k == 1 { <D_args as DispList>::nth(c, args, 0, fp)? } else { NIL };
-        if bi_hit(cc, r0, bi) {
-            if let Some(v) = bi_body(c, bi, r0, a0) { return Ok(v); }
-        }
+        if bi.is_power_of_two() {
+            let b = bi.trailing_zeros();
+            if bi_hit(cc, r0, b) { if let Some(v) = bi_body(c, b, r0, a0) { return Ok(v); } }
+        } else if let Some(v) = bi_run(c, cc, bi, r0, a0) { return Ok(v); }
         std::hint::cold_path();
         let base = stage(c, 2 + k)?;
         base[0].set(r0);
@@ -901,29 +904,34 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, H_line: crate::vm::Lin
     let r0 = if k == 0 { r0 } else { base[0].get() };
     let b = make_block(c, blk, fp);
     let r = if it != 0 && body_hash != 0 {
-        // baked builtin iterator (inline_iter.rs): its loop here under its cfunc frame, the block's entry compiled in
+        // baked builtin iterator (inline_iter.rs): the builtin's own loop under its cfunc frame, the block's entry compiled in
         let bp: *const Block = &b;
         // fast_hash: iter_refill checked this entry; the tree hash implies it now (iseq_hash), kept as one cheap compare
         let hit = (bi_hit(cc, r0, it & 0xff) && cc.fast_hash == body_hash) || iter_refill(c, cc, r0, mid, flags, it, blk, body_hash);
-        match if hit { iter_begin(c, it, r0, base, k) } else { None } {
-            Some(mut st) => {
+        let bb = c.top();
+        match if hit { frame(c, bb).ok() } else { None } {
+            Some(bfp) => {
                 let pf = c.frame;
                 let mut fr = Frame::cfunc(pf, cc.me as *const MethodEntry, bp);
-                // IT_SHARE: the block's frame made once, every step runs in it
+                let frp: *mut Frame = &mut fr;
+                // IT_SHARE: the block's frame made once, every step runs in it (the loops of iter_loop
+                // neither raise nor stage between steps, so they may run in that frame too)
                 let share = it & IT_SHARE != 0;
-                let mut bfr = block_frame(&b, st.bfp, &mut fr, blk);
-                c.frame = if share { &mut bfr.h } else { &mut fr };
-                let mut r = Ok(());
-                while iter_next(c, &mut st, it, r0) {
-                    // through c.frame (the pointer the callees use): a step starts at the block's line
+                let np = (it >> 8 & 0xff) as usize;
+                let mut bfr = block_frame(&b, bfp, frp, blk);
+                c.frame = if share { &mut bfr.h } else { frp };
+                let a = [if k > 0 { base[2].get() } else { NIL }, if k > 1 { base[3].get() } else { NIL }];
+                let r = iter_loop(c, it, r0, &a[..k.min(2)], &mut |c: &mut Ctx, v: &[Value]| {
+                    put_args(c, bb, bfp, np, v);
+                    // a step starts at the block's line
                     if share { c.frame().pos = Pos::at(&blk.info.line); }
-                    match <D_body as Disp>::spec(c, blk.bentry, st.bfp, CallArgs { me: std::ptr::null(), blk: bp, shared: share, inl: true }) {
-                        Ok(y) => iter_step(c, &mut st, it, base, y),
-                        Err(e) => { r = Err(e); break; }
-                    }
-                }
+                    <D_body as Disp>::spec(c, blk.bentry, bfp, CallArgs { me: std::ptr::null(), blk: bp, shared: share, inl: true })
+                });
                 c.frame = pf;
-                iter_end(c, &st, it, r0, base, r)
+                match r {
+                    Some(r) => { c.set_sp(base, 0); r }
+                    None => { std::hint::cold_path(); c.set_sp(base, 2 + k); call_cached_out(c, cc, mid, base, k as u32, &b, flags) }
+                }
             }
             None => { std::hint::cold_path(); call_cached_out(c, cc, mid, base, k as u32, &b, flags) }
         }

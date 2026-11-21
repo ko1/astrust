@@ -396,6 +396,7 @@ module ASTrustGen
             name: "#{@name}",
             default_dispatcher: DISPATCH_#{@name},
             hash_func: HASH_#{@name},
+            profile: PROF_#{@name},
             specializer: SPECIALIZE_#{@name},
             dumper: DUMP_#{@name},
             replacer: REPLACE_#{@name},
@@ -470,6 +471,33 @@ module ASTrustGen
             let u = unsafe { &(*(n as *mut NodeOf<#{struct_name}>)).u };
             let mut h = hash_str("#{canonical_name}");
         #{hs.join("\n")}
+            h
+        }
+        #{build_prof}
+        RS
+      end
+
+      # PROF_<name>(pc, n): what specialization bakes into n's subtree besides its structure: every @bake value
+      # and, for every @spec operand, the target it would compile in (its hash and, recursively, its profile).
+      # An entry's SD is named by hash_merge(structural hash, profile) (SpecCtx::hopt), so a name never
+      # stands for code baked from another profile.
+      def build_prof
+        stmts = @operands.map do |op|
+          if op.child? || op.node? then "    h = hash_merge(h, profile_node(pc, u.#{op.name}));"
+          elsif op.nodes? then "    for x in u.#{op.name}.iter() { h = hash_merge(h, profile_node(pc, *x)); }"
+          elsif op.bake? then "    h = hash_merge(h, hash_u64(unsafe { #{bake_value_expr(op)} } as u64));"
+          elsif op.spec?
+            ts = [spec_target_expr(op), spec_rec_target_expr(op)].compact
+            ts.map { |t| "    { let p: NodePtr = unsafe { #{t} }; h = hash_merge(h, if p.is_null() { 0 } else { hash_merge(hash_node(p), profile_node(pc, p)) }); }" }.join("\n")
+          end
+        end.compact
+        <<~RS
+        #[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut, unused_braces)]
+        fn PROF_#{@name}(pc: &mut ProfCtx, n: NodePtr) -> u64 {
+            let np = n as *mut NodeOf<#{struct_name}>;
+            let u = unsafe { &(*np).u };
+            let mut h = hash_str("#{@name}");
+        #{stmts.join("\n")}
             h
         }
         RS
@@ -663,6 +691,7 @@ module ASTrustGen
           pub name: &'static str,
           pub default_dispatcher: DispatchFn,
           pub hash_func: fn(NodePtr) -> u64,
+          pub profile: fn(&mut ProfCtx, NodePtr) -> u64,
           pub specializer: fn(&mut SpecCtx, NodePtr) -> String,
           pub dumper: fn(&mut String, NodePtr),
           pub replacer: fn(NodePtr, NodePtr, NodePtr),
@@ -746,6 +775,11 @@ module ASTrustGen
               h
           }
       }
+      /// What specialization bakes into the subtree at n (PROF_<name>); each node once per ProfCtx.
+      pub fn profile_node(pc: &mut ProfCtx, n: NodePtr) -> u64 {
+          if n.is_null() || !pc.seen.insert(n as usize) { return 0; }
+          unsafe { ((*n).head.kind.profile)(pc, n) }
+      }
       pub fn hash_node_list(ns: NodeList) -> u64 {
           let mut h = hash_u64(ns.len() as u64);
           for x in ns.iter() { h = hash_merge(h, hash_node(*x)); }
@@ -779,14 +813,14 @@ module ASTrustGen
       }
       /// Specialize n as a public entry: an exported `SD_<hash>` with the dispatcher's signature.
       pub fn specialize_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
-          let fname = format!("SD_{:016x}", hash_node(n));
+          let fname = format!("SD_{:016x}", sc.entry_name(hash_node(n)));
           if sc.emitted.contains(&fname)#{n.contiguous? ? ' || !node_laid(n)' : ''} { return fname; }
           sc.holes.clear();
           sc.begin_entry(n as usize, hash_node(n));
           let t = specialize_node(sc, n);
           let p = sc.rec_suffix(hash_node(n));
-          let s = format!("S_{:016x}{}", hash_node(n), p);
-          if sc.emitted.contains(&format!("R_{:016x}{}", hash_node(n), p)) && !sc.emitted.contains(&s) {
+          let s = format!("S_{:016x}{}{}", hash_node(n), sc.tag, p);
+          if sc.emitted.contains(&format!("R_{:016x}{}{}", hash_node(n), sc.tag, p)) && !sc.emitted.contains(&s) {
               // n calls itself: its one body is S_<hash>::run (R_ calls it directly); SD_ passes the spec-in value on
               specialize_run(sc, &s, &t);
               sc.out.push_str(&format!("#[no_mangle]\npub fn {}(#{params.join(', ')}) -> #{n.result_type} {{ {}::run(#{pnames.join(', ')}#{rec_load}) }}\n", fname, s));
@@ -807,17 +841,17 @@ module ASTrustGen
       pub fn specialize_rec(sc: &mut SpecCtx, q: NodePtr) -> String {
           let h = hash_node(q);
           let p = sc.rec_suffix(h);
-          let name = format!("R_{:016x}{}", h, p);
+          let name = format!("R_{:016x}{}{}", h, sc.tag, p);
           if !p.is_empty() {
               // the entry's patched body (S_<hash>P::run) holds the values of the one node it was bound to
               if sc.emitted.insert(name.clone()) {
-                  sc.out.push_str(&format!("pub struct {0};\\nimpl Disp for {0} {{\\n    #[inline(always)]\\n    fn call(#{params.join(', ')}) -> #{n.result_type} {{ #{rec_stmt}if #{pnames[1]} as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}P::run(#{pnames.join(', ')}#{rec_load}) }} else {{ std::hint::cold_path(); <Dyn as Disp>::call(#{pnames.join(', ')}) }} }}\\n    #[inline(always)]\\n    fn spec(#{params.join(', ')}#{spec_in ? ", a: #{spec_in}" : ''}) -> #{n.result_type} {{ #{rec_stmt}if #{pnames[1]} as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}P::run(#{pnames.join(', ')}#{rec_pass}) }} else {{ std::hint::cold_path(); <Dyn as Disp>::spec(#{pnames.join(', ')}#{spec_in ? ', a' : ''}) }} }}\\n}}\\n", name, h));
+                  sc.out.push_str(&format!("pub struct {0};\\nimpl Disp for {0} {{\\n    #[inline(always)]\\n    fn call(#{params.join(', ')}) -> #{n.result_type} {{ #{rec_stmt}if #{pnames[1]} as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}{2}P::run(#{pnames.join(', ')}#{rec_load}) }} else {{ std::hint::cold_path(); <Dyn as Disp>::call(#{pnames.join(', ')}) }} }}\\n    #[inline(always)]\\n    fn spec(#{params.join(', ')}#{spec_in ? ", a: #{spec_in}" : ''}) -> #{n.result_type} {{ #{rec_stmt}if #{pnames[1]} as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}{2}P::run(#{pnames.join(', ')}#{rec_pass}) }} else {{ std::hint::cold_path(); <Dyn as Disp>::spec(#{pnames.join(', ')}#{spec_in ? ', a' : ''}) }} }}\\n}}\\n", name, h, sc.tag));
               }
               return name;
           }
           if sc.emitted.insert(name.clone()) {
-              sc.rec.push(q as usize);
-              sc.out.push_str(&format!("pub struct {0};\\nimpl Disp for {0} {{\\n    #[inline(always)]\\n    fn call(#{params.join(', ')}) -> #{n.result_type} {{ #{rec_stmt}S_{1:016x}::run(#{pnames.join(', ')}#{rec_load}) }}\\n    #[inline(always)]\\n    fn spec(#{params.join(', ')}#{spec_in ? ", a: #{spec_in}" : ''}) -> #{n.result_type} {{ #{rec_stmt}S_{1:016x}::run(#{pnames.join(', ')}#{rec_pass}) }}\\n}}\\n", name, h));
+              sc.rec.push((q as usize, sc.tag.clone()));
+              sc.out.push_str(&format!("pub struct {0};\\nimpl Disp for {0} {{\\n    #[inline(always)]\\n    fn call(#{params.join(', ')}) -> #{n.result_type} {{ #{rec_stmt}S_{1:016x}{2}::run(#{pnames.join(', ')}#{rec_load}) }}\\n    #[inline(always)]\\n    fn spec(#{params.join(', ')}#{spec_in ? ", a: #{spec_in}" : ''}) -> #{n.result_type} {{ #{rec_stmt}S_{1:016x}{2}::run(#{pnames.join(', ')}#{rec_pass}) }}\\n}}\\n", name, h, sc.tag));
           }
           name
       }
@@ -827,9 +861,9 @@ module ASTrustGen
       }
       /// After the entries: S_<hash>::run of the recursion targets whose SD_ was not the one to provide it.
       pub fn specialize_finish(sc: &mut SpecCtx) {
-          while let Some(q) = sc.rec.pop() {
+          while let Some((q, tag)) = sc.rec.pop() {
               let q = q as NodePtr;
-              let s = format!("S_{:016x}", hash_node(q));
+              let s = format!("S_{:016x}{}", hash_node(q), tag);
               if sc.emitted.contains(&s) { continue; }
               let t = specialize_node(sc, q);
               specialize_run(sc, &s, &t);

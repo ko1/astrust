@@ -13,8 +13,8 @@ use crate::symbol::{intern, s};
 use crate::value::*;
 use crate::vm::*;
 
-macro_rules! cfn { ($name:ident, |$c:ident, $s:ident, $a:ident, $b:ident| $body:expr) => {
-    #[allow(unused_variables)]
+macro_rules! cfn { ($(#[$m:meta])* $name:ident, |$c:ident, $s:ident, $a:ident, $b:ident| $body:expr) => {
+    $(#[$m])* #[allow(unused_variables)]
     pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], $b: *const Block) -> RV { $body }
 }; }
 
@@ -204,13 +204,13 @@ cfn!(a_fetch, |c, slf, a, blk| {
         }
     }
 });
-cfn!(a_first, |c, slf, a, blk| {
+cfn!(#[inline] a_first, |c, slf, a, blk| {
     if a.is_empty() { return Ok(c.ary_get(slf, 0)); }
     let n = num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, "negative array size"); }
     Ok(c.ary_from_vec(c.ary(slf).iter().take(n as usize).copied().collect()))
 });
-cfn!(a_last, |c, slf, a, blk| {
+cfn!(#[inline] a_last, |c, slf, a, blk| {
     let l = c.ary_len(slf);
     if a.is_empty() { return Ok(if l == 0 { NIL } else { c.ary_get(slf, l - 1) }); }
     let n = num_to_long(c, a[0])?;
@@ -218,7 +218,10 @@ cfn!(a_last, |c, slf, a, blk| {
     let n = (n as usize).min(l);
     Ok(c.ary_from_vec(c.ary(slf)[l - n..].to_vec()))
 });
-cfn!(a_push, |c, slf, a, blk| { let v = c.ary_modify(slf)?; if a.len() == 1 { v.push(a[0]); } else { v.extend_from_slice(a); } Ok(slf) });
+// the growth out of line: a baked site runs this cfunc itself (inline_builtin.rs)
+cfn!(#[inline] a_push, |c, slf, a, blk| { let v = c.ary_modify(slf)?; if a.len() == 1 { if !v.try_push(a[0]) { push_grow(v, a[0]); } } else { v.extend_from_slice(a); } Ok(slf) });
+#[inline(never)]
+fn push_grow(v: &mut crate::avec::AVec, x: Value) { v.push(x) }
 cfn!(a_ltlt, |c, slf, a, blk| { c.ary_modify(slf)?; c.ary_push(slf, a[0]); Ok(slf) });
 cfn!(a_pop, |c, slf, a, blk| {
     let v = c.ary_modify(slf)?;
@@ -253,42 +256,71 @@ cfn!(a_insert, |c, slf, a, blk| {
     v.splice(pos..pos, a[1..].iter().copied());
     Ok(slf)
 });
-cfn!(a_length, |c, slf, a, blk| Ok(Value::fix(c.ary_len(slf) as i64)));
-cfn!(a_empty, |c, slf, a, blk| Ok(Value::bool(c.ary_len(slf) == 0)));
-cfn!(a_each, |c, slf, a, blk| {
-    if blk.is_null() { return crate::builtins::enumerator::enum_for_sized(c, slf, s::each, a); }
+cfn!(#[inline] a_length, |c, slf, a, blk| Ok(Value::fix(c.ary_len(slf) as i64)));
+cfn!(#[inline] a_empty, |c, slf, a, blk| Ok(Value::bool(c.ary_len(slf) == 0)));
+// The loops of Array's iterators, yielding through `y`: the builtin's block, or at a baked site the block's
+// entry compiled in (inline_iter.rs).  The Array is read again at every step (the block may change it).
+/// Array#each
+#[inline(always)]
+pub fn a_each_loop(c: &mut Ctx, slf: Value, y: &mut impl FnMut(&mut Ctx, &[Value]) -> RV) -> RV {
     let mut i = 0;
-    while let Some(&x) = c.ary(slf).get(i) { yield1(c, blk, x)?; i += 1; }
+    while let Some(&x) = c.ary(slf).get(i) { y(c, &[x])?; i += 1; }
     Ok(slf)
-});
-cfn!(a_each_index, |c, slf, a, blk| enum_or(c, slf, "each_index", a, blk, |c| { let mut i = 0; while i < c.ary_len(slf) { yield1(c, blk, Value::fix(i as i64))?; i += 1; } Ok(slf) }));
-cfn!(a_each_with_index, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && crate::builtins::enum_native::each_overridden(c, slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "each_with_index", a, blk) } else { enum_or(c, slf, "each_with_index", a, blk, |c| { let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { yield_block(c, blk, &[x, Value::fix(i as i64)])?; i += 1; } Ok(slf) }) });
-cfn!(a_reverse_each, |c, slf, a, blk| enum_or(c, slf, "reverse_each", a, blk, |c| { let mut i = c.ary_len(slf); while i > 0 { i -= 1; if i >= c.ary_len(slf) { i = c.ary_len(slf); continue; } let x = c.ary_get(slf, i); yield1(c, blk, x)?; } Ok(slf) }));
-cfn!(a_map, |c, slf, a, blk| enum_or(c, slf, "map", a, blk, |c| {
+}
+/// Array#map
+#[inline(always)]
+pub fn a_map_loop(c: &mut Ctx, slf: Value, y: &mut impl FnMut(&mut Ctx, &[Value]) -> RV) -> RV {
     let out = c.ary_new_capa(c.ary_len(slf));
     let mut i = 0;
-    while let Some(&x) = c.ary(slf).get(i) { let y = yield1(c, blk, x)?; c.ary_push(out, y); i += 1; }
+    while let Some(&x) = c.ary(slf).get(i) { let r = y(c, &[x])?; c.ary_push(out, r); i += 1; }
     Ok(out)
-}));
+}
+/// Array#select (keep: true) / #reject (false)
+#[inline(always)]
+pub fn a_select_loop(c: &mut Ctx, slf: Value, keep: bool, y: &mut impl FnMut(&mut Ctx, &[Value]) -> RV) -> RV {
+    let out = c.ary_new();
+    let mut i = 0;
+    while let Some(&x) = c.ary(slf).get(i) {
+        if y(c, &[x])?.truthy() == keep {
+            // as CRuby: select reads the element again after the block (rb_ary_elt), nil if it is gone
+            let v = if keep { c.ary(slf).get(i).copied().unwrap_or(NIL) } else { x };
+            c.ary_push(out, v);
+        }
+        i += 1;
+    }
+    Ok(out)
+}
+/// Array#each_with_index
+#[inline(always)]
+pub fn a_each_wi_loop(c: &mut Ctx, slf: Value, y: &mut impl FnMut(&mut Ctx, &[Value]) -> RV) -> RV {
+    let mut i = 0;
+    while let Some(&x) = c.ary(slf).get(i) { y(c, &[x, Value::fix(i as i64)])?; i += 1; }
+    Ok(slf)
+}
+/// Array#inject with a block and at most an initial value (None: more arguments)
+#[inline(always)]
+pub fn a_inject_loop(c: &mut Ctx, slf: Value, a: &[Value], y: &mut impl FnMut(&mut Ctx, &[Value]) -> RV) -> Option<RV> {
+    if a.len() > 1 { return None; }
+    let (mut acc, mut i) = match a.first() { Some(&v) => (v, 0), None => match c.ary(slf).first() { Some(&x) => (x, 1), None => return Some(Ok(NIL)) } };
+    while let Some(&x) = c.ary(slf).get(i) { acc = match y(c, &[acc, x]) { Ok(v) => v, Err(e) => return Some(Err(e)) }; i += 1; }
+    Some(Ok(acc))
+}
+cfn!(a_each, |c, slf, a, blk| {
+    if blk.is_null() { return crate::builtins::enumerator::enum_for_sized(c, slf, s::each, a); }
+    a_each_loop(c, slf, &mut |c, a| yield1(c, blk, a[0]))
+});
+cfn!(a_each_index, |c, slf, a, blk| enum_or(c, slf, "each_index", a, blk, |c| { let mut i = 0; while i < c.ary_len(slf) { yield1(c, blk, Value::fix(i as i64))?; i += 1; } Ok(slf) }));
+cfn!(a_each_with_index, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && crate::builtins::enum_native::each_overridden(c, slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "each_with_index", a, blk) } else { enum_or(c, slf, "each_with_index", a, blk, |c| a_each_wi_loop(c, slf, &mut |c, a| yield_block(c, blk, a))) });
+cfn!(a_reverse_each, |c, slf, a, blk| enum_or(c, slf, "reverse_each", a, blk, |c| { let mut i = c.ary_len(slf); while i > 0 { i -= 1; if i >= c.ary_len(slf) { i = c.ary_len(slf); continue; } let x = c.ary_get(slf, i); yield1(c, blk, x)?; } Ok(slf) }));
+cfn!(a_map, |c, slf, a, blk| enum_or(c, slf, "map", a, blk, |c| a_map_loop(c, slf, &mut |c, a| yield1(c, blk, a[0]))));
 cfn!(a_map_b, |c, slf, a, blk| enum_or(c, slf, "map!", a, blk, |c| {
     c.ary_modify(slf)?;
     let mut i = 0;
     while let Some(&x) = c.ary(slf).get(i) { let y = yield1(c, blk, x)?; c.ary_modify(slf)?; if i < c.ary_len(slf) { c.ary_mut(slf)[i] = y; } i += 1; }
     Ok(slf)
 }));
-cfn!(a_select, |c, slf, a, blk| enum_or(c, slf, "select", a, blk, |c| {
-    let out = c.ary_new();
-    let mut i = 0;
-    // as CRuby: the element is read again after the block (rb_ary_elt), nil if it is gone
-    while let Some(&x) = c.ary(slf).get(i) { if yield1(c, blk, x)?.truthy() { let y = c.ary(slf).get(i).copied().unwrap_or(NIL); c.ary_push(out, y); } i += 1; }
-    Ok(out)
-}));
-cfn!(a_reject, |c, slf, a, blk| enum_or(c, slf, "reject", a, blk, |c| {
-    let out = c.ary_new();
-    let mut i = 0;
-    while let Some(&x) = c.ary(slf).get(i) { if yield1(c, blk, x)?.falsy() { c.ary_push(out, x); } i += 1; }
-    Ok(out)
-}));
+cfn!(a_select, |c, slf, a, blk| enum_or(c, slf, "select", a, blk, |c| a_select_loop(c, slf, true, &mut |c, a| yield1(c, blk, a[0]))));
+cfn!(a_reject, |c, slf, a, blk| enum_or(c, slf, "reject", a, blk, |c| a_select_loop(c, slf, false, &mut |c, a| yield1(c, blk, a[0]))));
 fn filter_in_place(c: &mut Ctx, slf: Value, blk: *const Block, keep_truthy: bool) -> Result<bool, Esc> {
     c.ary_modify(slf)?;
     let mut keep = vec![]; let mut i = 0; let mut changed = false;
@@ -965,6 +997,7 @@ cfn!(a_each_slice, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array && crate
 }) });
 cfn!(a_inject, |c, slf, a, blk| {
     if obj_klass(slf) != c.vm().c_array && crate::builtins::enum_native::each_overridden(c, slf, a_each) { return crate::builtins::enum_native::call_enumerable(c, slf, "inject", a, blk); }
+    if !blk.is_null() { if let Some(r) = a_inject_loop(c, slf, a, &mut |c, a| yield_block(c, blk, a)) { return r; } }
     let (mut acc, mut i, op) = match (a.len(), blk.is_null()) {
         (0, _) => { if c.ary_len(slf) == 0 { return Ok(NIL); } (c.ary_get(slf, 0), 1, None) }
         (1, false) => (a[0], 0, None),

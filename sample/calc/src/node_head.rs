@@ -8,6 +8,7 @@ pub struct NodeKind {
     pub name: &'static str,
     pub default_dispatcher: DispatchFn,
     pub hash_func: fn(NodePtr) -> u64,
+    pub profile: fn(&mut ProfCtx, NodePtr) -> u64,
     pub specializer: fn(&mut SpecCtx, NodePtr) -> String,
     pub dumper: fn(&mut String, NodePtr),
     pub replacer: fn(NodePtr, NodePtr, NodePtr),
@@ -91,6 +92,11 @@ pub fn hash_node(n: NodePtr) -> u64 {
         h
     }
 }
+/// What specialization bakes into the subtree at n (PROF_<name>); each node once per ProfCtx.
+pub fn profile_node(pc: &mut ProfCtx, n: NodePtr) -> u64 {
+    if n.is_null() || !pc.seen.insert(n as usize) { return 0; }
+    unsafe { ((*n).head.kind.profile)(pc, n) }
+}
 pub fn hash_node_list(ns: NodeList) -> u64 {
     let mut h = hash_u64(ns.len() as u64);
     for x in ns.iter() { h = hash_merge(h, hash_node(*x)); }
@@ -124,14 +130,14 @@ pub fn specialize_open(sc: &mut SpecCtx, n: NodePtr) -> String {
 }
 /// Specialize n as a public entry: an exported `SD_<hash>` with the dispatcher's signature.
 pub fn specialize_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
-    let fname = format!("SD_{:016x}", hash_node(n));
+    let fname = format!("SD_{:016x}", sc.entry_name(hash_node(n)));
     if sc.emitted.contains(&fname) { return fname; }
     sc.holes.clear();
     sc.begin_entry(n as usize, hash_node(n));
     let t = specialize_node(sc, n);
     let p = sc.rec_suffix(hash_node(n));
-    let s = format!("S_{:016x}{}", hash_node(n), p);
-    if sc.emitted.contains(&format!("R_{:016x}{}", hash_node(n), p)) && !sc.emitted.contains(&s) {
+    let s = format!("S_{:016x}{}{}", hash_node(n), sc.tag, p);
+    if sc.emitted.contains(&format!("R_{:016x}{}{}", hash_node(n), sc.tag, p)) && !sc.emitted.contains(&s) {
         // n calls itself: its one body is S_<hash>::run (R_ calls it directly); SD_ passes the spec-in value on
         specialize_run(sc, &s, &t);
         sc.out.push_str(&format!("#[no_mangle]
@@ -158,17 +164,17 @@ pub static {}_HOLES: [u32; {}] = [{}];
 pub fn specialize_rec(sc: &mut SpecCtx, q: NodePtr) -> String {
     let h = hash_node(q);
     let p = sc.rec_suffix(h);
-    let name = format!("R_{:016x}{}", h, p);
+    let name = format!("R_{:016x}{}{}", h, sc.tag, p);
     if !p.is_empty() {
         // the entry's patched body (S_<hash>P::run) holds the values of the one node it was bound to
         if sc.emitted.insert(name.clone()) {
-            sc.out.push_str(&format!("pub struct {0};\nimpl Disp for {0} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ if n as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}P::run(c, n) }} else {{ std::hint::cold_path(); <Dyn as Disp>::call(c, n) }} }}\n    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr) -> i64 {{ if n as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}P::run(c, n) }} else {{ std::hint::cold_path(); <Dyn as Disp>::spec(c, n) }} }}\n}}\n", name, h));
+            sc.out.push_str(&format!("pub struct {0};\nimpl Disp for {0} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ if n as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}{2}P::run(c, n) }} else {{ std::hint::cold_path(); <Dyn as Disp>::call(c, n) }} }}\n    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr) -> i64 {{ if n as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}{2}P::run(c, n) }} else {{ std::hint::cold_path(); <Dyn as Disp>::spec(c, n) }} }}\n}}\n", name, h, sc.tag));
         }
         return name;
     }
     if sc.emitted.insert(name.clone()) {
-        sc.rec.push(q as usize);
-        sc.out.push_str(&format!("pub struct {0};\nimpl Disp for {0} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ S_{1:016x}::run(c, n) }}\n    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr) -> i64 {{ S_{1:016x}::run(c, n) }}\n}}\n", name, h));
+        sc.rec.push((q as usize, sc.tag.clone()));
+        sc.out.push_str(&format!("pub struct {0};\nimpl Disp for {0} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ S_{1:016x}{2}::run(c, n) }}\n    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr) -> i64 {{ S_{1:016x}{2}::run(c, n) }}\n}}\n", name, h, sc.tag));
     }
     name
 }
@@ -178,9 +184,9 @@ fn specialize_run(sc: &mut SpecCtx, s: &str, t: &str) {
 }
 /// After the entries: S_<hash>::run of the recursion targets whose SD_ was not the one to provide it.
 pub fn specialize_finish(sc: &mut SpecCtx) {
-    while let Some(q) = sc.rec.pop() {
+    while let Some((q, tag)) = sc.rec.pop() {
         let q = q as NodePtr;
-        let s = format!("S_{:016x}", hash_node(q));
+        let s = format!("S_{:016x}{}", hash_node(q), tag);
         if sc.emitted.contains(&s) { continue; }
         let t = specialize_node(sc, q);
         specialize_run(sc, &s, &t);
@@ -393,6 +399,7 @@ pub static KIND_node_num: NodeKind = NodeKind {
     name: "node_num",
     default_dispatcher: DISPATCH_node_num,
     hash_func: HASH_node_num,
+    profile: PROF_node_num,
     specializer: SPECIALIZE_node_num,
     dumper: DUMP_node_num,
     replacer: REPLACE_node_num,
@@ -407,6 +414,7 @@ pub static KIND_node_add: NodeKind = NodeKind {
     name: "node_add",
     default_dispatcher: DISPATCH_node_add,
     hash_func: HASH_node_add,
+    profile: PROF_node_add,
     specializer: SPECIALIZE_node_add,
     dumper: DUMP_node_add,
     replacer: REPLACE_node_add,
@@ -421,6 +429,7 @@ pub static KIND_node_sub: NodeKind = NodeKind {
     name: "node_sub",
     default_dispatcher: DISPATCH_node_sub,
     hash_func: HASH_node_sub,
+    profile: PROF_node_sub,
     specializer: SPECIALIZE_node_sub,
     dumper: DUMP_node_sub,
     replacer: REPLACE_node_sub,
@@ -435,6 +444,7 @@ pub static KIND_node_mul: NodeKind = NodeKind {
     name: "node_mul",
     default_dispatcher: DISPATCH_node_mul,
     hash_func: HASH_node_mul,
+    profile: PROF_node_mul,
     specializer: SPECIALIZE_node_mul,
     dumper: DUMP_node_mul,
     replacer: REPLACE_node_mul,
@@ -449,6 +459,7 @@ pub static KIND_node_mod: NodeKind = NodeKind {
     name: "node_mod",
     default_dispatcher: DISPATCH_node_mod,
     hash_func: HASH_node_mod,
+    profile: PROF_node_mod,
     specializer: SPECIALIZE_node_mod,
     dumper: DUMP_node_mod,
     replacer: REPLACE_node_mod,
@@ -463,6 +474,7 @@ pub static KIND_node_var: NodeKind = NodeKind {
     name: "node_var",
     default_dispatcher: DISPATCH_node_var,
     hash_func: HASH_node_var,
+    profile: PROF_node_var,
     specializer: SPECIALIZE_node_var,
     dumper: DUMP_node_var,
     replacer: REPLACE_node_var,
@@ -477,6 +489,7 @@ pub static KIND_node_set: NodeKind = NodeKind {
     name: "node_set",
     default_dispatcher: DISPATCH_node_set,
     hash_func: HASH_node_set,
+    profile: PROF_node_set,
     specializer: SPECIALIZE_node_set,
     dumper: DUMP_node_set,
     replacer: REPLACE_node_set,
@@ -491,6 +504,7 @@ pub static KIND_node_seq: NodeKind = NodeKind {
     name: "node_seq",
     default_dispatcher: DISPATCH_node_seq,
     hash_func: HASH_node_seq,
+    profile: PROF_node_seq,
     specializer: SPECIALIZE_node_seq,
     dumper: DUMP_node_seq,
     replacer: REPLACE_node_seq,
@@ -505,6 +519,7 @@ pub static KIND_node_times: NodeKind = NodeKind {
     name: "node_times",
     default_dispatcher: DISPATCH_node_times,
     hash_func: HASH_node_times,
+    profile: PROF_node_times,
     specializer: SPECIALIZE_node_times,
     dumper: DUMP_node_times,
     replacer: REPLACE_node_times,

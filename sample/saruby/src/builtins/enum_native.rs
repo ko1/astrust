@@ -113,15 +113,20 @@ fn no_blk(c: &mut Ctx, slf: Value, mid: &str, a: &[Value]) -> RV {
     crate::builtins::enumerator::enum_for_sized(c, slf, crate::symbol::intern(mid.as_bytes()), a)
 }
 
+/// Enumerable#map on a Range of fixnums whose #each is the builtin, yielding through `y` (inline_iter.rs);
+/// None: another receiver.
+#[inline(always)]
+pub fn en_map_range_loop(c: &mut Ctx, slf: Value, y: &mut impl FnMut(&mut Ctx, &[Value]) -> RV) -> Option<RV> {
+    let (lo, hi) = int_range(c, slf)?;
+    // the result in a local: the generic path reads it and the block out of `d` at every element
+    let out = c.ary_new();
+    let mut i = lo;
+    while i <= hi { match y(c, &[Value::fix(i)]) { Ok(r) => c.ary_push(out, r), Err(e) => return Some(Err(e)) } i += 1; }
+    Some(Ok(out))
+}
 fn en_map(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return no_blk(c, slf, "map", a); }
-    if let Some((lo, hi)) = int_range(c, slf) {
-        // the result in a local: the generic path reads it and the block out of `d` at every element
-        let out = c.ary_new();
-        let mut i = lo;
-        while i <= hi { let r = yield_block(c, blk, &[Value::fix(i)])?; c.ary_push(out, r); i += 1; }
-        return Ok(out);
-    }
+    if let Some(r) = en_map_range_loop(c, slf, &mut |c, a| yield_block(c, blk, a)) { return r; }
     let acc0 = c.ary_new();
     let d = c.ary_new_from(&[acc0, bptr(blk)]);
     run_each(c, slf, |c, d, args, _| { let r = yield_block(c, ublk(c, d, 1), args)?; c.ary_push(c.ary_get(d, 0), r); Ok(NIL) }, d, &[])?;

@@ -3,13 +3,14 @@
 // A `recv.m(args) { |..| body }` site whose cache held one of the iterators below (identified as
 // inline_builtin.rs identifies builtins: by the method entry boot defined, CallCache.bi) is baked
 // with the iterator's number and the block's entry compiled in (`body@spec`).  When the cache
-// still holds that builtin for the receiver's class, node_call_blk runs the loop: iter_next puts
-// a step's arguments in the block's frame, the site calls the block entry directly (no yield1,
-// no dispatcher), iter_step takes its value.  The loop runs under the builtin's cfunc frame
-// (backtraces name it, as for the out-of-line call); the receiver and any accumulator are in the
-// staged slots (rooted).  A receiver or argument the loop does not handle (a Bignum, a Float
-// limit, an endless Range ...) gives None from iter_begin before anything ran, and the site
-// calls the builtin out of line.
+// still holds that builtin for the receiver's class, node_call_blk runs the builtin's own loop
+// (iter_loop: the `*_loop` function the cfunc itself runs, generic over how it yields), with a
+// yield that puts the step's arguments in the block's frame and calls the block entry directly
+// (no yield1, no dispatcher).  So the iterator is written once, in the builtin, and the baked site
+// only specializes its yield.  The loop runs under the builtin's cfunc frame (backtraces name it,
+// as for the out-of-line call).  A receiver or argument the loop does not take (a Bignum, a Float
+// limit, an endless Range ...) gives None before anything ran, and the site calls the builtin out
+// of line.  The loops neither raise nor stage on the VM stack between steps (IT_SHARE relies on it).
 #![forbid(unsafe_code)]
 use crate::stack::*;
 use crate::value::*;
@@ -89,126 +90,37 @@ pub fn spec_iter_block(cc: &CallCache, argc: usize, kind: u32, blk: &Iseq) -> cr
     if d.len() <= 600 { blk.bentry } else { std::ptr::null_mut() }
 }
 
-/// A running inline iterator: the next integer or index and its bounds, the accumulator, the
-/// element of the current step, and the block's frame.
-pub struct It { i: i64, hi: i64, st: i64, acc: Value, cur: Value, bb: Stk, pub bfp: Fp }
-
-/// The block's frame for one step: the values at slots 2.., missing parameters nil, sp at its base.
+/// One step's arguments in the block's frame at `bb`: slots 2.., missing parameters nil, sp at its base.
 #[inline(always)]
-fn put_args(c: &mut Ctx, s: &It, np: usize, a: &[Value]) {
+pub fn put_args(c: &mut Ctx, bb: Stk, bfp: Fp, np: usize, a: &[Value]) {
+    let m = a.len().min(np);
     let mut i = 0;
-    while i < a.len() { s.bfp[2 + i].set(a[i]); i += 1; }
-    while i < np { s.bfp[2 + i].set(NIL); i += 1; }
-    c.set_sp(s.bb, 0);
+    while i < m { bfp[2 + i].set(a[i]); i += 1; }
+    while i < np { bfp[2 + i].set(NIL); i += 1; }
+    c.set_sp(bb, 0);
 }
 
-/// Start iterator `it` (baked: `kind | np << 8`) on r0 with the arguments staged at base[2..2+argc].
-/// None: not a case the loop handles (nothing has run).  An accumulator is rooted in base[1].
+/// The builtin's own loop for iterator `it` (baked) on r0 with the site's arguments `a`, its block called
+/// through `y`; None: a case that loop does not take (nothing has run), which the site calls out of line.
 #[inline(always)]
-pub fn iter_begin(c: &mut Ctx, it: u32, r0: Value, base: Stk, argc: usize) -> Option<It> {
-    let kind = it & 0xff;
-    let (mut i, hi, st) = match kind {
-        IT_TIMES => (0, r0.as_fix() - 1, 1),
-        IT_UPTO | IT_DOWNTO => {
-            let e = base[2].get();
-            if !e.is_fixnum() { return None; }
-            (r0.as_fix(), e.as_fix(), if kind == IT_UPTO { 1 } else { -1 })
-        }
-        IT_STEP => {
-            let (e, d) = (base[2].get(), base[3].get());
-            if !e.is_fixnum() || !d.is_fixnum() || d == Value::fix(0) { return None; }
-            (r0.as_fix(), e.as_fix(), d.as_fix())
-        }
-        IT_RANGE_EACH | IT_RANGE_MAP => {
-            let (b, e, x) = c.range(r0);
-            if !b.is_fixnum() || !e.is_fixnum() { return None; }
-            (b.as_fix(), if x { e.as_fix() - 1 } else { e.as_fix() }, 1)
-        }
-        _ => (0, 0, 1),
-    };
-    let bb = c.top();
-    let bfp = frame(c, bb).ok()?;
-    let mut acc = NIL;
-    match kind {
-        IT_RANGE_MAP | IT_ARY_SELECT | IT_ARY_REJECT => { acc = c.ary_new(); base[1].set(acc); }
-        IT_ARY_MAP => { let n = c.ary(r0).len(); acc = c.ary_new_capa(n); base[1].set(acc); }
-        IT_ARY_INJECT => if argc == 1 { acc = base[2].get(); } else {
-            // inject without an initial value: the first element, nil for an empty Array
-            match c.ary(r0).first() { Some(&x) => { acc = x; i = 1; } None => { acc = UNDEF; } }
-        },
-        IT_HASH_EACH => c.hash_iter_enter(r0),
-        _ => {}
-    }
-    Some(It { i, hi, st, acc, cur: NIL, bb, bfp })
-}
-
-/// Put the next step's arguments in the block's frame; false when the iteration is over.
-/// Arrays and Hashes are read again at every step (the block may change them).
-#[inline(always)]
-pub fn iter_next(c: &mut Ctx, s: &mut It, it: u32, r0: Value) -> bool {
-    let np = (it >> 8 & 0xff) as usize;
+pub fn iter_loop(c: &mut Ctx, it: u32, r0: Value, a: &[Value], y: &mut impl FnMut(&mut Ctx, &[Value]) -> RV) -> Option<RV> {
+    use crate::builtins::{array_methods as am, enum_native as en, hash_methods as hm, numeric_methods as nm, range_methods as rm};
     match it & 0xff {
-        // |lo|, |hi|, |st| < 2^62: i + st cannot overflow
-        IT_TIMES | IT_UPTO | IT_DOWNTO | IT_STEP | IT_RANGE_EACH | IT_RANGE_MAP => {
-            if if s.st > 0 { s.i > s.hi } else { s.i < s.hi } { return false; }
-            put_args(c, s, np, &[Value::fix(s.i)]);
-            s.i += s.st;
-            true
-        }
-        IT_ARY_INJECT => {
-            if s.acc == UNDEF { return false; }
-            let Some(&x) = c.ary(r0).get(s.i as usize) else { return false };
-            put_args(c, s, np, &[s.acc, x]);
-            s.i += 1;
-            true
-        }
-        IT_ARY_EACH_WI => {
-            let Some(&x) = c.ary(r0).get(s.i as usize) else { return false };
-            put_args(c, s, np, &[x, Value::fix(s.i)]);
-            s.i += 1;
-            true
-        }
-        IT_HASH_EACH => loop {
-            let Some((k, v)) = c.hash_entry_at(r0, s.i as usize) else { return false };
-            s.i += 1;
-            if k != UNDEF { put_args(c, s, np, &[k, v]); return true; }
-        },
-        _ => {
-            let Some(&x) = c.ary(r0).get(s.i as usize) else { return false };
-            put_args(c, s, np, &[x]);
-            s.cur = x;
-            s.i += 1;
-            true
-        }
+        IT_TIMES => nm::int_times_loop(c, r0, y),
+        IT_UPTO => nm::int_upto_loop(c, r0, a[0], 1, y),
+        IT_DOWNTO => nm::int_upto_loop(c, r0, a[0], -1, y),
+        IT_STEP => nm::num_step_loop(c, r0, a[0], a[1], y),
+        IT_RANGE_EACH => rm::r_each_loop(c, r0, y),
+        IT_RANGE_MAP => en::en_map_range_loop(c, r0, y),
+        IT_ARY_EACH => Some(am::a_each_loop(c, r0, y)),
+        IT_ARY_MAP => Some(am::a_map_loop(c, r0, y)),
+        IT_ARY_SELECT => Some(am::a_select_loop(c, r0, true, y)),
+        IT_ARY_REJECT => Some(am::a_select_loop(c, r0, false, y)),
+        IT_ARY_INJECT => am::a_inject_loop(c, r0, a, y),
+        IT_ARY_EACH_WI => Some(am::a_each_wi_loop(c, r0, y)),
+        IT_HASH_EACH => Some(hm::h_each_loop(c, r0, y)),
+        _ => None,
     }
-}
-
-/// What the block returned for the step iter_next set up.
-#[inline(always)]
-pub fn iter_step(c: &mut Ctx, s: &mut It, it: u32, base: Stk, y: Value) {
-    match it & 0xff {
-        IT_RANGE_MAP | IT_ARY_MAP => c.ary_push(s.acc, y),
-        // as Array#select: the element read again after the block (nil if it is gone)
-        IT_ARY_SELECT => if y.truthy() { let x = c.ary(base[0].get()).get(s.i as usize - 1).copied().unwrap_or(NIL); c.ary_push(s.acc, x); },
-        IT_ARY_REJECT => if y.falsy() { c.ary_push(s.acc, s.cur); },
-        // the accumulator is rooted in the staged slot while the block runs
-        IT_ARY_INJECT => { s.acc = y; base[1].set(y); }
-        _ => {}
-    }
-}
-
-/// End of the loop (r: the first error, if any): the iterator's value; sp back at the staged call.
-#[inline(always)]
-pub fn iter_end(c: &mut Ctx, s: &It, it: u32, r0: Value, base: Stk, r: Result<(), crate::vm::Esc>) -> RV {
-    let kind = it & 0xff;
-    if kind == IT_HASH_EACH { c.hash_iter_leave(r0); }
-    c.set_sp(base, 0);
-    r?;
-    Ok(match kind {
-        IT_RANGE_MAP | IT_ARY_MAP | IT_ARY_SELECT | IT_ARY_REJECT => s.acc,
-        IT_ARY_INJECT => if s.acc == UNDEF { NIL } else { s.acc },
-        _ => r0,
-    })
 }
 
 /// The loop's guard missed.  An empty or stale cache (first run, a redefinition) is filled without

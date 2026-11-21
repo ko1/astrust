@@ -2064,7 +2064,7 @@ fn SPECIALIZE_node_call(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push(format!("{}u64", h_callee));
     a.push(format!("{}u32", { let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }));
     a.push(format!("{}u32", { let u = &(*np).u; crate::vm::spec_shared(u.recv, u.args.len(), crate::vm::spec_callee(&u.cc, u.args.len(), u.flags)) }));
-    a.push(format!("{}u32", { let u = &(*np).u; crate::inline_builtin::site_builtin(&u.cc, u.args.len(), crate::vm::site_kind(&u.cc, u.args.len(), u.flags)) }));
+    a.push(format!("{}u32", { let u = &(*np).u; crate::inline_builtin::site_builtin(u.args.len(), crate::vm::site_kind(&u.cc, u.args.len(), u.flags), u.mid) }));
     }
     if !was_open { sc.open.remove(&own_hash); }
     // named by what is baked too (children's types, @bake values), not by the hash alone:

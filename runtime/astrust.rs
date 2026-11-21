@@ -43,7 +43,9 @@ pub struct SpecCtx {
     pub spec_depth: u32,          // nesting of speculated callees
     pub spec_max_depth: u32,
     pub comments: bool,
-    pub rec: Vec<usize>,          // nodes a direct recursive call (R_<hash>) names; their S_<hash> is owed
+    pub rec: Vec<(usize, String)>, // nodes a direct recursive call (R_<hash>) names, with the tag; their S_<hash> is owed
+    pub hopt: u64,                // the entry being specialized: its name, structure + profile (0: the structural hash)
+    pub tag: String,              // that entry's suffix for R_ / S_ items (whose code depends on its profile)
     pub unrolled: HashSet<u64>,   // recursion targets being compiled into themselves (their copy's sites: R_)
     pub rec_unroll: bool,         // ASTRUST_REC_UNROLL=0: a recursive site never compiles its target in
     pub reenter: u32,             // inside such a copy: nodes being specialized are specialized again
@@ -59,8 +61,11 @@ impl SpecCtx {
                   // ASTRUST_SPEC_DEPTH=n: how deep speculated callees nest (0: no speculation)
                   spec_max_depth: std::env::var("ASTRUST_SPEC_DEPTH").ok().and_then(|v| v.parse().ok()).unwrap_or(2), comments: std::env::var_os("ASTRUST_SD_COMMENTS").is_some(), rec: vec![],
                   unrolled: HashSet::new(), rec_unroll: std::env::var("ASTRUST_REC_UNROLL").map_or(true, |v| v != "0"), reenter: 0, holes: vec![],
-                  patch: false, patch_root: 0, patch_hash: 0 }
+                  patch: false, patch_root: 0, patch_hash: 0, hopt: 0, tag: String::new() }
     }
+    /// Name the next entry by `hopt` (hash_merge(structural hash, profile_node)); 0: by its structural hash.
+    pub fn set_profile(&mut self, hopt: u64) { self.hopt = hopt; self.tag = if hopt == 0 { String::new() } else { format!("_{:016x}", hopt) }; }
+    pub fn entry_name(&self, h: u64) -> u64 { if self.hopt == 0 { h } else { self.hopt } }
     /// The entry `root` (0: done) whose tree is specialized next; in the patch crate its holes are bound.
     pub fn begin_entry(&mut self, root: usize, hash: u64) {
         // ASTRUST_PATCH_HOLES=0: the patch crate reads holes from the node too (a control for the loader alone)
@@ -88,6 +93,10 @@ impl SpecCtx {
     pub fn rec_suffix(&self, h: u64) -> &'static str { if self.patch_root != 0 && h == self.patch_hash { "P" } else { "" } }
 }
 
+/// profile_node's walk: the nodes already counted.
+pub struct ProfCtx { pub seen: HashSet<usize> }
+impl ProfCtx { pub fn new() -> Self { ProfCtx { seen: HashSet::new() } } }
+
 // ---- code store ----------------------------------------------------------------
 
 extern "C" {
@@ -112,14 +121,44 @@ pub struct BakeConfig {
 
 /// A directory holding specialized code: `items/<name>.rs` (one per emitted item,
 /// content-addressed by its hash name, so bakes accumulate) and the linked `all.so`.
+/// `index.txt` maps an entry's structural hash and its program key (the embedder's: file and line, say)
+/// to the name of the SD baked for it (SD_<hopt>: structure and profile).  An entry of another program
+/// (no such key) gets the first SD baked for its structure.
 pub struct CodeStore {
     pub dir: PathBuf,
     handle: *mut c_void,
     has_patch: bool,           // patch.o was there when all.so was loaded
+    index: HashMap<u64, Vec<(String, u64)>>,
 }
 
 impl CodeStore {
-    pub fn new(dir: impl AsRef<Path>) -> Self { CodeStore { dir: dir.as_ref().to_path_buf(), handle: std::ptr::null_mut(), has_patch: false } }
+    pub fn new(dir: impl AsRef<Path>) -> Self { CodeStore { dir: dir.as_ref().to_path_buf(), handle: std::ptr::null_mut(), has_patch: false, index: HashMap::new() } }
+
+    fn read_index(dir: &Path) -> Vec<(u64, String, u64)> {
+        let Ok(s) = std::fs::read_to_string(dir.join("index.txt")) else { return vec![] };
+        s.lines().filter_map(|l| {
+            let mut it = l.splitn(3, ' ');
+            let h = u64::from_str_radix(it.next()?, 16).ok()?;
+            let o = u64::from_str_radix(it.next()?, 16).ok()?;
+            Some((h, it.next()?.to_string(), o))
+        }).collect()
+    }
+    /// Record (structural hash, key, hopt) of baked entries; a key baked again takes its new SD.
+    pub fn add_index(&self, rows: &[(u64, String, u64)]) -> std::io::Result<()> {
+        let mut all = Self::read_index(&self.dir);
+        for r in rows {
+            match all.iter_mut().find(|x| x.0 == r.0 && x.1 == r.1) { Some(x) => x.2 = r.2, None => all.push(r.clone()) }
+        }
+        let s: String = all.iter().map(|(h, k, o)| format!("{:016x} {:016x} {}\n", h, o, k)).collect();
+        std::fs::write(self.dir.join("index.txt"), s)
+    }
+    /// The SD name for an entry of structure `h` and program key `key`: its own, else the first baked for h, else h.
+    pub fn pick(&self, h: u64, key: &str) -> u64 {
+        match self.index.get(&h) {
+            Some(v) => v.iter().find(|x| x.0 == key).or(v.first()).map_or(h, |x| x.1),
+            None => h,
+        }
+    }
 
     /// dlopen `all.so` if present and baked against the same build.
     pub fn load(&mut self, build_id: &str) -> bool {
@@ -139,6 +178,7 @@ impl CodeStore {
         }
         self.handle = h;
         self.has_patch = self.dir.join("patch.o").exists();
+        for (h, k, o) in Self::read_index(&self.dir) { self.index.entry(h).or_default().push((k, o)); }
         true
     }
 
@@ -311,28 +351,34 @@ impl TieredStore {
         }
         self.preload.as_ref()
     }
-    /// Record an entry (a node, as usize) and return the SD address to install, if baked.
-    pub fn register(&mut self, node: usize, hash: u64, is_prelude: bool, build_id: &str) -> Option<*const c_void> {
+    /// Record an entry (a node, as usize, of structural hash `hash` and program key `key`) and return the
+    /// SD address to install and its name's hash (index.txt), if baked.
+    pub fn register(&mut self, node: usize, hash: u64, key: &str, is_prelude: bool, build_id: &str) -> Option<(*const c_void, u64)> {
         if self.program.is_none() { return None; }   // --plain
         if self.collect { if is_prelude { self.prelude_entries.push(node) } else { self.program_entries.push(node) } }
-        let p = if is_prelude { self.preload(build_id).and_then(|cs| cs.lookup(hash)) }
-                else { self.program.as_ref().and_then(|cs| cs.lookup(hash)) };
-        if p.is_some() { self.hits += 1; }
-        p
+        let cs = if is_prelude { self.preload(build_id) } else { self.program.as_ref() }?;
+        let o = cs.pick(hash, key);
+        let p = cs.lookup(o)?;
+        self.hits += 1;
+        Some((p, o))
     }
     /// Bake: `spec(entries, patch)` returns the specializer output for a set of entries (patch: for patch.o,
     /// built next to all.so where the loader runs).
-    pub fn bake(&mut self, program_dir: &Path, cfg: &BakeConfig, spec: impl Fn(&[usize], bool) -> String) -> Result<usize, String> {
+    /// `index(entry)`: (structural hash, program key, hopt) of an entry, for index.txt.
+    pub fn bake(&mut self, program_dir: &Path, cfg: &BakeConfig, spec: impl Fn(&[usize], bool) -> String, index: impl Fn(usize) -> (u64, String, u64)) -> Result<usize, String> {
         if self.preload(&cfg.build_id).is_none() {
             let _ = std::fs::remove_dir_all(self.preload_dir.join("items"));
             let _ = std::fs::remove_dir_all(self.preload_dir.join("pitems"));
-            Self::bake_into(&self.preload_dir, &self.prelude_entries, &spec, cfg)?;
+            let _ = std::fs::remove_file(self.preload_dir.join("index.txt"));
+            Self::bake_into(&self.preload_dir, &self.prelude_entries, &spec, &index, cfg)?;
         }
-        Self::bake_into(program_dir, &self.program_entries, &spec, cfg)
+        Self::bake_into(program_dir, &self.program_entries, &spec, &index, cfg)
     }
-    fn bake_into(dir: &Path, entries: &[usize], spec: &impl Fn(&[usize], bool) -> String, cfg: &BakeConfig) -> Result<usize, String> {
+    fn bake_into(dir: &Path, entries: &[usize], spec: &impl Fn(&[usize], bool) -> String, index: &impl Fn(usize) -> (u64, String, u64), cfg: &BakeConfig) -> Result<usize, String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let cs = CodeStore::new(dir);
+        let rows: Vec<(u64, String, u64)> = entries.iter().map(|&e| index(e)).collect();
+        cs.add_index(&rows).map_err(|e| e.to_string())?;
         let added = cs.add_items(&spec(entries, false)).map_err(|e| e.to_string())?;
         let padded = if loader::SUPPORTED { cs.add_items_in("pitems", &spec(entries, true)).map_err(|e| e.to_string())? } else { 0 };
         if added + padded > 0 || !dir.join("all.so").exists() || (loader::SUPPORTED && !dir.join("patch.o").exists()) { cs.build(cfg)?; }
