@@ -211,12 +211,19 @@ pub fn iter_end(c: &mut Ctx, s: &It, it: u32, r0: Value, base: Stk, r: Result<()
     })
 }
 
-/// A baked iterator site whose cache is empty or stale (its first run, after a redefinition): fill
-/// it without calling, so that this run already takes the loop.  A cache holding another class
-/// (a polymorphic site) is left alone.
+/// The loop's guard missed.  An empty or stale cache (first run, a redefinition) is filled without
+/// calling, so that this run already takes the loop; a cache holding another class (a polymorphic
+/// site) is left alone.  The block is not in the tree's hash, so sites with other blocks share the
+/// baked code: the entry's hash `h` must be this site's, remembered in cc.fast_hash (0 for a cfunc
+/// entry, reset by every fill).
 #[inline(never)]
-pub fn iter_refill(c: &mut Ctx, cc: &mut CallCache, r0: Value, mid: Sym, flags: u32, it: u32) -> bool {
-    if cc.klass != 0 && cc.serial == crate::vm::method_serial() { return false; }
-    crate::vm::lookup_cc(c, cc, r0, mid, flags);
-    crate::inline_builtin::bi_hit(cc, r0, it & 0xff)
+pub fn iter_refill(c: &mut Ctx, cc: &mut CallCache, r0: Value, mid: Sym, flags: u32, it: u32, blk: &Iseq, h: u64) -> bool {
+    if !crate::inline_builtin::bi_hit(cc, r0, it & 0xff) {
+        if cc.klass != 0 && cc.serial == crate::vm::method_serial() { return false; }
+        crate::vm::lookup_cc(c, cc, r0, mid, flags);
+        if !crate::inline_builtin::bi_hit(cc, r0, it & 0xff) { return false; }
+    }
+    if crate::node::hash_node(blk.bentry) != h { return false; }
+    cc.fast_hash = h;
+    true
 }

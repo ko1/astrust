@@ -890,7 +890,9 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, D_callee: Disp, D_body
     let r = if it != 0 && body_hash != 0 {
         // baked builtin iterator (inline_iter.rs): its loop here under its cfunc frame, the block's entry compiled in
         let bp: *const Block = &b;
-        match if bi_hit(cc, r0, it & 0xff) || iter_refill(c, cc, r0, mid, flags, it) { iter_begin(c, it, r0, base, k) } else { None } {
+        // fast_hash: this site's block entry is the baked one (blk is not in the tree's hash; iter_refill)
+        let hit = (bi_hit(cc, r0, it & 0xff) && cc.fast_hash == body_hash) || iter_refill(c, cc, r0, mid, flags, it, blk, body_hash);
+        match if hit { iter_begin(c, it, r0, base, k) } else { None } {
             Some(mut st) => {
                 let pf = c.frame;
                 let mut fr = Frame::cfunc(pf, cc.me as *const MethodEntry, bp);
