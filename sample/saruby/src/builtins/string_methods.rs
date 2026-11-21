@@ -841,20 +841,23 @@ cfn!(s_scan, |c, slf, a, blk| {
     let src = c.str_bytes(slf).to_vec();
     let out = c.ary_new();
     let mut i = 0;
+    let mut any = false;
+    let mut last = None;   // without a block only the last match becomes $~ (each MatchData snapshots the string)
     while i <= src.len() {
         let Some(g) = regexp::search_raw(c, re, &src, i) else { break };
         let (ms, me) = g[0].unwrap();
-        let m = regexp::match_new(c, re, slf, g.clone());
-        c.last_match = m;
+        let m = if blk.is_null() { last = Some(g.clone()); NIL } else { let m = regexp::match_new(c, re, slf, g.clone()); c.last_match = m; m };
         let item = if g.len() == 1 { c.str_new_like(slf, src[ms..me].to_vec()) } else {
             let arr = c.ary_new();
             for gi in g.iter().skip(1) { let it = match gi { Some((x, y)) => c.str_new_like(slf, src[*x..*y].to_vec()), None => NIL }; c.ary_push(arr, it); }
             arr
         };
-        if !blk.is_null() { yield1(c, blk, item)?; str_mod_check(c, slf, src.len())?; c.last_match = m; } else { c.ary_push(out, item); }
+        if !blk.is_null() { yield1(c, blk, item)?; str_mod_check(c, slf, src.len())?; c.last_match = m; any = true; } else { c.ary_push(out, item); }
         i = if me == ms { me + if me < src.len() { char_len_at(&src, me) } else { 1 } } else { me };
     }
+    if !any && last.is_none() { c.last_match = NIL; }   // CRuby: no match leaves $~ nil
     if !blk.is_null() { return Ok(slf); }
+    if let Some(g) = last { let m = regexp::match_new(c, re, slf, g); c.last_match = m; }
     Ok(out)
 });
 /// tr-style character set: (negated, codes).
