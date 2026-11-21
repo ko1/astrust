@@ -32,7 +32,7 @@ pub unsafe trait GcLang: Sized {
     fn as_object(r: Self::Ref) -> Option<NonNull<Self::Obj>>;    // "is this word a heap reference"
     fn from_object(p: NonNull<Self::Obj>) -> Self::Ref;          // how a moving backend rewrites a slot
     fn visit_roots<V: RootVisitor<Self>>(&mut self, v: &mut V);
-    fn scan_edges<V: EdgeVisitor<Self>>(&mut self, obj: &mut Self::Obj, v: &mut V);
+    fn scan_edges<V: RootVisitor<Self>>(&mut self, obj: &mut Self::Obj, v: &mut V);  // + words it owns
     unsafe fn finalize(&mut self, obj: NonNull<Self::Obj>);      // a dead object: release what it owns
 }
 
@@ -80,6 +80,8 @@ Points of the design:
   they designate, and never rewrite the words.  A binding declares `AMBIGUOUS_ROOTS = true` if it
   calls it, a backend declares whether it can honour it, and `Gc::new` refuses the combination
   "binding uses them, backend cannot" at compile time.  A precise binding simply never calls it.
+  `scan_edges` gets a `RootVisitor` too: an object may own ambiguous words (a suspended fiber's
+  machine stack), which are then traced only while the object is reachable.
 * **The object being allocated is a root.** `alloc` takes the object by value.  If a collection
   runs first, the backend receives it as `pending` and scans its edges, so values stored in the
   new object need no other root during the call (and a moving backend updates them).
@@ -137,7 +139,8 @@ Add the backend to the embedder's type alias (saruby: `sample/saruby/src/gc.rs`,
    may already be finalized).
 6. If references can sit in native locals, pass the machine stack as ambiguous roots:
    `stack::with_current_stack(top, |words| v.visit_ambiguous(words))`, and
-   `stack::words(lo, hi)` for suspended stacks (fibers).
+   `stack::words(lo, hi)` for suspended stacks (fibers): from `scan_edges` of the object that
+   owns the stack, so a suspended stack nothing refers to is not a root.
 
 ## What "precise" requires of the embedder
 
@@ -167,11 +170,15 @@ nothing in the type system says so.
 `sample/saruby/src/gc.rs`: `struct Saruby` (stateless; the roots are globals), `type Heap =
 Gc<Saruby, Backend>`, `gc::alloc(klass, body)`, `gc::collect()`, `gc::store`, `gc::each_object`.
 
-* Roots (`vm::visit_roots`, `vm::visit_ctx`, `fiber::visit_fibers`): exact — the `Vm` fields
-  (builtin classes, globals, `node_values`, `pinned`, `frozen_lits`, `symproc_cache`, crefs),
-  each `Ctx`'s `esc_val` / `errinfo` / `last_match` / `esc_tag_v`, the fiber list; ambiguous —
-  the running machine stack with callee-saved registers, every suspended fiber stack, and every
-  VM value stack.
+* Roots (`vm::visit_roots`, `vm::visit_ctx`): exact — the `Vm` fields (builtin classes,
+  globals, `node_values`, `pinned` (the current fiber among them), `frozen_lits`,
+  `symproc_cache`, crefs), the main `Ctx`'s `esc_val` / `errinfo` / `last_match` /
+  `esc_tag_v`; ambiguous — the running machine stack with callee-saved registers and the main
+  value stack.
+* A Fiber is an ordinary object: `FiberData::visit` (fiber.rs) traces its `Ctx` (value stack,
+  ambiguous) and, while it is switched out, its machine stack from the saved stack pointer
+  (ambiguous; the main thread's root fiber owns the main stack).  A suspended fiber nothing
+  refers to is collected; its stacks go back to pools (fiber_os.rs).
 * Edges (`GcLang::scan_edges`): the match over `Body`, `vm::visit_class` / `visit_me` /
   `visit_block`, and `RData::visit(&mut self, &mut gc::Visitor)` for native payloads
   (`gc::Visitor` is `dyn EdgeVisitor<Saruby>`: one virtual call per edge of a Data object).
@@ -206,8 +213,8 @@ Blocking precise roots (dropping the ambiguous machine-stack scan):
 * The VM value stacks are scanned as ambiguous words (`vm::visit_ctx`): slots below `sp` that
   no frame wrote yet hold stale Values.  They hold only Values, so this one can become exact
   once frames clear or bound their slots.
-* Values copied into Rust heap buffers across calls (`args.to_vec()` in `src/vm.rs`,
-  `src/fiber.rs` `fiber_main`), which no scan sees at all — wrong already today under stress.
+* Values copied into Rust heap buffers across calls (`args.to_vec()` in `src/vm.rs`; in
+  `src/fiber.rs` `fiber_main` the Array they came from is kept on the stack), which no scan sees.
 
 Blocking a moving backend (in addition):
 

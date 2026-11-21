@@ -24,8 +24,8 @@ pub type Backend = rt::mark_sweep::MarkSweep<Saruby>;
 pub type Backend = rt::mark_bitmap::MarkBitmap<Saruby>;
 
 pub type Heap = Gc<Saruby, Backend>;
-/// What `RData::visit` receives (object-safe form of the edge visitor).
-pub type Visitor<'a> = dyn EdgeVisitor<Saruby> + 'a;
+/// What `RData::visit` receives (object-safe form of the visitor; ambiguous words for fiber stacks).
+pub type Visitor<'a> = dyn RootVisitor<Saruby> + 'a;
 
 pub static mut HEAP: Option<Heap> = None;
 static mut STACK_BASE: usize = 0;
@@ -73,6 +73,15 @@ pub fn alloc_with(klass: Value, make: impl FnOnce() -> Body) -> Value {
 
 /// GC.start: a full collection, GC.disable or not (as CRuby: GC.disable stops only the automatic ones).
 pub fn collect() { heap().collect(&mut Saruby); }
+
+/// A collection the runtime asks for (as an allocation would), unless GC.disable is in effect.
+pub fn collect_auto() {
+    let h = heap();
+    if !h.ctl.disabled() { h.collect(&mut Saruby); }
+}
+
+/// Collections so far.
+pub fn collections() -> usize { heap().ctl.collections() }
 
 /// GC.start(full_mark: false), GC.disable or not.
 pub fn collect_minor() { heap().collect_minor(&mut Saruby); }
@@ -150,7 +159,7 @@ unsafe impl GcLang for Saruby {
     }
 
     #[inline(always)]
-    fn scan_edges<V: EdgeVisitor<Self>>(&mut self, o: &mut RObj, v: &mut V) {
+    fn scan_edges<V: RootVisitor<Self>>(&mut self, o: &mut RObj, v: &mut V) {
         v.visit(&mut o.klass);
         if o.flags & FL_EXIVAR != 0 { visit_gen_ivars(o, v); }
         match &mut o.body {

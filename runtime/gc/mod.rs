@@ -54,8 +54,9 @@ pub unsafe trait GcLang: Sized {
     fn from_object(p: NonNull<Self::Obj>) -> Self::Ref;
     /// Visit every root slot.
     fn visit_roots<V: RootVisitor<Self>>(&mut self, v: &mut V);
-    /// Visit every reference slot of one object.
-    fn scan_edges<V: EdgeVisitor<Self>>(&mut self, obj: &mut Self::Obj, v: &mut V);
+    /// Visit every reference slot of one object.  With `AMBIGUOUS_ROOTS`, also the ambiguous
+    /// words the object owns (a suspended machine stack: a fiber), through `visit_ambiguous`.
+    fn scan_edges<V: RootVisitor<Self>>(&mut self, obj: &mut Self::Obj, v: &mut V);
     /// Release what a dead object owns.  Must not allocate or touch other heap objects.
     ///
     /// # Safety
