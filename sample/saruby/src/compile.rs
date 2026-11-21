@@ -354,8 +354,9 @@ impl<'a> Compiler<'a> {
             if fl == 0 && sc.nslots as usize == 2 + params.lead.len() && leaf_body(body) { fl |= ME_LEAF; }
             ALLOC_node_method_entry(sc.nslots, params.lead.len() as u32, fl, line, body)
         } else { std::ptr::null_mut() };
-        let bentry = if kind == IseqKind::Block && lead_only {
-            ALLOC_node_block_entry(sc.nslots, params.lead.len() as u32, if sc.env_size > 0 { ME_ENV } else { 0 }, line, body)
+        let bentry = if (kind == IseqKind::Block || kind == IseqKind::Lambda) && lead_only {
+            let fl = if sc.env_size > 0 { ME_ENV } else { 0 } | if kind == IseqKind::Lambda { ME_LAMBDA } else { 0 };
+            ALLOC_node_block_entry(sc.nslots, params.lead.len() as u32, fl, line, body)
         } else { std::ptr::null_mut() };
         // dense keyword layout: lead then keywords in declared order, nothing else.  kentry takes
         // them all as plain params (a site passing every keyword in order); dentry takes none.

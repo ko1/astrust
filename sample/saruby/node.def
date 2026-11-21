@@ -1139,15 +1139,18 @@ node_method_entry(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, f
     }
 }
 
-// Entry of a block with only required params run as a plain block (run_block_fast): frame setup with
+// Entry of a block with only required params run as a plain block (run_block_fast; a `->` lambda: call_proc_kw): frame setup with
 // its sizes baked in.  The Block comes in ca.blk (CallArgs), the arguments are at fp[2..], sp is at the base.
 NODE_DEF
 node_block_entry(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, flags: u32, line: u32, body: NODE, ca@specin: CallArgs)
 {
     let b = unsafe { &*ca.blk };
+    // a lambda (ME_LAMBDA, called with its exact arity) is its own return target
+    let lambda = flags & ME_LAMBDA != 0;
+    let id = if lambda { c.next_serial() } else { b.home_id };
     // iseq null: Frame::iseq() takes it from self_blk when asked
     let mut fr = FrameFull {
-        h: Frame { prev: c.frame, fp: head(fp), me: b.me, blk: b.outer_blk, id: b.home_id, line, kind: FK_BLOCK, visi: VISI_PUBLIC, lite: false, pad: 0 },
+        h: Frame { prev: c.frame, fp: head(fp), me: b.me, blk: b.outer_blk, id, line, kind: if lambda { FK_LAMBDA } else { FK_BLOCK }, visi: VISI_PUBLIC, lite: false, pad: 0 },
         cref: b.cref, iseq: std::ptr::null(), self_blk: b, defined_class: b.defined_class,
     };
     fp[0].set(b.self_);
@@ -1163,7 +1166,9 @@ node_block_entry(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, fl
     c.frame = fr.prev;
     match r {
         Ok(v) => Ok(v),
-        Err(e) => if c.esc == EscKind::Next { c.esc = EscKind::None; Ok(c.esc_val) } else { Err(e) },
+        Err(e) => if c.esc == EscKind::Next || (lambda && ((c.esc == EscKind::Return && c.esc_tag == id) || (c.esc == EscKind::Break && c.esc_tag == b.tag))) {
+            c.esc = EscKind::None; Ok(c.esc_val)
+        } else { Err(e) },
     }
 }
 

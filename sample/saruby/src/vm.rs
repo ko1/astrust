@@ -179,6 +179,7 @@ pub fn kind_serial() -> u64 { method_serial() + vm().hierarchy_serial }
 pub const ME_ENV: u32 = 1;    // the frame has a heap env
 pub const ME_ID: u32 = 2;     // the frame needs an id: a block literal (or eval) in the body can return to it
 pub const ME_LEAF: u32 = 4;   // the body cannot call, raise or observe a frame: no frame is made
+pub const ME_LAMBDA: u32 = 8; // node_block_entry of a `->` literal: lambda frame (own return target)
 
 pub const FK_METHOD: u8 = 0;
 pub const FK_BLOCK: u8 = 1;
@@ -1591,7 +1592,7 @@ pub fn spec_callee_kw(cc: &CallCache, argc: usize, ci: &crate::compile::CallInfo
 pub fn spec_block(yc: &YieldCache, argc: usize) -> NodePtr {
     if yc.seen <= 1 { return std::ptr::null_mut(); }
     let is = unsafe { &*(yc.seen as *const Iseq) };
-    if is.bentry.is_null() || (argc == 1 && is.params.lead.len() >= 2) { return std::ptr::null_mut(); }
+    if is.bentry.is_null() || is.kind == IseqKind::Lambda || (argc == 1 && is.params.lead.len() >= 2) { return std::ptr::null_mut(); }
     let mut d = String::new();
     crate::node::dump_node(&mut d, is.bentry);
     if d.len() <= 600 { is.bentry } else { std::ptr::null_mut() }
@@ -2005,6 +2006,7 @@ pub fn block_fast(b: &Block, argc: usize) -> Option<&'static Iseq> {
     if let BlockKind::Iseq(is) = b.kind {
         let is = unsafe { &*is };
         // extra args are dropped and missing ones are nil; one arg for 2+ params may be an Array to spread
+        // a `->` block entry is only reached as a lambda proc, which the last test excludes
         if !is.bentry.is_null() && !(argc == 1 && is.params.lead.len() >= 2)
             && (b.proc_val == UNDEF || !rproc(b.proc_val).is_lambda) { return Some(is); }
     }
@@ -2048,15 +2050,24 @@ pub fn yield_with_self(c: &mut Ctx, blk: *const Block, args: &[Value], self_: Va
     invoke_block_full(c, &b2, args, std::ptr::null(), self_, false, std::ptr::null(), false)
 }
 
-pub fn call_proc(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block) -> RV {
-    let pd = rproc(p);
-    let b = pd.blk;
-    invoke_block_full(c, &b, args, blk, b.self_, pd.is_lambda, std::ptr::null(), false)
-}
+pub fn call_proc(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block) -> RV { call_proc_kw(c, p, args, blk, false) }
 
 pub fn call_proc_kw(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block, kw: bool) -> RV {
     let pd = rproc(p);
     let b = pd.blk;
+    // a `->` lambda called with its exact arity: its block entry (lambda frame, sizes baked)
+    if let BlockKind::Iseq(is) = b.kind {
+        let is = unsafe { &*is };
+        if is.kind == IseqKind::Lambda && !is.bentry.is_null() && !kw && blk.is_null() && args.len() == is.params.lead.len() {
+            let base = c.top();
+            stack_check(c, is.nlocals as usize + args.len() + 16)?;
+            put(base, 2, args);
+            c.call_blk = &b;
+            let r = run_body(c, is.bentry, base);
+            c.set_sp(base, 0);
+            return r;
+        }
+    }
     invoke_block_full(c, &b, args, blk, b.self_, pd.is_lambda, std::ptr::null(), kw)
 }
 
