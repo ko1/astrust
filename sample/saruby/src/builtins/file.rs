@@ -341,7 +341,7 @@ fn home_of(c: &mut Ctx, user: &str) -> Result<Vec<u8>, Esc> {
     arg_err(c, format!("user {} doesn't exist", user))
 }
 fn cwd() -> Vec<u8> { std::env::current_dir().map(|d| d.into_os_string().into_vec()).unwrap_or(b"/".to_vec()) }
-fn expand(c: &mut Ctx, a: &[Value], tilde: bool) -> Result<Vec<u8>, Esc> {
+pub(crate) fn expand(c: &mut Ctx, a: &[Value], tilde: bool) -> Result<Vec<u8>, Esc> {
     let mut p = path_arg(c, a[0])?.0;
     if tilde && p.starts_with(b"~") {
         let end = p.iter().position(|&x| x == b'/').unwrap_or(p.len());

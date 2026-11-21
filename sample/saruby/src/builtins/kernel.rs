@@ -708,8 +708,17 @@ fn locate_feature(c: &Ctx, name: &str, caller_file: Option<&str>) -> Feature {
     }
 }
 
+/// rb_get_path for require/load: a String, else to_path (if any) and then to_str.
+fn feature_name(c: &mut Ctx, v: Value) -> Result<String, Esc> {
+    let s = if is_string(v) { v } else {
+        let p = if v.is_heap() && respond_to(v, intern(b"to_path"), true) { funcall(c, v, intern(b"to_path"), &[], std::ptr::null())? } else { v };
+        expect_str(c, p)?
+    };
+    Ok(String::from_utf8_lossy(c.str_bytes(s)).into_owned())
+}
+
 pub fn require_feature(c: &mut Ctx, path: Value, relative: bool) -> RV {
-    let name = to_rstring(c, path)?;
+    let name = feature_name(c, path)?;
     let caller_file = if relative { c.caller_frame().map(|f| frame_file(f).to_string()) } else { None };
     let caller_file = caller_file.map(|f| if f == "-" || f == "-e" { "./x".to_string() } else { f });
     let file = match locate_feature(c, &name, caller_file.as_deref()) {
@@ -723,8 +732,17 @@ pub fn require_feature(c: &mut Ctx, path: Value, relative: bool) -> RV {
             return Ok(TRUE);
         }
         Feature::Missing => {
-            let e = make_exception(c.vm().c_load_error, &format!("cannot load such file -- {}", name));
-            ivar_set_raw(e, intern(b"path"), c.str_new(name.as_bytes()));
+            // require_relative reports the absolute path it tried (File.absolute_path(name, dir))
+            let shown = match &caller_file {
+                Some(cf) => {
+                    let dir = std::path::Path::new(cf).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
+                    let (nv, dv) = (c.str_new(name.as_bytes()), c.str_new(dir.as_bytes()));
+                    String::from_utf8_lossy(&crate::builtins::file::expand(c, &[nv, dv], false)?).into_owned()
+                }
+                None => name.clone(),
+            };
+            let e = make_exception(c.vm().c_load_error, &format!("cannot load such file -- {}", shown));
+            ivar_set_raw(e, intern(b"path"), c.str_new(shown.as_bytes()));
             return Err(raise_exc(c, e));
         }
     };
@@ -772,8 +790,30 @@ pub fn run_source(c: &mut Ctx, src: &[u8], file: &'static str, line: i32) -> RV 
 fn k_require(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV { check_argc(c, args, 1, 1)?; require_feature(c, args[0], false) }
 fn k_require_relative(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV { check_argc(c, args, 1, 1)?; require_feature(c, args[0], true) }
 fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
-    let name = to_rstring(c, args[0])?;
-    let p = resolve_feature(c, &name, None).map(|p| p.to_string_lossy().into_owned()).unwrap_or(name);
+    check_argc(c, args, 1, 2)?;
+    let name = feature_name(c, args[0])?;
+    // rb_find_file: the name as given (no ".rb" added), in $LOAD_PATH unless explicit, else from the cwd
+    let ex = if name.starts_with('~') { let nv = c.str_new(name.as_bytes()); String::from_utf8_lossy(&crate::builtins::file::expand(c, &[nv], true)?).into_owned() } else { name.clone() };
+    let explicit = ex.starts_with('/') || ex.starts_with("./") || ex.starts_with("../");
+    let mut found = None;
+    if !explicit {
+        let lp = c.vm().load_path;
+        for i in 0..c.ary_len(lp) {
+            let d = c.ary_get(lp, i);
+            let d = if is_string(d) { d } else { let dn = feature_name(c, d)?; c.str_new(dn.as_bytes()) };
+            let f = std::path::Path::new(&*String::from_utf8_lossy(c.str_bytes(d))).join(&ex);
+            if f.is_file() { found = Some(f.to_string_lossy().into_owned()); break; }
+        }
+    }
+    let p = match found {
+        Some(f) => f,
+        None if std::path::Path::new(&ex).is_file() => ex,
+        None => {
+            let e = make_exception(c.vm().c_load_error, &format!("cannot load such file -- {}", name));
+            ivar_set_raw(e, intern(b"path"), c.str_new(name.as_bytes()));
+            return Err(raise_exc(c, e));
+        }
+    };
     let wrap = args.get(1).copied().unwrap_or(FALSE);
     if wrap.truthy() {
         // load(file, true): run under an anonymous module, self = a fresh main extended with it
