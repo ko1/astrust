@@ -907,8 +907,9 @@ fn io_s_popen(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
             (e2, w, o2)
         } else { (env, vec![cmd], opts) };
         let mut spec = crate::builtins::process::spawn_spec(c, env, &words, opts)?;
-        if rd { spec.redirect.push((1, pr[1])); }
-        if wr { spec.redirect.push((0, pw[0])); }
+        // the pipe goes first so err: [:child, :out] refers to it
+        if rd { spec.redirect.insert(0, (1, pr[1])); }
+        if wr { spec.redirect.insert(0, (0, pw[0])); }
         crate::builtins::process::spawn_exec(c, &spec)?
     };
     if rd { sys::close(pr[1]); } if wr { sys::close(pw[0]); }
