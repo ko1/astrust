@@ -959,14 +959,36 @@ fn io_s_copy_stream(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> 
     let (src, sc) = open_side(c, a[0], false)?;
     let (dst, dc) = open_side(c, a[1], true)?;
     let len = match a.get(2) { Some(&l) if l != NIL => Some(num_to_long(c, l)?), _ => None };
-    if let Some(&o) = a.get(3) { if o != NIL { let o = num_to_long(c, o)?; do_seek(c, src, o, 0)?; } }
-    let largs: Vec<Value> = len.map(Value::fix).into_iter().collect();
-    let data = if is_io(c, src) { io_read(c, src, &largs, std::ptr::null())? } else { funcall(c, src, intern(b"read"), &largs, std::ptr::null())? };
-    let n = if data == NIL { 0 } else { c.str_bytes(data).len() };
-    if data != NIL { if is_io(c, dst) { io_write(c, dst, &[data], std::ptr::null())?; } else { funcall(c, dst, intern(b"write"), &[data], std::ptr::null())?; } }
+    let src_io = is_io(c, src);
+    if let Some(&o) = a.get(3) { if o != NIL {
+        if !src_io { return arg_err(c, "cannot specify src_offset for non-IO"); }
+        let o = num_to_long(c, o)?; do_seek(c, src, o, 0)?;
+    } }
+    // CRuby's copy_stream_fallback: 16 KiB chunks; a duck-typed source gets readpartial(len, buf) or read(len, buf)
+    let partial = src_io || respond_to(src, intern(b"readpartial"), true);
+    let meth = intern(if partial { b"readpartial" } else { b"read" });
+    let dst_io = is_io(c, dst);
+    let buf = c.str_new_enc(b"", ENC_BINARY);
+    let (mut total, mut rest) = (0i64, len.unwrap_or(-1));
+    loop {
+        // rest == 0 only (CRuby: a source that overshoots gets a negative length)
+        let l = match len { None => 16384, Some(_) if rest == 0 => break, Some(_) => rest.min(16384) };
+        let r = if src_io { io_readpartial(c, src, &[Value::fix(l), buf], std::ptr::null()) } else { funcall(c, src, meth, &[Value::fix(l), buf], std::ptr::null()) };
+        match r {
+            Ok(v) => { if !partial && v == NIL { break; } }
+            Err(e) => {
+                if partial && c.esc == EscKind::Raise && is_kind_of(c.esc_val, c.vm().c_eof_error) { c.esc = EscKind::None; break; }
+                return Err(e);
+            }
+        }
+        let w = if dst_io { io_write(c, dst, &[buf], std::ptr::null())? } else { funcall(c, dst, intern(b"write"), &[buf], std::ptr::null())? };
+        let w = num_to_long(c, w)?;
+        total += w; rest -= w;
+        if !partial && c.str_bytes(buf).is_empty() { break; }
+    }
     if sc { close_io(c, src)?; }
     if dc { close_io(c, dst)?; } else if let Some(d) = rio_mut(c, dst) { if d.init && !d.closed { io_flush_one(d); } }
-    Ok(Value::fix(n as i64))
+    Ok(Value::fix(total))
 }
 fn io_s_try_convert(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
     if is_io(c, a[0]) { return Ok(a[0]); }
