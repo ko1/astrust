@@ -24,7 +24,7 @@ pub static STDOUT_SYNC: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 pub struct RIo {
     pub fd: i32, pub wfd: i32, pub path: Vec<u8>, pub rbuf: Vec<u8>, pub rpos: usize, pub eof: bool, pub wbuf: Vec<u8>,
     pub closed: bool, pub init: bool, pub lineno: i64, pub writable: bool, pub readable: bool, pub binmode: bool, pub sync: bool,
-    pub pid: i32, pub enc: Option<u8>, pub enc2: Option<u8>, pub autoclose: bool, pub has_path: bool, pub data: bool, pub rerr: i64,
+    pub pid: i32, pub enc: Option<u8>, pub enc2: Option<u8>, pub ecflags: u8, pub autoclose: bool, pub has_path: bool, pub data: bool, pub rerr: i64,
     pub coop: bool, pub wouldblock: bool,   // coop: fill does not block, it sets wouldblock (other threads must run)
 }
 impl RData for RIo {
@@ -67,7 +67,7 @@ impl std::fmt::Display for PathArg {
 
 fn blank() -> RIo {
     RIo { fd: -1, wfd: -1, path: vec![], rbuf: vec![], rpos: 0, eof: false, wbuf: vec![], closed: false, init: false, lineno: 0, writable: false,
-          readable: false, binmode: false, sync: false, pid: 0, enc: None, enc2: None, autoclose: true, has_path: false, data: false, rerr: 0, coop: false, wouldblock: false }
+          readable: false, binmode: false, sync: false, pid: 0, enc: None, enc2: None, ecflags: 0, autoclose: true, has_path: false, data: false, rerr: 0, coop: false, wouldblock: false }
 }
 fn opened(fd: i32, path: &[u8], r: bool, w: bool) -> RIo {
     let mut io = blank();
@@ -187,16 +187,33 @@ pub fn io_write_bytes(c: &mut Ctx, io_v: Value, b: &[u8]) -> Result<(), Esc> {
 }
 /// The encoding a written String is converted to (make_writeconv), if any.
 fn wconv(io: &RIo) -> Option<u8> {
+    if io.ecflags & EC_UNSUPPORTED != 0 { return None; }
     match (io.enc, io.enc2) { (None, _) | (Some(ENC_BINARY), None) => None, (Some(e), None) | (_, Some(e)) => Some(e) }
+}
+// IO conversion options kept as flags: invalid: / undef: :replace; others (xml:, newline:, replace:,
+// fallback:) are not done by saruby's IO, which then does not convert (its old behaviour)
+const EC_INVALID: u8 = 1;
+const EC_UNDEF: u8 = 2;
+const EC_UNSUPPORTED: u8 = 4;
+fn ecflags_of(o: &crate::builtins::encoding::TcOpts) -> u8 {
+    (if o.invalid_replace { EC_INVALID } else { 0 }) | (if o.undef_replace { EC_UNDEF } else { 0 })
+        | (if o.xml != 0 || o.newline != 0 || o.replace.is_some() || o.fallback.is_some() { EC_UNSUPPORTED } else { 0 })
+}
+/// Convert `b` for an IO, or None where saruby has no converter for the pair (left as it is).
+fn io_transcode(c: &mut Ctx, b: &[u8], from: u8, to: u8, ec: u8) -> Result<Option<Vec<u8>>, Esc> {
+    use crate::builtins::encoding as en;
+    if ec & EC_UNSUPPORTED != 0 || !en::can_convert(from, to) { return Ok(None); }
+    let o = en::TcOpts { invalid_replace: ec & EC_INVALID != 0, undef_replace: ec & EC_UNDEF != 0, ..Default::default() };
+    Ok(Some(en::transcode(c, b, from, to, &o)?))
 }
 /// `sv` converted for writing to `io_v` (do_writeconv); None: written as it is.
 fn write_conv(c: &mut Ctx, io_v: Value, sv: Value) -> Result<Option<Vec<u8>>, Esc> {
     use crate::builtins::encoding as en;
-    let Some(to) = rio(c, io_v).and_then(wconv) else { return Ok(None) };
+    let Some((to, ec)) = rio(c, io_v).and_then(|io| Some((wconv(io)?, io.ecflags))) else { return Ok(None) };
     let from = c.str_enc(sv);
     if from == to || en::ascii_compat(from) && en::ascii_compat(to) && is_ascii(c.str_bytes(sv)) { return Ok(None); }
     let b = c.str_bytes(sv).to_vec();
-    Ok(Some(en::transcode(c, &b, from, to, &en::TcOpts::default())?))
+    io_transcode(c, &b, from, to, ec)
 }
 /// Write String `sv` without copying it out first; its byte count.
 fn io_write_str(c: &mut Ctx, io_v: Value, sv: Value) -> Result<usize, Esc> {
@@ -386,9 +403,9 @@ fn gets_raw(io: &mut RIo, la: &(Option<Vec<u8>>, Option<usize>, bool)) -> Option
 fn gets_value(c: &mut Ctx, slf: Value, la: &(Option<Vec<u8>>, Option<usize>, bool)) -> Result<(Value, i64), Esc> {
     let l = coop_read(c, slf, |io| (gets_raw(io, la), vec![]))?;
     let io = io_mut(c, slf);
-    let (enc, lineno) = ((io.enc, io.enc2), io.lineno);
+    let (enc, ec, lineno) = ((io.enc, io.enc2), io.ecflags, io.lineno);
     if io.rerr != 0 { let e = std::mem::take(&mut io.rerr); let (m, p) = (format!("io_fillbuf - fd:{} ", io.fd), io.path.clone()); return Err(raise_errno_at(c, e, &m, &p)); }
-    Ok((match l { Some(l) => read_str(c, enc, l)?, None => NIL }, lineno))
+    Ok((match l { Some(l) => read_str(c, enc, ec, l)?, None => NIL }, lineno))
 }
 fn io_gets(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let la = line_args(c, a)?;
@@ -448,8 +465,8 @@ fn io_read(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let v = coop_read(c, slf, |io| { let v = read_all(io); if io.wouldblock { (vec![], v) } else { (v, vec![]) } })?;
     let io = io_mut(c, slf);
     if io.rerr != 0 { let e = std::mem::take(&mut io.rerr); let p = io.path.clone(); return Err(raise_errno_at(c, e, "io_fread - ", &p)); }
-    let enc = (io.enc, io.enc2);
-    let sv = read_str(c, enc, v)?;
+    let (enc, ec) = ((io.enc, io.enc2), io.ecflags);
+    let sv = read_str(c, enc, ec, v)?;
     match a.get(1) {
         Some(&b) if b != NIL => { let b = expect_str(c, b)?; check_frozen(c, b)?; let (nb, ne) = (c.str_bytes(sv).to_vec(), c.str_enc(sv)); let r = c.rstring_mut(b); r.b = nb.into(); r.enc = ne; Ok(b) }
         _ => Ok(sv),
@@ -600,8 +617,8 @@ fn next_char(io: &mut RIo) -> Option<Vec<u8>> {
 fn io_getc(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let io = readable(c, slf)?;
     let ch = next_char(io);
-    let enc = (io.enc, io.enc2);
-    Ok(match ch { Some(v) => read_str(c, enc, v)?, None => NIL })
+    let (enc, ec) = ((io.enc, io.enc2), io.ecflags);
+    Ok(match ch { Some(v) => read_str(c, enc, ec, v)?, None => NIL })
 }
 fn io_readchar(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { let v = io_getc(c, slf, a, b)?; if v == NIL { return eof_err(c); } Ok(v) }
 fn io_getbyte(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
@@ -824,12 +841,13 @@ fn io_set_encoding(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
     check_open(c, slf, false)?;
     let (pos, opts) = match a.last() { Some(&l) if is_hash(l) => (&a[..a.len() - 1], Some(l)), _ => (a, None) };
     if pos.is_empty() || pos.len() > 2 { return argc_err(c, pos.len(), 1, 2); }
-    let nl = match opts { Some(h) => crate::builtins::encoding::parse_tc_opts(c, h)?.newline, None => 0 };
+    let (nl, ec) = match opts { Some(h) => { let o = crate::builtins::encoding::parse_tc_opts(c, h)?; (o.newline, ecflags_of(&o)) } None => (0, 0) };
     let e = encoding_set(c, pos[0], pos.get(1).copied().unwrap_or(NIL))?;
     let (rd, bin) = rio(c, slf).map(|io| (io.readable, io.binmode)).unwrap_or((false, false));
     if bin && nl != 0 { return arg_err(c, "newline decorator with binary mode"); }
     validate_enc_binmode(c, rd, bin, Some(e))?;
     set_encs(c, slf, e);
+    if let Some(io) = rio_mut(c, slf) { io.ecflags = ec; }
     Ok(slf)
 }
 /// io_strip_bom: the encoding of a BOM at the read position (consumed), if any.
@@ -865,10 +883,13 @@ fn io_set_encoding_by_bom(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Bloc
     Ok(match set_encoding_by_bom(c, slf) { Some(e) => crate::builtins::encoding::encoding_value(c, e), None => NIL })
 }
 /// Bytes read from `io` as a String of its read encoding, converted from the external one if it has both.
-fn read_str(c: &mut Ctx, enc: Encs, b: Vec<u8>) -> RV {
+fn read_str(c: &mut Ctx, enc: Encs, ec: u8, b: Vec<u8>) -> RV {
     let to = enc.0.unwrap_or_else(crate::builtins::encoding::default_external);
     match enc.1 {
-        Some(from) => { let o = crate::builtins::encoding::TcOpts::default(); let v = crate::builtins::encoding::transcode(c, &b, from, to, &o)?; Ok(c.str_from_vec_enc(v, to)) }
+        Some(from) => match io_transcode(c, &b, from, to, ec)? {
+            Some(v) => Ok(c.str_from_vec_enc(v, to)),
+            None => Ok(c.str_from_vec_enc(b, from)),
+        },
         None => Ok(c.str_from_vec_enc(b, to)),
     }
 }
@@ -906,9 +927,9 @@ fn io_nread(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let
 
 // ---- opening --------------------------------------------------------------------------------
 
-pub struct OpenMode { pub flags: i32, pub bin: bool, pub encs: Option<Encs>, pub perm: u32, pub bom: bool }
+pub struct OpenMode { pub flags: i32, pub bin: bool, pub encs: Option<Encs>, pub perm: u32, pub bom: bool, pub ecflags: u8 }
 impl OpenMode {
-    pub fn new(flags: i32, bin: bool) -> OpenMode { OpenMode { flags, bin, encs: None, perm: 0o666, bom: false } }
+    pub fn new(flags: i32, bin: bool) -> OpenMode { OpenMode { flags, bin, encs: None, perm: 0o666, bom: false, ecflags: 0 } }
 }
 /// Access flags of a mode string, and whether it says 'b' / 't'.
 fn mode_str_flags(c: &mut Ctx, mode: &str) -> Result<(i32, bool, bool), Esc> {
@@ -969,6 +990,7 @@ pub fn parse_mode(c: &mut Ctx, a: &[Value]) -> Result<OpenMode, Esc> {
         }
         if let Some(f) = g(c, h, "flags")? { if f != NIL { om.flags |= num_to_long(c, f)? as i32; } }
         let tc = crate::builtins::encoding::parse_tc_opts(c, h)?;
+        om.ecflags = ecflags_of(&tc);
         if let Some((e, bom)) = enc_options(c, h)? {
             if om.encs.is_some() { return arg_err(c, "encoding specified twice"); }
             om.encs = Some(e); om.bom = bom;
@@ -1003,6 +1025,7 @@ fn setup_io(c: &mut Ctx, v: Value, fd: i32, path: Option<&[u8]>, om: &OpenMode) 
     io.readable = acc != sys::O_WRONLY; io.writable = acc != sys::O_RDONLY;
     io.binmode = om.bin;
     (io.enc, io.enc2) = om.encs.unwrap_or_else(|| if om.bin { (Some(ENC_BINARY), None) } else { ext_int_to_encs(None, IntEnc::Default, false) });
+    io.ecflags = om.ecflags;
     if let Some(p) = path { io.path = p.to_vec(); io.has_path = true; }
     if om.bom && io.readable { set_encoding_by_bom(c, v); }
     Ok(())
@@ -1045,7 +1068,7 @@ fn io_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let fd = sys::fcntl(src.fd, 1030, 3); // F_DUPFD_CLOEXEC
     if fd < 0 { return Err(raise_errno(c, sys::errno(), "")); }
     let mut io = opened(fd, &src.path, src.readable, src.writable);
-    io.binmode = src.binmode; io.enc = src.enc; io.enc2 = src.enc2; io.has_path = src.has_path; io.lineno = src.lineno; io.sync = src.sync;
+    io.binmode = src.binmode; io.enc = src.enc; io.enc2 = src.enc2; io.ecflags = src.ecflags; io.has_path = src.has_path; io.lineno = src.lineno; io.sync = src.sync;
     if src.wfd >= 0 && src.wfd != src.fd { io.wfd = sys::fcntl(src.wfd, 1030, 3); }
     *io_mut(c, slf) = io;
     Ok(slf)
