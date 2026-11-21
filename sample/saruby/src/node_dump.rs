@@ -258,6 +258,7 @@ fn DUMP_node_ivar(out: &mut String, n: NodePtr) {
     out.push_str("(node_ivar");
     out.push(' '); out.push(':'); out.push_str(&crate::symbol::sym_str((*np).u.name));
     out.push(' '); out.push_str("<ic>");
+    out.push(' '); 
     out.push(')');
     }
 }
@@ -270,6 +271,7 @@ fn DUMP_node_iasgn(out: &mut String, n: NodePtr) {
     out.push(' '); out.push(':'); out.push_str(&crate::symbol::sym_str((*np).u.name));
     out.push(' '); dump_node(out, (*np).u.v);
     out.push(' '); out.push_str("<ic>");
+    out.push(' '); 
     out.push(')');
     }
 }
@@ -285,6 +287,7 @@ fn DUMP_node_ivar_arith(out: &mut String, n: NodePtr) {
     out.push(' '); out.push_str(&format!("{:?}", (*np).head.line));
     out.push(' '); out.push_str("<ic>");
     out.push(' '); out.push_str("<cc>");
+    out.push(' '); 
     out.push(')');
     }
 }

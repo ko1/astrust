@@ -8,6 +8,7 @@ pub struct NodeKind {
     pub name: &'static str,
     pub default_dispatcher: DispatchFn,
     pub hash_func: fn(NodePtr) -> u64,
+    pub profile: fn(&mut ProfCtx, NodePtr) -> u64,
     pub specializer: fn(&mut SpecCtx, NodePtr) -> String,
     pub dumper: fn(&mut String, NodePtr),
     pub replacer: fn(NodePtr, NodePtr, NodePtr),
@@ -91,6 +92,11 @@ pub fn hash_node(n: NodePtr) -> u64 {
         h
     }
 }
+/// What specialization bakes into the subtree at n (PROF_<name>); each node once per ProfCtx.
+pub fn profile_node(pc: &mut ProfCtx, n: NodePtr) -> u64 {
+    if n.is_null() || !pc.seen.insert(n as usize) { return 0; }
+    unsafe { ((*n).head.kind.profile)(pc, n) }
+}
 pub fn hash_node_list(ns: NodeList) -> u64 {
     let mut h = hash_u64(ns.len() as u64);
     for x in ns.iter() { h = hash_merge(h, hash_node(*x)); }
@@ -124,14 +130,14 @@ pub fn specialize_open(sc: &mut SpecCtx, n: NodePtr) -> String {
 }
 /// Specialize n as a public entry: an exported `SD_<hash>` with the dispatcher's signature.
 pub fn specialize_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
-    let fname = format!("SD_{:016x}", hash_node(n));
+    let fname = format!("SD_{:016x}", sc.entry_name(hash_node(n)));
     if sc.emitted.contains(&fname) { return fname; }
     sc.holes.clear();
     sc.begin_entry(n as usize, hash_node(n));
     let t = specialize_node(sc, n);
     let p = sc.rec_suffix(hash_node(n));
-    let s = format!("S_{:016x}{}", hash_node(n), p);
-    if sc.emitted.contains(&format!("R_{:016x}{}", hash_node(n), p)) && !sc.emitted.contains(&s) {
+    let s = format!("S_{:016x}{}{}", hash_node(n), sc.tag, p);
+    if sc.emitted.contains(&format!("R_{:016x}{}{}", hash_node(n), sc.tag, p)) && !sc.emitted.contains(&s) {
         // n calls itself: its one body is S_<hash>::run (R_ calls it directly); SD_ passes the spec-in value on
         specialize_run(sc, &s, &t);
         sc.out.push_str(&format!("#[no_mangle]
@@ -158,17 +164,17 @@ pub static {}_HOLES: [u32; {}] = [{}];
 pub fn specialize_rec(sc: &mut SpecCtx, q: NodePtr) -> String {
     let h = hash_node(q);
     let p = sc.rec_suffix(h);
-    let name = format!("R_{:016x}{}", h, p);
+    let name = format!("R_{:016x}{}{}", h, sc.tag, p);
     if !p.is_empty() {
         // the entry's patched body (S_<hash>P::run) holds the values of the one node it was bound to
         if sc.emitted.insert(name.clone()) {
-            sc.out.push_str(&format!("pub struct {0};\nimpl Disp for {0} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ if n as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}P::run(c, n, pos) }} else {{ std::hint::cold_path(); <Dyn as Disp>::call(c, n, pos) }} }}\n    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ if n as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}P::run(c, n, pos) }} else {{ std::hint::cold_path(); <Dyn as Disp>::spec(c, n, pos) }} }}\n}}\n", name, h));
+            sc.out.push_str(&format!("pub struct {0};\nimpl Disp for {0} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ if n as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}{2}P::run(c, n, pos) }} else {{ std::hint::cold_path(); <Dyn as Disp>::call(c, n, pos) }} }}\n    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ if n as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}{2}P::run(c, n, pos) }} else {{ std::hint::cold_path(); <Dyn as Disp>::spec(c, n, pos) }} }}\n}}\n", name, h, sc.tag));
         }
         return name;
     }
     if sc.emitted.insert(name.clone()) {
-        sc.rec.push(q as usize);
-        sc.out.push_str(&format!("pub struct {0};\nimpl Disp for {0} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ S_{1:016x}::run(c, n, pos) }}\n    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ S_{1:016x}::run(c, n, pos) }}\n}}\n", name, h));
+        sc.rec.push((q as usize, sc.tag.clone()));
+        sc.out.push_str(&format!("pub struct {0};\nimpl Disp for {0} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ S_{1:016x}{2}::run(c, n, pos) }}\n    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ S_{1:016x}{2}::run(c, n, pos) }}\n}}\n", name, h, sc.tag));
     }
     name
 }
@@ -178,9 +184,9 @@ fn specialize_run(sc: &mut SpecCtx, s: &str, t: &str) {
 }
 /// After the entries: S_<hash>::run of the recursion targets whose SD_ was not the one to provide it.
 pub fn specialize_finish(sc: &mut SpecCtx) {
-    while let Some(q) = sc.rec.pop() {
+    while let Some((q, tag)) = sc.rec.pop() {
         let q = q as NodePtr;
-        let s = format!("S_{:016x}", hash_node(q));
+        let s = format!("S_{:016x}{}", hash_node(q), tag);
         if sc.emitted.contains(&s) { continue; }
         let t = specialize_node(sc, q);
         specialize_run(sc, &s, &t);
@@ -713,6 +719,7 @@ pub static KIND_node_re_succ: NodeKind = NodeKind {
     name: "node_re_succ",
     default_dispatcher: DISPATCH_node_re_succ,
     hash_func: HASH_node_re_succ,
+    profile: PROF_node_re_succ,
     specializer: SPECIALIZE_node_re_succ,
     dumper: DUMP_node_re_succ,
     replacer: REPLACE_node_re_succ,
@@ -727,6 +734,7 @@ pub static KIND_node_re_sub_succ: NodeKind = NodeKind {
     name: "node_re_sub_succ",
     default_dispatcher: DISPATCH_node_re_sub_succ,
     hash_func: HASH_node_re_sub_succ,
+    profile: PROF_node_re_sub_succ,
     specializer: SPECIALIZE_node_re_sub_succ,
     dumper: DUMP_node_re_sub_succ,
     replacer: REPLACE_node_re_sub_succ,
@@ -741,6 +749,7 @@ pub static KIND_node_re_sub_succ_at: NodeKind = NodeKind {
     name: "node_re_sub_succ_at",
     default_dispatcher: DISPATCH_node_re_sub_succ_at,
     hash_func: HASH_node_re_sub_succ_at,
+    profile: PROF_node_re_sub_succ_at,
     specializer: SPECIALIZE_node_re_sub_succ_at,
     dumper: DUMP_node_re_sub_succ_at,
     replacer: REPLACE_node_re_sub_succ_at,
@@ -755,6 +764,7 @@ pub static KIND_node_re_byte: NodeKind = NodeKind {
     name: "node_re_byte",
     default_dispatcher: DISPATCH_node_re_byte,
     hash_func: HASH_node_re_byte,
+    profile: PROF_node_re_byte,
     specializer: SPECIALIZE_node_re_byte,
     dumper: DUMP_node_re_byte,
     replacer: REPLACE_node_re_byte,
@@ -769,6 +779,7 @@ pub static KIND_node_re_lit: NodeKind = NodeKind {
     name: "node_re_lit",
     default_dispatcher: DISPATCH_node_re_lit,
     hash_func: HASH_node_re_lit,
+    profile: PROF_node_re_lit,
     specializer: SPECIALIZE_node_re_lit,
     dumper: DUMP_node_re_lit,
     replacer: REPLACE_node_re_lit,
@@ -783,6 +794,7 @@ pub static KIND_node_re_one: NodeKind = NodeKind {
     name: "node_re_one",
     default_dispatcher: DISPATCH_node_re_one,
     hash_func: HASH_node_re_one,
+    profile: PROF_node_re_one,
     specializer: SPECIALIZE_node_re_one,
     dumper: DUMP_node_re_one,
     replacer: REPLACE_node_re_one,
@@ -797,6 +809,7 @@ pub static KIND_node_re_grapheme: NodeKind = NodeKind {
     name: "node_re_grapheme",
     default_dispatcher: DISPATCH_node_re_grapheme,
     hash_func: HASH_node_re_grapheme,
+    profile: PROF_node_re_grapheme,
     specializer: SPECIALIZE_node_re_grapheme,
     dumper: DUMP_node_re_grapheme,
     replacer: REPLACE_node_re_grapheme,
@@ -811,6 +824,7 @@ pub static KIND_node_re_rep1: NodeKind = NodeKind {
     name: "node_re_rep1",
     default_dispatcher: DISPATCH_node_re_rep1,
     hash_func: HASH_node_re_rep1,
+    profile: PROF_node_re_rep1,
     specializer: SPECIALIZE_node_re_rep1,
     dumper: DUMP_node_re_rep1,
     replacer: REPLACE_node_re_rep1,
@@ -825,6 +839,7 @@ pub static KIND_node_re_assert: NodeKind = NodeKind {
     name: "node_re_assert",
     default_dispatcher: DISPATCH_node_re_assert,
     hash_func: HASH_node_re_assert,
+    profile: PROF_node_re_assert,
     specializer: SPECIALIZE_node_re_assert,
     dumper: DUMP_node_re_assert,
     replacer: REPLACE_node_re_assert,
@@ -839,6 +854,7 @@ pub static KIND_node_re_keep: NodeKind = NodeKind {
     name: "node_re_keep",
     default_dispatcher: DISPATCH_node_re_keep,
     hash_func: HASH_node_re_keep,
+    profile: PROF_node_re_keep,
     specializer: SPECIALIZE_node_re_keep,
     dumper: DUMP_node_re_keep,
     replacer: REPLACE_node_re_keep,
@@ -853,6 +869,7 @@ pub static KIND_node_re_open: NodeKind = NodeKind {
     name: "node_re_open",
     default_dispatcher: DISPATCH_node_re_open,
     hash_func: HASH_node_re_open,
+    profile: PROF_node_re_open,
     specializer: SPECIALIZE_node_re_open,
     dumper: DUMP_node_re_open,
     replacer: REPLACE_node_re_open,
@@ -867,6 +884,7 @@ pub static KIND_node_re_open_nr: NodeKind = NodeKind {
     name: "node_re_open_nr",
     default_dispatcher: DISPATCH_node_re_open_nr,
     hash_func: HASH_node_re_open_nr,
+    profile: PROF_node_re_open_nr,
     specializer: SPECIALIZE_node_re_open_nr,
     dumper: DUMP_node_re_open_nr,
     replacer: REPLACE_node_re_open_nr,
@@ -881,6 +899,7 @@ pub static KIND_node_re_close: NodeKind = NodeKind {
     name: "node_re_close",
     default_dispatcher: DISPATCH_node_re_close,
     hash_func: HASH_node_re_close,
+    profile: PROF_node_re_close,
     specializer: SPECIALIZE_node_re_close,
     dumper: DUMP_node_re_close,
     replacer: REPLACE_node_re_close,
@@ -895,6 +914,7 @@ pub static KIND_node_re_backref: NodeKind = NodeKind {
     name: "node_re_backref",
     default_dispatcher: DISPATCH_node_re_backref,
     hash_func: HASH_node_re_backref,
+    profile: PROF_node_re_backref,
     specializer: SPECIALIZE_node_re_backref,
     dumper: DUMP_node_re_backref,
     replacer: REPLACE_node_re_backref,
@@ -909,6 +929,7 @@ pub static KIND_node_re_cond: NodeKind = NodeKind {
     name: "node_re_cond",
     default_dispatcher: DISPATCH_node_re_cond,
     hash_func: HASH_node_re_cond,
+    profile: PROF_node_re_cond,
     specializer: SPECIALIZE_node_re_cond,
     dumper: DUMP_node_re_cond,
     replacer: REPLACE_node_re_cond,
@@ -923,6 +944,7 @@ pub static KIND_node_re_alt: NodeKind = NodeKind {
     name: "node_re_alt",
     default_dispatcher: DISPATCH_node_re_alt,
     hash_func: HASH_node_re_alt,
+    profile: PROF_node_re_alt,
     specializer: SPECIALIZE_node_re_alt,
     dumper: DUMP_node_re_alt,
     replacer: REPLACE_node_re_alt,
@@ -937,6 +959,7 @@ pub static KIND_node_re_opt: NodeKind = NodeKind {
     name: "node_re_opt",
     default_dispatcher: DISPATCH_node_re_opt,
     hash_func: HASH_node_re_opt,
+    profile: PROF_node_re_opt,
     specializer: SPECIALIZE_node_re_opt,
     dumper: DUMP_node_re_opt,
     replacer: REPLACE_node_re_opt,
@@ -951,6 +974,7 @@ pub static KIND_node_re_rep: NodeKind = NodeKind {
     name: "node_re_rep",
     default_dispatcher: DISPATCH_node_re_rep,
     hash_func: HASH_node_re_rep,
+    profile: PROF_node_re_rep,
     specializer: SPECIALIZE_node_re_rep,
     dumper: DUMP_node_re_rep,
     replacer: REPLACE_node_re_rep,
@@ -965,6 +989,7 @@ pub static KIND_node_re_rep_cont: NodeKind = NodeKind {
     name: "node_re_rep_cont",
     default_dispatcher: DISPATCH_node_re_rep_cont,
     hash_func: HASH_node_re_rep_cont,
+    profile: PROF_node_re_rep_cont,
     specializer: SPECIALIZE_node_re_rep_cont,
     dumper: DUMP_node_re_rep_cont,
     replacer: REPLACE_node_re_rep_cont,
@@ -979,6 +1004,7 @@ pub static KIND_node_re_look: NodeKind = NodeKind {
     name: "node_re_look",
     default_dispatcher: DISPATCH_node_re_look,
     hash_func: HASH_node_re_look,
+    profile: PROF_node_re_look,
     specializer: SPECIALIZE_node_re_look,
     dumper: DUMP_node_re_look,
     replacer: REPLACE_node_re_look,
@@ -993,6 +1019,7 @@ pub static KIND_node_search: NodeKind = NodeKind {
     name: "node_search",
     default_dispatcher: DISPATCH_node_search,
     hash_func: HASH_node_search,
+    profile: PROF_node_search,
     specializer: SPECIALIZE_node_search,
     dumper: DUMP_node_search,
     replacer: REPLACE_node_search,
@@ -1007,6 +1034,7 @@ pub static KIND_node_search_memchr: NodeKind = NodeKind {
     name: "node_search_memchr",
     default_dispatcher: DISPATCH_node_search_memchr,
     hash_func: HASH_node_search_memchr,
+    profile: PROF_node_search_memchr,
     specializer: SPECIALIZE_node_search_memchr,
     dumper: DUMP_node_search_memchr,
     replacer: REPLACE_node_search_memchr,
@@ -1021,6 +1049,7 @@ pub static KIND_node_search_memmem: NodeKind = NodeKind {
     name: "node_search_memmem",
     default_dispatcher: DISPATCH_node_search_memmem,
     hash_func: HASH_node_search_memmem,
+    profile: PROF_node_search_memmem,
     specializer: SPECIALIZE_node_search_memmem,
     dumper: DUMP_node_search_memmem,
     replacer: REPLACE_node_search_memmem,
@@ -1035,6 +1064,7 @@ pub static KIND_node_search_byteset: NodeKind = NodeKind {
     name: "node_search_byteset",
     default_dispatcher: DISPATCH_node_search_byteset,
     hash_func: HASH_node_search_byteset,
+    profile: PROF_node_search_byteset,
     specializer: SPECIALIZE_node_search_byteset,
     dumper: DUMP_node_search_byteset,
     replacer: REPLACE_node_search_byteset,
@@ -1049,6 +1079,7 @@ pub static KIND_node_match_at: NodeKind = NodeKind {
     name: "node_match_at",
     default_dispatcher: DISPATCH_node_match_at,
     hash_func: HASH_node_match_at,
+    profile: PROF_node_match_at,
     specializer: SPECIALIZE_node_match_at,
     dumper: DUMP_node_match_at,
     replacer: REPLACE_node_match_at,

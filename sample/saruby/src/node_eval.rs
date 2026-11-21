@@ -50,8 +50,9 @@ use crate::symbol::s;
 
 
 
-// The slot is the site's cache (ic.idx), read at run time: a baked index would depend on the order the
-// program created the class's ivars, which is not in the tree's hash.
+// slot (baked): 1 + the index the site's cache held, 0 none.  Baked code tests it against the cache,
+// so which slot is known there; a stale one only sends the site out of line.  The slot is part of
+// the SD's name (profile_node): a program with another ivar order gets its own SD.
 
 
 // `@x += v` / `@x -= v` with a v that cannot change @x (compile.rs): one self / class / slot test for the
@@ -383,14 +384,19 @@ pub fn EVAL_node_dasgn(c: &mut Ctx, n: NodePtr, fp: Fp, hops: u32, idx: u32, v: 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_ivar(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, ic: &mut IvarCache) -> RV {
+pub fn EVAL_node_ivar(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, ic: &mut IvarCache, slot: u32) -> RV {
     let slf = fp[0].get();
     if slf.is_heap() {
         let o = obj(slf);
         if o.klass.raw() == ic.klass {
             if let Body::Object(ivs) = &o.body {
-                // an unset slot leaves through the miss path (a branch to code the site already has, not a select)
-                if let Some(v) = ivs.get(ic.idx as usize) { if v != UNDEF { return Ok(v); } }
+                if slot == 0 {
+                    if let Some(v) = ivs.get(ic.idx as usize) { return Ok(if v == UNDEF { NIL } else { v }); }
+                    return Ok(NIL);
+                } else if ic.idx == slot - 1 {
+                    // an unset slot leaves through the miss path (a branch to code the site already has, not a select)
+                    if let Some(v) = ivs.get((slot - 1) as usize) { if v != UNDEF { return Ok(v); } }
+                }
             }
         }
     }
@@ -400,13 +406,14 @@ pub fn EVAL_node_ivar(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, ic: &mut IvarC
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value, ic: &mut IvarCache) -> RV {
+pub fn EVAL_node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value, ic: &mut IvarCache, slot: u32) -> RV {
     let slf = fp[0].get();
     if slf.is_heap() {
         let o = obj(slf);
         if o.klass.raw() == ic.klass && o.flags & FL_FROZEN == 0 {
             if let Body::Object(ivs) = &mut o.body {
-                if ivs.set(ic.idx as usize, v) { return Ok(v); }
+                if slot == 0 { if ivs.set(ic.idx as usize, v) { return Ok(v); } }
+                else if ic.idx == slot - 1 && ivs.set((slot - 1) as usize, v) { return Ok(v); }
             }
         }
     }
@@ -416,16 +423,16 @@ pub fn EVAL_node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value, ic:
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_ivar_arith<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, sub: bool, v: Value, line: H_line, ic: &mut IvarCache, cc: &mut OpCc) -> RV {
+pub fn EVAL_node_ivar_arith<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, sub: bool, v: Value, line: H_line, ic: &mut IvarCache, cc: &mut OpCc, slot: u32) -> RV {
     let slf = fp[0].get();
     if slf.is_heap() && v.is_fixnum() && !redef(if sub { R_INT_MINUS } else { R_INT_PLUS }) {
         let o = obj(slf);
-        if o.klass.raw() == ic.klass && o.flags & FL_FROZEN == 0 {
+        if o.klass.raw() == ic.klass && o.flags & FL_FROZEN == 0 && (slot == 0 || ic.idx == slot - 1) {
             if let Body::Object(ivs) = &mut o.body {
-                if let Some(p) = ivs.slot_mut(ic.idx as usize) {
-                    let cur = *p;
+                let i = (if slot == 0 { ic.idx } else { slot - 1 }) as usize;
+                if let Some(cur) = ivs.get(i) {
                     if cur.is_fixnum() {
-                        if let Some(r) = if sub { cur.fix_sub(v) } else { cur.fix_add(v) } { *p = r; return Ok(r); }
+                        if let Some(r) = if sub { cur.fix_sub(v) } else { cur.fix_add(v) } { ivs.set(i, r); return Ok(r); }
                     }
                 }
             }

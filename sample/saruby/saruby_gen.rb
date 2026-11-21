@@ -44,6 +44,8 @@ class SarubyNodeDef < ASTrustGen::NodeDef
     # what the call site's cache holds when the code is baked (vm.rs SITE_*)
     def bake_value_expr(op)
       case @name
+      # 1 + the slot index in the site's cache (0: the site never ran); in the SD's name (profile_node)
+      when 'node_ivar', 'node_iasgn', 'node_ivar_arith' then "{ let u = &(*np).u; if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }"
       # 1 + the operand kinds the interpreter recorded at an operator site (opt.rs TyFb)
       when /\Anode_opt_/ then "{ 1 + (*np).u.tf.0 }"
       # 1 + the lead parameter count of the block compiled into a yield site

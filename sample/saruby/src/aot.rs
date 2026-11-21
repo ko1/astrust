@@ -58,6 +58,8 @@ fn hole_value(op: &str, root: usize, off: usize) -> Option<u64> {
 thread_local! {
     // a program's blocks and keyword methods that have an entry node over their body: the body is baked only if it ran on its own
     static BLOCKS: std::cell::RefCell<Vec<&'static Iseq>> = const { std::cell::RefCell::new(Vec::new()) };
+    // an entry's program key in index.txt: its body's file, line and kind of entry
+    static KEYS: std::cell::RefCell<std::collections::HashMap<usize, String>> = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 static SD_NAMES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -71,9 +73,12 @@ pub fn register_iseq(is: &'static Iseq) {
         if *SD_NAMES.get_or_init(|| std::env::var_os("SARUBY_SD_NAMES").is_some()) { eprintln!("SD_{:016x} {}{} {}:{}", hash_node(body), is.info.label, what, is.info.file, is.info.line); }
         // baked code assumes the layout of layout_tree (finish_iseq)
         if !node_laid(body) { return; }
-        if let Some(p) = st.register(body as usize, hash_node(body), prelude, env!("SARUBY_BUILD_ID")) {
+        let key = format!("{}:{}{}", is.info.file, is.info.line, what.trim());
+        let found = st.register(body as usize, hash_node(body), &key, prelude, env!("SARUBY_BUILD_ID"));
+        KEYS.with(|k| k.borrow_mut().insert(body as usize, key));
+        if let Some((p, name)) = found {
             // patch binding: the body gets its own copy when it is first dispatched (first_dispatch)
-            if st.defer(body as usize, hash_node(body), prelude, p) {
+            if st.defer(body as usize, name, prelude, p) {
                 unsafe { (*body).head.dispatcher = first_dispatch; }
             } else {
                 unsafe { (*body).head.dispatcher = std::mem::transmute::<*const std::os::raw::c_void, DispatchFn>(p); }
@@ -106,11 +111,17 @@ pub fn bake(store_dir: &str) -> Result<usize, String> {
     // a body that only ran through its entry node needs no separate copy
     let skip: Vec<usize> = BLOCKS.with(|b| b.borrow().iter().filter(|is| !is.body_used.get()).map(|is| is.body as usize).collect());
     st.program_entries.retain(|e| !skip.contains(e));
+    // an entry's SD is named by its structure and what the bake reads from the caches (profile_node)
+    let mut hopt = std::collections::HashMap::new();
+    for &e in st.prelude_entries.iter().chain(st.program_entries.iter()) {
+        hopt.insert(e, hash_merge(hash_node(e as NodePtr), profile_node(&mut ProfCtx::new(), e as NodePtr)));
+    }
     st.bake(std::path::Path::new(store_dir), &bake_config(), |entries, patch| {
         let mut sc = SpecCtx::new();
         sc.patch = patch;
-        for &e in entries { specialize_entry(&mut sc, e as NodePtr); }
+        for &e in entries { sc.set_profile(hopt[&e]); specialize_entry(&mut sc, e as NodePtr); }
+        sc.set_profile(0);
         specialize_finish(&mut sc);
         sc.out
-    })
+    }, |e| (hash_node(e as NodePtr), KEYS.with(|k| k.borrow().get(&e).cloned().unwrap_or_default()), hopt[&e]))
 }

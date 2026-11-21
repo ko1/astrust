@@ -793,6 +793,7 @@ fn SPECIALIZE_node_ivar(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("(*np).u.name".to_string());
     a.push("&mut (*np).u.ic".to_string());
+    a.push(format!("{}u32", { let u = &(*np).u; if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }));
     }
     if !was_open { sc.open.remove(&own_hash); }
     // named by what is baked too (children's types, @bake values), not by the hash alone:
@@ -828,6 +829,7 @@ fn SPECIALIZE_node_iasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("(*np).u.name".to_string());
     a.push("v_v".to_string());
     a.push("&mut (*np).u.ic".to_string());
+    a.push(format!("{}u32", { let u = &(*np).u; if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }));
     }
     if !was_open { sc.open.remove(&own_hash); }
     // named by what is baked too (children's types, @bake values), not by the hash alone:
@@ -867,6 +869,7 @@ fn SPECIALIZE_node_ivar_arith(sc: &mut SpecCtx, n: NodePtr) -> String {
     if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_ivar_arith_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_ivar_arith_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.ic".to_string());
     a.push("&mut (*np).u.cc".to_string());
+    a.push(format!("{}u32", { let u = &(*np).u; if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }));
     }
     if !was_open { sc.open.remove(&own_hash); }
     // named by what is baked too (children's types, @bake values), not by the hash alone:
