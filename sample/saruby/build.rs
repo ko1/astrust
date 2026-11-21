@@ -40,6 +40,8 @@ fn main() {
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}/lib/rustlib/{}/lib", sysroot.trim(), target);
     println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
     println!("cargo:rustc-link-arg=-ldl");
+    // libsaruby's references to its own symbols are bound at link time (RELATIVE, not looked up by name at startup)
+    println!("cargo:rustc-link-arg=-Wl,-Bsymbolic");
     println!("cargo:rustc-env=SARUBY_RUSTC_SYSROOT={}", sysroot.trim());
     println!("cargo:rustc-env=SARUBY_TARGET={}", target);
     // Build id = hash of the Rust sources and the GC backend (its allocation path is inlined
