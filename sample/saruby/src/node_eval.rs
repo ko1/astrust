@@ -811,6 +811,14 @@ pub fn EVAL_node_when_lit(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, v: Va
     if !v.is_fixnum() || subj.is_fixnum() { return Ok(FALSE); }
     Ok(Value::bool(srb_eqq(c, v, subj, cc)?))
 }
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_TEST_node_when_lit(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, v: Value, cc: &mut CallCache) -> Result<bool, Esc> {
+    let subj = slot(fp, subj_slot).get();
+    if subj == v { return Ok(true); }
+    if !v.is_fixnum() || subj.is_fixnum() { return Ok(false); }
+    srb_eqq(c, v, subj, cc)
+}
 
 
 #[inline(always)]

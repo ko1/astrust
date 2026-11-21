@@ -1997,7 +1997,10 @@ fn SPECIALIZE_node_when_lit(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_when_lit_struct>;\n", "n"));
 
     body.push_str(&format!("        EVAL_node_when_lit{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("    #[inline(always)]\n    fn test(c: &mut Ctx, n: NodePtr, fp: Fp) -> Result<bool, Esc> {{ unsafe {{\n"));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_when_lit_struct>;\n", "n"));
 
+    body.push_str(&format!("        EVAL_TEST_node_when_lit{}({})\n    }} }}\n", "", a.join(", ")));
 
     body.push_str("}
 ");
