@@ -25,16 +25,17 @@ pub struct RThread {
     fiber: Value, inner: Value, started: bool, dead: bool, value: Value, exc: Value, locals: Value, tvars: Value, name: Value,
     deadline: Option<Instant>, waiting: bool, io_wait: bool, wake: bool, pending: Value, killed: bool, progress: bool,
     report: Value, abort: bool, loc: String,
+    start: Value,   // [proc, args] until the first run makes the fiber (stacks only for threads that run)
 }
 impl RData for RThread {
-    fn visit(&mut self, m: &mut crate::gc::Visitor) { for v in [&mut self.fiber, &mut self.inner, &mut self.value, &mut self.exc, &mut self.locals, &mut self.tvars, &mut self.name, &mut self.pending, &mut self.report] { m.visit(v); } }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) { for v in [&mut self.fiber, &mut self.inner, &mut self.value, &mut self.exc, &mut self.locals, &mut self.tvars, &mut self.name, &mut self.pending, &mut self.report, &mut self.start] { m.visit(v); } }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
 impl RThread {
     fn blank(locals: Value, tvars: Value) -> RThread {
         RThread { fiber: NIL, inner: NIL, started: false, dead: false, value: NIL, exc: NIL, locals, tvars, name: NIL,
-            deadline: None, waiting: false, io_wait: false, wake: false, pending: NIL, killed: false, progress: false, report: UNDEF, abort: false, loc: String::new() }
+            deadline: None, waiting: false, io_wait: false, wake: false, pending: NIL, killed: false, progress: false, report: UNDEF, abort: false, loc: String::new(), start: NIL }
     }
 }
 static LIST: Global = Global::new();      // Array of live non-main threads
@@ -73,6 +74,7 @@ fn check_interrupt(c: &mut Ctx, t: Value) -> Result<(), Esc> {
 /// A thread's root fiber returned: record value / exception.
 fn finish_thread(c: &mut Ctx, t: Value) -> Result<(), Esc> {
     let (is_err, v) = crate::fiber::take_result(th(c, t).fiber);
+    crate::fiber::release_vstack(th(c, t).fiber);
     let r = th_mut(c, t);
     r.dead = true; r.progress = true;
     list_remove(c, t);
@@ -104,6 +106,14 @@ fn run_pass(c: &mut Ctx) -> Result<bool, Esc> {
         if r.dead { continue; }
         r.progress = !r.started;
         r.started = true;
+        if r.fiber == NIL {
+            let st = std::mem::replace(&mut r.start, NIL);
+            let (p, args) = (c.ary_get(st, 0), c.ary_get(st, 1));
+            let f = crate::fiber::new_thread_fiber(p, args);
+            let r = th_mut(c, t);
+            r.fiber = f; r.inner = f;
+        }
+        let r = th(c, t);
         let (f, inner) = (r.fiber, r.inner);
         CURRENT.set(c, t);
         crate::fiber::thread_switch_in(f, inner);
@@ -174,6 +184,13 @@ pub fn wait_readable(c: &mut Ctx, fd: i32) -> Result<(), Esc> {
     Ok(())
 }
 
+/// Wait until fd is writable, letting other threads run meanwhile.
+pub fn wait_writable(c: &mut Ctx, fd: i32) -> Result<(), Esc> {
+    let ready = |_: &mut Ctx| { let mut p = [crate::builtins::sys::PollFd { fd, events: crate::builtins::sys::POLLOUT, revents: 0 }]; Ok(crate::builtins::sys::poll(&mut p, 0) != 0) };
+    block_on(c, ready, None, false, true)?;
+    Ok(())
+}
+
 // ---- Thread ---------------------------------------------------------------------------------
 
 fn status_str(c: &Ctx, t: Value) -> &'static str { let r = th(c, t); if r.dead { "dead" } else if t == cur(c) { "run" } else if r.waiting || !r.started { if r.started { "sleep" } else { "run" } } else { "run" } }
@@ -188,10 +205,10 @@ fn th_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     let p = block_to_proc(c, b)?;
     let t = new_thread(c, slf);
     let args = c.ary_new_from(a);
-    let f = crate::fiber::new_thread_fiber(p, args);
+    let start = c.ary_new_from(&[p, args]);
     let loc = c.caller_frame().map(|f| format!("{}:{}", frame_file(f), f.line)).unwrap_or_default();
     let r = th_mut(c, t);
-    r.fiber = f; r.inner = f; r.loc = loc;
+    r.start = start; r.loc = loc;
     let l = LIST.get(c);
     c.ary_push(l, t);
     Ok(t)
@@ -244,8 +261,9 @@ fn kill_thread(c: &mut Ctx, t: Value) -> RV {
         let r = th_mut(c, t);
         r.dead = true;
         let f = r.fiber;
+        r.start = NIL;
         list_remove(c, t);
-        crate::fiber::discard(f);
+        if f != NIL { crate::fiber::discard(f); }
         return Ok(t);
     }
     let r = th_mut(c, t);
@@ -468,7 +486,7 @@ fn cv_broadcast(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
 // ---- Queue / SizedQueue -------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-pub struct RQueue { items: Value, closed: bool, max: usize, waiting: usize }
+pub struct RQueue { items: Value, head: usize, closed: bool, max: usize, waiting: usize }   // items[head..] are queued
 impl RData for RQueue {
     fn visit(&mut self, m: &mut crate::gc::Visitor) { m.visit(&mut self.items); }
     fn as_any(&self) -> &dyn std::any::Any { self }
@@ -476,12 +494,12 @@ impl RData for RQueue {
 }
 fn qu(c: &Ctx, v: Value) -> RQueue { *c.data::<RQueue>(v).expect("a Queue") }
 fn qu_mut(c: &mut Ctx, v: Value) -> &mut RQueue { c.data_mut::<RQueue>(v).expect("a Queue") }
-fn q_len(c: &Ctx, q: Value) -> usize { c.ary_len(qu(c, q).items) }
+fn q_len(c: &Ctx, q: Value) -> usize { let q = qu(c, q); c.ary_len(q.items) - q.head }
 pub fn alloc_queue(c: &mut Ctx, klass: Value) -> Option<Value> {
     let k = c.vm().c_queue;
     if k != NIL && crate::builtins::inherits(klass, k) {
         let items = c.ary_new();
-        return Some(c.alloc_with(klass, move || Body::Data(Box::new(RQueue { items, closed: false, max: 0, waiting: 0 }))));
+        return Some(c.alloc_with(klass, move || Body::Data(Box::new(RQueue { items, head: 0, closed: false, max: 0, waiting: 0 }))));
     }
     None
 }
@@ -493,7 +511,8 @@ fn q_init(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
         if !is_array(l) { return type_err(c, format!("can't convert {} to Array ({}#to_a gives {})", class_name_for_err(init), class_name_for_err(init), class_name_for_err(l))); }
         let v = c.ary(l).to_vec();
         let items = c.ary_from_vec(v);
-        qu_mut(c, s).items = items;
+        let q = qu_mut(c, s);
+        q.items = items; q.head = 0;
     }
     Ok(NIL)
 }
@@ -518,11 +537,11 @@ fn q_push(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, 2); }
     let q = qu(c, s);
     if q.closed { return q_closed_err(c); }
-    if q.max > 0 && c.ary_len(q.items) >= q.max {
+    if q.max > 0 && q_len(c, s) >= q.max {
         let (nb, deadline) = q_opts(c, &a[1..])?;
         if nb { return err(c, c.vm().c_thread_error, "queue full"); }
         qu_mut(c, s).waiting += 1;
-        let r = block_on(c, |c| { let q = qu(c, s); Ok(q.closed || c.ary_len(q.items) < q.max) }, deadline, true, false);
+        let r = block_on(c, |c| { let q = qu(c, s); Ok(q.closed || q_len(c, s) < q.max) }, deadline, true, false);
         qu_mut(c, s).waiting -= 1;
         if !r? { return Ok(NIL); }
         if qu(c, s).closed { return q_closed_err(c); }
@@ -541,12 +560,18 @@ fn q_pop(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
         qu_mut(c, s).waiting -= 1;
         if !r? || q_len(c, s) == 0 { return Ok(NIL); }
     }
-    let items = qu(c, s).items;
-    Ok(c.ary_mut(items).remove(0))
+    // O(1): advance head; the dead prefix is dropped once it is the larger half
+    let RQueue { items, head, .. } = qu(c, s);
+    let v = c.ary_mut(items);
+    let x = std::mem::replace(&mut v[head], NIL);
+    let head = head + 1;
+    let head = if head == v.len() { v.clear(); 0 } else if head >= 64 && head * 2 >= v.len() { v.drain(..head); 0 } else { head };
+    qu_mut(c, s).head = head;
+    Ok(x)
 }
 fn q_size(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(q_len(c, s) as i64)) }
 fn q_empty(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(q_len(c, s) == 0)) }
-fn q_clear(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let items = qu(c, s).items; c.ary_mut(items).clear(); Ok(s) }
+fn q_clear(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let items = qu(c, s).items; c.ary_mut(items).clear(); qu_mut(c, s).head = 0; Ok(s) }
 fn q_close(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { qu_mut(c, s).closed = true; Ok(s) }
 fn q_closed(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(qu(c, s).closed)) }
 fn q_num_waiting(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(qu(c, s).waiting as i64)) }

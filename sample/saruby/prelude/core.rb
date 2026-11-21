@@ -371,6 +371,11 @@ class Object
   def instance_variables_hash = nil
 end
 
+module GC
+  # CRuby's gc.rb signature: keywords, no Hash allocated per call
+  def self.start(full_mark: true, immediate_mark: true, immediate_sweep: true) = GC.__start(full_mark)
+end
+
 module Kernel
   def frozen_string? = false
   def then_if = self

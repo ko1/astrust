@@ -273,8 +273,7 @@ fn loc_inspect(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
 }
 fn k_caller_locations(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let (start, len) = caller_range(c, args)?;
-    let lines = backtrace_lines(c, 1 + start);
-    let lines: Vec<String> = match len { Some(n) => lines.into_iter().take(n).collect(), None => lines };
+    let Some(lines) = backtrace_lines_n(c, 1 + start, len) else { return Ok(NIL) };
     Ok(locations_from_lines(c, lines))
 }
 /// caller / caller_locations arguments: (start = 1, length = nil) or (range)

@@ -784,15 +784,81 @@ cfn!(a_dig, |c, slf, a, blk| {
     funcall(c, v, intern(b"dig"), &a[1..], std::ptr::null())
 });
 cfn!(a_first_n_compat, |c, slf, a, blk| Ok(NIL));
+// CRuby's ary_sample: same random draws, so a seeded generator picks the same elements
 cfn!(a_sample, |c, slf, a, blk| {
-    let n = c.ary_len(slf);
-    let pos: Vec<Value> = a.iter().copied().filter(|x| !is_hash(*x)).collect();
-    if pos.is_empty() { if n == 0 { return Ok(NIL); } let i = crate::builtins::random::rand_below(c, n as u64) as usize; return Ok(c.ary_get(slf, i)); }
-    let k = num_to_long(c, pos[0])?;
-    if k < 0 { return arg_err(c, "negative sample number"); }
+    let kw = kw_arg(a);
+    let pos = if kw.is_some() { &a[..a.len() - 1] } else { a };
+    check_argc(c, pos, 0, 1)?;
+    let gen = match kw { Some(h) => hash_get_opt(c, h, sym_value("random"))?.unwrap_or(c.vm().c_random), None => c.vm().c_random };
+    let upto = |c: &mut Ctx, m: usize| -> Result<usize, Esc> { Ok(crate::builtins::random::ulong_limited(c, gen, m as u64 - 1)? as usize) };
+    let mut len = c.ary_len(slf);
+    if pos.is_empty() {
+        let i = if len < 2 { 0 } else { upto(c, len)? };
+        return Ok(c.ary(slf).get(i).copied().unwrap_or(NIL));
+    }
+    let n = num_to_long(c, pos[0])?;
+    if n < 0 { return arg_err(c, "negative sample number"); }
+    let mut n = (n as usize).min(len);
+    if n <= 10 {
+        let mut rnds = [0usize; 10];
+        for i in 0..n { rnds[i] = upto(c, len - i)?; }
+        let k = len;
+        len = c.ary_len(slf);
+        if len < k && (0..n).any(|i| rnds[i] >= len.saturating_sub(i)) { return Ok(c.ary_new()); }
+        n = n.min(len);
+        let at = |c: &Ctx, i: usize| c.ary_get(slf, i);
+        let idx: Vec<usize> = match n {
+            0 => vec![],
+            1 => vec![rnds[0]],
+            2 => { let (i, mut j) = (rnds[0], rnds[1]); if j >= i { j += 1; } vec![i, j] }
+            3 => {
+                let (i, mut j, mut k) = (rnds[0], rnds[1], rnds[2]);
+                let (mut l, mut g) = (j, i);
+                if j >= i { l = i; j += 1; g = j; }
+                if k >= l { k += 1; if k >= g { k += 1; } }
+                vec![i, j, k]
+            }
+            _ => {
+                let mut sorted: Vec<usize> = Vec::with_capacity(n);
+                let mut idx = Vec::with_capacity(n);
+                for &r in &rnds[..n] {
+                    let mut k = r;
+                    let mut j = 0;
+                    while j < sorted.len() { if k < sorted[j] { break; } k += 1; j += 1; }
+                    sorted.insert(j, k);
+                    idx.push(k);
+                }
+                idx
+            }
+        };
+        let v: Vec<Value> = idx.into_iter().map(|i| at(c, i)).collect();
+        return Ok(c.ary_from_vec(v));
+    }
+    let memo_threshold = if len < 2560 { len / 128 } else if len < 5120 { len / 64 } else if len < 10240 { len / 32 } else { len / 16 };
+    if n <= memo_threshold / 2 {
+        // a partial Fisher-Yates over a sparse map of the swapped slots: no copy of self
+        let mut picks = Vec::with_capacity(n);
+        let mut max_idx = 0;
+        for i in 0..n { let r = upto(c, len - i)? + i; max_idx = max_idx.max(r); picks.push(r); }
+        len = c.ary_len(slf);
+        if len <= max_idx { n = 0; } else { n = n.min(len); }
+        // open addressing (<= n keys, load <= 1/2): a HashMap instance here moved rustc's codegen split and slowed map/select
+        let cap = (2 * n + 2).next_power_of_two();
+        let (mut keys, mut vals) = (vec![usize::MAX; cap], vec![0usize; cap]);
+        let slot = |keys: &[usize], k: usize| { let mut p = (k.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 40) & (cap - 1); while keys[p] != usize::MAX && keys[p] != k { p = (p + 1) & (cap - 1); } p };
+        let mut out = Vec::with_capacity(n);
+        for (i, &j) in picks[..n].iter().enumerate() {
+            let (pi, pj) = (slot(&keys, i), slot(&keys, j));
+            let i2 = if keys[pi] == i { vals[pi] } else { i };
+            let j2 = if keys[pj] == j { vals[pj] } else { j };
+            keys[pj] = j; vals[pj] = i2;
+            out.push(c.ary_get(slf, j2));
+        }
+        return Ok(c.ary_from_vec(out));
+    }
     let mut v = c.ary(slf).to_vec();
-    for i in 0..v.len() { let j = i + crate::builtins::random::rand_below(c, (v.len() - i) as u64) as usize; v.swap(i, j); }
-    v.truncate(k as usize);
+    for i in 0..n { let j = upto(c, len - i)? + i; v.swap(i, j); }
+    v.truncate(n);
     Ok(c.ary_from_vec(v))
 });
 cfn!(a_shuffle, |c, slf, a, blk| {

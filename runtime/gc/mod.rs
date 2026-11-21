@@ -124,6 +124,8 @@ pub struct Control {
     stress_count: usize,
     disabled: bool,
     collections: usize,
+    minors: usize,             // minor collections that found nothing young (collect_minor)
+    allocated_at_gc: u64,      // HeapStats::allocated when the last collection ended
     time: Duration,
 }
 
@@ -131,6 +133,7 @@ impl Control {
     /// GC.disable: allocation-driven triggers must not collect (backends check this).
     #[inline(always)] pub fn disabled(&self) -> bool { self.disabled }
     pub fn collections(&self) -> usize { self.collections }
+    pub fn minor_collections(&self) -> usize { self.minors }
     pub fn time(&self) -> Duration { self.time }
 
     /// Run one collection of `b` and account for it.
@@ -138,6 +141,7 @@ impl Control {
         let t0 = Instant::now();
         b.collect(lang, pending);
         self.collections += 1;
+        self.allocated_at_gc = b.stats().allocated;
         self.time += t0.elapsed();
     }
 }
@@ -154,7 +158,7 @@ impl<L: GcLang, B: GcBackend<L>> Gc<L, B> {
 
     pub fn new() -> Self {
         let () = Self::CHECK;
-        Gc { ctl: Control { stress: 0, stress_count: 0, disabled: false, collections: 0, time: Duration::ZERO }, backend: B::new(), _lang: PhantomData }
+        Gc { ctl: Control { stress: 0, stress_count: 0, disabled: false, collections: 0, minors: 0, allocated_at_gc: 0, time: Duration::ZERO }, backend: B::new(), _lang: PhantomData }
     }
 
     /// Put `obj` in the heap.  May collect: everything the caller still needs must be
@@ -188,6 +192,17 @@ impl<L: GcLang, B: GcBackend<L>> Gc<L, B> {
 
     /// Collect now, GC.disable or not.
     pub fn collect(&mut self, lang: &mut L) { self.ctl.collect(&mut self.backend, lang, None) }
+
+    /// A minor collection (young = allocated since the last collection).  No backend has
+    /// generations, so it is a full one, except when nothing is young: then there is nothing to free.
+    pub fn collect_minor(&mut self, lang: &mut L) {
+        if self.backend.stats().allocated == self.ctl.allocated_at_gc {
+            self.ctl.collections += 1;
+            self.ctl.minors += 1;
+        } else {
+            self.collect(lang);
+        }
+    }
 
     /// Stress mode: collect at every `n`-th allocation (0 = off).  The test for the rooting discipline.
     pub fn set_stress(&mut self, n: usize) { self.ctl.stress = n; self.ctl.stress_count = 0; }

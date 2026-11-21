@@ -25,7 +25,7 @@ fn enum_or<F: FnOnce(&mut Ctx) -> RV>(c: &mut Ctx, slf: Value, mid: &str, a: &[V
 /// Iterate live entries by slot index (tolerates mutation during iteration).
 fn each_entry(c: &mut Ctx, h: Value, mut f: impl FnMut(&mut Ctx, Value, Value) -> Result<bool, Esc>) -> Result<(), Esc> {
     c.hash_iter_enter(h);
-    let mut i = 0;
+    let mut i = c.hash_first_slot(h);
     let mut r = Ok(());
     while let Some((k, v)) = c.hash_entry_at(h, i) {
         if k != UNDEF { match f(c, k, v) { Ok(true) => {}, Ok(false) => break, Err(e) => { r = Err(e); break; } } }
@@ -339,9 +339,12 @@ cfn!(h_filter_keys_dig, |c, slf, a, blk| {
 });
 cfn!(h_shift, |c, slf, a, blk| {
     modify(c, slf)?;
-    let mut first = None;
-    each_entry(c, slf, |_c, k, v| { first = Some((k, v)); Ok(false) })?;
-    match first { Some((k, v)) => { hash_delete(c, slf, k)?; Ok(c.ary_new_from(&[k, v])) } None => Ok(NIL) }
+    if c.hash_len(slf) == 0 { return Ok(NIL); }
+    // the first live slot, deleted in place: no #hash / #eql? call (CRuby's st_shift)
+    let i = c.hash_first_slot(slf);
+    let (k, v) = c.hash_entry_at(slf, i).unwrap();
+    c.hash_delete_slot(slf, i);
+    Ok(c.ary_new_from(&[k, v]))
 });
 cfn!(h_first, |c, slf, a, blk| {
     if a.is_empty() { let mut f = NIL; each_entry(c, slf, |c, k, v| { f = c.ary_new_from(&[k, v]); Ok(false) })?; return Ok(f); }

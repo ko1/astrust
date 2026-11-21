@@ -86,6 +86,23 @@ fn m_lgamma(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 fn m_erf(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; Ok(c.float_new(sys::erf(f))) }
 fn m_erfc(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; Ok(c.float_new(sys::erfc(f))) }
 fn m_cbrt(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; let mut r = sys::cbrt(f); if r.is_finite() && !(f == 0.0 && r == 0.0) { r = (2.0 * r + (f / r / r)) / 3.0; } Ok(c.float_new(r)) }
+/// GC.stat_heap([heap [, key]]): saruby has one heap of fixed-size slots (heap 0).
+fn gc_stat_heap(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+    let h = crate::gc::heap().stats();
+    let st = c.hash_new();
+    for (k, v) in [("slot_size", std::mem::size_of::<RObj>() as i64), ("heap_live_slots", (h.slots - h.free) as i64), ("heap_free_slots", h.free as i64),
+                   ("total_allocated_objects", h.allocated as i64), ("total_freed_objects", h.freed as i64)] {
+        hash_set(c, st, sym_value(k), Value::fix(v))?;
+    }
+    match a.first() {
+        None => { let all = c.hash_new(); hash_set(c, all, Value::fix(0), st)?; Ok(all) }
+        Some(&i) if i == Value::fix(0) => match a.get(1) {
+            Some(&k) if k.is_sym() => match crate::hash::hash_get_opt(c, st, k)? { Some(v) => Ok(v), None => arg_err(c, format!("unknown key: {}", sym_str(k.as_sym()))) },
+            _ => Ok(st),
+        },
+        Some(_) => arg_err(c, "size pool index out of range"),
+    }
+}
 fn gc_config(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     let h = c.hash_new();
     hash_set(c, h, sym_value("rgengc_allow_full_mark"), TRUE)?;
@@ -234,7 +251,7 @@ pub fn init(vmr: &Vm) {
     define_module_function(gc, "measure_total_time=", |_c, _s, a, _b| Ok(a[0]), 1);
     define_module_function(gc, "total_time", |_c, _s, _a, _b| Ok(Value::fix(crate::gc::heap().ctl.time().as_nanos() as i64)), 0);
     define_module_function(gc, "config", gc_config, -1);
-    define_module_function(gc, "stat_heap", |c, _s, _a, _b| Ok(c.hash_new()), -1);
+    define_module_function(gc, "stat_heap", gc_stat_heap, -1);
     define_module_function(gc, "latest_gc_info", |c, _s, _a, _b| Ok(c.hash_new()), -1);
     define_module_function(gc, "verify_internal_consistency", |_c, _s, _a, _b| Ok(NIL), 0);
     let k = vmr.m_kernel;

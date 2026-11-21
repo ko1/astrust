@@ -31,14 +31,14 @@ enum Probe { Found(usize), Miss, Ask(usize, Value) }
 
 impl RHash {
     pub fn with_capacity(n: usize) -> RHash {
-        RHash { entries: Vec::with_capacity(n), index: Vec::new(), live: 0, default: NIL, default_proc: NIL, identity: false, iter_lev: 0 }
+        RHash { entries: Vec::with_capacity(n), index: Vec::new(), live: 0, default: NIL, default_proc: NIL, identity: false, iter_lev: 0, first: 0 }
     }
     pub fn pairs(&self) -> Vec<(Value, Value)> { self.entries.iter().filter(|e| e.key != UNDEF).map(|e| (e.key, e.val)).collect() }
-    pub fn clear(&mut self) { self.entries.clear(); self.index.clear(); self.live = 0; }
+    pub fn clear(&mut self) { self.entries.clear(); self.index.clear(); self.live = 0; self.first = 0; }
     /// A compacted copy: same entries, defaults and identity flag, not being iterated.
     pub fn dup(&self) -> RHash {
         let mut d = RHash { entries: self.entries.iter().filter(|e| e.key != UNDEF).copied().collect(), index: vec![], live: self.live,
-                            default: self.default, default_proc: self.default_proc, identity: self.identity, iter_lev: 0 };
+                            default: self.default, default_proc: self.default_proc, identity: self.identity, iter_lev: 0, first: 0 };
         d.rebuild_index();
         d
     }
@@ -46,6 +46,7 @@ impl RHash {
         // compact deleted entries first when many; never under an iteration, which walks the slots by number
         if self.entries.len() > self.live * 2 + 8 && self.iter_lev == 0 {
             self.entries.retain(|e| e.key != UNDEF);
+            self.first = 0;
         }
         if self.entries.len() <= SMALL { self.index.clear(); return; }
         let mut cap = 16;
@@ -124,7 +125,8 @@ impl RHash {
         self.entries[i].key = UNDEF;
         self.entries[i].val = NIL;
         self.live -= 1;
-        if self.live == 0 { self.entries.clear(); self.index.clear(); }
+        if self.live == 0 { self.clear(); }
+        else if i == self.first { while self.entries[self.first].key == UNDEF { self.first += 1; } }
         v
     }
 }
@@ -138,6 +140,8 @@ impl Ctx {
     pub fn hash_len(&self, h: Value) -> usize { self.hash(h).live }
     /// Number of slots, deleted ones included: the bound of an iteration by slot number.
     pub fn hash_slots(&self, h: Value) -> usize { self.hash(h).entries.len() }
+    /// The first slot that may be live: iterations start here.
+    pub fn hash_first_slot(&self, h: Value) -> usize { self.hash(h).first }
     /// Slot i (key UNDEF when deleted), for index-based iteration robust to mutation.
     pub fn hash_entry_at(&self, h: Value, i: usize) -> Option<(Value, Value)> { self.hash(h).entries.get(i).map(|e| (e.key, e.val)) }
     pub fn hash_pairs(&self, h: Value) -> Vec<(Value, Value)> { self.hash(h).pairs() }

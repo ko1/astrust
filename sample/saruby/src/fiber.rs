@@ -147,6 +147,11 @@ pub fn new_thread_fiber(proc_: Value, args: Value) -> Value { let f = new_fiber(
 pub fn is_done(f: Value) -> bool { fd(f).state == FState::Done }
 pub fn take_result(f: Value) -> (bool, Value) { let d = fd(f); let r = (d.err, d.xfer); d.err = false; d.xfer = NIL; r }
 pub fn last_switched_out() -> Value { unsafe { LAST_OUT } }
+/// A finished thread's value stack goes back to the pool now, not when the GC frees the Fiber.
+pub fn release_vstack(f: Value) {
+    let d = fd(f);
+    if d.state == FState::Done { let s = std::mem::replace(&mut d.vstack, stack_new(0)); stack_release(s); }
+}
 pub fn discard(f: Value) { unsafe { LIVE.retain(|&x| x != f); } fd(f).state = FState::Done; }
 /// Run a thread (root fiber `root`, resuming at `inner`) until it suspends or ends.
 pub fn thread_switch_in(root: Value, inner: Value) {

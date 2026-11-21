@@ -25,6 +25,7 @@ pub struct RIo {
     pub fd: i32, pub wfd: i32, pub path: Vec<u8>, pub rbuf: Vec<u8>, pub rpos: usize, pub eof: bool, pub wbuf: Vec<u8>,
     pub closed: bool, pub init: bool, pub lineno: i64, pub writable: bool, pub readable: bool, pub binmode: bool, pub sync: bool,
     pub pid: i32, pub enc: u8, pub enc_set: bool, pub autoclose: bool, pub has_path: bool, pub data: bool, pub rerr: i64,
+    pub coop: bool, pub wouldblock: bool,   // coop: fill does not block, it sets wouldblock (other threads must run)
 }
 impl RData for RIo {
     fn as_any(&self) -> &dyn std::any::Any { self }
@@ -66,7 +67,7 @@ impl std::fmt::Display for PathArg {
 
 fn blank() -> RIo {
     RIo { fd: -1, wfd: -1, path: vec![], rbuf: vec![], rpos: 0, eof: false, wbuf: vec![], closed: false, init: false, lineno: 0, writable: false,
-          readable: false, binmode: false, sync: false, pid: 0, enc: ENC_UTF8, enc_set: false, autoclose: true, has_path: false, data: false, rerr: 0 }
+          readable: false, binmode: false, sync: false, pid: 0, enc: ENC_UTF8, enc_set: false, autoclose: true, has_path: false, data: false, rerr: 0, coop: false, wouldblock: false }
 }
 fn opened(fd: i32, path: &[u8], r: bool, w: bool) -> RIo {
     let mut io = blank();
@@ -134,14 +135,36 @@ fn discard_rbuf(io: &mut RIo) {
 }
 
 /// Append to the stream (stdout / stderr go to the process buffers); Some(errno) on a failed flush.
-fn buffer_write(io: &mut RIo, b: &[u8]) -> Option<i64> {
+// buffer_write's answer when the flush must let other threads run (coop_flush)
+const FLUSH_COOP: i64 = -1;
+fn buffer_write(io: &mut RIo, b: &[u8], coop: bool) -> Option<i64> {
     let fd = out_fd(io);
     if fd == 1 { out_write(b); return None; }
     if fd == 2 { err_write(b); return None; }
     if !io.rbuf.is_empty() { discard_rbuf(io); }
     io.wbuf.extend_from_slice(b);
-    if io.wbuf.len() > 1 << 16 || io.sync { return io_flush_one(io); }
+    if io.wbuf.len() > 1 << 16 || io.sync { return if coop { Some(FLUSH_COOP) } else { io_flush_one(io) }; }
     None
+}
+/// Flush with other threads running while the fd is not writable (a full pipe would block them all).
+#[cold]
+fn coop_flush(c: &mut Ctx, io_v: Value) -> Result<(), Esc> {
+    loop {
+        let fd = { let io = io_mut(c, io_v); if io.wbuf.is_empty() { return Ok(()); } out_fd(io) };
+        crate::builtins::thread::wait_writable(c, fd)?;
+        check_open(c, io_v, true)?;
+        let io = io_mut(c, io_v);
+        // POLLOUT on a pipe promises PIPE_BUF bytes, so this write does not block
+        let n = io.wbuf.len().min(4096);
+        let w = sys::write(out_fd(io), &io.wbuf[..n]);
+        if w < 0 {
+            let e = sys::errno();
+            if e == sys::EINTR || e == sys::EAGAIN { continue; }
+            io.wbuf.clear();
+            return Err(raise_errno(c, e, ""));
+        }
+        io.wbuf.drain(..w as usize);
+    }
 }
 fn writable(io: &RIo) -> bool { io.init && !io.closed && io.writable }
 /// The error a write to `io_v` raises (not an open writable IO, or errno `e` of the flush).
@@ -152,25 +175,30 @@ fn write_err(c: &mut Ctx, io_v: Value, e: Option<i64>) -> Esc {
 }
 pub fn io_write_bytes(c: &mut Ctx, io_v: Value, b: &[u8]) -> Result<(), Esc> {
     // one payload lookup on the common path
-    let e = match c.data_mut::<RIo>(io_v) { Some(io) if writable(io) => match buffer_write(io, b) { None => return Ok(()), e => e }, _ => None };
+    let coop = crate::builtins::thread::active(c);
+    let e = match c.data_mut::<RIo>(io_v) { Some(io) if writable(io) => match buffer_write(io, b, coop) { None => return Ok(()), e => e }, _ => None };
+    if e == Some(FLUSH_COOP) { return coop_flush(c, io_v); }
     Err(write_err(c, io_v, e))
 }
 /// Write String `sv` without copying it out first; its byte count.
 fn io_write_str(c: &mut Ctx, io_v: Value, sv: Value) -> Result<usize, Esc> {
+    let coop = crate::builtins::thread::active(c);
     let e = match c.data_mut_and::<RIo>(io_v) {
         Some((io, o)) if writable(io) => {
             let b = o.str_bytes(sv).unwrap_or(&[]);   // sv is a String, never the IO
             let n = b.len();
-            match buffer_write(io, b) { None => return Ok(n), e => e }
+            match buffer_write(io, b, coop) { None => return Ok(n), Some(FLUSH_COOP) => Err(n), e => Ok(e) }
         }
-        _ => None,
+        _ => Ok(None),
     };
+    let e = match e { Ok(e) => e, Err(n) => { coop_flush(c, io_v)?; return Ok(n); } };
     Err(write_err(c, io_v, e))
 }
 
 fn fill(io: &mut RIo) -> bool {
     if io.rpos < io.rbuf.len() { return true; }
     if io.eof || io.data { return false; }
+    if io.coop && !fd_ready(io.fd, sys::POLLIN) { io.wouldblock = true; return false; }
     io.rbuf.clear(); io.rpos = 0;
     if io.fd == 0 { out_flush(); }
     io.rbuf.resize(65536, 0);
@@ -178,6 +206,29 @@ fn fill(io: &mut RIo) -> bool {
     io.rbuf.truncate(n);
     // pipes / ttys reach EOF only on a zero read; regular files may grow, so never latch eof
     n > 0
+}
+fn fd_ready(fd: i32, ev: i16) -> bool { let mut p = [sys::PollFd { fd, events: ev, revents: 0 }]; sys::poll(&mut p, 0) > 0 }
+/// Give consumed bytes back to the read buffer (a read that would block is redone after the wait).
+fn unread(io: &mut RIo, mut b: Vec<u8>) {
+    if b.is_empty() { return; }
+    b.extend_from_slice(&io.rbuf[io.rpos..]);
+    io.rbuf = b; io.rpos = 0;
+}
+/// Run read op `f` on `v`; while other threads exist, a fill that would block undoes `f`
+/// (it hands back what it consumed), waits for the fd with the others running, and runs `f` again.
+fn coop_read<T>(c: &mut Ctx, v: Value, mut f: impl FnMut(&mut RIo) -> (T, Vec<u8>)) -> Result<T, Esc> {
+    loop {
+        let coop = crate::builtins::thread::active(c);
+        let io = readable(c, v)?;
+        io.coop = coop; io.wouldblock = false;
+        let (r, used) = f(io);
+        io.coop = false;
+        if !io.wouldblock { return Ok(r); }
+        io.wouldblock = false;
+        unread(io, used);
+        let fd = io.fd;
+        crate::builtins::thread::wait_readable(c, fd)?;
+    }
 }
 fn find_sub(h: &[u8], n: &[u8]) -> Option<usize> { if n.len() == 1 { h.iter().position(|&b| b == n[0]) } else { h.windows(n.len()).position(|w| w == n) } }
 fn read_line(io: &mut RIo, sep: Option<&[u8]>, limit: Option<usize>) -> Option<Vec<u8>> {
@@ -221,6 +272,12 @@ fn read_all(io: &mut RIo) -> Vec<u8> {
 fn enc_of(io: &RIo) -> u8 { if io.binmode && !io.enc_set { ENC_BINARY } else { io.enc } }
 
 fn io_write(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+    if a.len() > 1 {
+        let mut out = vec![];
+        for &x in a { let sv = crate::rt::srb_tostr(c, x)?; out.extend_from_slice(c.str_bytes(sv)); }
+        io_write_bytes(c, slf, &out)?;
+        return Ok(Value::fix(out.len() as i64));
+    }
     let mut n = 0;
     for &x in a { let sv = crate::rt::srb_tostr(c, x)?; n += io_write_str(c, slf, sv)?; }
     Ok(Value::fix(n as i64))
@@ -279,6 +336,7 @@ fn line_args(c: &mut Ctx, a: &[Value]) -> Result<(Option<Vec<u8>>, Option<usize>
 fn gets_raw(io: &mut RIo, la: &(Option<Vec<u8>>, Option<usize>, bool)) -> Option<Vec<u8>> {
     let (sep, limit, chomp) = la;
     let mut l = read_line(io, sep.as_deref(), *limit)?;
+    if io.wouldblock { unread(io, l); return None; }
     io.lineno += 1;
     if *chomp { if let Some(sp) = sep {
         if sp.is_empty() { while l.ends_with(b"\n") { l.pop(); } }
@@ -288,8 +346,8 @@ fn gets_raw(io: &mut RIo, la: &(Option<Vec<u8>>, Option<usize>, bool)) -> Option
 }
 /// One line read from `slf` as a String (nil at EOF), and the stream's lineno after it.
 fn gets_value(c: &mut Ctx, slf: Value, la: &(Option<Vec<u8>>, Option<usize>, bool)) -> Result<(Value, i64), Esc> {
-    let io = readable(c, slf)?;
-    let l = gets_raw(io, la);
+    let l = coop_read(c, slf, |io| (gets_raw(io, la), vec![]))?;
+    let io = io_mut(c, slf);
     let (enc, lineno) = (enc_of(io), io.lineno);
     if io.rerr != 0 { let e = std::mem::take(&mut io.rerr); let (m, p) = (format!("io_fillbuf - fd:{} ", io.fd), io.path.clone()); return Err(raise_errno_at(c, e, &m, &p)); }
     Ok((match l { Some(l) => c.str_from_vec_enc(l, enc), None => NIL }, lineno))
@@ -337,17 +395,20 @@ fn io_read(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 0, 2)?;
     // the length is converted before the stream is looked at (CRuby's order; to_int may run Ruby code)
     let n = match a.first() { Some(&n) if n != NIL => { let n = num_to_long(c, n)?; if n < 0 { return arg_err(c, format!("negative length {} given", n)); } Some(n as usize) } _ => None };
-    let io = readable(c, slf)?;
     if let Some(n) = n {
-        let mut v = vec![];
-        while v.len() < n && fill(io) { let take = (n - v.len()).min(io.rbuf.len() - io.rpos); v.extend_from_slice(&io.rbuf[io.rpos..io.rpos + take]); io.rpos += take; }
+        let v = coop_read(c, slf, |io| {
+            let mut v = vec![];
+            while v.len() < n && fill(io) { let take = (n - v.len()).min(io.rbuf.len() - io.rpos); v.extend_from_slice(&io.rbuf[io.rpos..io.rpos + take]); io.rpos += take; }
+            if io.wouldblock { (vec![], v) } else { (v, vec![]) }
+        })?;
         if v.is_empty() && n > 0 {
             if let Some(&b) = a.get(1) { if b != NIL { let b = expect_str(c, b)?; check_frozen(c, b)?; c.rstring_mut(b).b.clear(); } }
             return Ok(NIL);
         }
         return into_outbuf(c, a.get(1).copied(), v, ENC_BINARY);
     }
-    let v = read_all(io);
+    let v = coop_read(c, slf, |io| { let v = read_all(io); if io.wouldblock { (vec![], v) } else { (v, vec![]) } })?;
+    let io = io_mut(c, slf);
     if io.rerr != 0 { let e = std::mem::take(&mut io.rerr); let p = io.path.clone(); return Err(raise_errno_at(c, e, "io_fread - ", &p)); }
     let enc = enc_of(io);
     into_outbuf(c, a.get(1).copied(), v, enc)
@@ -358,10 +419,20 @@ fn io_readpartial(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV 
     if n < 0 { return arg_err(c, format!("negative length {} given", n)); }
     let io = readable(c, slf)?;
     if n == 0 { return into_outbuf(c, a.get(1).copied(), vec![], ENC_BINARY); }
+    if let Some(r) = read_unbuffered(io, n as usize) {
+        return match r { Ok(v) if v.is_empty() => eof_err(c), Ok(v) => into_outbuf(c, a.get(1).copied(), v, ENC_BINARY), Err(e) => Err(raise_errno(c, e, "")) };
+    }
     if !fill(io) { return eof_err(c); }
     let take = (n as usize).min(io.rbuf.len() - io.rpos);
     let v = io.rbuf[io.rpos..io.rpos + take].to_vec(); io.rpos += take;
     into_outbuf(c, a.get(1).copied(), v, ENC_BINARY)
+}
+/// With nothing buffered, read up to n bytes straight from the fd (CRuby's io_getpartial; no 64 KiB fill).
+fn read_unbuffered(io: &mut RIo, n: usize) -> Option<Result<Vec<u8>, i64>> {
+    if io.rpos < io.rbuf.len() || io.data || io.eof { return None; }
+    if io.fd == 0 { out_flush(); }
+    let mut v = vec![0u8; n];
+    Some(sys::read_fd(io.fd, &mut v).map(|k| { v.truncate(k); v }))
 }
 fn wait_fd(fd: i32, ev: i16, ms: i32) -> bool { let mut p = [sys::PollFd { fd, events: ev, revents: 0 }]; sys::poll(&mut p, ms) > 0 }
 fn exception_opt(c: &mut Ctx, a: &[Value]) -> Result<bool, Esc> {
@@ -377,12 +448,30 @@ fn wait_error(c: &mut Ctx, name: &str, msg: &str) -> Esc {
 fn io_read_nonblock(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     let exc = exception_opt(c, a)?;
     let pos: Vec<Value> = a.iter().copied().filter(|x| !is_hash(*x)).collect();
-    let io = readable(c, slf)?;
-    if io.rpos >= io.rbuf.len() && !wait_fd(io.fd, sys::POLLIN, 0) {
+    let n = match pos.first() { Some(&n) => num_to_long(c, n)?, None => return argc_err(c, 0, 1, 2) };
+    if n < 0 { return arg_err(c, format!("negative length {} given", n)); }
+    // no wait for other threads here: this read must not block
+    check_open(c, slf, false)?;
+    if !io_mut(c, slf).readable { return err(c, c.vm().c_io_error, "not opened for reading"); }
+    if n == 0 { return into_outbuf(c, pos.get(1).copied(), vec![], ENC_BINARY); }
+    let io = io_mut(c, slf);
+    if !io.wbuf.is_empty() { io_flush_one(io); }
+    if io.rpos >= io.rbuf.len() && !io.data && !wait_fd(io.fd, sys::POLLIN, 0) {
         if !exc { return Ok(sym_value("wait_readable")); }
         return Err(wait_error(c, "EAGAINWaitReadable", "read would block"));
     }
-    if !fill(io) { if !exc { return Ok(NIL); } return eof_err(c); }
+    {
+        let io = io_mut(c, slf);
+        if let Some(r) = read_unbuffered(io, n as usize) {
+            return match r {
+                Ok(v) if v.is_empty() => if !exc { Ok(NIL) } else { eof_err(c) },
+                Ok(v) => into_outbuf(c, pos.get(1).copied(), v, ENC_BINARY),
+                Err(e) if e == sys::EAGAIN => if !exc { Ok(sym_value("wait_readable")) } else { Err(wait_error(c, "EAGAINWaitReadable", "read would block")) },
+                Err(e) => Err(raise_errno(c, e, "")),
+            };
+        }
+    }
+    if !fill(io_mut(c, slf)) { if !exc { return Ok(NIL); } return eof_err(c); }
     io_readpartial(c, slf, &pos, b)
 }
 fn io_write_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -959,14 +1048,36 @@ fn io_s_copy_stream(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> 
     let (src, sc) = open_side(c, a[0], false)?;
     let (dst, dc) = open_side(c, a[1], true)?;
     let len = match a.get(2) { Some(&l) if l != NIL => Some(num_to_long(c, l)?), _ => None };
-    if let Some(&o) = a.get(3) { if o != NIL { let o = num_to_long(c, o)?; do_seek(c, src, o, 0)?; } }
-    let largs: Vec<Value> = len.map(Value::fix).into_iter().collect();
-    let data = if is_io(c, src) { io_read(c, src, &largs, std::ptr::null())? } else { funcall(c, src, intern(b"read"), &largs, std::ptr::null())? };
-    let n = if data == NIL { 0 } else { c.str_bytes(data).len() };
-    if data != NIL { if is_io(c, dst) { io_write(c, dst, &[data], std::ptr::null())?; } else { funcall(c, dst, intern(b"write"), &[data], std::ptr::null())?; } }
+    let src_io = is_io(c, src);
+    if let Some(&o) = a.get(3) { if o != NIL {
+        if !src_io { return arg_err(c, "cannot specify src_offset for non-IO"); }
+        let o = num_to_long(c, o)?; do_seek(c, src, o, 0)?;
+    } }
+    // CRuby's copy_stream_fallback: 16 KiB chunks; a duck-typed source gets readpartial(len, buf) or read(len, buf)
+    let partial = src_io || respond_to(src, intern(b"readpartial"), true);
+    let meth = intern(if partial { b"readpartial" } else { b"read" });
+    let dst_io = is_io(c, dst);
+    let buf = c.str_new_enc(b"", ENC_BINARY);
+    let (mut total, mut rest) = (0i64, len.unwrap_or(-1));
+    loop {
+        // rest == 0 only (CRuby: a source that overshoots gets a negative length)
+        let l = match len { None => 16384, Some(_) if rest == 0 => break, Some(_) => rest.min(16384) };
+        let r = if src_io { io_readpartial(c, src, &[Value::fix(l), buf], std::ptr::null()) } else { funcall(c, src, meth, &[Value::fix(l), buf], std::ptr::null()) };
+        match r {
+            Ok(v) => { if !partial && v == NIL { break; } }
+            Err(e) => {
+                if partial && c.esc == EscKind::Raise && is_kind_of(c.esc_val, c.vm().c_eof_error) { c.esc = EscKind::None; break; }
+                return Err(e);
+            }
+        }
+        let w = if dst_io { io_write(c, dst, &[buf], std::ptr::null())? } else { funcall(c, dst, intern(b"write"), &[buf], std::ptr::null())? };
+        let w = num_to_long(c, w)?;
+        total += w; rest -= w;
+        if !partial && c.str_bytes(buf).is_empty() { break; }
+    }
     if sc { close_io(c, src)?; }
     if dc { close_io(c, dst)?; } else if let Some(d) = rio_mut(c, dst) { if d.init && !d.closed { io_flush_one(d); } }
-    Ok(Value::fix(n as i64))
+    Ok(Value::fix(total))
 }
 fn io_s_try_convert(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
     if is_io(c, a[0]) { return Ok(a[0]); }
@@ -1027,6 +1138,10 @@ pub fn boot_frozen_str(vmr: &Vm, b: &[u8]) -> Value {
 }
 
 pub fn init(vmr: &mut Vm) {
+    // CRuby holds two descriptors from boot (its timer thread's eventfd and epoll fd): taking two here
+    // gives a program the same fd numbers (IO.pipe is [5, 6] in both)
+    let mut held = [0; 2];
+    sys::pipe2(&mut held, sys::O_CLOEXEC);
     let io = define_class("IO", vmr.c_object);
     class_set_alloc(io, AllocKind::None);
     include_module(io, vmr.m_enumerable);

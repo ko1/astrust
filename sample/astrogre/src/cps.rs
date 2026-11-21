@@ -563,7 +563,7 @@ impl<'a> Lowerer<'a> {
                 let p = ALLOC_node_re_cond(g, yes, no);
                 (self.n(p), None)
             }
-            Ast::Backref(..) | Ast::Cond(..) => unreachable!(),
+            Ast::Backref(..) | Ast::Cond(..) | Ast::Call(_) => unreachable!(),
             Ast::Keep => {
                 let p = ALLOC_node_re_keep(tail.0);
                 (self.n(p), None)

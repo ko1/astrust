@@ -339,8 +339,7 @@ fn k_callee_name(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> R
 
 fn k_caller(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let (start, len) = crate::builtins::exception::caller_range(c, args)?;
-    let lines = backtrace_lines(c, 1 + start);
-    let lines: Vec<String> = match len { Some(n) => lines.into_iter().take(n).collect(), None => lines };
+    let Some(lines) = backtrace_lines_n(c, 1 + start, len) else { return Ok(NIL) };
     Ok(c.ary_of_strs(lines.into_iter().map(|l| l.into_bytes()).collect(), ENC_UTF8))
 }
 

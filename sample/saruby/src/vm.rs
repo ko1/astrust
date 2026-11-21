@@ -1100,23 +1100,33 @@ fn capture_frames(c: &Ctx) -> Vec<RawFrame> {
     frames
 }
 
-fn format_frames(frames: &[RawFrame], skip: usize) -> Vec<String> {
+fn format_frames(frames: &[RawFrame], skip: usize) -> Vec<String> { format_frames_n(frames, skip, usize::MAX).unwrap_or_default() }
+/// Lines skip..skip+n only: the others are not formatted (caller(0, 1) deep in a stack).
+/// None: fewer than `skip` frames (caller's nil).
+fn format_frames_n(frames: &[RawFrame], skip: usize, n: usize) -> Option<Vec<String>> {
     let mut out = vec![];
+    let mut seen = 0usize;
     unsafe {
         for fr in frames {
+            if seen >= skip && out.len() >= n { break; }
             if fr.kind != FK_CFUNC && fr.iseq.is_null() { continue; }
             // CRuby's send/__send__ and Proc#call/yield/===/[] do not push a frame
             if fr.kind == FK_CFUNC && (fr.me.is_null() == false && ((*fr.me).name == s::send || (*fr.me).name == s::__send__)) { continue; }
             if fr.kind == FK_CFUNC && fr.me == vm().ids.c_new { continue; }   // CRuby 4.0 has no Class#new frame
             if fr.kind == FK_CFUNC && !fr.me.is_null() && (*fr.me).owner == vm().c_proc && matches!(sym_str((*fr.me).name).as_ref(), "call" | "yield" | "===" | "[]") { continue; }
+            seen += 1;
+            if seen <= skip { continue; }
             out.push(format!("{}:{}:in '{}'", fr.file, fr.line, frame_label_of(fr.kind, fr.me, fr.iseq)));
         }
     }
-    if skip < out.len() { out.drain(..skip); } else { out.clear(); }
-    out
+    if seen < skip { None } else { Some(out) }
 }
 
 pub fn backtrace_lines(c: &Ctx, skip: usize) -> Vec<String> { format_frames(&capture_frames(c), skip) }
+pub fn backtrace_lines_n(c: &Ctx, skip: usize, n: Option<usize>) -> Option<Vec<String>> {
+    if n == Some(0) { return Some(vec![]); }   // CRuby: [] before the range is checked
+    format_frames_n(&capture_frames(c), skip, n.unwrap_or(usize::MAX))
+}
 
 // ---- calls -----------------------------------------------------------------------------------
 
@@ -2162,10 +2172,11 @@ pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const 
         BlockKind::Sym(mid) => {
             if args.is_empty() { return arg_err(c, "no receiver given"); }
             let recv = args[0];
+            let fl = if kw && args.len() > 1 { CF_KW } else { 0 };   // :m.to_proc.(recv, k: v) passes keywords on
             if unsafe { REFINEMENTS_ON } {
-                if let Some(r) = funcall_refined(c, b.cref, recv, mid, &args[1..], blkarg, 0) { return r; }
+                if let Some(r) = funcall_refined(c, b.cref, recv, mid, &args[1..], blkarg, fl) { return r; }
             }
-            funcall_public(c, recv, mid, &args[1..], blkarg)
+            funcall_flags(c, recv, mid, &args[1..], blkarg, fl)
         }
         BlockKind::Method(m) => {
             let mo = rmethod(m);

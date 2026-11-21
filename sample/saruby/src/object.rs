@@ -57,6 +57,7 @@ pub struct RHash {
     pub default_proc: Value,
     pub identity: bool,
     pub iter_lev: u32,             // running iterations (CRuby's iter_lev): no new key, no rehash meanwhile
+    pub first: usize,              // every slot before it is deleted (CRuby's entries_start): shift is O(1)
 }
 
 pub struct ProcData { pub blk: Block, pub is_lambda: bool, pub from_method: Value }

@@ -92,7 +92,24 @@ fn get_rnd(c: &Ctx, ob: Value) -> Option<Value> {
 
 fn fill_random_words(n: usize) -> Vec<u32> {
     let mut buf = vec![0u8; n * 4];
-    let ok = std::fs::File::open("/dev/urandom").and_then(|mut f| { use std::io::Read; f.read_exact(&mut buf) }).is_ok();
+    // SecureRandom asks for a few bytes at a time: read 4 KiB per open (no fd kept, so fd numbers stay CRuby's);
+    // the pool is per process, never shared with a forked child
+    thread_local! { static POOL: std::cell::RefCell<(i32, Vec<u8>)> = const { std::cell::RefCell::new((0, Vec::new())) }; }
+    let ok = POOL.with(|p| {
+        let mut p = p.borrow_mut();
+        let pid = crate::builtins::sys::getpid();
+        if p.0 != pid { *p = (pid, Vec::new()); }
+        if p.1.len() < buf.len() {
+            let mut more = vec![0u8; buf.len().max(4096)];
+            let read = std::fs::File::open("/dev/urandom").and_then(|mut f| { use std::io::Read; f.read_exact(&mut more) }).is_ok();
+            if !read { return false; }
+            p.1.extend_from_slice(&more);
+        }
+        let k = p.1.len() - buf.len();
+        buf.copy_from_slice(&p.1[k..]);
+        p.1.truncate(k);
+        true
+    });
     if !ok {
         let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(1);
         for (i, b) in buf.iter_mut().enumerate() { *b = (t >> ((i % 16) * 8)) as u8 ^ (std::process::id() as u8).wrapping_mul(i as u8 + 1); }
@@ -213,6 +230,16 @@ fn limited_big_rand(c: &mut Ctx, ob: Value, rnd: Option<Value>, limit: &BigInt) 
         }
         return Ok(c.big_to_value(BigInt::from_words(false, &out)));
     }
+}
+/// [0, limit] from `gen` (CRuby's rb_random_ulong_limited): a Random, or any object's #rand(limit + 1).
+pub fn ulong_limited(c: &mut Ctx, gen: Value, limit: u64) -> Result<u64, Esc> {
+    if let Some(r) = get_rnd(c, gen) { return Ok(limited_rand_mt(&mut rr(c, r).mt, limit)); }
+    let lim = c.int_from_i128(limit as i128 + 1);
+    let v = funcall(c, gen, intern(b"rand"), &[lim], std::ptr::null())?;
+    let v = crate::builtins::numeric_methods::num_to_long(c, v)?;
+    if v < 0 { return err(c, c.vm().c_range_error, format!("random number too small {}", v)); }
+    if v as u64 > limit { return err(c, c.vm().c_range_error, format!("random number too big {}", v)); }
+    Ok(v as u64)
 }
 /// [0, n) for the default generator (Array#shuffle / #sample).
 pub fn rand_below(c: &mut Ctx, n: u64) -> u64 {

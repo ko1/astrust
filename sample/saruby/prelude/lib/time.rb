@@ -18,10 +18,13 @@ class Time
       end
     end
 
+    # time.rb's zone_utc?: zones that mean UTC itself (not +0000 / GMT, which are local times)
+    def __zone_utc?(zone) = zone.match?(/\A(?:-00:00|-0000|-00|UTC|Z|UT)\z/i)
+
     def __make(year, mon, day, hour, min, sec, frac, zone, now)
       sec = sec.to_i + (frac ? Rational(frac.to_i, 10**frac.size) : 0)
       if zone
-        return utc(year, mon, day, hour, min, sec) if zone == "Z" || zone == "z" || zone == "-00:00" || zone == "-0000"
+        return utc(year, mon, day, hour, min, sec) if __zone_utc?(zone)
         off = zone_offset(zone)
         return new(year, mon, day, hour, min, sec, off) if off
       end
@@ -121,7 +124,9 @@ class Time
       fmt = format.gsub(/%([TXRrFDxcv+])/) { STRPTIME_EXPAND[$1] }
       keys = []
       re = fmt.gsub(/%[-_0^#]?(?:(\d+)|:+)?([A-Za-z%])|(\s+)|([^%\s]+)/) do
-        if $3 then '\s*'
+        # %Y followed by a number directive reads at most 4 digits (Date._strptime)
+        if $2 == "Y" && $~.post_match.match?(/\A%[-_0^#]?\d*[CDdeFGgHIjkLlMmNQRrSsTUuVvWwXxYy]/) then keys << :year; '([+-]?\d{1,4})'
+        elsif $3 then '\s*'
         elsif $4 then Regexp.escape($4)
         elsif $2 == "%" then "%"
         elsif $2 == "n" || $2 == "t" then '\s+'
@@ -136,8 +141,14 @@ class Time
       h = {}
       keys.each_with_index { |k, i| h[k] = m[i + 1] if k }
       if h[:epoch]
-        t = at(h[:epoch].to_i)
-        return h[:zone] ? t.localtime(zone_offset(h[:zone]) || 0) : t
+        sec = h[:epoch].to_i
+        usec = h[:frac] ? Rational(h[:frac].to_i, 10**h[:frac].size) * 1000000 : 0
+        t = at(sec, sec < 0 ? -usec : usec)
+        return t unless (zone = h[:zone])
+        return t.utc if __zone_utc?(zone)
+        off = zone_offset(zone) or return t.localtime
+        t.localtime
+        return t.utc_offset == off ? t : t.localtime(off)
       end
       year = h[:year]&.to_i
       if !year && h[:yy]
