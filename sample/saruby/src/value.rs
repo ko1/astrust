@@ -34,11 +34,13 @@ impl Value {
     #[inline(always)] pub fn both_fix(self, o: Value) -> bool { self.raw() & o.raw() & 1 == 1 }
     // Fixnum arithmetic on the tagged words (2n+1): one add with an overflow test instead of
     // untag / add / range check / retag.  None: the result is not a fixnum.
+    // (both are fixnums) `| 1` and `& !1` change nothing but show the compiler an odd sum, so that
+    // the non-zero test folds even where it cannot see each operand's tag test
     #[inline(always)] pub fn fix_add(self, o: Value) -> Option<Value> {
-        (self.raw() as i64).checked_add(o.raw() as i64 - 1).and_then(|r| std::num::NonZeroU64::new(r as u64)).map(Value)
+        ((self.raw() | 1) as i64).checked_add((o.raw() as i64 - 1) & !1).and_then(|r| std::num::NonZeroU64::new(r as u64)).map(Value)
     }
     #[inline(always)] pub fn fix_sub(self, o: Value) -> Option<Value> {
-        (self.raw() as i64).checked_sub(o.raw() as i64 - 1).and_then(|r| std::num::NonZeroU64::new(r as u64)).map(Value)
+        ((self.raw() | 1) as i64).checked_sub((o.raw() as i64 - 1) & !1).and_then(|r| std::num::NonZeroU64::new(r as u64)).map(Value)
     }
     /// A fixnum shifted left by 0 <= k < 64, if the result is a fixnum: on the tagged word, 2a << k
     /// keeps its bits exactly when a << k is a fixnum.
