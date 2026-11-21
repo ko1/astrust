@@ -255,7 +255,7 @@ impl Dumper {
                     self.out.push(b'['); w_long(&mut self.out, 2); self.obj(c, r, limit)?; self.obj(c, i, limit)?;
                 } else {
                     let k = real_class_of(v);
-                    if crate::builtins::io::rio(v).is_some() { return type_err(c, format!("can't dump {}", class_path(k))); }
+                    if crate::builtins::io::is_io(c, v) { return type_err(c, format!("can't dump {}", class_path(k))); }
                     return type_err(c, format!("no _dump_data is defined for class {}", class_path(k)));
                 }
             }

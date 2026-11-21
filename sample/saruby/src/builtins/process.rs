@@ -342,7 +342,7 @@ fn do_exec(sp: &Spec) { sys::execvp(&sp.prog, &sp.argv); }
 pub fn spawn_exec(c: &mut Ctx, sp: &Spec) -> Result<i32, Esc> {
     let mut ep = [0i32; 2];
     if sys::pipe2(&mut ep, sys::O_CLOEXEC) < 0 { return Err(raise_errno(c, sys::errno(), "pipe")); }
-    crate::builtins::io::flush_all();
+    crate::builtins::io::flush_all(c);
     let pid = sys::fork();
     if pid < 0 { let e = sys::errno(); sys::close(ep[0]); sys::close(ep[1]); return Err(raise_errno(c, e, "fork(2)")); }
     if pid == 0 {
@@ -421,7 +421,7 @@ fn k_backtick(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 fn k_exec(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let (env, cmd, opts) = split_args(a);
     let sp = spawn_spec(c, env, cmd, opts)?;
-    crate::builtins::io::flush_all();
+    crate::builtins::io::flush_all(c);
     if child_setup(&sp) { do_exec(&sp); }
     Err(raise_errno_plain(c, sys::errno(), &sp.prog.to_string_lossy()))
 }
@@ -448,7 +448,7 @@ pub fn child_exit(c: &mut Ctx, r: RV) -> ! {
     std::process::exit(st);
 }
 fn k_fork(c: &mut Ctx, _s: Value, _a: &[Value], blk: *const Block) -> RV {
-    crate::builtins::io::flush_all();
+    crate::builtins::io::flush_all(c);
     let pid = sys::fork();
     if pid < 0 { return Err(raise_errno(c, sys::errno(), "fork(2)")); }
     if pid == 0 {

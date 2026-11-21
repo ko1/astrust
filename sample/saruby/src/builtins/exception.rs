@@ -82,7 +82,7 @@ fn define_errno(vmr: &Vm, name: &str, no: i64) -> Value {
 /// strerror text of errno `no`.
 pub fn errno_message(no: i64) -> Option<&'static str> { ERRNOS.iter().find(|e| e.1 == no).map(|e| e.2) }
 /// Message of SystemCallError for errno `no` (nil: none given).
-fn errno_text(no: Value) -> String {
+pub fn errno_text(no: Value) -> String {
     if !no.is_fixnum() { return "unknown error".into(); }
     match errno_message(no.as_fix()) { Some(m) => m.into(), None => format!("Unknown error {}", no.as_fix()) }
 }

@@ -38,8 +38,8 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
         "saruby/errno" => crate::builtins::exception::define_all_errnos(c),
         "saruby/env" => crate::builtins::env::init(c),
         "saruby/rbconfig" | "rbconfig" => crate::builtins::misc::rbconfig_init(c),
-        "saruby/filetest" => crate::builtins::file::init_filetest(),
-        "saruby/stat" => crate::builtins::file::init_stat(),
+        "saruby/filetest" => crate::builtins::file::init_filetest(c),
+        "saruby/stat" => crate::builtins::file::init_stat(c),
         "saruby/sync" => crate::builtins::thread::init_sync(c),
         _ => {}
     }
