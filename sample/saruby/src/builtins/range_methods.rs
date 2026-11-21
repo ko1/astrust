@@ -321,17 +321,35 @@ cfn!(r_max, |c, slf, a, blk| {
             while (c.ary_len(out) as i64) < n && (b == NIL || i >= b.as_fix()) { c.ary_push(out, Value::fix(i)); i -= 1; }
             return Ok(out);
         }
+        // a Bignum end: counted down from it, not iterated up to it
+        if blk.is_null() && is_integer(e) && (b == NIL || is_integer(b)) {
+            let n = crate::builtins::numeric_methods::num_to_long(c, a[0])?;
+            let out = c.ary_new();
+            let one = Value::fix(1);
+            let mut i = if x { funcall(c, e, s::minus, &[one], std::ptr::null())? } else { e };
+            while (c.ary_len(out) as i64) < n {
+                if b != NIL && !funcall(c, i, intern(b">="), &[b], std::ptr::null())?.truthy() { break; }
+                c.ary_push(out, i);
+                i = funcall(c, i, s::minus, &[one], std::ptr::null())?;
+            }
+            return Ok(out);
+        }
+        if b == NIL && !blk.is_null() { return err(c, c.vm().c_range_error, "cannot get the maximum of beginless range with custom comparison method"); }
+        if b == NIL { return type_err(c, "can't iterate from NilClass"); }
+        return crate::builtins::enum_native::call_enumerable(c, slf, "max", a, blk);
+    }
+    // range_max: an exclusive non-numeric range is iterated
+    if x && !crate::numeric::is_numeric(e) {
         if b == NIL { return err(c, c.vm().c_range_error, "cannot get the maximum of beginless range with custom comparison method"); }
         return crate::builtins::enum_native::call_enumerable(c, slf, "max", a, blk);
     }
-    if b != NIL {
-        let r = funcall(c, b, s::cmp, &[e], std::ptr::null())?;
-        if r == NIL || r.as_fix() > 0 || (x && r.as_fix() == 0) { return Ok(NIL); }
-    }
+    let r = if b == NIL { -1 } else { let r = funcall(c, b, s::cmp, &[e], std::ptr::null())?; if r == NIL { return Ok(NIL); } r.as_fix() };
+    if r > 0 { return Ok(NIL); }
     if x {
-        if is_float(e) || (b != NIL && is_float(b)) { return type_err(c, "cannot exclude non Integer end value"); }
+        if !is_integer(e) { return type_err(c, "cannot exclude non Integer end value"); }
+        if r == 0 { return Ok(NIL); }
+        if b != NIL && !is_integer(b) { return type_err(c, "cannot exclude end value with non Integer begin value"); }
         if e.is_fixnum() { return Ok(Value::fix(e.as_fix() - 1)); }
-        if !is_integer(e) { return type_err(c, "cannot exclude end value with non Integer begin value"); }
         return funcall(c, e, s::minus, &[Value::fix(1)], std::ptr::null());
     }
     Ok(e)
@@ -360,61 +378,96 @@ cfn!(r_sum, |c, slf, a, blk| {
     let arr = r_to_a(c, slf, &[], std::ptr::null())?;
     crate::builtins::array_methods::a_sum(c, arr, a, blk)
 });
+// range_step of range.c (3.4+): numeric ranges step either way, others need a step that moves toward the end.
 cfn!(r_step, |c, slf, a, blk| {
     let (b, e, x) = c.range_parts(slf);
+    let numk = c.vm().c_numeric;
+    let isnum = |v: Value| v.is_fixnum() || v.is_flonum() || (v.is_heap() && is_kind_of(v, numk));
+    let (b_num, e_num) = (isnum(b), isnum(e));
+    let str_b = if is_string(b) { Some(b) } else { None };
     check_argc(c, a, 0, 1)?;
-    let st = if a.is_empty() { Value::fix(1) } else { a[0] };
-    if crate::numeric::is_numeric(st) && (b == NIL || crate::numeric::is_numeric(b)) {
-        let z = funcall(c, st, s::eq, &[Value::fix(0)], std::ptr::null())?;
-        if z.truthy() { return arg_err(c, "step can't be 0"); }
-    }
+    let st = match a.first() {
+        Some(&v) => v,
+        None if b_num || str_b.is_some() || b.is_sym() || (b == NIL && e_num) => Value::fix(1),
+        None => return arg_err(c, "step is required for non-numeric ranges"),
+    };
+    let st_num = isnum(st);
+    if st_num && b_num && funcall(c, st, s::eq, &[Value::fix(0)], std::ptr::null())?.truthy() { return arg_err(c, "step can't be 0"); }
     if blk.is_null() {
-        let num = |v: Value| v == NIL || crate::numeric::is_numeric(v);
-        if num(b) && num(e) && crate::numeric::is_numeric(st) && !(b == NIL && e == NIL) {
+        if st_num && ((b_num && (e == NIL || e_num)) || (b == NIL && e_num)) {
             return crate::builtins::enumerator::arith_seq_from(c, slf, b, e, st, x, mid_of(a), a);
         }
+        if b == NIL { return arg_err(c, "#step for non-numeric beginless ranges is meaningless"); }
         return crate::builtins::enumerator::enum_for(c, slf, mid_of(a), a, NIL);
     }
-    if crate::numeric::is_numeric(st) {
-        let z = funcall(c, st, s::eq, &[Value::fix(0)], std::ptr::null())?;
-        if z.truthy() { return arg_err(c, "step can't be 0"); }
-        let neg = funcall(c, st, s::lt, &[Value::fix(0)], std::ptr::null())?;
-        if neg.truthy() { return arg_err(c, "step can't be negative"); }
+    if b == NIL { return arg_err(c, "#step iteration for beginless ranges is meaningless"); }
+    if b.is_fixnum() && e == NIL && st.is_fixnum() {
+        let mut i = b;
+        loop { yield1(c, blk, i)?; i = funcall(c, i, s::plus, &[st], std::ptr::null())?; }
     }
-    if is_float(b) || is_float(e) || is_float(st) {
-        let (Some(bf), Some(sf)) = (c.num_to_f64(b), c.num_to_f64(st)) else { return type_err(c, "no implicit conversion to float"); };
-        let ef = if e == NIL { f64::INFINITY } else { match c.num_to_f64(e) { Some(x) => x, None => return type_err(c, "no implicit conversion to float") } };
-        let n = ((ef - bf) / sf + 1e-9).floor();
-        let mut i = 0.0;
-        loop {
-            if !n.is_infinite() && i > n { break; }
-            let v = bf + i * sf;
-            if x && v >= ef { break; }
-            let fv = c.float_new(v);
-            yield1(c, blk, fv)?;
-            i += 1.0;
+    if b.is_fixnum() && e.is_fixnum() && st.is_fixnum() {
+        let (mut i, unit) = (b.as_fix() as i128, st.as_fix() as i128);
+        let end = e.as_fix() as i128;
+        if unit < 0 {
+            let end = if x { end } else { end - 1 };
+            while i > end { yield1(c, blk, Value::fix(i as i64))?; i += unit; }
+        } else {
+            let end = if x { end } else { end + 1 };
+            while i < end { yield1(c, blk, Value::fix(i as i64))?; i += unit; }
         }
         return Ok(slf);
     }
-    if b.is_fixnum() && (e.is_fixnum() || e == NIL) && st.is_fixnum() {
-        let mut i = b.as_fix(); let s2 = st.as_fix();
-        loop { if e != NIL && (if x { i >= e.as_fix() } else { i > e.as_fix() }) { break; } yield1(c, blk, Value::fix(i))?; i += s2; }
+    if b_num && st_num && (is_float(b) || is_float(e) || is_float(st)) {
+        let (Some(beg), Some(unit)) = (c.num_to_f64(b), c.num_to_f64(st)) else { return type_err(c, "no implicit conversion to float"); };
+        let end = if e == NIL { if unit < 0.0 { f64::NEG_INFINITY } else { f64::INFINITY } } else { match c.num_to_f64(e) { Some(v) => v, None => return type_err(c, "no implicit conversion to float") } };
+        let n = crate::builtins::numeric_methods::float_step_size(beg, end, unit, x);
+        if unit.is_infinite() { if n != 0.0 { let v = c.float_new(beg); yield1(c, blk, v)?; } }
+        else {
+            let mut i = 0.0;
+            while i < n {
+                let mut d = i * unit + beg;
+                if if unit >= 0.0 { end < d } else { d < end } { d = end; }
+                let v = c.float_new(d); yield1(c, blk, v)?;
+                i += 1.0;
+            }
+        }
         return Ok(slf);
     }
-    if is_string(b) && st.is_fixnum() {
+    if (str_b.is_some() || b.is_sym()) && st.is_fixnum() {
+        // step_i: every k-th; a k below 1 yields the first only
         let k = st.as_fix();
         let mut idx = 0;
-        range_each(c, slf, |c, v| { if idx % k == 0 { yield1(c, blk, v)?; } idx += 1; Ok(true) })?;
+        range_each(c, slf, |c, v| { if idx == 0 || (k > 0 && idx % k == 0) { yield1(c, blk, v)?; } idx += 1; Ok(true) })?;
         return Ok(slf);
     }
-    let mut cur = b;
-    loop {
-        if e != NIL { let r = funcall(c, cur, s::cmp, &[e], std::ptr::null())?; if r == NIL || r.as_fix() > 0 || (x && r.as_fix() == 0) { break; } }
-        yield1(c, blk, cur)?;
-        cur = funcall(c, cur, s::plus, &[st], std::ptr::null())?;
+    let mut v = b;
+    if e == NIL { loop { yield1(c, blk, v)?; v = funcall(c, v, s::plus, &[st], std::ptr::null())?; } }
+    if b_num && st_num && r_less(c, st, Value::fix(0))? < 0 {
+        // backwards, as ArithmeticSequence
+        loop {
+            let r = r_less(c, e, v)?;
+            if x { if r >= 0 { break; } } else if r > 0 { break; }
+            yield1(c, blk, v)?;
+            if r == 0 { break; }
+            v = funcall(c, v, s::plus, &[st], std::ptr::null())?;
+        }
+        return Ok(slf);
+    }
+    let dir = r_less(c, b, e)?;
+    if dir == 0 { if !x { yield1(c, blk, v)?; } return Ok(slf); }
+    let next = funcall(c, b, s::plus, &[st], std::ptr::null())?;
+    if dir == r_less(c, b, next)? {
+        loop {
+            let r = r_less(c, v, e)?;
+            if x { if r != dir { break; } } else if r != dir && r != 0 { break; }
+            yield1(c, blk, v)?;
+            if r == 0 { break; }
+            v = funcall(c, v, s::plus, &[st], std::ptr::null())?;
+        }
     }
     Ok(slf)
 });
+
 thread_local!(static PCT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
 fn mid_of(_a: &[Value]) -> crate::value::Sym { if PCT.with(|p| p.get()) { intern(b"%") } else { s::step } }
 cfn!(r_pct, |c, slf, a, blk| { PCT.with(|p| p.set(true)); let r = r_step(c, slf, a, blk); PCT.with(|p| p.set(false)); r });
