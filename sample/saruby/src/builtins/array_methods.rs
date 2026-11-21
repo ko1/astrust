@@ -637,6 +637,15 @@ cfn!(a_sum, |c, slf, a, blk| {
     let mut acc = if a.is_empty() { Value::fix(0) } else { a[0] };
     let mut fsum: Option<(f64, f64)> = None; // Kahan-Babuska for floats
     let mut i = 0;
+    // a run of fixnums with no block runs no Ruby code: one borrow of the elements for the whole run
+    if blk.is_null() && acc.is_fixnum() {
+        let mut sum = acc.as_fix();
+        for &x in c.ary(slf) {
+            if !x.is_fixnum() { break; }
+            match sum.checked_add(x.as_fix()) { Some(r) if Value::fixable(r) => { sum = r; i += 1; } _ => break }
+        }
+        acc = Value::fix(sum);
+    }
     while let Some(&x0) = c.ary(slf).get(i) {
         let mut x = x0;
         if !blk.is_null() { x = yield1(c, blk, x)?; }
