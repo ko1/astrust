@@ -242,7 +242,8 @@ fn sio_readline(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 /// readlines / each_line reject a zero limit (gets returns "" for it, which would never end).
 fn check_zero_limit(c: &mut Ctx, a: &[Value], name: &str) -> Result<(), Esc> {
     let pos = match kw_arg(a) { Some(_) => &a[..a.len() - 1], None => a };
-    let lim = match pos { [l] if !is_string(*l) && *l != NIL => Some(*l), [_, l] => Some(*l), _ => None };
+    // one argument: a separator if it converts to a String (prepare_getline_args), else the limit
+    let lim = match pos { [l] if !is_string(*l) && *l != NIL && !(l.is_heap() && respond_to(*l, s::to_str, true)) => Some(*l), [_, l] => Some(*l), _ => None };
     if let Some(l) = lim { if l != NIL && crate::builtins::numeric_methods::num_to_long(c, l)? == 0 { return arg_err(c, format!("invalid limit: 0 for {}", name)); } }
     Ok(())
 }
