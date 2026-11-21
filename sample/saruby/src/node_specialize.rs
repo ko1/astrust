@@ -14,6 +14,7 @@ fn SPECIALIZE_node_nil(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -46,6 +47,7 @@ fn SPECIALIZE_node_true(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -78,6 +80,7 @@ fn SPECIALIZE_node_false(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -110,6 +113,7 @@ fn SPECIALIZE_node_self(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -142,6 +146,7 @@ fn SPECIALIZE_node_lit(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -174,6 +179,7 @@ fn SPECIALIZE_node_float(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -207,6 +213,7 @@ fn SPECIALIZE_node_str(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -241,6 +248,7 @@ fn SPECIALIZE_node_fstr(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -275,6 +283,7 @@ fn SPECIALIZE_node_dstr(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_parts.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -307,6 +316,7 @@ fn SPECIALIZE_node_tostr(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_v.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -339,6 +349,7 @@ fn SPECIALIZE_node_dsym(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_s.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -373,6 +384,7 @@ fn SPECIALIZE_node_regex(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -408,6 +420,7 @@ fn SPECIALIZE_node_dregex(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_s.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -441,6 +454,7 @@ fn SPECIALIZE_node_biglit(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -473,6 +487,7 @@ fn SPECIALIZE_node_ary(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_elems.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -506,6 +521,7 @@ fn SPECIALIZE_node_ary_build(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_elems.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -539,6 +555,7 @@ fn SPECIALIZE_node_hash(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_items.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -574,6 +591,7 @@ fn SPECIALIZE_node_range(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_b.as_str(), t_e.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -610,6 +628,7 @@ fn SPECIALIZE_node_range_lit(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -642,6 +661,7 @@ fn SPECIALIZE_node_lvar(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -675,6 +695,7 @@ fn SPECIALIZE_node_lasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_v.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -708,6 +729,7 @@ fn SPECIALIZE_node_dvar(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -742,6 +764,7 @@ fn SPECIALIZE_node_dasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_v.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -776,6 +799,7 @@ fn SPECIALIZE_node_ivar(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -811,6 +835,7 @@ fn SPECIALIZE_node_iasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_v.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -840,7 +865,7 @@ fn SPECIALIZE_node_ivar_arith(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("(*np).u.name".to_string());
     a.push(format!("{}", (*np).u.sub));
     a.push("v_v".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_ivar_arith_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_ivar_arith_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_ivar_arith_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.ic".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push(format!("{}u32", { let u = &(*np).u; if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }));
@@ -849,6 +874,7 @@ fn SPECIALIZE_node_ivar_arith(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_v.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -881,6 +907,7 @@ fn SPECIALIZE_node_gvar(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -914,6 +941,7 @@ fn SPECIALIZE_node_gasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_v.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -946,6 +974,7 @@ fn SPECIALIZE_node_cvar(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -979,6 +1008,7 @@ fn SPECIALIZE_node_cvasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_v.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1006,13 +1036,14 @@ fn SPECIALIZE_node_const(sc: &mut SpecCtx, n: NodePtr) -> String {
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("(*np).u.name".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_const_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_const_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_const_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1041,12 +1072,13 @@ fn SPECIALIZE_node_const_path(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_parent".to_string());
     a.push("(*np).u.name".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_const_path_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_const_path_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_const_path_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     }
     if !was_open { sc.open.remove(&own_hash); }
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_parent.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1079,6 +1111,7 @@ fn SPECIALIZE_node_top_const(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1112,6 +1145,7 @@ fn SPECIALIZE_node_cdecl(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_v.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1147,6 +1181,7 @@ fn SPECIALIZE_node_cdecl_path(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_parent.as_str(), t_v.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1180,6 +1215,7 @@ fn SPECIALIZE_node_errinfo(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1212,6 +1248,7 @@ fn SPECIALIZE_node_nth_ref(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1244,6 +1281,7 @@ fn SPECIALIZE_node_back_ref(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1276,6 +1314,7 @@ fn SPECIALIZE_node_block(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_stmts.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1302,13 +1341,14 @@ fn SPECIALIZE_node_line(sc: &mut SpecCtx, n: NodePtr) -> String {
     let np = n as *mut NodeOf<node_line_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_line_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_line_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_line_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push(child_ptr_expr(n, u.body));
     }
     if !was_open { sc.open.remove(&own_hash); }
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_body.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1345,6 +1385,7 @@ fn SPECIALIZE_node_if(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_cond.as_str(), t_then_b.as_str(), t_else_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1379,6 +1420,7 @@ fn SPECIALIZE_node_and(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1416,6 +1458,7 @@ fn SPECIALIZE_node_or(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1452,6 +1495,7 @@ fn SPECIALIZE_node_not(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_v.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1490,6 +1534,7 @@ fn SPECIALIZE_node_while(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_cond.as_str(), t_body.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1525,6 +1570,7 @@ fn SPECIALIZE_node_dowhile(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_cond.as_str(), t_body.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1557,6 +1603,7 @@ fn SPECIALIZE_node_loop_break(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_v.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1589,6 +1636,7 @@ fn SPECIALIZE_node_loop_next(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_v.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1621,6 +1669,7 @@ fn SPECIALIZE_node_break(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_v.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1653,6 +1702,7 @@ fn SPECIALIZE_node_next(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_v.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1685,6 +1735,7 @@ fn SPECIALIZE_node_return(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_v.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1717,6 +1768,7 @@ fn SPECIALIZE_node_retry(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1749,6 +1801,7 @@ fn SPECIALIZE_node_redo(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1786,6 +1839,7 @@ fn SPECIALIZE_node_rescue(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_body.as_str(), t_clauses.as_str(), t_else_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1823,6 +1877,7 @@ fn SPECIALIZE_node_resbody(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_classes.as_str(), t_assign.as_str(), t_body.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1857,6 +1912,7 @@ fn SPECIALIZE_node_ensure(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_body.as_str(), t_ens.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1893,6 +1949,7 @@ fn SPECIALIZE_node_when(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_pats.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1927,6 +1984,7 @@ fn SPECIALIZE_node_when_lit(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1961,6 +2019,7 @@ fn SPECIALIZE_node_defined(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_recv.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -1993,7 +2052,7 @@ fn SPECIALIZE_node_call(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("list_base(n)".to_string());
     a.push("(*np).u.mid".to_string());
     a.push(format!("{}u32", (*np).u.flags));
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_call_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push(format!("{}u64", h_callee));
     a.push(format!("{}u32", { let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }));
@@ -2004,6 +2063,7 @@ fn SPECIALIZE_node_call(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_recv.as_str(), t_args.as_str(), t_callee.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2037,7 +2097,7 @@ fn SPECIALIZE_node_call_blk(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("list_base(n)".to_string());
     a.push("(*np).u.mid".to_string());
     a.push(format!("{}u32", (*np).u.flags));
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_blk_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_blk_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_call_blk_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("(*np).u.blk".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push(format!("{}u64", h_callee));
@@ -2049,6 +2109,7 @@ fn SPECIALIZE_node_call_blk(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_recv.as_str(), t_args.as_str(), t_callee.as_str(), t_body.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2081,7 +2142,7 @@ fn SPECIALIZE_node_call_kw(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("list_base(n)".to_string());
     a.push("(*np).u.mid".to_string());
     a.push(format!("{}u32", (*np).u.flags));
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_kw_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_kw_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_call_kw_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("(*np).u.ci".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push(format!("{}u64", h_callee));
@@ -2091,6 +2152,7 @@ fn SPECIALIZE_node_call_kw(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_recv.as_str(), t_args.as_str(), t_callee.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2122,7 +2184,7 @@ fn SPECIALIZE_node_call_x(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("list_base(n)".to_string());
     a.push("(*np).u.mid".to_string());
     a.push(format!("{}u32", (*np).u.flags));
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_x_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_x_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_call_x_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("(*np).u.ci".to_string());
     a.push("&mut (*np).u.cc".to_string());
     }
@@ -2130,6 +2192,7 @@ fn SPECIALIZE_node_call_x(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_recv.as_str(), t_args.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2161,7 +2224,7 @@ fn SPECIALIZE_node_attrasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("list_base(n)".to_string());
     a.push("(*np).u.mid".to_string());
     a.push(format!("{}u32", (*np).u.flags));
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_attrasgn_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_attrasgn_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_attrasgn_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push(format!("{}u32", { let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }));
     }
@@ -2169,6 +2232,7 @@ fn SPECIALIZE_node_attrasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_recv.as_str(), t_args.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2196,7 +2260,7 @@ fn SPECIALIZE_node_super(sc: &mut SpecCtx, n: NodePtr) -> String {
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("list_base(n)".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_super_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_super_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_super_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("(*np).u.ci".to_string());
     a.push(format!("{}", (*np).u.zsuper));
     }
@@ -2204,6 +2268,7 @@ fn SPECIALIZE_node_super(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_args.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2240,6 +2305,7 @@ fn SPECIALIZE_node_yield(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_args.as_str(), t_callee.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2273,6 +2339,7 @@ fn SPECIALIZE_node_yield_x(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_args.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2305,6 +2372,7 @@ fn SPECIALIZE_node_block_given(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2337,6 +2405,7 @@ fn SPECIALIZE_node_lambda(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2366,7 +2435,7 @@ fn SPECIALIZE_node_opt_plus(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_plus_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_plus_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_plus_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2375,6 +2444,7 @@ fn SPECIALIZE_node_opt_plus(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2405,7 +2475,7 @@ fn SPECIALIZE_node_opt_minus(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_minus_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_minus_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_minus_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2414,6 +2484,7 @@ fn SPECIALIZE_node_opt_minus(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2444,7 +2515,7 @@ fn SPECIALIZE_node_opt_mul(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_mul_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_mul_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_mul_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2453,6 +2524,7 @@ fn SPECIALIZE_node_opt_mul(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2483,7 +2555,7 @@ fn SPECIALIZE_node_opt_div(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_div_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_div_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_div_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2492,6 +2564,7 @@ fn SPECIALIZE_node_opt_div(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2522,13 +2595,14 @@ fn SPECIALIZE_node_opt_pow(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_pow_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_pow_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_pow_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2559,13 +2633,14 @@ fn SPECIALIZE_node_opt_mod(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_mod_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_mod_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_mod_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2596,7 +2671,7 @@ fn SPECIALIZE_node_opt_lt(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_lt_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_lt_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_lt_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2605,6 +2680,7 @@ fn SPECIALIZE_node_opt_lt(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2639,7 +2715,7 @@ fn SPECIALIZE_node_opt_le(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_le_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_le_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_le_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2648,6 +2724,7 @@ fn SPECIALIZE_node_opt_le(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2682,7 +2759,7 @@ fn SPECIALIZE_node_opt_gt(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_gt_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_gt_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_gt_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2691,6 +2768,7 @@ fn SPECIALIZE_node_opt_gt(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2725,7 +2803,7 @@ fn SPECIALIZE_node_opt_ge(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_ge_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_ge_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_ge_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2734,6 +2812,7 @@ fn SPECIALIZE_node_opt_ge(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2768,7 +2847,7 @@ fn SPECIALIZE_node_opt_eq(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_eq_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_eq_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_eq_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2777,6 +2856,7 @@ fn SPECIALIZE_node_opt_eq(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2811,7 +2891,7 @@ fn SPECIALIZE_node_opt_neq(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_neq_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_neq_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_neq_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2820,6 +2900,7 @@ fn SPECIALIZE_node_opt_neq(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2854,13 +2935,14 @@ fn SPECIALIZE_node_opt_ltlt(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_ltlt_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_ltlt_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_ltlt_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2891,13 +2973,14 @@ fn SPECIALIZE_node_opt_gtgt(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_gtgt_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_gtgt_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_gtgt_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2928,13 +3011,14 @@ fn SPECIALIZE_node_opt_xor(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_xor_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_xor_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_xor_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -2965,13 +3049,14 @@ fn SPECIALIZE_node_opt_and(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_and_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_and_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_and_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -3002,13 +3087,14 @@ fn SPECIALIZE_node_opt_or(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_or_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_or_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_or_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -3039,7 +3125,7 @@ fn SPECIALIZE_node_opt_aref(sc: &mut SpecCtx, n: NodePtr) -> String {
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_aref_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_aref_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_aref_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -3048,6 +3134,7 @@ fn SPECIALIZE_node_opt_aref(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -3080,7 +3167,7 @@ fn SPECIALIZE_node_opt_aset(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     a.push("v_v".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_aset_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_aset_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_aset_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -3089,6 +3176,7 @@ fn SPECIALIZE_node_opt_aset(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_a.as_str(), t_b.as_str(), t_v.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -3120,7 +3208,7 @@ fn SPECIALIZE_node_method_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push(format!("{}u32", (*np).u.nlocals));
     a.push(format!("{}u32", (*np).u.nparams));
     a.push(format!("{}u32", (*np).u.flags));
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_method_entry_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_method_entry_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_method_entry_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push(child_ptr_expr(n, u.body));
     a.push("crate::vm::CallArgs::load(c)".to_string());
     }
@@ -3128,6 +3216,7 @@ fn SPECIALIZE_node_method_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_body.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -3161,7 +3250,7 @@ fn SPECIALIZE_node_block_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push(format!("{}u32", (*np).u.nlocals));
     a.push(format!("{}u32", (*np).u.nparams));
     a.push(format!("{}u32", (*np).u.flags));
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_block_entry_struct>, head.line), std::mem::size_of::<u32>())); } a.push("&(*np).head.line".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_block_entry_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_block_entry_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
     a.push(child_ptr_expr(n, u.body));
     a.push("crate::vm::CallArgs::load(c)".to_string());
     }
@@ -3169,6 +3258,7 @@ fn SPECIALIZE_node_block_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_body.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -3206,6 +3296,7 @@ fn SPECIALIZE_node_def(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -3240,6 +3331,7 @@ fn SPECIALIZE_node_sdef(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_recv.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -3278,6 +3370,7 @@ fn SPECIALIZE_node_class(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_cpath.as_str(), t_superclass.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -3313,6 +3406,7 @@ fn SPECIALIZE_node_module(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_cpath.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -3346,6 +3440,7 @@ fn SPECIALIZE_node_sclass(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_recv.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -3380,6 +3475,7 @@ fn SPECIALIZE_node_alias(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_newname.as_str(), t_oldname.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -3414,6 +3510,7 @@ fn SPECIALIZE_node_valias(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -3446,6 +3543,7 @@ fn SPECIALIZE_node_undef(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_names.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -3482,6 +3580,7 @@ fn SPECIALIZE_node_masgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_rhs.as_str(), t_targets.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -3517,6 +3616,7 @@ fn SPECIALIZE_node_masgn_elem(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -3549,6 +3649,7 @@ fn SPECIALIZE_node_unsupported(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -3582,6 +3683,7 @@ fn SPECIALIZE_node_special(sc: &mut SpecCtx, n: NodePtr) -> String {
     // named by what is baked too (children's types, @bake values), not by the hash alone:
     // two sites with one hash may have seen different things
     let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_arg.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
     if sc.emitted.contains(&name) { return name; }
     sc.emitted.insert(name.clone());
     let mut body = String::new();
@@ -3605,7 +3707,9 @@ pub fn specialize_list(sc: &mut SpecCtx, ns: &NodeList, parent: NodePtr) -> Stri
     let mut h = hash_str("list");
     for x in ns.iter() { h = hash_merge(h, hash_node(*x)); }
     if let Some(x) = ns.first() { h = hash_merge(h, (*x as usize).wrapping_sub(parent as usize) as u64); }
-    let name = format!("L_{:016x}", h);
+    // patch crate: the elements' names too (one in a bound entry's copy may call its R_<hash>P)
+    if sc.patch { h = hash_merge(h, hash_str(&ts.join(","))); }
+    let name = sc.positional(format!("L_{:016x}", h), parent as usize);
     if sc.emitted.contains(&name) { return name; }
     let mut s = format!("pub struct {};\nimpl DispList for {} {{\n    #[inline(always)] fn len(_ns: NodeList) -> usize {{ {} }}\n", name, name, ts.len());
     s.push_str(&format!("    #[inline(always)]\n    fn nth(c: &mut Ctx, ns: NodeList, i: usize, fp: Fp) -> RV {{\n        match i {{\n"));

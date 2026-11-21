@@ -25,6 +25,10 @@ class SarubyNodeDef < ASTrustGen::NodeDef
     # bodies are laid out in one block each (compile.rs finish_iseq)
     def contiguous? = true
     def head_hole?(op) = op.name == 'line'
+    # a line reaches the body as a Pos (vm.rs): the node's line field, or in a patch-bound copy the number itself
+    def hole_param_type(op) = op.name == 'line' ? 'crate::vm::Pos' : super
+    def hole_arg_expr(op, place) = op.name == 'line' ? "crate::vm::Pos::at(&#{place})" : super
+    def hole_patch_expr(op) = op.name == 'line' ? 'crate::vm::Pos::bound(&raw const %SYM%)' : nil
     # the method entry cached at this call site when the code is baked
     # what the call site's cache holds when the code is baked (vm.rs SITE_*)
     def bake_value_expr(op)

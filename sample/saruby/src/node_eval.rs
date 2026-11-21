@@ -422,7 +422,7 @@ pub fn EVAL_node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value, ic:
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_ivar_arith(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, sub: bool, v: Value, line: &'static u32, ic: &mut IvarCache, cc: &mut OpCc, slot: u32) -> RV {
+pub fn EVAL_node_ivar_arith(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, sub: bool, v: Value, line: crate::vm::Pos, ic: &mut IvarCache, cc: &mut OpCc, slot: u32) -> RV {
     let slf = fp[0].get();
     if slf.is_heap() && v.is_fixnum() && !redef(if sub { R_INT_MINUS } else { R_INT_PLUS }) {
         let o = obj(slf);
@@ -471,7 +471,7 @@ pub fn EVAL_node_cvasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value) ->
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_const(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, line: &'static u32, cc: &mut ConstCache) -> RV {
+pub fn EVAL_node_const(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, line: crate::vm::Pos, cc: &mut ConstCache) -> RV {
     let cref = unsafe { (*c.frame).cref() };
     if cc.serial == vm().const_serial && cc.cref == cref as usize { return Ok(unsafe { Value::from_raw(cc.val) }); }
     c.frame().pos = line;
@@ -481,7 +481,7 @@ pub fn EVAL_node_const(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, line: &'stati
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_const_path(c: &mut Ctx, n: NodePtr, fp: Fp, parent: Value, name: Sym, line: &'static u32) -> RV {
+pub fn EVAL_node_const_path(c: &mut Ctx, n: NodePtr, fp: Fp, parent: Value, name: Sym, line: crate::vm::Pos) -> RV {
     c.frame().pos = line;
     srb_const_path(c, parent, name)
 }
@@ -549,7 +549,7 @@ pub fn EVAL_node_block<D_stmts: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, stmts
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_line<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, line: &'static u32, body: NodePtr) -> RV {
+pub fn EVAL_node_line<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, line: crate::vm::Pos, body: NodePtr) -> RV {
     c.frame().pos = line;
     <D_body as Disp>::call(c, body, fp)
 }
@@ -822,7 +822,7 @@ pub fn EVAL_node_defined<D_recv: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, kind: u3
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: &'static u32, cc: &mut CallCache, callee_hash: u64, kind: u32, shared: u32, bi: u32) -> RV {
+pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: crate::vm::Pos, cc: &mut CallCache, callee_hash: u64, kind: u32, shared: u32, bi: u32) -> RV {
     // baked self call of a callee without parameters, locals, env or block literal: it runs in this frame
     if shared != 0 && callee_hash != 0 {
         let r0 = fp[0].get();
@@ -882,7 +882,7 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ct
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, D_callee: Disp, D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: &'static u32, blk: IseqRef, cc: &mut CallCache, callee_hash: u64, kind: u32, body_hash: u64, it: u32) -> RV {
+pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, D_callee: Disp, D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: crate::vm::Pos, blk: IseqRef, cc: &mut CallCache, callee_hash: u64, kind: u32, body_hash: u64, it: u32) -> RV {
     let k = <D_args as DispList>::len(args);
     let base = stage(c, 2 + k)?;
     let r0 = <D_recv as Disp>::call(c, recv, fp)?;
@@ -908,7 +908,7 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, D_callee: Disp, D_body
                 let mut r = Ok(());
                 while iter_next(c, &mut st, it, r0) {
                     // through c.frame (the pointer the callees use): a step starts at the block's line
-                    if share { c.frame().pos = &blk.info.line; }
+                    if share { c.frame().pos = Pos::at(&blk.info.line); }
                     match <D_body as Disp>::spec(c, blk.bentry, st.bfp, CallArgs { me: std::ptr::null(), blk: bp, shared: share }) {
                         Ok(y) => iter_step(c, &mut st, it, base, y),
                         Err(e) => { r = Err(e); break; }
@@ -940,7 +940,7 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, D_callee: Disp, D_body
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_call_kw<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: &'static u32, ci: CiRef, cc: &mut CallCache, callee_hash: u64, kind: u32) -> RV {
+pub fn EVAL_node_call_kw<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: crate::vm::Pos, ci: CiRef, cc: &mut CallCache, callee_hash: u64, kind: u32) -> RV {
     let k = <D_args as DispList>::len(args);
     let base = stage(c, 2 + k)?;
     base[0].set(<D_recv as Disp>::call(c, recv, fp)?);
@@ -963,7 +963,7 @@ pub fn EVAL_node_call_kw<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_call_x<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: &'static u32, ci: CiRef, cc: &mut CallCache) -> RV {
+pub fn EVAL_node_call_x<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: crate::vm::Pos, ci: CiRef, cc: &mut CallCache) -> RV {
     let base = stage(c, 2)?;
     let r0 = <D_recv as Disp>::call(c, recv, fp)?;
     base[0].set(r0);
@@ -988,7 +988,7 @@ pub fn EVAL_node_call_x<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr,
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_attrasgn<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: &'static u32, cc: &mut CallCache, kind: u32) -> RV {
+pub fn EVAL_node_attrasgn<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NodePtr, args: NodeList, mid: Sym, flags: u32, line: crate::vm::Pos, cc: &mut CallCache, kind: u32) -> RV {
     let k = <D_args as DispList>::len(args);
     let base = stage(c, 2 + k)?;
     base[0].set(<D_recv as Disp>::call(c, recv, fp)?);
@@ -1008,7 +1008,7 @@ pub fn EVAL_node_attrasgn<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePt
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_super<D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, args: NodeList, line: &'static u32, ci: CiRef, zsuper: bool) -> RV {
+pub fn EVAL_node_super<D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, args: NodeList, line: crate::vm::Pos, ci: CiRef, zsuper: bool) -> RV {
     let base = stage(c, 2)?;
     let tmp = crate::array::ary_new();
     base[0].set(fp[0].get()); base[1].set(tmp);
@@ -1083,7 +1083,7 @@ pub fn EVAL_node_lambda(c: &mut Ctx, n: NodePtr, fp: Fp, blk: IseqRef) -> RV {
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_plus(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
+pub fn EVAL_node_opt_plus(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_PLUS) { if let Some(r) = a.fix_add(b) { return Ok(r); } }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2(a, b, R_FLO_PLUS, R_INT_PLUS) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(crate::numeric::float_new(x + y)); }
@@ -1095,7 +1095,7 @@ pub fn EVAL_node_opt_plus(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, l
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_minus(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
+pub fn EVAL_node_opt_minus(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_MINUS) { if let Some(r) = a.fix_sub(b) { return Ok(r); } }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2(a, b, R_FLO_MINUS, R_INT_MINUS) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(crate::numeric::float_new(x - y)); }
@@ -1107,7 +1107,7 @@ pub fn EVAL_node_opt_minus(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_mul(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
+pub fn EVAL_node_opt_mul(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
     if a.both_fix(b) && !redef(R_INT_MUL) { if let Some(r) = a.fix_mul(b) { return Ok(r); } }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2(a, b, R_FLO_MUL, R_INT_MUL) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(crate::numeric::float_new(x * y)); }
@@ -1119,7 +1119,7 @@ pub fn EVAL_node_opt_mul(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, li
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_div(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
+pub fn EVAL_node_opt_div(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
     if a.is_fixnum() && b.is_fixnum() && b.as_fix() != 0 && !redef(R_INT_DIV) {
         let (x, y) = (a.as_fix(), b.as_fix());
         let q = if (x % y != 0) && ((x < 0) != (y < 0)) { x / y - 1 } else { x / y };
@@ -1135,7 +1135,7 @@ pub fn EVAL_node_opt_div(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, li
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_pow(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc) -> RV {
+pub fn EVAL_node_opt_pow(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc) -> RV {
     if a.is_flonum() && b.is_flonum() && !redef(R_FLO_POW) {
         let (x, y) = (a.flonum_val(), b.flonum_val());
         if x >= 0.0 { return Ok(crate::numeric::float_new(crate::numeric::libm_pow(x, y))); }
@@ -1146,7 +1146,7 @@ pub fn EVAL_node_opt_pow(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, li
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_mod(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc) -> RV {
+pub fn EVAL_node_opt_mod(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc) -> RV {
     if a.is_fixnum() && b.is_fixnum() && b.as_fix() != 0 && !redef(R_INT_MOD) {
         let (x, y) = (a.as_fix(), b.as_fix());
         let m = x % y;
@@ -1159,7 +1159,7 @@ pub fn EVAL_node_opt_mod(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, li
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_lt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
+pub fn EVAL_node_opt_lt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
     if a.both_fix(b) && !redef(R_INT_LT) { return Ok(Value::bool(a.fix_ord() < b.fix_ord())); }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LT, R_INT_LT) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x < y)); }
@@ -1169,7 +1169,7 @@ pub fn EVAL_node_opt_lt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, lin
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_TEST_node_opt_lt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
+pub fn EVAL_TEST_node_opt_lt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
     if a.both_fix(b) && !redef(R_INT_LT) { return Ok(a.fix_ord() < b.fix_ord()); }
     if tf_flo(ty) {
         if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LT) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() < b.flonum_val()); }
@@ -1181,7 +1181,7 @@ pub fn EVAL_TEST_node_opt_lt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_le(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
+pub fn EVAL_node_opt_le(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
     if a.both_fix(b) && !redef(R_INT_LE) { return Ok(Value::bool(a.fix_ord() <= b.fix_ord())); }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LE, R_INT_LE) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x <= y)); }
@@ -1191,7 +1191,7 @@ pub fn EVAL_node_opt_le(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, lin
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_TEST_node_opt_le(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
+pub fn EVAL_TEST_node_opt_le(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
     if a.both_fix(b) && !redef(R_INT_LE) { return Ok(a.fix_ord() <= b.fix_ord()); }
     if tf_flo(ty) {
         if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LE) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() <= b.flonum_val()); }
@@ -1203,7 +1203,7 @@ pub fn EVAL_TEST_node_opt_le(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_gt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
+pub fn EVAL_node_opt_gt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
     if a.both_fix(b) && !redef(R_INT_GT) { return Ok(Value::bool(a.fix_ord() > b.fix_ord())); }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GT, R_INT_GT) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x > y)); }
@@ -1213,7 +1213,7 @@ pub fn EVAL_node_opt_gt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, lin
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_TEST_node_opt_gt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
+pub fn EVAL_TEST_node_opt_gt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
     if a.both_fix(b) && !redef(R_INT_GT) { return Ok(a.fix_ord() > b.fix_ord()); }
     if tf_flo(ty) {
         if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GT) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() > b.flonum_val()); }
@@ -1225,7 +1225,7 @@ pub fn EVAL_TEST_node_opt_gt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_ge(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
+pub fn EVAL_node_opt_ge(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
     if a.both_fix(b) && !redef(R_INT_GE) { return Ok(Value::bool(a.fix_ord() >= b.fix_ord())); }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GE, R_INT_GE) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x >= y)); }
@@ -1235,7 +1235,7 @@ pub fn EVAL_node_opt_ge(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, lin
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_TEST_node_opt_ge(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
+pub fn EVAL_TEST_node_opt_ge(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
     if a.both_fix(b) && !redef(R_INT_GE) { return Ok(a.fix_ord() >= b.fix_ord()); }
     if tf_flo(ty) {
         if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GE) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() >= b.flonum_val()); }
@@ -1247,7 +1247,7 @@ pub fn EVAL_TEST_node_opt_ge(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_eq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
+pub fn EVAL_node_opt_eq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
     if a.both_fix(b) && !redef(R_INT_EQ) { return Ok(Value::bool(a == b)); }
     if tf_flo(ty) { if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x == y)); } }
     // nil / true / false / Symbol receivers: == is identity
@@ -1257,7 +1257,7 @@ pub fn EVAL_node_opt_eq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, lin
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_TEST_node_opt_eq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
+pub fn EVAL_TEST_node_opt_eq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
     if a.both_fix(b) && !redef(R_INT_EQ) { return Ok(a == b); }
     if tf_flo(ty) { if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() == b.flonum_val()); } }
     if a.is_sym() && b.is_sym() { return Ok(a == b); }
@@ -1268,7 +1268,7 @@ pub fn EVAL_TEST_node_opt_eq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_neq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
+pub fn EVAL_node_opt_neq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
     if a.both_fix(b) && !redef(R_INT_EQ) { return Ok(Value::bool(a != b)); }
     if tf_flo(ty) {
         if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x != y)); }
@@ -1278,7 +1278,7 @@ pub fn EVAL_node_opt_neq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, li
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_TEST_node_opt_neq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
+pub fn EVAL_TEST_node_opt_neq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> Result<bool, Esc> {
     if a.both_fix(b) && !redef(R_INT_EQ) { return Ok(a != b); }
     if tf_flo(ty) {
         if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() != b.flonum_val()); }
@@ -1290,7 +1290,7 @@ pub fn EVAL_TEST_node_opt_neq(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Valu
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_ltlt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc) -> RV {
+pub fn EVAL_node_opt_ltlt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc) -> RV {
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_LSHIFT) {
         let (x, k) = (a.as_fix(), b.as_fix());
         if (0..62).contains(&k) { let r = (x as i128) << k; if r >= FIXNUM_MIN as i128 && r <= FIXNUM_MAX as i128 { return Ok(Value::fix(r as i64)); } }
@@ -1314,7 +1314,7 @@ pub fn EVAL_node_opt_ltlt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, l
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_gtgt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc) -> RV {
+pub fn EVAL_node_opt_gtgt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc) -> RV {
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_RSHIFT) {
         let k = b.as_fix();
         if k >= 0 { return Ok(Value::fix(if k >= 63 { if a.as_fix() < 0 { -1 } else { 0 } } else { a.as_fix() >> k })); }
@@ -1325,7 +1325,7 @@ pub fn EVAL_node_opt_gtgt(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, l
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_xor(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc) -> RV {
+pub fn EVAL_node_opt_xor(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc) -> RV {
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_XOR) { return Ok(Value::fix(a.as_fix() ^ b.as_fix())); }
     srb_binop(c, a, b, s::xor, line, cc)
 }
@@ -1333,7 +1333,7 @@ pub fn EVAL_node_opt_xor(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, li
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_and(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc) -> RV {
+pub fn EVAL_node_opt_and(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc) -> RV {
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_AND) { return Ok(Value::fix(a.as_fix() & b.as_fix())); }
     srb_binop(c, a, b, s::and, line, cc)
 }
@@ -1341,7 +1341,7 @@ pub fn EVAL_node_opt_and(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, li
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_or(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc) -> RV {
+pub fn EVAL_node_opt_or(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc) -> RV {
     if a.is_fixnum() && b.is_fixnum() && !redef(R_INT_OR) { return Ok(Value::fix(a.as_fix() | b.as_fix())); }
     srb_binop(c, a, b, s::or, line, cc)
 }
@@ -1349,7 +1349,7 @@ pub fn EVAL_node_opt_or(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, lin
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_aref(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: &'static u32, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
+pub fn EVAL_node_opt_aref(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: crate::vm::Pos, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
     // the class load sits between the two tag tests, or they are merged into setcc / or
     if a.is_heap() && obj(a).klass.raw() == fast_ary_aref() && b.is_fixnum() {
         if let Some(&x) = c.ary(a).get(b.as_fix() as usize) { return Ok(x); }
@@ -1363,7 +1363,7 @@ pub fn EVAL_node_opt_aref(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, l
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_opt_aset(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, v: Value, line: &'static u32, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
+pub fn EVAL_node_opt_aset(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, v: Value, line: crate::vm::Pos, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
     if a.is_heap() && obj(a).klass.raw() == fast_ary_aset() && b.is_fixnum() && obj(a).flags & FL_FROZEN == 0 {
         if let Some(x) = c.ary_mut(a).get_mut(b.as_fix() as usize) { *x = v; return Ok(v); }
     } else if tf_hash(ty) && is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_ASET) {
@@ -1377,7 +1377,7 @@ pub fn EVAL_node_opt_aset(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, v
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, flags: u32, line: &'static u32, body: NodePtr, ca: CallArgs) -> RV {
+pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, flags: u32, line: crate::vm::Pos, body: NodePtr, ca: CallArgs) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit_body("entry", n, flags & ME_ENV != 0, nparams as usize, !ca.blk.is_null());
     // nothing in a leaf body can call, raise or look at a frame
     if flags & ME_LEAF != 0 { return <D_body as Disp>::call(c, body, fp); }
@@ -1407,7 +1407,7 @@ pub fn EVAL_node_method_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlo
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_block_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, flags: u32, line: &'static u32, body: NodePtr, ca: CallArgs) -> RV {
+pub fn EVAL_node_block_entry<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, flags: u32, line: crate::vm::Pos, body: NodePtr, ca: CallArgs) -> RV {
     let b = unsafe { &*ca.blk };
     // a lambda (ME_LAMBDA, called with its exact arity) is its own return target
     let lambda = flags & ME_LAMBDA != 0;

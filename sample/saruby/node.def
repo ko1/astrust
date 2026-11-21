@@ -721,7 +721,7 @@ node_call_blk(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym
                 let mut r = Ok(());
                 while iter_next(c, &mut st, it, r0) {
                     // through c.frame (the pointer the callees use): a step starts at the block's line
-                    if share { c.frame().pos = &blk.info.line; }
+                    if share { c.frame().pos = Pos::at(&blk.info.line); }
                     match EVAL_SPEC!(c, body, blk.bentry, st.bfp, CallArgs { me: std::ptr::null(), blk: bp, shared: share }) {
                         Ok(y) => iter_step(c, &mut st, it, base, y),
                         Err(e) => { r = Err(e); break; }

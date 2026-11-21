@@ -6,7 +6,7 @@ all: are
 $(GEN): node.def astrogre_gen.rb ../../lib/astrustgen.rb
 	ruby astrogre_gen.rb --input=node.def --output-dir=src
 
-are: $(GEN) $(wildcard src/*.rs) ../../runtime/astrust.rs
+are: $(GEN) $(wildcard src/*.rs) $(wildcard ../../runtime/*.rs)
 	cargo build --release
 	cp target/release/are target/release/libastrogre.rlib .
 

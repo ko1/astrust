@@ -127,7 +127,7 @@ module ASTrustGen
         # Parameter(s) of EVAL_<name>.
         def eval_param
           if ref? then "#{@name}: &mut #{@type}"
-          elsif hole? then "#{@name}: &'static #{@type}"
+          elsif hole? then "#{@name}: #{@owner.hole_param_type(self)}"
           elsif spec? then "#{@name}_hash: u64"
           elsif child? then "#{@name}: #{@type}"
           elsif node? then "#{@name}: NodePtr"
@@ -161,7 +161,13 @@ module ASTrustGen
         def specialize_arg
           f = "(*np).u.#{@name}"
           if ref? then "a.push(\"&mut (*np).u.#{@name}\".to_string());"
-          elsif hole? then "if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<#{@owner.struct_name}>, #{hole_place}), std::mem::size_of::<#{@type}>())); } a.push(\"&(*np).#{hole_place}\".to_string());"
+          elsif hole?
+            at = "np as usize + std::mem::offset_of!(NodeOf<#{@owner.struct_name}>, #{hole_place})"
+            read = "a.push(\"#{ASTrustGen.rust_str(@owner.hole_arg_expr(self, "(*np).#{hole_place}"))}\".to_string());"
+            push = "if sc.spec_depth == 0 { sc.holes.push((#{at}, std::mem::size_of::<#{@type}>())); } "
+            pe = @owner.hole_patch_expr(self)
+            # patch binding: inside an entry's own tree the argument names the hole's symbol
+            pe ? push + "if let Some(s) = sc.hole_sym(\"#{@name}\", #{at}) { a.push(\"#{ASTrustGen.rust_str(pe)}\".replace(\"%SYM%\", &s)); } else { #{read} }" : push + read
           elsif spec? then "a.push(format!(\"{}u64\", h_#{@name}));"
           elsif bake? then "a.push(format!(\"#{SCALARS[@type]}\", #{@owner.bake_value_expr(self)}));"
           elsif specin? then "a.push(\"#{ASTrustGen.rust_str(@owner.spec_in_load_expr(self))}\".to_string());"
@@ -229,6 +235,11 @@ module ASTrustGen
       def spec_in_store_stmt(var) = "let _ = #{var};"
       # @hole operand kept in the node head (a field of NodeDef#head_lead_fields) rather than the operand struct.
       def head_hole?(op) = false
+      # @hole: the body's parameter type, its argument read through the node at `place`, and for patch binding
+      # its argument from the hole's symbol %SYM% (a link-time constant the loader resolves; nil: never patched)
+      def hole_param_type(op) = "&'static #{op.type}"
+      def hole_arg_expr(op, place) = "&#{place}"
+      def hole_patch_expr(op) = nil
       # Trees are laid out by layout_tree and specialized code reaches children at constant offsets.
       def contiguous? = false
       def dispatch_prologue = ""
@@ -409,7 +420,7 @@ module ASTrustGen
         args = prefix_names.dup
         @operands.each do |op|
           if op.ref? then args << "&mut (*np).u.#{op.name}"
-          elsif op.hole? then args << "&(*np).#{op.hole_place}"
+          elsif op.hole? then args << hole_arg_expr(op, "(*np).#{op.hole_place}")
           elsif op.spec? then args << "0u64"
           elsif op.bake? then args << "0"
           elsif op.specin? then args << spec_in_load_expr(op)
@@ -558,6 +569,7 @@ module ASTrustGen
             // named by what is baked too (children's types, @bake values), not by the hash alone:
             // two sites with one hash may have seen different things
             let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[#{key_types}], ","), a.join(",")))));
+            let name = sc.positional(name, n as usize);
             if sc.emitted.contains(&name) { return name; }
             sc.emitted.insert(name.clone());
             let mut body = String::new();
@@ -759,9 +771,11 @@ module ASTrustGen
           let fname = format!("SD_{:016x}", hash_node(n));
           if sc.emitted.contains(&fname)#{n.contiguous? ? ' || !node_laid(n)' : ''} { return fname; }
           sc.holes.clear();
+          sc.begin_entry(n as usize, hash_node(n));
           let t = specialize_node(sc, n);
-          let s = format!("S_{:016x}", hash_node(n));
-          if sc.emitted.contains(&format!("R_{:016x}", hash_node(n))) && !sc.emitted.contains(&s) {
+          let p = sc.rec_suffix(hash_node(n));
+          let s = format!("S_{:016x}{}", hash_node(n), p);
+          if sc.emitted.contains(&format!("R_{:016x}{}", hash_node(n), p)) && !sc.emitted.contains(&s) {
               // n calls itself: its one body is S_<hash>::run (R_ calls it directly); SD_ passes the spec-in value on
               specialize_run(sc, &s, &t);
               sc.out.push_str(&format!("#[no_mangle]\npub fn {}(#{params.join(', ')}) -> #{n.result_type} {{ {}::run(#{pnames.join(', ')}#{rec_load}) }}\n", fname, s));
@@ -773,6 +787,7 @@ module ASTrustGen
               let d: Vec<String> = sc.holes.iter().map(|&(p, sz)| format!("{},{}", p - n as usize, sz)).collect();
               sc.out.push_str(&format!("#[no_mangle]\npub static {}_HOLES: [u32; {}] = [{}];\n", fname, 2 * d.len(), d.join(",")));
           }
+          sc.begin_entry(0, 0);
           sc.emitted.insert(fname.clone());
           fname
       }
@@ -780,7 +795,15 @@ module ASTrustGen
       /// `S_<hash>::run`, q's entry taking the spec-in value as a parameter (specialize_entry / _finish emit it).
       pub fn specialize_rec(sc: &mut SpecCtx, q: NodePtr) -> String {
           let h = hash_node(q);
-          let name = format!("R_{:016x}", h);
+          let p = sc.rec_suffix(h);
+          let name = format!("R_{:016x}{}", h, p);
+          if !p.is_empty() {
+              // the entry's patched body (S_<hash>P::run) holds the values of the one node it was bound to
+              if sc.emitted.insert(name.clone()) {
+                  sc.out.push_str(&format!("pub struct {0};\\nimpl Disp for {0} {{\\n    #[inline(always)]\\n    fn call(#{params.join(', ')}) -> #{n.result_type} {{ #{rec_stmt}if #{pnames[1]} as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}P::run(#{pnames.join(', ')}#{rec_load}) }} else {{ std::hint::cold_path(); <Dyn as Disp>::call(#{pnames.join(', ')}) }} }}\\n    #[inline(always)]\\n    fn spec(#{params.join(', ')}#{spec_in ? ", a: #{spec_in}" : ''}) -> #{n.result_type} {{ #{rec_stmt}if #{pnames[1]} as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}P::run(#{pnames.join(', ')}#{rec_pass}) }} else {{ std::hint::cold_path(); <Dyn as Disp>::spec(#{pnames.join(', ')}#{spec_in ? ', a' : ''}) }} }}\\n}}\\n", name, h));
+              }
+              return name;
+          }
           if sc.emitted.insert(name.clone()) {
               sc.rec.push(q as usize);
               sc.out.push_str(&format!("pub struct {0};\\nimpl Disp for {0} {{\\n    #[inline(always)]\\n    fn call(#{params.join(', ')}) -> #{n.result_type} {{ #{rec_stmt}S_{1:016x}::run(#{pnames.join(', ')}#{rec_load}) }}\\n    #[inline(always)]\\n    fn spec(#{params.join(', ')}#{spec_in ? ", a: #{spec_in}" : ''}) -> #{n.result_type} {{ #{rec_stmt}S_{1:016x}::run(#{pnames.join(', ')}#{rec_pass}) }}\\n}}\\n", name, h));
@@ -853,7 +876,9 @@ module ASTrustGen
           let mut h = hash_str("list");
           for x in ns.iter() { h = hash_merge(h, hash_node(*x)); }
           #{first.contiguous? ? 'if let Some(x) = ns.first() { h = hash_merge(h, (*x as usize).wrapping_sub(parent as usize) as u64); }' : ''}
-          let name = format!("L_{:016x}", h);
+          // patch crate: the elements' names too (one in a bound entry's copy may call its R_<hash>P)
+          if sc.patch { h = hash_merge(h, hash_str(&ts.join(","))); }
+          let name = sc.positional(format!("L_{:016x}", h), #{first.contiguous? ? 'parent as usize' : '0'});
           if sc.emitted.contains(&name) { return name; }
           let mut s = format!("pub struct {};\\nimpl DispList for {} {{\\n    #[inline(always)] fn len(_ns: NodeList) -> usize {{ {} }}\\n", name, name, ts.len());
           s.push_str(&format!("    #[inline(always)]\\n    fn nth(#{first.prefix_params[0]}, ns: NodeList, i: usize#{first.prefix_params.drop(2).map { ", #{it}" }.join}) -> #{first.result_type} {{\\n        match i {{\\n"));

@@ -13,7 +13,43 @@ fn exe_dir() -> std::path::PathBuf { std::env::current_exe().unwrap().parent().u
 /// Called once at startup.  `program_dir` None = --plain (no code store at all).
 #[allow(static_mut_refs)]
 pub fn init(program_dir: Option<&str>, collect: bool) {
-    unsafe { STORE = Some(TieredStore::new(exe_dir().join("preload_store"), program_dir.map(Into::into), env!("SARUBY_BUILD_ID"), collect)); }
+    let mut st = TieredStore::new(exe_dir().join("preload_store"), program_dir.map(Into::into), env!("SARUBY_BUILD_ID"), collect);
+    // SARUBY_PATCH=0: every body keeps the shared SD of all.so (no patch binding)
+    st.patch = std::env::var("SARUBY_PATCH").map_or(true, |v| v != "0");
+    if std::env::var_os("SARUBY_PATCH_STATS").is_some() {
+        // SAFETY: registers a plain extern "C" fn with no captured state.
+        unsafe { atexit(print_patch_stats); }
+    }
+    unsafe { STORE = Some(st); }
+}
+
+extern "C" { fn atexit(f: extern "C" fn()) -> std::os::raw::c_int; }
+#[allow(static_mut_refs)]
+extern "C" fn print_patch_stats() {
+    if let Some(st) = unsafe { STORE.as_ref() } {
+        let (n, failed, bytes) = st.patch_stats();
+        eprintln!("saruby: patch bound={} failed={} bytes={}", n, failed, bytes);
+    }
+}
+
+/// A body's dispatcher until its first dispatch: bind its own copy (or keep the shared SD), then run it.
+#[allow(static_mut_refs)]
+fn first_dispatch(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
+    let p = unsafe { STORE.as_mut() }.and_then(|st| st.bind(n as usize, env!("SARUBY_BUILD_ID"), first_dispatch as DispatchFn as usize, hole_value));
+    let Some(p) = p else { unreachable!("first_dispatch on a node that was not deferred") };
+    // SAFETY: p is the entry of an SD for this node's shape, with the dispatcher's signature.
+    let d = unsafe { std::mem::transmute::<*const std::os::raw::c_void, DispatchFn>(p) };
+    unsafe { (*n).head.dispatcher = d; }
+    d(c, n, fp)
+}
+
+/// A hole's value for the loader: a line as `Pos` keeps a bound one (vm.rs).
+fn hole_value(op: &str, root: usize, off: usize) -> Option<u64> {
+    if op != "line" { return None; }
+    // SAFETY: off is a hole of this entry's binding descriptor: a u32 inside the laid-out tree at root.
+    let line = unsafe { *((root + off) as *const u32) } as u64;
+    // as an immediate of R_X86_64_32S
+    if line < 1 << 30 { Some(line << 1 | 1) } else { None }
 }
 
 thread_local! {
@@ -31,7 +67,12 @@ pub fn register_iseq(is: &'static Iseq) {
         // baked code assumes the layout of layout_tree (finish_iseq)
         if !node_laid(body) { return; }
         if let Some(p) = st.register(body as usize, hash_node(body), prelude, env!("SARUBY_BUILD_ID")) {
-            unsafe { (*body).head.dispatcher = std::mem::transmute::<*const std::os::raw::c_void, DispatchFn>(p); }
+            // patch binding: the body gets its own copy when it is first dispatched (first_dispatch)
+            if st.defer(body as usize, hash_node(body), prelude, p) {
+                unsafe { (*body).head.dispatcher = first_dispatch; }
+            } else {
+                unsafe { (*body).head.dispatcher = std::mem::transmute::<*const std::os::raw::c_void, DispatchFn>(p); }
+            }
             vm().sd_hits += 1;
         }
     };
@@ -60,8 +101,9 @@ pub fn bake(store_dir: &str) -> Result<usize, String> {
     // a body that only ran through its entry node needs no separate copy
     let skip: Vec<usize> = BLOCKS.with(|b| b.borrow().iter().filter(|is| !is.body_used.get()).map(|is| is.body as usize).collect());
     st.program_entries.retain(|e| !skip.contains(e));
-    st.bake(std::path::Path::new(store_dir), &bake_config(), |entries| {
+    st.bake(std::path::Path::new(store_dir), &bake_config(), |entries, patch| {
         let mut sc = SpecCtx::new();
+        sc.patch = patch;
         for &e in entries { specialize_entry(&mut sc, e as NodePtr); }
         specialize_finish(&mut sc);
         sc.out

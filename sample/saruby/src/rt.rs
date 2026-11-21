@@ -980,7 +980,7 @@ pub fn run_class_body(c: &mut Ctx, klass: Value, is: &'static Iseq) -> RV {
     let cref = new_cref(klass, outer_cref);
     let mut fr = Frame::empty(base);
     fr.prev = c.frame; fr.iseq = is; fr.kind = FK_CLASS; fr.visi = VISI_PUBLIC;
-    fr.id = c.next_serial(); fr.cref = cref; fr.pos = &is.info.line;
+    fr.id = c.next_serial(); fr.cref = cref; fr.pos = Pos::at(&is.info.line);
     base[0].set(klass); base[1].set(NIL);
     nil_fill(base, 2, is.nlocals as usize);
     c.set_sp(base, is.nlocals as usize);

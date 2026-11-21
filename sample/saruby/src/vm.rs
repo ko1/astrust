@@ -218,7 +218,22 @@ pub struct Frame {
 /// A source line as a frame keeps it: a reference to the line operand of the node being run (or of an
 /// iseq), not the number.  A site then stores its own address, which specialized code shared by sites
 /// at other lines computes from the tree's root, and no line number enters specialized code or its hash.
-pub type Pos = &'static u32;
+/// A body's patch-bound copy (aot.rs) stores the number itself instead, tagged: `line << 1 | 1`.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct Pos(*const u32);
+impl Pos {
+    #[inline(always)] pub fn at(l: &'static u32) -> Pos { Pos(l) }
+    /// # Safety
+    /// `p` is `line << 1 | 1` (a hole the loader bound: aot.rs `hole_value`).
+    #[inline(always)] pub const unsafe fn bound(p: *const u8) -> Pos { Pos(p as *const u32) }
+    #[inline]
+    pub fn line(self) -> u32 {
+        let a = self.0.addr();
+        // SAFETY: an untagged Pos is made only by `at`, from a &'static u32.
+        if a & 1 != 0 { (a >> 1) as u32 } else { unsafe { *self.0 } }
+    }
+}
 pub static LINE_0: u32 = 0;
 pub static LINE_1: u32 = 1;
 
@@ -234,11 +249,11 @@ impl std::ops::Deref for FrameFull { type Target = Frame; #[inline(always)] fn d
 impl std::ops::DerefMut for FrameFull { #[inline(always)] fn deref_mut(&mut self) -> &mut Frame { &mut self.h } }
 
 impl Frame {
-    #[inline] pub fn line(&self) -> u32 { *self.pos }
+    #[inline] pub fn line(&self) -> u32 { self.pos.line() }
     pub fn empty(st: Stk) -> FrameFull {
         FrameFull {
             h: Frame { prev: std::ptr::null_mut(), fp: head(st), me: std::ptr::null(), blk: std::ptr::null(),
-                       id: 0, pos: &LINE_0, kind: FK_TOP, visi: VISI_PRIVATE, lite: false, pad: 0 },
+                       id: 0, pos: Pos::at(&LINE_0), kind: FK_TOP, visi: VISI_PRIVATE, lite: false, pad: 0 },
             cref: std::ptr::null(), iseq: std::ptr::null(), self_blk: std::ptr::null(), defined_class: NIL,
         }
     }
@@ -1594,7 +1609,7 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, re
     for j in 0..names.len() { vals[j] = base[2 + npos + j].get(); }
     let id = c.next_serial();
     let mut fr = FrameFull {
-        h: Frame { prev: c.frame, fp: head(base), me, blk, id, pos: &is.info.line, kind: FK_METHOD, visi: VISI_PUBLIC, lite: false, pad: 0 },
+        h: Frame { prev: c.frame, fp: head(base), me, blk, id, pos: Pos::at(&is.info.line), kind: FK_METHOD, visi: VISI_PUBLIC, lite: false, pad: 0 },
         cref: unsafe { (*me).cref }, iseq: is, self_blk: std::ptr::null(), defined_class: NIL,
     };
     base[0].set(recv);
@@ -1863,7 +1878,7 @@ pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, recv:
     fr.visi = VISI_PUBLIC;
     fr.id = c.next_serial();
     fr.cref = unsafe { (*me).cref };
-    fr.pos = &is.info.line;
+    fr.pos = Pos::at(&is.info.line);
     base[0].set(recv);
     c.frame = &mut fr.h;
     let r = if is.simple && argc as usize == is.params.lead.len() && flags & CF_KW == 0 {
@@ -2243,7 +2258,7 @@ pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &'static Iseq, base: Stk, argc
     fr.visi = VISI_PUBLIC;
     fr.id = if lambda { c.next_serial() } else { b.home_id };
     fr.self_blk = b;
-    fr.pos = &is.info.line;
+    fr.pos = Pos::at(&is.info.line);
     fr.defined_class = b.defined_class;
     c.frame = &mut fr.h;
     let fast = is.lead_only && is.env_size == 0 && argc as usize == is.params.lead.len() && (argc != 1 || is.params.lead.len() == 1) && !kw;

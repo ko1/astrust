@@ -5,7 +5,7 @@ all: calc
 $(GEN): node.def calc_gen.rb ../../lib/astrustgen.rb
 	ruby calc_gen.rb --input=node.def --output-dir=src
 
-calc: $(GEN) $(wildcard src/*.rs) ../../runtime/astrust.rs
+calc: $(GEN) $(wildcard src/*.rs) $(wildcard ../../runtime/*.rs)
 	cargo build --release
 	cp target/release/calc target/release/libcalc.so .
 
