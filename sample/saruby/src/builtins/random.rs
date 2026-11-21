@@ -92,7 +92,13 @@ fn get_rnd(c: &Ctx, ob: Value) -> Option<Value> {
 
 fn fill_random_words(n: usize) -> Vec<u32> {
     let mut buf = vec![0u8; n * 4];
-    let ok = std::fs::File::open("/dev/urandom").and_then(|mut f| { use std::io::Read; f.read_exact(&mut buf) }).is_ok();
+    thread_local! { static URANDOM: std::cell::RefCell<Option<std::fs::File>> = const { std::cell::RefCell::new(None) }; }
+    // kept open: SecureRandom asks for a few bytes at a time
+    let ok = URANDOM.with(|u| {
+        let mut u = u.borrow_mut();
+        if u.is_none() { *u = std::fs::File::open("/dev/urandom").ok(); }
+        u.as_mut().is_some_and(|f| { use std::io::Read; f.read_exact(&mut buf).is_ok() })
+    });
     if !ok {
         let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(1);
         for (i, b) in buf.iter_mut().enumerate() { *b = (t >> ((i % 16) * 8)) as u8 ^ (std::process::id() as u8).wrapping_mul(i as u8 + 1); }
