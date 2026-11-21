@@ -219,7 +219,7 @@ fn cstring(c: &mut Ctx, v: Value) -> Result<CString, Esc> {
 fn fd_of(c: &mut Ctx, v: Value) -> Result<Option<i32>, Esc> {
     if v.is_fixnum() { return Ok(Some(v.as_fix() as i32)); }
     if v.is_sym() { return Ok(match crate::symbol::sym_str(v.as_sym()).as_str() { "in" => Some(0), "out" => Some(1), "err" => Some(2), _ => None }); }
-    if let Some(io) = crate::builtins::io::rio(v) { if io.fd == 1 { out_flush(); } let _ = funcall(c, v, intern(b"flush"), &[], std::ptr::null()); return Ok(Some(if io.wfd >= 0 && !io.readable { io.wfd } else { io.fd })); }
+    if crate::builtins::io::is_io(c, v) { if crate::builtins::io::rio(c, v).is_some_and(|io| io.fd == 1) { out_flush(); } let _ = funcall(c, v, intern(b"flush"), &[], std::ptr::null()); return Ok(crate::builtins::io::rio(c, v).map(|io| if io.wfd >= 0 && !io.readable { io.wfd } else { io.fd })); }
     if respond_to(v, intern(b"to_io"), true) { let io = funcall(c, v, intern(b"to_io"), &[], std::ptr::null())?; return fd_of(c, io); }
     Ok(None)
 }
@@ -310,7 +310,7 @@ fn do_exec(sp: &Spec) { sys::execvp(&sp.prog, &sp.argv); }
 pub fn spawn_exec(c: &mut Ctx, sp: &Spec) -> Result<i32, Esc> {
     let mut ep = [0i32; 2];
     if sys::pipe2(&mut ep, sys::O_CLOEXEC) < 0 { return Err(raise_errno(c, sys::errno(), "pipe")); }
-    crate::builtins::io::flush_all();
+    crate::builtins::io::flush_all(c);
     let pid = sys::fork();
     if pid < 0 { let e = sys::errno(); sys::close(ep[0]); sys::close(ep[1]); return Err(raise_errno(c, e, "fork(2)")); }
     if pid == 0 {
@@ -389,7 +389,7 @@ fn k_backtick(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 fn k_exec(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let (env, cmd, opts) = split_args(a);
     let sp = spawn_spec(c, env, cmd, opts)?;
-    crate::builtins::io::flush_all();
+    crate::builtins::io::flush_all(c);
     if child_setup(&sp) { do_exec(&sp); }
     Err(raise_errno_plain(c, sys::errno(), &sp.prog.to_string_lossy()))
 }
@@ -416,7 +416,7 @@ pub fn child_exit(c: &mut Ctx, r: RV) -> ! {
     std::process::exit(st);
 }
 fn k_fork(c: &mut Ctx, _s: Value, _a: &[Value], blk: *const Block) -> RV {
-    crate::builtins::io::flush_all();
+    crate::builtins::io::flush_all(c);
     let pid = sys::fork();
     if pid < 0 { return Err(raise_errno(c, sys::errno(), "fork(2)")); }
     if pid == 0 {

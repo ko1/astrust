@@ -190,7 +190,7 @@ pub fn boot() {
     let k = enumerator::init(e, vm.c_object, vm.m_enumerable);
     vm.c_enumerator = k.enumerator; vm.c_yielder = k.yielder; vm.c_generator = k.generator;
     vm.c_lazy = k.lazy; vm.c_chain = k.chain; vm.c_arith_seq = k.arith_seq;
-    io::init();
+    io::init(vm);
     process::init();
     marshal::init();
     (vm.c_random, vm.default_random) = random::init(vm);
