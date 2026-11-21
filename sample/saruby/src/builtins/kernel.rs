@@ -614,7 +614,7 @@ pub const BUILTIN_FEATURES: &[&str] = &["set", "enumerator", "rational", "comple
     "benchmark", "fileutils", "shellwords", "strscan", "digest", "digest/md5", "digest/sha1", "digest/sha2", "zlib", "base64",
     "optparse", "ostruct", "forwardable", "singleton", "observer", "delegate", "socket", "open3", "logger", "uri", "net/http",
     "erb", "cgi", "yaml", "psych", "abbrev", "matrix", "prime", "tsort", "weakref", "find", "pathname", "io/nonblock", "fcntl",
-    "nkf", "racc", "racc/parser", "readline", "reline", "win32ole", "openssl", "mkmf", "rubygems", "bundler", "bundler/setup",
+    "nkf", "racc", "racc/parser", "readline", "reline", "win32ole", "openssl", "mkmf", "rubygems",
     "objspace", "did_you_mean", "error_highlight", "syntax_suggest", "-test-/memory_status", "random/formatter",
     "date_core", "socket.so", "io/console/size", "digest/sha2", "digest/sha1", "digest/md5", "digest/rmd160", "digest/bubblebabble", "net/protocol", "net/https",
     "open-uri", "resolv", "ipaddr", "pty", "syslog", "expect", "io/console", "yaml/store", "bigdecimal/util", "date/format", "psych/y",
@@ -775,9 +775,15 @@ fn m_ruby2_keywords(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -
             err_write(format!("{}(can only set in method defining module)\n", wloc).as_bytes());
             continue;
         }
+        // a define_method body is flagged on its block's iseq, as in CRuby
+        let target = match me.kind {
+            MKind::Iseq(is) => Some(is),
+            MKind::Bmethod(pv) => match c.proc_data(pv).blk.kind { BlockKind::Iseq(is) => Some(is), _ => None },
+            _ => None,
+        };
         let ok = match me.kind {
-            MKind::Iseq(is) => {
-                let Some(is) = c.iseq_ref(is) else { continue };
+            MKind::Iseq(_) | MKind::Bmethod(_) if target.is_some() => {
+                let Some(is) = c.iseq_ref(target.unwrap()) else { continue };
                 let p = &is.params;
                 let ok = p.rest.is_some() && p.post.is_empty() && p.kw.is_empty() && p.kwrest.is_none() && !p.no_kw;
                 if ok { is.ruby2_keywords.set(true); }
