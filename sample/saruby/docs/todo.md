@@ -39,9 +39,11 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 
 - [ ] **rubyspec を実 mspec で計測し、失敗の多い所から直す**（作業中）
 - [x] CRuby benchmark/*.rb 148/148（yml は 228/236: IO::Buffer、RubyVM、irb、Pathname、fiber_chain）
-- [ ] ruby-bench 60/88。残り: Zlib、Psych(YAML)、Date、json の C パーサ、Ractor、未インストール gem 18 本
-- [ ] `Date`（`require 'date'` が何もしない）、`Pathname`
-- [ ] Fiber storage、`Fiber#blocking?`、Fiber scheduler、fiber-local `Thread#[]`
+- [ ] ruby-bench 60/88。残り: Zlib、Psych(YAML)、json の C パーサ、Ractor、未インストール gem 18 本（liquid-* は Date の次に YAML で止まる）
+- [x] `Date` / `DateTime`（prelude/lib/date.rb、ext/date の Ruby 移植）、`Pathname`（CRuby 4.0 同様に組み込み、遅延ロード）、`require 'time'` は CRuby の time.rb
+- [x] Fiber storage、`Fiber#blocking?`、fiber-local `Thread#[]`、`Fiber#inspect` の状態、fiber called across threads
+- [ ] Fiber scheduler、`Fiber#raise(cause:)`
+- [ ] Enumerator がキーワード引数を渡さない（`to_enum(:m, k: 1)`）・private メソッドを呼べない（`Pathname#find` の enumerator が落ちる）
 - [ ] case/when が再定義された `Integer#===` を無視する（再定義フラグ 32bit が満杯 → 64bit に）
 - [ ] 再帰的な正規表現サブ式呼び出し `(?<a>a\g<a>?)`
 - [ ] `Array#shift` が O(n)（so_lists）。O(1) 版 2 案は他の配列アクセスを遅くして却下済み
