@@ -115,10 +115,11 @@ pub struct BakeConfig {
 pub struct CodeStore {
     pub dir: PathBuf,
     handle: *mut c_void,
+    has_patch: bool,           // patch.o was there when all.so was loaded
 }
 
 impl CodeStore {
-    pub fn new(dir: impl AsRef<Path>) -> Self { CodeStore { dir: dir.as_ref().to_path_buf(), handle: std::ptr::null_mut() } }
+    pub fn new(dir: impl AsRef<Path>) -> Self { CodeStore { dir: dir.as_ref().to_path_buf(), handle: std::ptr::null_mut(), has_patch: false } }
 
     /// dlopen `all.so` if present and baked against the same build.
     pub fn load(&mut self, build_id: &str) -> bool {
@@ -137,6 +138,7 @@ impl CodeStore {
             return false;
         }
         self.handle = h;
+        self.has_patch = self.dir.join("patch.o").exists();
         true
     }
 
@@ -164,10 +166,8 @@ impl CodeStore {
     pub fn add_items(&self, src: &str) -> std::io::Result<usize> { self.add_items_in("items", src) }
 
     /// Path of the patch-binding object (the same SDs as `all.so`, holes as symbols), if baked.
-    pub fn patch_obj(&self) -> Option<PathBuf> {
-        let p = self.dir.join("patch.o");
-        if self.loaded() && p.exists() { Some(p) } else { None }
-    }
+    pub fn patch_obj(&self) -> Option<PathBuf> { if self.has_patch { Some(self.dir.join("patch.o")) } else { None } }
+    pub fn has_patch(&self) -> bool { self.has_patch }
 
     /// Concatenate the stored items of `sub` into one crate and start rustc on it.
     fn rustc(&self, cfg: &BakeConfig, sub: &str, patch: bool) -> Result<(std::process::Child, PathBuf, PathBuf), String> {
@@ -282,7 +282,7 @@ impl TieredStore {
     pub fn defer(&mut self, node: usize, hash: u64, is_prelude: bool, shared: *const c_void) -> bool {
         if !self.patch || !loader::SUPPORTED { return false; }
         let cs = if is_prelude { self.preload.as_ref() } else { self.program.as_ref() };
-        if cs.and_then(|cs| cs.patch_obj()).is_none() { return false; }
+        if !cs.is_some_and(|cs| cs.has_patch()) { return false; }
         self.pending.insert(node, (shared as usize, hash, is_prelude));
         true
     }

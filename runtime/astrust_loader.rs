@@ -28,12 +28,15 @@ struct Sec { name: u32, typ: u32, flags: u64, off: usize, size: usize, align: us
 struct Sym { name: u32, shndx: u16, value: u64, size: u64 }
 struct Rela { off: usize, sym: u32, typ: u32, add: i64 }
 
+#[cold]
+fn truncated() -> String { "truncated object".to_string() }
+#[inline(always)]
 fn rd<const N: usize>(d: &[u8], at: usize) -> Result<[u8; N], String> {
-    d.get(at..at + N).and_then(|s| s.try_into().ok()).ok_or_else(|| "truncated object".to_string())
+    match d.get(at..at.wrapping_add(N)) { Some(s) => Ok(s.try_into().unwrap()), None => Err(truncated()) }
 }
-fn u16_at(d: &[u8], at: usize) -> Result<u16, String> { Ok(u16::from_le_bytes(rd(d, at)?)) }
-fn u32_at(d: &[u8], at: usize) -> Result<u32, String> { Ok(u32::from_le_bytes(rd(d, at)?)) }
-fn u64_at(d: &[u8], at: usize) -> Result<u64, String> { Ok(u64::from_le_bytes(rd(d, at)?)) }
+#[inline(always)] fn u16_at(d: &[u8], at: usize) -> Result<u16, String> { Ok(u16::from_le_bytes(rd(d, at)?)) }
+#[inline(always)] fn u32_at(d: &[u8], at: usize) -> Result<u32, String> { Ok(u32::from_le_bytes(rd(d, at)?)) }
+#[inline(always)] fn u64_at(d: &[u8], at: usize) -> Result<u64, String> { Ok(u64::from_le_bytes(rd(d, at)?)) }
 fn cstr(d: &[u8], at: usize) -> &[u8] {
     let s = d.get(at..).unwrap_or(&[]);
     &s[..s.iter().position(|&b| b == 0).unwrap_or(s.len())]
@@ -55,7 +58,7 @@ impl std::hash::Hasher for IdHasher {
 type IdMap<V> = HashMap<u64, V, std::hash::BuildHasherDefault<IdHasher>>;
 
 pub struct PatchObj {
-    data: Vec<u8>,
+    data: &'static [u8],          // the file, mapped read-only for the rest of the process
     secs: Vec<Sec>,
     syms: Vec<Sym>,
     kinds: Vec<Target>,          // by symbol
@@ -70,14 +73,14 @@ pub struct PatchObj {
 
 impl PatchObj {
     pub fn open(path: &std::path::Path, build_id: &str) -> Result<PatchObj, String> {
-        let data = std::fs::read(path).map_err(|e| e.to_string())?;
+        let data = map_file(path)?;
         let mut o = PatchObj::parse(data, build_id)?;
         o.mark_per_node();
         Ok(o)
     }
 
-    fn parse(data: Vec<u8>, build_id: &str) -> Result<PatchObj, String> {
-        let d = &data[..];
+    fn parse(data: &'static [u8], build_id: &str) -> Result<PatchObj, String> {
+        let d = data;
         // ELFCLASS64, little endian, ET_REL, EM_X86_64
         if d.get(..6) != Some(&[0x7f, b'E', b'L', b'F', 2, 1][..]) || u16_at(d, 16)? != 1 || u16_at(d, 18)? != 62 {
             return Err("not an x86-64 relocatable ELF object".into());
@@ -114,7 +117,7 @@ impl PatchObj {
                 _ => Target::Bad,
             });
             if bind != 0 && s.shndx != SHN_UNDEF && (s.shndx as usize) < shnum {
-                let hash = |b: &[u8]| std::str::from_utf8(b).ok().and_then(|x| u64::from_str_radix(x, 16).ok());
+                let hash = |b: &[u8]| if b.len() != 16 { None } else { b.iter().try_fold(0u64, |h, &c| Some(h << 4 | (c as char).to_digit(16)? as u64)) };
                 if let Some(x) = name.strip_prefix(b"SD_") {
                     match x.strip_suffix(b"_HOLES") {
                         Some(hx) => if let Some(k) = hash(hx) { holes.push((k, i)); },
@@ -223,6 +226,20 @@ const PROT_EXEC: c_int = 4;
 const MAP_SHARED: c_int = 1;
 const MAP_FIXED_NOREPLACE: c_int = 0x100000;
 const MAP_FAILED: usize = !0;
+const MAP_PRIVATE: c_int = 2;
+
+/// The file mapped read-only (only the pages read are faulted in), for the rest of the process.
+fn map_file(path: &std::path::Path) -> Result<&'static [u8], String> {
+    use std::os::fd::AsRawFd;
+    let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let len = f.metadata().map_err(|e| e.to_string())?.len() as usize;
+    if len == 0 { return Err("empty object".into()); }
+    // SAFETY: a fresh private read-only mapping of an open file; the store rewrites patch.o by rename only.
+    let p = unsafe { mmap(std::ptr::null_mut(), len, PROT_READ, MAP_PRIVATE, f.as_raw_fd(), 0) } as usize;
+    if p == MAP_FAILED { return Err("mmap".into()); }
+    // SAFETY: p..p+len is mapped read-only, never unmapped, and nothing writes it.
+    Ok(unsafe { std::slice::from_raw_parts(p as *const u8, len) })
+}
 
 
 /// Candidate addresses for `len` bytes in the gaps of /proc/self/maps within rel32 reach of `near`, nearest first.
