@@ -13,8 +13,8 @@ use crate::symbol::{intern, s};
 use crate::value::*;
 use crate::vm::*;
 
-macro_rules! cfn { ($name:ident, |$c:ident, $s:ident, $a:ident, $b:ident| $body:expr) => {
-    #[allow(unused_variables)]
+macro_rules! cfn { ($(#[$m:meta])* $name:ident, |$c:ident, $s:ident, $a:ident, $b:ident| $body:expr) => {
+    $(#[$m])* #[allow(unused_variables)]
     pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], $b: *const Block) -> RV { $body }
 }; }
 
@@ -204,13 +204,13 @@ cfn!(a_fetch, |c, slf, a, blk| {
         }
     }
 });
-cfn!(a_first, |c, slf, a, blk| {
+cfn!(#[inline] a_first, |c, slf, a, blk| {
     if a.is_empty() { return Ok(c.ary_get(slf, 0)); }
     let n = num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, "negative array size"); }
     Ok(c.ary_from_vec(c.ary(slf).iter().take(n as usize).copied().collect()))
 });
-cfn!(a_last, |c, slf, a, blk| {
+cfn!(#[inline] a_last, |c, slf, a, blk| {
     let l = c.ary_len(slf);
     if a.is_empty() { return Ok(if l == 0 { NIL } else { c.ary_get(slf, l - 1) }); }
     let n = num_to_long(c, a[0])?;
@@ -218,7 +218,10 @@ cfn!(a_last, |c, slf, a, blk| {
     let n = (n as usize).min(l);
     Ok(c.ary_from_vec(c.ary(slf)[l - n..].to_vec()))
 });
-cfn!(a_push, |c, slf, a, blk| { let v = c.ary_modify(slf)?; if a.len() == 1 { v.push(a[0]); } else { v.extend_from_slice(a); } Ok(slf) });
+// the growth out of line: a baked site runs this cfunc itself (inline_builtin.rs)
+cfn!(#[inline] a_push, |c, slf, a, blk| { let v = c.ary_modify(slf)?; if a.len() == 1 { if !v.try_push(a[0]) { push_grow(v, a[0]); } } else { v.extend_from_slice(a); } Ok(slf) });
+#[inline(never)]
+fn push_grow(v: &mut crate::avec::AVec, x: Value) { v.push(x) }
 cfn!(a_ltlt, |c, slf, a, blk| { c.ary_modify(slf)?; c.ary_push(slf, a[0]); Ok(slf) });
 cfn!(a_pop, |c, slf, a, blk| {
     let v = c.ary_modify(slf)?;
@@ -253,8 +256,8 @@ cfn!(a_insert, |c, slf, a, blk| {
     v.splice(pos..pos, a[1..].iter().copied());
     Ok(slf)
 });
-cfn!(a_length, |c, slf, a, blk| Ok(Value::fix(c.ary_len(slf) as i64)));
-cfn!(a_empty, |c, slf, a, blk| Ok(Value::bool(c.ary_len(slf) == 0)));
+cfn!(#[inline] a_length, |c, slf, a, blk| Ok(Value::fix(c.ary_len(slf) as i64)));
+cfn!(#[inline] a_empty, |c, slf, a, blk| Ok(Value::bool(c.ary_len(slf) == 0)));
 // The loops of Array's iterators, yielding through `y`: the builtin's block, or at a baked site the block's
 // entry compiled in (inline_iter.rs).  The Array is read again at every step (the block may change it).
 /// Array#each

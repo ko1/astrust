@@ -15,8 +15,8 @@ use crate::symbol::{intern, s};
 use crate::value::*;
 use crate::vm::*;
 
-macro_rules! cfn { ($name:ident, |$c:ident, $s:ident, $a:ident, $b:ident| $body:expr) => {
-    #[allow(unused_variables)]
+macro_rules! cfn { ($(#[$m:meta])* $name:ident, |$c:ident, $s:ident, $a:ident, $b:ident| $body:expr) => {
+    $(#[$m])* #[allow(unused_variables)]
     pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], $b: *const Block) -> RV { $body }
 }; }
 
@@ -165,8 +165,8 @@ cfn!(s_s_new, |c, slf, a, blk| {
     funcall_kw(c, o, s::initialize, a, blk, kw_arg(a).is_some())?;
     Ok(o)
 });
-cfn!(s_length, |c, slf, a, b_| Ok(Value::fix(c.str_char_len(slf) as i64)));
-cfn!(s_bytesize, |c, slf, a, b_| Ok(Value::fix(c.str_bytes(slf).len() as i64)));
+cfn!(#[inline] s_length, |c, slf, a, b_| Ok(Value::fix(c.str_char_len(slf) as i64)));
+cfn!(#[inline] s_bytesize, |c, slf, a, b_| Ok(Value::fix(c.str_bytes(slf).len() as i64)));
 cfn!(s_plus, |c, slf, a, b_| {
     let o = expect_str(c, a[0])?;
     let enc = compat(c, slf, o)?;
@@ -980,7 +980,7 @@ fn justify(c: &mut Ctx, slf: Value, a: &[Value], mode: u8) -> RV {
 cfn!(s_ljust, |c, slf, a, b_| justify(c, slf, a, b'l'));
 cfn!(s_rjust, |c, slf, a, b_| justify(c, slf, a, b'r'));
 cfn!(s_center, |c, slf, a, b_| justify(c, slf, a, b'c'));
-cfn!(s_empty, |c, slf, a, b_| Ok(Value::bool(c.str_bytes(slf).is_empty())));
+cfn!(#[inline] s_empty, |c, slf, a, b_| Ok(Value::bool(c.str_bytes(slf).is_empty())));
 cfn!(s_replace, |c, slf, a, b_| { let o = expect_str(c, a[0])?; let nb = c.str_bytes(o).to_vec(); let e = c.str_enc(o); let r = c.str_modify(slf)?; r.b = nb.into(); r.enc = e; Ok(slf) });
 cfn!(s_clear, |c, slf, a, b_| { c.str_modify(slf)?.b.clear(); Ok(slf) });
 cfn!(s_insert, |c, slf, a, b_| {

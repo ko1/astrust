@@ -115,20 +115,26 @@ pub fn bi_hit(cc: &CallCache, r: Value, bi: u32) -> bool {
     k && cc.serial == method_serial()
 }
 
-/// The body of builtin `bi` (a constant in baked code) on receiver r; None: call the builtin.
+/// The body of builtin `bi` (a constant in baked code) on receiver r (bi_hit: of the class the body
+/// expects); None: call the builtin.  Most are the builtin's cfunc itself, called directly (its
+/// code inlined here): those that neither raise nor call Ruby without a frame.
 #[inline(always)]
 pub fn bi_body(c: &mut Ctx, bi: u32, r: Value, a0: Value) -> Option<Value> {
+    use crate::builtins::{array_methods as am, hash_methods as hm, numeric_methods as nm, string_methods as sm};
+    let nb = std::ptr::null();
     let fix = r.is_fixnum();
     match bi {
-        1 => fix.then(|| Value::bool(r.as_fix() & 1 == 0)),
-        2 => fix.then(|| Value::bool(r.as_fix() & 1 != 0)),
-        3 => fix.then(|| Value::bool(r == Value::fix(0))),
-        4 => if fix && Value::fixable(-r.as_fix()) { Some(Value::fix(-r.as_fix())) } else { None },
-        5 => if fix && Value::fixable(r.as_fix().abs()) { Some(Value::fix(r.as_fix().abs())) } else { None },
-        6 => Some(r),
+        1 => nm::int_even(c, r, &[], nb).ok(),
+        2 => nm::int_odd(c, r, &[], nb).ok(),
+        3 => nm::int_zero(c, r, &[], nb).ok(),
+        4 => nm::int_uminus(c, r, &[], nb).ok(),
+        5 => nm::int_abs(c, r, &[], nb).ok(),
+        6 => nm::int_to_i(c, r, &[], nb).ok(),
+        // Integer#succ / #pred are the generic int_arith: the fixnum case here, the rest in the builtin
         7 => if fix { r.fix_add(Value::fix(1)) } else { None },
         8 => if fix { r.fix_sub(Value::fix(1)) } else { None },
-        9 => fix.then(|| c.float_new(r.as_fix() as f64)),
+        9 => nm::int_to_f(c, r, &[], nb).ok(),
+        // Float#to_i raises for NaN and the infinities (a frame for the backtrace): the finite case here
         10 => {
             if !is_float(r) { return None; }
             // the open interval truncates into the fixnum range; false for NaN and the infinities, which raise
@@ -136,17 +142,18 @@ pub fn bi_body(c: &mut Ctx, bi: u32, r: Value, a0: Value) -> Option<Value> {
             const L: f64 = (1u64 << 62) as f64;
             if f > -L && f < L { Some(Value::fix(f as i64)) } else { None }
         }
-        11 => Some(Value::fix(c.ary(r).len() as i64)),
-        12 => Some(Value::bool(c.ary(r).is_empty())),
-        13 => Some(c.ary(r).first().copied().unwrap_or(NIL)),
-        14 => Some(c.ary(r).last().copied().unwrap_or(NIL)),
-        // room without allocating: the growth path stays in the builtin
-        15 => (obj_flags(r) & FL_FROZEN == 0 && c.ary_mut(r).try_push(a0)).then_some(r),
-        16 => Some(Value::fix(c.hash_len(r) as i64)),
-        17 => Some(Value::bool(c.hash_len(r) == 0)),
-        18 => Some(Value::fix(c.str_char_len(r) as i64)),
-        19 => Some(Value::fix(c.str_bytes(r).len() as i64)),
-        20 => Some(Value::bool(c.str_bytes(r).is_empty())),
+        11 => am::a_length(c, r, &[], nb).ok(),
+        12 => am::a_empty(c, r, &[], nb).ok(),
+        13 => am::a_first(c, r, &[], nb).ok(),
+        14 => am::a_last(c, r, &[], nb).ok(),
+        // a frozen Array raises (in the builtin, with its frame)
+        15 => if obj_flags(r) & FL_FROZEN == 0 { am::a_push(c, r, &[a0], nb).ok() } else { None },
+        16 => hm::h_size(c, r, &[], nb).ok(),
+        17 => hm::h_empty(c, r, &[], nb).ok(),
+        18 => sm::s_length(c, r, &[], nb).ok(),
+        19 => sm::s_bytesize(c, r, &[], nb).ok(),
+        20 => sm::s_empty(c, r, &[], nb).ok(),
+        // Integer#[] takes ranges and two arguments too: one fixnum index here.
         // bit i of a fixnum (two's complement, so the sign beyond bit 62); 0 for a negative i
         BI_INT_AREF => (fix && a0.is_fixnum()).then(|| {
             let i = a0.as_fix();

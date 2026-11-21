@@ -176,8 +176,8 @@ fn int_cmp_val(c: &mut Ctx, a: Value, b: Value) -> Result<Option<std::cmp::Order
     Ok(None)
 }
 
-macro_rules! cfn { ($name:ident, |$c:ident, $s:ident, $a:ident| $body:expr) => {
-    #[allow(unused_variables)]
+macro_rules! cfn { ($(#[$m:meta])* $name:ident, |$c:ident, $s:ident, $a:ident| $body:expr) => {
+    $(#[$m])* #[allow(unused_variables)]
     pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], _b: *const Block) -> RV { $body }
 }; }
 
@@ -206,7 +206,7 @@ cfn!(int_pow_m, |c, s, a| {
     }
     int_arith(c, s, a[0], Op::Pow)
 });
-cfn!(int_uminus, |c, s, _a| Ok(if s.is_fixnum() { c.int_from_i128(-(s.as_fix() as i128)) } else { c.big_to_value(c.big(s).neg()) }));
+cfn!(#[inline] int_uminus, |c, s, _a| Ok(if s.is_fixnum() { c.int_from_i128(-(s.as_fix() as i128)) } else { c.big_to_value(c.big(s).neg()) }));
 cfn!(int_uplus, |c, s, _a| Ok(s));
 cfn!(int_not, |c, s, _a| Ok(if s.is_fixnum() { Value::fix(!s.as_fix()) } else { c.big_to_value(c.big(s).not()) }));
 fn int_bitop(c: &mut Ctx, a: Value, b: Value, op: u8) -> RV {
@@ -296,7 +296,7 @@ cfn!(int_lt, |c, s, a| int_rel(c, s, a[0], |o| o.is_lt(), s::lt));
 cfn!(int_le, |c, s, a| int_rel(c, s, a[0], |o| o.is_le(), s::le));
 cfn!(int_gt, |c, s, a| int_rel(c, s, a[0], |o| o.is_gt(), s::gt));
 cfn!(int_ge, |c, s, a| int_rel(c, s, a[0], |o| o.is_ge(), s::ge));
-cfn!(int_abs, |c, s, _a| Ok(if s.is_fixnum() { c.int_from_i64(s.as_fix().abs()) } else { c.big_to_value(c.big(s).abs()) }));
+cfn!(#[inline] int_abs, |c, s, _a| Ok(if s.is_fixnum() { c.int_from_i64(s.as_fix().abs()) } else { c.big_to_value(c.big(s).abs()) }));
 cfn!(int_to_s, |c, s, a| {
     let base = if a.is_empty() { 10 } else { num_to_long(c, a[0])? };
     if !(2..=36).contains(&base) { return arg_err(c, format!("invalid radix {}", base)); }
@@ -305,8 +305,8 @@ cfn!(int_to_s, |c, s, a| {
     c.rstring_mut(v).enc = ENC_ASCII;
     Ok(v)
 });
-cfn!(int_to_f, |c, s, _a| Ok(c.float_new(c.num_to_f64(s).unwrap())));
-cfn!(int_to_i, |c, s, _a| Ok(s));
+cfn!(#[inline] int_to_f, |c, s, _a| Ok(c.float_new(c.num_to_f64(s).unwrap())));
+cfn!(#[inline] int_to_i, |c, s, _a| Ok(s));
 cfn!(int_chr, |c, s, a| {
     let i = num_to_long(c, s)?;
     if !a.is_empty() || i > 255 {
@@ -375,9 +375,9 @@ fn int_downto(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
 }
 cfn!(int_succ, |c, s, _a| int_arith(c, s, Value::fix(1), Op::Add));
 cfn!(int_pred, |c, s, _a| int_arith(c, s, Value::fix(1), Op::Sub));
-cfn!(int_zero, |c, s, _a| Ok(Value::bool(s == Value::fix(0))));
-cfn!(int_even, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() & 1 == 0 } else { !c.big(s).is_odd() })));
-cfn!(int_odd, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() & 1 == 1 } else { c.big(s).is_odd() })));
+cfn!(#[inline] int_zero, |c, s, _a| Ok(Value::bool(s == Value::fix(0))));
+cfn!(#[inline] int_even, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() & 1 == 0 } else { !c.big(s).is_odd() })));
+cfn!(#[inline] int_odd, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() & 1 == 1 } else { c.big(s).is_odd() })));
 cfn!(int_positive, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() > 0 } else { !c.big(s).neg })));
 cfn!(int_negative, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() < 0 } else { c.big(s).neg })));
 cfn!(int_divmod, |c, s, a| {

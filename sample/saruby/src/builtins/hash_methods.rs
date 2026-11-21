@@ -12,8 +12,8 @@ use crate::symbol::{intern, s};
 use crate::value::*;
 use crate::vm::*;
 
-macro_rules! cfn { ($name:ident, |$c:ident, $s:ident, $a:ident, $b:ident| $body:expr) => {
-    #[allow(unused_variables)]
+macro_rules! cfn { ($(#[$m:meta])* $name:ident, |$c:ident, $s:ident, $a:ident, $b:ident| $body:expr) => {
+    $(#[$m])* #[allow(unused_variables)]
     pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], $b: *const Block) -> RV { $body }
 }; }
 
@@ -114,8 +114,8 @@ cfn!(h_delete, |c, slf, a, blk| {
     modify(c, slf)?;
     match hash_delete(c, slf, a[0])? { Some(v) => Ok(v), None => if blk.is_null() { Ok(NIL) } else { yield1(c, blk, a[0]) } }
 });
-cfn!(h_size, |c, slf, a, blk| Ok(Value::fix(c.hash_len(slf) as i64)));
-cfn!(h_empty, |c, slf, a, blk| Ok(Value::bool(c.hash_len(slf) == 0)));
+cfn!(#[inline] h_size, |c, slf, a, blk| Ok(Value::fix(c.hash_len(slf) as i64)));
+cfn!(#[inline] h_empty, |c, slf, a, blk| Ok(Value::bool(c.hash_len(slf) == 0)));
 cfn!(h_keys, |c, slf, a, blk| Ok(c.ary_from_vec(c.hash(slf).entries.iter().filter(|e| e.key != UNDEF).map(|e| e.key).collect())));
 cfn!(h_values, |c, slf, a, blk| Ok(c.ary_from_vec(c.hash(slf).entries.iter().filter(|e| e.key != UNDEF).map(|e| e.val).collect())));
 cfn!(h_values_at, |c, slf, a, blk| { let out = c.ary_new(); for &k in a { let v = hash_aref(c, slf, k)?; c.ary_push(out, v); } Ok(out) });
