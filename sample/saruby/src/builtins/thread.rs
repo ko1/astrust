@@ -25,16 +25,17 @@ pub struct RThread {
     fiber: Value, inner: Value, started: bool, dead: bool, value: Value, exc: Value, locals: Value, tvars: Value, name: Value,
     deadline: Option<Instant>, waiting: bool, io_wait: bool, wake: bool, pending: Value, killed: bool, progress: bool,
     report: Value, abort: bool, loc: String,
+    start: Value,   // [proc, args] until the first run makes the fiber (stacks only for threads that run)
 }
 impl RData for RThread {
-    fn visit(&mut self, m: &mut crate::gc::Visitor) { for v in [&mut self.fiber, &mut self.inner, &mut self.value, &mut self.exc, &mut self.locals, &mut self.tvars, &mut self.name, &mut self.pending, &mut self.report] { m.visit(v); } }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) { for v in [&mut self.fiber, &mut self.inner, &mut self.value, &mut self.exc, &mut self.locals, &mut self.tvars, &mut self.name, &mut self.pending, &mut self.report, &mut self.start] { m.visit(v); } }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
 impl RThread {
     fn blank(locals: Value, tvars: Value) -> RThread {
         RThread { fiber: NIL, inner: NIL, started: false, dead: false, value: NIL, exc: NIL, locals, tvars, name: NIL,
-            deadline: None, waiting: false, io_wait: false, wake: false, pending: NIL, killed: false, progress: false, report: UNDEF, abort: false, loc: String::new() }
+            deadline: None, waiting: false, io_wait: false, wake: false, pending: NIL, killed: false, progress: false, report: UNDEF, abort: false, loc: String::new(), start: NIL }
     }
 }
 static LIST: Global = Global::new();      // Array of live non-main threads
@@ -73,6 +74,7 @@ fn check_interrupt(c: &mut Ctx, t: Value) -> Result<(), Esc> {
 /// A thread's root fiber returned: record value / exception.
 fn finish_thread(c: &mut Ctx, t: Value) -> Result<(), Esc> {
     let (is_err, v) = crate::fiber::take_result(th(c, t).fiber);
+    crate::fiber::release_vstack(th(c, t).fiber);
     let r = th_mut(c, t);
     r.dead = true; r.progress = true;
     list_remove(c, t);
@@ -104,6 +106,14 @@ fn run_pass(c: &mut Ctx) -> Result<bool, Esc> {
         if r.dead { continue; }
         r.progress = !r.started;
         r.started = true;
+        if r.fiber == NIL {
+            let st = std::mem::replace(&mut r.start, NIL);
+            let (p, args) = (c.ary_get(st, 0), c.ary_get(st, 1));
+            let f = crate::fiber::new_thread_fiber(p, args);
+            let r = th_mut(c, t);
+            r.fiber = f; r.inner = f;
+        }
+        let r = th(c, t);
         let (f, inner) = (r.fiber, r.inner);
         CURRENT.set(c, t);
         crate::fiber::thread_switch_in(f, inner);
@@ -195,10 +205,10 @@ fn th_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     let p = block_to_proc(c, b)?;
     let t = new_thread(c, slf);
     let args = c.ary_new_from(a);
-    let f = crate::fiber::new_thread_fiber(p, args);
+    let start = c.ary_new_from(&[p, args]);
     let loc = c.caller_frame().map(|f| format!("{}:{}", frame_file(f), f.line)).unwrap_or_default();
     let r = th_mut(c, t);
-    r.fiber = f; r.inner = f; r.loc = loc;
+    r.start = start; r.loc = loc;
     let l = LIST.get(c);
     c.ary_push(l, t);
     Ok(t)
@@ -251,8 +261,9 @@ fn kill_thread(c: &mut Ctx, t: Value) -> RV {
         let r = th_mut(c, t);
         r.dead = true;
         let f = r.fiber;
+        r.start = NIL;
         list_remove(c, t);
-        crate::fiber::discard(f);
+        if f != NIL { crate::fiber::discard(f); }
         return Ok(t);
     }
     let r = th_mut(c, t);
