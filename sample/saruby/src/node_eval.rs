@@ -828,7 +828,7 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, H_line: crate::vm::LineHol
         let r0 = fp[0].get();
         if spec_hit(cc, r0, kind) {
             if shared == 1 { line.store(c.frame()); }
-            return <D_callee as Disp>::spec(c, cc.fast as NodePtr, fp, CallArgs { me: cc.me as *const MethodEntry, blk: std::ptr::null(), shared: true });
+            return <D_callee as Disp>::spec(c, cc.fast as NodePtr, fp, CallArgs { me: cc.me as *const MethodEntry, blk: std::ptr::null(), shared: true, inl: true });
         }
     }
     let k = <D_args as DispList>::len(args);
@@ -866,7 +866,7 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, H_line: crate::vm::LineHol
         if shared == 0 && spec_hit(cc, r0, kind) {
             // sp is where stage() left it: what the entry expects
             let callee_fp = frame(c, base)?;
-            let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp, CallArgs::new(cc.me as *const MethodEntry, std::ptr::null()));
+            let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp, CallArgs::inline(cc.me as *const MethodEntry, std::ptr::null()));
             c.set_sp(base, 0);
             return r;
         }
@@ -909,7 +909,7 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, H_line: crate::vm::Lin
                 while iter_next(c, &mut st, it, r0) {
                     // through c.frame (the pointer the callees use): a step starts at the block's line
                     if share { c.frame().pos = Pos::at(&blk.info.line); }
-                    match <D_body as Disp>::spec(c, blk.bentry, st.bfp, CallArgs { me: std::ptr::null(), blk: bp, shared: share }) {
+                    match <D_body as Disp>::spec(c, blk.bentry, st.bfp, CallArgs { me: std::ptr::null(), blk: bp, shared: share, inl: true }) {
                         Ok(y) => iter_step(c, &mut st, it, base, y),
                         Err(e) => { r = Err(e); break; }
                     }
@@ -951,7 +951,7 @@ pub fn EVAL_node_call_kw<D_recv: Disp, D_args: DispList, H_line: crate::vm::Line
         let r0 = base[0].get();
         if spec_hit(cc, r0, kind) {
             let callee_fp = frame(c, base)?;
-            let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp, CallArgs::new(cc.me as *const MethodEntry, std::ptr::null()));
+            let r = <D_callee as Disp>::spec(c, cc.fast as NodePtr, callee_fp, CallArgs::inline(cc.me as *const MethodEntry, std::ptr::null()));
             c.set_sp(base, 0);
             return r;
         }
@@ -1385,7 +1385,8 @@ pub fn EVAL_node_method_entry<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut
     let blk = ca.blk;
     // id 0: no block can return to this frame, and its own `return` is caught by the innermost entry
     let id = if flags & ME_ID != 0 { c.next_serial() } else { 0 };
-    let mut fr = Frame { prev: c.frame, fp: head(fp), me, blk, id, pos: line.pos(), kind: FK_METHOD, visi: VISI_PUBLIC, lite: true, pad: 0 };
+    let prev = c.frame;
+    let mut fr = Frame { prev, fp: head(fp), me, blk, id, pos: line.pos(), kind: FK_METHOD, visi: VISI_PUBLIC, lite: true, pad: 0 };
     // no native stack check here: whoever calls an entry out of line makes it (run_entry, site_fast)
     // a shared frame (the caller's, CallArgs) has no slots of its own and keeps the caller's env
     if !(shareable(nlocals, nparams, flags) && ca.shared) {
@@ -1397,7 +1398,9 @@ pub fn EVAL_node_method_entry<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut
     if flags & ME_ENV != 0 { make_env(unsafe { &*fr.iseq() }, fp, NIL); }
     c.frame = &mut fr;
     let r = <D_body as Disp>::call(c, body, fp);
-    c.frame = fr.prev;
+    // compiled in and no call in the body: `prev` stays in a register and the reload of fr.prev (a store-load
+    // round trip) goes; out of line it would cost a saved register
+    c.frame = if flags & ME_NOCALL != 0 && ca.inl { prev } else { fr.prev };
     match r {
         Ok(v) => Ok(v),
         Err(e) => if c.esc == EscKind::Return && c.esc_tag == id { c.esc = EscKind::None; Ok(c.esc_val) } else { Err(e) },

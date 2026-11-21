@@ -118,6 +118,10 @@ Measurements and what was tried: `~/ruby/src/trials/2026-11-21-saruby-call-path/
     `&&`, `||` of those).  It cannot call, raise or look at a frame, so the entry is just the body:
     no `Frame`, no checks, no sp change.  Keep such node bodies free of `c.frame`.
   * `ME_ENV`: locals captured by blocks live in a heap env.
+  * `ME_NOCALL`: the body has no call site (operators call only on their slow path).  Compiled into
+    its caller (`CallArgs.inl`, a constant there), the entry restores `c.frame` from the value it read,
+    not by reloading `fr.prev`: that reload put a store-load round trip on every call of a leaf callee
+    (`~/ruby/src/trials/2026-11-21-saruby-call-path-3/`).  Out of line the value would need a saved register.
 * Keyword methods whose parameters are lead + keywords in declared order (nothing else) have two more
   entries over the same frame layout: `Iseq.kentry` takes lead + every keyword as plain parameters,
   `Iseq.dentry` (no required keywords) takes lead only and runs the defaults first.  A literal keyword

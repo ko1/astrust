@@ -189,6 +189,7 @@ pub const ME_ENV: u32 = 1;    // the frame has a heap env
 pub const ME_ID: u32 = 2;     // the frame needs an id: a block literal (or eval) in the body can return to it
 pub const ME_LEAF: u32 = 4;   // the body cannot call, raise or observe a frame: no frame is made
 pub const ME_LAMBDA: u32 = 8; // node_block_entry of a `->` literal: lambda frame (own return target)
+pub const ME_NOCALL: u32 = 16; // the body has no call site: the entry restores c.frame from a register, not from the frame
 
 pub const FK_METHOD: u8 = 0;
 pub const FK_BLOCK: u8 = 1;
@@ -331,11 +332,13 @@ pub struct Ctx {
 /// What an entry node takes from its caller: in registers when the caller compiled the entry in
 /// (EVAL_SPEC!) or calls it directly (a recursive site: as a CallPass), else through c.call_me / c.call_blk.
 /// `shared`: the entry runs in its caller's frame (a compiled-in self call of a method without
-/// parameters, locals, env or block literal).
+/// parameters, locals, env or block literal).  `inl`: the entry is compiled into its caller (a constant there).
 #[derive(Clone, Copy)]
-pub struct CallArgs { pub me: *const MethodEntry, pub blk: *const Block, pub shared: bool }
+pub struct CallArgs { pub me: *const MethodEntry, pub blk: *const Block, pub shared: bool, pub inl: bool }
 impl CallArgs {
-    #[inline(always)] pub fn new(me: *const MethodEntry, blk: *const Block) -> CallArgs { CallArgs { me, blk, shared: false } }
+    #[inline(always)] pub fn new(me: *const MethodEntry, blk: *const Block) -> CallArgs { CallArgs { me, blk, shared: false, inl: false } }
+    /// From a site that compiled the entry in (EVAL_SPEC): the entry's body is part of the caller's function.
+    #[inline(always)] pub fn inline(me: *const MethodEntry, blk: *const Block) -> CallArgs { CallArgs { me, blk, shared: false, inl: true } }
     #[inline(always)] pub fn load(c: &Ctx) -> CallArgs { CallArgs::new(c.call_me, c.call_blk) }
     #[inline(always)] pub fn store(self, c: &mut Ctx) {
         // a shared frame cannot go through the context: spec_shared only offers it to specialized entries
@@ -348,7 +351,7 @@ impl CallArgs {
 #[derive(Clone, Copy)]
 pub struct CallPass { me: *const MethodEntry, bs: usize }
 impl CallPass {
-    #[inline(always)] pub fn unpass(self) -> CallArgs { CallArgs { me: self.me, blk: (self.bs & !1) as *const Block, shared: self.bs & 1 != 0 } }
+    #[inline(always)] pub fn unpass(self) -> CallArgs { CallArgs { me: self.me, blk: (self.bs & !1) as *const Block, shared: self.bs & 1 != 0, inl: false } }
 }
 
 /// Can the self call at a site run its compiled-in callee `p` in the caller's frame?
