@@ -848,7 +848,11 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, D_callee: Disp>(c: &mut Ct
         let base = stage(c, 2 + k)?;
         let r0 = <D_recv as Disp>::call(c, recv, fp)?;
         base[0].set(r0);
-        for i in 0..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
+        // the first three by hand: baked, LLVM keeps a loop over calls in arguments (tak) and spills around it
+        if k > 0 { let v = <D_args as DispList>::nth(c, args, 0, fp)?; base[2].set(v); }
+        if k > 1 { let v = <D_args as DispList>::nth(c, args, 1, fp)?; base[3].set(v); }
+        if k > 2 { let v = <D_args as DispList>::nth(c, args, 2, fp)?; base[4].set(v); }
+        for i in 3..k { let v = <D_args as DispList>::nth(c, args, i, fp)?; base[2 + i].set(v); }
         (base, r0)
     };
     unsafe { (*c.frame).line = line; }

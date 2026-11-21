@@ -662,7 +662,11 @@ node_call(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, fl
         let base = stage(c, 2 + k)?;
         let r0 = EVAL_ARG!(c, recv)?;
         base[0].set(r0);
-        for i in 0..k { let v = EVAL_NTH!(c, args, i)?; base[2 + i].set(v); }
+        // the first three by hand: baked, LLVM keeps a loop over calls in arguments (tak) and spills around it
+        if k > 0 { let v = EVAL_NTH!(c, args, 0)?; base[2].set(v); }
+        if k > 1 { let v = EVAL_NTH!(c, args, 1)?; base[3].set(v); }
+        if k > 2 { let v = EVAL_NTH!(c, args, 2)?; base[4].set(v); }
+        for i in 3..k { let v = EVAL_NTH!(c, args, i)?; base[2 + i].set(v); }
         (base, r0)
     };
     unsafe { (*c.frame).line = line; }
