@@ -633,6 +633,8 @@ pub fn EVAL_node_dowhile<D_cond: Disp, D_body: Disp>(c: &mut Ctx, n: NodePtr, fp
             Err(e) => match c.esc {
                 EscKind::LoopNext => { c.esc = EscKind::None; }
                 EscKind::LoopBreak => { c.esc = EscKind::None; return Ok(c.esc_val); }
+                // redo re-runs the body without testing the condition
+                EscKind::Redo => { c.esc = EscKind::None; continue; }
                 _ => return Err(e),
             }
         }
