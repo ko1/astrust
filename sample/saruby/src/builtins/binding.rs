@@ -21,6 +21,7 @@ impl RData for RBinding {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
 fn rbind(c: &Ctx, v: Value) -> &RBinding { c.data::<RBinding>(v).expect("not a Binding") }
+pub fn is_binding(c: &Ctx, v: Value) -> bool { c.data::<RBinding>(v).is_some() }
 fn rbind_mut(c: &mut Ctx, v: Value) -> &mut RBinding { c.data_mut::<RBinding>(v).expect("not a Binding") }
 
 /// Names visible from code whose env (fp[1]) belongs to `is` (or to its parent when

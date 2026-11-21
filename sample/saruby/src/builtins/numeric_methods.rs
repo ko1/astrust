@@ -25,7 +25,8 @@ pub fn num_to_long(c: &mut Ctx, v: Value) -> Result<i64, Esc> {
     if is_float(v) {
         let f = float_val(v);
         if f.is_nan() || f.is_infinite() { return err(c, c.vm().c_float_domain_error, float_to_s(f)); }
-        if f.abs() > 9.2e18 { return err(c, c.vm().c_range_error, format!("float {} out of range of integer", float_to_s(f))); }
+        // FIXABLE range of rb_num2long: -2**63 <= f < 2**63
+        if !(f >= -9223372036854775808.0 && f < 9223372036854775808.0) { return err(c, c.vm().c_range_error, format!("float {} out of range of integer", crate::builtins::sprintf::fmt_g10(f))); }
         return Ok(f as i64);
     }
     if v == NIL { return type_err(c, "no implicit conversion from nil to integer"); }
@@ -794,7 +795,15 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     }
     if st == NIL { st = Value::fix(1); }
     else if st == Value::fix(0) || (!st.is_fixnum() && funcall(c, st, s::eq, &[Value::fix(0)], std::ptr::null())?.truthy()) { return arg_err(c, "step can't be 0"); }
-    if b.is_null() { return crate::builtins::enumerator::arith_seq(c, s, lim, st, false, s::step); }
+    let numc = c.vm().c_numeric;
+    let numeric = |v: Value| v.is_fixnum() || is_float(v) || is_kind_of(v, numc);
+    if b.is_null() {
+        if (lim == NIL || numeric(lim)) && numeric(st) { return crate::builtins::enumerator::arith_seq(c, s, lim, st, false, s::step); }
+        // a non-Numeric limit or step: a plain Enumerator (numeric.c num_step)
+        return crate::builtins::enumerator::enum_for(c, s, s::step, &[lim, st], NIL);
+    }
+    // num_step_negative_p: `step > 0` decides the direction (and rejects e.g. a String step)
+    if !numeric(st) { funcall(c, st, s::gt, &[Value::fix(0)], std::ptr::null())?; }
     if s.is_fixnum() && st.is_fixnum() && (lim.is_fixnum() || lim == NIL) {
         let (mut i, d) = (s.as_fix(), st.as_fix());
         if lim == NIL {
@@ -808,6 +817,11 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
         let x = to_f(c, s)?; let d = to_f(c, st)?;
         let l = if lim == NIL { if d < 0.0 { f64::NEG_INFINITY } else { f64::INFINITY } } else { to_f(c, lim)? };
         let n = float_step_size(x, l, d, false);
+        // ruby_float_step: an infinite step yields self once
+        if d.is_infinite() {
+            if n != 0.0 { let fv = c.float_new(x); yield1(c, b, fv)?; }
+            return Ok(s);
+        }
         let mut i = 0.0;
         while i < n {
             let mut v = i * d + x;

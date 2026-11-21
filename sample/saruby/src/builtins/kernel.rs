@@ -51,6 +51,32 @@ pub fn stdout_write(c: &mut Ctx, b: &[u8]) -> Result<(), Esc> {
     funcall(c, so, intern(b"write"), &[st], std::ptr::null())?;
     Ok(())
 }
+/// Write to $stderr (dispatching when it was reassigned).
+pub fn stderr_write(c: &mut Ctx, b: &[u8]) -> Result<(), Esc> {
+    let se = *c.vm().globals.get(&intern(b"$stderr")).unwrap_or(&c.vm().stderr);
+    if se == c.vm().stderr { err_write(b); return Ok(()); }
+    let st = c.str_new(b);
+    funcall(c, se, intern(b"write"), &[st], std::ptr::null())?;
+    Ok(())
+}
+/// A warning goes through Warning.warn, as rb_warn does (so overrides and $stderr see it).
+pub fn warning_write(c: &mut Ctx, b: &[u8]) -> Result<(), Esc> {
+    let st = c.str_new(b);
+    let w = c.vm().m_warning;
+    funcall(c, w, intern(b"warn"), &[st], std::ptr::null())?;
+    Ok(())
+}
+/// rb_warn_category: Warning.warn(str, category: cat) unless Warning.warn takes exactly one argument.
+fn warning_write_cat(c: &mut Ctx, b: &[u8], cat: Value) -> Result<(), Esc> {
+    let w = c.vm().m_warning;
+    let me = search_method(singleton_class(w), intern(b"warn"));
+    if crate::builtins::proc::method_arity(c, me) == 1 { return warning_write(c, b); }
+    let st = c.str_new(b);
+    let h = c.hash_new();
+    hash_set(c, h, sym_value("category"), cat)?;
+    funcall_kw(c, w, intern(b"warn"), &[st, h], std::ptr::null(), true)?;
+    Ok(())
+}
 
 // ---- string conversion helpers ------------------------------------------------------------
 
@@ -172,6 +198,13 @@ fn k_putc(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
 
 fn k_printf(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     if args.is_empty() { return Ok(NIL); }
+    // printf(io, fmt, ...): a non-String first argument is the destination (io.write)
+    if !is_string(args[0]) {
+        if args.len() < 2 { return arg_err(c, "too few arguments"); }
+        let s = crate::builtins::sprintf::format(c, args[1], &args[2..])?;
+        funcall(c, args[0], intern(b"write"), &[s], std::ptr::null())?;
+        return Ok(NIL);
+    }
     let s = crate::builtins::sprintf::format(c, args[0], &args[1..])?;
     let b = c.str_bytes(s).to_vec();
     stdout_write(c, &b)?;
@@ -185,11 +218,20 @@ fn k_sprintf(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
 
 fn k_warn(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let (args, kw) = match kw_arg(args) { Some(h) => (&args[..args.len() - 1], Some(h)), None => (args, None) };
-    if c.vm().verbose == NIL { return Ok(NIL); }
     let mut uplevel = None;
+    let mut cat = NIL;
     if let Some(h) = kw {
         if let Some(u) = hash_get_opt(c, h, crate::vm::sym_value("uplevel"))? { if u != NIL { uplevel = Some(u.as_fix()); } }
+        if let Some(k) = hash_get_opt(c, h, crate::vm::sym_value("category"))? { cat = k; }
     }
+    // warning.rb: a category is a Symbol (or String) and the warning needs Warning[category]
+    if cat != NIL {
+        if is_string(cat) { cat = c.str_to_sym(cat); }
+        if !cat.is_sym() { return type_err(c, format!("no implicit conversion of {} into Symbol", class_name_for_err(cat))); }
+        let i = crate::builtins::misc::warning_category(c, cat)?;
+        if !crate::builtins::misc::warning_category_enabled(i) { return Ok(NIL); }
+    }
+    if c.vm().verbose == NIL { return Ok(NIL); }
     let mut out = puts_bytes(c, if args.is_empty() { return Ok(NIL) } else { args })?;
     if let Some(u) = uplevel {
         let lines = backtrace_lines(c, 1 + u as usize);
@@ -199,11 +241,7 @@ fn k_warn(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
             pre.extend(out); out = pre;
         }
     }
-    let se = *c.vm().globals.get(&intern(b"$stderr")).unwrap_or(&c.vm().stderr);
-    if se != c.vm().stderr {
-        let st = c.str_from_vec(out);
-        funcall(c, se, intern(b"write"), &[st], std::ptr::null())?;
-    } else { err_write(&out); }
+    warning_write_cat(c, &out, cat)?;
     Ok(NIL)
 }
 
@@ -422,11 +460,19 @@ fn k_integer(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let args = &args[..n];
     check_argc(c, args, 1, 2)?;
     let v = args[0];
-    let base = if args.len() > 1 && args[1] != NIL { crate::builtins::numeric_methods::num_to_long(c, args[1])? as u32 } else { 0 };
+    let base0 = if args.len() > 1 && args[1] != NIL { crate::builtins::numeric_methods::num_to_long(c, args[1])? } else { 0 };
     let r: RV = (|| {
         if is_string(v) {
             let b = c.str_bytes(v).to_vec();
             if b.contains(&0) { return arg_err(c, "string contains null byte"); }
+            // rb_int_parse_cstr: base <= 0 detects a prefix ("0..." included); below -1 the default is -base
+            let base = if base0 < -1 {
+                let t = b.trim_ascii_start();
+                let t = t.strip_prefix(b"+").or_else(|| t.strip_prefix(b"-")).unwrap_or(t);
+                if t.len() > 1 && t[0] == b'0' { 0 } else { -base0 }
+            } else if base0 <= 0 { 0 } else { base0 };
+            if base == 1 || base > 36 { return arg_err(c, format!("invalid radix {}", base)); }
+            let base = base as u32;
             match str_to_inum(&b, base, true) {
                 Some(x) => Ok(x),
                 None => { let ins = inspect_str(c, v)?; arg_err(c, format!("invalid value for Integer(): {}", ins)) }
@@ -662,8 +708,17 @@ fn locate_feature(c: &Ctx, name: &str, caller_file: Option<&str>) -> Feature {
     }
 }
 
+/// rb_get_path for require/load: a String, else to_path (if any) and then to_str.
+fn feature_name(c: &mut Ctx, v: Value) -> Result<String, Esc> {
+    let s = if is_string(v) { v } else {
+        let p = if v.is_heap() && respond_to(v, intern(b"to_path"), true) { funcall(c, v, intern(b"to_path"), &[], std::ptr::null())? } else { v };
+        expect_str(c, p)?
+    };
+    Ok(String::from_utf8_lossy(c.str_bytes(s)).into_owned())
+}
+
 pub fn require_feature(c: &mut Ctx, path: Value, relative: bool) -> RV {
-    let name = to_rstring(c, path)?;
+    let name = feature_name(c, path)?;
     let caller_file = if relative { c.caller_frame().map(|f| frame_file(f).to_string()) } else { None };
     let caller_file = caller_file.map(|f| if f == "-" || f == "-e" { "./x".to_string() } else { f });
     let file = match locate_feature(c, &name, caller_file.as_deref()) {
@@ -677,8 +732,17 @@ pub fn require_feature(c: &mut Ctx, path: Value, relative: bool) -> RV {
             return Ok(TRUE);
         }
         Feature::Missing => {
-            let e = make_exception(c.vm().c_load_error, &format!("cannot load such file -- {}", name));
-            ivar_set_raw(e, intern(b"path"), c.str_new(name.as_bytes()));
+            // require_relative reports the absolute path it tried (File.absolute_path(name, dir))
+            let shown = match &caller_file {
+                Some(cf) => {
+                    let dir = std::path::Path::new(cf).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
+                    let (nv, dv) = (c.str_new(name.as_bytes()), c.str_new(dir.as_bytes()));
+                    String::from_utf8_lossy(&crate::builtins::file::expand(c, &[nv, dv], false)?).into_owned()
+                }
+                None => name.clone(),
+            };
+            let e = make_exception(c.vm().c_load_error, &format!("cannot load such file -- {}", shown));
+            ivar_set_raw(e, intern(b"path"), c.str_new(shown.as_bytes()));
             return Err(raise_exc(c, e));
         }
     };
@@ -726,8 +790,30 @@ pub fn run_source(c: &mut Ctx, src: &[u8], file: &'static str, line: i32) -> RV 
 fn k_require(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV { check_argc(c, args, 1, 1)?; require_feature(c, args[0], false) }
 fn k_require_relative(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV { check_argc(c, args, 1, 1)?; require_feature(c, args[0], true) }
 fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
-    let name = to_rstring(c, args[0])?;
-    let p = resolve_feature(c, &name, None).map(|p| p.to_string_lossy().into_owned()).unwrap_or(name);
+    check_argc(c, args, 1, 2)?;
+    let name = feature_name(c, args[0])?;
+    // rb_find_file: the name as given (no ".rb" added), in $LOAD_PATH unless explicit, else from the cwd
+    let ex = if name.starts_with('~') { let nv = c.str_new(name.as_bytes()); String::from_utf8_lossy(&crate::builtins::file::expand(c, &[nv], true)?).into_owned() } else { name.clone() };
+    let explicit = ex.starts_with('/') || ex.starts_with("./") || ex.starts_with("../");
+    let mut found = None;
+    if !explicit {
+        let lp = c.vm().load_path;
+        for i in 0..c.ary_len(lp) {
+            let d = c.ary_get(lp, i);
+            let d = if is_string(d) { d } else { let dn = feature_name(c, d)?; c.str_new(dn.as_bytes()) };
+            let f = std::path::Path::new(&*String::from_utf8_lossy(c.str_bytes(d))).join(&ex);
+            if f.is_file() { found = Some(f.to_string_lossy().into_owned()); break; }
+        }
+    }
+    let p = match found {
+        Some(f) => f,
+        None if std::path::Path::new(&ex).is_file() => ex,
+        None => {
+            let e = make_exception(c.vm().c_load_error, &format!("cannot load such file -- {}", name));
+            ivar_set_raw(e, intern(b"path"), c.str_new(name.as_bytes()));
+            return Err(raise_exc(c, e));
+        }
+    };
     let wrap = args.get(1).copied().unwrap_or(FALSE);
     if wrap.truthy() {
         // load(file, true): run under an anonymous module, self = a fresh main extended with it
@@ -771,7 +857,7 @@ fn m_ruby2_keywords(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -
         let wloc = match c.caller_frame() { Some(pf) => format!("{}:{}: warning: Skipping set of ruby2_keywords flag for {} ", frame_file(pf), pf.line(), sym_str(nm)), None => String::new() };
         let Some(me) = c.me_ref(me) else { continue };
         if me.owner != k {
-            err_write(format!("{}(can only set in method defining module)\n", wloc).as_bytes());
+            warning_write(c, format!("{}(can only set in method defining module)\n", wloc).as_bytes())?;
             continue;
         }
         // a define_method body is flagged on its block's iseq, as in CRuby
@@ -788,10 +874,10 @@ fn m_ruby2_keywords(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -
                 if ok { is.ruby2_keywords.set(true); }
                 ok
             }
-            MKind::Cfunc(..) => { err_write(format!("{}(method not defined in Ruby)\n", wloc).as_bytes()); continue; }
+            MKind::Cfunc(..) => { warning_write(c, format!("{}(method not defined in Ruby)\n", wloc).as_bytes())?; continue; }
             _ => false,
         };
-        if !ok { err_write(format!("{}(method accepts keywords or post arguments or method does not accept argument splat)\n", wloc).as_bytes()); }
+        if !ok { warning_write(c, format!("{}(method accepts keywords or post arguments or method does not accept argument splat)\n", wloc).as_bytes())?; }
     }
     Ok(NIL)
 }
@@ -846,8 +932,11 @@ fn k_eval(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
     check_argc(c, args, 1, 4)?;
     let src = expect_str(c, args[0])?;
     let bind = if args.len() > 1 { args[1] } else { NIL };
-    let file: &'static str = if args.len() > 2 { Box::leak(to_rstring(c, args[2])?.into_boxed_str()) } else { "(eval)" };
-    let line = if args.len() > 3 { args[3].as_fix() as i32 } else { 1 };
+    if bind != NIL && !crate::builtins::binding::is_binding(c, bind) {
+        return type_err(c, format!("wrong argument type {} (expected binding)", class_name_for_err(bind)));
+    }
+    let file: &'static str = if args.len() > 2 && args[2] != NIL { let f = expect_str(c, args[2])?; Box::leak(String::from_utf8_lossy(c.str_bytes(f)).into_owned().into_boxed_str()) } else { "(eval)" };
+    let line = if args.len() > 3 { crate::builtins::numeric_methods::num_to_long(c, args[3])? as i32 } else { 1 };
     let srcb = c.str_bytes(src).to_vec();
     if bind != NIL { return crate::builtins::binding::eval_in_binding(c, bind, &srcb, file, line); }
     let b = crate::builtins::binding::binding_of_caller(c)?;

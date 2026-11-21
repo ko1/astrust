@@ -239,13 +239,23 @@ fn gvar_set_last_line(c: &mut Ctx, v: Value) { let _ = crate::builtins::kernel::
 fn sio_readline(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     match gets_impl(c, slf, a)? { Some(v) => Ok(v), None => err(c, c.vm().c_eof_error, "end of file reached") }
 }
+/// readlines / each_line reject a zero limit (gets returns "" for it, which would never end).
+fn check_zero_limit(c: &mut Ctx, a: &[Value], name: &str) -> Result<(), Esc> {
+    let pos = match kw_arg(a) { Some(_) => &a[..a.len() - 1], None => a };
+    // one argument: a separator if it converts to a String (prepare_getline_args), else the limit
+    let lim = match pos { [l] if !is_string(*l) && *l != NIL && !(l.is_heap() && respond_to(*l, s::to_str, true)) => Some(*l), [_, l] => Some(*l), _ => None };
+    if let Some(l) = lim { if l != NIL && crate::builtins::numeric_methods::num_to_long(c, l)? == 0 { return arg_err(c, format!("invalid limit: 0 for {}", name)); } }
+    Ok(())
+}
 fn sio_readlines(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+    check_zero_limit(c, a, "readlines")?;
     let out = c.ary_new();
     while let Some(l) = gets_impl(c, slf, a)? { c.ary_push(out, l); }
     Ok(out)
 }
 fn sio_each_line(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"each_line"), a, NIL); }
+    check_zero_limit(c, a, "each_line")?;
     while let Some(l) = gets_impl(c, slf, a)? { yield1(c, blk, l)?; }
     Ok(slf)
 }

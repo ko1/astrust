@@ -1,27 +1,35 @@
 # ARGF: the files named in ARGV (or stdin) as one stream.  Loaded on first use.
-ARGF = Object.new
-class << ARGF
+# As in CRuby, ARGF's class is anonymous ("ARGF.class"); ARGF.class.new(*argv) reads its own argv.
+ARGF = Class.new(Object) {
   include Enumerable
+
+  def self.name = "ARGF.class"
+  def self.to_s = "ARGF.class"
+  def self.inspect = "ARGF.class"
+
+  def initialize(*argv)
+    @argv = argv
+  end
 
   def __io
     return @io if @io
     unless @started
       @started = true
       @lineno ||= 0
-      if ARGV.empty?
+      if @argv.empty?
         @fname = "-"
         return @io = $stdin
       end
     end
-    return nil if ARGV.empty?
-    @fname = ARGV.shift
+    return nil if @argv.empty?
+    @fname = @argv.shift
     @io = @fname == "-" ? $stdin : File.open(@fname)
     @io.binmode if @binmode
     @io
   end
 
   def __advance
-    return nil if @started && ARGV.empty?   # the last file stays open at EOF
+    return nil if @started && @argv.empty?   # the last file stays open at EOF
     @io.close if @io && !@io.equal?($stdin) && !@io.closed?
     @io = nil
     __io
@@ -114,6 +122,27 @@ class << ARGF
     self
   end
 
+  def each_codepoint
+    return to_enum(:each_codepoint) unless block_given?
+    while (ch = getc)
+      yield ch.ord
+    end
+    self
+  end
+
+  def read_nonblock(*args, **kw)
+    while (io = __io)
+      begin
+        return io.read_nonblock(*args, **kw)
+      rescue EOFError
+        __advance or raise
+      end
+    end
+    raise EOFError, "end of file reached"
+  end
+
+  def seek(*args) = file.seek(*args)
+
   def each_byte
     return to_enum(:each_byte) unless block_given?
     while (b = getbyte)
@@ -147,7 +176,7 @@ class << ARGF
     @lineno = n
     $. = n
   end
-  def argv = ARGV
+  def argv = @argv
   def pos = file.pos
   alias tell pos
   def pos=(n)
@@ -191,4 +220,5 @@ class << ARGF
   def printf(*a) = $stdout.printf(*a)
   def putc(c) = $stdout.putc(c)
   def inplace_mode = nil
-end
+}.allocate
+ARGF.instance_variable_set(:@argv, ARGV)

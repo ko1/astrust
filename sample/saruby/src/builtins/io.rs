@@ -516,7 +516,9 @@ fn io_syswrite(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 }
 fn io_pread(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 2, 3)?;
-    let n = num_to_long(c, a[0])? as usize; let off = num_to_long(c, a[1])?;
+    let n = num_to_long(c, a[0])?; let off = num_to_long(c, a[1])?;
+    if n < 0 { return arg_err(c, "negative string size (or size too big)"); }
+    let n = n as usize;
     let fd = get_io(c, slf)?.fd;
     let mut v = vec![0u8; n];
     let k = sys::pread(fd, &mut v, off);
@@ -907,8 +909,9 @@ fn io_s_popen(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
             (e2, w, o2)
         } else { (env, vec![cmd], opts) };
         let mut spec = crate::builtins::process::spawn_spec(c, env, &words, opts)?;
-        if rd { spec.redirect.push((1, pr[1])); }
-        if wr { spec.redirect.push((0, pw[0])); }
+        // the pipe goes first so err: [:child, :out] refers to it
+        if rd { spec.redirect.insert(0, (1, pr[1])); }
+        if wr { spec.redirect.insert(0, (0, pw[0])); }
         crate::builtins::process::spawn_exec(c, &spec)?
     };
     if rd { sys::close(pr[1]); } if wr { sys::close(pw[0]); }

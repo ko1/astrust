@@ -645,7 +645,7 @@ pub fn init(vmr: &mut Vm) {
     d("backtrace", |c, _s, _a, _b| Ok(c.ary_new()), -1); d("backtrace_locations", |c, _s, _a, _b| Ok(c.ary_new()), -1);
     d("native_thread_id", |_c, _s, _a, _b| Ok(Value::fix(crate::builtins::sys::getpid() as i64)), 0);
     d("pending_interrupt?", |_c, _s, _a, _b| Ok(FALSE), -1);
-    d("fetch", |c, s, a, b| { let k = key_sym(c, a[0])?; let h = locals(c, s)?; match hash_get_opt(c, h, k)? { Some(v) => Ok(v), None if !b.is_null() => yield1(c, b, a[0]), None if a.len() > 1 => Ok(a[1]), None => { let d = inspect_str(c, k)?; err(c, c.vm().c_key_error, format!("key not found: {}", d)) } } }, -1);
+    d("fetch", |c, s, a, b| { check_argc(c, a, 1, 2)?; let k = key_sym(c, a[0])?; let h = locals(c, s)?; match hash_get_opt(c, h, k)? { Some(v) => Ok(v), None if !b.is_null() => yield1(c, b, a[0]), None if a.len() > 1 => Ok(a[1]), None => { let d = inspect_str(c, k)?; err(c, c.vm().c_key_error, format!("key not found: {}", d)) } } }, -1);
     for n in ["Mutex", "Queue", "SizedQueue", "ConditionVariable"] { crate::builtins::prelude::lazy_const(th, n, "saruby/sync"); crate::builtins::prelude::lazy_const(ob, n, "saruby/sync"); }
     crate::builtins::prelude::lazy_const(ob, "Monitor", "saruby/sync");
     crate::builtins::prelude::lazy_const(ob, "ThreadGroup", "saruby/sync");

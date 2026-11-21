@@ -12,7 +12,6 @@ use crate::array::*;
 use crate::builtins::kernel::*;
 use crate::builtins::numeric_methods::num_to_long;
 use crate::hash::*;
-use crate::string::*;
 use crate::symbol::{intern, s};
 use crate::value::*;
 use crate::vm::*;
@@ -26,124 +25,8 @@ impl RData for REnc {
 }
 pub fn encoding_value(c: &mut Ctx, id: u8) -> RV { Ok(crate::builtins::encoding::encoding_value(c, id)) }
 
-// ---- pack / unpack ----------------------------------------------------------------------
+// ---- base64 (pack itself is pack.rs) ----------------------------------------------------------------------
 
-fn parse_tmpl(t: &[u8]) -> Vec<(u8, Option<usize>, bool, bool)> {
-    let mut out = vec![];
-    let mut i = 0;
-    while i < t.len() {
-        let ch = t[i]; i += 1;
-        if ch.is_ascii_whitespace() { continue; }
-        let mut little = false; let mut big = false;
-        while i < t.len() && (t[i] == b'_' || t[i] == b'!' || t[i] == b'<' || t[i] == b'>') { if t[i] == b'<' { little = true; } if t[i] == b'>' { big = true; } i += 1; }
-        let mut cnt = None; let mut star = false;
-        if i < t.len() && t[i] == b'*' { star = true; i += 1; }
-        else { let st = i; while i < t.len() && t[i].is_ascii_digit() { i += 1; } if i > st { cnt = Some(std::str::from_utf8(&t[st..i]).unwrap().parse().unwrap()); } }
-        let _ = little;
-        out.push((ch, if star { Some(usize::MAX) } else { cnt }, big, star));
-    }
-    out
-}
-pub fn pack(c: &mut Ctx, ary: Value, a: &[Value]) -> RV {
-    if a.is_empty() { return argc_err(c, 0, 1, 1); }
-    let t = expect_str(c, a[0])?;
-    let tmpl = parse_tmpl(c.str_bytes(t));
-    let mut out: Vec<u8> = vec![];
-    let mut idx = 0;
-    let mut binary = false;
-    for (ch, cnt, big, _) in tmpl {
-        let next = |c: &mut Ctx, idx: &mut usize| -> RV { if *idx >= c.ary_len(ary) { return arg_err(c, "too few arguments"); } let v = c.ary_get(ary, *idx); *idx += 1; Ok(v) };
-        match ch {
-            b'a' | b'A' | b'Z' => {
-                let v = next(c, &mut idx)?; let sv = expect_str(c, v)?; let bs = c.str_bytes(sv).to_vec();
-                let n = match cnt { None => 1, Some(usize::MAX) => bs.len() + if ch == b'Z' { 1 } else { 0 }, Some(n) => n };
-                let pad = if ch == b'A' { b' ' } else { 0 };
-                for k in 0..n { out.push(*bs.get(k).unwrap_or(&pad)); }
-            }
-            b'U' => {
-                let n = match cnt { None => 1, Some(usize::MAX) => c.ary_len(ary).saturating_sub(idx), Some(n) => n };
-                for _ in 0..n { let v = next(c, &mut idx)?; let cp = num_to_long(c, v)?; if cp < 0 { return err(c, c.vm().c_range_error, "pack(U): value out of range"); } encode_utf8(cp as u32, &mut out); }
-            }
-            b'C' | b'c' | b'S' | b's' | b'L' | b'l' | b'Q' | b'q' | b'N' | b'n' | b'V' | b'v' | b'J' | b'j' => {
-                binary = true;
-                let n = match cnt { None => 1, Some(usize::MAX) => c.ary_len(ary).saturating_sub(idx), Some(n) => n };
-                for _ in 0..n {
-                    let v = next(c, &mut idx)?;
-                    let x = if crate::object::is_bignum(v) { c.big(v).bitop(&crate::bignum::BigInt::from_u64(u64::MAX), b'&').to_i64().unwrap_or(-1) } else { num_to_long(c, v)? } as u64;
-                    let (sz, be) = match ch { b'C' | b'c' => (1, false), b'S' | b's' => (2, big), b'L' | b'l' => (4, big), b'Q' | b'q' | b'J' | b'j' => (8, big), b'N' => (4, true), b'n' => (2, true), b'V' => (4, false), _ => (2, false) };
-                    let bytes = x.to_le_bytes();
-                    if be { for k in (0..sz).rev() { out.push(bytes[k]); } } else { out.extend_from_slice(&bytes[..sz]); }
-                }
-            }
-            b'E' | b'e' | b'D' | b'd' | b'F' | b'f' | b'G' | b'g' => {
-                binary = true;
-                let n = match cnt { None => 1, Some(usize::MAX) => c.ary_len(ary).saturating_sub(idx), Some(n) => n };
-                for _ in 0..n {
-                    let v = next(c, &mut idx)?; let f = crate::builtins::numeric_methods::to_f(c, v)?;
-                    match ch { b'E' | b'D' | b'd' => out.extend_from_slice(&f.to_le_bytes()), b'G' => out.extend_from_slice(&f.to_be_bytes()),
-                        b'e' | b'F' | b'f' => out.extend_from_slice(&(f as f32).to_le_bytes()), _ => out.extend_from_slice(&(f as f32).to_be_bytes()) }
-                }
-            }
-            b'H' | b'h' => {
-                let v = next(c, &mut idx)?; let sv = expect_str(c, v)?; let hs = c.str_bytes(sv).to_vec();
-                let n = match cnt { None => 1, Some(usize::MAX) => hs.len(), Some(n) => n };
-                let mut k = 0;
-                while k < n { let hi = hex_v(*hs.get(k).unwrap_or(&b'0')); let lo = hex_v(*hs.get(k + 1).unwrap_or(&b'0')); out.push(if ch == b'H' { hi << 4 | if k + 1 < n { lo } else { 0 } } else { lo << 4 | hi }); k += 2; }
-            }
-            b'm' => {
-                let v = next(c, &mut idx)?; let sv = expect_str(c, v)?;
-                let enc = base64(c.str_bytes(sv));
-                let line = match cnt { Some(0) => usize::MAX, Some(n) if n != usize::MAX => (n / 3 * 4).max(4), _ => 60 };
-                if line == usize::MAX { out.extend_from_slice(enc.as_bytes()); } else { for ch2 in enc.as_bytes().chunks(line) { out.extend_from_slice(ch2); out.push(b'\n'); } }
-            }
-            b'x' => { let n = cnt.unwrap_or(1); for _ in 0..n { out.push(0); } }
-            b'w' => {
-                let n = match cnt { None => 1, Some(usize::MAX) => c.ary_len(ary).saturating_sub(idx), Some(n) => n };
-                for _ in 0..n { let v = next(c, &mut idx)?; let mut x = num_to_long(c, v)? as u64; let mut tmp = vec![(x & 0x7f) as u8]; x >>= 7; while x > 0 { tmp.push((x & 0x7f) as u8 | 0x80); x >>= 7; } tmp.reverse(); out.extend(tmp); }
-            }
-            b'M' => {
-                let v = next(c, &mut idx)?; let sv = crate::rt::srb_tostr(c, v)?;
-                let len = match cnt { Some(n) if n > 1 && n != usize::MAX => n, _ => 72 };
-                let (mut n, mut prev) = (0usize, 0u8);
-                for &x in c.str_bytes(sv) {
-                    if x > 126 || (x < 32 && x != b'\n' && x != b'\t') || x == b'=' { out.extend_from_slice(format!("={:02X}", x).as_bytes()); n += 3; prev = 0; }
-                    else if x == b'\n' { if prev == b' ' || prev == b'\t' { out.push(b'='); out.push(x); } out.push(x); n = 0; prev = x; }
-                    else { out.push(x); n += 1; prev = x; }
-                    if n > len { out.extend_from_slice(b"=\n"); n = 0; prev = b'\n'; }
-                }
-                if n > 0 { out.extend_from_slice(b"=\n"); }
-            }
-            b'u' => {
-                let v = next(c, &mut idx)?; let sv = expect_str(c, v)?;
-                let line = match cnt { Some(n) if n >= 3 && n != usize::MAX => n / 3 * 3, _ => 45 };
-                let enc = |v: u8| if v == 0 { b'`' } else { v + 32 };
-                for chunk in c.str_bytes(sv).chunks(line) {
-                    out.push(enc(chunk.len() as u8));
-                    for g in chunk.chunks(3) {
-                        let (a0, a1, a2) = (g[0], *g.get(1).unwrap_or(&0), *g.get(2).unwrap_or(&0));
-                        out.extend_from_slice(&[enc(a0 >> 2), enc((a0 << 4 | a1 >> 4) & 63), enc((a1 << 2 | a2 >> 6) & 63), enc(a2 & 63)]);
-                    }
-                    out.push(b'\n');
-                }
-            }
-            b'b' | b'B' => {
-                let v = next(c, &mut idx)?; let sv = expect_str(c, v)?; let bits = c.str_bytes(sv);
-                let n = match cnt { None => 1, Some(usize::MAX) => bits.len(), Some(n) => n };
-                let start = out.len();
-                // CRuby pads a short bit string with (missing + 1) / 2 NUL bytes
-                let m = n.min(bits.len());
-                out.resize(start + (m + 7) / 8 + (n - m + 1) / 2, 0);
-                for k in 0..m { if bits[k] & 1 == 1 { out[start + k / 8] |= if ch == b'B' { 0x80 >> (k % 8) } else { 1 << (k % 8) }; } }
-                binary = true;
-            }
-            b'X' => { let n = match cnt { None => 1, Some(usize::MAX) => 0, Some(n) => n }; if n > out.len() { return arg_err(c, "X outside of string"); } out.truncate(out.len() - n); }
-            b'@' => { let n = match cnt { None => 1, Some(usize::MAX) => 0, Some(n) => n }; out.resize(n, 0); }
-            _ => return arg_err(c, format!("unknown pack directive '{}'", ch as char)),
-        }
-    }
-    Ok(c.str_from_vec_enc(out, if binary { ENC_BINARY } else { ENC_UTF8 }))
-}
-fn hex_v(x: u8) -> u8 { (x as char).to_digit(16).unwrap_or(0) as u8 }
 pub fn base64(b: &[u8]) -> String {
     const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
@@ -164,114 +47,6 @@ pub fn unbase64(s2: &[u8]) -> Vec<u8> {
     }
     out
 }
-pub fn unpack(c: &mut Ctx, sv: Value, a: &[Value]) -> RV {
-    let t = expect_str(c, a[0])?;
-    let tmpl = parse_tmpl(c.str_bytes(t));
-    let b = c.str_bytes(sv).to_vec();
-    let mut pos = 0;
-    let out = c.ary_new();
-    for (ch, cnt, big, _) in tmpl {
-        match ch {
-            b'a' | b'A' | b'Z' => {
-                let n = match cnt { None => 1, Some(usize::MAX) => b.len().saturating_sub(pos), Some(n) => n };
-                let e = (pos + n).min(b.len());
-                let mut v = b[pos..e].to_vec(); pos = e;
-                if ch == b'A' { while v.last().map(|x| *x == b' ' || *x == 0).unwrap_or(false) { v.pop(); } }
-                if ch == b'Z' { if let Some(z) = v.iter().position(|&x| x == 0) { v.truncate(z); } }
-                let s = c.str_from_vec_enc(v, if ch == b'a' || ch == b'Z' || ch == b'A' { ENC_BINARY } else { ENC_UTF8 }); c.ary_push(out, s);
-            }
-            b'U' => {
-                let n = match cnt { None => 1, Some(usize::MAX) => usize::MAX, Some(n) => n };
-                let mut k = 0;
-                while k < n && pos < b.len() { let (cp, l) = decode_utf8(&b, pos); c.ary_push(out, Value::fix(cp as i64)); pos += l; k += 1; }
-            }
-            b'C' | b'c' | b'S' | b's' | b'L' | b'l' | b'Q' | b'q' | b'N' | b'n' | b'V' | b'v' | b'J' | b'j' => {
-                let (sz, be, signed) = match ch { b'C' => (1, false, false), b'c' => (1, false, true), b'S' => (2, big, false), b's' => (2, big, true), b'L' => (4, big, false), b'l' => (4, big, true),
-                    b'Q' | b'J' => (8, big, false), b'q' | b'j' => (8, big, true), b'N' => (4, true, false), b'n' => (2, true, false), b'V' => (4, false, false), _ => (2, false, false) };
-                let n = match cnt { None => 1, Some(usize::MAX) => (b.len() - pos.min(b.len())) / sz, Some(n) => n };
-                for _ in 0..n {
-                    if pos + sz > b.len() { c.ary_push(out, NIL); continue; }
-                    let mut x: u64 = 0;
-                    for k in 0..sz { let byte = if be { b[pos + k] } else { b[pos + sz - 1 - k] }; x = x << 8 | byte as u64; }
-                    pos += sz;
-                    let v = if signed { let sh = 64 - sz * 8; ((x << sh) as i64) >> sh } else { x as i64 };
-                    let iv = if !signed && sz == 8 { c.int_from_i128(x as i128) } else { Value::fix(v) };
-                    c.ary_push(out, iv);
-                }
-            }
-            b'E' | b'D' | b'd' | b'G' | b'e' | b'F' | b'f' | b'g' => {
-                let sz = if matches!(ch, b'E' | b'D' | b'd' | b'G') { 8 } else { 4 };
-                let n = match cnt { None => 1, Some(usize::MAX) => (b.len() - pos.min(b.len())) / sz, Some(n) => n };
-                for _ in 0..n {
-                    if pos + sz > b.len() { c.ary_push(out, NIL); continue; }
-                    let sl = &b[pos..pos + sz]; pos += sz;
-                    let f = match ch { b'E' | b'D' | b'd' => f64::from_le_bytes(sl.try_into().unwrap()), b'G' => f64::from_be_bytes(sl.try_into().unwrap()),
-                        b'g' => f32::from_be_bytes(sl.try_into().unwrap()) as f64, _ => f32::from_le_bytes(sl.try_into().unwrap()) as f64 };
-                    let fv = c.float_new(f); c.ary_push(out, fv);
-                }
-            }
-            b'H' | b'h' => {
-                let n = match cnt { None => 1, Some(usize::MAX) => (b.len() - pos) * 2, Some(n) => n };
-                let mut s2 = String::new();
-                let mut k = 0;
-                while k < n && pos + k / 2 < b.len() { let byte = b[pos + k / 2]; let nib = if (k % 2 == 0) == (ch == b'H') { byte >> 4 } else { byte & 15 }; s2.push(std::char::from_digit(nib as u32, 16).unwrap()); k += 1; }
-                pos += (k + 1) / 2;
-                let s = c.str_new(s2.as_bytes()); c.ary_push(out, s);
-            }
-            b'm' => { let s = c.str_from_vec_enc(unbase64(&b[pos..]), ENC_BINARY); c.ary_push(out, s); pos = b.len(); }
-            b'x' => { pos += cnt.unwrap_or(1); }
-            b'w' => {
-                let n = match cnt { None => 1, Some(usize::MAX) => usize::MAX, Some(n) => n };
-                let mut k = 0;
-                while k < n && pos < b.len() { let mut x: u64 = 0; loop { let byte = b[pos]; pos += 1; x = x << 7 | (byte & 0x7f) as u64; if byte & 0x80 == 0 || pos >= b.len() { break; } } c.ary_push(out, Value::fix(x as i64)); k += 1; }
-            }
-            b'M' => {
-                let mut v = vec![]; let s2 = &b[pos.min(b.len())..]; let mut i = 0;
-                while i < s2.len() {
-                    if s2[i] == b'=' {
-                        if i + 1 >= s2.len() { v.extend_from_slice(&s2[i..]); break; }
-                        if s2[i + 1] == b'\n' { i += 2; continue; }
-                        if s2[i + 1] == b'\r' && s2.get(i + 2) == Some(&b'\n') { i += 3; continue; }
-                        if i + 2 < s2.len() && s2[i + 1].is_ascii_hexdigit() && s2[i + 2].is_ascii_hexdigit() { v.push(hex_v(s2[i + 1]) << 4 | hex_v(s2[i + 2])); i += 3; continue; }
-                        v.extend_from_slice(&s2[i..]);
-                        break;
-                    }
-                    v.push(s2[i]); i += 1;
-                }
-                pos = b.len();
-                let s = c.str_from_vec_enc(v, ENC_BINARY); c.ary_push(out, s);
-            }
-            b'u' => {
-                let mut v = vec![]; let s2 = &b[pos.min(b.len())..];
-                for line in s2.split(|&x| x == b'\n') {
-                    if line.is_empty() { continue; }
-                    let n = ((line[0].wrapping_sub(32)) & 63) as usize;
-                    if n == 0 { continue; }
-                    let d: Vec<u8> = line[1..].iter().map(|&x| x.wrapping_sub(32) & 63).collect();
-                    let mut got = vec![];
-                    for g in d.chunks(4) { let q = [g[0], *g.get(1).unwrap_or(&0), *g.get(2).unwrap_or(&0), *g.get(3).unwrap_or(&0)]; got.extend_from_slice(&[q[0] << 2 | q[1] >> 4, q[1] << 4 | q[2] >> 2, q[2] << 6 | q[3]]); }
-                    got.truncate(n);
-                    v.extend(got);
-                }
-                pos = b.len();
-                let s = c.str_from_vec_enc(v, ENC_BINARY); c.ary_push(out, s);
-            }
-            b'b' | b'B' => {
-                let avail = b.len().saturating_sub(pos) * 8;
-                let n = match cnt { None => 1, Some(usize::MAX) => avail, Some(n) => n.min(avail) };
-                let mut s2 = Vec::with_capacity(n);
-                for k in 0..n { let byte = b[pos + k / 8]; let bit = if ch == b'B' { byte >> (7 - k % 8) } else { byte >> (k % 8) } & 1; s2.push(b'0' + bit); }
-                pos += (n + 7) / 8;
-                let s = c.str_from_vec_enc(s2, ENC_ASCII); c.ary_push(out, s);
-            }
-            b'X' => { let n = match cnt { None => 1, Some(usize::MAX) => 0, Some(n) => n }; if n > pos { return arg_err(c, "X outside of string"); } pos -= n; }
-            b'@' => { let n = match cnt { None => 1, Some(usize::MAX) => 0, Some(n) => n }; if n > b.len() { return arg_err(c, "@ outside of string"); } pos = n; }
-            _ => return arg_err(c, format!("unknown unpack directive '{}'", ch as char)),
-        }
-    }
-    Ok(out)
-}
-
 // ---- GC / ObjectSpace -----------------------------------------------------------------------
 
 fn gc_start(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { crate::gc::collect(); Ok(NIL) }
@@ -318,7 +93,23 @@ fn os_count_objects(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> R
 }
 fn os_garbage_collect(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { crate::gc::collect(); Ok(NIL) }
 
-fn warning_warn(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let b = to_rstring(c, a[0])?; err_write(b.as_bytes()); Ok(NIL) }
+// Warning[category] flags (bit = index in WARN_CAT_NAMES); experimental is on by default, -w turns on deprecated.
+static WARN_CATS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0b0010);
+const WARN_CAT_NAMES: [&str; 4] = ["deprecated", "experimental", "performance", "strict_unused_block"];
+use std::sync::atomic::Ordering::Relaxed;
+pub fn warning_enable_deprecated() { WARN_CATS.fetch_or(1, Relaxed); }
+/// rb_warning_category_from_name: a Symbol naming a category.
+pub fn warning_category(c: &mut Ctx, v: Value) -> Result<usize, Esc> {
+    if !v.is_sym() { return type_err(c, format!("wrong argument type {} (expected Symbol)", class_name_for_err(v))); }
+    let n = crate::symbol::sym_str(v.as_sym());
+    match WARN_CAT_NAMES.iter().position(|&x| x == n) { Some(i) => Ok(i), None => arg_err(c, format!("unknown category: {}", n)) }
+}
+pub fn warning_category_enabled(i: usize) -> bool { WARN_CATS.load(Relaxed) & (1 << i) != 0 }
+fn warning_warn(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+    check_argc(c, a, 1, 2)?;
+    if !is_string(a[0]) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(a[0]))); }
+    let b = c.str_bytes(a[0]).to_vec(); stderr_write(c, &b)?; Ok(NIL)
+}
 fn objspace_wm_init(c: &mut Ctx, s2: Value, _a: &[Value], _b: *const Block) -> RV { let h = c.hash_new(); c.hash_mut(h).identity = true; ivar_set_raw(s2, intern(b"@h"), h); Ok(NIL) }
 fn wm_aref(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(s2, intern(b"@h")); Ok(hash_get_opt(c, h, a[0])?.unwrap_or(NIL)) }
 fn wm_aset(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(s2, intern(b"@h")); hash_set(c, h, a[0], a[1])?; Ok(a[1]) }
@@ -434,8 +225,13 @@ pub fn init(vmr: &mut Vm) {
     let wn = define_module("Warning");
     vmr.m_warning = wn;
     define_module_function(wn, "warn", warning_warn, -1);
-    define_singleton_cfunc(wn, "[]", |_c, _s, _a, _b| Ok(FALSE), 1);
-    define_singleton_cfunc(wn, "[]=", |_c, _s, a, _b| Ok(a[1]), 2);
+    define_singleton_cfunc(wn, "[]", |c, _s, a, _b| { let i = warning_category(c, a[0])?; Ok(Value::bool(WARN_CATS.load(Relaxed) & (1 << i) != 0)) }, 1);
+    define_singleton_cfunc(wn, "[]=", |c, _s, a, _b| {
+        let i = warning_category(c, a[0])?;
+        if a[1].truthy() { WARN_CATS.fetch_or(1 << i, Relaxed); } else { WARN_CATS.fetch_and(!(1 << i), Relaxed); }
+        Ok(a[1])
+    }, 2);
+    define_singleton_cfunc(wn, "categories", |c, _s, _a, _b| { let v: Vec<Value> = WARN_CAT_NAMES.iter().map(|n| sym_value(n)).collect(); Ok(c.ary_new_from(&v)) }, 0);
     // constants
     let set = |n: &str, v: Value| const_set(ob, intern(n.as_bytes()), v);
     for (n, v) in [("RUBY_VERSION", "3.4.0"), ("RUBY_RELEASE_DATE", "2026-11-20"), ("RUBY_PLATFORM", "x86_64-linux"), ("RUBY_ENGINE", "saruby"),

@@ -145,6 +145,9 @@ fn bump(mut s: Vec<u8>, k: i32) -> (Vec<u8>, i32) {
     }
 }
 
+/// "%-.10g" of a finite value (CRuby's float-out-of-range messages).
+pub fn fmt_g10(f: f64) -> String { format!("{}{}", if f < 0.0 { "-" } else { "" }, fmt_float(f.abs(), b'g', Some(10), false)) }
+
 /// BSD vfprintf layout of a non-negative finite value for f/e/E/g/G.
 fn fmt_float(f: f64, conv: u8, prec: Option<usize>, alt: bool) -> String {
     let p = prec.unwrap_or(6) as i32;
@@ -191,12 +194,12 @@ fn layout_e(dg: &[u8], ex: i32, decs: i32, alt: bool) -> String {
     s
 }
 /// %a: C99 hexadecimal float of |f|.
-fn fmt_hex_float(f: f64, prec: Option<usize>, upper: bool) -> String {
+fn fmt_hex_float(f: f64, prec: Option<usize>, upper: bool, alt: bool) -> String {
     let bits = f.to_bits();
     let mut exp = ((bits >> 52) & 0x7ff) as i32;
     let mut mant = bits & ((1u64 << 52) - 1);
     let s = if exp == 0 && mant == 0 {
-        let fr = match prec { Some(p) if p > 0 => format!(".{}", "0".repeat(p)), _ => String::new() };
+        let fr = match prec { Some(p) if p > 0 => format!(".{}", "0".repeat(p)), _ if alt => ".".to_string(), _ => String::new() };
         format!("0x0{}p+0", fr)
     } else {
         if exp == 0 { // subnormal: normalize
@@ -218,7 +221,7 @@ fn fmt_hex_float(f: f64, prec: Option<usize>, upper: bool) -> String {
                 hex = if p > 0 { format!("{:0w$x}", q & ((1u64 << (p * 4)) - 1), w = p) } else { String::new() };
             } else { hex.push_str(&"0".repeat(p - 13)); }
         } else { hex = hex.trim_end_matches('0').to_string(); }
-        let fr = if hex.is_empty() { String::new() } else { format!(".{}", hex) };
+        let fr = if !hex.is_empty() { format!(".{}", hex) } else if alt { ".".to_string() } else { String::new() };
         format!("0x{}{}p{}{}", lead, fr, if e < 0 { '-' } else { '+' }, e.abs())
     };
     if upper { s.to_uppercase() } else { s }
@@ -301,7 +304,11 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
         let mut name_for_err: Option<Vec<u8>> = None;
         let conv: u8;
         loop {
-            if i >= fmt.len() { return arg_err(c, "incomplete format specifier; use %% (double %) instead"); }
+            if i >= fmt.len() {
+                // sprintf.c reads the terminating NUL: only a lone trailing '%' is "incomplete"
+                if i == start + 1 { return arg_err(c, "incomplete format specifier; use %% (double %) instead"); }
+                return arg_err(c, "malformed format string");
+            }
             let x = fmt[i];
             match x {
                 b' ' | b'#' | b'+' | b'-' | b'0' => {
@@ -337,12 +344,15 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                     let v = match crate::hash::hash_get_opt(c, h, key)? {
                         Some(v) => v,
                         None => {
-                            if c.hash(h).default_proc != NIL || c.hash(h).default != NIL { crate::hash::hash_aref(c, h, key)? } else {
+                            // rb_hash_default_value; a nil default is "not found"
+                            let d = if c.hash(h).default_proc != NIL || c.hash(h).default != NIL { crate::hash::hash_aref(c, h, key)? } else { NIL };
+                            if d == NIL {
                                 let m = c.str_new_enc(&[b"key", label, b" not found"].concat(), fenc);
                                 let e2 = funcall(c, c.vm().c_key_error, intern(b"new"), &[m], std::ptr::null())?;
                                 ivar_set_raw(e2, crate::symbol::s::key, key); ivar_set_raw(e2, crate::symbol::s::receiver, h);
                                 return Err(raise_exc(c, e2));
                             }
+                            d
                         }
                     };
                     val = Some(v); name_for_err = Some(name.to_vec());
@@ -371,16 +381,17 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                         prec = std::str::from_utf8(&fmt[s0..i]).unwrap().parse().unwrap_or(0);
                     }
                 }
-                b'\n' | 0 => { out.push(b'%'); conv = 0; break; }
                 b'%' => {
                     if flags != 0 || i != start + 1 { return arg_err(c, "invalid format character - %"); }
                     out.push(b'%'); i += 1; conv = 0; break;
                 }
+                0 => return arg_err(c, "malformed format string"),
                 _ => { conv = x; i += 1; break; }
             }
         }
         if conv == 0 { continue; }
         if !braced && !matches!(conv, b'd' | b'i' | b'u' | b'f' | b'e' | b'E' | b'g' | b'G' | b'a' | b'A' | b'x' | b'X' | b'o' | b'b' | b'B' | b's' | b'p' | b'c') {
+            if conv < 0x20 || conv == 0x7f { return arg_err(c, "malformed format string"); }
             let ch = crate::builtins::encoding::mbclen(fenc, &fmt, i - 1);
             return arg_err(c, format!("malformed format string - %{}", String::from_utf8_lossy(&fmt[i - 1..i - 1 + ch])));
         }
@@ -423,16 +434,18 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                 let s = if iv.is_fixnum() { iv.as_fix().to_string() } else { crate::bignum::to_big(iv).to_string_radix(10) };
                 let (neg, mut digits) = if let Some(r) = s.strip_prefix('-') { (true, r.to_string()) } else { (false, s) };
                 let sign = if neg { "-" } else if flags & FPLUS != 0 { "+" } else if flags & FSPACE != 0 { " " } else { "" };
+                if prec_o == Some(0) && digits == "0" { digits.clear(); }
                 if let Some(p) = prec_o { if digits.len() < p { digits = format!("{}{}", "0".repeat(p - digits.len()), digits); } }
                 let n = sign.len() + digits.len();
                 pad(&mut out, sign.as_bytes(), digits.as_bytes(), n, w, flags, prec_o.is_none());
             }
+            b'f' if is_integer(v) || crate::builtins::rational::is_rational(c, v) => fmt_exact_f(c, &mut out, v, prec_o, w, flags),
             b'f' | b'e' | b'E' | b'g' | b'G' | b'a' | b'A' => {
                 let f = float_arg(c, v)?;
                 let neg = f.is_sign_negative() && !f.is_nan();
                 let sign = if neg { "-" } else if flags & FPLUS != 0 { "+" } else if flags & FSPACE != 0 { " " } else { "" };
                 let (body, num) = if f.is_nan() { ("NaN".to_string(), false) } else if f.is_infinite() { ("Inf".to_string(), false) }
-                    else if conv == b'a' || conv == b'A' { (fmt_hex_float(f.abs(), prec_o, conv == b'A'), true) }
+                    else if conv == b'a' || conv == b'A' { (fmt_hex_float(f.abs(), prec_o, conv == b'A', flags & FSHARP != 0), true) }
                     else { (fmt_float(f.abs(), conv, prec_o, flags & FSHARP != 0), true) };
                 let n = sign.len() + body.len();
                 if (conv == b'a' || conv == b'A') && num && flags & FZERO != 0 && flags & FMINUS == 0 && n < w {
@@ -461,13 +474,15 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                     let t = tw.trim_start_matches(fch).to_string();
                     format!("{}{}", fch, t)
                 } else { big.abs().to_string_radix(radix) };
+                if prec_o == Some(0) && bzero { digits.clear(); }
                 let fill = if dots { std::char::from_digit(radix - 1, radix).unwrap() } else { '0' };
                 if let Some(p) = prec_o { if digits.len() < p { digits = format!("{}{}", fill.to_string().repeat(p - digits.len()), digits); } }
                 else if dots && flags & FZERO != 0 && flags & FMINUS == 0 && w > digits.len() + 2 { digits = format!("{}{}", fill.to_string().repeat(w - digits.len() - 2), digits); }
                 if conv == b'X' { digits = digits.to_uppercase(); }
                 let mut sign = String::from(if bneg && !dots { "-" } else if flags & FPLUS != 0 { "+" } else if flags & FSPACE != 0 { " " } else { "" });
-                if flags & FSHARP != 0 && !bzero {
-                    let pre = match conv { b'x' => "0x", b'X' => "0X", b'o' => if digits.starts_with('0') { "" } else { "0" }, b'b' => "0b", _ => "0B" };
+                if flags & FSHARP != 0 {
+                    // '#o' makes the first digit a zero (none for "..7"); x/b prefixes only a non-zero value
+                    let pre = match conv { b'o' => if dots || digits.starts_with('0') { "" } else { "0" }, _ if bzero => "", b'x' => "0x", b'X' => "0X", b'b' => "0b", _ => "0B" };
                     sign.push_str(pre);
                 }
                 if dots { sign.push_str(".."); }
@@ -487,6 +502,40 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
         }
     }
     Ok(c.str_from_vec_enc(out, renc))
+}
+
+/// %f of an Integer or Rational: exact decimal digits (sprintf.c's 'f' case, '#' has no effect).
+fn fmt_exact_f(c: &mut Ctx, out: &mut Vec<u8>, v: Value, prec_o: Option<usize>, width: usize, flags: u32) {
+    use crate::builtins::rational as r;
+    let prec = prec_o.unwrap_or(6);
+    let (num, den) = if is_integer(v) { (v, Value::fix(1)) } else { r::rat_parts(c, v) };
+    let mut sign: i32 = if flags & FPLUS != 0 { 1 } else { 0 };
+    let mut num = num;
+    if r::isneg(c, num) { sign = -1; num = r::ineg(c, num); }
+    let mut zero = 0;
+    if den != Value::fix(1) {
+        let p = r::ipow(c, Value::fix(10), prec as u64);
+        num = r::imul(c, num, p);
+        let h = r::idiv(c, den, Value::fix(2));
+        num = r::iadd(c, num, h);
+        num = r::idiv(c, num, den);
+    } else { zero = prec; }
+    let t = r::istr(c, num).into_bytes();
+    let mut len = t.len() + zero;
+    if prec >= len { len = prec + 1; }
+    if sign != 0 || flags & FSPACE != 0 { len += 1; }
+    if prec > 0 { len += 1; }
+    let fill = width.saturating_sub(len);
+    if fill > 0 && flags & (FMINUS | FZERO) == 0 { out.extend(std::iter::repeat(b' ').take(fill)); }
+    if sign != 0 || flags & FSPACE != 0 { out.push(if sign > 0 { b'+' } else if sign < 0 { b'-' } else { b' ' }); }
+    if fill > 0 && flags & (FMINUS | FZERO) == FZERO { out.extend(std::iter::repeat(b'0').take(fill)); }
+    let len = t.len() + zero;
+    if len > prec { out.extend_from_slice(&t[..len - prec]); } else { out.push(b'0'); }
+    if prec > 0 { out.push(b'.'); }
+    if zero > 0 { out.extend(std::iter::repeat(b'0').take(zero)); }
+    else if prec > len { out.extend(std::iter::repeat(b'0').take(prec - len)); out.extend_from_slice(&t); }
+    else if prec > 0 { out.extend_from_slice(&t[len - prec..]); }
+    if fill > 0 && flags & FMINUS != 0 { out.extend(std::iter::repeat(b' ').take(fill)); }
 }
 
 /// Raise `klass` with a message made of raw bytes in encoding `enc`.

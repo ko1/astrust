@@ -518,11 +518,23 @@ pub fn srb_block_return(c: &mut Ctx, v: Value) -> RV {
         if unsafe { (*g).id } == id && k != FK_BLOCK && k != FK_CFUNC { alive = true; break; }
         g = unsafe { (*g).prev };
     }
-    if !alive { return Err(raise_local_jump(c, "unexpected return", "return", v)); }
+    if !alive || home_is_class_body(c, id) { return Err(raise_local_jump(c, "unexpected return", "return", v)); }
     c.esc = EscKind::Return;
     c.esc_val = v;
     c.esc_tag = id;
     Err(Esc)
+}
+
+/// A block's `return` cannot leave a class/module body (it can leave `class << x`, see srb_sclass).
+fn home_is_class_body(c: &Ctx, id: u64) -> bool {
+    let mut g = c.cur_frame();
+    while let Some(f) = g {
+        if f.id == id && f.kind != FK_BLOCK && f.kind != FK_CFUNC {
+            return f.kind == FK_CLASS && c.iseq_ref(f.iseq()).is_some_and(|is| is.info.label != "singleton class");
+        }
+        g = c.prev_frame(f);
+    }
+    false
 }
 
 #[cold]
@@ -1102,7 +1114,15 @@ pub fn srb_sclass(c: &mut Ctx, recv: Value, is: &'static Iseq, _fp: Fp) -> RV {
         return type_err(c, "can't define singleton");
     }
     let k = singleton_class(recv);
-    run_class_body(c, k, is)
+    let body_id = c.serial + 1;   // the id run_class_body gives its frame
+    let r = run_class_body(c, k, is);
+    // `return` in `class << x` returns from the enclosing method
+    if r.is_err() && c.esc == EscKind::Return && c.esc_tag == body_id {
+        let v = c.esc_val;
+        if c.frame().kind == FK_BLOCK { return srb_block_return(c, v); }
+        c.esc_tag = c.frame().id;
+    }
+    r
 }
 
 pub fn srb_alias(c: &mut Ctx, newname: Value, oldname: Value) -> RV {
