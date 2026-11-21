@@ -228,27 +228,33 @@ pub fn hash_inspect(c: &mut Ctx, slf: Value) -> RV {
     Ok(c.str_from_vec(out))
 }
 cfn!(h_inspect, |c, slf, a, blk| hash_inspect(c, slf));
-cfn!(h_eq, |c, slf, a, blk| {
-    let o = a[0];
+cfn!(h_eq, |c, slf, a, blk| hash_equal(c, slf, a[0], false));
+cfn!(h_eql, |c, slf, a, blk| hash_equal(c, slf, a[0], true));
+/// hash_equal: values compared by == or (eql) eql?.
+fn hash_equal(c: &mut Ctx, slf: Value, o: Value, eql: bool) -> RV {
     if slf == o { return Ok(TRUE); }
     if !is_hash(o) { if o.is_heap() && respond_to(o, s::to_hash, true) { let r = funcall(c, o, s::eq, &[slf], std::ptr::null())?; return Ok(Value::bool(r.truthy())); } return Ok(FALSE); }
     if c.hash_len(slf) != c.hash_len(o) { return Ok(FALSE); }
     if !recursion_enter(slf, s::eq) { return Ok(TRUE); }
     let mut ok = true;
     let r = each_entry(c, slf, |c, k, v| {
-        match hash_get_opt(c, o, k)? { Some(w) => { if !crate::builtins::array_methods::rb_eq(c, v, w)? { ok = false; return Ok(false); } } None => { ok = false; return Ok(false); } }
+        match hash_get_opt(c, o, k)? {
+            Some(w) => { let same = if eql { key_eql(c, v, w)? } else { crate::builtins::array_methods::rb_eq(c, v, w)? }; if !same { ok = false; return Ok(false); } }
+            None => { ok = false; return Ok(false); }
+        }
         Ok(true)
     });
     recursion_leave(slf, s::eq);
     r?;
     Ok(Value::bool(ok))
-});
+}
 cfn!(h_hash, |c, slf, a, blk| {
-    let mut h: u64 = c.hash_len(slf) as u64;
-    if !recursion_enter(slf, s::hash) { return Ok(Value::fix((h >> 2) as i64)); }
-    let r = each_entry(c, slf, |c, k, v| { let kh = key_hash(c, k)?; let vh = key_hash(c, v)?; h = h.wrapping_add(crate::astrust::hash_merge(kh, vh)); Ok(true) });
-    recursion_leave(slf, s::hash);
-    r?;
+    let n = c.hash_len(slf) as u64;
+    let h = crate::hash::hash_outer(c, slf, n, |c| {
+        let mut h = n;
+        each_entry(c, slf, |c, k, v| { let kh = crate::hash::ruby_hash(c, k)?; let vh = crate::hash::ruby_hash(c, v)?; h = h.wrapping_add(crate::astrust::hash_merge(kh, vh)); Ok(true) })?;
+        Ok(h)
+    })?;
     Ok(Value::fix((h >> 2) as i64))
 });
 cfn!(h_merge, |c, slf, a, blk| {
@@ -439,7 +445,7 @@ pub fn init(k: Value) {
     d("flat_map", h_flat_map, 0); d("select", h_select, 0); d("filter", h_select, 0); d("reject", h_reject, 0); d("select!", h_select_b, 0);
     d("filter!", h_select_b, 0); d("keep_if", h_keep_if, 0); d("reject!", h_reject_b, 0); d("delete_if", h_delete_if, 0); d("filter_map", h_filter_map, 0);
     d("any?", h_any, -1); d("to_a", h_to_a, 0); d("to_h", h_to_h, 0);
-    d("to_hash", h_to_hash, 0); d("inspect", h_inspect, 0); d("to_s", h_inspect, 0); d("==", h_eq, 1); d("eql?", h_eq, 1); d("hash", h_hash, 0);
+    d("to_hash", h_to_hash, 0); d("inspect", h_inspect, 0); d("to_s", h_inspect, 0); d("==", h_eq, 1); d("eql?", h_eql, 1); d("hash", h_hash, 0);
     d("merge", h_merge, -1); d("update", h_update, -1); d("merge!", h_update, -1); d("clear", h_clear, 0); d("replace", h_replace, 1);
     d("default", h_default, -1); d("default=", h_set_default, 1); d("default_proc", h_default_proc, 0); d("default_proc=", h_set_default_proc, 1);
     d("invert", h_invert, 0); d("transform_values", h_transform_values, 0); d("transform_values!", h_transform_values_b, 0);

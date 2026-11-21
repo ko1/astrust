@@ -520,7 +520,7 @@ cfn!(a_inspect, |c, slf, a, blk| ary_inspect(c, slf));
 cfn!(a_eq, |c, slf, a, blk| {
     let o = a[0];
     if slf == o { return Ok(TRUE); }
-    if !is_array(o) { if o.is_heap() && respond_to(o, s::to_ary, true) { let r = funcall(c, o, s::eq, &[slf], std::ptr::null())?; return Ok(Value::bool(r.truthy())); } return Ok(FALSE); }
+    if !is_array(o) { if crate::builtins::kernel::rb_respond_to(c, o, s::to_ary)? { let r = funcall(c, o, s::eq, &[slf], std::ptr::null())?; return Ok(Value::bool(r.truthy())); } return Ok(FALSE); }
     if c.ary_len(slf) != c.ary_len(o) { return Ok(FALSE); }
     if !recursion_enter(slf, s::eq) { return Ok(TRUE); }
     let mut i = 0;
@@ -533,10 +533,16 @@ cfn!(a_eq, |c, slf, a, blk| {
 });
 cfn!(a_eql, |c, slf, a, blk| {
     let o = a[0];
+    if slf == o { return Ok(TRUE); }
     if !is_array(o) || c.ary_len(slf) != c.ary_len(o) { return Ok(FALSE); }
+    if !recursion_enter(slf, s::eql_p) { return Ok(TRUE); }
     let mut i = 0;
-    while i < c.ary_len(slf) { if !key_eql(c, c.ary_get(slf, i), c.ary_get(o, i))? { return Ok(FALSE); } i += 1; }
-    Ok(TRUE)
+    let r: Result<bool, Esc> = (|| {
+        while i < c.ary_len(slf).min(c.ary_len(o)) { if !key_eql(c, c.ary_get(slf, i), c.ary_get(o, i))? { return Ok(false); } i += 1; }
+        Ok(c.ary_len(slf) == c.ary_len(o))
+    })();
+    recursion_leave(slf, s::eql_p);
+    Ok(Value::bool(r?))
 });
 cfn!(a_hash, |c, slf, a, blk| { let h = key_hash(c, slf)?; Ok(Value::fix((h >> 2) as i64)) });
 cfn!(a_cmp, |c, slf, a, blk| {

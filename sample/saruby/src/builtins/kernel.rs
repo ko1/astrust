@@ -119,6 +119,20 @@ pub fn class_name_for_err(v: Value) -> String {
     class_path(real_class_of(v))
 }
 
+/// rb_respond_to: a redefined respond_to? is asked; Kernel#respond_to? answers from the
+/// method table (public methods), then respond_to_missing?.
+pub fn rb_respond_to(c: &mut Ctx, v: Value, mid: Sym) -> Result<bool, Esc> {
+    let basic = search_method(c.vm().m_kernel, s::respond_to_p);
+    if lookup_method(class_of(v), s::respond_to_p) != basic {
+        return Ok(funcall(c, v, s::respond_to_p, &[Value::sym(mid)], std::ptr::null())?.truthy());
+    }
+    if respond_to(v, mid, false) { return Ok(true); }
+    if lookup_method(class_of(v), s::respond_to_missing_p) != search_method(c.vm().m_kernel, s::respond_to_missing_p) {
+        return Ok(funcall(c, v, s::respond_to_missing_p, &[Value::sym(mid), FALSE], std::ptr::null())?.truthy());
+    }
+    Ok(false)
+}
+
 // ---- recursion guard (inspect / hash / == of recursive structures) -------------------------
 
 // context-free (legacy.rs): converted modules of earlier waves call them without a context
