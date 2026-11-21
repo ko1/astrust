@@ -127,7 +127,7 @@ module ASTrustGen
         # Parameter(s) of EVAL_<name>.
         def eval_param
           if ref? then "#{@name}: &mut #{@type}"
-          elsif hole? then "#{@name}: #{@owner.hole_param_type(self)}"
+          elsif hole? then @owner.hole_trait(self) ? "#{@name}: H_#{@name}" : "#{@name}: #{@owner.hole_param_type(self)}"
           elsif spec? then "#{@name}_hash: u64"
           elsif child? then "#{@name}: #{@type}"
           elsif node? then "#{@name}: NodePtr"
@@ -139,6 +139,7 @@ module ASTrustGen
         def generic_param
           if node? || spec? then "D_#{@name}: Disp"
           elsif nodes? then "D_#{@name}: DispList"
+          elsif hole? && (t = @owner.hole_trait(self)) then "H_#{@name}: #{t}"
           end
         end
 
@@ -166,8 +167,10 @@ module ASTrustGen
             read = "a.push(\"#{ASTrustGen.rust_str(@owner.hole_arg_expr(self, "(*np).#{hole_place}"))}\".to_string());"
             push = "if sc.spec_depth == 0 { sc.holes.push((#{at}, std::mem::size_of::<#{@type}>())); } "
             pe = @owner.hole_patch_expr(self)
+            item = ASTrustGen.rust_str(@owner.hole_patch_item(self))
+            ty = @owner.hole_trait(self) ? "t_#{@name} = \"H_%SYM%\".replace(\"%SYM%\", &s); " : ""
             # patch binding: inside an entry's own tree the argument names the hole's symbol
-            pe ? push + "if let Some(s) = sc.hole_sym(\"#{@name}\", #{at}) { a.push(\"#{ASTrustGen.rust_str(pe)}\".replace(\"%SYM%\", &s)); } else { #{read} }" : push + read
+            pe ? push + "if let Some(s) = sc.hole_sym(\"#{@name}\", #{at}, \"#{item}\") { #{ty}a.push(\"#{ASTrustGen.rust_str(pe)}\".replace(\"%SYM%\", &s)); } else { #{read} }" : push + read
           elsif spec? then "a.push(format!(\"{}u64\", h_#{@name}));"
           elsif bake? then "a.push(format!(\"#{SCALARS[@type]}\", #{@owner.bake_value_expr(self)}));"
           elsif specin? then "a.push(\"#{ASTrustGen.rust_str(@owner.spec_in_load_expr(self))}\".to_string());"
@@ -240,6 +243,12 @@ module ASTrustGen
       def hole_param_type(op) = "&'static #{op.type}"
       def hole_arg_expr(op, place) = "&#{place}"
       def hole_patch_expr(op) = nil
+      # A hole whose type tells where its value is: the body is generic over a trait (non-nil) and takes
+      # `hole_dyn_type` from hole_arg_expr (interpreter, unbound sites) or, bound, the unit struct H_%SYM%
+      # (hole_patch_expr "H_%SYM%"), whose impls hole_patch_item gives (Rust items, %SYM% the symbol).
+      def hole_trait(op) = nil
+      def hole_dyn_type(op) = nil
+      def hole_patch_item(op) = ""
       # Trees are laid out by layout_tree and specialized code reaches children at constant offsets.
       def contiguous? = false
       def dispatch_prologue = ""
@@ -440,7 +449,7 @@ module ASTrustGen
       end
 
       def build_dispatch
-        ty = @operands.filter_map { it.generic_param ? (it.nodes? ? "DynList" : "Dyn") : nil }
+        ty = @operands.filter_map { it.generic_param ? (it.hole? ? hole_dyn_type(it) : it.nodes? ? "DynList" : "Dyn") : nil }
         <<~RS
         #[allow(non_snake_case, unused_variables, unused_unsafe)]
         pub fn DISPATCH_#{@name}(#{@prefix_params.join(', ')}) -> #{result_type} {
@@ -530,7 +539,9 @@ module ASTrustGen
           RS
         end
         child_types = @operands.map do |op|
-          if op.child? || op.node?
+          if op.hole? && hole_trait(op)
+            "    let mut t_#{op.name} = \"#{hole_dyn_type(op)}\".to_string();"
+          elsif op.child? || op.node?
             "    let t_#{op.name} = specialize_node(sc, u.#{op.name});"
           elsif op.nodes?
             "    let t_#{op.name} = specialize_list(sc, &u.#{op.name}#{contiguous? ? ", n" : ""});"

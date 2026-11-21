@@ -237,6 +237,20 @@ impl Pos {
 pub static LINE_0: u32 = 0;
 pub static LINE_1: u32 = 1;
 
+/// A node's line as its body gets it (@hole `line`): `LineAt` reads the node, a bound copy's unit
+/// struct (aot.rs, generated per hole) is the number, stored with one instruction.
+pub trait LineHole: Copy {
+    fn pos(self) -> Pos;
+    /// The frame is at the current line.
+    fn store(self, f: &mut Frame);
+}
+#[derive(Clone, Copy)]
+pub struct LineAt(pub &'static u32);
+impl LineHole for LineAt {
+    #[inline(always)] fn pos(self) -> Pos { Pos::at(self.0) }
+    #[inline(always)] fn store(self, f: &mut Frame) { f.pos = Pos::at(self.0); }
+}
+
 #[repr(C)]
 pub struct FrameFull {
     pub h: Frame,

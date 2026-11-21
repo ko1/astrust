@@ -25,10 +25,21 @@ class SarubyNodeDef < ASTrustGen::NodeDef
     # bodies are laid out in one block each (compile.rs finish_iseq)
     def contiguous? = true
     def head_hole?(op) = op.name == 'line'
-    # a line reaches the body as a Pos (vm.rs): the node's line field, or in a patch-bound copy the number itself
-    def hole_param_type(op) = op.name == 'line' ? 'crate::vm::Pos' : super
-    def hole_arg_expr(op, place) = op.name == 'line' ? "crate::vm::Pos::at(&#{place})" : super
-    def hole_patch_expr(op) = op.name == 'line' ? 'crate::vm::Pos::bound(&raw const %SYM%)' : nil
+    # a line reaches the body as a LineHole (vm.rs): the node's line field (LineAt), or in a patch-bound
+    # copy a unit struct whose number is a symbol the loader resolves; its store is one `mov $imm32`
+    def hole_trait(op) = op.name == 'line' ? 'crate::vm::LineHole' : nil
+    def hole_dyn_type(op) = 'crate::vm::LineAt'
+    def hole_arg_expr(op, place) = op.name == 'line' ? "crate::vm::LineAt(&#{place})" : super
+    def hole_patch_expr(op) = op.name == 'line' ? 'H_%SYM%' : nil
+    def hole_patch_item(op) = <<~RS.gsub("\n", ' ')
+      impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } }
+      impl Copy for H_%SYM% {}
+      impl crate::vm::LineHole for H_%SYM% {
+        #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }
+        #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {
+          std::arch::asm!("mov qword ptr [{0} + {1}], offset {2}", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } }
+      }
+    RS
     # the method entry cached at this call site when the code is baked
     # what the call site's cache holds when the code is baked (vm.rs SITE_*)
     def bake_value_expr(op)

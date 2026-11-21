@@ -73,13 +73,14 @@ impl SpecCtx {
     pub fn positional(&self, name: String, at: usize) -> String {
         if self.bound() { format!("{}P{}", name, at.wrapping_sub(self.patch_root)) } else { name }
     }
-    /// The symbol standing for hole `op` at address `at`, declared once (None: read it from the node).
-    pub fn hole_sym(&mut self, op: &str, at: usize) -> Option<String> {
+    /// The symbol standing for hole `op` at address `at`, declared once with the embedder's `item`
+    /// (impls of H_<symbol>, %SYM% the symbol) (None: read it from the node).
+    pub fn hole_sym(&mut self, op: &str, at: usize, item: &str) -> Option<String> {
         // a hole at the root itself stays: its address is the entry's `n`, already in a register
         if !self.bound() || at == self.patch_root { return None; }
         let s = format!("ASTRUST_HOLE_{}_{}", op, at - self.patch_root);
         if self.emitted.insert(s.clone()) {
-            self.out.push_str(&format!("pub struct H_{0};\nextern \"C\" {{ pub static {0}: u8; }}\n", s));
+            self.out.push_str(&format!("pub struct H_{0};\nextern \"C\" {{ pub static {0}: u8; }}\n{1}\n", s, item.replace("%SYM%", &s)));
         }
         Some(s)
     }
@@ -292,7 +293,7 @@ impl TieredStore {
         let cs = if is_prelude { self.preload.as_ref() } else { self.program.as_ref() };
         let path = cs.and_then(|cs| cs.patch_obj())?;
         let ld = self.loader.get_or_insert_with(|| loader::Loader::new(near));
-        match ld.instantiate(&path, build_id, &format!("SD_{:016x}", hash), node, hole) {
+        match ld.instantiate(&path, build_id, hash, node, hole) {
             Ok(p) => Some(p as *const c_void),
             Err(e) => {
                 if verbose() { eprintln!("astrust: SD_{:016x} not bound: {}", hash, e); }

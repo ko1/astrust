@@ -46,6 +46,9 @@ fn main() {
     // into baked code): AOT code baked against another build is refused.
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=../../runtime/gc");
+    // the code store emits the SD crates and loads patch.o
+    println!("cargo:rerun-if-changed=../../runtime/astrust.rs");
+    println!("cargo:rerun-if-changed=../../runtime/astrust_loader.rs");
     let mut h: u64 = 0xcbf29ce484222325;
     // every cargo feature changes the ABI of baked code (GC backend, stack backend)
     let mut feats: Vec<String> = std::env::vars().map(|(k, _)| k).filter(|k| k.starts_with("CARGO_FEATURE_")).collect();
@@ -53,6 +56,8 @@ fn main() {
     for b in feats.join(",").bytes() { h = (h ^ b as u64).wrapping_mul(0x100000001b3); }
     let mut files: Vec<_> = walk(PathBuf::from("src"));
     files.extend(walk(PathBuf::from("../../runtime/gc")));
+    files.push(PathBuf::from("../../runtime/astrust.rs"));
+    files.push(PathBuf::from("../../runtime/astrust_loader.rs"));
     files.sort();
     for f in files { for b in std::fs::read(&f).unwrap() { h = (h ^ b as u64).wrapping_mul(0x100000001b3); } }
     let id = format!("{:016x}", h);

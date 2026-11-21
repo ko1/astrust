@@ -2,7 +2,7 @@
 // relocatable patch.o, with the holes (symbols ASTRUST_HOLE_<op>_<offset>) relocated to the node's values.
 //
 // The ELF reader and the relocator are safe Rust over byte slices.  unsafe is confined to the
-// external interfaces: memfd/mmap (the arena), dlsym, and the one slice over the arena's writable view.
+// external interfaces: memfd/mmap (the arena), dlsym, and the one slice over each arena window's RW view.
 // x86-64 Linux only (SUPPORTED); elsewhere every instantiate fails and the caller keeps the shared SD.
 use std::collections::HashMap;
 use std::os::raw::{c_char, c_int, c_void};
@@ -24,8 +24,8 @@ const SHN_UNDEF: u16 = 0;
 const SHN_ABS: u16 = 0xfff1;
 const STB_WEAK: u8 = 2;
 
-struct Sec { name: u32, typ: u32, flags: u64, off: usize, size: usize, align: usize, link: u32, info: u32 }
-struct Sym { name: u32, info: u8, shndx: u16, value: u64, size: u64 }
+struct Sec { name: u32, typ: u32, flags: u64, off: usize, size: usize, align: usize }
+struct Sym { name: u32, shndx: u16, value: u64, size: u64 }
 struct Rela { off: usize, sym: u32, typ: u32, add: i64 }
 
 fn rd<const N: usize>(d: &[u8], at: usize) -> Result<[u8; N], String> {
@@ -34,23 +34,36 @@ fn rd<const N: usize>(d: &[u8], at: usize) -> Result<[u8; N], String> {
 fn u16_at(d: &[u8], at: usize) -> Result<u16, String> { Ok(u16::from_le_bytes(rd(d, at)?)) }
 fn u32_at(d: &[u8], at: usize) -> Result<u32, String> { Ok(u32::from_le_bytes(rd(d, at)?)) }
 fn u64_at(d: &[u8], at: usize) -> Result<u64, String> { Ok(u64::from_le_bytes(rd(d, at)?)) }
-fn cstr(d: &[u8], at: usize) -> &str {
+fn cstr(d: &[u8], at: usize) -> &[u8] {
     let s = d.get(at..).unwrap_or(&[]);
-    std::str::from_utf8(&s[..s.iter().position(|&b| b == 0).unwrap_or(s.len())]).unwrap_or("")
+    &s[..s.iter().position(|&b| b == 0).unwrap_or(s.len())]
 }
+fn show(b: &[u8]) -> String { String::from_utf8_lossy(b).into_owned() }
 
 /// What a relocation's symbol stands for.
-#[derive(Clone, Copy, PartialEq)]
-enum Target { Sec(usize, u64), Abs(u64), Ext(u32), Root, Hole(u32) }
+#[derive(Clone, Copy)]
+enum Target { Sec(usize, u64), Abs(u64), Ext { weak: bool }, Root, Hole, Bad }
+
+/// SD hashes as map keys: already uniform.
+#[derive(Default)]
+struct IdHasher(u64);
+impl std::hash::Hasher for IdHasher {
+    fn finish(&self) -> u64 { self.0 }
+    fn write(&mut self, b: &[u8]) { for &x in b { self.0 = self.0.rotate_left(8) ^ x as u64; } }
+    fn write_u64(&mut self, v: u64) { self.0 = v; }
+}
+type IdMap<V> = HashMap<u64, V, std::hash::BuildHasherDefault<IdHasher>>;
 
 pub struct PatchObj {
     data: Vec<u8>,
     secs: Vec<Sec>,
     syms: Vec<Sym>,
+    kinds: Vec<Target>,          // by symbol
+    ext: Vec<usize>,             // by symbol: its dlsym address once looked up (usize::MAX: not yet)
     strtab: usize,
     shstrtab: usize,
-    relas: Vec<Vec<Rela>>,      // by the section they apply to
-    entries: HashMap<String, usize>, // global defined symbol -> index (SD_<hash>, SD_<hash>_HOLES)
+    relas: Vec<Vec<Rela>>,       // by the section they apply to
+    entries: IdMap<(usize, Option<usize>)>, // SD_<hash>: its symbol and that of SD_<hash>_HOLES
     per_node: Vec<bool>,         // the section (or one it reaches) refers to a hole or the root
     shared: Vec<usize>,          // exec address of the one copy of a section not per node (0: not yet)
 }
@@ -58,14 +71,12 @@ pub struct PatchObj {
 impl PatchObj {
     pub fn open(path: &std::path::Path, build_id: &str) -> Result<PatchObj, String> {
         let data = std::fs::read(path).map_err(|e| e.to_string())?;
-        let mut o = PatchObj::parse(data)?;
-        let id = o.entry_bytes("ASTRUST_BUILD_ID")?;
-        if id.get(..16) != build_id.as_bytes().get(..16) { return Err("baked against another build".into()); }
+        let mut o = PatchObj::parse(data, build_id)?;
         o.mark_per_node();
         Ok(o)
     }
 
-    fn parse(data: Vec<u8>) -> Result<PatchObj, String> {
+    fn parse(data: Vec<u8>, build_id: &str) -> Result<PatchObj, String> {
         let d = &data[..];
         // ELFCLASS64, little endian, ET_REL, EM_X86_64
         if d.get(..6) != Some(&[0x7f, b'E', b'L', b'F', 2, 1][..]) || u16_at(d, 16)? != 1 || u16_at(d, 18)? != 62 {
@@ -75,60 +86,72 @@ impl PatchObj {
         let shnum = u16_at(d, 0x3c)? as usize;
         let shstrndx = u16_at(d, 0x3e)? as usize;
         let mut secs = Vec::with_capacity(shnum);
+        let mut links = Vec::with_capacity(shnum);
         for i in 0..shnum {
             let h = shoff + i * 64;
             secs.push(Sec { name: u32_at(d, h)?, typ: u32_at(d, h + 4)?, flags: u64_at(d, h + 8)?, off: u64_at(d, h + 24)? as usize,
-                            size: u64_at(d, h + 32)? as usize, link: u32_at(d, h + 40)?, info: u32_at(d, h + 44)?,
-                            align: (u64_at(d, h + 48)? as usize).max(1) });
+                            size: u64_at(d, h + 32)? as usize, align: (u64_at(d, h + 48)? as usize).max(1) });
+            links.push((u32_at(d, h + 40)?, u32_at(d, h + 44)?));
         }
         let shstrtab = secs.get(shstrndx).ok_or("no section names")?.off;
         let st = secs.iter().position(|s| s.typ == SHT_SYMTAB).ok_or("no symbol table")?;
-        let strtab = secs.get(secs[st].link as usize).ok_or("no string table")?.off;
-        let mut syms = Vec::with_capacity(secs[st].size / 24);
-        for i in 0..secs[st].size / 24 {
+        let strtab = secs.get(links[st].0 as usize).ok_or("no string table")?.off;
+        let nsym = secs[st].size / 24;
+        let (mut syms, mut kinds) = (Vec::with_capacity(nsym), Vec::with_capacity(nsym));
+        let mut entries: IdMap<(usize, Option<usize>)> = IdMap::default();
+        let mut holes: Vec<(u64, usize)> = vec![];
+        let mut id_ok = false;
+        for i in 0..nsym {
             let h = secs[st].off + i * 24;
-            syms.push(Sym { name: u32_at(d, h)?, info: d[h + 4], shndx: u16_at(d, h + 6)?, value: u64_at(d, h + 8)?, size: u64_at(d, h + 16)? });
+            let s = Sym { name: u32_at(d, h)?, shndx: u16_at(d, h + 6)?, value: u64_at(d, h + 8)?, size: u64_at(d, h + 16)? };
+            let (bind, name) = (d[h + 4] >> 4, cstr(d, strtab + s.name as usize));
+            kinds.push(match s.shndx {
+                SHN_UNDEF if name == b"ASTRUST_ROOT" => Target::Root,
+                SHN_UNDEF if name.starts_with(b"ASTRUST_HOLE_") => Target::Hole,
+                SHN_UNDEF => Target::Ext { weak: bind == STB_WEAK },
+                SHN_ABS => Target::Abs(s.value),
+                x if (x as usize) < shnum => Target::Sec(x as usize, s.value),
+                _ => Target::Bad,
+            });
+            if bind != 0 && s.shndx != SHN_UNDEF && (s.shndx as usize) < shnum {
+                let hash = |b: &[u8]| std::str::from_utf8(b).ok().and_then(|x| u64::from_str_radix(x, 16).ok());
+                if let Some(x) = name.strip_prefix(b"SD_") {
+                    match x.strip_suffix(b"_HOLES") {
+                        Some(hx) => if let Some(k) = hash(hx) { holes.push((k, i)); },
+                        None => if let Some(k) = hash(x) { entries.entry(k).or_insert((0, None)).0 = i; },
+                    }
+                } else if name == b"ASTRUST_BUILD_ID" {
+                    let at = secs[s.shndx as usize].off + s.value as usize;
+                    id_ok = d.get(at..at + 16) == build_id.as_bytes().get(..16);
+                }
+            }
+            syms.push(s);
         }
+        if !id_ok { return Err("baked against another build".into()); }
+        for (k, i) in holes { if let Some(e) = entries.get_mut(&k) { e.1 = Some(i); } }
         let mut relas: Vec<Vec<Rela>> = (0..shnum).map(|_| vec![]).collect();
-        for s in secs.iter().filter(|s| s.typ == SHT_RELA) {
-            let v = relas.get_mut(s.info as usize).ok_or("relocations for no section")?;
+        for (s, &(_, info)) in secs.iter().zip(&links) {
+            if s.typ != SHT_RELA { continue; }
+            let v = relas.get_mut(info as usize).ok_or("relocations for no section")?;
             for i in 0..s.size / 24 {
                 let h = s.off + i * 24;
-                let info = u64_at(d, h + 8)?;
-                v.push(Rela { off: u64_at(d, h)? as usize, sym: (info >> 32) as u32, typ: info as u32, add: u64_at(d, h + 16)? as i64 });
+                let ri = u64_at(d, h + 8)?;
+                if (ri >> 32) as usize >= nsym { return Err("bad symbol index".into()); }
+                v.push(Rela { off: u64_at(d, h)? as usize, sym: (ri >> 32) as u32, typ: ri as u32, add: u64_at(d, h + 16)? as i64 });
             }
-        }
-        let mut entries = HashMap::new();
-        for (i, s) in syms.iter().enumerate() {
-            let name = cstr(d, strtab + s.name as usize);
-            if s.info >> 4 != 0 && s.shndx != SHN_UNDEF && (name.starts_with("SD_") || name.starts_with("ASTRUST_")) { entries.insert(name.to_string(), i); }
         }
         let n = secs.len();
-        Ok(PatchObj { data, secs, syms, strtab, shstrtab, relas, entries, per_node: vec![false; n], shared: vec![0; n] })
+        Ok(PatchObj { data, secs, ext: vec![usize::MAX; nsym], syms, kinds, strtab, shstrtab, relas, entries, per_node: vec![false; n], shared: vec![0; n] })
     }
 
-    fn sym_name(&self, i: u32) -> &str { self.syms.get(i as usize).map_or("", |s| cstr(&self.data, self.strtab + s.name as usize)) }
-    fn sec_name(&self, i: usize) -> &str { cstr(&self.data, self.shstrtab + self.secs[i].name as usize) }
+    fn sym_name(&self, i: u32) -> String { show(cstr(&self.data, self.strtab + self.syms[i as usize].name as usize)) }
+    fn sec_name(&self, i: usize) -> &[u8] { cstr(&self.data, self.shstrtab + self.secs[i].name as usize) }
 
-    fn target(&self, sym: u32) -> Result<Target, String> {
-        let s = self.syms.get(sym as usize).ok_or("bad symbol index")?;
-        Ok(match s.shndx {
-            SHN_UNDEF => {
-                let name = self.sym_name(sym);
-                if name == "ASTRUST_ROOT" { Target::Root } else if name.starts_with("ASTRUST_HOLE_") { Target::Hole(sym) } else { Target::Ext(sym) }
-            }
-            SHN_ABS => Target::Abs(s.value),
-            i if (i as usize) < self.secs.len() => Target::Sec(i as usize, s.value),
-            _ => return Err(format!("unsupported symbol section {:#x}", s.shndx)),
-        })
-    }
-
-    /// The bytes of a defined global symbol.
-    fn entry_bytes(&self, name: &str) -> Result<&[u8], String> {
-        let s = &self.syms[*self.entries.get(name).ok_or_else(|| format!("no {}", name))?];
-        let sec = self.secs.get(s.shndx as usize).ok_or("bad section")?;
-        let at = sec.off + s.value as usize;
-        self.data.get(at..at + s.size as usize).ok_or_else(|| "truncated symbol".into())
+    /// The bytes of a defined symbol.
+    fn sym_bytes(&self, i: usize) -> Option<&[u8]> {
+        let s = &self.syms[i];
+        let at = self.secs.get(s.shndx as usize)?.off + s.value as usize;
+        self.data.get(at..at + s.size as usize)
     }
 
     /// Sections whose copy is the node's own: they refer to a hole or the root, or reach one that does.
@@ -138,9 +161,9 @@ impl PatchObj {
         let mut work = vec![];
         for s in 0..n {
             for r in &self.relas[s] {
-                match self.target(r.sym) {
-                    Ok(Target::Root | Target::Hole(_)) => if !self.per_node[s] { self.per_node[s] = true; work.push(s); },
-                    Ok(Target::Sec(t, _)) if t != s => users[t].push(s),
+                match self.kinds[r.sym as usize] {
+                    Target::Root | Target::Hole => if !self.per_node[s] { self.per_node[s] = true; work.push(s); },
+                    Target::Sec(t, _) if t != s => users[t].push(s),
                     _ => {}
                 }
             }
@@ -152,25 +175,36 @@ impl PatchObj {
 
     /// Sections reached from `start` through relocations: per node ones, and the shared ones they use.
     fn closure(&self, start: usize, per_node: bool) -> Result<Vec<usize>, String> {
-        let mut seen = vec![false; self.secs.len()];
-        let mut out = vec![];
-        let mut work = vec![start];
-        seen[start] = true;
-        while let Some(s) = work.pop() {
+        let mut out = vec![start];
+        let mut i = 0;
+        while i < out.len() {
+            let s = out[i];
+            i += 1;
             let sec = &self.secs[s];
             if sec.flags & SHF_ALLOC == 0 || sec.flags & SHF_TLS != 0 || sec.typ == SHT_NOBITS
-                || (sec.flags & SHF_WRITE != 0 && !self.sec_name(s).starts_with(".data.rel.ro")) {
-                return Err(format!("unsupported section {}", self.sec_name(s)));
+                || (sec.flags & SHF_WRITE != 0 && !self.sec_name(s).starts_with(b".data.rel.ro")) {
+                return Err(format!("unsupported section {}", show(self.sec_name(s))));
             }
-            out.push(s);
             for r in &self.relas[s] {
-                if let Target::Sec(t, _) = self.target(r.sym)? {
+                if let Target::Sec(t, _) = self.kinds[r.sym as usize] {
                     // a per node copy uses the shared copy of a section that needs no binding
-                    if !seen[t] && self.per_node[t] == per_node && (per_node || self.shared[t] == 0) { seen[t] = true; work.push(t); }
+                    if self.per_node[t] == per_node && (per_node || self.shared[t] == 0) && !out.contains(&t) { out.push(t); }
                 }
             }
         }
         Ok(out)
+    }
+
+    /// The address of external symbol `i` (dlsym once per symbol).
+    fn resolve(&mut self, i: u32, weak: bool) -> Result<usize, String> {
+        if self.ext[i as usize] != usize::MAX { return Ok(self.ext[i as usize]); }
+        let mut name = cstr(&self.data, self.strtab + self.syms[i as usize].name as usize).to_vec();
+        name.push(0);
+        // SAFETY: dlsym with RTLD_DEFAULT (null) and a NUL-terminated name only looks the symbol up.
+        let v = unsafe { dlsym(std::ptr::null_mut(), name.as_ptr() as *const c_char) } as usize;
+        if v == 0 && !weak { return Err(format!("unresolved {}", self.sym_name(i))); }
+        self.ext[i as usize] = v;
+        Ok(v)
     }
 }
 
@@ -281,41 +315,37 @@ impl Arena {
 }
 
 
-// ---- the loader ----------------------------------------------------------------------------
-
 pub struct Loader {
     arena: Option<Option<Arena>>,   // made at the first instantiate (None inside: no memfd)
     near: usize,
     objs: HashMap<std::path::PathBuf, Result<PatchObj, String>>,
-    ext: HashMap<String, usize>,
     pub instances: usize,
     pub failed: usize,
     pub bytes: usize,
     perf_map: Option<std::fs::File>,
 }
 
-
 impl Loader {
     pub fn new(near: usize) -> Loader {
         // ASTRUST_PERF_MAP=1: name each copy in /tmp/perf-<pid>.map for perf
         let perf_map = std::env::var_os("ASTRUST_PERF_MAP").and_then(|_| std::fs::File::create(format!("/tmp/perf-{}.map", std::process::id())).ok());
-        Loader { arena: None, near, objs: HashMap::new(), ext: HashMap::new(), instances: 0, failed: 0, bytes: 0, perf_map }
+        Loader { arena: None, near, objs: HashMap::new(), instances: 0, failed: 0, bytes: 0, perf_map }
     }
 
-    /// A copy of `entry` (SD_<hash>) from the object at `path`, bound to node `root`: its exec address.
-    pub fn instantiate(&mut self, path: &std::path::Path, build_id: &str, entry: &str, root: usize, hole: HoleFn) -> Result<usize, String> {
+    /// A copy of SD_<hash> from the object at `path`, bound to node `root`: its exec address.
+    pub fn instantiate(&mut self, path: &std::path::Path, build_id: &str, hash: u64, root: usize, hole: HoleFn) -> Result<usize, String> {
         let near = self.near;
         let arena = self.arena.get_or_insert_with(|| if SUPPORTED { Arena::new(near) } else { None });
         let obj = self.objs.entry(path.to_path_buf()).or_insert_with(|| PatchObj::open(path, build_id));
         let r = match (arena.as_mut(), obj.as_mut()) {
             (None, _) => Err("no arena".to_string()),
             (_, Err(e)) => Err(e.clone()),
-            (Some(a), Ok(o)) => instantiate(o, a, &mut self.ext, entry, root, hole),
+            (Some(a), Ok(o)) => instantiate(o, a, hash, root, hole),
         };
         match r {
             Ok((addr, len)) => {
                 self.instances += 1; self.bytes += len;
-                if let Some(f) = self.perf_map.as_mut() { use std::io::Write; let _ = writeln!(f, "{:x} {:x} {}@{:x}", addr, len, entry, root); }
+                if let Some(f) = self.perf_map.as_mut() { use std::io::Write; let _ = writeln!(f, "{:x} {:x} SD_{:016x}@{:x}", addr, len, hash, root); }
             }
             Err(_) => self.failed += 1,
         }
@@ -323,29 +353,30 @@ impl Loader {
     }
 }
 
-/// The node's copy of `entry`, after the shared sections it uses: (exec address, bytes of the copy).
-fn instantiate(o: &mut PatchObj, a: &mut Arena, ext: &mut HashMap<String, usize>, entry: &str, root: usize, hole: HoleFn) -> Result<(usize, usize), String> {
-    let e = *o.entries.get(entry).ok_or_else(|| format!("{} not in patch.o", entry))?;
-    let start = o.syms[e].shndx as usize;
+/// The node's copy of SD_<hash>, after the shared sections it uses: (exec address, bytes of the copy).
+fn instantiate(o: &mut PatchObj, a: &mut Arena, hash: u64, root: usize, hole: HoleFn) -> Result<(usize, usize), String> {
+    let &(e, holes) = o.entries.get(&hash).ok_or_else(|| format!("SD_{:016x} not in patch.o", hash))?;
+    let start = match o.kinds[e] { Target::Sec(s, _) => s, _ => return Err("entry not in a section".into()) };
     // the holes this entry may bind: (offset, size) pairs of its binding descriptor
-    let desc: Vec<u32> = o.entry_bytes(&format!("{}_HOLES", entry)).map(|b| b.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect()).unwrap_or_default();
+    let desc: Vec<u32> = holes.and_then(|h| o.sym_bytes(h)).map(|b| b.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()).unwrap_or_default();
     let mine = o.closure(start, o.per_node[start])?;
     // the shared copies first: a node's sections then lie together
     let mut need = vec![];
     for &s in &mine {
-        for r in &o.relas[s] { if let Target::Sec(t, _) = o.target(r.sym)? { if !o.per_node[t] && o.shared[t] == 0 { need.push(t); } } }
+        for r in &o.relas[s] { if let Target::Sec(t, _) = o.kinds[r.sym as usize] { if !o.per_node[t] && o.shared[t] == 0 { need.push(t); } } }
     }
     if !o.per_node[start] { need.push(start); }
-    for t in need { if o.shared[t] == 0 { place(o, a, ext, t, false, root, &desc, hole)?; } }
-    if !o.per_node[start] { return Ok((o.shared[start] + o.syms[e].value as usize, 0)); }
-    let (base, len) = place(o, a, ext, start, true, root, &desc, hole)?;
-    Ok((base + o.syms[e].value as usize, len))
+    for t in need { if o.shared[t] == 0 { place(o, a, t, false, root, &desc, hole)?; } }
+    let value = o.syms[e].value as usize;
+    if !o.per_node[start] { return Ok((o.shared[start] + value, 0)); }
+    let (base, len) = place(o, a, start, true, root, &desc, hole)?;
+    Ok((base + value, len))
 }
 
 /// Copy the closure of `start` (per node or shared) into the arena and relocate it: (address of start, bytes).
-/// A call out of rel32 reach goes through a stub, a GOT relocation through a slot, both after the copy.
-#[allow(clippy::too_many_arguments)]
-fn place(o: &mut PatchObj, a: &mut Arena, ext: &mut HashMap<String, usize>, start: usize, per_node: bool, root: usize, desc: &[u32], hole: HoleFn) -> Result<(usize, usize), String> {
+/// What the GOT holds is put in the instruction when it fits (ld's relaxations), else in a slot; a
+/// call out of rel32 reach goes through a stub.  Slots and stubs follow the copy.
+fn place(o: &mut PatchObj, a: &mut Arena, start: usize, per_node: bool, root: usize, desc: &[u32], hole: HoleFn) -> Result<(usize, usize), String> {
     let secs = o.closure(start, per_node)?;
     // sections with their alignment, and a 16-byte slot or stub per relocation that may need one
     a.reserve(secs.iter().map(|&s| o.secs[s].size + o.secs[s].align.max(16) + 16 * o.relas[s].iter().filter(|r| matches!(r.typ, 4 | 9 | 41 | 42)).count()).sum())?;
@@ -361,27 +392,23 @@ fn place(o: &mut PatchObj, a: &mut Arena, ext: &mut HashMap<String, usize>, star
         for i in 0..o.relas[s].len() {
             let (off, sym, typ, add) = { let r = &o.relas[s][i]; (r.off, r.sym, r.typ, r.add) };
             let p = addr[&s] + off;
-            let sv: u64 = match o.target(sym)? {
+            let sv: u64 = match o.kinds[sym as usize] {
                 Target::Sec(t, v) => {
                     let at = addr.get(&t).copied().unwrap_or(o.shared[t]);
-                    if at == 0 { return Err(format!("section {} not placed", o.sec_name(t))); }
+                    if at == 0 { return Err(format!("section {} not placed", show(o.sec_name(t)))); }
                     (at as u64).wrapping_add(v)
                 }
                 Target::Abs(v) => v,
                 Target::Root => root as u64,
-                Target::Hole(h) => {
-                    let name = o.sym_name(h);
-                    let rest = &name["ASTRUST_HOLE_".len()..];
-                    let (op, at) = rest.rsplit_once('_').ok_or("bad hole name")?;
+                Target::Hole => {
+                    let name = o.sym_name(sym);
+                    let (op, at) = name["ASTRUST_HOLE_".len()..].rsplit_once('_').ok_or("bad hole name")?;
                     let at: usize = at.parse().map_err(|_| "bad hole offset")?;
                     if !desc.chunks_exact(2).any(|d| d[0] as usize == at) { return Err(format!("hole {} not in the descriptor", name)); }
                     hole(op, root, at).ok_or_else(|| format!("hole {} unbound", name))?
                 }
-                Target::Ext(x) => {
-                    let name = o.sym_name(x).to_string();
-                    let weak = o.syms[x as usize].info >> 4 == STB_WEAK;
-                    resolve(ext, &name, weak)? as u64
-                }
+                Target::Ext { weak } => o.resolve(sym, weak)? as u64,
+                Target::Bad => return Err(format!("unsupported symbol {}", o.sym_name(sym))),
             };
             let pc = |v: i128| -> Result<[u8; 4], String> { i32::try_from(v).map(|x| x.to_le_bytes()).map_err(|_| "pc32 out of range".to_string()) };
             let bytes: Vec<u8> = match typ {
@@ -395,9 +422,7 @@ fn place(o: &mut PatchObj, a: &mut Arena, ext: &mut HashMap<String, usize>, star
                             // a call out of reach: jmp *0(%rip) and the address
                             let stub = match slots.get(&(sym | 1 << 31)) { Some(&x) => x, None => {
                                 let x = a.alloc(16, 16)?;
-                                let mut b = vec![0xff, 0x25, 0, 0, 0, 0];
-                                b.extend_from_slice(&sv.to_le_bytes());
-                                a.write(x, &b);
+                                a.write(x, &[&[0xff, 0x25, 0, 0, 0, 0][..], &sv.to_le_bytes()].concat());
                                 slots.insert(sym | 1 << 31, x); x } };
                             pc(stub as i128 + add as i128 - p as i128)?.to_vec()
                         }
@@ -405,25 +430,23 @@ fn place(o: &mut PatchObj, a: &mut Arena, ext: &mut HashMap<String, usize>, star
                     }
                 }
                 9 | 41 | 42 => {                                                               // GOTPCREL(X), REX_GOTPCRELX
-                    // relax as ld does: the instruction takes the value itself when it can
                     let rel = sv as i128 - (p as i128 + 4);
                     let code = &o.data[o.secs[s].off..o.secs[s].off + o.secs[s].size];
-                    let (op, modrm, rex) = (code.get(off.wrapping_sub(2)).copied(), code.get(off.wrapping_sub(1)).copied(), code.get(off.wrapping_sub(3)).copied());
+                    let at = |k: usize| off.checked_sub(k).and_then(|j| code.get(j)).copied();
                     let relaxed: Option<Vec<(usize, Vec<u8>)>> = if add != -4 { None } else {
-                        match (typ, op, modrm) {
+                        match (at(2), at(1)) {
                             // call *x(%rip) -> addr32 call x
-                            (9 | 41, Some(0xff), Some(0x15)) => pc(rel).ok().map(|b| vec![(p - 2, [&[0x67, 0xe8][..], &b].concat())]),
+                            (Some(0xff), Some(0x15)) if typ != 42 => pc(rel).ok().map(|b| vec![(p - 2, [&[0x67, 0xe8][..], &b].concat())]),
                             // jmp *x(%rip) -> jmp x; nop
-                            (9 | 41, Some(0xff), Some(0x25)) => pc(rel + 1).ok().map(|b| vec![(p - 2, [&[0xe9][..], &b, &[0x90]].concat())]),
-                            (9 | 42, Some(0x8b), Some(m)) if m & 0xc7 == 0x05 && rex.is_some_and(|r| r & 0xf8 == 0x48) => {
-                                let r = rex.unwrap();
-                                if let Ok(v) = i32::try_from(sv as i64) {
-                                    // mov x@GOTPCREL(%rip), %reg -> mov $x, %reg (REX.R becomes REX.B)
-                                    let rex2 = (r & !4) | ((r & 4) >> 2);
-                                    Some(vec![(p - 3, [&[rex2, 0xc7, 0xc0 | ((m >> 3) & 7)][..], &v.to_le_bytes()].concat())])
-                                } else {
+                            (Some(0xff), Some(0x25)) if typ != 42 => pc(rel + 1).ok().map(|b| vec![(p - 2, [&[0xe9][..], &b, &[0x90]].concat())]),
+                            // mov x(%rip), %reg with REX.W
+                            (Some(0x8b), Some(m)) if typ != 41 && m & 0xc7 == 0x05 && at(3).is_some_and(|r| r & 0xf8 == 0x48) => {
+                                let r = at(3).unwrap();
+                                match i32::try_from(sv as i64) {
+                                    // -> mov $x, %reg (REX.R becomes REX.B)
+                                    Ok(v) => Some(vec![(p - 3, [&[(r & !4) | ((r & 4) >> 2), 0xc7, 0xc0 | ((m >> 3) & 7)][..], &v.to_le_bytes()].concat())]),
                                     // -> lea x(%rip), %reg
-                                    pc(rel).ok().map(|b| vec![(p - 2, vec![0x8d]), (p, b.to_vec())])
+                                    Err(_) => pc(rel).ok().map(|b| vec![(p - 2, vec![0x8d]), (p, b.to_vec())]),
                                 }
                             }
                             _ => None,
@@ -443,14 +466,4 @@ fn place(o: &mut PatchObj, a: &mut Arena, ext: &mut HashMap<String, usize>, star
     }
     if !per_node { for (&s, &at) in &addr { o.shared[s] = at; } }
     Ok((addr[&start], a.bytes - first))
-}
-
-fn resolve(ext: &mut HashMap<String, usize>, name: &str, weak: bool) -> Result<usize, String> {
-    if let Some(&v) = ext.get(name) { return Ok(v); }
-    let c = std::ffi::CString::new(name).map_err(|_| "bad symbol name")?;
-    // SAFETY: dlsym with RTLD_DEFAULT (null) and a NUL-terminated name only looks the symbol up.
-    let v = unsafe { dlsym(std::ptr::null_mut(), c.as_ptr()) } as usize;
-    if v == 0 && !weak { return Err(format!("unresolved {}", name)); }
-    ext.insert(name.to_string(), v);
-    Ok(v)
 }

@@ -859,13 +859,14 @@ fn SPECIALIZE_node_ivar_arith(sc: &mut SpecCtx, n: NodePtr) -> String {
     let was_open = !sc.open.insert(own_hash);
     let u = unsafe { &(*(n as *mut NodeOf<node_ivar_arith_struct>)).u };
     let t_v = specialize_node(sc, u.v);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_ivar_arith_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("(*np).u.name".to_string());
     a.push(format!("{}", (*np).u.sub));
     a.push("v_v".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_ivar_arith_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_ivar_arith_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_ivar_arith_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_ivar_arith_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.ic".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push(format!("{}u32", { let u = &(*np).u; if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }));
@@ -883,7 +884,7 @@ fn SPECIALIZE_node_ivar_arith(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_ivar_arith_struct>;\n", "n"));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, {}, fp)?;\n", t_v, child_ptr_expr(n, u.v)));
-    body.push_str(&format!("        EVAL_node_ivar_arith{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_ivar_arith{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -1031,12 +1032,12 @@ fn SPECIALIZE_node_const(sc: &mut SpecCtx, n: NodePtr) -> String {
     let own_hash = hash_node(n);
     let was_open = !sc.open.insert(own_hash);
     let u = unsafe { &(*(n as *mut NodeOf<node_const_struct>)).u };
-
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_const_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("(*np).u.name".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_const_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_const_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_const_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_const_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
@@ -1052,7 +1053,7 @@ fn SPECIALIZE_node_const(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_const_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_const{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_const{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -1067,12 +1068,13 @@ fn SPECIALIZE_node_const_path(sc: &mut SpecCtx, n: NodePtr) -> String {
     let was_open = !sc.open.insert(own_hash);
     let u = unsafe { &(*(n as *mut NodeOf<node_const_path_struct>)).u };
     let t_parent = specialize_node(sc, u.parent);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_const_path_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_parent".to_string());
     a.push("(*np).u.name".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_const_path_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_const_path_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_const_path_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_const_path_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     }
     if !was_open { sc.open.remove(&own_hash); }
     // named by what is baked too (children's types, @bake values), not by the hash alone:
@@ -1087,7 +1089,7 @@ fn SPECIALIZE_node_const_path(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_const_path_struct>;\n", "n"));
     body.push_str(&format!("        let v_parent = <{} as Disp>::call(c, {}, fp)?;\n", t_parent, child_ptr_expr(n, u.parent)));
-    body.push_str(&format!("        EVAL_node_const_path{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_const_path{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -1337,11 +1339,12 @@ fn SPECIALIZE_node_line(sc: &mut SpecCtx, n: NodePtr) -> String {
     let own_hash = hash_node(n);
     let was_open = !sc.open.insert(own_hash);
     let u = unsafe { &(*(n as *mut NodeOf<node_line_struct>)).u };
+    let mut t_line = "crate::vm::LineAt".to_string();
     let t_body = specialize_node(sc, u.body);
     let np = n as *mut NodeOf<node_line_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_line_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_line_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_line_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_line_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push(child_ptr_expr(n, u.body));
     }
     if !was_open { sc.open.remove(&own_hash); }
@@ -1357,7 +1360,7 @@ fn SPECIALIZE_node_line(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_line_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_line{}({})\n    }} }}\n", format!("::<{}>", t_body), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_line{}({})\n    }} }}\n", format!("::<{}, {}>", t_line, t_body), a.join(", ")));
 
 
     body.push_str("}
@@ -2044,6 +2047,7 @@ fn SPECIALIZE_node_call(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_call_struct>)).u };
     let t_recv = specialize_node(sc, u.recv);
     let t_args = specialize_list(sc, &u.args, n);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let (t_callee, h_callee) = { let np = n as *mut NodeOf<node_call_struct>; let p: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) } }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth { { let q: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee_rec(&u.cc, u.args.len(), u.flags) } }; if sc.spec_max_depth > 0 && !q.is_null() && sc.open.contains(&hash_node(q)) { (specialize_rec(sc, q), hash_node(q)) } else { ("Dyn".to_string(), 0u64) } } } else if sc.open.contains(&hash_node(p)) { if sc.rec_unroll && sc.unrolled.insert(hash_node(p)) { sc.spec_depth += 1; let t = specialize_open(sc, p); sc.spec_depth -= 1; sc.unrolled.remove(&hash_node(p)); (t, hash_node(p)) } else { let q: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee_rec(&u.cc, u.args.len(), u.flags) } }; if sc.spec_max_depth > 0 && !q.is_null() && sc.open.contains(&hash_node(q)) { (specialize_rec(sc, q), hash_node(q)) } else { ("Dyn".to_string(), 0u64) } } } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };
     let np = n as *mut NodeOf<node_call_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
@@ -2052,7 +2056,7 @@ fn SPECIALIZE_node_call(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("list_base(n)".to_string());
     a.push("(*np).u.mid".to_string());
     a.push(format!("{}u32", (*np).u.flags));
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_call_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_call_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push(format!("{}u64", h_callee));
     a.push(format!("{}u32", { let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }));
@@ -2072,7 +2076,7 @@ fn SPECIALIZE_node_call(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_call_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_call{}({})\n    }} }}\n", format!("::<{}, {}, {}>", t_recv, t_args, t_callee), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_call{}({})\n    }} }}\n", format!("::<{}, {}, {}, {}>", t_recv, t_args, t_line, t_callee), a.join(", ")));
 
 
     body.push_str("}
@@ -2088,6 +2092,7 @@ fn SPECIALIZE_node_call_blk(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_call_blk_struct>)).u };
     let t_recv = specialize_node(sc, u.recv);
     let t_args = specialize_list(sc, &u.args, n);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let (t_callee, h_callee) = { let np = n as *mut NodeOf<node_call_blk_struct>; let p: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) } }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth { { let q: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee_rec(&u.cc, u.args.len(), u.flags) } }; if sc.spec_max_depth > 0 && !q.is_null() && sc.open.contains(&hash_node(q)) { (specialize_rec(sc, q), hash_node(q)) } else { ("Dyn".to_string(), 0u64) } } } else if sc.open.contains(&hash_node(p)) { if sc.rec_unroll && sc.unrolled.insert(hash_node(p)) { sc.spec_depth += 1; let t = specialize_open(sc, p); sc.spec_depth -= 1; sc.unrolled.remove(&hash_node(p)); (t, hash_node(p)) } else { let q: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee_rec(&u.cc, u.args.len(), u.flags) } }; if sc.spec_max_depth > 0 && !q.is_null() && sc.open.contains(&hash_node(q)) { (specialize_rec(sc, q), hash_node(q)) } else { ("Dyn".to_string(), 0u64) } } } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };
     let (t_body, h_body) = { let np = n as *mut NodeOf<node_call_blk_struct>; let p: NodePtr = unsafe { { let u = &(*np).u; crate::inline_iter::spec_iter_block(&u.cc, u.args.len(), crate::vm::site_kind(&u.cc, u.args.len(), u.flags), u.blk) } }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth { ("Dyn".to_string(), 0u64) } else if sc.open.contains(&hash_node(p)) { ("Dyn".to_string(), 0u64) } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };
     let np = n as *mut NodeOf<node_call_blk_struct>;
@@ -2097,7 +2102,7 @@ fn SPECIALIZE_node_call_blk(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("list_base(n)".to_string());
     a.push("(*np).u.mid".to_string());
     a.push(format!("{}u32", (*np).u.flags));
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_blk_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_call_blk_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_blk_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_call_blk_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("(*np).u.blk".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push(format!("{}u64", h_callee));
@@ -2118,7 +2123,7 @@ fn SPECIALIZE_node_call_blk(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_call_blk_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_call_blk{}({})\n    }} }}\n", format!("::<{}, {}, {}, {}>", t_recv, t_args, t_callee, t_body), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_call_blk{}({})\n    }} }}\n", format!("::<{}, {}, {}, {}, {}>", t_recv, t_args, t_line, t_callee, t_body), a.join(", ")));
 
 
     body.push_str("}
@@ -2134,6 +2139,7 @@ fn SPECIALIZE_node_call_kw(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_call_kw_struct>)).u };
     let t_recv = specialize_node(sc, u.recv);
     let t_args = specialize_list(sc, &u.args, n);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let (t_callee, h_callee) = { let np = n as *mut NodeOf<node_call_kw_struct>; let p: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee_kw(&u.cc, u.args.len(), u.ci) } }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth { { let q: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee_kw_rec(&u.cc, u.args.len(), u.ci) } }; if sc.spec_max_depth > 0 && !q.is_null() && sc.open.contains(&hash_node(q)) { (specialize_rec(sc, q), hash_node(q)) } else { ("Dyn".to_string(), 0u64) } } } else if sc.open.contains(&hash_node(p)) { if sc.rec_unroll && sc.unrolled.insert(hash_node(p)) { sc.spec_depth += 1; let t = specialize_open(sc, p); sc.spec_depth -= 1; sc.unrolled.remove(&hash_node(p)); (t, hash_node(p)) } else { let q: NodePtr = unsafe { { let u = &(*np).u; crate::vm::spec_callee_kw_rec(&u.cc, u.args.len(), u.ci) } }; if sc.spec_max_depth > 0 && !q.is_null() && sc.open.contains(&hash_node(q)) { (specialize_rec(sc, q), hash_node(q)) } else { ("Dyn".to_string(), 0u64) } } } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };
     let np = n as *mut NodeOf<node_call_kw_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
@@ -2142,7 +2148,7 @@ fn SPECIALIZE_node_call_kw(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("list_base(n)".to_string());
     a.push("(*np).u.mid".to_string());
     a.push(format!("{}u32", (*np).u.flags));
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_kw_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_call_kw_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_kw_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_call_kw_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("(*np).u.ci".to_string());
     a.push("&mut (*np).u.cc".to_string());
     a.push(format!("{}u64", h_callee));
@@ -2161,7 +2167,7 @@ fn SPECIALIZE_node_call_kw(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_call_kw_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_call_kw{}({})\n    }} }}\n", format!("::<{}, {}, {}>", t_recv, t_args, t_callee), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_call_kw{}({})\n    }} }}\n", format!("::<{}, {}, {}, {}>", t_recv, t_args, t_line, t_callee), a.join(", ")));
 
 
     body.push_str("}
@@ -2177,6 +2183,7 @@ fn SPECIALIZE_node_call_x(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_call_x_struct>)).u };
     let t_recv = specialize_node(sc, u.recv);
     let t_args = specialize_list(sc, &u.args, n);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_call_x_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
@@ -2184,7 +2191,7 @@ fn SPECIALIZE_node_call_x(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("list_base(n)".to_string());
     a.push("(*np).u.mid".to_string());
     a.push(format!("{}u32", (*np).u.flags));
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_x_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_call_x_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_call_x_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_call_x_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("(*np).u.ci".to_string());
     a.push("&mut (*np).u.cc".to_string());
     }
@@ -2201,7 +2208,7 @@ fn SPECIALIZE_node_call_x(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_call_x_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_call_x{}({})\n    }} }}\n", format!("::<{}, {}>", t_recv, t_args), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_call_x{}({})\n    }} }}\n", format!("::<{}, {}, {}>", t_recv, t_args, t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -2217,6 +2224,7 @@ fn SPECIALIZE_node_attrasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_attrasgn_struct>)).u };
     let t_recv = specialize_node(sc, u.recv);
     let t_args = specialize_list(sc, &u.args, n);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_attrasgn_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
@@ -2224,7 +2232,7 @@ fn SPECIALIZE_node_attrasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("list_base(n)".to_string());
     a.push("(*np).u.mid".to_string());
     a.push(format!("{}u32", (*np).u.flags));
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_attrasgn_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_attrasgn_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_attrasgn_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_attrasgn_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push(format!("{}u32", { let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }));
     }
@@ -2241,7 +2249,7 @@ fn SPECIALIZE_node_attrasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_attrasgn_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_attrasgn{}({})\n    }} }}\n", format!("::<{}, {}>", t_recv, t_args), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_attrasgn{}({})\n    }} }}\n", format!("::<{}, {}, {}>", t_recv, t_args, t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -2256,11 +2264,12 @@ fn SPECIALIZE_node_super(sc: &mut SpecCtx, n: NodePtr) -> String {
     let was_open = !sc.open.insert(own_hash);
     let u = unsafe { &(*(n as *mut NodeOf<node_super_struct>)).u };
     let t_args = specialize_list(sc, &u.args, n);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_super_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("list_base(n)".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_super_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_super_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_super_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_super_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("(*np).u.ci".to_string());
     a.push(format!("{}", (*np).u.zsuper));
     }
@@ -2277,7 +2286,7 @@ fn SPECIALIZE_node_super(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_super_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_super{}({})\n    }} }}\n", format!("::<{}>", t_args), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_super{}({})\n    }} }}\n", format!("::<{}, {}>", t_args, t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -2430,12 +2439,13 @@ fn SPECIALIZE_node_opt_plus(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_plus_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_plus_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_plus_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_plus_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_plus_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_plus_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2454,7 +2464,7 @@ fn SPECIALIZE_node_opt_plus(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_plus_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_node_opt_plus{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_plus{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -2470,12 +2480,13 @@ fn SPECIALIZE_node_opt_minus(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_minus_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_minus_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_minus_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_minus_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_minus_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_minus_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2494,7 +2505,7 @@ fn SPECIALIZE_node_opt_minus(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_minus_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_node_opt_minus{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_minus{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -2510,12 +2521,13 @@ fn SPECIALIZE_node_opt_mul(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_mul_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_mul_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_mul_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_mul_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_mul_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_mul_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2534,7 +2546,7 @@ fn SPECIALIZE_node_opt_mul(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_mul_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_node_opt_mul{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_mul{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -2550,12 +2562,13 @@ fn SPECIALIZE_node_opt_div(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_div_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_div_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_div_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_div_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_div_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_div_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2574,7 +2587,7 @@ fn SPECIALIZE_node_opt_div(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_div_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_node_opt_div{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_div{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -2590,12 +2603,13 @@ fn SPECIALIZE_node_opt_pow(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_pow_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_pow_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_pow_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_pow_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_pow_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_pow_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
@@ -2612,7 +2626,7 @@ fn SPECIALIZE_node_opt_pow(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_pow_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_node_opt_pow{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_pow{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -2628,12 +2642,13 @@ fn SPECIALIZE_node_opt_mod(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_mod_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_mod_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_mod_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_mod_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_mod_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_mod_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
@@ -2650,7 +2665,7 @@ fn SPECIALIZE_node_opt_mod(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_mod_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_node_opt_mod{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_mod{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -2666,12 +2681,13 @@ fn SPECIALIZE_node_opt_lt(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_lt_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_lt_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_lt_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_lt_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_lt_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_lt_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2690,12 +2706,12 @@ fn SPECIALIZE_node_opt_lt(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_lt_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_node_opt_lt{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_lt{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
     body.push_str(&format!("    #[inline(always)]\n    fn test(c: &mut Ctx, n: NodePtr, fp: Fp) -> Result<bool, Esc> {{ unsafe {{\n"));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_lt_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_TEST_node_opt_lt{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_TEST_node_opt_lt{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
     body.push_str("}
 ");
@@ -2710,12 +2726,13 @@ fn SPECIALIZE_node_opt_le(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_le_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_le_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_le_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_le_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_le_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_le_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2734,12 +2751,12 @@ fn SPECIALIZE_node_opt_le(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_le_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_node_opt_le{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_le{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
     body.push_str(&format!("    #[inline(always)]\n    fn test(c: &mut Ctx, n: NodePtr, fp: Fp) -> Result<bool, Esc> {{ unsafe {{\n"));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_le_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_TEST_node_opt_le{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_TEST_node_opt_le{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
     body.push_str("}
 ");
@@ -2754,12 +2771,13 @@ fn SPECIALIZE_node_opt_gt(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_gt_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_gt_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_gt_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_gt_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_gt_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_gt_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2778,12 +2796,12 @@ fn SPECIALIZE_node_opt_gt(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_gt_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_node_opt_gt{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_gt{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
     body.push_str(&format!("    #[inline(always)]\n    fn test(c: &mut Ctx, n: NodePtr, fp: Fp) -> Result<bool, Esc> {{ unsafe {{\n"));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_gt_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_TEST_node_opt_gt{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_TEST_node_opt_gt{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
     body.push_str("}
 ");
@@ -2798,12 +2816,13 @@ fn SPECIALIZE_node_opt_ge(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_ge_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_ge_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_ge_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_ge_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_ge_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_ge_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2822,12 +2841,12 @@ fn SPECIALIZE_node_opt_ge(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_ge_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_node_opt_ge{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_ge{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
     body.push_str(&format!("    #[inline(always)]\n    fn test(c: &mut Ctx, n: NodePtr, fp: Fp) -> Result<bool, Esc> {{ unsafe {{\n"));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_ge_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_TEST_node_opt_ge{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_TEST_node_opt_ge{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
     body.push_str("}
 ");
@@ -2842,12 +2861,13 @@ fn SPECIALIZE_node_opt_eq(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_eq_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_eq_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_eq_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_eq_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_eq_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_eq_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2866,12 +2886,12 @@ fn SPECIALIZE_node_opt_eq(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_eq_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_node_opt_eq{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_eq{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
     body.push_str(&format!("    #[inline(always)]\n    fn test(c: &mut Ctx, n: NodePtr, fp: Fp) -> Result<bool, Esc> {{ unsafe {{\n"));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_eq_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_TEST_node_opt_eq{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_TEST_node_opt_eq{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
     body.push_str("}
 ");
@@ -2886,12 +2906,13 @@ fn SPECIALIZE_node_opt_neq(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_neq_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_neq_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_neq_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_neq_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_neq_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_neq_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -2910,12 +2931,12 @@ fn SPECIALIZE_node_opt_neq(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_neq_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_node_opt_neq{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_neq{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
     body.push_str(&format!("    #[inline(always)]\n    fn test(c: &mut Ctx, n: NodePtr, fp: Fp) -> Result<bool, Esc> {{ unsafe {{\n"));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_neq_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_TEST_node_opt_neq{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_TEST_node_opt_neq{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
     body.push_str("}
 ");
@@ -2930,12 +2951,13 @@ fn SPECIALIZE_node_opt_ltlt(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_ltlt_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_ltlt_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_ltlt_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_ltlt_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_ltlt_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_ltlt_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
@@ -2952,7 +2974,7 @@ fn SPECIALIZE_node_opt_ltlt(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_ltlt_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_node_opt_ltlt{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_ltlt{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -2968,12 +2990,13 @@ fn SPECIALIZE_node_opt_gtgt(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_gtgt_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_gtgt_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_gtgt_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_gtgt_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_gtgt_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_gtgt_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
@@ -2990,7 +3013,7 @@ fn SPECIALIZE_node_opt_gtgt(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_gtgt_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_node_opt_gtgt{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_gtgt{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -3006,12 +3029,13 @@ fn SPECIALIZE_node_opt_xor(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_xor_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_xor_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_xor_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_xor_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_xor_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_xor_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
@@ -3028,7 +3052,7 @@ fn SPECIALIZE_node_opt_xor(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_xor_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_node_opt_xor{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_xor{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -3044,12 +3068,13 @@ fn SPECIALIZE_node_opt_and(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_and_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_and_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_and_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_and_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_and_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_and_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
@@ -3066,7 +3091,7 @@ fn SPECIALIZE_node_opt_and(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_and_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_node_opt_and{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_and{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -3082,12 +3107,13 @@ fn SPECIALIZE_node_opt_or(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_or_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_or_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_or_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_or_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_or_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_or_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
@@ -3104,7 +3130,7 @@ fn SPECIALIZE_node_opt_or(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_or_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_node_opt_or{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_or{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -3120,12 +3146,13 @@ fn SPECIALIZE_node_opt_aref(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = unsafe { &(*(n as *mut NodeOf<node_opt_aref_struct>)).u };
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_aref_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_aref_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_aref_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_aref_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_aref_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -3144,7 +3171,7 @@ fn SPECIALIZE_node_opt_aref(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_opt_aref_struct>;\n", "n"));
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
-    body.push_str(&format!("        EVAL_node_opt_aref{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_aref{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -3161,13 +3188,14 @@ fn SPECIALIZE_node_opt_aset(sc: &mut SpecCtx, n: NodePtr) -> String {
     let t_a = specialize_node(sc, u.a);
     let t_b = specialize_node(sc, u.b);
     let t_v = specialize_node(sc, u.v);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let np = n as *mut NodeOf<node_opt_aset_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     unsafe {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     a.push("v_v".to_string());
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_aset_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_aset_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_opt_aset_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_opt_aset_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push("&mut (*np).u.cc".to_string());
     a.push("&mut (*np).u.tf".to_string());
     a.push(format!("{}u32", { 1 + (*np).u.tf.0 }));
@@ -3187,7 +3215,7 @@ fn SPECIALIZE_node_opt_aset(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
     body.push_str(&format!("        let v_b = <{} as Disp>::call(c, {}, fp)?;\n", t_b, child_ptr_expr(n, u.b)));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, {}, fp)?;\n", t_v, child_ptr_expr(n, u.v)));
-    body.push_str(&format!("        EVAL_node_opt_aset{}({})\n    }} }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_opt_aset{}({})\n    }} }}\n", format!("::<{}>", t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -3201,6 +3229,7 @@ fn SPECIALIZE_node_method_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     let own_hash = hash_node(n);
     let was_open = !sc.open.insert(own_hash);
     let u = unsafe { &(*(n as *mut NodeOf<node_method_entry_struct>)).u };
+    let mut t_line = "crate::vm::LineAt".to_string();
     let t_body = specialize_node(sc, u.body);
     let np = n as *mut NodeOf<node_method_entry_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
@@ -3208,7 +3237,7 @@ fn SPECIALIZE_node_method_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push(format!("{}u32", (*np).u.nlocals));
     a.push(format!("{}u32", (*np).u.nparams));
     a.push(format!("{}u32", (*np).u.flags));
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_method_entry_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_method_entry_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_method_entry_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_method_entry_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push(child_ptr_expr(n, u.body));
     a.push("crate::vm::CallArgs::load(c)".to_string());
     }
@@ -3225,13 +3254,13 @@ fn SPECIALIZE_node_method_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_method_entry_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_method_entry{}({})\n    }} }}\n", format!("::<{}>", t_body), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_method_entry{}({})\n    }} }}\n", format!("::<{}, {}>", t_line, t_body), a.join(", ")));
 
     let a_spec: Vec<String> = a.iter().enumerate().map(|(i, x)| if i == 8 { "ca".to_string() } else { x.clone() }).collect();
     body.push_str(&format!("    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr, fp: Fp, ca: CallArgs) -> RV {{ unsafe {{\n"));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_method_entry_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_method_entry{}({})\n    }} }}\n", format!("::<{}>", t_body), a_spec.join(", ")));
+    body.push_str(&format!("        EVAL_node_method_entry{}({})\n    }} }}\n", format!("::<{}, {}>", t_line, t_body), a_spec.join(", ")));
     body.push_str("}
 ");
     sc.out.push_str(&body);
@@ -3243,6 +3272,7 @@ fn SPECIALIZE_node_block_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     let own_hash = hash_node(n);
     let was_open = !sc.open.insert(own_hash);
     let u = unsafe { &(*(n as *mut NodeOf<node_block_entry_struct>)).u };
+    let mut t_line = "crate::vm::LineAt".to_string();
     let t_body = specialize_node(sc, u.body);
     let np = n as *mut NodeOf<node_block_entry_struct>;
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
@@ -3250,7 +3280,7 @@ fn SPECIALIZE_node_block_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push(format!("{}u32", (*np).u.nlocals));
     a.push(format!("{}u32", (*np).u.nparams));
     a.push(format!("{}u32", (*np).u.flags));
-    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_block_entry_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_block_entry_struct>, head.line)) { a.push("crate::vm::Pos::bound(&raw const %SYM%)".replace("%SYM%", &s)); } else { a.push("crate::vm::Pos::at(&(*np).head.line)".to_string()); }
+    if sc.spec_depth == 0 { sc.holes.push((np as usize + std::mem::offset_of!(NodeOf<node_block_entry_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", np as usize + std::mem::offset_of!(NodeOf<node_block_entry_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*np).head.line)".to_string()); }
     a.push(child_ptr_expr(n, u.body));
     a.push("crate::vm::CallArgs::load(c)".to_string());
     }
@@ -3267,13 +3297,13 @@ fn SPECIALIZE_node_block_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ unsafe {{\n", name));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_block_entry_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_block_entry{}({})\n    }} }}\n", format!("::<{}>", t_body), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_block_entry{}({})\n    }} }}\n", format!("::<{}, {}>", t_line, t_body), a.join(", ")));
 
     let a_spec: Vec<String> = a.iter().enumerate().map(|(i, x)| if i == 8 { "ca".to_string() } else { x.clone() }).collect();
     body.push_str(&format!("    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr, fp: Fp, ca: CallArgs) -> RV {{ unsafe {{\n"));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_block_entry_struct>;\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_block_entry{}({})\n    }} }}\n", format!("::<{}>", t_body), a_spec.join(", ")));
+    body.push_str(&format!("        EVAL_node_block_entry{}({})\n    }} }}\n", format!("::<{}, {}>", t_line, t_body), a_spec.join(", ")));
     body.push_str("}
 ");
     sc.out.push_str(&body);
