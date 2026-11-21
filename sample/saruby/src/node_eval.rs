@@ -922,21 +922,21 @@ pub fn EVAL_node_call_x<D_recv: Disp, D_args: DispList>(c: &mut Ctx, n: NodePtr,
     let base = stage(c, 2)?;
     let r0 = <D_recv as Disp>::call(c, recv, fp)?;
     base[0].set(r0);
-    // f(*a) alone: a's elements are staged as the arguments, no argument Array
-    if srb_splat1(ci, flags) {
-        let v = <D_args as DispList>::nth(c, args, 0, fp)?;
-        unsafe { (*c.frame).line = line; }
-        return srb_call_splat1(c, cc, mid, base, v, ci, flags, fp);
-    }
-    let tmp = crate::array::ary_new();
-    base[1].set(tmp);
+    // f(*a) alone: a's elements are staged as the arguments, no argument Array (tmp is a itself)
+    let splat1 = srb_splat1(ci, flags);
     let mut blkv = NIL;
     let mut kw = NIL;
-    for i in 0..<D_args as DispList>::len(args) {
-        let v = <D_args as DispList>::nth(c, args, i, fp)?;
-        srb_callx_arg(c, ci, i, v, tmp, &mut kw, &mut blkv)?;
-    }
+    let tmp = if splat1 { <D_args as DispList>::nth(c, args, 0, fp)? } else {
+        let tmp = crate::array::ary_new();
+        base[1].set(tmp);
+        for i in 0..<D_args as DispList>::len(args) {
+            let v = <D_args as DispList>::nth(c, args, i, fp)?;
+            srb_callx_arg(c, ci, i, v, tmp, &mut kw, &mut blkv)?;
+        }
+        tmp
+    };
     unsafe { (*c.frame).line = line; }
+    if splat1 { return srb_call_splat1(c, cc, mid, base, tmp, ci, flags, fp); }
     srb_call_x(c, cc, mid, base, tmp, kw, blkv, ci, flags, fp)
 }
 
