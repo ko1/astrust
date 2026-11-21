@@ -193,7 +193,7 @@ impl Drop for FiberCtx {
 // ---- value stacks that read as nil ----------------------------------------------------------
 
 /// Bytes of the nil file; a stack maps it as many times as its size needs.
-const CHUNK: usize = 4 << 20;
+const CHUNK: usize = 1 << 20;   // written at startup: 1 MiB balances that against one mmap per MiB of stack
 
 thread_local! {
     static NILFD: std::cell::Cell<i32> = const { std::cell::Cell::new(-2) };   // -2: not tried
@@ -208,7 +208,7 @@ fn nil_fd() -> Option<i32> {
     // out of the way of the descriptors a program sees (they match CRuby's)
     let fd = match crate::builtins::sys::fcntl(fd, F_DUPFD_CLOEXEC, FD_MIN) { -1 => fd, hi => { crate::builtins::sys::close(fd); hi } };
     let ok = fd >= 0 && crate::builtins::sys::ftruncate(fd, CHUNK as i64) == 0 && {
-        let buf: Vec<u8> = std::iter::repeat_n(NIL.raw().to_ne_bytes(), 8192).flatten().collect();
+        let buf = NIL.raw().to_ne_bytes().repeat(8192);
         (0..CHUNK / buf.len()).all(|i| crate::builtins::sys::pwrite(fd, &buf, (i * buf.len()) as i64) == buf.len() as isize)
     };
     if !ok && fd >= 0 { crate::builtins::sys::close(fd); }
