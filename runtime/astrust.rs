@@ -121,43 +121,62 @@ pub struct BakeConfig {
 
 /// A directory holding specialized code: `items/<name>.rs` (one per emitted item,
 /// content-addressed by its hash name, so bakes accumulate) and the linked `all.so`.
-/// `hopt_index.txt` maps an entry's structural hash and its program key (the embedder's: file and line, say)
-/// to the name of the SD baked for it (SD_<hopt>: structure and profile).  An entry of another program
-/// (no such key) gets the first SD baked for its structure.
+/// `hopt_index.txt` maps an entry's structural hash and its program key (the embedder's hash of what
+/// identifies the entry in its program: source text and line, say) to the name of the SD baked for it
+/// (SD_<hopt>: structure and profile).  An entry of another program (no such key) gets the first SD baked
+/// for its structure.  One line per row, `<horg> <key> <hopt>` in hex, sorted by horg (bake order within).
 pub struct CodeStore {
     pub dir: PathBuf,
     handle: *mut c_void,
     has_patch: bool,           // patch.o was there when all.so was loaded
-    index: HashMap<u64, Vec<(String, u64)>>,
+    index: Vec<(u64, u64, u64)>, // (horg, key, hopt), sorted by horg
 }
 
-impl CodeStore {
-    pub fn new(dir: impl AsRef<Path>) -> Self { CodeStore { dir: dir.as_ref().to_path_buf(), handle: std::ptr::null_mut(), has_patch: false, index: HashMap::new() } }
+/// 8 lowercase hex digits, decoded 8 bytes at a time (SWAR: the index is read at every startup).
+fn hex8(b: &[u8]) -> Option<u64> {
+    const H: u64 = 0x8080808080808080;
+    let k = |c: u64| c * 0x0101010101010101;
+    let x = u64::from_be_bytes(b.try_into().ok()?);
+    if x & H != 0 { return None; }
+    let ge = |lo: u64| (x + k(0x80 - lo)) & H;   // bit 7 of each byte: byte >= lo
+    let (d, l) = (ge(0x30) & !ge(0x3a), ge(0x61) & !ge(0x67));
+    if d | l != H { return None; }
+    let mut y = (x & k(0x0f)) + (l >> 7) * 9;
+    y = (y | y >> 4) & 0x00ff00ff00ff00ff;
+    y = (y | y >> 8) & 0x0000ffff0000ffff;
+    Some((y | y >> 16) & 0xffffffff)
+}
+fn hex16(b: &[u8]) -> Option<u64> { Some(hex8(&b[..8])? << 32 | hex8(&b[8..])?) }
 
-    fn read_index(dir: &Path) -> Vec<(u64, String, u64)> {
-        let Ok(s) = std::fs::read_to_string(dir.join("hopt_index.txt")) else { return vec![] };
-        s.lines().filter_map(|l| {
-            let mut it = l.splitn(3, ' ');
-            let h = u64::from_str_radix(it.next()?, 16).ok()?;
-            let o = u64::from_str_radix(it.next()?, 16).ok()?;
-            Some((h, it.next()?.to_string(), o))
-        }).collect()
+impl CodeStore {
+    pub fn new(dir: impl AsRef<Path>) -> Self { CodeStore { dir: dir.as_ref().to_path_buf(), handle: std::ptr::null_mut(), has_patch: false, index: vec![] } }
+
+    /// Rows in bake order within a horg, sorted by horg.
+    fn read_index(dir: &Path) -> Vec<(u64, u64, u64)> {
+        let Ok(s) = std::fs::read(dir.join("hopt_index.txt")) else { return vec![] };
+        // fixed-width lines: a file of another format yields no row
+        let mut v: Vec<(u64, u64, u64)> = s.chunks_exact(51).filter_map(|l| {
+            if l[16] != b' ' || l[33] != b' ' || l[50] != b'\n' { return None; }
+            Some((hex16(&l[..16])?, hex16(&l[17..33])?, hex16(&l[34..50])?))
+        }).collect();
+        v.sort_by_key(|r| r.0);   // stable, and linear on the sorted file
+        v
     }
     /// Record (structural hash, key, hopt) of baked entries; a key baked again takes its new SD.
-    pub fn add_index(&self, rows: &[(u64, String, u64)]) -> std::io::Result<()> {
+    pub fn add_index(&self, rows: &[(u64, u64, u64)]) -> std::io::Result<()> {
         let mut all = Self::read_index(&self.dir);
         for r in rows {
-            match all.iter_mut().find(|x| x.0 == r.0 && x.1 == r.1) { Some(x) => x.2 = r.2, None => all.push(r.clone()) }
+            match all.iter_mut().find(|x| x.0 == r.0 && x.1 == r.1) { Some(x) => x.2 = r.2, None => all.push(*r) }
         }
-        let s: String = all.iter().map(|(h, k, o)| format!("{:016x} {:016x} {}\n", h, o, k)).collect();
+        all.sort_by_key(|r| r.0);
+        let s: String = all.iter().map(|(h, k, o)| format!("{:016x} {:016x} {:016x}\n", h, k, o)).collect();
         std::fs::write(self.dir.join("hopt_index.txt"), s)
     }
     /// The SD name for an entry of structure `h` and program key `key`: its own, else the first baked for h, else h.
-    pub fn pick(&self, h: u64, key: &str) -> u64 {
-        match self.index.get(&h) {
-            Some(v) => v.iter().find(|x| x.0 == key).or(v.first()).map_or(h, |x| x.1),
-            None => h,
-        }
+    pub fn pick(&self, h: u64, key: u64) -> u64 {
+        let i = self.index.partition_point(|r| r.0 < h);
+        let run = self.index[i..].iter().take_while(|r| r.0 == h);
+        run.clone().find(|r| r.1 == key).or(run.clone().next()).map_or(h, |r| r.2)
     }
 
     /// dlopen `all.so` if present and baked against the same build.
@@ -178,7 +197,7 @@ impl CodeStore {
         }
         self.handle = h;
         self.has_patch = self.dir.join("patch.o").exists();
-        for (h, k, o) in Self::read_index(&self.dir) { self.index.entry(h).or_default().push((k, o)); }
+        self.index = Self::read_index(&self.dir);
         true
     }
 
@@ -187,8 +206,10 @@ impl CodeStore {
     /// Address of the exported entry `SD_<hash>`, if baked.
     pub fn lookup(&self, hash: u64) -> Option<*const c_void> {
         if self.handle.is_null() { return None; }
-        let name = CString::new(format!("SD_{:016x}", hash)).unwrap();
-        let p = unsafe { dlsym(self.handle, name.as_ptr()) };
+        // "SD_<16 hex>\0" on the stack: one per registered body at startup
+        let mut name = *b"SD_0000000000000000\0";
+        for i in 0..16 { name[3 + i] = b"0123456789abcdef"[(hash >> (60 - 4 * i) & 15) as usize]; }
+        let p = unsafe { dlsym(self.handle, name.as_ptr() as *const c_char) };
         if p.is_null() { None } else { Some(p as *const c_void) }
     }
 
@@ -304,6 +325,7 @@ pub struct TieredStore {
     pub collect: bool,
     pub prelude_entries: Vec<usize>,
     pub program_entries: Vec<usize>,
+    keys: HashMap<usize, u64>,   // entry -> program key, while collecting
     pub hits: usize,
     /// Patch binding: a body's own copy from patch.o, made at its first dispatch (`defer` / `bind`).
     pub patch: bool,
@@ -314,7 +336,7 @@ pub struct TieredStore {
 impl TieredStore {
     pub fn new(preload_dir: PathBuf, program_dir: Option<PathBuf>, build_id: &str, collect: bool) -> Self {
         let program = program_dir.map(|d| { let mut cs = CodeStore::new(d); cs.load(build_id); cs });
-        TieredStore { preload_dir, program, preload: None, preload_tried: false, collect, prelude_entries: vec![], program_entries: vec![], hits: 0,
+        TieredStore { preload_dir, program, preload: None, preload_tried: false, collect, prelude_entries: vec![], program_entries: vec![], keys: HashMap::new(), hits: 0,
                       patch: false, loader: None, pending: HashMap::new() }
     }
     /// After `register` found `shared` for `node`: true if the body is to get its own copy at its first
@@ -351,33 +373,40 @@ impl TieredStore {
         }
         self.preload.as_ref()
     }
-    /// Record an entry (a node, as usize, of structural hash `hash` and program key `key`) and return the
-    /// SD address to install and its name's hash (hopt_index.txt), if baked.
-    pub fn register(&mut self, node: usize, hash: u64, key: &str, is_prelude: bool, build_id: &str) -> Option<(*const c_void, u64)> {
+    /// Record an entry (a node, as usize, of structural hash `hash()` and program key `key()`) and return the
+    /// SD address to install and its name's hash (hopt_index.txt), if baked.  Neither hash is computed when
+    /// no store can use it (the body's store is not loaded and this run does not bake).
+    pub fn register(&mut self, node: usize, hash: impl FnOnce() -> u64, key: impl FnOnce() -> u64, is_prelude: bool, build_id: &str) -> Option<(*const c_void, u64)> {
         if self.program.is_none() { return None; }   // --plain
-        if self.collect { if is_prelude { self.prelude_entries.push(node) } else { self.program_entries.push(node) } }
-        let cs = if is_prelude { self.preload(build_id) } else { self.program.as_ref() }?;
-        let o = cs.pick(hash, key);
+        let loaded = if is_prelude { self.preload(build_id).is_some() } else { self.program.as_ref().is_some_and(|cs| cs.loaded()) };
+        if !loaded && !self.collect { return None; }
+        let (h, k) = (hash(), key());
+        if self.collect {
+            if is_prelude { self.prelude_entries.push(node) } else { self.program_entries.push(node) }
+            self.keys.insert(node, k);
+        }
+        let cs = if is_prelude { self.preload.as_ref() } else { self.program.as_ref() }.filter(|cs| cs.loaded())?;
+        let o = cs.pick(h, k);
         let p = cs.lookup(o)?;
         self.hits += 1;
         Some((p, o))
     }
     /// Bake: `spec(entries, patch)` returns the specializer output for a set of entries (patch: for patch.o,
     /// built next to all.so where the loader runs).
-    /// `index(entry)`: (structural hash, program key, hopt) of an entry, for hopt_index.txt.
-    pub fn bake(&mut self, program_dir: &Path, cfg: &BakeConfig, spec: impl Fn(&[usize], bool) -> String, index: impl Fn(usize) -> (u64, String, u64)) -> Result<usize, String> {
+    /// `index(entry)`: (structural hash, hopt) of an entry, for hopt_index.txt with its program key.
+    pub fn bake(&mut self, program_dir: &Path, cfg: &BakeConfig, spec: impl Fn(&[usize], bool) -> String, index: impl Fn(usize) -> (u64, u64)) -> Result<usize, String> {
         if self.preload(&cfg.build_id).is_none() {
             let _ = std::fs::remove_dir_all(self.preload_dir.join("items"));
             let _ = std::fs::remove_dir_all(self.preload_dir.join("pitems"));
             let _ = std::fs::remove_file(self.preload_dir.join("hopt_index.txt"));
-            Self::bake_into(&self.preload_dir, &self.prelude_entries, &spec, &index, cfg)?;
+            Self::bake_into(&self.preload_dir, &self.prelude_entries, &self.keys, &spec, &index, cfg)?;
         }
-        Self::bake_into(program_dir, &self.program_entries, &spec, &index, cfg)
+        Self::bake_into(program_dir, &self.program_entries, &self.keys, &spec, &index, cfg)
     }
-    fn bake_into(dir: &Path, entries: &[usize], spec: &impl Fn(&[usize], bool) -> String, index: &impl Fn(usize) -> (u64, String, u64), cfg: &BakeConfig) -> Result<usize, String> {
+    fn bake_into(dir: &Path, entries: &[usize], keys: &HashMap<usize, u64>, spec: &impl Fn(&[usize], bool) -> String, index: &impl Fn(usize) -> (u64, u64), cfg: &BakeConfig) -> Result<usize, String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let cs = CodeStore::new(dir);
-        let rows: Vec<(u64, String, u64)> = entries.iter().map(|&e| index(e)).collect();
+        let rows: Vec<(u64, u64, u64)> = entries.iter().map(|&e| { let (h, o) = index(e); (h, keys[&e], o) }).collect();
         cs.add_index(&rows).map_err(|e| e.to_string())?;
         let added = cs.add_items(&spec(entries, false)).map_err(|e| e.to_string())?;
         let padded = if loader::SUPPORTED { cs.add_items_in("pitems", &spec(entries, true)).map_err(|e| e.to_string())? } else { 0 };
