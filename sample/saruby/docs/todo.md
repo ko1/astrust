@@ -65,7 +65,9 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [x] Regexp のエンコーディング（~/ruby/src/trials/2026-11-23-saruby-regexp/）: /e /s /u /n・FIXEDENCODING / NOENCODING・rb_reg_preprocess / prepare_enc 相当（astrogre に UTF-8 / 1 バイト / EUC-JP / Shift_JIS / 2 バイト系 / EUC-TW / GB18030 の読み方）、UTF-16/32 は UTF-8 形で照合、inspect / to_s / union、Regexp.timeout（実行時に強制）、try_convert・linear_time?・MatchData#match 等。core/regexp 164 → 252 / 256、matchdata 165 → 185 / 185、language/regexp 224 → 251 / 258
   - [ ] 残り: 旧来マルチバイトの文字に \p{..}、ISO-8859-x の文字種・大小文字、[[:punct:]] Ps 等の表、gsub / scan / split の素の探索は timeout 無し、CRuby がメモ化で線形にする指数バックトラック（`(a*)*$`）、eval した非 UTF-8 文字列のソースエンコーディング（regexp リテラルが UTF-8 扱い）
   - [ ] liquid-compile +0.47 % 命令（StringScanner#scan +42 / =~ +44 命令/呼び出し: 照合ごとのエンコーディング判定・timeout・モード引数）。String に coderange のキャッシュがあれば判定の走査が消える
-- [ ] IO の読み込み変換が行に分けてから変換（CRuby は変換してから分ける）。xml:/newline: 装飾と ISO-2022-JP 等は IO では変換しない（econv.rs の Econv を IO ごとに 1 つ持てば済む）
+- [x] IO の変換を変換エンジン経由に（io.c の readconv / cbuf / writeconv、builtins/io_conv.rs、docs/io_design.md「Encoding conversion」、~/ruby/src/trials/2026-11-23-saruby-io-transcode/）: 変換してから分ける（gets / getc / read / ungetc の cbuf、AFTER_OUTPUT、行の一般分岐を変換なしの IO にも）、newline: / xml: / replace: 装飾、ISO-2022-JP・UTF-16/32 への書き出し（close で終端）、byte 読みと char 読みの区別、BOM|、IO.pipe / popen / IO.read・write のエンコーディングとオプション、open_args:。CRuby との差分コーパス 28,412 件で base 16,669 → 28,343 一致（残りは sprintf の UTF-16 引数・GB18030 の limit 切り・CRuby の 8 KiB バッファ依存）、rubyspec core/io 1286 → 1325（他の 5 dir は増減なし）。gets 系は read_line の毎行コピーをやめて −62〜76 % 命令、io_pipe_rw −56 %
+  - [ ] 残り: 変換ありの gets が遅い（econv の AFTER_OUTPUT 呼び出しが 1 文字ずつ: Shift_JIS→UTF-8 の gets が base（行ごとに変換、CRuby と違う結果）の 2.3 倍の命令）、GB18030 / Big5 / EUC-KR の limit 切り（Onigmo の left_adjust_char_head 未移植）、生の UTF-16 の limit 切りで CRuby の 8 KiB バッファ依存の挙動、File.open + close が +1.1 %（open ごと +43 命令: parse_mode と RIo の 4 欄）
+  - [ ] IO#puts / #print / #p が上書きされた #write を呼ばない（rubyspec io/puts 14 件）、sprintf の UTF-16 引数、Integer#chr(UTF-32BE)、String#chomp の UTF-16（コーパスで見つけた IO 外の差）
 - [x] blop 層（docs/io_design.md、~/ruby/src/trials/2026-11-22-saruby-blop/）: 待ちは全部 slab 所有の op、エンジンは poll（既定）/ epoll。1 ms ポーリング廃止。file/flock・file/open・io-wait/wait・process/status/wait のタイムアウト解消
 - [ ] まだタイムアウト: kernel/require（並行 require: ロード中 feature の待ちと他スレッドの Thread#backtrace が要る）、mutex/lock・thread/list（グリーンスレッドに横取りが無い: ループ後方枝 / メソッド入口のタイムスライス検査が要る）
 - [ ] blop: epoll の登録を fd 単位で持ち越す、io_uring エンジン、CFUNC ワーカー（flock / FIFO open / waitpid(-1) のバックオフ代替、getaddrinfo）
@@ -96,6 +98,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [ ] `Array#cycle(n).size` が i64 で `len * n` してあふれる（array_methods.rs:969。debug で panic、release では折り返し。CRuby は Bignum）
 
 ## 性能（上 3 つの後。新規には起こさない）
+- [ ] IO 変換 round 1 の代償: io_file_create（File.open+close）+1.07%（open 1 回 ~43 命令）、io_select2/3 +0.33/+0.23%、変換付き gets 2.3×・puts 1.6×（io.c 同様に 1 文字ずつ受け渡すため）
 - [ ] 正規表現 round 1 の代償: liquid-compile +0.47%・liquid-render +0.16%（マッチごとのエンコーディング判定 ~44 命令、timeout 参照、ステップ計数）。String の coderange キャッシュで判定を省ける
 - [ ] rclass 除去（a1217f5）の代償を取り戻す: poly +0.85%（interp）/ +1.17%（AOT）、object +0.3%、optcarrot +0.36%/フレーム（命令数）。原因は call_slow のキャッシュ hit 経路で c を引き回すレジスタ移動 ~2.7 命令/呼び出し、ivar 読みの miss 呼び出しに c を渡す 1 命令、new_object のクラスの ivar 数読み 1 命令（user 2026-11-22「高速化は別途考えましょう」）
 

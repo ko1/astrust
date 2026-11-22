@@ -61,8 +61,10 @@ fn thr(c: &mut Ctx, v: Value) -> Result<(), Esc> { if c.data::<RThread>(v).is_so
 fn cur(c: &Ctx) -> Value { CURRENT.get(c) }
 /// Thread.current
 pub fn current_thread(c: &Ctx) -> Value { cur(c) }
+#[inline]
 fn is_main(c: &Ctx) -> bool { CURRENT.get(c) == MAIN.get(c) }
 /// Other threads exist (or we are inside one): blocking calls must go through the scheduler.
+#[inline]
 pub fn active(c: &Ctx) -> bool { !is_main(c) || c.ary_len(LIST.get(c)) > 0 }
 fn new_thread(c: &mut Ctx, klass: Value) -> Value {
     let l = c.hash_new();

@@ -219,6 +219,10 @@ read only on paths that are slow anyway.  Measurements: `~/ruby/src/trials/2026-
 ## IO, processes, threads
 * `RIo` (builtins/io.rs) is a raw fd plus read/write buffers; fd 1 writes go through the
   global stdout buffer (`kernel::out_write`).  `flush_all` runs before fork/exec and at exit.
+  Encoding conversion is io.c's: a stream with an internal encoding or a newline decorator reads
+  through a readconv into a char buffer and the char readers split that; writes go through
+  rb_str_encode and a writeconv (builtins/io_conv.rs on econv.rs; docs/io_design.md "Encoding
+  conversion").
 * Process (builtins/process.rs) forks with libc directly; `Signal.trap` handlers set a pending
   bit and run at blocking points (`sleep`, `Process.kill` to self, waits, `IO.select`).
 * Fibers (fiber.rs, CRuby's resume / yield / transfer / raise / kill rules): a fiber gets a
