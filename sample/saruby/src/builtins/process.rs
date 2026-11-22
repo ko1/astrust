@@ -205,13 +205,9 @@ fn k_sleep(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     };
     out_flush();
     run_pending_signals(c)?;
-    if crate::builtins::thread::active(c) { crate::builtins::thread::sleep(c, dur)?; return Ok(Value::fix(t0.elapsed().as_secs_f64().round() as i64)); }
-    loop {
-        let left = match dur { Some(d) => { let l = d - t0.elapsed().as_secs_f64(); if l <= 0.0 { break; } l } None => 3600.0 };
-        let ts = sys::Timespec { sec: left.floor() as i64, nsec: ((left - left.floor()) * 1e9) as i64 };
-        let r = sys::nanosleep(&ts);
-        if r < 0 && sys::errno() == sys::EINTR { let had = PENDING.load(Ordering::SeqCst) != 0; run_pending_signals(c)?; if had && dur.is_none() { break; } }
-    }
+    // a TIMER blop with or without other threads: the pump wakes for trap handlers (eventfd), which run
+    // and the sleep goes on (CRuby 4.0: a handler does not end `sleep`, forever or timed)
+    crate::builtins::thread::sleep(c, dur)?;
     Ok(Value::fix(t0.elapsed().as_secs_f64().round() as i64))
 }
 
