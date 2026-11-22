@@ -772,11 +772,11 @@ pub const BUILTIN_FEATURES: &[&str] = &["set", "enumerator", "rational", "comple
     "objspace", "coverage", "ripper", "tempfile", "tmpdir", "english", "English", "bigdecimal", "date", "json", "time",
     "benchmark", "fileutils", "shellwords", "strscan", "digest", "digest/md5", "digest/sha1", "digest/sha2", "zlib", "base64",
     "optparse", "ostruct", "forwardable", "singleton", "observer", "delegate", "socket", "open3", "logger", "uri", "net/http",
-    "erb", "cgi", "yaml", "psych", "abbrev", "matrix", "prime", "tsort", "weakref", "find", "pathname", "io/nonblock", "fcntl",
+    "erb", "cgi", "abbrev", "matrix", "prime", "tsort", "weakref", "find", "pathname", "io/nonblock", "fcntl",
     "nkf", "racc", "racc/parser", "readline", "reline", "win32ole", "openssl", "mkmf", "rubygems",
     "objspace", "did_you_mean", "error_highlight", "syntax_suggest", "-test-/memory_status", "random/formatter",
     "date_core", "socket.so", "io/console/size", "digest/sha2", "digest/sha1", "digest/md5", "digest/rmd160", "digest/bubblebabble", "net/protocol", "net/https",
-    "open-uri", "resolv", "ipaddr", "pty", "syslog", "expect", "io/console", "yaml/store", "bigdecimal/util", "date/format", "psych/y",
+    "open-uri", "resolv", "ipaddr", "pty", "syslog", "expect", "io/console", "bigdecimal/util", "date/format",
 ];
 
 fn resolve_feature(c: &Ctx, name: &str, relative_to: Option<&str>) -> Option<std::path::PathBuf> {
@@ -812,12 +812,14 @@ fn locate_feature(c: &Ctx, name: &str, caller_file: Option<&str>) -> Feature {
     let is_rb = name.ends_with(".rb");
     let is_so = name.ends_with(".so");
     let base = name.trim_end_matches(".rb").trim_end_matches(".so");
-    let native = !is_rb && crate::builtins::prelude::has_feature(base);
+    // "foo.so" may name a native part of its own, below a pure-Ruby "foo" (psych.so)
+    let so_native = is_so && crate::builtins::prelude::has_feature(name);
+    let native = !is_rb && (crate::builtins::prelude::has_feature(base) || so_native);
     // the reference ruby's pure-Ruby stdlib, unless saruby implements the feature itself
     let std_file = if native || is_so || relative || name.starts_with('/') || name.starts_with('.') { None } else { crate::builtins::prelude::stdlib_file(name) };
     match std_file {
         Some(f) => Feature::File(f),
-        None if native || BUILTIN_FEATURES.contains(&base) => Feature::Native(base.to_string()),
+        None if native || BUILTIN_FEATURES.contains(&base) => Feature::Native(if so_native { name.to_string() } else { base.to_string() }),
         None => Feature::Missing,
     }
 }

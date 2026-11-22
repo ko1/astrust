@@ -28,7 +28,7 @@ macro_rules! lib { ($n:literal) => { ($n, include_str!(concat!("../../prelude/li
 const LIBS: &[(&str, &str)] = &[lib!("etc"), lib!("timeout"), lib!("monitor"), lib!("time"), lib!("bundler"), ("bundler/setup", "require \"bundler\"; Bundler.setup\n"), lib!("date"), ("date_core", "require \"date\"\n"), lib!("pathname"), ("saruby/pathname", include_str!("../../prelude/lib/pathname_core.rb")), ("saruby/argf", include_str!("../../prelude/lib/argf.rb"))];
 /// Features whose implementation is native and always present (require is a no-op).
 const NATIVE: &[&str] = &["set", "stringio", "rbconfig", "thread", "fiber", "enumerator", "rational", "complex", "continuation",
-    "io/wait", "io/nonblock", "fcntl", "etc.so", "monitor.so", "strscan", "strscan.so", "json", "json/ext", "saruby/errno", "saruby/env", "saruby/rbconfig", "saruby/filetest", "saruby/stat", "saruby/sync", "saruby/econv", "saruby/tracepoint"];
+    "io/wait", "io/nonblock", "fcntl", "etc.so", "monitor.so", "strscan", "strscan.so", "psych.so", "json", "json/ext", "saruby/errno", "saruby/env", "saruby/rbconfig", "saruby/filetest", "saruby/stat", "saruby/sync", "saruby/econv", "saruby/tracepoint"];
 
 /// Constant `name` under `owner` whose native definition runs on first reference (boot time: builtins/mod.rs).
 pub use crate::builtins::lazy_const;
@@ -41,6 +41,7 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
     // native libraries whose classes are only built on first require
     if name == "strscan" || name == "strscan.so" { crate::builtins::strscan::init(c); }
     if name == "json" || name == "json/ext" { crate::builtins::json::init(c); }
+    if name == "psych.so" { crate::builtins::psych::init(c)?; }
     match name {
         "saruby/errno" => crate::builtins::exception::define_all_errnos(c),
         "saruby/env" => crate::builtins::env::init(c),
@@ -63,15 +64,31 @@ pub fn stdlib_dirs() -> Option<(String, String)> {
 }
 /// Bundled gems that live outside rubylibdir.
 const BUNDLED: &[&str] = &["ostruct", "base64", "benchmark", "logger", "observer", "abbrev", "pstore", "csv", "matrix", "prime", "getoptlong", "mutex_m", "drb", "rinda", "racc", "bigdecimal", "nkf", "syslog", "rexml", "rss"];
-const EXT_BACKED: &[&str] = &["socket", "openssl", "date", "zlib", "ripper", "psych", "yaml", "bigdecimal", "digest", "pathname", "pty", "coverage",
+const EXT_BACKED: &[&str] = &["socket", "openssl", "date", "zlib", "ripper", "bigdecimal", "digest", "pathname", "pty", "coverage",
     "objspace", "readline", "reline", "nkf", "fiddle", "syslog", "net", "open-uri", "resolv", "ipaddr", "io"];
+/// Default gems that the reference ruby (rubygems) activates from a newer installed gem.
+const GEM_FIRST: &[&str] = &["psych"];
+/// lib/<rb> of the highest installed version of gem `top`.
+fn newest_gem_file(gem: &str, top: &str, rb: &str) -> Option<std::path::PathBuf> {
+    let ver = |v: &str| -> Vec<u64> { v.split('.').map(|x| x.parse().unwrap_or(0)).collect() };
+    let mut best: Option<(Vec<u64>, std::path::PathBuf)> = None;
+    for e in std::fs::read_dir(std::path::Path::new(gem).join("gems")).ok()?.flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        let Some(v) = n.strip_prefix(top).and_then(|r| r.strip_prefix('-')) else { continue };
+        if !v.chars().all(|ch| ch.is_ascii_digit() || ch == '.') { continue; }
+        let f = e.path().join("lib").join(rb);
+        if f.is_file() && best.as_ref().map(|b| b.0 < ver(v)).unwrap_or(true) { best = Some((ver(v), f)); }
+    }
+    best.map(|b| b.1)
+}
 pub fn stdlib_file(name: &str) -> Option<std::path::PathBuf> {
     if EXT_BACKED.contains(&name.split('/').next().unwrap_or(name).trim_end_matches(".rb")) { return None; }
     let (lib, gem) = stdlib_dirs()?;
     let rb = if name.ends_with(".rb") { name.to_string() } else { format!("{}.rb", name) };
+    let top = name.split('/').next().unwrap_or(name).trim_end_matches(".rb");
+    if GEM_FIRST.contains(&top) { if let Some(f) = newest_gem_file(&gem, top, &rb) { return Some(f); } }
     let p = std::path::Path::new(&lib).join(&rb);
     if p.is_file() { return Some(p); }
-    let top = name.split('/').next().unwrap_or(name).trim_end_matches(".rb");
     if !BUNDLED.contains(&top) { return None; }
     let mut best: Option<std::path::PathBuf> = None;
     for e in std::fs::read_dir(std::path::Path::new(&gem).join("gems")).ok()?.flatten() {
