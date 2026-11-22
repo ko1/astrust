@@ -2,12 +2,7 @@
 // Values that fit in a Fixnum are always normalized back to Fixnum.
 // On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
 #![forbid(unsafe_code)]
-// the context-free API, for the modules not converted yet (bodies in object.rs)
-pub use crate::object::{big_to_value, int_from_i128, int_from_i64};
-pub use imp::*;
 
-// a module of its own: `no_legacy` must not meet the re-export above
-mod imp {
 #[allow(unused_imports)]
 use crate::heap::no_legacy::*;   // the old accessors cannot be named here
 #[allow(unused_imports)]
@@ -482,5 +477,4 @@ impl Ctx {
     }
     #[inline]
     pub fn int_from_i64(&mut self, i: i64) -> Value { if Value::fixable(i) { Value::fix(i) } else { self.big_to_value(BigInt::from_i64(i)) } }
-}
 }

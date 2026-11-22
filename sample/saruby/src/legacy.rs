@@ -1,42 +1,10 @@
-// Legacy Range / numeric API (no context), for the modules not converted yet (docs/safe_heap.md).
-// Converted code uses the `Ctx` methods of range.rs, numeric.rs, bignum.rs.
-use crate::heap::{obj_set_flags, obj_set_klass};
-use crate::object::*;
+// VM-state helpers without a payload (recursion guard) and boot-time class setup (docs/safe_heap.md).
+use crate::heap::obj_set_klass;
 #[allow(unused_imports)]
 use crate::heap::no_legacy_body::*;   // no object accessor (docs/safe_heap.md)
 use crate::value::*;
 use crate::vm::Ctx;
 
-pub fn range_new(b: Value, e: Value, excl: bool) -> Value { crate::gc::alloc(crate::vm::vm().c_range.get(), Body::Range(b, e, excl)) }
-
-#[inline]
-pub fn float_new(d: f64) -> Value {
-    match Value::flonum(d) { Some(v) => v, None => float_new_heap(d) }
-}
-#[cold]
-#[inline(never)]
-fn float_new_heap(d: f64) -> Value {
-    let v = crate::gc::alloc(crate::vm::vm().c_float.get(), Body::Float(d));
-    obj_set_flags(v, FL_FROZEN);
-    v
-}
-
-pub fn big_to_value(b: crate::bignum::BigInt) -> Value {
-    if let Some(i) = b.to_i64() { if Value::fixable(i) { return Value::fix(i); } }
-    let v = crate::gc::alloc(crate::vm::vm().c_integer.get(), Body::Bignum(Box::new(b)));
-    obj_set_flags(v, FL_FROZEN);
-    v
-}
-
-pub fn int_from_i128(i: i128) -> Value {
-    if i >= FIXNUM_MIN as i128 && i <= FIXNUM_MAX as i128 { Value::fix(i as i64) } else { big_to_value(crate::bignum::BigInt::from_i128(i)) }
-}
-pub fn int_from_i64(i: i64) -> Value { if Value::fixable(i) { Value::fix(i) } else { big_to_value(crate::bignum::BigInt::from_i64(i)) } }
-/// Float truncated to an Integer.
-pub fn f64_to_int(f: f64) -> Value {
-    let t = f.trunc();
-    if t.abs() < 4.0e18 { int_from_i64(t as i64) } else { big_to_value(crate::bignum::BigInt::from_f64(t)) }
-}
 /// Recursion guard of inspect / hash / == (VM state only, no payload).
 pub fn recursion_enter(v: Value, tag: crate::value::Sym) -> bool {
     let mut g = crate::vm::vm().recursive_guard.borrow_mut();

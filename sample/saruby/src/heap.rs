@@ -111,10 +111,10 @@ impl Ctx {
 
     /// Allocate an object; may collect.
     #[inline(always)]
-    pub fn alloc(&mut self, klass: Value, body: Body) -> Value { crate::gc::alloc_in(self, klass, body) }
+    pub fn alloc(&mut self, klass: Value, body: Body) -> Value { crate::gc::alloc(self, klass, body) }
     /// alloc with the body built once the slot is known (see gc::alloc_with).
     #[inline(always)]
-    pub fn alloc_with(&mut self, klass: Value, make: impl FnOnce() -> Body) -> Value { crate::gc::alloc_with_in(self, klass, make) }
+    pub fn alloc_with(&mut self, klass: Value, make: impl FnOnce() -> Body) -> Value { crate::gc::alloc_with(self, klass, make) }
     /// Account `n` bytes of payload memory to the collector's trigger.
     #[inline(always)]
     pub fn malloc_increase(&mut self, n: usize) { crate::gc::malloc_increase(n); }
@@ -170,7 +170,7 @@ pub mod no_legacy_body {
     ban!(obj rary rstr rhash rclass rproc rmethod rbig rdata ivars_of str_bytes);
 }
 
-/// The same for the context-free String API (str_legacy.rs); a module of its own so that a
+/// The same for the names of the former context-free String API (str_legacy.rs, gone); a module of its own so that a
 /// converted module opts in once it no longer calls them.
 #[allow(dead_code)]
 pub mod no_legacy_str {

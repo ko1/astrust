@@ -38,7 +38,6 @@ pub mod inline_builtin;
 pub mod inline_iter;
 pub mod bignum;
 pub mod string;
-pub mod str_legacy;
 pub mod array;
 pub mod hash;
 pub mod range;

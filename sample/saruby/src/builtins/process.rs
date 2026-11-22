@@ -622,7 +622,7 @@ fn p_exit_bang(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     sys::_exit(st as i32)
 }
 
-/// Boot (no context yet: allocates with gc::alloc directly).
+/// Boot.
 pub fn init(c: &mut Ctx) {
     let vmr = c.vm();
     let p = define_module(c, "Process");

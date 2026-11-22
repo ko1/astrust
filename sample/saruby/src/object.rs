@@ -119,10 +119,4 @@ pub use crate::heap::{float_val, is_array, is_bignum, is_class_or_module, is_flo
 
 
 
-// legacy Hash API (no context); converted code uses the `Ctx` methods of hash.rs
-pub fn hash_new() -> Value { hash_new_capa(0) }
-pub fn hash_new_capa(n: usize) -> Value {
-    crate::gc::alloc(crate::vm::vm().c_hash.get(), Body::Hash(Box::new(RHash::with_capacity(n))))
-}
-
 pub use crate::legacy::*;

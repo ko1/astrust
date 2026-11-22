@@ -727,7 +727,7 @@ fn sq_set_max(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(a[0])
 }
 
-/// Boot: Thread and the main thread (no context yet: allocates with gc::alloc directly).
+/// Boot: Thread and the main thread.
 pub fn init(c: &mut Ctx) {
     let vmr = c.vm();
     let ob = vmr.c_object.get();

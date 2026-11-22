@@ -1,12 +1,7 @@
 // Numeric core helpers (Float boxing, conversions, formatting).
 // On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
 #![forbid(unsafe_code)]
-// the context-free API, for the modules not converted yet (bodies in object.rs)
-pub use crate::object::float_new;
-pub use imp::*;
 
-// a module of its own: `no_legacy` must not meet the re-export above
-mod imp {
 #[allow(unused_imports)]
 use crate::heap::no_legacy::*;   // the old accessors cannot be named here
 #[allow(unused_imports)]
@@ -74,4 +69,3 @@ pub fn float_to_s(d: f64) -> String {
 
 
 pub fn is_numeric(v: Value) -> bool { v.is_fixnum() || is_float(v) || is_bignum(v) }
-}

@@ -1,12 +1,7 @@
 // Hash: insertion-ordered entries + open-addressing index (built once the hash grows).
 // On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).  Methods are in builtins/hash_methods.rs.
 #![forbid(unsafe_code)]
-// the context-free API, for the modules not converted yet (bodies in object.rs)
-pub use crate::object::{hash_new, hash_new_capa};
-pub use imp::*;
 
-// a module of its own: `no_legacy` must not meet the re-export above
-mod imp {
 #[allow(unused_imports)]
 use crate::heap::no_legacy::*;   // the old accessors cannot be named here
 #[allow(unused_imports)]
@@ -382,5 +377,4 @@ pub fn check_hash(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
         return type_err(c, "can't convert to Hash");
     }
     Ok(None)
-}
 }

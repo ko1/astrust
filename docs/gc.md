@@ -167,8 +167,8 @@ nothing in the type system says so.
 
 ## saruby's binding today
 
-`sample/saruby/src/gc.rs`: `struct Saruby` (stateless; the roots are globals), `type Heap =
-Gc<Saruby, Backend>`, `gc::alloc(klass, body)`, `gc::collect()`, `gc::store`, `gc::each_object`.
+`sample/saruby/src/gc.rs`: `type Saruby = Ctx` (the allocating context; the other roots are globals), `type Heap =
+Gc<Saruby, Backend>`, `gc::alloc(c, klass, body)` (through `Ctx::alloc`), `gc::collect(c)`, `gc::store`, `gc::each_object`.
 
 * Roots (`vm::visit_roots`, `vm::visit_ctx`): exact — the `Vm` fields (builtin classes,
   globals, `node_values`, `pinned` (the current fiber among them), `frozen_lits`,

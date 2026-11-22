@@ -1,12 +1,7 @@
 // Range core.  Methods in builtins/range_methods.rs.
 // On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
 #![forbid(unsafe_code)]
-// the context-free API, for the modules not converted yet (bodies in object.rs)
-pub use crate::object::range_new;
-pub use imp::*;
 
-// a module of its own: `no_legacy` must not meet the re-export above
-mod imp {
 #[allow(unused_imports)]
 use crate::heap::no_legacy::*;   // the old accessors cannot be named here
 #[allow(unused_imports)]
@@ -63,4 +58,3 @@ fn out_of_range(c: &mut Ctx, r: Value, err: i32, _b: i64, _e: i64) -> Result<Opt
     Ok(None)
 }
 fn err_range<T>(c: &mut Ctx, m: String) -> Result<T, Esc> { crate::vm::err(c, c.vm().c_range_error.get(), m) }
-}

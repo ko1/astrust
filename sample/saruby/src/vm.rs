@@ -1,7 +1,7 @@
 // VM core: execution context, frames, blocks, methods, classes, calls, exceptions.
 #![allow(clippy::missing_safety_doc)]
 use crate::heap::{obj_clear_flags, obj_flags, obj_klass, obj_set_flags, obj_set_klass};
-use crate::gc::{self, EdgeVisitor, Saruby, RootVisitor};
+use crate::gc::{EdgeVisitor, Saruby, RootVisitor};
 use crate::node::{NodePtr, DispatchFn};
 use crate::object::*;
 #[allow(unused_imports)]
@@ -2428,10 +2428,11 @@ pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &'static Iseq, base: Stk, argc
 // ---- GC roots -----------------------------------------------------------------------------------
 
 /// The exact root slots of the VM, and the value stacks (ambiguous).
-/// `cur`: the context that allocates or collects (gc's NO_CTX: none), scanned through this borrow only.
+/// `cur`: the context that allocates or collects, scanned through this borrow only.
 pub fn visit_roots<V: RootVisitor<Saruby>>(m: &mut V, cur: &mut Ctx) {
     let vm = vm();
-    let p: *mut Ctx = if gc::is_no_ctx(cur) { std::ptr::null_mut() } else { visit_ctx(m, cur); cur };
+    visit_ctx(m, cur);
+    let p: *mut Ctx = cur;
     SCAN_CTX.store(p, std::sync::atomic::Ordering::Relaxed);
     if vm.main_ctx.get() != p { visit_main_ctx(m); }
     for v in [&vm.c_basic_object, &vm.c_object, &vm.main_obj, &vm.stdout, &vm.stderr, &vm.stdin, &vm.loaded_features,
@@ -2453,13 +2454,13 @@ pub fn visit_roots<V: RootVisitor<Saruby>>(m: &mut V, cur: &mut Ctx) {
 }
 
 static SCAN_CTX: std::sync::atomic::AtomicPtr<Ctx> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
-/// The context the running collection scans through its caller's borrow (null: none); compared, never dereferenced.
+/// The context the running collection scans through its caller's borrow; compared, never dereferenced.
 pub fn scan_ctx() -> *mut Ctx { SCAN_CTX.load(std::sync::atomic::Ordering::Relaxed) }
 
 #[inline(always)]
 fn visit_cell<V: RootVisitor<Saruby>>(m: &mut V, k: &Cell<Value>) { let mut v = k.get(); m.visit(&mut v); k.set(v); }
 
-/// The main context, by place: the allocating code may hold `&mut` to it, so no `&mut Ctx` is made here.
+/// The main context, by place, while a fiber allocates: main is suspended in a switch that holds its `&mut Ctx`.
 fn visit_main_ctx<V: RootVisitor<Saruby>>(m: &mut V) {
     let p = vm().main_ctx.get();
     if p.is_null() { return; }   // boot: no context yet

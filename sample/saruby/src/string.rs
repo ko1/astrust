@@ -2,12 +2,7 @@
 // Core API on the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
 // Methods are in builtins/string_methods.rs.
 #![forbid(unsafe_code)]
-// the context-free functions, for the modules not converted yet
-pub use crate::str_legacy::*;
-pub use imp::*;
 
-// a module of its own: the bans must not meet the re-export above
-mod imp {
 #[allow(unused_imports)]
 use crate::heap::no_legacy::*;   // the old accessors cannot be named here
 #[allow(unused_imports)]
@@ -605,5 +600,4 @@ pub fn str_to_f(b: &[u8]) -> f64 {
     }
     let t: String = s[..end].chars().filter(|&c| c != '_').collect();
     t.parse::<f64>().unwrap_or(0.0)
-}
 }
