@@ -90,6 +90,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [ ] 解説書『saruby でわかる Rust』（~/ruby/src/trials/2026-11-21-saruby-rust-book）: vm/heap 分割の反映、trait と Ruby の module の対比・dispatch（Dyn と T_… の Disp）の説明を追加（2026-11-22 の会話）
 
 ## 性能（上 3 つの後。新規には起こさない）
+- [ ] 正規表現 round 1 の代償: liquid-compile +0.47%・liquid-render +0.16%（マッチごとのエンコーディング判定 ~44 命令、timeout 参照、ステップ計数）。String の coderange キャッシュで判定を省ける
 - [ ] rclass 除去（a1217f5）の代償を取り戻す: poly +0.85%（interp）/ +1.17%（AOT）、object +0.3%、optcarrot +0.36%/フレーム（命令数）。原因は call_slow のキャッシュ hit 経路で c を引き回すレジスタ移動 ~2.7 命令/呼び出し、ivar 読みの miss 呼び出しに c を渡す 1 命令、new_object のクラスの ivar 数読み 1 命令（user 2026-11-22「高速化は別途考えましょう」）
 
 - [x] sp4 の退行 ary: glibc がメモリをカーネルに返して再フォルト → `M_TOP_PAD` 64 MiB（ary 110 → 68 ms）
