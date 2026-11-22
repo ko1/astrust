@@ -37,7 +37,7 @@ fn blank_vm() -> Box<Vm> {
         c_io c_file c_enumerator c_lazy c_yielder c_generator c_random c_encoding c_rational c_complex c_binding
         c_data c_set c_fiber c_thread c_mutex c_queue c_arith_seq c_chain c_object_space_weak_map c_string_io c_dir
         c_stat c_monitor m_errno m_math m_process m_gc m_object_space m_marshal m_signal m_warning m_file_test
-        c_string_scanner c_string_scanner_error c_location default_random
+        c_string_scanner c_string_scanner_error c_econv c_location default_random
         main_obj stdout stderr stdin loaded_features load_path at_exit argv dollar_zero;
         verbose: FALSE,
         globals: HashMap::default(), global_aliases: HashMap::default(),
@@ -169,6 +169,7 @@ fn boot_classes(vmr: &mut Vm) {
     lazy_const(ob, "RbConfig", "saruby/rbconfig");
     lazy_const(ob, "Pathname", "saruby/pathname");
     encoding::init(vmr);
+    transcode::init(vmr);
     stringio::init(vmr);
     (vmr.c_regexp, vmr.c_match_data) = regexp_methods::init(vmr);
     vmr.c_struct = structs::init(vmr.c_object, vmr.m_enumerable);
@@ -209,6 +210,7 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     if let Some(r) = file::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = io::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = strscan::alloc_data(c, klass)? { return Ok(Some(r)); }
+    if let Some(r) = transcode::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = thread::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = thread::alloc_lock(c, klass) { return Ok(Some(r)); }
     if let Some(r) = thread::alloc_queue(c, klass) { return Ok(Some(r)); }

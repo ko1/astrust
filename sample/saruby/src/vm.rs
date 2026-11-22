@@ -406,7 +406,7 @@ pub struct Vm {
     pub c_object_space_weak_map: Value, pub c_string_io: Value, pub c_dir: Value, pub c_stat: Value, pub c_monitor: Value,
     pub m_errno: Value, pub m_math: Value, pub m_process: Value, pub m_gc: Value, pub m_object_space: Value, pub m_marshal: Value,
     pub m_signal: Value, pub m_warning: Value, pub m_file_test: Value,
-    pub c_string_scanner: Value, pub c_string_scanner_error: Value,
+    pub c_string_scanner: Value, pub c_string_scanner_error: Value, pub c_econv: Value,
     pub c_location: Value,
     /// Random::DEFAULT (the generator of Kernel#rand); a class-field root like the ones above.
     pub default_random: Value,

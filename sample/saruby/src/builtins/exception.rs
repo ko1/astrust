@@ -66,7 +66,7 @@ pub fn init_classes(vmr: &mut Vm) {
     vmr.c_invalid_byte_seq_error = define_class_under(enc, "InvalidByteSequenceError", vmr.c_encoding_error);
     vmr.c_undef_conv_error = define_class_under(enc, "UndefinedConversionError", vmr.c_encoding_error);
     {
-        use crate::builtins::encoding as en;
+        use crate::builtins::transcode as en;
         for k in [vmr.c_invalid_byte_seq_error, vmr.c_undef_conv_error] {
             define_cfunc(k, "source_encoding", en::exc_source_encoding, 0);
             define_cfunc(k, "destination_encoding", en::exc_destination_encoding, 0);
@@ -76,7 +76,7 @@ pub fn init_classes(vmr: &mut Vm) {
         define_cfunc(vmr.c_invalid_byte_seq_error, "error_bytes", en::exc_error_bytes, 0);
         define_cfunc(vmr.c_invalid_byte_seq_error, "readagain_bytes", en::exc_readagain_bytes, 0);
         define_cfunc(vmr.c_invalid_byte_seq_error, "incomplete_input?", en::exc_incomplete_input, 0);
-        define_cfunc(vmr.c_undef_conv_error, "error_char", en::exc_error_bytes, 0);
+        define_cfunc(vmr.c_undef_conv_error, "error_char", en::exc_error_char, 0);
     }
     vmr.c_converter_not_found_error = define_class_under(enc, "ConverterNotFoundError", vmr.c_encoding_error);
     vmr.m_errno = define_module("Errno");
