@@ -79,7 +79,7 @@ and exits when it ends (`Thread.current == Thread.main` in the child, as CRuby).
 
 | Ruby | op |
 |---|---|
-| `Kernel#sleep` (threads alive), `Thread.stop`, `Mutex#sleep` | `Timer` (deadline or none) |
+| `Kernel#sleep` (with or without other threads), `Thread.stop`, `Mutex#sleep` | `Timer` (deadline or none) |
 | `Thread#join(t)` / `#value` | `Wake(thread)`, notified at thread end |
 | `Mutex#lock` / `Monitor#enter`, `ConditionVariable#wait`, `Queue#pop`, `SizedQueue#push` | `Wake(mutex / cv token / queue)` with the timeout as deadline |
 | IO reads with an empty buffer (`read`, `readpartial`, `gets`, `getc`, `each_line`, …) on a fd that is not ready | `Read` into a 64 KiB owned buffer, appended to the IO's read buffer |
@@ -89,8 +89,11 @@ and exits when it ends (`Thread.current == Thread.main` in the child, as CRuby).
 | `Process.wait` of any child / a group, `File#flock` that would block, `File.open` of a FIFO writer without a reader | retry after a back-off `Timer` (1 ms doubling to 20 / 50 ms): no fd to wait on. A CFUNC worker (below) is the exact form |
 
 Without other threads, plain reads and writes still block in the syscall (nothing else could run);
-`IO.select` / `#wait*` always use the blop path (the main loop with no threads is a ppoll that also
-wakes for signals).
+`sleep`, `IO.select` and `#wait*` always use the blop path: the main loop with no threads is one
+ppoll that also wakes for signals through the eventfd. (The old `nanosleep` loop could miss a signal
+that arrived between its pending check and the call: a forked child of rubyspec process/wait slept
+through its TERM.) As in CRuby 4.0, a trap handler runs and the sleep goes on, with or without a
+duration (`Mutex#sleep` forever counts for deadlock, `Kernel#sleep` forever does not).
 
 ## Engines
 
