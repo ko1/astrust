@@ -32,12 +32,22 @@ static mut HEAP: Option<Heap> = None;
 static STACK_BASE: AtomicUsize = AtomicUsize::new(0);
 static STRESS: AtomicUsize = AtomicUsize::new(0);
 
-// Private: each `&mut Heap` lives inside one function below, and none re-enters: the collector's
-// callbacks (visit_roots, scan_edges, finalize, Data visit / drop) call no gc.rs function.
-// (a closure form, with_heap(|h| ..), measured +23 % instructions on gcchurn AOT)
-#[allow(static_mut_refs)]
+// `heap(&mut Scope)`: the temporary Scope ends with the statement, so no `&mut Heap` outlives it.
+// None nests: the collector's callbacks call no gc.rs function (asserted in debug builds).
+struct Scope;
+
+#[cfg(debug_assertions)]
+static IN_HEAP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(debug_assertions)]
+impl Drop for Scope { fn drop(&mut self) { IN_HEAP.store(false, Relaxed); } }
+
 #[inline(always)]
-fn heap() -> &'static mut Heap { unsafe { HEAP.as_mut().unwrap_unchecked() } }   // SAFETY: init runs first; see above
+fn heap(_: &mut Scope) -> &mut Heap {
+    #[cfg(debug_assertions)]
+    assert!(!IN_HEAP.swap(true, Relaxed), "gc: nested heap borrow");
+    // SAFETY: init runs first; one borrow at a time (above)
+    unsafe { (*&raw mut HEAP).as_mut().unwrap_unchecked() }
+}
 
 /// Top of the main machine stack.
 #[inline(always)]
@@ -50,16 +60,16 @@ pub fn init(stack_base: usize) {
 }
 
 /// The VM has booted: SARUBY_GC_STRESS=n (collect at every n-th allocation) takes effect.
-pub fn booted() { heap().set_stress(STRESS.load(Relaxed)); }
+pub fn booted() { heap(&mut Scope).set_stress(STRESS.load(Relaxed)); }
 
 #[inline]
-pub fn malloc_increase(n: usize) { heap().account_external(n); }
+pub fn malloc_increase(n: usize) { heap(&mut Scope).account_external(n); }
 
 /// Allocate an object.  May run a GC: every live Value must be reachable from the
 /// machine stack, the VM value stack, the heap, or `body`.
 #[inline]
 pub fn alloc(klass: Value, body: Body) -> Value {
-    let p = heap().alloc(&mut Saruby, move || RObj { klass, flags: 0, gc: GcHeader::new(), body });
+    let p = heap(&mut Scope).alloc(&mut Saruby, move || RObj { klass, flags: 0, gc: GcHeader::new(), body });
     // SAFETY: the object just allocated
     unsafe { Value::from_ptr(p.as_ptr()) }
 }
@@ -68,34 +78,34 @@ pub fn alloc(klass: Value, body: Body) -> Value {
 /// in sits on the stack and is copied with wide loads its narrow stores cannot forward to.
 #[inline(always)]
 pub fn alloc_with(klass: Value, make: impl FnOnce() -> Body) -> Value {
-    let p = heap().alloc(&mut Saruby, move || RObj { klass, flags: 0, gc: GcHeader::new(), body: make() });
+    let p = heap(&mut Scope).alloc(&mut Saruby, move || RObj { klass, flags: 0, gc: GcHeader::new(), body: make() });
     // SAFETY: the object just allocated
     unsafe { Value::from_ptr(p.as_ptr()) }
 }
 
 /// GC.start: a full collection, GC.disable or not (as CRuby: GC.disable stops only the automatic ones).
-pub fn collect() { heap().collect(&mut Saruby); }
+pub fn collect() { heap(&mut Scope).collect(&mut Saruby); }
 
 /// A collection the runtime asks for (as an allocation would), unless GC.disable is in effect.
 pub fn collect_auto() {
-    let h = heap();
-    if !h.ctl.disabled() { h.collect(&mut Saruby); }
+    // the condition's Scope ends before the block
+    if !heap(&mut Scope).ctl.disabled() { collect(); }
 }
 
 /// Collections so far.
-pub fn collections() -> usize { heap().ctl.collections() }
+pub fn collections() -> usize { heap(&mut Scope).ctl.collections() }
 /// Minor collections so far.
-pub fn minor_collections() -> usize { heap().ctl.minor_collections() }
+pub fn minor_collections() -> usize { heap(&mut Scope).ctl.minor_collections() }
 /// Time spent collecting.
-pub fn total_time() -> std::time::Duration { heap().ctl.time() }
+pub fn total_time() -> std::time::Duration { heap(&mut Scope).ctl.time() }
 /// Slot counts (GC.stat, ObjectSpace.count_objects).
-pub fn stats() -> rt::HeapStats { heap().stats() }
-pub fn backend_name() -> &'static str { heap().backend_name() }
+pub fn stats() -> rt::HeapStats { heap(&mut Scope).stats() }
+pub fn backend_name() -> &'static str { heap(&mut Scope).backend_name() }
 /// GC.disable / GC.enable: the previous state.
-pub fn set_disabled(d: bool) -> bool { heap().set_disabled(d) }
+pub fn set_disabled(d: bool) -> bool { heap(&mut Scope).set_disabled(d) }
 
 /// GC.start(full_mark: false), GC.disable or not.
-pub fn collect_minor() { heap().collect_minor(&mut Saruby); }
+pub fn collect_minor() { heap(&mut Scope).collect_minor(&mut Saruby); }
 
 /// Store `v` into `slot`, a reference slot of heap object `holder`, with the write barrier.
 /// No backend needs the barrier yet and saruby's stores do not go through here; a
@@ -104,13 +114,13 @@ pub fn collect_minor() { heap().collect_minor(&mut Saruby); }
 pub fn store(holder: Value, slot: &mut Value, v: Value) {
     debug_assert!(holder.is_heap());
     // SAFETY: a heap Value is a non-null object pointer
-    heap().store(unsafe { NonNull::new_unchecked(holder.ptr()) }, slot, v);
+    heap(&mut Scope).store(unsafe { NonNull::new_unchecked(holder.ptr()) }, slot, v);
 }
 
 /// Iterate live objects (ObjectSpace.each_object).  `f` must not allocate objects.
 pub fn each_object(mut f: impl FnMut(Value)) {
     // SAFETY: the backend enumerates allocated objects
-    heap().each_object(|p| f(unsafe { Value::from_ptr(p.as_ptr()) }));
+    heap(&mut Scope).each_object(|p| f(unsafe { Value::from_ptr(p.as_ptr()) }));
 }
 
 // Generic ivars (objects without an ivar table of their own) live in a side table keyed by
