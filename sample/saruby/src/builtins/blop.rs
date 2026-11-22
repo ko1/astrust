@@ -3,7 +3,7 @@
 // takes the op back with its result when it resumes. Engines (poll / epoll) are a trait.
 #![forbid(unsafe_code)]
 use crate::builtins::sys::{self, EpollEvent, PollFd, Timespec};
-use std::cell::RefCell;
+use crate::vm::Ctx;
 use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
@@ -234,10 +234,9 @@ impl Engine for EpollEngine {
     }
 }
 
-pub struct Blop { slab: Slab, engine: Box<dyn Engine>, wake: i32, ready: Vec<Ready> }
+pub struct Blop { slab: Slab, engine: Box<dyn Engine>, wake: i32, ready: Vec<Ready>, waiters: Vec<(u64, Id)> }   // waiters: Wake ops by key, oldest first
 /// The wake channel (an eventfd) for the signal handler: -1 before the first blop.
 static WAKE_FD: AtomicI32 = AtomicI32::new(-1);
-thread_local! { static B: RefCell<Option<Blop>> = const { RefCell::new(None) }; }
 
 fn new_wake() -> i32 {
     let fd = sys::eventfd(0, sys::EFD_CLOEXEC | sys::EFD_NONBLOCK);
@@ -252,14 +251,12 @@ fn new_engine(wake: i32) -> Box<dyn Engine> {
     if want == "epoll" { if let Some(e) = EpollEngine::open(wake) { return Box::new(e); } }
     Box::new(PollEngine { wake, fds: vec![], who: vec![] })
 }
-fn with<R>(f: impl FnOnce(&mut Blop) -> R) -> R {
-    B.with(|b| {
-        let mut b = b.borrow_mut();
-        let b = b.get_or_insert_with(|| { let wake = new_wake(); Blop { slab: Slab::new(), engine: new_engine(wake), wake, ready: vec![] } });
-        let r = f(b);
-        b.retire_done();
-        r
-    })
+/// The VM's blop state (made at the first use; `Vm::blop`).
+fn with<R>(c: &mut Ctx, f: impl FnOnce(&mut Blop) -> R) -> R {
+    let b = c.vm_mut().blop.get_or_insert_with(|| { let wake = new_wake(); Box::new(Blop { slab: Slab::new(), engine: new_engine(wake), wake, ready: vec![], waiters: vec![] }) });
+    let r = f(b);
+    b.retire_done();
+    r
 }
 impl Blop {
     /// Completed ops drop their fd interest at once (a level-triggered fd would keep firing).
@@ -271,20 +268,29 @@ impl Blop {
 }
 
 /// The engine's name ("poll" / "epoll").
-pub fn engine_name() -> &'static str { with(|b| b.engine.name()) }
+pub fn engine_name(c: &mut Ctx) -> &'static str { with(c, |b| b.engine.name()) }
 /// Enter `op` into the slab. `deadlockable`: only another thread can end it (deadlock detection).
-pub fn submit(op: Op, deadline: Option<Instant>, deadlockable: bool) -> Id {
-    with(|b| {
+pub fn submit(c: &mut Ctx, op: Op, deadline: Option<Instant>, deadlockable: bool) -> Id {
+    with(c, |b| {
+        let key = if let Op::Wake(k) = op { Some(k) } else { None };
         let id = b.slab.insert(Pending { op, deadline, deadlockable });
-        if let Some(Slot::Pending(p)) = b.slab.get(id) { b.engine.submit(id, &p.op); }
+        match key {
+            Some(k) => b.waiters.push((k, id)),
+            None => if let Some(Slot::Pending(p)) = b.slab.get(id) { b.engine.submit(id, &p.op); },
+        }
         id
     })
 }
-pub fn is_done(id: Id) -> bool { with(|b| matches!(b.slab.get(id), Some(Slot::Done(..)))) }
+pub fn is_done(c: &Ctx, id: Id) -> bool { c.vm().blop.as_ref().is_some_and(|b| matches!(b.slab.get(id), Some(Slot::Done(..)))) }
 /// Take the op back: its result, or Err(ECANCELED) if it had not completed (it is withdrawn).
-pub fn take(id: Id) -> (Option<Op>, Res) {
-    with(|b| {
-        if let Some(Slot::Pending(p)) = b.slab.get(id) { b.engine.retire(id, &p.op); }
+pub fn take(c: &mut Ctx, id: Id) -> (Option<Op>, Res) {
+    with(c, |b| {
+        let wake = match b.slab.get(id) {
+            Some(Slot::Pending(p)) => { b.engine.retire(id, &p.op); if let Op::Wake(k) = p.op { Some(k) } else { None } }
+            Some(Slot::Done(Op::Wake(k), _)) => Some(*k),
+            _ => None,
+        };
+        if wake.is_some() { if let Some(i) = b.waiters.iter().position(|w| w.1 == id) { b.waiters.remove(i); } }
         match b.slab.release(id) {
             Some(Slot::Done(op, r)) => (Some(op), r),
             Some(Slot::Pending(p)) => (Some(p.op), Err(ECANCELED)),
@@ -293,34 +299,42 @@ pub fn take(id: Id) -> (Option<Op>, Res) {
     })
 }
 /// Complete a pending op with Err(errno) (Thread#raise / #kill / #wakeup): its waiter becomes runnable.
-pub fn interrupt(id: Id, errno: i64) { with(|b| b.slab.complete(id, Err(errno))) }
+pub fn interrupt(c: &mut Ctx, id: Id, errno: i64) { with(c, |b| b.slab.complete(id, Err(errno))) }
 /// Complete every Wake(key) op.
-pub fn notify(key: u64) {
-    with(|b| {
-        if b.slab.npending == 0 { return; }
-        for i in 0..b.slab.ents.len() {
-            let e = &b.slab.ents[i];
-            if matches!(&e.slot, Slot::Pending(Pending { op: Op::Wake(k), .. }) if *k == key) { b.slab.complete(Id { idx: i as u32, gen: e.gen }, Ok(0)); }
-        }
-    })
+pub fn notify(c: &mut Ctx, key: u64) {
+    let Some(b) = c.vm_mut().blop.as_mut() else { return };
+    {
+        if b.waiters.is_empty() { return; }
+        let slab = &mut b.slab;
+        b.waiters.retain(|&(k, id)| { if k == key { slab.complete(id, Ok(0)); } k != key });
+    }
+}
+/// Complete the oldest pending Wake(key) op (one item / one slot / an unlocked Mutex: one waiter
+/// re-checks, not all). A woken waiter that leaves without taking it passes it on (`thread::wait`).
+pub fn notify_one(c: &mut Ctx, key: u64) {
+    let Some(b) = c.vm_mut().blop.as_mut() else { return };
+    {
+        let Some(i) = b.waiters.iter().position(|w| w.0 == key && matches!(b.slab.get(w.1), Some(Slot::Pending(_)))) else { return };
+        let (_, id) = b.waiters.remove(i);
+        b.slab.complete(id, Ok(0));
+    }
 }
 /// IO#close: every op on `fd` completes with Err(EBADF) (before the fd number can be reused).
-pub fn cancel_fd(fd: i32) {
+pub fn cancel_fd(c: &mut Ctx, fd: i32) {
     if fd < 0 { return; }
-    B.with(|b| {
-        let mut g = b.borrow_mut();
-        let Some(b) = g.as_mut() else { return };
+    let Some(b) = c.vm_mut().blop.as_mut() else { return };
+    {
         let ids: Vec<Id> = b.slab.pending().filter(|(_, p)| p.op.has_fd(fd)).map(|(id, _)| id).collect();
         for id in ids { b.slab.complete(id, Err(EBADF)); }
         b.retire_done();
-    })
+    }
 }
 /// Something could complete without another green thread running (a fd, a deadline, a non-deadlockable wait).
-pub fn can_finish_alone() -> bool { with(|b| b.slab.pending().any(|(_, p)| p.deadline.is_some() || !p.deadlockable || p.op.interest().next().is_some())) }
+pub fn can_finish_alone(c: &mut Ctx) -> bool { with(c, |b| b.slab.pending().any(|(_, p)| p.deadline.is_some() || !p.deadlockable || p.op.interest().next().is_some())) }
 /// Collect completions: expired deadlines, ready fds. `block`: sleep until one arrives (the only
 /// place the interpreter thread sleeps while green threads wait). Returns the number completed.
-pub fn pump(block: bool) -> usize {
-    with(|b| {
+pub fn pump(c: &mut Ctx, block: bool) -> usize {
+    with(c, |b| {
         if b.slab.npending == 0 && !block { return 0; }
         let has_fd = b.slab.fd_ops().next().is_some();
         // no clock read unless a deadline is pending (clock_gettime is a syscall on some clocksources)
@@ -339,14 +353,14 @@ pub fn pump(block: bool) -> usize {
 /// Called from the signal handler: wake a sleeping pump (write(2) is async-signal-safe).
 pub fn signal_wake() { let fd = WAKE_FD.load(Relaxed); if fd >= 0 { sys::write(fd, &1u64.to_ne_bytes()); } }
 /// Forked child: the other threads' ops are gone, and the eventfd / epoll set are the parent's.
-pub fn after_fork() {
-    B.with(|b| {
-        let mut g = b.borrow_mut();
-        let Some(b) = g.as_mut() else { return };
+pub fn after_fork(c: &mut Ctx) {
+    let Some(b) = c.vm_mut().blop.as_mut() else { return };
+    {
         for i in 0..b.slab.ents.len() as u32 { let gen = b.slab.ents[i as usize].gen; if !matches!(b.slab.ents[i as usize].slot, Slot::Free) { b.slab.release(Id { idx: i, gen }); } }
         b.slab.just_done.clear();
+        b.waiters.clear();
         sys::close(b.wake);
         b.wake = new_wake();
         b.engine.after_fork(b.wake);
-    })
+    }
 }

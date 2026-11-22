@@ -128,6 +128,8 @@ fn run_handler(c: &mut Ctx, sig: i32) -> Result<(), Esc> {
     funcall(c, h, intern(b"call"), &[Value::fix(sig as i64)], std::ptr::null())?;
     Ok(())
 }
+/// Some trapped signal arrived and its handler has not run yet.
+pub fn signals_pending() -> bool { PENDING.load(Ordering::Relaxed) != 0 }
 /// Run trap handlers of signals delivered since the last check.
 pub fn run_pending_signals(c: &mut Ctx) -> Result<(), Esc> {
     loop {

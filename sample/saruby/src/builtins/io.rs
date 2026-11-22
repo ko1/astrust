@@ -89,9 +89,9 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     Ok(None)
 }
 
+/// Threads waiting on these fds get IOError (before the numbers can be reused).
+fn cancel_waits(c: &mut Ctx, fd: i32, wfd: i32) { crate::builtins::blop::cancel_fd(c, fd); if wfd != fd { crate::builtins::blop::cancel_fd(c, wfd); } }
 fn close_fds(io: &mut RIo) {
-    // threads waiting on these fds get IOError (before the numbers can be reused)
-    crate::builtins::blop::cancel_fd(io.fd); crate::builtins::blop::cancel_fd(io.wfd);
     if io.fd >= 0 { sys::close(io.fd); } if io.wfd >= 0 && io.wfd != io.fd { sys::close(io.wfd); }
     io.fd = -1; io.wfd = -1;
 }
@@ -696,7 +696,9 @@ pub fn close_io(c: &mut Ctx, slf: Value) -> RV {
     if out_fd(io) == 1 { out_flush(); }
     let e = io_flush_one(io);
     io.closed = true;
-    if io.fd > 2 || io.wfd > 2 { close_fds(io); }
+    let (fd, wfd) = (io.fd, io.wfd);
+    if fd > 2 || wfd > 2 { cancel_waits(c, fd, wfd); let io = io_mut(c, slf); close_fds(io); }
+    let io = io_mut(c, slf);
     let pid = std::mem::take(&mut io.pid);
     if pid > 0 { crate::builtins::process::reap_child(c, pid)?; }
     if let Some(e) = e { return Err(raise_errno(c, e, "")); }
@@ -706,14 +708,14 @@ fn io_close(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { clo
 fn io_close_write(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let Some(io) = rio_mut(c, slf) else { return Ok(NIL) };
     if io.closed || !io.writable { return Ok(NIL); }
-    if io.wfd >= 0 && io.wfd != io.fd { io_flush_one(io); crate::builtins::blop::cancel_fd(io.wfd); sys::close(io.wfd); io.wfd = -1; io.writable = false; return Ok(NIL); }
+    if io.wfd >= 0 && io.wfd != io.fd { io_flush_one(io); let w = io.wfd; cancel_waits(c, -1, w); let io = io_mut(c, slf); sys::close(io.wfd); io.wfd = -1; io.writable = false; return Ok(NIL); }
     if io.readable { return err(c, c.vm().c_io_error, "closing non-duplex IO for writing"); }
     close_io(c, slf)
 }
 fn io_close_read(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let Some(io) = rio_mut(c, slf) else { return Ok(NIL) };
     if io.closed || !io.readable { return Ok(NIL); }
-    if io.wfd >= 0 && io.wfd != io.fd { crate::builtins::blop::cancel_fd(io.fd); sys::close(io.fd); io.fd = io.wfd; io.readable = false; return Ok(NIL); }
+    if io.wfd >= 0 && io.wfd != io.fd { let r = io.fd; cancel_waits(c, r, -1); let io = io_mut(c, slf); sys::close(io.fd); io.fd = io.wfd; io.readable = false; return Ok(NIL); }
     if io.writable { return err(c, c.vm().c_io_error, "closing non-duplex IO for reading"); }
     close_io(c, slf)
 }

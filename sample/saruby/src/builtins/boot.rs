@@ -54,6 +54,7 @@ fn blank_vm() -> Box<Vm> {
         warn_disabled: false, exit_status: 0, main_file: String::new(),
         rand_state: 0x2545F4914F6CDD1D,
         fiber_roots: vec![],
+        blop: None,
         ids: MethodIds { bo_eq: n, bo_init: n, c_new: n, m_eqq: n, kernel_hash: n, r_each: n },
         send_cache: crate::vm::send_cache_new(),
         main_ctx: std::ptr::null_mut(),

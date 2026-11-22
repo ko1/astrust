@@ -42,7 +42,7 @@ impl RThread {
     }
     fn interrupted(&self) -> bool { self.pending != NIL || self.killed }
     /// The scheduler should switch it in: not started, yielded, its op completed, or interrupted.
-    fn runnable(&self) -> bool { !self.dead && (!self.started || self.blop.is_none_or(blop::is_done) || self.interrupted()) }
+    fn runnable(&self, c: &Ctx) -> bool { !self.dead && (!self.started || self.blop.is_none_or(|id| blop::is_done(c, id)) || self.interrupted()) }
 }
 static LIST: Global = Global::new();      // Array of live non-main threads
 static MAIN: Global = Global::new();
@@ -81,7 +81,7 @@ fn check_interrupt(c: &mut Ctx, t: Value) -> Result<(), Esc> {
     Ok(())
 }
 /// Make a parked thread runnable (an interrupt or a wakeup was posted for it).
-fn kick(c: &Ctx, t: Value) { if let Some(id) = th(c, t).blop { blop::interrupt(id, blop::ECANCELED); } }
+fn kick(c: &mut Ctx, t: Value) { if let Some(id) = th(c, t).blop { blop::interrupt(c, id, blop::ECANCELED); } }
 /// A thread's root fiber returned: record value / exception.
 fn finish_thread(c: &mut Ctx, t: Value) -> Result<(), Esc> {
     let f = th(c, t).fiber;
@@ -90,7 +90,7 @@ fn finish_thread(c: &mut Ctx, t: Value) -> Result<(), Esc> {
     r.dead = true;
     list_remove(c, t);
     release_locks(c, t);
-    blop::notify(t.raw());
+    blop::notify(c, t.raw());
     if FORKED.load(Relaxed) && t == MAIN.get(c) { forked_main_exit(c, is_err, v); }
     if !is_err { th_mut(c, t).value = v; return Ok(()); }
     if is_kind_of(v, C_KILL.get(c)) { return Ok(()); }
@@ -113,15 +113,15 @@ fn forked_main_exit(c: &mut Ctx, is_err: bool, v: Value) -> ! {
 }
 /// Give every runnable thread one turn; true when any ran.
 fn run_pass(c: &mut Ctx) -> Result<bool, Esc> {
-    let v: Vec<Value> = c.ary(LIST.get(c)).iter().copied().filter(|&t| th(c, t).runnable()).collect();
+    let v: Vec<Value> = c.ary(LIST.get(c)).iter().copied().filter(|&t| th(c, t).runnable(c)).collect();
     if v.is_empty() { return Ok(false); }
     let snap = c.ary_from_vec(v);   // a thread killed during the pass leaves LIST: this keeps it alive
     let main = MAIN.get(c);
     let mut i = 0;
     while let Some(&t) = c.ary(snap).get(i) {
         i += 1;
+        if th(c, t).dead { continue; }   // runnable at the snapshot, and an op does not un-complete
         let r = th_mut(c, t);
-        if !r.runnable() { continue; }
         r.started = true;
         if r.fiber == NIL {
             let st = std::mem::replace(&mut r.start, NIL);
@@ -151,16 +151,18 @@ fn secs(f: f64) -> Duration { Duration::from_secs_f64(if f.is_finite() { f.clamp
 pub fn wait(c: &mut Ctx, op: Op, deadline: Option<Instant>, deadlockable: bool) -> Result<(Option<Op>, Res), Esc> {
     let me = cur(c);
     check_interrupt(c, me)?;
-    let id = blop::submit(op, deadline, deadlockable);
+    let id = blop::submit(c, op, deadline, deadlockable);
     let r = park(c, me, id);
-    let out = blop::take(id);
+    let out = blop::take(c, id);
+    // a notify_one this thread got but will not act on goes to the next waiter
+    if r.is_err() || th(c, me).interrupted() { if let (Some(Op::Wake(k)), Ok(_)) = &out { blop::notify_one(c, *k); } }
     r?;
     check_interrupt(c, me)?;
     Ok(out)
 }
 fn park(c: &mut Ctx, me: Value, id: Id) -> Result<(), Esc> {
     if !is_main(c) {
-        while !blop::is_done(id) && !th(c, me).interrupted() {
+        while !blop::is_done(c, id) && !th(c, me).interrupted() {
             let r = th_mut(c, me);
             r.blop = Some(id); r.waiting = true;
             crate::fiber::thread_switch_out(c);
@@ -178,23 +180,25 @@ fn park(c: &mut Ctx, me: Value, id: Id) -> Result<(), Esc> {
 /// engine's pump (the only place the interpreter sleeps) when nobody can run.
 fn schedule(c: &mut Ctx, me: Value, id: Id) -> Result<(), Esc> {
     loop {
-        if blop::is_done(id) || th(c, me).interrupted() { return Ok(()); }
-        crate::builtins::process::run_pending_signals(c)?;
-        if blop::is_done(id) || th(c, me).interrupted() { return Ok(()); }
-        if run_pass(c)? { blop::pump(false); continue; }
-        if !blop::can_finish_alone() && !IGNORE_DEADLOCK.load(Relaxed) { return err(c, C_FATAL.get(c), "No live threads left. Deadlock?"); }
-        blop::pump(true);
+        if blop::is_done(c, id) || th(c, me).interrupted() { return Ok(()); }
+        if crate::builtins::process::signals_pending() {
+            crate::builtins::process::run_pending_signals(c)?;
+            if blop::is_done(c, id) || th(c, me).interrupted() { return Ok(()); }
+        }
+        if run_pass(c)? { blop::pump(c, false); continue; }
+        if !blop::can_finish_alone(c) && !IGNORE_DEADLOCK.load(Relaxed) { return err(c, C_FATAL.get(c), "No live threads left. Deadlock?"); }
+        blop::pump(c, true);
     }
 }
 /// Block the current thread until cond holds (Ok(true)) or the deadline passes (Ok(false)).
-/// `key`: the object whose blop::notify ends a wait (None: only time or an interrupt does).
-pub fn block_on(c: &mut Ctx, mut cond: impl FnMut(&mut Ctx) -> Result<bool, Esc>, key: Option<Value>, deadline: Option<Instant>, deadlockable: bool) -> Result<bool, Esc> {
+/// `key`: what blop::notify ends the wait (an object's address; None: only time or an interrupt does).
+pub fn block_on(c: &mut Ctx, mut cond: impl FnMut(&mut Ctx) -> Result<bool, Esc>, key: Option<u64>, deadline: Option<Instant>, deadlockable: bool) -> Result<bool, Esc> {
     let me = cur(c);
     loop {
         check_interrupt(c, me)?;
         if cond(c)? { return Ok(true); }
         if deadline.is_some_and(|d| Instant::now() >= d) { return Ok(false); }
-        let op = match key { Some(k) => Op::Wake(k.raw()), None => Op::Timer };
+        let op = match key { Some(k) => Op::Wake(k), None => Op::Timer };
         let _ = wait(c, op, deadline, deadlockable)?;   // any wake re-checks cond
     }
 }
@@ -265,7 +269,7 @@ pub fn write_op(c: &mut Ctx, fd: i32, mut buf: Vec<u8>) -> Result<Result<usize, 
 }
 /// Forked child: only the forking thread survives, and it is the child's main thread (as CRuby).
 pub fn after_fork_child(c: &mut Ctx) {
-    blop::after_fork();
+    blop::after_fork(c);
     let me = cur(c);
     let l = LIST.get(c);
     let others: Vec<Value> = c.ary(l).iter().copied().filter(|&t| t != me).collect();
@@ -309,7 +313,7 @@ fn th_join(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if slf == cur(c) { return err(c, c.vm().c_thread_error, "Target thread must not be current thread"); }
     if slf == MAIN.get(c) { return err(c, c.vm().c_thread_error, "Target thread must not be main thread"); }
     let deadline = match a.first() { Some(&t) if t != NIL => { let f = crate::builtins::numeric_methods::to_f(c, t)?; Some(Instant::now() + secs(f)) } _ => None };
-    if !block_on(c, |c| Ok(th(c, slf).dead), Some(slf), deadline, true)? { return Ok(NIL); }
+    if !block_on(c, |c| Ok(th(c, slf).dead), Some(slf.raw()), deadline, true)? { return Ok(NIL); }
     let e = th(c, slf).exc;
     if e != NIL { return Err(raise_exc(c, e)); }
     Ok(slf)
@@ -323,7 +327,7 @@ fn th_list(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(c.ary_from_vec(v))
 }
 fn th_pass(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
-    if is_main(c) { run_pass(c)?; blop::pump(false); return Ok(NIL); }
+    if is_main(c) { run_pass(c)?; blop::pump(c, false); return Ok(NIL); }
     let me = cur(c);
     check_interrupt(c, me)?;
     crate::fiber::thread_switch_out(c);
@@ -356,7 +360,7 @@ fn kill_thread(c: &mut Ctx, t: Value) -> RV {
         let f = r.fiber;
         r.start = NIL;
         list_remove(c, t);
-        blop::notify(t.raw());
+        blop::notify(c, t.raw());
         if f != NIL { crate::fiber::discard(c, f); }
         return Ok(t);
     }
@@ -486,7 +490,9 @@ pub fn alloc_lock(c: &mut Ctx, klass: Value) -> Option<Value> {
 fn release_locks(c: &mut Ctx, t: Value) {
     if HELD.load(Relaxed) == 0 { return; }
     // each_object does not allocate: the closure's short borrows of c are the only ones
-    crate::gc::each_object(|v| { if let Some(l) = c.data_mut::<RLock>(v) { if l.owner == t { l.owner = NIL; l.count = 0; held_dec(); blop::notify(v.raw()); } } });
+    let mut freed = vec![];
+    crate::gc::each_object(|v| { if let Some(l) = c.data_mut::<RLock>(v) { if l.owner == t { l.owner = NIL; l.count = 0; held_dec(); freed.push(v.raw()); } } });
+    for k in freed { blop::notify_one(c, k); }
 }
 fn acquire(c: &mut Ctx, m: Value) -> Result<(), Esc> {
     let me = cur(c);
@@ -495,7 +501,7 @@ fn acquire(c: &mut Ctx, m: Value) -> Result<(), Esc> {
         if l.monitor { lk_mut(c, m).count += 1; return Ok(()); }
         return err(c, c.vm().c_thread_error, "deadlock; recursive locking");
     }
-    block_on(c, |c| { let o = lk(c, m).owner; Ok(o == NIL || th(c, o).dead) }, Some(m), None, true)?;
+    block_on(c, |c| { let o = lk(c, m).owner; Ok(o == NIL || th(c, o).dead) }, Some(m.raw()), None, true)?;
     let l = lk_mut(c, m);
     l.owner = me; l.count = 1;
     HELD.fetch_add(1, Relaxed);
@@ -507,7 +513,7 @@ fn release(c: &mut Ctx, m: Value) -> Result<(), Esc> {
     if l.owner != cur(c) { return err(c, c.vm().c_thread_error, if l.monitor { "current thread not owner" } else { "Attempt to unlock a mutex which is locked by another thread/fiber" }); }
     let l = lk_mut(c, m);
     l.count -= 1;
-    if l.count == 0 { l.owner = NIL; held_dec(); blop::notify(m.raw()); }
+    if l.count == 0 { l.owner = NIL; held_dec(); blop::notify_one(c, m.raw()); }
     Ok(())
 }
 fn mx_lock(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { acquire(c, s)?; Ok(s) }
@@ -549,10 +555,10 @@ fn mon_wait_for_cond(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV
     let l = lk_mut(c, s);
     l.owner = NIL; l.count = 0;
     held_dec();
-    blop::notify(s.raw());
+    blop::notify_one(c, s.raw());
     let r = cv_wait_raw(c, a[0], a[1]);
     let me = cur(c);
-    block_on(c, |c| Ok(lk(c, s).owner == NIL), Some(s), None, true)?;
+    block_on(c, |c| Ok(lk(c, s).owner == NIL), Some(s.raw()), None, true)?;
     let l = lk_mut(c, s);
     l.owner = me; l.count = count;
     HELD.fetch_add(1, Relaxed);
@@ -574,7 +580,7 @@ fn cv_wait_raw(c: &mut Ctx, cv: Value, timeout: Value) -> Result<bool, Esc> {
     let token = c.ary_new_from(&[FALSE]);
     let w = cv_waiters(c, cv);
     c.ary_push(w, token);
-    let r = block_on(c, |c| Ok(c.ary_get(token, 0).truthy()), Some(token), deadline, true);
+    let r = block_on(c, |c| Ok(c.ary_get(token, 0).truthy()), Some(token.raw()), deadline, true);
     c.ary_mut(w).retain(|&x| x != token);
     r
 }
@@ -589,13 +595,13 @@ fn cv_wait(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
 }
 fn cv_signal(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let w = cv_waiters(c, s);
-    if c.ary_len(w) > 0 { let t = c.ary_mut(w).remove(0); c.ary_mut(t)[0] = TRUE; blop::notify(t.raw()); }
+    if c.ary_len(w) > 0 { let t = c.ary_mut(w).remove(0); c.ary_mut(t)[0] = TRUE; blop::notify(c, t.raw()); }
     Ok(s)
 }
 fn cv_broadcast(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let w = cv_waiters(c, s);
     let ts = c.ary(w).to_vec();
-    for t in ts { c.ary_mut(t)[0] = TRUE; blop::notify(t.raw()); }
+    for t in ts { c.ary_mut(t)[0] = TRUE; blop::notify(c, t.raw()); }
     c.ary_mut(w).clear();
     Ok(s)
 }
@@ -649,6 +655,8 @@ fn q_opts(c: &mut Ctx, a: &[Value]) -> Result<(bool, Option<Instant>), Esc> {
     } } }
     Ok((nb, deadline))
 }
+/// SizedQueue pushers wait on this key, poppers on the queue's address (heap addresses are 8-aligned).
+fn space_key(q: Value) -> u64 { q.raw() | 1 }
 fn q_closed_err<T>(c: &mut Ctx) -> Result<T, Esc> { err(c, c.vm().c_closed_queue_error, "queue closed") }
 fn q_push(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, 2); }
@@ -658,14 +666,14 @@ fn q_push(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
         let (nb, deadline) = q_opts(c, &a[1..])?;
         if nb { return err(c, c.vm().c_thread_error, "queue full"); }
         qu_mut(c, s).waiting += 1;
-        let r = block_on(c, |c| { let q = qu(c, s); Ok(q.closed || q_len(c, s) < q.max) }, Some(s), deadline, true);
+        let r = block_on(c, |c| { let q = qu(c, s); Ok(q.closed || q_len(c, s) < q.max) }, Some(space_key(s)), deadline, true);
         qu_mut(c, s).waiting -= 1;
         if !r? { return Ok(NIL); }
         if qu(c, s).closed { return q_closed_err(c); }
     }
     let items = qu(c, s).items;
     c.ary_push(items, a[0]);
-    blop::notify(s.raw());
+    blop::notify_one(c, s.raw());
     Ok(s)
 }
 fn q_pop(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
@@ -674,7 +682,7 @@ fn q_pop(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
         if nb { return err(c, c.vm().c_thread_error, "queue empty"); }
         if qu(c, s).closed { return Ok(NIL); }
         qu_mut(c, s).waiting += 1;
-        let r = block_on(c, |c| Ok(qu(c, s).closed || q_len(c, s) > 0), Some(s), deadline, true);
+        let r = block_on(c, |c| Ok(qu(c, s).closed || q_len(c, s) > 0), Some(s.raw()), deadline, true);
         qu_mut(c, s).waiting -= 1;
         if !r? || q_len(c, s) == 0 { return Ok(NIL); }
     }
@@ -686,13 +694,13 @@ fn q_pop(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let head = if head == v.len() { v.clear(); 0 } else if head >= 64 && head * 2 >= v.len() { v.drain(..head); 0 } else { head };
     let q = qu_mut(c, s);
     q.head = head;
-    if q.max > 0 { blop::notify(s.raw()); }
+    if q.max > 0 { blop::notify_one(c, space_key(s)); }
     Ok(x)
 }
 fn q_size(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(q_len(c, s) as i64)) }
 fn q_empty(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(q_len(c, s) == 0)) }
-fn q_clear(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let items = qu(c, s).items; c.ary_mut(items).clear(); qu_mut(c, s).head = 0; blop::notify(s.raw()); Ok(s) }
-fn q_close(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { qu_mut(c, s).closed = true; blop::notify(s.raw()); Ok(s) }
+fn q_clear(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let items = qu(c, s).items; c.ary_mut(items).clear(); qu_mut(c, s).head = 0; blop::notify(c, space_key(s)); Ok(s) }
+fn q_close(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { qu_mut(c, s).closed = true; blop::notify(c, s.raw()); blop::notify(c, space_key(s)); Ok(s) }
 fn q_closed(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(qu(c, s).closed)) }
 fn q_num_waiting(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(qu(c, s).waiting as i64)) }
 fn q_freeze(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { type_err(c, format!("cannot freeze #<{}:0x{:016x}>", class_path(real_class_of(s)), s.raw())) }
@@ -701,7 +709,7 @@ fn sq_set_max(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let m = num_to_long(c, a[0])?;
     if m <= 0 { return arg_err(c, "queue size must be positive"); }
     qu_mut(c, s).max = m as usize;
-    blop::notify(s.raw());
+    blop::notify(c, space_key(s));
     Ok(a[0])
 }
 

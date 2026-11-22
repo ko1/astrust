@@ -452,6 +452,8 @@ pub struct Vm {
     pub dollar_zero: Value,
     pub rand_state: u64,
     pub fiber_roots: Vec<Value>,
+    /// green-thread waits in flight (builtins/blop.rs); made at the first wait
+    pub blop: Option<Box<crate::builtins::blop::Blop>>,
     pub ids: MethodIds,
     pub send_cache: Box<[SendWay; SEND_WAYS]>,
     pub main_ctx: *mut Ctx,   // the main thread's context, for the root scan
