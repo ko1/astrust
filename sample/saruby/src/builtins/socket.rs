@@ -835,6 +835,7 @@ fn init_sock(c: &mut Ctx, v: Value, fd: i32) -> RV {
     io.fd = fd; io.wfd = -1; io.readable = true; io.writable = true; io.init = true; io.closed = false; io.eof = false;
     io.rbuf.clear(); io.rpos = 0; io.wbuf.clear(); io.binmode = true; io.enc = Some(ENC_BINARY); io.enc2 = None; io.sync = true;
     io.autoclose = true; io.path.clear(); io.has_path = false; io.lineno = 0; io.rerr = 0;
+    crate::builtins::io::conv_note(io);
     ivar_set_raw(c, v, norev_sym(), Value::bool(NOREVLOOKUP.load(Relaxed)));
     Ok(v)
 }

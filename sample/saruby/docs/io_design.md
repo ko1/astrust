@@ -155,3 +155,31 @@ placeholders.
    waits instead).
 6. `Kernel#require` of a feature another thread is loading does not wait for it (rubyspec
    kernel/require "(concurrently)"; it also needs `Thread#backtrace` of another thread).
+
+## Encoding conversion
+
+`src/builtins/io_conv.rs` is io.c's conversion layer on the engine of `econv.rs`
+(measurements and the differential corpus: `~/ruby/src/trials/2026-11-23-saruby-io-transcode/`).
+
+| io.c | saruby | note |
+|---|---|---|
+| `encs.enc / enc2 / ecflags / ecopts` | `RIo.enc / enc2 / ecflags` (CRuby's ECONV_* bits) `/ ecrep` (the `replace:` string, boxed) | `ecflags` and `replace:` come from `transcode::prepare_options`, the parser String#encode uses |
+| `NEED_READCONV` (Unix) | `need_readconv`: an internal encoding, or a newline decorator (`"rt"`, `newline:`, `universal_newline:`) | text mode is no separate flag: it is "a newline decorator and not binmode", what `validate_enc_binmode` leaves in `FMODE_TEXTMODE` |
+| `readconv`, `cbuf` (capa ≥ 128 KiB) | `IoConv { rc, cbuf, cpos, ccap }`, boxed in `RIo.conv`, made on first use | a stream that never converts carries one `None` |
+| `fill_cbuf` / `more_char` (`ECONV_AFTER_OUTPUT`) | the same, with putback into rbuf and the flush at EOF | AFTER_OUTPUT is kept: after `gets` the bytes past the line are still unconverted in rbuf, so `read(n)` / `pos` / `set_encoding` see what CRuby's do |
+| `appendline` / `swallow` / `rb_io_getline_0`, `io_getc` | `getline::<S>`, `swallow::<S>`, `getc` / `getc_raw` over a `Src` (`Raw` = rbuf, `Conv` = cbuf) | the general branch serves both (a limit relaxed for a cut character, paragraph mode, multibyte separators, no lineno for a line cut by the limit); the fast path (`"\n"`, no limit, ASCII-compatible, no converter) is the old `read_line` |
+| `rb_io_check_byte_readable` | `byte_readable` / `no_char_pending` | `read(n)`, `readpartial`, `read_nonblock`, `sysread`, `getbyte`, `ungetbyte`: "byte oriented read for character buffered IO" |
+| `rb_io_ungetc` | converted streams push into cbuf ("ungetc failed" past its capacity), others into rbuf with CRuby's capacity rule ("ungetbyte failed") | `RIo.rcap` is the capacity CRuby's rbuf would have (8 KiB, 128 KiB with a converter) |
+| `make_writeconv` / `do_writeconv` | `make_writeconv` / `write_plan` + `transcode::str_encode` (rb_str_encode) + `writeconv_convert` | ASCII-incompatible externals (UTF-16/32) and stateful decorators get the double conversion; `finish_writeconv` writes the closing bytes (ISO-2022-JP's `ESC ( B`) at close and at finalization |
+| `clear_codeconv` | `set_encoding`, `binmode`, `reopen`, `seek` / `pos` with unread bytes; `rewind` drops the readconv | as CRuby, `set_encoding` drops the writeconv unfinished |
+
+With other threads running, a step that would block hands back what it took (to rbuf or cbuf),
+waits through the blop layer (`coop_fill`) and runs again (`src_run`); a character cut at the buffer
+end is resumed where it was (`getc_raw`'s carry), so the result does not depend on how the bytes
+arrived.
+
+Not as in CRuby: GB18030 / Big5 / EUC-KR find the start of the last character of a limit cut by a
+forward scan (CRuby has a `left_adjust_char_head` per encoding; UTF-8/16/32, EUC-JP, Shift_JIS and
+the single-byte ones follow CRuby's).  File reads take 64 KiB at a time where CRuby takes 8 KiB, so
+CRuby's quirk of a limit cut inside a UTF-16 newline swallowing the rest of its 8 KiB buffer gives a
+longer line here.

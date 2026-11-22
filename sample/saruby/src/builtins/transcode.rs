@@ -40,6 +40,8 @@ pub fn dump_bin(v: &[u8]) -> String {
 fn set(c: &mut Ctx, e: Value, k: &[u8], v: Value) { ivar_set_raw(c, e, intern(k), v); }
 fn attr(c: &Ctx, v: Value, k: &[u8]) -> Value { let x = ivar_get(c, v, intern(k)); if x == UNDEF { NIL } else { x } }
 
+/// The conversion errors' messages are ASCII-8BIT in CRuby (rb_sprintf of dumped bytes).
+fn bin_message(c: &mut Ctx, e: Value, msg: &str) { let m = c.str_new_enc(msg.as_bytes(), ENC_BINARY); ivar_set_raw(c, e, crate::symbol::s::mesg, m); }
 /// make_econv_exception: the exception for the last error, None if there was none.
 pub fn econv_exception(c: &mut Ctx, ec: &Econv) -> Option<Value> {
     let le = &ec.last_error;
@@ -49,7 +51,8 @@ pub fn econv_exception(c: &mut Ctx, ec: &Econv) -> Option<Value> {
             let msg = if r == Res::IncompleteInput { format!("incomplete {} on {}", d, le.src) }
                       else if !le.readagain.is_empty() { format!("{} followed by {} on {}", d, dump_bin(&le.readagain), le.src) }
                       else { format!("{} on {}", d, le.src) };
-            let e = make_exception(c, c.vm().c_invalid_byte_seq_error.get(), &msg);
+            let e = make_exception(c, c.vm().c_invalid_byte_seq_error.get(), "");
+            bin_message(c, e, &msg);
             let b = c.str_new_enc(&le.error_bytes, ENC_BINARY);
             set(c, e, b"__tc_bytes", b);
             let ra = if r == Res::IncompleteInput || le.readagain.is_empty() { NIL } else { c.str_new_enc(&le.readagain, ENC_BINARY) };
@@ -69,7 +72,8 @@ pub fn econv_exception(c: &mut Ctx, ec: &Econv) -> Option<Value> {
                 for el in &ec.elems { if !ev::is_decorator(el.tc.tr) { m.push_str(" to "); m.push_str(el.tc.tr.dst); } }
                 m
             };
-            let e = make_exception(c, c.vm().c_undef_conv_error.get(), &msg);
+            let e = make_exception(c, c.vm().c_undef_conv_error.get(), "");
+            bin_message(c, e, &msg);
             let ch = c.str_new_enc(b, enc_id(le.src).unwrap_or(ENC_BINARY));
             set(c, e, b"__tc_char", ch);
             e
@@ -270,7 +274,18 @@ fn str_transcode0(c: &mut Ctx, slf: Value, pos: &[Value], mut ecflags: u32, o: &
     } else { pos[0] };
     let arg2 = pos.get(1).copied();
     let (dname, denc) = enc_arg(c, arg1)?;
-    let (mut sname, mut senc) = match arg2 { None => { let e = c.str_enc(slf); (en::enc_name(e).to_string(), Some(e)) } Some(v) => enc_arg(c, v)? };
+    let src = match arg2 { None => None, Some(v) => Some(enc_arg(c, v)?) };
+    transcode1(c, slf, dname, denc, src, ecflags, explicit_invalid, o)
+}
+/// rb_str_encode(str, to, ecflags, ecopts) for IO's do_writeconv: the converted bytes, None when they stay as they are.
+pub fn str_encode(c: &mut Ctx, slf: Value, dname: &str, ecflags: u32, o: &Opts) -> Result<Option<Vec<u8>>, Esc> {
+    Ok(match transcode1(c, slf, dname.to_string(), enc_id(dname), None, ecflags, true, o)? { Some((Some(b), _)) => Some(b), _ => None })
+}
+/// str_transcode0 after its arguments are read: `src` is the given source encoding, if any.
+#[allow(clippy::too_many_arguments)]
+fn transcode1(c: &mut Ctx, slf: Value, dname: String, denc: Option<u8>, src: Option<(String, Option<u8>)>, ecflags: u32, explicit_invalid: bool, o: &Opts) -> Result<Option<(Option<Vec<u8>>, u8)>, Esc> {
+    let arg2 = if src.is_some() { Some(()) } else { None };
+    let (mut sname, mut senc) = match src { None => { let e = c.str_enc(slf); (en::enc_name(e).to_string(), Some(e)) } Some(x) => x };
     let dencidx = denc;
     let mut src = c.str_bytes(slf).to_vec();
     let (mut sn, mut dn) = (sname.clone(), dname.clone());
