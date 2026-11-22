@@ -134,6 +134,7 @@ pub fn specialize_entry(sc: &mut SpecCtx, n: NodePtr) -> String {
     if sc.emitted.contains(&fname) || !node_laid(n) { return fname; }
     sc.holes.clear();
     sc.begin_entry(n as usize, hash_node(n));
+    sc.tag = rec_tag(sc, n);
     let t = specialize_node(sc, n);
     let p = sc.rec_suffix(hash_node(n));
     let s = format!("S_{:016x}{}{}", hash_node(n), sc.tag, p);
@@ -159,22 +160,30 @@ pub static {}_HOLES: [u32; {}] = [{}];
     sc.emitted.insert(fname.clone());
     fname
 }
+/// R_ / S_ suffix of q: its own profile (what its body bakes), not the entry's: entries reaching q share them.
+pub fn rec_tag(sc: &mut SpecCtx, q: NodePtr) -> String {
+    if !sc.profiled { return String::new(); }
+    let h = *sc.own.entry(q as usize).or_insert_with(|| hash_merge(hash_node(q), profile_node(&mut ProfCtx::new(), q)));
+    format!("_{:016x}", h)
+}
 /// A call from inside the specialization of q to q (recursion): `R_<hash>`, a direct call of
 /// `S_<hash>::run`, q's entry taking the spec-in value as a parameter (specialize_entry / _finish emit it).
 pub fn specialize_rec(sc: &mut SpecCtx, q: NodePtr) -> String {
     let h = hash_node(q);
     let p = sc.rec_suffix(h);
-    let name = format!("R_{:016x}{}{}", h, sc.tag, p);
+    // P calls the bound entry's own body (S_<hash>P): the entry's suffix
+    let tag = if p.is_empty() { rec_tag(sc, q) } else { sc.tag.clone() };
+    let name = format!("R_{:016x}{}{}", h, tag, p);
     if !p.is_empty() {
         // the entry's patched body (S_<hash>P::run) holds the values of the one node it was bound to
         if sc.emitted.insert(name.clone()) {
-            sc.out.push_str(&format!("pub struct {0};\nimpl Disp for {0} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ crate::vm::native_check(c)?; if n as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}{2}P::run(c, n, fp, crate::vm::CallArgs::load(c).pass()) }} else {{ std::hint::cold_path(); <Dyn as Disp>::call(c, n, fp) }} }}\n    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr, fp: Fp, a: CallArgs) -> RV {{ crate::vm::native_check(c)?; if n as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}{2}P::run(c, n, fp, a.pass()) }} else {{ std::hint::cold_path(); <Dyn as Disp>::spec(c, n, fp, a) }} }}\n}}\n", name, h, sc.tag));
+            sc.out.push_str(&format!("pub struct {0};\nimpl Disp for {0} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ crate::vm::native_check(c)?; if n as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}{2}P::run(c, n, fp, crate::vm::CallArgs::load(c).pass()) }} else {{ std::hint::cold_path(); <Dyn as Disp>::call(c, n, fp) }} }}\n    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr, fp: Fp, a: CallArgs) -> RV {{ crate::vm::native_check(c)?; if n as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}{2}P::run(c, n, fp, a.pass()) }} else {{ std::hint::cold_path(); <Dyn as Disp>::spec(c, n, fp, a) }} }}\n}}\n", name, h, tag));
         }
         return name;
     }
     if sc.emitted.insert(name.clone()) {
-        sc.rec.push((q as usize, sc.tag.clone()));
-        sc.out.push_str(&format!("pub struct {0};\nimpl Disp for {0} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ crate::vm::native_check(c)?; S_{1:016x}{2}::run(c, n, fp, crate::vm::CallArgs::load(c).pass()) }}\n    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr, fp: Fp, a: CallArgs) -> RV {{ crate::vm::native_check(c)?; S_{1:016x}{2}::run(c, n, fp, a.pass()) }}\n}}\n", name, h, sc.tag));
+        sc.rec.push((q as usize, tag.clone()));
+        sc.out.push_str(&format!("pub struct {0};\nimpl Disp for {0} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{ crate::vm::native_check(c)?; S_{1:016x}{2}::run(c, n, fp, crate::vm::CallArgs::load(c).pass()) }}\n    #[inline(always)]\n    fn spec(c: &mut Ctx, n: NodePtr, fp: Fp, a: CallArgs) -> RV {{ crate::vm::native_check(c)?; S_{1:016x}{2}::run(c, n, fp, a.pass()) }}\n}}\n", name, h, tag));
     }
     name
 }

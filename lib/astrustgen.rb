@@ -547,8 +547,8 @@ module ASTrustGen
         RS
       end
 
-      # SPECIALIZE_<name>(sc, n) -> String: emits (once per hash) a zero-sized type
-      # `T_<hash>` implementing Disp whose call() is EVAL_<name> instantiated with the
+      # SPECIALIZE_<name>(sc, n) -> String: emits (once per name) a zero-sized type
+      # `T_<hash of its code>` implementing Disp whose call() is EVAL_<name> instantiated with the
       # children's SD types and the scalar operands baked in; returns the type name.
       def build_specialize_test(params, child_glue, tf)
         return "" unless @test_body
@@ -603,7 +603,6 @@ module ASTrustGen
           stmt = ASTrustGen.rust_str(child_storage_stmt(op, unwrap_expr(disp))).gsub('{', '{{').gsub('}', '}}').sub("\u0001", '{}').sub("\u0002", '{}')
           "    body.push_str(&format!(\"        #{stmt}\\n\", t_#{op.name}#{contiguous? ? ", child_ptr_expr(n, u.#{op.name})" : ""}));"
         end
-        key_types = @operands.select { it.child? || it.node? || it.nodes? || it.spec? }.map { "t_#{it.name}.as_str()" }.join(', ')
         tf = generic_names.empty? ? '""'.dup : "format!(\"::<#{generic_names.map { '{}' }.join(', ')}>\", #{generic_names.join(', ')})"
         params = @prefix_params.join(', ')
         <<~RS
@@ -619,23 +618,22 @@ module ASTrustGen
         #{@operands.map { "    " + it.specialize_arg }.join("\n")}
             }
             if !was_open { sc.open.remove(&own_hash); }
-            // named by what is baked too (children's types, @bake values), not by the hash alone:
-            // two sites with one hash may have seen different things
-            let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[#{key_types}], ","), a.join(",")))));
-            let name = sc.positional(name, n as usize);
-            if sc.emitted.contains(&name) { return name; }
-            sc.emitted.insert(name.clone());
+            // named by its code (children's names, baked operands, bound holes are in it): equal code is
+            // one item, whichever entry or position it was reached from
             let mut body = String::new();
-            body.push_str(&format!("pub struct {};\\n", name));
-            if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\\n'); }
-            body.push_str(&format!("impl Disp for {} {{\\n    #[inline(always)]\\n    fn call(#{params}) -> #{result_type} {{ unsafe {{\\n", name));
+            body.push_str(&format!("impl Disp for @SELF@ {{\\n    #[inline(always)]\\n    fn call(#{params}) -> #{result_type} {{ unsafe {{\\n"));
             body.push_str(&format!("        let np = {} as *mut NodeOf<#{struct_name}>;\\n", "#{prefix_names[1]}"));
         #{child_glue.join("\n")}
             body.push_str(&format!("        EVAL_#{@name}{}({})\\n    }} }}\\n", #{tf}, a.join(", ")));
         #{build_specialize_test(params, child_glue, tf)}
         #{build_specialize_spec(params, child_glue, tf)}
             body.push_str("}\n");
-            sc.out.push_str(&body);
+            let name = format!("T_{:016x}", hash_str(&body));
+            if sc.emitted.insert(name.clone()) {
+                sc.out.push_str(&format!("pub struct {};\\n", name));
+                if sc.comments { sc.out.push_str("// "); dump_node(&mut sc.out, n); sc.out.push('\\n'); }
+                sc.out.push_str(&body.replace("@SELF@", &name));
+            }
             name
         }
         RS
@@ -831,6 +829,7 @@ module ASTrustGen
           if sc.emitted.contains(&fname)#{n.contiguous? ? ' || !node_laid(n)' : ''} { return fname; }
           sc.holes.clear();
           sc.begin_entry(n as usize, hash_node(n));
+          sc.tag = rec_tag(sc, n);
           let t = specialize_node(sc, n);
           let p = sc.rec_suffix(hash_node(n));
           let s = format!("S_{:016x}{}{}", hash_node(n), sc.tag, p);
@@ -850,22 +849,30 @@ module ASTrustGen
           sc.emitted.insert(fname.clone());
           fname
       }
+      /// R_ / S_ suffix of q: its own profile (what its body bakes), not the entry's: entries reaching q share them.
+      pub fn rec_tag(sc: &mut SpecCtx, q: NodePtr) -> String {
+          if !sc.profiled { return String::new(); }
+          let h = *sc.own.entry(q as usize).or_insert_with(|| hash_merge(hash_node(q), profile_node(&mut ProfCtx::new(), q)));
+          format!("_{:016x}", h)
+      }
       /// A call from inside the specialization of q to q (recursion): `R_<hash>`, a direct call of
       /// `S_<hash>::run`, q's entry taking the spec-in value as a parameter (specialize_entry / _finish emit it).
       pub fn specialize_rec(sc: &mut SpecCtx, q: NodePtr) -> String {
           let h = hash_node(q);
           let p = sc.rec_suffix(h);
-          let name = format!("R_{:016x}{}{}", h, sc.tag, p);
+          // P calls the bound entry's own body (S_<hash>P): the entry's suffix
+          let tag = if p.is_empty() { rec_tag(sc, q) } else { sc.tag.clone() };
+          let name = format!("R_{:016x}{}{}", h, tag, p);
           if !p.is_empty() {
               // the entry's patched body (S_<hash>P::run) holds the values of the one node it was bound to
               if sc.emitted.insert(name.clone()) {
-                  sc.out.push_str(&format!("pub struct {0};\\nimpl Disp for {0} {{\\n    #[inline(always)]\\n    fn call(#{params.join(', ')}) -> #{n.result_type} {{ #{rec_stmt}if #{pnames[1]} as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}{2}P::run(#{pnames.join(', ')}#{rec_load}) }} else {{ std::hint::cold_path(); <Dyn as Disp>::call(#{pnames.join(', ')}) }} }}\\n    #[inline(always)]\\n    fn spec(#{params.join(', ')}#{spec_in ? ", a: #{spec_in}" : ''}) -> #{n.result_type} {{ #{rec_stmt}if #{pnames[1]} as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}{2}P::run(#{pnames.join(', ')}#{rec_pass}) }} else {{ std::hint::cold_path(); <Dyn as Disp>::spec(#{pnames.join(', ')}#{spec_in ? ', a' : ''}) }} }}\\n}}\\n", name, h, sc.tag));
+                  sc.out.push_str(&format!("pub struct {0};\\nimpl Disp for {0} {{\\n    #[inline(always)]\\n    fn call(#{params.join(', ')}) -> #{n.result_type} {{ #{rec_stmt}if #{pnames[1]} as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}{2}P::run(#{pnames.join(', ')}#{rec_load}) }} else {{ std::hint::cold_path(); <Dyn as Disp>::call(#{pnames.join(', ')}) }} }}\\n    #[inline(always)]\\n    fn spec(#{params.join(', ')}#{spec_in ? ", a: #{spec_in}" : ''}) -> #{n.result_type} {{ #{rec_stmt}if #{pnames[1]} as usize == &raw const ASTRUST_ROOT as usize {{ S_{1:016x}{2}P::run(#{pnames.join(', ')}#{rec_pass}) }} else {{ std::hint::cold_path(); <Dyn as Disp>::spec(#{pnames.join(', ')}#{spec_in ? ', a' : ''}) }} }}\\n}}\\n", name, h, tag));
               }
               return name;
           }
           if sc.emitted.insert(name.clone()) {
-              sc.rec.push((q as usize, sc.tag.clone()));
-              sc.out.push_str(&format!("pub struct {0};\\nimpl Disp for {0} {{\\n    #[inline(always)]\\n    fn call(#{params.join(', ')}) -> #{n.result_type} {{ #{rec_stmt}S_{1:016x}{2}::run(#{pnames.join(', ')}#{rec_load}) }}\\n    #[inline(always)]\\n    fn spec(#{params.join(', ')}#{spec_in ? ", a: #{spec_in}" : ''}) -> #{n.result_type} {{ #{rec_stmt}S_{1:016x}{2}::run(#{pnames.join(', ')}#{rec_pass}) }}\\n}}\\n", name, h, sc.tag));
+              sc.rec.push((q as usize, tag.clone()));
+              sc.out.push_str(&format!("pub struct {0};\\nimpl Disp for {0} {{\\n    #[inline(always)]\\n    fn call(#{params.join(', ')}) -> #{n.result_type} {{ #{rec_stmt}S_{1:016x}{2}::run(#{pnames.join(', ')}#{rec_load}) }}\\n    #[inline(always)]\\n    fn spec(#{params.join(', ')}#{spec_in ? ", a: #{spec_in}" : ''}) -> #{n.result_type} {{ #{rec_stmt}S_{1:016x}{2}::run(#{pnames.join(', ')}#{rec_pass}) }}\\n}}\\n", name, h, tag));
           }
           name
       }
@@ -945,14 +952,8 @@ module ASTrustGen
       /// SD type for a NODES operand: a `DispList` whose nth() dispatches statically.
       pub fn specialize_list(sc: &mut SpecCtx, ns: &NodeList#{first.contiguous? ? ', parent: NodePtr' : ''}) -> String {
           let ts: Vec<String> = ns.iter().map(|x| specialize_node(sc, *x)).collect();
-          let mut h = hash_str("list");
-          for x in ns.iter() { h = hash_merge(h, hash_node(*x)); }
-          #{first.contiguous? ? 'if let Some(x) = ns.first() { h = hash_merge(h, (*x as usize).wrapping_sub(parent as usize) as u64); }' : ''}
-          // the elements' names too: one list node specialized twice (a site, its unrolled copy) is two lists
-          h = hash_merge(h, hash_str(&ts.join(",")));
-          let name = sc.positional(format!("L_{:016x}", h), #{first.contiguous? ? 'parent as usize' : '0'});
-          if sc.emitted.contains(&name) { return name; }
-          let mut s = format!("pub struct {};\\nimpl DispList for {} {{\\n    #[inline(always)] fn len(_ns: NodeList) -> usize {{ {} }}\\n", name, name, ts.len());
+          // named by its code, as a T_
+          let mut s = format!("impl DispList for @SELF@ {{\\n    #[inline(always)] fn len(_ns: NodeList) -> usize {{ {} }}\\n", ts.len());
           s.push_str(&format!("    #[inline(always)]\\n    fn nth(#{first.prefix_params[0]}, ns: NodeList, i: usize#{first.prefix_params.drop(2).map { ", #{it}" }.join}) -> #{first.result_type} {{\\n        match i {{\\n"));
           for (i, t) in ts.iter().enumerate() {
               #{first.contiguous? ? 'let x = child_ptr_expr(parent, ns[i]).replacen("' + first.prefix_names[1] + '.", "(ns.as_ptr() as NodePtr).", 1);' : 'let x = format!("*ns.get_unchecked({})", i);'}
@@ -968,8 +969,8 @@ module ASTrustGen
               s.push_str(&format!("        {}\\n", "#{ASTrustGen.rust_str(first.each_stmt('@STEP@'))}".replace("@STEP@", &step)));
           }
           s.push_str("        #{ASTrustGen.rust_str(first.each_ok)}\\n    }\\n}\\n");
-          sc.emitted.insert(name.clone());
-          sc.out.push_str(&s);
+          let name = format!("L_{:016x}", hash_str(&s));
+          if sc.emitted.insert(name.clone()) { sc.out.push_str(&format!("pub struct {};\\n{}", name, s.replace("@SELF@", &name))); }
           name
       }
       RS
