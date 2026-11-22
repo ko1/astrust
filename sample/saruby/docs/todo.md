@@ -31,8 +31,8 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 
 - [x] builtins（全波）、inline_builtin.rs / inline_iter.rs、string/array/hash/range/bignum/regexp 本体、binding.rs、boot.rs
 - [x] コスト 0 で外せるものを入れた（unsafe 371 → 342）: 定数の Value を const fn、LitCache を Option<Value>、REFINEMENTS_ON・BOOTED・gc::STACK_BASE・STRESS を atomic、CallCache.cfunc を Option<fn>、aot::STORE を thread_local、焼いた即値を const { Value::imm(..) }。safe な Value::fix/sym/flonum は hash の regalloc を変えて +0.6〜1.4% のため見送り（unsafe_catalog.md 4.4）
-- [ ] unsafe_catalog.md 表 2.4 の 39 件に「どうやって見つかったか」列（型検査 / 借用規則 / 読み直し・テスト）。論文で safe 化の効果を主張する根拠（2026-11-22 user「safe 化のいい話」）
-- [ ] 安全なシグネチャで `&'static mut` を返す関数 10 個と、その呼び出し 449 か所（unsafe の数に出ない信頼の穴。docs/unsafe_catalog.md）
+- [x] 39 件の発見元を分類（借用検査 1 / 実行時検査 1 / 読み直し・テスト 37、unsafe_catalog.md）
+- [ ] `&'static mut` の穴: frame() 済み、vm() は &'static Vm（Cell/RefCell）・heap() は gc.rs 内に閉じた（1749107）。オブジェクトのアクセサ（rclass 94・rary 59 ほか）は作業中
 - [ ] sbuf.rs（String のバッファ、10 か所）: safe 版はブランチ `sbuf-safe-rs29`（str AOT +6% 命令 / +11.5% サイクル）。採否未定
 - [ ] 呼び出し経路・フレーム連鎖（vm.rs 80、rt.rs 64、node.def 16、stack_raw.rs 5）。前提 H5（実行中の builtin の下のフレームは生きている）は未検証
 - 残す（外部インターフェース・土台）: sys.rs、kalloc.rs、fiber_os.rs、patch ローダ、heap.rs / value.rs / gc.rs の土台
@@ -40,7 +40,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 ## 3. CRuby 互換性
 
 - [x] rubyspec を実 mspec で計測（runner: ~/ruby/src/trials/2026-11-22-saruby-rubyspec/bin/、SPEC_RUBY_VERSION=4.0.2）。core 19542/22373、language 2592/2933、library 1922/3188（CRuby 4.0.2: 23144/23155、2934/2934、6401/6402）
-- [ ] **AOT で knucleotide が segfault**（ruby-bench、base から。最優先で調べる）
+- [x] AOT で knucleotide が segfault → loader の Arena を fork 後に共有していた（3ea7ec4）
 - [x] rubyspec 第 2 回（~/ruby/src/trials/2026-11-22-saruby-rubyspec-2/）: 特殊グローバル変数、IO の外部/内部エンコーディング（io.c 移植、読み書きの変換）、マジックコメントのソースエンコーディング、再帰構造の #hash、Range#step/#max、Kernel#Float、タイムアウト 10 ファイル。core 19617 → 20324、language 2592 → 2720
 - [x] Encoding::Converter / String#encode を CRuby 4.0 の transcode.c から移植（econv.rs、表は enc/trans/*.c から tools/gen_trans_tables.rb で生成、9.5 MB）、TracePoint / set_trace_func（tracepoint.rs）。converter 142/142、tracepoint 74/76（~/ruby/src/trials/2026-11-22-saruby-converter-tracepoint/）
 - [ ] TracePoint の残り: thread_begin / thread_end。トレース用にコンパイルされていないコードは line と演算子の c_call を出さない。CRuby が内部で呼ぶ Exception#initialize・Module#===（rescue）・const_added / inherited の c_call は出ない
