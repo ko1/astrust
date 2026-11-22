@@ -93,6 +93,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [ ] `__callee__` on alias、`WeakMap#inspect`、`detailed_message` / `full_message` の書式
 - [ ] t/hand: 約 23,400 PASS / 10,200 FAIL
 - [ ] 解説書『saruby でわかる Rust』（~/ruby/src/trials/2026-11-21-saruby-rust-book）: vm/heap 分割の反映、trait と Ruby の module の対比・dispatch（Dyn と T_… の Disp）の説明を追加（2026-11-22 の会話）
+- [ ] `Array#cycle(n).size` が i64 で `len * n` してあふれる（array_methods.rs:969。debug で panic、release では折り返し。CRuby は Bignum）
 
 ## 性能（上 3 つの後。新規には起こさない）
 - [ ] 正規表現 round 1 の代償: liquid-compile +0.47%・liquid-render +0.16%（マッチごとのエンコーディング判定 ~44 命令、timeout 参照、ステップ計数）。String の coderange キャッシュで判定を省ける
