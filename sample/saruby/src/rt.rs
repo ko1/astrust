@@ -720,7 +720,7 @@ pub fn srb_callx_arg(c: &mut Ctx, ci: CiRef, i: usize, v: Value, tmp: Value, kw:
                 let last = c.ary(a)[n - 1];
                 if is_hash(last) && obj_flags(last) & FL_KWHASH != 0 && *kw == NIL {
                     c.ary_mut(tmp).pop();
-                    let h = hash_new();
+                    let h = c.hash_new();
                     crate::hash::hash_copy_entries(c, h, last)?;
                     c.ary_push(tmp, h);
                     *kw = h;
@@ -729,11 +729,11 @@ pub fn srb_callx_arg(c: &mut Ctx, ci: CiRef, i: usize, v: Value, tmp: Value, kw:
             }
         }
         AK_KW => {
-            if *kw == NIL { *kw = hash_new(); c.ary_push(tmp, *kw); c.ary_mut(tmp).pop(); }
+            if *kw == NIL { *kw = c.hash_new(); c.ary_push(tmp, *kw); c.ary_mut(tmp).pop(); }
             srb_hash_merge_kw(c, *kw, v)?;
         }
         AK_KWSPLAT => {
-            if *kw == NIL { *kw = hash_new(); }
+            if *kw == NIL { *kw = c.hash_new(); }
             if v != NIL { srb_hash_merge_kw(c, *kw, v)?; }
             // keep kw reachable through tmp's spare slot
         }
@@ -1272,7 +1272,7 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
         }
         SP_HASH_EXCEPT => {
             let h = c.ary(v)[0]; let used = c.ary(v)[1];
-            let out = hash_new();
+            let out = c.hash_new();
             if is_hash(h) {
                 let mut i = 0;
                 while let Some((k, x)) = c.hash_entry_at(h, i) {
@@ -1326,7 +1326,7 @@ pub fn srb_call_kw(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, k: usiz
         c.set_sp(base, 0);
         r
     } else {
-        let h = hash_new_capa(nkw);
+        let h = c.hash_new_capa(nkw);
         base[1].set(h);
         for (j, &nm) in ci.kw_names.iter().enumerate() {
             let v = base[2 + npos + j].get();

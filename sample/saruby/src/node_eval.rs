@@ -210,7 +210,7 @@ pub fn EVAL_node_lit(c: &mut Ctx, n: NodePtr, fp: Fp, v: Value) -> RV {
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_float(c: &mut Ctx, n: NodePtr, fp: Fp, v: f64) -> RV {
-    Ok(crate::numeric::float_new(v))
+    Ok(c.float_new(v))
 }
 
 
@@ -317,7 +317,7 @@ pub fn EVAL_node_ary_build<D_elems: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, e
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_hash<D_items: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, items: NodeList, kinds: Str) -> RV {
-    let h = crate::hash::hash_new_capa(kinds.len());
+    let h = c.hash_new_capa(kinds.len());
     let base = stage(c, 2)?;
     base[0].set(h);
     let mut i = 0;
@@ -1118,7 +1118,7 @@ pub fn EVAL_node_lambda(c: &mut Ctx, n: NodePtr, fp: Fp, blk: IseqRef) -> RV {
 pub fn EVAL_node_opt_plus<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
     if a.is_fixnum() && b.is_fixnum() && !c.int_redef() { if let Some(r) = a.fix_add(b) { return Ok(r); } }
     if tf_flo(ty) {
-        if let Some((x, y)) = flo2(a, b, R_FLO_PLUS, R_INT_PLUS) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(crate::numeric::float_new(x + y)); }
+        if let Some((x, y)) = flo2(a, b, R_FLO_PLUS, R_INT_PLUS) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(c.float_new(x + y)); }
         return srb_binop(c, a, b, s::plus, line.pos(), cc);
     }
     srb_arith_out(c, a, b, s::plus, line.pos(), cc)
@@ -1130,7 +1130,7 @@ pub fn EVAL_node_opt_plus<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, 
 pub fn EVAL_node_opt_minus<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
     if a.is_fixnum() && b.is_fixnum() && !c.int_redef() { if let Some(r) = a.fix_sub(b) { return Ok(r); } }
     if tf_flo(ty) {
-        if let Some((x, y)) = flo2(a, b, R_FLO_MINUS, R_INT_MINUS) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(crate::numeric::float_new(x - y)); }
+        if let Some((x, y)) = flo2(a, b, R_FLO_MINUS, R_INT_MINUS) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(c.float_new(x - y)); }
         return srb_binop(c, a, b, s::minus, line.pos(), cc);
     }
     srb_arith_out(c, a, b, s::minus, line.pos(), cc)
@@ -1142,7 +1142,7 @@ pub fn EVAL_node_opt_minus<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr,
 pub fn EVAL_node_opt_mul<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc, tf: &mut TyFb, ty: u32) -> RV {
     if a.both_fix(b) && !c.int_redef() { if let Some(r) = a.fix_mul(b) { return Ok(r); } }
     if tf_flo(ty) {
-        if let Some((x, y)) = flo2(a, b, R_FLO_MUL, R_INT_MUL) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(crate::numeric::float_new(x * y)); }
+        if let Some((x, y)) = flo2(a, b, R_FLO_MUL, R_INT_MUL) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(c.float_new(x * y)); }
         return srb_binop(c, a, b, s::mul, line.pos(), cc);
     }
     srb_arith_out(c, a, b, s::mul, line.pos(), cc)
@@ -1158,7 +1158,7 @@ pub fn EVAL_node_opt_div<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, f
         if Value::fixable(q) { return Ok(Value::fix(q)); }
     }
     if tf_flo(ty) {
-        if let Some((x, y)) = flo2(a, b, R_FLO_DIV, R_INT_DIV) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(crate::numeric::float_new(x / y)); }
+        if let Some((x, y)) = flo2(a, b, R_FLO_DIV, R_INT_DIV) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(c.float_new(x / y)); }
         return srb_binop(c, a, b, s::div, line.pos(), cc);
     }
     srb_arith_out(c, a, b, s::div, line.pos(), cc)
@@ -1170,7 +1170,7 @@ pub fn EVAL_node_opt_div<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, f
 pub fn EVAL_node_opt_pow<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, b: Value, line: H_line, cc: &mut OpCc) -> RV {
     if a.is_flonum() && b.is_flonum() && !redef(R_FLO_POW) {
         let (x, y) = (a.flonum_val(), b.flonum_val());
-        if x >= 0.0 { return Ok(crate::numeric::float_new(crate::numeric::libm_pow(x, y))); }
+        if x >= 0.0 { return Ok(c.float_new(crate::numeric::libm_pow(x, y))); }
     }
     srb_binop(c, a, b, s::pow, line.pos(), cc)
 }
