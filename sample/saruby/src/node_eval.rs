@@ -1069,7 +1069,8 @@ pub fn EVAL_node_yield<D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr
     // baked, one block seen: its entry compiled in, guarded by the iseq (yc.fast is set once its hash matched)
     let b = unsafe { &*blk };
     if let BlockKind::Iseq(is) = b.kind {
-        if is as usize == yc.fast && (b.proc_val == UNDEF || !rproc(b.proc_val).is_lambda) {
+        if is as usize == yc.fast && (b.proc_val == UNDEF || !c.proc_data(b.proc_val).is_lambda) {
+
             // np = 1 + the block's lead parameter count: missing arguments are nil
             if (k as u32) + 1 < np { nil_fill(base, 2 + k, 1 + np as usize); }
             c.set_sp(base, 0);

@@ -1199,10 +1199,11 @@ pub fn make_backtrace_lazy(c: &mut Ctx, skip: usize) -> Value {
 }
 
 /// An exception's backtrace (Array of String, or nil), formatting a captured one in place.
-pub fn exc_bt(e: Value) -> Value {
+pub fn exc_bt(c: &mut Ctx, e: Value) -> Value {
     let v = ivar_get(e, s::bt);
-    let Some(raw) = rdata::<RawBt>(v) else { return v };
+    let Some(raw) = c.data::<RawBt>(v) else { return v };
     let a = lines_to_array(format_frames(&raw.frames, raw.skip));
+
     ivar_set_raw(e, s::bt, a);
     a
 }
@@ -1937,8 +1938,7 @@ pub fn invoke_untraced(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: S
             ivar_set(c, recv, id, v)
         }
         MKind::Bmethod(p) => {
-            let pd = rproc(p);
-            let b = pd.blk;
+            let b = c.proc_data(p).blk;
             let mut fr_blk = b;
             fr_blk.self_ = recv;
             let args = to_vec(&base[2..2 + argc as usize]);
@@ -1955,7 +1955,7 @@ pub fn invoke_cfunc(c: &mut Ctx, me: *const MethodEntry, f: CFunc, arity: i32, r
     if flags & CF_KW != 0 && argc > 0 {
         // keywords to a cfunc: an empty **h passes nothing
         let last = base[1 + argc as usize].get();
-        if flags & CF_KW_SPLAT != 0 && is_hash(last) && rhash(last).live == 0 { argc -= 1; }
+        if flags & CF_KW_SPLAT != 0 && is_hash(last) && c.hash(last).live == 0 { argc -= 1; }
         else if is_hash(last) { obj_set_flags(last, FL_KWHASH); }
     }
     if arity >= 0 && argc as i32 != arity { return argc_err(c, argc as usize, arity, arity); }
@@ -2074,12 +2074,12 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
         let h = *args.last().unwrap();
         if accepts_kw && !p.forwarding {
             kwh = h; args.pop();
-        } else if (flags & CF_KW_SPLAT != 0 || is_block) && is_hash(h) && rhash(h).live == 0 {
+        } else if (flags & CF_KW_SPLAT != 0 || is_block) && is_hash(h) && c.hash(h).live == 0 {
             args.pop();
         } else if is.ruby2_keywords.get() && p.rest.is_some() && is_hash(h) {
             let d = crate::hash::hash_new();
             crate::array::ary_push(tmp, d);
-            for (k, x) in crate::hash::hash_pairs(h) { crate::hash::hash_aset(c, d, k, x)?; }
+            crate::hash::hash_copy_entries(c, d, h)?;
             obj_set_flags(d, FL_KWHASH);
             *args.last_mut().unwrap() = d;
         } else if p.forwarding {
@@ -2090,7 +2090,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
         let h = *args.last().unwrap();
         if is_hash(h) && p.kw.iter().all(|k| !k.required) { kwh = h; args.pop(); }
     }
-    if p.no_kw && flags & CF_KW != 0 && args.last().is_some_and(|&h| is_hash(h) && rhash(h).live > 0) {
+    if p.no_kw && flags & CF_KW != 0 && args.last().is_some_and(|&h| is_hash(h) && c.hash(h).live > 0) {
         return arg_err(c, "no keywords accepted");
     }
     let lead = p.lead.len();
@@ -2165,21 +2165,28 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
         if let Some(kr) = p.kwrest {
             let h = crate::hash::hash_new();
             if kwh != NIL {
-                for e in crate::hash::hash_pairs(kwh) {
-                    if e.0.is_sym() && p.kw.iter().any(|k| k.name == e.0.as_sym()) { continue; }
+                let mut i = 0;
+                while let Some(e) = c.hash_entry_at(kwh, i) {
+                    i += 1;
+                    if e.0 == UNDEF || e.0.is_sym() && p.kw.iter().any(|k| k.name == e.0.as_sym()) { continue; }
                     crate::hash::hash_set(c, h, e.0, e.1)?;
                 }
             }
             base[kr as usize].set(h);
-        } else if kwh != NIL && seen < rhash(kwh).live {
-            let unknown: Vec<String> = crate::hash::hash_pairs(kwh).iter()
-                .filter(|e| !(e.0.is_sym() && p.kw.iter().any(|k| k.name == e.0.as_sym())))
-                .map(|e| crate::builtins::kernel::inspect_str(c, e.0).unwrap_or_default()).collect();
+        } else if kwh != NIL && seen < c.hash(kwh).live {
+            let mut unknown: Vec<String> = vec![];
+            let mut i = 0;
+            while let Some(e) = c.hash_entry_at(kwh, i) {
+                i += 1;
+                if e.0 == UNDEF || e.0.is_sym() && p.kw.iter().any(|k| k.name == e.0.as_sym()) { continue; }
+                unknown.push(crate::builtins::kernel::inspect_str(c, e.0).unwrap_or_default());
+            }
             if !unknown.is_empty() {
                 return arg_err(c, format!("unknown keyword{}: {}", if unknown.len() > 1 { "s" } else { "" }, unknown.join(", ")));
             }
         }
-    } else if kwh != NIL && is_hash(kwh) && rhash(kwh).live > 0 && p.no_kw {
+    } else if kwh != NIL && is_hash(kwh) && c.hash(kwh).live > 0 && p.no_kw {
+
         return arg_err(c, "no keywords accepted");
     }
     if let Some(bs) = p.block {
@@ -2217,25 +2224,24 @@ pub fn block_to_proc(c: &mut Ctx, blk: *const Block) -> RV {
     let b = unsafe { &*blk };
     if b.proc_val != UNDEF { return Ok(b.proc_val); }
     if let BlockKind::Proc(p) = b.kind { return Ok(p); }
-    let outer = if b.outer_blk.is_null() { std::ptr::null() } else { &rproc(block_to_proc(c, b.outer_blk)?).blk as *const Block };
+    let outer = if b.outer_blk.is_null() { std::ptr::null() } else { let op = block_to_proc(c, b.outer_blk)?; proc_block(c, op) };
     let is_lambda = matches!(b.kind, BlockKind::Iseq(is) if unsafe { (*is).kind } == IseqKind::Lambda) || matches!(b.kind, BlockKind::Method(_));
     // copied from *b into the box, then patched there: a Block patched on the stack first was
     // read back with wide loads straddling the patch (a store-forwarding stall per Proc)
     let mut pd = Box::new(ProcData { blk: *b, is_lambda, from_method: NIL });
     pd.blk.outer_blk = outer;
     let p = gc::alloc_with(vm().c_proc.get(), move || Body::Proc(pd));
-    let pd = rproc(p);
-    pd.blk.proc_val = p;
+    c.proc_data_mut(p).blk.proc_val = p;
     unsafe { (*(blk as *mut Block)).proc_val = p; }
     Ok(p)
 }
 
 /// A Block view of a Proc value (for passing a proc as &blk).
-pub fn proc_block(p: Value) -> *const Block { &rproc(p).blk }
+pub fn proc_block(c: &Ctx, p: Value) -> *const Block { &c.proc_data(p).blk }
 
-pub fn is_lambda_block(b: *const Block) -> bool {
+pub fn is_lambda_block(c: &Ctx, b: *const Block) -> bool {
     let b = unsafe { &*b };
-    if b.proc_val != UNDEF && is_proc(b.proc_val) { return rproc(b.proc_val).is_lambda; }
+    if b.proc_val != UNDEF && is_proc(b.proc_val) { return c.proc_data(b.proc_val).is_lambda; }
     matches!(b.kind, BlockKind::Iseq(is) if unsafe { (*is).kind } == IseqKind::Lambda)
 }
 
@@ -2246,7 +2252,7 @@ pub fn yield_block(c: &mut Ctx, blk: *const Block, args: &[Value]) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("yield: from a builtin (yield_block)");
     if blk.is_null() { return err(c, vm().c_local_jump_error.get(), "no block given (yield)"); }
     let b = unsafe { &*blk };
-    if let Some(is) = block_fast(b, args.len()) {
+    if let Some(is) = block_fast(c, b, args.len()) {
         let base = c.top();
         stack_check(c, is.nlocals as usize + args.len() + 16)?;
         put(base, 2, args);
@@ -2259,13 +2265,13 @@ pub fn yield_block(c: &mut Ctx, blk: *const Block, args: &[Value]) -> RV {
 
 /// The iseq of a non-lambda block with only required params that `argc` args bind to without spreading.
 #[inline(always)]
-pub fn block_fast(b: &Block, argc: usize) -> Option<&'static Iseq> {
+pub fn block_fast(c: &Ctx, b: &Block, argc: usize) -> Option<&'static Iseq> {
     if let BlockKind::Iseq(is) = b.kind {
         let is = unsafe { &*is };
         // extra args are dropped and missing ones are nil; one arg for 2+ params may be an Array to spread
         // a `->` block entry is only reached as a lambda proc, which the last test excludes
         if !is.bentry.is_null() && !(argc == 1 && is.params.lead.len() >= 2)
-            && (b.proc_val == UNDEF || !rproc(b.proc_val).is_lambda) { return Some(is); }
+            && (b.proc_val == UNDEF || !c.proc_data(b.proc_val).is_lambda) { return Some(is); }
     }
     None
 }
@@ -2287,7 +2293,7 @@ pub fn yield1(c: &mut Ctx, blk: *const Block, a: Value) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("yield: from a builtin, 1 arg (yield1)");
     if !blk.is_null() {
         let b = unsafe { &*blk };
-        if let Some(is) = block_fast(b, 1) {
+        if let Some(is) = block_fast(c, b, 1) {
             let base = c.top();
             stack_check(c, is.nlocals as usize + 17)?;
             base[2].set(a);
@@ -2310,8 +2316,7 @@ pub fn yield_with_self(c: &mut Ctx, blk: *const Block, args: &[Value], self_: Va
 pub fn call_proc(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block) -> RV { call_proc_kw(c, p, args, blk, false) }
 
 pub fn call_proc_kw(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block, kw: bool) -> RV {
-    let pd = rproc(p);
-    let b = pd.blk;
+    let (b, p_lambda) = { let pd = c.proc_data(p); (pd.blk, pd.is_lambda) };
     // a `->` lambda called with its exact arity: its block entry (lambda frame, sizes baked)
     if let BlockKind::Iseq(is) = b.kind {
         let is = unsafe { &*is };
@@ -2325,7 +2330,7 @@ pub fn call_proc_kw(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block, kw
             return r;
         }
     }
-    invoke_block_full(c, &b, args, blk, b.self_, pd.is_lambda, std::ptr::null(), kw)
+    invoke_block_full(c, &b, args, blk, b.self_, p_lambda, std::ptr::null(), kw)
 }
 
 /// Run a block.  `lambda_call`: strict arity / own return target (lambda procs, bmethods).
@@ -2352,9 +2357,7 @@ pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const 
             funcall_flags(c, recv, mid, &args[1..], blkarg, fl)
         }
         BlockKind::Method(m) => {
-            let mo = rmethod(m);
-            let recv = mo.recv;
-            let me = mo.me;
+            let (recv, me) = { let mo = c.method_obj(m); (mo.recv, mo.me) };
             let base = stage(c, 2 + args.len())?;
             base[0].set(recv); base[1].set(NIL);
             put(base, 2, args);
@@ -2364,9 +2367,9 @@ pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const 
         }
         BlockKind::Cfunc(f, data) => f(c, data, args, blkarg),
         BlockKind::Proc(p) => {
-            let pd = rproc(p);
-            let inner = pd.blk;
-            invoke_block_full(c, &inner, args, blkarg, if self_ == b.self_ { inner.self_ } else { self_ }, pd.is_lambda || lambda_call, bme, kw)
+            let (inner, p_lambda) = { let pd = c.proc_data(p); (pd.blk, pd.is_lambda) };
+            invoke_block_full(c, &inner, args, blkarg, if self_ == b.self_ { inner.self_ } else { self_ }, p_lambda || lambda_call, bme, kw)
+
         }
     }
 }

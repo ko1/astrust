@@ -2,7 +2,7 @@
 // On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
 #![forbid(unsafe_code)]
 // the context-free API, for the modules not converted yet (bodies in object.rs)
-pub use crate::object::{float_new, num_to_f64};
+pub use crate::object::float_new;
 pub use imp::*;
 
 // a module of its own: `no_legacy` must not meet the re-export above

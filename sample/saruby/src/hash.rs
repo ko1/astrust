@@ -2,7 +2,7 @@
 // On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).  Methods are in builtins/hash_methods.rs.
 #![forbid(unsafe_code)]
 // the context-free API, for the modules not converted yet (bodies in object.rs)
-pub use crate::object::{hash_clear, hash_dup, hash_entry_at, hash_len, hash_new, hash_new_capa, hash_pairs};
+pub use crate::object::{hash_new, hash_new_capa};
 pub use imp::*;
 
 // a module of its own: `no_legacy` must not meet the re-export above
@@ -322,6 +322,18 @@ pub fn hash_set(c: &mut Ctx, h: Value, k: Value, v: Value) -> Result<(), Esc> {
     if r.insert_new(k, v, hc) % 64 == 0 { c.malloc_increase(64 * 24); }
     Ok(())
 }
+
+/// `dst[k] = v` for each entry of `src`, slot by slot: hashing a key runs Ruby code, which may
+/// change `src`, so its pairs are never copied out to an unrooted Vec first.
+pub fn hash_copy_entries(c: &mut Ctx, dst: Value, src: Value) -> Result<(), Esc> {
+    let mut i = 0;
+    while let Some((k, v)) = c.hash_entry_at(src, i) {
+        if k != UNDEF { hash_aset(c, dst, k, v)?; }
+        i += 1;
+    }
+    Ok(())
+}
+
 
 pub fn hash_delete(c: &mut Ctx, h: Value, k: Value) -> Result<Option<Value>, Esc> {
     match hash_lookup(c, h, k)? {

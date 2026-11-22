@@ -675,7 +675,7 @@ pub fn gvar_get(c: &mut Ctx, name: Sym) -> RV {
     let b = sym_bytes(name);
     match b {
         b"$!" => return Ok(c.errinfo),
-        b"$@" => { return Ok(if c.errinfo == NIL { NIL } else { exc_bt(c.errinfo) }); }
+        b"$@" => { return Ok(if c.errinfo == NIL { NIL } else { exc_bt(c, c.errinfo) }); }
         b"$~" => return Ok(c.last_match),
         b"$&" => return Ok(crate::regexp::nth_match(c, c.last_match, 0)),
         b"$`" => { let m = c.last_match; return Ok(if m == NIL { NIL } else { crate::regexp::match_pre(c, m) }); }

@@ -725,7 +725,7 @@ cfn!(a_sum, |c, slf, a, blk| {
         // the same x again after switching to the float sum: its block must not run twice
         loop {
         if let Some((s2, comp)) = fsum.as_mut() {
-            if let Some(f) = crate::numeric::num_to_f64(x) {
+            if let Some(f) = c.num_to_f64(x) {
                 // CRuby's float_sum: NaN / Inf short-circuit the compensation
                 if s2.is_nan() {}
                 else if f.is_nan() { *s2 = f; }
@@ -737,7 +737,7 @@ cfn!(a_sum, |c, slf, a, blk| {
             acc = c.float_new(*s2 + *comp); fsum = None;
         }
         if acc.is_fixnum() && x.is_fixnum() { if let Some(r) = acc.as_fix().checked_add(x.as_fix()) { if Value::fixable(r) { acc = Value::fix(r); i += 1; continue 'elems; } } }
-        if is_float(x) && crate::numeric::is_numeric(acc) && fsum.is_none() { fsum = Some((crate::numeric::num_to_f64(acc).unwrap(), 0.0)); continue; }
+        if is_float(x) && crate::numeric::is_numeric(acc) && fsum.is_none() { fsum = Some((c.num_to_f64(acc).unwrap(), 0.0)); continue; }
         acc = funcall(c, acc, s::plus, &[x], std::ptr::null())?;
         i += 1;
         continue 'elems;
@@ -985,7 +985,7 @@ cfn!(a_bsearch, |c, slf, a, blk| enum_or(c, slf, "bsearch", a, blk, |c| {
         if r == TRUE { found = x; hi = mid; }
         else if r == FALSE || r == NIL { lo = mid + 1; }
         else if r.is_fixnum() || is_float(r) {
-            let v = crate::numeric::num_to_f64(r).unwrap();
+            let v = c.num_to_f64(r).unwrap();
             if v == 0.0 { return Ok(x); }
             if v < 0.0 { hi = mid; } else { lo = mid + 1; }
         } else { return type_err(c, format!("wrong argument type {} (must be numeric, true, false or nil)", class_name_for_err(r))); }
@@ -1123,7 +1123,7 @@ cfn!(a_bsearch_index, |c, slf, a, blk| enum_or(c, slf, "bsearch_index", a, blk, 
         if r == TRUE { found = Value::fix(mid as i64); hi = mid; }
         else if r == FALSE || r == NIL { lo = mid + 1; }
         else if r.is_fixnum() || is_float(r) || is_bignum(r) {
-            let v = crate::numeric::num_to_f64(r).unwrap_or(0.0);
+            let v = c.num_to_f64(r).unwrap_or(0.0);
             if v == 0.0 { return Ok(Value::fix(mid as i64)); }
             if v < 0.0 { hi = mid; } else { lo = mid + 1; }
         } else { return type_err(c, format!("wrong argument type {} (must be numeric, true, false or nil)", class_name_for_err(r))); }

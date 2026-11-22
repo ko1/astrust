@@ -431,7 +431,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
             }
             b'd' | b'i' | b'u' => {
                 let iv = int_arg(c, v)?;
-                let s = if iv.is_fixnum() { iv.as_fix().to_string() } else { crate::bignum::to_big(iv).to_string_radix(10) };
+                let s = if iv.is_fixnum() { iv.as_fix().to_string() } else { c.to_big(iv).to_string_radix(10) };
                 let (neg, mut digits) = if let Some(r) = s.strip_prefix('-') { (true, r.to_string()) } else { (false, s) };
                 let sign = if neg { "-" } else if flags & FPLUS != 0 { "+" } else if flags & FSPACE != 0 { " " } else { "" };
                 if prec_o == Some(0) && digits == "0" { digits.clear(); }
@@ -460,7 +460,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                 let radix: u32 = match conv { b'x' | b'X' => 16, b'o' => 8, _ => 2 };
                 // non-negative fixnums (the common case) skip the bignum conversion
                 let small = if iv.is_fixnum() && iv.as_fix() >= 0 { Some(iv.as_fix() as u64) } else { None };
-                let big = if small.is_none() { crate::bignum::to_big(iv) } else { crate::bignum::BigInt::from_i64(0) };
+                let big = if small.is_none() { c.to_big(iv) } else { crate::bignum::BigInt::from_i64(0) };
                 let (bneg, bzero) = if small.is_some() { (false, small == Some(0)) } else { (big.neg, big.is_zero()) };
                 let dots = bneg && flags & (FPLUS | FSPACE) == 0;
                 let mut digits = if let Some(n) = small {

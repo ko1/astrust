@@ -21,22 +21,14 @@ fn float_new_heap(d: f64) -> Value {
     obj_set_flags(v, FL_FROZEN);
     v
 }
-/// Numeric value as f64 (Integer / Float), None otherwise.
-pub fn num_to_f64(v: Value) -> Option<f64> {
-    if v.is_fixnum() { Some(v.as_fix() as f64) }
-    else if is_float(v) { Some(float_val(v)) }
-    else if is_bignum(v) { Some(rbig(v).to_f64()) }
-    else { None }
-}
+
 pub fn big_to_value(b: crate::bignum::BigInt) -> Value {
     if let Some(i) = b.to_i64() { if Value::fixable(i) { return Value::fix(i); } }
     let v = crate::gc::alloc(crate::vm::vm().c_integer.get(), Body::Bignum(Box::new(b)));
     obj_set_flags(v, FL_FROZEN);
     v
 }
-pub fn to_big(v: Value) -> crate::bignum::BigInt {
-    if v.is_fixnum() { crate::bignum::BigInt::from_i64(v.as_fix()) } else { rbig(v).clone() }
-}
+
 pub fn int_from_i128(i: i128) -> Value {
     if i >= FIXNUM_MIN as i128 && i <= FIXNUM_MAX as i128 { Value::fix(i as i64) } else { big_to_value(crate::bignum::BigInt::from_i128(i)) }
 }

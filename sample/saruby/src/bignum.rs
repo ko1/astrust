@@ -3,7 +3,7 @@
 // On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
 #![forbid(unsafe_code)]
 // the context-free API, for the modules not converted yet (bodies in object.rs)
-pub use crate::object::{big_to_value, int_from_i128, int_from_i64, to_big};
+pub use crate::object::{big_to_value, int_from_i128, int_from_i64};
 pub use imp::*;
 
 // a module of its own: `no_legacy` must not meet the re-export above

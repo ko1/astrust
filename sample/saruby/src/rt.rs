@@ -261,8 +261,7 @@ pub fn srb_hash_merge_kw(c: &mut Ctx, h: Value, v: Value) -> Result<(), Esc> {
         }
         r
     };
-    for (k, x) in hash_pairs(src) { hash_aset(c, h, k, x)?; }
-    Ok(())
+    crate::hash::hash_copy_entries(c, h, src)
 }
 
 pub fn srb_range_new(c: &mut Ctx, b: Value, e: Value, excl: bool) -> RV {
@@ -517,7 +516,7 @@ fn break_target_alive(c: &Ctx, tag: u64) -> bool {
         let b = unsafe { (*g).blk };
         if !b.is_null() {
             let bb = unsafe { &*b };
-            if bb.tag == tag && (bb.proc_val == UNDEF || !is_proc(bb.proc_val) || b != proc_block(bb.proc_val)) { return true; }
+            if bb.tag == tag && (bb.proc_val == UNDEF || !is_proc(bb.proc_val) || b != proc_block(c, bb.proc_val)) { return true; }
         }
         g = unsafe { (*g).prev };
     }
@@ -740,7 +739,7 @@ pub fn srb_callx_arg(c: &mut Ctx, ci: CiRef, i: usize, v: Value, tmp: Value, kw:
                 if is_hash(last) && obj_flags(last) & FL_KWHASH != 0 && *kw == NIL {
                     rary(tmp).pop();
                     let h = hash_new();
-                    for (k, x) in hash_pairs(last) { hash_aset(c, h, k, x)?; }
+                    crate::hash::hash_copy_entries(c, h, last)?;
                     ary_push(tmp, h);
                     *kw = h;
                     rary(tmp).pop();
@@ -768,7 +767,7 @@ pub fn srb_callx_arg(c: &mut Ctx, ci: CiRef, i: usize, v: Value, tmp: Value, kw:
 
 fn block_from_value(c: &mut Ctx, blkv: Value, holder: &mut Block) -> Result<*const Block, Esc> {
     if blkv == NIL { return Ok(std::ptr::null()); }
-    if is_proc(blkv) { return Ok(proc_block(blkv)); }
+    if is_proc(blkv) { return Ok(proc_block(c, blkv)); }
     if blkv.is_sym() {
         // &:sym under refinements remembers the scope it was written in
         let cref = unsafe { (*c.frame).cref() };
@@ -779,7 +778,7 @@ fn block_from_value(c: &mut Ctx, blkv: Value, holder: &mut Block) -> Result<*con
             return Ok(holder as *const Block);
         }
         let p = crate::builtins::proc::sym_to_proc(c, blkv)?;
-        return Ok(proc_block(p));
+        return Ok(proc_block(c, p));
     }
     if is_method_obj(blkv) {
         *holder = Block::cfunc(c, |_c, _d, _a, _b| Ok(NIL), NIL);
@@ -788,7 +787,7 @@ fn block_from_value(c: &mut Ctx, blkv: Value, holder: &mut Block) -> Result<*con
     }
     if respond_to(blkv, s::to_proc, true) {
         let p = funcall(c, blkv, s::to_proc, &[], std::ptr::null())?;
-        if is_proc(p) { return Ok(proc_block(p)); }
+        if is_proc(p) { return Ok(proc_block(c, p)); }
         let cls = class_path(real_class_of(blkv));
         return type_err(c, format!("can't convert {} to Proc ({}#to_proc gives {})", cls, cls, class_path(real_class_of(p))));
     }
@@ -798,7 +797,7 @@ fn block_from_value(c: &mut Ctx, blkv: Value, holder: &mut Block) -> Result<*con
 /// Stage tmp (+ kw) as arguments at base and call.
 pub fn srb_call_x(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, tmp: Value, kw: Value, blkv: Value, ci: CiRef, flags: u32, fp: Fp) -> RV {
     let n = rary(tmp).len();
-    let has_kw = kw != NIL && (rhash(kw).live > 0 || ci.kinds.contains(&AK_KW));
+    let has_kw = kw != NIL && (c.hash(kw).live > 0 || ci.kinds.contains(&AK_KW));
     let total = n + if has_kw { 1 } else { 0 };
     stack_check(c, total + 4)?;
     base[1].set(tmp);
@@ -859,7 +858,7 @@ pub fn srb_super(c: &mut Ctx, base: Stk, tmp: Value, kw: Value, blkv: Value, ci:
     let sm = super_method(klass, owner, me.name);
     let fblk = f.blk;
     let n = rary(tmp).len();
-    let has_kw = kw != NIL && (rhash(kw).live > 0 || ci.kinds.contains(&AK_KW));
+    let has_kw = kw != NIL && (c.hash(kw).live > 0 || ci.kinds.contains(&AK_KW));
     let total = n + if has_kw { 1 } else { 0 };
     stack_check(c, total + 4)?;
     base[0].set(slf);
@@ -918,7 +917,7 @@ pub fn srb_yield_miss(c: &mut Ctx, yc: &mut YieldCache, h: u64, blk: *const Bloc
 pub fn srb_yield_staged(c: &mut Ctx, blk: *const Block, base: Stk, k: u32) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("yield: node_yield");
     let b = unsafe { &*blk };
-    if let Some(is) = block_fast(b, k as usize) {
+    if let Some(is) = block_fast(c, b, k as usize) {
         stack_check(c, is.nlocals as usize + 16)?;
         c.set_sp(base, 0);
         let r = run_block_fast(c, b, is, base, k);
@@ -928,7 +927,8 @@ pub fn srb_yield_staged(c: &mut Ctx, blk: *const Block, base: Stk, k: u32) -> RV
     if let BlockKind::Iseq(is) = b.kind {
         let is = unsafe { &*is };
         base[0].set(b.self_);
-        let r = run_block_iseq(c, b, is, base, k, std::ptr::null(), is_lambda_block(blk), std::ptr::null(), false);
+        let lam = is_lambda_block(c, blk);
+        let r = run_block_iseq(c, b, is, base, k, std::ptr::null(), lam, std::ptr::null(), false);
         c.set_sp(base, 0);
         return r;
     }
@@ -943,7 +943,7 @@ pub fn srb_yield_x(c: &mut Ctx, tmp: Value, kw: Value) -> RV {
     if blk.is_null() { return srb_no_block(c); }
     let mut args = rary(tmp).clone();
     // an empty **h still counts as "keywords given" for an iseq block (no auto-splat for non-simple blocks)
-    let has_kw = kw != NIL && (rhash(kw).live > 0 || matches!(unsafe { (*blk).kind }, BlockKind::Iseq(_)) && !is_lambda_block(blk));
+    let has_kw = kw != NIL && (c.hash(kw).live > 0 || matches!(unsafe { (*blk).kind }, BlockKind::Iseq(_)) && !is_lambda_block(c, blk));
     if has_kw { args.push(kw); }
     let b = unsafe { &*blk };
     invoke_block_full(c, b, &args, std::ptr::null(), b.self_, false, std::ptr::null(), has_kw)
@@ -952,7 +952,8 @@ pub fn srb_yield_x(c: &mut Ctx, tmp: Value, kw: Value) -> RV {
 pub fn srb_lambda(c: &mut Ctx, is: &'static Iseq, fp: Fp) -> RV {
     let b = make_block(c, is, fp);
     let p = block_to_proc(c, &b)?;
-    rproc(p).is_lambda = true;
+    c.proc_data_mut(p).is_lambda = true;
+
     Ok(p)
 }
 
@@ -1289,14 +1290,17 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
             let h = rary(v)[0]; let used = rary(v)[1];
             let out = hash_new();
             if is_hash(h) {
-                for (k, x) in hash_pairs(h) {
-                    if rary(used).contains(&k) { continue; }
+                let mut i = 0;
+                while let Some((k, x)) = c.hash_entry_at(h, i) {
+                    i += 1;
+                    if k == UNDEF || rary(used).contains(&k) { continue; }
                     hash_aset(c, out, k, x)?;
                 }
             }
             Ok(out)
         }
-        SP_EMPTY_P => Ok(Value::bool(is_hash(v) && rhash(v).live == 0)),
+        SP_EMPTY_P => Ok(Value::bool(is_hash(v) && c.hash(v).live == 0)),
+
         SP_FOR_UNPACK => {
             if is_array(v) && rary(v).len() == 1 { Ok(rary(v)[0]) } else { Ok(v) }
         }
