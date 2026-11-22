@@ -44,7 +44,10 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [x] rubyspec 第 2 回（~/ruby/src/trials/2026-11-22-saruby-rubyspec-2/）: 特殊グローバル変数、IO の外部/内部エンコーディング（io.c 移植、読み書きの変換）、マジックコメントのソースエンコーディング、再帰構造の #hash、Range#step/#max、Kernel#Float、タイムアウト 10 ファイル。core 19617 → 20324、language 2592 → 2720
 - [x] Encoding::Converter / String#encode を CRuby 4.0 の transcode.c から移植（econv.rs、表は enc/trans/*.c から tools/gen_trans_tables.rb で生成、9.5 MB）、TracePoint / set_trace_func（tracepoint.rs）。converter 142/142、tracepoint 74/76（~/ruby/src/trials/2026-11-22-saruby-converter-tracepoint/）
 - [ ] TracePoint の残り: thread_begin / thread_end。トレース用にコンパイルされていないコードは line と演算子の c_call を出さない。CRuby が内部で呼ぶ Exception#initialize・Module#===（rescue）・const_added / inherited の c_call は出ない
-- [ ] rubyspec の大きな塊: IO::Buffer 180、regexp のエンコーディング修飾子 /e /s /u /n
+- [ ] rubyspec の大きな塊: IO::Buffer 180
+- [x] Regexp のエンコーディング（~/ruby/src/trials/2026-11-23-saruby-regexp/）: /e /s /u /n・FIXEDENCODING / NOENCODING・rb_reg_preprocess / prepare_enc 相当（astrogre に UTF-8 / 1 バイト / EUC-JP / Shift_JIS / 2 バイト系 / EUC-TW / GB18030 の読み方）、UTF-16/32 は UTF-8 形で照合、inspect / to_s / union、Regexp.timeout（実行時に強制）、try_convert・linear_time?・MatchData#match 等。core/regexp 164 → 252 / 256、matchdata 165 → 185 / 185、language/regexp 224 → 251 / 258
+  - [ ] 残り: 旧来マルチバイトの文字に \p{..}、ISO-8859-x の文字種・大小文字、[[:punct:]] Ps 等の表、gsub / scan / split の素の探索は timeout 無し、CRuby がメモ化で線形にする指数バックトラック（`(a*)*$`）、eval した非 UTF-8 文字列のソースエンコーディング（regexp リテラルが UTF-8 扱い）
+  - [ ] liquid-compile +0.47 % 命令（StringScanner#scan +42 / =~ +44 命令/呼び出し: 照合ごとのエンコーディング判定・timeout・モード引数）。String に coderange のキャッシュがあれば判定の走査が消える
 - [ ] IO の読み込み変換が行に分けてから変換（CRuby は変換してから分ける）。xml:/newline: 装飾と ISO-2022-JP 等は IO では変換しない（econv.rs の Econv を IO ごとに 1 つ持てば済む）
 - [x] blop 層（docs/io_design.md、~/ruby/src/trials/2026-11-22-saruby-blop/）: 待ちは全部 slab 所有の op、エンジンは poll（既定）/ epoll。1 ms ポーリング廃止。file/flock・file/open・io-wait/wait・process/status/wait のタイムアウト解消
 - [ ] まだタイムアウト: kernel/require（並行 require: ロード中 feature の待ちと他スレッドの Thread#backtrace が要る）、mutex/lock・thread/list（グリーンスレッドに横取りが無い: ループ後方枝 / メソッド入口のタイムスライス検査が要る）
@@ -64,7 +67,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [ ] Fiber scheduler、`Fiber#raise(cause:)`
 - [x] Enumerator がキーワード引数を渡さない・private メソッドを呼べない（rb_block_call と同じに、stdlib-2）
 - [ ] case/when が再定義された `Integer#===` を無視する（再定義フラグ 32bit が満杯 → 64bit に）
-- [ ] 再帰的な正規表現サブ式呼び出し `(?<a>a\g<a>?)`
+- [x] 再帰的な正規表現サブ式呼び出し `(?<a>a\g<a>?)`・`\g<0>`・レベル付き後方参照 `\k<a+0>`・absent 演算子 `(?~x)`（2026-11-23-saruby-regexp）
 - [x] blop 層（docs/io_design.md）: 待ちを 1 か所に、slab + Id + 所有権ごと渡すバッファ、engine trait（poll 既定・epoll）。待機中の CPU ほぼ 0、外部 cat との往復 1k → 45k/s。rubyspec file/flock・file/open・io-wait/wait・process/status/wait のタイムアウト解消
 - [ ] blop の残り: Mutex/CV/Queue の受け渡しが重い（vm_thread_condvar2 +59%、condvar1 +28%、sized_queue4 +26% 命令）、epoll の登録キャッシュ、io_uring engine、worker thread（flock・FIFO open・Process.wait(-1) は back-off の仮実装）
 - [ ] 時分割がない: ブロックしないスレッドが他を飢えさせる（rubyspec mutex/lock・thread/list がタイムアウト）。node.def に時分割のチェックが要る（ASTro 原則と相談: 無効時コスト 0 の形で）
