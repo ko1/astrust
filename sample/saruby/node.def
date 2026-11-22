@@ -542,7 +542,7 @@ node_rescue(c: &mut Ctx, n: NodePtr, fp: Fp, body: NODE, clauses: NODES, else_b:
                     return Err(e);
                 }
                 if result.is_err() && c.esc == EscKind::Retry { c.esc = EscKind::None; c.errinfo = saved_err; continue; }
-                if result.is_ok() { c.errinfo = saved_err; }
+                if result.is_ok() || c.esc != EscKind::Raise { c.errinfo = saved_err; }
                 return result;
             }
         }
@@ -1286,7 +1286,7 @@ node_alias(c: &mut Ctx, n: NodePtr, fp: Fp, newname@child: Value, oldname@child:
 NODE_DEF
 node_valias(c: &mut Ctx, n: NodePtr, fp: Fp, newname: Sym, oldname: Sym)
 {
-    vm().global_aliases.insert(newname, oldname);
+    crate::builtins::kernel::gvar_alias(c, newname, oldname);
     Ok(NIL)
 }
 
