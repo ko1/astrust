@@ -182,7 +182,7 @@ pub static TRACE_COMPILE: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 #[derive(Default)]
 // spec_klass: cc.klass while the entry it holds is the one baked into the site (call_spec_out)
 // bi: which inlinable builtin it holds, and for which receivers (inline_builtin::cache_key)
-pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize, pub fast_hash: u64, pub fast_argc: u32, pub poly_next: u32, pub poly: usize, pub cfunc: usize, pub arity: i32, pub bi: u32, pub spec_klass: u64 }
+pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize, pub fast_hash: u64, pub fast_argc: u32, pub poly_next: u32, pub poly: usize, pub cfunc: Option<CFunc>, pub arity: i32, pub bi: u32, pub spec_klass: u64 }
 /// An operator site's call cache, made when the site first calls a method: most sites stay on
 /// their Integer / Float / Array paths, and a node holding one word keeps the tree dense.
 #[derive(Default)]
@@ -1334,7 +1334,7 @@ pub fn call_cached(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u
     let recv = base[0].get();
     let klass = class_of(recv);
     let hit = cc.klass == klass.raw() && cc.serial == method_serial();
-    #[cfg(feature = "nodeprof")] if hit && cc.cfunc != 0 { crate::nodeprof::hit_cfunc(c, klass, mid, argc); }
+    #[cfg(feature = "nodeprof")] if hit && cc.cfunc.is_some() { crate::nodeprof::hit_cfunc(c, klass, mid, argc); }
     if hit {
         if let Some(r) = cc_fast(c, cc, recv, base, argc, blk, flags) { return r; }
     }
@@ -1396,10 +1396,9 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
             _ => {}
         }
     }
-    if cc.cfunc != 0 && flags & CF_KW == 0 && (cc.arity < 0 || cc.arity == argc as i32) {
+    if let (Some(f), true) = (cc.cfunc, flags & CF_KW == 0 && (cc.arity < 0 || cc.arity == argc as i32)) {
         if cc.bi >= BI_SEND { if let Some(r) = send_fast(c, recv, base, argc, blk) { return Some(r); } }
         #[cfg(feature = "nodeprof")] crate::nodeprof::hit(if blk.is_null() { "site: cfunc" } else { "site: cfunc +blk" });
-        let f: CFunc = unsafe { std::mem::transmute::<usize, CFunc>(cc.cfunc) };
         let pf = c.frame;
         let mut fr = Frame::cfunc(pf, cc.me as *const MethodEntry, blk);
         c.frame = &mut fr;
@@ -1431,7 +1430,7 @@ pub fn site_kind(cc: &CallCache, argc: usize, flags: u32) -> u32 {
     let k = if cc.fast_argc as usize == argc { SITE_ENTRY }
         else if cc.fast != 0 { match cc.fast & 3 { 1 if argc == 0 => SITE_ATTR_R, 2 if argc == 1 => SITE_ATTR_W,
             0 if cc.fast_argc == u32::MAX => SITE_NEW, _ => return SITE_OTHER } }
-        else if cc.cfunc != 0 { if cc.bi >= BI_SEND && argc >= 1 { SITE_SEND } else { SITE_CFUNC } } else { return SITE_OTHER };
+        else if cc.cfunc.is_some() { if cc.bi >= BI_SEND && argc >= 1 { SITE_SEND } else { SITE_CFUNC } } else { return SITE_OTHER };
     k | if imm { SITE_IMM } else { 0 }
 }
 
@@ -1513,8 +1512,7 @@ pub fn site_fast(c: &mut Ctx, cc: &mut CallCache, recv: Value, base: Stk, argc: 
                 }
             }
         }
-        _ => if cc.fast == 0 && cc.cfunc != 0 && (cc.arity < 0 || cc.arity == argc as i32) {
-            let f: CFunc = unsafe { std::mem::transmute::<usize, CFunc>(cc.cfunc) };
+        _ => if let (0, Some(f), true) = (cc.fast, cc.cfunc, cc.arity < 0 || cc.arity == argc as i32) {
             let pf = c.frame;
             let mut fr = Frame::cfunc(pf, cc.me as *const MethodEntry, blk);
             c.frame = &mut fr;
@@ -1748,7 +1746,7 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, re
 
 #[inline(never)]
 fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry, serial: u64, flags: u32) {
-    cc.klass = klass.raw(); cc.serial = serial; cc.me = me as usize; cc.fast = 0; cc.fast_argc = u32::MAX; cc.fast_hash = 0; cc.cfunc = 0; cc.bi = 0;
+    cc.klass = klass.raw(); cc.serial = serial; cc.me = me as usize; cc.fast = 0; cc.fast_argc = u32::MAX; cc.fast_hash = 0; cc.cfunc = None; cc.bi = 0;
     // calls traced: the entry never hits (baked fast paths trust what a hit implies, e.g. a NewInfo),
     // so every call goes out of line to invoke (tracepoint::invoke_traced)
     if trace_mask() & EV_CALLS != 0 { cc.serial = 0; return; }
@@ -1763,7 +1761,7 @@ fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry
         }
         MKind::Cfunc(..) if me == vm().ids.bo_eq => { cc.fast = 3; }
         MKind::Cfunc(f, arity) if me == vm().ids.c_new => {
-            cc.cfunc = f as usize; cc.arity = arity;
+            cc.cfunc = Some(f); cc.arity = arity;
             // Class#new of a plain-object class whose initialize has a method entry
             let cd = rclass(recv);
             if cd.alloc == AllocKind::Object && !cd.is_singleton && !cd.is_module {
@@ -1777,7 +1775,7 @@ fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry
                 }
             }
         }
-        MKind::Cfunc(f, arity) => { cc.cfunc = f as usize; cc.arity = arity; cc.bi = crate::inline_builtin::cache_key(me, klass); }
+        MKind::Cfunc(f, arity) => { cc.cfunc = Some(f); cc.arity = arity; cc.bi = crate::inline_builtin::cache_key(me, klass); }
         MKind::AttrReader(name) | MKind::AttrWriter(name) => {
             let cd = rclass(klass);
             if !cd.is_singleton && cd.alloc == AllocKind::Object {
