@@ -34,11 +34,43 @@ pub const RE_OPT_ENC_NONE: u32 = 32;
 pub const RE_OPT_MASK: u32 = 7 | RE_OPT_FIXED | RE_OPT_ENC_NONE;
 pub const RE_LIT_ENC_SHIFT: u32 = 8;
 
+/// Mode marker (not an engine mode) for a UTF-16/32 string of encoding (mode - WIDE): its
+/// UTF-8 form is matched (the pattern was read as UTF-8 too) and offsets are mapped back.
+const WIDE: u8 = 0x80;
+
+type Groups = Vec<Option<(usize, usize)>>;
+
+/// One search (or anchored match with `at`) in mode `e`.
+pub fn engine_run(rx: &Regex, bytes: &[u8], start: usize, e: Enc, dl: Option<std::time::Instant>, at: bool) -> Result<Option<Groups>, ()> {
+    if e.0 < WIDE {
+        return if at { Ok(rx.match_at_enc(bytes, start, e)) } else { rx.search_timeout(bytes, start, e, dl) };
+    }
+    use crate::builtins::encoding as en;
+    let enc = e.0 - WIDE;
+    let (mut u, mut orig) = (Vec::with_capacity(bytes.len()), Vec::with_capacity(bytes.len() + 1));
+    let mut i = 0;
+    let mut ustart = None;
+    while i < bytes.len() {
+        if i == start { ustart = Some(u.len()); }
+        let l = en::precise_len(enc, bytes, i).unwrap_or(1);
+        let ch = en::to_unicode(enc, &bytes[i..(i + l).min(bytes.len())]).and_then(char::from_u32).unwrap_or(char::REPLACEMENT_CHARACTER);
+        let n = u.len();
+        u.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes());
+        orig.resize(orig.len() + (u.len() - n), i);
+        i += l;
+    }
+    orig.push(bytes.len());
+    let Some(us) = ustart.or(if start >= bytes.len() { Some(u.len()) } else { None }) else { return Ok(None) };
+    let g = if at { rx.match_at_enc(&u, us, Enc::UTF8) } else { rx.search_timeout(&u, us, Enc::UTF8, dl)? };
+    Ok(g.map(|g| g.into_iter().map(|x| x.map(|(a, b)| (orig[a], orig[b]))).collect()))
+}
+
 /// How the engine splits a string of `enc` into chars.
 pub fn engine_enc(enc: u8) -> Enc {
     use crate::builtins::encoding::{kind, EK};
     match kind(enc) {
-        EK::Utf8 | EK::U16LE | EK::U16BE | EK::U32LE | EK::U32BE => Enc::UTF8,
+        EK::Utf8 => Enc::UTF8,
+        EK::U16LE | EK::U16BE | EK::U32LE | EK::U32BE => Enc(WIDE + enc),
         EK::EucJp(_) => Enc::EUCJP,
         EK::Sjis(_) => Enc::SJIS,
         EK::Dbcs | EK::Big5 | EK::Gbk => Enc::DBCS,
@@ -133,7 +165,7 @@ fn regexp_prep(src: &[u8], enc: u8, opts: u32) -> Result<(Vec<u8>, u32, u8, Enc)
         None => if opts & RE_OPT_FIXED == 0 { enc = ENC_ASCII; },
     }
     // an ASCII-only pattern is used on any ASCII-compatible string; most strings are UTF-8
-    let mode = if opts & RE_OPT_FIXED != 0 { engine_enc(enc) } else { Enc::UTF8 };
+    let mode = if opts & RE_OPT_FIXED != 0 && en::ascii_compat(enc) { engine_enc(enc) } else { Enc::UTF8 };
     Ok((unesc, opts, enc, mode))
 }
 
@@ -438,14 +470,14 @@ pub fn search_timed(c: &mut Ctx, re: Value, s: Value, start: usize) -> Result<Op
         Prep::Ok(e) => {
             let Some(rx) = r.re.as_ref() else { return Ok(None) };
             if start > bytes.len() { return Ok(None); }
-            rx.search_timeout(bytes, start, e, deadline(r))
+            engine_run(rx, bytes, start, e, deadline(r), false)
         }
         p => {
             let e = prep_raise(c, p)?;
             let (r, bytes) = (rregexp(c, re).unwrap(), c.str_bytes(s));
             let Some(rx) = r.re.as_ref() else { return Ok(None) };
             if start > bytes.len() { return Ok(None); }
-            rx.search_timeout(bytes, start, e, deadline(r))
+            engine_run(rx, bytes, start, e, deadline(r), false)
         }
     };
     match r {
@@ -477,12 +509,12 @@ pub fn search_raw(c: &Ctx, re: Value, bytes: &[u8], start: usize) -> Option<Vec<
 pub fn search_raw_e(c: &Ctx, re: Value, bytes: &[u8], start: usize, e: Enc) -> Option<Vec<Option<(usize, usize)>>> {
     let r = rregexp(c, re)?;
     if start > bytes.len() { return None; }
-    r.re.as_ref()?.search_enc(bytes, start, e)
+    engine_run(r.re.as_ref()?, bytes, start, e, None, false).unwrap_or(None)
 }
 
 /// Anchored match at byte `pos`, the subject read as `e`.
 pub fn match_at_e(c: &Ctx, re: Value, bytes: &[u8], pos: usize, e: Enc) -> Option<Vec<Option<(usize, usize)>>> {
-    rregexp(c, re)?.re.as_ref()?.match_at_enc(bytes, pos, e)
+    engine_run(rregexp(c, re)?.re.as_ref()?, bytes, pos, e, None, true).unwrap_or(None)
 }
 
 pub fn match_new(c: &mut Ctx, re: Value, s: Value, groups: Vec<Option<(usize, usize)>>) -> Value {
@@ -610,8 +642,31 @@ fn opt_of(c: u8) -> u32 { match c { b'i' => 1, b'x' => 2, b'm' => 4, _ => 0 } }
 /// Regexp#to_s (rb_reg_str_with_term): "(?on-off:src)", absorbing a leading (?opts) / (?opts:...)
 /// that spans the whole source.
 pub fn regexp_to_s(r: &RRegexp) -> Vec<u8> {
-    let mut opts = r.opts & 7;
-    let src = &r.src[..];
+    if !crate::builtins::encoding::ascii_compat(r.enc) {
+        // built on the UTF-8 form, returned in the regexp's encoding
+        let u = wide_to_utf8(&r.src, r.enc).unwrap_or_default();
+        return utf8_to_wide(&to_s_of(&u, r.opts, ENC_UTF8), r.enc);
+    }
+    to_s_of(&r.src, r.opts, r.enc)
+}
+
+/// UTF-8 bytes in an ASCII-incompatible Unicode encoding.
+pub fn utf8_to_wide(u: &[u8], enc: u8) -> Vec<u8> {
+    let mut out = vec![];
+    for ch in String::from_utf8_lossy(u).chars() {
+        if let Some(b) = crate::builtins::encoding::from_unicode(enc, ch as u32) { out.extend_from_slice(&b); }
+    }
+    out
+}
+
+/// The UTF-8 form of `b` in `enc` (as is when ASCII-compatible).
+pub fn to_utf8_form(b: &[u8], enc: u8) -> Vec<u8> {
+    if crate::builtins::encoding::ascii_compat(enc) { b.to_vec() } else { wide_to_utf8(b, enc).unwrap_or_default() }
+}
+
+fn to_s_of(src: &[u8], opts: u32, enc: u8) -> Vec<u8> {
+    let mut opts = opts & 7;
+    let r_opts = opts;
     let mut s = 0;
     let mut e = src.len();
     loop {
@@ -625,12 +680,12 @@ pub fn regexp_to_s(r: &RRegexp) -> Vec<u8> {
         }
         if p < e && src[p] == b')' { opts = o; s = p + 1; continue; }
         if p < e && src[p] == b':' && src[e - 1] == b')' && p + 1 <= e - 1
-            && Regex::new_enc(&src[p + 1..e - 1], o, engine_enc(r.enc)).is_ok() {
+            && Regex::new_enc(&src[p + 1..e - 1], o, engine_enc(enc)).is_ok() {
             opts = o;
             s = p + 1;
             e -= 1;
         } else {
-            opts = r.opts & 7;
+            opts = r_opts;
             s = 0;
             e = src.len();
         }
@@ -643,7 +698,7 @@ pub fn regexp_to_s(r: &RRegexp) -> Vec<u8> {
         for (b, ch) in [(4, b'm'), (1, b'i'), (2, b'x')] { if opts & b == 0 { out.push(ch); } }
     }
     out.push(b':');
-    expr_str(&mut out, &src[s..e], r.enc, None, b'/');
+    expr_str(&mut out, &src[s..e], enc, None, b'/');
     out.push(b')');
     out
 }

@@ -90,7 +90,7 @@ fn do_scan_e(c: &mut Ctx, slf: Value, pat: Value, advance: bool, want_str: bool,
         let re = r.re.as_ref().unwrap();
         let (hay, off) = if s.fixed { (bytes, 0) } else { (&bytes[s.pos..], s.pos) };
         let at = s.pos - off;
-        let g = if head { re.match_at_enc(hay, at, md) } else { re.search_enc(hay, at, md) };
+        let g = crate::regexp::engine_run(re, hay, at, md, None, head).unwrap_or(None);
         (g.map(|g| g.into_iter().map(|x| x.map(|(a, b)| (a + off, b + off))).collect()), off)
     } else {
         let pb = c.str_bytes(pat);

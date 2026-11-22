@@ -16,7 +16,15 @@ use crate::symbol::{intern, s};
 use crate::value::*;
 use crate::vm::*;
 
-fn byte_to_char(c: &Ctx, sv: Value, off: usize) -> i64 { let b = c.str_bytes(sv); if c.str_enc(sv) != ENC_UTF8 || is_ascii(b) { off as i64 } else { utf8_len(&b[..off]) as i64 } }
+fn byte_to_char(c: &Ctx, sv: Value, off: usize) -> i64 {
+    use crate::builtins::encoding as en;
+    let (b, enc) = (c.str_bytes(sv), c.str_enc(sv));
+    if enc == ENC_UTF8 { return if is_ascii(b) { off as i64 } else { utf8_len(&b[..off]) as i64 }; }
+    if en::is_single_byte(enc) { return off as i64; }
+    let (mut i, mut n) = (0, 0);
+    while i < off { i += en::mbclen(enc, b, i); n += 1; }
+    n
+}
 fn rx(c: &Ctx, v: Value) -> &RRegexp { rregexp(c, v).expect("a Regexp") }
 fn md(c: &Ctx, v: Value) -> &RMatch { rmatch(c, v).expect("a MatchData") }
 /// rb_reg_check: TypeError for Regexp.allocate's uninitialized object.
@@ -132,10 +140,12 @@ fn re_s_union(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
             if let Some(f) = fixed { return Err(mismatch(c, w, f)); }
         }
         if i > 0 { src.push(b'|'); }
-        src.extend_from_slice(&part);
+        // joined in UTF-8 when the result is ASCII-incompatible (CRuby appends "|" in its encoding)
+        if incompat.is_some() { src.extend_from_slice(&to_utf8_form(&part, e)); } else { src.extend_from_slice(&part); }
     }
     std::hint::black_box(keep);
     let enc = incompat.or(fixed).unwrap_or(ENC_BINARY);
+    if incompat.is_some() { src = utf8_to_wide(&src, enc); }
     let s = c.str_from_vec_enc(src, enc);
     crate::builtins::object::c_new(c, k, &[s], std::ptr::null())
 }

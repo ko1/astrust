@@ -176,13 +176,15 @@ impl Dumper {
         if let Some(r) = crate::regexp::rregexp(c, v) {
             let (src, opts) = (r.src.clone(), r.opts);
             let enc = r.enc;
-            self.out.push(b'I');
+            let hasiv = !ivs.is_empty() || enc != ENC_BINARY;
+            if hasiv { self.out.push(b'I'); }
             let k = c.vm().c_regexp.get();
             self.uclass(c, v, k)?;
             self.out.push(b'/');
             w_bytes(&mut self.out, &src);
             self.out.push((opts & 0xff) as u8);
-            return self.w_ivars(c, Some(enc), &ivs, limit);
+            if hasiv { self.w_ivars(c, Some(enc), &ivs, limit)?; }
+            return Ok(());
         }
         // the kind and the fields needed, by value: the arms below call out
         enum K { Big, Class(bool, bool), Ary, Hash(Value, Value, bool), Range(Value, Value, bool), Obj, Data, Other }
