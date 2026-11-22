@@ -201,13 +201,16 @@ read only on paths that are slow anyway.  Measurements: `~/ruby/src/trials/2026-
 * Lazy natives: a constant registered with `prelude::lazy_const(owner, "Name", "saruby/x")`
   sits in the autoload table; first reference requires the internal feature, whose
   `prelude::load_feature` arm runs the Rust `init` (ENV, RbConfig, FileTest, File::Stat,
-  Errno::*, Mutex/Queue/Monitor).  `require "strscan"` / `"json"` build their classes the same way.
+  Errno::*, Mutex/Queue/Monitor).  `require "strscan"` / `"json"` / `"zlib"` build their classes the same way.
+  zlib (builtins/zlib.rs) is ext/zlib/zlib.c over Rust ports of zlib 1.3 (zlib_check.rs, zlib_deflate.rs,
+  zlib_inflate.rs): the compressed bytes equal CRuby's; a running stream is taken out of its object, so a
+  block or io callback that re-enters the object gets Zlib::InProgressError.
 * Lazy Ruby: `prelude/lib/*.rb` are embedded and compiled on first `require`
   (`etc`, `timeout`, `monitor`, `time`; ARGF is autoloaded from `saruby/argf`).
 * Everything else pure-Ruby comes from the reference ruby's stdlib: `build.rs` records
   `rubylibdir` and the gem dir (override at run time with `SARUBY_STDLIB=libdir:gemdir`);
   `require` falls back to it after `$LOAD_PATH`.  Libraries whose C half is missing
-  (`prelude::EXT_BACKED`: socket, date, zlib, openssl, ...) stay no-op requires.
+  (`prelude::EXT_BACKED`: socket, date, openssl, ...) stay no-op requires.
 
 ## IO, processes, threads
 * `RIo` (builtins/io.rs) is a raw fd plus read/write buffers; fd 1 writes go through the
