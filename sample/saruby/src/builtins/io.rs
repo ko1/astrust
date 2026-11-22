@@ -1895,13 +1895,6 @@ fn find_end_marker(src: &[u8]) -> Option<usize> {
     None
 }
 
-/// A frozen String at boot (no context yet: builtins::boot, pattern 16 of safe_heap.md).
-pub fn boot_frozen_str(vmr: &Vm, b: &[u8]) -> Value {
-    let v = crate::gc::alloc(vmr.c_string.get(), Body::String(RString { b: crate::sbuf::SBuf::from_slice(b), enc: ENC_UTF8 }));
-    obj_set_flags(v, FL_FROZEN);
-    v
-}
-
 pub fn init(c: &mut Ctx) {
     let vmr = c.vm();
     // CRuby holds two descriptors from boot (its timer thread's eventfd and epoll fd): taking two here
@@ -1950,10 +1943,10 @@ pub fn init(c: &mut Ctx) {
     const_set(c, io, intern(b"EWOULDBLOCKWaitReadable"), e1);
     const_set(c, io, intern(b"EWOULDBLOCKWaitWritable"), e2);
     crate::builtins::file::init(c);
-    let so = crate::gc::alloc(io, Body::Data(Box::new(opened(1, b"<STDOUT>", false, true))));
+    let so = c.alloc(io, Body::Data(Box::new(opened(1, b"<STDOUT>", false, true))));
     let mut e = opened(2, b"<STDERR>", false, true); e.sync = true;
-    let se = crate::gc::alloc(io, Body::Data(Box::new(e)));
-    let si = crate::gc::alloc(io, Body::Data(Box::new(opened(0, b"<STDIN>", true, false))));
+    let se = c.alloc(io, Body::Data(Box::new(e)));
+    let si = c.alloc(io, Body::Data(Box::new(opened(0, b"<STDIN>", true, false))));
     vmr.stdout.set(so); vmr.stderr.set(se); vmr.stdin.set(si);
     const_set(c, vmr.c_object.get(), intern(b"STDOUT"), so);
     const_set(c, vmr.c_object.get(), intern(b"STDERR"), se);
@@ -1962,7 +1955,7 @@ pub fn init(c: &mut Ctx) {
     vmr.globals.borrow_mut().insert(intern(b"$stderr"), se);
     vmr.globals.borrow_mut().insert(intern(b"$stdin"), si);
     for (a, b) in crate::builtins::kernel::GVAR_SYNONYMS { vmr.global_aliases.borrow_mut().insert(crate::symbol::intern_str(a), crate::symbol::intern_str(b)); }
-    let rs = boot_frozen_str(vmr, b"\n");
+    let rs = c.str_new_frozen(b"\n");
     vmr.globals.borrow_mut().insert(intern(b"$/"), rs);
     let _ = s::puts;
 }

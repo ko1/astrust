@@ -865,10 +865,13 @@ pub fn init(c: &mut Ctx) {
     di(c, "size", f_size, 0); di(c, "truncate", f_truncate, 1); di(c, "flock", f_flock, 1); di(c, "chmod", f_chmod, 1); di(c, "chown", f_chown, 2); di(c, "mtime", f_mtime, 0);
     di(c, "atime", f_atime, 0); di(c, "ctime", f_ctime, 0); di(c, "lstat", f_lstat, 0);
     define_cfunc(c, io, "stat", f_stat, 0);
-    const_set(c, f, intern(b"SEPARATOR"), crate::builtins::io::boot_frozen_str(vmr, b"/"));
-    const_set(c, f, intern(b"Separator"), crate::builtins::io::boot_frozen_str(vmr, b"/"));
+    let sep = c.str_new_frozen(b"/");
+    const_set(c, f, intern(b"SEPARATOR"), sep);
+    let sep = c.str_new_frozen(b"/");
+    const_set(c, f, intern(b"Separator"), sep);
     const_set(c, f, intern(b"ALT_SEPARATOR"), NIL);
-    const_set(c, f, intern(b"PATH_SEPARATOR"), crate::builtins::io::boot_frozen_str(vmr, b":"));
+    let sep = c.str_new_frozen(b":");
+    const_set(c, f, intern(b"PATH_SEPARATOR"), sep);
     let fc = define_module_under(c, f, "Constants");
     for (n, v) in [("RDONLY", 0), ("WRONLY", 1), ("RDWR", 2), ("APPEND", 0o2000), ("CREAT", 0o100), ("EXCL", 0o200), ("NONBLOCK", 0o4000), ("TRUNC", 0o1000),
                    ("NOCTTY", 0o400), ("BINARY", 0), ("SHARE_DELETE", 0), ("SYNC", 0o4010000), ("DSYNC", 0o10000), ("NOFOLLOW", 0o400000), ("DIRECTORY", 0o200000),
@@ -876,7 +879,8 @@ pub fn init(c: &mut Ctx) {
                    ("FNM_NOESCAPE", 1), ("FNM_PATHNAME", 2), ("FNM_DOTMATCH", 4), ("FNM_CASEFOLD", 8), ("FNM_EXTGLOB", 16), ("FNM_SYSCASE", 0), ("FNM_SHORTNAME", 0)] {
         const_set(c, fc, intern(n.as_bytes()), Value::fix(v));
     }
-    const_set(c, fc, intern(b"NULL"), crate::builtins::io::boot_frozen_str(vmr, b"/dev/null"));
+    let null = c.str_new_frozen(b"/dev/null");
+    const_set(c, fc, intern(b"NULL"), null);
     include_module(c, io, fc);
     let dir = define_class(c, "Dir", vmr.c_object.get());
     include_module(c, dir, vmr.m_enumerable.get());
