@@ -4,6 +4,9 @@
 #   reuse  (same shape, same profile): B with A's store runs within 2% of B with its own store
 #     a.rb / b.rb            the same methods at other lines, other code around them
 #     bi_a.rb / bi_b.rb      the same `x.size` site, Array#size in A, Hash#size in B (the bodies follow from the name)
+#   callee (reuse, and A's and B's stores have the same R_ / S_ items: a recursive callee's are named by its own
+#   structure and profile, not by the entry that reached it)
+#     rec_a.rb / rec_b.rb    the same fib and tak, called from the top level in A, from methods and a block in B
 #   shared (same shape, other profile): with one store baked by A and then B, each runs within 2% of its own store
 #   (an SD is named by its structure and its profile: B's SD does not replace A's, nor is A's taken for B's)
 #   and a copy of B at another path, run with that store, within 2% of B with its own store (hopt_index.txt is keyed
@@ -35,7 +38,12 @@ pair() {  # A B MODE
   printf "%s  its own store: sd_hits %d (+%d), %dM\n" "$b" "$hb" $((hb - h0)) $((ib / 1000000))
   [ "$ha" -gt "$h0" ] || { echo "FAIL: no SD of $a's store was used"; ok=0; }
   [ "$m0" = "$ma" ] && [ "$m0" = "$mb" ] || { echo "FAIL: output differs between stores"; ok=0; }
-  if [ "$3" = reuse ]; then
+  if [ "$3" = callee ]; then
+    local ra rb; ra=$(cd storeA/items && ls R_* S_* 2>/dev/null); rb=$(cd storeB/items && ls R_* S_* 2>/dev/null)
+    printf "%s  R_/S_ items: %s's store %d, its own %d, in both %d\n" "$b" "$a" "$(echo "$ra" | grep -c .)" "$(echo "$rb" | grep -c .)" "$(comm -12 <(echo "$ra") <(echo "$rb") | grep -c .)"
+    [ -n "$rb" ] && [ "$ra" = "$rb" ] || { echo "FAIL: the recursive callees' R_ / S_ items differ between the stores"; ok=0; }
+  fi
+  if [ "$3" != shared ]; then
     [ $((ia * 100)) -le $((ib * 102)) ] || { echo "FAIL: with $a's store more than 2% over its own store"; ok=0; }
   else
     bake storeAB "$a"; bake storeAB "$b"
@@ -58,6 +66,7 @@ pair() {  # A B MODE
 }
 pair a.rb b.rb reuse
 pair bi_a.rb bi_b.rb reuse
+pair rec_a.rb rec_b.rb callee
 pair ivar_a.rb ivar_b.rb shared
 pair poly_a.rb poly_b.rb shared
 [ $all = 1 ] && echo PASS
