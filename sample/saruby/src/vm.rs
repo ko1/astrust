@@ -1851,7 +1851,7 @@ pub fn spec_block_np(yc: &YieldCache, argc: usize) -> u32 {
 /// The heap Env of a frame whose variables are captured by blocks; params copied in.
 #[inline(never)]
 pub fn make_env(c: &mut Ctx, is: &Iseq, base: Stk, parent: Value) {
-    let env = gc::alloc_with(vm().c_env.get(), move || Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), parent));
+    let env = c.alloc_with(vm().c_env.get(), move || Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), parent));
     base[1].set(env);
     for &(sl, ei) in is.env_params.iter() { c.env_set(env, ei as u32, base[sl as usize].get()); }
 }
@@ -2080,7 +2080,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
         } else if (flags & CF_KW_SPLAT != 0 || is_block) && is_hash(h) && c.hash(h).live == 0 {
             args.pop();
         } else if is.ruby2_keywords.get() && p.rest.is_some() && is_hash(h) {
-            let d = crate::hash::hash_new();
+            let d = c.hash_new();
             c.ary_push(tmp, d);
             crate::hash::hash_copy_entries(c, d, h)?;
             obj_set_flags(d, FL_KWHASH);
@@ -2166,7 +2166,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
             return arg_err(c, format!("missing keyword{}: {}", if missing.len() > 1 { "s" } else { "" }, names.join(", ")));
         }
         if let Some(kr) = p.kwrest {
-            let h = crate::hash::hash_new();
+            let h = c.hash_new();
             if kwh != NIL {
                 let mut i = 0;
                 while let Some(e) = c.hash_entry_at(kwh, i) {
@@ -2197,7 +2197,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
     }
     // env
     if is.env_size > 0 {
-        let env = gc::alloc_with(vm().c_env.get(), move || Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), outer_env));
+        let env = c.alloc_with(vm().c_env.get(), move || Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), outer_env));
         base[1].set(env);
         for &(sl, ei) in is.env_params.iter() {
             c.env_set(env, ei as u32, base[sl as usize].get());
@@ -2234,7 +2234,7 @@ pub fn block_to_proc(c: &mut Ctx, blk: *const Block) -> RV {
     // read back with wide loads straddling the patch (a store-forwarding stall per Proc)
     let mut pd = Box::new(ProcData { blk: *b, is_lambda, from_method: NIL });
     pd.blk.outer_blk = outer;
-    let p = gc::alloc_with(vm().c_proc.get(), move || Body::Proc(pd));
+    let p = c.alloc_with(vm().c_proc.get(), move || Body::Proc(pd));
     c.proc_data_mut(p).blk.proc_val = p;
     unsafe { (*(blk as *mut Block)).proc_val = p; }
     Ok(p)
