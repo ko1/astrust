@@ -51,6 +51,8 @@ static C_KILL: Global = Global::new();    // internal exception unwinding a kill
 static C_FATAL: Global = Global::new();   // the unnamed-constant `fatal` exception class
 static ABORT_ALL: AtomicBool = AtomicBool::new(false);
 static REPORT_ALL: AtomicBool = AtomicBool::new(true);
+/// Thread.ignore_deadlock: a deadlock waits (for a signal) instead of raising fatal.
+pub static IGNORE_DEADLOCK: AtomicBool = AtomicBool::new(false);
 static FORKED: AtomicBool = AtomicBool::new(false);   // a forked child whose main thread was a green thread
 
 fn th(c: &Ctx, v: Value) -> &RThread { c.data::<RThread>(v).expect("a Thread") }
@@ -180,7 +182,7 @@ fn schedule(c: &mut Ctx, me: Value, id: Id) -> Result<(), Esc> {
         crate::builtins::process::run_pending_signals(c)?;
         if blop::is_done(id) || th(c, me).interrupted() { return Ok(()); }
         if run_pass(c)? { blop::pump(false); continue; }
-        if !blop::can_finish_alone() { return err(c, C_FATAL.get(c), "No live threads left. Deadlock?"); }
+        if !blop::can_finish_alone() && !IGNORE_DEADLOCK.load(Relaxed) { return err(c, C_FATAL.get(c), "No live threads left. Deadlock?"); }
         blop::pump(true);
     }
 }

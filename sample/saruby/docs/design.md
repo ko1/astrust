@@ -209,8 +209,10 @@ Measurements and what was tried: `~/ruby/src/trials/2026-11-21-saruby-call-path/
   suspended fibers come back without waiting for the object heap to fill.
 * Threads (builtins/thread.rs) are green: a Thread is a fiber chain entered from the main
   thread's scheduler (`fiber::thread_switch_in/out`).  A thread runs until it blocks in
-  `thread::block_on` (join, Queue, Mutex, ConditionVariable, sleep, pipe read, `Thread.pass`);
-  there is no preemption.
+  `thread::wait` on a blop (builtins/blop.rs: an op owned by a slab, named by an Id — Poll /
+  Read / Write / Timer / Wake), or calls `Thread.pass`; there is no preemption.  The scheduler
+  switches in only runnable threads and sleeps in the engine's pump (poll or epoll).  See
+  [io_design.md](io_design.md).
 
 ## Testing
 Differential tests against CRuby (oracle): `../../../astro/sample/rubyharness`.

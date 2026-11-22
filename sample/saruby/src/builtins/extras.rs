@@ -290,6 +290,6 @@ pub fn init(vmr: &Vm) {
     define_module_function(p, "maxgroups", |_c, _s, _a, _b| Ok(Value::fix(65536)), 0);
     let st = const_get_at(p, intern(b"Status")).unwrap();
     define_singleton_cfunc(st, "wait", st_s_wait, -1);
-    define_singleton_cfunc(vmr.c_thread, "ignore_deadlock", |_c, _s, _a, _b| Ok(FALSE), 0);
-    define_singleton_cfunc(vmr.c_thread, "ignore_deadlock=", |_c, _s, a, _b| Ok(a[0]), 1);
+    define_singleton_cfunc(vmr.c_thread, "ignore_deadlock", |_c, _s, _a, _b| Ok(Value::bool(crate::builtins::thread::IGNORE_DEADLOCK.load(std::sync::atomic::Ordering::Relaxed))), 0);
+    define_singleton_cfunc(vmr.c_thread, "ignore_deadlock=", |_c, _s, a, _b| { crate::builtins::thread::IGNORE_DEADLOCK.store(a[0].truthy(), std::sync::atomic::Ordering::Relaxed); Ok(a[0]) }, 1);
 }
