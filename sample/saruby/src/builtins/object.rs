@@ -896,7 +896,7 @@ fn m_cvars(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
 }
 fn m_freeze(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { obj_set_flags(slf, FL_FROZEN); Ok(slf) }
 fn m_module_new(c: &mut Ctx, slf: Value, _a: &[Value], b: *const Block) -> RV {
-    let m = new_module();
+    let m = new_module(c);
     obj_set_klass(m, if slf == c.vm().c_module.get() { c.vm().c_module.get() } else { slf });
     if !b.is_null() { yield_with_self(c, b, &[m], m, m)?; }
     Ok(m)
@@ -921,7 +921,7 @@ fn m_refine(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     let r = match found {
         Some(r) => r,
         None => {
-            let r = new_module();
+            let r = new_module(c);
             if let Some(rc) = const_get_at(c, c.vm().c_object.get(), intern(b"Refinement")) { obj_set_klass(r, rc); }
             let nm = c.str_new_frozen(format!("#<refinement:{}@{}>", class_path(c, k), class_path(c, slf)).as_bytes());
             let cd = c.class_mut(r);
@@ -1008,7 +1008,7 @@ pub fn alloc_instance(c: &mut Ctx, klass: Value) -> RV {
         AllocKind::Hash => { let h = c.hash_new(); obj_set_klass(h, klass); h }
         AllocKind::Range => c.alloc(klass, Body::Range(NIL, NIL, false)),
         AllocKind::Class => { let k = new_class(c, c.vm().c_object.get()); k }
-        AllocKind::Module => { let m = new_module(); obj_set_klass(m, klass); m }
+        AllocKind::Module => { let m = new_module(c); obj_set_klass(m, klass); m }
         AllocKind::Proc | AllocKind::None => {
             if let Some(v) = crate::builtins::alloc_data(c, klass)? { return Ok(v); }
             return type_err(c, format!("allocator undefined for {}", class_path(c, klass)));

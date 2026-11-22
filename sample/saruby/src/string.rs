@@ -555,7 +555,9 @@ pub fn succ_bytes(b: &[u8]) -> Vec<u8> {
     s
 }
 
-pub fn str_to_inum(b: &[u8], base: u32, strict: bool) -> Option<Value> {
+/// The Integer `b` spells as String#to_i / Integer() read it (None: `strict` and not one).
+pub fn str_to_inum(c: &mut Ctx, b: &[u8], base: u32, strict: bool) -> Option<Value> { str_to_big(b, base, strict).map(|n| c.big_to_value(n)) }
+pub fn str_to_big(b: &[u8], base: u32, strict: bool) -> Option<crate::bignum::BigInt> {
     let s = String::from_utf8_lossy(b);
     let t = if strict { s.trim().to_string() } else { s.trim_start().to_string() };
     let (neg, mut body) = if let Some(r) = t.strip_prefix('-') { (true, r.to_string()) } else if let Some(r) = t.strip_prefix('+') { (false, r.to_string()) } else { (false, t.clone()) };
@@ -575,10 +577,9 @@ pub fn str_to_inum(b: &[u8], base: u32, strict: bool) -> Option<Value> {
         if ch.is_digit(base) { digits.push(ch); last_us = false; } else { if strict { return None; } break; }
     }
     if strict && last_us && !digits.is_empty() { return None; }
-    if digits.is_empty() { return if strict { None } else { Some(Value::fix(0)) }; }
+    if digits.is_empty() { return if strict { None } else { Some(crate::bignum::BigInt::zero()) }; }
     let b = crate::bignum::BigInt::parse(&digits, base)?;
-    let b = if neg { b.neg() } else { b };
-    Some(crate::bignum::big_to_value(b))
+    Some(if neg { b.neg() } else { b })
 }
 
 pub fn str_to_f(b: &[u8]) -> f64 {

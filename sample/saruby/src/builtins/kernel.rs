@@ -493,7 +493,7 @@ fn k_integer(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
             } else if base0 <= 0 { 0 } else { base0 };
             if base == 1 || base > 36 { return arg_err(c, format!("invalid radix {}", base)); }
             let base = base as u32;
-            match str_to_inum(&b, base, true) {
+            match str_to_inum(c, &b, base, true) {
                 Some(x) => Ok(x),
                 None => { let ins = inspect_str(c, v)?; arg_err(c, format!("invalid value for Integer(): {}", ins)) }
             }
@@ -935,7 +935,7 @@ fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let wrap = args.get(1).copied().unwrap_or(FALSE);
     if wrap.truthy() {
         // load(file, true): run under an anonymous module, self = a fresh main extended with it
-        let m = if is_class_or_module(wrap) { wrap } else { new_module() };
+        let m = if is_class_or_module(wrap) { wrap } else { new_module(c) };
         let slf = new_object(c, c.vm().c_object.get());
         let sk = singleton_class(c, slf);
         include_module_c(c, sk, m);
@@ -1129,7 +1129,7 @@ pub fn init(c: &mut Ctx) {
 
 pub fn parse_int_for_format(c: &mut Ctx, v: Value) -> RV {
     let b = c.str_bytes(v).to_vec();   // str_to_inum may allocate a bignum
-    match str_to_inum(&b, 0, true) {
+    match str_to_inum(c, &b, 0, true) {
         Some(x) => Ok(x),
         None => { let ins = inspect_str(c, v)?; arg_err(c, format!("invalid value for Integer(): {}", ins)) }
     }

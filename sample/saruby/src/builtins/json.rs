@@ -355,7 +355,7 @@ impl Parser {
             }
             return Ok(c.float_new(std::str::from_utf8(&b[st..i]).unwrap().parse::<f64>().unwrap_or(0.0)));
         }
-        Ok(str_to_inum(&b[st..i], 10, false).unwrap_or(Value::fix(0)))
+        Ok(str_to_inum(c, &b[st..i], 10, false).unwrap_or(Value::fix(0)))
     }
     fn string(&mut self, c: &mut Ctx) -> RV {
         let b = &self.src;

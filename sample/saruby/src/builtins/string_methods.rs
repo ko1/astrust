@@ -339,7 +339,8 @@ cfn!(s_to_i, |c, slf, a, b_| {
     need_ascii_compat(c, slf)?;
     let base = if a.is_empty() { 10 } else { num_to_long(c, a[0])? };
     if base == 1 || base > 36 || base < 0 { return arg_err(c, format!("invalid radix {}", base)); }
-    Ok(str_to_inum(c.str_bytes(slf), base as u32, false).unwrap_or(Value::fix(0)))
+    let n = str_to_big(c.str_bytes(slf), base as u32, false);
+    Ok(n.map_or(Value::fix(0), |n| c.big_to_value(n)))
 });
 cfn!(s_to_f, |c, slf, a, b_| Ok(c.float_new(str_to_f(c.str_bytes(slf)))));
 cfn!(s_inspect, |c, slf, a, b_| Ok(c.str_new(inspect_bytes(c.str_bytes(slf), c.str_enc(slf)).as_bytes())));
@@ -1065,13 +1066,13 @@ cfn!(s_upto, |c, slf, a, blk| {
     }
     Ok(slf)
 });
-cfn!(s_hex, |c, slf, a, b_| { need_ascii_compat(c, slf)?; Ok(str_to_inum(c.str_bytes(slf), 16, false).unwrap_or(Value::fix(0))) });
+cfn!(s_hex, |c, slf, a, b_| { need_ascii_compat(c, slf)?; let n = str_to_big(c.str_bytes(slf), 16, false); Ok(n.map_or(Value::fix(0), |n| c.big_to_value(n))) });
 cfn!(s_oct, |c, slf, a, b_| {
     need_ascii_compat(c, slf)?;
     let v = String::from_utf8_lossy(c.str_bytes(slf)).trim().to_ascii_lowercase();
     let (neg, body) = if let Some(r) = v.strip_prefix('-') { (true, r.to_string()) } else { (false, v.clone()) };
     let base = if body.starts_with("0x") { 16 } else if body.starts_with("0b") { 2 } else if body.starts_with("0o") || body.starts_with('0') { 8 } else { 8 };
-    let r = str_to_inum(body.as_bytes(), if body.starts_with("0x") || body.starts_with("0b") || body.starts_with("0o") { 0 } else { base }, false).unwrap_or(Value::fix(0));
+    let r = str_to_inum(c, body.as_bytes(), if body.starts_with("0x") || body.starts_with("0b") || body.starts_with("0o") { 0 } else { base }, false).unwrap_or(Value::fix(0));
     if neg { funcall(c, r, s::uminus, &[], std::ptr::null()) } else { Ok(r) }
 });
 cfn!(s_freeze, |c, slf, a, b_| { obj_set_flags(slf, FL_FROZEN); Ok(slf) });

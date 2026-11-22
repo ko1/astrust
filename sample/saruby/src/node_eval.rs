@@ -277,7 +277,7 @@ pub fn EVAL_node_dregex(c: &mut Ctx, n: NodePtr, fp: Fp, s: Value, opts: u32, on
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_biglit(c: &mut Ctx, n: NodePtr, fp: Fp, digits: Str, lc: &mut LitCache) -> RV {
     if let Some(v) = lc.v { return Ok(v); }
-    Ok(srb_biglit(digits, lc))
+    Ok(srb_biglit(c, digits, lc))
 }
 
 
@@ -352,7 +352,7 @@ pub fn EVAL_node_range(c: &mut Ctx, n: NodePtr, fp: Fp, b: Value, e: Value, excl
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_range_lit(c: &mut Ctx, n: NodePtr, fp: Fp, b: Value, e: Value, excl: bool, lc: &mut LitCache) -> RV {
     if let Some(v) = lc.v { return Ok(v); }
-    Ok(srb_range_lit(b, e, excl, lc))
+    Ok(srb_range_lit(c, b, e, excl, lc))
 }
 
 

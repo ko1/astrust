@@ -52,12 +52,11 @@ pub fn tf_hash(ty: u32) -> bool { ty == 0 || (ty - 1) & TF_HASH != 0 }
 #[inline(never)]
 #[cold]
 pub fn srb_arith_out(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: Pos, cc: &mut OpCc) -> RV {
-    let f = crate::numeric::float_new;
     match mid {
-        s::plus => if let Some((x, y)) = flo2(a, b, R_FLO_PLUS, R_INT_PLUS) { return Ok(f(x + y)); }
-        s::minus => if let Some((x, y)) = flo2(a, b, R_FLO_MINUS, R_INT_MINUS) { return Ok(f(x - y)); }
-        s::mul => if let Some((x, y)) = flo2(a, b, R_FLO_MUL, R_INT_MUL) { return Ok(f(x * y)); }
-        s::div => if let Some((x, y)) = flo2(a, b, R_FLO_DIV, R_INT_DIV) { return Ok(f(x / y)); }
+        s::plus => if let Some((x, y)) = flo2(a, b, R_FLO_PLUS, R_INT_PLUS) { return Ok(c.float_new(x + y)); }
+        s::minus => if let Some((x, y)) = flo2(a, b, R_FLO_MINUS, R_INT_MINUS) { return Ok(c.float_new(x - y)); }
+        s::mul => if let Some((x, y)) = flo2(a, b, R_FLO_MUL, R_INT_MUL) { return Ok(c.float_new(x * y)); }
+        s::div => if let Some((x, y)) = flo2(a, b, R_FLO_DIV, R_INT_DIV) { return Ok(c.float_new(x / y)); }
         s::lt => if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LT, R_INT_LT) { return Ok(Value::bool(x < y)); }
         s::le => if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LE, R_INT_LE) { return Ok(Value::bool(x <= y)); }
         s::gt => if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GT, R_INT_GT) { return Ok(Value::bool(x > y)); }

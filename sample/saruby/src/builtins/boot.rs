@@ -72,14 +72,14 @@ pub fn boot(c: &mut Ctx) { boot_classes(c) }
 fn boot_classes(c: &mut Ctx) {
     let vmr = c.vm();
     // BasicObject / Object / Module / Class with hand-made metaclasses
-    let bo = alloc_class(NIL, NIL, false, AllocKind::Object);
-    let ob = alloc_class(NIL, bo, false, AllocKind::Object);
-    let md = alloc_class(NIL, ob, false, AllocKind::Module);
-    let cl = alloc_class(NIL, md, false, AllocKind::Class);
+    let bo = alloc_class(c, NIL, NIL, false, AllocKind::Object);
+    let ob = alloc_class(c, NIL, bo, false, AllocKind::Object);
+    let md = alloc_class(c, NIL, ob, false, AllocKind::Module);
+    let cl = alloc_class(c, NIL, md, false, AllocKind::Class);
     vmr.c_basic_object.set(bo); vmr.c_object.set(ob); vmr.c_module.set(md); vmr.c_class.set(cl);
     for k in [bo, ob, md, cl] { obj_set_klass(k, cl); }
     let mut mk = |k: Value, sup: Value| -> Value {
-        let m = alloc_class(cl, sup, false, AllocKind::Class);
+        let m = alloc_class(c, cl, sup, false, AllocKind::Class);
         boot_metaclass(c, k, m);
         m
     };

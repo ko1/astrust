@@ -224,9 +224,9 @@ pub fn srb_dregex(c: &mut Ctx, s: Value, opts: u32, once: bool, lc: &mut LitCach
     Ok(r)
 }
 
-pub fn srb_biglit(digits: Str, lc: &mut LitCache) -> Value {
+pub fn srb_biglit(c: &mut Ctx, digits: Str, lc: &mut LitCache) -> Value {
     let b = crate::bignum::BigInt::parse(std::str::from_utf8(digits).unwrap(), 10).unwrap();
-    let v = crate::bignum::big_to_value(b);
+    let v = c.big_to_value(b);
     vm().node_values.borrow_mut().push(v);
     lc.v = Some(v);
     v
@@ -273,8 +273,8 @@ pub fn srb_range_new(c: &mut Ctx, b: Value, e: Value, excl: bool) -> RV {
     crate::range::range_new_checked(c, b, e, excl)
 }
 
-pub fn srb_range_lit(b: Value, e: Value, excl: bool, lc: &mut LitCache) -> Value {
-    let r = crate::range::range_new(b, e, excl);
+pub fn srb_range_lit(c: &mut Ctx, b: Value, e: Value, excl: bool, lc: &mut LitCache) -> Value {
+    let r = c.range_new(b, e, excl);
     obj_set_flags(r, FL_FROZEN);
     vm().node_values.borrow_mut().push(r);
     lc.v = Some(r);
@@ -600,51 +600,51 @@ pub fn srb_eqq_class(c: &mut Ctx, p: Value, subj: Value, cc: &mut CallCache, km:
 }
 
 /// defined? answers are pooled frozen US-ASCII strings.
-fn defined_str(s: &[u8]) -> Value {
+fn defined_str(c: &mut Ctx, s: &[u8]) -> Value {
     let mut key = vec![0xff, b'd'];
     key.extend_from_slice(s);
     if let Some(&v) = vm().frozen_lits.borrow().get(&key) { return v; }
-    let v = crate::string::str_new_enc(s, ENC_ASCII);
+    let v = c.str_new_enc(s, ENC_ASCII);
     obj_set_flags(v, FL_FROZEN);
     vm().frozen_lits.borrow_mut().insert(key, v);
     v
 }
 
 pub fn srb_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, name: Sym, recv: NodePtr) -> RV {
-    let yes = |s: &[u8]| -> RV { Ok(defined_str(s)) };
+    let yes = |c: &mut Ctx, s: &[u8]| -> RV { Ok(defined_str(c, s)) };
     match kind {
-        DEF_LOCALVAR => yes(b"local-variable"),
-        DEF_SELF => yes(b"self"),
-        DEF_NIL => yes(b"nil"),
-        DEF_TRUE => yes(b"true"),
-        DEF_FALSE => yes(b"false"),
-        DEF_ASGN => yes(b"assignment"),
-        DEF_BACKREF => yes(b"global-variable"),
-        DEF_IVAR => if ivar_defined(c, fp[0].get(), name) { yes(b"instance-variable") } else { Ok(NIL) },
-        DEF_GVAR => if crate::builtins::kernel::gvar_defined(c, name) { yes(b"global-variable") } else { Ok(NIL) },
+        DEF_LOCALVAR => yes(c, b"local-variable"),
+        DEF_SELF => yes(c, b"self"),
+        DEF_NIL => yes(c, b"nil"),
+        DEF_TRUE => yes(c, b"true"),
+        DEF_FALSE => yes(c, b"false"),
+        DEF_ASGN => yes(c, b"assignment"),
+        DEF_BACKREF => yes(c, b"global-variable"),
+        DEF_IVAR => if ivar_defined(c, fp[0].get(), name) { yes(c, b"instance-variable") } else { Ok(NIL) },
+        DEF_GVAR => if crate::builtins::kernel::gvar_defined(c, name) { yes(c, b"global-variable") } else { Ok(NIL) },
         DEF_CVAR => {
             let k = cvar_base(c);
-            if cvar_lookup(c, k, name).is_some() { yes(b"class variable") } else { Ok(NIL) }
+            if cvar_lookup(c, k, name).is_some() { yes(c, b"class variable") } else { Ok(NIL) }
         }
         DEF_CONST => {
             let cref = unsafe { (*c.frame).cref() };
             let saved = (c.esc, c.esc_val);
-            match const_defined_lex(c, cref, name) { true => yes(b"constant"), false => { c.esc = saved.0; c.esc_val = saved.1; Ok(NIL) } }
+            match const_defined_lex(c, cref, name) { true => yes(c, b"constant"), false => { c.esc = saved.0; c.esc_val = saved.1; Ok(NIL) } }
         }
         DEF_CPATH => {
             let p = match D::call(c, recv, fp) { Ok(v) => v, Err(_) => { c.esc = EscKind::None; return Ok(NIL); } };
             let p = if p == UNDEF { vm().c_object.get() } else { p };
             if !is_class_or_module(p) { return Ok(NIL); }
             if ancestors(c, p).iter().any(|&k| c.class(k).consts.contains_key(&name) || c.class(k).autoload.contains_key(&name))
-                || (c.class(p).is_module && c.class(vm().c_object.get()).consts.contains_key(&name)) { yes(b"constant") } else { Ok(NIL) }
+                || (c.class(p).is_module && c.class(vm().c_object.get()).consts.contains_key(&name)) { yes(c, b"constant") } else { Ok(NIL) }
         }
         DEF_FCALL => {
             let slf = fp[0].get();
-            if respond_to(c, slf, name, true) { return yes(b"method"); }
+            if respond_to(c, slf, name, true) { return yes(c, b"method"); }
             let rm = lookup_method(c, class_of(slf), s::respond_to_missing_p);
             if !rm.is_null() && unsafe { (*rm).owner } != vm().c_object.get() && unsafe { (*rm).owner } != vm().m_kernel.get() {
                 let t = funcall(c, slf, s::respond_to_missing_p, &[Value::sym(name), TRUE], std::ptr::null())?;
-                if t.truthy() { return yes(b"method"); }
+                if t.truthy() { return yes(c, b"method"); }
             }
             Ok(NIL)
         }
@@ -657,24 +657,24 @@ pub fn srb_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, name: S
                 let rm = lookup_method(c, class_of(r), s::respond_to_missing_p);
                 if !rm.is_null() && unsafe { (*rm).owner } != vm().c_object.get() && unsafe { (*rm).owner } != vm().m_kernel.get() {
                     let t = funcall(c, r, s::respond_to_missing_p, &[Value::sym(name), TRUE], std::ptr::null())?;
-                    if t.truthy() { return yes(b"method"); }
+                    if t.truthy() { return yes(c, b"method"); }
                 }
                 return Ok(NIL);
             }
             let visi = unsafe { (*me).visi };
-            if visi == VISI_PUBLIC { return yes(b"method"); }
-            if visi == VISI_PROTECTED && is_kind_of(c, fp[0].get(), unsafe { (*me).owner }) { return yes(b"method"); }
+            if visi == VISI_PUBLIC { return yes(c, b"method"); }
+            if visi == VISI_PROTECTED && is_kind_of(c, fp[0].get(), unsafe { (*me).owner }) { return yes(c, b"method"); }
             Ok(NIL)
         }
-        DEF_YIELD => if unsafe { !(*c.frame).blk.is_null() } { yes(b"yield") } else { Ok(NIL) },
+        DEF_YIELD => if unsafe { !(*c.frame).blk.is_null() } { yes(c, b"yield") } else { Ok(NIL) },
         DEF_SUPER => {
             let f = c.frame();
             if f.me.is_null() { return Ok(NIL); }
             let me = unsafe { &*f.me };
             let sm = super_method(c, class_of(fp[0].get()), me.owner, me.name);
-            if sm.is_null() { Ok(NIL) } else { yes(b"super") }
+            if sm.is_null() { Ok(NIL) } else { yes(c, b"super") }
         }
-        _ => yes(b"expression"),
+        _ => yes(c, b"expression"),
     }
 }
 
@@ -1102,7 +1102,7 @@ pub fn srb_module(c: &mut Ctx, outer: Value, name: Sym, is: &'static Iseq, _fp: 
             m
         }
         None => {
-            let m = new_module();
+            let m = new_module(c);
             name_class(c, m, outer, name);
             const_set(c, outer, name, m);
             m

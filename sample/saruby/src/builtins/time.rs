@@ -200,7 +200,7 @@ fn num_exact(c: &mut Ctx, v: Value) -> RV {
 }
 fn str_to_inum(c: &mut Ctx, v: Value) -> RV {
     let b = c.str_bytes(v).to_vec();
-    if !b.contains(&0) { if let Some(x) = crate::string::str_to_inum(&b, 10, true) { return Ok(x); } }
+    if !b.contains(&0) { if let Some(x) = crate::string::str_to_inum(c, &b, 10, true) { return Ok(x); } }
     let ins = inspect_str(c, v)?;
     arg_err(c, format!("invalid value for Integer(): {}", ins))
 }

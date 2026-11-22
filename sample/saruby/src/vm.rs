@@ -532,8 +532,8 @@ pub fn real_class_of(c: &Ctx, v: Value) -> Value {
     k
 }
 
-pub fn alloc_class(meta: Value, superclass: Value, is_module: bool, alloc: AllocKind) -> Value {
-    let k = gc::alloc(meta, Body::Class(Box::new(ClassData::new(superclass, is_module, alloc))));
+pub fn alloc_class(c: &mut Ctx, meta: Value, superclass: Value, is_module: bool, alloc: AllocKind) -> Value {
+    let k = c.alloc(meta, Body::Class(Box::new(ClassData::new(superclass, is_module, alloc))));
     vm().hierarchy_serial.set(vm().hierarchy_serial.get() + 1);
     k
 }
@@ -542,11 +542,11 @@ pub fn alloc_class(meta: Value, superclass: Value, is_module: bool, alloc: Alloc
 pub fn new_class(c: &mut Ctx, superclass: Value) -> Value {
     let vm = vm();
     let alloc = if superclass == NIL { AllocKind::Object } else { c.class(superclass).alloc };
-    let k = alloc_class(vm.c_class.get(), superclass, false, alloc);
+    let k = alloc_class(c, vm.c_class.get(), superclass, false, alloc);
     if superclass != NIL {
         c.class_mut(superclass).subclasses.push(k);
         let sm = singleton_class(c, superclass);
-        let meta = alloc_class(vm.c_class.get(), sm, false, AllocKind::Class);
+        let meta = alloc_class(c, vm.c_class.get(), sm, false, AllocKind::Class);
         let md = c.class_mut(meta);
         md.is_singleton = true;
         md.attached = k;
@@ -555,7 +555,7 @@ pub fn new_class(c: &mut Ctx, superclass: Value) -> Value {
     k
 }
 
-pub fn new_module() -> Value { alloc_class(vm().c_module.get(), NIL, true, AllocKind::None) }
+pub fn new_module(c: &mut Ctx) -> Value { alloc_class(c, vm().c_module.get(), NIL, true, AllocKind::None) }
 
 pub fn singleton_class(c: &mut Ctx, v: Value) -> Value {
     if !v.is_heap() {
@@ -574,7 +574,8 @@ pub fn singleton_class(c: &mut Ctx, v: Value) -> Value {
             if sup == NIL { vm.c_class.get() } else { singleton_class(c, sup) }
         }
     } else { k };
-    let meta = alloc_class(vm.c_class.get(), superclass, false, c.class(superclass).alloc);
+    let a = c.class(superclass).alloc;
+    let meta = alloc_class(c, vm.c_class.get(), superclass, false, a);
     c.class_mut(meta).is_singleton = true;
     c.class_mut(meta).attached = v;
     if is_class_or_module(v) && !c.class(v).is_module && !c.class(v).is_singleton {
@@ -599,7 +600,7 @@ pub fn define_class_under(c: &mut Ctx, outer: Value, name: &str, superclass: Val
 pub fn class_set_alloc(c: &mut Ctx, k: Value, a: AllocKind) { c.class_mut(k).alloc = a; }
 pub fn define_class(c: &mut Ctx, name: &str, superclass: Value) -> Value { define_class_under(c, vm().c_object.get(), name, superclass) }
 pub fn define_module_under(c: &mut Ctx, outer: Value, name: &str) -> Value {
-    let m = new_module();
+    let m = new_module(c);
     name_class(c, m, outer, intern_str(name));
     const_set(c, outer, intern_str(name), m);
     m

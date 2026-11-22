@@ -299,7 +299,7 @@ fn ss_scan_integer(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
     let text: Vec<u8> = rest[..len].to_vec();
     let (st, en) = (s.pos, s.pos + len);
     set_match1(c, slf, st, en);
-    Ok(str_to_inum(&text, base as u32, false).unwrap_or(Value::fix(0)))
+    Ok(str_to_inum(c, &text, base as u32, false).unwrap_or(Value::fix(0)))
 }
 fn ss_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let Some(s) = c.data::<RScan>(slf) else { return Ok(NIL) };
