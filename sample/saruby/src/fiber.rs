@@ -193,11 +193,14 @@ pub(crate) fn fiber_main(c: &mut Ctx, args: Value, exc: bool) -> ! {
     let mut top = Frame::empty(c.bottom());
     c.frame = &mut top.h;
     let p = fd(c, f).proc_;
+    let thread = f == THREAD_ROOT.get(c);
     let r = if exc { received(c, (args, true)) } else {
         let argv: Vec<Value> = if is_array(args) { c.ary(args).to_vec() } else { vec![args] };
-        call_proc(c, p, &argv, std::ptr::null())
+        let tb = if thread && trace_mask() & EV_THREAD_BEGIN != 0 { crate::builtins::tracepoint::trace_thread(c, EV_THREAD_BEGIN) } else { Ok(()) };
+        tb.and_then(|_| call_proc(c, p, &argv, std::ptr::null()))
     };
     std::hint::black_box(args);   // keeps argv's values on this stack
+    let r = if thread && trace_mask() & EV_THREAD_END != 0 { crate::builtins::tracepoint::trace_thread(c, EV_THREAD_END).and(r) } else { r };
     let kill = KILL.get(c);
     let (v, failed) = match r {
         Ok(v) => (v, false),

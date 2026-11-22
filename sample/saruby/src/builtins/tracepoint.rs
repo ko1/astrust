@@ -8,6 +8,7 @@
 //   code compiled for tracing (vm::TRACE_COMPILE); call / b_call / class events of that code are
 //   reported in its own frame (run_traced_body), so binding / self / lineno are the callee's.
 // * raise: vm::raise_exc.  class / end: rt::run_class_body.  script_compiled: eval.
+// * thread_begin / thread_end: fiber::fiber_main of a thread's root fiber.
 #![forbid(unsafe_code)]
 use crate::array::*;
 #[allow(unused_imports)]
@@ -342,6 +343,19 @@ pub fn trace_raise(c: &mut Ctx, e: Value) {
     (c.esc, c.esc_val, c.esc_tag, c.esc_tag_v, c.errinfo) = saved;
 }
 
+/// fiber_main of a thread's root fiber: thread_begin / thread_end (No path, line 0).  An exception
+/// from the hook ends the thread with it.
+#[cold]
+#[inline(never)]
+pub fn trace_thread(c: &mut Ctx, ev: u32) -> Result<(), Esc> {
+    let th = crate::builtins::thread::current_thread(c);
+    let a = Arg { ev, path: "", line: 0, mid: None, callee: None, klass: NIL, self_: th, ret: NIL, exc: NIL, frame: 0, iseq: 0, lambda: false, script: NIL };
+    let saved = (c.esc, c.esc_val, c.esc_tag, c.esc_tag_v, c.errinfo);
+    fire(c, a)?;
+    (c.esc, c.esc_val, c.esc_tag, c.esc_tag_v, c.errinfo) = saved;
+    Ok(())
+}
+
 /// eval: the script_compiled event.
 #[cold]
 #[inline(never)]
@@ -494,7 +508,7 @@ fn tp_callee_id(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV { l
 fn tp_defined_class(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV { let a = cur(c, t)?; Ok(a.klass) }
 fn tp_self(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
     let a = cur(c, t)?;
-    Ok(if matches!(a.ev, EV_THREAD_BEGIN | EV_THREAD_END) { a.self_ } else { a.self_ })
+    Ok(a.self_)
 }
 fn tp_binding(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
     let a = cur(c, t)?;
