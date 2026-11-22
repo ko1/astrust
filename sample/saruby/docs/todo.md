@@ -69,6 +69,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [ ] bake を SD 単位にコンパイル・キャッシュ（いまはプログラムごとに all.rs 4.6 MB + patch.rs 7.9 MB を 1 crate で。optcarrot 47 秒、30k_* は rustc がメモリ不足）
 - [x] 長いベンチ（`bench_long/`、本体約 1 秒）での比較を artifact に（long.html）
 - [ ] koruby との差（起動差し引き、sp4）: tak・gcd・fib・ackermann（呼び出し 1 回の命令数）、bitops・intdiv（slow path 合流後の再検査）、optcarrot の L1d
+- [ ] 演算子ノードの型別の近道は、外れたときに型判定を順に重ねる分だけ高い → PGO で対処（user 2026-11-22）。`node_opt_ltlt` には他の演算子ノード（plus/aref/aset）にある型の記録 `tf@ref: TyFb` + `ty@bake` が無いので付け、焼いたコードは観測した型だけを先に判定（値は Hopt に入る）
 - [ ] 受け手をレジスタに保持（method_call −7% / optcarrot +0.4% 命令、判断待ち）
 - [ ] 起動: prelude の def 本体の遅延コンパイル（残り 13.7M 命令のうち 6.8M）
 - [ ] 起動の後戻り: `-e 'p 1'` 13.7M（de58efd）→ 20.6M 命令（2026-11-22、hopt_index・Pathname の起動時定義ほか）。`require 'date'` は +13 ms/プロセス
