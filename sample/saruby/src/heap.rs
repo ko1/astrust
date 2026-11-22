@@ -53,7 +53,7 @@ macro_rules! kind_test {
 }
 kind_test!(is_string Body::String(_), is_array Body::Array(_), is_hash Body::Hash(_), is_class_or_module Body::Class(_),
            is_proc Body::Proc(_), is_range Body::Range(..), is_bignum Body::Bignum(_), is_method_obj Body::Method(_),
-           is_heap_float Body::Float(_));
+           is_heap_float Body::Float(_), is_object Body::Object(_));
 #[inline(always)]
 pub fn is_float(v: Value) -> bool { v.is_flonum() || is_heap_float(v) }
 
@@ -244,6 +244,12 @@ impl Ctx {
     /// The whole body of `v`, any kind (Object#dup, Object#inspect dispatch on it); `body` made public.
     #[inline(always)]
     pub fn body_of(&self, v: Value) -> &Body { body(self, v) }
+    /// The ivars of heap object `v` when it is a plain object, None for any other kind.
+    #[inline(always)]
+    pub fn obj_ivars(&self, v: Value) -> Option<&crate::ivbuf::IvBuf> { match body(self, v) { Body::Object(x) => Some(x), _ => None } }
+    #[inline(always)]
+    pub fn obj_ivars_mut(&mut self, v: Value) -> Option<&mut crate::ivbuf::IvBuf> { match body_mut(self, v) { Body::Object(x) => Some(x), _ => None } }
+
     /// The frame of the code that called the running builtin; None at the bottom.
     #[inline(always)]
     pub fn caller_frame(&self) -> Option<&Frame> {

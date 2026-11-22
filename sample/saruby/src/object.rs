@@ -116,7 +116,7 @@ impl ClassData {
 // Unsound: unbounded `&'static mut` into GC objects.  Kept for modules not yet converted to the
 // context-borrowing accessors of heap.rs (docs/safe_heap.md); a converted module cannot name them.
 
-#[inline(always)] pub fn obj(v: Value) -> &'static mut RObj { unsafe { &mut *v.ptr() } }
+#[inline(always)] fn obj(v: Value) -> &'static mut RObj { unsafe { &mut *v.ptr() } }
 
 macro_rules! body_accessor {
     ($fn:ident, $variant:ident, $t:ty) => {
@@ -128,11 +128,10 @@ macro_rules! body_accessor {
 }
 body_accessor!(rstr, String, RString);
 body_accessor!(rary, Array, crate::avec::AVec);
-body_accessor!(ivars_of, Object, crate::ivbuf::IvBuf);
 #[inline(always)]
 pub fn rclass(v: Value) -> &'static mut ClassData { match &mut obj(v).body { Body::Class(h) => h, _ => panic!("not a class: {:?}", v) } }
 
-pub use crate::heap::{float_val, is_array, is_bignum, is_class_or_module, is_float, is_frozen, is_hash, is_method_obj, is_proc, is_range, is_string};
+pub use crate::heap::{float_val, is_array, is_bignum, is_class_or_module, is_float, is_frozen, is_hash, is_method_obj, is_object, is_proc, is_range, is_string};
 #[inline(always)] pub fn is_integer(v: Value) -> bool { v.is_fixnum() || is_bignum(v) }
 
 pub fn str_bytes(v: Value) -> &'static [u8] { &rstr(v).b }

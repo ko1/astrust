@@ -27,8 +27,8 @@ pub fn set_last_status(pid: i32, raw: i32) { LAST_STATUS.store(((pid as u32 as u
 fn new_status(c: &mut Ctx, pid: i32, raw: i32) -> Value {
     let k = const_get_at(c.vm().m_process.get(), intern(b"Status")).unwrap();
     let o = new_object(k);
-    ivar_set_raw(o, intern(b"@pid"), Value::fix(pid as i64));
-    ivar_set_raw(o, intern(b"@st"), Value::fix(raw as i64));
+    ivar_set_raw(c, o, intern(b"@pid"), Value::fix(pid as i64));
+    ivar_set_raw(c, o, intern(b"@st"), Value::fix(raw as i64));
     o
 }
 pub fn last_status(c: &mut Ctx) -> Value {
@@ -41,31 +41,31 @@ fn exited(st: i32) -> bool { st & 0x7f == 0 }
 fn exitstatus(st: i32) -> i32 { (st >> 8) & 0xff }
 fn signaled(st: i32) -> bool { ((st & 0x7f) + 1) as i8 >> 1 > 0 }
 fn stopped(st: i32) -> bool { st & 0xff == 0x7f }
-fn st_raw(s: Value) -> i32 { let v = ivar_get(s, intern(b"@st")); if v.is_fixnum() { v.as_fix() as i32 } else { 0 } }
-fn st_pid_of(s: Value) -> i64 { let v = ivar_get(s, intern(b"@pid")); if v.is_fixnum() { v.as_fix() } else { 0 } }
-fn st_exitstatus(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let st = st_raw(s); Ok(if exited(st) { Value::fix(exitstatus(st) as i64) } else { NIL }) }
-fn st_to_i(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(st_raw(s) as i64)) }
-fn st_pid(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(st_pid_of(s))) }
-fn st_success(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let st = st_raw(s); Ok(if exited(st) { Value::bool(exitstatus(st) == 0) } else { NIL }) }
-fn st_exited(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(exited(st_raw(s)))) }
-fn st_signaled(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(signaled(st_raw(s)))) }
-fn st_stopped(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(stopped(st_raw(s)))) }
-fn st_termsig(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let st = st_raw(s); Ok(if signaled(st) { Value::fix((st & 0x7f) as i64) } else { NIL }) }
-fn st_stopsig(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let st = st_raw(s); Ok(if stopped(st) { Value::fix(exitstatus(st) as i64) } else { NIL }) }
-fn st_coredump(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(st_raw(s) & 0x80 != 0 && signaled(st_raw(s)))) }
-fn st_desc(s: Value) -> String {
-    let st = st_raw(s);
-    let mut d = format!("pid {}", st_pid_of(s));
+fn st_raw(c: &Ctx, s: Value) -> i32 { let v = ivar_get(c, s, intern(b"@st")); if v.is_fixnum() { v.as_fix() as i32 } else { 0 } }
+fn st_pid_of(c: &Ctx, s: Value) -> i64 { let v = ivar_get(c, s, intern(b"@pid")); if v.is_fixnum() { v.as_fix() } else { 0 } }
+fn st_exitstatus(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let st = st_raw(c, s); Ok(if exited(st) { Value::fix(exitstatus(st) as i64) } else { NIL }) }
+fn st_to_i(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(st_raw(c, s) as i64)) }
+fn st_pid(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(st_pid_of(c, s))) }
+fn st_success(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let st = st_raw(c, s); Ok(if exited(st) { Value::bool(exitstatus(st) == 0) } else { NIL }) }
+fn st_exited(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(exited(st_raw(c, s)))) }
+fn st_signaled(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(signaled(st_raw(c, s)))) }
+fn st_stopped(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(stopped(st_raw(c, s)))) }
+fn st_termsig(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let st = st_raw(c, s); Ok(if signaled(st) { Value::fix((st & 0x7f) as i64) } else { NIL }) }
+fn st_stopsig(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let st = st_raw(c, s); Ok(if stopped(st) { Value::fix(exitstatus(st) as i64) } else { NIL }) }
+fn st_coredump(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(st_raw(c, s) & 0x80 != 0 && signaled(st_raw(c, s)))) }
+fn st_desc(c: &Ctx, s: Value) -> String {
+    let st = st_raw(c, s);
+    let mut d = format!("pid {}", st_pid_of(c, s));
     if stopped(st) { let sg = exitstatus(st); d.push_str(&format!(" stopped SIG{} (signal {})", signame(sg).unwrap_or("?"), sg)); }
     else if signaled(st) { let sg = st & 0x7f; d.push_str(&format!(" SIG{} (signal {})", signame(sg).unwrap_or("?"), sg)); if st & 0x80 != 0 { d.push_str(" (core dumped)"); } }
     else { d.push_str(&format!(" exit {}", exitstatus(st))); }
     d
 }
-fn st_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.str_new(st_desc(s).as_bytes())) }
-fn st_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.str_new(format!("#<Process::Status: {}>", st_desc(s)).as_bytes())) }
-fn st_eq(_c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
-    if a[0].is_fixnum() { return Ok(Value::bool(st_raw(s) as i64 == a[0].as_fix())); }
-    Ok(Value::bool(a[0].is_heap() && real_class_of(a[0]) == real_class_of(s) && st_raw(a[0]) == st_raw(s)))
+fn st_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.str_new(st_desc(c, s).as_bytes())) }
+fn st_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.str_new(format!("#<Process::Status: {}>", st_desc(c, s)).as_bytes())) }
+fn st_eq(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+    if a[0].is_fixnum() { return Ok(Value::bool(st_raw(c, s) as i64 == a[0].as_fix())); }
+    Ok(Value::bool(a[0].is_heap() && real_class_of(a[0]) == real_class_of(s) && st_raw(c, a[0]) == st_raw(c, s)))
 }
 
 // ---- signals ----------------------------------------------------------------------------------
@@ -121,7 +121,7 @@ fn signal_trap(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
 fn run_handler(c: &mut Ctx, sig: i32) -> Result<(), Esc> {
     let h = c.ary_get(HANDLERS.get(c), sig as usize);
     if is_string(h) {
-        if c.str_bytes(h) == b"EXIT" { let e = make_exception(c.vm().c_system_exit.get(), "exit"); ivar_set_raw(e, crate::symbol::s::status, Value::fix(0)); return Err(raise_exc(c, e)); }
+        if c.str_bytes(h) == b"EXIT" { let e = make_exception(c, c.vm().c_system_exit.get(), "exit"); ivar_set_raw(c, e, crate::symbol::s::status, Value::fix(0)); return Err(raise_exc(c, e)); }
         return Ok(());
     }
     if h == NIL || h == UNDEF { return Ok(()); }
@@ -173,8 +173,8 @@ fn p_kill(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
             let h = c.ary_get(hs, sig as usize);
             if h == UNDEF || (h == NIL && c.ary_len(hs) <= sig as usize) {
                 let name = format!("SIG{}", signame(sig).unwrap());
-                let e = make_exception(if sig == 2 { c.vm().c_interrupt.get() } else { c.vm().c_signal_exception.get() }, if sig == 2 { "" } else { &name });
-                ivar_set_raw(e, intern(b"signo"), Value::fix(sig as i64));
+                let e = make_exception(c, if sig == 2 { c.vm().c_interrupt.get() } else { c.vm().c_signal_exception.get() }, if sig == 2 { "" } else { &name });
+                ivar_set_raw(c, e, intern(b"signo"), Value::fix(sig as i64));
                 return Err(raise_exc(c, e));
             }
         }
@@ -444,7 +444,7 @@ fn k_system(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let (_, st) = waitpid_retry(c, pid, 0)?;
     set_last_status(pid, st);
     if exc && !(exited(st) && exitstatus(st) == 0) {
-        let d = st_desc(new_status(c, pid, st));
+        let ns = new_status(c, pid, st); let d = st_desc(c, ns);
         return err(c, c.vm().c_runtime_error.get(), format!("Command failed with {}: {}", d.splitn(3, ' ').nth(2).unwrap_or(""), sp.argv.last().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default()));
     }
     Ok(Value::bool(exited(st) && exitstatus(st) == 0))
@@ -541,23 +541,23 @@ fn p_detach(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let pid = a[0];
     let k = const_get_at(c.vm().m_process.get(), intern(b"Waiter")).unwrap();
     let o = new_object(k);
-    ivar_set_raw(o, intern(b"@pid"), pid);
+    ivar_set_raw(c, o, intern(b"@pid"), pid);
     Ok(o)
 }
 fn waiter_value(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let v = ivar_get(s, intern(b"@value"));
+    let v = ivar_get(c, s, intern(b"@value"));
     if v != NIL { return Ok(v); }
-    let pid = ivar_get(s, intern(b"@pid"));
+    let pid = ivar_get(c, s, intern(b"@pid"));
     let r = match wait_impl(c, &[pid]) { Ok(Some((p, st))) => new_status(c, p, st), Ok(None) => NIL, Err(_) => { c.esc = EscKind::None; NIL } };
-    ivar_set_raw(s, intern(b"@value"), r);
+    ivar_set_raw(c, s, intern(b"@value"), r);
     Ok(r)
 }
 fn waiter_join(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { waiter_value(c, s, a, b)?; Ok(s) }
-fn waiter_pid(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(s, intern(b"@pid"))) }
+fn waiter_pid(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, s, intern(b"@pid"))) }
 fn waiter_alive(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
-    if ivar_get(s, intern(b"@value")) != NIL { return Ok(FALSE); }
-    let pid = ivar_get(s, intern(b"@pid"));
-    match wait_impl(c, &[pid, Value::fix(1)]) { Ok(Some((p, st))) => { let v = new_status(c, p, st); ivar_set_raw(s, intern(b"@value"), v); Ok(FALSE) } Ok(None) => Ok(TRUE), Err(_) => { c.esc = EscKind::None; Ok(FALSE) } }
+    if ivar_get(c, s, intern(b"@value")) != NIL { return Ok(FALSE); }
+    let pid = ivar_get(c, s, intern(b"@pid"));
+    match wait_impl(c, &[pid, Value::fix(1)]) { Ok(Some((p, st))) => { let v = new_status(c, p, st); ivar_set_raw(c, s, intern(b"@value"), v); Ok(FALSE) } Ok(None) => Ok(TRUE), Err(_) => { c.esc = EscKind::None; Ok(FALSE) } }
 }
 
 // ---- clocks / ids -----------------------------------------------------------------------------
@@ -606,7 +606,7 @@ fn p_times(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     sys::times(&mut t);
     let k = const_get_at(c.vm().m_process.get(), intern(b"Tms")).unwrap();
     let o = new_object(k);
-    for (n, v) in [("@utime", t.utime), ("@stime", t.stime), ("@cutime", t.cutime), ("@cstime", t.cstime)] { let f = c.float_new(v as f64 / 100.0); ivar_set_raw(o, intern(n.as_bytes()), f); }
+    for (n, v) in [("@utime", t.utime), ("@stime", t.stime), ("@cutime", t.cutime), ("@cstime", t.cstime)] { let f = c.float_new(v as f64 / 100.0); ivar_set_raw(c, o, intern(n.as_bytes()), f); }
     Ok(o)
 }
 fn p_getrlimit(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {

@@ -145,8 +145,8 @@ fn rw_fail(c: &mut Ctx, readable: bool, e: i64, msg: &str) -> Esc {
     let pre = match e { sys::EAGAIN => "EAGAIN", EINPROGRESS => "EINPROGRESS", _ => return sys_fail(c, e, msg) };
     let name = format!("{}Wait{}", pre, if readable { "Readable" } else { "Writable" });
     let k = const_get_at(c.vm().c_io.get(), intern(name.as_bytes())).unwrap_or(c.vm().c_io_error.get());
-    let x = make_exception(k, &format!("{} - {}", crate::builtins::exception::errno_text(Value::fix(e)), msg));
-    ivar_set_raw(x, s::errno, Value::fix(e));
+    let x = make_exception(c, k, &format!("{} - {}", crate::builtins::exception::errno_text(Value::fix(e)), msg));
+    ivar_set_raw(c, x, s::errno, Value::fix(e));
     raise_exc(c, x)
 }
 fn socket_error<T>(c: &mut Ctx, msg: impl AsRef<str>) -> Result<T, Esc> { let k = E_SOCKET.get(c); err(c, k, msg) }
@@ -154,8 +154,8 @@ fn socket_error<T>(c: &mut Ctx, msg: impl AsRef<str>) -> Result<T, Esc> { let k 
 fn resolution_error(c: &mut Ctx, reason: &str, code: i32, eno: i64) -> Esc {
     if code == k("EAI_SYSTEM") && eno != 0 { return sys_fail(c, eno, reason); }
     let k = E_RESOLUTION.get(c);
-    let x = make_exception(k, &format!("{}: {}", reason, sys::gai_strerror(code)));
-    ivar_set_raw(x, intern(b"error_code"), Value::fix(code as i64));
+    let x = make_exception(c, k, &format!("{}: {}", reason, sys::gai_strerror(code)));
+    ivar_set_raw(c, x, intern(b"error_code"), Value::fix(code as i64));
     raise_exc(c, x)
 }
 fn timeout_error(c: &mut Ctx, msg: &str) -> Esc {
@@ -835,14 +835,14 @@ fn init_sock(c: &mut Ctx, v: Value, fd: i32) -> RV {
     io.fd = fd; io.wfd = -1; io.readable = true; io.writable = true; io.init = true; io.closed = false; io.eof = false;
     io.rbuf.clear(); io.rpos = 0; io.wbuf.clear(); io.binmode = true; io.enc = Some(ENC_BINARY); io.enc2 = None; io.sync = true;
     io.autoclose = true; io.path.clear(); io.has_path = false; io.lineno = 0; io.rerr = 0;
-    ivar_set_raw(v, norev_sym(), Value::bool(NOREVLOOKUP.load(Relaxed)));
+    ivar_set_raw(c, v, norev_sym(), Value::bool(NOREVLOOKUP.load(Relaxed)));
     Ok(v)
 }
 fn new_sock(c: &mut Ctx, klass: Value, fd: i32) -> RV {
     let v = crate::builtins::object::alloc_instance(c, klass)?;
     init_sock(c, v, fd)
 }
-fn sock_norev(v: Value) -> bool { ivar_get(v, norev_sym()) != FALSE }
+fn sock_norev(c: &Ctx, v: Value) -> bool { ivar_get(c, v, norev_sym()) != FALSE }
 fn rsock_socket(d: i32, t: i32, p: i32) -> i32 { sys::socket(d, t | k("SOCK_CLOEXEC") | k("SOCK_NONBLOCK"), p) }
 fn sfd(c: &mut Ctx, v: Value) -> Result<i32, Esc> { Ok(io::get_io(c, v)?.fd) }
 fn getfamily(fd: i32) -> i32 { let mut b = [0u8; SS_LEN]; match sys::getsockname(fd, &mut b) { Ok(n) => afamily(&b[..n.min(SS_LEN)]), Err(_) => AF_UNSPEC } }
@@ -854,7 +854,7 @@ fn is_dgram(c: &mut Ctx, fd: i32) -> Result<bool, Esc> {
 /// Wait for `ev` on the socket's fd (other threads run); IOError if it was closed meanwhile.
 fn wait(c: &mut Ctx, v: Value, ev: i16) -> Result<(), Esc> {
     let fd = sfd(c, v)?;
-    let dl = io::io_timeout(v).map(|t| std::time::Instant::now() + t);
+    let dl = io::io_timeout(c, v).map(|t| std::time::Instant::now() + t);
     let r = io::wait_one(c, fd, ev, dl)?;
     sfd(c, v)?;
     // rb_io_wait with the IO's timeout
@@ -864,7 +864,7 @@ fn wait(c: &mut Ctx, v: Value, ev: i16) -> Result<(), Esc> {
 fn so_error(fd: i32) -> Result<i64, i64> { let mut b = [0u8; 4]; sys::getsockopt(fd, SOL_SOCKET, k("SO_ERROR"), &mut b)?; Ok(i32::from_ne_bytes(b) as i64) }
 /// rsock_connect: Ok(Err(errno)) when connect(2) failed.
 fn do_connect(c: &mut Ctx, v: Value, sa: &[u8], deadline: Option<std::time::Instant>) -> Result<Result<(), i64>, Esc> {
-    let deadline = deadline.or_else(|| io::io_timeout(v).map(|t| std::time::Instant::now() + t));
+    let deadline = deadline.or_else(|| io::io_timeout(c, v).map(|t| std::time::Instant::now() + t));
     let fd = sfd(c, v)?;
     if sys::connect(fd, sa) == 0 { return Ok(Ok(())); }
     let e = sys::errno();
@@ -922,8 +922,8 @@ fn bs_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
 }
 fn bs_s_norev(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(NOREVLOOKUP.load(Relaxed))) }
 fn bs_s_set_norev(_c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { NOREVLOOKUP.store(a[0].truthy(), Relaxed); Ok(a[0]) }
-fn bs_norev(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { io::get_io(c, s)?; Ok(Value::bool(sock_norev(s))) }
-fn bs_set_norev(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { io::get_io(c, s)?; ivar_set_raw(s, norev_sym(), Value::bool(a[0].truthy())); Ok(s) }
+fn bs_norev(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { io::get_io(c, s)?; Ok(Value::bool(sock_norev(c, s))) }
+fn bs_set_norev(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { io::get_io(c, s)?; ivar_set_raw(c, s, norev_sym(), Value::bool(a[0].truthy())); Ok(s) }
 fn bs_shutdown(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 0, 1)?;
     let how = match a.first() {
@@ -1032,7 +1032,7 @@ fn check_outbuf(c: &mut Ctx, v: Option<&Value>) -> Result<Option<Value>, Esc> {
 fn recv_result(c: &mut Ctx, sock: Value, from: From, str: Value, sa: &[u8], alen: usize) -> RV {
     match from {
         From::Recv => Ok(str),
-        From::Ip => { let a = if alen != 0 && alen != SS_LEN { let nr = sock_norev(sock); ipaddr_ary(c, &sa[..alen], nr)? } else { NIL }; Ok(c.ary_new_from(&[str, a])) }
+        From::Ip => { let a = if alen != 0 && alen != SS_LEN { let nr = sock_norev(c, sock); ipaddr_ary(c, &sa[..alen], nr)? } else { NIL }; Ok(c.ary_new_from(&[str, a])) }
         From::Unix => { let a = unixaddr(c, &sa[..alen]); Ok(c.ary_new_from(&[str, a])) }
         From::Socket => { let fd = sfd(c, sock)?; let a = fd_socket_addrinfo(c, fd, &sa[..alen])?; Ok(c.ary_new_from(&[str, a])) }
     }
@@ -1130,10 +1130,10 @@ const CMSG_HDR: usize = 16;
 fn ancdata_new(c: &mut Ctx, family: i32, level: i32, typ: i32, data: Value) -> RV {
     let k = C_ANCDATA.get(c);
     let o = new_object(k);
-    ivar_set_raw(o, intern(b"family"), Value::fix(family as i64));
-    ivar_set_raw(o, intern(b"level"), Value::fix(level as i64));
-    ivar_set_raw(o, intern(b"type"), Value::fix(typ as i64));
-    ivar_set_raw(o, intern(b"data"), data);
+    ivar_set_raw(c, o, intern(b"family"), Value::fix(family as i64));
+    ivar_set_raw(c, o, intern(b"level"), Value::fix(level as i64));
+    ivar_set_raw(c, o, intern(b"type"), Value::fix(typ as i64));
+    ivar_set_raw(c, o, intern(b"data"), data);
     Ok(o)
 }
 fn sendmsg_common(c: &mut Ctx, s: Value, a: &[Value], nonblock: bool) -> RV {
@@ -1254,7 +1254,7 @@ fn recvmsg_common(c: &mut Ctx, s: Value, a: &[Value], nonblock: bool) -> RV {
                 let nfd = i32_at(ch, 0);
                 if scm_rights { let io = io_for_fd(c, nfd)?; c.ary_push(ios, io); } else { sys::close(nfd); }
             }
-            if scm_rights { ivar_set_raw(anc, intern(b"unix_rights"), ios); }
+            if scm_rights { ivar_set_raw(c, anc, intern(b"unix_rights"), ios); }
         }
         c.ary_push(out, anc);
         off += cmsg_align(len);
@@ -1308,7 +1308,7 @@ fn ip_addr_common(c: &mut Ctx, s: Value, a: &[Value], peer: bool) -> RV {
     check_argc(c, a, 0, 1)?;
     let nr = match a.first() { Some(&v) => revlookup_flag(c, v)?, None => None };
     io::get_io(c, s)?;
-    let nr = nr.unwrap_or_else(|| sock_norev(s));
+    let nr = nr.unwrap_or_else(|| sock_norev(c, s));
     let sa = name_of(c, s, peer)?;
     ipaddr_ary(c, &sa, nr)
 }
@@ -1334,7 +1334,7 @@ fn init_inetsock(c: &mut Ctx, slf: Value, rhost: Value, rserv: Value, lhost: Val
     let mut fl = 0;
     let named = !server && host_str(c, rhost, &mut fl)?.is_some_and(|h| { let h = String::from_utf8_lossy(&h).into_owned(); !is_ip_text(&h) });
     let ff = kwget(c, kw, "fast_fallback")?;
-    let ff = if ff == NIL { let s = C_SOCKET.get(c); ivar_get(s, intern(b"tcp_fast_fallback")) != FALSE } else { ff.truthy() };
+    let ff = if ff == NIL { let s = C_SOCKET.get(c); ivar_get(c, s, intern(b"tcp_fast_fallback")) != FALSE } else { ff.truthy() };
     let reason = if named && ff { "getaddrinfo(3)" } else { "getaddrinfo" };
     let res = getaddrinfo(c, rhost, rserv, (if server { k("AI_PASSIVE") } else { 0 }, AF_UNSPEC, SOCK_STREAM, 0), true, reason)?;
     let lres = if !server && (lhost != NIL || lserv != NIL) { Some(getaddrinfo(c, lhost, lserv, (0, AF_UNSPEC, SOCK_STREAM, 0), true, reason)?) } else { None };
@@ -1811,16 +1811,16 @@ fn sock_s_getifaddrs(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> 
         let o = new_object(k);
         let name = bin(c, &i.0);
         let idx = if_nametoindex(&i.0);
-        ivar_set_raw(o, intern(b"name"), name);
-        ivar_set_raw(o, intern(b"ifindex"), Value::fix(idx as i64));
-        ivar_set_raw(o, intern(b"flags"), Value::fix(i.1 as i64));
+        ivar_set_raw(c, o, intern(b"name"), name);
+        ivar_set_raw(c, o, intern(b"ifindex"), Value::fix(idx as i64));
+        ivar_set_raw(c, o, intern(b"flags"), Value::fix(i.1 as i64));
         let (a, n, x) = (sockaddr_obj(c, i.2.as_ref())?, sockaddr_obj(c, i.3.as_ref())?, sockaddr_obj(c, i.4.as_ref())?);
-        ivar_set_raw(o, intern(b"addr"), a); ivar_set_raw(o, intern(b"netmask"), n); ivar_set_raw(o, intern(b"ifu"), x);
+        ivar_set_raw(c, o, intern(b"addr"), a); ivar_set_raw(c, o, intern(b"netmask"), n); ivar_set_raw(c, o, intern(b"ifu"), x);
         c.ary_push(out, o);
     }
     Ok(out)
 }
-fn ifa_get(c: &mut Ctx, s: Value, n: &str) -> RV { let _ = c; Ok(ivar_get(s, intern(n.as_bytes()))) }
+fn ifa_get(c: &mut Ctx, s: Value, n: &str) -> RV { let _ = c; Ok(ivar_get(c, s, intern(n.as_bytes()))) }
 fn ifa_name(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { ifa_get(c, s, "name") }
 fn ifa_ifindex(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { ifa_get(c, s, "ifindex") }
 fn ifa_flags(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { ifa_get(c, s, "flags") }
@@ -1828,18 +1828,18 @@ fn ifa_addr(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { ifa_g
 fn ifa_netmask(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { ifa_get(c, s, "netmask") }
 const IFF_BROADCAST: i64 = 2;
 const IFF_POINTOPOINT: i64 = 0x10;
-fn ifa_broadaddr(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let f = ivar_get(s, intern(b"flags")).as_fix(); if f & IFF_BROADCAST != 0 { ifa_get(c, s, "ifu") } else { Ok(NIL) } }
-fn ifa_dstaddr(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let f = ivar_get(s, intern(b"flags")).as_fix(); if f & IFF_POINTOPOINT != 0 { ifa_get(c, s, "ifu") } else { Ok(NIL) } }
+fn ifa_broadaddr(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let f = ivar_get(c, s, intern(b"flags")).as_fix(); if f & IFF_BROADCAST != 0 { ifa_get(c, s, "ifu") } else { Ok(NIL) } }
+fn ifa_dstaddr(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let f = ivar_get(c, s, intern(b"flags")).as_fix(); if f & IFF_POINTOPOINT != 0 { ifa_get(c, s, "ifu") } else { Ok(NIL) } }
 fn ifa_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let mut r = format!("#<{} ", class_path(real_class_of(s))).into_bytes();
-    let name = ivar_get(s, intern(b"name")); r.extend_from_slice(c.str_bytes(name));
-    let flags = ivar_get(s, intern(b"flags")).as_fix() as u32;
+    let name = ivar_get(c, s, intern(b"name")); r.extend_from_slice(c.str_bytes(name));
+    let flags = ivar_get(c, s, intern(b"flags")).as_fix() as u32;
     const FL: &[(u32, &str)] = &[(0x1, "UP"), (0x2, "BROADCAST"), (0x4, "DEBUG"), (0x8, "LOOPBACK"), (0x10, "POINTOPOINT"), (0x40, "RUNNING"), (0x80, "NOARP"), (0x100, "PROMISC"), (0x20, "NOTRAILERS"), (0x200, "ALLMULTI"), (0x400, "MASTER"), (0x800, "SLAVE"), (0x1000, "MULTICAST"), (0x2000, "PORTSEL"), (0x4000, "AUTOMEDIA"), (0x8000, "DYNAMIC")];
     let mut f = flags; let mut sep = ' ';
     for (bit, n) in FL { if f & bit != 0 { f &= !bit; r.push(sep as u8); r.extend_from_slice(n.as_bytes()); sep = ','; } }
     if f != 0 { r.push(sep as u8); r.extend_from_slice(format!("{:#x}", f).as_bytes()); }
     for (key, label) in [("addr", " "), ("netmask", " netmask="), ("ifu", "")] {
-        let v = ivar_get(s, intern(key.as_bytes()));
+        let v = ivar_get(c, s, intern(key.as_bytes()));
         if v == NIL { continue; }
         let label = if key == "ifu" { if flags as i64 & IFF_BROADCAST != 0 { " broadcast=" } else if flags as i64 & IFF_POINTOPOINT != 0 { " dstaddr=" } else { continue } } else { label };
         let ai = get_ai(c, v)?;
@@ -1849,15 +1849,15 @@ fn ifa_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     r.push(b'>');
     Ok(bin(c, &r))
 }
-fn sock_s_fast_fallback(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let _ = c; Ok(ivar_get(s, intern(b"tcp_fast_fallback"))) }
-fn sock_s_set_fast_fallback(_c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { ivar_set_raw(s, intern(b"tcp_fast_fallback"), a[0]); Ok(a[0]) }
+fn sock_s_fast_fallback(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let _ = c; Ok(ivar_get(c, s, intern(b"tcp_fast_fallback"))) }
+fn sock_s_set_fast_fallback(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { ivar_set_raw(c, s, intern(b"tcp_fast_fallback"), a[0]); Ok(a[0]) }
 
 // ---- Socket::Option ------------------------------------------------------------------------
 fn option_new(c: &mut Ctx, family: i32, level: i32, optname: i32, data: Value) -> RV {
     let k = C_OPTION.get(c);
     let o = new_object(k);
     let d = expect_str(c, data)?;
-    for (n, v) in [("family", Value::fix(family as i64)), ("level", Value::fix(level as i64)), ("optname", Value::fix(optname as i64)), ("data", d)] { ivar_set_raw(o, intern(n.as_bytes()), v); }
+    for (n, v) in [("family", Value::fix(family as i64)), ("level", Value::fix(level as i64)), ("optname", Value::fix(optname as i64)), ("data", d)] { ivar_set_raw(c, o, intern(n.as_bytes()), v); }
     Ok(o)
 }
 fn opt_args(c: &mut Ctx, a: &[Value]) -> Result<(i32, i32, i32), Esc> {
@@ -1869,14 +1869,14 @@ fn opt_args(c: &mut Ctx, a: &[Value]) -> Result<(i32, i32, i32), Esc> {
 fn opt_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let (f, l, o) = opt_args(c, a)?;
     let d = expect_str(c, a[3])?;
-    for (n, v) in [("family", Value::fix(f as i64)), ("level", Value::fix(l as i64)), ("optname", Value::fix(o as i64)), ("data", d)] { ivar_set_raw(s, intern(n.as_bytes()), v); }
+    for (n, v) in [("family", Value::fix(f as i64)), ("level", Value::fix(l as i64)), ("optname", Value::fix(o as i64)), ("data", d)] { ivar_set_raw(c, s, intern(n.as_bytes()), v); }
     Ok(s)
 }
-fn opt_attr(s: Value, n: &str) -> Value { ivar_get(s, intern(n.as_bytes())) }
-fn opt_family(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(opt_attr(s, "family")) }
-fn opt_level(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let v = opt_attr(s, "level"); Ok(Value::fix(to_i32(c, v)? as i64)) }
-fn opt_optname(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let v = opt_attr(s, "optname"); Ok(Value::fix(to_i32(c, v)? as i64)) }
-fn opt_data(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let v = opt_attr(s, "data"); expect_str(c, v) }
+fn opt_attr(c: &Ctx, s: Value, n: &str) -> Value { ivar_get(c, s, intern(n.as_bytes())) }
+fn opt_family(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(opt_attr(c, s, "family")) }
+fn opt_level(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let v = opt_attr(c, s, "level"); Ok(Value::fix(to_i32(c, v)? as i64)) }
+fn opt_optname(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let v = opt_attr(c, s, "optname"); Ok(Value::fix(to_i32(c, v)? as i64)) }
+fn opt_data(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let v = opt_attr(c, s, "data"); expect_str(c, v) }
 fn opt_bytes(c: &mut Ctx, s: Value) -> Result<Vec<u8>, Esc> { let v = opt_data(c, s, &[], std::ptr::null())?; Ok(c.str_bytes(v).to_vec()) }
 fn check_size(c: &mut Ctx, len: usize, size: usize, name: &str) -> Result<(), Esc> {
     if len != size { return type_err(c, format!("size differ.  expected as {}={} but {}", name, size, len)); }
@@ -1927,7 +1927,7 @@ fn opt_s_linger(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     option_new(c, AF_UNSPEC, SOL_SOCKET, k("SO_LINGER"), d)
 }
 fn opt_linger(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let (l, o) = (opt_attr(s, "level"), opt_attr(s, "optname"));
+    let (l, o) = (opt_attr(c, s, "level"), opt_attr(c, s, "optname"));
     if l != Value::fix(SOL_SOCKET as i64) || o != Value::fix(k("SO_LINGER") as i64) { return type_err(c, "linger socket option expected"); }
     let d = opt_bytes(c, s)?;
     check_size(c, d.len(), 8, "sizeof(struct linger)")?;
@@ -1947,7 +1947,7 @@ fn opt_s_mc_ttl(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     option_new(c, AF_INET, 0, k("IP_MULTICAST_TTL"), d)
 }
 fn opt_mc(c: &mut Ctx, s: Value, name: &str) -> RV {
-    let (f, l, o) = (opt_attr(s, "family"), opt_attr(s, "level"), opt_attr(s, "optname"));
+    let (f, l, o) = (opt_attr(c, s, "family"), opt_attr(c, s, "level"), opt_attr(c, s, "optname"));
     if f == Value::fix(AF_INET as i64) && l == Value::fix(0) && o == Value::fix(k(name) as i64) { return opt_int(c, s, &[], std::ptr::null()); }
     type_err(c, format!("{} socket option expected", if name == "IP_MULTICAST_LOOP" { "ipv4_multicast_loop" } else { "ipv4_multicast_ttl" }))
 }
@@ -1999,9 +1999,9 @@ fn inspect_optval(family: i32, level: i32, opt: i32, d: &[u8]) -> Option<String>
     None
 }
 fn opt_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let fv = opt_attr(s, "family"); let family = to_i32(c, fv)?;
-    let lv = opt_attr(s, "level"); let level = to_i32(c, lv)?;
-    let ov = opt_attr(s, "optname"); let opt = to_i32(c, ov)?;
+    let fv = opt_attr(c, s, "family"); let family = to_i32(c, fv)?;
+    let lv = opt_attr(c, s, "level"); let level = to_i32(c, lv)?;
+    let ov = opt_attr(c, s, "optname"); let opt = to_i32(c, ov)?;
     let d = opt_bytes(c, s)?;
     let mut r = format!("#<{}:", class_path(real_class_of(s)));
     match int_to_name(&G_AF_NOPRE, family) { Some(n) => r.push_str(&format!(" {}", n)), None => r.push_str(&format!(" family:{}", family)) }
@@ -2033,14 +2033,14 @@ fn anc_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let l = level_arg(c, f, a[1])?;
     let t = cmsg_type_arg(c, f, l, a[2])?;
     let d = expect_str(c, a[3])?;
-    for (n, v) in [("family", Value::fix(f as i64)), ("level", Value::fix(l as i64)), ("type", Value::fix(t as i64)), ("data", d)] { ivar_set_raw(s, intern(n.as_bytes()), v); }
+    for (n, v) in [("family", Value::fix(f as i64)), ("level", Value::fix(l as i64)), ("type", Value::fix(t as i64)), ("data", d)] { ivar_set_raw(c, s, intern(n.as_bytes()), v); }
     Ok(s)
 }
-fn anc_attr(_c: &mut Ctx, s: Value, n: &str) -> RV { Ok(ivar_get(s, intern(n.as_bytes()))) }
+fn anc_attr(c: &mut Ctx, s: Value, n: &str) -> RV { Ok(ivar_get(c, s, intern(n.as_bytes()))) }
 fn anc_family(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { anc_attr(c, s, "family") }
 fn anc_level(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { anc_attr(c, s, "level") }
 fn anc_type(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { anc_attr(c, s, "type") }
-fn anc_data(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let v = ivar_get(s, intern(b"data")); expect_str(c, v) }
+fn anc_data(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let v = ivar_get(c, s, intern(b"data")); expect_str(c, v) }
 fn anc_s_int(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let i = to_i32(c, a[3])?;
     let d = bin(c, &i.to_ne_bytes());
@@ -2054,9 +2054,9 @@ fn anc_int(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
     Ok(Value::fix(i32_at(&d, 0) as i64))
 }
 fn anc_cmsg_is(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
-    let fv = ivar_get(s, intern(b"family")); let f = to_i32(c, fv)?;
-    let lv = ivar_get(s, intern(b"level")); let l0 = to_i32(c, lv)?;
-    let tv = ivar_get(s, intern(b"type")); let t0 = to_i32(c, tv)?;
+    let fv = ivar_get(c, s, intern(b"family")); let f = to_i32(c, fv)?;
+    let lv = ivar_get(c, s, intern(b"level")); let l0 = to_i32(c, lv)?;
+    let tv = ivar_get(c, s, intern(b"type")); let t0 = to_i32(c, tv)?;
     let l = level_arg(c, f, a[0])?;
     let t = cmsg_type_arg(c, f, l, a[1])?;
     Ok(Value::bool(l == l0 && t == t0))
@@ -2073,13 +2073,13 @@ fn anc_s_unix_rights(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> 
     }
     let dv = bin(c, &d);
     let o = new_object(slf);
-    for (n, v) in [("family", Value::fix(AF_UNIX as i64)), ("level", Value::fix(SOL_SOCKET as i64)), ("type", Value::fix(k("SCM_RIGHTS") as i64)), ("data", dv), ("unix_rights", ios)] { ivar_set_raw(o, intern(n.as_bytes()), v); }
+    for (n, v) in [("family", Value::fix(AF_UNIX as i64)), ("level", Value::fix(SOL_SOCKET as i64)), ("type", Value::fix(k("SCM_RIGHTS") as i64)), ("data", dv), ("unix_rights", ios)] { ivar_set_raw(c, o, intern(n.as_bytes()), v); }
     Ok(o)
 }
 fn anc_unix_rights(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let (l, t) = (ivar_get(s, intern(b"level")), ivar_get(s, intern(b"type")));
+    let (l, t) = (ivar_get(c, s, intern(b"level")), ivar_get(c, s, intern(b"type")));
     if l != Value::fix(SOL_SOCKET as i64) || t != Value::fix(k("SCM_RIGHTS") as i64) { return type_err(c, "SCM_RIGHTS ancillary data expected"); }
-    Ok(ivar_get(s, intern(b"unix_rights")))
+    Ok(ivar_get(c, s, intern(b"unix_rights")))
 }
 fn to_u32(c: &mut Ctx, v: Value) -> Result<u32, Esc> {
     let n = num_to_long(c, v)?;
@@ -2101,8 +2101,8 @@ fn anc_s_ip_pktinfo(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> R
     anc_initialize(c, o, &[Value::fix(AF_INET as i64), Value::fix(0), Value::fix(k("IP_PKTINFO") as i64), dv], std::ptr::null())
 }
 fn anc_fields(c: &mut Ctx, s: Value) -> Result<(i32, i32, Vec<u8>), Esc> {
-    let lv = ivar_get(s, intern(b"level")); let l = to_i32(c, lv)?;
-    let tv = ivar_get(s, intern(b"type")); let t = to_i32(c, tv)?;
+    let lv = ivar_get(c, s, intern(b"level")); let l = to_i32(c, lv)?;
+    let tv = ivar_get(c, s, intern(b"type")); let t = to_i32(c, tv)?;
     let d = anc_data(c, s, &[], std::ptr::null())?;
     Ok((l, t, c.str_bytes(d).to_vec()))
 }
@@ -2146,9 +2146,9 @@ fn anc_ipv6_pktinfo(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV
 fn anc_ipv6_pktinfo_addr(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ipv6_pktinfo(c, s)?.0) }
 fn anc_ipv6_pktinfo_ifindex(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(ipv6_pktinfo(c, s)?.1 as i64)) }
 fn anc_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let fv = ivar_get(s, intern(b"family")); let f = to_i32(c, fv)?;
-    let lv = ivar_get(s, intern(b"level")); let l = to_i32(c, lv)?;
-    let tv = ivar_get(s, intern(b"type")); let t = to_i32(c, tv)?;
+    let fv = ivar_get(c, s, intern(b"family")); let f = to_i32(c, fv)?;
+    let lv = ivar_get(c, s, intern(b"level")); let l = to_i32(c, lv)?;
+    let tv = ivar_get(c, s, intern(b"type")); let t = to_i32(c, tv)?;
     let d = anc_data(c, s, &[], std::ptr::null())?;
     let db = c.str_bytes(d).to_vec();
     let mut r = format!("#<{}:", class_path(real_class_of(s)));
@@ -2173,7 +2173,7 @@ fn anc_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(bin(c, &out))
 }
 
-fn resolution_error_code(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(s, intern(b"error_code"))) }
+fn resolution_error_code(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, s, intern(b"error_code"))) }
 
 /// require "socket.so".
 pub fn init(c: &mut Ctx) {
@@ -2234,7 +2234,7 @@ pub fn init(c: &mut Ctx) {
     define_private_cfunc(sock, "__recvfrom_nonblock", sock_recvfrom_nonblock, 4);
     ds(sock, "socketpair", sock_s_socketpair, -1); ds(sock, "pair", sock_s_socketpair, -1); ds(sock, "gethostname", sock_s_gethostname, 0); ds(sock, "gethostbyname", sock_s_gethostbyname, 1); ds(sock, "gethostbyaddr", sock_s_gethostbyaddr, -1); ds(sock, "getservbyname", sock_s_getservbyname, -1); ds(sock, "getservbyport", sock_s_getservbyport, -1); ds(sock, "getaddrinfo", sock_s_getaddrinfo, -1); ds(sock, "getnameinfo", sock_s_getnameinfo, -1); ds(sock, "sockaddr_in", sock_s_pack_sockaddr_in, 2); ds(sock, "pack_sockaddr_in", sock_s_pack_sockaddr_in, 2); ds(sock, "unpack_sockaddr_in", sock_s_unpack_sockaddr_in, 1); ds(sock, "sockaddr_un", sock_s_pack_sockaddr_un, 1); ds(sock, "pack_sockaddr_un", sock_s_pack_sockaddr_un, 1); ds(sock, "unpack_sockaddr_un", sock_s_unpack_sockaddr_un, 1); ds(sock, "ip_address_list", sock_s_ip_address_list, 0); ds(sock, "getifaddrs", sock_s_getifaddrs, 0); ds(sock, "tcp_fast_fallback", sock_s_fast_fallback, 0); ds(sock, "tcp_fast_fallback=", sock_s_set_fast_fallback, 1);
     let ff = !matches!(std::env::var("RUBY_TCP_NO_FAST_FALLBACK"), Ok(v) if v != "0");
-    ivar_set_raw(sock, intern(b"tcp_fast_fallback"), Value::bool(ff));
+    ivar_set_raw(c, sock, intern(b"tcp_fast_fallback"), Value::bool(ff));
     // Socket::Option, Socket::AncillaryData, Socket::Ifaddr
     let opt = define_class_under(sock, "Option", c_obj);
     C_OPTION.set(c, opt);

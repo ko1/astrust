@@ -32,10 +32,10 @@ fn e_cmp(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 }
 
 // Enumerable.__ivget / __ivset: hidden (non-@) instance slots for Data members; set ignores frozen.
-fn e_ivget(_c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(a[0], a[1].as_sym())) }
+fn e_ivget(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, a[0], a[1].as_sym())) }
 fn e_ivset(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     if !a[0].is_heap() || !a[1].is_sym() { return type_err(c, "bad hidden ivar"); }
-    ivar_set_raw(a[0], a[1].as_sym(), a[2]);
+    ivar_set_raw(c, a[0], a[1].as_sym(), a[2]);
     Ok(a[2])
 }
 

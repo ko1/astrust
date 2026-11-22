@@ -374,16 +374,16 @@ pub fn EVAL_node_lasgn(c: &mut Ctx, n: NodePtr, fp: Fp, idx: u32, v: Value) -> R
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_dvar(c: &mut Ctx, n: NodePtr, fp: Fp, hops: u32, idx: u32) -> RV {
-    let env = env_at(fp[1].get(), hops);
-    Ok(env_get(env, idx))
+    let env = c.env_up(fp[1].get(), hops);
+    Ok(c.env_get(env, idx))
 }
 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_dasgn(c: &mut Ctx, n: NodePtr, fp: Fp, hops: u32, idx: u32, v: Value) -> RV {
-    let env = env_at(fp[1].get(), hops);
-    env_set(env, idx, v);
+    let env = c.env_up(fp[1].get(), hops);
+    c.env_set(env, idx, v);
     Ok(v)
 }
 
@@ -392,21 +392,18 @@ pub fn EVAL_node_dasgn(c: &mut Ctx, n: NodePtr, fp: Fp, hops: u32, idx: u32, v: 
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_ivar(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, ic: &mut IvarCache, slot: u32) -> RV {
     let slf = fp[0].get();
-    if slf.is_heap() {
-        let o = obj(slf);
-        if o.klass.raw() == ic.klass {
-            if let Body::Object(ivs) = &o.body {
-                if slot == 0 {
-                    if let Some(v) = ivs.get(ic.idx as usize) { return Ok(if v == UNDEF { NIL } else { v }); }
-                    return Ok(NIL);
-                } else if ic.idx == slot - 1 {
-                    // an unset slot leaves through the miss path (a branch to code the site already has, not a select)
-                    if let Some(v) = ivs.get((slot - 1) as usize) { if v != UNDEF { return Ok(v); } }
-                }
+    if slf.is_heap() && obj_klass(slf).raw() == ic.klass {
+        if let Some(ivs) = c.obj_ivars(slf) {
+            if slot == 0 {
+                if let Some(v) = ivs.get(ic.idx as usize) { return Ok(if v == UNDEF { NIL } else { v }); }
+                return Ok(NIL);
+            } else if ic.idx == slot - 1 {
+                // an unset slot leaves through the miss path (a branch to code the site already has, not a select)
+                if let Some(v) = ivs.get((slot - 1) as usize) { if v != UNDEF { return Ok(v); } }
             }
         }
     }
-    Ok(srb_ivar_get_out(slf, name, ic))
+    Ok(srb_ivar_get_out(c, slf, name, ic))
 }
 
 
@@ -414,13 +411,10 @@ pub fn EVAL_node_ivar(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, ic: &mut IvarC
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value, ic: &mut IvarCache, slot: u32) -> RV {
     let slf = fp[0].get();
-    if slf.is_heap() {
-        let o = obj(slf);
-        if o.klass.raw() == ic.klass && o.flags & FL_FROZEN == 0 {
-            if let Body::Object(ivs) = &mut o.body {
-                if slot == 0 { if ivs.set(ic.idx as usize, v) { return Ok(v); } }
-                else if ic.idx == slot - 1 && ivs.set((slot - 1) as usize, v) { return Ok(v); }
-            }
+    if slf.is_heap() && obj_klass(slf).raw() == ic.klass && obj_flags(slf) & FL_FROZEN == 0 {
+        if let Some(ivs) = c.obj_ivars_mut(slf) {
+            if slot == 0 { if ivs.set(ic.idx as usize, v) { return Ok(v); } }
+            else if ic.idx == slot - 1 && ivs.set((slot - 1) as usize, v) { return Ok(v); }
         }
     }
     srb_ivar_set_out(c, slf, name, v, ic)
@@ -432,9 +426,9 @@ pub fn EVAL_node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value, ic:
 pub fn EVAL_node_ivar_arith<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, sub: bool, v: Value, line: H_line, ic: &mut IvarCache, cc: &mut OpCc, slot: u32) -> RV {
     let slf = fp[0].get();
     if slf.is_heap() && v.is_fixnum() && !c.int_redef() {
-        let o = obj(slf);
-        if o.klass.raw() == ic.klass && o.flags & FL_FROZEN == 0 && (slot == 0 || ic.idx == slot - 1) {
-            if let Body::Object(ivs) = &mut o.body {
+        if obj_klass(slf).raw() == ic.klass && obj_flags(slf) & FL_FROZEN == 0 && (slot == 0 || ic.idx == slot - 1) {
+            if let Some(ivs) = c.obj_ivars_mut(slf) {
+
                 let i = (if slot == 0 { ic.idx } else { slot - 1 }) as usize;
                 if let Some(cur) = ivs.get(i) {
                     if cur.is_fixnum() {
@@ -1431,7 +1425,7 @@ pub fn EVAL_node_method_entry<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut
     }
     let mut i = 2 + nparams;
     while i < nlocals { slot(fp, i).set(NIL); i += 1; }
-    if flags & ME_ENV != 0 { make_env(unsafe { &*fr.iseq() }, fp, NIL); }
+    if flags & ME_ENV != 0 { make_env(c, unsafe { &*fr.iseq() }, fp, NIL); }
     c.frame = &mut fr;
     let r = <D_body as Disp>::call(c, body, fp);
     // compiled in and no call in the body: `prev` stays in a register and the reload of fr.prev (a store-load
@@ -1465,7 +1459,7 @@ pub fn EVAL_node_block_entry<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut 
     let mut i = 2 + nparams;
     while i < nlocals { slot(fp, i).set(NIL); i += 1; }
     enter_base(c, fp, nlocals)?;
-    if flags & ME_ENV != 0 { make_env(unsafe { &*fr.h.iseq() }, fp, b.env); }
+    if flags & ME_ENV != 0 { make_env(c, unsafe { &*fr.h.iseq() }, fp, b.env); }
     if !shared { c.frame = &mut fr.h; }
     let mut r = <D_body as Disp>::call(c, body, fp);
     // redo runs the body again out of line (a second inline copy would double the block's code)

@@ -1138,8 +1138,8 @@ struct Bdv { v: Value, r: Real }
 
 fn vperr(c: &mut Ctx, e: VpErr) -> Esc {
     let m = match e {
-        VpErr::Fd(s) => make_exception(c.vm().c_float_domain_error.get(), s),
-        VpErr::NoMem => make_exception(c.vm().c_no_memory_error.get(), "failed to allocate memory"),
+        VpErr::Fd(s) => make_exception(c, c.vm().c_float_domain_error.get(), s),
+        VpErr::NoMem => make_exception(c, c.vm().c_no_memory_error.get(), "failed to allocate memory"),
     };
     raise_exc(c, m)
 }
@@ -1380,7 +1380,7 @@ fn get_bd(c: &mut Ctx, v: Value, prec: usize, must: bool, env: &Env) -> Result<O
 fn get_bd_must(c: &mut Ctx, v: Value, prec: usize, env: &Env) -> Result<Bdv, Esc> { Ok(get_bd(c, v, prec, true, env)?.unwrap()) }
 fn cannot_coerce(c: &mut Ctx, v: Value) -> Esc {
     let s = if !v.is_heap() { match inspect_str(c, v) { Ok(s) => s, Err(e) => return e } } else { class_path(real_class_of(v)) };
-    let m = make_exception(c.vm().c_type_error.get(), &format!("{} can't be coerced into BigDecimal", s));
+    let m = make_exception(c, c.vm().c_type_error.get(), &format!("{} can't be coerced into BigDecimal", s));
     raise_exc(c, m)
 }
 fn slf(c: &mut Ctx, v: Value) -> Result<Bdv, Esc> {
@@ -1606,7 +1606,7 @@ fn cstr(c: &mut Ctx, v: Value) -> Result<Vec<u8>, Esc> {
 }
 fn invalid_value(c: &mut Ctx, s: &[u8]) -> Esc {
     let m = format!("invalid value for BigDecimal(): \"{}\"", String::from_utf8_lossy(s));
-    let e = make_exception(c.vm().c_argument_error.get(), &m);
+    let e = make_exception(c, c.vm().c_argument_error.get(), &m);
     raise_exc(c, e)
 }
 fn s_load(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {

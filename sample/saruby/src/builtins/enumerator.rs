@@ -209,7 +209,7 @@ fn e_next(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     }
     let en = renum(c, slf);
     if en.pos >= c.ary_len(en.buf) {
-        let e = make_exception(c.vm().c_stop_iteration.get(), "iteration reached an end");
+        let e = make_exception(c, c.vm().c_stop_iteration.get(), "iteration reached an end");
         return Err(raise_exc(c, e));
     }
     let v = c.ary_get(en.buf, en.pos);

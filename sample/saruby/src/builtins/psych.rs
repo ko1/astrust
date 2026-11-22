@@ -189,7 +189,7 @@ fn p_native_parse(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV 
 fn p_parse(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     check_argc(c, a, 1, 2)?;
     let path = if a.len() == 2 { a[1] } else if respond_to(a[0], intern(b"path"), false) { funcall(c, a[0], intern(b"path"), &[], std::ptr::null())? } else { c.str_new(b"<unknown>") };
-    let h = ivar_get(slf, intern(b"@handler"));
+    let h = ivar_get(c, slf, intern(b"@handler"));
     p_native_parse(c, slf, &[h, a[0], path], b)
 }
 fn p_mark(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
@@ -315,7 +315,7 @@ fn e_set_line_width(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> R
 
 fn tr_build_exception(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
     let e = funcall(c, a[0], intern(b"allocate"), &[], std::ptr::null())?;
-    ivar_set_raw(e, intern(b"mesg"), a[1]);
+    ivar_set_raw(c, e, intern(b"mesg"), a[1]);
     Ok(e)
 }
 /// rb_path_to_class.

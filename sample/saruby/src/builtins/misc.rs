@@ -110,10 +110,10 @@ fn warning_warn(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     if !is_string(a[0]) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(a[0]))); }
     let b = c.str_bytes(a[0]).to_vec(); stderr_write(c, &b)?; Ok(NIL)
 }
-fn objspace_wm_init(c: &mut Ctx, s2: Value, _a: &[Value], _b: *const Block) -> RV { let h = c.hash_new(); c.hash_mut(h).identity = true; ivar_set_raw(s2, intern(b"@h"), h); Ok(NIL) }
-fn wm_aref(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(s2, intern(b"@h")); Ok(hash_get_opt(c, h, a[0])?.unwrap_or(NIL)) }
-fn wm_aset(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(s2, intern(b"@h")); hash_set(c, h, a[0], a[1])?; Ok(a[1]) }
-fn wm_key(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(s2, intern(b"@h")); Ok(Value::bool(hash_lookup(c, h, a[0])?.is_some())) }
+fn objspace_wm_init(c: &mut Ctx, s2: Value, _a: &[Value], _b: *const Block) -> RV { let h = c.hash_new(); c.hash_mut(h).identity = true; ivar_set_raw(c, s2, intern(b"@h"), h); Ok(NIL) }
+fn wm_aref(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(c, s2, intern(b"@h")); Ok(hash_get_opt(c, h, a[0])?.unwrap_or(NIL)) }
+fn wm_aset(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(c, s2, intern(b"@h")); hash_set(c, h, a[0], a[1])?; Ok(a[1]) }
+fn wm_key(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(c, s2, intern(b"@h")); Ok(Value::bool(hash_lookup(c, h, a[0])?.is_some())) }
 
 static FINALIZERS: Global = Global::new(); // Array of [object, callable]; run at exit
 fn finalizers(c: &mut Ctx) -> Value {

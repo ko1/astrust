@@ -835,7 +835,7 @@ cfn!(a_values_at, |c, slf, a, blk| {
     for &x in a {
         if is_range(x) {
             let n = c.ary_len(slf) as i64;
-            let (b, e, excl) = crate::range::range_parts(x);
+            let (b, e, excl) = c.range_parts(x);
             let st0 = if b == NIL { 0 } else { num_to_long(c, b)? };
             let st = if st0 < 0 { st0 + n } else { st0 };
             if st < 0 { let s2 = inspect_str(c, x)?; return err(c, c.vm().c_range_error.get(), format!("{} out of range", s2)); }

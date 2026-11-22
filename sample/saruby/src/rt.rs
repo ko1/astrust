@@ -282,58 +282,34 @@ pub fn srb_range_lit(b: Value, e: Value, excl: bool, lc: &mut LitCache) -> Value
 
 // ---- variables ----------------------------------------------------------------------------
 
-#[inline(always)]
-pub fn env_at(mut env: Value, hops: u32) -> Value {
-    for _ in 0..hops {
-        env = match &obj(env).body { Body::Env(_, p) => *p, _ => unsafe { std::hint::unreachable_unchecked() } };
-    }
-    env
-}
-#[inline(always)]
-pub fn env_get(env: Value, idx: u32) -> Value {
-    match &obj(env).body { Body::Env(v, _) => v.get(idx as usize), _ => unsafe { std::hint::unreachable_unchecked() } }
-}
-#[inline(always)]
-pub fn env_set(env: Value, idx: u32, x: Value) {
-    match &mut obj(env).body { Body::Env(v, _) => v.set(idx as usize, x), _ => unsafe { std::hint::unreachable_unchecked() } }
-}
-
-pub fn srb_ivar_get(slf: Value, name: Sym, ic: &mut IvarCache) -> Value {
-    if slf.is_heap() {
-        if let Body::Object(_) = &obj(slf).body {
-            let k = real_class_of(slf);
-            if let Some(&i) = rclass(k).ivar_index.get(&name) {
-                if obj_klass(slf) == k { ic.klass = k.raw(); ic.idx = i; }
-            }
+pub fn srb_ivar_get(c: &Ctx, slf: Value, name: Sym, ic: &mut IvarCache) -> Value {
+    if is_object(slf) {
+        let k = real_class_of(slf);
+        if let Some(&i) = rclass(k).ivar_index.get(&name) {
+            if obj_klass(slf) == k { ic.klass = k.raw(); ic.idx = i; }
         }
     }
-    ivar_get(slf, name)
+    ivar_get(c, slf, name)
 }
 
 /// A site's way out of its inline path: the cache without the baked slot first (a stale slot stays cheap), then the miss.
 #[cold]
 #[inline(never)]
-pub fn srb_ivar_get_out(slf: Value, name: Sym, ic: &mut IvarCache) -> Value {
-    if slf.is_heap() {
-        let o = obj(slf);
-        if o.klass.raw() == ic.klass {
-            if let Body::Object(ivs) = &o.body {
-                return match ivs.get(ic.idx as usize) { Some(v) if v != UNDEF => v, _ => NIL };
-            }
+pub fn srb_ivar_get_out(c: &Ctx, slf: Value, name: Sym, ic: &mut IvarCache) -> Value {
+    if slf.is_heap() && obj_klass(slf).raw() == ic.klass {
+        if let Some(ivs) = c.obj_ivars(slf) {
+            return match ivs.get(ic.idx as usize) { Some(v) if v != UNDEF => v, _ => NIL };
         }
     }
-    srb_ivar_get(slf, name, ic)
+    srb_ivar_get(c, slf, name, ic)
 }
 
 #[cold]
 #[inline(never)]
 pub fn srb_ivar_set_out(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &mut IvarCache) -> RV {
-    if slf.is_heap() {
-        let o = obj(slf);
-        if o.klass.raw() == ic.klass && o.flags & FL_FROZEN == 0 {
-            if let Body::Object(ivs) = &mut o.body {
-                if ivs.set(ic.idx as usize, v) { return Ok(v); }
-            }
+    if slf.is_heap() && obj_klass(slf).raw() == ic.klass && obj_flags(slf) & FL_FROZEN == 0 {
+        if let Some(ivs) = c.obj_ivars_mut(slf) {
+            if ivs.set(ic.idx as usize, v) { return Ok(v); }
         }
     }
     srb_ivar_set(c, slf, name, v, ic)
@@ -343,22 +319,21 @@ pub fn srb_ivar_set_out(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &mut I
 #[inline(never)]
 #[cold]
 pub fn srb_ivar_arith_out(c: &mut Ctx, slf: Value, name: Sym, sub: bool, v: Value, line: Pos, ic: &mut IvarCache, cc: &mut OpCc) -> RV {
-    let cur = srb_ivar_get_out(slf, name, ic);
+    let cur = srb_ivar_get_out(c, slf, name, ic);
     let r = crate::opt::srb_arith_out(c, cur, v, if sub { s::minus } else { s::plus }, line, cc)?;
     srb_ivar_set_out(c, slf, name, r, ic)
 }
 
 pub fn srb_ivar_set(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &mut IvarCache) -> RV {
     ivar_set(c, slf, name, v)?;
-    if slf.is_heap() {
-        if let Body::Object(_) = &obj(slf).body {
-            let k = real_class_of(slf);
-            if obj_klass(slf) == k {
-                ic.klass = k.raw(); ic.idx = ivar_index_for(k, name);
-            }
+    if is_object(slf) {
+        let k = real_class_of(slf);
+        if obj_klass(slf) == k {
+            ic.klass = k.raw(); ic.idx = ivar_index_for(k, name);
         }
     }
     Ok(v)
+
 }
 
 pub fn srb_gvar_get(c: &mut Ctx, name: Sym) -> RV { crate::builtins::kernel::gvar_get(c, name) }
@@ -559,9 +534,9 @@ fn home_is_class_body(c: &Ctx, id: u64) -> bool {
 
 #[cold]
 pub fn raise_local_jump(c: &mut Ctx, msg: &str, reason: &str, v: Value) -> Esc {
-    let e = make_exception(vm().c_local_jump_error.get(), msg);
-    ivar_set_raw(e, crate::symbol::intern(b"__reason"), sym_value(reason));
-    ivar_set_raw(e, crate::symbol::intern(b"__exit_value"), v);
+    let e = make_exception(c, vm().c_local_jump_error.get(), msg);
+    ivar_set_raw(c, e, crate::symbol::intern(b"__reason"), sym_value(reason));
+    ivar_set_raw(c, e, crate::symbol::intern(b"__exit_value"), v);
     raise_exc(c, e)
 }
 
@@ -644,7 +619,7 @@ pub fn srb_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, name: S
         DEF_FALSE => yes(b"false"),
         DEF_ASGN => yes(b"assignment"),
         DEF_BACKREF => yes(b"global-variable"),
-        DEF_IVAR => if ivar_defined(fp[0].get(), name) { yes(b"instance-variable") } else { Ok(NIL) },
+        DEF_IVAR => if ivar_defined(c, fp[0].get(), name) { yes(b"instance-variable") } else { Ok(NIL) },
         DEF_GVAR => if crate::builtins::kernel::gvar_defined(c, name) { yes(b"global-variable") } else { Ok(NIL) },
         DEF_CVAR => {
             let k = cvar_base(c);
@@ -1227,9 +1202,9 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
             if is_array(why) {
                 // [message, matchee, key]: a missing Hash key
                 let msg = format!("{}: {}", s, String::from_utf8_lossy(c.str_bytes(rary(why)[0])));
-                let e = make_exception(vm().c_no_matching_pattern_key_error.get(), &msg);
-                ivar_set_raw(e, s::receiver, rary(why)[1]);
-                ivar_set_raw(e, s::key, rary(why)[2]);
+                let e = make_exception(c, vm().c_no_matching_pattern_key_error.get(), &msg);
+                ivar_set_raw(c, e, s::receiver, rary(why)[1]);
+                ivar_set_raw(c, e, s::key, rary(why)[2]);
                 return Err(raise_exc(c, e));
             }
             let msg = if why == NIL { s } else { format!("{}: {}", s, String::from_utf8_lossy(c.str_bytes(why))) };

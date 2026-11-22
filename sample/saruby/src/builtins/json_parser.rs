@@ -238,7 +238,7 @@ fn position(src: &[u8], at: usize, v2: bool) -> (i64, i64) {
 fn new_exc(c: &mut Ctx, klass: Value, msg: &[u8]) -> Value {
     let e = new_object(klass);
     let m = c.str_new(msg);
-    ivar_set_raw(e, s::mesg, m);
+    ivar_set_raw(c, e, s::mesg, m);
     e
 }
 
@@ -277,18 +277,18 @@ impl<'a> M<'a> {
         let k = E_PARSER.get(c);
         if self.st.resumable {
             let e = new_exc(c, k, &msg);
-            ivar_set_raw(e, intern(b"@line"), Value::fix(0));
-            ivar_set_raw(e, intern(b"@column"), Value::fix(0));
+            ivar_set_raw(c, e, intern(b"@line"), Value::fix(0));
+            ivar_set_raw(c, e, intern(b"@column"), Value::fix(0));
             let p = self.json_path(c, dup_key);
-            ivar_set_raw(e, intern(b"@json_path"), p);
+            ivar_set_raw(c, e, intern(b"@json_path"), p);
             return PE::Rb(raise_exc(c, e));
         }
         let (line, col) = position(self.src, at, self.st.v2);
         msg.extend_from_slice(format!(" at line {} column {}", line, col).as_bytes());
         let e = new_exc(c, k, &msg);
-        ivar_set_raw(e, intern(b"@line"), Value::fix(line));
-        ivar_set_raw(e, intern(b"@column"), Value::fix(col));
-        if !self.st.v2 { let p = self.json_path(c, dup_key); ivar_set_raw(e, intern(b"@json_path"), p); }
+        ivar_set_raw(c, e, intern(b"@line"), Value::fix(line));
+        ivar_set_raw(c, e, intern(b"@column"), Value::fix(col));
+        if !self.st.v2 { let p = self.json_path(c, dup_key); ivar_set_raw(c, e, intern(b"@json_path"), p); }
         PE::Rb(raise_exc(c, e))
     }
     /// raise_parse_error_at(fmt, at, eos)

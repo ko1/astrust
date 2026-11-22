@@ -47,10 +47,10 @@ pub fn raise_errno_at(c: &mut Ctx, no: i64, pre: &str, path: &[u8]) -> Esc {
     let k = crate::builtins::exception::errno_class(c.vm(), no);
     let mut m = crate::builtins::exception::errno_text(Value::fix(no)).into_bytes();
     if !pre.is_empty() || !path.is_empty() { m.extend_from_slice(b" @ "); m.extend_from_slice(pre.as_bytes()); m.extend_from_slice(path); }
-    let e = make_exception(k, "");
+    let e = make_exception(c, k, "");
     let ms = c.str_new(&m);
-    ivar_set_raw(e, s::mesg, ms);
-    ivar_set_raw(e, s::errno, Value::fix(no));
+    ivar_set_raw(c, e, s::mesg, ms);
+    ivar_set_raw(c, e, s::errno, Value::fix(no));
     raise_exc(c, e)
 }
 /// A path argument: the String's bytes (any but NUL, as CRuby takes them).
@@ -136,16 +136,16 @@ fn readable_nowait(c: &mut Ctx, v: Value) -> Result<&mut RIo, Esc> {
 fn readable_check(c: &mut Ctx, v: Value) -> Result<(), Esc> {
     let io = readable_nowait(c, v)?;
     let (empty, fd) = (io.rpos >= io.rbuf.len() && !io.data, io.fd);
-    if empty && (crate::builtins::thread::active(c) || io_timeout(v).is_some()) { coop_fill(c, v, fd)?; }
+    if empty && (crate::builtins::thread::active(c) || io_timeout(c, v).is_some()) { coop_fill(c, v, fd)?; }
     Ok(())
 }
 // ---- IO#timeout: kept as a hidden ivar; looked up only once some IO has one -------------------
 static TIMEOUTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 fn timeout_sym() -> Sym { intern(b"__io_timeout") }
 /// The IO#timeout of `v`, if set.
-pub fn io_timeout(v: Value) -> Option<std::time::Duration> {
+pub fn io_timeout(c: &Ctx, v: Value) -> Option<std::time::Duration> {
     if !TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed) { return None; }
-    let t = ivar_get(v, intern(b"__io_timeout_ns"));
+    let t = ivar_get(c, v, intern(b"__io_timeout_ns"));
     if t.is_fixnum() { Some(std::time::Duration::from_nanos(t.as_fix().max(0) as u64)) } else { None }
 }
 /// IO::TimeoutError (made on first use: saruby's boot does not define it).
@@ -153,7 +153,7 @@ pub fn timeout_error_class(c: &mut Ctx) -> Value {
     let io = c.vm().c_io.get();
     match const_get_at(io, intern(b"TimeoutError")) { Some(k) => k, None => define_class_under(io, "TimeoutError", c.vm().c_io_error.get()) }
 }
-fn io_get_timeout(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { get_io(c, slf)?; Ok(if TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed) { ivar_get(slf, timeout_sym()) } else { NIL }) }
+fn io_get_timeout(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { get_io(c, slf)?; Ok(if TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed) { ivar_get(c, slf, timeout_sym()) } else { NIL }) }
 fn io_set_timeout(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let t = a[0];
     if t != NIL {
@@ -165,8 +165,8 @@ fn io_set_timeout(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV 
     get_io(c, slf)?;
     if t != NIL || TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed) {
         let ns = if t == NIL { NIL } else { let f = crate::builtins::numeric_methods::to_f(c, t)?; Value::fix((f.min(1e9) * 1e9) as i64) };
-        ivar_set_raw(slf, timeout_sym(), t);
-        ivar_set_raw(slf, intern(b"__io_timeout_ns"), ns);
+        ivar_set_raw(c, slf, timeout_sym(), t);
+        ivar_set_raw(c, slf, intern(b"__io_timeout_ns"), ns);
     }
     Ok(t)
 }
@@ -175,7 +175,7 @@ thread_local! { static SPARE: std::cell::RefCell<Vec<u8>> = const { std::cell::R
 /// the engine reads when the fd is ready, and the bytes are appended to rbuf.
 fn coop_fill(c: &mut Ctx, v: Value, fd: i32) -> Result<(), Esc> {
     if fd_ready(fd, sys::POLLIN) { return Ok(()); }   // fill reads it now
-    if let Some(t) = io_timeout(v) {
+    if let Some(t) = io_timeout(c, v) {
         if wait_one(c, fd, sys::POLLIN, Some(std::time::Instant::now() + t))?.is_none() {
             let k = timeout_error_class(c);
             return err(c, k, "Blocking operation timed out!");
@@ -329,7 +329,7 @@ fn unread(io: &mut RIo, mut b: Vec<u8>) {
 /// (it hands back what it consumed), waits for the fd with the others running, and runs `f` again.
 fn coop_read<T>(c: &mut Ctx, v: Value, mut f: impl FnMut(&mut RIo) -> (T, Vec<u8>)) -> Result<T, Esc> {
     loop {
-        let coop = crate::builtins::thread::active(c) || io_timeout(v).is_some();
+        let coop = crate::builtins::thread::active(c) || io_timeout(c, v).is_some();
         let io = readable(c, v)?;
         io.coop = coop; io.wouldblock = false;
         let (r, used) = f(io);
@@ -584,8 +584,8 @@ fn exception_opt(c: &mut Ctx, a: &[Value]) -> Result<bool, Esc> {
 }
 fn wait_error(c: &mut Ctx, name: &str, msg: &str) -> Esc {
     let k = const_get_at(c.vm().c_io.get(), intern(name.as_bytes())).unwrap();
-    let e = make_exception(k, &format!("Resource temporarily unavailable - {}", msg));
-    ivar_set_raw(e, s::errno, Value::fix(11));
+    let e = make_exception(c, k, &format!("Resource temporarily unavailable - {}", msg));
+    ivar_set_raw(c, e, s::errno, Value::fix(11));
     raise_exc(c, e)
 }
 fn io_read_nonblock(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {

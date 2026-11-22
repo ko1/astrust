@@ -821,17 +821,16 @@ pub fn respond_to(v: Value, mid: Sym, include_private: bool) -> bool {
 
 // ---- instance variables --------------------------------------------------------------------
 
-pub fn ivar_get(v: Value, name: Sym) -> Value {
+pub fn ivar_get(c: &Ctx, v: Value, name: Sym) -> Value {
     if v.is_heap() {
-        let o = obj(v);
-        if let Body::Object(ivs) = &o.body {
+        if let Some(ivs) = c.obj_ivars(v) {
             let k = real_class_of(v);
             if let Some(&i) = rclass(k).ivar_index.get(&name) {
                 if let Some(x) = ivs.get(i as usize) { if x != UNDEF { return x; } }
             }
             return NIL;
         }
-        if o.flags & FL_EXIVAR != 0 {
+        if obj_flags(v) & FL_EXIVAR != 0 {
             if let Some(iv) = vm().gen_ivars.borrow().get(&(v.raw() as usize)) {
                 for (n, x) in iv { if *n == name { return *x; } }
             }
@@ -840,10 +839,9 @@ pub fn ivar_get(v: Value, name: Sym) -> Value {
     NIL
 }
 
-pub fn ivar_defined(v: Value, name: Sym) -> bool {
+pub fn ivar_defined(c: &Ctx, v: Value, name: Sym) -> bool {
     if v.is_heap() {
-        let o = obj(v);
-        if let Body::Object(ivs) = &o.body {
+        if let Some(ivs) = c.obj_ivars(v) {
             let k = real_class_of(v);
             if let Some(&i) = rclass(k).ivar_index.get(&name) {
                 return ivs.get(i as usize).map(|x| x != UNDEF).unwrap_or(false);
@@ -865,37 +863,42 @@ pub fn ivar_index_for(k: Value, name: Sym) -> u32 {
 }
 
 pub fn ivar_set(c: &mut Ctx, v: Value, name: Sym, val: Value) -> RV {
-    if !v.is_heap() { return Err(raise_frozen(c, v)); }
-    let o = obj(v);
-    if o.flags & FL_FROZEN != 0 { return Err(raise_frozen(c, v)); }
-    ivar_set_raw(v, name, val);
+    if !v.is_heap() || obj_flags(v) & FL_FROZEN != 0 { return Err(raise_frozen(c, v)); }
+    ivar_set_raw(c, v, name, val);
     Ok(val)
 }
 
-pub fn ivar_set_raw(v: Value, name: Sym, val: Value) {
-    let o = obj(v);
-    if let Body::Object(_) = &o.body {
+pub fn ivar_set_raw(c: &mut Ctx, v: Value, name: Sym, val: Value) {
+    if is_object(v) {
         let k = real_class_of(v);
         let i = ivar_index_for(k, name) as usize;
-        let ivs = ivars_of(v);
+        let n = rclass(k).ivar_names.len();
+        let ivs = c.ivars_mut(v);
         // room for every ivar the class knows: later sets of this object hit
-        if ivs.len() <= i { ivs.resize(rclass(k).ivar_names.len()); }
+        if ivs.len() <= i { ivs.resize(n); }
         ivs.set(i, val);
         return;
     }
-    o.flags |= FL_EXIVAR;
+    ivar_set_generic(v, name, val);
+}
+
+/// An ivar of an object that is not a plain object (a class, a String, ..): the generic table and
+/// the header only, so no context is needed (boot-time setup uses it).
+pub fn ivar_set_generic(v: Value, name: Sym, val: Value) {
+    assert!(!is_object(v), "ivar_set_generic on a plain object");
+    obj_set_flags(v, FL_EXIVAR);
     let mut g = vm().gen_ivars.borrow_mut();
     let e = g.entry(v.raw() as usize).or_default();
     for (n, x) in e.iter_mut() { if *n == name { *x = val; return; } }
     e.push((name, val));
 }
 
-pub fn ivar_remove(v: Value, name: Sym) -> Option<Value> {
+pub fn ivar_remove(c: &mut Ctx, v: Value, name: Sym) -> Option<Value> {
     if !v.is_heap() { return None; }
-    let o = obj(v);
-    if let Body::Object(ivs) = &mut o.body {
+    if is_object(v) {
         let k = real_class_of(v);
         if let Some(&i) = rclass(k).ivar_index.get(&name) {
+            let ivs = c.ivars_mut(v);
             if let Some(old) = ivs.get(i as usize) { if old != UNDEF { ivs.set(i as usize, UNDEF); return Some(old); } }
         }
         return None;
@@ -907,11 +910,10 @@ pub fn ivar_remove(v: Value, name: Sym) -> Option<Value> {
 }
 
 /// (name, value) of the set ivars in definition order.
-pub fn ivar_list(v: Value) -> Vec<(Sym, Value)> {
+pub fn ivar_list(c: &Ctx, v: Value) -> Vec<(Sym, Value)> {
     let mut out = vec![];
     if !v.is_heap() { return out; }
-    let o = obj(v);
-    if let Body::Object(ivs) = &o.body {
+    if let Some(ivs) = c.obj_ivars(v) {
         let k = real_class_of(v);
         let names = &rclass(k).ivar_names;
         for (i, x) in ivs.iter().enumerate() { if x != UNDEF { out.push((names[i], x)); } }
@@ -1011,12 +1013,12 @@ pub fn on_free_data(p: *mut RObj) {
 
 #[inline]
 pub fn raise_exc(c: &mut Ctx, e: Value) -> Esc {
-    if ivar_get(e, s::bt) == NIL && is_exception(e) {
+    if ivar_get(c, e, s::bt) == NIL && is_exception(e) {
         let bt = make_backtrace_lazy(c, 0);
-        ivar_set_raw(e, s::bt, bt);
+        ivar_set_raw(c, e, s::bt, bt);
     }
-    if is_exception(e) && c.errinfo != NIL && c.errinfo != e && ivar_get(e, s::cause) == NIL && !ivar_defined(e, s::cause) {
-        ivar_set_raw(e, s::cause, c.errinfo);
+    if is_exception(e) && c.errinfo != NIL && c.errinfo != e && ivar_get(c, e, s::cause) == NIL && !ivar_defined(c, e, s::cause) {
+        ivar_set_raw(c, e, s::cause, c.errinfo);
     }
     // one test here (raise_exc is inlined everywhere): $DEBUG or a raise hook
     if vm().raise_hooks.get() && is_exception(e) { raise_hooks(c, e); }
@@ -1054,23 +1056,23 @@ pub fn is_kind_of(v: Value, k: Value) -> bool {
     ancestors(kl).contains(&k)
 }
 
-pub fn make_exception(klass: Value, msg: &str) -> Value {
+pub fn make_exception(c: &mut Ctx, klass: Value, msg: &str) -> Value {
     let e = new_object(klass);
     let m = crate::string::str_new(msg.as_bytes());
-    ivar_set_raw(e, s::mesg, m);
+    ivar_set_raw(c, e, s::mesg, m);
     e
 }
 
 pub fn make_name_error(c: &mut Ctx, klass: Value, msg: &str, name: Value, recv: Value) -> RV {
-    let e = make_exception(klass, msg);
-    ivar_set_raw(e, s::name, name);
-    ivar_set_raw(e, s::receiver, recv);
+    let e = make_exception(c, klass, msg);
+    ivar_set_raw(c, e, s::name, name);
+    ivar_set_raw(c, e, s::receiver, recv);
     let _ = c;
     Ok(e)
 }
 
 pub fn raise_msg(c: &mut Ctx, klass: Value, msg: &str) -> Esc {
-    let e = make_exception(klass, msg);
+    let e = make_exception(c, klass, msg);
     raise_exc(c, e)
 }
 
@@ -1098,8 +1100,8 @@ pub fn raise_frozen(c: &mut Ctx, v: Value) -> Esc {
         match r { Ok(s) => s, Err(e) => return e }
     } else { " ...".into() };
     let msg = format!("can't modify frozen {}: {}", class_path(real_class_of(v)), insp);
-    let e = make_exception(vm().c_frozen_error.get(), &msg);
-    ivar_set_raw(e, s::receiver, v);
+    let e = make_exception(c, vm().c_frozen_error.get(), &msg);
+    ivar_set_raw(c, e, s::receiver, v);
     raise_exc(c, e)
 }
 
@@ -1200,11 +1202,11 @@ pub fn make_backtrace_lazy(c: &mut Ctx, skip: usize) -> Value {
 
 /// An exception's backtrace (Array of String, or nil), formatting a captured one in place.
 pub fn exc_bt(c: &mut Ctx, e: Value) -> Value {
-    let v = ivar_get(e, s::bt);
+    let v = ivar_get(c, e, s::bt);
     let Some(raw) = c.data::<RawBt>(v) else { return v };
     let a = lines_to_array(format_frames(&raw.frames, raw.skip));
 
-    ivar_set_raw(e, s::bt, a);
+    ivar_set_raw(c, e, s::bt, a);
     a
 }
 
@@ -1277,9 +1279,9 @@ pub fn stack_check(c: &mut Ctx, need: usize) -> Result<(), Esc> {
 #[cold]
 #[inline(never)]
 pub fn raise_stack_overflow(c: &mut Ctx) -> Esc {
-    let e = make_exception(vm().c_system_stack_error.get(), "stack level too deep");
+    let e = make_exception(c, vm().c_system_stack_error.get(), "stack level too deep");
     let bt = crate::array::ary_new();
-    ivar_set_raw(e, s::bt, bt);
+    ivar_set_raw(c, e, s::bt, bt);
     raise_exc(c, e)
 }
 
@@ -1377,7 +1379,7 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
             }
             1 if argc == 0 => {
                 // attr_reader on an Object whose class assigned the ivar index
-                if let Body::Object(ivs) = &obj(recv).body {
+                if let Some(ivs) = c.obj_ivars(recv) {
                     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("site: attr_reader");
                     let v = ivs.get(cc.fast >> 2).unwrap_or(UNDEF);
                     c.set_sp(base, 0);
@@ -1385,9 +1387,8 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
                 }
             }
             2 if argc == 1 => {
-                let o = obj(recv);
-                if o.flags & FL_FROZEN == 0 {
-                    if let Body::Object(ivs) = &mut o.body {
+                if obj_flags(recv) & FL_FROZEN == 0 {
+                    if let Some(ivs) = c.obj_ivars_mut(recv) {
                         let i = cc.fast >> 2;
                         let v = base[2].get();
                         #[cfg(feature = "nodeprof")] crate::nodeprof::hit("site: attr_writer");
@@ -1505,16 +1506,15 @@ pub fn site_fast(c: &mut Ctx, cc: &mut CallCache, recv: Value, base: Stk, argc: 
         }
         SITE_SEND => if cc.bi >= BI_SEND { return send_fast(c, recv, base, argc, blk); }
         SITE_ATTR_R => if cc.fast & 3 == 1 {
-            if let Body::Object(ivs) = &obj(recv).body {
+            if let Some(ivs) = c.obj_ivars(recv) {
                 let v = ivs.get(cc.fast >> 2).unwrap_or(UNDEF);
                 c.set_sp(base, 0);
                 return Some(Ok(if v == UNDEF { NIL } else { v }));
             }
         }
         SITE_ATTR_W => if cc.fast & 3 == 2 {
-            let o = obj(recv);
-            if o.flags & FL_FROZEN == 0 {
-                if let Body::Object(ivs) = &mut o.body {
+            if obj_flags(recv) & FL_FROZEN == 0 {
+                if let Some(ivs) = c.obj_ivars_mut(recv) {
                     let v = base[2].get();
                     if ivs.set(cc.fast >> 2, v) { c.set_sp(base, 0); return Some(Ok(v)); }
                 }
@@ -1847,12 +1847,10 @@ pub fn spec_block_np(yc: &YieldCache, argc: usize) -> u32 {
 
 /// The heap Env of a frame whose variables are captured by blocks; params copied in.
 #[inline(never)]
-pub fn make_env(is: &Iseq, base: Stk, parent: Value) {
+pub fn make_env(c: &mut Ctx, is: &Iseq, base: Stk, parent: Value) {
     let env = gc::alloc_with(vm().c_env.get(), move || Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), parent));
     base[1].set(env);
-    if let Body::Env(vals, _) = &mut obj(env).body {
-        for &(sl, ei) in is.env_params.iter() { vals.set(ei as usize, base[sl as usize].get()); }
-    }
+    for &(sl, ei) in is.env_params.iter() { c.env_set(env, ei as u32, base[sl as usize].get()); }
 }
 
 /// Call of an Iseq method with only required, slot-contiguous params.
@@ -1930,7 +1928,7 @@ pub fn invoke_untraced(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: S
         MKind::Cfunc(f, arity) => invoke_cfunc(c, me, f, arity, recv, base, argc, blk, flags),
         MKind::AttrReader(id) => {
             if argc != 0 { return argc_err(c, argc as usize, 0, 0); }
-            Ok(ivar_get(recv, id))
+            Ok(ivar_get(c, recv, id))
         }
         MKind::AttrWriter(id) => {
             if argc != 1 { return argc_err(c, argc as usize, 1, 1); }
@@ -2199,7 +2197,8 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
         let env = gc::alloc_with(vm().c_env.get(), move || Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), outer_env));
         base[1].set(env);
         for &(sl, ei) in is.env_params.iter() {
-            if let Body::Env(vals, _) = &mut obj(env).body { vals.set(ei as usize, base[sl as usize].get()); }
+            c.env_set(env, ei as u32, base[sl as usize].get());
+
         }
     } else {
         base[1].set(outer_env);

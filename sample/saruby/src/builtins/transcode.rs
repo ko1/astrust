@@ -37,8 +37,8 @@ pub fn dump_bin(v: &[u8]) -> String {
 
 // ---- exceptions ---------------------------------------------------------------------------------
 
-fn set(e: Value, k: &[u8], v: Value) { ivar_set_raw(e, intern(k), v); }
-fn attr(v: Value, k: &[u8]) -> Value { let x = ivar_get(v, intern(k)); if x == UNDEF { NIL } else { x } }
+fn set(c: &mut Ctx, e: Value, k: &[u8], v: Value) { ivar_set_raw(c, e, intern(k), v); }
+fn attr(c: &Ctx, v: Value, k: &[u8]) -> Value { let x = ivar_get(c, v, intern(k)); if x == UNDEF { NIL } else { x } }
 
 /// make_econv_exception: the exception for the last error, None if there was none.
 pub fn econv_exception(c: &mut Ctx, ec: &Econv) -> Option<Value> {
@@ -49,12 +49,12 @@ pub fn econv_exception(c: &mut Ctx, ec: &Econv) -> Option<Value> {
             let msg = if r == Res::IncompleteInput { format!("incomplete {} on {}", d, le.src) }
                       else if !le.readagain.is_empty() { format!("{} followed by {} on {}", d, dump_bin(&le.readagain), le.src) }
                       else { format!("{} on {}", d, le.src) };
-            let e = make_exception(c.vm().c_invalid_byte_seq_error.get(), &msg);
+            let e = make_exception(c, c.vm().c_invalid_byte_seq_error.get(), &msg);
             let b = c.str_new_enc(&le.error_bytes, ENC_BINARY);
-            set(e, b"__tc_bytes", b);
+            set(c, e, b"__tc_bytes", b);
             let ra = if r == Res::IncompleteInput || le.readagain.is_empty() { NIL } else { c.str_new_enc(&le.readagain, ENC_BINARY) };
-            set(e, b"__tc_again", ra);
-            set(e, b"__tc_incomplete", Value::bool(r == Res::IncompleteInput));
+            set(c, e, b"__tc_again", ra);
+            set(c, e, b"__tc_incomplete", Value::bool(r == Res::IncompleteInput));
             e
         }
         Some(Res::UndefinedConversion) => {
@@ -69,29 +69,29 @@ pub fn econv_exception(c: &mut Ctx, ec: &Econv) -> Option<Value> {
                 for el in &ec.elems { if !ev::is_decorator(el.tc.tr) { m.push_str(" to "); m.push_str(el.tc.tr.dst); } }
                 m
             };
-            let e = make_exception(c.vm().c_undef_conv_error.get(), &msg);
+            let e = make_exception(c, c.vm().c_undef_conv_error.get(), &msg);
             let ch = c.str_new_enc(b, enc_id(le.src).unwrap_or(ENC_BINARY));
-            set(e, b"__tc_char", ch);
+            set(c, e, b"__tc_char", ch);
             e
         }
         _ => return None,
     };
     let (sn, dn) = (c.str_new_enc(le.src.as_bytes(), ENC_BINARY), c.str_new_enc(le.dst.as_bytes(), ENC_BINARY));
-    set(e, b"__tc_src_name", sn);
-    set(e, b"__tc_dst_name", dn);
+    set(c, e, b"__tc_src_name", sn);
+    set(c, e, b"__tc_dst_name", dn);
     let (se, de) = (encobj(c, le.src), encobj(c, le.dst));
-    if se != NIL { set(e, b"__tc_src", se); }
-    if de != NIL { set(e, b"__tc_dst", de); }
+    if se != NIL { set(c, e, b"__tc_src", se); }
+    if de != NIL { set(c, e, b"__tc_dst", de); }
     Some(e)
 }
-pub fn exc_source_encoding(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(slf, b"__tc_src")) }
-pub fn exc_destination_encoding(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(slf, b"__tc_dst")) }
-pub fn exc_source_encoding_name(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(slf, b"__tc_src_name")) }
-pub fn exc_destination_encoding_name(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(slf, b"__tc_dst_name")) }
-pub fn exc_error_bytes(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(slf, b"__tc_bytes")) }
-pub fn exc_readagain_bytes(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(slf, b"__tc_again")) }
-pub fn exc_incomplete_input(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(slf, b"__tc_incomplete")) }
-pub fn exc_error_char(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(slf, b"__tc_char")) }
+pub fn exc_source_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(c, slf, b"__tc_src")) }
+pub fn exc_destination_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(c, slf, b"__tc_dst")) }
+pub fn exc_source_encoding_name(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(c, slf, b"__tc_src_name")) }
+pub fn exc_destination_encoding_name(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(c, slf, b"__tc_dst_name")) }
+pub fn exc_error_bytes(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(c, slf, b"__tc_bytes")) }
+pub fn exc_readagain_bytes(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(c, slf, b"__tc_again")) }
+pub fn exc_incomplete_input(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(c, slf, b"__tc_incomplete")) }
+pub fn exc_error_char(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(c, slf, b"__tc_char")) }
 
 /// econv_description
 fn description(sname: &str, dname: &str, ecflags: u32, mut m: String) -> String {

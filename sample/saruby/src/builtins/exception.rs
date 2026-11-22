@@ -175,8 +175,8 @@ pub fn raise_errno(c: &mut Ctx, no: i64, detail: &str) -> Esc {
     let k = errno_class(c.vm(), no);
     let base = errno_text(Value::fix(no));
     let msg = if detail.is_empty() { base } else { format!("{} @ {}", base, detail) };
-    let e = make_exception(k, &msg);
-    ivar_set_raw(e, s::errno, Value::fix(no));
+    let e = make_exception(c, k, &msg);
+    ivar_set_raw(c, e, s::errno, Value::fix(no));
     raise_exc(c, e)
 }
 
@@ -184,8 +184,8 @@ pub fn raise_errno(c: &mut Ctx, no: i64, detail: &str) -> Esc {
 pub fn raise_errno_plain(c: &mut Ctx, no: i64, detail: &str) -> Esc {
     let k = errno_class(c.vm(), no);
     let base = errno_text(Value::fix(no));
-    let e = make_exception(k, &format!("{} - {}", base, detail));
-    ivar_set_raw(e, s::errno, Value::fix(no));
+    let e = make_exception(c, k, &format!("{} - {}", base, detail));
+    ivar_set_raw(c, e, s::errno, Value::fix(no));
     raise_exc(c, e)
 }
 
@@ -193,15 +193,15 @@ pub fn io_err_to_errno(e: &std::io::Error) -> i64 { e.raw_os_error().map(|x| x a
 
 fn exc_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 0, 1)?;
-    ivar_set_raw(slf, s::mesg, if a.is_empty() { NIL } else { a[0] });
+    ivar_set_raw(c, slf, s::mesg, if a.is_empty() { NIL } else { a[0] });
     Ok(NIL)
 }
 fn exc_s_exception(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { crate::builtins::object::c_new(c, slf, a, b) }
 fn exc_exception(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if a.is_empty() || a[0] == slf { return Ok(slf); }
     let e = crate::builtins::object::obj_dup(c, slf, true, None)?;
-    ivar_set_raw(e, s::mesg, a[0]);
-    ivar_set_raw(e, s::bt, NIL);
+    ivar_set_raw(c, e, s::mesg, a[0]);
+    ivar_set_raw(c, e, s::bt, NIL);
     Ok(e)
 }
 pub fn exc_message_str(c: &mut Ctx, e: Value) -> Result<String, Esc> {
@@ -209,7 +209,7 @@ pub fn exc_message_str(c: &mut Ctx, e: Value) -> Result<String, Esc> {
     if is_string(m) { Ok(String::from_utf8_lossy(c.str_bytes(m)).into_owned()) } else { to_rstring(c, m) }
 }
 fn exc_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let m = ivar_get(slf, s::mesg);
+    let m = ivar_get(c, slf, s::mesg);
     if m == NIL { return Ok(c.str_new(class_path(real_class_of(slf)).as_bytes())); }
     if is_string(m) { return Ok(m); }
     to_s_value(c, m)
@@ -246,20 +246,20 @@ fn exc_set_backtrace(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> 
         let strs = c.ary_new();
         let mut i = 0;
         while let Some(&x) = c.ary(bt).get(i) { let s = funcall(c, x, s::to_s, &[], std::ptr::null())?; c.ary_push(strs, s); i += 1; }
-        ivar_set_raw(slf, s::bt, strs);
-        ivar_set_raw(slf, intern(b"__bt_locs"), bt);
+        ivar_set_raw(c, slf, s::bt, strs);
+        ivar_set_raw(c, slf, intern(b"__bt_locs"), bt);
         return Ok(bt);
     }
-    ivar_set_raw(slf, s::bt, bt);
-    ivar_set_raw(slf, intern(b"__bt_locs"), NIL);
-    ivar_set_raw(slf, intern(b"__bt_set"), TRUE);
+    ivar_set_raw(c, slf, s::bt, bt);
+    ivar_set_raw(c, slf, intern(b"__bt_locs"), NIL);
+    ivar_set_raw(c, slf, intern(b"__bt_set"), TRUE);
     Ok(bt)
 }
 fn exc_backtrace_locations(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let locs = ivar_get(slf, intern(b"__bt_locs"));
+    let locs = ivar_get(c, slf, intern(b"__bt_locs"));
     if locs != NIL { return Ok(locs); }
     let bt = exc_bt(c, slf);
-    if bt == NIL || ivar_get(slf, intern(b"__bt_set")) == TRUE { return Ok(NIL); }
+    if bt == NIL || ivar_get(c, slf, intern(b"__bt_set")) == TRUE { return Ok(NIL); }
     let out = c.ary_new();
     let mut i = 0;
     while let Some(&l) = c.ary(bt).get(i) {
@@ -267,7 +267,7 @@ fn exc_backtrace_locations(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Blo
         else { c.ary_push(out, l); }
         i += 1;
     }
-    ivar_set_raw(slf, intern(b"__bt_locs"), out);
+    ivar_set_raw(c, slf, intern(b"__bt_locs"), out);
     Ok(out)
 }
 
@@ -279,10 +279,10 @@ pub fn location_from_str(c: &mut Ctx, s: &str) -> Value {
     let (path, line) = match head.rsplit_once(':') { Some((p, l)) if l.parse::<i64>().is_ok() => (p, l.parse::<i64>().unwrap()), _ => (head, 0) };
     let o = new_object(c.vm().c_location.get());
     let p = c.str_new(path.as_bytes());
-    ivar_set_raw(o, intern(b"path"), p);
-    ivar_set_raw(o, intern(b"lineno"), Value::fix(line));
+    ivar_set_raw(c, o, intern(b"path"), p);
+    ivar_set_raw(c, o, intern(b"lineno"), Value::fix(line));
     let l = c.str_new(label.as_bytes());
-    ivar_set_raw(o, intern(b"label"), l);
+    ivar_set_raw(c, o, intern(b"label"), l);
     o
 }
 pub fn locations_from_lines(c: &mut Ctx, lines: Vec<String>) -> Value {
@@ -290,26 +290,26 @@ pub fn locations_from_lines(c: &mut Ctx, lines: Vec<String>) -> Value {
     for l in lines { let v = location_from_str(c, &l); c.ary_push(out, v); }
     out
 }
-fn loc_path(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(slf, intern(b"path"))) }
+fn loc_path(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, slf, intern(b"path"))) }
 fn loc_abs_path(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let p = ivar_get(slf, intern(b"path"));
+    let p = ivar_get(c, slf, intern(b"path"));
     let ps = String::from_utf8_lossy(c.str_bytes(p)).into_owned();
     if ps.starts_with('<') || ps.starts_with('(') || ps == "-e" { return Ok(NIL); }
     match std::fs::canonicalize(&ps) { Ok(a) => Ok(c.str_new(a.to_string_lossy().as_bytes())), Err(_) => Ok(p) }
 }
-fn loc_lineno(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(slf, intern(b"lineno"))) }
-fn loc_label(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(slf, intern(b"label"))) }
+fn loc_lineno(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, slf, intern(b"lineno"))) }
+fn loc_label(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, slf, intern(b"label"))) }
 fn loc_base_label(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let l = ivar_get(slf, intern(b"label"));
+    let l = ivar_get(c, slf, intern(b"label"));
     let mut s = String::from_utf8_lossy(c.str_bytes(l)).into_owned();
     if let Some(p) = s.find(" in ") { if s.starts_with("block") || s.starts_with("rescue") || s.starts_with("ensure") { s = s[p + 4..].to_string(); } }
     if !s.starts_with('<') { if let Some(p) = s.rfind(['#', '.']) { s = s[p + 1..].to_string(); } }
     Ok(c.str_new(s.as_bytes()))
 }
 fn loc_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let p = ivar_get(slf, intern(b"path")); let l = ivar_get(slf, intern(b"label"));
+    let p = ivar_get(c, slf, intern(b"path")); let l = ivar_get(c, slf, intern(b"label"));
     let mut s = String::from_utf8_lossy(c.str_bytes(p)).into_owned();
-    s.push_str(&format!(":{}:in '{}'", ivar_get(slf, intern(b"lineno")).as_fix(), String::from_utf8_lossy(c.str_bytes(l))));
+    s.push_str(&format!(":{}:in '{}'", ivar_get(c, slf, intern(b"lineno")).as_fix(), String::from_utf8_lossy(c.str_bytes(l))));
     Ok(c.str_new(s.as_bytes()))
 }
 fn loc_inspect(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
@@ -358,7 +358,7 @@ pub fn init_location(vmr: &Vm) -> Value {
     define_module_function(vmr.m_kernel.get(), "caller_locations", k_caller_locations, -1);
     k
 }
-fn exc_cause(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(slf, s::cause)) }
+fn exc_cause(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, slf, s::cause)) }
 fn exc_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let o = a[0];
     if slf == o { return Ok(TRUE); }
@@ -383,7 +383,7 @@ pub fn full_message(c: &mut Ctx, e: Value, _highlight: bool) -> Result<String, E
     if lines.is_empty() { out.push_str(&format!("{}: {}\n", c.vm().main_file.borrow(), msg)); }
     else { out.push_str(&format!("{}: {}\n", first, msg)); }
     for l in lines.iter().skip(1) { out.push_str(&format!("\tfrom {}\n", l)); }
-    let cause = ivar_get(e, s::cause);
+    let cause = ivar_get(c, e, s::cause);
     if cause != NIL && cause != e && is_exception(cause) {
         let cs = full_message(c, cause, false)?;
         out.push_str(&cs);
@@ -399,59 +399,59 @@ fn exc_s_to_tty(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
 // NameError / NoMethodError / KeyError / FrozenError / StopIteration / SystemExit / etc.
 fn name_err_init(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let (pos, kw) = match kw_arg(a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
-    ivar_set_raw(slf, s::mesg, pos.first().copied().unwrap_or(NIL));
-    ivar_set_raw(slf, s::name, pos.get(1).copied().unwrap_or(NIL));
+    ivar_set_raw(c, slf, s::mesg, pos.first().copied().unwrap_or(NIL));
+    ivar_set_raw(c, slf, s::name, pos.get(1).copied().unwrap_or(NIL));
     let nme = c.vm().c_no_method_error.get();
     if real_class_of(slf) == nme || is_kind_of(slf, nme) {
         let args = match pos.get(2) { Some(&x) => x, None => c.ary_new() };
-        ivar_set_raw(slf, intern(b"args"), args);
+        ivar_set_raw(c, slf, intern(b"args"), args);
     }
     if let Some(h) = kw {
-        if let Some(r) = crate::hash::hash_get_opt(c, h, sym_value("receiver"))? { ivar_set_raw(slf, s::receiver, r); ivar_set_raw(slf, intern(b"__has_recv"), TRUE); }
+        if let Some(r) = crate::hash::hash_get_opt(c, h, sym_value("receiver"))? { ivar_set_raw(c, slf, s::receiver, r); ivar_set_raw(c, slf, intern(b"__has_recv"), TRUE); }
     }
     Ok(NIL)
 }
-fn name_err_name(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(slf, s::name)) }
+fn name_err_name(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, slf, s::name)) }
 fn name_err_receiver(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    if !ivar_defined(slf, s::receiver) { return arg_err(c, "no receiver is available"); }
-    Ok(ivar_get(slf, s::receiver))
+    if !ivar_defined(c, slf, s::receiver) { return arg_err(c, "no receiver is available"); }
+    Ok(ivar_get(c, slf, s::receiver))
 }
-fn nm_err_args(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let v = ivar_get(slf, intern(b"args")); Ok(if v == NIL { c.ary_new() } else { v }) }
+fn nm_err_args(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let v = ivar_get(c, slf, intern(b"args")); Ok(if v == NIL { c.ary_new() } else { v }) }
 fn key_err_init(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let (pos, kw) = match kw_arg(a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
-    ivar_set_raw(slf, s::mesg, pos.first().copied().unwrap_or(NIL));
+    ivar_set_raw(c, slf, s::mesg, pos.first().copied().unwrap_or(NIL));
     if let Some(h) = kw {
-        if let Some(r) = crate::hash::hash_get_opt(c, h, sym_value("receiver"))? { ivar_set_raw(slf, s::receiver, r); }
-        if let Some(k) = crate::hash::hash_get_opt(c, h, sym_value("key"))? { ivar_set_raw(slf, s::key, k); }
+        if let Some(r) = crate::hash::hash_get_opt(c, h, sym_value("receiver"))? { ivar_set_raw(c, slf, s::receiver, r); }
+        if let Some(k) = crate::hash::hash_get_opt(c, h, sym_value("key"))? { ivar_set_raw(c, slf, s::key, k); }
     }
     Ok(NIL)
 }
 fn key_err_key(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    if !ivar_defined(slf, s::key) { return arg_err(c, "no key is available"); }
-    Ok(ivar_get(slf, s::key))
+    if !ivar_defined(c, slf, s::key) { return arg_err(c, "no key is available"); }
+    Ok(ivar_get(c, slf, s::key))
 }
 fn frozen_err_init(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let (pos, kw) = match kw_arg(a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
-    ivar_set_raw(slf, s::mesg, pos.first().copied().unwrap_or(NIL));
-    if let Some(h) = kw { if let Some(r) = crate::hash::hash_get_opt(c, h, sym_value("receiver"))? { ivar_set_raw(slf, s::receiver, r); } }
+    ivar_set_raw(c, slf, s::mesg, pos.first().copied().unwrap_or(NIL));
+    if let Some(h) = kw { if let Some(r) = crate::hash::hash_get_opt(c, h, sym_value("receiver"))? { ivar_set_raw(c, slf, s::receiver, r); } }
     Ok(NIL)
 }
-fn stop_iter_result(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(slf, intern(b"result"))) }
-fn sysexit_init(_c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn stop_iter_result(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, slf, intern(b"result"))) }
+fn sysexit_init(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let mut st = 0;
     let mut i = 0;
     if let Some(&v) = a.first() {
         if v == TRUE { st = 0; i = 1; } else if v == FALSE { st = 1; i = 1; } else if v.is_fixnum() { st = v.as_fix(); i = 1; }
     }
     let msg = a.get(i).copied().unwrap_or(NIL);   // none: the message is the class name, as CRuby
-    ivar_set_raw(slf, s::mesg, msg);
-    ivar_set_raw(slf, s::status, Value::fix(st));
+    ivar_set_raw(c, slf, s::mesg, msg);
+    ivar_set_raw(c, slf, s::status, Value::fix(st));
     Ok(NIL)
 }
-fn sysexit_status(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let v = ivar_get(slf, s::status); Ok(if v == NIL { Value::fix(0) } else { v }) }
-fn sysexit_success(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let v = ivar_get(slf, s::status); Ok(Value::bool(v == NIL || v == Value::fix(0))) }
-fn uncaught_tag(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(slf, intern(b"tag"))) }
-fn uncaught_value(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(slf, intern(b"value"))) }
+fn sysexit_status(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let v = ivar_get(c, slf, s::status); Ok(if v == NIL { Value::fix(0) } else { v }) }
+fn sysexit_success(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let v = ivar_get(c, slf, s::status); Ok(Value::bool(v == NIL || v == Value::fix(0))) }
+fn uncaught_tag(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, slf, intern(b"tag"))) }
+fn uncaught_value(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, slf, intern(b"value"))) }
 fn syscallerr_init(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let k = real_class_of(slf);
     let mut no = NIL;
@@ -465,11 +465,11 @@ fn syscallerr_init(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
     let mut msg = errno_text(no);
     if detail != NIL { let ds = to_rstring(c, detail)?; msg = format!("{} - {}", msg, ds); }
     let m = c.str_new(msg.as_bytes());
-    ivar_set_raw(slf, s::mesg, m);
-    ivar_set_raw(slf, s::errno, no);
+    ivar_set_raw(c, slf, s::mesg, m);
+    ivar_set_raw(c, slf, s::errno, no);
     Ok(NIL)
 }
-fn syscallerr_errno(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(slf, s::errno)) }
+fn syscallerr_errno(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, slf, s::errno)) }
 
 pub fn init(vmr: &Vm) {
     let e = vmr.c_exception.get();
@@ -507,7 +507,7 @@ pub fn init(vmr: &Vm) {
     define_cfunc(vmr.c_uncaught_throw_error.get(), "value", uncaught_value, 0);
     define_private_cfunc(vmr.c_system_call_error.get(), "initialize", syscallerr_init, -1);
     define_cfunc(vmr.c_system_call_error.get(), "errno", syscallerr_errno, 0);
-    define_cfunc(vmr.c_local_jump_error.get(), "reason", |_c, s, _a, _b| { let r = ivar_get(s, intern(b"__reason")); Ok(if r == NIL { sym_value("noreason") } else { r }) }, 0);
-    define_cfunc(vmr.c_local_jump_error.get(), "exit_value", |_c, s, _a, _b| Ok(ivar_get(s, intern(b"__exit_value"))), 0);
+    define_cfunc(vmr.c_local_jump_error.get(), "reason", |c, s, _a, _b| { let r = ivar_get(c, s, intern(b"__reason")); Ok(if r == NIL { sym_value("noreason") } else { r }) }, 0);
+    define_cfunc(vmr.c_local_jump_error.get(), "exit_value", |c, s, _a, _b| Ok(ivar_get(c, s, intern(b"__exit_value"))), 0);
     let _ = sym_str;
 }

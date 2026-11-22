@@ -201,7 +201,7 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     if crate::builtins::inherits(klass, k.deflate) || crate::builtins::inherits(klass, k.inflate) {
         let inf = crate::builtins::inherits(klass, k.inflate);
         let o = c.alloc(klass, Body::Data(Box::new(RZ { z: Some(Box::new(ZStream::new(inf))), reuse: NIL })));
-        if inf { let h = c.hash_new(); ivar_set_raw(o, intern(b"@dictionaries"), h); }
+        if inf { let h = c.hash_new(); ivar_set_raw(c, o, intern(b"@dictionaries"), h); }
         return Ok(Some(o));
     }
     if crate::builtins::inherits(klass, k.gzwriter) || crate::builtins::inherits(klass, k.gzreader) {
@@ -329,7 +329,7 @@ fn zstream_run_try(c: &mut Ctx, z: &mut ZStream, src: &[u8], flush: i32, cx: Run
         if err != Z_OK && err != Z_STREAM_END {
             if z.avail_in > 0 { z.append_input(&input[ip..]); }
             if err == Z_NEED_DICT && cx.obj != NIL {
-                let dicts = ivar_get(cx.obj, intern(b"@dictionaries"));
+                let dicts = ivar_get(c, cx.obj, intern(b"@dictionaries"));
                 if is_hash(dicts) {
                     let key = uint(c, z.adler() as u64);
                     let dict = crate::hash::hash_aref(c, dicts, key)?;
@@ -601,7 +601,7 @@ fn do_inflate(c: &mut Ctx, z: &mut ZStream, src: Value, cx: RunCx) -> Result<(),
     Ok(())
 }
 fn inf_add_dictionary(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
-    let dicts = ivar_get(s, intern(b"@dictionaries"));
+    let dicts = ivar_get(c, s, intern(b"@dictionaries"));
     let sum = do_checksum(c, &a[..1], adler32, 1)?;
     crate::hash::hash_aset(c, dicts, sum, a[0])?;
     Ok(s)
@@ -724,8 +724,8 @@ fn with_gz(c: &mut Ctx, ov: Value, ready: bool, f: impl FnOnce(&mut Ctx, &mut Gz
 }
 
 fn gz_raise<T>(c: &mut Ctx, g: &GzCore, klass: Value, msg: &str) -> Result<T, Esc> {
-    let e = make_exception(klass, msg);
-    if let Some(i) = &g.z.input { let s = c.str_new_enc(i, ENC_BINARY); ivar_set_raw(e, intern(b"@input"), s); }
+    let e = make_exception(c, klass, msg);
+    if let Some(i) = &g.z.input { let s = c.str_new_enc(i, ENC_BINARY); ivar_set_raw(c, e, intern(b"@input"), s); }
     Err(raise_exc(c, e))
 }
 

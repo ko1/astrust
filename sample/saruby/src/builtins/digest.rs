@@ -339,8 +339,8 @@ fn superclass(c: &Ctx, k: Value) -> Value {
 fn algo_of_class(c: &mut Ctx, klass: Value) -> Result<Algo, Esc> {
     let mut p = klass;
     while p != NIL {
-        if ivar_defined(p, hidden(b"metadata")) {
-            let m = ivar_get(p, hidden(b"metadata"));
+        if ivar_defined(c, p, hidden(b"metadata")) {
+            let m = ivar_get(c, p, hidden(b"metadata"));
             return match if m.is_fixnum() { ALGOS.get(m.as_fix() as usize).copied() } else { None } {
                 Some(a) => Ok(a),
                 None if p == klass => type_err(c, format!("{}::metadata is not initialized properly", class_path(klass))),
@@ -351,10 +351,10 @@ fn algo_of_class(c: &mut Ctx, klass: Value) -> Result<Algo, Esc> {
     }
     err(c, c.vm().c_runtime_error.get(), "Digest::Base cannot be directly inherited in Ruby")
 }
-fn is_base(k: Value) -> bool { ivar_defined(k, hidden(b"__digest_base")) }
+fn is_base(c: &Ctx, k: Value) -> bool { ivar_defined(c, k, hidden(b"__digest_base")) }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     let mut p = klass;
-    while p != NIL && !is_base(p) { p = superclass(c, p); }
+    while p != NIL && !is_base(c, p) { p = superclass(c, p); }
     if p == NIL { return Ok(None); }
     if p == klass { return err(c, c.vm().c_not_impl_error.get(), "Digest::Base is an abstract class"); }
     let a = algo_of_class(c, klass)?;
@@ -420,7 +420,7 @@ pub fn init(c: &mut Ctx) {
     define_singleton_cfunc(k, "hexdigest", c_s_hexdigest, -1);
     let b = define_class_under(m, "Base", k);
     class_set_alloc(b, AllocKind::None);
-    ivar_set_raw(b, hidden(b"__digest_base"), TRUE);
+    ivar_set_raw(c, b, hidden(b"__digest_base"), TRUE);
     define_private_cfunc(b, "initialize_copy", b_copy, 1);
     define_cfunc(b, "reset", b_reset, 0);
     define_cfunc(b, "update", b_update, 1);
@@ -442,7 +442,7 @@ pub fn init_algo(c: &mut Ctx, which: &str) {
     };
     for &(n, a) in list {
         let k = define_class_under(m, n, base);
-        ivar_set_raw(k, hidden(b"metadata"), Value::fix(a.id()));
+        ivar_set_raw(c, k, hidden(b"metadata"), Value::fix(a.id()));
     }
 }
 

@@ -759,19 +759,19 @@ fn d_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let p = path_arg(c, pos[0])?;
     let l = dir_list(c, pos[0], false)?; let l = strs(c, l);
     let ps = c.str_new(p.as_bytes());
-    ivar_set_raw(s, iv("@path"), ps); ivar_set_raw(s, iv("@ents"), l); ivar_set_raw(s, iv("@pos"), Value::fix(0)); ivar_set_raw(s, iv("@closed"), FALSE);
+    ivar_set_raw(c, s, iv("@path"), ps); ivar_set_raw(c, s, iv("@ents"), l); ivar_set_raw(c, s, iv("@pos"), Value::fix(0)); ivar_set_raw(c, s, iv("@closed"), FALSE);
     Ok(NIL)
 }
 fn d_check(c: &mut Ctx, s: Value) -> Result<(Value, usize), Esc> {
-    let e = ivar_get(s, iv("@ents"));
+    let e = ivar_get(c, s, iv("@ents"));
     if e == NIL { return err(c, c.vm().c_io_error.get(), "uninitialized Dir"); }
-    if ivar_get(s, iv("@closed")).truthy() { return err(c, c.vm().c_io_error.get(), "closed directory"); }
-    Ok((e, ivar_get(s, iv("@pos")).as_fix() as usize))
+    if ivar_get(c, s, iv("@closed")).truthy() { return err(c, c.vm().c_io_error.get(), "closed directory"); }
+    Ok((e, ivar_get(c, s, iv("@pos")).as_fix() as usize))
 }
 fn d_read(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let (e, p) = d_check(c, s)?;
     if p >= c.ary_len(e) { return Ok(NIL); }
-    ivar_set_raw(s, iv("@pos"), Value::fix(p as i64 + 1));
+    ivar_set_raw(c, s, iv("@pos"), Value::fix(p as i64 + 1));
     let x = c.ary_get(e, p);
     Ok(c.str_dup(x))
 }
@@ -793,24 +793,24 @@ fn d_each_child(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> RV {
     each_elem(c, l, blk)?;
     Ok(s)
 }
-fn d_rewind(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { d_check(c, s)?; ivar_set_raw(s, iv("@pos"), Value::fix(0)); Ok(s) }
+fn d_rewind(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { d_check(c, s)?; ivar_set_raw(c, s, iv("@pos"), Value::fix(0)); Ok(s) }
 fn d_tell(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let (_, p) = d_check(c, s)?; Ok(Value::fix(p as i64)) }
-fn d_seek(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { d_check(c, s)?; let n = num_to_long(c, a[0])?; ivar_set_raw(s, iv("@pos"), Value::fix(n.max(0))); Ok(s) }
+fn d_seek(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { d_check(c, s)?; let n = num_to_long(c, a[0])?; ivar_set_raw(c, s, iv("@pos"), Value::fix(n.max(0))); Ok(s) }
 fn d_set_pos(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { d_seek(c, s, a, b)?; Ok(a[0]) }
-fn d_close(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { ivar_set_raw(s, iv("@closed"), TRUE); Ok(NIL) }
-fn d_path(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let p = ivar_get(s, iv("@path")); Ok(if p == NIL { NIL } else { c.str_dup(p) }) }
+fn d_close(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { ivar_set_raw(c, s, iv("@closed"), TRUE); Ok(NIL) }
+fn d_path(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let p = ivar_get(c, s, iv("@path")); Ok(if p == NIL { NIL } else { c.str_dup(p) }) }
 fn d_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let p = ivar_get(s, iv("@path"));
+    let p = ivar_get(c, s, iv("@path"));
     let k = class_path(real_class_of(s));
     let s = if p == NIL { format!("#<{}: uninitialized>", k) } else { format!("#<{}:{}>", k, String::from_utf8_lossy(c.str_bytes(p))) };
     Ok(c.str_new(s.as_bytes()))
 }
-fn d_chdir(c: &mut Ctx, s: Value, _a: &[Value], blk: *const Block) -> RV { d_check(c, s)?; let p = ivar_get(s, iv("@path")); d_s_chdir(c, s, &[p], blk) }
+fn d_chdir(c: &mut Ctx, s: Value, _a: &[Value], blk: *const Block) -> RV { d_check(c, s)?; let p = ivar_get(c, s, iv("@path")); d_s_chdir(c, s, &[p], blk) }
 fn d_s_open(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     let d = crate::builtins::object::c_new(c, slf, a, std::ptr::null())?;
     if blk.is_null() { return Ok(d); }
     let r = yield1(c, blk, d);
-    ivar_set_raw(d, iv("@closed"), TRUE);
+    ivar_set_raw(c, d, iv("@closed"), TRUE);
     r
 }
 

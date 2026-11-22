@@ -21,8 +21,8 @@ fn int_arg(c: &mut Ctx, v: Value) -> Result<i32, Esc> {
 fn sys_fail(c: &mut Ctx, func: &str) -> Esc {
     let no = sys::errno();
     let k = crate::builtins::exception::errno_class(c.vm(), no);
-    let e = make_exception(k, &format!("{} - {}", crate::builtins::exception::errno_text(Value::fix(no)), func));
-    ivar_set_raw(e, crate::symbol::s::errno, Value::fix(no));
+    let e = make_exception(c, k, &format!("{} - {}", crate::builtins::exception::errno_text(Value::fix(no)), func));
+    ivar_set_raw(c, e, crate::symbol::s::errno, Value::fix(no));
     raise_exc(c, e)
 }
 fn etc_sysconf(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {

@@ -79,7 +79,7 @@ fn list_remove(c: &mut Ctx, t: Value) { let l = LIST.get(c); c.ary_mut(l).retain
 fn check_interrupt(c: &mut Ctx, t: Value) -> Result<(), Esc> {
     let r = th_mut(c, t);
     if r.pending != NIL { let e = r.pending; r.pending = NIL; return Err(raise_exc(c, e)); }
-    if r.killed { r.killed = false; let e = make_exception(C_KILL.get(c), "killed"); return Err(raise_exc(c, e)); }
+    if r.killed { r.killed = false; let e = make_exception(c, C_KILL.get(c), "killed"); return Err(raise_exc(c, e)); }
     Ok(())
 }
 /// Make a parked thread runnable (an interrupt or a wakeup was posted for it).
@@ -222,7 +222,7 @@ pub fn sleep_for(c: &mut Ctx, d: Duration) -> Result<(), Esc> {
 }
 fn closed_in_another_thread(c: &mut Ctx) -> Esc {
     let k = c.vm().c_io_error.get();
-    let e = make_exception(k, "stream closed in another thread");
+    let e = make_exception(c, k, "stream closed in another thread");
     raise_exc(c, e)
 }
 /// Wait for readiness of `fds` (poll(2) events): Some(fds with revents) or None at the deadline.
@@ -343,8 +343,8 @@ fn th_stop(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(NIL)
 }
 fn exit_exception(c: &mut Ctx) -> Value {
-    let e = make_exception(c.vm().c_system_exit.get(), "exit");
-    ivar_set_raw(e, crate::symbol::s::status, Value::fix(0));
+    let e = make_exception(c, c.vm().c_system_exit.get(), "exit");
+    ivar_set_raw(c, e, crate::symbol::s::status, Value::fix(0));
     e
 }
 fn kill_thread(c: &mut Ctx, t: Value) -> RV {
@@ -352,7 +352,7 @@ fn kill_thread(c: &mut Ctx, t: Value) -> RV {
     if th(c, t).dead { return Ok(t); }
     if t == cur(c) {
         if is_main(c) { let e = exit_exception(c); return Err(raise_exc(c, e)); }
-        let e = make_exception(C_KILL.get(c), "killed");
+        let e = make_exception(c, C_KILL.get(c), "killed");
         return Err(raise_exc(c, e));
     }
     if t == MAIN.get(c) { let e = exit_exception(c); th_mut(c, t).pending = e; return Ok(t); }
@@ -375,7 +375,7 @@ fn th_kill(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { kill
 fn th_s_kill(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { kill_thread(c, a[0]) }
 fn th_s_exit(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { let t = cur(c); kill_thread(c, t) }
 fn th_raise(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    let e = if a.is_empty() { make_exception(c.vm().c_runtime_error.get(), "unhandled exception") } else { make_exception_from_args(c, a)? };
+    let e = if a.is_empty() { make_exception(c, c.vm().c_runtime_error.get(), "unhandled exception") } else { make_exception_from_args(c, a)? };
     thr(c, slf)?;
     if th(c, slf).dead { return Ok(NIL); }
     if slf == cur(c) { return Err(raise_exc(c, e)); }
@@ -404,8 +404,8 @@ fn th_status(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
 fn th_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { thr(c, s)?; let t = inspect_thread(c, s, status_str(c, s)); Ok(c.str_new(t.as_bytes())) }
 /// rb_frozen_error_raise(thread, "can't modify frozen thread locals")
 fn frozen_locals(c: &mut Ctx, t: Value) -> Esc {
-    let e = make_exception(c.vm().c_frozen_error.get(), "can't modify frozen thread locals");
-    ivar_set_raw(e, crate::symbol::s::receiver, t);
+    let e = make_exception(c, c.vm().c_frozen_error.get(), "can't modify frozen thread locals");
+    ivar_set_raw(c, e, crate::symbol::s::receiver, t);
     raise_exc(c, e)
 }
 /// rb_to_symbol: a Symbol, a String, or what #to_str makes a String.
@@ -581,10 +581,10 @@ fn mon_wait_for_cond(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV
 // ---- ConditionVariable ------------------------------------------------------------------------
 
 fn cv_waiters(c: &mut Ctx, cv: Value) -> Value {
-    let w = ivar_get(cv, intern(b"__waiters"));
+    let w = ivar_get(c, cv, intern(b"__waiters"));
     if w != NIL { return w; }
     let w = c.ary_new();
-    ivar_set_raw(cv, intern(b"__waiters"), w);
+    ivar_set_raw(c, cv, intern(b"__waiters"), w);
     w
 }
 fn cv_wait_raw(c: &mut Ctx, cv: Value, timeout: Value) -> Result<bool, Esc> {

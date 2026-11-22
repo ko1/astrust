@@ -349,7 +349,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                             if d == NIL {
                                 let m = c.str_new_enc(&[b"key", label, b" not found"].concat(), fenc);
                                 let e2 = funcall(c, c.vm().c_key_error.get(), intern(b"new"), &[m], std::ptr::null())?;
-                                ivar_set_raw(e2, crate::symbol::s::key, key); ivar_set_raw(e2, crate::symbol::s::receiver, h);
+                                ivar_set_raw(c, e2, crate::symbol::s::key, key); ivar_set_raw(c, e2, crate::symbol::s::receiver, h);
                                 return Err(raise_exc(c, e2));
                             }
                             d

@@ -76,7 +76,7 @@ impl Dumper {
     fn extended(&mut self, c: &mut Ctx, v: Value, check: bool) -> Result<(), Esc> {
         let k = obj_klass(v);
         if k == NIL || !c.class(k).is_singleton { return Ok(()); }
-        if check && (!c.class(k).mtbl.is_empty() || !c.class(k).consts.is_empty() || ivar_list(k).iter().any(|(n, _)| sym_bytes(*n).starts_with(b"@"))) { return type_err(c, "singleton can't be dumped"); }
+        if check && (!c.class(k).mtbl.is_empty() || !c.class(k).consts.is_empty() || ivar_list(c, k).iter().any(|(n, _)| sym_bytes(*n).starts_with(b"@"))) { return type_err(c, "singleton can't be dumped"); }
         let mods: Vec<Value> = c.class(k).includes.iter().rev().copied().collect();
         for m in mods { self.out.push(b'e'); self.uniq_class(c, m)?; }
         Ok(())
@@ -105,10 +105,10 @@ impl Dumper {
     fn user_ivars(&mut self, c: &mut Ctx, v: Value) -> Vec<(Sym, Value)> {
         if !v.is_heap() || is_class_or_module(v) { return vec![]; }
         let exc = is_exception(v);
-        let mut l: Vec<(Sym, Value)> = ivar_list(v).into_iter().filter(|(n, _)| { let b = sym_bytes(*n); b.starts_with(b"@") || (exc && b == b"mesg") }).collect();
+        let mut l: Vec<(Sym, Value)> = ivar_list(c, v).into_iter().filter(|(n, _)| { let b = sym_bytes(*n); b.starts_with(b"@") || (exc && b == b"mesg") }).collect();
         if exc {
             if !l.iter().any(|(n, _)| sym_bytes(*n) == b"mesg") { l.insert(0, (intern(b"mesg"), NIL)); }
-            let bt = ivar_get(v, intern(b"bt"));
+            let bt = ivar_get(c, v, intern(b"bt"));
             let at = l.iter().position(|(n, _)| sym_bytes(*n) == b"mesg").unwrap() + 1;
             l.insert(at, (intern(b"bt"), bt));
         }
@@ -234,7 +234,7 @@ impl Dumper {
                     self.class_of_obj(c, v, b'S', true)?;
                     w_long(&mut self.out, c.ary_len(mem) as i64);
                     let mut i = 0;
-                    while let Some(&m) = c.ary(mem).get(i) { let m = m.as_sym(); self.sym(m); let x = struct_get(v, m); self.obj(c, x, limit)?; i += 1; }
+                    while let Some(&m) = c.ary(mem).get(i) { let m = m.as_sym(); self.sym(m); let x = struct_get(c, v, m); self.obj(c, x, limit)?; i += 1; }
                     if !ivs.is_empty() { self.w_ivars(c, None, &ivs, limit)?; }
                 } else {
                     self.class_of_obj(c, v, b'o', true)?;
@@ -324,7 +324,7 @@ pub fn each_pair(c: &mut Ctx, h: Value, mut f: impl FnMut(&mut Ctx, Value, Value
     r
 }
 fn any_to_s_anon(c: &Ctx, k: Value) -> String { format!("#<{}:0x{:016x}>", if c.class(k).is_module { "Module" } else { "Class" }, k.raw()) }
-fn struct_get(v: Value, m: Sym) -> Value { ivar_get(v, m) }
+fn struct_get(c: &Ctx, v: Value, m: Sym) -> Value { ivar_get(c, v, m) }
 
 fn m_dump(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 1, 3)?;
@@ -438,7 +438,7 @@ impl Loader {
             let nb = sym_bytes(name);
             if nb == b"E" && (is_string(v) || crate::regexp::is_regexp(c, v)) { if is_string(v) { c.rstring_mut(v).enc = if val == TRUE { ENC_UTF8 } else { ENC_ASCII }; } continue; }
             if nb == b"encoding" && is_string(v) { if is_string(val) { if let Some(e) = crate::builtins::encoding::find_enc(c.str_bytes(val)) { c.rstring_mut(v).enc = e; } } continue; }
-            if v.is_heap() { ivar_set_raw(v, name, val); }
+            if v.is_heap() { ivar_set_raw(c, v, name, val); }
         }
         Ok(())
     }
@@ -537,7 +537,7 @@ impl Loader {
                     let want = c.ary_get(mem, i);
                     if want != Value::sym(slot) { return type_err(c, format!("struct {} not compatible (:{} for :{})", class_path(k), String::from_utf8_lossy(sym_bytes(slot)), String::from_utf8_lossy(sym_bytes(want.as_sym())))); }
                     let x = self.object(c)?;
-                    ivar_set_raw(v, slot, x);
+                    ivar_set_raw(c, v, slot, x);
                 }
                 v
             }
@@ -587,7 +587,7 @@ impl Loader {
                     let (mut b, mut e, mut excl) = (NIL, NIL, false);
                     for _ in 0..n {
                         let name = self.symbol(c)?; let x = self.object(c)?;
-                        match sym_bytes(name) { b"begin" => b = x, b"end" => e = x, b"excl" => excl = x.truthy(), _ => { ivar_set_raw(v, name, x); } }
+                        match sym_bytes(name) { b"begin" => b = x, b"end" => e = x, b"excl" => excl = x.truthy(), _ => { ivar_set_raw(c, v, name, x); } }
                     }
                     c.range_set(v, b, e, excl);
                     obj_set_flags(v, FL_FROZEN);
@@ -611,17 +611,17 @@ fn load_time(c: &mut Ctx, k: Value, data: Value) -> RV {
     let utc = p & (1 << 30) != 0;
     let (year, mon, mday, hour) = (((p >> 14) & 0xffff) as i64 + 1900, ((p >> 10) & 0xf) as i64 + 1, ((p >> 5) & 0x1f) as i64, (p & 0x1f) as i64);
     let (min, sec, usec) = ((sw >> 26) as i64, ((sw >> 20) & 0x3f) as i64, (sw & 0xfffff) as i64);
-    let nn = ivar_get(data, intern(b"nano_num"));
-    let nano = if nn.is_fixnum() { let d = ivar_get(data, intern(b"nano_den")); nn.as_fix() / if d.is_fixnum() && d.as_fix() != 0 { d.as_fix() } else { 1 } } else { 0 };
+    let nn = ivar_get(c, data, intern(b"nano_num"));
+    let nano = if nn.is_fixnum() { let d = ivar_get(c, data, intern(b"nano_den")); nn.as_fix() / if d.is_fixnum() && d.as_fix() != 0 { d.as_fix() } else { 1 } } else { 0 };
     let args = [year, mon, mday, hour, min, sec].map(Value::fix);
     let base = funcall(c, k, intern(b"utc"), &args, std::ptr::null())?;
     let secs = funcall(c, base, intern(b"to_i"), &[], std::ptr::null())?;
     let t = funcall(c, k, intern(b"at"), &[secs, Value::fix(usec * 1000 + nano), sym_value("nsec")], std::ptr::null())?;
     if utc { return funcall(c, t, intern(b"utc"), &[], std::ptr::null()); }
-    let off = ivar_get(data, intern(b"offset"));
+    let off = ivar_get(c, data, intern(b"offset"));
     if off.is_fixnum() {
         let local = funcall(c, t, intern(b"utc_offset"), &[], std::ptr::null())?;
-        if local != off || ivar_get(data, intern(b"zone")) == NIL { return funcall(c, t, intern(b"localtime"), &[off], std::ptr::null()); }
+        if local != off || ivar_get(c, data, intern(b"zone")) == NIL { return funcall(c, t, intern(b"localtime"), &[off], std::ptr::null()); }
     }
     Ok(t)
 }

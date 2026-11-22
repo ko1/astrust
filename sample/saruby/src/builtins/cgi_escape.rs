@@ -16,7 +16,7 @@ fn ext_mod(c: &Ctx) -> Value {
 }
 /// rb_call_super: the pure-Ruby CGI::Escape method this one is prepended over.
 fn call_super(c: &mut Ctx, slf: Value, name: &str, a: &[Value]) -> RV {
-    let um = ivar_get(ext_mod(c), intern(format!("__super_{}", name).as_bytes()));
+    let um = ivar_get(c, ext_mod(c), intern(format!("__super_{}", name).as_bytes()));
     let mut args = vec![slf];
     args.extend_from_slice(a);
     funcall(c, um, intern(b"bind_call"), &args, nb())
@@ -202,7 +202,7 @@ pub fn init(c: &mut Ctx) -> Result<(), Esc> {
         if respond_to_im(c, esc, n)? {
             let s = Value::sym(intern(n.as_bytes()));
             let um = funcall(c, esc, intern(b"instance_method"), &[s], nb())?;
-            ivar_set_raw(ext, intern(format!("__super_{}", n).as_bytes()), um);
+            ivar_set_raw(c, ext, intern(format!("__super_{}", n).as_bytes()), um);
         }
     }
     let d = |n: &str, f: CFunc, ar: i32| define_cfunc(ext, n, f, ar);

@@ -117,8 +117,8 @@ pub fn on_def(c: &mut Ctx, is: usize, klass: Value, name: Sym) {
 fn root(c: &mut Ctx, v: Value) {
     let m = const_get_at(c.vm().c_object.get(), intern(b"Coverage")).unwrap_or(NIL);
     if m == NIL { return; }
-    let mut a = ivar_get(m, intern(b"__classes"));
-    if a == NIL { a = c.ary_new(); ivar_set_raw(m, intern(b"__classes"), a); }
+    let mut a = ivar_get(c, m, intern(b"__classes"));
+    if a == NIL { a = c.ary_new(); ivar_set_raw(c, m, intern(b"__classes"), a); }
     c.ary_push(a, v);
 }
 

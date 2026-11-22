@@ -5,10 +5,6 @@ use crate::object::*;
 use crate::value::*;
 
 pub fn range_new(b: Value, e: Value, excl: bool) -> Value { crate::gc::alloc(crate::vm::vm().c_range.get(), Body::Range(b, e, excl)) }
-#[inline]
-pub fn range_parts(r: Value) -> (Value, Value, bool) {
-    match &obj(r).body { Body::Range(a, b, x) => (*a, *b, *x), _ => (NIL, NIL, false) }
-}
 
 #[inline]
 pub fn float_new(d: f64) -> Value {

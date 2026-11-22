@@ -111,7 +111,7 @@ fn k_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
 }
 pub fn k_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     if slf == c.vm().main_obj.get() { return Ok(c.str_new(b"main")); }
-    let ivs = ivar_list(slf);
+    let ivs = ivar_list(c, slf);
     let ivs: Vec<(Sym, Value)> = ivs.into_iter().filter(|(n, _)| sym_bytes(*n).first() == Some(&b'@')).collect();
     let k = real_class_of(slf);
     if ivs.is_empty() { return Ok(c.str_new(format!("#<{}:{:#018x}>", class_path(k), slf.raw()).as_bytes())); }
@@ -157,7 +157,7 @@ fn k_respond_to_missing(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block)
 fn k_ivar_get(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let n = to_sym_arg(c, a[0])?;
     check_ivar_name(c, n)?;
-    Ok(ivar_get(slf, n))
+    Ok(ivar_get(c, slf, n))
 }
 fn check_ivar_name(c: &mut Ctx, n: Sym) -> Result<(), Esc> {
     let b = sym_bytes(n);
@@ -175,17 +175,17 @@ fn k_ivar_set(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 fn k_ivar_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let n = to_sym_arg(c, a[0])?;
     check_ivar_name(c, n)?;
-    Ok(Value::bool(ivar_defined(slf, n)))
+    Ok(Value::bool(ivar_defined(c, slf, n)))
 }
 fn k_ivars(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let a = c.ary_new();
-    for (n, _) in ivar_list(slf) { if sym_bytes(n).first() == Some(&b'@') { c.ary_push(a, Value::sym(n)); } }
+    for (n, _) in ivar_list(c, slf) { if sym_bytes(n).first() == Some(&b'@') { c.ary_push(a, Value::sym(n)); } }
     Ok(a)
 }
 fn k_remove_ivar(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let n = to_sym_arg(c, a[0])?;
     check_frozen(c, slf)?;
-    match ivar_remove(slf, n) {
+    match ivar_remove(c, slf, n) {
         Some(v) => Ok(v),
         None => {
             let ins = inspect_str(c, slf)?;
@@ -235,7 +235,7 @@ pub fn obj_dup(c: &mut Ctx, slf: Value, clone: bool, freeze: Option<bool>) -> RV
 }
 
 fn finish_dup(c: &mut Ctx, slf: Value, n: Value, clone: bool, freeze: Option<bool>) -> RV {
-    if obj_flags(slf) & FL_EXIVAR != 0 { for (k, v) in ivar_list(slf) { ivar_set_raw(n, k, v); } }
+    if obj_flags(slf) & FL_EXIVAR != 0 { for (k, v) in ivar_list(c, slf) { ivar_set_raw(c, n, k, v); } }
     if clone {
         // singleton class copy
         let k = obj_klass(slf);
@@ -906,10 +906,10 @@ fn m_singleton_class_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) 
 fn m_hash(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix((crate::astrust::hash_u64(slf.raw()) >> 2) as i64)) }
 fn refinements_of(c: &mut Ctx, m: Value) -> Value {
     let key = intern(b"__refinements");
-    let l = ivar_get(m, key);
+    let l = ivar_get(c, m, key);
     if l != NIL { return l; }
     let l = c.ary_new();
-    ivar_set_raw(m, key, l);
+    ivar_set_raw(c, m, key, l);
     l
 }
 fn m_refine(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
@@ -953,7 +953,7 @@ fn m_using(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let outer = cref_refinements(old);
     let mut v = if outer != NIL && is_array(outer) { c.ary(outer).to_vec() } else { vec![] };
     for &anc in ancestors(m).iter().rev() {
-        let l = ivar_get(anc, intern(b"__refinements"));
+        let l = ivar_get(c, anc, intern(b"__refinements"));
         if l == NIL { continue; }
         for &x in c.ary(l) { v.retain(|&y| y != x); v.push(x); }
     }
@@ -967,7 +967,7 @@ fn m_using(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(slf)
 }
 fn m_refinements(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let l = ivar_get(slf, intern(b"__refinements"));
+    let l = ivar_get(c, slf, intern(b"__refinements"));
     Ok(if l == NIL { c.ary_new() } else { c.ary_from_vec(c.ary(l).to_vec()) })
 }
 fn refinement_target(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.class(slf).attached) }

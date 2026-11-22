@@ -43,7 +43,7 @@ pub fn out_check(c: &mut Ctx) -> Result<(), Esc> {
     let e = STDOUT_ERR.with(|x| x.replace(0));
     if e == 0 { return Ok(()); }
     let r = crate::builtins::io::raise_errno_at(c, e as i64, "rb_sys_fail_on_write - ", b"<STDOUT>");
-    if e == 32 { ivar_set_raw(c.esc_val, intern(b"signo"), Value::fix(13)); }
+    if e == 32 { ivar_set_raw(c, c.esc_val, intern(b"signo"), Value::fix(13)); }
     Err(r)
 }
 pub fn err_write(b: &[u8]) {
@@ -277,11 +277,11 @@ pub fn make_exception_from_args(c: &mut Ctx, args: &[Value]) -> RV {
     let e = match args.len() {
         0 => {
             if c.errinfo != NIL { c.errinfo }
-            else { make_exception(c.vm().c_runtime_error.get(), "unhandled exception") }
+            else { make_exception(c, c.vm().c_runtime_error.get(), "unhandled exception") }
         }
         1 if is_string(args[0]) => {
             let e = new_object(c.vm().c_runtime_error.get());
-            ivar_set_raw(e, s::mesg, args[0]);
+            ivar_set_raw(c, e, s::mesg, args[0]);
             e
         }
         _ => {
@@ -291,7 +291,7 @@ pub fn make_exception_from_args(c: &mut Ctx, args: &[Value]) -> RV {
             if !is_exception(e) { return type_err(c, "exception object expected"); }
             if args.len() >= 3 {
                 let bt = if is_string(args[2]) { c.ary_new_from(&[args[2]]) } else { args[2] };
-                ivar_set_raw(e, s::bt, bt);
+                ivar_set_raw(c, e, s::bt, bt);
             }
             e
         }
@@ -299,7 +299,7 @@ pub fn make_exception_from_args(c: &mut Ctx, args: &[Value]) -> RV {
     if let Some(h) = kw {
         if let Some(cause) = hash_get_opt(c, h, crate::vm::sym_value("cause"))? {
             if cause != NIL && !is_exception(cause) { return type_err(c, "exception object expected"); }
-            ivar_set_raw(e, s::cause, cause);
+            ivar_set_raw(c, e, s::cause, cause);
         } else if args.is_empty() {
             return arg_err(c, "only cause is given with no arguments");
         }
@@ -310,9 +310,9 @@ pub fn make_exception_from_args(c: &mut Ctx, args: &[Value]) -> RV {
 fn k_raise(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let e = make_exception_from_args(c, args)?;
     // the backtrace starts at the caller of raise
-    if ivar_get(e, s::bt) == NIL {
+    if ivar_get(c, e, s::bt) == NIL {
         let bt = make_backtrace_lazy(c, 1);
-        ivar_set_raw(e, s::bt, bt);
+        ivar_set_raw(c, e, s::bt, bt);
     }
     Err(raise_exc(c, e))
 }
@@ -328,7 +328,7 @@ fn k_loop(c: &mut Ctx, slf: Value, _args: &[Value], blk: *const Block) -> RV {
                 if c.esc == EscKind::Raise && is_kind_of(c.esc_val, c.vm().c_stop_iteration.get()) {
                     let ex = c.esc_val;
                     c.esc = EscKind::None;
-                    return Ok(ivar_get(ex, intern(b"result")));
+                    return Ok(ivar_get(c, ex, intern(b"result")));
                 }
                 return Err(e);
             }
@@ -362,9 +362,9 @@ fn k_throw(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let found = CATCH_TAGS.with(|t| t.borrow().iter().any(|&x| x == tag));
     if !found {
         let ins = inspect_str(c, tag)?;
-        let e = make_exception(c.vm().c_uncaught_throw_error.get(), &format!("uncaught throw {}", ins));
-        ivar_set_raw(e, intern(b"tag"), tag);
-        ivar_set_raw(e, intern(b"value"), val);
+        let e = make_exception(c, c.vm().c_uncaught_throw_error.get(), &format!("uncaught throw {}", ins));
+        ivar_set_raw(c, e, intern(b"tag"), tag);
+        ivar_set_raw(c, e, intern(b"value"), val);
         return Err(raise_exc(c, e));
     }
     c.esc = EscKind::Throw;
@@ -408,8 +408,8 @@ fn k_caller(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
 
 pub fn k_exit(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let st = match args.first() { None => 0, Some(&v) if v == TRUE => 0, Some(&v) if v == FALSE => 1, Some(&v) => crate::builtins::numeric_methods::num_to_long(c, v)? };
-    let e = make_exception(c.vm().c_system_exit.get(), "exit");
-    ivar_set_raw(e, s::status, Value::fix(st));
+    let e = make_exception(c, c.vm().c_system_exit.get(), "exit");
+    ivar_set_raw(c, e, s::status, Value::fix(st));
     Err(raise_exc(c, e))
 }
 
@@ -422,8 +422,8 @@ fn k_exit_bang(_c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV 
 pub fn k_abort(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let msg = if let Some(&m) = args.first() { let m = expect_str(c, m)?; let mut b = c.str_bytes(m).to_vec(); b.push(b'\n'); err_write(&b); m } else { c.str_new(b"exit") };
     let e = new_object(c.vm().c_system_exit.get());
-    ivar_set_raw(e, s::mesg, msg);
-    ivar_set_raw(e, s::status, Value::fix(1));
+    ivar_set_raw(c, e, s::mesg, msg);
+    ivar_set_raw(c, e, s::status, Value::fix(1));
     let _ = c;
     Err(raise_exc(c, e))
 }
@@ -700,7 +700,7 @@ pub fn gvar_get(c: &mut Ctx, name: Sym) -> RV {
 
 /// $/ holds a plain frozen String: a subclass instance, an ivar holder or a mutable one is copied.
 fn gvar_frozen_str(c: &mut Ctx, v: Value) -> Value {
-    if is_frozen(v) && real_class_of(v) == c.vm().c_string.get() && ivar_list(v).is_empty() { return v; }
+    if is_frozen(v) && real_class_of(v) == c.vm().c_string.get() && ivar_list(c, v).is_empty() { return v; }
     let n = c.str_copy(v);
     obj_set_flags(n, crate::object::FL_FROZEN);
     n
@@ -858,8 +858,8 @@ pub fn require_feature(c: &mut Ctx, path: Value, relative: bool) -> RV {
                 }
                 None => name.clone(),
             };
-            let e = make_exception(c.vm().c_load_error.get(), &format!("cannot load such file -- {}", shown));
-            ivar_set_raw(e, intern(b"path"), c.str_new(shown.as_bytes()));
+            let e = make_exception(c, c.vm().c_load_error.get(), &format!("cannot load such file -- {}", shown));
+            { let p = c.str_new(shown.as_bytes()); ivar_set_raw(c, e, intern(b"path"), p); }
             return Err(raise_exc(c, e));
         }
     };
@@ -889,7 +889,7 @@ pub fn init_load_path(lp: Value) { define_singleton_cfunc(lp, "resolve_feature_p
 pub fn load_file(c: &mut Ctx, path: &str) -> RV {
     let src = match std::fs::read(path) {
         Ok(s) => s,
-        Err(_) => { let e = make_exception(c.vm().c_load_error.get(), &format!("cannot load such file -- {}", path)); return Err(raise_exc(c, e)); }
+        Err(_) => { let e = make_exception(c, c.vm().c_load_error.get(), &format!("cannot load such file -- {}", path)); return Err(raise_exc(c, e)); }
     };
     let file: &'static str = Box::leak(path.to_string().into_boxed_str());
     run_source(c, &src, file, 1)
@@ -926,8 +926,8 @@ fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
         Some(f) => f,
         None if std::path::Path::new(&ex).is_file() => ex,
         None => {
-            let e = make_exception(c.vm().c_load_error.get(), &format!("cannot load such file -- {}", name));
-            ivar_set_raw(e, intern(b"path"), c.str_new(name.as_bytes()));
+            let e = make_exception(c, c.vm().c_load_error.get(), &format!("cannot load such file -- {}", name));
+            { let p = c.str_new(name.as_bytes()); ivar_set_raw(c, e, intern(b"path"), p); }
             return Err(raise_exc(c, e));
         }
     };
@@ -940,7 +940,7 @@ fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
         include_module_c(c, sk, m);
         let src = match std::fs::read(&p) {
             Ok(s) => s,
-            Err(_) => { let e = make_exception(c.vm().c_load_error.get(), &format!("cannot load such file -- {}", p)); return Err(raise_exc(c, e)); }
+            Err(_) => { let e = make_exception(c, c.vm().c_load_error.get(), &format!("cannot load such file -- {}", p)); return Err(raise_exc(c, e)); }
         };
         let file: &'static str = Box::leak(p.into_boxed_str());
         let is = match crate::compile::compile_source(&src, file, 1, IseqKind::Top, vec![]) { Ok(is) => is, Err(msg) => return err(c, c.vm().c_syntax_error.get(), msg) };

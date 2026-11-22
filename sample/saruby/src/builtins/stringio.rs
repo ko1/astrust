@@ -45,8 +45,8 @@ fn errno_exc(c: &mut Ctx, name: &str, msg: Option<&str>) -> Esc {
     let k = crate::builtins::exception::errno_class(c.vm(), no);
     let base = crate::builtins::exception::errno_text(Value::fix(no));
     let m = match msg { Some(m) => format!("{} - {}", base, m), None => base };
-    let e = make_exception(k, &m);
-    ivar_set_raw(e, s::errno, Value::fix(no));
+    let e = make_exception(c, k, &m);
+    ivar_set_raw(c, e, s::errno, Value::fix(no));
     raise_exc(c, e)
 }
 fn error_inval<T>(c: &mut Ctx, msg: Option<&str>) -> Result<T, Esc> { Err(errno_exc(c, "EINVAL", msg)) }
@@ -132,7 +132,7 @@ fn cat_enc(c: &mut Ctx, target: Value, data: &[u8], denc: u8) -> Result<(), Esc>
 
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     let mut p = klass;
-    while p != NIL && !ivar_defined(p, hidden_mark()) {
+    while p != NIL && !ivar_defined(c, p, hidden_mark()) {
         let mut s2 = c.class(p).superclass;
         while s2 != NIL && c.class(s2).is_module { s2 = c.class(s2).superclass; }
         p = s2;
@@ -863,7 +863,7 @@ pub fn init_console(c: &mut Ctx) {
 pub fn init(vmr: &Vm) {
     let k = define_class("StringIO", vmr.c_object.get());
     class_set_alloc(k, AllocKind::None);
-    ivar_set_raw(k, hidden_mark(), TRUE);
+    ivar_set_generic(k, hidden_mark(), TRUE);
     let io = vmr.c_io.get();
     for (n, v) in [("SEEK_SET", 0), ("SEEK_CUR", 1), ("SEEK_END", 2)] {
         if const_get_at(io, intern(n.as_bytes())).is_none() { const_set(io, intern(n.as_bytes()), Value::fix(v)); }

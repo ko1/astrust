@@ -71,7 +71,7 @@ fn gen_error(c: &mut Ctx, invalid: Value, msg: &[u8]) -> Esc {
     let k = E_GENERATOR.get(c);
     let m = c.str_new(msg);
     match funcall(c, k, intern(b"new"), &[m], std::ptr::null()) {
-        Ok(e) => { ivar_set_raw(e, intern(b"@invalid_object"), invalid); raise_exc(c, e) }
+        Ok(e) => { ivar_set_raw(c, e, intern(b"@invalid_object"), invalid); raise_exc(c, e) }
         Err(e) => e,
     }
 }
@@ -567,7 +567,7 @@ impl G {
             }
             if is_heap_float(ob) && exact(cf) { return self.float(c, ob); }
             if klass == C_FRAGMENT.get(c) && C_FRAGMENT.get(c) != NIL {
-                let f = ivar_get(ob, intern(b"json"));
+                let f = ivar_get(c, ob, intern(b"json"));
                 let f = check_string(c, f)?;
                 return self.out.str(c, f);
             }

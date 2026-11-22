@@ -308,11 +308,11 @@ fn handle_toplevel_error(c: &mut Ctx) -> i32 {
             let e = c.esc_val;
             c.esc = EscKind::None;
             if is_kind_of(e, vm().c_system_exit.get()) {
-                let st = ivar_get(e, symbol::s::status);
+                let st = ivar_get(c, e, symbol::s::status);
                 return if st.is_fixnum() { st.as_fix() as i32 } else { 0 };
             }
-            if is_kind_of(e, vm().c_signal_exception.get()) || ivar_get(e, symbol::intern(b"signo")).is_fixnum() {
-                let no = ivar_get(e, symbol::intern(b"signo"));
+            if is_kind_of(e, vm().c_signal_exception.get()) || ivar_get(c, e, symbol::intern(b"signo")).is_fixnum() {
+                let no = ivar_get(c, e, symbol::intern(b"signo"));
                 if no.is_fixnum() {
                     builtins::process::die_by_signal_at_exit(no.as_fix() as i32);
                     if !is_kind_of(e, vm().c_interrupt.get()) { return 128 + no.as_fix() as i32; }
