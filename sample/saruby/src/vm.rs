@@ -406,7 +406,9 @@ impl Ctx {
     #[inline(always)] pub fn next_serial(&mut self) -> u64 { self.serial += 1; self.serial }
     /// Is any of Integer's basic operators redefined (rt::R_INT_ALL)?
     #[inline(always)] pub fn int_redef(&self) -> bool { self.redef & crate::rt::R_INT_ALL != 0 }
-    #[inline(always)] pub fn frame(&self) -> &'static mut Frame { unsafe { &mut *self.frame } }
+    // SAFETY: H5; the borrow of the context excludes every call that pushes, pops or switches frames
+    #[inline(always)] pub fn frame(&self) -> &Frame { unsafe { &*self.frame } }
+    #[inline(always)] pub fn frame_mut(&mut self) -> &mut Frame { unsafe { &mut *self.frame } }
     #[inline(always)] pub fn self_val(&self) -> Value { let fp = unsafe { (*self.frame).fp }; fp[0].get() }
 }
 
