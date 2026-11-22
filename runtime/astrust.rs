@@ -45,7 +45,9 @@ pub struct SpecCtx {
     pub comments: bool,
     pub rec: Vec<(usize, String)>, // nodes a direct recursive call (R_<hash>) names, with the tag; their S_<hash> is owed
     pub hopt: u64,                // the entry being specialized: its name, structure + profile (0: the structural hash)
-    pub tag: String,              // that entry's suffix for R_ / S_ items (whose code depends on its profile)
+    pub tag: String,              // that entry's suffix for its own R_ / S_ (rec_tag)
+    pub profiled: bool,           // R_ / S_ names carry their target's profile (entries are named by Hopt)
+    pub own: HashMap<usize, u64>, // recursion target -> hash_merge(structural hash, its profile)
     pub unrolled: HashSet<u64>,   // recursion targets being compiled into themselves (their copy's sites: R_)
     pub rec_unroll: bool,         // ASTRUST_REC_UNROLL=0: a recursive site never compiles its target in
     pub reenter: u32,             // inside such a copy: nodes being specialized are specialized again
@@ -61,10 +63,10 @@ impl SpecCtx {
                   // ASTRUST_SPEC_DEPTH=n: how deep speculated callees nest (0: no speculation)
                   spec_max_depth: std::env::var("ASTRUST_SPEC_DEPTH").ok().and_then(|v| v.parse().ok()).unwrap_or(2), comments: std::env::var_os("ASTRUST_SD_COMMENTS").is_some(), rec: vec![],
                   unrolled: HashSet::new(), rec_unroll: std::env::var("ASTRUST_REC_UNROLL").map_or(true, |v| v != "0"), reenter: 0, holes: vec![],
-                  patch: false, patch_root: 0, patch_hash: 0, hopt: 0, tag: String::new() }
+                  patch: false, patch_root: 0, patch_hash: 0, hopt: 0, tag: String::new(), profiled: false, own: HashMap::new() }
     }
     /// Name the next entry by `hopt` (hash_merge(structural hash, profile_node)); 0: by its structural hash.
-    pub fn set_profile(&mut self, hopt: u64) { self.hopt = hopt; self.tag = if hopt == 0 { String::new() } else { format!("_{:016x}", hopt) }; }
+    pub fn set_profile(&mut self, hopt: u64) { self.hopt = hopt; }
     pub fn entry_name(&self, h: u64) -> u64 { if self.hopt == 0 { h } else { self.hopt } }
     /// The entry `root` (0: done) whose tree is specialized next; in the patch crate its holes are bound.
     pub fn begin_entry(&mut self, root: usize, hash: u64) {

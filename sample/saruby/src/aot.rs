@@ -121,6 +121,7 @@ fn bake_in(st: &mut TieredStore, store_dir: &str) -> Result<usize, String> {
     st.bake(std::path::Path::new(store_dir), &bake_config(), |entries, patch| {
         let mut sc = SpecCtx::new();
         sc.patch = patch;
+        sc.profiled = true;
         for &e in entries { sc.set_profile(hopt[&e]); specialize_entry(&mut sc, e as NodePtr); }
         sc.set_profile(0);
         specialize_finish(&mut sc);
