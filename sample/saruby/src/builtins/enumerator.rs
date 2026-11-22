@@ -17,6 +17,7 @@ pub struct REnum {
     pub buf: Value, pub pos: usize, pub fiber: Value,
     pub arith: Option<(Value, Value, Value, bool)>,
     pub lazy: bool,
+    pub kw: bool,     // the last of args was given as keywords
 }
 impl RData for REnum {
     fn visit(&mut self, m: &mut crate::gc::Visitor) {
@@ -38,8 +39,9 @@ fn renum(c: &Ctx, v: Value) -> REnum { *c.data::<REnum>(v).expect("an Enumerator
 fn renum_mut(c: &mut Ctx, v: Value) -> &mut REnum { c.data_mut::<REnum>(v).expect("an Enumerator") }
 
 fn new_enum(c: &mut Ctx, klass: Value, recv: Value, mid: Sym, args: &[Value], size: Value) -> Value {
+    let kw = kw_arg(args).is_some();
     let a = c.ary_new_from(args);
-    c.alloc(klass, Body::Data(Box::new(REnum { recv, mid, args: a, size, gen: NIL, buf: NIL, pos: 0, fiber: NIL, arith: None, lazy: false })))
+    c.alloc(klass, Body::Data(Box::new(REnum { recv, mid, args: a, size, gen: NIL, buf: NIL, pos: 0, fiber: NIL, arith: None, lazy: false, kw })))
 }
 
 pub fn enum_for(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], size_fn: Value) -> RV {
@@ -137,7 +139,9 @@ pub fn enum_each_with(c: &mut Ctx, e: Value, blk: *const Block) -> RV {
     }
     // `en.args` stays on this frame and roots the copies while the call runs
     let args = c.ary(en.args).to_vec();
-    let r = funcall_public(c, en.recv, en.mid, &args, blk);
+    // as rb_block_call: private methods too, and a keyword hash stays keywords
+    let kw = CF_FCALL | if en.kw { CF_KW } else { 0 };
+    let r = funcall_flags(c, en.recv, en.mid, &args, blk, kw);
     std::hint::black_box(en.args);
     r
 }
