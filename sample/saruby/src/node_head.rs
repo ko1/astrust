@@ -522,6 +522,13 @@ pub struct node_trace_struct {
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
+pub struct node_cov_struct {
+    pub id: u32,
+    pub body: NodePtr,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
 pub struct node_if_struct {
     pub cond: NodePtr,
     pub then_b: NodePtr,
@@ -1278,6 +1285,12 @@ pub fn ALLOC_node_trace(ev: u32, line: u32, body: NodePtr) -> NodePtr {
 }
 
 #[allow(non_snake_case)]
+pub fn ALLOC_node_cov(id: u32, body: NodePtr) -> NodePtr {
+    let n = node_allocate(&KIND_node_cov, node_cov_struct { id, body });
+    n
+}
+
+#[allow(non_snake_case)]
 pub fn ALLOC_node_if(cond: NodePtr, then_b: NodePtr, else_b: NodePtr) -> NodePtr {
     let n = node_allocate(&KIND_node_if, node_if_struct { cond, then_b, else_b });
     n
@@ -1900,6 +1913,12 @@ fn CHILDREN_node_line(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_trace(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_trace_struct>)).u };
+    f(&mut u.body);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_cov(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_cov_struct>)).u };
     f(&mut u.body);
 }
 
@@ -2936,6 +2955,21 @@ pub static KIND_node_trace: NodeKind = NodeKind {
     children: CHILDREN_node_trace,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_trace_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_trace_struct>>() <= 8);
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_cov: NodeKind = NodeKind {
+    name: "node_cov",
+    default_dispatcher: DISPATCH_node_cov,
+    hash_func: HASH_node_cov,
+    profile: PROF_node_cov,
+    specializer: SPECIALIZE_node_cov,
+    dumper: DUMP_node_cov,
+    replacer: REPLACE_node_cov,
+    no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_cov_struct>>(),
+    children: CHILDREN_node_cov,
+};
+const _: () = assert!(std::mem::size_of::<NodeOf<node_cov_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_cov_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_if: NodeKind = NodeKind {

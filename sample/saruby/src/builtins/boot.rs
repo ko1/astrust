@@ -199,6 +199,12 @@ pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if let Some(r) = random::dup_data(c, v)? { return Ok(Some(r)); }
     if let Some(r) = enumerator::dup_data(c, v)? { return Ok(Some(r)); }
     if let Some(r) = io::dup_data(c, v)? { return Ok(Some(r)); }
+    if let Some(r) = binding::dup_data(c, v)? { return Ok(Some(r)); }
+    if let Some(r) = digest::dup_data(c, v)? { return Ok(Some(r)); }
+    if let Some(r) = stringio::dup_data(c, v)? { return Ok(Some(r)); }
+    if let Some(r) = strscan::dup_data(c, v)? { return Ok(Some(r)); }
+    if let Some(r) = zlib::dup_data(c, v)? { return Ok(Some(r)); }
+    if let Some(r) = json_generator::dup_data(c, v)? { return Ok(Some(r)); }
     Ok(None)
 }
 
@@ -212,11 +218,18 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     if let Some(r) = file::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = io::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = strscan::alloc_data(c, klass)? { return Ok(Some(r)); }
+    if let Some(r) = psych::alloc_data(c, klass)? { return Ok(Some(r)); }
+    if let Some(r) = socket::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = transcode::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = tracepoint::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = thread::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = thread::alloc_lock(c, klass) { return Ok(Some(r)); }
     if let Some(r) = thread::alloc_queue(c, klass) { return Ok(Some(r)); }
+    if let Some(r) = digest::alloc_data(c, klass)? { return Ok(Some(r)); }
+    if let Some(r) = stringio::alloc_data(c, klass)? { return Ok(Some(r)); }
+    if let Some(r) = zlib::alloc_data(c, klass)? { return Ok(Some(r)); }
+    if let Some(r) = json_parser::alloc_data(c, klass)? { return Ok(Some(r)); }
+    if let Some(r) = json_generator::alloc_data(c, klass)? { return Ok(Some(r)); }
     Ok(None)
 }
 

@@ -166,12 +166,15 @@ pub fn rbconfig_init(c: &mut Ctx) {
     let arch = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" };
     let archname = format!("{}-linux", arch);
     let archdir = format!("{}/{}", lib, archname);
+    // the Unicode version of the case / property tables (Rust's char)
+    let (u0, u1, u2) = char::UNICODE_VERSION;
+    let (uv, uev) = (format!("{}.{}.{}", u0, u1, u2), format!("{}.{}", u0, u1));
     let entries: &[(&str, &str)] = &[("ruby_install_name", &name), ("RUBY_INSTALL_NAME", &name), ("RUBY_BASE_NAME", "ruby"), ("bindir", &bindir), ("EXEEXT", ""),
         ("host_os", "linux"), ("target_os", "linux"), ("host_cpu", arch), ("target_cpu", arch), ("arch", &archname), ("host", &archname),
         ("MAJOR", "3"), ("MINOR", "4"), ("TEENY", "0"), ("PATCHLEVEL", "0"), ("ruby_version", "3.4.0"), ("RUBY_PROGRAM_VERSION", "3.4.0"),
         ("RUBY_API_VERSION", "3.4"), ("rubylibdir", &lib), ("archdir", &archdir), ("rubyarchdir", &archdir), ("DLEXT", "so"), ("SOEXT", "so"),
         ("LIBEXT", "a"), ("OBJEXT", "o"), ("PATH_SEPARATOR", ":"), ("SHELL", "/bin/sh"), ("CC", "gcc"), ("CPP", "gcc -E"), ("ENABLE_SHARED", "yes"),
-        ("build_os", "linux"), ("build_cpu", arch), ("build", &archname), ("LIBRUBY_SO", "libsaruby.so"), ("prefix", &bindir), ("exec_prefix", &bindir),
+        ("build_os", "linux"), ("build_cpu", arch), ("build", &archname), ("LIBRUBY_SO", "libsaruby.so"), ("LIBRUBY", "libsaruby.so"), ("libdirname", "libdir"), ("LIBPATHENV", "LD_LIBRARY_PATH"), ("AR", "ar"), ("STRIP", "strip"), ("UNICODE_VERSION", &uv), ("UNICODE_EMOJI_VERSION", &uev), ("prefix", &bindir), ("exec_prefix", &bindir),
         ("libdir", &bindir), ("sitedir", ""), ("sitelibdir", ""), ("sitearchdir", ""), ("vendordir", ""), ("vendorlibdir", ""), ("vendorarchdir", ""),
         ("datadir", ""), ("mandir", ""), ("sysconfdir", "/etc"), ("localstatedir", "/var"), ("configure_args", ""), ("CFLAGS", ""), ("LDFLAGS", "")];
     for (k, v) in entries { let ks = c.str_new_frozen(k.as_bytes()); let vs = c.str_new(v.as_bytes()); let _ = hash_set(c, cfg, ks, vs); }
@@ -239,7 +242,7 @@ pub fn init(vmr: &mut Vm) {
     set("RUBY_DESCRIPTION", boot_str(vmr, crate::version().as_bytes()));
     set("RUBY_PATCHLEVEL", Value::fix(0));
     set("ARGV", vmr.argv);
-    set("TOPLEVEL_BINDING", NIL);
+    crate::builtins::lazy_const(ob, "TOPLEVEL_BINDING", "saruby/toplevel_binding");
     let _ = (intern, num_to_long);
     vmr.c_location = crate::builtins::exception::init_location(vmr);
 }

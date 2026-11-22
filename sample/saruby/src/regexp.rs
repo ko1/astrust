@@ -42,12 +42,18 @@ pub fn rmatch_mut(c: &mut Ctx, v: Value) -> Option<&mut RMatch> { c.data_mut::<R
 pub fn is_regexp(c: &Ctx, v: Value) -> bool { rregexp(c, v).is_some() }
 
 /// Search re in str from byte `start`; returns a MatchData or NIL, and sets $~.
-pub fn search(c: &mut Ctx, re: Value, s: Value, start: usize, set_last: bool) -> RV {
+/// ArgumentError for a String a regexp cannot search (broken encoding).
+pub fn check_searchable(c: &mut Ctx, s: Value) -> Result<(), Esc> {
     let bytes = c.str_bytes(s);
     let enc = c.str_enc(s);
     if !crate::string::is_ascii(bytes) && !crate::builtins::encoding::is_valid(enc, bytes) {
         return arg_err(c, format!("invalid byte sequence in {}", crate::builtins::encoding::enc_name(enc)));
     }
+    Ok(())
+}
+pub fn search(c: &mut Ctx, re: Value, s: Value, start: usize, set_last: bool) -> RV {
+    check_searchable(c, s)?;
+    let bytes = c.str_bytes(s);
     let groups = if start > bytes.len() { None } else { search_raw(c, re, bytes, start) };
     let Some(groups) = groups else { if set_last { c.last_match = NIL; } return Ok(NIL) };
     let m = match_new(c, re, s, groups);

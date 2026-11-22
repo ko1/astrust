@@ -10,7 +10,9 @@ use crate::prism_ast::{self as pa, Kind, Node as PNode};
 use crate::symbol::{intern, s};
 use crate::value::*;
 use crate::vm::*;
-use std::collections::{HashMap, HashSet};
+use crate::fxhash::{HashMap, HashSet};
+#[path = "compile_cov.rs"]
+mod cov;
 
 pub type IseqRef = &'static Iseq;
 pub type CiRef = &'static CallInfo;
@@ -107,8 +109,8 @@ struct Scope {
 
 impl Scope {
     fn new(kind: SK, captured: HashSet<Sym>) -> Scope {
-        Scope { kind, vars: HashMap::new(), names: vec![], nslots: 2, env_size: 0, captured, loop_depth: 0,
-                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![], children: vec![], params_seen: HashSet::new(), param_names: vec![], needs_id: false, end_line: 0, trace_line: 0 }
+        Scope { kind, vars: HashMap::default(), names: vec![], nslots: 2, env_size: 0, captured, loop_depth: 0,
+                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![], children: vec![], params_seen: HashSet::default(), param_names: vec![], needs_id: false, end_line: 0, trace_line: 0 }
     }
     fn has_env(&self) -> bool { self.env_size > 0 }
 }
@@ -124,6 +126,7 @@ pub struct Compiler<'a> {
     in_def: u32,
     pm_err: Option<u32>,          // single-pattern match: slot receiving the failure description
     tl_binding: bool,
+    cov: Option<usize>,           // Coverage file id: lines / methods get node_cov counters
     trace: bool,                  // compiled for tracing (vm::TRACE_COMPILE): trace points, no entries, locals in envs
     flat_stmts: bool,             // the next statements are no lines of their own (modifier / ternary forms)
     pub errors: Vec<String>,
@@ -154,7 +157,7 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, trace: false, flat_stmts: false, errors: vec![],
+        Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, errors: vec![],
                    csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()],
                    src_enc: crate::builtins::encoding::find_enc(pr.encoding.as_bytes()).unwrap_or(crate::object::ENC_UTF8) as u32 }
     }
@@ -507,17 +510,7 @@ impl<'a> Compiler<'a> {
     pub fn c(&mut self, n: &PNode) -> NodePtr {
         let line = self.line(n.loc);
         match &n.kind {
-            Kind::StatementsNode { body } => {
-                let flat = std::mem::take(&mut self.flat_stmts);
-                let v: Vec<NodePtr> = body.iter().map(|x| {
-                    let l = if self.trace { self.line(x.loc) } else { 0 };
-                    let traced = self.trace && !flat && !matches!(x.kind, Kind::BeginNode { .. }) && std::mem::replace(&mut self.cur().trace_line, l) != l;
-                    let r = self.c(x);
-                    if traced { ALLOC_node_trace(EV_LINE, l, r) }
-                    else if needs_line(x) { ALLOC_node_line(self.line(x.loc), r) } else { r }
-                }).collect();
-                self.seq(v)
-            }
+            Kind::StatementsNode { body } => self.statements(body),
             Kind::ParenthesesNode { body } => self.stmts(body.as_deref()),
             Kind::BeginNode { statements, rescue_clause, else_clause, ensure_clause } => {
                 let mut body = self.stmts(statements.as_deref());
@@ -741,6 +734,8 @@ impl<'a> Compiler<'a> {
             }
             Kind::NumberedReferenceReadNode { number } => ALLOC_node_nth_ref(*number),
             // control flow
+            Kind::IfNode { predicate, statements, subsequent, .. } if self.cov.is_some() => self.if_node(n, predicate, statements.as_deref(), subsequent.as_deref()),
+            Kind::UnlessNode { predicate, statements, else_clause } if self.cov.is_some() => self.unless_node(n, predicate, statements.as_deref(), else_clause.as_deref()),
             Kind::IfNode { predicate, statements, subsequent, .. } => {
                 let cnd = self.cond(predicate);
                 // `x if c` / `c ? x : y`: no line events of their own (CRuby's newline nodes)
@@ -761,9 +756,11 @@ impl<'a> Compiler<'a> {
             Kind::WhileNode { predicate, statements } | Kind::UntilNode { predicate, statements } => {
                 let until = matches!(n.kind, Kind::UntilNode { .. });
                 let cnd = self.cond(predicate);
+                let bb = self.bbase(if until { "until" } else { "while" }, n);
                 self.cur().loop_depth += 1;
                 let body = self.stmts_flat(statements.as_deref(), n.loc.start >= predicate.loc.start);
                 self.cur().loop_depth -= 1;
+                let body = self.btarget(bb, "body", |c| match statements { Some(s) => c.ploc(s), None => c.ploc(n) }, body);
                 if n.flags & pa::LOOP_FLAGS_BEGIN_MODIFIER != 0 { ALLOC_node_dowhile(cnd, body, until) } else { ALLOC_node_while(cnd, body, until) }
             }
             Kind::ForNode { index, collection, statements } => self.for_loop(n, index, collection, statements.as_deref(), line),
@@ -778,8 +775,8 @@ impl<'a> Compiler<'a> {
             Kind::RedoNode => ALLOC_node_redo(),
             Kind::RetryNode => ALLOC_node_retry(),
             Kind::ReturnNode { arguments } => { let v = self.args_value(arguments.as_deref()); ALLOC_node_return(v) }
-            Kind::CaseNode { predicate, conditions, else_clause } => self.case_when(predicate.as_deref(), conditions, else_clause.as_deref(), line),
-            Kind::CaseMatchNode { predicate, conditions, else_clause } => self.case_in(predicate.as_deref(), conditions, else_clause.as_deref(), line),
+            Kind::CaseNode { predicate, conditions, else_clause } => self.case_when(n, predicate.as_deref(), conditions, else_clause.as_deref(), line),
+            Kind::CaseMatchNode { predicate, conditions, else_clause } => self.case_in(n, predicate.as_deref(), conditions, else_clause.as_deref(), line),
             Kind::MatchPredicateNode { value, pattern } => {
                 let sl = self.hidden_slot();
                 let v = self.c(value);
@@ -948,7 +945,7 @@ impl<'a> Compiler<'a> {
             Kind::PostExecutionNode { statements } => {
                 // END { } → at_exit { }
                 // no scope of its own in prism: like a `for` body it shares the enclosing variables
-                let mut sc = Scope::new(SK::For, HashSet::new());
+                let mut sc = Scope::new(SK::For, HashSet::default());
                 sc.transparent = true;
                 self.scopes.push(sc);
                 let b = self.stmts(statements.as_deref());
@@ -1260,6 +1257,13 @@ impl<'a> Compiler<'a> {
             None => ALLOC_node_self(),
         };
         let (recv_node, pre) = match sl { Some(sl) => (ALLOC_node_lvar(sl), Some(ALLOC_node_lasgn(sl, recv_node))), None => (recv_node, None) };
+        // branch coverage of `&.`: the call without its block
+        let qcall = if sl.is_some() && self.cov.is_some() {
+            let mut end = match block { Some(b @ PNode { kind: Kind::BlockNode { .. }, .. }) => b.loc.start, _ => n.loc.start + n.loc.len };
+            while end > n.loc.start && self.src.get(end as usize - 1).is_some_and(|b| b.is_ascii_whitespace()) { end -= 1; }
+            let p = self.pos4(n.loc.start, end);
+            self.cov.and_then(|f| crate::builtins::coverage::branch_base(f, "&.", p)).map(|b| (b, p))
+        } else { None };
         let blk_iseq = match block {
             Some(b @ PNode { kind: Kind::BlockNode { locals, parameters, body }, .. }) => {
                 Some(self.compile_block(b, locals, parameters.as_deref(), body.as_deref(), IseqKind::Block, line))
@@ -1305,7 +1309,10 @@ impl<'a> Compiler<'a> {
         match pre {
             Some(set) => {
                 let test = ALLOC_node_special(SP_IS_NIL, ALLOC_node_lvar(sl.unwrap()));
-                let body = ALLOC_node_if(test, ALLOC_node_nil(), node);
+                let (bb, p) = match qcall { Some((b, p)) => (Some(b), p), None => (None, [0; 4]) };
+                let node = self.btarget(bb, "then", |_| p, node);
+                let nil = self.btarget(bb, "else", |_| p, ALLOC_node_nil());
+                let body = ALLOC_node_if(test, nil, node);
                 self.seq(vec![set, body])
             }
             None => node,
@@ -1435,15 +1442,17 @@ impl<'a> Compiler<'a> {
 
     // ---- case ------------------------------------------------------------------------------
 
-    fn case_when(&mut self, pred: Option<&PNode>, conds: &[PNode], els: Option<&PNode>, _line: u32) -> NodePtr {
-        let mut tail = match els { Some(e) => self.else_body(e), None => ALLOC_node_nil() };
+    fn case_when(&mut self, case: &PNode, pred: Option<&PNode>, conds: &[PNode], els: Option<&PNode>, _line: u32) -> NodePtr {
+        let pv = pred.map(|p| self.c(p));
+        let bb = self.bbase("case", case);
+        let (mut bodies, mut tail) = self.clause_bodies(bb, "when", case, conds, els, ALLOC_node_nil());
         match pred {
-            Some(p) => {
+            Some(_) => {
                 let sl = self.hidden_slot();
-                let pv = self.c(p);
-                let set = ALLOC_node_lasgn(sl, pv);
+                let set = ALLOC_node_lasgn(sl, pv.unwrap());
                 for w in conds.iter().rev() {
-                    if let Kind::WhenNode { conditions, statements } = &w.kind {
+                    let body = bodies.pop().unwrap();
+                    if let Kind::WhenNode { conditions, .. } = &w.kind {
                         let mut pats = vec![]; let mut kinds = vec![];
                         for cnd in conditions {
                             match &cnd.kind {
@@ -1455,7 +1464,6 @@ impl<'a> Compiler<'a> {
                             Some(v) => ALLOC_node_when_lit(sl, v),
                             None => ALLOC_node_when(sl, leak(pats), lstr(&kinds)),
                         };
-                        let body = self.stmts(statements.as_deref());
                         tail = ALLOC_node_if(test, body, tail);
                     }
                 }
@@ -1463,13 +1471,13 @@ impl<'a> Compiler<'a> {
             }
             None => {
                 for w in conds.iter().rev() {
-                    if let Kind::WhenNode { conditions, statements } = &w.kind {
+                    let body = bodies.pop().unwrap();
+                    if let Kind::WhenNode { conditions, .. } = &w.kind {
                         let mut test: Option<NodePtr> = None;
                         for cnd in conditions.iter().rev() {
                             let cv = self.c(cnd);
                             test = Some(match test { None => cv, Some(t) => ALLOC_node_or(cv, t) });
                         }
-                        let body = self.stmts(statements.as_deref());
                         tail = ALLOC_node_if(test.unwrap_or_else(ALLOC_node_false), body, tail);
                     }
                 }
@@ -1478,10 +1486,19 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn case_in(&mut self, pred: Option<&PNode>, conds: &[PNode], els: Option<&PNode>, _line: u32) -> NodePtr {
+    fn case_in(&mut self, case: &PNode, pred: Option<&PNode>, conds: &[PNode], els: Option<&PNode>, _line: u32) -> NodePtr {
         let sl = self.hidden_slot();
         let pv = match pred { Some(p) => self.c(p), None => ALLOC_node_nil() };
         let set = ALLOC_node_lasgn(sl, pv);
+        let bb = self.bbase("case", case);
+        if bb.is_some() {
+            let (mut bodies, mut tail) = self.clause_bodies(bb, "in", case, conds, els, ALLOC_node_special(SP_NOMATCH, ALLOC_node_lvar(sl)));
+            for w in conds.iter().rev() {
+                let body = bodies.pop().unwrap();
+                if let Kind::InNode { pattern, .. } = &w.kind { let test = self.pattern(pattern, sl); tail = ALLOC_node_if(test, body, tail); }
+            }
+            return self.seq(vec![set, tail]);
+        }
         if let (None, [PNode { kind: Kind::InNode { pattern, statements }, .. }]) = (els, conds) {
             // one clause, no else: the error says why it did not match
             let (test, fail) = self.single_pattern(pattern, sl);
@@ -1849,7 +1866,7 @@ impl<'a> Compiler<'a> {
     fn for_loop(&mut self, n: &PNode, index: &PNode, coll: &PNode, body: Option<&PNode>, line: u32) -> NodePtr {
         let cv = self.c(coll);
         // the body is a block that shares the enclosing scope's variables (captured into env)
-        let mut sc = Scope::new(SK::For, HashSet::new());
+        let mut sc = Scope::new(SK::For, HashSet::default());
         sc.transparent = true;
         self.scopes.push(sc);
         let p = self.hidden_slot();
@@ -1919,7 +1936,11 @@ impl<'a> Compiler<'a> {
         let endless = body.is_some_and(|b| b.loc.start + b.loc.len == n.loc.start + n.loc.len);
         let b = self.stmts_flat(body, endless);
         self.in_def -= 1;
+        let end = n.loc.start + n.loc.len;
+        let mslot = self.cov.and_then(|f| crate::builtins::coverage::method_slot(f, [line, self.pr.col_of(n.loc.start), self.pr.line_of(end), self.pr.col_of(end)]));
+        let b = match mslot { Some(s) => ALLOC_node_cov(s, b), None => b };
         let is = self.finish_iseq(b, ps, IseqKind::Method, crate::symbol::sym_str(name), line, name);
+        if let Some(s) = mslot { crate::builtins::coverage::bind_iseq(is as *const Iseq as usize, s); }
         METHOD_LABEL.with(|m| m.borrow_mut().pop());
         self.scopes = saved;
         is
@@ -2223,6 +2244,7 @@ pub fn compile_parsed(pr: &ParseResult, src: &[u8], file: &'static str, kind: Is
         TRACE_COMPILE.store(true, Relaxed);
         cm.trace = true;
     }
+    if let Some(f) = crate::builtins::coverage::compile_wants(file, kind == IseqKind::Eval, src, pr.start_line) { cm.trace = true; cm.cov = Some(f); }
     if kind == IseqKind::Eval && !outer.is_empty() { cm.captures.entry(key(&pr.root)).or_default().insert(Sym(u32::MAX)); }
     cm.eval_outer = outer;
     if kind == IseqKind::Main && src.windows(16).any(|w| w == b"TOPLEVEL_BINDING") {

@@ -412,6 +412,16 @@ pub fn DISPATCH_node_trace(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
 }
 
 #[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_cov(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_cov");
+    let np = n as *mut NodeOf<node_cov_struct>;
+    unsafe {
+
+    EVAL_node_cov::<Dyn>(c, n, fp, (*np).u.id, (*np).u.body)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
 pub fn DISPATCH_node_if(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_if");
     let np = n as *mut NodeOf<node_if_struct>;

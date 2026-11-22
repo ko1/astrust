@@ -1007,6 +1007,7 @@ pub fn srb_def(c: &mut Ctx, mid: Sym, is: &'static Iseq, _fp: Fp) -> RV {
     } else {
         define_iseq_method(c, klass, mid, is, visi);
     }
+    crate::builtins::coverage::on_def(c, is as *const Iseq as usize, klass, mid);
     crate::builtins::object::call_method_added(c, klass, mid)?;
     Ok(Value::sym(mid))
 }
@@ -1018,6 +1019,7 @@ pub fn srb_sdef(c: &mut Ctx, recv: Value, mid: Sym, is: &'static Iseq) -> RV {
     if is_frozen(recv) { return Err(raise_frozen(c, recv)); }
     let k = singleton_class(recv);
     define_iseq_method(c, k, mid, is, VISI_PUBLIC);
+    crate::builtins::coverage::on_def(c, is as *const Iseq as usize, k, mid);
     if crate::vm::respond_to(recv, s::singleton_method_added, true) {
         funcall(c, recv, s::singleton_method_added, &[Value::sym(mid)], std::ptr::null())?;
     }

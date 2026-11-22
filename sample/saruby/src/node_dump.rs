@@ -455,6 +455,17 @@ fn DUMP_node_trace(out: &mut String, n: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_cov(out: &mut String, n: NodePtr) {
+    let np = n as *mut NodeOf<node_cov_struct>;
+    unsafe {
+    out.push_str("(node_cov");
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.id));
+    out.push(' '); dump_node(out, (*np).u.body);
+    out.push(')');
+    }
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_if(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_if_struct>;
     unsafe {
