@@ -188,6 +188,52 @@ node_re_backref(c: &mut Ctx, n: NodePtr, pos: usize, groups: Groups, icase: bool
     }
 }
 
+// ---- subexpression calls (only in patterns with recursive calls or level backrefs) -------
+// Captures there pair each close with its own open across recursion (Onigmo's
+// MEMORY_START_PUSH / MEMORY_END_PUSH_REC), through the mark stack c.mstk.
+
+NODE_DEF
+node_re_open_rec(c: &mut Ctx, n: NodePtr, pos: usize, g: u32, next: NODE) -> u32
+{
+    let mark = c.log.len();
+    open_rec_k(c, g as usize, pos);
+    let r = EVAL_ARG!(c, next, pos);
+    if r == FAIL { c.undo(mark); }
+    r
+}
+
+NODE_DEF
+node_re_close_rec(c: &mut Ctx, n: NodePtr, pos: usize, g: u32, next: NODE) -> u32
+{
+    let mark = c.log.len();
+    close_rec_k(c, g as usize, pos);
+    let r = EVAL_ARG!(c, next, pos);
+    if r == FAIL { c.undo(mark); }
+    r
+}
+
+// \g<g>: runs group g's subroutine; its node_re_ret continues with `next`.
+NODE_DEF
+node_re_call(c: &mut Ctx, n: NodePtr, pos: usize, g: u32, next: NODE) -> u32
+{
+    call_k(c, g as usize, next, pos)
+}
+
+NODE_DEF
+node_re_ret(c: &mut Ctx, n: NodePtr, pos: usize) -> u32
+{
+    ret_k(c, pos)
+}
+
+NODE_DEF
+node_re_backref_lv(c: &mut Ctx, n: NodePtr, pos: usize, groups: Groups, icase: bool, nest: i32, next: NODE) -> u32
+{
+    match backref_lv_k(c, groups, icase, nest, pos) {
+        Some(np) => EVAL_ARG!(c, next, np),
+        None => FAIL,
+    }
+}
+
 NODE_DEF
 node_re_cond(c: &mut Ctx, n: NodePtr, pos: usize, groups: Groups, yes: NODE, no: NODE) -> u32
 {

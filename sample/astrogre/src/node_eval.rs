@@ -34,6 +34,16 @@ use super::node::*;
 // Group end (Onigmo MEMORY_END): never undone, so backrefs can see a stale end.
 
 
+// ---- subexpression calls (only in patterns with recursive calls or level backrefs) -------
+// Captures there pair each close with its own open across recursion (Onigmo's
+// MEMORY_START_PUSH / MEMORY_END_PUSH_REC), through the mark stack c.mstk.
+
+
+
+// \g<g>: runs group g's subroutine; its node_re_ret continues with `next`.
+
+
+
 
 // ---- choice and repetition ----------------------------------------------------------
 
@@ -232,6 +242,52 @@ pub fn EVAL_node_re_backref<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, g
             if r == FAIL { c.undo(mark); }
             r
         }
+        None => FAIL,
+    }
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_re_open_rec<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, g: u32, next: NodePtr) -> u32 {
+    let mark = c.log.len();
+    open_rec_k(c, g as usize, pos);
+    let r = <D_next as Disp>::call(c, next, pos);
+    if r == FAIL { c.undo(mark); }
+    r
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_re_close_rec<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, g: u32, next: NodePtr) -> u32 {
+    let mark = c.log.len();
+    close_rec_k(c, g as usize, pos);
+    let r = <D_next as Disp>::call(c, next, pos);
+    if r == FAIL { c.undo(mark); }
+    r
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_re_call<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, g: u32, next: NodePtr) -> u32 {
+    call_k(c, g as usize, next, pos)
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_re_ret(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {
+    ret_k(c, pos)
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_re_backref_lv<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, groups: Groups, icase: bool, nest: i32, next: NodePtr) -> u32 {
+    match backref_lv_k(c, groups, icase, nest, pos) {
+        Some(np) => <D_next as Disp>::call(c, next, np),
         None => FAIL,
     }
 }

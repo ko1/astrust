@@ -84,6 +84,36 @@ fn REPLACE_node_re_backref(n: NodePtr, old: NodePtr, new: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_re_open_rec(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_open_rec_struct>)).u };
+    if u.next == old { u.next = new; }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_re_close_rec(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_close_rec_struct>)).u };
+    if u.next == old { u.next = new; }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_re_call(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_call_struct>)).u };
+    if u.next == old { u.next = new; }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_re_ret(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_ret_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_re_backref_lv(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_backref_lv_struct>)).u };
+    if u.next == old { u.next = new; }
+}
+
+#[allow(non_snake_case, unused_variables)]
 fn REPLACE_node_re_cond(n: NodePtr, old: NodePtr, new: NodePtr) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_re_cond_struct>)).u };
     if u.yes == old { u.yes = new; }

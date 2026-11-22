@@ -583,6 +583,7 @@ enum Ast {
     Look(bool, bool, Box<Ast>), // (behind, negative, body)
     Atomic(Box<Ast>),
     Backref(BRef, bool),
+    BackrefLv(BRef, bool, i32), // \k<name+level>: the capture made at that call nesting level
     Keep,
     Grapheme,
     Cond(BRef, Box<Ast>, Box<Ast>),
@@ -778,6 +779,87 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Onigmo's fetch_name_with_level after `<` / `'`: a group number (negative: relative) or a
+    /// defined name, and an optional nest level (`name+1`, `-1-0`).
+    fn ref_name(&mut self, close: u8) -> Result<(BRef, Option<i32>), String> {
+        let st = self.i;
+        let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c >= 0x80;
+        let c0 = match self.peek() {
+            None => return err("group name is empty"),
+            Some(c) if c == close => return err("group name is empty"),
+            Some(c) => c,
+        };
+        self.i += 1;
+        let (mut is_num, mut neg) = (0, false);
+        let mut bad: Option<&str> = None;
+        if c0.is_ascii_digit() {
+            is_num = 1;
+        } else if c0 == b'-' {
+            is_num = 2;
+            neg = true;
+        } else if !word(c0) {
+            bad = Some("invalid char in group name");
+        }
+        let mut name_end = self.p.len();
+        let mut c = c0;
+        while self.i < self.p.len() {
+            name_end = self.i;
+            c = self.p[self.i];
+            self.i += 1;
+            if c == close || c == b')' || c == b'+' || c == b'-' {
+                if is_num == 2 {
+                    bad = Some("invalid group name");
+                    is_num = 0;
+                }
+                break;
+            }
+            if is_num != 0 {
+                if c.is_ascii_digit() {
+                    is_num = 1;
+                } else {
+                    bad = Some("invalid group name");
+                    is_num = 0;
+                }
+            } else if !word(c) {
+                bad = Some("invalid char in group name");
+            }
+        }
+        let mut level = None;
+        let whole = |s: &Self| Err(format!("invalid group name <{}>", String::from_utf8_lossy(&s.p[st..])));
+        if bad.is_none() && c != close {
+            if (c == b'+' || c == b'-') && self.peek().map_or(false, |d| d.is_ascii_digit()) {
+                let l = self.read_num().unwrap() as i32;
+                level = Some(if c == b'-' { -l } else { l });
+                if self.peek() != Some(close) {
+                    return whole(self);
+                }
+                self.i += 1;
+            } else {
+                return whole(self);
+            }
+        }
+        if let Some(m) = bad {
+            return Err(format!("{} <{}>", m, String::from_utf8_lossy(&self.p[st..name_end])));
+        }
+        let text = &self.p[if neg { st + 1 } else { st }..name_end];
+        if is_num != 0 {
+            let n: usize = std::str::from_utf8(text).ok().and_then(|t| t.parse().ok()).unwrap_or(0);
+            if n == 0 {
+                return whole(self);
+            }
+            if neg {
+                if n > self.ngroups {
+                    return err("invalid backref number/name");
+                }
+                return Ok((BRef::Num(self.ngroups + 1 - n), level));
+            }
+            return Ok((BRef::Num(n), level));
+        }
+        let name = String::from_utf8_lossy(text).into_owned();
+        self.check_name_defined(&name)?;
+        Ok((BRef::Name(name), level))
+    }
+
     /// Ruby resolves named references while parsing: the group must already be defined.
     fn check_name_defined(&self, name: &str) -> Result<(), String> {
         if self.group_names.iter().any(|n| n.as_deref() == Some(name)) {
@@ -941,32 +1023,20 @@ impl<'a> Parser<'a> {
                 Some(b'~') => return err("absent operator is not supported"),
                 Some(b'(') => {
                     self.i += 1;
-                    let st = self.i;
-                    while let Some(c) = self.peek() {
-                        if c == b')' {
-                            break;
+                    // (?(n)..), (?(<name>)..), (?('name')..); a level suffix is accepted and ignored
+                    let r = match self.peek() {
+                        Some(q @ (b'<' | b'\'')) => {
+                            self.i += 1;
+                            let (r, _) = self.ref_name(if q == b'<' { b'>' } else { b'\'' })?;
+                            r
                         }
-                        self.i += 1;
-                    }
+                        Some(b'0'..=b'9') => BRef::Num(self.read_num().unwrap() as usize),
+                        _ => return err("invalid conditional pattern"),
+                    };
                     if self.peek() != Some(b')') {
                         return err("invalid conditional pattern");
                     }
-                    let raw = String::from_utf8_lossy(&self.p[st..self.i]).into_owned();
                     self.i += 1;
-                    let name = if (raw.starts_with('<') && raw.ends_with('>')) || (raw.starts_with('\'') && raw.ends_with('\'')) && raw.len() >= 2 {
-                        raw[1..raw.len() - 1].to_string()
-                    } else {
-                        raw
-                    };
-                    if name.is_empty() {
-                        return err("invalid conditional pattern");
-                    }
-                    let r = if name.bytes().all(|b| b.is_ascii_digit()) {
-                        BRef::Num(name.parse().map_err(|_| "invalid backref number/name".to_string())?)
-                    } else {
-                        self.check_name_defined(&name)?;
-                        BRef::Name(name)
-                    };
                     let body = self.parse_alt()?;
                     if self.peek() != Some(b')') {
                         return err("end pattern with unmatched parenthesis");
@@ -1271,24 +1341,15 @@ impl<'a> Parser<'a> {
             b'k' if matches!(self.peek(), Some(b'<' | b'\'')) => {
                 let close = if self.peek() == Some(b'<') { b'>' } else { b'\'' };
                 self.i += 1;
-                let name = self.read_name(close).map_err(|_| "invalid backref number/name".to_string())?;
-                if name.is_empty() {
-                    return err("group name is empty");
+                if self.peek() == Some(b'+') {
+                    let name = self.read_name(close).map_err(|_| "invalid backref number/name".to_string())?;
+                    return Err(format!("undefined name <{}> reference", name));
                 }
-                let r = if let Some(rest) = name.strip_prefix('-') {
-                    let n: usize = rest.parse().map_err(|_| "invalid backref number/name".to_string())?;
-                    if n == 0 || n > self.ngroups {
-                        return err("invalid backref number/name");
-                    }
-                    BRef::Num(self.ngroups + 1 - n)
-                } else if name.as_bytes()[0].is_ascii_digit() || name.starts_with('+') {
-                    let n: usize = name.trim_start_matches('+').parse().map_err(|_| "invalid backref number/name".to_string())?;
-                    BRef::Num(n)
-                } else {
-                    self.check_name_defined(&name)?;
-                    BRef::Name(name)
-                };
-                Ast::Backref(r, self.icase)
+                let (r, level) = self.ref_name(close)?;
+                match level {
+                    Some(l) => Ast::BackrefLv(r, self.icase, l),
+                    None => Ast::Backref(r, self.icase),
+                }
             }
             b'g' if matches!(self.peek(), Some(b'<' | b'\'')) => {
                 let close = if self.peek() == Some(b'<') { b'>' } else { b'\'' };
@@ -1599,7 +1660,7 @@ impl<'a> Resolver<'a> {
             }
             Ast::Call(r) => {
                 let k = match r {
-                    BRef::Num(0) => return err("never ending recursion"),
+                    BRef::Num(0) => 0,
                     BRef::Num(k) => {
                         if self.has_named {
                             return err("numbered backref/call is not allowed. (use name)");
@@ -1618,6 +1679,10 @@ impl<'a> Resolver<'a> {
                 };
                 Ast::Call(BRef::Groups(vec![k]))
             }
+            Ast::BackrefLv(r, ic, l) => match self.walk(Ast::Backref(r, ic))? {
+                Ast::Backref(r, ic) => Ast::BackrefLv(r, ic, l),
+                _ => unreachable!(),
+            },
             Ast::Backref(r, ic) => {
                 let gs = match r {
                     BRef::Num(k) => {
@@ -1656,13 +1721,143 @@ fn collect_groups(n: &Ast, out: &mut Vec<Option<Ast>>) {
 /// No backrefs, conditionals, calls, or captures inside lookaheads (onig_check_linear_time).
 fn linear_ok(n: &Ast, in_look: bool) -> bool {
     match n {
-        Ast::Backref(..) | Ast::Cond(..) | Ast::Call(_) => false,
+        Ast::Backref(..) | Ast::BackrefLv(..) | Ast::Cond(..) | Ast::Call(_) => false,
         Ast::Group(_, b) => !in_look && linear_ok(b, in_look),
         Ast::Repeat(b, ..) | Ast::Atomic(b) => linear_ok(b, in_look),
         Ast::Look(behind, _, b) => linear_ok(b, in_look || !behind),
         Ast::Seq(v) | Ast::Alt(v) => v.iter().all(|x| linear_ok(x, in_look)),
         _ => true,
     }
+}
+fn collect_calls(n: &Ast, out: &mut Vec<usize>) {
+    match n {
+        Ast::Call(BRef::Groups(g)) => out.push(g[0]),
+        Ast::Group(_, b) | Ast::Repeat(b, ..) | Ast::Look(_, _, b) | Ast::Atomic(b) => collect_calls(b, out),
+        Ast::Seq(v) | Ast::Alt(v) => v.iter().for_each(|x| collect_calls(x, out)),
+        Ast::Cond(_, y, n) => { collect_calls(y, out); collect_calls(n, out) }
+        _ => {}
+    }
+}
+fn has_level_ref(n: &Ast) -> bool {
+    match n {
+        Ast::BackrefLv(..) => true,
+        Ast::Group(_, b) | Ast::Repeat(b, ..) | Ast::Look(_, _, b) | Ast::Atomic(b) => has_level_ref(b),
+        Ast::Seq(v) | Ast::Alt(v) => v.iter().any(has_level_ref),
+        Ast::Cond(_, y, n) => has_level_ref(y) || has_level_ref(n),
+        _ => false,
+    }
+}
+/// Minimum length in chars; a call already being entered counts as 0 (Onigmo get_min_match_length).
+fn min_len(n: &Ast, groups: &[Option<Ast>], stack: &mut Vec<usize>) -> u32 {
+    match n {
+        Ast::Char(..) | Ast::Any(_) | Ast::Class(_) | Ast::Grapheme => 1,
+        Ast::Seq(v) => v.iter().fold(0u32, |a, x| a.saturating_add(min_len(x, groups, stack))),
+        Ast::Alt(v) => v.iter().map(|x| min_len(x, groups, stack)).min().unwrap_or(0),
+        Ast::Group(_, b) | Ast::Atomic(b) => min_len(b, groups, stack),
+        Ast::Repeat(b, mn, _, _) => min_len(b, groups, stack).saturating_mul(*mn),
+        Ast::Cond(_, y, n) => min_len(y, groups, stack).min(min_len(n, groups, stack)),
+        Ast::Call(BRef::Groups(g)) => {
+            let k = g[0];
+            if stack.contains(&k) { return 0; }
+            let Some(Some(b)) = groups.get(k) else { return 0 };
+            stack.push(k);
+            let r = min_len(b, groups, stack);
+            stack.pop();
+            r
+        }
+        _ => 0,
+    }
+}
+/// Onigmo subexp_inf_recursive_check for group `target`: 2 if a call to it can come before any
+/// char is consumed, 1 if every path calls it again, 0 otherwise.  Nonzero: never ending.
+fn inf_rec(n: &Ast, groups: &[Option<Ast>], target: usize, head: bool, seen: &mut Vec<usize>) -> u8 {
+    match n {
+        Ast::Seq(v) => {
+            let (mut r, mut head) = (0, head);
+            for x in v {
+                let t = inf_rec(x, groups, target, head, seen);
+                if t == 2 { return 2; }
+                r |= t;
+                if head && min_len(x, groups, &mut vec![]) != 0 { head = false; }
+            }
+            r
+        }
+        Ast::Alt(v) => {
+            let mut r = 1;
+            for x in v {
+                let t = inf_rec(x, groups, target, head, seen);
+                if t == 2 { return 2; }
+                r &= t;
+            }
+            r
+        }
+        Ast::Repeat(b, mn, _, _) => {
+            let r = inf_rec(b, groups, target, head, seen);
+            if r == 1 && *mn == 0 { 0 } else { r }
+        }
+        Ast::Look(_, _, b) | Ast::Group(_, b) | Ast::Atomic(b) => inf_rec(b, groups, target, head, seen),
+        Ast::Call(BRef::Groups(g)) => {
+            let k = g[0];
+            if k == target { return if head { 2 } else { 1 }; }
+            if seen.contains(&k) { return 0; }
+            let Some(Some(b)) = groups.get(k) else { return 0 };
+            seen.push(k);
+            let r = inf_rec(b, groups, target, head, seen);
+            seen.pop();
+            r
+        }
+        _ => 0,
+    }
+}
+/// Entries of the mark stack of patterns with subexpression calls (Onigmo's MEM_START /
+/// MEM_END / CALL_FRAME / RETURN stack entries).
+#[derive(Clone, Copy, Debug)]
+pub enum MEnt {
+    Start(usize, usize),
+    End(usize, usize),
+    Call,
+    Ret,
+}
+
+/// Start of the open a close pairs with: nested opens and closes of g in between are skipped.
+fn rec_start(mstk: &[MEnt], g: usize) -> Option<usize> {
+    let mut depth = 0;
+    for e in mstk.iter().rev() {
+        match *e {
+            MEnt::End(h, _) if h == g => depth += 1,
+            MEnt::Start(h, p) if h == g => {
+                if depth == 0 {
+                    return Some(p);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// \k<g+nest> (Onigmo backref_match_at_nested_level): the latest capture of g made `nest` call
+/// levels away from the current one.
+fn backref_lv(e: Enc, mstk: &[MEnt], s: &[u8], groups: &[usize], icase: bool, nest: i32, pos: usize) -> Option<usize> {
+    let mut level = 0;
+    let mut pend = None;
+    for m in mstk.iter().rev() {
+        match *m {
+            MEnt::Call => level -= 1,
+            MEnt::Ret => level += 1,
+            MEnt::End(g, p) if level == nest && groups.contains(&g) => pend = Some(p),
+            MEnt::Start(g, p) if level == nest && groups.contains(&g) => {
+                if let Some(z) = pend {
+                    let sub = if p > z { &s[0..0] } else { &s[p..z] };
+                    if icase { return match_ic(e, s, pos, sub); }
+                    return if s.len() - pos >= sub.len() && &s[pos..pos + sub.len()] == sub { Some(pos + sub.len()) } else { None };
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 fn has_call(n: &Ast) -> bool {
     match n {
@@ -1673,18 +1868,21 @@ fn has_call(n: &Ast) -> bool {
         _ => false,
     }
 }
+/// expand_calls gave up: the pattern keeps real calls (recursion, or too many copies).
+const RECURSIVE: &str = "\0recursive";
+
 /// Replace each \g<k> by a copy of group k (capturing as k, as Onigmo's call sets the capture).
-/// Recursive calls are not supported; `budget` bounds the copies.
+/// Fails with RECURSIVE on a recursive call or when `budget` copies are used up.
 fn expand_calls(n: Ast, groups: &[Option<Ast>], stack: &mut Vec<usize>, budget: &mut usize) -> Result<Ast, String> {
     macro_rules! go { ($x:expr) => { expand_calls($x, groups, stack, budget)? } }
     Ok(match n {
         Ast::Call(BRef::Groups(g)) => {
             let k = g[0];
-            if stack.contains(&k) {
-                return err("recursive subexpression call is not supported");
+            if k == 0 || stack.contains(&k) {
+                return err(RECURSIVE);
             }
             let body = groups.get(k).and_then(|b| b.clone()).ok_or("undefined group reference")?;
-            *budget = budget.checked_sub(1).ok_or("too many subexpression calls")?;
+            *budget = budget.checked_sub(1).ok_or(RECURSIVE)?;
             stack.push(k);
             let b = go!(body);
             stack.pop();
@@ -1709,7 +1907,7 @@ fn expand_calls(n: Ast, groups: &[Option<Ast>], stack: &mut Vec<usize>, budget: 
 /// Length range in chars; None when unbounded or not fixed-computable (backrefs, \X).
 fn len_range(n: &Ast) -> Option<(u32, u32)> {
     Some(match n {
-        Ast::Call(_) => unreachable!("calls are expanded"),
+        Ast::Call(_) | Ast::BackrefLv(..) => return None,
         Ast::Empty | Ast::Assert(_) | Ast::Keep | Ast::Look(..) => (0, 0),
         Ast::Char(..) | Ast::Any(_) | Ast::Class(_) => (1, 1),
         Ast::Seq(v) => {
@@ -1796,6 +1994,10 @@ enum Inst {
     Keep,
     Grapheme,
     Match,
+    SaveRec(usize), // open / close of a capture paired through the mark stack
+    Call(usize),    // subroutine of group .0 (Vm::entries)
+    Ret,
+    BackrefLv { groups: Box<[usize]>, icase: bool, nest: i32 },
 }
 
 struct Compiler {
@@ -1803,6 +2005,7 @@ struct Compiler {
     nregs: usize,
     bt_depth: usize,
     backrefed: Vec<usize>,
+    rec: bool,
 }
 
 fn single_of(n: &Ast) -> Option<Single> {
@@ -1883,6 +2086,17 @@ impl Compiler {
                     self.prog[j] = Inst::Jmp(end);
                 }
             }
+            Ast::Group(g, b) if self.rec => {
+                self.emit_i(Inst::SaveRec(2 * g));
+                self.emit(b)?;
+                self.emit_i(Inst::SaveRec(2 * g + 1));
+            }
+            Ast::Call(BRef::Groups(g)) => {
+                self.emit_i(Inst::Call(g[0]));
+            }
+            Ast::BackrefLv(BRef::Groups(g), ic, nest) => {
+                self.emit_i(Inst::BackrefLv { groups: g.clone().into_boxed_slice(), icase: *ic, nest: *nest });
+            }
             Ast::Group(g, b) => {
                 // Onigmo pushes (backtrackable) group starts only inside alternation, variable
                 // repeat or negative lookaround, or for groups referenced by backrefs.
@@ -1934,7 +2148,7 @@ impl Compiler {
                 self.prog[cj] = Inst::CondJmp { groups: g.clone().into_boxed_slice(), no: nopc };
                 self.prog[j] = Inst::Jmp(end);
             }
-            Ast::Backref(..) | Ast::Cond(..) | Ast::Call(_) => unreachable!(),
+            Ast::Backref(..) | Ast::BackrefLv(..) | Ast::Cond(..) | Ast::Call(_) => unreachable!(),
             Ast::Keep => {
                 self.emit_i(Inst::Keep);
             }
@@ -2051,7 +2265,7 @@ const ONIG_EXPAND_LIMIT: usize = 50;
 /// Rough size in bytes of Onigmo's compiled code for `n` (compile_length_tree).
 fn onig_len(n: &Ast) -> usize {
     match n {
-        Ast::Call(_) => unreachable!("calls are expanded"),
+        Ast::Call(_) | Ast::BackrefLv(..) => 3,
         Ast::Empty => 0,
         Ast::Char(c, _) => 1 + if *c < 0x80 { 1 } else if *c < 0x800 { 2 } else if *c < 0x10000 { 3 } else { 4 },
         Ast::Any(_) | Ast::Assert(_) | Ast::Keep | Ast::Grapheme => 1,
@@ -2107,7 +2321,12 @@ fn onig_len(n: &Ast) -> usize {
 // First-byte analysis: returns whether the node can match empty.
 fn first_set(n: &Ast, set: &mut [bool; 256]) -> bool {
     match n {
-        Ast::Call(_) => unreachable!("calls are expanded"),
+        Ast::Call(_) | Ast::BackrefLv(..) => {
+            for b in 0..256 {
+                set[b] = true;
+            }
+            true
+        }
         Ast::Empty | Ast::Assert(_) | Ast::Keep | Ast::Look(..) => true,
         Ast::Char(c, ic) => {
             set[first_byte(*c) as usize] = true;
@@ -2210,7 +2429,7 @@ fn has_keep(n: &Ast) -> bool {
 
 fn has_any_group(n: &Ast) -> bool {
     match n {
-        Ast::Group(..) => true,
+        Ast::Group(..) | Ast::Call(_) => true,
         Ast::Seq(v) | Ast::Alt(v) => v.iter().any(has_any_group),
         Ast::Repeat(b, ..) | Ast::Look(_, _, b) | Ast::Atomic(b) => has_any_group(b),
         Ast::Cond(_, y, n) => has_any_group(y) || has_any_group(n),
@@ -2220,7 +2439,7 @@ fn has_any_group(n: &Ast) -> bool {
 
 fn has_group(n: &Ast) -> bool {
     match n {
-        Ast::Group(..) => true,
+        Ast::Group(..) | Ast::Call(_) => true,
         Ast::Seq(v) | Ast::Alt(v) => v.iter().any(has_group),
         // Like Onigmo's quantifiers_memory_node_info: captures inside lookarounds do not count.
         Ast::Repeat(b, _, mx, _) => *mx != 0 && has_group(b),
@@ -2377,6 +2596,12 @@ pub struct Vm {
     backrefed: Vec<usize>,
     /// Regexp.linear_time?: Onigmo can memoize the match
     pub linear: bool,
+    /// captures go through the mark stack (real calls or level backrefs)
+    rec: bool,
+    /// called groups (0: the whole pattern) and their bodies, compiled as subroutines
+    callees: Vec<(usize, Ast)>,
+    /// VM: subroutine entry pc by group number
+    entries: Vec<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -2387,6 +2612,9 @@ enum Bt {
     Greedy { pc: usize, minpos: usize, pos: usize, nb: i16 },
     Lazy { pc: usize, pos: usize, count: u32 },
     SprevBug { old: usize },
+    MPop,             // undo a mark-stack push
+    RetPop,           // undo a call's push of its return pc
+    RetPush { pc: usize }, // undo a return's pop
 }
 
 struct VmCtx<'a> {
@@ -2397,6 +2625,8 @@ struct VmCtx<'a> {
     gpos: usize,
     sprev_bug: usize, // position right after an empty backref (see Inst::Backref)
     enc: Enc,
+    mstk: Vec<MEnt>,
+    rets: Vec<usize>,
 }
 
 #[inline]
@@ -2639,19 +2869,45 @@ impl Vm {
         let ngroups = k;
         let mut ast = Resolver { map, has_named, total: ngroups, names: &names }.walk(ast)?;
         let linear = linear_ok(&ast, false);
+        let mut callees = Vec::new();
         if has_call(&ast) {
             let mut groups = Vec::new();
             collect_groups(&ast, &mut groups);
-            ast = expand_calls(ast, &groups, &mut Vec::new(), &mut 10_000)?;
+            match expand_calls(ast.clone(), &groups, &mut Vec::new(), &mut 10_000) {
+                Ok(a) => ast = a,
+                Err(e) if e == RECURSIVE => {
+                    groups.resize(groups.len().max(1), None);
+                    groups[0] = Some(ast.clone());
+                    let mut ks = Vec::new();
+                    collect_calls(&ast, &mut ks);
+                    ks.sort();
+                    ks.dedup();
+                    for &k in &ks {
+                        let body = groups.get(k).and_then(|b| b.clone()).ok_or("undefined group reference")?;
+                        if inf_rec(&body, &groups, k, true, &mut vec![k]) > 0 {
+                            return err("never ending recursion");
+                        }
+                        callees.push((k, if k == 0 { body } else { Ast::Group(k, Box::new(body)) }));
+                    }
+                }
+                Err(e) => return Err(e),
+            }
         }
+        let rec = !callees.is_empty() || has_level_ref(&ast);
         check_lookbehind(&ast, false)?;
 
         let mut backrefed = Vec::new();
         collect_backrefed(&ast, &mut backrefed);
         let c_backrefed = backrefed.clone();
-        let mut c = Compiler { prog: Vec::new(), nregs: 0, bt_depth: 0, backrefed };
+        let mut c = Compiler { prog: Vec::new(), nregs: 0, bt_depth: 0, backrefed, rec };
         c.emit(&ast)?;
         c.emit_i(Inst::Match);
+        let mut entries = vec![0; callees.iter().map(|x| x.0 + 1).max().unwrap_or(0)];
+        for (k, b) in &callees {
+            entries[*k] = c.pc();
+            c.emit_bt(b)?;
+            c.emit_i(Inst::Ret);
+        }
         let mut prog = c.prog;
         // Peephole: a single-char loop followed by a literal only stops where that literal's first byte is.
         for pc in 0..prog.len() {
@@ -2685,7 +2941,7 @@ impl Vm {
         ml.sort_by_key(|m| std::cmp::Reverse(m.0.len()));
         ml.truncate(4);
         let must = ml;
-        Ok(Vm { prog, ngroups, nregs: c.nregs, names, anchor, prefix, first, must, ast, backrefed: c_backrefed, linear })
+        Ok(Vm { prog, ngroups, nregs: c.nregs, names, anchor, prefix, first, must, ast, backrefed: c_backrefed, linear, rec, callees, entries })
     }
 
     pub fn group_count(&self) -> usize {
@@ -2701,7 +2957,7 @@ impl Vm {
     }
 
     fn ctx<'a>(&self, s: &'a [u8], gpos: usize, enc: Enc) -> VmCtx<'a> {
-        VmCtx { s, slots: vec![NONE; 2 * (self.ngroups + 1)], regs: vec![0; self.nregs], stack: Vec::new(), gpos, sprev_bug: NONE, enc }
+        VmCtx { s, slots: vec![NONE; 2 * (self.ngroups + 1)], regs: vec![0; self.nregs], stack: Vec::new(), gpos, sprev_bug: NONE, enc, mstk: Vec::new(), rets: Vec::new() }
     }
 
     fn try_at(&self, cx: &mut VmCtx, p: usize) -> Option<Vec<Option<(usize, usize)>>> {
@@ -2819,7 +3075,7 @@ impl Vm {
     fn compact(cx: &mut VmCtx, base: usize) {
         let mut w = base;
         for r in base..cx.stack.len() {
-            if matches!(cx.stack[r], Bt::Slot { .. } | Bt::Reg { .. } | Bt::SprevBug { .. }) {
+            if matches!(cx.stack[r], Bt::Slot { .. } | Bt::Reg { .. } | Bt::SprevBug { .. } | Bt::MPop | Bt::RetPop | Bt::RetPush { .. }) {
                 cx.stack[w] = cx.stack[r];
                 w += 1;
             }
@@ -2833,6 +3089,9 @@ impl Vm {
                 Bt::Slot { idx, old } => cx.slots[idx] = old,
                 Bt::Reg { idx, old } => cx.regs[idx] = old,
                 Bt::SprevBug { old } => cx.sprev_bug = old,
+                Bt::MPop => { cx.mstk.pop(); }
+                Bt::RetPop => { cx.rets.pop(); }
+                Bt::RetPush { pc } => cx.rets.push(pc),
                 _ => {}
             }
         }
@@ -3121,6 +3380,50 @@ impl Vm {
                     None => false,
                 },
                 Inst::Match => return Some(pos),
+                Inst::SaveRec(k) => {
+                    let g = k / 2;
+                    if k & 1 == 0 {
+                        cx.stack.push(Bt::Slot { idx: *k, old: cx.slots[*k] });
+                        cx.stack.push(Bt::Slot { idx: k + 1, old: cx.slots[k + 1] });
+                        cx.slots[*k] = pos;
+                        cx.slots[k + 1] = NONE;
+                        cx.mstk.push(MEnt::Start(g, pos));
+                    } else {
+                        let st = rec_start(&cx.mstk, g).unwrap_or(cx.slots[k - 1]);
+                        cx.stack.push(Bt::Slot { idx: *k, old: cx.slots[*k] });
+                        cx.stack.push(Bt::Slot { idx: k - 1, old: cx.slots[k - 1] });
+                        cx.slots[*k] = pos;
+                        cx.slots[k - 1] = st;
+                        cx.mstk.push(MEnt::End(g, pos));
+                    }
+                    cx.stack.push(Bt::MPop);
+                    pc += 1;
+                    true
+                }
+                Inst::Call(g) => {
+                    cx.rets.push(pc + 1);
+                    cx.stack.push(Bt::RetPop);
+                    cx.mstk.push(MEnt::Call);
+                    cx.stack.push(Bt::MPop);
+                    pc = self.entries[*g];
+                    true
+                }
+                Inst::Ret => {
+                    let r = cx.rets.pop().expect("a subexpression call");
+                    cx.stack.push(Bt::RetPush { pc: r });
+                    cx.mstk.push(MEnt::Ret);
+                    cx.stack.push(Bt::MPop);
+                    pc = r;
+                    true
+                }
+                Inst::BackrefLv { groups, icase, nest } => match backref_lv(e, &cx.mstk, s, groups, *icase, *nest, pos) {
+                    Some(np) => {
+                        pos = np;
+                        pc += 1;
+                        true
+                    }
+                    None => false,
+                },
             };
             if ok {
                 continue;
@@ -3139,6 +3442,9 @@ impl Vm {
                     Bt::Slot { idx, old } => cx.slots[idx] = old,
                     Bt::Reg { idx, old } => cx.regs[idx] = old,
                     Bt::SprevBug { old } => cx.sprev_bug = old,
+                    Bt::MPop => { cx.mstk.pop(); }
+                    Bt::RetPop => { cx.rets.pop(); }
+                    Bt::RetPush { pc } => cx.rets.push(pc),
                     Bt::Greedy { pc: p, minpos, pos: q, nb } => {
                         let np = if nb >= 0 { find_back(s, minpos, q - 1, nb as u8) } else { Some(prev_start_e(e, s, q, minpos)) };
                         if let Some(np) = np {
@@ -3221,7 +3527,7 @@ fn check_lookbehind(n: &Ast, inside: bool) -> Result<(), String> {
             }
             check_lookbehind(b, inside || *behind)
         }
-        Ast::Backref(..) | Ast::Keep if inside => err("invalid pattern in look-behind"),
+        Ast::Backref(..) | Ast::BackrefLv(..) | Ast::Keep if inside => err("invalid pattern in look-behind"),
         _ => Ok(()),
     }
 }

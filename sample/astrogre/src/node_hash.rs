@@ -256,6 +256,97 @@ fn PROF_node_re_backref(pc: &mut ProfCtx, n: NodePtr) -> u64 {
 
 
 #[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_re_open_rec(n: NodePtr) -> u64 {
+    let u = unsafe { &(*(n as *mut NodeOf<node_re_open_rec_struct>)).u };
+    let mut h = hash_str("node_re_open_rec");
+    h = hash_merge(h, hash_u64(u.g as u64));
+    h = hash_merge(h, hash_node(u.next));
+    h
+}
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut, unused_braces)]
+fn PROF_node_re_open_rec(pc: &mut ProfCtx, n: NodePtr) -> u64 {
+    let np = n as *mut NodeOf<node_re_open_rec_struct>;
+    let u = unsafe { &(*np).u };
+    let mut h = hash_str("node_re_open_rec");
+    h = hash_merge(h, profile_node(pc, u.next));
+    h
+}
+
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_re_close_rec(n: NodePtr) -> u64 {
+    let u = unsafe { &(*(n as *mut NodeOf<node_re_close_rec_struct>)).u };
+    let mut h = hash_str("node_re_close_rec");
+    h = hash_merge(h, hash_u64(u.g as u64));
+    h = hash_merge(h, hash_node(u.next));
+    h
+}
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut, unused_braces)]
+fn PROF_node_re_close_rec(pc: &mut ProfCtx, n: NodePtr) -> u64 {
+    let np = n as *mut NodeOf<node_re_close_rec_struct>;
+    let u = unsafe { &(*np).u };
+    let mut h = hash_str("node_re_close_rec");
+    h = hash_merge(h, profile_node(pc, u.next));
+    h
+}
+
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_re_call(n: NodePtr) -> u64 {
+    let u = unsafe { &(*(n as *mut NodeOf<node_re_call_struct>)).u };
+    let mut h = hash_str("node_re_call");
+    h = hash_merge(h, hash_u64(u.g as u64));
+    h = hash_merge(h, hash_node(u.next));
+    h
+}
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut, unused_braces)]
+fn PROF_node_re_call(pc: &mut ProfCtx, n: NodePtr) -> u64 {
+    let np = n as *mut NodeOf<node_re_call_struct>;
+    let u = unsafe { &(*np).u };
+    let mut h = hash_str("node_re_call");
+    h = hash_merge(h, profile_node(pc, u.next));
+    h
+}
+
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_re_ret(n: NodePtr) -> u64 {
+    let u = unsafe { &(*(n as *mut NodeOf<node_re_ret_struct>)).u };
+    let mut h = hash_str("node_re_ret");
+
+    h
+}
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut, unused_braces)]
+fn PROF_node_re_ret(pc: &mut ProfCtx, n: NodePtr) -> u64 {
+    let np = n as *mut NodeOf<node_re_ret_struct>;
+    let u = unsafe { &(*np).u };
+    let mut h = hash_str("node_re_ret");
+
+    h
+}
+
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_re_backref_lv(n: NodePtr) -> u64 {
+    let u = unsafe { &(*(n as *mut NodeOf<node_re_backref_lv_struct>)).u };
+    let mut h = hash_str("node_re_backref_lv");
+    h = hash_merge(h, { let mut h = hash_u64(u.groups.len() as u64); for &g in u.groups.iter() { h = hash_merge(h, hash_u64(g as u64)); } h });
+    h = hash_merge(h, hash_u64(u.icase as u64));
+    h = hash_merge(h, hash_u64(u.nest as u64));
+    h = hash_merge(h, hash_node(u.next));
+    h
+}
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut, unused_braces)]
+fn PROF_node_re_backref_lv(pc: &mut ProfCtx, n: NodePtr) -> u64 {
+    let np = n as *mut NodeOf<node_re_backref_lv_struct>;
+    let u = unsafe { &(*np).u };
+    let mut h = hash_str("node_re_backref_lv");
+    h = hash_merge(h, profile_node(pc, u.next));
+    h
+}
+
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_re_cond(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_re_cond_struct>)).u };
     let mut h = hash_str("node_re_cond");

@@ -33,8 +33,10 @@ pub const ABORT: u32 = 2;
 
 /// Recursion budget for nested loop iterations, in body nodes (~ native frames).
 pub const DEPTH_LIMIT: usize = 6000;
-/// Pseudo slot index in the undo log for Ctx::sprev_bug.
+/// Pseudo slot indices in the undo log: Ctx::sprev_bug, and the length of Ctx::mstk.
 const SPREV: usize = usize::MAX;
+const MSTK: usize = usize::MAX - 1;
+
 
 // single-char matcher kinds (node_re_one / node_re_rep1)
 pub const K_CH: u32 = 0;
@@ -78,6 +80,11 @@ pub struct Ctx {
     pub must_next: usize,
     pub ngroups: usize,
     pub enc: Enc,
+    pub mstk: Vec<MEnt>,
+    /// continuations of the active subexpression calls
+    pub rets: Vec<NodePtr>,
+    /// subroutine entry and its recursion cost, by group number
+    pub entries: Vec<(NodePtr, u32)>,
 }
 
 impl Ctx {
@@ -86,6 +93,7 @@ impl Ctx {
             s: s.as_ptr(), len: s.len(), slots: vec![NONE; 2 * (ngroups + 1)], log: Vec::new(),
             sprev_bug: NONE, gpos, rep_top: std::ptr::null_mut(), depth: 0, sub_end: 0,
             lb_target: NONE, must: &[], must_occ: Vec::new(), must_next: usize::MAX, ngroups, enc,
+            mstk: Vec::new(), rets: Vec::new(), entries: Vec::new(),
         }
     }
     /// Advances the required-literal occurrences to >= p; false when one no longer occurs
@@ -112,13 +120,19 @@ impl Ctx {
     pub fn undo(&mut self, mark: usize) {
         while self.log.len() > mark {
             let (i, old) = self.log.pop().unwrap();
-            if i == SPREV { self.sprev_bug = old } else { self.slots[i] = old }
+            if i < MSTK { self.slots[i] = old } else if i == SPREV { self.sprev_bug = old } else { self.mstk.truncate(old) }
         }
     }
     #[inline]
     pub fn set_slot(&mut self, i: usize, v: usize) {
         self.log.push((i, self.slots[i]));
         self.slots[i] = v;
+    }
+    /// Pushes a mark-stack entry, undone with the log.
+    #[inline]
+    pub fn mpush(&mut self, e: MEnt) {
+        self.log.push((MSTK, self.mstk.len()));
+        self.mstk.push(e);
     }
     #[inline]
     pub fn set_sprev(&mut self, v: usize) {
@@ -284,6 +298,52 @@ pub fn cond_k(c: &Ctx, groups: Groups) -> bool {
     groups.iter().any(|&g| c.slots[2 * g] != NONE && c.slots[2 * g + 1] != NONE)
 }
 
+// ---- subexpression calls ----------------------------------------------------------
+
+pub fn open_rec_k(c: &mut Ctx, g: usize, pos: usize) {
+    c.set_slot(2 * g, pos);
+    c.set_slot(2 * g + 1, NONE);
+    c.mpush(MEnt::Start(g, pos));
+}
+
+pub fn close_rec_k(c: &mut Ctx, g: usize, pos: usize) {
+    let st = rec_start(&c.mstk, g).unwrap_or(c.slots[2 * g]);
+    // end first: an (open, open+1) pair in the log would read as an open (empty_iter_verdict)
+    c.set_slot(2 * g + 1, pos);
+    c.set_slot(2 * g, st);
+    c.mpush(MEnt::End(g, pos));
+}
+
+pub fn call_k(c: &mut Ctx, g: usize, next: NodePtr, pos: usize) -> u32 {
+    let (entry, cost) = c.entries[g];
+    let cost = cost as usize;
+    c.depth += cost;
+    if c.depth > DEPTH_LIMIT { return ABORT; }
+    let mark = c.log.len();
+    c.rets.push(next);
+    c.mpush(MEnt::Call);
+    let r = call(c, entry, pos);
+    c.rets.pop();
+    if r == FAIL { c.undo(mark); }
+    c.depth -= cost;
+    r
+}
+
+pub fn ret_k(c: &mut Ctx, pos: usize) -> u32 {
+    let next = c.rets.pop().expect("a subexpression call");
+    let mark = c.log.len();
+    c.mpush(MEnt::Ret);
+    let r = call(c, next, pos);
+    if r == FAIL { c.undo(mark); }
+    c.rets.push(next);
+    r
+}
+
+#[inline]
+pub fn backref_lv_k(c: &Ctx, groups: Groups, icase: bool, nest: i32, pos: usize) -> Option<usize> {
+    backref_lv(c.enc, &c.mstk, c.subj(), groups, icase, nest, pos)
+}
+
 // ---- repetition -------------------------------------------------------------------
 
 pub struct RepFrame {
@@ -413,6 +473,10 @@ pub fn node_allocated(n: NodePtr) {
 struct Lowerer<'a> {
     bt_depth: usize,
     backrefed: &'a [usize],
+    /// captures paired through the mark stack (the pattern has calls or level backrefs)
+    rec: bool,
+    /// continuations of \g calls (AOT entries: node_re_ret dispatches to them)
+    call_nexts: Vec<NodePtr>,
     rep_cont: NodePtr,
     sub_succ: NodePtr,
     sub_succ_at: NodePtr,
@@ -517,6 +581,24 @@ impl<'a> Lowerer<'a> {
                 }
                 (cur, None)
             }
+            Ast::Group(g, b) if self.rec => {
+                let g = *g as u32;
+                let close = ALLOC_node_re_close_rec(g, tail.0);
+                let close = self.n(close);
+                let (inner, lit) = self.lower(b, (close, tail.1))?;
+                let open = ALLOC_node_re_open_rec(g, inner);
+                (self.n(open), lit)
+            }
+            Ast::Call(BRef::Groups(g)) => {
+                self.call_nexts.push(tail.0);
+                let p = ALLOC_node_re_call(g[0] as u32, tail.0);
+                (self.n(p), None)
+            }
+            Ast::BackrefLv(BRef::Groups(g), ic, nest) => {
+                let g = self.groups(g);
+                let p = ALLOC_node_re_backref_lv(g, *ic, *nest, tail.0);
+                (self.n(p), None)
+            }
             Ast::Group(g, b) => {
                 let g = *g as u32;
                 if self.bt_depth > 0 || self.backrefed.contains(&(g as usize)) {
@@ -564,7 +646,7 @@ impl<'a> Lowerer<'a> {
                 let p = ALLOC_node_re_cond(g, yes, no);
                 (self.n(p), None)
             }
-            Ast::Backref(..) | Ast::Cond(..) | Ast::Call(_) => unreachable!(),
+            Ast::Backref(..) | Ast::BackrefLv(..) | Ast::Cond(..) | Ast::Call(_) => unreachable!(),
             Ast::Keep => {
                 let p = ALLOC_node_re_keep(tail.0);
                 (self.n(p), None)
@@ -651,6 +733,9 @@ pub struct Regex {
     /// search_root without byte prefilters (they could stop inside a legacy multibyte char)
     pub plain_root: NodePtr,
     pub at_root: NodePtr,
+    /// subroutines of the called groups (empty without subexpression calls)
+    entries: Vec<(NodePtr, u32)>,
+    call_nexts: Vec<NodePtr>,
     nodes: Vec<NodePtr>,
     _bytes: Vec<Box<[u8]>>,
     _classes: Vec<Box<ClassBox>>,
@@ -696,11 +781,21 @@ impl Regex {
     fn build(vm: Vm, enc: Enc) -> Result<Regex, String> {
         let rep_cont = ALLOC_node_re_rep_cont();
         let mut lw = Lowerer {
-            bt_depth: 0, backrefed: &vm.backrefed, rep_cont, sub_succ: ALLOC_node_re_sub_succ(),
+            bt_depth: 0, backrefed: &vm.backrefed, rec: vm.rec, call_nexts: vec![], rep_cont, sub_succ: ALLOC_node_re_sub_succ(),
             sub_succ_at: ALLOC_node_re_sub_succ_at(), bytes: vec![], classes: vec![], groups: vec![], count: 0,
         };
         let succ = ALLOC_node_re_succ();
         let body = lw.lower(&vm.ast, (succ, None))?.0;
+        let mut entries = vec![];
+        if !vm.callees.is_empty() {
+            let ret = ALLOC_node_re_ret();
+            entries = vec![(std::ptr::null_mut(), 0); vm.callees.iter().map(|x| x.0).max().unwrap() + 1];
+            for (k, b) in &vm.callees {
+                let c0 = lw.count;
+                let e = lw.lower_bt(b, (ret, None))?.0;
+                entries[*k] = (e, (lw.count - c0 + 2) as u32);
+            }
+        }
         let mut sets = vec![];
         let search_root = match vm.anchor {
             Anchor::StrBegin => ALLOC_node_search(body, AN_STR_BEGIN),
@@ -722,7 +817,8 @@ impl Regex {
         let plain_root = if matches!(vm.anchor, Anchor::None) && search_root_prefilters(&vm) { ALLOC_node_search(body, AN_NONE) } else { search_root };
         let at_root = ALLOC_node_match_at(body);
         let (bytes, classes, groups) = (std::mem::take(&mut lw.bytes), std::mem::take(&mut lw.classes), std::mem::take(&mut lw.groups));
-        Ok(Regex { vm, enc, search_root, plain_root, at_root, nodes: vec![], _bytes: bytes, _classes: classes, _groups: groups, _sets: sets })
+        let call_nexts = std::mem::take(&mut lw.call_nexts);
+        Ok(Regex { vm, enc, search_root, plain_root, at_root, entries, call_nexts, nodes: vec![], _bytes: bytes, _classes: classes, _groups: groups, _sets: sets })
     }
 
     pub fn group_count(&self) -> usize { self.vm.group_count() }
@@ -747,6 +843,7 @@ impl Regex {
     pub fn search_enc(&self, s: &[u8], start: usize, enc: Enc) -> Option<Captures> {
         if start > s.len() { return None; }
         let mut c = Ctx::new(s, self.vm.group_count(), start, enc);
+        if !self.entries.is_empty() { c.entries = self.entries.clone(); }
         if !self.vm.must.is_empty() {
             c.must = &self.vm.must[..];
             c.must_occ = vec![NONE; self.vm.must.len()];
@@ -766,6 +863,7 @@ impl Regex {
     pub fn match_at_enc(&self, s: &[u8], pos: usize, enc: Enc) -> Option<Captures> {
         if pos > s.len() || !self.vm.must_ok_from(s, pos) { return None; }
         let mut c = Ctx::new(s, self.vm.group_count(), pos, enc);
+        if !self.entries.is_empty() { c.entries = self.entries.clone(); }
         match call(&mut c, self.at_root, pos) {
             OK => Some(self.captures(&c)),
             FAIL => None,
@@ -780,6 +878,8 @@ impl Regex {
     /// continuations): the AOT entries.
     pub fn entry_nodes(&self) -> Vec<NodePtr> {
         let mut v = vec![self.search_root, self.at_root];
+        v.extend(self.entries.iter().map(|e| e.0).filter(|e| !e.is_null()));
+        v.extend_from_slice(&self.call_nexts);
         for &n in &self.nodes {
             if unsafe { (*n).head.kind.name } == "node_re_rep" {
                 let u = unsafe { &(*(n as *mut NodeOf<node_re_rep_struct>)).u };

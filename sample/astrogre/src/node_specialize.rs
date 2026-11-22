@@ -480,6 +480,177 @@ fn SPECIALIZE_node_re_backref(sc: &mut SpecCtx, n: NodePtr) -> String {
 }
 
 #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
+fn SPECIALIZE_node_re_open_rec(sc: &mut SpecCtx, n: NodePtr) -> String {
+    let own_hash = hash_node(n);
+    let was_open = !sc.open.insert(own_hash);
+    let u = unsafe { &(*(n as *mut NodeOf<node_re_open_rec_struct>)).u };
+    let t_next = specialize_node(sc, u.next);
+    let np = n as *mut NodeOf<node_re_open_rec_struct>;
+    let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "pos".to_string()];
+    unsafe {
+    a.push(format!("{}u32", (*np).u.g));
+    a.push("(*np).u.next".to_string());
+    }
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by what is baked too (children's types, @bake values), not by the hash alone:
+    // two sites with one hash may have seen different things
+    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_next.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
+    if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());
+    let mut body = String::new();
+    body.push_str(&format!("pub struct {};\n", name));
+    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
+    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ unsafe {{\n", name));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_re_open_rec_struct>;\n", "n"));
+
+    body.push_str(&format!("        EVAL_node_re_open_rec{}({})\n    }} }}\n", format!("::<{}>", t_next), a.join(", ")));
+
+
+    body.push_str("}
+");
+    sc.out.push_str(&body);
+    name
+}
+
+#[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
+fn SPECIALIZE_node_re_close_rec(sc: &mut SpecCtx, n: NodePtr) -> String {
+    let own_hash = hash_node(n);
+    let was_open = !sc.open.insert(own_hash);
+    let u = unsafe { &(*(n as *mut NodeOf<node_re_close_rec_struct>)).u };
+    let t_next = specialize_node(sc, u.next);
+    let np = n as *mut NodeOf<node_re_close_rec_struct>;
+    let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "pos".to_string()];
+    unsafe {
+    a.push(format!("{}u32", (*np).u.g));
+    a.push("(*np).u.next".to_string());
+    }
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by what is baked too (children's types, @bake values), not by the hash alone:
+    // two sites with one hash may have seen different things
+    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_next.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
+    if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());
+    let mut body = String::new();
+    body.push_str(&format!("pub struct {};\n", name));
+    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
+    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ unsafe {{\n", name));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_re_close_rec_struct>;\n", "n"));
+
+    body.push_str(&format!("        EVAL_node_re_close_rec{}({})\n    }} }}\n", format!("::<{}>", t_next), a.join(", ")));
+
+
+    body.push_str("}
+");
+    sc.out.push_str(&body);
+    name
+}
+
+#[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
+fn SPECIALIZE_node_re_call(sc: &mut SpecCtx, n: NodePtr) -> String {
+    let own_hash = hash_node(n);
+    let was_open = !sc.open.insert(own_hash);
+    let u = unsafe { &(*(n as *mut NodeOf<node_re_call_struct>)).u };
+    let t_next = specialize_node(sc, u.next);
+    let np = n as *mut NodeOf<node_re_call_struct>;
+    let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "pos".to_string()];
+    unsafe {
+    a.push(format!("{}u32", (*np).u.g));
+    a.push("(*np).u.next".to_string());
+    }
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by what is baked too (children's types, @bake values), not by the hash alone:
+    // two sites with one hash may have seen different things
+    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_next.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
+    if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());
+    let mut body = String::new();
+    body.push_str(&format!("pub struct {};\n", name));
+    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
+    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ unsafe {{\n", name));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_re_call_struct>;\n", "n"));
+
+    body.push_str(&format!("        EVAL_node_re_call{}({})\n    }} }}\n", format!("::<{}>", t_next), a.join(", ")));
+
+
+    body.push_str("}
+");
+    sc.out.push_str(&body);
+    name
+}
+
+#[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
+fn SPECIALIZE_node_re_ret(sc: &mut SpecCtx, n: NodePtr) -> String {
+    let own_hash = hash_node(n);
+    let was_open = !sc.open.insert(own_hash);
+    let u = unsafe { &(*(n as *mut NodeOf<node_re_ret_struct>)).u };
+
+    let np = n as *mut NodeOf<node_re_ret_struct>;
+    let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "pos".to_string()];
+    unsafe {
+
+    }
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by what is baked too (children's types, @bake values), not by the hash alone:
+    // two sites with one hash may have seen different things
+    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
+    if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());
+    let mut body = String::new();
+    body.push_str(&format!("pub struct {};\n", name));
+    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
+    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ unsafe {{\n", name));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_re_ret_struct>;\n", "n"));
+
+    body.push_str(&format!("        EVAL_node_re_ret{}({})\n    }} }}\n", "", a.join(", ")));
+
+
+    body.push_str("}
+");
+    sc.out.push_str(&body);
+    name
+}
+
+#[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
+fn SPECIALIZE_node_re_backref_lv(sc: &mut SpecCtx, n: NodePtr) -> String {
+    let own_hash = hash_node(n);
+    let was_open = !sc.open.insert(own_hash);
+    let u = unsafe { &(*(n as *mut NodeOf<node_re_backref_lv_struct>)).u };
+    let t_next = specialize_node(sc, u.next);
+    let np = n as *mut NodeOf<node_re_backref_lv_struct>;
+    let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "pos".to_string()];
+    unsafe {
+    a.push("(*np).u.groups".to_string());
+    a.push(format!("{}", (*np).u.icase));
+    a.push(format!("{}i32", (*np).u.nest));
+    a.push("(*np).u.next".to_string());
+    }
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by what is baked too (children's types, @bake values), not by the hash alone:
+    // two sites with one hash may have seen different things
+    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_next.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
+    if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());
+    let mut body = String::new();
+    body.push_str(&format!("pub struct {};\n", name));
+    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
+    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ unsafe {{\n", name));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_re_backref_lv_struct>;\n", "n"));
+
+    body.push_str(&format!("        EVAL_node_re_backref_lv{}({})\n    }} }}\n", format!("::<{}>", t_next), a.join(", ")));
+
+
+    body.push_str("}
+");
+    sc.out.push_str(&body);
+    name
+}
+
+#[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
 fn SPECIALIZE_node_re_cond(sc: &mut SpecCtx, n: NodePtr) -> String {
     let own_hash = hash_node(n);
     let was_open = !sc.open.insert(own_hash);

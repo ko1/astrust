@@ -126,6 +126,51 @@ pub fn DISPATCH_node_re_backref(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {
 }
 
 #[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_re_open_rec(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {
+    let np = n as *mut NodeOf<node_re_open_rec_struct>;
+    unsafe {
+
+    EVAL_node_re_open_rec::<Dyn>(c, n, pos, (*np).u.g, (*np).u.next)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_re_close_rec(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {
+    let np = n as *mut NodeOf<node_re_close_rec_struct>;
+    unsafe {
+
+    EVAL_node_re_close_rec::<Dyn>(c, n, pos, (*np).u.g, (*np).u.next)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_re_call(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {
+    let np = n as *mut NodeOf<node_re_call_struct>;
+    unsafe {
+
+    EVAL_node_re_call::<Dyn>(c, n, pos, (*np).u.g, (*np).u.next)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_re_ret(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {
+    let np = n as *mut NodeOf<node_re_ret_struct>;
+    unsafe {
+
+    EVAL_node_re_ret(c, n, pos)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_re_backref_lv(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {
+    let np = n as *mut NodeOf<node_re_backref_lv_struct>;
+    unsafe {
+
+    EVAL_node_re_backref_lv::<Dyn>(c, n, pos, (*np).u.groups, (*np).u.icase, (*np).u.nest, (*np).u.next)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
 pub fn DISPATCH_node_re_cond(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {
     let np = n as *mut NodeOf<node_re_cond_struct>;
     unsafe {

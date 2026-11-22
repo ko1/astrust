@@ -158,6 +158,62 @@ fn DUMP_node_re_backref(out: &mut String, n: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_re_open_rec(out: &mut String, n: NodePtr) {
+    let np = n as *mut NodeOf<node_re_open_rec_struct>;
+    unsafe {
+    out.push_str("(node_re_open_rec");
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.g));
+    out.push(' '); dump_node(out, (*np).u.next);
+    out.push(')');
+    }
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_re_close_rec(out: &mut String, n: NodePtr) {
+    let np = n as *mut NodeOf<node_re_close_rec_struct>;
+    unsafe {
+    out.push_str("(node_re_close_rec");
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.g));
+    out.push(' '); dump_node(out, (*np).u.next);
+    out.push(')');
+    }
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_re_call(out: &mut String, n: NodePtr) {
+    let np = n as *mut NodeOf<node_re_call_struct>;
+    unsafe {
+    out.push_str("(node_re_call");
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.g));
+    out.push(' '); dump_node(out, (*np).u.next);
+    out.push(')');
+    }
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_re_ret(out: &mut String, n: NodePtr) {
+    let np = n as *mut NodeOf<node_re_ret_struct>;
+    unsafe {
+    out.push_str("(node_re_ret");
+
+    out.push(')');
+    }
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_re_backref_lv(out: &mut String, n: NodePtr) {
+    let np = n as *mut NodeOf<node_re_backref_lv_struct>;
+    unsafe {
+    out.push_str("(node_re_backref_lv");
+    out.push(' '); out.push_str("<groups>");
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.icase));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.nest));
+    out.push(' '); dump_node(out, (*np).u.next);
+    out.push(')');
+    }
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_re_cond(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_re_cond_struct>;
     unsafe {

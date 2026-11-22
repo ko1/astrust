@@ -340,6 +340,42 @@ pub struct node_re_backref_struct {
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
+pub struct node_re_open_rec_struct {
+    pub g: u32,
+    pub next: NodePtr,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct node_re_close_rec_struct {
+    pub g: u32,
+    pub next: NodePtr,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct node_re_call_struct {
+    pub g: u32,
+    pub next: NodePtr,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct node_re_ret_struct {
+
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct node_re_backref_lv_struct {
+    pub groups: Groups,
+    pub icase: bool,
+    pub nest: i32,
+    pub next: NodePtr,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
 pub struct node_re_cond_struct {
     pub groups: Groups,
     pub yes: NodePtr,
@@ -509,6 +545,36 @@ pub fn ALLOC_node_re_backref(groups: Groups, icase: bool, next: NodePtr) -> Node
 }
 
 #[allow(non_snake_case)]
+pub fn ALLOC_node_re_open_rec(g: u32, next: NodePtr) -> NodePtr {
+    let n = node_allocate(&KIND_node_re_open_rec, node_re_open_rec_struct { g, next });
+    n
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_re_close_rec(g: u32, next: NodePtr) -> NodePtr {
+    let n = node_allocate(&KIND_node_re_close_rec, node_re_close_rec_struct { g, next });
+    n
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_re_call(g: u32, next: NodePtr) -> NodePtr {
+    let n = node_allocate(&KIND_node_re_call, node_re_call_struct { g, next });
+    n
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_re_ret() -> NodePtr {
+    let n = node_allocate(&KIND_node_re_ret, node_re_ret_struct {  });
+    n
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_re_backref_lv(groups: Groups, icase: bool, nest: i32, next: NodePtr) -> NodePtr {
+    let n = node_allocate(&KIND_node_re_backref_lv, node_re_backref_lv_struct { groups, icase, nest, next });
+    n
+}
+
+#[allow(non_snake_case)]
 pub fn ALLOC_node_re_cond(groups: Groups, yes: NodePtr, no: NodePtr) -> NodePtr {
     let n = node_allocate(&KIND_node_re_cond, node_re_cond_struct { groups, yes, no });
     n
@@ -655,6 +721,36 @@ fn CHILDREN_node_re_close(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_backref(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_re_backref_struct>)).u };
+    f(&mut u.next);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_re_open_rec(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_open_rec_struct>)).u };
+    f(&mut u.next);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_re_close_rec(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_close_rec_struct>)).u };
+    f(&mut u.next);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_re_call(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_call_struct>)).u };
+    f(&mut u.next);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_re_ret(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_ret_struct>)).u };
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_re_backref_lv(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_backref_lv_struct>)).u };
     f(&mut u.next);
 }
 
@@ -938,6 +1034,81 @@ pub static KIND_node_re_backref: NodeKind = NodeKind {
     children: CHILDREN_node_re_backref,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_backref_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_backref_struct>>() <= 8);
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_re_open_rec: NodeKind = NodeKind {
+    name: "node_re_open_rec",
+    default_dispatcher: DISPATCH_node_re_open_rec,
+    hash_func: HASH_node_re_open_rec,
+    profile: PROF_node_re_open_rec,
+    specializer: SPECIALIZE_node_re_open_rec,
+    dumper: DUMP_node_re_open_rec,
+    replacer: REPLACE_node_re_open_rec,
+    no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_re_open_rec_struct>>(),
+    children: CHILDREN_node_re_open_rec,
+};
+const _: () = assert!(std::mem::size_of::<NodeOf<node_re_open_rec_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_open_rec_struct>>() <= 8);
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_re_close_rec: NodeKind = NodeKind {
+    name: "node_re_close_rec",
+    default_dispatcher: DISPATCH_node_re_close_rec,
+    hash_func: HASH_node_re_close_rec,
+    profile: PROF_node_re_close_rec,
+    specializer: SPECIALIZE_node_re_close_rec,
+    dumper: DUMP_node_re_close_rec,
+    replacer: REPLACE_node_re_close_rec,
+    no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_re_close_rec_struct>>(),
+    children: CHILDREN_node_re_close_rec,
+};
+const _: () = assert!(std::mem::size_of::<NodeOf<node_re_close_rec_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_close_rec_struct>>() <= 8);
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_re_call: NodeKind = NodeKind {
+    name: "node_re_call",
+    default_dispatcher: DISPATCH_node_re_call,
+    hash_func: HASH_node_re_call,
+    profile: PROF_node_re_call,
+    specializer: SPECIALIZE_node_re_call,
+    dumper: DUMP_node_re_call,
+    replacer: REPLACE_node_re_call,
+    no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_re_call_struct>>(),
+    children: CHILDREN_node_re_call,
+};
+const _: () = assert!(std::mem::size_of::<NodeOf<node_re_call_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_call_struct>>() <= 8);
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_re_ret: NodeKind = NodeKind {
+    name: "node_re_ret",
+    default_dispatcher: DISPATCH_node_re_ret,
+    hash_func: HASH_node_re_ret,
+    profile: PROF_node_re_ret,
+    specializer: SPECIALIZE_node_re_ret,
+    dumper: DUMP_node_re_ret,
+    replacer: REPLACE_node_re_ret,
+    no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_re_ret_struct>>(),
+    children: CHILDREN_node_re_ret,
+};
+const _: () = assert!(std::mem::size_of::<NodeOf<node_re_ret_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_ret_struct>>() <= 8);
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_re_backref_lv: NodeKind = NodeKind {
+    name: "node_re_backref_lv",
+    default_dispatcher: DISPATCH_node_re_backref_lv,
+    hash_func: HASH_node_re_backref_lv,
+    profile: PROF_node_re_backref_lv,
+    specializer: SPECIALIZE_node_re_backref_lv,
+    dumper: DUMP_node_re_backref_lv,
+    replacer: REPLACE_node_re_backref_lv,
+    no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_re_backref_lv_struct>>(),
+    children: CHILDREN_node_re_backref_lv,
+};
+const _: () = assert!(std::mem::size_of::<NodeOf<node_re_backref_lv_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_backref_lv_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_cond: NodeKind = NodeKind {
