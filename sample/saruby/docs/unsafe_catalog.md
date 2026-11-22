@@ -62,11 +62,13 @@ functions return an unbounded `&'static mut` from safe code (`heap_audit.rb` col
 `fn->&'static mut`: object.rs 7 — `obj`, `rhash`, `rclass`, `rproc`, `rmethod`, `rbig` and the
 macro-made `rary` family —, vm.rs 2 — `vm()`, `Ctx::frame()` —, gc.rs 1 — `heap()`; 9 after
 section 7 bounded `Ctx::frame()`; 8 after the vm / heap split of section 7: `vm()` returns `&'static Vm`,
-object.rs keeps 7, and gc.rs's `heap()` is private to gc.rs), and
+object.rs keeps 7, and gc.rs's `heap()` is private to gc.rs; 1 after the object accessors of section 7:
+only gc.rs's private `heap()`), and
 `heap_audit.rb` counts **449 call sites** of the old accessors (rt.rs 189, vm.rs 169, node.def 25,
 object.rs 25, legacy.rs 14, str_legacy.rs 11, lib.rs 11, gc.rs 2, aot.rs 1, compile.rs 1,
-inline_builtin.rs 1). Each of
-those is an aliasing or lifetime assumption that no `unsafe` keyword marks. One reduction of the
+inline_builtin.rs 1; 0 object-accessor sites after section 7's object accessors, whose
+`heap_audit.rb` sum of 149 is the `vm` column alone, i.e. uses of the shared `&'static Vm`). Each of
+those was an aliasing or lifetime assumption that no `unsafe` keyword marks. One reduction of the
 count was of exactly this kind: the ASTro-principles work (378 -> 365) replaced
 `unsafe { (*c.frame).line = line; }` in node.def by `c.frame().pos = line;`, i.e. it moved the
 dereference behind the safe-signature `Ctx::frame() -> &'static mut Frame`
@@ -345,6 +347,7 @@ it.
 | 36 | 4 | `SystemExit.new.message`, `SystemExit.new(3).message` | "exit" (CRuby: "SystemExit") | compatibility | c-test | 66320e3: smoke test |
 | 37 | 4 | `RuntimeError.new("a\nb").inspect` | `#<RuntimeError: "a\nb">` | compatibility | c-test | 66320e3: smoke test |
 | 38 | fiber | `a` resumes `b` resumes `a` | panic "entered unreachable code" (stack corrupted) | | c-test | 1b1b311: a test of Fiber's error cases run on the base build before the rewrite; the panic is an `unreachable!()` present since b3cc05f (2026-11-20), not a check of the conversion |
+| 40 | object accessors | `$go = false; class K; def initialize(s) = @s = s; def hash; if $go; $go = false; @s.clear; GC.start; end; 1; end; end; src = {}; src[K.new(src)] = "a"; 40.times { src["k#{_1}"] = "v#{_1}" * 10 }; $go = true; p({**src}.size)` | **panic** `not a class: #<obj ..>` (a freed object's klass); under `SARUBY_GC_STRESS=1` 28 entries holding other Strings | **GC rooting / use after free: pairs copied to a Rust `Vec` across `hash_aset` (Ruby `#hash`)** | c-read | 9e7fed4: while `rhash` / `hash_pairs` were replaced in rt.rs / vm.rs (the replacement `c.hash_pairs(src)` compiles), the loop was recognised as pattern 14 of safe_heap.md; the fix (`hash::hash_copy_entries`, slot by slot) was written before the repro, which then panicked on base `1749107`. Same shape at 5 sites (`{**h}` / `f(**h)`, two ruby2_keywords splats, `**kwrest` and unknown-keyword collection, pattern matching's rest); only `{**h}` reproduced (`2026-11-22-saruby-static-mut/objacc/repro/`) |
 | 39 | method layer | a `Vm` field added after `main_obj` | left uninitialized (`MaybeUninit` + `ptr::write`), no diagnostic | **latent UB** removed by construction | c-read | 0059037: boot rewritten as a struct literal (a missing field is now E0063); never observed |
 
 Rows 22, 25, 27, 29, 30, 33 to 37 are the "10 more compatibility differences" of earlier versions of
@@ -352,13 +355,13 @@ this table; row 16 was counted in wave 3's 7 but missing from the table.
 
 Counts (rows of the table above; no row is undetermined; the "found later" row below is c-test and not counted):
 
-| found by | rows | SIGSEGV | UB (incl. latent) | GC rooting / UAF | wave 2 | String | wave 3 | wave 4 | fiber | method layer |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| a: run-time check of the safe API | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 |
-| b: borrow checker (compile time) | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 |
-| c-read: reading while rewriting | 22 | 5 | 2 | 1 | 5 | 2 | 5 | 9 | 0 | 1 |
-| c-test: a test run during the work | 15 | 0 | 0 | 2 | 1 | 4 | 1 | 8 | 1 | 0 |
-| **total** | **39** | 5 | 2 | 3 | 6 | 7 | 7 | 17 | 1 | 1 |
+| found by | rows | SIGSEGV | UB (incl. latent) | GC rooting / UAF | wave 2 | String | wave 3 | wave 4 | fiber | method layer | object accessors |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| a: run-time check of the safe API | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 |
+| b: borrow checker (compile time) | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
+| c-read: reading while rewriting | 23 | 5 | 2 | 2 | 5 | 2 | 5 | 9 | 0 | 1 | 1 |
+| c-test: a test run during the work | 15 | 0 | 0 | 2 | 1 | 4 | 1 | 8 | 1 | 0 | 0 |
+| **total** | **40** | 5 | 2 | 4 | 6 | 7 | 7 | 17 | 1 | 1 | 1 |
 
 Borrow errors that were not defects. The first `cargo check` of string_methods.rs gave 21 E0502 and
 16 E0499 at about 50 lines; those in `chomp_impl` and `split` are row 7, the others are not tied to any
@@ -383,6 +386,9 @@ pairs across `hash_aset`; Rational / Complex / Time / Proc bodies held their Val
 during allocation; `thread::run_pass` iterated a Rust copy of the thread list while fibers ran;
 `spawn_spec` kept pairs in a `Vec` across `to_str`; the JSON parser held a `&'static [u8]` into the
 source String while running callbacks; the old global list of iterated hashes compared by address.
+Object accessors (section 7): `vm::ancestors` returned a `&'static Vec` into the ClassData that the
+next recomputation for the class dropped; no caller found that iterates it across such a
+recomputation (now an `Rc<[Value]>`).
 
 Performance defects the work uncovered (not bugs of behaviour): the "allocator accident"
 (`__rust_alloc` inlined or not depending on module grouping under ThinLTO: nesteddata −12 % / +5 %
@@ -1085,3 +1091,41 @@ interp, 642 -> 619 AOT; poly 4700 -> 4706 interp (+0.13 %), 2049 -> 2055 AOT (+0
 megamorphic site, so presumably the mcache `RefCell` on each miss: not verified). Startup
 `-e 'p 1'` (CODEGEN_UNITS=1, 5 runs) 15.417M -> 15.459M (+0.28 %). optcarrot 82.64M -> 82.64M
 per frame, checksum 59662. Step 3 alone: no change beyond 2M on any bench.
+
+**Applied: the object accessors** (trial README, section "object accessors"; base master
+`1749107`, eight commits `9e7fed4` .. `9f3b879`). object.rs no longer defines `obj`, `rary`,
+`rstr`, `rhash`, `rclass`, `rproc`, `rmethod`, `rbig`, `rdata`, `ivars_of`, `str_bytes` nor the
+context-free Array API built on them; every site uses heap.rs's context-borrowing accessors, with
+`c` threaded into the vm.rs / rt.rs functions that needed it (the class API: `&Ctx` for reads,
+`&mut Ctx` for writes and allocation). Boot runs on the main context: `heap::boot_vm` only installs
+the blank Vm, lib.rs makes the main `Ctx` and calls `builtins::boot(&mut c)`, so the builtins'
+`init(vmr: &Vm)` became `init(c: &mut Ctx)` (`Ctx::vm` returns `&'static Vm`). `ancestors()`
+returns an `Rc<[Value]>` from a `RefCell` cache instead of a `&'static Vec` into the ClassData.
+vm.rs, rt.rs, legacy.rs, str_legacy.rs import `heap::no_legacy_body` (state "converted (object
+accessors)" in `heap_audit.rb`: they still use `vm()` and the context-free allocators, which the
+full `no_legacy` bans). Counts, base -> after: `fn->&'static mut` 8 -> 1 (gc.rs's private `heap()`),
+object-accessor sites 233 -> 0, context-free Array API 27 -> 0, `unsafe` 377 -> 380 (object.rs
+-7, rt.rs -3, heap.rs +9 and node.def +4: the env accessors below).
+
+*Env access stays unchecked, now marked:* node_dvar / node_dasgn use
+`Ctx::env_{up,get,set}_unchecked` (heap.rs, `unsafe fn`, rule H6: a frame's env slot holds an
+Env). They borrow the context like every accessor, so the aliasing assumption of base's
+`obj(env)` is gone; base's `unreachable_unchecked` kind assumption remains, as a marked `unsafe`.
+The checked `c.env_*` cost block AOT +29 % and iterators AOT +25 % instructions (two `test` / `cmp`
+and two branches per access).
+
+*Bug found:* row 40 of 2.4 (`{**h}` and four other sites copied a Hash's pairs into a `Vec` across
+`hash_aset`: use after free under GC; c-read). *Closed by construction:* `ancestors()`'s
+`&'static Vec`, dropped by the next recomputation for the same class (no reachable case found).
+
+Instructions (local machine, shared; M = 10^6, base 3 runs, after 2 runs, equal): 12 of 15
+benches within 0.3 % interp and AOT (nesteddata -0.23 % / -0.32 % with `drop_body` per variant);
+poly 4706 -> 4746 interp (+0.85 %), 2055 -> 2079 AOT (+1.17 %); object 3292 -> 3304 (+0.36 %),
+1296 -> 1300 (+0.31 %); startup 15.459M -> 15.496M (+0.24 %). All of the excess comes with the
+`rclass` step (`a1217f5`); per callgrind: `call_slow` +2.7 instructions per megamorphic call
+(register moves and reloads on the poly-table hit path, no added operation), the ivar node +1 per
+read (the out-of-line miss call needs `c`, kept in a second register), `new_object` +1 per object.
+Analysed, not fixed: above the 0.3 % bound, kept on the branch for the decision.
+optcarrot 82.64M -> 82.94M per frame (+0.36 %), checksum 59662. Checks (trial README): three builds
+0 warnings, t/hand 0 differences, AOT vs `--plain` the same 7 address-only files as base, panic scan
+and GC stress 0 panics, reuse / fork tests pass.

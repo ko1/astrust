@@ -73,7 +73,7 @@ cfn!(h_s_aref, |c, slf, a, blk| {
         if let Some(arr) = check_array(c, a[0])? {
             for i in 0..c.ary_len(arr) {
                 let p = c.ary_get(arr, i);
-                let p = match check_array(c, p)? { Some(p) => p, None => return arg_err(c, format!("wrong element type {} at {} (expected array)", class_name_for_err(p), i)) };
+                let p = match check_array(c, p)? { Some(p) => p, None => return arg_err(c, format!("wrong element type {} at {} (expected array)", class_name_for_err(c, p), i)) };
                 match c.ary(p) { &[k] => hash_aset(c, h, k, NIL)?, &[k, v] => hash_aset(c, h, k, v)?, x => { let n = x.len(); return arg_err(c, format!("invalid number of elements ({} for 1..2)", n)) } }
             }
             return Ok(h);
@@ -93,8 +93,8 @@ cfn!(h_fetch, |c, slf, a, blk| {
             if !blk.is_null() { return yield1(c, blk, a[0]); }
             if a.len() > 1 { return Ok(a[1]); }
             let ins = inspect_str(c, a[0])?;
-            let e = make_exception(c.vm().c_key_error.get(), &format!("key not found: {}", ins));
-            ivar_set_raw(e, s::key, a[0]); ivar_set_raw(e, s::receiver, slf);
+            let e = make_exception(c, c.vm().c_key_error.get(), &format!("key not found: {}", ins));
+            ivar_set_raw(c, e, s::key, a[0]); ivar_set_raw(c, e, s::receiver, slf);
             Err(raise_exc(c, e))
         }
     }
@@ -192,7 +192,7 @@ cfn!(h_to_h, |c, slf, a, blk| {
     let out = c.hash_new();
     each_entry(c, slf, |c, k, v| {
         let r = yield_pair(c, blk, k, v)?;
-        let p = match check_array(c, r)? { Some(p) => p, None => return type_err(c, format!("wrong element type {} (expected array)", class_name_for_err(r))) };
+        let p = match check_array(c, r)? { Some(p) => p, None => return type_err(c, format!("wrong element type {} (expected array)", class_name_for_err(c, r))) };
         if c.ary_len(p) != 2 { return arg_err(c, format!("element has wrong array length (expected 2, was {})", c.ary_len(p))); }
         let (k, v) = (c.ary_get(p, 0), c.ary_get(p, 1));
         hash_aset(c, out, k, v)?; Ok(true)
@@ -233,7 +233,7 @@ cfn!(h_eql, |c, slf, a, blk| hash_equal(c, slf, a[0], true));
 /// hash_equal: values compared by == or (eql) eql?.
 fn hash_equal(c: &mut Ctx, slf: Value, o: Value, eql: bool) -> RV {
     if slf == o { return Ok(TRUE); }
-    if !is_hash(o) { if o.is_heap() && respond_to(o, s::to_hash, true) { let r = funcall(c, o, s::eq, &[slf], std::ptr::null())?; return Ok(Value::bool(r.truthy())); } return Ok(FALSE); }
+    if !is_hash(o) { if o.is_heap() && respond_to(c, o, s::to_hash, true) { let r = funcall(c, o, s::eq, &[slf], std::ptr::null())?; return Ok(Value::bool(r.truthy())); } return Ok(FALSE); }
     if c.hash_len(slf) != c.hash_len(o) { return Ok(FALSE); }
     if !recursion_enter(slf, s::eq) { return Ok(TRUE); }
     let mut ok = true;
@@ -259,14 +259,14 @@ cfn!(h_hash, |c, slf, a, blk| {
 });
 cfn!(h_merge, |c, slf, a, blk| {
     let out = c.hash_dup(slf); obj_set_klass(out, c.vm().c_hash.get());
-    if obj_klass(slf) != c.vm().c_hash.get() { obj_set_klass(out, real_class_of(slf)); }
+    if obj_klass(slf) != c.vm().c_hash.get() { obj_set_klass(out, real_class_of(c, slf)); }
     h_update(c, out, a, blk)?;
     Ok(out)
 });
 cfn!(h_update, |c, slf, a, blk| {
     modify(c, slf)?;
     for &x in a {
-        let o = match check_hash(c, x)? { Some(o) => o, None => return type_err(c, format!("no implicit conversion of {} into Hash", class_name_for_err(x))) };
+        let o = match check_hash(c, x)? { Some(o) => o, None => return type_err(c, format!("no implicit conversion of {} into Hash", class_name_for_err(c, x))) };
         each_entry(c, o, |c, k, v| {
             let nv = if !blk.is_null() { match hash_get_opt(c, slf, k)? { Some(old) => { c.hash_iter_enter(slf); let r = yield_block(c, blk, &[k, old, v]); c.hash_iter_leave(slf); r? } None => v } } else { v };
             modify(c, slf)?;
@@ -296,11 +296,11 @@ cfn!(h_default_proc, |c, slf, a, blk| Ok(c.hash(slf).default_proc));
 cfn!(h_set_default_proc, |c, slf, a, blk| {
     modify(c, slf)?;
     let mut p = a[0];
-    if p != NIL && !is_proc(p) && respond_to(p, intern(b"to_proc"), true) {
+    if p != NIL && !is_proc(p) && respond_to(c, p, intern(b"to_proc"), true) {
         let q = funcall(c, p, intern(b"to_proc"), &[], std::ptr::null())?;
         if is_proc(q) { p = q; }
     }
-    if p != NIL && !is_proc(p) { return type_err(c, format!("wrong default_proc type {} (expected Proc)", class_name_for_err(p))); }
+    if p != NIL && !is_proc(p) { return type_err(c, format!("wrong default_proc type {} (expected Proc)", class_name_for_err(c, p))); }
     if p != NIL && c.proc_data(p).is_lambda { let ar = crate::builtins::proc::proc_arity(c, p); if ar != 2 && !(ar < 0 && ar >= -3) { return type_err(c, format!("default_proc takes two arguments (2 for {})", ar)); } }
     let r = c.hash_mut(slf); r.default_proc = p; r.default = NIL; Ok(p)
 });
@@ -346,7 +346,7 @@ cfn!(h_filter_keys_dig, |c, slf, a, blk| {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
     let v = hash_aref(c, slf, a[0])?;
     if a.len() == 1 || v == NIL { return Ok(v); }
-    if !respond_to(v, intern(b"dig"), true) { return type_err(c, format!("{} does not have #dig method", class_name_for_err(v))); }
+    if !respond_to(c, v, intern(b"dig"), true) { return type_err(c, format!("{} does not have #dig method", class_name_for_err(c, v))); }
     funcall(c, v, intern(b"dig"), &a[1..], std::ptr::null())
 });
 cfn!(h_shift, |c, slf, a, blk| {
@@ -430,30 +430,30 @@ cfn!(h_flatten, |c, slf, a, blk| {
     Ok(out)
 });
 
-pub fn init(k: Value) {
-    let d = |n: &str, f: CFunc, a: i32| define_cfunc(k, n, f, a);
-    define_private_cfunc(k, "initialize", h_initialize, -1);
-    define_private_cfunc(k, "initialize_copy", h_initialize_copy, 1);
-    define_singleton_cfunc(k, "[]", h_s_aref, -1);
-    define_singleton_cfunc(k, "try_convert", h_s_try_convert, 1);
-    define_singleton_cfunc(k, "new", h_s_new, -1);
-    d("[]", h_aref, 1); d("[]=", h_aset, 2); d("store", h_store_kw, 2); d("fetch", h_fetch, -1); d("key?", h_key_p, 1); d("has_key?", h_key_p, 1);
-    d("include?", h_key_p, 1); d("member?", h_key_p, 1); d("value?", h_value_p, 1); d("has_value?", h_value_p, 1); d("key", h_key, 1);
-    d("delete", h_delete, 1); d("size", h_size, 0); d("length", h_size, 0); d("empty?", h_empty, 0); d("keys", h_keys, 0);
-    d("values", h_values, 0); d("values_at", h_values_at, -1); d("fetch_values", h_fetch_values, -1); d("each", h_each, 0); d("each_pair", h_each, 0);
-    d("each_key", h_each_key, 0); d("each_value", h_each_value, 0); d("each_with_index", h_each_with_index, 0); d("map", h_map, 0); d("collect", h_map, 0);
-    d("flat_map", h_flat_map, 0); d("select", h_select, 0); d("filter", h_select, 0); d("reject", h_reject, 0); d("select!", h_select_b, 0);
-    d("filter!", h_select_b, 0); d("keep_if", h_keep_if, 0); d("reject!", h_reject_b, 0); d("delete_if", h_delete_if, 0); d("filter_map", h_filter_map, 0);
-    d("any?", h_any, -1); d("to_a", h_to_a, 0); d("to_h", h_to_h, 0);
-    d("to_hash", h_to_hash, 0); d("inspect", h_inspect, 0); d("to_s", h_inspect, 0); d("==", h_eq, 1); d("eql?", h_eql, 1); d("hash", h_hash, 0);
-    d("merge", h_merge, -1); d("update", h_update, -1); d("merge!", h_update, -1); d("clear", h_clear, 0); d("replace", h_replace, 1);
-    d("default", h_default, -1); d("default=", h_set_default, 1); d("default_proc", h_default_proc, 0); d("default_proc=", h_set_default_proc, 1);
-    d("invert", h_invert, 0); d("transform_values", h_transform_values, 0); d("transform_values!", h_transform_values_b, 0);
-    d("transform_keys", h_transform_keys, -1); d("transform_keys!", h_transform_keys_b, -1); 
-    d("slice", h_slice, -1); d("except", h_except, -1); d("dig", h_filter_keys_dig, -1);
-    d("shift", h_shift, 0); d("compare_by_identity", h_compare_by_identity, 0); d("compare_by_identity?", h_compare_by_identity_p, 0);
-    d("rehash", h_rehash, 0); d("compact", h_compact, 0); d("compact!", h_compact_b, 0); d("assoc", h_assoc, 1); d("rassoc", h_rassoc, 1);
-    d("<=", h_le, 1); d("<", h_lt, 1); d(">=", h_ge, 1); d(">", h_gt, 1); d("freeze", h_freeze, 0); d("to_proc", h_to_proc, 0);
-    d("deconstruct_keys", h_deconstruct_keys, 1); d("flatten", h_flatten, -1);
+pub fn init(c: &mut Ctx, k: Value) {
+    let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, k, n, f, a);
+    define_private_cfunc(c, k, "initialize", h_initialize, -1);
+    define_private_cfunc(c, k, "initialize_copy", h_initialize_copy, 1);
+    define_singleton_cfunc(c, k, "[]", h_s_aref, -1);
+    define_singleton_cfunc(c, k, "try_convert", h_s_try_convert, 1);
+    define_singleton_cfunc(c, k, "new", h_s_new, -1);
+    d(c, "[]", h_aref, 1); d(c, "[]=", h_aset, 2); d(c, "store", h_store_kw, 2); d(c, "fetch", h_fetch, -1); d(c, "key?", h_key_p, 1); d(c, "has_key?", h_key_p, 1);
+    d(c, "include?", h_key_p, 1); d(c, "member?", h_key_p, 1); d(c, "value?", h_value_p, 1); d(c, "has_value?", h_value_p, 1); d(c, "key", h_key, 1);
+    d(c, "delete", h_delete, 1); d(c, "size", h_size, 0); d(c, "length", h_size, 0); d(c, "empty?", h_empty, 0); d(c, "keys", h_keys, 0);
+    d(c, "values", h_values, 0); d(c, "values_at", h_values_at, -1); d(c, "fetch_values", h_fetch_values, -1); d(c, "each", h_each, 0); d(c, "each_pair", h_each, 0);
+    d(c, "each_key", h_each_key, 0); d(c, "each_value", h_each_value, 0); d(c, "each_with_index", h_each_with_index, 0); d(c, "map", h_map, 0); d(c, "collect", h_map, 0);
+    d(c, "flat_map", h_flat_map, 0); d(c, "select", h_select, 0); d(c, "filter", h_select, 0); d(c, "reject", h_reject, 0); d(c, "select!", h_select_b, 0);
+    d(c, "filter!", h_select_b, 0); d(c, "keep_if", h_keep_if, 0); d(c, "reject!", h_reject_b, 0); d(c, "delete_if", h_delete_if, 0); d(c, "filter_map", h_filter_map, 0);
+    d(c, "any?", h_any, -1); d(c, "to_a", h_to_a, 0); d(c, "to_h", h_to_h, 0);
+    d(c, "to_hash", h_to_hash, 0); d(c, "inspect", h_inspect, 0); d(c, "to_s", h_inspect, 0); d(c, "==", h_eq, 1); d(c, "eql?", h_eql, 1); d(c, "hash", h_hash, 0);
+    d(c, "merge", h_merge, -1); d(c, "update", h_update, -1); d(c, "merge!", h_update, -1); d(c, "clear", h_clear, 0); d(c, "replace", h_replace, 1);
+    d(c, "default", h_default, -1); d(c, "default=", h_set_default, 1); d(c, "default_proc", h_default_proc, 0); d(c, "default_proc=", h_set_default_proc, 1);
+    d(c, "invert", h_invert, 0); d(c, "transform_values", h_transform_values, 0); d(c, "transform_values!", h_transform_values_b, 0);
+    d(c, "transform_keys", h_transform_keys, -1); d(c, "transform_keys!", h_transform_keys_b, -1); 
+    d(c, "slice", h_slice, -1); d(c, "except", h_except, -1); d(c, "dig", h_filter_keys_dig, -1);
+    d(c, "shift", h_shift, 0); d(c, "compare_by_identity", h_compare_by_identity, 0); d(c, "compare_by_identity?", h_compare_by_identity_p, 0);
+    d(c, "rehash", h_rehash, 0); d(c, "compact", h_compact, 0); d(c, "compact!", h_compact_b, 0); d(c, "assoc", h_assoc, 1); d(c, "rassoc", h_rassoc, 1);
+    d(c, "<=", h_le, 1); d(c, "<", h_lt, 1); d(c, ">=", h_ge, 1); d(c, ">", h_gt, 1); d(c, "freeze", h_freeze, 0); d(c, "to_proc", h_to_proc, 0);
+    d(c, "deconstruct_keys", h_deconstruct_keys, 1); d(c, "flatten", h_flatten, -1);
     let _ = (h_sort_by_fallback, h_min_by_fallback, h_find, h_all, h_count, h_group_by, h_partition, h_sum, h_min_by, h_sort_by, h_first);
 }

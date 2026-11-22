@@ -205,13 +205,14 @@ fn run_main(o: Opts) -> i32 {
     vm().main_ctx.set(&mut c);
     let mut top = Frame::empty(c.bottom());
     c.frame = &mut top.h;
+    builtins::boot(&mut c);
 
     let vm = vm();
     vm.verbose.set(if o.warn { TRUE } else { FALSE });
     if o.warn { builtins::misc::warning_enable_deprecated(); }
-    for d in &o.incdirs { let s = string::str_new(d.as_bytes()); array::ary_push(vm.load_path.get(), s); }
+    for d in &o.incdirs { let s = string::str_new(d.as_bytes()); c.ary_push(vm.load_path.get(), s); }
     builtins::prelude::setup_load_path(&mut c);
-    for a in &o.args { let s = string::str_new(a); array::ary_push(vm.argv.get(), s); }
+    for a in &o.args { let s = string::str_new(a); c.ary_push(vm.argv.get(), s); }
     aot::init(if o.plain { None } else { Some(&o.store) }, o.aot);
     vm.aot_collect.set(o.aot);
 
@@ -286,7 +287,7 @@ pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
     let vm = vm();
     loop {
         let ae = vm.at_exit.get();
-        let Some(p) = array::rary(ae).pop() else { break };
+        let Some(p) = c.ary_mut(ae).pop() else { break };
         c.esc = EscKind::None;
         if call_proc(c, p, &[], std::ptr::null()).is_err() { status = handle_toplevel_error(c); }
     }
@@ -307,15 +308,15 @@ fn handle_toplevel_error(c: &mut Ctx) -> i32 {
         EscKind::Raise => {
             let e = c.esc_val;
             c.esc = EscKind::None;
-            if is_kind_of(e, vm().c_system_exit.get()) {
-                let st = ivar_get(e, symbol::s::status);
+            if is_kind_of(c, e, vm().c_system_exit.get()) {
+                let st = ivar_get(c, e, symbol::s::status);
                 return if st.is_fixnum() { st.as_fix() as i32 } else { 0 };
             }
-            if is_kind_of(e, vm().c_signal_exception.get()) || ivar_get(e, symbol::intern(b"signo")).is_fixnum() {
-                let no = ivar_get(e, symbol::intern(b"signo"));
+            if is_kind_of(c, e, vm().c_signal_exception.get()) || ivar_get(c, e, symbol::intern(b"signo")).is_fixnum() {
+                let no = ivar_get(c, e, symbol::intern(b"signo"));
                 if no.is_fixnum() {
                     builtins::process::die_by_signal_at_exit(no.as_fix() as i32);
-                    if !is_kind_of(e, vm().c_interrupt.get()) { return 128 + no.as_fix() as i32; }
+                    if !is_kind_of(c, e, vm().c_interrupt.get()) { return 128 + no.as_fix() as i32; }
                 }
             }
             report_exception(c, e);
@@ -347,7 +348,7 @@ pub fn main_entry() {
         kalloc::adopt();
         let base = 0usize;
         gc::init(&base as *const usize as usize + 8);
-        builtins::boot();
+        builtins::boot::install();
         let st = run_main(o);
         builtins::kernel::out_flush();
         std::process::exit(st);

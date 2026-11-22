@@ -115,10 +115,10 @@ pub fn on_def(c: &mut Ctx, is: usize, klass: Value, name: Sym) {
 }
 /// Keep the classes named by method results alive (hidden array on Coverage).
 fn root(c: &mut Ctx, v: Value) {
-    let m = const_get_at(c.vm().c_object.get(), intern(b"Coverage")).unwrap_or(NIL);
+    let m = const_get_at(c, c.vm().c_object.get(), intern(b"Coverage")).unwrap_or(NIL);
     if m == NIL { return; }
-    let mut a = ivar_get(m, intern(b"__classes"));
-    if a == NIL { a = c.ary_new(); ivar_set_raw(m, intern(b"__classes"), a); }
+    let mut a = ivar_get(c, m, intern(b"__classes"));
+    if a == NIL { a = c.ary_new(); ivar_set_raw(c, m, intern(b"__classes"), a); }
     c.ary_push(a, v);
 }
 
@@ -126,7 +126,7 @@ fn root(c: &mut Ctx, v: Value) {
 fn to_hash(c: &mut Ctx, v: Value) -> RV {
     match crate::hash::check_hash(c, v)? {
         Some(h) => Ok(h),
-        None => type_err(c, format!("no implicit conversion of {} into Hash", crate::builtins::kernel::class_name_for_err(v))),
+        None => type_err(c, format!("no implicit conversion of {} into Hash", crate::builtins::kernel::class_name_for_err(c, v))),
     }
 }
 fn rt_err<T>(c: &mut Ctx, m: &str) -> Result<T, Esc> { err(c, c.vm().c_runtime_error.get(), m) }
@@ -137,7 +137,7 @@ fn set_state(s: u8) {
     RUNNING.store(s == 2, Relaxed);
 }
 fn cv_supported(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
-    if !a[0].is_sym() { return type_err(c, format!("wrong argument type {} (expected Symbol)", crate::builtins::kernel::class_name_for_err(a[0]))); }
+    if !a[0].is_sym() { return type_err(c, format!("wrong argument type {} (expected Symbol)", crate::builtins::kernel::class_name_for_err(c, a[0]))); }
     Ok(Value::bool(matches!(crate::symbol::sym_bytes(a[0].as_sym()), b"lines" | b"oneshot_lines" | b"branches" | b"methods" | b"eval")))
 }
 fn cv_setup(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
@@ -271,9 +271,9 @@ fn cv_running(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok
 /// Init_coverage
 pub fn init(c: &mut Ctx) {
     let ob = c.vm().c_object.get();
-    let m = const_get_at(ob, intern(b"Coverage")).unwrap_or_else(|| define_module("Coverage"));
-    define_singleton_cfunc(m, "supported?", cv_supported, 1);
-    let f = |n: &str, fun: CFunc, ar: i32| define_module_function(m, n, fun, ar);
-    f("setup", cv_setup, -1); f("start", cv_start, -1); f("resume", cv_resume, 0); f("suspend", cv_suspend, 0);
-    f("result", cv_result, -1); f("peek_result", cv_peek_result, 0); f("state", cv_state, 0); f("running?", cv_running, 0);
+    let m = const_get_at(c, ob, intern(b"Coverage")).unwrap_or_else(|| define_module(c, "Coverage"));
+    define_singleton_cfunc(c, m, "supported?", cv_supported, 1);
+    let f = |c: &mut Ctx, n: &str, fun: CFunc, ar: i32| define_module_function(c, m, n, fun, ar);
+    f(c, "setup", cv_setup, -1); f(c, "start", cv_start, -1); f(c, "resume", cv_resume, 0); f(c, "suspend", cv_suspend, 0);
+    f(c, "result", cv_result, -1); f(c, "peek_result", cv_peek_result, 0); f(c, "state", cv_state, 0); f(c, "running?", cv_running, 0);
 }

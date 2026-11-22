@@ -209,7 +209,7 @@ fn e_next(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     }
     let en = renum(c, slf);
     if en.pos >= c.ary_len(en.buf) {
-        let e = make_exception(c.vm().c_stop_iteration.get(), "iteration reached an end");
+        let e = make_exception(c, c.vm().c_stop_iteration.get(), "iteration reached an end");
         return Err(raise_exc(c, e));
     }
     let v = c.ary_get(en.buf, en.pos);
@@ -249,7 +249,7 @@ fn e_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     }
     if en.size == TRUE {
         let r = en.recv;
-        if respond_to(r, s::size, true) { return funcall(c, r, s::size, &[], std::ptr::null()); }
+        if respond_to(c, r, s::size, true) { return funcall(c, r, s::size, &[], std::ptr::null()); }
         return Ok(NIL);
     }
     if is_proc(en.size) { let p = en.size; return call_proc(c, p, &[], std::ptr::null()); }
@@ -258,7 +258,7 @@ fn e_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let (recv, mid) = (en.recv, en.mid);
     if (mid == s::times) && recv.is_fixnum() { return Ok(Value::fix(recv.as_fix().max(0))); }
     if mid == intern(b"each_slice") || mid == intern(b"each_cons") {
-        if respond_to(recv, s::size, true) {
+        if respond_to(c, recv, s::size, true) {
             let sz = funcall(c, recv, s::size, &[], std::ptr::null())?;
             let k = c.ary_get(en.args, 0).as_fix();
             if sz.is_fixnum() && k > 0 { let n = sz.as_fix(); return Ok(Value::fix(if mid == intern(b"each_slice") { (n + k - 1) / k } else { (n - k + 1).max(0) })); }
@@ -311,7 +311,7 @@ fn e_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let args = c.ary(en.args).to_vec();
     let mut a = String::new();
     if !args.is_empty() { a.push('('); for (i, x) in args.iter().enumerate() { if i > 0 { a.push_str(", "); } a.push_str(&inspect_str(c, *x)?); } a.push(')'); }
-    let cls = class_path(real_class_of(slf));
+    let cls = class_path(c, real_class_of(c, slf));
     Ok(c.str_new(format!("#<{}: {}:{}{}>", cls, r, sym_str(en.mid), a).as_bytes()))
 }
 fn is_range_origin(_v: Value) -> bool { false }
@@ -320,7 +320,7 @@ fn e_initialize(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
     let g = block_to_proc(c, blk)?;
     let size = a.first().copied().unwrap_or(NIL);
-    if size != NIL && !size.is_fixnum() && !is_float(size) && !is_bignum(size) && !is_proc(size) && !respond_to(size, s::call, true) {
+    if size != NIL && !size.is_fixnum() && !is_float(size) && !is_bignum(size) && !is_proc(size) && !respond_to(c, size, s::call, true) {
         crate::builtins::numeric_methods::num_to_long(c, size)?;
     }
     let Some(en) = c.data_mut::<REnum>(slf) else { return type_err(c, "wrong argument type (expected Enumerator)") };
@@ -393,49 +393,49 @@ pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     Ok(None)
 }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
-    if crate::builtins::inherits(klass, c.vm().c_enumerator.get()) { return Ok(Some(new_enum(c, klass, NIL, s::each, &[], NIL))); }
+    if crate::builtins::inherits(c, klass, c.vm().c_enumerator.get()) { return Ok(Some(new_enum(c, klass, NIL, s::each, &[], NIL))); }
     Ok(None)
 }
 
 /// The classes `init` defines, for the Vm.
 pub struct Classes { pub enumerator: Value, pub yielder: Value, pub generator: Value, pub lazy: Value, pub chain: Value, pub arith_seq: Value }
 /// `e` is Enumerator, already marked as having no allocator (its subclasses inherit that).
-pub fn init(e: Value, object: Value, enumerable: Value) -> Classes {
-    include_module(e, enumerable);
-    let k = Classes { enumerator: e, yielder: define_class_under(e, "Yielder", object), generator: define_class_under(e, "Generator", object),
-                      lazy: define_class_under(e, "Lazy", e), chain: define_class_under(e, "Chain", e), arith_seq: define_class_under(e, "ArithmeticSequence", e) };
-    define_singleton_cfunc(e, "new", crate::builtins::object::c_new, -1);
-    define_private_cfunc(e, "initialize", e_initialize, -1);
-    define_cfunc(e, "each", e_each, -1);
-    define_cfunc(e, "with_index", e_with_index, -1);
-    define_cfunc(e, "each_with_index", e_each_with_index, 0);
-    define_cfunc(e, "with_object", e_with_object, 1);
-    define_cfunc(e, "each_with_object", e_with_object, 1);
-    define_cfunc(e, "next", e_next, 0);
-    define_cfunc(e, "peek", e_peek, 0);
-    define_cfunc(e, "rewind", e_rewind, 0);
-    define_cfunc(e, "size", e_size, 0);
-    define_cfunc(e, "inspect", e_inspect, 0);
-    define_cfunc(e, "to_s", e_inspect, 0);
-    define_cfunc(e, "take", e_take, 1);
-    define_cfunc(e, "first", e_first, -1);
+pub fn init(c: &mut Ctx, e: Value, object: Value, enumerable: Value) -> Classes {
+    include_module(c, e, enumerable);
+    let k = Classes { enumerator: e, yielder: define_class_under(c, e, "Yielder", object), generator: define_class_under(c, e, "Generator", object),
+                      lazy: define_class_under(c, e, "Lazy", e), chain: define_class_under(c, e, "Chain", e), arith_seq: define_class_under(c, e, "ArithmeticSequence", e) };
+    define_singleton_cfunc(c, e, "new", crate::builtins::object::c_new, -1);
+    define_private_cfunc(c, e, "initialize", e_initialize, -1);
+    define_cfunc(c, e, "each", e_each, -1);
+    define_cfunc(c, e, "with_index", e_with_index, -1);
+    define_cfunc(c, e, "each_with_index", e_each_with_index, 0);
+    define_cfunc(c, e, "with_object", e_with_object, 1);
+    define_cfunc(c, e, "each_with_object", e_with_object, 1);
+    define_cfunc(c, e, "next", e_next, 0);
+    define_cfunc(c, e, "peek", e_peek, 0);
+    define_cfunc(c, e, "rewind", e_rewind, 0);
+    define_cfunc(c, e, "size", e_size, 0);
+    define_cfunc(c, e, "inspect", e_inspect, 0);
+    define_cfunc(c, e, "to_s", e_inspect, 0);
+    define_cfunc(c, e, "take", e_take, 1);
+    define_cfunc(c, e, "first", e_first, -1);
     let y = k.yielder;
-    define_singleton_cfunc(y, "new", y_s_new, 0);
-    define_cfunc(y, "yield", y_yield, -1);
-    define_cfunc(y, "call", y_yield, -1);
-    define_cfunc(y, "<<", y_ltlt, -1);
-    define_cfunc(y, "to_proc", y_to_proc, 0);
+    define_singleton_cfunc(c, y, "new", y_s_new, 0);
+    define_cfunc(c, y, "yield", y_yield, -1);
+    define_cfunc(c, y, "call", y_yield, -1);
+    define_cfunc(c, y, "<<", y_ltlt, -1);
+    define_cfunc(c, y, "to_proc", y_to_proc, 0);
     let a = k.arith_seq;
-    define_cfunc(a, "begin", arith_begin, 0);
-    define_cfunc(a, "end", arith_end, 0);
-    define_cfunc(a, "step", arith_step, 0);
-    define_cfunc(a, "exclude_end?", arith_excl, 0);
-    define_cfunc(a, "==", arith_eq, 1);
-    define_cfunc(a, "===", arith_eq, 1);
-    define_cfunc(a, "eql?", arith_eq, 1);
-    define_cfunc(a, "last", arith_last, -1);
-    define_cfunc(a, "first", arith_first, -1);
-    define_cfunc(a, "to_a", arith_to_a, 0);
-    define_cfunc(a, "entries", arith_to_a, 0);
+    define_cfunc(c, a, "begin", arith_begin, 0);
+    define_cfunc(c, a, "end", arith_end, 0);
+    define_cfunc(c, a, "step", arith_step, 0);
+    define_cfunc(c, a, "exclude_end?", arith_excl, 0);
+    define_cfunc(c, a, "==", arith_eq, 1);
+    define_cfunc(c, a, "===", arith_eq, 1);
+    define_cfunc(c, a, "eql?", arith_eq, 1);
+    define_cfunc(c, a, "last", arith_last, -1);
+    define_cfunc(c, a, "first", arith_first, -1);
+    define_cfunc(c, a, "to_a", arith_to_a, 0);
+    define_cfunc(c, a, "entries", arith_to_a, 0);
     k
 }

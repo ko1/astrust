@@ -71,7 +71,7 @@ fn new_thread(c: &mut Ctx, klass: Value) -> Value {
 }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     let k = c.vm().c_thread.get();
-    if k != NIL && crate::builtins::inherits(klass, k) { return Ok(Some(new_thread(c, klass))); }
+    if k != NIL && crate::builtins::inherits(c, klass, k) { return Ok(Some(new_thread(c, klass))); }
     Ok(None)
 }
 fn list_remove(c: &mut Ctx, t: Value) { let l = LIST.get(c); c.ary_mut(l).retain(|&x| x != t); }
@@ -79,7 +79,7 @@ fn list_remove(c: &mut Ctx, t: Value) { let l = LIST.get(c); c.ary_mut(l).retain
 fn check_interrupt(c: &mut Ctx, t: Value) -> Result<(), Esc> {
     let r = th_mut(c, t);
     if r.pending != NIL { let e = r.pending; r.pending = NIL; return Err(raise_exc(c, e)); }
-    if r.killed { r.killed = false; let e = make_exception(C_KILL.get(c), "killed"); return Err(raise_exc(c, e)); }
+    if r.killed { r.killed = false; let e = make_exception(c, C_KILL.get(c), "killed"); return Err(raise_exc(c, e)); }
     Ok(())
 }
 /// Make a parked thread runnable (an interrupt or a wakeup was posted for it).
@@ -95,8 +95,8 @@ fn finish_thread(c: &mut Ctx, t: Value) -> Result<(), Esc> {
     blop::notify(c, t.raw());
     if FORKED.load(Relaxed) && t == MAIN.get(c) { forked_main_exit(c, is_err, v); }
     if !is_err { th_mut(c, t).value = v; return Ok(()); }
-    if is_kind_of(v, C_KILL.get(c)) { return Ok(()); }
-    if is_kind_of(v, c.vm().c_system_exit.get()) { return Err(raise_exc(c, v)); }
+    if is_kind_of(c, v, C_KILL.get(c)) { return Ok(()); }
+    if is_kind_of(c, v, c.vm().c_system_exit.get()) { return Err(raise_exc(c, v)); }
     let r = th_mut(c, t);
     r.exc = v;
     let report = if r.report == UNDEF { REPORT_ALL.load(Relaxed) } else { r.report.truthy() };
@@ -110,7 +110,7 @@ fn finish_thread(c: &mut Ctx, t: Value) -> Result<(), Esc> {
 }
 /// A child forked from a green thread ends when that thread does (it is the child's main thread).
 fn forked_main_exit(c: &mut Ctx, is_err: bool, v: Value) -> ! {
-    let r = if !is_err || is_kind_of(v, C_KILL.get(c)) { Ok(NIL) } else { Err(raise_exc(c, v)) };
+    let r = if !is_err || is_kind_of(c, v, C_KILL.get(c)) { Ok(NIL) } else { Err(raise_exc(c, v)) };
     crate::builtins::process::child_exit(c, r)
 }
 /// Give every runnable thread one turn; true when any ran.
@@ -222,7 +222,7 @@ pub fn sleep_for(c: &mut Ctx, d: Duration) -> Result<(), Esc> {
 }
 fn closed_in_another_thread(c: &mut Ctx) -> Esc {
     let k = c.vm().c_io_error.get();
-    let e = make_exception(k, "stream closed in another thread");
+    let e = make_exception(c, k, "stream closed in another thread");
     raise_exc(c, e)
 }
 /// Wait for readiness of `fds` (poll(2) events): Some(fds with revents) or None at the deadline.
@@ -293,7 +293,7 @@ fn inspect_thread(c: &Ctx, t: Value, status: &str) -> String {
     let r = th(c, t);
     let name = if r.name != NIL { format!("@{}", String::from_utf8_lossy(c.str_bytes(r.name))) } else { String::new() };
     let loc = if r.loc.is_empty() { String::new() } else { format!(" {}", r.loc) };
-    format!("#<{}:0x{:016x}{}{} {}>", class_path(real_class_of(t)), t.raw(), name, loc, status)
+    format!("#<{}:0x{:016x}{}{} {}>", class_path(c, real_class_of(c, t)), t.raw(), name, loc, status)
 }
 fn th_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     if b.is_null() { return err(c, c.vm().c_thread_error.get(), "must be called with a block"); }
@@ -343,8 +343,8 @@ fn th_stop(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(NIL)
 }
 fn exit_exception(c: &mut Ctx) -> Value {
-    let e = make_exception(c.vm().c_system_exit.get(), "exit");
-    ivar_set_raw(e, crate::symbol::s::status, Value::fix(0));
+    let e = make_exception(c, c.vm().c_system_exit.get(), "exit");
+    ivar_set_raw(c, e, crate::symbol::s::status, Value::fix(0));
     e
 }
 fn kill_thread(c: &mut Ctx, t: Value) -> RV {
@@ -352,7 +352,7 @@ fn kill_thread(c: &mut Ctx, t: Value) -> RV {
     if th(c, t).dead { return Ok(t); }
     if t == cur(c) {
         if is_main(c) { let e = exit_exception(c); return Err(raise_exc(c, e)); }
-        let e = make_exception(C_KILL.get(c), "killed");
+        let e = make_exception(c, C_KILL.get(c), "killed");
         return Err(raise_exc(c, e));
     }
     if t == MAIN.get(c) { let e = exit_exception(c); th_mut(c, t).pending = e; return Ok(t); }
@@ -375,7 +375,7 @@ fn th_kill(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { kill
 fn th_s_kill(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { kill_thread(c, a[0]) }
 fn th_s_exit(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { let t = cur(c); kill_thread(c, t) }
 fn th_raise(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    let e = if a.is_empty() { make_exception(c.vm().c_runtime_error.get(), "unhandled exception") } else { make_exception_from_args(c, a)? };
+    let e = if a.is_empty() { make_exception(c, c.vm().c_runtime_error.get(), "unhandled exception") } else { make_exception_from_args(c, a)? };
     thr(c, slf)?;
     if th(c, slf).dead { return Ok(NIL); }
     if slf == cur(c) { return Err(raise_exc(c, e)); }
@@ -404,15 +404,15 @@ fn th_status(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
 fn th_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { thr(c, s)?; let t = inspect_thread(c, s, status_str(c, s)); Ok(c.str_new(t.as_bytes())) }
 /// rb_frozen_error_raise(thread, "can't modify frozen thread locals")
 fn frozen_locals(c: &mut Ctx, t: Value) -> Esc {
-    let e = make_exception(c.vm().c_frozen_error.get(), "can't modify frozen thread locals");
-    ivar_set_raw(e, crate::symbol::s::receiver, t);
+    let e = make_exception(c, c.vm().c_frozen_error.get(), "can't modify frozen thread locals");
+    ivar_set_raw(c, e, crate::symbol::s::receiver, t);
     raise_exc(c, e)
 }
 /// rb_to_symbol: a Symbol, a String, or what #to_str makes a String.
 pub fn key_sym(c: &mut Ctx, k: Value) -> RV {
     if k.is_sym() { return Ok(k); }
     if is_string(k) { return Ok(c.str_to_sym(k)); }
-    if respond_to(k, intern(b"to_str"), true) {
+    if respond_to(c, k, intern(b"to_str"), true) {
         let s = funcall(c, k, intern(b"to_str"), &[], std::ptr::null())?;
         if is_string(s) { return Ok(c.str_to_sym(s)); }
     }
@@ -465,7 +465,7 @@ fn th_group(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     thr(c, s)?;
     if th(c, s).dead { return Ok(NIL); }
     init_sync(c);
-    Ok(const_get_at(const_get_at(c.vm().c_object.get(), intern(b"ThreadGroup")).unwrap(), intern(b"Default")).unwrap())
+    Ok(const_get_at(c, const_get_at(c, c.vm().c_object.get(), intern(b"ThreadGroup")).unwrap(), intern(b"Default")).unwrap())
 }
 fn tg_list(c: &mut Ctx, _s: Value, a: &[Value], b: *const Block) -> RV { th_list(c, NIL, a, b) }
 
@@ -484,8 +484,8 @@ fn lk(c: &Ctx, v: Value) -> RLock { *c.data::<RLock>(v).expect("a Mutex") }
 fn lk_mut(c: &mut Ctx, v: Value) -> &mut RLock { c.data_mut::<RLock>(v).expect("a Mutex") }
 pub fn alloc_lock(c: &mut Ctx, klass: Value) -> Option<Value> {
     let (km, kx) = (c.vm().c_monitor.get(), c.vm().c_mutex.get());
-    let mon = km != NIL && crate::builtins::inherits(klass, km);
-    if mon || (kx != NIL && crate::builtins::inherits(klass, kx)) { return Some(c.alloc(klass, Body::Data(Box::new(RLock { owner: NIL, count: 0, monitor: mon })))); }
+    let mon = km != NIL && crate::builtins::inherits(c, klass, km);
+    if mon || (kx != NIL && crate::builtins::inherits(c, klass, kx)) { return Some(c.alloc(klass, Body::Data(Box::new(RLock { owner: NIL, count: 0, monitor: mon })))); }
     None
 }
 /// A dead thread gives its locks back.
@@ -581,10 +581,10 @@ fn mon_wait_for_cond(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV
 // ---- ConditionVariable ------------------------------------------------------------------------
 
 fn cv_waiters(c: &mut Ctx, cv: Value) -> Value {
-    let w = ivar_get(cv, intern(b"__waiters"));
+    let w = ivar_get(c, cv, intern(b"__waiters"));
     if w != NIL { return w; }
     let w = c.ary_new();
-    ivar_set_raw(cv, intern(b"__waiters"), w);
+    ivar_set_raw(c, cv, intern(b"__waiters"), w);
     w
 }
 fn cv_wait_raw(c: &mut Ctx, cv: Value, timeout: Value) -> Result<bool, Esc> {
@@ -632,7 +632,7 @@ fn qu_mut(c: &mut Ctx, v: Value) -> &mut RQueue { c.data_mut::<RQueue>(v).expect
 fn q_len(c: &Ctx, q: Value) -> usize { let q = qu(c, q); c.ary_len(q.items) - q.head }
 pub fn alloc_queue(c: &mut Ctx, klass: Value) -> Option<Value> {
     let k = c.vm().c_queue.get();
-    if k != NIL && crate::builtins::inherits(klass, k) {
+    if k != NIL && crate::builtins::inherits(c, klass, k) {
         let items = c.ary_new();
         return Some(c.alloc_with(klass, move || Body::Data(Box::new(RQueue { items, head: 0, closed: false, max: 0, waiting: 0 }))));
     }
@@ -641,9 +641,9 @@ pub fn alloc_queue(c: &mut Ctx, klass: Value) -> Option<Value> {
 fn q_init(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 0, 1)?;
     if let Some(&init) = a.first() {
-        if !respond_to(init, intern(b"to_a"), true) { return type_err(c, format!("can't convert {} into Array", class_name_for_err(init))); }
+        if !respond_to(c, init, intern(b"to_a"), true) { return type_err(c, format!("can't convert {} into Array", class_name_for_err(c, init))); }
         let l = funcall(c, init, intern(b"to_a"), &[], std::ptr::null())?;
-        if !is_array(l) { return type_err(c, format!("can't convert {} to Array ({}#to_a gives {})", class_name_for_err(init), class_name_for_err(init), class_name_for_err(l))); }
+        if !is_array(l) { return type_err(c, format!("can't convert {} to Array ({}#to_a gives {})", class_name_for_err(c, init), class_name_for_err(c, init), class_name_for_err(c, l))); }
         let v = c.ary(l).to_vec();
         let items = c.ary_from_vec(v);
         let q = qu_mut(c, s);
@@ -715,7 +715,7 @@ fn q_clear(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let it
 fn q_close(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { qu_mut(c, s).closed = true; blop::notify(c, s.raw()); blop::notify(c, space_key(s)); Ok(s) }
 fn q_closed(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(qu(c, s).closed)) }
 fn q_num_waiting(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(qu(c, s).waiting as i64)) }
-fn q_freeze(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { type_err(c, format!("cannot freeze #<{}:0x{:016x}>", class_path(real_class_of(s)), s.raw())) }
+fn q_freeze(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { type_err(c, format!("cannot freeze #<{}:0x{:016x}>", class_path(c, real_class_of(c, s)), s.raw())) }
 fn sq_max(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(qu(c, s).max as i64)) }
 fn sq_set_max(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let m = num_to_long(c, a[0])?;
@@ -726,10 +726,11 @@ fn sq_set_max(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
 }
 
 /// Boot: Thread and the main thread (no context yet: allocates with gc::alloc directly).
-pub fn init(vmr: &Vm) {
+pub fn init(c: &mut Ctx) {
+    let vmr = c.vm();
     let ob = vmr.c_object.get();
-    let th = define_class("Thread", ob);
-    class_set_alloc(th, AllocKind::None);
+    let th = define_class(c, "Thread", ob);
+    class_set_alloc(c, th, AllocKind::None);
     vmr.c_thread.set(th);
     let list = crate::gc::alloc(vmr.c_array.get(), Body::Array(crate::avec::AVec::new()));
     LIST.set_vm(vmr, list);
@@ -739,79 +740,79 @@ pub fn init(vmr: &Vm) {
     let main = crate::gc::alloc_with(th, move || { let mut r = RThread::blank(l, t); r.started = true; Body::Data(Box::new(r)) });
     MAIN.set_vm(vmr, main);
     CURRENT.set_vm(vmr, main);
-    let kill = new_class(vmr.c_exception.get());
+    let kill = new_class(c, vmr.c_exception.get());
     C_KILL.set_vm(vmr, kill);
-    let fatal = new_class(vmr.c_exception.get());
-    name_class(fatal, ob, intern(b"fatal"));
+    let fatal = new_class(c, vmr.c_exception.get());
+    name_class(c, fatal, ob, intern(b"fatal"));
     C_FATAL.set_vm(vmr, fatal);
-    let ds = |n: &str, f: CFunc, a: i32| define_singleton_cfunc(th, n, f, a);
-    ds("new", th_s_new, -1); ds("start", th_s_new, -1); ds("fork", th_s_new, -1); ds("current", th_current, 0); ds("main", th_main, 0); ds("list", th_list, 0);
-    ds("pass", th_pass, 0); ds("stop", th_stop, 0); ds("kill", th_s_kill, 1); ds("exit", th_s_exit, 0);
-    ds("abort_on_exception", |_c, _s, _a, _b| Ok(Value::bool(ABORT_ALL.load(Relaxed))), 0);
-    ds("abort_on_exception=", |_c, _s, a, _b| { ABORT_ALL.store(a[0].truthy(), Relaxed); Ok(a[0]) }, 1);
-    ds("report_on_exception", |_c, _s, _a, _b| Ok(Value::bool(REPORT_ALL.load(Relaxed))), 0);
-    ds("report_on_exception=", |_c, _s, a, _b| { REPORT_ALL.store(a[0].truthy(), Relaxed); Ok(a[0]) }, 1);
-    ds("handle_interrupt", |c, _s, _a, b| yield_block(c, b, &[]), -1);
-    ds("pending_interrupt?", |_c, _s, _a, _b| Ok(FALSE), -1);
-    let d = |n: &str, f: CFunc, a: i32| define_cfunc(th, n, f, a);
-    d("join", th_join, -1); d("value", th_value, 0); d("[]", th_aref, 1); d("[]=", th_aset, 2); d("key?", th_key_p, 1); d("keys", th_keys, 0);
-    d("thread_variable_get", th_tv_get, 1); d("thread_variable_set", th_tv_set, 2); d("thread_variable?", th_tv_p, 1); d("thread_variables", th_tvs, 0);
-    d("alive?", th_alive, 0); d("stop?", th_stop_p, 0); d("status", th_status, 0); d("inspect", th_inspect, 0); d("to_s", th_inspect, 0);
-    d("name", th_name, 0); d("name=", th_set_name, 1); d("kill", th_kill, 0); d("terminate", th_kill, 0); d("exit", th_kill, 0); d("raise", th_raise, -1);
-    d("wakeup", th_wakeup, 0); d("run", th_run, 0); d("report_on_exception", th_report, 0); d("report_on_exception=", th_set_report, 1);
-    d("abort_on_exception", th_abort, 0); d("abort_on_exception=", th_set_abort, 1); d("group", th_group, 0);
-    d("priority", |_c, _s, _a, _b| Ok(Value::fix(0)), 0); d("priority=", |_c, _s, a, _b| Ok(a[0]), 1);
-    d("backtrace", |c, _s, _a, _b| Ok(c.ary_new()), -1); d("backtrace_locations", |c, _s, _a, _b| Ok(c.ary_new()), -1);
-    d("native_thread_id", |_c, _s, _a, _b| Ok(Value::fix(crate::builtins::sys::getpid() as i64)), 0);
-    d("pending_interrupt?", |_c, _s, _a, _b| Ok(FALSE), -1);
-    d("fetch", |c, s, a, b| { check_argc(c, a, 1, 2)?; let k = key_sym(c, a[0])?; let h = locals(c, s)?; match hash_get_opt(c, h, k)? { Some(v) => Ok(v), None if !b.is_null() => yield1(c, b, a[0]), None if a.len() > 1 => Ok(a[1]), None => { let d = inspect_str(c, k)?; err(c, c.vm().c_key_error.get(), format!("key not found: {}", d)) } } }, -1);
-    for n in ["Mutex", "Queue", "SizedQueue", "ConditionVariable"] { crate::builtins::prelude::lazy_const(th, n, "saruby/sync"); crate::builtins::prelude::lazy_const(ob, n, "saruby/sync"); }
-    crate::builtins::prelude::lazy_const(ob, "Monitor", "saruby/sync");
-    crate::builtins::prelude::lazy_const(ob, "ThreadGroup", "saruby/sync");
+    let ds = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_singleton_cfunc(c, th, n, f, a);
+    ds(c, "new", th_s_new, -1); ds(c, "start", th_s_new, -1); ds(c, "fork", th_s_new, -1); ds(c, "current", th_current, 0); ds(c, "main", th_main, 0); ds(c, "list", th_list, 0);
+    ds(c, "pass", th_pass, 0); ds(c, "stop", th_stop, 0); ds(c, "kill", th_s_kill, 1); ds(c, "exit", th_s_exit, 0);
+    ds(c, "abort_on_exception", |_c, _s, _a, _b| Ok(Value::bool(ABORT_ALL.load(Relaxed))), 0);
+    ds(c, "abort_on_exception=", |_c, _s, a, _b| { ABORT_ALL.store(a[0].truthy(), Relaxed); Ok(a[0]) }, 1);
+    ds(c, "report_on_exception", |_c, _s, _a, _b| Ok(Value::bool(REPORT_ALL.load(Relaxed))), 0);
+    ds(c, "report_on_exception=", |_c, _s, a, _b| { REPORT_ALL.store(a[0].truthy(), Relaxed); Ok(a[0]) }, 1);
+    ds(c, "handle_interrupt", |c, _s, _a, b| yield_block(c, b, &[]), -1);
+    ds(c, "pending_interrupt?", |_c, _s, _a, _b| Ok(FALSE), -1);
+    let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, th, n, f, a);
+    d(c, "join", th_join, -1); d(c, "value", th_value, 0); d(c, "[]", th_aref, 1); d(c, "[]=", th_aset, 2); d(c, "key?", th_key_p, 1); d(c, "keys", th_keys, 0);
+    d(c, "thread_variable_get", th_tv_get, 1); d(c, "thread_variable_set", th_tv_set, 2); d(c, "thread_variable?", th_tv_p, 1); d(c, "thread_variables", th_tvs, 0);
+    d(c, "alive?", th_alive, 0); d(c, "stop?", th_stop_p, 0); d(c, "status", th_status, 0); d(c, "inspect", th_inspect, 0); d(c, "to_s", th_inspect, 0);
+    d(c, "name", th_name, 0); d(c, "name=", th_set_name, 1); d(c, "kill", th_kill, 0); d(c, "terminate", th_kill, 0); d(c, "exit", th_kill, 0); d(c, "raise", th_raise, -1);
+    d(c, "wakeup", th_wakeup, 0); d(c, "run", th_run, 0); d(c, "report_on_exception", th_report, 0); d(c, "report_on_exception=", th_set_report, 1);
+    d(c, "abort_on_exception", th_abort, 0); d(c, "abort_on_exception=", th_set_abort, 1); d(c, "group", th_group, 0);
+    d(c, "priority", |_c, _s, _a, _b| Ok(Value::fix(0)), 0); d(c, "priority=", |_c, _s, a, _b| Ok(a[0]), 1);
+    d(c, "backtrace", |c, _s, _a, _b| Ok(c.ary_new()), -1); d(c, "backtrace_locations", |c, _s, _a, _b| Ok(c.ary_new()), -1);
+    d(c, "native_thread_id", |_c, _s, _a, _b| Ok(Value::fix(crate::builtins::sys::getpid() as i64)), 0);
+    d(c, "pending_interrupt?", |_c, _s, _a, _b| Ok(FALSE), -1);
+    d(c, "fetch", |c, s, a, b| { check_argc(c, a, 1, 2)?; let k = key_sym(c, a[0])?; let h = locals(c, s)?; match hash_get_opt(c, h, k)? { Some(v) => Ok(v), None if !b.is_null() => yield1(c, b, a[0]), None if a.len() > 1 => Ok(a[1]), None => { let d = inspect_str(c, k)?; err(c, c.vm().c_key_error.get(), format!("key not found: {}", d)) } } }, -1);
+    for n in ["Mutex", "Queue", "SizedQueue", "ConditionVariable"] { crate::builtins::prelude::lazy_const(c, th, n, "saruby/sync"); crate::builtins::prelude::lazy_const(c, ob, n, "saruby/sync"); }
+    crate::builtins::prelude::lazy_const(c, ob, "Monitor", "saruby/sync");
+    crate::builtins::prelude::lazy_const(c, ob, "ThreadGroup", "saruby/sync");
 }
 /// ThreadGroup, Mutex, Monitor, Queue, SizedQueue, ConditionVariable (the "saruby/sync" feature).
 pub fn init_sync(c: &mut Ctx) {
     if c.vm().c_mutex.get() != NIL { return; }
     let (ob, th) = (c.vm().c_object.get(), c.vm().c_thread.get());
-    let tg = define_class("ThreadGroup", ob);
-    let dg = new_object(tg);
-    const_set(tg, intern(b"Default"), dg);
-    define_cfunc(tg, "list", tg_list, 0);
-    define_cfunc(tg, "add", |_c, s, _a, _b| Ok(s), 1);
-    define_cfunc(tg, "enclosed?", |_c, _s, _a, _b| Ok(FALSE), 0);
+    let tg = define_class(c, "ThreadGroup", ob);
+    let dg = new_object(c, tg);
+    const_set(c, tg, intern(b"Default"), dg);
+    define_cfunc(c, tg, "list", tg_list, 0);
+    define_cfunc(c, tg, "add", |_c, s, _a, _b| Ok(s), 1);
+    define_cfunc(c, tg, "enclosed?", |_c, _s, _a, _b| Ok(FALSE), 0);
     // Mutex / Monitor
-    let mx = define_class_under(th, "Mutex", ob);
-    class_set_alloc(mx, AllocKind::None);
-    const_set(ob, intern(b"Mutex"), mx);
+    let mx = define_class_under(c, th, "Mutex", ob);
+    class_set_alloc(c, mx, AllocKind::None);
+    const_set(c, ob, intern(b"Mutex"), mx);
     c.vm().c_mutex.set(mx);
-    let mon = define_class("Monitor", ob);
-    class_set_alloc(mon, AllocKind::None);
+    let mon = define_class(c, "Monitor", ob);
+    class_set_alloc(c, mon, AllocKind::None);
     c.vm().c_monitor.set(mon);
     for (k, pre) in [(mx, ""), (mon, "mon_")] {
-        define_cfunc(k, "synchronize", if k == mon { mon_sync } else { mx_sync }, 0);
-        define_cfunc(k, &format!("{}locked?", pre), mx_locked, 0);
-        define_cfunc(k, &format!("{}owned?", pre), mx_owned, 0);
+        define_cfunc(c, k, "synchronize", if k == mon { mon_sync } else { mx_sync }, 0);
+        define_cfunc(c, k, &format!("{}locked?", pre), mx_locked, 0);
+        define_cfunc(c, k, &format!("{}owned?", pre), mx_owned, 0);
     }
-    define_cfunc(mx, "lock", mx_lock, 0); define_cfunc(mx, "unlock", mx_unlock, 0); define_cfunc(mx, "try_lock", mx_try_lock, 0); define_cfunc(mx, "sleep", mx_sleep, -1);
-    define_cfunc(mon, "enter", mx_lock, 0); define_cfunc(mon, "exit", mx_unlock, 0); define_cfunc(mon, "try_enter", mx_try_lock, 0);
-    define_cfunc(mon, "new_cond", |c, s, a, b| { let f = c.str_new(b"monitor"); crate::builtins::kernel::require_feature(c, f, false)?; funcall(c, s, intern(b"new_cond"), a, b) }, 0);
-    define_cfunc(mon, "mon_synchronize", mon_sync, 0); define_cfunc(mon, "mon_check_owner", mon_check_owner, 0); define_cfunc(mon, "wait_for_cond", mon_wait_for_cond, 2);
+    define_cfunc(c, mx, "lock", mx_lock, 0); define_cfunc(c, mx, "unlock", mx_unlock, 0); define_cfunc(c, mx, "try_lock", mx_try_lock, 0); define_cfunc(c, mx, "sleep", mx_sleep, -1);
+    define_cfunc(c, mon, "enter", mx_lock, 0); define_cfunc(c, mon, "exit", mx_unlock, 0); define_cfunc(c, mon, "try_enter", mx_try_lock, 0);
+    define_cfunc(c, mon, "new_cond", |c, s, a, b| { let f = c.str_new(b"monitor"); crate::builtins::kernel::require_feature(c, f, false)?; funcall(c, s, intern(b"new_cond"), a, b) }, 0);
+    define_cfunc(c, mon, "mon_synchronize", mon_sync, 0); define_cfunc(c, mon, "mon_check_owner", mon_check_owner, 0); define_cfunc(c, mon, "wait_for_cond", mon_wait_for_cond, 2);
     // Queue / SizedQueue / ConditionVariable
-    let q = define_class_under(th, "Queue", ob);
-    class_set_alloc(q, AllocKind::None);
-    const_set(ob, intern(b"Queue"), q);
+    let q = define_class_under(c, th, "Queue", ob);
+    class_set_alloc(c, q, AllocKind::None);
+    const_set(c, ob, intern(b"Queue"), q);
     c.vm().c_queue.set(q);
-    define_private_cfunc(q, "initialize", q_init, -1);
-    for n in ["push", "<<", "enq"] { define_cfunc(q, n, q_push, -1); }
-    for n in ["pop", "shift", "deq"] { define_cfunc(q, n, q_pop, -1); }
-    for n in ["size", "length"] { define_cfunc(q, n, q_size, 0); }
-    define_cfunc(q, "empty?", q_empty, 0); define_cfunc(q, "clear", q_clear, 0); define_cfunc(q, "close", q_close, 0); define_cfunc(q, "closed?", q_closed, 0);
-    define_cfunc(q, "num_waiting", q_num_waiting, 0); define_cfunc(q, "freeze", q_freeze, 0);
-    let sq = define_class_under(th, "SizedQueue", q);
-    const_set(ob, intern(b"SizedQueue"), sq);
-    define_private_cfunc(sq, "initialize", sq_init, 1);
-    define_cfunc(sq, "max", sq_max, 0); define_cfunc(sq, "max=", sq_set_max, 1);
-    let cv = define_class_under(th, "ConditionVariable", ob);
-    const_set(ob, intern(b"ConditionVariable"), cv);
-    define_cfunc(cv, "wait", cv_wait, -1); define_cfunc(cv, "signal", cv_signal, 0); define_cfunc(cv, "broadcast", cv_broadcast, 0);
+    define_private_cfunc(c, q, "initialize", q_init, -1);
+    for n in ["push", "<<", "enq"] { define_cfunc(c, q, n, q_push, -1); }
+    for n in ["pop", "shift", "deq"] { define_cfunc(c, q, n, q_pop, -1); }
+    for n in ["size", "length"] { define_cfunc(c, q, n, q_size, 0); }
+    define_cfunc(c, q, "empty?", q_empty, 0); define_cfunc(c, q, "clear", q_clear, 0); define_cfunc(c, q, "close", q_close, 0); define_cfunc(c, q, "closed?", q_closed, 0);
+    define_cfunc(c, q, "num_waiting", q_num_waiting, 0); define_cfunc(c, q, "freeze", q_freeze, 0);
+    let sq = define_class_under(c, th, "SizedQueue", q);
+    const_set(c, ob, intern(b"SizedQueue"), sq);
+    define_private_cfunc(c, sq, "initialize", sq_init, 1);
+    define_cfunc(c, sq, "max", sq_max, 0); define_cfunc(c, sq, "max=", sq_set_max, 1);
+    let cv = define_class_under(c, th, "ConditionVariable", ob);
+    const_set(c, ob, intern(b"ConditionVariable"), cv);
+    define_cfunc(c, cv, "wait", cv_wait, -1); define_cfunc(c, cv, "signal", cv_signal, 0); define_cfunc(c, cv, "broadcast", cv_broadcast, 0);
 }

@@ -23,7 +23,7 @@ fn m_deprecate_constant(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) ->
     for &x in a {
         let n = to_sym_arg(c, x)?;
         if !c.class(s).consts.contains_key(&n) {
-            let e = make_name_error(c, c.vm().c_name_error.get(), &format!("constant {}::{} not defined", class_path(s), sym_str(n)), Value::sym(n), s)?;
+            let e = make_name_error(c, c.vm().c_name_error.get(), &format!("constant {}::{} not defined", class_path(c, s), sym_str(n)), Value::sym(n), s)?;
             return Err(raise_exc(c, e));
         }
     }
@@ -37,15 +37,15 @@ fn m_remove_cvar(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     }
     match c.class_mut(s).cvars.remove(&n) {
         Some(v) => Ok(v),
-        None => { let e = make_name_error(c, c.vm().c_name_error.get(), &format!("class variable {} not defined for {}", sym_str(n), class_path(s)), Value::sym(n), s)?; Err(raise_exc(c, e)) }
+        None => { let e = make_name_error(c, c.vm().c_name_error.get(), &format!("class variable {} not defined for {}", sym_str(n), class_path(c, s)), Value::sym(n), s)?; Err(raise_exc(c, e)) }
     }
 }
 fn m_undefined_instance_methods(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let names: Vec<Value> = c.class(s).mtbl.iter().filter(|(_, me)| matches!(c.me_ref(**me).map(|m| &m.kind), Some(MKind::Undef))).map(|(n, _)| Value::sym(*n)).collect();
     Ok(c.ary_from_vec(names))
 }
-fn le_path(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(s, intern(b"path"))) }
-fn nme_private_call(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(ivar_get(s, intern(b"private_call")).truthy())) }
+fn le_path(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, s, intern(b"path"))) }
+fn nme_private_call(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(ivar_get(c, s, intern(b"private_call")).truthy())) }
 fn sig_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, 2); }
     let (no, name) = if a[0].is_fixnum() {
@@ -57,12 +57,12 @@ fn sig_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
         let n = crate::builtins::process::signo_arg(c, a[0])?;
         (n as i64, format!("SIG{}", crate::builtins::process::signame(n).unwrap_or("")))
     };
-    ivar_set_raw(s, intern(b"signo"), Value::fix(no));
+    ivar_set_raw(c, s, intern(b"signo"), Value::fix(no));
     let m = c.str_new(name.as_bytes());
-    ivar_set_raw(s, crate::symbol::s::mesg, m);
+    ivar_set_raw(c, s, crate::symbol::s::mesg, m);
     Ok(NIL)
 }
-fn sig_signo(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(s, intern(b"signo"))) }
+fn sig_signo(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, s, intern(b"signo"))) }
 fn sig_signm(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { funcall(c, s, intern(b"message"), &[], std::ptr::null()) }
 fn m_expm1(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; Ok(c.float_new(f.exp_m1())) }
 fn m_log1p(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
@@ -160,7 +160,7 @@ fn io_wait(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
             if given { return arg_err(c, "timeout given more than once"); }
             given = true;
             // rb_time_interval
-            if !crate::numeric::is_numeric(x) { return type_err(c, format!("can't convert {} into time interval", class_path(real_class_of(x)))); }
+            if !crate::numeric::is_numeric(x) { return type_err(c, format!("can't convert {} into time interval", class_path(c, real_class_of(c, x)))); }
             if crate::builtins::numeric_methods::to_f(c, x)? < 0.0 { return arg_err(c, "time interval must not be negative"); }
             timeout = x;
         }
@@ -187,16 +187,16 @@ fn io_each_codepoint(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> R
     }
     Ok(s)
 }
-fn wm_h(s: Value) -> Value { ivar_get(s, intern(b"@h")) }
-fn wm_size(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(c.hash_len(wm_h(s)) as i64)) }
+fn wm_h(c: &Ctx, s: Value) -> Value { ivar_get(c, s, intern(b"@h")) }
+fn wm_size(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(c.hash_len(wm_h(c, s)) as i64)) }
 fn wm_delete(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
-    match hash_delete(c, wm_h(s), a[0])? { Some(v) => Ok(v), None => if b.is_null() { Ok(NIL) } else { yield1(c, b, a[0]) } }
+    match hash_delete(c, wm_h(c, s), a[0])? { Some(v) => Ok(v), None => if b.is_null() { Ok(NIL) } else { yield1(c, b, a[0]) } }
 }
-fn wm_keys(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let v = c.hash_pairs(wm_h(s)).into_iter().map(|p| p.0).collect(); Ok(c.ary_from_vec(v)) }
-fn wm_values(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let v = c.hash_pairs(wm_h(s)).into_iter().map(|p| p.1).collect(); Ok(c.ary_from_vec(v)) }
+fn wm_keys(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let v = c.hash_pairs(wm_h(c, s)).into_iter().map(|p| p.0).collect(); Ok(c.ary_from_vec(v)) }
+fn wm_values(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let v = c.hash_pairs(wm_h(c, s)).into_iter().map(|p| p.1).collect(); Ok(c.ary_from_vec(v)) }
 /// The pairs of the map's table, slot by slot (the block may change it).
 fn wm_walk(c: &mut Ctx, s: Value, mut f: impl FnMut(&mut Ctx, Value, Value) -> Result<(), Esc>) -> Result<(), Esc> {
-    let h = wm_h(s);
+    let h = wm_h(c, s);
     let mut i = 0;
     while let Some((k, v)) = c.hash_entry_at(h, i) { if k != UNDEF { f(c, k, v)?; } i += 1; }
     Ok(())
@@ -213,19 +213,19 @@ fn wm_each(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
 fn wm_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let mut parts = vec![];
     wm_walk(c, s, |c, k, v| { parts.push(format!("{} => {}", inspect_str(c, k)?, inspect_str(c, v)?)); Ok(()) })?;
-    Ok(c.str_new(format!("#<{}:0x{:016x}{}{}>", class_path(real_class_of(s)), s.raw(), if parts.is_empty() { "" } else { " " }, parts.join(", ")).as_bytes()))
+    Ok(c.str_new(format!("#<{}:0x{:016x}{}{}>", class_path(c, real_class_of(c, s)), s.raw(), if parts.is_empty() { "" } else { " " }, parts.join(", ")).as_bytes()))
 }
-fn wkm_init(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let h = c.hash_new(); ivar_set_raw(s, intern(b"@h"), h); Ok(NIL) }
-fn wkm_aref(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { Ok(hash_get_opt(c, wm_h(s), a[0])?.unwrap_or(NIL)) }
+fn wkm_init(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let h = c.hash_new(); ivar_set_raw(c, s, intern(b"@h"), h); Ok(NIL) }
+fn wkm_aref(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { Ok(hash_get_opt(c, wm_h(c, s), a[0])?.unwrap_or(NIL)) }
 fn wkm_aset(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     if a[0].is_imm() || is_float(a[0]) || is_bignum(a[0]) { return arg_err(c, "WeakKeyMap keys must be garbage collectable"); }
-    hash_set(c, wm_h(s), a[0], a[1])?;
+    hash_set(c, wm_h(c, s), a[0], a[1])?;
     Ok(a[1])
 }
-fn wkm_getkey(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { Ok(match hash_lookup(c, wm_h(s), a[0])? { Some(i) => c.hash_entry_at(wm_h(s), i).map(|e| e.0).unwrap_or(NIL), None => NIL }) }
-fn wkm_key_p(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(hash_lookup(c, wm_h(s), a[0])?.is_some())) }
-fn wkm_clear(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { c.hash_clear(wm_h(s)); Ok(s) }
-fn wkm_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let n = c.hash_len(wm_h(s)); Ok(c.str_new(format!("#<{}:0x{:016x} size={}>", class_path(real_class_of(s)), s.raw(), n).as_bytes())) }
+fn wkm_getkey(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { Ok(match hash_lookup(c, wm_h(c, s), a[0])? { Some(i) => c.hash_entry_at(wm_h(c, s), i).map(|e| e.0).unwrap_or(NIL), None => NIL }) }
+fn wkm_key_p(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(hash_lookup(c, wm_h(c, s), a[0])?.is_some())) }
+fn wkm_clear(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { c.hash_clear(wm_h(c, s)); Ok(s) }
+fn wkm_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let n = c.hash_len(wm_h(c, s)); Ok(c.str_new(format!("#<{}:0x{:016x} size={}>", class_path(c, real_class_of(c, s)), s.raw(), n).as_bytes())) }
 fn p_setrlimit(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 2, 3)?;
     let res = num_to_long(c, a[0])? as i32;
@@ -240,56 +240,57 @@ fn st_s_wait(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(if is_array(r) { c.ary_get(r, 1) } else { NIL })
 }
 
-pub fn init(vmr: &Vm) {
+pub fn init(c: &mut Ctx) {
+    let vmr = c.vm();
     let md = vmr.c_module.get();
-    define_cfunc(md, "deprecate_constant", m_deprecate_constant, -1);
-    define_cfunc(md, "remove_class_variable", m_remove_cvar, 1);
-    define_cfunc(md, "undefined_instance_methods", m_undefined_instance_methods, 0);
-    define_cfunc(vmr.c_load_error.get(), "path", le_path, 0);
-    define_cfunc(vmr.c_syntax_error.get(), "path", le_path, 0);
-    define_cfunc(vmr.c_no_method_error.get(), "private_call?", nme_private_call, 0);
+    define_cfunc(c, md, "deprecate_constant", m_deprecate_constant, -1);
+    define_cfunc(c, md, "remove_class_variable", m_remove_cvar, 1);
+    define_cfunc(c, md, "undefined_instance_methods", m_undefined_instance_methods, 0);
+    define_cfunc(c, vmr.c_load_error.get(), "path", le_path, 0);
+    define_cfunc(c, vmr.c_syntax_error.get(), "path", le_path, 0);
+    define_cfunc(c, vmr.c_no_method_error.get(), "private_call?", nme_private_call, 0);
     let se = vmr.c_signal_exception.get();
-    define_private_cfunc(se, "initialize", sig_initialize, -1);
-    define_cfunc(se, "signo", sig_signo, 0); define_cfunc(se, "signm", sig_signm, 0);
-    define_module_function(vmr.m_math.get(), "expm1", m_expm1, 1);
-    define_module_function(vmr.m_math.get(), "log1p", m_log1p, 1);
-    for (n, f) in [("erf", m_erf as CFunc), ("erfc", m_erfc), ("cbrt", m_cbrt), ("gamma", m_gamma), ("lgamma", m_lgamma)] { define_module_function(vmr.m_math.get(), n, f, 1); }
+    define_private_cfunc(c, se, "initialize", sig_initialize, -1);
+    define_cfunc(c, se, "signo", sig_signo, 0); define_cfunc(c, se, "signm", sig_signm, 0);
+    define_module_function(c, vmr.m_math.get(), "expm1", m_expm1, 1);
+    define_module_function(c, vmr.m_math.get(), "log1p", m_log1p, 1);
+    for (n, f) in [("erf", m_erf as CFunc), ("erfc", m_erfc), ("cbrt", m_cbrt), ("gamma", m_gamma), ("lgamma", m_lgamma)] { define_module_function(c, vmr.m_math.get(), n, f, 1); }
     let gc = vmr.m_gc.get();
-    define_module_function(gc, "auto_compact", |_c, _s, _a, _b| Ok(FALSE), 0);
-    define_module_function(gc, "auto_compact=", |_c, _s, a, _b| Ok(a[0]), 1);
-    define_module_function(gc, "measure_total_time", |_c, _s, _a, _b| Ok(TRUE), 0);
-    define_module_function(gc, "measure_total_time=", |_c, _s, a, _b| Ok(a[0]), 1);
-    define_module_function(gc, "total_time", |_c, _s, _a, _b| Ok(Value::fix(crate::gc::total_time().as_nanos() as i64)), 0);
-    define_module_function(gc, "config", gc_config, -1);
-    define_module_function(gc, "stat_heap", gc_stat_heap, -1);
-    define_module_function(gc, "latest_gc_info", |c, _s, _a, _b| Ok(c.hash_new()), -1);
-    define_module_function(gc, "verify_internal_consistency", |_c, _s, _a, _b| Ok(NIL), 0);
+    define_module_function(c, gc, "auto_compact", |_c, _s, _a, _b| Ok(FALSE), 0);
+    define_module_function(c, gc, "auto_compact=", |_c, _s, a, _b| Ok(a[0]), 1);
+    define_module_function(c, gc, "measure_total_time", |_c, _s, _a, _b| Ok(TRUE), 0);
+    define_module_function(c, gc, "measure_total_time=", |_c, _s, a, _b| Ok(a[0]), 1);
+    define_module_function(c, gc, "total_time", |_c, _s, _a, _b| Ok(Value::fix(crate::gc::total_time().as_nanos() as i64)), 0);
+    define_module_function(c, gc, "config", gc_config, -1);
+    define_module_function(c, gc, "stat_heap", gc_stat_heap, -1);
+    define_module_function(c, gc, "latest_gc_info", |c, _s, _a, _b| Ok(c.hash_new()), -1);
+    define_module_function(c, gc, "verify_internal_consistency", |_c, _s, _a, _b| Ok(NIL), 0);
     let k = vmr.m_kernel.get();
-    define_module_function(k, "global_variables", k_global_variables, 0);
-    define_module_function(k, "__callee__", k_callee, 0);
-    define_module_function(k, "test", k_test, -1);
-    define_module_function(k, "gem", |_c, _s, _a, _b| Ok(TRUE), -1);
-    define_cfunc(vmr.c_io.get(), "wait", io_wait, -1);
-    define_cfunc(vmr.c_io.get(), "each_codepoint", io_each_codepoint, 0);
+    define_module_function(c, k, "global_variables", k_global_variables, 0);
+    define_module_function(c, k, "__callee__", k_callee, 0);
+    define_module_function(c, k, "test", k_test, -1);
+    define_module_function(c, k, "gem", |_c, _s, _a, _b| Ok(TRUE), -1);
+    define_cfunc(c, vmr.c_io.get(), "wait", io_wait, -1);
+    define_cfunc(c, vmr.c_io.get(), "each_codepoint", io_each_codepoint, 0);
     let wm = vmr.c_object_space_weak_map.get();
-    include_module(wm, vmr.m_enumerable.get());
-    for n in ["size", "length"] { define_cfunc(wm, n, wm_size, 0); }
-    define_cfunc(wm, "delete", wm_delete, 1); define_cfunc(wm, "keys", wm_keys, 0); define_cfunc(wm, "values", wm_values, 0);
-    for n in ["each", "each_pair", "each_key", "each_value"] { define_cfunc(wm, n, wm_each, 0); }
-    define_cfunc(wm, "inspect", wm_inspect, 0);
-    define_cfunc(wm, "member?", |c, s, a, _b| Ok(Value::bool(hash_lookup(c, wm_h(s), a[0])?.is_some())), 1);
-    let wk = define_class_under(vmr.m_object_space.get(), "WeakKeyMap", vmr.c_object.get());
-    define_private_cfunc(wk, "initialize", wkm_init, 0);
-    define_cfunc(wk, "[]", wkm_aref, 1); define_cfunc(wk, "[]=", wkm_aset, 2); define_cfunc(wk, "getkey", wkm_getkey, 1); define_cfunc(wk, "key?", wkm_key_p, 1);
-    define_cfunc(wk, "delete", wm_delete, 1); define_cfunc(wk, "clear", wkm_clear, 0); define_cfunc(wk, "inspect", wkm_inspect, 0);
+    include_module(c, wm, vmr.m_enumerable.get());
+    for n in ["size", "length"] { define_cfunc(c, wm, n, wm_size, 0); }
+    define_cfunc(c, wm, "delete", wm_delete, 1); define_cfunc(c, wm, "keys", wm_keys, 0); define_cfunc(c, wm, "values", wm_values, 0);
+    for n in ["each", "each_pair", "each_key", "each_value"] { define_cfunc(c, wm, n, wm_each, 0); }
+    define_cfunc(c, wm, "inspect", wm_inspect, 0);
+    define_cfunc(c, wm, "member?", |c, s, a, _b| Ok(Value::bool(hash_lookup(c, wm_h(c, s), a[0])?.is_some())), 1);
+    let wk = define_class_under(c, vmr.m_object_space.get(), "WeakKeyMap", vmr.c_object.get());
+    define_private_cfunc(c, wk, "initialize", wkm_init, 0);
+    define_cfunc(c, wk, "[]", wkm_aref, 1); define_cfunc(c, wk, "[]=", wkm_aset, 2); define_cfunc(c, wk, "getkey", wkm_getkey, 1); define_cfunc(c, wk, "key?", wkm_key_p, 1);
+    define_cfunc(c, wk, "delete", wm_delete, 1); define_cfunc(c, wk, "clear", wkm_clear, 0); define_cfunc(c, wk, "inspect", wkm_inspect, 0);
     let p = vmr.m_process.get();
-    define_module_function(p, "setrlimit", p_setrlimit, -1);
-    define_module_function(p, "getsid", |_c, _s, _a, _b| Ok(Value::fix(sys::getsid(0) as i64)), -1);
-    define_module_function(p, "getpriority", |_c, _s, _a, _b| Ok(Value::fix(0)), 2);
-    define_module_function(p, "setpgrp", |_c, _s, _a, _b| { sys::setpgid(0, 0); Ok(Value::fix(0)) }, 0);
-    define_module_function(p, "maxgroups", |_c, _s, _a, _b| Ok(Value::fix(65536)), 0);
-    let st = const_get_at(p, intern(b"Status")).unwrap();
-    define_singleton_cfunc(st, "wait", st_s_wait, -1);
-    define_singleton_cfunc(vmr.c_thread.get(), "ignore_deadlock", |_c, _s, _a, _b| Ok(Value::bool(crate::builtins::thread::IGNORE_DEADLOCK.load(std::sync::atomic::Ordering::Relaxed))), 0);
-    define_singleton_cfunc(vmr.c_thread.get(), "ignore_deadlock=", |_c, _s, a, _b| { crate::builtins::thread::IGNORE_DEADLOCK.store(a[0].truthy(), std::sync::atomic::Ordering::Relaxed); Ok(a[0]) }, 1);
+    define_module_function(c, p, "setrlimit", p_setrlimit, -1);
+    define_module_function(c, p, "getsid", |_c, _s, _a, _b| Ok(Value::fix(sys::getsid(0) as i64)), -1);
+    define_module_function(c, p, "getpriority", |_c, _s, _a, _b| Ok(Value::fix(0)), 2);
+    define_module_function(c, p, "setpgrp", |_c, _s, _a, _b| { sys::setpgid(0, 0); Ok(Value::fix(0)) }, 0);
+    define_module_function(c, p, "maxgroups", |_c, _s, _a, _b| Ok(Value::fix(65536)), 0);
+    let st = const_get_at(c, p, intern(b"Status")).unwrap();
+    define_singleton_cfunc(c, st, "wait", st_s_wait, -1);
+    define_singleton_cfunc(c, vmr.c_thread.get(), "ignore_deadlock", |_c, _s, _a, _b| Ok(Value::bool(crate::builtins::thread::IGNORE_DEADLOCK.load(std::sync::atomic::Ordering::Relaxed))), 0);
+    define_singleton_cfunc(c, vmr.c_thread.get(), "ignore_deadlock=", |_c, _s, a, _b| { crate::builtins::thread::IGNORE_DEADLOCK.store(a[0].truthy(), std::sync::atomic::Ordering::Relaxed); Ok(a[0]) }, 1);
 }

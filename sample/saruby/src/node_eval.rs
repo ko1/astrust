@@ -225,7 +225,7 @@ pub fn EVAL_node_str(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32) -> RV {
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_fstr(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32, lc: &mut LitCache) -> RV {
     if let Some(v) = lc.v { return Ok(v); }
-    Ok(srb_fstr(s, enc, lc))
+    Ok(srb_fstr(c, s, enc, lc))
 }
 
 
@@ -252,7 +252,8 @@ pub fn EVAL_node_tostr(c: &mut Ctx, n: NodePtr, fp: Fp, v: Value) -> RV {
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_dsym(c: &mut Ctx, n: NodePtr, fp: Fp, s: Value) -> RV {
-    Ok(crate::string::str_to_sym(s))
+    Ok(c.str_to_sym(s))
+
 }
 
 
@@ -373,16 +374,18 @@ pub fn EVAL_node_lasgn(c: &mut Ctx, n: NodePtr, fp: Fp, idx: u32, v: Value) -> R
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_dvar(c: &mut Ctx, n: NodePtr, fp: Fp, hops: u32, idx: u32) -> RV {
-    let env = env_at(fp[1].get(), hops);
-    Ok(env_get(env, idx))
+    // SAFETY: H6 (heap.rs)
+    let env = unsafe { c.env_up_unchecked(fp[1].get(), hops) };
+    Ok(unsafe { c.env_get_unchecked(env, idx) })
 }
 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_dasgn(c: &mut Ctx, n: NodePtr, fp: Fp, hops: u32, idx: u32, v: Value) -> RV {
-    let env = env_at(fp[1].get(), hops);
-    env_set(env, idx, v);
+    // SAFETY: H6 (heap.rs)
+    let env = unsafe { c.env_up_unchecked(fp[1].get(), hops) };
+    unsafe { c.env_set_unchecked(env, idx, v) };
     Ok(v)
 }
 
@@ -391,21 +394,18 @@ pub fn EVAL_node_dasgn(c: &mut Ctx, n: NodePtr, fp: Fp, hops: u32, idx: u32, v: 
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_ivar(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, ic: &mut IvarCache, slot: u32) -> RV {
     let slf = fp[0].get();
-    if slf.is_heap() {
-        let o = obj(slf);
-        if o.klass.raw() == ic.klass {
-            if let Body::Object(ivs) = &o.body {
-                if slot == 0 {
-                    if let Some(v) = ivs.get(ic.idx as usize) { return Ok(if v == UNDEF { NIL } else { v }); }
-                    return Ok(NIL);
-                } else if ic.idx == slot - 1 {
-                    // an unset slot leaves through the miss path (a branch to code the site already has, not a select)
-                    if let Some(v) = ivs.get((slot - 1) as usize) { if v != UNDEF { return Ok(v); } }
-                }
+    if slf.is_heap() && obj_klass(slf).raw() == ic.klass {
+        if let Some(ivs) = c.obj_ivars(slf) {
+            if slot == 0 {
+                if let Some(v) = ivs.get(ic.idx as usize) { return Ok(if v == UNDEF { NIL } else { v }); }
+                return Ok(NIL);
+            } else if ic.idx == slot - 1 {
+                // an unset slot leaves through the miss path (a branch to code the site already has, not a select)
+                if let Some(v) = ivs.get((slot - 1) as usize) { if v != UNDEF { return Ok(v); } }
             }
         }
     }
-    Ok(srb_ivar_get_out(slf, name, ic))
+    Ok(srb_ivar_get_out(slf, name, ic, c))
 }
 
 
@@ -413,13 +413,10 @@ pub fn EVAL_node_ivar(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, ic: &mut IvarC
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value, ic: &mut IvarCache, slot: u32) -> RV {
     let slf = fp[0].get();
-    if slf.is_heap() {
-        let o = obj(slf);
-        if o.klass.raw() == ic.klass && o.flags & FL_FROZEN == 0 {
-            if let Body::Object(ivs) = &mut o.body {
-                if slot == 0 { if ivs.set(ic.idx as usize, v) { return Ok(v); } }
-                else if ic.idx == slot - 1 && ivs.set((slot - 1) as usize, v) { return Ok(v); }
-            }
+    if slf.is_heap() && obj_klass(slf).raw() == ic.klass && obj_flags(slf) & FL_FROZEN == 0 {
+        if let Some(ivs) = c.obj_ivars_mut(slf) {
+            if slot == 0 { if ivs.set(ic.idx as usize, v) { return Ok(v); } }
+            else if ic.idx == slot - 1 && ivs.set((slot - 1) as usize, v) { return Ok(v); }
         }
     }
     srb_ivar_set_out(c, slf, name, v, ic)
@@ -431,9 +428,9 @@ pub fn EVAL_node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value, ic:
 pub fn EVAL_node_ivar_arith<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, sub: bool, v: Value, line: H_line, ic: &mut IvarCache, cc: &mut OpCc, slot: u32) -> RV {
     let slf = fp[0].get();
     if slf.is_heap() && v.is_fixnum() && !c.int_redef() {
-        let o = obj(slf);
-        if o.klass.raw() == ic.klass && o.flags & FL_FROZEN == 0 && (slot == 0 || ic.idx == slot - 1) {
-            if let Body::Object(ivs) = &mut o.body {
+        if obj_klass(slf).raw() == ic.klass && obj_flags(slf) & FL_FROZEN == 0 && (slot == 0 || ic.idx == slot - 1) {
+            if let Some(ivs) = c.obj_ivars_mut(slf) {
+
                 let i = (if slot == 0 { ic.idx } else { slot - 1 }) as usize;
                 if let Some(cur) = ivs.get(i) {
                     if cur.is_fixnum() {
@@ -605,13 +602,13 @@ pub fn EVAL_TEST_node_or<D_a: Disp, D_b: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_not(c: &mut Ctx, n: NodePtr, fp: Fp, v: Value, cc: &mut OpCc) -> RV {
-    if v.is_heap() && srb_has_custom_not(v) { return srb_call0(c, v, s::not, cc); }
+    if v.is_heap() && srb_has_custom_not(c, v) { return srb_call0(c, v, s::not, cc); }
     Ok(Value::bool(v.falsy()))
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_TEST_node_not(c: &mut Ctx, n: NodePtr, fp: Fp, v: Value, cc: &mut OpCc) -> Result<bool, Esc> {
-    if v.is_heap() && srb_has_custom_not(v) { return Ok(srb_call0(c, v, s::not, cc)?.truthy()); }
+    if v.is_heap() && srb_has_custom_not(c, v) { return Ok(srb_call0(c, v, s::not, cc)?.truthy()); }
     Ok(v.falsy())
 }
 
@@ -734,7 +731,7 @@ pub fn EVAL_node_rescue<D_body: Disp, D_clauses: DispList, D_else_b: Disp>(c: &m
                 if c.esc != EscKind::Raise { return Err(e); }
                 c.sp_reset(saved_sp);
                 let exc = c.esc_val;
-                if !srb_rescuable(exc) { return Err(e); }
+                if !srb_rescuable(c, exc) { return Err(e); }
                 c.esc = EscKind::None;
                 c.errinfo = exc;
                 let mut matched = false;
@@ -765,7 +762,7 @@ pub fn EVAL_node_rescue<D_body: Disp, D_clauses: DispList, D_else_b: Disp>(c: &m
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_resbody<D_classes: DispList, D_assign: Disp, D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, classes: NodeList, kinds: Str, assign: NodePtr, body: NodePtr) -> RV {
     let exc = c.errinfo;
-    let mut ok = <D_classes as DispList>::len(classes) == 0 && srb_is_standard_error(exc);
+    let mut ok = <D_classes as DispList>::len(classes) == 0 && srb_is_standard_error(c, exc);
     let mut i = 0;
     while !ok && i < <D_classes as DispList>::len(classes) {
         let k = <D_classes as DispList>::nth(c, classes, i, fp)?;
@@ -999,7 +996,7 @@ pub fn EVAL_node_call_x<D_recv: Disp, D_args: DispList, H_line: crate::vm::LineH
     let mut blkv = NIL;
     let mut kw = NIL;
     let tmp = if splat1 { <D_args as DispList>::nth(c, args, 0, fp)? } else {
-        let tmp = crate::array::ary_new();
+        let tmp = c.ary_new();
         base[1].set(tmp);
         for i in 0..<D_args as DispList>::len(args) {
             let v = <D_args as DispList>::nth(c, args, i, fp)?;
@@ -1044,7 +1041,7 @@ pub fn EVAL_node_attrasgn<D_recv: Disp, D_args: DispList, H_line: crate::vm::Lin
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_super<D_args: DispList, H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, args: NodeList, line: H_line, ci: CiRef, zsuper: bool) -> RV {
     let base = stage(c, 2)?;
-    let tmp = crate::array::ary_new();
+    let tmp = c.ary_new();
     base[0].set(fp[0].get()); base[1].set(tmp);
     let mut blkv = NIL;
     let mut kw = NIL;
@@ -1069,7 +1066,8 @@ pub fn EVAL_node_yield<D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr
     // baked, one block seen: its entry compiled in, guarded by the iseq (yc.fast is set once its hash matched)
     let b = unsafe { &*blk };
     if let BlockKind::Iseq(is) = b.kind {
-        if is as usize == yc.fast && (b.proc_val == UNDEF || !rproc(b.proc_val).is_lambda) {
+        if is as usize == yc.fast && (b.proc_val == UNDEF || !c.proc_data(b.proc_val).is_lambda) {
+
             // np = 1 + the block's lead parameter count: missing arguments are nil
             if (k as u32) + 1 < np { nil_fill(base, 2 + k, 1 + np as usize); }
             c.set_sp(base, 0);
@@ -1086,7 +1084,7 @@ pub fn EVAL_node_yield<D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_yield_x<D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, args: NodeList, ci: CiRef) -> RV {
-    let tmp = crate::array::ary_new();
+    let tmp = c.ary_new();
     let base = stage(c, 1)?;
     base[0].set(tmp);
     let mut blkv = NIL;
@@ -1429,7 +1427,7 @@ pub fn EVAL_node_method_entry<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut
     }
     let mut i = 2 + nparams;
     while i < nlocals { slot(fp, i).set(NIL); i += 1; }
-    if flags & ME_ENV != 0 { make_env(unsafe { &*fr.iseq() }, fp, NIL); }
+    if flags & ME_ENV != 0 { make_env(c, unsafe { &*fr.iseq() }, fp, NIL); }
     c.frame = &mut fr;
     let r = <D_body as Disp>::call(c, body, fp);
     // compiled in and no call in the body: `prev` stays in a register and the reload of fr.prev (a store-load
@@ -1463,7 +1461,7 @@ pub fn EVAL_node_block_entry<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut 
     let mut i = 2 + nparams;
     while i < nlocals { slot(fp, i).set(NIL); i += 1; }
     enter_base(c, fp, nlocals)?;
-    if flags & ME_ENV != 0 { make_env(unsafe { &*fr.h.iseq() }, fp, b.env); }
+    if flags & ME_ENV != 0 { make_env(c, unsafe { &*fr.h.iseq() }, fp, b.env); }
     if !shared { c.frame = &mut fr.h; }
     let mut r = <D_body as Disp>::call(c, body, fp);
     // redo runs the body again out of line (a second inline copy would double the block's code)
@@ -1556,7 +1554,7 @@ pub fn EVAL_node_masgn<D_targets: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, rhs
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_masgn_elem(c: &mut Ctx, n: NodePtr, fp: Fp, tmp: u32, idx: u32, kind: u32, post: u32) -> RV {
     let a = slot(fp, tmp).get();
-    Ok(srb_masgn_elem(a, idx, kind, post))
+    Ok(srb_masgn_elem(c, a, idx, kind, post))
 }
 
 

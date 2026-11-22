@@ -114,7 +114,7 @@ fn st_cmp(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(Value::fix((m.mtime(), m.mtime_nsec()).cmp(&(o.mtime(), o.mtime_nsec())) as i64))
 }
 fn st_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let k = class_path(real_class_of(s));
+    let k = class_path(c, real_class_of(c, s));
     let Some(m) = c.data::<RStat>(s).and_then(|s| s.md.clone()) else { return Ok(c.str_new(format!("#<{}: uninitialized>", k).as_bytes())) };
     let mut t = vec![];
     for (sec, ns) in [(m.atime(), m.atime_nsec()), (m.mtime(), m.mtime_nsec()), (m.ctime(), m.ctime_nsec())] { let tv = time_of(c, sec, ns); t.push(inspect_str(c, tv)?); }
@@ -131,7 +131,7 @@ fn st_init_copy(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
 }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     let st = c.vm().c_stat.get();
-    if st != NIL && crate::builtins::inherits(klass, st) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(RStat { md: None }))))); }
+    if st != NIL && crate::builtins::inherits(c, klass, st) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(RStat { md: None }))))); }
     Ok(None)
 }
 
@@ -759,19 +759,19 @@ fn d_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let p = path_arg(c, pos[0])?;
     let l = dir_list(c, pos[0], false)?; let l = strs(c, l);
     let ps = c.str_new(p.as_bytes());
-    ivar_set_raw(s, iv("@path"), ps); ivar_set_raw(s, iv("@ents"), l); ivar_set_raw(s, iv("@pos"), Value::fix(0)); ivar_set_raw(s, iv("@closed"), FALSE);
+    ivar_set_raw(c, s, iv("@path"), ps); ivar_set_raw(c, s, iv("@ents"), l); ivar_set_raw(c, s, iv("@pos"), Value::fix(0)); ivar_set_raw(c, s, iv("@closed"), FALSE);
     Ok(NIL)
 }
 fn d_check(c: &mut Ctx, s: Value) -> Result<(Value, usize), Esc> {
-    let e = ivar_get(s, iv("@ents"));
+    let e = ivar_get(c, s, iv("@ents"));
     if e == NIL { return err(c, c.vm().c_io_error.get(), "uninitialized Dir"); }
-    if ivar_get(s, iv("@closed")).truthy() { return err(c, c.vm().c_io_error.get(), "closed directory"); }
-    Ok((e, ivar_get(s, iv("@pos")).as_fix() as usize))
+    if ivar_get(c, s, iv("@closed")).truthy() { return err(c, c.vm().c_io_error.get(), "closed directory"); }
+    Ok((e, ivar_get(c, s, iv("@pos")).as_fix() as usize))
 }
 fn d_read(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let (e, p) = d_check(c, s)?;
     if p >= c.ary_len(e) { return Ok(NIL); }
-    ivar_set_raw(s, iv("@pos"), Value::fix(p as i64 + 1));
+    ivar_set_raw(c, s, iv("@pos"), Value::fix(p as i64 + 1));
     let x = c.ary_get(e, p);
     Ok(c.str_dup(x))
 }
@@ -793,24 +793,24 @@ fn d_each_child(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> RV {
     each_elem(c, l, blk)?;
     Ok(s)
 }
-fn d_rewind(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { d_check(c, s)?; ivar_set_raw(s, iv("@pos"), Value::fix(0)); Ok(s) }
+fn d_rewind(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { d_check(c, s)?; ivar_set_raw(c, s, iv("@pos"), Value::fix(0)); Ok(s) }
 fn d_tell(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let (_, p) = d_check(c, s)?; Ok(Value::fix(p as i64)) }
-fn d_seek(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { d_check(c, s)?; let n = num_to_long(c, a[0])?; ivar_set_raw(s, iv("@pos"), Value::fix(n.max(0))); Ok(s) }
+fn d_seek(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { d_check(c, s)?; let n = num_to_long(c, a[0])?; ivar_set_raw(c, s, iv("@pos"), Value::fix(n.max(0))); Ok(s) }
 fn d_set_pos(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { d_seek(c, s, a, b)?; Ok(a[0]) }
-fn d_close(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { ivar_set_raw(s, iv("@closed"), TRUE); Ok(NIL) }
-fn d_path(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let p = ivar_get(s, iv("@path")); Ok(if p == NIL { NIL } else { c.str_dup(p) }) }
+fn d_close(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { ivar_set_raw(c, s, iv("@closed"), TRUE); Ok(NIL) }
+fn d_path(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let p = ivar_get(c, s, iv("@path")); Ok(if p == NIL { NIL } else { c.str_dup(p) }) }
 fn d_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let p = ivar_get(s, iv("@path"));
-    let k = class_path(real_class_of(s));
+    let p = ivar_get(c, s, iv("@path"));
+    let k = class_path(c, real_class_of(c, s));
     let s = if p == NIL { format!("#<{}: uninitialized>", k) } else { format!("#<{}:{}>", k, String::from_utf8_lossy(c.str_bytes(p))) };
     Ok(c.str_new(s.as_bytes()))
 }
-fn d_chdir(c: &mut Ctx, s: Value, _a: &[Value], blk: *const Block) -> RV { d_check(c, s)?; let p = ivar_get(s, iv("@path")); d_s_chdir(c, s, &[p], blk) }
+fn d_chdir(c: &mut Ctx, s: Value, _a: &[Value], blk: *const Block) -> RV { d_check(c, s)?; let p = ivar_get(c, s, iv("@path")); d_s_chdir(c, s, &[p], blk) }
 fn d_s_open(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     let d = crate::builtins::object::c_new(c, slf, a, std::ptr::null())?;
     if blk.is_null() { return Ok(d); }
     let r = yield1(c, blk, d);
-    ivar_set_raw(d, iv("@closed"), TRUE);
+    ivar_set_raw(c, d, iv("@closed"), TRUE);
     r
 }
 
@@ -822,72 +822,73 @@ const TESTS: &[(&str, CFunc, i32)] = &[("exist?", f_s_exist, 1), ("file?", f_s_f
         ("owned?", f_s_owned, 1), ("grpowned?", f_s_grpowned, 1), ("world_readable?", f_s_world_readable, 1), ("world_writable?", f_s_world_writable, 1), ("identical?", f_s_identical, 2)];
 pub fn init_filetest(c: &mut Ctx) {
     if c.vm().m_file_test.get() != NIL { return; }
-    let ft = define_module("FileTest");
+    let ft = define_module(c, "FileTest");
     c.vm().m_file_test.set(ft);
-    for &(n, fun, ar) in TESTS { define_module_function(ft, n, fun, ar); }
+    for &(n, fun, ar) in TESTS { define_module_function(c, ft, n, fun, ar); }
 }
 pub fn init_stat(c: &mut Ctx) {
     if c.vm().c_stat.get() != NIL { return; }
     let f = c.vm().c_file.get();
-    let st = define_class_under(f, "Stat", c.vm().c_object.get());
-    class_set_alloc(st, AllocKind::None);
-    include_module(st, c.vm().m_comparable.get());
+    let st = define_class_under(c, f, "Stat", c.vm().c_object.get());
+    class_set_alloc(c, st, AllocKind::None);
+    include_module(c, st, c.vm().m_comparable.get());
     c.vm().c_stat.set(st);
-    let sd = |n: &str, fun: CFunc, a: i32| define_cfunc(st, n, fun, a);
-    define_private_cfunc(st, "initialize", st_initialize, 1);
-    define_private_cfunc(st, "initialize_copy", st_init_copy, 1);
-    sd("size", st_size, 0); sd("mode", st_mode, 0); sd("uid", st_uid, 0); sd("gid", st_gid, 0); sd("ino", st_ino, 0); sd("dev", st_dev, 0);
-    sd("dev_major", st_dev_major, 0); sd("dev_minor", st_dev_minor, 0); sd("rdev", st_rdev, 0); sd("nlink", st_nlink, 0); sd("blksize", st_blksize, 0);
-    sd("blocks", st_blocks, 0); sd("atime", st_atime, 0); sd("mtime", st_mtime, 0); sd("ctime", st_ctime, 0); sd("birthtime", st_birthtime, 0);
-    sd("file?", st_file, 0); sd("directory?", st_dir, 0); sd("symlink?", st_symlink, 0); sd("pipe?", st_pipe, 0); sd("socket?", st_socket, 0);
-    sd("chardev?", st_chardev, 0); sd("blockdev?", st_blockdev, 0); sd("readable?", st_readable, 0); sd("writable?", st_writable, 0);
-    sd("executable?", st_executable, 0); sd("readable_real?", st_readable_real, 0); sd("writable_real?", st_writable_real, 0);
-    sd("executable_real?", st_executable_real, 0); sd("world_readable?", st_world_readable, 0); sd("world_writable?", st_world_writable, 0);
-    sd("zero?", st_zero, 0); sd("size?", st_size_p, 0); sd("ftype", st_ftype, 0); sd("setuid?", st_setuid, 0); sd("setgid?", st_setgid, 0);
-    sd("sticky?", st_sticky, 0); sd("owned?", st_owned, 0); sd("grpowned?", st_grpowned, 0); sd("<=>", st_cmp, 1); sd("inspect", st_inspect, 0);
+    let sd = |c: &mut Ctx, n: &str, fun: CFunc, a: i32| define_cfunc(c, st, n, fun, a);
+    define_private_cfunc(c, st, "initialize", st_initialize, 1);
+    define_private_cfunc(c, st, "initialize_copy", st_init_copy, 1);
+    sd(c, "size", st_size, 0); sd(c, "mode", st_mode, 0); sd(c, "uid", st_uid, 0); sd(c, "gid", st_gid, 0); sd(c, "ino", st_ino, 0); sd(c, "dev", st_dev, 0);
+    sd(c, "dev_major", st_dev_major, 0); sd(c, "dev_minor", st_dev_minor, 0); sd(c, "rdev", st_rdev, 0); sd(c, "nlink", st_nlink, 0); sd(c, "blksize", st_blksize, 0);
+    sd(c, "blocks", st_blocks, 0); sd(c, "atime", st_atime, 0); sd(c, "mtime", st_mtime, 0); sd(c, "ctime", st_ctime, 0); sd(c, "birthtime", st_birthtime, 0);
+    sd(c, "file?", st_file, 0); sd(c, "directory?", st_dir, 0); sd(c, "symlink?", st_symlink, 0); sd(c, "pipe?", st_pipe, 0); sd(c, "socket?", st_socket, 0);
+    sd(c, "chardev?", st_chardev, 0); sd(c, "blockdev?", st_blockdev, 0); sd(c, "readable?", st_readable, 0); sd(c, "writable?", st_writable, 0);
+    sd(c, "executable?", st_executable, 0); sd(c, "readable_real?", st_readable_real, 0); sd(c, "writable_real?", st_writable_real, 0);
+    sd(c, "executable_real?", st_executable_real, 0); sd(c, "world_readable?", st_world_readable, 0); sd(c, "world_writable?", st_world_writable, 0);
+    sd(c, "zero?", st_zero, 0); sd(c, "size?", st_size_p, 0); sd(c, "ftype", st_ftype, 0); sd(c, "setuid?", st_setuid, 0); sd(c, "setgid?", st_setgid, 0);
+    sd(c, "sticky?", st_sticky, 0); sd(c, "owned?", st_owned, 0); sd(c, "grpowned?", st_grpowned, 0); sd(c, "<=>", st_cmp, 1); sd(c, "inspect", st_inspect, 0);
 }
-pub fn init(vmr: &Vm) {
+pub fn init(c: &mut Ctx) {
+    let vmr = c.vm();
     let (io, f) = (vmr.c_io.get(), vmr.c_file.get());
-    crate::builtins::prelude::lazy_const(f, "Stat", "saruby/stat");
-    crate::builtins::prelude::lazy_const(vmr.c_object.get(), "FileTest", "saruby/filetest");
-    for &(n, fun, ar) in TESTS { define_singleton_cfunc(f, n, fun, ar); }
-    let df = |n: &str, fun: CFunc, a: i32| define_singleton_cfunc(f, n, fun, a);
-    df("open", f_s_open, -1); df("stat", f_s_stat, 1); df("lstat", f_s_lstat, 1); df("mtime", f_s_mtime, 1); df("atime", f_s_atime, 1); df("ctime", f_s_ctime, 1);
-    df("birthtime", f_s_birthtime, 1); df("ftype", f_s_ftype, 1); df("delete", f_s_delete, -1); df("unlink", f_s_delete, -1); df("rename", f_s_rename, 2);
-    df("symlink", f_s_symlink, 2); df("link", f_s_link, 2); df("readlink", f_s_readlink, 1); df("chmod", f_s_chmod, -1); df("chown", f_s_chown, -1);
-    df("lchown", f_s_lchown, -1); df("lchmod", f_s_lchmod, -1); df("truncate", f_s_truncate, 2); df("umask", f_s_umask, -1); df("mkfifo", f_s_mkfifo, -1);
-    df("utime", f_s_utime, -1); df("lutime", f_s_lutime, -1); df("basename", f_s_basename, -1); df("dirname", f_s_dirname, -1); df("extname", f_s_extname, 1);
-    df("split", f_s_split, 1); df("join", f_s_join, -1); df("expand_path", f_s_expand_path, -1); df("absolute_path", f_s_absolute_path, -1);
-    df("absolute_path?", f_s_absolute_path_p, 1); df("realpath", f_s_realpath, -1); df("realdirpath", f_s_realdirpath, -1); df("path", f_s_path, 1);
-    df("fnmatch", f_s_fnmatch, -1); df("fnmatch?", f_s_fnmatch, -1);
-    let di = |n: &str, fun: CFunc, a: i32| define_cfunc(f, n, fun, a);
-    di("size", f_size, 0); di("truncate", f_truncate, 1); di("flock", f_flock, 1); di("chmod", f_chmod, 1); di("chown", f_chown, 2); di("mtime", f_mtime, 0);
-    di("atime", f_atime, 0); di("ctime", f_ctime, 0); di("lstat", f_lstat, 0);
-    define_cfunc(io, "stat", f_stat, 0);
-    const_set(f, intern(b"SEPARATOR"), crate::builtins::io::boot_frozen_str(vmr, b"/"));
-    const_set(f, intern(b"Separator"), crate::builtins::io::boot_frozen_str(vmr, b"/"));
-    const_set(f, intern(b"ALT_SEPARATOR"), NIL);
-    const_set(f, intern(b"PATH_SEPARATOR"), crate::builtins::io::boot_frozen_str(vmr, b":"));
-    let fc = define_module_under(f, "Constants");
+    crate::builtins::prelude::lazy_const(c, f, "Stat", "saruby/stat");
+    crate::builtins::prelude::lazy_const(c, vmr.c_object.get(), "FileTest", "saruby/filetest");
+    for &(n, fun, ar) in TESTS { define_singleton_cfunc(c, f, n, fun, ar); }
+    let df = |c: &mut Ctx, n: &str, fun: CFunc, a: i32| define_singleton_cfunc(c, f, n, fun, a);
+    df(c, "open", f_s_open, -1); df(c, "stat", f_s_stat, 1); df(c, "lstat", f_s_lstat, 1); df(c, "mtime", f_s_mtime, 1); df(c, "atime", f_s_atime, 1); df(c, "ctime", f_s_ctime, 1);
+    df(c, "birthtime", f_s_birthtime, 1); df(c, "ftype", f_s_ftype, 1); df(c, "delete", f_s_delete, -1); df(c, "unlink", f_s_delete, -1); df(c, "rename", f_s_rename, 2);
+    df(c, "symlink", f_s_symlink, 2); df(c, "link", f_s_link, 2); df(c, "readlink", f_s_readlink, 1); df(c, "chmod", f_s_chmod, -1); df(c, "chown", f_s_chown, -1);
+    df(c, "lchown", f_s_lchown, -1); df(c, "lchmod", f_s_lchmod, -1); df(c, "truncate", f_s_truncate, 2); df(c, "umask", f_s_umask, -1); df(c, "mkfifo", f_s_mkfifo, -1);
+    df(c, "utime", f_s_utime, -1); df(c, "lutime", f_s_lutime, -1); df(c, "basename", f_s_basename, -1); df(c, "dirname", f_s_dirname, -1); df(c, "extname", f_s_extname, 1);
+    df(c, "split", f_s_split, 1); df(c, "join", f_s_join, -1); df(c, "expand_path", f_s_expand_path, -1); df(c, "absolute_path", f_s_absolute_path, -1);
+    df(c, "absolute_path?", f_s_absolute_path_p, 1); df(c, "realpath", f_s_realpath, -1); df(c, "realdirpath", f_s_realdirpath, -1); df(c, "path", f_s_path, 1);
+    df(c, "fnmatch", f_s_fnmatch, -1); df(c, "fnmatch?", f_s_fnmatch, -1);
+    let di = |c: &mut Ctx, n: &str, fun: CFunc, a: i32| define_cfunc(c, f, n, fun, a);
+    di(c, "size", f_size, 0); di(c, "truncate", f_truncate, 1); di(c, "flock", f_flock, 1); di(c, "chmod", f_chmod, 1); di(c, "chown", f_chown, 2); di(c, "mtime", f_mtime, 0);
+    di(c, "atime", f_atime, 0); di(c, "ctime", f_ctime, 0); di(c, "lstat", f_lstat, 0);
+    define_cfunc(c, io, "stat", f_stat, 0);
+    const_set(c, f, intern(b"SEPARATOR"), crate::builtins::io::boot_frozen_str(vmr, b"/"));
+    const_set(c, f, intern(b"Separator"), crate::builtins::io::boot_frozen_str(vmr, b"/"));
+    const_set(c, f, intern(b"ALT_SEPARATOR"), NIL);
+    const_set(c, f, intern(b"PATH_SEPARATOR"), crate::builtins::io::boot_frozen_str(vmr, b":"));
+    let fc = define_module_under(c, f, "Constants");
     for (n, v) in [("RDONLY", 0), ("WRONLY", 1), ("RDWR", 2), ("APPEND", 0o2000), ("CREAT", 0o100), ("EXCL", 0o200), ("NONBLOCK", 0o4000), ("TRUNC", 0o1000),
                    ("NOCTTY", 0o400), ("BINARY", 0), ("SHARE_DELETE", 0), ("SYNC", 0o4010000), ("DSYNC", 0o10000), ("NOFOLLOW", 0o400000), ("DIRECTORY", 0o200000),
                    ("TMPFILE", 0o20200000), ("NOATIME", 0o1000000), ("CLOEXEC", 0o2000000), ("LOCK_SH", 1), ("LOCK_EX", 2), ("LOCK_NB", 4), ("LOCK_UN", 8),
                    ("FNM_NOESCAPE", 1), ("FNM_PATHNAME", 2), ("FNM_DOTMATCH", 4), ("FNM_CASEFOLD", 8), ("FNM_EXTGLOB", 16), ("FNM_SYSCASE", 0), ("FNM_SHORTNAME", 0)] {
-        const_set(fc, intern(n.as_bytes()), Value::fix(v));
+        const_set(c, fc, intern(n.as_bytes()), Value::fix(v));
     }
-    const_set(fc, intern(b"NULL"), crate::builtins::io::boot_frozen_str(vmr, b"/dev/null"));
-    include_module(io, fc);
-    let dir = define_class("Dir", vmr.c_object.get());
-    include_module(dir, vmr.m_enumerable.get());
+    const_set(c, fc, intern(b"NULL"), crate::builtins::io::boot_frozen_str(vmr, b"/dev/null"));
+    include_module(c, io, fc);
+    let dir = define_class(c, "Dir", vmr.c_object.get());
+    include_module(c, dir, vmr.m_enumerable.get());
     vmr.c_dir.set(dir);
-    let dd = |n: &str, fun: CFunc, a: i32| define_singleton_cfunc(dir, n, fun, a);
-    dd("pwd", d_s_pwd, 0); dd("getwd", d_s_pwd, 0); dd("glob", d_s_glob, -1); dd("[]", d_s_aref, -1); dd("exist?", d_s_exist, 1); dd("mkdir", d_s_mkdir, -1);
-    dd("rmdir", d_s_rmdir, 1); dd("delete", d_s_rmdir, 1); dd("unlink", d_s_rmdir, 1); dd("entries", d_s_entries, -1); dd("children", d_s_children, -1);
-    dd("each_child", d_s_each_child, -1); dd("foreach", d_s_foreach, -1); dd("empty?", d_s_empty, 1); dd("home", d_s_home, -1); dd("chdir", d_s_chdir, -1);
-    dd("open", d_s_open, -1);
-    let dm = |n: &str, fun: CFunc, a: i32| define_cfunc(dir, n, fun, a);
-    define_private_cfunc(dir, "initialize", d_initialize, -1);
-    dm("read", d_read, 0); dm("each", d_each, 0); dm("children", d_children, 0); dm("each_child", d_each_child, 0); dm("rewind", d_rewind, 0);
-    dm("tell", d_tell, 0); dm("pos", d_tell, 0); dm("seek", d_seek, 1); dm("pos=", d_set_pos, 1); dm("close", d_close, 0); dm("path", d_path, 0);
-    dm("to_path", d_path, 0); dm("inspect", d_inspect, 0); dm("chdir", d_chdir, 0);
+    let dd = |c: &mut Ctx, n: &str, fun: CFunc, a: i32| define_singleton_cfunc(c, dir, n, fun, a);
+    dd(c, "pwd", d_s_pwd, 0); dd(c, "getwd", d_s_pwd, 0); dd(c, "glob", d_s_glob, -1); dd(c, "[]", d_s_aref, -1); dd(c, "exist?", d_s_exist, 1); dd(c, "mkdir", d_s_mkdir, -1);
+    dd(c, "rmdir", d_s_rmdir, 1); dd(c, "delete", d_s_rmdir, 1); dd(c, "unlink", d_s_rmdir, 1); dd(c, "entries", d_s_entries, -1); dd(c, "children", d_s_children, -1);
+    dd(c, "each_child", d_s_each_child, -1); dd(c, "foreach", d_s_foreach, -1); dd(c, "empty?", d_s_empty, 1); dd(c, "home", d_s_home, -1); dd(c, "chdir", d_s_chdir, -1);
+    dd(c, "open", d_s_open, -1);
+    let dm = |c: &mut Ctx, n: &str, fun: CFunc, a: i32| define_cfunc(c, dir, n, fun, a);
+    define_private_cfunc(c, dir, "initialize", d_initialize, -1);
+    dm(c, "read", d_read, 0); dm(c, "each", d_each, 0); dm(c, "children", d_children, 0); dm(c, "each_child", d_each_child, 0); dm(c, "rewind", d_rewind, 0);
+    dm(c, "tell", d_tell, 0); dm(c, "pos", d_tell, 0); dm(c, "seek", d_seek, 1); dm(c, "pos=", d_set_pos, 1); dm(c, "close", d_close, 0); dm(c, "path", d_path, 0);
+    dm(c, "to_path", d_path, 0); dm(c, "inspect", d_inspect, 0); dm(c, "chdir", d_chdir, 0);
 }

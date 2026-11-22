@@ -76,7 +76,7 @@ fn os_each_object(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV 
     vs.retain(|&v| {
         if matches!(c.body_of(v), Body::Env(..)) || obj_klass(v) == NIL { return false; }
         if is_class_or_module(v) && c.class(v).is_singleton { return false; }
-        match k { Some(k) => is_class_or_module(obj_klass(v)) && is_kind_of(v, k), None => true }
+        match k { Some(k) => is_class_or_module(obj_klass(v)) && is_kind_of(c, v, k), None => true }
     });
     let n = vs.len();
     let list = c.ary_from_vec(vs);
@@ -100,20 +100,20 @@ use std::sync::atomic::Ordering::Relaxed;
 pub fn warning_enable_deprecated() { WARN_CATS.fetch_or(1, Relaxed); }
 /// rb_warning_category_from_name: a Symbol naming a category.
 pub fn warning_category(c: &mut Ctx, v: Value) -> Result<usize, Esc> {
-    if !v.is_sym() { return type_err(c, format!("wrong argument type {} (expected Symbol)", class_name_for_err(v))); }
+    if !v.is_sym() { return type_err(c, format!("wrong argument type {} (expected Symbol)", class_name_for_err(c, v))); }
     let n = crate::symbol::sym_str(v.as_sym());
     match WARN_CAT_NAMES.iter().position(|&x| x == n) { Some(i) => Ok(i), None => arg_err(c, format!("unknown category: {}", n)) }
 }
 pub fn warning_category_enabled(i: usize) -> bool { WARN_CATS.load(Relaxed) & (1 << i) != 0 }
 fn warning_warn(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 1, 2)?;
-    if !is_string(a[0]) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(a[0]))); }
+    if !is_string(a[0]) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(c, a[0]))); }
     let b = c.str_bytes(a[0]).to_vec(); stderr_write(c, &b)?; Ok(NIL)
 }
-fn objspace_wm_init(c: &mut Ctx, s2: Value, _a: &[Value], _b: *const Block) -> RV { let h = c.hash_new(); c.hash_mut(h).identity = true; ivar_set_raw(s2, intern(b"@h"), h); Ok(NIL) }
-fn wm_aref(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(s2, intern(b"@h")); Ok(hash_get_opt(c, h, a[0])?.unwrap_or(NIL)) }
-fn wm_aset(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(s2, intern(b"@h")); hash_set(c, h, a[0], a[1])?; Ok(a[1]) }
-fn wm_key(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(s2, intern(b"@h")); Ok(Value::bool(hash_lookup(c, h, a[0])?.is_some())) }
+fn objspace_wm_init(c: &mut Ctx, s2: Value, _a: &[Value], _b: *const Block) -> RV { let h = c.hash_new(); c.hash_mut(h).identity = true; ivar_set_raw(c, s2, intern(b"@h"), h); Ok(NIL) }
+fn wm_aref(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(c, s2, intern(b"@h")); Ok(hash_get_opt(c, h, a[0])?.unwrap_or(NIL)) }
+fn wm_aset(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(c, s2, intern(b"@h")); hash_set(c, h, a[0], a[1])?; Ok(a[1]) }
+fn wm_key(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(c, s2, intern(b"@h")); Ok(Value::bool(hash_lookup(c, h, a[0])?.is_some())) }
 
 static FINALIZERS: Global = Global::new(); // Array of [object, callable]; run at exit
 fn finalizers(c: &mut Ctx) -> Value {
@@ -124,10 +124,10 @@ fn finalizers(c: &mut Ctx) -> Value {
 fn os_define_finalizer(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
     check_argc(c, a, 1, 2)?;
     let o = a[0];
-    if !o.is_heap() || is_float(o) || is_bignum(o) { return arg_err(c, format!("cannot define finalizer for {}", class_path(real_class_of(o)))); }
+    if !o.is_heap() || is_float(o) || is_bignum(o) { return arg_err(c, format!("cannot define finalizer for {}", class_path(c, real_class_of(c, o)))); }
     if is_frozen(o) { return Err(raise_frozen(c, o)); }
     let p = if a.len() > 1 { a[1] } else if !blk.is_null() { block_to_proc(c, blk)? } else { return arg_err(c, "tried to create Proc object without a block"); };
-    if !respond_to(p, intern(b"call"), true) { let d = inspect_str(c, p)?; return arg_err(c, format!("wrong type argument {} (should be callable)", d)); }
+    if !respond_to(c, p, intern(b"call"), true) { let d = inspect_str(c, p)?; return arg_err(c, format!("wrong type argument {} (should be callable)", d)); }
     let pair = c.ary_new_from(&[o, p]);
     let f = finalizers(c);
     c.ary_push(f, pair);
@@ -156,8 +156,8 @@ fn rbconfig_ruby(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(c.str_new(exe.as_bytes()))
 }
 pub fn rbconfig_init(c: &mut Ctx) {
-    if const_get_at(c.vm().c_object.get(), intern(b"RbConfig")).is_some() { return; }
-    let rbc = define_module("RbConfig");
+    if const_get_at(c, c.vm().c_object.get(), intern(b"RbConfig")).is_some() { return; }
+    let rbc = define_module(c, "RbConfig");
     let cfg = c.hash_new_capa(32);
     let exe = std::env::current_exe().unwrap_or_else(|_| "saruby".into());
     let bindir = exe.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
@@ -178,11 +178,11 @@ pub fn rbconfig_init(c: &mut Ctx) {
         ("libdir", &bindir), ("sitedir", ""), ("sitelibdir", ""), ("sitearchdir", ""), ("vendordir", ""), ("vendorlibdir", ""), ("vendorarchdir", ""),
         ("datadir", ""), ("mandir", ""), ("sysconfdir", "/etc"), ("localstatedir", "/var"), ("configure_args", ""), ("CFLAGS", ""), ("LDFLAGS", "")];
     for (k, v) in entries { let ks = c.str_new_frozen(k.as_bytes()); let vs = c.str_new(v.as_bytes()); let _ = hash_set(c, cfg, ks, vs); }
-    const_set(rbc, intern(b"CONFIG"), cfg);
-    const_set(rbc, intern(b"MAKEFILE_CONFIG"), cfg);
+    const_set(c, rbc, intern(b"CONFIG"), cfg);
+    const_set(c, rbc, intern(b"MAKEFILE_CONFIG"), cfg);
     let top = c.str_new(bindir.as_bytes());
-    const_set(rbc, intern(b"TOPDIR"), top);
-    define_singleton_cfunc(rbc, "ruby", rbconfig_ruby, 0);
+    const_set(c, rbc, intern(b"TOPDIR"), top);
+    define_singleton_cfunc(c, rbc, "ruby", rbconfig_ruby, 0);
 }
 
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
@@ -197,52 +197,53 @@ fn boot_str(vmr: &Vm, b: &[u8]) -> Value {
     s
 }
 
-pub fn init(vmr: &Vm) {
+pub fn init(c: &mut Ctx) {
+    let vmr = c.vm();
     let ob = vmr.c_object.get();
     // GC / ObjectSpace
-    let gc = define_module("GC");
+    let gc = define_module(c, "GC");
     vmr.m_gc.set(gc);
-    define_module_function(gc, "start", gc_start, -1);
-    define_singleton_cfunc(gc, "__start", gc_start_full, 1);
-    define_module_function(gc, "count", gc_count, 0);
-    define_module_function(gc, "disable", gc_disable, 0);
-    define_module_function(gc, "enable", gc_enable, 0);
-    define_module_function(gc, "stat", gc_stat, -1);
-    define_module_function(gc, "compact", gc_start, 0);
-    define_module_function(gc, "stress", |_c, _s, _a, _b| Ok(FALSE), 0);
-    define_module_function(gc, "stress=", |_c, _s, a, _b| Ok(a[0]), 1);
-    let os = define_module("ObjectSpace");
+    define_module_function(c, gc, "start", gc_start, -1);
+    define_singleton_cfunc(c, gc, "__start", gc_start_full, 1);
+    define_module_function(c, gc, "count", gc_count, 0);
+    define_module_function(c, gc, "disable", gc_disable, 0);
+    define_module_function(c, gc, "enable", gc_enable, 0);
+    define_module_function(c, gc, "stat", gc_stat, -1);
+    define_module_function(c, gc, "compact", gc_start, 0);
+    define_module_function(c, gc, "stress", |_c, _s, _a, _b| Ok(FALSE), 0);
+    define_module_function(c, gc, "stress=", |_c, _s, a, _b| Ok(a[0]), 1);
+    let os = define_module(c, "ObjectSpace");
     vmr.m_object_space.set(os);
-    define_module_function(os, "each_object", os_each_object, -1);
-    define_module_function(os, "count_objects", os_count_objects, -1);
-    define_module_function(os, "garbage_collect", os_garbage_collect, -1);
-    define_module_function(os, "define_finalizer", os_define_finalizer, -1);
-    define_module_function(os, "undefine_finalizer", os_undefine_finalizer, 1);
-    let wm = define_class_under(os, "WeakMap", ob);
+    define_module_function(c, os, "each_object", os_each_object, -1);
+    define_module_function(c, os, "count_objects", os_count_objects, -1);
+    define_module_function(c, os, "garbage_collect", os_garbage_collect, -1);
+    define_module_function(c, os, "define_finalizer", os_define_finalizer, -1);
+    define_module_function(c, os, "undefine_finalizer", os_undefine_finalizer, 1);
+    let wm = define_class_under(c, os, "WeakMap", ob);
     vmr.c_object_space_weak_map.set(wm);
-    define_private_cfunc(wm, "initialize", objspace_wm_init, 0);
-    define_cfunc(wm, "[]", wm_aref, 1);
-    define_cfunc(wm, "[]=", wm_aset, 2);
-    define_cfunc(wm, "key?", wm_key, 1);
-    define_cfunc(wm, "include?", wm_key, 1);
-    let wn = define_module("Warning");
+    define_private_cfunc(c, wm, "initialize", objspace_wm_init, 0);
+    define_cfunc(c, wm, "[]", wm_aref, 1);
+    define_cfunc(c, wm, "[]=", wm_aset, 2);
+    define_cfunc(c, wm, "key?", wm_key, 1);
+    define_cfunc(c, wm, "include?", wm_key, 1);
+    let wn = define_module(c, "Warning");
     vmr.m_warning.set(wn);
-    define_module_function(wn, "warn", warning_warn, -1);
-    define_singleton_cfunc(wn, "[]", |c, _s, a, _b| { let i = warning_category(c, a[0])?; Ok(Value::bool(WARN_CATS.load(Relaxed) & (1 << i) != 0)) }, 1);
-    define_singleton_cfunc(wn, "[]=", |c, _s, a, _b| {
+    define_module_function(c, wn, "warn", warning_warn, -1);
+    define_singleton_cfunc(c, wn, "[]", |c, _s, a, _b| { let i = warning_category(c, a[0])?; Ok(Value::bool(WARN_CATS.load(Relaxed) & (1 << i) != 0)) }, 1);
+    define_singleton_cfunc(c, wn, "[]=", |c, _s, a, _b| {
         let i = warning_category(c, a[0])?;
         if a[1].truthy() { WARN_CATS.fetch_or(1 << i, Relaxed); } else { WARN_CATS.fetch_and(!(1 << i), Relaxed); }
         Ok(a[1])
     }, 2);
-    define_singleton_cfunc(wn, "categories", |c, _s, _a, _b| { let v: Vec<Value> = WARN_CAT_NAMES.iter().map(|n| sym_value(n)).collect(); Ok(c.ary_new_from(&v)) }, 0);
+    define_singleton_cfunc(c, wn, "categories", |c, _s, _a, _b| { let v: Vec<Value> = WARN_CAT_NAMES.iter().map(|n| sym_value(n)).collect(); Ok(c.ary_new_from(&v)) }, 0);
     // constants
-    let set = |n: &str, v: Value| const_set(ob, intern(n.as_bytes()), v);
+    let set = |c: &mut Ctx, n: &str, v: Value| const_set(c, ob, intern(n.as_bytes()), v);
     for (n, v) in [("RUBY_VERSION", "3.4.0"), ("RUBY_RELEASE_DATE", "2026-11-20"), ("RUBY_PLATFORM", "x86_64-linux"), ("RUBY_ENGINE", "saruby"),
-                   ("RUBY_ENGINE_VERSION", "0.1.0"), ("RUBY_COPYRIGHT", "saruby - Copyright (C) 2026 Koichi Sasada")] { set(n, boot_str(vmr, v.as_bytes())); }
-    set("RUBY_DESCRIPTION", boot_str(vmr, crate::version().as_bytes()));
-    set("RUBY_PATCHLEVEL", Value::fix(0));
-    set("ARGV", vmr.argv.get());
-    crate::builtins::lazy_const(ob, "TOPLEVEL_BINDING", "saruby/toplevel_binding");
+                   ("RUBY_ENGINE_VERSION", "0.1.0"), ("RUBY_COPYRIGHT", "saruby - Copyright (C) 2026 Koichi Sasada")] { set(c, n, boot_str(vmr, v.as_bytes())); }
+    set(c, "RUBY_DESCRIPTION", boot_str(vmr, crate::version().as_bytes()));
+    set(c, "RUBY_PATCHLEVEL", Value::fix(0));
+    set(c, "ARGV", vmr.argv.get());
+    crate::builtins::lazy_const(c, ob, "TOPLEVEL_BINDING", "saruby/toplevel_binding");
     let _ = (intern, num_to_long);
-    vmr.c_location.set(crate::builtins::exception::init_location(vmr));
+    vmr.c_location.set(crate::builtins::exception::init_location(c));
 }

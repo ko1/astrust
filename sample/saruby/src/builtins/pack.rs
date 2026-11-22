@@ -95,8 +95,8 @@ fn int_low64(c: &mut Ctx, v: Value) -> u64 {
 /// rb_to_float: Numeric only; anything else is a TypeError.
 fn to_float(c: &mut Ctx, v: Value) -> Result<f64, Esc> {
     if let Some(f) = c.num_to_f64(v) { return Ok(f); }
-    if v.is_heap() && is_kind_of(v, c.vm().c_numeric.get()) { return crate::builtins::numeric_methods::to_f(c, v); }
-    type_err(c, format!("can't convert {} into Float", class_name_for_err(v)))
+    if v.is_heap() && is_kind_of(c, v, c.vm().c_numeric.get()) { return crate::builtins::numeric_methods::to_f(c, v); }
+    type_err(c, format!("can't convert {} into Float", class_name_for_err(c, v)))
 }
 fn to_float32(c: &mut Ctx, v: Value) -> Result<f32, Esc> {
     let d = to_float(c, v)?;
@@ -168,7 +168,7 @@ pub fn pack(c: &mut Ctx, ary: Value, a: &[Value]) -> RV {
     let buffer = match buffer {
         None | Some(NIL) => None,
         Some(b) => {
-            if !is_string(b) { return type_err(c, format!("buffer must be String, not {}", class_path(real_class_of(b)))); }
+            if !is_string(b) { return type_err(c, format!("buffer must be String, not {}", class_path(c, real_class_of(c, b)))); }
             check_frozen(c, b)?;
             Some(b)
         }

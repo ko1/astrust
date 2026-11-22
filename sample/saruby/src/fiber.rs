@@ -203,7 +203,7 @@ pub(crate) fn fiber_main(c: &mut Ctx, args: Value, exc: bool) -> ! {
         Ok(v) => (v, false),
         Err(_) if c.esc == EscKind::Throw && c.esc_tag_v == kill => (NIL, false),
         Err(_) if c.esc == EscKind::Raise => (c.esc_val, true),
-        Err(_) => { let k = c.vm().c_local_jump_error.get(); (make_exception(k, "break from proc-closure"), true) }
+        Err(_) => { let k = c.vm().c_local_jump_error.get(); (make_exception(c, k, "break from proc-closure"), true) }
     };
     c.esc = EscKind::None;
     c.frame = std::ptr::null_mut();
@@ -390,7 +390,7 @@ fn f_alive(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(V
 fn f_s_current(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(CUR.get(c)) }
 /// Fiber#raise: resume a yielding fiber (transfer to a transferring one) raising there.
 fn f_raise(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    let e = if a.is_empty() { let k = c.vm().c_runtime_error.get(); make_exception(k, "unhandled exception") } else { crate::builtins::kernel::make_exception_from_args(c, a)? };
+    let e = if a.is_empty() { let k = c.vm().c_runtime_error.get(); make_exception(c, k, "unhandled exception") } else { crate::builtins::kernel::make_exception_from_args(c, a)? };
     raise_in(c, slf, e)
 }
 /// CRuby fiber_raise: a fiber that resumed another passes it on to that one.
@@ -455,8 +455,8 @@ fn stop_iteration(c: &mut Ctx, e: Value) -> Esc {
     let f = renum(c, e).fiber;
     let res = if f != NIL { fd(c, f).enum_src } else { NIL };
     let k = c.vm().c_stop_iteration.get();
-    let ex = make_exception(k, "iteration reached an end");
-    ivar_set_raw(ex, crate::symbol::intern(b"result"), res);
+    let ex = make_exception(c, k, "iteration reached an end");
+    ivar_set_raw(c, ex, crate::symbol::intern(b"result"), res);
     raise_exc(c, ex)
 }
 
@@ -471,17 +471,18 @@ pub fn enum_peek(c: &mut Ctx, e: Value) -> RV {
     }
 }
 
-pub fn init(vmr: &Vm) {
-    let k = define_class("Fiber", vmr.c_object.get());
-    class_set_alloc(k, AllocKind::None);
+pub fn init(c: &mut Ctx) {
+    let vmr = c.vm();
+    let k = define_class(c, "Fiber", vmr.c_object.get());
+    class_set_alloc(c, k, AllocKind::None);
     vmr.c_fiber.set(k);
-    define_singleton_cfunc(k, "yield", f_s_yield, -1);
-    define_singleton_cfunc(k, "current", f_s_current, 0);
-    define_cfunc(k, "resume", f_resume, -1);
-    define_cfunc(k, "transfer", f_transfer, -1);
-    define_cfunc(k, "raise", f_raise, -1);
-    define_cfunc(k, "kill", f_kill, 0);
-    define_cfunc(k, "alive?", f_alive, 0);
+    define_singleton_cfunc(c, k, "yield", f_s_yield, -1);
+    define_singleton_cfunc(c, k, "current", f_s_current, 0);
+    define_cfunc(c, k, "resume", f_resume, -1);
+    define_cfunc(c, k, "transfer", f_transfer, -1);
+    define_cfunc(c, k, "raise", f_raise, -1);
+    define_cfunc(c, k, "kill", f_kill, 0);
+    define_cfunc(c, k, "alive?", f_alive, 0);
     let mut d = FiberData::new(NIL);
     d.main = true; d.started = true; d.running = true; d.blocking = true;
     let root = crate::gc::alloc(k, Body::Data(Box::new(d)));

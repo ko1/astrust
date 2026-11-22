@@ -78,14 +78,14 @@ pub fn init(c: &Ctx) {
 }
 
 /// CallCache.bi of a cache filled with entry me for class klass: its body and the mark of klass (0: none).
-pub fn cache_key(me: *const MethodEntry, klass: Value) -> u32 {
+pub fn cache_key(c: &Ctx, me: *const MethodEntry, klass: Value) -> u32 {
     if let Some(&(_, k)) = SEND_ME.get().and_then(|t| t.iter().find(|&&(m, _)| m != 0 && m == me as usize)) { return k; }
     let Some(&(_, body, _)) = BI_ME.get().and_then(|t| t.iter().find(|&&(m, b, k)| m == me as usize && (k == klass || b < IT_FIRST))) else { return 0 };
     let v = vm();
     // an iterator on an Array / Range / Hash: only that class itself (a subclass may have its own #each),
     // and Range#map only while Range#each is the builtin (its loop is Range#each's)
     if body >= IT_FIRST && recv_of(body) != C_INT {
-        if body == IT_RANGE_MAP && !std::ptr::eq(lookup_method(v.c_range.get(), s::each), v.ids.r_each.get()) { return 0; }
+        if body == IT_RANGE_MAP && !std::ptr::eq(lookup_method(c, v.c_range.get(), s::each), v.ids.r_each.get()) { return 0; }
         return body;
     }
     body | if klass == v.c_integer.get() { K_INT } else if klass == v.c_float.get() { K_FLO } else { 0 }

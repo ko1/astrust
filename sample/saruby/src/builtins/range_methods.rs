@@ -87,8 +87,8 @@ pub fn range_each(c: &mut Ctx, slf: Value, mut f: impl FnMut(&mut Ctx, Value) ->
         for i in 0..c.ary_len(blk_data) { let v = c.ary_get(blk_data, i); if !f(c, v)? { break; } }
         return Ok(());
     }
-    if b == NIL || is_float(b) { return type_err(c, format!("can't iterate from {}", class_path(real_class_of(b)))); }
-    if !respond_to(b, s::succ, true) { return type_err(c, format!("can't iterate from {}", class_path(real_class_of(b)))); }
+    if b == NIL || is_float(b) { return type_err(c, format!("can't iterate from {}", class_path(c, real_class_of(c, b)))); }
+    if !respond_to(c, b, s::succ, true) { return type_err(c, format!("can't iterate from {}", class_path(c, real_class_of(c, b)))); }
     let mut cur = b;
     loop {
         if e != NIL {
@@ -127,7 +127,7 @@ cfn!(r_reverse_each, |c, slf, a, blk| {
         loop { if b != NIL && i < b.as_fix() { break; } yield1(c, blk, Value::fix(i))?; i -= 1; }
         return Ok(slf);
     }
-    if e == NIL { return type_err(c, format!("can't iterate from {}", class_path(real_class_of(e)))); }
+    if e == NIL { return type_err(c, format!("can't iterate from {}", class_path(c, real_class_of(c, e)))); }
     let arr = r_to_a(c, slf, &[], std::ptr::null())?;
     let n = c.ary_len(arr);
     for i in (0..n).rev() { let v = c.ary_get(arr, i); yield1(c, blk, v)?; }
@@ -187,7 +187,7 @@ fn cover(c: &mut Ctx, slf: Value, v: Value) -> Result<bool, Esc> {
     cover_in(c, b, e, excl, v)
 }
 /// range.c linear_object_p: Numeric or Time.
-fn linear(c: &Ctx, v: Value) -> bool { crate::numeric::is_numeric(v) || (v.is_heap() && (is_kind_of(v, c.vm().c_numeric.get()) || is_kind_of(v, c.vm().c_time.get()))) }
+fn linear(c: &Ctx, v: Value) -> bool { crate::numeric::is_numeric(v) || (v.is_heap() && (is_kind_of(c, v, c.vm().c_numeric.get()) || is_kind_of(c, v, c.vm().c_time.get()))) }
 cfn!(r_include, |c, slf, a, blk| {
     check_argc(c, a, 1, 1)?;
     let (b, e, excl) = c.range_parts(slf);
@@ -199,7 +199,7 @@ cfn!(r_include, |c, slf, a, blk| {
     if is_string(b) && is_string(e) {
         // rb_str_include_range_p
         if v == NIL { return Ok(FALSE); }
-        let v = if is_string(v) { v } else if v.is_heap() && respond_to(v, s::to_str, true) { expect_str(c, v)? } else { return Ok(FALSE); };
+        let v = if is_string(v) { v } else if v.is_heap() && respond_to(c, v, s::to_str, true) { expect_str(c, v)? } else { return Ok(FALSE); };
         let (bb, eb, vb) = (c.str_bytes(b).to_vec(), c.str_bytes(e).to_vec(), c.str_bytes(v).to_vec());
         if bb.len() == 1 && eb.len() == 1 {
             if vb.len() != 1 { return Ok(FALSE); }
@@ -237,7 +237,7 @@ fn cover_range(c: &mut Ctx, slf: Value, val: Value) -> Result<bool, Esc> {
     let m = match funcall(c, val, intern(b"max"), &[], std::ptr::null()) {
         Ok(m) => m,
         Err(err) => {
-            if c.esc == EscKind::Raise && is_kind_of(c.esc_val, c.vm().c_type_error.get()) { c.esc = EscKind::None; NIL } else { return Err(err); }
+            if c.esc == EscKind::Raise && is_kind_of(c, c.esc_val, c.vm().c_type_error.get()) { c.esc = EscKind::None; NIL } else { return Err(err); }
         }
     };
     if m == NIL { return Ok(false); }
@@ -382,8 +382,8 @@ cfn!(r_sum, |c, slf, a, blk| {
 cfn!(r_step, |c, slf, a, blk| {
     let (b, e, x) = c.range_parts(slf);
     let numk = c.vm().c_numeric.get();
-    let isnum = |v: Value| v.is_fixnum() || v.is_flonum() || (v.is_heap() && is_kind_of(v, numk));
-    let (b_num, e_num) = (isnum(b), isnum(e));
+    let isnum = |c: &Ctx, v: Value| v.is_fixnum() || v.is_flonum() || (v.is_heap() && is_kind_of(c, v, numk));
+    let (b_num, e_num) = (isnum(c, b), isnum(c, e));
     let str_b = if is_string(b) { Some(b) } else { None };
     check_argc(c, a, 0, 1)?;
     let st = match a.first() {
@@ -391,7 +391,7 @@ cfn!(r_step, |c, slf, a, blk| {
         None if b_num || str_b.is_some() || b.is_sym() || (b == NIL && e_num) => Value::fix(1),
         None => return arg_err(c, "step is required for non-numeric ranges"),
     };
-    let st_num = isnum(st);
+    let st_num = isnum(c, st);
     if st_num && b_num && funcall(c, st, s::eq, &[Value::fix(0)], std::ptr::null())?.truthy() { return arg_err(c, "step can't be 0"); }
     if blk.is_null() {
         if st_num && ((b_num && (e == NIL || e_num)) || (b == NIL && e_num)) {
@@ -488,7 +488,7 @@ fn bs_check(c: &mut Ctx, blk: *const Block, val: Value, satisfied: &mut Value) -
         if n == 0 { return Ok(Probe::Found(val)); }
         return Ok(Probe::Smaller(n < 0));
     }
-    type_err(c, format!("wrong argument type {} (must be numeric, true, false or nil)", class_name_for_err(v)))
+    type_err(c, format!("wrong argument type {} (must be numeric, true, false or nil)", class_name_for_err(c, v)))
 }
 fn bs_i64(c: &mut Ctx, blk: *const Block, mut low: i64, mut high: i64, excl: bool, conv: &dyn Fn(&mut Ctx, i64) -> Value) -> RV {
     let mut satisfied = NIL;
@@ -569,10 +569,10 @@ cfn!(r_bsearch, |c, slf, a, blk| {
             diff = funcall(c, diff, s::mul, &[Value::fix(2)], std::ptr::null())?;
         }
     }
-    type_err(c, format!("can't do binary search for {}", class_name_for_err(b)))
+    type_err(c, format!("can't do binary search for {}", class_name_for_err(c, b)))
 });
 cfn!(r_overlap, |c, slf, a, blk| {
-    if !is_range(a[0]) { return type_err(c, format!("wrong argument type {} (expected Range)", class_name_for_err(a[0]))); }
+    if !is_range(a[0]) { return type_err(c, format!("wrong argument type {} (expected Range)", class_name_for_err(c, a[0]))); }
     let (b1, e1, x1) = c.range_parts(slf); let (b2, e2, x2) = c.range_parts(a[0]);
     let lt = |c: &mut Ctx, p: Value, q: Value, excl: bool| -> Result<bool, Esc> { if p == NIL || q == NIL { return Ok(true); } let r = funcall(c, p, s::cmp, &[q], std::ptr::null())?; Ok(r.is_fixnum() && (r.as_fix() < 0 || (!excl && r.as_fix() == 0))) };
     let empty = |c: &mut Ctx, b: Value, e: Value, x: bool| -> Result<bool, Esc> { if b == NIL || e == NIL { return Ok(false); } let r = funcall(c, b, s::cmp, &[e], std::ptr::null())?; Ok(!r.is_fixnum() || r.as_fix() > 0 || (x && r.as_fix() == 0)) };
@@ -581,15 +581,15 @@ cfn!(r_overlap, |c, slf, a, blk| {
 });
 
 /// Defines the methods of Range `k`; the entry of Range#each, for `vm.ids`.
-pub fn init(k: Value) -> *const MethodEntry {
-    let d = |n: &str, f: CFunc, a: i32| define_cfunc(k, n, f, a);
-    define_private_cfunc(k, "initialize", r_initialize, -1);
-    d("begin", r_begin, 0); d("first", r_first, -1); d("end", r_end, 0); d("last", r_last, -1); d("exclude_end?", r_excl, 0);
-    d("each", r_each, 0);
-    let each = search_method(k, s::each);
-    d("reverse_each", r_reverse_each, 0); d("to_a", r_to_a, 0); d("entries", r_to_a, 0); d("size", r_size, 0); d("count", r_count, -1);
-    d("include?", r_include, 1); d("member?", r_include, 1); d("cover?", r_cover, 1); d("===", r_eqq, 1); d("==", r_eq, 1); d("eql?", r_eql, 1);
-    d("hash", r_hash, 0); d("to_s", r_to_s, 0); d("inspect", r_inspect, 0); d("min", r_min, -1); d("minmax", r_minmax, 0); d("max", r_max, -1); 
-    d("step", r_step, -1); d("%", r_pct, 1); d("dup", r_dup_frozen, 0); d("bsearch", r_bsearch, 0); d("overlap?", r_overlap, 1);
+pub fn init(c: &mut Ctx, k: Value) -> *const MethodEntry {
+    let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, k, n, f, a);
+    define_private_cfunc(c, k, "initialize", r_initialize, -1);
+    d(c, "begin", r_begin, 0); d(c, "first", r_first, -1); d(c, "end", r_end, 0); d(c, "last", r_last, -1); d(c, "exclude_end?", r_excl, 0);
+    d(c, "each", r_each, 0);
+    let each = search_method(c, k, s::each);
+    d(c, "reverse_each", r_reverse_each, 0); d(c, "to_a", r_to_a, 0); d(c, "entries", r_to_a, 0); d(c, "size", r_size, 0); d(c, "count", r_count, -1);
+    d(c, "include?", r_include, 1); d(c, "member?", r_include, 1); d(c, "cover?", r_cover, 1); d(c, "===", r_eqq, 1); d(c, "==", r_eq, 1); d(c, "eql?", r_eql, 1);
+    d(c, "hash", r_hash, 0); d(c, "to_s", r_to_s, 0); d(c, "inspect", r_inspect, 0); d(c, "min", r_min, -1); d(c, "minmax", r_minmax, 0); d(c, "max", r_max, -1); 
+    d(c, "step", r_step, -1); d(c, "%", r_pct, 1); d(c, "dup", r_dup_frozen, 0); d(c, "bsearch", r_bsearch, 0); d(c, "overlap?", r_overlap, 1);
     each
 }

@@ -47,7 +47,7 @@ pub fn hit_cfunc(c: &crate::vm::Ctx, klass: crate::value::Value, mid: crate::val
     thread_local! { static NAMES: RefCell<HashMap<(u64, crate::value::Sym, u32), &'static str>> = RefCell::new(HashMap::new()); }
     let s = NAMES.with(|m| *m.borrow_mut().entry((klass.raw(), mid, argc)).or_insert_with(|| {
         let owner = c.method_entry(klass, mid).map_or(klass, |m| m.owner);
-        Box::leak(format!("cfunc {}#{}/{}", crate::vm::class_path(owner), crate::symbol::sym_str(mid), argc).into_boxed_str())
+        Box::leak(format!("cfunc {}#{}/{}", crate::vm::class_path(c, owner), crate::symbol::sym_str(mid), argc).into_boxed_str())
     }));
     hit(s);
 }

@@ -65,15 +65,15 @@ fn m_lgamma(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 }
 
 /// Defines the functions and constants of Math `m`.
-pub fn init(m: Value) {
-    let d = |n: &str, f: CFunc, a: i32| define_module_function(m, n, f, a);
-    d("sin", m_sin, 1); d("cos", m_cos, 1); d("tan", m_tan, 1); d("asin", m_asin, 1); d("acos", m_acos, 1); d("atan", m_atan, 1);
-    d("exp", m_exp, 1); d("sqrt", m_sqrt, 1); d("cbrt", m_cbrt, 1); d("sinh", m_sinh, 1); d("cosh", m_cosh, 1); d("tanh", m_tanh, 1);
-    d("asinh", m_asinh, 1); d("acosh", m_acosh, 1); d("atanh", m_atanh, 1); d("log2", m_log2, 1); d("log10", m_log10, 1); d("log", m_log, -1);
-    d("atan2", m_atan2, 2); d("hypot", m_hypot, 2); d("ldexp", m_pow_ldexp, 2); d("frexp", m_frexp, 1); d("erf", m_erf, 1); d("erfc", m_erfc, 1);
-    d("gamma", m_gamma, 1); d("lgamma", m_lgamma, 1);
+pub fn init(c: &mut Ctx, m: Value) {
+    let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_module_function(c, m, n, f, a);
+    d(c, "sin", m_sin, 1); d(c, "cos", m_cos, 1); d(c, "tan", m_tan, 1); d(c, "asin", m_asin, 1); d(c, "acos", m_acos, 1); d(c, "atan", m_atan, 1);
+    d(c, "exp", m_exp, 1); d(c, "sqrt", m_sqrt, 1); d(c, "cbrt", m_cbrt, 1); d(c, "sinh", m_sinh, 1); d(c, "cosh", m_cosh, 1); d(c, "tanh", m_tanh, 1);
+    d(c, "asinh", m_asinh, 1); d(c, "acosh", m_acosh, 1); d(c, "atanh", m_atanh, 1); d(c, "log2", m_log2, 1); d(c, "log10", m_log10, 1); d(c, "log", m_log, -1);
+    d(c, "atan2", m_atan2, 2); d(c, "hypot", m_hypot, 2); d(c, "ldexp", m_pow_ldexp, 2); d(c, "frexp", m_frexp, 1); d(c, "erf", m_erf, 1); d(c, "erfc", m_erfc, 1);
+    d(c, "gamma", m_gamma, 1); d(c, "lgamma", m_lgamma, 1);
     // both are flonums: nothing is allocated
     for (nm, v) in [("PI", std::f64::consts::PI), ("E", std::f64::consts::E)] {
-        const_set(m, crate::symbol::intern(nm.as_bytes()), Value::flonum(v).expect("a flonum"));
+        const_set(c, m, crate::symbol::intern(nm.as_bytes()), Value::flonum(v).expect("a flonum"));
     }
 }

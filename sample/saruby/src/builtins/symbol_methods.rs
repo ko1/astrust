@@ -59,15 +59,15 @@ fn sym_encoding(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     crate::builtins::misc::encoding_value(c, if is_ascii(b) { ENC_ASCII } else { ENC_UTF8 })
 }
 
-pub fn init(k: Value) {
-    let d = |n: &str, f: CFunc, a: i32| define_cfunc(k, n, f, a);
-    d("to_s", sym_to_s, 0); d("id2name", sym_to_s, 0); d("name", sym_name, 0); d("inspect", sym_inspect, 0);
-    d("to_proc", sym_to_proc, 0); d("to_sym", sym_to_sym, 0); d("length", sym_length, 0); d("size", sym_length, 0);
-    d("<=>", sym_cmp, 1); d("upcase", sym_upcase, -1); d("downcase", sym_downcase, -1); d("capitalize", sym_capitalize, -1);
-    d("swapcase", sym_swapcase, -1); d("succ", sym_succ, 0); d("next", sym_succ, 0); d("[]", sym_aref, -1); d("slice", sym_aref, -1);
-    d("start_with?", sym_start_with, -1); d("end_with?", sym_end_with, -1); d("=~", sym_match, 1); d("match", sym_match_m, -1);
-    d("match?", sym_match_p, -1); d("empty?", sym_empty, 0); d("casecmp", sym_casecmp, 1); d("casecmp?", sym_casecmp_p, 1);
-    d("encoding", sym_encoding, 0); d("==", sym_eq, 1); d("===", sym_eq, 1); d("intern", sym_to_sym, 0);
-    define_singleton_cfunc(k, "all_symbols", sym_all, 0);
+pub fn init(c: &mut Ctx, k: Value) {
+    let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, k, n, f, a);
+    d(c, "to_s", sym_to_s, 0); d(c, "id2name", sym_to_s, 0); d(c, "name", sym_name, 0); d(c, "inspect", sym_inspect, 0);
+    d(c, "to_proc", sym_to_proc, 0); d(c, "to_sym", sym_to_sym, 0); d(c, "length", sym_length, 0); d(c, "size", sym_length, 0);
+    d(c, "<=>", sym_cmp, 1); d(c, "upcase", sym_upcase, -1); d(c, "downcase", sym_downcase, -1); d(c, "capitalize", sym_capitalize, -1);
+    d(c, "swapcase", sym_swapcase, -1); d(c, "succ", sym_succ, 0); d(c, "next", sym_succ, 0); d(c, "[]", sym_aref, -1); d(c, "slice", sym_aref, -1);
+    d(c, "start_with?", sym_start_with, -1); d(c, "end_with?", sym_end_with, -1); d(c, "=~", sym_match, 1); d(c, "match", sym_match_m, -1);
+    d(c, "match?", sym_match_p, -1); d(c, "empty?", sym_empty, 0); d(c, "casecmp", sym_casecmp, 1); d(c, "casecmp?", sym_casecmp_p, 1);
+    d(c, "encoding", sym_encoding, 0); d(c, "==", sym_eq, 1); d(c, "===", sym_eq, 1); d(c, "intern", sym_to_sym, 0);
+    define_singleton_cfunc(c, k, "all_symbols", sym_all, 0);
     let _ = inspect_str;
 }

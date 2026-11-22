@@ -12,7 +12,7 @@ use crate::vm::*;
 /// Module#dup / Class#dup: a fresh class with copies of the tables.
 pub fn clone_class(c: &mut Ctx, k: Value) -> RV {
     let (is_module, sup) = { let cd = c.class(k); (cd.is_module, cd.superclass) };
-    let n = if is_module { new_module() } else { new_class(sup) };
+    let n = if is_module { new_module() } else { new_class(c, sup) };
     if is_module { obj_set_klass(n, obj_klass(k)); }
     // entries are rebuilt for the new owner; plain data and Values are copied (no allocation until written)
     let mt: Vec<(Sym, MethodEntry)> = c.class(k).mtbl.iter()
@@ -32,7 +32,7 @@ pub fn clone_class(c: &mut Ctx, k: Value) -> RV {
     // singleton methods (class methods)
     let sk = obj_klass(k);
     if c.class(sk).is_singleton {
-        let nsk = singleton_class(n);
+        let nsk = singleton_class(c, n);
         let tbl: Vec<(Sym, *const MethodEntry)> = c.class(sk).mtbl.iter().map(|(a, b)| (*a, *b)).collect();
         let nt = &mut c.class_mut(nsk).mtbl;
         for (m, me) in tbl { nt.insert(m, me); }

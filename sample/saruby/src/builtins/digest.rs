@@ -251,7 +251,7 @@ fn nb() -> *const Block { std::ptr::null() }
 fn call0(c: &mut Ctx, v: Value, m: &[u8]) -> RV { funcall(c, v, intern(m), &[], nb()) }
 fn call1(c: &mut Ctx, v: Value, m: &[u8], a: Value) -> RV { funcall(c, v, intern(m), &[a], nb()) }
 fn hidden(n: &[u8]) -> Sym { intern(n) }
-fn digest_mod(c: &mut Ctx) -> Value { let o = c.vm().c_object.get(); const_get_at(o, intern(b"Digest")).unwrap_or(NIL) }
+fn digest_mod(c: &mut Ctx) -> Value { let o = c.vm().c_object.get(); const_get_at(c, o, intern(b"Digest")).unwrap_or(NIL) }
 
 fn hexencode(c: &mut Ctx, v: Value) -> RV {
     let s = expect_str(c, v)?;
@@ -261,12 +261,12 @@ fn hexencode(c: &mut Ctx, v: Value) -> RV {
     Ok(c.str_new_enc(&out, ENC_ASCII))
 }
 fn unimpl<T>(c: &mut Ctx, s: Value, m: &str) -> Result<T, Esc> {
-    let n = class_path(real_class_of(s));
+    let n = class_path(c, real_class_of(c, s));
     err(c, c.vm().c_runtime_error.get(), format!("{} does not implement {}()", n, m))
 }
 fn obj_clone(c: &mut Ctx, s: Value) -> RV { call0(c, s, b"clone") }
 fn check_str(c: &mut Ctx, v: Value) -> RV {
-    if is_string(v) || (v.is_heap() && respond_to(v, intern(b"to_str"), true)) { expect_str(c, v) } else { Ok(NIL) }
+    if is_string(v) || (v.is_heap() && respond_to(c, v, intern(b"to_str"), true)) { expect_str(c, v) } else { Ok(NIL) }
 }
 
 fn s_hexencode(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { hexencode(c, a[0]) }
@@ -295,14 +295,15 @@ fn i_hexdigest_bang(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
 fn i_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { call0(c, s, b"hexdigest") }
 fn i_inspect(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
     let h = i_hexdigest(c, s, &[], b)?;
-    let mut out = format!("#<{}: ", class_path(real_class_of(s))).into_bytes();
+    let mut out = format!("#<{}: ", class_path(c, real_class_of(c, s))).into_bytes();
     out.extend_from_slice(c.str_bytes(h));
     out.push(b'>');
     Ok(c.str_new(&out))
 }
 fn i_equal(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
-    let inst = const_get_at(digest_mod(c), intern(b"Instance")).unwrap_or(NIL);
-    let (s1, s2) = if is_kind_of(a[0], inst) {
+    let dm = digest_mod(c);
+    let inst = const_get_at(c, dm, intern(b"Instance")).unwrap_or(NIL);
+    let (s1, s2) = if is_kind_of(c, a[0], inst) {
         (i_digest(c, s, &[], b)?, i_digest(c, a[0], &[], b)?)
     } else {
         let s1 = i_to_s(c, s, &[], b)?;
@@ -339,22 +340,22 @@ fn superclass(c: &Ctx, k: Value) -> Value {
 fn algo_of_class(c: &mut Ctx, klass: Value) -> Result<Algo, Esc> {
     let mut p = klass;
     while p != NIL {
-        if ivar_defined(p, hidden(b"metadata")) {
-            let m = ivar_get(p, hidden(b"metadata"));
+        if ivar_defined(c, p, hidden(b"metadata")) {
+            let m = ivar_get(c, p, hidden(b"metadata"));
             return match if m.is_fixnum() { ALGOS.get(m.as_fix() as usize).copied() } else { None } {
                 Some(a) => Ok(a),
-                None if p == klass => type_err(c, format!("{}::metadata is not initialized properly", class_path(klass))),
-                None => type_err(c, format!("{}({})::metadata is not initialized properly", class_path(klass), class_path(p))),
+                None if p == klass => type_err(c, format!("{}::metadata is not initialized properly", class_path(c, klass))),
+                None => type_err(c, format!("{}({})::metadata is not initialized properly", class_path(c, klass), class_path(c, p))),
             };
         }
         p = superclass(c, p);
     }
     err(c, c.vm().c_runtime_error.get(), "Digest::Base cannot be directly inherited in Ruby")
 }
-fn is_base(k: Value) -> bool { ivar_defined(k, hidden(b"__digest_base")) }
+fn is_base(c: &Ctx, k: Value) -> bool { ivar_defined(c, k, hidden(b"__digest_base")) }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     let mut p = klass;
-    while p != NIL && !is_base(p) { p = superclass(c, p); }
+    while p != NIL && !is_base(c, p) { p = superclass(c, p); }
     if p == NIL { return Ok(None); }
     if p == klass { return err(c, c.vm().c_not_impl_error.get(), "Digest::Base is an abstract class"); }
     let a = algo_of_class(c, klass)?;
@@ -363,16 +364,16 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     let Some(d) = c.data::<RDigest>(v) else { return Ok(None) };
     let a = d.st.algo;
-    Ok(Some(c.alloc(real_class_of(v), Body::Data(Box::new(RDigest { st: Hasher::new(a) })))))
+    Ok(Some(c.alloc(real_class_of(c, v), Body::Data(Box::new(RDigest { st: Hasher::new(a) })))))
 }
 fn ctx(c: &mut Ctx, s: Value) -> Result<&mut RDigest, Esc> {
-    if c.data::<RDigest>(s).is_none() { return type_err(c, format!("wrong argument type {} (expected digest)", class_path(real_class_of(s)))); }
+    if c.data::<RDigest>(s).is_none() { return type_err(c, format!("wrong argument type {} (expected digest)", class_path(c, real_class_of(c, s)))); }
     Ok(c.data_mut::<RDigest>(s).unwrap())
 }
 fn b_copy(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     if s == a[0] { return Ok(s); }
     check_frozen(c, s)?;
-    let k1 = real_class_of(s); let k2 = real_class_of(a[0]);
+    let k1 = real_class_of(c, s); let k2 = real_class_of(c, a[0]);
     let (a1, a2) = (algo_of_class(c, k1)?, algo_of_class(c, k2)?);
     if a1 != a2 { return type_err(c, "different algorithms"); }
     let st = ctx(c, a[0])?.st.clone();
@@ -380,60 +381,60 @@ fn b_copy(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(s)
 }
 fn b_reset(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let a = algo_of_class(c, real_class_of(s))?;
+    let a = algo_of_class(c, real_class_of(c, s))?;
     ctx(c, s)?.st = Hasher::new(a);
     Ok(s)
 }
 fn b_update(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
-    algo_of_class(c, real_class_of(s))?;
+    algo_of_class(c, real_class_of(c, s))?;
     let str = expect_str(c, a[0])?;
     let bytes = c.str_bytes(str).to_vec();
     ctx(c, s)?.st.update(&bytes);
     Ok(s)
 }
 fn b_finish(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let a = algo_of_class(c, real_class_of(s))?;
+    let a = algo_of_class(c, real_class_of(c, s))?;
     let d = ctx(c, s)?;
     let st = std::mem::replace(&mut d.st, Hasher::new(a));
     let out = st.finish();
     Ok(c.str_new_enc(&out, ENC_BINARY))
 }
-fn b_digest_length(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let a = algo_of_class(c, real_class_of(s))?; Ok(Value::fix(a.digest_len() as i64)) }
-fn b_block_length(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let a = algo_of_class(c, real_class_of(s))?; Ok(Value::fix(a.block_len() as i64)) }
+fn b_digest_length(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let a = algo_of_class(c, real_class_of(c, s))?; Ok(Value::fix(a.digest_len() as i64)) }
+fn b_block_length(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let a = algo_of_class(c, real_class_of(c, s))?; Ok(Value::fix(a.block_len() as i64)) }
 
 /// Init_digest
 pub fn init(c: &mut Ctx) {
     let ob = c.vm().c_object.get();
-    let m = match const_get_at(ob, intern(b"Digest")) { Some(v) if is_class_or_module(v) && c.class(v).is_module => v, _ => define_module("Digest") };
-    define_module_function(m, "hexencode", s_hexencode, 1);
-    let i = define_module_under(m, "Instance");
-    let d = |n: &str, f: CFunc, a: i32| define_cfunc(i, n, f, a);
-    d("update", i_update, 1); d("<<", i_update, 1);
-    define_private_cfunc(i, "finish", i_finish, 0);
-    d("reset", i_reset, 0); d("digest_length", i_digest_length, 0); d("block_length", i_block_length, 0);
-    d("==", i_equal, 1); d("inspect", i_inspect, 0); d("new", i_new, 0); d("digest", i_digest, -1); d("digest!", i_digest_bang, 0);
-    d("hexdigest", i_hexdigest, -1); d("hexdigest!", i_hexdigest_bang, 0); d("to_s", i_to_s, 0); d("length", i_length, 0); d("size", i_length, 0);
-    let k = define_class_under(m, "Class", ob);
-    define_private_cfunc(k, "initialize", c_init, 0);
+    let m = match const_get_at(c, ob, intern(b"Digest")) { Some(v) if is_class_or_module(v) && c.class(v).is_module => v, _ => define_module(c, "Digest") };
+    define_module_function(c, m, "hexencode", s_hexencode, 1);
+    let i = define_module_under(c, m, "Instance");
+    let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, i, n, f, a);
+    d(c, "update", i_update, 1); d(c, "<<", i_update, 1);
+    define_private_cfunc(c, i, "finish", i_finish, 0);
+    d(c, "reset", i_reset, 0); d(c, "digest_length", i_digest_length, 0); d(c, "block_length", i_block_length, 0);
+    d(c, "==", i_equal, 1); d(c, "inspect", i_inspect, 0); d(c, "new", i_new, 0); d(c, "digest", i_digest, -1); d(c, "digest!", i_digest_bang, 0);
+    d(c, "hexdigest", i_hexdigest, -1); d(c, "hexdigest!", i_hexdigest_bang, 0); d(c, "to_s", i_to_s, 0); d(c, "length", i_length, 0); d(c, "size", i_length, 0);
+    let k = define_class_under(c, m, "Class", ob);
+    define_private_cfunc(c, k, "initialize", c_init, 0);
     include_module_c(c, k, i);
-    define_singleton_cfunc(k, "digest", c_s_digest, -1);
-    define_singleton_cfunc(k, "hexdigest", c_s_hexdigest, -1);
-    let b = define_class_under(m, "Base", k);
-    class_set_alloc(b, AllocKind::None);
-    ivar_set_raw(b, hidden(b"__digest_base"), TRUE);
-    define_private_cfunc(b, "initialize_copy", b_copy, 1);
-    define_cfunc(b, "reset", b_reset, 0);
-    define_cfunc(b, "update", b_update, 1);
-    define_cfunc(b, "<<", b_update, 1);
-    define_private_cfunc(b, "finish", b_finish, 0);
-    define_cfunc(b, "digest_length", b_digest_length, 0);
-    define_cfunc(b, "block_length", b_block_length, 0);
+    define_singleton_cfunc(c, k, "digest", c_s_digest, -1);
+    define_singleton_cfunc(c, k, "hexdigest", c_s_hexdigest, -1);
+    let b = define_class_under(c, m, "Base", k);
+    class_set_alloc(c, b, AllocKind::None);
+    ivar_set_raw(c, b, hidden(b"__digest_base"), TRUE);
+    define_private_cfunc(c, b, "initialize_copy", b_copy, 1);
+    define_cfunc(c, b, "reset", b_reset, 0);
+    define_cfunc(c, b, "update", b_update, 1);
+    define_cfunc(c, b, "<<", b_update, 1);
+    define_private_cfunc(c, b, "finish", b_finish, 0);
+    define_cfunc(c, b, "digest_length", b_digest_length, 0);
+    define_cfunc(c, b, "block_length", b_block_length, 0);
 }
 
 /// Init_md5 / Init_sha1 / Init_sha2 / Init_rmd160 (after `require "digest"`).
 pub fn init_algo(c: &mut Ctx, which: &str) {
     let m = digest_mod(c);
-    let base = const_get_at(m, intern(b"Base")).unwrap_or(NIL);
+    let base = const_get_at(c, m, intern(b"Base")).unwrap_or(NIL);
     let list: &[(&str, Algo)] = match which {
         "md5" => &[("MD5", Algo::Md5)],
         "sha1" => &[("SHA1", Algo::Sha1)],
@@ -441,8 +442,8 @@ pub fn init_algo(c: &mut Ctx, which: &str) {
         _ => &[("SHA256", Algo::Sha256), ("SHA384", Algo::Sha384), ("SHA512", Algo::Sha512)],
     };
     for &(n, a) in list {
-        let k = define_class_under(m, n, base);
-        ivar_set_raw(k, hidden(b"metadata"), Value::fix(a.id()));
+        let k = define_class_under(c, m, n, base);
+        ivar_set_raw(c, k, hidden(b"metadata"), Value::fix(a.id()));
     }
 }
 
@@ -471,9 +472,9 @@ fn bb_inst(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let v 
 /// Init_bubblebabble
 pub fn init_bubblebabble(c: &mut Ctx) {
     let m = digest_mod(c);
-    define_module_function(m, "bubblebabble", bb_s, 1);
-    let k = const_get_at(m, intern(b"Class")).unwrap_or(NIL);
-    define_singleton_cfunc(k, "bubblebabble", bb_class, -1);
-    let i = const_get_at(m, intern(b"Instance")).unwrap_or(NIL);
-    define_cfunc(i, "bubblebabble", bb_inst, 0);
+    define_module_function(c, m, "bubblebabble", bb_s, 1);
+    let k = const_get_at(c, m, intern(b"Class")).unwrap_or(NIL);
+    define_singleton_cfunc(c, k, "bubblebabble", bb_class, -1);
+    let i = const_get_at(c, m, intern(b"Instance")).unwrap_or(NIL);
+    define_cfunc(c, i, "bubblebabble", bb_inst, 0);
 }

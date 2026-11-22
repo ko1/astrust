@@ -252,7 +252,7 @@ impl<'a> Args<'a> {
         if let Some(h) = self.hash { return Ok(h); }
         if self.args.len() != 1 { return arg_err(c, "one hash required"); }
         let a = self.args[0];
-        let h = if is_hash(a) { a } else if a.is_heap() && respond_to(a, intern(b"to_hash"), true) { funcall(c, a, intern(b"to_hash"), &[], std::ptr::null())? } else { NIL };
+        let h = if is_hash(a) { a } else if a.is_heap() && respond_to(c, a, intern(b"to_hash"), true) { funcall(c, a, intern(b"to_hash"), &[], std::ptr::null())? } else { NIL };
         if !is_hash(h) { return arg_err(c, "one hash required"); }
         self.hash = Some(h);
         Ok(h)
@@ -271,12 +271,12 @@ fn int_arg(c: &mut Ctx, v: Value) -> RV {
     if is_string(v) { return parse_int_for_format(c, v); }
     if v == NIL { return type_err(c, "can't convert nil into Integer"); }
     if is_integer(v) { return Ok(v); }
-    if v.is_heap() && respond_to(v, crate::symbol::s::to_int, true) { return to_integer(c, v); }
-    if v.is_heap() && respond_to(v, intern(b"to_i"), true) {
+    if v.is_heap() && respond_to(c, v, crate::symbol::s::to_int, true) { return to_integer(c, v); }
+    if v.is_heap() && respond_to(c, v, intern(b"to_i"), true) {
         let r = funcall(c, v, intern(b"to_i"), &[], std::ptr::null())?;
         if is_integer(r) { return Ok(r); }
     }
-    type_err(c, format!("can't convert {} into Integer", class_name_for_err(v)))
+    type_err(c, format!("can't convert {} into Integer", class_name_for_err(c, v)))
 }
 fn float_arg(c: &mut Ctx, v: Value) -> Result<f64, Esc> {
     if is_string(v) { let f = funcall(c, c.vm().main_obj.get(), intern(b"Float"), &[v], std::ptr::null())?; return to_f(c, f); }
@@ -349,7 +349,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                             if d == NIL {
                                 let m = c.str_new_enc(&[b"key", label, b" not found"].concat(), fenc);
                                 let e2 = funcall(c, c.vm().c_key_error.get(), intern(b"new"), &[m], std::ptr::null())?;
-                                ivar_set_raw(e2, crate::symbol::s::key, key); ivar_set_raw(e2, crate::symbol::s::receiver, h);
+                                ivar_set_raw(c, e2, crate::symbol::s::key, key); ivar_set_raw(c, e2, crate::symbol::s::receiver, h);
                                 return Err(raise_exc(c, e2));
                             }
                             d
@@ -404,7 +404,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                     b'p' => inspect_value(c, v)?,
                     b's' => crate::rt::srb_tostr(c, v)?,
                     _ => {
-                        if is_string(v) || (v.is_heap() && respond_to(v, crate::symbol::s::to_str, true) && !is_integer(v)) {
+                        if is_string(v) || (v.is_heap() && respond_to(c, v, crate::symbol::s::to_str, true) && !is_integer(v)) {
                             let s2 = expect_str(c, v)?;
                             let first = c.chars_of(s2).into_iter().next().unwrap_or_default();
                             c.str_new_enc(&first, c.str_enc(s2))
@@ -431,7 +431,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
             }
             b'd' | b'i' | b'u' => {
                 let iv = int_arg(c, v)?;
-                let s = if iv.is_fixnum() { iv.as_fix().to_string() } else { crate::bignum::to_big(iv).to_string_radix(10) };
+                let s = if iv.is_fixnum() { iv.as_fix().to_string() } else { c.to_big(iv).to_string_radix(10) };
                 let (neg, mut digits) = if let Some(r) = s.strip_prefix('-') { (true, r.to_string()) } else { (false, s) };
                 let sign = if neg { "-" } else if flags & FPLUS != 0 { "+" } else if flags & FSPACE != 0 { " " } else { "" };
                 if prec_o == Some(0) && digits == "0" { digits.clear(); }
@@ -460,7 +460,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                 let radix: u32 = match conv { b'x' | b'X' => 16, b'o' => 8, _ => 2 };
                 // non-negative fixnums (the common case) skip the bignum conversion
                 let small = if iv.is_fixnum() && iv.as_fix() >= 0 { Some(iv.as_fix() as u64) } else { None };
-                let big = if small.is_none() { crate::bignum::to_big(iv) } else { crate::bignum::BigInt::from_i64(0) };
+                let big = if small.is_none() { c.to_big(iv) } else { crate::bignum::BigInt::from_i64(0) };
                 let (bneg, bzero) = if small.is_some() { (false, small == Some(0)) } else { (big.neg, big.is_zero()) };
                 let dots = bneg && flags & (FPLUS | FSPACE) == 0;
                 let mut digits = if let Some(n) = small {

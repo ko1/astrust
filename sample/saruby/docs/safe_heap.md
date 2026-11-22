@@ -238,9 +238,14 @@ moved, and no `&mut` to a payload coexists with another reference to it.
 * **H5** (third wave): the frames from `c.frame` down are alive while a builtin reads them; and
   the in-place writes to a caller frame or a method entry assume the evaluator holds no Rust
   reference to it across the call (section "Third wave").
-* **The old accessors still exist.** A converted module cannot name them, but it can call a
-  function of an unconverted module that uses them. While a converted module holds a payload
-  borrow it must only call header functions and `std`; see step 4 of the recipe.
+* **H6** (object accessors, 2026-11-22): a local-variable node's env is an Env (a frame's env slot
+  is written by `make_env` / `setup_params` or from the Block that made the frame; an Env's parent
+  is fixed at allocation). `Ctx::env_*_unchecked` rely on it: the checked `env_*` cost block AOT
+  +29 % instructions (`2026-11-22-saruby-static-mut/README.md`, "object accessors").
+* **The old accessors are gone** (2026-11-22, same README): object.rs no longer defines `obj`,
+  `rary`, `rstr`, `rhash`, `rclass`, `rproc`, `rmethod`, `rbig`, `rdata`, `ivars_of` or `str_bytes`;
+  vm.rs, rt.rs, legacy.rs, str_legacy.rs import `heap::no_legacy_body`. What a payload borrow must
+  still not span is a context-free allocator (next item) or a `vm()` table borrow.
 * **Allocators that do not take the context** (`str_new`, `hash_new`, `float_new`,
   `crate::gc::alloc` itself: 71 call sites of `gc::alloc` in 28 files). Calling one under a
   live payload borrow compiles, and a collection can then run under the borrow. Converted
