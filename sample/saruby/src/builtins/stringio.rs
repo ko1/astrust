@@ -53,7 +53,7 @@ fn error_inval<T>(c: &mut Ctx, msg: Option<&str>) -> Result<T, Esc> { Err(errno_
 fn eof_error<T>(c: &mut Ctx) -> Result<T, Esc> { err(c, c.vm().c_eof_error, "end of file reached") }
 
 /// check_strio: the object's payload, or TypeError.
-fn obj(c: &mut Ctx, v: Value) -> Result<(Value, bool, bool), Esc> {
+fn strio_parts(c: &mut Ctx, v: Value) -> Result<(Value, bool, bool), Esc> {
     match c.data::<RStrIO>(v) {
         Some(o) => Ok((o.inner, o.rd, o.wr)),
         None => type_err(c, format!("wrong argument type {} (expected strio)", class_path(real_class_of(v)))),
@@ -63,7 +63,7 @@ fn obj_mut(c: &mut Ctx, v: Value) -> &mut RStrIO { c.data_mut::<RStrIO>(v).expec
 /// get_strio (StringIO(obj)): frozen check, type check, initialized.
 fn strio(c: &mut Ctx, v: Value) -> Result<SState, Esc> {
     check_frozen(c, v)?;
-    let (inner, _, _) = obj(c, v)?;
+    let (inner, _, _) = strio_parts(c, v)?;
     if inner == NIL { return err(c, c.vm().c_io_error, "uninitialized stream"); }
     Ok(*c.data::<SState>(inner).expect("strio state"))
 }
@@ -152,7 +152,7 @@ fn new_state(c: &mut Ctx) -> Value {
 // ---- construction -----------------------------------------------------------------------------
 
 fn sio_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    let (inner, _, _) = obj(c, slf)?;
+    let (inner, _, _) = strio_parts(c, slf)?;
     if inner == NIL { let n = new_state(c); obj_mut(c, slf).inner = n; }
     strio_init(c, slf, a)
 }
@@ -281,8 +281,8 @@ fn sio_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     }
     if orig == slf { return Ok(slf); }
     strio(c, orig)?;
-    obj(c, slf)?;
-    let (inner, rd, wr) = obj(c, orig)?;
+    strio_parts(c, slf)?;
+    let (inner, rd, wr) = strio_parts(c, orig)?;
     let o = obj_mut(c, slf);
     o.inner = inner; o.rd = rd; o.wr = wr;
     Ok(slf)
