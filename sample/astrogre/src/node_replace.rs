@@ -155,6 +155,13 @@ fn REPLACE_node_re_look(n: NodePtr, old: NodePtr, new: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_re_absent(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_absent_struct>)).u };
+    if u.body == old { u.body = new; }
+    if u.next == old { u.next = new; }
+}
+
+#[allow(non_snake_case, unused_variables)]
 fn REPLACE_node_search(n: NodePtr, old: NodePtr, new: NodePtr) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_search_struct>)).u };
     if u.body == old { u.body = new; }

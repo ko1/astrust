@@ -582,6 +582,7 @@ enum Ast {
     Assert(As),
     Look(bool, bool, Box<Ast>), // (behind, negative, body)
     Atomic(Box<Ast>),
+    Absent(Box<Ast>), // (?~x): the longest run without x in it (x of bounded length)
     Backref(BRef, bool),
     BackrefLv(BRef, bool, i32), // \k<name+level>: the capture made at that call nesting level
     Keep,
@@ -604,6 +605,7 @@ struct Parser<'a> {
     pending_u_list: bool,             // \u{61 62}: more code points follow
     u_list_prefix: Vec<Ast>,         // leading code points of a \u{...} list, emitted before the atom
     enc: Enc,
+    ascii: bool, // (?a): POSIX brackets match ASCII only
 }
 
 enum Lit {
@@ -693,7 +695,7 @@ impl<'a> Parser<'a> {
                     }
                     if self.at(b"(?") && matches!(self.peek_at(2), Some(b'i' | b'm' | b'x' | b'-' | b'a' | b'd' | b'u')) {
                         self.i += 2;
-                        let (ic, ex, ml) = (self.icase, self.ext, self.ml);
+                        let (ic, ex, ml, asc) = (self.icase, self.ext, self.ml, self.ascii);
                         let mut on = true;
                         let term;
                         loop {
@@ -702,7 +704,8 @@ impl<'a> Parser<'a> {
                                 Some(b'i') => self.icase = on,
                                 Some(b'm') => self.ml = on,
                                 Some(b'x') => self.ext = on,
-                                Some(b'a' | b'd' | b'u') => {}
+                                Some(b'a') => self.ascii = true,
+                                Some(b'd' | b'u') => self.ascii = false,
                                 Some(b'-') => on = false,
                                 Some(b':') => {
                                     term = b':';
@@ -732,6 +735,7 @@ impl<'a> Parser<'a> {
                         self.icase = ic;
                         self.ext = ex;
                         self.ml = ml;
+                        self.ascii = asc;
                         inner
                     } else {
                         self.parse_group()?
@@ -994,7 +998,7 @@ impl<'a> Parser<'a> {
 
     fn parse_group(&mut self) -> Result<Ast, String> {
         self.i += 1; // '('
-        let (ic, ex, ml) = (self.icase, self.ext, self.ml);
+        let (ic, ex, ml, asc) = (self.icase, self.ext, self.ml, self.ascii);
         enum G {
             Cap(usize),
             NonCap,
@@ -1020,7 +1024,15 @@ impl<'a> Parser<'a> {
                     self.i += 1;
                     G::Atomic
                 }
-                Some(b'~') => return err("absent operator is not supported"),
+                Some(b'~') => {
+                    self.i += 1;
+                    let inner = self.parse_alt()?;
+                    if self.peek() != Some(b')') {
+                        return err("end pattern with unmatched parenthesis");
+                    }
+                    self.i += 1;
+                    return Ok(Ast::Absent(Box::new(inner)));
+                }
                 Some(b'(') => {
                     self.i += 1;
                     // (?(n)..), (?(<name>)..), (?('name')..); a level suffix is accepted and ignored
@@ -1045,6 +1057,7 @@ impl<'a> Parser<'a> {
                     self.icase = ic;
                     self.ext = ex;
                     self.ml = ml;
+                    self.ascii = asc;
                     let mut r = r;
                     let (yes, no) = match body {
                         Ast::Alt(mut v) => {
@@ -1099,6 +1112,7 @@ impl<'a> Parser<'a> {
         self.icase = ic;
         self.ext = ex;
         self.ml = ml;
+        self.ascii = asc;
         Ok(match g {
             G::Cap(n) => Ast::Group(n, Box::new(inner)),
             G::NonCap => inner,
@@ -1465,6 +1479,11 @@ impl<'a> Parser<'a> {
         }
         let name = std::str::from_utf8(&self.p[st..j]).unwrap();
         match posix_by_name(name) {
+            Some(p) if self.ascii => {
+                self.i = j + 2;
+                let only = CClass { neg, icase: false, parts: vec![vec![CItem::Prop(p, false)], vec![CItem::Range(0, 127)]], bits: [0; 2] };
+                Ok(Some(CItem::Class(Box::new(only))))
+            }
             Some(p) => {
                 self.i = j + 2;
                 Ok(Some(CItem::Prop(p, neg)))
@@ -1606,6 +1625,7 @@ impl<'a> Parser<'a> {
     fn new(p: &'a [u8], opts: u32, enc: Enc) -> Parser<'a> {
         Parser {
             enc,
+            ascii: false,
             p,
             i: 0,
             icase: opts & OPT_I != 0,
@@ -1644,6 +1664,7 @@ impl<'a> Resolver<'a> {
             Ast::Repeat(b, a, m, k) => Ast::Repeat(Box::new(self.walk(*b)?), a, m, k),
             Ast::Look(be, ne, b) => Ast::Look(be, ne, Box::new(self.walk(*b)?)),
             Ast::Atomic(b) => Ast::Atomic(Box::new(self.walk(*b)?)),
+            Ast::Absent(b) => Ast::Absent(Box::new(self.walk(*b)?)),
             Ast::Cond(r, y, n) => {
                 let (r, bad) = match r {
                     BRef::BadCond(b) => (*b, true),
@@ -1713,7 +1734,7 @@ fn collect_groups(n: &Ast, out: &mut Vec<Option<Ast>>) {
     match n {
         Ast::Group(k, b) => { if out.len() <= *k { out.resize(*k + 1, None); } out[*k] = Some((**b).clone()); collect_groups(b, out) }
         Ast::Seq(v) | Ast::Alt(v) => v.iter().for_each(|x| collect_groups(x, out)),
-        Ast::Repeat(b, ..) | Ast::Look(_, _, b) | Ast::Atomic(b) => collect_groups(b, out),
+        Ast::Repeat(b, ..) | Ast::Look(_, _, b) | Ast::Atomic(b) | Ast::Absent(b) => collect_groups(b, out),
         Ast::Cond(_, y, n) => { collect_groups(y, out); collect_groups(n, out) }
         _ => {}
     }
@@ -1721,7 +1742,7 @@ fn collect_groups(n: &Ast, out: &mut Vec<Option<Ast>>) {
 /// No backrefs, conditionals, calls, or captures inside lookaheads (onig_check_linear_time).
 fn linear_ok(n: &Ast, in_look: bool) -> bool {
     match n {
-        Ast::Backref(..) | Ast::BackrefLv(..) | Ast::Cond(..) | Ast::Call(_) => false,
+        Ast::Backref(..) | Ast::BackrefLv(..) | Ast::Cond(..) | Ast::Call(_) | Ast::Absent(_) => false,
         Ast::Group(_, b) => !in_look && linear_ok(b, in_look),
         Ast::Repeat(b, ..) | Ast::Atomic(b) => linear_ok(b, in_look),
         Ast::Look(behind, _, b) => linear_ok(b, in_look || !behind),
@@ -1732,7 +1753,7 @@ fn linear_ok(n: &Ast, in_look: bool) -> bool {
 fn collect_calls(n: &Ast, out: &mut Vec<usize>) {
     match n {
         Ast::Call(BRef::Groups(g)) => out.push(g[0]),
-        Ast::Group(_, b) | Ast::Repeat(b, ..) | Ast::Look(_, _, b) | Ast::Atomic(b) => collect_calls(b, out),
+        Ast::Group(_, b) | Ast::Repeat(b, ..) | Ast::Look(_, _, b) | Ast::Atomic(b) | Ast::Absent(b) => collect_calls(b, out),
         Ast::Seq(v) | Ast::Alt(v) => v.iter().for_each(|x| collect_calls(x, out)),
         Ast::Cond(_, y, n) => { collect_calls(y, out); collect_calls(n, out) }
         _ => {}
@@ -1741,7 +1762,7 @@ fn collect_calls(n: &Ast, out: &mut Vec<usize>) {
 fn has_level_ref(n: &Ast) -> bool {
     match n {
         Ast::BackrefLv(..) => true,
-        Ast::Group(_, b) | Ast::Repeat(b, ..) | Ast::Look(_, _, b) | Ast::Atomic(b) => has_level_ref(b),
+        Ast::Group(_, b) | Ast::Repeat(b, ..) | Ast::Look(_, _, b) | Ast::Atomic(b) | Ast::Absent(b) => has_level_ref(b),
         Ast::Seq(v) | Ast::Alt(v) => v.iter().any(has_level_ref),
         Ast::Cond(_, y, n) => has_level_ref(y) || has_level_ref(n),
         _ => false,
@@ -1809,6 +1830,44 @@ fn inf_rec(n: &Ast, groups: &[Option<Ast>], target: usize, head: bool, seen: &mu
         _ => 0,
     }
 }
+/// (?~x) at pos: the first end of an x match starting at or after pos (len + 1 if none);
+/// `probe(p, q)` says whether x matches exactly s[p..q].  Shortest ends are tried first.
+fn absent_limit(e: Enc, s: &[u8], pos: usize, minlen: u32, maxlen: u32, mut probe: impl FnMut(usize, usize) -> bool) -> usize {
+    let len = s.len();
+    let mut lim = len + 1;
+    let mut p = pos;
+    while p < lim {
+        let (mut q, mut k) = (p, 0);
+        while q < lim {
+            if k >= minlen && probe(p, q) {
+                lim = q;
+                break;
+            }
+            if k >= maxlen || q >= len {
+                break;
+            }
+            q += char_len_e(e, s, q);
+            k += 1;
+        }
+        if p >= len {
+            break;
+        }
+        p += char_len_e(e, s, p);
+    }
+    lim
+}
+
+/// The longest end (?~x) can take: before the first x match ends.
+fn absent_max(e: Enc, s: &[u8], pos: usize, lim: usize) -> Option<usize> {
+    if lim > s.len() {
+        Some(s.len())
+    } else if lim <= pos {
+        None
+    } else {
+        Some(prev_start_e(e, s, lim, pos))
+    }
+}
+
 /// Entries of the mark stack of patterns with subexpression calls (Onigmo's MEM_START /
 /// MEM_END / CALL_FRAME / RETURN stack entries).
 #[derive(Clone, Copy, Debug)]
@@ -1862,7 +1921,7 @@ fn backref_lv(e: Enc, mstk: &[MEnt], s: &[u8], groups: &[usize], icase: bool, ne
 fn has_call(n: &Ast) -> bool {
     match n {
         Ast::Call(_) => true,
-        Ast::Group(_, b) | Ast::Repeat(b, ..) | Ast::Look(_, _, b) | Ast::Atomic(b) => has_call(b),
+        Ast::Group(_, b) | Ast::Repeat(b, ..) | Ast::Look(_, _, b) | Ast::Atomic(b) | Ast::Absent(b) => has_call(b),
         Ast::Seq(v) | Ast::Alt(v) => v.iter().any(has_call),
         Ast::Cond(_, y, n) => has_call(y) || has_call(n),
         _ => false,
@@ -1899,6 +1958,7 @@ fn expand_calls(n: Ast, groups: &[Option<Ast>], stack: &mut Vec<usize>, budget: 
         Ast::Repeat(b, a, m, k) => Ast::Repeat(Box::new(go!(*b)), a, m, k),
         Ast::Look(be, ne, b) => Ast::Look(be, ne, Box::new(go!(*b))),
         Ast::Atomic(b) => Ast::Atomic(Box::new(go!(*b))),
+        Ast::Absent(b) => Ast::Absent(Box::new(go!(*b))),
         Ast::Cond(r, y, n) => { let y = go!(*y); Ast::Cond(r, Box::new(y), Box::new(go!(*n))) }
         other => other,
     })
@@ -1929,6 +1989,7 @@ fn len_range(n: &Ast) -> Option<(u32, u32)> {
             (a, b)
         }
         Ast::Group(_, b) | Ast::Atomic(b) => len_range(b)?,
+        Ast::Absent(_) => return None,
         Ast::Repeat(b, mn, mx, _) => {
             if *mx == 0 {
                 return Some((0, 0));
@@ -1998,6 +2059,7 @@ enum Inst {
     Call(usize),    // subroutine of group .0 (Vm::entries)
     Ret,
     BackrefLv { groups: Box<[usize]>, icase: bool, nest: i32 },
+    Absent { end: usize, minlen: u32, maxlen: u32 }, // body (ends with SubEnd) at pc + 1
 }
 
 struct Compiler {
@@ -2135,6 +2197,14 @@ impl Compiler {
                 }
             }
             Ast::Atomic(b) => self.emit_sub(SubKind::Atomic, b, 0, 0)?,
+            Ast::Absent(b) => {
+                let (minlen, maxlen) = len_range(b).unwrap_or((0, INF));
+                let at = self.emit_i(Inst::Absent { end: 0, minlen, maxlen });
+                self.emit_bt(b)?;
+                self.emit_i(Inst::SubEnd);
+                let end = self.pc();
+                self.prog[at] = Inst::Absent { end, minlen, maxlen };
+            }
             Ast::Backref(BRef::Groups(g), ic) => {
                 self.emit_i(Inst::Backref { groups: g.clone().into_boxed_slice(), icase: *ic });
             }
@@ -2312,7 +2382,7 @@ fn onig_len(n: &Ast) -> usize {
             (true, false) => 5,
             (true, true) => 10,
         },
-        Ast::Atomic(b) => 2 + onig_len(b),
+        Ast::Atomic(b) | Ast::Absent(b) => 2 + onig_len(b),
         Ast::Backref(..) => 3,
         Ast::Cond(_, y, n) => 10 + onig_len(y) + onig_len(n),
     }
@@ -2377,6 +2447,12 @@ fn first_set(n: &Ast, set: &mut [bool; 256]) -> bool {
             e
         }
         Ast::Group(_, b) | Ast::Atomic(b) => first_set(b, set),
+        Ast::Absent(_) => {
+            for b in 0..256 {
+                set[b] = true;
+            }
+            true
+        }
         Ast::Repeat(b, mn, mx, _) => {
             if *mx == 0 {
                 return true;
@@ -3416,6 +3492,27 @@ impl Vm {
                     pc = r;
                     true
                 }
+                Inst::Absent { end, minlen, maxlen } => {
+                    let b = cx.stack.len();
+                    let lim = absent_limit(e, s, pos, *minlen, *maxlen, |p, q| {
+                        let hit = self.run(cx, pc + 1, p, q).is_some();
+                        Self::unwind(cx, b);
+                        hit
+                    });
+                    match absent_max(e, s, pos, lim) {
+                        None => false,
+                        Some(top) => {
+                            let mut q = pos;
+                            while q < top {
+                                cx.stack.push(Bt::Br { pc: *end, pos: q });
+                                q += char_len_e(e, s, q);
+                            }
+                            pos = top;
+                            pc = *end;
+                            true
+                        }
+                    }
+                }
                 Inst::BackrefLv { groups, icase, nest } => match backref_lv(e, &cx.mstk, s, groups, *icase, *nest, pos) {
                     Some(np) => {
                         pos = np;
@@ -3514,6 +3611,8 @@ fn check_lookbehind(n: &Ast, inside: bool) -> Result<(), String> {
     match n {
         Ast::Seq(v) | Ast::Alt(v) => v.iter().try_for_each(|x| check_lookbehind(x, inside)),
         Ast::Group(_, b) | Ast::Atomic(b) | Ast::Repeat(b, ..) => check_lookbehind(b, inside),
+        Ast::Absent(_) if inside => err("invalid pattern in look-behind"),
+        Ast::Absent(b) => check_lookbehind(b, false),
         Ast::Cond(_, y, n) => {
             check_lookbehind(y, inside)?;
             check_lookbehind(n, inside)

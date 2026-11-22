@@ -470,6 +470,27 @@ fn PROF_node_re_look(pc: &mut ProfCtx, n: NodePtr) -> u64 {
 
 
 #[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_re_absent(n: NodePtr) -> u64 {
+    let u = unsafe { &(*(n as *mut NodeOf<node_re_absent_struct>)).u };
+    let mut h = hash_str("node_re_absent");
+    h = hash_merge(h, hash_node(u.body));
+    h = hash_merge(h, hash_node(u.next));
+    h = hash_merge(h, hash_u64(u.minlen as u64));
+    h = hash_merge(h, hash_u64(u.maxlen as u64));
+    h
+}
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut, unused_braces)]
+fn PROF_node_re_absent(pc: &mut ProfCtx, n: NodePtr) -> u64 {
+    let np = n as *mut NodeOf<node_re_absent_struct>;
+    let u = unsafe { &(*np).u };
+    let mut h = hash_str("node_re_absent");
+    h = hash_merge(h, profile_node(pc, u.body));
+    h = hash_merge(h, profile_node(pc, u.next));
+    h
+}
+
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_search(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_search_struct>)).u };
     let mut h = hash_str("node_search");

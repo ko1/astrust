@@ -736,7 +736,8 @@ impl<'a> Compiler<'a> {
                 let k = match nm.as_slice() { b"$&" => 0, b"$`" => 1, b"$'" => 2, b"$+" => 3, _ => 0 };
                 ALLOC_node_back_ref(k)
             }
-            Kind::NumberedReferenceReadNode { number } => ALLOC_node_nth_ref(*number),
+            // prism gives 0 for a number too large to be a group
+            Kind::NumberedReferenceReadNode { number } => if *number == 0 { ALLOC_node_nil() } else { ALLOC_node_nth_ref(*number) },
             // control flow
             Kind::IfNode { predicate, statements, subsequent, .. } if self.cov.is_some() => self.if_node(n, predicate, statements.as_deref(), subsequent.as_deref()),
             Kind::UnlessNode { predicate, statements, else_clause } if self.cov.is_some() => self.unless_node(n, predicate, statements.as_deref(), else_clause.as_deref()),

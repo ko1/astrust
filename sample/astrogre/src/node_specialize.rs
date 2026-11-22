@@ -870,6 +870,43 @@ fn SPECIALIZE_node_re_look(sc: &mut SpecCtx, n: NodePtr) -> String {
 }
 
 #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
+fn SPECIALIZE_node_re_absent(sc: &mut SpecCtx, n: NodePtr) -> String {
+    let own_hash = hash_node(n);
+    let was_open = !sc.open.insert(own_hash);
+    let u = unsafe { &(*(n as *mut NodeOf<node_re_absent_struct>)).u };
+    let t_body = specialize_node(sc, u.body);
+    let t_next = specialize_node(sc, u.next);
+    let np = n as *mut NodeOf<node_re_absent_struct>;
+    let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "pos".to_string()];
+    unsafe {
+    a.push("(*np).u.body".to_string());
+    a.push("(*np).u.next".to_string());
+    a.push(format!("{}u32", (*np).u.minlen));
+    a.push(format!("{}u32", (*np).u.maxlen));
+    }
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by what is baked too (children's types, @bake values), not by the hash alone:
+    // two sites with one hash may have seen different things
+    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_body.as_str(), t_next.as_str()], ","), a.join(",")))));
+    let name = sc.positional(name, n as usize);
+    if sc.emitted.contains(&name) { return name; }
+    sc.emitted.insert(name.clone());
+    let mut body = String::new();
+    body.push_str(&format!("pub struct {};\n", name));
+    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
+    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {{ unsafe {{\n", name));
+    body.push_str(&format!("        let np = {} as *mut NodeOf<node_re_absent_struct>;\n", "n"));
+
+    body.push_str(&format!("        EVAL_node_re_absent{}({})\n    }} }}\n", format!("::<{}, {}>", t_body, t_next), a.join(", ")));
+
+
+    body.push_str("}
+");
+    sc.out.push_str(&body);
+    name
+}
+
+#[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
 fn SPECIALIZE_node_search(sc: &mut SpecCtx, n: NodePtr) -> String {
     let own_hash = hash_node(n);
     let was_open = !sc.open.insert(own_hash);

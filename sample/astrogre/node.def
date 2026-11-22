@@ -328,6 +328,13 @@ node_re_look(c: &mut Ctx, n: NodePtr, pos: usize, kind: u32, body: NODE, next: N
     }
 }
 
+// (?~x): `body` is x ending with node_re_sub_succ_at; the longest run without x first.
+NODE_DEF
+node_re_absent(c: &mut Ctx, n: NodePtr, pos: usize, body: NODE, next: NODE, minlen: u32, maxlen: u32) -> u32
+{
+    absent_k(c, body, next, minlen, maxlen, pos)
+}
+
 // ---- scanners: the search loop as a node, so it fuses with the pattern under AOT -----------
 // `pos` is the search start; each candidate resets the per-attempt state.  A match starting
 // at p must contain the required literals at or after p (c.must_next / Ctx::must_refresh).

@@ -344,6 +344,30 @@ pub fn backref_lv_k(c: &Ctx, groups: Groups, icase: bool, nest: i32, pos: usize)
     backref_lv(c.enc, &c.mstk, c.subj(), groups, icase, nest, pos)
 }
 
+/// (?~x): the probes run x ending at c.lb_target; their captures are dropped.
+pub fn absent_k(c: &mut Ctx, body: NodePtr, next: NodePtr, minlen: u32, maxlen: u32, pos: usize) -> u32 {
+    let (s, e) = (c.subj(), c.enc);
+    let saved = c.lb_target;
+    let mark = c.log.len();
+    let mut abort = false;
+    let lim = absent_limit(e, s, pos, minlen, maxlen, |p, q| {
+        if abort { return true; }
+        c.lb_target = q;
+        let r = call(c, body, p);
+        c.undo(mark);
+        if r == ABORT { abort = true; }
+        r == OK
+    });
+    c.lb_target = saved;
+    if abort { return ABORT; }
+    let Some(mut q) = absent_max(e, s, pos, lim) else { return FAIL };
+    loop {
+        let r = call(c, next, q);
+        if r != FAIL || q <= pos { return r; }
+        q = prev_start_e(e, s, q, pos);
+    }
+}
+
 // ---- repetition -------------------------------------------------------------------
 
 pub struct RepFrame {
@@ -475,7 +499,7 @@ struct Lowerer<'a> {
     backrefed: &'a [usize],
     /// captures paired through the mark stack (the pattern has calls or level backrefs)
     rec: bool,
-    /// continuations of \g calls (AOT entries: node_re_ret dispatches to them)
+    /// nodes entered indirectly (\g continuations, (?~) body and rest): AOT entries
     call_nexts: Vec<NodePtr>,
     rep_cont: NodePtr,
     sub_succ: NodePtr,
@@ -634,6 +658,15 @@ impl<'a> Lowerer<'a> {
                 (r?, None)
             }
             Ast::Atomic(b) => (self.sub(LK_ATOMIC, b, 0, 0, tail.0)?, None),
+            Ast::Absent(b) => {
+                let (minlen, maxlen) = len_range(b).unwrap_or((0, INF));
+                let at = self.sub_succ_at;
+                let body = self.lower_bt(b, (at, None))?.0;
+                self.call_nexts.push(body);
+                self.call_nexts.push(tail.0);
+                let p = ALLOC_node_re_absent(body, tail.0, minlen, maxlen);
+                (self.n(p), None)
+            }
             Ast::Backref(BRef::Groups(g), ic) => {
                 let g = self.groups(g);
                 let p = ALLOC_node_re_backref(g, *ic, tail.0);

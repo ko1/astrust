@@ -27,6 +27,7 @@ pub unsafe fn free_node(n: NodePtr) {
         "node_re_rep" => drop(Box::from_raw(n as *mut NodeOf<node_re_rep_struct>)),
         "node_re_rep_cont" => drop(Box::from_raw(n as *mut NodeOf<node_re_rep_cont_struct>)),
         "node_re_look" => drop(Box::from_raw(n as *mut NodeOf<node_re_look_struct>)),
+        "node_re_absent" => drop(Box::from_raw(n as *mut NodeOf<node_re_absent_struct>)),
         "node_search" => drop(Box::from_raw(n as *mut NodeOf<node_search_struct>)),
         "node_search_memchr" => drop(Box::from_raw(n as *mut NodeOf<node_search_memchr_struct>)),
         "node_search_memmem" => drop(Box::from_raw(n as *mut NodeOf<node_search_memmem_struct>)),

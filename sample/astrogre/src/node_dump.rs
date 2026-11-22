@@ -290,6 +290,19 @@ fn DUMP_node_re_look(out: &mut String, n: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_re_absent(out: &mut String, n: NodePtr) {
+    let np = n as *mut NodeOf<node_re_absent_struct>;
+    unsafe {
+    out.push_str("(node_re_absent");
+    out.push(' '); dump_node(out, (*np).u.body);
+    out.push(' '); dump_node(out, (*np).u.next);
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.minlen));
+    out.push(' '); out.push_str(&format!("{:?}", (*np).u.maxlen));
+    out.push(')');
+    }
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_search(out: &mut String, n: NodePtr) {
     let np = n as *mut NodeOf<node_search_struct>;
     unsafe {

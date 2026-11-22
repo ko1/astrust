@@ -229,15 +229,19 @@ cfn!(s_match_op, |c, slf, a, b_| {
     funcall(c, a[0], s::match_op, &[slf], std::ptr::null())
 });
 cfn!(s_match, |c, slf, a, blk| {
-    if a.is_empty() { return argc_err(c, 0, 1, 2); }
-    let re = regexp::to_regexp(c, a[0])?;
-    let pos = if a.len() > 1 { let p = num_to_long(c, a[1])?; let n = c.str_char_len(slf) as i64; let p = if p < 0 { p + n } else { p }; if p < 0 || p > n { c.last_match = NIL; return Ok(NIL); } char_to_byte(c, slf, p as usize).unwrap_or(0) } else { 0 };
-    let m = regexp::search(c, re, slf, pos, true)?;
+    if a.is_empty() || a.len() > 2 { return argc_err(c, a.len(), 1, 2); }
+    // rb_str_match_m: pat.match(self, ...), the String pattern not escaped
+    let p = get_pat(c, a[0])?;
+    let re = if is_string(p) { regexp::regcomp(c, p)? } else { p };
+    let mut args = a.to_vec();
+    args[0] = slf;
+    let m = funcall(c, re, intern(b"match"), &args, std::ptr::null())?;
     if m != NIL && !blk.is_null() { return yield1(c, blk, m); }
     Ok(m)
 });
 cfn!(s_match_p, |c, slf, a, b_| {
-    let re = regexp::to_regexp(c, a[0])?;
+    let p = get_pat(c, a[0])?;
+    let re = if is_string(p) { regexp::regcomp(c, p)? } else { p };
     let md = regexp::prepare(c, re, slf)?;
     let pos = if a.len() > 1 { let p = num_to_long(c, a[1])?.max(0) as usize; char_to_byte(c, slf, p).unwrap_or(usize::MAX) } else { 0 };
     Ok(Value::bool(regexp::search_raw_e(c, re, c.str_bytes(slf), pos, md).is_some()))
@@ -684,20 +688,31 @@ cfn!(s_split, |c, slf, a, blk| {
             }
         }
     } else {
-        let mut i = 0; let mut start = 0;
-        loop {
-            if limit > 0 && out.len() as i64 == limit - 1 { out.push(v[start..].to_vec()); break; }
-            let Some(g) = regexp::search_raw_e(c, re, v, i, md) else { out.push(v[start..].to_vec()); break; };
+        // rb_str_split_m's regexp loop: an empty match splits off one char; captures don't count toward limit
+        let len = v.len();
+        let (mut beg, mut start, mut last_null, mut cnt) = (0usize, 0usize, false, 1i64);
+        while start <= len {
+            let Some(g) = regexp::search_raw_e(c, re, v, start, md) else { break };
             let (ms, me) = g[0].unwrap();
-            if me == ms {
-                if ms >= v.len() { out.push(v[start..].to_vec()); break; }
-                if ms == start { i = ms + char_len_at(v, ms); if ms == 0 { continue; } out.push(v[start..i].to_vec()); start = i; for gi in g.iter().skip(1) { if let Some((x, y)) = gi { out.push(v[*x..*y].to_vec()); } } continue; }
-                out.push(v[start..ms].to_vec());
-            } else { out.push(v[start..ms].to_vec()); }
+            if start == ms && ms == me {
+                if last_null {
+                    out.push(v[beg..beg + char_len_at(v, beg)].to_vec());
+                    beg = start;
+                } else {
+                    start += if start == len { 1 } else { char_len_at(v, start) };
+                    last_null = true;
+                    continue;
+                }
+            } else {
+                out.push(v[beg..ms].to_vec());
+                beg = me;
+                start = me;
+            }
+            last_null = false;
             for gi in g.iter().skip(1) { if let Some((x, y)) = gi { out.push(v[*x..*y].to_vec()); } }
-            start = me; i = if me == ms { me + char_len_at(v, me) } else { me };
-            if i > v.len() { break; }
+            if limit > 0 { cnt += 1; if limit <= cnt { break; } }
         }
+        if len > 0 && (limit != 0 || len > beg) { out.push(v[beg..].to_vec()); }
     }
     if limit == 0 { while out.last().map(|x| x.is_empty()).unwrap_or(false) { out.pop(); } }
     let arr = c.ary_of_strs(out, c.str_enc(slf));
@@ -733,6 +748,7 @@ fn expand_repl(c: &Ctx, rep: &[u8], m_bytes: &[u8], groups: &[Option<(usize, usi
             match y {
                 b'0'..=b'9' => { grp((y - b'0') as usize, &mut out); i += 2; }
                 b'&' => { grp(0, &mut out); i += 2; }
+                b'+' => { if let Some(n) = (1..groups.len()).rev().find(|&n| groups[n].is_some()) { grp(n, &mut out); } i += 2; }
                 b'`' => { if let Some((a, _)) = groups[0] { out.extend_from_slice(&m_bytes[..a]); } i += 2; }
                 b'\'' => { if let Some((_, b)) = groups[0] { out.extend_from_slice(&m_bytes[b..]); } i += 2; }
                 b'\\' => { out.push(b'\\'); i += 2; }

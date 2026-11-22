@@ -177,7 +177,7 @@ fn re_tilde(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
 }
 fn re_eqq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let v = a[0];
-    let sv = if is_string(v) { v } else if v.is_sym() { subject(c, v)? } else { return Ok(FALSE) };
+    let sv = if is_string(v) { v } else if v.is_sym() { subject(c, v)? } else if v.is_heap() && respond_to(v, s::to_str, true) { expect_str(c, v)? } else { return Ok(FALSE) };
     let m = search(c, slf, sv, 0, true)?;
     Ok(Value::bool(m != NIL))
 }
@@ -208,7 +208,7 @@ pub fn reg_equal(c: &mut Ctx, a: Value, b: Value) -> Result<bool, Esc> {
 fn re_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(reg_equal(c, slf, a[0])?)) }
 fn re_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let r = rxc(c, slf)?;
-    let h = crate::astrust::hash_bytes(&r.src) ^ (r.opts & 7) as u64;
+    let h = crate::astrust::hash_bytes(&r.src) ^ (((r.opts & 7) as u64) << 8);
     Ok(Value::fix((h >> 2) as i64))
 }
 fn re_names(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
@@ -460,6 +460,5 @@ pub fn init(vmr: &Vm) -> (Value, Value) {
     d("pre_match", md_pre, 0); d("post_match", md_post, 0); d("to_s", md_to_s, 0); d("size", md_size, 0); d("length", md_size, 0);
     d("string", md_string, 0); d("regexp", md_regexp, 0); d("values_at", md_values_at, -1); d("inspect", md_inspect, 0); d("==", md_eq, 1);
     d("eql?", md_eq, 1); d("deconstruct_keys", md_deconstruct_keys, 1); d("match", md_match, 1); d("match_length", md_match_length, 1);
-    let _ = s::to_s;
     (r, m)
 }

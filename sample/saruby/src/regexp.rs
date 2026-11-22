@@ -556,6 +556,13 @@ pub fn escape(b: &[u8]) -> Vec<u8> {
     out
 }
 
+/// rb_reg_regcomp: a String used as a pattern as it is (String#match, #match?).
+pub fn regcomp(c: &mut Ctx, s: Value) -> RV {
+    let b = c.str_bytes(s).to_vec();
+    let e = c.str_enc(s);
+    regexp_new_enc(c, &b, e, 0)
+}
+
 /// Pattern argument for String methods: Regexp as is, String → literal regexp.
 pub fn to_regexp(c: &mut Ctx, pat: Value) -> RV {
     if is_regexp(c, pat) { return Ok(pat); }

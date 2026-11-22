@@ -55,6 +55,8 @@ use super::node::*;
 
 // Lookahead / lookbehind / atomic group: `body` ends with node_re_sub_succ(_at).
 
+// (?~x): `body` is x ending with node_re_sub_succ_at; the longest run without x first.
+
 // ---- scanners: the search loop as a node, so it fuses with the pattern under AOT -----------
 // `pos` is the search start; each candidate resets the per-attempt state.  A match starting
 // at p must contain the required literals at or after p (c.must_next / Ctx::must_refresh).
@@ -385,6 +387,13 @@ pub fn EVAL_node_re_look<D_body: Disp, D_next: Disp>(c: &mut Ctx, n: NodePtr, po
         if found { c.undo(mark); return FAIL; }
         <D_next as Disp>::call(c, next, pos)
     }
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_re_absent<D_body: Disp, D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, body: NodePtr, next: NodePtr, minlen: u32, maxlen: u32) -> u32 {
+    absent_k(c, body, next, minlen, maxlen, pos)
 }
 
 

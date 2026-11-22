@@ -225,6 +225,15 @@ pub fn DISPATCH_node_re_look(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {
 }
 
 #[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_re_absent(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {
+    let np = n as *mut NodeOf<node_re_absent_struct>;
+    unsafe {
+
+    EVAL_node_re_absent::<Dyn, Dyn>(c, n, pos, (*np).u.body, (*np).u.next, (*np).u.minlen, (*np).u.maxlen)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
 pub fn DISPATCH_node_search(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 {
     let np = n as *mut NodeOf<node_search_struct>;
     unsafe {

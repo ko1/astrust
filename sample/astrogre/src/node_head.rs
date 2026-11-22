@@ -428,6 +428,15 @@ pub struct node_re_look_struct {
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
+pub struct node_re_absent_struct {
+    pub body: NodePtr,
+    pub next: NodePtr,
+    pub minlen: u32,
+    pub maxlen: u32,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
 pub struct node_search_struct {
     pub body: NodePtr,
     pub anchor: u32,
@@ -607,6 +616,12 @@ pub fn ALLOC_node_re_rep_cont() -> NodePtr {
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_look(kind: u32, body: NodePtr, next: NodePtr, minlen: u32, maxlen: u32) -> NodePtr {
     let n = node_allocate(&KIND_node_re_look, node_re_look_struct { kind, body, next, minlen, maxlen });
+    n
+}
+
+#[allow(non_snake_case)]
+pub fn ALLOC_node_re_absent(body: NodePtr, next: NodePtr, minlen: u32, maxlen: u32) -> NodePtr {
+    let n = node_allocate(&KIND_node_re_absent, node_re_absent_struct { body, next, minlen, maxlen });
     n
 }
 
@@ -791,6 +806,13 @@ fn CHILDREN_node_re_rep_cont(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodeP
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_look(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_re_look_struct>)).u };
+    f(&mut u.body);
+    f(&mut u.next);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_re_absent(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_absent_struct>)).u };
     f(&mut u.body);
     f(&mut u.next);
 }
@@ -1199,6 +1221,21 @@ pub static KIND_node_re_look: NodeKind = NodeKind {
     children: CHILDREN_node_re_look,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_look_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_look_struct>>() <= 8);
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_re_absent: NodeKind = NodeKind {
+    name: "node_re_absent",
+    default_dispatcher: DISPATCH_node_re_absent,
+    hash_func: HASH_node_re_absent,
+    profile: PROF_node_re_absent,
+    specializer: SPECIALIZE_node_re_absent,
+    dumper: DUMP_node_re_absent,
+    replacer: REPLACE_node_re_absent,
+    no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_re_absent_struct>>(),
+    children: CHILDREN_node_re_absent,
+};
+const _: () = assert!(std::mem::size_of::<NodeOf<node_re_absent_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_absent_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_search: NodeKind = NodeKind {
