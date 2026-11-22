@@ -50,7 +50,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - 残す（外部インターフェース・土台）: sys.rs、kalloc.rs、fiber_os.rs、patch ローダ、heap.rs / value.rs / gc.rs の土台
 - [x] gc.rs の `heap()` も `&'static mut` を返さない: `heap(&mut Scope)`（一時値 Scope の文で借用が終わる。入れ子は debug ビルドで assert、全テスト 0 件）。fn->&'static mut 1 → 0、命令数・機械語とも base と同じ（trials/2026-11-22-saruby-static-mut「gc heap」）
   - with_heap の +23% の原因: クロージャ（alloc の fast path 全体）が AOT 側で inline されず、1 確保ごとに呼び出し + body のスタック経由コピー。`#[inline(always)]` を付けると gcchurn は戻るが、str は内側クロージャの捕獲変数のストアが空きリスト判定の前に出て node_str +3 命令/回（str interp +0.85%・AOT +1.4%）。クロージャ形は不採用
-- [~] main ctx の root 走査が、確保側の生きている `&mut Ctx` と重なる: Ctx 経由の確保・GC.start は解消（GcLang の束縛 = 確保する Ctx そのもの、その借用越しに走査。命令数 ±1M）。残りは context-free 確保 85 か所（`gc::alloc` / str_legacy / legacy / hash_new_capa、io.rs の起動時 4 か所を含む）。全部 c 経由にすれば NO_CTX と by-place 走査を消せる（unsafe −2）。str リテラルと new_object は hot なので変換ごとに測る
+- [x] main ctx の root 走査が、確保側の生きている `&mut Ctx` と重なる: 確保は全部 `gc::alloc(c, ..)`（context-free の 90 か所を段階的に変換、NO_CTX・str_legacy.rs・legacy の生成関数を削除。unsafe 382 → 380、static mut 10 → 9）。main ctx の by-place 読みは fiber が確保するときだけ。master 比: 15 ベンチ中 10・起動・optcarrot は同じ、object AOT +0.62 %（焼いたコードのレジスタ割り当て）、nesteddata AOT +1.0 %（Hash の malloc 越しに c を保持）、hash AOT +1.4 %（hash_set のレジスタ割り当て。旧 base と同じ値で、無関係な cold 編集で反転）。途中の事故 2 件（drop_body の Box<RHash> drop glue が外に出る、RHash::with_capacity が inline されない）は修正（trials/2026-11-22-saruby-static-mut「NO_CTX」）
 - [ ] vm 分割後の poly AOT +0.29%（mcache の RefCell 検査の推定、未検証）。sp4 の時間で要確認
 - [ ] 見送り中: safe な Value::fix/sym/flonum（hash +0.6〜1.4%、regalloc の変化）、ConstCache.val の Option 化（+0.1〜0.3%）
 
@@ -95,7 +95,8 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [ ] `__callee__` on alias、`WeakMap#inspect`、`detailed_message` / `full_message` の書式
 - [ ] t/hand: 約 23,400 PASS / 10,200 FAIL
 - [ ] 解説書『saruby でわかる Rust』（~/ruby/src/trials/2026-11-21-saruby-rust-book）: vm/heap 分割の反映、trait と Ruby の module の対比・dispatch（Dyn と T_… の Disp）の説明を追加（2026-11-22 の会話）
-- [ ] `Array#cycle(n).size` が i64 で `len * n` してあふれる（array_methods.rs:969。debug で panic、release では折り返し。CRuby は Bignum）
+- [x] `Array#cycle(n).size` が i64 で `len * n` してあふれる: Bignum で返す（CRuby master と同じ。4.0.2 は LONG2FIX で折り返す）。同時に Enumerable.__int の Fixnum 折り返しと Enumerator#size が Bignum を nil にするのも修正
+- [ ] `cycle` の size が即時計算: `[1].cycle(2**64)` が作った時点で RangeError（CRuby は size を呼ぶまで遅延して Enumerator を返す）
 
 ## 性能（上 3 つの後。新規には起こさない）
 - [ ] IO 変換 round 1 の代償: io_file_create（File.open+close）+1.07%（open 1 回 ~43 命令）、io_select2/3 +0.33/+0.23%、変換付き gets 2.3×・puts 1.6×（io.c 同様に 1 文字ずつ受け渡すため）

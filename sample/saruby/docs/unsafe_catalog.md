@@ -349,19 +349,22 @@ it.
 | 38 | fiber | `a` resumes `b` resumes `a` | panic "entered unreachable code" (stack corrupted) | | c-test | 1b1b311: a test of Fiber's error cases run on the base build before the rewrite; the panic is an `unreachable!()` present since b3cc05f (2026-11-20), not a check of the conversion |
 | 40 | object accessors | `$go = false; class K; def initialize(s) = @s = s; def hash; if $go; $go = false; @s.clear; GC.start; end; 1; end; end; src = {}; src[K.new(src)] = "a"; 40.times { src["k#{_1}"] = "v#{_1}" * 10 }; $go = true; p({**src}.size)` | **panic** `not a class: #<obj ..>` (a freed object's klass); under `SARUBY_GC_STRESS=1` 28 entries holding other Strings | **GC rooting / use after free: pairs copied to a Rust `Vec` across `hash_aset` (Ruby `#hash`)** | c-read | 9e7fed4: while `rhash` / `hash_pairs` were replaced in rt.rs / vm.rs (the replacement `c.hash_pairs(src)` compiles), the loop was recognised as pattern 14 of safe_heap.md; the fix (`hash::hash_copy_entries`, slot by slot) was written before the repro, which then panicked on base `1749107`. Same shape at 5 sites (`{**h}` / `f(**h)`, two ruby2_keywords splats, `**kwrest` and unknown-keyword collection, pattern matching's rest); only `{**h}` reproduced (`2026-11-22-saruby-static-mut/objacc/repro/`) |
 | 39 | method layer | a `Vm` field added after `main_obj` | left uninitialized (`MaybeUninit` + `ptr::write`), no diagnostic | **latent UB** removed by construction | c-read | 0059037: boot rewritten as a struct literal (a missing field is now E0063); never observed |
+| 41 | gc heap | `p [:a, :b].cycle(2**62).size` | debug build: panic (i64 overflow in `len * n`); release: wrapped (CRuby master 9223372036854775808) | integer overflow | c-test | e521210: the dev-build panic scan of the gc heap conversion (`cycle_nb_io_timeout_1020.rb`, trial README "gc heap"); fixed in the NO_CTX work |
+| 42 | gc heap | `p({a: 1, b: 2}.cycle(2**62).size)` | 0 (`Enumerable.__int` made a Fixnum of a long past the Fixnum range) | integer overflow | c-test | e521210: the first smoke test of row 41's fix (both `cycle` sizes printed side by side) printed 0; the cause read in `e_int` |
+| 43 | gc heap | `p [:a, :b].cycle(2**62).size` after row 41's fix | nil (`Enumerator#size` passed only Fixnum / Float sizes) | compatibility | c-test | e521210: the same smoke test printed nil; the cause read in `e_size` |
 
 Rows 22, 25, 27, 29, 30, 33 to 37 are the "10 more compatibility differences" of earlier versions of
 this table; row 16 was counted in wave 3's 7 but missing from the table.
 
 Counts (rows of the table above; no row is undetermined; the "found later" row below is c-test and not counted):
 
-| found by | rows | SIGSEGV | UB (incl. latent) | GC rooting / UAF | wave 2 | String | wave 3 | wave 4 | fiber | method layer | object accessors |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| a: run-time check of the safe API | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 |
-| b: borrow checker (compile time) | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
-| c-read: reading while rewriting | 23 | 5 | 2 | 2 | 5 | 2 | 5 | 9 | 0 | 1 | 1 |
-| c-test: a test run during the work | 15 | 0 | 0 | 2 | 1 | 4 | 1 | 8 | 1 | 0 | 0 |
-| **total** | **40** | 5 | 2 | 4 | 6 | 7 | 7 | 17 | 1 | 1 | 1 |
+| found by | rows | SIGSEGV | UB (incl. latent) | GC rooting / UAF | wave 2 | String | wave 3 | wave 4 | fiber | method layer | object accessors | gc heap |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| a: run-time check of the safe API | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
+| b: borrow checker (compile time) | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| c-read: reading while rewriting | 23 | 5 | 2 | 2 | 5 | 2 | 5 | 9 | 0 | 1 | 1 | 0 |
+| c-test: a test run during the work | 18 | 0 | 0 | 2 | 1 | 4 | 1 | 8 | 1 | 0 | 0 | 3 |
+| **total** | **43** | 5 | 2 | 4 | 6 | 7 | 7 | 17 | 1 | 1 | 1 | 3 |
 
 Borrow errors that were not defects. The first `cargo check` of string_methods.rs gave 21 E0502 and
 16 E0499 at about 50 lines; those in `chomp_impl` and `split` are row 7, the others are not tied to any
@@ -1170,3 +1173,25 @@ call: within 1M of base on all 15 benches interp and AOT, startup in the same ra
 optcarrot 82.97M -> 83.02M per frame (+0.06 %), checksum 59662. Checks (trial README): three builds 0
 warnings at each commit, t/hand 0 differences, AOT vs `--plain` the same files as base (addresses),
 panic scan and GC stress 0 panics, reuse / fork tests pass.
+
+**Applied: NO_CTX** (trial README, section "NO_CTX"; base master `612ab2b` line, then master
+`d8a2c40` merged). Every allocation now passes the allocating `&mut Ctx`: the 90 context-free call
+sites (counted exactly by marking the allocators `#[deprecated]`) were converted in measured steps
+(cold sites; `c` threaded into `alloc_class` / `new_module` / `str_to_inum` / the literal caches /
+`defined?`; String literals; `new_object`; Envs and Procs; Hash and Float construction in node.def /
+rt.rs; io.rs's boot sites), then `NO_CTX`, `is_no_ctx`, the context-free `gc::alloc` /
+`alloc_with`, str_legacy.rs and the legacy Range / Float / Integer / Hash constructors removed.
+`gc::alloc(c, ..)` is the only allocator; `vm::visit_roots` reads the main context by place only
+while a fiber allocates (main suspended in a switch). `unsafe` 382 -> 380, `static mut` 10 -> 9.
+Two codegen accidents found on the way and fixed: `Box<RHash>`'s drop glue left out of line in
+`gc::drop_body` by an unrelated edit of `run_main` (bisected; the Hash arm now drops the buffers in
+place), and `RHash::with_capacity` not inlined into `Ctx::hash_new_capa` (`#[inline]`). Cost against
+master: equal on 10 of the 15 benches interp and AOT and on startup; optcarrot 83.02M per frame for
+both; object AOT +0.62 % (register assignment around the inlined new_object in baked code;
+`Object.new` itself is 1 instruction cheaper), nesteddata AOT +1.0 % (the context lives across the
+Hash's two mallocs: one more callee-saved register in `hash_new_capa`, one argument move at the
+call site), hash AOT +1.4 % (hash_set's register allocation; the old base had the same count, and
+either of two unrelated cold edits flips it). Rows 41 to 43 of 2.4 were fixed alongside. Checks:
+three builds 0 warnings, t/hand only the `cycle` fix differs, AOT vs `--plain` 0 after masking
+addresses, panic scan and GC stress 0 panics, dev build 0 nested heap borrows, reuse / fork tests
+pass.
