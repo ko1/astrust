@@ -41,10 +41,15 @@ const WIDE: u8 = 0x80;
 type Groups = Vec<Option<(usize, usize)>>;
 
 /// One search (or anchored match with `at`) in mode `e`.
+#[inline(always)]
 pub fn engine_run(rx: &Regex, bytes: &[u8], start: usize, e: Enc, dl: Option<std::time::Instant>, at: bool) -> Result<Option<Groups>, ()> {
-    if e.0 < WIDE {
-        return if at { Ok(rx.match_at_enc(bytes, start, e)) } else { rx.search_timeout(bytes, start, e, dl) };
-    }
+    if e.0 >= WIDE { return wide_run(rx, bytes, start, e, dl, at); }
+    if at { Ok(rx.match_at_enc(bytes, start, e)) } else { rx.search_timeout(bytes, start, e, dl) }
+}
+
+#[cold]
+#[inline(never)]
+fn wide_run(rx: &Regex, bytes: &[u8], start: usize, e: Enc, dl: Option<std::time::Instant>, at: bool) -> Result<Option<Groups>, ()> {
     use crate::builtins::encoding as en;
     let enc = e.0 - WIDE;
     let (mut u, mut orig) = (Vec::with_capacity(bytes.len()), Vec::with_capacity(bytes.len() + 1));
