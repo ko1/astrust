@@ -18,9 +18,13 @@
     索引は 16 桁 hex 3 列の固定幅・Horg 順（SWAR で読む、二分探索）、キーは u64（hash_merge）、キーと Horg はストアが
     使うときだけ計算、prelude はソースをハッシュしない（ビルドごとのストア）。`-e 'p 1'` 20.20M → 17.97M（Hopt 前 17.54M）、
     --plain 15.47M → 13.98M。bake: fib の item 52 → 83（R_/S_ が entry ごとに複製）、optcarrot +2%（rustc 時間は誤差内）
-  - [ ] R_ / S_ の tag が entry の Hopt なので、同じ再帰先を含む entry ごとに R_/S_ が（中の名前を除いて同じ中身で）
-    複製される（fib: R 1 → 4、S 1 → 4。T 40 → 65 も R_ 名を含む T_ が別名になったためと推測、未確認）。
-    tag を再帰先の部分木の profile にすれば共有できるはず（未検証）
+  - [x] item の名前は中身だけで決まる（trials/2026-11-23-saruby-item-sharing）。R_ / S_ の tag が entry の Hopt
+    だったので entry ごとに複製されていた（fib: R/S 各 4。T 40 → 65 はその R_ 名を含む T_、確認済み）→ 再帰先自身の
+    構造ハッシュ + profile（rec_tag）。T_ / L_ は構造ハッシュ（ノードから読むだけのオペランド、def の名前や body も
+    入る）と patch.o の位置（P<offset>、穴の無い部分木にも）で別名になっていた → コード本文のハッシュ。
+    fib items 83 → 50 / pitems 119 → 81、optcarrot items 10261 → 7394 / pitems 18423 → 10837（all.rs −21%、
+    patch.rs −30%）。同じコードで別名の item（dupcheck.rb）は全ベンチ・optcarrot で 0。命令数は全ベンチ同じ
+  - [ ] 同じコードで別の R_ / S_ 名: 再帰先の profile のうち焼かれない部分（spec の深さ制限より先）が違うとき（未観測）
   - [ ] 残る起動の固定費: prelude の body ごとの dlsym 0.42M（Hopt 前から）、索引の読み込み 0.16M（callgrind）
   - ivar スロット番号（user: 「ノードのパラメータにして焼くだけなら原則を破らない」）
   - site kind、`shared`、組み込んだ呼び出し先・ブロック、演算子の型、イテレータの選択
