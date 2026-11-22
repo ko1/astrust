@@ -174,6 +174,26 @@ fn sio_read(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if let Some(bf) = buf { let r = c.str_modify(bf)?; r.b = data.into(); if len.is_some() { r.enc = ENC_BINARY; } return Ok(bf); }
     Ok(c.str_from_vec_enc(data, enc))
 }
+/// exception: of *_nonblock (true unless `exception: false`), and the positional arguments.
+fn nonblock_args(c: &mut Ctx, a: &[Value]) -> Result<(bool, usize), Esc> {
+    match kw_arg(a) {
+        Some(h) => Ok((crate::hash::hash_get_opt(c, h, sym_value("exception"))?.map(|v| v.truthy()).unwrap_or(true), a.len() - 1)),
+        None => Ok((true, a.len())),
+    }
+}
+fn sio_read_nonblock(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+    let (exc, n) = nonblock_args(c, a)?;
+    let a = &a[..n];
+    check_argc(c, a, 1, 2)?;
+    let r = sio_read(c, slf, a, b)?;
+    if r == NIL || (a[0].is_fixnum() && a[0].as_fix() > 0 && c.str_bytes(r).is_empty()) { if !exc { return Ok(NIL); } return err(c, c.vm().c_eof_error, "end of file reached"); }
+    Ok(r)
+}
+fn sio_write_nonblock(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+    let (_, n) = nonblock_args(c, a)?;
+    check_argc(c, &a[..n], 1, 1)?;
+    sio_write(c, slf, &a[..1], b)
+}
 fn sio_readpartial(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     let r = sio_read(c, slf, a, b)?;
     if r == NIL || (a.first().map(|v| v.is_fixnum() && v.as_fix() > 0).unwrap_or(false) && c.str_bytes(r).is_empty()) { return err(c, c.vm().c_eof_error, "end of file reached"); }
@@ -480,7 +500,7 @@ pub fn init(vmr: &Vm) {
     d("set_encoding", sio_set_encoding, -1); d("set_encoding_by_bom", sio_nil, 0); d("reopen", sio_reopen, -1);
     let r = |n: &str, f: CFunc, ar: i32| define_cfunc(gr, n, f, ar);
     r("readchar", sio_readchar, 0); r("readbyte", sio_readbyte, 0); r("readline", sio_readline, -1); r("sysread", sio_readpartial, -1);
-    r("readpartial", sio_readpartial, -1); r("read_nonblock", sio_readpartial, -1);
+    r("readpartial", sio_readpartial, -1); r("read_nonblock", sio_read_nonblock, -1);
     let w = |n: &str, f: CFunc, ar: i32| define_cfunc(gw, n, f, ar);
-    w("<<", sio_ltlt, 1); w("print", sio_print, -1); w("puts", sio_puts, -1); w("printf", sio_printf, -1); w("syswrite", sio_write, -1); w("write_nonblock", sio_write, -1);
+    w("<<", sio_ltlt, 1); w("print", sio_print, -1); w("puts", sio_puts, -1); w("printf", sio_printf, -1); w("syswrite", sio_write, -1); w("write_nonblock", sio_write_nonblock, -1);
 }
