@@ -617,10 +617,12 @@ fn ec_s_search_convpath(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -
     Ok(c.ary_from_vec(items))
 }
 
-pub fn init(vmr: &mut Vm) {
-    let k = define_class_under(vmr.c_encoding, "Converter", vmr.c_object);
+/// Encoding::Converter, defined on its first reference ("saruby/econv", builtins/prelude.rs).
+pub fn init(c: &mut Ctx) {
+    if c.vm().c_econv != NIL { return; }
+    let k = define_class_under(c.vm().c_encoding, "Converter", c.vm().c_object);
     class_set_alloc(k, AllocKind::None);
-    vmr.c_econv = k;
+    c.vm_mut().c_econv = k;
     define_singleton_cfunc(k, "asciicompat_encoding", ec_s_asciicompat_encoding, 1);
     define_singleton_cfunc(k, "search_convpath", ec_s_search_convpath, -1);
     define_cfunc(k, "initialize", ec_initialize, -1);

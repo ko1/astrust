@@ -373,6 +373,16 @@ node_line(c: &mut Ctx, n: NodePtr, fp: Fp, line@hole: u32, body: NODE)
     EVAL_ARG!(c, body)
 }
 
+// Only in code compiled for tracing (vm::TRACE_COMPILE): a statement's line (ev = EV_LINE) or a
+// rescue clause (EV_RESCUE), reported when a hook has that event.
+NODE_DEF
+node_trace(c: &mut Ctx, n: NodePtr, fp: Fp, ev: u32, line@hole: u32, body: NODE)
+{
+    line.store(c.frame());
+    if trace_mask() & ev != 0 { crate::builtins::tracepoint::trace_point(c, ev)?; }
+    EVAL_ARG!(c, body)
+}
+
 NODE_DEF
 node_if(c: &mut Ctx, n: NodePtr, fp: Fp, cond: NODE, then_b: NODE, else_b: NODE)
 {

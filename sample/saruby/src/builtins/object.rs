@@ -58,7 +58,7 @@ fn bo_instance_eval(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV
         if a.is_empty() { return argc_err(c, 0, 1, 3); }
         let src = expect_str(c, a[0])?;
         let bytes = c.str_bytes(src).to_vec();
-        let file: &'static str = if a.len() > 1 { Box::leak(to_rstring(c, a[1])?.into_boxed_str()) } else { "(eval)" };
+        let file: &'static str = if a.len() > 1 { Box::leak(to_rstring(c, a[1])?.into_boxed_str()) } else { crate::builtins::binding::eval_file(c) };
         return crate::builtins::binding::eval_with_self(c, slf, &bytes, file, if a.len() > 2 { a[2].as_fix() as i32 } else { 1 });
     }
     let dc = if slf.is_heap() && !slf.is_flonum() { singleton_class(slf) } else { NIL };
@@ -766,7 +766,7 @@ fn m_class_eval(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
         if a.is_empty() { return argc_err(c, 0, 1, 3); }
         let src = expect_str(c, a[0])?;
         let bytes = c.str_bytes(src).to_vec();
-        let file: &'static str = if a.len() > 1 { Box::leak(to_rstring(c, a[1])?.into_boxed_str()) } else { "(eval)" };
+        let file: &'static str = if a.len() > 1 { Box::leak(to_rstring(c, a[1])?.into_boxed_str()) } else { crate::builtins::binding::eval_file(c) };
         return crate::builtins::binding::eval_in_class(c, slf, &bytes, file, if a.len() > 2 { a[2].as_fix() as i32 } else { 1 });
     }
     yield_with_self(c, b, &[slf], slf, slf)
@@ -1026,7 +1026,7 @@ pub fn c_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
             }
             return Ok(o);
         },
-        Some(MKind::Iseq(is)) if !kw => {
+        Some(MKind::Iseq(is)) if !kw && trace_mask() & EV_CALLS == 0 => {
             let done = c.with_iseq(is, |c, is| -> Result<bool, Esc> {
                 let Some(is) = is else { return Ok(false) };
                 if !(is.lead_only && is.params.lead.len() == a.len()) { return Ok(false); }

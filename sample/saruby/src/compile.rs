@@ -101,12 +101,14 @@ struct Scope {
     params_seen: HashSet<Sym>,    // `|_, _|`: only the first duplicate binds the variable
     param_names: Vec<(u32, Sym)>, // parameter slot -> name (for #parameters)
     needs_id: bool,               // a block literal or an eval-like call inside: its frame needs an id
+    end_line: u32,                // the line of the scope's last byte (TracePoint return / end events)
+    trace_line: u32,              // the line of the last line event put in (one per line, as CRuby's)
 }
 
 impl Scope {
     fn new(kind: SK, captured: HashSet<Sym>) -> Scope {
         Scope { kind, vars: HashMap::new(), names: vec![], nslots: 2, env_size: 0, captured, loop_depth: 0,
-                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![], children: vec![], params_seen: HashSet::new(), param_names: vec![], needs_id: false }
+                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![], children: vec![], params_seen: HashSet::new(), param_names: vec![], needs_id: false, end_line: 0, trace_line: 0 }
     }
     fn has_env(&self) -> bool { self.env_size > 0 }
 }
@@ -122,6 +124,8 @@ pub struct Compiler<'a> {
     in_def: u32,
     pm_err: Option<u32>,          // single-pattern match: slot receiving the failure description
     tl_binding: bool,
+    trace: bool,                  // compiled for tracing (vm::TRACE_COMPILE): trace points, no entries, locals in envs
+    flat_stmts: bool,             // the next statements are no lines of their own (modifier / ternary forms)
     pub errors: Vec<String>,
     csyms: Vec<std::cell::Cell<Sym>>,   // pr.constants interned, on first use (NOSYM: not yet)
     src_enc: u32,                       // the source encoding (magic comment)
@@ -150,7 +154,7 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, errors: vec![],
+        Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, trace: false, flat_stmts: false, errors: vec![],
                    csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()],
                    src_enc: crate::builtins::encoding::find_enc(pr.encoding.as_bytes()).unwrap_or(crate::object::ENC_UTF8) as u32 }
     }
@@ -177,7 +181,7 @@ impl<'a> Compiler<'a> {
         let mut stack: Vec<(usize, bool)> = vec![(key(root), false)];
         let mut uses_binding = false;
         for b in body { self.analyze_rec(b, &mut stack, &mut uses_binding); }
-        if uses_binding {
+        if uses_binding || self.trace {
             // every local of every scope in this tree becomes env-resident
             self.captures.entry(key(root)).or_default().insert(Sym(u32::MAX));
         }
@@ -275,6 +279,7 @@ impl<'a> Compiler<'a> {
         let cap = self.captured_for(n);
         let all = cap.contains(&Sym(u32::MAX));
         let mut sc = Scope::new(kind, cap);
+        if self.trace { sc.end_line = self.pr.line_of((n.loc.start + n.loc.len).saturating_sub(1)); }
         for &l in locals {
             let nm = self.cst(l);
             if sc.vars.contains_key(&nm) { continue; }
@@ -387,6 +392,8 @@ impl<'a> Compiler<'a> {
 
     fn finish_iseq(&mut self, body: NodePtr, mut params: Params, kind: IseqKind, label: String, line: u32, name: Sym) -> &'static Iseq {
         let mut sc = self.scopes.pop().unwrap();
+        // traced code is run by invoke_iseq / run_block_iseq, which report its call events
+        let lead_only_entry = !self.trace;
         // evaluators reach their frame through a FRAME-slot window (stack.rs)
         if sc.nslots as usize > crate::stack::FRAME {
             self.errors.push(format!("{}:{}: {} needs too many local slots ({}, max {})", self.file, line, label, sc.nslots, crate::stack::FRAME));
@@ -410,7 +417,7 @@ impl<'a> Compiler<'a> {
             else if req_kw { req + 1 } else { req }
         };
         let local_names = sc.names.iter().map(|(n, l)| match l { VarLoc::Slot(i) => (*n, *i as i32, -1), VarLoc::Env(i) => (*n, -1, *i as i32) }).collect();
-        let entry = if kind == IseqKind::Method && lead_only {
+        let entry = if kind == IseqKind::Method && lead_only && lead_only_entry {
             let mut fl = 0;
             if sc.env_size > 0 { fl |= ME_ENV; }
             if sc.needs_id || sc.captured.contains(&Sym(u32::MAX)) { fl |= ME_ID; }
@@ -418,13 +425,13 @@ impl<'a> Compiler<'a> {
             if nocall_body(body) { fl |= ME_NOCALL; }
             ALLOC_node_method_entry(sc.nslots, params.lead.len() as u32, fl, line, body)
         } else { std::ptr::null_mut() };
-        let bentry = if (kind == IseqKind::Block || kind == IseqKind::Lambda) && lead_only {
+        let bentry = if (kind == IseqKind::Block || kind == IseqKind::Lambda) && lead_only && lead_only_entry {
             let fl = if sc.env_size > 0 { ME_ENV } else { 0 } | if kind == IseqKind::Lambda { ME_LAMBDA } else { 0 };
             ALLOC_node_block_entry(sc.nslots, params.lead.len() as u32, fl, line, body)
         } else { std::ptr::null_mut() };
         // dense keyword layout: lead then keywords in declared order, nothing else.  kentry takes
         // them all as plain params (a site passing every keyword in order); dentry takes none.
-        let dense = kind == IseqKind::Method && !params.kw.is_empty() && params.opt.is_empty() && params.rest.is_none()
+        let dense = lead_only_entry && kind == IseqKind::Method && !params.kw.is_empty() && params.opt.is_empty() && params.rest.is_none()
             && params.post.is_empty() && params.kwrest.is_none() && params.block.is_none() && params.destructure.is_empty()
             && !params.no_kw && !params.forwarding && !params.has_trailing_comma
             && params.lead.iter().chain(params.kw.iter().map(|k| &k.slot)).enumerate().all(|(i, &s)| s == 2 + i as u32);
@@ -464,7 +471,7 @@ impl<'a> Compiler<'a> {
         } else { (layout_tree(body), entry, bentry, kentry) };
         let is = Box::leak(Box::new(Iseq {
             body, entry, bentry, kentry, dentry, body_used: std::cell::Cell::new(false), nlocals: sc.nslots, params, env_size: sc.env_size, env_params,
-            info: CodeInfo { file: self.file, label, line }, kind, simple, lead_only, name, local_names, arity, uses_block: false,
+            info: CodeInfo { file: self.file, label, line, end_line: sc.end_line }, kind, simple, lead_only, name, local_names, arity, uses_block: false, traced: self.trace,
             parent: std::cell::Cell::new(std::ptr::null()), ruby2_keywords: std::cell::Cell::new(false),
             outer_names: if kind == IseqKind::Eval { self.eval_outer.iter().flatten().cloned().collect() } else { vec![] },
         }));
@@ -478,6 +485,12 @@ impl<'a> Compiler<'a> {
 
     fn stmts(&mut self, n: Option<&PNode>) -> NodePtr {
         match n { Some(n) => self.c(n), None => ALLOC_node_nil() }
+    }
+    fn stmts_flat(&mut self, n: Option<&PNode>, flat: bool) -> NodePtr {
+        self.flat_stmts = flat;
+        let r = self.stmts(n);
+        self.flat_stmts = false;
+        r
     }
 
     fn seq(&mut self, v: Vec<NodePtr>) -> NodePtr {
@@ -495,7 +508,14 @@ impl<'a> Compiler<'a> {
         let line = self.line(n.loc);
         match &n.kind {
             Kind::StatementsNode { body } => {
-                let v: Vec<NodePtr> = body.iter().map(|x| { let r = self.c(x); if needs_line(x) { ALLOC_node_line(self.line(x.loc), r) } else { r } }).collect();
+                let flat = std::mem::take(&mut self.flat_stmts);
+                let v: Vec<NodePtr> = body.iter().map(|x| {
+                    let l = if self.trace { self.line(x.loc) } else { 0 };
+                    let traced = self.trace && !flat && !matches!(x.kind, Kind::BeginNode { .. }) && std::mem::replace(&mut self.cur().trace_line, l) != l;
+                    let r = self.c(x);
+                    if traced { ALLOC_node_trace(EV_LINE, l, r) }
+                    else if needs_line(x) { ALLOC_node_line(self.line(x.loc), r) } else { r }
+                }).collect();
                 self.seq(v)
             }
             Kind::ParenthesesNode { body } => self.stmts(body.as_deref()),
@@ -618,7 +638,7 @@ impl<'a> Compiler<'a> {
                 let op = self.cst(*binary_operator);
                 // the fused node evaluates the right side before it reads the ivar: only for one that cannot change it
                 let pure = matches!(value.kind, Kind::IntegerNode { .. } | Kind::FloatNode { .. } | Kind::LocalVariableReadNode { .. } | Kind::InstanceVariableReadNode { .. });
-                if pure && (op == s::plus || op == s::minus) {
+                if pure && !self.trace && (op == s::plus || op == s::minus) {
                     let v = self.c(value);
                     ALLOC_node_ivar_arith(nm, op == s::minus, v, line)
                 } else {
@@ -723,13 +743,15 @@ impl<'a> Compiler<'a> {
             // control flow
             Kind::IfNode { predicate, statements, subsequent, .. } => {
                 let cnd = self.cond(predicate);
-                let t = self.stmts(statements.as_deref());
-                let e = match subsequent { Some(x) => self.else_body(x), None => ALLOC_node_nil() };
+                // `x if c` / `c ? x : y`: no line events of their own (CRuby's newline nodes)
+                let flat = n.loc.start >= predicate.loc.start;
+                let t = self.stmts_flat(statements.as_deref(), flat);
+                let e = match subsequent { Some(x) => { self.flat_stmts = flat; let e = self.else_body(x); self.flat_stmts = false; e } None => ALLOC_node_nil() };
                 ALLOC_node_if(cnd, t, e)
             }
             Kind::UnlessNode { predicate, statements, else_clause } => {
                 let cnd = self.cond(predicate);
-                let t = self.stmts(statements.as_deref());
+                let t = self.stmts_flat(statements.as_deref(), n.loc.start >= predicate.loc.start);
                 let e = match else_clause { Some(x) => self.else_body(x), None => ALLOC_node_nil() };
                 ALLOC_node_if(cnd, e, t)
             }
@@ -740,7 +762,7 @@ impl<'a> Compiler<'a> {
                 let until = matches!(n.kind, Kind::UntilNode { .. });
                 let cnd = self.cond(predicate);
                 self.cur().loop_depth += 1;
-                let body = self.stmts(statements.as_deref());
+                let body = self.stmts_flat(statements.as_deref(), n.loc.start >= predicate.loc.start);
                 self.cur().loop_depth -= 1;
                 if n.flags & pa::LOOP_FLAGS_BEGIN_MODIFIER != 0 { ALLOC_node_dowhile(cnd, body, until) } else { ALLOC_node_while(cnd, body, until) }
             }
@@ -1089,6 +1111,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn binop(&mut self, a: NodePtr, op: Sym, b: NodePtr, line: u32) -> NodePtr {
+        if self.trace { return self.call_node(a, op, vec![b], 0, line); }
         match op {
             x if x == s::plus => ALLOC_node_opt_plus(a, b, line),
             x if x == s::minus => ALLOC_node_opt_minus(a, b, line),
@@ -1249,9 +1272,9 @@ impl<'a> Compiler<'a> {
             && [s::plus, s::minus, s::mul, s::div, s::modulo, s::pow, s::lt, s::le, s::gt, s::ge, s::eq, s::neq, s::ltlt, s::gtgt, s::xor, s::and, s::or, s::aref].contains(&mid) {
             let a = self.c(args[0]);
             self.binop(recv_node, mid, a, line)
-        } else if simple && blk_iseq.is_none() && recv.is_some() && args.is_empty() && mid == s::not && !safe {
+        } else if simple && !self.trace && blk_iseq.is_none() && recv.is_some() && args.is_empty() && mid == s::not && !safe {
             ALLOC_node_not(recv_node)
-        } else if simple && blk_iseq.is_none() && recv.is_some() && args.len() == 2 && mid == s::aset && flags & CF_FCALL == 0 && !safe {
+        } else if simple && !self.trace && blk_iseq.is_none() && recv.is_some() && args.len() == 2 && mid == s::aset && flags & CF_FCALL == 0 && !safe {
             let a = self.c(args[0]); let b = self.c(args[1]);
             ALLOC_node_opt_aset(recv_node, a, b, line)
         } else if simple && attr {
@@ -1713,7 +1736,7 @@ impl<'a> Compiler<'a> {
     fn rescue_clauses(&mut self, r: &PNode) -> Vec<NodePtr> {
         let mut out = vec![];
         let mut cur = Some(r);
-        while let Some(PNode { kind: Kind::RescueNode { exceptions, reference, statements, subsequent }, .. }) = cur {
+        while let Some(rn @ PNode { kind: Kind::RescueNode { exceptions, reference, statements, subsequent }, .. }) = cur {
             let mut cls = vec![]; let mut kinds = vec![];
             for e in exceptions {
                 match &e.kind {
@@ -1723,6 +1746,7 @@ impl<'a> Compiler<'a> {
             }
             let assign = match reference { Some(t) => self.target(t, ALLOC_node_errinfo()), None => ALLOC_node_nil() };
             let body = self.stmts(statements.as_deref());
+            let body = if self.trace { ALLOC_node_trace(EV_RESCUE, self.line(rn.loc), body) } else { body };
             out.push(ALLOC_node_resbody(leak(cls), lstr(&kinds), assign, body));
             cur = subsequent.as_deref();
         }
@@ -1891,7 +1915,9 @@ impl<'a> Compiler<'a> {
         METHOD_LABEL.with(|m| m.borrow_mut().push(crate::symbol::sym_str(name)));
         self.in_def += 1;
         let ps = self.params(params, false);
-        let b = self.stmts(body);
+        // `def m = x`: no line of its own (it ends where the def does)
+        let endless = body.is_some_and(|b| b.loc.start + b.loc.len == n.loc.start + n.loc.len);
+        let b = self.stmts_flat(body, endless);
         self.in_def -= 1;
         let is = self.finish_iseq(b, ps, IseqKind::Method, crate::symbol::sym_str(name), line, name);
         METHOD_LABEL.with(|m| m.borrow_mut().pop());
@@ -2191,6 +2217,12 @@ pub fn compile_parsed(pr: &ParseResult, src: &[u8], file: &'static str, kind: Is
     }
     let mut cm = Compiler::new(pr, file);
     cm.src = src;
+    // compiled for tracing once a source names the hooks (zero cost for every other program)
+    use std::sync::atomic::Ordering::Relaxed;
+    if file != "<internal:prelude>" && (TRACE_COMPILE.load(Relaxed) || [&b"TracePoint"[..], b"set_trace_func"].iter().any(|w| src.windows(w.len()).any(|x| x == *w))) {
+        TRACE_COMPILE.store(true, Relaxed);
+        cm.trace = true;
+    }
     if kind == IseqKind::Eval && !outer.is_empty() { cm.captures.entry(key(&pr.root)).or_default().insert(Sym(u32::MAX)); }
     cm.eval_outer = outer;
     if kind == IseqKind::Main && src.windows(16).any(|w| w == b"TOPLEVEL_BINDING") {

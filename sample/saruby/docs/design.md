@@ -168,6 +168,22 @@ Measurements and what was tried: `~/ruby/src/trials/2026-11-21-saruby-call-path/
 * Operator nodes (`node_opt_*`, `@x += v`, `!x`) keep their call cache behind a pointer (`OpCc`),
   made when the site first calls a method.
 
+## Tracing (TracePoint, set_trace_func; builtins/tracepoint.rs)
+Nothing on a fast path looks at tracing; `vm::trace_mask()` (the union of the enabled hooks' events) is
+read only on paths that are slow anyway.  Measurements: `~/ruby/src/trials/2026-11-22-saruby-converter-tracepoint/`.
+
+* **Calls.** While call events are traced, `fill_cc` leaves an entry that never hits (serial 0), and
+  enabling / disabling bumps the method serial.  Every inline path of interpreted and baked call sites
+  (entries, compiled-in callees, inline builtins and iterators, attr, `send`, `Klass.new`) is guarded by
+  the serial, so all calls go out of line to `invoke_impl`, which hands them to `invoke_traced`.
+* **Code compiled for tracing.** Once a source names `TracePoint` or `set_trace_func` (or a hook is made),
+  later code is compiled with `vm::TRACE_COMPILE`: a `node_trace` before each statement (one per line, as
+  CRuby's newline nodes) and rescue clause, operators as plain calls, no entry nodes (so calls and yields
+  take `invoke_iseq` / `run_block_iseq`, which report call / return events in the callee's frame), and
+  every local in the env (`TracePoint#binding`).  Other programs compile and bake as before.
+* Code compiled earlier (the prelude, libraries loaded first) reports call-level events only; prelude
+  methods are reported as builtins (`c_call`), and calls they make are not reported.
+
 ## Lexical scope (Cref) and refinements
 * A frame's `cref` is its lexical class scope (constants, `def` target, class variables).  A
   cref whose `prev` is null is the top level.

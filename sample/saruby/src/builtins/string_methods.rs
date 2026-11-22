@@ -157,7 +157,7 @@ cfn!(s_initialize, |c, slf, a, _b| {
         if let Some(e) = crate::hash::hash_get_opt(c, h, sym_value("encoding"))? { let e = crate::builtins::encoding::to_enc(c, e)?; c.str_modify(slf)?.enc = e; }
         if let Some(cap) = crate::hash::hash_get_opt(c, h, sym_value("capacity"))? { num_to_long(c, cap)?; }
     }
-    Ok(NIL)
+    Ok(slf)
 });
 cfn!(s_s_new, |c, slf, a, blk| {
     let o = crate::builtins::object::alloc_instance(c, slf)?;

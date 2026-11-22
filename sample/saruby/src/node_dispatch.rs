@@ -402,6 +402,16 @@ pub fn DISPATCH_node_line(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
 }
 
 #[allow(non_snake_case, unused_variables, unused_unsafe)]
+pub fn DISPATCH_node_trace(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_trace");
+    let np = n as *mut NodeOf<node_trace_struct>;
+    unsafe {
+
+    EVAL_node_trace::<crate::vm::LineAt, Dyn>(c, n, fp, (*np).u.ev, crate::vm::LineAt(&(*np).head.line), (*np).u.body)
+    }
+}
+
+#[allow(non_snake_case, unused_variables, unused_unsafe)]
 pub fn DISPATCH_node_if(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_if");
     let np = n as *mut NodeOf<node_if_struct>;

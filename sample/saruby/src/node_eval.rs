@@ -74,6 +74,9 @@ use crate::symbol::s;
 
 
 
+// Only in code compiled for tracing (vm::TRACE_COMPILE): a statement's line (ev = EV_LINE) or a
+// rescue clause (EV_RESCUE), reported when a hook has that event.
+
 
 
 
@@ -542,6 +545,15 @@ pub fn EVAL_node_block<D_stmts: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, stmts
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_line<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, line: H_line, body: NodePtr) -> RV {
     line.store(c.frame());
+    <D_body as Disp>::call(c, body, fp)
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_trace<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, ev: u32, line: H_line, body: NodePtr) -> RV {
+    line.store(c.frame());
+    if trace_mask() & ev != 0 { crate::builtins::tracepoint::trace_point(c, ev)?; }
     <D_body as Disp>::call(c, body, fp)
 }
 

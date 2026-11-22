@@ -42,8 +42,10 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [x] rubyspec を実 mspec で計測（runner: ~/ruby/src/trials/2026-11-22-saruby-rubyspec/bin/、SPEC_RUBY_VERSION=4.0.2）。core 19542/22373、language 2592/2933、library 1922/3188（CRuby 4.0.2: 23144/23155、2934/2934、6401/6402）
 - [ ] **AOT で knucleotide が segfault**（ruby-bench、base から。最優先で調べる）
 - [x] rubyspec 第 2 回（~/ruby/src/trials/2026-11-22-saruby-rubyspec-2/）: 特殊グローバル変数、IO の外部/内部エンコーディング（io.c 移植、読み書きの変換）、マジックコメントのソースエンコーディング、再帰構造の #hash、Range#step/#max、Kernel#Float、タイムアウト 10 ファイル。core 19617 → 20324、language 2592 → 2720
-- [ ] rubyspec の大きな塊: IO::Buffer 180、Encoding::Converter 167（transcode とエラー属性はある。primitive_convert 以下が無い）、TracePoint 72、regexp のエンコーディング修飾子 /e /s /u /n
-- [ ] IO の読み込み変換が行に分けてから変換（CRuby は変換してから分ける）。xml:/newline: 装飾と ISO-2022-JP 等は IO では変換しない
+- [x] Encoding::Converter / String#encode を CRuby 4.0 の transcode.c から移植（econv.rs、表は enc/trans/*.c から tools/gen_trans_tables.rb で生成）、TracePoint / set_trace_func（tracepoint.rs）。converter 142/142、tracepoint 74/76（~/ruby/src/trials/2026-11-22-saruby-converter-tracepoint/）
+- [ ] TracePoint の残り: thread_begin / thread_end（thread.rs 書き換え後に）。トレース用にコンパイルされていないコード（TracePoint / set_trace_func を名指すソースより前に読んだもの）は line と演算子の c_call を出さない。CRuby が内部で呼ぶ Exception#initialize・Module#===（rescue）・const_added / inherited の c_call は出ない
+- [ ] rubyspec の大きな塊: IO::Buffer 180、regexp のエンコーディング修飾子 /e /s /u /n
+- [ ] IO の読み込み変換が行に分けてから変換（CRuby は変換してから分ける）。xml:/newline: 装飾と ISO-2022-JP 等は IO では変換しない（econv.rs の Econv を IO が持てば済む: writeconv / readconv を CRuby と同じく IO ごとに 1 つ）
 - [ ] まだタイムアウト: file/flock、file/open（FIFO をスレッド 2 本で）、kernel/require（並行 require）、mutex/lock、thread/list（グリーンスレッドに横取りが無い）、io-wait/wait
 - [ ] `$_` / `$?` のスレッドローカル化、`$0 =` でプロセス名
 - [ ] library/: bigdecimal、socket（core/file の 124 も）、zlib、digest、net-*、yaml

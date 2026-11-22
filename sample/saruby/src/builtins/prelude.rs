@@ -28,7 +28,7 @@ macro_rules! lib { ($n:literal) => { ($n, include_str!(concat!("../../prelude/li
 const LIBS: &[(&str, &str)] = &[lib!("etc"), lib!("timeout"), lib!("monitor"), lib!("time"), lib!("bundler"), ("bundler/setup", "require \"bundler\"; Bundler.setup\n"), lib!("date"), ("date_core", "require \"date\"\n"), lib!("pathname"), ("saruby/pathname", include_str!("../../prelude/lib/pathname_core.rb")), ("saruby/argf", include_str!("../../prelude/lib/argf.rb"))];
 /// Features whose implementation is native and always present (require is a no-op).
 const NATIVE: &[&str] = &["set", "stringio", "rbconfig", "thread", "fiber", "enumerator", "rational", "complex", "continuation",
-    "io/wait", "io/nonblock", "fcntl", "etc.so", "monitor.so", "strscan", "strscan.so", "json", "json/ext", "saruby/errno", "saruby/env", "saruby/rbconfig", "saruby/filetest", "saruby/stat", "saruby/sync"];
+    "io/wait", "io/nonblock", "fcntl", "etc.so", "monitor.so", "strscan", "strscan.so", "json", "json/ext", "saruby/errno", "saruby/env", "saruby/rbconfig", "saruby/filetest", "saruby/stat", "saruby/sync", "saruby/econv", "saruby/tracepoint"];
 
 /// Constant `name` under `owner` whose native definition runs on first reference (boot time: builtins/mod.rs).
 pub use crate::builtins::lazy_const;
@@ -48,6 +48,8 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
         "saruby/filetest" => crate::builtins::file::init_filetest(c),
         "saruby/stat" => crate::builtins::file::init_stat(c),
         "saruby/sync" => crate::builtins::thread::init_sync(c),
+        "saruby/econv" => crate::builtins::transcode::init(c),
+        "saruby/tracepoint" => crate::builtins::tracepoint::init_class(c),
         _ => {}
     }
     Ok(NIL)
