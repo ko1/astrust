@@ -103,7 +103,7 @@ fn f_real_p(c: &mut Ctx, x: Value) -> Result<bool, Esc> {
     if is_complex(c, x) { return Ok(false); }
     Ok(funcall(c, x, intern(b"real?"), &[], nul())?.truthy())
 }
-fn k_numeric(c: &Ctx, x: Value) -> bool { is_integer(x) || is_float(x) || is_kind_of(x, c.vm().c_numeric.get()) }
+fn k_numeric(c: &Ctx, x: Value) -> bool { is_integer(x) || is_float(x) || is_kind_of(c, x, c.vm().c_numeric.get()) }
 fn rat_canon(c: &Ctx, x: Value) -> Value { if is_rational(c, x) { let (n, d) = rat_parts(c, x); if d == Value::fix(1) { return n; } } x }
 fn to_f64(c: &mut Ctx, x: Value) -> Result<f64, Esc> { crate::builtins::numeric_methods::to_f(c, x) }
 
@@ -328,7 +328,7 @@ fn cpx_eq(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
 fn cpx_cmp(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let o = a[0]; let (re, im) = cpx_parts(c, s);
     if !k_numeric(c, o) {
-        if o.is_heap() && respond_to(o, s::coerce, true) && !is_string(o) {
+        if o.is_heap() && respond_to(c, o, s::coerce, true) && !is_string(o) {
             return match funcall(c, o, s::coerce, &[s], nul()) {
                 Ok(r) if is_array(r) && c.ary_len(r) == 2 => { let (x, y) = (c.ary(r)[0], c.ary(r)[1]); funcall(c, x, s::cmp, &[y], nul()) }
                 Ok(_) => Ok(NIL), Err(_) => { c.esc = EscKind::None; Ok(NIL) } };
@@ -347,7 +347,7 @@ fn cpx_coerce(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let o = a[0];
     if is_complex(c, o) { return Ok(c.ary_new_from(&[o, s])); }
     if k_numeric(c, o) && f_real_p(c, o)? { let x = cpx_raw(c, o, Value::fix(0)); return Ok(c.ary_new_from(&[x, s])); }
-    type_err(c, format!("{} can't be coerced into Complex", class_name_for_err(o)))
+    type_err(c, format!("{} can't be coerced into Complex", class_name_for_err(c, o)))
 }
 
 // ---- accessors / predicates -----------------------------------------------------------------
@@ -384,7 +384,7 @@ fn cpx_eql(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let o = a[0];
     if !is_complex(c, o) { return Ok(FALSE); }
     let (re, im) = cpx_parts(c, s); let (or, oi) = cpx_parts(c, o);
-    if real_class_of(re) != real_class_of(or) || real_class_of(im) != real_class_of(oi) { return Ok(FALSE); }
+    if real_class_of(c, re) != real_class_of(c, or) || real_class_of(c, im) != real_class_of(c, oi) { return Ok(FALSE); }
     cpx_eq(c, s, a, std::ptr::null())
 }
 
@@ -545,13 +545,13 @@ fn convert(c: &mut Ctx, a1: Value, a2: Option<Value>, raise: bool) -> RV {
             if k_numeric(c, a1) && !f_real_p(c, a1)? { return Ok(a1); }
             if !k_numeric(c, a1) {
                 let r: RV = (|| {
-                    if a1.is_heap() && respond_to(a1, intern(b"to_c"), true) {
+                    if a1.is_heap() && respond_to(c, a1, intern(b"to_c"), true) {
                         let r = funcall(c, a1, intern(b"to_c"), &[], nul())?;
                         if is_complex(c, r) { return Ok(r); }
-                        let cn = class_name_for_err(a1);
-                        return type_err(c, format!("can't convert {} to Complex ({}#to_c gives {})", cn, cn, class_name_for_err(r)));
+                        let cn = class_name_for_err(c, a1);
+                        return type_err(c, format!("can't convert {} to Complex ({}#to_c gives {})", cn, cn, class_name_for_err(c, r)));
                     }
-                    type_err(c, format!("can't convert {} into Complex", class_name_for_err(a1)))
+                    type_err(c, format!("can't convert {} into Complex", class_name_for_err(c, a1)))
                 })();
                 return match r { Err(e) => { if !raise && c.esc == EscKind::Raise { c.esc = EscKind::None; return Ok(NIL); } Err(e) } ok => ok };
             }
@@ -596,44 +596,45 @@ fn flo_arg(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
 fn nil_to_c(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(cpx_raw(c, Value::fix(0), Value::fix(0))) }
 
 /// Boot: defines Complex (returned) and the conversions on the other classes.
-pub fn init(vmr: &Vm) -> Value {
-    let k = define_class("Complex", vmr.c_numeric.get());
-    class_set_alloc(k, AllocKind::None);
-    let sk = singleton_class(k);
-    define_method_me(sk, s::new, new_me(s::new, sk, VISI_PUBLIC, MKind::Undef));
-    define_singleton_cfunc(k, "rect", s_rect, -1);
-    define_singleton_cfunc(k, "rectangular", s_rect, -1);
-    define_singleton_cfunc(k, "polar", s_polar, -1);
-    let d = |nm: &str, f: CFunc, ar: i32| define_cfunc(k, nm, f, ar);
-    d("+", cpx_plus, 1); d("-", cpx_minus, 1); d("*", cpx_mul, 1); d("/", cpx_div, 1); d("quo", cpx_div, 1);
-    d("fdiv", cpx_fdiv, 1); d("**", cpx_pow, 1); d("-@", cpx_uminus, 0); d("==", cpx_eq, 1); d("<=>", cpx_cmp, 1);
-    d("coerce", cpx_coerce, 1); d("real", cpx_real, 0); d("imaginary", cpx_imag, 0); d("imag", cpx_imag, 0);
-    d("abs", cpx_abs, 0); d("magnitude", cpx_abs, 0); d("abs2", cpx_abs2, 0); d("arg", cpx_arg, 0); d("angle", cpx_arg, 0);
-    d("phase", cpx_arg, 0); d("rectangular", cpx_rect, 0); d("rect", cpx_rect, 0); d("polar", cpx_polar_m, 0);
-    d("conjugate", cpx_conj, 0); d("conj", cpx_conj, 0); d("real?", cpx_real_p, 0); d("finite?", cpx_finite_p, 0);
-    d("infinite?", cpx_infinite_p, 0); d("hash", cpx_hash, 0); d("eql?", cpx_eql, 1); d("to_s", cpx_to_s, 0);
-    d("inspect", cpx_inspect, 0); d("to_i", cpx_to_i, 0); d("to_f", cpx_to_f, 0); d("to_r", cpx_to_r, 0);
-    d("rationalize", cpx_rationalize, -1); d("to_c", cpx_to_c, 0); d("numerator", cpx_numerator, 0);
-    d("denominator", cpx_denominator, 0);
+pub fn init(c: &mut Ctx) -> Value {
+    let vmr = c.vm();
+    let k = define_class(c, "Complex", vmr.c_numeric.get());
+    class_set_alloc(c, k, AllocKind::None);
+    let sk = singleton_class(c, k);
+    define_method_me(c, sk, s::new, new_me(s::new, sk, VISI_PUBLIC, MKind::Undef));
+    define_singleton_cfunc(c, k, "rect", s_rect, -1);
+    define_singleton_cfunc(c, k, "rectangular", s_rect, -1);
+    define_singleton_cfunc(c, k, "polar", s_polar, -1);
+    let d = |c: &mut Ctx, nm: &str, f: CFunc, ar: i32| define_cfunc(c, k, nm, f, ar);
+    d(c, "+", cpx_plus, 1); d(c, "-", cpx_minus, 1); d(c, "*", cpx_mul, 1); d(c, "/", cpx_div, 1); d(c, "quo", cpx_div, 1);
+    d(c, "fdiv", cpx_fdiv, 1); d(c, "**", cpx_pow, 1); d(c, "-@", cpx_uminus, 0); d(c, "==", cpx_eq, 1); d(c, "<=>", cpx_cmp, 1);
+    d(c, "coerce", cpx_coerce, 1); d(c, "real", cpx_real, 0); d(c, "imaginary", cpx_imag, 0); d(c, "imag", cpx_imag, 0);
+    d(c, "abs", cpx_abs, 0); d(c, "magnitude", cpx_abs, 0); d(c, "abs2", cpx_abs2, 0); d(c, "arg", cpx_arg, 0); d(c, "angle", cpx_arg, 0);
+    d(c, "phase", cpx_arg, 0); d(c, "rectangular", cpx_rect, 0); d(c, "rect", cpx_rect, 0); d(c, "polar", cpx_polar_m, 0);
+    d(c, "conjugate", cpx_conj, 0); d(c, "conj", cpx_conj, 0); d(c, "real?", cpx_real_p, 0); d(c, "finite?", cpx_finite_p, 0);
+    d(c, "infinite?", cpx_infinite_p, 0); d(c, "hash", cpx_hash, 0); d(c, "eql?", cpx_eql, 1); d(c, "to_s", cpx_to_s, 0);
+    d(c, "inspect", cpx_inspect, 0); d(c, "to_i", cpx_to_i, 0); d(c, "to_f", cpx_to_f, 0); d(c, "to_r", cpx_to_r, 0);
+    d(c, "rationalize", cpx_rationalize, -1); d(c, "to_c", cpx_to_c, 0); d(c, "numerator", cpx_numerator, 0);
+    d(c, "denominator", cpx_denominator, 0);
     for nm in ["%", "<", "<=", ">", ">=", "between?", "clamp", "div", "divmod", "floor", "ceil", "modulo", "remainder",
                "round", "step", "truncate", "i", "positive?", "negative?"] {
         let id = intern(nm.as_bytes());
-        define_method_me(k, id, new_me(id, k, VISI_PUBLIC, MKind::Undef));
+        define_method_me(c, k, id, new_me(id, k, VISI_PUBLIC, MKind::Undef));
     }
     // no context at boot (nothing is borrowed yet)
     let iu = crate::gc::alloc(k, Body::Data(Box::new(RComplex { re: Value::fix(0), im: Value::fix(1) })));
     obj_set_flags(iu, FL_FROZEN);
-    const_set(k, intern(b"I"), iu);
+    const_set(c, k, intern(b"I"), iu);
     let n = vmr.c_numeric.get();
-    define_cfunc(n, "to_c", num_to_c, 0);
-    define_cfunc(n, "i", num_i, 0);
-    define_cfunc(n, "polar", num_polar, 0);
-    define_cfunc(n, "abs2", num_abs2, 0);
-    define_cfunc(vmr.c_float.get(), "arg", flo_arg, 0);
-    define_cfunc(vmr.c_float.get(), "angle", flo_arg, 0);
-    define_cfunc(vmr.c_float.get(), "phase", flo_arg, 0);
-    define_cfunc(vmr.c_nil.get(), "to_c", nil_to_c, 0);
-    define_cfunc(vmr.c_string.get(), "to_c", str_to_c, 0);
-    define_module_function(vmr.m_kernel.get(), "Complex", k_complex, -1);
+    define_cfunc(c, n, "to_c", num_to_c, 0);
+    define_cfunc(c, n, "i", num_i, 0);
+    define_cfunc(c, n, "polar", num_polar, 0);
+    define_cfunc(c, n, "abs2", num_abs2, 0);
+    define_cfunc(c, vmr.c_float.get(), "arg", flo_arg, 0);
+    define_cfunc(c, vmr.c_float.get(), "angle", flo_arg, 0);
+    define_cfunc(c, vmr.c_float.get(), "phase", flo_arg, 0);
+    define_cfunc(c, vmr.c_nil.get(), "to_c", nil_to_c, 0);
+    define_cfunc(c, vmr.c_string.get(), "to_c", str_to_c, 0);
+    define_module_function(c, vmr.m_kernel.get(), "Complex", k_complex, -1);
     k
 }

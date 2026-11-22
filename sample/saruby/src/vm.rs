@@ -4,6 +4,8 @@ use crate::heap::{obj_clear_flags, obj_flags, obj_klass, obj_set_flags, obj_set_
 use crate::gc::{self, EdgeVisitor, Saruby, RootVisitor};
 use crate::node::{NodePtr, DispatchFn};
 use crate::object::*;
+#[allow(unused_imports)]
+use crate::heap::no_legacy_body::*;   // no object accessor (docs/safe_heap.md)
 use crate::symbol::{intern, intern_str, s, sym_str};
 use crate::value::*;
 pub use crate::stack::*;
@@ -524,9 +526,9 @@ pub fn class_of(v: Value) -> Value {
 }
 
 /// The non-singleton class of v.
-pub fn real_class_of(v: Value) -> Value {
+pub fn real_class_of(c: &Ctx, v: Value) -> Value {
     let mut k = class_of(v);
-    while rclass(k).is_singleton { k = rclass(k).superclass; }
+    while c.class(k).is_singleton { k = c.class(k).superclass; }
     k
 }
 
@@ -537,16 +539,17 @@ pub fn alloc_class(meta: Value, superclass: Value, is_module: bool, alloc: Alloc
 }
 
 /// Create a class with its metaclass (superclass's metaclass as the metaclass's super).
-pub fn new_class(superclass: Value) -> Value {
+pub fn new_class(c: &mut Ctx, superclass: Value) -> Value {
     let vm = vm();
-    let alloc = if superclass == NIL { AllocKind::Object } else { rclass(superclass).alloc };
+    let alloc = if superclass == NIL { AllocKind::Object } else { c.class(superclass).alloc };
     let k = alloc_class(vm.c_class.get(), superclass, false, alloc);
     if superclass != NIL {
-        rclass(superclass).subclasses.push(k);
-        let sm = singleton_class(superclass);
+        c.class_mut(superclass).subclasses.push(k);
+        let sm = singleton_class(c, superclass);
         let meta = alloc_class(vm.c_class.get(), sm, false, AllocKind::Class);
-        rclass(meta).is_singleton = true;
-        rclass(meta).attached = k;
+        let md = c.class_mut(meta);
+        md.is_singleton = true;
+        md.attached = k;
         obj_set_klass(k, meta);
     }
     k
@@ -554,27 +557,27 @@ pub fn new_class(superclass: Value) -> Value {
 
 pub fn new_module() -> Value { alloc_class(vm().c_module.get(), NIL, true, AllocKind::None) }
 
-pub fn singleton_class(v: Value) -> Value {
+pub fn singleton_class(c: &mut Ctx, v: Value) -> Value {
     if !v.is_heap() {
         if v == NIL || v == TRUE || v == FALSE { return class_of(v); }
         return NIL;
     }
     let k = obj_klass(v);
-    if rclass(k).is_singleton && rclass(k).attached == v { return k; }
+    if c.class(k).is_singleton && c.class(k).attached == v { return k; }
     let vm = vm();
-    let superclass = if is_class_or_module(v) && !rclass(v).is_module {
-        if rclass(v).is_singleton {
+    let superclass = if is_class_or_module(v) && !c.class(v).is_module {
+        if c.class(v).is_singleton {
             // metaclass of a metaclass
             k
         } else {
-            let sup = rclass(v).superclass;
-            if sup == NIL { vm.c_class.get() } else { singleton_class(sup) }
+            let sup = c.class(v).superclass;
+            if sup == NIL { vm.c_class.get() } else { singleton_class(c, sup) }
         }
     } else { k };
-    let meta = alloc_class(vm.c_class.get(), superclass, false, rclass(superclass).alloc);
-    rclass(meta).is_singleton = true;
-    rclass(meta).attached = v;
-    if is_class_or_module(v) && !rclass(v).is_module && !rclass(v).is_singleton {
+    let meta = alloc_class(vm.c_class.get(), superclass, false, c.class(superclass).alloc);
+    c.class_mut(meta).is_singleton = true;
+    c.class_mut(meta).attached = v;
+    if is_class_or_module(v) && !c.class(v).is_module && !c.class(v).is_singleton {
         // keep the metaclass chain consistent for classes created before this metaclass
     }
     obj_set_klass(meta, vm.c_class.get());
@@ -584,85 +587,82 @@ pub fn singleton_class(v: Value) -> Value {
     meta
 }
 
-pub fn class_name_sym(k: Value) -> Option<Value> { rclass(k).name }
+pub fn class_name_sym(c: &Ctx, k: Value) -> Option<Value> { c.class(k).name }
 
-pub fn define_class_under(outer: Value, name: &str, superclass: Value) -> Value {
-    let k = new_class(superclass);
-    name_class(k, outer, intern_str(name));
-    const_set(outer, intern_str(name), k);
+pub fn define_class_under(c: &mut Ctx, outer: Value, name: &str, superclass: Value) -> Value {
+    let k = new_class(c, superclass);
+    name_class(c, k, outer, intern_str(name));
+    const_set(c, outer, intern_str(name), k);
     k
 }
 /// How instances of class `k` are allocated (boot-time setup of builtin classes).
-pub fn class_set_alloc(k: Value, a: AllocKind) { rclass(k).alloc = a; }
-pub fn define_class(name: &str, superclass: Value) -> Value { define_class_under(vm().c_object.get(), name, superclass) }
-pub fn define_module_under(outer: Value, name: &str) -> Value {
+pub fn class_set_alloc(c: &mut Ctx, k: Value, a: AllocKind) { c.class_mut(k).alloc = a; }
+pub fn define_class(c: &mut Ctx, name: &str, superclass: Value) -> Value { define_class_under(c, vm().c_object.get(), name, superclass) }
+pub fn define_module_under(c: &mut Ctx, outer: Value, name: &str) -> Value {
     let m = new_module();
-    name_class(m, outer, intern_str(name));
-    const_set(outer, intern_str(name), m);
+    name_class(c, m, outer, intern_str(name));
+    const_set(c, outer, intern_str(name), m);
     m
 }
-pub fn define_module(name: &str) -> Value { define_module_under(vm().c_object.get(), name) }
+pub fn define_module(c: &mut Ctx, name: &str) -> Value { define_module_under(c, vm().c_object.get(), name) }
 
-pub fn name_class(k: Value, outer: Value, name: Sym) {
-    let cd = rclass(k);
-    if cd.name.is_some() { return; }
+pub fn name_class(c: &mut Ctx, k: Value, outer: Value, name: Sym) {
+    if c.class(k).name.is_some() { return; }
     let vm = vm();
     let path = if outer == vm.c_object.get() || outer == NIL { sym_str(name) } else {
-        match rclass(outer).name { Some(n) => format!("{}::{}", String::from_utf8_lossy(str_bytes(n)), sym_str(name)), None => return }
+        match c.class(outer).name { Some(n) => format!("{}::{}", String::from_utf8_lossy(c.str_bytes(n)), sym_str(name)), None => return }
     };
     let s = crate::string::str_new_frozen(path.as_bytes());
-    let cd = rclass(k);
+    let cd = c.class_mut(k);
     cd.name = Some(s);
     cd.base_name = name;
     cd.lexical_parent = outer;
-    // name nested anonymous modules too
+    // name nested anonymous modules too (still in k's table: rooted while name_class allocates)
     let consts: Vec<(Sym, Value)> = cd.consts.iter().map(|(a, b)| (*a, *b)).collect();
     for (cn, cv) in consts {
-        if is_class_or_module(cv) && rclass(cv).name.is_none() { name_class(cv, k, cn); }
+        if is_class_or_module(cv) && c.class(cv).name.is_none() { name_class(c, cv, k, cn); }
     }
 }
 
-pub fn class_path(k: Value) -> String {
-    let cd = rclass(k);
-    if let Some(n) = cd.name { return String::from_utf8_lossy(str_bytes(n)).into_owned(); }
+pub fn class_path(c: &Ctx, k: Value) -> String {
+    let cd = c.class(k);
+    if let Some(n) = cd.name { return String::from_utf8_lossy(c.str_bytes(n)).into_owned(); }
     if cd.is_singleton {
         let a = cd.attached;
-        let inner = if is_class_or_module(a) { class_path(a) } else { crate::builtins::kernel::any_to_s_str(a) };
+        let inner = if is_class_or_module(a) { class_path(c, a) } else { crate::builtins::kernel::any_to_s_str(c, a) };
         return format!("#<Class:{}>", inner);
     }
     format!("#<{}:{:#018x}>", if cd.is_module { "Module" } else { "Class" }, k.raw())
 }
 
 /// Include without a context (class setup): must not redefine a basic operation after boot.
-pub fn include_module(klass: Value, m: Value) {
-    assert!(!include_module_raw(klass, m), "include changed a basic operation without a context");
+pub fn include_module(c: &mut Ctx, klass: Value, m: Value) {
+    assert!(!include_module_raw(c, klass, m), "include changed a basic operation without a context");
 }
 pub fn include_module_c(c: &mut Ctx, klass: Value, m: Value) {
-    if include_module_raw(klass, m) { c.redef = crate::rt::redef_word(); }
+    if include_module_raw(c, klass, m) { c.redef = crate::rt::redef_word(); }
 }
-fn include_module_raw(klass: Value, m: Value) -> bool {
-    let cd = rclass(klass);
-    if cd.includes.contains(&m) { return false; }
-    if ancestors(klass).contains(&m) { return false; }
+fn include_module_raw(c: &mut Ctx, klass: Value, m: Value) -> bool {
+    if c.class(klass).includes.contains(&m) { return false; }
+    if ancestors(c, klass).contains(&m) { return false; }
     // an included method shadows an inherited one (e.g. NilClass's ==): operator fast paths must notice
     let mut changed = false;
-    for &am in ancestors(m).iter() {
-        let mids: Vec<Sym> = rclass(am).mtbl.keys().copied().collect();
-        for mid in mids { changed |= crate::rt::redef_note(klass, mid); }
+    for &am in ancestors(c, m).iter() {
+        let mids: Vec<Sym> = c.class(am).mtbl.keys().copied().collect();
+        for mid in mids { changed |= crate::rt::redef_note(c, klass, mid); }
     }
-    rclass(klass).includes.push(m);
+    c.class_mut(klass).includes.push(m);
     bump_hierarchy();
     changed
 }
 pub fn prepend_module(c: &mut Ctx, klass: Value, m: Value) {
-    let cd = rclass(klass);
-    if cd.prepends.contains(&m) { return; }
+    if c.class(klass).prepends.contains(&m) { return; }
     // a prepended method overrides the class's own: operator fast paths must notice
-    for &am in ancestors(m).iter() {
-        let mids: Vec<Sym> = rclass(am).mtbl.keys().copied().collect();
+    for &am in ancestors(c, m).iter() {
+        let mids: Vec<Sym> = c.class(am).mtbl.keys().copied().collect();
         for mid in mids { crate::rt::note_redefinition(c, klass, mid); }
     }
-    rclass(klass).prepends.push(m);
+    c.class_mut(klass).prepends.push(m);
     bump_hierarchy();
 }
 pub fn bump_hierarchy() {
@@ -673,15 +673,15 @@ pub fn bump_hierarchy() {
     vm.mcache.borrow_mut().clear();
 }
 
-fn module_chain(m: Value, out: &mut Vec<Value>) {
-    let cd = rclass(m);
-    for &p in cd.prepends.iter().rev() { module_chain(p, out); }
+fn module_chain(c: &Ctx, m: Value, out: &mut Vec<Value>) {
+    let cd = c.class(m);
+    for &p in cd.prepends.iter().rev() { module_chain(c, p, out); }
     out.push(m);
     // in include order: a later include goes in front, minus what an earlier one already brought in
     let mut chain: Vec<Value> = vec![];
     for &i in cd.includes.iter() {
         let mut new = vec![];
-        module_chain(i, &mut new);
+        module_chain(c, i, &mut new);
         new.retain(|x| !chain.contains(x));
         new.extend(chain);
         chain = new;
@@ -689,54 +689,52 @@ fn module_chain(m: Value, out: &mut Vec<Value>) {
     out.extend(chain);
 }
 
-/// Method resolution order (cached per class).
-pub fn ancestors(klass: Value) -> &'static Vec<Value> {
+/// Method resolution order (cached per class). An Rc: callers iterate it while using the context.
+pub fn ancestors(c: &Ctx, klass: Value) -> std::rc::Rc<[Value]> {
     let ser = vm().hierarchy_serial.get();
-    let cd = rclass(klass);
-    if cd.ancestors_serial == ser && cd.ancestors.is_some() { return cd.ancestors.as_ref().unwrap(); }
+    if let Some((s, a)) = &*c.class(klass).ancestors.borrow() { if *s == ser { return a.clone(); } }
     let mut out = vec![];
     let mut k = klass;
     while k != NIL {
         let mut part = vec![];
-        module_chain(k, &mut part);
+        module_chain(c, k, &mut part);
         for x in part {
             if !out.contains(&x) { out.push(x); }
         }
-        k = rclass(k).superclass;
+        k = c.class(k).superclass;
     }
-    let cd = rclass(klass);
-    cd.ancestors = Some(out);
-    cd.ancestors_serial = ser;
-    cd.ancestors.as_ref().unwrap()
+    let a: std::rc::Rc<[Value]> = out.into();
+    *c.class(klass).ancestors.borrow_mut() = Some((ser, a.clone()));
+    a
 }
 
-pub fn define_method_me(klass: Value, name: Sym, me: *const MethodEntry) {
-    rclass(klass).mtbl.insert(name, me);
+pub fn define_method_me(c: &mut Ctx, klass: Value, name: Sym, me: *const MethodEntry) {
+    c.class_mut(klass).mtbl.insert(name, me);
     let vm = vm();
     bump_method_serial();
     vm.mcache.borrow_mut().clear();
 }
 
-pub fn define_cfunc(klass: Value, name: &str, f: CFunc, arity: i32) {
+pub fn define_cfunc(c: &mut Ctx, klass: Value, name: &str, f: CFunc, arity: i32) {
     let s = intern_str(name);
-    define_method_me(klass, s, new_me(s, klass, VISI_PUBLIC, MKind::Cfunc(f, arity)));
+    define_method_me(c, klass, s, new_me(s, klass, VISI_PUBLIC, MKind::Cfunc(f, arity)));
 }
-pub fn define_private_cfunc(klass: Value, name: &str, f: CFunc, arity: i32) {
+pub fn define_private_cfunc(c: &mut Ctx, klass: Value, name: &str, f: CFunc, arity: i32) {
     let s = intern_str(name);
-    define_method_me(klass, s, new_me(s, klass, VISI_PRIVATE, MKind::Cfunc(f, arity)));
+    define_method_me(c, klass, s, new_me(s, klass, VISI_PRIVATE, MKind::Cfunc(f, arity)));
 }
-pub fn define_singleton_cfunc(v: Value, name: &str, f: CFunc, arity: i32) {
-    let k = singleton_class(v);
-    define_cfunc(k, name, f, arity);
+pub fn define_singleton_cfunc(c: &mut Ctx, v: Value, name: &str, f: CFunc, arity: i32) {
+    let k = singleton_class(c, v);
+    define_cfunc(c, k, name, f, arity);
 }
-pub fn define_module_function(m: Value, name: &str, f: CFunc, arity: i32) {
-    define_private_cfunc(m, name, f, arity);
-    define_singleton_cfunc(m, name, f, arity);
+pub fn define_module_function(c: &mut Ctx, m: Value, name: &str, f: CFunc, arity: i32) {
+    define_private_cfunc(c, m, name, f, arity);
+    define_singleton_cfunc(c, m, name, f, arity);
 }
 
-pub fn search_method(klass: Value, mid: Sym) -> *const MethodEntry {
-    for &k in ancestors(klass).iter() {
-        if let Some(&me) = rclass(k).mtbl.get(&mid) {
+pub fn search_method(c: &Ctx, klass: Value, mid: Sym) -> *const MethodEntry {
+    for &k in ancestors(c, klass).iter() {
+        if let Some(&me) = c.class(k).mtbl.get(&mid) {
             if let MKind::ZSuper = unsafe { (*me).kind } { continue; }
             return me;
         }
@@ -746,10 +744,10 @@ pub fn search_method(klass: Value, mid: Sym) -> *const MethodEntry {
 
 /// Lookup with the global method cache; undefined entries come back null.
 #[inline]
-pub fn lookup_method(klass: Value, mid: Sym) -> *const MethodEntry {
+pub fn lookup_method(c: &Ctx, klass: Value, mid: Sym) -> *const MethodEntry {
     let vm = vm();
     if let Some(&me) = vm.mcache.borrow().get(&(klass.raw(), mid)) { return me; }
-    let mut me = search_method(klass, mid);
+    let mut me = search_method(c, klass, mid);
     if !me.is_null() { if let MKind::Undef = unsafe { (*me).kind } { me = std::ptr::null(); } }
     vm.mcache.borrow_mut().insert((klass.raw(), mid), me);
     me
@@ -776,34 +774,34 @@ pub fn cref_refinements(mut cr: *const Cref) -> Value {
 
 /// Method lookup at a call site whose cref may have refinements activated.
 #[inline(never)]
-pub fn lookup_method_refined(cref: *const Cref, klass: Value, mid: Sym) -> *const MethodEntry {
+pub fn lookup_method_refined(c: &Ctx, cref: *const Cref, klass: Value, mid: Sym) -> *const MethodEntry {
     let refs = cref_refinements(cref);
-    if refs == NIL { return lookup_method(klass, mid); }
-    let n = rary(refs).len();
-    for &k in ancestors(klass).iter() {
+    if refs == NIL { return lookup_method(c, klass, mid); }
+    let n = c.ary(refs).len();
+    for &k in ancestors(c, klass).iter() {
         for i in (0..n).rev() {
-            let r = rary(refs)[i];
-            if rclass(r).attached != k { continue; }
-            let me = search_method(r, mid);
+            let r = c.ary(refs)[i];
+            if c.class(r).attached != k { continue; }
+            let me = search_method(c, r, mid);
             if me.is_null() { continue; }
             // `undef` in the refine block hides the method
             return if matches!(unsafe { (*me).kind }, MKind::Undef) { std::ptr::null() } else { me };
         }
-        if rclass(k).mtbl.contains_key(&mid) { break; }
+        if c.class(k).mtbl.contains_key(&mid) { break; }
     }
-    lookup_method(klass, mid)
+    lookup_method(c, klass, mid)
 }
 
 /// Next method after `owner` in klass's ancestors (super).
-pub fn super_method(klass: Value, owner: Value, mid: Sym) -> *const MethodEntry {
-    let anc = ancestors(klass);
+pub fn super_method(c: &Ctx, klass: Value, owner: Value, mid: Sym) -> *const MethodEntry {
+    let anc = ancestors(c, klass);
     let mut found = false;
     // super from a refined method: the refined class's own method comes next
-    let (owner, refined) = if rclass(owner).refined { (rclass(owner).attached, true) } else { (owner, false) };
+    let (owner, refined) = if c.class(owner).refined { (c.class(owner).attached, true) } else { (owner, false) };
     for &k in anc.iter() {
         if refined && k == owner { found = true; }
         if found {
-            if let Some(&me) = rclass(k).mtbl.get(&mid) {
+            if let Some(&me) = c.class(k).mtbl.get(&mid) {
                 if let MKind::ZSuper = unsafe { (*me).kind } { continue; }
                 if let MKind::Undef = unsafe { (*me).kind } { return std::ptr::null(); }
                 return me;
@@ -813,25 +811,24 @@ pub fn super_method(klass: Value, owner: Value, mid: Sym) -> *const MethodEntry 
     std::ptr::null()
 }
 
-pub fn respond_to(v: Value, mid: Sym, include_private: bool) -> bool {
-    let me = lookup_method(class_of(v), mid);
+pub fn respond_to(c: &Ctx, v: Value, mid: Sym, include_private: bool) -> bool {
+    let me = lookup_method(c, class_of(v), mid);
     if me.is_null() { return false; }
     include_private || unsafe { (*me).visi } == VISI_PUBLIC
 }
 
 // ---- instance variables --------------------------------------------------------------------
 
-pub fn ivar_get(v: Value, name: Sym) -> Value {
+pub fn ivar_get(c: &Ctx, v: Value, name: Sym) -> Value {
     if v.is_heap() {
-        let o = obj(v);
-        if let Body::Object(ivs) = &o.body {
-            let k = real_class_of(v);
-            if let Some(&i) = rclass(k).ivar_index.get(&name) {
+        if let Some(ivs) = c.obj_ivars(v) {
+            let k = real_class_of(c, v);
+            if let Some(&i) = c.class(k).ivar_index.get(&name) {
                 if let Some(x) = ivs.get(i as usize) { if x != UNDEF { return x; } }
             }
             return NIL;
         }
-        if o.flags & FL_EXIVAR != 0 {
+        if obj_flags(v) & FL_EXIVAR != 0 {
             if let Some(iv) = vm().gen_ivars.borrow().get(&(v.raw() as usize)) {
                 for (n, x) in iv { if *n == name { return *x; } }
             }
@@ -840,12 +837,11 @@ pub fn ivar_get(v: Value, name: Sym) -> Value {
     NIL
 }
 
-pub fn ivar_defined(v: Value, name: Sym) -> bool {
+pub fn ivar_defined(c: &Ctx, v: Value, name: Sym) -> bool {
     if v.is_heap() {
-        let o = obj(v);
-        if let Body::Object(ivs) = &o.body {
-            let k = real_class_of(v);
-            if let Some(&i) = rclass(k).ivar_index.get(&name) {
+        if let Some(ivs) = c.obj_ivars(v) {
+            let k = real_class_of(c, v);
+            if let Some(&i) = c.class(k).ivar_index.get(&name) {
                 return ivs.get(i as usize).map(|x| x != UNDEF).unwrap_or(false);
             }
             return false;
@@ -855,8 +851,8 @@ pub fn ivar_defined(v: Value, name: Sym) -> bool {
     false
 }
 
-pub fn ivar_index_for(k: Value, name: Sym) -> u32 {
-    let cd = rclass(k);
+pub fn ivar_index_for(c: &mut Ctx, k: Value, name: Sym) -> u32 {
+    let cd = c.class_mut(k);
     if let Some(&i) = cd.ivar_index.get(&name) { return i; }
     let i = cd.ivar_names.len() as u32;
     cd.ivar_names.push(name);
@@ -865,37 +861,42 @@ pub fn ivar_index_for(k: Value, name: Sym) -> u32 {
 }
 
 pub fn ivar_set(c: &mut Ctx, v: Value, name: Sym, val: Value) -> RV {
-    if !v.is_heap() { return Err(raise_frozen(c, v)); }
-    let o = obj(v);
-    if o.flags & FL_FROZEN != 0 { return Err(raise_frozen(c, v)); }
-    ivar_set_raw(v, name, val);
+    if !v.is_heap() || obj_flags(v) & FL_FROZEN != 0 { return Err(raise_frozen(c, v)); }
+    ivar_set_raw(c, v, name, val);
     Ok(val)
 }
 
-pub fn ivar_set_raw(v: Value, name: Sym, val: Value) {
-    let o = obj(v);
-    if let Body::Object(_) = &o.body {
-        let k = real_class_of(v);
-        let i = ivar_index_for(k, name) as usize;
-        let ivs = ivars_of(v);
+pub fn ivar_set_raw(c: &mut Ctx, v: Value, name: Sym, val: Value) {
+    if is_object(v) {
+        let k = real_class_of(c, v);
+        let i = ivar_index_for(c, k, name) as usize;
+        let n = c.class(k).ivar_names.len();
+        let ivs = c.ivars_mut(v);
         // room for every ivar the class knows: later sets of this object hit
-        if ivs.len() <= i { ivs.resize(rclass(k).ivar_names.len()); }
+        if ivs.len() <= i { ivs.resize(n); }
         ivs.set(i, val);
         return;
     }
-    o.flags |= FL_EXIVAR;
+    ivar_set_generic(v, name, val);
+}
+
+/// An ivar of an object that is not a plain object (a class, a String, ..): the generic table and
+/// the header only, so no context is needed (boot-time setup uses it).
+pub fn ivar_set_generic(v: Value, name: Sym, val: Value) {
+    assert!(!is_object(v), "ivar_set_generic on a plain object");
+    obj_set_flags(v, FL_EXIVAR);
     let mut g = vm().gen_ivars.borrow_mut();
     let e = g.entry(v.raw() as usize).or_default();
     for (n, x) in e.iter_mut() { if *n == name { *x = val; return; } }
     e.push((name, val));
 }
 
-pub fn ivar_remove(v: Value, name: Sym) -> Option<Value> {
+pub fn ivar_remove(c: &mut Ctx, v: Value, name: Sym) -> Option<Value> {
     if !v.is_heap() { return None; }
-    let o = obj(v);
-    if let Body::Object(ivs) = &mut o.body {
-        let k = real_class_of(v);
-        if let Some(&i) = rclass(k).ivar_index.get(&name) {
+    if is_object(v) {
+        let k = real_class_of(c, v);
+        if let Some(&i) = c.class(k).ivar_index.get(&name) {
+            let ivs = c.ivars_mut(v);
             if let Some(old) = ivs.get(i as usize) { if old != UNDEF { ivs.set(i as usize, UNDEF); return Some(old); } }
         }
         return None;
@@ -907,13 +908,12 @@ pub fn ivar_remove(v: Value, name: Sym) -> Option<Value> {
 }
 
 /// (name, value) of the set ivars in definition order.
-pub fn ivar_list(v: Value) -> Vec<(Sym, Value)> {
+pub fn ivar_list(c: &Ctx, v: Value) -> Vec<(Sym, Value)> {
     let mut out = vec![];
     if !v.is_heap() { return out; }
-    let o = obj(v);
-    if let Body::Object(ivs) = &o.body {
-        let k = real_class_of(v);
-        let names = &rclass(k).ivar_names;
+    if let Some(ivs) = c.obj_ivars(v) {
+        let k = real_class_of(c, v);
+        let names = &c.class(k).ivar_names;
         for (i, x) in ivs.iter().enumerate() { if x != UNDEF { out.push((names[i], x)); } }
         return out;
     }
@@ -923,33 +923,33 @@ pub fn ivar_list(v: Value) -> Vec<(Sym, Value)> {
 
 // ---- constants -----------------------------------------------------------------------------
 
-pub fn const_set(klass: Value, name: Sym, val: Value) {
-    let cd = rclass(klass);
+pub fn const_set(c: &mut Ctx, klass: Value, name: Sym, val: Value) {
+    let cd = c.class_mut(klass);
     if cd.consts.insert(name, val).is_none() { cd.const_order.push(name); }
     cd.autoload.remove(&name);
     vm().const_serial.set(vm().const_serial.get() + 1);
-    if is_class_or_module(val) && rclass(val).name.is_none() { name_class(val, klass, name); }
+    if is_class_or_module(val) && c.class(val).name.is_none() { name_class(c, val, klass, name); }
 }
 
-pub fn const_get_at(klass: Value, name: Sym) -> Option<Value> { rclass(klass).consts.get(&name).copied() }
+pub fn const_get_at(c: &Ctx, klass: Value, name: Sym) -> Option<Value> { c.class(klass).consts.get(&name).copied() }
 
 pub fn const_get_inherit(c: &mut Ctx, klass: Value, name: Sym) -> Result<Option<Value>, Esc> {
-    for &k in ancestors(klass).iter() {
-        if let Some(v) = const_get_at(k, name) { return Ok(Some(v)); }
-        if let Some(&path) = rclass(k).autoload.get(&name) { return do_autoload(c, k, name, path); }
+    for &k in ancestors(c, klass).iter() {
+        if let Some(v) = const_get_at(c, k, name) { return Ok(Some(v)); }
+        if let Some(&path) = c.class(k).autoload.get(&name) { return do_autoload(c, k, name, path); }
     }
-    if rclass(klass).is_module {
+    if c.class(klass).is_module {
         let o = vm().c_object.get();
-        if let Some(v) = const_get_at(o, name) { return Ok(Some(v)); }
-        if let Some(&path) = rclass(o).autoload.get(&name) { return do_autoload(c, o, name, path); }
+        if let Some(v) = const_get_at(c, o, name) { return Ok(Some(v)); }
+        if let Some(&path) = c.class(o).autoload.get(&name) { return do_autoload(c, o, name, path); }
     }
     Ok(None)
 }
 
 fn do_autoload(c: &mut Ctx, k: Value, name: Sym, path: Value) -> Result<Option<Value>, Esc> {
-    rclass(k).autoload.remove(&name);
+    c.class_mut(k).autoload.remove(&name);
     crate::builtins::kernel::require_feature(c, path, false)?;
-    Ok(const_get_at(k, name))
+    Ok(const_get_at(c, k, name))
 }
 
 /// Lexical scope first (not including the top level), then the cref class's ancestors, then Object.
@@ -959,8 +959,8 @@ pub fn const_lookup(c: &mut Ctx, cref: *const Cref, name: Sym) -> RV {
     unsafe {
         while !cr.is_null() && !(*cr).prev.is_null() {
             let k = (*cr).klass;
-            if let Some(v) = const_get_at(k, name) { return Ok(v); }
-            if let Some(&path) = rclass(k).autoload.get(&name) { if let Some(v) = do_autoload(c, k, name, path)? { return Ok(v); } }
+            if let Some(v) = const_get_at(c, k, name) { return Ok(v); }
+            if let Some(&path) = c.class(k).autoload.get(&name) { if let Some(v) = do_autoload(c, k, name, path)? { return Ok(v); } }
             cr = (*cr).prev;
         }
     }
@@ -971,12 +971,12 @@ pub fn const_lookup(c: &mut Ctx, cref: *const Cref, name: Sym) -> RV {
 }
 
 pub fn const_missing(c: &mut Ctx, klass: Value, name: Sym) -> RV {
-    let me = lookup_method(class_of(klass), s::const_missing);
+    let me = lookup_method(c, class_of(klass), s::const_missing);
     if !me.is_null() && !matches!(unsafe { (*me).kind }, MKind::Cfunc(..)) {
         return funcall(c, klass, s::const_missing, &[Value::sym(name)], std::ptr::null());
     }
     let msg = if klass == vm().c_object.get() { format!("uninitialized constant {}", sym_str(name)) }
-              else { format!("uninitialized constant {}::{}", class_path(klass), sym_str(name)) };
+              else { format!("uninitialized constant {}::{}", class_path(c, klass), sym_str(name)) };
     let e = make_name_error(c, vm().c_name_error.get(), &msg, Value::sym(name), klass)?;
     Err(raise_exc(c, e))
 }
@@ -984,9 +984,11 @@ pub fn const_missing(c: &mut Ctx, klass: Value, name: Sym) -> RV {
 // ---- object allocation helpers ------------------------------------------------------------
 
 #[inline]
-pub fn new_object(klass: Value) -> Value {
+pub fn new_object(c: &mut Ctx, klass: Value) -> Value {
     // slots for every ivar an instance of the class has had: initialize never grows it
-    gc::alloc_with(klass, move || Body::Object(crate::ivbuf::IvBuf::filled(rclass(klass).ivar_names.len())))
+    let n = c.class(klass).ivar_names.len();
+    gc::alloc_with(klass, move || Body::Object(crate::ivbuf::IvBuf::filled(n)))
+
 }
 
 pub fn object_id(v: Value) -> u64 {
@@ -1011,15 +1013,15 @@ pub fn on_free_data(p: *mut RObj) {
 
 #[inline]
 pub fn raise_exc(c: &mut Ctx, e: Value) -> Esc {
-    if ivar_get(e, s::bt) == NIL && is_exception(e) {
+    if ivar_get(c, e, s::bt) == NIL && is_exception(c, e) {
         let bt = make_backtrace_lazy(c, 0);
-        ivar_set_raw(e, s::bt, bt);
+        ivar_set_raw(c, e, s::bt, bt);
     }
-    if is_exception(e) && c.errinfo != NIL && c.errinfo != e && ivar_get(e, s::cause) == NIL && !ivar_defined(e, s::cause) {
-        ivar_set_raw(e, s::cause, c.errinfo);
+    if is_exception(c, e) && c.errinfo != NIL && c.errinfo != e && ivar_get(c, e, s::cause) == NIL && !ivar_defined(c, e, s::cause) {
+        ivar_set_raw(c, e, s::cause, c.errinfo);
     }
     // one test here (raise_exc is inlined everywhere): $DEBUG or a raise hook
-    if vm().raise_hooks.get() && is_exception(e) { raise_hooks(c, e); }
+    if vm().raise_hooks.get() && is_exception(c, e) { raise_hooks(c, e); }
     c.esc = EscKind::Raise;
     c.esc_val = e;
     Esc
@@ -1041,36 +1043,36 @@ fn debug_report(c: &mut Ctx, e: Value) {
     let (esc, val) = (c.esc, c.esc_val);
     let msg = crate::builtins::exception::exc_message_str(c, e).unwrap_or_default();
     c.esc = esc; c.esc_val = val;
-    eprintln!("Exception '{}' at {} - {}", class_path(real_class_of(e)), at, msg);
+    eprintln!("Exception '{}' at {} - {}", class_path(c, real_class_of(c, e)), at, msg);
 }
 
-pub fn is_exception(v: Value) -> bool {
-    v.is_heap() && is_kind_of(v, vm().c_exception.get())
+pub fn is_exception(c: &Ctx, v: Value) -> bool {
+    v.is_heap() && is_kind_of(c, v, vm().c_exception.get())
 }
 
-pub fn is_kind_of(v: Value, k: Value) -> bool {
+pub fn is_kind_of(c: &Ctx, v: Value, k: Value) -> bool {
     let kl = class_of(v);
     if kl == k { return true; }
-    ancestors(kl).contains(&k)
+    ancestors(c, kl).contains(&k)
 }
 
-pub fn make_exception(klass: Value, msg: &str) -> Value {
-    let e = new_object(klass);
+pub fn make_exception(c: &mut Ctx, klass: Value, msg: &str) -> Value {
+    let e = new_object(c, klass);
     let m = crate::string::str_new(msg.as_bytes());
-    ivar_set_raw(e, s::mesg, m);
+    ivar_set_raw(c, e, s::mesg, m);
     e
 }
 
 pub fn make_name_error(c: &mut Ctx, klass: Value, msg: &str, name: Value, recv: Value) -> RV {
-    let e = make_exception(klass, msg);
-    ivar_set_raw(e, s::name, name);
-    ivar_set_raw(e, s::receiver, recv);
+    let e = make_exception(c, klass, msg);
+    ivar_set_raw(c, e, s::name, name);
+    ivar_set_raw(c, e, s::receiver, recv);
     let _ = c;
     Ok(e)
 }
 
 pub fn raise_msg(c: &mut Ctx, klass: Value, msg: &str) -> Esc {
-    let e = make_exception(klass, msg);
+    let e = make_exception(c, klass, msg);
     raise_exc(c, e)
 }
 
@@ -1097,9 +1099,9 @@ pub fn raise_frozen(c: &mut Ctx, v: Value) -> Esc {
         crate::legacy::recursion_leave(v, tag);
         match r { Ok(s) => s, Err(e) => return e }
     } else { " ...".into() };
-    let msg = format!("can't modify frozen {}: {}", class_path(real_class_of(v)), insp);
-    let e = make_exception(vm().c_frozen_error.get(), &msg);
-    ivar_set_raw(e, s::receiver, v);
+    let msg = format!("can't modify frozen {}: {}", class_path(c, real_class_of(c, v)), insp);
+    let e = make_exception(c, vm().c_frozen_error.get(), &msg);
+    ivar_set_raw(c, e, s::receiver, v);
     raise_exc(c, e)
 }
 
@@ -1109,12 +1111,12 @@ pub fn check_frozen(c: &mut Ctx, v: Value) -> Result<(), Esc> {
     Ok(())
 }
 
-pub fn frame_label(f: &Frame) -> String { frame_label_of(f.kind, f.me, f.iseq()) }
+pub fn frame_label(c: &Ctx, f: &Frame) -> String { frame_label_of(c, f.kind, f.me, f.iseq()) }
 
-fn frame_label_of(kind: u8, fme: *const MethodEntry, iseq: *const Iseq) -> String {
+fn frame_label_of(c: &Ctx, kind: u8, fme: *const MethodEntry, iseq: *const Iseq) -> String {
     unsafe {
         if kind == FK_CFUNC {
-            let k = real_class_of_for_label(NIL, fme);
+            let k = real_class_of_for_label(c, NIL, fme);
             return format!("{}{}", k, sym_str((*fme).name));
         }
         if iseq.is_null() { return "<main>".into(); }
@@ -1124,7 +1126,7 @@ fn frame_label_of(kind: u8, fme: *const MethodEntry, iseq: *const Iseq) -> Strin
                 if !fme.is_null() {
                     let me = &*fme;
                     let owner = me.owner;
-                    let pre = method_owner_label(owner);
+                    let pre = method_owner_label(c, owner);
                     return format!("{}{}", pre, sym_str(me.name));
                 }
                 is.info.label.clone()
@@ -1135,7 +1137,7 @@ fn frame_label_of(kind: u8, fme: *const MethodEntry, iseq: *const Iseq) -> Strin
                 let l = &is.info.label;
                 let mname = sym_str(me.name);
                 match l.find(" in ") {
-                    Some(p) if l[p + 4..] == *mname => format!("{}{}{}", &l[..p + 4], method_owner_label(me.owner), mname),
+                    Some(p) if l[p + 4..] == *mname => format!("{}{}{}", &l[..p + 4], method_owner_label(c, me.owner), mname),
                     _ => l.clone(),
                 }
             }
@@ -1144,25 +1146,25 @@ fn frame_label_of(kind: u8, fme: *const MethodEntry, iseq: *const Iseq) -> Strin
     }
 }
 
-fn real_class_of_for_label(recv: Value, me: *const MethodEntry) -> String {
-    let owner = if me.is_null() { real_class_of(recv) } else { unsafe { (*me).owner } };
-    let cd = rclass(owner);
+fn real_class_of_for_label(c: &Ctx, recv: Value, me: *const MethodEntry) -> String {
+    let owner = if me.is_null() { real_class_of(c, recv) } else { unsafe { (*me).owner } };
+    let cd = c.class(owner);
     if cd.is_singleton {
-        if is_class_or_module(cd.attached) { return format!("{}.", class_path(cd.attached)); }
+        if is_class_or_module(cd.attached) { return format!("{}.", class_path(c, cd.attached)); }
         return String::new();
     }
-    format!("{}#", class_path(owner))
+    format!("{}#", class_path(c, owner))
 }
 
-fn method_owner_label(owner: Value) -> String {
-    let cd = rclass(owner);
+fn method_owner_label(c: &Ctx, owner: Value) -> String {
+    let cd = c.class(owner);
     if cd.is_singleton {
-        if is_class_or_module(cd.attached) { return format!("{}.", class_path(cd.attached)); }
+        if is_class_or_module(cd.attached) { return format!("{}.", class_path(c, cd.attached)); }
         return String::new();
     }
     if cd.name.is_none() { return String::new(); }
     if owner == vm().c_object.get() { return "Object#".into(); }
-    format!("{}#", class_path(owner))
+    format!("{}#", class_path(c, owner))
 }
 
 pub fn frame_file(f: &Frame) -> &'static str {
@@ -1172,11 +1174,11 @@ pub fn frame_file(f: &Frame) -> &'static str {
 /// Backtrace as an Array of "file:line:in 'label'" strings.
 pub fn make_backtrace(c: &mut Ctx, skip: usize) -> Value {
     let lines = backtrace_lines(c, skip);
-    lines_to_array(lines)
+    lines_to_array(c, lines)
 }
-fn lines_to_array(lines: Vec<String>) -> Value {
-    let a = crate::array::ary_new_capa(lines.len());
-    for l in lines { let s = crate::string::str_new(l.as_bytes()); crate::array::ary_push(a, s); }
+fn lines_to_array(c: &mut Ctx, lines: Vec<String>) -> Value {
+    let a = c.ary_new_capa(lines.len());
+    for l in lines { let s = crate::string::str_new(l.as_bytes()); c.ary_push(a, s); }
     a
 }
 
@@ -1199,11 +1201,13 @@ pub fn make_backtrace_lazy(c: &mut Ctx, skip: usize) -> Value {
 }
 
 /// An exception's backtrace (Array of String, or nil), formatting a captured one in place.
-pub fn exc_bt(e: Value) -> Value {
-    let v = ivar_get(e, s::bt);
-    let Some(raw) = rdata::<RawBt>(v) else { return v };
-    let a = lines_to_array(format_frames(&raw.frames, raw.skip));
-    ivar_set_raw(e, s::bt, a);
+pub fn exc_bt(c: &mut Ctx, e: Value) -> Value {
+    let v = ivar_get(c, e, s::bt);
+    let Some(raw) = c.data::<RawBt>(v) else { return v };
+    let lines = format_frames(c, &raw.frames, raw.skip);
+    let a = lines_to_array(c, lines);
+
+    ivar_set_raw(c, e, s::bt, a);
     a
 }
 
@@ -1226,10 +1230,10 @@ fn capture_frames(c: &Ctx) -> Vec<RawFrame> {
     frames
 }
 
-fn format_frames(frames: &[RawFrame], skip: usize) -> Vec<String> { format_frames_n(frames, skip, usize::MAX).unwrap_or_default() }
+fn format_frames(c: &Ctx, frames: &[RawFrame], skip: usize) -> Vec<String> { format_frames_n(c, frames, skip, usize::MAX).unwrap_or_default() }
 /// Lines skip..skip+n only: the others are not formatted (caller(0, 1) deep in a stack).
 /// None: fewer than `skip` frames (caller's nil).
-fn format_frames_n(frames: &[RawFrame], skip: usize, n: usize) -> Option<Vec<String>> {
+fn format_frames_n(c: &Ctx, frames: &[RawFrame], skip: usize, n: usize) -> Option<Vec<String>> {
     let mut out = vec![];
     let mut seen = 0usize;
     unsafe {
@@ -1242,16 +1246,16 @@ fn format_frames_n(frames: &[RawFrame], skip: usize, n: usize) -> Option<Vec<Str
             if fr.kind == FK_CFUNC && !fr.me.is_null() && (*fr.me).owner == vm().c_proc.get() && matches!(sym_str((*fr.me).name).as_ref(), "call" | "yield" | "===" | "[]") { continue; }
             seen += 1;
             if seen <= skip { continue; }
-            out.push(format!("{}:{}:in '{}'", fr.file, fr.line, frame_label_of(fr.kind, fr.me, fr.iseq)));
+            out.push(format!("{}:{}:in '{}'", fr.file, fr.line, frame_label_of(c, fr.kind, fr.me, fr.iseq)));
         }
     }
     if seen < skip { None } else { Some(out) }
 }
 
-pub fn backtrace_lines(c: &Ctx, skip: usize) -> Vec<String> { format_frames(&capture_frames(c), skip) }
+pub fn backtrace_lines(c: &Ctx, skip: usize) -> Vec<String> { format_frames(c, &capture_frames(c), skip) }
 pub fn backtrace_lines_n(c: &Ctx, skip: usize, n: Option<usize>) -> Option<Vec<String>> {
     if n == Some(0) { return Some(vec![]); }   // CRuby: [] before the range is checked
-    format_frames_n(&capture_frames(c), skip, n.unwrap_or(usize::MAX))
+    format_frames_n(c, &capture_frames(c), skip, n.unwrap_or(usize::MAX))
 }
 
 // ---- calls -----------------------------------------------------------------------------------
@@ -1276,9 +1280,9 @@ pub fn stack_check(c: &mut Ctx, need: usize) -> Result<(), Esc> {
 #[cold]
 #[inline(never)]
 pub fn raise_stack_overflow(c: &mut Ctx) -> Esc {
-    let e = make_exception(vm().c_system_stack_error.get(), "stack level too deep");
-    let bt = crate::array::ary_new();
-    ivar_set_raw(e, s::bt, bt);
+    let e = make_exception(c, vm().c_system_stack_error.get(), "stack level too deep");
+    let bt = c.ary_new();
+    ivar_set_raw(c, e, s::bt, bt);
     raise_exc(c, e)
 }
 
@@ -1294,7 +1298,7 @@ pub fn funcall_flags(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *c
     base[1].set(NIL);
     put(base, 2, args);
     let klass = class_of(recv);
-    let me = lookup_method(klass, mid);
+    let me = lookup_method(c, klass, mid);
     let r = if me.is_null() {
         method_missing(c, recv, mid, base, args.len() as u32, blk, flags)
     } else {
@@ -1314,8 +1318,8 @@ pub fn funcall_flags(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *c
 pub fn funcall_refined(c: &mut Ctx, cref: *const Cref, recv: Value, mid: Sym, args: &[Value], blk: *const Block, flags: u32) -> Option<RV> {
     // null: the current frame's scope (a cfunc frame carries its caller's cref)
     let cref = if cref.is_null() { unsafe { (*c.frame).cref() } } else { cref };
-    let me = lookup_method_refined(cref, class_of(recv), mid);
-    if me.is_null() || !rclass(unsafe { (*me).owner }).refined { return None; }
+    let me = lookup_method_refined(c, cref, class_of(recv), mid);
+    if me.is_null() || !c.class(unsafe { (*me).owner }).refined { return None; }
     if unsafe { (*me).visi } != VISI_PUBLIC && flags & CF_FCALL == 0 { return None; }
     let base = match stage(c, 2 + args.len()) { Ok(b) => b, Err(e) => return Some(Err(e)) };
     base[0].set(recv);
@@ -1366,7 +1370,7 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
                 let ni = unsafe { &*(cc.fast as *const NewInfo) };
                 if argc == ni.init_argc {
                     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("site: new");
-                    let o = new_object(ni.klass);
+                    let o = new_object(c, ni.klass);
                     base[0].set(o);   // self of initialize: keeps o alive and gives it back
                     c.call_me = ni.init_me; c.call_blk = blk;
                     let r = run_entry(c, ni.init_entry, base, argc);
@@ -1376,7 +1380,8 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
             }
             1 if argc == 0 => {
                 // attr_reader on an Object whose class assigned the ivar index
-                if let Body::Object(ivs) = &obj(recv).body {
+                // (is_heap first: the accessors' own check would add a panic path to every call site)
+                if let Some(ivs) = if recv.is_heap() { c.obj_ivars(recv) } else { None } {
                     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("site: attr_reader");
                     let v = ivs.get(cc.fast >> 2).unwrap_or(UNDEF);
                     c.set_sp(base, 0);
@@ -1384,9 +1389,8 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
                 }
             }
             2 if argc == 1 => {
-                let o = obj(recv);
-                if o.flags & FL_FROZEN == 0 {
-                    if let Body::Object(ivs) = &mut o.body {
+                if recv.is_heap() && obj_flags(recv) & FL_FROZEN == 0 {
+                    if let Some(ivs) = c.obj_ivars_mut(recv) {
                         let i = cc.fast >> 2;
                         let v = base[2].get();
                         #[cfg(feature = "nodeprof")] crate::nodeprof::hit("site: attr_writer");
@@ -1494,7 +1498,7 @@ pub fn site_fast(c: &mut Ctx, cc: &mut CallCache, recv: Value, base: Stk, argc: 
         SITE_NEW => if cc.fast & 3 == 0 && cc.fast_argc == u32::MAX {
             let ni = unsafe { &*(cc.fast as *const NewInfo) };
             if argc == ni.init_argc {
-                let o = new_object(ni.klass);
+                let o = new_object(c, ni.klass);
                 base[0].set(o);   // self of initialize: keeps o alive and gives it back
                 c.call_me = ni.init_me; c.call_blk = blk;
                 let r = run_entry(c, ni.init_entry, base, argc);
@@ -1504,16 +1508,16 @@ pub fn site_fast(c: &mut Ctx, cc: &mut CallCache, recv: Value, base: Stk, argc: 
         }
         SITE_SEND => if cc.bi >= BI_SEND { return send_fast(c, recv, base, argc, blk); }
         SITE_ATTR_R => if cc.fast & 3 == 1 {
-            if let Body::Object(ivs) = &obj(recv).body {
+            if let Some(ivs) = if recv.is_heap() { c.obj_ivars(recv) } else { None } {
                 let v = ivs.get(cc.fast >> 2).unwrap_or(UNDEF);
                 c.set_sp(base, 0);
                 return Some(Ok(if v == UNDEF { NIL } else { v }));
             }
         }
         SITE_ATTR_W => if cc.fast & 3 == 2 {
-            let o = obj(recv);
-            if o.flags & FL_FROZEN == 0 {
-                if let Body::Object(ivs) = &mut o.body {
+            if recv.is_heap() && obj_flags(recv) & FL_FROZEN == 0 {
+
+                if let Some(ivs) = c.obj_ivars_mut(recv) {
                     let v = base[2].get();
                     if ivs.set(cc.fast >> 2, v) { c.set_sp(base, 0); return Some(Ok(v)); }
                 }
@@ -1570,7 +1574,7 @@ pub fn send_guard(c: &Ctx, g: &mut SendGuard, recv: Value, smid: Sym) -> bool {
 #[inline(never)]
 fn send_guard_fill(c: &Ctx, g: &mut SendGuard, k: Value, smid: Sym) -> bool {
     if c.refinements_on() { return false; }
-    let ok = crate::inline_builtin::cache_key(lookup_method(k, smid), k) == BI_SEND;
+    let ok = crate::inline_builtin::cache_key(c, lookup_method(c, k, smid), k) == BI_SEND;
     if ok { g.klass = k.raw(); g.serial = method_serial(); }
     ok
 }
@@ -1624,7 +1628,7 @@ pub fn call_slow(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32
         let e: &mut CallCache = if cc.klass == 0 || cc.serial != serial {
             if cc.poly != 0 { for w in unsafe { &mut *(cc.poly as *mut [CallCache; POLY_WAYS]) }.iter_mut() { w.klass = 0; } }
             let me = lookup_site(c, klass, mid);
-            fill_cc(cc, recv, klass, me, serial, flags);
+            fill_cc(c, cc, recv, klass, me, serial, flags);
             cc
         } else {
             if cc.poly == 0 { cc.poly = Box::into_raw(Box::new(<[CallCache; POLY_WAYS]>::default())) as usize; }
@@ -1635,7 +1639,7 @@ pub fn call_slow(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32
                     let i = cc.poly_next as usize % POLY_WAYS;
                     cc.poly_next = cc.poly_next.wrapping_add(1);
                     let me = lookup_site(c, klass, mid);
-                    fill_cc(&mut t[i], recv, klass, me, serial, flags);
+                    fill_cc(c, &mut t[i], recv, klass, me, serial, flags);
                     &mut t[i]
                 }
             }
@@ -1663,17 +1667,17 @@ pub fn call_slow(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32
 /// Method lookup for a call site: refinements active in the frame's cref come first.
 #[inline(always)]
 fn lookup_site(c: &Ctx, klass: Value, mid: Sym) -> *const MethodEntry {
-    if refinements_on() { lookup_method_refined(unsafe { (*c.frame).cref() }, klass, mid) } else { lookup_method(klass, mid) }
+    if refinements_on() { lookup_method_refined(c, unsafe { (*c.frame).cref() }, klass, mid) } else { lookup_method(c, klass, mid) }
 }
 
 /// Method entry for recv.mid through the call cache (null: not found).
 #[inline(always)]
-pub fn lookup_cc(c: &Ctx, cc: &mut CallCache, recv: Value, mid: Sym, flags: u32) -> *const MethodEntry {
+pub fn lookup_cc(c: &mut Ctx, cc: &mut CallCache, recv: Value, mid: Sym, flags: u32) -> *const MethodEntry {
     let klass = class_of(recv);
     let serial = method_serial();
     if cc.klass == klass.raw() && cc.serial == serial { return cc.me as *const MethodEntry; }
     let me = lookup_site(c, klass, mid);
-    fill_cc(cc, recv, klass, me, serial, flags);
+    fill_cc(c, cc, recv, klass, me, serial, flags);
     me
 }
 
@@ -1752,7 +1756,7 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, re
 }
 
 #[inline(never)]
-fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry, serial: u64, flags: u32) {
+fn fill_cc(c: &mut Ctx, cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry, serial: u64, flags: u32) {
     cc.klass = klass.raw(); cc.serial = serial; cc.me = me as usize; cc.fast = 0; cc.fast_argc = u32::MAX; cc.fast_hash = 0; cc.cfunc = None; cc.bi = 0;
     // calls traced: the entry never hits (baked fast paths trust what a hit implies, e.g. a NewInfo),
     // so every call goes out of line to invoke (tracepoint::invoke_traced)
@@ -1770,9 +1774,9 @@ fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry
         MKind::Cfunc(f, arity) if me == vm().ids.c_new.get() => {
             cc.cfunc = Some(f); cc.arity = arity;
             // Class#new of a plain-object class whose initialize has a method entry
-            let cd = rclass(recv);
+            let cd = c.class(recv);
             if cd.alloc == AllocKind::Object && !cd.is_singleton && !cd.is_module {
-                let im = lookup_method(recv, s::initialize);
+                let im = lookup_method(c, recv, s::initialize);
                 if let Some(MKind::Iseq(is)) = (!im.is_null()).then(|| unsafe { (*im).kind }) {
                     let is = unsafe { &*is };
                     if !is.plain_entry().is_null() {
@@ -1782,11 +1786,11 @@ fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry
                 }
             }
         }
-        MKind::Cfunc(f, arity) => { cc.cfunc = Some(f); cc.arity = arity; cc.bi = crate::inline_builtin::cache_key(me, klass); }
+        MKind::Cfunc(f, arity) => { cc.cfunc = Some(f); cc.arity = arity; cc.bi = crate::inline_builtin::cache_key(c, me, klass); }
         MKind::AttrReader(name) | MKind::AttrWriter(name) => {
-            let cd = rclass(klass);
+            let cd = c.class(klass);
             if !cd.is_singleton && cd.alloc == AllocKind::Object {
-                let i = ivar_index_for(klass, name) as usize;
+                let i = ivar_index_for(c, klass, name) as usize;
                 cc.fast = (i << 2) | if matches!(m.kind, MKind::AttrReader(_)) { 1 } else { 2 };
             }
         }
@@ -1846,12 +1850,10 @@ pub fn spec_block_np(yc: &YieldCache, argc: usize) -> u32 {
 
 /// The heap Env of a frame whose variables are captured by blocks; params copied in.
 #[inline(never)]
-pub fn make_env(is: &Iseq, base: Stk, parent: Value) {
+pub fn make_env(c: &mut Ctx, is: &Iseq, base: Stk, parent: Value) {
     let env = gc::alloc_with(vm().c_env.get(), move || Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), parent));
     base[1].set(env);
-    if let Body::Env(vals, _) = &mut obj(env).body {
-        for &(sl, ei) in is.env_params.iter() { vals.set(ei as usize, base[sl as usize].get()); }
-    }
+    for &(sl, ei) in is.env_params.iter() { c.env_set(env, ei as u32, base[sl as usize].get()); }
 }
 
 /// Call of an Iseq method with only required, slot-contiguous params.
@@ -1868,8 +1870,8 @@ fn visibility_error(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk,
     let me_r = unsafe { &*me };
     if me_r.visi == VISI_PROTECTED {
         let slf = c.self_val();
-        let owner = if rclass(me_r.owner).is_module { me_r.owner } else { me_r.owner };
-        if is_kind_of(slf, owner) { return invoke(c, me, recv, base, argc, blk, flags); }
+        let owner = if c.class(me_r.owner).is_module { me_r.owner } else { me_r.owner };
+        if is_kind_of(c, slf, owner) { return invoke(c, me, recv, base, argc, blk, flags); }
     }
     // private setters may be called with self as explicit receiver
     if me_r.visi == VISI_PRIVATE && flags & CF_SUPER != 0 { return invoke(c, me, recv, base, argc, blk, flags); }
@@ -1882,7 +1884,7 @@ fn visibility_error(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk,
 
 pub fn method_missing(c: &mut Ctx, recv: Value, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     let klass = class_of(recv);
-    let mm = lookup_method(klass, s::method_missing);
+    let mm = lookup_method(c, klass, s::method_missing);
     if !mm.is_null() && unsafe { (*mm).owner } != vm().c_basic_object.get() {
         // shift args up by one to insert the method name
         let argc = argc as usize;
@@ -1929,24 +1931,25 @@ pub fn invoke_untraced(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: S
         MKind::Cfunc(f, arity) => invoke_cfunc(c, me, f, arity, recv, base, argc, blk, flags),
         MKind::AttrReader(id) => {
             if argc != 0 { return argc_err(c, argc as usize, 0, 0); }
-            Ok(ivar_get(recv, id))
+            Ok(ivar_get(c, recv, id))
         }
         MKind::AttrWriter(id) => {
             if argc != 1 { return argc_err(c, argc as usize, 1, 1); }
             let v = base[2].get();
             ivar_set(c, recv, id, v)
         }
-        MKind::Bmethod(p) => {
-            let pd = rproc(p);
-            let b = pd.blk;
-            let mut fr_blk = b;
-            fr_blk.self_ = recv;
-            let args = to_vec(&base[2..2 + argc as usize]);
-            let r = invoke_block_full(c, &fr_blk, &args, blk, recv, true, me, flags & CF_KW != 0);
-            r
-        }
+        MKind::Bmethod(p) => invoke_bmethod(c, me, p, recv, base, argc, blk, flags),
         MKind::Undef | MKind::ZSuper => no_method_error(c, recv, mer.name, flags),
     }
+}
+
+// out of line: inlined into invoke_untraced's callers it changed call_slow's register allocation (+2 instructions per call)
+#[inline(never)]
+fn invoke_bmethod(c: &mut Ctx, me: *const MethodEntry, p: Value, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
+    let mut fr_blk = c.proc_data(p).blk;
+    fr_blk.self_ = recv;
+    let args = to_vec(&base[2..2 + argc as usize]);
+    invoke_block_full(c, &fr_blk, &args, blk, recv, true, me, flags & CF_KW != 0)
 }
 
 #[inline]
@@ -1955,7 +1958,7 @@ pub fn invoke_cfunc(c: &mut Ctx, me: *const MethodEntry, f: CFunc, arity: i32, r
     if flags & CF_KW != 0 && argc > 0 {
         // keywords to a cfunc: an empty **h passes nothing
         let last = base[1 + argc as usize].get();
-        if flags & CF_KW_SPLAT != 0 && is_hash(last) && rhash(last).live == 0 { argc -= 1; }
+        if flags & CF_KW_SPLAT != 0 && is_hash(last) && c.hash(last).live == 0 { argc -= 1; }
         else if is_hash(last) { obj_set_flags(last, FL_KWHASH); }
     }
     if arity >= 0 && argc as i32 != arity { return argc_err(c, argc as usize, arity, arity); }
@@ -2064,7 +2067,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
     // copy args out (they overlap the local area)
     let mut args = to_vec(&base[2..2 + argc as usize]);
     // keep the args reachable while we allocate; made while they are still on the VM stack
-    let tmp = crate::array::ary_new_from(&args);
+    let tmp = c.ary_new_from(&args);
     nil_fill(base, 1, n);
     c.set_sp(base, n.max(2));
     // keywords
@@ -2074,12 +2077,12 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
         let h = *args.last().unwrap();
         if accepts_kw && !p.forwarding {
             kwh = h; args.pop();
-        } else if (flags & CF_KW_SPLAT != 0 || is_block) && is_hash(h) && rhash(h).live == 0 {
+        } else if (flags & CF_KW_SPLAT != 0 || is_block) && is_hash(h) && c.hash(h).live == 0 {
             args.pop();
         } else if is.ruby2_keywords.get() && p.rest.is_some() && is_hash(h) {
             let d = crate::hash::hash_new();
-            crate::array::ary_push(tmp, d);
-            for (k, x) in crate::hash::hash_pairs(h) { crate::hash::hash_aset(c, d, k, x)?; }
+            c.ary_push(tmp, d);
+            crate::hash::hash_copy_entries(c, d, h)?;
             obj_set_flags(d, FL_KWHASH);
             *args.last_mut().unwrap() = d;
         } else if p.forwarding {
@@ -2090,7 +2093,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
         let h = *args.last().unwrap();
         if is_hash(h) && p.kw.iter().all(|k| !k.required) { kwh = h; args.pop(); }
     }
-    if p.no_kw && flags & CF_KW != 0 && args.last().is_some_and(|&h| is_hash(h) && rhash(h).live > 0) {
+    if p.no_kw && flags & CF_KW != 0 && args.last().is_some_and(|&h| is_hash(h) && c.hash(h).live > 0) {
         return arg_err(c, "no keywords accepted");
     }
     let lead = p.lead.len();
@@ -2102,13 +2105,13 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
     if is_block && args.len() == 1 && (flags & CF_KW == 0 || simple_block) && (lead + post + opt > 1 || (p.rest.is_some() && lead + post + opt > 0) || p.has_trailing_comma || (lead == 1 && p.rest.is_some()))
         && !p.forwarding {
         let a = args[0];
-        let arr = if is_array(a) { Some(a) } else if a.is_heap() && !is_hash(a) && respond_to(a, s::to_ary, true) {
+        let arr = if is_array(a) { Some(a) } else if a.is_heap() && !is_hash(a) && respond_to(c, a, s::to_ary, true) {
             let r = funcall(c, a, s::to_ary, &[], std::ptr::null())?;
             if is_array(r) { Some(r) } else if r == NIL { None } else {
-                return type_err(c, format!("can't convert {} to Array ({}#to_ary gives {})", class_path(real_class_of(a)), class_path(real_class_of(a)), class_path(real_class_of(r))));
+                return type_err(c, format!("can't convert {} to Array ({}#to_ary gives {})", class_path(c, real_class_of(c, a)), class_path(c, real_class_of(c, a)), class_path(c, real_class_of(c, r))));
             }
         } else { None };
-        if let Some(arr) = arr { args = rary(arr).to_vec(); }
+        if let Some(arr) = arr { args = c.ary(arr).to_vec(); }
     }
     let given = args.len();
     let required = lead + post;
@@ -2133,12 +2136,12 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
     }
     if let Some(rs) = p.rest {
         let nrest = given.saturating_sub(ai + post);
-        let r = crate::array::ary_new_from(if nrest > 0 { &args[ai..ai + nrest] } else { &[] });
+        let r = c.ary_new_from(if nrest > 0 { &args[ai..ai + nrest] } else { &[] });
         base[rs as usize].set(r);
         ai += nrest;
     } else if p.forwarding {
         let nrest = given.saturating_sub(ai + post);
-        let r = crate::array::ary_new_from(if nrest > 0 { &args[ai..ai + nrest] } else { &[] });
+        let r = c.ary_new_from(if nrest > 0 { &args[ai..ai + nrest] } else { &[] });
         ai += nrest;
         // forwarding stores rest at the hidden slot recorded in kwrest position
         if let Some(fs) = p.kwrest { base[fs as usize].set(r); }
@@ -2165,21 +2168,28 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
         if let Some(kr) = p.kwrest {
             let h = crate::hash::hash_new();
             if kwh != NIL {
-                for e in crate::hash::hash_pairs(kwh) {
-                    if e.0.is_sym() && p.kw.iter().any(|k| k.name == e.0.as_sym()) { continue; }
+                let mut i = 0;
+                while let Some(e) = c.hash_entry_at(kwh, i) {
+                    i += 1;
+                    if e.0 == UNDEF || e.0.is_sym() && p.kw.iter().any(|k| k.name == e.0.as_sym()) { continue; }
                     crate::hash::hash_set(c, h, e.0, e.1)?;
                 }
             }
             base[kr as usize].set(h);
-        } else if kwh != NIL && seen < rhash(kwh).live {
-            let unknown: Vec<String> = crate::hash::hash_pairs(kwh).iter()
-                .filter(|e| !(e.0.is_sym() && p.kw.iter().any(|k| k.name == e.0.as_sym())))
-                .map(|e| crate::builtins::kernel::inspect_str(c, e.0).unwrap_or_default()).collect();
+        } else if kwh != NIL && seen < c.hash(kwh).live {
+            let mut unknown: Vec<String> = vec![];
+            let mut i = 0;
+            while let Some(e) = c.hash_entry_at(kwh, i) {
+                i += 1;
+                if e.0 == UNDEF || e.0.is_sym() && p.kw.iter().any(|k| k.name == e.0.as_sym()) { continue; }
+                unknown.push(crate::builtins::kernel::inspect_str(c, e.0).unwrap_or_default());
+            }
             if !unknown.is_empty() {
                 return arg_err(c, format!("unknown keyword{}: {}", if unknown.len() > 1 { "s" } else { "" }, unknown.join(", ")));
             }
         }
-    } else if kwh != NIL && is_hash(kwh) && rhash(kwh).live > 0 && p.no_kw {
+    } else if kwh != NIL && is_hash(kwh) && c.hash(kwh).live > 0 && p.no_kw {
+
         return arg_err(c, "no keywords accepted");
     }
     if let Some(bs) = p.block {
@@ -2190,7 +2200,8 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
         let env = gc::alloc_with(vm().c_env.get(), move || Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), outer_env));
         base[1].set(env);
         for &(sl, ei) in is.env_params.iter() {
-            if let Body::Env(vals, _) = &mut obj(env).body { vals.set(ei as usize, base[sl as usize].get()); }
+            c.env_set(env, ei as u32, base[sl as usize].get());
+
         }
     } else {
         base[1].set(outer_env);
@@ -2217,25 +2228,24 @@ pub fn block_to_proc(c: &mut Ctx, blk: *const Block) -> RV {
     let b = unsafe { &*blk };
     if b.proc_val != UNDEF { return Ok(b.proc_val); }
     if let BlockKind::Proc(p) = b.kind { return Ok(p); }
-    let outer = if b.outer_blk.is_null() { std::ptr::null() } else { &rproc(block_to_proc(c, b.outer_blk)?).blk as *const Block };
+    let outer = if b.outer_blk.is_null() { std::ptr::null() } else { let op = block_to_proc(c, b.outer_blk)?; proc_block(c, op) };
     let is_lambda = matches!(b.kind, BlockKind::Iseq(is) if unsafe { (*is).kind } == IseqKind::Lambda) || matches!(b.kind, BlockKind::Method(_));
     // copied from *b into the box, then patched there: a Block patched on the stack first was
     // read back with wide loads straddling the patch (a store-forwarding stall per Proc)
     let mut pd = Box::new(ProcData { blk: *b, is_lambda, from_method: NIL });
     pd.blk.outer_blk = outer;
     let p = gc::alloc_with(vm().c_proc.get(), move || Body::Proc(pd));
-    let pd = rproc(p);
-    pd.blk.proc_val = p;
+    c.proc_data_mut(p).blk.proc_val = p;
     unsafe { (*(blk as *mut Block)).proc_val = p; }
     Ok(p)
 }
 
 /// A Block view of a Proc value (for passing a proc as &blk).
-pub fn proc_block(p: Value) -> *const Block { &rproc(p).blk }
+pub fn proc_block(c: &Ctx, p: Value) -> *const Block { &c.proc_data(p).blk }
 
-pub fn is_lambda_block(b: *const Block) -> bool {
+pub fn is_lambda_block(c: &Ctx, b: *const Block) -> bool {
     let b = unsafe { &*b };
-    if b.proc_val != UNDEF && is_proc(b.proc_val) { return rproc(b.proc_val).is_lambda; }
+    if b.proc_val != UNDEF && is_proc(b.proc_val) { return c.proc_data(b.proc_val).is_lambda; }
     matches!(b.kind, BlockKind::Iseq(is) if unsafe { (*is).kind } == IseqKind::Lambda)
 }
 
@@ -2246,7 +2256,7 @@ pub fn yield_block(c: &mut Ctx, blk: *const Block, args: &[Value]) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("yield: from a builtin (yield_block)");
     if blk.is_null() { return err(c, vm().c_local_jump_error.get(), "no block given (yield)"); }
     let b = unsafe { &*blk };
-    if let Some(is) = block_fast(b, args.len()) {
+    if let Some(is) = block_fast(c, b, args.len()) {
         let base = c.top();
         stack_check(c, is.nlocals as usize + args.len() + 16)?;
         put(base, 2, args);
@@ -2259,13 +2269,13 @@ pub fn yield_block(c: &mut Ctx, blk: *const Block, args: &[Value]) -> RV {
 
 /// The iseq of a non-lambda block with only required params that `argc` args bind to without spreading.
 #[inline(always)]
-pub fn block_fast(b: &Block, argc: usize) -> Option<&'static Iseq> {
+pub fn block_fast(c: &Ctx, b: &Block, argc: usize) -> Option<&'static Iseq> {
     if let BlockKind::Iseq(is) = b.kind {
         let is = unsafe { &*is };
         // extra args are dropped and missing ones are nil; one arg for 2+ params may be an Array to spread
         // a `->` block entry is only reached as a lambda proc, which the last test excludes
         if !is.bentry.is_null() && !(argc == 1 && is.params.lead.len() >= 2)
-            && (b.proc_val == UNDEF || !rproc(b.proc_val).is_lambda) { return Some(is); }
+            && (b.proc_val == UNDEF || !c.proc_data(b.proc_val).is_lambda) { return Some(is); }
     }
     None
 }
@@ -2287,7 +2297,7 @@ pub fn yield1(c: &mut Ctx, blk: *const Block, a: Value) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("yield: from a builtin, 1 arg (yield1)");
     if !blk.is_null() {
         let b = unsafe { &*blk };
-        if let Some(is) = block_fast(b, 1) {
+        if let Some(is) = block_fast(c, b, 1) {
             let base = c.top();
             stack_check(c, is.nlocals as usize + 17)?;
             base[2].set(a);
@@ -2310,8 +2320,7 @@ pub fn yield_with_self(c: &mut Ctx, blk: *const Block, args: &[Value], self_: Va
 pub fn call_proc(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block) -> RV { call_proc_kw(c, p, args, blk, false) }
 
 pub fn call_proc_kw(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block, kw: bool) -> RV {
-    let pd = rproc(p);
-    let b = pd.blk;
+    let (b, p_lambda) = { let pd = c.proc_data(p); (pd.blk, pd.is_lambda) };
     // a `->` lambda called with its exact arity: its block entry (lambda frame, sizes baked)
     if let BlockKind::Iseq(is) = b.kind {
         let is = unsafe { &*is };
@@ -2325,7 +2334,7 @@ pub fn call_proc_kw(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block, kw
             return r;
         }
     }
-    invoke_block_full(c, &b, args, blk, b.self_, pd.is_lambda, std::ptr::null(), kw)
+    invoke_block_full(c, &b, args, blk, b.self_, p_lambda, std::ptr::null(), kw)
 }
 
 /// Run a block.  `lambda_call`: strict arity / own return target (lambda procs, bmethods).
@@ -2352,9 +2361,7 @@ pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const 
             funcall_flags(c, recv, mid, &args[1..], blkarg, fl)
         }
         BlockKind::Method(m) => {
-            let mo = rmethod(m);
-            let recv = mo.recv;
-            let me = mo.me;
+            let (recv, me) = { let mo = c.method_obj(m); (mo.recv, mo.me) };
             let base = stage(c, 2 + args.len())?;
             base[0].set(recv); base[1].set(NIL);
             put(base, 2, args);
@@ -2364,9 +2371,9 @@ pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const 
         }
         BlockKind::Cfunc(f, data) => f(c, data, args, blkarg),
         BlockKind::Proc(p) => {
-            let pd = rproc(p);
-            let inner = pd.blk;
-            invoke_block_full(c, &inner, args, blkarg, if self_ == b.self_ { inner.self_ } else { self_ }, pd.is_lambda || lambda_call, bme, kw)
+            let (inner, p_lambda) = { let pd = c.proc_data(p); (pd.blk, pd.is_lambda) };
+            invoke_block_full(c, &inner, args, blkarg, if self_ == b.self_ { inner.self_ } else { self_ }, p_lambda || lambda_call, bme, kw)
+
         }
     }
 }
@@ -2481,7 +2488,9 @@ pub fn visit_class<V: EdgeVisitor<Saruby> + ?Sized>(m: &mut V, cd: &mut ClassDat
     for v in cd.prepends.iter_mut() { m.visit(v); }
     for v in cd.subclasses.iter_mut() { m.visit(v); }
     for v in cd.extended_by.iter_mut() { m.visit(v); }
-    if let Some(a) = &mut cd.ancestors { for v in a { m.visit(v); } }
+    // a cache of classes reachable from superclass / includes / prepends: marked by value (a moving
+    // collector would drop the cache instead of updating a shared Rc)
+    if let Some((_, a)) = cd.ancestors.get_mut() { for &v in a.iter() { let mut x = v; m.visit(&mut x); } }
 }
 
 pub fn visit_me<V: EdgeVisitor<Saruby> + ?Sized>(m: &mut V, me: *const MethodEntry) {

@@ -57,8 +57,6 @@ fn hole_value(op: &str, root: usize, off: usize) -> Option<u64> {
 thread_local! {
     // a program's blocks and keyword methods that have an entry node over their body: the body is baked only if it ran on its own
     static BLOCKS: std::cell::RefCell<Vec<&'static Iseq>> = const { std::cell::RefCell::new(Vec::new()) };
-    // an entry's program key in hopt_index.txt: a hash of its source text, its line and kind of entry
-    static KEYS: std::cell::RefCell<std::collections::HashMap<usize, String>> = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 static SD_NAMES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -66,17 +64,20 @@ static SD_NAMES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 pub fn register_iseq(is: &'static Iseq, src_key: &dyn Fn() -> u64) { with_store(|st| register_in(st, is, src_key)); }
 
 fn register_in(st: &mut TieredStore, is: &'static Iseq, src_key: &dyn Fn() -> u64) {
+    if st.program.is_none() { return; }   // --plain
     let prelude = is.info.file == PRELUDE_FILE;
-    let src_key = src_key();
-    let mut reg = |body: NodePtr, what: &str| {
+    // an entry's program key in hopt_index.txt: its source text's hash (by content, not path: the same file
+    // run from another path or as a copy finds its own Hopt), line and kind.  The prelude is part of the
+    // build and its store is per build, so its text needs no hash.
+    let src = std::cell::OnceCell::new();
+    let src = || *src.get_or_init(|| if prelude { 0 } else { src_key() });
+    let mut reg = |body: NodePtr, kind: u64, what: &str| {
         // SARUBY_SD_NAMES=1: which body each SD_<hash> is (to read a perf profile)
         if *SD_NAMES.get_or_init(|| std::env::var_os("SARUBY_SD_NAMES").is_some()) { eprintln!("SD_{:016x} {}{} {}:{}", hash_node(body), is.info.label, what, is.info.file, is.info.line); }
         // baked code assumes the layout of layout_tree (finish_iseq)
         if !node_laid(body) { return; }
-        // by content, not path: the same file run from another path or as a copy finds its own Hopt
-        let key = format!("{:016x}:{}{}", src_key, is.info.line, what.trim());
-        let found = st.register(body as usize, hash_node(body), &key, prelude, env!("SARUBY_BUILD_ID"));
-        KEYS.with(|k| k.borrow_mut().insert(body as usize, key));
+        let key = || hash_merge(hash_merge(src(), is.info.line as u64), kind);
+        let found = st.register(body as usize, || hash_node(body), key, prelude, env!("SARUBY_BUILD_ID"));
         if let Some((p, name)) = found {
             // patch binding: the body gets its own copy when it is first dispatched (first_dispatch)
             if st.defer(body as usize, name, prelude, p) {
@@ -87,12 +88,12 @@ fn register_in(st: &mut TieredStore, is: &'static Iseq, src_key: &dyn Fn() -> u6
             vm().sd_hits.set(vm().sd_hits.get() + 1);
         }
     };
-    reg(if is.entry.is_null() { is.body } else { is.entry }, "");
+    reg(if is.entry.is_null() { is.body } else { is.entry }, 0, "");
     if !is.bentry.is_null() || !is.kentry.is_null() {
-        reg(if is.kentry.is_null() { is.bentry } else { is.kentry }, " (entry)");
+        reg(if is.kentry.is_null() { is.bentry } else { is.kentry }, 1, " (entry)");
         if !prelude { BLOCKS.with(|b| b.borrow_mut().push(is)); }
     }
-    if !is.dentry.is_null() { reg(is.dentry, " (defaults entry)"); }
+    if !is.dentry.is_null() { reg(is.dentry, 2, " (defaults entry)"); }
 }
 
 pub fn bake_config() -> BakeConfig {
@@ -124,5 +125,5 @@ fn bake_in(st: &mut TieredStore, store_dir: &str) -> Result<usize, String> {
         sc.set_profile(0);
         specialize_finish(&mut sc);
         sc.out
-    }, |e| (hash_node(e as NodePtr), KEYS.with(|k| k.borrow().get(&e).cloned().unwrap_or_default()), hopt[&e]))
+    }, |e| (hash_node(e as NodePtr), hopt[&e]))
 }

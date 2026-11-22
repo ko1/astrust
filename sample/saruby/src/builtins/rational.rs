@@ -248,7 +248,7 @@ pub fn rat_cmp_v(c: &mut Ctx, s: Value, o: Value) -> RV {
         let (x, y) = (rat_to_f(c, s), float_val(o));
         return Ok(match x.partial_cmp(&y) { Some(ord) => Value::fix(ord as i64), None => NIL });
     }
-    if o.is_heap() && respond_to(o, s::coerce, true) && !is_string(o) {
+    if o.is_heap() && respond_to(c, o, s::coerce, true) && !is_string(o) {
         let r = funcall(c, o, s::coerce, &[s], std::ptr::null());
         return match r {
             Ok(r) if is_array(r) && c.ary_len(r) == 2 => { let (x, y) = (c.ary(r)[0], c.ary(r)[1]); funcall(c, x, s::cmp, &[y], std::ptr::null()) }
@@ -294,7 +294,7 @@ fn rat_coerce(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
         let x = cpx_raw(c, s, Value::fix(0));
         return Ok(c.ary_new_from(&[o, x]));
     }
-    type_err(c, format!("{} can't be coerced into Rational", class_name_for_err(o)))
+    type_err(c, format!("{} can't be coerced into Rational", class_name_for_err(c, o)))
 }
 
 // ---- rounding -------------------------------------------------------------------------------
@@ -407,7 +407,7 @@ fn to_exact_pair(c: &mut Ctx, v: Value) -> Result<(Value, Value), Esc> {
     if let Some(p) = exact_parts(c, v) { return Ok(p); }
     if is_float(v) { let f = float_val(v); if !f.is_finite() { return err(c, c.vm().c_float_domain_error.get(), float_to_s(f)); } return Ok(float_parts(c, f)); }
     let r = funcall(c, v, intern(b"to_r"), &[], std::ptr::null())?;
-    match exact_parts(c, r) { Some(p) => Ok(p), None => type_err(c, format!("can't convert {} into Rational", class_name_for_err(v))) }
+    match exact_parts(c, r) { Some(p) => Ok(p), None => type_err(c, format!("can't convert {} into Rational", class_name_for_err(c, v))) }
 }
 fn rationalize_with(c: &mut Ctx, x: (Value, Value), e: Value) -> RV {
     let e = to_exact_pair(c, e)?;
@@ -580,18 +580,18 @@ fn conv_arg(c: &mut Ctx, v: Value, raise: bool) -> Result<Option<Value>, Esc> {
             None => { if !raise { return Ok(None); } let ins = inspect_str(c, v)?; arg_err(c, format!("invalid value for convert(): {}", ins)) }
         };
     }
-    if !is_kind_of(v, c.vm().c_numeric.get()) && v.is_heap() {
-        if respond_to(v, intern(b"to_r"), true) {
+    if !is_kind_of(c, v, c.vm().c_numeric.get()) && v.is_heap() {
+        if respond_to(c, v, intern(b"to_r"), true) {
             // exception: false also swallows what #to_r raises (rb_protect)
             let r = match funcall(c, v, intern(b"to_r"), &[], std::ptr::null()) {
                 Err(_) if !raise && c.esc == EscKind::Raise => { c.esc = EscKind::None; return Ok(None); }
                 r => r?,
             };
             if is_rational(c, r) { return Ok(Some(r)); }
-            let cn = class_name_for_err(v);
-            return type_err(c, format!("can't convert {} to Rational ({}#to_r gives {})", cn, cn, class_name_for_err(r)));
+            let cn = class_name_for_err(c, v);
+            return type_err(c, format!("can't convert {} to Rational ({}#to_r gives {})", cn, cn, class_name_for_err(c, r)));
         }
-        if respond_to(v, s::to_int, true) {
+        if respond_to(c, v, s::to_int, true) {
             // rb_check_to_int: an exception from to_int means "not an Integer"
             match funcall(c, v, s::to_int, &[], std::ptr::null()) {
                 Ok(r) if is_integer(r) => return Ok(Some(r)),
@@ -604,7 +604,7 @@ fn conv_arg(c: &mut Ctx, v: Value, raise: bool) -> Result<Option<Value>, Esc> {
 }
 fn int_value(c: &mut Ctx, v: Value) -> RV {
     if is_integer(v) { return Ok(v); }
-    if !is_numeric(v) && !is_rational(c, v) && v.is_heap() && respond_to(v, s::to_int, true) {
+    if !is_numeric(v) && !is_rational(c, v) && v.is_heap() && respond_to(c, v, s::to_int, true) {
         match funcall(c, v, s::to_int, &[], std::ptr::null()) { Ok(r) if is_integer(r) => return Ok(r), Ok(_) => {} Err(_) => c.esc = EscKind::None }
     }
     type_err(c, "not an integer")
@@ -617,19 +617,19 @@ pub fn convert_rational(c: &mut Ctx, a1: Value, a2: Option<Value>, raise: bool) 
     let Some(a2) = a2 else {
         if is_integer(a1) { return Ok(rat_raw(c, a1, Value::fix(1))); }
         if !raise {
-            if !respond_to(a1, intern(b"to_r"), true) { return Ok(NIL); }
+            if !respond_to(c, a1, intern(b"to_r"), true) { return Ok(NIL); }
             return match funcall(c, a1, intern(b"to_r"), &[], std::ptr::null()) { Ok(r) if is_rational(c, r) => Ok(r), Ok(_) => Ok(NIL), Err(_) => { c.esc = EscKind::None; Ok(NIL) } };
         }
-        if a1.is_heap() && respond_to(a1, intern(b"to_r"), true) {
+        if a1.is_heap() && respond_to(c, a1, intern(b"to_r"), true) {
             let r = funcall(c, a1, intern(b"to_r"), &[], std::ptr::null())?;
             if is_rational(c, r) { return Ok(r); }
-            let cn = class_name_for_err(a1);
-            return type_err(c, format!("can't convert {} to Rational ({}#to_r gives {})", cn, cn, class_name_for_err(r)));
+            let cn = class_name_for_err(c, a1);
+            return type_err(c, format!("can't convert {} to Rational ({}#to_r gives {})", cn, cn, class_name_for_err(c, r)));
         }
-        return type_err(c, format!("can't convert {} into Rational", class_name_for_err(a1)));
+        return type_err(c, format!("can't convert {} into Rational", class_name_for_err(c, a1)));
     };
     let kn = c.vm().c_numeric.get();
-    let numeric = |v: Value| is_kind_of(v, kn);
+    let numeric = |v: Value| is_kind_of(c, v, kn);
     if numeric(a1) && numeric(a2) && (!is_integer(a1) || !is_integer(a2)) {
         let x = if is_integer(a1) { rat_raw(c, a1, Value::fix(1)) } else { a1 };
         return funcall(c, x, s::div, &[a2], std::ptr::null());
@@ -661,29 +661,30 @@ fn nil_to_r(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(r
 fn nil_rationalize(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { check_argc(c, a, 0, 1)?; Ok(rat_raw(c, Value::fix(0), Value::fix(1))) }
 
 /// Boot: defines Rational (returned) and the conversions on the other classes.
-pub fn init(vmr: &Vm) -> Value {
-    let k = define_class("Rational", vmr.c_numeric.get());
-    class_set_alloc(k, AllocKind::None);
-    let sk = singleton_class(k);
-    define_method_me(sk, s::new, new_me(s::new, sk, VISI_PUBLIC, MKind::Undef));
-    let d = |nm: &str, f: CFunc, ar: i32| define_cfunc(k, nm, f, ar);
-    d("+", rat_plus, 1); d("-", rat_minus, 1); d("*", rat_mul, 1); d("/", rat_div, 1); d("quo", rat_div, 1);
-    d("fdiv", rat_fdiv, 1); d("**", rat_pow, 1); d("-@", rat_uminus, 0); d("abs", rat_abs, 0); d("magnitude", rat_abs, 0);
-    d("<=>", rat_cmp, 1); d("==", rat_eq, 1); d("<", rat_lt, 1); d("<=", rat_le, 1); d(">", rat_gt, 1); d(">=", rat_ge, 1);
-    d("coerce", rat_coerce, 1);
-    d("floor", rat_floor, -1); d("ceil", rat_ceil, -1); d("truncate", rat_truncate, -1); d("round", rat_round, -1);
-    d("to_s", rat_to_s, 0); d("inspect", rat_inspect, 0); d("to_f", rat_to_f_m, 0); d("to_i", rat_to_i, 0); d("to_r", rat_to_r, 0);
-    d("numerator", rat_num, 0); d("denominator", rat_den, 0); d("zero?", rat_zero_p, 0); d("positive?", rat_pos_p, 0);
-    d("negative?", rat_neg_p, 0); d("hash", rat_hash, 0); d("rationalize", rat_rationalize, -1);
-    define_cfunc(vmr.c_float.get(), "to_r", flo_to_r, 0);
-    define_cfunc(vmr.c_float.get(), "rationalize", flo_rationalize, -1);
-    define_cfunc(vmr.c_float.get(), "numerator", flo_numerator, 0);
-    define_cfunc(vmr.c_float.get(), "denominator", flo_denominator, 0);
-    define_cfunc(vmr.c_integer.get(), "to_r", int_to_r, 0);
-    define_cfunc(vmr.c_integer.get(), "rationalize", int_rationalize, -1);
-    define_cfunc(vmr.c_nil.get(), "to_r", nil_to_r, 0);
-    define_cfunc(vmr.c_nil.get(), "rationalize", nil_rationalize, -1);
-    define_cfunc(vmr.c_string.get(), "to_r", str_to_r, 0);
-    define_module_function(vmr.m_kernel.get(), "Rational", k_rational, -1);
+pub fn init(c: &mut Ctx) -> Value {
+    let vmr = c.vm();
+    let k = define_class(c, "Rational", vmr.c_numeric.get());
+    class_set_alloc(c, k, AllocKind::None);
+    let sk = singleton_class(c, k);
+    define_method_me(c, sk, s::new, new_me(s::new, sk, VISI_PUBLIC, MKind::Undef));
+    let d = |c: &mut Ctx, nm: &str, f: CFunc, ar: i32| define_cfunc(c, k, nm, f, ar);
+    d(c, "+", rat_plus, 1); d(c, "-", rat_minus, 1); d(c, "*", rat_mul, 1); d(c, "/", rat_div, 1); d(c, "quo", rat_div, 1);
+    d(c, "fdiv", rat_fdiv, 1); d(c, "**", rat_pow, 1); d(c, "-@", rat_uminus, 0); d(c, "abs", rat_abs, 0); d(c, "magnitude", rat_abs, 0);
+    d(c, "<=>", rat_cmp, 1); d(c, "==", rat_eq, 1); d(c, "<", rat_lt, 1); d(c, "<=", rat_le, 1); d(c, ">", rat_gt, 1); d(c, ">=", rat_ge, 1);
+    d(c, "coerce", rat_coerce, 1);
+    d(c, "floor", rat_floor, -1); d(c, "ceil", rat_ceil, -1); d(c, "truncate", rat_truncate, -1); d(c, "round", rat_round, -1);
+    d(c, "to_s", rat_to_s, 0); d(c, "inspect", rat_inspect, 0); d(c, "to_f", rat_to_f_m, 0); d(c, "to_i", rat_to_i, 0); d(c, "to_r", rat_to_r, 0);
+    d(c, "numerator", rat_num, 0); d(c, "denominator", rat_den, 0); d(c, "zero?", rat_zero_p, 0); d(c, "positive?", rat_pos_p, 0);
+    d(c, "negative?", rat_neg_p, 0); d(c, "hash", rat_hash, 0); d(c, "rationalize", rat_rationalize, -1);
+    define_cfunc(c, vmr.c_float.get(), "to_r", flo_to_r, 0);
+    define_cfunc(c, vmr.c_float.get(), "rationalize", flo_rationalize, -1);
+    define_cfunc(c, vmr.c_float.get(), "numerator", flo_numerator, 0);
+    define_cfunc(c, vmr.c_float.get(), "denominator", flo_denominator, 0);
+    define_cfunc(c, vmr.c_integer.get(), "to_r", int_to_r, 0);
+    define_cfunc(c, vmr.c_integer.get(), "rationalize", int_rationalize, -1);
+    define_cfunc(c, vmr.c_nil.get(), "to_r", nil_to_r, 0);
+    define_cfunc(c, vmr.c_nil.get(), "rationalize", nil_rationalize, -1);
+    define_cfunc(c, vmr.c_string.get(), "to_r", str_to_r, 0);
+    define_module_function(c, vmr.m_kernel.get(), "Rational", k_rational, -1);
     k
 }

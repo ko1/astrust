@@ -11,12 +11,12 @@ use crate::vm::*;
 
 fn nb() -> *const Block { std::ptr::null() }
 fn ext_mod(c: &Ctx) -> Value {
-    let cgi = const_get_at(c.vm().c_object.get(), intern(b"CGI")).unwrap_or(NIL);
-    if cgi == NIL { NIL } else { const_get_at(cgi, intern(b"EscapeExt")).unwrap_or(NIL) }
+    let cgi = const_get_at(c, c.vm().c_object.get(), intern(b"CGI")).unwrap_or(NIL);
+    if cgi == NIL { NIL } else { const_get_at(c, cgi, intern(b"EscapeExt")).unwrap_or(NIL) }
 }
 /// rb_call_super: the pure-Ruby CGI::Escape method this one is prepended over.
 fn call_super(c: &mut Ctx, slf: Value, name: &str, a: &[Value]) -> RV {
-    let um = ivar_get(ext_mod(c), intern(format!("__super_{}", name).as_bytes()));
+    let um = ivar_get(c, ext_mod(c), intern(format!("__super_{}", name).as_bytes()));
     let mut args = vec![slf];
     args.extend_from_slice(a);
     funcall(c, um, intern(b"bind_call"), &args, nb())
@@ -25,7 +25,7 @@ fn call_super(c: &mut Ctx, slf: Value, name: &str, a: &[Value]) -> RV {
 fn like(c: &mut Ctx, orig: Value, b: Vec<u8>, keep_class: bool) -> Value {
     let e = c.str_enc(orig);
     let n = c.str_from_vec_enc(b, e);
-    if keep_class { obj_set_klass(n, real_class_of(orig)); }
+    if keep_class { obj_set_klass(n, real_class_of(c, orig)); }
     n
 }
 
@@ -156,9 +156,9 @@ fn unescape(c: &mut Ctx, s: Value, encv: Value, plus: bool) -> RV {
 fn accept_charset(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
     if let Some(&e) = a.get(1) { return Ok(e); }
     let k = class_of(slf);
-    match crate::rt::cvar_lookup(k, intern(b"@@accept_charset")) {
+    match crate::rt::cvar_lookup(c, k, intern(b"@@accept_charset")) {
         Some((_, v)) => Ok(v),
-        None => err(c, c.vm().c_name_error.get(), format!("uninitialized class variable @@accept_charset in {}", class_path(real_class_of(slf)))),
+        None => err(c, c.vm().c_name_error.get(), format!("uninitialized class variable @@accept_charset in {}", class_path(c, real_class_of(c, slf)))),
     }
 }
 fn ascii(c: &Ctx, s: Value) -> bool { en::ascii_compat(c.str_enc(s)) }
@@ -195,21 +195,21 @@ fn e_unescape_uri(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV 
 /// InitVM_escape (after cgi/escape.rb has defined the Ruby versions).
 pub fn init(c: &mut Ctx) -> Result<(), Esc> {
     let ob = c.vm().c_object.get();
-    let cgi = match const_get_at(ob, intern(b"CGI")) { Some(v) => v, None => define_class("CGI", ob) };
-    let ext = match const_get_at(cgi, intern(b"EscapeExt")) { Some(v) => v, None => define_module_under(cgi, "EscapeExt") };
-    let esc = match const_get_at(cgi, intern(b"Escape")) { Some(v) => v, None => define_module_under(cgi, "Escape") };
+    let cgi = match const_get_at(c, ob, intern(b"CGI")) { Some(v) => v, None => define_class(c, "CGI", ob) };
+    let ext = match const_get_at(c, cgi, intern(b"EscapeExt")) { Some(v) => v, None => define_module_under(c, cgi, "EscapeExt") };
+    let esc = match const_get_at(c, cgi, intern(b"Escape")) { Some(v) => v, None => define_module_under(c, cgi, "Escape") };
     for n in ["escapeHTML", "unescapeHTML", "escapeURIComponent", "unescapeURIComponent", "escape", "unescape"] {
         if respond_to_im(c, esc, n)? {
             let s = Value::sym(intern(n.as_bytes()));
             let um = funcall(c, esc, intern(b"instance_method"), &[s], nb())?;
-            ivar_set_raw(ext, intern(format!("__super_{}", n).as_bytes()), um);
+            ivar_set_raw(c, ext, intern(format!("__super_{}", n).as_bytes()), um);
         }
     }
-    let d = |n: &str, f: CFunc, ar: i32| define_cfunc(ext, n, f, ar);
-    d("escapeHTML", e_escape_html, 1); d("unescapeHTML", e_unescape_html, 1);
-    d("escapeURIComponent", e_escape_uri, 1); d("escape_uri_component", e_escape_uri, 1);
-    d("unescapeURIComponent", e_unescape_uri, -1); d("unescape_uri_component", e_unescape_uri, -1);
-    d("escape", e_escape, 1); d("unescape", e_unescape, -1);
+    let d = |c: &mut Ctx, n: &str, f: CFunc, ar: i32| define_cfunc(c, ext, n, f, ar);
+    d(c, "escapeHTML", e_escape_html, 1); d(c, "unescapeHTML", e_unescape_html, 1);
+    d(c, "escapeURIComponent", e_escape_uri, 1); d(c, "escape_uri_component", e_escape_uri, 1);
+    d(c, "unescapeURIComponent", e_unescape_uri, -1); d(c, "unescape_uri_component", e_unescape_uri, -1);
+    d(c, "escape", e_escape, 1); d(c, "unescape", e_unescape, -1);
     funcall(c, esc, intern(b"prepend"), &[ext], nb())?;
     funcall(c, cgi, intern(b"extend"), &[ext], nb())?;
     Ok(())

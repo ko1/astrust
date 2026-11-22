@@ -142,11 +142,26 @@ fn owns_nothing(b: &Body) -> bool {
 // SAFETY (caller): p is a dead, initialized object, finalized exactly once
 #[inline(never)]
 unsafe fn drop_body(p: *mut RObj) {
+    use std::ptr::drop_in_place as d;
     unsafe {
         if let Body::Data(_) = &(*p).body { crate::vm::on_free_data(p); }
-        std::ptr::drop_in_place(&mut (*p).body);
+        // per variant: Body's drop glue was left out of line by some builds (nesteddata +0.6 % at 3ae9503)
+        match &mut (*p).body {
+            Body::Free(_) | Body::Float(_) | Body::Range(..) => {}
+            Body::Object(x) => d(x),
+            Body::Class(x) => d(x),
+            Body::String(x) => d(x),
+            Body::Array(x) => d(x),
+            Body::Hash(x) => d(x),
+            Body::Bignum(x) => d(x),
+            Body::Proc(x) => d(x),
+            Body::Env(x, _) => d(x),
+            Body::Method(x) => d(x),
+            Body::Data(x) => d(x),
+        }
     }
 }
+
 
 // SAFETY: RObj carries its GcHeader in `gc` and is 8-aligned; heap Values are made only by `alloc`.
 unsafe impl GcLang for Saruby {

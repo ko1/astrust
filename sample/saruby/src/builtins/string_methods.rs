@@ -181,9 +181,9 @@ cfn!(s_mul, |c, slf, a, b_| {
 });
 cfn!(s_mod, |c, slf, a, b_| {
     let x = a[0];
-    let arr = if is_array(x) { x } else if x.is_heap() && !is_string(x) && respond_to(x, intern(b"to_ary"), true) {
+    let arr = if is_array(x) { x } else if x.is_heap() && !is_string(x) && respond_to(c, x, intern(b"to_ary"), true) {
         let r = funcall(c, x, intern(b"to_ary"), &[], std::ptr::null())?;
-        if is_array(r) || r == NIL { r } else { return type_err(c, format!("can't convert {} to Array ({}#to_ary gives {})", class_name_for_err(x), class_name_for_err(x), class_name_for_err(r))); }
+        if is_array(r) || r == NIL { r } else { return type_err(c, format!("can't convert {} to Array ({}#to_ary gives {})", class_name_for_err(c, x), class_name_for_err(c, x), class_name_for_err(c, r))); }
     } else { NIL };
     // the elements stay reachable through `arr`, kept alive past the call
     let args: Vec<Value> = if arr != NIL { c.ary(arr).to_vec() } else { vec![x] };
@@ -197,7 +197,7 @@ cfn!(s_eq, |c, slf, a, b_| {
     if !o.is_heap() { return Ok(FALSE); }
     // rb_respond_to honours a user-defined respond_to?
     let rt = intern(b"respond_to?");
-    let ok = if respond_to(o, rt, true) { funcall(c, o, rt, &[Value::sym(s::to_str)], std::ptr::null())?.truthy() } else { respond_to(o, s::to_str, true) };
+    let ok = if respond_to(c, o, rt, true) { funcall(c, o, rt, &[Value::sym(s::to_str)], std::ptr::null())?.truthy() } else { respond_to(c, o, s::to_str, true) };
     if ok { let r = funcall(c, o, s::eq, &[slf], std::ptr::null())?; return Ok(Value::bool(r.truthy())); }
     Ok(FALSE)
 });
@@ -205,11 +205,11 @@ cfn!(s_eql, |c, slf, a, b_| Ok(Value::bool(is_string(a[0]) && c.str_bytes(slf) =
 cfn!(s_hash, |c, slf, a, b_| Ok(Value::fix((c.str_hash(slf) >> 2) as i64)));
 cfn!(s_cmp, |c, slf, a, b_| {
     if is_string(a[0]) { return Ok(Value::fix(c.str_bytes(slf).cmp(c.str_bytes(a[0])) as i64)); }
-    if a[0].is_heap() && respond_to(a[0], s::to_str, true) {
+    if a[0].is_heap() && respond_to(c, a[0], s::to_str, true) {
         let t = funcall(c, a[0], s::to_str, &[], std::ptr::null())?;
         if is_string(t) { return Ok(Value::fix(c.str_bytes(slf).cmp(c.str_bytes(t)) as i64)); }
     }
-    if a[0].is_heap() && respond_to(a[0], s::cmp, true) {
+    if a[0].is_heap() && respond_to(c, a[0], s::cmp, true) {
         let r = funcall(c, a[0], s::cmp, &[slf], std::ptr::null())?;
         if r == NIL { return Ok(NIL); }
         let pos = if r.is_fixnum() { r.as_fix() > 0 } else if is_bignum(r) { !c.big(r).neg } else { funcall(c, r, intern(b">"), &[Value::fix(0)], std::ptr::null())?.truthy() };
@@ -374,7 +374,7 @@ fn case_opts(c: &mut Ctx, a: &[Value], fold_ok: bool) -> Result<(bool, bool, boo
     let name = |v: Value| if v.is_sym() { String::from_utf8_lossy(crate::symbol::sym_bytes(v.as_sym())).into_owned() } else { String::new() };
     let mut r = (false, false, false);
     for (i, &v) in a.iter().enumerate() {
-        if !v.is_sym() { return type_err(c, format!("no implicit conversion of {} into Symbol", class_name_for_err(v))); }
+        if !v.is_sym() { return type_err(c, format!("no implicit conversion of {} into Symbol", class_name_for_err(c, v))); }
         match name(v).as_str() {
             "ascii" if a.len() == 1 => r.0 = true,
             "turkic" | "lithuanian" if a.len() == 1 || i == 0 || name(a[0]) == "turkic" || name(a[0]) == "lithuanian" => { if name(v) == "turkic" { r.1 = true; } }
@@ -727,8 +727,8 @@ cfn!(s_split, |c, slf, a, blk| {
 /// Pattern argument of sub/gsub/split: a Regexp or a String (via to_str).
 fn get_pat(c: &mut Ctx, p: Value) -> RV {
     if regexp::is_regexp(c, p) || is_string(p) { return Ok(p); }
-    if p.is_heap() && respond_to(p, s::to_str, true) { return expect_str(c, p); }
-    type_err(c, format!("wrong argument type {} (expected Regexp)", class_name_for_err(p)))
+    if p.is_heap() && respond_to(c, p, s::to_str, true) { return expect_str(c, p); }
+    type_err(c, format!("wrong argument type {} (expected Regexp)", class_name_for_err(c, p)))
 }
 /// What expand_repl can raise; it takes no context so that it can read the replacement in place.
 enum ReplErr { Undefined(String), BadFormat }
@@ -855,8 +855,8 @@ cfn!(s_sub_b, |c, slf, a, blk| { check_frozen(c, slf)?; if a.len() == 1 && blk.i
 cfn!(s_gsub_b, |c, slf, a, blk| { if a.len() == 1 && blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"gsub!"), a, NIL); } check_frozen(c, slf)?; match subst(c, slf, a, blk, true, true)? { Some((v, e)) => { let r = c.str_modify(slf)?; r.b = v.into(); r.enc = e; Ok(slf) } None => Ok(NIL) } });
 cfn!(s_scan, |c, slf, a, blk| {
     let p = a[0];
-    if !regexp::is_regexp(c, p) && !is_string(p) && !(p.is_heap() && respond_to(p, s::to_str, true)) {
-        return type_err(c, format!("wrong argument type {} (expected Regexp)", class_name_for_err(p)));
+    if !regexp::is_regexp(c, p) && !is_string(p) && !(p.is_heap() && respond_to(c, p, s::to_str, true)) {
+        return type_err(c, format!("wrong argument type {} (expected Regexp)", class_name_for_err(c, p)));
     }
     let p = if regexp::is_regexp(c, p) { p } else { expect_str(c, p)? };
     if is_string(p) { compat(c, slf, p)?; }
@@ -1142,7 +1142,7 @@ cfn!(s_scrub, |c, slf, a, blk| { let v = scrub_impl(c, slf, a, blk)?; Ok(c.str_n
 cfn!(s_scrub_b, |c, slf, a, blk| { check_frozen(c, slf)?; if let Some(v) = scrub_impl(c, slf, a, blk)? { c.str_modify(slf)?.b = v.into(); } Ok(slf) });
 /// to_str-convertible other string for casecmp, or None.
 fn casecmp_other(c: &mut Ctx, slf: Value, o: Value) -> Result<Option<Value>, Esc> {
-    let o = if is_string(o) { o } else if o.is_heap() && respond_to(o, s::to_str, true) { expect_str(c, o)? } else { return type_err(c, format!("no implicit conversion of {} into String", class_name_for_err(o))) };
+    let o = if is_string(o) { o } else if o.is_heap() && respond_to(c, o, s::to_str, true) { expect_str(c, o)? } else { return type_err(c, format!("no implicit conversion of {} into String", class_name_for_err(c, o))) };
     if crate::builtins::encoding::compatible(c, slf, o).is_none() { return Ok(None); }
     Ok(Some(o))
 }
@@ -1158,13 +1158,13 @@ fn casefold_ascii(c: &Ctx, v: Value) -> Vec<u8> {
     out
 }
 cfn!(s_casecmp, |c, slf, a, b_| {
-    if !is_string(a[0]) && !(a[0].is_heap() && respond_to(a[0], s::to_str, true)) { return Ok(NIL); }
+    if !is_string(a[0]) && !(a[0].is_heap() && respond_to(c, a[0], s::to_str, true)) { return Ok(NIL); }
     let Some(o) = casecmp_other(c, slf, a[0])? else { return Ok(NIL) };
     let (x, y) = (casefold_ascii(c, slf), casefold_ascii(c, o));
     Ok(Value::fix(x.cmp(&y) as i64))
 });
 cfn!(s_casecmp_p, |c, slf, a, b_| {
-    if !is_string(a[0]) && !(a[0].is_heap() && respond_to(a[0], s::to_str, true)) { return Ok(NIL); }
+    if !is_string(a[0]) && !(a[0].is_heap() && respond_to(c, a[0], s::to_str, true)) { return Ok(NIL); }
     let Some(o) = casecmp_other(c, slf, a[0])? else { return Ok(NIL) };
     Ok(Value::bool(fold_case(c.str_bytes(slf), c.str_enc(slf)) == fold_case(c.str_bytes(o), c.str_enc(o))))
 });
@@ -1387,7 +1387,7 @@ cfn!(s_to_c, |c, slf, a, b_| {
     let x = natural(c, r1, k1)?;
     if is_i(j) { return kernel_call(c, "Complex", &[zero, x]); }
     if j < v.len() && v[j] == b'@' {
-        if let Some((r2, _, k2)) = scan_rational(c, &v, j + 1)? { let y = natural(c, r2, k2)?; let cx = const_get_at(c.vm().c_object.get(), intern(b"Complex")).unwrap_or(NIL); return funcall(c, cx, intern(b"polar"), &[x, y], std::ptr::null()); }
+        if let Some((r2, _, k2)) = scan_rational(c, &v, j + 1)? { let y = natural(c, r2, k2)?; let cx = const_get_at(c, c.vm().c_object.get(), intern(b"Complex")).unwrap_or(NIL); return funcall(c, cx, intern(b"polar"), &[x, y], std::ptr::null()); }
         return kernel_call(c, "Complex", &[x, zero]);
     }
     if j < v.len() && (v[j] == b'+' || v[j] == b'-') {
@@ -1454,7 +1454,7 @@ cfn!(s_append_as_bytes, |c, slf, a, b_| {
         if x.is_fixnum() { add.push(x.as_fix() as u8); }
         else if is_bignum(x) { let bg = c.big(x); let m = bg.mag.first().copied().unwrap_or(0) as u8; add.push(if bg.neg { m.wrapping_neg() } else { m }); }
         else if is_string(x) { add.extend_from_slice(c.str_bytes(x)); }
-        else { return type_err(c, format!("wrong argument type {} (expected String or Integer)", class_name_for_err(x))); }
+        else { return type_err(c, format!("wrong argument type {} (expected String or Integer)", class_name_for_err(c, x))); }
     }
     c.rstring_mut(slf).b.extend_from_slice(&add);
     Ok(slf)
@@ -1509,7 +1509,7 @@ cfn!(s_byterindex, |c, slf, a, b_| {
 /// (start, len) in bytes from either a Range or an (index, length) pair.
 fn byte_range(c: &mut Ctx, slf: Value, a: &[Value], n: i64) -> Result<(usize, usize), Esc> {
     let (st, ln) = if a.len() == 1 {
-        if !is_range(a[0]) { return type_err(c, format!("wrong argument type {} (expected Range)", class_name_for_err(a[0]))); }
+        if !is_range(a[0]) { return type_err(c, format!("wrong argument type {} (expected Range)", class_name_for_err(c, a[0]))); }
         crate::range::range_beg_len(c, a[0], n, 1)?.unwrap()
     } else {
         let (mut st, ln) = (num_to_long(c, a[0])?, num_to_long(c, a[1])?);
@@ -1533,7 +1533,7 @@ cfn!(s_bytesplice, |c, slf, a, b_| {
         _ => return argc_err(c, a.len(), 2, 5),
     };
     if !srange.is_empty() && (srange.len() == 1) != (dst.len() == 1) {
-        return type_err(c, format!("wrong argument type {} (expected Range)", class_name_for_err(if dst.len() == 1 { srange[0] } else { dst[0] })));
+        return type_err(c, format!("wrong argument type {} (expected Range)", class_name_for_err(c, if dst.len() == 1 { srange[0] } else { dst[0] })));
     }
     let s2 = expect_str(c, src)?;
     let (ds, dl) = byte_range(c, slf, dst, n)?;
@@ -1551,37 +1551,37 @@ cfn!(s_bytesplice, |c, slf, a, b_| {
 cfn!(s_between, |c, slf, a, b_| Ok(Value::bool(c.str_bytes(slf) >= c.str_bytes(a[0]) && c.str_bytes(slf) <= c.str_bytes(a[1]))));
 cfn!(s_intern_frozen_p, |c, slf, a, b_| Ok(Value::bool(is_frozen(slf))));
 cfn!(s_dup, |c, slf, a, b_| crate::builtins::object::obj_dup(c, slf, false, None));
-cfn!(s_s_try_convert, |c, slf, a, b_| { if is_string(a[0]) { return Ok(a[0]); } if a[0].is_heap() && respond_to(a[0], s::to_str, true) { return expect_str(c, a[0]); } Ok(NIL) });
+cfn!(s_s_try_convert, |c, slf, a, b_| { if is_string(a[0]) { return Ok(a[0]); } if a[0].is_heap() && respond_to(c, a[0], s::to_str, true) { return expect_str(c, a[0]); } Ok(NIL) });
 
-pub fn init(k: Value) {
-    let d = |n: &str, f: CFunc, a: i32| define_cfunc(k, n, f, a);
-    define_private_cfunc(k, "initialize", s_initialize, -1);
-    d("length", s_length, 0); d("size", s_length, 0); d("bytesize", s_bytesize, 0); d("+", s_plus, 1); d("*", s_mul, 1); d("%", s_mod, 1);
-    d("==", s_eq, 1); d("===", s_eq, 1); d("eql?", s_eql, 1); d("hash", s_hash, 0); d("<=>", s_cmp, 1); d("=~", s_match_op, 1);
-    d("match", s_match, -1); d("match?", s_match_p, -1); d("[]", s_aref, -1); d("slice", s_aref, -1); d("[]=", s_aset, -1);
-    d("concat", s_concat, -1); d("<<", s_ltlt, 1); d("to_s", s_to_s, 0); d("to_str", s_to_s, 0); d("to_sym", s_to_sym, 0); d("intern", s_to_sym, 0);
-    d("to_i", s_to_i, -1); d("to_f", s_to_f, 0); d("inspect", s_inspect, 0); d("dump", s_dump, 0);
-    d("upcase", s_upcase, -1); d("upcase!", s_upcase_b, -1); d("downcase", s_downcase, -1); d("downcase!", s_downcase_b, -1);
-    d("swapcase", s_swapcase, -1); d("swapcase!", s_swapcase_b, -1); d("capitalize", s_capitalize, -1); d("capitalize!", s_capitalize_b, -1);
-    d("reverse", s_reverse, 0); d("reverse!", s_reverse_b, 0); d("include?", s_include, 1); d("start_with?", s_start_with, -1);
-    d("end_with?", s_end_with, -1); d("index", s_index, -1); d("rindex", s_rindex, -1); d("byteindex", s_byteindex, -1); d("byterindex", s_byterindex, -1); d("bytesplice", s_bytesplice, -1); d("append_as_bytes", s_append_as_bytes, -1); d("tr_s!", s_tr_s_b, 2); d("encode!", crate::builtins::transcode::s_encode_bang, -1); d("scrub!", s_scrub_b, -1); d("unicode_normalize!", s_unicode_normalize_b, -1); d("unicode_normalized?", s_unicode_normalized_p, -1);
-    d("strip", s_strip, -1); d("strip!", s_strip_b, -1); d("lstrip", s_lstrip, -1); d("lstrip!", s_lstrip_b, -1); d("rstrip", s_rstrip, -1); d("rstrip!", s_rstrip_b, -1);
-    d("chomp", s_chomp, -1); d("chomp!", s_chomp_b, -1); d("chop", s_chop, 0); d("chop!", s_chop_b, 0); d("chr", s_chr, 0);
-    d("chars", s_chars, 0); d("each_char", s_each_char, 0); d("bytes", s_bytes, 0); d("each_byte", s_each_byte, 0);
-    d("lines", s_lines, -1); d("each_line", s_each_line, -1); d("split", s_split, -1); d("sub", s_sub, -1); d("gsub", s_gsub, -1);
-    d("sub!", s_sub_b, -1); d("gsub!", s_gsub_b, -1); d("scan", s_scan, 1); d("tr", s_tr, 2); d("tr!", s_tr_b, 2); d("tr_s", s_tr_s, 2);
-    d("delete", s_delete, -1); d("delete!", s_delete_b, -1); d("count", s_count, -1); d("squeeze", s_squeeze, -1); d("squeeze!", s_squeeze_b, -1);
-    d("ljust", s_ljust, -1); d("rjust", s_rjust, -1); d("center", s_center, -1); d("empty?", s_empty, 0); d("replace", s_replace, 1);
-    define_private_cfunc(k, "initialize_copy", s_replace, 1); d("clear", s_clear, 0); d("insert", s_insert, 2); d("prepend", s_prepend, -1); d("ord", s_ord, 0); d("sum", s_sum, -1);
-    d("succ", s_succ, 0); d("next", s_succ, 0); d("succ!", s_succ_b, 0); d("next!", s_succ_b, 0); d("upto", s_upto, -1); d("hex", s_hex, 0); d("oct", s_oct, 0);
-    d("freeze", s_freeze, 0); d("+@", s_uplus, 0); d("-@", s_uminus, 0); d("dedup", s_uminus, 0); d("encoding", s_encoding, 0);
-    d("force_encoding", s_force_encoding, 1); d("b", s_b, 0); d("valid_encoding?", s_valid_encoding, 0); d("ascii_only?", s_ascii_only, 0);
-    d("unicode_normalize", s_unicode_normalize, -1); d("encode", crate::builtins::transcode::s_encode, -1); d("scrub", s_scrub, -1); d("casecmp", s_casecmp, 1); d("casecmp?", s_casecmp_p, 1);
-    d("partition", s_partition, 1); d("rpartition", s_rpartition, 1); d("delete_prefix", s_delete_prefix, 1); d("delete_suffix", s_delete_suffix, 1);
-    d("delete_prefix!", s_delete_prefix_b, 1); d("delete_suffix!", s_delete_suffix_b, 1); d("slice!", s_slice_b, -1); d("getbyte", s_getbyte, 1); d("setbyte", s_setbyte, 2);
-    d("byteslice", s_byteslice, -1); d("unpack", s_unpack, -1); d("unpack1", s_unpack1, -1); d("crypt", s_crypt, 1); d("each_grapheme_cluster", s_each_grapheme, 0);
-    d("grapheme_clusters", s_grapheme_clusters, 0); d("codepoints", s_codepoints, 0); d("each_codepoint", s_each_codepoint, 0); d("dup", s_dup, 0); d("undump", s_undump, 0); d("to_r", s_to_r, 0); d("to_c", s_to_c, 0);
-    define_singleton_cfunc(k, "try_convert", s_s_try_convert, 1);
+pub fn init(c: &mut Ctx, k: Value) {
+    let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, k, n, f, a);
+    define_private_cfunc(c, k, "initialize", s_initialize, -1);
+    d(c, "length", s_length, 0); d(c, "size", s_length, 0); d(c, "bytesize", s_bytesize, 0); d(c, "+", s_plus, 1); d(c, "*", s_mul, 1); d(c, "%", s_mod, 1);
+    d(c, "==", s_eq, 1); d(c, "===", s_eq, 1); d(c, "eql?", s_eql, 1); d(c, "hash", s_hash, 0); d(c, "<=>", s_cmp, 1); d(c, "=~", s_match_op, 1);
+    d(c, "match", s_match, -1); d(c, "match?", s_match_p, -1); d(c, "[]", s_aref, -1); d(c, "slice", s_aref, -1); d(c, "[]=", s_aset, -1);
+    d(c, "concat", s_concat, -1); d(c, "<<", s_ltlt, 1); d(c, "to_s", s_to_s, 0); d(c, "to_str", s_to_s, 0); d(c, "to_sym", s_to_sym, 0); d(c, "intern", s_to_sym, 0);
+    d(c, "to_i", s_to_i, -1); d(c, "to_f", s_to_f, 0); d(c, "inspect", s_inspect, 0); d(c, "dump", s_dump, 0);
+    d(c, "upcase", s_upcase, -1); d(c, "upcase!", s_upcase_b, -1); d(c, "downcase", s_downcase, -1); d(c, "downcase!", s_downcase_b, -1);
+    d(c, "swapcase", s_swapcase, -1); d(c, "swapcase!", s_swapcase_b, -1); d(c, "capitalize", s_capitalize, -1); d(c, "capitalize!", s_capitalize_b, -1);
+    d(c, "reverse", s_reverse, 0); d(c, "reverse!", s_reverse_b, 0); d(c, "include?", s_include, 1); d(c, "start_with?", s_start_with, -1);
+    d(c, "end_with?", s_end_with, -1); d(c, "index", s_index, -1); d(c, "rindex", s_rindex, -1); d(c, "byteindex", s_byteindex, -1); d(c, "byterindex", s_byterindex, -1); d(c, "bytesplice", s_bytesplice, -1); d(c, "append_as_bytes", s_append_as_bytes, -1); d(c, "tr_s!", s_tr_s_b, 2); d(c, "encode!", crate::builtins::transcode::s_encode_bang, -1); d(c, "scrub!", s_scrub_b, -1); d(c, "unicode_normalize!", s_unicode_normalize_b, -1); d(c, "unicode_normalized?", s_unicode_normalized_p, -1);
+    d(c, "strip", s_strip, -1); d(c, "strip!", s_strip_b, -1); d(c, "lstrip", s_lstrip, -1); d(c, "lstrip!", s_lstrip_b, -1); d(c, "rstrip", s_rstrip, -1); d(c, "rstrip!", s_rstrip_b, -1);
+    d(c, "chomp", s_chomp, -1); d(c, "chomp!", s_chomp_b, -1); d(c, "chop", s_chop, 0); d(c, "chop!", s_chop_b, 0); d(c, "chr", s_chr, 0);
+    d(c, "chars", s_chars, 0); d(c, "each_char", s_each_char, 0); d(c, "bytes", s_bytes, 0); d(c, "each_byte", s_each_byte, 0);
+    d(c, "lines", s_lines, -1); d(c, "each_line", s_each_line, -1); d(c, "split", s_split, -1); d(c, "sub", s_sub, -1); d(c, "gsub", s_gsub, -1);
+    d(c, "sub!", s_sub_b, -1); d(c, "gsub!", s_gsub_b, -1); d(c, "scan", s_scan, 1); d(c, "tr", s_tr, 2); d(c, "tr!", s_tr_b, 2); d(c, "tr_s", s_tr_s, 2);
+    d(c, "delete", s_delete, -1); d(c, "delete!", s_delete_b, -1); d(c, "count", s_count, -1); d(c, "squeeze", s_squeeze, -1); d(c, "squeeze!", s_squeeze_b, -1);
+    d(c, "ljust", s_ljust, -1); d(c, "rjust", s_rjust, -1); d(c, "center", s_center, -1); d(c, "empty?", s_empty, 0); d(c, "replace", s_replace, 1);
+    define_private_cfunc(c, k, "initialize_copy", s_replace, 1); d(c, "clear", s_clear, 0); d(c, "insert", s_insert, 2); d(c, "prepend", s_prepend, -1); d(c, "ord", s_ord, 0); d(c, "sum", s_sum, -1);
+    d(c, "succ", s_succ, 0); d(c, "next", s_succ, 0); d(c, "succ!", s_succ_b, 0); d(c, "next!", s_succ_b, 0); d(c, "upto", s_upto, -1); d(c, "hex", s_hex, 0); d(c, "oct", s_oct, 0);
+    d(c, "freeze", s_freeze, 0); d(c, "+@", s_uplus, 0); d(c, "-@", s_uminus, 0); d(c, "dedup", s_uminus, 0); d(c, "encoding", s_encoding, 0);
+    d(c, "force_encoding", s_force_encoding, 1); d(c, "b", s_b, 0); d(c, "valid_encoding?", s_valid_encoding, 0); d(c, "ascii_only?", s_ascii_only, 0);
+    d(c, "unicode_normalize", s_unicode_normalize, -1); d(c, "encode", crate::builtins::transcode::s_encode, -1); d(c, "scrub", s_scrub, -1); d(c, "casecmp", s_casecmp, 1); d(c, "casecmp?", s_casecmp_p, 1);
+    d(c, "partition", s_partition, 1); d(c, "rpartition", s_rpartition, 1); d(c, "delete_prefix", s_delete_prefix, 1); d(c, "delete_suffix", s_delete_suffix, 1);
+    d(c, "delete_prefix!", s_delete_prefix_b, 1); d(c, "delete_suffix!", s_delete_suffix_b, 1); d(c, "slice!", s_slice_b, -1); d(c, "getbyte", s_getbyte, 1); d(c, "setbyte", s_setbyte, 2);
+    d(c, "byteslice", s_byteslice, -1); d(c, "unpack", s_unpack, -1); d(c, "unpack1", s_unpack1, -1); d(c, "crypt", s_crypt, 1); d(c, "each_grapheme_cluster", s_each_grapheme, 0);
+    d(c, "grapheme_clusters", s_grapheme_clusters, 0); d(c, "codepoints", s_codepoints, 0); d(c, "each_codepoint", s_each_codepoint, 0); d(c, "dup", s_dup, 0); d(c, "undump", s_undump, 0); d(c, "to_r", s_to_r, 0); d(c, "to_c", s_to_c, 0);
+    define_singleton_cfunc(c, k, "try_convert", s_s_try_convert, 1);
     let _ = (s_squish, s_intern_frozen_p, s_between);
-    define_singleton_cfunc(k, "new", s_s_new, -1);
+    define_singleton_cfunc(c, k, "new", s_s_new, -1);
 }

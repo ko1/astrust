@@ -92,11 +92,11 @@ fn re_s_escape(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 fn check_regexp_type(c: &mut Ctx, v: Value) -> RV {
     if is_regexp(c, v) { return Ok(v); }
     let m = intern(b"to_regexp");
-    if !respond_to(v, m, true) { return Ok(NIL); }
+    if !respond_to(c, v, m, true) { return Ok(NIL); }
     let r = funcall(c, v, m, &[], std::ptr::null())?;
     if r != NIL && !is_regexp(c, r) {
-        let cls = class_path(real_class_of(v));
-        return type_err(c, format!("can't convert {} into Regexp ({}#to_regexp gives {})", cls, cls, class_path(real_class_of(r))));
+        let cls = class_path(c, real_class_of(c, v));
+        return type_err(c, format!("can't convert {} into Regexp ({}#to_regexp gives {})", cls, cls, class_path(c, real_class_of(c, r))));
     }
     Ok(r)
 }
@@ -186,7 +186,7 @@ fn re_tilde(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
 }
 fn re_eqq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let v = a[0];
-    let sv = if is_string(v) { v } else if v.is_sym() { subject(c, v)? } else if v.is_heap() && respond_to(v, s::to_str, true) { expect_str(c, v)? } else { return Ok(FALSE) };
+    let sv = if is_string(v) { v } else if v.is_sym() { subject(c, v)? } else if v.is_heap() && respond_to(c, v, s::to_str, true) { expect_str(c, v)? } else { return Ok(FALSE) };
     let m = search(c, slf, sv, 0, true)?;
     Ok(Value::bool(m != NIL))
 }
@@ -198,7 +198,7 @@ fn re_source(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
 fn re_fixed_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(rx(c, slf).fixed())) }
 fn re_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let e = rx(c, slf).enc; Ok(crate::builtins::encoding::encoding_value(c, e)) }
 fn re_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    if rx(c, slf).re.is_none() { let t = any_to_s_str(slf); return Ok(c.str_new(t.as_bytes())); }
+    if rx(c, slf).re.is_none() { let t = any_to_s_str(c, slf); return Ok(c.str_new(t.as_bytes())); }
     let r = rx(c, slf);
     let (t, e) = (regexp_inspect(r), if crate::builtins::encoding::ascii_compat(r.enc) { r.enc } else { ENC_ASCII });
     Ok(c.str_from_vec_enc(t, e))
@@ -401,13 +401,13 @@ fn md_deconstruct_keys(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) ->
         for (k, v) in c.hash_pairs(h) { let ks = c.str_to_sym(k); crate::hash::hash_set(c, out, ks, v)?; }
         return Ok(out);
     }
-    if !is_array(keys) { let t = class_path(real_class_of(keys)); return type_err(c, format!("wrong argument type {} (expected Array)", t)); }
+    if !is_array(keys) { let t = class_path(c, real_class_of(c, keys)); return type_err(c, format!("wrong argument type {} (expected Array)", t)); }
     let out = c.hash_new();
     let ks = c.ary(keys).to_vec();
     let names = rregexp(c, md(c, slf).regexp).and_then(|r| r.re.as_ref()).map(|r| r.names()).unwrap_or_default();
     if ks.len() > names.len() { return Ok(out); }
     for k in ks {
-        if !k.is_sym() { let t = class_path(real_class_of(k)); return type_err(c, format!("wrong argument type {} (expected Symbol)", t)); }
+        if !k.is_sym() { let t = class_path(c, real_class_of(c, k)); return type_err(c, format!("wrong argument type {} (expected Symbol)", t)); }
         let nm = crate::symbol::sym_str(k.as_sym());
         if !names.iter().any(|(n, _)| *n == nm) { break; }
         let i = group_index(c, slf, k)?.unwrap_or(0);
@@ -427,45 +427,46 @@ pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     Ok(None)
 }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
-    if crate::builtins::inherits(klass, c.vm().c_regexp.get()) {
+    if crate::builtins::inherits(c, klass, c.vm().c_regexp.get()) {
         return Ok(Some(c.alloc(klass, Body::Data(Box::new(RRegexp { src: vec![], opts: 0, re: None, enc: ENC_BINARY, timeout: None })))));
     }
     Ok(None)
 }
 
 /// Boot: Regexp and MatchData; returns (Regexp, MatchData).
-pub fn init(vmr: &Vm) -> (Value, Value) {
-    let r = define_class("Regexp", vmr.c_object.get());
-    class_set_alloc(r, AllocKind::None);
-    const_set(r, intern(b"IGNORECASE"), Value::fix(1));
-    const_set(r, intern(b"EXTENDED"), Value::fix(2));
-    const_set(r, intern(b"MULTILINE"), Value::fix(4));
-    const_set(r, intern(b"FIXEDENCODING"), Value::fix(RE_OPT_FIXED as i64));
-    const_set(r, intern(b"NOENCODING"), Value::fix(RE_OPT_ENC_NONE as i64));
-    define_singleton_cfunc(r, "escape", re_s_escape, 1);
-    define_singleton_cfunc(r, "quote", re_s_escape, 1);
-    define_singleton_cfunc(r, "union", re_s_union, -1);
-    define_singleton_cfunc(r, "last_match", re_s_last_match, -1);
-    define_singleton_cfunc(r, "compile", re_s_compile, -1);
-    define_singleton_cfunc(r, "try_convert", re_s_try_convert, 1);
-    define_singleton_cfunc(r, "linear_time?", re_s_linear_time, -1);
-    define_singleton_cfunc(r, "timeout", re_s_timeout, 0);
-    define_singleton_cfunc(r, "timeout=", re_s_set_timeout, 1);
-    define_private_cfunc(r, "initialize", re_initialize, -1);
-    define_class_under(r, "TimeoutError", vmr.c_regexp_error.get());
-    let d = |n: &str, f: CFunc, a: i32| define_cfunc(r, n, f, a);
-    d("match", re_match, -1); d("match?", re_match_p, -1); d("=~", re_match_op, 1); d("===", re_eqq, 1); d("~", re_tilde, 0); d("source", re_source, 0); d("encoding", re_encoding, 0); d("fixed_encoding?", re_fixed_encoding, 0);
-    d("inspect", re_inspect, 0); d("to_s", re_to_s, 0); d("options", re_options, 0); d("casefold?", re_casefold, 0); d("==", re_eq, 1);
-    d("eql?", re_eq, 1); d("hash", re_hash, 0); d("names", re_names, 0); d("named_captures", re_named_captures, 0); d("freeze", re_freeze, 0); d("timeout", re_timeout, 0);
-    let m = define_class("MatchData", vmr.c_object.get());
-    class_set_alloc(m, AllocKind::None);
-    let ms = singleton_class(m);
-    define_method_me(ms, intern(b"allocate"), new_me(intern(b"allocate"), ms, VISI_PUBLIC, MKind::Undef));
-    let d = |n: &str, f: CFunc, a: i32| define_cfunc(m, n, f, a);
-    d("[]", md_aref, -1); d("to_a", md_to_a, 0); d("captures", md_captures, 0); d("deconstruct", md_captures, 0); d("named_captures", md_named_captures, -1);
-    d("names", md_names, 0); d("begin", md_begin, 1); d("end", md_end, 1); d("offset", md_offset, 1); d("byteoffset", md_byteoffset, 1); d("bytebegin", md_bytebegin, 1); d("byteend", md_byteend, 1);
-    d("pre_match", md_pre, 0); d("post_match", md_post, 0); d("to_s", md_to_s, 0); d("size", md_size, 0); d("length", md_size, 0);
-    d("string", md_string, 0); d("regexp", md_regexp, 0); d("values_at", md_values_at, -1); d("inspect", md_inspect, 0); d("==", md_eq, 1);
-    d("eql?", md_eq, 1); d("deconstruct_keys", md_deconstruct_keys, 1); d("match", md_match, 1); d("match_length", md_match_length, 1);
+pub fn init(c: &mut Ctx) -> (Value, Value) {
+    let vmr = c.vm();
+    let r = define_class(c, "Regexp", vmr.c_object.get());
+    class_set_alloc(c, r, AllocKind::None);
+    const_set(c, r, intern(b"IGNORECASE"), Value::fix(1));
+    const_set(c, r, intern(b"EXTENDED"), Value::fix(2));
+    const_set(c, r, intern(b"MULTILINE"), Value::fix(4));
+    const_set(c, r, intern(b"FIXEDENCODING"), Value::fix(RE_OPT_FIXED as i64));
+    const_set(c, r, intern(b"NOENCODING"), Value::fix(RE_OPT_ENC_NONE as i64));
+    define_singleton_cfunc(c, r, "escape", re_s_escape, 1);
+    define_singleton_cfunc(c, r, "quote", re_s_escape, 1);
+    define_singleton_cfunc(c, r, "union", re_s_union, -1);
+    define_singleton_cfunc(c, r, "last_match", re_s_last_match, -1);
+    define_singleton_cfunc(c, r, "compile", re_s_compile, -1);
+    define_singleton_cfunc(c, r, "try_convert", re_s_try_convert, 1);
+    define_singleton_cfunc(c, r, "linear_time?", re_s_linear_time, -1);
+    define_singleton_cfunc(c, r, "timeout", re_s_timeout, 0);
+    define_singleton_cfunc(c, r, "timeout=", re_s_set_timeout, 1);
+    define_private_cfunc(c, r, "initialize", re_initialize, -1);
+    define_class_under(c, r, "TimeoutError", vmr.c_regexp_error.get());
+    let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, r, n, f, a);
+    d(c, "match", re_match, -1); d(c, "match?", re_match_p, -1); d(c, "=~", re_match_op, 1); d(c, "===", re_eqq, 1); d(c, "~", re_tilde, 0); d(c, "source", re_source, 0); d(c, "encoding", re_encoding, 0); d(c, "fixed_encoding?", re_fixed_encoding, 0);
+    d(c, "inspect", re_inspect, 0); d(c, "to_s", re_to_s, 0); d(c, "options", re_options, 0); d(c, "casefold?", re_casefold, 0); d(c, "==", re_eq, 1);
+    d(c, "eql?", re_eq, 1); d(c, "hash", re_hash, 0); d(c, "names", re_names, 0); d(c, "named_captures", re_named_captures, 0); d(c, "freeze", re_freeze, 0); d(c, "timeout", re_timeout, 0);
+    let m = define_class(c, "MatchData", vmr.c_object.get());
+    class_set_alloc(c, m, AllocKind::None);
+    let ms = singleton_class(c, m);
+    define_method_me(c, ms, intern(b"allocate"), new_me(intern(b"allocate"), ms, VISI_PUBLIC, MKind::Undef));
+    let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, m, n, f, a);
+    d(c, "[]", md_aref, -1); d(c, "to_a", md_to_a, 0); d(c, "captures", md_captures, 0); d(c, "deconstruct", md_captures, 0); d(c, "named_captures", md_named_captures, -1);
+    d(c, "names", md_names, 0); d(c, "begin", md_begin, 1); d(c, "end", md_end, 1); d(c, "offset", md_offset, 1); d(c, "byteoffset", md_byteoffset, 1); d(c, "bytebegin", md_bytebegin, 1); d(c, "byteend", md_byteend, 1);
+    d(c, "pre_match", md_pre, 0); d(c, "post_match", md_post, 0); d(c, "to_s", md_to_s, 0); d(c, "size", md_size, 0); d(c, "length", md_size, 0);
+    d(c, "string", md_string, 0); d(c, "regexp", md_regexp, 0); d(c, "values_at", md_values_at, -1); d(c, "inspect", md_inspect, 0); d(c, "==", md_eq, 1);
+    d(c, "eql?", md_eq, 1); d(c, "deconstruct_keys", md_deconstruct_keys, 1); d(c, "match", md_match, 1); d(c, "match_length", md_match_length, 1);
     (r, m)
 }

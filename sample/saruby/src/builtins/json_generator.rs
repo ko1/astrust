@@ -71,7 +71,7 @@ fn gen_error(c: &mut Ctx, invalid: Value, msg: &[u8]) -> Esc {
     let k = E_GENERATOR.get(c);
     let m = c.str_new(msg);
     match funcall(c, k, intern(b"new"), &[m], std::ptr::null()) {
-        Ok(e) => { ivar_set_raw(e, intern(b"@invalid_object"), invalid); raise_exc(c, e) }
+        Ok(e) => { ivar_set_raw(c, e, intern(b"@invalid_object"), invalid); raise_exc(c, e) }
         Err(e) => e,
     }
 }
@@ -90,7 +90,7 @@ fn valid_json_string(c: &Ctx, v: Value) -> bool {
 }
 fn to_s(c: &mut Ctx, v: Value) -> RV { let t = funcall(c, v, intern(b"to_s"), &[], std::ptr::null())?; expect_str(c, t) }
 fn check_string(c: &mut Ctx, v: Value) -> RV {
-    if is_string(v) { Ok(v) } else { type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(v))) }
+    if is_string(v) { Ok(v) } else { type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(c, v))) }
 }
 /// str.encode(UTF-8); a StandardError becomes a GeneratorError with its message.
 fn encode_utf8(c: &mut Ctx, v: Value) -> RV {
@@ -98,7 +98,7 @@ fn encode_utf8(c: &mut Ctx, v: Value) -> RV {
     match funcall(c, v, intern(b"encode"), &[u], std::ptr::null()) {
         Ok(r) => Ok(r),
         Err(e) => {
-            if c.esc != EscKind::Raise || !is_kind_of(c.esc_val, c.vm().c_standard_error.get()) { return Err(e); }
+            if c.esc != EscKind::Raise || !is_kind_of(c, c.esc_val, c.vm().c_standard_error.get()) { return Err(e); }
             let x = c.esc_val;
             c.esc = EscKind::None; c.esc_val = NIL;
             let m = funcall(c, x, intern(b"message"), &[], std::ptr::null())?;
@@ -298,7 +298,7 @@ impl G {
         r
     }
     fn fallback(&mut self, c: &mut Ctx, ob: Value) -> Result<(), Esc> {
-        if respond_to(ob, intern(b"to_json"), false) {
+        if respond_to(c, ob, intern(b"to_json"), false) {
             let t = self.call_to_json(c, ob)?;
             let t = check_string(c, t)?;
             return self.out.str(c, t);
@@ -336,7 +336,7 @@ impl G {
                 if is_string(r) {
                     if !valid_json_string(c, r) { return Err(gen_error(c, v, b"source sequence is illegal/malformed utf-8")); }
                 } else if is_key {
-                    let m = format!("{} not allowed as object key in JSON", class_path(class_of(r)));
+                    let m = format!("{} not allowed as object key in JSON", class_path(c, class_of(r)));
                     return Err(gen_error(c, r, m.as_bytes()));
                 }
                 return Ok(r);
@@ -432,11 +432,11 @@ impl G {
                 let p = P_RFC_SORT.get(c);
                 let aj = if self.s.strict { self.s.as_json } else { NIL };
                 h = call_proc(c, p, &[h, aj], std::ptr::null())?;
-                if !is_hash(h) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(h))); }
+                if !is_hash(h) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(c, h))); }
             } else if self.s.sort_keys.truthy() {
                 let p = self.s.sort_keys;
                 h = call_proc(c, p, &[h], std::ptr::null())?;
-                if !is_hash(h) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(h))); }
+                if !is_hash(h) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(c, h))); }
             }
         }
         self.increase_depth(c)?;
@@ -468,7 +468,7 @@ impl G {
             match kt {
                 1 => {
                     if !self.v2 && *first_type != 1 { self.mixed_keys(c, h, mixed)?; }
-                    break if real_class_of(key) == c.vm().c_string.get() { key } else { self.string_subclass_key(c, key)? };
+                    break if real_class_of(c, key) == c.vm().c_string.get() { key } else { self.string_subclass_key(c, key)? };
                 }
                 2 => {
                     if !self.v2 && *first_type != 2 { self.mixed_keys(c, h, mixed)?; }
@@ -482,20 +482,20 @@ impl G {
                             as_json_called = true;
                             continue;
                         }
-                        let m = format!("{} not allowed as object key in JSON", class_path(class_of(key)));
+                        let m = format!("{} not allowed as object key in JSON", class_path(c, class_of(key)));
                         return Err(gen_error(c, key, m.as_bytes()));
                     }
                     let t = funcall(c, key, intern(b"to_s"), &[], std::ptr::null())?;
-                    if !is_string(t) { return type_err(c, format!("can't convert {} to String ({}#to_s gives {})", class_path(real_class_of(key)), class_path(real_class_of(key)), class_path(real_class_of(t)))); }
+                    if !is_string(t) { return type_err(c, format!("can't convert {} to String ({}#to_s gives {})", class_path(c, real_class_of(c, key)), class_path(c, real_class_of(c, key)), class_path(c, real_class_of(c, t)))); }
                     break t;
                 }
             }
         };
         if self.v2 {
-            if real_class_of(key_s) == c.vm().c_string.get() { self.string(c, key_s)?; } else { self.value(c, key_s, true)?; }
+            if real_class_of(c, key_s) == c.vm().c_string.get() { self.string(c, key_s)?; } else { self.value(c, key_s, true)?; }
         } else {
             let ks = self.ensure_valid(c, key_s, as_json_called, true)?;
-            if is_string(ks) && real_class_of(ks) == c.vm().c_string.get() { self.raw_string(c, ks)?; } else { self.value(c, ks, true)?; }
+            if is_string(ks) && real_class_of(c, ks) == c.vm().c_string.get() { self.raw_string(c, ks)?; } else { self.value(c, ks, true)?; }
         }
         if self.s.space_before != NIL { let n = self.s.space_before; self.out.str(c, n)?; }
         self.out.ch(c, b':')?;
@@ -505,8 +505,8 @@ impl G {
     fn string_subclass_key(&mut self, c: &mut Ctx, key: Value) -> RV {
         let t = funcall(c, key, intern(b"to_s"), &[], std::ptr::null())?;
         if !is_string(t) {
-            let n = class_path(real_class_of(key));
-            return type_err(c, format!("can't convert {} to String ({}#to_s gives {})", n, n, class_path(real_class_of(t))));
+            let n = class_path(c, real_class_of(c, key));
+            return type_err(c, format!("can't convert {} to String ({}#to_s gives {})", n, n, class_path(c, real_class_of(c, t))));
         }
         Ok(t)
     }
@@ -545,7 +545,7 @@ impl G {
                 return self.fallback(c, ob);
             }
             if !ob.is_heap() { if self.general(c, &mut ob, &mut as_json_called)? { continue; } return Ok(()); }
-            let klass = real_class_of(ob);
+            let klass = real_class_of(c, ob);
             let exact = |k: Value| !fallback || klass == k;
             let vmr = c.vm();
             let (ch, ca, cs, cf) = (vmr.c_hash.get(), vmr.c_array.get(), vmr.c_string.get(), vmr.c_float.get());
@@ -567,7 +567,7 @@ impl G {
             }
             if is_heap_float(ob) && exact(cf) { return self.float(c, ob); }
             if klass == C_FRAGMENT.get(c) && C_FRAGMENT.get(c) != NIL {
-                let f = ivar_get(ob, intern(b"json"));
+                let f = ivar_get(c, ob, intern(b"json"));
                 let f = check_string(c, f)?;
                 return self.out.str(c, f);
             }
@@ -583,7 +583,7 @@ impl G {
                 *as_json_called = true;
                 return Ok(true);
             }
-            let m = format!("{} not allowed in JSON", class_path(class_of(*ob)));
+            let m = format!("{} not allowed in JSON", class_path(c, class_of(*ob)));
             return Err(gen_error(c, *ob, m.as_bytes()));
         }
         self.fallback(c, *ob)?;
@@ -651,7 +651,7 @@ fn m_generate(c: &mut Ctx, ob: Value, opts: Value, io: Value, top: Top) -> RV {
 fn sym_is(k: Value, name: &[u8]) -> bool { k.is_sym() && crate::symbol::sym_bytes(k.as_sym()) == name }
 fn string_config(c: &mut Ctx, v: Value) -> RV {
     if !v.truthy() { return Ok(NIL); }
-    if !is_string(v) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(v))); }
+    if !is_string(v) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(c, v))); }
     if c.str_len(v) == 0 { return Ok(NIL); }
     if is_frozen(v) { return Ok(v); }
     let n = c.str_copy(v);
@@ -673,20 +673,20 @@ fn depth_config(c: &mut Ctx, v: Value) -> Result<i64, Esc> {
     Ok(d)
 }
 fn buffer_initial_length_set(c: &mut Ctx, s: &mut Cfg, v: Value) -> Result<(), Esc> {
-    if !v.is_fixnum() { return type_err(c, format!("wrong argument type {} (expected Integer)", class_name_for_err(v))); }
+    if !v.is_fixnum() { return type_err(c, format!("wrong argument type {} (expected Integer)", class_name_for_err(c, v))); }
     if v.as_fix() > 0 { s.buffer_initial_length = v.as_fix(); }
     Ok(())
 }
 fn as_json_config(c: &mut Ctx, v: Value) -> RV {
     if v2(c) {
         if is_proc(v) { return Ok(v); }
-        if !respond_to(v, intern(b"to_proc"), true) { return type_err(c, format!("no implicit conversion of {} into Proc", class_name_for_err(v))); }
+        if !respond_to(c, v, intern(b"to_proc"), true) { return type_err(c, format!("no implicit conversion of {} into Proc", class_name_for_err(c, v))); }
         let p = funcall(c, v, intern(b"to_proc"), &[], std::ptr::null())?;
-        if !is_proc(p) { let n = class_path(real_class_of(v)); return type_err(c, format!("can't convert {} to Proc ({}#to_proc gives {})", n, n, class_path(real_class_of(p)))); }
+        if !is_proc(p) { let n = class_path(c, real_class_of(c, v)); return type_err(c, format!("can't convert {} to Proc ({}#to_proc gives {})", n, n, class_path(c, real_class_of(c, p)))); }
         return Ok(p);
     }
     if is_proc(v) { return Ok(v); }
-    let p = if respond_to(v, intern(b"to_proc"), true) { funcall(c, v, intern(b"to_proc"), &[], std::ptr::null())? } else { UNDEF };
+    let p = if respond_to(c, v, intern(b"to_proc"), true) { funcall(c, v, intern(b"to_proc"), &[], std::ptr::null())? } else { UNDEF };
     if !is_proc(p) { return type_err(c, "as_json must be a Proc"); }
     Ok(p)
 }
@@ -699,7 +699,7 @@ fn normalize_sort_keys(c: &mut Ctx, v: Value) -> RV {
 /// configure_state: Hash keys over the fields.
 fn configure(c: &mut Ctx, s: &mut Cfg, opts: Value) -> Result<(), Esc> {
     if !opts.truthy() { return Ok(()); }
-    if !is_hash(opts) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(opts))); }
+    if !is_hash(opts) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(c, opts))); }
     if c.hash_len(opts) == 0 { return Ok(()); }
     let two = v2(c);
     let mut unknown: Vec<Value> = vec![];
@@ -787,14 +787,14 @@ fn st_configure(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 }
 fn st_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if slf == a[0] { return Ok(slf); }
-    if !is_state(c, a[0]) { return type_err(c, format!("wrong argument type {} (expected JSON/Generator/State)", class_name_for_err(a[0]))); }
+    if !is_state(c, a[0]) { return type_err(c, format!("wrong argument type {} (expected JSON/Generator/State)", class_name_for_err(c, a[0]))); }
     let s = cfg_of(c, a[0]);
     *cfg_mut(c, slf) = s;
     Ok(slf)
 }
 fn st_s_from_state(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let o = a[0];
-    if is_kind_of(o, slf) { return Ok(o); }
+    if is_kind_of(c, o, slf) { return Ok(o); }
     if is_hash(o) { return funcall(c, slf, intern(b"new"), &[o], std::ptr::null()); }
     let k = C_STATE.get(c);
     funcall(c, k, intern(b"new"), &[], std::ptr::null())
@@ -845,7 +845,7 @@ fn gm_raw_object(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV 
     let h = c.hash_new();
     let m = M_JSON.get(c);
     let id = funcall(c, m, intern(b"create_id"), &[], std::ptr::null())?;
-    let n = c.str_new_enc(class_path(real_class_of(slf)).as_bytes(), ENC_ASCII);
+    let n = c.str_new_enc(class_path(c, real_class_of(c, slf)).as_bytes(), ENC_ASCII);
     hash_aset(c, h, id, n)?;
     let f = c.str_new(b"C*");
     let ary = funcall(c, slf, intern(b"unpack"), &[f], std::ptr::null())?;
@@ -861,7 +861,7 @@ fn gm_string_included(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) ->
     Ok(r)
 }
 fn gm_json_create(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
-    if !is_hash(a[0]) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(a[0]))); }
+    if !is_hash(a[0]) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(c, a[0]))); }
     let k = c.str_new(b"raw");
     let ary = hash_aref(c, a[0], k)?;
     let f = c.str_new(b"C*");
@@ -872,13 +872,13 @@ fn gm_json_create(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     let k = C_STATE.get(c);
-    if k != NIL && crate::builtins::inherits(klass, k) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(PState { s: Cfg::new() }))))); }
+    if k != NIL && crate::builtins::inherits(c, klass, k) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(PState { s: Cfg::new() }))))); }
     Ok(None)
 }
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if !is_state(c, v) { return Ok(None); }
     let k = obj_klass(v);
-    let k = if c.class(k).is_singleton { real_class_of(v) } else { k };
+    let k = if c.class(k).is_singleton { real_class_of(c, v) } else { k };
     Ok(Some(c.alloc(k, Body::Data(Box::new(PState { s: Cfg::new() })))))
 }
 
@@ -887,68 +887,68 @@ pub fn init(c: &mut Ctx) -> RV {
     let f = c.str_new(b"json/common");
     require_feature(c, f, false)?;
     let o = c.vm().c_object.get();
-    let m = match const_get_at(o, intern(b"JSON")) { Some(m) => m, None => define_module("JSON") };
+    let m = match const_get_at(c, o, intern(b"JSON")) { Some(m) => m, None => define_module(c, "JSON") };
     M_JSON.set(c, m);
     json_version(c);
     let two = v2(c);
-    if let Some(fr) = const_get_at(m, intern(b"Fragment")) { C_FRAGMENT.set(c, fr); }
-    let ext = match const_get_at(m, intern(b"Ext")) { Some(e) => e, None => define_module_under(m, "Ext") };
-    let gen = match const_get_at(ext, intern(b"Generator")) { Some(g) => g, None => define_module_under(ext, "Generator") };
+    if let Some(fr) = const_get_at(c, m, intern(b"Fragment")) { C_FRAGMENT.set(c, fr); }
+    let ext = match const_get_at(c, m, intern(b"Ext")) { Some(e) => e, None => define_module_under(c, m, "Ext") };
+    let gen = match const_get_at(c, ext, intern(b"Generator")) { Some(g) => g, None => define_module_under(c, ext, "Generator") };
     for (g, n) in [(&E_GENERATOR, "GeneratorError"), (&E_NESTING, "NestingError")] {
-        match const_get_at(m, intern(n.as_bytes())) { Some(k) => g.set(c, k), None => return err(c, c.vm().c_name_error.get(), format!("uninitialized constant JSON::{}", n)) }
+        match const_get_at(c, m, intern(n.as_bytes())) { Some(k) => g.set(c, k), None => return err(c, c.vm().c_name_error.get(), format!("uninitialized constant JSON::{}", n)) }
     }
-    let st = class_under(gen, "State", o);
-    class_set_alloc(st, AllocKind::None);
+    let st = class_under(c, gen, "State", o);
+    class_set_alloc(c, st, AllocKind::None);
     C_STATE.set(c, st);
-    define_singleton_cfunc(st, "from_state", st_s_from_state, 1);
+    define_singleton_cfunc(c, st, "from_state", st_s_from_state, 1);
     if !two {
-        define_singleton_cfunc(st, "default_sort_keys_proc=", st_s_default_sort_keys, 1);
-        define_singleton_cfunc(st, "rfc8785_number_formatter_proc=", st_s_rfc_number, 1);
-        define_singleton_cfunc(st, "rfc8785_sort_keys_proc=", st_s_rfc_sort, 1);
+        define_singleton_cfunc(c, st, "default_sort_keys_proc=", st_s_default_sort_keys, 1);
+        define_singleton_cfunc(c, st, "rfc8785_number_formatter_proc=", st_s_rfc_number, 1);
+        define_singleton_cfunc(c, st, "rfc8785_sort_keys_proc=", st_s_rfc_sort, 1);
     }
-    let d = |n: &str, f: CFunc, a: i32| define_cfunc(st, n, f, a);
-    d("initialize", st_initialize, -1);
-    define_private_cfunc(st, "_configure", st_configure, 1);
-    d("initialize_copy", st_init_copy, 1);
-    d("indent", st_indent, 0); d("indent=", st_set_indent, 1);
-    d("space", st_space, 0); d("space=", st_set_space, 1);
-    d("space_before", st_space_before, 0); d("space_before=", st_set_space_before, 1);
-    d("object_nl", st_object_nl, 0); d("object_nl=", st_set_object_nl, 1);
-    d("array_nl", st_array_nl, 0); d("array_nl=", st_set_array_nl, 1);
-    d("as_json", st_as_json, 0); d("as_json=", st_set_as_json, 1);
-    d("max_nesting", st_max_nesting, 0); d("max_nesting=", st_set_max_nesting, 1);
-    d("script_safe", st_script_safe, 0); d("script_safe?", st_script_safe, 0); d("script_safe=", st_set_script_safe, 1);
-    if two { d("escape_slash", st_script_safe, 0); d("escape_slash?", st_script_safe, 0); d("escape_slash=", st_set_script_safe, 1); }
-    d("strict", st_strict, 0); d("strict?", st_strict, 0); d("strict=", st_set_strict, 1);
-    d("check_circular?", st_check_circular, 0);
-    d("allow_nan?", st_allow_nan, 0); d("allow_nan=", st_set_allow_nan, 1);
-    d("ascii_only?", st_ascii_only, 0); d("ascii_only=", st_set_ascii_only, 1);
-    d("depth", st_depth, 0); d("depth=", st_set_depth, 1);
-    d("buffer_initial_length", st_buffer_initial_length, 0); d("buffer_initial_length=", st_set_buffer_initial_length, 1);
-    d("generate", st_generate, -1);
+    let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, st, n, f, a);
+    d(c, "initialize", st_initialize, -1);
+    define_private_cfunc(c, st, "_configure", st_configure, 1);
+    d(c, "initialize_copy", st_init_copy, 1);
+    d(c, "indent", st_indent, 0); d(c, "indent=", st_set_indent, 1);
+    d(c, "space", st_space, 0); d(c, "space=", st_set_space, 1);
+    d(c, "space_before", st_space_before, 0); d(c, "space_before=", st_set_space_before, 1);
+    d(c, "object_nl", st_object_nl, 0); d(c, "object_nl=", st_set_object_nl, 1);
+    d(c, "array_nl", st_array_nl, 0); d(c, "array_nl=", st_set_array_nl, 1);
+    d(c, "as_json", st_as_json, 0); d(c, "as_json=", st_set_as_json, 1);
+    d(c, "max_nesting", st_max_nesting, 0); d(c, "max_nesting=", st_set_max_nesting, 1);
+    d(c, "script_safe", st_script_safe, 0); d(c, "script_safe?", st_script_safe, 0); d(c, "script_safe=", st_set_script_safe, 1);
+    if two { d(c, "escape_slash", st_script_safe, 0); d(c, "escape_slash?", st_script_safe, 0); d(c, "escape_slash=", st_set_script_safe, 1); }
+    d(c, "strict", st_strict, 0); d(c, "strict?", st_strict, 0); d(c, "strict=", st_set_strict, 1);
+    d(c, "check_circular?", st_check_circular, 0);
+    d(c, "allow_nan?", st_allow_nan, 0); d(c, "allow_nan=", st_set_allow_nan, 1);
+    d(c, "ascii_only?", st_ascii_only, 0); d(c, "ascii_only=", st_set_ascii_only, 1);
+    d(c, "depth", st_depth, 0); d(c, "depth=", st_set_depth, 1);
+    d(c, "buffer_initial_length", st_buffer_initial_length, 0); d(c, "buffer_initial_length=", st_set_buffer_initial_length, 1);
+    d(c, "generate", st_generate, -1);
     if two {
-        d("generate_new", st_generate, -1);
-        define_singleton_cfunc(st, "generate", st_s_generate, 3);
+        d(c, "generate_new", st_generate, -1);
+        define_singleton_cfunc(c, st, "generate", st_s_generate, 3);
     } else {
-        d("_generate_no_fallback", st_generate_no_fallback, -1);
-        d("sort_keys", st_sort_keys, 0); d("sort_keys=", st_set_sort_keys, 1);
-        d("rfc8785?", st_rfc8785, 0); d("rfc8785=", st_set_rfc8785, 1);
-        define_private_cfunc(st, "allow_duplicate_key?", st_allow_duplicate_key, 0);
-        define_singleton_cfunc(st, "generate", st_s_generate, 3);
-        define_singleton_cfunc(st, "_generate_no_fallback", st_s_generate_no_fallback, 3);
+        d(c, "_generate_no_fallback", st_generate_no_fallback, -1);
+        d(c, "sort_keys", st_sort_keys, 0); d(c, "sort_keys=", st_set_sort_keys, 1);
+        d(c, "rfc8785?", st_rfc8785, 0); d(c, "rfc8785=", st_set_rfc8785, 1);
+        define_private_cfunc(c, st, "allow_duplicate_key?", st_allow_duplicate_key, 0);
+        define_singleton_cfunc(c, st, "generate", st_s_generate, 3);
+        define_singleton_cfunc(c, st, "_generate_no_fallback", st_s_generate_no_fallback, 3);
     }
     if two {
-        let gm = define_module_under(gen, "GeneratorMethods");
-        let mm = |n: &str, f: CFunc| { let x = define_module_under(gm, n); define_cfunc(x, "to_json", f, -1); x };
-        mm("Object", gm_object); mm("Hash", gm_hash); mm("Array", gm_array); mm("Integer", gm_integer); mm("Float", gm_float);
-        let ms = mm("String", gm_string);
-        define_singleton_cfunc(ms, "included", gm_string_included, 1);
-        define_cfunc(ms, "to_json_raw", gm_raw, -1);
-        define_cfunc(ms, "to_json_raw_object", gm_raw_object, 0);
-        let se = define_module_under(ms, "Extend");
-        define_cfunc(se, "json_create", gm_json_create, 1);
+        let gm = define_module_under(c, gen, "GeneratorMethods");
+        let mm = |c: &mut Ctx, n: &str, f: CFunc| { let x = define_module_under(c, gm, n); define_cfunc(c, x, "to_json", f, -1); x };
+        mm(c, "Object", gm_object); mm(c, "Hash", gm_hash); mm(c, "Array", gm_array); mm(c, "Integer", gm_integer); mm(c, "Float", gm_float);
+        let ms = mm(c, "String", gm_string);
+        define_singleton_cfunc(c, ms, "included", gm_string_included, 1);
+        define_cfunc(c, ms, "to_json_raw", gm_raw, -1);
+        define_cfunc(c, ms, "to_json_raw_object", gm_raw_object, 0);
+        let se = define_module_under(c, ms, "Extend");
+        define_cfunc(c, se, "json_create", gm_json_create, 1);
         M_STRING_EXTEND.set(c, se);
-        mm("TrueClass", gm_true); mm("FalseClass", gm_false); mm("NilClass", gm_nil);
+        mm(c, "TrueClass", gm_true); mm(c, "FalseClass", gm_false); mm(c, "NilClass", gm_nil);
     }
     let f = c.str_new(b"json/ext/generator/state");
     require_feature(c, f, false)?;

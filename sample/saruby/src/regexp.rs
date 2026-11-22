@@ -488,7 +488,7 @@ pub fn search_timed(c: &mut Ctx, re: Value, s: Value, start: usize) -> Result<Op
     match r {
         Ok(g) => Ok(g),
         Err(()) => {
-            let k = const_get_at(c.vm().c_regexp.get(), crate::symbol::intern(b"TimeoutError")).unwrap_or(c.vm().c_regexp_error.get());
+            let k = const_get_at(c, c.vm().c_regexp.get(), crate::symbol::intern(b"TimeoutError")).unwrap_or(c.vm().c_regexp_error.get());
             err(c, k, "regexp match timeout")
         }
     }

@@ -2,7 +2,7 @@
 // On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).  Methods are in builtins/hash_methods.rs.
 #![forbid(unsafe_code)]
 // the context-free API, for the modules not converted yet (bodies in object.rs)
-pub use crate::object::{hash_clear, hash_dup, hash_entry_at, hash_len, hash_new, hash_new_capa, hash_pairs};
+pub use crate::object::{hash_new, hash_new_capa};
 pub use imp::*;
 
 // a module of its own: `no_legacy` must not meet the re-export above
@@ -191,12 +191,12 @@ fn hash_of(c: &mut Ctx, k: Value) -> Result<Hv, Esc> {
     let r = funcall(c, k, s::hash, &[], std::ptr::null())?;
     if r.is_fixnum() { return Ok(Hv::Ruby(r.as_fix() as u64)); }
     if is_bignum(r) { return Ok(Hv::Raw(big_hash(c, r))); }
-    if r.is_heap() && !is_float(r) && respond_to(r, s::to_int, true) {
+    if r.is_heap() && !is_float(r) && respond_to(c, r, s::to_int, true) {
         let i = funcall(c, r, s::to_int, &[], std::ptr::null())?;
         if i.is_fixnum() { return Ok(Hv::Ruby(i.as_fix() as u64)); }
         if is_bignum(i) { return Ok(Hv::Raw(big_hash(c, i))); }
     }
-    type_err(c, format!("no implicit conversion of {} into Integer", crate::builtins::kernel::class_name_for_err(r)))
+    type_err(c, format!("no implicit conversion of {} into Integer", crate::builtins::kernel::class_name_for_err(c, r)))
 }
 /// Array#hash over the elements' #hash values; a recursive array hashes by its length alone.
 fn ary_hash(c: &mut Ctx, k: Value) -> Result<u64, Esc> {
@@ -323,6 +323,18 @@ pub fn hash_set(c: &mut Ctx, h: Value, k: Value, v: Value) -> Result<(), Esc> {
     Ok(())
 }
 
+/// `dst[k] = v` for each entry of `src`, slot by slot: hashing a key runs Ruby code, which may
+/// change `src`, so its pairs are never copied out to an unrooted Vec first.
+pub fn hash_copy_entries(c: &mut Ctx, dst: Value, src: Value) -> Result<(), Esc> {
+    let mut i = 0;
+    while let Some((k, v)) = c.hash_entry_at(src, i) {
+        if k != UNDEF { hash_aset(c, dst, k, v)?; }
+        i += 1;
+    }
+    Ok(())
+}
+
+
 pub fn hash_delete(c: &mut Ctx, h: Value, k: Value) -> Result<Option<Value>, Esc> {
     match hash_lookup(c, h, k)? {
         Some(i) => {
@@ -363,7 +375,7 @@ pub fn hash_to_a(c: &mut Ctx, h: Value) -> RV {
 /// Implicit conversion to Hash (to_hash).
 pub fn check_hash(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if is_hash(v) { return Ok(Some(v)); }
-    if v.is_heap() && respond_to(v, s::to_hash, true) {
+    if v.is_heap() && respond_to(c, v, s::to_hash, true) {
         let r = funcall(c, v, s::to_hash, &[], std::ptr::null())?;
         if is_hash(r) { return Ok(Some(r)); }
         return type_err(c, "can't convert to Hash");

@@ -42,12 +42,12 @@ fn set_match1(c: &mut Ctx, v: Value, a: usize, b: usize) {
 }
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if c.data::<RScan>(v).is_none() { return Ok(None); }
-    let k = real_class_of(v);
+    let k = real_class_of(c, v);
     alloc_data(c, k)
 }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     let k = c.vm().c_string_scanner.get();
-    if k != NIL && crate::builtins::inherits(klass, k) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(RScan { str: UNDEF, pos: 0, prev: 0, groups: None, re: NIL, fixed: false, base: 0 }))))); }
+    if k != NIL && crate::builtins::inherits(c, klass, k) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(RScan { str: UNDEF, pos: 0, prev: 0, groups: None, re: NIL, fixed: false, base: 0 }))))); }
     Ok(None)
 }
 fn ss_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
@@ -112,8 +112,8 @@ fn do_scan_e(c: &mut Ctx, slf: Value, pat: Value, advance: bool, want_str: bool,
     if want_str { Ok(sub(c, s.str, start, e)) } else { Ok(Value::fix((e - start) as i64)) }
 }
 fn check_pat(c: &mut Ctx, v: Value) -> Result<(), Esc> {
-    if crate::regexp::is_regexp(c, v) || is_string(v) || respond_to(v, intern(b"to_str"), true) { return Ok(()); }
-    type_err(c, format!("wrong argument type {} (expected Regexp)", class_name_for_err(v)))
+    if crate::regexp::is_regexp(c, v) || is_string(v) || respond_to(c, v, intern(b"to_str"), true) { return Ok(()); }
+    type_err(c, format!("wrong argument type {} (expected Regexp)", class_name_for_err(c, v)))
 }
 macro_rules! scan_fn { ($name:ident, $adv:expr, $str:expr, $head:expr) => { fn $name(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { check_pat(c, a[0])?; do_scan(c, s, a[0], $adv, $str, $head) } }; }
 scan_fn!(ss_scan, true, true, true);
@@ -317,28 +317,28 @@ fn ss_fixed_anchor_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) ->
 
 /// Run by the first `require "strscan"`.
 pub fn init(c: &mut Ctx) {
-    let k = define_class("StringScanner", c.vm().c_object.get());
-    class_set_alloc(k, AllocKind::None);
-    let e = define_class_under(k, "Error", c.vm().c_standard_error.get());
+    let k = define_class(c, "StringScanner", c.vm().c_object.get());
+    class_set_alloc(c, k, AllocKind::None);
+    let e = define_class_under(c, k, "Error", c.vm().c_standard_error.get());
     c.vm().c_string_scanner.set(k);
     c.vm().c_string_scanner_error.set(e);
     let v = c.str_new_frozen(b"3.1.6");
-    const_set(k, intern(b"Version"), v);
+    const_set(c, k, intern(b"Version"), v);
     let v = c.str_new_frozen(b"$Id$");
-    const_set(k, intern(b"Id"), v);
-    define_private_cfunc(k, "initialize", ss_initialize, -1);
-    define_private_cfunc(k, "initialize_copy", ss_init_copy, 1);
-    define_singleton_cfunc(k, "must_C_version", |_c, s, _a, _b| Ok(s), 0);
-    let d = |n: &str, f: CFunc, a: i32| define_cfunc(k, n, f, a);
-    d("scan", ss_scan, 1); d("match?", ss_match_p, 1); d("skip", ss_skip, 1); d("check", ss_check, 1); d("scan_until", ss_scan_until, 1);
-    d("skip_until", ss_skip_until, 1); d("exist?", ss_exist_p, 1); d("check_until", ss_check_until, 1); d("scan_full", ss_scan_full, 3);
-    d("search_full", ss_search_full, 3); d("getch", ss_getch, 0); d("get_byte", ss_get_byte, 0); d("getbyte", ss_get_byte, 0); d("scan_byte", ss_scan_byte, 0);
-    d("peek_byte", ss_peek_byte, 0); d("peek", ss_peek, 1); d("peep", ss_peek, 1); d("eos?", ss_eos, 0); d("empty?", ss_eos, 0); d("rest?", ss_rest_p, 0);
-    d("rest", ss_rest, 0); d("rest_size", ss_rest_size, 0); d("restsize", ss_rest_size, 0); d("string", ss_string, 0); d("string=", ss_set_string, 1);
-    d("concat", ss_concat, 1); d("<<", ss_concat, 1); d("pos", ss_pos, 0); d("pointer", ss_pos, 0); d("pos=", ss_set_pos, 1); d("pointer=", ss_set_pos, 1);
-    d("charpos", ss_charpos, 0); d("reset", ss_reset, 0); d("terminate", ss_terminate, 0); d("clear", ss_terminate, 0); d("unscan", ss_unscan, 0);
-    d("bol?", ss_bol, 0); d("beginning_of_line?", ss_bol, 0); d("matched", ss_matched, 0); d("matched?", ss_matched_p, 0); d("matched_size", ss_matched_size, 0);
-    d("pre_match", ss_pre_match, 0); d("post_match", ss_post_match, 0); d("[]", ss_aref, 1); d("size", ss_size, 0); d("captures", ss_captures, 0);
-    d("values_at", ss_values_at, -1); d("named_captures", ss_named_captures, 0); d("scan_integer", ss_scan_integer, -1); d("inspect", ss_inspect, 0);
-    d("fixed_anchor?", ss_fixed_anchor_p, 0);
+    const_set(c, k, intern(b"Id"), v);
+    define_private_cfunc(c, k, "initialize", ss_initialize, -1);
+    define_private_cfunc(c, k, "initialize_copy", ss_init_copy, 1);
+    define_singleton_cfunc(c, k, "must_C_version", |_c, s, _a, _b| Ok(s), 0);
+    let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, k, n, f, a);
+    d(c, "scan", ss_scan, 1); d(c, "match?", ss_match_p, 1); d(c, "skip", ss_skip, 1); d(c, "check", ss_check, 1); d(c, "scan_until", ss_scan_until, 1);
+    d(c, "skip_until", ss_skip_until, 1); d(c, "exist?", ss_exist_p, 1); d(c, "check_until", ss_check_until, 1); d(c, "scan_full", ss_scan_full, 3);
+    d(c, "search_full", ss_search_full, 3); d(c, "getch", ss_getch, 0); d(c, "get_byte", ss_get_byte, 0); d(c, "getbyte", ss_get_byte, 0); d(c, "scan_byte", ss_scan_byte, 0);
+    d(c, "peek_byte", ss_peek_byte, 0); d(c, "peek", ss_peek, 1); d(c, "peep", ss_peek, 1); d(c, "eos?", ss_eos, 0); d(c, "empty?", ss_eos, 0); d(c, "rest?", ss_rest_p, 0);
+    d(c, "rest", ss_rest, 0); d(c, "rest_size", ss_rest_size, 0); d(c, "restsize", ss_rest_size, 0); d(c, "string", ss_string, 0); d(c, "string=", ss_set_string, 1);
+    d(c, "concat", ss_concat, 1); d(c, "<<", ss_concat, 1); d(c, "pos", ss_pos, 0); d(c, "pointer", ss_pos, 0); d(c, "pos=", ss_set_pos, 1); d(c, "pointer=", ss_set_pos, 1);
+    d(c, "charpos", ss_charpos, 0); d(c, "reset", ss_reset, 0); d(c, "terminate", ss_terminate, 0); d(c, "clear", ss_terminate, 0); d(c, "unscan", ss_unscan, 0);
+    d(c, "bol?", ss_bol, 0); d(c, "beginning_of_line?", ss_bol, 0); d(c, "matched", ss_matched, 0); d(c, "matched?", ss_matched_p, 0); d(c, "matched_size", ss_matched_size, 0);
+    d(c, "pre_match", ss_pre_match, 0); d(c, "post_match", ss_post_match, 0); d(c, "[]", ss_aref, 1); d(c, "size", ss_size, 0); d(c, "captures", ss_captures, 0);
+    d(c, "values_at", ss_values_at, -1); d(c, "named_captures", ss_named_captures, 0); d(c, "scan_integer", ss_scan_integer, -1); d(c, "inspect", ss_inspect, 0);
+    d(c, "fixed_anchor?", ss_fixed_anchor_p, 0);
 }

@@ -36,8 +36,8 @@ impl RData for PEmitter {
 
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     let (p, e) = (C_PARSER.get(c), C_EMITTER.get(c));
-    if p != NIL && crate::builtins::inherits(klass, p) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(PParser { mark: Mark::default() }))))); }
-    if e != NIL && crate::builtins::inherits(klass, e) {
+    if p != NIL && crate::builtins::inherits(c, klass, p) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(PParser { mark: Mark::default() }))))); }
+    if e != NIL && crate::builtins::inherits(c, klass, e) {
         let mut em = Emitter::new();
         em.set_indent(2);
         return Ok(Some(c.alloc(klass, Body::Data(Box::new(PEmitter { em, io: NIL })))));
@@ -45,7 +45,7 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     Ok(None)
 }
 
-fn check_type<T>(c: &mut Ctx, v: Value, expected: &str) -> Result<T, Esc> { type_err(c, format!("wrong argument type {} (expected {})", class_name_for_err(v), expected)) }
+fn check_type<T>(c: &mut Ctx, v: Value, expected: &str) -> Result<T, Esc> { type_err(c, format!("wrong argument type {} (expected {})", class_name_for_err(c, v), expected)) }
 /// rb_str_export_to_enc(v, UTF-8): converted when possible, else the bytes as they are.
 fn export_utf8(c: &mut Ctx, v: Value) -> Vec<u8> {
     let enc = c.str_enc(v);
@@ -111,7 +111,7 @@ struct Ids { loc: Sym, ss: Sym, es: Sym, sd: Sym, ed: Sym, al: Sym, sc: Sym, sq:
 
 fn p_native_parse(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let (handler, yaml, path) = (a[0], a[1], a[2]);
-    let (io, bytes, enc) = if respond_to(yaml, intern(b"read"), false) {
+    let (io, bytes, enc) = if respond_to(c, yaml, intern(b"read"), false) {
         let ee = funcall(c, yaml, intern(b"external_encoding"), &[], std::ptr::null())?;
         let ei = if ee == NIL { ENC_BINARY } else { crate::builtins::encoding::to_enc(c, ee)? };
         let pe = if ei == ENC_ASCII || ei == ENC_UTF8 { yp::UTF8_ENCODING } else if ei == ENC_UTF16LE { yp::UTF16LE_ENCODING } else if ei == ENC_UTF16BE { yp::UTF16BE_ENCODING } else { yp::ANY_ENCODING };
@@ -188,13 +188,13 @@ fn p_native_parse(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV 
 /// Parser#parse(yaml, path = ...) of psych 4's psych.so (psych 5 defines it in parser.rb).
 fn p_parse(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     check_argc(c, a, 1, 2)?;
-    let path = if a.len() == 2 { a[1] } else if respond_to(a[0], intern(b"path"), false) { funcall(c, a[0], intern(b"path"), &[], std::ptr::null())? } else { c.str_new(b"<unknown>") };
-    let h = ivar_get(slf, intern(b"@handler"));
+    let path = if a.len() == 2 { a[1] } else if respond_to(c, a[0], intern(b"path"), false) { funcall(c, a[0], intern(b"path"), &[], std::ptr::null())? } else { c.str_new(b"<unknown>") };
+    let h = ivar_get(c, slf, intern(b"@handler"));
     p_native_parse(c, slf, &[h, a[0], path], b)
 }
 fn p_mark(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let m = c.data::<PParser>(slf).map(|d| d.mark).unwrap_or_default();
-    let k = match const_get_at(C_PARSER.get(c), intern(b"Mark")) { Some(k) => k, None => return err(c, c.vm().c_name_error.get(), "uninitialized constant Psych::Parser::Mark") };
+    let k = match const_get_at(c, C_PARSER.get(c), intern(b"Mark")) { Some(k) => k, None => return err(c, c.vm().c_name_error.get(), "uninitialized constant Psych::Parser::Mark") };
     funcall(c, k, intern(b"new"), &[Value::fix(m.index as i64), Value::fix(m.line as i64), Value::fix(m.column as i64)], std::ptr::null())
 }
 
@@ -315,7 +315,7 @@ fn e_set_line_width(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> R
 
 fn tr_build_exception(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
     let e = funcall(c, a[0], intern(b"allocate"), &[], std::ptr::null())?;
-    ivar_set_raw(e, intern(b"mesg"), a[1]);
+    ivar_set_raw(c, e, intern(b"mesg"), a[1]);
     Ok(e)
 }
 /// rb_path_to_class.
@@ -345,12 +345,12 @@ fn cl_path2class(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV 
         let valid = !seg.is_empty() && (seg[0].is_ascii_uppercase() || seg[0] >= 0x80) && seg.iter().all(|x| x.is_ascii_alphanumeric() || *x == b'_' || *x >= 0x80);
         if !valid { return undefined(c, p); }
         let id = intern(&seg);
-        let found = match const_get_at(k, id) {
+        let found = match const_get_at(c, k, id) {
             Some(v) => Some(v),
             None if first => const_get_inherit(c, k, id)?,
             None => {
-                let anc = ancestors(k);
-                if anc.iter().skip(1).any(|&x| const_get_at(x, id).is_some()) { None } else { const_get_inherit(c, k, id)? }
+                let anc = ancestors(c, k);
+                if anc.iter().skip(1).any(|&x| const_get_at(c, x, id).is_some()) { None } else { const_get_inherit(c, k, id)? }
             }
         };
         let Some(v) = found else { return undefined(c, p) };
@@ -362,11 +362,11 @@ fn cl_path2class(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV 
 }
 
 /// rb_define_module_under / rb_define_class_under: an existing constant is reopened.
-fn module_under(outer: Value, name: &str) -> Value {
-    match const_get_at(outer, intern(name.as_bytes())) { Some(m) if is_class_or_module(m) => m, _ => define_module_under(outer, name) }
+fn module_under(c: &mut Ctx, outer: Value, name: &str) -> Value {
+    match const_get_at(c, outer, intern(name.as_bytes())) { Some(m) if is_class_or_module(m) => m, _ => define_module_under(c, outer, name) }
 }
-fn class_under(outer: Value, name: &str, sup: Value) -> Value {
-    match const_get_at(outer, intern(name.as_bytes())) { Some(k) if is_class_or_module(k) => k, _ => define_class_under(outer, name, sup) }
+fn class_under(c: &mut Ctx, outer: Value, name: &str, sup: Value) -> Value {
+    match const_get_at(c, outer, intern(name.as_bytes())) { Some(k) if is_class_or_module(k) => k, _ => define_class_under(c, outer, name, sup) }
 }
 
 fn libyaml_version(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.ary_new_from(&[Value::fix(0), Value::fix(2), Value::fix(5)])) }
@@ -375,37 +375,37 @@ fn libyaml_version(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV
 pub fn init(c: &mut Ctx) -> RV {
     if C_PARSER.get(c) != NIL { return Ok(NIL); }
     let o = c.vm().c_object.get();
-    let m = module_under(o, "Psych");
+    let m = module_under(c, o, "Psych");
     M_PSYCH.set(c, m);
-    define_singleton_cfunc(m, "libyaml_version", libyaml_version, 0);
+    define_singleton_cfunc(c, m, "libyaml_version", libyaml_version, 0);
 
-    let p = class_under(m, "Parser", o);
+    let p = class_under(c, m, "Parser", o);
     C_PARSER.set(c, p);
-    class_set_alloc(p, AllocKind::None);
-    for (n, v) in [("ANY", yp::ANY_ENCODING), ("UTF8", yp::UTF8_ENCODING), ("UTF16LE", yp::UTF16LE_ENCODING), ("UTF16BE", yp::UTF16BE_ENCODING)] { const_set(p, intern(n.as_bytes()), Value::fix(v as i64)); }
+    class_set_alloc(c, p, AllocKind::None);
+    for (n, v) in [("ANY", yp::ANY_ENCODING), ("UTF8", yp::UTF8_ENCODING), ("UTF16LE", yp::UTF16LE_ENCODING), ("UTF16BE", yp::UTF16BE_ENCODING)] { const_set(c, p, intern(n.as_bytes()), Value::fix(v as i64)); }
     let f = c.str_new(b"psych/syntax_error");
     require_feature(c, f, false)?;
-    define_private_cfunc(p, "_native_parse", p_native_parse, 3);
-    define_cfunc(p, "parse", p_parse, -1);
-    define_cfunc(p, "mark", p_mark, 0);
+    define_private_cfunc(c, p, "_native_parse", p_native_parse, 3);
+    define_cfunc(c, p, "parse", p_parse, -1);
+    define_cfunc(c, p, "mark", p_mark, 0);
 
-    let h = class_under(m, "Handler", o);
-    let e = class_under(m, "Emitter", h);
+    let h = class_under(c, m, "Handler", o);
+    let e = class_under(c, m, "Emitter", h);
     C_EMITTER.set(c, e);
-    class_set_alloc(e, AllocKind::None);
-    let d = |n: &str, f: CFunc, a: i32| define_cfunc(e, n, f, a);
-    d("initialize", e_initialize, -1); d("start_stream", e_start_stream, 1); d("end_stream", e_end_stream, 0);
-    d("start_document", e_start_document, 3); d("end_document", e_end_document, 1); d("scalar", e_scalar, 6);
-    d("start_sequence", e_start_sequence, 4); d("end_sequence", e_end_sequence, 0); d("start_mapping", e_start_mapping, 4);
-    d("end_mapping", e_end_mapping, 0); d("alias", e_alias, 1); d("canonical", e_canonical, 0); d("canonical=", e_set_canonical, 1);
-    d("indentation", e_indentation, 0); d("indentation=", e_set_indentation, 1); d("line_width", e_line_width, 0); d("line_width=", e_set_line_width, 1);
+    class_set_alloc(c, e, AllocKind::None);
+    let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, e, n, f, a);
+    d(c, "initialize", e_initialize, -1); d(c, "start_stream", e_start_stream, 1); d(c, "end_stream", e_end_stream, 0);
+    d(c, "start_document", e_start_document, 3); d(c, "end_document", e_end_document, 1); d(c, "scalar", e_scalar, 6);
+    d(c, "start_sequence", e_start_sequence, 4); d(c, "end_sequence", e_end_sequence, 0); d(c, "start_mapping", e_start_mapping, 4);
+    d(c, "end_mapping", e_end_mapping, 0); d(c, "alias", e_alias, 1); d(c, "canonical", e_canonical, 0); d(c, "canonical=", e_set_canonical, 1);
+    d(c, "indentation", e_indentation, 0); d(c, "indentation=", e_set_indentation, 1); d(c, "line_width", e_line_width, 0); d(c, "line_width=", e_set_line_width, 1);
 
-    let cl = class_under(m, "ClassLoader", o);
-    let vis = module_under(m, "Visitors");
-    let visitor = class_under(vis, "Visitor", o);
-    let tr = class_under(vis, "ToRuby", visitor);
-    define_private_cfunc(tr, "build_exception", tr_build_exception, 2);
-    define_private_cfunc(cl, "path2class", cl_path2class, 1);
-    class_under(vis, "YAMLTree", visitor);
+    let cl = class_under(c, m, "ClassLoader", o);
+    let vis = module_under(c, m, "Visitors");
+    let visitor = class_under(c, vis, "Visitor", o);
+    let tr = class_under(c, vis, "ToRuby", visitor);
+    define_private_cfunc(c, tr, "build_exception", tr_build_exception, 2);
+    define_private_cfunc(c, cl, "path2class", cl_path2class, 1);
+    class_under(c, vis, "YAMLTree", visitor);
     Ok(NIL)
 }

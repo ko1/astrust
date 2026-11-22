@@ -67,7 +67,7 @@ pub fn init_toplevel(c: &mut Ctx) {
     let file: &'static str = "<main>";
     let b = new_binding(c, RBinding { self_: slf, env, names: vec![vec![]], cref, me: std::ptr::null(), file, line: 0, extra: NIL, dc: NIL });
     let ob = c.vm().c_object.get();
-    const_set(ob, crate::symbol::intern(b"TOPLEVEL_BINDING"), b);
+    const_set(c, ob, crate::symbol::intern(b"TOPLEVEL_BINDING"), b);
 }
 
 fn frame_binding(c: &Ctx, f: &Frame) -> RBinding {
@@ -174,7 +174,7 @@ fn eval_under(c: &mut Ctx, slf: Value, k: Value, src: &[u8], file: &'static str,
     run_eval_iseq(c, is, slf, env, cref, std::ptr::null(), VISI_PUBLIC)
 }
 pub fn eval_with_self(c: &mut Ctx, slf: Value, src: &[u8], file: &'static str, line: i32) -> RV {
-    let k = if slf.is_heap() { singleton_class(slf) } else { class_of(slf) };
+    let k = if slf.is_heap() { singleton_class(c, slf) } else { class_of(slf) };
     eval_under(c, slf, k, src, file, line)
 }
 pub fn eval_in_class(c: &mut Ctx, k: Value, src: &[u8], file: &'static str, line: i32) -> RV {
@@ -239,13 +239,14 @@ fn b_source_location(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> R
     Ok(c.ary_new_from(&[f, Value::fix(line as i64)]))
 }
 
-pub fn init(vmr: &Vm) {
+pub fn init(c: &mut Ctx) {
+    let vmr = c.vm();
     let k = vmr.c_binding.get();
-    define_cfunc(k, "local_variable_get", b_lvar_get, 1);
-    define_cfunc(k, "local_variable_set", b_lvar_set, 2);
-    define_cfunc(k, "local_variable_defined?", b_lvar_defined, 1);
-    define_cfunc(k, "receiver", b_receiver, 0);
-    define_cfunc(k, "eval", b_eval, -1);
-    define_cfunc(k, "local_variables", b_local_variables, 0);
-    define_cfunc(k, "source_location", b_source_location, 0);
+    define_cfunc(c, k, "local_variable_get", b_lvar_get, 1);
+    define_cfunc(c, k, "local_variable_set", b_lvar_set, 2);
+    define_cfunc(c, k, "local_variable_defined?", b_lvar_defined, 1);
+    define_cfunc(c, k, "receiver", b_receiver, 0);
+    define_cfunc(c, k, "eval", b_eval, -1);
+    define_cfunc(c, k, "local_variables", b_local_variables, 0);
+    define_cfunc(c, k, "source_location", b_source_location, 0);
 }

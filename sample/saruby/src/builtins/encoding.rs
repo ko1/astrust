@@ -652,7 +652,8 @@ fn const_names(n: &str) -> Vec<String> {
 }
 
 /// Boot: no context runs yet, so the Encoding objects are allocated directly.
-pub fn init(vmr: &Vm) {
+pub fn init(c: &mut Ctx) {
+    let vmr = c.vm();
     let ek = vmr.c_encoding.get();
     for i in 0..NENC {
         let e = crate::gc::alloc(ek, Body::Data(Box::new(REnc { id: i as u8 })));
@@ -664,25 +665,25 @@ pub fn init(vmr: &Vm) {
         let ev = vmr.enc_objs.borrow()[i];
         for n in std::iter::once(&d.name).chain(d.aliases.iter()) {
             if matches!(*n, "locale" | "external" | "filesystem") { continue; }
-            for cn in const_names(n) { const_set(ek, intern(cn.as_bytes()), ev); }
+            for cn in const_names(n) { const_set(c, ek, intern(cn.as_bytes()), ev); }
         }
     }
-    define_cfunc(ek, "to_s", enc_to_s, 0);
-    define_cfunc(ek, "name", enc_to_s, 0);
-    define_cfunc(ek, "inspect", enc_inspect, 0);
-    define_cfunc(ek, "names", enc_names, 0);
-    define_cfunc(ek, "dummy?", enc_dummy_p, 0);
-    define_cfunc(ek, "ascii_compatible?", enc_ascii_compat_p, 0);
-    define_cfunc(ek, "_dump", enc_dump, -1);
-    define_singleton_cfunc(ek, "_load", enc_s_load, 1);
-    define_singleton_cfunc(ek, "find", enc_s_find, 1);
-    define_singleton_cfunc(ek, "list", enc_s_list, 0);
-    define_singleton_cfunc(ek, "name_list", enc_s_name_list, 0);
-    define_singleton_cfunc(ek, "aliases", enc_s_aliases, 0);
-    define_singleton_cfunc(ek, "default_external", enc_s_default_external, 0);
-    define_singleton_cfunc(ek, "default_internal", enc_s_default_internal, 0);
-    define_singleton_cfunc(ek, "default_external=", enc_s_set_default_external, 1);
-    define_singleton_cfunc(ek, "default_internal=", enc_s_set_default_internal, 1);
-    define_singleton_cfunc(ek, "locale_charmap", enc_s_locale_charmap, 0);
-    define_singleton_cfunc(ek, "compatible?", enc_s_compatible_p, 2);
+    define_cfunc(c, ek, "to_s", enc_to_s, 0);
+    define_cfunc(c, ek, "name", enc_to_s, 0);
+    define_cfunc(c, ek, "inspect", enc_inspect, 0);
+    define_cfunc(c, ek, "names", enc_names, 0);
+    define_cfunc(c, ek, "dummy?", enc_dummy_p, 0);
+    define_cfunc(c, ek, "ascii_compatible?", enc_ascii_compat_p, 0);
+    define_cfunc(c, ek, "_dump", enc_dump, -1);
+    define_singleton_cfunc(c, ek, "_load", enc_s_load, 1);
+    define_singleton_cfunc(c, ek, "find", enc_s_find, 1);
+    define_singleton_cfunc(c, ek, "list", enc_s_list, 0);
+    define_singleton_cfunc(c, ek, "name_list", enc_s_name_list, 0);
+    define_singleton_cfunc(c, ek, "aliases", enc_s_aliases, 0);
+    define_singleton_cfunc(c, ek, "default_external", enc_s_default_external, 0);
+    define_singleton_cfunc(c, ek, "default_internal", enc_s_default_internal, 0);
+    define_singleton_cfunc(c, ek, "default_external=", enc_s_set_default_external, 1);
+    define_singleton_cfunc(c, ek, "default_internal=", enc_s_set_default_internal, 1);
+    define_singleton_cfunc(c, ek, "locale_charmap", enc_s_locale_charmap, 0);
+    define_singleton_cfunc(c, ek, "compatible?", enc_s_compatible_p, 2);
 }

@@ -2,13 +2,12 @@
 // Converted code uses the `Ctx` methods of range.rs, numeric.rs, bignum.rs.
 use crate::heap::{obj_set_flags, obj_set_klass};
 use crate::object::*;
+#[allow(unused_imports)]
+use crate::heap::no_legacy_body::*;   // no object accessor (docs/safe_heap.md)
 use crate::value::*;
+use crate::vm::Ctx;
 
 pub fn range_new(b: Value, e: Value, excl: bool) -> Value { crate::gc::alloc(crate::vm::vm().c_range.get(), Body::Range(b, e, excl)) }
-#[inline]
-pub fn range_parts(r: Value) -> (Value, Value, bool) {
-    match &obj(r).body { Body::Range(a, b, x) => (*a, *b, *x), _ => (NIL, NIL, false) }
-}
 
 #[inline]
 pub fn float_new(d: f64) -> Value {
@@ -21,22 +20,14 @@ fn float_new_heap(d: f64) -> Value {
     obj_set_flags(v, FL_FROZEN);
     v
 }
-/// Numeric value as f64 (Integer / Float), None otherwise.
-pub fn num_to_f64(v: Value) -> Option<f64> {
-    if v.is_fixnum() { Some(v.as_fix() as f64) }
-    else if is_float(v) { Some(float_val(v)) }
-    else if is_bignum(v) { Some(rbig(v).to_f64()) }
-    else { None }
-}
+
 pub fn big_to_value(b: crate::bignum::BigInt) -> Value {
     if let Some(i) = b.to_i64() { if Value::fixable(i) { return Value::fix(i); } }
     let v = crate::gc::alloc(crate::vm::vm().c_integer.get(), Body::Bignum(Box::new(b)));
     obj_set_flags(v, FL_FROZEN);
     v
 }
-pub fn to_big(v: Value) -> crate::bignum::BigInt {
-    if v.is_fixnum() { crate::bignum::BigInt::from_i64(v.as_fix()) } else { rbig(v).clone() }
-}
+
 pub fn int_from_i128(i: i128) -> Value {
     if i >= FIXNUM_MIN as i128 && i <= FIXNUM_MAX as i128 { Value::fix(i as i64) } else { big_to_value(crate::bignum::BigInt::from_i128(i)) }
 }
@@ -58,16 +49,16 @@ pub fn recursion_leave(v: Value, tag: crate::value::Sym) {
     if let Some(p) = g.iter().rposition(|&(x, t)| x == v.raw() && t == tag) { g.remove(p); }
 }
 
-// ---- boot-time class setup for builtins/boot.rs (no context exists yet) ----
+// ---- boot-time class setup for builtins/boot.rs ----
 /// `m` becomes the metaclass of `k`.
-pub fn boot_metaclass(k: Value, m: Value) {
-    let d = rclass(m);
+pub fn boot_metaclass(c: &mut Ctx, k: Value, m: Value) {
+    let d = c.class_mut(m);
     d.is_singleton = true; d.attached = k;
     obj_set_klass(k, m);
 }
-pub fn boot_subclass(sup: Value, k: Value) { rclass(sup).subclasses.push(k); }
+pub fn boot_subclass(c: &mut Ctx, sup: Value, k: Value) { c.class_mut(sup).subclasses.push(k); }
 /// Constants `names` of `owner` autoload the native `feature`.
-pub fn boot_autoload(owner: Value, names: &[&str], feature: &str) {
+pub fn boot_autoload(c: &mut Ctx, owner: Value, names: &[&str], feature: &str) {
     let path = crate::str_legacy::str_new_frozen(feature.as_bytes());
-    for n in names { rclass(owner).autoload.insert(crate::symbol::intern(n.as_bytes()), path); }
+    for n in names { c.class_mut(owner).autoload.insert(crate::symbol::intern(n.as_bytes()), path); }
 }

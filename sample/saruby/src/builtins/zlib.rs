@@ -198,21 +198,21 @@ impl RData for RGz {
 
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     let Some(k) = ZK.with(|z| z.get()) else { return Ok(None) };
-    if crate::builtins::inherits(klass, k.deflate) || crate::builtins::inherits(klass, k.inflate) {
-        let inf = crate::builtins::inherits(klass, k.inflate);
+    if crate::builtins::inherits(c, klass, k.deflate) || crate::builtins::inherits(c, klass, k.inflate) {
+        let inf = crate::builtins::inherits(c, klass, k.inflate);
         let o = c.alloc(klass, Body::Data(Box::new(RZ { z: Some(Box::new(ZStream::new(inf))), reuse: NIL })));
-        if inf { let h = c.hash_new(); ivar_set_raw(o, intern(b"@dictionaries"), h); }
+        if inf { let h = c.hash_new(); ivar_set_raw(c, o, intern(b"@dictionaries"), h); }
         return Ok(Some(o));
     }
-    if crate::builtins::inherits(klass, k.gzwriter) || crate::builtins::inherits(klass, k.gzreader) {
-        let inf = crate::builtins::inherits(klass, k.gzreader);
+    if crate::builtins::inherits(c, klass, k.gzwriter) || crate::builtins::inherits(c, klass, k.gzreader) {
+        let inf = crate::builtins::inherits(c, klass, k.gzreader);
         return Ok(Some(c.alloc(klass, Body::Data(Box::new(RGz { g: Some(Box::new(GzCore::new(inf))), io: NIL, orig_name: NIL, comment: NIL, ecopts: NIL, path: NIL })))));
     }
     Ok(None)
 }
 /// dup/clone: a fresh object of the class; initialize_copy fills it.
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
-    if c.data::<RZ>(v).is_some() || c.data::<RGz>(v).is_some() { return alloc_data(c, real_class_of(v)); }
+    if c.data::<RZ>(v).is_some() || c.data::<RGz>(v).is_some() { return alloc_data(c, real_class_of(c, v)); }
     Ok(None)
 }
 
@@ -221,7 +221,7 @@ fn in_progress<T>(c: &mut Ctx) -> Result<T, Esc> { err(c, zk().in_progress, "zli
 fn take_z(c: &mut Ctx, ov: Value) -> Result<Box<ZStream>, Esc> {
     match c.data_mut::<RZ>(ov) {
         Some(r) => match r.z.take() { Some(z) => Ok(z), None => in_progress(c) },
-        None => type_err(c, format!("wrong argument type {} (expected zstream)", class_name_for_err(ov))),
+        None => type_err(c, format!("wrong argument type {} (expected zstream)", class_name_for_err(c, ov))),
     }
 }
 fn put_z(c: &mut Ctx, ov: Value, z: Box<ZStream>) { if let Some(r) = c.data_mut::<RZ>(ov) { r.z = Some(z); } }
@@ -329,7 +329,7 @@ fn zstream_run_try(c: &mut Ctx, z: &mut ZStream, src: &[u8], flush: i32, cx: Run
         if err != Z_OK && err != Z_STREAM_END {
             if z.avail_in > 0 { z.append_input(&input[ip..]); }
             if err == Z_NEED_DICT && cx.obj != NIL {
-                let dicts = ivar_get(cx.obj, intern(b"@dictionaries"));
+                let dicts = ivar_get(c, cx.obj, intern(b"@dictionaries"));
                 if is_hash(dicts) {
                     let key = uint(c, z.adler() as u64);
                     let dict = crate::hash::hash_aref(c, dicts, key)?;
@@ -388,7 +388,7 @@ fn do_checksum(c: &mut Ctx, a: &[Value], f: fn(u32, &[u8]) -> u32, init: u32) ->
     let mut sum: u32 = if vsum != NIL { to_ulong(c, vsum)? as u32 } else if str == NIL { 0 } else { init };
     if str == NIL {
         sum = init;   // crc32/adler32 with a NULL buffer return their initial value
-    } else if is_kind_of(str, c.vm().c_io.get()) {
+    } else if is_kind_of(c, str, c.vm().c_io.get()) {
         loop {
             let b = funcall(c, str, intern(b"read"), &[Value::fix(8192)], std::ptr::null())?;
             if b == NIL { break; }
@@ -601,7 +601,7 @@ fn do_inflate(c: &mut Ctx, z: &mut ZStream, src: Value, cx: RunCx) -> Result<(),
     Ok(())
 }
 fn inf_add_dictionary(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
-    let dicts = ivar_get(s, intern(b"@dictionaries"));
+    let dicts = ivar_get(c, s, intern(b"@dictionaries"));
     let sum = do_checksum(c, &a[..1], adler32, 1)?;
     crate::hash::hash_aset(c, dicts, sum, a[0])?;
     Ok(s)
@@ -710,7 +710,7 @@ fn gz_io(c: &Ctx, ov: Value) -> Value { gz_vals(c, ov).0 }
 fn take_gz(c: &mut Ctx, ov: Value) -> Result<Box<GzCore>, Esc> {
     match c.data_mut::<RGz>(ov) {
         Some(r) => match r.g.take() { Some(g) => Ok(g), None => in_progress(c) },
-        None => type_err(c, format!("wrong argument type {} (expected gzfile)", class_name_for_err(ov))),
+        None => type_err(c, format!("wrong argument type {} (expected gzfile)", class_name_for_err(c, ov))),
     }
 }
 fn put_gz(c: &mut Ctx, ov: Value, g: Box<GzCore>) { if let Some(r) = c.data_mut::<RGz>(ov) { r.g = Some(g); } }
@@ -724,8 +724,8 @@ fn with_gz(c: &mut Ctx, ov: Value, ready: bool, f: impl FnOnce(&mut Ctx, &mut Gz
 }
 
 fn gz_raise<T>(c: &mut Ctx, g: &GzCore, klass: Value, msg: &str) -> Result<T, Esc> {
-    let e = make_exception(klass, msg);
-    if let Some(i) = &g.z.input { let s = c.str_new_enc(i, ENC_BINARY); ivar_set_raw(e, intern(b"@input"), s); }
+    let e = make_exception(c, klass, msg);
+    if let Some(i) = &g.z.input { let s = c.str_new_enc(i, ENC_BINARY); ivar_set_raw(c, e, intern(b"@input"), s); }
     Err(raise_exc(c, e))
 }
 
@@ -744,7 +744,7 @@ fn write_raw(c: &mut Ctx, g: &mut GzCore, io: Value) -> Result<(), Esc> {
         g.z.avail_out = 0;
         let s = bin(c, data);
         funcall(c, io, intern(b"write"), &[s], std::ptr::null())?;
-        if g.z.flags & GZ_SYNC != 0 && respond_to(io, intern(b"flush"), false) { funcall(c, io, intern(b"flush"), &[], std::ptr::null())?; }
+        if g.z.flags & GZ_SYNC != 0 && respond_to(c, io, intern(b"flush"), false) { funcall(c, io, intern(b"flush"), &[], std::ptr::null())?; }
     }
     Ok(())
 }
@@ -753,15 +753,15 @@ fn read_raw(c: &mut Ctx, io: Value, outbuf: Value) -> RV {
     let mut args = vec![Value::fix(GZFILE_READ_SIZE)];
     if outbuf != NIL { args.push(outbuf); }
     match funcall(c, io, intern(b"readpartial"), &args, std::ptr::null()) {
-        Ok(s) => { if !is_string(s) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(s))); } Ok(s) }
+        Ok(s) => { if !is_string(s) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(c, s))); } Ok(s) }
         Err(e) => {
             if c.esc != EscKind::Raise { return Err(e); }
             let x = c.esc_val;
-            if is_kind_of(x, c.vm().c_eof_error.get()) { c.esc = EscKind::None; return Ok(NIL); }
-            if is_kind_of(x, c.vm().c_no_method_error.get()) {
+            if is_kind_of(c, x, c.vm().c_eof_error.get()) { c.esc = EscKind::None; return Ok(NIL); }
+            if is_kind_of(c, x, c.vm().c_no_method_error.get()) {
                 c.esc = EscKind::None;
                 let s = funcall(c, io, intern(b"read"), &args, std::ptr::null())?;
-                if s != NIL && !is_string(s) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(s))); }
+                if s != NIL && !is_string(s) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(c, s))); }
                 return Ok(s);
             }
             Err(e)
@@ -988,7 +988,7 @@ fn gz_close(c: &mut Ctx, ov: Value, g: &mut GzCore, closeflag: bool) -> RV {
     let r = gz_end(c, g, io, on, cm);
     if let Some(d) = c.data_mut::<RGz>(ov) { d.io = NIL; d.orig_name = NIL; d.comment = NIL; }
     r?;
-    if closeflag && respond_to(io, intern(b"close"), false) { funcall(c, io, intern(b"close"), &[], std::ptr::null())?; }
+    if closeflag && respond_to(c, io, intern(b"close"), false) { funcall(c, io, intern(b"close"), &[], std::ptr::null())?; }
     Ok(io)
 }
 
@@ -1081,16 +1081,16 @@ fn gzf_path(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.
 
 /// io.path when io responds to it (IOError ignored), and the singleton GzipFile#path.
 fn init_path(c: &mut Ctx, ov: Value, io: Value) -> Result<(), Esc> {
-    if !respond_to(io, intern(b"path"), false) { return Ok(()); }
+    if !respond_to(c, io, intern(b"path"), false) { return Ok(()); }
     match funcall(c, io, intern(b"path"), &[], std::ptr::null()) {
         Ok(p) => {
             if let Some(r) = c.data_mut::<RGz>(ov) { r.path = p; }
-            let sk = singleton_class(ov);
-            define_cfunc(sk, "path", gzf_path, 0);
+            let sk = singleton_class(c, ov);
+            define_cfunc(c, sk, "path", gzf_path, 0);
             Ok(())
         }
         Err(e) => {
-            if c.esc == EscKind::Raise && is_kind_of(c.esc_val, c.vm().c_io_error.get()) { c.esc = EscKind::None; return Ok(()); }
+            if c.esc == EscKind::Raise && is_kind_of(c, c.esc_val, c.vm().c_io_error.get()) { c.esc = EscKind::None; return Ok(()); }
             Err(e)
         }
     }
@@ -1157,7 +1157,7 @@ fn gzw_flush(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
         write_raw(c, g, io)?;
         Ok(NIL)
     })?;
-    if respond_to(io, intern(b"flush"), false) { funcall(c, io, intern(b"flush"), &[], std::ptr::null())?; }
+    if respond_to(c, io, intern(b"flush"), false) { funcall(c, io, intern(b"flush"), &[], std::ptr::null())?; }
     Ok(s)
 }
 fn gzw_write(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
@@ -1245,7 +1245,7 @@ fn gzr_readpartial(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     with_gz(c, s, true, |_c, _g| Ok(NIL))?;
     let len = num_to_long(c, a[0])?;
     if len < 0 { return arg_err(c, format!("negative length {} given", len)); }
-    if outbuf != NIL && !is_string(outbuf) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(outbuf))); }
+    if outbuf != NIL && !is_string(outbuf) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(c, outbuf))); }
     with_gz(c, s, true, |c, g| {
         if len == 0 {
             if outbuf == NIL { return Ok(c.str_new_enc(b"", ENC_BINARY)); }
@@ -1374,7 +1374,7 @@ fn gzr_gets_impl(c: &mut Ctx, s: Value, a: &[Value]) -> RV {
         if lim != NIL {
             if rs != NIL { rs = expect_str(c, rs)?; }
         } else if rs != NIL {
-            if is_string(rs) {} else if respond_to(rs, intern(b"to_str"), true) { rs = expect_str(c, rs)?; }
+            if is_string(rs) {} else if respond_to(c, rs, intern(b"to_str"), true) { rs = expect_str(c, rs)?; }
             else { lim = rs; rs = global_get("$/"); }
         }
         if lim != NIL {
@@ -1676,87 +1676,87 @@ end
 /// Run by the first `require "zlib"`.
 pub fn init(c: &mut Ctx) {
     let (std_err, object) = (c.vm().c_standard_error.get(), c.vm().c_object.get());
-    let m = define_module("Zlib");
-    let error = define_class_under(m, "Error", std_err);
-    let d = |n: &str| define_class_under(m, n, error);
-    let mut k = Zk { m, error, stream_end: d("StreamEnd"), need_dict: d("NeedDict"), data_error: d("DataError"), stream_error: d("StreamError"),
-        mem_error: d("MemError"), buf_error: d("BufError"), version_error: d("VersionError"), in_progress: d("InProgressError"),
+    let m = define_module(c, "Zlib");
+    let error = define_class_under(c, m, "Error", std_err);
+    let d = |c: &mut Ctx, n: &str| define_class_under(c, m, n, error);
+    let mut k = Zk { m, error, stream_end: d(c, "StreamEnd"), need_dict: d(c, "NeedDict"), data_error: d(c, "DataError"), stream_error: d(c, "StreamError"),
+        mem_error: d(c, "MemError"), buf_error: d(c, "BufError"), version_error: d(c, "VersionError"), in_progress: d(c, "InProgressError"),
         deflate: NIL, inflate: NIL, gz_error: NIL, no_footer: NIL, crc_error: NIL, length_error: NIL, gzwriter: NIL, gzreader: NIL };
-    define_module_function(m, "zlib_version", z_zlib_version, 0);
-    define_module_function(m, "adler32", z_adler32, -1);
-    define_module_function(m, "adler32_combine", z_adler32_combine, 3);
-    define_module_function(m, "crc32", z_crc32, -1);
-    define_module_function(m, "crc32_combine", z_crc32_combine, 3);
-    define_module_function(m, "crc_table", z_crc_table, 0);
-    let cs = |c: &mut Ctx, n: &str, v: &[u8]| { let s = c.str_new_enc(v, ENC_BINARY); const_set(m, intern(n.as_bytes()), s); };
+    define_module_function(c, m, "zlib_version", z_zlib_version, 0);
+    define_module_function(c, m, "adler32", z_adler32, -1);
+    define_module_function(c, m, "adler32_combine", z_adler32_combine, 3);
+    define_module_function(c, m, "crc32", z_crc32, -1);
+    define_module_function(c, m, "crc32_combine", z_crc32_combine, 3);
+    define_module_function(c, m, "crc_table", z_crc_table, 0);
+    let cs = |c: &mut Ctx, n: &str, v: &[u8]| { let s = c.str_new_enc(v, ENC_BINARY); const_set(c, m, intern(n.as_bytes()), s); };
     cs(c, "VERSION", b"3.2.3");
     cs(c, "ZLIB_VERSION", b"1.3");
-    let ci = |n: &str, v: i64| const_set(m, intern(n.as_bytes()), Value::fix(v));
-    let zs = define_class_under(m, "ZStream", object);
-    class_set_alloc(zs, AllocKind::None);
-    let z = |n: &str, f: CFunc, a: i32| define_cfunc(zs, n, f, a);
-    z("avail_out", zs_avail_out, 0); z("avail_out=", zs_set_avail_out, 1); z("avail_in", zs_avail_in, 0); z("total_in", zs_total_in, 0);
-    z("total_out", zs_total_out, 0); z("data_type", zs_data_type, 0); z("adler", zs_adler, 0); z("finished?", zs_finished_p, 0);
-    z("stream_end?", zs_finished_p, 0); z("closed?", zs_closed_p, 0); z("ended?", zs_closed_p, 0); z("close", zs_end, 0); z("end", zs_end, 0);
-    z("reset", zs_reset, 0); z("finish", zs_finish, 0); z("flush_next_in", zs_flush_next_in, 0); z("flush_next_out", zs_flush_next_out, 0);
-    ci("BINARY", Z_BINARY as i64); ci("ASCII", Z_TEXT as i64); ci("TEXT", Z_TEXT as i64); ci("UNKNOWN", Z_UNKNOWN as i64);
-    let df = define_class_under(m, "Deflate", zs);
-    class_set_alloc(df, AllocKind::None);
-    define_singleton_cfunc(df, "deflate", def_s_deflate, -1);
-    define_singleton_cfunc(m, "deflate", def_s_deflate, -1);
-    let z = |n: &str, f: CFunc, a: i32| define_cfunc(df, n, f, a);
-    define_private_cfunc(df, "initialize", def_initialize, -1);
-    define_private_cfunc(df, "initialize_copy", def_init_copy, 1);
-    z("deflate", def_deflate, -1); z("<<", def_addstr, 1); z("flush", def_flush, -1); z("params", def_params, 2); z("set_dictionary", def_set_dictionary, 1);
-    let inf = define_class_under(m, "Inflate", zs);
-    class_set_alloc(inf, AllocKind::None);
-    define_singleton_cfunc(inf, "inflate", inf_s_inflate, 1);
-    define_singleton_cfunc(m, "inflate", inf_s_inflate, 1);
-    define_private_cfunc(inf, "initialize", inf_initialize, -1);
-    let z = |n: &str, f: CFunc, a: i32| define_cfunc(inf, n, f, a);
-    z("add_dictionary", inf_add_dictionary, 1); z("inflate", inf_inflate, -1); z("<<", inf_addstr, 1); z("sync", inf_sync, 1);
-    z("sync_point?", inf_sync_point_p, 0); z("set_dictionary", inf_set_dictionary, 1);
-    ci("NO_COMPRESSION", 0); ci("BEST_SPEED", 1); ci("BEST_COMPRESSION", 9); ci("DEFAULT_COMPRESSION", -1);
-    ci("FILTERED", 1); ci("HUFFMAN_ONLY", 2); ci("RLE", 3); ci("FIXED", 4); ci("DEFAULT_STRATEGY", 0);
-    ci("MAX_WBITS", 15); ci("DEF_MEM_LEVEL", 8); ci("MAX_MEM_LEVEL", 9);
-    ci("NO_FLUSH", 0); ci("SYNC_FLUSH", 2); ci("FULL_FLUSH", 3); ci("FINISH", 4);
-    let gzf = define_class_under(m, "GzipFile", object);
-    class_set_alloc(gzf, AllocKind::None);
-    let gz_error = define_class_under(gzf, "Error", error);
+    let ci = |c: &mut Ctx, n: &str, v: i64| const_set(c, m, intern(n.as_bytes()), Value::fix(v));
+    let zs = define_class_under(c, m, "ZStream", object);
+    class_set_alloc(c, zs, AllocKind::None);
+    let z = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, zs, n, f, a);
+    z(c, "avail_out", zs_avail_out, 0); z(c, "avail_out=", zs_set_avail_out, 1); z(c, "avail_in", zs_avail_in, 0); z(c, "total_in", zs_total_in, 0);
+    z(c, "total_out", zs_total_out, 0); z(c, "data_type", zs_data_type, 0); z(c, "adler", zs_adler, 0); z(c, "finished?", zs_finished_p, 0);
+    z(c, "stream_end?", zs_finished_p, 0); z(c, "closed?", zs_closed_p, 0); z(c, "ended?", zs_closed_p, 0); z(c, "close", zs_end, 0); z(c, "end", zs_end, 0);
+    z(c, "reset", zs_reset, 0); z(c, "finish", zs_finish, 0); z(c, "flush_next_in", zs_flush_next_in, 0); z(c, "flush_next_out", zs_flush_next_out, 0);
+    ci(c, "BINARY", Z_BINARY as i64); ci(c, "ASCII", Z_TEXT as i64); ci(c, "TEXT", Z_TEXT as i64); ci(c, "UNKNOWN", Z_UNKNOWN as i64);
+    let df = define_class_under(c, m, "Deflate", zs);
+    class_set_alloc(c, df, AllocKind::None);
+    define_singleton_cfunc(c, df, "deflate", def_s_deflate, -1);
+    define_singleton_cfunc(c, m, "deflate", def_s_deflate, -1);
+    let z = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, df, n, f, a);
+    define_private_cfunc(c, df, "initialize", def_initialize, -1);
+    define_private_cfunc(c, df, "initialize_copy", def_init_copy, 1);
+    z(c, "deflate", def_deflate, -1); z(c, "<<", def_addstr, 1); z(c, "flush", def_flush, -1); z(c, "params", def_params, 2); z(c, "set_dictionary", def_set_dictionary, 1);
+    let inf = define_class_under(c, m, "Inflate", zs);
+    class_set_alloc(c, inf, AllocKind::None);
+    define_singleton_cfunc(c, inf, "inflate", inf_s_inflate, 1);
+    define_singleton_cfunc(c, m, "inflate", inf_s_inflate, 1);
+    define_private_cfunc(c, inf, "initialize", inf_initialize, -1);
+    let z = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, inf, n, f, a);
+    z(c, "add_dictionary", inf_add_dictionary, 1); z(c, "inflate", inf_inflate, -1); z(c, "<<", inf_addstr, 1); z(c, "sync", inf_sync, 1);
+    z(c, "sync_point?", inf_sync_point_p, 0); z(c, "set_dictionary", inf_set_dictionary, 1);
+    ci(c, "NO_COMPRESSION", 0); ci(c, "BEST_SPEED", 1); ci(c, "BEST_COMPRESSION", 9); ci(c, "DEFAULT_COMPRESSION", -1);
+    ci(c, "FILTERED", 1); ci(c, "HUFFMAN_ONLY", 2); ci(c, "RLE", 3); ci(c, "FIXED", 4); ci(c, "DEFAULT_STRATEGY", 0);
+    ci(c, "MAX_WBITS", 15); ci(c, "DEF_MEM_LEVEL", 8); ci(c, "MAX_MEM_LEVEL", 9);
+    ci(c, "NO_FLUSH", 0); ci(c, "SYNC_FLUSH", 2); ci(c, "FULL_FLUSH", 3); ci(c, "FINISH", 4);
+    let gzf = define_class_under(c, m, "GzipFile", object);
+    class_set_alloc(c, gzf, AllocKind::None);
+    let gz_error = define_class_under(c, gzf, "Error", error);
     k.gz_error = gz_error;
-    k.no_footer = define_class_under(gzf, "NoFooter", gz_error);
-    k.crc_error = define_class_under(gzf, "CRCError", gz_error);
-    k.length_error = define_class_under(gzf, "LengthError", gz_error);
-    let gzw = define_class_under(m, "GzipWriter", gzf);
-    let gzr = define_class_under(m, "GzipReader", gzf);
-    class_set_alloc(gzw, AllocKind::None);
-    class_set_alloc(gzr, AllocKind::None);
+    k.no_footer = define_class_under(c, gzf, "NoFooter", gz_error);
+    k.crc_error = define_class_under(c, gzf, "CRCError", gz_error);
+    k.length_error = define_class_under(c, gzf, "LengthError", gz_error);
+    let gzw = define_class_under(c, m, "GzipWriter", gzf);
+    let gzr = define_class_under(c, m, "GzipReader", gzf);
+    class_set_alloc(c, gzw, AllocKind::None);
+    class_set_alloc(c, gzr, AllocKind::None);
     k.deflate = df;
     k.inflate = inf;
     k.gzwriter = gzw;
     k.gzreader = gzr;
     ZK.with(|z| z.set(Some(k)));
-    let z = |n: &str, f: CFunc, a: i32| define_cfunc(gzf, n, f, a);
-    z("to_io", gzf_to_io, 0); z("crc", gzf_crc, 0); z("mtime", gzf_mtime, 0); z("level", gzf_level, 0); z("os_code", gzf_os_code, 0);
-    z("orig_name", gzf_orig_name, 0); z("comment", gzf_comment, 0); z("close", gzf_close, 0); z("finish", gzf_finish, 0);
-    z("closed?", gzf_closed_p, 0); z("sync", gzf_sync, 0); z("sync=", gzf_set_sync, 1);
-    let r = |n: &str, f: CFunc, a: i32| define_cfunc(gzr, n, f, a);
-    r("lineno", gzf_lineno, 0); r("lineno=", gzf_set_lineno, 1); r("eof", gzf_eof_p, 0); r("eof?", gzf_eof_p, 0);
-    r("pos", gzf_total_out, 0); r("tell", gzf_total_out, 0);
-    let w = |n: &str, f: CFunc, a: i32| define_cfunc(gzw, n, f, a);
-    w("mtime=", gzw_set_mtime, 1); w("orig_name=", gzw_set_orig_name, 1); w("comment=", gzw_set_comment, 1);
-    w("pos", gzf_total_in, 0); w("tell", gzf_total_in, 0);
-    define_private_cfunc(gzw, "initialize", gzw_initialize, -1);
-    w("flush", gzw_flush, -1); w("write", gzw_write, -1); w("putc", gzw_putc, 1);
-    define_private_cfunc(gzr, "initialize", gzr_initialize, -1);
-    r("rewind", gzr_rewind, 0); r("unused", gzr_unused, 0); r("read", gzr_read, -1); r("readpartial", gzr_readpartial, -1);
-    r("getc", gzr_getc, 0); r("getbyte", gzr_getbyte, 0); r("readchar", gzr_readchar, 0); r("readbyte", gzr_readbyte, 0);
-    r("each_byte", gzr_each_byte, 0); r("each_char", gzr_each_char, 0); r("ungetc", gzr_ungetc, 1); r("ungetbyte", gzr_ungetbyte, 1);
-    r("gets", gzr_gets, -1); r("readline", gzr_readline, -1); r("each", gzr_each, -1); r("each_line", gzr_each, -1);
-    r("readlines", gzr_readlines, -1); r("external_encoding", gzr_external_encoding, 0);
-    define_singleton_cfunc(m, "gzip", z_gzip, -1);
-    define_singleton_cfunc(m, "gunzip", z_gunzip, 1);
+    let z = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, gzf, n, f, a);
+    z(c, "to_io", gzf_to_io, 0); z(c, "crc", gzf_crc, 0); z(c, "mtime", gzf_mtime, 0); z(c, "level", gzf_level, 0); z(c, "os_code", gzf_os_code, 0);
+    z(c, "orig_name", gzf_orig_name, 0); z(c, "comment", gzf_comment, 0); z(c, "close", gzf_close, 0); z(c, "finish", gzf_finish, 0);
+    z(c, "closed?", gzf_closed_p, 0); z(c, "sync", gzf_sync, 0); z(c, "sync=", gzf_set_sync, 1);
+    let r = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, gzr, n, f, a);
+    r(c, "lineno", gzf_lineno, 0); r(c, "lineno=", gzf_set_lineno, 1); r(c, "eof", gzf_eof_p, 0); r(c, "eof?", gzf_eof_p, 0);
+    r(c, "pos", gzf_total_out, 0); r(c, "tell", gzf_total_out, 0);
+    let w = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, gzw, n, f, a);
+    w(c, "mtime=", gzw_set_mtime, 1); w(c, "orig_name=", gzw_set_orig_name, 1); w(c, "comment=", gzw_set_comment, 1);
+    w(c, "pos", gzf_total_in, 0); w(c, "tell", gzf_total_in, 0);
+    define_private_cfunc(c, gzw, "initialize", gzw_initialize, -1);
+    w(c, "flush", gzw_flush, -1); w(c, "write", gzw_write, -1); w(c, "putc", gzw_putc, 1);
+    define_private_cfunc(c, gzr, "initialize", gzr_initialize, -1);
+    r(c, "rewind", gzr_rewind, 0); r(c, "unused", gzr_unused, 0); r(c, "read", gzr_read, -1); r(c, "readpartial", gzr_readpartial, -1);
+    r(c, "getc", gzr_getc, 0); r(c, "getbyte", gzr_getbyte, 0); r(c, "readchar", gzr_readchar, 0); r(c, "readbyte", gzr_readbyte, 0);
+    r(c, "each_byte", gzr_each_byte, 0); r(c, "each_char", gzr_each_char, 0); r(c, "ungetc", gzr_ungetc, 1); r(c, "ungetbyte", gzr_ungetbyte, 1);
+    r(c, "gets", gzr_gets, -1); r(c, "readline", gzr_readline, -1); r(c, "each", gzr_each, -1); r(c, "each_line", gzr_each, -1);
+    r(c, "readlines", gzr_readlines, -1); r(c, "external_encoding", gzr_external_encoding, 0);
+    define_singleton_cfunc(c, m, "gzip", z_gzip, -1);
+    define_singleton_cfunc(c, m, "gunzip", z_gunzip, 1);
     for (n, v) in [("OS_CODE", 3), ("OS_MSDOS", 0), ("OS_AMIGA", 1), ("OS_VMS", 2), ("OS_UNIX", 3), ("OS_ATARI", 5), ("OS_OS2", 6), ("OS_MACOS", 7),
-        ("OS_TOPS20", 10), ("OS_WIN32", 11), ("OS_VMCMS", 4), ("OS_ZSYSTEM", 8), ("OS_CPM", 9), ("OS_QDOS", 12), ("OS_RISCOS", 13), ("OS_UNKNOWN", 255)] { ci(n, v); }
+        ("OS_TOPS20", 10), ("OS_WIN32", 11), ("OS_VMCMS", 4), ("OS_ZSYSTEM", 8), ("OS_CPM", 9), ("OS_QDOS", 12), ("OS_RISCOS", 13), ("OS_UNKNOWN", 255)] { ci(c, n, v); }
     let _ = run_source(c, RUBY_PART.as_bytes(), "<internal:zlib>", 1);
 }

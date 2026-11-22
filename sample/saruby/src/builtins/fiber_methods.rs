@@ -24,7 +24,7 @@ fn validate(c: &mut Ctx, v: Value) -> Result<(), Esc> {
     if !is_hash(v) { return type_err(c, "storage must be a hash"); }
     if is_frozen(v) { let k = c.vm().c_frozen_error.get(); return err(c, k, "storage must not be frozen"); }
     for (k, _) in c.hash_pairs(v) {
-        if !k.is_sym() { return type_err(c, format!("wrong argument type {} (expected Symbol)", class_name_for_err(k))); }
+        if !k.is_sym() { return type_err(c, format!("wrong argument type {} (expected Symbol)", class_name_for_err(c, k))); }
     }
     Ok(())
 }
@@ -116,20 +116,21 @@ fn f_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let loc = if p != NIL && is_proc(p) {
         match c.proc_data(p).blk.kind { BlockKind::Iseq(is) => c.iseq_ref(is).map_or(String::new(), |is| format!(" {}:{}", is.info.file, is.info.line)), _ => String::new() }
     } else { String::new() };
-    let t = format!("#<{}:{:#018x}{} ({}{})>", class_path(real_class_of(slf)), slf.raw(), loc, st, if resuming { " by resuming" } else { "" });
+    let t = format!("#<{}:{:#018x}{} ({}{})>", class_path(c, real_class_of(c, slf)), slf.raw(), loc, st, if resuming { " by resuming" } else { "" });
     Ok(c.str_new(t.as_bytes()))
 }
 
-pub fn init(vmr: &Vm) {
+pub fn init(c: &mut Ctx) {
+    let vmr = c.vm();
     let k = vmr.c_fiber.get();
-    define_singleton_cfunc(k, "new", f_s_new, -1);
-    define_singleton_cfunc(k, "[]", f_s_aref, 1);
-    define_singleton_cfunc(k, "[]=", f_s_aset, 2);
-    define_singleton_cfunc(k, "blocking?", f_s_blocking_p, 0);
-    define_singleton_cfunc(k, "blocking", f_s_blocking, 0);
-    define_cfunc(k, "storage", f_storage, 0);
-    define_cfunc(k, "storage=", f_storage_set, 1);
-    define_cfunc(k, "blocking?", f_blocking_p, 0);
-    define_cfunc(k, "inspect", f_inspect, 0);
-    define_cfunc(k, "to_s", f_inspect, 0);
+    define_singleton_cfunc(c, k, "new", f_s_new, -1);
+    define_singleton_cfunc(c, k, "[]", f_s_aref, 1);
+    define_singleton_cfunc(c, k, "[]=", f_s_aset, 2);
+    define_singleton_cfunc(c, k, "blocking?", f_s_blocking_p, 0);
+    define_singleton_cfunc(c, k, "blocking", f_s_blocking, 0);
+    define_cfunc(c, k, "storage", f_storage, 0);
+    define_cfunc(c, k, "storage=", f_storage_set, 1);
+    define_cfunc(c, k, "blocking?", f_blocking_p, 0);
+    define_cfunc(c, k, "inspect", f_inspect, 0);
+    define_cfunc(c, k, "to_s", f_inspect, 0);
 }

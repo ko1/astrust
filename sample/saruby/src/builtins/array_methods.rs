@@ -45,8 +45,8 @@ pub fn rb_cmp(c: &mut Ctx, a: Value, b: Value) -> Result<std::cmp::Ordering, Esc
 pub fn cmp_result(c: &mut Ctx, r: Value, a: Value, b: Value) -> Result<i64, Esc> {
     if r.is_fixnum() { return Ok(r.as_fix().signum()); }
     if r == NIL {
-        let an = class_path(real_class_of(a));
-        let bn = if b.is_heap() && !is_float(b) { class_path(real_class_of(b)) } else { inspect_str(c, b)? };
+        let an = class_path(c, real_class_of(c, a));
+        let bn = if b.is_heap() && !is_float(b) { class_path(c, real_class_of(c, b)) } else { inspect_str(c, b)? };
         return arg_err(c, format!("comparison of {} with {} failed", an, bn));
     }
     if is_bignum(r) { return Ok(if c.big(r).neg { -1 } else { 1 }); }
@@ -497,7 +497,7 @@ pub fn ary_join(c: &mut Ctx, slf: Value, sep: &[u8], out: &mut Vec<u8>, enc: &mu
     r
 }
 fn check_str_conv(c: &mut Ctx, x: Value) -> Result<Option<Value>, Esc> {
-    if respond_to(x, s::to_str, true) { return Ok(Some(expect_str(c, x)?)); }
+    if respond_to(c, x, s::to_str, true) { return Ok(Some(expect_str(c, x)?)); }
     Ok(None)
 }
 cfn!(a_join, |c, slf, a, blk| {
@@ -517,7 +517,7 @@ cfn!(a_to_h, |c, slf, a, blk| {
     let mut i = 0;
     while let Some(&x) = c.ary(slf).get(i) {
         let pair = if blk.is_null() { x } else { yield1(c, blk, x)? };
-        let p = match check_array(c, pair)? { Some(p) => p, None => return type_err(c, format!("wrong element type {} at {} (expected array)", class_name_for_err(pair), i)) };
+        let p = match check_array(c, pair)? { Some(p) => p, None => return type_err(c, format!("wrong element type {} at {} (expected array)", class_name_for_err(c, pair), i)) };
         if c.ary_len(p) != 2 { return arg_err(c, format!("wrong array length at {} (expected 2, was {})", i, c.ary_len(p))); }
         hash_aset(c, h, c.ary_get(p, 0), c.ary_get(p, 1))?;
         i += 1;
@@ -725,7 +725,7 @@ cfn!(a_sum, |c, slf, a, blk| {
         // the same x again after switching to the float sum: its block must not run twice
         loop {
         if let Some((s2, comp)) = fsum.as_mut() {
-            if let Some(f) = crate::numeric::num_to_f64(x) {
+            if let Some(f) = c.num_to_f64(x) {
                 // CRuby's float_sum: NaN / Inf short-circuit the compensation
                 if s2.is_nan() {}
                 else if f.is_nan() { *s2 = f; }
@@ -737,7 +737,7 @@ cfn!(a_sum, |c, slf, a, blk| {
             acc = c.float_new(*s2 + *comp); fsum = None;
         }
         if acc.is_fixnum() && x.is_fixnum() { if let Some(r) = acc.as_fix().checked_add(x.as_fix()) { if Value::fixable(r) { acc = Value::fix(r); i += 1; continue 'elems; } } }
-        if is_float(x) && crate::numeric::is_numeric(acc) && fsum.is_none() { fsum = Some((crate::numeric::num_to_f64(acc).unwrap(), 0.0)); continue; }
+        if is_float(x) && crate::numeric::is_numeric(acc) && fsum.is_none() { fsum = Some((c.num_to_f64(acc).unwrap(), 0.0)); continue; }
         acc = funcall(c, acc, s::plus, &[x], std::ptr::null())?;
         i += 1;
         continue 'elems;
@@ -760,7 +760,7 @@ cfn!(a_zip, |c, slf, a, blk| {
     if c.ary_len(slf) == 0 { return Ok(if blk.is_null() { c.ary_new() } else { NIL }); }
     let mut others = vec![];
     for &x in a {
-        let arr = if is_array(x) { x } else if let Some(arr) = check_array(c, x)? { arr } else if respond_to(x, s::each, true) { { let n = Value::fix(c.ary_len(slf) as i64); if respond_to(x, intern(b"first"), true) { funcall(c, x, intern(b"first"), &[n], std::ptr::null())? } else { funcall(c, x, s::to_a, &[], std::ptr::null())? } } } else { return type_err(c, format!("wrong argument type {} (must respond to :each)", class_name_for_err(x))); };
+        let arr = if is_array(x) { x } else if let Some(arr) = check_array(c, x)? { arr } else if respond_to(c, x, s::each, true) { { let n = Value::fix(c.ary_len(slf) as i64); if respond_to(c, x, intern(b"first"), true) { funcall(c, x, intern(b"first"), &[n], std::ptr::null())? } else { funcall(c, x, s::to_a, &[], std::ptr::null())? } } } else { return type_err(c, format!("wrong argument type {} (must respond to :each)", class_name_for_err(c, x))); };
         others.push(arr);
     }
     let keep = c.ary_from_vec(others.clone());
@@ -835,7 +835,7 @@ cfn!(a_values_at, |c, slf, a, blk| {
     for &x in a {
         if is_range(x) {
             let n = c.ary_len(slf) as i64;
-            let (b, e, excl) = crate::range::range_parts(x);
+            let (b, e, excl) = c.range_parts(x);
             let st0 = if b == NIL { 0 } else { num_to_long(c, b)? };
             let st = if st0 < 0 { st0 + n } else { st0 };
             if st < 0 { let s2 = inspect_str(c, x)?; return err(c, c.vm().c_range_error.get(), format!("{} out of range", s2)); }
@@ -849,7 +849,7 @@ cfn!(a_dig, |c, slf, a, blk| {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
     let v = ary_aref(c, slf, &a[..1])?;
     if a.len() == 1 || v == NIL { return Ok(v); }
-    if !respond_to(v, intern(b"dig"), true) { return type_err(c, format!("{} does not have #dig method", class_name_for_err(v))); }
+    if !respond_to(c, v, intern(b"dig"), true) { return type_err(c, format!("{} does not have #dig method", class_name_for_err(c, v))); }
     funcall(c, v, intern(b"dig"), &a[1..], std::ptr::null())
 });
 cfn!(a_first_n_compat, |c, slf, a, blk| Ok(NIL));
@@ -985,10 +985,10 @@ cfn!(a_bsearch, |c, slf, a, blk| enum_or(c, slf, "bsearch", a, blk, |c| {
         if r == TRUE { found = x; hi = mid; }
         else if r == FALSE || r == NIL { lo = mid + 1; }
         else if r.is_fixnum() || is_float(r) {
-            let v = crate::numeric::num_to_f64(r).unwrap();
+            let v = c.num_to_f64(r).unwrap();
             if v == 0.0 { return Ok(x); }
             if v < 0.0 { hi = mid; } else { lo = mid + 1; }
-        } else { return type_err(c, format!("wrong argument type {} (must be numeric, true, false or nil)", class_name_for_err(r))); }
+        } else { return type_err(c, format!("wrong argument type {} (must be numeric, true, false or nil)", class_name_for_err(c, r))); }
     }
     Ok(found)
 }));
@@ -1123,43 +1123,43 @@ cfn!(a_bsearch_index, |c, slf, a, blk| enum_or(c, slf, "bsearch_index", a, blk, 
         if r == TRUE { found = Value::fix(mid as i64); hi = mid; }
         else if r == FALSE || r == NIL { lo = mid + 1; }
         else if r.is_fixnum() || is_float(r) || is_bignum(r) {
-            let v = crate::numeric::num_to_f64(r).unwrap_or(0.0);
+            let v = c.num_to_f64(r).unwrap_or(0.0);
             if v == 0.0 { return Ok(Value::fix(mid as i64)); }
             if v < 0.0 { hi = mid; } else { lo = mid + 1; }
-        } else { return type_err(c, format!("wrong argument type {} (must be numeric, true, false or nil)", class_name_for_err(r))); }
+        } else { return type_err(c, format!("wrong argument type {} (must be numeric, true, false or nil)", class_name_for_err(c, r))); }
     }
     Ok(found)
 }));
 cfn!(a_freeze, |c, slf, a, blk| { obj_set_flags(slf, FL_FROZEN); Ok(slf) });
 cfn!(a_s_try_convert, |c, slf, a, blk| Ok(check_array(c, a[0])?.unwrap_or(NIL)));
 
-pub fn init(k: Value) {
-    let d = |n: &str, f: CFunc, a: i32| define_cfunc(k, n, f, a);
-    define_private_cfunc(k, "initialize", a_initialize, -1);
-    define_singleton_cfunc(k, "[]", a_s_aref, -1);
-    define_singleton_cfunc(k, "try_convert", a_s_try_convert, 1);
-    d("[]", a_aref, -1); d("slice", a_aref, -1); d("[]=", a_aset, -1); d("at", a_at, 1); d("fetch", a_fetch, -1); d("first", a_first, -1); d("last", a_last, -1);
-    d("push", a_push, -1); d("append", a_push, -1); d("<<", a_ltlt, 1); d("pop", a_pop, -1); d("shift", a_shift, -1); d("unshift", a_unshift, -1);
-    d("prepend", a_unshift, -1); d("insert", a_insert, -1); d("length", a_length, 0); d("size", a_length, 0); d("empty?", a_empty, 0);
-    d("each", a_each, 0); d("each_index", a_each_index, 0); d("each_with_index", a_each_with_index, 0); d("reverse_each", a_reverse_each, 0);
-    d("map", a_map, 0); d("collect", a_map, 0); d("map!", a_map_b, 0); d("collect!", a_map_b, 0); d("select", a_select, 0); d("filter", a_select, 0);
-    d("reject", a_reject, 0); d("select!", a_select_b, 0); d("filter!", a_select_b, 0); d("keep_if", a_keep_if, 0); d("reject!", a_reject_b, 0);
-    d("delete_if", a_delete_if, 0); d("index", a_index, -1); d("find_index", a_index, -1); d("rindex", a_rindex, -1); d("include?", a_include, 1);
-    d("member?", a_include, 1); d("delete", a_delete, 1); d("delete_at", a_delete_at, 1); d("compact", a_compact, 0); d("compact!", a_compact_b, 0);
-    d("flatten", a_flatten, -1); d("flatten!", a_flatten_b, -1); d("uniq", a_uniq, 0); d("uniq!", a_uniq_b, 0); d("sort", a_sort, 0); d("sort!", a_sort_b, 0);
-    d("sort_by!", a_sort_by_b, 0); d("reverse", a_reverse, 0); d("reverse!", a_reverse_b, 0); d("rotate", a_rotate, -1); d("rotate!", a_rotate_b, -1);
-    d("join", a_join, -1); d("to_a", a_to_a, 0); d("entries", a_entries, 0); d("to_ary", a_to_ary, 0); d("to_h", a_to_h, 0); d("inspect", a_inspect, 0); d("to_s", a_inspect, 0);
-    d("==", a_eq, 1); d("eql?", a_eql, 1); d("hash", a_hash, 0); d("<=>", a_cmp, 1); d("+", a_plus, 1); d("-", a_minus, 1); d("difference", a_difference, -1);
-    d("*", a_mul, 1); d("&", a_and, 1); d("intersection", a_intersection, -1); d("intersect?", a_intersect_p, 1); d("|", a_or, 1); d("union", a_union, -1);
-    d("concat", a_concat, -1); d("clear", a_clear, 0); d("replace", a_replace, 1); d("initialize_copy", a_replace, 1); d("fill", a_fill, -1); d("slice!", a_slice_b, -1);
-    d("min", a_min, -1); d("max", a_max, -1); d("sum", a_sum, -1); d("count", a_count, -1); d("take", a_take, 1); d("drop", a_drop, 1);
-    d("take_while", a_take_while, 0); d("drop_while", a_drop_while, 0); d("zip", a_zip, -1); d("product", a_product, -1); d("combination", a_combination, 1);
-    d("permutation", a_permutation, -1); d("repeated_combination", a_repeated_combination, 1); d("repeated_permutation", a_repeated_permutation, 1);
-    d("transpose", a_transpose, 0); d("assoc", a_assoc, 1); d("rassoc", a_rassoc, 1); d("values_at", a_values_at, -1); d("dig", a_dig, -1);
-    d("sample", a_sample, -1); d("shuffle", a_shuffle, -1); d("shuffle!", a_shuffle_b, -1); d("cycle", a_cycle, -1); d("bsearch", a_bsearch, 0);
-    d("pack", a_pack, -1); d("flat_map", a_flat_map, 0); d("collect_concat", a_flat_map, 0); d("any?", a_any, -1); d("all?", a_all, -1); d("none?", a_none, -1);
-    d("find", a_find, -1); d("detect", a_find, -1); d("each_slice", a_each_slice, 1); d("inject", a_inject, -1); d("reduce", a_inject, -1);
-    d("sort_by", a_sort_by_native, 0); d("each_cons", a_each_cons, 1); d("filter_map", a_filter_map, 0); d("minmax", a_minmax, 0); d("freeze", a_freeze, 0);
-    d("fetch_values", a_fetch_values, -1); d("rfind", a_rfind, -1); d("bsearch_index", a_bsearch_index, 0); d("deconstruct", a_to_ary, 0);
+pub fn init(c: &mut Ctx, k: Value) {
+    let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, k, n, f, a);
+    define_private_cfunc(c, k, "initialize", a_initialize, -1);
+    define_singleton_cfunc(c, k, "[]", a_s_aref, -1);
+    define_singleton_cfunc(c, k, "try_convert", a_s_try_convert, 1);
+    d(c, "[]", a_aref, -1); d(c, "slice", a_aref, -1); d(c, "[]=", a_aset, -1); d(c, "at", a_at, 1); d(c, "fetch", a_fetch, -1); d(c, "first", a_first, -1); d(c, "last", a_last, -1);
+    d(c, "push", a_push, -1); d(c, "append", a_push, -1); d(c, "<<", a_ltlt, 1); d(c, "pop", a_pop, -1); d(c, "shift", a_shift, -1); d(c, "unshift", a_unshift, -1);
+    d(c, "prepend", a_unshift, -1); d(c, "insert", a_insert, -1); d(c, "length", a_length, 0); d(c, "size", a_length, 0); d(c, "empty?", a_empty, 0);
+    d(c, "each", a_each, 0); d(c, "each_index", a_each_index, 0); d(c, "each_with_index", a_each_with_index, 0); d(c, "reverse_each", a_reverse_each, 0);
+    d(c, "map", a_map, 0); d(c, "collect", a_map, 0); d(c, "map!", a_map_b, 0); d(c, "collect!", a_map_b, 0); d(c, "select", a_select, 0); d(c, "filter", a_select, 0);
+    d(c, "reject", a_reject, 0); d(c, "select!", a_select_b, 0); d(c, "filter!", a_select_b, 0); d(c, "keep_if", a_keep_if, 0); d(c, "reject!", a_reject_b, 0);
+    d(c, "delete_if", a_delete_if, 0); d(c, "index", a_index, -1); d(c, "find_index", a_index, -1); d(c, "rindex", a_rindex, -1); d(c, "include?", a_include, 1);
+    d(c, "member?", a_include, 1); d(c, "delete", a_delete, 1); d(c, "delete_at", a_delete_at, 1); d(c, "compact", a_compact, 0); d(c, "compact!", a_compact_b, 0);
+    d(c, "flatten", a_flatten, -1); d(c, "flatten!", a_flatten_b, -1); d(c, "uniq", a_uniq, 0); d(c, "uniq!", a_uniq_b, 0); d(c, "sort", a_sort, 0); d(c, "sort!", a_sort_b, 0);
+    d(c, "sort_by!", a_sort_by_b, 0); d(c, "reverse", a_reverse, 0); d(c, "reverse!", a_reverse_b, 0); d(c, "rotate", a_rotate, -1); d(c, "rotate!", a_rotate_b, -1);
+    d(c, "join", a_join, -1); d(c, "to_a", a_to_a, 0); d(c, "entries", a_entries, 0); d(c, "to_ary", a_to_ary, 0); d(c, "to_h", a_to_h, 0); d(c, "inspect", a_inspect, 0); d(c, "to_s", a_inspect, 0);
+    d(c, "==", a_eq, 1); d(c, "eql?", a_eql, 1); d(c, "hash", a_hash, 0); d(c, "<=>", a_cmp, 1); d(c, "+", a_plus, 1); d(c, "-", a_minus, 1); d(c, "difference", a_difference, -1);
+    d(c, "*", a_mul, 1); d(c, "&", a_and, 1); d(c, "intersection", a_intersection, -1); d(c, "intersect?", a_intersect_p, 1); d(c, "|", a_or, 1); d(c, "union", a_union, -1);
+    d(c, "concat", a_concat, -1); d(c, "clear", a_clear, 0); d(c, "replace", a_replace, 1); d(c, "initialize_copy", a_replace, 1); d(c, "fill", a_fill, -1); d(c, "slice!", a_slice_b, -1);
+    d(c, "min", a_min, -1); d(c, "max", a_max, -1); d(c, "sum", a_sum, -1); d(c, "count", a_count, -1); d(c, "take", a_take, 1); d(c, "drop", a_drop, 1);
+    d(c, "take_while", a_take_while, 0); d(c, "drop_while", a_drop_while, 0); d(c, "zip", a_zip, -1); d(c, "product", a_product, -1); d(c, "combination", a_combination, 1);
+    d(c, "permutation", a_permutation, -1); d(c, "repeated_combination", a_repeated_combination, 1); d(c, "repeated_permutation", a_repeated_permutation, 1);
+    d(c, "transpose", a_transpose, 0); d(c, "assoc", a_assoc, 1); d(c, "rassoc", a_rassoc, 1); d(c, "values_at", a_values_at, -1); d(c, "dig", a_dig, -1);
+    d(c, "sample", a_sample, -1); d(c, "shuffle", a_shuffle, -1); d(c, "shuffle!", a_shuffle_b, -1); d(c, "cycle", a_cycle, -1); d(c, "bsearch", a_bsearch, 0);
+    d(c, "pack", a_pack, -1); d(c, "flat_map", a_flat_map, 0); d(c, "collect_concat", a_flat_map, 0); d(c, "any?", a_any, -1); d(c, "all?", a_all, -1); d(c, "none?", a_none, -1);
+    d(c, "find", a_find, -1); d(c, "detect", a_find, -1); d(c, "each_slice", a_each_slice, 1); d(c, "inject", a_inject, -1); d(c, "reduce", a_inject, -1);
+    d(c, "sort_by", a_sort_by_native, 0); d(c, "each_cons", a_each_cons, 1); d(c, "filter_map", a_filter_map, 0); d(c, "minmax", a_minmax, 0); d(c, "freeze", a_freeze, 0);
+    d(c, "fetch_values", a_fetch_values, -1); d(c, "rfind", a_rfind, -1); d(c, "bsearch_index", a_bsearch_index, 0); d(c, "deconstruct", a_to_ary, 0);
     let _ = (a_frozen_dup, a_first_n_compat, a_s_new);
 }

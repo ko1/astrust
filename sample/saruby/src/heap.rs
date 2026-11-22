@@ -53,7 +53,7 @@ macro_rules! kind_test {
 }
 kind_test!(is_string Body::String(_), is_array Body::Array(_), is_hash Body::Hash(_), is_class_or_module Body::Class(_),
            is_proc Body::Proc(_), is_range Body::Range(..), is_bignum Body::Bignum(_), is_method_obj Body::Method(_),
-           is_heap_float Body::Float(_));
+           is_heap_float Body::Float(_), is_object Body::Object(_));
 #[inline(always)]
 pub fn is_float(v: Value) -> bool { v.is_flonum() || is_heap_float(v) }
 
@@ -121,7 +121,7 @@ impl Ctx {
 
     /// VM state (builtin classes, method identities, tables).
     #[inline(always)]
-    pub fn vm(&self) -> &Vm { crate::vm::vm() }
+    pub fn vm(&self) -> &'static Vm { crate::vm::vm() }   // all Cell / RefCell: no borrow of the context needed
 }
 
 /// Read access to every object but one, while that one is borrowed mutably (`Ctx::ary_mut_and`).
@@ -159,6 +159,15 @@ pub mod no_legacy {
     ban!(obj rary rstr rhash rclass rproc rmethod rbig rdata ivars_of str_bytes vm
          ary_new ary_new_capa ary_new_from ary_from_vec ary_push ary_len ary_get ary_to_vec
          str_new str_from_vec str_from_vec_enc hash_new float_new);
+}
+
+/// The object accessors alone (object.rs no longer defines them): a module that still uses the
+/// context-free allocators or `vm()` (vm.rs, rt.rs, ..) opts in to this one, so that a
+/// reintroduced `&'static mut` accessor is ambiguous there too.
+#[allow(dead_code)]
+pub mod no_legacy_body {
+    macro_rules! ban { ($($n:ident)*) => { $(pub fn $n(_: super::Token) {})* }; }
+    ban!(obj rary rstr rhash rclass rproc rmethod rbig rdata ivars_of str_bytes);
 }
 
 /// The same for the context-free String API (str_legacy.rs); a module of its own so that a
@@ -211,7 +220,7 @@ impl Ctx {
     #[inline(always)]
     pub fn method_entry(&self, klass: Value, mid: Sym) -> Option<&MethodEntry> {
         // SAFETY: lookup_method gives null or an entry made by vm::new_me, a leaked Box that is never freed
-        unsafe { crate::vm::lookup_method(klass, mid).as_ref() }
+        unsafe { crate::vm::lookup_method(self, klass, mid).as_ref() }
     }
     /// Parameters of the literal block a builtin was given; None for no block or a non-iseq one.
     pub fn block_params(&self, blk: *const Block) -> Option<&Params> {
@@ -244,6 +253,12 @@ impl Ctx {
     /// The whole body of `v`, any kind (Object#dup, Object#inspect dispatch on it); `body` made public.
     #[inline(always)]
     pub fn body_of(&self, v: Value) -> &Body { body(self, v) }
+    /// The ivars of heap object `v` when it is a plain object, None for any other kind.
+    #[inline(always)]
+    pub fn obj_ivars(&self, v: Value) -> Option<&crate::ivbuf::IvBuf> { match body(self, v) { Body::Object(x) => Some(x), _ => None } }
+    #[inline(always)]
+    pub fn obj_ivars_mut(&mut self, v: Value) -> Option<&mut crate::ivbuf::IvBuf> { match body_mut(self, v) { Body::Object(x) => Some(x), _ => None } }
+
     /// The frame of the code that called the running builtin; None at the bottom.
     #[inline(always)]
     pub fn caller_frame(&self) -> Option<&Frame> {
@@ -341,24 +356,56 @@ impl Global {
 // ---- method layer: envs (binding.rs), boot (builtins/mod.rs) -------------------------------------
 
 impl Ctx {
-    /// The env `hops` levels out from `env`.
+    /// The env `hops` levels out from `env` (inline: local-variable nodes and baked code use them).
+    #[inline(always)]
     pub fn env_up(&self, mut env: Value, hops: u32) -> Value {
         for _ in 0..hops { env = match body(self, env) { Body::Env(_, p) => *p, _ => wrong_kind(env, "an env") }; }
         env
     }
+    #[inline(always)]
     pub fn env_get(&self, env: Value, i: u32) -> Value {
         match body(self, env) { Body::Env(v, _) => v.get(i as usize), _ => wrong_kind(env, "an env") }
     }
+    #[inline(always)]
     pub fn env_set(&mut self, env: Value, i: u32, x: Value) {
         match body_mut(self, env) { Body::Env(v, _) => v.set(i as usize, x), _ => wrong_kind(env, "an env") }
     }
 }
 
-/// Install the VM and run the boot sequence on it: once, before any `Ctx` exists.
-pub fn boot_vm(v: Box<Vm>, boot: impl FnOnce(&Vm)) {
+// H6: a local-variable node's env is an Env: a frame's env slot (fp[1]) is written by make_env /
+// setup_params (an Env) or from the Block that made the frame (Block.env, an Env), and an Env's
+// parent is fixed at allocation; compile.rs never sends `hops` past the outermost env.
+// The checked forms above cost a block loop 4 instructions per access (block AOT +29 %).
+impl Ctx {
+    /// env_up without the kind checks.
+    /// # Safety
+    /// H6: `env` and its first `hops` parents are Envs.
+    #[inline(always)]
+    pub unsafe fn env_up_unchecked(&self, mut env: Value, hops: u32) -> Value {
+        // SAFETY: H1, H2 (a shared borrow of the context), H6
+        for _ in 0..hops { env = match unsafe { &(*env.ptr()).body } { Body::Env(_, p) => *p, _ => unsafe { std::hint::unreachable_unchecked() } }; }
+        env
+    }
+    /// # Safety
+    /// H6: `env` is an Env.
+    #[inline(always)]
+    pub unsafe fn env_get_unchecked(&self, env: Value, i: u32) -> Value {
+        // SAFETY: as env_up_unchecked
+        match unsafe { &(*env.ptr()).body } { Body::Env(v, _) => v.get(i as usize), _ => unsafe { std::hint::unreachable_unchecked() } }
+    }
+    /// # Safety
+    /// H6: `env` is an Env.
+    #[inline(always)]
+    pub unsafe fn env_set_unchecked(&mut self, env: Value, i: u32, x: Value) {
+        // SAFETY: H1, H2 (an exclusive borrow of the context), H6
+        match unsafe { &mut (*env.ptr()).body } { Body::Env(v, _) => v.set(i as usize, x), _ => unsafe { std::hint::unreachable_unchecked() } }
+    }
+}
+
+/// Install the VM: once, before any `Ctx` exists (the boot sequence then runs on the main context).
+pub fn boot_vm(v: Box<Vm>) {
     static BOOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     assert!(!BOOTED.swap(true, std::sync::atomic::Ordering::SeqCst), "saruby: VM booted twice");
     // SAFETY: the only write of VM (flag above), before any vm() or Ctx
     unsafe { *(&raw mut crate::vm::VM) = Some(v); }
-    boot(crate::vm::vm());
 }

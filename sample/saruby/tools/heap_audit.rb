@@ -3,7 +3,8 @@
 # (docs/safe_heap.md).  Per file: call sites of each old accessor, and `unsafe` occurrences.
 # `fn->&'static mut`: functions of the file that return a `&'static mut` (its own unsound accessors).
 # `static mut`: mutable statics declared in the file.
-# Exit 1 if a converted file (one that imports heap::no_legacy) still names an old accessor.
+# Exit 1 if a converted file (one that imports heap::no_legacy) still names an old accessor, or a file
+# that imports heap::no_legacy_body names an object accessor ("converted (object accessors)").
 # Generated sources (src/node_*.rs, src/prism_ast.rs) are not counted; node.def is.
 ROOT = File.expand_path('..', __dir__)
 BODY = %w[obj rary rstr rhash rclass rproc rmethod rbig rdata ivars_of str_bytes]
@@ -31,6 +32,7 @@ files.each do |f|
   c = COLS.transform_values { |ns| ns.sum { count(body, _1) } }
   uns = src.scan(/\bunsafe\b/).size
   converted = src =~ /^\s*use crate::heap::no_legacy::\*/ ? true : false
+  body_only = !converted && src =~ /^\s*use crate::heap::no_legacy_body::\*/ ? true : false
   helpers = src.scan(/\bfn\s+\w+[^{;]*->[^{;]*&'static mut/).size   # local accessors handing out &'static mut
   if converted
     banned = BODY + ARY + ALLOC + %w[vm]
@@ -39,8 +41,12 @@ files.each do |f|
     left = banned.select { count(body, _1) > 0 || body =~ /::#{_1}\(/ }
     bad << "#{rel}: #{left.join(' ')}" unless left.empty?
   end
+  if body_only
+    left = BODY.select { count(body, _1) > 0 || body =~ /::#{_1}\(/ }
+    bad << "#{rel}: #{left.join(' ')}" unless left.empty?
+  end
   statics = src.scan(/\bstatic\s+mut\s+\w+\s*:/).size
-  rows << [rel, c, uns, converted, raw.include?('#![forbid(unsafe_code)]'), helpers, statics]
+  rows << [rel, c, uns, converted ? true : (body_only ? :body : false), raw.include?('#![forbid(unsafe_code)]'), helpers, statics]
 end
 
 heads = COLS.keys
@@ -54,7 +60,7 @@ rows.each do |rel, c, uns, conv, forbid, helpers, statics|
   s = c.values.sum
   next if s == 0 && uns == 0 && !conv && helpers == 0 && statics == 0
   heads.each { tot[_1] += c[_1] }; tu += uns; th += helpers; ts += statics
-  state = conv ? (forbid ? 'converted, forbid(unsafe_code)' : 'converted') : (forbid ? 'forbid(unsafe_code)' : '')
+  state = conv == :body ? 'converted (object accessors)' : conv ? (forbid ? 'converted, forbid(unsafe_code)' : 'converted') : (forbid ? 'forbid(unsafe_code)' : '')
   puts fmt.([md ? rel : rel.ljust(w), *heads.map { c[_1].to_s.rjust(6) }, s.to_s.rjust(5), helpers.to_s.rjust(16), statics.to_s.rjust(10), uns.to_s.rjust(6), state])
 end
 puts fmt.([md ? 'total' : 'total'.ljust(w), *heads.map { tot[_1].to_s.rjust(6) }, tot.values.sum.to_s.rjust(5), th.to_s.rjust(16), ts.to_s.rjust(10), tu.to_s.rjust(6), ''])
