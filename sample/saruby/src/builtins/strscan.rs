@@ -40,6 +40,11 @@ fn set_match1(c: &mut Ctx, v: Value, a: usize, b: usize) {
     let s = sc_mut(c, v);
     s.prev = a; s.base = a; s.groups = Some(vec![Some((a, b))]); s.re = NIL; s.pos = b;
 }
+pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
+    if c.data::<RScan>(v).is_none() { return Ok(None); }
+    let k = real_class_of(v);
+    alloc_data(c, k)
+}
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     let k = c.vm().c_string_scanner;
     if k != NIL && crate::builtins::inherits(klass, k) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(RScan { str: UNDEF, pos: 0, prev: 0, groups: None, re: NIL, fixed: false, base: 0 }))))); }
@@ -56,8 +61,10 @@ fn ss_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
 fn ss_init_copy(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     sc(c, a[0])?;
     let o = c.data::<RScan>(a[0]).expect("a StringScanner");
-    let n = RScan { str: o.str, pos: o.pos, prev: o.prev, groups: o.groups.clone(), re: o.re, fixed: o.fixed, base: o.base };
-    *sc_mut(c, s) = n;
+    // strscan_init_copy copies the registers but not the regexp (so names are not copied)
+    let n = RScan { str: o.str, pos: o.pos, prev: o.prev, groups: o.groups.clone(), re: NIL, fixed: o.fixed, base: o.base };
+    let old_re = sc_mut(c, s).re;
+    *sc_mut(c, s) = RScan { re: old_re, ..n };
     Ok(s)
 }
 /// Bytes a..b of `str` (clamped to its length) as a String of its encoding.
@@ -238,11 +245,11 @@ fn ss_captures(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     for i in 1..n { let v = group(c, slf, i as i64); c.ary_push(out, v); }
     Ok(out)
 }
-fn ss_values_at(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn ss_values_at(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     let s = sc(c, slf)?;
     if s.ngroups.is_none() { return Ok(NIL); }
     let out = c.ary_new();
-    for &x in a { let i = num_to_long(c, x)?; let v = group(c, slf, i); c.ary_push(out, v); }
+    for &x in a { let v = ss_aref(c, slf, &[x], b)?; c.ary_push(out, v); }
     Ok(out)
 }
 fn ss_named_captures(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
@@ -258,18 +265,38 @@ fn ss_named_captures(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) ->
     Ok(h)
 }
 fn ss_scan_integer(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    let base = match a.last() { Some(&h) if is_hash(h) => match crate::hash::hash_get_opt(c, h, sym_value("base"))? { Some(b) => num_to_long(c, b)?, None => 10 }, _ => 10 };
-    if base != 10 && base != 16 { return arg_err(c, format!("Unsupported integer base: {}, expected 10 or 16", base)); }
+    // def scan_integer(base: 10) (strscan.rb)
+    let kw = kw_arg(a);
+    let npos = a.len() - kw.is_some() as usize;
+    if npos > 0 { return argc_err(c, npos, 0, 0); }
+    let base = match kw { Some(h) => {
+        for (k, _) in c.hash_pairs(h) { if k != sym_value("base") { let ks = crate::builtins::kernel::inspect_str(c, k)?; return arg_err(c, format!("unknown keyword: {}", ks)); } }
+        crate::hash::hash_get_opt(c, h, sym_value("base"))?.unwrap_or(Value::fix(10))
+    } None => Value::fix(10) };
+    let base = if base == Value::fix(10) { 10 } else if base == Value::fix(16) { 16 } else {
+        let bs = crate::builtins::kernel::inspect_str(c, base)?;
+        return arg_err(c, format!("Unsupported integer base: {}, expected 10 or 16", bs));
+    };
     let s = sc(c, slf)?;
+    sc_mut(c, slf).groups = None;
+    let enc = c.str_enc(s.str);
+    if !crate::builtins::encoding::ascii_compat(enc) {
+        return err(c, c.vm().c_compat_error, format!("ASCII incompatible encoding: {}", crate::builtins::encoding::enc_name(enc)));
+    }
+    // strscan_scan_base10_integer / strscan_scan_base16_integer
     let b = c.str_bytes(s.str);
-    let mut i = s.pos;
-    if i < b.len() && (b[i] == b'-' || b[i] == b'+') { i += 1; }
-    if base == 16 && i + 1 < b.len() && b[i] == b'0' && (b[i + 1] | 0x20) == b'x' { i += 2; }
-    let ds = i;
-    while i < b.len() && (if base == 10 { b[i].is_ascii_digit() } else { b[i].is_ascii_hexdigit() }) { i += 1; }
-    if i == ds { sc_mut(c, slf).groups = None; return Ok(NIL); }
-    let text: Vec<u8> = b[s.pos..i].to_vec();
-    set_match1(c, slf, s.pos, i);
+    let rest = &b[s.pos.min(b.len())..];
+    let n = rest.len();
+    if n == 0 { return Ok(NIL); }
+    let dig = |x: u8| if base == 10 { x.is_ascii_digit() } else { x.is_ascii_hexdigit() };
+    let mut len = 0;
+    if rest[0] == b'-' || rest[0] == b'+' { len += 1; }
+    if base == 16 && n >= len + 3 && rest[len] == b'0' && rest[len + 1] == b'x' && rest[len + 2].is_ascii_hexdigit() { len += 2; }
+    if len >= n || !dig(rest[len]) { return Ok(NIL); }
+    while len < n && dig(rest[len]) { len += 1; }
+    let text: Vec<u8> = rest[..len].to_vec();
+    let (st, en) = (s.pos, s.pos + len);
+    set_match1(c, slf, st, en);
     Ok(str_to_inum(&text, base as u32, false).unwrap_or(Value::fix(0)))
 }
 fn ss_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
