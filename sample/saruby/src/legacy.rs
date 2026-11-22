@@ -3,6 +3,7 @@
 use crate::heap::{obj_set_flags, obj_set_klass};
 use crate::object::*;
 use crate::value::*;
+use crate::vm::Ctx;
 
 pub fn range_new(b: Value, e: Value, excl: bool) -> Value { crate::gc::alloc(crate::vm::vm().c_range.get(), Body::Range(b, e, excl)) }
 
@@ -46,16 +47,16 @@ pub fn recursion_leave(v: Value, tag: crate::value::Sym) {
     if let Some(p) = g.iter().rposition(|&(x, t)| x == v.raw() && t == tag) { g.remove(p); }
 }
 
-// ---- boot-time class setup for builtins/boot.rs (no context exists yet) ----
+// ---- boot-time class setup for builtins/boot.rs ----
 /// `m` becomes the metaclass of `k`.
-pub fn boot_metaclass(k: Value, m: Value) {
-    let d = rclass(m);
+pub fn boot_metaclass(c: &mut Ctx, k: Value, m: Value) {
+    let d = c.class_mut(m);
     d.is_singleton = true; d.attached = k;
     obj_set_klass(k, m);
 }
-pub fn boot_subclass(sup: Value, k: Value) { rclass(sup).subclasses.push(k); }
+pub fn boot_subclass(c: &mut Ctx, sup: Value, k: Value) { c.class_mut(sup).subclasses.push(k); }
 /// Constants `names` of `owner` autoload the native `feature`.
-pub fn boot_autoload(owner: Value, names: &[&str], feature: &str) {
+pub fn boot_autoload(c: &mut Ctx, owner: Value, names: &[&str], feature: &str) {
     let path = crate::str_legacy::str_new_frozen(feature.as_bytes());
-    for n in names { rclass(owner).autoload.insert(crate::symbol::intern(n.as_bytes()), path); }
+    for n in names { c.class_mut(owner).autoload.insert(crate::symbol::intern(n.as_bytes()), path); }
 }

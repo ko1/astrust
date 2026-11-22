@@ -93,8 +93,8 @@ pub struct ClassData {
     pub extended_by: Vec<Value>,
     pub ivar_index: HashMap<Sym, u32>,
     pub ivar_names: Vec<Sym>,
-    pub ancestors: Option<Vec<Value>>,
-    pub ancestors_serial: u64,
+    // (hierarchy serial, ancestors): a cache that `vm::ancestors` fills under a shared borrow
+    pub ancestors: std::cell::RefCell<Option<(u64, std::rc::Rc<[Value]>)>>,
     pub alloc: AllocKind,
     pub subclasses: Vec<Value>,
     pub private_consts: Vec<Sym>,
@@ -107,33 +107,16 @@ impl ClassData {
             name: None, base_name: Sym(0), lexical_parent: NIL, superclass, is_module, is_singleton: false, attached: NIL,
             mtbl: HashMap::default(), consts: HashMap::default(), const_order: vec![], autoload: HashMap::default(), cvars: HashMap::default(),
             includes: vec![], prepends: vec![], extended_by: vec![], ivar_index: HashMap::default(), ivar_names: vec![],
-            ancestors: None, ancestors_serial: 0, alloc, subclasses: vec![], private_consts: vec![], refined: false,
+            ancestors: std::cell::RefCell::new(None), alloc, subclasses: vec![], private_consts: vec![], refined: false,
         }
     }
 }
 
-// ---- legacy accessors (callers guarantee the body kind) --------------------
-// Unsound: unbounded `&'static mut` into GC objects.  Kept for modules not yet converted to the
-// context-borrowing accessors of heap.rs (docs/safe_heap.md); a converted module cannot name them.
-
-#[inline(always)] fn obj(v: Value) -> &'static mut RObj { unsafe { &mut *v.ptr() } }
-
-macro_rules! body_accessor {
-    ($fn:ident, $variant:ident, $t:ty) => {
-        #[inline(always)]
-        pub fn $fn(v: Value) -> &'static mut $t {
-            match &mut obj(v).body { Body::$variant(x) => x, _ => unsafe { std::hint::unreachable_unchecked() } }
-        }
-    };
-}
-body_accessor!(rstr, String, RString);
-#[inline(always)]
-pub fn rclass(v: Value) -> &'static mut ClassData { match &mut obj(v).body { Body::Class(h) => h, _ => panic!("not a class: {:?}", v) } }
+// Payloads are reached only through the context-borrowing accessors of heap.rs (docs/safe_heap.md).
 
 pub use crate::heap::{float_val, is_array, is_bignum, is_class_or_module, is_float, is_frozen, is_hash, is_method_obj, is_object, is_proc, is_range, is_string};
 #[inline(always)] pub fn is_integer(v: Value) -> bool { v.is_fixnum() || is_bignum(v) }
 
-pub fn str_bytes(v: Value) -> &'static [u8] { &rstr(v).b }
 
 
 // legacy Hash API (no context); converted code uses the `Ctx` methods of hash.rs

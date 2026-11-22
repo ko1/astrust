@@ -79,7 +79,7 @@ fn rt_mut(c: &mut Ctx, v: Value) -> &mut RTrace { c.data_mut::<RTrace>(v).expect
 
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     let k = c.vm().c_tracepoint.get();
-    if k != NIL && crate::builtins::inherits(klass, k) {
+    if k != NIL && crate::builtins::inherits(c, klass, k) {
         return Ok(Some(c.alloc(klass, Body::Data(Box::new(RTrace { events: 0, proc_: NIL, enabled: false, target: 0, target_line: 0, target_thread: NIL, stf: false, cur: None })))));
     }
     Ok(None)
@@ -265,14 +265,14 @@ pub fn invoke_traced(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk
     };
     if is_internal(c) { return invoke_untraced(c, me, recv, base, argc, blk, flags); }
     let k = c.vm().c_tracepoint.get();
-    if k != NIL && (recv == k || real_class_of(recv) == k) {
+    if k != NIL && (recv == k || real_class_of(c, recv) == k) {
         if let Some(&(_, d, b, e)) = TP_RB.iter().find(|x| x.0 == sym_str(name)) { return invoke_tp_rb(c, me, recv, base, argc, blk, flags, (d, b, e)); }
     }
     if trace_mask() & (call_ev | ret_ev) == 0 { return invoke_untraced(c, me, recv, base, argc, blk, flags); }
     // Class#new is not reported (CRuby 4.0's opt_new), its BasicObject#initialize is (here the default is not called)
     if me == c.vm().ids.c_new.get() {
         let r = invoke_untraced(c, me, recv, base, argc, blk, flags)?;
-        let im = lookup_method(real_class_of(r), intern(b"initialize"));
+        let im = lookup_method(c, real_class_of(c, r), intern(b"initialize"));
         if im == c.vm().ids.bo_init.get() {
             let mut a = frame_arg(c, EV_C_CALL);
             let (mid, callee, klass) = method_of(c, im);
@@ -356,10 +356,10 @@ pub fn trace_script_compiled(c: &mut Ctx, src: &[u8]) -> Result<(), Esc> {
 
 fn event_of(c: &mut Ctx, v: Value) -> Result<u32, Esc> {
     let s = if v.is_sym() { v } else if is_string(v) { Value::sym(intern(c.str_bytes(v))) } else {
-        let cn = crate::builtins::kernel::class_name_for_err(v);
-        if !respond_to(v, intern(b"to_sym"), true) { return type_err(c, format!("no implicit conversion of {} into Symbol", cn)); }
+        let cn = crate::builtins::kernel::class_name_for_err(c, v);
+        if !respond_to(c, v, intern(b"to_sym"), true) { return type_err(c, format!("no implicit conversion of {} into Symbol", cn)); }
         let r = funcall(c, v, intern(b"to_sym"), &[], std::ptr::null())?;
-        if !r.is_sym() { return type_err(c, format!("can't convert {} to Symbol ({}#to_sym gives {})", cn, cn, crate::builtins::kernel::class_name_for_err(r))); }
+        if !r.is_sym() { return type_err(c, format!("can't convert {} to Symbol ({}#to_sym gives {})", cn, cn, crate::builtins::kernel::class_name_for_err(c, r))); }
         r
     };
     let n = sym_str(s.as_sym());
@@ -576,24 +576,25 @@ fn k_set_trace_func(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV
 }
 
 /// set_trace_func at boot; TracePoint itself is defined on its first reference ("saruby/tracepoint").
-pub fn init(vmr: &Vm) {
-    define_module_function(vmr.m_kernel.get(), "set_trace_func", k_set_trace_func, 1);
-    crate::builtins::lazy_const(vmr.c_object.get(), "TracePoint", "saruby/tracepoint");
+pub fn init(c: &mut Ctx) {
+    let vmr = c.vm();
+    define_module_function(c, vmr.m_kernel.get(), "set_trace_func", k_set_trace_func, 1);
+    crate::builtins::lazy_const(c, vmr.c_object.get(), "TracePoint", "saruby/tracepoint");
 }
 pub fn init_class(c: &mut Ctx) {
     if c.vm().c_tracepoint.get() != NIL { return; }
-    let k = define_class("TracePoint", c.vm().c_object.get());
-    class_set_alloc(k, AllocKind::None);
+    let k = define_class(c, "TracePoint", c.vm().c_object.get());
+    class_set_alloc(c, k, AllocKind::None);
     c.vm().c_tracepoint.set(k);
-    define_singleton_cfunc(k, "new", tp_new, -1);
-    define_singleton_cfunc(k, "trace", tp_s_trace, -1);
-    define_singleton_cfunc(k, "allow_reentry", tp_s_allow_reentry, 0);
-    define_singleton_cfunc(k, "stat", tp_s_stat, 0);
+    define_singleton_cfunc(c, k, "new", tp_new, -1);
+    define_singleton_cfunc(c, k, "trace", tp_s_trace, -1);
+    define_singleton_cfunc(c, k, "allow_reentry", tp_s_allow_reentry, 0);
+    define_singleton_cfunc(c, k, "stat", tp_s_stat, 0);
     for (n, f, ar) in [("enable", tp_enable as CFunc, -1), ("disable", tp_disable, 0), ("enabled?", tp_enabled_p, 0), ("event", tp_event, 0),
                        ("lineno", tp_lineno, 0), ("path", tp_path, 0), ("method_id", tp_method_id, 0), ("callee_id", tp_callee_id, 0),
                        ("defined_class", tp_defined_class, 0), ("self", tp_self, 0), ("binding", tp_binding, 0), ("return_value", tp_return_value, 0),
                        ("raised_exception", tp_raised_exception, 0), ("eval_script", tp_eval_script, 0), ("parameters", tp_parameters, 0),
                        ("inspect", tp_inspect, 0)] {
-        define_cfunc(k, n, f, ar);
+        define_cfunc(c, k, n, f, ar);
     }
 }

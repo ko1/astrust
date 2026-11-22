@@ -88,19 +88,19 @@ impl Ctx {
 /// Implicit conversion to Array (to_ary); None when not convertible.
 pub fn check_array(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if is_array(v) { return Ok(Some(v)); }
-    if v.is_heap() && respond_to(v, crate::symbol::s::to_ary, true) {
+    if v.is_heap() && respond_to(c, v, crate::symbol::s::to_ary, true) {
         let r = funcall(c, v, crate::symbol::s::to_ary, &[], std::ptr::null())?;
         if is_array(r) { return Ok(Some(r)); }
         if r == NIL { return Ok(None); }
-        let cls = class_path(real_class_of(v));
-        return type_err(c, format!("can't convert {} to Array ({}#to_ary gives {})", cls, cls, class_path(real_class_of(r))));
+        let cls = class_path(c, real_class_of(c, v));
+        return type_err(c, format!("can't convert {} to Array ({}#to_ary gives {})", cls, cls, class_path(c, real_class_of(c, r))));
     }
     Ok(None)
 }
 pub fn expect_array(c: &mut Ctx, v: Value) -> RV {
     match check_array(c, v)? {
         Some(a) => Ok(a),
-        None => type_err(c, format!("no implicit conversion of {} into Array", crate::builtins::kernel::class_name_for_err(v))),
+        None => type_err(c, format!("no implicit conversion of {} into Array", crate::builtins::kernel::class_name_for_err(c, v))),
     }
 }
 }

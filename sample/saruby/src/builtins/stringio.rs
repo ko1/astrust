@@ -42,7 +42,7 @@ fn nb() -> *const Block { std::ptr::null() }
 fn hidden_mark() -> Sym { intern(b"__strio") }
 fn errno_exc(c: &mut Ctx, name: &str, msg: Option<&str>) -> Esc {
     let no = if name == "EINVAL" { 22 } else { 13 };
-    let k = crate::builtins::exception::errno_class(c.vm(), no);
+    let k = crate::builtins::exception::errno_class(c, no);
     let base = crate::builtins::exception::errno_text(Value::fix(no));
     let m = match msg { Some(m) => format!("{} - {}", base, m), None => base };
     let e = make_exception(c, k, &m);
@@ -56,7 +56,7 @@ fn eof_error<T>(c: &mut Ctx) -> Result<T, Esc> { err(c, c.vm().c_eof_error.get()
 fn strio_parts(c: &mut Ctx, v: Value) -> Result<(Value, bool, bool), Esc> {
     match c.data::<RStrIO>(v) {
         Some(o) => Ok((o.inner, o.rd, o.wr)),
-        None => type_err(c, format!("wrong argument type {} (expected strio)", class_path(real_class_of(v)))),
+        None => type_err(c, format!("wrong argument type {} (expected strio)", class_path(c, real_class_of(c, v)))),
     }
 }
 fn obj_mut(c: &mut Ctx, v: Value) -> &mut RStrIO { c.data_mut::<RStrIO>(v).expect("a StringIO") }
@@ -142,7 +142,7 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
 }
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if c.data::<RStrIO>(v).is_none() { return Ok(None); }
-    Ok(Some(c.alloc(real_class_of(v), Body::Data(Box::new(RStrIO { inner: NIL, rd: false, wr: false })))))
+    Ok(Some(c.alloc(real_class_of(c, v), Body::Data(Box::new(RStrIO { inner: NIL, rd: false, wr: false })))))
 }
 fn new_state(c: &mut Ctx) -> Value {
     let k = c.vm().c_object.get();
@@ -214,7 +214,7 @@ fn class_new(c: &mut Ctx, klass: Value, a: &[Value]) -> RV {
 }
 fn sio_s_new(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if !blk.is_null() {
-        let n = class_path(slf);
+        let n = class_path(c, slf);
         let loc = backtrace_lines(c, 0).first().map(|l| l.split(":in ").next().unwrap_or("").to_string()).unwrap_or_default();
         crate::builtins::kernel::warning_write(c, format!("{}: warning: {}::new() does not take block; use {}::open() instead\n", loc, n, n).as_bytes())?;
     }
@@ -271,11 +271,11 @@ fn sio_eof(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(V
 fn sio_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let mut orig = a[0];
     if c.data::<RStrIO>(orig).is_none() {
-        let r = if orig.is_heap() && respond_to(orig, intern(b"to_strio"), true) { funcall(c, orig, intern(b"to_strio"), &[], nb())? } else { NIL };
+        let r = if orig.is_heap() && respond_to(c, orig, intern(b"to_strio"), true) { funcall(c, orig, intern(b"to_strio"), &[], nb())? } else { NIL };
         if c.data::<RStrIO>(r).is_none() {
-            let from = crate::builtins::kernel::class_name_for_err(orig);
-            if r == NIL && !(orig.is_heap() && respond_to(orig, intern(b"to_strio"), true)) { return type_err(c, format!("no implicit conversion of {} into StringIO", from)); }
-            return type_err(c, format!("can't convert {} to StringIO ({}#to_strio gives {})", class_path(real_class_of(orig)), class_path(real_class_of(orig)), class_path(real_class_of(r))));
+            let from = crate::builtins::kernel::class_name_for_err(c, orig);
+            if r == NIL && !(orig.is_heap() && respond_to(c, orig, intern(b"to_strio"), true)) { return type_err(c, format!("no implicit conversion of {} into StringIO", from)); }
+            return type_err(c, format!("can't convert {} to StringIO ({}#to_strio gives {})", class_path(c, real_class_of(c, orig)), class_path(c, real_class_of(c, orig)), class_path(c, real_class_of(c, r))));
         }
         orig = r;
     }
@@ -448,7 +448,7 @@ fn sio_each_codepoint(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -
 struct GetlineArg { rs: Value, limit: i64, chomp: bool }
 fn check_string_type(c: &mut Ctx, v: Value) -> RV {
     if is_string(v) { return Ok(v); }
-    if v.is_heap() && respond_to(v, s::to_str, true) { return expect_str(c, v); }
+    if v.is_heap() && respond_to(c, v, s::to_str, true) { return expect_str(c, v); }
     Ok(NIL)
 }
 fn prepare_getline_args(c: &mut Ctx, p: &SState, a: &[Value]) -> Result<GetlineArg, Esc> {
@@ -738,7 +738,7 @@ fn io_write(c: &mut Ctx, io: Value, s2: Value) -> RV { funcall(c, io, intern(b"w
 /// rb_io_writev for a non-IO: one write call, or one per piece when #write takes one argument.
 fn io_writev(c: &mut Ctx, io: Value, pieces: &[Value]) -> Result<(), Esc> {
     if pieces.len() > 1 {
-        let me = lookup_method(class_of(io), intern(b"write"));
+        let me = lookup_method(c, class_of(io), intern(b"write"));
         if !me.is_null() && crate::builtins::proc::method_arity(c, me) == 1 {
             for &x in pieces { io_write(c, io, x)?; }
             return Ok(());
@@ -843,7 +843,7 @@ fn gr_getch(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { func
 fn gr_getpass(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 0, 1)?;
     if let Some(&pr) = a.first() { if pr != NIL { let s2 = expect_str(c, pr)?; io_write(c, slf, s2)?; } }
-    if respond_to(slf, intern(b"flush"), false) { funcall(c, slf, intern(b"flush"), &[], nb())?; }
+    if respond_to(c, slf, intern(b"flush"), false) { funcall(c, slf, intern(b"flush"), &[], nb())?; }
     let r = funcall(c, slf, intern(b"gets"), &[], nb());
     let rs = default_rs(c);
     io_write(c, slf, rs)?;
@@ -854,46 +854,47 @@ fn gr_getpass(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 /// The part of io/console that is not about terminals.
 pub fn init_console(c: &mut Ctx) {
     let io = c.vm().c_io.get();
-    let gr = const_get_at(io, intern(b"generic_readable")).unwrap_or_else(|| define_module_under(io, "generic_readable"));
-    define_cfunc(gr, "getch", gr_getch, -1);
-    define_cfunc(gr, "getpass", gr_getpass, -1);
+    let gr = const_get_at(c, io, intern(b"generic_readable")).unwrap_or_else(|| define_module_under(c, io, "generic_readable"));
+    define_cfunc(c, gr, "getch", gr_getch, -1);
+    define_cfunc(c, gr, "getpass", gr_getpass, -1);
 }
 
 /// Boot: no context runs yet.
-pub fn init(vmr: &Vm) {
-    let k = define_class("StringIO", vmr.c_object.get());
-    class_set_alloc(k, AllocKind::None);
+pub fn init(c: &mut Ctx) {
+    let vmr = c.vm();
+    let k = define_class(c, "StringIO", vmr.c_object.get());
+    class_set_alloc(c, k, AllocKind::None);
     ivar_set_generic(k, hidden_mark(), TRUE);
     let io = vmr.c_io.get();
     for (n, v) in [("SEEK_SET", 0), ("SEEK_CUR", 1), ("SEEK_END", 2)] {
-        if const_get_at(io, intern(n.as_bytes())).is_none() { const_set(io, intern(n.as_bytes()), Value::fix(v)); }
+        if const_get_at(c, io, intern(n.as_bytes())).is_none() { const_set(c, io, intern(n.as_bytes()), Value::fix(v)); }
     }
-    include_module(k, vmr.m_enumerable.get());
-    const_set(k, intern(b"VERSION"), crate::gc::alloc(vmr.c_string.get(), Body::String(RString { b: crate::sbuf::SBuf::from_slice(b"3.2.0"), enc: ENC_UTF8 })));
-    const_set(k, intern(b"MAX_LENGTH"), Value::fix(i64::MAX >> 1));
-    define_singleton_cfunc(k, "new", sio_s_new, -1);
-    define_singleton_cfunc(k, "open", sio_s_open, -1);
-    define_private_cfunc(k, "initialize", sio_initialize, -1);
-    define_private_cfunc(k, "initialize_copy", sio_copy, 1);
-    let d = |n: &str, f: CFunc, ar: i32| define_cfunc(k, n, f, ar);
-    d("reopen", sio_reopen, -1); d("string", sio_string, 0); d("string=", sio_set_string, 1); d("lineno", sio_lineno, 0); d("lineno=", sio_set_lineno, 1);
-    d("binmode", sio_binmode, 0); d("close", sio_close, 0); d("close_read", sio_close_read, 0); d("close_write", sio_close_write, 0);
-    d("closed?", sio_closed, 0); d("closed_read?", sio_closed_read, 0); d("closed_write?", sio_closed_write, 0); d("eof", sio_eof, 0); d("eof?", sio_eof, 0);
-    d("fcntl", sio_fcntl, -1); d("flush", sio_self, 0); d("fsync", sio_zero, 0); d("pos", sio_pos, 0); d("pos=", sio_set_pos, 1);
-    d("rewind", sio_rewind, 0); d("seek", sio_seek, -1); d("sync", sio_true, 0); d("sync=", sio_first, 1); d("tell", sio_pos, 0);
-    d("each", sio_each, -1); d("each_line", sio_each, -1); d("each_byte", sio_each_byte, 0); d("each_char", sio_each_char, 0); d("each_codepoint", sio_each_codepoint, 0);
-    d("getc", sio_getc, 0); d("ungetc", sio_ungetc, 1); d("ungetbyte", sio_ungetbyte, 1); d("getbyte", sio_getbyte, 0); d("gets", sio_gets, -1);
-    d("readlines", sio_readlines, -1); d("read", sio_read, -1); d("pread", sio_pread, -1); d("write", sio_write, -1); d("putc", sio_putc, 1);
-    d("isatty", sio_false, 0); d("tty?", sio_false, 0); d("pid", sio_nil, 0); d("fileno", sio_nil, 0); d("size", sio_size, 0); d("length", sio_size, 0);
-    d("truncate", sio_truncate, 1); d("external_encoding", sio_external_encoding, 0); d("internal_encoding", sio_internal_encoding, 0);
-    d("set_encoding", sio_set_encoding, -1); d("set_encoding_by_bom", sio_set_encoding_by_bom, 0);
-    let gr = define_module_under(io, "generic_readable");
-    let r = |n: &str, f: CFunc, ar: i32| define_cfunc(gr, n, f, ar);
-    r("readchar", sio_readchar, 0); r("readbyte", sio_readbyte, 0); r("readline", sio_readline, -1); r("sysread", sio_sysread, -1);
-    r("readpartial", sio_sysread, -1); r("read_nonblock", sio_read_nonblock, -1);
-    include_module(k, gr);
-    let gw = define_module_under(io, "generic_writable");
-    let w = |n: &str, f: CFunc, ar: i32| define_cfunc(gw, n, f, ar);
-    w("<<", sio_addstr, 1); w("print", sio_print, -1); w("printf", sio_printf, -1); w("puts", sio_puts, -1); w("syswrite", sio_syswrite, 1); w("write_nonblock", sio_write_nonblock, -1);
-    include_module(k, gw);
+    include_module(c, k, vmr.m_enumerable.get());
+    const_set(c, k, intern(b"VERSION"), crate::gc::alloc(vmr.c_string.get(), Body::String(RString { b: crate::sbuf::SBuf::from_slice(b"3.2.0"), enc: ENC_UTF8 })));
+    const_set(c, k, intern(b"MAX_LENGTH"), Value::fix(i64::MAX >> 1));
+    define_singleton_cfunc(c, k, "new", sio_s_new, -1);
+    define_singleton_cfunc(c, k, "open", sio_s_open, -1);
+    define_private_cfunc(c, k, "initialize", sio_initialize, -1);
+    define_private_cfunc(c, k, "initialize_copy", sio_copy, 1);
+    let d = |c: &mut Ctx, n: &str, f: CFunc, ar: i32| define_cfunc(c, k, n, f, ar);
+    d(c, "reopen", sio_reopen, -1); d(c, "string", sio_string, 0); d(c, "string=", sio_set_string, 1); d(c, "lineno", sio_lineno, 0); d(c, "lineno=", sio_set_lineno, 1);
+    d(c, "binmode", sio_binmode, 0); d(c, "close", sio_close, 0); d(c, "close_read", sio_close_read, 0); d(c, "close_write", sio_close_write, 0);
+    d(c, "closed?", sio_closed, 0); d(c, "closed_read?", sio_closed_read, 0); d(c, "closed_write?", sio_closed_write, 0); d(c, "eof", sio_eof, 0); d(c, "eof?", sio_eof, 0);
+    d(c, "fcntl", sio_fcntl, -1); d(c, "flush", sio_self, 0); d(c, "fsync", sio_zero, 0); d(c, "pos", sio_pos, 0); d(c, "pos=", sio_set_pos, 1);
+    d(c, "rewind", sio_rewind, 0); d(c, "seek", sio_seek, -1); d(c, "sync", sio_true, 0); d(c, "sync=", sio_first, 1); d(c, "tell", sio_pos, 0);
+    d(c, "each", sio_each, -1); d(c, "each_line", sio_each, -1); d(c, "each_byte", sio_each_byte, 0); d(c, "each_char", sio_each_char, 0); d(c, "each_codepoint", sio_each_codepoint, 0);
+    d(c, "getc", sio_getc, 0); d(c, "ungetc", sio_ungetc, 1); d(c, "ungetbyte", sio_ungetbyte, 1); d(c, "getbyte", sio_getbyte, 0); d(c, "gets", sio_gets, -1);
+    d(c, "readlines", sio_readlines, -1); d(c, "read", sio_read, -1); d(c, "pread", sio_pread, -1); d(c, "write", sio_write, -1); d(c, "putc", sio_putc, 1);
+    d(c, "isatty", sio_false, 0); d(c, "tty?", sio_false, 0); d(c, "pid", sio_nil, 0); d(c, "fileno", sio_nil, 0); d(c, "size", sio_size, 0); d(c, "length", sio_size, 0);
+    d(c, "truncate", sio_truncate, 1); d(c, "external_encoding", sio_external_encoding, 0); d(c, "internal_encoding", sio_internal_encoding, 0);
+    d(c, "set_encoding", sio_set_encoding, -1); d(c, "set_encoding_by_bom", sio_set_encoding_by_bom, 0);
+    let gr = define_module_under(c, io, "generic_readable");
+    let r = |c: &mut Ctx, n: &str, f: CFunc, ar: i32| define_cfunc(c, gr, n, f, ar);
+    r(c, "readchar", sio_readchar, 0); r(c, "readbyte", sio_readbyte, 0); r(c, "readline", sio_readline, -1); r(c, "sysread", sio_sysread, -1);
+    r(c, "readpartial", sio_sysread, -1); r(c, "read_nonblock", sio_read_nonblock, -1);
+    include_module(c, k, gr);
+    let gw = define_module_under(c, io, "generic_writable");
+    let w = |c: &mut Ctx, n: &str, f: CFunc, ar: i32| define_cfunc(c, gw, n, f, ar);
+    w(c, "<<", sio_addstr, 1); w(c, "print", sio_print, -1); w(c, "printf", sio_printf, -1); w(c, "puts", sio_puts, -1); w(c, "syswrite", sio_syswrite, 1); w(c, "write_nonblock", sio_write_nonblock, -1);
+    include_module(c, k, gw);
 }

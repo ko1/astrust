@@ -121,7 +121,7 @@ impl Ctx {
 
     /// VM state (builtin classes, method identities, tables).
     #[inline(always)]
-    pub fn vm(&self) -> &Vm { crate::vm::vm() }
+    pub fn vm(&self) -> &'static Vm { crate::vm::vm() }   // all Cell / RefCell: no borrow of the context needed
 }
 
 /// Read access to every object but one, while that one is borrowed mutably (`Ctx::ary_mut_and`).
@@ -211,7 +211,7 @@ impl Ctx {
     #[inline(always)]
     pub fn method_entry(&self, klass: Value, mid: Sym) -> Option<&MethodEntry> {
         // SAFETY: lookup_method gives null or an entry made by vm::new_me, a leaked Box that is never freed
-        unsafe { crate::vm::lookup_method(klass, mid).as_ref() }
+        unsafe { crate::vm::lookup_method(self, klass, mid).as_ref() }
     }
     /// Parameters of the literal block a builtin was given; None for no block or a non-iseq one.
     pub fn block_params(&self, blk: *const Block) -> Option<&Params> {
@@ -393,11 +393,10 @@ impl Ctx {
     }
 }
 
-/// Install the VM and run the boot sequence on it: once, before any `Ctx` exists.
-pub fn boot_vm(v: Box<Vm>, boot: impl FnOnce(&Vm)) {
+/// Install the VM: once, before any `Ctx` exists (the boot sequence then runs on the main context).
+pub fn boot_vm(v: Box<Vm>) {
     static BOOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     assert!(!BOOTED.swap(true, std::sync::atomic::Ordering::SeqCst), "saruby: VM booted twice");
     // SAFETY: the only write of VM (flag above), before any vm() or Ctx
     unsafe { *(&raw mut crate::vm::VM) = Some(v); }
-    boot(crate::vm::vm());
 }

@@ -144,7 +144,7 @@ fn sys_fail(c: &mut Ctx, e: i64, msg: &str) -> Esc { raise_errno_plain(c, e, msg
 fn rw_fail(c: &mut Ctx, readable: bool, e: i64, msg: &str) -> Esc {
     let pre = match e { sys::EAGAIN => "EAGAIN", EINPROGRESS => "EINPROGRESS", _ => return sys_fail(c, e, msg) };
     let name = format!("{}Wait{}", pre, if readable { "Readable" } else { "Writable" });
-    let k = const_get_at(c.vm().c_io.get(), intern(name.as_bytes())).unwrap_or(c.vm().c_io_error.get());
+    let k = const_get_at(c, c.vm().c_io.get(), intern(name.as_bytes())).unwrap_or(c.vm().c_io_error.get());
     let x = make_exception(c, k, &format!("{} - {}", crate::builtins::exception::errno_text(Value::fix(e)), msg));
     ivar_set_raw(c, x, s::errno, Value::fix(e));
     raise_exc(c, x)
@@ -417,7 +417,7 @@ fn make_sockaddr_un(c: &mut Ctx, path: &[u8], what: &str) -> Result<Vec<u8>, Esc
 
 // ---- constant arguments (constants.c) -------------------------------------------------------
 fn constant_arg(c: &mut Ctx, v: Value, g: &Grp, msg: &str) -> Result<i32, Esc> {
-    let name = if let Some(n) = sym_arg(v) { Some(n) } else if is_string(v) || (v.is_heap() && respond_to(v, s::to_str, true) && !is_integer(v)) {
+    let name = if let Some(n) = sym_arg(v) { Some(n) } else if is_string(v) || (v.is_heap() && respond_to(c, v, s::to_str, true) && !is_integer(v)) {
         let s = expect_str(c, v)?; Some(c.str_bytes(s).to_vec())
     } else { None };
     match name {
@@ -466,7 +466,7 @@ struct Ai { sa: Vec<u8>, pfamily: i32, socktype: i32, protocol: i32, canonname: 
 fn blank_addr() -> RAddr { RAddr { init: false, sa: vec![], pfamily: 0, socktype: 0, protocol: 0, canonname: NIL, inspectname: NIL } }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     let k = C_ADDRINFO.get(c);
-    if k != NIL && crate::builtins::inherits(klass, k) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(blank_addr()))))); }
+    if k != NIL && crate::builtins::inherits(c, klass, k) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(blank_addr()))))); }
     Ok(None)
 }
 fn is_addrinfo(c: &Ctx, v: Value) -> bool { c.data::<RAddr>(v).is_some_and(|a| a.init) }
@@ -551,7 +551,7 @@ fn inspect_sockaddr(c: &mut Ctx, sa: &[u8]) -> Result<Vec<u8>, Esc> {
 }
 fn ai_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let ai = get_ai(c, slf)?;
-    let mut r = format!("#<{}: ", class_path(real_class_of(slf))).into_bytes();
+    let mut r = format!("#<{}: ", class_path(c, real_class_of(c, slf))).into_bytes();
     r.extend(inspect_sockaddr(c, &ai.sa)?);
     let mut t = String::new();
     if ai.pfamily != 0 && afamily(&ai.sa) != ai.pfamily {
@@ -917,7 +917,7 @@ fn bs_s_for_fd(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 }
 /// rb_io_s_new: a block is ignored with a warning.
 fn bs_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
-    if blk_given(b) { let n = class_path(slf); rb_warn(c, &format!("{}::new() does not take block; use {}::open() instead", n, n))?; }
+    if blk_given(b) { let n = class_path(c, slf); rb_warn(c, &format!("{}::new() does not take block; use {}::open() instead", n, n))?; }
     crate::builtins::object::c_new(c, slf, a, std::ptr::null())
 }
 fn bs_s_norev(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(NOREVLOOKUP.load(Relaxed))) }
@@ -1129,7 +1129,7 @@ fn cmsg_align(n: usize) -> usize { (n + 7) & !7 }
 const CMSG_HDR: usize = 16;
 fn ancdata_new(c: &mut Ctx, family: i32, level: i32, typ: i32, data: Value) -> RV {
     let k = C_ANCDATA.get(c);
-    let o = new_object(k);
+    let o = new_object(c, k);
     ivar_set_raw(c, o, intern(b"family"), Value::fix(family as i64));
     ivar_set_raw(c, o, intern(b"level"), Value::fix(level as i64));
     ivar_set_raw(c, o, intern(b"type"), Value::fix(typ as i64));
@@ -1297,7 +1297,7 @@ fn revlookup_flag(c: &mut Ctx, v: Value) -> Result<Option<bool>, Esc> {
     if v == TRUE { return Ok(Some(false)); }
     if v == FALSE { return Ok(Some(true)); }
     if v == NIL { return Ok(None); }
-    if !v.is_sym() { return type_err(c, format!("wrong argument type {} (expected Symbol)", class_name_for_err(v))); }
+    if !v.is_sym() { return type_err(c, format!("wrong argument type {} (expected Symbol)", class_name_for_err(c, v))); }
     match sym_bytes(v.as_sym()) {
         b"numeric" => Ok(Some(true)),
         b"hostname" => Ok(Some(false)),
@@ -1601,7 +1601,7 @@ fn socketpair(c: &mut Ctx, klass: Value, d: Value, t: Value, p: Value, b: *const
         let res = yield_block(c, b, &[r]);
         for s in [s2, s1] {
             if res.is_err() { let (e, v) = (c.esc, c.esc_val); let _ = funcall(c, s, intern(b"close"), &[], std::ptr::null()); c.esc = e; c.esc_val = v; }
-            else if let Err(x) = funcall(c, s, intern(b"close"), &[], std::ptr::null()) { let _ = x; let k = c.vm().c_io_error.get(); if !is_kind_of(c.esc_val, k) { return Err(Esc); } }
+            else if let Err(x) = funcall(c, s, intern(b"close"), &[], std::ptr::null()) { let _ = x; let k = c.vm().c_io_error.get(); if !is_kind_of(c, c.esc_val, k) { return Err(Esc); } }
         }
         return res;
     }
@@ -1733,7 +1733,7 @@ fn sock_s_getnameinfo(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> 
     check_argc(c, a, 1, 2)?;
     let fl = match a.get(1) { Some(&f) if f != NIL => to_i32(c, f)?, _ => 0 };
     let sa = a[0];
-    let addrs: Vec<Vec<u8>> = if is_addrinfo(c, sa) || is_string(sa) || (sa.is_heap() && !is_array(sa) && respond_to(sa, s::to_str, true)) {
+    let addrs: Vec<Vec<u8>> = if is_addrinfo(c, sa) || is_string(sa) || (sa.is_heap() && !is_array(sa) && respond_to(c, sa, s::to_str, true)) {
         let (b, _) = sockaddr_arg(c, sa)?;
         if b.len() > SS_LEN { return type_err(c, "sockaddr length too big"); }
         let need = match afamily(&b) { AF_INET => SIN_LEN, AF_INET6 => SIN6_LEN, _ => 0 };
@@ -1808,7 +1808,7 @@ fn sock_s_getifaddrs(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> 
     let out = c.ary_new();
     let k = C_IFADDR.get(c);
     for i in &l {
-        let o = new_object(k);
+        let o = new_object(c, k);
         let name = bin(c, &i.0);
         let idx = if_nametoindex(&i.0);
         ivar_set_raw(c, o, intern(b"name"), name);
@@ -1831,7 +1831,7 @@ const IFF_POINTOPOINT: i64 = 0x10;
 fn ifa_broadaddr(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let f = ivar_get(c, s, intern(b"flags")).as_fix(); if f & IFF_BROADCAST != 0 { ifa_get(c, s, "ifu") } else { Ok(NIL) } }
 fn ifa_dstaddr(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let f = ivar_get(c, s, intern(b"flags")).as_fix(); if f & IFF_POINTOPOINT != 0 { ifa_get(c, s, "ifu") } else { Ok(NIL) } }
 fn ifa_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let mut r = format!("#<{} ", class_path(real_class_of(s))).into_bytes();
+    let mut r = format!("#<{} ", class_path(c, real_class_of(c, s))).into_bytes();
     let name = ivar_get(c, s, intern(b"name")); r.extend_from_slice(c.str_bytes(name));
     let flags = ivar_get(c, s, intern(b"flags")).as_fix() as u32;
     const FL: &[(u32, &str)] = &[(0x1, "UP"), (0x2, "BROADCAST"), (0x4, "DEBUG"), (0x8, "LOOPBACK"), (0x10, "POINTOPOINT"), (0x40, "RUNNING"), (0x80, "NOARP"), (0x100, "PROMISC"), (0x20, "NOTRAILERS"), (0x200, "ALLMULTI"), (0x400, "MASTER"), (0x800, "SLAVE"), (0x1000, "MULTICAST"), (0x2000, "PORTSEL"), (0x4000, "AUTOMEDIA"), (0x8000, "DYNAMIC")];
@@ -1855,7 +1855,7 @@ fn sock_s_set_fast_fallback(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block
 // ---- Socket::Option ------------------------------------------------------------------------
 fn option_new(c: &mut Ctx, family: i32, level: i32, optname: i32, data: Value) -> RV {
     let k = C_OPTION.get(c);
-    let o = new_object(k);
+    let o = new_object(c, k);
     let d = expect_str(c, data)?;
     for (n, v) in [("family", Value::fix(family as i64)), ("level", Value::fix(level as i64)), ("optname", Value::fix(optname as i64)), ("data", d)] { ivar_set_raw(c, o, intern(n.as_bytes()), v); }
     Ok(o)
@@ -1918,7 +1918,7 @@ fn opt_bool(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(Value::bool(i32_at(&d, 0) != 0))
 }
 fn opt_s_linger(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
-    let onoff = if is_integer(a[0]) || (a[0].is_heap() && respond_to(a[0], intern(b"to_int"), true)) {
+    let onoff = if is_integer(a[0]) || (a[0].is_heap() && respond_to(c, a[0], intern(b"to_int"), true)) {
         let iv = crate::builtins::numeric_methods::to_integer(c, a[0])?; to_i32(c, iv)?
     } else { a[0].truthy() as i32 };
     let secs = to_i32(c, a[1])?;
@@ -2003,7 +2003,7 @@ fn opt_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let lv = opt_attr(c, s, "level"); let level = to_i32(c, lv)?;
     let ov = opt_attr(c, s, "optname"); let opt = to_i32(c, ov)?;
     let d = opt_bytes(c, s)?;
-    let mut r = format!("#<{}:", class_path(real_class_of(s)));
+    let mut r = format!("#<{}:", class_path(c, real_class_of(c, s)));
     match int_to_name(&G_AF_NOPRE, family) { Some(n) => r.push_str(&format!(" {}", n)), None => r.push_str(&format!(" family:{}", family)) }
     if level == SOL_SOCKET {
         r.push_str(" SOCKET");
@@ -2044,7 +2044,7 @@ fn anc_data(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let v
 fn anc_s_int(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let i = to_i32(c, a[3])?;
     let d = bin(c, &i.to_ne_bytes());
-    let o = new_object(slf);
+    let o = new_object(c, slf);
     anc_initialize(c, o, &[a[0], a[1], a[2], d], std::ptr::null())
 }
 fn anc_int(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
@@ -2072,7 +2072,7 @@ fn anc_s_unix_rights(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> 
         c.ary_push(ios, io);
     }
     let dv = bin(c, &d);
-    let o = new_object(slf);
+    let o = new_object(c, slf);
     for (n, v) in [("family", Value::fix(AF_UNIX as i64)), ("level", Value::fix(SOL_SOCKET as i64)), ("type", Value::fix(k("SCM_RIGHTS") as i64)), ("data", dv), ("unix_rights", ios)] { ivar_set_raw(c, o, intern(n.as_bytes()), v); }
     Ok(o)
 }
@@ -2097,7 +2097,7 @@ fn anc_s_ip_pktinfo(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> R
     if afamily(&dst) != AF_INET { return arg_err(c, "spec_dst is not AF_INET sockaddr"); }
     let mut d = idx.to_ne_bytes().to_vec(); d.extend_from_slice(&dst[4..8]); d.extend_from_slice(&addr[4..8]);
     let dv = bin(c, &d);
-    let o = new_object(slf);
+    let o = new_object(c, slf);
     anc_initialize(c, o, &[Value::fix(AF_INET as i64), Value::fix(0), Value::fix(k("IP_PKTINFO") as i64), dv], std::ptr::null())
 }
 fn anc_fields(c: &mut Ctx, s: Value) -> Result<(i32, i32, Vec<u8>), Esc> {
@@ -2120,7 +2120,7 @@ fn anc_s_ipv6_pktinfo(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) ->
     if afamily(&addr) != AF_INET6 { return arg_err(c, "addr is not AF_INET6 sockaddr"); }
     let mut d = addr[8..24].to_vec(); d.extend_from_slice(&idx.to_ne_bytes());
     let dv = bin(c, &d);
-    let o = new_object(slf);
+    let o = new_object(c, slf);
     anc_initialize(c, o, &[Value::fix(AF_INET6 as i64), Value::fix(41), Value::fix(k("IPV6_PKTINFO") as i64), dv], std::ptr::null())
 }
 fn ipv6_pktinfo(c: &mut Ctx, s: Value) -> Result<(Value, u32), Esc> {
@@ -2135,7 +2135,7 @@ fn ipv6_pktinfo(c: &mut Ctx, s: Value) -> Result<(Value, u32), Esc> {
 fn anc_timestamp(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let (l, t, d) = anc_fields(c, s)?;
     if l == SOL_SOCKET && d.len() == 16 && (t == k("SCM_TIMESTAMP") || t == k("SCM_TIMESTAMPNS")) {
-        let tk = const_get_at(c.vm().c_object.get(), intern(b"Time")).unwrap_or(NIL);
+        let tk = const_get_at(c, c.vm().c_object.get(), intern(b"Time")).unwrap_or(NIL);
         let (sec, frac) = (Value::fix(u64_at(&d, 0) as i64), Value::fix(u64_at(&d, 8) as i64));
         let unit = sym_value(if t == k("SCM_TIMESTAMP") { "usec" } else { "nsec" });
         return funcall(c, tk, intern(b"at"), &[sec, frac, unit], std::ptr::null());
@@ -2151,7 +2151,7 @@ fn anc_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let tv = ivar_get(c, s, intern(b"type")); let t = to_i32(c, tv)?;
     let d = anc_data(c, s, &[], std::ptr::null())?;
     let db = c.str_bytes(d).to_vec();
-    let mut r = format!("#<{}:", class_path(real_class_of(s)));
+    let mut r = format!("#<{}:", class_path(c, real_class_of(c, s)));
     match int_to_name(&G_AF_NOPRE, f) { Some(n) => r.push_str(&format!(" {}", n)), None => r.push_str(&format!(" family:{}", f)) }
     if l == SOL_SOCKET {
         r.push_str(" SOCKET");
@@ -2183,84 +2183,84 @@ pub fn init(c: &mut Ctx) {
     io::timeout_error_class(c);
     crate::builtins::exception::register_rare_errnos(c);
     for (n, w) in [("EINPROGRESSWaitReadable", "WaitReadable"), ("EINPROGRESSWaitWritable", "WaitWritable")] {
-        if const_get_at(io_k, intern(n.as_bytes())).is_none() {
-            let base = crate::builtins::exception::errno_class(c.vm(), EINPROGRESS);
-            let e = define_class_under(io_k, n, base);
-            let m = const_get_at(io_k, intern(w.as_bytes())).unwrap();
+        if const_get_at(c, io_k, intern(n.as_bytes())).is_none() {
+            let base = crate::builtins::exception::errno_class(c, EINPROGRESS);
+            let e = define_class_under(c, io_k, n, base);
+            let m = const_get_at(c, io_k, intern(w.as_bytes())).unwrap();
             include_module_c(c, e, m);
         }
     }
-    let bs = define_class("BasicSocket", io_k);
+    let bs = define_class(c, "BasicSocket", io_k);
     C_BASIC.set(c, bs);
     let _ = crate::builtins::object::undef_method(c, bs, intern(b"initialize"));
-    let ds = |k: Value, n: &str, f: CFunc, a: i32| define_singleton_cfunc(k, n, f, a);
-    ds(bs, "new", bs_s_new, -1);
-    ds(bs, "do_not_reverse_lookup", bs_s_norev, 0); ds(bs, "do_not_reverse_lookup=", bs_s_set_norev, 1); ds(bs, "for_fd", bs_s_for_fd, 1);
-    define_cfunc(bs, "close_read", bs_close_read, 0); define_cfunc(bs, "close_write", bs_close_write, 0); define_cfunc(bs, "shutdown", bs_shutdown, -1); define_cfunc(bs, "setsockopt", bs_setsockopt, -1); define_cfunc(bs, "getsockopt", bs_getsockopt, 2); define_cfunc(bs, "getsockname", bs_getsockname, 0); define_cfunc(bs, "getpeername", bs_getpeername, 0); define_cfunc(bs, "getpeereid", bs_getpeereid, 0); define_cfunc(bs, "local_address", bs_local_address, 0); define_cfunc(bs, "remote_address", bs_remote_address, 0); define_cfunc(bs, "send", bs_send, -1); define_cfunc(bs, "recv", bs_recv, -1); define_cfunc(bs, "do_not_reverse_lookup", bs_norev, 0); define_cfunc(bs, "do_not_reverse_lookup=", bs_set_norev, 1);
-    define_private_cfunc(bs, "__recv_nonblock", bs_recv_nonblock, 4); define_private_cfunc(bs, "__read_nonblock", bs_read_nonblock, 3); define_private_cfunc(bs, "__write_nonblock", bs_write_nonblock, 2); define_private_cfunc(bs, "__sendmsg", bs_sendmsg, 4); define_private_cfunc(bs, "__sendmsg_nonblock", bs_sendmsg_nonblock, 5); define_private_cfunc(bs, "__recvmsg", bs_recvmsg, 4); define_private_cfunc(bs, "__recvmsg_nonblock", bs_recvmsg_nonblock, 5);
-    let sock = define_class("Socket", bs);
+    let ds = |c: &mut Ctx, k: Value, n: &str, f: CFunc, a: i32| define_singleton_cfunc(c, k, n, f, a);
+    ds(c, bs, "new", bs_s_new, -1);
+    ds(c, bs, "do_not_reverse_lookup", bs_s_norev, 0); ds(c, bs, "do_not_reverse_lookup=", bs_s_set_norev, 1); ds(c, bs, "for_fd", bs_s_for_fd, 1);
+    define_cfunc(c, bs, "close_read", bs_close_read, 0); define_cfunc(c, bs, "close_write", bs_close_write, 0); define_cfunc(c, bs, "shutdown", bs_shutdown, -1); define_cfunc(c, bs, "setsockopt", bs_setsockopt, -1); define_cfunc(c, bs, "getsockopt", bs_getsockopt, 2); define_cfunc(c, bs, "getsockname", bs_getsockname, 0); define_cfunc(c, bs, "getpeername", bs_getpeername, 0); define_cfunc(c, bs, "getpeereid", bs_getpeereid, 0); define_cfunc(c, bs, "local_address", bs_local_address, 0); define_cfunc(c, bs, "remote_address", bs_remote_address, 0); define_cfunc(c, bs, "send", bs_send, -1); define_cfunc(c, bs, "recv", bs_recv, -1); define_cfunc(c, bs, "do_not_reverse_lookup", bs_norev, 0); define_cfunc(c, bs, "do_not_reverse_lookup=", bs_set_norev, 1);
+    define_private_cfunc(c, bs, "__recv_nonblock", bs_recv_nonblock, 4); define_private_cfunc(c, bs, "__read_nonblock", bs_read_nonblock, 3); define_private_cfunc(c, bs, "__write_nonblock", bs_write_nonblock, 2); define_private_cfunc(c, bs, "__sendmsg", bs_sendmsg, 4); define_private_cfunc(c, bs, "__sendmsg_nonblock", bs_sendmsg_nonblock, 5); define_private_cfunc(c, bs, "__recvmsg", bs_recvmsg, 4); define_private_cfunc(c, bs, "__recvmsg_nonblock", bs_recvmsg_nonblock, 5);
+    let sock = define_class(c, "Socket", bs);
     C_SOCKET.set(c, sock);
-    let se = define_class("SocketError", std_err);
+    let se = define_class(c, "SocketError", std_err);
     E_SOCKET.set(c, se);
-    let re = define_class_under(sock, "ResolutionError", se);
+    let re = define_class_under(c, sock, "ResolutionError", se);
     E_RESOLUTION.set(c, re);
-    define_cfunc(re, "error_code", resolution_error_code, 0);
+    define_cfunc(c, re, "error_code", resolution_error_code, 0);
     // IPSocket, TCPSocket, TCPServer, UDPSocket
-    let ip = define_class("IPSocket", bs);
-    define_cfunc(ip, "inspect", ip_inspect, 0); define_cfunc(ip, "addr", ip_addr, -1); define_cfunc(ip, "peeraddr", ip_peeraddr, -1); define_cfunc(ip, "recvfrom", ip_recvfrom, -1);
-    ds(ip, "getaddress", ip_s_getaddress, 1);
+    let ip = define_class(c, "IPSocket", bs);
+    define_cfunc(c, ip, "inspect", ip_inspect, 0); define_cfunc(c, ip, "addr", ip_addr, -1); define_cfunc(c, ip, "peeraddr", ip_peeraddr, -1); define_cfunc(c, ip, "recvfrom", ip_recvfrom, -1);
+    ds(c, ip, "getaddress", ip_s_getaddress, 1);
     let _ = crate::builtins::object::undef_method(c, ip, intern(b"getpeereid"));
-    let tcp = define_class("TCPSocket", ip);
+    let tcp = define_class(c, "TCPSocket", ip);
     C_TCPSOCKET.set(c, tcp);
-    ds(tcp, "gethostbyname", tcp_s_gethostbyname, 1);
-    define_private_cfunc(tcp, "initialize", tcp_initialize, -1);
-    let srv = define_class("TCPServer", tcp);
-    define_cfunc(srv, "accept", tcp_accept, 0); define_private_cfunc(srv, "__accept_nonblock", tcp_accept_nonblock, 1); define_cfunc(srv, "sysaccept", sysaccept, 0);
-    define_private_cfunc(srv, "initialize", tcp_svr_initialize, -1); define_cfunc(srv, "listen", sock_listen, 1);
-    let udp = define_class("UDPSocket", ip);
-    define_private_cfunc(udp, "initialize", udp_initialize, -1); define_cfunc(udp, "connect", udp_connect, 2); define_cfunc(udp, "bind", udp_bind, 2); define_cfunc(udp, "send", udp_send, -1);
-    define_private_cfunc(udp, "__recvfrom_nonblock", udp_recvfrom_nonblock, 4);
+    ds(c, tcp, "gethostbyname", tcp_s_gethostbyname, 1);
+    define_private_cfunc(c, tcp, "initialize", tcp_initialize, -1);
+    let srv = define_class(c, "TCPServer", tcp);
+    define_cfunc(c, srv, "accept", tcp_accept, 0); define_private_cfunc(c, srv, "__accept_nonblock", tcp_accept_nonblock, 1); define_cfunc(c, srv, "sysaccept", sysaccept, 0);
+    define_private_cfunc(c, srv, "initialize", tcp_svr_initialize, -1); define_cfunc(c, srv, "listen", sock_listen, 1);
+    let udp = define_class(c, "UDPSocket", ip);
+    define_private_cfunc(c, udp, "initialize", udp_initialize, -1); define_cfunc(c, udp, "connect", udp_connect, 2); define_cfunc(c, udp, "bind", udp_bind, 2); define_cfunc(c, udp, "send", udp_send, -1);
+    define_private_cfunc(c, udp, "__recvfrom_nonblock", udp_recvfrom_nonblock, 4);
     // UNIXSocket, UNIXServer
-    let us = define_class("UNIXSocket", bs);
+    let us = define_class(c, "UNIXSocket", bs);
     C_UNIXSOCKET.set(c, us);
-    define_private_cfunc(us, "initialize", unix_initialize, 1); define_cfunc(us, "path", unix_path_m, 0); define_cfunc(us, "addr", unix_addr, 0); define_cfunc(us, "peeraddr", unix_peeraddr, 0); define_cfunc(us, "recvfrom", unix_recvfrom, -1); define_cfunc(us, "send_io", unix_send_io, 1); define_cfunc(us, "recv_io", unix_recv_io, -1);
-    ds(us, "socketpair", unix_s_socketpair, -1); ds(us, "pair", unix_s_socketpair, -1);
-    let usv = define_class("UNIXServer", us);
-    define_private_cfunc(usv, "initialize", unix_svr_initialize, 1); define_cfunc(usv, "accept", unix_accept, 0); define_private_cfunc(usv, "__accept_nonblock", unix_accept_nonblock, 1);
-    define_cfunc(usv, "sysaccept", sysaccept, 0); define_cfunc(usv, "listen", sock_listen, 1);
+    define_private_cfunc(c, us, "initialize", unix_initialize, 1); define_cfunc(c, us, "path", unix_path_m, 0); define_cfunc(c, us, "addr", unix_addr, 0); define_cfunc(c, us, "peeraddr", unix_peeraddr, 0); define_cfunc(c, us, "recvfrom", unix_recvfrom, -1); define_cfunc(c, us, "send_io", unix_send_io, 1); define_cfunc(c, us, "recv_io", unix_recv_io, -1);
+    ds(c, us, "socketpair", unix_s_socketpair, -1); ds(c, us, "pair", unix_s_socketpair, -1);
+    let usv = define_class(c, "UNIXServer", us);
+    define_private_cfunc(c, usv, "initialize", unix_svr_initialize, 1); define_cfunc(c, usv, "accept", unix_accept, 0); define_private_cfunc(c, usv, "__accept_nonblock", unix_accept_nonblock, 1);
+    define_cfunc(c, usv, "sysaccept", sysaccept, 0); define_cfunc(c, usv, "listen", sock_listen, 1);
     // Socket
-    define_private_cfunc(sock, "initialize", sock_initialize, -1); define_cfunc(sock, "connect", sock_connect, 1); define_cfunc(sock, "bind", sock_bind, 1); define_cfunc(sock, "listen", sock_listen, 1); define_cfunc(sock, "accept", sock_accept, 0); define_cfunc(sock, "sysaccept", sock_sysaccept, 0); define_cfunc(sock, "recvfrom", sock_recvfrom, -1);
-    define_private_cfunc(sock, "__connect_nonblock", sock_connect_nonblock, 2); define_private_cfunc(sock, "__accept_nonblock", sock_accept_nonblock, 1);
-    define_private_cfunc(sock, "__recvfrom_nonblock", sock_recvfrom_nonblock, 4);
-    ds(sock, "socketpair", sock_s_socketpair, -1); ds(sock, "pair", sock_s_socketpair, -1); ds(sock, "gethostname", sock_s_gethostname, 0); ds(sock, "gethostbyname", sock_s_gethostbyname, 1); ds(sock, "gethostbyaddr", sock_s_gethostbyaddr, -1); ds(sock, "getservbyname", sock_s_getservbyname, -1); ds(sock, "getservbyport", sock_s_getservbyport, -1); ds(sock, "getaddrinfo", sock_s_getaddrinfo, -1); ds(sock, "getnameinfo", sock_s_getnameinfo, -1); ds(sock, "sockaddr_in", sock_s_pack_sockaddr_in, 2); ds(sock, "pack_sockaddr_in", sock_s_pack_sockaddr_in, 2); ds(sock, "unpack_sockaddr_in", sock_s_unpack_sockaddr_in, 1); ds(sock, "sockaddr_un", sock_s_pack_sockaddr_un, 1); ds(sock, "pack_sockaddr_un", sock_s_pack_sockaddr_un, 1); ds(sock, "unpack_sockaddr_un", sock_s_unpack_sockaddr_un, 1); ds(sock, "ip_address_list", sock_s_ip_address_list, 0); ds(sock, "getifaddrs", sock_s_getifaddrs, 0); ds(sock, "tcp_fast_fallback", sock_s_fast_fallback, 0); ds(sock, "tcp_fast_fallback=", sock_s_set_fast_fallback, 1);
+    define_private_cfunc(c, sock, "initialize", sock_initialize, -1); define_cfunc(c, sock, "connect", sock_connect, 1); define_cfunc(c, sock, "bind", sock_bind, 1); define_cfunc(c, sock, "listen", sock_listen, 1); define_cfunc(c, sock, "accept", sock_accept, 0); define_cfunc(c, sock, "sysaccept", sock_sysaccept, 0); define_cfunc(c, sock, "recvfrom", sock_recvfrom, -1);
+    define_private_cfunc(c, sock, "__connect_nonblock", sock_connect_nonblock, 2); define_private_cfunc(c, sock, "__accept_nonblock", sock_accept_nonblock, 1);
+    define_private_cfunc(c, sock, "__recvfrom_nonblock", sock_recvfrom_nonblock, 4);
+    ds(c, sock, "socketpair", sock_s_socketpair, -1); ds(c, sock, "pair", sock_s_socketpair, -1); ds(c, sock, "gethostname", sock_s_gethostname, 0); ds(c, sock, "gethostbyname", sock_s_gethostbyname, 1); ds(c, sock, "gethostbyaddr", sock_s_gethostbyaddr, -1); ds(c, sock, "getservbyname", sock_s_getservbyname, -1); ds(c, sock, "getservbyport", sock_s_getservbyport, -1); ds(c, sock, "getaddrinfo", sock_s_getaddrinfo, -1); ds(c, sock, "getnameinfo", sock_s_getnameinfo, -1); ds(c, sock, "sockaddr_in", sock_s_pack_sockaddr_in, 2); ds(c, sock, "pack_sockaddr_in", sock_s_pack_sockaddr_in, 2); ds(c, sock, "unpack_sockaddr_in", sock_s_unpack_sockaddr_in, 1); ds(c, sock, "sockaddr_un", sock_s_pack_sockaddr_un, 1); ds(c, sock, "pack_sockaddr_un", sock_s_pack_sockaddr_un, 1); ds(c, sock, "unpack_sockaddr_un", sock_s_unpack_sockaddr_un, 1); ds(c, sock, "ip_address_list", sock_s_ip_address_list, 0); ds(c, sock, "getifaddrs", sock_s_getifaddrs, 0); ds(c, sock, "tcp_fast_fallback", sock_s_fast_fallback, 0); ds(c, sock, "tcp_fast_fallback=", sock_s_set_fast_fallback, 1);
     let ff = !matches!(std::env::var("RUBY_TCP_NO_FAST_FALLBACK"), Ok(v) if v != "0");
     ivar_set_raw(c, sock, intern(b"tcp_fast_fallback"), Value::bool(ff));
     // Socket::Option, Socket::AncillaryData, Socket::Ifaddr
-    let opt = define_class_under(sock, "Option", c_obj);
+    let opt = define_class_under(c, sock, "Option", c_obj);
     C_OPTION.set(c, opt);
-    define_private_cfunc(opt, "initialize", opt_initialize, 4); define_cfunc(opt, "family", opt_family, 0); define_cfunc(opt, "level", opt_level, 0); define_cfunc(opt, "optname", opt_optname, 0); define_cfunc(opt, "data", opt_data, 0); define_cfunc(opt, "inspect", opt_inspect, 0); define_cfunc(opt, "int", opt_int, 0); define_cfunc(opt, "byte", opt_byte, 0); define_cfunc(opt, "bool", opt_bool, 0); define_cfunc(opt, "linger", opt_linger, 0); define_cfunc(opt, "ipv4_multicast_ttl", opt_mc_ttl, 0); define_cfunc(opt, "ipv4_multicast_loop", opt_mc_loop, 0); define_cfunc(opt, "unpack", opt_unpack, 1); define_cfunc(opt, "to_s", opt_data, 0);
-    ds(opt, "int", opt_s_int, 4); ds(opt, "byte", opt_s_byte, 4); ds(opt, "bool", opt_s_bool, 4); ds(opt, "linger", opt_s_linger, 2); ds(opt, "ipv4_multicast_ttl", opt_s_mc_ttl, 1); ds(opt, "ipv4_multicast_loop", opt_s_mc_loop, 1);
-    let anc = define_class_under(sock, "AncillaryData", c_obj);
+    define_private_cfunc(c, opt, "initialize", opt_initialize, 4); define_cfunc(c, opt, "family", opt_family, 0); define_cfunc(c, opt, "level", opt_level, 0); define_cfunc(c, opt, "optname", opt_optname, 0); define_cfunc(c, opt, "data", opt_data, 0); define_cfunc(c, opt, "inspect", opt_inspect, 0); define_cfunc(c, opt, "int", opt_int, 0); define_cfunc(c, opt, "byte", opt_byte, 0); define_cfunc(c, opt, "bool", opt_bool, 0); define_cfunc(c, opt, "linger", opt_linger, 0); define_cfunc(c, opt, "ipv4_multicast_ttl", opt_mc_ttl, 0); define_cfunc(c, opt, "ipv4_multicast_loop", opt_mc_loop, 0); define_cfunc(c, opt, "unpack", opt_unpack, 1); define_cfunc(c, opt, "to_s", opt_data, 0);
+    ds(c, opt, "int", opt_s_int, 4); ds(c, opt, "byte", opt_s_byte, 4); ds(c, opt, "bool", opt_s_bool, 4); ds(c, opt, "linger", opt_s_linger, 2); ds(c, opt, "ipv4_multicast_ttl", opt_s_mc_ttl, 1); ds(c, opt, "ipv4_multicast_loop", opt_s_mc_loop, 1);
+    let anc = define_class_under(c, sock, "AncillaryData", c_obj);
     C_ANCDATA.set(c, anc);
-    define_private_cfunc(anc, "initialize", anc_initialize, 4); define_cfunc(anc, "family", anc_family, 0); define_cfunc(anc, "level", anc_level, 0); define_cfunc(anc, "type", anc_type, 0); define_cfunc(anc, "data", anc_data, 0); define_cfunc(anc, "int", anc_int, 0); define_cfunc(anc, "cmsg_is?", anc_cmsg_is, 2); define_cfunc(anc, "unix_rights", anc_unix_rights, 0); define_cfunc(anc, "inspect", anc_inspect, 0);
-    ds(anc, "int", anc_s_int, 4); ds(anc, "unix_rights", anc_s_unix_rights, -1);
-    ds(anc, "ip_pktinfo", anc_s_ip_pktinfo, -1); ds(anc, "ipv6_pktinfo", anc_s_ipv6_pktinfo, 2);
-    define_cfunc(anc, "timestamp", anc_timestamp, 0); define_cfunc(anc, "ip_pktinfo", anc_ip_pktinfo, 0); define_cfunc(anc, "ipv6_pktinfo", anc_ipv6_pktinfo, 0);
-    define_cfunc(anc, "ipv6_pktinfo_addr", anc_ipv6_pktinfo_addr, 0); define_cfunc(anc, "ipv6_pktinfo_ifindex", anc_ipv6_pktinfo_ifindex, 0);
-    let ifa = define_class_under(sock, "Ifaddr", c_obj);
+    define_private_cfunc(c, anc, "initialize", anc_initialize, 4); define_cfunc(c, anc, "family", anc_family, 0); define_cfunc(c, anc, "level", anc_level, 0); define_cfunc(c, anc, "type", anc_type, 0); define_cfunc(c, anc, "data", anc_data, 0); define_cfunc(c, anc, "int", anc_int, 0); define_cfunc(c, anc, "cmsg_is?", anc_cmsg_is, 2); define_cfunc(c, anc, "unix_rights", anc_unix_rights, 0); define_cfunc(c, anc, "inspect", anc_inspect, 0);
+    ds(c, anc, "int", anc_s_int, 4); ds(c, anc, "unix_rights", anc_s_unix_rights, -1);
+    ds(c, anc, "ip_pktinfo", anc_s_ip_pktinfo, -1); ds(c, anc, "ipv6_pktinfo", anc_s_ipv6_pktinfo, 2);
+    define_cfunc(c, anc, "timestamp", anc_timestamp, 0); define_cfunc(c, anc, "ip_pktinfo", anc_ip_pktinfo, 0); define_cfunc(c, anc, "ipv6_pktinfo", anc_ipv6_pktinfo, 0);
+    define_cfunc(c, anc, "ipv6_pktinfo_addr", anc_ipv6_pktinfo_addr, 0); define_cfunc(c, anc, "ipv6_pktinfo_ifindex", anc_ipv6_pktinfo_ifindex, 0);
+    let ifa = define_class_under(c, sock, "Ifaddr", c_obj);
     C_IFADDR.set(c, ifa);
-    define_cfunc(ifa, "name", ifa_name, 0); define_cfunc(ifa, "ifindex", ifa_ifindex, 0); define_cfunc(ifa, "flags", ifa_flags, 0); define_cfunc(ifa, "addr", ifa_addr, 0); define_cfunc(ifa, "netmask", ifa_netmask, 0); define_cfunc(ifa, "broadaddr", ifa_broadaddr, 0); define_cfunc(ifa, "dstaddr", ifa_dstaddr, 0); define_cfunc(ifa, "inspect", ifa_inspect, 0);
+    define_cfunc(c, ifa, "name", ifa_name, 0); define_cfunc(c, ifa, "ifindex", ifa_ifindex, 0); define_cfunc(c, ifa, "flags", ifa_flags, 0); define_cfunc(c, ifa, "addr", ifa_addr, 0); define_cfunc(c, ifa, "netmask", ifa_netmask, 0); define_cfunc(c, ifa, "broadaddr", ifa_broadaddr, 0); define_cfunc(c, ifa, "dstaddr", ifa_dstaddr, 0); define_cfunc(c, ifa, "inspect", ifa_inspect, 0);
     // Addrinfo
-    let ai = define_class("Addrinfo", c_obj);
-    class_set_alloc(ai, AllocKind::None);
+    let ai = define_class(c, "Addrinfo", c_obj);
+    class_set_alloc(c, ai, AllocKind::None);
     C_ADDRINFO.set(c, ai);
-    define_private_cfunc(ai, "initialize", ai_initialize, -1); define_cfunc(ai, "inspect", ai_inspect, 0); define_cfunc(ai, "inspect_sockaddr", ai_inspect_sockaddr, 0); define_cfunc(ai, "afamily", ai_afamily, 0); define_cfunc(ai, "pfamily", ai_pfamily, 0); define_cfunc(ai, "socktype", ai_socktype, 0); define_cfunc(ai, "protocol", ai_protocol, 0); define_cfunc(ai, "canonname", ai_canonname, 0); define_cfunc(ai, "ipv4?", ai_ipv4_p, 0); define_cfunc(ai, "ipv6?", ai_ipv6_p, 0); define_cfunc(ai, "unix?", ai_unix_p, 0); define_cfunc(ai, "ip?", ai_ip_p, 0); define_cfunc(ai, "ip_unpack", ai_ip_unpack, 0); define_cfunc(ai, "ip_address", ai_ip_address, 0); define_cfunc(ai, "ip_port", ai_ip_port, 0); define_cfunc(ai, "ipv4_private?", ai_ipv4_private, 0); define_cfunc(ai, "ipv4_loopback?", ai_ipv4_loopback, 0); define_cfunc(ai, "ipv4_multicast?", ai_ipv4_multicast, 0); define_cfunc(ai, "ipv6_unspecified?", ai_ipv6_unspecified, 0); define_cfunc(ai, "ipv6_loopback?", ai_ipv6_loopback, 0); define_cfunc(ai, "ipv6_multicast?", ai_ipv6_multicast, 0); define_cfunc(ai, "ipv6_linklocal?", ai_ipv6_linklocal, 0); define_cfunc(ai, "ipv6_sitelocal?", ai_ipv6_sitelocal, 0); define_cfunc(ai, "ipv6_unique_local?", ai_ipv6_unique_local, 0); define_cfunc(ai, "ipv6_v4mapped?", ai_ipv6_v4mapped, 0); define_cfunc(ai, "ipv6_v4compat?", ai_ipv6_v4compat, 0); define_cfunc(ai, "ipv6_mc_nodelocal?", ai_ipv6_mc_nodelocal, 0); define_cfunc(ai, "ipv6_mc_linklocal?", ai_ipv6_mc_linklocal, 0); define_cfunc(ai, "ipv6_mc_sitelocal?", ai_ipv6_mc_sitelocal, 0); define_cfunc(ai, "ipv6_mc_orglocal?", ai_ipv6_mc_orglocal, 0); define_cfunc(ai, "ipv6_mc_global?", ai_ipv6_mc_global, 0); define_cfunc(ai, "ipv6_to_ipv4", ai_ipv6_to_ipv4, 0); define_cfunc(ai, "unix_path", ai_unix_path, 0); define_cfunc(ai, "to_sockaddr", ai_to_sockaddr, 0); define_cfunc(ai, "to_s", ai_to_sockaddr, 0); define_cfunc(ai, "getnameinfo", ai_getnameinfo, -1); define_cfunc(ai, "marshal_dump", ai_mdump, 0); define_cfunc(ai, "marshal_load", ai_mload, 1);
-    ds(ai, "getaddrinfo", ai_s_getaddrinfo, -1); ds(ai, "ip", ai_s_ip, 1); ds(ai, "tcp", ai_s_tcp, 2); ds(ai, "udp", ai_s_udp, 2); ds(ai, "unix", ai_s_unix, -1);
+    define_private_cfunc(c, ai, "initialize", ai_initialize, -1); define_cfunc(c, ai, "inspect", ai_inspect, 0); define_cfunc(c, ai, "inspect_sockaddr", ai_inspect_sockaddr, 0); define_cfunc(c, ai, "afamily", ai_afamily, 0); define_cfunc(c, ai, "pfamily", ai_pfamily, 0); define_cfunc(c, ai, "socktype", ai_socktype, 0); define_cfunc(c, ai, "protocol", ai_protocol, 0); define_cfunc(c, ai, "canonname", ai_canonname, 0); define_cfunc(c, ai, "ipv4?", ai_ipv4_p, 0); define_cfunc(c, ai, "ipv6?", ai_ipv6_p, 0); define_cfunc(c, ai, "unix?", ai_unix_p, 0); define_cfunc(c, ai, "ip?", ai_ip_p, 0); define_cfunc(c, ai, "ip_unpack", ai_ip_unpack, 0); define_cfunc(c, ai, "ip_address", ai_ip_address, 0); define_cfunc(c, ai, "ip_port", ai_ip_port, 0); define_cfunc(c, ai, "ipv4_private?", ai_ipv4_private, 0); define_cfunc(c, ai, "ipv4_loopback?", ai_ipv4_loopback, 0); define_cfunc(c, ai, "ipv4_multicast?", ai_ipv4_multicast, 0); define_cfunc(c, ai, "ipv6_unspecified?", ai_ipv6_unspecified, 0); define_cfunc(c, ai, "ipv6_loopback?", ai_ipv6_loopback, 0); define_cfunc(c, ai, "ipv6_multicast?", ai_ipv6_multicast, 0); define_cfunc(c, ai, "ipv6_linklocal?", ai_ipv6_linklocal, 0); define_cfunc(c, ai, "ipv6_sitelocal?", ai_ipv6_sitelocal, 0); define_cfunc(c, ai, "ipv6_unique_local?", ai_ipv6_unique_local, 0); define_cfunc(c, ai, "ipv6_v4mapped?", ai_ipv6_v4mapped, 0); define_cfunc(c, ai, "ipv6_v4compat?", ai_ipv6_v4compat, 0); define_cfunc(c, ai, "ipv6_mc_nodelocal?", ai_ipv6_mc_nodelocal, 0); define_cfunc(c, ai, "ipv6_mc_linklocal?", ai_ipv6_mc_linklocal, 0); define_cfunc(c, ai, "ipv6_mc_sitelocal?", ai_ipv6_mc_sitelocal, 0); define_cfunc(c, ai, "ipv6_mc_orglocal?", ai_ipv6_mc_orglocal, 0); define_cfunc(c, ai, "ipv6_mc_global?", ai_ipv6_mc_global, 0); define_cfunc(c, ai, "ipv6_to_ipv4", ai_ipv6_to_ipv4, 0); define_cfunc(c, ai, "unix_path", ai_unix_path, 0); define_cfunc(c, ai, "to_sockaddr", ai_to_sockaddr, 0); define_cfunc(c, ai, "to_s", ai_to_sockaddr, 0); define_cfunc(c, ai, "getnameinfo", ai_getnameinfo, -1); define_cfunc(c, ai, "marshal_dump", ai_mdump, 0); define_cfunc(c, ai, "marshal_load", ai_mload, 1);
+    ds(c, ai, "getaddrinfo", ai_s_getaddrinfo, -1); ds(c, ai, "ip", ai_s_ip, 1); ds(c, ai, "tcp", ai_s_tcp, 2); ds(c, ai, "udp", ai_s_udp, 2); ds(c, ai, "unix", ai_s_unix, -1);
     // constants, on Socket and Socket::Constants
-    let cm = define_module_under(sock, "Constants");
+    let cm = define_module_under(c, sock, "Constants");
     for (n, v) in all_consts() {
         let x = Value::fix(v);
-        const_set(sock, intern(n.as_bytes()), x);
-        const_set(cm, intern(n.as_bytes()), x);
+        const_set(c, sock, intern(n.as_bytes()), x);
+        const_set(c, cm, intern(n.as_bytes()), x);
     }
 }

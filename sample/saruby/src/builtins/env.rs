@@ -110,7 +110,7 @@ fn env_mutate(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
 /// ENV.update / merge!: like ENV[k] = v per pair (nil deletes), the block resolves existing names.
 fn env_update(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     for &x in a {
-        let Some(h) = check_hash(c, x)? else { return type_err(c, format!("no implicit conversion of {} into Hash", crate::builtins::kernel::class_name_for_err(x))) };
+        let Some(h) = check_hash(c, x)? else { return type_err(c, format!("no implicit conversion of {} into Hash", crate::builtins::kernel::class_name_for_err(c, x))) };
         let mut i = 0;
         while let Some((k, v)) = c.hash_entry_at(h, i) {
             i += 1;
@@ -128,17 +128,18 @@ fn env_dup(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { type_
 fn env_clone(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { type_err(c, "Cannot clone ENV, use ENV.to_h to get a copy of ENV as a hash") }
 
 pub fn init(c: &mut Ctx) {
-    let env = new_object(c.vm().c_object.get());
-    include_module(singleton_class(env), c.vm().m_enumerable.get());
-    let d = |n: &str, f: CFunc, a: i32| define_singleton_cfunc(env, n, f, a);
-    d("[]", env_aref, 1); d("fetch", env_fetch, -1); d("[]=", env_aset, 2); d("store", env_aset, 2); d("delete", env_delete, 1);
-    for n in ["key?", "has_key?", "include?", "member?"] { d(n, env_key_p, 1); }
-    for n in ["value?", "has_value?"] { d(n, env_value_p, 1); }
-    d("key", env_key, 1); d("keys", env_keys, 0); d("values", env_values, 0); d("to_h", env_to_h, 0); d("to_hash", env_to_h, 0);
-    d("size", env_size, 0); d("length", env_size, 0); d("empty?", env_empty, 0); d("clear", env_clear, 0); d("inspect", env_inspect, 0); d("to_s", env_to_s, 0);
-    for n in ["each", "each_pair", "each_key", "each_value", "select", "filter", "reject", "slice", "except", "values_at", "assoc", "rassoc", "invert", "to_a", "filter_map"] { d(n, env_delegate, -1); }
-    d("update", env_update, -1); d("merge!", env_update, -1);
-    for n in ["replace", "delete_if", "reject!", "keep_if", "select!", "filter!", "shift"] { d(n, env_mutate, -1); }
-    d("freeze", env_freeze, 0); d("dup", env_dup, 0); d("clone", env_clone, -1); d("rehash", |_c, _s, _a, _b| Ok(NIL), 0);
-    const_set(c.vm().c_object.get(), intern(b"ENV"), env);
+    let env = new_object(c, c.vm().c_object.get());
+    let se = singleton_class(c, env);
+    include_module(c, se, c.vm().m_enumerable.get());
+    let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_singleton_cfunc(c, env, n, f, a);
+    d(c, "[]", env_aref, 1); d(c, "fetch", env_fetch, -1); d(c, "[]=", env_aset, 2); d(c, "store", env_aset, 2); d(c, "delete", env_delete, 1);
+    for n in ["key?", "has_key?", "include?", "member?"] { d(c, n, env_key_p, 1); }
+    for n in ["value?", "has_value?"] { d(c, n, env_value_p, 1); }
+    d(c, "key", env_key, 1); d(c, "keys", env_keys, 0); d(c, "values", env_values, 0); d(c, "to_h", env_to_h, 0); d(c, "to_hash", env_to_h, 0);
+    d(c, "size", env_size, 0); d(c, "length", env_size, 0); d(c, "empty?", env_empty, 0); d(c, "clear", env_clear, 0); d(c, "inspect", env_inspect, 0); d(c, "to_s", env_to_s, 0);
+    for n in ["each", "each_pair", "each_key", "each_value", "select", "filter", "reject", "slice", "except", "values_at", "assoc", "rassoc", "invert", "to_a", "filter_map"] { d(c, n, env_delegate, -1); }
+    d(c, "update", env_update, -1); d(c, "merge!", env_update, -1);
+    for n in ["replace", "delete_if", "reject!", "keep_if", "select!", "filter!", "shift"] { d(c, n, env_mutate, -1); }
+    d(c, "freeze", env_freeze, 0); d(c, "dup", env_dup, 0); d(c, "clone", env_clone, -1); d(c, "rehash", |_c, _s, _a, _b| Ok(NIL), 0);
+    const_set(c, c.vm().c_object.get(), intern(b"ENV"), env);
 }

@@ -420,12 +420,12 @@ NODE_TEST
 NODE_DEF
 node_not(c: &mut Ctx, n: NodePtr, fp: Fp, v@child: Value, cc@ref: OpCc)
 {
-    if v.is_heap() && srb_has_custom_not(v) { return srb_call0(c, v, s::not, cc); }
+    if v.is_heap() && srb_has_custom_not(c, v) { return srb_call0(c, v, s::not, cc); }
     Ok(Value::bool(v.falsy()))
 }
 NODE_TEST
 {
-    if v.is_heap() && srb_has_custom_not(v) { return Ok(srb_call0(c, v, s::not, cc)?.truthy()); }
+    if v.is_heap() && srb_has_custom_not(c, v) { return Ok(srb_call0(c, v, s::not, cc)?.truthy()); }
     Ok(v.falsy())
 }
 
@@ -539,7 +539,7 @@ node_rescue(c: &mut Ctx, n: NodePtr, fp: Fp, body: NODE, clauses: NODES, else_b:
                 if c.esc != EscKind::Raise { return Err(e); }
                 c.sp_reset(saved_sp);
                 let exc = c.esc_val;
-                if !srb_rescuable(exc) { return Err(e); }
+                if !srb_rescuable(c, exc) { return Err(e); }
                 c.esc = EscKind::None;
                 c.errinfo = exc;
                 let mut matched = false;
@@ -570,7 +570,7 @@ NODE_DEF
 node_resbody(c: &mut Ctx, n: NodePtr, fp: Fp, classes: NODES, kinds: Str, assign: NODE, body: NODE)
 {
     let exc = c.errinfo;
-    let mut ok = EVAL_LEN!(classes) == 0 && srb_is_standard_error(exc);
+    let mut ok = EVAL_LEN!(classes) == 0 && srb_is_standard_error(c, exc);
     let mut i = 0;
     while !ok && i < EVAL_LEN!(classes) {
         let k = EVAL_NTH!(c, classes, i)?;

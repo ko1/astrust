@@ -80,7 +80,8 @@ pub fn warning_write(c: &mut Ctx, b: &[u8]) -> Result<(), Esc> {
 /// rb_warn_category: Warning.warn(str, category: cat) unless Warning.warn takes exactly one argument.
 fn warning_write_cat(c: &mut Ctx, b: &[u8], cat: Value) -> Result<(), Esc> {
     let w = c.vm().m_warning.get();
-    let me = search_method(singleton_class(w), intern(b"warn"));
+    let sw = singleton_class(c, w);
+    let me = search_method(c, sw, intern(b"warn"));
     if crate::builtins::proc::method_arity(c, me) == 1 { return warning_write(c, b); }
     let st = c.str_new(b);
     let h = c.hash_new();
@@ -91,9 +92,9 @@ fn warning_write_cat(c: &mut Ctx, b: &[u8], cat: Value) -> Result<(), Esc> {
 
 // ---- string conversion helpers ------------------------------------------------------------
 
-pub fn any_to_s_str(v: Value) -> String {
-    let k = real_class_of(v);
-    format!("#<{}:{:#018x}>", class_path(k), v.raw())
+pub fn any_to_s_str(c: &Ctx, v: Value) -> String {
+    let k = real_class_of(c, v);
+    format!("#<{}:{:#018x}>", class_path(c, k), v.raw())
 }
 
 pub fn inspect_str(c: &mut Ctx, v: Value) -> Result<String, Esc> {
@@ -105,7 +106,7 @@ pub fn inspect_value(c: &mut Ctx, v: Value) -> RV {
     if v == NIL { return Ok(c.str_new(b"nil")); }
     if v.is_fixnum() && !crate::rt::redef(0) { return Ok(c.str_new(v.as_fix().to_string().as_bytes())); }
     let r = funcall(c, v, s::inspect, &[], std::ptr::null())?;
-    if is_string(r) { Ok(r) } else { Ok(c.str_new(any_to_s_str(v).as_bytes())) }
+    if is_string(r) { Ok(r) } else { Ok(c.str_new(any_to_s_str(c, v).as_bytes())) }
 }
 
 pub fn to_s_value(c: &mut Ctx, v: Value) -> RV { crate::rt::srb_tostr(c, v) }
@@ -118,27 +119,27 @@ pub fn nomethod_desc(c: &mut Ctx, v: Value) -> Result<String, Esc> {
     if v == c.vm().main_obj.get() { return Ok("main".into()); }
     if is_class_or_module(v) {
         let cd = c.class(v);
-        return Ok(format!("{} {}", if cd.is_module { "module" } else { "class" }, class_path(v)));
+        return Ok(format!("{} {}", if cd.is_module { "module" } else { "class" }, class_path(c, v)));
     }
-    Ok(format!("an instance of {}", class_path(real_class_of(v))))
+    Ok(format!("an instance of {}", class_path(c, real_class_of(c, v))))
 }
 
-pub fn class_name_for_err(v: Value) -> String {
+pub fn class_name_for_err(c: &Ctx, v: Value) -> String {
     if v == NIL { return "nil".into(); }
     if v == TRUE { return "true".into(); }
     if v == FALSE { return "false".into(); }
-    class_path(real_class_of(v))
+    class_path(c, real_class_of(c, v))
 }
 
 /// rb_respond_to: a redefined respond_to? is asked; Kernel#respond_to? answers from the
 /// method table (public methods), then respond_to_missing?.
 pub fn rb_respond_to(c: &mut Ctx, v: Value, mid: Sym) -> Result<bool, Esc> {
-    let basic = search_method(c.vm().m_kernel.get(), s::respond_to_p);
-    if lookup_method(class_of(v), s::respond_to_p) != basic {
+    let basic = search_method(c, c.vm().m_kernel.get(), s::respond_to_p);
+    if lookup_method(c, class_of(v), s::respond_to_p) != basic {
         return Ok(funcall(c, v, s::respond_to_p, &[Value::sym(mid)], std::ptr::null())?.truthy());
     }
-    if respond_to(v, mid, false) { return Ok(true); }
-    if lookup_method(class_of(v), s::respond_to_missing_p) != search_method(c.vm().m_kernel.get(), s::respond_to_missing_p) {
+    if respond_to(c, v, mid, false) { return Ok(true); }
+    if lookup_method(c, class_of(v), s::respond_to_missing_p) != search_method(c, c.vm().m_kernel.get(), s::respond_to_missing_p) {
         return Ok(funcall(c, v, s::respond_to_missing_p, &[Value::sym(mid), FALSE], std::ptr::null())?.truthy());
     }
     Ok(false)
@@ -252,7 +253,7 @@ fn k_warn(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     // warning.rb: a category is a Symbol (or String) and the warning needs Warning[category]
     if cat != NIL {
         if is_string(cat) { cat = c.str_to_sym(cat); }
-        if !cat.is_sym() { return type_err(c, format!("no implicit conversion of {} into Symbol", class_name_for_err(cat))); }
+        if !cat.is_sym() { return type_err(c, format!("no implicit conversion of {} into Symbol", class_name_for_err(c, cat))); }
         let i = crate::builtins::misc::warning_category(c, cat)?;
         if !crate::builtins::misc::warning_category_enabled(i) { return Ok(NIL); }
     }
@@ -280,15 +281,15 @@ pub fn make_exception_from_args(c: &mut Ctx, args: &[Value]) -> RV {
             else { make_exception(c, c.vm().c_runtime_error.get(), "unhandled exception") }
         }
         1 if is_string(args[0]) => {
-            let e = new_object(c.vm().c_runtime_error.get());
+            let e = new_object(c, c.vm().c_runtime_error.get());
             ivar_set_raw(c, e, s::mesg, args[0]);
             e
         }
         _ => {
             let k = args[0];
-            if !respond_to(k, s::exception, true) { return type_err(c, "exception class/object expected"); }
+            if !respond_to(c, k, s::exception, true) { return type_err(c, "exception class/object expected"); }
             let e = funcall(c, k, s::exception, &args[1..args.len().min(2)], std::ptr::null())?;
-            if !is_exception(e) { return type_err(c, "exception object expected"); }
+            if !is_exception(c, e) { return type_err(c, "exception object expected"); }
             if args.len() >= 3 {
                 let bt = if is_string(args[2]) { c.ary_new_from(&[args[2]]) } else { args[2] };
                 ivar_set_raw(c, e, s::bt, bt);
@@ -298,7 +299,7 @@ pub fn make_exception_from_args(c: &mut Ctx, args: &[Value]) -> RV {
     };
     if let Some(h) = kw {
         if let Some(cause) = hash_get_opt(c, h, crate::vm::sym_value("cause"))? {
-            if cause != NIL && !is_exception(cause) { return type_err(c, "exception object expected"); }
+            if cause != NIL && !is_exception(c, cause) { return type_err(c, "exception object expected"); }
             ivar_set_raw(c, e, s::cause, cause);
         } else if args.is_empty() {
             return arg_err(c, "only cause is given with no arguments");
@@ -325,7 +326,7 @@ fn k_loop(c: &mut Ctx, slf: Value, _args: &[Value], blk: *const Block) -> RV {
         match yield_block(c, blk, &[]) {
             Ok(_) => {}
             Err(e) => {
-                if c.esc == EscKind::Raise && is_kind_of(c.esc_val, c.vm().c_stop_iteration.get()) {
+                if c.esc == EscKind::Raise && is_kind_of(c, c.esc_val, c.vm().c_stop_iteration.get()) {
                     let ex = c.esc_val;
                     c.esc = EscKind::None;
                     return Ok(ivar_get(c, ex, intern(b"result")));
@@ -339,7 +340,7 @@ fn k_loop(c: &mut Ctx, slf: Value, _args: &[Value], blk: *const Block) -> RV {
 thread_local! { static CATCH_TAGS: std::cell::RefCell<Vec<Value>> = const { std::cell::RefCell::new(vec![]) }; }
 
 fn k_catch(c: &mut Ctx, _s: Value, args: &[Value], blk: *const Block) -> RV {
-    let tag = if args.is_empty() { new_object(c.vm().c_object.get()) } else { args[0] };
+    let tag = if args.is_empty() { new_object(c, c.vm().c_object.get()) } else { args[0] };
     CATCH_TAGS.with(|t| t.borrow_mut().push(tag));
     let r = yield_block(c, blk, &[tag]);
     CATCH_TAGS.with(|t| t.borrow_mut().pop());
@@ -421,7 +422,7 @@ fn k_exit_bang(_c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV 
 
 pub fn k_abort(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let msg = if let Some(&m) = args.first() { let m = expect_str(c, m)?; let mut b = c.str_bytes(m).to_vec(); b.push(b'\n'); err_write(&b); m } else { c.str_new(b"exit") };
-    let e = new_object(c.vm().c_system_exit.get());
+    let e = new_object(c, c.vm().c_system_exit.get());
     ivar_set_raw(c, e, s::mesg, msg);
     ivar_set_raw(c, e, s::status, Value::fix(1));
     let _ = c;
@@ -437,7 +438,7 @@ fn k_at_exit(c: &mut Ctx, _s: Value, _args: &[Value], blk: *const Block) -> RV {
 
 /// ARGF (a lazily loaded prelude library).
 pub fn argf(c: &mut Ctx) -> RV { const_lookup(c, c.vm().top_cref.get(), intern(b"ARGF")) }
-fn argf_plain(c: &Ctx) -> bool { c.ary_len(c.vm().argv.get()) == 0 && const_get_at(c.vm().c_object.get(), intern(b"ARGF")).is_none() }
+fn argf_plain(c: &Ctx) -> bool { c.ary_len(c.vm().argv.get()) == 0 && const_get_at(c, c.vm().c_object.get(), intern(b"ARGF")).is_none() }
 fn k_gets(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     out_flush();
     // no file arguments: plain stdin without loading ARGF
@@ -505,9 +506,9 @@ fn k_integer(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
             Ok(crate::legacy::f64_to_int(f))
         } else if v == NIL { type_err(c, "can't convert nil into Integer") }
         else {
-            if respond_to(v, s::to_int, true) { let r = funcall(c, v, s::to_int, &[], std::ptr::null())?; if is_integer(r) { return Ok(r); } }
-            if respond_to(v, s::to_i, true) { let r = funcall(c, v, s::to_i, &[], std::ptr::null())?; if is_integer(r) { return Ok(r); } }
-            type_err(c, format!("can't convert {} into Integer", class_name_for_err(v)))
+            if respond_to(c, v, s::to_int, true) { let r = funcall(c, v, s::to_int, &[], std::ptr::null())?; if is_integer(r) { return Ok(r); } }
+            if respond_to(c, v, s::to_i, true) { let r = funcall(c, v, s::to_i, &[], std::ptr::null())?; if is_integer(r) { return Ok(r); } }
+            type_err(c, format!("can't convert {} into Integer", class_name_for_err(c, v)))
         }
     })();
     match r { Err(e) if !exc && c.esc == EscKind::Raise => { let _ = e; c.esc = EscKind::None; Ok(NIL) } r => r }
@@ -594,13 +595,13 @@ fn k_float(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
             match parse_float_strict(c, &b) { Some(f) => return Ok(c.float_new(f)), None => { let ins = inspect_str(c, v)?; return arg_err(c, format!("invalid value for Float(): {}", ins)); } }
         }
         if v == NIL { return type_err(c, "can't convert nil into Float"); }
-        if respond_to(v, s::to_f, true) {
+        if respond_to(c, v, s::to_f, true) {
             let r = funcall(c, v, s::to_f, &[], std::ptr::null())?;
             if is_float(r) { return Ok(r); }
-            let cn = class_name_for_err(v);
-            return type_err(c, format!("can't convert {} to Float ({}#to_f gives {})", cn, cn, class_name_for_err(r)));
+            let cn = class_name_for_err(c, v);
+            return type_err(c, format!("can't convert {} to Float ({}#to_f gives {})", cn, cn, class_name_for_err(c, r)));
         }
-        type_err(c, format!("can't convert {} into Float", class_name_for_err(v)))
+        type_err(c, format!("can't convert {} into Float", class_name_for_err(c, v)))
     })();
     match r { Err(e) if !exc && c.esc == EscKind::Raise => { let _ = e; c.esc = EscKind::None; Ok(NIL) } r => r }
 }
@@ -609,13 +610,13 @@ fn k_string(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     check_argc(c, args, 1, 1)?;
     let v = args[0];
     if is_string(v) { return Ok(v); }
-    if v.is_heap() && respond_to(v, s::to_str, true) { return funcall(c, v, s::to_str, &[], std::ptr::null()); }
-    if respond_to(v, s::to_s, true) {
+    if v.is_heap() && respond_to(c, v, s::to_str, true) { return funcall(c, v, s::to_str, &[], std::ptr::null()); }
+    if respond_to(c, v, s::to_s, true) {
         let r = funcall(c, v, s::to_s, &[], std::ptr::null())?;
-        if !is_string(r) { return type_err(c, format!("can't convert {} to String ({}#to_s gives {})", class_name_for_err(v), class_name_for_err(v), class_name_for_err(r))); }
+        if !is_string(r) { return type_err(c, format!("can't convert {} to String ({}#to_s gives {})", class_name_for_err(c, v), class_name_for_err(c, v), class_name_for_err(c, r))); }
         return Ok(r);
     }
-    type_err(c, format!("can't convert {} into String", class_name_for_err(v)))
+    type_err(c, format!("can't convert {} into String", class_name_for_err(c, v)))
 }
 
 fn k_array(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
@@ -624,10 +625,10 @@ fn k_array(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     if is_array(v) { return Ok(v); }
     if v == NIL { return Ok(c.ary_new()); }
     if let Some(a) = check_array(c, v)? { return Ok(a); }
-    if respond_to(v, s::to_a, true) {
+    if respond_to(c, v, s::to_a, true) {
         let r = funcall(c, v, s::to_a, &[], std::ptr::null())?;
         if is_array(r) { return Ok(r); }
-        if r != NIL { return type_err(c, format!("can't convert {} to Array ({}#to_a gives {})", class_name_for_err(v), class_name_for_err(v), class_name_for_err(r))); }
+        if r != NIL { return type_err(c, format!("can't convert {} to Array ({}#to_a gives {})", class_name_for_err(c, v), class_name_for_err(c, v), class_name_for_err(c, r))); }
     }
     Ok(c.ary_new_from(&[v]))
 }
@@ -638,7 +639,7 @@ fn k_hash_conv(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     if is_hash(v) { return Ok(v); }
     if v == NIL || (is_array(v) && c.ary_len(v) == 0) { return Ok(c.hash_new()); }
     if let Some(h) = check_hash(c, v)? { return Ok(h); }
-    type_err(c, format!("can't convert {} into Hash", class_name_for_err(v)))
+    type_err(c, format!("can't convert {} into Hash", class_name_for_err(c, v)))
 }
 
 // ---- object identity / hash ----------------------------------------------------------------
@@ -700,7 +701,7 @@ pub fn gvar_get(c: &mut Ctx, name: Sym) -> RV {
 
 /// $/ holds a plain frozen String: a subclass instance, an ivar holder or a mutable one is copied.
 fn gvar_frozen_str(c: &mut Ctx, v: Value) -> Value {
-    if is_frozen(v) && real_class_of(v) == c.vm().c_string.get() && ivar_list(c, v).is_empty() { return v; }
+    if is_frozen(v) && real_class_of(c, v) == c.vm().c_string.get() && ivar_list(c, v).is_empty() { return v; }
     let n = c.str_copy(v);
     obj_set_flags(n, crate::object::FL_FROZEN);
     n
@@ -718,8 +719,8 @@ pub fn gvar_set(c: &mut Ctx, shown: Sym, v: Value) -> RV {
     let mut v = v;
     match nb {
         b"$~" => {
-            if v != NIL && !(v.is_heap() && is_kind_of(v, c.vm().c_match_data.get())) {
-                return type_err(c, format!("wrong argument type {} (expected MatchData)", class_name_for_err(v)));
+            if v != NIL && !(v.is_heap() && is_kind_of(c, v, c.vm().c_match_data.get())) {
+                return type_err(c, format!("wrong argument type {} (expected MatchData)", class_name_for_err(c, v)));
             }
             c.last_match = v; return Ok(v);
         }
@@ -733,8 +734,8 @@ pub fn gvar_set(c: &mut Ctx, shown: Sym, v: Value) -> RV {
         b"$DEBUG" => { c.vm().debug_flag.set(v.truthy()); crate::vm::update_raise_hooks(); }
         b"$0" => { let s = expect_str(c, v)?; c.vm().dollar_zero.set(s); return Ok(v); }
         b"$stdout" | b"$stderr" => {
-            if !respond_to(v, intern(b"write"), true) {
-                return type_err(c, format!("{} must have write method, {} given", sym_str(shown), class_path(real_class_of(v))));
+            if !respond_to(c, v, intern(b"write"), true) {
+                return type_err(c, format!("{} must have write method, {} given", sym_str(shown), class_path(c, real_class_of(c, v))));
             }
         }
         b"$/" | b"$\\" | b"$," | b"$;" => {
@@ -828,7 +829,7 @@ fn locate_feature(c: &Ctx, name: &str, caller_file: Option<&str>) -> Feature {
 /// rb_get_path for require/load: a String, else to_path (if any) and then to_str.
 fn feature_name(c: &mut Ctx, v: Value) -> Result<String, Esc> {
     let s = if is_string(v) { v } else {
-        let p = if v.is_heap() && respond_to(v, intern(b"to_path"), true) { funcall(c, v, intern(b"to_path"), &[], std::ptr::null())? } else { v };
+        let p = if v.is_heap() && respond_to(c, v, intern(b"to_path"), true) { funcall(c, v, intern(b"to_path"), &[], std::ptr::null())? } else { v };
         expect_str(c, p)?
     };
     Ok(String::from_utf8_lossy(c.str_bytes(s)).into_owned())
@@ -884,7 +885,7 @@ fn lp_resolve_feature_path(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block
     let ps = c.str_new(path.as_bytes());
     Ok(c.ary_new_from(&[Value::sym(intern(kind.as_bytes())), ps]))
 }
-pub fn init_load_path(lp: Value) { define_singleton_cfunc(lp, "resolve_feature_path", lp_resolve_feature_path, 1); }
+pub fn init_load_path(c: &mut Ctx, lp: Value) { define_singleton_cfunc(c, lp, "resolve_feature_path", lp_resolve_feature_path, 1); }
 
 pub fn load_file(c: &mut Ctx, path: &str) -> RV {
     let src = match std::fs::read(path) {
@@ -935,8 +936,8 @@ fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     if wrap.truthy() {
         // load(file, true): run under an anonymous module, self = a fresh main extended with it
         let m = if is_class_or_module(wrap) { wrap } else { new_module() };
-        let slf = new_object(c.vm().c_object.get());
-        let sk = singleton_class(slf);
+        let slf = new_object(c, c.vm().c_object.get());
+        let sk = singleton_class(c, slf);
         include_module_c(c, sk, m);
         let src = match std::fs::read(&p) {
             Ok(s) => s,
@@ -966,9 +967,9 @@ fn m_ruby2_keywords(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -
     let k = if is_class_or_module(slf) { slf } else { c.vm().c_object.get() };
     for &a in args {
         let nm = crate::builtins::object::to_sym_arg(c, a)?;
-        let me = search_method(k, nm);
+        let me = search_method(c, k, nm);
         if me.is_null() {
-            let e = make_name_error(c, c.vm().c_name_error.get(), &format!("undefined method '{}' for {} '{}'", sym_str(nm), if c.class(k).is_module { "module" } else { "class" }, class_path(k)), Value::sym(nm), k)?;
+            let e = make_name_error(c, c.vm().c_name_error.get(), &format!("undefined method '{}' for {} '{}'", sym_str(nm), if c.class(k).is_module { "module" } else { "class" }, class_path(c, k)), Value::sym(nm), k)?;
             return Err(raise_exc(c, e));
         }
         let wloc = match c.caller_frame() { Some(pf) => format!("{}:{}: warning: Skipping set of ruby2_keywords flag for {} ", frame_file(pf), pf.line(), sym_str(nm)), None => String::new() };
@@ -999,11 +1000,11 @@ fn m_ruby2_keywords(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -
     Ok(NIL)
 }
 fn h_s_r2k_hash_p(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
-    if !is_hash(args[0]) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(args[0]))); }
+    if !is_hash(args[0]) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(c, args[0]))); }
     Ok(Value::bool(obj_flags(args[0]) & FL_KWHASH != 0))
 }
 fn h_s_r2k_hash(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
-    if !is_hash(args[0]) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(args[0]))); }
+    if !is_hash(args[0]) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(c, args[0]))); }
     let d = c.hash_new();
     let pairs = c.hash_pairs(args[0]);
     let keep = c.ary_new_from(&pairs.iter().flat_map(|&(k, x)| [k, x]).collect::<Vec<_>>());   // pairs is not scanned
@@ -1028,9 +1029,9 @@ fn m_autoload_p(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV
     let k = if is_class_or_module(slf) { slf } else { c.vm().c_object.get() };
     let nm = crate::builtins::object::to_sym_arg(c, args[0])?;
     let inherit = args.get(1).map(|v| v.truthy()).unwrap_or(true);
-    let list: Vec<Value> = if inherit { ancestors(k).clone() } else { vec![k] };
+    let list: Vec<Value> = if inherit { ancestors(c, k).to_vec() } else { vec![k] };
     for kk in list {
-        if const_get_at(kk, nm).is_some() { return Ok(NIL); }
+        if const_get_at(c, kk, nm).is_some() { return Ok(NIL); }
         if let Some(&p) = c.class(kk).autoload.get(&nm) { return Ok(if c.str_bytes(p).starts_with(b"saruby/") { NIL } else { p }); }
     }
     Ok(NIL)
@@ -1050,7 +1051,7 @@ fn k_eval(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
     let src = expect_str(c, args[0])?;
     let bind = if args.len() > 1 { args[1] } else { NIL };
     if bind != NIL && !crate::builtins::binding::is_binding(c, bind) {
-        return type_err(c, format!("wrong argument type {} (expected binding)", class_name_for_err(bind)));
+        return type_err(c, format!("wrong argument type {} (expected binding)", class_name_for_err(c, bind)));
     }
     let file: &'static str = if args.len() > 2 && args[2] != NIL { let f = expect_str(c, args[2])?; Box::leak(String::from_utf8_lossy(c.str_bytes(f)).into_owned().into_boxed_str()) } else { crate::builtins::binding::eval_file(c) };
     let line = if args.len() > 3 { crate::builtins::numeric_methods::num_to_long(c, args[3])? as i32 } else { 1 };
@@ -1068,59 +1069,61 @@ fn k_local_variables(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) 
     crate::builtins::binding::local_variables(c, b)
 }
 
-pub fn init(vmr: &Vm) {
+pub fn init(c: &mut Ctx) {
+    let vmr = c.vm();
     let k = vmr.m_kernel.get();
-    let mf = |n: &str, f: CFunc, a: i32| define_module_function(k, n, f, a);
-    mf("puts", k_puts, -1);
-    mf("print", k_print, -1);
-    mf("p", k_p, -1);
-    mf("pp", k_pp, -1);
-    mf("putc", k_putc, 1);
-    mf("printf", k_printf, -1);
-    mf("sprintf", k_sprintf, -1);
-    mf("format", k_sprintf, -1);
-    mf("warn", k_warn, -1);
-    mf("raise", k_raise, -1);
-    mf("fail", k_raise, -1);
-    mf("loop", k_loop, 0);
-    mf("catch", k_catch, -1);
-    mf("throw", k_throw, -1);
-    mf("block_given?", k_block_given, 0);
-    mf("lambda", k_lambda, 0);
-    mf("proc", k_proc, 0);
-    mf("__method__", k_method_name, 0);
-    mf("__callee__", k_callee_name, 0);
-    mf("caller", k_caller, -1);
-    mf("exit", k_exit, -1);
-    mf("exit!", k_exit_bang, -1);
-    mf("abort", k_abort, -1);
-    mf("at_exit", k_at_exit, 0);
-    mf("gets", k_gets, -1);
-    mf("readline", k_readline, -1);
-    mf("readlines", k_readlines, -1);
-    mf("rand", k_rand, -1);
-    mf("srand", k_srand, -1);
-    mf("Integer", k_integer, -1);
-    mf("Float", k_float, -1);
-    mf("String", k_string, -1);
-    mf("Array", k_array, -1);
-    mf("Hash", k_hash_conv, -1);
-    mf("require", k_require, -1);
-    mf("require_relative", k_require_relative, -1);
-    mf("load", k_load, -1);
-    mf("autoload", k_autoload, -1);
-    mf("autoload?", m_autoload_p, -1);
-    define_cfunc(vmr.c_module.get(), "autoload?", m_autoload_p, -1);
-    define_private_cfunc(vmr.c_module.get(), "ruby2_keywords", m_ruby2_keywords, -1);
-    define_private_cfunc(singleton_class(vmr.main_obj.get()), "ruby2_keywords", m_ruby2_keywords, -1);
-    define_singleton_cfunc(vmr.c_module.get(), "nesting", m_s_nesting, 0);
-    define_singleton_cfunc(vmr.c_hash.get(), "ruby2_keywords_hash?", h_s_r2k_hash_p, 1);
-    define_singleton_cfunc(vmr.c_hash.get(), "ruby2_keywords_hash", h_s_r2k_hash, 1);
-    mf("__dir__", k_dir, 0);
-    mf("eval", k_eval, -1);
-    mf("binding", k_binding, 0);
-    mf("local_variables", k_local_variables, 0);
-    define_cfunc(vmr.c_module.get(), "autoload", k_autoload, -1);
+    let mf = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_module_function(c, k, n, f, a);
+    mf(c, "puts", k_puts, -1);
+    mf(c, "print", k_print, -1);
+    mf(c, "p", k_p, -1);
+    mf(c, "pp", k_pp, -1);
+    mf(c, "putc", k_putc, 1);
+    mf(c, "printf", k_printf, -1);
+    mf(c, "sprintf", k_sprintf, -1);
+    mf(c, "format", k_sprintf, -1);
+    mf(c, "warn", k_warn, -1);
+    mf(c, "raise", k_raise, -1);
+    mf(c, "fail", k_raise, -1);
+    mf(c, "loop", k_loop, 0);
+    mf(c, "catch", k_catch, -1);
+    mf(c, "throw", k_throw, -1);
+    mf(c, "block_given?", k_block_given, 0);
+    mf(c, "lambda", k_lambda, 0);
+    mf(c, "proc", k_proc, 0);
+    mf(c, "__method__", k_method_name, 0);
+    mf(c, "__callee__", k_callee_name, 0);
+    mf(c, "caller", k_caller, -1);
+    mf(c, "exit", k_exit, -1);
+    mf(c, "exit!", k_exit_bang, -1);
+    mf(c, "abort", k_abort, -1);
+    mf(c, "at_exit", k_at_exit, 0);
+    mf(c, "gets", k_gets, -1);
+    mf(c, "readline", k_readline, -1);
+    mf(c, "readlines", k_readlines, -1);
+    mf(c, "rand", k_rand, -1);
+    mf(c, "srand", k_srand, -1);
+    mf(c, "Integer", k_integer, -1);
+    mf(c, "Float", k_float, -1);
+    mf(c, "String", k_string, -1);
+    mf(c, "Array", k_array, -1);
+    mf(c, "Hash", k_hash_conv, -1);
+    mf(c, "require", k_require, -1);
+    mf(c, "require_relative", k_require_relative, -1);
+    mf(c, "load", k_load, -1);
+    mf(c, "autoload", k_autoload, -1);
+    mf(c, "autoload?", m_autoload_p, -1);
+    define_cfunc(c, vmr.c_module.get(), "autoload?", m_autoload_p, -1);
+    define_private_cfunc(c, vmr.c_module.get(), "ruby2_keywords", m_ruby2_keywords, -1);
+    let sm = singleton_class(c, vmr.main_obj.get());
+    define_private_cfunc(c, sm, "ruby2_keywords", m_ruby2_keywords, -1);
+    define_singleton_cfunc(c, vmr.c_module.get(), "nesting", m_s_nesting, 0);
+    define_singleton_cfunc(c, vmr.c_hash.get(), "ruby2_keywords_hash?", h_s_r2k_hash_p, 1);
+    define_singleton_cfunc(c, vmr.c_hash.get(), "ruby2_keywords_hash", h_s_r2k_hash, 1);
+    mf(c, "__dir__", k_dir, 0);
+    mf(c, "eval", k_eval, -1);
+    mf(c, "binding", k_binding, 0);
+    mf(c, "local_variables", k_local_variables, 0);
+    define_cfunc(c, vmr.c_module.get(), "autoload", k_autoload, -1);
     let _ = intern_str;
 }
 

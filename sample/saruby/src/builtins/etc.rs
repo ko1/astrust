@@ -12,15 +12,15 @@ use crate::vm::*;
 
 /// NUM2INT
 fn int_arg(c: &mut Ctx, v: Value) -> Result<i32, Esc> {
-    if !v.is_fixnum() && !(v.is_heap() && (matches!(c.body_of(v), Body::Bignum(_) | Body::Float(_)) || respond_to(v, intern(b"to_int"), true))) {
-        return type_err(c, format!("no implicit conversion of {} into Integer", class_name_for_err(v)));
+    if !v.is_fixnum() && !(v.is_heap() && (matches!(c.body_of(v), Body::Bignum(_) | Body::Float(_)) || respond_to(c, v, intern(b"to_int"), true))) {
+        return type_err(c, format!("no implicit conversion of {} into Integer", class_name_for_err(c, v)));
     }
     Ok(num_to_long(c, v)? as i32)
 }
 /// rb_sys_fail(func)
 fn sys_fail(c: &mut Ctx, func: &str) -> Esc {
     let no = sys::errno();
-    let k = crate::builtins::exception::errno_class(c.vm(), no);
+    let k = crate::builtins::exception::errno_class(c, no);
     let e = make_exception(c, k, &format!("{} - {}", crate::builtins::exception::errno_text(Value::fix(no)), func));
     ivar_set_raw(c, e, crate::symbol::s::errno, Value::fix(no));
     raise_exc(c, e)
@@ -53,9 +53,9 @@ fn io_pathconf(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 }
 pub fn init(c: &mut Ctx) {
     let ob = c.vm().c_object.get();
-    let m = const_get_at(ob, intern(b"Etc")).unwrap_or_else(|| define_module("Etc"));
-    define_module_function(m, "sysconf", etc_sysconf, 1);
-    define_module_function(m, "confstr", etc_confstr, 1);
+    let m = const_get_at(c, ob, intern(b"Etc")).unwrap_or_else(|| define_module(c, "Etc"));
+    define_module_function(c, m, "sysconf", etc_sysconf, 1);
+    define_module_function(c, m, "confstr", etc_confstr, 1);
     let io = c.vm().c_io.get();
-    define_cfunc(io, "pathconf", io_pathconf, 1);
+    define_cfunc(c, io, "pathconf", io_pathconf, 1);
 }

@@ -191,12 +191,12 @@ fn hash_of(c: &mut Ctx, k: Value) -> Result<Hv, Esc> {
     let r = funcall(c, k, s::hash, &[], std::ptr::null())?;
     if r.is_fixnum() { return Ok(Hv::Ruby(r.as_fix() as u64)); }
     if is_bignum(r) { return Ok(Hv::Raw(big_hash(c, r))); }
-    if r.is_heap() && !is_float(r) && respond_to(r, s::to_int, true) {
+    if r.is_heap() && !is_float(r) && respond_to(c, r, s::to_int, true) {
         let i = funcall(c, r, s::to_int, &[], std::ptr::null())?;
         if i.is_fixnum() { return Ok(Hv::Ruby(i.as_fix() as u64)); }
         if is_bignum(i) { return Ok(Hv::Raw(big_hash(c, i))); }
     }
-    type_err(c, format!("no implicit conversion of {} into Integer", crate::builtins::kernel::class_name_for_err(r)))
+    type_err(c, format!("no implicit conversion of {} into Integer", crate::builtins::kernel::class_name_for_err(c, r)))
 }
 /// Array#hash over the elements' #hash values; a recursive array hashes by its length alone.
 fn ary_hash(c: &mut Ctx, k: Value) -> Result<u64, Esc> {
@@ -375,7 +375,7 @@ pub fn hash_to_a(c: &mut Ctx, h: Value) -> RV {
 /// Implicit conversion to Hash (to_hash).
 pub fn check_hash(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if is_hash(v) { return Ok(Some(v)); }
-    if v.is_heap() && respond_to(v, s::to_hash, true) {
+    if v.is_heap() && respond_to(c, v, s::to_hash, true) {
         let r = funcall(c, v, s::to_hash, &[], std::ptr::null())?;
         if is_hash(r) { return Ok(Some(r)); }
         return type_err(c, "can't convert to Hash");

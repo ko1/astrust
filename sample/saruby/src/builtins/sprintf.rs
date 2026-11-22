@@ -252,7 +252,7 @@ impl<'a> Args<'a> {
         if let Some(h) = self.hash { return Ok(h); }
         if self.args.len() != 1 { return arg_err(c, "one hash required"); }
         let a = self.args[0];
-        let h = if is_hash(a) { a } else if a.is_heap() && respond_to(a, intern(b"to_hash"), true) { funcall(c, a, intern(b"to_hash"), &[], std::ptr::null())? } else { NIL };
+        let h = if is_hash(a) { a } else if a.is_heap() && respond_to(c, a, intern(b"to_hash"), true) { funcall(c, a, intern(b"to_hash"), &[], std::ptr::null())? } else { NIL };
         if !is_hash(h) { return arg_err(c, "one hash required"); }
         self.hash = Some(h);
         Ok(h)
@@ -271,12 +271,12 @@ fn int_arg(c: &mut Ctx, v: Value) -> RV {
     if is_string(v) { return parse_int_for_format(c, v); }
     if v == NIL { return type_err(c, "can't convert nil into Integer"); }
     if is_integer(v) { return Ok(v); }
-    if v.is_heap() && respond_to(v, crate::symbol::s::to_int, true) { return to_integer(c, v); }
-    if v.is_heap() && respond_to(v, intern(b"to_i"), true) {
+    if v.is_heap() && respond_to(c, v, crate::symbol::s::to_int, true) { return to_integer(c, v); }
+    if v.is_heap() && respond_to(c, v, intern(b"to_i"), true) {
         let r = funcall(c, v, intern(b"to_i"), &[], std::ptr::null())?;
         if is_integer(r) { return Ok(r); }
     }
-    type_err(c, format!("can't convert {} into Integer", class_name_for_err(v)))
+    type_err(c, format!("can't convert {} into Integer", class_name_for_err(c, v)))
 }
 fn float_arg(c: &mut Ctx, v: Value) -> Result<f64, Esc> {
     if is_string(v) { let f = funcall(c, c.vm().main_obj.get(), intern(b"Float"), &[v], std::ptr::null())?; return to_f(c, f); }
@@ -404,7 +404,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                     b'p' => inspect_value(c, v)?,
                     b's' => crate::rt::srb_tostr(c, v)?,
                     _ => {
-                        if is_string(v) || (v.is_heap() && respond_to(v, crate::symbol::s::to_str, true) && !is_integer(v)) {
+                        if is_string(v) || (v.is_heap() && respond_to(c, v, crate::symbol::s::to_str, true) && !is_integer(v)) {
                             let s2 = expect_str(c, v)?;
                             let first = c.chars_of(s2).into_iter().next().unwrap_or_default();
                             c.str_new_enc(&first, c.str_enc(s2))

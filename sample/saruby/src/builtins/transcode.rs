@@ -188,7 +188,7 @@ pub fn prepare_options(c: &mut Ctx, h: Value, ecflags: u32) -> Result<(u32, Opts
     if v != NIL {
         match crate::hash::check_hash(c, v)? {
             Some(hh) => o.fallback = Some(hh),
-            None => if is_proc(v) || is_method_obj(v) || respond_to(v, intern(b"[]"), false) { o.fallback = Some(v); },
+            None => if is_proc(v) || is_method_obj(v) || respond_to(c, v, intern(b"[]"), false) { o.fallback = Some(v); },
         }
     }
     Ok((ecflags, o))
@@ -319,7 +319,7 @@ pub fn s_encode(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
         Some((None, e)) => c.str_copy_enc(slf, e),
         Some((Some(b), e)) => c.str_from_vec_enc(b, e),
     };
-    let k = real_class_of(slf);
+    let k = real_class_of(c, slf);
     if k != c.vm().c_string.get() { obj_set_klass(v, k); }
     Ok(v)
 }
@@ -362,7 +362,7 @@ impl RData for REconv {
 }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     let k = c.vm().c_econv.get();
-    if k != NIL && crate::builtins::inherits(klass, k) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(REconv { ec: None, senc: None, denc: None }))))); }
+    if k != NIL && crate::builtins::inherits(c, klass, k) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(REconv { ec: None, senc: None, denc: None }))))); }
     Ok(None)
 }
 /// check_econv
@@ -446,7 +446,7 @@ fn ec_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 }
 
 fn ec_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let cname = class_path(real_class_of(slf));
+    let cname = class_path(c, real_class_of(c, slf));
     let s = match c.data::<REconv>(slf).and_then(|r| r.ec.as_ref()) {
         None => format!("#<{}: uninitialized>", cname),
         Some(ec) => description(&ec.sname, &ec.dname, ec.flags, format!("#<{}: ", cname)) + ">",
@@ -620,32 +620,32 @@ fn ec_s_search_convpath(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -
 /// Encoding::Converter, defined on its first reference ("saruby/econv", builtins/prelude.rs).
 pub fn init(c: &mut Ctx) {
     if c.vm().c_econv.get() != NIL { return; }
-    let k = define_class_under(c.vm().c_encoding.get(), "Converter", c.vm().c_object.get());
-    class_set_alloc(k, AllocKind::None);
+    let k = define_class_under(c, c.vm().c_encoding.get(), "Converter", c.vm().c_object.get());
+    class_set_alloc(c, k, AllocKind::None);
     c.vm().c_econv.set(k);
-    define_singleton_cfunc(k, "asciicompat_encoding", ec_s_asciicompat_encoding, 1);
-    define_singleton_cfunc(k, "search_convpath", ec_s_search_convpath, -1);
-    define_cfunc(k, "initialize", ec_initialize, -1);
-    define_cfunc(k, "inspect", ec_inspect, 0);
-    define_cfunc(k, "convpath", ec_convpath, 0);
-    define_cfunc(k, "source_encoding", ec_source_encoding, 0);
-    define_cfunc(k, "destination_encoding", ec_destination_encoding, 0);
-    define_cfunc(k, "primitive_convert", ec_primitive_convert, -1);
-    define_cfunc(k, "convert", ec_convert, 1);
-    define_cfunc(k, "finish", ec_finish, 0);
-    define_cfunc(k, "primitive_errinfo", ec_primitive_errinfo, 0);
-    define_cfunc(k, "insert_output", ec_insert_output, 1);
-    define_cfunc(k, "putback", ec_putback, -1);
-    define_cfunc(k, "last_error", ec_last_error, 0);
-    define_cfunc(k, "replacement", ec_replacement, 0);
-    define_cfunc(k, "replacement=", ec_set_replacement, 1);
-    define_cfunc(k, "==", ec_eq, 1);
+    define_singleton_cfunc(c, k, "asciicompat_encoding", ec_s_asciicompat_encoding, 1);
+    define_singleton_cfunc(c, k, "search_convpath", ec_s_search_convpath, -1);
+    define_cfunc(c, k, "initialize", ec_initialize, -1);
+    define_cfunc(c, k, "inspect", ec_inspect, 0);
+    define_cfunc(c, k, "convpath", ec_convpath, 0);
+    define_cfunc(c, k, "source_encoding", ec_source_encoding, 0);
+    define_cfunc(c, k, "destination_encoding", ec_destination_encoding, 0);
+    define_cfunc(c, k, "primitive_convert", ec_primitive_convert, -1);
+    define_cfunc(c, k, "convert", ec_convert, 1);
+    define_cfunc(c, k, "finish", ec_finish, 0);
+    define_cfunc(c, k, "primitive_errinfo", ec_primitive_errinfo, 0);
+    define_cfunc(c, k, "insert_output", ec_insert_output, 1);
+    define_cfunc(c, k, "putback", ec_putback, -1);
+    define_cfunc(c, k, "last_error", ec_last_error, 0);
+    define_cfunc(c, k, "replacement", ec_replacement, 0);
+    define_cfunc(c, k, "replacement=", ec_set_replacement, 1);
+    define_cfunc(c, k, "==", ec_eq, 1);
     for (n, v) in [("INVALID_MASK", ev::INVALID_MASK), ("INVALID_REPLACE", ev::INVALID_REPLACE), ("UNDEF_MASK", ev::UNDEF_MASK), ("UNDEF_REPLACE", ev::UNDEF_REPLACE),
                    ("UNDEF_HEX_CHARREF", ev::UNDEF_HEX_CHARREF), ("PARTIAL_INPUT", ev::PARTIAL_INPUT), ("AFTER_OUTPUT", ev::AFTER_OUTPUT),
                    ("UNIVERSAL_NEWLINE_DECORATOR", ev::UNIVERSAL_NEWLINE_DECORATOR), ("LF_NEWLINE_DECORATOR", ev::LF_NEWLINE_DECORATOR),
                    ("CRLF_NEWLINE_DECORATOR", ev::CRLF_NEWLINE_DECORATOR), ("CR_NEWLINE_DECORATOR", ev::CR_NEWLINE_DECORATOR),
                    ("XML_TEXT_DECORATOR", ev::XML_TEXT_DECORATOR), ("XML_ATTR_CONTENT_DECORATOR", ev::XML_ATTR_CONTENT_DECORATOR),
                    ("XML_ATTR_QUOTE_DECORATOR", ev::XML_ATTR_QUOTE_DECORATOR)] {
-        const_set(k, intern(n.as_bytes()), Value::fix(v as i64));
+        const_set(c, k, intern(n.as_bytes()), Value::fix(v as i64));
     }
 }

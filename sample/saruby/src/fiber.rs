@@ -471,17 +471,18 @@ pub fn enum_peek(c: &mut Ctx, e: Value) -> RV {
     }
 }
 
-pub fn init(vmr: &Vm) {
-    let k = define_class("Fiber", vmr.c_object.get());
-    class_set_alloc(k, AllocKind::None);
+pub fn init(c: &mut Ctx) {
+    let vmr = c.vm();
+    let k = define_class(c, "Fiber", vmr.c_object.get());
+    class_set_alloc(c, k, AllocKind::None);
     vmr.c_fiber.set(k);
-    define_singleton_cfunc(k, "yield", f_s_yield, -1);
-    define_singleton_cfunc(k, "current", f_s_current, 0);
-    define_cfunc(k, "resume", f_resume, -1);
-    define_cfunc(k, "transfer", f_transfer, -1);
-    define_cfunc(k, "raise", f_raise, -1);
-    define_cfunc(k, "kill", f_kill, 0);
-    define_cfunc(k, "alive?", f_alive, 0);
+    define_singleton_cfunc(c, k, "yield", f_s_yield, -1);
+    define_singleton_cfunc(c, k, "current", f_s_current, 0);
+    define_cfunc(c, k, "resume", f_resume, -1);
+    define_cfunc(c, k, "transfer", f_transfer, -1);
+    define_cfunc(c, k, "raise", f_raise, -1);
+    define_cfunc(c, k, "kill", f_kill, 0);
+    define_cfunc(c, k, "alive?", f_alive, 0);
     let mut d = FiberData::new(NIL);
     d.main = true; d.started = true; d.running = true; d.blocking = true;
     let root = crate::gc::alloc(k, Body::Data(Box::new(d)));

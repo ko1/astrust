@@ -36,8 +36,8 @@ static VER: AtomicU32 = AtomicU32::new(0);
 pub fn json_version(c: &Ctx) -> u32 {
     let v = VER.load(Relaxed);
     if v != 0 { return v; }
-    let m = match const_get_at(c.vm().c_object.get(), intern(b"JSON")) { Some(m) => m, None => return 30000 };
-    let n = match const_get_at(m, intern(b"VERSION")) {
+    let m = match const_get_at(c, c.vm().c_object.get(), intern(b"JSON")) { Some(m) => m, None => return 30000 };
+    let n = match const_get_at(c, m, intern(b"VERSION")) {
         Some(s) if is_string(s) => {
             let t = String::from_utf8_lossy(c.str_bytes(s)).into_owned();
             let p: Vec<u32> = t.split('.').map(|x| x.parse().unwrap_or(0)).collect();
@@ -82,7 +82,7 @@ fn sym_is(k: Value, name: &[u8]) -> bool { k.is_sym() && crate::symbol::sym_byte
 fn config_init(c: &mut Ctx, opts: Value) -> Result<Config, Esc> {
     let mut cfg = Config::new(c);
     if opts == NIL { return Ok(cfg); }
-    if !is_hash(opts) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(opts))); }
+    if !is_hash(opts) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(c, opts))); }
     if c.hash_len(opts) == 0 { return Ok(cfg); }
     let three = !v2(c);
     let mut unknown: Vec<Value> = vec![];
@@ -98,7 +98,7 @@ fn config_init(c: &mut Ctx, opts: Value) -> Result<Config, Esc> {
         else if sym_is(k, b"on_load") {
             let mut p = v;
             if three && v.truthy() && !is_proc(v) {
-                p = if respond_to(v, intern(b"to_proc"), true) { funcall(c, v, intern(b"to_proc"), &[], std::ptr::null())? } else { UNDEF };
+                p = if respond_to(c, v, intern(b"to_proc"), true) { funcall(c, v, intern(b"to_proc"), &[], std::ptr::null())? } else { UNDEF };
                 if !is_proc(p) { return type_err(c, "on_load must be a Proc"); }
             }
             cfg.on_load = if p.truthy() { p } else { NIL };
@@ -106,10 +106,10 @@ fn config_init(c: &mut Ctx, opts: Value) -> Result<Config, Esc> {
         else if sym_is(k, b"allow_duplicate_key") { cfg.dup = if v.truthy() { Dup::Ignore } else { Dup::Raise }; }
         else if sym_is(k, b"decimal_class") {
             if v.truthy() {
-                if respond_to(v, intern(b"try_convert"), false) { cfg.decimal_class = v; cfg.decimal_mid = intern(b"try_convert"); }
-                else if respond_to(v, intern(b"new"), false) { cfg.decimal_class = v; cfg.decimal_mid = intern(b"new"); }
+                if respond_to(c, v, intern(b"try_convert"), false) { cfg.decimal_class = v; cfg.decimal_mid = intern(b"try_convert"); }
+                else if respond_to(c, v, intern(b"new"), false) { cfg.decimal_class = v; cfg.decimal_mid = intern(b"new"); }
                 else if is_class_or_module(v) && !c.class(v).is_module {
-                    let name = class_path(v);
+                    let name = class_path(c, v);
                     match name.rfind(':') {
                         Some(i) => {
                             let path = c.str_new(name[..i - 1].as_bytes());
@@ -236,7 +236,7 @@ fn position(src: &[u8], at: usize, v2: bool) -> (i64, i64) {
 }
 
 fn new_exc(c: &mut Ctx, klass: Value, msg: &[u8]) -> Value {
-    let e = new_object(klass);
+    let e = new_object(c, klass);
     let m = c.str_new(msg);
     ivar_set_raw(c, e, s::mesg, m);
     e
@@ -1170,8 +1170,8 @@ fn rp_parsed_bytes(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> R
 
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     let (pc, rpk) = (C_CONFIG.get(c), C_RESUMABLE.get(c));
-    if pc != NIL && crate::builtins::inherits(klass, pc) { let cfg = Config::new(c); return Ok(Some(c.alloc(klass, Body::Data(Box::new(PConfig { cfg, set: false }))))); }
-    if rpk != NIL && crate::builtins::inherits(klass, rpk) {
+    if pc != NIL && crate::builtins::inherits(c, klass, pc) { let cfg = Config::new(c); return Ok(Some(c.alloc(klass, Body::Data(Box::new(PConfig { cfg, set: false }))))); }
+    if rpk != NIL && crate::builtins::inherits(c, klass, rpk) {
         let cfg = Config::new(c);
         return Ok(Some(c.alloc(klass, Body::Data(Box::new(Resumable { cfg, st: None, buf: Vec::new(), has_buf: false, parsed: 0, incomplete: 0, complete: true, in_use: false })))));
     }
@@ -1179,13 +1179,13 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
 }
 
 fn path_class(c: &mut Ctx, m: Value, name: &str) -> Result<Value, Esc> {
-    match const_get_at(m, intern(name.as_bytes())) { Some(k) => Ok(k), None => err(c, c.vm().c_name_error.get(), format!("uninitialized constant JSON::{}", name)) }
+    match const_get_at(c, m, intern(name.as_bytes())) { Some(k) => Ok(k), None => err(c, c.vm().c_name_error.get(), format!("uninitialized constant JSON::{}", name)) }
 }
-fn module_under(outer: Value, name: &str) -> Value {
-    match const_get_at(outer, intern(name.as_bytes())) { Some(m) if is_class_or_module(m) => m, _ => define_module_under(outer, name) }
+fn module_under(c: &mut Ctx, outer: Value, name: &str) -> Value {
+    match const_get_at(c, outer, intern(name.as_bytes())) { Some(m) if is_class_or_module(m) => m, _ => define_module_under(c, outer, name) }
 }
-pub fn class_under(outer: Value, name: &str, sup: Value) -> Value {
-    match const_get_at(outer, intern(name.as_bytes())) { Some(k) if is_class_or_module(k) => k, _ => define_class_under(outer, name, sup) }
+pub fn class_under(c: &mut Ctx, outer: Value, name: &str, sup: Value) -> Value {
+    match const_get_at(c, outer, intern(name.as_bytes())) { Some(k) if is_class_or_module(k) => k, _ => define_class_under(c, outer, name, sup) }
 }
 
 /// Init_parser, run by `require "json/ext/parser"`.
@@ -1193,28 +1193,28 @@ pub fn init(c: &mut Ctx) -> RV {
     let f = c.str_new(b"json/common");
     require_feature(c, f, false)?;
     let o = c.vm().c_object.get();
-    let m = module_under(o, "JSON");
+    let m = module_under(c, o, "JSON");
     M_JSON.set(c, m);
     json_version(c);
-    let ext = module_under(m, "Ext");
-    let pc = class_under(ext, "ParserConfig", o);
-    class_set_alloc(pc, AllocKind::None);
+    let ext = module_under(c, m, "Ext");
+    let pc = class_under(c, ext, "ParserConfig", o);
+    class_set_alloc(c, pc, AllocKind::None);
     C_CONFIG.set(c, pc);
     let pe = path_class(c, m, "ParserError")?; E_PARSER.set(c, pe);
     let ne = path_class(c, m, "NestingError")?; E_NESTING.set(c, ne);
-    if v2(c) { define_cfunc(pc, "initialize", pc_initialize, 1); } else { define_private_cfunc(pc, "initialize", pc_initialize, 1); }
-    define_cfunc(pc, "parse", pc_parse, 1);
-    let p = class_under(ext, "Parser", o);
-    define_singleton_cfunc(p, "parse", parser_s_parse, 2);
+    if v2(c) { define_cfunc(c, pc, "initialize", pc_initialize, 1); } else { define_private_cfunc(c, pc, "initialize", pc_initialize, 1); }
+    define_cfunc(c, pc, "parse", pc_parse, 1);
+    let p = class_under(c, ext, "Parser", o);
+    define_singleton_cfunc(c, p, "parse", parser_s_parse, 2);
     if !v2(c) {
-        let r = class_under(m, "ResumableParser", o);
-        class_set_alloc(r, AllocKind::None);
+        let r = class_under(c, m, "ResumableParser", o);
+        class_set_alloc(c, r, AllocKind::None);
         C_RESUMABLE.set(c, r);
-        define_private_cfunc(r, "initialize", rp_initialize, -1);
-        let d = |n: &str, f: CFunc, a: i32| define_cfunc(r, n, f, a);
-        d("<<", rp_feed, 1); d("parse", rp_parse, 0); d("value", rp_value, 0); d("value?", rp_value_p, 0);
-        d("partial_value", rp_partial_value, 0); d("partial_value?", rp_partial_value_p, 0); d("clear", rp_clear, 0);
-        d("rest", rp_rest, 0); d("eos?", rp_eos_p, 0); d("parsed_bytes", rp_parsed_bytes, 0);
+        define_private_cfunc(c, r, "initialize", rp_initialize, -1);
+        let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, r, n, f, a);
+        d(c, "<<", rp_feed, 1); d(c, "parse", rp_parse, 0); d(c, "value", rp_value, 0); d(c, "value?", rp_value_p, 0);
+        d(c, "partial_value", rp_partial_value, 0); d(c, "partial_value?", rp_partial_value_p, 0); d(c, "clear", rp_clear, 0);
+        d(c, "rest", rp_rest, 0); d(c, "eos?", rp_eos_p, 0); d(c, "parsed_bytes", rp_parsed_bytes, 0);
     }
     for (g, n) in [(&V_NAN, "NaN"), (&V_INF, "Infinity"), (&V_NINF, "MinusInfinity")] { let v = path_class(c, m, n)?; g.set(c, v); }
     Ok(NIL)

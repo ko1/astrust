@@ -1379,7 +1379,7 @@ fn get_bd(c: &mut Ctx, v: Value, prec: usize, must: bool, env: &Env) -> Result<O
 }
 fn get_bd_must(c: &mut Ctx, v: Value, prec: usize, env: &Env) -> Result<Bdv, Esc> { Ok(get_bd(c, v, prec, true, env)?.unwrap()) }
 fn cannot_coerce(c: &mut Ctx, v: Value) -> Esc {
-    let s = if !v.is_heap() { match inspect_str(c, v) { Ok(s) => s, Err(e) => return e } } else { class_path(real_class_of(v)) };
+    let s = if !v.is_heap() { match inspect_str(c, v) { Ok(s) => s, Err(e) => return e } } else { class_path(c, real_class_of(c, v)) };
     let m = make_exception(c, c.vm().c_type_error.get(), &format!("{} can't be coerced into BigDecimal", s));
     raise_exc(c, m)
 }
@@ -1394,8 +1394,8 @@ fn get_coerce_prec(a: &Real, prec: usize) -> usize {
 
 // rb_num_coerce_*
 fn do_coerce(c: &mut Ctx, x: Value, y: Value, err_: bool) -> Result<Option<(Value, Value)>, Esc> {
-    if !respond_to(y, intern(b"coerce"), true) {
-        if err_ { let s = if !y.is_heap() { inspect_str(c, y)? } else { class_path(real_class_of(y)) }; return type_err(c, format!("{} can't be coerced into BigDecimal", s)); }
+    if !respond_to(c, y, intern(b"coerce"), true) {
+        if err_ { let s = if !y.is_heap() { inspect_str(c, y)? } else { class_path(c, real_class_of(c, y)) }; return type_err(c, format!("{} can't be coerced into BigDecimal", s)); }
         return Ok(None);
     }
     let a = funcall(c, y, intern(b"coerce"), &[x], std::ptr::null())?;
@@ -1415,7 +1415,7 @@ fn coerce_relop(c: &mut Ctx, x: Value, y: Value, op: &str) -> RV {
         let r = funcall(c, a, intern(op.as_bytes()), &[b], std::ptr::null())?;
         if r != NIL { return Ok(r); }
     }
-    let s = if !y.is_heap() || is_float(y) { inspect_str(c, y)? } else { class_path(real_class_of(y)) };
+    let s = if !y.is_heap() || is_float(y) { inspect_str(c, y)? } else { class_path(c, real_class_of(c, y)) };
     arg_err(c, format!("comparison of BigDecimal with {} failed", s))
 }
 
@@ -1648,7 +1648,7 @@ fn check_rounding_mode_option(c: &mut Ctx, opts: Value, env: &Env) -> Result<u16
     if mode == NIL { return Ok(env.round); }
     let s = if mode.is_sym() { Some(sym_str(mode.as_sym()).into_bytes()) }
         else if is_string(mode) { Some(c.str_bytes(mode).to_vec()) }
-        else if mode.is_heap() && respond_to(mode, intern(b"to_str"), true) { let t = funcall(c, mode, intern(b"to_str"), &[], std::ptr::null())?; if is_string(t) { Some(c.str_bytes(t).to_vec()) } else { None } }
+        else if mode.is_heap() && respond_to(c, mode, intern(b"to_str"), true) { let t = funcall(c, mode, intern(b"to_str"), &[], std::ptr::null())?; if is_string(t) { Some(c.str_bytes(t).to_vec()) } else { None } }
         else { None };
     if let Some(s) = &s {
         let l = s.to_ascii_lowercase();
@@ -1744,12 +1744,12 @@ fn convert(c: &mut Ctx, val: Value, digs: Option<usize>, raise: bool) -> RV {
         }
         return convert(c, re, digs, raise);
     }
-    let s = if is_string(val) { val } else if val.is_heap() && respond_to(val, intern(b"to_str"), true) {
+    let s = if is_string(val) { val } else if val.is_heap() && respond_to(c, val, intern(b"to_str"), true) {
         let s = funcall(c, val, intern(b"to_str"), &[], std::ptr::null())?;
-        if !is_string(s) { let cn = class_path(real_class_of(val)); return type_err(c, format!("can't convert {} to String ({}#to_str gives {})", cn, cn, class_path(real_class_of(s)))); }
+        if !is_string(s) { let cn = class_path(c, real_class_of(c, val)); return type_err(c, format!("can't convert {} to String ({}#to_str gives {})", cn, cn, class_path(c, real_class_of(c, s)))); }
         s
     } else {
-        if raise { return type_err(c, format!("can't convert {} into BigDecimal", class_path(real_class_of(val)))); }
+        if raise { return type_err(c, format!("can't convert {} into BigDecimal", class_path(c, real_class_of(c, val)))); }
         return Ok(NIL);
     };
     let enc = c.rstring(s).enc;
@@ -2076,19 +2076,19 @@ fn m_clone(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(s)
 /// Run by the first `require "bigdecimal.so"`.
 pub fn init(c: &mut Ctx) {
     if CLASS.get(c) != NIL { return; }
-    let k = define_class("BigDecimal", c.vm().c_numeric.get());
-    class_set_alloc(k, AllocKind::None);
+    let k = define_class(c, "BigDecimal", c.vm().c_numeric.get());
+    class_set_alloc(c, k, AllocKind::None);
     CLASS.set(c, k);
     let kernel = c.vm().m_kernel.get();
-    define_module_function(kernel, "BigDecimal", k_bigdecimal, -1);
-    let sk = singleton_class(k);
+    define_module_function(c, kernel, "BigDecimal", k_bigdecimal, -1);
+    let sk = singleton_class(c, k);
     let _ = crate::builtins::object::undef_method(c, sk, intern(b"new"));
-    let sd = |n: &str, f: M, a: i32| define_singleton_cfunc(k, n, f, a);
-    sd("interpret_loosely", s_interpret_loosely, 1); sd("mode", s_mode, -1); sd("limit", s_limit, -1); sd("double_fig", s_double_fig, 0);
-    sd("_load", s_load, 1); sd("save_exception_mode", s_save_exception_mode, 0); sd("save_rounding_mode", s_save_rounding_mode, 0);
-    sd("save_limit", s_save_limit, 0);
+    let sd = |c: &mut Ctx, n: &str, f: M, a: i32| define_singleton_cfunc(c, k, n, f, a);
+    sd(c, "interpret_loosely", s_interpret_loosely, 1); sd(c, "mode", s_mode, -1); sd(c, "limit", s_limit, -1); sd(c, "double_fig", s_double_fig, 0);
+    sd(c, "_load", s_load, 1); sd(c, "save_exception_mode", s_save_exception_mode, 0); sd(c, "save_rounding_mode", s_save_rounding_mode, 0);
+    sd(c, "save_limit", s_save_limit, 0);
     let v = c.str_new_frozen(b"4.1.3");
-    const_set(k, intern(b"VERSION"), v);
+    const_set(c, k, intern(b"VERSION"), v);
     for (n, x) in [("BASE", BASE as i64), ("EXCEPTION_ALL", EXC_ALL as i64), ("EXCEPTION_NaN", EXC_NAN as i64), ("EXCEPTION_INFINITY", EXC_INFINITY as i64),
         ("EXCEPTION_UNDERFLOW", EXC_UNDERFLOW as i64), ("EXCEPTION_OVERFLOW", EXC_OVERFLOW as i64), ("EXCEPTION_ZERODIVIDE", EXC_ZERODIVIDE as i64),
         ("ROUND_MODE", ROUND_MODE as i64), ("ROUND_UP", ROUND_UP as i64), ("ROUND_DOWN", ROUND_DOWN as i64), ("ROUND_HALF_UP", ROUND_HALF_UP as i64),
@@ -2096,22 +2096,22 @@ pub fn init(c: &mut Ctx) {
         ("SIGN_NaN", SIGN_NAN as i64), ("SIGN_POSITIVE_ZERO", SIGN_POSITIVE_ZERO as i64), ("SIGN_NEGATIVE_ZERO", SIGN_NEGATIVE_ZERO as i64),
         ("SIGN_POSITIVE_FINITE", SIGN_POSITIVE_FINITE as i64), ("SIGN_NEGATIVE_FINITE", SIGN_NEGATIVE_FINITE as i64),
         ("SIGN_POSITIVE_INFINITE", SIGN_POSITIVE_INFINITE as i64), ("SIGN_NEGATIVE_INFINITE", SIGN_NEGATIVE_INFINITE as i64)] {
-        const_set(k, intern(n.as_bytes()), Value::fix(x));
+        const_set(c, k, intern(n.as_bytes()), Value::fix(x));
     }
     let special = |c: &mut Ctx, sign: i16| { let mut r = Real::alloc(1); r.set_special(sign); wrap(c, r) };
     let pi = special(c, SIGN_POSITIVE_INFINITE);
-    const_set(k, intern(b"INFINITY"), pi);
+    const_set(c, k, intern(b"INFINITY"), pi);
     let nan = special(c, SIGN_NAN);
-    const_set(k, intern(b"NAN"), nan);
-    let d = |n: &str, f: M, a: i32| define_cfunc(k, n, f, a);
-    d("precision", m_precision, 0); d("scale", m_scale, 0); d("precision_scale", m_precision_scale, 0); d("n_significant_digits", m_n_significant_digits, 0);
-    d("add", m_add2, 2); d("sub", m_sub2, 2); d("mult", m_mult2, 2); d("div", m_div, -1); d("hash", m_hash, 0); d("to_s", m_to_s, -1);
-    d("to_i", m_to_i, 0); d("to_int", m_to_i, 0); d("to_r", m_to_r, 0); d("split", m_split, 0); d("+", m_add, 1); d("-", m_sub, 1);
-    d("+@", m_uplus, 0); d("-@", m_neg, 0); d("*", m_mult, 1); d("/", m_divide, 1); d("quo", m_quo, -1); d("%", m_mod, 1); d("modulo", m_mod, 1);
-    d("remainder", m_remainder, 1); d("divmod", m_divmod, 1); d("clone", m_clone, 0); d("dup", m_clone, 0); d("to_f", m_to_f, 0);
-    d("abs", m_abs, 0); d("fix", m_fix, 0); d("round", m_round, -1); d("frac", m_frac, 0); d("floor", m_floor, -1); d("ceil", m_ceil, -1);
-    d("<=>", m_cmp, 1); d("==", m_eq, 1); d("===", m_eq, 1); d("eql?", m_eq, 1); d("<", m_lt, 1); d("<=", m_le, 1); d(">", m_gt, 1); d(">=", m_ge, 1);
-    d("zero?", m_zero_p, 0); d("nonzero?", m_nonzero_p, 0); d("coerce", m_coerce, 1); d("inspect", m_inspect, 0); d("exponent", m_exponent, 0);
-    d("sign", m_sign, 0); d("nan?", m_nan_p, 0); d("infinite?", m_infinite_p, 0); d("finite?", m_finite_p, 0); d("truncate", m_truncate, -1);
-    d("_decimal_shift", m_decimal_shift, 1); d("_dump", m_dump, -1);
+    const_set(c, k, intern(b"NAN"), nan);
+    let d = |c: &mut Ctx, n: &str, f: M, a: i32| define_cfunc(c, k, n, f, a);
+    d(c, "precision", m_precision, 0); d(c, "scale", m_scale, 0); d(c, "precision_scale", m_precision_scale, 0); d(c, "n_significant_digits", m_n_significant_digits, 0);
+    d(c, "add", m_add2, 2); d(c, "sub", m_sub2, 2); d(c, "mult", m_mult2, 2); d(c, "div", m_div, -1); d(c, "hash", m_hash, 0); d(c, "to_s", m_to_s, -1);
+    d(c, "to_i", m_to_i, 0); d(c, "to_int", m_to_i, 0); d(c, "to_r", m_to_r, 0); d(c, "split", m_split, 0); d(c, "+", m_add, 1); d(c, "-", m_sub, 1);
+    d(c, "+@", m_uplus, 0); d(c, "-@", m_neg, 0); d(c, "*", m_mult, 1); d(c, "/", m_divide, 1); d(c, "quo", m_quo, -1); d(c, "%", m_mod, 1); d(c, "modulo", m_mod, 1);
+    d(c, "remainder", m_remainder, 1); d(c, "divmod", m_divmod, 1); d(c, "clone", m_clone, 0); d(c, "dup", m_clone, 0); d(c, "to_f", m_to_f, 0);
+    d(c, "abs", m_abs, 0); d(c, "fix", m_fix, 0); d(c, "round", m_round, -1); d(c, "frac", m_frac, 0); d(c, "floor", m_floor, -1); d(c, "ceil", m_ceil, -1);
+    d(c, "<=>", m_cmp, 1); d(c, "==", m_eq, 1); d(c, "===", m_eq, 1); d(c, "eql?", m_eq, 1); d(c, "<", m_lt, 1); d(c, "<=", m_le, 1); d(c, ">", m_gt, 1); d(c, ">=", m_ge, 1);
+    d(c, "zero?", m_zero_p, 0); d(c, "nonzero?", m_nonzero_p, 0); d(c, "coerce", m_coerce, 1); d(c, "inspect", m_inspect, 0); d(c, "exponent", m_exponent, 0);
+    d(c, "sign", m_sign, 0); d(c, "nan?", m_nan_p, 0); d(c, "infinite?", m_infinite_p, 0); d(c, "finite?", m_finite_p, 0); d(c, "truncate", m_truncate, -1);
+    d(c, "_decimal_shift", m_decimal_shift, 1); d(c, "_dump", m_dump, -1);
 }

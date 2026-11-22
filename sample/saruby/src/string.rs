@@ -336,13 +336,13 @@ pub fn to_rstring(c: &mut Ctx, v: Value) -> Result<String, Esc> {
 /// Implicit conversion to String (to_str).
 pub fn expect_str(c: &mut Ctx, v: Value) -> RV {
     if is_string(v) { return Ok(v); }
-    if v.is_heap() && respond_to(v, s::to_str, true) {
+    if v.is_heap() && respond_to(c, v, s::to_str, true) {
         let r = funcall(c, v, s::to_str, &[], std::ptr::null())?;
         if is_string(r) { return Ok(r); }
-        let cls = class_path(real_class_of(v));
-        return type_err(c, format!("can't convert {} to String ({}#to_str gives {})", cls, cls, class_path(real_class_of(r))));
+        let cls = class_path(c, real_class_of(c, v));
+        return type_err(c, format!("can't convert {} to String ({}#to_str gives {})", cls, cls, class_path(c, real_class_of(c, r))));
     }
-    type_err(c, format!("no implicit conversion of {} into String", crate::builtins::kernel::class_name_for_err(v)))
+    type_err(c, format!("no implicit conversion of {} into String", crate::builtins::kernel::class_name_for_err(c, v)))
 }
 
 // ---- case helpers -----------------------------------------------------------------------

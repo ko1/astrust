@@ -1,6 +1,6 @@
 // Boot sequence of the built-in classes, and the Data dispatch of dup / allocate.
-// No context exists during boot: the Vm is passed by `heap::boot_vm`; class payloads that have
-// no vm.rs setter are set up by the boot helpers of legacy.rs (docs/safe_heap.md, "Method layer").
+// Runs on the main context (lib.rs makes it right after `install`); class payloads that have no
+// vm.rs setter are set up by the boot helpers of legacy.rs (docs/safe_heap.md, "Method layer").
 #![forbid(unsafe_code)]
 #[allow(unused_imports)]
 use crate::heap::no_legacy::*;   // the old accessors cannot be named here
@@ -64,9 +64,13 @@ fn blank_vm() -> Box<Vm> {
 fn boot_ary(vmr: &Vm) -> Value { crate::gc::alloc(vmr.c_array.get(), Body::Array(crate::avec::AVec::new())) }
 
 /// Create the class hierarchy and every built-in method.
-pub fn boot() { crate::heap::boot_vm(blank_vm(), boot_classes) }
+/// Install a blank VM (before the main context is made).
+pub fn install() { crate::heap::boot_vm(blank_vm()) }
+/// Create the class hierarchy and every built-in method, on the main context.
+pub fn boot(c: &mut Ctx) { boot_classes(c) }
 
-fn boot_classes(vmr: &Vm) {
+fn boot_classes(c: &mut Ctx) {
+    let vmr = c.vm();
     // BasicObject / Object / Module / Class with hand-made metaclasses
     let bo = alloc_class(NIL, NIL, false, AllocKind::Object);
     let ob = alloc_class(NIL, bo, false, AllocKind::Object);
@@ -74,9 +78,9 @@ fn boot_classes(vmr: &Vm) {
     let cl = alloc_class(NIL, md, false, AllocKind::Class);
     vmr.c_basic_object.set(bo); vmr.c_object.set(ob); vmr.c_module.set(md); vmr.c_class.set(cl);
     for k in [bo, ob, md, cl] { obj_set_klass(k, cl); }
-    let mk = |k: Value, sup: Value| -> Value {
+    let mut mk = |k: Value, sup: Value| -> Value {
         let m = alloc_class(cl, sup, false, AllocKind::Class);
-        boot_metaclass(k, m);
+        boot_metaclass(c, k, m);
         m
     };
     let mbo = mk(bo, cl);
@@ -84,113 +88,113 @@ fn boot_classes(vmr: &Vm) {
     let mmd = mk(md, mob);
     let _mcl = mk(cl, mmd);
     for (k, n) in [(bo, "BasicObject"), (ob, "Object"), (md, "Module"), (cl, "Class")] {
-        name_class(k, ob, intern_str(n));
-        const_set(ob, intern_str(n), k);
+        name_class(c, k, ob, intern_str(n));
+        const_set(c, ob, intern_str(n), k);
     }
-    boot_subclass(ob, md); boot_subclass(md, cl); boot_subclass(bo, ob);
-    vmr.m_kernel.set(define_module("Kernel"));
-    include_module(ob, vmr.m_kernel.get());
-    vmr.m_comparable.set(define_module("Comparable"));
-    vmr.m_enumerable.set(define_module("Enumerable"));
-    let num = define_class("Numeric", ob);
-    include_module(num, vmr.m_comparable.get());
+    boot_subclass(c, ob, md); boot_subclass(c, md, cl); boot_subclass(c, bo, ob);
+    vmr.m_kernel.set(define_module(c, "Kernel"));
+    include_module(c, ob, vmr.m_kernel.get());
+    vmr.m_comparable.set(define_module(c, "Comparable"));
+    vmr.m_enumerable.set(define_module(c, "Enumerable"));
+    let num = define_class(c, "Numeric", ob);
+    include_module(c, num, vmr.m_comparable.get());
     vmr.c_numeric.set(num);
-    vmr.c_integer.set(define_class("Integer", num));
-    vmr.c_float.set(define_class("Float", num));
-    vmr.c_string.set(define_class("String", ob));
-    class_set_alloc(vmr.c_string.get(), AllocKind::String);
+    vmr.c_integer.set(define_class(c, "Integer", num));
+    vmr.c_float.set(define_class(c, "Float", num));
+    vmr.c_string.set(define_class(c, "String", ob));
+    class_set_alloc(c, vmr.c_string.get(), AllocKind::String);
     // name strings made before String existed have no class yet
     for k in [bo, ob, md, cl, vmr.m_kernel.get(), vmr.m_comparable.get(), vmr.m_enumerable.get(), num, vmr.c_integer.get(), vmr.c_float.get(), vmr.c_string.get()] {
-        if let Some(n) = class_name_sym(k) { obj_set_klass(n, vmr.c_string.get()); }
+        if let Some(n) = class_name_sym(c, k) { obj_set_klass(n, vmr.c_string.get()); }
     }
-    include_module(vmr.c_string.get(), vmr.m_comparable.get());
-    vmr.c_symbol.set(define_class("Symbol", ob));
-    include_module(vmr.c_symbol.get(), vmr.m_comparable.get());
-    vmr.c_array.set(define_class("Array", ob));
-    class_set_alloc(vmr.c_array.get(), AllocKind::Array);
-    include_module(vmr.c_array.get(), vmr.m_enumerable.get());
-    vmr.c_hash.set(define_class("Hash", ob));
-    class_set_alloc(vmr.c_hash.get(), AllocKind::Hash);
-    include_module(vmr.c_hash.get(), vmr.m_enumerable.get());
-    vmr.c_range.set(define_class("Range", ob));
-    class_set_alloc(vmr.c_range.get(), AllocKind::Range);
-    include_module(vmr.c_range.get(), vmr.m_enumerable.get());
-    vmr.c_nil.set(define_class("NilClass", ob));
-    vmr.c_true.set(define_class("TrueClass", ob));
-    vmr.c_false.set(define_class("FalseClass", ob));
-    vmr.c_proc.set(define_class("Proc", ob));
-    class_set_alloc(vmr.c_proc.get(), AllocKind::Proc);
-    vmr.c_method.set(define_class("Method", ob));
-    class_set_alloc(vmr.c_method.get(), AllocKind::None);
-    vmr.c_unbound_method.set(define_class("UnboundMethod", ob));
-    class_set_alloc(vmr.c_unbound_method.get(), AllocKind::None);
-    vmr.c_env.set(new_class(ob));
-    vmr.c_binding.set(define_class("Binding", ob));
-    class_set_alloc(vmr.c_binding.get(), AllocKind::None);
-    for k in [vmr.c_integer.get(), vmr.c_float.get(), vmr.c_symbol.get(), vmr.c_nil.get(), vmr.c_true.get(), vmr.c_false.get()] { class_set_alloc(k, AllocKind::None); }
+    include_module(c, vmr.c_string.get(), vmr.m_comparable.get());
+    vmr.c_symbol.set(define_class(c, "Symbol", ob));
+    include_module(c, vmr.c_symbol.get(), vmr.m_comparable.get());
+    vmr.c_array.set(define_class(c, "Array", ob));
+    class_set_alloc(c, vmr.c_array.get(), AllocKind::Array);
+    include_module(c, vmr.c_array.get(), vmr.m_enumerable.get());
+    vmr.c_hash.set(define_class(c, "Hash", ob));
+    class_set_alloc(c, vmr.c_hash.get(), AllocKind::Hash);
+    include_module(c, vmr.c_hash.get(), vmr.m_enumerable.get());
+    vmr.c_range.set(define_class(c, "Range", ob));
+    class_set_alloc(c, vmr.c_range.get(), AllocKind::Range);
+    include_module(c, vmr.c_range.get(), vmr.m_enumerable.get());
+    vmr.c_nil.set(define_class(c, "NilClass", ob));
+    vmr.c_true.set(define_class(c, "TrueClass", ob));
+    vmr.c_false.set(define_class(c, "FalseClass", ob));
+    vmr.c_proc.set(define_class(c, "Proc", ob));
+    class_set_alloc(c, vmr.c_proc.get(), AllocKind::Proc);
+    vmr.c_method.set(define_class(c, "Method", ob));
+    class_set_alloc(c, vmr.c_method.get(), AllocKind::None);
+    vmr.c_unbound_method.set(define_class(c, "UnboundMethod", ob));
+    class_set_alloc(c, vmr.c_unbound_method.get(), AllocKind::None);
+    vmr.c_env.set(new_class(c, ob));
+    vmr.c_binding.set(define_class(c, "Binding", ob));
+    class_set_alloc(c, vmr.c_binding.get(), AllocKind::None);
+    for k in [vmr.c_integer.get(), vmr.c_float.get(), vmr.c_symbol.get(), vmr.c_nil.get(), vmr.c_true.get(), vmr.c_false.get()] { class_set_alloc(c, k, AllocKind::None); }
 
-    vmr.main_obj.set(new_object(ob));
+    vmr.main_obj.set(new_object(c, ob));
     vmr.loaded_features.set(boot_ary(vmr));
     vmr.load_path.set(boot_ary(vmr));
-    kernel::init_load_path(vmr.load_path.get());
+    kernel::init_load_path(c, vmr.load_path.get());
     vmr.at_exit.set(boot_ary(vmr));
     vmr.argv.set(boot_ary(vmr));
     vmr.top_cref.set(new_cref(ob, std::ptr::null()));
 
-    exception::init_classes(vmr);
-    let ids = object::init(vmr);
+    exception::init_classes(c);
+    let ids = object::init(c);
     vmr.ids.bo_init.set(ids.bo_init); vmr.ids.bo_eq.set(ids.bo_eq); vmr.ids.kernel_hash.set(ids.kernel_hash); vmr.ids.m_eqq.set(ids.m_eqq); vmr.ids.c_new.set(ids.c_new);
-    kernel::init(vmr);
-    boot_autoload(vmr.c_object.get(), &["ARGF"], "saruby/argf");
-    proc::init(vmr);
-    exception::init(vmr);
-    numeric_methods::init(vmr.c_numeric.get(), vmr.c_integer.get(), vmr.c_float.get());
+    kernel::init(c);
+    boot_autoload(c, vmr.c_object.get(), &["ARGF"], "saruby/argf");
+    proc::init(c);
+    exception::init(c);
+    numeric_methods::init(c, vmr.c_numeric.get(), vmr.c_integer.get(), vmr.c_float.get());
     for (nm, v) in numeric_methods::FLOAT_CONSTS {
         let f = match Value::flonum(v) { Some(f) => f, None => { let f = crate::gc::alloc(vmr.c_float.get(), Body::Float(v)); obj_set_flags(f, FL_FROZEN); f } };
-        const_set(vmr.c_float.get(), crate::symbol::intern(nm.as_bytes()), f);
+        const_set(c, vmr.c_float.get(), crate::symbol::intern(nm.as_bytes()), f);
     }
-    string_methods::init(vmr.c_string.get());
-    symbol_methods::init(vmr.c_symbol.get());
-    array_methods::init(vmr.c_array.get());
-    hash_methods::init(vmr.c_hash.get());
-    vmr.ids.r_each.set(range_methods::init(vmr.c_range.get()));
-    let e = define_class("Enumerator", vmr.c_object.get());
-    class_set_alloc(e, AllocKind::None);
-    let k = enumerator::init(e, vmr.c_object.get(), vmr.m_enumerable.get());
+    string_methods::init(c, vmr.c_string.get());
+    symbol_methods::init(c, vmr.c_symbol.get());
+    array_methods::init(c, vmr.c_array.get());
+    hash_methods::init(c, vmr.c_hash.get());
+    vmr.ids.r_each.set(range_methods::init(c, vmr.c_range.get()));
+    let e = define_class(c, "Enumerator", vmr.c_object.get());
+    class_set_alloc(c, e, AllocKind::None);
+    let k = enumerator::init(c, e, vmr.c_object.get(), vmr.m_enumerable.get());
     vmr.c_enumerator.set(k.enumerator); vmr.c_yielder.set(k.yielder); vmr.c_generator.set(k.generator);
     vmr.c_lazy.set(k.lazy); vmr.c_chain.set(k.chain); vmr.c_arith_seq.set(k.arith_seq);
-    io::init(vmr);
-    process::init(vmr);
-    vmr.m_marshal.set(marshal::init());
-    let (r, d) = random::init(vmr);
+    io::init(c);
+    process::init(c);
+    vmr.m_marshal.set(marshal::init(c));
+    let (r, d) = random::init(c);
     vmr.c_random.set(r); vmr.default_random.set(d);
-    binding::init(vmr);
-    thread::init(vmr);
-    misc::init(vmr);
-    lazy_const(ob, "ENV", "saruby/env");
-    lazy_const(ob, "RbConfig", "saruby/rbconfig");
-    lazy_const(ob, "Pathname", "saruby/pathname");
-    encoding::init(vmr);
-    lazy_const(vmr.c_encoding.get(), "Converter", "saruby/econv");
-    tracepoint::init(vmr);
-    stringio::init(vmr);
-    let (r, m) = regexp_methods::init(vmr);
+    binding::init(c);
+    thread::init(c);
+    misc::init(c);
+    lazy_const(c, ob, "ENV", "saruby/env");
+    lazy_const(c, ob, "RbConfig", "saruby/rbconfig");
+    lazy_const(c, ob, "Pathname", "saruby/pathname");
+    encoding::init(c);
+    lazy_const(c, vmr.c_encoding.get(), "Converter", "saruby/econv");
+    tracepoint::init(c);
+    stringio::init(c);
+    let (r, m) = regexp_methods::init(c);
     vmr.c_regexp.set(r); vmr.c_match_data.set(m);
-    vmr.c_struct.set(structs::init(vmr.c_object.get(), vmr.m_enumerable.get()));
-    vmr.c_time.set(time::init(vmr));
-    math::init(vmr.m_math.get());
-    vmr.c_rational.set(rational::init(vmr));
-    vmr.c_complex.set(complex::init(vmr));
-    enum_native::init(vmr.m_enumerable.get());
-    crate::fiber::init(vmr);
-    fiber_methods::init(vmr);
-    extras::init(vmr);
+    vmr.c_struct.set(structs::init(c, vmr.c_object.get(), vmr.m_enumerable.get()));
+    vmr.c_time.set(time::init(c));
+    math::init(c, vmr.m_math.get());
+    vmr.c_rational.set(rational::init(c));
+    vmr.c_complex.set(complex::init(c));
+    enum_native::init(c, vmr.m_enumerable.get());
+    crate::fiber::init(c);
+    fiber_methods::init(c);
+    extras::init(c);
 }
 
 /// Constant `name` under `owner` whose native definition (`feature`) runs on first reference; boot time, no context.
-pub fn lazy_const(owner: Value, name: &str, feature: &str) { boot_autoload(owner, &[name], feature); }
+pub fn lazy_const(c: &mut Ctx, owner: Value, name: &str, feature: &str) { boot_autoload(c, owner, &[name], feature); }
 /// lazy_const for several names of one feature.
-pub fn lazy_consts(owner: Value, names: &[&str], feature: &str) { boot_autoload(owner, names, feature); }
+pub fn lazy_consts(c: &mut Ctx, owner: Value, names: &[&str], feature: &str) { boot_autoload(c, owner, names, feature); }
 
 /// dup/clone of built-in Data objects.
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
@@ -236,4 +240,4 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
 }
 
 /// Is klass (or an ancestor) the given built-in class?
-pub fn inherits(klass: Value, base: Value) -> bool { klass == base || ancestors(klass).contains(&base) }
+pub fn inherits(c: &Ctx, klass: Value, base: Value) -> bool { klass == base || ancestors(c, klass).contains(&base) }

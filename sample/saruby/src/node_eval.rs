@@ -602,13 +602,13 @@ pub fn EVAL_TEST_node_or<D_a: Disp, D_b: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_not(c: &mut Ctx, n: NodePtr, fp: Fp, v: Value, cc: &mut OpCc) -> RV {
-    if v.is_heap() && srb_has_custom_not(v) { return srb_call0(c, v, s::not, cc); }
+    if v.is_heap() && srb_has_custom_not(c, v) { return srb_call0(c, v, s::not, cc); }
     Ok(Value::bool(v.falsy()))
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_TEST_node_not(c: &mut Ctx, n: NodePtr, fp: Fp, v: Value, cc: &mut OpCc) -> Result<bool, Esc> {
-    if v.is_heap() && srb_has_custom_not(v) { return Ok(srb_call0(c, v, s::not, cc)?.truthy()); }
+    if v.is_heap() && srb_has_custom_not(c, v) { return Ok(srb_call0(c, v, s::not, cc)?.truthy()); }
     Ok(v.falsy())
 }
 
@@ -731,7 +731,7 @@ pub fn EVAL_node_rescue<D_body: Disp, D_clauses: DispList, D_else_b: Disp>(c: &m
                 if c.esc != EscKind::Raise { return Err(e); }
                 c.sp_reset(saved_sp);
                 let exc = c.esc_val;
-                if !srb_rescuable(exc) { return Err(e); }
+                if !srb_rescuable(c, exc) { return Err(e); }
                 c.esc = EscKind::None;
                 c.errinfo = exc;
                 let mut matched = false;
@@ -762,7 +762,7 @@ pub fn EVAL_node_rescue<D_body: Disp, D_clauses: DispList, D_else_b: Disp>(c: &m
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_resbody<D_classes: DispList, D_assign: Disp, D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, classes: NodeList, kinds: Str, assign: NodePtr, body: NodePtr) -> RV {
     let exc = c.errinfo;
-    let mut ok = <D_classes as DispList>::len(classes) == 0 && srb_is_standard_error(exc);
+    let mut ok = <D_classes as DispList>::len(classes) == 0 && srb_is_standard_error(c, exc);
     let mut i = 0;
     while !ok && i < <D_classes as DispList>::len(classes) {
         let k = <D_classes as DispList>::nth(c, classes, i, fp)?;

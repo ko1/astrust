@@ -17,7 +17,7 @@ fn e_int(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 fn e_hash(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     match crate::hash::check_hash(c, a[0])? {
         Some(h) => Ok(h),
-        None => type_err(c, format!("no implicit conversion of {} into Hash", crate::builtins::kernel::class_name_for_err(a[0]))),
+        None => type_err(c, format!("no implicit conversion of {} into Hash", crate::builtins::kernel::class_name_for_err(c, a[0]))),
     }
 }
 // Enumerable.__argc(given, min, max): ArgumentError with CRuby's wording (max -1 = unlimited).
@@ -50,7 +50,7 @@ pub fn each_overridden(c: &Ctx, recv: Value, native: CFunc) -> bool {
 /// Call Enumerable's own implementation of mid on recv (for natives whose #each was overridden).
 pub fn call_enumerable(c: &mut Ctx, recv: Value, mid: &str, args: &[Value], blk: *const Block) -> RV {
     let mid = crate::symbol::intern(mid.as_bytes());
-    let me = lookup_method(c.vm().m_enumerable.get(), mid);
+    let me = lookup_method(c, c.vm().m_enumerable.get(), mid);
     if me.is_null() { return funcall(c, recv, mid, args, blk); }
     let base = c.top();
     if !c.has_room(args.len() + 2) { return funcall(c, recv, mid, args, blk); }
@@ -283,7 +283,7 @@ fn slice_cons(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, cons: boo
     let mid = if cons { "each_cons" } else { "each_slice" };
     if blk.is_null() {
         let mut size = NIL;
-        if respond_to(slf, s::size, true) {
+        if respond_to(c, slf, s::size, true) {
             let sz = funcall(c, slf, s::size, &[], std::ptr::null())?;
             size = if sz.is_fixnum() { Value::fix(if cons { (sz.as_fix() - n + 1).max(0) } else { (sz.as_fix() + n - 1) / n }) } else { sz };
         }
@@ -312,31 +312,31 @@ fn slice_cons(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, cons: boo
 fn en_each_slice(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV { slice_cons(c, slf, a, blk, false) }
 fn en_each_cons(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV { slice_cons(c, slf, a, blk, true) }
 
-fn define_enumerable_natives(m: Value) {
-    define_cfunc(m, "each_slice", en_each_slice, 1); define_cfunc(m, "each_cons", en_each_cons, 1);
-    define_cfunc(m, "map", en_map, 0); define_cfunc(m, "collect", en_map, 0);
-    define_cfunc(m, "flat_map", en_flat_map, 0); define_cfunc(m, "collect_concat", en_flat_map, 0);
-    define_cfunc(m, "filter_map", en_filter_map, 0);
-    define_cfunc(m, "select", en_select, 0); define_cfunc(m, "filter", en_select, 0); define_cfunc(m, "find_all", en_select, 0);
-    define_cfunc(m, "reject", en_reject, 0);
-    define_cfunc(m, "to_a", en_to_a, -1); define_cfunc(m, "entries", en_to_a, -1);
-    define_cfunc(m, "each_with_index", en_each_with_index, -1);
-    define_cfunc(m, "each_with_object", en_each_with_object, 1);
-    define_cfunc(m, "include?", en_include, 1); define_cfunc(m, "member?", en_include, 1);
-    define_cfunc(m, "find", en_find, -1); define_cfunc(m, "detect", en_find, -1);
-    define_cfunc(m, "count", en_count, -1);
-    define_cfunc(m, "group_by", en_group_by, 0);
-    define_cfunc(m, "inject", en_inject, -1); define_cfunc(m, "reduce", en_inject, -1);
+fn define_enumerable_natives(c: &mut Ctx, m: Value) {
+    define_cfunc(c, m, "each_slice", en_each_slice, 1); define_cfunc(c, m, "each_cons", en_each_cons, 1);
+    define_cfunc(c, m, "map", en_map, 0); define_cfunc(c, m, "collect", en_map, 0);
+    define_cfunc(c, m, "flat_map", en_flat_map, 0); define_cfunc(c, m, "collect_concat", en_flat_map, 0);
+    define_cfunc(c, m, "filter_map", en_filter_map, 0);
+    define_cfunc(c, m, "select", en_select, 0); define_cfunc(c, m, "filter", en_select, 0); define_cfunc(c, m, "find_all", en_select, 0);
+    define_cfunc(c, m, "reject", en_reject, 0);
+    define_cfunc(c, m, "to_a", en_to_a, -1); define_cfunc(c, m, "entries", en_to_a, -1);
+    define_cfunc(c, m, "each_with_index", en_each_with_index, -1);
+    define_cfunc(c, m, "each_with_object", en_each_with_object, 1);
+    define_cfunc(c, m, "include?", en_include, 1); define_cfunc(c, m, "member?", en_include, 1);
+    define_cfunc(c, m, "find", en_find, -1); define_cfunc(c, m, "detect", en_find, -1);
+    define_cfunc(c, m, "count", en_count, -1);
+    define_cfunc(c, m, "group_by", en_group_by, 0);
+    define_cfunc(c, m, "inject", en_inject, -1); define_cfunc(c, m, "reduce", en_inject, -1);
 }
 
 /// Defines the native methods of Enumerable `m`.
-pub fn init(m: Value) {
-    define_enumerable_natives(m);
-    define_singleton_cfunc(m, "__int", e_int, 1);
-    define_singleton_cfunc(m, "__hash", e_hash, 1);
-    define_singleton_cfunc(m, "__argc", e_argc, 3);
-    define_singleton_cfunc(m, "__cmp", e_cmp, 2);
-    define_singleton_cfunc(m, "__range_sum", |c, _s, a, b| crate::builtins::range_methods::r_sum(c, a[0], &a[1..], b), 2);
-    define_singleton_cfunc(m, "__ivget", e_ivget, 2);
-    define_singleton_cfunc(m, "__ivset", e_ivset, 3);
+pub fn init(c: &mut Ctx, m: Value) {
+    define_enumerable_natives(c, m);
+    define_singleton_cfunc(c, m, "__int", e_int, 1);
+    define_singleton_cfunc(c, m, "__hash", e_hash, 1);
+    define_singleton_cfunc(c, m, "__argc", e_argc, 3);
+    define_singleton_cfunc(c, m, "__cmp", e_cmp, 2);
+    define_singleton_cfunc(c, m, "__range_sum", |c, _s, a, b| crate::builtins::range_methods::r_sum(c, a[0], &a[1..], b), 2);
+    define_singleton_cfunc(c, m, "__ivget", e_ivget, 2);
+    define_singleton_cfunc(c, m, "__ivset", e_ivset, 3);
 }

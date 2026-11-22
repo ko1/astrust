@@ -44,7 +44,7 @@ fn lossy(b: &[u8]) -> String { String::from_utf8_lossy(b).into_owned() }
 
 /// raise_errno whose detail ends with a path, kept as bytes (CRuby's message carries the path as given).
 pub fn raise_errno_at(c: &mut Ctx, no: i64, pre: &str, path: &[u8]) -> Esc {
-    let k = crate::builtins::exception::errno_class(c.vm(), no);
+    let k = crate::builtins::exception::errno_class(c, no);
     let mut m = crate::builtins::exception::errno_text(Value::fix(no)).into_bytes();
     if !pre.is_empty() || !path.is_empty() { m.extend_from_slice(b" @ "); m.extend_from_slice(pre.as_bytes()); m.extend_from_slice(path); }
     let e = make_exception(c, k, "");
@@ -81,11 +81,11 @@ pub fn new_io(c: &mut Ctx, klass: Value, fd: i32, path: &[u8], r: bool, w: bool)
 /// IO#dup / #clone: a blank IO of the class; initialize_copy dups the descriptor.
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if !is_io(c, v) { return Ok(None); }
-    let k = real_class_of(v);
+    let k = real_class_of(c, v);
     Ok(Some(c.alloc(k, Body::Data(Box::new(blank())))))
 }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
-    if crate::builtins::inherits(klass, c.vm().c_io.get()) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(blank()))))); }
+    if crate::builtins::inherits(c, klass, c.vm().c_io.get()) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(blank()))))); }
     Ok(None)
 }
 
@@ -115,7 +115,7 @@ fn check_open(c: &mut Ctx, v: Value, want_w: bool) -> Result<(), Esc> {
         None => 0, Some(i) if !i.init => 1, Some(i) if i.closed => 2, Some(i) if want_w && !i.writable => 3, _ => return Ok(()),
     };
     match st {
-        0 => type_err(c, format!("wrong argument type {} (expected IO)", class_name_for_err(v))),
+        0 => type_err(c, format!("wrong argument type {} (expected IO)", class_name_for_err(c, v))),
         1 => err(c, c.vm().c_io_error.get(), "uninitialized stream"),
         2 => err(c, c.vm().c_io_error.get(), "closed stream"),
         _ => err(c, c.vm().c_io_error.get(), "not opened for writing"),
@@ -151,13 +151,13 @@ pub fn io_timeout(c: &Ctx, v: Value) -> Option<std::time::Duration> {
 /// IO::TimeoutError (made on first use: saruby's boot does not define it).
 pub fn timeout_error_class(c: &mut Ctx) -> Value {
     let io = c.vm().c_io.get();
-    match const_get_at(io, intern(b"TimeoutError")) { Some(k) => k, None => define_class_under(io, "TimeoutError", c.vm().c_io_error.get()) }
+    match const_get_at(c, io, intern(b"TimeoutError")) { Some(k) => k, None => define_class_under(c, io, "TimeoutError", c.vm().c_io_error.get()) }
 }
 fn io_get_timeout(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { get_io(c, slf)?; Ok(if TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed) { ivar_get(c, slf, timeout_sym()) } else { NIL }) }
 fn io_set_timeout(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let t = a[0];
     if t != NIL {
-        if !is_kind_of(t, c.vm().c_numeric.get()) { return type_err(c, format!("can't convert {} into time interval", class_name_for_err(t))); }
+        if !is_kind_of(c, t, c.vm().c_numeric.get()) { return type_err(c, format!("can't convert {} into time interval", class_name_for_err(c, t))); }
         let f = crate::builtins::numeric_methods::to_f(c, t)?;
         if f < 0.0 { return arg_err(c, "time interval must not be negative"); }
         TIMEOUTS.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -583,7 +583,7 @@ fn exception_opt(c: &mut Ctx, a: &[Value]) -> Result<bool, Esc> {
     Ok(true)
 }
 fn wait_error(c: &mut Ctx, name: &str, msg: &str) -> Esc {
-    let k = const_get_at(c.vm().c_io.get(), intern(name.as_bytes())).unwrap();
+    let k = const_get_at(c, c.vm().c_io.get(), intern(name.as_bytes())).unwrap();
     let e = make_exception(c, k, &format!("Resource temporarily unavailable - {}", msg));
     ivar_set_raw(c, e, s::errno, Value::fix(11));
     raise_exc(c, e)
@@ -795,7 +795,7 @@ fn io_path(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
 fn io_binmode(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; io.binmode = true; io.enc = Some(ENC_BINARY); io.enc2 = None; Ok(slf) }
 fn io_binmode_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(io.binmode)) }
 pub fn io_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let k = class_path(real_class_of(slf));
+    let k = class_path(c, real_class_of(c, slf));
     let s = match rio(c, slf) {
         None => format!("#<{}>", k),
         Some(i) if !i.init => format!("#<{}: uninitialized>", k),
@@ -930,7 +930,7 @@ fn encoding_set(c: &mut Ctx, v1: Value, v2: Value) -> Result<Encs, Esc> {
         return Ok((enc, enc2));
     }
     if v1 == NIL { return Ok(ext_int_to_encs(None, IntEnc::Default, false)); }
-    let v1 = if !is_string(v1) && !crate::builtins::encoding::is_encoding(c, v1) && v1.is_heap() && respond_to(v1, s::to_str, true) { expect_str(c, v1)? } else { v1 };
+    let v1 = if !is_string(v1) && !crate::builtins::encoding::is_encoding(c, v1) && v1.is_heap() && respond_to(c, v1, s::to_str, true) { expect_str(c, v1)? } else { v1 };
     if is_string(v1) && crate::builtins::encoding::ascii_compat(c.str_enc(v1)) { let b = c.str_bytes(v1).to_vec(); return Ok(parse_mode_enc(c, &b)?.0); }
     let e = to_enc(c, v1)?;
     Ok(ext_int_to_encs(Some(e), IntEnc::Default, false))
@@ -1034,7 +1034,7 @@ fn io_nonblock(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
 /// require "io/nonblock".
 pub fn init_nonblock(c: &mut Ctx) {
     let io = c.vm().c_io.get();
-    define_cfunc(io, "nonblock?", io_nonblock_p, 0); define_cfunc(io, "nonblock=", io_set_nonblock, 1); define_cfunc(io, "nonblock", io_nonblock, -1);
+    define_cfunc(c, io, "nonblock?", io_nonblock_p, 0); define_cfunc(c, io, "nonblock=", io_set_nonblock, 1); define_cfunc(c, io, "nonblock", io_nonblock, -1);
 }
 /// The deadline of an IO wait's timeout argument (nil: none).
 pub fn wait_deadline(c: &mut Ctx, v: Option<&Value>) -> Result<Option<std::time::Instant>, Esc> {
@@ -1155,7 +1155,7 @@ fn validate_enc_binmode(c: &mut Ctx, readable: bool, bin: bool, encs: Option<Enc
 }
 
 pub fn path_arg(c: &mut Ctx, v: Value) -> Result<PathArg, Esc> {
-    let sv = if is_string(v) { v } else if respond_to(v, intern(b"to_path"), true) { let p = funcall(c, v, intern(b"to_path"), &[], std::ptr::null())?; expect_str(c, p)? } else { expect_str(c, v)? };
+    let sv = if is_string(v) { v } else if respond_to(c, v, intern(b"to_path"), true) { let p = funcall(c, v, intern(b"to_path"), &[], std::ptr::null())?; expect_str(c, p)? } else { expect_str(c, v)? };
     let b = c.str_bytes(sv);
     if b.contains(&0) { return arg_err(c, "path name contains null byte"); }   // rb_get_path
     Ok(PathArg(b.to_vec()))
@@ -1257,7 +1257,7 @@ fn io_s_open(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV { op
 /// Kernel#open: a file, "|command", or anything with #to_open.
 fn k_open(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
-    if !is_string(a[0]) && respond_to(a[0], intern(b"to_open"), true) {
+    if !is_string(a[0]) && respond_to(c, a[0], intern(b"to_open"), true) {
         let r = funcall(c, a[0], intern(b"to_open"), &a[1..], std::ptr::null())?;
         return if blk.is_null() { Ok(r) } else { yield1(c, blk, r) };
     }
@@ -1335,7 +1335,7 @@ fn io_s_popen(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
 /// rb_time_interval for IO.select: milliseconds, -1 for none (nil) or an infinite one.
 fn select_timeout(c: &mut Ctx, v: Option<&Value>) -> Result<i32, Esc> {
     let t = match v { Some(&t) if t != NIL => t, _ => return Ok(-1) };
-    if !crate::numeric::is_numeric(t) { return type_err(c, format!("can't convert {} into time interval", crate::builtins::kernel::class_name_for_err(t))); }
+    if !crate::numeric::is_numeric(t) { return type_err(c, format!("can't convert {} into time interval", crate::builtins::kernel::class_name_for_err(c, t))); }
     let f = crate::builtins::numeric_methods::to_f(c, t)?;
     if f.is_nan() { return err(c, c.vm().c_range_error.get(), "NaN out of Time range"); }
     if f < 0.0 { return arg_err(c, "time interval must not be negative"); }
@@ -1453,7 +1453,7 @@ fn io_s_binwrite(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 fn io_s_copy_stream(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 2, 4)?;
     let open_side = |c: &mut Ctx, v: Value, w: bool| -> Result<(Value, bool), Esc> {
-        if is_string(v) || (!is_io(c, v) && respond_to(v, intern(b"to_path"), true)) {
+        if is_string(v) || (!is_io(c, v) && respond_to(c, v, intern(b"to_path"), true)) {
             let p = path_arg(c, v)?;
             let om = OpenMode::new(if w { sys::O_WRONLY | sys::O_CREAT | sys::O_TRUNC } else { 0 }, true);
             let fd = sysopen(c, &p, &om)?;
@@ -1470,7 +1470,7 @@ fn io_s_copy_stream(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> 
         let o = num_to_long(c, o)?; do_seek(c, src, o, 0)?;
     } }
     // CRuby's copy_stream_fallback: 16 KiB chunks; a duck-typed source gets readpartial(len, buf) or read(len, buf)
-    let partial = src_io || respond_to(src, intern(b"readpartial"), true);
+    let partial = src_io || respond_to(c, src, intern(b"readpartial"), true);
     let meth = intern(if partial { b"readpartial" } else { b"read" });
     let dst_io = is_io(c, dst);
     let buf = c.str_new_enc(b"", ENC_BINARY);
@@ -1482,7 +1482,7 @@ fn io_s_copy_stream(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> 
         match r {
             Ok(v) => { if !partial && v == NIL { break; } }
             Err(e) => {
-                if partial && c.esc == EscKind::Raise && is_kind_of(c.esc_val, c.vm().c_eof_error.get()) { c.esc = EscKind::None; break; }
+                if partial && c.esc == EscKind::Raise && is_kind_of(c, c.esc_val, c.vm().c_eof_error.get()) { c.esc = EscKind::None; break; }
                 return Err(e);
             }
         }
@@ -1497,7 +1497,7 @@ fn io_s_copy_stream(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> 
 }
 fn io_s_try_convert(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
     if is_io(c, a[0]) { return Ok(a[0]); }
-    if respond_to(a[0], intern(b"to_io"), true) { return funcall(c, a[0], intern(b"to_io"), &[], std::ptr::null()); }
+    if respond_to(c, a[0], intern(b"to_io"), true) { return funcall(c, a[0], intern(b"to_io"), &[], std::ptr::null()); }
     Ok(NIL)
 }
 fn io_reopen(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -1534,7 +1534,7 @@ pub fn setup_data(c: &mut Ctx, src: &[u8], file: &str) {
         let mut r = opened(-1, file.as_bytes(), true, false);
         r.rbuf = src.to_vec(); r.rpos = pos; r.data = true; r.has_path = true; r.lineno = 0;
         let io = c.alloc(c.vm().c_file.get(), Body::Data(Box::new(r)));
-        const_set(c.vm().c_object.get(), intern(b"DATA"), io);
+        const_set(c, c.vm().c_object.get(), intern(b"DATA"), io);
     }
 }
 fn find_end_marker(src: &[u8]) -> Option<usize> {
@@ -1553,61 +1553,62 @@ pub fn boot_frozen_str(vmr: &Vm, b: &[u8]) -> Value {
     v
 }
 
-pub fn init(vmr: &Vm) {
+pub fn init(c: &mut Ctx) {
+    let vmr = c.vm();
     // CRuby holds two descriptors from boot (its timer thread's eventfd and epoll fd): taking two here
     // gives a program the same fd numbers (IO.pipe is [5, 6] in both)
     let mut held = [0; 2];
     sys::pipe2(&mut held, sys::O_CLOEXEC);
-    let io = define_class("IO", vmr.c_object.get());
-    class_set_alloc(io, AllocKind::None);
-    include_module(io, vmr.m_enumerable.get());
+    let io = define_class(c, "IO", vmr.c_object.get());
+    class_set_alloc(c, io, AllocKind::None);
+    include_module(c, io, vmr.m_enumerable.get());
     vmr.c_io.set(io);
-    let f = define_class("File", io);
+    let f = define_class(c, "File", io);
     vmr.c_file.set(f);
-    let d = |n: &str, fun: CFunc, a: i32| define_cfunc(io, n, fun, a);
-    d("write", io_write, -1); d("puts", io_puts, -1); d("print", io_print, -1); d("<<", io_ltlt, 1); d("printf", io_printf, -1); d("p", io_p, -1); d("putc", io_putc, 1);
-    d("flush", io_flush, 0); d("fsync", io_fsync, 0); d("fdatasync", io_fsync, 0); d("sync", io_sync, 0); d("sync=", io_set_sync, 1); d("gets", io_gets, -1); d("readline", io_readline, -1);
-    d("each_line", io_each_line, -1); d("each", io_each_line, -1); d("readlines", io_readlines, -1); d("read", io_read, -1); d("getc", io_getc, 0);
-    d("readchar", io_readchar, 0); d("getbyte", io_getbyte, 0); d("readbyte", io_readbyte, 0); d("each_byte", io_each_byte, 0); d("each_char", io_each_char, 0);
-    d("ungetc", io_ungetc, 1); d("ungetbyte", io_ungetbyte, 1); d("readpartial", io_readpartial, -1); d("read_nonblock", io_read_nonblock, -1);
-    d("write_nonblock", io_write_nonblock, -1); d("sysread", io_sysread, -1); d("syswrite", io_syswrite, 1); d("pread", io_pread, -1); d("pwrite", io_pwrite, 2);
-    d("eof?", io_eof, 0); d("eof", io_eof, 0); d("close", io_close, 0); d("close_read", io_close_read, 0); d("close_write", io_close_write, 0);
-    d("closed?", io_closed, 0); d("fileno", io_fileno, 0); d("to_i", io_fileno, 0);
-    d("tty?", io_tty, 0); d("isatty", io_tty, 0); d("path", io_path, 0); d("to_path", io_path, 0); d("binmode", io_binmode, 0); d("binmode?", io_binmode_p, 0); d("inspect", io_inspect, 0);
-    d("lineno", io_lineno, 0); d("lineno=", io_set_lineno, 1); d("rewind", io_rewind, 0); d("seek", io_seek, -1); d("sysseek", io_sysseek, -1);
-    d("pos", io_pos, 0); d("tell", io_pos, 0); d("pos=", io_set_pos, 1); d("pid", io_pid, 0); d("to_io", io_to_io, 0);
-    d("external_encoding", io_ext_enc, 0); d("internal_encoding", io_int_enc, 0); d("set_encoding", io_set_encoding, -1);
-    d("set_encoding_by_bom", io_set_encoding_by_bom, 0);
-    d("autoclose?", io_autoclose_p, 0); d("autoclose=", io_set_autoclose, 1); d("close_on_exec?", io_cloexec_p, 0); d("close_on_exec=", io_set_cloexec, 1);
-    d("fcntl", io_fcntl, -1); d("reopen", io_reopen, -1); d("wait_readable", io_wait_readable, -1); d("wait_writable", io_wait_writable, -1);
-    d("ready?", io_ready_p, 0); d("nread", io_nread, 0); d("timeout", io_get_timeout, 0); d("timeout=", io_set_timeout, 1);
-    define_private_cfunc(io, "initialize", io_initialize, -1);
-    define_private_cfunc(io, "initialize_copy", io_init_copy, 1);
-    define_private_cfunc(f, "initialize", file_initialize, -1);
-    let ds = |n: &str, fun: CFunc, a: i32| define_singleton_cfunc(io, n, fun, a);
-    ds("open", io_s_open, -1); ds("for_fd", crate::builtins::object::c_new, -1); ds("sysopen", io_s_sysopen, -1); ds("pipe", io_s_pipe, -1); ds("popen", io_s_popen, -1);
-    ds("select", io_s_select, -1); ds("read", io_s_read, -1); ds("binread", io_s_binread, -1); ds("readlines", io_s_readlines, -1); ds("foreach", io_s_foreach, -1);
-    ds("write", io_s_write, -1); ds("binwrite", io_s_binwrite, -1); ds("copy_stream", io_s_copy_stream, -1); ds("try_convert", io_s_try_convert, 1);
-    define_module_function(vmr.m_kernel.get(), "select", io_s_select, -1);
-    define_module_function(vmr.m_kernel.get(), "open", k_open, -1);
-    for (n, v) in [("SEEK_SET", 0), ("SEEK_CUR", 1), ("SEEK_END", 2), ("SEEK_DATA", 3), ("SEEK_HOLE", 4), ("READABLE", 1), ("PRIORITY", 2), ("WRITABLE", 4)] { const_set(io, intern(n.as_bytes()), Value::fix(v)); }
-    let wr = define_module_under(io, "WaitReadable");
-    let ww = define_module_under(io, "WaitWritable");
-    let eagain = crate::builtins::exception::errno_class(vmr, 11);
-    const_set(vmr.m_errno.get(), intern(b"EWOULDBLOCK"), eagain);
-    let e1 = define_class_under(io, "EAGAINWaitReadable", eagain); include_module(e1, wr);
-    let e2 = define_class_under(io, "EAGAINWaitWritable", eagain); include_module(e2, ww);
-    const_set(io, intern(b"EWOULDBLOCKWaitReadable"), e1);
-    const_set(io, intern(b"EWOULDBLOCKWaitWritable"), e2);
-    crate::builtins::file::init(vmr);
+    let d = |c: &mut Ctx, n: &str, fun: CFunc, a: i32| define_cfunc(c, io, n, fun, a);
+    d(c, "write", io_write, -1); d(c, "puts", io_puts, -1); d(c, "print", io_print, -1); d(c, "<<", io_ltlt, 1); d(c, "printf", io_printf, -1); d(c, "p", io_p, -1); d(c, "putc", io_putc, 1);
+    d(c, "flush", io_flush, 0); d(c, "fsync", io_fsync, 0); d(c, "fdatasync", io_fsync, 0); d(c, "sync", io_sync, 0); d(c, "sync=", io_set_sync, 1); d(c, "gets", io_gets, -1); d(c, "readline", io_readline, -1);
+    d(c, "each_line", io_each_line, -1); d(c, "each", io_each_line, -1); d(c, "readlines", io_readlines, -1); d(c, "read", io_read, -1); d(c, "getc", io_getc, 0);
+    d(c, "readchar", io_readchar, 0); d(c, "getbyte", io_getbyte, 0); d(c, "readbyte", io_readbyte, 0); d(c, "each_byte", io_each_byte, 0); d(c, "each_char", io_each_char, 0);
+    d(c, "ungetc", io_ungetc, 1); d(c, "ungetbyte", io_ungetbyte, 1); d(c, "readpartial", io_readpartial, -1); d(c, "read_nonblock", io_read_nonblock, -1);
+    d(c, "write_nonblock", io_write_nonblock, -1); d(c, "sysread", io_sysread, -1); d(c, "syswrite", io_syswrite, 1); d(c, "pread", io_pread, -1); d(c, "pwrite", io_pwrite, 2);
+    d(c, "eof?", io_eof, 0); d(c, "eof", io_eof, 0); d(c, "close", io_close, 0); d(c, "close_read", io_close_read, 0); d(c, "close_write", io_close_write, 0);
+    d(c, "closed?", io_closed, 0); d(c, "fileno", io_fileno, 0); d(c, "to_i", io_fileno, 0);
+    d(c, "tty?", io_tty, 0); d(c, "isatty", io_tty, 0); d(c, "path", io_path, 0); d(c, "to_path", io_path, 0); d(c, "binmode", io_binmode, 0); d(c, "binmode?", io_binmode_p, 0); d(c, "inspect", io_inspect, 0);
+    d(c, "lineno", io_lineno, 0); d(c, "lineno=", io_set_lineno, 1); d(c, "rewind", io_rewind, 0); d(c, "seek", io_seek, -1); d(c, "sysseek", io_sysseek, -1);
+    d(c, "pos", io_pos, 0); d(c, "tell", io_pos, 0); d(c, "pos=", io_set_pos, 1); d(c, "pid", io_pid, 0); d(c, "to_io", io_to_io, 0);
+    d(c, "external_encoding", io_ext_enc, 0); d(c, "internal_encoding", io_int_enc, 0); d(c, "set_encoding", io_set_encoding, -1);
+    d(c, "set_encoding_by_bom", io_set_encoding_by_bom, 0);
+    d(c, "autoclose?", io_autoclose_p, 0); d(c, "autoclose=", io_set_autoclose, 1); d(c, "close_on_exec?", io_cloexec_p, 0); d(c, "close_on_exec=", io_set_cloexec, 1);
+    d(c, "fcntl", io_fcntl, -1); d(c, "reopen", io_reopen, -1); d(c, "wait_readable", io_wait_readable, -1); d(c, "wait_writable", io_wait_writable, -1);
+    d(c, "ready?", io_ready_p, 0); d(c, "nread", io_nread, 0); d(c, "timeout", io_get_timeout, 0); d(c, "timeout=", io_set_timeout, 1);
+    define_private_cfunc(c, io, "initialize", io_initialize, -1);
+    define_private_cfunc(c, io, "initialize_copy", io_init_copy, 1);
+    define_private_cfunc(c, f, "initialize", file_initialize, -1);
+    let ds = |c: &mut Ctx, n: &str, fun: CFunc, a: i32| define_singleton_cfunc(c, io, n, fun, a);
+    ds(c, "open", io_s_open, -1); ds(c, "for_fd", crate::builtins::object::c_new, -1); ds(c, "sysopen", io_s_sysopen, -1); ds(c, "pipe", io_s_pipe, -1); ds(c, "popen", io_s_popen, -1);
+    ds(c, "select", io_s_select, -1); ds(c, "read", io_s_read, -1); ds(c, "binread", io_s_binread, -1); ds(c, "readlines", io_s_readlines, -1); ds(c, "foreach", io_s_foreach, -1);
+    ds(c, "write", io_s_write, -1); ds(c, "binwrite", io_s_binwrite, -1); ds(c, "copy_stream", io_s_copy_stream, -1); ds(c, "try_convert", io_s_try_convert, 1);
+    define_module_function(c, vmr.m_kernel.get(), "select", io_s_select, -1);
+    define_module_function(c, vmr.m_kernel.get(), "open", k_open, -1);
+    for (n, v) in [("SEEK_SET", 0), ("SEEK_CUR", 1), ("SEEK_END", 2), ("SEEK_DATA", 3), ("SEEK_HOLE", 4), ("READABLE", 1), ("PRIORITY", 2), ("WRITABLE", 4)] { const_set(c, io, intern(n.as_bytes()), Value::fix(v)); }
+    let wr = define_module_under(c, io, "WaitReadable");
+    let ww = define_module_under(c, io, "WaitWritable");
+    let eagain = crate::builtins::exception::errno_class(c, 11);
+    const_set(c, vmr.m_errno.get(), intern(b"EWOULDBLOCK"), eagain);
+    let e1 = define_class_under(c, io, "EAGAINWaitReadable", eagain); include_module(c, e1, wr);
+    let e2 = define_class_under(c, io, "EAGAINWaitWritable", eagain); include_module(c, e2, ww);
+    const_set(c, io, intern(b"EWOULDBLOCKWaitReadable"), e1);
+    const_set(c, io, intern(b"EWOULDBLOCKWaitWritable"), e2);
+    crate::builtins::file::init(c);
     let so = crate::gc::alloc(io, Body::Data(Box::new(opened(1, b"<STDOUT>", false, true))));
     let mut e = opened(2, b"<STDERR>", false, true); e.sync = true;
     let se = crate::gc::alloc(io, Body::Data(Box::new(e)));
     let si = crate::gc::alloc(io, Body::Data(Box::new(opened(0, b"<STDIN>", true, false))));
     vmr.stdout.set(so); vmr.stderr.set(se); vmr.stdin.set(si);
-    const_set(vmr.c_object.get(), intern(b"STDOUT"), so);
-    const_set(vmr.c_object.get(), intern(b"STDERR"), se);
-    const_set(vmr.c_object.get(), intern(b"STDIN"), si);
+    const_set(c, vmr.c_object.get(), intern(b"STDOUT"), so);
+    const_set(c, vmr.c_object.get(), intern(b"STDERR"), se);
+    const_set(c, vmr.c_object.get(), intern(b"STDIN"), si);
     vmr.globals.borrow_mut().insert(intern(b"$stdout"), so);
     vmr.globals.borrow_mut().insert(intern(b"$stderr"), se);
     vmr.globals.borrow_mut().insert(intern(b"$stdin"), si);

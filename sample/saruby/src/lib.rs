@@ -205,6 +205,7 @@ fn run_main(o: Opts) -> i32 {
     vm().main_ctx.set(&mut c);
     let mut top = Frame::empty(c.bottom());
     c.frame = &mut top.h;
+    builtins::boot(&mut c);
 
     let vm = vm();
     vm.verbose.set(if o.warn { TRUE } else { FALSE });
@@ -307,15 +308,15 @@ fn handle_toplevel_error(c: &mut Ctx) -> i32 {
         EscKind::Raise => {
             let e = c.esc_val;
             c.esc = EscKind::None;
-            if is_kind_of(e, vm().c_system_exit.get()) {
+            if is_kind_of(c, e, vm().c_system_exit.get()) {
                 let st = ivar_get(c, e, symbol::s::status);
                 return if st.is_fixnum() { st.as_fix() as i32 } else { 0 };
             }
-            if is_kind_of(e, vm().c_signal_exception.get()) || ivar_get(c, e, symbol::intern(b"signo")).is_fixnum() {
+            if is_kind_of(c, e, vm().c_signal_exception.get()) || ivar_get(c, e, symbol::intern(b"signo")).is_fixnum() {
                 let no = ivar_get(c, e, symbol::intern(b"signo"));
                 if no.is_fixnum() {
                     builtins::process::die_by_signal_at_exit(no.as_fix() as i32);
-                    if !is_kind_of(e, vm().c_interrupt.get()) { return 128 + no.as_fix() as i32; }
+                    if !is_kind_of(c, e, vm().c_interrupt.get()) { return 128 + no.as_fix() as i32; }
                 }
             }
             report_exception(c, e);
@@ -347,7 +348,7 @@ pub fn main_entry() {
         kalloc::adopt();
         let base = 0usize;
         gc::init(&base as *const usize as usize + 8);
-        builtins::boot();
+        builtins::boot::install();
         let st = run_main(o);
         builtins::kernel::out_flush();
         std::process::exit(st);

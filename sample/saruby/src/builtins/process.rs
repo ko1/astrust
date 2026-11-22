@@ -25,8 +25,8 @@ use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 static LAST_STATUS: AtomicU64 = AtomicU64::new(0xffff_ffff_0000_0000);
 pub fn set_last_status(pid: i32, raw: i32) { LAST_STATUS.store(((pid as u32 as u64) << 32) | raw as u32 as u64, Ordering::Relaxed); }
 fn new_status(c: &mut Ctx, pid: i32, raw: i32) -> Value {
-    let k = const_get_at(c.vm().m_process.get(), intern(b"Status")).unwrap();
-    let o = new_object(k);
+    let k = const_get_at(c, c.vm().m_process.get(), intern(b"Status")).unwrap();
+    let o = new_object(c, k);
     ivar_set_raw(c, o, intern(b"@pid"), Value::fix(pid as i64));
     ivar_set_raw(c, o, intern(b"@st"), Value::fix(raw as i64));
     o
@@ -65,7 +65,7 @@ fn st_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.s
 fn st_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.str_new(format!("#<Process::Status: {}>", st_desc(c, s)).as_bytes())) }
 fn st_eq(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     if a[0].is_fixnum() { return Ok(Value::bool(st_raw(c, s) as i64 == a[0].as_fix())); }
-    Ok(Value::bool(a[0].is_heap() && real_class_of(a[0]) == real_class_of(s) && st_raw(c, a[0]) == st_raw(c, s)))
+    Ok(Value::bool(a[0].is_heap() && real_class_of(c, a[0]) == real_class_of(c, s) && st_raw(c, a[0]) == st_raw(c, s)))
 }
 
 // ---- signals ----------------------------------------------------------------------------------
@@ -81,7 +81,7 @@ extern "C" fn on_signal(sig: i32) { PENDING.fetch_or(1 << sig, Ordering::SeqCst)
 pub fn signo_arg(c: &mut Ctx, v: Value) -> Result<i32, Esc> {
     if v.is_fixnum() { let n = v.as_fix(); if !(0..65).contains(&n) { return arg_err(c, format!("invalid signal number ({})", n)); } return Ok(n as i32); }
     let name = if v.is_sym() { crate::symbol::sym_str(v.as_sym()) } else if is_string(v) { String::from_utf8_lossy(c.str_bytes(v)).into_owned() } else {
-        return arg_err(c, format!("bad signal type {}", class_name_for_err(v)));
+        return arg_err(c, format!("bad signal type {}", class_name_for_err(c, v)));
     };
     let (neg, n) = match name.strip_prefix('-') { Some(r) => (true, r), None => (false, name.as_str()) };
     let n = n.strip_prefix("SIG").unwrap_or(n);
@@ -198,7 +198,7 @@ fn k_sleep(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let t0 = std::time::Instant::now();
     let dur = match args.first() {
         Some(&v) if v != NIL => {
-            if !crate::numeric::is_numeric(v) && !crate::builtins::rational::is_rational(c, v) { return type_err(c, format!("can't convert {} into time interval", class_name_for_err(v))); }
+            if !crate::numeric::is_numeric(v) && !crate::builtins::rational::is_rational(c, v) { return type_err(c, format!("can't convert {} into time interval", class_name_for_err(c, v))); }
             let secs = crate::builtins::numeric_methods::to_f(c, v)?;
             if secs < 0.0 { return arg_err(c, "time interval must not be negative"); }
             Some(secs)
@@ -229,7 +229,7 @@ fn needs_shell(s: &str) -> bool {
         || matches!(first, "exit" | "cd" | "export" | "exec" | "set" | "unset" | "." | ":" | "eval" | "source" | "trap" | "ulimit" | "umask" | "wait" | "alias" | "command" | "type" | "read" | "if" | "for" | "while" | "case" | "!")
 }
 fn cstring(c: &mut Ctx, v: Value) -> Result<CString, Esc> {
-    let sv = if is_string(v) { v } else if respond_to(v, intern(b"to_path"), true) && !v.is_sym() { funcall(c, v, intern(b"to_path"), &[], std::ptr::null())? } else { expect_str(c, v)? };
+    let sv = if is_string(v) { v } else if respond_to(c, v, intern(b"to_path"), true) && !v.is_sym() { funcall(c, v, intern(b"to_path"), &[], std::ptr::null())? } else { expect_str(c, v)? };
     if c.str_bytes(sv).contains(&0) { return arg_err(c, "string contains null byte"); }
     Ok(CString::new(c.str_bytes(sv)).unwrap())
 }
@@ -242,7 +242,7 @@ fn fd_of(c: &mut Ctx, v: Value) -> Result<Option<i32>, Esc> {
         let Some(io) = c.data::<RIo>(v) else { return Ok(None) };
         return Ok(Some(if io.wfd >= 0 && !io.readable { io.wfd } else { io.fd }));
     }
-    if respond_to(v, intern(b"to_io"), true) { let io = funcall(c, v, intern(b"to_io"), &[], std::ptr::null())?; return fd_of(c, io); }
+    if respond_to(c, v, intern(b"to_io"), true) { let io = funcall(c, v, intern(b"to_io"), &[], std::ptr::null())?; return fd_of(c, io); }
     Ok(None)
 }
 /// Pairs of Hash `h`, each also pushed to `keep` (a Vec is not scanned by the collector).
@@ -539,8 +539,8 @@ fn p_waitall(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
 fn p_detach(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     // no native threads: a Thread-like object whose value/join waits for the child
     let pid = a[0];
-    let k = const_get_at(c.vm().m_process.get(), intern(b"Waiter")).unwrap();
-    let o = new_object(k);
+    let k = const_get_at(c, c.vm().m_process.get(), intern(b"Waiter")).unwrap();
+    let o = new_object(c, k);
     ivar_set_raw(c, o, intern(b"@pid"), pid);
     Ok(o)
 }
@@ -569,7 +569,7 @@ fn clock_id(c: &mut Ctx, v: Value) -> Result<i32, Esc> {
         "GETRUSAGE_BASED_CLOCK_PROCESS_CPUTIME_ID" | "TIMES_BASED_CLOCK_PROCESS_CPUTIME_ID" | "CLOCK_BASED_CLOCK_PROCESS_CPUTIME_ID" => 2,
         _ => return Err(raise_errno(c, 22, "clock_gettime")),
     }); }
-    type_err(c, format!("no implicit conversion of {} into Integer", class_name_for_err(v)))
+    type_err(c, format!("no implicit conversion of {} into Integer", class_name_for_err(c, v)))
 }
 fn timespec_value(c: &mut Ctx, t: &sys::Timespec, unit: Value) -> RV {
     let ns = t.sec as i128 * 1_000_000_000 + t.nsec as i128;
@@ -604,8 +604,8 @@ fn clock_getres(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 fn p_times(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     let mut t = sys::Tms { utime: 0, stime: 0, cutime: 0, cstime: 0 };
     sys::times(&mut t);
-    let k = const_get_at(c.vm().m_process.get(), intern(b"Tms")).unwrap();
-    let o = new_object(k);
+    let k = const_get_at(c, c.vm().m_process.get(), intern(b"Tms")).unwrap();
+    let o = new_object(c, k);
     for (n, v) in [("@utime", t.utime), ("@stime", t.stime), ("@cutime", t.cutime), ("@cstime", t.cstime)] { let f = c.float_new(v as f64 / 100.0); ivar_set_raw(c, o, intern(n.as_bytes()), f); }
     Ok(o)
 }
@@ -623,59 +623,60 @@ fn p_exit_bang(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 }
 
 /// Boot (no context yet: allocates with gc::alloc directly).
-pub fn init(vmr: &Vm) {
-    let p = define_module("Process");
+pub fn init(c: &mut Ctx) {
+    let vmr = c.vm();
+    let p = define_module(c, "Process");
     vmr.m_process.set(p);
     let h = crate::gc::alloc(vmr.c_array.get(), Body::Array(crate::avec::AVec::new()));
     HANDLERS.set_vm(vmr, h);
-    let mf = |n: &str, f: CFunc, a: i32| define_module_function(p, n, f, a);
-    mf("clock_gettime", clock_gettime, -1); mf("clock_getres", clock_getres, -1); mf("times", p_times, 0);
-    mf("pid", |_c, _s, _a, _b| Ok(Value::fix(sys::getpid() as i64)), 0);
-    mf("ppid", |_c, _s, _a, _b| Ok(Value::fix(sys::getppid() as i64)), 0);
-    mf("uid", |_c, _s, _a, _b| Ok(Value::fix(sys::getuid() as i64)), 0);
-    mf("euid", |_c, _s, _a, _b| Ok(Value::fix(sys::geteuid() as i64)), 0);
-    mf("gid", |_c, _s, _a, _b| Ok(Value::fix(sys::getgid() as i64)), 0);
-    mf("egid", |_c, _s, _a, _b| Ok(Value::fix(sys::getegid() as i64)), 0);
-    mf("getpgrp", |_c, _s, _a, _b| Ok(Value::fix(sys::getpgid(0) as i64)), 0);
-    mf("getpgid", |c, _s, a, _b| { let p = num_to_long(c, a[0])? as i32; let r = sys::getpgid(p); if r < 0 { return Err(raise_errno(c, sys::errno(), "")); } Ok(Value::fix(r as i64)) }, 1);
-    mf("setpgid", |c, _s, a, _b| { let (p, g) = (num_to_long(c, a[0])? as i32, num_to_long(c, a[1])? as i32); if sys::setpgid(p, g) < 0 { return Err(raise_errno(c, sys::errno(), "")); } Ok(Value::fix(0)) }, 2);
-    mf("setsid", |c, _s, _a, _b| { let r = sys::setsid(); if r < 0 { return Err(raise_errno(c, sys::errno(), "")); } Ok(Value::fix(r as i64)) }, 0);
-    mf("kill", p_kill, -1); mf("wait", p_wait, -1); mf("waitpid", p_wait, -1); mf("wait2", p_wait2, -1); mf("waitpid2", p_wait2, -1); mf("waitall", p_waitall, 0);
-    mf("detach", p_detach, 1); mf("fork", k_fork, 0); mf("spawn", k_spawn, -1); mf("exec", k_exec, -1); mf("exit!", p_exit_bang, -1); mf("exit", k_exit, -1);
-    mf("abort", k_abort, -1);
-    mf("getrlimit", p_getrlimit, 1); mf("__itimer", p_itimer, 1); mf("setproctitle", |_c, _s, a, _b| Ok(a[0]), 1); mf("last_status", |c, _s, _a, _b| Ok(last_status(c)), 0);
-    mf("argv0", |c, _s, _a, _b| Ok(c.vm().dollar_zero.get()), 0); mf("warmup", |_c, _s, _a, _b| Ok(TRUE), 0);
-    mf("groups", |c, _s, _a, _b| Ok(c.ary_new_from(&[Value::fix(sys::getgid() as i64)])), 0);
-    mf("daemon", |c, _s, _a, _b| err(c, c.vm().c_not_impl_error.get(), "daemon() function is unimplemented on this machine"), -1);
+    let mf = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_module_function(c, p, n, f, a);
+    mf(c, "clock_gettime", clock_gettime, -1); mf(c, "clock_getres", clock_getres, -1); mf(c, "times", p_times, 0);
+    mf(c, "pid", |_c, _s, _a, _b| Ok(Value::fix(sys::getpid() as i64)), 0);
+    mf(c, "ppid", |_c, _s, _a, _b| Ok(Value::fix(sys::getppid() as i64)), 0);
+    mf(c, "uid", |_c, _s, _a, _b| Ok(Value::fix(sys::getuid() as i64)), 0);
+    mf(c, "euid", |_c, _s, _a, _b| Ok(Value::fix(sys::geteuid() as i64)), 0);
+    mf(c, "gid", |_c, _s, _a, _b| Ok(Value::fix(sys::getgid() as i64)), 0);
+    mf(c, "egid", |_c, _s, _a, _b| Ok(Value::fix(sys::getegid() as i64)), 0);
+    mf(c, "getpgrp", |_c, _s, _a, _b| Ok(Value::fix(sys::getpgid(0) as i64)), 0);
+    mf(c, "getpgid", |c, _s, a, _b| { let p = num_to_long(c, a[0])? as i32; let r = sys::getpgid(p); if r < 0 { return Err(raise_errno(c, sys::errno(), "")); } Ok(Value::fix(r as i64)) }, 1);
+    mf(c, "setpgid", |c, _s, a, _b| { let (p, g) = (num_to_long(c, a[0])? as i32, num_to_long(c, a[1])? as i32); if sys::setpgid(p, g) < 0 { return Err(raise_errno(c, sys::errno(), "")); } Ok(Value::fix(0)) }, 2);
+    mf(c, "setsid", |c, _s, _a, _b| { let r = sys::setsid(); if r < 0 { return Err(raise_errno(c, sys::errno(), "")); } Ok(Value::fix(r as i64)) }, 0);
+    mf(c, "kill", p_kill, -1); mf(c, "wait", p_wait, -1); mf(c, "waitpid", p_wait, -1); mf(c, "wait2", p_wait2, -1); mf(c, "waitpid2", p_wait2, -1); mf(c, "waitall", p_waitall, 0);
+    mf(c, "detach", p_detach, 1); mf(c, "fork", k_fork, 0); mf(c, "spawn", k_spawn, -1); mf(c, "exec", k_exec, -1); mf(c, "exit!", p_exit_bang, -1); mf(c, "exit", k_exit, -1);
+    mf(c, "abort", k_abort, -1);
+    mf(c, "getrlimit", p_getrlimit, 1); mf(c, "__itimer", p_itimer, 1); mf(c, "setproctitle", |_c, _s, a, _b| Ok(a[0]), 1); mf(c, "last_status", |c, _s, _a, _b| Ok(last_status(c)), 0);
+    mf(c, "argv0", |c, _s, _a, _b| Ok(c.vm().dollar_zero.get()), 0); mf(c, "warmup", |_c, _s, _a, _b| Ok(TRUE), 0);
+    mf(c, "groups", |c, _s, _a, _b| Ok(c.ary_new_from(&[Value::fix(sys::getgid() as i64)])), 0);
+    mf(c, "daemon", |c, _s, _a, _b| err(c, c.vm().c_not_impl_error.get(), "daemon() function is unimplemented on this machine"), -1);
     for (n, v) in [("CLOCK_REALTIME", 0), ("CLOCK_MONOTONIC", 1), ("CLOCK_PROCESS_CPUTIME_ID", 2), ("CLOCK_THREAD_CPUTIME_ID", 3), ("CLOCK_MONOTONIC_RAW", 4),
                    ("CLOCK_REALTIME_COARSE", 5), ("CLOCK_MONOTONIC_COARSE", 6), ("CLOCK_BOOTTIME", 7), ("WNOHANG", 1), ("WUNTRACED", 2), ("PRIO_PROCESS", 0),
                    ("RLIMIT_CPU", 0), ("RLIMIT_FSIZE", 1), ("RLIMIT_DATA", 2), ("RLIMIT_STACK", 3), ("RLIMIT_CORE", 4), ("RLIMIT_RSS", 5), ("RLIMIT_NPROC", 6),
                    ("RLIMIT_NOFILE", 7), ("RLIMIT_MEMLOCK", 8), ("RLIMIT_AS", 9)] {
-        const_set(p, intern(n.as_bytes()), Value::fix(v));
+        const_set(c, p, intern(n.as_bytes()), Value::fix(v));
     }
     let inf = crate::gc::alloc(vmr.c_integer.get(), Body::Bignum(Box::new(crate::bignum::BigInt::from_i128(u64::MAX as i128))));
     crate::heap::obj_set_flags(inf, FL_FROZEN);
-    const_set(p, intern(b"RLIM_INFINITY"), inf);
-    let st = define_class_under(p, "Status", vmr.c_object.get());
-    let sd = |n: &str, f: CFunc, a: i32| define_cfunc(st, n, f, a);
-    sd("exitstatus", st_exitstatus, 0); sd("to_i", st_to_i, 0); sd("pid", st_pid, 0); sd("success?", st_success, 0); sd("exited?", st_exited, 0);
-    sd("signaled?", st_signaled, 0); sd("stopped?", st_stopped, 0); sd("termsig", st_termsig, 0); sd("stopsig", st_stopsig, 0); sd("coredump?", st_coredump, 0);
-    sd("to_s", st_to_s, 0); sd("inspect", st_inspect, 0); sd("==", st_eq, 1);
-    let tms = define_class_under(p, "Tms", vmr.c_object.get());
-    for n in ["utime", "stime", "cutime", "cstime"] { define_method_me(tms, intern(n.as_bytes()), new_me(intern(n.as_bytes()), tms, VISI_PUBLIC, MKind::AttrReader(intern(format!("@{}", n).as_bytes())))); }
-    let w = define_class_under(p, "Waiter", vmr.c_object.get());
-    define_cfunc(w, "value", waiter_value, 0); define_cfunc(w, "join", waiter_join, -1); define_cfunc(w, "pid", waiter_pid, 0); define_cfunc(w, "alive?", waiter_alive, 0);
-    let sg = define_module("Signal");
+    const_set(c, p, intern(b"RLIM_INFINITY"), inf);
+    let st = define_class_under(c, p, "Status", vmr.c_object.get());
+    let sd = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, st, n, f, a);
+    sd(c, "exitstatus", st_exitstatus, 0); sd(c, "to_i", st_to_i, 0); sd(c, "pid", st_pid, 0); sd(c, "success?", st_success, 0); sd(c, "exited?", st_exited, 0);
+    sd(c, "signaled?", st_signaled, 0); sd(c, "stopped?", st_stopped, 0); sd(c, "termsig", st_termsig, 0); sd(c, "stopsig", st_stopsig, 0); sd(c, "coredump?", st_coredump, 0);
+    sd(c, "to_s", st_to_s, 0); sd(c, "inspect", st_inspect, 0); sd(c, "==", st_eq, 1);
+    let tms = define_class_under(c, p, "Tms", vmr.c_object.get());
+    for n in ["utime", "stime", "cutime", "cstime"] { define_method_me(c, tms, intern(n.as_bytes()), new_me(intern(n.as_bytes()), tms, VISI_PUBLIC, MKind::AttrReader(intern(format!("@{}", n).as_bytes())))); }
+    let w = define_class_under(c, p, "Waiter", vmr.c_object.get());
+    define_cfunc(c, w, "value", waiter_value, 0); define_cfunc(c, w, "join", waiter_join, -1); define_cfunc(c, w, "pid", waiter_pid, 0); define_cfunc(c, w, "alive?", waiter_alive, 0);
+    let sg = define_module(c, "Signal");
     vmr.m_signal.set(sg);
-    define_module_function(sg, "trap", signal_trap, -1);
-    define_module_function(sg, "list", signal_list, 0);
-    define_module_function(sg, "signame", signal_signame, 1);
+    define_module_function(c, sg, "trap", signal_trap, -1);
+    define_module_function(c, sg, "list", signal_list, 0);
+    define_module_function(c, sg, "signame", signal_signame, 1);
     let k = vmr.m_kernel.get();
-    define_module_function(k, "trap", signal_trap, -1);
-    define_module_function(k, "sleep", k_sleep, -1);
-    define_module_function(k, "system", k_system, -1);
-    define_module_function(k, "`", k_backtick, 1);
-    define_module_function(k, "spawn", k_spawn, -1);
-    define_module_function(k, "exec", k_exec, -1);
-    define_module_function(k, "fork", k_fork, 0);
+    define_module_function(c, k, "trap", signal_trap, -1);
+    define_module_function(c, k, "sleep", k_sleep, -1);
+    define_module_function(c, k, "system", k_system, -1);
+    define_module_function(c, k, "`", k_backtick, 1);
+    define_module_function(c, k, "spawn", k_spawn, -1);
+    define_module_function(c, k, "exec", k_exec, -1);
+    define_module_function(c, k, "fork", k_fork, 0);
 }

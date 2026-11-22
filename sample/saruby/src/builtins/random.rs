@@ -142,7 +142,7 @@ fn rand_init_default(c: &mut Ctx, mt: &mut Mt) -> Value {
 
 fn obj_bytes(c: &mut Ctx, ob: Value, n: usize) -> Result<Vec<u8>, Esc> {
     let v = funcall_public(c, ob, intern(b"bytes"), &[Value::fix(n as i64)], std::ptr::null())?;
-    if !is_string(v) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(v))); }
+    if !is_string(v) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(c, v))); }
     let b = c.str_bytes(v).to_vec();
     if b.len() < n { return err(c, c.vm().c_range_error.get(), format!("random data too short {}", b.len())); }
     if b.len() > n { return err(c, c.vm().c_range_error.get(), format!("random data too long {}", b.len())); }
@@ -270,7 +270,7 @@ fn rand_int(c: &mut Ctx, ob: Value, rnd: Option<Value>, vmax: Value, restrictive
 }
 
 fn domain_error<T>(c: &mut Ctx) -> Result<T, Esc> {
-    let k = Some(crate::builtins::exception::errno_class(c.vm(), 33));
+    let k = Some(crate::builtins::exception::errno_class(c, 33));
     match k {
         Some(k) => { let e = funcall(c, k, s::new, &[], std::ptr::null())?; Err(raise_exc(c, e)) }
         None => err(c, c.vm().c_argument_error.get(), "Numerical argument out of domain"),
@@ -279,7 +279,7 @@ fn domain_error<T>(c: &mut Ctx) -> Result<T, Esc> {
 fn float_value(c: &mut Ctx, f: f64) -> Result<f64, Esc> { if !f.is_finite() { return domain_error(c); } Ok(f) }
 pub(crate) fn check_to_int(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if is_integer(v) { return Ok(Some(v)); }
-    if v.is_heap() && !is_float(v) && respond_to(v, s::to_int, true) {
+    if v.is_heap() && !is_float(v) && respond_to(c, v, s::to_int, true) {
         let r = funcall(c, v, s::to_int, &[], std::ptr::null())?;
         if is_integer(r) { return Ok(Some(r)); }
     }
@@ -287,7 +287,7 @@ pub(crate) fn check_to_int(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> 
 }
 fn check_to_float(c: &mut Ctx, v: Value) -> Result<Option<f64>, Esc> {
     if is_float(v) { return Ok(Some(float_val(v))); }
-    if !is_kind_of(v, c.vm().c_numeric.get()) && !v.is_fixnum() { return Ok(None); }
+    if !is_kind_of(c, v, c.vm().c_numeric.get()) && !v.is_fixnum() { return Ok(None); }
     if let Some(f) = c.num_to_f64(v) { return Ok(Some(f)); }
     let r = funcall(c, v, s::to_f, &[], std::ptr::null())?;
     Ok(if is_float(r) { Some(float_val(r)) } else { None })
@@ -299,7 +299,7 @@ fn rand_range(c: &mut Ctx, ob: Value, rnd: Option<Value>, range: Value) -> Resul
     if !is_range(range) { return Ok(Draw::False); }
     let (beg, end, excl) = c.range(range);
     if beg == NIL || end == NIL { return domain_error(c); }
-    if !respond_to(end, s::minus, true) { return Ok(Draw::False); }
+    if !respond_to(c, end, s::minus, true) { return Ok(Draw::False); }
     let vmax = funcall(c, end, s::minus, &[beg], std::ptr::null())?;
     let mut v = NIL;
     let iv = if is_float(vmax) { None } else { check_to_int(c, vmax)? };
@@ -444,7 +444,7 @@ fn r_init(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
 fn r_seed(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.data::<RRandom>(s).map(|r| r.seed).unwrap_or(NIL)) }
 fn r_eq(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let o = a[0];
-    if real_class_of(s) != real_class_of(o) { return Ok(FALSE); }
+    if real_class_of(c, s) != real_class_of(c, o) { return Ok(FALSE); }
     let (Some(x), Some(y)) = (c.data::<RRandom>(s), c.data::<RRandom>(o)) else { return Ok(FALSE) };
     if x.mt.state != y.mt.state || x.mt.next != y.mt.next || x.mt.left != y.mt.left { return Ok(FALSE); }
     Ok(Value::bool(icmp_eq(c, x.seed, y.seed)))
@@ -468,7 +468,7 @@ fn s_urandom(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 }
 
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
-    if crate::builtins::inherits(klass, c.vm().c_random.get()) {
+    if crate::builtins::inherits(c, klass, c.vm().c_random.get()) {
         let mut mt = Mt::new(); mt.init_genrand(0);
         return Ok(Some(c.alloc(klass, Body::Data(Box::new(RRandom { mt, seed: Value::fix(0) })))));
     }
@@ -477,38 +477,40 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if let Some(r) = c.data::<RRandom>(v) {
         let (mt, seed) = (r.mt.clone(), r.seed);
-        return Ok(Some(c.alloc_with(real_class_of(v), move || Body::Data(Box::new(RRandom { mt, seed })))));
+        return Ok(Some(c.alloc_with(real_class_of(c, v), move || Body::Data(Box::new(RRandom { mt, seed })))));
     }
     Ok(None)
 }
 
 /// Boot: defines Random; returns (Random, the default generator).
-pub fn init(vmr: &Vm) -> (Value, Value) {
-    let base = new_class(vmr.c_object.get());
-    class_set_alloc(base, AllocKind::None);
-    let r = define_class("Random", base);
-    class_set_alloc(r, AllocKind::None);
-    const_set(r, intern(b"Base"), base);
-    crate::vm::name_class(base, r, intern(b"Base"));
-    define_private_cfunc(base, "initialize", r_init, -1);
-    define_cfunc(base, "rand", r_rand, -1);
-    define_cfunc(base, "bytes", r_bytes, 1);
-    define_cfunc(base, "seed", r_seed, 0);
-    define_private_cfunc(r, "initialize_copy", r_init_copy, 1);
-    define_cfunc(r, "==", r_eq, 1);
-    define_singleton_cfunc(r, "srand", k_srand, -1);
-    define_singleton_cfunc(r, "rand", r_rand, -1);
-    define_singleton_cfunc(r, "bytes", s_bytes, 1);
-    define_singleton_cfunc(r, "seed", s_seed, 0);
-    define_singleton_cfunc(r, "new_seed", s_new_seed, 0);
-    define_singleton_cfunc(r, "urandom", s_urandom, 1);
-    let fm = define_module_under(r, "Formatter");
-    define_cfunc(fm, "random_number", r_random_number, -1);
-    define_cfunc(fm, "rand", r_random_number, -1);
-    include_module(base, fm);
-    include_module(singleton_class(base), fm);
-    define_module_function(vmr.m_kernel.get(), "rand", k_rand, -1);
-    define_module_function(vmr.m_kernel.get(), "srand", k_srand, -1);
+pub fn init(c: &mut Ctx) -> (Value, Value) {
+    let vmr = c.vm();
+    let base = new_class(c, vmr.c_object.get());
+    class_set_alloc(c, base, AllocKind::None);
+    let r = define_class(c, "Random", base);
+    class_set_alloc(c, r, AllocKind::None);
+    const_set(c, r, intern(b"Base"), base);
+    crate::vm::name_class(c, base, r, intern(b"Base"));
+    define_private_cfunc(c, base, "initialize", r_init, -1);
+    define_cfunc(c, base, "rand", r_rand, -1);
+    define_cfunc(c, base, "bytes", r_bytes, 1);
+    define_cfunc(c, base, "seed", r_seed, 0);
+    define_private_cfunc(c, r, "initialize_copy", r_init_copy, 1);
+    define_cfunc(c, r, "==", r_eq, 1);
+    define_singleton_cfunc(c, r, "srand", k_srand, -1);
+    define_singleton_cfunc(c, r, "rand", r_rand, -1);
+    define_singleton_cfunc(c, r, "bytes", s_bytes, 1);
+    define_singleton_cfunc(c, r, "seed", s_seed, 0);
+    define_singleton_cfunc(c, r, "new_seed", s_new_seed, 0);
+    define_singleton_cfunc(c, r, "urandom", s_urandom, 1);
+    let fm = define_module_under(c, r, "Formatter");
+    define_cfunc(c, fm, "random_number", r_random_number, -1);
+    define_cfunc(c, fm, "rand", r_random_number, -1);
+    include_module(c, base, fm);
+    let sb = singleton_class(c, base);
+    include_module(c, sb, fm);
+    define_module_function(c, vmr.m_kernel.get(), "rand", k_rand, -1);
+    define_module_function(c, vmr.m_kernel.get(), "srand", k_srand, -1);
     let mut mt = Mt::new();
     let w = fill_random_words(4);
     mt.init_by_array(&w);
