@@ -2,6 +2,8 @@
 // Converted code uses the `Ctx` methods of range.rs, numeric.rs, bignum.rs.
 use crate::heap::{obj_set_flags, obj_set_klass};
 use crate::object::*;
+#[allow(unused_imports)]
+use crate::heap::no_legacy_body::*;   // no object accessor (docs/safe_heap.md)
 use crate::value::*;
 use crate::vm::Ctx;
 

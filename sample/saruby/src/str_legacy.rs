@@ -3,6 +3,8 @@
 // cannot name these (`heap::no_legacy_str`).
 use crate::heap::obj_set_flags;
 use crate::object::*;
+#[allow(unused_imports)]
+use crate::heap::no_legacy_body::*;   // no object accessor (docs/safe_heap.md)
 use crate::sbuf::SBuf;
 use crate::value::*;
 use crate::vm::vm;

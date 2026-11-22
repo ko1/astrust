@@ -4,6 +4,8 @@ use crate::heap::{obj_clear_flags, obj_flags, obj_klass, obj_set_flags, obj_set_
 use crate::gc::{self, EdgeVisitor, Saruby, RootVisitor};
 use crate::node::{NodePtr, DispatchFn};
 use crate::object::*;
+#[allow(unused_imports)]
+use crate::heap::no_legacy_body::*;   // no object accessor (docs/safe_heap.md)
 use crate::symbol::{intern, intern_str, s, sym_str};
 use crate::value::*;
 pub use crate::stack::*;

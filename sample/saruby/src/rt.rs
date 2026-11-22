@@ -4,6 +4,8 @@ use crate::compile::*;
 use crate::hash::*;
 use crate::node::*;
 use crate::object::*;
+#[allow(unused_imports)]
+use crate::heap::no_legacy_body::*;   // no object accessor (docs/safe_heap.md)
 use crate::string::*;
 use crate::symbol::{intern, s, sym_str};
 use crate::value::*;

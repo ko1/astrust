@@ -161,6 +161,15 @@ pub mod no_legacy {
          str_new str_from_vec str_from_vec_enc hash_new float_new);
 }
 
+/// The object accessors alone (object.rs no longer defines them): a module that still uses the
+/// context-free allocators or `vm()` (vm.rs, rt.rs, ..) opts in to this one, so that a
+/// reintroduced `&'static mut` accessor is ambiguous there too.
+#[allow(dead_code)]
+pub mod no_legacy_body {
+    macro_rules! ban { ($($n:ident)*) => { $(pub fn $n(_: super::Token) {})* }; }
+    ban!(obj rary rstr rhash rclass rproc rmethod rbig rdata ivars_of str_bytes);
+}
+
 /// The same for the context-free String API (str_legacy.rs); a module of its own so that a
 /// converted module opts in once it no longer calls them.
 #[allow(dead_code)]
