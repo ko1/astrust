@@ -194,7 +194,12 @@ unsafe fn drop_body(p: *mut RObj) {
             Body::Class(x) => d(x),
             Body::String(x) => d(x),
             Body::Array(x) => d(x),
-            Body::Hash(x) => d(x),
+            // in place (entries, index: its only fields with drop glue): Box<RHash>'s glue was left out of line by some partitions
+            Body::Hash(x) => {
+                let h: *mut RHash = &mut **x;
+                d(&mut (*h).entries); d(&mut (*h).index);
+                std::alloc::dealloc(h.cast(), std::alloc::Layout::new::<RHash>());
+            }
             Body::Bignum(x) => d(x),
             Body::Proc(x) => d(x),
             Body::Env(x, _) => d(x),
