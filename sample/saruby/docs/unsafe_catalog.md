@@ -269,53 +269,106 @@ Proposed and **rejected** (each in the ledger `~/ruby/src/ideas/rejected/`):
 
 ### 2.4 Bugs found by removing `unsafe`
 
-Each line is a defect of the code *before* the conversion that the conversion either forced into
-the open (a borrow error at a place that held a reference across a call) or that was found while
-re-checking that place. Repro files are in the trial named. "now" = CRuby's output.
+Each line is a defect of the code *before* the conversion, found while its module was converted
+and fixed in the commit named. Repro files are in the trial named. "now" = CRuby's output.
 
-Attribution (to be completed per row): defects were found in three ways — (a) the safe accessors check the
-object's kind where the legacy ones did not ("unchecked kind" rows: the SIGSEGVs), (b) the borrow rule
-refused a reference held across a callback ("stale reference" rows: Ruby-level invalidation, not memory
-safety Rust could name), (c) re-reading or testing (GC stress) the converted code. Only (a) and (b) are
-effects of the type system; (c) is a by-product of the work. A per-row "found by" column is pending.
+**Found by** says what first exposed the defect (one value per row):
 
-| wave | repro (one line) | before | kind |
-|---|---|---|---|
-| 2 | `h = (1..100).to_h { [_1, _1] }; n = 0; h.each { \|k, _\| h.delete(k); n += 1 }; p [n, h.size]` | `[59, 41]` (slots compacted under the iteration) | iterator invalidation |
-| 2 | `class K; def initialize(h) = @h = h; def hash = 7; def eql?(o) = (@h.clear if $go; false); end; h = {}; 12.times { h[K.new(h)] = 1 }; $go = true; p h[K.new(h)]` | panic index out of bounds (probe kept the mask across `eql?`) | stale index across a callback |
-| 2 | `o = Object.new; def o.hash = raise("boom"); a = [o]; 2.times { begin; a.hash; p :no; rescue => e; p e.message; end }` | `"boom"`, then `:no` (recursion guard left set) | state not restored on raise |
-| 2 | `h = {"a" => 1}; begin; h.each { h.compare_by_identity }; rescue => e; p e.message; end; p h["a"]` | wrong message, `nil` | flag set before a failing rehash |
-| 2 | `h = {}; h.replace({}.compare_by_identity); p h.compare_by_identity?` | `false` | |
-| 2 | `S = Struct.new(:a); s = S.new(nil); s.a = s; p s.hash == s.hash` | process dies (unbounded recursion) | |
-| String | `s = +"abc"; o = Object.new; o.define_singleton_method(:to_str) { s << "y" * 300; "c" }; s.chomp(o).size` | 3 (bytes of a moved buffer; CRuby 303) | **use of a stale `&'static [u8]` after the buffer moved** |
-| String | `io.read(o)` with `o.to_int` doing `io.string = "x"` | `"lo w"` (old string) | stale reference across `to_int` |
-| String | `Class.new(StringIO) { def initialize; end }.new.read` | **SIGSEGV** (nil read as a String) | unchecked kind |
-| String | `s[o, 2] = "x"`, `s.byteslice(o, 5)`, `s.bytesplice(o, 5, "x")` with a `to_int` that clears `s` | panic (Rust index out of range) | length read before a conversion |
-| String | `s.each_byte { s.clear }` | 150 iterations, zeros | iterating a buffer that is gone |
-| String | `split` / `scan` / `gsub` / `scrub` with a block that changes the receiver | no "string modified" | |
-| String | `sub`, `partition` argument / receiver order | read at the wrong moment | |
-| 3 | `abort(1)` | **SIGSEGV** (a Fixnum read as a String) | unchecked kind |
-| 3 | `autoload(1, "x")` | **SIGSEGV** | unchecked kind |
-| 3 | `Module.new { refine(String) { import_methods 1 } }` | **SIGSEGV** | unchecked kind |
-| 3 | `class String; def upcase = :x; end; p :y.upcase` | panic `:x is not a heap object` | |
-| 3 | `"ab" =~ /(?<x>a)/; p Regexp.last_match(:x)` | `nil` (name read with `as_fix`) | unchecked kind |
-| 3 | `SARUBY_GC_STRESS=1`: `p(/\A(?<x>.)(?<x>.)\k<x>\z/.match("abb").to_a)` | `["b", "b", "b"]` | **GC rooting: Strings held only in a Rust `Vec` during an allocation** (MatchData#to_a) |
-| 4 | `r, w = IO.pipe; w.close; r.read(5, 123)` | **SIGSEGV** (an Integer read as a String) | unchecked kind |
-| 4 | `File.realpath` / `Dir.pwd` on a name with a latin-1 byte | bytes replaced by U+FFFD | **undefined behaviour: `from_utf8_unchecked` on non-UTF-8 bytes** |
-| 4 | `IO.readlines(path, chomp: true)` under `SARUBY_GC_STRESS=1` | TypeError (options Hash collected) | **GC rooting** |
-| 4 | `marshal_dump` that clears its Hash and runs `GC.start` | dumps a freed String (79 bytes) | **use after free (GC)** |
-| 4 | a `to_int` that closes the stream during `r.read(o)` | nil via a stale reference | stale reference across a callback |
-| 4 | `IO.read(path, -1.5)` | "negative length -9007199254740989" (a Float read as a Fixnum) | unchecked kind |
-| 4 | `marshal_dump` / `to_json` that adds a key to the Hash being dumped | dumped silently | iterator invalidation |
-| 4 | 10 more compatibility differences fixed in the same files (`r.read(5, "x".freeze)`, `File.readlines(dir)`, `JSON.load` forms, `SystemCallError.new` forms, `SystemExit#message`, `RuntimeError#inspect`) | | found while re-reading each call |
-| fiber | `a` resumes `b` resumes `a` | panic "entered unreachable code" (stack corrupted) | |
-| method layer | a `Vm` field added after `main_obj` | left uninitialized (`MaybeUninit` + `ptr::write`), no diagnostic | **latent UB** removed by construction |
+* **a**: a run-time check of the safe API fired (the kind check of a context-borrowing accessor
+  panicked).
+* **b**: the borrow checker rejected the converted code at the defect's site (E0499 / E0502), and
+  the fix is what made it compile.
+* **c-read**: named in the code while it was being rewritten: a fix was written before any run showed
+  the defect, or the converted build already behaved correctly the first time it ran the repro.
+* **c-test**: a run showed it first: a smoke or callback test written during the conversion, the
+  per-file run of the test corpus against CRuby, a `SARUBY_GC_STRESS=1` run, or a crash in a
+  benchmark.
+* **undetermined**: the records do not say (no row needed it).
+
+How it was decided: for each row, the fix commit (named; `git show` contains the fix), and the
+recorded session of the agent that did the conversion, read in order: which compile errors, panics and
+test outputs came before the fix, and whether the build the repro first ran on was already fixed. The
+records hold commands, edits and outputs but not the reasoning behind them, so c-read says that the fix
+came before any run showed the defect, not why that code was looked at. The per-row record numbers are in `T/README.md`, section "bug attribution". Where a pre-fix shape was
+cheap to rebuild, it was written with today's safe API and type-checked (2.4.1).
+
+Correction: until 2026-11-22 this section attributed the rows by their kind ("unchecked kind" rows,
+the SIGSEGVs, to the accessors' kind check; "stale reference" rows to the borrow rule) without
+checking how each was found. The records contradict that: none of the five SIGSEGV rows was found by a
+check firing, and one stale-reference row was found by the borrow checker. The column below replaces
+it.
+
+| # | wave | repro (one line) | before | kind | found by | evidence (fix commit: what exposed it) |
+|---:|---|---|---|---|---|---|
+| 1 | 2 | `h = (1..100).to_h { [_1, _1] }; n = 0; h.each { \|k, _\| h.delete(k); n += 1 }; p [n, h.size]` | `[59, 41]` (slots compacted under the iteration) | iterator invalidation | c-read | af4b634: hash.rs was written anew (no compile error in it); the repro list naming rows 1 to 4 was written before the first run, on which the new build already printed `[100, 0]` |
+| 2 | 2 | `class K; def initialize(h) = @h = h; def hash = 7; def eql?(o) = (@h.clear if $go; false); end; h = {}; 12.times { h[K.new(h)] = 1 }; $go = true; p h[K.new(h)]` | panic index out of bounds (probe kept the mask across `eql?`) | stale index across a callback | c-read | af4b634: same list; the panic is Rust's slice bounds check in the base code (hash.rs:136), not a check the conversion added; the pre-fix shape compiles on the safe API (2.4.1) |
+| 3 | 2 | `o = Object.new; def o.hash = raise("boom"); a = [o]; 2.times { begin; a.hash; p :no; rescue => e; p e.message; end }` | `"boom"`, then `:no` (recursion guard left set) | state not restored on raise | c-read | af4b634: same list |
+| 4 | 2 | `h = {"a" => 1}; begin; h.each { h.compare_by_identity }; rescue => e; p e.message; end; p h["a"]` | wrong message, `nil` | flag set before a failing rehash | c-read | af4b634: same list |
+| 5 | 2 | `h = {}; h.replace({}.compare_by_identity); p h.compare_by_identity?` | `false` | | c-read | af4b634: second repro list; the new build was correct on its first run |
+| 6 | 2 | `S = Struct.new(:a); s = S.new(nil); s.a = s; p s.hash == s.hash` | process dies (unbounded recursion) | | c-test | dc28c5a: smoke test of the struct conversion; base and new build both died |
+| 7 | String | `s = +"abc"; o = Object.new; o.define_singleton_method(:to_str) { s << "y" * 300; "c" }; s.chomp(o).size` (also `chomp!`, `split`) | 3 (bytes of a moved buffer; CRuby 303) | **use of a stale `&'static [u8]` after the buffer moved** | **b** | b92b160: the first `cargo check` after the mechanical pass over string_methods.rs gave E0502 at `let suf = expect_str(c, a[0])?` in `chomp_impl` (the receiver's bytes borrowed across `to_str`) and at `get_pat` in `split`; both were rewritten to read the receiver after the conversion. The callback test later showed base 3, new 303. Rebuilt: E0502 (2.4.1) |
+| 8 | String | `io.read(o)` with `o.to_int` doing `io.string = "x"` | `"lo w"` (old string) | stale reference across `to_int` | c-read | f1ecd68: stringio.rs rewritten on a `Copy` snapshot, no compile error; the build the callback test first ran on already printed `"x"`. Rebuilt: E0499 with `&mut StrIO`, compiles with the snapshot (2.4.1) |
+| 9 | String | `Class.new(StringIO) { def initialize; end }.new.read` | **SIGSEGV** (nil read as a String) | unchecked kind | c-read | f1ecd68: the rewritten stringio.rs guarded "a stream whose initialize never ran"; the repro was then run on base (status 139) |
+| 10 | String | `s[o, 2] = "x"`, `s.byteslice(o, 5)`, `s.bytesplice(o, 5, "x")` with a `to_int` that clears `s` | panic (Rust index out of range) | length read before a conversion | c-test | 1d4f2cb: callback test (91 cases, one process each); base and the converted build both panicked in Rust's bounds check; the shape compiles (2.4.1) |
+| 11 | String | `s.each_byte { s.clear }` | 150 iterations, zeros | iterating a buffer that is gone | c-test | 1d4f2cb: callback test; base and converted build both wrong; the shape compiles (2.4.1) |
+| 12 | String | `split` / `scan` / `gsub` / `scrub` with a block that changes the receiver | no "string modified" | | c-test | 1d4f2cb: callback test and a split/scan/gsub variant file |
+| 13 | String | `sub`, `partition` argument / receiver order | read at the wrong moment | | c-test | 1d4f2cb: callback test |
+| 14 | 3 | `abort(1)` | **SIGSEGV** (a Fixnum read as a String) | unchecked kind | c-read | e3c62b2: a grep for accessor calls in the converted kernel.rs listed `c.str_bytes(m)` on an unchecked argument; `expect_str` was added before the repro ran (base: SIGSEGV) |
+| 15 | 3 | `autoload(1, "x")` | **SIGSEGV** | unchecked kind | c-read | e3c62b2: the same grep listed the `autoload` lines; the argument checks were added in the same edit, before the repro ran |
+| 16 | 3 | `autoload(:X, 1)` / `autoload(:X, "")` | accepted | missing argument check | c-read | e3c62b2: the same edit |
+| 17 | 3 | `Module.new { refine(String) { import_methods 1 } }` | **SIGSEGV** | unchecked kind | c-read | 93d8b24: a grep for `c.class(..)` on arguments in object.rs; the check was added with no run in between |
+| 18 | 3 | `class String; def upcase = :x; end; p :y.upcase` | panic `:x is not a heap object` | unchecked kind | **a** | 4985d89: the panic scan of 2949 output files found `saruby: :redef_up is not a heap object` at heap.rs:26 (`wrong_kind`, the kind check added with the heap pilot) in t/hand/sdi_inline_sends.rb on base 5791694 (`2026-11-21-saruby-safe-heap-3/results/pan.base/`); the commit message: "segfaulted before the safe-heap conversion" |
+| 19 | 3 | `"ab" =~ /(?<x>a)/; p Regexp.last_match(:x)` | `nil` (name read with `as_fix`) | unchecked kind | c-read | f070c01: regexp_methods.rs read whole and rewritten; `as_fix` replaced before the repro ran |
+| 20 | 3 | `SARUBY_GC_STRESS=1`: `p(/\A(?<x>.)(?<x>.)\k<x>\z/.match("abb").to_a)` | `["b", "b", "b"]` | **GC rooting: Strings held only in a Rust `Vec` during an allocation** (MatchData#to_a) | c-test | f070c01: GC-stress run of the regexp files (4 differ from base); the shape compiles (2.4.1) |
+| 21 | 4 | `r, w = IO.pipe; w.close; r.read(5, 123)` | **SIGSEGV** (an Integer read as a String) | unchecked kind | c-read | a7c9c80: io.rs was written anew (no borrow error); the new build was correct on the first repro run (rows 21 to 26 in one file) |
+| 22 | 4 | `r, w = IO.pipe; w.close; r.read(5, "x".freeze)` | nil | missing frozen check | c-read | a7c9c80: same run |
+| 23 | 4 | `IO.read(path, -1.5)` | "negative length -9007199254740989" (a Float read as a Fixnum) | unchecked kind | c-read | a7c9c80: same run |
+| 24 | 4 | a `to_int` that closes the stream during `r.read(o)` | nil via a stale reference | stale reference across a callback | c-read | a7c9c80: same run. Rebuilt in the pre-fix shape (`&mut RIo` across `num_to_long`): E0499 (2.4.1); the compiler never saw it because io.rs was not converted line by line |
+| 25 | 4 | `r.read(-1)` on a closed stream | "closed stream" (CRuby: "negative length -1 given") | order of checks | c-read | a7c9c80: same run |
+| 26 | 4 | `File.realpath` / `Dir.pwd` on a name with a latin-1 byte | bytes replaced by U+FFFD | **undefined behaviour: `from_utf8_unchecked` on non-UTF-8 bytes** | c-read | a7c9c80: same run; the `unsafe` in `path_arg` was itself what the conversion removed |
+| 27 | 4 | `File.readlines(dir)`, `File.foreach(dir)` | `[]`, nil (CRuby: Errno::EISDIR) | error dropped | c-test | a7c9c80: per-file run of t/hand: `file_read_dir_eisdir.rb` changed, then checked against CRuby |
+| 28 | 4 | `IO.readlines(path, chomp: true)` under `SARUBY_GC_STRESS=1` | TypeError (options Hash collected) | **GC rooting** | c-test | a7c9c80: GC-stress per-file run (`io_class_methods.rb`) |
+| 29 | 4 | `JSON.load(src, proc)` | proc called on values only, result ignored | compatibility | c-test | 1103063: smoke test of the converted json.rs against CRuby |
+| 30 | 4 | `JSON.load("  ")`, `JSON.load("", nil, allow_blank: false)` | nil (CRuby: JSON::ParserError) | compatibility | c-read | 1103063: found in json 3.1's `JSON.load` source while fixing row 29 |
+| 31 | 4 | `marshal_dump` / `to_json` that adds a key to the Hash being dumped | dumped silently | iterator invalidation | c-read | edc8776, 1103063: Hash walks rewritten slot by slot inside `hash_iter_enter`; the new build was correct on the first repro run |
+| 32 | 4 | `marshal_dump` that clears its Hash and runs `GC.start` | dumps a freed String (79 bytes) | **use after free (GC)** | c-read | edc8776: same run; the old code dumped from a `Vec` of pairs; the shape compiles (2.4.1) |
+| 33 | 4 | `SystemCallError.new("x", 2)`, `SystemCallError.new(2)` | a SystemCallError (CRuby: Errno::ENOENT) | compatibility | c-test | 66320e3: smoke test of the converted exception.rs against CRuby |
+| 34 | 4 | `SystemCallError.new("x", 9999).message` | "unknown error - x" | compatibility | c-test | 66320e3: same test |
+| 35 | 4 | `SystemCallError.new("message").errno` | the module `Errno` (found as `Object::Errno`) | compatibility | c-test | 52842b4: per-file run of t/spec/exception_000.rb against CRuby |
+| 36 | 4 | `SystemExit.new.message`, `SystemExit.new(3).message` | "exit" (CRuby: "SystemExit") | compatibility | c-test | 66320e3: smoke test |
+| 37 | 4 | `RuntimeError.new("a\nb").inspect` | `#<RuntimeError: "a\nb">` | compatibility | c-test | 66320e3: smoke test |
+| 38 | fiber | `a` resumes `b` resumes `a` | panic "entered unreachable code" (stack corrupted) | | c-test | 1b1b311: a test of Fiber's error cases run on the base build before the rewrite; the panic is an `unreachable!()` present since b3cc05f (2026-11-20), not a check of the conversion |
+| 39 | method layer | a `Vm` field added after `main_obj` | left uninitialized (`MaybeUninit` + `ptr::write`), no diagnostic | **latent UB** removed by construction | c-read | 0059037: boot rewritten as a struct literal (a missing field is now E0063); never observed |
+
+Rows 22, 25, 27, 29, 30, 33 to 37 are the "10 more compatibility differences" of earlier versions of
+this table; row 16 was counted in wave 3's 7 but missing from the table.
+
+Counts (rows of the table above; no row is undetermined; the "found later" row below is c-test and not counted):
+
+| found by | rows | SIGSEGV | UB (incl. latent) | GC rooting / UAF | wave 2 | String | wave 3 | wave 4 | fiber | method layer |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| a: run-time check of the safe API | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 |
+| b: borrow checker (compile time) | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 |
+| c-read: reading while rewriting | 22 | 5 | 2 | 1 | 5 | 2 | 5 | 9 | 0 | 1 |
+| c-test: a test run during the work | 15 | 0 | 0 | 2 | 1 | 4 | 1 | 8 | 1 | 0 |
+| **total** | **39** | 5 | 2 | 3 | 6 | 7 | 7 | 17 | 1 | 1 |
+
+Borrow errors that were not defects. The first `cargo check` of string_methods.rs gave 21 E0502 and
+16 E0499 at about 50 lines; those in `chomp_impl` and `split` are row 7, the others are not tied to any
+row (for example an allocation inside the argument list of another call that takes the context,
+`c.ary_from_vec(vec![c.str_new(..), ..])`). The other conversion records show 26 borrow-error messages
+(structs.rs 1, enum_native.rs 7, math.rs 1, time.rs 5, complex.rs 9, proc.rs 2, io.rs 1), none tied
+to a row (counted from the tool outputs in the records, including those saved to separate files).
+
+Not in the table (outside the waves' bug lists, not attributed here): b8cb7f3 fixes four panics found
+by a scan of 2944 test outputs, and b0553a4 a panic of the kind check introduced by the conversion
+itself (Integer#pow), i.e. a regression the check caught, not a defect of the old code.
 
 Found later (not by removing `unsafe`; the `unsafe` named is the one whose SAFETY claim was false):
 
 | found | repro (one line) | before | unsafe / assumption | found by |
 |---|---|---|---|---|
-| 11-22 | AOT, patch binding on: `fork` a child, each side then first-dispatches new bodies (`tools/aot/fork_patch_arena_1122.rb`; ruby-bench knucleotide) | **SIGSEGV** / `memory allocation of 1.3e14 bytes failed` / a child killed (`SARUBY_PATCH=0`, `--plain` fine) | runtime/astrust_loader.rs `Arena::grow`: the RW window as `&'static mut [u8]`, "only this Arena uses it". The memfd is `MAP_SHARED`, so after `fork` the child's copy of the Arena (same `used`) wrote the parent's code pages: two processes held the one `&mut`. Fixed: an Arena records its pid; a child drops the inherited one unused and binds into a memfd of its own | backtrace (rsp truncated in patch-bound code outside every library), then a per-allocation pid trace: parent and child allocated the same addresses (`2026-11-22-saruby-knucleotide-segv`) |
+| 11-22 | AOT, patch binding on: `fork` a child, each side then first-dispatches new bodies (`tools/aot/fork_patch_arena_1122.rb`; ruby-bench knucleotide) | **SIGSEGV** / `memory allocation of 1.3e14 bytes failed` / a child killed (`SARUBY_PATCH=0`, `--plain` fine) | runtime/astrust_loader.rs `Arena::grow`: the RW window as `&'static mut [u8]`, "only this Arena uses it". The memfd is `MAP_SHARED`, so after `fork` the child's copy of the Arena (same `used`) wrote the parent's code pages: two processes held the one `&mut`. Fixed: an Arena records its pid; a child drops the inherited one unused and binds into a memfd of its own | c-test (a crash of a benchmark run): backtrace (rsp truncated in patch-bound code outside every library), then a per-allocation pid trace: parent and child allocated the same addresses (`2026-11-22-saruby-knucleotide-segv`) |
 
 Closed by construction and not reproduced (wave 3 and 4 READMEs): `clone_class` read the source
 class through a `'static` alias while allocating; `Hash.ruby2_keywords_hash` iterated a `Vec` of
@@ -330,6 +383,41 @@ from moving functions between files; safe_heap.md, `ideas/rejected/saruby-legacy
 and a store-forwarding stall from building a by-value payload on the stack and handing it to an
 out-of-line allocator (strscan +30 % cycles on −3 % instructions; the same mechanism made gcchurn
 460M -> 725M cycles at the pilot's merge on sp4, `2026-11-20-astrust-vs-astro/bisect_4a06252.txt`).
+
+#### 2.4.1 The pre-fix shapes rebuilt on the safe API
+
+Each shape written as a function against today's API (base `b08c665`, appended to the converted file,
+type-checked with `cargo check --release --features gc-marksweep`, then removed; sources and output in
+`T/results/bug_attribution/`). A second check with the rejected ones removed finished with no error or
+warning, so "compiles" below is a clean check.
+
+| row | pre-fix shape | `cargo check` |
+|---:|---|---|
+| 7 | `let v = c.str_bytes(slf);` then `expect_str(c, a[0])?`, then `v` used (chomp) | E0502 |
+| 7 | `let v = c.str_bytes(slf);` then `get_pat(c, ..)?`, `c.ary_new()`, `c.str_new(&v[..])` (split) | E0502 ×3 |
+| 24 | `let io = readable(c, slf)?;` (`&mut RIo`) then `num_to_long(c, ..)?`, then `fill(io)` | E0499 |
+| 8 | `let d = sio_mut(c, slf);` (`&mut StrIO`) then `num_to_long(c, ..)?`, then `d.pos` | E0499 |
+| 8 | `let d = sio(c, slf)?;` (a `Copy` snapshot) then `num_to_long(c, ..)?`, then read at `d.pos` | compiles |
+| 2 | index mask copied out of `c.hash(hv)`, the table re-borrowed per probe step, `key_eql(c, ..)?` in between | compiles |
+| 11 | length copied, `c.str_bytes(slf).get(i)` re-borrowed per step around `yield1(c, ..)?` | compiles |
+| 10 | `c.str_len(slf)` before `num_to_long(c, ..)?`, the slice taken after with the old length | compiles |
+| 20, 32 | new Strings collected into a `Vec<Value>`, then one more allocation (`c.ary_from_vec`) | compiles |
+| 14 | `c.str_bytes(m)` on an argument whose kind is not checked | compiles (the kind check panics when it runs on a non-String, as in row 18) |
+
+#### 2.4.2 What the attribution says
+
+Of the 39 rows, the borrow checker found one at compile time (row 7: a receiver's bytes held across
+`to_str` in `chomp`, `chomp!` and `split`), the safe accessors' run-time kind check found one (row 18,
+a panic where the code had segfaulted before the conversion), and the other 37 were found in the
+conversion work itself: 22 while reading the code being rewritten, 15 by tests run during it. None of the
+five SIGSEGVs was found by a check firing; three of them (rows 14, 15, 17) were found reviewing the lines
+that a grep for accessor calls listed in the converted files, the other two (9, 21) while rewriting the
+module. Of the shapes rebuilt in 2.4.1 that keep a reference, a length or an index across a callback,
+the borrow checker rejects three
+(rows 7, 24, and 8 when the payload is held as `&mut`) and accepts four (row 8 as a `Copy` snapshot,
+rows 2, 10, 11): a length, an index or a snapshot copied out of the borrow compiles and keeps the defect.
+The rooting shapes (rows 20, 32) compile. Row 24's shape would have been rejected, but io.rs was written
+anew, so the compiler never saw it.
 
 ## 3. The checked value stack against the raw one on sp4
 
@@ -854,13 +942,17 @@ Measured, with the trial that holds the numbers:
    +2.4 % instructions per benchmark (pilot, wave 2). The interior-mutability alternative cost up to
    +96 % cycles (RefCell emulation). The forced restructuring was often a gain (hash −36 %, io_write
    −11 %, json −10 % instructions).
-2. **What the conversion found** (not all by the borrow checker itself; see the attribution note under table 2.4): 39 behavioural defects across the waves (table 2.4), of which
-   5 SIGSEGVs, 1 undefined behaviour (`from_utf8_unchecked`), 3 GC rooting / use-after-free defects
-   (MatchData#to_a with its Strings only in a Rust `Vec` during an allocation, IO.readlines' options
-   Hash, marshal_dump + GC.start), 1 latent uninitialized field (boot's `MaybeUninit<Vm>`), and many stale-reference-across-callback defects (a `&'static [u8]` used after
-   `to_str` moved the buffer; hash probes across `eql?`). Most were not memory-safety bugs Rust could
-   name: they were *Ruby-level* invalidation bugs that the borrow rule exposed because it forbids
-   holding the reference across the callback at all.
+2. **What the conversion found** (table 2.4, with how each row was found): 39 behavioural defects, of
+   which 5 SIGSEGVs, 1 undefined behaviour (`from_utf8_unchecked`), 3 GC rooting / use-after-free
+   defects (MatchData#to_a with its Strings only in a Rust `Vec` during an allocation, IO.readlines'
+   options Hash, marshal_dump + GC.start), 1 latent uninitialized field (boot's `MaybeUninit<Vm>`), and
+   stale-reference-across-callback defects (a `&'static [u8]` used after `to_str` moved the buffer; hash
+   probes across `eql?`). One was found by the borrow checker at compile time (chomp / split: the
+   receiver's bytes held across `to_str`), one by the accessors' run-time kind check (Symbol#upcase),
+   22 while reading the code being rewritten and 15 by tests run during the work; none of the SIGSEGVs
+   was found by a check firing. Most were Ruby-level invalidation or compatibility defects, not
+   memory-safety bugs Rust could name, and of seven pre-fix shapes rebuilt on the safe API that keep a
+   reference, a length or an index across a callback, four compile (2.4.1).
 3. **Surprisingly removable at zero instruction cost** (section 4): `Value` construction and the
    literal caches (13 `unsafe`), `static mut` flags as atomics (10; REDEF earlier, 2), function
    pointers in caches as `Option<fn>` (2). Rust's niche optimisation (`NonZeroU64`, `Option<fn>`,
