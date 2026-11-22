@@ -69,7 +69,7 @@ NODE_DEF
 node_fstr(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32, lc@ref: LitCache)
 {
     if let Some(v) = lc.v { return Ok(v); }
-    Ok(srb_fstr(s, enc, lc))
+    Ok(srb_fstr(c, s, enc, lc))
 }
 
 NODE_DEF
@@ -93,7 +93,8 @@ node_tostr(c: &mut Ctx, n: NodePtr, fp: Fp, v@child: Value)
 NODE_DEF
 node_dsym(c: &mut Ctx, n: NodePtr, fp: Fp, s@child: Value)
 {
-    Ok(crate::string::str_to_sym(s))
+    Ok(c.str_to_sym(s))
+
 }
 
 NODE_DEF

@@ -150,11 +150,11 @@ pub fn srb_aset_out(c: &mut Ctx, a: Value, b: Value, v: Value, line: Pos, cc: &m
 
 // ---- literals ----------------------------------------------------------------------------
 
-pub fn srb_fstr(s: Str, enc: u32, lc: &mut LitCache) -> Value {
+pub fn srb_fstr(c: &mut Ctx, s: Str, enc: u32, lc: &mut LitCache) -> Value {
     // frozen literals share the -"str" pool, like CRuby's fstring table
     let found = vm().frozen_lits.borrow().get(s).copied();   // not borrowed across the allocation below
     let v = match found {
-        Some(v) if rstr(v).enc == enc as u8 => v,
+        Some(v) if c.str_enc(v) == enc as u8 => v,
         other => {
             let pooled = other.is_some();
             let v = crate::string::str_new_enc(s, enc as u8);
@@ -170,13 +170,17 @@ pub fn srb_fstr(s: Str, enc: u32, lc: &mut LitCache) -> Value {
 /// Append an interpolated value to the string being built (acc is fresh: mutable, unshared).
 pub fn srb_dstr_append(c: &mut Ctx, acc: Value, v: Value) -> Result<(), Esc> {
     if is_string(v) {
-        let (a, b) = (rstr(acc), rstr(v));
-        if a.enc == b.enc { crate::gc::malloc_increase(b.b.len()); a.b.extend_from_slice(&b.b); return Ok(()); }
-        return str_append_str(c, acc, v);
+        let (a, others) = c.str_mut_and(acc);
+        let n = match others.rstring(v) {
+            Some(b) if a.enc == b.enc => { a.b.extend_from_slice(&b.b); b.b.len() }
+            _ => return str_append_str(c, acc, v),
+        };
+        c.malloc_increase(n);
+        return Ok(());
     }
     if v.is_fixnum() {
         // an empty acc would take the Integer string's US-ASCII encoding: left to the slow path
-        let a = rstr(acc);
+        let a = c.rstring_mut(acc);
         if !a.b.is_empty() && a.enc <= ENC_ASCII {
             let mut buf = [0u8; 20];
             let i = v.as_fix();
@@ -213,7 +217,7 @@ pub fn srb_regex_lit(c: &mut Ctx, src: Str, opts: u32, lc: &mut LitCache) -> RV 
 }
 
 pub fn srb_dregex(c: &mut Ctx, s: Value, opts: u32, once: bool, lc: &mut LitCache) -> RV {
-    let b = str_bytes(s).to_vec();
+    let b = c.str_bytes(s).to_vec();
     let r = crate::regexp::regexp_new(c, &b, opts)?;
     if once { vm().node_values.borrow_mut().push(r); lc.v = Some(r); }
     Ok(r)
@@ -598,7 +602,7 @@ pub fn srb_eqq(c: &mut Ctx, p: Value, subj: Value, cc: &mut CallCache) -> Result
     if p.is_fixnum() && subj.is_fixnum() { return Ok(p == subj); }
     if p.is_sym() { return Ok(p == subj); }
     if p == NIL || p == TRUE || p == FALSE { return Ok(p == subj); }
-    if is_string(p) && is_string(subj) && obj_klass(p) == vm().c_string.get() { return Ok(str_bytes(p) == str_bytes(subj)); }
+    if is_string(p) && is_string(subj) && obj_klass(p) == vm().c_string.get() { return Ok(c.str_eq(p, subj)); }
     let base = stage(c, 3)?;
     base[0].set(p); base[2].set(subj);
     let r = call_cached(c, cc, s::eqq, base, 1, std::ptr::null(), 0)?;
@@ -967,7 +971,8 @@ pub fn srb_binop(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: Pos, cc: &mut 
 
 #[cold]
 pub fn srb_eq(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -> RV {
-    if is_string(a) && is_string(b) && obj_klass(a) == vm().c_string.get() { return Ok(Value::bool(crate::string::str_eq(a, b))); }
+    if is_string(a) && is_string(b) && obj_klass(a) == vm().c_string.get() { return Ok(Value::bool(c.str_eq(a, b))); }
+
     srb_binop(c, a, b, s::eq, line, cc)
 }
 
@@ -1160,7 +1165,7 @@ pub fn srb_undef(c: &mut Ctx, v: Value) -> Result<(), Esc> {
         let f = c.frame();
         if f.defined_class() != NIL && f.kind != FK_CLASS { f.defined_class() } else { cref_class(c) }
     };
-    let mid = if v.is_sym() { v.as_sym() } else { crate::string::str_to_sym(v).as_sym() };
+    let mid = if v.is_sym() { v.as_sym() } else { c.str_to_sym(v).as_sym() };
     crate::builtins::object::undef_method(c, klass, mid)
 }
 
@@ -1221,13 +1226,13 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
             let s = crate::builtins::kernel::inspect_str(c, subj)?;
             if is_array(why) {
                 // [message, matchee, key]: a missing Hash key
-                let msg = format!("{}: {}", s, String::from_utf8_lossy(str_bytes(rary(why)[0])));
+                let msg = format!("{}: {}", s, String::from_utf8_lossy(c.str_bytes(rary(why)[0])));
                 let e = make_exception(vm().c_no_matching_pattern_key_error.get(), &msg);
                 ivar_set_raw(e, s::receiver, rary(why)[1]);
                 ivar_set_raw(e, s::key, rary(why)[2]);
                 return Err(raise_exc(c, e));
             }
-            let msg = if why == NIL { s } else { format!("{}: {}", s, String::from_utf8_lossy(str_bytes(why))) };
+            let msg = if why == NIL { s } else { format!("{}: {}", s, String::from_utf8_lossy(c.str_bytes(why))) };
             err(c, vm().c_no_matching_pattern_error.get(), msg)
         }
         SP_PM_MSG => {

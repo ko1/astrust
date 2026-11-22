@@ -33,15 +33,15 @@ pub struct CallInfo { pub kinds: Vec<u8>, pub blk: Option<&'static Iseq>, pub kw
 // Merkle hashes of the opaque operands: by content, never by an address or an id of this process,
 // so the same code in another program (or at another place) gets the same SD (Reusable).
 
-/// An immediate by its bits (value_bake bakes it), a Symbol by its name, a heap literal by content
-/// (it is read from the node at run time, so its content only keeps unlike sites apart).
+/// An immediate by its bits (value_bake bakes it), a Symbol by its name, a heap literal by kind
+/// (compile.rs puts only immediates in Value operands; no payload is read: hashing has no context).
 pub fn value_hash(v: Value) -> u64 {
     use crate::astrust::{hash_bytes, hash_merge, hash_str, hash_u64};
     if v.is_sym() { hash_merge(hash_str("sym"), hash_bytes(crate::symbol::sym_bytes(v.as_sym()))) }
     else if !v.is_heap() { hash_u64(v.raw()) }
     else if crate::heap::is_heap_float(v) { hash_merge(hash_str("float"), hash_u64(crate::heap::float_val(v).to_bits())) }
-    else if crate::object::is_string(v) { hash_merge(hash_str("str"), hash_bytes(crate::object::str_bytes(v))) }
     else { hash_str("heap") }
+
 }
 pub fn value_bake(v: Value) -> Option<String> {
     if v.is_sym() || v.is_heap() { None } else { Some(format!("const {{ Value::imm({:#x}) }}", v.raw())) }

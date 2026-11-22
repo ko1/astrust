@@ -225,7 +225,7 @@ pub fn EVAL_node_str(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32) -> RV {
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_fstr(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32, lc: &mut LitCache) -> RV {
     if let Some(v) = lc.v { return Ok(v); }
-    Ok(srb_fstr(s, enc, lc))
+    Ok(srb_fstr(c, s, enc, lc))
 }
 
 
@@ -252,7 +252,8 @@ pub fn EVAL_node_tostr(c: &mut Ctx, n: NodePtr, fp: Fp, v: Value) -> RV {
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_dsym(c: &mut Ctx, n: NodePtr, fp: Fp, s: Value) -> RV {
-    Ok(crate::string::str_to_sym(s))
+    Ok(c.str_to_sym(s))
+
 }
 
 
