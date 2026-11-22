@@ -30,8 +30,8 @@ pub const RE_OPT_ENC_NONE: u32 = 32;
 pub fn regexp_new(c: &mut Ctx, src: &[u8], opts: u32) -> RV {
     let ropts = opts & (OPT_I | OPT_X | OPT_M);
     match Regex::new(src, ropts) {
-        Ok(re) => { let src = src.to_vec(); Ok(c.alloc_with(c.vm().c_regexp, move || Body::Data(Box::new(RRegexp { src, opts, re: Some(re), enc_fixed: false })))) }
-        Err(e) => err(c, c.vm().c_regexp_error, format!("{}: /{}/", e, String::from_utf8_lossy(src))),
+        Ok(re) => { let src = src.to_vec(); Ok(c.alloc_with(c.vm().c_regexp.get(), move || Body::Data(Box::new(RRegexp { src, opts, re: Some(re), enc_fixed: false })))) }
+        Err(e) => err(c, c.vm().c_regexp_error.get(), format!("{}: /{}/", e, String::from_utf8_lossy(src))),
     }
 }
 
@@ -71,7 +71,7 @@ pub fn search_raw(c: &Ctx, re: Value, bytes: &[u8], start: usize) -> Option<Vec<
 pub fn match_new(c: &mut Ctx, re: Value, s: Value, groups: Vec<Option<(usize, usize)>>) -> Value {
     // CRuby's MatchData keeps a frozen snapshot: a String changed after the match must not move its groups
     let s = if is_frozen(s) { s } else { let d = c.str_dup(s); obj_set_flags(d, FL_FROZEN); d };
-    c.alloc_with(c.vm().c_match_data, move || Body::Data(Box::new(RMatch { regexp: re, str: s, groups })))
+    c.alloc_with(c.vm().c_match_data.get(), move || Body::Data(Box::new(RMatch { regexp: re, str: s, groups })))
 }
 
 /// The span of group `n` (negative from the end) of MatchData `m`, and its string.

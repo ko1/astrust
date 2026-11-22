@@ -141,7 +141,7 @@ impl Dumper {
         let id = self.objs.len();
         self.objs.insert(v.raw(), id);
         if is_float(v) { self.out.push(b'f'); w_bytes(&mut self.out, float_repr(float_val(v)).as_bytes()); return Ok(()); }
-        if crate::builtins::inherits(real_class_of(v), c.vm().c_time) && crate::builtins::time::time_to_ns(c, v).is_some() { return self.time(c, v, limit); }
+        if crate::builtins::inherits(real_class_of(v), c.vm().c_time.get()) && crate::builtins::time::time_to_ns(c, v).is_some() { return self.time(c, v, limit); }
         // user hooks first
         if respond_to(v, intern(b"marshal_dump"), true) && !is_class_or_module(v) {
             let d = funcall(c, v, intern(b"marshal_dump"), &[], std::ptr::null())?;
@@ -166,7 +166,7 @@ impl Dumper {
             let enc = c.str_enc(v);
             let hasiv = !ivs.is_empty() || enc != ENC_BINARY;
             if hasiv { self.out.push(b'I'); }
-            let k = c.vm().c_string;
+            let k = c.vm().c_string.get();
             self.uclass(c, v, k)?;
             self.out.push(b'"');
             w_bytes(&mut self.out, c.str_bytes(v));
@@ -177,7 +177,7 @@ impl Dumper {
             let (src, opts) = (r.src.clone(), r.opts);
             let enc = if is_ascii(&src) && !r.enc_fixed { ENC_ASCII } else { ENC_UTF8 };
             self.out.push(b'I');
-            let k = c.vm().c_regexp;
+            let k = c.vm().c_regexp.get();
             self.uclass(c, v, k)?;
             self.out.push(b'/');
             w_bytes(&mut self.out, &src);
@@ -202,7 +202,7 @@ impl Dumper {
                 w_bytes(&mut self.out, n.as_bytes());
             }
             K::Ary => {
-                let k = c.vm().c_array;
+                let k = c.vm().c_array.get();
                 self.uclass(c, v, k)?;
                 self.out.push(b'[');
                 w_long(&mut self.out, c.ary_len(v) as i64);
@@ -211,7 +211,7 @@ impl Dumper {
             }
             K::Hash(default_proc, def, identity) => {
                 if default_proc != NIL { return type_err(c, "can't dump hash with default proc"); }
-                let kh = c.vm().c_hash;
+                let kh = c.vm().c_hash.get();
                 if identity && real_class_of(v) == kh { self.out.push(b'C'); self.uniq_class(c, kh)?; } else { self.uclass(c, v, kh)?; }
                 self.out.push(if def == NIL { b'{' } else { b'}' });
                 w_long(&mut self.out, c.hash_len(v) as i64);
@@ -227,7 +227,7 @@ impl Dumper {
             }
             K::Obj => {
                 let k = real_class_of(v);
-                let (ks, kd) = (c.vm().c_struct, c.vm().c_data);
+                let (ks, kd) = (c.vm().c_struct.get(), c.vm().c_data.get());
                 if crate::builtins::inherits(k, ks) || (kd != NIL && crate::builtins::inherits(k, kd)) {
                     let mem = funcall(c, k, intern(b"members"), &[], std::ptr::null())?;
                     if !ivs.is_empty() { self.out.push(b'I'); }
@@ -354,7 +354,7 @@ impl Loader {
     fn byte(&mut self, c: &mut Ctx) -> Result<u8, Esc> {
         if self.io {
             let v = funcall(c, self.src, intern(b"getbyte"), &[], std::ptr::null())?;
-            if v == NIL { return err(c, c.vm().c_eof_error, "end of file reached"); }
+            if v == NIL { return err(c, c.vm().c_eof_error.get(), "end of file reached"); }
             return Ok(num_to_long(c, v)? as u8);
         }
         match self.data.get(self.pos) { Some(&b) => { self.pos += 1; Ok(b) } None => arg_err(c, TOO_SHORT) }
@@ -408,7 +408,7 @@ impl Loader {
         }
     }
     fn path2class(&mut self, c: &mut Ctx, name: &[u8]) -> RV {
-        let mut k = c.vm().c_object;
+        let mut k = c.vm().c_object.get();
         for part in String::from_utf8_lossy(name).split("::") {
             match const_get_inherit(c, k, intern(part.as_bytes())) {
                 Ok(Some(v)) => k = v,
@@ -546,7 +546,7 @@ impl Loader {
                 let b = self.rbytes(c)?;
                 let data = c.str_from_vec_enc(b, ENC_BINARY);
                 if ivar { self.ivars(c, data)?; ivar_done = true; }
-                if crate::builtins::inherits(k, c.vm().c_time) && c.str_bytes(data).len() == 8 {
+                if crate::builtins::inherits(k, c.vm().c_time.get()) && c.str_bytes(data).len() == 8 {
                     let v = load_time(c, k, data)?;
                     self.entry(c, v);
                     return Ok(v);
@@ -558,7 +558,7 @@ impl Loader {
             b'U' => {
                 let k = self.class(c)?;
                 let idx = self.entry(c, NIL);
-                let (kr, kc) = (c.vm().c_rational, c.vm().c_complex);
+                let (kr, kc) = (c.vm().c_rational.get(), c.vm().c_complex.get());
                 if k == kr || k == kc {
                     let d = self.object(c)?;
                     if !is_array(d) || c.ary_len(d) != 2 { return arg_err(c, "marshaled rational must have an array whose length is 2 but 0"); }

@@ -22,7 +22,7 @@ fn dup(c: &mut Ctx, v: Value) -> RV { if v == NIL { Ok(NIL) } else { crate::buil
 fn validate(c: &mut Ctx, v: Value) -> Result<(), Esc> {
     if v == NIL { return Ok(()); }
     if !is_hash(v) { return type_err(c, "storage must be a hash"); }
-    if is_frozen(v) { let k = c.vm().c_frozen_error; return err(c, k, "storage must not be frozen"); }
+    if is_frozen(v) { let k = c.vm().c_frozen_error.get(); return err(c, k, "storage must not be frozen"); }
     for (k, _) in c.hash_pairs(v) {
         if !k.is_sym() { return type_err(c, format!("wrong argument type {} (expected Symbol)", class_name_for_err(k))); }
     }
@@ -120,8 +120,8 @@ fn f_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(c.str_new(t.as_bytes()))
 }
 
-pub fn init(vmr: &mut Vm) {
-    let k = vmr.c_fiber;
+pub fn init(vmr: &Vm) {
+    let k = vmr.c_fiber.get();
     define_singleton_cfunc(k, "new", f_s_new, -1);
     define_singleton_cfunc(k, "[]", f_s_aref, 1);
     define_singleton_cfunc(k, "[]=", f_s_aset, 2);

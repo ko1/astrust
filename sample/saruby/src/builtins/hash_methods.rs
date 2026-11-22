@@ -93,7 +93,7 @@ cfn!(h_fetch, |c, slf, a, blk| {
             if !blk.is_null() { return yield1(c, blk, a[0]); }
             if a.len() > 1 { return Ok(a[1]); }
             let ins = inspect_str(c, a[0])?;
-            let e = make_exception(c.vm().c_key_error, &format!("key not found: {}", ins));
+            let e = make_exception(c.vm().c_key_error.get(), &format!("key not found: {}", ins));
             ivar_set_raw(e, s::key, a[0]); ivar_set_raw(e, s::receiver, slf);
             Err(raise_exc(c, e))
         }
@@ -188,7 +188,7 @@ cfn!(h_count, |c, slf, a, blk| {
 });
 cfn!(h_to_a, |c, slf, a, blk| hash_to_a(c, slf));
 cfn!(h_to_h, |c, slf, a, blk| {
-    if blk.is_null() { if obj_klass(slf) == c.vm().c_hash { return Ok(slf); } let h = c.hash_dup(slf); obj_set_klass(h, c.vm().c_hash); return Ok(h); }
+    if blk.is_null() { if obj_klass(slf) == c.vm().c_hash.get() { return Ok(slf); } let h = c.hash_dup(slf); obj_set_klass(h, c.vm().c_hash.get()); return Ok(h); }
     let out = c.hash_new();
     each_entry(c, slf, |c, k, v| {
         let r = yield_pair(c, blk, k, v)?;
@@ -258,8 +258,8 @@ cfn!(h_hash, |c, slf, a, blk| {
     Ok(Value::fix((h >> 2) as i64))
 });
 cfn!(h_merge, |c, slf, a, blk| {
-    let out = c.hash_dup(slf); obj_set_klass(out, c.vm().c_hash);
-    if obj_klass(slf) != c.vm().c_hash { obj_set_klass(out, real_class_of(slf)); }
+    let out = c.hash_dup(slf); obj_set_klass(out, c.vm().c_hash.get());
+    if obj_klass(slf) != c.vm().c_hash.get() { obj_set_klass(out, real_class_of(slf)); }
     h_update(c, out, a, blk)?;
     Ok(out)
 });
@@ -280,7 +280,7 @@ cfn!(h_replace, |c, slf, a, blk| {
     modify(c, slf)?;
     let o = match check_hash(c, a[0])? { Some(o) => o, None => return type_err(c, "no implicit conversion into Hash") };
     if o == slf { return Ok(slf); }
-    if c.hash_iterating(slf) { return err(c, c.vm().c_runtime_error, "can't replace hash during iteration"); }
+    if c.hash_iterating(slf) { return err(c, c.vm().c_runtime_error.get(), "can't replace hash during iteration"); }
     let (d, others) = c.hash_mut_and(slf);
     if let Some(o) = others.hash(o) { d.clear(); d.identity = o.identity; d.default = o.default; d.default_proc = o.default_proc; }
     copy_entries(c, slf, o, false)?;
@@ -341,7 +341,7 @@ cfn!(h_sum, |c, slf, a, blk| { let arr = hash_to_a(c, slf)?; crate::builtins::ar
 cfn!(h_min_by, |c, slf, a, blk| { let arr = hash_to_a(c, slf)?; funcall(c, arr, intern(b"min_by"), a, blk) });
 cfn!(h_sort_by, |c, slf, a, blk| { let arr = hash_to_a(c, slf)?; funcall(c, arr, s::sort_by, a, blk) });
 cfn!(h_slice, |c, slf, a, blk| { let out = c.hash_new(); for &k in a { if let Some(v) = hash_get_opt(c, slf, k)? { hash_set(c, out, k, v)?; } } Ok(out) });
-cfn!(h_except, |c, slf, a, blk| { let out = c.hash_dup(slf); obj_set_klass(out, c.vm().c_hash); for &k in a { hash_delete(c, out, k)?; } Ok(out) });
+cfn!(h_except, |c, slf, a, blk| { let out = c.hash_dup(slf); obj_set_klass(out, c.vm().c_hash.get()); for &k in a { hash_delete(c, out, k)?; } Ok(out) });
 cfn!(h_filter_keys_dig, |c, slf, a, blk| {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
     let v = hash_aref(c, slf, a[0])?;
@@ -368,7 +368,7 @@ cfn!(h_first, |c, slf, a, blk| {
 cfn!(h_compare_by_identity, |c, slf, a, blk| {
     modify(c, slf)?;
     // before the flag changes: a failed rehash would leave the index on the old hash codes
-    if c.hash_iterating(slf) { return err(c, c.vm().c_runtime_error, "compare_by_identity during iteration"); }
+    if c.hash_iterating(slf) { return err(c, c.vm().c_runtime_error.get(), "compare_by_identity during iteration"); }
     c.hash_mut(slf).identity = true;
     hash_rehash(c, slf)?;
     Ok(slf)
@@ -402,7 +402,7 @@ cfn!(h_gt, |c, slf, a, blk| { if !is_hash(a[0]) { return type_err(c, "no implici
 cfn!(h_freeze, |c, slf, a, blk| { obj_set_flags(slf, FL_FROZEN); Ok(slf) });
 cfn!(h_to_proc, |c, slf, a, blk| {
     let b = Block::cfunc(c, |c, d, args, _b| { if args.is_empty() { return argc_err(c, 0, 1, 1); } hash_aref(c, d, args[0]) }, slf);
-    let k = c.vm().c_proc;
+    let k = c.vm().c_proc.get();
     let p = c.alloc(k, Body::Proc(Box::new(ProcData { blk: b, is_lambda: true, from_method: NIL })));
     c.proc_data_mut(p).blk.proc_val = p;
     Ok(p)

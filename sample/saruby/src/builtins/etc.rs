@@ -52,10 +52,10 @@ fn io_pathconf(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(Value::fix(r))
 }
 pub fn init(c: &mut Ctx) {
-    let ob = c.vm().c_object;
+    let ob = c.vm().c_object.get();
     let m = const_get_at(ob, intern(b"Etc")).unwrap_or_else(|| define_module("Etc"));
     define_module_function(m, "sysconf", etc_sysconf, 1);
     define_module_function(m, "confstr", etc_confstr, 1);
-    let io = c.vm().c_io;
+    let io = c.vm().c_io.get();
     define_cfunc(io, "pathconf", io_pathconf, 1);
 }

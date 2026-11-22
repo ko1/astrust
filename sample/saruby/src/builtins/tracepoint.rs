@@ -78,7 +78,7 @@ fn rt(c: &Ctx, v: Value) -> Option<&RTrace> { c.data::<RTrace>(v) }
 fn rt_mut(c: &mut Ctx, v: Value) -> &mut RTrace { c.data_mut::<RTrace>(v).expect("a TracePoint") }
 
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
-    let k = c.vm().c_tracepoint;
+    let k = c.vm().c_tracepoint.get();
     if k != NIL && crate::builtins::inherits(klass, k) {
         return Ok(Some(c.alloc(klass, Body::Data(Box::new(RTrace { events: 0, proc_: NIL, enabled: false, target: 0, target_line: 0, target_thread: NIL, stf: false, cur: None })))));
     }
@@ -86,10 +86,10 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
 }
 
 fn list(c: &mut Ctx) -> Value {
-    let l = c.vm().trace_list;
+    let l = c.vm().trace_list.get();
     if l != NIL { return l; }
     let a = c.ary_new();
-    c.vm_mut().trace_list = a;
+    c.vm().trace_list.set(a);
     a
 }
 /// The mask is the union of the enabled hooks' events.
@@ -112,7 +112,7 @@ fn method_of(c: &Ctx, me: *const MethodEntry) -> (Option<Sym>, Option<Sym>, Valu
         Some(m) => {
             let orig = match m.kind { MKind::Iseq(is) => c.iseq_ref(is).map(|i| i.name).filter(|n| n.0 != 0).unwrap_or(m.name), _ => m.name };
             // an alias' entry is a copy of the original under its own name (object::alias_method)
-            let called = c.vm().alias_names.get(&(me as usize)).copied().unwrap_or(m.name);
+            let called = c.vm().alias_names.borrow().get(&(me as usize)).copied().unwrap_or(m.name);
             (Some(orig), Some(called), m.owner)
         }
         None => (None, None, NIL),
@@ -147,7 +147,7 @@ fn in_target(c: &Ctx, is: usize, target: usize) -> bool {
 }
 
 fn current_thread(c: &mut Ctx) -> Value {
-    let k = c.vm().c_thread;
+    let k = c.vm().c_thread.get();
     // reports nothing itself
     let was = IN_HOOK.with(|h| h.replace(true));
     let saved = (c.esc, c.esc_val, c.esc_tag, c.esc_tag_v);
@@ -160,7 +160,7 @@ fn current_thread(c: &mut Ctx) -> Value {
 /// Run the hooks enabled for event `a`.  An exception from a hook propagates.
 pub fn fire(c: &mut Ctx, a: Arg) -> Result<(), Esc> {
     if IN_HOOK.with(|h| h.get()) && !REENTRY.with(|r| r.get()) { return Ok(()); }
-    let l = c.vm().trace_list;
+    let l = c.vm().trace_list.get();
     if l == NIL { return Ok(()); }
     // by index: enable / disable replace the list, so `l` (kept on the stack) holds the hooks alive
     let mut thread = None;
@@ -258,22 +258,22 @@ pub fn invoke_traced(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk
         MKind::Bmethod(_) => (EV_CALL, EV_RETURN),
         MKind::Cfunc(..) | MKind::AttrReader(_) | MKind::AttrWriter(_) => {
             // Proc#call and friends are not reported (CRuby's opt_call)
-            if owner == c.vm().c_proc && matches!(sym_str(name).as_str(), "call" | "()" | "yield" | "===" | "[]") { return invoke_untraced(c, me, recv, base, argc, blk, flags); }
+            if owner == c.vm().c_proc.get() && matches!(sym_str(name).as_str(), "call" | "()" | "yield" | "===" | "[]") { return invoke_untraced(c, me, recv, base, argc, blk, flags); }
             (EV_C_CALL, EV_C_RETURN)
         }
         _ => return invoke_untraced(c, me, recv, base, argc, blk, flags),
     };
     if is_internal(c) { return invoke_untraced(c, me, recv, base, argc, blk, flags); }
-    let k = c.vm().c_tracepoint;
+    let k = c.vm().c_tracepoint.get();
     if k != NIL && (recv == k || real_class_of(recv) == k) {
         if let Some(&(_, d, b, e)) = TP_RB.iter().find(|x| x.0 == sym_str(name)) { return invoke_tp_rb(c, me, recv, base, argc, blk, flags, (d, b, e)); }
     }
     if trace_mask() & (call_ev | ret_ev) == 0 { return invoke_untraced(c, me, recv, base, argc, blk, flags); }
     // Class#new is not reported (CRuby 4.0's opt_new), its BasicObject#initialize is (here the default is not called)
-    if me == c.vm().ids.c_new {
+    if me == c.vm().ids.c_new.get() {
         let r = invoke_untraced(c, me, recv, base, argc, blk, flags)?;
         let im = lookup_method(real_class_of(r), intern(b"initialize"));
-        if im == c.vm().ids.bo_init {
+        if im == c.vm().ids.bo_init.get() {
             let mut a = frame_arg(c, EV_C_CALL);
             let (mid, callee, klass) = method_of(c, im);
             a.mid = mid; a.callee = callee; a.klass = klass; a.self_ = r;
@@ -381,7 +381,7 @@ fn tp_new(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return arg_err(c, "must be called with a block"); }
     let p = block_to_proc(c, blk)?;
     TRACE_COMPILE.store(true, std::sync::atomic::Ordering::Relaxed);
-    let k = if is_class_or_module(slf) { slf } else { c.vm().c_tracepoint };
+    let k = if is_class_or_module(slf) { slf } else { c.vm().c_tracepoint.get() };
     let t = alloc_data(c, k)?.unwrap();
     let d = rt_mut(c, t);
     d.events = ev; d.proc_ = p;
@@ -402,7 +402,7 @@ fn enable(c: &mut Ctx, t: Value, target: usize, line: u32, thread: Value) -> Res
     let mut v: Vec<Value> = c.ary(l).iter().copied().filter(|&x| x != t).collect();
     v.insert(pos.min(v.len()), t);
     let na = c.ary_from_vec(v);
-    c.vm_mut().trace_list = na;
+    c.vm().trace_list.set(na);
     update_mask(c);
     Ok(())
 }
@@ -410,7 +410,7 @@ fn disable(c: &mut Ctx, t: Value) {
     let l = list(c);
     let v: Vec<Value> = c.ary(l).iter().copied().filter(|&x| x != t).collect();
     let na = c.ary_from_vec(v);
-    c.vm_mut().trace_list = na;
+    c.vm().trace_list.set(na);
     let d = rt_mut(c, t);
     d.enabled = false; d.target = 0; d.target_line = 0; d.target_thread = NIL;
     update_mask(c);
@@ -484,7 +484,7 @@ fn tp_disable(c: &mut Ctx, t: Value, _a: &[Value], blk: *const Block) -> RV {
 fn tp_enabled_p(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(rt(c, t).is_some_and(|d| d.enabled))) }
 
 fn cur(c: &mut Ctx, t: Value) -> Result<Arg, Esc> {
-    match rt(c, t).and_then(|d| d.cur) { Some(a) => Ok(a), None => err(c, c.vm().c_runtime_error, "access from outside") }
+    match rt(c, t).and_then(|d| d.cur) { Some(a) => Ok(a), None => err(c, c.vm().c_runtime_error.get(), "access from outside") }
 }
 fn tp_event(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV { let a = cur(c, t)?; Ok(sym_value(ev_name(a.ev))) }
 fn tp_lineno(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV { let a = cur(c, t)?; Ok(Value::fix(a.line as i64)) }
@@ -503,17 +503,17 @@ fn tp_binding(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
 }
 fn tp_return_value(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
     let a = cur(c, t)?;
-    if !matches!(a.ev, EV_RETURN | EV_C_RETURN | EV_B_RETURN) { return err(c, c.vm().c_runtime_error, "not supported by this event"); }
+    if !matches!(a.ev, EV_RETURN | EV_C_RETURN | EV_B_RETURN) { return err(c, c.vm().c_runtime_error.get(), "not supported by this event"); }
     Ok(a.ret)
 }
 fn tp_raised_exception(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
     let a = cur(c, t)?;
-    if !matches!(a.ev, EV_RAISE | EV_RESCUE) { return err(c, c.vm().c_runtime_error, "not supported by this event"); }
+    if !matches!(a.ev, EV_RAISE | EV_RESCUE) { return err(c, c.vm().c_runtime_error.get(), "not supported by this event"); }
     Ok(a.exc)
 }
 fn tp_eval_script(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
     let a = cur(c, t)?;
-    if a.ev != EV_SCRIPT_COMPILED { return err(c, c.vm().c_runtime_error, "not supported by this event"); }
+    if a.ev != EV_SCRIPT_COMPILED { return err(c, c.vm().c_runtime_error.get(), "not supported by this event"); }
     Ok(a.script)
 }
 fn tp_parameters(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
@@ -524,7 +524,7 @@ fn tp_parameters(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
             Ok(crate::builtins::proc::params_list(c, a.iseq as *const Iseq, lambda))
         }
         EV_CALL | EV_RETURN | EV_B_CALL | EV_B_RETURN | EV_C_CALL | EV_C_RETURN => Ok(c.ary_new()),
-        _ => err(c, c.vm().c_runtime_error, "not supported by this event"),
+        _ => err(c, c.vm().c_runtime_error.get(), "not supported by this event"),
     }
 }
 fn tp_inspect(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
@@ -540,7 +540,7 @@ fn tp_inspect(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(c.str_new(s.as_bytes()))
 }
 fn tp_s_allow_reentry(c: &mut Ctx, _s: Value, _a: &[Value], blk: *const Block) -> RV {
-    if !IN_HOOK.with(|h| h.get()) { return err(c, c.vm().c_runtime_error, "No need to allow reentrance."); }
+    if !IN_HOOK.with(|h| h.get()) { return err(c, c.vm().c_runtime_error.get(), "No need to allow reentrance."); }
     let was = REENTRY.with(|r| r.replace(true));
     let in_hook = IN_HOOK.with(|h| h.replace(false));
     let r = yield_block(c, blk, &[]);
@@ -560,7 +560,7 @@ fn k_set_trace_func(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV
     let before = trace_mask();
     TRACE_COMPILE.store(true, std::sync::atomic::Ordering::Relaxed);
     init_class(c);
-    let k = c.vm().c_tracepoint;
+    let k = c.vm().c_tracepoint.get();
     let t = alloc_data(c, k)?.unwrap();
     let d = rt_mut(c, t);
     d.events = EV_LINE | EV_CLASS | EV_END | EV_CALL | EV_RETURN | EV_C_CALL | EV_C_RETURN | EV_RAISE;
@@ -569,22 +569,22 @@ fn k_set_trace_func(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV
     // its own c-return, which invoke_traced did not see coming
     if before & EV_CALLS == 0 {
         let mut ar = frame_arg(c, EV_C_RETURN);
-        ar.mid = Some(intern(b"set_trace_func")); ar.callee = ar.mid; ar.klass = c.vm().m_kernel; ar.ret = a[0];
+        ar.mid = Some(intern(b"set_trace_func")); ar.callee = ar.mid; ar.klass = c.vm().m_kernel.get(); ar.ret = a[0];
         fire(c, ar)?;
     }
     Ok(a[0])
 }
 
 /// set_trace_func at boot; TracePoint itself is defined on its first reference ("saruby/tracepoint").
-pub fn init(vmr: &mut Vm) {
-    define_module_function(vmr.m_kernel, "set_trace_func", k_set_trace_func, 1);
-    crate::builtins::lazy_const(vmr.c_object, "TracePoint", "saruby/tracepoint");
+pub fn init(vmr: &Vm) {
+    define_module_function(vmr.m_kernel.get(), "set_trace_func", k_set_trace_func, 1);
+    crate::builtins::lazy_const(vmr.c_object.get(), "TracePoint", "saruby/tracepoint");
 }
 pub fn init_class(c: &mut Ctx) {
-    if c.vm().c_tracepoint != NIL { return; }
-    let k = define_class("TracePoint", c.vm().c_object);
+    if c.vm().c_tracepoint.get() != NIL { return; }
+    let k = define_class("TracePoint", c.vm().c_object.get());
     class_set_alloc(k, AllocKind::None);
-    c.vm_mut().c_tracepoint = k;
+    c.vm().c_tracepoint.set(k);
     define_singleton_cfunc(k, "new", tp_new, -1);
     define_singleton_cfunc(k, "trace", tp_s_trace, -1);
     define_singleton_cfunc(k, "allow_reentry", tp_s_allow_reentry, 0);

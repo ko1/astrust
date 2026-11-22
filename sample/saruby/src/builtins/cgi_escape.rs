@@ -11,7 +11,7 @@ use crate::vm::*;
 
 fn nb() -> *const Block { std::ptr::null() }
 fn ext_mod(c: &Ctx) -> Value {
-    let cgi = const_get_at(c.vm().c_object, intern(b"CGI")).unwrap_or(NIL);
+    let cgi = const_get_at(c.vm().c_object.get(), intern(b"CGI")).unwrap_or(NIL);
     if cgi == NIL { NIL } else { const_get_at(cgi, intern(b"EscapeExt")).unwrap_or(NIL) }
 }
 /// rb_call_super: the pure-Ruby CGI::Escape method this one is prepended over.
@@ -158,7 +158,7 @@ fn accept_charset(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
     let k = class_of(slf);
     match crate::rt::cvar_lookup(k, intern(b"@@accept_charset")) {
         Some((_, v)) => Ok(v),
-        None => err(c, c.vm().c_name_error, format!("uninitialized class variable @@accept_charset in {}", class_path(real_class_of(slf)))),
+        None => err(c, c.vm().c_name_error.get(), format!("uninitialized class variable @@accept_charset in {}", class_path(real_class_of(slf)))),
     }
 }
 fn ascii(c: &Ctx, s: Value) -> bool { en::ascii_compat(c.str_enc(s)) }
@@ -194,7 +194,7 @@ fn e_unescape_uri(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV 
 }
 /// InitVM_escape (after cgi/escape.rb has defined the Ruby versions).
 pub fn init(c: &mut Ctx) -> Result<(), Esc> {
-    let ob = c.vm().c_object;
+    let ob = c.vm().c_object.get();
     let cgi = match const_get_at(ob, intern(b"CGI")) { Some(v) => v, None => define_class("CGI", ob) };
     let ext = match const_get_at(cgi, intern(b"EscapeExt")) { Some(v) => v, None => define_module_under(cgi, "EscapeExt") };
     let esc = match const_get_at(cgi, intern(b"Escape")) { Some(v) => v, None => define_module_under(cgi, "Escape") };

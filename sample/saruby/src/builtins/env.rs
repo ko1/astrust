@@ -47,7 +47,7 @@ fn env_fetch(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     if let Some(v) = get(&k) { return Ok(env_str(c, &v)); }
     if !b.is_null() { return yield1(c, b, a[0]); }
     if a.len() > 1 { return Ok(a[1]); }
-    let e = make_exception(c.vm().c_key_error, &format!("key not found: {}", inspect_bytes(&k, ENC_UTF8)));
+    let e = make_exception(c.vm().c_key_error.get(), &format!("key not found: {}", inspect_bytes(&k, ENC_UTF8)));
     ivar_set_raw(e, intern(b"receiver"), s); ivar_set_raw(e, intern(b"key"), a[0]);
     Err(raise_exc(c, e))
 }
@@ -128,8 +128,8 @@ fn env_dup(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { type_
 fn env_clone(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { type_err(c, "Cannot clone ENV, use ENV.to_h to get a copy of ENV as a hash") }
 
 pub fn init(c: &mut Ctx) {
-    let env = new_object(c.vm().c_object);
-    include_module(singleton_class(env), c.vm().m_enumerable);
+    let env = new_object(c.vm().c_object.get());
+    include_module(singleton_class(env), c.vm().m_enumerable.get());
     let d = |n: &str, f: CFunc, a: i32| define_singleton_cfunc(env, n, f, a);
     d("[]", env_aref, 1); d("fetch", env_fetch, -1); d("[]=", env_aset, 2); d("store", env_aset, 2); d("delete", env_delete, 1);
     for n in ["key?", "has_key?", "include?", "member?"] { d(n, env_key_p, 1); }
@@ -140,5 +140,5 @@ pub fn init(c: &mut Ctx) {
     d("update", env_update, -1); d("merge!", env_update, -1);
     for n in ["replace", "delete_if", "reject!", "keep_if", "select!", "filter!", "shift"] { d(n, env_mutate, -1); }
     d("freeze", env_freeze, 0); d("dup", env_dup, 0); d("clone", env_clone, -1); d("rehash", |_c, _s, _a, _b| Ok(NIL), 0);
-    const_set(c.vm().c_object, intern(b"ENV"), env);
+    const_set(c.vm().c_object.get(), intern(b"ENV"), env);
 }

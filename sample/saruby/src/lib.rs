@@ -77,7 +77,7 @@ use vm::*;
 
 /// Run a top-level iseq with the given self.
 pub fn run_top_iseq(c: &mut Ctx, is: &'static Iseq, slf: Value) -> RV {
-    run_top_iseq_cref(c, is, slf, vm().top_cref)
+    run_top_iseq_cref(c, is, slf, vm().top_cref.get())
 }
 
 pub fn run_top_iseq_cref(c: &mut Ctx, is: &'static Iseq, slf: Value, cref: *const Cref) -> RV {
@@ -96,7 +96,7 @@ pub fn run_top_iseq_cref(c: &mut Ctx, is: &'static Iseq, slf: Value, cref: *cons
     nil_fill(base, 2, is.nlocals as usize);
     c.set_sp(base, is.nlocals as usize);
     if is.env_size > 0 {
-        let env = gc::alloc(vm().c_env, object::Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), NIL));
+        let env = gc::alloc(vm().c_env.get(), object::Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), NIL));
         base[1].set(env);
     }
     c.frame = &mut fr.h;
@@ -202,18 +202,18 @@ fn run_main(o: Opts) -> i32 {
     c.attach_stack(stack_new(8 << 20));
     let probe = 0u8;
     c.native_limit = (&probe as *const u8 as usize).saturating_sub(STACK_BYTES - (4 << 20));
-    vm().main_ctx = &mut c;
+    vm().main_ctx.set(&mut c);
     let mut top = Frame::empty(c.bottom());
     c.frame = &mut top.h;
 
     let vm = vm();
-    vm.verbose = if o.warn { TRUE } else { FALSE };
+    vm.verbose.set(if o.warn { TRUE } else { FALSE });
     if o.warn { builtins::misc::warning_enable_deprecated(); }
-    for d in &o.incdirs { let s = string::str_new(d.as_bytes()); array::ary_push(vm.load_path, s); }
+    for d in &o.incdirs { let s = string::str_new(d.as_bytes()); array::ary_push(vm.load_path.get(), s); }
     builtins::prelude::setup_load_path(&mut c);
-    for a in &o.args { let s = string::str_new(a); array::ary_push(vm.argv, s); }
+    for a in &o.args { let s = string::str_new(a); array::ary_push(vm.argv.get(), s); }
     aot::init(if o.plain { None } else { Some(&o.store) }, o.aot);
-    vm.aot_collect = o.aot;
+    vm.aot_collect.set(o.aot);
 
     let (src, file): (Vec<u8>, String) = if !o.e.is_empty() {
         (o.e.join(&b"\n"[..]), "-e".into())
@@ -228,8 +228,8 @@ fn run_main(o: Opts) -> i32 {
         let _ = std::io::stdin().read_to_end(&mut b);
         (b, "-".into())
     };
-    vm.main_file = file.clone();
-    vm.dollar_zero = string::str_new(file.as_bytes());
+    *vm.main_file.borrow_mut() = file.clone();
+    vm.dollar_zero.set(string::str_new(file.as_bytes()));
     let file: &'static str = Box::leak(file.into_boxed_str());
 
     inline_builtin::init(&c);
@@ -264,7 +264,7 @@ fn run_main(o: Opts) -> i32 {
         let s = string::str_new(r.as_bytes());
         if builtins::kernel::require_feature(&mut c, s, false).is_err() { let e = c.esc_val; report_exception(&mut c, e); return 1; }
     }
-    let r = run_top_iseq(&mut c, is, vm.main_obj);
+    let r = run_top_iseq(&mut c, is, vm.main_obj.get());
     if r.is_err() { status = handle_toplevel_error(&mut c); }
     status = run_exit_handlers(&mut c, status);
     #[cfg(feature = "nodeprof")] nodeprof::report();
@@ -276,7 +276,7 @@ fn run_main(o: Opts) -> i32 {
     }
     if o.verbose_astro {
         let st = gc::stats();
-        eprintln!("saruby: sd_hits={} gc={} gc_count={} gc_time={:?} heap_slots={} allocated={}", vm.sd_hits, gc::backend_name(), gc::collections(), gc::total_time(), st.slots, st.allocated);
+        eprintln!("saruby: sd_hits={} gc={} gc_count={} gc_time={:?} heap_slots={} allocated={}", vm.sd_hits.get(), gc::backend_name(), gc::collections(), gc::total_time(), st.slots, st.allocated);
     }
     status
 }
@@ -285,7 +285,7 @@ fn run_main(o: Opts) -> i32 {
 pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
     let vm = vm();
     loop {
-        let ae = vm.at_exit;
+        let ae = vm.at_exit.get();
         let Some(p) = array::rary(ae).pop() else { break };
         c.esc = EscKind::None;
         if call_proc(c, p, &[], std::ptr::null()).is_err() { status = handle_toplevel_error(c); }
@@ -307,15 +307,15 @@ fn handle_toplevel_error(c: &mut Ctx) -> i32 {
         EscKind::Raise => {
             let e = c.esc_val;
             c.esc = EscKind::None;
-            if is_kind_of(e, vm().c_system_exit) {
+            if is_kind_of(e, vm().c_system_exit.get()) {
                 let st = ivar_get(e, symbol::s::status);
                 return if st.is_fixnum() { st.as_fix() as i32 } else { 0 };
             }
-            if is_kind_of(e, vm().c_signal_exception) || ivar_get(e, symbol::intern(b"signo")).is_fixnum() {
+            if is_kind_of(e, vm().c_signal_exception.get()) || ivar_get(e, symbol::intern(b"signo")).is_fixnum() {
                 let no = ivar_get(e, symbol::intern(b"signo"));
                 if no.is_fixnum() {
                     builtins::process::die_by_signal_at_exit(no.as_fix() as i32);
-                    if !is_kind_of(e, vm().c_interrupt) { return 128 + no.as_fix() as i32; }
+                    if !is_kind_of(e, vm().c_interrupt.get()) { return 128 + no.as_fix() as i32; }
                 }
             }
             report_exception(c, e);

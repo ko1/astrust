@@ -46,7 +46,7 @@ pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     alloc_data(c, k)
 }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
-    let k = c.vm().c_string_scanner;
+    let k = c.vm().c_string_scanner.get();
     if k != NIL && crate::builtins::inherits(klass, k) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(RScan { str: UNDEF, pos: 0, prev: 0, groups: None, re: NIL, fixed: false, base: 0 }))))); }
     Ok(None)
 }
@@ -183,7 +183,7 @@ fn ss_set_pos(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let s = sc(c, slf)?;
     let len = c.str_len(s.str) as i64;
     let p = if n < 0 { n + len } else { n };
-    if p < 0 || p > len { return err(c, c.vm().c_range_error, "index out of range"); }
+    if p < 0 || p > len { return err(c, c.vm().c_range_error.get(), "index out of range"); }
     sc_mut(c, slf).pos = p as usize;
     Ok(a[0])
 }
@@ -191,7 +191,7 @@ fn ss_reset(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { sc(
 fn ss_terminate(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let s = sc(c, slf)?; let n = c.str_len(s.str); let s = sc_mut(c, slf); s.pos = n; s.groups = None; Ok(slf) }
 fn ss_unscan(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let s = sc(c, slf)?;
-    if s.ngroups.is_none() { return err(c, c.vm().c_string_scanner_error, "unscan failed: previous match record not exist"); }
+    if s.ngroups.is_none() { return err(c, c.vm().c_string_scanner_error.get(), "unscan failed: previous match record not exist"); }
     let st = sc_mut(c, slf);
     st.pos = s.prev; st.groups = None;
     Ok(slf)
@@ -226,7 +226,7 @@ fn ss_post_match(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV 
 }
 fn name_index(c: &mut Ctx, re: Value, name: &str) -> Result<i64, Esc> {
     if let Some(r) = crate::regexp::rregexp(c, re) { if let Some(&i) = r.re.as_ref().unwrap().group_index(name).last() { return Ok(i as i64); } }
-    err(c, c.vm().c_index_error, format!("undefined group name reference: {}", name))
+    err(c, c.vm().c_index_error.get(), format!("undefined group name reference: {}", name))
 }
 fn ss_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let s = sc(c, slf)?;
@@ -281,7 +281,7 @@ fn ss_scan_integer(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
     sc_mut(c, slf).groups = None;
     let enc = c.str_enc(s.str);
     if !crate::builtins::encoding::ascii_compat(enc) {
-        return err(c, c.vm().c_compat_error, format!("ASCII incompatible encoding: {}", crate::builtins::encoding::enc_name(enc)));
+        return err(c, c.vm().c_compat_error.get(), format!("ASCII incompatible encoding: {}", crate::builtins::encoding::enc_name(enc)));
     }
     // strscan_scan_base10_integer / strscan_scan_base16_integer
     let b = c.str_bytes(s.str);
@@ -315,11 +315,11 @@ fn ss_fixed_anchor_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) ->
 
 /// Run by the first `require "strscan"`.
 pub fn init(c: &mut Ctx) {
-    let k = define_class("StringScanner", c.vm().c_object);
+    let k = define_class("StringScanner", c.vm().c_object.get());
     class_set_alloc(k, AllocKind::None);
-    let e = define_class_under(k, "Error", c.vm().c_standard_error);
-    c.vm_mut().c_string_scanner = k;
-    c.vm_mut().c_string_scanner_error = e;
+    let e = define_class_under(k, "Error", c.vm().c_standard_error.get());
+    c.vm().c_string_scanner.set(k);
+    c.vm().c_string_scanner_error.set(e);
     let v = c.str_new_frozen(b"3.1.6");
     const_set(k, intern(b"Version"), v);
     let v = c.str_new_frozen(b"$Id$");

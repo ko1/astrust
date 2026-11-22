@@ -50,7 +50,7 @@ pub fn each_overridden(c: &Ctx, recv: Value, native: CFunc) -> bool {
 /// Call Enumerable's own implementation of mid on recv (for natives whose #each was overridden).
 pub fn call_enumerable(c: &mut Ctx, recv: Value, mid: &str, args: &[Value], blk: *const Block) -> RV {
     let mid = crate::symbol::intern(mid.as_bytes());
-    let me = lookup_method(c.vm().m_enumerable, mid);
+    let me = lookup_method(c.vm().m_enumerable.get(), mid);
     if me.is_null() { return funcall(c, recv, mid, args, blk); }
     let base = c.top();
     if !c.has_room(args.len() + 2) { return funcall(c, recv, mid, args, blk); }
@@ -98,14 +98,14 @@ fn run_each(c: &mut Ctx, recv: Value, f: CBlockFn, data: Value, args: &[Value]) 
 }
 /// First and last element of an Integer Range whose #each is Range's own.
 fn int_range(c: &Ctx, recv: Value) -> Option<(i64, i64)> {
-    if !is_range(recv) || obj_klass(recv) != c.vm().c_range || range_each_redefined(c) { return None; }
+    if !is_range(recv) || obj_klass(recv) != c.vm().c_range.get() || range_each_redefined(c) { return None; }
     match c.range(recv) {
         (b, e, x) if b.is_fixnum() && e.is_fixnum() => Some((b.as_fix(), if x { e.as_fix() - 1 } else { e.as_fix() })),
         _ => None,
     }
 }
 fn range_each_redefined(c: &Ctx) -> bool {
-    !matches!(c.method_entry(c.vm().c_range, s::each), Some(me) if std::ptr::eq(me, c.vm().ids.r_each))
+    !matches!(c.method_entry(c.vm().c_range.get(), s::each), Some(me) if std::ptr::eq(me, c.vm().ids.r_each.get()))
 }
 fn enum_stop(c: &mut Ctx, data: Value) -> RV { c.esc = EscKind::Throw; c.esc_tag_v = data; c.esc_val = NIL; Err(Esc) }
 

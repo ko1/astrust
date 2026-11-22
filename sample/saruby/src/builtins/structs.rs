@@ -48,7 +48,7 @@ fn st_s_new(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
             let sv = expect_str(c, x)?;
             let b = c.str_bytes(sv);
             if b.is_empty() || !b[0].is_ascii_uppercase() && b[0] < 0x80 {
-                let e = make_name_error(c, c.vm().c_name_error, &format!("identifier {} needs to be constant", String::from_utf8_lossy(b)), NIL, slf)?;
+                let e = make_name_error(c, c.vm().c_name_error.get(), &format!("identifier {} needs to be constant", String::from_utf8_lossy(b)), NIL, slf)?;
                 return Err(raise_exc(c, e));
             }
             cname = sv;
@@ -139,7 +139,7 @@ fn idx_of(c: &mut Ctx, slf: Value, k: Value) -> Result<Sym, Esc> {
     if k.is_sym() || is_string(k) {
         let n = if k.is_sym() { k.as_sym() } else { intern(c.str_bytes(k)) };
         if !c.ary(mem).contains(&Value::sym(n)) {
-            let e = make_name_error(c, c.vm().c_name_error, &format!("no member '{}' in struct", sym_str(n)), Value::sym(n), slf)?;
+            let e = make_name_error(c, c.vm().c_name_error.get(), &format!("no member '{}' in struct", sym_str(n)), Value::sym(n), slf)?;
             return Err(raise_exc(c, e));
         }
         return Ok(n);
@@ -149,7 +149,7 @@ fn idx_of(c: &mut Ctx, slf: Value, k: Value) -> Result<Sym, Esc> {
     let j = if i < 0 { i + len } else { i };
     if j < 0 || j >= len {
         let msg = if i < 0 { format!("offset {} too small for struct(size:{})", i, len) } else { format!("offset {} too large for struct(size:{})", i, len) };
-        return err(c, c.vm().c_index_error, msg);
+        return err(c, c.vm().c_index_error.get(), msg);
     }
     Ok(c.ary_get(mem, j as usize).as_sym())
 }
@@ -243,8 +243,8 @@ fn st_values_at(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     for &x in a {
         if is_range(x) { continue; }
         let i = crate::builtins::numeric_methods::num_to_long(c, x)?;
-        if i < -len { return err(c, c.vm().c_index_error, format!("offset {} too small for struct(size:{})", i, len)); }
-        if i >= len { return err(c, c.vm().c_index_error, format!("offset {} too large for struct(size:{})", i, len)); }
+        if i < -len { return err(c, c.vm().c_index_error.get(), format!("offset {} too small for struct(size:{})", i, len)); }
+        if i >= len { return err(c, c.vm().c_index_error.get(), format!("offset {} too large for struct(size:{})", i, len)); }
     }
     crate::builtins::array_methods::a_values_at(c, arr, a, b)
 }

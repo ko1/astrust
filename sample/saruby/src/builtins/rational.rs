@@ -82,7 +82,7 @@ pub fn rat_parts(c: &Ctx, v: Value) -> (Value, Value) { let r = c.data::<RRation
 
 /// Already-normalized parts.
 pub fn rat_raw(c: &mut Ctx, num: Value, den: Value) -> Value {
-    let k = c.vm().c_rational;
+    let k = c.vm().c_rational.get();
     // built after the slot is found: num and den stay on the stack (rooted) through a collection
     let v = c.alloc_with(k, move || Body::Data(Box::new(RRational { num, den })));
     obj_set_flags(v, FL_FROZEN);
@@ -97,7 +97,7 @@ pub fn rat_new(c: &mut Ctx, num: Value, den: Value) -> Value {
     if g != Value::fix(1) && !iszero(g) { n = idiv(c, n, g); d = idiv(c, d, g); }
     rat_raw(c, n, d)
 }
-fn zerodiv<T>(c: &mut Ctx) -> Result<T, Esc> { err(c, c.vm().c_zero_div_error, "divided by 0") }
+fn zerodiv<T>(c: &mut Ctx) -> Result<T, Esc> { err(c, c.vm().c_zero_div_error.get(), "divided by 0") }
 pub fn rat_new_checked(c: &mut Ctx, num: Value, den: Value) -> RV {
     if iszero(den) { return zerodiv(c); }
     Ok(rat_new(c, num, den))
@@ -118,7 +118,7 @@ pub fn float_parts(c: &mut Ctx, f: f64) -> (Value, Value) {
     else { let nv = c.big_to_value(n); (nv, c.big_to_value(BigInt::from_i64(1).shl((-e) as usize))) }
 }
 pub fn float_to_r(c: &mut Ctx, f: f64) -> RV {
-    if !f.is_finite() { return err(c, c.vm().c_float_domain_error, float_to_s(f)); }
+    if !f.is_finite() { return err(c, c.vm().c_float_domain_error.get(), float_to_s(f)); }
     let (n, d) = float_parts(c, f);
     Ok(rat_raw(c, n, d))
 }
@@ -405,7 +405,7 @@ fn simplest_between(c: &mut Ctx, a: (Value, Value), b: (Value, Value)) -> (Value
 fn norm_pair(c: &mut Ctx, n: Value, d: Value) -> (Value, Value) { let r = rat_new(c, n, d); rat_parts(c, r) }
 fn to_exact_pair(c: &mut Ctx, v: Value) -> Result<(Value, Value), Esc> {
     if let Some(p) = exact_parts(c, v) { return Ok(p); }
-    if is_float(v) { let f = float_val(v); if !f.is_finite() { return err(c, c.vm().c_float_domain_error, float_to_s(f)); } return Ok(float_parts(c, f)); }
+    if is_float(v) { let f = float_val(v); if !f.is_finite() { return err(c, c.vm().c_float_domain_error.get(), float_to_s(f)); } return Ok(float_parts(c, f)); }
     let r = funcall(c, v, intern(b"to_r"), &[], std::ptr::null())?;
     match exact_parts(c, r) { Some(p) => Ok(p), None => type_err(c, format!("can't convert {} into Rational", class_name_for_err(v))) }
 }
@@ -432,7 +432,7 @@ fn flo_to_r(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { float
 fn flo_rationalize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 0, 1)?;
     let f = float_val(s);
-    if !f.is_finite() { return err(c, c.vm().c_float_domain_error, float_to_s(f)); }
+    if !f.is_finite() { return err(c, c.vm().c_float_domain_error.get(), float_to_s(f)); }
     if !a.is_empty() { let p = float_parts(c, f); return rationalize_with(c, p, a[0]); }
     if f == 0.0 { return Ok(rat_raw(c, Value::fix(0), Value::fix(1))); }
     // f = m * 2^e with a 53-bit mantissa
@@ -553,7 +553,7 @@ fn str_to_r(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let b = c.str_bytes(s).to_vec();
     match parse_rational(c, &b, false)? {
         None => Ok(rat_raw(c, Value::fix(0), Value::fix(1))),
-        Some(v) if is_float(v) => { if float_val(v).is_infinite() { return err(c, c.vm().c_float_domain_error, "Infinity"); } Ok(v) }
+        Some(v) if is_float(v) => { if float_val(v).is_infinite() { return err(c, c.vm().c_float_domain_error.get(), "Infinity"); } Ok(v) }
         Some(v) => Ok(v),
     }
 }
@@ -574,13 +574,13 @@ fn conv_arg(c: &mut Ctx, v: Value, raise: bool) -> Result<Option<Value>, Esc> {
             Some(r) if is_float(r) => {
                 if float_val(r) == 0.0 { return Ok(Some(rat_raw(c, Value::fix(0), Value::fix(1)))); }
                 if !raise { return Ok(None); }
-                err(c, c.vm().c_float_domain_error, "Infinity")
+                err(c, c.vm().c_float_domain_error.get(), "Infinity")
             }
             Some(r) => Ok(Some(r)),
             None => { if !raise { return Ok(None); } let ins = inspect_str(c, v)?; arg_err(c, format!("invalid value for convert(): {}", ins)) }
         };
     }
-    if !is_kind_of(v, c.vm().c_numeric) && v.is_heap() {
+    if !is_kind_of(v, c.vm().c_numeric.get()) && v.is_heap() {
         if respond_to(v, intern(b"to_r"), true) {
             // exception: false also swallows what #to_r raises (rb_protect)
             let r = match funcall(c, v, intern(b"to_r"), &[], std::ptr::null()) {
@@ -628,7 +628,7 @@ pub fn convert_rational(c: &mut Ctx, a1: Value, a2: Option<Value>, raise: bool) 
         }
         return type_err(c, format!("can't convert {} into Rational", class_name_for_err(a1)));
     };
-    let kn = c.vm().c_numeric;
+    let kn = c.vm().c_numeric.get();
     let numeric = |v: Value| is_kind_of(v, kn);
     if numeric(a1) && numeric(a2) && (!is_integer(a1) || !is_integer(a2)) {
         let x = if is_integer(a1) { rat_raw(c, a1, Value::fix(1)) } else { a1 };
@@ -662,7 +662,7 @@ fn nil_rationalize(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV 
 
 /// Boot: defines Rational (returned) and the conversions on the other classes.
 pub fn init(vmr: &Vm) -> Value {
-    let k = define_class("Rational", vmr.c_numeric);
+    let k = define_class("Rational", vmr.c_numeric.get());
     class_set_alloc(k, AllocKind::None);
     let sk = singleton_class(k);
     define_method_me(sk, s::new, new_me(s::new, sk, VISI_PUBLIC, MKind::Undef));
@@ -675,15 +675,15 @@ pub fn init(vmr: &Vm) -> Value {
     d("to_s", rat_to_s, 0); d("inspect", rat_inspect, 0); d("to_f", rat_to_f_m, 0); d("to_i", rat_to_i, 0); d("to_r", rat_to_r, 0);
     d("numerator", rat_num, 0); d("denominator", rat_den, 0); d("zero?", rat_zero_p, 0); d("positive?", rat_pos_p, 0);
     d("negative?", rat_neg_p, 0); d("hash", rat_hash, 0); d("rationalize", rat_rationalize, -1);
-    define_cfunc(vmr.c_float, "to_r", flo_to_r, 0);
-    define_cfunc(vmr.c_float, "rationalize", flo_rationalize, -1);
-    define_cfunc(vmr.c_float, "numerator", flo_numerator, 0);
-    define_cfunc(vmr.c_float, "denominator", flo_denominator, 0);
-    define_cfunc(vmr.c_integer, "to_r", int_to_r, 0);
-    define_cfunc(vmr.c_integer, "rationalize", int_rationalize, -1);
-    define_cfunc(vmr.c_nil, "to_r", nil_to_r, 0);
-    define_cfunc(vmr.c_nil, "rationalize", nil_rationalize, -1);
-    define_cfunc(vmr.c_string, "to_r", str_to_r, 0);
-    define_module_function(vmr.m_kernel, "Rational", k_rational, -1);
+    define_cfunc(vmr.c_float.get(), "to_r", flo_to_r, 0);
+    define_cfunc(vmr.c_float.get(), "rationalize", flo_rationalize, -1);
+    define_cfunc(vmr.c_float.get(), "numerator", flo_numerator, 0);
+    define_cfunc(vmr.c_float.get(), "denominator", flo_denominator, 0);
+    define_cfunc(vmr.c_integer.get(), "to_r", int_to_r, 0);
+    define_cfunc(vmr.c_integer.get(), "rationalize", int_rationalize, -1);
+    define_cfunc(vmr.c_nil.get(), "to_r", nil_to_r, 0);
+    define_cfunc(vmr.c_nil.get(), "rationalize", nil_rationalize, -1);
+    define_cfunc(vmr.c_string.get(), "to_r", str_to_r, 0);
+    define_module_function(vmr.m_kernel.get(), "Rational", k_rational, -1);
     k
 }

@@ -18,37 +18,37 @@ use crate::vm::*;
 
 impl Ctx {
     #[inline]
-    pub fn ary_new(&mut self) -> Value { let k = self.vm().c_array; self.alloc_with(k, move || Body::Array(AVec::new())) }
+    pub fn ary_new(&mut self) -> Value { let k = self.vm().c_array.get(); self.alloc_with(k, move || Body::Array(AVec::new())) }
     #[inline]
     pub fn ary_new_capa(&mut self, n: usize) -> Value {
         self.malloc_increase(n * 8);
-        let k = self.vm().c_array;
+        let k = self.vm().c_array.get();
         self.alloc_with(k, move || Body::Array(AVec::with_capacity(n)))
     }
     #[inline]
     pub fn ary_new_from(&mut self, v: &[Value]) -> Value {
         self.malloc_increase(v.len() * 8);
-        let k = self.vm().c_array;
+        let k = self.vm().c_array.get();
         self.alloc_with(k, move || Body::Array(AVec::from_slice(v)))
     }
     /// An Array of the first n (<= avec::INLINE) of `w`.
     #[inline(always)]
     pub fn ary_new_small(&mut self, n: usize, w: [Value; crate::avec::INLINE]) -> Value {
-        let k = self.vm().c_array;
+        let k = self.vm().c_array.get();
         self.alloc_with(k, move || Body::Array(AVec::small(n, w)))
     }
     /// An Array of the values of stack slots (which keep them rooted meanwhile).
     #[inline]
     pub fn ary_from_slots(&mut self, s: &[std::cell::Cell<Value>]) -> Value {
         if s.len() > crate::avec::INLINE { return self.ary_from_vec(s.iter().map(|x| x.get()).collect()); }
-        let k = self.vm().c_array;
+        let k = self.vm().c_array.get();
         self.alloc_with(k, || Body::Array(AVec::from_slots(s)))
     }
     /// The Vec becomes the Array's payload; its Values are roots during the allocation.
     #[inline]
     pub fn ary_from_vec(&mut self, v: Vec<Value>) -> Value {
         self.malloc_increase(v.len() * 8);
-        let k = self.vm().c_array;
+        let k = self.vm().c_array.get();
         if v.len() <= crate::avec::INLINE { return self.alloc_with(k, || Body::Array(AVec::from_slice(&v))); }
         // empty first, then the Vec stored field by field: moving a ready Body::Array into the slot
         // is compiled as an unaligned copy from the stack that stalls on its own stores

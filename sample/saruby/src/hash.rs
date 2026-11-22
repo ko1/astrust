@@ -134,7 +134,7 @@ impl RHash {
 impl Ctx {
     pub fn hash_new(&mut self) -> Value { self.hash_new_capa(0) }
     pub fn hash_new_capa(&mut self, n: usize) -> Value {
-        let k = self.vm().c_hash;
+        let k = self.vm().c_hash.get();
         self.alloc(k, Body::Hash(Box::new(RHash::with_capacity(n))))
     }
     pub fn hash_len(&self, h: Value) -> usize { self.hash(h).live }
@@ -183,7 +183,7 @@ fn hash_of(c: &mut Ctx, k: Value) -> Result<Hv, Esc> {
     if is_float(k) { let f = float_val(k); return Ok(Hv::Raw(mix(if f == 0.0 { 0 } else { f.to_bits() }))); }
     if is_bignum(k) { return Ok(Hv::Raw(big_hash(c, k))); }
     let (kernel, array) = match c.method_entry(class_of(k), s::hash) {
-        Some(me) => (std::ptr::eq(me, c.vm().ids.kernel_hash), me.owner == c.vm().c_array),
+        Some(me) => (std::ptr::eq(me, c.vm().ids.kernel_hash.get()), me.owner == c.vm().c_array.get()),
         None => (false, false),
     };
     if kernel { return Ok(Hv::Raw(mix(k.raw()))); }
@@ -279,7 +279,7 @@ pub fn hash_aref(c: &mut Ctx, h: Value, k: Value) -> RV {
     match found {
         Some(i) => Ok(c.hash(h).entries[i].val),
         None => {
-            if obj_klass(h) != c.vm().c_hash {
+            if obj_klass(h) != c.vm().c_hash.get() {
                 let user = matches!(c.method_entry(class_of(h), s::default), Some(me) if !matches!(me.kind, MKind::Cfunc(..)));
                 if user { return funcall(c, h, s::default, &[k], std::ptr::null()); }
             }
@@ -318,7 +318,7 @@ pub fn hash_set(c: &mut Ctx, h: Value, k: Value, v: Value) -> Result<(), Esc> {
         hc
     };
     let r = c.hash_mut(h);
-    if r.iter_lev != 0 { return err(c, c.vm().c_runtime_error, "can't add a new key into hash during iteration"); }
+    if r.iter_lev != 0 { return err(c, c.vm().c_runtime_error.get(), "can't add a new key into hash during iteration"); }
     if r.insert_new(k, v, hc) % 64 == 0 { c.malloc_increase(64 * 24); }
     Ok(())
 }
@@ -336,7 +336,7 @@ pub fn hash_delete(c: &mut Ctx, h: Value, k: Value) -> Result<Option<Value>, Esc
 }
 
 pub fn hash_rehash(c: &mut Ctx, h: Value) -> Result<(), Esc> {
-    if c.hash_iterating(h) { return err(c, c.vm().c_runtime_error, "rehash during iteration"); }
+    if c.hash_iterating(h) { return err(c, c.vm().c_runtime_error.get(), "rehash during iteration"); }
     // the pairs move to a Ruby Array: `hash` of a key is Ruby code, and the emptied table roots nothing
     let flat: Vec<Value> = c.hash(h).entries.iter().filter(|e| e.key != UNDEF).flat_map(|e| [e.key, e.val]).collect();
     let keep = c.ary_from_vec(flat);

@@ -253,7 +253,8 @@ fn new_engine(wake: i32) -> Box<dyn Engine> {
 }
 /// The VM's blop state (made at the first use; `Vm::blop`).
 fn with<R>(c: &mut Ctx, f: impl FnOnce(&mut Blop) -> R) -> R {
-    let b = c.vm_mut().blop.get_or_insert_with(|| { let wake = new_wake(); Box::new(Blop { slab: Slab::new(), engine: new_engine(wake), wake, ready: vec![], waiters: vec![] }) });
+    let mut g = c.vm().blop.borrow_mut();
+    let b = g.get_or_insert_with(|| { let wake = new_wake(); Box::new(Blop { slab: Slab::new(), engine: new_engine(wake), wake, ready: vec![], waiters: vec![] }) });
     let r = f(b);
     b.retire_done();
     r
@@ -281,7 +282,7 @@ pub fn submit(c: &mut Ctx, op: Op, deadline: Option<Instant>, deadlockable: bool
         id
     })
 }
-pub fn is_done(c: &Ctx, id: Id) -> bool { c.vm().blop.as_ref().is_some_and(|b| matches!(b.slab.get(id), Some(Slot::Done(..)))) }
+pub fn is_done(c: &Ctx, id: Id) -> bool { c.vm().blop.borrow().as_ref().is_some_and(|b| matches!(b.slab.get(id), Some(Slot::Done(..)))) }
 /// Take the op back: its result, or Err(ECANCELED) if it had not completed (it is withdrawn).
 pub fn take(c: &mut Ctx, id: Id) -> (Option<Op>, Res) {
     with(c, |b| {
@@ -302,7 +303,8 @@ pub fn take(c: &mut Ctx, id: Id) -> (Option<Op>, Res) {
 pub fn interrupt(c: &mut Ctx, id: Id, errno: i64) { with(c, |b| b.slab.complete(id, Err(errno))) }
 /// Complete every Wake(key) op.
 pub fn notify(c: &mut Ctx, key: u64) {
-    let Some(b) = c.vm_mut().blop.as_mut() else { return };
+    let mut g = c.vm().blop.borrow_mut();
+    let Some(b) = g.as_mut() else { return };
     {
         if b.waiters.is_empty() { return; }
         let slab = &mut b.slab;
@@ -312,7 +314,8 @@ pub fn notify(c: &mut Ctx, key: u64) {
 /// Complete the oldest pending Wake(key) op (one item / one slot / an unlocked Mutex: one waiter
 /// re-checks, not all). A woken waiter that leaves without taking it passes it on (`thread::wait`).
 pub fn notify_one(c: &mut Ctx, key: u64) {
-    let Some(b) = c.vm_mut().blop.as_mut() else { return };
+    let mut g = c.vm().blop.borrow_mut();
+    let Some(b) = g.as_mut() else { return };
     {
         let Some(i) = b.waiters.iter().position(|w| w.0 == key && matches!(b.slab.get(w.1), Some(Slot::Pending(_)))) else { return };
         let (_, id) = b.waiters.remove(i);
@@ -322,7 +325,8 @@ pub fn notify_one(c: &mut Ctx, key: u64) {
 /// IO#close: every op on `fd` completes with Err(EBADF) (before the fd number can be reused).
 pub fn cancel_fd(c: &mut Ctx, fd: i32) {
     if fd < 0 { return; }
-    let Some(b) = c.vm_mut().blop.as_mut() else { return };
+    let mut g = c.vm().blop.borrow_mut();
+    let Some(b) = g.as_mut() else { return };
     {
         let ids: Vec<Id> = b.slab.pending().filter(|(_, p)| p.op.has_fd(fd)).map(|(id, _)| id).collect();
         for id in ids { b.slab.complete(id, Err(EBADF)); }
@@ -354,7 +358,8 @@ pub fn pump(c: &mut Ctx, block: bool) -> usize {
 pub fn signal_wake() { let fd = WAKE_FD.load(Relaxed); if fd >= 0 { sys::write(fd, &1u64.to_ne_bytes()); } }
 /// Forked child: the other threads' ops are gone, and the eventfd / epoll set are the parent's.
 pub fn after_fork(c: &mut Ctx) {
-    let Some(b) = c.vm_mut().blop.as_mut() else { return };
+    let mut g = c.vm().blop.borrow_mut();
+    let Some(b) = g.as_mut() else { return };
     {
         for i in 0..b.slab.ents.len() as u32 { let gen = b.slab.ents[i as usize].gen; if !matches!(b.slab.ents[i as usize].slot, Slot::Free) { b.slab.release(Id { idx: i, gen }); } }
         b.slab.just_done.clear();

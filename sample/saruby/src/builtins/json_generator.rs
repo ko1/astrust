@@ -34,7 +34,7 @@ static P_RFC_SORT: Global = Global::new();
 fn v2(c: &Ctx) -> bool { json_version(c) < 30000 }
 /// rb_warn: "file:line: warning: msg" at the Ruby caller, unless $VERBOSE is nil.
 fn rb_warn(c: &mut Ctx, msg: &str) -> Result<(), Esc> {
-    if c.vm().verbose == NIL { return Ok(()); }
+    if c.vm().verbose.get() == NIL { return Ok(()); }
     let loc = backtrace_lines(c, 0).first().map(|l| l.split(":in ").next().unwrap_or("").to_string()).unwrap_or_default();
     warning_write(c, format!("{}: warning: {}\n", loc, msg).as_bytes())
 }
@@ -98,7 +98,7 @@ fn encode_utf8(c: &mut Ctx, v: Value) -> RV {
     match funcall(c, v, intern(b"encode"), &[u], std::ptr::null()) {
         Ok(r) => Ok(r),
         Err(e) => {
-            if c.esc != EscKind::Raise || !is_kind_of(c.esc_val, c.vm().c_standard_error) { return Err(e); }
+            if c.esc != EscKind::Raise || !is_kind_of(c.esc_val, c.vm().c_standard_error.get()) { return Err(e); }
             let x = c.esc_val;
             c.esc = EscKind::None; c.esc_val = NIL;
             let m = funcall(c, x, intern(b"message"), &[], std::ptr::null())?;
@@ -468,7 +468,7 @@ impl G {
             match kt {
                 1 => {
                     if !self.v2 && *first_type != 1 { self.mixed_keys(c, h, mixed)?; }
-                    break if real_class_of(key) == c.vm().c_string { key } else { self.string_subclass_key(c, key)? };
+                    break if real_class_of(key) == c.vm().c_string.get() { key } else { self.string_subclass_key(c, key)? };
                 }
                 2 => {
                     if !self.v2 && *first_type != 2 { self.mixed_keys(c, h, mixed)?; }
@@ -492,10 +492,10 @@ impl G {
             }
         };
         if self.v2 {
-            if real_class_of(key_s) == c.vm().c_string { self.string(c, key_s)?; } else { self.value(c, key_s, true)?; }
+            if real_class_of(key_s) == c.vm().c_string.get() { self.string(c, key_s)?; } else { self.value(c, key_s, true)?; }
         } else {
             let ks = self.ensure_valid(c, key_s, as_json_called, true)?;
-            if is_string(ks) && real_class_of(ks) == c.vm().c_string { self.raw_string(c, ks)?; } else { self.value(c, ks, true)?; }
+            if is_string(ks) && real_class_of(ks) == c.vm().c_string.get() { self.raw_string(c, ks)?; } else { self.value(c, ks, true)?; }
         }
         if self.s.space_before != NIL { let n = self.s.space_before; self.out.str(c, n)?; }
         self.out.ch(c, b':')?;
@@ -548,7 +548,7 @@ impl G {
             let klass = real_class_of(ob);
             let exact = |k: Value| !fallback || klass == k;
             let vmr = c.vm();
-            let (ch, ca, cs, cf) = (vmr.c_hash, vmr.c_array, vmr.c_string, vmr.c_float);
+            let (ch, ca, cs, cf) = (vmr.c_hash.get(), vmr.c_array.get(), vmr.c_string.get(), vmr.c_float.get());
             if is_bignum(ob) {
                 if self.s.rfc8785 && !self.v2 { return self.rfc_number(c, ob); }
                 let t = funcall(c, ob, intern(b"to_s"), &[], std::ptr::null())?;
@@ -886,7 +886,7 @@ pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
 pub fn init(c: &mut Ctx) -> RV {
     let f = c.str_new(b"json/common");
     require_feature(c, f, false)?;
-    let o = c.vm().c_object;
+    let o = c.vm().c_object.get();
     let m = match const_get_at(o, intern(b"JSON")) { Some(m) => m, None => define_module("JSON") };
     M_JSON.set(c, m);
     json_version(c);
@@ -895,7 +895,7 @@ pub fn init(c: &mut Ctx) -> RV {
     let ext = match const_get_at(m, intern(b"Ext")) { Some(e) => e, None => define_module_under(m, "Ext") };
     let gen = match const_get_at(ext, intern(b"Generator")) { Some(g) => g, None => define_module_under(ext, "Generator") };
     for (g, n) in [(&E_GENERATOR, "GeneratorError"), (&E_NESTING, "NestingError")] {
-        match const_get_at(m, intern(n.as_bytes())) { Some(k) => g.set(c, k), None => return err(c, c.vm().c_name_error, format!("uninitialized constant JSON::{}", n)) }
+        match const_get_at(m, intern(n.as_bytes())) { Some(k) => g.set(c, k), None => return err(c, c.vm().c_name_error.get(), format!("uninitialized constant JSON::{}", n)) }
     }
     let st = class_under(gen, "State", o);
     class_set_alloc(st, AllocKind::None);

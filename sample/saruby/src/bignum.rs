@@ -468,7 +468,7 @@ impl Ctx {
     /// Normalize: Fixnum when it fits, else a Bignum object (frozen).
     pub fn big_to_value(&mut self, b: BigInt) -> Value {
         if let Some(i) = b.to_i64() { if Value::fixable(i) { return Value::fix(i); } }
-        let k = self.vm().c_integer;
+        let k = self.vm().c_integer.get();
         let v = self.alloc(k, Body::Bignum(Box::new(b)));
         obj_set_flags(v, FL_FROZEN);
         v

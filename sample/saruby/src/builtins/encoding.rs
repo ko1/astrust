@@ -498,7 +498,7 @@ pub fn find_enc(name: &[u8]) -> Option<u8> {
 pub fn default_external() -> u8 { DEFAULT_EXTERNAL.load(Relaxed) }
 pub fn default_internal() -> Option<u8> { let d = DEFAULT_INTERNAL.load(Relaxed); if d < 0 { None } else { Some(d as u8) } }
 
-pub fn encoding_value(c: &Ctx, id: u8) -> Value { c.vm().enc_objs[id as usize] }
+pub fn encoding_value(c: &Ctx, id: u8) -> Value { c.vm().enc_objs.borrow()[id as usize] }
 pub fn is_encoding(c: &Ctx, v: Value) -> bool { c.data::<REnc>(v).is_some() }
 
 /// Encoding object, name string or object with to_str -> encoding id.
@@ -534,7 +534,7 @@ pub fn compatible(c: &Ctx, a: Value, b: Value) -> Option<u8> {
     None
 }
 pub fn compat_error(c: &mut Ctx, ea: u8, eb: u8) -> Esc {
-    raise_msg(c, c.vm().c_compat_error, &format!("incompatible character encodings: {} and {}", enc_name_msg(ea), enc_name_msg(eb)))
+    raise_msg(c, c.vm().c_compat_error.get(), &format!("incompatible character encodings: {} and {}", enc_name_msg(ea), enc_name_msg(eb)))
 }
 pub fn check_compatible(c: &mut Ctx, a: Value, b: Value) -> Result<u8, Esc> {
     match compatible(c, a, b) { Some(e) => Ok(e), None => { let (ea, eb) = (c.str_enc(a), c.str_enc(b)); Err(compat_error(c, ea, eb)) } }
@@ -652,16 +652,16 @@ fn const_names(n: &str) -> Vec<String> {
 }
 
 /// Boot: no context runs yet, so the Encoding objects are allocated directly.
-pub fn init(vmr: &mut Vm) {
-    let ek = vmr.c_encoding;
+pub fn init(vmr: &Vm) {
+    let ek = vmr.c_encoding.get();
     for i in 0..NENC {
         let e = crate::gc::alloc(ek, Body::Data(Box::new(REnc { id: i as u8 })));
         obj_set_flags(e, FL_FROZEN);
-        vmr.enc_objs.push(e);
-        vmr.pinned.push(e);
+        vmr.enc_objs.borrow_mut().push(e);
+        vmr.pinned.borrow_mut().push(e);
     }
     for (i, d) in ENCS.iter().enumerate() {
-        let ev = vmr.enc_objs[i];
+        let ev = vmr.enc_objs.borrow()[i];
         for n in std::iter::once(&d.name).chain(d.aliases.iter()) {
             if matches!(*n, "locale" | "external" | "filesystem") { continue; }
             for cn in const_names(n) { const_set(ek, intern(cn.as_bytes()), ev); }

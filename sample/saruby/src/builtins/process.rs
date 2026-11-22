@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 static LAST_STATUS: AtomicU64 = AtomicU64::new(0xffff_ffff_0000_0000);
 pub fn set_last_status(pid: i32, raw: i32) { LAST_STATUS.store(((pid as u32 as u64) << 32) | raw as u32 as u64, Ordering::Relaxed); }
 fn new_status(c: &mut Ctx, pid: i32, raw: i32) -> Value {
-    let k = const_get_at(c.vm().m_process, intern(b"Status")).unwrap();
+    let k = const_get_at(c.vm().m_process.get(), intern(b"Status")).unwrap();
     let o = new_object(k);
     ivar_set_raw(o, intern(b"@pid"), Value::fix(pid as i64));
     ivar_set_raw(o, intern(b"@st"), Value::fix(raw as i64));
@@ -121,7 +121,7 @@ fn signal_trap(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
 fn run_handler(c: &mut Ctx, sig: i32) -> Result<(), Esc> {
     let h = c.ary_get(HANDLERS.get(c), sig as usize);
     if is_string(h) {
-        if c.str_bytes(h) == b"EXIT" { let e = make_exception(c.vm().c_system_exit, "exit"); ivar_set_raw(e, crate::symbol::s::status, Value::fix(0)); return Err(raise_exc(c, e)); }
+        if c.str_bytes(h) == b"EXIT" { let e = make_exception(c.vm().c_system_exit.get(), "exit"); ivar_set_raw(e, crate::symbol::s::status, Value::fix(0)); return Err(raise_exc(c, e)); }
         return Ok(());
     }
     if h == NIL || h == UNDEF { return Ok(()); }
@@ -173,7 +173,7 @@ fn p_kill(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
             let h = c.ary_get(hs, sig as usize);
             if h == UNDEF || (h == NIL && c.ary_len(hs) <= sig as usize) {
                 let name = format!("SIG{}", signame(sig).unwrap());
-                let e = make_exception(if sig == 2 { c.vm().c_interrupt } else { c.vm().c_signal_exception }, if sig == 2 { "" } else { &name });
+                let e = make_exception(if sig == 2 { c.vm().c_interrupt.get() } else { c.vm().c_signal_exception.get() }, if sig == 2 { "" } else { &name });
                 ivar_set_raw(e, intern(b"signo"), Value::fix(sig as i64));
                 return Err(raise_exc(c, e));
             }
@@ -445,7 +445,7 @@ fn k_system(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     set_last_status(pid, st);
     if exc && !(exited(st) && exitstatus(st) == 0) {
         let d = st_desc(new_status(c, pid, st));
-        return err(c, c.vm().c_runtime_error, format!("Command failed with {}: {}", d.splitn(3, ' ').nth(2).unwrap_or(""), sp.argv.last().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default()));
+        return err(c, c.vm().c_runtime_error.get(), format!("Command failed with {}: {}", d.splitn(3, ' ').nth(2).unwrap_or(""), sp.argv.last().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default()));
     }
     Ok(Value::bool(exited(st) && exitstatus(st) == 0))
 }
@@ -539,7 +539,7 @@ fn p_waitall(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
 fn p_detach(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     // no native threads: a Thread-like object whose value/join waits for the child
     let pid = a[0];
-    let k = const_get_at(c.vm().m_process, intern(b"Waiter")).unwrap();
+    let k = const_get_at(c.vm().m_process.get(), intern(b"Waiter")).unwrap();
     let o = new_object(k);
     ivar_set_raw(o, intern(b"@pid"), pid);
     Ok(o)
@@ -604,7 +604,7 @@ fn clock_getres(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 fn p_times(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     let mut t = sys::Tms { utime: 0, stime: 0, cutime: 0, cstime: 0 };
     sys::times(&mut t);
-    let k = const_get_at(c.vm().m_process, intern(b"Tms")).unwrap();
+    let k = const_get_at(c.vm().m_process.get(), intern(b"Tms")).unwrap();
     let o = new_object(k);
     for (n, v) in [("@utime", t.utime), ("@stime", t.stime), ("@cutime", t.cutime), ("@cstime", t.cstime)] { let f = c.float_new(v as f64 / 100.0); ivar_set_raw(o, intern(n.as_bytes()), f); }
     Ok(o)
@@ -623,10 +623,10 @@ fn p_exit_bang(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 }
 
 /// Boot (no context yet: allocates with gc::alloc directly).
-pub fn init(vmr: &mut Vm) {
+pub fn init(vmr: &Vm) {
     let p = define_module("Process");
-    vmr.m_process = p;
-    let h = crate::gc::alloc(vmr.c_array, Body::Array(crate::avec::AVec::new()));
+    vmr.m_process.set(p);
+    let h = crate::gc::alloc(vmr.c_array.get(), Body::Array(crate::avec::AVec::new()));
     HANDLERS.set_vm(vmr, h);
     let mf = |n: &str, f: CFunc, a: i32| define_module_function(p, n, f, a);
     mf("clock_gettime", clock_gettime, -1); mf("clock_getres", clock_getres, -1); mf("times", p_times, 0);
@@ -644,33 +644,33 @@ pub fn init(vmr: &mut Vm) {
     mf("detach", p_detach, 1); mf("fork", k_fork, 0); mf("spawn", k_spawn, -1); mf("exec", k_exec, -1); mf("exit!", p_exit_bang, -1); mf("exit", k_exit, -1);
     mf("abort", k_abort, -1);
     mf("getrlimit", p_getrlimit, 1); mf("__itimer", p_itimer, 1); mf("setproctitle", |_c, _s, a, _b| Ok(a[0]), 1); mf("last_status", |c, _s, _a, _b| Ok(last_status(c)), 0);
-    mf("argv0", |c, _s, _a, _b| Ok(c.vm().dollar_zero), 0); mf("warmup", |_c, _s, _a, _b| Ok(TRUE), 0);
+    mf("argv0", |c, _s, _a, _b| Ok(c.vm().dollar_zero.get()), 0); mf("warmup", |_c, _s, _a, _b| Ok(TRUE), 0);
     mf("groups", |c, _s, _a, _b| Ok(c.ary_new_from(&[Value::fix(sys::getgid() as i64)])), 0);
-    mf("daemon", |c, _s, _a, _b| err(c, c.vm().c_not_impl_error, "daemon() function is unimplemented on this machine"), -1);
+    mf("daemon", |c, _s, _a, _b| err(c, c.vm().c_not_impl_error.get(), "daemon() function is unimplemented on this machine"), -1);
     for (n, v) in [("CLOCK_REALTIME", 0), ("CLOCK_MONOTONIC", 1), ("CLOCK_PROCESS_CPUTIME_ID", 2), ("CLOCK_THREAD_CPUTIME_ID", 3), ("CLOCK_MONOTONIC_RAW", 4),
                    ("CLOCK_REALTIME_COARSE", 5), ("CLOCK_MONOTONIC_COARSE", 6), ("CLOCK_BOOTTIME", 7), ("WNOHANG", 1), ("WUNTRACED", 2), ("PRIO_PROCESS", 0),
                    ("RLIMIT_CPU", 0), ("RLIMIT_FSIZE", 1), ("RLIMIT_DATA", 2), ("RLIMIT_STACK", 3), ("RLIMIT_CORE", 4), ("RLIMIT_RSS", 5), ("RLIMIT_NPROC", 6),
                    ("RLIMIT_NOFILE", 7), ("RLIMIT_MEMLOCK", 8), ("RLIMIT_AS", 9)] {
         const_set(p, intern(n.as_bytes()), Value::fix(v));
     }
-    let inf = crate::gc::alloc(vmr.c_integer, Body::Bignum(Box::new(crate::bignum::BigInt::from_i128(u64::MAX as i128))));
+    let inf = crate::gc::alloc(vmr.c_integer.get(), Body::Bignum(Box::new(crate::bignum::BigInt::from_i128(u64::MAX as i128))));
     crate::heap::obj_set_flags(inf, FL_FROZEN);
     const_set(p, intern(b"RLIM_INFINITY"), inf);
-    let st = define_class_under(p, "Status", vmr.c_object);
+    let st = define_class_under(p, "Status", vmr.c_object.get());
     let sd = |n: &str, f: CFunc, a: i32| define_cfunc(st, n, f, a);
     sd("exitstatus", st_exitstatus, 0); sd("to_i", st_to_i, 0); sd("pid", st_pid, 0); sd("success?", st_success, 0); sd("exited?", st_exited, 0);
     sd("signaled?", st_signaled, 0); sd("stopped?", st_stopped, 0); sd("termsig", st_termsig, 0); sd("stopsig", st_stopsig, 0); sd("coredump?", st_coredump, 0);
     sd("to_s", st_to_s, 0); sd("inspect", st_inspect, 0); sd("==", st_eq, 1);
-    let tms = define_class_under(p, "Tms", vmr.c_object);
+    let tms = define_class_under(p, "Tms", vmr.c_object.get());
     for n in ["utime", "stime", "cutime", "cstime"] { define_method_me(tms, intern(n.as_bytes()), new_me(intern(n.as_bytes()), tms, VISI_PUBLIC, MKind::AttrReader(intern(format!("@{}", n).as_bytes())))); }
-    let w = define_class_under(p, "Waiter", vmr.c_object);
+    let w = define_class_under(p, "Waiter", vmr.c_object.get());
     define_cfunc(w, "value", waiter_value, 0); define_cfunc(w, "join", waiter_join, -1); define_cfunc(w, "pid", waiter_pid, 0); define_cfunc(w, "alive?", waiter_alive, 0);
     let sg = define_module("Signal");
-    vmr.m_signal = sg;
+    vmr.m_signal.set(sg);
     define_module_function(sg, "trap", signal_trap, -1);
     define_module_function(sg, "list", signal_list, 0);
     define_module_function(sg, "signame", signal_signame, 1);
-    let k = vmr.m_kernel;
+    let k = vmr.m_kernel.get();
     define_module_function(k, "trap", signal_trap, -1);
     define_module_function(k, "sleep", k_sleep, -1);
     define_module_function(k, "system", k_system, -1);

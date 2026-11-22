@@ -156,7 +156,7 @@ fn rbconfig_ruby(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(c.str_new(exe.as_bytes()))
 }
 pub fn rbconfig_init(c: &mut Ctx) {
-    if const_get_at(c.vm().c_object, intern(b"RbConfig")).is_some() { return; }
+    if const_get_at(c.vm().c_object.get(), intern(b"RbConfig")).is_some() { return; }
     let rbc = define_module("RbConfig");
     let cfg = c.hash_new_capa(32);
     let exe = std::env::current_exe().unwrap_or_else(|_| "saruby".into());
@@ -192,16 +192,16 @@ pub fn alloc_data(_c: &mut Ctx, _klass: Value) -> Result<Option<Value>, Esc> { O
 
 /// Boot: no context yet, so the frozen constant Strings are allocated directly.
 fn boot_str(vmr: &Vm, b: &[u8]) -> Value {
-    let s = crate::gc::alloc(vmr.c_string, Body::String(RString { b: crate::sbuf::SBuf::from_slice(b), enc: ENC_UTF8 }));
+    let s = crate::gc::alloc(vmr.c_string.get(), Body::String(RString { b: crate::sbuf::SBuf::from_slice(b), enc: ENC_UTF8 }));
     obj_set_flags(s, FL_FROZEN);
     s
 }
 
-pub fn init(vmr: &mut Vm) {
-    let ob = vmr.c_object;
+pub fn init(vmr: &Vm) {
+    let ob = vmr.c_object.get();
     // GC / ObjectSpace
     let gc = define_module("GC");
-    vmr.m_gc = gc;
+    vmr.m_gc.set(gc);
     define_module_function(gc, "start", gc_start, -1);
     define_singleton_cfunc(gc, "__start", gc_start_full, 1);
     define_module_function(gc, "count", gc_count, 0);
@@ -212,21 +212,21 @@ pub fn init(vmr: &mut Vm) {
     define_module_function(gc, "stress", |_c, _s, _a, _b| Ok(FALSE), 0);
     define_module_function(gc, "stress=", |_c, _s, a, _b| Ok(a[0]), 1);
     let os = define_module("ObjectSpace");
-    vmr.m_object_space = os;
+    vmr.m_object_space.set(os);
     define_module_function(os, "each_object", os_each_object, -1);
     define_module_function(os, "count_objects", os_count_objects, -1);
     define_module_function(os, "garbage_collect", os_garbage_collect, -1);
     define_module_function(os, "define_finalizer", os_define_finalizer, -1);
     define_module_function(os, "undefine_finalizer", os_undefine_finalizer, 1);
     let wm = define_class_under(os, "WeakMap", ob);
-    vmr.c_object_space_weak_map = wm;
+    vmr.c_object_space_weak_map.set(wm);
     define_private_cfunc(wm, "initialize", objspace_wm_init, 0);
     define_cfunc(wm, "[]", wm_aref, 1);
     define_cfunc(wm, "[]=", wm_aset, 2);
     define_cfunc(wm, "key?", wm_key, 1);
     define_cfunc(wm, "include?", wm_key, 1);
     let wn = define_module("Warning");
-    vmr.m_warning = wn;
+    vmr.m_warning.set(wn);
     define_module_function(wn, "warn", warning_warn, -1);
     define_singleton_cfunc(wn, "[]", |c, _s, a, _b| { let i = warning_category(c, a[0])?; Ok(Value::bool(WARN_CATS.load(Relaxed) & (1 << i) != 0)) }, 1);
     define_singleton_cfunc(wn, "[]=", |c, _s, a, _b| {
@@ -241,8 +241,8 @@ pub fn init(vmr: &mut Vm) {
                    ("RUBY_ENGINE_VERSION", "0.1.0"), ("RUBY_COPYRIGHT", "saruby - Copyright (C) 2026 Koichi Sasada")] { set(n, boot_str(vmr, v.as_bytes())); }
     set("RUBY_DESCRIPTION", boot_str(vmr, crate::version().as_bytes()));
     set("RUBY_PATCHLEVEL", Value::fix(0));
-    set("ARGV", vmr.argv);
+    set("ARGV", vmr.argv.get());
     crate::builtins::lazy_const(ob, "TOPLEVEL_BINDING", "saruby/toplevel_binding");
     let _ = (intern, num_to_long);
-    vmr.c_location = crate::builtins::exception::init_location(vmr);
+    vmr.c_location.set(crate::builtins::exception::init_location(vmr));
 }

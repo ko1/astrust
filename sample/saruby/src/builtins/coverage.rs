@@ -115,7 +115,7 @@ pub fn on_def(c: &mut Ctx, is: usize, klass: Value, name: Sym) {
 }
 /// Keep the classes named by method results alive (hidden array on Coverage).
 fn root(c: &mut Ctx, v: Value) {
-    let m = const_get_at(c.vm().c_object, intern(b"Coverage")).unwrap_or(NIL);
+    let m = const_get_at(c.vm().c_object.get(), intern(b"Coverage")).unwrap_or(NIL);
     if m == NIL { return; }
     let mut a = ivar_get(m, intern(b"__classes"));
     if a == NIL { a = c.ary_new(); ivar_set_raw(m, intern(b"__classes"), a); }
@@ -129,7 +129,7 @@ fn to_hash(c: &mut Ctx, v: Value) -> RV {
         None => type_err(c, format!("no implicit conversion of {} into Hash", crate::builtins::kernel::class_name_for_err(v))),
     }
 }
-fn rt_err<T>(c: &mut Ctx, m: &str) -> Result<T, Esc> { err(c, c.vm().c_runtime_error, m) }
+fn rt_err<T>(c: &mut Ctx, m: &str) -> Result<T, Esc> { err(c, c.vm().c_runtime_error.get(), m) }
 fn state(_: &mut Ctx) -> u8 { COV.with(|cv| cv.borrow().state) }
 fn set_state(s: u8) {
     COV.with(|cv| cv.borrow_mut().state = s);
@@ -270,7 +270,7 @@ fn cv_running(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok
 
 /// Init_coverage
 pub fn init(c: &mut Ctx) {
-    let ob = c.vm().c_object;
+    let ob = c.vm().c_object.get();
     let m = const_get_at(ob, intern(b"Coverage")).unwrap_or_else(|| define_module("Coverage"));
     define_singleton_cfunc(m, "supported?", cv_supported, 1);
     let f = |n: &str, fun: CFunc, ar: i32| define_module_function(m, n, fun, ar);

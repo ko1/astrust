@@ -38,11 +38,11 @@ fn mo(c: &Ctx, v: Value) -> MethodObj {
 fn me_owner(c: &Ctx, me: *const MethodEntry) -> Value { c.me_ref(me).map_or(NIL, |m| m.owner) }
 
 pub fn sym_to_proc(c: &mut Ctx, sym: Value) -> RV {
-    if let Some(&p) = c.vm().symproc_cache.get(&sym.as_sym()) { return Ok(p); }
+    if let Some(&p) = c.vm().symproc_cache.borrow().get(&sym.as_sym()) { return Ok(p); }
     let mut b = Block::cfunc(c, sym_proc_call, sym);
     b.kind = BlockKind::Sym(sym.as_sym());
-    let p = new_proc(c, c.vm().c_proc, b, true, NIL);
-    c.vm_mut().symproc_cache.insert(sym.as_sym(), p);
+    let p = new_proc(c, c.vm().c_proc.get(), b, true, NIL);
+    c.vm().symproc_cache.borrow_mut().insert(sym.as_sym(), p);
     Ok(p)
 }
 
@@ -157,7 +157,7 @@ fn make_curry(c: &mut Ctx, p: Value, arity: i64, got: Value) -> RV {
     let data = c.ary_new_from(&[p, Value::fix(arity), got]);
     let b = Block::cfunc(c, curry_call, data);
     let lambda = c.proc_data(p).is_lambda;
-    Ok(new_proc(c, c.vm().c_proc, b, lambda, NIL))
+    Ok(new_proc(c, c.vm().c_proc.get(), b, lambda, NIL))
 }
 fn proc_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let pd = c.proc_data(slf);
@@ -176,14 +176,14 @@ fn proc_compose_right(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) ->
     let data = c.ary_new_from(&[slf, g, FALSE]);
     let b = Block::cfunc(c, compose_call, data);
     let lambda = !is_proc(slf) || c.proc_data(slf).is_lambda;
-    Ok(new_proc(c, c.vm().c_proc, b, lambda, NIL))
+    Ok(new_proc(c, c.vm().c_proc.get(), b, lambda, NIL))
 }
 fn proc_compose_left(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let g = a[0];
     callable_check(c, g)?;
     let data = c.ary_new_from(&[g, slf, TRUE]);
     let b = Block::cfunc(c, compose_call, data);
-    Ok(new_proc(c, c.vm().c_proc, b, true, NIL))
+    Ok(new_proc(c, c.vm().c_proc.get(), b, true, NIL))
 }
 fn compose_call(c: &mut Ctx, data: Value, args: &[Value], blk: *const Block) -> RV {
     let f = c.ary_get(data, 0); let g = c.ary_get(data, 1);
@@ -193,7 +193,7 @@ fn compose_call(c: &mut Ctx, data: Value, args: &[Value], blk: *const Block) -> 
 fn proc_s_new(c: &mut Ctx, slf: Value, _a: &[Value], b: *const Block) -> RV {
     if b.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
     let p = block_to_proc(c, b)?;
-    if slf != c.vm().c_proc {
+    if slf != c.vm().c_proc.get() {
         let np = crate::builtins::object::obj_dup(c, p, false, None)?;
         obj_set_klass(np, slf);
         funcall(c, np, s::initialize, &[], std::ptr::null())?;
@@ -238,15 +238,15 @@ pub fn method_object(c: &mut Ctx, recv: Value, mid: Sym, public_only: bool) -> R
             let r = funcall(c, recv, s::respond_to_missing_p, &[Value::sym(mid), TRUE], std::ptr::null())?;
             if r.truthy() {
                 let mm = new_me(mid, class_of(recv), VISI_PUBLIC, MKind::Cfunc(mm_forward, -1));
-                return Ok(new_method_obj(c, c.vm().c_method, MethodObj { recv, me: mm, name: mid, unbound: false, owner: class_of(recv) }));
+                return Ok(new_method_obj(c, c.vm().c_method.get(), MethodObj { recv, me: mm, name: mid, unbound: false, owner: class_of(recv) }));
             }
         }
         let desc = nomethod_desc(c, recv)?;
-        let e = make_name_error(c, c.vm().c_name_error, &format!("undefined method '{}' for {}", sym_str(mid), desc), Value::sym(mid), recv)?;
+        let e = make_name_error(c, c.vm().c_name_error.get(), &format!("undefined method '{}' for {}", sym_str(mid), desc), Value::sym(mid), recv)?;
         return Err(raise_exc(c, e));
     }
     let owner = me_owner(c, me);
-    Ok(new_method_obj(c, c.vm().c_method, MethodObj { recv, me, name: mid, unbound: false, owner }))
+    Ok(new_method_obj(c, c.vm().c_method.get(), MethodObj { recv, me, name: mid, unbound: false, owner }))
 }
 
 fn mm_forward(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
@@ -261,11 +261,11 @@ pub fn unbound_method_object(c: &mut Ctx, klass: Value, mid: Sym, public_only: b
     let me = search_method(klass, mid);
     if c.me_ref(me).is_none_or(|m| matches!(m.kind, MKind::Undef) || (public_only && m.visi != VISI_PUBLIC)) {
         let kind = if c.class(klass).is_module { "module" } else { "class" };
-        let e = make_name_error(c, c.vm().c_name_error, &format!("undefined method '{}' for {} '{}'", sym_str(mid), kind, class_path(klass)), Value::sym(mid), klass)?;
+        let e = make_name_error(c, c.vm().c_name_error.get(), &format!("undefined method '{}' for {} '{}'", sym_str(mid), kind, class_path(klass)), Value::sym(mid), klass)?;
         return Err(raise_exc(c, e));
     }
     let owner = me_owner(c, me);
-    Ok(new_method_obj(c, c.vm().c_unbound_method, MethodObj { recv: klass, me, name: mid, unbound: true, owner }))
+    Ok(new_method_obj(c, c.vm().c_unbound_method.get(), MethodObj { recv: klass, me, name: mid, unbound: true, owner }))
 }
 
 fn meth_call(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
@@ -285,7 +285,7 @@ fn meth_to_proc(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let mut b = Block::cfunc(c, |_c, _d, _a, _b| Ok(NIL), NIL);
     b.kind = BlockKind::Method(slf);
     b.self_ = c.method_obj(slf).recv;
-    Ok(new_proc(c, c.vm().c_proc, b, true, slf))
+    Ok(new_proc(c, c.vm().c_proc.get(), b, true, slf))
 }
 fn meth_arity(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(method_arity(c, c.method_obj(slf).me))) }
 fn meth_name(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::sym(c.method_obj(slf).name)) }
@@ -293,7 +293,7 @@ fn meth_owner(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { O
 fn meth_receiver(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.method_obj(slf).recv) }
 fn meth_unbind(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let m = mo(c, slf);
-    Ok(new_method_obj(c, c.vm().c_unbound_method, MethodObj { recv: real_class_of(m.recv), me: m.me, name: m.name, unbound: true, owner: m.owner }))
+    Ok(new_method_obj(c, c.vm().c_unbound_method.get(), MethodObj { recv: real_class_of(m.recv), me: m.me, name: m.name, unbound: true, owner: m.owner }))
 }
 fn meth_original_name(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(c.me_ref(c.method_obj(slf).me).map_or(NIL, |m| Value::sym(m.name)))
@@ -421,7 +421,7 @@ fn um_bind(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if !is_module && !is_kind_of(a[0], owner) && !is_singleton {
         return type_err(c, format!("bind argument must be an instance of {}", class_path(owner)));
     }
-    Ok(new_method_obj(c, c.vm().c_method, MethodObj { recv: a[0], me: m.me, name: m.name, unbound: false, owner: m.owner }))
+    Ok(new_method_obj(c, c.vm().c_method.get(), MethodObj { recv: a[0], me: m.me, name: m.name, unbound: false, owner: m.owner }))
 }
 fn um_bind_call(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
@@ -431,7 +431,7 @@ fn um_bind_call(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
 
 /// Boot: methods of Proc, Method and UnboundMethod.
 pub fn init(vmr: &Vm) {
-    let p = vmr.c_proc;
+    let p = vmr.c_proc.get();
     define_cfunc(p, "call", proc_call, -1);
     define_cfunc(p, "()", proc_call, -1);
     define_cfunc(p, "[]", proc_call, -1);
@@ -454,7 +454,7 @@ pub fn init(vmr: &Vm) {
     define_cfunc(p, "ruby2_keywords", proc_ruby2kw, 0);
     define_singleton_cfunc(p, "new", proc_s_new, -1);
 
-    for k in [vmr.c_method, vmr.c_unbound_method] {
+    for k in [vmr.c_method.get(), vmr.c_unbound_method.get()] {
         define_cfunc(k, "arity", meth_arity, 0);
         define_cfunc(k, "name", meth_name, 0);
         define_cfunc(k, "owner", meth_owner, 0);
@@ -468,7 +468,7 @@ pub fn init(vmr: &Vm) {
         define_cfunc(k, "hash", meth_hash, 0);
         define_cfunc(k, "super_method", meth_super_method, 0);
     }
-    let m = vmr.c_method;
+    let m = vmr.c_method.get();
     define_cfunc(m, "call", meth_call, -1);
     define_cfunc(m, ">>", proc_compose_right, 1);
     define_cfunc(m, "<<", proc_compose_left, 1);
@@ -479,7 +479,7 @@ pub fn init(vmr: &Vm) {
     define_cfunc(m, "receiver", meth_receiver, 0);
     define_cfunc(m, "unbind", meth_unbind, 0);
     define_cfunc(m, "curry", meth_curry, -1);
-    let u = vmr.c_unbound_method;
+    let u = vmr.c_unbound_method.get();
     define_cfunc(u, "bind", um_bind, 1);
     define_cfunc(u, "bind_call", um_bind_call, -1);
     let _ = intern;

@@ -28,7 +28,7 @@ impl Ctx {
     #[inline(always)]
     pub fn str_from_sbuf(&mut self, b: SBuf, enc: u8) -> Value {
         self.str_account(b.len());
-        let k = self.vm().c_string;
+        let k = self.vm().c_string.get();
         self.alloc_with(k, move || Body::String(RString { b, enc }))
     }
     #[inline]
@@ -37,13 +37,13 @@ impl Ctx {
     #[inline]
     pub fn str_new_enc(&mut self, b: &[u8], enc: u8) -> Value {
         self.str_account(b.len());
-        let k = self.vm().c_string;
+        let k = self.vm().c_string.get();
         self.alloc_with(k, move || Body::String(RString { b: SBuf::from_slice(b), enc }))
     }
     #[inline]
     pub fn str_with_capa(&mut self, n: usize, enc: u8) -> Value {
         self.str_account(n);
-        let k = self.vm().c_string;
+        let k = self.vm().c_string.get();
         self.alloc_with(k, move || Body::String(RString { b: SBuf::with_capacity(n), enc }))
     }
     #[inline]

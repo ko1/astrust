@@ -120,12 +120,8 @@ impl Ctx {
     pub fn malloc_increase(&mut self, n: usize) { crate::gc::malloc_increase(n); }
 
     /// VM state (builtin classes, method identities, tables).
-    #[allow(static_mut_refs)]
     #[inline(always)]
-    pub fn vm(&self) -> &Vm { unsafe { crate::vm::VM.as_deref().unwrap_unchecked() } }   // SAFETY: set by boot before any Ctx runs; H2
-    #[allow(static_mut_refs)]
-    #[inline(always)]
-    pub fn vm_mut(&mut self) -> &mut Vm { unsafe { crate::vm::VM.as_deref_mut().unwrap_unchecked() } }   // SAFETY: as `vm`
+    pub fn vm(&self) -> &Vm { crate::vm::vm() }
 }
 
 /// Read access to every object but one, while that one is borrowed mutably (`Ctx::ary_mut_and`).
@@ -328,16 +324,16 @@ impl Global {
     pub fn get(&self, c: &Ctx) -> Value { self.get_vm(c.vm()) }
     #[inline]
     pub fn get_vm(&self, vm: &Vm) -> Value {
-        match self.0.load(std::sync::atomic::Ordering::Relaxed) { 0 => NIL, i => vm.pinned[i - 1] }
+        match self.0.load(std::sync::atomic::Ordering::Relaxed) { 0 => NIL, i => vm.pinned.borrow()[i - 1] }
     }
     #[inline]
-    pub fn set(&self, c: &mut Ctx, v: Value) { self.set_vm(c.vm_mut(), v) }
+    pub fn set(&self, c: &mut Ctx, v: Value) { self.set_vm(c.vm(), v) }
     /// Boot-time form (no context yet; `builtins::boot` passes the Vm).
-    pub fn set_vm(&self, vm: &mut Vm, v: Value) {
+    pub fn set_vm(&self, vm: &Vm, v: Value) {
         use std::sync::atomic::Ordering::Relaxed;
         match self.0.load(Relaxed) {
-            0 => { vm.pinned.push(v); self.0.store(vm.pinned.len(), Relaxed); }
-            i => vm.pinned[i - 1] = v,
+            0 => { vm.pinned.borrow_mut().push(v); self.0.store(vm.pinned.borrow().len(), Relaxed); }
+            i => vm.pinned.borrow_mut()[i - 1] = v,
         }
     }
 }
@@ -359,10 +355,10 @@ impl Ctx {
 }
 
 /// Install the VM and run the boot sequence on it: once, before any `Ctx` exists.
-pub fn boot_vm(v: Box<Vm>, boot: impl FnOnce(&mut Vm)) {
+pub fn boot_vm(v: Box<Vm>, boot: impl FnOnce(&Vm)) {
     static BOOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     assert!(!BOOTED.swap(true, std::sync::atomic::Ordering::SeqCst), "saruby: VM booted twice");
-    // SAFETY: the only write of VM (flag above), before any Ctx; boot's legacy vm() calls alias it as before
-    let vm = unsafe { let p = &raw mut crate::vm::VM; *p = Some(v); (*p).as_deref_mut().unwrap() };
-    boot(vm);
+    // SAFETY: the only write of VM (flag above), before any vm() or Ctx
+    unsafe { *(&raw mut crate::vm::VM) = Some(v); }
+    boot(crate::vm::vm());
 }

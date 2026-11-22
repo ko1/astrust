@@ -146,7 +146,7 @@ fn group_index(c: &mut Ctx, m: Value, k: Value) -> Result<Option<usize>, Esc> {
         let nm = if k.is_sym() { crate::symbol::sym_str(k.as_sym()) } else { String::from_utf8_lossy(c.str_bytes(k)).into_owned() };
         let r = rregexp(c, md(c, m).regexp);
         let idx = r.and_then(|r| r.re.as_ref()).map(|r| r.group_index(&nm)).unwrap_or_default();
-        if idx.is_empty() { return err(c, c.vm().c_index_error, format!("undefined group name reference: {}", nm)); }
+        if idx.is_empty() { return err(c, c.vm().c_index_error.get(), format!("undefined group name reference: {}", nm)); }
         for &i in idx.iter().rev() { if md(c, m).groups.get(i).map(|g| g.is_some()).unwrap_or(false) { return Ok(Some(i)); } }
         return Ok(Some(*idx.last().unwrap()));
     }
@@ -160,7 +160,7 @@ fn group_index(c: &mut Ctx, m: Value, k: Value) -> Result<Option<usize>, Esc> {
 fn group_index_strict(c: &mut Ctx, m: Value, k: Value) -> Result<usize, Esc> {
     if k.is_sym() || is_string(k) { return Ok(group_index(c, m, k)?.unwrap_or(0)); }
     let i = crate::builtins::numeric_methods::num_to_long(c, k)?;
-    if i < 0 || i >= md(c, m).groups.len() as i64 { return err(c, c.vm().c_index_error, format!("index {} out of matches", i)); }
+    if i < 0 || i >= md(c, m).groups.len() as i64 { return err(c, c.vm().c_index_error.get(), format!("index {} out of matches", i)); }
     Ok(i as usize)
 }
 fn md_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -248,7 +248,7 @@ pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     Ok(None)
 }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
-    if crate::builtins::inherits(klass, c.vm().c_regexp) {
+    if crate::builtins::inherits(klass, c.vm().c_regexp.get()) {
         let re = crate::regex_engine::Regex::new(b"", 0).ok();
         return Ok(Some(c.alloc(klass, Body::Data(Box::new(RRegexp { src: vec![], opts: 0, re, enc_fixed: false })))));
     }
@@ -266,7 +266,7 @@ fn re_initialize(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
 
 /// Boot: Regexp and MatchData; returns (Regexp, MatchData).
 pub fn init(vmr: &Vm) -> (Value, Value) {
-    let r = define_class("Regexp", vmr.c_object);
+    let r = define_class("Regexp", vmr.c_object.get());
     class_set_alloc(r, AllocKind::None);
     const_set(r, intern(b"IGNORECASE"), Value::fix(1));
     const_set(r, intern(b"EXTENDED"), Value::fix(2));
@@ -281,7 +281,7 @@ pub fn init(vmr: &Vm) -> (Value, Value) {
     d("match", re_match, -1); d("match?", re_match_p, -1); d("=~", re_match_op, 1); d("===", re_eqq, 1); d("source", re_source, 0); d("encoding", re_encoding, 0); d("fixed_encoding?", re_fixed_encoding, 0);
     d("inspect", re_inspect, 0); d("to_s", re_to_s, 0); d("options", re_options, 0); d("casefold?", re_casefold, 0); d("==", re_eq, 1);
     d("eql?", re_eq, 1); d("hash", re_hash, 0); d("names", re_names, 0); d("named_captures", re_named_captures, 0); d("freeze", re_freeze, 0);
-    let m = define_class("MatchData", vmr.c_object);
+    let m = define_class("MatchData", vmr.c_object.get());
     class_set_alloc(m, AllocKind::None);
     let d = |n: &str, f: CFunc, a: i32| define_cfunc(m, n, f, a);
     d("[]", md_aref, -1); d("to_a", md_to_a, 0); d("captures", md_captures, 0); d("deconstruct", md_captures, 0); d("named_captures", md_named_captures, -1);

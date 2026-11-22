@@ -112,7 +112,7 @@ fn new_fiber(c: &mut Ctx, klass: Value, proc_: Value) -> Value {
 fn start(c: &mut Ctx, f: Value) -> Result<(), Esc> {
     collect_dead_fibers();
     let Some((mut stack, _)) = NativeStack::take() else {
-        let k = c.vm().c_fiber_error;
+        let k = c.vm().c_fiber_error.get();
         return err(c, k, "can't alloc machine stack to fiber");
     };
     let mut ctx = FiberCtx::new(stack.bottom() + NATIVE_MARGIN);
@@ -203,7 +203,7 @@ pub(crate) fn fiber_main(c: &mut Ctx, args: Value, exc: bool) -> ! {
         Ok(v) => (v, false),
         Err(_) if c.esc == EscKind::Throw && c.esc_tag_v == kill => (NIL, false),
         Err(_) if c.esc == EscKind::Raise => (c.esc_val, true),
-        Err(_) => { let k = c.vm().c_local_jump_error; (make_exception(k, "break from proc-closure"), true) }
+        Err(_) => { let k = c.vm().c_local_jump_error.get(); (make_exception(k, "break from proc-closure"), true) }
     };
     c.esc = EscKind::None;
     c.frame = std::ptr::null_mut();
@@ -235,7 +235,7 @@ fn return_fiber(c: &mut Ctx, cur: Value) -> Value {
 
 fn owner_of(c: &Ctx, f: Value) -> Value { let d = fd(c, f); if d.main { MAIN_ROOT.get(c) } else { d.owner } }
 
-fn fiber_err<T>(c: &mut Ctx, msg: &str) -> Result<T, Esc> { let k = c.vm().c_fiber_error; err(c, k, msg) }
+fn fiber_err<T>(c: &mut Ctx, msg: &str) -> Result<T, Esc> { let k = c.vm().c_fiber_error.get(); err(c, k, msg) }
 
 /// Resume f passing `v`, or the arguments `a` when v is UNDEF.
 fn resume_kw(c: &mut Ctx, f: Value, v: Value, a: &[Value], exc: bool) -> RV {
@@ -311,7 +311,7 @@ pub fn fiber_yield(c: &mut Ctx, v: Value) -> RV {
 // ---- green threads (builtins/thread.rs): a thread is a fiber chain entered from the scheduler ----
 
 pub fn new_thread_fiber(c: &mut Ctx, proc_: Value, args: Value, storage: Value) -> Value {
-    let k = c.vm().c_fiber;
+    let k = c.vm().c_fiber.get();
     let f = new_fiber(c, k, proc_);
     let d = fdm(c, f);
     d.xfer = args; d.owner = f; d.storage = storage; d.blocking = true;
@@ -390,7 +390,7 @@ fn f_alive(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(V
 fn f_s_current(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(CUR.get(c)) }
 /// Fiber#raise: resume a yielding fiber (transfer to a transferring one) raising there.
 fn f_raise(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    let e = if a.is_empty() { let k = c.vm().c_runtime_error; make_exception(k, "unhandled exception") } else { crate::builtins::kernel::make_exception_from_args(c, a)? };
+    let e = if a.is_empty() { let k = c.vm().c_runtime_error.get(); make_exception(k, "unhandled exception") } else { crate::builtins::kernel::make_exception_from_args(c, a)? };
     raise_in(c, slf, e)
 }
 /// CRuby fiber_raise: a fiber that resumed another passes it on to that one.
@@ -433,10 +433,10 @@ fn enum_fiber(c: &mut Ctx, e: Value) -> Value {
     let f = renum(c, e).fiber;
     if f != NIL { return f; }
     let blk = Block::cfunc(c, enum_body, e);
-    let pk = c.vm().c_proc;
+    let pk = c.vm().c_proc.get();
     let p = c.alloc(pk, Body::Proc(Box::new(ProcData { blk, is_lambda: false, from_method: NIL })));
     c.proc_data_mut(p).blk.proc_val = p;
-    let fk = c.vm().c_fiber;
+    let fk = c.vm().c_fiber.get();
     let f = new_fiber(c, fk, p);
     c.data_mut::<REnum>(e).expect("an Enumerator").fiber = f;
     f
@@ -454,7 +454,7 @@ fn enum_pull(c: &mut Ctx, e: Value) -> Result<Option<Value>, Esc> {
 fn stop_iteration(c: &mut Ctx, e: Value) -> Esc {
     let f = renum(c, e).fiber;
     let res = if f != NIL { fd(c, f).enum_src } else { NIL };
-    let k = c.vm().c_stop_iteration;
+    let k = c.vm().c_stop_iteration.get();
     let ex = make_exception(k, "iteration reached an end");
     ivar_set_raw(ex, crate::symbol::intern(b"result"), res);
     raise_exc(c, ex)
@@ -471,10 +471,10 @@ pub fn enum_peek(c: &mut Ctx, e: Value) -> RV {
     }
 }
 
-pub fn init(vmr: &mut Vm) {
-    let k = define_class("Fiber", vmr.c_object);
+pub fn init(vmr: &Vm) {
+    let k = define_class("Fiber", vmr.c_object.get());
     class_set_alloc(k, AllocKind::None);
-    vmr.c_fiber = k;
+    vmr.c_fiber.set(k);
     define_singleton_cfunc(k, "yield", f_s_yield, -1);
     define_singleton_cfunc(k, "current", f_s_current, 0);
     define_cfunc(k, "resume", f_resume, -1);
@@ -488,6 +488,6 @@ pub fn init(vmr: &mut Vm) {
     MAIN_ROOT.set_vm(vmr, root);
     THREAD_ROOT.set_vm(vmr, root);
     CUR.set_vm(vmr, root);
-    let tag = crate::gc::alloc(vmr.c_array, Body::Array(crate::avec::AVec::new()));
+    let tag = crate::gc::alloc(vmr.c_array.get(), Body::Array(crate::avec::AVec::new()));
     KILL.set_vm(vmr, tag);
 }

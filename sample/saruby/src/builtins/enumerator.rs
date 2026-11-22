@@ -45,16 +45,16 @@ fn new_enum(c: &mut Ctx, klass: Value, recv: Value, mid: Sym, args: &[Value], si
 }
 
 pub fn enum_for(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], size_fn: Value) -> RV {
-    let k = c.vm().c_enumerator;
+    let k = c.vm().c_enumerator.get();
     Ok(new_enum(c, k, recv, mid, args, size_fn))
 }
 /// An enumerator whose size is the receiver's size.
 pub fn enum_for_sized(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value]) -> RV {
-    let k = c.vm().c_enumerator;
+    let k = c.vm().c_enumerator.get();
     Ok(new_enum(c, k, recv, mid, args, TRUE))
 }
 pub fn enum_from_array(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], arr: Value) -> RV {
-    let k = c.vm().c_enumerator;
+    let k = c.vm().c_enumerator.get();
     let e = new_enum(c, k, recv, mid, args, NIL);
     let none = c.ary_new();
     let en = renum_mut(c, e);
@@ -63,14 +63,14 @@ pub fn enum_from_array(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], arr: 
 }
 
 pub fn arith_seq(c: &mut Ctx, b: Value, e: Value, st: Value, excl: bool, mid: Sym) -> RV {
-    let k = c.vm().c_arith_seq;
+    let k = c.vm().c_arith_seq.get();
     let v = new_enum(c, k, b, mid, &[], NIL);
     renum_mut(c, v).arith = Some((b, e, st, excl));
     Ok(v)
 }
 /// ArithmeticSequence made by Range#step / Range#%: inspects as "((range).mid(args))".
 pub fn arith_seq_from(c: &mut Ctx, range: Value, b: Value, e: Value, st: Value, excl: bool, mid: Sym, args: &[Value]) -> RV {
-    let k = c.vm().c_arith_seq;
+    let k = c.vm().c_arith_seq.get();
     let v = new_enum(c, k, range, mid, args, NIL);
     renum_mut(c, v).arith = Some((b, e, st, excl));
     Ok(v)
@@ -85,7 +85,7 @@ pub fn arith_seq_slice(c: &mut Ctx, seq: Value, ary: Value) -> RV {
         if excl && e != NIL { e = Value::fix(num_to_long(c, e)? + 1); excl = false; }
         std::mem::swap(&mut b, &mut e);
     }
-    let oor = |c: &mut Ctx| -> RV { let s2 = inspect_str(c, seq)?; err(c, c.vm().c_range_error, format!("{} out of range", s2)) };
+    let oor = |c: &mut Ctx| -> RV { let s2 = inspect_str(c, seq)?; err(c, c.vm().c_range_error.get(), format!("{} out of range", s2)) };
     // rb_range_component_beg_len
     let mut beg = if b == NIL { 0 } else { num_to_long(c, b)? };
     let mut end = if e == NIL { -1 } else { num_to_long(c, e)? };
@@ -129,7 +129,7 @@ pub fn enum_each_with(c: &mut Ctx, e: Value, blk: *const Block) -> RV {
     }
     if en.gen != NIL {
         let p = block_to_proc(c, blk)?;
-        let k = c.vm().c_yielder;
+        let k = c.vm().c_yielder.get();
         let y = c.alloc(k, Body::Data(Box::new(RYielder { blk: p })));
         return call_proc(c, en.gen, &[y], std::ptr::null());
     }
@@ -151,7 +151,7 @@ fn e_each(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
         if a.is_empty() { return Ok(slf); }
         let en = renum(c, slf);
         let mut args = c.ary(en.args).to_vec(); args.extend_from_slice(a);
-        let k = c.vm().c_enumerator;
+        let k = c.vm().c_enumerator.get();
         return Ok(new_enum(c, k, en.recv, en.mid, &args, NIL));
     }
     if !a.is_empty() {
@@ -209,7 +209,7 @@ fn e_next(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     }
     let en = renum(c, slf);
     if en.pos >= c.ary_len(en.buf) {
-        let e = make_exception(c.vm().c_stop_iteration, "iteration reached an end");
+        let e = make_exception(c.vm().c_stop_iteration.get(), "iteration reached an end");
         return Err(raise_exc(c, e));
     }
     let v = c.ary_get(en.buf, en.pos);
@@ -328,7 +328,7 @@ fn e_initialize(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     Ok(slf)
 }
 fn y_s_new(c: &mut Ctx, slf: Value, _a: &[Value], blk: *const Block) -> RV {
-    if blk.is_null() { return err(c, c.vm().c_local_jump_error, "no block given"); }
+    if blk.is_null() { return err(c, c.vm().c_local_jump_error.get(), "no block given"); }
     let p = block_to_proc(c, blk)?;
     Ok(c.alloc(slf, Body::Data(Box::new(RYielder { blk: p }))))
 }
@@ -340,7 +340,7 @@ fn y_yield(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 fn y_ltlt(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { y_yield(c, slf, a, b)?; Ok(slf) }
 fn y_to_proc(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let b = Block::cfunc(c, |c, d, args, _b| y_yield(c, d, args, std::ptr::null()), slf);
-    let k = c.vm().c_proc;
+    let k = c.vm().c_proc.get();
     let p = c.alloc(k, Body::Proc(Box::new(ProcData { blk: b, is_lambda: true, from_method: NIL })));
     c.proc_data_mut(p).blk.proc_val = p;
     Ok(p)
@@ -393,7 +393,7 @@ pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     Ok(None)
 }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
-    if crate::builtins::inherits(klass, c.vm().c_enumerator) { return Ok(Some(new_enum(c, klass, NIL, s::each, &[], NIL))); }
+    if crate::builtins::inherits(klass, c.vm().c_enumerator.get()) { return Ok(Some(new_enum(c, klass, NIL, s::each, &[], NIL))); }
     Ok(None)
 }
 

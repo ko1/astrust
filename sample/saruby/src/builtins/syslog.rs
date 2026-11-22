@@ -34,7 +34,7 @@ fn s_syslog(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 fn s_closelog(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { sys::closelog(); Ok(NIL) }
 fn s_setlogmask(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let m = num_to_long(c, a[0])? as i32; Ok(Value::fix(sys::setlogmask(m) as i64)) }
 pub fn init(c: &mut Ctx) {
-    let ob = c.vm().c_object;
+    let ob = c.vm().c_object.get();
     let m = const_get_at(ob, intern(b"Syslog")).unwrap_or_else(|| define_module("Syslog"));
     define_singleton_cfunc(m, "__openlog", s_openlog, 3);
     define_singleton_cfunc(m, "__syslog", s_syslog, 2);

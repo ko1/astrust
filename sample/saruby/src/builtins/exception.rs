@@ -15,80 +15,80 @@ use crate::symbol::{intern, s, sym_str};
 use crate::value::*;
 use crate::vm::*;
 
-pub fn init_classes(vmr: &mut Vm) {
-    let ob = vmr.c_object;
+pub fn init_classes(vmr: &Vm) {
+    let ob = vmr.c_object.get();
     let ex = define_class("Exception", ob);
     class_set_alloc(ex, AllocKind::Exception);
-    vmr.c_exception = ex;
+    vmr.c_exception.set(ex);
     let d = |n: &str, sup: Value| define_class(n, sup);
-    vmr.c_no_memory_error = d("NoMemoryError", ex);
-    vmr.c_script_error = d("ScriptError", ex);
-    vmr.c_load_error = d("LoadError", vmr.c_script_error);
-    vmr.c_not_impl_error = d("NotImplementedError", vmr.c_script_error);
-    vmr.c_syntax_error = d("SyntaxError", vmr.c_script_error);
-    vmr.c_security_error = d("SecurityError", ex);
-    vmr.c_signal_exception = d("SignalException", ex);
-    vmr.c_interrupt = d("Interrupt", vmr.c_signal_exception);
-    vmr.c_system_exit = d("SystemExit", ex);
-    vmr.c_system_stack_error = d("SystemStackError", ex);
+    vmr.c_no_memory_error.set(d("NoMemoryError", ex));
+    vmr.c_script_error.set(d("ScriptError", ex));
+    vmr.c_load_error.set(d("LoadError", vmr.c_script_error.get()));
+    vmr.c_not_impl_error.set(d("NotImplementedError", vmr.c_script_error.get()));
+    vmr.c_syntax_error.set(d("SyntaxError", vmr.c_script_error.get()));
+    vmr.c_security_error.set(d("SecurityError", ex));
+    vmr.c_signal_exception.set(d("SignalException", ex));
+    vmr.c_interrupt.set(d("Interrupt", vmr.c_signal_exception.get()));
+    vmr.c_system_exit.set(d("SystemExit", ex));
+    vmr.c_system_stack_error.set(d("SystemStackError", ex));
     let se = d("StandardError", ex);
-    vmr.c_standard_error = se;
-    vmr.c_argument_error = d("ArgumentError", se);
-    vmr.c_uncaught_throw_error = d("UncaughtThrowError", vmr.c_argument_error);
-    vmr.c_encoding_error = d("EncodingError", se);
-    vmr.c_fiber_error = d("FiberError", se);
-    vmr.c_io_error = d("IOError", se);
-    vmr.c_eof_error = d("EOFError", vmr.c_io_error);
-    vmr.c_index_error = d("IndexError", se);
-    vmr.c_key_error = d("KeyError", vmr.c_index_error);
-    vmr.c_stop_iteration = d("StopIteration", vmr.c_index_error);
-    vmr.c_closed_queue_error = d("ClosedQueueError", vmr.c_stop_iteration);
-    vmr.c_local_jump_error = d("LocalJumpError", se);
-    vmr.c_name_error = d("NameError", se);
-    vmr.c_no_method_error = d("NoMethodError", vmr.c_name_error);
-    vmr.c_range_error = d("RangeError", se);
-    vmr.c_float_domain_error = d("FloatDomainError", vmr.c_range_error);
-    vmr.c_regexp_error = d("RegexpError", se);
-    vmr.c_runtime_error = d("RuntimeError", se);
-    vmr.c_frozen_error = d("FrozenError", vmr.c_runtime_error);
-    vmr.c_system_call_error = d("SystemCallError", se);
-    vmr.c_thread_error = d("ThreadError", se);
-    vmr.c_type_error = d("TypeError", se);
-    vmr.c_zero_div_error = d("ZeroDivisionError", se);
-    vmr.c_no_matching_pattern_error = d("NoMatchingPatternError", se);
-    vmr.c_no_matching_pattern_key_error = d("NoMatchingPatternKeyError", vmr.c_no_matching_pattern_error);
+    vmr.c_standard_error.set(se);
+    vmr.c_argument_error.set(d("ArgumentError", se));
+    vmr.c_uncaught_throw_error.set(d("UncaughtThrowError", vmr.c_argument_error.get()));
+    vmr.c_encoding_error.set(d("EncodingError", se));
+    vmr.c_fiber_error.set(d("FiberError", se));
+    vmr.c_io_error.set(d("IOError", se));
+    vmr.c_eof_error.set(d("EOFError", vmr.c_io_error.get()));
+    vmr.c_index_error.set(d("IndexError", se));
+    vmr.c_key_error.set(d("KeyError", vmr.c_index_error.get()));
+    vmr.c_stop_iteration.set(d("StopIteration", vmr.c_index_error.get()));
+    vmr.c_closed_queue_error.set(d("ClosedQueueError", vmr.c_stop_iteration.get()));
+    vmr.c_local_jump_error.set(d("LocalJumpError", se));
+    vmr.c_name_error.set(d("NameError", se));
+    vmr.c_no_method_error.set(d("NoMethodError", vmr.c_name_error.get()));
+    vmr.c_range_error.set(d("RangeError", se));
+    vmr.c_float_domain_error.set(d("FloatDomainError", vmr.c_range_error.get()));
+    vmr.c_regexp_error.set(d("RegexpError", se));
+    vmr.c_runtime_error.set(d("RuntimeError", se));
+    vmr.c_frozen_error.set(d("FrozenError", vmr.c_runtime_error.get()));
+    vmr.c_system_call_error.set(d("SystemCallError", se));
+    vmr.c_thread_error.set(d("ThreadError", se));
+    vmr.c_type_error.set(d("TypeError", se));
+    vmr.c_zero_div_error.set(d("ZeroDivisionError", se));
+    vmr.c_no_matching_pattern_error.set(d("NoMatchingPatternError", se));
+    vmr.c_no_matching_pattern_key_error.set(d("NoMatchingPatternKeyError", vmr.c_no_matching_pattern_error.get()));
     let m = define_module("Math");
-    vmr.m_math = m;
-    vmr.c_math_domain_error = define_class_under(m, "DomainError", vmr.c_argument_error);
+    vmr.m_math.set(m);
+    vmr.c_math_domain_error.set(define_class_under(m, "DomainError", vmr.c_argument_error.get()));
     let enc = define_class("Encoding", ob);
-    vmr.c_encoding = enc;
-    vmr.c_compat_error = define_class_under(enc, "CompatibilityError", vmr.c_encoding_error);
-    vmr.c_invalid_byte_seq_error = define_class_under(enc, "InvalidByteSequenceError", vmr.c_encoding_error);
-    vmr.c_undef_conv_error = define_class_under(enc, "UndefinedConversionError", vmr.c_encoding_error);
+    vmr.c_encoding.set(enc);
+    vmr.c_compat_error.set(define_class_under(enc, "CompatibilityError", vmr.c_encoding_error.get()));
+    vmr.c_invalid_byte_seq_error.set(define_class_under(enc, "InvalidByteSequenceError", vmr.c_encoding_error.get()));
+    vmr.c_undef_conv_error.set(define_class_under(enc, "UndefinedConversionError", vmr.c_encoding_error.get()));
     {
         use crate::builtins::transcode as en;
-        for k in [vmr.c_invalid_byte_seq_error, vmr.c_undef_conv_error] {
+        for k in [vmr.c_invalid_byte_seq_error.get(), vmr.c_undef_conv_error.get()] {
             define_cfunc(k, "source_encoding", en::exc_source_encoding, 0);
             define_cfunc(k, "destination_encoding", en::exc_destination_encoding, 0);
             define_cfunc(k, "source_encoding_name", en::exc_source_encoding_name, 0);
             define_cfunc(k, "destination_encoding_name", en::exc_destination_encoding_name, 0);
         }
-        define_cfunc(vmr.c_invalid_byte_seq_error, "error_bytes", en::exc_error_bytes, 0);
-        define_cfunc(vmr.c_invalid_byte_seq_error, "readagain_bytes", en::exc_readagain_bytes, 0);
-        define_cfunc(vmr.c_invalid_byte_seq_error, "incomplete_input?", en::exc_incomplete_input, 0);
-        define_cfunc(vmr.c_undef_conv_error, "error_char", en::exc_error_char, 0);
+        define_cfunc(vmr.c_invalid_byte_seq_error.get(), "error_bytes", en::exc_error_bytes, 0);
+        define_cfunc(vmr.c_invalid_byte_seq_error.get(), "readagain_bytes", en::exc_readagain_bytes, 0);
+        define_cfunc(vmr.c_invalid_byte_seq_error.get(), "incomplete_input?", en::exc_incomplete_input, 0);
+        define_cfunc(vmr.c_undef_conv_error.get(), "error_char", en::exc_error_char, 0);
     }
-    vmr.c_converter_not_found_error = define_class_under(enc, "ConverterNotFoundError", vmr.c_encoding_error);
-    vmr.m_errno = define_module("Errno");
+    vmr.c_converter_not_found_error.set(define_class_under(enc, "ConverterNotFoundError", vmr.c_encoding_error.get()));
+    vmr.m_errno.set(define_module("Errno"));
     // Errno::* classes are built on first use (autoload of an internal feature) to keep boot short
     let names: Vec<&str> = ERRNOS[..BOOT_ERRNOS].iter().map(|e| e.0).chain(ERRNO_ALIASES[..2].iter().map(|a| a.0)).collect();
-    crate::builtins::lazy_consts(vmr.m_errno, &names, "saruby/errno");
+    crate::builtins::lazy_consts(vmr.m_errno.get(), &names, "saruby/errno");
 }
 /// Entries of ERRNOS (and the first two ERRNO_ALIASES) named at boot; interning the rest costs startup.
 const BOOT_ERRNOS: usize = 66;
 /// The less common Errno names, made reachable on require "socket" (saruby/errno defines them all).
 pub fn register_rare_errnos(c: &mut Ctx) {
-    let m = c.vm().m_errno;
+    let m = c.vm().m_errno.get();
     let names: Vec<&str> = ERRNOS[BOOT_ERRNOS..].iter().map(|e| e.0).chain(ERRNO_ALIASES[2..].iter().map(|a| a.0))
         .filter(|n| const_get_at(m, intern(n.as_bytes())).is_none()).collect();
     crate::builtins::lazy_consts(m, &names, "saruby/errno");
@@ -98,8 +98,8 @@ const ERRNO_ALIASES: &[(&str, &str)] = &[("EOPNOTSUPP", "ENOTSUP"), ("EDEADLOCK"
     ("EAUTH", "NOERROR"), ("EBADARCH", "NOERROR"), ("EBADEXEC", "NOERROR"), ("EBADMACHO", "NOERROR"), ("EBADRPC", "NOERROR"), ("ECAPMODE", "NOERROR"), ("EDEVERR", "NOERROR"), ("EDOOFUS", "NOERROR"), ("EFTYPE", "NOERROR"), ("EIPSEC", "NOERROR"), ("ELAST", "NOERROR"), ("ENEEDAUTH", "NOERROR"), ("ENOATTR", "NOERROR"), ("ENOPOLICY", "NOERROR"), ("ENOTCAPABLE", "NOERROR"), ("EPROCLIM", "NOERROR"), ("EPROCUNAVAIL", "NOERROR"), ("EPROGMISMATCH", "NOERROR"), ("EPROGUNAVAIL", "NOERROR"), ("EPWROFF", "NOERROR"), ("EQFULL", "NOERROR"), ("ERPCMISMATCH", "NOERROR"), ("ESHLIBVERS", "NOERROR")];
 // Errno::X: its number is the constant `Errno`; its message comes from ERRNOS by that number.
 fn define_errno(vmr: &Vm, name: &str, no: i64) -> Value {
-    if let Some(k) = const_get_at(vmr.m_errno, intern(name.as_bytes())) { return k; }
-    let k = define_class_under(vmr.m_errno, name, vmr.c_system_call_error);
+    if let Some(k) = const_get_at(vmr.m_errno.get(), intern(name.as_bytes())) { return k; }
+    let k = define_class_under(vmr.m_errno.get(), name, vmr.c_system_call_error.get());
     const_set(k, intern(b"Errno"), Value::fix(no));
     k
 }
@@ -112,7 +112,7 @@ pub fn errno_text(no: Value) -> String {
 }
 /// Every Errno class (the "saruby/errno" feature).
 pub fn define_all_errnos(c: &mut Ctx) {
-    let m = c.vm().m_errno;
+    let m = c.vm().m_errno.get();
     for (name, no, _) in ERRNOS { define_errno(c.vm(), name, *no); }
     for (alias, name) in ERRNO_ALIASES {
         let k = const_get_at(m, intern(name.as_bytes())).unwrap();
@@ -168,7 +168,7 @@ pub const ERRNOS: &[(&str, i64, &str)] = &[
 pub fn errno_class(vmr: &Vm, no: i64) -> Value {
     // ENOTSUP and friends share numbers: the first table entry names the class
     for (name, n, _) in ERRNOS { if *n == no { return define_errno(vmr, name, *n); } }
-    vmr.c_system_call_error
+    vmr.c_system_call_error.get()
 }
 
 pub fn raise_errno(c: &mut Ctx, no: i64, detail: &str) -> Esc {
@@ -238,7 +238,7 @@ fn exc_backtrace(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV
 fn exc_set_backtrace(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let v = a[0];
     let bt = if is_string(v) { c.ary_new_from(&[v]) } else if v == NIL || is_array(v) { v } else { return type_err(c, "backtrace must be an Array of String or an Array of Thread::Backtrace::Location"); };
-    let loc = c.vm().c_location;
+    let loc = c.vm().c_location.get();
     if is_array(bt) && !c.ary(bt).iter().all(|&x| is_string(x)) && !c.ary(bt).iter().all(|&x| x.is_heap() && is_kind_of(x, loc)) {
         return type_err(c, "backtrace must be an Array of String or an Array of Thread::Backtrace::Location");
     }
@@ -277,7 +277,7 @@ fn exc_backtrace_locations(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Blo
 pub fn location_from_str(c: &mut Ctx, s: &str) -> Value {
     let (head, label) = match s.rfind(":in '") { Some(p) => (&s[..p], s[p + 5..].trim_end_matches('\'')), None => (s, "") };
     let (path, line) = match head.rsplit_once(':') { Some((p, l)) if l.parse::<i64>().is_ok() => (p, l.parse::<i64>().unwrap()), _ => (head, 0) };
-    let o = new_object(c.vm().c_location);
+    let o = new_object(c.vm().c_location.get());
     let p = c.str_new(path.as_bytes());
     ivar_set_raw(o, intern(b"path"), p);
     ivar_set_raw(o, intern(b"lineno"), Value::fix(line));
@@ -330,7 +330,7 @@ pub fn caller_range(c: &mut Ctx, args: &[Value]) -> Result<(usize, Option<usize>
         let len = match args.get(1) { Some(&l) if l.is_fixnum() => { if l.as_fix() < 0 { return arg_err(c, format!("negative size ({})", l.as_fix())); } Some(l.as_fix() as usize) }, _ => None };
         return Ok((a.as_fix() as usize, len));
     }
-    if is_kind_of(a, c.vm().c_range) {
+    if is_kind_of(a, c.vm().c_range.get()) {
         let b = funcall(c, a, intern(b"begin"), &[], std::ptr::null())?;
         let e = funcall(c, a, intern(b"end"), &[], std::ptr::null())?;
         let excl = funcall(c, a, intern(b"exclude_end?"), &[], std::ptr::null())?.truthy();
@@ -346,8 +346,8 @@ pub fn caller_range(c: &mut Ctx, args: &[Value]) -> Result<(usize, Option<usize>
 
 /// Thread::Backtrace::Location; returns the class.
 pub fn init_location(vmr: &Vm) -> Value {
-    let bt = define_class_under(vmr.c_thread, "Backtrace", vmr.c_object);
-    let k = define_class_under(bt, "Location", vmr.c_object);
+    let bt = define_class_under(vmr.c_thread.get(), "Backtrace", vmr.c_object.get());
+    let k = define_class_under(bt, "Location", vmr.c_object.get());
     define_cfunc(k, "path", loc_path, 0);
     define_cfunc(k, "absolute_path", loc_abs_path, 0);
     define_cfunc(k, "lineno", loc_lineno, 0);
@@ -355,7 +355,7 @@ pub fn init_location(vmr: &Vm) -> Value {
     define_cfunc(k, "base_label", loc_base_label, 0);
     define_cfunc(k, "to_s", loc_to_s, 0);
     define_cfunc(k, "inspect", loc_inspect, 0);
-    define_module_function(vmr.m_kernel, "caller_locations", k_caller_locations, -1);
+    define_module_function(vmr.m_kernel.get(), "caller_locations", k_caller_locations, -1);
     k
 }
 fn exc_cause(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(slf, s::cause)) }
@@ -380,7 +380,7 @@ pub fn full_message(c: &mut Ctx, e: Value, _highlight: bool) -> Result<String, E
     let msg = if is_string(dm) { String::from_utf8_lossy(c.str_bytes(dm)).into_owned() } else { exc_message_str(c, e)? };
     let mut out = String::new();
     let first = lines.first().cloned().unwrap_or_else(|| "-e:1:in '<main>'".into());
-    if lines.is_empty() { out.push_str(&format!("{}: {}\n", c.vm().main_file, msg)); }
+    if lines.is_empty() { out.push_str(&format!("{}: {}\n", c.vm().main_file.borrow(), msg)); }
     else { out.push_str(&format!("{}: {}\n", first, msg)); }
     for l in lines.iter().skip(1) { out.push_str(&format!("\tfrom {}\n", l)); }
     let cause = ivar_get(e, s::cause);
@@ -401,7 +401,7 @@ fn name_err_init(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let (pos, kw) = match kw_arg(a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
     ivar_set_raw(slf, s::mesg, pos.first().copied().unwrap_or(NIL));
     ivar_set_raw(slf, s::name, pos.get(1).copied().unwrap_or(NIL));
-    let nme = c.vm().c_no_method_error;
+    let nme = c.vm().c_no_method_error.get();
     if real_class_of(slf) == nme || is_kind_of(slf, nme) {
         let args = match pos.get(2) { Some(&x) => x, None => c.ary_new() };
         ivar_set_raw(slf, intern(b"args"), args);
@@ -457,7 +457,7 @@ fn syscallerr_init(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
     let mut no = NIL;
     for &kk in ancestors(k).iter() { if let Some(v) = const_get_at(kk, intern(b"Errno")) { if v.is_fixnum() { no = v; break; } } }
     let mut detail = a.first().copied().unwrap_or(NIL);
-    if k == c.vm().c_system_call_error {
+    if k == c.vm().c_system_call_error.get() {
         if a.len() == 1 && detail.is_fixnum() { no = detail; detail = NIL; } else if a.len() >= 2 && a[1].is_fixnum() { no = a[1]; }
         // a known errno turns the instance into Errno::X, as CRuby
         if no.is_fixnum() && errno_message(no.as_fix()).is_some() { let ek = errno_class(c.vm(), no.as_fix()); obj_set_klass(slf, ek); }
@@ -472,7 +472,7 @@ fn syscallerr_init(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
 fn syscallerr_errno(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(slf, s::errno)) }
 
 pub fn init(vmr: &Vm) {
-    let e = vmr.c_exception;
+    let e = vmr.c_exception.get();
     define_private_cfunc(e, "initialize", exc_initialize, -1);
     define_singleton_cfunc(e, "exception", exc_s_exception, -1);
     define_singleton_cfunc(e, "to_tty?", exc_s_to_tty, 0);
@@ -487,27 +487,27 @@ pub fn init(vmr: &Vm) {
     define_cfunc(e, "cause", exc_cause, 0);
     define_cfunc(e, "==", exc_eq, 1);
     define_cfunc(e, "full_message", exc_full_message, -1);
-    let ne = vmr.c_name_error;
+    let ne = vmr.c_name_error.get();
     define_private_cfunc(ne, "initialize", name_err_init, -1);
     define_cfunc(ne, "name", name_err_name, 0);
     define_cfunc(ne, "receiver", name_err_receiver, 0);
-    define_cfunc(vmr.c_no_method_error, "args", nm_err_args, 0);
-    define_private_cfunc(vmr.c_key_error, "initialize", key_err_init, -1);
-    define_cfunc(vmr.c_key_error, "key", key_err_key, 0);
-    define_cfunc(vmr.c_key_error, "receiver", name_err_receiver, 0);
-    define_private_cfunc(vmr.c_frozen_error, "initialize", frozen_err_init, -1);
-    define_cfunc(vmr.c_frozen_error, "receiver", name_err_receiver, 0);
-    define_cfunc(vmr.c_no_matching_pattern_key_error, "key", key_err_key, 0);
-    define_cfunc(vmr.c_no_matching_pattern_key_error, "matchee", name_err_receiver, 0);
-    define_cfunc(vmr.c_stop_iteration, "result", stop_iter_result, 0);
-    define_private_cfunc(vmr.c_system_exit, "initialize", sysexit_init, -1);
-    define_cfunc(vmr.c_system_exit, "status", sysexit_status, 0);
-    define_cfunc(vmr.c_system_exit, "success?", sysexit_success, 0);
-    define_cfunc(vmr.c_uncaught_throw_error, "tag", uncaught_tag, 0);
-    define_cfunc(vmr.c_uncaught_throw_error, "value", uncaught_value, 0);
-    define_private_cfunc(vmr.c_system_call_error, "initialize", syscallerr_init, -1);
-    define_cfunc(vmr.c_system_call_error, "errno", syscallerr_errno, 0);
-    define_cfunc(vmr.c_local_jump_error, "reason", |_c, s, _a, _b| { let r = ivar_get(s, intern(b"__reason")); Ok(if r == NIL { sym_value("noreason") } else { r }) }, 0);
-    define_cfunc(vmr.c_local_jump_error, "exit_value", |_c, s, _a, _b| Ok(ivar_get(s, intern(b"__exit_value"))), 0);
+    define_cfunc(vmr.c_no_method_error.get(), "args", nm_err_args, 0);
+    define_private_cfunc(vmr.c_key_error.get(), "initialize", key_err_init, -1);
+    define_cfunc(vmr.c_key_error.get(), "key", key_err_key, 0);
+    define_cfunc(vmr.c_key_error.get(), "receiver", name_err_receiver, 0);
+    define_private_cfunc(vmr.c_frozen_error.get(), "initialize", frozen_err_init, -1);
+    define_cfunc(vmr.c_frozen_error.get(), "receiver", name_err_receiver, 0);
+    define_cfunc(vmr.c_no_matching_pattern_key_error.get(), "key", key_err_key, 0);
+    define_cfunc(vmr.c_no_matching_pattern_key_error.get(), "matchee", name_err_receiver, 0);
+    define_cfunc(vmr.c_stop_iteration.get(), "result", stop_iter_result, 0);
+    define_private_cfunc(vmr.c_system_exit.get(), "initialize", sysexit_init, -1);
+    define_cfunc(vmr.c_system_exit.get(), "status", sysexit_status, 0);
+    define_cfunc(vmr.c_system_exit.get(), "success?", sysexit_success, 0);
+    define_cfunc(vmr.c_uncaught_throw_error.get(), "tag", uncaught_tag, 0);
+    define_cfunc(vmr.c_uncaught_throw_error.get(), "value", uncaught_value, 0);
+    define_private_cfunc(vmr.c_system_call_error.get(), "initialize", syscallerr_init, -1);
+    define_cfunc(vmr.c_system_call_error.get(), "errno", syscallerr_errno, 0);
+    define_cfunc(vmr.c_local_jump_error.get(), "reason", |_c, s, _a, _b| { let r = ivar_get(s, intern(b"__reason")); Ok(if r == NIL { sym_value("noreason") } else { r }) }, 0);
+    define_cfunc(vmr.c_local_jump_error.get(), "exit_value", |_c, s, _a, _b| Ok(ivar_get(s, intern(b"__exit_value"))), 0);
     let _ = sym_str;
 }

@@ -107,8 +107,8 @@ fn bin(c: &mut Ctx, b: &[u8]) -> Value { c.str_new_enc(b, ENC_BINARY) }
 fn usascii(c: &mut Ctx, b: &str) -> Value { c.str_new_enc(b.as_bytes(), ENC_ASCII) }
 fn to_i32(c: &mut Ctx, v: Value) -> Result<i32, Esc> {
     let n = num_to_long(c, v)?;
-    if n > i32::MAX as i64 { return err(c, c.vm().c_range_error, format!("integer {} too big to convert to 'int'", n)); }
-    if n < i32::MIN as i64 { return err(c, c.vm().c_range_error, format!("integer {} too small to convert to 'int'", n)); }
+    if n > i32::MAX as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too big to convert to 'int'", n)); }
+    if n < i32::MIN as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too small to convert to 'int'", n)); }
     Ok(n as i32)
 }
 /// StringValueCStr: the bytes of a String (to_str), without NUL.
@@ -135,7 +135,7 @@ fn afamily(sa: &[u8]) -> i32 { if sa.len() >= 2 { u16_at(sa, 0) as i32 } else { 
 // ---- errors ------------------------------------------------------------------------------------
 /// rb_warn: "file:line: warning: msg" unless $VERBOSE is nil.
 fn rb_warn(c: &mut Ctx, msg: &str) -> Result<(), Esc> {
-    if c.vm().verbose == NIL { return Ok(()); }
+    if c.vm().verbose.get() == NIL { return Ok(()); }
     let loc = c.cur_frame().map(|f| format!("{}:{}: ", frame_file(f), f.line())).unwrap_or_default();
     warning_write(c, format!("{}warning: {}\n", loc, msg).as_bytes())
 }
@@ -144,7 +144,7 @@ fn sys_fail(c: &mut Ctx, e: i64, msg: &str) -> Esc { raise_errno_plain(c, e, msg
 fn rw_fail(c: &mut Ctx, readable: bool, e: i64, msg: &str) -> Esc {
     let pre = match e { sys::EAGAIN => "EAGAIN", EINPROGRESS => "EINPROGRESS", _ => return sys_fail(c, e, msg) };
     let name = format!("{}Wait{}", pre, if readable { "Readable" } else { "Writable" });
-    let k = const_get_at(c.vm().c_io, intern(name.as_bytes())).unwrap_or(c.vm().c_io_error);
+    let k = const_get_at(c.vm().c_io.get(), intern(name.as_bytes())).unwrap_or(c.vm().c_io_error.get());
     let x = make_exception(k, &format!("{} - {}", crate::builtins::exception::errno_text(Value::fix(e)), msg));
     ivar_set_raw(x, s::errno, Value::fix(e));
     raise_exc(c, x)
@@ -322,7 +322,7 @@ fn host_str(c: &mut Ctx, host: Value, flags: &mut i32) -> Result<Option<Vec<u8>>
     if host == NIL { return Ok(None); }
     if is_integer(host) {
         let n = num_to_long(c, host)?;
-        if n < 0 || n > u32::MAX as i64 { return err(c, c.vm().c_range_error, format!("integer {} too big to convert to 'unsigned int'", n)); }
+        if n < 0 || n > u32::MAX as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too big to convert to 'unsigned int'", n)); }
         *flags |= k("AI_NUMERICHOST");
         return Ok(Some(ipv4_str(n as u32).into_bytes()));
     }
@@ -1044,7 +1044,7 @@ fn s_recvfrom(c: &mut Ctx, sock: Value, a: &[Value], from: From) -> RV {
     let len = strbuf_len(c, a[0])?;
     let out = check_outbuf(c, a.get(2))?;
     let io = io::get_io(c, sock)?;
-    if io.rpos < io.rbuf.len() { return err(c, c.vm().c_io_error, "recv for buffered IO"); }
+    if io.rpos < io.rbuf.len() { return err(c, c.vm().c_io_error.get(), "recv for buffered IO"); }
     let mut buf = vec![0u8; len];
     let mut sa = [0u8; SS_LEN];
     let (n, alen) = loop {
@@ -1068,7 +1068,7 @@ fn s_recvfrom_nonblock(c: &mut Ctx, sock: Value, a: &[Value], from: From) -> RV 
     let len = strbuf_len(c, a[0])?;
     let out = check_outbuf(c, Some(&a[2]))?;
     let io = io::get_io(c, sock)?;
-    if io.rpos < io.rbuf.len() { return err(c, c.vm().c_io_error, "recvfrom for buffered IO"); }
+    if io.rpos < io.rbuf.len() { return err(c, c.vm().c_io_error.get(), "recvfrom for buffered IO"); }
     let fd = io.fd;
     let mut buf = vec![0u8; len];
     let mut sa = [0u8; SS_LEN];
@@ -1105,13 +1105,13 @@ fn bs_read_nonblock(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV 
             Err(e) => { let p = io_path(c, s); return Err(match p { Some(p) => sys_fail(c, e, &String::from_utf8_lossy(&p)), None => crate::builtins::exception::raise_errno(c, e, "") }); }
         }
     };
-    if data.is_empty() { if a[2] == FALSE { return Ok(NIL); } return err(c, c.vm().c_eof_error, "end of file reached"); }
+    if data.is_empty() { if a[2] == FALSE { return Ok(NIL); } return err(c, c.vm().c_eof_error.get(), "end of file reached"); }
     io::into_outbuf(c, out, data, ENC_BINARY)
 }
 fn bs_write_nonblock(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let m = if is_string(a[0]) { a[0] } else { to_s_value(c, a[0])? };
     let io = io::get_io(c, s)?;
-    if !io.writable { return err(c, c.vm().c_io_error, "not opened for writing"); }
+    if !io.writable { return err(c, c.vm().c_io_error.get(), "not opened for writing"); }
     io::flush_one(io);
     let fd = io.fd;
     let msg = c.str_bytes(m).to_vec();
@@ -1205,7 +1205,7 @@ fn recvmsg_common(c: &mut Ctx, s: Value, a: &[Value], nonblock: bool) -> RV {
     let ex = a.get(4) != Some(&FALSE);
     let mut grow = a[0] == NIL || a[2] == NIL;
     let io = io::get_io(c, s)?;
-    if io.rpos < io.rbuf.len() { return err(c, c.vm().c_io_error, "recvmsg for buffered IO"); }
+    if io.rpos < io.rbuf.len() { return err(c, c.vm().c_io_error.get(), "recvmsg for buffered IO"); }
     if nonblock { flags |= k("MSG_DONTWAIT"); }
     let orig = flags;
     let (data, name, ctl, mflags) = loop {
@@ -1268,7 +1268,7 @@ fn io_for_fd(c: &mut Ctx, fd: i32) -> RV {
     use std::os::unix::fs::FileTypeExt;
     let sock = sys::fd_metadata(fd).map(|m| m.file_type().is_socket()).unwrap_or(false);
     if sock { let k = C_SOCKET.get(c); return new_sock(c, k, fd); }
-    let k = c.vm().c_io;
+    let k = c.vm().c_io.get();
     Ok(io::new_io(c, k, fd, b"", true, true))
 }
 
@@ -1540,7 +1540,7 @@ fn unix_send_io(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
 }
 fn unix_recv_io(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 0, 2)?;
-    let klass = if a.is_empty() { c.vm().c_io } else { a[0] };
+    let klass = if a.is_empty() { c.vm().c_io.get() } else { a[0] };
     let mode = a.get(1).copied().unwrap_or(NIL);
     let space = cmsg_align(CMSG_HDR + 4);
     let (cl, ctl) = loop {
@@ -1601,7 +1601,7 @@ fn socketpair(c: &mut Ctx, klass: Value, d: Value, t: Value, p: Value, b: *const
         let res = yield_block(c, b, &[r]);
         for s in [s2, s1] {
             if res.is_err() { let (e, v) = (c.esc, c.esc_val); let _ = funcall(c, s, intern(b"close"), &[], std::ptr::null()); c.esc = e; c.esc_val = v; }
-            else if let Err(x) = funcall(c, s, intern(b"close"), &[], std::ptr::null()) { let _ = x; let k = c.vm().c_io_error; if !is_kind_of(c.esc_val, k) { return Err(Esc); } }
+            else if let Err(x) = funcall(c, s, intern(b"close"), &[], std::ptr::null()) { let _ = x; let k = c.vm().c_io_error.get(); if !is_kind_of(c.esc_val, k) { return Err(Esc); } }
         }
         return res;
     }
@@ -1703,7 +1703,7 @@ fn sock_s_getservbyname(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -
 fn sock_s_getservbyport(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 1, 2)?;
     let n = num_to_long(c, a[0])?;
-    if n != (n as u16) as i64 { return err(c, c.vm().c_range_error, format!("integer {} too {} to convert into `int16_t'", n, if n > 0 { "big" } else { "small" })); }
+    if n != (n as u16) as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too {} to convert into `int16_t'", n, if n > 0 { "big" } else { "small" })); }
     let proto = match a.get(1) { Some(&p) if p != NIL => cstr_arg(c, p)?, _ => b"tcp".to_vec() };
     match getservby(None, n as u32, &proto) {
         Some((name, _)) => Ok(bin(c, &name)),
@@ -2083,7 +2083,7 @@ fn anc_unix_rights(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV 
 }
 fn to_u32(c: &mut Ctx, v: Value) -> Result<u32, Esc> {
     let n = num_to_long(c, v)?;
-    if n < i32::MIN as i64 || n > u32::MAX as i64 { return err(c, c.vm().c_range_error, format!("integer {} too big to convert to 'unsigned int'", n)); }
+    if n < i32::MIN as i64 || n > u32::MAX as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too big to convert to 'unsigned int'", n)); }
     Ok(n as u32)
 }
 fn anc_s_ip_pktinfo(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -2135,7 +2135,7 @@ fn ipv6_pktinfo(c: &mut Ctx, s: Value) -> Result<(Value, u32), Esc> {
 fn anc_timestamp(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let (l, t, d) = anc_fields(c, s)?;
     if l == SOL_SOCKET && d.len() == 16 && (t == k("SCM_TIMESTAMP") || t == k("SCM_TIMESTAMPNS")) {
-        let tk = const_get_at(c.vm().c_object, intern(b"Time")).unwrap_or(NIL);
+        let tk = const_get_at(c.vm().c_object.get(), intern(b"Time")).unwrap_or(NIL);
         let (sec, frac) = (Value::fix(u64_at(&d, 0) as i64), Value::fix(u64_at(&d, 8) as i64));
         let unit = sym_value(if t == k("SCM_TIMESTAMP") { "usec" } else { "nsec" });
         return funcall(c, tk, intern(b"at"), &[sec, frac, unit], std::ptr::null());
@@ -2178,7 +2178,7 @@ fn resolution_error_code(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block)
 /// require "socket.so".
 pub fn init(c: &mut Ctx) {
     if C_SOCKET.get(c) != NIL { return; }
-    let (c_obj, io_k, std_err) = (c.vm().c_object, c.vm().c_io, c.vm().c_standard_error);
+    let (c_obj, io_k, std_err) = (c.vm().c_object.get(), c.vm().c_io.get(), c.vm().c_standard_error.get());
     // core classes of CRuby 4.0 that saruby's IO does not define yet
     io::timeout_error_class(c);
     crate::builtins::exception::register_rare_errnos(c);

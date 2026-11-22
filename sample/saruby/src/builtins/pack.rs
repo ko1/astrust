@@ -47,7 +47,7 @@ fn next_dir(c: &mut Ctx, f: &[u8], p: &mut usize) -> Result<Option<Dir>, Esc> {
                 }
                 b'<' | b'>' => {
                     if !NATSTR.contains(&ty) { return arg_err(c, format!("'{}' allowed only after types {}", f[*p] as char, std::str::from_utf8(NATSTR).unwrap())); }
-                    if endian != 0 { return err(c, c.vm().c_range_error, "Can't use both '<' and '>'"); }
+                    if endian != 0 { return err(c, c.vm().c_range_error.get(), "Can't use both '<' and '>'"); }
                     endian = f[*p]; *p += 1;
                 }
                 _ => break,
@@ -60,7 +60,7 @@ fn next_dir(c: &mut Ctx, f: &[u8], p: &mut usize) -> Result<Option<Dir>, Esc> {
             let st = *p; while *p < f.len() && f[*p].is_ascii_digit() { *p += 1; }
             match std::str::from_utf8(&f[st..*p]).unwrap().parse::<u64>() {
                 Ok(n) if n <= i64::MAX as u64 => len = Some(n as usize),
-                _ => return err(c, c.vm().c_range_error, "pack length too big"),
+                _ => return err(c, c.vm().c_range_error.get(), "pack length too big"),
             }
         }
         return Ok(Some(Dir { ty, natint, endian, len, star, at_end }));
@@ -95,7 +95,7 @@ fn int_low64(c: &mut Ctx, v: Value) -> u64 {
 /// rb_to_float: Numeric only; anything else is a TypeError.
 fn to_float(c: &mut Ctx, v: Value) -> Result<f64, Esc> {
     if let Some(f) = c.num_to_f64(v) { return Ok(f); }
-    if v.is_heap() && is_kind_of(v, c.vm().c_numeric) { return crate::builtins::numeric_methods::to_f(c, v); }
+    if v.is_heap() && is_kind_of(v, c.vm().c_numeric.get()) { return crate::builtins::numeric_methods::to_f(c, v); }
     type_err(c, format!("can't convert {} into Float", class_name_for_err(v)))
 }
 fn to_float32(c: &mut Ctx, v: Value) -> Result<f32, Esc> {
@@ -105,7 +105,7 @@ fn to_float32(c: &mut Ctx, v: Value) -> Result<f32, Esc> {
 
 fn uv_to_utf8(c: &mut Ctx, uv: u64, out: &mut Vec<u8>) -> Result<(), Esc> {
     let n = match uv { 0..=0x7f => { out.push(uv as u8); return Ok(()); } 0x80..=0x7ff => 2, 0x800..=0xffff => 3, 0x10000..=0x1fffff => 4,
-        0x200000..=0x3ffffff => 5, 0x4000000..=0x7fffffff => 6, _ => return err(c, c.vm().c_range_error, "pack(U): value out of range") };
+        0x200000..=0x3ffffff => 5, 0x4000000..=0x7fffffff => 6, _ => return err(c, c.vm().c_range_error.get(), "pack(U): value out of range") };
     let lead: u8 = [0, 0, 0xc0, 0xe0, 0xf0, 0xf8, 0xfc][n];
     out.push(lead | (uv >> (6 * (n - 1))) as u8);
     for k in (0..n - 1).rev() { out.push(0x80 | ((uv >> (6 * k)) & 0x3f) as u8); }
@@ -248,7 +248,7 @@ pub fn pack(c: &mut Ctx, ary: Value, a: &[Value]) -> RV {
             b'U' => for _ in 0..len {
                 let v = nextfrom!(); let v = to_integer(c, v)?;
                 let l = num_to_long(c, v)?;
-                if l < 0 { return err(c, c.vm().c_range_error, "pack(U): value out of range"); }
+                if l < 0 { return err(c, c.vm().c_range_error.get(), "pack(U): value out of range"); }
                 uv_to_utf8(c, l as u64, &mut res)?;
             },
             b'u' | b'm' => {

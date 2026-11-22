@@ -84,7 +84,7 @@ fn register_in(st: &mut TieredStore, is: &'static Iseq, src_key: &dyn Fn() -> u6
             } else {
                 unsafe { (*body).head.dispatcher = std::mem::transmute::<*const std::os::raw::c_void, DispatchFn>(p); }
             }
-            vm().sd_hits += 1;
+            vm().sd_hits.set(vm().sd_hits.get() + 1);
         }
     };
     reg(if is.entry.is_null() { is.body } else { is.entry }, "");

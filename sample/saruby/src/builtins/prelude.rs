@@ -18,9 +18,9 @@ pub fn load_prelude(c: &mut Ctx) -> RV {
     let pr = crate::prism::read_serialized(CORE_AST);
     let is = match crate::compile::compile_parsed(&pr, CORE.as_bytes(), "<internal:prelude>", IseqKind::Top, vec![]) {
         Ok(is) => is,
-        Err(msg) => return err(c, c.vm().c_syntax_error, msg),
+        Err(msg) => return err(c, c.vm().c_syntax_error.get(), msg),
     };
-    crate::run_top_iseq(c, is, c.vm().main_obj)
+    crate::run_top_iseq(c, is, c.vm().main_obj.get())
 }
 
 macro_rules! lib { ($n:literal) => { ($n, include_str!(concat!("../../prelude/lib/", $n, ".rb"))) }; }
@@ -129,6 +129,6 @@ pub fn stdlib_file(name: &str) -> Option<std::path::PathBuf> {
 /// $LOAD_PATH: -I dirs (already added), RUBYLIB.
 pub fn setup_load_path(c: &mut Ctx) {
     if let Ok(p) = std::env::var("RUBYLIB") {
-        for d in p.split(':') { let s = c.str_new(d.as_bytes()); let lp = c.vm().load_path; c.ary_push(lp, s); }
+        for d in p.split(':') { let s = c.str_new(d.as_bytes()); let lp = c.vm().load_path.get(); c.ary_push(lp, s); }
     }
 }

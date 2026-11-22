@@ -7,6 +7,7 @@ use crate::symbol::{intern, intern_str, s, sym_str};
 use crate::value::*;
 pub use crate::stack::*;
 use crate::fxhash::HashMap;
+use std::cell::{Cell, RefCell};
 
 // ---- non-local exits -----------------------------------------------------------
 
@@ -135,7 +136,7 @@ pub struct Cref { pub klass: Value, pub prev: *const Cref, pub refinements: Valu
 
 pub fn new_cref(klass: Value, prev: *const Cref) -> *const Cref {
     let p = Box::into_raw(Box::new(Cref { klass, prev, refinements: NIL })) as *const Cref;
-    vm().crefs.push(p);
+    vm().crefs.borrow_mut().push(p);
     p
 }
 
@@ -212,7 +213,7 @@ pub const KIND_WAYS: usize = 8;
 pub fn kind_way(k: u64) -> usize { (k.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 61) as usize }
 /// Changes whenever a method or an ancestry does (both counters only grow).
 #[inline(always)]
-pub fn kind_serial() -> u64 { method_serial() + vm().hierarchy_serial }
+pub fn kind_serial() -> u64 { method_serial() + vm().hierarchy_serial.get() }
 
 // ---- frames ---------------------------------------------------------------------------------
 
@@ -416,95 +417,96 @@ impl Ctx {
 
 #[repr(C)]
 pub struct Vm {
-    pub c_basic_object: Value, pub c_object: Value, pub c_module: Value, pub c_class: Value,
-    pub m_kernel: Value, pub m_comparable: Value, pub m_enumerable: Value,
-    pub c_nil: Value, pub c_true: Value, pub c_false: Value,
-    pub c_numeric: Value, pub c_integer: Value, pub c_float: Value,
-    pub c_string: Value, pub c_symbol: Value, pub c_array: Value, pub c_hash: Value, pub c_range: Value,
-    pub c_proc: Value, pub c_method: Value, pub c_unbound_method: Value, pub c_env: Value,
-    pub c_exception: Value, pub c_standard_error: Value, pub c_runtime_error: Value, pub c_argument_error: Value,
-    pub c_type_error: Value, pub c_name_error: Value, pub c_no_method_error: Value, pub c_zero_div_error: Value,
-    pub c_index_error: Value, pub c_key_error: Value, pub c_range_error: Value, pub c_stop_iteration: Value,
-    pub c_frozen_error: Value, pub c_local_jump_error: Value, pub c_float_domain_error: Value, pub c_io_error: Value,
-    pub c_eof_error: Value, pub c_system_exit: Value, pub c_script_error: Value, pub c_load_error: Value,
-    pub c_not_impl_error: Value, pub c_syntax_error: Value, pub c_system_stack_error: Value,
-    pub c_no_matching_pattern_error: Value, pub c_no_matching_pattern_key_error: Value, pub c_fiber_error: Value,
-    pub c_uncaught_throw_error: Value, pub c_regexp_error: Value, pub c_encoding_error: Value, pub c_math_domain_error: Value,
-    pub c_system_call_error: Value, pub c_interrupt: Value, pub c_signal_exception: Value, pub c_security_error: Value,
-    pub c_thread_error: Value, pub c_closed_queue_error: Value, pub c_no_memory_error: Value, pub c_compat_error: Value,
-    pub c_invalid_byte_seq_error: Value, pub c_undef_conv_error: Value, pub c_converter_not_found_error: Value,
-    pub c_struct: Value, pub c_regexp: Value, pub c_match_data: Value, pub c_time: Value, pub c_io: Value, pub c_file: Value,
-    pub c_enumerator: Value, pub c_lazy: Value, pub c_yielder: Value, pub c_generator: Value, pub c_random: Value, pub c_encoding: Value,
-    pub c_rational: Value, pub c_complex: Value, pub c_binding: Value, pub c_data: Value, pub c_set: Value,
-    pub c_fiber: Value, pub c_thread: Value, pub c_mutex: Value, pub c_queue: Value, pub c_arith_seq: Value, pub c_chain: Value,
-    pub c_object_space_weak_map: Value, pub c_string_io: Value, pub c_dir: Value, pub c_stat: Value, pub c_monitor: Value,
-    pub m_errno: Value, pub m_math: Value, pub m_process: Value, pub m_gc: Value, pub m_object_space: Value, pub m_marshal: Value,
-    pub m_signal: Value, pub m_warning: Value, pub m_file_test: Value,
-    pub c_string_scanner: Value, pub c_string_scanner_error: Value, pub c_econv: Value, pub c_tracepoint: Value, pub trace_list: Value,
-    pub c_location: Value,
+    pub c_basic_object: Cell<Value>, pub c_object: Cell<Value>, pub c_module: Cell<Value>, pub c_class: Cell<Value>,
+    pub m_kernel: Cell<Value>, pub m_comparable: Cell<Value>, pub m_enumerable: Cell<Value>,
+    pub c_nil: Cell<Value>, pub c_true: Cell<Value>, pub c_false: Cell<Value>,
+    pub c_numeric: Cell<Value>, pub c_integer: Cell<Value>, pub c_float: Cell<Value>,
+    pub c_string: Cell<Value>, pub c_symbol: Cell<Value>, pub c_array: Cell<Value>, pub c_hash: Cell<Value>, pub c_range: Cell<Value>,
+    pub c_proc: Cell<Value>, pub c_method: Cell<Value>, pub c_unbound_method: Cell<Value>, pub c_env: Cell<Value>,
+    pub c_exception: Cell<Value>, pub c_standard_error: Cell<Value>, pub c_runtime_error: Cell<Value>, pub c_argument_error: Cell<Value>,
+    pub c_type_error: Cell<Value>, pub c_name_error: Cell<Value>, pub c_no_method_error: Cell<Value>, pub c_zero_div_error: Cell<Value>,
+    pub c_index_error: Cell<Value>, pub c_key_error: Cell<Value>, pub c_range_error: Cell<Value>, pub c_stop_iteration: Cell<Value>,
+    pub c_frozen_error: Cell<Value>, pub c_local_jump_error: Cell<Value>, pub c_float_domain_error: Cell<Value>, pub c_io_error: Cell<Value>,
+    pub c_eof_error: Cell<Value>, pub c_system_exit: Cell<Value>, pub c_script_error: Cell<Value>, pub c_load_error: Cell<Value>,
+    pub c_not_impl_error: Cell<Value>, pub c_syntax_error: Cell<Value>, pub c_system_stack_error: Cell<Value>,
+    pub c_no_matching_pattern_error: Cell<Value>, pub c_no_matching_pattern_key_error: Cell<Value>, pub c_fiber_error: Cell<Value>,
+    pub c_uncaught_throw_error: Cell<Value>, pub c_regexp_error: Cell<Value>, pub c_encoding_error: Cell<Value>, pub c_math_domain_error: Cell<Value>,
+    pub c_system_call_error: Cell<Value>, pub c_interrupt: Cell<Value>, pub c_signal_exception: Cell<Value>, pub c_security_error: Cell<Value>,
+    pub c_thread_error: Cell<Value>, pub c_closed_queue_error: Cell<Value>, pub c_no_memory_error: Cell<Value>, pub c_compat_error: Cell<Value>,
+    pub c_invalid_byte_seq_error: Cell<Value>, pub c_undef_conv_error: Cell<Value>, pub c_converter_not_found_error: Cell<Value>,
+    pub c_struct: Cell<Value>, pub c_regexp: Cell<Value>, pub c_match_data: Cell<Value>, pub c_time: Cell<Value>, pub c_io: Cell<Value>, pub c_file: Cell<Value>,
+    pub c_enumerator: Cell<Value>, pub c_lazy: Cell<Value>, pub c_yielder: Cell<Value>, pub c_generator: Cell<Value>, pub c_random: Cell<Value>, pub c_encoding: Cell<Value>,
+    pub c_rational: Cell<Value>, pub c_complex: Cell<Value>, pub c_binding: Cell<Value>, pub c_data: Cell<Value>, pub c_set: Cell<Value>,
+    pub c_fiber: Cell<Value>, pub c_thread: Cell<Value>, pub c_mutex: Cell<Value>, pub c_queue: Cell<Value>, pub c_arith_seq: Cell<Value>, pub c_chain: Cell<Value>,
+    pub c_object_space_weak_map: Cell<Value>, pub c_string_io: Cell<Value>, pub c_dir: Cell<Value>, pub c_stat: Cell<Value>, pub c_monitor: Cell<Value>,
+    pub m_errno: Cell<Value>, pub m_math: Cell<Value>, pub m_process: Cell<Value>, pub m_gc: Cell<Value>, pub m_object_space: Cell<Value>, pub m_marshal: Cell<Value>,
+    pub m_signal: Cell<Value>, pub m_warning: Cell<Value>, pub m_file_test: Cell<Value>,
+    pub c_string_scanner: Cell<Value>, pub c_string_scanner_error: Cell<Value>, pub c_econv: Cell<Value>, pub c_tracepoint: Cell<Value>, pub trace_list: Cell<Value>,
+    pub c_location: Cell<Value>,
     /// Random::DEFAULT (the generator of Kernel#rand); a class-field root like the ones above.
-    pub default_random: Value,
-    pub main_obj: Value,
-    pub stdout: Value, pub stderr: Value, pub stdin: Value,
-    pub globals: HashMap<Sym, Value>,
-    pub global_aliases: HashMap<Sym, Sym>,
-    pub const_serial: u64,
-    pub hierarchy_serial: u64,
-    pub mcache: HashMap<(u64, Sym), *const MethodEntry>,
-    pub gen_ivars: HashMap<usize, Vec<(Sym, Value)>>,
-    pub node_values: Vec<Value>,
-    pub crefs: Vec<*const Cref>,
-    pub top_cref: *const Cref,
-    pub loaded_features: Value,
-    pub load_path: Value,
-    pub script_name: String,
-    pub at_exit: Value,
-    pub object_ids: HashMap<u64, u64>,
-    pub next_object_id: u64,
-    pub sources: Vec<&'static str>,
-    pub verbose: Value,
-    pub debug_flag: bool,
-    pub raise_hooks: bool,   // debug_flag, or a hook on raise events (update_raise_hooks)
-    pub aot_entries: Vec<NodePtr>,
-    pub aot_collect: bool,
-    pub code_store: Option<crate::astrust::CodeStore>,
-    pub sd_hits: usize,
-    pub frozen_lits: HashMap<Vec<u8>, Value>,
-    pub symproc_cache: HashMap<Sym, Value>,
+    pub default_random: Cell<Value>,
+    pub main_obj: Cell<Value>,
+    pub stdout: Cell<Value>, pub stderr: Cell<Value>, pub stdin: Cell<Value>,
+    pub globals: RefCell<HashMap<Sym, Value>>,
+    pub global_aliases: RefCell<HashMap<Sym, Sym>>,
+    pub const_serial: Cell<u64>,
+    pub hierarchy_serial: Cell<u64>,
+    pub mcache: RefCell<HashMap<(u64, Sym), *const MethodEntry>>,
+    pub gen_ivars: RefCell<HashMap<usize, Vec<(Sym, Value)>>>,
+    pub node_values: RefCell<Vec<Value>>,
+    pub crefs: RefCell<Vec<*const Cref>>,
+    pub top_cref: Cell<*const Cref>,
+    pub loaded_features: Cell<Value>,
+    pub load_path: Cell<Value>,
+    pub script_name: RefCell<String>,
+    pub at_exit: Cell<Value>,
+    pub object_ids: RefCell<HashMap<u64, u64>>,
+    pub next_object_id: Cell<u64>,
+    pub sources: RefCell<Vec<&'static str>>,
+    pub verbose: Cell<Value>,
+    pub debug_flag: Cell<bool>,
+    pub raise_hooks: Cell<bool>,   // debug_flag, or a hook on raise events (update_raise_hooks)
+    pub aot_entries: RefCell<Vec<NodePtr>>,
+    pub aot_collect: Cell<bool>,
+    pub code_store: RefCell<Option<crate::astrust::CodeStore>>,
+    pub sd_hits: Cell<usize>,
+    pub frozen_lits: RefCell<HashMap<Vec<u8>, Value>>,
+    pub symproc_cache: RefCell<HashMap<Sym, Value>>,
     /// Symbol#name: one frozen String per symbol, as in CRuby.
-    pub sym_names: HashMap<Sym, Value>,
+    pub sym_names: RefCell<HashMap<Sym, Value>>,
     /// __callee__ of entries made by alias / define_method(name, method): entry address -> name.
-    pub alias_names: HashMap<usize, Sym>,
-    pub data_free_hooks: Vec<fn(*mut RObj)>,
-    pub pinned: Vec<Value>,
+    pub alias_names: RefCell<HashMap<usize, Sym>>,
+    pub data_free_hooks: RefCell<Vec<fn(*mut RObj)>>,
+    pub pinned: RefCell<Vec<Value>>,
     /// Encoding objects by encoding id (kept alive by `pinned`).
-    pub enc_objs: Vec<Value>,
-    pub recursive_guard: Vec<(u64, Sym)>,
-    pub argv: Value,
-    pub warn_disabled: bool,
-    pub exit_status: i32,
-    pub main_file: String,
-    pub dollar_zero: Value,
-    pub rand_state: u64,
-    pub fiber_roots: Vec<Value>,
+    pub enc_objs: RefCell<Vec<Value>>,
+    pub recursive_guard: RefCell<Vec<(u64, Sym)>>,
+    pub argv: Cell<Value>,
+    pub warn_disabled: Cell<bool>,
+    pub exit_status: Cell<i32>,
+    pub main_file: RefCell<String>,
+    pub dollar_zero: Cell<Value>,
+    pub rand_state: Cell<u64>,
+    pub fiber_roots: RefCell<Vec<Value>>,
     /// green-thread waits in flight (builtins/blop.rs); made at the first wait
-    pub blop: Option<Box<crate::builtins::blop::Blop>>,
+    pub blop: RefCell<Option<Box<crate::builtins::blop::Blop>>>,
     pub ids: MethodIds,
-    pub send_cache: Box<[SendWay; SEND_WAYS]>,
-    pub main_ctx: *mut Ctx,   // the main thread's context, for the root scan
+    pub send_cache: Box<[Cell<SendWay>; SEND_WAYS]>,
+    pub main_ctx: Cell<*mut Ctx>,   // the main thread's context, for the root scan
 }
 
 /// Builtin methods the VM recognizes by identity (set once at boot).
 pub struct MethodIds {
-    pub bo_eq: *const MethodEntry, pub bo_init: *const MethodEntry, pub c_new: *const MethodEntry,
-    pub m_eqq: *const MethodEntry, pub kernel_hash: *const MethodEntry, pub r_each: *const MethodEntry,
+    pub bo_eq: Cell<*const MethodEntry>, pub bo_init: Cell<*const MethodEntry>, pub c_new: Cell<*const MethodEntry>,
+    pub m_eqq: Cell<*const MethodEntry>, pub kernel_hash: Cell<*const MethodEntry>, pub r_each: Cell<*const MethodEntry>,
 }
 
 pub static mut VM: Option<Box<Vm>> = None;
 
+/// The VM, shared: every field is a `Cell` / `RefCell`, so no `&mut Vm` exists.
 #[allow(static_mut_refs)]
 #[inline(always)]
-pub fn vm() -> &'static mut Vm { unsafe { VM.as_mut().unwrap_unchecked() } }
+pub fn vm() -> &'static Vm { unsafe { VM.as_deref().unwrap_unchecked() } }   // SAFETY: written once by heap::boot_vm before any use
 
 // ---- class model --------------------------------------------------------------------------
 
@@ -512,12 +514,12 @@ pub fn vm() -> &'static mut Vm { unsafe { VM.as_mut().unwrap_unchecked() } }
 pub fn class_of(v: Value) -> Value {
     if v.is_heap() { return obj(v).klass; }
     let vm = vm();
-    if v.is_fixnum() { vm.c_integer }
-    else if v.is_flonum() { vm.c_float }
-    else if v.is_sym() { vm.c_symbol }
-    else if v == NIL { vm.c_nil }
-    else if v == TRUE { vm.c_true }
-    else { vm.c_false }
+    if v.is_fixnum() { vm.c_integer.get() }
+    else if v.is_flonum() { vm.c_float.get() }
+    else if v.is_sym() { vm.c_symbol.get() }
+    else if v == NIL { vm.c_nil.get() }
+    else if v == TRUE { vm.c_true.get() }
+    else { vm.c_false.get() }
 }
 
 /// The non-singleton class of v.
@@ -529,7 +531,7 @@ pub fn real_class_of(v: Value) -> Value {
 
 pub fn alloc_class(meta: Value, superclass: Value, is_module: bool, alloc: AllocKind) -> Value {
     let k = gc::alloc(meta, Body::Class(Box::new(ClassData::new(superclass, is_module, alloc))));
-    vm().hierarchy_serial += 1;
+    vm().hierarchy_serial.set(vm().hierarchy_serial.get() + 1);
     k
 }
 
@@ -537,11 +539,11 @@ pub fn alloc_class(meta: Value, superclass: Value, is_module: bool, alloc: Alloc
 pub fn new_class(superclass: Value) -> Value {
     let vm = vm();
     let alloc = if superclass == NIL { AllocKind::Object } else { rclass(superclass).alloc };
-    let k = alloc_class(vm.c_class, superclass, false, alloc);
+    let k = alloc_class(vm.c_class.get(), superclass, false, alloc);
     if superclass != NIL {
         rclass(superclass).subclasses.push(k);
         let sm = singleton_class(superclass);
-        let meta = alloc_class(vm.c_class, sm, false, AllocKind::Class);
+        let meta = alloc_class(vm.c_class.get(), sm, false, AllocKind::Class);
         rclass(meta).is_singleton = true;
         rclass(meta).attached = k;
         obj(k).klass = meta;
@@ -549,7 +551,7 @@ pub fn new_class(superclass: Value) -> Value {
     k
 }
 
-pub fn new_module() -> Value { alloc_class(vm().c_module, NIL, true, AllocKind::None) }
+pub fn new_module() -> Value { alloc_class(vm().c_module.get(), NIL, true, AllocKind::None) }
 
 pub fn singleton_class(v: Value) -> Value {
     if !v.is_heap() {
@@ -565,19 +567,19 @@ pub fn singleton_class(v: Value) -> Value {
             k
         } else {
             let sup = rclass(v).superclass;
-            if sup == NIL { vm.c_class } else { singleton_class(sup) }
+            if sup == NIL { vm.c_class.get() } else { singleton_class(sup) }
         }
     } else { k };
-    let meta = alloc_class(vm.c_class, superclass, false, rclass(superclass).alloc);
+    let meta = alloc_class(vm.c_class.get(), superclass, false, rclass(superclass).alloc);
     rclass(meta).is_singleton = true;
     rclass(meta).attached = v;
     if is_class_or_module(v) && !rclass(v).is_module && !rclass(v).is_singleton {
         // keep the metaclass chain consistent for classes created before this metaclass
     }
-    obj(meta).klass = vm.c_class;
+    obj(meta).klass = vm.c_class.get();
     obj(v).klass = meta;
     bump_method_serial();
-    vm.mcache.clear();
+    vm.mcache.borrow_mut().clear();
     meta
 }
 
@@ -591,20 +593,20 @@ pub fn define_class_under(outer: Value, name: &str, superclass: Value) -> Value 
 }
 /// How instances of class `k` are allocated (boot-time setup of builtin classes).
 pub fn class_set_alloc(k: Value, a: AllocKind) { rclass(k).alloc = a; }
-pub fn define_class(name: &str, superclass: Value) -> Value { define_class_under(vm().c_object, name, superclass) }
+pub fn define_class(name: &str, superclass: Value) -> Value { define_class_under(vm().c_object.get(), name, superclass) }
 pub fn define_module_under(outer: Value, name: &str) -> Value {
     let m = new_module();
     name_class(m, outer, intern_str(name));
     const_set(outer, intern_str(name), m);
     m
 }
-pub fn define_module(name: &str) -> Value { define_module_under(vm().c_object, name) }
+pub fn define_module(name: &str) -> Value { define_module_under(vm().c_object.get(), name) }
 
 pub fn name_class(k: Value, outer: Value, name: Sym) {
     let cd = rclass(k);
     if cd.name.is_some() { return; }
     let vm = vm();
-    let path = if outer == vm.c_object || outer == NIL { sym_str(name) } else {
+    let path = if outer == vm.c_object.get() || outer == NIL { sym_str(name) } else {
         match rclass(outer).name { Some(n) => format!("{}::{}", String::from_utf8_lossy(str_bytes(n)), sym_str(name)), None => return }
     };
     let s = crate::string::str_new_frozen(path.as_bytes());
@@ -664,10 +666,10 @@ pub fn prepend_module(c: &mut Ctx, klass: Value, m: Value) {
 }
 pub fn bump_hierarchy() {
     let vm = vm();
-    vm.hierarchy_serial += 1;
+    vm.hierarchy_serial.set(vm.hierarchy_serial.get() + 1);
     bump_method_serial();
-    vm.const_serial += 1;
-    vm.mcache.clear();
+    vm.const_serial.set(vm.const_serial.get() + 1);
+    vm.mcache.borrow_mut().clear();
 }
 
 fn module_chain(m: Value, out: &mut Vec<Value>) {
@@ -688,7 +690,7 @@ fn module_chain(m: Value, out: &mut Vec<Value>) {
 
 /// Method resolution order (cached per class).
 pub fn ancestors(klass: Value) -> &'static Vec<Value> {
-    let ser = vm().hierarchy_serial;
+    let ser = vm().hierarchy_serial.get();
     let cd = rclass(klass);
     if cd.ancestors_serial == ser && cd.ancestors.is_some() { return cd.ancestors.as_ref().unwrap(); }
     let mut out = vec![];
@@ -711,7 +713,7 @@ pub fn define_method_me(klass: Value, name: Sym, me: *const MethodEntry) {
     rclass(klass).mtbl.insert(name, me);
     let vm = vm();
     bump_method_serial();
-    vm.mcache.clear();
+    vm.mcache.borrow_mut().clear();
 }
 
 pub fn define_cfunc(klass: Value, name: &str, f: CFunc, arity: i32) {
@@ -745,10 +747,10 @@ pub fn search_method(klass: Value, mid: Sym) -> *const MethodEntry {
 #[inline]
 pub fn lookup_method(klass: Value, mid: Sym) -> *const MethodEntry {
     let vm = vm();
-    if let Some(&me) = vm.mcache.get(&(klass.raw(), mid)) { return me; }
+    if let Some(&me) = vm.mcache.borrow().get(&(klass.raw(), mid)) { return me; }
     let mut me = search_method(klass, mid);
     if !me.is_null() { if let MKind::Undef = unsafe { (*me).kind } { me = std::ptr::null(); } }
-    vm.mcache.insert((klass.raw(), mid), me);
+    vm.mcache.borrow_mut().insert((klass.raw(), mid), me);
     me
 }
 
@@ -829,7 +831,7 @@ pub fn ivar_get(v: Value, name: Sym) -> Value {
             return NIL;
         }
         if o.flags & FL_EXIVAR != 0 {
-            if let Some(iv) = vm().gen_ivars.get(&(v.raw() as usize)) {
+            if let Some(iv) = vm().gen_ivars.borrow().get(&(v.raw() as usize)) {
                 for (n, x) in iv { if *n == name { return *x; } }
             }
         }
@@ -847,7 +849,7 @@ pub fn ivar_defined(v: Value, name: Sym) -> bool {
             }
             return false;
         }
-        if let Some(iv) = vm().gen_ivars.get(&(v.raw() as usize)) { return iv.iter().any(|(n, _)| *n == name); }
+        if let Some(iv) = vm().gen_ivars.borrow().get(&(v.raw() as usize)) { return iv.iter().any(|(n, _)| *n == name); }
     }
     false
 }
@@ -881,7 +883,8 @@ pub fn ivar_set_raw(v: Value, name: Sym, val: Value) {
         return;
     }
     o.flags |= FL_EXIVAR;
-    let e = vm().gen_ivars.entry(v.raw() as usize).or_default();
+    let mut g = vm().gen_ivars.borrow_mut();
+    let e = g.entry(v.raw() as usize).or_default();
     for (n, x) in e.iter_mut() { if *n == name { *x = val; return; } }
     e.push((name, val));
 }
@@ -896,7 +899,7 @@ pub fn ivar_remove(v: Value, name: Sym) -> Option<Value> {
         }
         return None;
     }
-    if let Some(iv) = vm().gen_ivars.get_mut(&(v.raw() as usize)) {
+    if let Some(iv) = vm().gen_ivars.borrow_mut().get_mut(&(v.raw() as usize)) {
         if let Some(p) = iv.iter().position(|(n, _)| *n == name) { return Some(iv.remove(p).1); }
     }
     None
@@ -913,7 +916,7 @@ pub fn ivar_list(v: Value) -> Vec<(Sym, Value)> {
         for (i, x) in ivs.iter().enumerate() { if x != UNDEF { out.push((names[i], x)); } }
         return out;
     }
-    if let Some(iv) = vm().gen_ivars.get(&(v.raw() as usize)) { out.extend(iv.iter().cloned()); }
+    if let Some(iv) = vm().gen_ivars.borrow().get(&(v.raw() as usize)) { out.extend(iv.iter().cloned()); }
     out
 }
 
@@ -923,7 +926,7 @@ pub fn const_set(klass: Value, name: Sym, val: Value) {
     let cd = rclass(klass);
     if cd.consts.insert(name, val).is_none() { cd.const_order.push(name); }
     cd.autoload.remove(&name);
-    vm().const_serial += 1;
+    vm().const_serial.set(vm().const_serial.get() + 1);
     if is_class_or_module(val) && rclass(val).name.is_none() { name_class(val, klass, name); }
 }
 
@@ -935,7 +938,7 @@ pub fn const_get_inherit(c: &mut Ctx, klass: Value, name: Sym) -> Result<Option<
         if let Some(&path) = rclass(k).autoload.get(&name) { return do_autoload(c, k, name, path); }
     }
     if rclass(klass).is_module {
-        let o = vm().c_object;
+        let o = vm().c_object.get();
         if let Some(v) = const_get_at(o, name) { return Ok(Some(v)); }
         if let Some(&path) = rclass(o).autoload.get(&name) { return do_autoload(c, o, name, path); }
     }
@@ -960,9 +963,9 @@ pub fn const_lookup(c: &mut Ctx, cref: *const Cref, name: Sym) -> RV {
             cr = (*cr).prev;
         }
     }
-    let start = if cref.is_null() { vm.c_object } else { unsafe { (*cref).klass } };
+    let start = if cref.is_null() { vm.c_object.get() } else { unsafe { (*cref).klass } };
     if let Some(v) = const_get_inherit(c, start, name)? { return Ok(v); }
-    if let Some(v) = const_get_inherit(c, vm.c_object, name)? { return Ok(v); }
+    if let Some(v) = const_get_inherit(c, vm.c_object.get(), name)? { return Ok(v); }
     const_missing(c, start, name)
 }
 
@@ -971,9 +974,9 @@ pub fn const_missing(c: &mut Ctx, klass: Value, name: Sym) -> RV {
     if !me.is_null() && !matches!(unsafe { (*me).kind }, MKind::Cfunc(..)) {
         return funcall(c, klass, s::const_missing, &[Value::sym(name)], std::ptr::null());
     }
-    let msg = if klass == vm().c_object { format!("uninitialized constant {}", sym_str(name)) }
+    let msg = if klass == vm().c_object.get() { format!("uninitialized constant {}", sym_str(name)) }
               else { format!("uninitialized constant {}::{}", class_path(klass), sym_str(name)) };
-    let e = make_name_error(c, vm().c_name_error, &msg, Value::sym(name), klass)?;
+    let e = make_name_error(c, vm().c_name_error.get(), &msg, Value::sym(name), klass)?;
     Err(raise_exc(c, e))
 }
 
@@ -990,16 +993,17 @@ pub fn object_id(v: Value) -> u64 {
     if !v.is_heap() { return v.raw(); }
     let vm = vm();
     let key = v.raw();
-    if let Some(&id) = vm.object_ids.get(&key) { return id; }
-    vm.next_object_id += 8;
-    let id = vm.next_object_id;
-    vm.object_ids.insert(key, id);
+    if let Some(&id) = vm.object_ids.borrow().get(&key) { return id; }
+    vm.next_object_id.set(vm.next_object_id.get() + 8);
+    let id = vm.next_object_id.get();
+    vm.object_ids.borrow_mut().insert(key, id);
     id
 }
 
 pub fn on_free_data(p: *mut RObj) {
     let vm = vm();
-    for f in vm.data_free_hooks.clone() { f(p); }
+    let hooks = vm.data_free_hooks.borrow().clone();
+    for f in hooks { f(p); }
 }
 
 // ---- exceptions -----------------------------------------------------------------------------
@@ -1014,7 +1018,7 @@ pub fn raise_exc(c: &mut Ctx, e: Value) -> Esc {
         ivar_set_raw(e, s::cause, c.errinfo);
     }
     // one test here (raise_exc is inlined everywhere): $DEBUG or a raise hook
-    if vm().raise_hooks && is_exception(e) { raise_hooks(c, e); }
+    if vm().raise_hooks.get() && is_exception(e) { raise_hooks(c, e); }
     c.esc = EscKind::Raise;
     c.esc_val = e;
     Esc
@@ -1023,11 +1027,11 @@ pub fn raise_exc(c: &mut Ctx, e: Value) -> Esc {
 #[cold]
 #[inline(never)]
 fn raise_hooks(c: &mut Ctx, e: Value) {
-    if vm().debug_flag { debug_report(c, e); }
+    if vm().debug_flag.get() { debug_report(c, e); }
     if trace_mask() & EV_RAISE != 0 { crate::builtins::tracepoint::trace_raise(c, e); }
 }
 /// Vm::raise_hooks after $DEBUG or the trace mask changed.
-pub fn update_raise_hooks() { let v = vm(); v.raise_hooks = v.debug_flag || trace_mask() & EV_RAISE != 0; }
+pub fn update_raise_hooks() { let v = vm(); v.raise_hooks.set(v.debug_flag.get() || trace_mask() & EV_RAISE != 0); }
 
 /// $DEBUG: "Exception 'X' at file:line - message" on every raise.
 #[cold]
@@ -1040,7 +1044,7 @@ fn debug_report(c: &mut Ctx, e: Value) {
 }
 
 pub fn is_exception(v: Value) -> bool {
-    v.is_heap() && is_kind_of(v, vm().c_exception)
+    v.is_heap() && is_kind_of(v, vm().c_exception.get())
 }
 
 pub fn is_kind_of(v: Value, k: Value) -> bool {
@@ -1070,8 +1074,8 @@ pub fn raise_msg(c: &mut Ctx, klass: Value, msg: &str) -> Esc {
 }
 
 pub fn err<T>(c: &mut Ctx, klass: Value, msg: impl AsRef<str>) -> Result<T, Esc> { Err(raise_msg(c, klass, msg.as_ref())) }
-pub fn arg_err<T>(c: &mut Ctx, msg: impl AsRef<str>) -> Result<T, Esc> { err(c, vm().c_argument_error, msg) }
-pub fn type_err<T>(c: &mut Ctx, msg: impl AsRef<str>) -> Result<T, Esc> { err(c, vm().c_type_error, msg) }
+pub fn arg_err<T>(c: &mut Ctx, msg: impl AsRef<str>) -> Result<T, Esc> { err(c, vm().c_argument_error.get(), msg) }
+pub fn type_err<T>(c: &mut Ctx, msg: impl AsRef<str>) -> Result<T, Esc> { err(c, vm().c_type_error.get(), msg) }
 
 pub fn argc_err<T>(c: &mut Ctx, given: usize, min: i32, max: i32) -> Result<T, Esc> {
     let exp = if max < 0 { format!("{}+", min) } else if min == max { format!("{}", min) } else { format!("{}..{}", min, max) };
@@ -1093,7 +1097,7 @@ pub fn raise_frozen(c: &mut Ctx, v: Value) -> Esc {
         match r { Ok(s) => s, Err(e) => return e }
     } else { " ...".into() };
     let msg = format!("can't modify frozen {}: {}", class_path(real_class_of(v)), insp);
-    let e = make_exception(vm().c_frozen_error, &msg);
+    let e = make_exception(vm().c_frozen_error.get(), &msg);
     ivar_set_raw(e, s::receiver, v);
     raise_exc(c, e)
 }
@@ -1156,7 +1160,7 @@ fn method_owner_label(owner: Value) -> String {
         return String::new();
     }
     if cd.name.is_none() { return String::new(); }
-    if owner == vm().c_object { return "Object#".into(); }
+    if owner == vm().c_object.get() { return "Object#".into(); }
     format!("{}#", class_path(owner))
 }
 
@@ -1190,7 +1194,7 @@ impl RData for RawBt {
 /// The backtrace at this point, unformatted (stored in an exception's `bt`).
 pub fn make_backtrace_lazy(c: &mut Ctx, skip: usize) -> Value {
     let frames = capture_frames(c);
-    crate::gc::alloc(vm().c_object, Body::Data(Box::new(RawBt { frames, skip })))
+    crate::gc::alloc(vm().c_object.get(), Body::Data(Box::new(RawBt { frames, skip })))
 }
 
 /// An exception's backtrace (Array of String, or nil), formatting a captured one in place.
@@ -1233,8 +1237,8 @@ fn format_frames_n(frames: &[RawFrame], skip: usize, n: usize) -> Option<Vec<Str
             if fr.kind != FK_CFUNC && fr.iseq.is_null() { continue; }
             // CRuby's send/__send__ and Proc#call/yield/===/[] do not push a frame
             if fr.kind == FK_CFUNC && (fr.me.is_null() == false && ((*fr.me).name == s::send || (*fr.me).name == s::__send__)) { continue; }
-            if fr.kind == FK_CFUNC && fr.me == vm().ids.c_new { continue; }   // CRuby 4.0 has no Class#new frame
-            if fr.kind == FK_CFUNC && !fr.me.is_null() && (*fr.me).owner == vm().c_proc && matches!(sym_str((*fr.me).name).as_ref(), "call" | "yield" | "===" | "[]") { continue; }
+            if fr.kind == FK_CFUNC && fr.me == vm().ids.c_new.get() { continue; }   // CRuby 4.0 has no Class#new frame
+            if fr.kind == FK_CFUNC && !fr.me.is_null() && (*fr.me).owner == vm().c_proc.get() && matches!(sym_str((*fr.me).name).as_ref(), "call" | "yield" | "===" | "[]") { continue; }
             seen += 1;
             if seen <= skip { continue; }
             out.push(format!("{}:{}:in '{}'", fr.file, fr.line, frame_label_of(fr.kind, fr.me, fr.iseq)));
@@ -1271,7 +1275,7 @@ pub fn stack_check(c: &mut Ctx, need: usize) -> Result<(), Esc> {
 #[cold]
 #[inline(never)]
 pub fn raise_stack_overflow(c: &mut Ctx) -> Esc {
-    let e = make_exception(vm().c_system_stack_error, "stack level too deep");
+    let e = make_exception(vm().c_system_stack_error.get(), "stack level too deep");
     let bt = crate::array::ary_new();
     ivar_set_raw(e, s::bt, bt);
     raise_exc(c, e)
@@ -1428,7 +1432,7 @@ pub const SITE_IMM: u32 = 16;      // flag: the cached receiver class is an imme
 pub fn site_kind(cc: &CallCache, argc: usize, flags: u32) -> u32 {
     if flags & CF_KW != 0 || cc.klass == 0 { return SITE_OTHER; }
     let v = vm();
-    let imm = [v.c_integer, v.c_float, v.c_symbol, v.c_nil, v.c_true, v.c_false].iter().any(|k| k.raw() == cc.klass);
+    let imm = [v.c_integer.get(), v.c_float.get(), v.c_symbol.get(), v.c_nil.get(), v.c_true.get(), v.c_false.get()].iter().any(|k| k.raw() == cc.klass);
     let k = if cc.fast_argc as usize == argc { SITE_ENTRY }
         else if cc.fast != 0 { match cc.fast & 3 { 1 if argc == 0 => SITE_ATTR_R, 2 if argc == 1 => SITE_ATTR_W,
             0 if cc.fast_argc == u32::MAX => SITE_NEW, _ => return SITE_OTHER } }
@@ -1467,7 +1471,7 @@ fn klass_hit(ck: u64, cc: &CallCache, recv: Value, kind: u32) -> bool {
     if kind & 15 == SITE_OTHER { return false; }
     // Integer and Float receivers inline (n.even?, x.to_i ...; a Float may also be a heap object)
     let k = if kind & SITE_IMM != 0 {
-        if recv.is_fixnum() { vm().c_integer.raw() } else if recv.is_flonum() { vm().c_float.raw() }
+        if recv.is_fixnum() { vm().c_integer.get().raw() } else if recv.is_flonum() { vm().c_float.get().raw() }
         else if recv.is_heap() { obj(recv).klass.raw() } else { class_of_imm(recv) }
     }
             else { if !recv.is_heap() { return false; } obj(recv).klass.raw() };
@@ -1574,8 +1578,8 @@ fn send_guard_fill(c: &Ctx, g: &mut SendGuard, k: Value, smid: Sym) -> bool {
 #[derive(Clone, Copy)]
 pub struct SendWay { klass: u64, mid: u64, serial: u64, me: *const MethodEntry, entry: NodePtr, argc: u32 }
 pub const SEND_WAYS: usize = 256;
-pub fn send_cache_new() -> Box<[SendWay; SEND_WAYS]> {
-    Box::new([SendWay { klass: 0, mid: 0, serial: 0, me: std::ptr::null(), entry: std::ptr::null_mut(), argc: u32::MAX }; SEND_WAYS])
+pub fn send_cache_new() -> Box<[Cell<SendWay>; SEND_WAYS]> {
+    Box::new(std::array::from_fn(|_| Cell::new(SendWay { klass: 0, mid: 0, serial: 0, me: std::ptr::null(), entry: std::ptr::null_mut(), argc: u32::MAX })))
 }
 
 /// The way for klass (a receiver's class, raw) and the Symbol mid; None: no such method.
@@ -1584,7 +1588,7 @@ fn send_way(c: &Ctx, k: Value, mid: Value) -> Option<SendWay> {
     let klass = k.raw();
     let i = (klass.wrapping_add(mid.raw()).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56) as usize % SEND_WAYS;
     let serial = method_serial();
-    let w = vm().send_cache[i];
+    let w = vm().send_cache[i].get();
     if w.klass == klass && w.mid == mid.raw() && w.serial == serial { return Some(w); }
     send_fill(c, i, k, mid, serial)
 }
@@ -1598,7 +1602,7 @@ fn send_fill(c: &Ctx, i: usize, k: Value, mid: Value, serial: u64) -> Option<Sen
         _ => (std::ptr::null_mut(), u32::MAX),
     };
     let w = SendWay { klass: k.raw(), mid: mid.raw(), serial, me: m, entry, argc };
-    vm().send_cache[i] = w;
+    vm().send_cache[i].set(w);
     Some(w)
 }
 
@@ -1761,8 +1765,8 @@ fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry
             let e = is.plain_entry();
             if !e.is_null() { cc.fast = e as usize; cc.fast_argc = is.params.lead.len() as u32; cc.fast_hash = crate::node::hash_node(e); }
         }
-        MKind::Cfunc(..) if me == vm().ids.bo_eq => { cc.fast = 3; }
-        MKind::Cfunc(f, arity) if me == vm().ids.c_new => {
+        MKind::Cfunc(..) if me == vm().ids.bo_eq.get() => { cc.fast = 3; }
+        MKind::Cfunc(f, arity) if me == vm().ids.c_new.get() => {
             cc.cfunc = Some(f); cc.arity = arity;
             // Class#new of a plain-object class whose initialize has a method entry
             let cd = rclass(recv);
@@ -1807,7 +1811,7 @@ pub fn spec_callee_rec(cc: &CallCache, argc: usize, flags: u32) -> NodePtr {
 pub fn site_kind_kw(cc: &CallCache, argc: usize, ci: &crate::compile::CallInfo) -> u32 {
     if cc.klass == 0 || ci.blk.is_some() || cc.fast_argc != KW_DENSE | argc as u32 { return SITE_OTHER; }
     let v = vm();
-    let imm = [v.c_integer, v.c_float, v.c_symbol, v.c_nil, v.c_true, v.c_false].iter().any(|k| k.raw() == cc.klass);
+    let imm = [v.c_integer.get(), v.c_float.get(), v.c_symbol.get(), v.c_nil.get(), v.c_true.get(), v.c_false.get()].iter().any(|k| k.raw() == cc.klass);
     SITE_ENTRY | if imm { SITE_IMM } else { 0 }
 }
 
@@ -1842,7 +1846,7 @@ pub fn spec_block_np(yc: &YieldCache, argc: usize) -> u32 {
 /// The heap Env of a frame whose variables are captured by blocks; params copied in.
 #[inline(never)]
 pub fn make_env(is: &Iseq, base: Stk, parent: Value) {
-    let env = gc::alloc_with(vm().c_env, move || Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), parent));
+    let env = gc::alloc_with(vm().c_env.get(), move || Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), parent));
     base[1].set(env);
     if let Body::Env(vals, _) = &mut obj(env).body {
         for &(sl, ei) in is.env_params.iter() { vals.set(ei as usize, base[sl as usize].get()); }
@@ -1871,14 +1875,14 @@ fn visibility_error(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk,
     let kind = if me_r.visi == VISI_PROTECTED { "protected" } else { "private" };
     let desc = crate::builtins::kernel::nomethod_desc(c, recv)?;
     let msg = format!("{} method '{}' called for {}", kind, sym_str(me_r.name), desc);
-    let e = make_name_error(c, vm().c_no_method_error, &msg, Value::sym(me_r.name), recv)?;
+    let e = make_name_error(c, vm().c_no_method_error.get(), &msg, Value::sym(me_r.name), recv)?;
     Err(raise_exc(c, e))
 }
 
 pub fn method_missing(c: &mut Ctx, recv: Value, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     let klass = class_of(recv);
     let mm = lookup_method(klass, s::method_missing);
-    if !mm.is_null() && unsafe { (*mm).owner } != vm().c_basic_object {
+    if !mm.is_null() && unsafe { (*mm).owner } != vm().c_basic_object.get() {
         // shift args up by one to insert the method name
         let argc = argc as usize;
         let new_base = stage(c, 3 + argc)?;
@@ -1894,11 +1898,11 @@ pub fn method_missing(c: &mut Ctx, recv: Value, mid: Sym, base: Stk, argc: u32, 
 pub fn no_method_error(c: &mut Ctx, recv: Value, mid: Sym, flags: u32) -> RV {
     let desc = crate::builtins::kernel::nomethod_desc(c, recv)?;
     let (cls, msg) = if flags & CF_VCALL != 0 {
-        (vm().c_name_error, format!("undefined local variable or method '{}' for {}", sym_str(mid), desc))
+        (vm().c_name_error.get(), format!("undefined local variable or method '{}' for {}", sym_str(mid), desc))
     } else if flags & CF_SUPER != 0 {
-        (vm().c_no_method_error, format!("super: no superclass method '{}' for {}", sym_str(mid), desc))
+        (vm().c_no_method_error.get(), format!("super: no superclass method '{}' for {}", sym_str(mid), desc))
     } else {
-        (vm().c_no_method_error, format!("undefined method '{}' for {}", sym_str(mid), desc))
+        (vm().c_no_method_error.get(), format!("undefined method '{}' for {}", sym_str(mid), desc))
     };
     let e = make_name_error(c, cls, &msg, Value::sym(mid), recv)?;
     Err(raise_exc(c, e))
@@ -2182,7 +2186,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
     }
     // env
     if is.env_size > 0 {
-        let env = gc::alloc_with(vm().c_env, move || Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), outer_env));
+        let env = gc::alloc_with(vm().c_env.get(), move || Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), outer_env));
         base[1].set(env);
         for &(sl, ei) in is.env_params.iter() {
             if let Body::Env(vals, _) = &mut obj(env).body { vals.set(ei as usize, base[sl as usize].get()); }
@@ -2218,7 +2222,7 @@ pub fn block_to_proc(c: &mut Ctx, blk: *const Block) -> RV {
     // read back with wide loads straddling the patch (a store-forwarding stall per Proc)
     let mut pd = Box::new(ProcData { blk: *b, is_lambda, from_method: NIL });
     pd.blk.outer_blk = outer;
-    let p = gc::alloc_with(vm().c_proc, move || Body::Proc(pd));
+    let p = gc::alloc_with(vm().c_proc.get(), move || Body::Proc(pd));
     let pd = rproc(p);
     pd.blk.proc_val = p;
     unsafe { (*(blk as *mut Block)).proc_val = p; }
@@ -2239,7 +2243,7 @@ pub fn is_lambda_block(b: *const Block) -> bool {
 #[inline(never)]
 pub fn yield_block(c: &mut Ctx, blk: *const Block, args: &[Value]) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("yield: from a builtin (yield_block)");
-    if blk.is_null() { return err(c, vm().c_local_jump_error, "no block given (yield)"); }
+    if blk.is_null() { return err(c, vm().c_local_jump_error.get(), "no block given (yield)"); }
     let b = unsafe { &*blk };
     if let Some(is) = block_fast(b, args.len()) {
         let base = c.top();
@@ -2418,22 +2422,42 @@ pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &'static Iseq, base: Stk, argc
 /// The exact root slots of the VM, and the value stacks (ambiguous).
 pub fn visit_roots<V: RootVisitor<Saruby>>(m: &mut V) {
     let vm = vm();
-    // SAFETY: run_main's context outlives every collection
-    unsafe { visit_ctx(m, &mut *vm.main_ctx); }
-    for v in [&mut vm.c_basic_object, &mut vm.c_object, &mut vm.main_obj, &mut vm.stdout, &mut vm.stderr, &mut vm.stdin, &mut vm.loaded_features,
-              &mut vm.load_path, &mut vm.at_exit, &mut vm.verbose, &mut vm.argv, &mut vm.dollar_zero] { m.visit(v); }
-    for v in vm.globals.values_mut() { m.visit(v); }
-    for v in vm.node_values.iter_mut() { m.visit(v); }
-    for v in vm.pinned.iter_mut() { m.visit(v); }
-    for v in vm.fiber_roots.iter_mut() { m.visit(v); }
-    for v in vm.frozen_lits.values_mut() { m.visit(v); }
-    for v in vm.symproc_cache.values_mut() { m.visit(v); }
-    for v in vm.sym_names.values_mut() { m.visit(v); }
-    for &cr in vm.crefs.iter() { let cr = unsafe { &mut *(cr as *mut Cref) }; m.visit(&mut cr.klass); m.visit(&mut cr.refinements); }
-    // every builtin class field (zero until boot fills it in)
-    let vp = vm as *mut Vm as *mut u64;
+    visit_main_ctx(m);
+    for v in [&vm.c_basic_object, &vm.c_object, &vm.main_obj, &vm.stdout, &vm.stderr, &vm.stdin, &vm.loaded_features,
+              &vm.load_path, &vm.at_exit, &vm.verbose, &vm.argv, &vm.dollar_zero] { visit_cell(m, v); }
+    // a mutator holding one of these borrows across an allocation panics here instead of aliasing
+    for v in vm.globals.borrow_mut().values_mut() { m.visit(v); }
+    for v in vm.node_values.borrow_mut().iter_mut() { m.visit(v); }
+    for v in vm.pinned.borrow_mut().iter_mut() { m.visit(v); }
+    for v in vm.fiber_roots.borrow_mut().iter_mut() { m.visit(v); }
+    for v in vm.frozen_lits.borrow_mut().values_mut() { m.visit(v); }
+    for v in vm.symproc_cache.borrow_mut().values_mut() { m.visit(v); }
+    for v in vm.sym_names.borrow_mut().values_mut() { m.visit(v); }
+    for &cr in vm.crefs.borrow().iter() { let cr = unsafe { &mut *(cr as *mut Cref) }; m.visit(&mut cr.klass); m.visit(&mut cr.refinements); }
+    // every builtin class field (nil until boot fills it in)
     let nclass_fields = (std::mem::offset_of!(Vm, main_obj)) / 8;
-    for i in 0..nclass_fields { unsafe { let p = vp.add(i); if *p != 0 { m.visit(&mut *(p as *mut Value)); } } }
+    // SAFETY: Vm is repr(C) and starts with nclass_fields Cell<Value> fields
+    let cells = unsafe { std::slice::from_raw_parts(vm as *const Vm as *const Cell<Value>, nclass_fields) };
+    for k in cells { visit_cell(m, k); }
+}
+
+#[inline(always)]
+fn visit_cell<V: RootVisitor<Saruby>>(m: &mut V, k: &Cell<Value>) { let mut v = k.get(); m.visit(&mut v); k.set(v); }
+
+/// The main context, by place: the allocating code may hold `&mut` to it, so no `&mut Ctx` is made here.
+fn visit_main_ctx<V: RootVisitor<Saruby>>(m: &mut V) {
+    let p = vm().main_ctx.get();
+    if p.is_null() { return; }   // boot: no context yet
+    // SAFETY: run_main's context, which outlives every collection
+    unsafe {
+        let live = (*p).live();
+        m.visit_ambiguous(std::slice::from_raw_parts(live.as_ptr() as *const usize, live.len()));
+        for f in [&raw mut (*p).esc_val, &raw mut (*p).errinfo, &raw mut (*p).last_match, &raw mut (*p).esc_tag_v] {
+            let mut v = f.read();
+            m.visit(&mut v);
+            if v != f.read() { f.write(v); }   // only a moving collector writes
+        }
+    }
 }
 
 /// One execution context: its value stack and the values it holds.
@@ -2480,8 +2504,8 @@ pub fn visit_block<V: EdgeVisitor<Saruby> + ?Sized>(m: &mut V, b: &mut Block) {
 // ---- misc helpers --------------------------------------------------------------------------
 
 pub fn sym_value(name: &str) -> Value { Value::sym(intern_str(name)) }
-pub fn global_get(name: &str) -> Value { *vm().globals.get(&intern_str(name)).unwrap_or(&NIL) }
-pub fn global_set(name: &str, v: Value) { vm().globals.insert(intern_str(name), v); }
+pub fn global_get(name: &str) -> Value { *vm().globals.borrow().get(&intern_str(name)).unwrap_or(&NIL) }
+pub fn global_set(name: &str, v: Value) { vm().globals.borrow_mut().insert(intern_str(name), v); }
 
 pub fn intern_value(b: &[u8]) -> Value { Value::sym(intern(b)) }
 

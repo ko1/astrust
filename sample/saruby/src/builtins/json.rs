@@ -120,7 +120,7 @@ impl Gen {
             } else { self.out.extend_from_slice(float_json(f).as_bytes()); }
         }
         else if is_bignum(v) { self.out.extend_from_slice(c.big(v).to_string_radix(10).as_bytes()); }
-        else if is_string(v) && real_class_of(v) == c.vm().c_string {
+        else if is_string(v) && real_class_of(v) == c.vm().c_string.get() {
             let enc = c.str_enc(v);
             let ok = if enc == ENC_UTF8 || enc == ENC_ASCII || enc == ENC_BINARY { self.string(c.str_bytes(v)) } else {
                 let oh = c.hash_new();
@@ -132,7 +132,7 @@ impl Gen {
             if !ok { return Err(bad_utf8(c, v)); }
         }
         else if v.is_sym() { if !self.string(crate::symbol::sym_bytes(v.as_sym())) { return Err(bad_utf8(c, v)); } }
-        else if is_array(v) && real_class_of(v) == c.vm().c_array {
+        else if is_array(v) && real_class_of(v) == c.vm().c_array.get() {
             if c.ary_len(v) == 0 { self.out.extend_from_slice(b"[]"); return Ok(()); }
             self.enter(c)?;
             self.out.push(b'[');
@@ -149,7 +149,7 @@ impl Gen {
             self.nl_indent(true);
             self.out.push(b']');
         }
-        else if is_hash(v) && real_class_of(v) == c.vm().c_hash {
+        else if is_hash(v) && real_class_of(v) == c.vm().c_hash.get() {
             if c.hash_len(v) == 0 { self.out.extend_from_slice(b"{}"); return Ok(()); }
             self.enter(c)?;
             self.out.push(b'{');
@@ -181,7 +181,7 @@ impl Gen {
             if self.coder != NIL || self.strict {
                 // Coder / strict mode: the callback turns it into a JSON-native value, or it is an error
                 let r = if self.coder != NIL { call_proc(c, self.coder, &[v, FALSE], std::ptr::null())? } else { v };
-                let native = r.is_imm() || is_float(r) || is_bignum(r) || ((is_string(r) || is_array(r) || is_hash(r)) && [c.vm().c_string, c.vm().c_array, c.vm().c_hash].contains(&real_class_of(r)));
+                let native = r.is_imm() || is_float(r) || is_bignum(r) || ((is_string(r) || is_array(r) || is_hash(r)) && [c.vm().c_string.get(), c.vm().c_array.get(), c.vm().c_hash.get()].contains(&real_class_of(r)));
                 if !native || r == v {
                     let e = make_exception(jconst(c, "GeneratorError"), &format!("{} not allowed in JSON", class_path(real_class_of(r))));
                     ivar_set_raw(e, intern(b"@invalid_object"), r);
@@ -232,11 +232,11 @@ fn j_dump(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 /// obj.to_json(state = nil) for the core classes.
 fn o_to_json(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let st = a.first().copied().unwrap_or(NIL);
-    let core = s.is_imm() || is_float(s) || is_bignum(s) || ((is_string(s) || is_array(s) || is_hash(s)) && [c.vm().c_string, c.vm().c_array, c.vm().c_hash].contains(&real_class_of(s)));
+    let core = s.is_imm() || is_float(s) || is_bignum(s) || ((is_string(s) || is_array(s) || is_hash(s)) && [c.vm().c_string.get(), c.vm().c_array.get(), c.vm().c_hash.get()].contains(&real_class_of(s)));
     if core { return generate_with(c, s, st); }
     // generic objects (and subclasses of core classes) become their to_s
     let mut g = gen_from(c, st)?;
-    if is_array(s) || is_hash(s) { let k = obj_klass(s); obj_set_klass(s, if is_array(s) { c.vm().c_array } else { c.vm().c_hash }); let r = g.value(c, s); obj_set_klass(s, k); r?; }
+    if is_array(s) || is_hash(s) { let k = obj_klass(s); obj_set_klass(s, if is_array(s) { c.vm().c_array.get() } else { c.vm().c_hash.get() }); let r = g.value(c, s); obj_set_klass(s, k); r?; }
     else { let t = crate::rt::srb_tostr(c, s)?; if !g.string(c.str_bytes(t)) { return Err(bad_utf8(c, t)); } }
     Ok(c.str_from_vec(std::mem::take(&mut g.out)))
 }
@@ -465,11 +465,11 @@ fn decimal_class(c: &mut Ctx, k: Value) -> Result<Option<(Value, Sym)>, Esc> {
     let name = class_path(k);
     match name.rfind("::") {
         Some(i) => {
-            let (o, path) = (c.vm().c_object, c.str_new(name[..i].as_bytes()));
+            let (o, path) = (c.vm().c_object.get(), c.str_new(name[..i].as_bytes()));
             let m = funcall(c, o, intern(b"const_get"), &[path], std::ptr::null())?;
             Ok(Some((m, intern(name[i + 2..].as_bytes()))))
         }
-        None => Ok(Some((c.vm().m_kernel, intern(name.as_bytes())))),
+        None => Ok(Some((c.vm().m_kernel.get(), intern(name.as_bytes())))),
     }
 }
 fn parse_with(c: &mut Ctx, src: Value, opts: Value, bang: bool) -> RV {
@@ -479,8 +479,8 @@ fn parse_with(c: &mut Ctx, src: Value, opts: Value, bang: bool) -> RV {
         trailing_comma: opt_bool(c, opts, "allow_trailing_comma")?, comments: opt_bool(c, opts, "allow_comments")?, dup_key: opt(c, opts, "allow_duplicate_key")?.map(|v| v.truthy()).unwrap_or(false), obj_class: NIL, ary_class: NIL, on_load: NIL, decimal: None };
     if let Some(pr) = opt(c, opts, "on_load")? { p.on_load = pr; }
     if let Some(k) = opt(c, opts, "decimal_class")? { p.decimal = decimal_class(c, k)?; }
-    if let Some(k) = opt(c, opts, "object_class")? { if k != NIL && k != c.vm().c_hash { p.obj_class = k; } }
-    if let Some(k) = opt(c, opts, "array_class")? { if k != NIL && k != c.vm().c_array { p.ary_class = k; } }
+    if let Some(k) = opt(c, opts, "object_class")? { if k != NIL && k != c.vm().c_hash.get() { p.obj_class = k; } }
+    if let Some(k) = opt(c, opts, "array_class")? { if k != NIL && k != c.vm().c_array.get() { p.ary_class = k; } }
     let v = p.value(c)?;
     p.ws();
     if p.pos < p.src.len() { return p.fail(c, &format!("unexpected token at end of stream '{}'", p.frag(p.pos)), p.pos); }
@@ -507,7 +507,7 @@ fn j_load(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     parse_with(c, src, h, false)
 }
 fn j_load_file(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
-    let s = funcall(c, c.vm().c_file, intern(b"read"), &a[..1], std::ptr::null())?;
+    let s = funcall(c, c.vm().c_file.get(), intern(b"read"), &a[..1], std::ptr::null())?;
     parse_with(c, s, a.get(1).copied().unwrap_or(NIL), false)
 }
 // JSON::Coder: options plus a callback for values JSON has no notation for
@@ -539,7 +539,7 @@ fn k_jj(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 
 pub fn init(c: &mut Ctx) {
     if M_JSON.get(c) != NIL { return; }
-    let (c_standard_error, c_object, m_kernel) = (c.vm().c_standard_error, c.vm().c_object, c.vm().m_kernel);
+    let (c_standard_error, c_object, m_kernel) = (c.vm().c_standard_error.get(), c.vm().c_object.get(), c.vm().m_kernel.get());
     let m = define_module("JSON");
     M_JSON.set(c, m);
     let base = define_class_under(m, "JSONError", c_standard_error);

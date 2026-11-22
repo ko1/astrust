@@ -478,7 +478,7 @@ pub fn EVAL_node_cvasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value) ->
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_const<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, line: H_line, cc: &mut ConstCache) -> RV {
     let cref = unsafe { (*c.frame).cref() };
-    if cc.serial == vm().const_serial && cc.cref == cref as usize { return Ok(unsafe { Value::from_raw(cc.val) }); }
+    if cc.serial == vm().const_serial.get() && cc.cref == cref as usize { return Ok(unsafe { Value::from_raw(cc.val) }); }
     line.store(c.frame_mut());
     srb_const_get(c, cref, name, cc)
 }
@@ -495,7 +495,7 @@ pub fn EVAL_node_const_path<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_top_const(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym) -> RV {
-    srb_const_path(c, vm().c_object, name)
+    srb_const_path(c, vm().c_object.get(), name)
 }
 
 
@@ -1329,10 +1329,10 @@ pub fn EVAL_node_opt_ltlt<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, 
     }
     // Array#<< / String#<< themselves.  They raise with this node's line and no frame of their own, as CRuby;
     // a frozen Array (the only raise of Array#<<) goes out of line, keeping the line's store off this path
-    if is_array(a) && obj(a).klass == vm().c_array && !redef(R_ARY_LTLT) && obj(a).flags & FL_FROZEN == 0 {
+    if is_array(a) && obj(a).klass == vm().c_array.get() && !redef(R_ARY_LTLT) && obj(a).flags & FL_FROZEN == 0 {
         return crate::builtins::array_methods::a_ltlt(c, a, &[b], std::ptr::null());
     }
-    if is_string(a) && obj(a).klass == vm().c_string && !redef(R_STR_LTLT) {
+    if is_string(a) && obj(a).klass == vm().c_string.get() && !redef(R_STR_LTLT) {
         // the common case of String#<< (a String of the same encoding onto an unfrozen one); the rest, which may raise, is String#<<
         if is_string(b) && !is_frozen(a) && c.str_enc(a) == c.str_enc(b) { c.str_append_same_enc(a, b); return Ok(a); }
         line.store(c.frame_mut());
@@ -1384,7 +1384,7 @@ pub fn EVAL_node_opt_aref<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, 
     // Array#[] / Hash#[] themselves
     if a.is_heap() && obj(a).klass.raw() == fast_ary_aref() && b.is_fixnum() {
         return Ok(crate::builtins::array_methods::ary_entry(c, a, b.as_fix()));
-    } else if tf_hash(ty) && is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_AREF) {
+    } else if tf_hash(ty) && is_hash(a) && obj(a).klass == vm().c_hash.get() && !redef(R_HASH_AREF) {
         if ty == 0 { tf.0 |= TF_HASH; }
         line.store(c.frame_mut());
         return crate::builtins::hash_methods::h_aref(c, a, &[b], std::ptr::null());
@@ -1399,7 +1399,7 @@ pub fn EVAL_node_opt_aset<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, 
     // Array#[]= (its in-place case here, the rest in srb_aset_out) / Hash#[]= themselves
     if a.is_heap() && obj(a).klass.raw() == fast_ary_aset() && b.is_fixnum() {
         if crate::builtins::array_methods::ary_set_in(c, a, b.as_fix(), v) { return Ok(v); }
-    } else if tf_hash(ty) && is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_ASET) {
+    } else if tf_hash(ty) && is_hash(a) && obj(a).klass == vm().c_hash.get() && !redef(R_HASH_ASET) {
         if ty == 0 { tf.0 |= TF_HASH; }
         line.store(c.frame_mut());
         return crate::builtins::hash_methods::h_aset(c, a, &[b, v], std::ptr::null());

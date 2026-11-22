@@ -35,7 +35,7 @@ fn byte_to_char(c: &Ctx, v: Value, off: usize) -> usize {
 }
 fn need_ascii_compat(c: &mut Ctx, v: Value) -> Result<(), Esc> {
     let e = c.str_enc(v);
-    if !crate::builtins::encoding::ascii_compat(e) { return err(c, c.vm().c_compat_error, format!("ASCII incompatible encoding: {}", crate::builtins::encoding::enc_name(e))); }
+    if !crate::builtins::encoding::ascii_compat(e) { return err(c, c.vm().c_compat_error.get(), format!("ASCII incompatible encoding: {}", crate::builtins::encoding::enc_name(e))); }
     Ok(())
 }
 /// Encoding of `a + b` or CompatibilityError.
@@ -57,11 +57,11 @@ fn check_valid(c: &mut Ctx, v: Value) -> Result<(), Esc> {
 /// char_to_byte for an index that was valid when the length was read; IndexError if a conversion
 /// shrank the string since.
 fn char_to_byte_at(c: &mut Ctx, v: Value, i: usize) -> Result<usize, Esc> {
-    match char_to_byte(c, v, i) { Some(x) => Ok(x), None => err(c, c.vm().c_index_error, format!("index {} out of string", i)) }
+    match char_to_byte(c, v, i) { Some(x) => Ok(x), None => err(c, c.vm().c_index_error.get(), format!("index {} out of string", i)) }
 }
 /// "string modified": a block or a conversion changed the receiver under an iteration.
 fn str_mod_check(c: &mut Ctx, v: Value, len: usize) -> Result<(), Esc> {
-    if c.str_len(v) != len { return err(c, c.vm().c_runtime_error, "string modified"); }
+    if c.str_len(v) != len { return err(c, c.vm().c_runtime_error.get(), "string modified"); }
     Ok(())
 }
 /// substring by char start/len
@@ -252,33 +252,33 @@ cfn!(s_aset, |c, slf, a, b_| {
     let (bs, be) = if a.len() == 3 {
         if regexp::is_regexp(c, a[0]) {
             let m = regexp::search(c, a[0], slf, 0, true)?;
-            if m == NIL { return err(c, c.vm().c_index_error, "regexp not matched"); }
+            if m == NIL { return err(c, c.vm().c_index_error.get(), "regexp not matched"); }
             let g = num_to_long(c, a[1])?;
-            match regexp::rmatch(c, m).unwrap().groups.get(g as usize).copied().flatten() { Some(x) => x, None => return err(c, c.vm().c_index_error, format!("index {} out of regexp", g)) }
+            match regexp::rmatch(c, m).unwrap().groups.get(g as usize).copied().flatten() { Some(x) => x, None => return err(c, c.vm().c_index_error.get(), format!("index {} out of regexp", g)) }
         } else {
             let (st0, ln) = nums.unwrap();
             let mut st = st0;
             if st < 0 { st += n; }
-            if st < 0 || st > n { return err(c, c.vm().c_index_error, format!("index {} out of string", st0)); }
-            if ln < 0 { return err(c, c.vm().c_index_error, format!("negative length {}", ln)); }
+            if st < 0 || st > n { return err(c, c.vm().c_index_error.get(), format!("index {} out of string", st0)); }
+            if ln < 0 { return err(c, c.vm().c_index_error.get(), format!("negative length {}", ln)); }
             (char_to_byte_at(c, slf, st as usize)?, char_to_byte_at(c, slf, (st + ln).min(n) as usize)?)
         }
     } else if a[0].is_fixnum() {
         let mut i = a[0].as_fix();
         if i < 0 { i += n; }
-        if i < 0 || i > n { return err(c, c.vm().c_index_error, format!("index {} out of string", a[0].as_fix())); }
+        if i < 0 || i > n { return err(c, c.vm().c_index_error.get(), format!("index {} out of string", a[0].as_fix())); }
         let bs = char_to_byte_at(c, slf, i as usize)?; (bs, char_to_byte(c, slf, i as usize + 1).unwrap_or(bs))
     } else if is_range(a[0]) {
         match crate::range::range_beg_len(c, a[0], n, 1)? { Some((st, ln)) => (char_to_byte_at(c, slf, st as usize)?, char_to_byte_at(c, slf, (st + ln).min(n) as usize)?), None => return Ok(val) }
     } else if is_string(a[0]) {
-        match find_bytes(c.str_bytes(slf), c.str_bytes(a[0]), 0) { Some(p) => (p, p + c.str_bytes(a[0]).len()), None => return err(c, c.vm().c_index_error, "string not matched") }
+        match find_bytes(c.str_bytes(slf), c.str_bytes(a[0]), 0) { Some(p) => (p, p + c.str_bytes(a[0]).len()), None => return err(c, c.vm().c_index_error.get(), "string not matched") }
     } else if regexp::is_regexp(c, a[0]) {
         let m = regexp::search(c, a[0], slf, 0, true)?;
-        if m == NIL { return err(c, c.vm().c_index_error, "regexp not matched"); }
+        if m == NIL { return err(c, c.vm().c_index_error.get(), "regexp not matched"); }
         regexp::rmatch(c, m).unwrap().groups[0].unwrap()
     } else { let i = num_to_long(c, a[0])?; return s_aset(c, slf, &[Value::fix(i), val], b_); };
     let vb = c.str_bytes(val).to_vec();
-    if bs > be || be > c.str_len(slf) { return err(c, c.vm().c_index_error, format!("index {} out of string", bs)); }
+    if bs > be || be > c.str_len(slf) { return err(c, c.vm().c_index_error.get(), format!("index {} out of string", bs)); }
     let r = c.str_modify(slf)?;
     r.b.splice(bs..be, vb);
     Ok(val)
@@ -300,18 +300,18 @@ fn int_to_char_str(c: &mut Ctx, slf: Value, x: Value) -> RV {
     let enc = c.str_enc(slf);
     if x.is_fixnum() && x.as_fix() < 0 || is_bignum(x) {
         let s = crate::builtins::kernel::inspect_str(c, x)?;
-        return err(c, c.vm().c_range_error, format!("{} out of char range", s));
+        return err(c, c.vm().c_range_error.get(), format!("{} out of char range", s));
     }
     let i = x.as_fix();
     if enc == ENC_BINARY || enc == ENC_ASCII {
-        if i > 255 { return err(c, c.vm().c_range_error, format!("{} out of char range", i)); }
+        if i > 255 { return err(c, c.vm().c_range_error.get(), format!("{} out of char range", i)); }
         if enc == ENC_ASCII && i > 127 { c.rstring_mut(slf).enc = ENC_BINARY; }
         return Ok(c.str_new_enc(&[i as u8], c.str_enc(slf)));
     }
-    if i > u32::MAX as i64 || (en::is_unicode(enc) && i > 0x10ffff) || (en::is_single_byte(enc) && i > 0xff) { return err(c, c.vm().c_range_error, format!("{} out of char range", i)); }
+    if i > u32::MAX as i64 || (en::is_unicode(enc) && i > 0x10ffff) || (en::is_single_byte(enc) && i > 0xff) { return err(c, c.vm().c_range_error.get(), format!("{} out of char range", i)); }
     match en::code_to_bytes(enc, i as u32) {
         Some(v) => Ok(c.str_new_enc(&v, enc)),
-        None => err(c, c.vm().c_range_error, format!("invalid codepoint 0x{:X} in {}", i, en::enc_name(enc))),
+        None => err(c, c.vm().c_range_error.get(), format!("invalid codepoint 0x{:X} in {}", i, en::enc_name(enc))),
     }
 }
 cfn!(#[inline] s_ltlt, |c, slf, a, b_| {
@@ -323,7 +323,7 @@ cfn!(#[inline] s_ltlt, |c, slf, a, b_| {
     Ok(slf)
 });
 cfn!(s_to_s, |c, slf, a, b_| {
-    if obj_klass(slf) == c.vm().c_string { return Ok(slf); }
+    if obj_klass(slf) == c.vm().c_string.get() { return Ok(slf); }
     Ok(c.str_copy(slf))
 });
 cfn!(s_to_sym, |c, slf, a, b_| Ok(c.str_to_sym(slf)));
@@ -714,8 +714,8 @@ enum ReplErr { Undefined(String), BadFormat }
 impl ReplErr {
     fn raise(self, c: &mut Ctx) -> Esc {
         match self {
-            ReplErr::Undefined(name) => raise_msg(c, c.vm().c_index_error, &format!("undefined group name reference: {}", name)),
-            ReplErr::BadFormat => raise_msg(c, c.vm().c_runtime_error, "invalid group name reference format"),
+            ReplErr::Undefined(name) => raise_msg(c, c.vm().c_index_error.get(), &format!("undefined group name reference: {}", name)),
+            ReplErr::BadFormat => raise_msg(c, c.vm().c_runtime_error.get(), "invalid group name reference format"),
         }
     }
 }
@@ -795,7 +795,7 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool, 
         } else {
             let mstr = c.str_new_like(slf, src[ms..me].to_vec());
             let v = yield1(c, blk, mstr)?;
-            if bang && c.str_bytes(slf) != &src[..] { return err(c, c.vm().c_runtime_error, "string modified"); }
+            if bang && c.str_bytes(slf) != &src[..] { return err(c, c.vm().c_runtime_error.get(), "string modified"); }
             if watch { str_mod_check(c, slf, src.len())?; }
             c.last_match = mval;
             let sv = crate::rt::srb_tostr(c, v)?;
@@ -988,7 +988,7 @@ cfn!(s_insert, |c, slf, a, b_| {
     let idx = num_to_long(c, a[0])?; let o = expect_str(c, a[1])?;
     let n = c.str_char_len(slf) as i64;
     let pos = if idx < 0 { idx + n + 1 } else { idx };
-    if pos < 0 || pos > n { return err(c, c.vm().c_index_error, format!("index {} out of string", idx)); }
+    if pos < 0 || pos > n { return err(c, c.vm().c_index_error.get(), format!("index {} out of string", idx)); }
     let bp = char_to_byte(c, slf, pos as usize).unwrap();
     let ob = c.str_bytes(o).to_vec();
     c.str_modify(slf)?.b.splice(bp..bp, ob);
@@ -1053,16 +1053,16 @@ cfn!(s_oct, |c, slf, a, b_| {
 cfn!(s_freeze, |c, slf, a, b_| { obj_set_flags(slf, FL_FROZEN); Ok(slf) });
 cfn!(s_uplus, |c, slf, a, b_| if is_frozen(slf) { Ok(c.str_copy(slf)) } else { Ok(slf) });
 cfn!(s_uminus, |c, slf, a, b_| {
-    let has_iv = c.vm().gen_ivars.get(&(slf.raw() as usize)).map(|v| !v.is_empty()).unwrap_or(false);
-    if obj_klass(slf) != c.vm().c_string || has_iv {
+    let has_iv = c.vm().gen_ivars.borrow().get(&(slf.raw() as usize)).map(|v| !v.is_empty()).unwrap_or(false);
+    if obj_klass(slf) != c.vm().c_string.get() || has_iv {
         if is_frozen(slf) && !has_iv { return Ok(slf); }
         let v = c.str_copy(slf); obj_set_klass(v, obj_klass(slf)); obj_set_flags(v, FL_FROZEN); return Ok(v);
     }
     let key = c.str_bytes(slf).to_vec();
-    if let Some(&v) = c.vm().frozen_lits.get(&key) { if c.str_enc(v) == c.str_enc(slf) { return Ok(v); } }
+    if let Some(&v) = c.vm().frozen_lits.borrow().get(&key) { if c.str_enc(v) == c.str_enc(slf) { return Ok(v); } }
     // a bare frozen receiver becomes the pool entry itself
     let v = if is_frozen(slf) { slf } else { let v = c.str_new_enc(&key, c.str_enc(slf)); obj_set_flags(v, FL_FROZEN); v };
-    c.vm_mut().frozen_lits.insert(key, v);
+    c.vm().frozen_lits.borrow_mut().insert(key, v);
     Ok(v)
 });
 cfn!(s_encoding, |c, slf, a, b_| crate::builtins::misc::encoding_value(c, c.str_enc(slf)));
@@ -1076,7 +1076,7 @@ cfn!(s_unicode_normalized_p, |c, slf, a, b_| { unicode_check(c, slf)?; Ok(TRUE) 
 fn unicode_check(c: &mut Ctx, slf: Value) -> Result<(), Esc> {
     let e = c.str_enc(slf);
     if !crate::builtins::encoding::is_unicode(e) && !(e == ENC_ASCII || is_ascii(c.str_bytes(slf)) && crate::builtins::encoding::ascii_compat(e)) {
-        return err(c, c.vm().c_compat_error, format!("Unicode Normalization not appropriate for {}", crate::builtins::encoding::enc_name_msg(e)));
+        return err(c, c.vm().c_compat_error.get(), format!("Unicode Normalization not appropriate for {}", crate::builtins::encoding::enc_name_msg(e)));
     }
     Ok(())
 }
@@ -1189,7 +1189,7 @@ cfn!(s_slice_b, |c, slf, a, b_| {
     Ok(r)
 });
 cfn!(s_getbyte, |c, slf, a, b_| { let i = num_to_long(c, a[0])?; let n = c.str_bytes(slf).len() as i64; let i = if i < 0 { i + n } else { i }; Ok(if i >= 0 && i < n { Value::fix(c.str_bytes(slf)[i as usize] as i64) } else { NIL }) });
-cfn!(s_setbyte, |c, slf, a, b_| { let i = num_to_long(c, a[0])?; let v = num_to_long(c, a[1])?; let n = c.str_bytes(slf).len() as i64; let i2 = if i < 0 { i + n } else { i }; if i2 < 0 || i2 >= n { return err(c, c.vm().c_index_error, format!("index {} out of string", i)); } c.str_modify(slf)?.b[i2 as usize] = v as u8; Ok(a[1]) });
+cfn!(s_setbyte, |c, slf, a, b_| { let i = num_to_long(c, a[0])?; let v = num_to_long(c, a[1])?; let n = c.str_bytes(slf).len() as i64; let i2 = if i < 0 { i + n } else { i }; if i2 < 0 || i2 >= n { return err(c, c.vm().c_index_error.get(), format!("index {} out of string", i)); } c.str_modify(slf)?.b[i2 as usize] = v as u8; Ok(a[1]) });
 cfn!(s_byteslice, |c, slf, a, b_| {
     let n = c.str_bytes(slf).len() as i64;
     check_argc(c, a, 1, 2)?;
@@ -1321,7 +1321,7 @@ fn scan_decimal(v: &[u8], i: usize) -> Option<(crate::bignum::BigInt, crate::big
     if exp > 0 { num = num.mul(&BigInt::from_i64(10).pow(exp as u64)); } else if exp < 0 { den = den.mul(&BigInt::from_i64(10).pow((-exp) as u64)); }
     Some((num, den, j, is_float))
 }
-fn kernel_call(c: &mut Ctx, name: &str, args: &[Value]) -> RV { let m = c.vm().main_obj; funcall(c, m, intern(name.as_bytes()), args, std::ptr::null()) }
+fn kernel_call(c: &mut Ctx, name: &str, args: &[Value]) -> RV { let m = c.vm().main_obj.get(); funcall(c, m, intern(name.as_bytes()), args, std::ptr::null()) }
 /// [sign] decimal [/ decimal] as a Rational; (value, end, kind 0=int 1=float 2=rational).
 fn scan_rational(c: &mut Ctx, v: &[u8], i: usize) -> Result<Option<(Value, usize, u8)>, Esc> {
     use crate::bignum::big_to_value;
@@ -1362,7 +1362,7 @@ cfn!(s_to_c, |c, slf, a, b_| {
     let x = natural(c, r1, k1)?;
     if is_i(j) { return kernel_call(c, "Complex", &[zero, x]); }
     if j < v.len() && v[j] == b'@' {
-        if let Some((r2, _, k2)) = scan_rational(c, &v, j + 1)? { let y = natural(c, r2, k2)?; let cx = const_get_at(c.vm().c_object, intern(b"Complex")).unwrap_or(NIL); return funcall(c, cx, intern(b"polar"), &[x, y], std::ptr::null()); }
+        if let Some((r2, _, k2)) = scan_rational(c, &v, j + 1)? { let y = natural(c, r2, k2)?; let cx = const_get_at(c.vm().c_object.get(), intern(b"Complex")).unwrap_or(NIL); return funcall(c, cx, intern(b"polar"), &[x, y], std::ptr::null()); }
         return kernel_call(c, "Complex", &[x, zero]);
     }
     if j < v.len() && (v[j] == b'+' || v[j] == b'-') {
@@ -1376,7 +1376,7 @@ cfn!(s_to_c, |c, slf, a, b_| {
 // String#undump.
 cfn!(s_undump, |c, slf, a, b_| {
     let v = c.str_bytes(slf).to_vec();
-    let bad = |c: &mut Ctx| -> RV { err(c, c.vm().c_runtime_error, "invalid dumped string; not wrapped with '\"' nor '\"...\".force_encoding(\"...\")' form") };
+    let bad = |c: &mut Ctx| -> RV { err(c, c.vm().c_runtime_error.get(), "invalid dumped string; not wrapped with '\"' nor '\"...\".force_encoding(\"...\")' form") };
     if v.len() < 2 || v[0] != b'"' { return bad(c); }
     let mut out = vec![]; let mut i = 1; let mut closed = false; let mut uni = false;
     while i < v.len() {
@@ -1384,39 +1384,39 @@ cfn!(s_undump, |c, slf, a, b_| {
         if x == b'"' { closed = true; i += 1; break; }
         if x != b'\\' { out.push(x); i += 1; continue; }
         i += 1;
-        if i >= v.len() { return err(c, c.vm().c_runtime_error, "invalid escape"); }
+        if i >= v.len() { return err(c, c.vm().c_runtime_error.get(), "invalid escape"); }
         let y = v[i]; i += 1;
         match y {
             b'n' => out.push(b'\n'), b't' => out.push(b'\t'), b'r' => out.push(b'\r'), b'a' => out.push(7), b'b' => out.push(8),
             b'v' => out.push(11), b'f' => out.push(12), b'e' => out.push(0x1b), b's' => out.push(b' '),
             b'x' => {
                 let h: String = v[i..].iter().take(2).take_while(|z| z.is_ascii_hexdigit()).map(|&z| z as char).collect();
-                if h.is_empty() { return err(c, c.vm().c_runtime_error, "invalid hex escape"); }
+                if h.is_empty() { return err(c, c.vm().c_runtime_error.get(), "invalid hex escape"); }
                 out.push(u8::from_str_radix(&h, 16).unwrap()); i += h.len();
             }
             b'u' => {
                 uni = true;
                 if i < v.len() && v[i] == b'{' {
-                    let e = match v[i..].iter().position(|&z| z == b'}') { Some(e) => i + e, None => return err(c, c.vm().c_runtime_error, "unterminated Unicode escape") };
+                    let e = match v[i..].iter().position(|&z| z == b'}') { Some(e) => i + e, None => return err(c, c.vm().c_runtime_error.get(), "unterminated Unicode escape") };
                     for part in String::from_utf8_lossy(&v[i + 1..e]).split_whitespace() { let cp = u32::from_str_radix(part, 16).unwrap_or(0xfffd); encode_utf8(cp, &mut out); }
                     i = e + 1;
                 } else {
                     let h: String = v[i..].iter().take(4).map(|&z| z as char).collect();
-                    let Ok(cp) = u32::from_str_radix(&h, 16) else { return err(c, c.vm().c_runtime_error, "invalid Unicode escape") };
+                    let Ok(cp) = u32::from_str_radix(&h, 16) else { return err(c, c.vm().c_runtime_error.get(), "invalid Unicode escape") };
                     encode_utf8(cp, &mut out); i += 4;
                 }
             }
             _ => out.push(y),
         }
     }
-    if !closed { return err(c, c.vm().c_runtime_error, "unterminated dumped string"); }
+    if !closed { return err(c, c.vm().c_runtime_error.get(), "unterminated dumped string"); }
     let mut enc = c.str_enc(slf);
     let rest = &v[i..];
     if !rest.is_empty() {
         let rs = String::from_utf8_lossy(rest).into_owned();
         let t = rs.strip_prefix(".dup").unwrap_or(&rs);
         let Some(t) = t.strip_prefix(".force_encoding(\"").and_then(|t| t.strip_suffix("\")")) else { return bad(c) };
-        if uni { return err(c, c.vm().c_runtime_error, "dumped string contained Unicode escape but used force_encoding"); }
+        if uni { return err(c, c.vm().c_runtime_error.get(), "dumped string contained Unicode escape but used force_encoding"); }
         let name = c.str_new(t.as_bytes()); enc = crate::builtins::encoding::to_enc(c, name)?;
     }
     let r = c.str_from_vec_enc(out, enc);
@@ -1438,7 +1438,7 @@ cfn!(s_append_as_bytes, |c, slf, a, b_| {
 fn check_char_boundary(c: &mut Ctx, slf: Value, off: usize, what: &str) -> Result<(), Esc> {
     let r = c.rstring(slf);
     if off >= r.b.len() || enc_single(&r.b, r.enc) { return Ok(()); }
-    if char_offsets_of(&r.b, r.enc).binary_search(&off).is_err() { return err(c, c.vm().c_index_error, format!("{} {} does not land on character boundary", what, off)); }
+    if char_offsets_of(&r.b, r.enc).binary_search(&off).is_err() { return err(c, c.vm().c_index_error.get(), format!("{} {} does not land on character boundary", what, off)); }
     Ok(())
 }
 cfn!(s_byteindex, |c, slf, a, b_| {
@@ -1487,9 +1487,9 @@ fn byte_range(c: &mut Ctx, slf: Value, a: &[Value], n: i64) -> Result<(usize, us
         crate::range::range_beg_len(c, a[0], n, 1)?.unwrap()
     } else {
         let (mut st, ln) = (num_to_long(c, a[0])?, num_to_long(c, a[1])?);
-        if ln < 0 { return err(c, c.vm().c_index_error, format!("negative length {}", ln)); }
+        if ln < 0 { return err(c, c.vm().c_index_error.get(), format!("negative length {}", ln)); }
         if st < 0 { st += n; }
-        if st < 0 || st > n { let o = num_to_long(c, a[0])?; return err(c, c.vm().c_index_error, format!("index {} out of string", o)); }
+        if st < 0 || st > n { let o = num_to_long(c, a[0])?; return err(c, c.vm().c_index_error.get(), format!("index {} out of string", o)); }
         (st, ln)
     };
     let e = (st + ln).min(n);
@@ -1515,8 +1515,8 @@ cfn!(s_bytesplice, |c, slf, a, b_| {
     let enc = compat(c, slf, s2)?;
     check_frozen(c, slf)?;
     // the index conversions above may have shrunk either string
-    let Some(piece) = c.str_bytes(s2).get(ss..ss + sl).map(|x| x.to_vec()) else { return err(c, c.vm().c_index_error, format!("index {} out of string", ss)) };
-    if ds + dl > c.str_len(slf) { return err(c, c.vm().c_index_error, format!("index {} out of string", ds)); }
+    let Some(piece) = c.str_bytes(s2).get(ss..ss + sl).map(|x| x.to_vec()) else { return err(c, c.vm().c_index_error.get(), format!("index {} out of string", ss)) };
+    if ds + dl > c.str_len(slf) { return err(c, c.vm().c_index_error.get(), format!("index {} out of string", ds)); }
     let r = c.rstring_mut(slf);
     r.b.splice(ds..ds + dl, piece);
     r.enc = enc;

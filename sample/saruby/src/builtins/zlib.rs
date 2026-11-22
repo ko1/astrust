@@ -145,7 +145,7 @@ fn raise_zlib_error<T>(c: &mut Ctx, code: i32, msg: Option<&str>) -> Result<T, E
 
 /// rb_warning: only under $VERBOSE = true, with the caller's location.
 fn rb_warning(c: &mut Ctx, msg: &str) -> Result<(), Esc> {
-    if c.vm().verbose != TRUE { return Ok(()); }
+    if c.vm().verbose.get() != TRUE { return Ok(()); }
     let loc = backtrace_lines(c, 0).first().map(|l| l.split(":in ").next().unwrap_or("").to_string()).unwrap_or_default();
     warning_write(c, format!("{}: warning: {}\n", loc, msg).as_bytes())
 }
@@ -157,7 +157,7 @@ fn to_ulong(c: &mut Ctx, v: Value) -> Result<u64, Esc> {
     if is_bignum(v) {
         let b = c.big(v);
         if !b.neg && b.mag.len() <= 2 { return Ok(b.mag.iter().rev().fold(0u64, |a, &w| (a << 32) | w as u64)); }
-        if !b.neg { return err(c, c.vm().c_range_error, "bignum out of range of unsigned long"); }
+        if !b.neg { return err(c, c.vm().c_range_error.get(), "bignum out of range of unsigned long"); }
     }
     Ok(num_to_long(c, v)? as u64)
 }
@@ -388,7 +388,7 @@ fn do_checksum(c: &mut Ctx, a: &[Value], f: fn(u32, &[u8]) -> u32, init: u32) ->
     let mut sum: u32 = if vsum != NIL { to_ulong(c, vsum)? as u32 } else if str == NIL { 0 } else { init };
     if str == NIL {
         sum = init;   // crc32/adler32 with a NULL buffer return their initial value
-    } else if is_kind_of(str, c.vm().c_io) {
+    } else if is_kind_of(str, c.vm().c_io.get()) {
         loop {
             let b = funcall(c, str, intern(b"read"), &[Value::fix(8192)], std::ptr::null())?;
             if b == NIL { break; }
@@ -757,8 +757,8 @@ fn read_raw(c: &mut Ctx, io: Value, outbuf: Value) -> RV {
         Err(e) => {
             if c.esc != EscKind::Raise { return Err(e); }
             let x = c.esc_val;
-            if is_kind_of(x, c.vm().c_eof_error) { c.esc = EscKind::None; return Ok(NIL); }
-            if is_kind_of(x, c.vm().c_no_method_error) {
+            if is_kind_of(x, c.vm().c_eof_error.get()) { c.esc = EscKind::None; return Ok(NIL); }
+            if is_kind_of(x, c.vm().c_no_method_error.get()) {
                 c.esc = EscKind::None;
                 let s = funcall(c, io, intern(b"read"), &args, std::ptr::null())?;
                 if s != NIL && !is_string(s) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(s))); }
@@ -784,7 +784,7 @@ fn read_raw_until_zero(c: &mut Ctx, g: &mut GzCore, io: Value, mut offset: usize
         let inp = g.z.input.as_deref().unwrap_or(&[]);
         if let Some(p) = inp[offset.min(inp.len())..].iter().position(|&b| b == 0) { return Ok(offset + p); }
         // Zlib.gunzip has no io (Qundef); CRuby calls readpartial/read on it anyway
-        if io == UNDEF { return err(c, c.vm().c_no_method_error, "undefined method 'read' for an instance of Float"); }
+        if io == UNDEF { return err(c, c.vm().c_no_method_error.get(), "undefined method 'read' for an instance of Float"); }
         let s = read_raw(c, io, NIL)?;
         if s == NIL { return err(c, zk().gz_error, "unexpected end of file"); }
         offset = g.z.input_len();
@@ -996,7 +996,7 @@ fn gzf_to_io(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with
 fn gzf_crc(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_gz(c, s, true, |c, g| Ok(uint(c, g.crc as u64))) }
 fn gzf_mtime(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let t = with_gz(c, s, true, |_c, g| Ok(Value::fix(g.mtime as i64)))?;
-    let tk = c.vm().c_time;
+    let tk = c.vm().c_time.get();
     funcall(c, tk, intern(b"at"), &[t], std::ptr::null())
 }
 fn gzf_level(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_gz(c, s, true, |_c, g| Ok(Value::fix(g.level as i64))) }
@@ -1014,7 +1014,7 @@ fn gzf_comment(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
 fn gzf_lineno(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_gz(c, s, true, |_c, g| Ok(Value::fix(g.lineno as i64))) }
 fn gzf_set_lineno(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let n = num_to_long(c, a[0])?;
-    if n > i32::MAX as i64 || n < i32::MIN as i64 { return err(c, c.vm().c_range_error, format!("integer {} too {} to convert to 'int'", n, if n < 0 { "small" } else { "big" })); }
+    if n > i32::MAX as i64 || n < i32::MIN as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too {} to convert to 'int'", n, if n < 0 { "small" } else { "big" })); }
     with_gz(c, s, true, |_c, g| { g.lineno = n as i32; Ok(NIL) })?;
     Ok(a[0])
 }
@@ -1025,10 +1025,10 @@ fn header_check(c: &mut Ctx, s: Value) -> Result<(), Esc> {
 }
 fn gzw_set_mtime(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     header_check(c, s)?;
-    let k = c.vm().main_obj;
+    let k = c.vm().main_obj.get();
     let v = funcall(c, k, intern(b"Integer"), &[a[0]], std::ptr::null())?;
     let n = to_ulong(c, v)?;
-    if n > u32::MAX as u64 && (n as i64) < i32::MIN as i64 { return err(c, c.vm().c_range_error, format!("integer {} too big to convert to 'unsigned int'", n)); }
+    if n > u32::MAX as u64 && (n as i64) < i32::MIN as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too big to convert to 'unsigned int'", n)); }
     with_gz(c, s, true, |_c, g| { g.mtime = n as u32; g.z.flags |= GZ_MTIME_IS_SET; Ok(NIL) })?;
     Ok(a[0])
 }
@@ -1090,7 +1090,7 @@ fn init_path(c: &mut Ctx, ov: Value, io: Value) -> Result<(), Esc> {
             Ok(())
         }
         Err(e) => {
-            if c.esc == EscKind::Raise && is_kind_of(c.esc_val, c.vm().c_io_error) { c.esc = EscKind::None; return Ok(()); }
+            if c.esc == EscKind::Raise && is_kind_of(c.esc_val, c.vm().c_io_error.get()) { c.esc = EscKind::None; return Ok(()); }
             Err(e)
         }
     }
@@ -1256,7 +1256,7 @@ fn gzr_readpartial(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
         if g.finished() {
             if g.z.flags & GZ_FOOTER_FINISHED == 0 { check_footer(c, g, io, outbuf)?; }
             if outbuf != NIL { set_outbuf(c, outbuf, b"")?; }
-            return err(c, c.vm().c_eof_error, "end of file reached");
+            return err(c, c.vm().c_eof_error.get(), "end of file reached");
         }
         shift_to(c, g, len as usize, outbuf)
     })
@@ -1268,7 +1268,7 @@ fn gzr_getc(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
 }
 fn gzr_readchar(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     let d = gzr_getc(c, s, a, b)?;
-    if d == NIL { return err(c, c.vm().c_eof_error, "end of file reached"); }
+    if d == NIL { return err(c, c.vm().c_eof_error.get(), "end of file reached"); }
     Ok(d)
 }
 fn gzr_getbyte(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
@@ -1279,7 +1279,7 @@ fn gzr_getbyte(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
 }
 fn gzr_readbyte(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     let d = gzr_getbyte(c, s, a, b)?;
-    if d == NIL { return err(c, c.vm().c_eof_error, "end of file reached"); }
+    if d == NIL { return err(c, c.vm().c_eof_error.get(), "end of file reached"); }
     Ok(d)
 }
 fn gzr_each_char(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> RV {
@@ -1459,7 +1459,7 @@ fn gzr_gets(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
 }
 fn gzr_readline(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     let d = gzr_gets(c, s, a, b)?;
-    if d == NIL { return err(c, c.vm().c_eof_error, "end of file reached"); }
+    if d == NIL { return err(c, c.vm().c_eof_error.get(), "end of file reached"); }
     Ok(d)
 }
 fn gzr_each(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> RV {
@@ -1675,7 +1675,7 @@ end
 
 /// Run by the first `require "zlib"`.
 pub fn init(c: &mut Ctx) {
-    let (std_err, object) = (c.vm().c_standard_error, c.vm().c_object);
+    let (std_err, object) = (c.vm().c_standard_error.get(), c.vm().c_object.get());
     let m = define_module("Zlib");
     let error = define_class_under(m, "Error", std_err);
     let d = |n: &str| define_class_under(m, n, error);

@@ -18,12 +18,12 @@ use crate::value::*;
 use crate::vm::*;
 
 macro_rules! blank_vm {
-    ($($nil:ident)*; $($f:ident: $e:expr),* $(,)?) => { Box::new(Vm { $($nil: NIL,)* $($f: $e),* }) };
+    ($($nil:ident)*; $($f:ident: $e:expr),* $(,)?) => { Box::new(Vm { $($nil: NIL.into(),)* $($f: $e.into()),* }) };
 }
 
 fn blank_vm() -> Box<Vm> {
     // the class fields start as nil; boot() fills them
-    let n = std::ptr::null();
+    let n = std::ptr::null::<MethodEntry>();
     blank_vm!(
         c_basic_object c_object c_module c_class m_kernel m_comparable m_enumerable c_nil c_true c_false c_numeric
         c_integer c_float c_string c_symbol c_array c_hash c_range c_proc c_method c_unbound_method c_env c_exception
@@ -43,7 +43,7 @@ fn blank_vm() -> Box<Vm> {
         globals: HashMap::default(), global_aliases: HashMap::default(),
         const_serial: 1, hierarchy_serial: 1,
         mcache: HashMap::default(), gen_ivars: HashMap::default(),
-        node_values: vec![], crefs: vec![], top_cref: std::ptr::null(),
+        node_values: vec![], crefs: vec![], top_cref: std::ptr::null::<Cref>(),
         script_name: String::new(),
         object_ids: HashMap::default(), next_object_id: 0,
         sources: vec![], debug_flag: false, raise_hooks: false,
@@ -55,24 +55,24 @@ fn blank_vm() -> Box<Vm> {
         rand_state: 0x2545F4914F6CDD1D,
         fiber_roots: vec![],
         blop: None,
-        ids: MethodIds { bo_eq: n, bo_init: n, c_new: n, m_eqq: n, kernel_hash: n, r_each: n },
+        ids: MethodIds { bo_eq: n.into(), bo_init: n.into(), c_new: n.into(), m_eqq: n.into(), kernel_hash: n.into(), r_each: n.into() },
         send_cache: crate::vm::send_cache_new(),
-        main_ctx: std::ptr::null_mut(),
+        main_ctx: std::ptr::null_mut::<Ctx>(),
     )
 }
 
-fn boot_ary(vmr: &Vm) -> Value { crate::gc::alloc(vmr.c_array, Body::Array(crate::avec::AVec::new())) }
+fn boot_ary(vmr: &Vm) -> Value { crate::gc::alloc(vmr.c_array.get(), Body::Array(crate::avec::AVec::new())) }
 
 /// Create the class hierarchy and every built-in method.
 pub fn boot() { crate::heap::boot_vm(blank_vm(), boot_classes) }
 
-fn boot_classes(vmr: &mut Vm) {
+fn boot_classes(vmr: &Vm) {
     // BasicObject / Object / Module / Class with hand-made metaclasses
     let bo = alloc_class(NIL, NIL, false, AllocKind::Object);
     let ob = alloc_class(NIL, bo, false, AllocKind::Object);
     let md = alloc_class(NIL, ob, false, AllocKind::Module);
     let cl = alloc_class(NIL, md, false, AllocKind::Class);
-    vmr.c_basic_object = bo; vmr.c_object = ob; vmr.c_module = md; vmr.c_class = cl;
+    vmr.c_basic_object.set(bo); vmr.c_object.set(ob); vmr.c_module.set(md); vmr.c_class.set(cl);
     for k in [bo, ob, md, cl] { obj_set_klass(k, cl); }
     let mk = |k: Value, sup: Value| -> Value {
         let m = alloc_class(cl, sup, false, AllocKind::Class);
@@ -88,81 +88,82 @@ fn boot_classes(vmr: &mut Vm) {
         const_set(ob, intern_str(n), k);
     }
     boot_subclass(ob, md); boot_subclass(md, cl); boot_subclass(bo, ob);
-    vmr.m_kernel = define_module("Kernel");
-    include_module(ob, vmr.m_kernel);
-    vmr.m_comparable = define_module("Comparable");
-    vmr.m_enumerable = define_module("Enumerable");
+    vmr.m_kernel.set(define_module("Kernel"));
+    include_module(ob, vmr.m_kernel.get());
+    vmr.m_comparable.set(define_module("Comparable"));
+    vmr.m_enumerable.set(define_module("Enumerable"));
     let num = define_class("Numeric", ob);
-    include_module(num, vmr.m_comparable);
-    vmr.c_numeric = num;
-    vmr.c_integer = define_class("Integer", num);
-    vmr.c_float = define_class("Float", num);
-    vmr.c_string = define_class("String", ob);
-    class_set_alloc(vmr.c_string, AllocKind::String);
+    include_module(num, vmr.m_comparable.get());
+    vmr.c_numeric.set(num);
+    vmr.c_integer.set(define_class("Integer", num));
+    vmr.c_float.set(define_class("Float", num));
+    vmr.c_string.set(define_class("String", ob));
+    class_set_alloc(vmr.c_string.get(), AllocKind::String);
     // name strings made before String existed have no class yet
-    for k in [bo, ob, md, cl, vmr.m_kernel, vmr.m_comparable, vmr.m_enumerable, num, vmr.c_integer, vmr.c_float, vmr.c_string] {
-        if let Some(n) = class_name_sym(k) { obj_set_klass(n, vmr.c_string); }
+    for k in [bo, ob, md, cl, vmr.m_kernel.get(), vmr.m_comparable.get(), vmr.m_enumerable.get(), num, vmr.c_integer.get(), vmr.c_float.get(), vmr.c_string.get()] {
+        if let Some(n) = class_name_sym(k) { obj_set_klass(n, vmr.c_string.get()); }
     }
-    include_module(vmr.c_string, vmr.m_comparable);
-    vmr.c_symbol = define_class("Symbol", ob);
-    include_module(vmr.c_symbol, vmr.m_comparable);
-    vmr.c_array = define_class("Array", ob);
-    class_set_alloc(vmr.c_array, AllocKind::Array);
-    include_module(vmr.c_array, vmr.m_enumerable);
-    vmr.c_hash = define_class("Hash", ob);
-    class_set_alloc(vmr.c_hash, AllocKind::Hash);
-    include_module(vmr.c_hash, vmr.m_enumerable);
-    vmr.c_range = define_class("Range", ob);
-    class_set_alloc(vmr.c_range, AllocKind::Range);
-    include_module(vmr.c_range, vmr.m_enumerable);
-    vmr.c_nil = define_class("NilClass", ob);
-    vmr.c_true = define_class("TrueClass", ob);
-    vmr.c_false = define_class("FalseClass", ob);
-    vmr.c_proc = define_class("Proc", ob);
-    class_set_alloc(vmr.c_proc, AllocKind::Proc);
-    vmr.c_method = define_class("Method", ob);
-    class_set_alloc(vmr.c_method, AllocKind::None);
-    vmr.c_unbound_method = define_class("UnboundMethod", ob);
-    class_set_alloc(vmr.c_unbound_method, AllocKind::None);
-    vmr.c_env = new_class(ob);
-    vmr.c_binding = define_class("Binding", ob);
-    class_set_alloc(vmr.c_binding, AllocKind::None);
-    for k in [vmr.c_integer, vmr.c_float, vmr.c_symbol, vmr.c_nil, vmr.c_true, vmr.c_false] { class_set_alloc(k, AllocKind::None); }
+    include_module(vmr.c_string.get(), vmr.m_comparable.get());
+    vmr.c_symbol.set(define_class("Symbol", ob));
+    include_module(vmr.c_symbol.get(), vmr.m_comparable.get());
+    vmr.c_array.set(define_class("Array", ob));
+    class_set_alloc(vmr.c_array.get(), AllocKind::Array);
+    include_module(vmr.c_array.get(), vmr.m_enumerable.get());
+    vmr.c_hash.set(define_class("Hash", ob));
+    class_set_alloc(vmr.c_hash.get(), AllocKind::Hash);
+    include_module(vmr.c_hash.get(), vmr.m_enumerable.get());
+    vmr.c_range.set(define_class("Range", ob));
+    class_set_alloc(vmr.c_range.get(), AllocKind::Range);
+    include_module(vmr.c_range.get(), vmr.m_enumerable.get());
+    vmr.c_nil.set(define_class("NilClass", ob));
+    vmr.c_true.set(define_class("TrueClass", ob));
+    vmr.c_false.set(define_class("FalseClass", ob));
+    vmr.c_proc.set(define_class("Proc", ob));
+    class_set_alloc(vmr.c_proc.get(), AllocKind::Proc);
+    vmr.c_method.set(define_class("Method", ob));
+    class_set_alloc(vmr.c_method.get(), AllocKind::None);
+    vmr.c_unbound_method.set(define_class("UnboundMethod", ob));
+    class_set_alloc(vmr.c_unbound_method.get(), AllocKind::None);
+    vmr.c_env.set(new_class(ob));
+    vmr.c_binding.set(define_class("Binding", ob));
+    class_set_alloc(vmr.c_binding.get(), AllocKind::None);
+    for k in [vmr.c_integer.get(), vmr.c_float.get(), vmr.c_symbol.get(), vmr.c_nil.get(), vmr.c_true.get(), vmr.c_false.get()] { class_set_alloc(k, AllocKind::None); }
 
-    vmr.main_obj = new_object(ob);
-    vmr.loaded_features = boot_ary(vmr);
-    vmr.load_path = boot_ary(vmr);
-    kernel::init_load_path(vmr.load_path);
-    vmr.at_exit = boot_ary(vmr);
-    vmr.argv = boot_ary(vmr);
-    vmr.top_cref = new_cref(ob, std::ptr::null());
+    vmr.main_obj.set(new_object(ob));
+    vmr.loaded_features.set(boot_ary(vmr));
+    vmr.load_path.set(boot_ary(vmr));
+    kernel::init_load_path(vmr.load_path.get());
+    vmr.at_exit.set(boot_ary(vmr));
+    vmr.argv.set(boot_ary(vmr));
+    vmr.top_cref.set(new_cref(ob, std::ptr::null()));
 
     exception::init_classes(vmr);
     let ids = object::init(vmr);
-    vmr.ids.bo_init = ids.bo_init; vmr.ids.bo_eq = ids.bo_eq; vmr.ids.kernel_hash = ids.kernel_hash; vmr.ids.m_eqq = ids.m_eqq; vmr.ids.c_new = ids.c_new;
+    vmr.ids.bo_init.set(ids.bo_init); vmr.ids.bo_eq.set(ids.bo_eq); vmr.ids.kernel_hash.set(ids.kernel_hash); vmr.ids.m_eqq.set(ids.m_eqq); vmr.ids.c_new.set(ids.c_new);
     kernel::init(vmr);
-    boot_autoload(vmr.c_object, &["ARGF"], "saruby/argf");
+    boot_autoload(vmr.c_object.get(), &["ARGF"], "saruby/argf");
     proc::init(vmr);
     exception::init(vmr);
-    numeric_methods::init(vmr.c_numeric, vmr.c_integer, vmr.c_float);
+    numeric_methods::init(vmr.c_numeric.get(), vmr.c_integer.get(), vmr.c_float.get());
     for (nm, v) in numeric_methods::FLOAT_CONSTS {
-        let f = match Value::flonum(v) { Some(f) => f, None => { let f = crate::gc::alloc(vmr.c_float, Body::Float(v)); obj_set_flags(f, FL_FROZEN); f } };
-        const_set(vmr.c_float, crate::symbol::intern(nm.as_bytes()), f);
+        let f = match Value::flonum(v) { Some(f) => f, None => { let f = crate::gc::alloc(vmr.c_float.get(), Body::Float(v)); obj_set_flags(f, FL_FROZEN); f } };
+        const_set(vmr.c_float.get(), crate::symbol::intern(nm.as_bytes()), f);
     }
-    string_methods::init(vmr.c_string);
-    symbol_methods::init(vmr.c_symbol);
-    array_methods::init(vmr.c_array);
-    hash_methods::init(vmr.c_hash);
-    vmr.ids.r_each = range_methods::init(vmr.c_range);
-    let e = define_class("Enumerator", vmr.c_object);
+    string_methods::init(vmr.c_string.get());
+    symbol_methods::init(vmr.c_symbol.get());
+    array_methods::init(vmr.c_array.get());
+    hash_methods::init(vmr.c_hash.get());
+    vmr.ids.r_each.set(range_methods::init(vmr.c_range.get()));
+    let e = define_class("Enumerator", vmr.c_object.get());
     class_set_alloc(e, AllocKind::None);
-    let k = enumerator::init(e, vmr.c_object, vmr.m_enumerable);
-    vmr.c_enumerator = k.enumerator; vmr.c_yielder = k.yielder; vmr.c_generator = k.generator;
-    vmr.c_lazy = k.lazy; vmr.c_chain = k.chain; vmr.c_arith_seq = k.arith_seq;
+    let k = enumerator::init(e, vmr.c_object.get(), vmr.m_enumerable.get());
+    vmr.c_enumerator.set(k.enumerator); vmr.c_yielder.set(k.yielder); vmr.c_generator.set(k.generator);
+    vmr.c_lazy.set(k.lazy); vmr.c_chain.set(k.chain); vmr.c_arith_seq.set(k.arith_seq);
     io::init(vmr);
     process::init(vmr);
-    vmr.m_marshal = marshal::init();
-    (vmr.c_random, vmr.default_random) = random::init(vmr);
+    vmr.m_marshal.set(marshal::init());
+    let (r, d) = random::init(vmr);
+    vmr.c_random.set(r); vmr.default_random.set(d);
     binding::init(vmr);
     thread::init(vmr);
     misc::init(vmr);
@@ -170,16 +171,17 @@ fn boot_classes(vmr: &mut Vm) {
     lazy_const(ob, "RbConfig", "saruby/rbconfig");
     lazy_const(ob, "Pathname", "saruby/pathname");
     encoding::init(vmr);
-    lazy_const(vmr.c_encoding, "Converter", "saruby/econv");
+    lazy_const(vmr.c_encoding.get(), "Converter", "saruby/econv");
     tracepoint::init(vmr);
     stringio::init(vmr);
-    (vmr.c_regexp, vmr.c_match_data) = regexp_methods::init(vmr);
-    vmr.c_struct = structs::init(vmr.c_object, vmr.m_enumerable);
-    vmr.c_time = time::init(vmr);
-    math::init(vmr.m_math);
-    vmr.c_rational = rational::init(vmr);
-    vmr.c_complex = complex::init(vmr);
-    enum_native::init(vmr.m_enumerable);
+    let (r, m) = regexp_methods::init(vmr);
+    vmr.c_regexp.set(r); vmr.c_match_data.set(m);
+    vmr.c_struct.set(structs::init(vmr.c_object.get(), vmr.m_enumerable.get()));
+    vmr.c_time.set(time::init(vmr));
+    math::init(vmr.m_math.get());
+    vmr.c_rational.set(rational::init(vmr));
+    vmr.c_complex.set(complex::init(vmr));
+    enum_native::init(vmr.m_enumerable.get());
     crate::fiber::init(vmr);
     fiber_methods::init(vmr);
     extras::init(vmr);

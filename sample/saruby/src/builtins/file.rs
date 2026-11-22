@@ -32,14 +32,14 @@ fn os_err_at(c: &mut Ctx, e: &std::io::Error, pre: &str, p: &[u8]) -> Esc { crat
 fn last_err_at(c: &mut Ctx, pre: &str, p: &[u8]) -> Esc { let e = sys::errno(); crate::builtins::io::raise_errno_at(c, e, pre, p) }
 /// "(x, y)" of two paths, for the messages of rename / link
 fn pair(x: &PathArg, y: &PathArg) -> Vec<u8> { let mut v = b"(".to_vec(); v.extend_from_slice(x.as_bytes()); v.extend_from_slice(b", "); v.extend_from_slice(y.as_bytes()); v.push(b')'); v }
-fn new_stat(c: &mut Ctx, md: std::fs::Metadata) -> Value { init_stat(c); c.alloc(c.vm().c_stat, Body::Data(Box::new(RStat { md: Some(md) }))) }
+fn new_stat(c: &mut Ctx, md: std::fs::Metadata) -> Value { init_stat(c); c.alloc(c.vm().c_stat.get(), Body::Data(Box::new(RStat { md: Some(md) }))) }
 fn fd_meta(fd: i32) -> std::io::Result<std::fs::Metadata> {
     sys::fd_metadata(fd)
 }
 /// Metadata of a path or an IO argument.
 fn meta_of(c: &mut Ctx, v: Value, follow: bool) -> Result<Result<std::fs::Metadata, (std::io::Error, PathArg)>, Esc> {
     if let Some(io) = rio(c, v) {
-        if io.closed { return err(c, c.vm().c_io_error, "closed stream"); }
+        if io.closed { return err(c, c.vm().c_io_error.get(), "closed stream"); }
         return Ok(fd_meta(io.fd).map_err(|e| (e, PathArg(io.path.clone()))));
     }
     let p = path_arg(c, v)?;
@@ -53,7 +53,7 @@ fn stat_md(c: &mut Ctx, v: Value) -> Result<std::fs::Metadata, Esc> {
 fn time_of(c: &mut Ctx, sec: i64, nsec: i64) -> Value {
     use crate::builtins::time::{RTime, LOCAL};
     let w = c.int_from_i128(sec as i128 * 1_000_000_000 + nsec as i128);
-    c.alloc_with(c.vm().c_time, move || Body::Data(Box::new(RTime { w, mode: LOCAL, off: NIL, zone: NIL, dst: false })))
+    c.alloc_with(c.vm().c_time.get(), move || Body::Data(Box::new(RTime { w, mode: LOCAL, off: NIL, zone: NIL, dst: false })))
 }
 fn access_ok(md: &std::fs::Metadata, bit: u32, effective: bool) -> bool {
     let (uid, gid) = if effective { (sys::geteuid(), sys::getegid()) } else { (sys::getuid(), sys::getgid()) };
@@ -130,7 +130,7 @@ fn st_init_copy(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(s)
 }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
-    let st = c.vm().c_stat;
+    let st = c.vm().c_stat.get();
     if st != NIL && crate::builtins::inherits(klass, st) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(RStat { md: None }))))); }
     Ok(None)
 }
@@ -198,7 +198,7 @@ fn f_s_birthtime(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     }
 }
 fn birthtime(c: &mut Ctx, m: &std::fs::Metadata) -> RV {
-    match m.created().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()) { Some(d) => Ok(time_of(c, d.as_secs() as i64, d.subsec_nanos() as i64)), None => err(c, c.vm().c_not_impl_error, "birthtime() function is unimplemented on this machine") }
+    match m.created().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()) { Some(d) => Ok(time_of(c, d.as_secs() as i64, d.subsec_nanos() as i64)), None => err(c, c.vm().c_not_impl_error.get(), "birthtime() function is unimplemented on this machine") }
 }
 fn f_s_ftype(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     match meta_of(c, a[0], false)? { Ok(m) => Ok(c.str_new(ftype(&m).as_bytes())), Err((e, p)) => Err(os_err_at(c, &e, "rb_file_s_ftype - ", p.as_bytes())) }
@@ -243,7 +243,7 @@ fn f_s_lchown(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
     for &x in &a[2..] { let p = path_arg(c, x)?; if sys::lchown(&p.cstr(), u, g) < 0 { return Err(last_err_at(c, "rb_file_s_lchown - ", p.as_bytes())); } }
     Ok(Value::fix(a.len() as i64 - 2))
 }
-fn f_s_lchmod(c: &mut Ctx, _slf: Value, _a: &[Value], _b: *const Block) -> RV { err(c, c.vm().c_not_impl_error, "lchmod() function is unimplemented on this machine") }
+fn f_s_lchmod(c: &mut Ctx, _slf: Value, _a: &[Value], _b: *const Block) -> RV { err(c, c.vm().c_not_impl_error.get(), "lchmod() function is unimplemented on this machine") }
 fn f_s_truncate(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
     let p = path_arg(c, a[0])?; let n = num_to_long(c, a[1])?;
     if sys::truncate(&p.cstr(), n) < 0 { return Err(last_err_at(c, "rb_file_s_truncate - ", p.as_bytes())); }
@@ -397,7 +397,7 @@ fn f_truncate(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let n = num_to_long(c, a[0])?;
     funcall(c, s, intern(b"flush"), &[], std::ptr::null())?;
     let io = crate::builtins::io::get_io(c, s)?;
-    if !io.writable { return err(c, c.vm().c_io_error, "not opened for writing"); }
+    if !io.writable { return err(c, c.vm().c_io_error.get(), "not opened for writing"); }
     if sys::ftruncate(io.fd, n) < 0 { let p = io.path.clone(); return Err(last_err_at(c, "", &p)); }
     Ok(Value::fix(0))
 }
@@ -764,8 +764,8 @@ fn d_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
 }
 fn d_check(c: &mut Ctx, s: Value) -> Result<(Value, usize), Esc> {
     let e = ivar_get(s, iv("@ents"));
-    if e == NIL { return err(c, c.vm().c_io_error, "uninitialized Dir"); }
-    if ivar_get(s, iv("@closed")).truthy() { return err(c, c.vm().c_io_error, "closed directory"); }
+    if e == NIL { return err(c, c.vm().c_io_error.get(), "uninitialized Dir"); }
+    if ivar_get(s, iv("@closed")).truthy() { return err(c, c.vm().c_io_error.get(), "closed directory"); }
     Ok((e, ivar_get(s, iv("@pos")).as_fix() as usize))
 }
 fn d_read(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
@@ -821,18 +821,18 @@ const TESTS: &[(&str, CFunc, i32)] = &[("exist?", f_s_exist, 1), ("file?", f_s_f
         ("zero?", f_s_zero, 1), ("empty?", f_s_zero, 1), ("size?", f_s_size_p, 1), ("size", f_s_size, 1), ("setuid?", f_s_setuid, 1), ("setgid?", f_s_setgid, 1), ("sticky?", f_s_sticky, 1),
         ("owned?", f_s_owned, 1), ("grpowned?", f_s_grpowned, 1), ("world_readable?", f_s_world_readable, 1), ("world_writable?", f_s_world_writable, 1), ("identical?", f_s_identical, 2)];
 pub fn init_filetest(c: &mut Ctx) {
-    if c.vm().m_file_test != NIL { return; }
+    if c.vm().m_file_test.get() != NIL { return; }
     let ft = define_module("FileTest");
-    c.vm_mut().m_file_test = ft;
+    c.vm().m_file_test.set(ft);
     for &(n, fun, ar) in TESTS { define_module_function(ft, n, fun, ar); }
 }
 pub fn init_stat(c: &mut Ctx) {
-    if c.vm().c_stat != NIL { return; }
-    let f = c.vm().c_file;
-    let st = define_class_under(f, "Stat", c.vm().c_object);
+    if c.vm().c_stat.get() != NIL { return; }
+    let f = c.vm().c_file.get();
+    let st = define_class_under(f, "Stat", c.vm().c_object.get());
     class_set_alloc(st, AllocKind::None);
-    include_module(st, c.vm().m_comparable);
-    c.vm_mut().c_stat = st;
+    include_module(st, c.vm().m_comparable.get());
+    c.vm().c_stat.set(st);
     let sd = |n: &str, fun: CFunc, a: i32| define_cfunc(st, n, fun, a);
     define_private_cfunc(st, "initialize", st_initialize, 1);
     define_private_cfunc(st, "initialize_copy", st_init_copy, 1);
@@ -846,10 +846,10 @@ pub fn init_stat(c: &mut Ctx) {
     sd("zero?", st_zero, 0); sd("size?", st_size_p, 0); sd("ftype", st_ftype, 0); sd("setuid?", st_setuid, 0); sd("setgid?", st_setgid, 0);
     sd("sticky?", st_sticky, 0); sd("owned?", st_owned, 0); sd("grpowned?", st_grpowned, 0); sd("<=>", st_cmp, 1); sd("inspect", st_inspect, 0);
 }
-pub fn init(vmr: &mut Vm) {
-    let (io, f) = (vmr.c_io, vmr.c_file);
+pub fn init(vmr: &Vm) {
+    let (io, f) = (vmr.c_io.get(), vmr.c_file.get());
     crate::builtins::prelude::lazy_const(f, "Stat", "saruby/stat");
-    crate::builtins::prelude::lazy_const(vmr.c_object, "FileTest", "saruby/filetest");
+    crate::builtins::prelude::lazy_const(vmr.c_object.get(), "FileTest", "saruby/filetest");
     for &(n, fun, ar) in TESTS { define_singleton_cfunc(f, n, fun, ar); }
     let df = |n: &str, fun: CFunc, a: i32| define_singleton_cfunc(f, n, fun, a);
     df("open", f_s_open, -1); df("stat", f_s_stat, 1); df("lstat", f_s_lstat, 1); df("mtime", f_s_mtime, 1); df("atime", f_s_atime, 1); df("ctime", f_s_ctime, 1);
@@ -877,9 +877,9 @@ pub fn init(vmr: &mut Vm) {
     }
     const_set(fc, intern(b"NULL"), crate::builtins::io::boot_frozen_str(vmr, b"/dev/null"));
     include_module(io, fc);
-    let dir = define_class("Dir", vmr.c_object);
-    include_module(dir, vmr.m_enumerable);
-    vmr.c_dir = dir;
+    let dir = define_class("Dir", vmr.c_object.get());
+    include_module(dir, vmr.m_enumerable.get());
+    vmr.c_dir.set(dir);
     let dd = |n: &str, fun: CFunc, a: i32| define_singleton_cfunc(dir, n, fun, a);
     dd("pwd", d_s_pwd, 0); dd("getwd", d_s_pwd, 0); dd("glob", d_s_glob, -1); dd("[]", d_s_aref, -1); dd("exist?", d_s_exist, 1); dd("mkdir", d_s_mkdir, -1);
     dd("rmdir", d_s_rmdir, 1); dd("delete", d_s_rmdir, 1); dd("unlink", d_s_rmdir, 1); dd("entries", d_s_entries, -1); dd("children", d_s_children, -1);

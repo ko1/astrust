@@ -24,7 +24,7 @@ impl Ctx {
     #[cold]
     #[inline(never)]
     fn float_new_heap(&mut self, d: f64) -> Value {
-        let k = self.vm().c_float;
+        let k = self.vm().c_float.get();
         let v = self.alloc(k, Body::Float(d));
         obj_set_flags(v, FL_FROZEN);
         v

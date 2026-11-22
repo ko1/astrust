@@ -25,7 +25,7 @@ impl RData for RComplex {
 pub fn is_complex(c: &Ctx, v: Value) -> bool { c.data::<RComplex>(v).is_some() }
 pub fn cpx_parts(c: &Ctx, v: Value) -> (Value, Value) { let r = c.data::<RComplex>(v).expect("a Complex"); (r.re, r.im) }
 pub fn cpx_raw(c: &mut Ctx, re: Value, im: Value) -> Value {
-    let k = c.vm().c_complex;
+    let k = c.vm().c_complex.get();
     let v = c.alloc_with(k, move || Body::Data(Box::new(RComplex { re, im })));
     obj_set_flags(v, FL_FROZEN);
     v
@@ -103,7 +103,7 @@ fn f_real_p(c: &mut Ctx, x: Value) -> Result<bool, Esc> {
     if is_complex(c, x) { return Ok(false); }
     Ok(funcall(c, x, intern(b"real?"), &[], nul())?.truthy())
 }
-fn k_numeric(c: &Ctx, x: Value) -> bool { is_integer(x) || is_float(x) || is_kind_of(x, c.vm().c_numeric) }
+fn k_numeric(c: &Ctx, x: Value) -> bool { is_integer(x) || is_float(x) || is_kind_of(x, c.vm().c_numeric.get()) }
 fn rat_canon(c: &Ctx, x: Value) -> Value { if is_rational(c, x) { let (n, d) = rat_parts(c, x); if d == Value::fix(1) { return n; } } x }
 fn to_f64(c: &mut Ctx, x: Value) -> Result<f64, Esc> { crate::builtins::numeric_methods::to_f(c, x) }
 
@@ -405,7 +405,7 @@ fn cpx_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { le
 
 fn range_err_conv<T>(c: &mut Ctx, s: Value, into: &str) -> Result<T, Esc> {
     let t = format(c, s, false)?;
-    err(c, c.vm().c_range_error, format!("can't convert {} into {}", t, into))
+    err(c, c.vm().c_range_error.get(), format!("can't convert {} into {}", t, into))
 }
 fn cpx_to_i(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let (re, im) = cpx_parts(c, s);
@@ -597,7 +597,7 @@ fn nil_to_c(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c
 
 /// Boot: defines Complex (returned) and the conversions on the other classes.
 pub fn init(vmr: &Vm) -> Value {
-    let k = define_class("Complex", vmr.c_numeric);
+    let k = define_class("Complex", vmr.c_numeric.get());
     class_set_alloc(k, AllocKind::None);
     let sk = singleton_class(k);
     define_method_me(sk, s::new, new_me(s::new, sk, VISI_PUBLIC, MKind::Undef));
@@ -624,16 +624,16 @@ pub fn init(vmr: &Vm) -> Value {
     let iu = crate::gc::alloc(k, Body::Data(Box::new(RComplex { re: Value::fix(0), im: Value::fix(1) })));
     obj_set_flags(iu, FL_FROZEN);
     const_set(k, intern(b"I"), iu);
-    let n = vmr.c_numeric;
+    let n = vmr.c_numeric.get();
     define_cfunc(n, "to_c", num_to_c, 0);
     define_cfunc(n, "i", num_i, 0);
     define_cfunc(n, "polar", num_polar, 0);
     define_cfunc(n, "abs2", num_abs2, 0);
-    define_cfunc(vmr.c_float, "arg", flo_arg, 0);
-    define_cfunc(vmr.c_float, "angle", flo_arg, 0);
-    define_cfunc(vmr.c_float, "phase", flo_arg, 0);
-    define_cfunc(vmr.c_nil, "to_c", nil_to_c, 0);
-    define_cfunc(vmr.c_string, "to_c", str_to_c, 0);
-    define_module_function(vmr.m_kernel, "Complex", k_complex, -1);
+    define_cfunc(vmr.c_float.get(), "arg", flo_arg, 0);
+    define_cfunc(vmr.c_float.get(), "angle", flo_arg, 0);
+    define_cfunc(vmr.c_float.get(), "phase", flo_arg, 0);
+    define_cfunc(vmr.c_nil.get(), "to_c", nil_to_c, 0);
+    define_cfunc(vmr.c_string.get(), "to_c", str_to_c, 0);
+    define_module_function(vmr.m_kernel.get(), "Complex", k_complex, -1);
     k
 }

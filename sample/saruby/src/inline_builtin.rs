@@ -67,14 +67,14 @@ static SEND_ME: std::sync::OnceLock<[(usize, u32); 2]> = std::sync::OnceLock::ne
 pub fn init(c: &Ctx) {
     let v = c.vm();
     let t = TABLE.iter().filter_map(|&(k, name, body)| {
-        let klass = [v.c_integer, v.c_float, v.c_array, v.c_hash, v.c_string, v.c_range][k as usize];
+        let klass = [v.c_integer.get(), v.c_float.get(), v.c_array.get(), v.c_hash.get(), v.c_string.get(), v.c_range.get()][k as usize];
         let m = c.method_entry(klass, intern(name.as_bytes()))?;
         // an iterator may be inherited (Numeric#step, Enumerable#map): the class is then checked in cache_key
         (matches!(m.kind, MKind::Cfunc(..)) && (m.owner == klass || body >= IT_FIRST)).then_some((m as *const MethodEntry as usize, body, klass))
     }).collect();
     let _ = BI_ME.set(t);
     let me = |k: Value, n: &str| c.method_entry(k, intern(n.as_bytes())).map_or(0, |m| m as *const MethodEntry as usize);
-    let _ = SEND_ME.set([(me(v.m_kernel, "send"), BI_SEND), (me(v.c_basic_object, "__send__"), BI_SEND)]);
+    let _ = SEND_ME.set([(me(v.m_kernel.get(), "send"), BI_SEND), (me(v.c_basic_object.get(), "__send__"), BI_SEND)]);
 }
 
 /// CallCache.bi of a cache filled with entry me for class klass: its body and the mark of klass (0: none).
@@ -85,10 +85,10 @@ pub fn cache_key(me: *const MethodEntry, klass: Value) -> u32 {
     // an iterator on an Array / Range / Hash: only that class itself (a subclass may have its own #each),
     // and Range#map only while Range#each is the builtin (its loop is Range#each's)
     if body >= IT_FIRST && recv_of(body) != C_INT {
-        if body == IT_RANGE_MAP && !std::ptr::eq(lookup_method(v.c_range, s::each), v.ids.r_each) { return 0; }
+        if body == IT_RANGE_MAP && !std::ptr::eq(lookup_method(v.c_range.get(), s::each), v.ids.r_each.get()) { return 0; }
         return body;
     }
-    body | if klass == v.c_integer { K_INT } else if klass == v.c_float { K_FLO } else { 0 }
+    body | if klass == v.c_integer.get() { K_INT } else if klass == v.c_float.get() { K_FLO } else { 0 }
 }
 
 /// argc a body takes

@@ -18,7 +18,7 @@ use crate::vm::*;
 
 impl Ctx {
     pub fn range_new(&mut self, b: Value, e: Value, excl: bool) -> Value {
-        let k = self.vm().c_range;
+        let k = self.vm().c_range.get();
         self.alloc(k, Body::Range(b, e, excl))
     }
     /// (begin, end, exclusive) of a Range; (nil, nil, false) for anything else.
@@ -62,5 +62,5 @@ fn out_of_range(c: &mut Ctx, r: Value, err: i32, _b: i64, _e: i64) -> Result<Opt
     }
     Ok(None)
 }
-fn err_range<T>(c: &mut Ctx, m: String) -> Result<T, Esc> { crate::vm::err(c, c.vm().c_range_error, m) }
+fn err_range<T>(c: &mut Ctx, m: String) -> Result<T, Esc> { crate::vm::err(c, c.vm().c_range_error.get(), m) }
 }

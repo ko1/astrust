@@ -155,21 +155,21 @@ pub fn str_bytes(v: Value) -> &'static [u8] { &rstr(v).b }
 
 // legacy Array API (no context); converted code uses the `Ctx` methods of array.rs
 #[inline]
-pub fn ary_new() -> Value { crate::gc::alloc_with(crate::vm::vm().c_array, move || Body::Array(crate::avec::AVec::new())) }
+pub fn ary_new() -> Value { crate::gc::alloc_with(crate::vm::vm().c_array.get(), move || Body::Array(crate::avec::AVec::new())) }
 #[inline]
 pub fn ary_new_capa(n: usize) -> Value {
     crate::gc::malloc_increase(n * 8);
-    crate::gc::alloc_with(crate::vm::vm().c_array, move || Body::Array(crate::avec::AVec::with_capacity(n)))
+    crate::gc::alloc_with(crate::vm::vm().c_array.get(), move || Body::Array(crate::avec::AVec::with_capacity(n)))
 }
 #[inline]
 pub fn ary_new_from(v: &[Value]) -> Value {
     crate::gc::malloc_increase(v.len() * 8);
-    crate::gc::alloc_with(crate::vm::vm().c_array, move || Body::Array(crate::avec::AVec::from_slice(v)))
+    crate::gc::alloc_with(crate::vm::vm().c_array.get(), move || Body::Array(crate::avec::AVec::from_slice(v)))
 }
 #[inline]
 pub fn ary_from_vec(v: Vec<Value>) -> Value {
     crate::gc::malloc_increase(v.len() * 8);
-    crate::gc::alloc_with(crate::vm::vm().c_array, move || Body::Array(crate::avec::AVec::from_vec(v)))
+    crate::gc::alloc_with(crate::vm::vm().c_array.get(), move || Body::Array(crate::avec::AVec::from_vec(v)))
 }
 #[inline(always)]
 pub fn ary_push(a: Value, v: Value) {
@@ -188,7 +188,7 @@ pub fn ary_to_vec(a: Value) -> Vec<Value> { rary(a).to_vec() }
 // legacy Hash API (no context); converted code uses the `Ctx` methods of hash.rs
 pub fn hash_new() -> Value { hash_new_capa(0) }
 pub fn hash_new_capa(n: usize) -> Value {
-    crate::gc::alloc(crate::vm::vm().c_hash, Body::Hash(Box::new(RHash::with_capacity(n))))
+    crate::gc::alloc(crate::vm::vm().c_hash.get(), Body::Hash(Box::new(RHash::with_capacity(n))))
 }
 pub fn hash_pairs(h: Value) -> Vec<(Value, Value)> { rhash(h).pairs() }
 pub fn hash_len(h: Value) -> usize { rhash(h).live }

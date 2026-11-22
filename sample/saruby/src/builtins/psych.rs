@@ -100,7 +100,7 @@ impl Source for Src<'_> {
 
 fn syntax_error(c: &mut Ctx, e: &yp::YError, path: Value) -> Esc {
     let m = M_PSYCH.get(c);
-    let k = match const_get_inherit(c, m, intern(b"SyntaxError")) { Ok(Some(k)) => k, Ok(None) => return raise_msg(c, c.vm().c_runtime_error, e.problem), Err(x) => return x };
+    let k = match const_get_inherit(c, m, intern(b"SyntaxError")) { Ok(Some(k)) => k, Ok(None) => return raise_msg(c, c.vm().c_runtime_error.get(), e.problem), Err(x) => return x };
     let problem = c.str_new_enc(e.problem.as_bytes(), ENC_ASCII);
     let context = match e.context { Some(s) => c.str_new_enc(s.as_bytes(), ENC_ASCII), None => NIL };
     let args = [path, Value::fix(e.context_mark.line as i64 + 1), Value::fix(e.context_mark.column as i64 + 1), Value::fix(e.problem_offset as i64), problem, context];
@@ -194,7 +194,7 @@ fn p_parse(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
 }
 fn p_mark(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let m = c.data::<PParser>(slf).map(|d| d.mark).unwrap_or_default();
-    let k = match const_get_at(C_PARSER.get(c), intern(b"Mark")) { Some(k) => k, None => return err(c, c.vm().c_name_error, "uninitialized constant Psych::Parser::Mark") };
+    let k = match const_get_at(C_PARSER.get(c), intern(b"Mark")) { Some(k) => k, None => return err(c, c.vm().c_name_error.get(), "uninitialized constant Psych::Parser::Mark") };
     funcall(c, k, intern(b"new"), &[Value::fix(m.index as i64), Value::fix(m.line as i64), Value::fix(m.column as i64)], std::ptr::null())
 }
 
@@ -214,16 +214,16 @@ fn emit(c: &mut Ctx, slf: Value, ev: EventData) -> RV {
     for chunk in out {
         let s = c.str_new(&chunk);
         let w = funcall(c, io, intern(b"write"), &[s], std::ptr::null())?;
-        if num_to_long(c, w)? as i32 == 0 { return err(c, c.vm().c_runtime_error, "write error"); }
+        if num_to_long(c, w)? as i32 == 0 { return err(c, c.vm().c_runtime_error.get(), "write error"); }
     }
-    if r.is_err() { return err(c, c.vm().c_runtime_error, problem.unwrap_or("")); }
+    if r.is_err() { return err(c, c.vm().c_runtime_error.get(), problem.unwrap_or("")); }
     Ok(slf)
 }
 /// C truthiness of a VALUE: only false is 0.
 fn ctrue(v: Value) -> bool { v != FALSE }
 fn num2int(c: &mut Ctx, v: Value) -> Result<i64, Esc> {
     let n = num_to_long(c, v)?;
-    if n > i32::MAX as i64 || n < i32::MIN as i64 { return err(c, c.vm().c_range_error, format!("integer {} too {} to convert to 'int'", n, if n < 0 { "small" } else { "big" })); }
+    if n > i32::MAX as i64 || n < i32::MIN as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too {} to convert to 'int'", n, if n < 0 { "small" } else { "big" })); }
     Ok(n)
 }
 fn e_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -266,7 +266,7 @@ fn e_start_document(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> R
         for i in 0..n {
             let Some(t) = c.ary(tags).get(i).copied() else { break };
             if !crate::array::is_array(t) { return check_type(c, t, "Array"); }
-            if c.ary(t).len() < 2 { return err(c, c.vm().c_runtime_error, "tag tuple must be of length 2"); }
+            if c.ary(t).len() < 2 { return err(c, c.vm().c_runtime_error.get(), "tag tuple must be of length 2"); }
             let (h, p) = (c.ary(t)[0], c.ary(t)[1]);
             let h = expect_str(c, h)?;
             let p = expect_str(c, p)?;
@@ -331,7 +331,7 @@ fn cl_path2class(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV 
         return arg_err(c, format!("can't retrieve anonymous class {}", q));
     }
     let undefined = |c: &mut Ctx, upto: usize| -> RV { let s = String::from_utf8_lossy(&b[..upto]).into_owned(); arg_err(c, format!("undefined class/module {}", s)) };
-    let mut k = c.vm().c_object;
+    let mut k = c.vm().c_object.get();
     let (mut p, mut pbeg) = (0, 0);
     let mut first = true;
     while p < b.len() {
@@ -374,7 +374,7 @@ fn libyaml_version(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV
 /// Run by the first `require "psych.so"`.
 pub fn init(c: &mut Ctx) -> RV {
     if C_PARSER.get(c) != NIL { return Ok(NIL); }
-    let o = c.vm().c_object;
+    let o = c.vm().c_object.get();
     let m = module_under(o, "Psych");
     M_PSYCH.set(c, m);
     define_singleton_cfunc(m, "libyaml_version", libyaml_version, 0);

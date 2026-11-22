@@ -246,8 +246,8 @@ impl<'a> Args<'a> {
         match self.args.get(n as usize - 1) { Some(&v) => Ok(v), None => arg_err(c, "too few arguments") }
     }
     fn hash(&mut self, c: &mut Ctx, name: &[u8], enc: u8) -> RV {
-        if self.posarg > 0 { return Err(raise_bytes(c, c.vm().c_argument_error, &[b"named", name, format!(" after unnumbered({})", self.posarg).as_bytes()].concat(), enc)); }
-        if self.posarg == -1 { return Err(raise_bytes(c, c.vm().c_argument_error, &[b"named", name, b" after numbered"].concat(), enc)); }
+        if self.posarg > 0 { return Err(raise_bytes(c, c.vm().c_argument_error.get(), &[b"named", name, format!(" after unnumbered({})", self.posarg).as_bytes()].concat(), enc)); }
+        if self.posarg == -1 { return Err(raise_bytes(c, c.vm().c_argument_error.get(), &[b"named", name, b" after numbered"].concat(), enc)); }
         self.posarg = -2;
         if let Some(h) = self.hash { return Ok(h); }
         if self.args.len() != 1 { return arg_err(c, "one hash required"); }
@@ -265,7 +265,7 @@ const FWIDTH: u32 = 32; const FPREC: u32 = 64;
 fn int_arg(c: &mut Ctx, v: Value) -> RV {
     if is_float(v) {
         let f = float_val(v);
-        if f.is_nan() || f.is_infinite() { return err(c, c.vm().c_float_domain_error, crate::numeric::float_to_s(f)); }
+        if f.is_nan() || f.is_infinite() { return err(c, c.vm().c_float_domain_error.get(), crate::numeric::float_to_s(f)); }
         return Ok(crate::legacy::f64_to_int(f.trunc()));
     }
     if is_string(v) { return parse_int_for_format(c, v); }
@@ -279,7 +279,7 @@ fn int_arg(c: &mut Ctx, v: Value) -> RV {
     type_err(c, format!("can't convert {} into Integer", class_name_for_err(v)))
 }
 fn float_arg(c: &mut Ctx, v: Value) -> Result<f64, Esc> {
-    if is_string(v) { let f = funcall(c, c.vm().main_obj, intern(b"Float"), &[v], std::ptr::null())?; return to_f(c, f); }
+    if is_string(v) { let f = funcall(c, c.vm().main_obj.get(), intern(b"Float"), &[v], std::ptr::null())?; return to_f(c, f); }
     to_f(c, v)
 }
 
@@ -287,7 +287,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
     use crate::builtins::encoding as en;
     let fmts = expect_str(c, fmtv)?;
     let (fenc, fmt) = { let r = c.rstring(fmts); (r.enc, r.b.to_vec()) };
-    if !en::ascii_compat(fenc) { return err(c, c.vm().c_compat_error, format!("ASCII incompatible encoding: {}", en::enc_name(fenc))); }
+    if !en::ascii_compat(fenc) { return err(c, c.vm().c_compat_error.get(), format!("ASCII incompatible encoding: {}", en::enc_name(fenc))); }
     let mut out: Vec<u8> = Vec::with_capacity(fmt.len() + 16);
     let mut renc = fenc;
     let mut st = Args { args, next: 0, posarg: 0, hash: None };
@@ -338,7 +338,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                     let h = st.hash(c, label, fenc)?;
                     if val.is_some() {
                         let prev = name_for_err.clone().unwrap_or_default();
-                        return Err(raise_bytes(c, c.vm().c_argument_error, &[b"named", label, b" after <", &prev, b">"].concat(), fenc));
+                        return Err(raise_bytes(c, c.vm().c_argument_error.get(), &[b"named", label, b" after <", &prev, b">"].concat(), fenc));
                     }
                     let key = Value::sym(intern(name));
                     let v = match crate::hash::hash_get_opt(c, h, key)? {
@@ -348,7 +348,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                             let d = if c.hash(h).default_proc != NIL || c.hash(h).default != NIL { crate::hash::hash_aref(c, h, key)? } else { NIL };
                             if d == NIL {
                                 let m = c.str_new_enc(&[b"key", label, b" not found"].concat(), fenc);
-                                let e2 = funcall(c, c.vm().c_key_error, intern(b"new"), &[m], std::ptr::null())?;
+                                let e2 = funcall(c, c.vm().c_key_error.get(), intern(b"new"), &[m], std::ptr::null())?;
                                 ivar_set_raw(e2, crate::symbol::s::key, key); ivar_set_raw(e2, crate::symbol::s::receiver, h);
                                 return Err(raise_exc(c, e2));
                             }
@@ -410,10 +410,10 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                             c.str_new_enc(&first, c.str_enc(s2))
                         } else {
                             let n = num_to_long(c, v)?;
-                            if n < 0 { return err(c, c.vm().c_range_error, format!("{} out of char range", n)); }
+                            if n < 0 { return err(c, c.vm().c_range_error.get(), format!("{} out of char range", n)); }
                             match en::code_to_bytes(renc, n as u32) {
                                 Some(bs) => c.str_new_enc(&bs, renc),
-                                None => return err(c, c.vm().c_range_error, if en::is_unicode(renc) && n > 0x10ffff || en::is_single_byte(renc) { format!("{} out of char range", n) } else { format!("invalid character") }),
+                                None => return err(c, c.vm().c_range_error.get(), if en::is_unicode(renc) && n > 0x10ffff || en::is_single_byte(renc) { format!("{} out of char range", n) } else { format!("invalid character") }),
                             }
                         }
                     }
@@ -421,9 +421,9 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                 // result encoding negotiation
                 let (senc, mut bb) = { let r = c.rstring(sv); (r.enc, r.b.to_vec()) };
                 if senc != renc && !is_ascii(&bb) {
-                    if !en::ascii_compat(senc) { return err(c, c.vm().c_compat_error, format!("incompatible character encodings: {} and {}", en::enc_name_msg(renc), en::enc_name_msg(senc))); }
+                    if !en::ascii_compat(senc) { return err(c, c.vm().c_compat_error.get(), format!("incompatible character encodings: {} and {}", en::enc_name_msg(renc), en::enc_name_msg(senc))); }
                     if is_ascii(&out) && is_ascii(&fmt[i..]) && is_ascii(&fmt[..start]) || out.is_empty() && is_ascii(&fmt) { renc = senc; }
-                    else { return err(c, c.vm().c_compat_error, format!("incompatible character encodings: {} and {}", en::enc_name_msg(renc), en::enc_name_msg(senc))); }
+                    else { return err(c, c.vm().c_compat_error.get(), format!("incompatible character encodings: {} and {}", en::enc_name_msg(renc), en::enc_name_msg(senc))); }
                 }
                 if let Some(p) = prec_o { if conv != b'c' { let off = char_offsets_of(&bb, senc); if p + 1 < off.len() { bb.truncate(off[p]); } } }
                 let n = enc_strlen(&bb, senc);
@@ -494,10 +494,10 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
     if st.posarg >= 0 && st.next < args.len() && !(args.len() == 1 && is_hash(args[0])) {
         let dbg = gvar_get(c, intern(b"$DEBUG"))?;
         if dbg.truthy() { return arg_err(c, "too many arguments for format string"); }
-        if c.vm().verbose == TRUE {
+        if c.vm().verbose.get() == TRUE {
             let loc = backtrace_lines(c, 0).first().map(|l| l.split(":in ").next().unwrap_or("").to_string()).unwrap_or_default();
             let m = c.str_new(format!("{}: warning: too many arguments for format string\n", loc).as_bytes());
-            let w = c.vm().m_warning;
+            let w = c.vm().m_warning.get();
             funcall(c, w, intern(b"warn"), &[m], std::ptr::null())?;
         }
     }

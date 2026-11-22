@@ -50,7 +50,7 @@ fn errno_exc(c: &mut Ctx, name: &str, msg: Option<&str>) -> Esc {
     raise_exc(c, e)
 }
 fn error_inval<T>(c: &mut Ctx, msg: Option<&str>) -> Result<T, Esc> { Err(errno_exc(c, "EINVAL", msg)) }
-fn eof_error<T>(c: &mut Ctx) -> Result<T, Esc> { err(c, c.vm().c_eof_error, "end of file reached") }
+fn eof_error<T>(c: &mut Ctx) -> Result<T, Esc> { err(c, c.vm().c_eof_error.get(), "end of file reached") }
 
 /// check_strio: the object's payload, or TypeError.
 fn strio_parts(c: &mut Ctx, v: Value) -> Result<(Value, bool, bool), Esc> {
@@ -64,7 +64,7 @@ fn obj_mut(c: &mut Ctx, v: Value) -> &mut RStrIO { c.data_mut::<RStrIO>(v).expec
 fn strio(c: &mut Ctx, v: Value) -> Result<SState, Esc> {
     check_frozen(c, v)?;
     let (inner, _, _) = strio_parts(c, v)?;
-    if inner == NIL { return err(c, c.vm().c_io_error, "uninitialized stream"); }
+    if inner == NIL { return err(c, c.vm().c_io_error.get(), "uninitialized stream"); }
     Ok(*c.data::<SState>(inner).expect("strio state"))
 }
 fn st_mut(c: &mut Ctx, v: Value) -> &mut SState {
@@ -78,17 +78,17 @@ fn mode_set(c: &mut Ctx, v: Value, bit: u32) -> bool {
 }
 fn readable(c: &mut Ctx, v: Value) -> Result<SState, Esc> {
     let p = strio(c, v)?;
-    if !mode_set(c, v, FM_R) { return err(c, c.vm().c_io_error, "not opened for reading"); }
+    if !mode_set(c, v, FM_R) { return err(c, c.vm().c_io_error.get(), "not opened for reading"); }
     Ok(p)
 }
 fn writable(c: &mut Ctx, v: Value) -> Result<SState, Esc> {
     let p = strio(c, v)?;
-    if !mode_set(c, v, FM_W) { return err(c, c.vm().c_io_error, "not opened for writing"); }
+    if !mode_set(c, v, FM_W) { return err(c, c.vm().c_io_error.get(), "not opened for writing"); }
     Ok(p)
 }
 fn closed(c: &mut Ctx, v: Value) -> bool { !mode_set(c, v, FM_R) && !mode_set(c, v, FM_W) }
 fn check_modifiable(c: &mut Ctx, p: &SState) -> Result<(), Esc> {
-    if p.string != NIL && is_frozen(p.string) { return err(c, c.vm().c_io_error, "not modifiable string"); }
+    if p.string != NIL && is_frozen(p.string) { return err(c, c.vm().c_io_error.get(), "not modifiable string"); }
     Ok(())
 }
 fn slen(c: &Ctx, p: &SState) -> i64 { if p.string == NIL { 0 } else { c.str_bytes(p.string).len() as i64 } }
@@ -145,7 +145,7 @@ pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     Ok(Some(c.alloc(real_class_of(v), Body::Data(Box::new(RStrIO { inner: NIL, rd: false, wr: false })))))
 }
 fn new_state(c: &mut Ctx) -> Value {
-    let k = c.vm().c_object;
+    let k = c.vm().c_object.get();
     c.alloc(k, Body::Data(Box::new(SState { string: NIL, enc: None, pos: 0, lineno: 0, flags: 0 })))
 }
 
@@ -239,7 +239,7 @@ fn sio_first(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { str
 fn sio_true(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { strio(c, slf)?; Ok(TRUE) }
 fn sio_fcntl(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     strio(c, slf)?;
-    err(c, c.vm().c_not_impl_error, "fcntl() function is unimplemented on this machine")
+    err(c, c.vm().c_not_impl_error.get(), "fcntl() function is unimplemented on this machine")
 }
 fn sio_string(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(strio(c, slf)?.string) }
 fn sio_set_string(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -254,12 +254,12 @@ fn sio_set_string(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV 
 fn sio_close(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { strio(c, slf)?; let o = obj_mut(c, slf); o.rd = false; o.wr = false; Ok(NIL) }
 fn sio_close_read(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let p = strio(c, slf)?;
-    if p.flags & FM_R == 0 { return err(c, c.vm().c_io_error, "closing non-duplex IO for reading"); }
+    if p.flags & FM_R == 0 { return err(c, c.vm().c_io_error.get(), "closing non-duplex IO for reading"); }
     obj_mut(c, slf).rd = false; Ok(NIL)
 }
 fn sio_close_write(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let p = strio(c, slf)?;
-    if p.flags & FM_W == 0 { return err(c, c.vm().c_io_error, "closing non-duplex IO for writing"); }
+    if p.flags & FM_W == 0 { return err(c, c.vm().c_io_error.get(), "closing non-duplex IO for writing"); }
     obj_mut(c, slf).wr = false; Ok(NIL)
 }
 fn sio_closed(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { strio(c, slf)?; Ok(Value::bool(closed(c, slf))) }
@@ -314,7 +314,7 @@ fn sio_seek(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     strio(c, slf)?;
     check_argc(c, a, 1, 2)?;
     let amount = num_to_long(c, a[0])?;
-    if closed(c, slf) { return err(c, c.vm().c_io_error, "closed stream"); }
+    if closed(c, slf) { return err(c, c.vm().c_io_error.get(), "closed stream"); }
     let whence = match a.get(1) { Some(&w) if w != NIL => num_to_long(c, w)?, _ => 0 };
     let p = strio(c, slf)?;
     let offset = match whence { 0 => 0, 1 => p.pos, 2 => slen(c, &p), _ => return error_inval(c, Some("invalid whence")) };
@@ -380,11 +380,11 @@ fn sio_ungetc(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let x = a[0];
     if x.is_fixnum() || (x.is_heap() && matches!(c.body_of(x), Body::Bignum(_))) {
         let cc = num_to_long(c, x)?;
-        if cc < i32::MIN as i64 || cc > i32::MAX as i64 { return err(c, c.vm().c_range_error, format!("integer {} too {} to convert to 'int'", cc, if cc < 0 { "small" } else { "big" })); }
+        if cc < i32::MIN as i64 || cc > i32::MAX as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too {} to convert to 'int'", cc, if cc < 0 { "small" } else { "big" })); }
         let enc = c.str_enc(p.string);
         let cp = cc as u32;
         let Some(bs) = en::code_to_bytes(enc, cp) else {
-            return err(c, c.vm().c_range_error, format!("{} out of char range", cp));
+            return err(c, c.vm().c_range_error.get(), format!("{} out of char range", cp));
         };
         return unget_bytes(c, slf, Some(&bs), bs.len());
     }
@@ -853,7 +853,7 @@ fn gr_getpass(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 }
 /// The part of io/console that is not about terminals.
 pub fn init_console(c: &mut Ctx) {
-    let io = c.vm().c_io;
+    let io = c.vm().c_io.get();
     let gr = const_get_at(io, intern(b"generic_readable")).unwrap_or_else(|| define_module_under(io, "generic_readable"));
     define_cfunc(gr, "getch", gr_getch, -1);
     define_cfunc(gr, "getpass", gr_getpass, -1);
@@ -861,15 +861,15 @@ pub fn init_console(c: &mut Ctx) {
 
 /// Boot: no context runs yet.
 pub fn init(vmr: &Vm) {
-    let k = define_class("StringIO", vmr.c_object);
+    let k = define_class("StringIO", vmr.c_object.get());
     class_set_alloc(k, AllocKind::None);
     ivar_set_raw(k, hidden_mark(), TRUE);
-    let io = vmr.c_io;
+    let io = vmr.c_io.get();
     for (n, v) in [("SEEK_SET", 0), ("SEEK_CUR", 1), ("SEEK_END", 2)] {
         if const_get_at(io, intern(n.as_bytes())).is_none() { const_set(io, intern(n.as_bytes()), Value::fix(v)); }
     }
-    include_module(k, vmr.m_enumerable);
-    const_set(k, intern(b"VERSION"), crate::gc::alloc(vmr.c_string, Body::String(RString { b: crate::sbuf::SBuf::from_slice(b"3.2.0"), enc: ENC_UTF8 })));
+    include_module(k, vmr.m_enumerable.get());
+    const_set(k, intern(b"VERSION"), crate::gc::alloc(vmr.c_string.get(), Body::String(RString { b: crate::sbuf::SBuf::from_slice(b"3.2.0"), enc: ENC_UTF8 })));
     const_set(k, intern(b"MAX_LENGTH"), Value::fix(i64::MAX >> 1));
     define_singleton_cfunc(k, "new", sio_s_new, -1);
     define_singleton_cfunc(k, "open", sio_s_open, -1);

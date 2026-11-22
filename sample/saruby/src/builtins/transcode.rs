@@ -49,7 +49,7 @@ pub fn econv_exception(c: &mut Ctx, ec: &Econv) -> Option<Value> {
             let msg = if r == Res::IncompleteInput { format!("incomplete {} on {}", d, le.src) }
                       else if !le.readagain.is_empty() { format!("{} followed by {} on {}", d, dump_bin(&le.readagain), le.src) }
                       else { format!("{} on {}", d, le.src) };
-            let e = make_exception(c.vm().c_invalid_byte_seq_error, &msg);
+            let e = make_exception(c.vm().c_invalid_byte_seq_error.get(), &msg);
             let b = c.str_new_enc(&le.error_bytes, ENC_BINARY);
             set(e, b"__tc_bytes", b);
             let ra = if r == Res::IncompleteInput || le.readagain.is_empty() { NIL } else { c.str_new_enc(&le.readagain, ENC_BINARY) };
@@ -69,7 +69,7 @@ pub fn econv_exception(c: &mut Ctx, ec: &Econv) -> Option<Value> {
                 for el in &ec.elems { if !ev::is_decorator(el.tc.tr) { m.push_str(" to "); m.push_str(el.tc.tr.dst); } }
                 m
             };
-            let e = make_exception(c.vm().c_undef_conv_error, &msg);
+            let e = make_exception(c.vm().c_undef_conv_error.get(), &msg);
             let ch = c.str_new_enc(b, enc_id(le.src).unwrap_or(ENC_BINARY));
             set(e, b"__tc_char", ch);
             e
@@ -115,7 +115,7 @@ fn description(sname: &str, dname: &str, ecflags: u32, mut m: String) -> String 
 /// rb_econv_open_exc
 pub fn open_exc(c: &mut Ctx, sname: &str, dname: &str, ecflags: u32) -> Esc {
     let m = description(sname, dname, ecflags, "code converter not found (".into()) + ")";
-    raise_msg(c, c.vm().c_converter_not_found_error, &m)
+    raise_msg(c, c.vm().c_converter_not_found_error.get(), &m)
 }
 
 // ---- options ------------------------------------------------------------------------------------
@@ -162,7 +162,7 @@ pub fn econv_opts(c: &mut Ctx, h: Value, mut ecflags: u32) -> Result<u32, Esc> {
     }
     match nlflag {
         1 => { ecflags &= !ev::NEWLINE_DECORATOR_MASK; ecflags |= setflags; }
-        3 => if c.vm().verbose == TRUE { crate::builtins::kernel::warn_str(c, "warning: :newline option precedes other newline options\n"); },
+        3 => if c.vm().verbose.get() == TRUE { crate::builtins::kernel::warn_str(c, "warning: :newline option precedes other newline options\n"); },
         _ => {}
     }
     Ok(ecflags)
@@ -320,7 +320,7 @@ pub fn s_encode(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
         Some((Some(b), e)) => c.str_from_vec_enc(b, e),
     };
     let k = real_class_of(slf);
-    if k != c.vm().c_string { obj_set_klass(v, k); }
+    if k != c.vm().c_string.get() { obj_set_klass(v, k); }
     Ok(v)
 }
 pub fn s_encode_bang(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -361,7 +361,7 @@ impl RData for REconv {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
-    let k = c.vm().c_econv;
+    let k = c.vm().c_econv.get();
     if k != NIL && crate::builtins::inherits(klass, k) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(REconv { ec: None, senc: None, denc: None }))))); }
     Ok(None)
 }
@@ -586,7 +586,7 @@ fn ec_replacement(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV
 fn ec_set_replacement(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let s = expect_str(c, a[0])?;
     let (b, e) = (c.str_bytes(s).to_vec(), en::enc_name(c.str_enc(s)));
-    if !ec_of(c, slf)?.set_replacement(&b, e) { return err(c, c.vm().c_undef_conv_error, "replacement character setup failed"); }
+    if !ec_of(c, slf)?.set_replacement(&b, e) { return err(c, c.vm().c_undef_conv_error.get(), "replacement character setup failed"); }
     Ok(a[0])
 }
 fn ec_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -619,10 +619,10 @@ fn ec_s_search_convpath(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -
 
 /// Encoding::Converter, defined on its first reference ("saruby/econv", builtins/prelude.rs).
 pub fn init(c: &mut Ctx) {
-    if c.vm().c_econv != NIL { return; }
-    let k = define_class_under(c.vm().c_encoding, "Converter", c.vm().c_object);
+    if c.vm().c_econv.get() != NIL { return; }
+    let k = define_class_under(c.vm().c_encoding.get(), "Converter", c.vm().c_object.get());
     class_set_alloc(k, AllocKind::None);
-    c.vm_mut().c_econv = k;
+    c.vm().c_econv.set(k);
     define_singleton_cfunc(k, "asciicompat_encoding", ec_s_asciicompat_encoding, 1);
     define_singleton_cfunc(k, "search_convpath", ec_s_search_convpath, -1);
     define_cfunc(k, "initialize", ec_initialize, -1);

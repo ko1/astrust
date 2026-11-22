@@ -74,7 +74,7 @@ fn zone_localtime(c: &mut Ctx, t: Value, zone: Value) -> Result<bool, Esc> {
     if !respond_to(zone, intern(b"utc_to_local"), true) { return Ok(false); }
     let secs = secs_of(c, rt(c, t).w);
     let w = ex_mul(c, secs, ns());
-    let tm = new_time(c, c.vm().c_time, w, UTC, NIL);
+    let tm = new_time(c, c.vm().c_time.get(), w, UTC, NIL);
     let local = funcall(c, zone, intern(b"utc_to_local"), &[tm], std::ptr::null())?;
     let ls = extract_secs(c, local)?;
     let dst = zone_dst(c, zone, tm)?;
@@ -85,7 +85,7 @@ fn zone_localtime(c: &mut Ctx, t: Value, zone: Value) -> Result<bool, Esc> {
 /// local wall clock seconds l (+ subsec) in zone -> sets t
 fn zone_timelocal(c: &mut Ctx, t: Value, zone: Value, l: Value, sub: Value) -> Result<bool, Esc> {
     let w = ex_mul(c, l, ns());
-    let tm = new_time(c, c.vm().c_time, w, UTC, NIL);
+    let tm = new_time(c, c.vm().c_time.get(), w, UTC, NIL);
     let utc = funcall(c, zone, intern(b"local_to_utc"), &[tm], std::ptr::null())?;
     let u = extract_secs(c, utc)?;
     let dst = zone_dst(c, zone, tm)?;
@@ -207,7 +207,7 @@ fn str_to_inum(c: &mut Ctx, v: Value) -> RV {
 fn obj2int(c: &mut Ctx, v: Value) -> Result<i64, Esc> {
     let v = if is_string(v) { str_to_inum(c, v)? } else { v };
     let i = crate::builtins::numeric_methods::num_to_long(c, v)?;
-    if i < i32::MIN as i64 || i > i32::MAX as i64 { return err(c, c.vm().c_range_error, format!("integer {} too {} to convert to 'int'", i, if i < 0 { "small" } else { "big" })); }
+    if i < i32::MIN as i64 || i > i32::MAX as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too {} to convert to 'int'", i, if i < 0 { "small" } else { "big" })); }
     Ok(i)
 }
 fn obj2ubits(c: &mut Ctx, v: Value, bits: u32) -> Result<i64, Esc> {
@@ -257,7 +257,7 @@ fn normalize_mday(a: &mut Args) {
 fn year_i128(c: &mut Ctx, y: Value) -> Result<i128, Esc> {
     let y = obj2vint(c, y)?;
     if y.is_fixnum() { return Ok(y.as_fix() as i128); }
-    match c.to_big(y).to_string_radix(10).parse::<i128>() { Ok(v) if v.abs() < (1i128 << 100) => Ok(v), _ => err(c, c.vm().c_range_error, "year too big") }
+    match c.to_big(y).to_string_radix(10).parse::<i128>() { Ok(v) if v.abs() < (1i128 << 100) => Ok(v), _ => err(c, c.vm().c_range_error.get(), "year too big") }
 }
 /// Time.local / Time.utc argument forms
 fn time_arg(c: &mut Ctx, argv: &[Value]) -> Result<Args, Esc> {
@@ -304,7 +304,7 @@ enum Off { Utc, Fixed(Value) }
 /// CRuby's utc_offset_arg: None when not an offset spec.
 fn utc_offset_arg(c: &mut Ctx, v: Value) -> Result<Option<Off>, Esc> {
     if is_integer(v) { return Ok(Some(Off::Fixed(v))); }
-    if is_string(v) || (v.is_heap() && !is_kind_of(v, c.vm().c_numeric) && respond_to(v, s::to_str, true)) {
+    if is_string(v) || (v.is_heap() && !is_kind_of(v, c.vm().c_numeric.get()) && respond_to(v, s::to_str, true)) {
         let sv = if is_string(v) { v } else { funcall(c, v, s::to_str, &[], std::ptr::null())? };
         let b = c.str_bytes(sv).to_vec();
         let d2 = |i: usize| -> Option<i64> { if i + 1 < b.len() && b[i].is_ascii_digit() && b[i + 1].is_ascii_digit() { Some(((b[i] - b'0') * 10 + (b[i + 1] - b'0')) as i64) } else { None } };
@@ -832,7 +832,7 @@ fn subsec_digits(c: &mut Ctx, t: RTime, p: usize) -> Value {
 fn zone_abbr(c: &mut Ctx, t: &RTime) -> Result<String, Esc> {
     let z = t.zone;
     let r = if is_string(z) { z } else {
-        let tm = new_time(c, c.vm().c_time, t.w, UTC, NIL);
+        let tm = new_time(c, c.vm().c_time.get(), t.w, UTC, NIL);
         if respond_to(z, intern(b"abbr"), true) { funcall(c, z, intern(b"abbr"), &[tm], std::ptr::null())? }
         else if respond_to(z, intern(b"strftime"), true) { { let f = c.str_new(b"%Z"); funcall(c, z, intern(b"strftime"), &[f, tm], std::ptr::null())? } }
         else if respond_to(z, s::name, true) { funcall(c, z, s::name, &[], std::ptr::null())? } else { NIL }
@@ -936,15 +936,15 @@ pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     Ok(None)
 }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
-    if crate::builtins::inherits(klass, c.vm().c_time) { return Ok(Some(new_time(c, klass, Value::fix(0), LOCAL, NIL))); }
+    if crate::builtins::inherits(klass, c.vm().c_time.get()) { return Ok(Some(new_time(c, klass, Value::fix(0), LOCAL, NIL))); }
     Ok(None)
 }
 
 /// Boot: defines Time (returned).
 pub fn init(vmr: &Vm) -> Value {
-    let k = define_class("Time", vmr.c_object);
+    let k = define_class("Time", vmr.c_object.get());
     class_set_alloc(k, AllocKind::None);
-    include_module(k, vmr.m_comparable);
+    include_module(k, vmr.m_comparable.get());
     define_singleton_cfunc(k, "now", t_now, -1);
     define_singleton_cfunc(k, "at", t_at, -1);
     define_singleton_cfunc(k, "local", t_local, -1);

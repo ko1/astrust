@@ -36,7 +36,7 @@ static VER: AtomicU32 = AtomicU32::new(0);
 pub fn json_version(c: &Ctx) -> u32 {
     let v = VER.load(Relaxed);
     if v != 0 { return v; }
-    let m = match const_get_at(c.vm().c_object, intern(b"JSON")) { Some(m) => m, None => return 30000 };
+    let m = match const_get_at(c.vm().c_object.get(), intern(b"JSON")) { Some(m) => m, None => return 30000 };
     let n = match const_get_at(m, intern(b"VERSION")) {
         Some(s) if is_string(s) => {
             let t = String::from_utf8_lossy(c.str_bytes(s)).into_owned();
@@ -113,10 +113,10 @@ fn config_init(c: &mut Ctx, opts: Value) -> Result<Config, Esc> {
                     match name.rfind(':') {
                         Some(i) => {
                             let path = c.str_new(name[..i - 1].as_bytes());
-                            cfg.decimal_class = funcall(c, c.vm().c_object, intern(b"const_get"), &[path], std::ptr::null())?;
+                            cfg.decimal_class = funcall(c, c.vm().c_object.get(), intern(b"const_get"), &[path], std::ptr::null())?;
                             cfg.decimal_mid = intern(name[i + 1..].as_bytes());
                         }
-                        None => { cfg.decimal_class = c.vm().m_kernel; cfg.decimal_mid = intern(name.as_bytes()); }
+                        None => { cfg.decimal_class = c.vm().m_kernel.get(); cfg.decimal_mid = intern(name.as_bytes()); }
                     }
                 }
             }
@@ -580,7 +580,7 @@ impl<'a> M<'a> {
     fn float_of(&mut self, c: &mut Ctx, a: usize, b: usize, cstr: bool) -> PR<Value> {
         let t = std::str::from_utf8(&self.src[a..b]).unwrap_or("0");
         let f: f64 = t.parse().unwrap_or(0.0);
-        if cstr && c.vm().verbose == TRUE {
+        if cstr && c.vm().verbose.get() == TRUE {
             let mant_nonzero = self.src[a..b].iter().take_while(|&&x| x != b'e' && x != b'E').any(|&x| (b'1'..=b'9').contains(&x));
             if f.is_infinite() || (f == 0.0 && mant_nonzero) {
                 let (w, ell) = if b - a > 20 { (20, "...") } else { (b - a, "") };
@@ -1179,7 +1179,7 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
 }
 
 fn path_class(c: &mut Ctx, m: Value, name: &str) -> Result<Value, Esc> {
-    match const_get_at(m, intern(name.as_bytes())) { Some(k) => Ok(k), None => err(c, c.vm().c_name_error, format!("uninitialized constant JSON::{}", name)) }
+    match const_get_at(m, intern(name.as_bytes())) { Some(k) => Ok(k), None => err(c, c.vm().c_name_error.get(), format!("uninitialized constant JSON::{}", name)) }
 }
 fn module_under(outer: Value, name: &str) -> Value {
     match const_get_at(outer, intern(name.as_bytes())) { Some(m) if is_class_or_module(m) => m, _ => define_module_under(outer, name) }
@@ -1192,7 +1192,7 @@ pub fn class_under(outer: Value, name: &str, sup: Value) -> Value {
 pub fn init(c: &mut Ctx) -> RV {
     let f = c.str_new(b"json/common");
     require_feature(c, f, false)?;
-    let o = c.vm().c_object;
+    let o = c.vm().c_object.get();
     let m = module_under(o, "JSON");
     M_JSON.set(c, m);
     json_version(c);

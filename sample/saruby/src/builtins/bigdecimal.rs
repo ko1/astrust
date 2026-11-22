@@ -1138,8 +1138,8 @@ struct Bdv { v: Value, r: Real }
 
 fn vperr(c: &mut Ctx, e: VpErr) -> Esc {
     let m = match e {
-        VpErr::Fd(s) => make_exception(c.vm().c_float_domain_error, s),
-        VpErr::NoMem => make_exception(c.vm().c_no_memory_error, "failed to allocate memory"),
+        VpErr::Fd(s) => make_exception(c.vm().c_float_domain_error.get(), s),
+        VpErr::NoMem => make_exception(c.vm().c_no_memory_error.get(), "failed to allocate memory"),
     };
     raise_exc(c, m)
 }
@@ -1180,8 +1180,8 @@ fn check_get_v(c: &mut Ctx, b: Bdv, env: &Env) -> RV { check_exception(c, &b.r, 
 
 fn num2int(c: &mut Ctx, v: Value) -> Result<i32, Esc> {
     let n = num_to_long(c, v)?;
-    if n > i32::MAX as i64 { return err(c, c.vm().c_range_error, format!("integer {} too big to convert to 'int'", n)); }
-    if n < i32::MIN as i64 { return err(c, c.vm().c_range_error, format!("integer {} too small to convert to 'int'", n)); }
+    if n > i32::MAX as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too big to convert to 'int'", n)); }
+    if n < i32::MIN as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too small to convert to 'int'", n)); }
     Ok(n as i32)
 }
 fn check_int_precision(c: &mut Ctx, v: Value) -> Result<usize, Esc> {
@@ -1380,7 +1380,7 @@ fn get_bd(c: &mut Ctx, v: Value, prec: usize, must: bool, env: &Env) -> Result<O
 fn get_bd_must(c: &mut Ctx, v: Value, prec: usize, env: &Env) -> Result<Bdv, Esc> { Ok(get_bd(c, v, prec, true, env)?.unwrap()) }
 fn cannot_coerce(c: &mut Ctx, v: Value) -> Esc {
     let s = if !v.is_heap() { match inspect_str(c, v) { Ok(s) => s, Err(e) => return e } } else { class_path(real_class_of(v)) };
-    let m = make_exception(c.vm().c_type_error, &format!("{} can't be coerced into BigDecimal", s));
+    let m = make_exception(c.vm().c_type_error.get(), &format!("{} can't be coerced into BigDecimal", s));
     raise_exc(c, m)
 }
 fn slf(c: &mut Ctx, v: Value) -> Result<Bdv, Esc> {
@@ -1497,7 +1497,7 @@ fn do_divmod(c: &mut Ctx, s: Value, r: Value, truncate: bool, env: &Env) -> Resu
     let Some(b) = get_bd(c, r, get_coerce_prec(&a.r, 0), false, env)? else { return Ok(None) };
     let nan = || { let mut x = Real::alloc(1); x.set_nan(); x };
     if a.r.is_nan() || b.r.is_nan() || (a.r.is_inf() && b.r.is_inf()) { return Ok(Some((nan(), nan()))); }
-    if b.r.is_zero() { return err(c, c.vm().c_zero_div_error, "divided by 0"); }
+    if b.r.is_zero() { return err(c, c.vm().c_zero_div_error.get(), "divided by 0"); }
     if a.r.is_inf() {
         let mut d = Real::alloc(1);
         d.set_inf(if a.r.get_sign() == b.r.get_sign() { 1 } else { -1 });
@@ -1552,7 +1552,7 @@ fn to_i_real(c: &mut Ctx, r: &Real, env: &Env) -> RV {
     if dpower != 0 {
         let e = c.int_from_i64(dpower as i64);
         let p10 = funcall(c, Value::fix(10), intern(b"**"), &[e], std::ptr::null())?;
-        if is_float(p10) { return err(c, c.vm().c_float_domain_error, "Infinity"); }
+        if is_float(p10) { return err(c, c.vm().c_float_domain_error.get(), "Infinity"); }
         ret = funcall(c, ret, intern(b"*"), &[p10], std::ptr::null())?;
     }
     Ok(ret)
@@ -1606,7 +1606,7 @@ fn cstr(c: &mut Ctx, v: Value) -> Result<Vec<u8>, Esc> {
 }
 fn invalid_value(c: &mut Ctx, s: &[u8]) -> Esc {
     let m = format!("invalid value for BigDecimal(): \"{}\"", String::from_utf8_lossy(s));
-    let e = make_exception(c.vm().c_argument_error, &m);
+    let e = make_exception(c.vm().c_argument_error.get(), &m);
     raise_exc(c, e)
 }
 fn s_load(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
@@ -1638,8 +1638,8 @@ fn check_rounding_mode(c: &mut Ctx, v: Value) -> Result<u16, Esc> {
     // NUM2USHORT: rb_to_int's message for nil
     let iv = if v == NIL { to_integer(c, v)? } else { v };
     let n = num_to_long(c, iv)?;
-    if n > u16::MAX as i64 { return err(c, c.vm().c_range_error, format!("integer {} too big to convert to 'unsigned short'", n)); }
-    if n < i16::MIN as i64 { return err(c, c.vm().c_range_error, format!("integer {} too small to convert to 'unsigned short'", n)); }
+    if n > u16::MAX as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too big to convert to 'unsigned short'", n)); }
+    if n < i16::MIN as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too small to convert to 'unsigned short'", n)); }
     if !(1..=7).contains(&n) { let s = to_s_value(c, v)?; let s = String::from_utf8_lossy(c.str_bytes(s)).into_owned(); return arg_err(c, format!("invalid rounding mode ({})", s)); }
     Ok(n as u16)
 }
@@ -1755,7 +1755,7 @@ fn convert(c: &mut Ctx, val: Value, digs: Option<usize>, raise: bool) -> RV {
     let enc = c.rstring(s).enc;
     if !crate::builtins::encoding::ascii_compat(enc) {
         let n = crate::builtins::encoding::enc_name(enc);
-        return err(c, c.vm().c_encoding_error, format!("ASCII incompatible encoding: {}", n));
+        return err(c, c.vm().c_encoding_error.get(), format!("ASCII incompatible encoding: {}", n));
     }
     let b = c.str_bytes(s).to_vec();
     if b.contains(&0) {
@@ -2036,7 +2036,7 @@ fn m_to_r(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let ten = BigInt::from_i64(10);
     let (n, d) = if dp < 0 { (num, ten.pow((-dp) as u64)) } else { (num.mul(&ten.pow(dp as u64)), BigInt::from_i64(1)) };
     let (n, d) = (c.big_to_value(n), c.big_to_value(d));
-    let k = c.vm().m_kernel;
+    let k = c.vm().m_kernel.get();
     funcall(c, k, intern(b"Rational"), &[n, d], std::ptr::null())
 }
 fn m_decimal_shift(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
@@ -2076,10 +2076,10 @@ fn m_clone(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(s)
 /// Run by the first `require "bigdecimal.so"`.
 pub fn init(c: &mut Ctx) {
     if CLASS.get(c) != NIL { return; }
-    let k = define_class("BigDecimal", c.vm().c_numeric);
+    let k = define_class("BigDecimal", c.vm().c_numeric.get());
     class_set_alloc(k, AllocKind::None);
     CLASS.set(c, k);
-    let kernel = c.vm().m_kernel;
+    let kernel = c.vm().m_kernel.get();
     define_module_function(kernel, "BigDecimal", k_bigdecimal, -1);
     let sk = singleton_class(k);
     let _ = crate::builtins::object::undef_method(c, sk, intern(b"new"));

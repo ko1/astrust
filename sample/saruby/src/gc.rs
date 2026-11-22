@@ -118,13 +118,13 @@ pub fn each_object(mut f: impl FnMut(Value)) {
 #[cold]
 #[inline(never)]
 fn visit_gen_ivars<V: EdgeVisitor<Saruby>>(o: *mut RObj, v: &mut V) {
-    if let Some(iv) = crate::vm::vm().gen_ivars.get_mut(&(o as usize)) {
+    if let Some(iv) = crate::vm::vm().gen_ivars.borrow_mut().get_mut(&(o as usize)) {
         for (_, x) in iv.iter_mut() { v.visit(x); }
     }
 }
 #[cold]
 #[inline(never)]
-fn remove_gen_ivars(p: *mut RObj) { crate::vm::vm().gen_ivars.remove(&(p as usize)); }
+fn remove_gen_ivars(p: *mut RObj) { crate::vm::vm().gen_ivars.borrow_mut().remove(&(p as usize)); }
 
 // The kinds that die most often own nothing when small; drop_in_place would dispatch through a jump table.
 #[inline(always)]

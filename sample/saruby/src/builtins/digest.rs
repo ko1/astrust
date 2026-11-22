@@ -251,7 +251,7 @@ fn nb() -> *const Block { std::ptr::null() }
 fn call0(c: &mut Ctx, v: Value, m: &[u8]) -> RV { funcall(c, v, intern(m), &[], nb()) }
 fn call1(c: &mut Ctx, v: Value, m: &[u8], a: Value) -> RV { funcall(c, v, intern(m), &[a], nb()) }
 fn hidden(n: &[u8]) -> Sym { intern(n) }
-fn digest_mod(c: &mut Ctx) -> Value { let o = c.vm().c_object; const_get_at(o, intern(b"Digest")).unwrap_or(NIL) }
+fn digest_mod(c: &mut Ctx) -> Value { let o = c.vm().c_object.get(); const_get_at(o, intern(b"Digest")).unwrap_or(NIL) }
 
 fn hexencode(c: &mut Ctx, v: Value) -> RV {
     let s = expect_str(c, v)?;
@@ -262,7 +262,7 @@ fn hexencode(c: &mut Ctx, v: Value) -> RV {
 }
 fn unimpl<T>(c: &mut Ctx, s: Value, m: &str) -> Result<T, Esc> {
     let n = class_path(real_class_of(s));
-    err(c, c.vm().c_runtime_error, format!("{} does not implement {}()", n, m))
+    err(c, c.vm().c_runtime_error.get(), format!("{} does not implement {}()", n, m))
 }
 fn obj_clone(c: &mut Ctx, s: Value) -> RV { call0(c, s, b"clone") }
 fn check_str(c: &mut Ctx, v: Value) -> RV {
@@ -349,14 +349,14 @@ fn algo_of_class(c: &mut Ctx, klass: Value) -> Result<Algo, Esc> {
         }
         p = superclass(c, p);
     }
-    err(c, c.vm().c_runtime_error, "Digest::Base cannot be directly inherited in Ruby")
+    err(c, c.vm().c_runtime_error.get(), "Digest::Base cannot be directly inherited in Ruby")
 }
 fn is_base(k: Value) -> bool { ivar_defined(k, hidden(b"__digest_base")) }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     let mut p = klass;
     while p != NIL && !is_base(p) { p = superclass(c, p); }
     if p == NIL { return Ok(None); }
-    if p == klass { return err(c, c.vm().c_not_impl_error, "Digest::Base is an abstract class"); }
+    if p == klass { return err(c, c.vm().c_not_impl_error.get(), "Digest::Base is an abstract class"); }
     let a = algo_of_class(c, klass)?;
     Ok(Some(c.alloc(klass, Body::Data(Box::new(RDigest { st: Hasher::new(a) })))))
 }
@@ -403,7 +403,7 @@ fn b_block_length(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
 
 /// Init_digest
 pub fn init(c: &mut Ctx) {
-    let ob = c.vm().c_object;
+    let ob = c.vm().c_object.get();
     let m = match const_get_at(ob, intern(b"Digest")) { Some(v) if is_class_or_module(v) && c.class(v).is_module => v, _ => define_module("Digest") };
     define_module_function(m, "hexencode", s_hexencode, 1);
     let i = define_module_under(m, "Instance");

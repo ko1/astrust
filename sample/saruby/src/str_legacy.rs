@@ -13,17 +13,17 @@ fn account(n: usize) { if n > crate::sbuf::INLINE { crate::gc::malloc_increase(n
 #[inline]
 pub fn str_new(b: &[u8]) -> Value {
     account(b.len());
-    crate::gc::alloc_with(vm().c_string, move || Body::String(RString { b: SBuf::from_slice(b), enc: ENC_UTF8 }))
+    crate::gc::alloc_with(vm().c_string.get(), move || Body::String(RString { b: SBuf::from_slice(b), enc: ENC_UTF8 }))
 }
 #[inline]
 pub fn str_new_enc(b: &[u8], enc: u8) -> Value {
     account(b.len());
-    crate::gc::alloc_with(vm().c_string, move || Body::String(RString { b: SBuf::from_slice(b), enc }))
+    crate::gc::alloc_with(vm().c_string.get(), move || Body::String(RString { b: SBuf::from_slice(b), enc }))
 }
 #[inline]
 pub fn str_with_capa(n: usize, enc: u8) -> Value {
     account(n);
-    crate::gc::alloc_with(vm().c_string, move || Body::String(RString { b: SBuf::with_capacity(n), enc }))
+    crate::gc::alloc_with(vm().c_string.get(), move || Body::String(RString { b: SBuf::with_capacity(n), enc }))
 }
 pub fn str_new_frozen(b: &[u8]) -> Value {
     let v = str_new(b);

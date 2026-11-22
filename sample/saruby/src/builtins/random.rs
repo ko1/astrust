@@ -80,12 +80,12 @@ impl RData for RRandom {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
 
-fn default_rnd(c: &Ctx) -> Value { c.vm().default_random }
+fn default_rnd(c: &Ctx) -> Value { c.vm().default_random.get() }
 fn rr(c: &mut Ctx, v: Value) -> &mut RRandom { c.data_mut::<RRandom>(v).expect("a Random") }
 
 /// The generator behind ob: a Random instance, the Random class (default), or None.
 fn get_rnd(c: &Ctx, ob: Value) -> Option<Value> {
-    if ob == NIL || ob == c.vm().c_random { return Some(default_rnd(c)); }
+    if ob == NIL || ob == c.vm().c_random.get() { return Some(default_rnd(c)); }
     if c.data::<RRandom>(ob).is_some() { return Some(ob); }
     None
 }
@@ -144,8 +144,8 @@ fn obj_bytes(c: &mut Ctx, ob: Value, n: usize) -> Result<Vec<u8>, Esc> {
     let v = funcall_public(c, ob, intern(b"bytes"), &[Value::fix(n as i64)], std::ptr::null())?;
     if !is_string(v) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(v))); }
     let b = c.str_bytes(v).to_vec();
-    if b.len() < n { return err(c, c.vm().c_range_error, format!("random data too short {}", b.len())); }
-    if b.len() > n { return err(c, c.vm().c_range_error, format!("random data too long {}", b.len())); }
+    if b.len() < n { return err(c, c.vm().c_range_error.get(), format!("random data too short {}", b.len())); }
+    if b.len() > n { return err(c, c.vm().c_range_error.get(), format!("random data too long {}", b.len())); }
     Ok(b)
 }
 fn int32(c: &mut Ctx, ob: Value, rnd: Option<Value>) -> Result<u32, Esc> {
@@ -238,8 +238,8 @@ pub fn ulong_limited(c: &mut Ctx, ob: Value, limit: u64) -> Result<u64, Esc> {
     let lim = c.int_from_i128(limit as i128 + 1);
     let v = funcall_public(c, ob, intern(b"rand"), &[lim], std::ptr::null())?;
     let r = crate::builtins::numeric_methods::num_to_long(c, v)?;
-    if r < 0 { return err(c, c.vm().c_range_error, format!("random number too small {}", r)); }
-    if r as u64 > limit { return err(c, c.vm().c_range_error, format!("random number too big {}", r)); }
+    if r < 0 { return err(c, c.vm().c_range_error.get(), format!("random number too small {}", r)); }
+    if r as u64 > limit { return err(c, c.vm().c_range_error.get(), format!("random number too big {}", r)); }
     Ok(r as u64)
 }
 /// [0, n) for the default generator (Array#shuffle / #sample).
@@ -273,7 +273,7 @@ fn domain_error<T>(c: &mut Ctx) -> Result<T, Esc> {
     let k = Some(crate::builtins::exception::errno_class(c.vm(), 33));
     match k {
         Some(k) => { let e = funcall(c, k, s::new, &[], std::ptr::null())?; Err(raise_exc(c, e)) }
-        None => err(c, c.vm().c_argument_error, "Numerical argument out of domain"),
+        None => err(c, c.vm().c_argument_error.get(), "Numerical argument out of domain"),
     }
 }
 fn float_value(c: &mut Ctx, f: f64) -> Result<f64, Esc> { if !f.is_finite() { return domain_error(c); } Ok(f) }
@@ -287,7 +287,7 @@ pub(crate) fn check_to_int(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> 
 }
 fn check_to_float(c: &mut Ctx, v: Value) -> Result<Option<f64>, Esc> {
     if is_float(v) { return Ok(Some(float_val(v))); }
-    if !is_kind_of(v, c.vm().c_numeric) && !v.is_fixnum() { return Ok(None); }
+    if !is_kind_of(v, c.vm().c_numeric.get()) && !v.is_fixnum() { return Ok(None); }
     if let Some(f) = c.num_to_f64(v) { return Ok(Some(f)); }
     let r = funcall(c, v, s::to_f, &[], std::ptr::null())?;
     Ok(if is_float(r) { Some(float_val(r)) } else { None })
@@ -392,7 +392,7 @@ pub fn rand_value(c: &mut Ctx, vmax: Value) -> RV {
         if let Draw::Val(v) = rand_range(c, NIL, rnd, vmax)? { return Ok(v); }
         let vi = if is_float(vmax) {
             let f = float_val(vmax);
-            if !f.is_finite() { return err(c, c.vm().c_float_domain_error, float_to_s(f)); }
+            if !f.is_finite() { return err(c, c.vm().c_float_domain_error.get(), float_to_s(f)); }
             crate::builtins::numeric_methods::f64_to_int(c, f)
         } else { crate::builtins::numeric_methods::to_integer(c, vmax)? };
         if vi != Value::fix(0) { if let Some(v) = rand_int(c, NIL, rnd, vi, false)? { return Ok(v); } }
@@ -428,7 +428,7 @@ fn r_bytes(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
 }
 fn r_init(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 0, 1)?;
-    if is_frozen(s) { let ins = inspect_str(c, s)?; return err(c, c.vm().c_frozen_error, format!("can't modify frozen Random: {}", ins)); }
+    if is_frozen(s) { let ins = inspect_str(c, s)?; return err(c, c.vm().c_frozen_error.get(), format!("can't modify frozen Random: {}", ins)); }
     if c.data::<RRandom>(s).is_none() { return type_err(c, "undefined random interface") }
     if a.is_empty() {
         let mut mt = Mt::new(); let sd = rand_init_default(c, &mut mt);
@@ -468,7 +468,7 @@ fn s_urandom(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 }
 
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
-    if crate::builtins::inherits(klass, c.vm().c_random) {
+    if crate::builtins::inherits(klass, c.vm().c_random.get()) {
         let mut mt = Mt::new(); mt.init_genrand(0);
         return Ok(Some(c.alloc(klass, Body::Data(Box::new(RRandom { mt, seed: Value::fix(0) })))));
     }
@@ -484,7 +484,7 @@ pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
 
 /// Boot: defines Random; returns (Random, the default generator).
 pub fn init(vmr: &Vm) -> (Value, Value) {
-    let base = new_class(vmr.c_object);
+    let base = new_class(vmr.c_object.get());
     class_set_alloc(base, AllocKind::None);
     let r = define_class("Random", base);
     class_set_alloc(r, AllocKind::None);
@@ -507,15 +507,15 @@ pub fn init(vmr: &Vm) -> (Value, Value) {
     define_cfunc(fm, "rand", r_random_number, -1);
     include_module(base, fm);
     include_module(singleton_class(base), fm);
-    define_module_function(vmr.m_kernel, "rand", k_rand, -1);
-    define_module_function(vmr.m_kernel, "srand", k_srand, -1);
+    define_module_function(vmr.m_kernel.get(), "rand", k_rand, -1);
+    define_module_function(vmr.m_kernel.get(), "srand", k_srand, -1);
     let mut mt = Mt::new();
     let w = fill_random_words(4);
     mt.init_by_array(&w);
     let mut w = w; if *w.last().unwrap() <= 1 { w.push(1); }
     // no context at boot (nothing is borrowed yet)
     // top word > 1: at least 2**96, a bignum
-    let sd = crate::gc::alloc(vmr.c_integer, Body::Bignum(Box::new(BigInt::from_words(false, &w))));
+    let sd = crate::gc::alloc(vmr.c_integer.get(), Body::Bignum(Box::new(BigInt::from_words(false, &w))));
     crate::heap::obj_set_flags(sd, FL_FROZEN);
     let d = crate::gc::alloc_with(r, move || Body::Data(Box::new(RRandom { mt, seed: sd })));
     (r, d)
