@@ -98,6 +98,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [ ] `Array#cycle(n).size` が i64 で `len * n` してあふれる（array_methods.rs:969。debug で panic、release では折り返し。CRuby は Bignum）
 
 ## 性能（上 3 つの後。新規には起こさない）
+- [ ] IO 変換 round 1 の代償: io_file_create（File.open+close）+1.07%（open 1 回 ~43 命令）、io_select2/3 +0.33/+0.23%、変換付き gets 2.3×・puts 1.6×（io.c 同様に 1 文字ずつ受け渡すため）
 - [ ] 正規表現 round 1 の代償: liquid-compile +0.47%・liquid-render +0.16%（マッチごとのエンコーディング判定 ~44 命令、timeout 参照、ステップ計数）。String の coderange キャッシュで判定を省ける
 - [ ] rclass 除去（a1217f5）の代償を取り戻す: poly +0.85%（interp）/ +1.17%（AOT）、object +0.3%、optcarrot +0.36%/フレーム（命令数）。原因は call_slow のキャッシュ hit 経路で c を引き回すレジスタ移動 ~2.7 命令/呼び出し、ivar 読みの miss 呼び出しに c を渡す 1 命令、new_object のクラスの ivar 数読み 1 命令（user 2026-11-22「高速化は別途考えましょう」）
 
