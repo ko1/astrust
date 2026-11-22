@@ -988,8 +988,7 @@ pub fn const_missing(c: &mut Ctx, klass: Value, name: Sym) -> RV {
 pub fn new_object(c: &mut Ctx, klass: Value) -> Value {
     // slots for every ivar an instance of the class has had: initialize never grows it
     let n = c.class(klass).ivar_names.len();
-    gc::alloc_with(klass, move || Body::Object(crate::ivbuf::IvBuf::filled(n)))
-
+    c.alloc_with(klass, move || Body::Object(crate::ivbuf::IvBuf::filled(n)))
 }
 
 pub fn object_id(v: Value) -> u64 {
