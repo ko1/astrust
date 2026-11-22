@@ -28,7 +28,7 @@ macro_rules! lib { ($n:literal) => { ($n, include_str!(concat!("../../prelude/li
 const LIBS: &[(&str, &str)] = &[lib!("etc"), lib!("timeout"), lib!("monitor"), lib!("time"), lib!("bundler"), ("bundler/setup", "require \"bundler\"; Bundler.setup\n"), lib!("date"), ("date_core", "require \"date\"\n"), lib!("pathname"), ("saruby/pathname", include_str!("../../prelude/lib/pathname_core.rb")), ("saruby/argf", include_str!("../../prelude/lib/argf.rb"))];
 /// Features whose implementation is native and always present (require is a no-op).
 const NATIVE: &[&str] = &["set", "stringio", "rbconfig", "thread", "fiber", "enumerator", "rational", "complex", "continuation",
-    "io/wait", "io/nonblock", "fcntl", "etc.so", "monitor.so", "strscan", "strscan.so", "json", "json/ext", "saruby/errno", "saruby/env", "saruby/rbconfig", "saruby/filetest", "saruby/stat", "saruby/sync", "saruby/econv", "saruby/tracepoint"];
+    "io/wait", "io/nonblock", "fcntl", "etc.so", "monitor.so", "strscan", "strscan.so", "socket.so", "json", "json/ext", "saruby/errno", "saruby/env", "saruby/rbconfig", "saruby/filetest", "saruby/stat", "saruby/sync", "saruby/econv", "saruby/tracepoint"];
 
 /// Constant `name` under `owner` whose native definition runs on first reference (boot time: builtins/mod.rs).
 pub use crate::builtins::lazy_const;
@@ -41,6 +41,7 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
     // native libraries whose classes are only built on first require
     if name == "strscan" || name == "strscan.so" { crate::builtins::strscan::init(c); }
     if name == "json" || name == "json/ext" { crate::builtins::json::init(c); }
+    if name == "socket.so" { crate::builtins::socket::init(c); }
     match name {
         "saruby/errno" => crate::builtins::exception::define_all_errnos(c),
         "saruby/env" => crate::builtins::env::init(c),
@@ -50,6 +51,7 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
         "saruby/sync" => crate::builtins::thread::init_sync(c),
         "saruby/econv" => crate::builtins::transcode::init(c),
         "saruby/tracepoint" => crate::builtins::tracepoint::init_class(c),
+        "io/nonblock" => crate::builtins::io::init_nonblock(c),
         _ => {}
     }
     Ok(NIL)
@@ -62,9 +64,9 @@ pub fn stdlib_dirs() -> Option<(String, String)> {
     Some((lib.to_string(), gem.to_string()))
 }
 /// Bundled gems that live outside rubylibdir.
-const BUNDLED: &[&str] = &["ostruct", "base64", "benchmark", "logger", "observer", "abbrev", "pstore", "csv", "matrix", "prime", "getoptlong", "mutex_m", "drb", "rinda", "racc", "bigdecimal", "nkf", "syslog", "rexml", "rss"];
-const EXT_BACKED: &[&str] = &["socket", "openssl", "date", "zlib", "ripper", "psych", "yaml", "bigdecimal", "digest", "pathname", "pty", "coverage",
-    "objspace", "readline", "reline", "nkf", "fiddle", "syslog", "net", "open-uri", "resolv", "ipaddr", "io"];
+const BUNDLED: &[&str] = &["ostruct", "base64", "benchmark", "logger", "observer", "abbrev", "pstore", "csv", "matrix", "prime", "getoptlong", "mutex_m", "drb", "rinda", "racc", "bigdecimal", "nkf", "syslog", "rexml", "rss", "net-ftp", "net-imap", "net-pop", "net-smtp"];
+const EXT_BACKED: &[&str] = &["openssl", "date", "zlib", "ripper", "psych", "yaml", "bigdecimal", "digest", "pathname", "pty", "coverage",
+    "objspace", "readline", "reline", "nkf", "fiddle", "syslog", "io"];
 pub fn stdlib_file(name: &str) -> Option<std::path::PathBuf> {
     if EXT_BACKED.contains(&name.split('/').next().unwrap_or(name).trim_end_matches(".rb")) { return None; }
     let (lib, gem) = stdlib_dirs()?;
@@ -72,7 +74,9 @@ pub fn stdlib_file(name: &str) -> Option<std::path::PathBuf> {
     let p = std::path::Path::new(&lib).join(&rb);
     if p.is_file() { return Some(p); }
     let top = name.split('/').next().unwrap_or(name).trim_end_matches(".rb");
-    if !BUNDLED.contains(&top) { return None; }
+    // net/ftp lives in the bundled gem net-ftp
+    let dashed = name.trim_end_matches(".rb").split('/').take(2).collect::<Vec<_>>().join("-");
+    let top = if BUNDLED.contains(&top) { top } else if BUNDLED.contains(&dashed.as_str()) { BUNDLED.iter().copied().find(|b| *b == dashed).unwrap() } else { return None };
     let mut best: Option<std::path::PathBuf> = None;
     for e in std::fs::read_dir(std::path::Path::new(&gem).join("gems")).ok()?.flatten() {
         let n = e.file_name().to_string_lossy().into_owned();
