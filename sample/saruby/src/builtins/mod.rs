@@ -50,6 +50,7 @@ pub mod tracepoint;
 pub mod digest;
 pub mod etc;
 pub mod syslog;
+pub mod cgi_escape;
 pub mod zlib;
 pub mod zlib_check;
 pub mod zlib_deflate;
