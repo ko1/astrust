@@ -217,7 +217,7 @@ pub fn EVAL_node_float(c: &mut Ctx, n: NodePtr, fp: Fp, v: f64) -> RV {
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_str(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32) -> RV {
-    Ok(crate::string::str_new_enc(s, enc as u8))
+    Ok(c.str_new_enc(s, enc as u8))
 }
 
 
@@ -232,7 +232,7 @@ pub fn EVAL_node_fstr(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32, lc: &mu
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_dstr<D_parts: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, parts: NodeList, enc: u32, cap: u32) -> RV {
-    let acc = crate::string::str_with_capa(cap as usize, enc as u8);
+    let acc = c.str_with_capa(cap as usize, enc as u8);
     for i in 0..<D_parts as DispList>::len(parts) {
         let v = <D_parts as DispList>::nth(c, parts, i, fp)?;
         srb_dstr_append(c, acc, v)?;

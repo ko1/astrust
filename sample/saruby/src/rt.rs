@@ -159,7 +159,7 @@ pub fn srb_fstr(c: &mut Ctx, s: Str, enc: u32, lc: &mut LitCache) -> Value {
         Some(v) if c.str_enc(v) == enc as u8 => v,
         other => {
             let pooled = other.is_some();
-            let v = crate::string::str_new_enc(s, enc as u8);
+            let v = c.str_new_enc(s, enc as u8);
             obj_set_flags(v, FL_FROZEN);
             if pooled { vm().node_values.borrow_mut().push(v); } else { vm().frozen_lits.borrow_mut().insert(s.to_vec(), v); }
             v
@@ -203,11 +203,13 @@ pub fn srb_tostr(c: &mut Ctx, v: Value) -> RV {
     if crate::vm::refinements_on() {
         if let Some(r) = funcall_refined(c, std::ptr::null(), v, s::to_s, &[], std::ptr::null(), CF_FCALL) { let r = r?; if is_string(r) { return Ok(r); } }
     }
-    if v.is_fixnum() { return Ok(str_new(v.as_fix().to_string().as_bytes())); }
-    if v.is_sym() { return Ok(str_new(crate::symbol::sym_bytes(v.as_sym()))); }
-    if v == NIL { return Ok(str_new(b"")); }
+    if v.is_fixnum() { return Ok(c.str_new(v.as_fix().to_string().as_bytes())); }
+    if v.is_sym() { return Ok(c.str_new(crate::symbol::sym_bytes(v.as_sym()))); }
+    if v == NIL { return Ok(c.str_new(b"")); }
     let r = funcall(c, v, s::to_s, &[], std::ptr::null())?;
-    if is_string(r) { Ok(r) } else { Ok(str_new(crate::builtins::kernel::any_to_s_str(c, v).as_bytes())) }
+    if is_string(r) { return Ok(r); }
+    let t = crate::builtins::kernel::any_to_s_str(c, v);
+    Ok(c.str_new(t.as_bytes()))
 }
 
 pub fn srb_regex_lit(c: &mut Ctx, src: Str, opts: u32, lc: &mut LitCache) -> RV {
