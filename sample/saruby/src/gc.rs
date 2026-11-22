@@ -14,6 +14,7 @@ pub use crate::astrust_gc::{EdgeVisitor, GcHeader, RootVisitor};
 use crate::object::*;
 use crate::value::*;
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
 /// The language binding.  Stateless: saruby's roots are globals (`vm()`, the fiber list).
 pub struct Saruby;
@@ -28,8 +29,8 @@ pub type Heap = Gc<Saruby, Backend>;
 pub type Visitor<'a> = dyn RootVisitor<Saruby> + 'a;
 
 pub static mut HEAP: Option<Heap> = None;
-static mut STACK_BASE: usize = 0;
-static mut STRESS: usize = 0;
+static STACK_BASE: AtomicUsize = AtomicUsize::new(0);
+static STRESS: AtomicUsize = AtomicUsize::new(0);
 
 #[allow(static_mut_refs)]
 #[inline(always)]
@@ -37,18 +38,16 @@ pub fn heap() -> &'static mut Heap { unsafe { HEAP.as_mut().unwrap_unchecked() }
 
 /// Top of the main machine stack.
 #[inline(always)]
-pub fn stack_base() -> usize { unsafe { STACK_BASE } }
+pub fn stack_base() -> usize { STACK_BASE.load(Relaxed) }
 
 pub fn init(stack_base: usize) {
-    unsafe {
-        HEAP = Some(Heap::new());
-        STACK_BASE = stack_base;
-        if let Ok(s) = std::env::var("SARUBY_GC_STRESS") { STRESS = s.parse().unwrap_or(1).max(1); }
-    }
+    unsafe { HEAP = Some(Heap::new()); }
+    STACK_BASE.store(stack_base, Relaxed);
+    if let Ok(s) = std::env::var("SARUBY_GC_STRESS") { STRESS.store(s.parse().unwrap_or(1).max(1), Relaxed); }
 }
 
 /// The VM has booted: SARUBY_GC_STRESS=n (collect at every n-th allocation) takes effect.
-pub fn booted() { heap().set_stress(unsafe { STRESS }); }
+pub fn booted() { heap().set_stress(STRESS.load(Relaxed)); }
 
 #[inline]
 pub fn malloc_increase(n: usize) { heap().account_external(n); }
