@@ -34,7 +34,7 @@ const LIBS: &[(&str, &str)] = &[lib!("etc"), lib!("timeout"), lib!("monitor"), l
 /// Features whose implementation is native and always present (require is a no-op).
 const NATIVE: &[&str] = &["set", "stringio", "rbconfig", "thread", "fiber", "enumerator", "rational", "complex", "continuation",
     "io/wait", "io/nonblock", "fcntl", "etc.so", "monitor.so", "strscan", "strscan.so", "psych.so", "json", "json/ext", "zlib", "saruby/errno", "saruby/env", "saruby/rbconfig", "saruby/filetest", "saruby/stat", "saruby/sync", "saruby/econv", "saruby/tracepoint",
-    "saruby/etc", "saruby/syslog", "saruby/digest", "saruby/digest/md5", "saruby/digest/sha1", "saruby/digest/sha2", "saruby/digest/rmd160", "saruby/digest/bubblebabble"];
+    "saruby/toplevel_binding", "saruby/etc", "saruby/syslog", "saruby/digest", "saruby/digest/md5", "saruby/digest/sha1", "saruby/digest/sha2", "saruby/digest/rmd160", "saruby/digest/bubblebabble"];
 
 /// Constant `name` under `owner` whose native definition runs on first reference (boot time: builtins/mod.rs).
 pub use crate::builtins::lazy_const;
@@ -60,6 +60,7 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
         "saruby/tracepoint" => crate::builtins::tracepoint::init_class(c),
         "io/console" => crate::builtins::stringio::init_console(c),
         "saruby/etc" => crate::builtins::etc::init(c),
+        "saruby/toplevel_binding" => crate::builtins::binding::init_toplevel(c),
         "saruby/syslog" => crate::builtins::syslog::init(c),
         "saruby/digest" => crate::builtins::digest::init(c),
         "saruby/digest/bubblebabble" => crate::builtins::digest::init_bubblebabble(c),

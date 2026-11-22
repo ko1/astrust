@@ -239,7 +239,7 @@ pub fn init(vmr: &mut Vm) {
     set("RUBY_DESCRIPTION", boot_str(vmr, crate::version().as_bytes()));
     set("RUBY_PATCHLEVEL", Value::fix(0));
     set("ARGV", vmr.argv);
-    set("TOPLEVEL_BINDING", NIL);
+    crate::builtins::lazy_const(ob, "TOPLEVEL_BINDING", "saruby/toplevel_binding");
     let _ = (intern, num_to_long);
     vmr.c_location = crate::builtins::exception::init_location(vmr);
 }
