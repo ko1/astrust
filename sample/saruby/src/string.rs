@@ -250,6 +250,9 @@ pub fn inspect_bytes(b: &[u8], enc: u8) -> String {
         };
         let cp = en::char_code(enc, &b[i..i + l]);
         let is_asc = (ac && l == 1 && cp < 0x80) || (uni && cp < 0x80);
+        // rb_str_inspect escapes these controls whatever the encoding
+        let ctl = match cp { 0x0a => "\\n", 0x0d => "\\r", 0x09 => "\\t", 0x0c => "\\f", 0x0b => "\\v", 0x08 => "\\b", 0x07 => "\\a", 0x1b => "\\e", _ => "" };
+        if !is_asc && !ctl.is_empty() { out.push_str(ctl); i += l; continue; }
         if is_asc {
             match cp as u8 {
                 b'"' => out.push_str("\\\""),

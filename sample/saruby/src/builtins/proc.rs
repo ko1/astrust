@@ -81,7 +81,7 @@ pub fn method_arity(c: &Ctx, me: *const MethodEntry) -> i64 {
 }
 
 /// Proc#parameters / Method#parameters of an iseq: built as symbols under the iseq borrow, then allocated.
-fn params_list(c: &mut Ctx, is: *const Iseq, lambda: bool) -> Value {
+pub fn params_list(c: &mut Ctx, is: *const Iseq, lambda: bool) -> Value {
     let mut rows: Vec<Vec<Value>> = vec![];
     if let Some(is) = c.iseq_ref(is) {
         let p = &is.params;

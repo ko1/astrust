@@ -22,7 +22,7 @@ pub enum EscKind { None, Raise, Break, Next, Return, LoopBreak, LoopNext, Retry,
 
 // ---- code descriptors --------------------------------------------------------------
 
-pub struct CodeInfo { pub file: &'static str, pub label: String, pub line: u32 }
+pub struct CodeInfo { pub file: &'static str, pub label: String, pub line: u32, pub end_line: u32 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IseqKind { Method, Block, Lambda, Class, Top, Eval, Main }
@@ -70,6 +70,7 @@ pub struct Iseq {
     pub parent: std::cell::Cell<*const Iseq>,          // lexically enclosing iseq (set when it is finished)
     pub outer_names: Vec<(Sym, u32, u32)>,             // eval: the binding's names (name, hops, idx)
     pub ruby2_keywords: std::cell::Cell<bool>,         // Module#ruby2_keywords: flag a trailing keyword Hash in *rest
+    pub traced: bool,                                  // compiled with trace points (TRACE_COMPILE)
 }
 
 impl Iseq {
@@ -146,6 +147,37 @@ static METHOD_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 #[inline(always)]
 pub fn method_serial() -> u64 { METHOD_SERIAL.load(std::sync::atomic::Ordering::Relaxed) }
 pub fn bump_method_serial() { METHOD_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+
+// ---- tracing (TracePoint, set_trace_func; builtins/tracepoint.rs) --------------------------------
+// Event bits as CRuby's RUBY_EVENT_*.  The mask is the union of the enabled hooks' events; it is
+// read only on slow paths and in trace points that compile.rs puts into code compiled for tracing.
+pub const EV_LINE: u32 = 0x1;
+pub const EV_CLASS: u32 = 0x2;
+pub const EV_END: u32 = 0x4;
+pub const EV_CALL: u32 = 0x8;
+pub const EV_RETURN: u32 = 0x10;
+pub const EV_C_CALL: u32 = 0x20;
+pub const EV_C_RETURN: u32 = 0x40;
+pub const EV_RAISE: u32 = 0x80;
+pub const EV_B_CALL: u32 = 0x100;
+pub const EV_B_RETURN: u32 = 0x200;
+pub const EV_THREAD_BEGIN: u32 = 0x400;
+pub const EV_THREAD_END: u32 = 0x800;
+pub const EV_SCRIPT_COMPILED: u32 = 0x2000;
+pub const EV_RESCUE: u32 = 0x4000;
+pub const EV_CALLS: u32 = EV_CALL | EV_RETURN | EV_C_CALL | EV_C_RETURN | EV_B_CALL | EV_B_RETURN;
+static TRACE_MASK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+#[inline(always)]
+pub fn trace_mask() -> u32 { TRACE_MASK.load(std::sync::atomic::Ordering::Relaxed) }
+/// While call events are traced, caches keep no fast path (fill_cc), so every call reaches invoke.
+pub fn set_trace_mask(m: u32) {
+    let old = TRACE_MASK.swap(m, std::sync::atomic::Ordering::Relaxed);
+    if (old ^ m) & EV_CALLS != 0 { bump_method_serial(); }
+    update_raise_hooks();
+}
+/// Code compiled from now on gets trace points (compile.rs); set by the first source that names
+/// TracePoint or set_trace_func, or by creating a hook.
+pub static TRACE_COMPILE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Default)]
 // spec_klass: cc.klass while the entry it holds is the one baked into the site (call_spec_out)
@@ -406,7 +438,7 @@ pub struct Vm {
     pub c_object_space_weak_map: Value, pub c_string_io: Value, pub c_dir: Value, pub c_stat: Value, pub c_monitor: Value,
     pub m_errno: Value, pub m_math: Value, pub m_process: Value, pub m_gc: Value, pub m_object_space: Value, pub m_marshal: Value,
     pub m_signal: Value, pub m_warning: Value, pub m_file_test: Value,
-    pub c_string_scanner: Value, pub c_string_scanner_error: Value,
+    pub c_string_scanner: Value, pub c_string_scanner_error: Value, pub c_econv: Value, pub c_tracepoint: Value, pub trace_list: Value,
     pub c_location: Value,
     /// Random::DEFAULT (the generator of Kernel#rand); a class-field root like the ones above.
     pub default_random: Value,
@@ -430,6 +462,7 @@ pub struct Vm {
     pub sources: Vec<&'static str>,
     pub verbose: Value,
     pub debug_flag: bool,
+    pub raise_hooks: bool,   // debug_flag, or a hook on raise events (update_raise_hooks)
     pub aot_entries: Vec<NodePtr>,
     pub aot_collect: bool,
     pub code_store: Option<crate::astrust::CodeStore>,
@@ -977,11 +1010,21 @@ pub fn raise_exc(c: &mut Ctx, e: Value) -> Esc {
     if is_exception(e) && c.errinfo != NIL && c.errinfo != e && ivar_get(e, s::cause) == NIL && !ivar_defined(e, s::cause) {
         ivar_set_raw(e, s::cause, c.errinfo);
     }
-    if vm().debug_flag && is_exception(e) { debug_report(c, e); }
+    // one test here (raise_exc is inlined everywhere): $DEBUG or a raise hook
+    if vm().raise_hooks && is_exception(e) { raise_hooks(c, e); }
     c.esc = EscKind::Raise;
     c.esc_val = e;
     Esc
 }
+
+#[cold]
+#[inline(never)]
+fn raise_hooks(c: &mut Ctx, e: Value) {
+    if vm().debug_flag { debug_report(c, e); }
+    if trace_mask() & EV_RAISE != 0 { crate::builtins::tracepoint::trace_raise(c, e); }
+}
+/// Vm::raise_hooks after $DEBUG or the trace mask changed.
+pub fn update_raise_hooks() { let v = vm(); v.raise_hooks = v.debug_flag || trace_mask() & EV_RAISE != 0; }
 
 /// $DEBUG: "Exception 'X' at file:line - message" on every raise.
 #[cold]
@@ -1705,6 +1748,9 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, re
 #[inline(never)]
 fn fill_cc(cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry, serial: u64, flags: u32) {
     cc.klass = klass.raw(); cc.serial = serial; cc.me = me as usize; cc.fast = 0; cc.fast_argc = u32::MAX; cc.fast_hash = 0; cc.cfunc = 0; cc.bi = 0;
+    // calls traced: the entry never hits (baked fast paths trust what a hit implies, e.g. a NewInfo),
+    // so every call goes out of line to invoke (tracepoint::invoke_traced)
+    if trace_mask() & EV_CALLS != 0 { cc.serial = 0; return; }
     if me.is_null() { return; }
     let m = unsafe { &*me };
     if m.visi != VISI_PUBLIC && flags & CF_FCALL == 0 { return; }
@@ -1864,6 +1910,13 @@ pub fn invoke(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc:
 
 #[inline(always)]
 fn invoke_impl(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
+    if trace_mask() & EV_CALLS != 0 { return crate::builtins::tracepoint::invoke_traced(c, me, recv, base, argc, blk, flags); }
+    invoke_untraced(c, me, recv, base, argc, blk, flags)
+}
+
+/// invoke without the call events (tracepoint::invoke_traced reports them around this).
+#[inline(always)]
+pub fn invoke_untraced(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     let mer = unsafe { &*me };
     match mer.kind {
         MKind::Iseq(is) => invoke_iseq(c, me, unsafe { &*is }, recv, base, argc, blk, flags),
@@ -1944,10 +1997,10 @@ pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, recv:
         let n = is.nlocals as usize;
         nil_fill(base, 2 + argc as usize, n);
         c.set_sp(base, n);
-        run_body(c, is.body, base)
+        run_iseq_body(c, is, base, EV_CALL, EV_RETURN)
     } else {
         match setup_params(c, is, base, argc, blk, flags, false, NIL) {
-            Ok(()) => run_body(c, is.body, base),
+            Ok(()) => run_iseq_body(c, is, base, EV_CALL, EV_RETURN),
             Err(e) => Err(e),
         }
     };
@@ -1962,6 +2015,14 @@ pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, recv:
             } else { Err(e) }
         }
     }
+}
+
+/// run_body of an iseq run in its own frame; code compiled for tracing reports its call / return
+/// events (`ev`, `ret`) there.
+#[inline(always)]
+pub fn run_iseq_body(c: &mut Ctx, is: &'static Iseq, base: Stk, ev: u32, ret: u32) -> RV {
+    if is.traced && trace_mask() & (ev | ret) != 0 { return crate::builtins::tracepoint::run_traced_body(c, is, base, ev, ret); }
+    run_body(c, is.body, base)
 }
 
 #[inline(always)]
@@ -2326,11 +2387,11 @@ pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &'static Iseq, base: Stk, argc
         let n = is.nlocals as usize;
         nil_fill(base, 2 + argc as usize, n);
         c.set_sp(base, n);
-        run_body(c, is.body, base)
+        run_iseq_body(c, is, base, EV_B_CALL, EV_B_RETURN)
     } else {
         let flags = if kw { CF_KW } else { 0 };
         match setup_params(c, is, base, argc, blkarg, flags, !lambda, b.env) {
-            Ok(()) => run_body(c, is.body, base),
+            Ok(()) => run_iseq_body(c, is, base, EV_B_CALL, EV_B_RETURN),
             Err(e) => Err(e),
         }
     };

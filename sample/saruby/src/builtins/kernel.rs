@@ -729,7 +729,7 @@ pub fn gvar_set(c: &mut Ctx, shown: Sym, v: Value) -> RV {
             return Ok(v);
         }
         b"$VERBOSE" => { c.vm_mut().verbose = if v == NIL { NIL } else { Value::bool(v.truthy()) }; return Ok(v); }
-        b"$DEBUG" => { c.vm_mut().debug_flag = v.truthy(); }
+        b"$DEBUG" => { c.vm_mut().debug_flag = v.truthy(); crate::vm::update_raise_hooks(); }
         b"$0" => { let s = expect_str(c, v)?; c.vm_mut().dollar_zero = s; return Ok(v); }
         b"$stdout" | b"$stderr" => {
             if !respond_to(v, intern(b"write"), true) {
@@ -1049,7 +1049,7 @@ fn k_eval(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
     if bind != NIL && !crate::builtins::binding::is_binding(c, bind) {
         return type_err(c, format!("wrong argument type {} (expected binding)", class_name_for_err(bind)));
     }
-    let file: &'static str = if args.len() > 2 && args[2] != NIL { let f = expect_str(c, args[2])?; Box::leak(String::from_utf8_lossy(c.str_bytes(f)).into_owned().into_boxed_str()) } else { "(eval)" };
+    let file: &'static str = if args.len() > 2 && args[2] != NIL { let f = expect_str(c, args[2])?; Box::leak(String::from_utf8_lossy(c.str_bytes(f)).into_owned().into_boxed_str()) } else { crate::builtins::binding::eval_file(c) };
     let line = if args.len() > 3 { crate::builtins::numeric_methods::num_to_long(c, args[3])? as i32 } else { 1 };
     let srcb = c.str_bytes(src).to_vec();
     if bind != NIL { return crate::builtins::binding::eval_in_binding(c, bind, &srcb, file, line); }

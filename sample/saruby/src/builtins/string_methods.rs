@@ -157,7 +157,7 @@ cfn!(s_initialize, |c, slf, a, _b| {
         if let Some(e) = crate::hash::hash_get_opt(c, h, sym_value("encoding"))? { let e = crate::builtins::encoding::to_enc(c, e)?; c.str_modify(slf)?.enc = e; }
         if let Some(cap) = crate::hash::hash_get_opt(c, h, sym_value("capacity"))? { num_to_long(c, cap)?; }
     }
-    Ok(NIL)
+    Ok(slf)
 });
 cfn!(s_s_new, |c, slf, a, blk| {
     let o = crate::builtins::object::alloc_instance(c, slf)?;
@@ -1079,41 +1079,8 @@ fn unicode_check(c: &mut Ctx, slf: Value) -> Result<(), Esc> {
     }
     Ok(())
 }
-/// String#encode core: returns (bytes, encoding).
-fn encode_impl(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<(Vec<u8>, u8), Esc> {
-    use crate::builtins::encoding as en;
-    let kw = kw_arg(a);
-    let pos: &[Value] = if kw.is_some() { &a[..a.len() - 1] } else { a };
-    let pos: &[Value] = if kw.is_none() && !pos.is_empty() && is_hash(*pos.last().unwrap()) { &pos[..pos.len() - 1] } else { pos };
-    let opth = if kw.is_some() { kw } else if !a.is_empty() && is_hash(*a.last().unwrap()) { Some(*a.last().unwrap()) } else { None };
-    if pos.len() > 2 { return argc_err(c, pos.len(), 0, 2); }
-    let o = match opth { Some(h) => en::parse_tc_opts(c, h)?, None => en::TcOpts::default() };
-    let src_enc = c.str_enc(slf);
-    let to = match pos.first() {
-        None => match en::default_internal() { Some(e) => Ok(e), None => Ok(src_enc) },
-        Some(&v) => en::to_enc_opt(c, v)?,
-    };
-    let from = match pos.get(1) { None => Ok(src_enc), Some(&v) => en::to_enc_opt(c, v)? };
-    let (to, from) = match (to, from) {
-        (Ok(t), Ok(f)) => (t, f),
-        (t, f) => {
-            let tn = match &t { Ok(e) => en::enc_name(*e).to_string(), Err(n) => n.clone() };
-            let fnm = match &f { Ok(e) => en::enc_name(*e).to_string(), Err(n) => n.clone() };
-            if tn.eq_ignore_ascii_case(&fnm) { return Ok((c.str_bytes(slf).to_vec(), src_enc)); }
-            return Err(en::converter_not_found(c, &fnm, &tn));
-        }
-    };
-    let plain = o.xml == 0 && o.newline == 0;
-    if from == to && plain && !o.invalid_replace { return Ok((c.str_bytes(slf).to_vec(), to)); }
-    if from == to && plain && o.invalid_replace && en::is_valid(from, c.str_bytes(slf)) { return Ok((c.str_bytes(slf).to_vec(), to)); }
-    if plain && from != to && en::ascii_compat(from) && en::ascii_compat(to) && is_ascii(c.str_bytes(slf)) && !en::is_dummy(to) && to != ENC_BINARY
-        || plain && to == ENC_BINARY && en::ascii_compat(from) && is_ascii(c.str_bytes(slf)) { return Ok((c.str_bytes(slf).to_vec(), to)); }
-    let src = c.str_bytes(slf).to_vec();
-    let out = en::transcode(c, &src, from, to, &o)?;
-    Ok((out, to))
-}
-cfn!(s_encode, |c, slf, a, b_| { let (v, e) = encode_impl(c, slf, a)?; Ok(c.str_from_vec_enc(v, e)) });
-cfn!(s_encode_b, |c, slf, a, b_| { check_frozen(c, slf)?; let (v, e) = encode_impl(c, slf, a)?; let r = c.rstring_mut(slf); r.b = v.into(); r.enc = e; Ok(slf) });
+/// String#scrub with `rep` (nil: the default replacement); None if valid.
+pub fn scrub_bytes(c: &mut Ctx, s: Value, rep: Value) -> Result<Option<Vec<u8>>, Esc> { scrub_impl(c, s, &[rep], std::ptr::null()) }
 /// scrub core: None if the string is valid.
 fn scrub_impl(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> Result<Option<Vec<u8>>, Esc> {
     use crate::builtins::encoding as en;
@@ -1570,7 +1537,7 @@ pub fn init(k: Value) {
     d("upcase", s_upcase, -1); d("upcase!", s_upcase_b, -1); d("downcase", s_downcase, -1); d("downcase!", s_downcase_b, -1);
     d("swapcase", s_swapcase, -1); d("swapcase!", s_swapcase_b, -1); d("capitalize", s_capitalize, -1); d("capitalize!", s_capitalize_b, -1);
     d("reverse", s_reverse, 0); d("reverse!", s_reverse_b, 0); d("include?", s_include, 1); d("start_with?", s_start_with, -1);
-    d("end_with?", s_end_with, -1); d("index", s_index, -1); d("rindex", s_rindex, -1); d("byteindex", s_byteindex, -1); d("byterindex", s_byterindex, -1); d("bytesplice", s_bytesplice, -1); d("append_as_bytes", s_append_as_bytes, -1); d("tr_s!", s_tr_s_b, 2); d("encode!", s_encode_b, -1); d("scrub!", s_scrub_b, -1); d("unicode_normalize!", s_unicode_normalize_b, -1); d("unicode_normalized?", s_unicode_normalized_p, -1);
+    d("end_with?", s_end_with, -1); d("index", s_index, -1); d("rindex", s_rindex, -1); d("byteindex", s_byteindex, -1); d("byterindex", s_byterindex, -1); d("bytesplice", s_bytesplice, -1); d("append_as_bytes", s_append_as_bytes, -1); d("tr_s!", s_tr_s_b, 2); d("encode!", crate::builtins::transcode::s_encode_bang, -1); d("scrub!", s_scrub_b, -1); d("unicode_normalize!", s_unicode_normalize_b, -1); d("unicode_normalized?", s_unicode_normalized_p, -1);
     d("strip", s_strip, -1); d("strip!", s_strip_b, -1); d("lstrip", s_lstrip, -1); d("lstrip!", s_lstrip_b, -1); d("rstrip", s_rstrip, -1); d("rstrip!", s_rstrip_b, -1);
     d("chomp", s_chomp, -1); d("chomp!", s_chomp_b, -1); d("chop", s_chop, 0); d("chop!", s_chop_b, 0); d("chr", s_chr, 0);
     d("chars", s_chars, 0); d("each_char", s_each_char, 0); d("bytes", s_bytes, 0); d("each_byte", s_each_byte, 0);
@@ -1582,7 +1549,7 @@ pub fn init(k: Value) {
     d("succ", s_succ, 0); d("next", s_succ, 0); d("succ!", s_succ_b, 0); d("next!", s_succ_b, 0); d("upto", s_upto, -1); d("hex", s_hex, 0); d("oct", s_oct, 0);
     d("freeze", s_freeze, 0); d("+@", s_uplus, 0); d("-@", s_uminus, 0); d("dedup", s_uminus, 0); d("encoding", s_encoding, 0);
     d("force_encoding", s_force_encoding, 1); d("b", s_b, 0); d("valid_encoding?", s_valid_encoding, 0); d("ascii_only?", s_ascii_only, 0);
-    d("unicode_normalize", s_unicode_normalize, -1); d("encode", s_encode, -1); d("scrub", s_scrub, -1); d("casecmp", s_casecmp, 1); d("casecmp?", s_casecmp_p, 1);
+    d("unicode_normalize", s_unicode_normalize, -1); d("encode", crate::builtins::transcode::s_encode, -1); d("scrub", s_scrub, -1); d("casecmp", s_casecmp, 1); d("casecmp?", s_casecmp_p, 1);
     d("partition", s_partition, 1); d("rpartition", s_rpartition, 1); d("delete_prefix", s_delete_prefix, 1); d("delete_suffix", s_delete_suffix, 1);
     d("delete_prefix!", s_delete_prefix_b, 1); d("delete_suffix!", s_delete_suffix_b, 1); d("slice!", s_slice_b, -1); d("getbyte", s_getbyte, 1); d("setbyte", s_setbyte, 2);
     d("byteslice", s_byteslice, -1); d("unpack", s_unpack, -1); d("unpack1", s_unpack1, -1); d("crypt", s_crypt, 1); d("each_grapheme_cluster", s_each_grapheme, 0);

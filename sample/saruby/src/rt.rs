@@ -1039,7 +1039,7 @@ pub fn run_class_body(c: &mut Ctx, klass: Value, is: &'static Iseq) -> RV {
         base[1].set(env);
     }
     c.frame = &mut fr.h;
-    let r = run_body(c, is.body, base);
+    let r = run_iseq_body(c, is, base, EV_CLASS, EV_END);
     c.frame = fr.prev;
     c.set_sp(base, 0);
     r

@@ -57,6 +57,15 @@ pub fn binding_of_caller(c: &mut Ctx) -> RV {
     let b = frame_binding(c, c.caller_frame().expect("binding: no caller frame"));
     Ok(new_binding(c, b))
 }
+/// Binding of the frame at `addr` on the current frame chain (TracePoint#binding); nil if it is gone.
+pub fn binding_of_frame_at(c: &mut Ctx, addr: usize) -> RV {
+    let mut f = c.cur_frame();
+    while let Some(x) = f {
+        if x as *const Frame as usize == addr { let b = frame_binding(c, x); return Ok(new_binding(c, b)); }
+        f = c.prev_frame(x);
+    }
+    Ok(NIL)
+}
 pub fn binding_of_proc(c: &mut Ctx, p: Value) -> RV {
     let b = c.proc_data(p).blk;
     let (names, file, line) = match b.kind {
@@ -70,6 +79,16 @@ fn env_names(names: &[Vec<(Sym, u32, u32)>]) -> Vec<(Sym, u32, u32)> {
     names.iter().flatten().cloned().collect()
 }
 
+/// The file name of an eval given none: "(eval at FILE:LINE)" of the calling Ruby code.
+pub fn eval_file(c: &Ctx) -> &'static str {
+    thread_local! { static NAMES: std::cell::RefCell<std::collections::HashMap<String, &'static str>> = Default::default(); }
+    let mut f = c.cur_frame();
+    while let Some(x) = f { if !x.iseq().is_null() { break; } f = c.prev_frame(x); }
+    let Some(f) = f else { return "(eval)" };
+    let name = format!("(eval at {}:{})", frame_file(f), f.line());
+    NAMES.with(|m| *m.borrow_mut().entry(name.clone()).or_insert_with(|| Box::leak(name.into_boxed_str())))
+}
+
 pub fn eval_in_binding(c: &mut Ctx, bind: Value, src: &[u8], file: &'static str, line: i32) -> RV {
     let b = rbind(c, bind);
     let outer = vec![env_names(&b.names)];
@@ -78,6 +97,7 @@ pub fn eval_in_binding(c: &mut Ctx, bind: Value, src: &[u8], file: &'static str,
         Ok(is) => is,
         Err(m) => return err(c, c.vm().c_syntax_error, m),
     };
+    crate::builtins::tracepoint::trace_script_compiled(c, src)?;
     let mut new_env = NIL;
     let r = run_eval_iseq_env(c, is, slf, env, cref, me, VISI_PUBLIC, &mut new_env);
     // locals the eval introduced stay visible through this Binding
@@ -126,6 +146,7 @@ fn eval_under(c: &mut Ctx, slf: Value, k: Value, src: &[u8], file: &'static str,
     let outer = vec![env_names(&b.names)];
     let env = b.env;
     let is = match crate::compile::compile_source(src, file, line, IseqKind::Eval, outer) { Ok(is) => is, Err(m) => return err(c, c.vm().c_syntax_error, m) };
+    crate::builtins::tracepoint::trace_script_compiled(c, src)?;
     let cur = c.cur_frame().map_or(std::ptr::null(), |f| f.cref());
     let cref = new_cref(k, cur);
     run_eval_iseq(c, is, slf, env, cref, std::ptr::null(), VISI_PUBLIC)
@@ -186,7 +207,8 @@ fn b_receiver(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(
 fn b_eval(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let src = expect_str(c, a[0])?;
     let bytes = c.str_bytes(src).to_vec();
-    eval_in_binding(c, s, &bytes, "(eval)", 1)
+    let f = eval_file(c);
+    eval_in_binding(c, s, &bytes, f, 1)
 }
 fn b_local_variables(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { local_variables(c, s) }
 fn b_source_location(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {

@@ -515,6 +515,13 @@ pub struct node_line_struct {
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
+pub struct node_trace_struct {
+    pub ev: u32,
+    pub body: NodePtr,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
 pub struct node_if_struct {
     pub cond: NodePtr,
     pub then_b: NodePtr,
@@ -1265,6 +1272,12 @@ pub fn ALLOC_node_line(line: u32, body: NodePtr) -> NodePtr {
 }
 
 #[allow(non_snake_case)]
+pub fn ALLOC_node_trace(ev: u32, line: u32, body: NodePtr) -> NodePtr {
+    let n = node_allocate(&KIND_node_trace, node_trace_struct { ev, body });
+    unsafe { (*n).head.line = line; } n
+}
+
+#[allow(non_snake_case)]
 pub fn ALLOC_node_if(cond: NodePtr, then_b: NodePtr, else_b: NodePtr) -> NodePtr {
     let n = node_allocate(&KIND_node_if, node_if_struct { cond, then_b, else_b });
     n
@@ -1881,6 +1894,12 @@ fn CHILDREN_node_block(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_line(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_line_struct>)).u };
+    f(&mut u.body);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_trace(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_trace_struct>)).u };
     f(&mut u.body);
 }
 
@@ -2902,6 +2921,21 @@ pub static KIND_node_line: NodeKind = NodeKind {
     children: CHILDREN_node_line,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_line_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_line_struct>>() <= 8);
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_trace: NodeKind = NodeKind {
+    name: "node_trace",
+    default_dispatcher: DISPATCH_node_trace,
+    hash_func: HASH_node_trace,
+    profile: PROF_node_trace,
+    specializer: SPECIALIZE_node_trace,
+    dumper: DUMP_node_trace,
+    replacer: REPLACE_node_trace,
+    no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_trace_struct>>(),
+    children: CHILDREN_node_trace,
+};
+const _: () = assert!(std::mem::size_of::<NodeOf<node_trace_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_trace_struct>>() <= 8);
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_if: NodeKind = NodeKind {

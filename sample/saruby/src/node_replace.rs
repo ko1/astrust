@@ -242,6 +242,12 @@ fn REPLACE_node_line(n: NodePtr, old: NodePtr, new: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_trace(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = unsafe { &mut (*(n as *mut NodeOf<node_trace_struct>)).u };
+    if u.body == old { u.body = new; }
+}
+
+#[allow(non_snake_case, unused_variables)]
 fn REPLACE_node_if(n: NodePtr, old: NodePtr, new: NodePtr) {
     let u = unsafe { &mut (*(n as *mut NodeOf<node_if_struct>)).u };
     if u.cond == old { u.cond = new; }
