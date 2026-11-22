@@ -61,7 +61,8 @@ with unsound signatures** are still in use outside the converted modules. At `f8
 functions return an unbounded `&'static mut` from safe code (`heap_audit.rb` column
 `fn->&'static mut`: object.rs 7 — `obj`, `rhash`, `rclass`, `rproc`, `rmethod`, `rbig` and the
 macro-made `rary` family —, vm.rs 2 — `vm()`, `Ctx::frame()` —, gc.rs 1 — `heap()`; 9 after
-section 7 bounded `Ctx::frame()`), and
+section 7 bounded `Ctx::frame()`; 8 after the vm / heap split of section 7: `vm()` returns `&'static Vm`,
+object.rs keeps 7, and gc.rs's `heap()` is private to gc.rs), and
 `heap_audit.rb` counts **449 call sites** of the old accessors (rt.rs 189, vm.rs 169, node.def 25,
 object.rs 25, legacy.rs 14, str_legacy.rs 11, lib.rs 11, gc.rs 2, aot.rs 1, compile.rs 1,
 inline_builtin.rs 1). Each of
@@ -1037,3 +1038,50 @@ borrows (the collector needs it). For `gc::heap()`: private, behind gc.rs functi
 identical except `srb_super`; instruction counts identical to the printed M on all 15 benches
 interp and AOT, startup in the same range, optcarrot 82.63M -> 82.64M per frame (local machine,
 shared: instructions only).
+
+**Applied: the vm / heap split** (trial README, section "vm/heap split"; base master `0db5dd0`,
+three commits). Counts are `heap_audit.rb`, base -> after.
+
+1. `gc::heap()` private: `HEAP` and `heap()` are private to gc.rs; GC.count / GC.stat /
+   GC.disable / ObjectSpace.count_objects and the exit stats call `gc::collections`, `stats`,
+   `set_disabled`, `total_time`, `backend_name`. No `&mut Heap` leaves gc.rs, and none of the
+   collector's callbacks (root scan, edges, finalize, Data visit / drop; `data_free_hooks` is
+   empty) calls a gc.rs function, so the private `&'static mut` never has two live copies.
+   Instruction counts identical. A closure form, `with_heap(|h| ..)` (no `fn -> &'static mut` at
+   all), measured gcchurn AOT 988M -> 1212M (+23 %) and str 4242M -> 4314M interp (+1.7 %), two
+   runs each, equal: rejected (cause not investigated).
+2. `vm() -> &'static Vm`; no `&mut Vm` exists anywhere. Every field is interior-mutable: builtin
+   classes and the other Value roots `Cell<Value>` (written by boot and the lazy inits of
+   TracePoint / StringScanner / Encoding::Converter / ..., read with `.get()`), counters and
+   flags `Cell<u64 / bool / usize / i32>`, `MethodIds` `Cell` pointers, `send_cache`
+   `[Cell<SendWay>]`, the 22 tables `RefCell` (globals, mcache, gen_ivars, node_values,
+   frozen_lits, pinned, blop, ...). `Ctx::vm_mut`, boot's `vmr: &mut Vm` and
+   `Global::set_vm(&mut Vm)` are gone. The collector borrows the tables it scans or edits
+   (`gen_ivars` in mark and finalize), so a mutator holding a table borrow across an allocation
+   panics instead of aliasing. The conversion found one such site: `srb_fstr` held
+   `frozen_lits.get(s)` (the match scrutinee) across `str_new_enc`; it copies the lookup out
+   first now. heap.rs `unsafe` 32 -> 30 (the `vm` / `vm_mut` derefs), total 379 -> 377, vm.rs
+   `fn->&'static mut` 1 -> 0.
+   *Not done as proposed above:* "tables through `c.vm_mut()`". The collector reads nearly every
+   table as a root and is reached from context-free `gc::alloc` (114 call sites), so a borrow
+   through the context would not exclude it; the tables it does not touch are used from
+   context-free code (`lookup_method` and mcache) or would need a second `unsafe` deref to hand
+   out `&mut`. `RefCell` costs a flag test, on paths off the per-call fast path except the mcache
+   lookup of an inline-cache miss.
+   *Main-context root scan:* no longer `&mut *main_ctx` beside the allocating code's
+   `c: &mut Ctx`; it reads the stack bounds and the four Value fields by place (`visit_main_ctx`).
+   That is still a read of memory a live `&mut Ctx` covers (UB under Tree Borrows when that
+   reference is a protected argument). The full fix hands the collector the allocating context,
+   i.e. allocation only through `Ctx::alloc` (the heap pilot's end state). Open.
+3. Object headers through heap.rs (`obj_klass`, `obj_set_klass`, `obj_flags`, `obj_set_flags`,
+   `obj_clear_flags`) at the 39 sites of vm.rs / rt.rs / node.def / legacy.rs / object.rs /
+   str_legacy.rs that used `obj(v)` only for klass / flags. `obj` sites 70 -> 31, old-accessor
+   sites 452 -> 414. The payload accessors (`rclass` 94, `rary` 59, the remaining `obj` 31, ...)
+   need `c` threaded into context-free vm.rs / rt.rs functions: not done.
+
+Instructions (local machine, shared; M = 10^6 `instructions:u`; base / after, base and after
+each run twice, equal): 13 of 15 benches within 2M (0.2 %) interp and AOT; nesteddata 907 -> 884
+interp, 642 -> 619 AOT; poly 4700 -> 4706 interp (+0.13 %), 2049 -> 2055 AOT (+0.29 %; poly is a
+megamorphic site, so presumably the mcache `RefCell` on each miss: not verified). Startup
+`-e 'p 1'` (CODEGEN_UNITS=1, 5 runs) 15.417M -> 15.459M (+0.28 %). optcarrot 82.64M -> 82.64M
+per frame, checksum 59662. Step 3 alone: no change beyond 2M on any bench.

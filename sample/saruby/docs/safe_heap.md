@@ -137,9 +137,10 @@ a blank context `rbconfig_init` built while the real one was live, was removed.
 
 ### `vm()` and the method identities
 
-`vm() -> &'static mut Vm` has the same defect as `rary`. The same cure: `c.vm() -> &Vm` and
-`c.vm_mut() -> &mut Vm` borrow the context. Builtin class values are `Copy`, so
-`c.vm().c_array` never holds the borrow.
+`vm() -> &'static mut Vm` had the same defect as `rary`. It now returns `&'static Vm` and every
+field is interior-mutable (builtin classes `Cell<Value>`, counters `Cell<u64>`, tables
+`RefCell`; unsafe_catalog.md section 7), so no `&mut Vm` exists; `c.vm()` is the same `&Vm` and
+`c.vm_mut()` is gone. A class value is read with `c.vm().c_array.get()`.
 
 The six method identities and `MAIN_CTX` were `static mut` raw pointers read with `unsafe` at
 each use. They are now `Vm.ids: MethodIds` and `Vm.main_ctx`, written once by boot /
@@ -1202,7 +1203,7 @@ contract: `process::on_signal` only sets an atomic), `_exit`.
 A `static mut X: Value` was read and written with `unsafe` and kept alive by pushing it on
 `Vm.pinned` once. `heap::Global` replaces it without `unsafe`: the Value lives in a slot of
 `Vm.pinned` and the static holds only the slot index (an `AtomicUsize`). `g.get(c)` /
-`g.set(c, v)` go through `c.vm()` / `c.vm_mut()`, `g.set_vm(vm, v)` is the boot form. Since the
+`g.set(c, v)` go through `c.vm()` (`Vm.pinned` is a `RefCell`), `g.set_vm(vm, v)` is the boot form. Since the
 collector visits `Vm.pinned` in place, a moving collector would also update the value, which
 the old statics did not allow. Plain data statics became atomics (`AtomicBool`, `AtomicI32`,
 `AtomicU64` for `LAST_STATUS` with pid and status packed). Cost: an index load and a bounds
@@ -1405,8 +1406,8 @@ cover sys.rs.
   The VM is installed by `heap::boot_vm(vm, |vmr| ..)`: the one `unsafe` of boot, guarded by an
   atomic so that it runs once, before any `Ctx` exists. boot receives `&mut Vm` instead of calling
   `vm()`; the boot-time code it calls (`define_class`, `const_set`, ..) still uses `vm()`
-  internally, which aliases that `&mut Vm` as it did before (the `vm()` item of "What is still
-  open"). Class setup without a vm.rs setter (metaclass link, subclass list, autoload entries)
+  internally, which aliased that `&mut Vm` (fixed: boot now receives `&Vm`, and no `&mut Vm`
+  exists; unsafe_catalog.md section 7). Class setup without a vm.rs setter (metaclass link, subclass list, autoload entries)
   is three helpers in legacy.rs (`boot_metaclass`, `boot_subclass`, `boot_autoload`): boot has no
   context, so they stay context-free, as pattern 16 says.
 
@@ -1539,7 +1540,7 @@ Correctness of all three: the per-file outputs of `t/hand` `str*`, `sym*`, `enco
    | `obj(v).klass`, `obj(v).klass = k` | `obj_klass(v)`, `obj_set_klass(v, k)` |
    | `obj(v).flags & F`, `\|= F`, `&= !F` | `obj_flags(v) & F`, `obj_set_flags(v, F)`, `obj_clear_flags(v, F)` |
    | `matches!(obj(v).body, Body::X(..))` | `is_x(v)` (add a line to `kind_test!` in heap.rs if missing) |
-   | `vm().field` | `c.vm().field`; a write is `c.vm_mut().field = ..` |
+   | `vm().field` | `c.vm().field.get()` / `.set(x)` (a `Cell`), `c.vm().table.borrow()` / `.borrow_mut()` (a `RefCell`; never held across an allocation) |
    | `str_new(b)`, `str_from_vec(v)`, `hash_new()`, `float_new(d)`, `gc::alloc(k, body)` | `c.str_new(b)`, ..., `c.alloc(k, body)`. For an allocator not wrapped yet, add the `&mut self` form to the block at the end of heap.rs and the free name to `no_legacy`. |
    | `hash_new()`, `hash_len(h)`, `hash_pairs(h)`, `hash_entry_at(h, i)`, `hash_clear(h)`, `hash_dup(h)` | the same names as methods of `c` (hash.rs) |
    | `range_parts(r)`, `range_new(b, e, x)` | `c.range_parts(r)` (nil, nil, false for a non-Range), `c.range(r)` (must be a Range), `c.range_new(b, e, x)` |
@@ -1560,7 +1561,7 @@ Correctness of all three: the per-file outputs of `t/hand` `str*`, `sym*`, `enco
    * after a call that runs Ruby code, re-check what the code before it checked (frozen:
      `c.ary_modify(slf)?` again; length: re-read).
 5. **Module state.** A `static mut` holding Values becomes a `Vm` field (visited in
-   `vm::visit_roots`), read with `c.vm()`, written with `c.vm_mut()`.
+   `vm::visit_roots`), a `Cell` or `RefCell` reached with `c.vm()`.
 6. `make` (no warnings), `make FEATURES=raw_stack`, `ruby tools/heap_audit.rb` (exit 0), the
    differential tests of the module's area, and the same files under `SARUBY_GC_STRESS=1`.
 
