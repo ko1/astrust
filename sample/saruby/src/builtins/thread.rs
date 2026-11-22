@@ -59,6 +59,8 @@ fn th(c: &Ctx, v: Value) -> &RThread { c.data::<RThread>(v).expect("a Thread") }
 fn th_mut(c: &mut Ctx, v: Value) -> &mut RThread { c.data_mut::<RThread>(v).expect("a Thread") }
 fn thr(c: &mut Ctx, v: Value) -> Result<(), Esc> { if c.data::<RThread>(v).is_some() { Ok(()) } else { type_err(c, "wrong argument type (expected Thread)") } }
 fn cur(c: &Ctx) -> Value { CURRENT.get(c) }
+/// Thread.current
+pub fn current_thread(c: &Ctx) -> Value { cur(c) }
 fn is_main(c: &Ctx) -> bool { CURRENT.get(c) == MAIN.get(c) }
 /// Other threads exist (or we are inside one): blocking calls must go through the scheduler.
 pub fn active(c: &Ctx) -> bool { !is_main(c) || c.ary_len(LIST.get(c)) > 0 }

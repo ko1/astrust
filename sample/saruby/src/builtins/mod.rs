@@ -19,6 +19,7 @@ pub mod strscan;
 pub mod psych;
 pub mod yaml_parser;
 pub mod yaml_emitter;
+pub mod bigdecimal;
 pub mod json;
 pub mod env;
 pub mod extras;
