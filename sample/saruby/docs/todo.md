@@ -48,8 +48,9 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [ ] sbuf.rs（String のバッファ、10 か所）: safe 版はブランチ `sbuf-safe-rs29`（str AOT +6% 命令 / +11.5% サイクル）。採否未定
 - [ ] 呼び出し経路・フレーム連鎖（vm.rs 80、rt.rs 64、node.def 16、stack_raw.rs 5）。前提 H5（実行中の builtin の下のフレームは生きている）は未検証
 - 残す（外部インターフェース・土台）: sys.rs、kalloc.rs、fiber_os.rs、patch ローダ、heap.rs / value.rs / gc.rs の土台
-- [ ] main ctx の root 走査が、確保側の生きている `&mut Ctx` とまだ重なる（vm/heap 分割の残り。直すには確保を全部 c 経由に）
-- [ ] gc.rs 内の `heap() -> &'static mut Heap` をクロージャ形 `with_heap` にすると gcchurn AOT +23%・str +1.7%（原因未調査）
+- [x] gc.rs の `heap()` も `&'static mut` を返さない: `heap(&mut Scope)`（一時値 Scope の文で借用が終わる。入れ子は debug ビルドで assert、全テスト 0 件）。fn->&'static mut 1 → 0、命令数・機械語とも base と同じ（trials/2026-11-22-saruby-static-mut「gc heap」）
+  - with_heap の +23% の原因: クロージャ（alloc の fast path 全体）が AOT 側で inline されず、1 確保ごとに呼び出し + body のスタック経由コピー。`#[inline(always)]` を付けると gcchurn は戻るが、str は内側クロージャの捕獲変数のストアが空きリスト判定の前に出て node_str +3 命令/回（str interp +0.85%・AOT +1.4%）。クロージャ形は不採用
+- [~] main ctx の root 走査が、確保側の生きている `&mut Ctx` と重なる: Ctx 経由の確保・GC.start は解消（GcLang の束縛 = 確保する Ctx そのもの、その借用越しに走査。命令数 ±1M）。残りは context-free 確保 85 か所（`gc::alloc` / str_legacy / legacy / hash_new_capa、io.rs の起動時 4 か所を含む）。全部 c 経由にすれば NO_CTX と by-place 走査を消せる（unsafe −2）。str リテラルと new_object は hot なので変換ごとに測る
 - [ ] vm 分割後の poly AOT +0.29%（mcache の RefCell 検査の推定、未検証）。sp4 の時間で要確認
 - [ ] 見送り中: safe な Value::fix/sym/flonum（hash +0.6〜1.4%、regalloc の変化）、ConstCache.val の Option 化（+0.1〜0.3%）
 

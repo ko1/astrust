@@ -1055,7 +1055,7 @@ three commits). Counts are `heap_audit.rb`, base -> after.
    empty) calls a gc.rs function, so the private `&'static mut` never has two live copies.
    Instruction counts identical. A closure form, `with_heap(|h| ..)` (no `fn -> &'static mut` at
    all), measured gcchurn AOT 988M -> 1212M (+23 %) and str 4242M -> 4314M interp (+1.7 %), two
-   runs each, equal: rejected (cause not investigated).
+   runs each, equal: rejected (cause not investigated then; found later: "Applied: the gc heap" below).
 2. `vm() -> &'static Vm`; no `&mut Vm` exists anywhere. Every field is interior-mutable: builtin
    classes and the other Value roots `Cell<Value>` (written by boot and the lazy inits of
    TracePoint / StringScanner / Encoding::Converter / ..., read with `.get()`), counters and
@@ -1078,7 +1078,8 @@ three commits). Counts are `heap_audit.rb`, base -> after.
    `c: &mut Ctx`; it reads the stack bounds and the four Value fields by place (`visit_main_ctx`).
    That is still a read of memory a live `&mut Ctx` covers (UB under Tree Borrows when that
    reference is a protected argument). The full fix hands the collector the allocating context,
-   i.e. allocation only through `Ctx::alloc` (the heap pilot's end state). Open.
+   i.e. allocation only through `Ctx::alloc` (the heap pilot's end state). Open (done for the
+   allocations through `Ctx`: "Applied: the gc heap" below).
 3. Object headers through heap.rs (`obj_klass`, `obj_set_klass`, `obj_flags`, `obj_set_flags`,
    `obj_clear_flags`) at the 39 sites of vm.rs / rt.rs / node.def / legacy.rs / object.rs /
    str_legacy.rs that used `obj(v)` only for klass / flags. `obj` sites 70 -> 31, old-accessor
@@ -1129,3 +1130,43 @@ Analysed, not fixed: above the 0.3 % bound, kept on the branch for the decision.
 optcarrot 82.64M -> 82.94M per frame (+0.36 %), checksum 59662. Checks (trial README): three builds
 0 warnings, t/hand 0 differences, AOT vs `--plain` the same 7 address-only files as base, panic scan
 and GC stress 0 panics, reuse / fork tests pass.
+
+**Applied: the gc heap** (trial README, section "gc heap"; base master `4833f74`, two commits).
+No function returns `&'static mut` any more (`fn->&'static mut` 1 -> 0).
+
+*Why `with_heap(|h| ..)` cost +23 %* (reproduced: gcchurn AOT 986M -> 1210M, str 4241M -> 4313M
+interp): the closure `|h| h.alloc(..)`, which holds the whole inlined allocation fast path, stayed
+out of line in the AOT crate's code (`gc::alloc_with::<ary_new_small::{closure}>::{closure#0}`,
+38M of callgrind's 56M difference at OUTER=10): a call per allocation, and the body built in the
+caller's frame and copied with 16-byte loads, the stall `alloc_with` exists to avoid.
+`#[inline(always)]` on the closure restores gcchurn (985M), but str stays +0.85 % interp / +1.4 %
+AOT: `DISPATCH_node_str` +3 instructions per call, the inner `move || RObj { .. }` closure's
+captures stored to the stack before the free-list test (base: on the slow path only). Not kept.
+
+*The form kept:* `fn heap(_: &mut Scope) -> &mut Heap`, called as `heap(&mut Scope).f(..)`. The
+borrow lasts as long as the temporary `Scope`, i.e. to the end of the statement, so no `&mut Heap`
+is kept in a local, returned or stored (`let h = heap(&mut Scope); h.f()` is E0716). Within a
+statement a second `&mut Heap` would need a gc.rs function called while a Heap method runs; the
+only saruby code a Heap method runs is the GcLang callbacks (root scan, edges, finalize, Data
+visit / drop) and `each_object`'s `f`, and none calls gc.rs. The compiler does not check that last
+part, so debug builds do: `heap()` sets a flag that `Scope`'s `Drop` clears and panics if it is
+already set. Dev build over t/hand, t/spec, t/method (3102 files) and a GC-stress sample (194):
+no nesting; a deliberately nested call panics. Code identical to base (disassembly after masking
+addresses), instruction counts identical on the 15 benches interp and AOT.
+
+*Main-context root scan:* the GcLang binding is now the allocating context (`gc::Saruby = Ctx`).
+`Ctx::alloc` / `alloc_with` hand their `&mut Ctx` to `Heap::alloc` as the language value, GC.start
+/ `ObjectSpace.garbage_collect` / the fiber collector pass their `c`, and `vm::visit_roots` scans
+that context through the borrow, skipping the by-place read of the main context and the
+`FiberCtx::get` of a fiber when it is the one passed. For allocations through `Ctx` no collector
+access overlaps the allocating code's `&mut Ctx` any more. The context-free `gc::alloc` /
+`alloc_with` pass a static dummy `NO_CTX` and keep the old by-place scan: 85 call sites (53 in
+functions that have `c`, 32 without; node.def literals, rt.rs AOT helpers, `alloc_class`, boot
+inits incl. io.rs). Converting them retires `NO_CTX` (`unsafe` −2) and leaves the by-place read
+only for an allocating fiber (main suspended in a switch). `unsafe` 380 -> 382, `static mut`
+9 -> 10 (NO_CTX). A first form, `Saruby { ctx: *mut Ctx }`, cost gcchurn AOT +0.8 % (the struct's
+store hoisted onto the fast path); as the context itself it is a register argument of the cold
+call: within 1M of base on all 15 benches interp and AOT, startup in the same range.
+optcarrot 82.97M -> 83.02M per frame (+0.06 %), checksum 59662. Checks (trial README): three builds 0
+warnings at each commit, t/hand 0 differences, AOT vs `--plain` the same files as base (addresses),
+panic scan and GC stress 0 panics, reuse / fork tests pass.
