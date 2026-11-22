@@ -43,7 +43,7 @@ pub struct SpecCtx {
     pub spec_depth: u32,          // nesting of speculated callees
     pub spec_max_depth: u32,
     pub comments: bool,
-    pub rec: Vec<(usize, String)>, // nodes a direct recursive call (R_<hash>) names, with the tag; their S_<hash> is owed
+    pub rec: Vec<(usize, String)>, // nodes a direct recursive call (R_<hash><tag>) names, with the tag; their S_ is owed
     pub hopt: u64,                // the entry being specialized: its name, structure + profile (0: the structural hash)
     pub tag: String,              // that entry's suffix for its own R_ / S_ (rec_tag)
     pub profiled: bool,           // R_ / S_ names carry their target's profile (entries are named by Hopt)
@@ -76,12 +76,9 @@ impl SpecCtx {
         self.patch_hash = hash;
     }
     fn bound(&self) -> bool { self.patch_root != 0 && self.spec_depth == 0 }
-    /// An item's name in a bound tree carries its offset from the root: its holes are the root's.
-    pub fn positional(&self, name: String, at: usize) -> String {
-        if self.bound() { format!("{}P{}", name, at.wrapping_sub(self.patch_root)) } else { name }
-    }
     /// The symbol standing for hole `op` at address `at`, declared once with the embedder's `item`
-    /// (impls of H_<symbol>, %SYM% the symbol) (None: read it from the node).
+    /// (impls of H_<symbol>, %SYM% the symbol) (None: read it from the node).  The symbol names the
+    /// offset from the root, so an item using it is named by that position (its name hashes its code).
     pub fn hole_sym(&mut self, op: &str, at: usize, item: &str) -> Option<String> {
         // a hole at the root itself stays: its address is the entry's `n`, already in a register
         if !self.bound() || at == self.patch_root { return None; }

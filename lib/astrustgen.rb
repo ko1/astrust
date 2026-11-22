@@ -547,8 +547,8 @@ module ASTrustGen
         RS
       end
 
-      # SPECIALIZE_<name>(sc, n) -> String: emits (once per hash) a zero-sized type
-      # `T_<hash>` implementing Disp whose call() is EVAL_<name> instantiated with the
+      # SPECIALIZE_<name>(sc, n) -> String: emits (once per name) a zero-sized type
+      # `T_<hash of its code>` implementing Disp whose call() is EVAL_<name> instantiated with the
       # children's SD types and the scalar operands baked in; returns the type name.
       def build_specialize_test(params, child_glue, tf)
         return "" unless @test_body
@@ -603,7 +603,6 @@ module ASTrustGen
           stmt = ASTrustGen.rust_str(child_storage_stmt(op, unwrap_expr(disp))).gsub('{', '{{').gsub('}', '}}').sub("\u0001", '{}').sub("\u0002", '{}')
           "    body.push_str(&format!(\"        #{stmt}\\n\", t_#{op.name}#{contiguous? ? ", child_ptr_expr(n, u.#{op.name})" : ""}));"
         end
-        key_types = @operands.select { it.child? || it.node? || it.nodes? || it.spec? }.map { "t_#{it.name}.as_str()" }.join(', ')
         tf = generic_names.empty? ? '""'.dup : "format!(\"::<#{generic_names.map { '{}' }.join(', ')}>\", #{generic_names.join(', ')})"
         params = @prefix_params.join(', ')
         <<~RS
@@ -619,23 +618,22 @@ module ASTrustGen
         #{@operands.map { "    " + it.specialize_arg }.join("\n")}
             }
             if !was_open { sc.open.remove(&own_hash); }
-            // named by what is baked too (children's types, @bake values), not by the hash alone:
-            // two sites with one hash may have seen different things
-            let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[#{key_types}], ","), a.join(",")))));
-            let name = sc.positional(name, n as usize);
-            if sc.emitted.contains(&name) { return name; }
-            sc.emitted.insert(name.clone());
+            // named by its code (children's names, baked operands, bound holes are in it): equal code is
+            // one item, whichever entry or position it was reached from
             let mut body = String::new();
-            body.push_str(&format!("pub struct {};\\n", name));
-            if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\\n'); }
-            body.push_str(&format!("impl Disp for {} {{\\n    #[inline(always)]\\n    fn call(#{params}) -> #{result_type} {{ unsafe {{\\n", name));
+            body.push_str(&format!("impl Disp for @SELF@ {{\\n    #[inline(always)]\\n    fn call(#{params}) -> #{result_type} {{ unsafe {{\\n"));
             body.push_str(&format!("        let np = {} as *mut NodeOf<#{struct_name}>;\\n", "#{prefix_names[1]}"));
         #{child_glue.join("\n")}
             body.push_str(&format!("        EVAL_#{@name}{}({})\\n    }} }}\\n", #{tf}, a.join(", ")));
         #{build_specialize_test(params, child_glue, tf)}
         #{build_specialize_spec(params, child_glue, tf)}
             body.push_str("}\n");
-            sc.out.push_str(&body);
+            let name = format!("T_{:016x}", hash_str(&body));
+            if sc.emitted.insert(name.clone()) {
+                sc.out.push_str(&format!("pub struct {};\\n", name));
+                if sc.comments { sc.out.push_str("// "); dump_node(&mut sc.out, n); sc.out.push('\\n'); }
+                sc.out.push_str(&body.replace("@SELF@", &name));
+            }
             name
         }
         RS
@@ -954,14 +952,8 @@ module ASTrustGen
       /// SD type for a NODES operand: a `DispList` whose nth() dispatches statically.
       pub fn specialize_list(sc: &mut SpecCtx, ns: &NodeList#{first.contiguous? ? ', parent: NodePtr' : ''}) -> String {
           let ts: Vec<String> = ns.iter().map(|x| specialize_node(sc, *x)).collect();
-          let mut h = hash_str("list");
-          for x in ns.iter() { h = hash_merge(h, hash_node(*x)); }
-          #{first.contiguous? ? 'if let Some(x) = ns.first() { h = hash_merge(h, (*x as usize).wrapping_sub(parent as usize) as u64); }' : ''}
-          // the elements' names too: one list node specialized twice (a site, its unrolled copy) is two lists
-          h = hash_merge(h, hash_str(&ts.join(",")));
-          let name = sc.positional(format!("L_{:016x}", h), #{first.contiguous? ? 'parent as usize' : '0'});
-          if sc.emitted.contains(&name) { return name; }
-          let mut s = format!("pub struct {};\\nimpl DispList for {} {{\\n    #[inline(always)] fn len(_ns: NodeList) -> usize {{ {} }}\\n", name, name, ts.len());
+          // named by its code, as a T_
+          let mut s = format!("impl DispList for @SELF@ {{\\n    #[inline(always)] fn len(_ns: NodeList) -> usize {{ {} }}\\n", ts.len());
           s.push_str(&format!("    #[inline(always)]\\n    fn nth(#{first.prefix_params[0]}, ns: NodeList, i: usize#{first.prefix_params.drop(2).map { ", #{it}" }.join}) -> #{first.result_type} {{\\n        match i {{\\n"));
           for (i, t) in ts.iter().enumerate() {
               #{first.contiguous? ? 'let x = child_ptr_expr(parent, ns[i]).replacen("' + first.prefix_names[1] + '.", "(ns.as_ptr() as NodePtr).", 1);' : 'let x = format!("*ns.get_unchecked({})", i);'}
@@ -977,8 +969,8 @@ module ASTrustGen
               s.push_str(&format!("        {}\\n", "#{ASTrustGen.rust_str(first.each_stmt('@STEP@'))}".replace("@STEP@", &step)));
           }
           s.push_str("        #{ASTrustGen.rust_str(first.each_ok)}\\n    }\\n}\\n");
-          sc.emitted.insert(name.clone());
-          sc.out.push_str(&s);
+          let name = format!("L_{:016x}", hash_str(&s));
+          if sc.emitted.insert(name.clone()) { sc.out.push_str(&format!("pub struct {};\\n{}", name, s.replace("@SELF@", &name))); }
           name
       }
       RS

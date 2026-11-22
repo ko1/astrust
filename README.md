@@ -126,9 +126,13 @@ saruby does this; an inline cache there is one addressing mode away from the bod
 ## Code store
 
 `CodeStore` keeps one file per emitted item (`items/T_<hash>.rs`, `L_<hash>.rs`, `SD_<hash>.rs`),
-content-addressed so that bakes accumulate (a `T_` name merges the node hash with the children's item
-names and the baked operands, so equal subtrees that saw different facts get separate items), and links them into `all.so`; `lookup(hash)` returns
+content-addressed so that bakes accumulate, and links them into `all.so`; `lookup(hash)` returns
 `SD_<hash>`. Each `.so` embeds the interpreter's build id and is ignored when it does not match.
+An item's name depends only on what is in it, never on the entry or position it was reached from, so
+equal code is one item across entries and programs: a `T_` / `L_` is named by the hash of its code (the
+children's item names, the baked operands and, in `patch.o`, the hole symbols are in that text); a
+recursive call's `R_` and the target's body `S_` by the target's structural hash and its own profile (its
+Hopt, below), which is what that code bakes (their names must be known before the body is specialized).
 
 Horg / Hopt (as in ASTro, docs/idea.md §2.5): an entry's structural hash is **Horg**. What a bake folds in
 from the run (inline-cache contents: ivar slots, call-site kinds, compiled-in callees, operand types...) is

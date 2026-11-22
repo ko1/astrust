@@ -11,16 +11,10 @@ fn SPECIALIZE_node_num(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push(format!("{}i64", (*np).u.v));
     }
     if !was_open { sc.open.remove(&own_hash); }
-    // named by what is baked too (children's types, @bake values), not by the hash alone:
-    // two sites with one hash may have seen different things
-    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
-    let name = sc.positional(name, n as usize);
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());
+    // named by its code (children's names, baked operands, bound holes are in it): equal code is
+    // one item, whichever entry or position it was reached from
     let mut body = String::new();
-    body.push_str(&format!("pub struct {};\n", name));
-    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
-    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ unsafe {{\n", name));
+    body.push_str(&format!("impl Disp for @SELF@ {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ unsafe {{\n"));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_num_struct>;\n", "n"));
 
     body.push_str(&format!("        EVAL_node_num{}({})\n    }} }}\n", "", a.join(", ")));
@@ -28,7 +22,12 @@ fn SPECIALIZE_node_num(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str("}
 ");
-    sc.out.push_str(&body);
+    let name = format!("T_{:016x}", hash_str(&body));
+    if sc.emitted.insert(name.clone()) {
+        sc.out.push_str(&format!("pub struct {};\n", name));
+        if sc.comments { sc.out.push_str("// "); dump_node(&mut sc.out, n); sc.out.push('\n'); }
+        sc.out.push_str(&body.replace("@SELF@", &name));
+    }
     name
 }
 
@@ -46,16 +45,10 @@ fn SPECIALIZE_node_add(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("(*np).u.r".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
-    // named by what is baked too (children's types, @bake values), not by the hash alone:
-    // two sites with one hash may have seen different things
-    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_l.as_str(), t_r.as_str()], ","), a.join(",")))));
-    let name = sc.positional(name, n as usize);
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());
+    // named by its code (children's names, baked operands, bound holes are in it): equal code is
+    // one item, whichever entry or position it was reached from
     let mut body = String::new();
-    body.push_str(&format!("pub struct {};\n", name));
-    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
-    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ unsafe {{\n", name));
+    body.push_str(&format!("impl Disp for @SELF@ {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ unsafe {{\n"));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_add_struct>;\n", "n"));
 
     body.push_str(&format!("        EVAL_node_add{}({})\n    }} }}\n", format!("::<{}, {}>", t_l, t_r), a.join(", ")));
@@ -63,7 +56,12 @@ fn SPECIALIZE_node_add(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str("}
 ");
-    sc.out.push_str(&body);
+    let name = format!("T_{:016x}", hash_str(&body));
+    if sc.emitted.insert(name.clone()) {
+        sc.out.push_str(&format!("pub struct {};\n", name));
+        if sc.comments { sc.out.push_str("// "); dump_node(&mut sc.out, n); sc.out.push('\n'); }
+        sc.out.push_str(&body.replace("@SELF@", &name));
+    }
     name
 }
 
@@ -81,16 +79,10 @@ fn SPECIALIZE_node_sub(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("(*np).u.r".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
-    // named by what is baked too (children's types, @bake values), not by the hash alone:
-    // two sites with one hash may have seen different things
-    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_l.as_str(), t_r.as_str()], ","), a.join(",")))));
-    let name = sc.positional(name, n as usize);
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());
+    // named by its code (children's names, baked operands, bound holes are in it): equal code is
+    // one item, whichever entry or position it was reached from
     let mut body = String::new();
-    body.push_str(&format!("pub struct {};\n", name));
-    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
-    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ unsafe {{\n", name));
+    body.push_str(&format!("impl Disp for @SELF@ {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ unsafe {{\n"));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_sub_struct>;\n", "n"));
 
     body.push_str(&format!("        EVAL_node_sub{}({})\n    }} }}\n", format!("::<{}, {}>", t_l, t_r), a.join(", ")));
@@ -98,7 +90,12 @@ fn SPECIALIZE_node_sub(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str("}
 ");
-    sc.out.push_str(&body);
+    let name = format!("T_{:016x}", hash_str(&body));
+    if sc.emitted.insert(name.clone()) {
+        sc.out.push_str(&format!("pub struct {};\n", name));
+        if sc.comments { sc.out.push_str("// "); dump_node(&mut sc.out, n); sc.out.push('\n'); }
+        sc.out.push_str(&body.replace("@SELF@", &name));
+    }
     name
 }
 
@@ -116,16 +113,10 @@ fn SPECIALIZE_node_mul(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("(*np).u.r".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
-    // named by what is baked too (children's types, @bake values), not by the hash alone:
-    // two sites with one hash may have seen different things
-    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_l.as_str(), t_r.as_str()], ","), a.join(",")))));
-    let name = sc.positional(name, n as usize);
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());
+    // named by its code (children's names, baked operands, bound holes are in it): equal code is
+    // one item, whichever entry or position it was reached from
     let mut body = String::new();
-    body.push_str(&format!("pub struct {};\n", name));
-    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
-    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ unsafe {{\n", name));
+    body.push_str(&format!("impl Disp for @SELF@ {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ unsafe {{\n"));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_mul_struct>;\n", "n"));
 
     body.push_str(&format!("        EVAL_node_mul{}({})\n    }} }}\n", format!("::<{}, {}>", t_l, t_r), a.join(", ")));
@@ -133,7 +124,12 @@ fn SPECIALIZE_node_mul(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str("}
 ");
-    sc.out.push_str(&body);
+    let name = format!("T_{:016x}", hash_str(&body));
+    if sc.emitted.insert(name.clone()) {
+        sc.out.push_str(&format!("pub struct {};\n", name));
+        if sc.comments { sc.out.push_str("// "); dump_node(&mut sc.out, n); sc.out.push('\n'); }
+        sc.out.push_str(&body.replace("@SELF@", &name));
+    }
     name
 }
 
@@ -151,16 +147,10 @@ fn SPECIALIZE_node_mod(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_r".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
-    // named by what is baked too (children's types, @bake values), not by the hash alone:
-    // two sites with one hash may have seen different things
-    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_l.as_str(), t_r.as_str()], ","), a.join(",")))));
-    let name = sc.positional(name, n as usize);
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());
+    // named by its code (children's names, baked operands, bound holes are in it): equal code is
+    // one item, whichever entry or position it was reached from
     let mut body = String::new();
-    body.push_str(&format!("pub struct {};\n", name));
-    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
-    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ unsafe {{\n", name));
+    body.push_str(&format!("impl Disp for @SELF@ {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ unsafe {{\n"));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_mod_struct>;\n", "n"));
     body.push_str(&format!("        let v_l = <{} as Disp>::call(c, (*np).u.l);\n", t_l));
     body.push_str(&format!("        let v_r = <{} as Disp>::call(c, (*np).u.r);\n", t_r));
@@ -169,7 +159,12 @@ fn SPECIALIZE_node_mod(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str("}
 ");
-    sc.out.push_str(&body);
+    let name = format!("T_{:016x}", hash_str(&body));
+    if sc.emitted.insert(name.clone()) {
+        sc.out.push_str(&format!("pub struct {};\n", name));
+        if sc.comments { sc.out.push_str("// "); dump_node(&mut sc.out, n); sc.out.push('\n'); }
+        sc.out.push_str(&body.replace("@SELF@", &name));
+    }
     name
 }
 
@@ -185,16 +180,10 @@ fn SPECIALIZE_node_var(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push(format!("{}u32", (*np).u.idx));
     }
     if !was_open { sc.open.remove(&own_hash); }
-    // named by what is baked too (children's types, @bake values), not by the hash alone:
-    // two sites with one hash may have seen different things
-    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[], ","), a.join(",")))));
-    let name = sc.positional(name, n as usize);
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());
+    // named by its code (children's names, baked operands, bound holes are in it): equal code is
+    // one item, whichever entry or position it was reached from
     let mut body = String::new();
-    body.push_str(&format!("pub struct {};\n", name));
-    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
-    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ unsafe {{\n", name));
+    body.push_str(&format!("impl Disp for @SELF@ {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ unsafe {{\n"));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_var_struct>;\n", "n"));
 
     body.push_str(&format!("        EVAL_node_var{}({})\n    }} }}\n", "", a.join(", ")));
@@ -202,7 +191,12 @@ fn SPECIALIZE_node_var(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str("}
 ");
-    sc.out.push_str(&body);
+    let name = format!("T_{:016x}", hash_str(&body));
+    if sc.emitted.insert(name.clone()) {
+        sc.out.push_str(&format!("pub struct {};\n", name));
+        if sc.comments { sc.out.push_str("// "); dump_node(&mut sc.out, n); sc.out.push('\n'); }
+        sc.out.push_str(&body.replace("@SELF@", &name));
+    }
     name
 }
 
@@ -219,16 +213,10 @@ fn SPECIALIZE_node_set(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_v".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
-    // named by what is baked too (children's types, @bake values), not by the hash alone:
-    // two sites with one hash may have seen different things
-    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_v.as_str()], ","), a.join(",")))));
-    let name = sc.positional(name, n as usize);
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());
+    // named by its code (children's names, baked operands, bound holes are in it): equal code is
+    // one item, whichever entry or position it was reached from
     let mut body = String::new();
-    body.push_str(&format!("pub struct {};\n", name));
-    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
-    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ unsafe {{\n", name));
+    body.push_str(&format!("impl Disp for @SELF@ {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ unsafe {{\n"));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_set_struct>;\n", "n"));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, (*np).u.v);\n", t_v));
     body.push_str(&format!("        EVAL_node_set{}({})\n    }} }}\n", "", a.join(", ")));
@@ -236,7 +224,12 @@ fn SPECIALIZE_node_set(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str("}
 ");
-    sc.out.push_str(&body);
+    let name = format!("T_{:016x}", hash_str(&body));
+    if sc.emitted.insert(name.clone()) {
+        sc.out.push_str(&format!("pub struct {};\n", name));
+        if sc.comments { sc.out.push_str("// "); dump_node(&mut sc.out, n); sc.out.push('\n'); }
+        sc.out.push_str(&body.replace("@SELF@", &name));
+    }
     name
 }
 
@@ -252,16 +245,10 @@ fn SPECIALIZE_node_seq(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("(*np).u.xs".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
-    // named by what is baked too (children's types, @bake values), not by the hash alone:
-    // two sites with one hash may have seen different things
-    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_xs.as_str()], ","), a.join(",")))));
-    let name = sc.positional(name, n as usize);
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());
+    // named by its code (children's names, baked operands, bound holes are in it): equal code is
+    // one item, whichever entry or position it was reached from
     let mut body = String::new();
-    body.push_str(&format!("pub struct {};\n", name));
-    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
-    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ unsafe {{\n", name));
+    body.push_str(&format!("impl Disp for @SELF@ {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ unsafe {{\n"));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_seq_struct>;\n", "n"));
 
     body.push_str(&format!("        EVAL_node_seq{}({})\n    }} }}\n", format!("::<{}>", t_xs), a.join(", ")));
@@ -269,7 +256,12 @@ fn SPECIALIZE_node_seq(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str("}
 ");
-    sc.out.push_str(&body);
+    let name = format!("T_{:016x}", hash_str(&body));
+    if sc.emitted.insert(name.clone()) {
+        sc.out.push_str(&format!("pub struct {};\n", name));
+        if sc.comments { sc.out.push_str("// "); dump_node(&mut sc.out, n); sc.out.push('\n'); }
+        sc.out.push_str(&body.replace("@SELF@", &name));
+    }
     name
 }
 
@@ -287,16 +279,10 @@ fn SPECIALIZE_node_times(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("(*np).u.body".to_string());
     }
     if !was_open { sc.open.remove(&own_hash); }
-    // named by what is baked too (children's types, @bake values), not by the hash alone:
-    // two sites with one hash may have seen different things
-    let name = format!("T_{:016x}", hash_merge(own_hash, hash_str(&format!("{}|{}", <[&str]>::join(&[t_cnt.as_str(), t_body.as_str()], ","), a.join(",")))));
-    let name = sc.positional(name, n as usize);
-    if sc.emitted.contains(&name) { return name; }
-    sc.emitted.insert(name.clone());
+    // named by its code (children's names, baked operands, bound holes are in it): equal code is
+    // one item, whichever entry or position it was reached from
     let mut body = String::new();
-    body.push_str(&format!("pub struct {};\n", name));
-    if sc.comments { body.push_str("// "); dump_node(&mut body, n); body.push('\n'); }
-    body.push_str(&format!("impl Disp for {} {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ unsafe {{\n", name));
+    body.push_str(&format!("impl Disp for @SELF@ {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr) -> i64 {{ unsafe {{\n"));
     body.push_str(&format!("        let np = {} as *mut NodeOf<node_times_struct>;\n", "n"));
 
     body.push_str(&format!("        EVAL_node_times{}({})\n    }} }}\n", format!("::<{}, {}>", t_cnt, t_body), a.join(", ")));
@@ -304,21 +290,20 @@ fn SPECIALIZE_node_times(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     body.push_str("}
 ");
-    sc.out.push_str(&body);
+    let name = format!("T_{:016x}", hash_str(&body));
+    if sc.emitted.insert(name.clone()) {
+        sc.out.push_str(&format!("pub struct {};\n", name));
+        if sc.comments { sc.out.push_str("// "); dump_node(&mut sc.out, n); sc.out.push('\n'); }
+        sc.out.push_str(&body.replace("@SELF@", &name));
+    }
     name
 }
 
 /// SD type for a NODES operand: a `DispList` whose nth() dispatches statically.
 pub fn specialize_list(sc: &mut SpecCtx, ns: &NodeList) -> String {
     let ts: Vec<String> = ns.iter().map(|x| specialize_node(sc, *x)).collect();
-    let mut h = hash_str("list");
-    for x in ns.iter() { h = hash_merge(h, hash_node(*x)); }
-    
-    // the elements' names too: one list node specialized twice (a site, its unrolled copy) is two lists
-    h = hash_merge(h, hash_str(&ts.join(",")));
-    let name = sc.positional(format!("L_{:016x}", h), 0);
-    if sc.emitted.contains(&name) { return name; }
-    let mut s = format!("pub struct {};\nimpl DispList for {} {{\n    #[inline(always)] fn len(_ns: NodeList) -> usize {{ {} }}\n", name, name, ts.len());
+    // named by its code, as a T_
+    let mut s = format!("impl DispList for @SELF@ {{\n    #[inline(always)] fn len(_ns: NodeList) -> usize {{ {} }}\n", ts.len());
     s.push_str(&format!("    #[inline(always)]\n    fn nth(c: &mut Ctx, ns: NodeList, i: usize) -> i64 {{\n        match i {{\n"));
     for (i, t) in ts.iter().enumerate() {
         let x = format!("*ns.get_unchecked({})", i);
@@ -334,7 +319,7 @@ pub fn specialize_list(sc: &mut SpecCtx, ns: &NodeList) -> String {
         s.push_str(&format!("        {}\n", "@STEP@;".replace("@STEP@", &step)));
     }
     s.push_str("        ()\n    }\n}\n");
-    sc.emitted.insert(name.clone());
-    sc.out.push_str(&s);
+    let name = format!("L_{:016x}", hash_str(&s));
+    if sc.emitted.insert(name.clone()) { sc.out.push_str(&format!("pub struct {};\n{}", name, s.replace("@SELF@", &name))); }
     name
 }
