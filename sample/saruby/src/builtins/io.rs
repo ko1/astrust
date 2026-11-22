@@ -32,6 +32,7 @@ pub struct RIo {
     pub rcap: u32,   // CRuby's rbuf capacity once allocated (ungetbyte's limit); 0: not yet
     pub textmode: bool,   // FMODE_TEXTMODE
     pub wc_need: bool,   // writes are converted (conv_note keeps it)
+    pub rfull: bool,   // the last fill read at least rcap bytes (or none yet)
     pub conv: Option<Box<cv::IoConv>>,
 }
 impl RData for RIo {
@@ -82,7 +83,7 @@ impl std::fmt::Display for PathArg {
 fn blank() -> RIo {
     RIo { fd: -1, wfd: -1, path: vec![], rbuf: vec![], rpos: 0, eof: false, wbuf: vec![], closed: false, init: false, lineno: 0, writable: false,
           readable: false, binmode: false, sync: false, pid: 0, enc: None, enc2: None, ecflags: 0, autoclose: true, has_path: false, data: false, rerr: 0, coop: false, wouldblock: false,
-          ecrep: None, conv: None, rcap: 0, textmode: false, wc_need: false }
+          ecrep: None, conv: None, rcap: 0, textmode: false, wc_need: false, rfull: true }
 }
 fn opened(fd: i32, path: &[u8], r: bool, w: bool) -> RIo {
     let mut io = blank();
@@ -357,9 +358,12 @@ pub(crate) fn fill(io: &mut RIo) -> bool {
     io.rbuf.clear(); io.rpos = 0;
     if io.fd == 0 { out_flush(); }
     if io.rcap == 0 { io.rcap = if cv::need_readconv(io) { 128 * 1024 } else { 8192 }; }
-    io.rbuf.resize((io.rcap as usize).max(65536), 0);
+    // 64 KiB, or CRuby's capacity after a read shorter than that (a pipe): the buffer is zeroed up to this size
+    let want = if io.rfull { (io.rcap as usize).max(65536) } else { io.rcap as usize };
+    io.rbuf.resize(want, 0);
     let n = match sys::read_fd(io.fd, &mut io.rbuf) { Ok(n) => n, Err(e) => { io.rerr = e; 0 } };
     io.rbuf.truncate(n);
+    io.rfull = n >= io.rcap as usize;
     // pipes / ttys reach EOF only on a zero read; regular files may grow, so never latch eof
     n > 0
 }
@@ -402,11 +406,13 @@ fn read_line(io: &mut RIo, sep: Option<&[u8]>, limit: Option<usize>) -> Option<V
         let mut take = avail.len();
         let mut done = false;
         if let Some(sp) = sp {
-            // the separator may straddle the previous chunk
+            // a match straddling the previous chunk, then one inside this one
             let back = (sp.len() - 1).min(line.len());
-            let start = line.len() - back;
-            let mut probe = line[start..].to_vec(); probe.extend_from_slice(avail);
-            if let Some(p) = find_sub(&probe, sp) { take = p + sp.len() - back; done = true; }
+            let found = if back == 0 { None } else {
+                let mut probe = line[line.len() - back..].to_vec(); probe.extend_from_slice(&avail[..(sp.len() - 1).min(avail.len())]);
+                find_sub(&probe, sp).map(|p| p + sp.len() - back)
+            };
+            if let Some(t) = found.or_else(|| find_sub(avail, sp).map(|p| p + sp.len())) { take = t; done = true; }
         }
         if let Some(l) = limit { if line.len() + take >= l { take = l - line.len(); done = true; } }
         line.extend_from_slice(&avail[..take]);
