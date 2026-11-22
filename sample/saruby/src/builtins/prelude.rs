@@ -34,7 +34,7 @@ const LIBS: &[(&str, &str)] = &[lib!("etc"), lib!("timeout"), lib!("monitor"), l
     ("digest/sha2", include_str!("../../prelude/lib/digest_sha2.rb")), ("digest/sha2/loader", "require 'digest'\nrequire 'saruby/digest/sha2'\n")];
 /// Features whose implementation is native and always present (require is a no-op).
 const NATIVE: &[&str] = &["set", "stringio", "rbconfig", "thread", "fiber", "enumerator", "rational", "complex", "continuation",
-    "io/wait", "io/nonblock", "fcntl", "etc.so", "monitor.so", "strscan", "strscan.so", "bigdecimal.so", "psych.so", "socket.so", "json", "json/ext", "zlib", "saruby/errno", "saruby/env", "saruby/rbconfig", "saruby/filetest", "saruby/stat", "saruby/sync", "saruby/econv", "saruby/tracepoint",
+    "io/wait", "io/nonblock", "fcntl", "etc.so", "monitor.so", "strscan", "strscan.so", "bigdecimal.so", "psych.so", "socket.so", "json/ext/parser", "json/ext/parser.so", "json/ext/generator", "json/ext/generator.so", "zlib", "saruby/errno", "saruby/env", "saruby/rbconfig", "saruby/filetest", "saruby/stat", "saruby/sync", "saruby/econv", "saruby/tracepoint",
     "coverage.so", "cgi/escape.so", "saruby/toplevel_binding", "saruby/etc", "saruby/syslog", "saruby/digest", "saruby/digest/md5", "saruby/digest/sha1", "saruby/digest/sha2", "saruby/digest/rmd160", "saruby/digest/bubblebabble"];
 
 /// Constant `name` under `owner` whose native definition runs on first reference (boot time: builtins/mod.rs).
@@ -47,7 +47,10 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
     }
     // native libraries whose classes are only built on first require
     if name == "strscan" || name == "strscan.so" { crate::builtins::strscan::init(c); }
-    if name == "json" || name == "json/ext" { crate::builtins::json::init(c); }
+    // without the gem's Ruby code (no reference ruby), "json" is saruby's own approximation
+    if name == "json" { crate::builtins::json::init(c); }
+    if name.starts_with("json/ext/parser") { crate::builtins::json_parser::init(c)?; }
+    if name.starts_with("json/ext/generator") { crate::builtins::json_generator::init(c)?; }
     if name == "zlib" { crate::builtins::zlib::init(c); }
     if name == "psych.so" { crate::builtins::psych::init(c)?; }
     if name == "bigdecimal.so" { crate::builtins::bigdecimal::init(c); }
@@ -87,8 +90,8 @@ const BUNDLED: &[&str] = &["ostruct", "base64", "benchmark", "logger", "observer
 const EXT_BACKED: &[&str] = &["openssl", "date", "ripper", "digest", "pathname", "pty", "coverage",
     "objspace", "readline", "reline", "nkf", "fiddle", "syslog", "io"];
 /// Default gems that the reference ruby (rubygems) activates from a newer installed gem.
-const GEM_FIRST: &[&str] = &["psych"];
-/// lib/<rb> of the highest installed version of gem `top`.
+const GEM_FIRST: &[&str] = &["psych", "json"];
+/// lib/<rb> of the highest installed version of gem `top` (the one activated: it has lib/<top>.rb).
 fn newest_gem_file(gem: &str, top: &str, rb: &str) -> Option<std::path::PathBuf> {
     let ver = |v: &str| -> Vec<u64> { v.split('.').map(|x| x.parse().unwrap_or(0)).collect() };
     let mut best: Option<(Vec<u64>, std::path::PathBuf)> = None;
@@ -96,10 +99,10 @@ fn newest_gem_file(gem: &str, top: &str, rb: &str) -> Option<std::path::PathBuf>
         let n = e.file_name().to_string_lossy().into_owned();
         let Some(v) = n.strip_prefix(top).and_then(|r| r.strip_prefix('-')) else { continue };
         if !v.chars().all(|ch| ch.is_ascii_digit() || ch == '.') { continue; }
-        let f = e.path().join("lib").join(rb);
-        if f.is_file() && best.as_ref().map(|b| b.0 < ver(v)).unwrap_or(true) { best = Some((ver(v), f)); }
+        let lib = e.path().join("lib");
+        if lib.join(format!("{}.rb", top)).is_file() && best.as_ref().map(|b| b.0 < ver(v)).unwrap_or(true) { best = Some((ver(v), lib)); }
     }
-    best.map(|b| b.1)
+    best.map(|b| b.1.join(rb)).filter(|f| f.is_file())
 }
 pub fn stdlib_file(name: &str) -> Option<std::path::PathBuf> {
     if EXT_BACKED.contains(&name.split('/').next().unwrap_or(name).trim_end_matches(".rb")) { return None; }

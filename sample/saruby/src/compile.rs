@@ -10,7 +10,7 @@ use crate::prism_ast::{self as pa, Kind, Node as PNode};
 use crate::symbol::{intern, s};
 use crate::value::*;
 use crate::vm::*;
-use std::collections::{HashMap, HashSet};
+use crate::fxhash::{HashMap, HashSet};
 #[path = "compile_cov.rs"]
 mod cov;
 
@@ -109,8 +109,8 @@ struct Scope {
 
 impl Scope {
     fn new(kind: SK, captured: HashSet<Sym>) -> Scope {
-        Scope { kind, vars: HashMap::new(), names: vec![], nslots: 2, env_size: 0, captured, loop_depth: 0,
-                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![], children: vec![], params_seen: HashSet::new(), param_names: vec![], needs_id: false, end_line: 0, trace_line: 0 }
+        Scope { kind, vars: HashMap::default(), names: vec![], nslots: 2, env_size: 0, captured, loop_depth: 0,
+                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![], children: vec![], params_seen: HashSet::default(), param_names: vec![], needs_id: false, end_line: 0, trace_line: 0 }
     }
     fn has_env(&self) -> bool { self.env_size > 0 }
 }
@@ -157,7 +157,7 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, errors: vec![],
+        Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, errors: vec![],
                    csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()],
                    src_enc: crate::builtins::encoding::find_enc(pr.encoding.as_bytes()).unwrap_or(crate::object::ENC_UTF8) as u32 }
     }
@@ -945,7 +945,7 @@ impl<'a> Compiler<'a> {
             Kind::PostExecutionNode { statements } => {
                 // END { } → at_exit { }
                 // no scope of its own in prism: like a `for` body it shares the enclosing variables
-                let mut sc = Scope::new(SK::For, HashSet::new());
+                let mut sc = Scope::new(SK::For, HashSet::default());
                 sc.transparent = true;
                 self.scopes.push(sc);
                 let b = self.stmts(statements.as_deref());
@@ -1866,7 +1866,7 @@ impl<'a> Compiler<'a> {
     fn for_loop(&mut self, n: &PNode, index: &PNode, coll: &PNode, body: Option<&PNode>, line: u32) -> NodePtr {
         let cv = self.c(coll);
         // the body is a block that shares the enclosing scope's variables (captured into env)
-        let mut sc = Scope::new(SK::For, HashSet::new());
+        let mut sc = Scope::new(SK::For, HashSet::default());
         sc.transparent = true;
         self.scopes.push(sc);
         let p = self.hidden_slot();
