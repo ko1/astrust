@@ -24,12 +24,18 @@ I/O latency in 1 ms steps: a pipe round trip through `cat` ran at ~1,100/s).
 | engine vtable (`init/prep/cancel/pump`) | `trait Engine { submit, retire, pump, after_fork }` | readiness engines report `Ready { id, idx, revents }`; `Slab::apply_ready` does the I/O for Read / Write (completion emulated in one place, shared by poll and epoll). A completion engine would call `Slab::complete` itself |
 | `korb_blop_post / cancel / cancel_fd` | `Slab::complete`, `blop::interrupt(id, errno)`, `blop::cancel_fd(fd)` | |
 | `korb_blop_wait` (check_ints on return) | `thread::wait(c, op, deadline, deadlockable)`; pending Thread#raise / #kill delivered on return; completion wins a race with an interrupt (its result is dropped, as in CRuby) | |
-| Mutex / CV / Queue: explicit wait queues of `korb_thread*`, plain park | the same waits are **blops** of kind `Wake(key)`; `blop::notify(key)` completes them (key = the object's address) | one park mechanism, one runnable test (`op done or interrupted`), one deadlock rule. No wait-queue links in the objects (they are GC-movable payloads; the slab holds no Values) |
+| Mutex / CV / Queue: explicit wait queues of `korb_thread*`, plain park | the same waits are **blops** of kind `Wake(key)` (key = the object's address; SizedQueue pushers use address\|1); `notify_one(key)` completes the oldest waiter (Mutex unlock, Queue push, SizedQueue pop), `notify(key)` all of them (join, close, CV broadcast); a woken waiter that is interrupted instead passes its wake-up on | one park mechanism, one runnable test (`op done or interrupted`), one deadlock rule. The wait list (`Vec<(key, Id)>`) is in the blop state, not in the objects (GC payloads; the slab holds no Values) |
 | run queue, any thread can be the scheduler | the main thread's loop (`thread::schedule`) switches in the **runnable** threads (unstarted, yielded, op done, or interrupted) | saruby's threads are fiber chains entered from the main thread (unchanged). A parked thread is no longer switched in to re-check anything |
 | eventfd registered permanently, signals wake the pump | the same: `on_signal` writes the eventfd (`blop::signal_wake`); trap handlers run in the main thread's loop while others are parked | |
 | probe uring → epoll → poll | `SARUBY_BLOP_ENGINE=poll` (default) / `epoll` | measured (below): with a few fds poll is faster |
 
 ## The pieces
+
+**Where the state lives**: `Vm::blop` (`Option<Box<Blop>>`, made at the first wait), reached through
+the `Ctx`. A first version kept it in a `thread_local!` `RefCell`: in `libsaruby.so` every access
+is a `__tls_get_addr` call plus a borrow flag, 16–20 % of the instructions of
+`vm_thread_condvar1` / `sized_queue4`. The signal handler only touches an atomic (the eventfd
+number). An IO collected by the GC needs no cancel: a thread waiting on it roots it.
 
 **Slab** (`blop.rs`): `Vec<Entry { gen, slot }>` with a free list; slot = `Free | Pending { op, deadline, deadlockable } | Done(op, res)`.
 `submit` inserts and registers interest; completion moves `Pending → Done` once (later posts are
