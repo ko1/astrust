@@ -509,8 +509,8 @@ fn acquire(c: &mut Ctx, m: Value) -> Result<(), Esc> {
 }
 fn release(c: &mut Ctx, m: Value) -> Result<(), Esc> {
     let l = lk(c, m);
-    if l.owner == NIL { return err(c, c.vm().c_thread_error, if l.monitor { "current thread not owner" } else { "Attempt to unlock a mutex which is not locked" }); }
-    if l.owner != cur(c) { return err(c, c.vm().c_thread_error, if l.monitor { "current thread not owner" } else { "Attempt to unlock a mutex which is locked by another thread/fiber" }); }
+    if l.owner == NIL { return err(c, c.vm().c_thread_error, if l.monitor { "current fiber not owner" } else { "Attempt to unlock a mutex which is not locked" }); }
+    if l.owner != cur(c) { return err(c, c.vm().c_thread_error, if l.monitor { "current fiber not owner" } else { "Attempt to unlock a mutex which is locked by another thread/fiber" }); }
     let l = lk_mut(c, m);
     l.count -= 1;
     if l.count == 0 { l.owner = NIL; held_dec(); blop::notify_one(c, m.raw()); }
@@ -536,6 +536,16 @@ fn mx_sync(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
     if r.is_err() { c.esc = ek; c.esc_val = ev; }
     r
 }
+/// monitor_synchronize: rb_ensure(yield, monitor_exit), so leaving unowned raises.
+fn mon_sync(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
+    acquire(c, s)?;
+    if b.is_null() { release(c, s)?; return err(c, c.vm().c_local_jump_error, "no block given"); }
+    let r = yield_block(c, b, &[]);
+    let (ek, ev) = (c.esc, c.esc_val);
+    release(c, s)?;
+    if r.is_err() { c.esc = ek; c.esc_val = ev; }
+    r
+}
 fn mx_sleep(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let dur = match a.first() { Some(&t) if t != NIL => Some(crate::builtins::numeric_methods::to_f(c, t)?), _ => None };
     let t0 = Instant::now();
@@ -546,7 +556,7 @@ fn mx_sleep(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(Value::fix(t0.elapsed().as_secs_f64().round() as i64))
 }
 fn mon_check_owner(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
-    if lk(c, s).owner != cur(c) { return err(c, c.vm().c_thread_error, "current thread not owner"); }
+    if lk(c, s).owner != cur(c) { return err(c, c.vm().c_thread_error, "current fiber not owner"); }
     Ok(NIL)
 }
 /// Monitor#wait_for_cond(cond, timeout): fully release, wait on cond, re-enter with the old count.
@@ -776,14 +786,14 @@ pub fn init_sync(c: &mut Ctx) {
     class_set_alloc(mon, AllocKind::None);
     c.vm_mut().c_monitor = mon;
     for (k, pre) in [(mx, ""), (mon, "mon_")] {
-        define_cfunc(k, "synchronize", mx_sync, 0);
+        define_cfunc(k, "synchronize", if k == mon { mon_sync } else { mx_sync }, 0);
         define_cfunc(k, &format!("{}locked?", pre), mx_locked, 0);
         define_cfunc(k, &format!("{}owned?", pre), mx_owned, 0);
     }
     define_cfunc(mx, "lock", mx_lock, 0); define_cfunc(mx, "unlock", mx_unlock, 0); define_cfunc(mx, "try_lock", mx_try_lock, 0); define_cfunc(mx, "sleep", mx_sleep, -1);
     define_cfunc(mon, "enter", mx_lock, 0); define_cfunc(mon, "exit", mx_unlock, 0); define_cfunc(mon, "try_enter", mx_try_lock, 0);
     define_cfunc(mon, "new_cond", |c, s, a, b| { let f = c.str_new(b"monitor"); crate::builtins::kernel::require_feature(c, f, false)?; funcall(c, s, intern(b"new_cond"), a, b) }, 0);
-    define_cfunc(mon, "mon_synchronize", mx_sync, 0); define_cfunc(mon, "mon_check_owner", mon_check_owner, 0); define_cfunc(mon, "wait_for_cond", mon_wait_for_cond, 2);
+    define_cfunc(mon, "mon_synchronize", mon_sync, 0); define_cfunc(mon, "mon_check_owner", mon_check_owner, 0); define_cfunc(mon, "wait_for_cond", mon_wait_for_cond, 2);
     // Queue / SizedQueue / ConditionVariable
     let q = define_class_under(th, "Queue", ob);
     class_set_alloc(q, AllocKind::None);

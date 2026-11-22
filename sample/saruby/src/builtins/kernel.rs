@@ -691,6 +691,7 @@ pub fn gvar_get(c: &mut Ctx, name: Sym) -> RV {
         b"$VERBOSE" => return Ok(c.vm().verbose),
         b"$DEBUG" => return Ok(*c.vm().globals.get(&name).unwrap_or(&Value::bool(c.vm().debug_flag))),
         b"$?" => return Ok(crate::builtins::process::last_status(c)),
+        b"$." => return Ok(*c.vm().globals.get(&name).unwrap_or(&Value::fix(0))),
         b"$=" => { gvar_warn(c, "variable $= is no longer effective", true)?; return Ok(FALSE); }
         _ => {}
     }
