@@ -81,10 +81,21 @@ pub fn init_classes(vmr: &mut Vm) {
     vmr.c_converter_not_found_error = define_class_under(enc, "ConverterNotFoundError", vmr.c_encoding_error);
     vmr.m_errno = define_module("Errno");
     // Errno::* classes are built on first use (autoload of an internal feature) to keep boot short
-    let names: Vec<&str> = ERRNOS.iter().map(|e| e.0).chain(ERRNO_ALIASES.iter().map(|a| a.0)).collect();
+    let names: Vec<&str> = ERRNOS[..BOOT_ERRNOS].iter().map(|e| e.0).chain(ERRNO_ALIASES[..2].iter().map(|a| a.0)).collect();
     crate::builtins::lazy_consts(vmr.m_errno, &names, "saruby/errno");
 }
-const ERRNO_ALIASES: &[(&str, &str)] = &[("EOPNOTSUPP", "ENOTSUP"), ("EDEADLOCK", "EDEADLK")];
+/// Entries of ERRNOS (and the first two ERRNO_ALIASES) named at boot; interning the rest costs startup.
+const BOOT_ERRNOS: usize = 66;
+/// The less common Errno names, made reachable on require "socket" (saruby/errno defines them all).
+pub fn register_rare_errnos(c: &mut Ctx) {
+    let m = c.vm().m_errno;
+    let names: Vec<&str> = ERRNOS[BOOT_ERRNOS..].iter().map(|e| e.0).chain(ERRNO_ALIASES[2..].iter().map(|a| a.0))
+        .filter(|n| const_get_at(m, intern(n.as_bytes())).is_none()).collect();
+    crate::builtins::lazy_consts(m, &names, "saruby/errno");
+}
+const ERRNO_ALIASES: &[(&str, &str)] = &[("EOPNOTSUPP", "ENOTSUP"), ("EDEADLOCK", "EDEADLK"),
+    // not on Linux: CRuby makes them Errno::NOERROR
+    ("EAUTH", "NOERROR"), ("EBADARCH", "NOERROR"), ("EBADEXEC", "NOERROR"), ("EBADMACHO", "NOERROR"), ("EBADRPC", "NOERROR"), ("ECAPMODE", "NOERROR"), ("EDEVERR", "NOERROR"), ("EDOOFUS", "NOERROR"), ("EFTYPE", "NOERROR"), ("EIPSEC", "NOERROR"), ("ELAST", "NOERROR"), ("ENEEDAUTH", "NOERROR"), ("ENOATTR", "NOERROR"), ("ENOPOLICY", "NOERROR"), ("ENOTCAPABLE", "NOERROR"), ("EPROCLIM", "NOERROR"), ("EPROCUNAVAIL", "NOERROR"), ("EPROGMISMATCH", "NOERROR"), ("EPROGUNAVAIL", "NOERROR"), ("EPWROFF", "NOERROR"), ("EQFULL", "NOERROR"), ("ERPCMISMATCH", "NOERROR"), ("ESHLIBVERS", "NOERROR")];
 // Errno::X: its number is the constant `Errno`; its message comes from ERRNOS by that number.
 fn define_errno(vmr: &Vm, name: &str, no: i64) -> Value {
     if let Some(k) = const_get_at(vmr.m_errno, intern(name.as_bytes())) { return k; }
@@ -133,6 +144,24 @@ pub const ERRNOS: &[(&str, i64, &str)] = &[
     ("EDOM", 33, "Numerical argument out of domain"), ("ERANGE", 34, "Numerical result out of range"),
     ("ENOTEMPTY", 39, "Directory not empty"), ("ECONNREFUSED", 111, "Connection refused"), ("ENOTSUP", 95, "Operation not supported"),
     ("ELOOP", 40, "Too many levels of symbolic links"), ("ENAMETOOLONG", 36, "File name too long"), ("EXDEV", 18, "Invalid cross-device link"),
+    // the rest of Linux's, as CRuby defines them
+    ("EADV", 68, "Advertise error"), ("EBADE", 52, "Invalid exchange"), ("EBADFD", 77, "File descriptor in bad state"), ("EBADMSG", 74, "Bad message"),
+    ("EBADR", 53, "Invalid request descriptor"), ("EBADRQC", 56, "Invalid request code"), ("EBADSLT", 57, "Invalid slot"), ("EBFONT", 59, "Bad font file format"),
+    ("ECHRNG", 44, "Channel number out of range"), ("ECOMM", 70, "Communication error on send"), ("EDOTDOT", 73, "RFS specific error"), ("EHOSTDOWN", 112, "Host is down"),
+    ("EHWPOISON", 133, "Memory page has hardware error"), ("EIDRM", 43, "Identifier removed"), ("EISNAM", 120, "Is a named type file"), ("EKEYEXPIRED", 127, "Key has expired"),
+    ("EKEYREJECTED", 129, "Key was rejected by service"), ("EKEYREVOKED", 128, "Key has been revoked"), ("EL2HLT", 51, "Level 2 halted"), ("EL2NSYNC", 45, "Level 2 not synchronized"),
+    ("EL3HLT", 46, "Level 3 halted"), ("EL3RST", 47, "Level 3 reset"), ("ELIBACC", 79, "Can not access a needed shared library"), ("ELIBBAD", 80, "Accessing a corrupted shared library"),
+    ("ELIBEXEC", 83, "Cannot exec a shared library directly"), ("ELIBMAX", 82, "Attempting to link in too many shared libraries"), ("ELIBSCN", 81, ".lib section in a.out corrupted"), ("ELNRNG", 48, "Link number out of range"),
+    ("EMEDIUMTYPE", 124, "Wrong medium type"), ("EMULTIHOP", 72, "Multihop attempted"), ("ENAVAIL", 119, "No XENIX semaphores available"), ("ENETDOWN", 100, "Network is down"),
+    ("ENETRESET", 102, "Network dropped connection on reset"), ("ENOANO", 55, "No anode"), ("ENOCSI", 50, "No CSI structure available"), ("ENODATA", 61, "No data available"),
+    ("ENOKEY", 126, "Required key not available"), ("ENOLINK", 67, "Link has been severed"), ("ENOMEDIUM", 123, "No medium found"), ("ENOMSG", 42, "No message of desired type"),
+    ("ENONET", 64, "Machine is not on the network"), ("ENOPKG", 65, "Package not installed"), ("ENOPROTOOPT", 92, "Protocol not available"), ("ENOSR", 63, "Out of streams resources"),
+    ("ENOSTR", 60, "Device not a stream"), ("ENOTNAM", 118, "Not a XENIX named type file"), ("ENOTRECOVERABLE", 131, "State not recoverable"), ("ENOTUNIQ", 76, "Name not unique on network"),
+    ("EOWNERDEAD", 130, "Owner died"), ("EPFNOSUPPORT", 96, "Protocol family not supported"), ("EPROTOTYPE", 91, "Protocol wrong type for socket"), ("EREMCHG", 78, "Remote address changed"),
+    ("EREMOTE", 66, "Object is remote"), ("EREMOTEIO", 121, "Remote I/O error"), ("ERESTART", 85, "Interrupted system call should be restarted"), ("ERFKILL", 132, "Operation not possible due to RF-kill"),
+    ("ESHUTDOWN", 108, "Cannot send after transport endpoint shutdown"), ("ESOCKTNOSUPPORT", 94, "Socket type not supported"), ("ESRMNT", 69, "Srmount error"), ("ESTRPIPE", 86, "Streams pipe error"),
+    ("ETIME", 62, "Timer expired"), ("ETOOMANYREFS", 109, "Too many references: cannot splice"), ("EUCLEAN", 117, "Structure needs cleaning"), ("EUNATCH", 49, "Protocol driver not attached"),
+    ("EUSERS", 87, "Too many users"), ("EXFULL", 54, "Exchange full"),
 ];
 
 /// Errno class of `no`, made on first use (through vm.rs: no payload is touched here).

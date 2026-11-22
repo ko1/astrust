@@ -92,6 +92,8 @@ and exits when it ends (`Thread.current == Thread.main` in the child, as CRuby).
 | buffered writes / flush to a fd that is not writable | `Write` of ≤ 4096 bytes (POLLOUT promises PIPE_BUF) |
 | `IO.select`, `IO#wait_readable / wait_writable / wait`, `#sysread` | `Poll` (all fds, with the timeout) |
 | `Process.wait(pid)`, `system`, `` ` ``, `IO#close` of a popen | `Poll` on a pidfd (`pidfd_open`), then `waitpid(WNOHANG)` |
+| socket `accept`, `connect` (non-blocking connect, then SO_ERROR), `recv` / `recvfrom` / `recvmsg`, `send` / `sendmsg` on a full buffer (`builtins/socket.rs`); sockets are non-blocking fds, as in CRuby, and `IO#timeout` is the deadline | `Poll` on the socket fd, then the call is retried |
+| `getaddrinfo` / reverse `getnameinfo` while other threads exist | a `std::thread` worker runs the call (`Send + 'static` closure); the waiting thread polls an eventfd the worker writes (`socket.rs offload`) |
 | `Process.wait` of any child / a group, `File#flock` that would block, `File.open` of a FIFO writer without a reader | retry after a back-off `Timer` (1 ms doubling to 20 / 50 ms): no fd to wait on. A CFUNC worker (below) is the exact form |
 
 Without other threads, plain reads and writes still block in the syscall (nothing else could run);
@@ -134,7 +136,7 @@ dropped from the epoll set (poll would report POLLNVAL).
   state it in the type).
 - probe order uring → (ENOSYS / EPERM: container seccomp) → epoll → poll, as koruby.
 
-**CFUNC** (not implemented): koruby's worker-thread kind for calls that cannot be multiplexed
+**CFUNC** (one ad-hoc form: the resolver worker of socket.rs): koruby's worker-thread kind for calls that cannot be multiplexed
 (`getaddrinfo`, blocking `open` of a FIFO, `flock`). In Rust the "fn must not touch the VM"
 contract is a `Send + 'static` bound on the closure — `Ctx` and heap borrows are not `Send`, so the
 compiler checks what koruby needs a CodeQL rule for. The back-off emulations above are its

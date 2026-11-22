@@ -218,6 +218,7 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     if let Some(r) = io::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = strscan::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = psych::alloc_data(c, klass)? { return Ok(Some(r)); }
+    if let Some(r) = socket::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = transcode::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = tracepoint::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = thread::alloc_data(c, klass)? { return Ok(Some(r)); }
