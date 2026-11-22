@@ -1,5 +1,6 @@
 // VM core: execution context, frames, blocks, methods, classes, calls, exceptions.
 #![allow(clippy::missing_safety_doc)]
+use crate::heap::{obj_clear_flags, obj_flags, obj_klass, obj_set_flags, obj_set_klass};
 use crate::gc::{self, EdgeVisitor, Saruby, RootVisitor};
 use crate::node::{NodePtr, DispatchFn};
 use crate::object::*;
@@ -512,7 +513,7 @@ pub fn vm() -> &'static Vm { unsafe { VM.as_deref().unwrap_unchecked() } }   // 
 
 #[inline]
 pub fn class_of(v: Value) -> Value {
-    if v.is_heap() { return obj(v).klass; }
+    if v.is_heap() { return obj_klass(v); }
     let vm = vm();
     if v.is_fixnum() { vm.c_integer.get() }
     else if v.is_flonum() { vm.c_float.get() }
@@ -546,7 +547,7 @@ pub fn new_class(superclass: Value) -> Value {
         let meta = alloc_class(vm.c_class.get(), sm, false, AllocKind::Class);
         rclass(meta).is_singleton = true;
         rclass(meta).attached = k;
-        obj(k).klass = meta;
+        obj_set_klass(k, meta);
     }
     k
 }
@@ -558,7 +559,7 @@ pub fn singleton_class(v: Value) -> Value {
         if v == NIL || v == TRUE || v == FALSE { return class_of(v); }
         return NIL;
     }
-    let k = obj(v).klass;
+    let k = obj_klass(v);
     if rclass(k).is_singleton && rclass(k).attached == v { return k; }
     let vm = vm();
     let superclass = if is_class_or_module(v) && !rclass(v).is_module {
@@ -576,8 +577,8 @@ pub fn singleton_class(v: Value) -> Value {
     if is_class_or_module(v) && !rclass(v).is_module && !rclass(v).is_singleton {
         // keep the metaclass chain consistent for classes created before this metaclass
     }
-    obj(meta).klass = vm.c_class.get();
-    obj(v).klass = meta;
+    obj_set_klass(meta, vm.c_class.get());
+    obj_set_klass(v, meta);
     bump_method_serial();
     vm.mcache.borrow_mut().clear();
     meta
@@ -1472,9 +1473,9 @@ fn klass_hit(ck: u64, cc: &CallCache, recv: Value, kind: u32) -> bool {
     // Integer and Float receivers inline (n.even?, x.to_i ...; a Float may also be a heap object)
     let k = if kind & SITE_IMM != 0 {
         if recv.is_fixnum() { vm().c_integer.get().raw() } else if recv.is_flonum() { vm().c_float.get().raw() }
-        else if recv.is_heap() { obj(recv).klass.raw() } else { class_of_imm(recv) }
+        else if recv.is_heap() { obj_klass(recv).raw() } else { class_of_imm(recv) }
     }
-            else { if !recv.is_heap() { return false; } obj(recv).klass.raw() };
+            else { if !recv.is_heap() { return false; } obj_klass(recv).raw() };
     ck == k && cc.serial == method_serial()
 }
 
@@ -1955,7 +1956,7 @@ pub fn invoke_cfunc(c: &mut Ctx, me: *const MethodEntry, f: CFunc, arity: i32, r
         // keywords to a cfunc: an empty **h passes nothing
         let last = base[1 + argc as usize].get();
         if flags & CF_KW_SPLAT != 0 && is_hash(last) && rhash(last).live == 0 { argc -= 1; }
-        else if is_hash(last) { obj(last).flags |= FL_KWHASH; }
+        else if is_hash(last) { obj_set_flags(last, FL_KWHASH); }
     }
     if arity >= 0 && argc as i32 != arity { return argc_err(c, argc as usize, arity, arity); }
     let pf = c.frame;
@@ -1965,7 +1966,7 @@ pub fn invoke_cfunc(c: &mut Ctx, me: *const MethodEntry, f: CFunc, arity: i32, r
     c.frame = pf;
     if flags & CF_KW != 0 && argc > 0 {
         let last = base[1 + argc as usize].get();
-        if is_hash(last) { obj(last).flags &= !FL_KWHASH; }
+        if is_hash(last) { obj_clear_flags(last, FL_KWHASH); }
     }
     r
 }
@@ -1973,7 +1974,7 @@ pub fn invoke_cfunc(c: &mut Ctx, me: *const MethodEntry, f: CFunc, arity: i32, r
 /// Is the last argument of a cfunc a keyword hash?
 pub fn kw_arg(args: &[Value]) -> Option<Value> {
     let l = *args.last()?;
-    if is_hash(l) && obj(l).flags & FL_KWHASH != 0 { Some(l) } else { None }
+    if is_hash(l) && obj_flags(l) & FL_KWHASH != 0 { Some(l) } else { None }
 }
 
 pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
@@ -2079,7 +2080,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
             let d = crate::hash::hash_new();
             crate::array::ary_push(tmp, d);
             for (k, x) in crate::hash::hash_pairs(h) { crate::hash::hash_aset(c, d, k, x)?; }
-            obj(d).flags |= FL_KWHASH;
+            obj_set_flags(d, FL_KWHASH);
             *args.last_mut().unwrap() = d;
         } else if p.forwarding {
             // keep as positional for forwarding; remember it's keywords
@@ -2141,7 +2142,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
         ai += nrest;
         // forwarding stores rest at the hidden slot recorded in kwrest position
         if let Some(fs) = p.kwrest { base[fs as usize].set(r); }
-        if flags & CF_KW != 0 { obj(r).flags |= FL_KWHASH; }
+        if flags & CF_KW != 0 { obj_set_flags(r, FL_KWHASH); }
     }
     for &sl in p.post.iter() { base[sl as usize].set(if ai < given { args[ai] } else { NIL }); ai += 1; }
     // keywords; kw_unset: not passed (their slots stay nil until their defaults run)

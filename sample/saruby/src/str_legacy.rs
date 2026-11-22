@@ -1,6 +1,7 @@
 // Legacy String API (no context), for the modules not converted to the context-borrowing
 // accessors yet (docs/safe_heap.md); converted code uses the `Ctx` methods of string.rs and
 // cannot name these (`heap::no_legacy_str`).
+use crate::heap::obj_set_flags;
 use crate::object::*;
 use crate::sbuf::SBuf;
 use crate::symbol::intern;
@@ -27,7 +28,7 @@ pub fn str_with_capa(n: usize, enc: u8) -> Value {
 }
 pub fn str_new_frozen(b: &[u8]) -> Value {
     let v = str_new(b);
-    obj(v).flags |= FL_FROZEN;
+    obj_set_flags(v, FL_FROZEN);
     v
 }
 pub fn str_eq(a: Value, b: Value) -> bool { rstr(a).b == rstr(b).b }

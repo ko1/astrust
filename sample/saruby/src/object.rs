@@ -1,6 +1,7 @@
 // Heap object layout.  Every heap object is one fixed-size slot (`RObj`) in a GC
 // page; variable-sized payloads (string bytes, array elements, hash tables, class
 // data) live in Rust-owned buffers that the slot owns and drops on sweep.
+use crate::heap::obj_klass;
 use crate::value::*;
 use crate::vm::{Block, MethodEntry};
 use std::any::Any;
@@ -194,6 +195,6 @@ pub fn hash_pairs(h: Value) -> Vec<(Value, Value)> { rhash(h).pairs() }
 pub fn hash_len(h: Value) -> usize { rhash(h).live }
 pub fn hash_entry_at(h: Value, i: usize) -> Option<(Value, Value)> { rhash(h).entries.get(i).map(|e| (e.key, e.val)) }
 pub fn hash_clear(h: Value) { rhash(h).clear(); }
-pub fn hash_dup(h: Value) -> Value { let d = rhash(h).dup(); crate::gc::alloc(obj(h).klass, Body::Hash(Box::new(d))) }
+pub fn hash_dup(h: Value) -> Value { let d = rhash(h).dup(); crate::gc::alloc(obj_klass(h), Body::Hash(Box::new(d))) }
 
 pub use crate::legacy::*;

@@ -1,5 +1,6 @@
 // Legacy Range / numeric API (no context), for the modules not converted yet (docs/safe_heap.md).
 // Converted code uses the `Ctx` methods of range.rs, numeric.rs, bignum.rs.
+use crate::heap::{obj_set_flags, obj_set_klass};
 use crate::object::*;
 use crate::value::*;
 
@@ -17,7 +18,7 @@ pub fn float_new(d: f64) -> Value {
 #[inline(never)]
 fn float_new_heap(d: f64) -> Value {
     let v = crate::gc::alloc(crate::vm::vm().c_float.get(), Body::Float(d));
-    obj(v).flags |= FL_FROZEN;
+    obj_set_flags(v, FL_FROZEN);
     v
 }
 /// Numeric value as f64 (Integer / Float), None otherwise.
@@ -30,7 +31,7 @@ pub fn num_to_f64(v: Value) -> Option<f64> {
 pub fn big_to_value(b: crate::bignum::BigInt) -> Value {
     if let Some(i) = b.to_i64() { if Value::fixable(i) { return Value::fix(i); } }
     let v = crate::gc::alloc(crate::vm::vm().c_integer.get(), Body::Bignum(Box::new(b)));
-    obj(v).flags |= FL_FROZEN;
+    obj_set_flags(v, FL_FROZEN);
     v
 }
 pub fn to_big(v: Value) -> crate::bignum::BigInt {
@@ -62,7 +63,7 @@ pub fn recursion_leave(v: Value, tag: crate::value::Sym) {
 pub fn boot_metaclass(k: Value, m: Value) {
     let d = rclass(m);
     d.is_singleton = true; d.attached = k;
-    obj(k).klass = m;
+    obj_set_klass(k, m);
 }
 pub fn boot_subclass(sup: Value, k: Value) { rclass(sup).subclasses.push(k); }
 /// Constants `names` of `owner` autoload the native `feature`.

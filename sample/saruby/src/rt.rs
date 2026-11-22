@@ -1,4 +1,5 @@
 // Out-of-line runtime support for the nodes in node.def (slow paths).
+use crate::heap::{obj_flags, obj_klass, obj_set_flags};
 use crate::compile::*;
 use crate::hash::*;
 use crate::node::*;
@@ -107,8 +108,8 @@ pub fn fast_ary_aset() -> u64 { FAST_ARY_ASET.load(Relaxed) }
 pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -> RV {
     if booted() && !redef(R_ARY_AREF) { FAST_ARY_AREF.store(vm().c_array.get().raw(), Relaxed); }
     use crate::builtins::{array_methods as am, hash_methods as hm};
-    if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array.get() && !redef(R_ARY_AREF) { return Ok(am::ary_entry(c, a, b.as_fix())); }
-    if is_hash(a) && obj(a).klass == vm().c_hash.get() && !redef(R_HASH_AREF) {
+    if b.is_fixnum() && is_array(a) && obj_klass(a) == vm().c_array.get() && !redef(R_ARY_AREF) { return Ok(am::ary_entry(c, a, b.as_fix())); }
+    if is_hash(a) && obj_klass(a) == vm().c_hash.get() && !redef(R_HASH_AREF) {
         c.frame_mut().pos = line;
         return hm::h_aref(c, a, &[b], std::ptr::null());
     }
@@ -122,7 +123,7 @@ pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -
 #[inline(never)]
 #[cold]
 pub fn srb_ltlt_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -> RV {
-    if is_array(a) && obj(a).klass == vm().c_array.get() && !redef(R_ARY_LTLT) {
+    if is_array(a) && obj_klass(a) == vm().c_array.get() && !redef(R_ARY_LTLT) {
         c.frame_mut().pos = line;
         return crate::builtins::array_methods::a_ltlt(c, a, &[b], std::ptr::null());
     }
@@ -136,11 +137,11 @@ pub fn srb_aset_out(c: &mut Ctx, a: Value, b: Value, v: Value, line: Pos, cc: &m
     if booted() && !redef(R_ARY_ASET) { FAST_ARY_ASET.store(vm().c_array.get().raw(), Relaxed); }
     use crate::builtins::{array_methods as am, hash_methods as hm};
     // Array#[]= / Hash#[]= themselves: errors (frozen, index) with this line and no frame of their own, as CRuby
-    if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array.get() && !redef(R_ARY_ASET) {
+    if b.is_fixnum() && is_array(a) && obj_klass(a) == vm().c_array.get() && !redef(R_ARY_ASET) {
         c.frame_mut().pos = line;
         return am::ary_store(c, a, b.as_fix(), v);
     }
-    if is_hash(a) && obj(a).klass == vm().c_hash.get() && !redef(R_HASH_ASET) {
+    if is_hash(a) && obj_klass(a) == vm().c_hash.get() && !redef(R_HASH_ASET) {
         c.frame_mut().pos = line;
         return hm::h_aset(c, a, &[b, v], std::ptr::null());
     }
@@ -157,7 +158,7 @@ pub fn srb_fstr(s: Str, enc: u32, lc: &mut LitCache) -> Value {
         other => {
             let pooled = other.is_some();
             let v = crate::string::str_new_enc(s, enc as u8);
-            obj(v).flags |= FL_FROZEN;
+            obj_set_flags(v, FL_FROZEN);
             if pooled { vm().node_values.borrow_mut().push(v); } else { vm().frozen_lits.borrow_mut().insert(s.to_vec(), v); }
             v
         }
@@ -205,7 +206,7 @@ pub fn srb_tostr(c: &mut Ctx, v: Value) -> RV {
 
 pub fn srb_regex_lit(c: &mut Ctx, src: Str, opts: u32, lc: &mut LitCache) -> RV {
     let r = crate::regexp::regexp_new(c, src, opts)?;
-    obj(r).flags |= FL_FROZEN;
+    obj_set_flags(r, FL_FROZEN);
     vm().node_values.borrow_mut().push(r);
     lc.v = Some(r);
     Ok(r)
@@ -270,7 +271,7 @@ pub fn srb_range_new(c: &mut Ctx, b: Value, e: Value, excl: bool) -> RV {
 
 pub fn srb_range_lit(b: Value, e: Value, excl: bool, lc: &mut LitCache) -> Value {
     let r = crate::range::range_new(b, e, excl);
-    obj(r).flags |= FL_FROZEN;
+    obj_set_flags(r, FL_FROZEN);
     vm().node_values.borrow_mut().push(r);
     lc.v = Some(r);
     r
@@ -299,7 +300,7 @@ pub fn srb_ivar_get(slf: Value, name: Sym, ic: &mut IvarCache) -> Value {
         if let Body::Object(_) = &obj(slf).body {
             let k = real_class_of(slf);
             if let Some(&i) = rclass(k).ivar_index.get(&name) {
-                if obj(slf).klass == k { ic.klass = k.raw(); ic.idx = i; }
+                if obj_klass(slf) == k { ic.klass = k.raw(); ic.idx = i; }
             }
         }
     }
@@ -349,7 +350,7 @@ pub fn srb_ivar_set(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &mut IvarC
     if slf.is_heap() {
         if let Body::Object(_) = &obj(slf).body {
             let k = real_class_of(slf);
-            if obj(slf).klass == k {
+            if obj_klass(slf) == k {
                 ic.klass = k.raw(); ic.idx = ivar_index_for(k, name);
             }
         }
@@ -598,7 +599,7 @@ pub fn srb_eqq(c: &mut Ctx, p: Value, subj: Value, cc: &mut CallCache) -> Result
     if p.is_fixnum() && subj.is_fixnum() { return Ok(p == subj); }
     if p.is_sym() { return Ok(p == subj); }
     if p == NIL || p == TRUE || p == FALSE { return Ok(p == subj); }
-    if is_string(p) && is_string(subj) && obj(p).klass == vm().c_string.get() { return Ok(str_bytes(p) == str_bytes(subj)); }
+    if is_string(p) && is_string(subj) && obj_klass(p) == vm().c_string.get() { return Ok(str_bytes(p) == str_bytes(subj)); }
     let base = stage(c, 3)?;
     base[0].set(p); base[2].set(subj);
     let r = call_cached(c, cc, s::eqq, base, 1, std::ptr::null(), 0)?;
@@ -611,7 +612,7 @@ pub fn srb_eqq(c: &mut Ctx, p: Value, subj: Value, cc: &mut CallCache) -> Result
 pub fn srb_eqq_class(c: &mut Ctx, p: Value, subj: Value, cc: &mut CallCache, km: &mut KindMemo) -> Result<bool, Esc> {
     let r = srb_eqq(c, p, subj, cc)?;
     // cc.me is what the call just ran when the cache is p's (a polymorphic site keeps others elsewhere)
-    if p.is_heap() && cc.klass == obj(p).klass.raw() && cc.me == vm().ids.m_eqq.get() as usize {
+    if p.is_heap() && cc.klass == obj_klass(p).raw() && cc.me == vm().ids.m_eqq.get() as usize {
         let (k, ser) = (class_of(subj).raw(), kind_serial());
         if km.pat != p.raw() || km.ser != ser { *km = KindMemo { pat: p.raw(), ser, memo: [0; KIND_WAYS] }; }
         km.memo[kind_way(k)] = k | r as u64;
@@ -625,7 +626,7 @@ fn defined_str(s: &[u8]) -> Value {
     key.extend_from_slice(s);
     if let Some(&v) = vm().frozen_lits.borrow().get(&key) { return v; }
     let v = crate::string::str_new_enc(s, ENC_ASCII);
-    obj(v).flags |= FL_FROZEN;
+    obj_set_flags(v, FL_FROZEN);
     vm().frozen_lits.borrow_mut().insert(key, v);
     v
 }
@@ -736,7 +737,7 @@ pub fn srb_callx_arg(c: &mut Ctx, ci: CiRef, i: usize, v: Value, tmp: Value, kw:
             // a ruby2_keywords hash at the end of a splat is passed as keywords
             if n > 0 {
                 let last = rary(a)[n - 1];
-                if is_hash(last) && obj(last).flags & FL_KWHASH != 0 && *kw == NIL {
+                if is_hash(last) && obj_flags(last) & FL_KWHASH != 0 && *kw == NIL {
                     rary(tmp).pop();
                     let h = hash_new();
                     for (k, x) in hash_pairs(last) { hash_aset(c, h, k, x)?; }
@@ -965,7 +966,7 @@ pub fn srb_binop(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: Pos, cc: &mut 
 
 #[cold]
 pub fn srb_eq(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -> RV {
-    if is_string(a) && is_string(b) && obj(a).klass == vm().c_string.get() { return Ok(Value::bool(crate::string::str_eq(a, b))); }
+    if is_string(a) && is_string(b) && obj_klass(a) == vm().c_string.get() { return Ok(Value::bool(crate::string::str_eq(a, b))); }
     srb_binop(c, a, b, s::eq, line, cc)
 }
 
