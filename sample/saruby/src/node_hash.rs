@@ -728,6 +728,24 @@ fn PROF_node_trace(pc: &mut ProfCtx, n: NodePtr) -> u64 {
 
 
 #[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_cov(n: NodePtr) -> u64 {
+    let u = unsafe { &(*(n as *mut NodeOf<node_cov_struct>)).u };
+    let mut h = hash_str("node_cov");
+    h = hash_merge(h, hash_u64(u.id as u64));
+    h = hash_merge(h, hash_node(u.body));
+    h
+}
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut, unused_braces)]
+fn PROF_node_cov(pc: &mut ProfCtx, n: NodePtr) -> u64 {
+    let np = n as *mut NodeOf<node_cov_struct>;
+    let u = unsafe { &(*np).u };
+    let mut h = hash_str("node_cov");
+    h = hash_merge(h, profile_node(pc, u.body));
+    h
+}
+
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_if(n: NodePtr) -> u64 {
     let u = unsafe { &(*(n as *mut NodeOf<node_if_struct>)).u };
     let mut h = hash_str("node_if");
