@@ -6,12 +6,16 @@ use crate::node::*;
 use crate::vm::*;
 
 const PRELUDE_FILE: &str = "<internal:prelude>";
-pub static mut STORE: Option<TieredStore> = None;
+thread_local! {
+    // leaked, as the static it replaces was never dropped; no drop glue, so atexit still sees it
+    static STORE: std::cell::RefCell<Option<&'static mut TieredStore>> = const { std::cell::RefCell::new(None) };
+}
+/// `f(store)`; None under --plain.  A nested call panics (RefCell) instead of aliasing.
+fn with_store<R>(f: impl FnOnce(&mut TieredStore) -> R) -> Option<R> { STORE.with_borrow_mut(|s| s.as_deref_mut().map(f)) }
 
 fn exe_dir() -> std::path::PathBuf { std::env::current_exe().unwrap().parent().unwrap().to_path_buf() }
 
 /// Called once at startup.  `program_dir` None = --plain (no code store at all).
-#[allow(static_mut_refs)]
 pub fn init(program_dir: Option<&str>, collect: bool) {
     let mut st = TieredStore::new(exe_dir().join("preload_store"), program_dir.map(Into::into), env!("SARUBY_BUILD_ID"), collect);
     // SARUBY_PATCH=0: every body keeps the shared SD of all.so (no patch binding)
@@ -20,24 +24,19 @@ pub fn init(program_dir: Option<&str>, collect: bool) {
         // SAFETY: registers a plain extern "C" fn with no captured state.
         unsafe { atexit(print_patch_stats); }
     }
-    unsafe { STORE = Some(st); }
+    STORE.set(Some(Box::leak(Box::new(st))));
 }
 
 extern "C" { fn atexit(f: extern "C" fn()) -> std::os::raw::c_int; }
-#[allow(static_mut_refs)]
 extern "C" fn print_patch_stats() {
-    // SAFETY: at exit no other access to STORE is live.
-    if let Some(st) = unsafe { STORE.as_ref() } {
-        let (n, failed, bytes) = st.patch_stats();
+    if let Some((n, failed, bytes)) = with_store(|st| st.patch_stats()) {
         eprintln!("saruby: patch bound={} failed={} bytes={}", n, failed, bytes);
     }
 }
 
 /// A body's dispatcher until its first dispatch: bind its own copy (or keep the shared SD), then run it.
-#[allow(static_mut_refs)]
 fn first_dispatch(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
-    // SAFETY: STORE is set at startup; binding runs no Ruby code, so no other borrow of it is live.
-    let p = unsafe { STORE.as_mut() }.and_then(|st| st.bind(n as usize, env!("SARUBY_BUILD_ID"), first_dispatch as DispatchFn as usize, hole_value));
+    let p = with_store(|st| st.bind(n as usize, env!("SARUBY_BUILD_ID"), first_dispatch as DispatchFn as usize, hole_value)).flatten();
     let Some(p) = p else { unreachable!("first_dispatch on a node that was not deferred") };
     // SAFETY: p is the entry of an SD for this node's shape, with the dispatcher's signature.
     let d = unsafe { std::mem::transmute::<*const std::os::raw::c_void, DispatchFn>(p) };
@@ -64,9 +63,9 @@ thread_local! {
 
 static SD_NAMES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-#[allow(static_mut_refs)]
-pub fn register_iseq(is: &'static Iseq, src_key: &dyn Fn() -> u64) {
-    let Some(st) = (unsafe { STORE.as_mut() }) else { return };
+pub fn register_iseq(is: &'static Iseq, src_key: &dyn Fn() -> u64) { with_store(|st| register_in(st, is, src_key)); }
+
+fn register_in(st: &mut TieredStore, is: &'static Iseq, src_key: &dyn Fn() -> u64) {
     let prelude = is.info.file == PRELUDE_FILE;
     let src_key = src_key();
     let mut reg = |body: NodePtr, what: &str| {
@@ -107,9 +106,9 @@ pub fn bake_config() -> BakeConfig {
     }
 }
 
-#[allow(static_mut_refs)]
-pub fn bake(store_dir: &str) -> Result<usize, String> {
-    let st = unsafe { STORE.as_mut() }.ok_or("no code store")?;
+pub fn bake(store_dir: &str) -> Result<usize, String> { with_store(|st| bake_in(st, store_dir)).ok_or("no code store")? }
+
+fn bake_in(st: &mut TieredStore, store_dir: &str) -> Result<usize, String> {
     // a body that only ran through its entry node needs no separate copy
     let skip: Vec<usize> = BLOCKS.with(|b| b.borrow().iter().filter(|is| !is.body_used.get()).map(|is| is.body as usize).collect());
     st.program_entries.retain(|e| !skip.contains(e));
