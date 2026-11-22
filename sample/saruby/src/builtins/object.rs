@@ -355,7 +355,7 @@ pub fn method_list(c: &mut Ctx, slf_class: Value, filter: impl Fn(u8) -> bool, i
 
 fn k_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let all = a.first().map(|v| v.truthy()).unwrap_or(true);
-    if !all { return k_singleton_methods(c, slf, &[], _b); }
+    if !all { return k_singleton_methods(c, slf, &[FALSE], _b); }
     Ok(method_list(c, class_of(slf), |v| v != VISI_PRIVATE, true))
 }
 fn k_public_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { Ok(method_list(c, class_of(slf), |v| v == VISI_PUBLIC, a.first().is_none_or(|v| v.truthy()))) }
@@ -369,6 +369,8 @@ fn k_singleton_methods(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) 
     let mut names: Vec<(Sym, *const MethodEntry)> = c.class(k).mtbl.iter().map(|(a, b)| (*a, *b)).collect();
     names.sort_by_key(|x| x.0);
     for (n, me) in names { if me_visi(c, me) != VISI_PRIVATE && !matches!(me_kind(c, me), Some(MKind::Undef)) { c.ary_push(a, Value::sym(n)); } }
+    // singleton_methods(false): the singleton class's own methods only
+    if !_a.first().is_none_or(|v| v.truthy()) { return Ok(a); }
     for &m in c.class(k).includes.clone().iter() {
         for (n, v) in mtbl_entries(c, m) { if v == VISI_PUBLIC && !c.ary(a).contains(&Value::sym(n)) { c.ary_push(a, Value::sym(n)); } }
     }

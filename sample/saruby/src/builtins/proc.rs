@@ -392,6 +392,8 @@ fn meth_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let same_body = x.me == y.me || match (c.me_ref(x.me).map(|m| m.kind), c.me_ref(y.me).map(|m| m.kind)) {
         (Some(MKind::Iseq(p)), Some(MKind::Iseq(q))) => p == q,
         (Some(MKind::Cfunc(f, _)), Some(MKind::Cfunc(g, _))) => f as usize == g as usize,
+        (Some(MKind::Bmethod(p)), Some(MKind::Bmethod(q))) => p == q,
+        (Some(MKind::AttrReader(p)), Some(MKind::AttrReader(q))) | (Some(MKind::AttrWriter(p)), Some(MKind::AttrWriter(q))) => p == q,
         _ => false,
     };
     Ok(Value::bool(x.recv == y.recv && same_body && obj_klass(slf) == obj_klass(a[0])))
