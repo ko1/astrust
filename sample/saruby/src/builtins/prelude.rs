@@ -55,6 +55,7 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
         "saruby/sync" => crate::builtins::thread::init_sync(c),
         "saruby/econv" => crate::builtins::transcode::init(c),
         "saruby/tracepoint" => crate::builtins::tracepoint::init_class(c),
+        "io/console" => crate::builtins::stringio::init_console(c),
         "saruby/digest" => crate::builtins::digest::init(c),
         "saruby/digest/bubblebabble" => crate::builtins::digest::init_bubblebabble(c),
         _ if name.starts_with("saruby/digest/") => crate::builtins::digest::init_algo(c, &name[14..]),
