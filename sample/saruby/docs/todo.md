@@ -13,7 +13,15 @@
 - [x] 再利用テスト `tools/reuse_test.sh`（別プログラムで焼いたストアが効くこと）
 - [x] 焼き込むプロファイル値をハッシュに混ぜる（ASTro の Hopt: SD_<Hopt>、`hopt_index.txt` に (Horg, ファイル・行・入口種別) → Hopt）。first bake wins は解消
   - [x] hopt_index のキー: ファイルパス → ソースの内容のハッシュ + 行 + 入口種別（別パス・コピーでも自分の Hopt。reuse_test.sh の copy ケース）
-  - [ ] 起動 +2M 命令（索引の読み込み等、未分解）、bake 時間への影響未測定
+  - [x] 起動 +2M 命令の分解と削減（trials/2026-11-23-saruby-hopt-startup）: 索引の文字列パース + HashMap 0.94M、
+    body ごとの format! キーと KEYS（String の HashMap）約 1.0M（--plain でも払っていた）、core.rb の FNV 0.12M。
+    索引は 16 桁 hex 3 列の固定幅・Horg 順（SWAR で読む、二分探索）、キーは u64（hash_merge）、キーと Horg はストアが
+    使うときだけ計算、prelude はソースをハッシュしない（ビルドごとのストア）。`-e 'p 1'` 20.20M → 17.97M（Hopt 前 17.54M）、
+    --plain 15.47M → 13.98M。bake: fib の item 52 → 83（R_/S_ が entry ごとに複製）、optcarrot +2%（rustc 時間は誤差内）
+  - [ ] R_ / S_ の tag が entry の Hopt なので、同じ再帰先を含む entry ごとに R_/S_ が（中の名前を除いて同じ中身で）
+    複製される（fib: R 1 → 4、S 1 → 4。T 40 → 65 も R_ 名を含む T_ が別名になったためと推測、未確認）。
+    tag を再帰先の部分木の profile にすれば共有できるはず（未検証）
+  - [ ] 残る起動の固定費: prelude の body ごとの dlsym 0.42M（Hopt 前から）、索引の読み込み 0.16M（callgrind）
   - ivar スロット番号（user: 「ノードのパラメータにして焼くだけなら原則を破らない」）
   - site kind、`shared`、組み込んだ呼び出し先・ブロック、演算子の型、イテレータの選択
 - [x] 組み込みメソッドの展開を名前で選ぶ（F4）。size/length/empty?/to_i/to_int は +6〜20 命令/呼び出し
