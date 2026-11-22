@@ -41,7 +41,11 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 
 - [x] rubyspec を実 mspec で計測（runner: ~/ruby/src/trials/2026-11-22-saruby-rubyspec/bin/、SPEC_RUBY_VERSION=4.0.2）。core 19542/22373、language 2592/2933、library 1922/3188（CRuby 4.0.2: 23144/23155、2934/2934、6401/6402）
 - [ ] **AOT で knucleotide が segfault**（ruby-bench、base から。最優先で調べる）
-- [ ] rubyspec の大きな塊: IO::Buffer 180、Encoding::Converter 167、TracePoint 72、#inspect の違い 101、引数の型チェック 90、Array#== / #hash の端 90、NameError#receiver 60、language の非 UTF-8 マジックコメント 30・predefined_spec 79、core のタイムアウト 14 ファイル
+- [x] rubyspec 第 2 回（~/ruby/src/trials/2026-11-22-saruby-rubyspec-2/）: 特殊グローバル変数、IO の外部/内部エンコーディング（io.c 移植、読み書きの変換）、マジックコメントのソースエンコーディング、再帰構造の #hash、Range#step/#max、Kernel#Float、タイムアウト 10 ファイル。core 19617 → 20324、language 2592 → 2720
+- [ ] rubyspec の大きな塊: IO::Buffer 180、Encoding::Converter 167（transcode とエラー属性はある。primitive_convert 以下が無い）、TracePoint 72、regexp のエンコーディング修飾子 /e /s /u /n
+- [ ] IO の読み込み変換が行に分けてから変換（CRuby は変換してから分ける）。xml:/newline: 装飾と ISO-2022-JP 等は IO では変換しない
+- [ ] まだタイムアウト: file/flock、file/open（FIFO をスレッド 2 本で）、kernel/require（並行 require）、mutex/lock、thread/list（グリーンスレッドに横取りが無い）、io-wait/wait
+- [ ] `$_` / `$?` のスレッドローカル化、`$0 =` でプロセス名
 - [ ] library/: bigdecimal、socket（core/file の 124 も）、zlib、digest、net-*、yaml
 - [ ] RUBY_VERSION を 4.0.x にするか（いまは 3.4.0。mspec は SPEC_RUBY_VERSION で回避）
 - [x] CRuby benchmark/*.rb 148/148（yml は 228/236: IO::Buffer、RubyVM、irb、Pathname、fiber_chain）

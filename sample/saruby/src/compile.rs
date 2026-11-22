@@ -124,6 +124,7 @@ pub struct Compiler<'a> {
     tl_binding: bool,
     pub errors: Vec<String>,
     csyms: Vec<std::cell::Cell<Sym>>,   // pr.constants interned, on first use (NOSYM: not yet)
+    src_enc: u32,                       // the source encoding (magic comment)
 }
 const NOSYM: Sym = Sym(u32::MAX);
 
@@ -150,7 +151,13 @@ pub const DEF_BACKREF: u32 = 16;
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
         Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, errors: vec![],
-                   csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()] }
+                   csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()],
+                   src_enc: crate::builtins::encoding::find_enc(pr.encoding.as_bytes()).unwrap_or(crate::object::ENC_UTF8) as u32 }
+    }
+    /// Encoding of a string literal: the source's unless an escape forced one.
+    fn lit_enc(&self, flags: u32) -> u32 {
+        if flags & pa::STRING_FLAGS_FORCED_BINARY_ENCODING != 0 { crate::object::ENC_BINARY as u32 }
+        else if flags & pa::STRING_FLAGS_FORCED_UTF8_ENCODING != 0 { crate::object::ENC_UTF8 as u32 } else { self.src_enc }
     }
 
     fn cst(&self, c: u32) -> Sym {
@@ -526,7 +533,7 @@ impl<'a> Compiler<'a> {
                 self.fcall("Complex", vec![z, v], line)
             }
             Kind::StringNode { unescaped } => {
-                let enc = if n.flags & pa::STRING_FLAGS_FORCED_BINARY_ENCODING != 0 { crate::object::ENC_BINARY as u32 } else { 0 };
+                let enc = self.lit_enc(n.flags);
                 if n.flags & pa::STRING_FLAGS_FROZEN != 0 { ALLOC_node_fstr(lstr(unescaped), enc) } else { ALLOC_node_str(lstr(unescaped), enc) }
             }
             Kind::XStringNode { unescaped } => {
@@ -576,7 +583,8 @@ impl<'a> Compiler<'a> {
             Kind::SourceLineNode => ALLOC_node_lit(Value::fix(line as i64)),
             Kind::SourceEncodingNode => {
                 let e = ALLOC_node_top_const(intern(b"Encoding"));
-                ALLOC_node_const_path(e, intern(b"UTF_8"), line)
+                let nm = crate::builtins::encoding::enc_name(self.src_enc as u8).to_ascii_uppercase().replace('-', "_");
+                ALLOC_node_const_path(e, intern(nm.as_bytes()), line)
             }
             // variables
             Kind::LocalVariableReadNode { name, depth } => { let nm = self.cst(*name); self.var_read(nm, *depth) }
@@ -627,8 +635,11 @@ impl<'a> Compiler<'a> {
                 let nm = self.cst(*name); let v = self.c(value);
                 ALLOC_node_and(ALLOC_node_ivar(nm), ALLOC_node_iasgn(nm, v))
             }
-            Kind::GlobalVariableReadNode { name } => ALLOC_node_gvar(self.cst(*name)),
-            Kind::GlobalVariableWriteNode { name, value } => { let v = self.c(value); ALLOC_node_gasgn(self.cst(*name), v) }
+            Kind::GlobalVariableReadNode { name } => { let nm = self.cst(*name); let r = ALLOC_node_gvar(nm); if gvar_warns(nm) { ALLOC_node_line(line, r) } else { r } }
+            Kind::GlobalVariableWriteNode { name, value } => {
+                let nm = self.cst(*name); let v = self.c(value); let r = ALLOC_node_gasgn(nm, v);
+                if gvar_warns(nm) { ALLOC_node_line(line, r) } else { r }
+            }
             Kind::GlobalVariableOperatorWriteNode { name, value, binary_operator } => {
                 let nm = self.cst(*name);
                 let r = ALLOC_node_gvar(nm); let v = self.c(value);
@@ -974,13 +985,13 @@ impl<'a> Compiler<'a> {
         }).sum();
         // short results start inside the object slot (spilling copies at most 23 bytes)
         let cap = if cap <= 48 { 0 } else { cap.min(4096) };
-        ALLOC_node_dstr(leak(v), 0, cap as u32)
+        ALLOC_node_dstr(leak(v), self.src_enc, cap as u32)
     }
     fn dstr_parts(&mut self, parts: &[PNode], v: &mut Vec<NodePtr>) {
         for p in parts {
             match &p.kind {
                 Kind::StringNode { unescaped } => {
-                    let enc = if p.flags & pa::STRING_FLAGS_FORCED_BINARY_ENCODING != 0 { crate::object::ENC_BINARY as u32 } else { 0 };
+                    let enc = self.lit_enc(p.flags);
                     v.push(ALLOC_node_fstr(lstr(unescaped), enc))
                 }
                 Kind::InterpolatedStringNode { parts } => self.dstr_parts(parts, v),
@@ -1219,7 +1230,7 @@ impl<'a> Compiler<'a> {
         let recv_node = match recv {
             // "lit".freeze / -"lit": the receiver is the interned literal
             Some(PNode { kind: Kind::StringNode { unescaped }, flags: rf, .. }) if args.is_empty() && block.is_none() && (mid == s::freeze || mid == s::uminus) => {
-                let enc = if rf & pa::STRING_FLAGS_FORCED_BINARY_ENCODING != 0 { crate::object::ENC_BINARY as u32 } else { 0 };
+                let enc = self.lit_enc(*rf);
                 ALLOC_node_fstr(lstr(unescaped), enc)
             }
             Some(r) => self.c(r),
@@ -2099,6 +2110,9 @@ fn nocall_body(body: NodePtr) -> bool {
 }
 
 /// Statements that can raise without passing through a node that records the line.
+/// Globals whose read or write can warn: the warning names the line.
+fn gvar_warns(nm: Sym) -> bool { matches!(crate::symbol::sym_bytes(nm), b"$/" | b"$-0" | b"$\\" | b"$," | b"$;" | b"$-F" | b"$=") }
+
 fn needs_line(n: &PNode) -> bool {
     match &n.kind {
         Kind::ArrayNode { .. } | Kind::HashNode { .. } | Kind::KeywordHashNode { .. } | Kind::CaseMatchNode { .. } | Kind::MatchRequiredNode { .. }

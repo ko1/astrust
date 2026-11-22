@@ -504,7 +504,7 @@ class Enumerator
       end
     end
     def rewind = (@__enums.reverse_each { |e| e.rewind if e.respond_to?(:rewind) }; self)
-    def inspect = "#<Enumerator::Product: #{@__enums.inspect}>"
+    def inspect = @__enums ? "#<Enumerator::Product: #{@__enums.inspect}>" : "#<#{self.class}: uninitialized>"
     alias to_s inspect
   end
 
@@ -526,7 +526,7 @@ class Enumerator
     end
     def +(other) = Chain.new(self, other)
     def rewind = (@__enums.reverse_each { |e| e.rewind if e.respond_to?(:rewind) }; self)
-    def inspect = "#<Enumerator::Chain: [#{@__enums.map(&:inspect).join(', ')}]>"
+    def inspect = @__enums ? "#<Enumerator::Chain: [#{@__enums.map(&:inspect).join(', ')}]>" : "#<#{self.class}: uninitialized>"
     alias to_s inspect
   end
 
@@ -636,6 +636,8 @@ class Enumerator
     def inspect
       if @__parent
         "#<#{self.class}: #{@__parent.inspect}:#{@__mid}#{__args_s}>"
+      elsif @__margs.nil? && !@__gen
+        "#<#{self.class}: uninitialized>"
       elsif @__gen
         "#<#{self.class}: #{@__src.inspect}:each>"
       elsif @__meth == :each && @__margs.empty?

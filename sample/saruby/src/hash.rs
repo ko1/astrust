@@ -166,41 +166,63 @@ fn big_hash(c: &Ctx, v: Value) -> u64 { crate::astrust::hash_str(&c.big(v).to_st
 
 /// Ruby `hash` of a key.
 pub fn key_hash(c: &mut Ctx, k: Value) -> Result<u64, Esc> {
+    match hash_of(c, k)? { Hv::Raw(h) => Ok(h), Hv::Ruby(r) => Ok(mix(r)) }
+}
+/// rb_hash: the value `k.hash` answers, as the bits an Integer#hash / Array#hash result has.
+pub fn ruby_hash(c: &mut Ctx, k: Value) -> Result<u64, Esc> {
+    match hash_of(c, k)? { Hv::Raw(h) => Ok(h >> 2), Hv::Ruby(r) => Ok(r) }
+}
+/// A table hash computed here (whose #hash is it >> 2), or what a Ruby #hash returned.
+enum Hv { Raw(u64), Ruby(u64) }
+fn hash_of(c: &mut Ctx, k: Value) -> Result<Hv, Esc> {
     if k.is_fixnum() || k.is_sym() || !k.is_heap() {
-        if k.is_flonum() { let f = k.flonum_val(); return Ok(mix(if f == 0.0 { 0 } else { f.to_bits() })); }
-        return Ok(mix(k.raw()));
+        if k.is_flonum() { let f = k.flonum_val(); return Ok(Hv::Raw(mix(if f == 0.0 { 0 } else { f.to_bits() }))); }
+        return Ok(Hv::Raw(mix(k.raw())));
     }
-    if is_string(k) { return Ok(crate::astrust::hash_bytes(c.str_bytes(k))); }
-    if is_float(k) { let f = float_val(k); return Ok(mix(if f == 0.0 { 0 } else { f.to_bits() })); }
-    if is_bignum(k) { return Ok(big_hash(c, k)); }
+    if is_string(k) { return Ok(Hv::Raw(crate::astrust::hash_bytes(c.str_bytes(k)))); }
+    if is_float(k) { let f = float_val(k); return Ok(Hv::Raw(mix(if f == 0.0 { 0 } else { f.to_bits() }))); }
+    if is_bignum(k) { return Ok(Hv::Raw(big_hash(c, k))); }
     let (kernel, array) = match c.method_entry(class_of(k), s::hash) {
         Some(me) => (std::ptr::eq(me, c.vm().ids.kernel_hash), me.owner == c.vm().c_array),
         None => (false, false),
     };
-    if kernel { return Ok(mix(k.raw())); }
-    if is_array(k) && array {
-        let n = c.ary_len(k);
-        let mut h: u64 = 0x345678 ^ n as u64;
-        if crate::builtins::kernel::recursion_enter(k, s::hash) {
-            let mut r = Ok(());
-            for i in 0..n {
-                let x = c.ary_get(k, i);
-                match key_hash(c, x) { Ok(xh) => h = crate::astrust::hash_merge(h, xh), Err(e) => { r = Err(e); break; } }
-            }
-            crate::builtins::kernel::recursion_leave(k, s::hash);
-            r?;
-        }
-        return Ok(h);
-    }
+    if kernel { return Ok(Hv::Raw(mix(k.raw()))); }
+    if is_array(k) && array { return Ok(Hv::Raw(ary_hash(c, k)?)); }
     let r = funcall(c, k, s::hash, &[], std::ptr::null())?;
-    if r.is_fixnum() { return Ok(mix(r.as_fix() as u64)); }
-    if is_bignum(r) { return Ok(big_hash(c, r)); }
+    if r.is_fixnum() { return Ok(Hv::Ruby(r.as_fix() as u64)); }
+    if is_bignum(r) { return Ok(Hv::Raw(big_hash(c, r))); }
     if r.is_heap() && !is_float(r) && respond_to(r, s::to_int, true) {
         let i = funcall(c, r, s::to_int, &[], std::ptr::null())?;
-        if i.is_fixnum() { return Ok(mix(i.as_fix() as u64)); }
-        if is_bignum(i) { return Ok(big_hash(c, i)); }
+        if i.is_fixnum() { return Ok(Hv::Ruby(i.as_fix() as u64)); }
+        if is_bignum(i) { return Ok(Hv::Raw(big_hash(c, i))); }
     }
     type_err(c, format!("no implicit conversion of {} into Integer", crate::builtins::kernel::class_name_for_err(r)))
+}
+/// Array#hash over the elements' #hash values; a recursive array hashes by its length alone.
+fn ary_hash(c: &mut Ctx, k: Value) -> Result<u64, Esc> {
+    let n = c.ary_len(k);
+    let start: u64 = 0x345678 ^ n as u64;
+    hash_outer(c, k, crate::astrust::hash_merge(start, 0x41727261), |c| {
+        let mut h = start;
+        let mut i = 0;
+        while i < c.ary_len(k) { let x = c.ary_get(k, i); h = crate::astrust::hash_merge(h, ruby_hash(c, x)?); i += 1; }
+        Ok(h)
+    })
+}
+thread_local! {
+    static HASH_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static HASH_RECURSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+/// rb_exec_recursive_outer for #hash of `v`: a recursion met anywhere inside makes the outermost
+/// call answer `rec`, so equal recursive structures hash alike.
+pub fn hash_outer(c: &mut Ctx, v: Value, rec: u64, f: impl FnOnce(&mut Ctx) -> Result<u64, Esc>) -> Result<u64, Esc> {
+    if !crate::builtins::kernel::recursion_enter(v, s::hash) { HASH_RECURSED.with(|r| r.set(true)); return Ok(rec); }
+    let d = HASH_DEPTH.with(|x| { let d = x.get(); x.set(d + 1); d });
+    let r = f(c);
+    HASH_DEPTH.with(|x| x.set(d));
+    crate::builtins::kernel::recursion_leave(v, s::hash);
+    if d == 0 && HASH_RECURSED.with(|x| x.replace(false)) { return r.map(|_| rec); }
+    r
 }
 
 /// Ruby `eql?`.

@@ -1037,7 +1037,13 @@ pub fn check_argc(c: &mut Ctx, args: &[Value], min: usize, max: usize) -> Result
 }
 
 pub fn raise_frozen(c: &mut Ctx, v: Value) -> Esc {
-    let insp = crate::builtins::kernel::inspect_str(c, v).unwrap_or_else(|_| "?".into());
+    // rb_error_frozen_object: an #inspect that modifies the object gives " ..." (rb_exec_recursive)
+    let tag = crate::symbol::intern(b"__frozen_inspect__");
+    let insp = if crate::legacy::recursion_enter(v, tag) {
+        let r = crate::builtins::kernel::inspect_str(c, v);
+        crate::legacy::recursion_leave(v, tag);
+        match r { Ok(s) => s, Err(e) => return e }
+    } else { " ...".into() };
     let msg = format!("can't modify frozen {}: {}", class_path(real_class_of(v)), insp);
     let e = make_exception(vm().c_frozen_error, &msg);
     ivar_set_raw(e, s::receiver, v);

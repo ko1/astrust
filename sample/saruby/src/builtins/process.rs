@@ -93,6 +93,10 @@ pub fn signo_arg(c: &mut Ctx, v: Value) -> Result<i32, Esc> {
 fn signal_trap(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
     if a.is_empty() || a.len() > 2 || (a.len() == 1 && blk.is_null()) { if a.len() == 1 { return arg_err(c, "tried to create Proc object without a block"); } return argc_err(c, a.len(), 1, 2); }
     let sig = signo_arg(c, a[0])?;
+    if sig < 0 {
+        let nm = if a[0].is_sym() { crate::symbol::sym_str(a[0].as_sym()) } else { String::from_utf8_lossy(c.str_bytes(a[0])).into_owned() };
+        return arg_err(c, format!("negative signal name: {}", nm));
+    }
     if matches!(sig, 4 | 7 | 8 | 11 | 26) { return arg_err(c, format!("can't trap reserved signal: SIG{}", signame(sig).unwrap())); }
     if matches!(sig, 9 | 19) { return Err(raise_errno_plain(c, 22, &format!("SIG{}", signame(sig).unwrap()))); }
     let cmd = if a.len() == 2 { a[1] } else { block_to_proc(c, blk)? };
@@ -216,6 +220,7 @@ fn k_sleep(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
 pub struct Spec {
     pub argv: Vec<CString>, pub prog: CString, pub env: Vec<(CString, Option<CString>)>, pub clear_env: bool, pub chdir: Option<CString>,
     pub redirect: Vec<(i32, i32)>, pub close: Vec<i32>, pub opened: Vec<i32>, pub pgroup: Option<i32>, pub umask: Option<u32>,
+    pub close_others: Vec<i32>,   // close_others: true: fds >= 3 the child gets with close-on-exec
 }
 impl Drop for Spec { fn drop(&mut self) { for &fd in &self.opened { sys::close(fd); } } }
 
@@ -250,7 +255,7 @@ fn pairs_kept(c: &mut Ctx, h: Value, keep: Value) -> Vec<(Value, Value)> {
 }
 /// Build the child description from (env, cmd..., opts) as Kernel#spawn takes them.
 pub fn spawn_spec(c: &mut Ctx, env: Option<Value>, args: &[Value], opts: Option<Value>) -> Result<Spec, Esc> {
-    let mut sp = Spec { argv: vec![], prog: CString::new("").unwrap(), env: vec![], clear_env: false, chdir: None, redirect: vec![], close: vec![], opened: vec![], pgroup: None, umask: None };
+    let mut sp = Spec { argv: vec![], prog: CString::new("").unwrap(), env: vec![], clear_env: false, chdir: None, redirect: vec![], close: vec![], opened: vec![], pgroup: None, umask: None, close_others: vec![] };
     if args.is_empty() { return argc_err(c, 0, 1, -1); }
     if args.len() == 1 && !is_array(args[0]) {
         let cmd = cstring(c, args[0])?;
@@ -289,7 +294,16 @@ pub fn spawn_spec(c: &mut Ctx, env: Option<Value>, args: &[Value], opts: Option<
                 "new_pgroup" => { continue; }
                 "umask" => { sp.umask = Some(num_to_long(c, v)? as u32); continue; }
                 "unsetenv_others" => { sp.clear_env = v.truthy(); continue; }
-                "close_others" | "exception" => { continue; }
+                "close_others" => {
+                    if v.truthy() {
+                        // the fds open now (listed before fork: the child must not allocate)
+                        if let Ok(d) = std::fs::read_dir("/proc/self/fd") {
+                            sp.close_others = d.filter_map(|e| e.ok()?.file_name().to_str()?.parse::<i32>().ok()).filter(|&fd| fd >= 3).collect();
+                        }
+                    } else { sp.close_others.clear(); }
+                    continue;
+                }
+                "exception" => { continue; }
                 "in" | "out" | "err" => {}
                 o => { if o.starts_with("rlimit_") { continue; } return arg_err(c, format!("wrong exec option symbol: {}", o)); }
             }
@@ -334,6 +348,11 @@ fn child_setup(sp: &Spec) -> bool {
         else if sys::dup2(src, dst) < 0 { return false; }
     }
     for &fd in &sp.close { sys::close(fd); }
+    for &fd in &sp.close_others {
+        if sp.redirect.iter().any(|&(dst, _)| dst == fd) { continue; }
+        let f = sys::fcntl(fd, sys::F_GETFD, 0);
+        if f >= 0 { sys::fcntl(fd, sys::F_SETFD, f | sys::FD_CLOEXEC); }
+    }
     for sig in [13, 2, 3, 15, 1, 10, 12, 14, 17] { sys::signal(sig, sys::SigAction::Default); }
     true
 }

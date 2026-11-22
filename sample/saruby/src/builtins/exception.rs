@@ -65,6 +65,19 @@ pub fn init_classes(vmr: &mut Vm) {
     vmr.c_compat_error = define_class_under(enc, "CompatibilityError", vmr.c_encoding_error);
     vmr.c_invalid_byte_seq_error = define_class_under(enc, "InvalidByteSequenceError", vmr.c_encoding_error);
     vmr.c_undef_conv_error = define_class_under(enc, "UndefinedConversionError", vmr.c_encoding_error);
+    {
+        use crate::builtins::encoding as en;
+        for k in [vmr.c_invalid_byte_seq_error, vmr.c_undef_conv_error] {
+            define_cfunc(k, "source_encoding", en::exc_source_encoding, 0);
+            define_cfunc(k, "destination_encoding", en::exc_destination_encoding, 0);
+            define_cfunc(k, "source_encoding_name", en::exc_source_encoding_name, 0);
+            define_cfunc(k, "destination_encoding_name", en::exc_destination_encoding_name, 0);
+        }
+        define_cfunc(vmr.c_invalid_byte_seq_error, "error_bytes", en::exc_error_bytes, 0);
+        define_cfunc(vmr.c_invalid_byte_seq_error, "readagain_bytes", en::exc_readagain_bytes, 0);
+        define_cfunc(vmr.c_invalid_byte_seq_error, "incomplete_input?", en::exc_incomplete_input, 0);
+        define_cfunc(vmr.c_undef_conv_error, "error_char", en::exc_error_bytes, 0);
+    }
     vmr.c_converter_not_found_error = define_class_under(enc, "ConverterNotFoundError", vmr.c_encoding_error);
     vmr.m_errno = define_module("Errno");
     // Errno::* classes are built on first use (autoload of an internal feature) to keep boot short
@@ -197,7 +210,10 @@ fn exc_set_backtrace(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> 
     let v = a[0];
     let bt = if is_string(v) { c.ary_new_from(&[v]) } else if v == NIL || is_array(v) { v } else { return type_err(c, "backtrace must be an Array of String or an Array of Thread::Backtrace::Location"); };
     let loc = c.vm().c_location;
-    if is_array(bt) && c.ary_len(bt) > 0 && c.ary(bt).iter().all(|&x| is_kind_of(x, loc)) {
+    if is_array(bt) && !c.ary(bt).iter().all(|&x| is_string(x)) && !c.ary(bt).iter().all(|&x| x.is_heap() && is_kind_of(x, loc)) {
+        return type_err(c, "backtrace must be an Array of String or an Array of Thread::Backtrace::Location");
+    }
+    if is_array(bt) && c.ary_len(bt) > 0 && c.ary(bt).iter().all(|&x| x.is_heap() && is_kind_of(x, loc)) {
         let strs = c.ary_new();
         let mut i = 0;
         while let Some(&x) = c.ary(bt).get(i) { let s = funcall(c, x, s::to_s, &[], std::ptr::null())?; c.ary_push(strs, s); i += 1; }

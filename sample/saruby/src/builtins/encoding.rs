@@ -485,6 +485,32 @@ pub fn converter_not_found(c: &mut Ctx, from: &str, to: &str) -> Esc {
     raise_msg(c, c.vm().c_converter_not_found_error, &format!("code converter not found ({} to {})", from, to))
 }
 
+/// Raise an InvalidByteSequenceError / UndefinedConversionError with what CRuby's converter
+/// attaches: the encodings of the failing step, the bytes, the bytes to read again.
+#[allow(clippy::too_many_arguments)]
+fn tc_raise(c: &mut Ctx, invalid: bool, msg: &str, src: u8, dst: u8, bytes: &[u8], again: &[u8], incomplete: bool) -> Esc {
+    let k = if invalid { c.vm().c_invalid_byte_seq_error } else { c.vm().c_undef_conv_error };
+    let e = make_exception(k, msg);
+    ivar_set_raw(e, intern(b"__tc_src"), Value::fix(src as i64));
+    ivar_set_raw(e, intern(b"__tc_dst"), Value::fix(dst as i64));
+    let eb = c.str_new_enc(bytes, if invalid { ENC_BINARY } else { src });
+    ivar_set_raw(e, intern(b"__tc_bytes"), eb);
+    let ra = if again.is_empty() { NIL } else { c.str_new_enc(again, ENC_BINARY) };
+    ivar_set_raw(e, intern(b"__tc_again"), ra);
+    ivar_set_raw(e, intern(b"__tc_incomplete"), Value::bool(incomplete));
+    raise_exc(c, e)
+}
+fn tc_attr(slf: Value, name: &[u8]) -> Value { let v = ivar_get(slf, intern(name)); if v == UNDEF { NIL } else { v } }
+fn tc_enc(c: &Ctx, slf: Value, name: &[u8]) -> Value { let v = tc_attr(slf, name); if v.is_fixnum() { encoding_value(c, v.as_fix() as u8) } else { NIL } }
+fn tc_enc_name(c: &mut Ctx, slf: Value, name: &[u8]) -> RV { let v = tc_attr(slf, name); Ok(if v.is_fixnum() { c.str_new(enc_name(v.as_fix() as u8).as_bytes()) } else { NIL }) }
+pub fn exc_source_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(tc_enc(c, slf, b"__tc_src")) }
+pub fn exc_destination_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(tc_enc(c, slf, b"__tc_dst")) }
+pub fn exc_source_encoding_name(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { tc_enc_name(c, slf, b"__tc_src") }
+pub fn exc_destination_encoding_name(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { tc_enc_name(c, slf, b"__tc_dst") }
+pub fn exc_error_bytes(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(tc_attr(slf, b"__tc_bytes")) }
+pub fn exc_readagain_bytes(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(tc_attr(slf, b"__tc_again")) }
+pub fn exc_incomplete_input(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(tc_attr(slf, b"__tc_incomplete")) }
+
 /// Convert `src` (in `from`) to `to`.  `same` = from == to (only scrub/xml/newline apply).
 pub fn transcode(c: &mut Ctx, src: &[u8], from: u8, to: u8, o: &TcOpts) -> Result<Vec<u8>, Esc> {
     let same = from == to;
@@ -515,12 +541,15 @@ pub fn transcode(c: &mut Ctx, src: &[u8], from: u8, to: u8, o: &TcOpts) -> Resul
             if o.invalid_replace { let r = rep_bytes(c)?; out.extend(r); i += n; continue; }
             if same { out.extend_from_slice(&src[i..i + n]); i += n; continue; }
             let eb = &src[i..i + n];
-            let msg = if i + n >= src.len() && max_len(from_r) > n && kind(from_r) != Ascii && eb[0] >= 0x80 || (min_len(from_r) > 1 && i + n >= src.len() && n < min_len(from_r)) {
+            let msg = if i + n >= src.len() && max_len(from_r) > n && kind(from_r) != Ascii && eb[0] >= 0x80 && needmore(from_r, eb) || (min_len(from_r) > 1 && i + n >= src.len() && n < min_len(from_r)) {
                 format!("incomplete {} on {}", show_bytes(eb), enc_name(from_r))
-            } else if n > 1 || (kind(from_r) == Utf8 && (0xc2..=0xf4).contains(&eb[0]) && i + n < src.len()) {
+            } else if n > 1 || (needmore(from_r, eb) && i + n < src.len()) {
                 format!("{} followed by {} on {}", show_bytes(eb), show_bytes(&src[i + n..i + n + 1]), enc_name(from_r))
             } else { format!("{} on {}", show_bytes(eb), enc_name(from_r)) };
-            return Err(raise_msg(c, c.vm().c_invalid_byte_seq_error, &msg));
+            let incomplete = msg.starts_with("incomplete");
+            let again: &[u8] = if msg.contains(" followed by ") { &src[i + n..i + n + 1] } else { b"" };
+            let dst = if from_r == ENC_UTF8 || to == ENC_UTF8 { to } else { ENC_UTF8 };
+            return Err(tc_raise(c, true, &msg, from_r, dst, eb, again, incomplete));
         };
         let ch = &src[i..i + l];
         i += l;
@@ -532,7 +561,8 @@ pub fn transcode(c: &mut Ctx, src: &[u8], from: u8, to: u8, o: &TcOpts) -> Resul
             if let Some(fb) = o.fallback { let r = fallback(c, fb, ch, from_r, ro)?; out.extend(r); continue; }
             let msg = if to == ENC_UTF8 || from_r == ENC_BINARY && false { format!("{} from {} to {}", show_bytes(ch), enc_name(from), enc_name(to)) }
                       else { format!("{} to UTF-8 in conversion from {} to UTF-8 to {}", show_bytes(ch), enc_name(from), enc_name(to)) };
-            return Err(raise_msg(c, c.vm().c_undef_conv_error, &msg));
+            let dst = if to == ENC_UTF8 { to } else { ENC_UTF8 };
+            return Err(tc_raise(c, false, &msg, from, dst, ch, b"", false));
         };
         // newline conversion
         if o.newline == 1 || o.newline == 4 {
@@ -555,7 +585,8 @@ pub fn transcode(c: &mut Ctx, src: &[u8], from: u8, to: u8, o: &TcOpts) -> Resul
                 if let Some(fb) = o.fallback { let r = fallback(c, fb, ch, from_r, ro)?; out.extend(r); continue; }
                 let msg = if from_r == ENC_UTF8 || kind(from_r) == Utf8 { format!("U+{:04X} from UTF-8 to {}", u, enc_name(to)) }
                           else { format!("U+{:04X} to {} in conversion from {} to UTF-8 to {}", u, enc_name(to), enc_name(from), enc_name(to)) };
-                return Err(raise_msg(c, c.vm().c_undef_conv_error, &msg));
+                let mut u8b = vec![]; crate::string::encode_utf8(u, &mut u8b);
+                return Err(tc_raise(c, false, &msg, ENC_UTF8, to, &u8b, b"", false));
             }
         }
     }
@@ -583,7 +614,7 @@ fn fallback(c: &mut Ctx, fb: Value, ch: &[u8], from: u8, to: u8) -> Result<Vec<u
 
 fn conv_ok(from: u8, to: u8) -> bool {
     let bad = |e: u8| matches!(enc_name(e), "UTF-7" | "ISO-2022-JP" | "ISO-2022-JP-2" | "CP50220" | "CP50221" | "IBM037" | "ISO-2022-JP-KDDI" | "Emacs-Mule");
-    !(bad(from) || bad(to)) && !(from == ENC_BINARY && !ascii_compat(to))
+    !(bad(from) || bad(to))
 }
 
 // ---- lookup ---------------------------------------------------------------------------------
@@ -601,6 +632,7 @@ pub fn default_external() -> u8 { DEFAULT_EXTERNAL.load(Relaxed) }
 pub fn default_internal() -> Option<u8> { let d = DEFAULT_INTERNAL.load(Relaxed); if d < 0 { None } else { Some(d as u8) } }
 
 pub fn encoding_value(c: &Ctx, id: u8) -> Value { c.vm().enc_objs[id as usize] }
+pub fn is_encoding(c: &Ctx, v: Value) -> bool { c.data::<REnc>(v).is_some() }
 
 /// Encoding object, name string or object with to_str -> encoding id.
 pub fn to_enc(c: &mut Ctx, v: Value) -> Result<u8, Esc> {

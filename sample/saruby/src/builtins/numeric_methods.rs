@@ -497,7 +497,7 @@ cfn!(int_digits, |c, s, a| {
 });
 cfn!(int_bit_length, |c, s, _a| Ok(Value::fix(if s.is_fixnum() { let x = s.as_fix(); (64 - if x < 0 { (!x).leading_zeros() } else { x.leading_zeros() }) as i64 } else { c.big(s).bit_length() as i64 })));
 cfn!(int_size, |c, s, _a| Ok(Value::fix(if s.is_fixnum() { 8 } else { ((c.big(s).mag.len() * 4 + 7) / 8 * 8) as i64 })));
-cfn!(int_hash, |c, s, _a| Ok(Value::fix((crate::astrust::hash_str(&c.to_big(s).to_string_radix(16)) >> 2) as i64)));
+cfn!(int_hash, |c, s, _a| Ok(Value::fix((crate::hash::key_hash(c, s)? >> 2) as i64)));
 /// Kernel#Float semantics (rb_Float)
 pub fn rb_float(c: &mut Ctx, v: Value) -> Result<f64, Esc> {
     if let Some(f) = c.num_to_f64(v) { return Ok(f); }

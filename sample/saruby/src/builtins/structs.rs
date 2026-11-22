@@ -177,11 +177,15 @@ fn st_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { st_cmp_
 fn st_eql(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { st_cmp_members(c, slf, a[0], true) }
 fn st_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let seed = real_class_of(slf).raw();
-    // a struct that contains itself: the inner occurrence hashes as its class alone
-    if !recursion_enter(slf, s::hash) { return Ok(Value::fix((seed >> 2) as i64)); }
-    let r = st_to_a(c, slf, &[], std::ptr::null()).and_then(|x| key_hash(c, x));
-    recursion_leave(slf, s::hash);
-    Ok(Value::fix(((r? ^ seed) >> 2) as i64))
+    // a recursive struct hashes by its class alone (rb_exec_recursive_outer)
+    let h = crate::hash::hash_outer(c, slf, seed, |c| {
+        let vals = st_to_a(c, slf, &[], std::ptr::null())?;
+        let mut h = seed;
+        let mut i = 0;
+        while i < c.ary_len(vals) { let x = c.ary_get(vals, i); h = crate::astrust::hash_merge(h, crate::hash::ruby_hash(c, x)?); i += 1; }
+        Ok(h)
+    })?;
+    Ok(Value::fix((h >> 2) as i64))
 }
 fn st_members(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let m = members_of(c, real_class_of(slf)); Ok(c.ary_from_vec(c.ary(m).to_vec())) }
 fn st_each(c: &mut Ctx, slf: Value, _a: &[Value], blk: *const Block) -> RV {
