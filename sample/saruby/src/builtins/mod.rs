@@ -14,6 +14,7 @@ pub mod enumerator;
 pub mod sprintf;
 pub mod pp;
 pub mod io;
+pub mod io_conv;
 pub mod marshal;
 pub mod strscan;
 pub mod psych;

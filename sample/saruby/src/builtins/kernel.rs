@@ -56,7 +56,7 @@ pub fn err_write(b: &[u8]) {
 /// Write to $stdout (dispatching when it was reassigned).
 pub fn stdout_write(c: &mut Ctx, b: &[u8]) -> Result<(), Esc> {
     let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
-    if so == c.vm().stdout.get() { out_write(b); return out_check(c); }
+    if so == c.vm().stdout.get() && !stdout_conv() { out_write(b); return out_check(c); }
     if so == c.vm().stderr.get() { err_write(b); return Ok(()); }
     let st = c.str_new(b);
     funcall(c, so, intern(b"write"), &[st], std::ptr::null())?;
@@ -152,10 +152,26 @@ pub use crate::legacy::{recursion_enter, recursion_leave};
 
 // ---- puts / print / p -------------------------------------------------------------------
 
+/// rb_str_end_with_asciichar(str, '\n')
+#[inline]
+pub fn ends_with_newline(b: &[u8], enc: u8) -> bool {
+    if enc == ENC_UTF8 || enc == ENC_ASCII || enc == ENC_BINARY { return b.last() == Some(&b'\n'); }
+    ends_with_newline_enc(b, enc)
+}
+fn ends_with_newline_enc(b: &[u8], enc: u8) -> bool {
+    use crate::builtins::encoding as en;
+    let m = en::min_len(enc);
+    if b.len() < m { return false; }
+    if m == 1 { return b.last() == Some(&b'\n'); }
+    let e = &b[b.len() - m..];
+    let mut i = 0; while i < b.len() - m { i += en::mbclen(enc, b, i); }
+    i == b.len() - m && en::char_code(enc, e) == 10
+}
 fn puts_one(c: &mut Ctx, v: Value, out: &mut Vec<u8>) -> Result<(), Esc> {
     if is_string(v) {
-        out.extend_from_slice(&c.str_bytes(v));
-        if !c.str_bytes(v).ends_with(b"\n") { out.push(b'\n'); }
+        let r = c.rstring(v);
+        out.extend_from_slice(&r.b);
+        if !ends_with_newline(&r.b, r.enc) { out.push(b'\n'); }
         return Ok(());
     }
     if is_array(v) {
@@ -181,9 +197,11 @@ pub fn puts_bytes(c: &mut Ctx, args: &[Value]) -> Result<Vec<u8>, Esc> {
     Ok(out)
 }
 
+/// STDOUT converts what is written to it (set_encoding): go through IO#write / #puts.
+fn stdout_conv() -> bool { crate::builtins::io::STDOUT_CONV.load(std::sync::atomic::Ordering::Relaxed) }
 fn k_puts(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
-    if so != c.vm().stdout.get() && so != c.vm().stderr.get() {
+    if so != c.vm().stdout.get() && so != c.vm().stderr.get() || so == c.vm().stdout.get() && stdout_conv() {
         return funcall(c, so, s::puts, args, std::ptr::null());
     }
     let out = puts_bytes(c, args)?;
@@ -192,6 +210,10 @@ fn k_puts(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
 }
 
 fn k_print(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+    if stdout_conv() {
+        let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
+        if so == c.vm().stdout.get() { return funcall(c, so, intern(b"print"), args, std::ptr::null()); }
+    }
     let mut out = vec![];
     for &a in args { let s = to_s_value(c, a)?; out.extend_from_slice(&c.str_bytes(s)); }
     stdout_write(c, &out)?;
@@ -746,6 +768,7 @@ pub fn gvar_set(c: &mut Ctx, shown: Sym, v: Value) -> RV {
                 }
                 gvar_warn(c, &format!("non-nil '{}' is deprecated", sym_str(shown)), true)?;
                 if nb == b"$/" { v = gvar_frozen_str(c, v); }
+                if nb == b"$\\" || nb == b"$," { crate::builtins::io::OUTPUT_SEPS.store(true, std::sync::atomic::Ordering::Relaxed); }
             }
         }
         b"$." => { let n = crate::builtins::numeric_methods::num_to_long(c, v)?; v = Value::fix(n as i32 as i64); }
