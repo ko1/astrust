@@ -28,7 +28,7 @@ BY_FILE = {
 }
 CALL_PATH = ['src/vm.rs', 'src/rt.rs', 'node.def']
 RULES = [
-  [/static mut|REFINEMENTS_ON|BOOTED|VM\.as_(mut|deref)|HEAP\.as_mut|STACK_BASE|STRESS/, 'static mut global'],
+  [/(?<!')static mut|REFINEMENTS_ON|BOOTED|VM\.as_(mut|deref)|HEAP\.as_mut|STACK_BASE|STRESS/, 'static mut global'],
   [/visit_ctx|visit_ambiguous|m\.visit|main_ctx/, 'GC root scan'],
   [/transmute|cc\.fast as|cc\.poly|yc\.seen|cc\.val/, 'cache word reinterpreted'],
   [/unreachable_unchecked/, 'unchecked kind assumption'],
@@ -43,7 +43,7 @@ RULES = [
 ]
 HEAP_RULES = [
   [/mint\(\)|Token\(/, 'context token (Token::mint)'],
-  [/VM\.as_|HEAP\.as_mut|static mut|STACK_BASE|STRESS|BOOTED|&raw mut crate::vm::VM/, 'static mut global'],
+  [/VM\.as_|HEAP\.as_mut|HEAP = |(?<!')static mut|STACK_BASE|STRESS|BOOTED|&raw mut crate::vm::VM/, 'static mut global'],
   [/from_raw|from_ptr/, 'Value from a raw word'],
   [/\(\*robj\(v\)\)\.(klass|flags)/, 'object header place access'],
   [/frame\.as_ref|f\.prev|\.prev\.as_mut|set_cref/, 'frame chain (H5)'],

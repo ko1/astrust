@@ -1,7 +1,9 @@
 # `unsafe` in saruby: where it is necessary, what removing it cost, what removing it found
 
 2026-11-22. The state described is master at **`f88d3e6`** ("saruby: todo.md (unsafe removal is
-weighed against performance)"); every count below is of that tree unless a commit is named. Raw
+weighed against performance)"); every count below is of that tree unless a commit is named, except
+the totals of 1.1 and 1.2, which are updated to master `d983d25` plus the zero-cost removals of
+section 4.4 (371 -> 342). Raw
 data, scripts and the experiment patches: `~/ruby/src/trials/2026-11-22-saruby-unsafe-catalog/`
 (called `T` below). The other trials cited are siblings of it in `~/ruby/src/trials/`.
 
@@ -45,9 +47,9 @@ with `--list`, the category of every occurrence.
 
 | where | `unsafe` | note |
 |---|---:|---|
-| `sample/saruby/src/**/*.rs` + `node.def`, hand-written | **365** | `heap_audit.rb` total; 52 files carry `#![forbid(unsafe_code)]` |
+| `sample/saruby/src/**/*.rs` + `node.def`, hand-written | **342** | `heap_audit.rb` total after section 4.4 (master `d983d25`: 371; `f88d3e6`: 365) |
 | of which compiled only with `FEATURES=raw_stack` | 5 | `src/stack_raw.rs`; the default build uses the checked `src/stack.rs` (0) |
-| generated `src/node_*.rs` (from node.def by `lib/astrustgen.rb`) | 1131 | node_specialize 393, node_hash 235, node_head 163, node_replace 120, node_dispatch 102, node_dump 102, node_eval 16; `prism_ast.rs` 0 |
+| generated `src/node_*.rs` (from node.def by `lib/astrustgen.rb`) | 1152 | after 4.4: node_specialize 402, node_hash 239, node_head 170, node_replace 122, node_dispatch 104, node_dump 104, node_eval 11; `prism_ast.rs` 0 (`f88d3e6`: 1131) |
 | generated per bake: the code store's SD crates | 259 for `fib.rb` | `all.rs` items 100 (83 files), `patch.rs` items 159 (119 files); grows with the program |
 | `runtime/` (ASTrust runtime shared by the samples) | 49 | `astrust.rs` 5 (dlopen / dlsym), `astrust_loader.rs` 10 (memfd / mmap), `gc/` 34 |
 | `lib/astrustgen.rb` (templates of the generated code) | 32 | |
@@ -70,39 +72,42 @@ an upper bound on *marked* trust, not on trust.
 
 ### 1.2 By category
 
-`ruby tools/unsafe_catalog.rb` at `f88d3e6` (the classification inside vm.rs / rt.rs / node.def and
-inside the heap files is by the text of each site, a heuristic; `--list` shows every decision).
+`ruby tools/unsafe_catalog.rb` at `f88d3e6` and after section 4.4 (master `d983d25` + the zero-cost
+removals; the classification inside vm.rs / rt.rs / node.def and inside the heap files is by the text of
+each site, a heuristic; `--list` shows every decision). Between the two columns lie a day of master
+(the blop layer added 6 to sys.rs, the rest was neutral: 365 -> 371 at `d983d25`) and section 4.4 (-29).
 
-| category | `unsafe` | files |
-|---|---:|---|
-| OS interface: libc wrappers | 67 | builtins/sys.rs |
-| OS interface: global allocator | 13 | kalloc.rs |
-| fiber: stacks and context switch | 23 | fiber_os.rs 22, fiber.rs 1 |
-| code loading: code store, patch binding | 11 | aot.rs |
-| parser FFI (prism) | 1 | prism.rs |
-| node building: raw node reads | 6 (+1 in text emitted into generated code) | compile.rs |
-| GC & heap base | 70 | heap.rs 34, value.rs 11, gc.rs 16, object.rs 7, lib.rs 2 |
-| call path & frames | 158 | vm.rs 80, rt.rs 62, node.def 16 |
-| value stack, raw backend | 5 | stack_raw.rs (not in the default build) |
-| String buffer (SBuf) | 10 | sbuf.rs |
-| **total** | **365** | |
+| category | `f88d3e6` | after 4.4 | files (after 4.4) |
+|---|---:|---:|---|
+| OS interface: libc wrappers | 67 | 73 | builtins/sys.rs |
+| OS interface: global allocator | 13 | 13 | kalloc.rs |
+| fiber: stacks and context switch | 23 | 23 | fiber_os.rs 22, fiber.rs 1 |
+| code loading: code store, patch binding | 11 | 6 | aot.rs |
+| parser FFI (prism) | 1 | 1 | prism.rs |
+| node building: raw node reads | 6 (+1 in text emitted into generated code) | 6 | compile.rs |
+| GC & heap base | 70 | 61 | heap.rs 32, gc.rs 14, value.rs 7, object.rs 7, lib.rs 1 |
+| call path & frames | 158 | 144 | vm.rs 76, rt.rs 57, node.def 11 |
+| value stack, raw backend | 5 | 5 | stack_raw.rs (not in the default build) |
+| String buffer (SBuf) | 10 | 10 | sbuf.rs |
+| **total** | **365** | **342** | |
 
-Sub-categories of the two large groups:
+Sub-categories of the two large groups (`f88d3e6` -> after 4.4; one site, `Ctx::frame()` at vm.rs:409,
+moved from "static mut global" to "frame chain" when the rule stopped matching the text `'static mut`):
 
 | GC & heap base | `unsafe` | | call path & frames | `unsafe` |
 |---|---:|---|---|---:|
-| Value from a raw word (`from_raw`, `from_ptr`) | 15 | | frame chain (`c.frame`, `prev`, `FrameFull`) | 39 |
-| entry / iseq / block / cref reads (leaked, H4) | 12 | | method entry (leaked `Box`) | 36 |
-| static mut global (`VM`, `HEAP`, `REFINEMENTS_ON`, ...) | 8 | | block pointer (H4) | 17 |
-| GC binding (gc.rs: `GcLang`, finalize, roots) | 8 | | iseq (never freed) | 16 |
-| payload accessor (`body`, `body_mut`, `*_mut_and`, kind tests) | 8 | | cref chain (leaked) | 11 |
-| legacy accessors (object.rs) | 7 | | static mut global | 10 |
-| object header place access | 5 | | cache word reinterpreted (`transmute`, `as *const NewInfo`) | 10 |
-| frame chain (H5) | 5 | | node pointer | 5 |
-| context token (`Token::mint`) | 2 | | Value from a raw word (literal caches) | 5 |
-| | | | GC root scan | 4 |
-| | | | unchecked kind assumption (`unreachable_unchecked`) | 3 |
-| | | | line position (`Pos`, patch holes) | 2 |
+| Value from a raw word (`from_raw`, `from_ptr`) | 15 -> 11 | | frame chain (`c.frame`, `prev`, `FrameFull`) | 39 -> 41 |
+| entry / iseq / block / cref reads (leaked, H4) | 12 -> 10 | | method entry (leaked `Box`) | 36 -> 36 |
+| static mut global (`VM`, `HEAP`, ...) | 8 -> 5 | | block pointer (H4) | 17 -> 17 |
+| GC binding (gc.rs: `GcLang`, finalize, roots) | 8 -> 8 | | iseq (never freed) | 16 -> 16 |
+| payload accessor (`body`, `body_mut`, `*_mut_and`, kind tests) | 8 -> 8 | | cref chain (leaked) | 11 -> 11 |
+| legacy accessors (object.rs) | 7 -> 7 | | static mut global (`vm()`) | 10 -> 1 |
+| object header place access | 5 -> 5 | | cache word reinterpreted (`as *const NewInfo`, `cc.poly`, `cc.val`) | 10 -> 8 |
+| frame chain (H5) | 5 -> 5 | | node pointer | 5 -> 5 |
+| context token (`Token::mint`) | 2 -> 2 | | Value from a raw word (literal caches) | 5 -> 0 |
+| | | | GC root scan | 4 -> 4 |
+| | | | unchecked kind assumption (`unreachable_unchecked`) | 3 -> 3 |
+| | | | line position (`Pos`, patch holes) | 2 -> 2 |
 
 ### 1.3 Per site group: operation, why it is not safe, alternative, cost
 
@@ -140,7 +145,7 @@ fiber.rs went from 21 to 1 `unsafe` in that trial (`deny(unsafe_code)` on the fi
 |---|---|---|---|---|
 | runtime/astrust.rs:168–191 (5) | `dlopen` the baked `all.so`, `dlerror`, `dlsym` the build id and each `SD_<hash>` | loading native code: what the symbol points to is trusted by construction (same rustc, same crate, build id checked) | no AOT (`--plain`) | M: the interpreter is the alternative; on sp4 at de58efd, fib 0.315 s interp vs 0.091 s AOT, tak 0.662 vs 0.211 (`results_sp4_all_de58efd.tsv`). |
 | runtime/astrust_loader.rs:207–310 (10) | patch binding: `memfd_create`, `ftruncate`, `mmap` ×3 (RW view, RX view placed near libsaruby, fallback), `munmap`, the RW window as `&mut [u8]` (one writer process: a forked child binds into a memfd of its own, see 2.4 "found later"), `dlsym` of externals | writing and then executing code; the ELF reader and relocator themselves are safe Rust over byte slices | the shared SD without per-body copies (`SARUBY_PATCH=0`) | M (`2026-11-21-astrust-patch-binding`): optcarrot 84.74M vs 85.45M instructions per frame with / without (−0.83 %), cycles undecidable locally; tak −6.3 %, ackermann +3.0 % instructions; sp4 ackermann +7 % with patch binding (`2026-11-21-saruby-sp4-regressions`). |
-| aot.rs:23, 30, 40, 69, 110 | `static mut STORE` (the loaded code store) | `static mut` | `OnceLock` / `Mutex` | A: one lock or one atomic load per first dispatch and per bake; off the steady-state path. Not measured. |
+| aot.rs:23, 30, 40, 69, 110 (5; **removed in 4.4**) | `static mut STORE` (the loaded code store) | `static mut` | done: a `thread_local!` `RefCell<Option<&'static mut TieredStore>>` (leaked as before, no TLS destructor, so the atexit stats hook still sees it; a nested borrow panics) | M: ±0.0 % instructions on all 30 cells of 4.4. |
 | aot.rs:43, 84 | `transmute` of a `dlsym` address to `DispatchFn` | a data pointer to a function pointer | — (inherent to dlsym) | — |
 | aot.rs:45, 82, 84 | write of the dispatcher into a node head | the node is a raw `NodePtr` (see "node pointers" below) | — | — |
 | aot.rs:21, 53 | `atexit` (stats); the hole value read at `root + off` | FFI; raw read of a node field by offset | — | — |
@@ -153,13 +158,13 @@ fiber.rs went from 21 to 1 `unsafe` in that trial (`deny(unsafe_code)` on the fi
 |---|---|---|---|---|
 | heap.rs:65, 67 (`body`, `body_mut`), 109, 148, 204, 211 (`*_mut_and`), 51 (`kind_test!`), 185 (`float_val`) | the payload of a GC object as a reference that borrows the context (`c.ary(v) -> &[Value]`) | the object graph is owned by the collector, not by any Rust value: a `Value` is a word, its object is reached by address. The borrow of `Ctx` stands for "the heap"; the deref is the one place where that correspondence is asserted (H1 liveness, H2 one context at a time). | (b) `RefCell`-like borrow flag per object | M (`2026-11-21-koruby-safe-heap`, safe_heap.md "Alternatives"): ary AOT +96 % cycles / +13 % instructions, sieve +85 % cycles, fannkuch +66 %, sort +13 %; interpreter +0 to +7 %. Rejected. |
 | heap.rs:35–43 | header place reads / writes (`klass`, `flags`) without a reference | the same address; place access avoids aliasing any payload borrow (H3) | `Cell` fields in `RObj` | A: same machine code (`Cell` is a place access); would make the header safe given a safe `&RObj`, which is what is missing. Not measured. |
-| heap.rs:125, 128, 366; gc.rs:36, 40, 51; aot.rs (above) | `static mut VM`, `HEAP`, `STACK_BASE`, `STRESS` behind `c.vm()`, `gc::heap()` | `static mut`; `vm()` has hundreds of context-free callers in rt.rs / vm.rs / node.def (the 449 legacy call sites) | `Vm` owned by `Ctx` (the stated end state, safe_heap.md "vm() and the method identities") | the check part measured in section 4 (`vmchk`); the ownership change not measured. |
+| heap.rs:125, 128, 366; gc.rs:36, 40, 51 | `static mut VM`, `HEAP` behind `c.vm()`, `gc::heap()` (`STACK_BASE` and `STRESS` became `AtomicUsize` in 4.4, -2) | `static mut`; `vm()` has hundreds of context-free callers in rt.rs / vm.rs / node.def (the 449 legacy call sites) | `Vm` owned by `Ctx` (the stated end state, safe_heap.md "vm() and the method identities") | the check part measured in section 4 (`vmchk`); the ownership change not measured. |
 | heap.rs:218–309 (12 + 5 frame) | method entries, crefs, iseqs, blocks and frames read through raw pointers, borrowing `c` | entries and crefs are leaked `Box`es, iseqs are never freed: never dangling, but stored as raw pointers because some are written in place (`me_set_visi`, `cref_set_refinements`) and because frames live on the native stack (H5) | `&'static` with `Cell` fields for the mutable parts (entries, crefs, iseqs); frames: no safe form (below) | A (entries): zero in principle; not built. |
 | heap.rs:21; lib.rs:197; fiber_os.rs:175 | `Token::mint` (2 + 1) | the only way to make a `Ctx`; its contract (H2) is "contexts run one at a time" | — (an `unsafe` marker by design: it is what makes the rest checkable) | — |
-| value.rs:18–21, 28, 30, 71, 76, 84, 86 (11) | `Value::from_raw` (NonZero unchecked), `from_ptr` | `Value` is `NonZeroU64`; `from_raw` is `unsafe` so that safe code cannot forge a heap `Value` (H1) | `NonZeroU64::new(..).unwrap()` / `.map(Value)` where the word is provably non-zero and not a heap address (fixnum, symbol, flonum, constants) | M: section 4 (`val`). |
+| value.rs:18–21, 28, 30, 71, 76, 84, 86 (11) | `Value::from_raw` (NonZero unchecked), `from_ptr` | `Value` is `NonZeroU64`; `from_raw` is `unsafe` so that safe code cannot forge a heap `Value` (H1) | `NonZeroU64::new(..).unwrap()` / `.map(Value)` where the word is provably non-zero and not a heap address (fixnum, symbol, flonum, constants) | M: section 4 (`val`). In 4.4 only the four constants were taken (const fn, compile time: identical instructions); `fix` / `sym` / `flonum` stay unchecked because their safe forms move other functions' code (hash +1.4 %, nesteddata +7 % instructions, 4.4). |
 | gc.rs:62, 71, 96, 102, 133–157, 183–186 | `from_ptr` of new objects, `unsafe impl GcLang`, `drop_body` / `finalize`, the conservative machine-stack scan | the collector frees memory and scans raw stack words | — | — |
 | object.rs:119–143 (7) | the legacy accessors: `obj(v) -> &'static mut RObj`, `rhash`, `rproc`, `rmethod`, `rbig`, `rfloat_heap` with `unreachable_unchecked` on a wrong kind | unsound safe API kept for the 449 unconverted call sites | the context-borrowing accessors (done for every builtin) | M for the conversion: see section 2; the kind check is 2 instructions per access (pilot). |
-| lib.rs:238 | `rt::BOOTED = true` | `static mut` | `AtomicBool` | M: section 4 (`atomic`). |
+| lib.rs:238 (**removed in 4.4**) | `rt::BOOTED = true` | `static mut` | done: `AtomicBool` | M: section 4 (`atomic`), 4.4. |
 
 #### Call path and frames (vm.rs 80, rt.rs 62, node.def 16)
 
@@ -170,10 +175,10 @@ fiber.rs went from 21 to 1 `unsafe` in that trial (`deny(unsafe_code)` on the fi
 | block pointer, H4 (17) | `&*blk`, `(*blk).tag`, `(*blk).kind` | a `Block` lives in its creator's Rust frame or in a Proc; the callee receives `*const Block` and assumes it alive for the call (H4) | lifetimes on every builtin signature (`&'a Block`) | A: not attempted; it changes the `CFunc` type of every builtin. |
 | iseq, never freed (16) | `&*is`, `(*is).bentry` | iseqs are leaked and immutable after build except `Cell` fields | `&'static Iseq` | A: zero; `c.iseq_ref` already returns `&'static Iseq` (heap.rs:271). |
 | cref chain, leaked (11) | `(*cr).klass`, `(*cr).prev` loops (vm.rs:727, 917; rt.rs:350, 675) | leaked, `refinements` written in place | `&'static Cref` with a `Cell` | A: zero. |
-| static mut global (10) | `vm()` (vm.rs:470), `REFINEMENTS_ON` (vm.rs:1589, 2253; rt.rs:180, 746), `BOOTED` (rt.rs:67, 107, 125) | `static mut` | atomics; `Vm` owned by `Ctx` | M: section 4 (`atomic`, `vmchk`). Precedent: REDEF as `AtomicU32`, identical instruction counts (`2026-11-21-saruby-loops-arith`, step 0007, commit c9c69a5). |
-| cache word reinterpreted (10) | `transmute::<usize, CFunc>(cc.cfunc)` (vm.rs:1350, 1465), `&*(cc.fast as *const NewInfo)`, `&mut *(cc.poly as *mut [CallCache; POLY_WAYS])`, `yc.seen as *const Iseq` | call caches are plain words so that baked code can test them with one compare and the generator can hash them | typed fields: `Option<CFunc>` (niche, same size), `Option<&'static NewInfo>`, `Option<Box<[CallCache; N]>>` | M for `cfunc`: section 4 (`cfunc`). |
+| static mut global (10; 1 after 4.4) | `vm()` (vm.rs:470), `REFINEMENTS_ON` (vm.rs:1589, 2253; rt.rs:180, 746) and `BOOTED` (rt.rs:67, 107, 125) became `AtomicBool` in 4.4 | `static mut` | atomics (done); `Vm` owned by `Ctx` | M: section 4 (`atomic`, `vmchk`). Precedent: REDEF as `AtomicU32`, identical instruction counts (`2026-11-21-saruby-loops-arith`, step 0007, commit c9c69a5). |
+| cache word reinterpreted (10) | `transmute::<usize, CFunc>(cc.cfunc)` (vm.rs:1350, 1465), `&*(cc.fast as *const NewInfo)`, `&mut *(cc.poly as *mut [CallCache; POLY_WAYS])`, `yc.seen as *const Iseq` | call caches are plain words so that baked code can test them with one compare and the generator can hash them | typed fields: `Option<CFunc>` (niche, same size), `Option<&'static NewInfo>`, `Option<Box<[CallCache; N]>>` | M for `cfunc`: section 4 (`cfunc`); applied in 4.4 (-2; object AOT -0.31 % instructions, the rest ±0.0 %). |
 | node pointer (5) | `(*recv).head.kind`, dispatcher call `((*body).head.dispatcher)(c, body, fp)` | see "Generated code": nodes are a raw-pointer graph | — | — |
-| Value from a raw word (5) | literal caches `Value::from_raw(lc.v)` (node.def:70, 101, 108, 115, 191) | the cache is a `u64` | `LitCache { v: Option<Value> }` (niche) | M: section 4 (`val`). |
+| Value from a raw word (5; 0 after 4.4) | literal caches `Value::from_raw(lc.v)` (node.def:70, 101, 108, 115, 191) | the cache is a `u64` | done: `LitCache { v: Option<Value> }` (niche) | M: section 4 (`val`), 4.4: ±0.0 %. The same change for the constant cache (`ConstCache.val`, node.def:311) costs one test per constant read in the interpreter (hash +0.28 %, str +0.28 %, gcchurn +0.20 %, object +0.12 %; 4.4) and was not applied. |
 | GC root scan (4) | vm.rs:2331–2383: `visit_ctx(&mut *vm.main_ctx)`, class fields walked as words, live stack as `&[usize]` | the collector writes slots through raw addresses | — | — |
 | unchecked kind (3) | rt.rs:268, 274, 278 `Body::Env` else `unreachable_unchecked` | legacy shape | `unreachable!()` / the checked accessor | A: 1 compare-and-branch per env access in the interpreter; not measured. Precedent: the kind check of the safe heap accessors, 2 instructions per access, 0 to +2.1 % instructions (pilot). |
 | line position (2) | vm.rs:230 `Pos::bound` (an `unsafe fn`), 235 the deref of an untagged `Pos` | `Pos` is a tagged word: an address of a line (interpreter) or the line itself (bound by the patch loader) | an enum | A: the 48-byte frame variant that stored the line itself was measured and rejected: +50–60M instructions on method_call / send (`2026-11-21-astrust-patch-binding`, "Frame layout"). |
@@ -188,7 +193,7 @@ The default build uses `stack.rs` (`#![forbid(unsafe_code)]`); its cost is secti
 | src/node_head.rs | 163 | `ALLOC_*` constructors and accessors: write fields of `NodeOf<T>` through `NodePtr` (`*mut NodeHead`), `(*n).head.line = line`, `node_laid`, `list_base` (`from_raw_parts` over child lists) | nodes are allocated once, laid out contiguously ("contiguous trees"), never freed, and rewritten in place: the dispatcher field is replaced at specialization and at the first dispatch of patch binding, and child slots are replaced by `node_replace`. Baked code addresses a node as `root + constant` and binds holes to node addresses, so the node's address is part of its identity. | an arena of nodes with `u32` indices and `Cell` fields: A, not built; it would change every `NodePtr` operand of every evaluator signature and the baked-code address arithmetic. |
 | src/node_specialize.rs, node_hash.rs, node_dump.rs, node_replace.rs | 393, 235, 102, 120 | read node operands by kind to specialize, hash, dump, replace | as above | as above |
 | src/node_dispatch.rs, node_eval.rs | 102, 16 | the dispatcher call through `(*n).head.dispatcher`; `match` over a child index with `unreachable_unchecked` | as above | the default arm as `unreachable!()`: A, not measured |
-| code store SD crates (per bake; fib: 259) | | every `Disp::call` body is one `unsafe { .. }` (operand reads through `np`, `&mut (*np).u.cc`), `DispList::nth`'s `unreachable_unchecked`, `Value::from_raw(<literal>)`, and in `patch.rs` the hole items: `Pos::bound(&raw const ASTRUST_HOLE_line_N)` and the `asm!` store of a relocated immediate | the generator emits node reads as raw pointer reads; patch binding needs a relocation the compiler cannot express in safe Rust (`asm!` with a `sym` operand) | — for the holes; the rest as for node pointers |
+| code store SD crates (per bake; fib: 259) | | every `Disp::call` body is one `unsafe { .. }` (operand reads through `np`, `&mut (*np).u.cc`), `DispList::nth`'s `unreachable_unchecked`, `Value::from_raw(<literal>)` (`const { Value::imm(<literal>) }` since 4.4), and in `patch.rs` the hole items: `Pos::bound(&raw const ASTRUST_HOLE_line_N)` and the `asm!` store of a relocated immediate | the generator emits node reads as raw pointer reads; patch binding needs a relocation the compiler cannot express in safe Rust (`asm!` with a `sym` operand) | — for the holes; the rest as for node pointers |
 
 #### String buffer (sbuf.rs 10)
 
@@ -609,7 +614,7 @@ and `make FEATURES=raw_stack` without warnings (`T/logs/make.*`).
 
 Reading, per variant:
 
-* **`val`, `atomic`, `cfunc`: removing 13, 10 and 2 `unsafe` costs no instructions.** Of the 44 cells,
+* **`val`, `atomic`, `cfunc`: removing 13, 10 and 2 `unsafe` costs no instructions** (applied on master in 4.4, except the safe `fix` / `sym` / `flonum` of `val`). Of the 44 cells,
   `val` changes 6 (nbody AOT +0.8 %, mathfn AOT −0.8 %, nested_loop interp +0.4 %, poly interp +0.2 %,
   collatz / strfmt interp +0.1 %), `atomic` 2 (poly +0.5 % / +1.2 %), `cfunc` 6 (closures −0.5 % /
   −0.5 %, object AOT −0.3 %, mathfn interp +0.3 %, collatz interp +0.2 %, strfmt interp +0.1 %), all
@@ -727,6 +732,97 @@ The unstable files are the same in every row (`range_min_super_bt_label_1019`, `
 three `kernel_*`). The benchmarks of 4.1 and 4.2 were not output-checked per variant by the perf
 scripts; their outputs are covered for rs29b by the method-layer trial's 415-file check.
 
+### 4.4 Applied on master (`d983d25`)
+
+The zero-cost variants of 4.1 were re-applied by hand on master `d983d25` (patch binding, blop layer,
+Encoding::Converter and TracePoint had landed since `f88d3e6`), together with four more of the same kind,
+and re-measured. Raw data and scripts: `T/applied/` (`results/perf.{1,2,3}`, `perf.val*`, `perf.null1`,
+`results/oc.run`, `logs/`). Development machine, load average 6 to 21 (written at the top and bottom of
+each result file); instructions are read, cycles only where the spread is small.
+
+| commit | change | `unsafe` (heap_audit) |
+|---|---|---:|
+| base `d983d25` | | 371 |
+| val | `NIL` / `FALSE` / `TRUE` / `UNDEF` by a const fn; `LitCache.v: Option<Value>` | 362 |
+| atomic | `REFINEMENTS_ON`, `rt::BOOTED` as `AtomicBool` (Relaxed) | 352 |
+| cfunc | `CallCache.cfunc: Option<CFunc>` | 350 |
+| gc | `gc::STACK_BASE`, `STRESS` as `AtomicUsize` | 348 |
+| store | `aot::STORE` in a `thread_local!` `RefCell` (the store leaked, as before) | 343 |
+| imm (= tip2) | `value_bake` emits `const { Value::imm(..) }` instead of `unsafe { Value::from_raw(..) }` | 342 (fib's SD crates 286 -> 270) |
+
+Instructions (M, minimum of 5; each column is the commit against the build before it; gc and store were
+built together), interpreter and AOT:
+
+| bench | mode | base ins (M) | val | atomic | cfunc | gc + store | imm | tip2 vs base | base cyc (M, spread) | tip2 cyc (spread) |
+|---|---|---:|---|---|---|---|---|---|---|---|
+| fib | interp | 6725.7 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 1846 (16.1 %) | 2017 (9.7 %) +9.3 % |
+| fib | aot | 1897.2 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 476 (5.9 %) | 482 (28.0 %) +1.3 % |
+| tak | interp | 13678.1 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 4317 (33.2 %) | 4457 (55.5 %) +3.2 % |
+| tak | aot | 3776.1 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 1049 (56.9 %) | 1062 (26.1 %) +1.3 % |
+| method_call | interp | 13968.9 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 4035 (7.1 %) | 4070 (4.1 %) +0.9 % |
+| method_call | aot | 3023.4 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 775 (3.3 %) | 777 (1.6 %) +0.3 % |
+| send | interp | 11028.6 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 3167 (3.3 %) | 3213 (2.0 %) +1.5 % |
+| send | aot | 1973.5 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 456 (13.4 %) | 452 (10.8 %) -0.9 % |
+| ivar | interp | 11187.5 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 3204 (24.4 %) | 3182 (69.9 %) -0.7 % |
+| ivar | aot | 2487.8 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 530 (4.8 %) | 531 (3.5 %) +0.1 % |
+| object | interp | 3295.1 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 955 (2.2 %) | 924 (5.2 %) -3.2 % |
+| object | aot | 1303.4 | ±0.0 % | ±0.0 % | -0.31 % | ±0.0 % | ±0.0 % | -0.31 % | 307 (12.8 %) | 309 (5.9 %) +0.8 % |
+| block | interp | 3033.5 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 875 (4.4 %) | 820 (3.0 %) -6.3 % |
+| block | aot | 413.4 | ±0.0 % | +0.07 % | ±0.0 % | -0.07 % | ±0.0 % | ±0.0 % | 96 (5.5 %) | 92 (13.4 %) -4.7 % |
+| iterators | interp | 8236.9 | ±0.0 % | -0.24 % | ±0.0 % | +0.24 % | ±0.0 % | ±0.0 % | 2221 (87.2 %) | 2217 (19.3 %) -0.2 % |
+| iterators | aot | 1166.0 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 266 (2.6 %) | 271 (6.4 %) +2.0 % |
+| mapreduce | interp | 5270.0 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 1487 (36.9 %) | 1350 (38.6 %) -9.3 % |
+| mapreduce | aot | 997.9 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 242 (51.3 %) | 231 (65.4 %) -4.6 % |
+| ary | interp | 5262.9 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 1615 (4.1 %) | 1641 (4.0 %) +1.7 % |
+| ary | aot | 1327.4 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 272 (11.0 %) | 276 (2.8 %) +1.3 % |
+| str | interp | 4245.6 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 1097 (2.8 %) | 1128 (2.6 %) +2.9 % |
+| str | aot | 2593.8 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 687 (2.2 %) | 612 (6.6 %) -10.9 % |
+| hash | interp | 5288.1 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 1803 (8.6 %) | 1714 (7.1 %) -5.0 % |
+| hash | aot | 2173.0 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 604 (4.1 %) | 612 (9.0 %) +1.3 % |
+| nesteddata | interp | 893.9 | ±0.0 % | +5.08 % | ±0.0 % | -4.83 % | ±0.0 % | ±0.0 % | 282 (15.4 %) | 265 (15.0 %) -6.0 % |
+| nesteddata | aot | 629.2 | ±0.0 % | +7.09 % | ±0.0 % | -6.63 % | ±0.0 % | ±0.0 % | 184 (9.7 %) | 187 (15.4 %) +1.5 % |
+| gcchurn | interp | 4050.8 | ±0.0 % | +0.20 % | ±0.0 % | -0.20 % | ±0.0 % | ±0.0 % | 1313 (30.6 %) | 1258 (71.7 %) -4.2 % |
+| gcchurn | aot | 991.0 | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | ±0.0 % | 242 (91.4 %) | 228 (93.3 %) -5.9 % |
+| poly | interp | 4703.1 | ±0.0 % | +0.26 % | ±0.0 % | -0.26 % | ±0.0 % | ±0.0 % | 1422 (5.1 %) | 1390 (4.4 %) -2.3 % |
+| poly | aot | 2052.0 | ±0.0 % | +0.60 % | ±0.0 % | -0.60 % | ±0.0 % | ±0.0 % | 450 (9.8 %) | 456 (5.0 %) +1.4 % |
+
+* **tip2 against base: ±0.0 % on 29 of 30 cells; object AOT −0.31 % (from cfunc).** optcarrot (bake
+  60 frames, checksum 59662 at 180 frames, per frame = (500-frame run − 200-frame run) / 300, 5 rounds):
+  82.68M -> 82.63M instructions (−0.06 %), 24.16M -> 23.92M cycles with a 500-frame spread of 58.7 % /
+  4.8 %: cycles cannot decide, and nothing indicates a cost. The cycles column moves −10.9 % to +9.3 % on
+  equal instructions with spreads of the same size; on the cells with spreads below 5 % on both sides
+  (method_call AOT +0.3 %, send interp +1.5 %, ary interp +1.7 %, str interp +2.9 %, block interp −6.3 %,
+  poly interp −2.3 %) the signs are mixed. The machine cannot decide these; sp4 would.
+* **atomic, taken alone, costs instructions that the next commit gives back exactly**: nesteddata
+  +5.08 % / +7.09 %, poly +0.26 % / +0.60 %, gcchurn interp +0.20 %, iterators interp −0.24 %; gc + store
+  undoes each to the digit. nesteddata's +45.0M is the same count that three builds of the `val`
+  experiments below reach without any atomic, so it is a state of the code generator, not the cost of a
+  Relaxed load. Measured on `f88d3e6` the same commit gave poly +0.5 % / +1.2 % (4.1).
+* **Not applied: the safe `Value::fix` / `sym` / `flonum`** (−4). Each safe form is correct and leaves
+  no check in the machine code, but it moves the register allocation of functions it is inlined into:
+  `hash_set` keeps two arguments in callee-saved registers from its entry (+2 instructions per call:
+  hash +0.57 % / +1.38 %, exactly 30.0M for 15M calls), and a safe `fix` alone moves nesteddata
+  +5.0 % / +7.0 % and poly +0.26 % / +0.60 %. Bisection (`results/perf.val*`): constants alone (valC)
+  and constants + literal caches (valG) are identical to base on every cell; constants + `sym` + `flonum`
+  (valH) also; valG + valH together (valF) flip `hash_set`; `fix` alone (valE) carries all three
+  effects; `NonZeroU64::new(..).unwrap()` and `NonZeroU64::MIN | bits` give the same hash count. A
+  semantically null edit of `fix` that keeps the `unsafe` (an extra `#[inline(always)]` helper, null1)
+  is identical to base, so the harness is deterministic, and the effect needs these particular IR
+  changes; it was not traced further than `hash_set`'s prologue.
+* **Not applied: `ConstCache.val: Option<Value>`** (−1). The hit test gains a `Some` check per constant
+  read in the interpreter: hash +0.28 % (one instruction per read of `INNER`), str +0.28 %, gcchurn
+  +0.20 %, object +0.12 %, ±0.0 % AOT. Patch: `T/applied/rejected/`.
+* `imm` changes the baked code of 93 of 1217 SD functions of optcarrot in size, both ways (net +6208
+  bytes, +0.3 % of `.text`; a second bake of base changes none), because the const block is less IR than
+  an inlined `from_raw`; run time ±0.0 % on every AOT cell and −0.06 % on optcarrot.
+* Compatibility (`T/applied/logs/compat.txt`, `cmp-*.txt`; tip2 against base, per file stdout + stderr +
+  exit status): t/hand `--plain` 1832 files, 1829 identical, 0 different, 2 unstable (base differs from
+  itself), 1 timeout; AOT (baked) against `--plain` on every 8th t/hand file: tip2 229 / 229 identical
+  with patch binding and with `SARUBY_PATCH=0` (base: 230 / 230 both; a file was added to rubyharness
+  between the runs); t/spec + t/method `--plain` 1237 / 1237; no "panicked at" in any output;
+  `tools/reuse_test.sh` and `tools/aot_fork_test.sh` PASS; `make`, `make FEATURES=raw_stack`,
+  `make GC=bitmap` without warnings; `heap_audit.rb` exit 0.
+
 ## 5. What remains unmeasured
 
 Each item is a cost that this document states only by argument (section 1.3 marks them **A**).
@@ -739,7 +835,6 @@ Each item is a cost that this document states only by argument (section 1.3 mark
 | nodes in an index arena (generated code) | 1131 generated + per-bake SD code | the node address is part of the design (laid-out trees, baked `root + offset`, patch holes) | — |
 | removing the 449 legacy-accessor call sites (rt.rs, vm.rs, node.def) | the 10 unsound safe functions | large mechanical conversion; the pilot's per-access cost (2 instructions, 0 to +2.1 %) is the estimate | convert rt.rs's env / cref helpers first |
 | `unreachable_unchecked` -> `unreachable!()` (rt.rs env 3, generated `DispList::nth`) | 3 + one per baked list | generator owned by other work | one generator line; count instructions |
-| `static mut STORE` (aot.rs) as `OnceLock` | 5 | off the steady-state path | — |
 | kalloc's TLS `asm!` via `thread_local!` | 2 | — | one build, the allocator benchmarks of 4.2 |
 | fibers on OS threads | 23 | a different runtime | a micro benchmark of a thread handoff against the 403-cycle switch |
 | sys.rs through `nix` / `rustix` | 67 | moves the `unsafe`, does not remove it | — |
