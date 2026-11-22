@@ -101,6 +101,7 @@ node_re_rep1(c: &mut Ctx, n: NodePtr, pos: usize, kind: u32, ch: u32, cls: Class
             let r = EVAL_ARG!(c, next, q);
             if r != FAIL { return r; }
             if q <= minpos { return FAIL; }
+            if tick(c) { return TIMEOUT; }
             q = if nb >= 0 {
                 match find_back(s, minpos, q - 1, nb as u8) { Some(x) => x, None => return FAIL }
             } else {
@@ -113,6 +114,7 @@ node_re_rep1(c: &mut Ctx, n: NodePtr, pos: usize, kind: u32, ch: u32, cls: Class
             let r = EVAL_ARG!(c, next, q);
             if r != FAIL { return r; }
             if k >= max { return FAIL; }
+            if tick(c) { return TIMEOUT; }
             let np = match one_k(e, kind, ch, cls, s, q) { Some(x) => x, None => return FAIL };
             match lazy_advance_k(e, kind, ch, cls, s, np, k + 1, max, nb) {
                 Some((a, b)) => { q = a; k = b; }
@@ -296,7 +298,7 @@ node_re_look(c: &mut Ctx, n: NodePtr, pos: usize, kind: u32, body: NODE, next: N
     }
     if kind == LK_NEG_AHEAD {
         let r = EVAL_ARG!(c, body, pos);
-        if r == ABORT { return r; }
+        if r >= ABORT { return r; }
         if r == OK { c.undo(mark); return FAIL; }
         return EVAL_ARG!(c, next, pos);
     }
@@ -309,7 +311,7 @@ node_re_look(c: &mut Ctx, n: NodePtr, pos: usize, kind: u32, body: NODE, next: N
     loop {
         if k >= minlen {
             let r = EVAL_ARG!(c, body, q);
-            if r == ABORT { c.lb_target = saved; return r; }
+            if r >= ABORT { c.lb_target = saved; return r; }
             if r == OK { found = true; break; }
         }
         if k >= maxlen || q == 0 { break; }
@@ -359,7 +361,7 @@ node_search(c: &mut Ctx, n: NodePtr, pos: usize, body: NODE, anchor: u32) -> u32
         c.reset(p);
         let r = EVAL_ARG!(c, body, p);
         if r != FAIL { return r; }
-        if p >= len { return FAIL; }
+        if p >= len || tick(c) { return if p >= len { FAIL } else { TIMEOUT }; }
         p += char_len_e(c.enc, s, p);
     }
 }
@@ -376,6 +378,7 @@ node_search_memchr(c: &mut Ctx, n: NodePtr, pos: usize, body: NODE, b: u8) -> u3
         c.reset(p);
         let r = EVAL_ARG!(c, body, p);
         if r != FAIL { return r; }
+        if tick(c) { return TIMEOUT; }
         p += char_len_e(c.enc, s, p);
     }
 }
@@ -392,6 +395,7 @@ node_search_memmem(c: &mut Ctx, n: NodePtr, pos: usize, body: NODE, needle: Byte
         c.reset(p);
         let r = EVAL_ARG!(c, body, p);
         if r != FAIL { return r; }
+        if tick(c) { return TIMEOUT; }
         p += char_len_e(c.enc, s, p);
     }
 }
@@ -410,6 +414,7 @@ node_search_byteset(c: &mut Ctx, n: NodePtr, pos: usize, body: NODE, set: ByteSe
         c.reset(p);
         let r = EVAL_ARG!(c, body, p);
         if r != FAIL { return r; }
+        if tick(c) { return TIMEOUT; }
         p += char_len_e(c.enc, s, p);
     }
 }

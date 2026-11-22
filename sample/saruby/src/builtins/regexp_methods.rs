@@ -159,7 +159,7 @@ fn re_match_p(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let sv = subject(c, a[0])?;
     let e = prepare(c, slf, sv)?;
     let pos = if a.len() > 1 { let p = crate::builtins::numeric_methods::num_to_long(c, a[1])?; let n = c.str_char_len(sv) as i64; let p = if p < 0 { p + n } else { p }; if p < 0 || p > n { return Ok(FALSE); } c.char_offsets(sv)[p as usize] } else { 0 };
-    Ok(Value::bool(search_raw_e(c, slf, c.str_bytes(sv), pos, e).is_some()))
+    Ok(Value::bool(search_timed(c, slf, sv, pos, e)?.is_some()))
 }
 fn re_match_op(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if a[0] == NIL { c.last_match = NIL; return Ok(NIL); }
@@ -239,12 +239,9 @@ fn re_s_last_match(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV 
 }
 fn re_freeze(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { obj_set_flags(slf, FL_FROZEN); Ok(slf) }
 fn re_timeout(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let t = rx(c, slf).timeout; Ok(t.map_or(NIL, |f| c.float_new(f))) }
-/// Regexp.timeout (f64 bits; NO_TIMEOUT = unset).  Matching does not enforce it yet.
-static TIMEOUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(NO_TIMEOUT);
-const NO_TIMEOUT: u64 = u64::MAX;
 fn re_s_timeout(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let t = TIMEOUT.load(std::sync::atomic::Ordering::Relaxed);
-    Ok(if t == NO_TIMEOUT { NIL } else { c.float_new(f64::from_bits(t)) })
+    let t = crate::regexp::TIMEOUT.load(std::sync::atomic::Ordering::Relaxed);
+    Ok(if t == crate::regexp::NO_TIMEOUT { NIL } else { c.float_new(f64::from_bits(t)) })
 }
 fn re_s_set_timeout(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let t = if a[0] == NIL { None } else {
@@ -252,7 +249,7 @@ fn re_s_set_timeout(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV
         if !(f > 0.0) || f.is_nan() { let t = inspect_str(c, a[0])?; return arg_err(c, format!("invalid timeout: {}", t)); }
         Some(f)
     };
-    TIMEOUT.store(t.map_or(NO_TIMEOUT, f64::to_bits), std::sync::atomic::Ordering::Relaxed);
+    crate::regexp::TIMEOUT.store(t.map_or(crate::regexp::NO_TIMEOUT, f64::to_bits), std::sync::atomic::Ordering::Relaxed);
     Ok(a[0])
 }
 /// Regexp.linear_time?: Onigmo's memoization applies unless the pattern has backrefs,

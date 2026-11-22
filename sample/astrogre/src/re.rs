@@ -2703,6 +2703,10 @@ struct VmCtx<'a> {
     enc: Enc,
     mstk: Vec<MEnt>,
     rets: Vec<usize>,
+    ticks: u32,
+    deadline: Option<std::time::Instant>,
+    /// the deadline passed: every run() fails from then on
+    timed_out: bool,
 }
 
 #[inline]
@@ -3033,7 +3037,7 @@ impl Vm {
     }
 
     fn ctx<'a>(&self, s: &'a [u8], gpos: usize, enc: Enc) -> VmCtx<'a> {
-        VmCtx { s, slots: vec![NONE; 2 * (self.ngroups + 1)], regs: vec![0; self.nregs], stack: Vec::new(), gpos, sprev_bug: NONE, enc, mstk: Vec::new(), rets: Vec::new() }
+        VmCtx { s, slots: vec![NONE; 2 * (self.ngroups + 1)], regs: vec![0; self.nregs], stack: Vec::new(), gpos, sprev_bug: NONE, enc, mstk: Vec::new(), rets: Vec::new(), ticks: 1024, deadline: None, timed_out: false }
     }
 
     fn try_at(&self, cx: &mut VmCtx, p: usize) -> Option<Vec<Option<(usize, usize)>>> {
@@ -3061,20 +3065,29 @@ impl Vm {
         self.must.iter().all(|m| find_must(s, m, pos).is_some())
     }
 
-    pub fn match_at(&self, s: &[u8], pos: usize, enc: Enc) -> Option<Vec<Option<(usize, usize)>>> {
+    pub fn match_at(&self, s: &[u8], pos: usize, enc: Enc, deadline: Option<std::time::Instant>) -> Result<Option<Vec<Option<(usize, usize)>>>, ()> {
         if pos > s.len() {
-            return None;
+            return Ok(None);
         }
         for m in &self.must {
             if find_must(s, m, pos).is_none() {
-                return None;
+                return Ok(None);
             }
         }
         let mut cx = self.ctx(s, pos, enc);
-        self.try_at(&mut cx, pos)
+        cx.deadline = deadline;
+        let r = self.try_at(&mut cx, pos);
+        if cx.timed_out { Err(()) } else { Ok(r) }
     }
 
-    pub fn search(&self, s: &[u8], start: usize, enc: Enc) -> Option<Vec<Option<(usize, usize)>>> {
+    pub fn search(&self, s: &[u8], start: usize, enc: Enc, deadline: Option<std::time::Instant>) -> Result<Option<Vec<Option<(usize, usize)>>>, ()> {
+        let mut cx = self.ctx(s, start, enc);
+        cx.deadline = deadline;
+        let r = self.search_cx(&mut cx, s, start, enc);
+        if cx.timed_out { Err(()) } else { Ok(r) }
+    }
+
+    fn search_cx(&self, cx: &mut VmCtx, s: &[u8], start: usize, enc: Enc) -> Option<Vec<Option<(usize, usize)>>> {
         let len = s.len();
         if start > len {
             return None;
@@ -3087,10 +3100,9 @@ impl Vm {
                 None => return None,
             }
         }
-        let mut cx = self.ctx(s, start, enc);
         let mut p = start;
         loop {
-            if p > last_must {
+            if cx.timed_out || p > last_must {
                 return None;
             }
             match self.anchor {
@@ -3129,7 +3141,7 @@ impl Vm {
                     }
                 }
             }
-            if let Some(r) = self.try_at(&mut cx, p) {
+            if let Some(r) = self.try_at(cx, p) {
                 return Some(r);
             }
             if p >= len {
@@ -3526,6 +3538,14 @@ impl Vm {
                 continue;
             }
             // Backtrack.
+            cx.ticks -= 1;
+            if cx.ticks == 0 {
+                cx.ticks = 1024;
+                if cx.timed_out || cx.deadline.map_or(false, |d| std::time::Instant::now() >= d) {
+                    cx.timed_out = true;
+                    return None;
+                }
+            }
             loop {
                 if cx.stack.len() == base {
                     return None;

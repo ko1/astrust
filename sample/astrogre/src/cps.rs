@@ -30,6 +30,10 @@ pub struct ClassBox {
 pub const FAIL: u32 = 0;
 pub const OK: u32 = 1;
 pub const ABORT: u32 = 2;
+/// Regex::search_timeout's deadline passed (also stops the search, like ABORT).
+pub const TIMEOUT: u32 = 3;
+/// Backtracking steps between two clock reads when a deadline is set.
+const TICKS: u32 = 1024;
 
 /// Recursion budget for nested loop iterations, in body nodes (~ native frames).
 pub const DEPTH_LIMIT: usize = 6000;
@@ -85,6 +89,9 @@ pub struct Ctx {
     pub rets: Vec<NodePtr>,
     /// subroutine entry and its recursion cost, by group number
     pub entries: Vec<(NodePtr, u32)>,
+    /// countdown to the next deadline check (see tick)
+    pub ticks: u32,
+    pub deadline: Option<std::time::Instant>,
 }
 
 impl Ctx {
@@ -93,7 +100,7 @@ impl Ctx {
             s: s.as_ptr(), len: s.len(), slots: vec![NONE; 2 * (ngroups + 1)], log: Vec::new(),
             sprev_bug: NONE, gpos, rep_top: std::ptr::null_mut(), depth: 0, sub_end: 0,
             lb_target: NONE, must: &[], must_occ: Vec::new(), must_next: usize::MAX, ngroups, enc,
-            mstk: Vec::new(), rets: Vec::new(), entries: Vec::new(),
+            mstk: Vec::new(), rets: Vec::new(), entries: Vec::new(), ticks: u32::MAX, deadline: None,
         }
     }
     /// Advances the required-literal occurrences to >= p; false when one no longer occurs
@@ -148,6 +155,27 @@ impl Ctx {
         self.rep_top = std::ptr::null_mut();
         self.depth = 0;
         self.slots[0] = p;
+    }
+}
+
+/// One backtracking step: true once the deadline has passed (checked every TICKS steps).
+#[inline(always)]
+pub fn tick(c: &mut Ctx) -> bool {
+    c.ticks -= 1;
+    c.ticks == 0 && tick_slow(c)
+}
+
+#[cold]
+fn tick_slow(c: &mut Ctx) -> bool {
+    match c.deadline {
+        Some(d) => {
+            c.ticks = TICKS;
+            std::time::Instant::now() >= d
+        }
+        None => {
+            c.ticks = u32::MAX;
+            false
+        }
     }
 }
 
@@ -319,6 +347,7 @@ pub fn call_k(c: &mut Ctx, g: usize, next: NodePtr, pos: usize) -> u32 {
     let cost = cost as usize;
     c.depth += cost;
     if c.depth > DEPTH_LIMIT { return ABORT; }
+    if tick(c) { return TIMEOUT; }
     let mark = c.log.len();
     c.rets.push(next);
     c.mpush(MEnt::Call);
@@ -349,17 +378,17 @@ pub fn absent_k(c: &mut Ctx, body: NodePtr, next: NodePtr, minlen: u32, maxlen: 
     let (s, e) = (c.subj(), c.enc);
     let saved = c.lb_target;
     let mark = c.log.len();
-    let mut abort = false;
+    let mut stop = FAIL;
     let lim = absent_limit(e, s, pos, minlen, maxlen, |p, q| {
-        if abort { return true; }
+        if stop != FAIL { return true; }
         c.lb_target = q;
         let r = call(c, body, p);
         c.undo(mark);
-        if r == ABORT { abort = true; }
+        if r >= ABORT { stop = r; }
         r == OK
     });
     c.lb_target = saved;
-    if abort { return ABORT; }
+    if stop != FAIL { return stop; }
     let Some(mut q) = absent_max(e, s, pos, lim) else { return FAIL };
     loop {
         let r = call(c, next, q);
@@ -427,6 +456,7 @@ fn rep_iter(c: &mut Ctx, f: *mut RepFrame, pos: usize) -> u32 {
         let cost = (*f).cost as usize;
         c.depth += cost;
         if c.depth > DEPTH_LIMIT { return ABORT; }
+        if tick(c) { return TIMEOUT; }
         let (os, om) = ((*f).start, (*f).mark);
         (*f).start = pos;
         (*f).mark = c.log.len();
@@ -874,19 +904,26 @@ impl Regex {
     /// search with the subject split into chars as `enc` says (an ASCII-only pattern can be
     /// used on any ASCII-compatible encoding).
     pub fn search_enc(&self, s: &[u8], start: usize, enc: Enc) -> Option<Captures> {
-        if start > s.len() { return None; }
+        self.search_timeout(s, start, enc, None).unwrap_or(None)
+    }
+
+    /// search_enc that gives up with Err(()) once `deadline` has passed.
+    pub fn search_timeout(&self, s: &[u8], start: usize, enc: Enc, deadline: Option<std::time::Instant>) -> Result<Option<Captures>, ()> {
+        if start > s.len() { return Ok(None); }
         let mut c = Ctx::new(s, self.vm.group_count(), start, enc);
+        if deadline.is_some() { c.deadline = deadline; c.ticks = TICKS; }
         if !self.entries.is_empty() { c.entries = self.entries.clone(); }
         if !self.vm.must.is_empty() {
             c.must = &self.vm.must[..];
             c.must_occ = vec![NONE; self.vm.must.len()];
-            if !c.must_refresh(start) { return None; }
+            if !c.must_refresh(start) { return Ok(None); }
         }
         let root = if enc.is_mb() { self.plain_root } else { self.search_root };
         match call(&mut c, root, start) {
-            OK => Some(self.captures(&c)),
-            FAIL => None,
-            _ => self.vm.search(s, start, enc),
+            OK => Ok(Some(self.captures(&c))),
+            FAIL => Ok(None),
+            TIMEOUT => Err(()),
+            _ => self.vm.search(s, start, enc, deadline),
         }
     }
 
@@ -900,12 +937,12 @@ impl Regex {
         match call(&mut c, self.at_root, pos) {
             OK => Some(self.captures(&c)),
             FAIL => None,
-            _ => self.vm.match_at(s, pos, enc),
+            _ => self.vm.match_at(s, pos, enc, None).unwrap_or(None),
         }
     }
 
     /// Search with the VM only (for tests and comparisons).
-    pub fn search_vm(&self, s: &[u8], start: usize) -> Option<Captures> { self.vm.search(s, start, self.enc) }
+    pub fn search_vm(&self, s: &[u8], start: usize) -> Option<Captures> { self.vm.search(s, start, self.enc, None).unwrap_or(None) }
 
     /// Nodes whose dispatchers may be called indirectly (scanner roots, loop bodies and
     /// continuations): the AOT entries.

@@ -354,11 +354,40 @@ pub fn reg_warn(c: &mut Ctx, msg: &str) -> Result<(), Esc> {
     crate::builtins::kernel::warning_write(c, format!("{}: warning: {}\n", loc, msg).as_bytes())
 }
 
+/// Regexp.timeout (f64 bits; NO_TIMEOUT = unset).  Enforced by search / match? (not by the
+/// raw searches of gsub, scan, split).
+pub static TIMEOUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(NO_TIMEOUT);
+pub const NO_TIMEOUT: u64 = u64::MAX;
+
+/// When a match of `re` must give up: its own timeout, else Regexp.timeout.
+fn deadline(c: &Ctx, re: Value) -> Option<std::time::Instant> {
+    let own = rregexp(c, re).and_then(|r| r.timeout);
+    let t = own.or_else(|| { let b = TIMEOUT.load(std::sync::atomic::Ordering::Relaxed); if b == NO_TIMEOUT { None } else { Some(f64::from_bits(b)) } })?;
+    Some(std::time::Instant::now() + std::time::Duration::from_secs_f64(t.max(0.0)))
+}
+
+/// search_raw_e under the regexp's timeout: Regexp::TimeoutError when it passes.
+pub fn search_timed(c: &mut Ctx, re: Value, s: Value, start: usize, e: Enc) -> Result<Option<Vec<Option<(usize, usize)>>>, Esc> {
+    let dl = deadline(c, re);
+    let r = {
+        let bytes = c.str_bytes(s);
+        let Some(rx) = rregexp(c, re).and_then(|r| r.re.as_ref()) else { return Ok(None) };
+        if start > bytes.len() { return Ok(None); }
+        rx.search_timeout(bytes, start, e, dl)
+    };
+    match r {
+        Ok(g) => Ok(g),
+        Err(()) => {
+            let k = const_get_at(c.vm().c_regexp.get(), crate::symbol::intern(b"TimeoutError")).unwrap_or(c.vm().c_regexp_error.get());
+            err(c, k, "regexp match timeout")
+        }
+    }
+}
+
 /// Search re in str from byte `start`; returns a MatchData or NIL, and sets $~.
 pub fn search(c: &mut Ctx, re: Value, s: Value, start: usize, set_last: bool) -> RV {
     let e = prepare(c, re, s)?;
-    let bytes = c.str_bytes(s);
-    let groups = if start > bytes.len() { None } else { search_raw_e(c, re, bytes, start, e) };
+    let groups = search_timed(c, re, s, start, e)?;
     let Some(groups) = groups else { if set_last { c.last_match = NIL; } return Ok(NIL) };
     let m = match_new(c, re, s, groups);
     if set_last { c.last_match = m; }

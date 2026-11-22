@@ -162,6 +162,7 @@ pub fn EVAL_node_re_rep1<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, kind
             let r = <D_next as Disp>::call(c, next, q);
             if r != FAIL { return r; }
             if q <= minpos { return FAIL; }
+            if tick(c) { return TIMEOUT; }
             q = if nb >= 0 {
                 match find_back(s, minpos, q - 1, nb as u8) { Some(x) => x, None => return FAIL }
             } else {
@@ -174,6 +175,7 @@ pub fn EVAL_node_re_rep1<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, kind
             let r = <D_next as Disp>::call(c, next, q);
             if r != FAIL { return r; }
             if k >= max { return FAIL; }
+            if tick(c) { return TIMEOUT; }
             let np = match one_k(e, kind, ch, cls, s, q) { Some(x) => x, None => return FAIL };
             match lazy_advance_k(e, kind, ch, cls, s, np, k + 1, max, nb) {
                 Some((a, b)) => { q = a; k = b; }
@@ -357,7 +359,7 @@ pub fn EVAL_node_re_look<D_body: Disp, D_next: Disp>(c: &mut Ctx, n: NodePtr, po
     }
     if kind == LK_NEG_AHEAD {
         let r = <D_body as Disp>::call(c, body, pos);
-        if r == ABORT { return r; }
+        if r >= ABORT { return r; }
         if r == OK { c.undo(mark); return FAIL; }
         return <D_next as Disp>::call(c, next, pos);
     }
@@ -370,7 +372,7 @@ pub fn EVAL_node_re_look<D_body: Disp, D_next: Disp>(c: &mut Ctx, n: NodePtr, po
     loop {
         if k >= minlen {
             let r = <D_body as Disp>::call(c, body, q);
-            if r == ABORT { c.lb_target = saved; return r; }
+            if r >= ABORT { c.lb_target = saved; return r; }
             if r == OK { found = true; break; }
         }
         if k >= maxlen || q == 0 { break; }
@@ -417,7 +419,7 @@ pub fn EVAL_node_search<D_body: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, body:
         c.reset(p);
         let r = <D_body as Disp>::call(c, body, p);
         if r != FAIL { return r; }
-        if p >= len { return FAIL; }
+        if p >= len || tick(c) { return if p >= len { FAIL } else { TIMEOUT }; }
         p += char_len_e(c.enc, s, p);
     }
 }
@@ -435,6 +437,7 @@ pub fn EVAL_node_search_memchr<D_body: Disp>(c: &mut Ctx, n: NodePtr, pos: usize
         c.reset(p);
         let r = <D_body as Disp>::call(c, body, p);
         if r != FAIL { return r; }
+        if tick(c) { return TIMEOUT; }
         p += char_len_e(c.enc, s, p);
     }
 }
@@ -452,6 +455,7 @@ pub fn EVAL_node_search_memmem<D_body: Disp>(c: &mut Ctx, n: NodePtr, pos: usize
         c.reset(p);
         let r = <D_body as Disp>::call(c, body, p);
         if r != FAIL { return r; }
+        if tick(c) { return TIMEOUT; }
         p += char_len_e(c.enc, s, p);
     }
 }
@@ -471,6 +475,7 @@ pub fn EVAL_node_search_byteset<D_body: Disp>(c: &mut Ctx, n: NodePtr, pos: usiz
         c.reset(p);
         let r = <D_body as Disp>::call(c, body, p);
         if r != FAIL { return r; }
+        if tick(c) { return TIMEOUT; }
         p += char_len_e(c.enc, s, p);
     }
 }
