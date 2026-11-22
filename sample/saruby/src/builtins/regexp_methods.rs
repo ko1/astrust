@@ -73,6 +73,7 @@ fn re_match(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
 fn re_match_p(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if a[0] == NIL { return Ok(FALSE); }
     let sv = if a[0].is_sym() { c.str_new(crate::symbol::sym_bytes(a[0].as_sym())) } else { expect_str(c, a[0])? };
+    check_searchable(c, sv)?;
     let pos = if a.len() > 1 { let p = crate::builtins::numeric_methods::num_to_long(c, a[1])?; c.char_offsets(sv).get(p.max(0) as usize).copied().unwrap_or(usize::MAX) } else { 0 };
     Ok(Value::bool(search_raw(c, slf, c.str_bytes(sv), pos).is_some()))
 }

@@ -238,6 +238,7 @@ cfn!(s_match, |c, slf, a, blk| {
 });
 cfn!(s_match_p, |c, slf, a, b_| {
     let re = regexp::to_regexp(c, a[0])?;
+    regexp::check_searchable(c, slf)?;
     let pos = if a.len() > 1 { let p = num_to_long(c, a[1])?.max(0) as usize; char_to_byte(c, slf, p).unwrap_or(usize::MAX) } else { 0 };
     Ok(Value::bool(regexp::search_raw(c, re, c.str_bytes(slf), pos).is_some()))
 });
