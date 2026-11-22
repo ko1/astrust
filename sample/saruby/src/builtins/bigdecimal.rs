@@ -1231,18 +1231,129 @@ fn float_to_real(c: &mut Ctx, d: f64, digs: usize, raise: bool, env: &Env) -> Re
         if !raise { return Ok(None); }
         return arg_err(c, "precision too large.");
     }
-    let s = if digs == 0 { format!("{:e}", d.abs()) } else { format!("{:.*e}", digs - 1, d.abs()) };
-    let (mant, ex) = s.split_once('e').unwrap();
-    let mut digits: Vec<u8> = mant.bytes().filter(|b| b.is_ascii_digit()).collect();
+    let (mut digits, decpt) = if digs == 0 { dtoa_mode0(d.abs()) } else { dtoa_mode2(d.abs(), digs) };
     while digits.len() > 1 && digits.last() == Some(&b'0') { digits.pop(); }
     digits.truncate(DOUBLE_FIG);
-    let decpt: i64 = ex.parse::<i64>().unwrap() + 1;
     let mut t = Vec::from(&b"0."[..]);
     t.extend_from_slice(&digits);
     t.extend_from_slice(format!("e{}", decpt).as_bytes());
     let mut r = vp!(c, vp_alloc(&t, true, env)).ok().expect("digits");
     if d < 0.0 { r.set_sign(-1); }
     Ok(Some(r))
+}
+
+const TENS: [f64; 23] = [1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22];
+const BIGTENS: [f64; 5] = [1e16, 1e32, 1e64, 1e128, 1e256];
+
+/// dtoa(d, 2, ndigits) of bigdecimal's missing/dtoa.c for d > 0: (digit chars, decpt). Its floating-point
+/// fast path (ndigits <= Quick_max 14) is kept: in its uncertain zone it rounds half-even on the last digit.
+fn dtoa_mode2(d: f64, ndigits: usize) -> (Vec<u8>, i64) {
+    let bits = d.to_bits();
+    let (w0, w1) = ((bits >> 32) as u32, bits as u32);
+    let ef = ((bits >> 52) & 0x7ff) as i32;
+    let (mant, e2) = if ef != 0 { ((bits & ((1u64 << 52) - 1)) | (1u64 << 52), ef - 1075) } else { (bits & ((1u64 << 52) - 1), -1074) };
+    let tz = mant.trailing_zeros() as i32;
+    let be = e2 + tz;
+    let bbits = 64 - (mant >> tz).leading_zeros() as i32;
+    let (d2, i) = if ef != 0 {
+        (f64::from_bits((bits & ((1u64 << 52) - 1)) | (1023u64 << 52)), ef - 1023)
+    } else {
+        let i = bbits + be + (1023 + 52 - 1);
+        let x: u32 = if i > 32 { (w0 << (64 - i)) | (w1 >> (i - 32)) } else { w1 << (32 - i) };
+        (f64::from_bits((x as f64).to_bits() - (31u64 << 52)), i - (1023 + 52 - 1) - 1)
+    };
+    let ds = (d2 - 1.5) * 0.289529654602168 + 0.1760912590558 + i as f64 * 0.301029995663981;
+    let mut k = ds as i32;
+    if ds < 0.0 && ds != k as f64 { k -= 1; }
+    let mut k_check = true;
+    if (0..=22).contains(&k) { if d < TENS[k as usize] { k -= 1; } k_check = false; }
+    let n = ndigits.max(1) as i32;
+    let mut half = false;
+    if n <= 14 {
+        let (mut dd, mut ilim, mut kk, mut ieps, mut bi) = (d, n, k, 2, 0usize);
+        if kk > 0 {
+            let mut dsv = TENS[(kk & 0xf) as usize];
+            let mut j = kk >> 4;
+            if j & 0x10 != 0 { j &= 0xf; dd /= BIGTENS[4]; ieps += 1; }
+            while j != 0 { if j & 1 != 0 { ieps += 1; dsv *= BIGTENS[bi]; } j >>= 1; bi += 1; }
+            dd /= dsv;
+        } else if kk != 0 {
+            let j1 = -kk;
+            dd *= TENS[(j1 & 0xf) as usize];
+            let mut j = j1 >> 4;
+            while j != 0 { if j & 1 != 0 { ieps += 1; dd *= BIGTENS[bi]; } j >>= 1; bi += 1; }
+        }
+        if k_check && dd < 1.0 && ilim > 0 { kk -= 1; dd *= 10.0; ieps += 1; }
+        let mut eps = ieps as f64 * dd + 7.0;
+        eps = f64::from_bits(eps.to_bits().wrapping_sub(52u64 << 52));
+        eps *= TENS[(ilim - 1) as usize];
+        let mut s: Vec<u8> = vec![];
+        let mut i = 1;
+        loop {
+            let l = dd as i64;
+            dd -= l as f64;
+            if dd == 0.0 { ilim = i; }
+            s.push(b'0' + l as u8);
+            if i == ilim {
+                if dd > 0.5 + eps { return bump_up(s, kk); }
+                if dd < 0.5 - eps { while s.last() == Some(&b'0') { s.pop(); } return (s, kk as i64 + 1); }
+                half = true;
+                if (s.last().unwrap() - b'0') & 1 == 1 { return bump_up(s, kk); }
+                break;
+            }
+            i += 1;
+            dd *= 10.0;
+        }
+    }
+    // the exact path: all significant decimal places of d (at most 767), rounded half-even
+    let ex = format!("{:.800e}", d);
+    let (m, e) = ex.split_once('e').unwrap();
+    let all: Vec<u8> = m.bytes().filter(|b| b.is_ascii_digit()).collect();
+    let k = e.parse::<i64>().unwrap();
+    let n = n as usize;
+    let mut s = all[..n].to_vec();
+    let rest = &all[n..];
+    let j = match rest.first() { None => -1, Some(&f) if f > b'5' => 1, Some(&f) if f < b'5' => -1, _ => if rest[1..].iter().any(|&x| x != b'0') { 1 } else { 0 } };
+    // the "small integer" branch rounds without consulting `half`
+    let small_int = be >= 0 && k <= 14;
+    if j > 0 || (j == 0 && (s[n - 1] - b'0') & 1 == 1) {
+        while s.last() == Some(&b'9') { s.pop(); }
+        if s.is_empty() { return (vec![b'1'], k + 2); }
+        let last = s.len() - 1;
+        if small_int || !half || (s[last] - b'0') & 1 == 1 { s[last] += 1; }
+    } else {
+        while s.len() > 1 && s.last() == Some(&b'0') { s.pop(); }
+    }
+    (s, k + 1)
+}
+/// dtoa(d, 0): the shortest round-tripping digits; of two equally near candidates dtoa takes the even one.
+fn dtoa_mode0(d: f64) -> (Vec<u8>, i64) {
+    let s = format!("{:e}", d);
+    let (mant, ex) = s.split_once('e').unwrap();
+    let short: Vec<u8> = mant.bytes().filter(|b| b.is_ascii_digit()).collect();
+    let k = ex.parse::<i64>().unwrap();
+    let n = short.len();
+    let exact = format!("{:.800e}", d);
+    let (m, e) = exact.split_once('e').unwrap();
+    if e.parse::<i64>().unwrap() == k {
+        let all: Vec<u8> = m.bytes().filter(|b| b.is_ascii_digit()).collect();
+        let rest = &all[n..];
+        let tie = rest.first() == Some(&b'5') && rest[1..].iter().all(|&x| x == b'0');
+        if tie && (short[n - 1] - b'0') & 1 == 1 {
+            let mut alt = all[..n].to_vec();
+            if (alt[n - 1] - b'0') & 1 == 0 {
+                let t = format!("{}.{}e{}", alt[0] as char, std::str::from_utf8(&alt[1..]).unwrap(), k);
+                if t.parse::<f64>() == Ok(d) { while alt.len() > 1 && alt.last() == Some(&b'0') { alt.pop(); } return (alt, k + 1); }
+            }
+        }
+    }
+    (short, k + 1)
+}
+fn bump_up(mut s: Vec<u8>, k: i32) -> (Vec<u8>, i64) {
+    while s.last() == Some(&b'9') { s.pop(); }
+    if s.is_empty() { return (vec![b'1'], k as i64 + 2); }
+    *s.last_mut().unwrap() += 1;
+    (s, k as i64 + 1)
 }
 
 fn rational_to_real(c: &mut Ctx, v: Value, digs: Option<usize>, raise: bool, env: &Env) -> Result<Option<Bdv>, Esc> {
