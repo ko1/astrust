@@ -71,21 +71,22 @@ fn ss_init_copy(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
 fn sub(c: &mut Ctx, str: Value, a: usize, b: usize) -> Value { let n = c.str_len(str); let (a, b) = (a.min(n), b.min(n)); c.str_sub(str, a..b.max(a)) }
 
 /// Core matcher: `head` anchors at the scan pointer, otherwise search forward.
-fn do_scan(c: &mut Ctx, slf: Value, pat: Value, advance: bool, want_str: bool, head: bool) -> RV {
+fn do_scan(c: &mut Ctx, slf: Value, pat: Value, advance: bool, want_str: bool, head: bool) -> RV { do_scan_e(c, slf, pat, advance, want_str, head, None) }
+/// `md`: how to read the string, once a warning about it has been issued (see regexp::prep_of).
+fn do_scan_e(c: &mut Ctx, slf: Value, pat: Value, advance: bool, want_str: bool, head: bool, md: Option<crate::regex_engine::Enc>) -> RV {
     let pat = if crate::regexp::is_regexp(c, pat) { pat } else { expect_str(c, pat)? };
     let mut s = sc(c, slf)?;
     let len = c.str_len(s.str);
     if s.pos > len { s.pos = len; sc_mut(c, slf).pos = len; }
     let is_re = crate::regexp::is_regexp(c, pat);
-    let md = if is_re { crate::regexp::prepare(c, pat, s.str)? } else { crate::regex_engine::Enc::UTF8 };
     let src = c.rstring(s.str);
     let bytes: &[u8] = &src.b;
-    if is_re && !is_ascii(bytes) && !crate::builtins::encoding::is_valid(src.enc, bytes) {
-        let enc = src.enc;
-        return arg_err(c, format!("invalid byte sequence in {}", crate::builtins::encoding::enc_name(enc)));
-    }
     // the string stays borrowed while matching: nothing below takes the context until `found` is known
     let (found, base): (Option<Vec<Option<(usize, usize)>>>, usize) = if let Some(r) = crate::regexp::rregexp(c, pat) {
+        let md = match md { Some(e) => e, None => match crate::regexp::prep_r(r, src.enc, bytes) {
+            Ok(e) => e,
+            Err(p) => { let e = crate::regexp::prep_fail(c, p)?; return do_scan_e(c, slf, pat, advance, want_str, head, Some(e)); }
+        } };
         let re = r.re.as_ref().unwrap();
         let (hay, off) = if s.fixed { (bytes, 0) } else { (&bytes[s.pos..], s.pos) };
         let at = s.pos - off;

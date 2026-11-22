@@ -81,7 +81,7 @@ pub fn str_aref(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
         if regexp::is_regexp(c, a[0]) {
             let m = regexp::search(c, a[0], slf, 0, true)?;
             if m == NIL { return Ok(NIL); }
-            if a[1].is_sym() || is_string(a[1]) { let nm = if a[1].is_sym() { a[1].as_sym() } else { intern(c.str_bytes(a[1])) }; return Ok(regexp::named_match(c, m, nm)); }
+            if a[1].is_sym() || is_string(a[1]) { return regexp::named_match_strict(c, m, a[1]); }
             let i = num_to_long(c, a[1])?;
             return Ok(regexp::nth_match(c, m, i));
         }
@@ -258,7 +258,11 @@ cfn!(s_aset, |c, slf, a, b_| {
             let m = regexp::search(c, a[0], slf, 0, true)?;
             if m == NIL { return err(c, c.vm().c_index_error.get(), "regexp not matched"); }
             let g = num_to_long(c, a[1])?;
-            match regexp::rmatch(c, m).unwrap().groups.get(g as usize).copied().flatten() { Some(x) => x, None => return err(c, c.vm().c_index_error.get(), format!("index {} out of regexp", g)) }
+            // rb_str_subpat_set: negative counts from the end, but never reaches group 0
+            let n = regexp::rmatch(c, m).unwrap().groups.len() as i64;
+            if g >= n || (g < 0 && -g >= n) { return err(c, c.vm().c_index_error.get(), format!("index {} out of regexp", g)); }
+            let g = if g < 0 { g + n } else { g };
+            match regexp::rmatch(c, m).unwrap().groups[g as usize] { Some(x) => x, None => return err(c, c.vm().c_index_error.get(), format!("regexp group {} not matched", g)) }
         } else {
             let (st0, ln) = nums.unwrap();
             let mut st = st0;
@@ -623,7 +627,7 @@ cfn!(s_split, |c, slf, a, blk| {
     // " " in an ASCII-compatible encoding is the one-space pattern without decoding it
     let awk = is_string(pat) && (c.str_bytes(pat) == b" " && (default_pat || crate::builtins::encoding::ascii_compat(c.str_enc(pat))) || { let cs = codes_of(c, pat); cs.len() == 1 && cs[0].0 == 32 });
     let re = if is_string(pat) { NIL } else { regexp::to_regexp(c, pat)? };
-    let md = if re != NIL { regexp::prepare(c, re, slf)? } else { crate::regex_engine::Enc::UTF8 };
+    let md = if re != NIL { regexp::prepare_valid(c, re, slf)? } else { crate::regex_engine::Enc::UTF8 };
     let sp = |x: u8| matches!(x, 9..=13 | 32);
     if awk && c.str_enc(slf) <= ENC_ASCII && limit == 0 && blk.is_null() {
         // the common call: build the result directly (short pieces need no malloc)
@@ -781,7 +785,7 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool, 
     let lit = if is_string(pat) { Some(c.str_bytes(pat).to_vec()) } else { None };
     let mut re = if lit.is_none() { regexp::to_regexp(c, pat)? } else { NIL };
     if lit.is_some() { compat(c, slf, pat)?; } else { check_valid(c, slf)?; }
-    let md = if lit.is_none() { regexp::prepare(c, re, slf)? } else { crate::regex_engine::Enc::UTF8 };
+    let md = if lit.is_none() { regexp::prepare_valid(c, re, slf)? } else { crate::regex_engine::Enc::UTF8 };
     let src = match early { Some(v) => v, None => c.str_bytes(slf).to_vec() };
     let enc = c.str_enc(slf);
     let mut renc = enc;
@@ -858,7 +862,7 @@ cfn!(s_scan, |c, slf, a, blk| {
     if is_string(p) { compat(c, slf, p)?; }
     check_valid(c, slf)?;
     let re = regexp::to_regexp(c, p)?;
-    let md = regexp::prepare(c, re, slf)?;
+    let md = regexp::prepare_valid(c, re, slf)?;
     let src = c.str_bytes(slf).to_vec();
     let out = c.ary_new();
     let mut i = 0;

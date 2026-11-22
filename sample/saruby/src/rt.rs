@@ -205,7 +205,7 @@ pub fn srb_tostr(c: &mut Ctx, v: Value) -> RV {
 }
 
 pub fn srb_regex_lit(c: &mut Ctx, src: Str, opts: u32, lc: &mut LitCache) -> RV {
-    let r = crate::regexp::regexp_new(c, src, opts)?;
+    let r = crate::regexp::regexp_new_lit(c, src, opts)?;
     obj_set_flags(r, FL_FROZEN);
     vm().node_values.borrow_mut().push(r);
     lc.v = Some(r);

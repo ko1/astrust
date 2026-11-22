@@ -68,6 +68,25 @@ pub const AN_STR_BEGIN: u32 = 1;
 pub const AN_START: u32 = 2;
 pub const AN_LINE: u32 = 3;
 
+/// Matching state of patterns with calls / level backrefs, kept out of Ctx so that the others
+/// pay nothing for it (no search runs inside another one on a thread).
+pub struct RecState {
+    pub mstk: Vec<MEnt>,
+    /// continuations of the active subexpression calls
+    pub rets: Vec<NodePtr>,
+    /// subroutine entry and its recursion cost, by group number
+    pub entries: Vec<(NodePtr, u32)>,
+}
+
+thread_local! {
+    static REC: std::cell::RefCell<RecState> = const { std::cell::RefCell::new(RecState { mstk: Vec::new(), rets: Vec::new(), entries: Vec::new() }) };
+}
+
+#[inline]
+pub fn rs<R>(f: impl FnOnce(&mut RecState) -> R) -> R {
+    REC.with(|r| f(&mut r.borrow_mut()))
+}
+
 pub struct Ctx {
     pub s: *const u8,
     pub len: usize,
@@ -84,11 +103,6 @@ pub struct Ctx {
     pub must_next: usize,
     pub ngroups: usize,
     pub enc: Enc,
-    pub mstk: Vec<MEnt>,
-    /// continuations of the active subexpression calls
-    pub rets: Vec<NodePtr>,
-    /// subroutine entry and its recursion cost, by group number
-    pub entries: Vec<(NodePtr, u32)>,
     /// countdown to the next deadline check (see tick)
     pub ticks: u32,
     pub deadline: Option<std::time::Instant>,
@@ -100,7 +114,7 @@ impl Ctx {
             s: s.as_ptr(), len: s.len(), slots: vec![NONE; 2 * (ngroups + 1)], log: Vec::new(),
             sprev_bug: NONE, gpos, rep_top: std::ptr::null_mut(), depth: 0, sub_end: 0,
             lb_target: NONE, must: &[], must_occ: Vec::new(), must_next: usize::MAX, ngroups, enc,
-            mstk: Vec::new(), rets: Vec::new(), entries: Vec::new(), ticks: u32::MAX, deadline: None,
+            ticks: u32::MAX, deadline: None,
         }
     }
     /// Advances the required-literal occurrences to >= p; false when one no longer occurs
@@ -127,7 +141,7 @@ impl Ctx {
     pub fn undo(&mut self, mark: usize) {
         while self.log.len() > mark {
             let (i, old) = self.log.pop().unwrap();
-            if i < MSTK { self.slots[i] = old } else if i == SPREV { self.sprev_bug = old } else { self.mstk.truncate(old) }
+            if i < MSTK { self.slots[i] = old } else if i == SPREV { self.sprev_bug = old } else { rs(|r| r.mstk.truncate(old)) }
         }
     }
     #[inline]
@@ -138,8 +152,8 @@ impl Ctx {
     /// Pushes a mark-stack entry, undone with the log.
     #[inline]
     pub fn mpush(&mut self, e: MEnt) {
-        self.log.push((MSTK, self.mstk.len()));
-        self.mstk.push(e);
+        let n = rs(|r| { r.mstk.push(e); r.mstk.len() - 1 });
+        self.log.push((MSTK, n));
     }
     #[inline]
     pub fn set_sprev(&mut self, v: usize) {
@@ -335,7 +349,7 @@ pub fn open_rec_k(c: &mut Ctx, g: usize, pos: usize) {
 }
 
 pub fn close_rec_k(c: &mut Ctx, g: usize, pos: usize) {
-    let st = rec_start(&c.mstk, g).unwrap_or(c.slots[2 * g]);
+    let st = rs(|r| rec_start(&r.mstk, g)).unwrap_or(c.slots[2 * g]);
     // end first: an (open, open+1) pair in the log would read as an open (empty_iter_verdict)
     c.set_slot(2 * g + 1, pos);
     c.set_slot(2 * g, st);
@@ -343,34 +357,34 @@ pub fn close_rec_k(c: &mut Ctx, g: usize, pos: usize) {
 }
 
 pub fn call_k(c: &mut Ctx, g: usize, next: NodePtr, pos: usize) -> u32 {
-    let (entry, cost) = c.entries[g];
+    let (entry, cost) = rs(|r| r.entries[g]);
     let cost = cost as usize;
     c.depth += cost;
     if c.depth > DEPTH_LIMIT { return ABORT; }
     if tick(c) { return TIMEOUT; }
     let mark = c.log.len();
-    c.rets.push(next);
+    rs(|r| r.rets.push(next));
     c.mpush(MEnt::Call);
     let r = call(c, entry, pos);
-    c.rets.pop();
+    rs(|r| r.rets.pop());
     if r == FAIL { c.undo(mark); }
     c.depth -= cost;
     r
 }
 
 pub fn ret_k(c: &mut Ctx, pos: usize) -> u32 {
-    let next = c.rets.pop().expect("a subexpression call");
+    let next = rs(|r| r.rets.pop()).expect("a subexpression call");
     let mark = c.log.len();
     c.mpush(MEnt::Ret);
     let r = call(c, next, pos);
     if r == FAIL { c.undo(mark); }
-    c.rets.push(next);
+    rs(|r| r.rets.push(next));
     r
 }
 
 #[inline]
 pub fn backref_lv_k(c: &Ctx, groups: Groups, icase: bool, nest: i32, pos: usize) -> Option<usize> {
-    backref_lv(c.enc, &c.mstk, c.subj(), groups, icase, nest, pos)
+    rs(|r| backref_lv(c.enc, &r.mstk, c.subj(), groups, icase, nest, pos))
 }
 
 /// (?~x): the probes run x ending at c.lb_target; their captures are dropped.
@@ -912,7 +926,7 @@ impl Regex {
         if start > s.len() { return Ok(None); }
         let mut c = Ctx::new(s, self.vm.group_count(), start, enc);
         if deadline.is_some() { c.deadline = deadline; c.ticks = TICKS; }
-        if !self.entries.is_empty() { c.entries = self.entries.clone(); }
+        if self.vm.rec { rs(|r| { r.mstk.clear(); r.rets.clear(); r.entries.clone_from(&self.entries); }); }
         if !self.vm.must.is_empty() {
             c.must = &self.vm.must[..];
             c.must_occ = vec![NONE; self.vm.must.len()];
@@ -933,7 +947,7 @@ impl Regex {
     pub fn match_at_enc(&self, s: &[u8], pos: usize, enc: Enc) -> Option<Captures> {
         if pos > s.len() || !self.vm.must_ok_from(s, pos) { return None; }
         let mut c = Ctx::new(s, self.vm.group_count(), pos, enc);
-        if !self.entries.is_empty() { c.entries = self.entries.clone(); }
+        if self.vm.rec { rs(|r| { r.mstk.clear(); r.rets.clear(); r.entries.clone_from(&self.entries); }); }
         match call(&mut c, self.at_root, pos) {
             OK => Some(self.captures(&c)),
             FAIL => None,

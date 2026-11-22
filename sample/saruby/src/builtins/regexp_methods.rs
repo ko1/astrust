@@ -145,7 +145,7 @@ fn subject(c: &mut Ctx, v: Value) -> RV {
     expect_str(c, v)
 }
 fn re_match(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
-    check_argc(c, a, 1, 2)?;
+    if a.is_empty() || a.len() > 2 { return argc_err(c, a.len(), 1, 2); }
     if a[0] == NIL { c.last_match = NIL; return Ok(NIL); }
     let sv = subject(c, a[0])?;
     let pos = if a.len() > 1 { let p = crate::builtins::numeric_methods::num_to_long(c, a[1])?; let n = c.str_char_len(sv) as i64; let p = if p < 0 { p + n } else { p }; if p < 0 || p > n { c.last_match = NIL; return Ok(NIL); } c.char_offsets(sv)[p as usize] } else { 0 };
@@ -154,12 +154,11 @@ fn re_match(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     Ok(m)
 }
 fn re_match_p(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    check_argc(c, a, 1, 2)?;
+    if a.is_empty() || a.len() > 2 { return argc_err(c, a.len(), 1, 2); }
     if a[0] == NIL { return Ok(FALSE); }
     let sv = subject(c, a[0])?;
-    let e = prepare(c, slf, sv)?;
-    let pos = if a.len() > 1 { let p = crate::builtins::numeric_methods::num_to_long(c, a[1])?; let n = c.str_char_len(sv) as i64; let p = if p < 0 { p + n } else { p }; if p < 0 || p > n { return Ok(FALSE); } c.char_offsets(sv)[p as usize] } else { 0 };
-    Ok(Value::bool(search_timed(c, slf, sv, pos, e)?.is_some()))
+    let pos = if a.len() > 1 { let p = crate::builtins::numeric_methods::num_to_long(c, a[1])?; let n = c.str_char_len(sv) as i64; let p = if p < 0 { p + n } else { p }; if p < 0 || p > n { prepare(c, slf, sv)?; return Ok(FALSE); } c.char_offsets(sv)[p as usize] } else { 0 };
+    Ok(Value::bool(search_timed(c, slf, sv, pos)?.is_some()))
 }
 fn re_match_op(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if a[0] == NIL { c.last_match = NIL; return Ok(NIL); }
@@ -279,8 +278,9 @@ fn group_index(c: &mut Ctx, m: Value, k: Value) -> Result<Option<usize>, Esc> {
     }
     let i = crate::builtins::numeric_methods::num_to_long(c, k)?;
     let n = md(c, m).groups.len() as i64;
-    let i = if i < 0 { i + n } else { i };
-    if i < 0 || i >= n { return Ok(None); }
+    // like rb_reg_nth_match, a negative index never reaches group 0
+    let i = if i < 0 { if i + n <= 0 { return Ok(None); } i + n } else { i };
+    if i >= n { return Ok(None); }
     Ok(Some(i as usize))
 }
 /// match_backref_number + bounds check (begin/end/offset/byte*): no negative indices.

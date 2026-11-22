@@ -563,11 +563,7 @@ impl<'a> Compiler<'a> {
                 if n.flags & pa::INTERPOLATED_STRING_NODE_FLAGS_FROZEN != 0 { self.call_node(d, s::freeze, vec![], 0, line) } else { d }
             }
             Kind::InterpolatedSymbolNode { parts } => { let d = self.dstr(parts); ALLOC_node_dsym(d) }
-            Kind::RegularExpressionNode { unescaped } => {
-                let o = regex_opts(n.flags, self.src_enc);
-                if self.file != "<internal:prelude>" { if let Err(m) = crate::regexp::regexp_check(unescaped, o) { self.errors.push(format!("{}:{}: {}", self.file, line, m)); } }
-                ALLOC_node_regex(lstr(unescaped), o)
-            }
+            Kind::RegularExpressionNode { unescaped } => self.regex_lit(unescaped, n.flags, line),
             Kind::InterpolatedRegularExpressionNode { parts } => {
                 let d = self.dstr(parts);
                 ALLOC_node_dregex(d, regex_opts(n.flags, self.src_enc), n.flags & pa::REGULAR_EXPRESSION_FLAGS_ONCE != 0)
@@ -2212,6 +2208,16 @@ pub const PM_NOT_EMPTY: i64 = 8;
 thread_local! {
     static METHOD_LABEL: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(vec![]);
     static CLASS_LABEL: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(vec![]);
+}
+
+impl<'a> Compiler<'a> {
+    /// A regexp literal (out of line: `c` is large).  An invalid one raises SyntaxError when run.
+    #[inline(never)]
+    fn regex_lit(&mut self, src: &[u8], flags: u32, line: u32) -> NodePtr {
+        let s = lstr(src);
+        if self.file != "<internal:prelude>" { crate::regexp::note_literal(s, self.file, line); }
+        ALLOC_node_regex(s, regex_opts(flags, self.src_enc))
+    }
 }
 
 /// i/x/m, /n, /e /s /u (fixed) and the source string's encoding (regexp.rs RE_LIT_ENC_SHIFT).

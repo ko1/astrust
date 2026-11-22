@@ -63,13 +63,36 @@ pub fn regexp_new_dyn(c: &mut Ctx, s: Value, opts: u32) -> RV {
     Ok(r)
 }
 
+/// Where each regexp literal's source is (by the address of its leaked bytes), for the error.
+static LIT_LINES: std::sync::Mutex<Option<std::collections::HashMap<usize, (&'static str, u32)>>> = std::sync::Mutex::new(None);
+pub fn note_literal(src: &'static [u8], file: &'static str, line: u32) {
+    if let Ok(mut m) = LIT_LINES.lock() { m.get_or_insert_with(Default::default).insert(src.as_ptr() as usize, (file, line)); }
+}
+
+/// A regexp literal: CRuby rejects an invalid one at parse time, so it is a SyntaxError here.
+pub fn regexp_new_lit(c: &mut Ctx, src: &[u8], opts: u32) -> RV {
+    let e = (opts >> RE_LIT_ENC_SHIFT) & 0xff;
+    let enc = if e == 0 { ENC_UTF8 } else { (e - 1) as u8 };
+    match regexp_build(src, enc, opts & RE_OPT_MASK) {
+        Ok(x) => Ok(regexp_alloc(c, x)),
+        Err(m) => {
+            let at = LIT_LINES.lock().ok().and_then(|t| t.as_ref().and_then(|t| t.get(&(src.as_ptr() as usize)).copied()));
+            let loc = match at { Some((f, l)) => format!("{}:{}", f, l), None => backtrace_lines(c, 0).first().map(|l| l.split(":in ").next().unwrap_or("").to_string()).unwrap_or_default() };
+            err(c, c.vm().c_syntax_error.get(), format!("{}: {}", loc, m))
+        }
+    }
+}
+
 /// rb_reg_initialize_str: `src` is a String of encoding `enc`.
 pub fn regexp_new_enc(c: &mut Ctx, src: &[u8], enc: u8, opts: u32) -> RV {
-    let (src, opts, enc, re) = match regexp_build(src, enc, opts) {
-        Ok(x) => x,
-        Err(e) => return err(c, c.vm().c_regexp_error.get(), e),
-    };
-    Ok(c.alloc_with(c.vm().c_regexp.get(), move || Body::Data(Box::new(RRegexp { src, opts, re: Some(re), enc, timeout: None }))))
+    match regexp_build(src, enc, opts) {
+        Ok(x) => Ok(regexp_alloc(c, x)),
+        Err(e) => err(c, c.vm().c_regexp_error.get(), e),
+    }
+}
+
+fn regexp_alloc(c: &mut Ctx, (src, opts, enc, re): (Vec<u8>, u32, u8, Regex)) -> Value {
+    c.alloc_with(c.vm().c_regexp.get(), move || Body::Data(Box::new(RRegexp { src, opts, re: Some(re), enc, timeout: None })))
 }
 
 /// Source, options, encoding and compiled pattern, or the RegexpError message.
@@ -79,13 +102,6 @@ pub fn regexp_build(src: &[u8], enc: u8, opts: u32) -> Result<(Vec<u8>, u32, u8,
     Ok((src.to_vec(), opts, enc, re))
 }
 
-/// A literal's RegexpError message, if any (compile time: CRuby reports it as a SyntaxError).
-pub fn regexp_check(src: &[u8], opts: u32) -> Result<(), String> {
-    let e = (opts >> RE_LIT_ENC_SHIFT) & 0xff;
-    let enc = if e == 0 { ENC_UTF8 } else { (e - 1) as u8 };
-    let (unesc, opts, enc, mode) = regexp_prep(src, enc, opts & RE_OPT_MASK)?;
-    Regex::check(&unesc, opts & 7, mode).map_err(|e| format!("{}: {}", e, regexp_desc(src, enc, opts)))
-}
 
 /// rb_reg_initialize up to the engine: (pattern for the engine, options, encoding, engine mode).
 fn regexp_prep(src: &[u8], enc: u8, opts: u32) -> Result<(Vec<u8>, u32, u8, Enc), String> {
@@ -317,30 +333,78 @@ pub fn check_searchable(c: &mut Ctx, s: Value) -> Result<(), Esc> {
     Ok(())
 }
 
+enum Prep { Ok(Enc), Broken(u8), Uninit, Incompat(u8, u8), Warn(Enc, u8) }
+
+/// rb_reg_prepare_enc without the raising: `r` against a string of `senc` / `bytes` (`valid`:
+/// the caller has checked the string).  Without a coderange cache the string is scanned only
+/// when the answer depends on it being 7-bit: an ASCII-only (non-fixed) pattern reads a 7-bit
+/// string the same in its own encoding and in the string's.
+#[inline(always)]
+fn prep(r: &RRegexp, senc: u8, bytes: &[u8], valid: bool) -> Prep {
+    use crate::builtins::encoding as en;
+    if !valid && !is_ascii(bytes) && !en::is_valid(senc, bytes) { return Prep::Broken(senc); }
+    // the common case: an ASCII-only pattern (not fixed, not /n), or the string's own encoding
+    if r.opts & (RE_OPT_FIXED | RE_OPT_ENC_NONE) == 0 && r.re.is_some() && (r.enc == senc || en::ascii_compat(senc)) {
+        return Prep::Ok(if senc == ENC_UTF8 { Enc::UTF8 } else { engine_enc(senc) });
+    }
+    prep_rest(r, senc, bytes)
+}
+
+#[inline(never)]
+fn prep_rest(r: &RRegexp, senc: u8, bytes: &[u8]) -> Prep {
+    use crate::builtins::encoding as en;
+    if r.re.is_none() { return Prep::Uninit; }
+    let renc = r.enc;
+    if renc == senc { return Prep::Ok(engine_enc(senc)); }
+    if !en::ascii_compat(senc) { return Prep::Incompat(renc, senc); }
+    if r.fixed() {
+        if !en::ascii_compat(renc) || !is_ascii(bytes) { return Prep::Incompat(renc, senc); }
+        return Prep::Ok(engine_enc(renc));
+    }
+    if r.opts & RE_OPT_ENC_NONE != 0 && senc != ENC_BINARY && !is_ascii(bytes) { return Prep::Warn(engine_enc(senc), senc); }
+    Prep::Ok(engine_enc(senc))
+}
+
+#[inline]
+fn prep_raise(c: &mut Ctx, p: Prep) -> Result<Enc, Esc> {
+    match p {
+        Prep::Ok(e) => Ok(e),
+        p => prep_slow(c, p),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn prep_slow(c: &mut Ctx, p: Prep) -> Result<Enc, Esc> {
+    use crate::builtins::encoding as en;
+    match p {
+        Prep::Ok(e) => Ok(e),
+        Prep::Broken(senc) => arg_err(c, format!("invalid byte sequence in {}", en::enc_name(senc))),
+        Prep::Uninit => type_err(c, "uninitialized Regexp"),
+        Prep::Incompat(renc, senc) => Err(reg_enc_error(c, renc, senc)),
+        Prep::Warn(e, senc) => { reg_warn(c, &format!("historical binary regexp match /.../n against {} string", en::enc_name(senc)))?; Ok(e) }
+    }
+}
+
 /// rb_reg_prepare_enc: how to read `s` when matching `re` against it, or the error CRuby raises.
 pub fn prepare(c: &mut Ctx, re: Value, s: Value) -> Result<Enc, Esc> {
-    use crate::builtins::encoding as en;
-    let senc = c.str_enc(s);
-    let bytes = c.str_bytes(s);
-    let seven = en::ascii_compat(senc) && is_ascii(bytes);
-    if !seven && !en::is_valid(senc, bytes) {
-        return arg_err(c, format!("invalid byte sequence in {}", en::enc_name(senc)));
-    }
-    let Some(r) = rregexp(c, re) else { return Ok(Enc::UTF8) };
-    if r.re.is_none() { return type_err(c, "uninitialized Regexp"); }
-    let (renc, fixed, none) = (r.enc, r.fixed(), r.opts & RE_OPT_ENC_NONE != 0);
-    if renc == senc { return Ok(engine_enc(senc)); }
-    if seven && renc == ENC_ASCII { return Ok(engine_enc(renc)); }
-    if !en::ascii_compat(senc) { return Err(reg_enc_error(c, renc, senc)); }
-    if fixed {
-        if !en::ascii_compat(renc) || !seven { return Err(reg_enc_error(c, renc, senc)); }
-        return Ok(engine_enc(renc));
-    }
-    if none && senc != ENC_BINARY && !seven {
-        reg_warn(c, &format!("historical binary regexp match /.../n against {} string", en::enc_name(senc)))?;
-    }
-    Ok(engine_enc(senc))
+    let p = match rregexp(c, re) { Some(r) => { let st = c.rstring(s); prep(r, st.enc, &st.b, false) } None => Prep::Ok(Enc::UTF8) };
+    prep_raise(c, p)
 }
+
+/// prepare for a string the caller has already checked for a broken encoding.
+pub fn prepare_valid(c: &mut Ctx, re: Value, s: Value) -> Result<Enc, Esc> {
+    let p = match rregexp(c, re) { Some(r) => { let st = c.rstring(s); prep(r, st.enc, &st.b, true) } None => Prep::Ok(Enc::UTF8) };
+    prep_raise(c, p)
+}
+
+/// prepare on a string the caller holds (`senc` / `bytes`); Err needs prep_fail.
+pub struct PrepErr(Prep);
+#[inline]
+pub fn prep_r(r: &RRegexp, senc: u8, bytes: &[u8]) -> Result<Enc, PrepErr> {
+    match prep(r, senc, bytes, false) { Prep::Ok(e) => Ok(e), p => Err(PrepErr(p)) }
+}
+pub fn prep_fail(c: &mut Ctx, e: PrepErr) -> Result<Enc, Esc> { prep_slow(c, e.0) }
 
 fn reg_enc_error(c: &mut Ctx, renc: u8, senc: u8) -> Esc {
     use crate::builtins::encoding::enc_name_msg;
@@ -359,21 +423,30 @@ pub fn reg_warn(c: &mut Ctx, msg: &str) -> Result<(), Esc> {
 pub static TIMEOUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(NO_TIMEOUT);
 pub const NO_TIMEOUT: u64 = u64::MAX;
 
-/// When a match of `re` must give up: its own timeout, else Regexp.timeout.
-fn deadline(c: &Ctx, re: Value) -> Option<std::time::Instant> {
-    let own = rregexp(c, re).and_then(|r| r.timeout);
-    let t = own.or_else(|| { let b = TIMEOUT.load(std::sync::atomic::Ordering::Relaxed); if b == NO_TIMEOUT { None } else { Some(f64::from_bits(b)) } })?;
+/// When a match of `r` must give up: its own timeout, else Regexp.timeout.
+fn deadline(r: &RRegexp) -> Option<std::time::Instant> {
+    let t = r.timeout.or_else(|| { let b = TIMEOUT.load(std::sync::atomic::Ordering::Relaxed); if b == NO_TIMEOUT { None } else { Some(f64::from_bits(b)) } })?;
     Some(std::time::Instant::now() + std::time::Duration::from_secs_f64(t.max(0.0)))
 }
 
-/// search_raw_e under the regexp's timeout: Regexp::TimeoutError when it passes.
-pub fn search_timed(c: &mut Ctx, re: Value, s: Value, start: usize, e: Enc) -> Result<Option<Vec<Option<(usize, usize)>>>, Esc> {
-    let dl = deadline(c, re);
-    let r = {
-        let bytes = c.str_bytes(s);
-        let Some(rx) = rregexp(c, re).and_then(|r| r.re.as_ref()) else { return Ok(None) };
-        if start > bytes.len() { return Ok(None); }
-        rx.search_timeout(bytes, start, e, dl)
+/// prepare + search under the regexp's timeout (Regexp::TimeoutError when it passes).
+pub fn search_timed(c: &mut Ctx, re: Value, s: Value, start: usize) -> Result<Option<Vec<Option<(usize, usize)>>>, Esc> {
+    let st = c.rstring(s);
+    let (senc, bytes) = (st.enc, &st.b[..]);
+    let Some(r) = rregexp(c, re) else { return Ok(None) };
+    let r = match prep(r, senc, bytes, false) {
+        Prep::Ok(e) => {
+            let Some(rx) = r.re.as_ref() else { return Ok(None) };
+            if start > bytes.len() { return Ok(None); }
+            rx.search_timeout(bytes, start, e, deadline(r))
+        }
+        p => {
+            let e = prep_raise(c, p)?;
+            let (r, bytes) = (rregexp(c, re).unwrap(), c.str_bytes(s));
+            let Some(rx) = r.re.as_ref() else { return Ok(None) };
+            if start > bytes.len() { return Ok(None); }
+            rx.search_timeout(bytes, start, e, deadline(r))
+        }
     };
     match r {
         Ok(g) => Ok(g),
@@ -386,8 +459,7 @@ pub fn search_timed(c: &mut Ctx, re: Value, s: Value, start: usize, e: Enc) -> R
 
 /// Search re in str from byte `start`; returns a MatchData or NIL, and sets $~.
 pub fn search(c: &mut Ctx, re: Value, s: Value, start: usize, set_last: bool) -> RV {
-    let e = prepare(c, re, s)?;
-    let groups = search_timed(c, re, s, start, e)?;
+    let groups = search_timed(c, re, s, start)?;
     let Some(groups) = groups else { if set_last { c.last_match = NIL; } return Ok(NIL) };
     let m = match_new(c, re, s, groups);
     if set_last { c.last_match = m; }
@@ -426,8 +498,18 @@ fn group_span(c: &Ctx, m: Value, n: i64) -> Option<(Value, usize, usize)> {
     if n < 0 { return None; }
     md.groups.get(n as usize).copied().flatten().map(|(a, b)| (md.str, a, b))
 }
+/// rb_reg_nth_match: a negative n counts from the end but never reaches group 0.
 pub fn nth_match(c: &mut Ctx, m: Value, n: i64) -> Value {
+    if n < 0 && rmatch(c, m).map_or(true, |md| n + md.groups.len() as i64 <= 0) { return NIL; }
     match group_span(c, m, n) { Some((s, a, b)) => c.str_sub(s, a..b), None => NIL }
+}
+
+/// The capture named by a String / Symbol; IndexError for a name the regexp lacks.
+pub fn named_match_strict(c: &mut Ctx, m: Value, name: Value) -> RV {
+    let nm = if name.is_sym() { crate::symbol::sym_str(name.as_sym()) } else { String::from_utf8_lossy(c.str_bytes(name)).into_owned() };
+    let known = rmatch(c, m).and_then(|md| rregexp(c, md.regexp)).and_then(|r| r.re.as_ref()).map_or(false, |r| !r.group_index(&nm).is_empty());
+    if !known { return err(c, c.vm().c_index_error.get(), format!("undefined group name reference: {}", nm)); }
+    Ok(named_match(c, m, crate::symbol::intern(nm.as_bytes())))
 }
 pub fn match_pre(c: &mut Ctx, m: Value) -> Value {
     match group_span(c, m, 0) { Some((s, a, _)) => c.str_sub(s, 0..a), None => NIL }
