@@ -253,7 +253,7 @@ fn e_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
         return Ok(NIL);
     }
     if is_proc(en.size) { let p = en.size; return call_proc(c, p, &[], std::ptr::null()); }
-    if en.size.is_fixnum() || is_float(en.size) { return Ok(en.size); }
+    if is_integer(en.size) || is_float(en.size) { return Ok(en.size); }
     if en.mid == s::loop_ { return Ok(c.float_new(f64::INFINITY)); }
     let (recv, mid) = (en.recv, en.mid);
     if (mid == s::times) && recv.is_fixnum() { return Ok(Value::fix(recv.as_fix().max(0))); }

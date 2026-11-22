@@ -11,7 +11,8 @@ use crate::vm::*;
 
 // Enumerable.__int(n): implicit Integer conversion (to_int) with CRuby's errors.
 fn e_int(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
-    Ok(Value::fix(num_to_long(c, a[0])?))
+    let n = num_to_long(c, a[0])?;
+    Ok(c.int_from_i64(n))
 }
 // Enumerable.__hash(h): implicit Hash conversion (to_hash) or TypeError.
 fn e_hash(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {

@@ -966,7 +966,7 @@ cfn!(a_cycle, |c, slf, a, blk| {
     check_argc(c, a, 0, 1)?;
     if blk.is_null() {
         let l = c.ary_len(slf) as i64;
-        let size = if a.is_empty() || a[0] == NIL { if l == 0 { Value::fix(0) } else { c.float_new(f64::INFINITY) } } else { Value::fix(l * num_to_long(c, a[0])?.max(0)) };
+        let size = if a.is_empty() || a[0] == NIL { if l == 0 { Value::fix(0) } else { c.float_new(f64::INFINITY) } } else { let n = num_to_long(c, a[0])?.max(0); c.int_from_i128(l as i128 * n as i128) };
         return crate::builtins::enumerator::enum_for(c, slf, intern(b"cycle"), a, size);
     }
     enum_or(c, slf, "cycle", a, blk, |c| {
