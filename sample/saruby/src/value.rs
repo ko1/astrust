@@ -15,17 +15,18 @@ pub struct Value(NonZeroU64);
 #[repr(transparent)]
 pub struct Sym(pub u32);
 
-const fn konst(r: u64) -> Value { match NonZeroU64::new(r) { Some(x) => Value(x), None => panic!() } }
-pub const NIL: Value = konst(0x04);
-pub const FALSE: Value = konst(0x0c);
-pub const TRUE: Value = konst(0x14);
-pub const UNDEF: Value = konst(0x1c);
+pub const NIL: Value = Value::imm(0x04);
+pub const FALSE: Value = Value::imm(0x0c);
+pub const TRUE: Value = Value::imm(0x14);
+pub const UNDEF: Value = Value::imm(0x1c);
 const SYM_TAG: u64 = 0x34;
 pub const FIXNUM_MAX: i64 = (1i64 << 62) - 1;
 pub const FIXNUM_MIN: i64 = -(1i64 << 62);
 
 impl Value {
     #[inline(always)] pub const fn raw(self) -> u64 { self.0.get() }
+    /// An immediate by its bits; in `const { }` (baked code) a zero is a compile error.
+    pub const fn imm(r: u64) -> Value { match NonZeroU64::new(r) { Some(x) => Value(x), None => panic!("zero Value") } }
     #[inline(always)] pub const unsafe fn from_raw(r: u64) -> Value { Value(NonZeroU64::new_unchecked(r)) }
     #[inline(always)] pub fn is_fixnum(self) -> bool { self.raw() & 1 == 1 }
     #[inline(always)] pub fn fix(i: i64) -> Value { unsafe { Value::from_raw(((i << 1) | 1) as u64) } }

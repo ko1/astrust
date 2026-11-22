@@ -42,7 +42,7 @@ pub fn value_hash(v: Value) -> u64 {
     else { hash_str("heap") }
 }
 pub fn value_bake(v: Value) -> Option<String> {
-    if v.is_sym() || v.is_heap() { None } else { Some(format!("unsafe {{ Value::from_raw({:#x}) }}", v.raw())) }
+    if v.is_sym() || v.is_heap() { None } else { Some(format!("const {{ Value::imm({:#x}) }}", v.raw())) }
 }
 /// A method / block / class body by its structure: the body's tree and the parameters' shape (not the
 /// names, label or line: those are read from the iseq at run time).
