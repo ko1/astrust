@@ -776,13 +776,13 @@ pub fn cref_refinements(mut cr: *const Cref) -> Value {
 
 /// Method lookup at a call site whose cref may have refinements activated.
 #[inline(never)]
-pub fn lookup_method_refined(cref: *const Cref, klass: Value, mid: Sym) -> *const MethodEntry {
+pub fn lookup_method_refined(c: &Ctx, cref: *const Cref, klass: Value, mid: Sym) -> *const MethodEntry {
     let refs = cref_refinements(cref);
     if refs == NIL { return lookup_method(klass, mid); }
-    let n = rary(refs).len();
+    let n = c.ary(refs).len();
     for &k in ancestors(klass).iter() {
         for i in (0..n).rev() {
-            let r = rary(refs)[i];
+            let r = c.ary(refs)[i];
             if rclass(r).attached != k { continue; }
             let me = search_method(r, mid);
             if me.is_null() { continue; }
@@ -1174,11 +1174,11 @@ pub fn frame_file(f: &Frame) -> &'static str {
 /// Backtrace as an Array of "file:line:in 'label'" strings.
 pub fn make_backtrace(c: &mut Ctx, skip: usize) -> Value {
     let lines = backtrace_lines(c, skip);
-    lines_to_array(lines)
+    lines_to_array(c, lines)
 }
-fn lines_to_array(lines: Vec<String>) -> Value {
-    let a = crate::array::ary_new_capa(lines.len());
-    for l in lines { let s = crate::string::str_new(l.as_bytes()); crate::array::ary_push(a, s); }
+fn lines_to_array(c: &mut Ctx, lines: Vec<String>) -> Value {
+    let a = c.ary_new_capa(lines.len());
+    for l in lines { let s = crate::string::str_new(l.as_bytes()); c.ary_push(a, s); }
     a
 }
 
@@ -1204,7 +1204,8 @@ pub fn make_backtrace_lazy(c: &mut Ctx, skip: usize) -> Value {
 pub fn exc_bt(c: &mut Ctx, e: Value) -> Value {
     let v = ivar_get(c, e, s::bt);
     let Some(raw) = c.data::<RawBt>(v) else { return v };
-    let a = lines_to_array(format_frames(&raw.frames, raw.skip));
+    let lines = format_frames(&raw.frames, raw.skip);
+    let a = lines_to_array(c, lines);
 
     ivar_set_raw(c, e, s::bt, a);
     a
@@ -1280,7 +1281,7 @@ pub fn stack_check(c: &mut Ctx, need: usize) -> Result<(), Esc> {
 #[inline(never)]
 pub fn raise_stack_overflow(c: &mut Ctx) -> Esc {
     let e = make_exception(c, vm().c_system_stack_error.get(), "stack level too deep");
-    let bt = crate::array::ary_new();
+    let bt = c.ary_new();
     ivar_set_raw(c, e, s::bt, bt);
     raise_exc(c, e)
 }
@@ -1317,7 +1318,7 @@ pub fn funcall_flags(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *c
 pub fn funcall_refined(c: &mut Ctx, cref: *const Cref, recv: Value, mid: Sym, args: &[Value], blk: *const Block, flags: u32) -> Option<RV> {
     // null: the current frame's scope (a cfunc frame carries its caller's cref)
     let cref = if cref.is_null() { unsafe { (*c.frame).cref() } } else { cref };
-    let me = lookup_method_refined(cref, class_of(recv), mid);
+    let me = lookup_method_refined(c, cref, class_of(recv), mid);
     if me.is_null() || !rclass(unsafe { (*me).owner }).refined { return None; }
     if unsafe { (*me).visi } != VISI_PUBLIC && flags & CF_FCALL == 0 { return None; }
     let base = match stage(c, 2 + args.len()) { Ok(b) => b, Err(e) => return Some(Err(e)) };
@@ -1379,7 +1380,8 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
             }
             1 if argc == 0 => {
                 // attr_reader on an Object whose class assigned the ivar index
-                if let Some(ivs) = c.obj_ivars(recv) {
+                // (is_heap first: the accessors' own check would add a panic path to every call site)
+                if let Some(ivs) = if recv.is_heap() { c.obj_ivars(recv) } else { None } {
                     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("site: attr_reader");
                     let v = ivs.get(cc.fast >> 2).unwrap_or(UNDEF);
                     c.set_sp(base, 0);
@@ -1387,7 +1389,7 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
                 }
             }
             2 if argc == 1 => {
-                if obj_flags(recv) & FL_FROZEN == 0 {
+                if recv.is_heap() && obj_flags(recv) & FL_FROZEN == 0 {
                     if let Some(ivs) = c.obj_ivars_mut(recv) {
                         let i = cc.fast >> 2;
                         let v = base[2].get();
@@ -1506,14 +1508,15 @@ pub fn site_fast(c: &mut Ctx, cc: &mut CallCache, recv: Value, base: Stk, argc: 
         }
         SITE_SEND => if cc.bi >= BI_SEND { return send_fast(c, recv, base, argc, blk); }
         SITE_ATTR_R => if cc.fast & 3 == 1 {
-            if let Some(ivs) = c.obj_ivars(recv) {
+            if let Some(ivs) = if recv.is_heap() { c.obj_ivars(recv) } else { None } {
                 let v = ivs.get(cc.fast >> 2).unwrap_or(UNDEF);
                 c.set_sp(base, 0);
                 return Some(Ok(if v == UNDEF { NIL } else { v }));
             }
         }
         SITE_ATTR_W => if cc.fast & 3 == 2 {
-            if obj_flags(recv) & FL_FROZEN == 0 {
+            if recv.is_heap() && obj_flags(recv) & FL_FROZEN == 0 {
+
                 if let Some(ivs) = c.obj_ivars_mut(recv) {
                     let v = base[2].get();
                     if ivs.set(cc.fast >> 2, v) { c.set_sp(base, 0); return Some(Ok(v)); }
@@ -1664,7 +1667,7 @@ pub fn call_slow(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32
 /// Method lookup for a call site: refinements active in the frame's cref come first.
 #[inline(always)]
 fn lookup_site(c: &Ctx, klass: Value, mid: Sym) -> *const MethodEntry {
-    if refinements_on() { lookup_method_refined(unsafe { (*c.frame).cref() }, klass, mid) } else { lookup_method(klass, mid) }
+    if refinements_on() { lookup_method_refined(c, unsafe { (*c.frame).cref() }, klass, mid) } else { lookup_method(klass, mid) }
 }
 
 /// Method entry for recv.mid through the call cache (null: not found).
@@ -2064,7 +2067,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
     // copy args out (they overlap the local area)
     let mut args = to_vec(&base[2..2 + argc as usize]);
     // keep the args reachable while we allocate; made while they are still on the VM stack
-    let tmp = crate::array::ary_new_from(&args);
+    let tmp = c.ary_new_from(&args);
     nil_fill(base, 1, n);
     c.set_sp(base, n.max(2));
     // keywords
@@ -2078,7 +2081,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
             args.pop();
         } else if is.ruby2_keywords.get() && p.rest.is_some() && is_hash(h) {
             let d = crate::hash::hash_new();
-            crate::array::ary_push(tmp, d);
+            c.ary_push(tmp, d);
             crate::hash::hash_copy_entries(c, d, h)?;
             obj_set_flags(d, FL_KWHASH);
             *args.last_mut().unwrap() = d;
@@ -2108,7 +2111,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
                 return type_err(c, format!("can't convert {} to Array ({}#to_ary gives {})", class_path(real_class_of(a)), class_path(real_class_of(a)), class_path(real_class_of(r))));
             }
         } else { None };
-        if let Some(arr) = arr { args = rary(arr).to_vec(); }
+        if let Some(arr) = arr { args = c.ary(arr).to_vec(); }
     }
     let given = args.len();
     let required = lead + post;
@@ -2133,12 +2136,12 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
     }
     if let Some(rs) = p.rest {
         let nrest = given.saturating_sub(ai + post);
-        let r = crate::array::ary_new_from(if nrest > 0 { &args[ai..ai + nrest] } else { &[] });
+        let r = c.ary_new_from(if nrest > 0 { &args[ai..ai + nrest] } else { &[] });
         base[rs as usize].set(r);
         ai += nrest;
     } else if p.forwarding {
         let nrest = given.saturating_sub(ai + post);
-        let r = crate::array::ary_new_from(if nrest > 0 { &args[ai..ai + nrest] } else { &[] });
+        let r = c.ary_new_from(if nrest > 0 { &args[ai..ai + nrest] } else { &[] });
         ai += nrest;
         // forwarding stores rest at the hidden slot recorded in kwrest position
         if let Some(fs) = p.kwrest { base[fs as usize].set(r); }

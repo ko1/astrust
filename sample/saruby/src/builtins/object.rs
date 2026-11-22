@@ -143,7 +143,7 @@ fn k_respond_to(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let priv_ = a.len() > 1 && a[1].truthy();
     if respond_to(slf, mid, priv_) { return Ok(TRUE); }
     if c.refinements_on() {
-        let me = lookup_method_refined(cur_cref(c), class_of(slf), mid);
+        let me = lookup_method_refined(c, cur_cref(c), class_of(slf), mid);
         if !me.is_null() && (priv_ || me_visi(c, me) == VISI_PUBLIC) { return Ok(TRUE); }
     }
     let rm = lookup_method(class_of(slf), s::respond_to_missing_p);

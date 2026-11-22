@@ -347,16 +347,49 @@ impl Global {
 // ---- method layer: envs (binding.rs), boot (builtins/mod.rs) -------------------------------------
 
 impl Ctx {
-    /// The env `hops` levels out from `env`.
+    /// The env `hops` levels out from `env` (inline: local-variable nodes and baked code use them).
+    #[inline(always)]
     pub fn env_up(&self, mut env: Value, hops: u32) -> Value {
         for _ in 0..hops { env = match body(self, env) { Body::Env(_, p) => *p, _ => wrong_kind(env, "an env") }; }
         env
     }
+    #[inline(always)]
     pub fn env_get(&self, env: Value, i: u32) -> Value {
         match body(self, env) { Body::Env(v, _) => v.get(i as usize), _ => wrong_kind(env, "an env") }
     }
+    #[inline(always)]
     pub fn env_set(&mut self, env: Value, i: u32, x: Value) {
         match body_mut(self, env) { Body::Env(v, _) => v.set(i as usize, x), _ => wrong_kind(env, "an env") }
+    }
+}
+
+// H6: a local-variable node's env is an Env: a frame's env slot (fp[1]) is written by make_env /
+// setup_params (an Env) or from the Block that made the frame (Block.env, an Env), and an Env's
+// parent is fixed at allocation; compile.rs never sends `hops` past the outermost env.
+// The checked forms above cost a block loop 4 instructions per access (block AOT +29 %).
+impl Ctx {
+    /// env_up without the kind checks.
+    /// # Safety
+    /// H6: `env` and its first `hops` parents are Envs.
+    #[inline(always)]
+    pub unsafe fn env_up_unchecked(&self, mut env: Value, hops: u32) -> Value {
+        // SAFETY: H1, H2 (a shared borrow of the context), H6
+        for _ in 0..hops { env = match unsafe { &(*env.ptr()).body } { Body::Env(_, p) => *p, _ => unsafe { std::hint::unreachable_unchecked() } }; }
+        env
+    }
+    /// # Safety
+    /// H6: `env` is an Env.
+    #[inline(always)]
+    pub unsafe fn env_get_unchecked(&self, env: Value, i: u32) -> Value {
+        // SAFETY: as env_up_unchecked
+        match unsafe { &(*env.ptr()).body } { Body::Env(v, _) => v.get(i as usize), _ => unsafe { std::hint::unreachable_unchecked() } }
+    }
+    /// # Safety
+    /// H6: `env` is an Env.
+    #[inline(always)]
+    pub unsafe fn env_set_unchecked(&mut self, env: Value, i: u32, x: Value) {
+        // SAFETY: H1, H2 (an exclusive borrow of the context), H6
+        match unsafe { &mut (*env.ptr()).body } { Body::Env(v, _) => v.set(i as usize, x), _ => unsafe { std::hint::unreachable_unchecked() } }
     }
 }
 

@@ -374,16 +374,18 @@ pub fn EVAL_node_lasgn(c: &mut Ctx, n: NodePtr, fp: Fp, idx: u32, v: Value) -> R
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_dvar(c: &mut Ctx, n: NodePtr, fp: Fp, hops: u32, idx: u32) -> RV {
-    let env = c.env_up(fp[1].get(), hops);
-    Ok(c.env_get(env, idx))
+    // SAFETY: H6 (heap.rs)
+    let env = unsafe { c.env_up_unchecked(fp[1].get(), hops) };
+    Ok(unsafe { c.env_get_unchecked(env, idx) })
 }
 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_dasgn(c: &mut Ctx, n: NodePtr, fp: Fp, hops: u32, idx: u32, v: Value) -> RV {
-    let env = c.env_up(fp[1].get(), hops);
-    c.env_set(env, idx, v);
+    // SAFETY: H6 (heap.rs)
+    let env = unsafe { c.env_up_unchecked(fp[1].get(), hops) };
+    unsafe { c.env_set_unchecked(env, idx, v) };
     Ok(v)
 }
 
@@ -403,7 +405,7 @@ pub fn EVAL_node_ivar(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, ic: &mut IvarC
             }
         }
     }
-    Ok(srb_ivar_get_out(c, slf, name, ic))
+    Ok(srb_ivar_get_out(slf, name, ic, c))
 }
 
 
@@ -994,7 +996,7 @@ pub fn EVAL_node_call_x<D_recv: Disp, D_args: DispList, H_line: crate::vm::LineH
     let mut blkv = NIL;
     let mut kw = NIL;
     let tmp = if splat1 { <D_args as DispList>::nth(c, args, 0, fp)? } else {
-        let tmp = crate::array::ary_new();
+        let tmp = c.ary_new();
         base[1].set(tmp);
         for i in 0..<D_args as DispList>::len(args) {
             let v = <D_args as DispList>::nth(c, args, i, fp)?;
@@ -1039,7 +1041,7 @@ pub fn EVAL_node_attrasgn<D_recv: Disp, D_args: DispList, H_line: crate::vm::Lin
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_super<D_args: DispList, H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, args: NodeList, line: H_line, ci: CiRef, zsuper: bool) -> RV {
     let base = stage(c, 2)?;
-    let tmp = crate::array::ary_new();
+    let tmp = c.ary_new();
     base[0].set(fp[0].get()); base[1].set(tmp);
     let mut blkv = NIL;
     let mut kw = NIL;
@@ -1082,7 +1084,7 @@ pub fn EVAL_node_yield<D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_yield_x<D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, args: NodeList, ci: CiRef) -> RV {
-    let tmp = crate::array::ary_new();
+    let tmp = c.ary_new();
     let base = stage(c, 1)?;
     base[0].set(tmp);
     let mut blkv = NIL;
@@ -1552,7 +1554,7 @@ pub fn EVAL_node_masgn<D_targets: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, rhs
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_masgn_elem(c: &mut Ctx, n: NodePtr, fp: Fp, tmp: u32, idx: u32, kind: u32, post: u32) -> RV {
     let a = slot(fp, tmp).get();
-    Ok(srb_masgn_elem(a, idx, kind, post))
+    Ok(srb_masgn_elem(c, a, idx, kind, post))
 }
 
 

@@ -209,9 +209,9 @@ fn run_main(o: Opts) -> i32 {
     let vm = vm();
     vm.verbose.set(if o.warn { TRUE } else { FALSE });
     if o.warn { builtins::misc::warning_enable_deprecated(); }
-    for d in &o.incdirs { let s = string::str_new(d.as_bytes()); array::ary_push(vm.load_path.get(), s); }
+    for d in &o.incdirs { let s = string::str_new(d.as_bytes()); c.ary_push(vm.load_path.get(), s); }
     builtins::prelude::setup_load_path(&mut c);
-    for a in &o.args { let s = string::str_new(a); array::ary_push(vm.argv.get(), s); }
+    for a in &o.args { let s = string::str_new(a); c.ary_push(vm.argv.get(), s); }
     aot::init(if o.plain { None } else { Some(&o.store) }, o.aot);
     vm.aot_collect.set(o.aot);
 
@@ -286,7 +286,7 @@ pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
     let vm = vm();
     loop {
         let ae = vm.at_exit.get();
-        let Some(p) = array::rary(ae).pop() else { break };
+        let Some(p) = c.ary_mut(ae).pop() else { break };
         c.esc = EscKind::None;
         if call_proc(c, p, &[], std::ptr::null()).is_err() { status = handle_toplevel_error(c); }
     }
