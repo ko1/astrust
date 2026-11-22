@@ -1937,16 +1937,18 @@ pub fn invoke_untraced(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: S
             let v = base[2].get();
             ivar_set(c, recv, id, v)
         }
-        MKind::Bmethod(p) => {
-            let b = c.proc_data(p).blk;
-            let mut fr_blk = b;
-            fr_blk.self_ = recv;
-            let args = to_vec(&base[2..2 + argc as usize]);
-            let r = invoke_block_full(c, &fr_blk, &args, blk, recv, true, me, flags & CF_KW != 0);
-            r
-        }
+        MKind::Bmethod(p) => invoke_bmethod(c, me, p, recv, base, argc, blk, flags),
         MKind::Undef | MKind::ZSuper => no_method_error(c, recv, mer.name, flags),
     }
+}
+
+// out of line: inlined into invoke_untraced's callers it changed call_slow's register allocation (+2 instructions per call)
+#[inline(never)]
+fn invoke_bmethod(c: &mut Ctx, me: *const MethodEntry, p: Value, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
+    let mut fr_blk = c.proc_data(p).blk;
+    fr_blk.self_ = recv;
+    let args = to_vec(&base[2..2 + argc as usize]);
+    invoke_block_full(c, &fr_blk, &args, blk, recv, true, me, flags & CF_KW != 0)
 }
 
 #[inline]
