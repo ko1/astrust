@@ -1118,7 +1118,9 @@ fn file_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
     let p = path_arg(c, a[0])?;
     let om = parse_mode(c, &a[1..])?;
     let fd = sysopen(c, &p, &om)?;
-    setup_io(c, slf, fd, Some(p.as_bytes()), &om)?;
+    // an O_TMPFILE file has no path
+    let path = if om.flags & 0o20000000 != 0 { None } else { Some(p.as_bytes()) };
+    setup_io(c, slf, fd, path, &om)?;
     Ok(NIL)
 }
 fn io_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -1130,7 +1132,12 @@ fn io_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if a.len() < 2 || is_hash(a[1]) && crate::hash::hash_get_opt(c, a[1], sym_value("mode"))?.is_none() { om.flags = (om.flags & !sys::O_ACCMODE) | (fl & sys::O_ACCMODE); }
     else if (fl & sys::O_ACCMODE) != sys::O_RDWR && (om.flags & sys::O_ACCMODE) != (fl & sys::O_ACCMODE) { return Err(raise_errno(c, 22, "")); }
     setup_io(c, slf, fd, None, &om)?;
-    if let Some(&l) = a.last() { if is_hash(l) { if let Some(v) = crate::hash::hash_get_opt(c, l, sym_value("autoclose"))? { if let Some(io) = rio_mut(c, slf) { io.autoclose = v.truthy(); } } } }
+    if let Some(&l) = a.last() { if is_hash(l) {
+        if let Some(v) = crate::hash::hash_get_opt(c, l, sym_value("autoclose"))? { if let Some(io) = rio_mut(c, slf) { io.autoclose = v.truthy(); } }
+        if let Some(v) = crate::hash::hash_get_opt(c, l, sym_value("path"))? {
+            if v != NIL { let ps = expect_str(c, v)?; let b = c.str_bytes(ps).to_vec(); if let Some(io) = rio_mut(c, slf) { io.path = b; io.has_path = true; } }
+        }
+    } }
     Ok(NIL)
 }
 fn io_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
