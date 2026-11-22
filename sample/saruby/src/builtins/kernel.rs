@@ -812,6 +812,8 @@ fn locate_feature(c: &Ctx, name: &str, caller_file: Option<&str>) -> Feature {
     let is_rb = name.ends_with(".rb");
     let is_so = name.ends_with(".so");
     let base = name.trim_end_matches(".rb").trim_end_matches(".so");
+    // "foo.so" may be native while "foo" is the gem's Ruby file (bigdecimal)
+    if is_so && !relative && crate::builtins::prelude::has_feature(name) { return Feature::Native(name.to_string()); }
     let native = !is_rb && crate::builtins::prelude::has_feature(base);
     // the reference ruby's pure-Ruby stdlib, unless saruby implements the feature itself
     let std_file = if native || is_so || relative || name.starts_with('/') || name.starts_with('.') { None } else { crate::builtins::prelude::stdlib_file(name) };

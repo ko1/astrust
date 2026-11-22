@@ -16,6 +16,7 @@ pub mod pp;
 pub mod io;
 pub mod marshal;
 pub mod strscan;
+pub mod bigdecimal;
 pub mod json;
 pub mod env;
 pub mod extras;
