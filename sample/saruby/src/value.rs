@@ -15,10 +15,11 @@ pub struct Value(NonZeroU64);
 #[repr(transparent)]
 pub struct Sym(pub u32);
 
-pub const NIL: Value = unsafe { Value::from_raw(0x04) };
-pub const FALSE: Value = unsafe { Value::from_raw(0x0c) };
-pub const TRUE: Value = unsafe { Value::from_raw(0x14) };
-pub const UNDEF: Value = unsafe { Value::from_raw(0x1c) };
+const fn konst(r: u64) -> Value { match NonZeroU64::new(r) { Some(x) => Value(x), None => panic!() } }
+pub const NIL: Value = konst(0x04);
+pub const FALSE: Value = konst(0x0c);
+pub const TRUE: Value = konst(0x14);
+pub const UNDEF: Value = konst(0x1c);
 const SYM_TAG: u64 = 0x34;
 pub const FIXNUM_MAX: i64 = (1i64 << 62) - 1;
 pub const FIXNUM_MIN: i64 = -(1i64 << 62);

@@ -221,7 +221,7 @@ pub fn EVAL_node_str(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32) -> RV {
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_fstr(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32, lc: &mut LitCache) -> RV {
-    if lc.v != 0 { return Ok(unsafe { Value::from_raw(lc.v) }); }
+    if let Some(v) = lc.v { return Ok(v); }
     Ok(srb_fstr(s, enc, lc))
 }
 
@@ -256,7 +256,7 @@ pub fn EVAL_node_dsym(c: &mut Ctx, n: NodePtr, fp: Fp, s: Value) -> RV {
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_regex(c: &mut Ctx, n: NodePtr, fp: Fp, src: Str, opts: u32, lc: &mut LitCache) -> RV {
-    if lc.v != 0 { return Ok(unsafe { Value::from_raw(lc.v) }); }
+    if let Some(v) = lc.v { return Ok(v); }
     srb_regex_lit(c, src, opts, lc)
 }
 
@@ -264,7 +264,7 @@ pub fn EVAL_node_regex(c: &mut Ctx, n: NodePtr, fp: Fp, src: Str, opts: u32, lc:
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_dregex(c: &mut Ctx, n: NodePtr, fp: Fp, s: Value, opts: u32, once: bool, lc: &mut LitCache) -> RV {
-    if once && lc.v != 0 { return Ok(unsafe { Value::from_raw(lc.v) }); }
+    if once { if let Some(v) = lc.v { return Ok(v); } }
     srb_dregex(c, s, opts, once, lc)
 }
 
@@ -272,7 +272,7 @@ pub fn EVAL_node_dregex(c: &mut Ctx, n: NodePtr, fp: Fp, s: Value, opts: u32, on
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_biglit(c: &mut Ctx, n: NodePtr, fp: Fp, digits: Str, lc: &mut LitCache) -> RV {
-    if lc.v != 0 { return Ok(unsafe { Value::from_raw(lc.v) }); }
+    if let Some(v) = lc.v { return Ok(v); }
     Ok(srb_biglit(digits, lc))
 }
 
@@ -347,7 +347,7 @@ pub fn EVAL_node_range(c: &mut Ctx, n: NodePtr, fp: Fp, b: Value, e: Value, excl
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_range_lit(c: &mut Ctx, n: NodePtr, fp: Fp, b: Value, e: Value, excl: bool, lc: &mut LitCache) -> RV {
-    if lc.v != 0 { return Ok(unsafe { Value::from_raw(lc.v) }); }
+    if let Some(v) = lc.v { return Ok(v); }
     Ok(srb_range_lit(b, e, excl, lc))
 }
 

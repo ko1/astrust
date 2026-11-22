@@ -17,7 +17,7 @@ pub type CiRef = &'static CallInfo;
 pub type Str = &'static [u8];
 
 #[derive(Default)]
-pub struct LitCache { pub v: u64 }
+pub struct LitCache { pub v: Option<Value> }
 
 /// Argument kinds of a general call (node_call_x / node_super / node_yield_x).
 pub const AK_ARG: u8 = 0;

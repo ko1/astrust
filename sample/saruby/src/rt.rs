@@ -160,7 +160,7 @@ pub fn srb_fstr(s: Str, enc: u32, lc: &mut LitCache) -> Value {
             v
         }
     };
-    lc.v = v.raw();
+    lc.v = Some(v);
     v
 }
 
@@ -205,14 +205,14 @@ pub fn srb_regex_lit(c: &mut Ctx, src: Str, opts: u32, lc: &mut LitCache) -> RV 
     let r = crate::regexp::regexp_new(c, src, opts)?;
     obj(r).flags |= FL_FROZEN;
     vm().node_values.push(r);
-    lc.v = r.raw();
+    lc.v = Some(r);
     Ok(r)
 }
 
 pub fn srb_dregex(c: &mut Ctx, s: Value, opts: u32, once: bool, lc: &mut LitCache) -> RV {
     let b = str_bytes(s).to_vec();
     let r = crate::regexp::regexp_new(c, &b, opts)?;
-    if once { vm().node_values.push(r); lc.v = r.raw(); }
+    if once { vm().node_values.push(r); lc.v = Some(r); }
     Ok(r)
 }
 
@@ -220,7 +220,7 @@ pub fn srb_biglit(digits: Str, lc: &mut LitCache) -> Value {
     let b = crate::bignum::BigInt::parse(std::str::from_utf8(digits).unwrap(), 10).unwrap();
     let v = crate::bignum::big_to_value(b);
     vm().node_values.push(v);
-    lc.v = v.raw();
+    lc.v = Some(v);
     v
 }
 
@@ -270,7 +270,7 @@ pub fn srb_range_lit(b: Value, e: Value, excl: bool, lc: &mut LitCache) -> Value
     let r = crate::range::range_new(b, e, excl);
     obj(r).flags |= FL_FROZEN;
     vm().node_values.push(r);
-    lc.v = r.raw();
+    lc.v = Some(r);
     r
 }
 

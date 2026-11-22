@@ -67,7 +67,7 @@ node_str(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32)
 NODE_DEF
 node_fstr(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32, lc@ref: LitCache)
 {
-    if lc.v != 0 { return Ok(unsafe { Value::from_raw(lc.v) }); }
+    if let Some(v) = lc.v { return Ok(v); }
     Ok(srb_fstr(s, enc, lc))
 }
 
@@ -98,21 +98,21 @@ node_dsym(c: &mut Ctx, n: NodePtr, fp: Fp, s@child: Value)
 NODE_DEF
 node_regex(c: &mut Ctx, n: NodePtr, fp: Fp, src: Str, opts: u32, lc@ref: LitCache)
 {
-    if lc.v != 0 { return Ok(unsafe { Value::from_raw(lc.v) }); }
+    if let Some(v) = lc.v { return Ok(v); }
     srb_regex_lit(c, src, opts, lc)
 }
 
 NODE_DEF
 node_dregex(c: &mut Ctx, n: NodePtr, fp: Fp, s@child: Value, opts: u32, once: bool, lc@ref: LitCache)
 {
-    if once && lc.v != 0 { return Ok(unsafe { Value::from_raw(lc.v) }); }
+    if once { if let Some(v) = lc.v { return Ok(v); } }
     srb_dregex(c, s, opts, once, lc)
 }
 
 NODE_DEF
 node_biglit(c: &mut Ctx, n: NodePtr, fp: Fp, digits: Str, lc@ref: LitCache)
 {
-    if lc.v != 0 { return Ok(unsafe { Value::from_raw(lc.v) }); }
+    if let Some(v) = lc.v { return Ok(v); }
     Ok(srb_biglit(digits, lc))
 }
 
@@ -184,7 +184,7 @@ node_range(c: &mut Ctx, n: NodePtr, fp: Fp, b@child: Value, e@child: Value, excl
 NODE_DEF
 node_range_lit(c: &mut Ctx, n: NodePtr, fp: Fp, b: Value, e: Value, excl: bool, lc@ref: LitCache)
 {
-    if lc.v != 0 { return Ok(unsafe { Value::from_raw(lc.v) }); }
+    if let Some(v) = lc.v { return Ok(v); }
     Ok(srb_range_lit(b, e, excl, lc))
 }
 
