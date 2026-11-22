@@ -175,7 +175,7 @@ impl Dumper {
         }
         if let Some(r) = crate::regexp::rregexp(c, v) {
             let (src, opts) = (r.src.clone(), r.opts);
-            let enc = if is_ascii(&src) && !r.enc_fixed { ENC_ASCII } else { ENC_UTF8 };
+            let enc = r.enc;
             self.out.push(b'I');
             let k = c.vm().c_regexp.get();
             self.uclass(c, v, k)?;
@@ -495,7 +495,8 @@ impl Loader {
                 let tmp = c.str_from_vec_enc(src, ENC_BINARY);
                 if ivar { self.ivars(c, tmp)?; ivar_done = true; }
                 let b = c.str_bytes(tmp).to_vec();
-                let v = crate::regexp::regexp_new(c, &b, opts)?;
+                let e = c.str_enc(tmp);
+                let v = crate::regexp::regexp_new_enc(c, &b, e, opts)?;
                 c.ary_mut(self.objs)[idx] = v; v
             }
             b'[' => {

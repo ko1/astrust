@@ -213,8 +213,7 @@ pub fn srb_regex_lit(c: &mut Ctx, src: Str, opts: u32, lc: &mut LitCache) -> RV 
 }
 
 pub fn srb_dregex(c: &mut Ctx, s: Value, opts: u32, once: bool, lc: &mut LitCache) -> RV {
-    let b = str_bytes(s).to_vec();
-    let r = crate::regexp::regexp_new(c, &b, opts)?;
+    let r = crate::regexp::regexp_new_dyn(c, s, opts)?;
     if once { vm().node_values.borrow_mut().push(r); lc.v = Some(r); }
     Ok(r)
 }

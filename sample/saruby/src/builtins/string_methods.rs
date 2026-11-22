@@ -238,9 +238,9 @@ cfn!(s_match, |c, slf, a, blk| {
 });
 cfn!(s_match_p, |c, slf, a, b_| {
     let re = regexp::to_regexp(c, a[0])?;
-    regexp::check_searchable(c, slf)?;
+    let md = regexp::prepare(c, re, slf)?;
     let pos = if a.len() > 1 { let p = num_to_long(c, a[1])?.max(0) as usize; char_to_byte(c, slf, p).unwrap_or(usize::MAX) } else { 0 };
-    Ok(Value::bool(regexp::search_raw(c, re, c.str_bytes(slf), pos).is_some()))
+    Ok(Value::bool(regexp::search_raw_e(c, re, c.str_bytes(slf), pos, md).is_some()))
 });
 cfn!(s_aref, |c, slf, a, b_| str_aref(c, slf, a));
 cfn!(s_aset, |c, slf, a, b_| {
@@ -420,7 +420,7 @@ cfn!(s_reverse_b, |c, slf, a, b_| { let r = c.str_modify(slf)?; let nv = reverse
 cfn!(s_include, |c, slf, a, b_| { let o = expect_str(c, a[0])?; Ok(Value::bool(find_bytes(c.str_bytes(slf), c.str_bytes(o), 0).is_some())) });
 cfn!(s_start_with, |c, slf, a, b_| {
     for &x in a {
-        if regexp::is_regexp(c, x) { if let Some(g) = regexp::rregexp(c, x).unwrap().re.as_ref().unwrap().match_at(c.str_bytes(slf), 0) { let m = regexp::match_new(c, x, slf, g); c.last_match = m; return Ok(TRUE); } c.last_match = NIL; continue; }
+        if regexp::is_regexp(c, x) { let md = regexp::prepare(c, x, slf)?; if let Some(g) = regexp::match_at_e(c, x, c.str_bytes(slf), 0, md) { let m = regexp::match_new(c, x, slf, g); c.last_match = m; return Ok(TRUE); } c.last_match = NIL; continue; }
         let o = expect_str(c, x)?; compat(c, slf, o)?; if c.str_bytes(slf).starts_with(c.str_bytes(o)) && c.char_offsets(slf).binary_search(&c.str_bytes(o).len()).is_ok() { return Ok(TRUE); }
     }
     Ok(FALSE)
@@ -430,8 +430,8 @@ cfn!(s_index, |c, slf, a, b_| {
     let mut st = if a.len() > 1 { num_to_long(c, a[1])? } else { 0 };
     if st != 0 {
         let n = c.str_char_len(slf) as i64;
-        if st < 0 { st += n; if st < 0 { return Ok(NIL); } }
-        if st > n { return Ok(NIL); }
+        if st < 0 { st += n; if st < 0 { if regexp::is_regexp(c, a[0]) { c.last_match = NIL; } return Ok(NIL); } }
+        if st > n { if regexp::is_regexp(c, a[0]) { c.last_match = NIL; } return Ok(NIL); }
     }
     let bs = char_to_byte(c, slf, st as usize).unwrap();
     if regexp::is_regexp(c, a[0]) {
@@ -450,9 +450,10 @@ cfn!(s_rindex, |c, slf, a, b_| {
     if st > n { st = n; }
     let bs = char_to_byte(c, slf, st as usize).unwrap();
     if regexp::is_regexp(c, a[0]) {
+        let md = regexp::prepare(c, a[0], slf)?;
         let mut p = bs as i64;
         while p >= 0 {
-            if let Some(g) = regexp::rregexp(c, a[0]).unwrap().re.as_ref().unwrap().match_at(c.str_bytes(slf), p as usize) {
+            if let Some(g) = regexp::match_at_e(c, a[0], c.str_bytes(slf), p as usize, md) {
                 let m = regexp::match_new(c, a[0], slf, g); c.last_match = m;
                 return Ok(Value::fix(byte_to_char(c, slf, p as usize) as i64));
             }
@@ -618,6 +619,7 @@ cfn!(s_split, |c, slf, a, blk| {
     // " " in an ASCII-compatible encoding is the one-space pattern without decoding it
     let awk = is_string(pat) && (c.str_bytes(pat) == b" " && (default_pat || crate::builtins::encoding::ascii_compat(c.str_enc(pat))) || { let cs = codes_of(c, pat); cs.len() == 1 && cs[0].0 == 32 });
     let re = if is_string(pat) { NIL } else { regexp::to_regexp(c, pat)? };
+    let md = if re != NIL { regexp::prepare(c, re, slf)? } else { crate::regex_engine::Enc::UTF8 };
     let sp = |x: u8| matches!(x, 9..=13 | 32);
     if awk && c.str_enc(slf) <= ENC_ASCII && limit == 0 && blk.is_null() {
         // the common call: build the result directly (short pieces need no malloc)
@@ -685,7 +687,7 @@ cfn!(s_split, |c, slf, a, blk| {
         let mut i = 0; let mut start = 0;
         loop {
             if limit > 0 && out.len() as i64 == limit - 1 { out.push(v[start..].to_vec()); break; }
-            let Some(g) = regexp::search_raw(c, re, v, i) else { out.push(v[start..].to_vec()); break; };
+            let Some(g) = regexp::search_raw_e(c, re, v, i, md) else { out.push(v[start..].to_vec()); break; };
             let (ms, me) = g[0].unwrap();
             if me == ms {
                 if ms >= v.len() { out.push(v[start..].to_vec()); break; }
@@ -763,6 +765,7 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool, 
     let lit = if is_string(pat) { Some(c.str_bytes(pat).to_vec()) } else { None };
     let mut re = if lit.is_none() { regexp::to_regexp(c, pat)? } else { NIL };
     if lit.is_some() { compat(c, slf, pat)?; } else { check_valid(c, slf)?; }
+    let md = if lit.is_none() { regexp::prepare(c, re, slf)? } else { crate::regex_engine::Enc::UTF8 };
     let src = match early { Some(v) => v, None => c.str_bytes(slf).to_vec() };
     let enc = c.str_enc(slf);
     let mut renc = enc;
@@ -776,7 +779,7 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool, 
         let g: Vec<Option<(usize, usize)>> = if let Some(l) = &lit {
             match find_bytes(&src, l, i) { Some(p) => vec![Some((p, p + l.len()))], None => break }
         } else {
-            match regexp::search_raw(c, re, &src, i) { Some(g) => g, None => break }
+            match regexp::search_raw_e(c, re, &src, i, md) { Some(g) => g, None => break }
         };
         let (ms, me) = g[0].unwrap();
         out.extend_from_slice(&src[last..ms]);
@@ -839,13 +842,14 @@ cfn!(s_scan, |c, slf, a, blk| {
     if is_string(p) { compat(c, slf, p)?; }
     check_valid(c, slf)?;
     let re = regexp::to_regexp(c, p)?;
+    let md = regexp::prepare(c, re, slf)?;
     let src = c.str_bytes(slf).to_vec();
     let out = c.ary_new();
     let mut i = 0;
     let mut any = false;
     let mut last = None;   // without a block only the last match becomes $~ (each MatchData snapshots the string)
     while i <= src.len() {
-        let Some(g) = regexp::search_raw(c, re, &src, i) else { break };
+        let Some(g) = regexp::search_raw_e(c, re, &src, i, md) else { break };
         let (ms, me) = g[0].unwrap();
         let m = if blk.is_null() { last = Some(g.clone()); NIL } else { let m = regexp::match_new(c, re, slf, g.clone()); c.last_match = m; m };
         let item = if g.len() == 1 { c.str_new_like(slf, src[ms..me].to_vec()) } else {
@@ -1162,8 +1166,9 @@ cfn!(s_rpartition, |c, slf, a, b_| {
     let sep = if regexp::is_regexp(c, a[0]) { NIL } else { expect_str(c, a[0])? };
     let v = c.str_bytes(slf).to_vec();
     let found = if regexp::is_regexp(c, a[0]) {
+        let md = regexp::prepare(c, a[0], slf)?;
         let mut p = v.len() as i64; let mut r = None;
-        while p >= 0 { if let Some(g) = regexp::rregexp(c, a[0]).unwrap().re.as_ref().unwrap().match_at(&v, p as usize) { r = Some(g[0].unwrap()); break; } p -= 1; }
+        while p >= 0 { if let Some(g) = regexp::match_at_e(c, a[0], &v, p as usize, md) { r = Some(g[0].unwrap()); break; } p -= 1; }
         r
     } else { let p = sep; rfind_bytes(&v, c.str_bytes(p), v.len()).map(|i| (i, i + c.str_bytes(p).len())) };
     match found {
@@ -1465,9 +1470,10 @@ cfn!(s_byterindex, |c, slf, a, b_| {
     if st > n { st = n; }
     check_char_boundary(c, slf, st as usize, "offset")?;
     if regexp::is_regexp(c, a[0]) {
+        let md = regexp::prepare(c, a[0], slf)?;
         let mut p = st;
         while p >= 0 {
-            if let Some(g) = regexp::rregexp(c, a[0]).unwrap().re.as_ref().unwrap().match_at(c.str_bytes(slf), p as usize) {
+            if let Some(g) = regexp::match_at_e(c, a[0], c.str_bytes(slf), p as usize, md) {
                 let m = regexp::match_new(c, a[0], slf, g); c.last_match = m;
                 return Ok(Value::fix(p));
             }

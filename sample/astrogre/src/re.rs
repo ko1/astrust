@@ -89,8 +89,99 @@ fn prev_start(s: &[u8], i: usize, lo: usize) -> usize {
     if j < i - 1 && decode(s, j).1 == i - j { j } else { i - 1 }
 }
 
+// ---------------------------------------------------------------------------
+// Subject encodings.  Outside UTF-8 a lone high byte is BAD + b, and a multibyte char of the
+// legacy CJK encodings is MB + its bytes big-endian (Onigmo's code for them; 4-byte chars are
+// the bytes themselves, >= 0x81000000).
+
+/// How the subject is split into chars.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Enc(pub u8);
+impl Enc {
+    pub const UTF8: Enc = Enc(0);
+    /// One byte per char (ASCII-8BIT, US-ASCII, ISO-8859-*, ...).
+    pub const BYTE: Enc = Enc(1);
+    pub const EUCJP: Enc = Enc(2);
+    pub const SJIS: Enc = Enc(3);
+    /// Lead 0x81..=0xFE plus one byte (Big5, GBK, EUC-KR, CP949, ...).
+    pub const DBCS: Enc = Enc(4);
+    pub const EUCTW: Enc = Enc(5);
+    pub const GB18030: Enc = Enc(6);
+    #[inline]
+    pub fn is_mb(self) -> bool { self.0 >= 2 }
+}
+const MB: u32 = 0x0200_0000;
+
+/// Length of the legacy multibyte char at s[i] (s[i] >= 0x80); 1 for a stray or truncated byte.
+fn mb_len(e: Enc, s: &[u8], i: usize) -> usize {
+    let b = s[i];
+    let l = match e {
+        Enc::EUCJP => match b { 0x8E => 2, 0x8F => 3, 0xA1..=0xFE => 2, _ => 1 },
+        Enc::SJIS => match b { 0x81..=0x9F | 0xE0..=0xFC => 2, _ => 1 },
+        Enc::DBCS => match b { 0x81..=0xFE => 2, _ => 1 },
+        Enc::EUCTW => match b { 0x8E => 4, 0xA1..=0xFE => 2, _ => 1 },
+        Enc::GB18030 => match b { 0x81..=0xFE => if matches!(s.get(i + 1), Some(0x30..=0x39)) { 4 } else { 2 }, _ => 1 },
+        _ => 1,
+    };
+    if i + l > s.len() { 1 } else { l }
+}
+
+fn decode_mb(e: Enc, s: &[u8], i: usize) -> (u32, usize) {
+    let l = mb_len(e, s, i);
+    if l == 1 {
+        return (BAD + s[i] as u32, 1);
+    }
+    let mut v = 0u32;
+    for k in 0..l {
+        v = (v << 8) | s[i + k] as u32;
+    }
+    (if l == 4 { v } else { MB + v }, l)
+}
+
+#[inline(always)]
+fn decode_e(e: Enc, s: &[u8], i: usize) -> (u32, usize) {
+    let b = s[i];
+    if b < 0x80 {
+        return (b as u32, 1);
+    }
+    match e {
+        Enc::UTF8 => decode(s, i),
+        Enc::BYTE => (BAD + b as u32, 1),
+        _ => decode_mb(e, s, i),
+    }
+}
+
+#[inline(always)]
+fn char_len_e(e: Enc, s: &[u8], i: usize) -> usize {
+    if s[i] < 0x80 { 1 } else { match e { Enc::UTF8 => decode(s, i).1, Enc::BYTE => 1, _ => mb_len(e, s, i) } }
+}
+
+/// prev_start for any encoding; legacy multibyte scans forward from `lo` (a char start).
+#[inline]
+fn prev_start_e(e: Enc, s: &[u8], i: usize, lo: usize) -> usize {
+    match e {
+        Enc::UTF8 => prev_start(s, i, lo),
+        Enc::BYTE => i - 1,
+        _ => {
+            let mut p = lo;
+            loop {
+                let n = p + char_len_e(e, s, p);
+                if n >= i {
+                    return p;
+                }
+                p = n;
+            }
+        }
+    }
+}
+
 fn push_char(v: &mut Vec<u8>, c: u32) {
-    if c >= BAD {
+    if c >= MB {
+        let (n, x) = if c >= 0x8000_0000 { (4, c) } else if c - MB > 0xFFFF { (3, c - MB) } else { (2, c - MB) };
+        for k in (0..n).rev() {
+            v.push((x >> (8 * k)) as u8);
+        }
+    } else if c >= BAD {
         v.push((c - BAD) as u8);
     } else if let Some(ch) = char::from_u32(c) {
         let mut buf = [0u8; 4];
@@ -511,6 +602,7 @@ struct Parser<'a> {
     group_names: Vec<Option<String>>, // by parse-order group number - 1
     pending_u_list: bool,             // \u{61 62}: more code points follow
     u_list_prefix: Vec<Ast>,         // leading code points of a \u{...} list, emitted before the atom
+    enc: Enc,
 }
 
 enum Lit {
@@ -667,7 +759,7 @@ impl<'a> Parser<'a> {
                     self.parse_escape()?
                 }
                 _ => {
-                    let (ch, l) = decode(self.p, self.i);
+                    let (ch, l) = decode_e(self.enc, self.p, self.i);
                     self.i += l;
                     self.mk_char(ch)
                 }
@@ -979,6 +1071,35 @@ impl<'a> Parser<'a> {
 
     /// A raw byte >= 0x80 from \x or octal: try to complete a UTF-8 sequence from following \xHH.
     fn finish_byte(&mut self, b: u8) -> u32 {
+        if self.enc == Enc::BYTE {
+            return BAD + b as u32;
+        }
+        if self.enc.is_mb() {
+            // complete the char from following \xHH, as decode_mb would split it
+            let save = self.i;
+            let mut bytes = vec![b, 0, 0, 0];
+            let mut n = 1;
+            while n < 4 && self.at(b"\\x") {
+                let need = mb_len(self.enc, &bytes, 0);
+                if n >= need {
+                    break;
+                }
+                self.i += 2;
+                match self.hex_digits(2) {
+                    Some(v) => {
+                        bytes[n] = v as u8;
+                        n += 1;
+                    }
+                    None => break,
+                }
+            }
+            let (c, l) = decode_mb(self.enc, &bytes[..n], 0);
+            if l == n {
+                return c;
+            }
+            self.i = save;
+            return BAD + b as u32;
+        }
         let need = if b & 0xE0 == 0xC0 { 2 } else if b & 0xF0 == 0xE0 { 3 } else if b & 0xF8 == 0xF0 { 4 } else { 1 };
         if need == 1 {
             return BAD + b as u32;
@@ -1117,7 +1238,7 @@ impl<'a> Parser<'a> {
             b'b' if in_class => 8,
             _ => {
                 self.i -= 1;
-                let (ch, l) = decode(self.p, self.i);
+                let (ch, l) = decode_e(self.enc, self.p, self.i);
                 self.i += l;
                 ch
             }
@@ -1260,7 +1381,7 @@ impl<'a> Parser<'a> {
             self.i += 1;
             return self.lit_escape(e, true);
         }
-        let (ch, l) = decode(self.p, self.i);
+        let (ch, l) = decode_e(self.enc, self.p, self.i);
         self.i += l;
         Ok(Lit::Ch(ch))
     }
@@ -1421,8 +1542,9 @@ fn reduce_repeat(atom: Ast, min: u32, max: u32, kind: Kind) -> Ast {
 }
 
 impl<'a> Parser<'a> {
-    fn new(p: &'a [u8], opts: u32) -> Parser<'a> {
+    fn new(p: &'a [u8], opts: u32, enc: Enc) -> Parser<'a> {
         Parser {
+            enc,
             p,
             i: 0,
             icase: opts & OPT_I != 0,
@@ -1529,6 +1651,17 @@ fn collect_groups(n: &Ast, out: &mut Vec<Option<Ast>>) {
         Ast::Repeat(b, ..) | Ast::Look(_, _, b) | Ast::Atomic(b) => collect_groups(b, out),
         Ast::Cond(_, y, n) => { collect_groups(y, out); collect_groups(n, out) }
         _ => {}
+    }
+}
+/// No backrefs, conditionals, calls, or captures inside lookaheads (onig_check_linear_time).
+fn linear_ok(n: &Ast, in_look: bool) -> bool {
+    match n {
+        Ast::Backref(..) | Ast::Cond(..) | Ast::Call(_) => false,
+        Ast::Group(_, b) => !in_look && linear_ok(b, in_look),
+        Ast::Repeat(b, ..) | Ast::Atomic(b) => linear_ok(b, in_look),
+        Ast::Look(behind, _, b) => linear_ok(b, in_look || !behind),
+        Ast::Seq(v) | Ast::Alt(v) => v.iter().all(|x| linear_ok(x, in_look)),
+        _ => true,
     }
 }
 fn has_call(n: &Ast) -> bool {
@@ -2242,6 +2375,8 @@ pub struct Vm {
     must: Vec<MustLit>,
     ast: Ast,
     backrefed: Vec<usize>,
+    /// Regexp.linear_time?: Onigmo can memoize the match
+    pub linear: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -2261,10 +2396,11 @@ struct VmCtx<'a> {
     stack: Vec<Bt>,
     gpos: usize,
     sprev_bug: usize, // position right after an empty backref (see Inst::Backref)
+    enc: Enc,
 }
 
 #[inline]
-fn one(m: &Single, s: &[u8], pos: usize) -> Option<usize> {
+fn one(e: Enc, m: &Single, s: &[u8], pos: usize) -> Option<usize> {
     if pos >= s.len() {
         return None;
     }
@@ -2274,7 +2410,7 @@ fn one(m: &Single, s: &[u8], pos: usize) -> Option<usize> {
             if *c < 128 {
                 if b as u32 == *c { Some(pos + 1) } else { None }
             } else {
-                let (d, l) = decode(s, pos);
+                let (d, l) = decode_e(e, s, pos);
                 if d == *c { Some(pos + l) } else { None }
             }
         }
@@ -2282,7 +2418,7 @@ fn one(m: &Single, s: &[u8], pos: usize) -> Option<usize> {
             if b < 128 {
                 if b.to_ascii_lowercase() as u32 == *f { Some(pos + 1) } else { None }
             } else {
-                let (d, l) = decode(s, pos);
+                let (d, l) = decode_e(e, s, pos);
                 if fold(d) == *f { Some(pos + l) } else { None }
             }
         }
@@ -2292,15 +2428,15 @@ fn one(m: &Single, s: &[u8], pos: usize) -> Option<usize> {
             } else if b < 128 {
                 Some(pos + 1)
             } else {
-                Some(pos + decode(s, pos).1)
+                Some(pos + decode_e(e, s, pos).1)
             }
         }
-        Single::AnyNL => Some(pos + char_len(s, pos)),
+        Single::AnyNL => Some(pos + char_len_e(e, s, pos)),
         Single::Class(cc) => {
             if b < 128 {
                 if cc.bit(b) { Some(pos + 1) } else { None }
             } else {
-                let (d, l) = decode(s, pos);
+                let (d, l) = decode_e(e, s, pos);
                 if cc.test(d) { Some(pos + l) } else { None }
             }
         }
@@ -2309,7 +2445,7 @@ fn one(m: &Single, s: &[u8], pos: usize) -> Option<usize> {
 
 /// Greedily consumes up to `rem` more chars matching `m`.
 #[inline]
-fn scan_greedy(m: &Single, s: &[u8], mut p: usize, rem: u32) -> usize {
+fn scan_greedy(e: Enc, m: &Single, s: &[u8], mut p: usize, rem: u32) -> usize {
     let len = s.len();
     if rem == INF {
         match m {
@@ -2336,7 +2472,7 @@ fn scan_greedy(m: &Single, s: &[u8], mut p: usize, rem: u32) -> usize {
                         }
                         p += 1;
                     } else {
-                        let (d, l) = decode(s, p);
+                        let (d, l) = decode_e(e, s, p);
                         if !cc.test(d) {
                             break;
                         }
@@ -2350,7 +2486,7 @@ fn scan_greedy(m: &Single, s: &[u8], mut p: usize, rem: u32) -> usize {
     }
     let mut n = 0u32;
     while n < rem {
-        match one(m, s, p) {
+        match one(e, m, s, p) {
             Some(np) => {
                 p = np;
                 n += 1;
@@ -2414,23 +2550,32 @@ fn rfind_sub(h: &[u8], n: &[u8]) -> Option<usize> {
 }
 
 #[inline]
-fn word_at(s: &[u8], pos: usize) -> bool {
-    pos < s.len() && is_uword(decode(s, pos).0)
+fn word_at(e: Enc, s: &[u8], pos: usize) -> bool {
+    pos < s.len() && is_bword(decode_e(e, s, pos).0)
 }
 
 #[inline]
-fn word_before(s: &[u8], pos: usize) -> bool {
-    pos > 0 && is_uword(decode(s, prev_start(s, pos, 0)).0)
+fn word_before(e: Enc, s: &[u8], pos: usize) -> bool {
+    pos > 0 && is_bword(decode_e(e, s, prev_start_e(e, s, pos, 0)).0)
+}
+
+/// \b's notion of a word char: Onigmo counts legacy multibyte chars as word chars there.
+#[inline]
+fn is_bword(c: u32) -> bool {
+    is_uword(c) || c >= MB
 }
 
 fn is_extender(c: u32) -> bool {
     is_mark(c) || c == 0x200C || (0xE0020..=0xE007F).contains(&c)
 }
 
-fn grapheme(s: &[u8], pos: usize) -> Option<usize> {
+fn grapheme(e: Enc, s: &[u8], pos: usize) -> Option<usize> {
     let len = s.len();
     if pos >= len {
         return None;
+    }
+    if e != Enc::UTF8 {
+        return Some(pos + char_len_e(e, s, pos));
     }
     if s[pos] == b'\r' {
         return Some(if pos + 1 < len && s[pos + 1] == b'\n' { pos + 2 } else { pos + 1 });
@@ -2460,8 +2605,8 @@ fn grapheme(s: &[u8], pos: usize) -> Option<usize> {
 }
 
 impl Vm {
-    pub fn new(pat: &[u8], opts: u32) -> Result<Vm, String> {
-        let mut ps = Parser::new(pat, opts);
+    pub fn new(pat: &[u8], opts: u32, enc: Enc) -> Result<Vm, String> {
+        let mut ps = Parser::new(pat, opts, enc);
         let ast = ps.parse_alt()?;
         if ps.i < pat.len() {
             // Only an unmatched ')' can stop the top-level parse early.
@@ -2493,6 +2638,7 @@ impl Vm {
         }
         let ngroups = k;
         let mut ast = Resolver { map, has_named, total: ngroups, names: &names }.walk(ast)?;
+        let linear = linear_ok(&ast, false);
         if has_call(&ast) {
             let mut groups = Vec::new();
             collect_groups(&ast, &mut groups);
@@ -2539,7 +2685,7 @@ impl Vm {
         ml.sort_by_key(|m| std::cmp::Reverse(m.0.len()));
         ml.truncate(4);
         let must = ml;
-        Ok(Vm { prog, ngroups, nregs: c.nregs, names, anchor, prefix, first, must, ast, backrefed: c_backrefed })
+        Ok(Vm { prog, ngroups, nregs: c.nregs, names, anchor, prefix, first, must, ast, backrefed: c_backrefed, linear })
     }
 
     pub fn group_count(&self) -> usize {
@@ -2554,8 +2700,8 @@ impl Vm {
         self.names.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone()).unwrap_or_default()
     }
 
-    fn ctx<'a>(&self, s: &'a [u8], gpos: usize) -> VmCtx<'a> {
-        VmCtx { s, slots: vec![NONE; 2 * (self.ngroups + 1)], regs: vec![0; self.nregs], stack: Vec::new(), gpos, sprev_bug: NONE }
+    fn ctx<'a>(&self, s: &'a [u8], gpos: usize, enc: Enc) -> VmCtx<'a> {
+        VmCtx { s, slots: vec![NONE; 2 * (self.ngroups + 1)], regs: vec![0; self.nregs], stack: Vec::new(), gpos, sprev_bug: NONE, enc }
     }
 
     fn try_at(&self, cx: &mut VmCtx, p: usize) -> Option<Vec<Option<(usize, usize)>>> {
@@ -2583,7 +2729,7 @@ impl Vm {
         self.must.iter().all(|m| find_must(s, m, pos).is_some())
     }
 
-    pub fn match_at(&self, s: &[u8], pos: usize) -> Option<Vec<Option<(usize, usize)>>> {
+    pub fn match_at(&self, s: &[u8], pos: usize, enc: Enc) -> Option<Vec<Option<(usize, usize)>>> {
         if pos > s.len() {
             return None;
         }
@@ -2592,11 +2738,11 @@ impl Vm {
                 return None;
             }
         }
-        let mut cx = self.ctx(s, pos);
+        let mut cx = self.ctx(s, pos, enc);
         self.try_at(&mut cx, pos)
     }
 
-    pub fn search(&self, s: &[u8], start: usize) -> Option<Vec<Option<(usize, usize)>>> {
+    pub fn search(&self, s: &[u8], start: usize, enc: Enc) -> Option<Vec<Option<(usize, usize)>>> {
         let len = s.len();
         if start > len {
             return None;
@@ -2609,7 +2755,7 @@ impl Vm {
                 None => return None,
             }
         }
-        let mut cx = self.ctx(s, start);
+        let mut cx = self.ctx(s, start, enc);
         let mut p = start;
         loop {
             if p > last_must {
@@ -2634,6 +2780,7 @@ impl Vm {
                         }
                     }
                 }
+                Anchor::None if enc.is_mb() => {} // byte prefilters could land inside a char
                 Anchor::None => {
                     if let Some(pre) = &self.prefix {
                         match find_sub(s, pre, p) {
@@ -2642,7 +2789,7 @@ impl Vm {
                         }
                     } else if let Some(fs) = &self.first {
                         while p < len && !fs[s[p] as usize] {
-                            p += char_len(s, p);
+                            p += char_len_e(enc, s, p);
                         }
                         if p >= len {
                             return None;
@@ -2656,13 +2803,8 @@ impl Vm {
             if p >= len {
                 return None;
             }
-            p += char_len(s, p);
+            p += char_len_e(enc, s, p);
         }
-    }
-
-    #[inline]
-    fn assert(&self, a: As, s: &[u8], pos: usize, gpos: usize, sprev_bug: usize) -> bool {
-        assert_at(a, s, pos, gpos, sprev_bug)
     }
 
     fn empty_iter_mem(&self, cx: &VmCtx, reg: usize, pos: usize) -> u8 {
@@ -2700,6 +2842,7 @@ impl Vm {
         let base = cx.stack.len();
         let s = cx.s;
         let len = s.len();
+        let e = cx.enc;
         loop {
             let ok = match &self.prog[pc] {
                 Inst::Str(b) => {
@@ -2711,7 +2854,7 @@ impl Vm {
                         false
                     }
                 }
-                Inst::One(m) => match one(m, s, pos) {
+                Inst::One(m) => match one(e, m, s, pos) {
                     Some(np) => {
                         pos = np;
                         pc += 1;
@@ -2751,7 +2894,7 @@ impl Vm {
                     true
                 }
                 Inst::Assert(a) => {
-                    if self.assert(*a, s, pos, cx.gpos, cx.sprev_bug) {
+                    if assert_at(e, *a, s, pos, cx.gpos, cx.sprev_bug) {
                         pc += 1;
                         true
                     } else {
@@ -2762,7 +2905,7 @@ impl Vm {
                     let mut p = pos;
                     let mut cnt = 0u32;
                     while cnt < *min {
-                        match one(m, s, p) {
+                        match one(e, m, s, p) {
                             Some(np) => {
                                 p = np;
                                 cnt += 1;
@@ -2775,7 +2918,7 @@ impl Vm {
                     } else if *greedy {
                         let minpos = p;
                         let rem = if *max == INF { INF } else { *max - *min };
-                        let maxpos = scan_greedy(m, s, p, rem);
+                        let maxpos = scan_greedy(e, m, s, p, rem);
                         let cand = if *nb >= 0 { find_back(s, minpos, maxpos, *nb as u8) } else { Some(maxpos) };
                         match cand {
                             Some(q) => {
@@ -2789,7 +2932,7 @@ impl Vm {
                             None => false,
                         }
                     } else {
-                        match lazy_advance(m, s, p, cnt, *max, *nb) {
+                        match lazy_advance(e, m, s, p, cnt, *max, *nb) {
                             Some((q, c2)) => {
                                 if c2 < *max {
                                     cx.stack.push(Bt::Lazy { pc, pos: q, count: c2 });
@@ -2896,7 +3039,7 @@ impl Vm {
                                 if k >= *maxlen || q == 0 {
                                     break;
                                 }
-                                q = prev_start(s, q, 0);
+                                q = prev_start_e(e, s, q, 0);
                                 k += 1;
                             }
                             if *kind == SubKind::Behind {
@@ -2924,14 +3067,14 @@ impl Vm {
                 Inst::Backref { groups, icase } => {
                     let mut hit = None;
                     for &g in groups.iter().rev() {
-                        let (a, e) = (cx.slots[2 * g], cx.slots[2 * g + 1]);
-                        if a == NONE || e == NONE {
+                        let (a, z) = (cx.slots[2 * g], cx.slots[2 * g + 1]);
+                        if a == NONE || z == NONE {
                             continue;
                         }
                         // A stale end before the start compares as empty in Onigmo.
-                        let sub = if a > e { &s[0..0] } else { &s[a..e] };
+                        let sub = if a > z { &s[0..0] } else { &s[a..z] };
                         if *icase {
-                            if let Some(np) = match_ic(s, pos, sub) {
+                            if let Some(np) = match_ic(e, s, pos, sub) {
                                 hit = Some(np);
                                 break;
                             }
@@ -2969,7 +3112,7 @@ impl Vm {
                     pc += 1;
                     true
                 }
-                Inst::Grapheme => match grapheme(s, pos) {
+                Inst::Grapheme => match grapheme(e, s, pos) {
                     Some(np) => {
                         pos = np;
                         pc += 1;
@@ -2997,7 +3140,7 @@ impl Vm {
                     Bt::Reg { idx, old } => cx.regs[idx] = old,
                     Bt::SprevBug { old } => cx.sprev_bug = old,
                     Bt::Greedy { pc: p, minpos, pos: q, nb } => {
-                        let np = if nb >= 0 { find_back(s, minpos, q - 1, nb as u8) } else { Some(prev_start(s, q, minpos)) };
+                        let np = if nb >= 0 { find_back(s, minpos, q - 1, nb as u8) } else { Some(prev_start_e(e, s, q, minpos)) };
                         if let Some(np) = np {
                             if np > minpos {
                                 cx.stack.push(Bt::Greedy { pc: p, minpos, pos: np, nb });
@@ -3009,8 +3152,8 @@ impl Vm {
                     }
                     Bt::Lazy { pc: p, pos: q, count } => {
                         if let Inst::RepChar { m, max, nb, .. } = &self.prog[p] {
-                            if let Some(np) = one(m, s, q) {
-                                if let Some((r, c2)) = lazy_advance(m, s, np, count + 1, *max, *nb) {
+                            if let Some(np) = one(e, m, s, q) {
+                                if let Some((r, c2)) = lazy_advance(e, m, s, np, count + 1, *max, *nb) {
                                     if c2 < *max {
                                         cx.stack.push(Bt::Lazy { pc: p, pos: r, count: c2 });
                                     }
@@ -3029,29 +3172,29 @@ impl Vm {
 
 /// From (p, cnt), consumes further chars until the position could start the following literal.
 #[inline]
-fn lazy_advance(m: &Single, s: &[u8], mut p: usize, mut cnt: u32, max: u32, nb: i16) -> Option<(usize, u32)> {
+fn lazy_advance(e: Enc, m: &Single, s: &[u8], mut p: usize, mut cnt: u32, max: u32, nb: i16) -> Option<(usize, u32)> {
     if nb >= 0 {
         let b = nb as u8;
         while !(p < s.len() && s[p] == b) {
             if cnt >= max {
                 return None;
             }
-            p = one(m, s, p)?;
+            p = one(e, m, s, p)?;
             cnt += 1;
         }
     }
     Some((p, cnt))
 }
 
-fn match_ic(s: &[u8], pos: usize, sub: &[u8]) -> Option<usize> {
+fn match_ic(e: Enc, s: &[u8], pos: usize, sub: &[u8]) -> Option<usize> {
     let mut i = 0;
     let mut p = pos;
     while i < sub.len() {
         if p >= s.len() {
             return None;
         }
-        let (a, la) = decode(sub, i);
-        let (b, lb) = decode(s, p);
+        let (a, la) = decode_e(e, sub, i);
+        let (b, lb) = decode_e(e, s, p);
         if a != b && fold(a) != fold(b) {
             return None;
         }
@@ -3084,11 +3227,11 @@ fn check_lookbehind(n: &Ast, inside: bool) -> Result<(), String> {
 }
 
 #[inline]
-fn word_prev(s: &[u8], pos: usize, sprev_bug: usize) -> bool {
-    if pos == sprev_bug && pos > 0 { word_at(s, pos) } else { word_before(s, pos) }
+fn word_prev(e: Enc, s: &[u8], pos: usize, sprev_bug: usize) -> bool {
+    if pos == sprev_bug && pos > 0 { word_at(e, s, pos) } else { word_before(e, s, pos) }
 }
 
-fn assert_at(a: As, s: &[u8], pos: usize, gpos: usize, sprev_bug: usize) -> bool {
+fn assert_at(e: Enc, a: As, s: &[u8], pos: usize, gpos: usize, sprev_bug: usize) -> bool {
     let len = s.len();
     match a {
         As::Bol => pos == 0 || (pos < len && s[pos - 1] == b'\n'),
@@ -3096,8 +3239,8 @@ fn assert_at(a: As, s: &[u8], pos: usize, gpos: usize, sprev_bug: usize) -> bool
         As::StrBegin => pos == 0,
         As::StrEnd => pos == len,
         As::StrEndNl => pos == len || (pos + 1 == len && s[pos] == b'\n'),
-        As::WordB => word_prev(s, pos, sprev_bug) != word_at(s, pos),
-        As::NotWordB => word_prev(s, pos, sprev_bug) == word_at(s, pos),
+        As::WordB => word_prev(e, s, pos, sprev_bug) != word_at(e, s, pos),
+        As::NotWordB => word_prev(e, s, pos, sprev_bug) == word_at(e, s, pos),
         As::Gpos => pos == gpos,
     }
 }

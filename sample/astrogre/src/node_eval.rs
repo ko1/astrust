@@ -107,7 +107,7 @@ pub fn EVAL_node_re_lit<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, bytes
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_re_one<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, kind: u32, ch: u32, cls: ClassRef, next: NodePtr) -> u32 {
-    match one_k(kind, ch, cls, c.subj(), pos) {
+    match one_k(c.enc, kind, ch, cls, c.subj(), pos) {
         Some(np) => <D_next as Disp>::call(c, next, np),
         None => FAIL,
     }
@@ -128,10 +128,11 @@ pub fn EVAL_node_re_grapheme<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, 
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_re_rep1<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, kind: u32, ch: u32, cls: ClassRef, min: u32, max: u32, greedy: bool, nb: i32, next: NodePtr) -> u32 {
     let s = c.subj();
+    let e = c.enc;
     let mut p = pos;
     let mut cnt = 0u32;
     while cnt < min {
-        match one_k(kind, ch, cls, s, p) {
+        match one_k(e, kind, ch, cls, s, p) {
             Some(np) => { p = np; cnt += 1; }
             None => return FAIL,
         }
@@ -139,7 +140,7 @@ pub fn EVAL_node_re_rep1<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, kind
     if greedy {
         let minpos = p;
         let rem = if max == INF { INF } else { max - min };
-        let maxpos = scan_k(kind, ch, cls, s, p, rem);
+        let maxpos = scan_k(e, kind, ch, cls, s, p, rem);
         let mut q = if nb >= 0 {
             match find_back(s, minpos, maxpos, nb as u8) { Some(q) => q, None => return FAIL }
         } else {
@@ -152,17 +153,17 @@ pub fn EVAL_node_re_rep1<D_next: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, kind
             q = if nb >= 0 {
                 match find_back(s, minpos, q - 1, nb as u8) { Some(x) => x, None => return FAIL }
             } else {
-                prev_start(s, q, minpos)
+                prev_start_e(e, s, q, minpos)
             };
         }
     } else {
-        let (mut q, mut k) = match lazy_advance_k(kind, ch, cls, s, p, cnt, max, nb) { Some(x) => x, None => return FAIL };
+        let (mut q, mut k) = match lazy_advance_k(e, kind, ch, cls, s, p, cnt, max, nb) { Some(x) => x, None => return FAIL };
         loop {
             let r = <D_next as Disp>::call(c, next, q);
             if r != FAIL { return r; }
             if k >= max { return FAIL; }
-            let np = match one_k(kind, ch, cls, s, q) { Some(x) => x, None => return FAIL };
-            match lazy_advance_k(kind, ch, cls, s, np, k + 1, max, nb) {
+            let np = match one_k(e, kind, ch, cls, s, q) { Some(x) => x, None => return FAIL };
+            match lazy_advance_k(e, kind, ch, cls, s, np, k + 1, max, nb) {
                 Some((a, b)) => { q = a; k = b; }
                 None => return FAIL,
             }
@@ -315,7 +316,7 @@ pub fn EVAL_node_re_look<D_body: Disp, D_next: Disp>(c: &mut Ctx, n: NodePtr, po
             if r == OK { found = true; break; }
         }
         if k >= maxlen || q == 0 { break; }
-        q = prev_start(s, q, 0);
+        q = prev_start_e(c.enc, s, q, 0);
         k += 1;
     }
     c.lb_target = saved;
@@ -352,7 +353,7 @@ pub fn EVAL_node_search<D_body: Disp>(c: &mut Ctx, n: NodePtr, pos: usize, body:
         let r = <D_body as Disp>::call(c, body, p);
         if r != FAIL { return r; }
         if p >= len { return FAIL; }
-        p += char_len(s, p);
+        p += char_len_e(c.enc, s, p);
     }
 }
 
@@ -369,7 +370,7 @@ pub fn EVAL_node_search_memchr<D_body: Disp>(c: &mut Ctx, n: NodePtr, pos: usize
         c.reset(p);
         let r = <D_body as Disp>::call(c, body, p);
         if r != FAIL { return r; }
-        p += char_len(s, p);
+        p += char_len_e(c.enc, s, p);
     }
 }
 
@@ -386,7 +387,7 @@ pub fn EVAL_node_search_memmem<D_body: Disp>(c: &mut Ctx, n: NodePtr, pos: usize
         c.reset(p);
         let r = <D_body as Disp>::call(c, body, p);
         if r != FAIL { return r; }
-        p += char_len(s, p);
+        p += char_len_e(c.enc, s, p);
     }
 }
 
@@ -400,12 +401,12 @@ pub fn EVAL_node_search_byteset<D_body: Disp>(c: &mut Ctx, n: NodePtr, pos: usiz
     let mut p = pos;
     loop {
         if p > c.must_next && !c.must_refresh(p) { return FAIL; }
-        while p < len && !fs[s[p] as usize] { p += char_len(s, p); }
+        while p < len && !fs[s[p] as usize] { p += char_len_e(c.enc, s, p); }
         if p >= len || (p > c.must_next && !c.must_refresh(p)) { return FAIL; }
         c.reset(p);
         let r = <D_body as Disp>::call(c, body, p);
         if r != FAIL { return r; }
-        p += char_len(s, p);
+        p += char_len_e(c.enc, s, p);
     }
 }
 

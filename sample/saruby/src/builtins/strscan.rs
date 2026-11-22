@@ -77,6 +77,7 @@ fn do_scan(c: &mut Ctx, slf: Value, pat: Value, advance: bool, want_str: bool, h
     let len = c.str_len(s.str);
     if s.pos > len { s.pos = len; sc_mut(c, slf).pos = len; }
     let is_re = crate::regexp::is_regexp(c, pat);
+    let md = if is_re { crate::regexp::prepare(c, pat, s.str)? } else { crate::regex_engine::Enc::UTF8 };
     let src = c.rstring(s.str);
     let bytes: &[u8] = &src.b;
     if is_re && !is_ascii(bytes) && !crate::builtins::encoding::is_valid(src.enc, bytes) {
@@ -88,7 +89,7 @@ fn do_scan(c: &mut Ctx, slf: Value, pat: Value, advance: bool, want_str: bool, h
         let re = r.re.as_ref().unwrap();
         let (hay, off) = if s.fixed { (bytes, 0) } else { (&bytes[s.pos..], s.pos) };
         let at = s.pos - off;
-        let g = if head { re.match_at(hay, at) } else { re.search(hay, at) };
+        let g = if head { re.match_at_enc(hay, at, md) } else { re.search_enc(hay, at, md) };
         (g.map(|g| g.into_iter().map(|x| x.map(|(a, b)| (a + off, b + off))).collect()), off)
     } else {
         let pb = c.str_bytes(pat);

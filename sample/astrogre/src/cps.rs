@@ -77,14 +77,15 @@ pub struct Ctx {
     pub must_occ: Vec<usize>,
     pub must_next: usize,
     pub ngroups: usize,
+    pub enc: Enc,
 }
 
 impl Ctx {
-    pub fn new(s: &[u8], ngroups: usize, gpos: usize) -> Ctx {
+    pub fn new(s: &[u8], ngroups: usize, gpos: usize, enc: Enc) -> Ctx {
         Ctx {
             s: s.as_ptr(), len: s.len(), slots: vec![NONE; 2 * (ngroups + 1)], log: Vec::new(),
             sprev_bug: NONE, gpos, rep_top: std::ptr::null_mut(), depth: 0, sub_end: 0,
-            lb_target: NONE, must: &[], must_occ: Vec::new(), must_next: usize::MAX, ngroups,
+            lb_target: NONE, must: &[], must_occ: Vec::new(), must_next: usize::MAX, ngroups, enc,
         }
     }
     /// Advances the required-literal occurrences to >= p; false when one no longer occurs
@@ -152,7 +153,7 @@ pub fn bytes_lit(b: &[u8]) -> String {
 // ---- single-char matchers ------------------------------------------------------
 
 #[inline(always)]
-pub fn one_k(kind: u32, ch: u32, cls: ClassRef, s: &[u8], pos: usize) -> Option<usize> {
+pub fn one_k(e: Enc, kind: u32, ch: u32, cls: ClassRef, s: &[u8], pos: usize) -> Option<usize> {
     if pos >= s.len() { return None; }
     let b = s[pos];
     match kind {
@@ -160,7 +161,7 @@ pub fn one_k(kind: u32, ch: u32, cls: ClassRef, s: &[u8], pos: usize) -> Option<
             if ch < 128 {
                 if b as u32 == ch { Some(pos + 1) } else { None }
             } else {
-                let (d, l) = decode(s, pos);
+                let (d, l) = decode_e(e, s, pos);
                 if d == ch { Some(pos + l) } else { None }
             }
         }
@@ -168,20 +169,20 @@ pub fn one_k(kind: u32, ch: u32, cls: ClassRef, s: &[u8], pos: usize) -> Option<
             if b < 128 {
                 if b.to_ascii_lowercase() as u32 == ch { Some(pos + 1) } else { None }
             } else {
-                let (d, l) = decode(s, pos);
+                let (d, l) = decode_e(e, s, pos);
                 if fold(d) == ch { Some(pos + l) } else { None }
             }
         }
         K_ANY => {
-            if b == b'\n' { None } else if b < 128 { Some(pos + 1) } else { Some(pos + decode(s, pos).1) }
+            if b == b'\n' { None } else if b < 128 { Some(pos + 1) } else { Some(pos + decode_e(e, s, pos).1) }
         }
-        K_ANYNL => Some(pos + char_len(s, pos)),
+        K_ANYNL => Some(pos + char_len_e(e, s, pos)),
         _ => {
             let cc = unsafe { &(*cls).cc };
             if b < 128 {
                 if cc.bit(b) { Some(pos + 1) } else { None }
             } else {
-                let (d, l) = decode(s, pos);
+                let (d, l) = decode_e(e, s, pos);
                 if cc.test(d) { Some(pos + l) } else { None }
             }
         }
@@ -190,7 +191,7 @@ pub fn one_k(kind: u32, ch: u32, cls: ClassRef, s: &[u8], pos: usize) -> Option<
 
 /// Greedily consumes up to `rem` more chars (scan_greedy for node operands).
 #[inline(always)]
-pub fn scan_k(kind: u32, ch: u32, cls: ClassRef, s: &[u8], mut p: usize, rem: u32) -> usize {
+pub fn scan_k(e: Enc, kind: u32, ch: u32, cls: ClassRef, s: &[u8], mut p: usize, rem: u32) -> usize {
     let len = s.len();
     if rem == INF {
         match kind {
@@ -209,7 +210,7 @@ pub fn scan_k(kind: u32, ch: u32, cls: ClassRef, s: &[u8], mut p: usize, rem: u3
                         if !cc.bit(b) { break; }
                         p += 1;
                     } else {
-                        let (d, l) = decode(s, p);
+                        let (d, l) = decode_e(e, s, p);
                         if !cc.test(d) { break; }
                         p += l;
                     }
@@ -221,7 +222,7 @@ pub fn scan_k(kind: u32, ch: u32, cls: ClassRef, s: &[u8], mut p: usize, rem: u3
     }
     let mut n = 0u32;
     while n < rem {
-        match one_k(kind, ch, cls, s, p) {
+        match one_k(e, kind, ch, cls, s, p) {
             Some(np) => { p = np; n += 1; }
             None => break,
         }
@@ -230,12 +231,12 @@ pub fn scan_k(kind: u32, ch: u32, cls: ClassRef, s: &[u8], mut p: usize, rem: u3
 }
 
 #[inline(always)]
-pub fn lazy_advance_k(kind: u32, ch: u32, cls: ClassRef, s: &[u8], mut p: usize, mut cnt: u32, max: u32, nb: i32) -> Option<(usize, u32)> {
+pub fn lazy_advance_k(e: Enc, kind: u32, ch: u32, cls: ClassRef, s: &[u8], mut p: usize, mut cnt: u32, max: u32, nb: i32) -> Option<(usize, u32)> {
     if nb >= 0 {
         let b = nb as u8;
         while !(p < s.len() && s[p] == b) {
             if cnt >= max { return None; }
-            p = one_k(kind, ch, cls, s, p)?;
+            p = one_k(e, kind, ch, cls, s, p)?;
             cnt += 1;
         }
     }
@@ -248,7 +249,7 @@ pub fn assert_k(kind: u32, c: &Ctx, pos: usize) -> bool {
         0 => As::Bol, 1 => As::Eol, 2 => As::StrBegin, 3 => As::StrEnd, 4 => As::StrEndNl,
         5 => As::WordB, 6 => As::NotWordB, _ => As::Gpos,
     };
-    assert_at(a, c.subj(), pos, c.gpos, c.sprev_bug)
+    assert_at(c.enc, a, c.subj(), pos, c.gpos, c.sprev_bug)
 }
 
 fn assert_code(a: As) -> u32 {
@@ -267,7 +268,7 @@ pub fn backref_k(c: &Ctx, groups: Groups, icase: bool, pos: usize) -> Option<usi
         if a == NONE || e == NONE { continue; }
         let sub = if a > e { &s[0..0] } else { &s[a..e] };
         if icase {
-            if let Some(np) = match_ic(s, pos, sub) { return Some(np); }
+            if let Some(np) = match_ic(c.enc, s, pos, sub) { return Some(np); }
         } else if s.len() - pos >= sub.len() && &s[pos..pos + sub.len()] == sub {
             return Some(pos + sub.len());
         }
@@ -276,7 +277,7 @@ pub fn backref_k(c: &Ctx, groups: Groups, icase: bool, pos: usize) -> Option<usi
 }
 
 #[inline]
-pub fn grapheme_k(c: &Ctx, pos: usize) -> Option<usize> { grapheme(c.subj(), pos) }
+pub fn grapheme_k(c: &Ctx, pos: usize) -> Option<usize> { grapheme(c.enc, c.subj(), pos) }
 
 #[inline]
 pub fn cond_k(c: &Ctx, groups: Groups) -> bool {
@@ -644,7 +645,11 @@ impl<'a> Lowerer<'a> {
 /// A compiled pattern: the CPS node tree (primary) plus the VM program (fallback).
 pub struct Regex {
     vm: Vm,
+    /// The encoding the pattern was parsed in; the default for matching.
+    pub enc: Enc,
     pub search_root: NodePtr,
+    /// search_root without byte prefilters (they could stop inside a legacy multibyte char)
+    pub plain_root: NodePtr,
     pub at_root: NodePtr,
     nodes: Vec<NodePtr>,
     _bytes: Vec<Box<[u8]>>,
@@ -667,9 +672,17 @@ pub type Captures = Vec<Option<(usize, usize)>>;
 
 impl Regex {
     pub fn new(pat: &[u8], opts: u32) -> Result<Regex, String> {
-        let vm = Vm::new(pat, opts)?;
+        Self::new_enc(pat, opts, Enc::UTF8)
+    }
+
+    /// Parses and checks the pattern without building the matcher.
+    pub fn check(pat: &[u8], opts: u32, enc: Enc) -> Result<(), String> { Vm::new(pat, opts, enc).map(|_| ()) }
+
+    /// Pattern chars are read in `enc`, which is also the default subject encoding.
+    pub fn new_enc(pat: &[u8], opts: u32, enc: Enc) -> Result<Regex, String> {
+        let vm = Vm::new(pat, opts, enc)?;
         ALLOCATED.with(|a| a.borrow_mut().clear());
-        let r = Self::build(vm);
+        let r = Self::build(vm, enc);
         let nodes = ALLOCATED.with(|a| std::mem::take(&mut *a.borrow_mut()));
         match r {
             Ok(mut re) => { re.nodes = nodes; Ok(re) }
@@ -680,7 +693,7 @@ impl Regex {
         }
     }
 
-    fn build(vm: Vm) -> Result<Regex, String> {
+    fn build(vm: Vm, enc: Enc) -> Result<Regex, String> {
         let rep_cont = ALLOC_node_re_rep_cont();
         let mut lw = Lowerer {
             bt_depth: 0, backrefed: &vm.backrefed, rep_cont, sub_succ: ALLOC_node_re_sub_succ(),
@@ -706,12 +719,14 @@ impl Regex {
                 }
             }
         };
+        let plain_root = if matches!(vm.anchor, Anchor::None) && search_root_prefilters(&vm) { ALLOC_node_search(body, AN_NONE) } else { search_root };
         let at_root = ALLOC_node_match_at(body);
         let (bytes, classes, groups) = (std::mem::take(&mut lw.bytes), std::mem::take(&mut lw.classes), std::mem::take(&mut lw.groups));
-        Ok(Regex { vm, search_root, at_root, nodes: vec![], _bytes: bytes, _classes: classes, _groups: groups, _sets: sets })
+        Ok(Regex { vm, enc, search_root, plain_root, at_root, nodes: vec![], _bytes: bytes, _classes: classes, _groups: groups, _sets: sets })
     }
 
     pub fn group_count(&self) -> usize { self.vm.group_count() }
+    pub fn linear_time(&self) -> bool { self.vm.linear }
     pub fn names(&self) -> Vec<(String, Vec<usize>)> { self.vm.names() }
     pub fn group_index(&self, name: &str) -> Vec<usize> { self.vm.group_index(name) }
 
@@ -725,34 +740,41 @@ impl Regex {
     }
 
     /// Leftmost match whose start is >= `start`.
-    pub fn search(&self, s: &[u8], start: usize) -> Option<Captures> {
+    pub fn search(&self, s: &[u8], start: usize) -> Option<Captures> { self.search_enc(s, start, self.enc) }
+
+    /// search with the subject split into chars as `enc` says (an ASCII-only pattern can be
+    /// used on any ASCII-compatible encoding).
+    pub fn search_enc(&self, s: &[u8], start: usize, enc: Enc) -> Option<Captures> {
         if start > s.len() { return None; }
-        let mut c = Ctx::new(s, self.vm.group_count(), start);
+        let mut c = Ctx::new(s, self.vm.group_count(), start, enc);
         if !self.vm.must.is_empty() {
             c.must = &self.vm.must[..];
             c.must_occ = vec![NONE; self.vm.must.len()];
             if !c.must_refresh(start) { return None; }
         }
-        match call(&mut c, self.search_root, start) {
+        let root = if enc.is_mb() { self.plain_root } else { self.search_root };
+        match call(&mut c, root, start) {
             OK => Some(self.captures(&c)),
             FAIL => None,
-            _ => self.vm.search(s, start),
+            _ => self.vm.search(s, start, enc),
         }
     }
 
     /// Match anchored at `pos`.
-    pub fn match_at(&self, s: &[u8], pos: usize) -> Option<Captures> {
+    pub fn match_at(&self, s: &[u8], pos: usize) -> Option<Captures> { self.match_at_enc(s, pos, self.enc) }
+
+    pub fn match_at_enc(&self, s: &[u8], pos: usize, enc: Enc) -> Option<Captures> {
         if pos > s.len() || !self.vm.must_ok_from(s, pos) { return None; }
-        let mut c = Ctx::new(s, self.vm.group_count(), pos);
+        let mut c = Ctx::new(s, self.vm.group_count(), pos, enc);
         match call(&mut c, self.at_root, pos) {
             OK => Some(self.captures(&c)),
             FAIL => None,
-            _ => self.vm.match_at(s, pos),
+            _ => self.vm.match_at(s, pos, enc),
         }
     }
 
     /// Search with the VM only (for tests and comparisons).
-    pub fn search_vm(&self, s: &[u8], start: usize) -> Option<Captures> { self.vm.search(s, start) }
+    pub fn search_vm(&self, s: &[u8], start: usize) -> Option<Captures> { self.vm.search(s, start, self.enc) }
 
     /// Nodes whose dispatchers may be called indirectly (scanner roots, loop bodies and
     /// continuations): the AOT entries.
@@ -785,3 +807,5 @@ pub fn memchr_from(s: &[u8], b: u8, from: usize) -> Option<usize> {
 
 #[inline(always)]
 pub fn find_from(s: &[u8], needle: &[u8], from: usize) -> Option<usize> { find_sub(s, needle, from) }
+
+fn search_root_prefilters(vm: &Vm) -> bool { vm.prefix.is_some() || vm.first.is_some() }

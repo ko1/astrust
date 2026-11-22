@@ -563,13 +563,17 @@ impl<'a> Compiler<'a> {
                 if n.flags & pa::INTERPOLATED_STRING_NODE_FLAGS_FROZEN != 0 { self.call_node(d, s::freeze, vec![], 0, line) } else { d }
             }
             Kind::InterpolatedSymbolNode { parts } => { let d = self.dstr(parts); ALLOC_node_dsym(d) }
-            Kind::RegularExpressionNode { unescaped } => ALLOC_node_regex(lstr(unescaped), regex_opts(n.flags)),
+            Kind::RegularExpressionNode { unescaped } => {
+                let o = regex_opts(n.flags, self.src_enc);
+                if self.file != "<internal:prelude>" { if let Err(m) = crate::regexp::regexp_check(unescaped, o) { self.errors.push(format!("{}:{}: {}", self.file, line, m)); } }
+                ALLOC_node_regex(lstr(unescaped), o)
+            }
             Kind::InterpolatedRegularExpressionNode { parts } => {
                 let d = self.dstr(parts);
-                ALLOC_node_dregex(d, regex_opts(n.flags), n.flags & pa::REGULAR_EXPRESSION_FLAGS_ONCE != 0)
+                ALLOC_node_dregex(d, regex_opts(n.flags, self.src_enc), n.flags & pa::REGULAR_EXPRESSION_FLAGS_ONCE != 0)
             }
             Kind::MatchLastLineNode { unescaped } => {
-                let re = ALLOC_node_regex(lstr(unescaped), regex_opts(n.flags));
+                let re = ALLOC_node_regex(lstr(unescaped), regex_opts(n.flags, self.src_enc));
                 let ll = ALLOC_node_gvar(intern(b"$_"));
                 self.call_node(re, s::match_op, vec![ll], 0, line)
             }
@@ -2209,13 +2213,23 @@ thread_local! {
     static CLASS_LABEL: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(vec![]);
 }
 
-pub fn regex_opts(flags: u32) -> u32 {
+/// i/x/m, /n, /e /s /u (fixed) and the source string's encoding (regexp.rs RE_LIT_ENC_SHIFT).
+pub fn regex_opts(flags: u32, src_enc: u32) -> u32 {
+    // FORCED_US_ASCII is left out: this prism sets it with non-ASCII group names
+    use crate::object::{ENC_BINARY, ENC_UTF8};
     let mut o = 0;
     if flags & pa::REGULAR_EXPRESSION_FLAGS_IGNORE_CASE != 0 { o |= 1; }
     if flags & pa::REGULAR_EXPRESSION_FLAGS_EXTENDED != 0 { o |= 2; }
     if flags & pa::REGULAR_EXPRESSION_FLAGS_MULTI_LINE != 0 { o |= 4; }
-    if flags & pa::REGULAR_EXPRESSION_FLAGS_FORCED_BINARY_ENCODING != 0 || flags & pa::REGULAR_EXPRESSION_FLAGS_ASCII_8BIT != 0 { o |= 32; }
-    o
+    if flags & pa::REGULAR_EXPRESSION_FLAGS_ASCII_8BIT != 0 { o |= 32; }
+    let kcode = pa::REGULAR_EXPRESSION_FLAGS_EUC_JP | pa::REGULAR_EXPRESSION_FLAGS_WINDOWS_31J | pa::REGULAR_EXPRESSION_FLAGS_UTF_8;
+    if flags & kcode != 0 { o |= 16; }
+    let enc = if flags & (pa::REGULAR_EXPRESSION_FLAGS_FORCED_BINARY_ENCODING | pa::REGULAR_EXPRESSION_FLAGS_ASCII_8BIT) != 0 { ENC_BINARY as u32 }
+        else if flags & (pa::REGULAR_EXPRESSION_FLAGS_FORCED_UTF8_ENCODING | pa::REGULAR_EXPRESSION_FLAGS_UTF_8) != 0 { ENC_UTF8 as u32 }
+        else if flags & pa::REGULAR_EXPRESSION_FLAGS_EUC_JP != 0 { crate::builtins::encoding::ENC_EUCJP as u32 }
+        else if flags & pa::REGULAR_EXPRESSION_FLAGS_WINDOWS_31J != 0 { crate::builtins::encoding::find_enc(b"Windows-31J").unwrap_or(ENC_BINARY) as u32 }
+        else { src_enc };
+    o | ((enc + 1) << crate::regexp::RE_LIT_ENC_SHIFT)
 }
 
 /// Parse and compile a source file into a top-level iseq.  Err = SyntaxError message.
