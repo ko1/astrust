@@ -284,3 +284,19 @@ pub fn write_fd(fd: c_int, mut b: &[u8]) -> Result<(), i64> {
     }
     Ok(())
 }
+
+// ---- Etc: sysconf(3) / confstr(3) / fpathconf(3) -------------------------------------------------
+mod ffi_etc {
+    use super::*;
+    extern "C" {
+        pub fn sysconf(name: c_int) -> std::ffi::c_long;
+        pub fn confstr(name: c_int, buf: *mut u8, len: usize) -> usize;
+        pub fn fpathconf(fd: c_int, name: c_int) -> std::ffi::c_long;
+    }
+}
+// SAFETY: integers only.
+pub fn sysconf(name: c_int) -> i64 { unsafe { ffi_etc::sysconf(name) as i64 } }
+// SAFETY: buf is a live Rust slice whose length is the count passed.
+pub fn confstr(name: c_int, buf: &mut [u8]) -> usize { unsafe { ffi_etc::confstr(name, buf.as_mut_ptr(), buf.len()) } }
+// SAFETY: integers only; a bad fd is EBADF.
+pub fn fpathconf(fd: c_int, name: c_int) -> i64 { unsafe { ffi_etc::fpathconf(fd, name) as i64 } }

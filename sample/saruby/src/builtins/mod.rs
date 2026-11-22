@@ -45,6 +45,7 @@ pub mod econv;
 pub mod transcode;
 pub mod tracepoint;
 pub mod digest;
+pub mod etc;
 pub mod boot;
 
 pub use boot::{alloc_data, boot, dup_data, inherits, lazy_const, lazy_consts};
