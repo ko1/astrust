@@ -36,6 +36,10 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [ ] sbuf.rs（String のバッファ、10 か所）: safe 版はブランチ `sbuf-safe-rs29`（str AOT +6% 命令 / +11.5% サイクル）。採否未定
 - [ ] 呼び出し経路・フレーム連鎖（vm.rs 80、rt.rs 64、node.def 16、stack_raw.rs 5）。前提 H5（実行中の builtin の下のフレームは生きている）は未検証
 - 残す（外部インターフェース・土台）: sys.rs、kalloc.rs、fiber_os.rs、patch ローダ、heap.rs / value.rs / gc.rs の土台
+- [ ] main ctx の root 走査が、確保側の生きている `&mut Ctx` とまだ重なる（vm/heap 分割の残り。直すには確保を全部 c 経由に）
+- [ ] gc.rs 内の `heap() -> &'static mut Heap` をクロージャ形 `with_heap` にすると gcchurn AOT +23%・str +1.7%（原因未調査）
+- [ ] vm 分割後の poly AOT +0.29%（mcache の RefCell 検査の推定、未検証）。sp4 の時間で要確認
+- [ ] 見送り中: safe な Value::fix/sym/flonum（hash +0.6〜1.4%、regalloc の変化）、ConstCache.val の Option 化（+0.1〜0.3%）
 
 ## 3. CRuby 互換性
 
@@ -72,6 +76,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [ ] 大きな左シフト（CRuby は NoMemoryError、saruby は 2^26 bit 超を RangeError）
 - [ ] `__callee__` on alias、`WeakMap#inspect`、`detailed_message` / `full_message` の書式
 - [ ] t/hand: 約 23,400 PASS / 10,200 FAIL
+- [ ] 解説書『saruby でわかる Rust』（~/ruby/src/trials/2026-11-21-saruby-rust-book）: vm/heap 分割の反映、trait と Ruby の module の対比・dispatch（Dyn と T_… の Disp）の説明を追加（2026-11-22 の会話）
 
 ## 性能（上 3 つの後。新規には起こさない）
 
@@ -86,6 +91,8 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [ ] 起動: prelude の def 本体の遅延コンパイル（残り 13.7M 命令のうち 6.8M）
 - [ ] 起動の後戻り: `-e 'p 1'` 13.7M（de58efd）→ 20.6M 命令（2026-11-22、hopt_index・Pathname の起動時定義ほか）。`require 'date'` は +13 ms/プロセス
 - [ ] ivar の多相: 親クラスのメソッド内の `@a` が親・サブクラス両方のオブジェクトから使われると並びが違い、単相のキャッシュが外れる（shape 的な仕組み）。スロット番号は実行しないと決まらない（継承・条件分岐・instance_variable_set）ので静的割り当てはしない（2026-11-22 user と確認）
+- [ ] sort の AOT サイクルが alloc-sweep の 2・3 番目のコミット後に +1〜3% かも（局所機では判定不能、sp4 で再計測）
+- [ ] 生成器 astrustgen.rb を build.rs に移す（ideas/idea/astrust-gen-in-rust.md）。ASTrust が成熟してから（user 2026-11-22）
 
 ## 計測の約束
 
