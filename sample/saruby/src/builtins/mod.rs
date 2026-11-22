@@ -44,6 +44,10 @@ pub mod trans_tables;
 pub mod econv;
 pub mod transcode;
 pub mod tracepoint;
+pub mod zlib;
+pub mod zlib_check;
+pub mod zlib_deflate;
+pub mod zlib_inflate;
 pub mod boot;
 
 pub use boot::{alloc_data, boot, dup_data, inherits, lazy_const, lazy_consts};
