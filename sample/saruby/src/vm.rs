@@ -2428,9 +2428,12 @@ pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &'static Iseq, base: Stk, argc
 // ---- GC roots -----------------------------------------------------------------------------------
 
 /// The exact root slots of the VM, and the value stacks (ambiguous).
-pub fn visit_roots<V: RootVisitor<Saruby>>(m: &mut V) {
+/// `cur`: the context that allocates or collects (gc's NO_CTX: none), scanned through this borrow only.
+pub fn visit_roots<V: RootVisitor<Saruby>>(m: &mut V, cur: &mut Ctx) {
     let vm = vm();
-    visit_main_ctx(m);
+    let p: *mut Ctx = if gc::is_no_ctx(cur) { std::ptr::null_mut() } else { visit_ctx(m, cur); cur };
+    SCAN_CTX.store(p, std::sync::atomic::Ordering::Relaxed);
+    if vm.main_ctx.get() != p { visit_main_ctx(m); }
     for v in [&vm.c_basic_object, &vm.c_object, &vm.main_obj, &vm.stdout, &vm.stderr, &vm.stdin, &vm.loaded_features,
               &vm.load_path, &vm.at_exit, &vm.verbose, &vm.argv, &vm.dollar_zero] { visit_cell(m, v); }
     // a mutator holding one of these borrows across an allocation panics here instead of aliasing
@@ -2448,6 +2451,10 @@ pub fn visit_roots<V: RootVisitor<Saruby>>(m: &mut V) {
     let cells = unsafe { std::slice::from_raw_parts(vm as *const Vm as *const Cell<Value>, nclass_fields) };
     for k in cells { visit_cell(m, k); }
 }
+
+static SCAN_CTX: std::sync::atomic::AtomicPtr<Ctx> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+/// The context the running collection scans through its caller's borrow (null: none); compared, never dereferenced.
+pub fn scan_ctx() -> *mut Ctx { SCAN_CTX.load(std::sync::atomic::Ordering::Relaxed) }
 
 #[inline(always)]
 fn visit_cell<V: RootVisitor<Saruby>>(m: &mut V, k: &Cell<Value>) { let mut v = k.get(); m.visit(&mut v); k.set(v); }

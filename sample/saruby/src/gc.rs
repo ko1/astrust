@@ -13,11 +13,13 @@ use crate::astrust_gc::{self as rt, Gc, GcLang};
 pub use crate::astrust_gc::{EdgeVisitor, GcHeader, RootVisitor};
 use crate::object::*;
 use crate::value::*;
+use crate::vm::Ctx;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
-/// The language binding.  Stateless: saruby's roots are globals (`vm()`, the fiber list).
-pub struct Saruby;
+/// The language binding is the context that allocates or collects (NO_CTX when none is given):
+/// the collector scans that context through the caller's borrow.
+pub type Saruby = Ctx;
 
 #[cfg(not(feature = "gc-bitmap"))]
 pub type Backend = rt::mark_sweep::MarkSweep<Saruby>;
@@ -49,6 +51,24 @@ fn heap(_: &mut Scope) -> &mut Heap {
     unsafe { (*&raw mut HEAP).as_mut().unwrap_unchecked() }
 }
 
+// What context-free allocations pass: never runs, and the collector reads no object through it.
+static mut NO_CTX: Ctx = Ctx {
+    sp: crate::stack::NO_SP, frame: std::ptr::null_mut(), serial: 0, call_me: std::ptr::null(), native_limit: 0,
+    call_blk: std::ptr::null(), stk: crate::stack::NO_STACK, esc: crate::vm::EscKind::None, esc_val: NIL, esc_tag: 0,
+    esc_tag_v: NIL, errinfo: NIL, last_match: NIL, in_ensure: 0, redef: 0,
+    // SAFETY: as above, NO_CTX is never a running context's token
+    tok: unsafe { crate::heap::Token::mint() },
+};
+
+#[inline(always)]
+fn no_ctx(_: &mut Scope) -> &mut Ctx {
+    // SAFETY: one borrow at a time, as heap()
+    unsafe { &mut *&raw mut NO_CTX }
+}
+/// `c` is NO_CTX: the allocation gave no context.
+#[inline(always)]
+pub fn is_no_ctx(c: *const Ctx) -> bool { std::ptr::eq(c, &raw const NO_CTX) }
+
 /// Top of the main machine stack.
 #[inline(always)]
 pub fn stack_base() -> usize { STACK_BASE.load(Relaxed) }
@@ -67,9 +87,21 @@ pub fn malloc_increase(n: usize) { heap(&mut Scope).account_external(n); }
 
 /// Allocate an object.  May run a GC: every live Value must be reachable from the
 /// machine stack, the VM value stack, the heap, or `body`.
+/// Context-free (no `&mut Ctx` given): the running context is scanned by place (vm::visit_roots).
 #[inline]
-pub fn alloc(klass: Value, body: Body) -> Value {
-    let p = heap(&mut Scope).alloc(&mut Saruby, move || RObj { klass, flags: 0, gc: GcHeader::new(), body });
+pub fn alloc(klass: Value, body: Body) -> Value { alloc_by(no_ctx(&mut Scope), klass, body) }
+/// alloc_with, context-free.
+#[inline(always)]
+pub fn alloc_with(klass: Value, make: impl FnOnce() -> Body) -> Value { alloc_with_by(no_ctx(&mut Scope), klass, make) }
+/// alloc by `c` (Ctx::alloc): a collection scans `c` through this borrow.
+#[inline(always)]
+pub fn alloc_in(c: &mut Ctx, klass: Value, body: Body) -> Value { alloc_by(c, klass, body) }
+#[inline(always)]
+pub fn alloc_with_in(c: &mut Ctx, klass: Value, make: impl FnOnce() -> Body) -> Value { alloc_with_by(c, klass, make) }
+
+#[inline]
+fn alloc_by(c: &mut Ctx, klass: Value, body: Body) -> Value {
+    let p = heap(&mut Scope).alloc(c, move || RObj { klass, flags: 0, gc: GcHeader::new(), body });
     // SAFETY: the object just allocated
     unsafe { Value::from_ptr(p.as_ptr()) }
 }
@@ -77,19 +109,19 @@ pub fn alloc(klass: Value, body: Body) -> Value {
 /// alloc, with the body built by `make` once the slot is known: a body built first and passed
 /// in sits on the stack and is copied with wide loads its narrow stores cannot forward to.
 #[inline(always)]
-pub fn alloc_with(klass: Value, make: impl FnOnce() -> Body) -> Value {
-    let p = heap(&mut Scope).alloc(&mut Saruby, move || RObj { klass, flags: 0, gc: GcHeader::new(), body: make() });
+fn alloc_with_by(c: &mut Ctx, klass: Value, make: impl FnOnce() -> Body) -> Value {
+    let p = heap(&mut Scope).alloc(c, move || RObj { klass, flags: 0, gc: GcHeader::new(), body: make() });
     // SAFETY: the object just allocated
     unsafe { Value::from_ptr(p.as_ptr()) }
 }
 
 /// GC.start: a full collection, GC.disable or not (as CRuby: GC.disable stops only the automatic ones).
-pub fn collect() { heap(&mut Scope).collect(&mut Saruby); }
+pub fn collect(c: &mut Ctx) { heap(&mut Scope).collect(c); }
 
 /// A collection the runtime asks for (as an allocation would), unless GC.disable is in effect.
-pub fn collect_auto() {
+pub fn collect_auto(c: &mut Ctx) {
     // the condition's Scope ends before the block
-    if !heap(&mut Scope).ctl.disabled() { collect(); }
+    if !heap(&mut Scope).ctl.disabled() { collect(c); }
 }
 
 /// Collections so far.
@@ -105,7 +137,7 @@ pub fn backend_name() -> &'static str { heap(&mut Scope).backend_name() }
 pub fn set_disabled(d: bool) -> bool { heap(&mut Scope).set_disabled(d) }
 
 /// GC.start(full_mark: false), GC.disable or not.
-pub fn collect_minor() { heap(&mut Scope).collect_minor(&mut Saruby); }
+pub fn collect_minor(c: &mut Ctx) { heap(&mut Scope).collect_minor(c); }
 
 /// Store `v` into `slot`, a reference slot of heap object `holder`, with the write barrier.
 /// No backend needs the barrier yet and saruby's stores do not go through here; a
@@ -191,7 +223,7 @@ unsafe impl GcLang for Saruby {
     fn visit_roots<V: RootVisitor<Self>>(&mut self, v: &mut V) {
         // SAFETY: current_stack_top() is the end of the stack this code runs on
         unsafe { rt::stack::with_current_stack(crate::fiber::current_stack_top(), |w| v.visit_ambiguous(w)); }
-        crate::vm::visit_roots(v);
+        crate::vm::visit_roots(v, self);
     }
 
     #[inline(always)]

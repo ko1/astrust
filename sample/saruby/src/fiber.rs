@@ -63,7 +63,7 @@ impl RData for FiberData {
     fn visit(&mut self, m: &mut crate::gc::Visitor) {
         for v in [&mut self.proc_, &mut self.xfer, &mut self.prev, &mut self.resuming, &mut self.enum_src, &mut self.storage, &mut self.locals, &mut self.owner] { m.visit(v); }
         if let Some(p) = &mut self.peek { m.visit(p); }
-        if let Some(c) = &mut self.ctx { visit_ctx(m, c.get()); }
+        if let Some(c) = &mut self.ctx { if c.ptr() != crate::vm::scan_ctx() { visit_ctx(m, c.get()); } }
         if self.running || self.sp == 0 { return; }
         match &self.stack {
             Some(s) => m.visit_ambiguous(s.words(self.sp)),
@@ -110,7 +110,7 @@ fn new_fiber(c: &mut Ctx, klass: Value, proc_: Value) -> Value {
 
 /// Give a fiber its stacks and a first frame that runs fiber_main.
 fn start(c: &mut Ctx, f: Value) -> Result<(), Esc> {
-    collect_dead_fibers();
+    collect_dead_fibers(c);
     let Some((mut stack, _)) = NativeStack::take() else {
         let k = c.vm().c_fiber_error.get();
         return err(c, k, "can't alloc machine stack to fiber");
@@ -128,7 +128,7 @@ fn start(c: &mut Ctx, f: Value) -> Result<(), Esc> {
 
 /// Stacks come back only when their fibers are collected: collect once fibers have started as
 /// often as there were fibers with stacks after the last collection (amortized, like heap growth).
-fn collect_dead_fibers() {
+fn collect_dead_fibers(c: &mut Ctx) {
     let n = crate::gc::collections();
     if n != GC_SEEN.load(Relaxed) {
         GC_SEEN.store(n, Relaxed);
@@ -136,7 +136,7 @@ fn collect_dead_fibers() {
         STACKS_AT_GC.store(STACKS.load(Relaxed), Relaxed);
     }
     if STARTS.fetch_add(1, Relaxed) < STACKS_AT_GC.load(Relaxed).max(STARTS_MIN) { return; }
-    crate::gc::collect_auto();
+    crate::gc::collect_auto(c);
 }
 
 /// Release what a finished fiber no longer needs (it cannot be done on its own stack).

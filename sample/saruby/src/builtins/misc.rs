@@ -49,10 +49,10 @@ pub fn unbase64(s2: &[u8]) -> Vec<u8> {
 }
 // ---- GC / ObjectSpace -----------------------------------------------------------------------
 
-fn gc_start(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { crate::gc::collect(); Ok(NIL) }
+fn gc_start(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { crate::gc::collect(c); Ok(NIL) }
 // GC.__start(full_mark), behind the prelude's GC.start (keywords as in CRuby's gc.rb, no Hash)
-fn gc_start_full(_c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
-    if a[0].truthy() { crate::gc::collect() } else { crate::gc::collect_minor() }
+fn gc_start_full(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+    if a[0].truthy() { crate::gc::collect(c) } else { crate::gc::collect_minor(c) }
     Ok(NIL)
 }
 fn gc_count(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(crate::gc::collections() as i64)) }
@@ -91,7 +91,7 @@ fn os_count_objects(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> R
     hash_set(c, st, sym_value("FREE"), Value::fix(h.free as i64))?;
     Ok(st)
 }
-fn os_garbage_collect(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { crate::gc::collect(); Ok(NIL) }
+fn os_garbage_collect(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { crate::gc::collect(c); Ok(NIL) }
 
 // Warning[category] flags (bit = index in WARN_CAT_NAMES); experimental is on by default, -w turns on deprecated.
 static WARN_CATS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0b0010);

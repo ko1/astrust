@@ -176,6 +176,8 @@ impl FiberCtx {
         });
         FiberCtx(NonNull::from(Box::leak(c)))
     }
+    /// Which context this is (compared with gc's allocating one).
+    pub fn ptr(&self) -> *mut Ctx { self.0.as_ptr() }
     /// The context, for its owner while the fiber does not run, and for the collector.
     pub fn get(&mut self) -> &mut Ctx {
         // SAFETY: the fiber's own code holds the other reference, and is suspended (or is the caller) meanwhile, as with main_ctx
