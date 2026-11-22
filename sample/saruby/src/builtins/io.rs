@@ -488,6 +488,8 @@ fn io_read(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
             if io.wouldblock { (vec![], v) } else { (v, vec![]) }
         })?;
         if v.is_empty() && n > 0 {
+            let io = io_mut(c, slf);
+            if io.rerr != 0 { let e = std::mem::take(&mut io.rerr); let p = io.path.clone(); return Err(raise_errno_at(c, e, "io_fread - ", &p)); }
             if let Some(&b) = a.get(1) { if b != NIL { let b = expect_str(c, b)?; check_frozen(c, b)?; c.rstring_mut(b).b.clear(); } }
             return Ok(NIL);
         }
