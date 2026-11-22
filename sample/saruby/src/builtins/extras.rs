@@ -146,13 +146,25 @@ fn k_test(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 fn io_wait(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     // wait(events, timeout) or wait(timeout = nil, mode = :read)
     let (fd, buffered) = { let io = crate::builtins::io::get_io(c, s)?; (io.fd, io.rpos < io.rbuf.len()) };
-    let (mut events, mut timeout, mut int_form) = (1i64, NIL, false);
-    if a.len() == 2 && a[0].is_fixnum() && !a[1].is_sym() { events = a[0].as_fix(); timeout = a[1]; int_form = true; }
-    else {
+    // io.c io_wait: two non-Symbol arguments are (events, timeout); otherwise modes and at most one timeout
+    let int_form = a.len() == 2 && !a[0].is_sym() && !a[1].is_sym();
+    let (mut events, mut timeout) = (0i64, NIL);
+    if int_form {
+        events = num_to_long(c, a[0])?;
+        if events <= 0 { return arg_err(c, "Events must be positive integer!"); }
+        timeout = a[1];
+    } else {
+        let mut given = false;
         for &x in a {
-            if x.is_sym() { events = match sym_str(x.as_sym()).as_str() { "r" | "read" | "readable" => 1, "w" | "write" | "writable" => 4, "rw" | "read_write" | "readable_writable" => 5, o => return arg_err(c, format!("unsupported mode: {}", o)) }; }
-            else if x != NIL { timeout = x; }
+            if x.is_sym() { events |= match sym_str(x.as_sym()).as_str() { "r" | "read" | "readable" => 1, "w" | "write" | "writable" => 4, "rw" | "read_write" | "readable_writable" => 5, o => return arg_err(c, format!("unsupported mode: {}", o)) }; continue; }
+            if given { return arg_err(c, "timeout given more than once"); }
+            given = true;
+            // rb_time_interval
+            if !crate::numeric::is_numeric(x) { return type_err(c, format!("can't convert {} into time interval", class_path(real_class_of(x)))); }
+            if crate::builtins::numeric_methods::to_f(c, x)? < 0.0 { return arg_err(c, "time interval must not be negative"); }
+            timeout = x;
         }
+        if events == 0 { events = 1; }
     }
     if events & 1 != 0 && buffered { return Ok(if int_form { Value::fix(1) } else { s }); }
     let dl = crate::builtins::io::wait_deadline(c, if timeout == NIL { None } else { Some(&timeout) })?;

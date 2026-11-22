@@ -197,11 +197,13 @@ pub fn block_on(c: &mut Ctx, mut cond: impl FnMut(&mut Ctx) -> Result<bool, Esc>
     }
 }
 /// Kernel#sleep when threads are in play.
-pub fn sleep(c: &mut Ctx, dur: Option<f64>) -> Result<(), Esc> {
+pub fn sleep(c: &mut Ctx, dur: Option<f64>) -> Result<(), Esc> { sleep_as(c, dur, false) }
+/// `deadlockable`: a sleep forever counts for deadlock detection (Mutex#sleep does, Kernel#sleep does not, as CRuby).
+fn sleep_as(c: &mut Ctx, dur: Option<f64>, deadlockable: bool) -> Result<(), Esc> {
     let me = cur(c);
     th_mut(c, me).wake = false;
     let deadline = dur.map(|d| Instant::now() + secs(d));
-    block_on(c, |c| Ok(std::mem::take(&mut th_mut(c, me).wake)), None, deadline, false)?;
+    block_on(c, |c| Ok(std::mem::take(&mut th_mut(c, me).wake)), None, deadline, deadlockable)?;
     Ok(())
 }
 /// Sleep `d` through the scheduler (back-off of a retried call that has no fd to wait on).
@@ -530,7 +532,7 @@ fn mx_sleep(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let dur = match a.first() { Some(&t) if t != NIL => Some(crate::builtins::numeric_methods::to_f(c, t)?), _ => None };
     let t0 = Instant::now();
     release(c, s)?;
-    let r = sleep(c, dur);
+    let r = sleep_as(c, dur, true);
     acquire(c, s)?;
     r?;
     Ok(Value::fix(t0.elapsed().as_secs_f64().round() as i64))
