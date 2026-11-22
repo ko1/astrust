@@ -97,6 +97,7 @@ fn close_fds(io: &mut RIo) {
 }
 fn out_fd(io: &RIo) -> i32 { if io.wfd >= 0 { io.wfd } else { io.fd } }
 
+pub fn flush_one(io: &mut RIo) -> Option<i64> { io_flush_one(io) }
 fn io_flush_one(io: &mut RIo) -> Option<i64> {
     if io.wbuf.is_empty() { return None; }
     let b = std::mem::take(&mut io.wbuf);
@@ -135,18 +136,61 @@ fn readable_nowait(c: &mut Ctx, v: Value) -> Result<&mut RIo, Esc> {
 fn readable_check(c: &mut Ctx, v: Value) -> Result<(), Esc> {
     let io = readable_nowait(c, v)?;
     let (empty, fd) = (io.rpos >= io.rbuf.len() && !io.data, io.fd);
-    if empty && crate::builtins::thread::active(c) { coop_fill(c, v, fd)?; }
+    if empty && (crate::builtins::thread::active(c) || io_timeout(v).is_some()) { coop_fill(c, v, fd)?; }
     Ok(())
+}
+// ---- IO#timeout: kept as a hidden ivar; looked up only once some IO has one -------------------
+static TIMEOUTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn timeout_sym() -> Sym { intern(b"__io_timeout") }
+/// The IO#timeout of `v`, if set.
+pub fn io_timeout(v: Value) -> Option<std::time::Duration> {
+    if !TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed) { return None; }
+    let t = ivar_get(v, intern(b"__io_timeout_ns"));
+    if t.is_fixnum() { Some(std::time::Duration::from_nanos(t.as_fix().max(0) as u64)) } else { None }
+}
+/// IO::TimeoutError (made on first use: saruby's boot does not define it).
+pub fn timeout_error_class(c: &mut Ctx) -> Value {
+    let io = c.vm().c_io;
+    match const_get_at(io, intern(b"TimeoutError")) { Some(k) => k, None => define_class_under(io, "TimeoutError", c.vm().c_io_error) }
+}
+fn io_get_timeout(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { get_io(c, slf)?; Ok(if TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed) { ivar_get(slf, timeout_sym()) } else { NIL }) }
+fn io_set_timeout(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+    let t = a[0];
+    if t != NIL {
+        if !is_kind_of(t, c.vm().c_numeric) { return type_err(c, format!("can't convert {} into time interval", class_name_for_err(t))); }
+        let f = crate::builtins::numeric_methods::to_f(c, t)?;
+        if f < 0.0 { return arg_err(c, "time interval must not be negative"); }
+        TIMEOUTS.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    get_io(c, slf)?;
+    if t != NIL || TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed) {
+        let ns = if t == NIL { NIL } else { let f = crate::builtins::numeric_methods::to_f(c, t)?; Value::fix((f.min(1e9) * 1e9) as i64) };
+        ivar_set_raw(slf, timeout_sym(), t);
+        ivar_set_raw(slf, intern(b"__io_timeout_ns"), ns);
+    }
+    Ok(t)
 }
 thread_local! { static SPARE: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) }; }
 /// With other threads running, an empty read buffer is filled by a READ blop: this thread parks,
 /// the engine reads when the fd is ready, and the bytes are appended to rbuf.
 fn coop_fill(c: &mut Ctx, v: Value, fd: i32) -> Result<(), Esc> {
     if fd_ready(fd, sys::POLLIN) { return Ok(()); }   // fill reads it now
+    if let Some(t) = io_timeout(v) {
+        if wait_one(c, fd, sys::POLLIN, Some(std::time::Instant::now() + t))?.is_none() {
+            let k = timeout_error_class(c);
+            return err(c, k, "Blocking operation timed out!");
+        }
+        return check_open(c, v, false);
+    }
     if fd == 0 { out_flush(); }
     let mut buf = SPARE.with(|s| std::mem::take(&mut *s.borrow_mut()));
     if buf.len() < 65536 { buf.resize(65536, 0); }
-    let (buf, r) = crate::builtins::thread::read_op(c, fd, buf)?;
+    // a non-blocking fd (a socket) is read first, as CRuby does: a listening socket never polls readable but fails at once
+    let first = if sys::fcntl(fd, sys::F_GETFL, 0) & sys::O_NONBLOCK != 0 {
+        let n = sys::read(fd, &mut buf);
+        if n >= 0 { Some(Ok(n as usize)) } else { match sys::errno() { sys::EAGAIN | sys::EINTR => None, e => Some(Err(e)) } }
+    } else { None };
+    let (buf, r) = match first { Some(r) => (buf, r), None => crate::builtins::thread::read_op(c, fd, buf)? };
     let r = check_open(c, v, false).map(|_| {
         let io = io_mut(c, v);
         match r {
@@ -285,16 +329,17 @@ fn unread(io: &mut RIo, mut b: Vec<u8>) {
 /// (it hands back what it consumed), waits for the fd with the others running, and runs `f` again.
 fn coop_read<T>(c: &mut Ctx, v: Value, mut f: impl FnMut(&mut RIo) -> (T, Vec<u8>)) -> Result<T, Esc> {
     loop {
-        let coop = crate::builtins::thread::active(c);
+        let coop = crate::builtins::thread::active(c) || io_timeout(v).is_some();
         let io = readable(c, v)?;
         io.coop = coop; io.wouldblock = false;
         let (r, used) = f(io);
         io.coop = false;
         if !io.wouldblock { return Ok(r); }
         io.wouldblock = false;
-        unread(io, used);
         let fd = io.fd;
+        // what `f` consumed is given back after the wait; a timeout drops it, as CRuby's read does
         coop_fill(c, v, fd)?;
+        unread(io_mut(c, v), used);
     }
 }
 fn find_sub(h: &[u8], n: &[u8]) -> Option<usize> { if n.len() == 1 { h.iter().position(|&b| b == n[0]) } else { h.windows(n.len()).position(|w| w == n) } }
@@ -471,7 +516,12 @@ fn io_readlines(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(out)
 }
 /// Store `v` into the caller's buffer string (read(n, buf) forms).
-fn into_outbuf(c: &mut Ctx, buf: Option<Value>, v: Vec<u8>, enc: u8) -> RV {
+/// An outbuf is emptied when a read returns nil at EOF.
+fn clear_outbuf(c: &mut Ctx, buf: Option<Value>) -> Result<(), Esc> {
+    if let Some(b) = buf { if b != NIL { let b = expect_str(c, b)?; check_frozen(c, b)?; c.rstring_mut(b).b.clear(); } }
+    Ok(())
+}
+pub fn into_outbuf(c: &mut Ctx, buf: Option<Value>, v: Vec<u8>, enc: u8) -> RV {
     match buf {
         Some(b) if b != NIL => { let b = expect_str(c, b)?; check_frozen(c, b)?; c.rstring_mut(b).b = v.into(); Ok(b) }
         _ => Ok(c.str_from_vec_enc(v, enc)),
@@ -481,6 +531,7 @@ fn io_read(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 0, 2)?;
     // the length is converted before the stream is looked at (CRuby's order; to_int may run Ruby code)
     let n = match a.first() { Some(&n) if n != NIL => { let n = num_to_long(c, n)?; if n < 0 { return arg_err(c, format!("negative length {} given", n)); } Some(n as usize) } _ => None };
+    if n == Some(0) { readable_nowait(c, slf)?; return into_outbuf(c, a.get(1).copied(), vec![], ENC_BINARY); }
     if let Some(n) = n {
         let v = coop_read(c, slf, |io| {
             let mut v = vec![];
@@ -554,14 +605,14 @@ fn io_read_nonblock(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV
         let io = io_mut(c, slf);
         if let Some(r) = read_unbuffered(io, n as usize) {
             return match r {
-                Ok(v) if v.is_empty() => if !exc { Ok(NIL) } else { eof_err(c) },
+                Ok(v) if v.is_empty() => if !exc { clear_outbuf(c, pos.get(1).copied())?; Ok(NIL) } else { eof_err(c) },
                 Ok(v) => into_outbuf(c, pos.get(1).copied(), v, ENC_BINARY),
                 Err(e) if e == sys::EAGAIN => if !exc { Ok(sym_value("wait_readable")) } else { Err(wait_error(c, "EAGAINWaitReadable", "read would block")) },
                 Err(e) => Err(raise_errno(c, e, "")),
             };
         }
     }
-    if !fill(io_mut(c, slf)) { if !exc { return Ok(NIL); } return eof_err(c); }
+    if !fill(io_mut(c, slf)) { if !exc { clear_outbuf(c, pos.get(1).copied())?; return Ok(NIL); } return eof_err(c); }
     io_readpartial(c, slf, &pos, b)
 }
 fn io_write_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -609,6 +660,15 @@ fn io_syswrite(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let fd = out_fd(io);
     if fd == 1 { out_flush(); }
     io_flush_one(io);
+    // one write(2) on a non-blocking fd: the count may be short (rb_io_write_memory)
+    if sys::fcntl(fd, sys::F_GETFL, 0) & sys::O_NONBLOCK != 0 {
+        loop {
+            let n = sys::write(fd, c.str_bytes(sv));
+            if n >= 0 { return Ok(Value::fix(n as i64)); }
+            let e = sys::errno();
+            if e != sys::EINTR { return Err(raise_errno(c, e, "")); }
+        }
+    }
     match sys::write_fd(fd, c.str_bytes(sv)) { Ok(()) => Ok(Value::fix(c.str_bytes(sv).len() as i64)), Err(e) => Err(raise_errno(c, e, "")) }
 }
 fn io_pread(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -732,14 +792,17 @@ fn io_path(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
 }
 fn io_binmode(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; io.binmode = true; io.enc = Some(ENC_BINARY); io.enc2 = None; Ok(slf) }
 fn io_binmode_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(io.binmode)) }
-fn io_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+pub fn io_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let k = class_path(real_class_of(slf));
     let s = match rio(c, slf) {
         None => format!("#<{}>", k),
         Some(i) if !i.init => format!("#<{}: uninitialized>", k),
         Some(i) => {
-            let p = if i.has_path || !i.path.is_empty() { lossy(&i.path) } else { format!("fd {}", i.fd) };
-            format!("#<{}:{}{}>", k, p, if i.closed { " (closed)" } else { "" })
+            let named = i.has_path || !i.path.is_empty();
+            if !named && i.closed { format!("#<{}:(closed)>", k) } else {
+                let p = if named { lossy(&i.path) } else { format!("fd {}", i.fd) };
+                format!("#<{}:{}{}>", k, p, if i.closed { " (closed)" } else { "" })
+            }
         }
     };
     Ok(c.str_new(s.as_bytes()))
@@ -942,6 +1005,34 @@ fn io_fcntl(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let r = sys::fcntl(io.fd, cmd, arg);
     if r < 0 { return Err(raise_errno(c, sys::errno(), "")); }
     Ok(Value::fix(r as i64))
+}
+// io/nonblock
+fn set_nonblock(fd: i32, on: bool) -> bool {
+    let fl = sys::fcntl(fd, sys::F_GETFL, 0);
+    let was = fl & sys::O_NONBLOCK != 0;
+    if fl >= 0 && was != on { sys::fcntl(fd, sys::F_SETFL, if on { fl | sys::O_NONBLOCK } else { fl & !sys::O_NONBLOCK }); }
+    was
+}
+fn io_nonblock_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    let io = get_io(c, slf)?;
+    let fl = sys::fcntl(out_fd(io), sys::F_GETFL, 0);
+    if fl < 0 { return Err(raise_errno(c, sys::errno(), "")); }
+    Ok(Value::bool(fl & sys::O_NONBLOCK != 0))
+}
+fn io_set_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; set_nonblock(out_fd(io), a[0].truthy()); Ok(a[0]) }
+fn io_nonblock(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+    check_argc(c, a, 0, 1)?;
+    let on = a.first().map(|v| v.truthy()).unwrap_or(true);
+    let fd = out_fd(get_io(c, slf)?);
+    let was = set_nonblock(fd, on);
+    let r = yield_block(c, b, &[slf]);
+    if was != on { if let Some(io) = rio(c, slf) { if !io.closed { set_nonblock(out_fd(io), was); } } }
+    r
+}
+/// require "io/nonblock".
+pub fn init_nonblock(c: &mut Ctx) {
+    let io = c.vm().c_io;
+    define_cfunc(io, "nonblock?", io_nonblock_p, 0); define_cfunc(io, "nonblock=", io_set_nonblock, 1); define_cfunc(io, "nonblock", io_nonblock, -1);
 }
 /// The deadline of an IO wait's timeout argument (nil: none).
 pub fn wait_deadline(c: &mut Ctx, v: Option<&Value>) -> Result<Option<std::time::Instant>, Esc> {
@@ -1480,7 +1571,7 @@ pub fn init(vmr: &mut Vm) {
     d("set_encoding_by_bom", io_set_encoding_by_bom, 0);
     d("autoclose?", io_autoclose_p, 0); d("autoclose=", io_set_autoclose, 1); d("close_on_exec?", io_cloexec_p, 0); d("close_on_exec=", io_set_cloexec, 1);
     d("fcntl", io_fcntl, -1); d("reopen", io_reopen, -1); d("wait_readable", io_wait_readable, -1); d("wait_writable", io_wait_writable, -1);
-    d("ready?", io_ready_p, 0); d("nread", io_nread, 0);
+    d("ready?", io_ready_p, 0); d("nread", io_nread, 0); d("timeout", io_get_timeout, 0); d("timeout=", io_set_timeout, 1);
     define_private_cfunc(io, "initialize", io_initialize, -1);
     define_private_cfunc(io, "initialize_copy", io_init_copy, 1);
     define_private_cfunc(f, "initialize", file_initialize, -1);
