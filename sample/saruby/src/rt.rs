@@ -109,7 +109,7 @@ pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -
     use crate::builtins::{array_methods as am, hash_methods as hm};
     if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && !redef(R_ARY_AREF) { return Ok(am::ary_entry(c, a, b.as_fix())); }
     if is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_AREF) {
-        c.frame().pos = line;
+        c.frame_mut().pos = line;
         return hm::h_aref(c, a, &[b], std::ptr::null());
     }
     // Integer#[] (optcarrot's bit tests): its body when the site's cache holds it, without the call
@@ -123,7 +123,7 @@ pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -
 #[cold]
 pub fn srb_ltlt_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -> RV {
     if is_array(a) && obj(a).klass == vm().c_array && !redef(R_ARY_LTLT) {
-        c.frame().pos = line;
+        c.frame_mut().pos = line;
         return crate::builtins::array_methods::a_ltlt(c, a, &[b], std::ptr::null());
     }
     srb_binop(c, a, b, s::ltlt, line, cc)
@@ -137,11 +137,11 @@ pub fn srb_aset_out(c: &mut Ctx, a: Value, b: Value, v: Value, line: Pos, cc: &m
     use crate::builtins::{array_methods as am, hash_methods as hm};
     // Array#[]= / Hash#[]= themselves: errors (frozen, index) with this line and no frame of their own, as CRuby
     if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && !redef(R_ARY_ASET) {
-        c.frame().pos = line;
+        c.frame_mut().pos = line;
         return am::ary_store(c, a, b.as_fix(), v);
     }
     if is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_ASET) {
-        c.frame().pos = line;
+        c.frame_mut().pos = line;
         return hm::h_aset(c, a, &[b, v], std::ptr::null());
     }
     srb_aset(c, a, b, v, line, cc)
@@ -855,6 +855,7 @@ pub fn srb_super(c: &mut Ctx, base: Stk, tmp: Value, kw: Value, blkv: Value, ci:
     let klass = class_of(slf);
     let owner = if f.defined_class() != NIL { f.defined_class() } else { me.owner };
     let sm = super_method(klass, owner, me.name);
+    let fblk = f.blk;
     let n = rary(tmp).len();
     let has_kw = kw != NIL && (rhash(kw).live > 0 || ci.kinds.contains(&AK_KW));
     let total = n + if has_kw { 1 } else { 0 };
@@ -871,7 +872,7 @@ pub fn srb_super(c: &mut Ctx, base: Stk, tmp: Value, kw: Value, blkv: Value, ci:
         &lit
     } else if ci.kinds.contains(&AK_BLOCK) {
         block_from_value(c, blkv, &mut holder)?
-    } else { f.blk };
+    } else { fblk };
     let fl = CF_FCALL | CF_SUPER | if has_kw { CF_KW | if !ci.kinds.contains(&AK_KW) { CF_KW_SPLAT } else { 0 } } else { 0 };
     let r = if sm.is_null() {
         let mm = lookup_method(klass, s::method_missing);
@@ -957,7 +958,7 @@ pub fn srb_lambda(c: &mut Ctx, is: &'static Iseq, fp: Fp) -> RV {
 pub fn srb_binop(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: Pos, cc: &mut OpCc) -> RV {
     let base = stage(c, 3)?;
     base[0].set(a); base[2].set(b);
-    c.frame().pos = line;
+    c.frame_mut().pos = line;
     call_cached(c, cc.get(), mid, base, 1, std::ptr::null(), 0)
 }
 
@@ -970,7 +971,7 @@ pub fn srb_eq(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -> RV {
 pub fn srb_aset(c: &mut Ctx, a: Value, b: Value, v: Value, line: Pos, cc: &mut OpCc) -> RV {
     let base = stage(c, 4)?;
     base[0].set(a); base[2].set(b); base[3].set(v);
-    c.frame().pos = line;
+    c.frame_mut().pos = line;
     call_cached(c, cc.get(), s::aset, base, 2, std::ptr::null(), 0)?;
     Ok(v)
 }

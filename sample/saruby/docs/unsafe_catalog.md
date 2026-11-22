@@ -35,6 +35,7 @@ How to read the numbers:
 4. [Gaps measured for this document](#4-gaps-measured-for-this-document)
 5. [What remains unmeasured](#5-what-remains-unmeasured)
 6. [Findings for a paper](#6-findings-for-a-paper)
+7. [Design note: the `&'static mut` accessors](#7-design-note-the-static-mut-accessors)
 
 ## 1. Inventory of the remaining `unsafe`
 
@@ -59,7 +60,8 @@ The number of `unsafe` tokens understates the trust surface in one specific way:
 with unsound signatures** are still in use outside the converted modules. At `f88d3e6`, ten
 functions return an unbounded `&'static mut` from safe code (`heap_audit.rb` column
 `fn->&'static mut`: object.rs 7 — `obj`, `rhash`, `rclass`, `rproc`, `rmethod`, `rbig` and the
-macro-made `rary` family —, vm.rs 2 — `vm()`, `Ctx::frame()` —, gc.rs 1 — `heap()`), and
+macro-made `rary` family —, vm.rs 2 — `vm()`, `Ctx::frame()` —, gc.rs 1 — `heap()`; 9 after
+section 7 bounded `Ctx::frame()`), and
 `heap_audit.rb` counts **449 call sites** of the old accessors (rt.rs 189, vm.rs 169, node.def 25,
 object.rs 25, legacy.rs 14, str_legacy.rs 11, lib.rs 11, gc.rs 2, aot.rs 1, compile.rs 1,
 inline_builtin.rs 1). Each of
@@ -985,3 +987,49 @@ Measured, with the trial that holds the numbers:
    or several builds, and cycle effects below ~5 % need a dedicated machine.
 
 Assumed, not measured: the cost of a safe frame chain, of safe node graphs, of safe fibers (section 5).
+
+## 7. Design note: the `&'static mut` accessors
+
+Trial: `2026-11-22-saruby-static-mut` (inventory script, options, measurements, patch). Base
+`b08c665`.
+
+**Inventory.** Ten safe functions returned an unbounded `&'static mut`: object.rs `obj`, `rhash`,
+`rclass`, `rproc`, `rmethod`, `rbig`, `rdata` (and the macro-made `rstr` / `rary` / `ivars_of`, not
+seen by the audit's regex), vm.rs `vm()` and `Ctx::frame()`, gc.rs `heap()`. Call sites (hand-written
+code, comments stripped): `vm()` 148, `gc::heap()` 20, `Ctx::frame()` 29, object accessors 272;
+469 in all (rt.rs 189, vm.rs 164, node.def 32, object.rs 25, legacy.rs 14, gc.rs 12, str_legacy.rs
+11, lib.rs 10, misc.rs 7, extras.rs 2, aot.rs / compile.rs / inline_builtin.rs 1 each).
+Of 184 field reads through `vm()`, 142 are builtin class / module values (set by boot, `Copy`);
+the writes are tables (`node_values`, `gen_ivars`, `mcache`, ...) and counters (`const_serial`,
+`hierarchy_serial`, `sd_hits`, `next_object_id`). Hot: `const_serial` and `c_array` / `c_string`
+/ `c_hash` in node.def, the immediates' classes in `class_of`, `mcache` on an inline-cache miss,
+`send_cache` per `send`, `heap()` per allocation, `Ctx::frame()` per line record (`pos` is its only
+written field).
+
+**Aliasing that exists today** (UB under the Rust model, no visible bug): a caller's `let vm = vm()`
+live across an allocation whose collection calls `vm()` again (`new_class`; `visit_roots`,
+`visit_gen_ivars` with `gen_ivars.get_mut`); boot's `vmr: &mut Vm` live across `define_class`
+(which calls `vm()`); the root scan's `&mut *vm.main_ctx` while the allocating code holds its
+`c: &mut Ctx`. `Ctx::frame()` had one reference held across `&mut Ctx` calls (`srb_super` read
+`f.blk` after `stack_check` / `make_block` / `block_from_value`).
+
+**Options** (full table in the trial README):
+
+| option | `unsafe` | sites | cost |
+|---|---:|---:|---|
+| (i) thread the context: `c.vm()` / `c.vm_mut()`, `c.frame()` / `c.frame_mut()`, `c.ary(v)`.. | −1 per removed global accessor, −7 object.rs when unused; heap.rs keeps 2 | 469 + `c` parameters for context-free callers (`class_of`, `new_class`, `lookup_method`, ...) | M: accessor free (slice below); kind checks 0 to +2.1 % (heap pilot) |
+| (ii) `Cell` per `Copy` field, `RefCell` for tables off the hot path, `vm() -> &'static Vm` | 0 (−1 with a TLS owner) | ~150 field accesses + boot's 329 `vmr.` | A: `Cell` 0; `RefCell` a flag test per `mcache` miss / `send` |
+| (iii) one owner with scoped borrows (`with_vm`, `with_heap`) | −1 each with TLS | 469 closures; the collector re-enters, so callers must release before allocating | A: flag + TLS per scope; `STORE` precedent ±0.0 % (cold) |
+| (iv) raw pointer, only `&self` + `Cell` fields | 0 | as (ii); impossible for `Vec`-backed payloads | A: 0 for `Copy` fields |
+
+Proposed end state for `vm()`: builtin classes in an immutable `&'static` table built by boot,
+counters as `Cell<u64>`, tables through `c.vm_mut()`, `gen_ivars` out of the `Vm` the mutator
+borrows (the collector needs it). For `gc::heap()`: private, behind gc.rs functions
+(`gc::stats()`, `gc::set_disabled`) that do not re-enter.
+
+**Applied: `Ctx::frame()`** as `frame(&self) -> &Frame` and `frame_mut(&mut self) -> &mut Frame`
+(21 writers to `frame_mut`, 8 readers unchanged, `srb_super` reads `f.blk` first). `fn->&'static mut`
+10 -> 9, `unsafe` 342 -> 343 (two bounded derefs instead of one unbounded). `libsaruby.so` code
+identical except `srb_super`; instruction counts identical to the printed M on all 15 benches
+interp and AOT, startup in the same range, optcarrot 82.63M -> 82.64M per frame (local machine,
+shared: instructions only).

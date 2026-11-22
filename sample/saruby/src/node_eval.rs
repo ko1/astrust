@@ -477,7 +477,7 @@ pub fn EVAL_node_cvasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value) ->
 pub fn EVAL_node_const<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, line: H_line, cc: &mut ConstCache) -> RV {
     let cref = unsafe { (*c.frame).cref() };
     if cc.serial == vm().const_serial && cc.cref == cref as usize { return Ok(unsafe { Value::from_raw(cc.val) }); }
-    line.store(c.frame());
+    line.store(c.frame_mut());
     srb_const_get(c, cref, name, cc)
 }
 
@@ -485,7 +485,7 @@ pub fn EVAL_node_const<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp:
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_const_path<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, parent: Value, name: Sym, line: H_line) -> RV {
-    line.store(c.frame());
+    line.store(c.frame_mut());
     srb_const_path(c, parent, name)
 }
 
@@ -544,7 +544,7 @@ pub fn EVAL_node_block<D_stmts: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, stmts
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_line<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, line: H_line, body: NodePtr) -> RV {
-    line.store(c.frame());
+    line.store(c.frame_mut());
     <D_body as Disp>::call(c, body, fp)
 }
 
@@ -552,7 +552,7 @@ pub fn EVAL_node_line<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut Ctx, n:
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_trace<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, ev: u32, line: H_line, body: NodePtr) -> RV {
-    line.store(c.frame());
+    line.store(c.frame_mut());
     if trace_mask() & ev != 0 { crate::builtins::tracepoint::trace_point(c, ev)?; }
     <D_body as Disp>::call(c, body, fp)
 }
@@ -840,7 +840,7 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, H_line: crate::vm::LineHol
     if shared != 0 && callee_hash != 0 {
         let r0 = fp[0].get();
         if spec_hit(cc, r0, kind) {
-            if shared == 1 { line.store(c.frame()); }
+            if shared == 1 { line.store(c.frame_mut()); }
             return <D_callee as Disp>::spec(c, cc.fast as NodePtr, fp, CallArgs { me: cc.me as *const MethodEntry, blk: std::ptr::null(), shared: true, inl: true });
         }
     }
@@ -866,7 +866,7 @@ pub fn EVAL_node_call<D_recv: Disp, D_args: DispList, H_line: crate::vm::LineHol
         <D_args as DispList>::each(c, args, fp,  |c, i, v| { base[2 + i].set(v); Ok(()) })?;
         (base, r0)
     };
-    line.store(c.frame());
+    line.store(c.frame_mut());
     if bi != 0 { return call_cached_out(c, cc, mid, base, k as u32, std::ptr::null(), flags); }
     // with arguments in between, reading the slot back is cheaper than keeping the receiver live
     let r0 = if k == 0 { r0 } else { base[0].get() };
@@ -899,7 +899,7 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, H_line: crate::vm::Lin
     let r0 = <D_recv as Disp>::call(c, recv, fp)?;
     base[0].set(r0);
     <D_args as DispList>::each(c, args, fp,  |c, i, v| { base[2 + i].set(v); Ok(()) })?;
-    line.store(c.frame());
+    line.store(c.frame_mut());
     // with arguments in between, reading the slot back is cheaper than keeping the receiver live
     let r0 = if k == 0 { r0 } else { base[0].get() };
     let b = make_block(c, blk, fp);
@@ -924,7 +924,7 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, H_line: crate::vm::Lin
                 let r = iter_loop(c, it, r0, &a[..k.min(2)], &mut |c: &mut Ctx, v: &[Value]| {
                     put_args(c, bb, bfp, np, v);
                     // a step starts at the block's line
-                    if share { c.frame().pos = Pos::at(&blk.info.line); }
+                    if share { c.frame_mut().pos = Pos::at(&blk.info.line); }
                     <D_body as Disp>::spec(c, blk.bentry, bfp, CallArgs { me: std::ptr::null(), blk: bp, shared: share, inl: true })
                 });
                 c.frame = pf;
@@ -961,7 +961,7 @@ pub fn EVAL_node_call_kw<D_recv: Disp, D_args: DispList, H_line: crate::vm::Line
     let base = stage(c, 2 + k)?;
     base[0].set(<D_recv as Disp>::call(c, recv, fp)?);
     <D_args as DispList>::each(c, args, fp,  |c, i, v| { base[2 + i].set(v); Ok(()) })?;
-    line.store(c.frame());
+    line.store(c.frame_mut());
     // baked: the callee's kentry compiled in (every keyword passed in declared order, no block literal)
     if callee_hash != 0 {
         let r0 = base[0].get();
@@ -996,7 +996,7 @@ pub fn EVAL_node_call_x<D_recv: Disp, D_args: DispList, H_line: crate::vm::LineH
         }
         tmp
     };
-    line.store(c.frame());
+    line.store(c.frame_mut());
     if splat1 { return srb_call_splat1(c, cc, mid, base, tmp, ci, flags, fp); }
     srb_call_x(c, cc, mid, base, tmp, kw, blkv, ci, flags, fp)
 }
@@ -1016,7 +1016,7 @@ pub fn EVAL_node_attrasgn<D_recv: Disp, D_args: DispList, H_line: crate::vm::Lin
     let base = stage(c, 2 + k)?;
     base[0].set(<D_recv as Disp>::call(c, recv, fp)?);
     <D_args as DispList>::each(c, args, fp,  |c, i, v| { base[2 + i].set(v); Ok(()) })?;
-    line.store(c.frame());
+    line.store(c.frame_mut());
     let val = base[1 + k].get();
     if kind == SITE_INTERP { call_cached(c, cc, mid, base, k as u32, std::ptr::null(), flags)?; return Ok(val); }
     // baked code: only the site's one fast path inline, as node_call
@@ -1041,7 +1041,7 @@ pub fn EVAL_node_super<D_args: DispList, H_line: crate::vm::LineHole>(c: &mut Ct
         let v = <D_args as DispList>::nth(c, args, i, fp)?;
         srb_callx_arg(c, ci, i, v, tmp, &mut kw, &mut blkv)?;
     }
-    line.store(c.frame());
+    line.store(c.frame_mut());
     srb_super(c, base, tmp, kw, blkv, ci, fp, zsuper)
 }
 
@@ -1325,7 +1325,7 @@ pub fn EVAL_node_opt_ltlt<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, 
     if is_string(a) && obj(a).klass == vm().c_string && !redef(R_STR_LTLT) {
         // the common case of String#<< (a String of the same encoding onto an unfrozen one); the rest, which may raise, is String#<<
         if is_string(b) && !is_frozen(a) && c.str_enc(a) == c.str_enc(b) { c.str_append_same_enc(a, b); return Ok(a); }
-        line.store(c.frame());
+        line.store(c.frame_mut());
         return crate::builtins::string_methods::s_ltlt(c, a, &[b], std::ptr::null());
     }
     srb_ltlt_out(c, a, b, line.pos(), cc)
@@ -1376,7 +1376,7 @@ pub fn EVAL_node_opt_aref<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, 
         return Ok(crate::builtins::array_methods::ary_entry(c, a, b.as_fix()));
     } else if tf_hash(ty) && is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_AREF) {
         if ty == 0 { tf.0 |= TF_HASH; }
-        line.store(c.frame());
+        line.store(c.frame_mut());
         return crate::builtins::hash_methods::h_aref(c, a, &[b], std::ptr::null());
     }
     srb_aref_out(c, a, b, line.pos(), cc)
@@ -1391,7 +1391,7 @@ pub fn EVAL_node_opt_aset<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, 
         if crate::builtins::array_methods::ary_set_in(c, a, b.as_fix(), v) { return Ok(v); }
     } else if tf_hash(ty) && is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_ASET) {
         if ty == 0 { tf.0 |= TF_HASH; }
-        line.store(c.frame());
+        line.store(c.frame_mut());
         return crate::builtins::hash_methods::h_aset(c, a, &[b, v], std::ptr::null());
     }
     srb_aset_out(c, a, b, v, line.pos(), cc)
