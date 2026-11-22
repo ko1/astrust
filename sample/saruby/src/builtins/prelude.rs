@@ -26,6 +26,7 @@ pub fn load_prelude(c: &mut Ctx) -> RV {
 macro_rules! lib { ($n:literal) => { ($n, include_str!(concat!("../../prelude/lib/", $n, ".rb"))) }; }
 /// Features implemented by saruby itself: Ruby source compiled on first require.
 const LIBS: &[(&str, &str)] = &[lib!("etc"), lib!("timeout"), lib!("monitor"), lib!("time"), lib!("bundler"), ("bundler/setup", "require \"bundler\"; Bundler.setup\n"), lib!("date"), ("date_core", "require \"date\"\n"), lib!("pathname"), ("saruby/pathname", include_str!("../../prelude/lib/pathname_core.rb")), ("saruby/argf", include_str!("../../prelude/lib/argf.rb")),
+    ("syslog", "require 'syslog_ext'\n"), lib!("syslog_ext"), ("syslog/logger", include_str!("../../prelude/lib/syslog_logger.rb")),
     lib!("digest"), ("digest/version", "module Digest\n  VERSION = \"3.2.1\"\nend\n"), ("digest/loader", "require 'saruby/digest'\n"),
     ("digest/md5", "require 'digest'\nrequire 'saruby/digest/md5'\n"), ("digest/sha1", "require 'digest'\nrequire 'saruby/digest/sha1'\n"),
     ("digest/rmd160", "require 'digest'\nrequire 'saruby/digest/rmd160'\n"), ("digest/bubblebabble", "require 'digest'\nrequire 'saruby/digest/bubblebabble'\n"),
@@ -33,7 +34,7 @@ const LIBS: &[(&str, &str)] = &[lib!("etc"), lib!("timeout"), lib!("monitor"), l
 /// Features whose implementation is native and always present (require is a no-op).
 const NATIVE: &[&str] = &["set", "stringio", "rbconfig", "thread", "fiber", "enumerator", "rational", "complex", "continuation",
     "io/wait", "io/nonblock", "fcntl", "etc.so", "monitor.so", "strscan", "strscan.so", "json", "json/ext", "saruby/errno", "saruby/env", "saruby/rbconfig", "saruby/filetest", "saruby/stat", "saruby/sync", "saruby/econv", "saruby/tracepoint",
-    "saruby/etc", "saruby/digest", "saruby/digest/md5", "saruby/digest/sha1", "saruby/digest/sha2", "saruby/digest/rmd160", "saruby/digest/bubblebabble"];
+    "saruby/etc", "saruby/syslog", "saruby/digest", "saruby/digest/md5", "saruby/digest/sha1", "saruby/digest/sha2", "saruby/digest/rmd160", "saruby/digest/bubblebabble"];
 
 /// Constant `name` under `owner` whose native definition runs on first reference (boot time: builtins/mod.rs).
 pub use crate::builtins::lazy_const;
@@ -57,6 +58,7 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
         "saruby/tracepoint" => crate::builtins::tracepoint::init_class(c),
         "io/console" => crate::builtins::stringio::init_console(c),
         "saruby/etc" => crate::builtins::etc::init(c),
+        "saruby/syslog" => crate::builtins::syslog::init(c),
         "saruby/digest" => crate::builtins::digest::init(c),
         "saruby/digest/bubblebabble" => crate::builtins::digest::init_bubblebabble(c),
         _ if name.starts_with("saruby/digest/") => crate::builtins::digest::init_algo(c, &name[14..]),

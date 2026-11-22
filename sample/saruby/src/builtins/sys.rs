@@ -300,3 +300,32 @@ pub fn sysconf(name: c_int) -> i64 { unsafe { ffi_etc::sysconf(name) as i64 } }
 pub fn confstr(name: c_int, buf: &mut [u8]) -> usize { unsafe { ffi_etc::confstr(name, buf.as_mut_ptr(), buf.len()) } }
 // SAFETY: integers only; a bad fd is EBADF.
 pub fn fpathconf(fd: c_int, name: c_int) -> i64 { unsafe { ffi_etc::fpathconf(fd, name) as i64 } }
+
+// ---- syslog(3) -------------------------------------------------------------------------------------
+mod ffi_syslog {
+    use super::*;
+    extern "C" {
+        pub fn openlog(ident: *const std::ffi::c_char, opt: c_int, fac: c_int);
+        pub fn syslog(pri: c_int, fmt: *const std::ffi::c_char, ...);
+        pub fn closelog();
+        pub fn setlogmask(mask: c_int) -> c_int;
+    }
+}
+/// openlog keeps the ident pointer: the CString lives here until closelog.
+static SYSLOG_IDENT: std::sync::Mutex<Option<CString>> = std::sync::Mutex::new(None);
+pub fn openlog(ident: CString, opt: c_int, fac: c_int) {
+    let mut g = SYSLOG_IDENT.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: the ident's buffer is kept alive in SYSLOG_IDENT until closelog.
+    unsafe { ffi_syslog::openlog(ident.as_ptr(), opt, fac) }
+    *g = Some(ident);
+}
+// SAFETY: a "%s" format with one NUL-terminated string argument.
+pub fn syslog(pri: c_int, msg: &CStr) { unsafe { ffi_syslog::syslog(pri, c"%s".as_ptr(), msg.as_ptr()) } }
+pub fn closelog() {
+    let mut g = SYSLOG_IDENT.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: no arguments; the ident is released only after the log is closed.
+    unsafe { ffi_syslog::closelog() }
+    *g = None;
+}
+// SAFETY: integers only.
+pub fn setlogmask(mask: c_int) -> c_int { unsafe { ffi_syslog::setlogmask(mask) } }
