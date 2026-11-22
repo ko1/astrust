@@ -239,7 +239,7 @@ fn run_main(o: Opts) -> i32 {
         report_exception(&mut c, e);
         return 1;
     }
-    unsafe { rt::BOOTED = true; }
+    rt::BOOTED.store(true, std::sync::atomic::Ordering::Relaxed);
     gc::booted();
 
     // DATA / __END__

@@ -7,7 +7,7 @@ use crate::string::*;
 use crate::symbol::{intern, s, sym_str};
 use crate::value::*;
 use crate::vm::*;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
 
 // ---- redefinition flags for operator fast paths -----------------------------------------
 
@@ -45,7 +45,8 @@ pub const R_FLO_POW: u32 = 1 << 30;
 pub const R_IMM_EQ: u32 = 1 << 31;
 
 pub static REDEF: AtomicU32 = AtomicU32::new(0);
-pub static mut BOOTED: bool = false;
+pub static BOOTED: AtomicBool = AtomicBool::new(false);
+#[inline(always)] pub fn booted() -> bool { BOOTED.load(Relaxed) }
 
 // Integer#+ - * / % < <= > >= == & | << >> ^: the fixnum paths of operator nodes test all of them at once
 // (c.int_redef()), so that one test covers every operator of a straight run of baked code
@@ -64,7 +65,7 @@ pub fn note_redefinition(c: &mut Ctx, klass: Value, mid: Sym) {
 
 /// REDEF for (klass, mid); true if it changed.  The running context must then copy it (note_redefinition).
 pub fn redef_note(klass: Value, mid: Sym) -> bool {
-    if unsafe { !BOOTED } { return false; }
+    if !booted() { return false; }
     let before = redef_word();
     // a refinement of a basic operation turns its inline fast path off everywhere
     let klass = if rclass(klass).refined { rclass(klass).attached } else { klass };
@@ -104,7 +105,7 @@ pub fn fast_ary_aset() -> u64 { FAST_ARY_ASET.load(Relaxed) }
 #[inline(never)]
 #[cold]
 pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -> RV {
-    if unsafe { BOOTED } && !redef(R_ARY_AREF) { FAST_ARY_AREF.store(vm().c_array.raw(), Relaxed); }
+    if booted() && !redef(R_ARY_AREF) { FAST_ARY_AREF.store(vm().c_array.raw(), Relaxed); }
     use crate::builtins::{array_methods as am, hash_methods as hm};
     if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && !redef(R_ARY_AREF) { return Ok(am::ary_entry(c, a, b.as_fix())); }
     if is_hash(a) && obj(a).klass == vm().c_hash && !redef(R_HASH_AREF) {
@@ -132,7 +133,7 @@ pub fn srb_ltlt_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -
 #[inline(never)]
 #[cold]
 pub fn srb_aset_out(c: &mut Ctx, a: Value, b: Value, v: Value, line: Pos, cc: &mut OpCc) -> RV {
-    if unsafe { BOOTED } && !redef(R_ARY_ASET) { FAST_ARY_ASET.store(vm().c_array.raw(), Relaxed); }
+    if booted() && !redef(R_ARY_ASET) { FAST_ARY_ASET.store(vm().c_array.raw(), Relaxed); }
     use crate::builtins::{array_methods as am, hash_methods as hm};
     // Array#[]= / Hash#[]= themselves: errors (frozen, index) with this line and no frame of their own, as CRuby
     if b.is_fixnum() && is_array(a) && obj(a).klass == vm().c_array && !redef(R_ARY_ASET) {
@@ -191,7 +192,7 @@ pub fn srb_dstr_append(c: &mut Ctx, acc: Value, v: Value) -> Result<(), Esc> {
 
 pub fn srb_tostr(c: &mut Ctx, v: Value) -> RV {
     if is_string(v) { return Ok(v); }
-    if unsafe { REFINEMENTS_ON } {
+    if crate::vm::refinements_on() {
         if let Some(r) = funcall_refined(c, std::ptr::null(), v, s::to_s, &[], std::ptr::null(), CF_FCALL) { let r = r?; if is_string(r) { return Ok(r); } }
     }
     if v.is_fixnum() { return Ok(str_new(v.as_fix().to_string().as_bytes())); }
@@ -769,7 +770,7 @@ fn block_from_value(c: &mut Ctx, blkv: Value, holder: &mut Block) -> Result<*con
     if blkv.is_sym() {
         // &:sym under refinements remembers the scope it was written in
         let cref = unsafe { (*c.frame).cref() };
-        if unsafe { REFINEMENTS_ON } && cref_refinements(cref) != NIL {
+        if crate::vm::refinements_on() && cref_refinements(cref) != NIL {
             *holder = Block::cfunc(c, |_c, _d, _a, _b| Ok(NIL), NIL);
             holder.kind = BlockKind::Sym(blkv.as_sym());
             holder.cref = cref;

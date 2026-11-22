@@ -269,11 +269,11 @@ impl Ctx {
     /// An iseq by pointer: iseqs are never freed.
     #[inline(always)]
     pub fn iseq_ref(&self, is: *const Iseq) -> Option<&'static Iseq> { unsafe { is.as_ref() } }   // SAFETY: never freed
-    /// vm::REFINEMENTS_ON (a `static mut bool` of vm.rs), by value.
+    /// vm::REFINEMENTS_ON, by value.
     #[inline(always)]
-    pub fn refinements_on(&self) -> bool { unsafe { crate::vm::REFINEMENTS_ON } }   // SAFETY: one interpreter thread; read by value, no reference made
+    pub fn refinements_on(&self) -> bool { crate::vm::refinements_on() }
     #[inline(always)]
-    pub fn set_refinements_on(&mut self) { unsafe { crate::vm::REFINEMENTS_ON = true; } }   // SAFETY: as refinements_on
+    pub fn set_refinements_on(&mut self) { crate::vm::REFINEMENTS_ON.store(true, std::sync::atomic::Ordering::Relaxed); }
     /// `f(c, iseq)`: an iseq beside the context. Sound because nothing makes a `&mut Iseq`
     /// (they are built, leaked and then only read, `Cell` fields included), so a shared
     /// reference cannot conflict with anything `&mut Ctx` reaches; the closure scopes it.

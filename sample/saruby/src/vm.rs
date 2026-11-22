@@ -755,7 +755,8 @@ pub fn lookup_method(klass: Value, mid: Sym) -> *const MethodEntry {
 // ancestry.  `using` puts it on the caller's cref; call sites under that cref look there first.
 
 /// Set by the first `using`: call-site lookups consult the frame's cref from then on.
-pub static mut REFINEMENTS_ON: bool = false;
+pub static REFINEMENTS_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[inline(always)] pub fn refinements_on() -> bool { REFINEMENTS_ON.load(std::sync::atomic::Ordering::Relaxed) }
 
 /// The refinements active for a cref (Array, later entries win) or NIL.
 pub fn cref_refinements(mut cr: *const Cref) -> Value {
@@ -1657,7 +1658,7 @@ pub fn call_slow(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32
 /// Method lookup for a call site: refinements active in the frame's cref come first.
 #[inline(always)]
 fn lookup_site(c: &Ctx, klass: Value, mid: Sym) -> *const MethodEntry {
-    if unsafe { REFINEMENTS_ON } { lookup_method_refined(unsafe { (*c.frame).cref() }, klass, mid) } else { lookup_method(klass, mid) }
+    if refinements_on() { lookup_method_refined(unsafe { (*c.frame).cref() }, klass, mid) } else { lookup_method(klass, mid) }
 }
 
 /// Method entry for recv.mid through the call cache (null: not found).
@@ -2340,7 +2341,7 @@ pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const 
             if args.is_empty() { return arg_err(c, "no receiver given"); }
             let recv = args[0];
             let fl = if kw && args.len() > 1 { CF_KW } else { 0 };   // :m.to_proc.(recv, k: v) passes keywords on
-            if unsafe { REFINEMENTS_ON } {
+            if refinements_on() {
                 if let Some(r) = funcall_refined(c, b.cref, recv, mid, &args[1..], blkarg, fl) { return r; }
             }
             funcall_flags(c, recv, mid, &args[1..], blkarg, fl)
