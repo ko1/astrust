@@ -22,6 +22,7 @@ pub mod extras;
 pub mod thread;
 pub mod fiber_methods;
 pub mod sys;
+pub mod blop;
 pub mod file;
 pub mod process;
 pub mod pack;

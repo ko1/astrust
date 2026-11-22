@@ -76,7 +76,7 @@ const SIGNALS: &[(&str, i32)] = &[("EXIT", 0), ("HUP", 1), ("INT", 2), ("QUIT", 
 pub fn signame(n: i32) -> Option<&'static str> { SIGNALS.iter().find(|s| s.1 == n).map(|s| s.0) }
 static PENDING: AtomicU64 = AtomicU64::new(0);
 static HANDLERS: Global = Global::new(); // Array indexed by signo: nil (default) / String / Proc
-extern "C" fn on_signal(sig: i32) { PENDING.fetch_or(1 << sig, Ordering::SeqCst); }
+extern "C" fn on_signal(sig: i32) { PENDING.fetch_or(1 << sig, Ordering::SeqCst); crate::builtins::blop::signal_wake(); }
 
 pub fn signo_arg(c: &mut Ctx, v: Value) -> Result<i32, Esc> {
     if v.is_fixnum() { let n = v.as_fix(); if !(0..65).contains(&n) { return arg_err(c, format!("invalid signal number ({})", n)); } return Ok(n as i32); }
@@ -388,6 +388,7 @@ fn split_args(a: &[Value]) -> (Option<Value>, &[Value], Option<Value>) {
     match rest.last() { Some(&l) if is_hash(l) && rest.len() > 1 => (env, &rest[..rest.len() - 1], Some(l)), _ => (env, rest, None) }
 }
 fn waitpid_retry(c: &mut Ctx, pid: i32, flags: i32) -> Result<(i32, i32), Esc> {
+    if flags & WNOHANG == 0 && crate::builtins::thread::active(c) { return waitpid_coop(c, pid, flags)?.map_err(|e| raise_errno(c, e, "")); }
     loop {
         let mut st = 0;
         let r = sys::waitpid(pid, &mut st, flags);
@@ -395,6 +396,34 @@ fn waitpid_retry(c: &mut Ctx, pid: i32, flags: i32) -> Result<(i32, i32), Esc> {
         if r < 0 { return Err(raise_errno(c, sys::errno(), "")); }
         return Ok((r, st));
     }
+}
+const WNOHANG: i32 = 1;
+/// waitpid with other threads running: a pidfd's readiness (a POLL blop) for one pid, a
+/// back-off sleep for "any child" / a process group (no fd to wait on).
+fn waitpid_coop(c: &mut Ctx, pid: i32, flags: i32) -> Result<Result<(i32, i32), i64>, Esc> {
+    let pfd = if pid > 0 { sys::pidfd_open(pid) } else { -1 };
+    let mut nap = std::time::Duration::from_millis(1);
+    let r = loop {
+        let mut st = 0;
+        let r = sys::waitpid(pid, &mut st, flags | WNOHANG);
+        if r < 0 && sys::errno() == sys::EINTR { continue; }
+        if r < 0 { break Err(sys::errno()); }
+        if r > 0 { break Ok((r, st)); }
+        let w = if pfd >= 0 { crate::builtins::thread::wait_readable(c, pfd) } else {
+            let w = crate::builtins::thread::sleep_for(c, nap);
+            nap = (nap * 2).min(std::time::Duration::from_millis(20));
+            w
+        };
+        if let Err(e) = w { if pfd >= 0 { sys::close(pfd); } return Err(e); }
+    };
+    if pfd >= 0 { sys::close(pfd); }
+    Ok(r)
+}
+/// Reap a popen child from IO#close (other threads run meanwhile).
+pub fn reap_child(c: &mut Ctx, pid: i32) -> Result<(), Esc> {
+    if !crate::builtins::thread::active(c) { wait_child(pid); return Ok(()); }
+    if let Ok((_, st)) = waitpid_coop(c, pid, 0)? { set_last_status(pid, st); }
+    Ok(())
 }
 /// Reap a popen child (called from IO#close).
 pub fn wait_child(pid: i32) {
@@ -431,7 +460,11 @@ fn k_backtick(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     sys::close(p[1]);
     let pid = match pid { Ok(p) => p, Err(e) => { sys::close(p[0]); return Err(e); } };
     let mut out = vec![]; let mut buf = [0u8; 65536];
-    loop { match sys::read_fd(p[0], &mut buf) { Ok(0) | Err(_) => break, Ok(n) => out.extend_from_slice(&buf[..n]) } }
+    let coop = crate::builtins::thread::active(c);
+    loop {
+        if coop { if let Err(e) = crate::builtins::thread::wait_readable(c, p[0]) { sys::close(p[0]); return Err(e); } }
+        match sys::read_fd(p[0], &mut buf) { Ok(0) | Err(_) => break, Ok(n) => out.extend_from_slice(&buf[..n]) }
+    }
     sys::close(p[0]);
     let (_, st) = waitpid_retry(c, pid, 0)?;
     set_last_status(pid, st);
@@ -460,7 +493,7 @@ pub fn die_if_signaled() {
     let sig = DIE_SIGNAL.load(Ordering::Relaxed);
     if sig > 0 { sys::signal(sig, sys::SigAction::Default); sys::kill(sys::getpid(), sig); }
 }
-pub fn after_fork_child() { PENDING.store(0, Ordering::SeqCst); }
+pub fn after_fork_child(c: &mut Ctx) { PENDING.store(0, Ordering::SeqCst); crate::builtins::thread::after_fork_child(c); }
 /// Finish a forked child that ran a block.
 pub fn child_exit(c: &mut Ctx, r: RV) -> ! {
     let st = crate::finish(c, r.is_err());
@@ -471,7 +504,7 @@ fn k_fork(c: &mut Ctx, _s: Value, _a: &[Value], blk: *const Block) -> RV {
     let pid = sys::fork();
     if pid < 0 { return Err(raise_errno(c, sys::errno(), "fork(2)")); }
     if pid == 0 {
-        after_fork_child();
+        after_fork_child(c);
         if blk.is_null() { return Ok(NIL); }
         let r = yield_block(c, blk, &[]);
         child_exit(c, r);

@@ -404,10 +404,18 @@ fn f_truncate(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
 fn f_flock(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let op = num_to_long(c, a[0])? as i32;
     funcall(c, s, intern(b"flush"), &[], std::ptr::null())?;
-    let io = crate::builtins::io::get_io(c, s)?;
+    // with other threads, a lock that would block is retried after a back-off sleep (no fd to wait on)
+    let coop = crate::builtins::thread::active(c) && op & 4 == 0;
+    let mut nap = std::time::Duration::from_millis(1);
     loop {
-        if sys::flock(io.fd, op) == 0 { return Ok(Value::fix(0)); }
-        match sys::errno() { 4 => continue, 11 if op & 4 != 0 => return Ok(FALSE), _ => { let p = io.path.clone(); return Err(last_err_at(c, "", &p)); } }
+        let io = crate::builtins::io::get_io(c, s)?;
+        if sys::flock(io.fd, if coop { op | 4 } else { op }) == 0 { return Ok(Value::fix(0)); }
+        match sys::errno() {
+            4 => continue,
+            11 if coop => { crate::builtins::thread::sleep_for(c, nap)?; nap = (nap * 2).min(std::time::Duration::from_millis(50)); }
+            11 if op & 4 != 0 => return Ok(FALSE),
+            _ => { let p = io.path.clone(); return Err(last_err_at(c, "", &p)); }
+        }
     }
 }
 fn f_chmod(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {

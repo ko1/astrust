@@ -155,16 +155,14 @@ fn io_wait(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
         }
     }
     if events & 1 != 0 && buffered { return Ok(if int_form { Value::fix(1) } else { s }); }
-    let ms = if timeout == NIL { -1 } else { (crate::builtins::numeric_methods::to_f(c, timeout)? * 1000.0).ceil() as i32 };
-    let mut p = [sys::PollFd { fd, events: (if events & 1 != 0 { sys::POLLIN } else { 0 }) | (if events & 4 != 0 { sys::POLLOUT } else { 0 }) | (if events & 2 != 0 { 2 } else { 0 }), revents: 0 }];
-    out_flush();
-    let n = sys::poll(&mut p, ms);
-    if n < 0 { return Err(raise_errno(c, sys::errno(), "")); }
-    if n == 0 { return Ok(NIL); }
+    let dl = crate::builtins::io::wait_deadline(c, if timeout == NIL { None } else { Some(&timeout) })?;
+    let ev = (if events & 1 != 0 { sys::POLLIN } else { 0 }) | (if events & 4 != 0 { sys::POLLOUT } else { 0 }) | (if events & 2 != 0 { 2 } else { 0 });
+    let Some(rev) = crate::builtins::io::wait_one(c, fd, ev, dl)? else { return Ok(NIL) };
+    crate::builtins::io::get_io(c, s)?;
     if !int_form { return Ok(s); }
     let mut r = 0;
-    if p[0].revents & (sys::POLLIN | sys::POLLHUP) != 0 { r |= 1; }
-    if p[0].revents & sys::POLLOUT != 0 { r |= 4; }
+    if rev & (sys::POLLIN | sys::POLLHUP) != 0 { r |= 1; }
+    if rev & sys::POLLOUT != 0 { r |= 4; }
     Ok(Value::fix(r & events.max(1)))
 }
 fn io_each_codepoint(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> RV {

@@ -90,6 +90,8 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
 }
 
 fn close_fds(io: &mut RIo) {
+    // threads waiting on these fds get IOError (before the numbers can be reused)
+    crate::builtins::blop::cancel_fd(io.fd); crate::builtins::blop::cancel_fd(io.wfd);
     if io.fd >= 0 { sys::close(io.fd); } if io.wfd >= 0 && io.wfd != io.fd { sys::close(io.wfd); }
     io.fd = -1; io.wfd = -1;
 }
@@ -121,16 +123,39 @@ fn check_open(c: &mut Ctx, v: Value, want_w: bool) -> Result<(), Esc> {
 /// The open stream behind `v` (IOError when closed / uninitialized).
 pub fn get_io(c: &mut Ctx, v: Value) -> Result<&mut RIo, Esc> { check_open(c, v, false)?; Ok(io_mut(c, v)) }
 fn readable(c: &mut Ctx, v: Value) -> Result<&mut RIo, Esc> { readable_check(c, v)?; Ok(io_mut(c, v)) }
-fn readable_check(c: &mut Ctx, v: Value) -> Result<(), Esc> {
+/// An open readable stream, without waiting for data.
+fn readable_nowait(c: &mut Ctx, v: Value) -> Result<&mut RIo, Esc> {
     check_open(c, v, false)?;
     let io = io_mut(c, v);
     if !io.readable { return err(c, c.vm().c_io_error, "not opened for reading"); }
     if !io.wbuf.is_empty() { io_flush_one(io); }
     if io.rerr != 0 { let e = std::mem::take(&mut io.rerr); let p = io.path.clone(); return Err(raise_errno_at(c, e, "io_fread - ", &p)); }
-    // another thread may run (and close the stream) while this one waits
+    Ok(io_mut(c, v))
+}
+fn readable_check(c: &mut Ctx, v: Value) -> Result<(), Esc> {
+    let io = readable_nowait(c, v)?;
     let (empty, fd) = (io.rpos >= io.rbuf.len() && !io.data, io.fd);
-    if empty && crate::builtins::thread::active(c) { crate::builtins::thread::wait_readable(c, fd)?; return check_open(c, v, false); }
+    if empty && crate::builtins::thread::active(c) { coop_fill(c, v, fd)?; }
     Ok(())
+}
+thread_local! { static SPARE: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) }; }
+/// With other threads running, an empty read buffer is filled by a READ blop: this thread parks,
+/// the engine reads when the fd is ready, and the bytes are appended to rbuf.
+fn coop_fill(c: &mut Ctx, v: Value, fd: i32) -> Result<(), Esc> {
+    if fd_ready(fd, sys::POLLIN) { return Ok(()); }   // fill reads it now
+    if fd == 0 { out_flush(); }
+    let mut buf = SPARE.with(|s| std::mem::take(&mut *s.borrow_mut()));
+    if buf.len() < 65536 { buf.resize(65536, 0); }
+    let (buf, r) = crate::builtins::thread::read_op(c, fd, buf)?;
+    let r = check_open(c, v, false).map(|_| {
+        let io = io_mut(c, v);
+        match r {
+            Ok(n) => { if io.rpos >= io.rbuf.len() { io.rbuf.clear(); io.rpos = 0; } io.rbuf.extend_from_slice(&buf[..n]); }
+            Err(e) => io.rerr = e,
+        }
+    });
+    SPARE.with(|s| *s.borrow_mut() = buf);
+    r
 }
 fn discard_rbuf(io: &mut RIo) {
     // give unread bytes back to the kernel offset before writing / seeking
@@ -156,19 +181,24 @@ fn buffer_write(io: &mut RIo, b: &[u8], coop: bool) -> Option<i64> {
 fn coop_flush(c: &mut Ctx, io_v: Value) -> Result<(), Esc> {
     loop {
         let fd = { let io = io_mut(c, io_v); if io.wbuf.is_empty() { return Ok(()); } out_fd(io) };
-        crate::builtins::thread::wait_writable(c, fd)?;
+        // POLLOUT on a pipe promises PIPE_BUF bytes, so a write of that much does not block
+        let w = if fd_ready(fd, sys::POLLOUT) {
+            let io = io_mut(c, io_v);
+            let n = io.wbuf.len().min(4096);
+            let w = sys::write(fd, &io.wbuf[..n]);
+            if w < 0 { Err(sys::errno()) } else { Ok(w as usize) }
+        } else {
+            // a WRITE blop: the engine writes once the fd is writable
+            let chunk = { let io = io_mut(c, io_v); io.wbuf[..io.wbuf.len().min(4096)].to_vec() };
+            crate::builtins::thread::write_op(c, fd, chunk)?
+        };
         check_open(c, io_v, true)?;
         let io = io_mut(c, io_v);
-        // POLLOUT on a pipe promises PIPE_BUF bytes, so this write does not block
-        let n = io.wbuf.len().min(4096);
-        let w = sys::write(out_fd(io), &io.wbuf[..n]);
-        if w < 0 {
-            let e = sys::errno();
-            if e == sys::EINTR || e == sys::EAGAIN { continue; }
-            io.wbuf.clear();
-            return Err(raise_errno(c, e, ""));
+        match w {
+            Ok(w) => { io.wbuf.drain(..w.min(io.wbuf.len())); }
+            Err(e) if e == sys::EINTR || e == sys::EAGAIN => {}
+            Err(e) => { io.wbuf.clear(); return Err(raise_errno(c, e, "")); }
         }
-        io.wbuf.drain(..w as usize);
     }
 }
 fn writable(io: &RIo) -> bool { io.init && !io.closed && io.writable }
@@ -264,7 +294,7 @@ fn coop_read<T>(c: &mut Ctx, v: Value, mut f: impl FnMut(&mut RIo) -> (T, Vec<u8
         io.wouldblock = false;
         unread(io, used);
         let fd = io.fd;
-        crate::builtins::thread::wait_readable(c, fd)?;
+        coop_fill(c, v, fd)?;
     }
 }
 fn find_sub(h: &[u8], n: &[u8]) -> Option<usize> { if n.len() == 1 { h.iter().position(|&b| b == n[0]) } else { h.windows(n.len()).position(|w| w == n) } }
@@ -560,10 +590,11 @@ fn io_sysread(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 1, 2)?;
     let n = num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, format!("negative length {} given", n)); }
-    let io = readable(c, slf)?;
+    let io = readable_nowait(c, slf)?;
     if io.rpos < io.rbuf.len() { return err(c, c.vm().c_io_error, "sysread for buffered IO"); }
     let fd = io.fd;
     if n == 0 { return into_outbuf(c, a.get(1).copied(), vec![], ENC_BINARY); }
+    if crate::builtins::thread::active(c) { crate::builtins::thread::wait_readable(c, fd)?; check_open(c, slf, false)?; }
     let mut v = vec![0u8; n as usize];
     match sys::read_fd(fd, &mut v) {
         Ok(0) => eof_err(c),
@@ -646,14 +677,14 @@ fn unget(io: &mut RIo, b: &[u8]) {
 fn io_ungetc(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if a[0] == NIL { return Ok(NIL); }
     let b = if a[0].is_fixnum() { let mut v = vec![]; encode_utf8(a[0].as_fix() as u32, &mut v); v } else { let sv = expect_str(c, a[0])?; c.str_bytes(sv).to_vec() };
-    let io = readable(c, slf)?;
+    let io = readable_nowait(c, slf)?;
     unget(io, &b);
     Ok(NIL)
 }
 fn io_ungetbyte(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if a[0] == NIL { return Ok(NIL); }
     let b = if a[0].is_fixnum() { vec![a[0].as_fix() as u8] } else { let sv = expect_str(c, a[0])?; c.str_bytes(sv).to_vec() };
-    let io = readable(c, slf)?;
+    let io = readable_nowait(c, slf)?;
     unget(io, &b);
     Ok(NIL)
 }
@@ -667,7 +698,7 @@ pub fn close_io(c: &mut Ctx, slf: Value) -> RV {
     io.closed = true;
     if io.fd > 2 || io.wfd > 2 { close_fds(io); }
     let pid = std::mem::take(&mut io.pid);
-    if pid > 0 { crate::builtins::process::wait_child(pid); }
+    if pid > 0 { crate::builtins::process::reap_child(c, pid)?; }
     if let Some(e) = e { return Err(raise_errno(c, e, "")); }
     Ok(NIL)
 }
@@ -675,14 +706,14 @@ fn io_close(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { clo
 fn io_close_write(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let Some(io) = rio_mut(c, slf) else { return Ok(NIL) };
     if io.closed || !io.writable { return Ok(NIL); }
-    if io.wfd >= 0 && io.wfd != io.fd { io_flush_one(io); sys::close(io.wfd); io.wfd = -1; io.writable = false; return Ok(NIL); }
+    if io.wfd >= 0 && io.wfd != io.fd { io_flush_one(io); crate::builtins::blop::cancel_fd(io.wfd); sys::close(io.wfd); io.wfd = -1; io.writable = false; return Ok(NIL); }
     if io.readable { return err(c, c.vm().c_io_error, "closing non-duplex IO for writing"); }
     close_io(c, slf)
 }
 fn io_close_read(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let Some(io) = rio_mut(c, slf) else { return Ok(NIL) };
     if io.closed || !io.readable { return Ok(NIL); }
-    if io.wfd >= 0 && io.wfd != io.fd { sys::close(io.fd); io.fd = io.wfd; io.readable = false; return Ok(NIL); }
+    if io.wfd >= 0 && io.wfd != io.fd { crate::builtins::blop::cancel_fd(io.fd); sys::close(io.fd); io.fd = io.wfd; io.readable = false; return Ok(NIL); }
     if io.writable { return err(c, c.vm().c_io_error, "closing non-duplex IO for reading"); }
     close_io(c, slf)
 }
@@ -711,8 +742,8 @@ fn io_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     };
     Ok(c.str_new(s.as_bytes()))
 }
-fn io_lineno(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = readable(c, slf)?; Ok(Value::fix(io.lineno)) }
-fn io_set_lineno(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let n = num_to_long(c, a[0])?; let io = readable(c, slf)?; io.lineno = n; Ok(a[0]) }
+fn io_lineno(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = readable_nowait(c, slf)?; Ok(Value::fix(io.lineno)) }
+fn io_set_lineno(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let n = num_to_long(c, a[0])?; let io = readable_nowait(c, slf)?; io.lineno = n; Ok(a[0]) }
 fn do_seek(c: &mut Ctx, slf: Value, off: i64, whence: i32) -> Result<i64, Esc> {
     let io = get_io(c, slf)?;
     if io.data { io.rpos = match whence { 0 => off, 1 => io.rpos as i64 + off, _ => io.rbuf.len() as i64 + off }.clamp(0, io.rbuf.len() as i64) as usize; return Ok(io.rpos as i64); }
@@ -910,21 +941,38 @@ fn io_fcntl(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if r < 0 { return Err(raise_errno(c, sys::errno(), "")); }
     Ok(Value::fix(r as i64))
 }
-fn timeout_ms(c: &mut Ctx, v: Option<&Value>) -> Result<i32, Esc> {
-    Ok(match v { Some(&t) if t != NIL && !is_hash(t) => { let f = crate::builtins::numeric_methods::to_f(c, t)?; (f * 1000.0).ceil() as i32 } _ => -1 })
+/// The deadline of an IO wait's timeout argument (nil: none).
+pub fn wait_deadline(c: &mut Ctx, v: Option<&Value>) -> Result<Option<std::time::Instant>, Esc> {
+    Ok(match v { Some(&t) if t != NIL && !is_hash(t) => {
+        let f = crate::builtins::numeric_methods::to_f(c, t)?;
+        Some(std::time::Instant::now() + std::time::Duration::from_secs_f64(if f.is_finite() { f.clamp(0.0, 1e9) } else { 1e9 }))
+    } _ => None })
+}
+/// Wait for `events` on one fd through the scheduler (other threads run; signals are handled).
+pub fn wait_one(c: &mut Ctx, fd: i32, events: i16, deadline: Option<std::time::Instant>) -> Result<Option<i16>, Esc> {
+    out_flush();
+    let r = crate::builtins::thread::poll_wait(c, vec![sys::PollFd { fd, events, revents: 0 }], deadline)?;
+    Ok(r.map(|p| p[0].revents))
 }
 fn io_wait_readable(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    let ms = timeout_ms(c, a.first())?;
-    let io = readable(c, slf)?;
-    Ok(if io.rpos < io.rbuf.len() || wait_fd(io.fd, sys::POLLIN, ms) { slf } else { NIL })
+    let dl = wait_deadline(c, a.first())?;
+    let io = readable_nowait(c, slf)?;
+    if io.rpos < io.rbuf.len() { return Ok(slf); }
+    let fd = io.fd;
+    let r = wait_one(c, fd, sys::POLLIN, dl)?;
+    check_open(c, slf, false)?;
+    Ok(if r.is_some() { slf } else { NIL })
 }
 fn io_wait_writable(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    let ms = timeout_ms(c, a.first())?;
+    let dl = wait_deadline(c, a.first())?;
     let io = get_io(c, slf)?;
-    Ok(if wait_fd(out_fd(io), sys::POLLOUT, ms) { slf } else { NIL })
+    let fd = out_fd(io);
+    let r = wait_one(c, fd, sys::POLLOUT, dl)?;
+    check_open(c, slf, false)?;
+    Ok(if r.is_some() { slf } else { NIL })
 }
-fn io_ready_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = readable(c, slf)?; Ok(Value::bool(io.rpos < io.rbuf.len() || wait_fd(io.fd, sys::POLLIN, 0))) }
-fn io_nread(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = readable(c, slf)?; Ok(Value::fix((io.rbuf.len() - io.rpos) as i64)) }
+fn io_ready_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = readable_nowait(c, slf)?; Ok(Value::bool(io.rpos < io.rbuf.len() || wait_fd(io.fd, sys::POLLIN, 0))) }
+fn io_nread(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = readable_nowait(c, slf)?; Ok(Value::fix((io.rbuf.len() - io.rpos) as i64)) }
 
 // ---- opening --------------------------------------------------------------------------------
 
@@ -1033,12 +1081,30 @@ fn setup_io(c: &mut Ctx, v: Value, fd: i32, path: Option<&[u8]>, om: &OpenMode) 
 }
 pub fn sysopen(c: &mut Ctx, path: &PathArg, om: &OpenMode) -> Result<i32, Esc> {
     let cp = path.cstr();
+    if om.flags & sys::O_NONBLOCK == 0 && crate::builtins::thread::active(c) && is_fifo(path) { return open_fifo_coop(c, path, om); }
     loop {
         let fd = sys::open(&cp, om.flags | sys::O_CLOEXEC, om.perm);
         if fd >= 0 { return Ok(fd); }
         let e = sys::errno();
         if e == sys::EINTR { continue; }
         return Err(raise_errno_at(c, e, "rb_sysopen - ", path.as_bytes()));
+    }
+}
+fn is_fifo(path: &PathArg) -> bool { use std::os::unix::fs::FileTypeExt; std::fs::metadata(path.path()).is_ok_and(|m| m.file_type().is_fifo()) }
+/// open(2) of a FIFO with other threads running: O_NONBLOCK so it cannot block them all; a writer
+/// without a reader (ENXIO) retries after a back-off sleep. The fd is then made blocking again.
+/// (A reader no longer waits for a writer at open; its first read waits instead.)
+fn open_fifo_coop(c: &mut Ctx, path: &PathArg, om: &OpenMode) -> Result<i32, Esc> {
+    let cp = path.cstr();
+    let mut nap = std::time::Duration::from_millis(1);
+    loop {
+        let fd = sys::open(&cp, om.flags | sys::O_CLOEXEC | sys::O_NONBLOCK, om.perm);
+        if fd >= 0 { let fl = sys::fcntl(fd, sys::F_GETFL, 0); sys::fcntl(fd, sys::F_SETFL, fl & !sys::O_NONBLOCK); return Ok(fd); }
+        let e = sys::errno();
+        if e == sys::EINTR { continue; }
+        if e != 6 { return Err(raise_errno_at(c, e, "rb_sysopen - ", path.as_bytes())); }   // ENXIO: no reader yet
+        crate::builtins::thread::sleep_for(c, nap)?;
+        nap = (nap * 2).min(std::time::Duration::from_millis(50));
     }
 }
 /// File#initialize(path_or_fd, mode, perm, **opts)
@@ -1133,7 +1199,7 @@ fn io_s_popen(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
         let pid = sys::fork();
         if pid == 0 {
             if rd { sys::dup2(pr[1], 1); } if wr { sys::dup2(pw[0], 0); } for fd in [pr[0], pr[1], pw[0], pw[1]] { if fd > 2 { sys::close(fd); } }
-            crate::builtins::process::after_fork_child();
+            crate::builtins::process::after_fork_child(c);
             if blk.is_null() { return Ok(NIL); }
             let r = yield1(c, blk, NIL);
             crate::builtins::process::child_exit(c, r);
@@ -1195,23 +1261,12 @@ fn io_s_select(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
         }
     }
     out_flush();
-    // with other threads: they run while this one waits
-    if crate::builtins::thread::active(c) && !ready_now && ms != 0 {
+    if ready_now { sys::poll(&mut pfds, 0); }
+    else {
+        // a POLL blop: other threads run and trap handlers fire while this one waits
         let deadline = if ms < 0 { None } else { Some(std::time::Instant::now() + std::time::Duration::from_millis(ms as u64)) };
-        let mut got = 0;
-        crate::builtins::thread::block_on(c, |_| { got = sys::poll(&mut pfds, 0); Ok(got != 0) }, deadline, false, true)?;
-        if got < 0 { return Err(raise_errno(c, sys::errno(), "select(2)")); }
-        if got == 0 { return Ok(NIL); }
-        for (p, (k, v)) in pfds.iter().zip(who.iter()) { if p.revents != 0 { c.ary_push(out[*k], *v); } }
-        return Ok(res);
+        match crate::builtins::thread::poll_wait(c, pfds, deadline)? { Some(p) => pfds = p, None => return Ok(NIL) }
     }
-    let n = loop {
-        let n = sys::poll(&mut pfds, if ready_now { 0 } else { ms });
-        if n < 0 && sys::errno() == sys::EINTR { crate::builtins::process::run_pending_signals(c)?; continue; }
-        break n;
-    };
-    if n < 0 { return Err(raise_errno(c, sys::errno(), "select(2)")); }
-    if n == 0 && !ready_now { return Ok(NIL); }
     for (p, (k, v)) in pfds.iter().zip(who.iter()) { if p.revents != 0 { c.ary_push(out[*k], *v); } }
     Ok(res)
 }

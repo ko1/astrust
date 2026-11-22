@@ -7,6 +7,11 @@ use std::ffi::{CStr, CString};
 pub type c_int = i32;
 #[repr(C)] pub struct PollFd { pub fd: c_int, pub events: i16, pub revents: i16 }
 #[repr(C)] pub struct Timespec { pub sec: i64, pub nsec: i64 }
+/// struct epoll_event (packed on x86-64, as the kernel's).
+#[cfg_attr(target_arch = "x86_64", repr(C, packed))]
+#[cfg_attr(not(target_arch = "x86_64"), repr(C))]
+#[derive(Clone, Copy)]
+pub struct EpollEvent { pub events: u32, pub data: u64 }
 #[repr(C)] pub struct Rlimit { pub cur: u64, pub max: u64 }
 #[repr(C)] pub struct Tms { pub utime: i64, pub stime: i64, pub cutime: i64, pub cstime: i64 }
 
@@ -55,6 +60,12 @@ mod ffi {
         pub fn getsid(pid: c_int) -> c_int;
         pub fn signal(sig: c_int, h: usize) -> usize;
         pub fn poll(fds: *mut PollFd, n: u64, timeout: c_int) -> c_int;
+        pub fn ppoll(fds: *mut PollFd, n: u64, ts: *const Timespec, sigmask: *const u8) -> c_int;
+        pub fn epoll_create1(flags: c_int) -> c_int;
+        pub fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, ev: *mut EpollEvent) -> c_int;
+        pub fn epoll_pwait2(epfd: c_int, evs: *mut EpollEvent, n: c_int, ts: *const Timespec, sigmask: *const u8) -> c_int;
+        pub fn eventfd(init: u32, flags: c_int) -> c_int;
+        pub fn syscall(n: i64, ...) -> i64;
         pub fn nanosleep(req: *const Timespec, rem: *mut Timespec) -> c_int;
         pub fn clock_gettime(id: c_int, ts: *mut Timespec) -> c_int;
         pub fn clock_getres(id: c_int, ts: *mut Timespec) -> c_int;
@@ -109,6 +120,25 @@ pub fn flock(fd: c_int, op: c_int) -> c_int { unsafe { ffi::flock(fd, op) } }
 pub fn fchmod(fd: c_int, mode: u32) -> c_int { unsafe { ffi::fchmod(fd, mode) } }
 pub fn fchown(fd: c_int, u: u32, g: u32) -> c_int { unsafe { ffi::fchown(fd, u, g) } }
 pub fn poll(fds: &mut [PollFd], timeout: c_int) -> c_int { unsafe { ffi::poll(fds.as_mut_ptr(), fds.len() as u64, timeout) } }
+/// ppoll(2) with no signal mask change; None waits without a time limit.
+pub fn ppoll(fds: &mut [PollFd], timeout: Option<&Timespec>) -> c_int {
+    let ts = timeout.map_or(std::ptr::null(), |t| t as *const Timespec);
+    unsafe { ffi::ppoll(fds.as_mut_ptr(), fds.len() as u64, ts, std::ptr::null()) }   // SAFETY: live slice; ts null or live
+}
+pub const EPOLL_CLOEXEC: c_int = O_CLOEXEC;
+pub const EPOLL_CTL_ADD: c_int = 1; pub const EPOLL_CTL_DEL: c_int = 2; pub const EPOLL_CTL_MOD: c_int = 3;
+pub const EFD_CLOEXEC: c_int = O_CLOEXEC; pub const EFD_NONBLOCK: c_int = O_NONBLOCK;
+pub fn epoll_create1(flags: c_int) -> c_int { unsafe { ffi::epoll_create1(flags) } }   // SAFETY: integers
+/// epoll_ctl(2); `ev` is ignored by EPOLL_CTL_DEL.
+pub fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, mut ev: EpollEvent) -> c_int { unsafe { ffi::epoll_ctl(epfd, op, fd, &mut ev) } }   // SAFETY: ev is a live local
+/// epoll_pwait2(2) into `evs`; None waits without a time limit.
+pub fn epoll_pwait2(epfd: c_int, evs: &mut [EpollEvent], timeout: Option<&Timespec>) -> c_int {
+    let ts = timeout.map_or(std::ptr::null(), |t| t as *const Timespec);
+    unsafe { ffi::epoll_pwait2(epfd, evs.as_mut_ptr(), evs.len().min(i32::MAX as usize) as c_int, ts, std::ptr::null()) }   // SAFETY: live slice of its length; ts null or live
+}
+pub fn eventfd(init: u32, flags: c_int) -> c_int { unsafe { ffi::eventfd(init, flags) } }   // SAFETY: integers
+/// pidfd_open(2) (Linux 5.3; no glibc wrapper before 2.36).
+pub fn pidfd_open(pid: c_int) -> c_int { unsafe { ffi::syscall(434, pid as i64, 0i64) as c_int } }   // SAFETY: SYS_pidfd_open takes two integers
 /// Metadata of an open fd without taking ownership of it.
 pub fn fd_metadata(fd: c_int) -> std::io::Result<std::fs::Metadata> {
     use std::os::unix::io::FromRawFd;
