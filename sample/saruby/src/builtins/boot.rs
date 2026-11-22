@@ -61,7 +61,7 @@ fn blank_vm() -> Box<Vm> {
     )
 }
 
-fn boot_ary(vmr: &Vm) -> Value { crate::gc::alloc(vmr.c_array.get(), Body::Array(crate::avec::AVec::new())) }
+fn boot_ary(c: &mut Ctx) -> Value { let k = c.vm().c_array.get(); c.alloc(k, Body::Array(crate::avec::AVec::new())) }
 
 /// Create the class hierarchy and every built-in method.
 /// Install a blank VM (before the main context is made).
@@ -134,11 +134,11 @@ fn boot_classes(c: &mut Ctx) {
     for k in [vmr.c_integer.get(), vmr.c_float.get(), vmr.c_symbol.get(), vmr.c_nil.get(), vmr.c_true.get(), vmr.c_false.get()] { class_set_alloc(c, k, AllocKind::None); }
 
     vmr.main_obj.set(new_object(c, ob));
-    vmr.loaded_features.set(boot_ary(vmr));
-    vmr.load_path.set(boot_ary(vmr));
+    vmr.loaded_features.set(boot_ary(c));
+    vmr.load_path.set(boot_ary(c));
     kernel::init_load_path(c, vmr.load_path.get());
-    vmr.at_exit.set(boot_ary(vmr));
-    vmr.argv.set(boot_ary(vmr));
+    vmr.at_exit.set(boot_ary(c));
+    vmr.argv.set(boot_ary(c));
     vmr.top_cref.set(new_cref(ob, std::ptr::null()));
 
     exception::init_classes(c);
@@ -150,7 +150,7 @@ fn boot_classes(c: &mut Ctx) {
     exception::init(c);
     numeric_methods::init(c, vmr.c_numeric.get(), vmr.c_integer.get(), vmr.c_float.get());
     for (nm, v) in numeric_methods::FLOAT_CONSTS {
-        let f = match Value::flonum(v) { Some(f) => f, None => { let f = crate::gc::alloc(vmr.c_float.get(), Body::Float(v)); obj_set_flags(f, FL_FROZEN); f } };
+        let f = match Value::flonum(v) { Some(f) => f, None => { let f = c.alloc(vmr.c_float.get(), Body::Float(v)); obj_set_flags(f, FL_FROZEN); f } };
         const_set(c, vmr.c_float.get(), crate::symbol::intern(nm.as_bytes()), f);
     }
     string_methods::init(c, vmr.c_string.get());

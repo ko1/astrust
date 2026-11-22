@@ -1023,7 +1023,7 @@ pub fn run_class_body(c: &mut Ctx, klass: Value, is: &'static Iseq) -> RV {
     nil_fill(base, 2, is.nlocals as usize);
     c.set_sp(base, is.nlocals as usize);
     if is.env_size > 0 {
-        let env = crate::gc::alloc(vm().c_env.get(), Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), NIL));
+        let env = c.alloc(vm().c_env.get(), Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), NIL));
         base[1].set(env);
     }
     c.frame = &mut fr.h;
@@ -1224,13 +1224,14 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
                 PM_FIND => format!("{} does not match to find pattern", insp(c, a(1))?),
                 PM_DECONK => format!("{} does not respond to #deconstruct_keys", insp(c, a(1))?),
                 PM_KEY => {
-                    let m = str_new(format!("key not found: {}", insp(c, a(2))?).as_bytes());
+                    let t = format!("key not found: {}", insp(c, a(2))?);
+                    let m = c.str_new(t.as_bytes());
                     return Ok(c.ary_new_from(&[m, a(1), a(2)]));
                 }
                 PM_REST => format!("rest of {} is not empty", insp(c, a(1))?),
                 _ => format!("{} is not empty", insp(c, a(1))?),
             };
-            Ok(str_new(msg.as_bytes()))
+            Ok(c.str_new(msg.as_bytes()))
         }
         SP_NAMED_CAPTURE => {
             let m = c.last_match;

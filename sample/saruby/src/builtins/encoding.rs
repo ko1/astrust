@@ -651,12 +651,11 @@ fn const_names(n: &str) -> Vec<String> {
     out
 }
 
-/// Boot: no context runs yet, so the Encoding objects are allocated directly.
 pub fn init(c: &mut Ctx) {
     let vmr = c.vm();
     let ek = vmr.c_encoding.get();
     for i in 0..NENC {
-        let e = crate::gc::alloc(ek, Body::Data(Box::new(REnc { id: i as u8 })));
+        let e = c.alloc(ek, Body::Data(Box::new(REnc { id: i as u8 })));
         obj_set_flags(e, FL_FROZEN);
         vmr.enc_objs.borrow_mut().push(e);
         vmr.pinned.borrow_mut().push(e);

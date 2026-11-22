@@ -190,9 +190,10 @@ pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
 }
 pub fn alloc_data(_c: &mut Ctx, _klass: Value) -> Result<Option<Value>, Esc> { Ok(None) }
 
-/// Boot: no context yet, so the frozen constant Strings are allocated directly.
-fn boot_str(vmr: &Vm, b: &[u8]) -> Value {
-    let s = crate::gc::alloc(vmr.c_string.get(), Body::String(RString { b: crate::sbuf::SBuf::from_slice(b), enc: ENC_UTF8 }));
+/// A frozen constant String.
+fn boot_str(c: &mut Ctx, b: &[u8]) -> Value {
+    let k = c.vm().c_string.get();
+    let s = c.alloc(k, Body::String(RString { b: crate::sbuf::SBuf::from_slice(b), enc: ENC_UTF8 }));
     obj_set_flags(s, FL_FROZEN);
     s
 }
@@ -239,8 +240,9 @@ pub fn init(c: &mut Ctx) {
     // constants
     let set = |c: &mut Ctx, n: &str, v: Value| const_set(c, ob, intern(n.as_bytes()), v);
     for (n, v) in [("RUBY_VERSION", "3.4.0"), ("RUBY_RELEASE_DATE", "2026-11-20"), ("RUBY_PLATFORM", "x86_64-linux"), ("RUBY_ENGINE", "saruby"),
-                   ("RUBY_ENGINE_VERSION", "0.1.0"), ("RUBY_COPYRIGHT", "saruby - Copyright (C) 2026 Koichi Sasada")] { set(c, n, boot_str(vmr, v.as_bytes())); }
-    set(c, "RUBY_DESCRIPTION", boot_str(vmr, crate::version().as_bytes()));
+                   ("RUBY_ENGINE_VERSION", "0.1.0"), ("RUBY_COPYRIGHT", "saruby - Copyright (C) 2026 Koichi Sasada")] { let s = boot_str(c, v.as_bytes()); set(c, n, s); }
+    let s = boot_str(c, crate::version().as_bytes());
+    set(c, "RUBY_DESCRIPTION", s);
     set(c, "RUBY_PATCHLEVEL", Value::fix(0));
     set(c, "ARGV", vmr.argv.get());
     crate::builtins::lazy_const(c, ob, "TOPLEVEL_BINDING", "saruby/toplevel_binding");

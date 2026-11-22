@@ -503,7 +503,7 @@ fn k_integer(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
         else if is_float(v) {
             let f = float_val(v);
             if f.is_nan() || f.is_infinite() { return err(c, c.vm().c_float_domain_error.get(), crate::numeric::float_to_s(f)); }
-            Ok(crate::legacy::f64_to_int(f))
+            Ok(crate::builtins::numeric_methods::f64_to_int(c, f))
         } else if v == NIL { type_err(c, "can't convert nil into Integer") }
         else {
             if respond_to(c, v, s::to_int, true) { let r = funcall(c, v, s::to_int, &[], std::ptr::null())?; if is_integer(r) { return Ok(r); } }

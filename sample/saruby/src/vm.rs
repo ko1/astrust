@@ -612,7 +612,7 @@ pub fn name_class(c: &mut Ctx, k: Value, outer: Value, name: Sym) {
     let path = if outer == vm.c_object.get() || outer == NIL { sym_str(name) } else {
         match c.class(outer).name { Some(n) => format!("{}::{}", String::from_utf8_lossy(c.str_bytes(n)), sym_str(name)), None => return }
     };
-    let s = crate::string::str_new_frozen(path.as_bytes());
+    let s = c.str_new_frozen(path.as_bytes());
     let cd = c.class_mut(k);
     cd.name = Some(s);
     cd.base_name = name;
@@ -1058,7 +1058,7 @@ pub fn is_kind_of(c: &Ctx, v: Value, k: Value) -> bool {
 
 pub fn make_exception(c: &mut Ctx, klass: Value, msg: &str) -> Value {
     let e = new_object(c, klass);
-    let m = crate::string::str_new(msg.as_bytes());
+    let m = c.str_new(msg.as_bytes());
     ivar_set_raw(c, e, s::mesg, m);
     e
 }
@@ -1178,7 +1178,7 @@ pub fn make_backtrace(c: &mut Ctx, skip: usize) -> Value {
 }
 fn lines_to_array(c: &mut Ctx, lines: Vec<String>) -> Value {
     let a = c.ary_new_capa(lines.len());
-    for l in lines { let s = crate::string::str_new(l.as_bytes()); c.ary_push(a, s); }
+    for l in lines { let s = c.str_new(l.as_bytes()); c.ary_push(a, s); }
     a
 }
 
@@ -1197,7 +1197,7 @@ impl RData for RawBt {
 /// The backtrace at this point, unformatted (stored in an exception's `bt`).
 pub fn make_backtrace_lazy(c: &mut Ctx, skip: usize) -> Value {
     let frames = capture_frames(c);
-    crate::gc::alloc(vm().c_object.get(), Body::Data(Box::new(RawBt { frames, skip })))
+    c.alloc(vm().c_object.get(), Body::Data(Box::new(RawBt { frames, skip })))
 }
 
 /// An exception's backtrace (Array of String, or nil), formatting a captured one in place.

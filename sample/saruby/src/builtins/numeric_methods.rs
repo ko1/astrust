@@ -324,7 +324,7 @@ cfn!(int_chr, |c, s, a| {
         return Ok(c.str_from_vec(b));
     }
     if i < 0 { return err(c, c.vm().c_range_error.get(), format!("{} out of char range", i)); }
-    Ok(str_new_enc(&[i as u8], if i < 128 { ENC_ASCII } else { ENC_BINARY }))
+    Ok(c.str_new_enc(&[i as u8], if i < 128 { ENC_ASCII } else { ENC_BINARY }))
 });
 cfn!(int_ord, |c, s, _a| Ok(s));
 /// The fixnum loop of Integer#times, yielding through `y` (inline_iter.rs: a baked site's block); None: not a fixnum.

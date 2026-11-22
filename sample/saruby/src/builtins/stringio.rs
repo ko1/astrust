@@ -870,7 +870,8 @@ pub fn init(c: &mut Ctx) {
         if const_get_at(c, io, intern(n.as_bytes())).is_none() { const_set(c, io, intern(n.as_bytes()), Value::fix(v)); }
     }
     include_module(c, k, vmr.m_enumerable.get());
-    const_set(c, k, intern(b"VERSION"), crate::gc::alloc(vmr.c_string.get(), Body::String(RString { b: crate::sbuf::SBuf::from_slice(b"3.2.0"), enc: ENC_UTF8 })));
+    let v = c.alloc(vmr.c_string.get(), Body::String(RString { b: crate::sbuf::SBuf::from_slice(b"3.2.0"), enc: ENC_UTF8 }));
+    const_set(c, k, intern(b"VERSION"), v);
     const_set(c, k, intern(b"MAX_LENGTH"), Value::fix(i64::MAX >> 1));
     define_singleton_cfunc(c, k, "new", sio_s_new, -1);
     define_singleton_cfunc(c, k, "open", sio_s_open, -1);

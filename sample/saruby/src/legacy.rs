@@ -59,6 +59,6 @@ pub fn boot_metaclass(c: &mut Ctx, k: Value, m: Value) {
 pub fn boot_subclass(c: &mut Ctx, sup: Value, k: Value) { c.class_mut(sup).subclasses.push(k); }
 /// Constants `names` of `owner` autoload the native `feature`.
 pub fn boot_autoload(c: &mut Ctx, owner: Value, names: &[&str], feature: &str) {
-    let path = crate::str_legacy::str_new_frozen(feature.as_bytes());
+    let path = c.str_new_frozen(feature.as_bytes());
     for n in names { c.class_mut(owner).autoload.insert(crate::symbol::intern(n.as_bytes()), path); }
 }

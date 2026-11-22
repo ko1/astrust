@@ -1349,7 +1349,6 @@ fn scan_decimal(v: &[u8], i: usize) -> Option<(crate::bignum::BigInt, crate::big
 fn kernel_call(c: &mut Ctx, name: &str, args: &[Value]) -> RV { let m = c.vm().main_obj.get(); funcall(c, m, intern(name.as_bytes()), args, std::ptr::null()) }
 /// [sign] decimal [/ decimal] as a Rational; (value, end, kind 0=int 1=float 2=rational).
 fn scan_rational(c: &mut Ctx, v: &[u8], i: usize) -> Result<Option<(Value, usize, u8)>, Esc> {
-    use crate::bignum::big_to_value;
     let mut j = i; let mut neg = false;
     if j < v.len() && (v[j] == b'+' || v[j] == b'-') { neg = v[j] == b'-'; j += 1; }
     let Some((mut n, mut d, k, fl)) = scan_decimal(v, j) else { return Ok(None) };
@@ -1359,7 +1358,8 @@ fn scan_rational(c: &mut Ctx, v: &[u8], i: usize) -> Result<Option<(Value, usize
         if let Some((n2, d2, k2, _)) = scan_decimal(v, j + 1) { n = n.mul(&d2); d = d.mul(&n2); j = k2; kind = 2; }
     }
     if neg { n = n.neg(); }
-    let r = kernel_call(c, "Rational", &[big_to_value(n), big_to_value(d)])?;
+    let (n, d) = (c.big_to_value(n), c.big_to_value(d));
+    let r = kernel_call(c, "Rational", &[n, d])?;
     Ok(Some((r, j, kind)))
 }
 cfn!(s_to_r, |c, slf, a, b_| {

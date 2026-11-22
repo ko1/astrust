@@ -515,10 +515,9 @@ pub fn init(c: &mut Ctx) -> (Value, Value) {
     let w = fill_random_words(4);
     mt.init_by_array(&w);
     let mut w = w; if *w.last().unwrap() <= 1 { w.push(1); }
-    // no context at boot (nothing is borrowed yet)
     // top word > 1: at least 2**96, a bignum
-    let sd = crate::gc::alloc(vmr.c_integer.get(), Body::Bignum(Box::new(BigInt::from_words(false, &w))));
+    let sd = c.alloc(vmr.c_integer.get(), Body::Bignum(Box::new(BigInt::from_words(false, &w))));
     crate::heap::obj_set_flags(sd, FL_FROZEN);
-    let d = crate::gc::alloc_with(r, move || Body::Data(Box::new(RRandom { mt, seed: sd })));
+    let d = c.alloc_with(r, move || Body::Data(Box::new(RRandom { mt, seed: sd })));
     (r, d)
 }

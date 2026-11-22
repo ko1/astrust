@@ -621,8 +621,7 @@ pub fn init(c: &mut Ctx) -> Value {
         let id = intern(nm.as_bytes());
         define_method_me(c, k, id, new_me(id, k, VISI_PUBLIC, MKind::Undef));
     }
-    // no context at boot (nothing is borrowed yet)
-    let iu = crate::gc::alloc(k, Body::Data(Box::new(RComplex { re: Value::fix(0), im: Value::fix(1) })));
+    let iu = c.alloc(k, Body::Data(Box::new(RComplex { re: Value::fix(0), im: Value::fix(1) })));
     obj_set_flags(iu, FL_FROZEN);
     const_set(c, k, intern(b"I"), iu);
     let n = vmr.c_numeric.get();

@@ -485,10 +485,10 @@ pub fn init(c: &mut Ctx) {
     define_cfunc(c, k, "alive?", f_alive, 0);
     let mut d = FiberData::new(NIL);
     d.main = true; d.started = true; d.running = true; d.blocking = true;
-    let root = crate::gc::alloc(k, Body::Data(Box::new(d)));
+    let root = c.alloc(k, Body::Data(Box::new(d)));
     MAIN_ROOT.set_vm(vmr, root);
     THREAD_ROOT.set_vm(vmr, root);
     CUR.set_vm(vmr, root);
-    let tag = crate::gc::alloc(vmr.c_array.get(), Body::Array(crate::avec::AVec::new()));
+    let tag = c.alloc(vmr.c_array.get(), Body::Array(crate::avec::AVec::new()));
     KILL.set_vm(vmr, tag);
 }

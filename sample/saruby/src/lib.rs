@@ -96,7 +96,7 @@ pub fn run_top_iseq_cref(c: &mut Ctx, is: &'static Iseq, slf: Value, cref: *cons
     nil_fill(base, 2, is.nlocals as usize);
     c.set_sp(base, is.nlocals as usize);
     if is.env_size > 0 {
-        let env = gc::alloc(vm().c_env.get(), object::Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), NIL));
+        let env = c.alloc(vm().c_env.get(), object::Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), NIL));
         base[1].set(env);
     }
     c.frame = &mut fr.h;
@@ -210,9 +210,9 @@ fn run_main(o: Opts) -> i32 {
     let vm = vm();
     vm.verbose.set(if o.warn { TRUE } else { FALSE });
     if o.warn { builtins::misc::warning_enable_deprecated(); }
-    for d in &o.incdirs { let s = string::str_new(d.as_bytes()); c.ary_push(vm.load_path.get(), s); }
+    for d in &o.incdirs { let s = c.str_new(d.as_bytes()); c.ary_push(vm.load_path.get(), s); }
     builtins::prelude::setup_load_path(&mut c);
-    for a in &o.args { let s = string::str_new(a); c.ary_push(vm.argv.get(), s); }
+    for a in &o.args { let s = c.str_new(a); c.ary_push(vm.argv.get(), s); }
     aot::init(if o.plain { None } else { Some(&o.store) }, o.aot);
     vm.aot_collect.set(o.aot);
 
@@ -230,7 +230,7 @@ fn run_main(o: Opts) -> i32 {
         (b, "-".into())
     };
     *vm.main_file.borrow_mut() = file.clone();
-    vm.dollar_zero.set(string::str_new(file.as_bytes()));
+    vm.dollar_zero.set(c.str_new(file.as_bytes()));
     let file: &'static str = Box::leak(file.into_boxed_str());
 
     inline_builtin::init(&c);
@@ -262,7 +262,7 @@ fn run_main(o: Opts) -> i32 {
     }
     let mut status = 0;
     for r in &o.requires {
-        let s = string::str_new(r.as_bytes());
+        let s = c.str_new(r.as_bytes());
         if builtins::kernel::require_feature(&mut c, s, false).is_err() { let e = c.esc_val; report_exception(&mut c, e); return 1; }
     }
     let r = run_top_iseq(&mut c, is, vm.main_obj.get());

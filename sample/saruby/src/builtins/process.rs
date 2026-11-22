@@ -627,7 +627,7 @@ pub fn init(c: &mut Ctx) {
     let vmr = c.vm();
     let p = define_module(c, "Process");
     vmr.m_process.set(p);
-    let h = crate::gc::alloc(vmr.c_array.get(), Body::Array(crate::avec::AVec::new()));
+    let h = c.alloc(vmr.c_array.get(), Body::Array(crate::avec::AVec::new()));
     HANDLERS.set_vm(vmr, h);
     let mf = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_module_function(c, p, n, f, a);
     mf(c, "clock_gettime", clock_gettime, -1); mf(c, "clock_getres", clock_getres, -1); mf(c, "times", p_times, 0);
@@ -654,7 +654,7 @@ pub fn init(c: &mut Ctx) {
                    ("RLIMIT_NOFILE", 7), ("RLIMIT_MEMLOCK", 8), ("RLIMIT_AS", 9)] {
         const_set(c, p, intern(n.as_bytes()), Value::fix(v));
     }
-    let inf = crate::gc::alloc(vmr.c_integer.get(), Body::Bignum(Box::new(crate::bignum::BigInt::from_i128(u64::MAX as i128))));
+    let inf = c.alloc(vmr.c_integer.get(), Body::Bignum(Box::new(crate::bignum::BigInt::from_i128(u64::MAX as i128))));
     crate::heap::obj_set_flags(inf, FL_FROZEN);
     const_set(c, p, intern(b"RLIM_INFINITY"), inf);
     let st = define_class_under(c, p, "Status", vmr.c_object.get());

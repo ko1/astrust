@@ -732,12 +732,12 @@ pub fn init(c: &mut Ctx) {
     let th = define_class(c, "Thread", ob);
     class_set_alloc(c, th, AllocKind::None);
     vmr.c_thread.set(th);
-    let list = crate::gc::alloc(vmr.c_array.get(), Body::Array(crate::avec::AVec::new()));
+    let list = c.alloc(vmr.c_array.get(), Body::Array(crate::avec::AVec::new()));
     LIST.set_vm(vmr, list);
     let ch = vmr.c_hash.get();
-    let l = crate::gc::alloc(ch, Body::Hash(Box::new(RHash::with_capacity(0))));
-    let t = crate::gc::alloc(ch, Body::Hash(Box::new(RHash::with_capacity(0))));
-    let main = crate::gc::alloc_with(th, move || { let mut r = RThread::blank(l, t); r.started = true; Body::Data(Box::new(r)) });
+    let l = c.alloc(ch, Body::Hash(Box::new(RHash::with_capacity(0))));
+    let t = c.alloc(ch, Body::Hash(Box::new(RHash::with_capacity(0))));
+    let main = c.alloc_with(th, move || { let mut r = RThread::blank(l, t); r.started = true; Body::Data(Box::new(r)) });
     MAIN.set_vm(vmr, main);
     CURRENT.set_vm(vmr, main);
     let kill = new_class(c, vmr.c_exception.get());
