@@ -11,6 +11,8 @@ use crate::symbol::{intern, s};
 use crate::value::*;
 use crate::vm::*;
 use std::collections::{HashMap, HashSet};
+#[path = "compile_cov.rs"]
+mod cov;
 
 pub type IseqRef = &'static Iseq;
 pub type CiRef = &'static CallInfo;
@@ -508,23 +510,7 @@ impl<'a> Compiler<'a> {
     pub fn c(&mut self, n: &PNode) -> NodePtr {
         let line = self.line(n.loc);
         match &n.kind {
-            Kind::StatementsNode { body } => {
-                let flat = std::mem::take(&mut self.flat_stmts);
-                let last = body.len().saturating_sub(1);
-                let v: Vec<NodePtr> = body.iter().enumerate().map(|(i, x)| {
-                    let l = if self.trace { self.line(x.loc) } else { 0 };
-                    // a side-effect-free statement whose value is unused compiles to nothing in CRuby: no line event
-                    let elided = self.trace && i < last && pure_static(x);
-                    let traced = self.trace && !flat && !elided && !matches!(x.kind, Kind::BeginNode { .. }) && std::mem::replace(&mut self.cur().trace_line, l) != l;
-                    let r = if elided { self.trace = false; let r = self.c(x); self.trace = true; r } else { self.c(x) };
-                    if traced {
-                        let t = ALLOC_node_trace(EV_LINE, l, r);
-                        match self.cov { Some(f) => ALLOC_node_cov(crate::builtins::coverage::line_slot(f, l), t), None => t }
-                    }
-                    else if needs_line(x) { ALLOC_node_line(self.line(x.loc), r) } else { r }
-                }).collect();
-                self.seq(v)
-            }
+            Kind::StatementsNode { body } => self.statements(body),
             Kind::ParenthesesNode { body } => self.stmts(body.as_deref()),
             Kind::BeginNode { statements, rescue_clause, else_clause, ensure_clause } => {
                 let mut body = self.stmts(statements.as_deref());
@@ -748,39 +734,20 @@ impl<'a> Compiler<'a> {
             }
             Kind::NumberedReferenceReadNode { number } => ALLOC_node_nth_ref(*number),
             // control flow
+            Kind::IfNode { predicate, statements, subsequent, .. } if self.cov.is_some() => self.if_node(n, predicate, statements.as_deref(), subsequent.as_deref()),
+            Kind::UnlessNode { predicate, statements, else_clause } if self.cov.is_some() => self.unless_node(n, predicate, statements.as_deref(), else_clause.as_deref()),
             Kind::IfNode { predicate, statements, subsequent, .. } => {
                 let cnd = self.cond(predicate);
-                let fold = static_truth(predicate);
-                let bb = if fold.is_some() { None } else { self.bbase("if", n) };
-                let saved_cov = self.cov;
-                if fold == Some(false) { self.cov = None; }
                 // `x if c` / `c ? x : y`: no line events of their own (CRuby's newline nodes)
                 let flat = n.loc.start >= predicate.loc.start;
                 let t = self.stmts_flat(statements.as_deref(), flat);
-                let pe = predicate.loc.start + predicate.loc.len;
-                let tl = match statements { Some(s) => self.ploc(s), None => self.pos4(pe, pe) };
-                let t = self.btarget(bb, "then", tl, t);
-                self.cov = if fold == Some(true) { None } else { saved_cov };
                 let e = match subsequent { Some(x) => { self.flat_stmts = flat; let e = self.else_body(x); self.flat_stmts = false; e } None => ALLOC_node_nil() };
-                let el = match subsequent { Some(x) => self.else_loc(x, x), None => self.ploc(n) };
-                let e = self.btarget(bb, "else", el, e);
-                self.cov = saved_cov;
                 ALLOC_node_if(cnd, t, e)
             }
             Kind::UnlessNode { predicate, statements, else_clause } => {
                 let cnd = self.cond(predicate);
-                let fold = static_truth(predicate);
-                let bb = if fold.is_some() { None } else { self.bbase("unless", n) };
-                let saved_cov = self.cov;
-                if fold == Some(true) { self.cov = None; }
                 let t = self.stmts_flat(statements.as_deref(), n.loc.start >= predicate.loc.start);
-                self.cov = if fold == Some(false) { None } else { saved_cov };
                 let e = match else_clause { Some(x) => self.else_body(x), None => ALLOC_node_nil() };
-                self.cov = saved_cov;
-                let el = match else_clause { Some(x) => self.else_loc(x, n), None => self.ploc(n) };
-                let e = self.btarget(bb, "else", el, e);
-                let tl = match statements { Some(s) => self.ploc(s), None => self.ploc(n) };
-                let t = self.btarget(bb, "then", tl, t);
                 ALLOC_node_if(cnd, e, t)
             }
             Kind::ElseNode { statements } => self.stmts(statements.as_deref()),
@@ -793,8 +760,7 @@ impl<'a> Compiler<'a> {
                 self.cur().loop_depth += 1;
                 let body = self.stmts_flat(statements.as_deref(), n.loc.start >= predicate.loc.start);
                 self.cur().loop_depth -= 1;
-                let bl = match statements { Some(s) => self.ploc(s), None => self.ploc(n) };
-                let body = self.btarget(bb, "body", bl, body);
+                let body = self.btarget(bb, "body", |c| match statements { Some(s) => c.ploc(s), None => c.ploc(n) }, body);
                 if n.flags & pa::LOOP_FLAGS_BEGIN_MODIFIER != 0 { ALLOC_node_dowhile(cnd, body, until) } else { ALLOC_node_while(cnd, body, until) }
             }
             Kind::ForNode { index, collection, statements } => self.for_loop(n, index, collection, statements.as_deref(), line),
@@ -997,22 +963,6 @@ impl<'a> Compiler<'a> {
             Kind::ErrorRecoveryNode { .. } => self.unsupported("syntax error", n.loc),
             _ => self.unsupported(pa::kind_name(&n.kind), n.loc),
         }
-    }
-
-    /// [first_lineno, first_column, last_lineno, last_column] of bytes start..end.
-    fn pos4(&self, start: u32, end: u32) -> [u32; 4] { [self.pr.line_of(start), self.pr.col_of(start), self.pr.line_of(end), self.pr.col_of(end)] }
-    fn ploc(&self, n: &PNode) -> [u32; 4] { self.pos4(n.loc.start, n.loc.start + n.loc.len) }
-    /// Branch coverage (Coverage with branches:): a base for `n`, if measured.
-    fn bbase(&mut self, ty: &'static str, n: &PNode) -> Option<usize> {
-        let f = self.cov?;
-        crate::builtins::coverage::branch_base(f, ty, self.ploc(n))
-    }
-    fn btarget(&mut self, base: Option<usize>, label: &'static str, p: [u32; 4], body: NodePtr) -> NodePtr {
-        match base { Some(b) => ALLOC_node_cov(crate::builtins::coverage::branch_target(b, label, p), body), None => body }
-    }
-    /// The location of an else clause's body (the whole construct `parent` when it is empty).
-    fn else_loc(&self, e: &PNode, parent: &PNode) -> [u32; 4] {
-        match &e.kind { Kind::ElseNode { statements: Some(s) } => self.ploc(s), Kind::ElseNode { statements: None } => self.ploc(parent), _ => self.ploc(e) }
     }
 
     fn else_body(&mut self, n: &PNode) -> NodePtr {
@@ -1360,8 +1310,8 @@ impl<'a> Compiler<'a> {
             Some(set) => {
                 let test = ALLOC_node_special(SP_IS_NIL, ALLOC_node_lvar(sl.unwrap()));
                 let (bb, p) = match qcall { Some((b, p)) => (Some(b), p), None => (None, [0; 4]) };
-                let node = self.btarget(bb, "then", p, node);
-                let nil = self.btarget(bb, "else", p, ALLOC_node_nil());
+                let node = self.btarget(bb, "then", |_| p, node);
+                let nil = self.btarget(bb, "else", |_| p, ALLOC_node_nil());
                 let body = ALLOC_node_if(test, nil, node);
                 self.seq(vec![set, body])
             }
@@ -1491,21 +1441,6 @@ impl<'a> Compiler<'a> {
     }
 
     // ---- case ------------------------------------------------------------------------------
-
-    /// Bodies of `when` / `in` clauses and the else, compiled in source order (branch ids follow it).
-    fn clause_bodies(&mut self, bb: Option<usize>, label: &'static str, case: &PNode, conds: &[PNode], els: Option<&PNode>, no_else: NodePtr) -> (Vec<NodePtr>, NodePtr) {
-        let mut v = vec![];
-        for w in conds {
-            let (Kind::WhenNode { statements, .. } | Kind::InNode { statements, .. }) = &w.kind else { v.push(ALLOC_node_nil()); continue };
-            let b = self.stmts(statements.as_deref());
-            let p = match statements { Some(s) => self.ploc(s), None => self.ploc(w) };
-            v.push(self.btarget(bb, label, p, b));
-        }
-        let e = match els { Some(e) => self.else_body(e), None => no_else };
-        let el = match els { Some(e) => self.else_loc(e, e), None => self.ploc(case) };
-        let e = self.btarget(bb, "else", el, e);
-        (v, e)
-    }
 
     fn case_when(&mut self, case: &PNode, pred: Option<&PNode>, conds: &[PNode], els: Option<&PNode>, _line: u32) -> NodePtr {
         let pv = pred.map(|p| self.c(p));
@@ -2318,48 +2253,6 @@ pub fn compile_parsed(pr: &ParseResult, src: &[u8], file: &'static str, kind: Is
     }
     let is = cm.compile_program(&pr.root, kind);
     if cm.errors.is_empty() { Ok(is) } else { Err(cm.errors.join("\n")) }
-}
-
-/// Statements CRuby compiles to nothing when their value is unused (`lvar`: local reads count).
-fn pure_static_in(n: &PNode, lvar: bool) -> bool {
-    let p = |x: &PNode| pure_static_in(x, lvar);
-    match &n.kind {
-        Kind::IntegerNode { .. } | Kind::FloatNode { .. } | Kind::RationalNode { .. } | Kind::ImaginaryNode { .. } | Kind::StringNode { .. }
-        | Kind::SymbolNode { .. } | Kind::NilNode | Kind::TrueNode | Kind::FalseNode | Kind::SelfNode
-        | Kind::InstanceVariableReadNode { .. } | Kind::SourceLineNode | Kind::SourceEncodingNode | Kind::SourceFileNode { .. } => true,
-        Kind::LocalVariableReadNode { .. } => lvar,
-        // inside a container only literals stay static for folding ([self]; [a] are not)
-        Kind::ArrayNode { elements, .. } => elements.iter().all(|x| if lvar { p(x) } else { lit_static(x) }),
-        Kind::HashNode { elements } => elements.iter().all(|e| matches!(&e.kind, Kind::AssocNode { key, value, .. } if if lvar { p(key) && p(value) } else { lit_static(key) && lit_static(value) })),
-        Kind::RangeNode { left, right, .. } => left.as_deref().is_none_or(p) && right.as_deref().is_none_or(p),
-        Kind::ParenthesesNode { body: Some(b) } => match &b.kind { Kind::StatementsNode { body } => body.iter().all(p), _ => p(b) },
-        _ => false,
-    }
-}
-fn pure_static(n: &PNode) -> bool { pure_static_in(n, true) }
-fn lit_static(n: &PNode) -> bool { !matches!(n.kind, Kind::SelfNode | Kind::InstanceVariableReadNode { .. } | Kind::LocalVariableReadNode { .. }) && pure_static_in(n, false) }
-/// A condition CRuby folds at compile time (no branch coverage, the dead side not compiled): its truth.
-fn static_truth(n: &PNode) -> Option<bool> {
-    match &n.kind {
-        Kind::FalseNode | Kind::NilNode => Some(false),
-        Kind::LambdaNode { .. } => Some(true),
-        _ => paren_truth(n),
-    }
-}
-fn paren_truth(n: &PNode) -> Option<bool> {
-    match &n.kind {
-        Kind::TrueNode | Kind::IntegerNode { .. } | Kind::FloatNode { .. } | Kind::RationalNode { .. } | Kind::ImaginaryNode { .. }
-        | Kind::SymbolNode { .. } | Kind::SourceLineNode | Kind::SourceEncodingNode => Some(true),
-        // `(a; b; c)`: literal statements before a truthy constant
-        Kind::ParenthesesNode { body: Some(b) } => match &b.kind {
-            Kind::StatementsNode { body } if !body.is_empty() => {
-                let (last, init) = body.split_last().unwrap();
-                if init.iter().all(|x| pure_static_in(x, false)) { paren_truth(last) } else { None }
-            }
-            _ => paren_truth(b),
-        },
-        _ => None,
-    }
 }
 
 /// The value of a single non-splat `when` pattern that is an immediate literal.
