@@ -123,9 +123,6 @@ fn k_global_variables(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) ->
     for n in names { c.ary_push(out, Value::sym(intern(&n))); }
     Ok(out)
 }
-fn k_callee(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
-    Ok(match c.caller_frame().and_then(|p| c.me_ref(p.me)) { Some(m) => Value::sym(m.name), None => NIL })
-}
 fn k_test(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 2, 3)?;
     let cmd = if is_string(a[0]) { *c.str_bytes(a[0]).first().unwrap_or(&b'?') } else { num_to_long(c, a[0])? as u8 };
@@ -212,8 +209,10 @@ fn wm_each(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
 }
 fn wm_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let mut parts = vec![];
-    wm_walk(c, s, |c, k, v| { parts.push(format!("{} => {}", inspect_str(c, k)?, inspect_str(c, v)?)); Ok(()) })?;
-    Ok(c.str_new(format!("#<{}:0x{:016x}{}{}>", class_path(c, real_class_of(c, s)), s.raw(), if parts.is_empty() { "" } else { " " }, parts.join(", ")).as_bytes()))
+    // as weakmap.c: immediates by #inspect, objects by rb_any_to_s
+    let show = |c: &mut Ctx, v: Value| if v.is_imm() { inspect_str(c, v) } else { Ok(crate::builtins::kernel::any_to_s_str(c, v)) };
+    wm_walk(c, s, |c, k, v| { parts.push(format!("{} => {}", show(c, k)?, show(c, v)?)); Ok(()) })?;
+    Ok(c.str_new(format!("#<{}:0x{:016x}{}{}>", class_path(c, real_class_of(c, s)), s.raw(), if parts.is_empty() { "" } else { ": " }, parts.join(", ")).as_bytes()))
 }
 fn wkm_init(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let h = c.hash_new(); ivar_set_raw(c, s, intern(b"@h"), h); Ok(NIL) }
 fn wkm_aref(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { Ok(hash_get_opt(c, wm_h(c, s), a[0])?.unwrap_or(NIL)) }
@@ -267,7 +266,6 @@ pub fn init(c: &mut Ctx) {
     define_module_function(c, gc, "verify_internal_consistency", |_c, _s, _a, _b| Ok(NIL), 0);
     let k = vmr.m_kernel.get();
     define_module_function(c, k, "global_variables", k_global_variables, 0);
-    define_module_function(c, k, "__callee__", k_callee, 0);
     define_module_function(c, k, "test", k_test, -1);
     define_module_function(c, k, "gem", |_c, _s, _a, _b| Ok(TRUE), -1);
     define_cfunc(c, vmr.c_io.get(), "wait", io_wait, -1);

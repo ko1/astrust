@@ -445,6 +445,12 @@ pub fn callee_name(c: &Ctx, me: *const MethodEntry) -> Sym {
     match c.vm().alias_names.borrow().get(&(me as usize)) { Some(&n) => n, None => c.me_ref(me).map_or(Sym(0), |m| m.name) }
 }
 
+/// A copy of an alias entry (visibility change, module_function) is still called by the alias' name.
+fn keep_alias_name(c: &Ctx, from: *const MethodEntry, to: *const MethodEntry) {
+    let n = c.vm().alias_names.borrow().get(&(from as usize)).copied();
+    if let Some(n) = n { c.vm().alias_names.borrow_mut().insert(to as usize, n); }
+}
+
 pub fn alias_method(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) -> Result<(), Esc> {
     let mut me = search_method(c, klass, oldname);
     if (me.is_null() || matches!(me_kind(c, me), Some(MKind::Undef))) && c.class(klass).is_module {
@@ -589,15 +595,18 @@ fn set_visibility(c: &mut Ctx, slf: Value, a: &[Value], visi: u8) -> RV {
         let Some(o) = me_copy(c, me) else { continue };
         if visi == VISI_MODFUNC {
             let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi: VISI_PRIVATE, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
+            keep_alias_name(c, me, n);
             define_method_me(c, slf, m, n);
             let sk = singleton_class(c, slf);
             let n2 = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: sk, visi: VISI_PUBLIC, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
+            keep_alias_name(c, me, n2);
             define_method_me(c, sk, m, n2);
             continue;
         }
         if o.owner == slf { c.me_set_visi(me, visi); bump_method_serial(); c.vm().mcache.borrow_mut().clear(); }
         else {
             let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
+            keep_alias_name(c, me, n);
             define_method_me(c, slf, m, n);
         }
     }

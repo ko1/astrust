@@ -104,7 +104,7 @@ fn finish_thread(c: &mut Ctx, t: Value) -> Result<(), Esc> {
     let report = if r.report == UNDEF { REPORT_ALL.load(Relaxed) } else { r.report.truthy() };
     if report {
         let head = format!("{} terminated with exception (report_on_exception is true):\n", inspect_thread(c, t, "run"));
-        let msg = crate::builtins::exception::full_message(c, v, false).unwrap_or_default();
+        let msg = crate::builtins::exception::full_message(c, v).unwrap_or_default();
         err_write(format!("{}{}", head, msg).as_bytes());
     }
     if th(c, t).abort || ABORT_ALL.load(Relaxed) { return Err(raise_exc(c, v)); }

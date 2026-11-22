@@ -412,13 +412,20 @@ fn k_proc(c: &mut Ctx, _s: Value, _args: &[Value], blk: *const Block) -> RV {
     block_to_proc(c, blk)
 }
 
+/// The method of the nearest Ruby frame below the running builtin (`send :__method__` skips send).
+fn ruby_caller_me(c: &Ctx) -> *const MethodEntry {
+    let mut f = c.caller_frame();
+    while let Some(x) = f { if x.kind != FK_CFUNC { return x.me; } f = c.prev_frame(x); }
+    std::ptr::null()
+}
+
 fn k_method_name(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV {
-    let me = c.caller_frame().map_or(std::ptr::null(), |p| p.me);
+    let me = ruby_caller_me(c);
     Ok(c.me_ref(me).map_or(NIL, |m| Value::sym(m.name)))
 }
 
 fn k_callee_name(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV {
-    let me = c.caller_frame().map_or(std::ptr::null(), |p| p.me);
+    let me = ruby_caller_me(c);
     if me.is_null() { return Ok(NIL); }
     Ok(Value::sym(crate::builtins::object::callee_name(c, me)))
 }
