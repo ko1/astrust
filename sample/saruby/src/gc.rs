@@ -28,13 +28,16 @@ pub type Heap = Gc<Saruby, Backend>;
 /// What `RData::visit` receives (object-safe form of the visitor; ambiguous words for fiber stacks).
 pub type Visitor<'a> = dyn RootVisitor<Saruby> + 'a;
 
-pub static mut HEAP: Option<Heap> = None;
+static mut HEAP: Option<Heap> = None;
 static STACK_BASE: AtomicUsize = AtomicUsize::new(0);
 static STRESS: AtomicUsize = AtomicUsize::new(0);
 
+// Private: each `&mut Heap` lives inside one function below, and none re-enters: the collector's
+// callbacks (visit_roots, scan_edges, finalize, Data visit / drop) call no gc.rs function.
+// (a closure form, with_heap(|h| ..), measured +23 % instructions on gcchurn AOT)
 #[allow(static_mut_refs)]
 #[inline(always)]
-pub fn heap() -> &'static mut Heap { unsafe { HEAP.as_mut().unwrap_unchecked() } }
+fn heap() -> &'static mut Heap { unsafe { HEAP.as_mut().unwrap_unchecked() } }   // SAFETY: init runs first; see above
 
 /// Top of the main machine stack.
 #[inline(always)]
@@ -81,6 +84,15 @@ pub fn collect_auto() {
 
 /// Collections so far.
 pub fn collections() -> usize { heap().ctl.collections() }
+/// Minor collections so far.
+pub fn minor_collections() -> usize { heap().ctl.minor_collections() }
+/// Time spent collecting.
+pub fn total_time() -> std::time::Duration { heap().ctl.time() }
+/// Slot counts (GC.stat, ObjectSpace.count_objects).
+pub fn stats() -> rt::HeapStats { heap().stats() }
+pub fn backend_name() -> &'static str { heap().backend_name() }
+/// GC.disable / GC.enable: the previous state.
+pub fn set_disabled(d: bool) -> bool { heap().set_disabled(d) }
 
 /// GC.start(full_mark: false), GC.disable or not.
 pub fn collect_minor() { heap().collect_minor(&mut Saruby); }

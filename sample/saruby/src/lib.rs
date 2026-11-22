@@ -275,9 +275,8 @@ fn run_main(o: Opts) -> i32 {
         }
     }
     if o.verbose_astro {
-        let h = gc::heap();
-        let st = h.stats();
-        eprintln!("saruby: sd_hits={} gc={} gc_count={} gc_time={:?} heap_slots={} allocated={}", vm.sd_hits, h.backend_name(), h.ctl.collections(), h.ctl.time(), st.slots, st.allocated);
+        let st = gc::stats();
+        eprintln!("saruby: sd_hits={} gc={} gc_count={} gc_time={:?} heap_slots={} allocated={}", vm.sd_hits, gc::backend_name(), gc::collections(), gc::total_time(), st.slots, st.allocated);
     }
     status
 }

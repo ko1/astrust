@@ -55,11 +55,11 @@ fn gc_start_full(_c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     if a[0].truthy() { crate::gc::collect() } else { crate::gc::collect_minor() }
     Ok(NIL)
 }
-fn gc_count(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(crate::gc::heap().ctl.collections() as i64)) }
-fn gc_disable(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(crate::gc::heap().set_disabled(true))) }
-fn gc_enable(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(crate::gc::heap().set_disabled(false))) }
+fn gc_count(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(crate::gc::collections() as i64)) }
+fn gc_disable(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(crate::gc::set_disabled(true))) }
+fn gc_enable(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(crate::gc::set_disabled(false))) }
 fn gc_stat(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
-    let (n, m, h) = (crate::gc::heap().ctl.collections() as i64, crate::gc::heap().ctl.minor_collections() as i64, crate::gc::heap().stats());
+    let (n, m, h) = (crate::gc::collections() as i64, crate::gc::minor_collections() as i64, crate::gc::stats());
     let st = c.hash_new();
     for (k, v) in [("count", n), ("heap_live_slots", (h.slots - h.free) as i64), ("heap_free_slots", h.free as i64),
                    ("total_allocated_objects", h.allocated as i64), ("total_freed_objects", h.freed as i64), ("heap_available_slots", h.slots as i64), ("major_gc_count", n - m), ("minor_gc_count", m)] {
@@ -85,7 +85,7 @@ fn os_each_object(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV 
     Ok(Value::fix(n as i64))
 }
 fn os_count_objects(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let h = crate::gc::heap().stats();
+    let h = crate::gc::stats();
     let st = c.hash_new();
     hash_set(c, st, sym_value("TOTAL"), Value::fix(h.slots as i64))?;
     hash_set(c, st, sym_value("FREE"), Value::fix(h.free as i64))?;
