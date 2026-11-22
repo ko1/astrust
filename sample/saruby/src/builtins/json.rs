@@ -275,7 +275,7 @@ fn st_to_h(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.h
 // ---- parser -----------------------------------------------------------------------------------
 
 // `src`: the input's bytes, copied once (object_class / array_class callbacks may change the String)
-struct Parser { src: Vec<u8>, pos: usize, symbolize: bool, allow_nan: bool, freeze: bool, max_nesting: usize, depth: usize, trailing_comma: bool, dup_key: bool, comments: bool, obj_class: Value, ary_class: Value, on_load: Value }
+struct Parser { src: Vec<u8>, pos: usize, symbolize: bool, allow_nan: bool, freeze: bool, max_nesting: usize, depth: usize, trailing_comma: bool, dup_key: bool, comments: bool, obj_class: Value, ary_class: Value, on_load: Value, decimal: Option<(Value, Sym)> }
 impl Parser {
     fn fail<T>(&self, c: &mut Ctx, msg: &str, at: usize) -> Result<T, Esc> {
         let b = &self.src;
@@ -348,7 +348,13 @@ impl Parser {
             return self.fail(c, &format!("invalid number: '{}'", String::from_utf8_lossy(&b[st..e])), st);
         }
         self.pos = i;
-        if is_f { return Ok(c.float_new(std::str::from_utf8(&b[st..i]).unwrap().parse::<f64>().unwrap_or(0.0))); }
+        if is_f {
+            if let Some((recv, mid)) = self.decimal {
+                let text = c.str_new_enc(&b[st..i], ENC_BINARY);
+                return funcall(c, recv, mid, &[text], std::ptr::null());
+            }
+            return Ok(c.float_new(std::str::from_utf8(&b[st..i]).unwrap().parse::<f64>().unwrap_or(0.0)));
+        }
         Ok(str_to_inum(&b[st..i], 10, false).unwrap_or(Value::fix(0)))
     }
     fn string(&mut self, c: &mut Ctx) -> RV {
@@ -450,12 +456,29 @@ impl Parser {
         Ok(out)
     }
 }
+/// decimal_class: receiver and method for a float literal (json 3.1 parser.c: try_convert, new, or Kernel#<Name>).
+fn decimal_class(c: &mut Ctx, k: Value) -> Result<Option<(Value, Sym)>, Esc> {
+    if !k.truthy() { return Ok(None); }
+    if respond_to(k, intern(b"try_convert"), false) { return Ok(Some((k, intern(b"try_convert")))); }
+    if respond_to(k, intern(b"new"), false) { return Ok(Some((k, intern(b"new")))); }
+    if !is_class_or_module(k) || c.class(k).is_module { return Ok(None); }
+    let name = class_path(k);
+    match name.rfind("::") {
+        Some(i) => {
+            let (o, path) = (c.vm().c_object, c.str_new(name[..i].as_bytes()));
+            let m = funcall(c, o, intern(b"const_get"), &[path], std::ptr::null())?;
+            Ok(Some((m, intern(name[i + 2..].as_bytes()))))
+        }
+        None => Ok(Some((c.vm().m_kernel, intern(name.as_bytes())))),
+    }
+}
 fn parse_with(c: &mut Ctx, src: Value, opts: Value, bang: bool) -> RV {
     let src = expect_str(c, src)?;
     let mut p = Parser { src: c.str_bytes(src).to_vec(), pos: 0, symbolize: opt_bool(c, opts, "symbolize_names")?, allow_nan: bang || opt_bool(c, opts, "allow_nan")?, freeze: opt_bool(c, opts, "freeze")?,
         max_nesting: match opt(c, opts, "max_nesting")? { Some(m) if m.is_fixnum() => m.as_fix().max(0) as usize, _ => 0 }, depth: 0,
-        trailing_comma: opt_bool(c, opts, "allow_trailing_comma")?, comments: opt_bool(c, opts, "allow_comments")?, dup_key: opt(c, opts, "allow_duplicate_key")?.map(|v| v.truthy()).unwrap_or(false), obj_class: NIL, ary_class: NIL, on_load: NIL };
+        trailing_comma: opt_bool(c, opts, "allow_trailing_comma")?, comments: opt_bool(c, opts, "allow_comments")?, dup_key: opt(c, opts, "allow_duplicate_key")?.map(|v| v.truthy()).unwrap_or(false), obj_class: NIL, ary_class: NIL, on_load: NIL, decimal: None };
     if let Some(pr) = opt(c, opts, "on_load")? { p.on_load = pr; }
+    if let Some(k) = opt(c, opts, "decimal_class")? { p.decimal = decimal_class(c, k)?; }
     if let Some(k) = opt(c, opts, "object_class")? { if k != NIL && k != c.vm().c_hash { p.obj_class = k; } }
     if let Some(k) = opt(c, opts, "array_class")? { if k != NIL && k != c.vm().c_array { p.ary_class = k; } }
     let v = p.value(c)?;
