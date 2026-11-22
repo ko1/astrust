@@ -1101,6 +1101,8 @@ node_opt_ltlt(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, l
         return crate::builtins::array_methods::a_ltlt(c, a, &[b], std::ptr::null());
     }
     if is_string(a) && obj(a).klass == vm().c_string && !redef(R_STR_LTLT) {
+        // the common case of String#<< (a String of the same encoding onto an unfrozen one); the rest, which may raise, is String#<<
+        if is_string(b) && !is_frozen(a) && c.str_enc(a) == c.str_enc(b) { c.str_append_same_enc(a, b); return Ok(a); }
         line.store(c.frame());
         return crate::builtins::string_methods::s_ltlt(c, a, &[b], std::ptr::null());
     }
