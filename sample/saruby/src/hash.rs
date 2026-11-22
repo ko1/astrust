@@ -30,6 +30,7 @@ fn identity_hash(k: Value) -> u64 { mix(k.raw()) }
 enum Probe { Found(usize), Miss, Ask(usize, Value) }
 
 impl RHash {
+    #[inline]
     pub fn with_capacity(n: usize) -> RHash {
         RHash { entries: Vec::with_capacity(n), index: Vec::new(), live: 0, default: NIL, default_proc: NIL, identity: false, iter_lev: 0, first: 0 }
     }

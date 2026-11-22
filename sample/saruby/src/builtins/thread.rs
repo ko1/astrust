@@ -734,9 +734,8 @@ pub fn init(c: &mut Ctx) {
     vmr.c_thread.set(th);
     let list = c.alloc(vmr.c_array.get(), Body::Array(crate::avec::AVec::new()));
     LIST.set_vm(vmr, list);
-    let ch = vmr.c_hash.get();
-    let l = c.alloc(ch, Body::Hash(Box::new(RHash::with_capacity(0))));
-    let t = c.alloc(ch, Body::Hash(Box::new(RHash::with_capacity(0))));
+    let l = c.hash_new();
+    let t = c.hash_new();
     let main = c.alloc_with(th, move || { let mut r = RThread::blank(l, t); r.started = true; Body::Data(Box::new(r)) });
     MAIN.set_vm(vmr, main);
     CURRENT.set_vm(vmr, main);
