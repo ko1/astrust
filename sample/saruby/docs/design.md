@@ -205,6 +205,10 @@ read only on paths that are slow anyway.  Measurements: `~/ruby/src/trials/2026-
   zlib (builtins/zlib.rs) is ext/zlib/zlib.c over Rust ports of zlib 1.3 (zlib_check.rs, zlib_deflate.rs,
   zlib_inflate.rs): the compressed bytes equal CRuby's; a running stream is taken out of its object, so a
   block or io callback that re-enters the object gets Zlib::InProgressError.
+  json: `require "json"` loads the newest installed json gem's Ruby code (as rubygems activates it)
+  over `json/ext/parser` and `json/ext/generator` done natively (json_parser.rs, json_generator.rs,
+  json_fpconv.rs = the gem's Grisu2): JSON::VERSION picks the 3.x or the 2.x rules (both checked against
+  json 3.1.0 and 2.13.2). builtins/json.rs is only the fallback when there is no reference ruby.
 * Lazy Ruby: `prelude/lib/*.rb` are embedded and compiled on first `require`
   (`etc`, `timeout`, `monitor`, `time`; ARGF is autoloaded from `saruby/argf`).
 * Everything else pure-Ruby comes from the reference ruby's stdlib: `build.rs` records
