@@ -321,6 +321,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                     let s0 = i; while i < fmt.len() && fmt[i].is_ascii_digit() { i += 1; }
                     let n: i64 = std::str::from_utf8(&fmt[s0..i]).unwrap().parse().unwrap_or(i64::MAX);
                     if i < fmt.len() && fmt[i] == b'$' {
+                        if n > i32::MAX as i64 { return arg_err(c, "width too big"); }
                         if val.is_some() { return arg_err(c, format!("value given twice - {}$", n)); }
                         val = Some(st.pos_arg(c, n)?); i += 1;
                     } else {
@@ -378,7 +379,9 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                         if p < 0 { flags &= !FPREC; } else { prec = p; }
                     } else {
                         let s0 = i; while i < fmt.len() && fmt[i].is_ascii_digit() { i += 1; }
-                        prec = std::str::from_utf8(&fmt[s0..i]).unwrap().parse().unwrap_or(0);
+                        let n: i64 = if i == s0 { 0 } else { std::str::from_utf8(&fmt[s0..i]).unwrap().parse().unwrap_or(i64::MAX) };
+                        if n > i32::MAX as i64 { return arg_err(c, "precision too big"); }
+                        prec = n;
                     }
                 }
                 b'%' => {
@@ -479,7 +482,8 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                 } else { big.abs().to_string_radix(radix) };
                 if prec_o == Some(0) && bzero { digits.clear(); }
                 let fill = if dots { std::char::from_digit(radix - 1, radix).unwrap() } else { '0' };
-                if let Some(p) = prec_o { if digits.len() < p { digits = format!("{}{}", fill.to_string().repeat(p - digits.len()), digits); } }
+                // the ".." of a negative counts toward the precision
+                if let Some(p) = prec_o.map(|p| if dots { p.saturating_sub(2) } else { p }) { if digits.len() < p { digits = format!("{}{}", fill.to_string().repeat(p - digits.len()), digits); } }
                 else if dots && flags & FZERO != 0 && flags & FMINUS == 0 && w > digits.len() + 2 { digits = format!("{}{}", fill.to_string().repeat(w - digits.len() - 2), digits); }
                 if conv == b'X' { digits = digits.to_uppercase(); }
                 let mut sign = String::from(if bneg && !dots { "-" } else if flags & FPLUS != 0 { "+" } else if flags & FSPACE != 0 { " " } else { "" });
