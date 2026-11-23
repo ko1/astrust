@@ -141,5 +141,6 @@ pub fn init(c: &mut Ctx) {
     d(c, "update", env_update, -1); d(c, "merge!", env_update, -1);
     for n in ["replace", "delete_if", "reject!", "keep_if", "select!", "filter!", "shift"] { d(c, n, env_mutate, -1); }
     d(c, "freeze", env_freeze, 0); d(c, "dup", env_dup, 0); d(c, "clone", env_clone, -1); d(c, "rehash", |_c, _s, _a, _b| Ok(NIL), 0);
+    obj_set_flags(env, crate::object::FL_SHAREABLE);   // as CRuby's (Ractor.shareable?)
     const_set(c, c.vm().c_object.get(), intern(b"ENV"), env);
 }

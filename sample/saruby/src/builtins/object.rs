@@ -158,7 +158,9 @@ fn k_respond_to_missing(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block)
 fn k_ivar_get(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let n = to_sym_arg(c, a[0])?;
     check_ivar_name(c, n)?;
-    Ok(ivar_get(c, slf, n))
+    let v = ivar_get(c, slf, n);
+    if crate::builtins::ractor::multi() { crate::builtins::ractor::class_ivar_get_check(c, slf, n, v)?; }
+    Ok(v)
 }
 fn check_ivar_name(c: &mut Ctx, n: Sym) -> Result<(), Esc> {
     let b = sym_bytes(n);
@@ -171,6 +173,7 @@ fn check_ivar_name(c: &mut Ctx, n: Sym) -> Result<(), Esc> {
 fn k_ivar_set(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let n = to_sym_arg(c, a[0])?;
     check_ivar_name(c, n)?;
+    if crate::builtins::ractor::multi() { crate::builtins::ractor::class_ivar_set_check(c, slf, n)?; }
     ivar_set(c, slf, n, a[1])
 }
 fn k_ivar_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -820,11 +823,13 @@ fn m_const_get(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
         }
         let sym = one.unwrap_or_else(|| intern(p.as_bytes()));
         if !is_class_or_module(cur) { return type_err(c, format!("{} does not refer to class/module", name)); }
+        let parent = cur;
         cur = if inherit {
             match const_get_inherit(c, cur, sym)? { Some(v) => v, None => const_missing(c, cur, sym)? }
         } else {
             match const_get_at(c, cur, sym) { Some(v) => v, None => const_missing(c, cur, sym)? }
         };
+        if crate::builtins::ractor::multi() { crate::builtins::ractor::const_check(c, parent, false, sym, cur)?; }
     }
     Ok(cur)
 }
@@ -836,6 +841,7 @@ fn m_const_set(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
         return Err(raise_exc(c, e));
     }
     check_frozen(c, slf)?;
+    if crate::builtins::ractor::multi() { crate::builtins::ractor::cdecl_check(c, a[1])?; }
     const_set(c, slf, n, a[1]);
     Ok(a[1])
 }
@@ -899,6 +905,7 @@ fn m_const_missing(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
 }
 fn m_cvar_get(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let n = to_sym_arg(c, a[0])?;
+    if crate::builtins::ractor::multi() { crate::builtins::ractor::cvar_check(c, slf, n)?; }
     match crate::rt::cvar_lookup(c, slf, n) {
         Some((_, v)) => Ok(v),
         None => {
@@ -909,6 +916,7 @@ fn m_cvar_get(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 }
 fn m_cvar_set(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let n = to_sym_arg(c, a[0])?;
+    if crate::builtins::ractor::multi() { crate::builtins::ractor::cvar_check(c, slf, n)?; }
     match crate::rt::cvar_lookup(c, slf, n) { Some((o, _)) => { c.class_mut(o).cvars.insert(n, a[1]); } None => { c.class_mut(slf).cvars.insert(n, a[1]); } }
     Ok(a[1])
 }

@@ -171,6 +171,7 @@ fn boot_classes(c: &mut Ctx) {
     vmr.c_random.set(r); vmr.default_random.set(d);
     binding::init(c);
     thread::init(c);
+    lazy_const(c, ob, "Ractor", "saruby/ractor");
     misc::init(c);
     lazy_const(c, ob, "ENV", "saruby/env");
     lazy_const(c, ob, "RbConfig", "saruby/rbconfig");

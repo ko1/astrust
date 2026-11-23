@@ -799,7 +799,7 @@ class Set
   end
   def to_a = __hash.keys
   def to_set(*a, &b) = (a.empty? && !b && instance_of?(Set) ? self : Set.new(self, *a, &b))
-  def freeze = (super)
+  def freeze = (__hash.freeze; super)
   def |(o) = (s = dup; s.merge(__enum(o)); s)
   alias union |
   alias + |

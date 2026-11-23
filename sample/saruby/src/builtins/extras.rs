@@ -110,6 +110,7 @@ fn gc_config(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(h)
 }
 fn k_global_variables(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+    if crate::builtins::ractor::multi() { crate::builtins::ractor::global_variables_check(c)?; }
     let out = c.ary_new();
     // the built-in names first (CRuby's order), then the others by name: the table's own order is a hash order
     let mut user: Vec<Vec<u8>> = c.vm().globals.borrow().keys().map(|k| sym_bytes(*k).to_vec()).collect();

@@ -29,6 +29,7 @@ pub mod json_parser;
 pub mod env;
 pub mod extras;
 pub mod thread;
+pub mod ractor;
 pub mod svar;
 pub mod fiber_methods;
 pub mod sys;

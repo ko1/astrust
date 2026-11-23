@@ -351,23 +351,25 @@ pub fn srb_range_lit(c: &mut Ctx, b: Value, e: Value, excl: bool, lc: &LitCache)
 
 // ---- variables ----------------------------------------------------------------------------
 
-pub fn srb_ivar_get(c: &Ctx, slf: Value, name: Sym, ic: &IvarCache) -> Value {
+pub fn srb_ivar_get(c: &mut Ctx, slf: Value, name: Sym, ic: &IvarCache) -> RV {
     if is_object(slf) {
         let k = real_class_of(c, slf);
         if let Some(&i) = c.class(k).ivar_index.get(&name) {
             if obj_klass(slf) == k { ic.klass.set(k.raw()); ic.idx.set(i); }
         }
     }
-    ivar_get(c, slf, name)
+    let v = ivar_get(c, slf, name);
+    if crate::builtins::ractor::multi() { crate::builtins::ractor::class_ivar_get_check(c, slf, name, v)?; }
+    Ok(v)
 }
 
 /// A site's way out of its inline path: the cache without the baked slot first (a stale slot stays cheap), then the miss.
 #[cold]
 #[inline(never)]
-pub fn srb_ivar_get_out(slf: Value, name: Sym, ic: &IvarCache, c: &Ctx) -> Value {
+pub fn srb_ivar_get_out(slf: Value, name: Sym, ic: &IvarCache, c: &mut Ctx) -> RV {
     if slf.is_heap() && obj_klass(slf).raw() == ic.klass.get() {
         if let Some(ivs) = c.obj_ivars(slf) {
-            return match ivs.get(ic.idx.get() as usize) { Some(v) if v != UNDEF => v, _ => NIL };
+            return Ok(match ivs.get(ic.idx.get() as usize) { Some(v) if v != UNDEF => v, _ => NIL });
         }
     }
     srb_ivar_get(c, slf, name, ic)
@@ -388,12 +390,13 @@ pub fn srb_ivar_set_out(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &IvarC
 #[inline(never)]
 #[cold]
 pub fn srb_ivar_arith_out(c: &mut Ctx, slf: Value, name: Sym, sub: bool, v: Value, line: Pos, ic: &IvarCache, cc: &OpCc) -> RV {
-    let cur = srb_ivar_get_out(slf, name, ic, c);
+    let cur = srb_ivar_get_out(slf, name, ic, c)?;
     let r = crate::opt::srb_arith_out(c, cur, v, if sub { s::minus } else { s::plus }, line, cc)?;
     srb_ivar_set_out(c, slf, name, r, ic)
 }
 
 pub fn srb_ivar_set(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &IvarCache) -> RV {
+    if crate::builtins::ractor::multi() { crate::builtins::ractor::class_ivar_set_check(c, slf, name)?; }
     ivar_set(c, slf, name, v)?;
     if is_object(slf) {
         let k = real_class_of(c, slf);
@@ -405,8 +408,14 @@ pub fn srb_ivar_set(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &IvarCache
 
 }
 
-pub fn srb_gvar_get(c: &mut Ctx, name: Sym) -> RV { crate::builtins::kernel::gvar_get(c, name) }
-pub fn srb_gvar_set(c: &mut Ctx, name: Sym, v: Value) -> RV { crate::builtins::kernel::gvar_set(c, name, v) }
+pub fn srb_gvar_get(c: &mut Ctx, name: Sym) -> RV {
+    if crate::builtins::ractor::multi() { crate::builtins::ractor::gvar_check(c, name)?; }
+    crate::builtins::kernel::gvar_get(c, name)
+}
+pub fn srb_gvar_set(c: &mut Ctx, name: Sym, v: Value) -> RV {
+    if crate::builtins::ractor::multi() { crate::builtins::ractor::gvar_check(c, name)?; }
+    crate::builtins::kernel::gvar_set(c, name, v)
+}
 
 /// The class whose class variables the current code sees (lexical cref, skipping singletons).
 fn cvar_base(c: &Ctx) -> Value {
@@ -441,6 +450,7 @@ fn cvar_toplevel_check(c: &mut Ctx) -> Result<(), Esc> {
 pub fn srb_cvar_get(c: &mut Ctx, name: Sym) -> RV {
     cvar_toplevel_check(c)?;
     let k = cvar_base(c);
+    if crate::builtins::ractor::multi() { crate::builtins::ractor::cvar_check(c, k, name)?; }
     match cvar_lookup(c, k, name) {
         Some((_, v)) => Ok(v),
         None => {
@@ -454,6 +464,7 @@ pub fn srb_cvar_get(c: &mut Ctx, name: Sym) -> RV {
 pub fn srb_cvar_set(c: &mut Ctx, name: Sym, v: Value) -> RV {
     cvar_toplevel_check(c)?;
     let k = cvar_base(c);
+    if crate::builtins::ractor::multi() { crate::builtins::ractor::cvar_check(c, k, name)?; }
     match cvar_lookup(c, k, name) {
         Some((owner, _)) => { c.class_mut(owner).cvars.insert(name, v); }
         None => { c.class_mut(k).cvars.insert(name, v); }
@@ -464,6 +475,14 @@ pub fn srb_cvar_set(c: &mut Ctx, name: Sym, v: Value) -> RV {
 #[cold]
 pub fn srb_const_get(c: &mut Ctx, cref: *const Cref, name: Sym, cc: &ConstCache) -> RV {
     let v = const_lookup(c, cref, name)?;
+    // while other Ractors live only shareable values are cached: every Ractor may read those
+    if crate::builtins::ractor::multi() && !crate::builtins::ractor::shareable(c, v) {
+        if crate::builtins::ractor::isolated(c) {
+            let (k, lexical) = crate::builtins::ractor::const_found_in(c, cref, name);
+            crate::builtins::ractor::const_check(c, k, lexical, name, v)?;
+        }
+        return Ok(v);
+    }
     cc.serial.set(vm().const_serial.get());
     cc.cref.set(cref as usize);
     cc.val.set(v.raw());
@@ -477,7 +496,8 @@ pub fn srb_const_path(c: &mut Ctx, parent: Value, name: Sym) -> RV {
         return type_err(c, format!("{} is not a class/module", s));
     }
     if let Some(v) = const_get_inherit(c, parent, name)? {
-        if parent != vm().c_object.get() || true { return Ok(v); }
+        if crate::builtins::ractor::multi() { crate::builtins::ractor::const_check(c, parent, false, name, v)?; }
+        return Ok(v);
     }
     const_missing(c, parent, name)
 }
@@ -501,6 +521,7 @@ pub fn srb_cdecl(c: &mut Ctx, parent: Value, name: Sym, v: Value) -> RV {
         let s = crate::builtins::kernel::inspect_str(c, k)?;
         return type_err(c, format!("{} is not a class/module", s));
     }
+    if crate::builtins::ractor::multi() { crate::builtins::ractor::cdecl_check(c, v)?; }
     const_set(c, k, name, v);
     Ok(v)
 }

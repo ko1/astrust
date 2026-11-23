@@ -73,6 +73,7 @@ pub struct Iseq {
     pub uses_block: bool,
     pub parent: std::cell::Cell<*const Iseq>,          // lexically enclosing iseq (set when it is finished)
     pub outer_names: Vec<(Sym, u32, u32)>,             // eval: the binding's names (name, hops, idx)
+    pub outer_vars: Vec<Sym>,                          // block: outer variables it uses, `yield` if it yields (Ractor.new)
     pub ruby2_keywords: std::cell::Cell<bool>,         // Module#ruby2_keywords: flag a trailing keyword Hash in *rest
     pub traced: bool,                                  // compiled with trace points (TRACE_COMPILE)
 }
@@ -1968,11 +1969,14 @@ pub fn invoke_untraced(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: S
         MKind::Cfunc(f, arity) => invoke_cfunc(c, me, f, arity, recv, base, argc, blk, flags),
         MKind::AttrReader(id) => {
             if argc != 0 { return argc_err(c, argc as usize, 0, 0); }
-            Ok(ivar_get(c, recv, id))
+            let v = ivar_get(c, recv, id);
+            if crate::builtins::ractor::multi() { crate::builtins::ractor::class_ivar_get_check(c, recv, id, v)?; }
+            Ok(v)
         }
         MKind::AttrWriter(id) => {
             if argc != 1 { return argc_err(c, argc as usize, 1, 1); }
             let v = base[2].get();
+            if crate::builtins::ractor::multi() { crate::builtins::ractor::class_ivar_set_check(c, recv, id)?; }
             ivar_set(c, recv, id, v)
         }
         MKind::Bmethod(p) => invoke_bmethod(c, me, p, recv, base, argc, blk, flags),
