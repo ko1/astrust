@@ -8,7 +8,6 @@ use crate::heap::no_legacy_hn::*;
 #[allow(unused_imports)]
 use crate::heap::no_legacy_str::*;
 use crate::array::*;
-use crate::builtins::exception::raise_errno;
 use crate::builtins::numeric_methods::num_to_long;
 use crate::builtins::object::to_sym_arg;
 use crate::builtins::sys;
@@ -184,15 +183,6 @@ fn io_each_codepoint(c: &mut Ctx, s: Value, a: &[Value], blk: Blk) -> RV {
     }
     Ok(s)
 }
-fn p_setrlimit(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
-    check_argc(c, a, 2, 3)?;
-    let res = num_to_long(c, a[0])? as i32;
-    let lim = |c: &mut Ctx, v: Value| -> Result<u64, Esc> { if is_bignum(v) { Ok(u64::MAX) } else { Ok(num_to_long(c, v)? as u64) } };
-    let cur = lim(c, a[1])?;
-    let max = match a.get(2) { Some(&m) => lim(c, m)?, None => cur };
-    if sys::setrlimit(res, &sys::Rlimit { cur, max }) < 0 { return Err(raise_errno(c, sys::errno(), "setrlimit")); }
-    Ok(NIL)
-}
 pub fn init(c: &mut Ctx) {
     let vmr = c.vm();
     let md = vmr.c_module.get();
@@ -225,11 +215,8 @@ pub fn init(c: &mut Ctx) {
     define_cfunc(c, vmr.c_io.get(), "wait", io_wait, -1);
     define_cfunc(c, vmr.c_io.get(), "each_codepoint", io_each_codepoint, 0);
     let p = vmr.m_process.get();
-    define_module_function(c, p, "setrlimit", p_setrlimit, -1);
     define_module_function(c, p, "getsid", |_c, _s, _a, _b| Ok(Value::fix(sys::getsid(0) as i64)), -1);
-    define_module_function(c, p, "getpriority", |_c, _s, _a, _b| Ok(Value::fix(0)), 2);
     define_module_function(c, p, "setpgrp", |_c, _s, _a, _b| { sys::setpgid(0, 0); Ok(Value::fix(0)) }, 0);
-    define_module_function(c, p, "maxgroups", |_c, _s, _a, _b| Ok(Value::fix(65536)), 0);
     define_singleton_cfunc(c, vmr.c_thread.get(), "ignore_deadlock", |_c, _s, _a, _b| Ok(Value::bool(crate::builtins::thread::IGNORE_DEADLOCK.load(std::sync::atomic::Ordering::Relaxed))), 0);
     define_singleton_cfunc(c, vmr.c_thread.get(), "ignore_deadlock=", |_c, _s, a, _b| { crate::builtins::thread::IGNORE_DEADLOCK.store(a[0].truthy(), std::sync::atomic::Ordering::Relaxed); Ok(a[0]) }, 1);
 }

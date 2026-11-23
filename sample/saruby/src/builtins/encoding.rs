@@ -489,7 +489,8 @@ pub fn transcode(c: &mut Ctx, src: &[u8], from: u8, to: u8, o: &TcOpts) -> Resul
 pub fn find_enc(name: &[u8]) -> Option<u8> {
     let n = std::str::from_utf8(name).ok()?;
     if n.eq_ignore_ascii_case("internal") { return None; }
-    if n.eq_ignore_ascii_case("external") || n.eq_ignore_ascii_case("locale") || n.eq_ignore_ascii_case("filesystem") { return Some(default_external()); }
+    if n.eq_ignore_ascii_case("locale") { return Some(ENC_UTF8); }
+    if n.eq_ignore_ascii_case("external") || n.eq_ignore_ascii_case("filesystem") { return Some(default_external()); }
     for (i, d) in ENCS.iter().enumerate() {
         if d.name.eq_ignore_ascii_case(n) || d.aliases.iter().any(|a| a.eq_ignore_ascii_case(n)) { return Some(i as u8); }
     }
@@ -497,6 +498,17 @@ pub fn find_enc(name: &[u8]) -> Option<u8> {
 }
 pub fn default_external() -> u8 { DEFAULT_EXTERNAL.load(Relaxed) }
 pub fn default_internal() -> Option<u8> { let d = DEFAULT_INTERNAL.load(Relaxed); if d < 0 { None } else { Some(d as u8) } }
+/// rb_external_str_new_with_enc: bytes in `enc`, converted to default_internal when one is set
+/// (kept in `enc` when that conversion fails).
+pub fn external_str(c: &mut Ctx, b: Vec<u8>, enc: u8) -> Value {
+    if let Some(i) = default_internal() {
+        if i != enc && enc != ENC_BINARY && ascii_compat(enc) {
+            if crate::string::is_ascii(&b) && ascii_compat(i) { return c.str_from_vec_enc(b, i); }
+            if let Some(o) = crate::builtins::econv::convert_string(enc_name(enc), enc_name(i), &b) { return c.str_from_vec_enc(o, i); }
+        }
+    }
+    c.str_from_vec_enc(b, enc)
+}
 
 pub fn encoding_value(c: &Ctx, id: u8) -> Value { c.vm().enc_objs.borrow()[id as usize] }
 pub fn is_encoding(c: &Ctx, v: Value) -> bool { c.data::<REnc>(v).is_some() }
@@ -556,10 +568,10 @@ fn enc_names(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let out = c.ary_new();
     push_name(c, out, d.name);
     for a in d.aliases {
-        if (*a == "locale" || *a == "external" || *a == "filesystem") && id != default_external() { continue; }
+        if (*a == "external" || *a == "filesystem") && id != default_external() { continue; }
         push_name(c, out, a);
     }
-    if id == default_external() && id != ENC_UTF8 { for a in ["locale", "external", "filesystem"] { push_name(c, out, a); } }
+    if id == default_external() && id != ENC_UTF8 { for a in ["external", "filesystem"] { push_name(c, out, a); } }
     Ok(out)
 }
 fn enc_dummy_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(is_dummy(id_of(c, slf)))) }
@@ -593,7 +605,7 @@ fn enc_s_aliases(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
         let d = &ENCS[i as usize];
         for a in d.aliases {
             let k = c.str_new_enc(a.as_bytes(), ENC_ASCII);
-            let tgt = if matches!(*a, "locale" | "external" | "filesystem") { enc_name(default_external()) } else { d.name };
+            let tgt = if matches!(*a, "external" | "filesystem") { enc_name(default_external()) } else { d.name };
             let v = c.str_new_enc(tgt.as_bytes(), ENC_ASCII);
             crate::hash::hash_aset(c, h, k, v)?;
         }
