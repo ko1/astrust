@@ -1014,14 +1014,36 @@ fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     Ok(TRUE)
 }
 
-fn k_autoload(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
+/// rb_class_real(rb_vm_cbase()): where Kernel#autoload / #autoload? work.
+fn autoload_cbase(c: &Ctx) -> Value {
+    let cr = c.caller_frame().map_or(std::ptr::null(), |f| f.cref());
+    let mut k = c.cref_ref(cr).map_or(c.vm().c_object.get(), |r| r.klass);
+    while c.class(k).is_singleton { k = c.class(k).superclass; }
+    k
+}
+fn k_autoload(c: &mut Ctx, _slf: Value, args: &[Value], b: *const Block) -> RV { let k = autoload_cbase(c); m_autoload(c, k, args, b) }
+/// rb_mod_autoload / rb_autoload_str.
+fn m_autoload(c: &mut Ctx, k: Value, args: &[Value], _b: *const Block) -> RV {
     check_argc(c, args, 2, 2)?;
-    let k = if is_class_or_module(slf) { slf } else { c.vm().c_object.get() };
     let nm = crate::builtins::object::to_sym_arg(c, args[0])?;
-    let path = expect_str(c, args[1])?;
+    let path = if is_string(args[1]) { args[1] } else { let f = feature_name(c, args[1])?; c.str_new(f.as_bytes()) };
+    if !sym_bytes(nm).first().is_some_and(|b| b.is_ascii_uppercase()) {
+        let e = make_name_error(c, c.vm().c_name_error.get(), &format!("autoload must be constant name: {}", sym_str(nm)), Value::sym(nm), k)?;
+        return Err(raise_exc(c, e));
+    }
+    check_frozen(c, k)?;
     if c.str_len(path) == 0 { return arg_err(c, "empty feature name"); }
+    if const_get_at(c, k, nm).is_some() { return Ok(NIL); }
     c.class_mut(k).autoload.insert(nm, path);
     Ok(NIL)
+}
+/// Run an autoload's require: `main.require(path)` as CRuby (so an overridden require sees it);
+/// saruby's own lazy features load directly.
+pub fn autoload_require(c: &mut Ctx, path: Value) -> Result<(), Esc> {
+    if c.str_bytes(path).starts_with(b"saruby/") { require_feature(c, path, false)?; return Ok(()); }
+    let main = c.vm().main_obj.get();
+    funcall(c, main, s::require, &[path], std::ptr::null())?;
+    Ok(())
 }
 
 fn m_ruby2_keywords(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
@@ -1085,9 +1107,9 @@ fn m_s_nesting(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV 
     }
     Ok(out)
 }
-fn m_autoload_p(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_autoload_p(c: &mut Ctx, _slf: Value, args: &[Value], b: *const Block) -> RV { let k = autoload_cbase(c); m_autoload_p(c, k, args, b) }
+fn m_autoload_p(c: &mut Ctx, k: Value, args: &[Value], _b: *const Block) -> RV {
     check_argc(c, args, 1, 2)?;
-    let k = if is_class_or_module(slf) { slf } else { c.vm().c_object.get() };
     let nm = crate::builtins::object::to_sym_arg(c, args[0])?;
     let inherit = args.get(1).map(|v| v.truthy()).unwrap_or(true);
     let list: Vec<Value> = if inherit { ancestors(c, k).to_vec() } else { vec![k] };
@@ -1172,7 +1194,7 @@ pub fn init(c: &mut Ctx) {
     mf(c, "require_relative", k_require_relative, -1);
     mf(c, "load", k_load, -1);
     mf(c, "autoload", k_autoload, -1);
-    mf(c, "autoload?", m_autoload_p, -1);
+    mf(c, "autoload?", k_autoload_p, -1);
     define_cfunc(c, vmr.c_module.get(), "autoload?", m_autoload_p, -1);
     define_private_cfunc(c, vmr.c_module.get(), "ruby2_keywords", m_ruby2_keywords, -1);
     let sm = singleton_class(c, vmr.main_obj.get());
@@ -1184,7 +1206,7 @@ pub fn init(c: &mut Ctx) {
     mf(c, "eval", k_eval, -1);
     mf(c, "binding", k_binding, 0);
     mf(c, "local_variables", k_local_variables, 0);
-    define_cfunc(c, vmr.c_module.get(), "autoload", k_autoload, -1);
+    define_cfunc(c, vmr.c_module.get(), "autoload", m_autoload, -1);
     let _ = intern_str;
 }
 

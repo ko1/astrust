@@ -951,7 +951,7 @@ pub fn const_get_inherit(c: &mut Ctx, klass: Value, name: Sym) -> Result<Option<
 
 fn do_autoload(c: &mut Ctx, k: Value, name: Sym, path: Value) -> Result<Option<Value>, Esc> {
     c.class_mut(k).autoload.remove(&name);
-    crate::builtins::kernel::require_feature(c, path, false)?;
+    crate::builtins::kernel::autoload_require(c, path)?;
     Ok(const_get_at(c, k, name))
 }
 

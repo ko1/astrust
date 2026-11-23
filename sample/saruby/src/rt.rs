@@ -1054,7 +1054,7 @@ pub fn srb_class(c: &mut Ctx, outer: Value, name: Sym, sup: Value, is: &'static 
         None => {
             if let Some(&path) = c.class(outer).autoload.get(&name) {
                 c.class_mut(outer).autoload.remove(&name);
-                crate::builtins::kernel::require_feature(c, path, false)?;
+                crate::builtins::kernel::autoload_require(c, path)?;
                 const_get_at(c, outer, name)
             } else { None }
         }
@@ -1096,7 +1096,7 @@ pub fn srb_module(c: &mut Ctx, outer: Value, name: Sym, is: &'static Iseq, _fp: 
     }
     // reopening an autoload constant loads it first (as srb_class does)
     if const_get_at(c, outer, name).is_none() {
-        if let Some(path) = c.class_mut(outer).autoload.remove(&name) { crate::builtins::kernel::require_feature(c, path, false)?; }
+        if let Some(path) = c.class_mut(outer).autoload.remove(&name) { crate::builtins::kernel::autoload_require(c, path)?; }
     }
     let m = match const_get_at(c, outer, name) {
         Some(m) => {
