@@ -991,12 +991,16 @@ pub fn require_feature(c: &mut Ctx, path: Value, relative: bool) -> RV {
     let caller_file = caller_file.map(|f| if f == "-" || f == "-e" { "./x".to_string() } else { f });
     // require_relative in a feature of saruby's own (<internal:a/b>): the feature a/<name>
     if let Some(inner) = caller_file.as_deref().and_then(|f| f.strip_prefix("<internal:")).and_then(|f| f.strip_suffix('>')) {
-        let rel = match inner.rfind('/') { Some(p) => format!("{}/{}", &inner[..p], name), None => name.clone() };
+        let mut rel: Vec<&str> = inner.split('/').collect();
+        rel.pop();
+        for seg in name.split('/') { match seg { ".." => { rel.pop(); } "." => {} s => rel.push(s) } }
+        let rel = rel.join("/");
         if crate::builtins::prelude::has_feature(&rel) { let r = c.str_new(rel.as_bytes()); return require_feature(c, r, false); }
     }
     let file = match locate_feature(c, &name, caller_file.as_deref()) {
         Feature::File(f) => f,
         Feature::Native(base) => {
+            if base == "did_you_mean" { if let Some(r) = crate::builtins::did_you_mean::require(c) { return r; } }
             let lf = c.vm().loaded_features.get();
             if c.ary(lf).iter().any(|&x| is_string(x) && c.str_bytes(x) == base.as_bytes()) { return Ok(FALSE); }
             let key = c.str_new(base.as_bytes());

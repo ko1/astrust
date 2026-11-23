@@ -47,6 +47,21 @@ fn iseq_names(c: &Ctx, is: *const Iseq, own: bool) -> Vec<(Sym, u32, u32)> {
     out
 }
 
+/// rb_iseq_local_variables: every local of `is` and of the scopes it is a block of, declared or not yet assigned.
+pub fn iseq_var_names(c: &Ctx, is: *const Iseq) -> Vec<Sym> {
+    let mut out: Vec<Sym> = vec![];
+    let mut cur = c.iseq_ref(is);
+    while let Some(i) = cur {
+        for &(n, _, _) in &i.local_names { if !internal_name(n) && !out.contains(&n) { out.push(n); } }
+        if i.kind == IseqKind::Eval { for &(n, _, _) in &i.outer_names { if !internal_name(n) && !out.contains(&n) { out.push(n); } } }
+        if !matches!(i.kind, IseqKind::Block | IseqKind::Lambda) { break; }
+        cur = c.iseq_ref(i.parent.get());
+    }
+    out
+}
+// compile.rs's hidden locals (`it`, anonymous forwarded params)
+fn internal_name(n: Sym) -> bool { matches!(crate::symbol::sym_bytes(n), b"__it" | b"__fwd_rest" | b"__fwd_kw" | b"__fwd_blk") }
+
 fn new_binding(c: &mut Ctx, b: RBinding) -> Value {
     let k = c.vm().c_binding.get();
     // the Values stay on the stack (in the closure) until the slot exists

@@ -59,6 +59,7 @@ pub mod digest;
 pub mod etc;
 pub mod syslog;
 pub mod error_highlight;
+pub mod did_you_mean;
 pub mod cgi_escape;
 pub mod coverage;
 pub mod objspace;

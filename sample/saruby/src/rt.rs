@@ -1114,10 +1114,11 @@ pub fn srb_def(c: &mut Ctx, mid: Sym, is: &'static Iseq, _fp: Fp) -> RV {
 }
 
 pub fn srb_sdef(c: &mut Ctx, recv: Value, mid: Sym, is: &'static Iseq) -> RV {
-    if !recv.is_heap() || recv.is_fixnum() {
+    // nil / true / false: their class, as CRuby's singleton_class
+    if (!recv.is_heap() || recv.is_fixnum()) && recv != NIL && recv != TRUE && recv != FALSE {
         return type_err(c, format!("can't define singleton"));
     }
-    if is_frozen(recv) { return Err(raise_frozen(c, recv)); }
+    if recv.is_heap() && is_frozen(recv) { return Err(raise_frozen(c, recv)); }
     let k = singleton_class(c, recv);
     define_iseq_method(c, k, mid, is, VISI_PUBLIC);
     crate::builtins::coverage::on_def(c, is as *const Iseq as usize, k, mid);
