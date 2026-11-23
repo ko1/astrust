@@ -1269,8 +1269,8 @@ pub fn ALLOC_node_const_path(parent: NodePtr, name: Sym, line: u32) -> NodePtr {
 }
 
 #[allow(non_snake_case)]
-pub fn ALLOC_node_top_const(name: Sym) -> NodePtr {
-    node_allocate_with(&KIND_node_top_const, node_top_const_struct { name }, |_| { })
+pub fn ALLOC_node_top_const(name: Sym, line: u32) -> NodePtr {
+    node_allocate_with(&KIND_node_top_const, node_top_const_struct { name }, |h| { h.line = line; })
 }
 
 #[allow(non_snake_case)]

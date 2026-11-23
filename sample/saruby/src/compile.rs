@@ -679,7 +679,7 @@ impl<'a> Compiler<'a> {
             Kind::SourceFileNode { filepath } => ALLOC_node_str(lstr(filepath), 0),
             Kind::SourceLineNode => ALLOC_node_lit(Value::fix(line as i64)),
             Kind::SourceEncodingNode => {
-                let e = ALLOC_node_top_const(intern(b"Encoding"));
+                let e = ALLOC_node_top_const(intern(b"Encoding"), line);
                 let nm = crate::builtins::encoding::enc_name(self.src_enc as u8).to_ascii_uppercase().replace('-', "_");
                 ALLOC_node_const_path(e, intern(nm.as_bytes()), line)
             }
@@ -787,7 +787,8 @@ impl<'a> Compiler<'a> {
             }
             Kind::ConstantPathNode { parent, name } => {
                 let nm = self.cst(name.unwrap_or(0));
-                match parent { None => ALLOC_node_top_const(nm), Some(p) => { let pv = self.c(p); ALLOC_node_const_path(pv, nm, line) } }
+                // CRuby's opt_getconstant_path: a path from a constant (or ::) is one instruction, at the whole path
+                match parent { None => ALLOC_node_top_const(nm, line), Some(p) => { let pv = if static_cpath(p) { self.c_node(p) } else { self.c(p) }; ALLOC_node_const_path(pv, nm, line) } }
             }
             Kind::ConstantPathWriteNode { target, value } => {
                 let v = self.c(value);
@@ -795,18 +796,18 @@ impl<'a> Compiler<'a> {
             }
             Kind::ConstantPathOrWriteNode { target, value } => {
                 let v = self.c(value);
-                let rd = self.c(target);
+                let rd = self.cpath_read(target, line);
                 let w = self.cpath_write(target, v);
                 let (p, nm) = self.cpath_parts(target);
                 let d = ALLOC_node_defined(DEF_CPATH, nm, p);
                 ALLOC_node_if(d, rd, w)
             }
             Kind::ConstantPathAndWriteNode { target, value } => {
-                let v = self.c(value); let rd = self.c(target); let w = self.cpath_write(target, v);
+                let v = self.c(value); let rd = self.cpath_read(target, line); let w = self.cpath_write(target, v);
                 ALLOC_node_and(rd, w)
             }
             Kind::ConstantPathOperatorWriteNode { target, value, binary_operator } => {
-                let v = self.c(value); let rd = self.c(target);
+                let v = self.c(value); let rd = self.cpath_read(target, line);
                 let e = self.binop(rd, self.cst(*binary_operator), v, line);
                 self.cpath_write(target, e)
             }
@@ -1167,7 +1168,7 @@ impl<'a> Compiler<'a> {
     fn cpath_parent(&mut self, cp: &PNode) -> (NodePtr, bool) {
         match &cp.kind {
             Kind::ConstantPathNode { parent: Some(p), .. } => (self.c(p), true),
-            Kind::ConstantPathNode { parent: None, .. } => (ALLOC_node_top_const(intern(b"Object")), true),
+            Kind::ConstantPathNode { parent: None, .. } => (ALLOC_node_top_const(intern(b"Object"), self.line(cp.loc)), true),
             _ => (ALLOC_node_nil(), false),
         }
     }
@@ -1179,6 +1180,14 @@ impl<'a> Compiler<'a> {
                 (p, nm)
             }
             _ => (ALLOC_node_nil(), Sym(0)),
+        }
+    }
+    /// The read of an op-write's target path: its parent at its own node, the path at the write's (CRuby).
+    fn cpath_read(&mut self, t: &PNode, line: u32) -> NodePtr {
+        match &t.kind {
+            Kind::ConstantPathNode { parent: Some(p), name } => { let pv = self.c(p); ALLOC_node_const_path(pv, self.cst(name.unwrap_or(0)), line) }
+            Kind::ConstantPathNode { parent: None, name } => ALLOC_node_top_const(self.cst(name.unwrap_or(0)), line),
+            _ => self.c(t),
         }
     }
     fn cpath_write(&mut self, target: &PNode, v: NodePtr) -> NodePtr {
@@ -2070,6 +2079,8 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_block(&mut self, n: &PNode, locals: &[u32], params: Option<&PNode>, body: Option<&PNode>, kind: IseqKind, line: u32) -> &'static Iseq {
+        // the block's own node (its entry and frame line: error_highlight's block_node), not the call's
+        let saved = node_tag_swap(n.id);
         let sk = if kind == IseqKind::Lambda { SK::Lambda } else { SK::Block };
         let label = self.block_label();
         self.push_scope(sk, n, locals);
@@ -2107,6 +2118,7 @@ impl<'a> Compiler<'a> {
         let is = self.finish_iseq(b, ps, kind, label, line, Sym(0));
         // the block's home frame: `return` in the block targets it by id
         if let Some(p) = self.scopes.last_mut() { p.needs_id = true; }
+        node_tag_swap(saved);
         is
     }
 
@@ -2421,4 +2433,13 @@ fn lit_imm(pats: &[NodePtr], kinds: &[u8]) -> Option<Value> {
     if !std::ptr::eq(unsafe { (*n).head.kind }, &KIND_node_lit) { return None; }
     let v = unsafe { (*(n as *mut NodeOf<node_lit_struct>)).u.v };
     if v.is_fixnum() || v.is_special() { Some(v) } else { None }
+}
+
+/// A constant path from a constant or `::` only (CRuby compiles it as one opt_getconstant_path).
+fn static_cpath(n: &PNode) -> bool {
+    match &n.kind {
+        Kind::ConstantReadNode { .. } | Kind::ConstantPathNode { parent: None, .. } => true,
+        Kind::ConstantPathNode { parent: Some(p), .. } => static_cpath(p),
+        _ => false,
+    }
 }

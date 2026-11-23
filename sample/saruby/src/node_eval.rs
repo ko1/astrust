@@ -509,7 +509,8 @@ pub fn EVAL_node_const_path<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_top_const(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym) -> RV {
+pub fn EVAL_node_top_const<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, line: H_line) -> RV {
+    line.store(c.frame_mut());
     srb_const_path(c, vm().c_object.get(), name)
 }
 

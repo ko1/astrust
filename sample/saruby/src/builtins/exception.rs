@@ -351,14 +351,14 @@ pub fn locations_from_lines(c: &mut Ctx, lines: Vec<String>) -> Value {
 /// Locations with their prism node ids (error_highlight).
 pub fn locations_from_locs(c: &mut Ctx, locs: Vec<(String, u32)>) -> Value {
     let out = c.ary_new();
-    for (l, n) in locs { let v = location_from_str(c, &l); ivar_set_raw(c, v, intern(b"__nid"), Value::fix(n as i64)); c.ary_push(out, v); }
+    for (l, n) in locs { let v = location_from_str(c, &l); ivar_set_raw(c, v, intern(b"__nid"), nid_value(n)); c.ary_push(out, v); }
     out
 }
 fn loc_path(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, slf, intern(b"path"))) }
 fn loc_abs_path(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let p = ivar_get(c, slf, intern(b"path"));
     let ps = String::from_utf8_lossy(c.str_bytes(p)).into_owned();
-    if ps.starts_with('<') || ps.starts_with('(') || ps == "-e" { return Ok(NIL); }
+    if ps.starts_with('<') || ps.starts_with('(') || ps == "-e" || ivar_get(c, slf, intern(b"__nid")) == FALSE { return Ok(NIL); }
     match std::fs::canonicalize(&ps) { Ok(a) => Ok(c.str_new(a.to_string_lossy().as_bytes())), Err(_) => Ok(p) }
 }
 fn loc_lineno(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, slf, intern(b"lineno"))) }

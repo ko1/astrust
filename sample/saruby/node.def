@@ -327,8 +327,9 @@ node_const_path(c: &mut Ctx, n: NodePtr, fp: Fp, parent@child: Value, name: Sym,
 }
 
 NODE_DEF
-node_top_const(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym)
+node_top_const(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, line@hole: u32)
 {
+    line.store(c.frame_mut());
     srb_const_path(c, vm().c_object.get(), name)
 }
 

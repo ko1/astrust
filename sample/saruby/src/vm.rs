@@ -1257,7 +1257,7 @@ pub fn exc_bt(c: &mut Ctx, e: Value) -> Value {
     let (lines, nids): (Vec<String>, Vec<u32>) = format_frames_n(c, &raw.frames, raw.skip, usize::MAX).unwrap_or_default().into_iter().unzip();
     let a = lines_to_array(c, lines);
     let ns = c.ary_new_capa(nids.len());
-    for n in nids { c.ary_push(ns, Value::fix(n as i64)); }
+    for n in nids { c.ary_push(ns, nid_value(n)); }
     ivar_set_raw(c, e, s::bt, a);
     ivar_set_raw(c, e, intern(b"__bt_nids"), ns);
     a
@@ -1282,6 +1282,11 @@ fn capture_frames(c: &Ctx) -> Vec<RawFrame> {
     }
     frames
 }
+
+/// A backtrace line's node id: of code from eval (no absolute path).
+pub const NID_EVAL: u32 = u32::MAX;
+/// A Location's __nid: the id, or false for code from eval.
+pub fn nid_value(n: u32) -> Value { if n == NID_EVAL { FALSE } else { Value::fix(n as i64) } }
 
 /// The prism node id of the code at `pos` (CRuby's node_id_for_backtrace_location; 0: none): a node's tag, or
 /// at a body's own line its definition's.
@@ -1309,7 +1314,10 @@ fn format_frames_n(c: &Ctx, frames: &[RawFrame], skip: usize, n: usize) -> Optio
             if fr.kind == FK_CFUNC && !fr.me.is_null() && (*fr.me).owner == vm().c_proc.get() && matches!(sym_str((*fr.me).name).as_ref(), "call" | "yield" | "===" | "[]") { continue; }
             seen += 1;
             if seen <= skip { continue; }
-            out.push((format!("{}:{}:in '{}'", fr.file, fr.line, frame_label_of(c, fr.kind, fr.me, fr.iseq)), fr.nid));
+            // code from eval has no absolute path (CRuby: realpath nil), so no node to look up either
+            let mut is = fr.iseq;
+            while !is.is_null() && (*is).kind != IseqKind::Eval { is = (*is).parent.get(); }
+            out.push((format!("{}:{}:in '{}'", fr.file, fr.line, frame_label_of(c, fr.kind, fr.me, fr.iseq)), if is.is_null() { fr.nid } else { NID_EVAL }));
         }
     }
     if seen < skip { None } else { Some(out) }

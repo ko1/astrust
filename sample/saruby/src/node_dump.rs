@@ -310,6 +310,7 @@ fn DUMP_node_top_const(out: &mut String, n: NodePtr) {
     let u = node_u::<node_top_const_struct>(n);
     out.push_str("(node_top_const");
     out.push(' '); out.push(':'); out.push_str(&crate::symbol::sym_str(u.name));
+    out.push(' '); out.push_str(&format!("{:?}", (*node_head_line(n))));
     out.push(')');
 }
 

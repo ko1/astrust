@@ -269,7 +269,7 @@ pub fn DISPATCH_node_top_const(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_top_const");
     let u = node_u::<node_top_const_struct>(n);
 
-    EVAL_node_top_const(c, n, fp, u.name)
+    EVAL_node_top_const::<crate::vm::LineAt>(c, n, fp, u.name, crate::vm::LineAt(&(*node_head_line(n))))
 }
 
 #[allow(non_snake_case, unused_variables)]
