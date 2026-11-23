@@ -512,6 +512,7 @@ pub fn child_exit(c: &mut Ctx, r: RV) -> ! {
     std::process::exit(st);
 }
 fn k_fork(c: &mut Ctx, _s: Value, _a: &[Value], blk: *const Block) -> RV {
+    if crate::builtins::ractor::isolated(c) { return err(c, crate::builtins::ractor::isolation_error_class(c), "can not fork from non-main Ractors"); }
     crate::builtins::io::flush_all(c);
     let pid = sys::fork();
     if pid < 0 { return Err(raise_errno(c, sys::errno(), "fork(2)")); }

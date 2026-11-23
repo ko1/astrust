@@ -422,7 +422,7 @@ pub fn EVAL_node_ivar(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, ic: &IvarCache
             }
         }
     }
-    srb_ivar_get_out(slf, name, ic, c)
+    Ok(srb_ivar_get_out(slf, name, ic, c))
 }
 
 

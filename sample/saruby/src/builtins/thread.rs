@@ -425,6 +425,7 @@ fn slice_over(pri: i32) -> bool {
 #[inline(never)]
 pub fn poll(c: &mut Ctx) -> Result<(), Esc> {
     crate::vm::clear_ints();
+    if crate::builtins::ractor::multi() { crate::builtins::ractor::check_deferred(c)?; }
     let me = cur(c);
     let main = is_main(c);
     let sig = crate::builtins::process::signals_pending();

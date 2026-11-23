@@ -104,13 +104,14 @@ struct Scope {
     param_names: Vec<(u32, Sym)>, // parameter slot -> name (for #parameters)
     needs_id: bool,               // a block literal or an eval-like call inside: its frame needs an id
     end_line: u32,                // the line of the scope's last byte (TracePoint return / end events)
+    outer: Vec<(u64, Sym)>,       // block: (order key, outer variable) it uses, `yield` if it yields (Iseq::outer_vars)
     trace_line: u32,              // the line of the last line event put in (one per line, as CRuby's)
 }
 
 impl Scope {
     fn new(kind: SK, captured: HashSet<Sym>) -> Scope {
         Scope { kind, vars: HashMap::default(), names: vec![], nslots: 2, env_size: 0, captured, loop_depth: 0,
-                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![], children: vec![], params_seen: HashSet::default(), param_names: vec![], needs_id: false, end_line: 0, trace_line: 0 }
+                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![], children: vec![], params_seen: HashSet::default(), param_names: vec![], needs_id: false, end_line: 0, trace_line: 0, outer: vec![] }
     }
     fn has_env(&self) -> bool { self.env_size > 0 }
 }
@@ -122,8 +123,7 @@ pub struct Compiler<'a> {
     src_key: std::cell::OnceCell<u64>,   // hash of src: the program key of its bodies in hopt_index.txt (aot.rs)
     scopes: Vec<Scope>,
     captures: HashMap<usize, HashSet<Sym>>,
-    outer: HashMap<usize, Vec<(u32, Sym)>>,   // block -> outer variables it uses (prism constant id, name); `yield` too
-    pending_outer: Vec<Sym>,                  // the next finish_iseq's Iseq::outer_vars
+    void_read: bool,              // compiling a variable read whose value is unused: no use of it (Iseq::outer_vars)
     pub eval_outer: Vec<Vec<(Sym, u32, u32)>>,  // eval: outer scopes' (name, hops, idx), innermost first
     in_def: u32,
     pm_err: Option<u32>,          // single-pattern match: slot receiving the failure description
@@ -159,7 +159,7 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), outer: HashMap::default(), pending_outer: vec![], eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, errors: vec![],
+        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), void_read: false, eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, errors: vec![],
                    csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()],
                    src_enc: crate::builtins::encoding::find_enc(pr.encoding.as_bytes()).unwrap_or(crate::object::ENC_UTF8) as u32 };
         // identifiers of a non-UTF-8 source are symbols in its encoding (as its symbol literals)
@@ -224,7 +224,6 @@ impl<'a> Compiler<'a> {
                 let k = stack[i as usize].0;
                 let nm = self.cst(name);
                 self.captures.entry(k).or_default().insert(nm);
-                for &(b, transparent) in &stack[i as usize + 1..] { if !transparent { self.outer.entry(b).or_default().push((name, nm)); } }
             }
         }
         match &n.kind {
@@ -236,20 +235,6 @@ impl<'a> Compiler<'a> {
             }
             // bare `super` in a block re-reads every parameter of the method
             Kind::ForwardingSuperNode { .. } if stack.len() > 1 => { self.captures.entry(stack[0].0).or_default().insert(Sym(u32::MAX)); }
-            // a variable read in void context is no use of it (CRuby's compiler drops it)
-            Kind::StatementsNode { body } if stack.len() > 1 => {
-                for (i, ch) in body.iter().enumerate() {
-                    if i + 1 < body.len() && matches!(ch.kind, Kind::LocalVariableReadNode { .. }) {
-                        let o = std::mem::take(&mut self.outer);
-                        self.analyze_rec(ch, stack, ub);
-                        self.outer = o;
-                    } else { self.analyze_rec(ch, stack, ub); }
-                }
-                return;
-            }
-            Kind::YieldNode { .. } if stack.len() > 1 => {
-                for &(b, transparent) in &stack[1..] { if !transparent { self.outer.entry(b).or_default().push((u32::MAX, s::yield_)); } }
-            }
             Kind::FlipFlopNode { .. } if stack.len() > 1 => {
                 let nm = intern(format!("%ff{}", n.loc.start).as_bytes());
                 self.captures.entry(stack[0].0).or_default().insert(nm);
@@ -341,8 +326,21 @@ impl<'a> Compiler<'a> {
         loc
     }
 
-    /// Resolve a variable at prism depth → (hops, loc).
+    /// Resolve a variable at prism depth → (hops, loc); the blocks between its owner and here use an
+    /// outer variable (Iseq::outer_vars, keyed by owner and index: declaration order, as CRuby's ID order).
     fn resolve(&mut self, nm: Sym, depth: u32) -> (u32, VarLoc) {
+        let mut d = depth as i64;
+        let mut i = self.scopes.len() as i64 - 1;
+        while i >= 0 && (self.scopes[i as usize].transparent || d > 0) { if !self.scopes[i as usize].transparent { d -= 1; } i -= 1; }
+        let r = self.resolve_loc(nm, depth);
+        if !self.void_read && (i + 1) < self.scopes.len() as i64 {
+            let idx = match r.1 { VarLoc::Slot(x) => x, VarLoc::Env(x) => x | 1 << 31 };
+            let key = ((i + 1) as u64) << 32 | idx as u64;
+            for sc in &mut self.scopes[(i + 1).max(0) as usize..] { if matches!(sc.kind, SK::Block | SK::Lambda) { sc.outer.push((key, nm)); } }
+        }
+        r
+    }
+    fn resolve_loc(&mut self, nm: Sym, depth: u32) -> (u32, VarLoc) {
         let mut d = depth as i64;
         let mut i = self.scopes.len() as i64 - 1;
         let mut hops = 0;
@@ -505,7 +503,7 @@ impl<'a> Compiler<'a> {
             info: CodeInfo { file: self.file, label, line, end_line: sc.end_line }, kind, simple, lead_only, name, local_names, arity, uses_block: false, traced: self.trace,
             parent: std::cell::Cell::new(std::ptr::null()), ruby2_keywords: std::cell::Cell::new(false),
             outer_names: if kind == IseqKind::Eval { self.eval_outer.iter().flatten().cloned().collect() } else { vec![] },
-            outer_vars: std::mem::take(&mut self.pending_outer),
+            outer_vars: { let mut v = std::mem::take(&mut sc.outer); v.sort_unstable(); v.dedup_by_key(|x| x.1); v.into_iter().map(|x| x.1).collect() },
         }));
         for ch in &sc.children { ch.parent.set(is); }
         if let Some(p) = self.scopes.last_mut() { p.children.push(is); }
@@ -858,6 +856,7 @@ impl<'a> Compiler<'a> {
             Kind::SuperNode { arguments, block } => self.super_call(arguments.as_deref(), block.as_deref(), false, line),
             Kind::ForwardingSuperNode { block } => self.super_call(None, block.as_deref(), true, line),
             Kind::YieldNode { arguments } => {
+                for sc in self.scopes.iter_mut().rev() { if !matches!(sc.kind, SK::Block | SK::Lambda) { break; } sc.outer.push((u64::MAX, s::yield_)); }
                 let args: Vec<&PNode> = match arguments.as_deref() { Some(PNode { kind: Kind::ArgumentsNode { arguments }, .. }) => arguments.iter().collect(), _ => vec![] };
                 if args.iter().all(|a| self.simple_arg(a)) {
                     let v: Vec<NodePtr> = args.iter().map(|a| self.c(a)).collect();
@@ -2043,11 +2042,6 @@ impl<'a> Compiler<'a> {
             None => Params::default(),
         };
         let b = self.stmts(body);
-        // in the order CRuby lists them (ID order ~ first appearance in the source)
-        let mut ov = self.outer.remove(&key(n)).unwrap_or_default();
-        ov.sort_by_key(|x| x.0);
-        ov.dedup_by_key(|x| x.1);
-        self.pending_outer = ov.into_iter().map(|x| x.1).collect();
         let is = self.finish_iseq(b, ps, kind, label, line, Sym(0));
         // the block's home frame: `return` in the block targets it by id
         if let Some(p) = self.scopes.last_mut() { p.needs_id = true; }

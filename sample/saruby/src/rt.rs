@@ -351,7 +351,7 @@ pub fn srb_range_lit(c: &mut Ctx, b: Value, e: Value, excl: bool, lc: &LitCache)
 
 // ---- variables ----------------------------------------------------------------------------
 
-pub fn srb_ivar_get(c: &mut Ctx, slf: Value, name: Sym, ic: &IvarCache) -> RV {
+pub fn srb_ivar_get(c: &Ctx, slf: Value, name: Sym, ic: &IvarCache) -> Value {
     if is_object(slf) {
         let k = real_class_of(c, slf);
         if let Some(&i) = c.class(k).ivar_index.get(&name) {
@@ -359,17 +359,18 @@ pub fn srb_ivar_get(c: &mut Ctx, slf: Value, name: Sym, ic: &IvarCache) -> RV {
         }
     }
     let v = ivar_get(c, slf, name);
-    if crate::builtins::ractor::multi() { crate::builtins::ractor::class_ivar_get_check(c, slf, name, v)?; }
-    Ok(v)
+    // a class's ivar in a non-main Ractor: checked at the next check point (this path cannot raise)
+    if crate::builtins::ractor::multi() { crate::builtins::ractor::class_ivar_read(c, slf, name, v); }
+    v
 }
 
 /// A site's way out of its inline path: the cache without the baked slot first (a stale slot stays cheap), then the miss.
 #[cold]
 #[inline(never)]
-pub fn srb_ivar_get_out(slf: Value, name: Sym, ic: &IvarCache, c: &mut Ctx) -> RV {
+pub fn srb_ivar_get_out(slf: Value, name: Sym, ic: &IvarCache, c: &Ctx) -> Value {
     if slf.is_heap() && obj_klass(slf).raw() == ic.klass.get() {
         if let Some(ivs) = c.obj_ivars(slf) {
-            return Ok(match ivs.get(ic.idx.get() as usize) { Some(v) if v != UNDEF => v, _ => NIL });
+            return match ivs.get(ic.idx.get() as usize) { Some(v) if v != UNDEF => v, _ => NIL };
         }
     }
     srb_ivar_get(c, slf, name, ic)
@@ -390,7 +391,7 @@ pub fn srb_ivar_set_out(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &IvarC
 #[inline(never)]
 #[cold]
 pub fn srb_ivar_arith_out(c: &mut Ctx, slf: Value, name: Sym, sub: bool, v: Value, line: Pos, ic: &IvarCache, cc: &OpCc) -> RV {
-    let cur = srb_ivar_get_out(slf, name, ic, c)?;
+    let cur = srb_ivar_get_out(slf, name, ic, c);
     let r = crate::opt::srb_arith_out(c, cur, v, if sub { s::minus } else { s::plus }, line, cc)?;
     srb_ivar_set_out(c, slf, name, r, ic)
 }

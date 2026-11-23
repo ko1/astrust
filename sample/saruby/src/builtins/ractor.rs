@@ -92,6 +92,7 @@ fn evt(c: &Ctx) -> u64 { MAIN_R.get(c).raw() | 2 }
 
 fn error<T>(c: &mut Ctx, g: &Global, msg: impl AsRef<str>) -> Result<T, Esc> { let k = g.get(c); err(c, k, msg) }
 fn closed_err<T>(c: &mut Ctx) -> Result<T, Esc> { error(c, &E_CLOSED, "The port was already closed") }
+pub fn isolation_error_class(c: &Ctx) -> Value { E_ISOLATION.get(c) }
 fn isolation<T>(c: &mut Ctx, msg: impl AsRef<str>) -> Result<T, Esc> { error(c, &E_ISOLATION, msg) }
 
 // ---- shareable ------------------------------------------------------------------------------
@@ -205,6 +206,8 @@ pub fn make_shareable(c: &mut Ctx, v: Value) -> Result<(), Esc> {
 /// rb_proc_ractor_make_shareable: self and the outer variables it reads must be shareable.
 fn proc_make_shareable(c: &mut Ctx, p: Value) -> Result<(), Esc> {
     let b = c.proc_data(p).blk;
+    // Method#to_proc, Hash#to_proc, ... (CRuby: block_type is not iseq / symbol)
+    if matches!(b.kind, BlockKind::Method(_) | BlockKind::Cfunc(..) | BlockKind::Proc(_)) { return err(c, c.vm().c_runtime_error.get(), "not supported yet"); }
     if !shareable(c, b.self_) {
         let s = inspect_str(c, p)?;
         return isolation(c, format!("Proc's self is not shareable: {}", s));
@@ -503,7 +506,8 @@ fn ractor_main(c: &mut Ctx, r: Value, _a: &[Value], _b: *const Block) -> RV {
     let p = c.ary_get(st, 0);
     let args = c.ary_get(st, 1);
     let argv = c.ary(args).to_vec();
-    let res = call_proc(c, p, &argv, std::ptr::null());
+    // a class ivar read node_ivar deferred may be the last thing the block did
+    let res = call_proc(c, p, &argv, std::ptr::null()).and_then(|v| check_deferred(c).map(|_| v));
     match res {
         Ok(v) => finish(c, r, v, false),
         Err(_) => {
@@ -739,6 +743,45 @@ pub fn class_ivar_get_check(c: &mut Ctx, k: Value, name: Sym, v: Value) -> Resul
     let p = class_path(c, k);
     isolation(c, format!("can not get unshareable values from instance variables of classes/modules from non-main Ractors ({} from {})", sym_str(name), p))
 }
+/// attr_reader / attr_writer outside the plain-object fast path (vm::invoke_untraced).
+#[inline(never)]
+pub fn attr_get(c: &mut Ctx, recv: Value, id: Sym) -> RV {
+    let v = ivar_get(c, recv, id);
+    if multi() { class_ivar_get_check(c, recv, id, v)?; }
+    Ok(v)
+}
+#[inline(never)]
+pub fn attr_set(c: &mut Ctx, recv: Value, id: Sym, v: Value) -> RV {
+    if multi() { class_ivar_set_check(c, recv, id)?; }
+    ivar_set(c, recv, id, v)
+}
+/// node_ivar's miss path read a class's ivar (it cannot raise): a non-main Ractor gets the check at
+/// its next check point (the interrupt bit makes the next call site poll; thread::poll calls
+/// `check_deferred`), before the value can reach a method call.
+static DEFERRED_K: Global = Global::new();
+static DEFERRED_R: Global = Global::new();   // the Ractor that read it
+static DEFERRED_N: AtomicU64 = AtomicU64::new(0);   // name + 1, 0: nothing pending
+#[cold]
+#[inline(never)]
+pub fn class_ivar_read(c: &Ctx, k: Value, name: Sym, v: Value) {
+    if !crate::object::is_class_or_module(k) || !isolated(c) || !v.is_heap() || obj_flags(v) & FL_SHAREABLE != 0 || crate::object::is_class_or_module(v) { return; }
+    if sym_bytes(name).first() != Some(&b'@') { return; }
+    DEFERRED_K.set_vm(c.vm(), k);
+    DEFERRED_R.set_vm(c.vm(), thread::current_ractor(c));
+    DEFERRED_N.store(name.0 as u64 + 1, Relaxed);
+    crate::vm::set_ints();
+}
+#[cold]
+#[inline(never)]
+pub fn check_deferred(c: &mut Ctx) -> Result<(), Esc> {
+    if DEFERRED_N.load(Relaxed) == 0 || DEFERRED_R.get(c) != thread::current_ractor(c) { return Ok(()); }
+    let n = DEFERRED_N.swap(0, Relaxed);
+    let name = Sym((n - 1) as u32);
+    let k = DEFERRED_K.get(c);
+    DEFERRED_K.set(c, NIL);
+    let v = ivar_get(c, k, name);
+    class_ivar_get_check(c, k, name, v)
+}
 #[cold]
 #[inline(never)]
 pub fn class_ivar_set_check(c: &mut Ctx, k: Value, name: Sym) -> Result<(), Esc> {
@@ -758,8 +801,6 @@ pub fn init(c: &mut Ctx) {
     let k = define_class(c, "Ractor", ob);
     class_set_alloc(c, k, AllocKind::None);
     C_RACTOR.set(c, k);
-    let main = alloc_ractor(c, k, 1, NIL, NIL);
-    MAIN_R.set(c, main);
     let rt = vmr.c_runtime_error.get();
     let e = define_class_under(c, k, "Error", rt);
     E_ERROR.set(c, e);
@@ -778,6 +819,8 @@ pub fn init(c: &mut Ctx) {
     let pk = define_class_under(c, k, "Port", ob);
     class_set_alloc(c, pk, AllocKind::None);
     C_PORT.set(c, pk);
+    let main = alloc_ractor(c, k, 1, NIL, NIL);   // after Port: it has a default port
+    MAIN_R.set(c, main);
     define_singleton_cfunc(c, pk, "new", p_s_new, 0);
     let dp = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, pk, n, f, a);
     dp(c, "send", p_send, -1); dp(c, "<<", p_send, -1); dp(c, "receive", p_receive, 0); dp(c, "close", p_close, 0); dp(c, "closed?", p_closed, 0); dp(c, "inspect", p_inspect, 0);

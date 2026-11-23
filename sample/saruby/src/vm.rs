@@ -1969,15 +1969,12 @@ pub fn invoke_untraced(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: S
         MKind::Cfunc(f, arity) => invoke_cfunc(c, me, f, arity, recv, base, argc, blk, flags),
         MKind::AttrReader(id) => {
             if argc != 0 { return argc_err(c, argc as usize, 0, 0); }
-            let v = ivar_get(c, recv, id);
-            if crate::builtins::ractor::multi() { crate::builtins::ractor::class_ivar_get_check(c, recv, id, v)?; }
-            Ok(v)
+            crate::builtins::ractor::attr_get(c, recv, id)
         }
         MKind::AttrWriter(id) => {
             if argc != 1 { return argc_err(c, argc as usize, 1, 1); }
             let v = base[2].get();
-            if crate::builtins::ractor::multi() { crate::builtins::ractor::class_ivar_set_check(c, recv, id)?; }
-            ivar_set(c, recv, id, v)
+            crate::builtins::ractor::attr_set(c, recv, id, v)
         }
         MKind::Bmethod(p) => invoke_bmethod(c, me, p, recv, base, argc, blk, flags),
         MKind::Undef | MKind::ZSuper => no_method_error(c, recv, mer.name, flags),
