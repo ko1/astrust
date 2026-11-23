@@ -191,7 +191,9 @@ fn rare_edges<V: EdgeVisitor<Saruby>>(o: &mut RObj, v: &mut V) -> bool {
 // What a dead object leaves in side tables (generic ivars, the allocation tracer, object ids).
 #[cold]
 #[inline(never)]
-fn forget(addr: usize, flags: u32) {
+fn forget(p: NonNull<RObj>) {
+    // the flags are read here, not passed: finalize then tests them in memory (one instruction)
+    let (addr, flags) = (p.as_ptr() as usize, obj_flags(<Saruby as GcLang>::from_object(p)));
     let vm = crate::vm::vm();
     if flags & FL_EXIVAR != 0 { vm.gen_ivars.borrow_mut().remove(&addr); }
     if flags & FL_TRACED != 0 { crate::builtins::objspace::forget(addr); }
@@ -303,11 +305,11 @@ unsafe impl GcLang for Saruby {
     }
 
     #[inline(always)]
-    unsafe fn finalize(&mut self, p: NonNull<RObj>) {
-        let p = p.as_ptr();
+    unsafe fn finalize(&mut self, obj: NonNull<RObj>) {
+        let p = obj.as_ptr();
         // SAFETY: the collector hands us a dead, initialized object exactly once
         unsafe {
-            if (*p).flags & (FL_EXIVAR | FL_TRACED | FL_HAS_ID) != 0 { forget(p as usize, (*p).flags); }
+            if (*p).flags & (FL_EXIVAR | FL_TRACED | FL_HAS_ID) != 0 { forget(obj); }
             if !owns_nothing(&(*p).body) { drop_body(p); }
             // poison: a stale reference finds a Free body, not a dropped payload
             std::ptr::write(&mut (*p).body, Body::Free(std::ptr::null_mut()));

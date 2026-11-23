@@ -42,7 +42,7 @@ pub fn allocated(c: &mut Ctx, v: Value, generation: usize) {
     if obj_klass(v) == NIL { return; }   // hidden (envs, weak tables)
     // CRuby 4.0 has no frame for Class#new (nor for a C `new` that is rb_class_new_instance, as Struct's)
     let mut f = c.cur_frame();
-    while let Some(fr) = f { if fr.kind == FK_CFUNC && c.me_ref(fr.me).is_some_and(|m| m.name == crate::symbol::s::new) { f = c.prev_frame(fr); } else { break; } }
+    while let Some(fr) = f { if fr.kind == FK_CFUNC && c.me_ref(fr.me).is_some_and(|m| m.name == crate::symbol::s::new || opt_insn(c, m)) { f = c.prev_frame(fr); } else { break; } }
     let Some(fr) = f else { return };
     // a method implemented in C (a cfunc, or saruby's prelude) reports its Ruby caller's place
     let mut g = Some(fr);
@@ -57,6 +57,22 @@ pub fn allocated(c: &mut Ctx, v: Value, generation: usize) {
     } else { None };
     obj_set_flags(v, FL_TRACED);
     TABLE.with_borrow_mut(|t| t.insert(v.raw() as usize, Info { file, line, path, mid, generation }));
+}
+
+/// A builtin that CRuby runs as a specialized instruction (opt_plus, opt_aref, ...): no frame of its own.
+fn opt_insn(c: &Ctx, m: &MethodEntry) -> bool {
+    let vmr = c.vm();
+    let (k, n) = (m.owner, sym_bytes(m.name));
+    // the receivers each opt_ instruction of CRuby 4.0 handles itself
+    if k == vmr.c_integer.get() || k == vmr.c_float.get() {
+        matches!(n, b"+" | b"-" | b"*" | b"/" | b"%" | b"==" | b"!=" | b"<" | b"<=" | b">" | b">=" | b"&" | b"|" | b"succ")
+    } else if k == vmr.c_string.get() {
+        matches!(n, b"+" | b"==" | b"!=" | b"<<" | b"length" | b"size" | b"empty?" | b"succ" | b"=~")
+    } else if k == vmr.c_array.get() {
+        matches!(n, b"+" | b"<<" | b"[]" | b"[]=" | b"length" | b"size" | b"empty?")
+    } else if k == vmr.c_hash.get() {
+        matches!(n, b"[]" | b"[]=" | b"length" | b"size" | b"empty?")
+    } else { false }
 }
 
 /// A traced object died (gc.rs finalize).

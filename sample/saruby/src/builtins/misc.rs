@@ -84,7 +84,20 @@ fn os_each_object(c: &mut Ctx, s2: Value, a: &[Value], blk: *const Block) -> RV 
     for i in 0..n { let x = c.ary_get(list, i); yield1(c, blk, x)?; }
     Ok(Value::fix(n as i64))
 }
-fn os_garbage_collect(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { crate::gc::collect(c); Ok(NIL) }
+// ObjectSpace.garbage_collect(full_mark: true, immediate_mark: true, immediate_sweep: true), as gc.rb
+fn os_garbage_collect(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+    let mut full = true;
+    if let Some(&h) = a.last().filter(|&&h| is_hash(h)) {
+        let mut unknown = vec![];
+        for (k, v) in c.hash_pairs(h) {
+            if k == sym_value("full_mark") { full = v.truthy(); }
+            else if k != sym_value("immediate_mark") && k != sym_value("immediate_sweep") { unknown.push(inspect_str(c, k)?); }
+        }
+        if !unknown.is_empty() { return arg_err(c, format!("unknown keyword{}: {}", if unknown.len() > 1 { "s" } else { "" }, unknown.join(", "))); }
+    }
+    if full { crate::gc::collect(c) } else { crate::gc::collect_minor(c) }
+    Ok(NIL)
+}
 
 // Warning[category] flags (bit = index in WARN_CAT_NAMES); experimental is on by default, -w turns on deprecated.
 static WARN_CATS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0b0010);
