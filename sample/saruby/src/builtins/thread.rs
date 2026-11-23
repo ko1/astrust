@@ -138,12 +138,14 @@ fn check_interrupt(c: &mut Ctx, t: Value) -> Result<(), Esc> { check_interrupt_a
 /// Interrupts queued in all threads: lets a blocking IO call skip the queue test.
 static QUEUED: AtomicUsize = AtomicUsize::new(0);
 /// puts / print / IO#write are blocking calls: :on_blocking interrupts are delivered before the write.
-#[inline]
+#[inline(always)]
 pub fn blocking_point(c: &mut Ctx) -> Result<(), Esc> {
-    if QUEUED.load(Relaxed) == 0 { return Ok(()); }
-    let me = cur(c);
-    check_interrupt_at(c, me, true)
+    if QUEUED.load(Relaxed) != 0 { return blocking_point_slow(c); }
+    Ok(())
 }
+#[cold]
+#[inline(never)]
+fn blocking_point_slow(c: &mut Ctx) -> Result<(), Esc> { let me = cur(c); check_interrupt_at(c, me, true) }
 /// Queue an interrupt for t (rb_threadptr_pending_interrupt_enque) and wake it if it may take it.
 fn enqueue_interrupt(c: &mut Ctx, t: Value, e: Value) {
     let q = th(c, t).pending;
