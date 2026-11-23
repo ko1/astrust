@@ -314,6 +314,14 @@ fn e_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if en.mid == s::loop_ { return Ok(c.float_new(f64::INFINITY)); }
     let (recv, mid) = (en.recv, en.mid);
     if (mid == s::times) && recv.is_fixnum() { return Ok(Value::fix(recv.as_fix().max(0))); }
+    if crate::object::is_string(recv) {
+        match crate::symbol::sym_bytes(mid) {
+            b"each_char" | b"each_codepoint" => return Ok(Value::fix(c.str_char_len(recv) as i64)),
+            b"each_byte" => return Ok(Value::fix(c.str_len(recv) as i64)),
+            b"each_grapheme_cluster" => { let g = funcall(c, recv, intern(b"grapheme_clusters"), &[], std::ptr::null())?; return Ok(Value::fix(c.ary_len(g) as i64)); }
+            _ => {}
+        }
+    }
     if mid == intern(b"each_slice") || mid == intern(b"each_cons") {
         if respond_to(c, recv, s::size, true) {
             let sz = funcall(c, recv, s::size, &[], std::ptr::null())?;

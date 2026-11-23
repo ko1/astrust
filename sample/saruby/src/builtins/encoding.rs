@@ -488,7 +488,7 @@ pub fn transcode(c: &mut Ctx, src: &[u8], from: u8, to: u8, o: &TcOpts) -> Resul
 
 pub fn find_enc(name: &[u8]) -> Option<u8> {
     let n = std::str::from_utf8(name).ok()?;
-    if n.eq_ignore_ascii_case("internal") { return None; }
+    if n.eq_ignore_ascii_case("internal") { return Some(default_internal().unwrap_or(ENC_BINARY)); }   // unset: BINARY (force_encoding)
     if n.eq_ignore_ascii_case("locale") { return Some(ENC_UTF8); }
     if n.eq_ignore_ascii_case("external") || n.eq_ignore_ascii_case("filesystem") { return Some(default_external()); }
     for (i, d) in ENCS.iter().enumerate() {

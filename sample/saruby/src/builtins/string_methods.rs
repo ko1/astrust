@@ -193,7 +193,7 @@ cfn!(s_mod, |c, slf, a, b_| {
 });
 cfn!(s_eq, |c, slf, a, b_| {
     let o = a[0];
-    if is_string(o) { return Ok(Value::bool(c.str_bytes(slf) == c.str_bytes(o))); }
+    if is_string(o) { return Ok(Value::bool(c.str_eq(slf, o))); }
     if !o.is_heap() { return Ok(FALSE); }
     // rb_respond_to honours a user-defined respond_to?
     let rt = intern(b"respond_to?");
@@ -201,7 +201,7 @@ cfn!(s_eq, |c, slf, a, b_| {
     if ok { let r = funcall(c, o, s::eq, &[slf], std::ptr::null())?; return Ok(Value::bool(r.truthy())); }
     Ok(FALSE)
 });
-cfn!(s_eql, |c, slf, a, b_| Ok(Value::bool(is_string(a[0]) && c.str_bytes(slf) == c.str_bytes(a[0]))));
+cfn!(s_eql, |c, slf, a, b_| Ok(Value::bool(is_string(a[0]) && c.str_eq(slf, a[0]))));
 cfn!(s_hash, |c, slf, a, b_| Ok(Value::fix((c.str_hash(slf) >> 2) as i64)));
 cfn!(s_cmp, |c, slf, a, b_| {
     if is_string(a[0]) { return Ok(Value::fix(c.str_bytes(slf).cmp(c.str_bytes(a[0])) as i64)); }
@@ -560,7 +560,10 @@ fn is_newline(c: &Ctx, v: Value) -> bool {
 fn chomp_impl(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<Vec<u8>, Esc> {
     check_argc(c, a, 0, 1)?;
     if c.str_bytes(slf).is_empty() { return Ok(vec![]); }
-    if a.is_empty() || (a[0] != NIL && is_string(a[0]) && is_newline(c, a[0])) {
+    // no argument: $/ ("\n" keeps the smart newline handling)
+    let rs = if a.is_empty() { gvar_get(c, intern(b"$/"))? } else { a[0] };
+    let a: &[Value] = &[rs];
+    if a[0] != NIL && is_string(a[0]) && is_newline(c, a[0]) {
         let v = c.str_bytes(slf);
         if v.ends_with(b"\r\n") { return Ok(v[..v.len() - 2].to_vec()); }
         if v.ends_with(b"\n") || v.ends_with(b"\r") { return Ok(v[..v.len() - 1].to_vec()); }
@@ -901,6 +904,8 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk, global: bool, bang: boo
     let watch = bang || global;
     let mut srcv = NIL; // frozen copy of the source shared by every MatchData
     let mut out = vec![];
+    // gsub: CRuby's dest buffer, its encoding settled at each append (o7: ASCII only so far)
+    let (mut oe, mut o7) = (enc, None);
     let mut i = 0; let mut last = 0; let mut changed = false;
     loop {
         let g: Vec<Option<(usize, usize)>> = if let Some(l) = &lit {
@@ -909,7 +914,7 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk, global: bool, bang: boo
             match regexp::search_raw_e(c, re, &src, i, md) { Some(g) => g, None => break }
         };
         let (ms, me) = g[0].unwrap();
-        out.extend_from_slice(&src[last..ms]);
+        if global { buf_cat(c, &mut out, &mut oe, &mut o7, &src[last..ms], enc)?; } else { out.extend_from_slice(&src[last..ms]); }
         if re == NIL { re = regexp::to_regexp(c, pat)?; }
         if srcv == NIL { srcv = c.str_new_like(slf, src.clone()); obj_set_flags(srcv, FL_FROZEN); }
         let mval = regexp::match_new(c, re, srcv, g.clone());
@@ -919,9 +924,16 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk, global: bool, bang: boo
             let v = crate::hash::hash_aref(c, h, key)?;
             let sv = crate::rt::srb_tostr(c, v)?;
             if watch { str_mod_check(c, slf, src.len())?; }
-            renc = join_enc(c, renc, src_ascii, sv)?; out.extend_from_slice(c.str_bytes(sv));
+            if global { let (b, e) = (c.str_bytes(sv).to_vec(), c.str_enc(sv)); buf_cat(c, &mut out, &mut oe, &mut o7, &b, e)?; }
+            else { renc = join_enc(c, renc, src_ascii, sv)?; out.extend_from_slice(c.str_bytes(sv)); }
         } else if let Some(r) = str_rep {
-            renc = join_enc(c, renc, src_ascii, r)?; match expand_repl(c, c.str_bytes(r), &src, &g, re) { Ok(ex) => out.extend(ex), Err(e) => return Err(e.raise(c)) }
+            let ex = match expand_repl(c, c.str_bytes(r), &src, &g, re) { Ok(ex) => ex, Err(e) => return Err(e.raise(c)) };
+            if global {
+                // rb_reg_regsub: the expansion takes the replacement's encoding unless only the groups are non-ASCII
+                let re_ = c.str_enc(r);
+                let e = if is_ascii(&ex) || !is_ascii(c.str_bytes(r)) { re_ } else { enc };
+                buf_cat(c, &mut out, &mut oe, &mut o7, &ex, e)?;
+            } else { renc = join_enc(c, renc, src_ascii, r)?; out.extend(ex); }
         } else {
             let mstr = c.str_new_like(slf, src[ms..me].to_vec());
             let v = yield1(c, blk, mstr)?;
@@ -929,18 +941,45 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk, global: bool, bang: boo
             if watch { str_mod_check(c, slf, src.len())?; }
             crate::builtins::svar::set_last_match(c, mval);
             let sv = crate::rt::srb_tostr(c, v)?;
-            renc = join_enc(c, renc, src_ascii, sv)?; out.extend_from_slice(c.str_bytes(sv));
+            if global { let (b, e) = (c.str_bytes(sv).to_vec(), c.str_enc(sv)); buf_cat(c, &mut out, &mut oe, &mut o7, &b, e)?; }
+            else { renc = join_enc(c, renc, src_ascii, sv)?; out.extend_from_slice(c.str_bytes(sv)); }
         }
         changed = true;
         last = me;
         if me == ms {
-            if ms < src.len() { let l = enc_char_len(&src, ms, enc); out.extend_from_slice(&src[ms..ms + l]); last = ms + l; i = ms + l; } else { i = ms + 1; }
+            if ms < src.len() {
+                let l = enc_char_len(&src, ms, enc);
+                if global { buf_cat(c, &mut out, &mut oe, &mut o7, &src[ms..ms + l], enc)?; } else { out.extend_from_slice(&src[ms..ms + l]); }
+                last = ms + l; i = ms + l;
+            } else { i = ms + 1; }
         } else { i = me; }
         if !global || i > src.len() { break; }
     }
     if !changed { crate::builtins::svar::set_last_match(c, NIL); return Ok(None); }
-    if last < src.len() { out.extend_from_slice(&src[last..]); }
-    Ok(Some((out, renc)))
+    if last < src.len() { if global { buf_cat(c, &mut out, &mut oe, &mut o7, &src[last..], enc)?; } else { out.extend_from_slice(&src[last..]); } }
+    Ok(Some((out, if global { oe } else { renc })))
+}
+/// rb_enc_cr_str_buf_cat: append `b` (encoding `e`) to `out` (encoding `*oe`; `*o7`: ASCII only so far,
+/// None until an append of another encoding needs it).
+fn buf_cat(c: &mut Ctx, out: &mut Vec<u8>, oe: &mut u8, o7: &mut Option<bool>, b: &[u8], e: u8) -> Result<(), Esc> {
+    if *oe != e { buf_cat_enc(c, out, oe, o7, b, e)?; } else { *o7 = None; }
+    out.extend_from_slice(b);
+    Ok(())
+}
+#[cold]
+fn buf_cat_enc(c: &mut Ctx, out: &mut Vec<u8>, oe: &mut u8, o7: &mut Option<bool>, b: &[u8], e: u8) -> Result<(), Esc> {
+    use crate::builtins::encoding as en;
+    if !en::ascii_compat(*oe) || !en::ascii_compat(e) {
+        if b.is_empty() { return Ok(()); }
+        if out.is_empty() { *oe = e; *o7 = Some(false); return Ok(()); }
+        return Err(en::compat_error(c, *oe, e));
+    }
+    let a7 = o7.unwrap_or_else(|| is_ascii(out));
+    let p7 = is_ascii(b);
+    if !a7 && !p7 { return Err(en::compat_error(c, *oe, e)); }
+    if a7 && !p7 { *oe = e; }
+    *o7 = Some(a7 && p7);
+    Ok(())
 }
 /// Result encoding after splicing replacement `rv` into a subject (rb_enc_check rules).
 fn join_enc(c: &mut Ctx, renc: u8, src_ascii: bool, rv: Value) -> Result<u8, Esc> {
@@ -1097,17 +1136,21 @@ fn squeeze_impl(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<Vec<u8>, Esc> {
 cfn!(s_squeeze, |c, slf, a, b_| { let v = squeeze_impl(c, slf, a)?; Ok(c.str_new_like(slf, v)) });
 cfn!(s_squeeze_b, |c, slf, a, b_| { let v = squeeze_impl(c, slf, a)?; check_frozen(c, slf)?; if v.len() == c.str_bytes(slf).len() { return Ok(NIL); } c.str_modify(slf)?.b = v.into(); Ok(slf) });
 fn justify(c: &mut Ctx, slf: Value, a: &[Value], mode: u8) -> RV {
+    check_argc(c, a, 1, 2)?;
     let w = num_to_long(c, a[0])?;
-    let pad = if a.len() > 1 { let p = expect_str(c, a[1])?; c.str_bytes(p).to_vec() } else { b" ".to_vec() };
-    if pad.is_empty() { return arg_err(c, "zero width padding"); }
+    let (padchars, enc) = if a.len() > 1 {
+        let p = expect_str(c, a[1])?;
+        let enc = compat(c, slf, p)?;
+        (c.chars_of(p), enc)
+    } else { (vec![b" ".to_vec()], c.str_enc(slf)) };
+    if padchars.is_empty() { return arg_err(c, "zero width padding"); }
     let n = c.str_char_len(slf) as i64;
-    if w <= n { return Ok(c.str_new_like(slf, c.str_bytes(slf).to_vec())); }
+    if w <= n { return Ok(c.str_copy(slf)); }
     let total = (w - n) as usize;
-    let padchars: Vec<Vec<u8>> = { let ps = c.str_new(&pad); c.chars_of(ps) };
     let mk = |k: usize| -> Vec<u8> { let mut v = vec![]; for i in 0..k { v.extend_from_slice(&padchars[i % padchars.len()]); } v };
     let (l, r) = match mode { b'l' => (0, total), b'r' => (total, 0), _ => (total / 2, total - total / 2) };
     let mut out = mk(l); out.extend_from_slice(c.str_bytes(slf)); out.extend(mk(r));
-    Ok(c.str_new_like(slf, out))
+    Ok(c.str_from_vec_enc(out, enc))
 }
 cfn!(s_ljust, |c, slf, a, b_| justify(c, slf, a, b'l'));
 cfn!(s_rjust, |c, slf, a, b_| justify(c, slf, a, b'r'));
@@ -1323,10 +1366,24 @@ cfn!(s_rpartition, |c, slf, a, b_| {
         None => { let (x, y, z) = (c.str_sub(slf, 0..0), c.str_sub(slf, 0..0), c.str_copy(slf)); c.ary_from_vec(vec![x, y, z]) }
     })
 });
-cfn!(s_delete_prefix, |c, slf, a, b_| { let p = expect_str(c, a[0])?; let v = c.str_bytes(slf); Ok(c.str_new_like(slf, if v.starts_with(c.str_bytes(p)) { v[c.str_bytes(p).len()..].to_vec() } else { v.to_vec() })) });
-cfn!(s_delete_suffix, |c, slf, a, b_| { let p = expect_str(c, a[0])?; let v = c.str_bytes(slf); Ok(c.str_new_like(slf, if v.ends_with(c.str_bytes(p)) { v[..v.len() - c.str_bytes(p).len()].to_vec() } else { v.to_vec() })) });
-cfn!(s_delete_prefix_b, |c, slf, a, b_| { let p = expect_str(c, a[0])?; check_frozen(c, slf)?; let n = c.str_bytes(p).len(); if c.str_bytes(slf).starts_with(c.str_bytes(p)) { c.rstring_mut(slf).b.remove_front(n); Ok(slf) } else { Ok(NIL) } });
-cfn!(s_delete_suffix_b, |c, slf, a, b_| { let p = expect_str(c, a[0])?; check_frozen(c, slf)?; let n = c.str_bytes(p).len(); if c.str_bytes(slf).ends_with(c.str_bytes(p)) { let l = c.str_bytes(slf).len(); c.rstring_mut(slf).b.truncate(l - n); Ok(slf) } else { Ok(NIL) } });
+/// deleted_prefix_length / deleted_suffix_length: bytes to drop (0: none).
+fn deleted_affix_len(c: &mut Ctx, slf: Value, x: Value, suffix: bool) -> Result<usize, Esc> {
+    let p = expect_str(c, x)?;
+    if !crate::builtins::encoding::is_valid(c.str_enc(p), c.str_bytes(p)) { return Ok(0); }
+    compat(c, slf, p)?;
+    let (v, pb) = (c.str_bytes(slf), c.str_bytes(p));
+    let n = pb.len();
+    if n == 0 || v.len() < n { return Ok(0); }
+    let at = if suffix { v.len() - n } else { n };
+    if (if suffix { &v[at..] } else { &v[..n] }) != pb { return Ok(0); }
+    let r = c.rstring(slf);
+    if !enc_single(&r.b, r.enc) { let mut i = 0; while i < at { i += enc_char_len(&r.b, i, r.enc); } if i != at { return Ok(0); } }
+    Ok(n)
+}
+cfn!(s_delete_prefix, |c, slf, a, b_| { let n = deleted_affix_len(c, slf, a[0], false)?; let l = c.str_len(slf); Ok(c.str_sub(slf, n..l)) });
+cfn!(s_delete_suffix, |c, slf, a, b_| { let n = deleted_affix_len(c, slf, a[0], true)?; let l = c.str_len(slf); Ok(c.str_sub(slf, 0..l - n)) });
+cfn!(s_delete_prefix_b, |c, slf, a, b_| { check_frozen(c, slf)?; let n = deleted_affix_len(c, slf, a[0], false)?; if n == 0 { return Ok(NIL); } c.str_modify(slf)?.b.remove_front(n); Ok(slf) });
+cfn!(s_delete_suffix_b, |c, slf, a, b_| { check_frozen(c, slf)?; let n = deleted_affix_len(c, slf, a[0], true)?; if n == 0 { return Ok(NIL); } let l = c.str_len(slf); c.str_modify(slf)?.b.truncate(l - n); Ok(slf) });
 /// rb_str_subpos: char (start, len) -> byte range.
 fn subpos(c: &Ctx, v: Value, start: i64, len: i64) -> Option<(usize, usize)> {
     let n = c.str_char_len(v) as i64;
@@ -1699,7 +1756,15 @@ cfn!(s_bytesplice, |c, slf, a, b_| {
 cfn!(s_between, |c, slf, a, b_| Ok(Value::bool(c.str_bytes(slf) >= c.str_bytes(a[0]) && c.str_bytes(slf) <= c.str_bytes(a[1]))));
 cfn!(s_intern_frozen_p, |c, slf, a, b_| Ok(Value::bool(is_frozen(slf))));
 cfn!(s_dup, |c, slf, a, b_| crate::builtins::object::obj_dup(c, slf, false, None));
-cfn!(s_s_try_convert, |c, slf, a, b_| { if is_string(a[0]) { return Ok(a[0]); } if a[0].is_heap() && respond_to(c, a[0], s::to_str, true) { return expect_str(c, a[0]); } Ok(NIL) });
+cfn!(s_s_try_convert, |c, slf, a, b_| {
+    // rb_check_string_type: nil from to_str is no conversion; another non-String raises
+    if is_string(a[0]) || !a[0].is_heap() { return Ok(if is_string(a[0]) { a[0] } else { NIL }); }
+    match check_funcall(c, a[0], s::to_str)? {
+        None => Ok(NIL),
+        Some(r) if r == NIL || is_string(r) => Ok(r),
+        Some(r) => { let cls = class_name_for_err(c, a[0]); let rc = class_name_for_err(c, r); type_err(c, format!("can't convert {} to String ({}#to_str gives {})", cls, cls, rc)) }
+    }
+});
 
 // ---- UTF-16 / UTF-32 -----------------------------------------------------------------------
 // The byte-oriented methods below run on the UTF-8 form of a valid wide string (the same characters)

@@ -87,7 +87,10 @@ impl Ctx {
     #[inline(always)]
     pub fn str_len(&self, v: Value) -> usize { self.rstring(v).b.len() }
     #[inline(always)]
-    pub fn str_eq(&self, a: Value, b: Value) -> bool { self.rstring(a).b == self.rstring(b).b }
+    pub fn str_eq(&self, a: Value, b: Value) -> bool {
+        let (x, y) = (self.rstring(a), self.rstring(b));
+        x.b == y.b && (x.enc == y.enc || str_comparable(&x.b, x.enc, y.enc))
+    }
     #[inline(always)]
     pub fn str_hash(&self, v: Value) -> u64 { crate::astrust::hash_bytes(&self.rstring(v).b) }
     /// String#to_sym: symbol::BAD_SYM for a broken String of an ASCII-compatible encoding other than UTF-8
@@ -175,6 +178,15 @@ impl std::ops::Deref for ByteSnap {
     fn deref(&self) -> &[u8] { if self.n <= ByteSnap::INLINE { &self.buf[..self.n] } else { &self.heap } }
 }
 
+/// rb_str_comparable for two Strings holding the same bytes `b` in encodings `ea` and `eb`.
+#[cold]
+pub fn str_comparable(b: &[u8], ea: u8, eb: u8) -> bool {
+    use crate::builtins::encoding::ascii_compat;
+    if b.is_empty() { return true; }
+    let seven = is_ascii(b);
+    let (a7, b7) = (seven && ascii_compat(ea), seven && ascii_compat(eb));
+    (a7 && (b7 || ascii_compat(eb))) || (b7 && ascii_compat(ea))
+}
 pub fn str_append_str(c: &mut Ctx, acc: Value, s: Value) -> Result<(), Esc> {
     check_frozen(c, acc)?;
     let ea = c.str_enc(acc);
