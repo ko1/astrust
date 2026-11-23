@@ -452,10 +452,12 @@ fn en_each_cons(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
 fn en_partition(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return no_blk(c, slf, "partition", a); }
     let (t, f) = (c.ary_new(), c.ary_new());
-    let d = c.ary_new_from(&[t, f, bptr(blk)]);
+    // the block as a Proc: #each may keep its block past this call (enum_each_pack_1123p.rb)
+    let p = block_to_proc(c, blk)?;
+    let d = c.ary_new_from(&[t, f, p]);
     run_each(c, slf, |c, d, args, _| {
         let v = pack(c, args);
-        let i = if yield1(c, ublk(c, d, 2), v)?.truthy() { 0 } else { 1 };
+        let i = if call_proc(c, c.ary_get(d, 2), &[v], std::ptr::null())?.truthy() { 0 } else { 1 };
         c.ary_push(c.ary_get(d, i), v);
         Ok(NIL)
     }, d, &[])?;
@@ -475,8 +477,10 @@ fn en_tally(c: &mut Ctx, slf: Value, a: &[Value], _blk: *const Block) -> RV {
 // Enumerable.__each(obj, *args) { |v| }: obj.each(*args) with each yield packed (ENUM_WANT_SVALUE)
 fn e_each(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
-    let d = c.ary_new_from(&[bptr(blk)]);
-    run_each(c, a[0], |c, d, args, _| { let v = pack(c, args); yield1(c, ublk(c, d, 0), v) }, d, &a[1..])?;
+    // a Proc, not the Block's address: #each may keep the block and call it after this returns
+    let p = block_to_proc(c, blk)?;
+    let d = c.ary_new_from(&[p]);
+    run_each(c, a[0], |c, d, args, _| { let v = pack(c, args); call_proc(c, c.ary_get(d, 0), &[v], std::ptr::null()) }, d, &a[1..])?;
     Ok(a[0])
 }
 // Enumerable.__set_init(h, enum) { |x| }: set.c set_i_initialize (an Array is read directly, no #each)
@@ -505,11 +509,12 @@ fn set_merge_one(c: &mut Ctx, h: Value, e: Value, blk: *const Block) -> RV {
         return Ok(NIL);
     }
     if !respond_to(c, e, crate::symbol::intern(b"each_entry"), true) && !respond_to(c, e, s::each, true) { return arg_err(c, "value must be enumerable"); }
-    let d = c.ary_new_from(&[h, bptr(blk)]);
+    let p = if blk.is_null() { NIL } else { block_to_proc(c, blk)? };
+    let d = c.ary_new_from(&[h, p]);
     run_each(c, e, |c, d, args, _| {
         let v = pack(c, args);
-        let b = ublk(c, d, 1);
-        let k = if b.is_null() { v } else { yield1(c, b, v)? };
+        let p = c.ary_get(d, 1);
+        let k = if p == NIL { v } else { call_proc(c, p, &[v], std::ptr::null())? };
         crate::hash::hash_aset(c, c.ary_get(d, 0), k, TRUE)?;
         Ok(NIL)
     }, d, &[])?;
