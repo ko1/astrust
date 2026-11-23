@@ -10,6 +10,7 @@ pub mod astrust_gc;
 
 pub mod prism;
 pub mod prism_ast;
+pub mod prism_generic;
 pub mod fxhash;
 pub mod value;
 pub mod symbol;
@@ -182,7 +183,8 @@ fn parse_args() -> Opts {
             "--version" => { println!("{}", version()); std::process::exit(0); }
             "-h" | "--help" => usage(),
             "--" => { i += 1; if i < argv.len() && o.e.is_empty() { o.script = Some(argv[i].clone()); } else if i < argv.len() { o.args.push(raw[i].clone()); } }
-            "--disable-gems" | "--disable=gems" | "--enable-frozen-string-literal" | "--yjit" | "--disable-all" => {}
+            "--disable-gems" | "--disable=gems" | "--enable-frozen-string-literal" | "--yjit" => {}
+            "--disable-all" | "--disable-error_highlight" | "--disable=error_highlight" => crate::builtins::error_highlight::disable(),
             s if s.starts_with("-I") => { if s.len() > 2 { o.incdirs.push(s[2..].into()); } else { i += 1; o.incdirs.push(argv.get(i).cloned().unwrap_or_else(|| usage())); } }
             s if s.starts_with("-r") => { if s.len() > 2 { o.requires.push(s[2..].into()); } else { i += 1; o.requires.push(argv.get(i).cloned().unwrap_or_else(|| usage())); } }
             s if s.starts_with("--disable") || s.starts_with("--enable") => {}

@@ -58,6 +58,7 @@ pub mod tracepoint;
 pub mod digest;
 pub mod etc;
 pub mod syslog;
+pub mod error_highlight;
 pub mod cgi_escape;
 pub mod coverage;
 pub mod objspace;

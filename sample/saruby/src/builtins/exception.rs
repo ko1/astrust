@@ -272,6 +272,7 @@ fn decorate_message(c: &mut Ctx, e: Value, emesg: Value, highlight: bool) -> Vec
     o
 }
 fn exc_detailed_message(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+    if let Some(m) = crate::builtins::error_highlight::detailed_message(c, slf, a)? { return Ok(m); }
     let highlight = highlight_kw(c, kw_arg(a))?.truthy();
     let m = funcall(c, slf, s::message, &[], std::ptr::null())?;
     let m = check_str(c, m)?;

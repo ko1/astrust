@@ -73,22 +73,25 @@ impl ParseResult {
 
 include!("prism_opts.rs");
 
-pub fn parse(src: &[u8], o: &ParseOpts) -> ParseResult {
+pub fn parse(src: &[u8], o: &ParseOpts) -> ParseResult { read_serialized(&serialize(src, o)) }
+
+/// pm_serialize_parse's output for `src`.
+pub fn serialize(src: &[u8], o: &ParseOpts) -> Vec<u8> {
     let opts = build_options(o);
-    let bytes = unsafe {
+    unsafe {
         let b = pm_buffer_new();
         pm_serialize_parse(b, src.as_ptr(), src.len(), opts.as_ptr() as *const c_char);
         let v = std::slice::from_raw_parts(pm_buffer_value(b) as *const u8, pm_buffer_length(b)).to_vec();
         pm_buffer_free(b);
         v
-    };
-    read_serialized(&bytes)
+    }
 }
 
-/// The result of a parse from its serialization (pm_serialize_parse's output).
-pub fn read_serialized(bytes: &[u8]) -> ParseResult {
-    let mut r = Reader { buf: bytes, pos: 0 };
-    assert!(&bytes[0..5] == b"PRISM", "prism: bad serialization");
+/// What a serialization holds before its root node; `r` is left at the root.
+pub struct Prefix { pub encoding: String, pub start_line: i32, pub line_offsets: Vec<u32>, pub data_loc: Option<Loc>,
+    pub errors: Vec<Diag>, pub warnings: Vec<Diag>, pool_off: usize, pool_n: usize }
+pub fn read_prefix(r: &mut Reader) -> Prefix {
+    assert!(&r.buf[0..5] == b"PRISM", "prism: bad serialization");
     r.pos = 5;
     let _maj = r.byte(); let _min = r.byte(); let _pat = r.byte();
     let _sem = r.byte();
@@ -116,13 +119,28 @@ pub fn read_serialized(bytes: &[u8]) -> ParseResult {
     let _continuable = r.byte();
     let pool_off = r.u32le() as usize;
     let pool_n = r.varu() as usize;
-    let root = r.node();
-    let mut constants = Vec::with_capacity(pool_n);
-    for i in 0..pool_n {
-        let p = pool_off + i * 8;
-        let st = u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap()) as usize;
-        let ln = u32::from_le_bytes(bytes[p + 4..p + 8].try_into().unwrap()) as usize;
-        constants.push(bytes[st..st + ln].to_vec());
+    Prefix { encoding, start_line, line_offsets, data_loc, errors, warnings, pool_off, pool_n }
+}
+impl Prefix {
+    /// The constant pool (the names of Cst).
+    pub fn constants(&self, bytes: &[u8]) -> Vec<Vec<u8>> {
+        let mut constants = Vec::with_capacity(self.pool_n);
+        for i in 0..self.pool_n {
+            let p = self.pool_off + i * 8;
+            let st = u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap()) as usize;
+            let ln = u32::from_le_bytes(bytes[p + 4..p + 8].try_into().unwrap()) as usize;
+            constants.push(bytes[st..st + ln].to_vec());
+        }
+        constants
     }
+}
+
+/// The result of a parse from its serialization (pm_serialize_parse's output).
+pub fn read_serialized(bytes: &[u8]) -> ParseResult {
+    let mut r = Reader { buf: bytes, pos: 0 };
+    let p = read_prefix(&mut r);
+    let root = r.node();
+    let constants = p.constants(bytes);
+    let Prefix { encoding, start_line, line_offsets, data_loc, errors, warnings, .. } = p;
     ParseResult { root, constants, line_offsets, start_line, errors, warnings, data_loc, encoding }
 }

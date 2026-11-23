@@ -19,7 +19,7 @@ FEATURES ?=
 	@echo '$(FEATURES)' | cmp -s - $@ || echo '$(FEATURES)' > $@
 FORCE:
 
-saruby: $(GEN) src/prism_ast.rs build.rs tools/prism_serialize.c $(shell find src ../astrogre/src -name '*.rs') ../astrogre/node.def prelude/core.rb $(wildcard prelude/lib/*.rb) $(wildcard ../../runtime/*.rs) $(wildcard ../../runtime/gc/*.rs) target/.gc-$(GC) .features
+saruby: $(GEN) src/prism_ast.rs build.rs tools/prism_serialize.c $(shell find src ../astrogre/src -name '*.rs') ../astrogre/node.def prelude/core.rb $(wildcard prelude/lib/*.rb prelude/lib/*/*.rb) $(wildcard ../../runtime/*.rs) $(wildcard ../../runtime/gc/*.rs) target/.gc-$(GC) .features
 	cargo build --$(PROFILE) --features "gc-$(GC) $(FEATURES)"
 	cp target/$(PROFILE)/saruby target/$(PROFILE)/libsaruby.so .
 

@@ -906,8 +906,10 @@ impl<'a> Compiler<'a> {
                 ALLOC_node_if(st, on_state, off_state)
             }
             // calls
-            Kind::CallNode { receiver, name, arguments, block, .. } => {
+            Kind::CallNode { receiver, name, arguments, block, message_loc } => {
                 let nm = self.cst(*name);
+                // a call is at its message's line (CRuby: `x\n  .foo` raises at line 2)
+                let line = message_loc.map_or(line, |l| self.line(l));
                 self.call(n, receiver.as_deref(), nm, arguments.as_deref(), block.as_deref(), line)
             }
             Kind::SuperNode { arguments, block } => self.super_call(arguments.as_deref(), block.as_deref(), false, line),
