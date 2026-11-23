@@ -334,7 +334,17 @@ cfn!(s_to_s, |c, slf, a, b_| {
     if obj_klass(slf) == c.vm().c_string.get() { return Ok(slf); }
     Ok(c.str_copy(slf))
 });
-cfn!(s_to_sym, |c, slf, a, b_| Ok(c.str_to_sym(slf)));
+// UTF-8 first, with nothing to do after intern (a broken UTF-8 String is not checked: a scan per call)
+cfn!(s_to_sym, |c, slf, a, b_| { if c.str_enc(slf) == ENC_UTF8 { return Ok(Value::sym(intern(c.str_bytes(slf)))); } s_to_sym_enc(c, slf) });
+#[inline(never)]
+fn s_to_sym_enc(c: &mut Ctx, slf: Value) -> RV { let s = c.str_intern(slf); if s == crate::symbol::BAD_SYM { return sym_enc_err(c, slf); } Ok(Value::sym(s)) }
+#[cold]
+#[inline(never)]
+fn sym_enc_err(c: &mut Ctx, s: Value) -> RV {
+    let i = crate::builtins::kernel::inspect_str(c, s)?;
+    let m = format!("invalid symbol in encoding {} :{}", crate::builtins::encoding::enc_name(c.str_enc(s)), i);
+    err(c, c.vm().c_encoding_error.get(), m)
+}
 cfn!(s_to_i, |c, slf, a, b_| {
     need_ascii_compat(c, slf)?;
     let base = if a.is_empty() { 10 } else { num_to_long(c, a[0])? };
@@ -1619,27 +1629,55 @@ macro_rules! wide_m { ($w:ident, $f:ident, $bang:expr, $chomp:expr) => {
 }; }
 wide_m!(w_chomp, s_chomp, false, true); wide_m!(w_chomp_b, s_chomp_b, true, true);
 wide_m!(w_chop, s_chop, false, false); wide_m!(w_chop_b, s_chop_b, true, false);
-/// A broken wide string: lstrip_offset raises at an invalid character in the leading space, rstrip_offset always.
-fn broken_wide_strip(c: &mut Ctx, slf: Value, l: bool, r: bool) -> Result<(), Esc> {
+/// A broken String: lstrip_offset raises at an invalid character it reaches (not in a single-byte
+/// encoding), rstrip_offset always (rb_enc_str_coderange).
+/// Some(offset): lstrip of a broken wide String, by characters (the byte loop of strip_range does not apply).
+#[inline]
+fn broken_strip(c: &mut Ctx, slf: Value, l: bool, r: bool) -> Result<Option<usize>, Esc> {
+    use crate::builtins::encoding as en;
+    let x = c.rstring(slf);
+    if !r && en::min_len(x.enc) == 1 {
+        // lstrip alone looks at its first non-space character only
+        let i = x.b.iter().position(|&b| !is_ws(b)).unwrap_or(x.b.len());
+        if i == x.b.len() || x.b[i] < 0x80 || en::is_single_byte(x.enc) || en::precise_len(x.enc, &x.b, i).is_some() { return Ok(None); }
+    } else if en::min_len(x.enc) == 1 && x.b.is_ascii() || en::is_valid(x.enc, &x.b) { return Ok(None); }
+    broken_strip_err(c, slf, l && !en::is_single_byte(x.enc), r)
+}
+#[cold]
+#[inline(never)]
+fn broken_strip_err(c: &mut Ctx, slf: Value, l: bool, r: bool) -> Result<Option<usize>, Esc> {
     use crate::builtins::encoding as en;
     let (enc, b) = { let x = c.rstring(slf); (x.enc, x.b.to_vec()) };
-    if en::min_len(enc) == 1 || en::is_valid(enc, &b) { return Ok(()); }
     let msg = format!("invalid byte sequence in {}", en::enc_name(enc));
+    let mut i = 0;
     if l {
-        let mut i = 0;
         while i < b.len() {
-            let Some(n) = en::precise_len(enc, &b, i) else { return arg_err(c, msg) };
-            if !matches!(en::char_code(enc, &b[i..i + n]), 0 | 9..=13 | 32) { break; }
+            let (n, code) = if en::min_len(enc) == 4 {
+                // Onigmo's utf32 mbc_enc_len tests the code as a signed int: 0x80000000.. pass
+                if b.len() - i < 4 { return arg_err(c, msg); }
+                let w = [b[i], b[i + 1], b[i + 2], b[i + 3]];
+                let k = if enc == en::ENC_UTF32LE { u32::from_le_bytes(w) } else { u32::from_be_bytes(w) };
+                if k as i32 > 0x10ffff || (0xd800..=0xdfff).contains(&k) { return arg_err(c, msg); }
+                (4, k)
+            } else {
+                let Some(n) = en::precise_len(enc, &b, i) else { return arg_err(c, msg) };
+                (n, en::char_code(enc, &b[i..i + n]))
+            };
+            if !matches!(code, 0 | 9..=13 | 32) { break; }
             i += n;
         }
     }
     if r { return err(c, c.vm().c_compat_error.get(), msg); }
-    Ok(())
+    Ok(if l && en::min_len(enc) > 1 { Some(i) } else { None })
 }
 macro_rules! wide_strip { ($w:ident, $f:ident, $bang:expr, $l:expr, $r:expr) => {
     fn $w(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
         if wide(c, slf) { return via_u8(c, slf, a, b, $f, $bang, false); }
-        broken_wide_strip(c, slf, $l, $r)?;
+        if let (Some(i), true) = (broken_strip(c, slf, $l, $r)?, a.is_empty()) {
+            if !$bang { let n = c.str_len(slf); return Ok(c.str_sub(slf, i..n)); }
+            if i == 0 { return Ok(NIL); }
+            c.str_modify(slf)?.b.remove_front(i); return Ok(slf);
+        }
         $f(c, slf, a, b)
     }
 }; }

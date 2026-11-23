@@ -61,11 +61,17 @@ impl Dumper {
         let n = self.syms.len();
         self.syms.insert(sy, n);
         let b = sym_bytes(sy);
-        let ascii = is_ascii(b);
-        if !ascii { self.out.push(b'I'); }
+        // w_symbol: the encoding as an ivar, none for an ASCII name or a BINARY one
+        let enc = match crate::builtins::symbol_methods::sym_encoding(sy) { ENC_ASCII if is_ascii(b) => ENC_BINARY, e => e };
+        if enc != ENC_BINARY { self.out.push(b'I'); }
         self.out.push(b':');
         w_bytes(&mut self.out, b);
-        if !ascii { w_long(&mut self.out, 1); self.sym(intern(b"E")); self.out.push(b'T'); }
+        match enc {
+            ENC_BINARY => {}
+            ENC_UTF8 => { w_long(&mut self.out, 1); self.sym(intern(b"E")); self.out.push(b'T'); }
+            ENC_ASCII => { w_long(&mut self.out, 1); self.sym(intern(b"E")); self.out.push(b'F'); }
+            e => { w_long(&mut self.out, 1); self.sym(intern(b"encoding")); self.out.push(b'"'); w_bytes(&mut self.out, crate::builtins::encoding::enc_name(e).as_bytes()); }
+        }
     }
     fn class_name(&mut self, c: &mut Ctx, k: Value) -> Result<String, Esc> {
         if c.class(k).name.is_none() { let a = any_to_s_anon(c, k); return type_err(c, format!("can't dump anonymous {} {}", if c.class(k).is_module { "module" } else { "class" }, a)); }
@@ -402,7 +408,20 @@ impl Loader {
                 let b = self.rbytes(c)?;
                 let idx = self.syms.len();
                 self.syms.push(intern(&b));
-                if ivar { let n = self.len(c)?; for _ in 0..n { self.symbol(c)?; self.object(c)?; } }
+                // r_symreal: no encoding ivar is BINARY (for a non-ASCII name)
+                let mut enc = ENC_BINARY;
+                if ivar {
+                    let n = self.len(c)?;
+                    for _ in 0..n {
+                        let k = self.symbol(c)?; let v = self.object(c)?;
+                        match sym_bytes(k) {
+                            b"E" => enc = if v.truthy() { ENC_UTF8 } else { ENC_ASCII },
+                            b"encoding" if is_string(v) => { if let Some(e) = crate::builtins::encoding::find_enc(c.str_bytes(v)) { enc = e; } }
+                            _ => {}
+                        }
+                    }
+                }
+                self.syms[idx] = crate::string::sym_of(&b, enc);
                 Ok(self.syms[idx])
             }
             b'I' => { let t2 = self.byte(c)?; self.symbol_of(c, t2, true) }

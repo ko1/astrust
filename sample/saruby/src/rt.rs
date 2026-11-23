@@ -69,6 +69,7 @@ pub fn note_redefinition(c: &mut Ctx, klass: Value, mid: Sym) {
 /// REDEF for (klass, mid); true if it changed.  The running context must then copy it (note_redefinition).
 pub fn redef_note(c: &Ctx, klass: Value, mid: Sym) -> bool {
     if !booted() { return false; }
+    if mid == s::puts || matches!(crate::symbol::sym_bytes(mid), b"write" | b"putc") { crate::builtins::io::note_out_method(c, klass); }
     let before = redef_word();
     // a refinement of a basic operation turns its inline fast path off everywhere
     let klass = if c.class(klass).refined { c.class(klass).attached } else { klass };
@@ -1054,7 +1055,7 @@ pub fn srb_class(c: &mut Ctx, outer: Value, name: Sym, sup: Value, is: &'static 
         None => {
             if let Some(&path) = c.class(outer).autoload.get(&name) {
                 c.class_mut(outer).autoload.remove(&name);
-                crate::builtins::kernel::require_feature(c, path, false)?;
+                crate::builtins::kernel::autoload_require(c, path)?;
                 const_get_at(c, outer, name)
             } else { None }
         }
@@ -1096,7 +1097,7 @@ pub fn srb_module(c: &mut Ctx, outer: Value, name: Sym, is: &'static Iseq, _fp: 
     }
     // reopening an autoload constant loads it first (as srb_class does)
     if const_get_at(c, outer, name).is_none() {
-        if let Some(path) = c.class_mut(outer).autoload.remove(&name) { crate::builtins::kernel::require_feature(c, path, false)?; }
+        if let Some(path) = c.class_mut(outer).autoload.remove(&name) { crate::builtins::kernel::autoload_require(c, path)?; }
     }
     let m = match const_get_at(c, outer, name) {
         Some(m) => {

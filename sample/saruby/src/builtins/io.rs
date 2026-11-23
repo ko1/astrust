@@ -448,7 +448,90 @@ fn io_write(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     for &x in a { let sv = crate::rt::srb_tostr(c, x)?; n += io_write_str(c, slf, sv)?; }
     Ok(Value::fix(n as i64))
 }
+
+// ---- output through an overridden #write (rb_io_write / rb_io_writev) ----
+// Until a method named write / puts / putc is defined on an IO class, a singleton of an IO or a module,
+// output skips the method lookup.
+static OUT_REDEF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[inline(always)]
+pub fn out_redef() -> bool { OUT_REDEF.load(std::sync::atomic::Ordering::Relaxed) }
+#[cold]
+pub fn note_out_method(c: &Ctx, klass: Value) {
+    let io = c.vm().c_io.get();
+    if c.class(klass).is_module || klass == io || ancestors(c, klass).contains(&io) {
+        OUT_REDEF.store(true, std::sync::atomic::Ordering::Relaxed);
+        STDOUT_CONV.fetch_or(2, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+/// !rb_method_basic_definition_p(CLASS_OF(io), id_write): output must call `io.write`.
+#[inline(always)]
+pub fn dyn_write(c: &Ctx, io: Value) -> bool { out_redef() && dyn_write_slow(c, io) }
+#[cold]
+#[inline(never)]
+fn dyn_write_slow(c: &Ctx, io: Value) -> bool {
+    !matches!(c.method_entry(class_of(io), intern(b"write")), Some(me) if std::ptr::eq(me, c.vm().ids.io_write.get()))
+}
+/// rb_io_writev: `io.write(*a)`, or one call per argument to a #write that takes exactly one.
+pub fn writev_dyn(c: &mut Ctx, io: Value, a: &[Value]) -> Result<(), Esc> {
+    let w = intern(b"write");
+    if a.len() > 1 {
+        let me = lookup_method(c, class_of(io), w);
+        if !me.is_null() && crate::builtins::proc::method_arity(c, me) == 1 {
+            if io != c.vm().stderr.get() && c.vm().verbose.get().truthy() {
+                let k = class_of(io);
+                let who = if c.class(k).is_singleton { inspect_str(c, io)? + "." } else { crate::vm::class_path(c, k) + "#" };
+                gvar_warn(c, &format!("{}write is outdated interface which accepts just one argument", who), true)?;
+            }
+            for &x in a { funcall(c, io, w, &[x], std::ptr::null())?; }
+            return Ok(());
+        }
+    }
+    funcall(c, io, w, a, std::ptr::null())?;
+    Ok(())
+}
+/// rb_io_puts with a dispatched #write.
+#[inline(never)]
+pub fn puts_dyn(c: &mut Ctx, io: Value, a: &[Value]) -> Result<(), Esc> {
+    if a.is_empty() { let rs = c.str_new_enc(b"\n", ENC_ASCII); return writev_dyn(c, io, &[rs]); }
+    for &x in a {
+        let line = if is_string(x) { x } else {
+            if let Some(ary) = if x.is_heap() { crate::array::check_array(c, x)? } else { None } {
+                if !recursion_enter(ary, s::puts) { let l = c.str_new(b"[...]"); puts_dyn(c, io, &[l])?; continue; }
+                // each element on its own (io_puts_ary): an empty Array writes nothing
+                let mut i = 0;
+                let r = loop { if i >= c.ary_len(ary) { break Ok(()); } let e = c.ary_get(ary, i); if let Err(e) = puts_dyn(c, io, &[e]) { break Err(e); } i += 1; };
+                recursion_leave(ary, s::puts);
+                r?; continue;
+            }
+            to_s_value(c, x)?
+        };
+        let rs = c.str_new_enc(b"\n", ENC_ASCII);
+        if c.str_bytes(line).is_empty() { writev_dyn(c, io, &[rs])?; }
+        else if ends_with_newline(c.str_bytes(line), c.str_enc(line)) { writev_dyn(c, io, &[line])?; }
+        else { writev_dyn(c, io, &[line, rs])?; }
+    }
+    Ok(())
+}
+/// rb_io_print with a dispatched #write: the objects go to #write as they are.
+#[inline(never)]
+pub fn print_dyn(c: &mut Ctx, io: Value, a: &[Value]) -> Result<(), Esc> {
+    let (fs, ors) = (global_get("$,"), global_get("$\\"));
+    let last;
+    let a = if a.is_empty() { last = [crate::builtins::svar::last_line(c)]; &last[..] } else { a };
+    if a.len() > 1 && fs != NIL { print_fs_warn(c)?; }
+    let w = intern(b"write");
+    for (i, &x) in a.iter().enumerate() {
+        if i > 0 && fs != NIL { funcall(c, io, w, &[fs], std::ptr::null())?; }
+        funcall(c, io, w, &[x], std::ptr::null())?;
+    }
+    if ors != NIL { funcall(c, io, w, &[ors], std::ptr::null())?; }
+    Ok(())
+}
+#[cold]
+fn print_fs_warn(c: &mut Ctx) -> Result<(), Esc> { crate::builtins::kernel::warn_deprecated(c, "$, is set to non-nil value") }
+
 fn io_puts(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+    if out_redef() && dyn_write_slow(c, slf) { puts_dyn(c, slf, a)?; return Ok(NIL); }
     if rio(c, slf).is_some_and(wconv) {
         // each line and its newline are converted on their own (rb_io_puts -> rb_io_writev)
         for &x in a { puts_conv(c, slf, x)?; }
@@ -474,10 +557,12 @@ fn puts_conv(c: &mut Ctx, slf: Value, x: Value) -> Result<(), Esc> {
 }
 /// $, or $\ has been set non-nil (IO#print looks them up only then)
 pub static OUTPUT_SEPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-fn io_print(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+pub fn io_print(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let (fs, ors) = if OUTPUT_SEPS.load(std::sync::atomic::Ordering::Relaxed) { (global_get("$,"), global_get("$\\")) } else { (NIL, NIL) };
     let last;
     let a = if a.is_empty() { last = [crate::builtins::svar::last_line(c)]; &last[..] } else { a };
+    if out_redef() && dyn_write_slow(c, slf) { print_dyn(c, slf, a)?; return Ok(NIL); }
+    if a.len() > 1 && fs != NIL { print_fs_warn(c)?; }
     if fs == NIL && ors == NIL && !rio(c, slf).is_some_and(wconv) {
         let mut out = vec![];
         for &x in a { let sv = crate::rt::srb_tostr(c, x)?; out.extend_from_slice(c.str_bytes(sv)); }
@@ -490,13 +575,31 @@ fn io_print(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if ors != NIL { let r = crate::rt::srb_tostr(c, ors)?; io_write_str(c, slf, r)?; }
     Ok(NIL)
 }
-fn io_ltlt(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { io_write(c, slf, a, b)?; Ok(slf) }
+fn io_ltlt(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+    if out_redef() { return ltlt_slow(c, slf, a, b); }
+    io_write(c, slf, a, b)?; Ok(slf)
+}
+#[cold]
+#[inline(never)]
+fn ltlt_slow(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+    if dyn_write_slow(c, slf) { write_dyn(c, slf, a[0])?; } else { io_write(c, slf, a, b)?; }
+    Ok(slf)
+}
+/// rb_io_write: `io.write(x)`.
+#[cold]
+#[inline(never)]
+fn write_dyn(c: &mut Ctx, io: Value, x: Value) -> Result<(), Esc> { funcall(c, io, intern(b"write"), &[x], std::ptr::null()).map(|_| ()) }
 fn io_printf(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if a.is_empty() { return Ok(NIL); }
     let s2 = crate::builtins::sprintf::format(c, a[0], &a[1..])?;
+    if out_redef() && dyn_write_slow(c, slf) { write_dyn(c, slf, s2)?; return Ok(NIL); }
     io_write_str(c, slf, s2)?; Ok(NIL)
 }
 fn io_p(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+    if out_redef() && dyn_write_slow(c, slf) {
+        for &x in a { let s2 = inspect_value(c, x)?; let rs = c.str_new_enc(b"\n", ENC_ASCII); writev_dyn(c, slf, &[s2, rs])?; }
+        return Ok(NIL);
+    }
     if rio(c, slf).is_some_and(wconv) {
         for &x in a { let s2 = inspect_value(c, x)?; io_write_str(c, slf, s2)?; let rs = c.str_new_enc(b"\n", ENC_ASCII); io_write_str(c, slf, rs)?; }
         return Ok(NIL);
@@ -1223,12 +1326,16 @@ fn set_encs(c: &mut Ctx, v: Value, e: Encs, eo: EcOpts) {
         cv::clear_codeconv(io); conv_note(io);
     }
 }
-// Kernel#puts / print / p write STDOUT's bytes directly unless it converts
-pub static STDOUT_CONV: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+// Kernel#puts / print / p write STDOUT's bytes directly unless it converts (bit 0) or an output method
+// may be overridden (bit 1, out_redef)
+pub static STDOUT_CONV: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 /// After a stream's encodings change: whether its writes convert (a duplex popen converts only what it reads).
 pub fn conv_note(io: &mut RIo) {
     io.wc_need = cv::need_writeconv(io) && !(io.wfd >= 0 && io.wfd != io.fd);
-    if out_fd(io) == 1 { STDOUT_CONV.store(io.wc_need, std::sync::atomic::Ordering::Relaxed); }
+    if out_fd(io) == 1 {
+        use std::sync::atomic::Ordering::Relaxed;
+        if io.wc_need { STDOUT_CONV.fetch_or(1, Relaxed); } else { STDOUT_CONV.fetch_and(!1, Relaxed); }
+    }
 }
 fn io_set_encoding(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     check_open(c, slf, false)?;
@@ -1908,7 +2015,9 @@ pub fn init(c: &mut Ctx) {
     let f = define_class(c, "File", io);
     vmr.c_file.set(f);
     let d = |c: &mut Ctx, n: &str, fun: CFunc, a: i32| define_cfunc(c, io, n, fun, a);
-    d(c, "write", io_write, -1); d(c, "puts", io_puts, -1); d(c, "print", io_print, -1); d(c, "<<", io_ltlt, 1); d(c, "printf", io_printf, -1); d(c, "p", io_p, -1); d(c, "putc", io_putc, 1);
+    d(c, "write", io_write, -1);
+    vmr.ids.io_write.set(lookup_method(c, io, intern(b"write")));
+    d(c, "puts", io_puts, -1); d(c, "print", io_print, -1); d(c, "<<", io_ltlt, 1); d(c, "printf", io_printf, -1); d(c, "p", io_p, -1); d(c, "putc", io_putc, 1);
     d(c, "flush", io_flush, 0); d(c, "fsync", io_fsync, 0); d(c, "fdatasync", io_fsync, 0); d(c, "sync", io_sync, 0); d(c, "sync=", io_set_sync, 1); d(c, "gets", io_gets, -1); d(c, "readline", io_readline, -1);
     d(c, "each_line", io_each_line, -1); d(c, "each", io_each_line, -1); d(c, "readlines", io_readlines, -1); d(c, "read", io_read, -1); d(c, "getc", io_getc, 0);
     d(c, "readchar", io_readchar, 0); d(c, "getbyte", io_getbyte, 0); d(c, "readbyte", io_readbyte, 0); d(c, "each_byte", io_each_byte, 0); d(c, "each_char", io_each_char, 0);

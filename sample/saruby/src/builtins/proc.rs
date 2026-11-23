@@ -160,9 +160,9 @@ fn make_curry(c: &mut Ctx, p: Value, arity: i64, got: Value) -> RV {
     Ok(new_proc(c, c.vm().c_proc.get(), b, lambda, NIL))
 }
 fn proc_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let pd = c.proc_data(slf);
-    let loc = match pd.blk.kind { BlockKind::Iseq(is) => c.iseq_ref(is).map_or(String::new(), |is| format!(" {}:{}", is.info.file, is.info.line)), BlockKind::Sym(s) => format!("(&:{})", sym_str(s)), _ => String::new() };
-    let t = format!("#<Proc:{:#018x}{}{}>", slf.raw(), loc, if pd.is_lambda { " (lambda)" } else { "" });
+    let (kind, lambda) = { let pd = c.proc_data(slf); (pd.blk.kind, pd.is_lambda) };
+    let loc = match kind { BlockKind::Iseq(is) => c.iseq_ref(is).map_or(String::new(), |is| format!(" {}:{}", is.info.file, is.info.line)), BlockKind::Sym(s) => { let i = crate::builtins::kernel::inspect_str(c, Value::sym(s))?; format!("(&{})", i) } _ => String::new() };
+    let t = format!("#<Proc:{:#018x}{}{}>", slf.raw(), loc, if lambda { " (lambda)" } else { "" });
     Ok(c.str_new(t.as_bytes()))
 }
 fn callable_check(c: &mut Ctx, g: Value) -> Result<(), Esc> {

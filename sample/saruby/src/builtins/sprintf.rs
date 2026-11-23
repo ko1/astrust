@@ -340,7 +340,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                         let prev = name_for_err.clone().unwrap_or_default();
                         return Err(raise_bytes(c, c.vm().c_argument_error.get(), &[b"named", label, b" after <", &prev, b">"].concat(), fenc));
                     }
-                    let key = Value::sym(intern(name));
+                    let key = Value::sym(crate::string::sym_of(name, fenc));
                     let v = match crate::hash::hash_get_opt(c, h, key)? {
                         Some(v) => v,
                         None => {

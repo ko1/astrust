@@ -962,13 +962,21 @@ cfn!(a_shuffle, |c, slf, a, blk| {
     Ok(out)
 });
 cfn!(a_shuffle_b, |c, slf, a, blk| { let r = a_shuffle(c, slf, a, blk)?; *c.ary_modify(slf)? = c.ary(r).to_vec().into(); Ok(slf) });
+/// Enumerator#size marker of Array#cycle's enumerators.
+pub const ARY_CYCLE_SIZE: &[u8] = b"__ary_cycle_size";
+/// rb_ary_cycle_size.
+pub fn ary_cycle_size(c: &mut Ctx, ary: Value, args: Value) -> RV {
+    let l = c.ary_len(ary);
+    if l == 0 { return Ok(Value::fix(0)); }
+    let n = if c.ary_len(args) > 0 { c.ary_get(args, 0) } else { NIL };
+    if n == NIL { return Ok(c.float_new(f64::INFINITY)); }
+    let m = num_to_long(c, n)?;
+    Ok(if m <= 0 { Value::fix(0) } else { c.int_from_i128(l as i128 * m as i128) })
+}
 cfn!(a_cycle, |c, slf, a, blk| {
     check_argc(c, a, 0, 1)?;
-    if blk.is_null() {
-        let l = c.ary_len(slf) as i64;
-        let size = if a.is_empty() || a[0] == NIL { if l == 0 { Value::fix(0) } else { c.float_new(f64::INFINITY) } } else { let n = num_to_long(c, a[0])?.max(0); c.int_from_i128(l as i128 * n as i128) };
-        return crate::builtins::enumerator::enum_for(c, slf, intern(b"cycle"), a, size);
-    }
+    // the size is computed when asked (rb_ary_cycle_size): a count that is no long fails only then
+    if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"cycle"), a, Value::sym(intern(ARY_CYCLE_SIZE))); }
     enum_or(c, slf, "cycle", a, blk, |c| {
     let n = if a.is_empty() || a[0] == NIL { -1 } else { num_to_long(c, a[0])? };
     let mut k = 0;

@@ -72,9 +72,11 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
   - [ ] liquid-compile +0.47 % 命令（StringScanner#scan +42 / =~ +44 命令/呼び出し: 照合ごとのエンコーディング判定・timeout・モード引数）。String に coderange のキャッシュがあれば判定の走査が消える
 - [x] IO の変換を変換エンジン経由に（io.c の readconv / cbuf / writeconv、builtins/io_conv.rs、docs/io_design.md「Encoding conversion」、~/ruby/src/trials/2026-11-23-saruby-io-transcode/）: 変換してから分ける（gets / getc / read / ungetc の cbuf、AFTER_OUTPUT、行の一般分岐を変換なしの IO にも）、newline: / xml: / replace: 装飾、ISO-2022-JP・UTF-16/32 への書き出し（close で終端）、byte 読みと char 読みの区別、BOM|、IO.pipe / popen / IO.read・write のエンコーディングとオプション、open_args:。CRuby との差分コーパス 28,412 件で base 16,669 → 28,343 一致（残りは sprintf の UTF-16 引数・GB18030 の limit 切り・CRuby の 8 KiB バッファ依存）、rubyspec core/io 1286 → 1325（他の 5 dir は増減なし）。gets 系は read_line の毎行コピーをやめて −62〜76 % 命令、io_pipe_rw −56 %
   - [ ] 残り: 変換ありの gets が遅い（econv の AFTER_OUTPUT 呼び出しが 1 文字ずつ: Shift_JIS→UTF-8 の gets が base（行ごとに変換、CRuby と違う結果）の 2.3 倍の命令）、GB18030 / Big5 / EUC-KR の limit 切り（Onigmo の left_adjust_char_head 未移植）、生の UTF-16 の limit 切りで CRuby の 8 KiB バッファ依存の挙動、File.open + close が +1.1 %（open ごと +43 命令: parse_mode と RIo の 4 欄）
-  - [ ] IO#puts / #print / #p が上書きされた #write を呼ばない（rubyspec io/puts 14 件）
+  - [x] IO#puts / #print / #<< / #printf と Kernel#puts / #print / #p / #putc が上書きされた #write を呼ぶ（rb_io_write / rb_io_writev、アリティ 1 の #write には 1 個ずつ。write / puts / putc の定義を redef_note が見るまではフラグ 1 個の検査だけ。io/puts 5 → 18 / 19、~/ruby/src/trials/2026-11-23-saruby-compat-bundle-2/）
+  - [ ] 残り: io/puts の 1 件は rb_check_funcall（to_ary を method_missing 経由で呼ぶ）が check_array に無いため。write を定義した module が後から IO に入っていない場合も遅い道（lookup）に入る
   - [x] UTF-16 / UTF-32 の String メソッド（chomp / chop / strip 系 / lines / 揃え / partition / 大小文字を UTF-8 形で）、Integer#chr(enc)、sprintf の非 ASCII 互換引数（~/ruby/src/trials/2026-11-23-saruby-compat-bundle/、差分調査 407 → 33 行）
-  - [ ] 残り: 幅広文字列の to_sym（Symbol にエンコーディングが無い）、壊れた UTF-8 などの strip が CRuby の ArgumentError / CompatibilityError を出さない（coderange が無いので全走査が要る）
+  - [x] Symbol のエンコーディング（UTF-16/32、非 ASCII の BINARY / ISO-8859-x / EUC-JP / SJIS / 高位バイトの US-ASCII は別 Symbol: symbol.rs の副表、intern は不変）、Symbol#encoding / to_s / inspect / length、非 UTF-8 ソースの識別子・リテラル・ラベル、eval の文字列のエンコーディング、Marshal、sprintf の %<name>、const_get。壊れた文字列の strip / lstrip / rstrip の ArgumentError / CompatibilityError（全エンコーディング、~/ruby/src/trials/2026-11-23-saruby-compat-bundle-2/）
+  - [ ] 残り: 壊れた UTF-8 の String#to_sym が EncodingError を出さない（検査は to_sym 1 回 +6 命令、見送り）、interpolation `:"#{...}"` の壊れたバイト（node_dsym）、Struct / TracePoint 等が文字列名を intern する所はエンコーディングを見ない、UTF-32 で 0x80000000 以上の符号（Onigmo は符号付きで比較して有効扱い）の valid_encoding?
 - [x] blop 層（docs/io_design.md、~/ruby/src/trials/2026-11-22-saruby-blop/）: 待ちは全部 slab 所有の op、エンジンは poll（既定）/ epoll。1 ms ポーリング廃止。file/flock・file/open・io-wait/wait・process/status/wait のタイムアウト解消
 - [ ] まだタイムアウト: kernel/require（並行 require: ロード中 feature の待ちと他スレッドの Thread#backtrace が要る）、mutex/lock・thread/list（グリーンスレッドに横取りが無い: ループ後方枝 / メソッド入口のタイムスライス検査が要る）
 - [ ] blop: epoll の登録を fd 単位で持ち越す、io_uring エンジン、CFUNC ワーカー（flock / FIFO open / waitpid(-1) のバックオフ代替、getaddrinfo）
@@ -85,7 +87,8 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [ ] library/ の残り: openssl 173（部分実装は `defined?(OpenSSL::SSL)` 判定を壊すので丸ごと）、objectspace 46（trace_object_allocations は割り当てフックが要る）、weakref の回収、`Coverage.line_stub`（RubyVM::InstructionSequence）
 - [ ] 起動の命令数が codegen-units=16 の分割で ±0.8M 動く（`__rust_alloc` がどの呼び出し元に inline されるか）。比較は `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1` で（base 16.177M → stdlib-2 16.190M。既定ビルドの先頭は json の FxHash 化で 15.91M）
 - [ ] 値を使わない式（`if` の値など、外側から決まるもの）の line イベントがまだ CRuby より多い（文単位の省略はした）
-- [ ] autoload が `main.require` を呼ばない（core/kernel/autoload_spec）、Enumerator#first を別スレッドから供給したときの break（enum_first_cross_thread_1022）
+- [x] autoload が `main.require` を呼ぶ、Kernel#autoload の対象は rb_vm_cbase 相当、to_path / 凍結 / 定数名の検査、Enumerator#first / take を別スレッドから供給したときの break（LocalJumpError をそのスレッドで、first_i / take_i の数え方）。kernel/autoload 14 → 24 / 25（~/ruby/src/trials/2026-11-23-saruby-compat-bundle-2/）
+- [ ] autoload の残り: Class.new のブロック中の def の cref（kernel/autoload 1 件）、module/autoload 17 件（ロード中の他スレッドからの見え方、同じファイルを直接 require したとき、const_source_location、rubygems の読み込み）
 - [ ] RUBY_VERSION を 4.0.x にするか（いまは 3.4.0。mspec は SPEC_RUBY_VERSION で回避）。変わるもの（調査のみ、~/ruby/src/trials/2026-11-23-saruby-compat-bundle/ README）: RbConfig の MAJOR/MINOR/ruby_version/RUBY_API_VERSION も揃える必要（Gem.default_dir が lib/ruby/gems/3.4.0 を指し 4.0.2 の gem が見えない）、4.0.2 の rbconfig.rb は 4.0.x 以外で raise、bundled_gems.rb の SINCE 判定（ostruct / logger / benchmark / pstore / irb 等が 3.4.0 では :warning、4.0 では :error 側）、gem の `require "cgi/util" if RUBY_VERSION < "3.5"`（3.4.0 だと 4.0 で消えた CGI::Util を読みに行く）、prism ffi の version 3、Bundler の ruby_40?、RUBY_DESCRIPTION の "Ruby 3.4 compatible"
 - [x] CRuby benchmark/*.rb 148/148（yml は 228/236: IO::Buffer、RubyVM、irb、Pathname、fiber_chain）
 - [ ] ruby-bench 67/88（check、plain。stdlib-2 で zlib・psych・json/ext が入り chunky-png・hexapdf・psych-load・liquid-*・json_parse_* が一致）。残り: Ractor 3 本、未インストール gem 18 本
@@ -101,11 +104,11 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [ ] `Array#shift` が O(n)（so_lists）。O(1) 版 2 案は他の配列アクセスを遅くして却下済み
 - [ ] 大きな左シフト（CRuby は NoMemoryError、saruby は 2^26 bit 超を RangeError）
 - [x] `__callee__` on alias、`WeakMap#inspect`、`detailed_message` / `full_message` の書式（eval_error.c / error.c の移植、~/ruby/src/trials/2026-11-23-saruby-compat-bundle/）
-- [ ] error_highlight（CRuby の未捕捉例外に出るソースの ^^^ 表示）が無い
+- [ ] error_highlight（CRuby の未捕捉例外に出るソースの ^^^ 表示）が無い。要るもの（調査のみ、~/ruby/src/trials/2026-11-23-saruby-compat-bundle-2/ README）: 例外を出した呼び出しの列。CRuby は命令ごとの node_id を backtrace_location に持ち、error_highlight が prism で読み直して node_id で節を引く。saruby のフレームは Pos（行オペランドへの参照）だけで、生成ノードに列も id も無い（node.def は触れない）。行と名前で読み直す近似なら実行時コスト 0 だが、同じ行に同名の呼び出しが 2 つあると決まらない
 - [ ] t/hand: 約 23,400 PASS / 10,200 FAIL
 - [ ] 解説書『saruby でわかる Rust』（~/ruby/src/trials/2026-11-21-saruby-rust-book）: vm/heap 分割の反映、trait と Ruby の module の対比・dispatch（Dyn と T_… の Disp）の説明を追加（2026-11-22 の会話）
 - [x] `Array#cycle(n).size` が i64 で `len * n` してあふれる: Bignum で返す（CRuby master と同じ。4.0.2 は LONG2FIX で折り返す）。同時に Enumerable.__int の Fixnum 折り返しと Enumerator#size が Bignum を nil にするのも修正
-- [ ] `cycle` の size が即時計算: `[1].cycle(2**64)` が作った時点で RangeError（CRuby は size を呼ぶまで遅延して Enumerator を返す）
+- [x] `cycle` の size を遅延計算: `[1].cycle(2**64)` は Enumerator、size で RangeError（rb_ary_cycle_size、~/ruby/src/trials/2026-11-23-saruby-compat-bundle-2/）
 - [ ] `$0 =` / setproctitle: CRuby は argv 領域を書き換える（ps のコマンド行）。saruby は何もしない（comm を変えるのは CRuby と逆の振る舞いなので外した）。Rust が持たないメモリへの書き込みが要る
 
 ## 性能（上 3 つの後。新規には起こさない）

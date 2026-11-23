@@ -253,6 +253,9 @@ fn e_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
         return Ok(NIL);
     }
     if is_proc(en.size) { let p = en.size; return call_proc(c, p, &[], std::ptr::null()); }
+    if en.size.is_sym() && crate::symbol::sym_bytes(en.size.as_sym()) == crate::builtins::array_methods::ARY_CYCLE_SIZE {
+        return crate::builtins::array_methods::ary_cycle_size(c, en.recv, en.args);
+    }
     if is_integer(en.size) || is_float(en.size) { return Ok(en.size); }
     if en.mid == s::loop_ { return Ok(c.float_new(f64::INFINITY)); }
     let (recv, mid) = (en.recv, en.mid);
@@ -350,12 +353,19 @@ fn e_take(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if n < 0 { return arg_err(c, "attempt to take negative size"); }
     let out = c.ary_new();
     if n == 0 { return Ok(out); }
-    let data = c.ary_new_from(&[out, Value::fix(n)]);
+    let fib = crate::fiber::current(c);
+    let data = c.ary_new_from(&[out, Value::fix(n), fib]);
     let b = Block::cfunc(c, |c, d, args, _b| {
         let out = c.ary_get(d, 0);
         let v = if args.len() == 1 { args[0] } else { c.ary_new_from(args) };
         c.ary_push(out, v);
-        if c.ary_len(out) as i64 >= c.ary_get(d, 1).as_fix() { c.esc = EscKind::Throw; c.esc_tag_v = d; c.esc_val = out; return Err(Esc); }
+        // CRuby's `--n == 0` then rb_iter_break: from another thread / fiber the break is a LocalJumpError there
+        let left = c.ary_get(d, 1).as_fix() - 1;
+        c.ary_mut(d)[1] = Value::fix(left);
+        if left == 0 {
+            if crate::fiber::current(c) != c.ary_get(d, 2) { return Err(crate::rt::raise_local_jump(c, "break from proc-closure", "break", NIL)); }
+            c.esc = EscKind::Throw; c.esc_tag_v = d; c.esc_val = out; return Err(Esc);
+        }
         Ok(NIL)
     }, data);
     match enum_each_with(c, slf, &b) {
@@ -364,8 +374,20 @@ fn e_take(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     }
 }
 fn e_first(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
-    if a.is_empty() { let r = e_take(c, slf, &[Value::fix(1)], b)?; return Ok(c.ary_get(r, 0)); }
-    e_take(c, slf, a, b)
+    if !a.is_empty() { return e_take(c, slf, a, b); }
+    // first_i: keep the value and break, every time
+    let fib = crate::fiber::current(c);
+    let data = c.ary_new_from(&[NIL, fib]);
+    let b = Block::cfunc(c, |c, d, args, _b| {
+        let v = if args.len() == 1 { args[0] } else { c.ary_new_from(args) };
+        c.ary_mut(d)[0] = v;
+        if crate::fiber::current(c) != c.ary_get(d, 1) { return Err(crate::rt::raise_local_jump(c, "break from proc-closure", "break", NIL)); }
+        c.esc = EscKind::Throw; c.esc_tag_v = d; c.esc_val = NIL; Err(Esc)
+    }, data);
+    match enum_each_with(c, slf, &b) {
+        Err(e) => { if c.esc == EscKind::Throw && c.esc_tag_v == data { c.esc = EscKind::None; return Ok(c.ary_get(data, 0)); } Err(e) }
+        Ok(_) => Ok(c.ary_get(data, 0)),
+    }
 }
 fn arith_begin(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(renum(c, slf).arith.unwrap().0) }
 fn arith_end(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(renum(c, slf).arith.unwrap().1) }

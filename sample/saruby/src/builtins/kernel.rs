@@ -56,8 +56,8 @@ pub fn err_write(b: &[u8]) {
 /// Write to $stdout (dispatching when it was reassigned).
 pub fn stdout_write(c: &mut Ctx, b: &[u8]) -> Result<(), Esc> {
     let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
-    if so == c.vm().stdout.get() && !stdout_conv() { out_write(b); return out_check(c); }
-    if so == c.vm().stderr.get() { err_write(b); return Ok(()); }
+    if so == c.vm().stdout.get() && !stdout_slow() { out_write(b); return out_check(c); }
+    if so == c.vm().stderr.get() && !crate::builtins::io::out_redef() { err_write(b); return Ok(()); }
     let st = c.str_new(b);
     funcall(c, so, intern(b"write"), &[st], std::ptr::null())?;
     Ok(())
@@ -197,11 +197,13 @@ pub fn puts_bytes(c: &mut Ctx, args: &[Value]) -> Result<Vec<u8>, Esc> {
     Ok(out)
 }
 
-/// STDOUT converts what is written to it (set_encoding): go through IO#write / #puts.
-fn stdout_conv() -> bool { crate::builtins::io::STDOUT_CONV.load(std::sync::atomic::Ordering::Relaxed) }
+/// STDOUT converts what is written to it (set_encoding) or an output method may be overridden:
+/// go through IO#write / #puts.
+#[inline(always)]
+fn stdout_slow() -> bool { crate::builtins::io::STDOUT_CONV.load(std::sync::atomic::Ordering::Relaxed) != 0 }
 fn k_puts(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
-    if so != c.vm().stdout.get() && so != c.vm().stderr.get() || so == c.vm().stdout.get() && stdout_conv() {
+    if so != c.vm().stdout.get() && (so != c.vm().stderr.get() || crate::builtins::io::out_redef()) || so == c.vm().stdout.get() && stdout_slow() {
         return funcall(c, so, s::puts, args, std::ptr::null());
     }
     let out = puts_bytes(c, args)?;
@@ -209,21 +211,41 @@ fn k_puts(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     Ok(NIL)
 }
 
-fn k_print(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
-    if stdout_conv() {
-        let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
-        if so == c.vm().stdout.get() { return funcall(c, so, intern(b"print"), args, std::ptr::null()); }
+fn k_print(c: &mut Ctx, _s: Value, args: &[Value], b: *const Block) -> RV {
+    use crate::builtins::io;
+    let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
+    // rb_io_print to $stdout: $_, $, and $\, and a #write of $stdout's own
+    if so != c.vm().stdout.get() || stdout_slow() || args.is_empty() || io::OUTPUT_SEPS.load(std::sync::atomic::Ordering::Relaxed) {
+        if c.data::<io::RIo>(so).is_some() { return io::io_print(c, so, args, b); }
+        io::print_dyn(c, so, args)?; return Ok(NIL);
     }
     let mut out = vec![];
     for &a in args { let s = to_s_value(c, a)?; out.extend_from_slice(&c.str_bytes(s)); }
-    stdout_write(c, &out)?;
+    out_write(&out); out_check(c)?;
     Ok(NIL)
 }
 
 fn k_p(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+    let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
+    if so != c.vm().stdout.get() || stdout_slow() { return p_dyn(c, args); }
     let mut out = vec![];
     for &a in args { let s = inspect_value(c, a)?; out.extend_from_slice(&c.str_bytes(s)); out.push(b'\n'); }
-    stdout_write(c, &out)?;
+    out_write(&out); out_check(c)?;
+    Ok(match args.len() { 0 => NIL, 1 => args[0], _ => c.ary_new_from(args) })
+}
+
+/// rb_p_write for each object, then rb_p_result's flush of a File $stdout.
+#[cold]
+fn p_dyn(c: &mut Ctx, args: &[Value]) -> RV {
+    use crate::builtins::io;
+    let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
+    let is_io = c.data::<io::RIo>(so).is_some();
+    for &a in args {
+        let s = inspect_value(c, a)?;
+        let rs = c.str_new_enc(b"\n", ENC_ASCII);
+        if is_io && !io::dyn_write(c, so) { funcall(c, so, intern(b"write"), &[s, rs], std::ptr::null())?; } else { io::writev_dyn(c, so, &[s, rs])?; }
+    }
+    if is_io { funcall(c, so, intern(b"flush"), &[], std::ptr::null())?; }
     Ok(match args.len() { 0 => NIL, 1 => args[0], _ => c.ary_new_from(args) })
 }
 
@@ -239,6 +261,11 @@ fn k_pp(c: &mut Ctx, s: Value, args: &[Value], b: *const Block) -> RV {
 fn k_putc(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     check_argc(c, args, 1, 1)?;
     let v = args[0];
+    let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
+    // rb_f_putc: $stdout.putc unless writing to STDOUT as is; a String gives its first character
+    if so != c.vm().stdout.get() || stdout_slow() || is_string(v) && c.str_bytes(v).first().is_some_and(|&b| b >= 0x80) {
+        return funcall(c, so, intern(b"putc"), args, std::ptr::null());
+    }
     let b = if is_string(v) { vec![*c.str_bytes(v).first().unwrap_or(&0)] } else { vec![(crate::builtins::numeric_methods::num_to_long(c, v)? & 0xff) as u8] };
     stdout_write(c, &b)?;
     Ok(v)
@@ -693,12 +720,14 @@ pub fn gvar_alias(c: &mut Ctx, new: Sym, old: Sym) {
 }
 
 /// "file:line: warning: msg" through Warning.warn, unless $VERBOSE is nil (or the category is off).
-fn gvar_warn(c: &mut Ctx, msg: &str, deprecated: bool) -> Result<(), Esc> {
+pub fn gvar_warn(c: &mut Ctx, msg: &str, deprecated: bool) -> Result<(), Esc> {
     if c.vm().verbose.get() == NIL || (deprecated && !crate::builtins::misc::warning_category_enabled(0)) { return Ok(()); }
     let loc = c.cur_frame().map(|f| format!("{}:{}: ", frame_file(f), f.line())).unwrap_or_default();
     let m = format!("{}warning: {}\n", loc, msg);
     if deprecated { warning_write_cat(c, m.as_bytes(), sym_value("deprecated")) } else { warning_write(c, m.as_bytes()) }
 }
+
+pub fn warn_deprecated(c: &mut Ctx, msg: &str) -> Result<(), Esc> { gvar_warn(c, msg, true) }
 
 pub fn gvar_get(c: &mut Ctx, name: Sym) -> RV {
     let name = resolve_gvar(c, name);
@@ -985,14 +1014,38 @@ fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     Ok(TRUE)
 }
 
-fn k_autoload(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
+/// rb_class_real(rb_vm_cbase()): where Kernel#autoload / #autoload? work.
+fn autoload_cbase(c: &Ctx) -> Value {
+    let Some(f) = c.caller_frame() else { return c.vm().c_object.get() };
+    // the class a `def` there would define on (rt::srb_def): instance_eval's singleton included
+    let mut k = c.cref_ref(f.cref()).map_or(c.vm().c_object.get(), |r| r.klass);
+    if f.defined_class() != NIL && f.kind != FK_CLASS { k = f.defined_class(); }
+    while c.class(k).is_singleton { k = c.class(k).superclass; }
+    k
+}
+fn k_autoload(c: &mut Ctx, _slf: Value, args: &[Value], b: *const Block) -> RV { let k = autoload_cbase(c); m_autoload(c, k, args, b) }
+/// rb_mod_autoload / rb_autoload_str.
+fn m_autoload(c: &mut Ctx, k: Value, args: &[Value], _b: *const Block) -> RV {
     check_argc(c, args, 2, 2)?;
-    let k = if is_class_or_module(slf) { slf } else { c.vm().c_object.get() };
     let nm = crate::builtins::object::to_sym_arg(c, args[0])?;
-    let path = expect_str(c, args[1])?;
+    let path = if is_string(args[1]) { args[1] } else { let f = feature_name(c, args[1])?; c.str_new(f.as_bytes()) };
+    if !sym_bytes(nm).first().is_some_and(|b| b.is_ascii_uppercase()) {
+        let e = make_name_error(c, c.vm().c_name_error.get(), &format!("autoload must be constant name: {}", sym_str(nm)), Value::sym(nm), k)?;
+        return Err(raise_exc(c, e));
+    }
+    check_frozen(c, k)?;
     if c.str_len(path) == 0 { return arg_err(c, "empty feature name"); }
+    if const_get_at(c, k, nm).is_some() { return Ok(NIL); }
     c.class_mut(k).autoload.insert(nm, path);
     Ok(NIL)
+}
+/// Run an autoload's require: `main.require(path)` as CRuby (so an overridden require sees it);
+/// saruby's own lazy features load directly.
+pub fn autoload_require(c: &mut Ctx, path: Value) -> Result<(), Esc> {
+    if c.str_bytes(path).starts_with(b"saruby/") { require_feature(c, path, false)?; return Ok(()); }
+    let main = c.vm().main_obj.get();
+    funcall(c, main, s::require, &[path], std::ptr::null())?;
+    Ok(())
 }
 
 fn m_ruby2_keywords(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
@@ -1056,9 +1109,9 @@ fn m_s_nesting(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV 
     }
     Ok(out)
 }
-fn m_autoload_p(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_autoload_p(c: &mut Ctx, _slf: Value, args: &[Value], b: *const Block) -> RV { let k = autoload_cbase(c); m_autoload_p(c, k, args, b) }
+fn m_autoload_p(c: &mut Ctx, k: Value, args: &[Value], _b: *const Block) -> RV {
     check_argc(c, args, 1, 2)?;
-    let k = if is_class_or_module(slf) { slf } else { c.vm().c_object.get() };
     let nm = crate::builtins::object::to_sym_arg(c, args[0])?;
     let inherit = args.get(1).map(|v| v.truthy()).unwrap_or(true);
     let list: Vec<Value> = if inherit { ancestors(c, k).to_vec() } else { vec![k] };
@@ -1087,11 +1140,11 @@ fn k_eval(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
     }
     let file: &'static str = if args.len() > 2 && args[2] != NIL { let f = expect_str(c, args[2])?; Box::leak(String::from_utf8_lossy(c.str_bytes(f)).into_owned().into_boxed_str()) } else { crate::builtins::binding::eval_file(c) };
     let line = if args.len() > 3 { crate::builtins::numeric_methods::num_to_long(c, args[3])? as i32 } else { 1 };
-    let srcb = c.str_bytes(src).to_vec();
-    if bind != NIL { return crate::builtins::binding::eval_in_binding(c, bind, &srcb, file, line); }
+    let (srcb, enc) = (c.str_bytes(src).to_vec(), c.str_enc(src));
+    if bind != NIL { return crate::builtins::binding::eval_in_binding(c, bind, &srcb, enc, file, line); }
     let b = crate::builtins::binding::binding_of_caller(c)?;
     let _ = slf;
-    crate::builtins::binding::eval_in_binding(c, b, &srcb, file, line)
+    crate::builtins::binding::eval_in_binding(c, b, &srcb, enc, file, line)
 }
 
 fn k_binding(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV { crate::builtins::binding::binding_of_caller(c) }
@@ -1143,7 +1196,7 @@ pub fn init(c: &mut Ctx) {
     mf(c, "require_relative", k_require_relative, -1);
     mf(c, "load", k_load, -1);
     mf(c, "autoload", k_autoload, -1);
-    mf(c, "autoload?", m_autoload_p, -1);
+    mf(c, "autoload?", k_autoload_p, -1);
     define_cfunc(c, vmr.c_module.get(), "autoload?", m_autoload_p, -1);
     define_private_cfunc(c, vmr.c_module.get(), "ruby2_keywords", m_ruby2_keywords, -1);
     let sm = singleton_class(c, vmr.main_obj.get());
@@ -1155,7 +1208,7 @@ pub fn init(c: &mut Ctx) {
     mf(c, "eval", k_eval, -1);
     mf(c, "binding", k_binding, 0);
     mf(c, "local_variables", k_local_variables, 0);
-    define_cfunc(c, vmr.c_module.get(), "autoload", k_autoload, -1);
+    define_cfunc(c, vmr.c_module.get(), "autoload", m_autoload, -1);
     let _ = intern_str;
 }
 

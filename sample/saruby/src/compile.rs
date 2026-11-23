@@ -157,14 +157,25 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, errors: vec![],
+        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, errors: vec![],
                    csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()],
-                   src_enc: crate::builtins::encoding::find_enc(pr.encoding.as_bytes()).unwrap_or(crate::object::ENC_UTF8) as u32 }
+                   src_enc: crate::builtins::encoding::find_enc(pr.encoding.as_bytes()).unwrap_or(crate::object::ENC_UTF8) as u32 };
+        // identifiers of a non-UTF-8 source are symbols in its encoding (as its symbol literals)
+        if c.src_enc != crate::object::ENC_UTF8 as u32 {
+            for (i, b) in pr.constants.iter().enumerate() { if !b.is_ascii() { c.csyms[i].set(c.sym_lit(b, 0)); } }
+        }
+        c
     }
     /// Encoding of a string literal: the source's unless an escape forced one.
     fn lit_enc(&self, flags: u32) -> u32 {
         if flags & pa::STRING_FLAGS_FORCED_BINARY_ENCODING != 0 { crate::object::ENC_BINARY as u32 }
         else if flags & pa::STRING_FLAGS_FORCED_UTF8_ENCODING != 0 { crate::object::ENC_UTF8 as u32 } else { self.src_enc }
+    }
+
+    /// A symbol literal: a non-ASCII name in a source encoding other than UTF-8 keeps that encoding.
+    fn sym_lit(&self, b: &[u8], flags: u32) -> Sym {
+        let enc = if flags & pa::SYMBOL_FLAGS_FORCED_BINARY_ENCODING != 0 { crate::object::ENC_BINARY } else { self.src_enc as u8 };
+        if enc == crate::object::ENC_UTF8 || flags & pa::SYMBOL_FLAGS_FORCED_UTF8_ENCODING != 0 || b.is_ascii() { intern(b) } else { crate::symbol::intern_enc(b, enc) }
     }
 
     fn cst(&self, c: u32) -> Sym {
@@ -557,7 +568,7 @@ impl<'a> Compiler<'a> {
                 let s = self.dstr(parts);
                 self.fcall("`", vec![s], line)
             }
-            Kind::SymbolNode { unescaped } => ALLOC_node_lit(Value::sym(intern(unescaped))),
+            Kind::SymbolNode { unescaped } => ALLOC_node_lit(Value::sym(self.sym_lit(unescaped, n.flags))),
             Kind::InterpolatedStringNode { parts } => {
                 let d = self.dstr(parts);
                 if n.flags & pa::INTERPOLATED_STRING_NODE_FLAGS_FROZEN != 0 { self.call_node(d, s::freeze, vec![], 0, line) } else { d }
@@ -1147,7 +1158,7 @@ impl<'a> Compiler<'a> {
         for e in elements {
             match &e.kind {
                 Kind::AssocNode { key, .. } => match &key.kind {
-                    Kind::SymbolNode { unescaped } => { let s = intern(unescaped); if names.contains(&s) { return None; } names.push(s); }
+                    Kind::SymbolNode { unescaped } => { let s = self.sym_lit(unescaped, key.flags); if names.contains(&s) { return None; } names.push(s); }
                     _ => return None,
                 },
                 _ => return None,
@@ -1242,8 +1253,8 @@ impl<'a> Compiler<'a> {
             }
         }
         if (mid == s::send || mid == s::__send__) && block.is_none() && !safe && !attr && args.iter().all(|a| self.simple_arg(a)) {
-            if let Some(Kind::SymbolNode { unescaped }) = args.first().map(|a| &a.kind) {
-                return self.send_sym(recv, mid, intern(unescaped), &args[1..], flags, line);
+            if let Some((Kind::SymbolNode { unescaped }, f)) = args.first().map(|a| (&a.kind, a.flags)) {
+                return self.send_sym(recv, mid, self.sym_lit(unescaped, f), &args[1..], flags, line);
             }
         }
         // receiver
@@ -1678,7 +1689,7 @@ impl<'a> Compiler<'a> {
                 if let Some(k) = constant { tests.push(self.eqq_pattern(k, sl)); }
                 let hsl = self.hidden_slot();
                 let keys: Vec<NodePtr> = elements.iter().filter_map(|e| match &e.kind {
-                    Kind::AssocNode { key, .. } => match &key.kind { Kind::SymbolNode { unescaped } => Some(ALLOC_node_lit(Value::sym(intern(unescaped)))), _ => None },
+                    Kind::AssocNode { key, .. } => match &key.kind { Kind::SymbolNode { unescaped } => Some(ALLOC_node_lit(Value::sym(self.sym_lit(unescaped, key.flags)))), _ => None },
                     _ => None,
                 }).collect();
                 // deconstruct_keys(nil): `**rest`, `**nil` and the empty pattern need every key
@@ -1695,7 +1706,7 @@ impl<'a> Compiler<'a> {
                 for e in elements {
                     if let Kind::AssocNode { key, value } = &e.kind {
                         if let Kind::SymbolNode { unescaped } = &key.kind {
-                            let k = Value::sym(intern(unescaped));
+                            let k = Value::sym(self.sym_lit(unescaped, key.flags));
                             used.push(ALLOC_node_lit(k));
                             let has = ALLOC_node_special(SP_HASH_HAS, ALLOC_node_ary(leak(vec![ALLOC_node_lvar(hsl), ALLOC_node_lit(k)])));
                             let has = self.pm_fail(has, PM_KEY, vec![ALLOC_node_lvar(hsl), ALLOC_node_lit(k)]);
@@ -2241,9 +2252,15 @@ pub fn regex_opts(flags: u32, src_enc: u32) -> u32 {
 
 /// Parse and compile a source file into a top-level iseq.  Err = SyntaxError message.
 pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, String> {
+    compile_source_enc(src, crate::object::ENC_UTF8, file, line, kind, outer)
+}
+/// compile_source of an eval'd String: its encoding is the source's unless a magic comment says otherwise.
+#[inline(always)]
+pub fn compile_source_enc(src: &[u8], enc: u8, file: &'static str, line: i32, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, String> {
+    let ename = if enc == crate::object::ENC_UTF8 { "" } else { crate::builtins::encoding::enc_name(enc) };
     let mut scopes: Vec<Vec<Vec<u8>>> = outer.iter().rev().map(|sc| sc.iter().map(|(n, _, _)| crate::symbol::sym_bytes(*n).to_vec()).collect()).collect();
     if !scopes.is_empty() { scopes.push(vec![]); }
-    let pr = prism::parse(src, &prism::ParseOpts { filepath: file.as_bytes(), line, scopes, main_script: kind == IseqKind::Main, frozen_string_literal: 0 });
+    let pr = prism::parse(src, &prism::ParseOpts { filepath: file.as_bytes(), line, scopes, main_script: kind == IseqKind::Main, frozen_string_literal: 0, encoding: ename.as_bytes() });
     compile_parsed(&pr, src, file, kind, outer)
 }
 

@@ -112,11 +112,11 @@ pub fn eval_file(c: &Ctx) -> &'static str {
     NAMES.with(|m| *m.borrow_mut().entry(name.clone()).or_insert_with(|| Box::leak(name.into_boxed_str())))
 }
 
-pub fn eval_in_binding(c: &mut Ctx, bind: Value, src: &[u8], file: &'static str, line: i32) -> RV {
+pub fn eval_in_binding(c: &mut Ctx, bind: Value, src: &[u8], enc: u8, file: &'static str, line: i32) -> RV {
     let b = rbind(c, bind);
     let outer = vec![env_names(&b.names)];
     let (slf, env, cref, me, dc, svar) = (b.self_, b.env, b.cref, b.me, b.dc, (b.svar, b.ret));
-    let is = match crate::compile::compile_source(src, file, line, IseqKind::Eval, outer) {
+    let is = match crate::compile::compile_source_enc(src, enc, file, line, IseqKind::Eval, outer) {
         Ok(is) => is,
         Err(m) => return err(c, c.vm().c_syntax_error.get(), m),
     };
@@ -169,23 +169,23 @@ fn run_eval_iseq_env(c: &mut Ctx, is: &'static Iseq, slf: Value, env: Value, cre
 }
 
 /// instance_eval / module_eval with a String: self and the definee are given, locals are the caller's.
-fn eval_under(c: &mut Ctx, slf: Value, k: Value, src: &[u8], file: &'static str, line: i32) -> RV {
+fn eval_under(c: &mut Ctx, slf: Value, k: Value, src: &[u8], enc: u8, file: &'static str, line: i32) -> RV {
     let bind = binding_of_caller(c)?;
     let b = rbind(c, bind);
     let outer = vec![env_names(&b.names)];
     let env = b.env;
-    let is = match crate::compile::compile_source(src, file, line, IseqKind::Eval, outer) { Ok(is) => is, Err(m) => return err(c, c.vm().c_syntax_error.get(), m) };
+    let is = match crate::compile::compile_source_enc(src, enc, file, line, IseqKind::Eval, outer) { Ok(is) => is, Err(m) => return err(c, c.vm().c_syntax_error.get(), m) };
     crate::builtins::tracepoint::trace_script_compiled(c, src)?;
     let cur = c.cur_frame().map_or(std::ptr::null(), |f| f.cref());
     let cref = new_cref(k, cur);
     run_eval_iseq(c, is, slf, env, cref, std::ptr::null(), VISI_PUBLIC)
 }
-pub fn eval_with_self(c: &mut Ctx, slf: Value, src: &[u8], file: &'static str, line: i32) -> RV {
+pub fn eval_with_self(c: &mut Ctx, slf: Value, src: &[u8], enc: u8, file: &'static str, line: i32) -> RV {
     let k = if slf.is_heap() { singleton_class(c, slf) } else { class_of(slf) };
-    eval_under(c, slf, k, src, file, line)
+    eval_under(c, slf, k, src, enc, file, line)
 }
-pub fn eval_in_class(c: &mut Ctx, k: Value, src: &[u8], file: &'static str, line: i32) -> RV {
-    eval_under(c, k, k, src, file, line)
+pub fn eval_in_class(c: &mut Ctx, k: Value, src: &[u8], enc: u8, file: &'static str, line: i32) -> RV {
+    eval_under(c, k, k, src, enc, file, line)
 }
 
 pub fn local_variables(c: &mut Ctx, b: Value) -> RV {
@@ -237,7 +237,8 @@ fn b_eval(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let src = expect_str(c, a[0])?;
     let bytes = c.str_bytes(src).to_vec();
     let f = eval_file(c);
-    eval_in_binding(c, s, &bytes, f, 1)
+    let enc = c.str_enc(src);
+    eval_in_binding(c, s, &bytes, enc, f, 1)
 }
 fn b_local_variables(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { local_variables(c, s) }
 fn b_source_location(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
