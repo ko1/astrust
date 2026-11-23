@@ -1205,10 +1205,20 @@ pub fn require_feature(c: &mut Ctx, path: Value, relative: bool) -> RV {
         Feature::File(f) => f,
         Feature::Native(base) => {
             if base == "did_you_mean" { if let Some(r) = crate::builtins::did_you_mean::require(c) { return r; } }
-            if feature_present(&name, &lp, &loaded_list(c)) { return Ok(FALSE); }
+            // a .so of that name is there and no .rb exists (pathname.so but pathname.rb loads)
+            if !crate::builtins::prelude::has_lib(&base) && feature_present(&name, &lp, &loaded_list(c)) { return Ok(FALSE); }
+            // saruby's own parts ("saruby/...") are not features of CRuby's: kept out of $LOADED_FEATURES
+            if base.starts_with("saruby/") {
+                if INTERNAL_LOADED.with_borrow(|l| l.contains(&base)) { return Ok(FALSE); }
+                INTERNAL_LOADED.with_borrow_mut(|l| l.push(base.clone()));
+                crate::builtins::prelude::load_feature(c, &base)?;
+                return Ok(TRUE);
+            }
             let lf = c.vm().loaded_features.get();
-            if c.ary(lf).iter().any(|&x| is_string(x) && c.str_bytes(x) == base.as_bytes()) { return Ok(FALSE); }
-            let key = c.str_new(base.as_bytes());
+            // one with Ruby code is recorded as its .rb (as CRuby's lib/<name>.rb)
+            let feat = if crate::builtins::prelude::has_lib(&base) { format!("{}.rb", base) } else { base.clone() };
+            if c.ary(lf).iter().any(|&x| is_string(x) && (c.str_bytes(x) == base.as_bytes() || c.str_bytes(x) == feat.as_bytes())) { return Ok(FALSE); }
+            let key = c.str_new(feat.as_bytes());
             c.ary_push(lf, key);
             crate::builtins::prelude::load_feature(c, &base)?;
             return Ok(TRUE);
@@ -1260,6 +1270,8 @@ fn wait_loading(c: &mut Ctx, key: &str, me: Value) -> Result<bool, Esc> {
     }
 }
 
+// saruby's internal features already loaded
+thread_local! { static INTERNAL_LOADED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) }; }
 // features being required, and by which thread (CRuby's loading table)
 thread_local! { static LOADING: std::cell::RefCell<Vec<(String, Value)>> = const { std::cell::RefCell::new(Vec::new()) }; }
 // (feature, its realpath) of the files require loaded

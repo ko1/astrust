@@ -623,7 +623,8 @@ fn m_attr_accessor(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
 }
 fn m_attr(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if a.len() == 2 && (a[1] == TRUE || a[1] == FALSE) {
-        if c.vm().verbose.get() == TRUE {
+        // rb_category_warning(DEPRECATED): verbose and Warning[:deprecated]
+        if c.vm().verbose.get() == TRUE && crate::builtins::misc::warning_category_enabled(0) {
             let at = c.caller_frame().map(|f| format!("{}:{}: ", frame_file(f), f.line())).unwrap_or_default();
             crate::builtins::kernel::warning_write(c, format!("{}warning: optional boolean argument is obsoleted\n", at).as_bytes())?;
         }
@@ -692,6 +693,8 @@ fn top_public(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV { set_visibi
 fn m_private_class_method(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let k = singleton_class(c, slf); set_visibility(c, k, a, VISI_PRIVATE)?; Ok(NIL) }
 fn m_public_class_method(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let k = singleton_class(c, slf); set_visibility(c, k, a, VISI_PUBLIC)?; Ok(NIL) }
 
+// a private constant referenced with a scope: (receiver, name) for the const_missing it calls
+thread_local! { pub static PRIVATE_REF: std::cell::Cell<Option<(Value, Sym)>> = const { std::cell::Cell::new(None) }; }
 /// The scope visibility define_method uses (rb_vm_cref_in_context(mod, mod)): the caller's default when it
 /// runs in `m` itself (class body, class_exec block), public otherwise.
 fn scope_visi(c: &Ctx, m: Value) -> u8 {
@@ -699,7 +702,16 @@ fn scope_visi(c: &Ctx, m: Value) -> u8 {
     if p.fp[0].get() != m { return VISI_PUBLIC; }
     let in_m = if p.kind == FK_BLOCK { p.defined_class() == m } else { c.cref_ref(p.cref()).map_or(c.vm().c_object.get(), |r| r.klass) == m };
     if !in_m { return VISI_PUBLIC; }
-    p.visi
+    if p.kind != FK_BLOCK || p.visi != VISI_PUBLIC { return p.visi; }
+    // a block inside the scope shares its visibility (CRuby keeps it in the cref): the enclosing blocks' setting
+    let mut f = c.prev_frame(p);
+    while let Some(x) = f {
+        if x.kind == FK_CFUNC { f = c.prev_frame(x); continue; }
+        if x.kind != FK_BLOCK || x.fp[0].get() != m || x.defined_class() != m { break; }
+        if x.visi != VISI_PUBLIC { return x.visi; }
+        f = c.prev_frame(x);
+    }
+    VISI_PUBLIC
 }
 fn is_special_private(mid: Sym) -> bool {
     mid == s::initialize || mid == s::initialize_copy || mid == s::respond_to_missing_p || mid == s::mid_initialize_dup || mid == s::mid_initialize_clone
@@ -967,7 +979,13 @@ fn const_path(c: &mut Ctx, slf: Value, a: &[Value], defined: bool) -> RV {
         if !is_const_name(&name) { return Err(wrong_const_name(c, slf, &name)); }
         let sym = if is_sym { sval.as_sym() } else { c.str_to_sym(sval).as_sym() };
         return match const_part(c, slf, sym, inherit, true, defined)? {
-            Some(v) => { if !defined { const_access_check(c, slf, sym, false)?; } Ok(if defined { TRUE } else { v }) }
+            Some(v) => {
+                if !defined {
+                    const_access_check(c, slf, sym, false)?;
+                    if crate::builtins::ractor::multi() { crate::builtins::ractor::const_check(c, slf, false, sym, v)?; }
+                }
+                Ok(if defined { TRUE } else { v })
+            }
             None if defined => Ok(FALSE),
             None => const_missing(c, slf, sym),
         };
@@ -1118,7 +1136,15 @@ fn set_const_visi(c: &mut Ctx, slf: Value, a: &[Value], private: bool) -> RV {
     }
     Ok(NIL)
 }
+pub fn private_ref_error(c: &mut Ctx, slf: Value, n: Sym) -> Result<Option<Esc>, Esc> {
+    let Some((k, pn)) = PRIVATE_REF.take() else { return Ok(None) };
+    if pn != n { return Ok(None); }
+    let e = make_name_error(c, c.vm().c_name_error.get(), &format!("private constant {}::{} referenced", class_path(c, k), sym_str(n)), Value::sym(n), slf)?;
+    Ok(Some(raise_exc(c, e)))
+}
 fn m_const_missing(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    // a private constant referenced with a scope comes here first (rb_const_missing after private_const_reference)
+    if a[0].is_sym() { if let Some(e) = private_ref_error(c, slf, a[0].as_sym())? { return Err(e); } }
     // the name may be any object (rb_mod_const_missing formats it with %s)
     let ns = if a[0].is_sym() { sym_str(a[0].as_sym()).to_string() } else { to_rstring(c, a[0])? };
     let msg = if slf == c.vm().c_object.get() { format!("uninitialized constant {}", ns) } else { format!("uninitialized constant {}::{}", class_path(c, slf), ns) };

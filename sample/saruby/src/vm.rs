@@ -1144,6 +1144,12 @@ pub fn do_autoload(c: &mut Ctx, k: Value, name: Sym) -> Result<Option<Value>, Es
             Autoload::Absent | Autoload::Done => return Ok(const_get_at(c, k, name)),
         }
     };
+    // saruby's own lazy features define their constants directly (several per feature, by name)
+    if c.str_bytes(path).starts_with(b"saruby/") {
+        c.class_mut(k).autoload.remove(&name);
+        crate::builtins::kernel::autoload_require(c, path)?;
+        return Ok(const_get_at(c, k, name));
+    }
     c.class_mut(k).cx_mut().autoloading.push(AutoloadRun { name, thread: me, value: UNDEF, loc: None });
     let r = crate::builtins::kernel::autoload_require(c, path);
     let runs = &mut c.class_mut(k).cx_mut().autoloading;
@@ -1162,23 +1168,26 @@ pub fn do_autoload(c: &mut Ctx, k: Value, name: Sym) -> Result<Option<Value>, Es
 pub static CONST_VIS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// `parent::name` (scoped) or const_get found a constant: a private one is an error when scoped, a deprecated one warns.
 #[inline]
-pub fn const_access_check(c: &mut Ctx, parent: Value, name: Sym, scoped: bool) -> Result<(), Esc> {
-    if !CONST_VIS.load(std::sync::atomic::Ordering::Relaxed) { return Ok(()); }
+/// Some(v): a private constant was replaced by const_missing's value.
+pub fn const_access_check(c: &mut Ctx, parent: Value, name: Sym, scoped: bool) -> Result<Option<Value>, Esc> {
+    if !CONST_VIS.load(std::sync::atomic::Ordering::Relaxed) { return Ok(None); }
     const_access_slow(c, parent, name, scoped)
 }
 #[cold]
-fn const_access_slow(c: &mut Ctx, parent: Value, name: Sym, scoped: bool) -> Result<(), Esc> {
+fn const_access_slow(c: &mut Ctx, parent: Value, name: Sym, scoped: bool) -> Result<Option<Value>, Esc> {
     let o = vm().c_object.get();
     let owner = ancestors(c, parent).iter().copied().find(|&k| c.class(k).consts.contains_key(&name))
         .or_else(|| (c.class(parent).is_module && c.class(o).consts.contains_key(&name)).then_some(o));
-    let Some(owner) = owner else { return Ok(()) };
+    let Some(owner) = owner else { return Ok(None) };
     if scoped && c.class(owner).private_consts.contains(&name) {
-        let msg = format!("private constant {}::{} referenced", class_path(c, parent), sym_str(name));
-        let e = make_name_error(c, vm().c_name_error.get(), &msg, Value::sym(name), parent)?;
-        return Err(raise_exc(c, e));
+        // parent.const_missing(name); Module's own raises the private-constant error
+        crate::builtins::object::PRIVATE_REF.set(Some((parent, name)));
+        let r = const_missing(c, parent, name);
+        crate::builtins::object::PRIVATE_REF.set(None);
+        return r.map(Some);
     }
     if c.class(owner).is_deprecated(name) { warn_deprecated_const(c, owner, name)?; }
-    Ok(())
+    Ok(None)
 }
 pub fn warn_deprecated_const(c: &mut Ctx, owner: Value, name: Sym) -> Result<(), Esc> {
     let path = if owner == vm().c_object.get() { sym_str(name).to_string() } else { format!("{}::{}", class_path(c, owner), sym_str(name)) };
@@ -1208,6 +1217,7 @@ pub fn const_missing(c: &mut Ctx, klass: Value, name: Sym) -> RV {
     if !me.is_null() && !matches!(unsafe { (*me).kind }, MKind::Cfunc(..)) {
         return funcall(c, klass, s::const_missing, &[Value::sym(name)], std::ptr::null());
     }
+    if let Some(e) = crate::builtins::object::private_ref_error(c, klass, name)? { return Err(e); }
     let msg = if klass == vm().c_object.get() { format!("uninitialized constant {}", sym_str(name)) }
               else { format!("uninitialized constant {}::{}", class_path(c, klass), sym_str(name)) };
     let e = make_name_error(c, vm().c_name_error.get(), &msg, Value::sym(name), klass)?;

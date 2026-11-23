@@ -47,6 +47,8 @@ const NATIVE: &[&str] = &["set", "stringio", "rbconfig", "thread", "fiber", "enu
 
 /// Constant `name` under `owner` whose native definition runs on first reference (boot time: builtins/mod.rs).
 pub use crate::builtins::lazy_const;
+/// A feature with Ruby code of saruby's own (CRuby has a .rb for it).
+pub fn has_lib(name: &str) -> bool { LIBS.iter().any(|l| l.0 == name) }
 pub fn has_feature(name: &str) -> bool { NATIVE.contains(&name) || LIBS.iter().any(|l| l.0 == name) }
 pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
     // lib/pp.rb shares the inspect recursion list (kernel::rec_enter)
