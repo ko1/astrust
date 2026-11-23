@@ -397,7 +397,7 @@ fn add(c: &mut Ctx, slf: Value, kind: Kind, blk: Blk, memo: Value, args: Value, 
     // enumerator_init_copy(enumerator_allocate(rb_cLazy), obj)
     let k = c.vm().c_lazy.get();
     if real_class_of(c, slf) != k { return type_err(c, "initialize_copy should take same class object"); }
-    if en.fiber != NIL { return type_err(c, "can't copy execution context"); }
+    if crate::fiber::enum_fiber_live(c, slf) { return type_err(c, "can't copy execution context"); }
     let (root, procs) = if en.procs != NIL && en.lz & LZ_DUP == 0 { let p = c.ary(en.procs).to_vec(); (en.recv, c.ary_from_vec(p)) } else { (slf, c.ary_new()) };
     let ok = c.vm().c_object.get();
     let ent = c.alloc(ok, Body::Data(Box::new(Entry { proc_, memo, kind, mid, args })));

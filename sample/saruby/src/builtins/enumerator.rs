@@ -504,7 +504,7 @@ fn arith_to_a(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { collect_al
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if let Some(&e) = c.data::<REnum>(v) {
         // enumerator_init_copy
-        if e.fiber != NIL { return type_err(c, "can't copy execution context"); }
+        if crate::fiber::enum_fiber_live(c, v) { return type_err(c, "can't copy execution context"); }
         let lz = if e.procs != NIL { e.lz | crate::builtins::lazy::LZ_DUP } else { e.lz };
         let n = c.alloc(obj_klass(v), Body::Data(Box::new(REnum { buf: NIL, pos: 0, fiber: NIL, lz, ..e })));
         return Ok(Some(n));
