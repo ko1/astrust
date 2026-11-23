@@ -1048,7 +1048,7 @@ pub fn alloc_instance(c: &mut Ctx, klass: Value) -> RV {
     if cd.is_singleton { return type_err(c, "can't create instance of singleton class"); }
     Ok(match cd.alloc {
         AllocKind::Object | AllocKind::Exception => new_object(c, klass),
-        AllocKind::String => c.alloc(klass, Body::String(RString { b: crate::sbuf::SBuf::new(), enc: ENC_UTF8 })),
+        AllocKind::String => c.alloc(klass, Body::String(RString { b: crate::sbuf::SBuf::new(), enc: ENC_BINARY })),
         AllocKind::Array => c.alloc(klass, Body::Array(crate::avec::AVec::new())),
         AllocKind::Hash => { let h = c.hash_new(); obj_set_klass(h, klass); h }
         AllocKind::Range => c.alloc(klass, Body::Range(NIL, NIL, false)),

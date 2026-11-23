@@ -151,6 +151,7 @@ cfn!(s_initialize, |c, slf, a, _b| {
     check_argc(c, pos, 0, 1)?;
     if let Some(&v) = pos.first() {
         let sv = expect_str(c, v)?;
+        if sv == slf { check_frozen(c, slf)?; }
         if sv != slf { let nb = c.str_bytes(sv).to_vec(); let e = c.str_enc(sv); let r = c.str_modify(slf)?; r.b = nb.into(); r.enc = e; }
     }
     if let Some(h) = kw {
@@ -203,11 +204,18 @@ cfn!(s_eq, |c, slf, a, b_| {
 });
 cfn!(s_eql, |c, slf, a, b_| Ok(Value::bool(is_string(a[0]) && c.str_eq(slf, a[0]))));
 cfn!(s_hash, |c, slf, a, b_| Ok(Value::fix((c.str_hash(slf) >> 2) as i64)));
+fn str_cmp_enc(c: &Ctx, a: Value, b: Value) -> i64 {
+    let r = c.str_bytes(a).cmp(c.str_bytes(b)) as i64;
+    if r != 0 || c.str_enc(a) == c.str_enc(b) || str_comparable(c.str_bytes(a), c.str_enc(a), c.str_enc(b)) { return r; }
+    // CRuby's encoding index: BINARY 0, UTF-8 1 (saruby swaps them)
+    let ix = |e: u8| match e { ENC_UTF8 => 1, ENC_BINARY => 0, e => e };
+    if ix(c.str_enc(a)) > ix(c.str_enc(b)) { 1 } else { -1 }
+}
 cfn!(s_cmp, |c, slf, a, b_| {
-    if is_string(a[0]) { return Ok(Value::fix(c.str_bytes(slf).cmp(c.str_bytes(a[0])) as i64)); }
+    if is_string(a[0]) { return Ok(Value::fix(str_cmp_enc(c, slf, a[0]))); }
     if a[0].is_heap() && respond_to(c, a[0], s::to_str, true) {
         let t = funcall(c, a[0], s::to_str, &[], std::ptr::null())?;
-        if is_string(t) { return Ok(Value::fix(c.str_bytes(slf).cmp(c.str_bytes(t)) as i64)); }
+        if is_string(t) { return Ok(Value::fix(str_cmp_enc(c, slf, t))); }
     }
     if a[0].is_heap() && respond_to(c, a[0], s::cmp, true) {
         let r = funcall(c, a[0], s::cmp, &[slf], std::ptr::null())?;
@@ -353,7 +361,7 @@ cfn!(s_to_s, |c, slf, a, b_| {
     Ok(c.str_copy(slf))
 });
 // UTF-8 first, with nothing to do after intern (a broken UTF-8 String is not checked: a scan per call)
-cfn!(s_to_sym, |c, slf, a, b_| { if c.str_enc(slf) == ENC_UTF8 { return Ok(Value::sym(intern(c.str_bytes(slf)))); } s_to_sym_enc(c, slf) });
+cfn!(s_to_sym, |c, slf, a, b_| { if c.str_enc(slf) == ENC_UTF8 && (is_ascii(c.str_bytes(slf)) || std::str::from_utf8(c.str_bytes(slf)).is_ok()) { return Ok(Value::sym(intern(c.str_bytes(slf)))); } s_to_sym_enc(c, slf) });
 #[inline(never)]
 fn s_to_sym_enc(c: &mut Ctx, slf: Value) -> RV { let s = c.str_intern(slf); if s == crate::symbol::BAD_SYM { return sym_enc_err(c, slf); } Ok(Value::sym(s)) }
 #[cold]
@@ -370,7 +378,7 @@ cfn!(s_to_i, |c, slf, a, b_| {
     let n = str_to_big(c.str_bytes(slf), base as u32, false);
     Ok(n.map_or(Value::fix(0), |n| c.big_to_value(n)))
 });
-cfn!(s_to_f, |c, slf, a, b_| Ok(c.float_new(str_to_f(c.str_bytes(slf)))));
+cfn!(s_to_f, |c, slf, a, b_| { need_ascii_compat(c, slf)?; Ok(c.float_new(str_to_f(c.str_bytes(slf)))) });
 cfn!(s_inspect, |c, slf, a, b_| Ok(c.str_new(inspect_bytes(c.str_bytes(slf), c.str_enc(slf)).as_bytes())));
 cfn!(s_dump, |c, slf, a, b_| {
     use crate::builtins::encoding as en;
@@ -452,7 +460,7 @@ fn reverse_bytes(bv: &[u8], enc: u8) -> Vec<u8> {
 }
 cfn!(s_reverse, |c, slf, a, b_| { let r = c.rstring(slf); let nv = reverse_bytes(&r.b, r.enc); Ok(c.str_new_like(slf, nv)) });
 cfn!(s_reverse_b, |c, slf, a, b_| { let r = c.str_modify(slf)?; let nv = reverse_bytes(&r.b, r.enc); r.b = nv.into(); Ok(slf) });
-cfn!(s_include, |c, slf, a, b_| { let o = expect_str(c, a[0])?; Ok(Value::bool(find_bytes(c.str_bytes(slf), c.str_bytes(o), 0).is_some())) });
+cfn!(s_include, |c, slf, a, b_| { let o = expect_str(c, a[0])?; compat(c, slf, o)?; Ok(Value::bool(find_on_boundary(c, slf, c.str_bytes(o), 0).is_some())) });
 cfn!(s_start_with, |c, slf, a, b_| {
     for &x in a {
         if regexp::is_regexp(c, x) { let md = regexp::prepare(c, x, slf)?; if let Some(g) = regexp::match_at_e(c, x, c.str_bytes(slf), 0, md) { let m = regexp::match_new(c, x, slf, g); crate::builtins::svar::set_last_match(c, m); return Ok(TRUE); } crate::builtins::svar::set_last_match(c, NIL); continue; }
@@ -588,7 +596,7 @@ fn chop_impl(v: &[u8], enc: u8) -> Vec<u8> {
     v[..off[off.len() - 2]].to_vec()
 }
 cfn!(s_chop, |c, slf, a, b_| Ok(c.str_new_like(slf, chop_impl(c.str_bytes(slf), c.str_enc(slf)))));
-cfn!(s_chop_b, |c, slf, a, b_| { if c.str_bytes(slf).is_empty() { return Ok(NIL); } let v = chop_impl(c.str_bytes(slf), c.str_enc(slf)); c.str_modify(slf)?.b = v.into(); Ok(slf) });
+cfn!(s_chop_b, |c, slf, a, b_| { check_frozen(c, slf)?; if c.str_bytes(slf).is_empty() { return Ok(NIL); } let v = chop_impl(c.str_bytes(slf), c.str_enc(slf)); c.str_modify(slf)?.b = v.into(); Ok(slf) });
 cfn!(s_chr, |c, slf, a, b_| { let v = c.str_bytes(slf); if v.is_empty() { return Ok(c.str_new_like(slf, vec![])); } let l = enc_char_len(v, 0, c.str_enc(slf)); Ok(c.str_new_like(slf, v[..l].to_vec())) });
 cfn!(s_chars, |c, slf, a, blk| {
     let parts = c.chars_of(slf);
@@ -837,7 +845,7 @@ fn split_searches(c: &Ctx, p: Value) -> bool { regexp::rregexp(c, p).is_some_and
 /// Pattern argument of sub/gsub/split: a Regexp or a String (via to_str).
 fn get_pat(c: &mut Ctx, p: Value) -> RV {
     if regexp::is_regexp(c, p) || is_string(p) { return Ok(p); }
-    if p.is_heap() && respond_to(c, p, s::to_str, true) { return expect_str(c, p); }
+    if p.is_heap() { if let Some(r) = check_funcall(c, p, s::to_str)? { if is_string(r) { return Ok(r); } return expect_str(c, p); } }
     type_err(c, format!("wrong argument type {} (expected Regexp)", class_name_for_err(c, p)))
 }
 /// What expand_repl can raise; it takes no context so that it can read the replacement in place.
@@ -1108,6 +1116,7 @@ cfn!(s_delete, |c, slf, a, b_| {
     Ok(c.str_new_like(slf, v))
 });
 cfn!(s_delete_b, |c, slf, a, b_| {
+    check_frozen(c, slf)?;
     if c.str_bytes(slf).is_empty() { return Ok(NIL); }
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
     let sets = sets_of(c, slf, a)?;
@@ -1230,7 +1239,7 @@ cfn!(s_uplus, |c, slf, a, b_| if obj_flags(slf) & (FL_FROZEN | FL_CHILLED_ANY) !
 cfn!(s_uminus, |c, slf, a, b_| {
     let has_iv = c.vm().gen_ivars.borrow().get(&(slf.raw() as usize)).map(|v| !v.is_empty()).unwrap_or(false);
     if obj_klass(slf) != c.vm().c_string.get() || has_iv {
-        if is_frozen(slf) && !has_iv { return Ok(slf); }
+        if is_frozen(slf) { return Ok(slf); }
         let v = c.str_copy(slf); obj_set_klass(v, obj_klass(slf)); obj_set_flags(v, FL_FROZEN); return Ok(v);
     }
     let key = c.str_bytes(slf).to_vec();
@@ -1299,7 +1308,7 @@ fn scrub_impl(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> Result<Option<V
     Ok(Some(out))
 }
 cfn!(s_scrub, |c, slf, a, blk| { let v = scrub_impl(c, slf, a, blk)?; Ok(c.str_new_like(slf, v.unwrap_or_else(|| c.str_bytes(slf).to_vec()))) });
-cfn!(s_scrub_b, |c, slf, a, blk| { check_frozen(c, slf)?; if let Some(v) = scrub_impl(c, slf, a, blk)? { c.str_modify(slf)?.b = v.into(); } Ok(slf) });
+cfn!(s_scrub_b, |c, slf, a, blk| { if let Some(v) = scrub_impl(c, slf, a, blk)? { c.str_modify(slf)?.b = v.into(); } Ok(slf) });
 /// to_str-convertible other string for casecmp, or None.
 fn casecmp_other(c: &mut Ctx, slf: Value, o: Value) -> Result<Option<Value>, Esc> {
     let o = if is_string(o) { o } else if o.is_heap() && respond_to(c, o, s::to_str, true) { expect_str(c, o)? } else { return type_err(c, format!("no implicit conversion of {} into String", class_name_for_err(c, o))) };
@@ -1599,6 +1608,7 @@ fn natural(c: &mut Ctx, r: Value, kind: u8) -> RV {
     match kind { 0 => funcall(c, r, intern(b"to_i"), &[], std::ptr::null()), 1 => funcall(c, r, intern(b"to_f"), &[], std::ptr::null()), _ => Ok(r) }
 }
 cfn!(s_to_c, |c, slf, a, b_| {
+    need_ascii_compat(c, slf)?;
     let v = c.str_bytes(slf).to_vec();
     let mut i = 0; while i < v.len() && is_ws(v[i]) { i += 1; }
     let zero = Value::fix(0);
@@ -1778,6 +1788,7 @@ cfn!(s_bytesplice, |c, slf, a, b_| {
         3 if is_range(a[0]) => (&a[..1], a[1], &a[2..]),
         3 => (&a[..2], a[2], &[]),
         5 => (&a[..2], a[2], &a[3..]),
+        4 => return arg_err(c, "wrong number of arguments (given 4, expected 2, 3, or 5)"),
         _ => return argc_err(c, a.len(), 2, 5),
     };
     if !srange.is_empty() && (srange.len() == 1) != (dst.len() == 1) {
