@@ -67,12 +67,12 @@ fn cmp_clamp(c: &mut Ctx, x: Value, a: &[Value], _b: *const Block) -> RV {
 // Enumerable.__to_a(obj): obj's #each collected (enum_to_a), for the Enumerable methods that sort
 fn e_to_a(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let acc = c.ary_new();
-    run_each(c, a[0], |c, d, args, _| { let v = pack(c, args); c.ary_push(d, v); Ok(NIL) }, acc, &[])?;
+    run_each(c, a[0], |c, d, args, _, _o| { let v = pack(c, args); c.ary_push(d, v); Ok(NIL) }, acc, &[], std::ptr::null())?;
     Ok(acc)
 }
 fn e_sort_by(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
     let acc = c.ary_new();
-    run_each(c, a[0], |c, d, args, _| { let v = pack(c, args); c.ary_push(d, v); Ok(NIL) }, acc, &[])?;
+    run_each(c, a[0], |c, d, args, _, _o| { let v = pack(c, args); c.ary_push(d, v); Ok(NIL) }, acc, &[], std::ptr::null())?;
     crate::builtins::array_methods::sort_by_body(c, acc, blk)
 }
 pub fn init_comparable(c: &mut Ctx, m: Value) {
@@ -121,21 +121,17 @@ use crate::symbol::s;
 
 #[inline]
 fn pack(c: &mut Ctx, args: &[Value]) -> Value { match args.len() { 0 => NIL, 1 => args[0], _ => c.ary_new_from(args) } }
-#[inline]
-fn ublk(c: &Ctx, d: Value, i: usize) -> *const Block { c.ary_get(d, i).as_fix() as usize as *const Block }
-#[inline]
-fn bptr(b: *const Block) -> Value { Value::fix(b as usize as i64) }
-
 /// Run recv.each with a Rust block; Ok(true) if it was stopped early by `enum_stop`.
-fn run_each(c: &mut Ctx, recv: Value, f: CBlockFn, data: Value, args: &[Value]) -> Result<bool, Esc> {
+/// `f` gets `blk` as its last argument: the Cfunc block's outer block, promoted with it if #each keeps it.
+fn run_each(c: &mut Ctx, recv: Value, f: CBlockFn, data: Value, args: &[Value], blk: *const Block) -> Result<bool, Esc> {
     let r = if let (true, Some((lo, hi))) = (args.is_empty(), int_range(c, recv)) {
         // Integer ranges: no #each dispatch, no Ruby block frames
         let mut i = lo;
         let mut r = Ok(NIL);
-        while i <= hi { if let Err(e) = f(c, data, &[Value::fix(i)], std::ptr::null()) { r = Err(e); break; } i += 1; }
+        while i <= hi { if let Err(e) = f(c, data, &[Value::fix(i)], std::ptr::null(), blk) { r = Err(e); break; } i += 1; }
         r
     } else {
-        let b = Block::cfunc(c, f, data);
+        let b = Block::cfunc_for(c, f, data, blk);
         funcall(c, recv, s::each, args, &b)
     };
     match r {
@@ -157,7 +153,20 @@ fn int_range(c: &Ctx, recv: Value) -> Option<(i64, i64)> {
 fn range_each_redefined(c: &Ctx) -> bool {
     !matches!(c.method_entry(c.vm().c_range.get(), s::each), Some(me) if std::ptr::eq(me, c.vm().ids.r_each.get()))
 }
-fn enum_stop(c: &mut Ctx, data: Value) -> RV { c.esc = EscKind::Throw; c.esc_tag_v = data; c.esc_val = NIL; Err(Esc) }
+/// rb_iter_break for a run_each whose data Array ends in a live flag (`run_each_stop`); a kept block
+/// called after the method returned gets CRuby's LocalJumpError instead of a throw nobody catches.
+fn enum_stop(c: &mut Ctx, data: Value) -> RV {
+    if c.ary_get(data, c.ary_len(data) - 1) != TRUE { return Err(crate::rt::raise_local_jump(c, "unexpected break", "break", NIL)); }
+    c.esc = EscKind::Throw; c.esc_tag_v = data; c.esc_val = NIL; Err(Esc)
+}
+/// run_each for a block that may `enum_stop`: `data` gets the live flag for the call's duration.
+fn run_each_stop(c: &mut Ctx, recv: Value, f: CBlockFn, data: Value, blk: *const Block) -> Result<bool, Esc> {
+    c.ary_push(data, TRUE);
+    let r = run_each(c, recv, f, data, &[], blk);
+    let n = c.ary_len(data) - 1;
+    c.ary_mut(data)[n] = FALSE;
+    r
+}
 
 fn no_blk(c: &mut Ctx, slf: Value, mid: &str, a: &[Value]) -> RV {
     crate::builtins::enumerator::enum_for_sized(c, slf, crate::symbol::intern(mid.as_bytes()), a)
@@ -177,38 +186,34 @@ pub fn en_map_range_loop(c: &mut Ctx, slf: Value, y: &mut impl FnMut(&mut Ctx, &
 fn en_map(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return no_blk(c, slf, "map", a); }
     if let Some(r) = en_map_range_loop(c, slf, &mut |c, a| yield_block(c, blk, a)) { return r; }
-    let acc0 = c.ary_new();
-    let d = c.ary_new_from(&[acc0, bptr(blk)]);
-    run_each(c, slf, |c, d, args, _| { let r = yield_block(c, ublk(c, d, 1), args)?; c.ary_push(c.ary_get(d, 0), r); Ok(NIL) }, d, &[])?;
-    Ok(c.ary_get(d, 0))
+    let d = c.ary_new();
+    run_each(c, slf, |c, d, args, _, o| { let r = yield_block(c, o, args)?; c.ary_push(d, r); Ok(NIL) }, d, &[], blk)?;
+    Ok(d)
 }
 fn en_flat_map(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return no_blk(c, slf, "flat_map", a); }
-    let acc0 = c.ary_new();
-    let d = c.ary_new_from(&[acc0, bptr(blk)]);
-    run_each(c, slf, |c, d, args, _| {
-        let r = yield_block(c, ublk(c, d, 1), args)?;
-        let out = c.ary_get(d, 0);
+    let d = c.ary_new();
+    run_each(c, slf, |c, out, args, _, o| {
+        let r = yield_block(c, o, args)?;
         match check_array(c, r)? { Some(ra) => c.ary_concat(out, ra), None => c.ary_push(out, r) }
         Ok(NIL)
-    }, d, &[])?;
-    Ok(c.ary_get(d, 0))
+    }, d, &[], blk)?;
+    Ok(d)
 }
 fn en_filter_map(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return no_blk(c, slf, "filter_map", a); }
-    let acc0 = c.ary_new();
-    let d = c.ary_new_from(&[acc0, bptr(blk)]);
-    run_each(c, slf, |c, d, args, _| { let r = yield_block(c, ublk(c, d, 1), args)?; if r.truthy() { c.ary_push(c.ary_get(d, 0), r); } Ok(NIL) }, d, &[])?;
-    Ok(c.ary_get(d, 0))
+    let d = c.ary_new();
+    run_each(c, slf, |c, d, args, _, o| { let r = yield_block(c, o, args)?; if r.truthy() { c.ary_push(d, r); } Ok(NIL) }, d, &[], blk)?;
+    Ok(d)
 }
 fn select_impl(c: &mut Ctx, slf: Value, blk: *const Block, want: bool) -> RV {
     let acc0 = c.ary_new();
-    let d = c.ary_new_from(&[acc0, bptr(blk), Value::bool(want)]);
-    run_each(c, slf, |c, d, args, _| {
+    let d = c.ary_new_from(&[acc0, Value::bool(want)]);
+    run_each(c, slf, |c, d, args, _, o| {
         let v = pack(c, args);
-        if yield1(c, ublk(c, d, 1), v)?.truthy() == c.ary_get(d, 2).truthy() { c.ary_push(c.ary_get(d, 0), v); }
+        if yield1(c, o, v)?.truthy() == c.ary_get(d, 1).truthy() { c.ary_push(c.ary_get(d, 0), v); }
         Ok(NIL)
-    }, d, &[])?;
+    }, d, &[], blk)?;
     Ok(c.ary_get(d, 0))
 }
 fn en_select(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
@@ -222,65 +227,63 @@ fn en_reject(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
 fn en_to_a(c: &mut Ctx, slf: Value, a: &[Value], _blk: *const Block) -> RV {
     let acc0 = c.ary_new();
     let d = c.ary_new_from(&[acc0]);
-    run_each(c, slf, |c, d, args, _| { let v = pack(c, args); c.ary_push(c.ary_get(d, 0), v); Ok(NIL) }, d, a)?;
+    run_each(c, slf, |c, d, args, _, _o| { let v = pack(c, args); c.ary_push(c.ary_get(d, 0), v); Ok(NIL) }, d, a, std::ptr::null())?;
     Ok(c.ary_get(d, 0))
 }
 fn en_each_with_index(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return no_blk(c, slf, "each_with_index", a); }
-    let d = c.ary_new_from(&[Value::fix(0), bptr(blk)]);
-    run_each(c, slf, |c, d, args, _| {
+    let d = c.ary_new_from(&[Value::fix(0)]);
+    run_each(c, slf, |c, d, args, _, o| {
         let i = c.ary_get(d, 0);
         c.ary_mut(d)[0] = Value::fix(i.as_fix() + 1);
         let v = pack(c, args);
-        yield_block(c, ublk(c, d, 1), &[v, i])?;
-        Ok(NIL)
-    }, d, a)?;
+        yield_block(c, o, &[v, i])
+    }, d, a, blk)?;
     Ok(slf)
 }
 fn en_each_with_object(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return no_blk(c, slf, "each_with_object", a); }
-    let d = c.ary_new_from(&[a[0], bptr(blk)]);
-    run_each(c, slf, |c, d, args, _| { let v = pack(c, args); yield_block(c, ublk(c, d, 1), &[v, c.ary_get(d, 0)])?; Ok(NIL) }, d, &[])?;
+    run_each(c, slf, |c, m, args, _, o| { let v = pack(c, args); yield_block(c, o, &[v, m]) }, a[0], &[], blk)?;
     Ok(a[0])
 }
 fn en_include(c: &mut Ctx, slf: Value, a: &[Value], _blk: *const Block) -> RV {
     let d = c.ary_new_from(&[a[0]]);
-    let hit = run_each(c, slf, |c, d, args, _| {
+    let hit = run_each_stop(c, slf, |c, d, args, _, _o| {
         let v = pack(c, args);
         if crate::builtins::array_methods::rb_eq(c, v, c.ary_get(d, 0))? { return enum_stop(c, d); }
         Ok(NIL)
-    }, d, &[])?;
+    }, d, std::ptr::null())?;
     Ok(Value::bool(hit))
 }
 fn en_find(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     check_argc(c, a, 0, 1)?;
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, crate::symbol::intern(b"find"), a, NIL); }
-    let d = c.ary_new_from(&[NIL, bptr(blk)]);
-    let hit = run_each(c, slf, |c, d, args, _| {
+    let d = c.ary_new_from(&[NIL]);
+    let hit = run_each_stop(c, slf, |c, d, args, _, o| {
         let v = pack(c, args);
-        if yield1(c, ublk(c, d, 1), v)?.truthy() { c.ary_mut(d)[0] = v; return enum_stop(c, d); }
+        if yield1(c, o, v)?.truthy() { c.ary_mut(d)[0] = v; return enum_stop(c, d); }
         Ok(NIL)
-    }, d, &[])?;
+    }, d, blk)?;
     if hit { return Ok(c.ary_get(d, 0)); }
     match a.first() { Some(&ifnone) if ifnone != NIL => funcall(c, ifnone, s::call, &[], std::ptr::null()), _ => Ok(NIL) }
 }
 fn en_count(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     check_argc(c, a, 0, 1)?;
     let mode = if !a.is_empty() { 1 } else if !blk.is_null() { 2 } else { 0 };
-    let d = c.ary_new_from(&[Value::fix(0), bptr(blk), Value::fix(mode), a.first().copied().unwrap_or(NIL)]);
-    run_each(c, slf, |c, d, args, _| {
-        let hit = match c.ary_get(d, 2).as_fix() {
+    let d = c.ary_new_from(&[Value::fix(0), Value::fix(mode), a.first().copied().unwrap_or(NIL)]);
+    run_each(c, slf, |c, d, args, _, o| {
+        let hit = match c.ary_get(d, 1).as_fix() {
             0 => true,
-            1 => { let v = pack(c, args); crate::builtins::array_methods::rb_eq(c, v, c.ary_get(d, 3))? }
-            _ => yield_block(c, ublk(c, d, 1), args)?.truthy(),
+            1 => { let v = pack(c, args); crate::builtins::array_methods::rb_eq(c, v, c.ary_get(d, 2))? }
+            _ => yield_block(c, o, args)?.truthy(),
         };
         if hit { c.ary_mut(d)[0] = Value::fix(c.ary_get(d, 0).as_fix() + 1); }
         Ok(NIL)
-    }, d, &[])?;
+    }, d, &[], blk)?;
     Ok(c.ary_get(d, 0))
 }
 // enum.c minmax_by: elements taken in pairs, the smaller key against the minimum, the larger against the maximum.
-// d: [blk, min, max, min_key, max_key, last, last_key, state (bit 0: min/max set, bit 1: last set)]
+// d: [unused, min, max, min_key, max_key, last, last_key, state (bit 0: min/max set, bit 1: last set)]
 fn minmax_by_update(c: &mut Ctx, d: Value, v1: Value, v2: Value, i1: Value, i2: Value) -> Result<(), Esc> {
     use crate::builtins::array_methods::rb_cmp;
     let st = c.ary_get(d, 7).as_fix();
@@ -297,10 +300,10 @@ fn minmax_by_update(c: &mut Ctx, d: Value, v1: Value, v2: Value, i1: Value, i2: 
 }
 fn en_minmax_by(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return no_blk(c, slf, "minmax_by", a); }
-    let d = c.ary_new_from(&[bptr(blk), NIL, NIL, NIL, NIL, NIL, NIL, Value::fix(0)]);
-    run_each(c, slf, |c, d, args, _| {
+    let d = c.ary_new_from(&[NIL, NIL, NIL, NIL, NIL, NIL, NIL, Value::fix(0)]);
+    run_each(c, slf, |c, d, args, _, o| {
         let mut i = pack(c, args);
-        let mut vi = yield1(c, ublk(c, d, 0), i)?;
+        let mut vi = yield1(c, o, i)?;
         let st = c.ary_get(d, 7).as_fix();
         if st & 2 == 0 { c.ary_mut(d)[5] = i; c.ary_mut(d)[6] = vi; c.ary_mut(d)[7] = Value::fix(st | 2); return Ok(NIL); }
         let (mut j, mut vj) = (c.ary_get(d, 5), c.ary_get(d, 6));
@@ -309,7 +312,7 @@ fn en_minmax_by(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
         if n.is_eq() { i = j; vi = vj; } else if n.is_lt() { std::mem::swap(&mut i, &mut j); std::mem::swap(&mut vi, &mut vj); }
         minmax_by_update(c, d, vi, vj, i, j)?;
         Ok(NIL)
-    }, d, &[])?;
+    }, d, &[], blk)?;
     if c.ary_get(d, 7).as_fix() & 2 != 0 { let (l, lv) = (c.ary_get(d, 5), c.ary_get(d, 6)); minmax_by_update(c, d, lv, lv, l, l)?; }
     Ok(c.ary_new_from(&[c.ary_get(d, 1), c.ary_get(d, 2)]))
 }
@@ -322,28 +325,28 @@ fn minmax_by_one(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, mx: bo
     if let Some(&n) = a.first().filter(|n| **n != NIL) {
         let Some(nm) = Nmin::new(c, n, true, mx, blk)? else { return Ok(c.ary_new()); };
         let d = nm.save(c);
-        run_each(c, slf, |c, d, args, _| {
-            let mut nm = Nmin::load(c, d);
+        run_each(c, slf, |c, d, args, _, o| {
+            let mut nm = Nmin::load(c, d, o);
             let v = pack(c, args);
-            let k = yield1(c, nm.blk(), v)?;
+            let k = yield1(c, o, v)?;
             nm.add(c, v, k)?;
             nm.store(c, d);
             Ok(NIL)
-        }, d, &[])?;
-        return Nmin::load(c, d).finish(c);
+        }, d, &[], blk)?;
+        return Nmin::load(c, d, blk).finish(c);
     }
-    // d: [blk, best, best key, set?, max?]
-    let d = c.ary_new_from(&[bptr(blk), NIL, NIL, FALSE, Value::bool(mx)]);
-    run_each(c, slf, |c, d, args, _| {
+    // d: [unused, best, best key, set?, max?]
+    let d = c.ary_new_from(&[NIL, NIL, NIL, FALSE, Value::bool(mx)]);
+    run_each(c, slf, |c, d, args, _, o| {
         let v = pack(c, args);
-        let k = yield1(c, ublk(c, d, 0), v)?;
+        let k = yield1(c, o, v)?;
         let take = if c.ary_get(d, 3) == FALSE { true } else {
             let o = crate::builtins::array_methods::rb_cmp(c, k, c.ary_get(d, 2))?;
             if c.ary_get(d, 4) == TRUE { o.is_gt() } else { o.is_lt() }
         };
         if take { let a = c.ary_mut(d); a[1] = v; a[2] = k; a[3] = TRUE; }
         Ok(NIL)
-    }, d, &[])?;
+    }, d, &[], blk)?;
     Ok(c.ary_get(d, 1))
 }
 // Enumerable#min / #max: min_i (OPTIMIZED_CMP(element, best)) / min_ii; with n, rb_nmin_run
@@ -372,21 +375,19 @@ fn en_max_by(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV { mi
 fn en_group_by(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return no_blk(c, slf, "group_by", a); }
     let acc0 = c.hash_new();
-    let d = c.ary_new_from(&[acc0, bptr(blk)]);
-    run_each(c, slf, |c, d, args, _| {
+    run_each(c, slf, |c, h, args, _, o| {
         let v = pack(c, args);
-        let k = yield1(c, ublk(c, d, 1), v)?;
-        let h = c.ary_get(d, 0);
+        let k = yield1(c, o, v)?;
         // group_by_i: rb_hash_aref (a redefined Hash#default answers a miss)
         let got = match crate::hash::hash_get_opt(c, h, k)? { Some(x) => x, None => crate::hash::hash_default_value(c, h, k)? };
         if is_array(got) { c.ary_push(got, v); } else { let arr = c.ary_new_from(&[v]); crate::hash::hash_aset(c, h, k, arr)?; }
         Ok(NIL)
-    }, d, &[])?;
-    Ok(c.ary_get(d, 0))
+    }, acc0, &[], blk)?;
+    Ok(acc0)
 }
 fn en_inject(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if a.len() > 2 || (a.is_empty() && blk.is_null()) { return argc_err(c, a.len(), 1, 2); }
-    // d = [acc (UNDEF = first element pending), blk, op (nil = block)]
+    // d = [acc (UNDEF = first element pending), op (nil = block)]
     let (acc, op) = match (a.len(), blk.is_null()) {
         (2, _) => (a[0], a[1]),
         (1, true) => (UNDEF, a[0]),
@@ -397,13 +398,13 @@ fn en_inject(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
         let ins = crate::builtins::kernel::inspect_str(c, op)?;
         return type_err(c, format!("{} is not a symbol nor a string", ins));
     };
-    let d = c.ary_new_from(&[acc, bptr(blk), op]);
-    run_each(c, slf, |c, d, args, _| {
+    let d = c.ary_new_from(&[acc, op]);
+    run_each(c, slf, |c, d, args, _, o| {
         let v = pack(c, args);
         let acc = c.ary_get(d, 0);
         if acc == UNDEF { c.ary_mut(d)[0] = v; return Ok(NIL); }
-        let op = c.ary_get(d, 2);
-        let r = if op == NIL { yield_block(c, ublk(c, d, 1), &[acc, v])? } else {
+        let op = c.ary_get(d, 1);
+        let r = if op == NIL { yield_block(c, o, &[acc, v])? } else {
             let m = op.as_sym();
             if m == s::plus && acc.is_fixnum() && v.is_fixnum() {
                 match acc.as_fix().checked_add(v.as_fix()) { Some(x) if Value::fixable(x) => Value::fix(x), _ => funcall_public(c, acc, m, &[v], std::ptr::null())? }
@@ -411,7 +412,7 @@ fn en_inject(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
         };
         c.ary_mut(d)[0] = r;
         Ok(NIL)
-    }, d, &[])?;
+    }, d, &[], blk)?;
     let r = c.ary_get(d, 0);
     Ok(if r == UNDEF { NIL } else { r })
 }
@@ -426,21 +427,21 @@ fn slice_cons(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, cons: boo
     let sz = if respond_to(c, slf, s::size, true) { funcall(c, slf, s::size, &[], std::ptr::null())? } else { NIL };
     if cons && sz.is_fixnum() && (n as u64) > sz.as_fix() as u64 { return Ok(slf); }
     let acc0 = c.ary_new();
-    let d = c.ary_new_from(&[acc0, bptr(blk), Value::fix(n), Value::bool(cons)]);
-    run_each(c, slf, |c, d, args, _| {
+    let d = c.ary_new_from(&[acc0, Value::fix(n), Value::bool(cons)]);
+    run_each(c, slf, |c, d, args, _, o| {
         let v = pack(c, args);
         let buf = c.ary_get(d, 0);
-        let n = c.ary_get(d, 2).as_fix() as usize;
+        let n = c.ary_get(d, 1).as_fix() as usize;
         c.ary_push(buf, v);
-        if c.ary_get(d, 3).truthy() {
+        if c.ary_get(d, 2).truthy() {
             if c.ary_len(buf) > n { c.ary_mut(buf).remove(0); }
-            if c.ary_len(buf) == n { let cp = c.ary_from_vec(c.ary(buf).to_vec()); yield1(c, ublk(c, d, 1), cp)?; }
+            if c.ary_len(buf) == n { let cp = c.ary_from_vec(c.ary(buf).to_vec()); return yield1(c, o, cp); }
         } else if c.ary_len(buf) == n {
             c.ary_mut(d)[0] = c.ary_new();
-            yield1(c, ublk(c, d, 1), buf)?;
+            return yield1(c, o, buf);
         }
         Ok(NIL)
-    }, d, &[])?;
+    }, d, &[], blk)?;
     let buf = c.ary_get(d, 0);
     if !cons && c.ary_len(buf) > 0 { yield1(c, blk, buf)?; }
     Ok(slf)
@@ -452,15 +453,13 @@ fn en_each_cons(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
 fn en_partition(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return no_blk(c, slf, "partition", a); }
     let (t, f) = (c.ary_new(), c.ary_new());
-    // the block as a Proc: #each may keep its block past this call (enum_each_pack_1123p.rb)
-    let p = block_to_proc(c, blk)?;
-    let d = c.ary_new_from(&[t, f, p]);
-    run_each(c, slf, |c, d, args, _| {
+    let d = c.ary_new_from(&[t, f]);
+    run_each(c, slf, |c, d, args, _, o| {
         let v = pack(c, args);
-        let i = if call_proc(c, c.ary_get(d, 2), &[v], std::ptr::null())?.truthy() { 0 } else { 1 };
+        let i = if yield1(c, o, v)?.truthy() { 0 } else { 1 };
         c.ary_push(c.ary_get(d, i), v);
         Ok(NIL)
-    }, d, &[])?;
+    }, d, &[], blk)?;
     Ok(c.ary_new_from(&[t, f]))
 }
 fn en_tally(c: &mut Ctx, slf: Value, a: &[Value], _blk: *const Block) -> RV {
@@ -470,17 +469,14 @@ fn en_tally(c: &mut Ctx, slf: Value, a: &[Value], _blk: *const Block) -> RV {
         if is_frozen(h) { return Err(raise_frozen(c, h)); }
         h
     };
-    run_each(c, slf, |c, h, args, _| { let v = pack(c, args); crate::hash::hash_tally_up(c, h, v)?; Ok(NIL) }, h, &[])?;
+    run_each(c, slf, |c, h, args, _, _o| { let v = pack(c, args); crate::hash::hash_tally_up(c, h, v)?; Ok(NIL) }, h, &[], std::ptr::null())?;
     Ok(h)
 }
 
 // Enumerable.__each(obj, *args) { |v| }: obj.each(*args) with each yield packed (ENUM_WANT_SVALUE)
 fn e_each(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
-    // a Proc, not the Block's address: #each may keep the block and call it after this returns
-    let p = block_to_proc(c, blk)?;
-    let d = c.ary_new_from(&[p]);
-    run_each(c, a[0], |c, d, args, _| { let v = pack(c, args); call_proc(c, c.ary_get(d, 0), &[v], std::ptr::null()) }, d, &a[1..])?;
+    run_each(c, a[0], |c, _d, args, _, o| { let v = pack(c, args); yield1(c, o, v) }, NIL, &a[1..], blk)?;
     Ok(a[0])
 }
 // Enumerable.__set_init(h, enum) { |x| }: set.c set_i_initialize (an Array is read directly, no #each)
@@ -509,15 +505,12 @@ fn set_merge_one(c: &mut Ctx, h: Value, e: Value, blk: *const Block) -> RV {
         return Ok(NIL);
     }
     if !respond_to(c, e, crate::symbol::intern(b"each_entry"), true) && !respond_to(c, e, s::each, true) { return arg_err(c, "value must be enumerable"); }
-    let p = if blk.is_null() { NIL } else { block_to_proc(c, blk)? };
-    let d = c.ary_new_from(&[h, p]);
-    run_each(c, e, |c, d, args, _| {
+    run_each(c, e, |c, h, args, _, o| {
         let v = pack(c, args);
-        let p = c.ary_get(d, 1);
-        let k = if p == NIL { v } else { call_proc(c, p, &[v], std::ptr::null())? };
-        crate::hash::hash_aset(c, c.ary_get(d, 0), k, TRUE)?;
+        let k = if o.is_null() { v } else { yield1(c, o, v)? };
+        crate::hash::hash_aset(c, h, k, TRUE)?;
         Ok(NIL)
-    }, d, &[])?;
+    }, h, &[], blk)?;
     Ok(NIL)
 }
 // Enumerable.__set_merge(h, enums): set_i_merge's loop over its arguments

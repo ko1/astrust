@@ -856,18 +856,18 @@ impl Nmin {
         let buf = c.ary_new();
         Ok(Some(Nmin { n: n as usize, bufmax: n as usize * 4, buf, curlen: 0, limit: None, rev, by, blk }))
     }
-    /// The state as a Ruby Array, for a block function that gets only a Value (enum_native.rs)
+    /// The state as a Ruby Array, for a block function that gets only a Value (enum_native.rs);
+    /// the block is not in it: `load` takes the Cfunc block's outer block.
     pub fn save(&self, c: &mut Ctx) -> Value {
         let l = self.limit.unwrap_or(NIL);
         let fl = (self.limit.is_some() as i64) | (self.rev as i64) << 1 | (self.by as i64) << 2;
-        c.ary_new_from(&[self.buf, Value::fix(self.n as i64), Value::fix(self.curlen as i64), l, Value::fix(fl), Value::fix(self.blk as usize as i64)])
+        c.ary_new_from(&[self.buf, Value::fix(self.n as i64), Value::fix(self.curlen as i64), l, Value::fix(fl)])
     }
-    pub fn load(c: &Ctx, d: Value) -> Nmin {
+    pub fn load(c: &Ctx, d: Value, blk: *const Block) -> Nmin {
         let n = c.ary_get(d, 1).as_fix() as usize;
         let fl = c.ary_get(d, 4).as_fix();
         Nmin { n, bufmax: n * 4, buf: c.ary_get(d, 0), curlen: c.ary_get(d, 2).as_fix() as usize,
-               limit: if fl & 1 != 0 { Some(c.ary_get(d, 3)) } else { None }, rev: fl & 2 != 0, by: fl & 4 != 0,
-               blk: c.ary_get(d, 5).as_fix() as usize as *const Block }
+               limit: if fl & 1 != 0 { Some(c.ary_get(d, 3)) } else { None }, rev: fl & 2 != 0, by: fl & 4 != 0, blk }
     }
     pub fn store(&self, c: &mut Ctx, d: Value) {
         let fl = (self.limit.is_some() as i64) | (self.rev as i64) << 1 | (self.by as i64) << 2;

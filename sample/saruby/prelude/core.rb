@@ -81,7 +81,7 @@ module Enumerable
     raise ArgumentError, "attempt to take negative size" if n < 0
     a = []
     return a if n == 0
-    Enumerable.__each(self) { |v| a << v; break if a.size >= n }
+    Enumerable.__each(self) { |v| a << v; break if a.size == n }
     a
   end
   def take(n)
@@ -89,7 +89,7 @@ module Enumerable
     raise ArgumentError, "attempt to take negative size" if n < 0
     a = []
     return a if n == 0
-    Enumerable.__each(self) { |v| a << v; break if a.size >= n }
+    Enumerable.__each(self) { |v| a << v; break if a.size == n }
     a
   end
   def take_while

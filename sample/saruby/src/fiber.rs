@@ -447,12 +447,12 @@ fn f_kill(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
 
 // ---- Enumerator#next / #peek ----------------------------------------------------------------
 
-fn enum_feed(c: &mut Ctx, _data: Value, args: &[Value], _b: *const Block) -> RV {
+fn enum_feed(c: &mut Ctx, _data: Value, args: &[Value], _b: *const Block, _o: *const Block) -> RV {
     let v = args_value(c, args);
     fiber_yield(c, v)?;
     Ok(NIL)
 }
-fn enum_body(c: &mut Ctx, e: Value, _args: &[Value], _b: *const Block) -> RV {
+fn enum_body(c: &mut Ctx, e: Value, _args: &[Value], _b: *const Block, _o: *const Block) -> RV {
     let blk = Block::cfunc(c, enum_feed, NIL);
     let r = crate::builtins::enumerator::enum_each_with(c, e, &blk)?;
     let f = CUR.get(c);

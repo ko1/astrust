@@ -60,7 +60,7 @@ pub fn range_each(c: &mut Ctx, slf: Value, mut f: impl FnMut(&mut Ctx, Value) ->
         }
         let (bs, es) = (c.str_new(&bb), c.str_new(&eb));
         let blk_data = c.ary_new();
-        let collect = Block::cfunc(c, |c, d, args, _b| { c.ary_push(d, args[0]); Ok(NIL) }, blk_data);
+        let collect = Block::cfunc(c, |c, d, args, _b, _o| { c.ary_push(d, args[0]); Ok(NIL) }, blk_data);
         let ev = if excl { TRUE } else { FALSE };
         funcall(c, bs, s::upto, &[es, ev], &collect)?;
         for i in 0..c.ary_len(blk_data) { let v = Value::sym(intern(c.str_bytes(c.ary_get(blk_data, i)))); if !f(c, v)? { break; } }
@@ -81,7 +81,7 @@ pub fn range_each(c: &mut Ctx, slf: Value, mut f: impl FnMut(&mut Ctx, Value) ->
             return Ok(());
         }
         let blk_data = c.ary_new();
-        let collect = Block::cfunc(c, |c, d, args, _b| { c.ary_push(d, args[0]); Ok(NIL) }, blk_data);
+        let collect = Block::cfunc(c, |c, d, args, _b, _o| { c.ary_push(d, args[0]); Ok(NIL) }, blk_data);
         let ev = if excl { TRUE } else { FALSE };
         funcall(c, b, s::upto, &[e, ev], &collect)?;
         for i in 0..c.ary_len(blk_data) { let v = c.ary_get(blk_data, i); if !f(c, v)? { break; } }

@@ -869,7 +869,7 @@ fn block_from_value(c: &mut Ctx, blkv: Value, holder: &mut Block) -> Result<*con
         // &:sym under refinements remembers the scope it was written in
         let cref = unsafe { (*c.frame).cref() };
         if crate::vm::refinements_on() && cref_refinements(cref) != NIL {
-            *holder = Block::cfunc(c, |_c, _d, _a, _b| Ok(NIL), NIL);
+            *holder = Block::cfunc(c, |_c, _d, _a, _b, _o| Ok(NIL), NIL);
             holder.kind = BlockKind::Sym(blkv.as_sym());
             holder.cref = cref;
             return Ok(holder as *const Block);
@@ -878,7 +878,7 @@ fn block_from_value(c: &mut Ctx, blkv: Value, holder: &mut Block) -> Result<*con
         return Ok(proc_block(c, p));
     }
     if is_method_obj(blkv) {
-        *holder = Block::cfunc(c, |_c, _d, _a, _b| Ok(NIL), NIL);
+        *holder = Block::cfunc(c, |_c, _d, _a, _b, _o| Ok(NIL), NIL);
         holder.kind = BlockKind::Method(blkv);
         return Ok(holder as *const Block);
     }
@@ -901,7 +901,7 @@ pub fn srb_call_x(c: &mut Ctx, cc: &CallCache, mid: Sym, base: Stk, tmp: Value, 
     for i in 0..n { base[2 + i].set(c.ary(tmp)[i]); }
     if has_kw { base[2 + n].set(kw); }
     c.set_sp(base, 2 + total);
-    let mut holder = Block::cfunc(c, |_c, _d, _a, _b| Ok(NIL), NIL);
+    let mut holder = Block::cfunc(c, |_c, _d, _a, _b, _o| Ok(NIL), NIL);
     let mut lit;
     let blk: *const Block = if let Some(is) = ci.blk {
         lit = make_block(c, is, fp);
@@ -963,7 +963,7 @@ pub fn srb_super(c: &mut Ctx, base: Stk, tmp: Value, kw: Value, blkv: Value, ci:
     for i in 0..n { base[2 + i].set(c.ary(tmp)[i]); }
     if has_kw { base[2 + n].set(kw); }
     c.set_sp(base, 2 + total);
-    let mut holder = Block::cfunc(c, |_c, _d, _a, _b| Ok(NIL), NIL);
+    let mut holder = Block::cfunc(c, |_c, _d, _a, _b, _o| Ok(NIL), NIL);
     let lit;
     let blk: *const Block = if let Some(is) = ci.blk {
         lit = make_block(c, is, fp);

@@ -86,7 +86,9 @@ impl Iseq {
 
 // ---- blocks ---------------------------------------------------------------------------
 
-pub type CBlockFn = fn(&mut Ctx, Value, &[Value], *const Block) -> RV;
+/// (data, args, the block passed to this block, `outer`: the block this one was made for, or null).
+/// A builtin reaches its caller's block only through `outer`: capturing the Cfunc block promotes it with it.
+pub type CBlockFn = fn(&mut Ctx, Value, &[Value], *const Block, *const Block) -> RV;
 
 #[derive(Clone, Copy)]
 pub enum BlockKind { Iseq(*const Iseq), Sym(Sym), Method(Value), Cfunc(CBlockFn, Value), Proc(Value) }
@@ -110,6 +112,12 @@ impl Block {
         let tag = c.next_serial();
         Block { kind: BlockKind::Cfunc(f, data), self_: NIL, env: NIL, me: std::ptr::null(), outer_blk: std::ptr::null(),
                 cref: std::ptr::null(), home_id: 0, tag, proc_val: UNDEF, defined_class: NIL }
+    }
+    /// A Cfunc block that runs `outer` (the builtin's own block): `f` gets it as its last argument.
+    pub fn cfunc_for(c: &mut Ctx, f: CBlockFn, data: Value, outer: *const Block) -> Block {
+        let mut b = Block::cfunc(c, f, data);
+        b.outer_blk = outer;
+        b
     }
 }
 
@@ -2407,7 +2415,7 @@ pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const 
             c.set_sp(base, 0);
             r
         }
-        BlockKind::Cfunc(f, data) => f(c, data, args, blkarg),
+        BlockKind::Cfunc(f, data) => f(c, data, args, blkarg, b.outer_blk),
         BlockKind::Proc(p) => {
             let (inner, p_lambda) = { let pd = c.proc_data(p); (pd.blk, pd.is_lambda) };
             invoke_block_full(c, &inner, args, blkarg, if self_ == b.self_ { inner.self_ } else { self_ }, p_lambda || lambda_call, bme, kw)

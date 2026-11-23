@@ -14,7 +14,7 @@ use crate::symbol::{intern, s, sym_str};
 use crate::value::*;
 use crate::vm::*;
 
-fn sym_proc_call(c: &mut Ctx, data: Value, args: &[Value], blk: *const Block) -> RV {
+fn sym_proc_call(c: &mut Ctx, data: Value, args: &[Value], blk: *const Block, _o: *const Block) -> RV {
     if args.is_empty() { return arg_err(c, "no receiver given"); }
     let mid = data.as_sym();
     funcall_public(c, args[0], mid, &args[1..], blk)
@@ -145,7 +145,7 @@ fn proc_curry(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let got = c.ary_new();
     make_curry(c, slf, arity, got)
 }
-fn curry_call(c: &mut Ctx, data: Value, args: &[Value], _blk: *const Block) -> RV {
+fn curry_call(c: &mut Ctx, data: Value, args: &[Value], _blk: *const Block, _o: *const Block) -> RV {
     let p = c.ary_get(data, 0); let arity = c.ary_get(data, 1).as_fix(); let got = c.ary_get(data, 2);
     let mut v = c.ary(got).to_vec();
     v.extend_from_slice(args);
@@ -185,7 +185,7 @@ fn proc_compose_left(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> 
     let b = Block::cfunc(c, compose_call, data);
     Ok(new_proc(c, c.vm().c_proc.get(), b, true, NIL))
 }
-fn compose_call(c: &mut Ctx, data: Value, args: &[Value], blk: *const Block) -> RV {
+fn compose_call(c: &mut Ctx, data: Value, args: &[Value], blk: *const Block, _o: *const Block) -> RV {
     let f = c.ary_get(data, 0); let g = c.ary_get(data, 1);
     let x = funcall(c, f, s::call, args, blk)?;
     funcall(c, g, s::call, &[x], std::ptr::null())
@@ -282,7 +282,7 @@ fn meth_call(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     r
 }
 fn meth_to_proc(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let mut b = Block::cfunc(c, |_c, _d, _a, _b| Ok(NIL), NIL);
+    let mut b = Block::cfunc(c, |_c, _d, _a, _b, _o| Ok(NIL), NIL);
     b.kind = BlockKind::Method(slf);
     b.self_ = c.method_obj(slf).recv;
     Ok(new_proc(c, c.vm().c_proc.get(), b, true, slf))

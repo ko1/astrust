@@ -125,7 +125,7 @@ pub fn enum_each_with(c: &mut Ctx, e: Value, blk: *const Block) -> RV {
         }
         let r = c.range_new(b, en_, excl);
         let bp = block_to_proc(c, blk)?;
-        let fwd = Block::cfunc(c, |c, d, args, _b| { let bb = c.proc_data(d).blk; invoke_block_full(c, &bb, args, std::ptr::null(), bb.self_, false, std::ptr::null(), false) }, bp);
+        let fwd = Block::cfunc(c, |c, d, args, _b, _o| { let bb = c.proc_data(d).blk; invoke_block_full(c, &bb, args, std::ptr::null(), bb.self_, false, std::ptr::null(), false) }, bp);
         if en.mid == s::step && !en.recv.is_heap() || (en.mid == s::step && crate::numeric::is_numeric(en.recv)) {
             return funcall(c, b, s::step, &[en_, st], &fwd);
         }
@@ -198,7 +198,7 @@ fn e_with_index(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     let offv = if a.is_empty() || a[0] == NIL { Value::fix(0) } else if a[0].is_fixnum() || is_bignum(a[0]) { a[0] } else { Value::fix(off) };
     let bp = block_to_proc(c, blk)?;
     let data = c.ary_new_from(&[offv, bp]);
-    let b = Block::cfunc(c, |c, d, args, _b| {
+    let b = Block::cfunc(c, |c, d, args, _b, _o| {
         let i = c.ary_get(d, 0); let p = c.ary_get(d, 1);
         let next = if i.is_fixnum() && Value::fixable(i.as_fix() + 1) { Value::fix(i.as_fix() + 1) } else { funcall(c, i, s::plus, &[Value::fix(1)], std::ptr::null())? };
         c.ary_mut(d)[0] = next;
@@ -216,7 +216,7 @@ fn e_with_object(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV 
     let memo = a[0];
     let bp = block_to_proc(c, blk)?;
     let data = c.ary_new_from(&[memo, bp]);
-    let b = Block::cfunc(c, |c, d, args, _b| {
+    let b = Block::cfunc(c, |c, d, args, _b, _o| {
         let v = if args.len() == 1 { args[0] } else { c.ary_new_from(args) };
         let (p, memo) = (c.ary_get(d, 1), c.ary_get(d, 0));
         call_proc(c, p, &[v, memo], std::ptr::null())
@@ -226,7 +226,7 @@ fn e_with_object(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV 
 }
 fn collect_all(c: &mut Ctx, slf: Value) -> RV {
     let out = c.ary_new();
-    let b = Block::cfunc(c, |c, d, args, _b| { let v = if args.len() == 1 { args[0] } else { c.ary_new_from(args) }; c.ary_push(d, v); Ok(NIL) }, out);
+    let b = Block::cfunc(c, |c, d, args, _b, _o| { let v = if args.len() == 1 { args[0] } else { c.ary_new_from(args) }; c.ary_push(d, v); Ok(NIL) }, out);
     enum_each_with(c, slf, &b)?;
     Ok(out)
 }
@@ -379,7 +379,7 @@ fn y_yield(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 }
 fn y_ltlt(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { y_yield(c, slf, a, b)?; Ok(slf) }
 fn y_to_proc(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let b = Block::cfunc(c, |c, d, args, _b| y_yield(c, d, args, std::ptr::null()), slf);
+    let b = Block::cfunc(c, |c, d, args, _b, _o| y_yield(c, d, args, std::ptr::null()), slf);
     let k = c.vm().c_proc.get();
     let p = c.alloc(k, Body::Proc(Box::new(ProcData { blk: b, is_lambda: true, from_method: NIL })));
     c.proc_data_mut(p).blk.proc_val = p;
@@ -392,7 +392,7 @@ fn e_take(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if n == 0 { return Ok(out); }
     let fib = crate::fiber::current(c);
     let data = c.ary_new_from(&[out, Value::fix(n), fib]);
-    let b = Block::cfunc(c, |c, d, args, _b| {
+    let b = Block::cfunc(c, |c, d, args, _b, _o| {
         let out = c.ary_get(d, 0);
         let v = if args.len() == 1 { args[0] } else { c.ary_new_from(args) };
         c.ary_push(out, v);
@@ -415,13 +415,18 @@ fn e_first(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     // first_i: keep the value and break, every time
     let fib = crate::fiber::current(c);
     let data = c.ary_new_from(&[NIL, fib]);
-    let b = Block::cfunc(c, |c, d, args, _b| {
+    let b = Block::cfunc(c, |c, d, args, _b, _o| {
         let v = if args.len() == 1 { args[0] } else { c.ary_new_from(args) };
         c.ary_mut(d)[0] = v;
-        if crate::fiber::current(c) != c.ary_get(d, 1) { return Err(crate::rt::raise_local_jump(c, "break from proc-closure", "break", NIL)); }
+        let f = c.ary_get(d, 1);
+        // nil: #first has returned (a kept block called late)
+        if f == NIL { return Err(crate::rt::raise_local_jump(c, "unexpected break", "break", NIL)); }
+        if crate::fiber::current(c) != f { return Err(crate::rt::raise_local_jump(c, "break from proc-closure", "break", NIL)); }
         c.esc = EscKind::Throw; c.esc_tag_v = d; c.esc_val = NIL; Err(Esc)
     }, data);
-    match enum_each_with(c, slf, &b) {
+    let r = enum_each_with(c, slf, &b);
+    c.ary_mut(data)[1] = NIL;
+    match r {
         Err(e) => { if c.esc == EscKind::Throw && c.esc_tag_v == data { c.esc = EscKind::None; return Ok(c.ary_get(data, 0)); } Err(e) }
         Ok(_) => Ok(c.ary_get(data, 0)),
     }

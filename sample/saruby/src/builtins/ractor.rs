@@ -501,7 +501,7 @@ fn isolate(c: &mut Ctx, p: Value) -> RV {
 }
 
 /// The body of a Ractor's main thread.
-fn ractor_main(c: &mut Ctx, r: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ractor_main(c: &mut Ctx, r: Value, _a: &[Value], _b: *const Block, _o: *const Block) -> RV {
     let st = std::mem::replace(&mut rr_mut(c, r).start, NIL);
     let p = c.ary_get(st, 0);
     let args = c.ary_get(st, 1);

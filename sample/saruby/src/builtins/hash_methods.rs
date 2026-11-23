@@ -401,7 +401,7 @@ cfn!(h_ge, |c, slf, a, blk| { if !is_hash(a[0]) { return type_err(c, "no implici
 cfn!(h_gt, |c, slf, a, blk| { if !is_hash(a[0]) { return type_err(c, "no implicit conversion into Hash"); } if c.hash_len(slf) <= c.hash_len(a[0]) { return Ok(FALSE); } h_lt_le(c, a[0], &[slf], blk) });
 cfn!(h_freeze, |c, slf, a, blk| { obj_set_flags(slf, FL_FROZEN); Ok(slf) });
 cfn!(h_to_proc, |c, slf, a, blk| {
-    let b = Block::cfunc(c, |c, d, args, _b| { if args.is_empty() { return argc_err(c, 0, 1, 1); } hash_aref(c, d, args[0]) }, slf);
+    let b = Block::cfunc(c, |c, d, args, _b, _o| { if args.is_empty() { return argc_err(c, 0, 1, 1); } hash_aref(c, d, args[0]) }, slf);
     let k = c.vm().c_proc.get();
     let p = c.alloc(k, Body::Proc(Box::new(ProcData { blk: b, is_lambda: true, from_method: NIL })));
     c.proc_data_mut(p).blk.proc_val = p;
