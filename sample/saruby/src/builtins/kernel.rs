@@ -249,7 +249,7 @@ pub fn puts_bytes(c: &mut Ctx, args: &[Value]) -> Result<Vec<u8>, Esc> {
 /// go through IO#write / #puts.
 #[inline(always)]
 fn stdout_slow() -> bool { crate::builtins::io::STDOUT_CONV.load(std::sync::atomic::Ordering::Relaxed) != 0 }
-fn k_puts(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_puts(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     crate::builtins::thread::blocking_point(c)?;
     let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
     if so != c.vm().stdout.get() && (so != c.vm().stderr.get() || crate::builtins::io::out_redef()) || so == c.vm().stdout.get() && stdout_slow() {
@@ -260,7 +260,7 @@ fn k_puts(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     Ok(NIL)
 }
 
-fn k_print(c: &mut Ctx, _s: Value, args: &[Value], b: *const Block) -> RV {
+fn k_print(c: &mut Ctx, _s: Value, args: &[Value], b: Blk) -> RV {
     use crate::builtins::io;
     crate::builtins::thread::blocking_point(c)?;
     let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
@@ -275,7 +275,7 @@ fn k_print(c: &mut Ctx, _s: Value, args: &[Value], b: *const Block) -> RV {
     Ok(NIL)
 }
 
-fn k_p(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_p(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
     if so != c.vm().stdout.get() || stdout_slow() { return p_dyn(c, args); }
     let mut out = vec![];
@@ -299,7 +299,7 @@ fn p_dyn(c: &mut Ctx, args: &[Value]) -> RV {
     Ok(match args.len() { 0 => NIL, 1 => args[0], _ => c.ary_new_from(args) })
 }
 
-fn k_putc(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_putc(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     check_argc(c, args, 1, 1)?;
     let v = args[0];
     let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
@@ -312,7 +312,7 @@ fn k_putc(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     Ok(v)
 }
 
-fn k_printf(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_printf(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     if args.is_empty() { return Ok(NIL); }
     // printf(io, fmt, ...): a non-String first argument is the destination (io.write)
     if !is_string(args[0]) {
@@ -327,12 +327,12 @@ fn k_printf(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     Ok(NIL)
 }
 
-fn k_sprintf(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_sprintf(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     if args.is_empty() { return argc_err(c, 0, 1, -1); }
     crate::builtins::sprintf::format(c, args[0], &args[1..])
 }
 
-fn k_warn(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_warn(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     let (args, kw) = match kw_arg(args) { Some(h) => (&args[..args.len() - 1], Some(h)), None => (args, None) };
     let mut uplevel = None;
     let mut cat = NIL;
@@ -434,7 +434,7 @@ pub fn exception_setup(c: &mut Ctx, args: &[Value]) -> RV {
     Ok(e)
 }
 
-fn k_raise(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_raise(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     let e = make_exception_from_args(c, args)?;
     // the backtrace starts at the caller of raise
     if ivar_get(c, e, s::bt) == NIL {
@@ -446,7 +446,7 @@ fn k_raise(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
 
 // ---- control ------------------------------------------------------------------------------
 
-fn k_loop(c: &mut Ctx, slf: Value, _args: &[Value], blk: *const Block) -> RV {
+fn k_loop(c: &mut Ctx, slf: Value, _args: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, s::loop_, &[], NIL); }
     loop {
         // a check point per step, as the back edge of CRuby's `while true; yield; end`
@@ -467,7 +467,7 @@ fn k_loop(c: &mut Ctx, slf: Value, _args: &[Value], blk: *const Block) -> RV {
 
 thread_local! { static CATCH_TAGS: std::cell::RefCell<Vec<Value>> = const { std::cell::RefCell::new(vec![]) }; }
 
-fn k_catch(c: &mut Ctx, _s: Value, args: &[Value], blk: *const Block) -> RV {
+fn k_catch(c: &mut Ctx, _s: Value, args: &[Value], blk: Blk) -> RV {
     let tag = if args.is_empty() { new_object(c, c.vm().c_object.get()) } else { args[0] };
     CATCH_TAGS.with(|t| t.borrow_mut().push(tag));
     let r = yield_block(c, blk, &[tag]);
@@ -484,7 +484,7 @@ fn k_catch(c: &mut Ctx, _s: Value, args: &[Value], blk: *const Block) -> RV {
     }
 }
 
-fn k_throw(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_throw(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     check_argc(c, args, 1, 2)?;
     let tag = args[0];
     let val = if args.len() > 1 { args[1] } else { NIL };
@@ -502,18 +502,18 @@ fn k_throw(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     Err(Esc)
 }
 
-fn k_block_given(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV {
+fn k_block_given(c: &mut Ctx, _s: Value, _args: &[Value], _b: Blk) -> RV {
     // the cfunc frame's caller
     Ok(Value::bool(c.caller_frame().is_some_and(|p| !p.blk.is_null())))
 }
 
-fn k_lambda(c: &mut Ctx, _s: Value, _args: &[Value], blk: *const Block) -> RV {
+fn k_lambda(c: &mut Ctx, _s: Value, _args: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
     let p = block_to_proc(c, blk)?;
     Ok(p)
 }
 
-fn k_proc(c: &mut Ctx, _s: Value, _args: &[Value], blk: *const Block) -> RV {
+fn k_proc(c: &mut Ctx, _s: Value, _args: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
     block_to_proc(c, blk)
 }
@@ -525,37 +525,37 @@ fn ruby_caller_me(c: &Ctx) -> *const MethodEntry {
     std::ptr::null()
 }
 
-fn k_method_name(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV {
+fn k_method_name(c: &mut Ctx, _s: Value, _args: &[Value], _b: Blk) -> RV {
     let me = ruby_caller_me(c);
     Ok(c.me_ref(me).map_or(NIL, |m| Value::sym(m.name)))
 }
 
-fn k_callee_name(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV {
+fn k_callee_name(c: &mut Ctx, _s: Value, _args: &[Value], _b: Blk) -> RV {
     let me = ruby_caller_me(c);
     if me.is_null() { return Ok(NIL); }
     Ok(Value::sym(crate::builtins::object::callee_name(c, me)))
 }
 
-fn k_caller(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_caller(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     let (start, len) = crate::builtins::exception::caller_range(c, args)?;
     let Some(lines) = backtrace_lines_n(c, 1 + start, len) else { return Ok(NIL) };
     Ok(c.ary_of_strs(lines.into_iter().map(|l| l.into_bytes()).collect(), ENC_UTF8))
 }
 
-pub fn k_exit(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+pub fn k_exit(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     let st = match args.first() { None => 0, Some(&v) if v == TRUE => 0, Some(&v) if v == FALSE => 1, Some(&v) => crate::builtins::numeric_methods::num_to_long(c, v)? };
     let e = make_exception(c, c.vm().c_system_exit.get(), "exit");
     ivar_set_raw(c, e, s::status, Value::fix(st));
     Err(raise_exc(c, e))
 }
 
-fn k_exit_bang(_c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_exit_bang(_c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     let st = match args.first() { None => 0, Some(&v) if v == TRUE => 0, Some(&v) if v == FALSE => 1, Some(&v) => v.as_fix() };
     out_flush();
     std::process::exit(st as i32);
 }
 
-pub fn k_abort(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+pub fn k_abort(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     let msg = if let Some(&m) = args.first() { let m = expect_str(c, m)?; let mut b = c.str_bytes(m).to_vec(); b.push(b'\n'); err_write(&b); m } else { c.str_new(b"exit") };
     let e = new_object(c, c.vm().c_system_exit.get());
     ivar_set_raw(c, e, s::mesg, msg);
@@ -564,7 +564,7 @@ pub fn k_abort(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     Err(raise_exc(c, e))
 }
 
-fn k_at_exit(c: &mut Ctx, _s: Value, _args: &[Value], blk: *const Block) -> RV {
+fn k_at_exit(c: &mut Ctx, _s: Value, _args: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return arg_err(c, "called without a block"); }
     let p = block_to_proc(c, blk)?;
     c.ary_push(c.vm().at_exit.get(), p);
@@ -574,7 +574,7 @@ fn k_at_exit(c: &mut Ctx, _s: Value, _args: &[Value], blk: *const Block) -> RV {
 /// ARGF (a lazily loaded prelude library).
 pub fn argf(c: &mut Ctx) -> RV { const_lookup(c, c.vm().top_cref.get(), intern(b"ARGF")) }
 fn argf_plain(c: &Ctx) -> bool { c.ary_len(c.vm().argv.get()) == 0 && const_get_at(c, c.vm().c_object.get(), intern(b"ARGF")).is_none() }
-fn k_gets(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_gets(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     out_flush();
     // no file arguments: plain stdin without loading ARGF
     let src = if argf_plain(c) { *c.vm().globals.borrow().get(&intern(b"$stdin")).unwrap_or(&c.vm().stdin.get()) } else { argf(c)? };
@@ -582,12 +582,12 @@ fn k_gets(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     crate::builtins::svar::set_last_line(c, v);
     Ok(v)
 }
-fn k_readline(c: &mut Ctx, s: Value, args: &[Value], b: *const Block) -> RV {
+fn k_readline(c: &mut Ctx, s: Value, args: &[Value], b: Blk) -> RV {
     let v = k_gets(c, s, args, b)?;
     if v == NIL { return err(c, c.vm().c_eof_error.get(), "end of file reached"); }
     Ok(v)
 }
-fn k_readlines(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_readlines(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     out_flush();
     let src = if argf_plain(c) { *c.vm().globals.borrow().get(&intern(b"$stdin")).unwrap_or(&c.vm().stdin.get()) } else { argf(c)? };
     funcall(c, src, intern(b"readlines"), args, std::ptr::null())
@@ -596,10 +596,10 @@ fn k_readlines(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
 /// Print a warning line unless $VERBOSE is nil.
 pub fn warn_str(c: &mut Ctx, msg: &str) { if c.vm().verbose.get() != NIL { err_write(msg.as_bytes()); } }
 
-fn k_rand(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_rand(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     crate::builtins::random::rand_value(c, args.first().copied().unwrap_or(NIL))
 }
-fn k_srand(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_srand(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     let old = c.vm().rand_state.get();
     let seed = match args.first() { Some(&v) => crate::builtins::numeric_methods::num_to_long(c, v)? as u64, None => 0x2545F4914F6CDD1D };
     crate::builtins::random::seed(c, seed);
@@ -610,7 +610,7 @@ fn k_srand(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
 
 use crate::builtins::rational::kw_exception;
 
-fn k_integer(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_integer(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     let (n, exc) = kw_exception(c, args)?;
     let args = &args[..n];
     check_argc(c, args, 1, 2)?;
@@ -715,7 +715,7 @@ pub fn parse_float_strict(_c: &mut Ctx, b: &[u8]) -> Option<f64> {
     Some(if neg { -v } else { v })
 }
 
-fn k_float(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_float(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     let (n, exc) = kw_exception(c, args)?;
     let args = &args[..n];
     check_argc(c, args, 1, 1)?;
@@ -741,7 +741,7 @@ fn k_float(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     match r { Err(e) if !exc && c.esc == EscKind::Raise => { let _ = e; c.esc = EscKind::None; Ok(NIL) } r => r }
 }
 
-fn k_string(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_string(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     check_argc(c, args, 1, 1)?;
     let v = args[0];
     if is_string(v) { return Ok(v); }
@@ -754,7 +754,7 @@ fn k_string(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     type_err(c, format!("can't convert {} into String", class_name_for_err(c, v)))
 }
 
-fn k_array(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_array(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     check_argc(c, args, 1, 1)?;
     let v = args[0];
     if is_array(v) { return Ok(v); }
@@ -768,7 +768,7 @@ fn k_array(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     Ok(c.ary_new_from(&[v]))
 }
 
-fn k_hash_conv(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_hash_conv(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     check_argc(c, args, 1, 1)?;
     let v = args[0];
     if is_hash(v) { return Ok(v); }
@@ -779,7 +779,7 @@ fn k_hash_conv(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
 
 // ---- object identity / hash ----------------------------------------------------------------
 
-pub fn obj_hash(_c: &mut Ctx, slf: Value, _args: &[Value], _b: *const Block) -> RV {
+pub fn obj_hash(_c: &mut Ctx, slf: Value, _args: &[Value], _b: Blk) -> RV {
     let h = crate::astrust::hash_u64(slf.raw());
     Ok(Value::fix((h >> 2) as i64))
 }
@@ -1021,7 +1021,7 @@ pub fn require_feature(c: &mut Ctx, path: Value, relative: bool) -> RV {
 }
 
 /// $LOAD_PATH.resolve_feature_path: [:rb, path], [:so, "name.so"] for a feature saruby provides, or nil.
-fn lp_resolve_feature_path(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn lp_resolve_feature_path(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let sv = expect_str(c, a[0])?;
     let name = String::from_utf8_lossy(c.str_bytes(sv)).into_owned();
     let (kind, path) = match locate_feature(c, &name, None) {
@@ -1052,9 +1052,9 @@ pub fn run_source(c: &mut Ctx, src: &[u8], file: &'static str, line: i32) -> RV 
     crate::run_top_iseq(c, is, c.vm().main_obj.get())
 }
 
-fn k_require(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV { check_argc(c, args, 1, 1)?; require_feature(c, args[0], false) }
-fn k_require_relative(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV { check_argc(c, args, 1, 1)?; require_feature(c, args[0], true) }
-fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_require(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV { check_argc(c, args, 1, 1)?; require_feature(c, args[0], false) }
+fn k_require_relative(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV { check_argc(c, args, 1, 1)?; require_feature(c, args[0], true) }
+fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     check_argc(c, args, 1, 2)?;
     let name = feature_name(c, args[0])?;
     // rb_find_file: the name as given (no ".rb" added), in $LOAD_PATH unless explicit, else from the cwd
@@ -1109,9 +1109,9 @@ fn autoload_cbase(c: &Ctx) -> Value {
     while c.class(k).is_singleton { k = c.class(k).superclass; }
     k
 }
-fn k_autoload(c: &mut Ctx, _slf: Value, args: &[Value], b: *const Block) -> RV { let k = autoload_cbase(c); m_autoload(c, k, args, b) }
+fn k_autoload(c: &mut Ctx, _slf: Value, args: &[Value], b: Blk) -> RV { let k = autoload_cbase(c); m_autoload(c, k, args, b) }
 /// rb_mod_autoload / rb_autoload_str.
-fn m_autoload(c: &mut Ctx, k: Value, args: &[Value], _b: *const Block) -> RV {
+fn m_autoload(c: &mut Ctx, k: Value, args: &[Value], _b: Blk) -> RV {
     check_argc(c, args, 2, 2)?;
     let nm = crate::builtins::object::to_sym_arg(c, args[0])?;
     let path = if is_string(args[1]) { args[1] } else { let f = feature_name(c, args[1])?; c.str_new(f.as_bytes()) };
@@ -1134,7 +1134,7 @@ pub fn autoload_require(c: &mut Ctx, path: Value) -> Result<(), Esc> {
     Ok(())
 }
 
-fn m_ruby2_keywords(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
+fn m_ruby2_keywords(c: &mut Ctx, slf: Value, args: &[Value], _b: Blk) -> RV {
     let k = if is_class_or_module(slf) { slf } else { c.vm().c_object.get() };
     for &a in args {
         let nm = crate::builtins::object::to_sym_arg(c, a)?;
@@ -1170,11 +1170,11 @@ fn m_ruby2_keywords(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -
     }
     Ok(NIL)
 }
-fn h_s_r2k_hash_p(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn h_s_r2k_hash_p(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     if !is_hash(args[0]) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(c, args[0]))); }
     Ok(Value::bool(obj_flags(args[0]) & FL_KWHASH != 0))
 }
-fn h_s_r2k_hash(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+fn h_s_r2k_hash(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     if !is_hash(args[0]) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(c, args[0]))); }
     let d = c.hash_new();
     let pairs = c.hash_pairs(args[0]);
@@ -1184,7 +1184,7 @@ fn h_s_r2k_hash(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV 
     obj_set_flags(d, FL_KWHASH);
     Ok(d)
 }
-fn m_s_nesting(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV {
+fn m_s_nesting(c: &mut Ctx, _s: Value, _args: &[Value], _b: Blk) -> RV {
     let out = c.ary_new();
     let mut cr = c.caller_frame().map_or(std::ptr::null(), |f| f.cref());
     while let Some(r) = c.cref_ref(cr) {
@@ -1195,8 +1195,8 @@ fn m_s_nesting(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV 
     }
     Ok(out)
 }
-fn k_autoload_p(c: &mut Ctx, _slf: Value, args: &[Value], b: *const Block) -> RV { let k = autoload_cbase(c); m_autoload_p(c, k, args, b) }
-fn m_autoload_p(c: &mut Ctx, k: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_autoload_p(c: &mut Ctx, _slf: Value, args: &[Value], b: Blk) -> RV { let k = autoload_cbase(c); m_autoload_p(c, k, args, b) }
+fn m_autoload_p(c: &mut Ctx, k: Value, args: &[Value], _b: Blk) -> RV {
     check_argc(c, args, 1, 2)?;
     let nm = crate::builtins::object::to_sym_arg(c, args[0])?;
     let inherit = args.get(1).map(|v| v.truthy()).unwrap_or(true);
@@ -1208,7 +1208,7 @@ fn m_autoload_p(c: &mut Ctx, k: Value, args: &[Value], _b: *const Block) -> RV {
     Ok(NIL)
 }
 
-fn k_dir(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV {
+fn k_dir(c: &mut Ctx, _s: Value, _args: &[Value], _b: Blk) -> RV {
     let f = c.caller_frame().map_or("-", frame_file).to_string();
     let p = std::path::Path::new(&f);
     let abs = std::fs::canonicalize(p).unwrap_or(p.to_path_buf());
@@ -1217,7 +1217,7 @@ fn k_dir(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV {
 
 // ---- eval / binding --------------------------------------------------------------------
 
-fn k_eval(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
+fn k_eval(c: &mut Ctx, slf: Value, args: &[Value], _b: Blk) -> RV {
     check_argc(c, args, 1, 4)?;
     let src = expect_str(c, args[0])?;
     let bind = if args.len() > 1 { args[1] } else { NIL };
@@ -1233,9 +1233,9 @@ fn k_eval(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
     crate::builtins::binding::eval_in_binding(c, b, &srcb, enc, file, line)
 }
 
-fn k_binding(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV { crate::builtins::binding::binding_of_caller(c) }
+fn k_binding(c: &mut Ctx, _s: Value, _args: &[Value], _b: Blk) -> RV { crate::builtins::binding::binding_of_caller(c) }
 
-fn k_local_variables(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV {
+fn k_local_variables(c: &mut Ctx, _s: Value, _args: &[Value], _b: Blk) -> RV {
     let b = crate::builtins::binding::binding_of_caller(c)?;
     crate::builtins::binding::local_variables(c, b)
 }

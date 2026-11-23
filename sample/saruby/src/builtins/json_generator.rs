@@ -735,8 +735,8 @@ fn empty_frozen(c: &mut Ctx) -> Value { let v = c.str_new(b""); crate::heap::obj
 
 macro_rules! str_attr {
     ($get:ident, $set:ident, $f:ident) => {
-        fn $get(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let v = cfg_of(c, slf).$f; Ok(if v == NIL { empty_frozen(c) } else { v }) }
-        fn $set(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { frozen_check(c, slf)?; let v = string_config(c, a[0])?; cfg_mut(c, slf).$f = v; Ok(NIL) }
+        fn $get(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let v = cfg_of(c, slf).$f; Ok(if v == NIL { empty_frozen(c) } else { v }) }
+        fn $set(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { frozen_check(c, slf)?; let v = string_config(c, a[0])?; cfg_mut(c, slf).$f = v; Ok(NIL) }
     };
 }
 str_attr!(st_indent, st_set_indent, indent);
@@ -746,91 +746,91 @@ str_attr!(st_object_nl, st_set_object_nl, object_nl);
 str_attr!(st_array_nl, st_set_array_nl, array_nl);
 macro_rules! bool_attr {
     ($get:ident, $set:ident, $f:ident) => {
-        fn $get(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(cfg_of(c, slf).$f)) }
-        fn $set(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { frozen_check(c, slf)?; cfg_mut(c, slf).$f = a[0].truthy(); Ok(NIL) }
+        fn $get(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(cfg_of(c, slf).$f)) }
+        fn $set(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { frozen_check(c, slf)?; cfg_mut(c, slf).$f = a[0].truthy(); Ok(NIL) }
     };
 }
 bool_attr!(st_script_safe, st_set_script_safe, script_safe);
 bool_attr!(st_strict, st_set_strict, strict);
 bool_attr!(st_allow_nan, st_set_allow_nan, allow_nan);
 bool_attr!(st_ascii_only, st_set_ascii_only, ascii_only);
-fn st_as_json(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(cfg_of(c, slf).as_json) }
-fn st_set_as_json(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { frozen_check(c, slf)?; let p = as_json_config(c, a[0])?; cfg_mut(c, slf).as_json = p; Ok(NIL) }
-fn st_check_circular(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(cfg_of(c, slf).max_nesting != 0)) }
-fn st_max_nesting(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(cfg_of(c, slf).max_nesting)) }
-fn st_set_max_nesting(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { frozen_check(c, slf)?; let n = long_config(c, a[0])?; cfg_mut(c, slf).max_nesting = n; Ok(NIL) }
-fn st_depth(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(cfg_of(c, slf).depth)) }
-fn st_set_depth(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { frozen_check(c, slf)?; let n = depth_config(c, a[0])?; cfg_mut(c, slf).depth = n; Ok(NIL) }
-fn st_buffer_initial_length(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(cfg_of(c, slf).buffer_initial_length)) }
-fn st_set_buffer_initial_length(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn st_as_json(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(cfg_of(c, slf).as_json) }
+fn st_set_as_json(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { frozen_check(c, slf)?; let p = as_json_config(c, a[0])?; cfg_mut(c, slf).as_json = p; Ok(NIL) }
+fn st_check_circular(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(cfg_of(c, slf).max_nesting != 0)) }
+fn st_max_nesting(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(cfg_of(c, slf).max_nesting)) }
+fn st_set_max_nesting(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { frozen_check(c, slf)?; let n = long_config(c, a[0])?; cfg_mut(c, slf).max_nesting = n; Ok(NIL) }
+fn st_depth(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(cfg_of(c, slf).depth)) }
+fn st_set_depth(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { frozen_check(c, slf)?; let n = depth_config(c, a[0])?; cfg_mut(c, slf).depth = n; Ok(NIL) }
+fn st_buffer_initial_length(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(cfg_of(c, slf).buffer_initial_length)) }
+fn st_set_buffer_initial_length(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     frozen_check(c, slf)?;
     let mut s = cfg_of(c, slf);
     buffer_initial_length_set(c, &mut s, a[0])?;
     cfg_mut(c, slf).buffer_initial_length = s.buffer_initial_length;
     Ok(NIL)
 }
-fn st_sort_keys(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(cfg_of(c, slf).sort_keys) }
-fn st_set_sort_keys(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { frozen_check(c, slf)?; let p = normalize_sort_keys(c, a[0])?; cfg_mut(c, slf).sort_keys = p; Ok(p) }
-fn st_rfc8785(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(cfg_of(c, slf).rfc8785)) }
-fn st_set_rfc8785(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { frozen_check(c, slf)?; cfg_mut(c, slf).rfc8785 = a[0].truthy(); Ok(Value::bool(a[0].truthy())) }
-fn st_allow_duplicate_key(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(match cfg_of(c, slf).allow_duplicate_key { Some(b) => Value::bool(b), None => FALSE }) }
-fn st_initialize(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn st_sort_keys(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(cfg_of(c, slf).sort_keys) }
+fn st_set_sort_keys(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { frozen_check(c, slf)?; let p = normalize_sort_keys(c, a[0])?; cfg_mut(c, slf).sort_keys = p; Ok(p) }
+fn st_rfc8785(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(cfg_of(c, slf).rfc8785)) }
+fn st_set_rfc8785(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { frozen_check(c, slf)?; cfg_mut(c, slf).rfc8785 = a[0].truthy(); Ok(Value::bool(a[0].truthy())) }
+fn st_allow_duplicate_key(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(match cfg_of(c, slf).allow_duplicate_key { Some(b) => Value::bool(b), None => FALSE }) }
+fn st_initialize(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     rb_warn(c, "The json gem extension was loaded with the stdlib ruby code. You should upgrade rubygems with `gem update --system`")?;
     Ok(slf)
 }
-fn st_configure(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn st_configure(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     frozen_check(c, slf)?;
     let mut s = cfg_of(c, slf);
     configure(c, &mut s, a[0])?;
     *cfg_mut(c, slf) = s;
     Ok(slf)
 }
-fn st_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn st_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if slf == a[0] { return Ok(slf); }
     if !is_state(c, a[0]) { return type_err(c, format!("wrong argument type {} (expected JSON/Generator/State)", class_name_for_err(c, a[0]))); }
     let s = cfg_of(c, a[0]);
     *cfg_mut(c, slf) = s;
     Ok(slf)
 }
-fn st_s_from_state(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn st_s_from_state(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let o = a[0];
     if is_kind_of(c, o, slf) { return Ok(o); }
     if is_hash(o) { return funcall(c, slf, intern(b"new"), &[o], std::ptr::null()); }
     let k = C_STATE.get(c);
     funcall(c, k, intern(b"new"), &[], std::ptr::null())
 }
-fn from_state(c: &mut Ctx, o: Value) -> RV { let k = C_STATE.get(c); st_s_from_state(c, k, &[o], std::ptr::null()) }
+fn from_state(c: &mut Ctx, o: Value) -> RV { let k = C_STATE.get(c); st_s_from_state(c, k, &[o], Blk::NONE) }
 fn set_proc_once(c: &mut Ctx, g: &Global, p: Value, name: &str) -> RV {
     if !is_proc(p) { return type_err(c, format!("{} must be a Proc", name)); }
     if g.get(c) != NIL { return arg_err(c, format!("{} can only be set once", name)); }
     g.set(c, p);
     Ok(p)
 }
-fn st_s_default_sort_keys(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { set_proc_once(c, &P_SORT_KEYS, a[0], "sort_key_proc") }
-fn st_s_rfc_number(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { set_proc_once(c, &P_RFC_NUMBER, a[0], "rfc8785_number_formatter_proc") }
-fn st_s_rfc_sort(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { set_proc_once(c, &P_RFC_SORT, a[0], "rfc8785_sort_keys_proc") }
-fn st_generate(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn st_s_default_sort_keys(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { set_proc_once(c, &P_SORT_KEYS, a[0], "sort_key_proc") }
+fn st_s_rfc_number(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { set_proc_once(c, &P_RFC_NUMBER, a[0], "rfc8785_number_formatter_proc") }
+fn st_s_rfc_sort(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { set_proc_once(c, &P_RFC_SORT, a[0], "rfc8785_sort_keys_proc") }
+fn st_generate(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let io = a.get(1).copied().filter(|v| v.truthy()).unwrap_or(NIL);
     partial_generate(c, slf, a[0], Top::Value, io)
 }
-fn st_generate_no_fallback(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn st_generate_no_fallback(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let io = a.get(1).copied().filter(|v| v.truthy()).unwrap_or(NIL);
     partial_generate(c, slf, a[0], Top::NoFallback, io)
 }
-fn st_s_generate(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let io = if a[2].truthy() { a[2] } else { NIL }; m_generate(c, a[0], a[1], io, Top::Value) }
-fn st_s_generate_no_fallback(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let io = if a[2].truthy() { a[2] } else { NIL }; m_generate(c, a[0], a[1], io, Top::NoFallback) }
+fn st_s_generate(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let io = if a[2].truthy() { a[2] } else { NIL }; m_generate(c, a[0], a[1], io, Top::Value) }
+fn st_s_generate_no_fallback(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let io = if a[2].truthy() { a[2] } else { NIL }; m_generate(c, a[0], a[1], io, Top::NoFallback) }
 
 // ---- json 2.x GeneratorMethods ------------------------------------------------------------------
 
 fn gm_state(c: &mut Ctx, a: &[Value]) -> RV { check_argc(c, a, 0, 1)?; from_state(c, a.first().copied().unwrap_or(NIL)) }
-fn gm_hash(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let st = gm_state(c, a)?; partial_generate(c, st, slf, Top::Object, NIL) }
-fn gm_array(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let st = gm_state(c, a)?; partial_generate(c, st, slf, Top::Array, NIL) }
-fn gm_integer(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let st = gm_state(c, a)?; partial_generate(c, st, slf, Top::Integer, NIL) }
-fn gm_float(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let st = gm_state(c, a)?; partial_generate(c, st, slf, Top::Float, NIL) }
-fn gm_string(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let st = gm_state(c, a)?; partial_generate(c, st, slf, Top::String, NIL) }
-fn gm_object(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn gm_hash(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let st = gm_state(c, a)?; partial_generate(c, st, slf, Top::Object, NIL) }
+fn gm_array(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let st = gm_state(c, a)?; partial_generate(c, st, slf, Top::Array, NIL) }
+fn gm_integer(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let st = gm_state(c, a)?; partial_generate(c, st, slf, Top::Integer, NIL) }
+fn gm_float(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let st = gm_state(c, a)?; partial_generate(c, st, slf, Top::Float, NIL) }
+fn gm_string(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let st = gm_state(c, a)?; partial_generate(c, st, slf, Top::String, NIL) }
+fn gm_object(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let t = funcall(c, slf, intern(b"to_s"), &[], std::ptr::null())?;
     if a.len() > 1 { check_argc(c, a, 0, 1)?; }
     let t = check_string(c, t)?;
@@ -838,10 +838,10 @@ fn gm_object(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     partial_generate(c, st, t, Top::String, NIL)
 }
 fn gm_lit(c: &mut Ctx, a: &[Value], s: &[u8]) -> RV { check_argc(c, a, 0, 1)?; Ok(c.str_new(s)) }
-fn gm_true(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { gm_lit(c, a, b"true") }
-fn gm_false(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { gm_lit(c, a, b"false") }
-fn gm_nil(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { gm_lit(c, a, b"null") }
-fn gm_raw_object(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn gm_true(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { gm_lit(c, a, b"true") }
+fn gm_false(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { gm_lit(c, a, b"false") }
+fn gm_nil(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { gm_lit(c, a, b"null") }
+fn gm_raw_object(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let h = c.hash_new();
     let m = M_JSON.get(c);
     let id = funcall(c, m, intern(b"create_id"), &[], std::ptr::null())?;
@@ -853,14 +853,14 @@ fn gm_raw_object(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV 
     hash_aset(c, h, k, ary)?;
     Ok(h)
 }
-fn gm_raw(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { let h = gm_raw_object(c, slf, &[], b)?; gm_hash(c, h, a, b) }
-fn gm_string_included(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn gm_raw(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { let h = gm_raw_object(c, slf, &[], b)?; gm_hash(c, h, a, b) }
+fn gm_string_included(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let ext = M_STRING_EXTEND.get(c);
     let r = funcall(c, a[0], intern(b"extend"), &[ext], std::ptr::null())?;
     let _ = slf;
     Ok(r)
 }
-fn gm_json_create(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gm_json_create(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     if !is_hash(a[0]) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(c, a[0]))); }
     let k = c.str_new(b"raw");
     let ary = hash_aref(c, a[0], k)?;

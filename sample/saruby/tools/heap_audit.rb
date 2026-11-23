@@ -4,7 +4,8 @@
 # `fn->&'static mut`: functions of the file that return a `&'static mut` (its own unsound accessors).
 # `static mut`: mutable statics declared in the file.
 # Exit 1 if a converted file (one that imports heap::no_legacy) still names an old accessor, or a file
-# that imports heap::no_legacy_body names an object accessor ("converted (object accessors)").
+# that imports heap::no_legacy_body names an object accessor ("converted (object accessors)"), or a
+# builtin names a raw block pointer (`*const Block`, `vm_blk`, `BlkArg`, `.ptr()`, `as *const _`, an address-to-pointer fn).
 # Generated sources (src/node_*.rs, src/prism_ast.rs) are not counted; node.def is.
 ROOT = File.expand_path('..', __dir__)
 BODY = %w[obj rary rstr rhash rclass rproc rmethod rbig rdata ivars_of str_bytes]
@@ -45,6 +46,15 @@ files.each do |f|
     left = BODY.select { count(body, _1) > 0 || body =~ /::#{_1}\(/ }
     bad << "#{rel}: #{left.join(' ')}" unless left.empty?
   end
+  # a builtin holds its block as a Blk<'call> (vm.rs): it may not name the raw type, make one from an
+  # address, or reach the VM's raw constructor; `// blk-audit:` on the line states why one may
+  if rel.start_with?('src/builtins/')
+    raw.each_line.with_index(1) do |l, i|
+      next if l.include?('// blk-audit:')
+      code = l.sub(%r{//.*}, '')
+      bad << "#{rel}:#{i}: raw block (#{$&})" if code =~ /\*const Block|\bvm_blk\b|\bBlkArg\b|\.ptr\(\)|as \*const _|\b(without_provenance|with_exposed_provenance|with_addr|map_addr)\b/
+    end
+  end
   statics = src.scan(/\bstatic\s+mut\s+\w+\s*:/).size
   rows << [rel, c, uns, converted ? true : (body_only ? :body : false), raw.include?('#![forbid(unsafe_code)]'), helpers, statics]
 end
@@ -65,6 +75,6 @@ rows.each do |rel, c, uns, conv, forbid, helpers, statics|
 end
 puts fmt.([md ? 'total' : 'total'.ljust(w), *heads.map { tot[_1].to_s.rjust(6) }, tot.values.sum.to_s.rjust(5), th.to_s.rjust(16), ts.to_s.rjust(10), tu.to_s.rjust(6), ''])
 unless bad.empty?
-  warn "converted files still naming old accessors:\n  " + bad.join("\n  ")
+  warn "converted files still naming old accessors, or builtins holding a raw block:\n  " + bad.join("\n  ")
   exit 1
 end

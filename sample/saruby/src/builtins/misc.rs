@@ -50,17 +50,17 @@ pub fn unbase64(s2: &[u8]) -> Vec<u8> {
 }
 // ---- GC / ObjectSpace -----------------------------------------------------------------------
 
-fn gc_start(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { crate::gc::collect(c); run_finalizer_queue(c, FinAt::Internal(44)); Ok(NIL) }
+fn gc_start(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { crate::gc::collect(c); run_finalizer_queue(c, FinAt::Internal(44)); Ok(NIL) }
 // GC.__start(full_mark), behind the prelude's GC.start (keywords as in CRuby's gc.rb, no Hash)
-fn gc_start_full(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gc_start_full(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     if a[0].truthy() { crate::gc::collect(c) } else { crate::gc::collect_minor(c) }
     run_finalizer_queue(c, FinAt::Internal(44));
     Ok(NIL)
 }
-fn gc_count(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(crate::gc::collections() as i64)) }
-fn gc_disable(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(crate::gc::set_disabled(true))) }
-fn gc_enable(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(crate::gc::set_disabled(false))) }
-fn gc_stat(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gc_count(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(crate::gc::collections() as i64)) }
+fn gc_disable(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(crate::gc::set_disabled(true))) }
+fn gc_enable(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(crate::gc::set_disabled(false))) }
+fn gc_stat(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (n, m, h) = (crate::gc::collections() as i64, crate::gc::minor_collections() as i64, crate::gc::stats());
     let st = c.hash_new();
     for (k, v) in [("count", n), ("heap_live_slots", (h.slots - h.free) as i64), ("heap_free_slots", h.free as i64),
@@ -70,7 +70,7 @@ fn gc_stat(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     if let Some(&k) = a.first() { if k.is_sym() { return Ok(hash_get_opt(c, st, k)?.unwrap_or(Value::fix(0))); } }
     Ok(st)
 }
-fn os_each_object(c: &mut Ctx, s2: Value, a: &[Value], blk: *const Block) -> RV {
+fn os_each_object(c: &mut Ctx, s2: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, s2, intern(b"each_object"), a, NIL); }
     let k = a.first().copied();
     // nothing allocates between the walk and the Array that roots the result
@@ -87,7 +87,7 @@ fn os_each_object(c: &mut Ctx, s2: Value, a: &[Value], blk: *const Block) -> RV 
     Ok(Value::fix(n as i64))
 }
 // ObjectSpace.garbage_collect(full_mark: true, immediate_mark: true, immediate_sweep: true), as gc.rb
-fn os_garbage_collect(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn os_garbage_collect(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let mut full = true;
     if let Some(&h) = a.last().filter(|&&h| is_hash(h)) {
         let mut unknown = vec![];
@@ -114,7 +114,7 @@ pub fn warning_category(c: &mut Ctx, v: Value) -> Result<usize, Esc> {
     match WARN_CAT_NAMES.iter().position(|&x| x == n) { Some(i) => Ok(i), None => arg_err(c, format!("unknown category: {}", n)) }
 }
 pub fn warning_category_enabled(i: usize) -> bool { WARN_CATS.load(Relaxed) & (1 << i) != 0 }
-fn warning_warn(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn warning_warn(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     if !is_string(a[0]) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(c, a[0]))); }
     let b = c.str_bytes(a[0]).to_vec(); stderr_write(c, &b)?; Ok(NIL)
@@ -148,7 +148,7 @@ pub fn fin_enqueue(c: &mut Ctx, dead: Vec<Value>) {
     FIN_PENDING.store(true, Relaxed);
     crate::vm::set_ints();
 }
-fn os_define_finalizer(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
+fn os_define_finalizer(c: &mut Ctx, _s: Value, a: &[Value], blk: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let o = a[0];
     if !o.is_heap() || is_float(o) || is_bignum(o) { return arg_err(c, format!("cannot define finalizer for {}", class_path(c, real_class_of(c, o)))); }
@@ -177,7 +177,7 @@ fn os_define_finalizer(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -
     obj_set_flags(r, FL_FROZEN);
     Ok(r)
 }
-fn os_undefine_finalizer(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn os_undefine_finalizer(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     if a[0].is_heap() && is_frozen(a[0]) { return Err(raise_frozen(c, a[0])); }
     let t = FIN_TABLE.get(c);
     if t != NIL { hash_delete(c, t, a[0])?; }
@@ -253,7 +253,7 @@ pub fn run_finalizers(c: &mut Ctx) {
     drain_queue(c, FinAt::Exit);
     FIN_RUNNING.store(false, Relaxed);
 }
-fn rbconfig_ruby(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn rbconfig_ruby(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "saruby".into());
     Ok(c.str_new(exe.as_bytes()))
 }

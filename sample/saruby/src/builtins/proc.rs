@@ -14,7 +14,7 @@ use crate::symbol::{intern, s, sym_str};
 use crate::value::*;
 use crate::vm::*;
 
-fn sym_proc_call(c: &mut Ctx, data: Value, args: &[Value], blk: *const Block, _o: *const Block) -> RV {
+fn sym_proc_call(c: &mut Ctx, data: Value, args: &[Value], blk: Blk, _o: Blk) -> RV {
     if args.is_empty() { return arg_err(c, "no receiver given"); }
     let mid = data.as_sym();
     funcall_public(c, args[0], mid, &args[1..], blk)
@@ -119,24 +119,24 @@ fn rows_to_ary(c: &mut Ctx, rows: Vec<Vec<Value>>) -> Value {
     out
 }
 
-fn proc_call(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn proc_call(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let kw = kw_arg(a).is_some();
     call_proc_kw(c, slf, a, b, kw)
 }
-fn proc_arity_m(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(proc_arity(c, slf))) }
-fn proc_lambda_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(c.proc_data(slf).is_lambda)) }
-fn proc_to_proc(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(slf) }
-fn proc_parameters(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn proc_arity_m(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(proc_arity(c, slf))) }
+fn proc_lambda_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(c.proc_data(slf).is_lambda)) }
+fn proc_to_proc(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(slf) }
+fn proc_parameters(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let (mut lambda, kind) = { let pd = c.proc_data(slf); (pd.is_lambda, pd.blk.kind) };
     if let Some(h) = kw_arg(a) { if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("lambda"))? { if v != NIL { lambda = v.truthy(); } } }
     match kind {
         BlockKind::Iseq(is) => Ok(params_list(c, is, lambda)),
         BlockKind::Sym(_) => Ok(rows_to_ary(c, vec![vec![sym_value("req")], vec![sym_value("rest")]])),
-        BlockKind::Method(m) => method_parameters(c, m, &[], std::ptr::null()),
+        BlockKind::Method(m) => method_parameters(c, m, &[], Blk::NONE),
         _ => Ok(rows_to_ary(c, vec![vec![sym_value("rest")]])),
     }
 }
-fn proc_curry(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn proc_curry(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let arity = if !a.is_empty() { a[0].as_fix() } else { let ar = proc_arity(c, slf); if ar < 0 { -ar - 1 } else { ar } };
     if c.proc_data(slf).is_lambda && !a.is_empty() {
         let ar = proc_arity(c, slf);
@@ -145,7 +145,7 @@ fn proc_curry(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let got = c.ary_new();
     make_curry(c, slf, arity, got)
 }
-fn curry_call(c: &mut Ctx, data: Value, args: &[Value], _blk: *const Block, _o: *const Block) -> RV {
+fn curry_call(c: &mut Ctx, data: Value, args: &[Value], _blk: Blk, _o: Blk) -> RV {
     let p = c.ary_get(data, 0); let arity = c.ary_get(data, 1).as_fix(); let got = c.ary_get(data, 2);
     let mut v = c.ary(got).to_vec();
     v.extend_from_slice(args);
@@ -159,7 +159,7 @@ fn make_curry(c: &mut Ctx, p: Value, arity: i64, got: Value) -> RV {
     let lambda = c.proc_data(p).is_lambda;
     Ok(new_proc(c, c.vm().c_proc.get(), b, lambda, NIL))
 }
-fn proc_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn proc_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let (kind, lambda) = { let pd = c.proc_data(slf); (pd.blk.kind, pd.is_lambda) };
     let loc = match kind { BlockKind::Iseq(is) => c.iseq_ref(is).map_or(String::new(), |is| format!(" {}:{}", is.info.file, is.info.line)), BlockKind::Sym(s) => { let i = crate::builtins::kernel::inspect_str(c, Value::sym(s))?; format!("(&{})", i) } _ => String::new() };
     let t = format!("#<Proc:{:#018x}{}{}>", slf.raw(), loc, if lambda { " (lambda)" } else { "" });
@@ -169,7 +169,7 @@ fn callable_check(c: &mut Ctx, g: Value) -> Result<(), Esc> {
     if !is_proc(g) && !is_method_obj(g) && !respond_to(c, g, s::call, true) { return type_err(c, "callable object is expected"); }
     Ok(())
 }
-fn proc_compose_right(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn proc_compose_right(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     // (f >> g).call(x) = g.(f.(x))
     let g = a[0];
     callable_check(c, g)?;
@@ -178,19 +178,19 @@ fn proc_compose_right(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) ->
     let lambda = !is_proc(slf) || c.proc_data(slf).is_lambda;
     Ok(new_proc(c, c.vm().c_proc.get(), b, lambda, NIL))
 }
-fn proc_compose_left(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn proc_compose_left(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let g = a[0];
     callable_check(c, g)?;
     let data = c.ary_new_from(&[g, slf, TRUE]);
     let b = Block::cfunc(c, compose_call, data);
     Ok(new_proc(c, c.vm().c_proc.get(), b, true, NIL))
 }
-fn compose_call(c: &mut Ctx, data: Value, args: &[Value], blk: *const Block, _o: *const Block) -> RV {
+fn compose_call(c: &mut Ctx, data: Value, args: &[Value], blk: Blk, _o: Blk) -> RV {
     let f = c.ary_get(data, 0); let g = c.ary_get(data, 1);
     let x = funcall(c, f, s::call, args, blk)?;
     funcall(c, g, s::call, &[x], std::ptr::null())
 }
-fn proc_s_new(c: &mut Ctx, slf: Value, _a: &[Value], b: *const Block) -> RV {
+fn proc_s_new(c: &mut Ctx, slf: Value, _a: &[Value], b: Blk) -> RV {
     if b.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
     let p = block_to_proc(c, b)?;
     if slf != c.vm().c_proc.get() {
@@ -201,14 +201,14 @@ fn proc_s_new(c: &mut Ctx, slf: Value, _a: &[Value], b: *const Block) -> RV {
     }
     Ok(p)
 }
-fn proc_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn proc_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if slf == a[0] { return Ok(TRUE); }
     if !is_proc(a[0]) { return Ok(FALSE); }
     let (x, y) = (c.proc_data(slf), c.proc_data(a[0]));
     let same = match (x.blk.kind, y.blk.kind) { (BlockKind::Iseq(p), BlockKind::Iseq(q)) => p == q && x.blk.env == y.blk.env && x.blk.self_ == y.blk.self_, _ => false };
     Ok(Value::bool(same && x.is_lambda == y.is_lambda))
 }
-fn proc_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn proc_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let x = c.proc_data(slf);
     let h = match x.blk.kind { BlockKind::Iseq(p) => p as u64 ^ x.blk.env.raw(), _ => slf.raw() };
     Ok(Value::fix((crate::astrust::hash_u64(h) >> 2) as i64))
@@ -219,14 +219,14 @@ fn iseq_location(c: &mut Ctx, is: *const Iseq) -> RV {
     let f = c.str_new(file.as_bytes());
     Ok(c.ary_new_from(&[f, Value::fix(line as i64)]))
 }
-fn proc_source_location(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn proc_source_location(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     match c.proc_data(slf).blk.kind {
         BlockKind::Iseq(is) => iseq_location(c, is),
         _ => Ok(NIL),
     }
 }
-fn proc_binding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { crate::builtins::binding::binding_of_proc(c, slf) }
-fn proc_ruby2kw(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(slf) }
+fn proc_binding(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { crate::builtins::binding::binding_of_proc(c, slf) }
+fn proc_ruby2kw(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(slf) }
 
 // ---- Method / UnboundMethod -----------------------------------------------------------------
 
@@ -249,7 +249,7 @@ pub fn method_object(c: &mut Ctx, recv: Value, mid: Sym, public_only: bool) -> R
     Ok(new_method_obj(c, c.vm().c_method.get(), MethodObj { recv, me, name: mid, unbound: false, owner }))
 }
 
-fn mm_forward(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn mm_forward(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let me = c.cur_frame().map_or(std::ptr::null(), |f| f.me);
     let Some(mid) = c.me_ref(me).map(|m| m.name) else { return arg_err(c, "no method name") };
     let mut args = vec![Value::sym(mid)];
@@ -268,7 +268,7 @@ pub fn unbound_method_object(c: &mut Ctx, klass: Value, mid: Sym, public_only: b
     Ok(new_method_obj(c, c.vm().c_unbound_method.get(), MethodObj { recv: klass, me, name: mid, unbound: true, owner }))
 }
 
-fn meth_call(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn meth_call(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let m = mo(c, slf);
     let (recv, me) = (m.recv, m.me);
     let base = c.top();
@@ -281,21 +281,21 @@ fn meth_call(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     c.set_sp(base, 0);
     r
 }
-fn meth_to_proc(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn meth_to_proc(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let mut b = Block::cfunc(c, |_c, _d, _a, _b, _o| Ok(NIL), NIL);
     b.kind = BlockKind::Method(slf);
     b.self_ = c.method_obj(slf).recv;
     Ok(new_proc(c, c.vm().c_proc.get(), b, true, slf))
 }
-fn meth_arity(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(method_arity(c, c.method_obj(slf).me))) }
-fn meth_name(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::sym(c.method_obj(slf).name)) }
-fn meth_owner(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(me_owner(c, c.method_obj(slf).me)) }
-fn meth_receiver(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.method_obj(slf).recv) }
-fn meth_unbind(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn meth_arity(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(method_arity(c, c.method_obj(slf).me))) }
+fn meth_name(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::sym(c.method_obj(slf).name)) }
+fn meth_owner(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(me_owner(c, c.method_obj(slf).me)) }
+fn meth_receiver(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.method_obj(slf).recv) }
+fn meth_unbind(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let m = mo(c, slf);
     Ok(new_method_obj(c, c.vm().c_unbound_method.get(), MethodObj { recv: real_class_of(c, m.recv), me: m.me, name: m.name, unbound: true, owner: m.owner }))
 }
-fn meth_original_name(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn meth_original_name(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     Ok(c.me_ref(c.method_obj(slf).me).map_or(NIL, |m| Value::sym(m.name)))
 }
 /// Arity of a cfunc-like entry, or the iseq the entry runs (Method#parameters, #inspect).
@@ -310,7 +310,7 @@ fn me_sig(c: &Ctx, me: *const MethodEntry) -> Sig {
         _ => Sig::Other,
     }
 }
-pub fn method_parameters(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+pub fn method_parameters(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let me = c.method_obj(slf).me;
     let bmethod_noiseq = matches!(c.me_ref(me).map(|m| m.kind), Some(MKind::Bmethod(_)));
     match me_sig(c, me) {
@@ -324,7 +324,7 @@ pub fn method_parameters(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block
         _ => Ok(c.ary_new()),
     }
 }
-fn meth_source_location(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn meth_source_location(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let me = c.method_obj(slf).me;
     match c.me_ref(me).map(|m| m.kind) {
         Some(MKind::Iseq(is)) => iseq_location(c, is),
@@ -348,7 +348,7 @@ fn meth_sig(c: &mut Ctx, slf: Value) -> Result<String, Esc> {
         return Ok(format!("({})", inner));
     }
     if forwarding { return Ok(format!("(...) {}:{}", file, line)); }
-    let ps = method_parameters(c, slf, &[], std::ptr::null())?;
+    let ps = method_parameters(c, slf, &[], Blk::NONE)?;
     let mut parts = vec![];
     for e in c.ary(ps) {
         let e = c.ary(*e);
@@ -369,7 +369,7 @@ fn meth_sig(c: &mut Ctx, slf: Value) -> Result<String, Esc> {
     let inner = if parts == ["*", "**", "&"] { "...".to_string() } else { parts.join(", ") };
     Ok(format!("({}) {}:{}", inner, file, line))
 }
-fn meth_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn meth_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let m = mo(c, slf);
     let (owner, me_name) = match c.me_ref(m.me) { Some(me) => (me.owner, me.name), None => (NIL, m.name) };
     let sig = meth_sig(c, slf)?;
@@ -386,7 +386,7 @@ fn meth_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     };
     Ok(c.str_new(s.as_bytes()))
 }
-fn meth_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn meth_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if !is_method_obj(a[0]) { return Ok(FALSE); }
     let (x, y) = (mo(c, slf), mo(c, a[0]));
     let same_body = x.me == y.me || match (c.me_ref(x.me).map(|m| m.kind), c.me_ref(y.me).map(|m| m.kind)) {
@@ -398,11 +398,11 @@ fn meth_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     };
     Ok(Value::bool(x.recv == y.recv && same_body && obj_klass(slf) == obj_klass(a[0])))
 }
-fn meth_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn meth_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let m = c.method_obj(slf);
     Ok(Value::fix((crate::astrust::hash_u64(m.recv.raw() ^ (m.me as u64)) >> 2) as i64))
 }
-fn meth_super_method(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn meth_super_method(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let m = mo(c, slf);
     let klass = if m.unbound { m.recv } else { class_of(m.recv) };
     let sm = super_method(c, klass, me_owner(c, m.me), m.name);
@@ -410,11 +410,11 @@ fn meth_super_method(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) ->
     let owner = me_owner(c, sm);
     Ok(new_method_obj(c, obj_klass(slf), MethodObj { recv: m.recv, me: sm, name: m.name, unbound: m.unbound, owner }))
 }
-fn meth_curry(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn meth_curry(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let p = meth_to_proc(c, slf, &[], b)?;
     proc_curry(c, p, a, b)
 }
-fn um_bind(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn um_bind(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let m = mo(c, slf);
     let owner = me_owner(c, m.me);
     let (is_module, is_singleton) = if is_class_or_module(owner) { let k = c.class(owner); (k.is_module, k.is_singleton) } else { (false, false) };
@@ -423,7 +423,7 @@ fn um_bind(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     }
     Ok(new_method_obj(c, c.vm().c_method.get(), MethodObj { recv: a[0], me: m.me, name: m.name, unbound: false, owner: m.owner }))
 }
-fn um_bind_call(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn um_bind_call(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
     let m = um_bind(c, slf, &a[..1], b)?;
     meth_call(c, m, &a[1..], b)

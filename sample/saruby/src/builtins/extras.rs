@@ -18,7 +18,7 @@ use crate::symbol::{intern, sym_bytes, sym_str};
 use crate::value::*;
 use crate::vm::*;
 
-fn m_deprecate_constant(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_deprecate_constant(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     for &x in a {
         let n = to_sym_arg(c, x)?;
         if !c.class(s).consts.contains_key(&n) {
@@ -28,7 +28,7 @@ fn m_deprecate_constant(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) ->
     }
     Ok(s)
 }
-fn m_remove_cvar(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_remove_cvar(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let n = to_sym_arg(c, a[0])?;
     if !sym_bytes(n).starts_with(b"@@") {
         let e = make_name_error(c, c.vm().c_name_error.get(), &format!("'{}' is not allowed as a class variable name", sym_str(n)), Value::sym(n), s)?;
@@ -39,13 +39,13 @@ fn m_remove_cvar(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
         None => { let e = make_name_error(c, c.vm().c_name_error.get(), &format!("class variable {} not defined for {}", sym_str(n), class_path(c, s)), Value::sym(n), s)?; Err(raise_exc(c, e)) }
     }
 }
-fn m_undefined_instance_methods(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn m_undefined_instance_methods(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let names: Vec<Value> = c.class(s).mtbl.iter().filter(|(_, me)| matches!(c.me_ref(**me).map(|m| &m.kind), Some(MKind::Undef))).map(|(n, _)| Value::sym(*n)).collect();
     Ok(c.ary_from_vec(names))
 }
-fn le_path(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, s, intern(b"path"))) }
-fn nme_private_call(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(ivar_get(c, s, intern(b"private_call")).truthy())) }
-fn sig_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn le_path(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, s, intern(b"path"))) }
+fn nme_private_call(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(ivar_get(c, s, intern(b"private_call")).truthy())) }
+fn sig_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, 2); }
     let (no, name) = if a[0].is_fixnum() {
         let n = a[0].as_fix();
@@ -61,32 +61,32 @@ fn sig_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     ivar_set_raw(c, s, crate::symbol::s::mesg, m);
     Ok(NIL)
 }
-fn sig_signo(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, s, intern(b"signo"))) }
-fn sig_signm(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { funcall(c, s, intern(b"message"), &[], std::ptr::null()) }
-fn m_expm1(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; Ok(c.float_new(f.exp_m1())) }
-fn m_log1p(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn sig_signo(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, s, intern(b"signo"))) }
+fn sig_signm(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { funcall(c, s, intern(b"message"), &[], std::ptr::null()) }
+fn m_expm1(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; Ok(c.float_new(f.exp_m1())) }
+fn m_log1p(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let f = crate::builtins::numeric_methods::rb_float(c, a[0])?;
     if f < -1.0 { return err(c, c.vm().c_math_domain_error.get(), "Numerical argument is out of domain - \"log1p\""); }
     Ok(c.float_new(f.ln_1p()))
 }
-fn m_gamma(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_gamma(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let f = crate::builtins::numeric_methods::rb_float(c, a[0])?;
     if f == f64::NEG_INFINITY || (f < 0.0 && f == f.floor()) { return err(c, c.vm().c_math_domain_error.get(), "Numerical argument is out of domain - \"gamma\""); }
     if f == f.floor() && (1.0..=23.0).contains(&f) { let mut r = 1.0f64; let mut k = 2.0; while k < f { r *= k; k += 1.0; } return Ok(c.float_new(r)); }
     Ok(c.float_new(sys::tgamma(f)))
 }
-fn m_lgamma(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_lgamma(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let f = crate::builtins::numeric_methods::rb_float(c, a[0])?;
     if f == f64::NEG_INFINITY { return err(c, c.vm().c_math_domain_error.get(), "Numerical argument is out of domain - \"lgamma\""); }
     let (r, sign) = if f == 0.0 { (f64::INFINITY, if f.is_sign_negative() { -1 } else { 1 }) } else { let mut sign = 1i32; let r = sys::lgamma_r(f, &mut sign); (r, if sign < 0 { -1 } else { 1 }) };
     let rv = c.float_new(r);
     Ok(c.ary_new_from(&[rv, Value::fix(sign)]))
 }
-fn m_erf(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; Ok(c.float_new(sys::erf(f))) }
-fn m_erfc(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; Ok(c.float_new(sys::erfc(f))) }
-fn m_cbrt(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; let mut r = sys::cbrt(f); if r.is_finite() && !(f == 0.0 && r == 0.0) { r = (2.0 * r + (f / r / r)) / 3.0; } Ok(c.float_new(r)) }
+fn m_erf(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; Ok(c.float_new(sys::erf(f))) }
+fn m_erfc(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; Ok(c.float_new(sys::erfc(f))) }
+fn m_cbrt(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; let mut r = sys::cbrt(f); if r.is_finite() && !(f == 0.0 && r == 0.0) { r = (2.0 * r + (f / r / r)) / 3.0; } Ok(c.float_new(r)) }
 /// GC.stat_heap([heap [, key]]): saruby has one heap of fixed-size slots (heap 0).
-fn gc_stat_heap(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gc_stat_heap(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let h = crate::gc::stats();
     let st = c.hash_new();
     for (k, v) in [("slot_size", std::mem::size_of::<RObj>() as i64), ("heap_live_slots", (h.slots - h.free) as i64), ("heap_free_slots", h.free as i64),
@@ -102,14 +102,14 @@ fn gc_stat_heap(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
         Some(_) => arg_err(c, "size pool index out of range"),
     }
 }
-fn gc_config(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn gc_config(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     let h = c.hash_new();
     hash_set(c, h, sym_value("rgengc_allow_full_mark"), TRUE)?;
     let d = c.str_new(b"default");
     hash_set(c, h, sym_value("implementation"), d)?;
     Ok(h)
 }
-fn k_global_variables(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn k_global_variables(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     if crate::builtins::ractor::multi() { crate::builtins::ractor::global_variables_check(c)?; }
     let out = c.ary_new();
     // the built-in names first (CRuby's order), then the others by name: the table's own order is a hash order
@@ -123,7 +123,7 @@ fn k_global_variables(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) ->
     for n in names { c.ary_push(out, Value::sym(intern(&n))); }
     Ok(out)
 }
-fn k_test(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn k_test(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 2, 3)?;
     let cmd = if is_string(a[0]) { *c.str_bytes(a[0]).first().unwrap_or(&b'?') } else { num_to_long(c, a[0])? as u8 };
     let name = match cmd {
@@ -140,7 +140,7 @@ fn k_test(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     };
     funcall(c, c.vm().c_file.get(), intern(name.as_bytes()), &a[1..], std::ptr::null())
 }
-fn io_wait(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_wait(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     // wait(events, timeout) or wait(timeout = nil, mode = :read)
     let (fd, buffered) = { let io = crate::builtins::io::get_io(c, s)?; (io.fd, io.rpos < io.rbuf.len()) };
     // io.c io_wait: two non-Symbol arguments are (events, timeout); otherwise modes and at most one timeout
@@ -174,7 +174,7 @@ fn io_wait(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     if rev & sys::POLLOUT != 0 { r |= 4; }
     Ok(Value::fix(r & events.max(1)))
 }
-fn io_each_codepoint(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> RV {
+fn io_each_codepoint(c: &mut Ctx, s: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, s, intern(b"each_codepoint"), a, NIL); }
     loop {
         let ch = funcall(c, s, intern(b"getc"), &[], std::ptr::null())?;
@@ -184,7 +184,7 @@ fn io_each_codepoint(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> R
     }
     Ok(s)
 }
-fn p_setrlimit(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn p_setrlimit(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 2, 3)?;
     let res = num_to_long(c, a[0])? as i32;
     let lim = |c: &mut Ctx, v: Value| -> Result<u64, Esc> { if is_bignum(v) { Ok(u64::MAX) } else { Ok(num_to_long(c, v)? as u64) } };

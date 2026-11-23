@@ -247,7 +247,7 @@ pub fn run_traced_body(c: &mut Ctx, is: &'static Iseq, base: Stk, call_ev: u32, 
 /// reported around it (a builtin's, or the prelude's as a builtin's).
 #[cold]
 #[inline(never)]
-pub fn invoke_traced(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
+pub fn invoke_traced(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: Blk, flags: u32) -> RV {
     let Some(m) = c.me_ref(me) else { return invoke_untraced(c, me, recv, base, argc, blk, flags) };
     let (kind, name, owner) = (m.kind, m.name, m.owner);
     let (call_ev, ret_ev) = match kind {
@@ -318,7 +318,7 @@ const TP_RB: [(&str, u32, u32, u32); 21] = [
     ("raised_exception", 403, 404, 405), ("eval_script", 409, 410, 411), ("instruction_sequence", 417, 418, 419),
 ];
 #[allow(clippy::too_many_arguments)]
-fn invoke_tp_rb(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32, (d, b, e): (u32, u32, u32)) -> RV {
+fn invoke_tp_rb(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: Blk, flags: u32, (d, b, e): (u32, u32, u32)) -> RV {
     let (mid, callee, klass) = method_of(c, me);
     let a = Arg { ev: EV_CALL, path: TP_RB_FILE, line: d, mid, callee, klass, self_: recv, ret: NIL, exc: NIL, frame: 0, iseq: 0, lambda: false, script: NIL };
     let before = trace_mask();
@@ -388,7 +388,7 @@ fn event_of(c: &mut Ctx, v: Value) -> Result<u32, Esc> {
     }
 }
 
-fn tp_new(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn tp_new(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     let mut ev = 0;
     for &v in a { ev |= event_of(c, v)?; }
     if a.is_empty() { ev = EV_ALL; }
@@ -401,7 +401,7 @@ fn tp_new(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     d.events = ev; d.proc_ = p;
     Ok(t)
 }
-fn tp_s_trace(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn tp_s_trace(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     let t = tp_new(c, slf, a, blk)?;
     enable(c, t, 0, 0, NIL)?;
     Ok(t)
@@ -445,7 +445,7 @@ fn target_iseq(c: &mut Ctx, v: Value) -> Result<usize, Esc> {
     match is { Some(is) => Ok(is as usize), None => arg_err(c, "specified target is not supported") }
 }
 
-fn tp_enable(c: &mut Ctx, t: Value, a: &[Value], blk: *const Block) -> RV {
+fn tp_enable(c: &mut Ctx, t: Value, a: &[Value], blk: Blk) -> RV {
     let kw = kw_arg(a);
     let pos = if kw.is_some() { &a[..a.len() - 1] } else { a };
     if !pos.is_empty() { return argc_err(c, pos.len(), 0, 0); }
@@ -485,7 +485,7 @@ fn tp_enable(c: &mut Ctx, t: Value, a: &[Value], blk: *const Block) -> RV {
     else { disable(c, t); }
     r
 }
-fn tp_disable(c: &mut Ctx, t: Value, _a: &[Value], blk: *const Block) -> RV {
+fn tp_disable(c: &mut Ctx, t: Value, _a: &[Value], blk: Blk) -> RV {
     let (was, targeted) = rt(c, t).map_or((false, false), |d| (d.enabled, d.target != 0));
     if blk.is_null() { if was { disable(c, t); } return Ok(Value::bool(was)); }
     if targeted { return arg_err(c, "can't disable a targeting TracePoint in a block"); }
@@ -495,42 +495,42 @@ fn tp_disable(c: &mut Ctx, t: Value, _a: &[Value], blk: *const Block) -> RV {
     if was { enable(c, t, 0, 0, th)?; }
     r
 }
-fn tp_enabled_p(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(rt(c, t).is_some_and(|d| d.enabled))) }
+fn tp_enabled_p(c: &mut Ctx, t: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(rt(c, t).is_some_and(|d| d.enabled))) }
 
 fn cur(c: &mut Ctx, t: Value) -> Result<Arg, Esc> {
     match rt(c, t).and_then(|d| d.cur) { Some(a) => Ok(a), None => err(c, c.vm().c_runtime_error.get(), "access from outside") }
 }
-fn tp_event(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV { let a = cur(c, t)?; Ok(sym_value(ev_name(a.ev))) }
-fn tp_lineno(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV { let a = cur(c, t)?; Ok(Value::fix(a.line as i64)) }
-fn tp_path(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV { let a = cur(c, t)?; Ok(if a.path.is_empty() { NIL } else { c.str_new(a.path.as_bytes()) }) }
-fn tp_method_id(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV { let a = cur(c, t)?; Ok(a.mid.map(Value::sym).unwrap_or(NIL)) }
-fn tp_callee_id(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV { let a = cur(c, t)?; Ok(a.callee.map(Value::sym).unwrap_or(NIL)) }
-fn tp_defined_class(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV { let a = cur(c, t)?; Ok(a.klass) }
-fn tp_self(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
+fn tp_event(c: &mut Ctx, t: Value, _a: &[Value], _b: Blk) -> RV { let a = cur(c, t)?; Ok(sym_value(ev_name(a.ev))) }
+fn tp_lineno(c: &mut Ctx, t: Value, _a: &[Value], _b: Blk) -> RV { let a = cur(c, t)?; Ok(Value::fix(a.line as i64)) }
+fn tp_path(c: &mut Ctx, t: Value, _a: &[Value], _b: Blk) -> RV { let a = cur(c, t)?; Ok(if a.path.is_empty() { NIL } else { c.str_new(a.path.as_bytes()) }) }
+fn tp_method_id(c: &mut Ctx, t: Value, _a: &[Value], _b: Blk) -> RV { let a = cur(c, t)?; Ok(a.mid.map(Value::sym).unwrap_or(NIL)) }
+fn tp_callee_id(c: &mut Ctx, t: Value, _a: &[Value], _b: Blk) -> RV { let a = cur(c, t)?; Ok(a.callee.map(Value::sym).unwrap_or(NIL)) }
+fn tp_defined_class(c: &mut Ctx, t: Value, _a: &[Value], _b: Blk) -> RV { let a = cur(c, t)?; Ok(a.klass) }
+fn tp_self(c: &mut Ctx, t: Value, _a: &[Value], _b: Blk) -> RV {
     let a = cur(c, t)?;
     Ok(a.self_)
 }
-fn tp_binding(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
+fn tp_binding(c: &mut Ctx, t: Value, _a: &[Value], _b: Blk) -> RV {
     let a = cur(c, t)?;
     if a.frame == 0 || matches!(a.ev, EV_C_CALL | EV_C_RETURN) { return Ok(NIL); }
     crate::builtins::binding::binding_of_frame_at(c, a.frame)
 }
-fn tp_return_value(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
+fn tp_return_value(c: &mut Ctx, t: Value, _a: &[Value], _b: Blk) -> RV {
     let a = cur(c, t)?;
     if !matches!(a.ev, EV_RETURN | EV_C_RETURN | EV_B_RETURN) { return err(c, c.vm().c_runtime_error.get(), "not supported by this event"); }
     Ok(a.ret)
 }
-fn tp_raised_exception(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
+fn tp_raised_exception(c: &mut Ctx, t: Value, _a: &[Value], _b: Blk) -> RV {
     let a = cur(c, t)?;
     if !matches!(a.ev, EV_RAISE | EV_RESCUE) { return err(c, c.vm().c_runtime_error.get(), "not supported by this event"); }
     Ok(a.exc)
 }
-fn tp_eval_script(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
+fn tp_eval_script(c: &mut Ctx, t: Value, _a: &[Value], _b: Blk) -> RV {
     let a = cur(c, t)?;
     if a.ev != EV_SCRIPT_COMPILED { return err(c, c.vm().c_runtime_error.get(), "not supported by this event"); }
     Ok(a.script)
 }
-fn tp_parameters(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
+fn tp_parameters(c: &mut Ctx, t: Value, _a: &[Value], _b: Blk) -> RV {
     let a = cur(c, t)?;
     match a.ev {
         EV_CALL | EV_RETURN | EV_B_CALL | EV_B_RETURN if a.iseq != 0 => {
@@ -541,7 +541,7 @@ fn tp_parameters(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
         _ => err(c, c.vm().c_runtime_error.get(), "not supported by this event"),
     }
 }
-fn tp_inspect(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
+fn tp_inspect(c: &mut Ctx, t: Value, _a: &[Value], _b: Blk) -> RV {
     let s = match rt(c, t).and_then(|d| d.cur) {
         None => if rt(c, t).is_some_and(|d| d.enabled) { "#<TracePoint:enabled>".to_string() } else { "#<TracePoint:disabled>".to_string() },
         Some(a) => match a.ev {
@@ -553,7 +553,7 @@ fn tp_inspect(c: &mut Ctx, t: Value, _a: &[Value], _b: *const Block) -> RV {
     };
     Ok(c.str_new(s.as_bytes()))
 }
-fn tp_s_allow_reentry(c: &mut Ctx, _s: Value, _a: &[Value], blk: *const Block) -> RV {
+fn tp_s_allow_reentry(c: &mut Ctx, _s: Value, _a: &[Value], blk: Blk) -> RV {
     if !IN_HOOK.with(|h| h.get()) { return err(c, c.vm().c_runtime_error.get(), "No need to allow reentrance."); }
     let was = REENTRY.with(|r| r.replace(true));
     let in_hook = IN_HOOK.with(|h| h.replace(false));
@@ -562,10 +562,10 @@ fn tp_s_allow_reentry(c: &mut Ctx, _s: Value, _a: &[Value], blk: *const Block) -
     REENTRY.with(|r| r.set(was));
     r
 }
-fn tp_s_stat(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.hash_new()) }
+fn tp_s_stat(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.hash_new()) }
 
 /// Kernel#set_trace_func(proc or nil)
-fn k_set_trace_func(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn k_set_trace_func(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let l = list(c);
     let old: Vec<Value> = c.ary(l).iter().copied().filter(|&x| rt(c, x).is_some_and(|d| d.stf)).collect();
     for t in old { disable(c, t); }

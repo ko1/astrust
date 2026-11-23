@@ -9,7 +9,7 @@ use crate::symbol::intern;
 use crate::value::*;
 use crate::vm::*;
 
-fn nb() -> *const Block { std::ptr::null() }
+fn nb() -> Blk<'static> { Blk::NONE }
 fn ext_mod(c: &Ctx) -> Value {
     let cgi = const_get_at(c, c.vm().c_object.get(), intern(b"CGI")).unwrap_or(NIL);
     if cgi == NIL { NIL } else { const_get_at(c, cgi, intern(b"EscapeExt")).unwrap_or(NIL) }
@@ -162,30 +162,30 @@ fn accept_charset(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
     }
 }
 fn ascii(c: &Ctx, s: Value) -> bool { en::ascii_compat(c.str_enc(s)) }
-fn e_escape_html(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn e_escape_html(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let s = expect_str(c, a[0])?;
     if ascii(c, s) { Ok(escape_html(c, s)) } else { call_super(c, slf, "escapeHTML", &[s]) }
 }
-fn e_unescape_html(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn e_unescape_html(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let s = expect_str(c, a[0])?;
     if ascii(c, s) { Ok(unescape_html(c, s)) } else { call_super(c, slf, "unescapeHTML", &[s]) }
 }
-fn e_escape(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn e_escape(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let s = expect_str(c, a[0])?;
     if ascii(c, s) { Ok(escape(c, s, true)) } else { call_super(c, slf, "escape", &[s]) }
 }
-fn e_escape_uri(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn e_escape_uri(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let s = expect_str(c, a[0])?;
     if ascii(c, s) { Ok(escape(c, s, false)) } else { call_super(c, slf, "escapeURIComponent", &[s]) }
 }
-fn e_unescape(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn e_unescape(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let s = expect_str(c, a[0])?;
     if !ascii(c, s) { return call_super(c, slf, "unescape", a); }
     let e = accept_charset(c, slf, a)?;
     unescape(c, s, e, true)
 }
-fn e_unescape_uri(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn e_unescape_uri(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let s = expect_str(c, a[0])?;
     if !ascii(c, s) { return call_super(c, slf, "unescapeURIComponent", a); }

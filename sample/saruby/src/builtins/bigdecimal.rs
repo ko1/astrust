@@ -1560,17 +1560,17 @@ fn to_i_real(c: &mut Ctx, r: &Real, env: &Env) -> RV {
 
 // ---- methods -----------------------------------------------------------------------------------
 
-type M = fn(&mut Ctx, Value, &[Value], *const Block) -> RV;
+type M = fn(&mut Ctx, Value, &[Value], Blk) -> RV;
 
-fn m_precision(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let a = slf(c, s)?; Ok(c.int_from_i64(count_precision_and_scale(&a.r).0 as i64)) }
-fn m_scale(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let a = slf(c, s)?; Ok(c.int_from_i64(count_precision_and_scale(&a.r).1 as i64)) }
-fn m_precision_scale(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn m_precision(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let a = slf(c, s)?; Ok(c.int_from_i64(count_precision_and_scale(&a.r).0 as i64)) }
+fn m_scale(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let a = slf(c, s)?; Ok(c.int_from_i64(count_precision_and_scale(&a.r).1 as i64)) }
+fn m_precision_scale(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let a = slf(c, s)?;
     let (p, sc) = count_precision_and_scale(&a.r);
     let (p, sc) = (c.int_from_i64(p as i64), c.int_from_i64(sc as i64));
     Ok(c.ary_new_from(&[p, sc]))
 }
-fn m_n_significant_digits(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn m_n_significant_digits(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let a = slf(c, s)?.r;
     if a.is_zero() || !a.is_def() { return Ok(Value::fix(0)); }
     let mut n = a.prec;
@@ -1580,7 +1580,7 @@ fn m_n_significant_digits(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block)
     let mut ntz = 0i64; let mut x = a.frac[n - 1]; while x > 0 && x % 10 == 0 { ntz += 1; x /= 10; }
     Ok(c.int_from_i64(BASE_FIG as i64 * n as i64 - nlz - ntz))
 }
-fn m_hash(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn m_hash(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let a = slf(c, s)?.r;
     let mut h = a.sign as i64 as u64;
     if a.sign == 2 || a.sign == -2 {
@@ -1591,7 +1591,7 @@ fn m_hash(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     }
     Ok(Value::fix((h as i64) >> 1))
 }
-fn m_dump(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_dump(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     let r = slf(c, s)?.r;
     let mut out = format!("{}:", r.prec * BASE_FIG).into_bytes();
@@ -1609,7 +1609,7 @@ fn invalid_value(c: &mut Ctx, s: &[u8]) -> Esc {
     let e = make_exception(c, c.vm().c_argument_error.get(), &m);
     raise_exc(c, e)
 }
-fn s_load(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn s_load(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let b = cstr(c, a[0])?;
     let mut p = 0;
     while p < b.len() {
@@ -1658,7 +1658,7 @@ fn check_rounding_mode_option(c: &mut Ctx, opts: Value, env: &Env) -> Result<u16
     arg_err(c, format!("invalid rounding mode ({})", shown))
 }
 
-fn s_mode(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn s_mode(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let which = a[0];
     let val = a.get(1).copied().unwrap_or(NIL);
@@ -1682,7 +1682,7 @@ fn s_mode(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     }
     type_err(c, "first argument for BigDecimal.mode invalid")
 }
-fn s_limit(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn s_limit(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     let cur = get_limit(c)?;
     let ncur = c.int_from_i64(cur as i64);
@@ -1694,8 +1694,8 @@ fn s_limit(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     }
     Ok(ncur)
 }
-fn s_double_fig(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(DOUBLE_FIG as i64)) }
-fn save_and_yield(c: &mut Ctx, key: &str, b: *const Block) -> RV {
+fn s_double_fig(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(DOUBLE_FIG as i64)) }
+fn save_and_yield(c: &mut Ctx, key: &str, b: Blk) -> RV {
     let saved = tl_get(c, key, match key { K_ROUND => Value::fix(ROUND_HALF_UP as i64), _ => Value::fix(0) })?;
     let r = yield_block(c, b, &[NIL]);
     let (ek, ev) = (c.esc, c.esc_val);
@@ -1703,11 +1703,11 @@ fn save_and_yield(c: &mut Ctx, key: &str, b: *const Block) -> RV {
     if r.is_err() { c.esc = ek; c.esc_val = ev; }
     r
 }
-fn s_save_exception_mode(c: &mut Ctx, _s: Value, _a: &[Value], b: *const Block) -> RV { save_and_yield(c, K_EXC, b) }
-fn s_save_rounding_mode(c: &mut Ctx, _s: Value, _a: &[Value], b: *const Block) -> RV { save_and_yield(c, K_ROUND, b) }
-fn s_save_limit(c: &mut Ctx, _s: Value, _a: &[Value], b: *const Block) -> RV { save_and_yield(c, K_LIMIT, b) }
+fn s_save_exception_mode(c: &mut Ctx, _s: Value, _a: &[Value], b: Blk) -> RV { save_and_yield(c, K_EXC, b) }
+fn s_save_rounding_mode(c: &mut Ctx, _s: Value, _a: &[Value], b: Blk) -> RV { save_and_yield(c, K_ROUND, b) }
+fn s_save_limit(c: &mut Ctx, _s: Value, _a: &[Value], b: Blk) -> RV { save_and_yield(c, K_LIMIT, b) }
 
-fn s_interpret_loosely(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn s_interpret_loosely(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let v = expect_str(c, a[0])?;
     let mut b = c.str_bytes(v).to_vec();
     if let Some(p) = b.iter().position(|&x| x == 0) { b.truncate(p); }
@@ -1768,7 +1768,7 @@ fn convert(c: &mut Ctx, val: Value, digs: Option<usize>, raise: bool) -> RV {
     }
 }
 
-fn k_bigdecimal(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn k_bigdecimal(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (n, raise) = crate::builtins::rational::kw_exception(c, a)?;
     let a = &a[..n];
     check_argc(c, a, 1, 2)?;
@@ -1782,21 +1782,21 @@ fn k_bigdecimal(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     convert(c, a[0], digs, raise)
 }
 
-fn m_add(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_add(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     if !is_coerceable(c, a[0]) { return coerce_bin(c, s, a[0], "+"); }
     addsub(c, s, a[0], 0, 1)
 }
-fn m_sub(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_sub(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     if !is_coerceable(c, a[0]) { return coerce_bin(c, s, a[0], "-"); }
     addsub(c, s, a[0], 0, -1)
 }
-fn m_mult(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_mult(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     if !is_coerceable(c, a[0]) { return coerce_bin(c, s, a[0], "*"); }
     mult_with_coerce(c, s, a[0], 0)
 }
-fn m_add2(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { let p = check_int_precision(c, a[1])?; addsub(c, s, a[0], p, 1) }
-fn m_sub2(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { let p = check_int_precision(c, a[1])?; addsub(c, s, a[0], p, -1) }
-fn m_mult2(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { let p = check_int_precision(c, a[1])?; mult_with_coerce(c, s, a[0], p) }
+fn m_add2(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { let p = check_int_precision(c, a[1])?; addsub(c, s, a[0], p, 1) }
+fn m_sub2(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { let p = check_int_precision(c, a[1])?; addsub(c, s, a[0], p, -1) }
+fn m_mult2(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { let p = check_int_precision(c, a[1])?; mult_with_coerce(c, s, a[0], p) }
 
 /// BigDecimal_div2(self, b, n)
 fn div2_value(c: &mut Ctx, s: Value, b: Value, n: Value) -> RV {
@@ -1811,29 +1811,29 @@ fn div2_value(c: &mut Ctx, s: Value, b: Value, n: Value) -> RV {
     let av = slf(c, s)?;
     Ok(div2(c, av, b, ix, &env)?.v)
 }
-fn m_divide(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_divide(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     if !is_coerceable(c, a[0]) { return coerce_bin(c, s, a[0], "/"); }
     div2_value(c, s, a[0], Value::fix(0))
 }
-fn m_div(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_div(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     div2_value(c, s, a[0], a.get(1).copied().unwrap_or(NIL))
 }
-fn m_quo(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_quo(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let n = if a.len() > 1 { check_int_precision(c, a[1])? as i64 } else { -1 };
     if n > 0 { return div2_value(c, s, a[0], a[1]); }
-    m_divide(c, s, &a[..1], std::ptr::null())
+    m_divide(c, s, &a[..1], Blk::NONE)
 }
-fn m_mod(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_mod(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let env = env(c)?;
     match do_divmod(c, s, a[0], false, &env)? { Some((_, m)) => check_get(c, m, &env), None => coerce_bin(c, s, a[0], "%") }
 }
-fn m_remainder(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_remainder(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let env = env(c)?;
     match do_divmod(c, s, a[0], true, &env)? { Some((_, m)) => check_get(c, m, &env), None => coerce_bin(c, s, a[0], "remainder") }
 }
-fn m_divmod(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_divmod(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let env = env(c)?;
     match do_divmod(c, s, a[0], false, &env)? {
         Some((d, m)) => {
@@ -1871,31 +1871,31 @@ fn cmp(c: &mut Ctx, s: Value, r: Value, op: u8) -> RV {
         _ => Value::bool(e < 0),
     })
 }
-fn m_cmp(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { cmp(c, s, a[0], b'*') }
-fn m_eq(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { cmp(c, s, a[0], b'=') }
-fn m_lt(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { cmp(c, s, a[0], b'<') }
-fn m_le(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { cmp(c, s, a[0], b'L') }
-fn m_gt(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { cmp(c, s, a[0], b'>') }
-fn m_ge(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { cmp(c, s, a[0], b'G') }
+fn m_cmp(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { cmp(c, s, a[0], b'*') }
+fn m_eq(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { cmp(c, s, a[0], b'=') }
+fn m_lt(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { cmp(c, s, a[0], b'<') }
+fn m_le(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { cmp(c, s, a[0], b'L') }
+fn m_gt(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { cmp(c, s, a[0], b'>') }
+fn m_ge(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { cmp(c, s, a[0], b'G') }
 
-fn m_zero_p(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(slf(c, s)?.r.is_zero())) }
-fn m_nonzero_p(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(if slf(c, s)?.r.is_zero() { NIL } else { s }) }
-fn m_coerce(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_zero_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(slf(c, s)?.r.is_zero())) }
+fn m_nonzero_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(if slf(c, s)?.r.is_zero() { NIL } else { s }) }
+fn m_coerce(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let env = env(c)?;
     let p = slf(c, s)?;
     let b = get_bd_must(c, a[0], get_coerce_prec(&p.r, 0), &env)?;
     let bv = check_get_v(c, b, &env)?;
     Ok(c.ary_new_from(&[bv, s]))
 }
-fn m_uplus(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(s) }
-fn m_neg(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn m_uplus(_c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(s) }
+fn m_neg(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let env = env(c)?;
     let a = slf(c, s)?.r;
     let mut r = vp!(c, Real::zw(1, a.prec * BASE_FIG));
     vp!(c, vp_asgn(&mut r, &a, -10, &env));
     check_get(c, r, &env)
 }
-fn m_abs(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn m_abs(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let env = env(c)?;
     let a = slf(c, s)?.r;
     let mut r = vp!(c, Real::zw(1, a.prec * BASE_FIG));
@@ -1908,20 +1908,20 @@ fn fix_real(a: &Real, env: &Env) -> VR<Real> {
     vp_active_round(&mut r, a, ROUND_DOWN, 0, env)?;
     Ok(r)
 }
-fn m_fix(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn m_fix(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let env = env(c)?;
     let a = slf(c, s)?.r;
     let r = vp!(c, fix_real(&a, &env));
     check_get(c, r, &env)
 }
-fn m_frac(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn m_frac(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let env = env(c)?;
     let a = slf(c, s)?.r;
     let mut r = vp!(c, Real::zw(1, (a.prec + 1) * BASE_FIG));
     vp!(c, vp_frac(&mut r, &a, &env));
     check_get(c, r, &env)
 }
-fn m_round(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_round(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 2)?;
     let env = env(c)?;
     let mut sw = env.round;
@@ -1954,11 +1954,11 @@ fn trunc_floor_ceil(c: &mut Ctx, s: Value, a: &[Value], mode: u16) -> RV {
     if a.is_empty() { check_exception(c, &r, false, &env)?; return to_i_real(c, &r, &env); }
     check_get(c, r, &env)
 }
-fn m_truncate(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { trunc_floor_ceil(c, s, a, ROUND_DOWN) }
-fn m_floor(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { trunc_floor_ceil(c, s, a, ROUND_FLOOR) }
-fn m_ceil(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { trunc_floor_ceil(c, s, a, ROUND_CEIL) }
+fn m_truncate(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { trunc_floor_ceil(c, s, a, ROUND_DOWN) }
+fn m_floor(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { trunc_floor_ceil(c, s, a, ROUND_FLOOR) }
+fn m_ceil(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { trunc_floor_ceil(c, s, a, ROUND_CEIL) }
 
-fn m_to_s(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_to_s(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     let r = slf(c, s)?.r;
     let (mut fmt, mut f_plus, mut mc) = (false, 0, 0usize);
@@ -1982,12 +1982,12 @@ fn m_to_s(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let out = if fmt { vp_to_fstring(&r, mc, f_plus) } else { vp_to_string(&r, mc, f_plus) };
     Ok(c.str_new_enc(&out, ENC_ASCII))
 }
-fn m_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn m_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let r = slf(c, s)?.r;
     let out = vp_to_string(&r, 0, 0);
     Ok(c.str_new_enc(&out, ENC_BINARY))
 }
-fn m_split(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn m_split(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let r = slf(c, s)?.r;
     let mut m = vp_sz_mantissa(&r);
     let mut sg = 1;
@@ -1998,16 +1998,16 @@ fn m_split(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let ev = c.int_from_i64(e as i64);
     Ok(c.ary_new_from(&[Value::fix(sg), ms, Value::fix(10), ev]))
 }
-fn m_exponent(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let r = slf(c, s)?.r; Ok(c.int_from_i64(vp_exponent10(&r) as i64)) }
-fn m_sign(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(slf(c, s)?.r.sign as i64)) }
-fn m_nan_p(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(slf(c, s)?.r.is_nan())) }
-fn m_infinite_p(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn m_exponent(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let r = slf(c, s)?.r; Ok(c.int_from_i64(vp_exponent10(&r) as i64)) }
+fn m_sign(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(slf(c, s)?.r.sign as i64)) }
+fn m_nan_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(slf(c, s)?.r.is_nan())) }
+fn m_infinite_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let r = slf(c, s)?.r;
     Ok(if r.is_pos_inf() { Value::fix(1) } else if r.is_neg_inf() { Value::fix(-1) } else { NIL })
 }
-fn m_finite_p(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let r = slf(c, s)?.r; Ok(Value::bool(!r.is_nan() && !r.is_inf())) }
-fn m_to_i(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let env = env(c)?; let r = slf(c, s)?.r; to_i_real(c, &r, &env) }
-fn m_to_f(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn m_finite_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let r = slf(c, s)?.r; Ok(Value::bool(!r.is_nan() && !r.is_inf())) }
+fn m_to_i(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let env = env(c)?; let r = slf(c, s)?.r; to_i_real(c, &r, &env) }
+fn m_to_f(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let env = env(c)?;
     let r = slf(c, s)?.r;
     let neg = r.sign < 0;
@@ -2023,7 +2023,7 @@ fn m_to_f(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     if d == 0.0 { return under(c); }
     Ok(c.float_new(d))
 }
-fn m_to_r(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn m_to_r(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let env = env(c)?;
     let r = slf(c, s)?.r;
     check_exception(c, &r, true, &env)?;
@@ -2039,7 +2039,7 @@ fn m_to_r(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     let k = c.vm().m_kernel.get();
     funcall(c, k, intern(b"Rational"), &[n, d], std::ptr::null())
 }
-fn m_decimal_shift(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_decimal_shift(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let env = env(c)?;
     let av = slf(c, s)?;
     let iv = to_integer(c, a[0])?;
@@ -2071,7 +2071,7 @@ fn m_decimal_shift(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     vp!(c, add_exponent(&mut r, exponent_shift, &env));
     check_get(c, r, &env)
 }
-fn m_clone(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(s) }
+fn m_clone(_c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(s) }
 
 /// Run by the first `require "bigdecimal.so"`.
 pub fn init(c: &mut Ctx) {

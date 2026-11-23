@@ -171,19 +171,19 @@ fn mul_parts(c: &mut Ctx, a: (Value, Value), b: (Value, Value)) -> Value {
     if isneg(c, d) { let (n, d) = (ineg(c, n), ineg(c, d)); rat_raw(c, n, d) } else { rat_raw(c, n, d) }
 }
 
-fn rat_plus(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn rat_plus(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let o = a[0];
     if let Some(p) = exact_parts(c, o) { return Ok(add_parts(c, rat_parts(c, s), p, false)); }
     if is_float(o) { return Ok(c.float_new(rat_to_f(c, s) + float_val(o))); }
     coerce_bin(c, s, o, s::plus, false)
 }
-fn rat_minus(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn rat_minus(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let o = a[0];
     if let Some(p) = exact_parts(c, o) { return Ok(add_parts(c, rat_parts(c, s), p, true)); }
     if is_float(o) { return Ok(c.float_new(rat_to_f(c, s) - float_val(o))); }
     coerce_bin(c, s, o, s::minus, false)
 }
-fn rat_mul(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn rat_mul(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let o = a[0];
     if let Some(p) = exact_parts(c, o) { return Ok(mul_parts(c, rat_parts(c, s), p)); }
     if is_float(o) { return Ok(c.float_new(rat_to_f(c, s) * float_val(o))); }
@@ -197,8 +197,8 @@ pub fn rat_div_v(c: &mut Ctx, s: Value, o: Value) -> RV {
     if is_float(o) { return Ok(c.float_new(rat_to_f(c, s) / float_val(o))); }
     coerce_bin(c, s, o, s::div, false)
 }
-fn rat_div(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { rat_div_v(c, s, a[0]) }
-fn rat_fdiv(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn rat_div(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { rat_div_v(c, s, a[0]) }
+fn rat_fdiv(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let o = a[0];
     if exact_zero(c, o) { return Ok(c.float_new(rat_to_f(c, s) / 0.0)); }
     let d = rat_div_v(c, s, o)?;
@@ -206,10 +206,10 @@ fn rat_fdiv(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     if is_float(d) { return Ok(d); }
     funcall(c, d, s::to_f, &[], std::ptr::null())
 }
-fn rat_uminus(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let (n, d) = rat_parts(c, s); let n = ineg(c, n); Ok(rat_raw(c, n, d)) }
-fn rat_abs(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let (n, d) = rat_parts(c, s); Ok(if isneg(c, n) { let n = ineg(c, n); rat_raw(c, n, d) } else { s }) }
+fn rat_uminus(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let (n, d) = rat_parts(c, s); let n = ineg(c, n); Ok(rat_raw(c, n, d)) }
+fn rat_abs(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let (n, d) = rat_parts(c, s); Ok(if isneg(c, n) { let n = ineg(c, n); rat_raw(c, n, d) } else { s }) }
 
-fn rat_pow(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn rat_pow(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let mut o = a[0];
     if exact_zero(c, o) { return Ok(rat_raw(c, Value::fix(1), Value::fix(1))); }
     if is_rational(c, o) && rat_parts(c, o).1 == Value::fix(1) { o = rat_parts(c, o).0; }
@@ -258,7 +258,7 @@ pub fn rat_cmp_v(c: &mut Ctx, s: Value, o: Value) -> RV {
     }
     Ok(NIL)
 }
-fn rat_cmp(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { rat_cmp_v(c, s, a[0]) }
+fn rat_cmp(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { rat_cmp_v(c, s, a[0]) }
 fn rat_rel(c: &mut Ctx, s: Value, o: Value, op: Sym, f: fn(Ordering) -> bool) -> RV {
     if exact_parts(c, o).is_some() || is_float(o) {
         let r = rat_cmp_v(c, s, o)?;
@@ -267,11 +267,11 @@ fn rat_rel(c: &mut Ctx, s: Value, o: Value, op: Sym, f: fn(Ordering) -> bool) ->
     }
     coerce_bin(c, s, o, op, true)
 }
-fn rat_lt(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { rat_rel(c, s, a[0], s::lt, |o| o.is_lt()) }
-fn rat_le(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { rat_rel(c, s, a[0], s::le, |o| o.is_le()) }
-fn rat_gt(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { rat_rel(c, s, a[0], s::gt, |o| o.is_gt()) }
-fn rat_ge(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { rat_rel(c, s, a[0], s::ge, |o| o.is_ge()) }
-fn rat_eq(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn rat_lt(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { rat_rel(c, s, a[0], s::lt, |o| o.is_lt()) }
+fn rat_le(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { rat_rel(c, s, a[0], s::le, |o| o.is_le()) }
+fn rat_gt(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { rat_rel(c, s, a[0], s::gt, |o| o.is_gt()) }
+fn rat_ge(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { rat_rel(c, s, a[0], s::ge, |o| o.is_ge()) }
+fn rat_eq(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let o = a[0];
     let (n, d) = rat_parts(c, s);
     if is_integer(o) { return Ok(Value::bool(d == Value::fix(1) && icmp(c, n, o) == Ordering::Equal)); }
@@ -280,7 +280,7 @@ fn rat_eq(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let r = funcall(c, o, s::eq, &[s], std::ptr::null())?;
     Ok(Value::bool(r.truthy()))
 }
-fn rat_coerce(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn rat_coerce(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let o = a[0];
     if is_integer(o) { let r = rat_raw(c, o, Value::fix(1)); return Ok(c.ary_new_from(&[r, s])); }
     if is_float(o) { let f = c.float_new(rat_to_f(c, s)); return Ok(c.ary_new_from(&[o, f])); }
@@ -345,32 +345,32 @@ pub fn rat_round_nd(c: &mut Ctx, s: Value, k: i64, mode: u8, half: u8) -> Value 
     if k < 1 { let (rn, rd) = rat_parts(c, res); return r_trunc(c, rn, rd); }
     res
 }
-fn rat_floor(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { rat_round_common(c, s, a, b'f') }
-fn rat_ceil(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { rat_round_common(c, s, a, b'c') }
-fn rat_truncate(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { rat_round_common(c, s, a, b't') }
-fn rat_round(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { rat_round_common(c, s, a, b'r') }
+fn rat_floor(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { rat_round_common(c, s, a, b'f') }
+fn rat_ceil(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { rat_round_common(c, s, a, b'c') }
+fn rat_truncate(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { rat_round_common(c, s, a, b't') }
+fn rat_round(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { rat_round_common(c, s, a, b'r') }
 
 // ---- conversions ----------------------------------------------------------------------------
 
-fn rat_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn rat_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let (n, d) = rat_parts(c, s);
     let t = format!("{}/{}", istr(c, n), istr(c, d));
     Ok(c.str_new_enc(t.as_bytes(), crate::object::ENC_ASCII))
 }
-fn rat_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn rat_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let (n, d) = rat_parts(c, s);
     let t = format!("({}/{})", istr(c, n), istr(c, d));
     Ok(c.str_new_enc(t.as_bytes(), crate::object::ENC_ASCII))
 }
-fn rat_to_f_m(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.float_new(rat_to_f(c, s))) }
-fn rat_to_i(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let (n, d) = rat_parts(c, s); Ok(r_trunc(c, n, d)) }
-fn rat_to_r(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(s) }
-fn rat_num(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(rat_parts(c, s).0) }
-fn rat_den(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(rat_parts(c, s).1) }
-fn rat_zero_p(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(iszero(rat_parts(c, s).0))) }
-fn rat_pos_p(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let n = rat_parts(c, s).0; Ok(Value::bool(!isneg(c, n) && !iszero(n))) }
-fn rat_neg_p(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(isneg(c, rat_parts(c, s).0))) }
-fn rat_hash(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn rat_to_f_m(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.float_new(rat_to_f(c, s))) }
+fn rat_to_i(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let (n, d) = rat_parts(c, s); Ok(r_trunc(c, n, d)) }
+fn rat_to_r(_c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(s) }
+fn rat_num(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(rat_parts(c, s).0) }
+fn rat_den(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(rat_parts(c, s).1) }
+fn rat_zero_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(iszero(rat_parts(c, s).0))) }
+fn rat_pos_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let n = rat_parts(c, s).0; Ok(Value::bool(!isneg(c, n) && !iszero(n))) }
+fn rat_neg_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(isneg(c, rat_parts(c, s).0))) }
+fn rat_hash(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let (n, d) = rat_parts(c, s);
     let h = crate::astrust::hash_merge(crate::hash::key_hash(c, n)?, crate::hash::key_hash(c, d)? ^ 0x5241);
     Ok(Value::fix((h >> 2) as i64))
@@ -423,13 +423,13 @@ fn rationalize_with(c: &mut Ctx, x: (Value, Value), e: Value) -> RV {
     let p = if neg { ineg(c, p) } else { p };
     Ok(rat_new(c, p, q))
 }
-fn rat_rationalize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn rat_rationalize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     if a.is_empty() { return Ok(s); }
     rationalize_with(c, rat_parts(c, s), a[0])
 }
-fn flo_to_r(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { float_to_r(c, float_val(s)) }
-fn flo_rationalize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn flo_to_r(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { float_to_r(c, float_val(s)) }
+fn flo_rationalize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     let f = float_val(s);
     if !f.is_finite() { return err(c, c.vm().c_float_domain_error.get(), float_to_s(f)); }
@@ -459,12 +459,12 @@ pub fn frexp(f: f64) -> (f64, i64) {
     let m = f64::from_bits((bits & !(0x7ffu64 << 52)) | (1022u64 << 52));
     (m, exp - 1022)
 }
-fn flo_numerator(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn flo_numerator(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let f = float_val(s);
     if f.is_nan() || f.is_infinite() { return Ok(s); }
     let r = float_to_r(c, f)?; Ok(rat_parts(c, r).0)
 }
-fn flo_denominator(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn flo_denominator(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let f = float_val(s);
     if f.is_nan() { return Ok(s); }
     if f.is_infinite() { return Ok(c.float_new(1.0)); }
@@ -549,7 +549,7 @@ pub fn parse_rational(c: &mut Ctx, b: &[u8], strict: bool) -> Result<Option<Valu
     let n = c.big_to_value(num); let d = c.big_to_value(den);
     Ok(Some(rat_new(c, n, d)))
 }
-fn str_to_r(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn str_to_r(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let b = c.str_bytes(s).to_vec();
     match parse_rational(c, &b, false)? {
         None => Ok(rat_raw(c, Value::fix(0), Value::fix(1))),
@@ -648,17 +648,17 @@ pub fn kw_exception(c: &mut Ctx, a: &[Value]) -> Result<(usize, bool), Esc> {
     }
     Ok((a.len(), true))
 }
-fn k_rational(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn k_rational(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (n, raise) = kw_exception(c, a)?;
     let a = &a[..n];
     check_argc(c, a, 1, 2)?;
     convert_rational(c, a[0], a.get(1).copied(), raise)
 }
 
-fn int_to_r(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(rat_raw(c, s, Value::fix(1))) }
-fn int_rationalize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { check_argc(c, a, 0, 1)?; Ok(rat_raw(c, s, Value::fix(1))) }
-fn nil_to_r(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(rat_raw(c, Value::fix(0), Value::fix(1))) }
-fn nil_rationalize(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { check_argc(c, a, 0, 1)?; Ok(rat_raw(c, Value::fix(0), Value::fix(1))) }
+fn int_to_r(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(rat_raw(c, s, Value::fix(1))) }
+fn int_rationalize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 0, 1)?; Ok(rat_raw(c, s, Value::fix(1))) }
+fn nil_to_r(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(rat_raw(c, Value::fix(0), Value::fix(1))) }
+fn nil_rationalize(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 0, 1)?; Ok(rat_raw(c, Value::fix(0), Value::fix(1))) }
 
 /// Boot: defines Rational (returned) and the conversions on the other classes.
 pub fn init(c: &mut Ctx) -> Value {

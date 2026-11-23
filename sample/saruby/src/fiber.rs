@@ -403,13 +403,13 @@ pub fn locals(c: &mut Ctx, f: Value) -> Value {
 }
 /// The main thread's running fiber while a green thread runs (the scheduler's), else the current one.
 pub fn main_thread_fiber(c: &Ctx) -> Value { if THREAD_ROOT.get(c) == MAIN_ROOT.get(c) { CUR.get(c) } else { SCHED.get(c) } }
-fn f_resume(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { resume_kw(c, slf, UNDEF, a, false) }
-fn f_transfer(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let v = pass_args(c, slf, a); transfer_kw(c, slf, v, false) }
-fn f_s_yield(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let v = args_value(c, a); fiber_yield(c, v) }
-fn f_alive(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(!fd(c, slf).done)) }
-fn f_s_current(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(CUR.get(c)) }
+fn f_resume(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { resume_kw(c, slf, UNDEF, a, false) }
+fn f_transfer(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let v = pass_args(c, slf, a); transfer_kw(c, slf, v, false) }
+fn f_s_yield(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let v = args_value(c, a); fiber_yield(c, v) }
+fn f_alive(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(!fd(c, slf).done)) }
+fn f_s_current(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(CUR.get(c)) }
 /// Fiber#raise: resume a yielding fiber (transfer to a transferring one) raising there.
-fn f_raise(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn f_raise(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let e = crate::builtins::kernel::exception_setup(c, a)?;
     raise_in(c, slf, e)
 }
@@ -430,10 +430,10 @@ fn f_backtrace_any(c: &mut Ctx, slf: Value, a: &[Value], locs: bool) -> RV {
     let v: Vec<Value> = lines.into_iter().map(|l| c.str_new(l.as_bytes())).collect();
     Ok(c.ary_from_vec(v))
 }
-fn f_backtrace(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { f_backtrace_any(c, slf, a, false) }
-fn f_backtrace_locations(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { f_backtrace_any(c, slf, a, true) }
+fn f_backtrace(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { f_backtrace_any(c, slf, a, false) }
+fn f_backtrace_locations(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { f_backtrace_any(c, slf, a, true) }
 /// Fiber#kill: unwind the fiber (its ensure clauses run) and let it end.
-fn f_kill(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn f_kill(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let d = fdm(c, slf);
     if d.killed { return Ok(FALSE); }
     d.killed = true;
@@ -447,14 +447,14 @@ fn f_kill(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
 
 // ---- Enumerator#next / #peek ----------------------------------------------------------------
 
-fn enum_feed(c: &mut Ctx, _data: Value, args: &[Value], _b: *const Block, _o: *const Block) -> RV {
+fn enum_feed(c: &mut Ctx, _data: Value, args: &[Value], _b: Blk, _o: Blk) -> RV {
     let v = args_value(c, args);
     fiber_yield(c, v)?;
     Ok(NIL)
 }
-fn enum_body(c: &mut Ctx, e: Value, _args: &[Value], _b: *const Block, _o: *const Block) -> RV {
+fn enum_body(c: &mut Ctx, e: Value, _args: &[Value], _b: Blk, _o: Blk) -> RV {
     let blk = Block::cfunc(c, enum_feed, NIL);
-    let r = crate::builtins::enumerator::enum_each_with(c, e, &blk)?;
+    let r = crate::builtins::enumerator::enum_each_with(c, e, Blk::of(&blk))?;
     let f = CUR.get(c);
     fdm(c, f).enum_src = r;
     Ok(UNDEF)

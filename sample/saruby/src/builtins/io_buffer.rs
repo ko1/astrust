@@ -71,7 +71,7 @@ impl RData for RBuf {
 }
 fn empty() -> RBuf { RBuf { mem: Mem::None, base: 0, size: 0, flags: 0, source: NIL } }
 
-fn nb() -> *const Block { std::ptr::null() }
+fn nb() -> Blk<'static> { Blk::NONE }
 fn buf(c: &Ctx, v: Value) -> &RBuf { c.data::<RBuf>(v).expect("an IO::Buffer") }
 fn buf_mut(c: &mut Ctx, v: Value) -> &mut RBuf { c.data_mut::<RBuf>(v).expect("an IO::Buffer") }
 /// TypedData_Get_Struct: TypeError unless `v` is an IO::Buffer.
@@ -514,7 +514,7 @@ fn set_one(c: &mut Ctx, slf: Value, tv: Value, off: &mut usize, v: Value) -> Res
 
 // ---- class methods --------------------------------------------------------------------------
 
-fn s_size_of(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn s_size_of(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     if is_array(a[0]) {
         let mut total = 0usize;
         let mut i = 0;
@@ -536,7 +536,7 @@ fn for_instance(c: &mut Ctx, klass: Value, s: Value, mut flags: u32) -> RV {
     Ok(inst)
 }
 /// io_buffer_for_yield_instance with its ensure: the String is locked while the block runs.
-fn for_yield(c: &mut Ctx, klass: Value, s: Value, blk: *const Block) -> RV {
+fn for_yield(c: &mut Ctx, klass: Value, s: Value, blk: Blk) -> RV {
     let r = (|| -> RV {
         let inst = for_instance(c, klass, s, 0)?;
         if !is_frozen(s) {
@@ -552,14 +552,14 @@ fn for_yield(c: &mut Ctx, klass: Value, s: Value, blk: *const Block) -> RV {
     }
     r
 }
-fn s_for(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn s_for(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     let s = expect_str(c, a[0])?;
     if !blk.is_null() { return for_yield(c, slf, s, blk); }
     // rb_str_tmp_frozen_acquire: a frozen String as is, else a frozen copy
     let s = if is_frozen(s) { s } else { let t = c.str_copy(s); obj_set_flags(t, FL_FROZEN); t };
     for_instance(c, slf, s, READONLY)
 }
-fn s_string(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn s_string(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     let n = num2long(c, a[0])?;
     if n < 0 { return arg_err(c, "negative string size (or size too big)"); }
     let mut v = Vec::new();
@@ -589,7 +589,7 @@ fn map_target(c: &mut Ctx, io: Value) -> Result<(i64, i32), Esc> {
     let fd = funcall(c, io, fileno, &[], nb())?;
     Ok((sz, num2int(c, fd)?))
 }
-fn s_map(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn s_map(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 4)?;
     let (file_size, fd) = map_target(c, a[0])?;
     if file_size <= 0 { return arg_err(c, "Invalid negative or zero file size!"); }
@@ -627,14 +627,14 @@ fn s_map(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
 
 // ---- instance methods -----------------------------------------------------------------------
 
-fn b_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 2)?;
     let size = match a.first() { Some(&x) => extract(c, x, "Size")?, None => DEFAULT_SIZE.load(std::sync::atomic::Ordering::Relaxed) };
     let flags = if a.len() >= 2 { extract_flags(c, a[1])? } else { flags_for_size(size) };
     initialize_with(c, slf, size, flags)?;
     Ok(slf)
 }
-fn b_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check(c, a[0])?;
     let (sa, ssize) = for_reading(c, a[0])?;
     let src = rd(c, sa, ssize).to_vec();
@@ -673,11 +673,11 @@ fn to_s_string(c: &Ctx, slf: Value) -> String {
     s.push('>');
     s
 }
-fn b_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn b_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let s = to_s_string(c, slf);
     Ok(c.str_new_enc(s.as_bytes(), ENC_BINARY))
 }
-fn b_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn b_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let mut s = to_s_string(c, slf);
     let a = at(c, slf);
     let size = buf(c, slf).size;
@@ -688,7 +688,7 @@ fn b_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     }
     Ok(c.str_new_enc(s.as_bytes(), ENC_BINARY))
 }
-fn b_hexdump(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_hexdump(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 3)?;
     let (off, len) = offset_length(c, slf, a)?;
     let width = if a.len() >= 3 {
@@ -705,20 +705,20 @@ fn b_hexdump(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     hexdump_into(&mut s, width, b, off, off + len, true);
     Ok(c.str_new_enc(s.as_bytes(), ENC_BINARY))
 }
-fn b_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let n = buf(c, slf).size; Ok(u64_value(c, n as u64)) }
-fn b_valid_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(valid(c, slf))) }
-fn b_null_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(buf(c, slf).base == 0)) }
-fn b_empty_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(buf(c, slf).size == 0)) }
+fn b_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let n = buf(c, slf).size; Ok(u64_value(c, n as u64)) }
+fn b_valid_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(valid(c, slf))) }
+fn b_null_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(buf(c, slf).base == 0)) }
+fn b_empty_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(buf(c, slf).size == 0)) }
 fn flag_p(c: &Ctx, slf: Value, f: u32) -> RV { Ok(Value::bool(buf(c, slf).flags & f != 0)) }
-fn b_external_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { flag_p(c, slf, EXTERNAL) }
-fn b_internal_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { flag_p(c, slf, INTERNAL) }
-fn b_mapped_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { flag_p(c, slf, MAPPED) }
-fn b_shared_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { flag_p(c, slf, SHARED) }
-fn b_locked_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { flag_p(c, slf, LOCKED) }
-fn b_private_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { flag_p(c, slf, PRIVATE) }
-fn b_readonly_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { flag_p(c, slf, READONLY) }
+fn b_external_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { flag_p(c, slf, EXTERNAL) }
+fn b_internal_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { flag_p(c, slf, INTERNAL) }
+fn b_mapped_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { flag_p(c, slf, MAPPED) }
+fn b_shared_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { flag_p(c, slf, SHARED) }
+fn b_locked_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { flag_p(c, slf, LOCKED) }
+fn b_private_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { flag_p(c, slf, PRIVATE) }
+fn b_readonly_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { flag_p(c, slf, READONLY) }
 
-fn b_locked(c: &mut Ctx, slf: Value, _a: &[Value], blk: *const Block) -> RV {
+fn b_locked(c: &mut Ctx, slf: Value, _a: &[Value], blk: Blk) -> RV {
     if buf(c, slf).flags & LOCKED != 0 { return raise(c, &E_LOCKED, "Buffer already locked!"); }
     buf_mut(c, slf).flags |= LOCKED;
     let r = if blk.is_null() { err(c, c.vm().c_local_jump_error.get(), "no block given") } else { yield1(c, blk, slf) };
@@ -732,9 +732,9 @@ fn free_checked(c: &mut Ctx, v: Value) -> Result<(), Esc> {
     free_mem(buf_mut(c, v));
     Ok(())
 }
-fn b_free(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { free_checked(c, slf)?; Ok(slf) }
+fn b_free(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { free_checked(c, slf)?; Ok(slf) }
 
-fn b_slice(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_slice(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 2)?;
     let (off, len) = offset_length(c, slf, a)?;
     validate_range(c, slf, off, len)?;
@@ -745,7 +745,7 @@ fn b_slice(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     s.flags = flags; s.base = base.wrapping_add(off); s.size = len; s.source = if src != NIL { src } else { slf };
     Ok(inst)
 }
-fn b_transfer(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn b_transfer(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if buf(c, slf).flags & LOCKED != 0 { return raise(c, &E_LOCKED, "Cannot transfer ownership of locked buffer!"); }
     let k = real_class_of(c, slf);
     let inst = new_instance(c, k)?;
@@ -758,7 +758,7 @@ fn b_transfer(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
 }
 fn sys_fail<T>(c: &mut Ctx, e: i64, what: &str) -> Result<T, Esc> { Err(crate::builtins::exception::raise_errno_plain(c, e, what)) }
 /// rb_io_buffer_resize.
-fn b_resize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_resize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let size = extract(c, a[0], "Size")?;
     for_reading(c, slf)?;
     let (flags, base) = { let b = buf(c, slf); (b.flags, b.base) };
@@ -809,7 +809,7 @@ fn b_resize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     b.base = mem.addr(); b.mem = mem; b.size = size; b.flags = fl; b.source = NIL;
     Ok(slf)
 }
-fn b_cmp(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_cmp(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let (xa, xs) = for_reading(c, slf)?;
     check(c, a[0])?;
     let (ya, ys) = for_reading(c, a[0])?;
@@ -819,13 +819,13 @@ fn b_cmp(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(Value::fix(x.iter().zip(y).find(|(p, q)| p != q).map_or(0, |(&p, &q)| p as i64 - q as i64)))
 }
 
-fn b_get_value(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_get_value(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let off = extract(c, a[1], "Offset")?;
     for_reading(c, slf)?;
     let t = ty_of(c, a[0])?;
     value_at(c, slf, t, off)
 }
-fn b_get_values(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_get_values(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let mut off = extract(c, a[1], "Offset")?;
     for_reading(c, slf)?;
     if !is_array(a[0]) { return arg_err(c, "Argument buffer_types should be an array!"); }
@@ -868,7 +868,7 @@ fn type_arg(c: &mut Ctx, a: &[Value]) -> Result<(Sym, Option<Ty>), Esc> {
     let n = sym_bytes(id);
     Ok((id, ty_named(n)))
 }
-fn b_each(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn b_each(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"each"), a, NIL); }
     let (_, size) = for_reading(c, slf)?;
     let (id, t) = type_arg(c, a)?;
@@ -882,7 +882,7 @@ fn b_each(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     }
     Ok(slf)
 }
-fn b_values(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_values(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let (_, size) = for_reading(c, slf)?;
     let (id, t) = type_arg(c, a)?;
     let (mut off, count) = offset_count(c, t, size, a.get(1..).unwrap_or(&[]))?;
@@ -895,7 +895,7 @@ fn b_values(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     }
     Ok(out)
 }
-fn b_each_byte(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn b_each_byte(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"each_byte"), a, NIL); }
     let (_, size) = for_reading(c, slf)?;
     let u8t = Ty { k: Kind::U8, be: true };
@@ -908,13 +908,13 @@ fn b_each_byte(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     }
     Ok(slf)
 }
-fn b_set_value(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_set_value(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     for_writing(c, slf)?;
     let mut off = extract(c, a[1], "Offset")?;
     set_one(c, slf, a[0], &mut off, a[2])?;
     Ok(u64_value(c, off as u64))
 }
-fn b_set_values(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_set_values(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     for_writing(c, slf)?;
     if !is_array(a[0]) { return arg_err(c, "Argument buffer_types should be an array!"); }
     let mut off = extract(c, a[1], "Offset")?;
@@ -947,14 +947,14 @@ fn copy_in(c: &mut Ctx, slf: Value, src: &[u8], a: &[Value]) -> RV {
     if len != 0 { wr(c, at, size)?[off..off + len].copy_from_slice(&src[soff..soff + len]); }
     Ok(u64_value(c, len as u64))
 }
-fn b_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 4)?;
     check(c, a[0])?;
     let (sa, ss) = for_reading(c, a[0])?;
     let src = rd(c, sa, ss).to_vec();
     copy_in(c, slf, &src, &a[1..])
 }
-fn b_get_string(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_get_string(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 3)?;
     let (off, len) = offset_length(c, slf, a)?;
     for_reading(c, slf)?;
@@ -964,13 +964,13 @@ fn b_get_string(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let b = rd(c, at, size)[off..off + len].to_vec();
     Ok(c.str_from_vec_enc(b, enc))
 }
-fn b_set_string(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_set_string(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 4)?;
     let s = expect_str(c, a[0])?;
     let src = c.str_bytes(s).to_vec();
     copy_in(c, slf, &src, &a[1..])
 }
-fn b_clear(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_clear(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 3)?;
     let val = match a.first() { Some(&v) => num2uint(c, v)? as u8, None => 0 };
     let (off, len) = offset_length(c, slf, a.get(1..).unwrap_or(&[]))?;
@@ -1001,10 +1001,10 @@ fn new_with(c: &mut Ctx, bytes: &[u8]) -> RV {
     wr(c, at, size)?.copy_from_slice(bytes);
     Ok(inst)
 }
-fn b_and(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { binop(c, slf, a[0], |x, m| x & m) }
-fn b_or(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { binop(c, slf, a[0], |x, m| x | m) }
-fn b_xor(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { binop(c, slf, a[0], |x, m| x ^ m) }
-fn b_not(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn b_and(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { binop(c, slf, a[0], |x, m| x & m) }
+fn b_or(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { binop(c, slf, a[0], |x, m| x | m) }
+fn b_xor(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { binop(c, slf, a[0], |x, m| x ^ m) }
+fn b_not(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let (xa, xs) = for_reading(c, slf)?;
     let out: Vec<u8> = rd(c, xa, xs).iter().map(|&b| !b).collect();
     new_with(c, &out)
@@ -1024,10 +1024,10 @@ fn binop_bang(c: &mut Ctx, slf: Value, mask: Value, op: fn(u8, u8) -> u8) -> RV 
     for (i, b) in wr(c, xa, xs)?.iter_mut().enumerate() { *b = op(*b, m[i % m.len()]); }
     Ok(slf)
 }
-fn b_and_bang(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { binop_bang(c, slf, a[0], |x, m| x & m) }
-fn b_or_bang(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { binop_bang(c, slf, a[0], |x, m| x | m) }
-fn b_xor_bang(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { binop_bang(c, slf, a[0], |x, m| x ^ m) }
-fn b_not_bang(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn b_and_bang(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { binop_bang(c, slf, a[0], |x, m| x & m) }
+fn b_or_bang(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { binop_bang(c, slf, a[0], |x, m| x | m) }
+fn b_xor_bang(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { binop_bang(c, slf, a[0], |x, m| x ^ m) }
+fn b_not_bang(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let (xa, xs) = for_writing(c, slf)?;
     for b in wr(c, xa, xs)?.iter_mut() { *b = !*b; }
     Ok(slf)
@@ -1114,10 +1114,10 @@ fn io_op(c: &mut Ctx, slf: Value, a: &[Value], dir: Dir, positional: bool) -> RV
     match dir { Dir::Read => { for_writing(c, slf)?; } Dir::Write => { for_reading(c, slf)?; } }
     transfer_io(c, slf, fd, dir, from, len, off)
 }
-fn b_read(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { io_op(c, slf, a, Dir::Read, false) }
-fn b_pread(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { io_op(c, slf, a, Dir::Read, true) }
-fn b_write(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { io_op(c, slf, a, Dir::Write, false) }
-fn b_pwrite(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { io_op(c, slf, a, Dir::Write, true) }
+fn b_read(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { io_op(c, slf, a, Dir::Read, false) }
+fn b_pread(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { io_op(c, slf, a, Dir::Read, true) }
+fn b_write(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { io_op(c, slf, a, Dir::Write, false) }
+fn b_pwrite(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { io_op(c, slf, a, Dir::Write, true) }
 
 // ---- Init_IO_Buffer -------------------------------------------------------------------------
 

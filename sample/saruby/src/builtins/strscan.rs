@@ -50,7 +50,7 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     if k != NIL && crate::builtins::inherits(c, klass, k) { return Ok(Some(c.alloc(klass, Body::Data(Box::new(RScan { str: UNDEF, pos: 0, prev: 0, groups: None, re: NIL, fixed: false, base: 0 }))))); }
     Ok(None)
 }
-fn ss_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn ss_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let (pos, opts) = match a.last() { Some(&l) if is_hash(l) => (&a[..a.len() - 1], Some(l)), _ => (a, None) };
     check_argc(c, pos, 1, 2)?;
     let sv = expect_str(c, pos[0])?;
@@ -58,7 +58,7 @@ fn ss_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     *sc_mut(c, s) = RScan { str: sv, pos: 0, prev: 0, groups: None, re: NIL, fixed, base: 0 };
     Ok(NIL)
 }
-fn ss_init_copy(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn ss_init_copy(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     sc(c, a[0])?;
     let o = c.data::<RScan>(a[0]).expect("a StringScanner");
     // strscan_init_copy copies the registers but not the regexp (so names are not copied)
@@ -115,7 +115,7 @@ fn check_pat(c: &mut Ctx, v: Value) -> Result<(), Esc> {
     if crate::regexp::is_regexp(c, v) || is_string(v) || respond_to(c, v, intern(b"to_str"), true) { return Ok(()); }
     type_err(c, format!("wrong argument type {} (expected Regexp)", class_name_for_err(c, v)))
 }
-macro_rules! scan_fn { ($name:ident, $adv:expr, $str:expr, $head:expr) => { fn $name(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { check_pat(c, a[0])?; do_scan(c, s, a[0], $adv, $str, $head) } }; }
+macro_rules! scan_fn { ($name:ident, $adv:expr, $str:expr, $head:expr) => { fn $name(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { check_pat(c, a[0])?; do_scan(c, s, a[0], $adv, $str, $head) } }; }
 scan_fn!(ss_scan, true, true, true);
 scan_fn!(ss_match_p, false, false, true);
 scan_fn!(ss_skip, true, false, true);
@@ -124,9 +124,9 @@ scan_fn!(ss_scan_until, true, true, false);
 scan_fn!(ss_skip_until, true, false, false);
 scan_fn!(ss_exist_p, false, false, false);
 scan_fn!(ss_check_until, false, true, false);
-fn ss_scan_full(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { check_pat(c, a[0])?; do_scan(c, s, a[0], a[1].truthy(), a[2].truthy(), true) }
-fn ss_search_full(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { check_pat(c, a[0])?; do_scan(c, s, a[0], a[1].truthy(), a[2].truthy(), false) }
-fn ss_getch(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ss_scan_full(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { check_pat(c, a[0])?; do_scan(c, s, a[0], a[1].truthy(), a[2].truthy(), true) }
+fn ss_search_full(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { check_pat(c, a[0])?; do_scan(c, s, a[0], a[1].truthy(), a[2].truthy(), false) }
+fn ss_getch(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let s = sc(c, slf)?;
     let src = c.rstring(s.str);
     if s.pos >= src.b.len() { sc_mut(c, slf).groups = None; return Ok(NIL); }
@@ -134,53 +134,53 @@ fn ss_getch(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     set_match1(c, slf, s.pos, s.pos + l);
     Ok(sub(c, s.str, s.pos, s.pos + l))
 }
-fn ss_get_byte(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ss_get_byte(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let s = sc(c, slf)?;
     if s.pos >= c.str_len(s.str) { sc_mut(c, slf).groups = None; return Ok(NIL); }
     set_match1(c, slf, s.pos, s.pos + 1);
     Ok(sub(c, s.str, s.pos, s.pos + 1))
 }
-fn ss_scan_byte(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ss_scan_byte(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let s = sc(c, slf)?;
     let Some(&x) = c.str_bytes(s.str).get(s.pos) else { sc_mut(c, slf).groups = None; return Ok(NIL) };
     set_match1(c, slf, s.pos, s.pos + 1);
     Ok(Value::fix(x as i64))
 }
-fn ss_peek_byte(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ss_peek_byte(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let s = sc(c, slf)?;
     Ok(c.str_bytes(s.str).get(s.pos).map(|&b| Value::fix(b as i64)).unwrap_or(NIL))
 }
-fn ss_peek(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn ss_peek(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, "negative string size (or size too big)"); }
     let s = sc(c, slf)?;
     Ok(sub(c, s.str, s.pos, s.pos.saturating_add(n as usize)))
 }
-fn ss_eos(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let s = sc(c, slf)?; Ok(Value::bool(s.pos >= c.str_len(s.str))) }
-fn ss_rest_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let s = sc(c, slf)?; Ok(Value::bool(s.pos < c.str_len(s.str))) }
-fn ss_rest(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let s = sc(c, slf)?; Ok(sub(c, s.str, s.pos, usize::MAX)) }
-fn ss_rest_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let s = sc(c, slf)?; Ok(Value::fix(c.str_len(s.str).saturating_sub(s.pos) as i64)) }
-fn ss_string(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(sc(c, slf)?.str) }
-fn ss_set_string(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn ss_eos(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let s = sc(c, slf)?; Ok(Value::bool(s.pos >= c.str_len(s.str))) }
+fn ss_rest_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let s = sc(c, slf)?; Ok(Value::bool(s.pos < c.str_len(s.str))) }
+fn ss_rest(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let s = sc(c, slf)?; Ok(sub(c, s.str, s.pos, usize::MAX)) }
+fn ss_rest_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let s = sc(c, slf)?; Ok(Value::fix(c.str_len(s.str).saturating_sub(s.pos) as i64)) }
+fn ss_string(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(sc(c, slf)?.str) }
+fn ss_set_string(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let sv = expect_str(c, a[0])?;
     sc(c, slf)?;
     let s = sc_mut(c, slf);
     s.str = sv; s.pos = 0; s.groups = None;
     Ok(a[0])
 }
-fn ss_concat(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn ss_concat(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let sv = expect_str(c, a[0])?;
     let s = sc(c, slf)?;
     str_append_str(c, s.str, sv)?;
     Ok(slf)
 }
-fn ss_pos(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(sc(c, slf)?.pos as i64)) }
-fn ss_charpos(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ss_pos(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(sc(c, slf)?.pos as i64)) }
+fn ss_charpos(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let s = sc(c, slf)?;
     let src = c.rstring(s.str);
     Ok(Value::fix(enc_strlen(&src.b[..s.pos.min(src.b.len())], src.enc) as i64))
 }
-fn ss_set_pos(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn ss_set_pos(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = num_to_long(c, a[0])?;
     let s = sc(c, slf)?;
     let len = c.str_len(s.str) as i64;
@@ -189,16 +189,16 @@ fn ss_set_pos(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     sc_mut(c, slf).pos = p as usize;
     Ok(a[0])
 }
-fn ss_reset(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { sc(c, slf)?; let s = sc_mut(c, slf); s.pos = 0; s.groups = None; Ok(slf) }
-fn ss_terminate(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let s = sc(c, slf)?; let n = c.str_len(s.str); let s = sc_mut(c, slf); s.pos = n; s.groups = None; Ok(slf) }
-fn ss_unscan(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ss_reset(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { sc(c, slf)?; let s = sc_mut(c, slf); s.pos = 0; s.groups = None; Ok(slf) }
+fn ss_terminate(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let s = sc(c, slf)?; let n = c.str_len(s.str); let s = sc_mut(c, slf); s.pos = n; s.groups = None; Ok(slf) }
+fn ss_unscan(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let s = sc(c, slf)?;
     if s.ngroups.is_none() { return err(c, c.vm().c_string_scanner_error.get(), "unscan failed: previous match record not exist"); }
     let st = sc_mut(c, slf);
     st.pos = s.prev; st.groups = None;
     Ok(slf)
 }
-fn ss_bol(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ss_bol(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let s = sc(c, slf)?;
     let b = c.str_bytes(s.str);
     if s.pos > b.len() { return Ok(NIL); }
@@ -212,17 +212,17 @@ fn group(c: &mut Ctx, slf: Value, i: i64) -> Value {
     if i < 0 || i as usize >= g.len() { return NIL; }
     match g[i as usize] { Some((a, b)) => { let str = s.str; sub(c, str, a, b) } None => NIL }
 }
-fn ss_matched(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { sc(c, slf)?; Ok(group(c, slf, 0)) }
-fn ss_matched_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(sc(c, slf)?.ngroups.is_some())) }
-fn ss_matched_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ss_matched(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { sc(c, slf)?; Ok(group(c, slf, 0)) }
+fn ss_matched_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(sc(c, slf)?.ngroups.is_some())) }
+fn ss_matched_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let s = sc(c, slf)?;
     Ok(if s.ngroups.is_some() { Value::fix((s.m0.1 - s.m0.0) as i64) } else { NIL })
 }
-fn ss_pre_match(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ss_pre_match(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let s = sc(c, slf)?;
     Ok(if s.ngroups.is_some() { sub(c, s.str, 0, s.m0.0) } else { NIL })
 }
-fn ss_post_match(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ss_post_match(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let s = sc(c, slf)?;
     Ok(if s.ngroups.is_some() { sub(c, s.str, s.m0.1, usize::MAX) } else { NIL })
 }
@@ -230,7 +230,7 @@ fn name_index(c: &mut Ctx, re: Value, name: &str) -> Result<i64, Esc> {
     if let Some(r) = crate::regexp::rregexp(c, re) { if let Some(&i) = r.re.as_ref().unwrap().group_index(name).last() { return Ok(i as i64); } }
     err(c, c.vm().c_index_error.get(), format!("undefined group name reference: {}", name))
 }
-fn ss_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn ss_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let s = sc(c, slf)?;
     if s.ngroups.is_none() { return Ok(NIL); }
     let i = if a[0].is_sym() || is_string(a[0]) {
@@ -239,22 +239,22 @@ fn ss_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     } else { num_to_long(c, a[0])? };
     Ok(group(c, slf, i))
 }
-fn ss_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let s = sc(c, slf)?; Ok(match s.ngroups { Some(n) => Value::fix(n as i64), None => NIL }) }
-fn ss_captures(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ss_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let s = sc(c, slf)?; Ok(match s.ngroups { Some(n) => Value::fix(n as i64), None => NIL }) }
+fn ss_captures(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let s = sc(c, slf)?;
     let Some(n) = s.ngroups else { return Ok(NIL) };
     let out = c.ary_new();
     for i in 1..n { let v = group(c, slf, i as i64); c.ary_push(out, v); }
     Ok(out)
 }
-fn ss_values_at(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn ss_values_at(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let s = sc(c, slf)?;
     if s.ngroups.is_none() { return Ok(NIL); }
     let out = c.ary_new();
     for &x in a { let v = ss_aref(c, slf, &[x], b)?; c.ary_push(out, v); }
     Ok(out)
 }
-fn ss_named_captures(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ss_named_captures(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let s = sc(c, slf)?;
     let h = c.hash_new();
     let names = match crate::regexp::rregexp(c, s.re) { Some(r) => r.re.as_ref().unwrap().names(), None => return Ok(h) };
@@ -266,7 +266,7 @@ fn ss_named_captures(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) ->
     }
     Ok(h)
 }
-fn ss_scan_integer(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn ss_scan_integer(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     // def scan_integer(base: 10) (strscan.rb)
     let kw = kw_arg(a);
     let npos = a.len() - kw.is_some() as usize;
@@ -301,7 +301,7 @@ fn ss_scan_integer(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
     set_match1(c, slf, st, en);
     Ok(str_to_inum(c, &text, base as u32, false).unwrap_or(Value::fix(0)))
 }
-fn ss_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ss_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let Some(s) = c.data::<RScan>(slf) else { return Ok(NIL) };
     if s.str == UNDEF { return Ok(c.str_new(b"#<StringScanner (uninitialized)>")); }
     let (pos, b) = (s.pos, c.str_bytes(s.str));
@@ -313,7 +313,7 @@ fn ss_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     };
     Ok(c.str_new(text.as_bytes()))
 }
-fn ss_fixed_anchor_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(sc(c, slf)?.fixed)) }
+fn ss_fixed_anchor_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(sc(c, slf)?.fixed)) }
 
 /// Run by the first `require "strscan"`.
 pub fn init(c: &mut Ctx) {

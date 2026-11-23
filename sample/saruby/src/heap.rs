@@ -222,9 +222,9 @@ impl Ctx {
         unsafe { crate::vm::lookup_method(self, klass, mid).as_ref() }
     }
     /// Parameters of the literal block a builtin was given; None for no block or a non-iseq one.
-    pub fn block_params(&self, blk: *const Block) -> Option<&Params> {
+    pub fn block_params(&self, blk: impl crate::vm::BlkArg) -> Option<&Params> {
         // SAFETY: a builtin's `blk` is null or its caller's Block, alive for the call (as `yield_block` assumes)
-        let b = unsafe { blk.as_ref() }?;
+        let b = unsafe { blk.ptr().as_ref() }?;
         // SAFETY: iseqs are never freed
         match b.kind { BlockKind::Iseq(is) => unsafe { is.as_ref() }.map(|is| &is.params), _ => None }
     }
@@ -297,7 +297,7 @@ impl Ctx {
     }
     /// The Block a builtin received, by value (H4).
     #[inline(always)]
-    pub fn block_copy(&self, blk: *const Block) -> Option<Block> { unsafe { blk.as_ref().copied() } }   // SAFETY: H4
+    pub fn block_copy(&self, blk: impl crate::vm::BlkArg) -> Option<Block> { unsafe { blk.ptr().as_ref().copied() } }   // SAFETY: H4
     /// Change a method entry's visibility in place (Module#private on an owned method). A place
     /// write: no reference is made; `me_ref` borrows are excluded by `&mut self`.
     #[inline(always)]

@@ -175,7 +175,7 @@ pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &OpCc) -> RV
     if b.is_fixnum() && is_array(a) && obj_klass(a) == vm().c_array.get() && !redef(R_ARY_AREF) { return Ok(am::ary_entry(c, a, b.as_fix())); }
     if is_hash(a) && obj_klass(a) == vm().c_hash.get() && !redef(R_HASH_AREF) {
         c.frame_mut().pos = line;
-        return hm::h_aref(c, a, &[b], std::ptr::null());
+        return hm::h_aref(c, a, &[b], Blk::NONE);
     }
     // Integer#[] (optcarrot's bit tests): its body when the site's cache holds it, without the call
     use crate::inline_builtin::*;
@@ -189,7 +189,7 @@ pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &OpCc) -> RV
 pub fn srb_ltlt_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &OpCc) -> RV {
     if is_array(a) && obj_klass(a) == vm().c_array.get() && !redef(R_ARY_LTLT) {
         c.frame_mut().pos = line;
-        return crate::builtins::array_methods::a_ltlt(c, a, &[b], std::ptr::null());
+        return crate::builtins::array_methods::a_ltlt(c, a, &[b], Blk::NONE);
     }
     srb_binop(c, a, b, s::ltlt, line, cc)
 }
@@ -207,7 +207,7 @@ pub fn srb_aset_out(c: &mut Ctx, a: Value, b: Value, v: Value, line: Pos, cc: &O
     }
     if is_hash(a) && obj_klass(a) == vm().c_hash.get() && !redef(R_HASH_ASET) {
         c.frame_mut().pos = line;
-        return hm::h_aset(c, a, &[b, v], std::ptr::null());
+        return hm::h_aset(c, a, &[b, v], Blk::NONE);
     }
     srb_aset(c, a, b, v, line, cc)
 }

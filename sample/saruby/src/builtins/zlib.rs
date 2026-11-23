@@ -256,7 +256,7 @@ fn run_once(z: &mut ZStream, input: &[u8], ip: &mut usize, flush: i32) -> i32 {
     err
 }
 
-fn yield_buf(c: &mut Ctx, z: &mut ZStream, blk: *const Block, reuse: Value) -> Result<(), Esc> {
+fn yield_buf(c: &mut Ctx, z: &mut ZStream, blk: Blk, reuse: Value) -> Result<(), Esc> {
     let data = z.buf.take().unwrap_or_default();
     let v = detach_value(c, z, data, reuse)?;
     if z.flags & FLAG_REUSE_BUFFER != 0 { z.buf = Some(Vec::new()); }
@@ -264,7 +264,7 @@ fn yield_buf(c: &mut Ctx, z: &mut ZStream, blk: *const Block, reuse: Value) -> R
     r.map(|_| ())
 }
 /// zstream_expand_buffer (may yield a full buffer to the block).
-fn expand_buffer(c: &mut Ctx, z: &mut ZStream, blk: *const Block, reuse: Value) -> Result<(), Esc> {
+fn expand_buffer(c: &mut Ctx, z: &mut ZStream, blk: Blk, reuse: Value) -> Result<(), Esc> {
     if z.buf.is_none() { z.expand_buffer_into(INITIAL_BUFSIZE); return Ok(()); }
     if !z.gzfile() && !blk.is_null() {
         let filled = z.filled();
@@ -291,8 +291,8 @@ fn detach_value(c: &mut Ctx, z: &ZStream, data: Vec<u8>, reuse: Value) -> RV {
 
 /// Who is running: the object (for @dictionaries), its block, and a reused output String.
 #[derive(Clone, Copy)]
-struct RunCx { obj: Value, blk: *const Block, reuse: Value }
-const NOCX: RunCx = RunCx { obj: NIL, blk: std::ptr::null(), reuse: NIL };
+struct RunCx<'a> { obj: Value, blk: Blk<'a>, reuse: Value }
+const NOCX: RunCx = RunCx { obj: NIL, blk: Blk::NONE, reuse: NIL };
 
 fn zstream_run(c: &mut Ctx, z: &mut ZStream, src: &[u8], flush: i32, cx: RunCx) -> Result<(), Esc> {
     if z.flags & FLAG_IN_PROGRESS != 0 { return in_progress(c); }
@@ -401,60 +401,60 @@ fn do_checksum(c: &mut Ctx, a: &[Value], f: fn(u32, &[u8]) -> u32, init: u32) ->
     }
     Ok(uint(c, sum as u64))
 }
-fn z_adler32(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { do_checksum(c, a, adler32, 1) }
-fn z_crc32(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { do_checksum(c, a, crc32, 0) }
-fn z_adler32_combine(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn z_adler32(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { do_checksum(c, a, adler32, 1) }
+fn z_crc32(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { do_checksum(c, a, crc32, 0) }
+fn z_adler32_combine(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (x, y, l) = (to_ulong(c, a[0])?, to_ulong(c, a[1])?, num_to_long(c, a[2])?);
     Ok(uint(c, adler32_combine(x as u32, y as u32, l) as u64))
 }
-fn z_crc32_combine(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn z_crc32_combine(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (x, y, l) = (to_ulong(c, a[0])?, to_ulong(c, a[1])?, num_to_long(c, a[2])?);
     Ok(uint(c, crc32_combine(x as u32, y as u32, l) as u64))
 }
-fn z_crc_table(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn z_crc_table(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     let v: Vec<Value> = crc_table().iter().map(|&x| Value::fix(x as i64)).collect();
     Ok(c.ary_new_from(&v))
 }
-fn z_zlib_version(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.str_new_enc(b"1.3.1", ENC_BINARY)) }   // zlibVersion() of the system zlib CRuby runs with
+fn z_zlib_version(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.str_new_enc(b"1.3.1", ENC_BINARY)) }   // zlibVersion() of the system zlib CRuby runs with
 
 // ---- ZStream ------------------------------------------------------------------------------
 
-fn zs_end(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_z(c, s, true, |c, z| { zstream_end(c, z)?; Ok(NIL) }) }
-fn zs_reset(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn zs_end(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { with_z(c, s, true, |c, z| { zstream_end(c, z)?; Ok(NIL) }) }
+fn zs_reset(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     with_z(c, s, true, |_c, z| { z.reset(); Ok(NIL) })?;
     if let Some(r) = c.data_mut::<RZ>(s) { r.reuse = NIL; }
     Ok(NIL)
 }
-fn cx_of(c: &Ctx, s: Value, blk: *const Block) -> RunCx { RunCx { obj: s, blk, reuse: c.data::<RZ>(s).map(|r| r.reuse).unwrap_or(NIL) } }
-fn zs_finish(c: &mut Ctx, s: Value, _a: &[Value], blk: *const Block) -> RV {
+fn cx_of<'a>(c: &Ctx, s: Value, blk: Blk<'a>) -> RunCx<'a> { RunCx { obj: s, blk, reuse: c.data::<RZ>(s).map(|r| r.reuse).unwrap_or(NIL) } }
+fn zs_finish(c: &mut Ctx, s: Value, _a: &[Value], blk: Blk) -> RV {
     let cx = cx_of(c, s, blk);
     with_z(c, s, true, |c, z| { zstream_run(c, z, b"", Z_FINISH, cx)?; detach_buffer(c, z, cx) })
 }
-fn zs_flush_next_in(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_z(c, s, false, |c, z| { let v = z.detach_input(); Ok(bin(c, v)) }) }
-fn zs_flush_next_out(c: &mut Ctx, s: Value, _a: &[Value], blk: *const Block) -> RV {
+fn zs_flush_next_in(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { with_z(c, s, false, |c, z| { let v = z.detach_input(); Ok(bin(c, v)) }) }
+fn zs_flush_next_out(c: &mut Ctx, s: Value, _a: &[Value], blk: Blk) -> RV {
     let cx = cx_of(c, s, blk);
     with_z(c, s, false, |c, z| detach_buffer(c, z, cx))
 }
-fn zs_avail_out(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_z(c, s, false, |c, z| Ok(uint(c, z.avail_out as u64))) }
-fn zs_set_avail_out(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn zs_avail_out(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { with_z(c, s, false, |c, z| Ok(uint(c, z.avail_out as u64))) }
+fn zs_set_avail_out(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let n = num_to_long(c, a[0])?;
     with_z(c, s, true, |_c, z| { z.expand_buffer_into(n as u32 as usize); Ok(NIL) })?;
     Ok(a[0])
 }
-fn zs_avail_in(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_z(c, s, false, |_c, z| Ok(Value::fix(z.input_len() as i32 as i64))) }
-fn zs_total_in(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_z(c, s, true, |c, z| Ok(uint(c, z.total_in()))) }
-fn zs_total_out(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_z(c, s, true, |c, z| Ok(uint(c, z.total_out()))) }
-fn zs_data_type(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_z(c, s, true, |_c, z| Ok(Value::fix(z.data_type() as i64))) }
-fn zs_adler(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_z(c, s, true, |c, z| Ok(uint(c, z.adler() as u64))) }
-fn zs_finished_p(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_z(c, s, true, |_c, z| Ok(Value::bool(z.finished()))) }
-fn zs_closed_p(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_z(c, s, false, |_c, z| Ok(Value::bool(!z.ready()))) }
+fn zs_avail_in(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { with_z(c, s, false, |_c, z| Ok(Value::fix(z.input_len() as i32 as i64))) }
+fn zs_total_in(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { with_z(c, s, true, |c, z| Ok(uint(c, z.total_in()))) }
+fn zs_total_out(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { with_z(c, s, true, |c, z| Ok(uint(c, z.total_out()))) }
+fn zs_data_type(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { with_z(c, s, true, |_c, z| Ok(Value::fix(z.data_type() as i64))) }
+fn zs_adler(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { with_z(c, s, true, |c, z| Ok(uint(c, z.adler() as u64))) }
+fn zs_finished_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { with_z(c, s, true, |_c, z| Ok(Value::bool(z.finished()))) }
+fn zs_closed_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { with_z(c, s, false, |_c, z| Ok(Value::bool(!z.ready()))) }
 
 // ---- Deflate ------------------------------------------------------------------------------
 
 fn deflate_init(c: &mut Ctx, level: i32, wbits: i32, memlevel: i32, strategy: i32) -> Result<Box<Deflate>, Esc> {
     match Deflate::new(level, Z_DEFLATED, wbits, memlevel, strategy) { Ok(d) => Ok(d), Err(e) => raise_zlib_error(c, e, None) }
 }
-fn def_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn def_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 4)?;
     let level = int_arg(c, a.first(), -1)?;
     let wbits = int_arg(c, a.get(1), MAX_WBITS)?;
@@ -464,7 +464,7 @@ fn def_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     with_z(c, s, false, |_c, z| { z.eng = Eng::Def(d); z.flags |= FLAG_READY; Ok(NIL) })?;
     Ok(s)
 }
-fn def_init_copy(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn def_init_copy(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     if s == a[0] { return Ok(s); }
     let z2 = take_z(c, a[0])?;
     if !z2.ready() { put_z(c, a[0], z2); return err(c, zk().error, "stream is not ready"); }
@@ -475,7 +475,7 @@ fn def_init_copy(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
 }
 
 fn level_of(c: &mut Ctx, v: Option<&Value>) -> Result<i32, Esc> { int_arg(c, v, -1) }
-fn def_s_deflate(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
+fn def_s_deflate(c: &mut Ctx, _s: Value, a: &[Value], blk: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let lev = level_of(c, a.get(1))?;
     let src = expect_str(c, a[0])?;
@@ -501,18 +501,18 @@ fn do_deflate(c: &mut Ctx, z: &mut ZStream, src: Value, flush: i32, cx: RunCx) -
     }
     Ok(())
 }
-fn def_deflate(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> RV {
+fn def_deflate(c: &mut Ctx, s: Value, a: &[Value], blk: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let flush = int_arg(c, a.get(1), Z_NO_FLUSH)?;
     let cx = cx_of(c, s, blk);
     with_z(c, s, true, |c, z| { do_deflate(c, z, a[0], flush, cx)?; detach_buffer(c, z, cx) })
 }
-fn def_addstr(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> RV {
+fn def_addstr(c: &mut Ctx, s: Value, a: &[Value], blk: Blk) -> RV {
     let cx = cx_of(c, s, blk);
     with_z(c, s, true, |c, z| { do_deflate(c, z, a[0], Z_NO_FLUSH, cx)?; Ok(NIL) })?;
     Ok(s)
 }
-fn def_flush(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> RV {
+fn def_flush(c: &mut Ctx, s: Value, a: &[Value], blk: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     let flush = int_arg(c, a.first(), Z_SYNC_FLUSH)?;
     let cx = cx_of(c, s, blk);
@@ -521,7 +521,7 @@ fn def_flush(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> RV {
         detach_buffer(c, z, cx)
     })
 }
-fn def_params(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> RV {
+fn def_params(c: &mut Ctx, s: Value, a: &[Value], blk: Blk) -> RV {
     let level = int_arg(c, a.first(), -1)?;
     let strategy = int_arg(c, a.get(1), Z_DEFAULT_STRATEGY)?;
     let cx = cx_of(c, s, blk);
@@ -553,7 +553,7 @@ fn params_once(z: &mut ZStream, level: i32, strategy: i32) -> i32 {
     z.avail_out = n - w;
     err
 }
-fn def_set_dictionary(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn def_set_dictionary(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let src = expect_str(c, a[0])?;
     let d = c.str_bytes(src).to_vec();
     with_z(c, s, true, |c, z| {
@@ -569,14 +569,14 @@ fn def_set_dictionary(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> R
 fn inflate_init(c: &mut Ctx, wbits: i32) -> Result<Box<Inflate>, Esc> {
     match Inflate::new(wbits) { Ok(i) => Ok(i), Err(e) => raise_zlib_error(c, e, None) }
 }
-fn inf_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn inf_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     let wbits = int_arg(c, a.first(), MAX_WBITS)?;
     let i = inflate_init(c, wbits)?;
     with_z(c, s, false, |_c, z| { z.eng = Eng::Inf(i); z.flags |= FLAG_READY; Ok(NIL) })?;
     Ok(s)
 }
-fn inf_s_inflate(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
+fn inf_s_inflate(c: &mut Ctx, _s: Value, a: &[Value], blk: Blk) -> RV {
     let src = expect_str(c, a[0])?;
     let i = inflate_init(c, MAX_WBITS)?;
     let mut z = ZStream::new(true);
@@ -600,13 +600,13 @@ fn do_inflate(c: &mut Ctx, z: &mut ZStream, src: Value, cx: RunCx) -> Result<(),
     }
     Ok(())
 }
-fn inf_add_dictionary(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn inf_add_dictionary(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let dicts = ivar_get(c, s, intern(b"@dictionaries"));
     let sum = do_checksum(c, &a[..1], adler32, 1)?;
     crate::hash::hash_aset(c, dicts, sum, a[0])?;
     Ok(s)
 }
-fn inf_inflate(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> RV {
+fn inf_inflate(c: &mut Ctx, s: Value, a: &[Value], blk: Blk) -> RV {
     let (pos, opts) = match a.last() { Some(&h) if is_hash(h) && !a.is_empty() => (&a[..a.len() - 1], Some(h)), _ => (a, None) };
     let mut buffer = NIL;
     if let Some(h) = opts {
@@ -651,7 +651,7 @@ fn inf_inflate(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> RV {
         Ok(dst)
     })
 }
-fn inf_addstr(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> RV {
+fn inf_addstr(c: &mut Ctx, s: Value, a: &[Value], blk: Blk) -> RV {
     let cx = cx_of(c, s, blk);
     with_z(c, s, true, |c, z| {
         if z.finished() {
@@ -670,7 +670,7 @@ fn sync_engine(z: &mut ZStream, data: &[u8]) -> (i32, usize) {
     let err = match &mut z.eng { Eng::Inf(i) => i.sync(&mut io), _ => Z_STREAM_ERROR };
     (err, data.len() - io.ip)
 }
-fn inf_sync(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn inf_sync(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let src = expect_str(c, a[0])?;
     let bytes = c.str_bytes(src).to_vec();
     with_z(c, s, true, |c, z| {
@@ -693,10 +693,10 @@ fn inf_sync(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
         Ok(FALSE)
     })
 }
-fn inf_sync_point_p(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn inf_sync_point_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     with_z(c, s, true, |_c, z| Ok(Value::bool(matches!(&z.eng, Eng::Inf(i) if i.sync_point()))))
 }
-fn inf_set_dictionary(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn inf_set_dictionary(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     with_z(c, s, true, |c, z| { inflate_set_dictionary(c, z, a[0])?; Ok(NIL) })?;
     Ok(a[0])
 }
@@ -992,27 +992,27 @@ fn gz_close(c: &mut Ctx, ov: Value, g: &mut GzCore, closeflag: bool) -> RV {
     Ok(io)
 }
 
-fn gzf_to_io(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_gz(c, s, true, |c, _g| Ok(gz_io(c, s))) }
-fn gzf_crc(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_gz(c, s, true, |c, g| Ok(uint(c, g.crc as u64))) }
-fn gzf_mtime(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn gzf_to_io(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { with_gz(c, s, true, |c, _g| Ok(gz_io(c, s))) }
+fn gzf_crc(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { with_gz(c, s, true, |c, g| Ok(uint(c, g.crc as u64))) }
+fn gzf_mtime(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let t = with_gz(c, s, true, |_c, g| Ok(Value::fix(g.mtime as i64)))?;
     let tk = c.vm().c_time.get();
     funcall(c, tk, intern(b"at"), &[t], std::ptr::null())
 }
-fn gzf_level(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_gz(c, s, true, |_c, g| Ok(Value::fix(g.level as i64))) }
-fn gzf_os_code(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_gz(c, s, true, |_c, g| Ok(Value::fix(g.os_code as i64))) }
-fn gzf_orig_name(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn gzf_level(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { with_gz(c, s, true, |_c, g| Ok(Value::fix(g.level as i64))) }
+fn gzf_os_code(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { with_gz(c, s, true, |_c, g| Ok(Value::fix(g.os_code as i64))) }
+fn gzf_orig_name(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     with_gz(c, s, true, |_c, _g| Ok(NIL))?;
     let v = gz_vals(c, s).1;
     Ok(if v == NIL { NIL } else { c.str_dup(v) })
 }
-fn gzf_comment(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn gzf_comment(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     with_gz(c, s, true, |_c, _g| Ok(NIL))?;
     let v = gz_vals(c, s).2;
     Ok(if v == NIL { NIL } else { c.str_dup(v) })
 }
-fn gzf_lineno(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_gz(c, s, true, |_c, g| Ok(Value::fix(g.lineno as i64))) }
-fn gzf_set_lineno(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gzf_lineno(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { with_gz(c, s, true, |_c, g| Ok(Value::fix(g.lineno as i64))) }
+fn gzf_set_lineno(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let n = num_to_long(c, a[0])?;
     if n > i32::MAX as i64 || n < i32::MIN as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too {} to convert to 'int'", n, if n < 0 { "small" } else { "big" })); }
     with_gz(c, s, true, |_c, g| { g.lineno = n as i32; Ok(NIL) })?;
@@ -1023,7 +1023,7 @@ fn header_check(c: &mut Ctx, s: Value) -> Result<(), Esc> {
     if done.truthy() { return err(c, zk().gz_error, "header is already written"); }
     Ok(())
 }
-fn gzw_set_mtime(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gzw_set_mtime(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     header_check(c, s)?;
     let k = c.vm().main_obj.get();
     let v = funcall(c, k, intern(b"Integer"), &[a[0]], std::ptr::null())?;
@@ -1040,44 +1040,44 @@ fn header_str(c: &mut Ctx, s: Value, v: Value) -> RV {
     if let Some(p) = c.str_bytes(d).iter().position(|&b| b == 0) { c.rstring_mut(d).b.truncate(p); }
     Ok(d)
 }
-fn gzw_set_orig_name(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gzw_set_orig_name(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let d = header_str(c, s, a[0])?;
     if let Some(r) = c.data_mut::<RGz>(s) { r.orig_name = d; }
     Ok(a[0])
 }
-fn gzw_set_comment(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gzw_set_comment(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let d = header_str(c, s, a[0])?;
     if let Some(r) = c.data_mut::<RGz>(s) { r.comment = d; }
     Ok(a[0])
 }
-fn gzf_close(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn gzf_close(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let ready = with_gz(c, s, false, |_c, g| Ok(Value::bool(g.z.ready())))?;
     if !ready.truthy() { return Ok(NIL); }
     with_gz(c, s, false, |c, g| gz_close(c, s, g, true))
 }
-fn gzf_finish(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_gz(c, s, true, |c, g| gz_close(c, s, g, false)) }
-fn gzf_closed_p(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(gz_io(c, s) == NIL)) }
-fn gzf_eof_p(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn gzf_finish(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { with_gz(c, s, true, |c, g| gz_close(c, s, g, false)) }
+fn gzf_closed_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(gz_io(c, s) == NIL)) }
+fn gzf_eof_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let io = gz_io(c, s);
     with_gz(c, s, true, |c, g| {
         while !g.z.finished() && g.z.filled() == 0 { read_more(c, g, io, NIL)?; }
         Ok(Value::bool(g.finished()))
     })
 }
-fn gzf_sync(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_gz(c, s, true, |_c, g| Ok(Value::bool(g.z.flags & GZ_SYNC != 0))) }
-fn gzf_set_sync(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gzf_sync(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { with_gz(c, s, true, |_c, g| Ok(Value::bool(g.z.flags & GZ_SYNC != 0))) }
+fn gzf_set_sync(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let on = a[0].truthy();
     with_gz(c, s, true, |_c, g| { if on { g.z.flags |= GZ_SYNC; } else { g.z.flags &= !GZ_SYNC; } Ok(NIL) })?;
     Ok(a[0])
 }
-fn gzf_total_in(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { with_gz(c, s, true, |c, g| Ok(uint(c, g.z.total_in()))) }
-fn gzf_total_out(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn gzf_total_in(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { with_gz(c, s, true, |c, g| Ok(uint(c, g.z.total_in()))) }
+fn gzf_total_out(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     with_gz(c, s, true, |c, g| {
         let (t, f) = (g.z.total_out(), g.z.filled() as u64);
         Ok(if t >= f { uint(c, t - f) } else { Value::fix(-((f - t) as i64)) })
     })
 }
-fn gzf_path(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.data::<RGz>(s).map(|r| r.path).unwrap_or(NIL)) }
+fn gzf_path(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.data::<RGz>(s).map(|r| r.path).unwrap_or(NIL)) }
 
 /// io.path when io responds to it (IOError ignored), and the singleton GzipFile#path.
 fn init_path(c: &mut Ctx, ov: Value, io: Value) -> Result<(), Esc> {
@@ -1130,7 +1130,7 @@ fn ecopts(c: &mut Ctx, ov: Value, g: &mut GzCore, opts: Value) -> Result<(), Esc
 
 // ---- GzipWriter ---------------------------------------------------------------------------
 
-fn gzw_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gzw_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let (pos, opt) = match a.last() { Some(&h) if a.len() > 1 && is_hash(h) => (&a[..a.len() - 1], h), _ => (a, NIL) };
     check_argc(c, pos, 1, 3)?;
     let io = pos[0];
@@ -1148,7 +1148,7 @@ fn gzw_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     init_path(c, s, io)?;
     Ok(s)
 }
-fn gzw_flush(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gzw_flush(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     let flush = int_arg(c, a.first(), Z_SYNC_FLUSH)?;
     let io = gz_io(c, s);
@@ -1160,7 +1160,7 @@ fn gzw_flush(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     if respond_to(c, io, intern(b"flush"), false) { funcall(c, io, intern(b"flush"), &[], std::ptr::null())?; }
     Ok(s)
 }
-fn gzw_write(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gzw_write(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let mut total = 0usize;
     for &v in a {
         let mut str = if is_string(v) { v } else { to_s_value(c, v)? };
@@ -1181,7 +1181,7 @@ fn gzw_write(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     }
     Ok(Value::fix(total as i64))
 }
-fn gzw_putc(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gzw_putc(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let ch = if is_string(a[0]) { c.str_bytes(a[0]).first().copied().unwrap_or(0) } else { num_to_long(c, a[0])? as u8 };
     let (io, on, cm) = gz_vals(c, s);
     with_gz(c, s, true, |c, g| { gz_write(c, g, io, on, cm, &[ch])?; Ok(NIL) })?;
@@ -1190,7 +1190,7 @@ fn gzw_putc(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
 
 // ---- GzipReader ---------------------------------------------------------------------------
 
-fn gzr_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gzr_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let (pos, opt) = match a.last() { Some(&h) if a.len() > 1 && is_hash(h) => (&a[..a.len() - 1], h), _ => (a, NIL) };
     check_argc(c, pos, 1, 1)?;
     let io = pos[0];
@@ -1208,7 +1208,7 @@ fn gzr_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(s)
 }
 fn ecopts_of(c: &Ctx, s: Value) -> Value { c.data::<RGz>(s).map(|r| r.ecopts).unwrap_or(NIL) }
-fn gzr_rewind(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn gzr_rewind(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let io = gz_io(c, s);
     with_gz(c, s, true, |c, g| {
         let n = g.z.total_in() as i64 + g.z.input_len() as i64;
@@ -1218,7 +1218,7 @@ fn gzr_rewind(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
         Ok(Value::fix(0))
     })
 }
-fn gzr_unused(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn gzr_unused(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let io = gz_io(c, s);
     with_gz(c, s, false, |c, g| {
         if !g.z.ready() || !g.finished() { return Ok(NIL); }
@@ -1226,7 +1226,7 @@ fn gzr_unused(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
         match &g.z.input { None => Ok(NIL), Some(i) => { let i = i.clone(); Ok(bin(c, i)) } }
     })
 }
-fn gzr_read(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gzr_read(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 2)?;
     let vlen = a.first().copied().unwrap_or(NIL);
     let outbuf = a.get(1).copied().unwrap_or(NIL);
@@ -1238,7 +1238,7 @@ fn gzr_read(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     if len < 0 { return arg_err(c, format!("negative length {} given", len)); }
     with_gz(c, s, true, |c, g| gz_read(c, g, io, len, outbuf))
 }
-fn gzr_readpartial(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gzr_readpartial(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let outbuf = a.get(1).copied().unwrap_or(NIL);
     let io = gz_io(c, s);
@@ -1261,38 +1261,38 @@ fn gzr_readpartial(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
         shift_to(c, g, len as usize, outbuf)
     })
 }
-fn gzr_getc(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn gzr_getc(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let io = gz_io(c, s);
     let eco = ecopts_of(c, s);
     with_gz(c, s, true, |c, g| gz_getc(c, g, io, eco))
 }
-fn gzr_readchar(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+fn gzr_readchar(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     let d = gzr_getc(c, s, a, b)?;
     if d == NIL { return err(c, c.vm().c_eof_error.get(), "end of file reached"); }
     Ok(d)
 }
-fn gzr_getbyte(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn gzr_getbyte(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let io = gz_io(c, s);
     let d = with_gz(c, s, true, |c, g| gz_read(c, g, io, 1, NIL))?;
     if d == NIL { return Ok(NIL); }
     Ok(Value::fix(c.str_bytes(d)[0] as i64))
 }
-fn gzr_readbyte(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+fn gzr_readbyte(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     let d = gzr_getbyte(c, s, a, b)?;
     if d == NIL { return err(c, c.vm().c_eof_error.get(), "end of file reached"); }
     Ok(d)
 }
-fn gzr_each_char(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> RV {
+fn gzr_each_char(c: &mut Ctx, s: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, s, intern(b"each_char"), &[], NIL); }
-    loop { let ch = gzr_getc(c, s, a, std::ptr::null())?; if ch == NIL { break; } yield1(c, blk, ch)?; }
+    loop { let ch = gzr_getc(c, s, a, Blk::NONE)?; if ch == NIL { break; } yield1(c, blk, ch)?; }
     Ok(NIL)
 }
-fn gzr_each_byte(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> RV {
+fn gzr_each_byte(c: &mut Ctx, s: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, s, intern(b"each_byte"), &[], NIL); }
-    loop { let ch = gzr_getbyte(c, s, a, std::ptr::null())?; if ch == NIL { break; } yield1(c, blk, ch)?; }
+    loop { let ch = gzr_getbyte(c, s, a, Blk::NONE)?; if ch == NIL { break; } yield1(c, blk, ch)?; }
     Ok(NIL)
 }
-fn gzr_ungetc(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+fn gzr_ungetc(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     if a[0].is_fixnum() { return gzr_ungetbyte(c, s, a, b); }
     with_gz(c, s, true, |_c, _g| Ok(NIL))?;
     let mut sv = expect_str(c, a[0])?;
@@ -1310,7 +1310,7 @@ fn gzr_ungetc(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     let bytes = c.str_bytes(sv).to_vec();
     with_gz(c, s, true, |_c, g| { g.z.ungets(&bytes); g.ungetc += bytes.len() as i64; Ok(NIL) })
 }
-fn gzr_ungetbyte(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gzr_ungetbyte(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     with_gz(c, s, true, |_c, _g| Ok(NIL))?;
     let ch = if is_string(a[0]) { c.str_bytes(a[0]).first().copied().unwrap_or(0) } else { num_to_long(c, a[0])? as u8 };
     with_gz(c, s, true, |_c, g| { g.z.ungets(&[ch]); g.ungetc += 1; Ok(NIL) })
@@ -1452,34 +1452,34 @@ fn gzr_gets_impl(c: &mut Ctx, s: Value, a: &[Value]) -> RV {
 }
 /// The early return of gzreader_gets keeps gzfile_read's binary String.
 fn newstr_raw(c: &mut Ctx, b: Vec<u8>) -> RV { Ok(bin(c, b)) }
-fn gzr_gets(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gzr_gets(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let d = gzr_gets_impl(c, s, a)?;
     if d != NIL { gvar_set(c, intern(b"$_"), d)?; }
     Ok(d)
 }
-fn gzr_readline(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+fn gzr_readline(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     let d = gzr_gets(c, s, a, b)?;
     if d == NIL { return err(c, c.vm().c_eof_error.get(), "end of file reached"); }
     Ok(d)
 }
-fn gzr_each(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> RV {
+fn gzr_each(c: &mut Ctx, s: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { let m = c.cur_method_name().unwrap_or(intern(b"each")); return crate::builtins::enumerator::enum_for(c, s, m, &[], NIL); }   // RETURN_ENUMERATOR(obj, 0, 0)
     loop { let l = gzr_gets_impl(c, s, a)?; if l == NIL { break; } yield1(c, blk, l)?; }
     Ok(s)
 }
-fn gzr_readlines(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn gzr_readlines(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let dst = c.ary_new();
     loop { let l = gzr_gets_impl(c, s, a)?; if l == NIL { break; } c.ary_push(dst, l); }
     Ok(dst)
 }
-fn gzr_external_encoding(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn gzr_external_encoding(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let e = with_gz(c, s, true, |_c, g| Ok(Value::fix(g.enc as i64)))?;
     Ok(crate::builtins::encoding::encoding_value(c, e.as_fix() as u8))
 }
 
 // ---- Zlib.gzip / Zlib.gunzip --------------------------------------------------------------
 
-fn z_gzip(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn z_gzip(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (pos, opts) = match a.last() { Some(&h) if is_hash(h) => (&a[..a.len() - 1], Some(h)), _ => (a, None) };
     let (mut level, mut strategy) = (NIL, NIL);
     if let Some(h) = opts {
@@ -1517,7 +1517,7 @@ fn z_gzip(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     if g.z.ready() { let (ek, ev) = (c.esc, c.esc_val); let _ = zstream_end(c, &mut g.z); if r.is_err() { c.esc = ek; c.esc_val = ev; } }
     r
 }
-fn z_gunzip(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn z_gunzip(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let src = expect_str(c, a[0])?;
     let mut g = GzCore::new(true);
     let i = inflate_init(c, -MAX_WBITS)?;

@@ -297,8 +297,8 @@ fn t_mk(c: &mut Ctx, slf: Value, a: &[Value], utc: bool) -> RV {
     if utc { let w = args_to_w(c, &args, Some(Value::fix(0))); Ok(new_time(c, slf, w, UTC, NIL)) }
     else { let w = args_to_w(c, &args, None); Ok(new_time(c, slf, w, LOCAL, NIL)) }
 }
-fn t_local(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { t_mk(c, slf, a, false) }
-fn t_utc_s(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { t_mk(c, slf, a, true) }
+fn t_local(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { t_mk(c, slf, a, false) }
+fn t_utc_s(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { t_mk(c, slf, a, true) }
 
 enum Off { Utc, Fixed(Value) }
 /// CRuby's utc_offset_arg: None when not an offset spec.
@@ -353,7 +353,7 @@ fn zonelocal(c: &mut Ctx, t: Value, zone: Value) -> Result<(), Esc> {
     Ok(())
 }
 
-fn t_now(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn t_now(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
     let w = c.int_from_i128(d.as_secs() as i128 * NS as i128 + d.subsec_nanos() as i128);
     let t = new_time(c, slf, w, LOCAL, NIL);
@@ -369,7 +369,7 @@ fn get_scale(c: &mut Ctx, unit: Value) -> Result<i64, Esc> {
     let ins = inspect_str(c, unit)?;
     arg_err(c, format!("unexpected unit: {}", ins))
 }
-fn t_at(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn t_at(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let kw = kw_arg(a);
     let a = if kw.is_some() { &a[..a.len() - 1] } else { a };
     check_argc(c, a, 1, 3)?;
@@ -486,7 +486,7 @@ fn init_parse(c: &mut Ctx, slf: Value, sv: Value, zone: Value, prec: Option<usiz
     let a = Args { year, mon: 1, mday: 1, hour: 0, min: 0, sec: 0, sub: Value::fix(0), isdst: None };
     init_vtm(c, slf, a, zone)
 }
-fn t_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn t_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let kw = kw_arg(a);
     let a = if kw.is_some() { &a[..a.len() - 1] } else { a };
     if a.len() > 7 { return arg_err(c, format!("wrong number of arguments (given {}, expected 0..7)", a.len())); }
@@ -524,42 +524,42 @@ fn t_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 
 // ---- accessors ------------------------------------------------------------------------------
 
-macro_rules! vf { ($n:ident, |$c:ident, $v:ident| $e:expr) => { fn $n($c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let t = rt($c, slf); let $v = vtm_of($c, t); Ok($e) } }; }
+macro_rules! vf { ($n:ident, |$c:ident, $v:ident| $e:expr) => { fn $n($c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let t = rt($c, slf); let $v = vtm_of($c, t); Ok($e) } }; }
 vf!(t_year, |c, v| int_of(c, v.year)); vf!(t_month, |c, v| Value::fix(v.mon)); vf!(t_day, |c, v| Value::fix(v.mday));
 vf!(t_hour, |c, v| Value::fix(v.hour)); vf!(t_min, |c, v| Value::fix(v.min)); vf!(t_sec, |c, v| Value::fix(v.sec));
 vf!(t_wday, |c, v| Value::fix(v.wday)); vf!(t_yday, |c, v| Value::fix(v.yday)); vf!(t_isdst, |c, v| Value::bool(v.isdst));
 vf!(t_utc_offset, |c, v| v.off);
-macro_rules! wd { ($n:ident, $d:expr) => { fn $n(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let t = rt(c, slf); Ok(Value::bool(vtm_of(c, t).wday == $d)) } }; }
+macro_rules! wd { ($n:ident, $d:expr) => { fn $n(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let t = rt(c, slf); Ok(Value::bool(vtm_of(c, t).wday == $d)) } }; }
 wd!(t_sunday, 0); wd!(t_monday, 1); wd!(t_tuesday, 2); wd!(t_wednesday, 3); wd!(t_thursday, 4); wd!(t_friday, 5); wd!(t_saturday, 6);
-fn t_zone(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn t_zone(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let t = rt(c, slf);
     if t.mode == ZONE { return Ok(t.zone); }
     let v = vtm_of(c, t);
     Ok(match v.zone { Some(z) => c.str_new_enc(z.as_bytes(), crate::object::ENC_ASCII), None => NIL })
 }
-fn t_to_i(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(secs_of(c, rt(c, slf).w)) }
+fn t_to_i(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(secs_of(c, rt(c, slf).w)) }
 fn w_to_f(c: &mut Ctx, w: Value) -> f64 { if is_integer(w) { int_to_f(c, w) / 1e9 } else { let x = ex_div(c, w, ns()); ex_to_f(c, x) } }
-fn t_to_f(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let f = w_to_f(c, rt(c, slf).w); Ok(c.float_new(f)) }
-fn t_to_r(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn t_to_f(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let f = w_to_f(c, rt(c, slf).w); Ok(c.float_new(f)) }
+fn t_to_r(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let r = ex_div(c, rt(c, slf).w, ns());
     Ok(if is_integer(r) { rat_raw(c, r, Value::fix(1)) } else { r })
 }
 fn subns(c: &mut Ctx, t: RTime) -> Value { ex_mod(c, t.w, ns()) }
-fn t_usec(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let t = rt(c, slf); let n = subns(c, t); let u = ex_div(c, n, Value::fix(1000)); Ok(ex_floor(c, u)) }
-fn t_nsec(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let t = rt(c, slf); let n = subns(c, t); Ok(ex_floor(c, n)) }
-fn t_subsec(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let t = rt(c, slf); let n = subns(c, t); Ok(ex_div(c, n, ns())) }
-fn t_utc_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(rt(c, slf).mode == UTC)) }
+fn t_usec(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let t = rt(c, slf); let n = subns(c, t); let u = ex_div(c, n, Value::fix(1000)); Ok(ex_floor(c, u)) }
+fn t_nsec(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let t = rt(c, slf); let n = subns(c, t); Ok(ex_floor(c, n)) }
+fn t_subsec(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let t = rt(c, slf); let n = subns(c, t); Ok(ex_div(c, n, ns())) }
+fn t_utc_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(rt(c, slf).mode == UTC)) }
 
 // ---- zone changes ---------------------------------------------------------------------------
 
 fn modify(c: &mut Ctx, v: Value) -> Result<(), Esc> { check_frozen(c, v) }
 fn set_mode(c: &mut Ctx, t: Value, mode: u8, off: Value) { let r = rt_mut(c, t); r.mode = mode; r.off = off; }
-fn t_utc(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn t_utc(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if rt(c, slf).mode != UTC { modify(c, slf)?; }
     set_mode(c, slf, UTC, NIL); Ok(slf)
 }
-fn t_getutc(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let t = rt(c, slf); Ok(new_time(c, real_class_of(c, slf), t.w, UTC, NIL)) }
-fn t_localtime(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn t_getutc(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let t = rt(c, slf); Ok(new_time(c, real_class_of(c, slf), t.w, UTC, NIL)) }
+fn t_localtime(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     if let Some(&z) = a.first() { if z != NIL {
         if tzobj_p(c, z) { modify(c, slf)?; zone_localtime(c, slf, z)?; return Ok(slf); }
@@ -574,7 +574,7 @@ fn t_localtime(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if rt(c, slf).mode != LOCAL { modify(c, slf)?; }
     set_mode(c, slf, LOCAL, NIL); Ok(slf)
 }
-fn t_getlocal(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn t_getlocal(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let w = rt(c, slf).w;
     let n = copy_time(c, real_class_of(c, slf), slf, w)?;
     t_localtime(c, n, a, b)
@@ -589,15 +589,15 @@ fn time_add(c: &mut Ctx, slf: Value, o: Value, sign: i64) -> RV {
     let w = if sign > 0 { ex_add(c, tw, d) } else { ex_sub(c, tw, d) };
     copy_time(c, real_class_of(c, slf), slf, w)
 }
-fn t_plus(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn t_plus(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if is_time(c, a[0]) { return type_err(c, "time + time?"); }
     time_add(c, slf, a[0], 1)
 }
-fn t_minus(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn t_minus(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if is_time(c, a[0]) { let d = ex_sub(c, rt(c, slf).w, rt(c, a[0]).w); let f = w_to_f(c, d); return Ok(c.float_new(f)); }
     time_add(c, slf, a[0], -1)
 }
-fn t_cmp(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn t_cmp(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let o = a[0];
     if is_time(c, o) { return Ok(Value::fix(ex_cmp(c, rt(c, slf).w, rt(c, o).w) as i64)); }
     if o.is_heap() && respond_to(c, o, s::cmp, true) {
@@ -608,12 +608,12 @@ fn t_cmp(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     }
     Ok(NIL)
 }
-fn t_eql(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn t_eql(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if !is_time(c, a[0]) { return Ok(FALSE); }
     let (x, y) = (rt(c, slf).w, rt(c, a[0]).w);
     Ok(Value::bool(ex_cmp(c, x, y) == Ordering::Equal && is_integer(x) == is_integer(y)))
 }
-fn t_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let h = crate::hash::key_hash(c, rt(c, slf).w)?; Ok(Value::fix((h >> 2) as i64)) }
+fn t_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let h = crate::hash::key_hash(c, rt(c, slf).w)?; Ok(Value::fix((h >> 2) as i64)) }
 fn ndigits_den(c: &mut Ctx, a: &[Value]) -> RV {
     check_argc(c, a, 0, 1)?;
     match a.first() {
@@ -639,9 +639,9 @@ fn t_round_impl(c: &mut Ctx, slf: Value, a: &[Value], mode: u8) -> RV {
         _ => { let h = ex_div(c, den, Value::fix(2)); if ex_cmp(c, v, h) == Ordering::Less { time_add(c, slf, v, -1) } else { up(c) } }
     }
 }
-fn t_round(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { t_round_impl(c, slf, a, b'r') }
-fn t_floor(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { t_round_impl(c, slf, a, b'f') }
-fn t_ceil(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { t_round_impl(c, slf, a, b'c') }
+fn t_round(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { t_round_impl(c, slf, a, b'r') }
+fn t_floor(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { t_round_impl(c, slf, a, b'f') }
+fn t_ceil(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { t_round_impl(c, slf, a, b'c') }
 
 // ---- formatting -----------------------------------------------------------------------------
 
@@ -846,7 +846,7 @@ fn strf(c: &mut Ctx, slf: Value, fmt: &[u8]) -> Result<String, Esc> {
     strftime_into(c, &mut out, &t, &v, fmt)?;
     Ok(out)
 }
-fn t_strftime(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn t_strftime(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let f = expect_str(c, a[0])?;
     let fb = c.str_bytes(f).to_vec();
     let enc = c.str_enc(f);
@@ -854,12 +854,12 @@ fn t_strftime(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(c.str_new_enc(s2.as_bytes(), if enc == crate::object::ENC_ASCII && !s2.is_ascii() { crate::object::ENC_UTF8 } else { enc }))
 }
 fn ascii(c: &mut Ctx, s2: String) -> Value { c.str_new_enc(s2.as_bytes(), crate::object::ENC_ASCII) }
-fn t_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn t_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let f: &[u8] = if rt(c, slf).mode == UTC { b"%Y-%m-%d %H:%M:%S UTC" } else { b"%Y-%m-%d %H:%M:%S %z" };
     let s2 = strf(c, slf, f)?; Ok(ascii(c, s2))
 }
-fn t_ctime(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let s2 = strf(c, slf, b"%a %b %e %H:%M:%S %Y")?; Ok(ascii(c, s2)) }
-fn t_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn t_ctime(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let s2 = strf(c, slf, b"%a %b %e %H:%M:%S %Y")?; Ok(ascii(c, s2)) }
+fn t_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let mut s2 = strf(c, slf, b"%Y-%m-%d %H:%M:%S")?;
     let t = rt(c, slf);
     let sub = subns(c, t);
@@ -876,13 +876,13 @@ fn t_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     }
     Ok(ascii(c, s2))
 }
-fn t_to_a(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn t_to_a(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let v = vtm_of(c, rt(c, slf));
-    let z = t_zone(c, slf, &[], std::ptr::null())?;
+    let z = t_zone(c, slf, &[], Blk::NONE)?;
     let y = int_of(c, v.year);
     Ok(c.ary_from_vec(vec![Value::fix(v.sec), Value::fix(v.min), Value::fix(v.hour), Value::fix(v.mday), Value::fix(v.mon), y, Value::fix(v.wday), Value::fix(v.yday), Value::bool(v.isdst), z]))
 }
-fn t_deconstruct_keys(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn t_deconstruct_keys(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let v = vtm_of(c, rt(c, slf));
     let keys = ["year", "month", "day", "yday", "wday", "hour", "min", "sec", "subsec", "dst", "zone"];
     let h = c.hash_new();
@@ -893,14 +893,14 @@ fn t_deconstruct_keys(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) ->
         if want != NIL && !c.ary(want).contains(&ks) { continue; }
         let val = match k {
             "year" => int_of(c, v.year), "month" => Value::fix(v.mon), "day" => Value::fix(v.mday), "yday" => Value::fix(v.yday), "wday" => Value::fix(v.wday),
-            "hour" => Value::fix(v.hour), "min" => Value::fix(v.min), "sec" => Value::fix(v.sec), "subsec" => t_subsec(c, slf, &[], std::ptr::null())?,
-            "dst" => Value::bool(v.isdst), _ => t_zone(c, slf, &[], std::ptr::null())?,
+            "hour" => Value::fix(v.hour), "min" => Value::fix(v.min), "sec" => Value::fix(v.sec), "subsec" => t_subsec(c, slf, &[], Blk::NONE)?,
+            "dst" => Value::bool(v.isdst), _ => t_zone(c, slf, &[], Blk::NONE)?,
         };
         crate::hash::hash_set(c, h, ks, val)?;
     }
     Ok(h)
 }
-fn t_xmlschema(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn t_xmlschema(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     let fd = if a.is_empty() { 0 } else { crate::builtins::numeric_methods::num_to_long(c, a[0])?.max(0) as usize };
     let t = rt(c, slf); let v = vtm_of(c, t);
@@ -923,7 +923,7 @@ fn t_xmlschema(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     }
     Ok(ascii(c, s2))
 }
-fn t_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn t_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if slf == a[0] { return Ok(slf); }
     modify(c, slf)?;
     let Some(&o) = c.data::<RTime>(a[0]) else { return type_err(c, "initialize_copy should take same class object") };

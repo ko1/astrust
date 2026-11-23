@@ -17,7 +17,7 @@ use crate::vm::*;
 
 macro_rules! cfn { ($(#[$m:meta])* $name:ident, |$c:ident, $s:ident, $a:ident, $b:ident| $body:expr) => {
     $(#[$m])* #[allow(unused_variables)]
-    pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], $b: *const Block) -> RV { $body }
+    pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], $b: Blk) -> RV { $body }
 }; }
 
 /// Character index → byte offset (None if out of range); `i` may equal the length.
@@ -796,7 +796,7 @@ fn expand_repl(c: &Ctx, rep: &[u8], m_bytes: &[u8], groups: &[Option<(usize, usi
 }
 
 /// sub/gsub core: returns (new bytes, changed)
-fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, global: bool, bang: bool) -> Result<Option<(Vec<u8>, u8)>, Esc> {
+fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk, global: bool, bang: bool) -> Result<Option<(Vec<u8>, u8)>, Esc> {
     if a.is_empty() || a.len() > 2 { return argc_err(c, a.len(), 1, 2); }
     let pat = a[0];
     // sub works on a copy taken before its arguments are converted (CRuby dups first)
@@ -1131,9 +1131,9 @@ fn unicode_check(c: &mut Ctx, slf: Value) -> Result<(), Esc> {
     Ok(())
 }
 /// String#scrub with `rep` (nil: the default replacement); None if valid.
-pub fn scrub_bytes(c: &mut Ctx, s: Value, rep: Value) -> Result<Option<Vec<u8>>, Esc> { scrub_impl(c, s, &[rep], std::ptr::null()) }
+pub fn scrub_bytes(c: &mut Ctx, s: Value, rep: Value) -> Result<Option<Vec<u8>>, Esc> { scrub_impl(c, s, &[rep], Blk::NONE) }
 /// scrub core: None if the string is valid.
-fn scrub_impl(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> Result<Option<Vec<u8>>, Esc> {
+fn scrub_impl(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> Result<Option<Vec<u8>>, Esc> {
     use crate::builtins::encoding as en;
     let enc = c.str_enc(slf);
     check_argc(c, a, 0, 1)?;
@@ -1253,7 +1253,7 @@ cfn!(s_byteslice, |c, slf, a, b_| {
     Ok(c.str_sub(slf, st as usize..e as usize))
 });
 cfn!(s_unpack, |c, slf, a, b_| crate::builtins::pack::unpack(c, slf, a, b_, false));
-cfn!(s_unpack1, |c, slf, a, b_| crate::builtins::pack::unpack(c, slf, a, std::ptr::null(), true));
+cfn!(s_unpack1, |c, slf, a, b_| crate::builtins::pack::unpack(c, slf, a, Blk::NONE, true));
 cfn!(s_crypt, |c, slf, a, b_| Ok(c.str_new_like(slf, c.str_bytes(slf).to_vec())));
 /// Extended grapheme clusters (approximation of UAX #29: CRLF, combining marks, ZWJ
 /// sequences, variation selectors, emoji modifiers, regional-indicator pairs, Hangul).
@@ -1607,12 +1607,12 @@ fn wide_args(c: &mut Ctx, slf: Value, a: &[Value], chomp: bool) -> Result<Vec<Va
     Ok(out)
 }
 /// `f` on the UTF-8 form; `bang`: `f` changes it in place and self takes the result.
-fn via_u8(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, f: CFunc, bang: bool, chomp: bool) -> RV {
+fn via_u8(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk, f: CFunc, bang: bool, chomp: bool) -> RV {
     let enc = c.str_enc(slf);
     let a8 = wide_args(c, slf, a, chomp)?;
     if bang { check_frozen(c, slf)?; }
     let s8 = to_u8(c, slf);
-    let r = f(c, s8, &a8, std::ptr::null())?;
+    let r = f(c, s8, &a8, Blk::NONE)?;
     if bang {
         if r == NIL { return Ok(NIL); }
         let w = regexp::utf8_to_wide(c.str_bytes(s8), enc);
@@ -1628,7 +1628,7 @@ fn via_u8(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, f: CFunc, ban
     Ok(r)
 }
 macro_rules! wide_m { ($w:ident, $f:ident, $bang:expr, $chomp:expr) => {
-    fn $w(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { if wide(c, slf) { via_u8(c, slf, a, b, $f, $bang, $chomp) } else { $f(c, slf, a, b) } }
+    fn $w(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { if wide(c, slf) { via_u8(c, slf, a, b, $f, $bang, $chomp) } else { $f(c, slf, a, b) } }
 }; }
 wide_m!(w_chomp, s_chomp, false, true); wide_m!(w_chomp_b, s_chomp_b, true, true);
 wide_m!(w_chop, s_chop, false, false); wide_m!(w_chop_b, s_chop_b, true, false);
@@ -1674,7 +1674,7 @@ fn broken_strip_err(c: &mut Ctx, slf: Value, l: bool, r: bool) -> Result<Option<
     Ok(if l && en::min_len(enc) > 1 { Some(i) } else { None })
 }
 macro_rules! wide_strip { ($w:ident, $f:ident, $bang:expr, $l:expr, $r:expr) => {
-    fn $w(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+    fn $w(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
         if wide(c, slf) { return via_u8(c, slf, a, b, $f, $bang, false); }
         if let (Some(i), true) = (broken_strip(c, slf, $l, $r)?, a.is_empty()) {
             if !$bang { let n = c.str_len(slf); return Ok(c.str_sub(slf, i..n)); }
@@ -1688,7 +1688,7 @@ wide_strip!(w_strip, s_strip, false, true, true); wide_strip!(w_strip_b, s_strip
 wide_strip!(w_lstrip, s_lstrip, false, true, false); wide_strip!(w_lstrip_b, s_lstrip_b, true, true, false);
 wide_strip!(w_rstrip, s_rstrip, false, false, true); wide_strip!(w_rstrip_b, s_rstrip_b, true, false, true);
 // as rb_str_justify: the default pad is one byte " " even in a wide string
-fn w_justify(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block, f: CFunc, mode: u8) -> RV {
+fn w_justify(c: &mut Ctx, slf: Value, a: &[Value], b: Blk, f: CFunc, mode: u8) -> RV {
     if !wide(c, slf) { return f(c, slf, a, b); }
     if a.len() != 1 { return via_u8(c, slf, a, b, f, false, false); }
     let w = num_to_long(c, a[0])?;
@@ -1698,22 +1698,22 @@ fn w_justify(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block, f: CFunc, mo
     let mut out = vec![b' '; l]; out.extend_from_slice(c.str_bytes(slf)); out.extend(std::iter::repeat(b' ').take(r));
     Ok(c.str_new_like(slf, out))
 }
-fn w_ljust(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { w_justify(c, slf, a, b, s_ljust, b'l') }
-fn w_rjust(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { w_justify(c, slf, a, b, s_rjust, b'r') }
-fn w_center(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { w_justify(c, slf, a, b, s_center, b'c') }
+fn w_ljust(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { w_justify(c, slf, a, b, s_ljust, b'l') }
+fn w_rjust(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { w_justify(c, slf, a, b, s_rjust, b'r') }
+fn w_center(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { w_justify(c, slf, a, b, s_center, b'c') }
 // lines(chomp: true) of a wide string drops the separator only (not a "\r" before "\n"), as CRuby
-fn w_lines(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn w_lines(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if !wide(c, slf) { return s_lines(c, slf, a, blk); }
     let kw = kw_arg(a);
     let chomp = match kw { Some(h) => crate::hash::hash_get_opt(c, h, sym_value("chomp"))?.is_some_and(|v| v.truthy()), None => false };
     let pos: Vec<Value> = if kw.is_some() { a[..a.len() - 1].to_vec() } else { a.to_vec() };
     let sep = match pos.first() { Some(&x) if is_string(x) => Some(c.str_bytes(x).to_vec()), Some(_) => None, None => crate::builtins::encoding::code_to_bytes(c.str_enc(slf), 10) };
     let r = match sep { Some(sb) if chomp && !sb.is_empty() => {
-        let r = via_u8(c, slf, &pos, std::ptr::null(), s_lines, false, false)?;
+        let r = via_u8(c, slf, &pos, Blk::NONE, s_lines, false, false)?;
         let n = c.ary_len(r);
         for i in 0..n { let x = c.ary_get(r, i); if c.str_bytes(x).ends_with(&sb) { let l = c.str_bytes(x).len() - sb.len(); c.str_modify(x)?.b.truncate(l); } }
         r
-    } _ => via_u8(c, slf, a, std::ptr::null(), s_lines, false, false)? };
+    } _ => via_u8(c, slf, a, Blk::NONE, s_lines, false, false)? };
     if blk.is_null() { return Ok(r); }
     let n = c.ary_len(r);
     for i in 0..n { let x = c.ary_get(r, i); yield1(c, blk, x)?; }
@@ -1723,13 +1723,13 @@ wide_m!(w_upcase, s_upcase, false, false); wide_m!(w_upcase_b, s_upcase_b, true,
 wide_m!(w_downcase, s_downcase, false, false); wide_m!(w_downcase_b, s_downcase_b, true, false);
 wide_m!(w_swapcase, s_swapcase, false, false); wide_m!(w_swapcase_b, s_swapcase_b, true, false);
 wide_m!(w_capitalize, s_capitalize, false, false); wide_m!(w_capitalize_b, s_capitalize_b, true, false);
-fn w_each_line(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn w_each_line(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if b.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"each_line"), a, NIL); }
     w_lines(c, slf, a, b)
 }
 // a String separator only (a Regexp already matches the UTF-8 form)
-fn w_partition(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { if is_string(a[0]) && wide(c, slf) { via_u8(c, slf, a, b, s_partition, false, false) } else { s_partition(c, slf, a, b) } }
-fn w_rpartition(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { if is_string(a[0]) && wide(c, slf) { via_u8(c, slf, a, b, s_rpartition, false, false) } else { s_rpartition(c, slf, a, b) } }
+fn w_partition(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { if is_string(a[0]) && wide(c, slf) { via_u8(c, slf, a, b, s_partition, false, false) } else { s_partition(c, slf, a, b) } }
+fn w_rpartition(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { if is_string(a[0]) && wide(c, slf) { via_u8(c, slf, a, b, s_rpartition, false, false) } else { s_rpartition(c, slf, a, b) } }
 
 pub fn init(c: &mut Ctx, k: Value) {
     let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, k, n, f, a);

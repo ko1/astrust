@@ -178,7 +178,7 @@ fn int_cmp_val(c: &mut Ctx, a: Value, b: Value) -> Result<Option<std::cmp::Order
 
 macro_rules! cfn { ($(#[$m:meta])* $name:ident, |$c:ident, $s:ident, $a:ident| $body:expr) => {
     $(#[$m])* #[allow(unused_variables)]
-    pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], _b: *const Block) -> RV { $body }
+    pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], _b: Blk) -> RV { $body }
 }; }
 
 cfn!(int_plus, |c, s, a| int_arith(c, s, a[0], Op::Add));
@@ -380,7 +380,7 @@ pub fn int_upto_loop(c: &mut Ctx, s: Value, e: Value, dir: i64, y: &mut impl FnM
     while if dir > 0 { i <= e } else { i >= e } { if let Err(e) = y(c, &[Value::fix(i)]) { return Some(Err(e)); } i += dir; }
     Some(Ok(s))
 }
-fn int_times(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
+fn int_times(c: &mut Ctx, s: Value, _a: &[Value], b: Blk) -> RV {
     if b.is_null() { return crate::builtins::enumerator::enum_for(c, s, s::times, &[], NIL); }
     if let Some(r) = int_times_loop(c, s, &mut |c, a| yield1(c, b, a[0])) { return r; }
     if crate::rt::redef(crate::rt::R_INT_LT | crate::rt::R_INT_SUCC) {
@@ -397,7 +397,7 @@ fn int_times(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
     }
     Ok(s)
 }
-fn int_upto(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+fn int_upto(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     if b.is_null() { return crate::builtins::enumerator::enum_for(c, s, s::upto, a, NIL); }
     if let Some(r) = int_upto_loop(c, s, a[0], 1, &mut |c, a| yield1(c, b, a[0])) { return r; }
     if is_float(a[0]) {
@@ -413,7 +413,7 @@ fn int_upto(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     }
     Ok(s)
 }
-fn int_downto(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+fn int_downto(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     if b.is_null() { return crate::builtins::enumerator::enum_for(c, s, s::downto, a, NIL); }
     if let Some(r) = int_upto_loop(c, s, a[0], -1, &mut |c, a| yield1(c, b, a[0])) { return r; }
     let mut i = s;
@@ -432,7 +432,7 @@ cfn!(#[inline] int_odd, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() 
 cfn!(int_positive, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() > 0 } else { !c.big(s).neg })));
 cfn!(int_negative, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() < 0 } else { c.big(s).neg })));
 cfn!(int_divmod, |c, s, a| {
-    if is_float(a[0]) { let f = c.float_new(c.num_to_f64(s).unwrap()); return flo_divmod(c, f, a, std::ptr::null()); }
+    if is_float(a[0]) { let f = c.float_new(c.num_to_f64(s).unwrap()); return flo_divmod(c, f, a, Blk::NONE); }
     if !is_integer(a[0]) { return coerce_bin(c, s, a[0], s::divmod, false); }
     let q = int_arith(c, s, a[0], Op::Div)?; let m = int_arith(c, s, a[0], Op::Mod)?;
     Ok(c.ary_new_from(&[q, m]))
@@ -457,7 +457,7 @@ cfn!(int_fdiv, |c, s, a| {
 });
 cfn!(int_remainder, |c, s, a| {
     if is_float(a[0]) { if float_val(a[0]) == 0.0 { return err(c, c.vm().c_zero_div_error.get(), "divided by 0"); } return Ok(c.float_new(c.num_to_f64(s).unwrap() % float_val(a[0]))); }
-    if !is_integer(a[0]) { return num_remainder(c, s, a, std::ptr::null()); }
+    if !is_integer(a[0]) { return num_remainder(c, s, a, Blk::NONE); }
     let y = c.to_big(a[0]);
     if y.is_zero() { return err(c, c.vm().c_zero_div_error.get(), "divided by 0"); }
     Ok(c.big_to_value(c.to_big(s).divrem_trunc(&y).1))
@@ -556,8 +556,8 @@ cfn!(int_coerce, |c, s, a| {
 });
 cfn!(int_gcdlcm, |c, s, a| {
     if !is_integer(a[0]) { return type_err(c, "not an integer"); }
-    let g = int_gcd(c, s, a, std::ptr::null())?;
-    let l = int_lcm(c, s, a, std::ptr::null())?;
+    let g = int_gcd(c, s, a, Blk::NONE)?;
+    let l = int_lcm(c, s, a, Blk::NONE)?;
     Ok(c.ary_new_from(&[g, l]))
 });
 cfn!(int_allbits, |c, s, a| { let m = to_integer(c, a[0])?; let r = int_bitop(c, s, m, b'&')?; Ok(Value::bool(c.to_big(r) == c.to_big(m))) });
@@ -649,7 +649,7 @@ cfn!(flo_finite, |c, s, _a| Ok(Value::bool(float_val(s).is_finite())));
 cfn!(flo_zero, |c, s, _a| Ok(Value::bool(float_val(s) == 0.0)));
 cfn!(flo_positive, |c, s, _a| Ok(Value::bool(float_val(s) > 0.0)));
 cfn!(flo_negative, |c, s, _a| Ok(Value::bool(float_val(s) < 0.0)));
-fn flo_divmod(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn flo_divmod(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let x = float_val(s);
     let Some(y) = c.num_to_f64(a[0]) else { return coerce_bin(c, s, a[0], s::divmod, false) };
     let (q, m) = flodivmod(c, x, y)?;
@@ -824,7 +824,7 @@ pub fn num_step_loop(c: &mut Ctx, s: Value, lim: Value, st: Value, y: &mut impl 
     while n > 0 { if let Err(e) = y(c, &[Value::fix(i)]) { return Some(Err(e)); } i += d; n -= 1; }
     Some(Ok(s))
 }
-fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     let kw = kw_arg(a);
     let pos = if kw.is_some() { &a[..a.len() - 1] } else { a };
     if pos.len() > 2 { return arg_err(c, format!("wrong number of arguments (given {}, expected 0..2)", pos.len())); }
@@ -884,7 +884,7 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     }
     num_step_generic(c, s, s, lim, st, b)
 }
-fn num_step_generic(c: &mut Ctx, s: Value, from: Value, lim: Value, st: Value, b: *const Block) -> RV {
+fn num_step_generic(c: &mut Ctx, s: Value, from: Value, lim: Value, st: Value, b: Blk) -> RV {
     let neg = lim != NIL && funcall(c, st, s::lt, &[Value::fix(0)], std::ptr::null())?.truthy();
     let mut i = from;
     loop {
@@ -915,10 +915,10 @@ cfn!(num_coerce, |c, s, a| {
     let (x, y) = (c.float_new(x), c.float_new(y));
     Ok(c.ary_new_from(&[x, y]))
 });
-cfn!(num_floor, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_floor(c, f, a, std::ptr::null()) });
-cfn!(num_ceil, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_ceil(c, f, a, std::ptr::null()) });
-cfn!(num_round, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_round(c, f, a, std::ptr::null()) });
-cfn!(num_truncate, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_truncate(c, f, a, std::ptr::null()) });
+cfn!(num_floor, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_floor(c, f, a, Blk::NONE) });
+cfn!(num_ceil, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_ceil(c, f, a, Blk::NONE) });
+cfn!(num_round, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_round(c, f, a, Blk::NONE) });
+cfn!(num_truncate, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_truncate(c, f, a, Blk::NONE) });
 cfn!(num_div, |c, s, a| {
     let q = funcall(c, s, s::div, &[a[0]], std::ptr::null())?;
     funcall(c, q, intern(b"floor"), &[], std::ptr::null())

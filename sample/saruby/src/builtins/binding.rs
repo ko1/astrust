@@ -74,12 +74,12 @@ pub fn init_toplevel(c: &mut Ctx) {
 }
 
 /// A frame's Binding and its block, which the caller promotes (`with_block`) once the frame borrow ends.
-fn frame_binding(c: &Ctx, f: &Frame) -> (RBinding, *const Block) {
+fn frame_binding(c: &Ctx, f: &Frame) -> (RBinding, *const Block) {   // blk-audit: the frame's block (H5)
     (RBinding { self_: f.fp[0].get(), env: f.fp[1].get(), names: vec![iseq_names(c, f.iseq(), true)], cref: f.cref(), me: f.me, file: frame_file(f), line: f.line(), extra: NIL, dc: f.defined_class(),
                svar: crate::builtins::svar::frame_home_id(c, f), ret: f.id, blk: NIL }, f.blk)
 }
 /// The Binding with its frame's block as a Proc: eval'd `yield` after the frame returned runs the copy.
-fn with_block(c: &mut Ctx, (mut b, blk): (RBinding, *const Block)) -> Result<RBinding, Esc> {
+fn with_block(c: &mut Ctx, (mut b, blk): (RBinding, *const Block)) -> Result<RBinding, Esc> {   // blk-audit: promoted before the frame can return
     b.blk = block_to_proc(c, blk)?;
     Ok(b)
 }
@@ -211,7 +211,7 @@ fn find_var(b: &RBinding, n: Sym) -> Option<(u32, u32)> {
     for (nm, h, i) in b.names.iter().flatten() { if *nm == n { return Some((*h, *i)); } }
     None
 }
-fn b_lvar_get(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_lvar_get(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let n = crate::builtins::object::to_sym_arg(c, a[0])?;
     let b = rbind(c, s);
     let (var, env, extra) = (find_var(b, n), b.env, b.extra);
@@ -225,7 +225,7 @@ fn b_lvar_get(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
         }
     }
 }
-fn b_lvar_set(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_lvar_set(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let n = crate::builtins::object::to_sym_arg(c, a[0])?;
     let b = rbind(c, s);
     let (var, env, extra) = (find_var(b, n), b.env, b.extra);
@@ -238,20 +238,20 @@ fn b_lvar_set(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     }
     Ok(a[1])
 }
-fn b_lvar_defined(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_lvar_defined(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let n = crate::builtins::object::to_sym_arg(c, a[0])?;
     Ok(Value::bool(find_var(rbind(c, s), n).is_some()))
 }
-fn b_receiver(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(rbind(c, s).self_) }
-fn b_eval(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_receiver(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(rbind(c, s).self_) }
+fn b_eval(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let src = expect_str(c, a[0])?;
     let bytes = c.str_bytes(src).to_vec();
     let f = eval_file(c);
     let enc = c.str_enc(src);
     eval_in_binding(c, s, &bytes, enc, f, 1)
 }
-fn b_local_variables(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { local_variables(c, s) }
-fn b_source_location(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn b_local_variables(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { local_variables(c, s) }
+fn b_source_location(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let (file, line) = { let b = rbind(c, s); (b.file, b.line) };
     let f = c.str_new(file.as_bytes());
     Ok(c.ary_new_from(&[f, Value::fix(line as i64)]))

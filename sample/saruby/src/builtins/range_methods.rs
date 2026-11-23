@@ -14,7 +14,7 @@ use crate::vm::*;
 
 macro_rules! cfn { ($name:ident, |$c:ident, $s:ident, $a:ident, $b:ident| $body:expr) => {
     #[allow(unused_variables)]
-    pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], $b: *const Block) -> RV { $body }
+    pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], $b: Blk) -> RV { $body }
 }; }
 
 cfn!(r_initialize, |c, slf, a, blk| {
@@ -128,7 +128,7 @@ cfn!(r_reverse_each, |c, slf, a, blk| {
         return Ok(slf);
     }
     if e == NIL { return type_err(c, format!("can't iterate from {}", class_path(c, real_class_of(c, e)))); }
-    let arr = r_to_a(c, slf, &[], std::ptr::null())?;
+    let arr = r_to_a(c, slf, &[], Blk::NONE)?;
     let n = c.ary_len(arr);
     for i in (0..n).rev() { let v = c.ary_get(arr, i); yield1(c, blk, v)?; }
     Ok(slf)
@@ -169,7 +169,7 @@ cfn!(r_count, |c, slf, a, blk| {
         if e == NIL || (b == NIL && e != NIL) { return Ok(c.float_new(f64::INFINITY)); }
         if is_integer(b) { return r_size(c, slf, a, blk); }
     }
-    let arr = r_to_a(c, slf, &[], std::ptr::null())?;
+    let arr = r_to_a(c, slf, &[], Blk::NONE)?;
     funcall(c, arr, intern(b"count"), a, blk)
 });
 /// range.c r_less: <=> as -1/0/1, or i64::MAX when incomparable (nil).
@@ -293,7 +293,7 @@ cfn!(r_last, |c, slf, a, blk| {
     if a.is_empty() {
         return Ok(e);
     }
-    let arr = r_to_a(c, slf, &[], std::ptr::null())?;
+    let arr = r_to_a(c, slf, &[], Blk::NONE)?;
     let _ = (b, x);
     funcall(c, arr, intern(b"last"), a, std::ptr::null())
 });
@@ -365,8 +365,8 @@ cfn!(r_minmax, |c, slf, a, blk| {
         if e == NIL { return err(c, c.vm().c_range_error.get(), "cannot get the maximum of endless range"); }
         return crate::builtins::enum_native::call_enumerable(c, slf, "minmax", a, blk);
     }
-    let lo = r_min(c, slf, &[], std::ptr::null())?;
-    let hi = r_max(c, slf, &[], std::ptr::null())?;
+    let lo = r_min(c, slf, &[], Blk::NONE)?;
+    let hi = r_max(c, slf, &[], Blk::NONE)?;
     Ok(c.ary_new_from(&[lo, hi]))
 });
 cfn!(r_sum, |c, slf, a, blk| {
@@ -378,10 +378,10 @@ cfn!(r_sum, |c, slf, a, blk| {
         let s2 = (lo + hi) * (hi - lo + 1) / 2;
         let n = c.int_from_i128(s2);
         // int_range_sum: rb_int_plus, no call of a redefined Integer#+
-        if is_integer(init) { return crate::builtins::numeric_methods::int_plus(c, init, &[n], std::ptr::null()); }
+        if is_integer(init) { return crate::builtins::numeric_methods::int_plus(c, init, &[n], Blk::NONE); }
         return funcall(c, init, s::plus, &[n], std::ptr::null());
     }
-    let arr = r_to_a(c, slf, &[], std::ptr::null())?;
+    let arr = r_to_a(c, slf, &[], Blk::NONE)?;
     crate::builtins::array_methods::a_sum(c, arr, a, blk)
 });
 // range_step of range.c (3.4+): numeric ranges step either way, others need a step that moves toward the end.
@@ -482,7 +482,7 @@ cfn!(r_pct, |c, slf, a, blk| { PCT.with(|p| p.set(true)); let r = r_step(c, slf,
 cfn!(r_dup_frozen, |c, slf, a, blk| Ok(slf));
 // Range#bsearch after CRuby range.c (same probe order: BSEARCH / bsearch_integer_range / doubling for endless).
 enum Probe { Found(Value), Smaller(bool) }
-fn bs_check(c: &mut Ctx, blk: *const Block, val: Value, satisfied: &mut Value) -> Result<Probe, Esc> {
+fn bs_check(c: &mut Ctx, blk: Blk, val: Value, satisfied: &mut Value) -> Result<Probe, Esc> {
     let v = yield1(c, blk, val)?;
     if v.is_fixnum() {
         if v.as_fix() == 0 { return Ok(Probe::Found(val)); }
@@ -498,7 +498,7 @@ fn bs_check(c: &mut Ctx, blk: *const Block, val: Value, satisfied: &mut Value) -
     }
     type_err(c, format!("wrong argument type {} (must be numeric, true, false or nil)", class_name_for_err(c, v)))
 }
-fn bs_i64(c: &mut Ctx, blk: *const Block, mut low: i64, mut high: i64, excl: bool, conv: &dyn Fn(&mut Ctx, i64) -> Value) -> RV {
+fn bs_i64(c: &mut Ctx, blk: Blk, mut low: i64, mut high: i64, excl: bool, conv: &dyn Fn(&mut Ctx, i64) -> Value) -> RV {
     let mut satisfied = NIL;
     if !excl { high += 1; }
     low -= 1;
@@ -513,7 +513,7 @@ fn bs_i64(c: &mut Ctx, blk: *const Block, mut low: i64, mut high: i64, excl: boo
     }
     Ok(satisfied)
 }
-fn bs_int_range(c: &mut Ctx, blk: *const Block, beg: Value, end: Value, excl: bool) -> RV {
+fn bs_int_range(c: &mut Ctx, blk: Blk, beg: Value, end: Value, excl: bool) -> RV {
     if beg.is_fixnum() && end.is_fixnum() && end.as_fix() < i64::MAX / 4 && beg.as_fix() > i64::MIN / 4 {
         return bs_i64(c, blk, beg.as_fix(), end.as_fix(), excl, &|_c, i| Value::fix(i));
     }

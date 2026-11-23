@@ -38,7 +38,7 @@ impl RData for RStrIO {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
 
-fn nb() -> *const Block { std::ptr::null() }
+fn nb() -> Blk<'static> { Blk::NONE }
 fn hidden_mark() -> Sym { intern(b"__strio") }
 fn errno_exc(c: &mut Ctx, name: &str, msg: Option<&str>) -> Esc {
     let no = if name == "EINVAL" { 22 } else { 13 };
@@ -151,7 +151,7 @@ fn new_state(c: &mut Ctx) -> Value {
 
 // ---- construction -----------------------------------------------------------------------------
 
-fn sio_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let (inner, _, _) = strio_parts(c, slf)?;
     if inner == NIL { let n = new_state(c); obj_mut(c, slf).inner = n; }
     strio_init(c, slf, a)
@@ -212,7 +212,7 @@ fn class_new(c: &mut Ctx, klass: Value, a: &[Value]) -> RV {
     funcall_kw(c, o, s::initialize, a, nb(), kw_arg(a).is_some())?;
     Ok(o)
 }
-fn sio_s_new(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn sio_s_new(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if !blk.is_null() {
         let n = class_path(c, slf);
         let loc = backtrace_lines(c, 0).first().map(|l| l.split(":in ").next().unwrap_or("").to_string()).unwrap_or_default();
@@ -220,7 +220,7 @@ fn sio_s_new(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     }
     class_new(c, slf, a)
 }
-fn sio_s_open(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn sio_s_open(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     let o = class_new(c, slf, a)?;
     if blk.is_null() { return Ok(o); }
     let r = yield1(c, blk, o);
@@ -231,18 +231,18 @@ fn sio_s_open(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
 
 // ---- trivial / state ----------------------------------------------------------------------------
 
-fn sio_false(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { strio(c, slf)?; Ok(FALSE) }
-fn sio_nil(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { strio(c, slf)?; Ok(NIL) }
-fn sio_self(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { strio(c, slf)?; Ok(slf) }
-fn sio_zero(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { strio(c, slf)?; Ok(Value::fix(0)) }
-fn sio_first(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { strio(c, slf)?; Ok(a[0]) }
-fn sio_true(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { strio(c, slf)?; Ok(TRUE) }
-fn sio_fcntl(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn sio_false(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { strio(c, slf)?; Ok(FALSE) }
+fn sio_nil(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { strio(c, slf)?; Ok(NIL) }
+fn sio_self(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { strio(c, slf)?; Ok(slf) }
+fn sio_zero(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { strio(c, slf)?; Ok(Value::fix(0)) }
+fn sio_first(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { strio(c, slf)?; Ok(a[0]) }
+fn sio_true(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { strio(c, slf)?; Ok(TRUE) }
+fn sio_fcntl(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     strio(c, slf)?;
     err(c, c.vm().c_not_impl_error.get(), "fcntl() function is unimplemented on this machine")
 }
-fn sio_string(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(strio(c, slf)?.string) }
-fn sio_set_string(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_string(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(strio(c, slf)?.string) }
+fn sio_set_string(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     strio(c, slf)?;
     st_mut(c, slf).flags &= !FM_RW;
     let s2 = expect_str(c, a[0])?;
@@ -251,24 +251,24 @@ fn sio_set_string(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV 
     p.pos = 0; p.lineno = 0; p.string = s2;
     Ok(s2)
 }
-fn sio_close(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { strio(c, slf)?; let o = obj_mut(c, slf); o.rd = false; o.wr = false; Ok(NIL) }
-fn sio_close_read(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn sio_close(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { strio(c, slf)?; let o = obj_mut(c, slf); o.rd = false; o.wr = false; Ok(NIL) }
+fn sio_close_read(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let p = strio(c, slf)?;
     if p.flags & FM_R == 0 { return err(c, c.vm().c_io_error.get(), "closing non-duplex IO for reading"); }
     obj_mut(c, slf).rd = false; Ok(NIL)
 }
-fn sio_close_write(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn sio_close_write(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let p = strio(c, slf)?;
     if p.flags & FM_W == 0 { return err(c, c.vm().c_io_error.get(), "closing non-duplex IO for writing"); }
     obj_mut(c, slf).wr = false; Ok(NIL)
 }
-fn sio_closed(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { strio(c, slf)?; Ok(Value::bool(closed(c, slf))) }
-fn sio_closed_read(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { strio(c, slf)?; Ok(Value::bool(!mode_set(c, slf, FM_R))) }
-fn sio_closed_write(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { strio(c, slf)?; Ok(Value::bool(!mode_set(c, slf, FM_W))) }
+fn sio_closed(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { strio(c, slf)?; Ok(Value::bool(closed(c, slf))) }
+fn sio_closed_read(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { strio(c, slf)?; Ok(Value::bool(!mode_set(c, slf, FM_R))) }
+fn sio_closed_write(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { strio(c, slf)?; Ok(Value::bool(!mode_set(c, slf, FM_W))) }
 /// strio_to_read: readable and not at the end.
 fn to_read(c: &mut Ctx, slf: Value) -> Result<Option<SState>, Esc> { let p = readable(c, slf)?; Ok(if eos(c, &p) { None } else { Some(p) }) }
-fn sio_eof(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(to_read(c, slf)?.is_none())) }
-fn sio_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_eof(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(to_read(c, slf)?.is_none())) }
+fn sio_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let mut orig = a[0];
     if c.data::<RStrIO>(orig).is_none() {
         let r = if orig.is_heap() && respond_to(c, orig, intern(b"to_strio"), true) { funcall(c, orig, intern(b"to_strio"), &[], nb())? } else { NIL };
@@ -287,30 +287,30 @@ fn sio_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     o.inner = inner; o.rd = rd; o.wr = wr;
     Ok(slf)
 }
-fn sio_lineno(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(strio(c, slf)?.lineno)) }
-fn sio_set_lineno(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { strio(c, slf)?; let n = num_to_long(c, a[0])?; st_mut(c, slf).lineno = n; Ok(a[0]) }
-fn sio_binmode(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn sio_lineno(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(strio(c, slf)?.lineno)) }
+fn sio_set_lineno(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { strio(c, slf)?; let n = num_to_long(c, a[0])?; st_mut(c, slf).lineno = n; Ok(a[0]) }
+fn sio_binmode(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let p = strio(c, slf)?;
     st_mut(c, slf).enc = Some(ENC_BINARY);
     if mode_set(c, slf, FM_W) && p.string != NIL { c.rstring_mut(p.string).enc = ENC_BINARY; }
     Ok(slf)
 }
-fn sio_reopen(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn sio_reopen(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     check_frozen(c, slf)?;
     if a.len() == 1 && !is_string(a[0]) { return sio_copy(c, slf, a, b); }
     strio(c, slf)?;
     strio_init(c, slf, a)
 }
-fn sio_pos(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(strio(c, slf)?.pos)) }
-fn sio_set_pos(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_pos(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(strio(c, slf)?.pos)) }
+fn sio_set_pos(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     strio(c, slf)?;
     let p = num_to_long(c, a[0])?;
     if p < 0 { return error_inval(c, None); }
     st_mut(c, slf).pos = p;
     Ok(a[0])
 }
-fn sio_rewind(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { strio(c, slf)?; let p = st_mut(c, slf); p.pos = 0; p.lineno = 0; Ok(Value::fix(0)) }
-fn sio_seek(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_rewind(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { strio(c, slf)?; let p = st_mut(c, slf); p.pos = 0; p.lineno = 0; Ok(Value::fix(0)) }
+fn sio_seek(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     strio(c, slf)?;
     check_argc(c, a, 1, 2)?;
     let amount = num_to_long(c, a[0])?;
@@ -325,7 +325,7 @@ fn sio_seek(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 
 // ---- reading --------------------------------------------------------------------------------
 
-fn sio_each_byte(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn sio_each_byte(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"each_byte"), a, NIL); }
     while let Some(p) = to_read(c, slf)? {
         let x = c.str_bytes(p.string)[p.pos as usize];
@@ -334,7 +334,7 @@ fn sio_each_byte(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV 
     }
     Ok(slf)
 }
-fn sio_getc(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn sio_getc(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let p = readable(c, slf)?;
     if eos(c, &p) { return Ok(NIL); }
     let enc = enc_or_default(get_enc(c, &p));
@@ -344,7 +344,7 @@ fn sio_getc(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     st_mut(c, slf).pos += l as i64;
     Ok(c.str_from_vec_enc(ch, enc))
 }
-fn sio_getbyte(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn sio_getbyte(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let p = readable(c, slf)?;
     if eos(c, &p) { return Ok(NIL); }
     let x = c.str_bytes(p.string)[p.pos as usize];
@@ -373,7 +373,7 @@ fn unget_bytes(c: &mut Ctx, slf: Value, cp: Option<&[u8]>, cl: usize) -> RV {
     st_mut(c, slf).pos = npos as i64;
     Ok(NIL)
 }
-fn sio_ungetc(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_ungetc(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let p = readable(c, slf)?;
     check_modifiable(c, &p)?;
     if p.string == NIL || a[0] == NIL { return Ok(NIL); }
@@ -402,7 +402,7 @@ fn unget_string(c: &mut Ctx, slf: Value, s2: Value) -> RV {
     let b = c.str_bytes(s2).to_vec();
     unget_bytes(c, slf, Some(&b), cl)
 }
-fn sio_ungetbyte(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_ungetbyte(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let p = readable(c, slf)?;
     check_modifiable(c, &p)?;
     if p.string == NIL || a[0] == NIL { return Ok(NIL); }
@@ -415,22 +415,22 @@ fn sio_ungetbyte(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let s2 = expect_str(c, x)?;
     unget_string(c, slf, s2)
 }
-fn sio_readchar(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn sio_readchar(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let r = funcall(c, slf, intern(b"getc"), &[], nb())?;
     if r == NIL { return eof_error(c); }
     Ok(r)
 }
-fn sio_readbyte(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn sio_readbyte(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let r = funcall(c, slf, intern(b"getbyte"), &[], nb())?;
     if r == NIL { return eof_error(c); }
     Ok(r)
 }
-fn sio_each_char(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn sio_each_char(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"each_char"), a, NIL); }
     loop { let ch = sio_getc(c, slf, &[], nb())?; if ch == NIL { break; } yield1(c, blk, ch)?; }
     Ok(slf)
 }
-fn sio_each_codepoint(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn sio_each_codepoint(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"each_codepoint"), a, NIL); }
     let p = readable(c, slf)?;
     let enc = enc_or_default(get_enc(c, &p));
@@ -562,7 +562,7 @@ fn getline(c: &mut Ctx, slf: Value, arg: &GetlineArg) -> RV {
     Ok(str)
 }
 fn set_last_line(c: &mut Ctx, v: Value) -> Result<(), Esc> { crate::builtins::kernel::gvar_set(c, intern(b"$_"), v)?; Ok(()) }
-fn sio_gets(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_gets(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let p = readable(c, slf)?;
     let arg = prepare_getline_args(c, &p, a)?;
     if arg.limit == 0 {
@@ -574,12 +574,12 @@ fn sio_gets(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     set_last_line(c, r)?;
     Ok(r)
 }
-fn sio_readline(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_readline(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let r = funcall_kw(c, slf, intern(b"gets"), a, nb(), kw_arg(a).is_some())?;
     if r == NIL { return eof_error(c); }
     Ok(r)
 }
-fn sio_each(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn sio_each(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     let p = readable(c, slf)?;
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"each_line"), a, NIL); }
     let arg = prepare_getline_args(c, &p, a)?;
@@ -587,7 +587,7 @@ fn sio_each(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     loop { let l = getline(c, slf, &arg)?; if l == NIL { break; } yield1(c, blk, l)?; }
     Ok(slf)
 }
-fn sio_readlines(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_readlines(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let p = readable(c, slf)?;
     let arg = prepare_getline_args(c, &p, a)?;
     if arg.limit == 0 { return arg_err(c, "invalid limit: 0 for readlines"); }
@@ -641,8 +641,8 @@ fn read_impl(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
     st_mut(c, slf).pos += n;
     Ok(r)
 }
-fn sio_read(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { read_impl(c, slf, a) }
-fn sio_pread(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_read(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { read_impl(c, slf, a) }
+fn sio_pread(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 2, 3)?;
     let len = num_to_long(c, a[0])?;
     let off = num_to_long(c, a[1])?;
@@ -660,12 +660,12 @@ fn sio_pread(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     r.b = data.into(); r.enc = ENC_BINARY;
     Ok(buf)
 }
-fn sio_sysread(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_sysread(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let r = funcall_kw(c, slf, intern(b"read"), a, nb(), kw_arg(a).is_some())?;
     if r == NIL { return eof_error(c); }
     Ok(r)
 }
-fn sio_read_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_read_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let kw = kw_arg(a);
     let pos: &[Value] = if kw.is_some() { &a[..a.len() - 1] } else { a };
     check_argc(c, pos, 1, 2)?;
@@ -711,12 +711,12 @@ fn write_one(c: &mut Ctx, slf: Value, x: Value) -> Result<i64, Esc> {
     st_mut(c, slf).pos += len as i64;
     Ok(len as i64)
 }
-fn sio_write(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_write(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let mut n = 0;
     for &x in a { n += write_one(c, slf, x)?; }
     Ok(Value::fix(n))
 }
-fn sio_putc(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_putc(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let p = writable(c, slf)?;
     check_modifiable(c, &p)?;
     let ch = a[0];
@@ -767,12 +767,12 @@ fn puts_one(c: &mut Ctx, io: Value, x: Value) -> Result<(), Esc> {
     }
     if c.str_bytes(line).is_empty() || !ends_with_newline(c, line) { let rs = default_rs(c); io_writev(c, io, &[line, rs]) } else { io_writev(c, io, &[line]) }
 }
-fn sio_puts(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_puts(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() { let rs = default_rs(c); io_write(c, slf, rs)?; return Ok(NIL); }
     for &x in a { puts_one(c, slf, x)?; }
     Ok(NIL)
 }
-fn sio_print(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_print(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let line;
     let args: &[Value] = if a.is_empty() { line = [crate::builtins::kernel::gvar_get(c, intern(b"$_"))?]; &line } else { a };
     let fs = crate::builtins::kernel::gvar_get(c, intern(b"$,"))?;
@@ -784,21 +784,21 @@ fn sio_print(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if ors != NIL { io_write(c, slf, ors)?; }
     Ok(NIL)
 }
-fn sio_printf(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_printf(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() { return arg_err(c, "too few arguments"); }
     let s2 = crate::builtins::sprintf::format(c, a[0], &a[1..])?;
     io_write(c, slf, s2)?;
     Ok(NIL)
 }
-fn sio_addstr(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { io_write(c, slf, a[0])?; Ok(slf) }
-fn sio_syswrite(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { io_write(c, slf, a[0]) }
-fn sio_write_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_addstr(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { io_write(c, slf, a[0])?; Ok(slf) }
+fn sio_syswrite(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { io_write(c, slf, a[0]) }
+fn sio_write_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let pos: &[Value] = if kw_arg(a).is_some() { &a[..a.len() - 1] } else { a };
     check_argc(c, pos, 1, 1)?;
     io_write(c, slf, pos[0])
 }
-fn sio_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let p = strio(c, slf)?; Ok(Value::fix(slen(c, &p))) }
-fn sio_truncate(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let p = strio(c, slf)?; Ok(Value::fix(slen(c, &p))) }
+fn sio_truncate(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let p = writable(c, slf)?;
     let l = num_to_long(c, a[0])?;
     if l < 0 { return error_inval(c, Some("negative length")); }
@@ -806,12 +806,12 @@ fn sio_truncate(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     c.str_modify(p.string)?.b.resize(l as usize, 0);
     Ok(Value::fix(0))
 }
-fn sio_external_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn sio_external_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let p = strio(c, slf)?;
     Ok(match get_enc(c, &p) { Some(e) => en::encoding_value(c, e), None => NIL })
 }
-fn sio_internal_encoding(_c: &mut Ctx, _slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(NIL) }
-fn sio_set_encoding(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn sio_internal_encoding(_c: &mut Ctx, _slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(NIL) }
+fn sio_set_encoding(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let p = strio(c, slf)?;
     let pos: &[Value] = if kw_arg(a).is_some() { &a[..a.len() - 1] } else { a };
     check_argc(c, pos, 1, 2)?;
@@ -832,15 +832,15 @@ fn sio_set_encoding(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> R
     if let Some(e) = enc { if p.string != NIL && mode_set(c, slf, FM_W) && !is_frozen(p.string) { c.rstring_mut(p.string).enc = e; } }
     Ok(slf)
 }
-fn sio_set_encoding_by_bom(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn sio_set_encoding_by_bom(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     strio(c, slf)?;
     Ok(match set_encoding_by_bom(c, slf) { Some(e) => en::encoding_value(c, e), None => NIL })
 }
 
 // ---- io/console's generic_readable methods ------------------------------------------------------
 
-fn gr_getch(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { funcall(c, slf, intern(b"getc"), a, nb()) }
-fn gr_getpass(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn gr_getch(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { funcall(c, slf, intern(b"getc"), a, nb()) }
+fn gr_getpass(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     if let Some(&pr) = a.first() { if pr != NIL { let s2 = expect_str(c, pr)?; io_write(c, slf, s2)?; } }
     if respond_to(c, slf, intern(b"flush"), false) { funcall(c, slf, intern(b"flush"), &[], nb())?; }

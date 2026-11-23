@@ -978,7 +978,7 @@ fn parse(c: &mut Ctx, cfg: &Config, src: Value) -> RV {
 
 fn config_of(c: &Ctx, v: Value) -> Option<Config> { c.data::<PConfig>(v).map(|p| p.cfg) }
 
-fn pc_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn pc_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 1)?;
     if !v2(c) { check_frozen(c, slf)?; }
     let cfg = config_init(c, a[0])?;
@@ -986,11 +986,11 @@ fn pc_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     p.cfg = cfg; p.set = true;
     Ok(slf)
 }
-fn pc_parse(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn pc_parse(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let cfg = config_of(c, slf).expect("a ParserConfig");
     parse(c, &cfg, a[0])
 }
-fn parser_s_parse(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn parser_s_parse(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     if v2(c) { convert_encoding(c, a[0])?; }
     let cfg = config_init(c, a[1])?;
     parse(c, &cfg, a[0])
@@ -1022,7 +1022,7 @@ fn rp_acquire(c: &mut Ctx, v: Value, lock: bool) -> Result<(), Esc> {
     if lock { rp(c, v).in_use = true; }
     Ok(())
 }
-fn rp_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn rp_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_frozen(c, slf)?;
     if a.len() > 1 || (a.len() == 1 && !is_hash(a[0])) { return Err(argc_error(c, a.len(), 0, 0)); }
     let cfg = config_init(c, a.first().copied().unwrap_or(NIL))?;
@@ -1033,7 +1033,7 @@ fn argc_error(c: &mut Ctx, given: usize, min: usize, max: usize) -> Esc {
     let m = if min == max { format!("wrong number of arguments (given {}, expected {})", given, min) } else { format!("wrong number of arguments (given {}, expected {}..{})", given, min, max) };
     arg_err::<()>(c, m).unwrap_err()
 }
-fn rp_feed(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn rp_feed(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_frozen(c, slf)?;
     rp_acquire(c, slf, false)?;
     let s = convert_encoding(c, a[0])?;
@@ -1047,7 +1047,7 @@ fn rp_feed(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     r.has_buf = true;
     Ok(slf)
 }
-fn rp_parse(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn rp_parse(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     rp_acquire(c, slf, true)?;
     {
         let r = rp(c, slf);
@@ -1081,14 +1081,14 @@ fn rp_parse(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let _ = stack;
     match err { Some(e) => Err(e), None => Ok(Value::bool(complete)) }
 }
-fn rp_value_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn rp_value_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     rp_acquire(c, slf, false)?;
     let r = rp(c, slf);
     let Some(st) = r.st.as_ref() else { return Ok(FALSE) };
     let (stack, done) = (st.stack, st.frames.last().map(|f| f.ph == Ph::Done).unwrap_or(false));
     Ok(Value::bool(c.ary_len(stack) > 0 && done))
 }
-fn rp_value(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn rp_value(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     rp_acquire(c, slf, false)?;
     let r = rp(c, slf);
     if let Some(st) = r.st.as_mut() {
@@ -1103,13 +1103,13 @@ fn rp_value(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     }
     arg_err(c, "no ready value")
 }
-fn rp_clear(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn rp_clear(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     rp_acquire(c, slf, false)?;
     let r = rp(c, slf);
     r.has_buf = false; r.buf = Vec::new(); r.complete = true; r.parsed = 0; r.incomplete = 0; r.st = None;
     Ok(slf)
 }
-fn rp_partial_value(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn rp_partial_value(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     rp_acquire(c, slf, true)?;
     let r = partial_value(c, slf);
     rp(c, slf).in_use = false;
@@ -1142,25 +1142,25 @@ fn partial_value(c: &mut Ctx, slf: Value) -> RV {
         }
     }
 }
-fn rp_rest(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn rp_rest(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let r = rp(c, slf);
     if !r.has_buf { return Ok(c.str_new(b"")); }
     let cur = r.st.as_ref().map(|s| s.cur).unwrap_or(0);
     let b = r.buf[cur.min(r.buf.len())..].to_vec();
     Ok(c.str_from_vec(b))
 }
-fn rp_eos_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn rp_eos_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let r = rp(c, slf);
     let cur = r.st.as_ref().map(|s| s.cur).unwrap_or(0);
     Ok(Value::bool(!r.has_buf || cur >= r.buf.len()))
 }
-fn rp_partial_value_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn rp_partial_value_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let r = rp(c, slf);
     let Some(st) = r.st.as_ref() else { return Ok(FALSE) };
     let (stack, done) = (st.stack, st.frames.last().map(|f| f.ph == Ph::Done).unwrap_or(true));
     Ok(Value::bool(c.ary_len(stack) > 0 && !done))
 }
-fn rp_parsed_bytes(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn rp_parsed_bytes(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let r = rp(c, slf);
     let n = (r.parsed + r.incomplete) as i64;
     Ok(c.int_from_i64(n))

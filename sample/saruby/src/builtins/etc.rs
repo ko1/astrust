@@ -25,14 +25,14 @@ fn sys_fail(c: &mut Ctx, func: &str) -> Esc {
     ivar_set_raw(c, e, crate::symbol::s::errno, Value::fix(no));
     raise_exc(c, e)
 }
-fn etc_sysconf(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn etc_sysconf(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let n = int_arg(c, a[0])?;
     sys::set_errno(0);
     let r = sys::sysconf(n);
     if r == -1 { if sys::errno() == 0 { return Ok(NIL); } return Err(sys_fail(c, "sysconf")); }
     Ok(Value::fix(r))
 }
-fn etc_confstr(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn etc_confstr(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let n = int_arg(c, a[0])?;
     let mut buf = vec![0u8; 512];
     sys::set_errno(0);
@@ -42,7 +42,7 @@ fn etc_confstr(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     buf.truncate(r - 1);
     Ok(c.str_new_enc(&buf, ENC_BINARY))
 }
-fn io_pathconf(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_pathconf(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = int_arg(c, a[0])?;
     let fd = funcall(c, slf, intern(b"fileno"), &[], std::ptr::null())?;
     let fd = num_to_long(c, fd)? as i32;

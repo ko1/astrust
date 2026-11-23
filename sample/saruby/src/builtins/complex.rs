@@ -30,7 +30,7 @@ pub fn cpx_raw(c: &mut Ctx, re: Value, im: Value) -> Value {
     obj_set_flags(v, FL_FROZEN);
     v
 }
-fn nul() -> *const Block { std::ptr::null() }
+fn nul() -> Blk<'static> { Blk::NONE }
 
 // ---- generic helpers (CRuby's f_add & co. with their shortcuts) -----------------------------
 
@@ -169,13 +169,13 @@ pub fn polar_pi(c: &mut Ctx, abs: f64, ang: f64) -> Value {
 
 fn coerce(c: &mut Ctx, s: Value, o: Value, op: Sym) -> RV { crate::builtins::numeric_methods::coerce_bin(c, s, o, op, false) }
 
-fn cpx_plus(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn cpx_plus(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let o = a[0]; let (re, im) = cpx_parts(c, s);
     if is_complex(c, o) { let (or, oi) = cpx_parts(c, o); let r = f_add(c, re, or)?; let i = f_add(c, im, oi)?; return Ok(cpx_raw(c, r, i)); }
     if k_numeric(c, o) && f_real_p(c, o)? { let r = f_add(c, re, o)?; return Ok(cpx_raw(c, r, im)); }
     coerce(c, s, o, s::plus)
 }
-fn cpx_minus(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn cpx_minus(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let o = a[0]; let (re, im) = cpx_parts(c, s);
     if is_complex(c, o) { let (or, oi) = cpx_parts(c, o); let r = f_sub(c, re, or)?; let i = f_sub(c, im, oi)?; return Ok(cpx_raw(c, r, i)); }
     if k_numeric(c, o) && f_real_p(c, o)? { let r = f_sub(c, re, o)?; return Ok(cpx_raw(c, r, im)); }
@@ -202,7 +202,7 @@ fn cpx_mul_v(c: &mut Ctx, s: Value, o: Value) -> RV {
     if k_numeric(c, o) && f_real_p(c, o)? { let i = f_mul(c, im, o)?; let r = f_mul(c, re, o)?; return Ok(cpx_raw(c, r, i)); }
     coerce(c, s, o, s::mul)
 }
-fn cpx_mul(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { cpx_mul_v(c, s, a[0]) }
+fn cpx_mul(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { cpx_mul_v(c, s, a[0]) }
 fn f_gt(c: &mut Ctx, x: Value, y: Value) -> Result<bool, Esc> {
     if x.is_fixnum() && y.is_fixnum() { return Ok(x.as_fix() > y.as_fix()); }
     Ok(funcall(c, x, s::gt, &[y], nul())?.truthy())
@@ -234,9 +234,9 @@ fn divide(c: &mut Ctx, s: Value, o: Value, fdiv: bool) -> RV {
     }
     coerce(c, s, o, if fdiv { intern(b"fdiv") } else { s::div })
 }
-fn cpx_div(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { divide(c, s, a[0], false) }
-fn cpx_fdiv(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { divide(c, s, a[0], true) }
-fn cpx_uminus(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let (re, im) = cpx_parts(c, s); let r = f_neg(c, re)?; let i = f_neg(c, im)?; Ok(cpx_raw(c, r, i)) }
+fn cpx_div(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { divide(c, s, a[0], false) }
+fn cpx_fdiv(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { divide(c, s, a[0], true) }
+fn cpx_uminus(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let (re, im) = cpx_parts(c, s); let r = f_neg(c, re)?; let i = f_neg(c, im)?; Ok(cpx_raw(c, r, i)) }
 
 fn num_pow(c: &mut Ctx, x: Value, y: Value) -> RV { funcall(c, x, s::pow, &[y], nul()) }
 fn zero_for(c: &mut Ctx, x: Value) -> Value { if is_float(x) { c.float_new(0.0) } else if is_rational(c, x) { rat_raw(c, Value::fix(0), Value::fix(1)) } else { Value::fix(0) } }
@@ -276,7 +276,7 @@ fn cpx_arg_v(c: &mut Ctx, s: Value) -> RV {
     let y = to_f64(c, im)?; let x = to_f64(c, re)?;
     Ok(c.float_new(y.atan2(x)))
 }
-fn cpx_pow(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn cpx_pow(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let mut o = a[0];
     if k_numeric(c, o) && exact_zero(c, o) { return Ok(cpx_raw(c, Value::fix(1), Value::fix(0))); }
     if is_rational(c, o) && rat_parts(c, o).1 == Value::fix(1) { o = rat_parts(c, o).0; }
@@ -327,13 +327,13 @@ fn cpx_pow(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     coerce(c, s, o, s::pow)
 }
 
-fn cpx_eq(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn cpx_eq(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let o = a[0]; let (re, im) = cpx_parts(c, s);
     if is_complex(c, o) { let (or, oi) = cpx_parts(c, o); return Ok(Value::bool(f_eqeq(c, re, or)? && f_eqeq(c, im, oi)?)); }
     if k_numeric(c, o) && f_real_p(c, o)? { return Ok(Value::bool(f_eqeq(c, re, o)? && f_zero_p(c, im)?)); }
     let r = funcall(c, o, s::eq, &[s], nul())?; Ok(Value::bool(r.truthy()))
 }
-fn cpx_cmp(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn cpx_cmp(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let o = a[0]; let (re, im) = cpx_parts(c, s);
     if !k_numeric(c, o) {
         if o.is_heap() && respond_to(c, o, s::coerce, true) && !is_string(o) {
@@ -351,7 +351,7 @@ fn cpx_cmp(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     }
     funcall(c, re, s::cmp, &[o], nul())
 }
-fn cpx_coerce(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn cpx_coerce(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let o = a[0];
     if is_complex(c, o) { return Ok(c.ary_new_from(&[o, s])); }
     if k_numeric(c, o) && f_real_p(c, o)? { let x = cpx_raw(c, o, Value::fix(0)); return Ok(c.ary_new_from(&[x, s])); }
@@ -360,17 +360,17 @@ fn cpx_coerce(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
 
 // ---- accessors / predicates -----------------------------------------------------------------
 
-fn cpx_real(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(cpx_parts(c, s).0) }
-fn cpx_imag(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(cpx_parts(c, s).1) }
-fn cpx_abs(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { cpx_abs_v(c, s) }
-fn cpx_abs2(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn cpx_real(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(cpx_parts(c, s).0) }
+fn cpx_imag(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(cpx_parts(c, s).1) }
+fn cpx_abs(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { cpx_abs_v(c, s) }
+fn cpx_abs2(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let (re, im) = cpx_parts(c, s); let x = f_mul(c, re, re)?; let y = f_mul(c, im, im)?; f_add(c, x, y)
 }
-fn cpx_arg(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { cpx_arg_v(c, s) }
-fn cpx_rect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let (re, im) = cpx_parts(c, s); Ok(c.ary_new_from(&[re, im])) }
-fn cpx_polar_m(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let r = cpx_abs_v(c, s)?; let t = cpx_arg_v(c, s)?; Ok(c.ary_new_from(&[r, t])) }
-fn cpx_conj(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let (re, im) = cpx_parts(c, s); let i = f_neg(c, im)?; Ok(cpx_raw(c, re, i)) }
-fn cpx_real_p(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(FALSE) }
+fn cpx_arg(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { cpx_arg_v(c, s) }
+fn cpx_rect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let (re, im) = cpx_parts(c, s); Ok(c.ary_new_from(&[re, im])) }
+fn cpx_polar_m(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let r = cpx_abs_v(c, s)?; let t = cpx_arg_v(c, s)?; Ok(c.ary_new_from(&[r, t])) }
+fn cpx_conj(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let (re, im) = cpx_parts(c, s); let i = f_neg(c, im)?; Ok(cpx_raw(c, re, i)) }
+fn cpx_real_p(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(FALSE) }
 fn f_finite(c: &mut Ctx, x: Value) -> Result<bool, Esc> {
     if is_integer(x) || is_rational(c, x) { return Ok(true); }
     if is_float(x) { return Ok(float_val(x).is_finite()); }
@@ -381,19 +381,19 @@ fn f_infinite(c: &mut Ctx, x: Value) -> Result<bool, Esc> {
     if is_float(x) { return Ok(float_val(x).is_infinite()); }
     Ok(funcall(c, x, intern(b"infinite?"), &[], nul())?.truthy())
 }
-fn cpx_finite_p(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let (re, im) = cpx_parts(c, s); Ok(Value::bool(f_finite(c, re)? && f_finite(c, im)?)) }
-fn cpx_infinite_p(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let (re, im) = cpx_parts(c, s); Ok(if f_infinite(c, re)? || f_infinite(c, im)? { Value::fix(1) } else { NIL }) }
-fn cpx_hash(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn cpx_finite_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let (re, im) = cpx_parts(c, s); Ok(Value::bool(f_finite(c, re)? && f_finite(c, im)?)) }
+fn cpx_infinite_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let (re, im) = cpx_parts(c, s); Ok(if f_infinite(c, re)? || f_infinite(c, im)? { Value::fix(1) } else { NIL }) }
+fn cpx_hash(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let (re, im) = cpx_parts(c, s);
     let h = crate::astrust::hash_merge(crate::hash::key_hash(c, re)?, crate::hash::key_hash(c, im)? ^ 0x436f);
     Ok(Value::fix((h >> 2) as i64))
 }
-fn cpx_eql(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn cpx_eql(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let o = a[0];
     if !is_complex(c, o) { return Ok(FALSE); }
     let (re, im) = cpx_parts(c, s); let (or, oi) = cpx_parts(c, o);
     if real_class_of(c, re) != real_class_of(c, or) || real_class_of(c, im) != real_class_of(c, oi) { return Ok(FALSE); }
-    cpx_eq(c, s, a, std::ptr::null())
+    cpx_eq(c, s, a, Blk::NONE)
 }
 
 fn format(c: &mut Ctx, s: Value, insp: bool) -> Result<String, Esc> {
@@ -408,42 +408,42 @@ fn format(c: &mut Ctx, s: Value, insp: bool) -> Result<String, Esc> {
     out.push('i');
     Ok(out)
 }
-fn cpx_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let t = format(c, s, false)?; Ok(c.str_new(t.as_bytes())) }
-fn cpx_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let t = format(c, s, true)?; Ok(c.str_new(format!("({})", t).as_bytes())) }
+fn cpx_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let t = format(c, s, false)?; Ok(c.str_new(t.as_bytes())) }
+fn cpx_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let t = format(c, s, true)?; Ok(c.str_new(format!("({})", t).as_bytes())) }
 
 fn range_err_conv<T>(c: &mut Ctx, s: Value, into: &str) -> Result<T, Esc> {
     let t = format(c, s, false)?;
     err(c, c.vm().c_range_error.get(), format!("can't convert {} into {}", t, into))
 }
-fn cpx_to_i(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn cpx_to_i(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let (re, im) = cpx_parts(c, s);
     if !exact_zero(c, im) { return range_err_conv(c, s, "Integer"); }
     funcall(c, re, s::to_i, &[], nul())
 }
-fn cpx_to_f(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn cpx_to_f(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let (re, im) = cpx_parts(c, s);
     if !exact_zero(c, im) { return range_err_conv(c, s, "Float"); }
     funcall(c, re, s::to_f, &[], nul())
 }
-fn cpx_to_r(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn cpx_to_r(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let (re, im) = cpx_parts(c, s);
     if !(is_float(im) && float_val(im) == 0.0) && !exact_zero(c, im) { return range_err_conv(c, s, "Rational"); }
     funcall(c, re, intern(b"to_r"), &[], nul())
 }
-fn cpx_rationalize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn cpx_rationalize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     let (re, im) = cpx_parts(c, s);
     if !(is_float(im) && float_val(im) == 0.0) && !exact_zero(c, im) { return range_err_conv(c, s, "Rational"); }
     funcall(c, re, intern(b"rationalize"), a, nul())
 }
-fn cpx_to_c(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(s) }
-fn cpx_denominator(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn cpx_to_c(_c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(s) }
+fn cpx_denominator(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let (re, im) = cpx_parts(c, s);
     let a = funcall(c, re, intern(b"denominator"), &[], nul())?;
     let b = funcall(c, im, intern(b"denominator"), &[], nul())?;
     funcall(c, a, intern(b"lcm"), &[b], nul())
 }
-fn cpx_numerator(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn cpx_numerator(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let (re, im) = cpx_parts(c, s);
     let cd = cpx_denominator(c, s, &[], nul())?;
     let rn = funcall(c, re, intern(b"numerator"), &[], nul())?; let rd = funcall(c, re, intern(b"denominator"), &[], nul())?;
@@ -455,13 +455,13 @@ fn cpx_numerator(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
 
 // ---- construction ---------------------------------------------------------------------------
 
-fn s_rect(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn s_rect(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let re = real_check(c, a[0])?;
     let im = if a.len() > 1 { real_check(c, a[1])? } else { Value::fix(0) };
     Ok(cpx_raw(c, re, im))
 }
-fn s_polar(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn s_polar(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let abs = real_check(c, a[0])?;
     let arg = if a.len() > 1 { real_check(c, a[1])? } else { Value::fix(0) };
@@ -529,7 +529,7 @@ fn parse_complex(c: &mut Ctx, b: &[u8]) -> Result<(Value, bool), Esc> {
     }
     Ok((cpx_raw(c, n1, zero), fin(i)))
 }
-fn str_to_c(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn str_to_c(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let b = c.str_bytes(s).to_vec();
     Ok(parse_complex(c, &b)?.0)
 }
@@ -579,7 +579,7 @@ fn convert(c: &mut Ctx, a1: Value, a2: Option<Value>, raise: bool) -> RV {
     })();
     match r { Err(e) => { if !raise && c.esc == EscKind::Raise { c.esc = EscKind::None; return Ok(NIL); } Err(e) } ok => ok }
 }
-fn k_complex(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn k_complex(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (n, raise) = kw_exception(c, a)?;
     let a = &a[..n];
     check_argc(c, a, 1, 2)?;
@@ -588,20 +588,20 @@ fn k_complex(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 
 // ---- Numeric side ---------------------------------------------------------------------------
 
-fn num_to_c(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(cpx_raw(c, s, Value::fix(0))) }
-fn num_i(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(cpx_raw(c, Value::fix(0), s)) }
-fn num_polar(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn num_to_c(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(cpx_raw(c, s, Value::fix(0))) }
+fn num_i(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(cpx_raw(c, Value::fix(0), s)) }
+fn num_polar(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let a = funcall(c, s, intern(b"abs"), &[], nul())?;
     let t = funcall(c, s, intern(b"arg"), &[], nul())?;
     Ok(c.ary_new_from(&[a, t]))
 }
-fn num_abs2(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { funcall(c, s, s::mul, &[s], nul()) }
-fn flo_arg(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn num_abs2(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { funcall(c, s, s::mul, &[s], nul()) }
+fn flo_arg(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let f = float_val(s);
     if f.is_nan() { return Ok(s); }
     Ok(if f.is_sign_negative() { c.float_new(std::f64::consts::PI) } else { Value::fix(0) })
 }
-fn nil_to_c(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(cpx_raw(c, Value::fix(0), Value::fix(0))) }
+fn nil_to_c(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(cpx_raw(c, Value::fix(0), Value::fix(0))) }
 
 /// Boot: defines Complex (returned) and the conversions on the other classes.
 pub fn init(c: &mut Ctx) -> Value {

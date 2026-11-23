@@ -116,7 +116,7 @@ pub fn arith_seq_slice(c: &mut Ctx, seq: Value, ary: Value) -> RV {
 }
 
 /// Run the enumerator, feeding each yielded value to blk.
-pub fn enum_each_with(c: &mut Ctx, e: Value, blk: *const Block) -> RV {
+pub fn enum_each_with(c: &mut Ctx, e: Value, blk: Blk) -> RV {
     let en = renum(c, e);
     if let Some((b, en_, st, excl)) = en.arith {
         if b.is_fixnum() && en_.is_fixnum() && st.is_fixnum() && crate::rt::redef(crate::rt::R_INT_EQ | crate::rt::R_INT_LT | crate::rt::R_INT_GE | crate::rt::R_INT_COERCE) {
@@ -151,7 +151,7 @@ pub fn enum_each_with(c: &mut Ctx, e: Value, blk: *const Block) -> RV {
 }
 
 /// enumerator.c arith_seq_each on Integers once ==, <, >= or coerce is redefined: the calls it makes.
-fn arith_each_calls(c: &mut Ctx, b: Value, e: Value, st: Value, x: bool, blk: *const Block) -> RV {
+fn arith_each_calls(c: &mut Ctx, b: Value, e: Value, st: Value, x: bool, blk: Blk) -> RV {
     let eq0 = |c: &mut Ctx, v: Value| -> Result<bool, Esc> { Ok(v == Value::fix(0) || (crate::rt::redef(crate::rt::R_INT_EQ) && funcall(c, v, s::eq, &[Value::fix(0)], std::ptr::null())?.truthy())) };
     if eq0(c, st)? { loop { yield1(c, blk, b)?; } }
     let (bi, ei, si) = (b.as_fix() as i128, e.as_fix() as i128, st.as_fix() as i128);
@@ -176,7 +176,7 @@ fn arith_each_calls(c: &mut Ctx, b: Value, e: Value, st: Value, x: bool, blk: *c
     Ok(NIL)
 }
 
-fn e_each(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn e_each(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() {
         if a.is_empty() { return Ok(slf); }
         let en = renum(c, slf);
@@ -192,7 +192,7 @@ fn e_each(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     enum_each_with(c, slf, blk)
 }
 
-fn e_with_index(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn e_with_index(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     let off = if a.is_empty() || a[0] == NIL { 0 } else { crate::builtins::numeric_methods::num_to_long(c, a[0])? };
     if blk.is_null() { return enum_for_sized(c, slf, intern(b"with_index"), a); }
     let offv = if a.is_empty() || a[0] == NIL { Value::fix(0) } else if a[0].is_fixnum() || is_bignum(a[0]) { a[0] } else { Value::fix(off) };
@@ -205,13 +205,13 @@ fn e_with_index(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
         let v = if args.len() == 1 { args[0] } else { c.ary_new_from(args) };
         call_proc(c, p, &[v, i], std::ptr::null())
     }, data);
-    enum_each_with(c, slf, &b)
+    enum_each_with(c, slf, Blk::of(&b))
 }
-fn e_each_with_index(c: &mut Ctx, slf: Value, _a: &[Value], blk: *const Block) -> RV {
+fn e_each_with_index(c: &mut Ctx, slf: Value, _a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return enum_for_sized(c, slf, intern(b"each_with_index"), &[]); }
     e_with_index(c, slf, &[], blk)
 }
-fn e_with_object(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn e_with_object(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return enum_for(c, slf, intern(b"with_object"), a, NIL); }
     let memo = a[0];
     let bp = block_to_proc(c, blk)?;
@@ -221,16 +221,16 @@ fn e_with_object(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV 
         let (p, memo) = (c.ary_get(d, 1), c.ary_get(d, 0));
         call_proc(c, p, &[v, memo], std::ptr::null())
     }, data);
-    enum_each_with(c, slf, &b)?;
+    enum_each_with(c, slf, Blk::of(&b))?;
     Ok(memo)
 }
 fn collect_all(c: &mut Ctx, slf: Value) -> RV {
     let out = c.ary_new();
     let b = Block::cfunc(c, |c, d, args, _b, _o| { let v = if args.len() == 1 { args[0] } else { c.ary_new_from(args) }; c.ary_push(d, v); Ok(NIL) }, out);
-    enum_each_with(c, slf, &b)?;
+    enum_each_with(c, slf, Blk::of(&b))?;
     Ok(out)
 }
-fn e_next(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn e_next(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if obj_flags(slf) & FL_FROZEN != 0 { return Err(raise_frozen(c, slf)); }
     if renum(c, slf).buf == NIL {
         if let Some(r) = crate::fiber::enum_next(c, slf)? { return Ok(r); }
@@ -246,19 +246,19 @@ fn e_next(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     renum_mut(c, slf).pos += 1;
     Ok(v)
 }
-fn e_peek(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn e_peek(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if obj_flags(slf) & FL_FROZEN != 0 { return Err(raise_frozen(c, slf)); }
     if crate::fiber::enum_has_fiber(slf) { return crate::fiber::enum_peek(c, slf); }
     let v = e_next(c, slf, a, b)?;
     renum_mut(c, slf).pos -= 1;
     Ok(v)
 }
-fn e_rewind(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn e_rewind(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let en = renum_mut(c, slf);
     en.pos = 0; en.buf = NIL; en.fiber = NIL;
     Ok(slf)
 }
-fn e_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn e_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let en = renum(c, slf);
     if let Some((b, e, st, x)) = en.arith {
         if b.is_fixnum() && e.is_fixnum() && st.is_fixnum() {
@@ -321,7 +321,7 @@ pub fn float_step_size(beg: f64, end: f64, unit: f64, excl: bool) -> f64 {
     if n < 0.0 { return 0.0; }
     (n + err).floor() + 1.0
 }
-fn e_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn e_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let en = renum(c, slf);
     if let Some((b, e, st, x)) = en.arith {
         let r = if en.mid == s::step && crate::numeric::is_numeric(b) && !is_range(en.recv) && false { String::new() } else { String::new() };
@@ -355,7 +355,7 @@ fn e_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     r
 }
 fn is_range_origin(_v: Value) -> bool { false }
-fn e_initialize(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn e_initialize(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     if blk.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
     let g = block_to_proc(c, blk)?;
@@ -367,25 +367,25 @@ fn e_initialize(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     en.gen = g; en.size = size; en.recv = NIL; en.mid = s::each; en.buf = NIL; en.pos = 0;
     Ok(slf)
 }
-fn y_s_new(c: &mut Ctx, slf: Value, _a: &[Value], blk: *const Block) -> RV {
+fn y_s_new(c: &mut Ctx, slf: Value, _a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return err(c, c.vm().c_local_jump_error.get(), "no block given"); }
     let p = block_to_proc(c, blk)?;
     Ok(c.alloc(slf, Body::Data(Box::new(RYielder { blk: p }))))
 }
-fn y_yield(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn y_yield(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let p = c.data::<RYielder>(slf).expect("a Yielder").blk;
     let bb = c.proc_data(p).blk;
     invoke_block_full(c, &bb, a, std::ptr::null(), bb.self_, false, std::ptr::null(), false)
 }
-fn y_ltlt(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { y_yield(c, slf, a, b)?; Ok(slf) }
-fn y_to_proc(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let b = Block::cfunc(c, |c, d, args, _b, _o| y_yield(c, d, args, std::ptr::null()), slf);
+fn y_ltlt(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { y_yield(c, slf, a, b)?; Ok(slf) }
+fn y_to_proc(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
+    let b = Block::cfunc(c, |c, d, args, _b, _o| y_yield(c, d, args, Blk::NONE), slf);
     let k = c.vm().c_proc.get();
     let p = c.alloc(k, Body::Proc(Box::new(ProcData { blk: b, is_lambda: true, from_method: NIL })));
     c.proc_data_mut(p).blk.proc_val = p;
     Ok(p)
 }
-fn e_take(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn e_take(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = crate::builtins::numeric_methods::num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, "attempt to take negative size"); }
     let out = c.ary_new();
@@ -405,12 +405,12 @@ fn e_take(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
         }
         Ok(NIL)
     }, data);
-    match enum_each_with(c, slf, &b) {
+    match enum_each_with(c, slf, Blk::of(&b)) {
         Err(e) => { if c.esc == EscKind::Throw && c.esc_tag_v == data { c.esc = EscKind::None; return Ok(out); } Err(e) }
         Ok(_) => Ok(out),
     }
 }
-fn e_first(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn e_first(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if !a.is_empty() { return e_take(c, slf, a, b); }
     // first_i: keep the value and break, every time
     let fib = crate::fiber::current(c);
@@ -424,30 +424,30 @@ fn e_first(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
         if crate::fiber::current(c) != f { return Err(crate::rt::raise_local_jump(c, "break from proc-closure", "break", NIL)); }
         c.esc = EscKind::Throw; c.esc_tag_v = d; c.esc_val = NIL; Err(Esc)
     }, data);
-    let r = enum_each_with(c, slf, &b);
+    let r = enum_each_with(c, slf, Blk::of(&b));
     c.ary_mut(data)[1] = NIL;
     match r {
         Err(e) => { if c.esc == EscKind::Throw && c.esc_tag_v == data { c.esc = EscKind::None; return Ok(c.ary_get(data, 0)); } Err(e) }
         Ok(_) => Ok(c.ary_get(data, 0)),
     }
 }
-fn arith_begin(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(renum(c, slf).arith.unwrap().0) }
-fn arith_end(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(renum(c, slf).arith.unwrap().1) }
-fn arith_step(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(renum(c, slf).arith.unwrap().2) }
-fn arith_excl(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(renum(c, slf).arith.unwrap().3)) }
-fn arith_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn arith_begin(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(renum(c, slf).arith.unwrap().0) }
+fn arith_end(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(renum(c, slf).arith.unwrap().1) }
+fn arith_step(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(renum(c, slf).arith.unwrap().2) }
+fn arith_excl(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(renum(c, slf).arith.unwrap().3)) }
+fn arith_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if !is_arith_seq(c, a[0]) { return Ok(FALSE); }
     let (b1, e1, s1, x1) = renum(c, slf).arith.unwrap();
     let (b2, e2, s2, x2) = renum(c, a[0]).arith.unwrap();
     use crate::builtins::array_methods::rb_eq;
     Ok(Value::bool(x1 == x2 && rb_eq(c, b1, b2)? && rb_eq(c, e1, e2)? && rb_eq(c, s1, s2)?))
 }
-fn arith_last(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn arith_last(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let all = collect_all(c, slf)?;
     funcall(c, all, intern(b"last"), a, b)
 }
-fn arith_first(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { e_first(c, slf, a, b) }
-fn arith_to_a(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { collect_all(c, slf) }
+fn arith_first(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { e_first(c, slf, a, b) }
+fn arith_to_a(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { collect_all(c, slf) }
 
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if let Some(&e) = c.data::<REnum>(v) {

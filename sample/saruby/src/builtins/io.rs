@@ -188,8 +188,8 @@ pub fn timeout_error_class(c: &mut Ctx) -> Value {
 }
 /// IO#timeout as set (nil: none).
 pub fn io_timeout_value(c: &Ctx, v: Value) -> Value { if TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed) { ivar_get(c, v, timeout_sym()) } else { NIL } }
-fn io_get_timeout(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { get_io(c, slf)?; Ok(if TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed) { ivar_get(c, slf, timeout_sym()) } else { NIL }) }
-fn io_set_timeout(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_get_timeout(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { get_io(c, slf)?; Ok(if TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed) { ivar_get(c, slf, timeout_sym()) } else { NIL }) }
+fn io_set_timeout(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let t = a[0];
     if t != NIL {
         if !is_kind_of(c, t, c.vm().c_numeric.get()) { return type_err(c, format!("can't convert {} into time interval", class_name_for_err(c, t))); }
@@ -530,7 +530,7 @@ fn read_all(io: &mut RIo) -> Vec<u8> {
 /// io_read_encoding.
 fn enc_of(io: &RIo) -> u8 { io.enc.unwrap_or_else(crate::builtins::encoding::default_external) }
 
-fn io_write(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_write(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     crate::builtins::thread::blocking_point(c)?;
     if a.len() > 1 && !rio(c, slf).is_some_and(wconv) {
         let mut out = vec![];
@@ -624,7 +624,7 @@ pub fn print_dyn(c: &mut Ctx, io: Value, a: &[Value]) -> Result<(), Esc> {
 #[cold]
 fn print_fs_warn(c: &mut Ctx) -> Result<(), Esc> { crate::builtins::kernel::warn_deprecated(c, "$, is set to non-nil value") }
 
-fn io_puts(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_puts(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     crate::builtins::thread::blocking_point(c)?;
     if out_redef() && dyn_write_slow(c, slf) { puts_dyn(c, slf, a)?; return Ok(NIL); }
     if rio(c, slf).is_some_and(wconv) {
@@ -652,7 +652,7 @@ fn puts_conv(c: &mut Ctx, slf: Value, x: Value) -> Result<(), Esc> {
 }
 /// $, or $\ has been set non-nil (IO#print looks them up only then)
 pub static OUTPUT_SEPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-pub fn io_print(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+pub fn io_print(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     crate::builtins::thread::blocking_point(c)?;
     let (fs, ors) = if OUTPUT_SEPS.load(std::sync::atomic::Ordering::Relaxed) { (global_get("$,"), global_get("$\\")) } else { (NIL, NIL) };
     let last;
@@ -671,13 +671,13 @@ pub fn io_print(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if ors != NIL { let r = crate::rt::srb_tostr(c, ors)?; io_write_str(c, slf, r)?; }
     Ok(NIL)
 }
-fn io_ltlt(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn io_ltlt(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if out_redef() { return ltlt_slow(c, slf, a, b); }
     io_write(c, slf, a, b)?; Ok(slf)
 }
 #[cold]
 #[inline(never)]
-fn ltlt_slow(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn ltlt_slow(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if dyn_write_slow(c, slf) { write_dyn(c, slf, a[0])?; } else { io_write(c, slf, a, b)?; }
     Ok(slf)
 }
@@ -685,13 +685,13 @@ fn ltlt_slow(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
 #[cold]
 #[inline(never)]
 fn write_dyn(c: &mut Ctx, io: Value, x: Value) -> Result<(), Esc> { funcall(c, io, intern(b"write"), &[x], std::ptr::null()).map(|_| ()) }
-fn io_printf(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_printf(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() { return Ok(NIL); }
     let s2 = crate::builtins::sprintf::format(c, a[0], &a[1..])?;
     if out_redef() && dyn_write_slow(c, slf) { write_dyn(c, slf, s2)?; return Ok(NIL); }
     io_write_str(c, slf, s2)?; Ok(NIL)
 }
-fn io_p(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_p(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if out_redef() && dyn_write_slow(c, slf) {
         for &x in a { let s2 = inspect_value(c, x)?; let rs = c.str_new_enc(b"\n", ENC_ASCII); writev_dyn(c, slf, &[s2, rs])?; }
         return Ok(NIL);
@@ -704,7 +704,7 @@ fn io_p(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     for &x in a { let s2 = inspect_value(c, x)?; out.extend_from_slice(c.str_bytes(s2)); out.push(b'\n'); }
     io_write_bytes(c, slf, &out)?; Ok(NIL)
 }
-fn io_putc(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_putc(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let ch = if is_string(a[0]) {
         let (sb, e) = (c.str_bytes(a[0]), c.str_enc(a[0]));
         let l = if sb.is_empty() { 0 } else { enc_char_len(sb, 0, e).min(sb.len()) };
@@ -714,7 +714,7 @@ fn io_putc(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     funcall(c, slf, intern(b"write"), &[ch], std::ptr::null())?;
     Ok(a[0])
 }
-fn io_flush(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn io_flush(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     get_io(c, slf)?;
     if crate::builtins::thread::schedulers_set() {
         let s = sched_writer(c, slf);
@@ -724,9 +724,9 @@ fn io_flush(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     if out_fd(io) == 1 { out_flush(); } else if let Some(e) = io_flush_one(io) { return Err(raise_errno(c, e, "")); }
     Ok(slf)
 }
-fn io_fsync(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { io_flush(c, slf, a, b)?; let io = get_io(c, slf)?; sys::fsync(out_fd(io)); Ok(Value::fix(0)) }
-fn io_sync(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(io.sync || out_fd(io) == 2)) }
-fn io_set_sync(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_fsync(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { io_flush(c, slf, a, b)?; let io = get_io(c, slf)?; sys::fsync(out_fd(io)); Ok(Value::fix(0)) }
+fn io_sync(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(io.sync || out_fd(io) == 2)) }
+fn io_set_sync(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let io = get_io(c, slf)?;
     io.sync = a[0].truthy();
     if out_fd(io) == 1 { STDOUT_SYNC.store(io.sync, std::sync::atomic::Ordering::Relaxed); if io.sync { out_flush(); } } else if io.sync { io_flush_one(io); }
@@ -844,7 +844,7 @@ fn gets_src<S: cv::Src>(c: &mut Ctx, slf: Value, la: &LineArgs) -> Result<(Value
     if io.rerr != 0 { return Err(fillbuf_err(c, slf)); }
     Ok((match r { Some((l, _)) => c.str_from_vec_enc(l, enc), None => NIL }, lineno))
 }
-fn io_gets(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_gets(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let la = line_args(c, a)?;
     let (v, lineno) = gets_value(c, slf, &la)?;
     if v != NIL { global_set("$.", Value::fix(lineno)); }
@@ -852,12 +852,12 @@ fn io_gets(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(v)
 }
 fn eof_err<T>(c: &mut Ctx) -> Result<T, Esc> { err(c, c.vm().c_eof_error.get(), "end of file reached") }
-fn io_readline(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn io_readline(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let v = io_gets(c, slf, a, b)?;
     if v == NIL { return eof_err(c); }
     Ok(v)
 }
-fn io_each_line(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn io_each_line(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"each_line"), a, NIL); }
     let la = line_args(c, a)?;
     if la.limit == Some(0) { return arg_err(c, "invalid limit: 0 for each_line"); }
@@ -869,7 +869,7 @@ fn io_each_line(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     }
     Ok(slf)
 }
-fn io_readlines(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_readlines(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let la = line_args(c, a)?;
     if la.limit == Some(0) { return arg_err(c, "invalid limit: 0 for readlines"); }
     let out = c.ary_new();
@@ -888,7 +888,7 @@ pub fn into_outbuf(c: &mut Ctx, buf: Option<Value>, v: Vec<u8>, enc: u8) -> RV {
         _ => Ok(c.str_from_vec_enc(v, enc)),
     }
 }
-fn io_read(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_read(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 2)?;
     // the length is converted before the stream is looked at (CRuby's order; to_int may run Ruby code)
     let n = match a.first() { Some(&n) if n != NIL => { let n = num_to_long(c, n)?; if n < 0 { return arg_err(c, format!("negative length {} given", n)); } Some(n as usize) } _ => None };
@@ -943,7 +943,7 @@ fn byte_readable(c: &mut Ctx, v: Value) -> Result<(), Esc> {
     if cv::char_pending(io) { return Err(io_error(c, BYTE_READ_MSG)); }
     Ok(())
 }
-fn io_readpartial(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_readpartial(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let n = num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, format!("negative length {} given", n)); }
@@ -975,7 +975,7 @@ fn wait_error(c: &mut Ctx, name: &str, msg: &str) -> Esc {
     ivar_set_raw(c, e, s::errno, Value::fix(11));
     raise_exc(c, e)
 }
-fn io_read_nonblock(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn io_read_nonblock(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let exc = exception_opt(c, a)?;
     let pos: Vec<Value> = a.iter().copied().filter(|x| !is_hash(*x)).collect();
     let n = match pos.first() { Some(&n) => num_to_long(c, n)?, None => return argc_err(c, 0, 1, 2) };
@@ -1005,7 +1005,7 @@ fn io_read_nonblock(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV
     if !fill(io_mut(c, slf)) { if !exc { clear_outbuf(c, pos.get(1).copied())?; return Ok(NIL); } return eof_err(c); }
     io_readpartial(c, slf, &pos, b)
 }
-fn io_write_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_write_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let exc = exception_opt(c, a)?;
     let sv = crate::rt::srb_tostr(c, a[0])?;
     check_open(c, slf, true)?;
@@ -1027,7 +1027,7 @@ fn io_write_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> 
     }
     Ok(Value::fix(n as i64))
 }
-fn io_sysread(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_sysread(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let n = num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, format!("negative length {} given", n)); }
@@ -1044,7 +1044,7 @@ fn io_sysread(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
         Err(e) => Err(raise_errno(c, e, "")),
     }
 }
-fn io_syswrite(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_syswrite(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let sv = crate::rt::srb_tostr(c, a[0])?;
     check_open(c, slf, true)?;
     let io = io_mut(c, slf);
@@ -1064,7 +1064,7 @@ fn io_syswrite(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     }
     match sys::write_fd(fd, c.str_bytes(sv)) { Ok(()) => Ok(Value::fix(c.str_bytes(sv).len() as i64)), Err(e) => Err(raise_errno(c, e, "")) }
 }
-fn io_pread(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_pread(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 2, 3)?;
     let n = num_to_long(c, a[0])?; let off = num_to_long(c, a[1])?;
     if n < 0 { return arg_err(c, "negative string size (or size too big)"); }
@@ -1077,7 +1077,7 @@ fn io_pread(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     v.truncate(k as usize);
     into_outbuf(c, a.get(2).copied(), v, ENC_BINARY)
 }
-fn io_pwrite(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_pwrite(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let sv = crate::rt::srb_tostr(c, a[0])?; let off = num_to_long(c, a[1])?;
     let io = get_io(c, slf)?;
     io_flush_one(io);
@@ -1086,7 +1086,7 @@ fn io_pwrite(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if k < 0 { return Err(raise_errno(c, sys::errno(), "")); }
     Ok(Value::fix(k as i64))
 }
-fn io_getc(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn io_getc(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let io = readable(c, slf)?;
     if cv::need_readconv(io) {
         let ch = conv_read(c, slf, cv::getc)?;
@@ -1107,22 +1107,22 @@ fn io_getc(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let enc = enc_of(io_mut(c, slf));
     Ok(match ch { Some(v) => c.str_from_vec_enc(v, enc), None => NIL })
 }
-fn io_readchar(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { let v = io_getc(c, slf, a, b)?; if v == NIL { return eof_err(c); } Ok(v) }
-fn io_getbyte(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn io_readchar(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { let v = io_getc(c, slf, a, b)?; if v == NIL { return eof_err(c); } Ok(v) }
+fn io_getbyte(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let io = readable_bytes(c, slf)?;
     if !fill(io) { return Ok(NIL); }
     io.rpos += 1;
     Ok(Value::fix(io.rbuf[io.rpos - 1] as i64))
 }
-fn io_readbyte(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { let v = io_getbyte(c, slf, a, b)?; if v == NIL { return eof_err(c); } Ok(v) }
-fn io_each_byte(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn io_readbyte(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { let v = io_getbyte(c, slf, a, b)?; if v == NIL { return eof_err(c); } Ok(v) }
+fn io_each_byte(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"each_byte"), a, NIL); }
-    loop { let v = io_getbyte(c, slf, &[], std::ptr::null())?; if v == NIL { break; } yield1(c, blk, v)?; }
+    loop { let v = io_getbyte(c, slf, &[], Blk::NONE)?; if v == NIL { break; } yield1(c, blk, v)?; }
     Ok(slf)
 }
-fn io_each_char(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn io_each_char(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"each_char"), a, NIL); }
-    loop { let v = io_getc(c, slf, &[], std::ptr::null())?; if v == NIL { break; } yield1(c, blk, v)?; }
+    loop { let v = io_getc(c, slf, &[], Blk::NONE)?; if v == NIL { break; } yield1(c, blk, v)?; }
     Ok(slf)
 }
 /// io_ungetbyte's capacity check (the buffer CRuby would have allocated).
@@ -1142,7 +1142,7 @@ fn unget(io: &mut RIo, b: &[u8]) {
     if io.rpos >= b.len() && !io.data { io.rpos -= b.len(); let p = io.rpos; io.rbuf[p..p + b.len()].copy_from_slice(b); }
     else { let mut nb = b.to_vec(); nb.extend_from_slice(&io.rbuf[io.rpos..]); io.rbuf = nb; io.rpos = 0; }
 }
-fn io_ungetc(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_ungetc(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     readable_nowait(c, slf)?;
     let b = if a[0].is_fixnum() || is_bignum(a[0]) {
         let enc = cv::read_enc(io_mut(c, slf));
@@ -1164,7 +1164,7 @@ fn uint_chr(c: &mut Ctx, x: Value, enc: u8) -> Result<Vec<u8>, Esc> {
         _ => err(c, c.vm().c_range_error.get(), format!("invalid codepoint 0x{:X} in {}", i, en::enc_name(enc))),
     }
 }
-fn io_ungetbyte(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_ungetbyte(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     no_char_pending(c, slf)?;
     if a[0] == NIL { return Ok(NIL); }
     let b = if a[0].is_fixnum() { vec![a[0].as_fix() as u8] } else { let sv = expect_str(c, a[0])?; c.str_bytes(sv).to_vec() };
@@ -1172,7 +1172,7 @@ fn io_ungetbyte(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     unget_checked(c, slf, &b)?;
     Ok(NIL)
 }
-fn io_eof(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = readable(c, slf)?; Ok(Value::bool(!cv::char_pending(io) && !fill(io))) }
+fn io_eof(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = readable(c, slf)?; Ok(Value::bool(!cv::char_pending(io) && !fill(io))) }
 
 pub fn close_io(c: &mut Ctx, slf: Value) -> RV {
     let Some(io) = rio_mut(c, slf) else { return Ok(NIL) };
@@ -1240,8 +1240,8 @@ fn finish_wconv(c: &mut Ctx, slf: Value) -> Option<Value> {
     cv::close_writeconv(io_mut(c, slf));
     x
 }
-fn io_close(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { close_io(c, slf) }
-fn io_close_write(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn io_close(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { close_io(c, slf) }
+fn io_close_write(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let Some(io) = rio_mut(c, slf) else { return Ok(NIL) };
     if io.closed || !io.writable { return Ok(NIL); }
     if io.wfd >= 0 && io.wfd != io.fd {
@@ -1254,33 +1254,33 @@ fn io_close_write(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV
     if io.readable { return err(c, c.vm().c_io_error.get(), "closing non-duplex IO for writing"); }
     close_io(c, slf)
 }
-fn io_close_read(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn io_close_read(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let Some(io) = rio_mut(c, slf) else { return Ok(NIL) };
     if io.closed || !io.readable { return Ok(NIL); }
     if io.wfd >= 0 && io.wfd != io.fd { let r = io.fd; cancel_waits(c, r, -1); let io = io_mut(c, slf); sys::close(io.fd); io.fd = io.wfd; io.readable = false; return Ok(NIL); }
     if io.writable { return err(c, c.vm().c_io_error.get(), "closing non-duplex IO for reading"); }
     close_io(c, slf)
 }
-fn io_closed(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn io_closed(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let Some(io) = rio(c, slf) else { return Ok(FALSE) };
     if !io.init { return err(c, c.vm().c_io_error.get(), "uninitialized stream"); }
     Ok(Value::bool(io.closed))
 }
-fn io_fileno(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; Ok(Value::fix(io.fd as i64)) }
-fn io_tty(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(sys::isatty(io.fd) == 1)) }
-fn io_path(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn io_fileno(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = get_io(c, slf)?; Ok(Value::fix(io.fd as i64)) }
+fn io_tty(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(sys::isatty(io.fd) == 1)) }
+fn io_path(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let p = match rio(c, slf) { Some(i) if i.has_path => i.path.clone(), _ => return Ok(NIL) };
     Ok(c.str_new(&p))
 }
-fn io_binmode(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn io_binmode(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let io = get_io(c, slf)?;
     io.binmode = true; io.enc = Some(ENC_BINARY); io.enc2 = None; io.ecflags = 0; io.ecrep = None; io.textmode = false;
     cv::clear_codeconv(io);
     conv_note(io);
     Ok(slf)
 }
-fn io_binmode_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(io.binmode)) }
-pub fn io_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn io_binmode_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(io.binmode)) }
+pub fn io_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let k = class_path(c, real_class_of(c, slf));
     let s = match rio(c, slf) {
         None => format!("#<{}>", k),
@@ -1295,8 +1295,8 @@ pub fn io_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV
     };
     Ok(c.str_new(s.as_bytes()))
 }
-fn io_lineno(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = readable_nowait(c, slf)?; Ok(Value::fix(io.lineno)) }
-fn io_set_lineno(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let n = num_to_long(c, a[0])?; let io = readable_nowait(c, slf)?; io.lineno = n; Ok(a[0]) }
+fn io_lineno(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = readable_nowait(c, slf)?; Ok(Value::fix(io.lineno)) }
+fn io_set_lineno(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let n = num_to_long(c, a[0])?; let io = readable_nowait(c, slf)?; io.lineno = n; Ok(a[0]) }
 fn do_seek(c: &mut Ctx, slf: Value, off: i64, whence: i32) -> Result<i64, Esc> {
     let io = get_io(c, slf)?;
     if io.data { io.rpos = match whence { 0 => off, 1 => io.rpos as i64 + off, _ => io.rbuf.len() as i64 + off }.clamp(0, io.rbuf.len() as i64) as usize; return Ok(io.rpos as i64); }
@@ -1311,11 +1311,11 @@ fn do_seek(c: &mut Ctx, slf: Value, off: i64, whence: i32) -> Result<i64, Esc> {
 fn whence_arg(c: &mut Ctx, v: Option<&Value>) -> Result<i32, Esc> {
     Ok(match v { None => 0, Some(&w) if w.is_sym() => match crate::symbol::sym_str(w.as_sym()).as_str() { "SET" => 0, "CUR" => 1, "END" => 2, o => return arg_err(c, format!("unknown whence: {}", o)) }, Some(&w) => num_to_long(c, w)? as i32 })
 }
-fn io_rewind(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { do_seek(c, slf, 0, 0)?; let io = get_io(c, slf)?; io.lineno = 0; cv::clear_readconv(io); Ok(Value::fix(0)) }
-fn io_seek(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { check_argc(c, a, 1, 2)?; let off = num_to_long(c, a[0])?; let w = whence_arg(c, a.get(1))?; do_seek(c, slf, off, w)?; Ok(Value::fix(0)) }
-fn io_sysseek(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { check_argc(c, a, 1, 2)?; let off = num_to_long(c, a[0])?; let w = whence_arg(c, a.get(1))?; Ok(Value::fix(do_seek(c, slf, off, w)?)) }
-fn io_set_pos(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let off = num_to_long(c, a[0])?; do_seek(c, slf, off, 0)?; Ok(a[0]) }
-fn io_pos(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn io_rewind(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { do_seek(c, slf, 0, 0)?; let io = get_io(c, slf)?; io.lineno = 0; cv::clear_readconv(io); Ok(Value::fix(0)) }
+fn io_seek(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 1, 2)?; let off = num_to_long(c, a[0])?; let w = whence_arg(c, a.get(1))?; do_seek(c, slf, off, w)?; Ok(Value::fix(0)) }
+fn io_sysseek(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 1, 2)?; let off = num_to_long(c, a[0])?; let w = whence_arg(c, a.get(1))?; Ok(Value::fix(do_seek(c, slf, off, w)?)) }
+fn io_set_pos(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let off = num_to_long(c, a[0])?; do_seek(c, slf, off, 0)?; Ok(a[0]) }
+fn io_pos(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let io = get_io(c, slf)?;
     if io.data { return Ok(Value::fix(io.rpos as i64)); }
     io_flush_one(io);
@@ -1326,15 +1326,15 @@ fn io_pos(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     if io.conv.is_some() && unread > 0 && sys::lseek(io.fd, -unread, 1) >= 0 { io.rbuf.clear(); io.rpos = 0; cv::clear_codeconv(io); }
     Ok(Value::fix(r - unread))
 }
-fn io_pid(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; Ok(if io.pid > 0 { Value::fix(io.pid as i64) } else { NIL }) }
-fn io_to_io(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(slf) }
-fn io_ext_enc(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn io_pid(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = get_io(c, slf)?; Ok(if io.pid > 0 { Value::fix(io.pid as i64) } else { NIL }) }
+fn io_to_io(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(slf) }
+fn io_ext_enc(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if rio(c, slf).is_none() { get_io(c, slf)?; }
     let io = rio(c, slf).expect("an IO");
     let e = if io.enc2.is_some() { io.enc2 } else if io.writable { io.enc } else { Some(enc_of(io)) };
     Ok(match e { Some(e) => crate::builtins::encoding::encoding_value(c, e), None => NIL })
 }
-fn io_int_enc(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn io_int_enc(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if rio(c, slf).is_none() { get_io(c, slf)?; }
     let io = rio(c, slf).expect("an IO");
     Ok(if io.enc2.is_none() { NIL } else { crate::builtins::encoding::encoding_value(c, enc_of(io)) })
@@ -1468,7 +1468,7 @@ pub fn conv_note(io: &mut RIo) {
         if io.wc_need { STDOUT_CONV.fetch_or(1, Relaxed); } else { STDOUT_CONV.fetch_and(!1, Relaxed); }
     }
 }
-fn io_set_encoding(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_set_encoding(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_open(c, slf, false)?;
     let (pos, opts) = match a.last() { Some(&l) if is_hash(l) => (&a[..a.len() - 1], Some(l)), _ => (a, None) };
     if pos.is_empty() || pos.len() > 2 { return argc_err(c, pos.len(), 1, 2); }
@@ -1506,7 +1506,7 @@ fn set_encoding_by_bom(c: &mut Ctx, v: Value) -> Option<u8> {
     conv_note(io);
     found
 }
-fn io_set_encoding_by_bom(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn io_set_encoding_by_bom(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let io = get_io(c, slf)?;
     if !io.binmode { return arg_err(c, "ASCII incompatible encoding needs binmode"); }
     if io.enc2.is_some() { return arg_err(c, "encoding conversion is set"); }
@@ -1514,15 +1514,15 @@ fn io_set_encoding_by_bom(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Bloc
     Ok(match set_encoding_by_bom(c, slf) { Some(e) => crate::builtins::encoding::encoding_value(c, e), None => NIL })
 }
 
-fn io_autoclose_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(io.autoclose)) }
-fn io_set_autoclose(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; io.autoclose = a[0].truthy(); Ok(a[0]) }
-fn io_cloexec_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(sys::fcntl(io.fd, sys::F_GETFD, 0) & sys::FD_CLOEXEC != 0)) }
-fn io_set_cloexec(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_autoclose_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(io.autoclose)) }
+fn io_set_autoclose(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let io = get_io(c, slf)?; io.autoclose = a[0].truthy(); Ok(a[0]) }
+fn io_cloexec_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(sys::fcntl(io.fd, sys::F_GETFD, 0) & sys::FD_CLOEXEC != 0)) }
+fn io_set_cloexec(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let io = get_io(c, slf)?;
     for fd in [io.fd, io.wfd] { if fd >= 0 { let f = sys::fcntl(fd, sys::F_GETFD, 0); sys::fcntl(fd, sys::F_SETFD, if a[0].truthy() { f | sys::FD_CLOEXEC } else { f & !sys::FD_CLOEXEC }); } }
     Ok(a[0])
 }
-fn io_fcntl(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_fcntl(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let cmd = num_to_long(c, a[0])? as i32; let arg = match a.get(1) { Some(&v) if v.is_fixnum() => v.as_fix() as i32, _ => 0 };
     let io = get_io(c, slf)?;
     let r = sys::fcntl(io.fd, cmd, arg);
@@ -1536,14 +1536,14 @@ fn set_nonblock(fd: i32, on: bool) -> bool {
     if fl >= 0 && was != on { sys::fcntl(fd, sys::F_SETFL, if on { fl | sys::O_NONBLOCK } else { fl & !sys::O_NONBLOCK }); }
     was
 }
-fn io_nonblock_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn io_nonblock_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let io = get_io(c, slf)?;
     let fl = sys::fcntl(out_fd(io), sys::F_GETFL, 0);
     if fl < 0 { return Err(raise_errno(c, sys::errno(), "")); }
     Ok(Value::bool(fl & sys::O_NONBLOCK != 0))
 }
-fn io_set_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let io = get_io(c, slf)?; set_nonblock(out_fd(io), a[0].truthy()); Ok(a[0]) }
-fn io_nonblock(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn io_set_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let io = get_io(c, slf)?; set_nonblock(out_fd(io), a[0].truthy()); Ok(a[0]) }
+fn io_nonblock(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     let on = a.first().map(|v| v.truthy()).unwrap_or(true);
     let fd = out_fd(get_io(c, slf)?);
@@ -1579,7 +1579,7 @@ pub fn wait_one(c: &mut Ctx, io: Value, fd: i32, events: i16, deadline: Option<s
     let r = crate::builtins::thread::poll_wait(c, vec![sys::PollFd { fd, events, revents: 0 }], deadline)?;
     Ok(r.map(|p| p[0].revents))
 }
-fn io_wait_readable(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_wait_readable(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let dl = wait_deadline(c, a.first())?;
     let io = readable_nowait(c, slf)?;
     if io.rpos < io.rbuf.len() { return Ok(slf); }
@@ -1588,7 +1588,7 @@ fn io_wait_readable(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> R
     check_open(c, slf, false)?;
     Ok(if r.is_some() { slf } else { NIL })
 }
-fn io_wait_writable(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_wait_writable(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let dl = wait_deadline(c, a.first())?;
     let io = get_io(c, slf)?;
     let fd = out_fd(io);
@@ -1596,8 +1596,8 @@ fn io_wait_writable(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> R
     check_open(c, slf, false)?;
     Ok(if r.is_some() { slf } else { NIL })
 }
-fn io_ready_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = readable_nowait(c, slf)?; Ok(Value::bool(io.rpos < io.rbuf.len() || wait_fd(io.fd, sys::POLLIN, 0))) }
-fn io_nread(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let io = readable_nowait(c, slf)?; Ok(Value::fix((io.rbuf.len() - io.rpos) as i64)) }
+fn io_ready_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = readable_nowait(c, slf)?; Ok(Value::bool(io.rpos < io.rbuf.len() || wait_fd(io.fd, sys::POLLIN, 0))) }
+fn io_nread(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = readable_nowait(c, slf)?; Ok(Value::fix((io.rbuf.len() - io.rpos) as i64)) }
 
 // ---- opening --------------------------------------------------------------------------------
 
@@ -1742,7 +1742,7 @@ fn open_fifo_coop(c: &mut Ctx, path: &PathArg, om: &OpenMode) -> Result<i32, Esc
     }
 }
 /// File#initialize(path_or_fd, mode, perm, **opts)
-fn file_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn file_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, 3); }
     if a[0].is_fixnum() { return io_initialize(c, slf, a, _b); }
     let p = path_arg(c, a[0])?;
@@ -1753,7 +1753,7 @@ fn file_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
     setup_io(c, slf, fd, path, &om)?;
     Ok(NIL)
 }
-fn io_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, 2); }
     let fd = num_to_long(c, a[0])? as i32;
     let fl = sys::fcntl(fd, sys::F_GETFL, 0);
@@ -1774,7 +1774,7 @@ fn io_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     } }
     Ok(NIL)
 }
-fn io_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let src = get_io(c, a[0])?;
     io_flush_one(src);
     let fd = sys::fcntl(src.fd, 1030, 3); // F_DUPFD_CLOEXEC
@@ -1787,8 +1787,8 @@ fn io_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(slf)
 }
 /// Class.open-style: new + yield + close.
-pub fn open_with_block(c: &mut Ctx, klass: Value, a: &[Value], blk: *const Block) -> RV {
-    let f = crate::builtins::object::c_new(c, klass, a, std::ptr::null())?;
+pub fn open_with_block(c: &mut Ctx, klass: Value, a: &[Value], blk: Blk) -> RV {
+    let f = crate::builtins::object::c_new(c, klass, a, Blk::NONE)?;
     if blk.is_null() { return Ok(f); }
     let r = yield1(c, blk, f);
     let (ek, ev) = (c.esc, c.esc_val);
@@ -1797,9 +1797,9 @@ pub fn open_with_block(c: &mut Ctx, klass: Value, a: &[Value], blk: *const Block
     cr?;
     r
 }
-fn io_s_open(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV { open_with_block(c, slf, a, blk) }
+fn io_s_open(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV { open_with_block(c, slf, a, blk) }
 /// Kernel#open: a file, "|command", or anything with #to_open.
-fn k_open(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
+fn k_open(c: &mut Ctx, _s: Value, a: &[Value], blk: Blk) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
     if !is_string(a[0]) && respond_to(c, a[0], intern(b"to_open"), true) {
         let r = funcall(c, a[0], intern(b"to_open"), &a[1..], std::ptr::null())?;
@@ -1807,12 +1807,12 @@ fn k_open(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
     }
     open_with_block(c, c.vm().c_file.get(), a, blk)
 }
-fn io_s_sysopen(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_s_sysopen(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     let p = path_arg(c, a[0])?;
     let om = parse_mode(c, &a[1..])?;
     Ok(Value::fix(sysopen(c, &p, &om)? as i64))
 }
-fn io_s_pipe(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn io_s_pipe(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     let mut fds = [0i32; 2];
     if sys::pipe2(&mut fds, sys::O_CLOEXEC) < 0 { return Err(raise_errno(c, sys::errno(), "")); }
     let r = new_io(c, slf, fds[0], b"", true, false);
@@ -1841,7 +1841,7 @@ fn io_s_pipe(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if res.is_err() { c.esc = ek; c.esc_val = ev; }
     res
 }
-fn io_s_popen(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn io_s_popen(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     let (mut pos, opts): (Vec<Value>, Option<Value>) = match a.last() { Some(&l) if is_hash(l) && a.len() > 1 => (a[..a.len() - 1].to_vec(), Some(l)), _ => (a.to_vec(), None) };
     if pos.is_empty() { return argc_err(c, 0, 1, 3); }
     let env = if is_hash(pos[0]) && pos.len() > 1 { Some(pos.remove(0)) } else { None };
@@ -1918,7 +1918,7 @@ fn select_timeout(c: &mut Ctx, v: Option<&Value>) -> Result<i32, Esc> {
     if f < 0.0 { return arg_err(c, "time interval must not be negative"); }
     Ok(if f * 1000.0 >= i32::MAX as f64 { -1 } else { (f * 1000.0).ceil() as i32 })
 }
-fn io_s_select(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_s_select(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     // a non-blocking fiber's scheduler may take the whole call (io_select), else it blocks as usual
     let s = crate::builtins::thread::scheduler_current(c);
     if s != NIL { if let Some(r) = crate::builtins::thread::sched_hook(c, s, "io_select", a)? { return Ok(r); } }
@@ -1986,12 +1986,12 @@ fn io_s_read_impl(c: &mut Ctx, slf: Value, a: &[Value], bin: bool) -> RV {
     if len != NIL { let n = num_to_long(c, len)?; if n < 0 { return arg_err(c, format!("negative length {} given", n)); } }
     with_file(c, slf, pos[0], om, |c, io| {
         if off != NIL { let o = num_to_long(c, off)?; if o < 0 { if bin { let p = rio(c, io).map(|i| lossy(&i.path)).unwrap_or_default(); return Err(raise_errno(c, 22, &p)); } return arg_err(c, format!("negative offset {} given", o)); } do_seek(c, io, o, 0)?; }
-        let r = io_read(c, io, if len == NIL { &[] } else { std::slice::from_ref(&len) }, std::ptr::null())?;
+        let r = io_read(c, io, if len == NIL { &[] } else { std::slice::from_ref(&len) }, Blk::NONE)?;
         Ok(r)
     })
 }
-fn io_s_read(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { io_s_read_impl(c, slf, a, false) }
-fn io_s_binread(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { io_s_read_impl(c, slf, a, true) }
+fn io_s_read(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { io_s_read_impl(c, slf, a, false) }
+fn io_s_binread(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { io_s_read_impl(c, slf, a, true) }
 /// (path, sep/limit args) plus the chomp: option as a Hash, for readlines / foreach.
 fn line_opts(c: &mut Ctx, pos: &[Value], opts: Option<Value>) -> Result<Vec<Value>, Esc> {
     let chomp = match opts { Some(h) => crate::hash::hash_get_opt(c, h, sym_value("chomp"))?, None => None };
@@ -1999,17 +1999,17 @@ fn line_opts(c: &mut Ctx, pos: &[Value], opts: Option<Value>) -> Result<Vec<Valu
     if let Some(v) = chomp { let h = c.hash_new(); crate::hash::hash_set(c, h, sym_value("chomp"), v)?; la.push(h); }
     Ok(la)
 }
-fn io_s_readlines(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_s_readlines(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let (pos, opts) = split_opts(a);
     if pos.is_empty() { return argc_err(c, 0, 1, 3); }
     let om = read_mode(c, opts, false)?;
     let la = line_opts(c, pos, opts)?;
     let keep = c.ary_new_from(&la);   // the chomp Hash lives only in `la` while the file is opened
-    let r = with_file(c, slf, pos[0], om, |c, io| io_readlines(c, io, &la, std::ptr::null()));
+    let r = with_file(c, slf, pos[0], om, |c, io| io_readlines(c, io, &la, Blk::NONE));
     std::hint::black_box(keep);
     r
 }
-fn io_s_foreach(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn io_s_foreach(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"foreach"), a, NIL); }
     let (pos, opts) = split_opts(a);
     if pos.is_empty() { return argc_err(c, 0, 1, 3); }
@@ -2032,14 +2032,14 @@ fn io_s_write_impl(c: &mut Ctx, slf: Value, a: &[Value], bin: bool) -> RV {
     om.bin |= bin;
     let data = pos[1];
     with_file(c, slf, pos[0], om, |c, io| {
-        if bin { io_binmode(c, io, &[], std::ptr::null())?; }
+        if bin { io_binmode(c, io, &[], Blk::NONE)?; }
         if off != NIL { let o = num_to_long(c, off)?; do_seek(c, io, o, 0)?; }
-        io_write(c, io, &[data], std::ptr::null())
+        io_write(c, io, &[data], Blk::NONE)
     })
 }
-fn io_s_write(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { io_s_write_impl(c, slf, a, false) }
-fn io_s_binwrite(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { io_s_write_impl(c, slf, a, true) }
-fn io_s_copy_stream(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_s_write(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { io_s_write_impl(c, slf, a, false) }
+fn io_s_binwrite(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { io_s_write_impl(c, slf, a, true) }
+fn io_s_copy_stream(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 2, 4)?;
     let open_side = |c: &mut Ctx, v: Value, w: bool| -> Result<(Value, bool), Esc> {
         if is_string(v) || (!is_io(c, v) && respond_to(c, v, intern(b"to_path"), true)) {
@@ -2067,7 +2067,7 @@ fn io_s_copy_stream(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> 
     loop {
         // rest == 0 only (CRuby: a source that overshoots gets a negative length)
         let l = match len { None => 16384, Some(_) if rest == 0 => break, Some(_) => rest.min(16384) };
-        let r = if src_io { io_readpartial(c, src, &[Value::fix(l), buf], std::ptr::null()) } else { funcall(c, src, meth, &[Value::fix(l), buf], std::ptr::null()) };
+        let r = if src_io { io_readpartial(c, src, &[Value::fix(l), buf], Blk::NONE) } else { funcall(c, src, meth, &[Value::fix(l), buf], std::ptr::null()) };
         match r {
             Ok(v) => { if !partial && v == NIL { break; } }
             Err(e) => {
@@ -2075,7 +2075,7 @@ fn io_s_copy_stream(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> 
                 return Err(e);
             }
         }
-        let w = if dst_io { io_write(c, dst, &[buf], std::ptr::null())? } else { funcall(c, dst, intern(b"write"), &[buf], std::ptr::null())? };
+        let w = if dst_io { io_write(c, dst, &[buf], Blk::NONE)? } else { funcall(c, dst, intern(b"write"), &[buf], std::ptr::null())? };
         let w = num_to_long(c, w)?;
         total += w; rest -= w;
         if !partial && c.str_bytes(buf).is_empty() { break; }
@@ -2084,12 +2084,12 @@ fn io_s_copy_stream(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> 
     if dc { close_io(c, dst)?; } else if let Some(d) = rio_mut(c, dst) { if d.init && !d.closed { io_flush_one(d); } }
     Ok(Value::fix(total))
 }
-fn io_s_try_convert(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_s_try_convert(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     if is_io(c, a[0]) { return Ok(a[0]); }
     if respond_to(c, a[0], intern(b"to_io"), true) { return funcall(c, a[0], intern(b"to_io"), &[], std::ptr::null()); }
     Ok(NIL)
 }
-fn io_reopen(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn io_reopen(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, 2); }
     { let io = io_mut(c, slf); if io.init && !io.closed { if out_fd(io) == 1 { out_flush(); } io_flush_one(io); } }
     if let Some(src) = rio(c, a[0]) {

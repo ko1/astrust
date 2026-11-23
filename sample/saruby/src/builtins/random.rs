@@ -372,12 +372,12 @@ fn check_random_number(c: &mut Ctx, d: Draw, a: &[Value]) -> RV {
     }
 }
 
-fn r_rand(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn r_rand(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let rnd = get_rnd(c, s);
     let d = rand_random(c, s, rnd, a)?;
     check_random_number(c, d, a)
 }
-fn r_random_number(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn r_random_number(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let rnd = get_rnd(c, s);
     match rand_random(c, s, rnd, a)? {
         Draw::Val(v) if v == NIL => { let r = random_real(c, s, rnd, true)?; Ok(c.float_new(r)) }
@@ -400,8 +400,8 @@ pub fn rand_value(c: &mut Ctx, vmax: Value) -> RV {
     let r = random_real(c, NIL, rnd, true)?;
     Ok(c.float_new(r))
 }
-fn k_rand(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { check_argc(c, a, 0, 1)?; rand_value(c, a.first().copied().unwrap_or(NIL)) }
-fn k_srand(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn k_rand(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 0, 1)?; rand_value(c, a.first().copied().unwrap_or(NIL)) }
+fn k_srand(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     let seed = if a.is_empty() { make_seed_value(c, fill_random_words(4)) } else { crate::builtins::numeric_methods::to_integer(c, a[0])? };
     let d = default_rnd(c);
@@ -422,11 +422,11 @@ fn bytes_of(c: &mut Ctx, r: Value, n: Value) -> RV {
     while left > 0 { let mut x = mt.genrand_int32(); for _ in 0..left.min(4) { out.push(x as u8); x >>= 8; } left -= left.min(4); }
     Ok(c.str_from_vec_enc(out, ENC_BINARY))
 }
-fn r_bytes(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn r_bytes(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let Some(r) = get_rnd(c, s) else { return type_err(c, "wrong argument type") };
     bytes_of(c, r, a[0])
 }
-fn r_init(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn r_init(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     if is_frozen(s) { let ins = inspect_str(c, s)?; return err(c, c.vm().c_frozen_error.get(), format!("can't modify frozen Random: {}", ins)); }
     if c.data::<RRandom>(s).is_none() { return type_err(c, "undefined random interface") }
@@ -441,8 +441,8 @@ fn r_init(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     }
     Ok(s)
 }
-fn r_seed(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.data::<RRandom>(s).map(|r| r.seed).unwrap_or(NIL)) }
-fn r_eq(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn r_seed(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.data::<RRandom>(s).map(|r| r.seed).unwrap_or(NIL)) }
+fn r_eq(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let o = a[0];
     if real_class_of(c, s) != real_class_of(c, o) { return Ok(FALSE); }
     let (Some(x), Some(y)) = (c.data::<RRandom>(s), c.data::<RRandom>(o)) else { return Ok(FALSE) };
@@ -450,16 +450,16 @@ fn r_eq(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(Value::bool(icmp_eq(c, x.seed, y.seed)))
 }
 fn icmp_eq(c: &Ctx, a: Value, b: Value) -> bool { is_integer(a) && is_integer(b) && c.to_big(a) == c.to_big(b) }
-fn r_init_copy(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn r_init_copy(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     if let Some((r, others)) = c.data_mut_and::<RRandom>(s) {
         if let Some(o) = others.data::<RRandom>(a[0]) { r.mt = o.mt.clone(); r.seed = o.seed; }
     }
     Ok(s)
 }
-fn s_new_seed(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(make_seed_value(c, fill_random_words(4))) }
-fn s_seed(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { let d = default_rnd(c); Ok(rr(c, d).seed) }
-fn s_bytes(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { bytes_of(c, default_rnd(c), a[0]) }
-fn s_urandom(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn s_new_seed(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(make_seed_value(c, fill_random_words(4))) }
+fn s_seed(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { let d = default_rnd(c); Ok(rr(c, d).seed) }
+fn s_bytes(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { bytes_of(c, default_rnd(c), a[0]) }
+fn s_urandom(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let n = crate::builtins::numeric_methods::num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, "negative string size (or size too big)"); }
     let w = fill_random_words((n as usize + 3) / 4);

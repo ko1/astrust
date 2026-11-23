@@ -88,14 +88,14 @@ pub fn econv_exception(c: &mut Ctx, ec: &Econv) -> Option<Value> {
     if de != NIL { set(c, e, b"__tc_dst", de); }
     Some(e)
 }
-pub fn exc_source_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(c, slf, b"__tc_src")) }
-pub fn exc_destination_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(c, slf, b"__tc_dst")) }
-pub fn exc_source_encoding_name(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(c, slf, b"__tc_src_name")) }
-pub fn exc_destination_encoding_name(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(c, slf, b"__tc_dst_name")) }
-pub fn exc_error_bytes(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(c, slf, b"__tc_bytes")) }
-pub fn exc_readagain_bytes(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(c, slf, b"__tc_again")) }
-pub fn exc_incomplete_input(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(c, slf, b"__tc_incomplete")) }
-pub fn exc_error_char(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(attr(c, slf, b"__tc_char")) }
+pub fn exc_source_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(attr(c, slf, b"__tc_src")) }
+pub fn exc_destination_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(attr(c, slf, b"__tc_dst")) }
+pub fn exc_source_encoding_name(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(attr(c, slf, b"__tc_src_name")) }
+pub fn exc_destination_encoding_name(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(attr(c, slf, b"__tc_dst_name")) }
+pub fn exc_error_bytes(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(attr(c, slf, b"__tc_bytes")) }
+pub fn exc_readagain_bytes(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(attr(c, slf, b"__tc_again")) }
+pub fn exc_incomplete_input(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(attr(c, slf, b"__tc_incomplete")) }
+pub fn exc_error_char(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(attr(c, slf, b"__tc_char")) }
 
 /// econv_description
 fn description(sname: &str, dname: &str, ecflags: u32, mut m: String) -> String {
@@ -326,7 +326,7 @@ fn encode_args<'a>(c: &mut Ctx, a: &'a [Value]) -> Result<(&'a [Value], u32, Opt
         None => Ok((a, 0, Opts::default())),
     }
 }
-pub fn s_encode(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+pub fn s_encode(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let (pos, f, o) = encode_args(c, a)?;
     let r = str_transcode0(c, slf, pos, f, &o)?;
     let v = match r {
@@ -338,7 +338,7 @@ pub fn s_encode(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if k != c.vm().c_string.get() { obj_set_klass(v, k); }
     Ok(v)
 }
-pub fn s_encode_bang(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+pub fn s_encode_bang(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_frozen(c, slf)?;
     let (pos, f, o) = encode_args(c, a)?;
     match str_transcode0(c, slf, pos, f, &o)? {
@@ -413,7 +413,7 @@ fn to_int_val(c: &mut Ctx, v: Value) -> Result<i64, Esc> {
     Ok(i.as_fix())
 }
 
-fn ec_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn ec_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if c.data::<REconv>(slf).is_some_and(|r| r.ec.is_some()) { return type_err(c, "already initialized"); }
     let convpath = if a.len() == 1 { crate::array::check_array(c, a[0])? } else { None };
     let (ec, senc, denc) = if let Some(cp) = convpath {
@@ -460,7 +460,7 @@ fn ec_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(slf)
 }
 
-fn ec_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ec_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let cname = class_path(c, real_class_of(c, slf));
     let s = match c.data::<REconv>(slf).and_then(|r| r.ec.as_ref()) {
         None => format!("#<{}: uninitialized>", cname),
@@ -468,7 +468,7 @@ fn ec_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     };
     Ok(c.str_new_enc(s.as_bytes(), ENC_BINARY))
 }
-fn ec_convpath(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ec_convpath(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let items: Vec<(&'static str, &'static str)> = ec_of(c, slf)?.elems.iter().map(|e| (e.tc.tr.src, e.tc.tr.dst)).collect();
     let out = c.ary_new();
     for (s, d) in items {
@@ -477,8 +477,8 @@ fn ec_convpath(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     }
     Ok(out)
 }
-fn ec_source_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let e = ecm(c, slf)?.senc; Ok(e.map(|e| en::encoding_value(c, e)).unwrap_or(NIL)) }
-fn ec_destination_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let e = ecm(c, slf)?.denc; Ok(e.map(|e| en::encoding_value(c, e)).unwrap_or(NIL)) }
+fn ec_source_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let e = ecm(c, slf)?.senc; Ok(e.map(|e| en::encoding_value(c, e)).unwrap_or(NIL)) }
+fn ec_destination_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let e = ecm(c, slf)?.denc; Ok(e.map(|e| en::encoding_value(c, e)).unwrap_or(NIL)) }
 
 fn res_sym(r: Res) -> Value {
     sym_value(match r {
@@ -488,7 +488,7 @@ fn res_sym(r: Res) -> Value {
 }
 
 /// econv_primitive_convert
-fn ec_primitive_convert(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn ec_primitive_convert(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let kw = kw_arg(a);
     let pos = if kw.is_some() { &a[..a.len() - 1] } else { a };
     if pos.len() < 2 || pos.len() > 5 { return argc_err(c, a.len(), 2, 5); }
@@ -536,12 +536,12 @@ fn ec_primitive_convert(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) 
     Ok(res_sym(res))
 }
 
-fn ec_convert(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn ec_convert(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let s = expect_str(c, a[0])?;
     ecm(c, slf)?;
     let src = c.str_copy(s);
     let dst = c.str_new_enc(b"", ENC_BINARY);
-    let r = ec_primitive_convert(c, slf, &[src, dst, NIL, NIL, Value::fix(ev::PARTIAL_INPUT as i64)], std::ptr::null())?;
+    let r = ec_primitive_convert(c, slf, &[src, dst, NIL, NIL, Value::fix(ev::PARTIAL_INPUT as i64)], Blk::NONE)?;
     if r == res_sym(Res::InvalidByteSequence) || r == res_sym(Res::UndefinedConversion) || r == res_sym(Res::IncompleteInput) {
         let ec = ec_of(c, slf)?.clone();
         let e = econv_exception(c, &ec).unwrap();
@@ -550,10 +550,10 @@ fn ec_convert(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if r == res_sym(Res::Finished) { return arg_err(c, "converter already finished"); }
     Ok(dst)
 }
-fn ec_finish(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ec_finish(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     ecm(c, slf)?;
     let dst = c.str_new_enc(b"", ENC_BINARY);
-    let r = ec_primitive_convert(c, slf, &[NIL, dst, NIL, NIL, Value::fix(0)], std::ptr::null())?;
+    let r = ec_primitive_convert(c, slf, &[NIL, dst, NIL, NIL, Value::fix(0)], Blk::NONE)?;
     if r == res_sym(Res::InvalidByteSequence) || r == res_sym(Res::UndefinedConversion) || r == res_sym(Res::IncompleteInput) {
         let ec = ec_of(c, slf)?.clone();
         let e = econv_exception(c, &ec).unwrap();
@@ -561,7 +561,7 @@ fn ec_finish(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     }
     Ok(dst)
 }
-fn ec_primitive_errinfo(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ec_primitive_errinfo(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let le = ec_of(c, slf)?.last_error.clone();
     let r = res_sym(le.result.unwrap_or(Res::SourceBufferEmpty));
     let s = if le.error_tc.is_none() { NIL } else { c.str_new_enc(le.src.as_bytes(), ENC_BINARY) };
@@ -569,7 +569,7 @@ fn ec_primitive_errinfo(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block)
     let (eb, ra) = if le.error_tc.is_some() { (c.str_new_enc(&le.error_bytes, ENC_BINARY), c.str_new_enc(&le.readagain, ENC_BINARY)) } else { (NIL, NIL) };
     Ok(c.ary_from_vec(vec![r, s, d, eb, ra]))
 }
-fn ec_insert_output(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn ec_insert_output(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let s = expect_str(c, a[0])?;
     let ins = ec_of(c, slf)?.insert_encoding();
     let to = enc_id(ins).unwrap_or(ENC_BINARY);
@@ -580,7 +580,7 @@ fn ec_insert_output(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> R
     if !ec_of(c, slf)?.insert_output(&conv, ins) { return arg_err(c, "too big string"); }
     Ok(NIL)
 }
-fn ec_putback(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn ec_putback(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     let max = match a.first() { Some(&m) if m != NIL => Some(to_i32(c, m)?), _ => None };
     let ec = ec_of(c, slf)?;
@@ -590,21 +590,21 @@ fn ec_putback(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let senc = ecm(c, slf)?.senc;
     Ok(c.str_from_vec_enc(v, senc.unwrap_or(ENC_BINARY)))
 }
-fn ec_last_error(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ec_last_error(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let ec = ec_of(c, slf)?.clone();
     Ok(econv_exception(c, &ec).unwrap_or(NIL))
 }
-fn ec_replacement(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ec_replacement(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let (b, e) = ec_of(c, slf)?.replacement();
     Ok(c.str_from_vec_enc(b, enc_id(&e).unwrap_or(ENC_BINARY)))
 }
-fn ec_set_replacement(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn ec_set_replacement(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let s = expect_str(c, a[0])?;
     let (b, e) = (c.str_bytes(s).to_vec(), en::enc_name(c.str_enc(s)));
     if !ec_of(c, slf)?.set_replacement(&b, e) { return err(c, c.vm().c_undef_conv_error.get(), "replacement character setup failed"); }
     Ok(a[0])
 }
-fn ec_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn ec_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     ecm(c, slf)?;
     let Some(o) = c.data::<REconv>(a[0]) else { return Ok(NIL) };
     let Some(e2) = o.ec.as_ref() else { return Ok(FALSE) };
@@ -613,11 +613,11 @@ fn ec_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
         && e1.elems.len() == e2.elems.len() && e1.elems.iter().zip(&e2.elems).all(|(x, y)| std::ptr::eq(x.tc.tr, y.tc.tr));
     Ok(Value::bool(same))
 }
-fn ec_s_asciicompat_encoding(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn ec_s_asciicompat_encoding(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (n, _) = enc_arg(c, a[0])?;
     Ok(match ev::asciicompat_encoding(&n) { Some(r) => encobj(c, r), None => NIL })
 }
-fn ec_s_search_convpath(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn ec_s_search_convpath(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (sn, dn, _, _, f, _) = econv_args(c, a)?;
     let Some(path) = ev::search_path(&sn, &dn) else { return Err(open_exc(c, &sn, &dn, f)) };
     let Some(decos) = ev::decorator_names(f) else { return Err(open_exc(c, &sn, &dn, f)) };

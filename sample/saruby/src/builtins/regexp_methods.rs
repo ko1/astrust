@@ -63,8 +63,8 @@ fn reg_init_args(c: &mut Ctx, a: &[Value]) -> Result<(Vec<u8>, u8, u32, Option<f
     Ok((c.str_bytes(src).to_vec(), c.str_enc(src), opts, timeout))
 }
 
-fn re_s_compile(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { crate::builtins::object::c_new(c, slf, a, b) }
-fn re_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn re_s_compile(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { crate::builtins::object::c_new(c, slf, a, b) }
+fn re_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_frozen(c, slf)?;
     if rregexp(c, slf).map_or(false, |r| r.re.is_some()) { return type_err(c, "already initialized regexp"); }
     let (src, enc, opts, timeout) = reg_init_args(c, a)?;
@@ -73,7 +73,7 @@ fn re_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     me.src = src; me.opts = opts; me.re = Some(re); me.enc = enc; me.timeout = timeout;
     Ok(slf)
 }
-fn re_s_escape(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn re_s_escape(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     use crate::builtins::encoding as en;
     let v = if a[0].is_sym() { let b = crate::symbol::sym_bytes(a[0].as_sym()); c.str_new_enc(b, if crate::string::is_ascii(b) { ENC_ASCII } else { ENC_UTF8 }) } else { expect_str(c, a[0])? };
     let enc = c.str_enc(v);
@@ -100,18 +100,18 @@ fn check_regexp_type(c: &mut Ctx, v: Value) -> RV {
     }
     Ok(r)
 }
-fn re_s_try_convert(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { check_regexp_type(c, a[0]) }
-fn re_s_union(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn re_s_try_convert(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { check_regexp_type(c, a[0]) }
+fn re_s_union(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     use crate::builtins::encoding as en;
     let list: Vec<Value> = if a.len() == 1 && is_array(a[0]) { c.ary(a[0]).to_vec() } else { a.to_vec() };
     let k = c.vm().c_regexp.get();
-    if list.is_empty() { let s = c.str_new(b"(?!)"); return crate::builtins::object::c_new(c, k, &[s], std::ptr::null()); }
+    if list.is_empty() { let s = c.str_new(b"(?!)"); return crate::builtins::object::c_new(c, k, &[s], Blk::NONE); }
     let keep = c.ary_new_from(&list);   // to_str may run Ruby code; list is not scanned
     if list.len() == 1 {
         let r = check_regexp_type(c, list[0])?;
         if r != NIL { return Ok(r); }
-        let q = re_s_escape(c, NIL, &[list[0]], std::ptr::null())?;
-        return crate::builtins::object::c_new(c, k, &[q], std::ptr::null());
+        let q = re_s_escape(c, NIL, &[list[0]], Blk::NONE)?;
+        return crate::builtins::object::c_new(c, k, &[q], Blk::NONE);
     }
     let (mut asciionly, mut fixed, mut incompat): (bool, Option<u8>, Option<u8>) = (false, None, None);
     let mut src: Vec<u8> = vec![];
@@ -127,7 +127,7 @@ fn re_s_union(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
             let sv = expect_str(c, x)?;
             let e = c.str_enc(sv);
             let kind = if !en::ascii_compat(e) { 2 } else if is_ascii(c.str_bytes(sv)) { 0 } else { 1 };
-            let q = re_s_escape(c, NIL, &[sv], std::ptr::null())?;
+            let q = re_s_escape(c, NIL, &[sv], Blk::NONE)?;
             (c.str_bytes(q).to_vec(), e, kind)
         };
         match kind {
@@ -147,14 +147,14 @@ fn re_s_union(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let enc = incompat.or(fixed).unwrap_or(ENC_BINARY);
     if incompat.is_some() { src = utf8_to_wide(&src, enc); }
     let s = c.str_from_vec_enc(src, enc);
-    crate::builtins::object::c_new(c, k, &[s], std::ptr::null())
+    crate::builtins::object::c_new(c, k, &[s], Blk::NONE)
 }
 /// The String a match method searches: a Symbol's name, or the to_str of anything else.
 fn subject(c: &mut Ctx, v: Value) -> RV {
     if v.is_sym() { let b = crate::symbol::sym_bytes(v.as_sym()); return Ok(c.str_new_enc(b, if is_ascii(b) { ENC_ASCII } else { ENC_UTF8 })); }
     expect_str(c, v)
 }
-fn re_match(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn re_match(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if a.is_empty() || a.len() > 2 { return argc_err(c, a.len(), 1, 2); }
     if a[0] == NIL { crate::builtins::svar::set_last_match(c, NIL); return Ok(NIL); }
     let sv = subject(c, a[0])?;
@@ -163,14 +163,14 @@ fn re_match(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if m != NIL && !blk.is_null() { return yield1(c, blk, m); }
     Ok(m)
 }
-fn re_match_p(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn re_match_p(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() || a.len() > 2 { return argc_err(c, a.len(), 1, 2); }
     if a[0] == NIL { return Ok(FALSE); }
     let sv = subject(c, a[0])?;
     let pos = if a.len() > 1 { let p = crate::builtins::numeric_methods::num_to_long(c, a[1])?; let n = c.str_char_len(sv) as i64; let p = if p < 0 { p + n } else { p }; if p < 0 || p > n { prepare(c, slf, sv)?; return Ok(FALSE); } c.char_offsets(sv)[p as usize] } else { 0 };
     Ok(Value::bool(search_timed(c, slf, sv, pos)?.is_some()))
 }
-fn re_match_op(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn re_match_op(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if a[0] == NIL { crate::builtins::svar::set_last_match(c, NIL); return Ok(NIL); }
     let sv = subject(c, a[0])?;
     let m = search(c, slf, sv, 0, true)?;
@@ -179,33 +179,33 @@ fn re_match_op(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(Value::fix(byte_to_char(c, sv, off)))
 }
 /// Regexp#~: match against $_.
-fn re_tilde(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn re_tilde(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let line = gvar_get(c, intern(b"$_"))?;
     if !is_string(line) { crate::builtins::svar::set_last_match(c, NIL); return Ok(NIL); }
-    re_match_op(c, slf, &[line], std::ptr::null())
+    re_match_op(c, slf, &[line], Blk::NONE)
 }
-fn re_eqq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn re_eqq(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let v = a[0];
     let sv = if is_string(v) { v } else if v.is_sym() { subject(c, v)? } else if v.is_heap() && respond_to(c, v, s::to_str, true) { expect_str(c, v)? } else { return Ok(FALSE) };
     let m = search(c, slf, sv, 0, true)?;
     Ok(Value::bool(m != NIL))
 }
-fn re_source(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn re_source(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let r = rxc(c, slf)?;
     let (src, e) = (r.src.clone(), r.enc);
     let s = c.str_new_enc(&src, e); obj_set_flags(s, FL_FROZEN); Ok(s)
 }
-fn re_fixed_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(rx(c, slf).fixed())) }
-fn re_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let e = rx(c, slf).enc; Ok(crate::builtins::encoding::encoding_value(c, e)) }
-fn re_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn re_fixed_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(rx(c, slf).fixed())) }
+fn re_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let e = rx(c, slf).enc; Ok(crate::builtins::encoding::encoding_value(c, e)) }
+fn re_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if rx(c, slf).re.is_none() { let t = any_to_s_str(c, slf); return Ok(c.str_new(t.as_bytes())); }
     let r = rx(c, slf);
     let (t, e) = (regexp_inspect(r), if crate::builtins::encoding::ascii_compat(r.enc) { r.enc } else { ENC_ASCII });
     Ok(c.str_from_vec_enc(t, e))
 }
-fn re_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let r = rxc(c, slf)?; let (t, e) = (regexp_to_s(r), r.enc); Ok(c.str_from_vec_enc(t, e)) }
-fn re_options(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix((rxc(c, slf)?.opts & RE_OPT_MASK) as i64)) }
-fn re_casefold(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(rxc(c, slf)?.opts & 1 != 0)) }
+fn re_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let r = rxc(c, slf)?; let (t, e) = (regexp_to_s(r), r.enc); Ok(c.str_from_vec_enc(t, e)) }
+fn re_options(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix((rxc(c, slf)?.opts & RE_OPT_MASK) as i64)) }
+fn re_casefold(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(rxc(c, slf)?.opts & 1 != 0)) }
 /// rb_reg_equal
 pub fn reg_equal(c: &mut Ctx, a: Value, b: Value) -> Result<bool, Esc> {
     if a == b { return Ok(true); }
@@ -214,19 +214,19 @@ pub fn reg_equal(c: &mut Ctx, a: Value, b: Value) -> Result<bool, Esc> {
     let (r, o) = (rx(c, a), rx(c, b));
     Ok(r.fixed() == o.fixed() && (r.opts & 7) == (o.opts & 7) && r.enc == o.enc && r.src == o.src)
 }
-fn re_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(reg_equal(c, slf, a[0])?)) }
-fn re_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn re_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { Ok(Value::bool(reg_equal(c, slf, a[0])?)) }
+fn re_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let r = rxc(c, slf)?;
     let h = crate::astrust::hash_bytes(&r.src) ^ (((r.opts & 7) as u64) << 8);
     Ok(Value::fix((h >> 2) as i64))
 }
-fn re_names(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn re_names(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let names = rxc(c, slf)?.re.as_ref().map(|r| r.names()).unwrap_or_default();
     let out = c.ary_new_capa(names.len());
     for (n, _) in names { let s = c.str_new(n.as_bytes()); c.ary_push(out, s); }
     Ok(out)
 }
-fn re_named_captures(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn re_named_captures(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let names = rxc(c, slf)?.re.as_ref().map(|r| r.names()).unwrap_or_default();
     let h = c.hash_new();
     for (n, idx) in names {
@@ -236,23 +236,23 @@ fn re_named_captures(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) ->
     }
     Ok(h)
 }
-fn re_s_last_match(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn re_s_last_match(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     if let Some(&i) = a.first() {
         let lm = crate::builtins::svar::last_match(c);
         if lm == NIL { return Ok(NIL); }
-        if i.is_sym() || is_string(i) { return md_aref(c, lm, &[i], std::ptr::null()); }
+        if i.is_sym() || is_string(i) { return md_aref(c, lm, &[i], Blk::NONE); }
         let i = crate::builtins::numeric_methods::num_to_long(c, i)?;
         return Ok(nth_match(c, lm, i));
     }
     Ok(crate::builtins::svar::last_match(c))
 }
-fn re_freeze(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { obj_set_flags(slf, FL_FROZEN); Ok(slf) }
-fn re_timeout(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let t = rx(c, slf).timeout; Ok(t.map_or(NIL, |f| c.float_new(f))) }
-fn re_s_timeout(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn re_freeze(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { obj_set_flags(slf, FL_FROZEN); Ok(slf) }
+fn re_timeout(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let t = rx(c, slf).timeout; Ok(t.map_or(NIL, |f| c.float_new(f))) }
+fn re_s_timeout(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     let t = crate::regexp::TIMEOUT.load(std::sync::atomic::Ordering::Relaxed);
     Ok(if t == crate::regexp::NO_TIMEOUT { NIL } else { c.float_new(f64::from_bits(t)) })
 }
-fn re_s_set_timeout(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn re_s_set_timeout(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let t = if a[0] == NIL { None } else {
         let f = crate::builtins::numeric_methods::to_f(c, a[0])?;
         if !(f > 0.0) || f.is_nan() { let t = inspect_str(c, a[0])?; return arg_err(c, format!("invalid timeout: {}", t)); }
@@ -263,7 +263,7 @@ fn re_s_set_timeout(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV
 }
 /// Regexp.linear_time?: Onigmo's memoization applies unless the pattern has backrefs,
 /// subexpression calls, the absent operator or captures inside lookarounds.
-fn re_s_linear_time(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn re_s_linear_time(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (args, _kw) = match kw_arg(a) { Some(_) => (&a[..a.len() - 1], true), None => (a, false) };
     if args.is_empty() || args.len() > 2 { return argc_err(c, args.len(), 1, 2); }
     let r = if is_regexp(c, args[0]) {
@@ -271,7 +271,7 @@ fn re_s_linear_time(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV
         args[0]
     } else {
         let k = c.vm().c_regexp.get();
-        crate::builtins::object::c_new(c, k, a, std::ptr::null())?
+        crate::builtins::object::c_new(c, k, a, Blk::NONE)?
     };
     Ok(Value::bool(rxc(c, r)?.re.as_ref().map_or(false, |re| re.linear_time())))
 }
@@ -300,24 +300,24 @@ fn group_index_strict(c: &mut Ctx, m: Value, k: Value) -> Result<usize, Esc> {
     if i < 0 || i >= md(c, m).groups.len() as i64 { return err(c, c.vm().c_index_error.get(), format!("index {} out of matches", i)); }
     Ok(i as usize)
 }
-fn md_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    if a.len() == 2 || is_range(a[0]) { let all = md_to_a(c, slf, &[], std::ptr::null())?; return crate::builtins::array_methods::ary_aref(c, all, a); }
+fn md_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    if a.len() == 2 || is_range(a[0]) { let all = md_to_a(c, slf, &[], Blk::NONE)?; return crate::builtins::array_methods::ary_aref(c, all, a); }
     match group_index(c, slf, a[0])? { Some(i) => Ok(nth_match(c, slf, i as i64)), None => Ok(NIL) }
 }
-fn md_match(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let i = group_index_strict(c, slf, a[0])?; Ok(nth_match(c, slf, i as i64)) }
-fn md_match_length(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn md_match(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let i = group_index_strict(c, slf, a[0])?; Ok(nth_match(c, slf, i as i64)) }
+fn md_match_length(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let i = group_index_strict(c, slf, a[0])?;
     let v = nth_match(c, slf, i as i64);
     Ok(if v == NIL { NIL } else { Value::fix(c.str_char_len(v) as i64) })
 }
-fn md_to_a(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn md_to_a(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let n = md(c, slf).groups.len();
     let out = c.ary_new_capa(n);
     for i in 0..n { let x = nth_match(c, slf, i as i64); c.ary_push(out, x); }
     Ok(out)
 }
-fn md_captures(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(match_groups_array(c, slf)) }
-fn md_named_captures(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn md_captures(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(match_groups_array(c, slf)) }
+fn md_named_captures(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let h = c.hash_new();
     let symk = match kw_arg(a) { Some(hh) => crate::hash::hash_get_opt(c, hh, sym_value("symbolize_names"))?.map(|v| v.truthy()).unwrap_or(false), None => false };
     let names = rregexp(c, md(c, slf).regexp).and_then(|r| r.re.as_ref()).map(|r| r.names()).unwrap_or_default();
@@ -329,32 +329,32 @@ fn md_named_captures(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> 
     }
     Ok(h)
 }
-fn md_names(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { let r = md(c, slf).regexp; if r == NIL { return Ok(c.ary_new()); } re_names(c, r, a, b) }
+fn md_names(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { let r = md(c, slf).regexp; if r == NIL { return Ok(c.ary_new()); } re_names(c, r, a, b) }
 /// Character offset of an end (0: begin, 1: end) of group a[0].
 fn md_edge(c: &mut Ctx, slf: Value, a: &[Value], end: bool) -> RV {
     let i = group_index_strict(c, slf, a[0])?;
     let m = md(c, slf);
     Ok(match m.groups[i] { Some((s2, e)) => Value::fix(byte_to_char(c, m.str, if end { e } else { s2 })), None => NIL })
 }
-fn md_begin(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { md_edge(c, slf, a, false) }
-fn md_end(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { md_edge(c, slf, a, true) }
-fn md_offset(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { let x = md_begin(c, slf, a, b)?; let y = md_end(c, slf, a, b)?; Ok(c.ary_new_from(&[x, y])) }
-fn md_byteoffset(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn md_begin(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { md_edge(c, slf, a, false) }
+fn md_end(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { md_edge(c, slf, a, true) }
+fn md_offset(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { let x = md_begin(c, slf, a, b)?; let y = md_end(c, slf, a, b)?; Ok(c.ary_new_from(&[x, y])) }
+fn md_byteoffset(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let i = group_index_strict(c, slf, a[0])?;
     let pair = match md(c, slf).groups.get(i).copied().flatten() { Some((s2, e)) => [Value::fix(s2 as i64), Value::fix(e as i64)], None => [NIL, NIL] };
     Ok(c.ary_new_from(&pair))
 }
 /// MatchData#bytebegin / #byteend (3.4)
-fn md_bytebegin(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let i = group_index_strict(c, slf, a[0])?; Ok(md(c, slf).groups.get(i).copied().flatten().map_or(NIL, |(s2, _)| Value::fix(s2 as i64))) }
-fn md_byteend(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let i = group_index_strict(c, slf, a[0])?; Ok(md(c, slf).groups.get(i).copied().flatten().map_or(NIL, |(_, e)| Value::fix(e as i64))) }
-fn md_pre(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(match_pre(c, slf)) }
-fn md_post(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(match_post(c, slf)) }
-fn md_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(nth_match(c, slf, 0)) }
-fn md_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(md(c, slf).groups.len() as i64)) }
+fn md_bytebegin(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let i = group_index_strict(c, slf, a[0])?; Ok(md(c, slf).groups.get(i).copied().flatten().map_or(NIL, |(s2, _)| Value::fix(s2 as i64))) }
+fn md_byteend(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let i = group_index_strict(c, slf, a[0])?; Ok(md(c, slf).groups.get(i).copied().flatten().map_or(NIL, |(_, e)| Value::fix(e as i64))) }
+fn md_pre(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(match_pre(c, slf)) }
+fn md_post(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(match_post(c, slf)) }
+fn md_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(nth_match(c, slf, 0)) }
+fn md_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(md(c, slf).groups.len() as i64)) }
 // the snapshot taken at match time is already frozen
-fn md_string(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(md(c, slf).str) }
-fn md_regexp(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(md(c, slf).regexp) }
-fn md_values_at(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn md_string(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(md(c, slf).str) }
+fn md_regexp(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(md(c, slf).regexp) }
+fn md_values_at(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let all = md_to_a(c, slf, &[], b)?;
     let out = c.ary_new();
     for &k in a {
@@ -370,7 +370,7 @@ fn md_values_at(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     }
     Ok(out)
 }
-fn md_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn md_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let mut out = String::from("#<MatchData ");
     let m0 = nth_match(c, slf, 0);
     out.push_str(&inspect_str(c, m0)?);
@@ -385,7 +385,7 @@ fn md_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     out.push('>');
     Ok(c.str_new(out.as_bytes()))
 }
-fn md_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn md_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if slf == a[0] { return Ok(TRUE); }
     let Some(o) = rmatch(c, a[0]) else { return Ok(FALSE) };
     let m = md(c, slf);
@@ -393,7 +393,7 @@ fn md_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if m.groups != o.groups || !c.str_eq(m.str, o.str) || c.str_enc(m.str) != c.str_enc(o.str) { return Ok(FALSE); }
     Ok(Value::bool(reg_equal(c, r1, r2)?))
 }
-fn md_deconstruct_keys(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn md_deconstruct_keys(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let keys = a[0];
     if keys == NIL {
         let h = md_named_captures(c, slf, &[], b)?;
