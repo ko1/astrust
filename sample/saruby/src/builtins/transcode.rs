@@ -247,6 +247,8 @@ pub fn transcode_loop(c: &mut Ctx, src: &[u8], sname: &str, dname: &str, ecflags
 fn enc_arg(c: &mut Ctx, v: Value) -> Result<(String, Option<u8>), Esc> {
     if let Some(e) = to_encoding_index(c, v) { return Ok((en::enc_name(e).to_string(), Some(e))); }
     let s = expect_str(c, v)?;
+    // rb_to_encoding_index converts with to_str too
+    if s != v { if let Some(e) = to_encoding_index(c, s) { return Ok((en::enc_name(e).to_string(), Some(e))); } }
     let b = c.str_bytes(s);
     if b.contains(&0) { return arg_err(c, "string contains null byte"); }
     Ok((String::from_utf8_lossy(b).into_owned(), None))

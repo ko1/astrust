@@ -1445,7 +1445,17 @@ cfn!(s_byteslice, |c, slf, a, b_| {
 });
 cfn!(s_unpack, |c, slf, a, b_| crate::builtins::pack::unpack(c, slf, a, b_, false));
 cfn!(s_unpack1, |c, slf, a, b_| crate::builtins::pack::unpack(c, slf, a, Blk::NONE, true));
-cfn!(s_crypt, |c, slf, a, b_| Ok(c.str_new_like(slf, c.str_bytes(slf).to_vec())));
+cfn!(s_crypt, |c, slf, a, b_| {
+    let salt = expect_str(c, a[0])?;
+    for v in [slf, salt] { if crate::builtins::encoding::min_len(c.str_enc(v)) > 1 { let n = crate::builtins::encoding::enc_name(c.str_enc(v)); return arg_err(c, format!("wide char encoding: {}", n)); } }
+    if c.str_bytes(slf).contains(&0) { return arg_err(c, "string contains null byte"); }
+    let sb = c.str_bytes(salt);
+    if sb.len() < 2 || sb[0] == 0 || sb[1] == 0 { return arg_err(c, "salt too short (need >=2 bytes)"); }
+    match crate::builtins::crypt::crypt(c.str_bytes(slf), sb) {
+        Some(h) => Ok(c.str_from_vec_enc(h, ENC_BINARY)),
+        None => err(c, c.vm().c_not_impl_error.get(), "crypt: only the traditional DES scheme (2-character salt) is supported"),
+    }
+});
 /// Extended grapheme clusters (approximation of UAX #29: CRLF, combining marks, ZWJ
 /// sequences, variation selectors, emoji modifiers, regional-indicator pairs, Hangul).
 fn graphemes(c: &Ctx, v: Value) -> Vec<(usize, usize)> {
@@ -1616,53 +1626,86 @@ cfn!(s_to_c, |c, slf, a, b_| {
     kernel_call(c, "Complex", &[x, zero])
 });
 // String#undump.
+// str_undump, transcribed from string.c.
 cfn!(s_undump, |c, slf, a, b_| {
+    need_ascii_compat(c, slf)?;
     let v = c.str_bytes(slf).to_vec();
-    let bad = |c: &mut Ctx| -> RV { err(c, c.vm().c_runtime_error.get(), "invalid dumped string; not wrapped with '\"' nor '\"...\".force_encoding(\"...\")' form") };
-    if v.len() < 2 || v[0] != b'"' { return bad(c); }
-    let mut out = vec![]; let mut i = 1; let mut closed = false; let mut uni = false;
-    while i < v.len() {
+    let rt = |c: &mut Ctx, m: &str| -> RV { err(c, c.vm().c_runtime_error.get(), m.to_string()) };
+    if !is_ascii(&v) { return rt(c, "non-ASCII character detected"); }
+    if v.contains(&0) { return rt(c, "string contains null byte"); }
+    const BAD: &str = "invalid dumped string; not wrapped with '\"' nor '\"...\".force_encoding(\"...\")' form";
+    if v.len() < 2 || v[0] != b'"' { return rt(c, BAD); }
+    // scan_hex: up to `max` hex digits at `p`
+    let hex = |p: usize, max: usize| -> (u32, usize) {
+        let mut n: u32 = 0; let mut k = 0;
+        while k < max && p + k < v.len() && v[p + k].is_ascii_hexdigit() { n = n.wrapping_mul(16).wrapping_add((v[p + k] as char).to_digit(16).unwrap()); k += 1; }
+        (n, k)
+    };
+    let (mut out, mut enc) = (vec![], c.str_enc(slf));
+    let (mut utf8, mut binary) = (false, false);
+    let mut i = 1;
+    loop {
+        if i >= v.len() { return rt(c, "unterminated dumped string"); }
         let x = v[i];
-        if x == b'"' { closed = true; i += 1; break; }
+        if x == b'"' {
+            i += 1;
+            if i == v.len() { break; }
+            let mut t = &v[i..];
+            if t.len() > 4 && t.starts_with(b".dup") { t = &t[4..]; }
+            const FE: &[u8] = b".force_encoding(\"";
+            if t.len() <= FE.len() || !t.starts_with(FE) { return rt(c, BAD); }
+            t = &t[FE.len()..];
+            if utf8 { return rt(c, "dumped string contained Unicode escape but used force_encoding"); }
+            let Some(q) = t.iter().position(|&z| z == b'"') else { return rt(c, BAD) };
+            if &t[q..] != b"\")" { return rt(c, BAD); }
+            match crate::builtins::encoding::find_enc(&t[..q]) { Some(e) => enc = e, None => return rt(c, "dumped string has unknown encoding name") }
+            break;
+        }
         if x != b'\\' { out.push(x); i += 1; continue; }
         i += 1;
-        if i >= v.len() { return err(c, c.vm().c_runtime_error.get(), "invalid escape"); }
-        let y = v[i]; i += 1;
-        match y {
-            b'n' => out.push(b'\n'), b't' => out.push(b'\t'), b'r' => out.push(b'\r'), b'a' => out.push(7), b'b' => out.push(8),
-            b'v' => out.push(11), b'f' => out.push(12), b'e' => out.push(0x1b), b's' => out.push(b' '),
-            b'x' => {
-                let h: String = v[i..].iter().take(2).take_while(|z| z.is_ascii_hexdigit()).map(|&z| z as char).collect();
-                if h.is_empty() { return err(c, c.vm().c_runtime_error.get(), "invalid hex escape"); }
-                out.push(u8::from_str_radix(&h, 16).unwrap()); i += h.len();
-            }
+        if i >= v.len() { return rt(c, "invalid escape"); }
+        match v[i] {
+            b'\\' | b'"' | b'#' => { out.push(v[i]); i += 1; }
+            b'n' => { out.push(b'\n'); i += 1; } b'r' => { out.push(b'\r'); i += 1; } b't' => { out.push(b'\t'); i += 1; }
+            b'f' => { out.push(12); i += 1; } b'v' => { out.push(11); i += 1; } b'b' => { out.push(8); i += 1; }
+            b'a' => { out.push(7); i += 1; } b'e' => { out.push(0x1b); i += 1; }
             b'u' => {
-                uni = true;
-                if i < v.len() && v[i] == b'{' {
-                    let e = match v[i..].iter().position(|&z| z == b'}') { Some(e) => i + e, None => return err(c, c.vm().c_runtime_error.get(), "unterminated Unicode escape") };
-                    for part in String::from_utf8_lossy(&v[i + 1..e]).split_whitespace() { let cp = u32::from_str_radix(part, 16).unwrap_or(0xfffd); encode_utf8(cp, &mut out); }
-                    i = e + 1;
+                if binary { return rt(c, "hex escape and Unicode escape are mixed"); }
+                utf8 = true;
+                i += 1;
+                if i >= v.len() { return rt(c, "invalid Unicode escape"); }
+                enc = ENC_UTF8;
+                if v[i] == b'{' {
+                    i += 1;
+                    loop {
+                        if i >= v.len() { return rt(c, "unterminated Unicode escape"); }
+                        if v[i] == b'}' { i += 1; break; }
+                        if v[i].is_ascii_whitespace() || v[i] == 0x0b { i += 1; continue; }
+                        let (cp, n) = hex(i, usize::MAX);
+                        if n == 0 || n > 6 { return rt(c, "invalid Unicode escape"); }
+                        if cp > 0x10ffff { return rt(c, "invalid Unicode codepoint (too large)"); }
+                        if (0xd800..=0xdfff).contains(&cp) { return rt(c, "invalid Unicode codepoint"); }
+                        encode_utf8(cp, &mut out); i += n;
+                    }
                 } else {
-                    let h: String = v[i..].iter().take(4).map(|&z| z as char).collect();
-                    let Ok(cp) = u32::from_str_radix(&h, 16) else { return err(c, c.vm().c_runtime_error.get(), "invalid Unicode escape") };
-                    encode_utf8(cp, &mut out); i += 4;
+                    let (cp, n) = hex(i, 4);
+                    if n != 4 { return rt(c, "invalid Unicode escape"); }
+                    if (0xd800..=0xdfff).contains(&cp) { return rt(c, "invalid Unicode codepoint"); }
+                    encode_utf8(cp, &mut out); i += n;
                 }
             }
-            _ => out.push(y),
+            b'x' => {
+                i += 1;
+                if i >= v.len() { return rt(c, "invalid hex escape"); }
+                let (b, n) = hex(i, 2);
+                if n != 2 { return rt(c, "invalid hex escape"); }
+                if b >= 0x80 { if utf8 { return rt(c, "hex escape and Unicode escape are mixed"); } binary = true; }
+                out.push(b as u8); i += n;
+            }
+            y => { out.push(b'\\'); out.push(y); i += 1; }
         }
     }
-    if !closed { return err(c, c.vm().c_runtime_error.get(), "unterminated dumped string"); }
-    let mut enc = c.str_enc(slf);
-    let rest = &v[i..];
-    if !rest.is_empty() {
-        let rs = String::from_utf8_lossy(rest).into_owned();
-        let t = rs.strip_prefix(".dup").unwrap_or(&rs);
-        let Some(t) = t.strip_prefix(".force_encoding(\"").and_then(|t| t.strip_suffix("\")")) else { return bad(c) };
-        if uni { return err(c, c.vm().c_runtime_error.get(), "dumped string contained Unicode escape but used force_encoding"); }
-        let name = c.str_new(t.as_bytes()); enc = crate::builtins::encoding::to_enc(c, name)?;
-    }
-    let r = c.str_from_vec_enc(out, enc);
-    Ok(r)
+    Ok(c.str_from_vec_enc(out, enc))
 });
 cfn!(s_append_as_bytes, |c, slf, a, b_| {
     check_frozen(c, slf)?;
