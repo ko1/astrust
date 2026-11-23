@@ -19,7 +19,7 @@ use crate::array::*;
 use crate::builtins::kernel::*;
 use crate::hash::*;
 use crate::heap::Global;
-use crate::symbol::{intern, sym_bytes, sym_str};
+use crate::symbol::{intern, sym_bytes};
 use crate::value::*;
 use crate::vm::*;
 use std::cell::{Cell, RefCell};
@@ -343,7 +343,7 @@ fn dump_obj(c: &mut Ctx, v: Value) -> String {
         }
         Body::Proc(_) => s.push_str(", \"struct\":\"proc\""),
         Body::Method(_) => s.push_str(", \"struct\":\"method\""),
-        Body::Data(_) if t == "DATA" => { let n = class_path(c, real_class_of(c, v)).to_lowercase(); s.push_str(&format!(", \"struct\":\"{}\"", n.rsplit("::").next().unwrap_or(""))); }
+        Body::Data(_) if t == "DATA" => { let n = class_path(c, real_class_of(c, v)).to_ascii_lowercase(); s.push_str(&format!(", \"struct\":\"{}\"", n.rsplit("::").next().unwrap_or(""))); }
         _ => {}
     }
     let refs: Vec<String> = crate::gc::reachable_from(c, v).into_iter().filter(|&r| r != k).map(addr).collect();
@@ -508,7 +508,7 @@ fn os_id2ref(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     warn_deprecated(c, "ObjectSpace._id2ref is deprecated")?;
     let id = a[0];
     if !is_integer(id) { return type_err(c, format!("wrong argument type {} (expected Integer)", class_name_for_err(c, id))); }
-    let shown = || -> String { if id.is_fixnum() { format!("0x{:016x}", id.as_fix()) } else { "a large id".into() } };
+    let shown = || -> String { if id.is_fixnum() { format!("0x{:016x}", id.as_fix() as u64) } else { "a large id".into() } };
     if id.is_fixnum() {
         let n = id.as_fix() as u64;
         // immediates: object_id is n*2+1 for an Integer, the word itself otherwise
@@ -525,25 +525,31 @@ fn os_id2ref(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     err(c, c.vm().c_range_error.get(), m)
 }
 
-/// Boot: ObjectSpace::WeakMap, WeakKeyMap, _id2ref.
+/// Boot: _id2ref; WeakMap and WeakKeyMap are made on first reference (saruby/weakmap).
 pub fn init_core(c: &mut Ctx) {
+    let os = c.vm().m_object_space.get();
+    define_module_function(c, os, "_id2ref", os_id2ref, 1);
+    crate::builtins::lazy_consts(c, os, &["WeakMap", "WeakKeyMap"], "saruby/weakmap");
+}
+
+/// ObjectSpace::WeakMap, ObjectSpace::WeakKeyMap.
+pub fn init_weak(c: &mut Ctx) {
     let vmr = c.vm();
     let os = vmr.m_object_space.get();
-    define_module_function(c, os, "_id2ref", os_id2ref, 1);
     let wm = define_class_under(c, os, "WeakMap", vmr.c_object.get());
     vmr.c_object_space_weak_map.set(wm);
     include_module(c, wm, vmr.m_enumerable.get());
     define_private_cfunc(c, wm, "initialize", wm_init, 0);
     define_cfunc(c, wm, "[]", wm_aref, 1);
     define_cfunc(c, wm, "[]=", wm_aset, 2);
-    for n in ["key?", "include?", "member?"] { define_cfunc(c, wm, n, wm_key, 1); }
+    for n in ["key?", "include?"] { define_cfunc(c, wm, n, wm_key, 1); }
     for n in ["size", "length"] { define_cfunc(c, wm, n, wm_size, 0); }
     define_cfunc(c, wm, "delete", wm_delete, 1);
     define_cfunc(c, wm, "keys", wm_keys, 0);
     define_cfunc(c, wm, "values", wm_values, 0);
     for n in ["each", "each_pair", "each_key", "each_value"] { define_cfunc(c, wm, n, wm_each, 0); }
     define_cfunc(c, wm, "inspect", wm_inspect, 0);
-    let _ = crate::builtins::object::alias_method(c, wm, intern(b"member?"), intern(b"include?"));
+    crate::builtins::object::boot_alias(c, wm, intern(b"member?"), intern(b"include?"));
     let wk = define_class_under(c, os, "WeakKeyMap", vmr.c_object.get());
     define_private_cfunc(c, wk, "initialize", wm_init, 0);
     define_cfunc(c, wk, "[]", wm_aref, 1);
@@ -553,5 +559,4 @@ pub fn init_core(c: &mut Ctx) {
     define_cfunc(c, wk, "delete", wm_delete, 1);
     define_cfunc(c, wk, "clear", wkm_clear, 0);
     define_cfunc(c, wk, "inspect", wkm_inspect, 0);
-    let _ = sym_str;
 }
