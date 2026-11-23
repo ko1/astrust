@@ -10,55 +10,65 @@ use crate::string::*;
 use crate::symbol::{intern, s, sym_str};
 use crate::value::*;
 use crate::vm::*;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 
 // ---- redefinition flags for operator fast paths -----------------------------------------
 
-pub const R_INT_PLUS: u32 = 1 << 0;
-pub const R_INT_MINUS: u32 = 1 << 1;
-pub const R_INT_MUL: u32 = 1 << 2;
-pub const R_INT_DIV: u32 = 1 << 3;
-pub const R_INT_MOD: u32 = 1 << 4;
-pub const R_INT_LT: u32 = 1 << 5;
-pub const R_INT_LE: u32 = 1 << 6;
-pub const R_INT_GT: u32 = 1 << 7;
-pub const R_INT_GE: u32 = 1 << 8;
-pub const R_INT_EQ: u32 = 1 << 9;
-pub const R_INT_AND: u32 = 1 << 10;
-pub const R_INT_OR: u32 = 1 << 11;
-pub const R_FLO_PLUS: u32 = 1 << 12;
-pub const R_FLO_MINUS: u32 = 1 << 13;
-pub const R_FLO_MUL: u32 = 1 << 14;
-pub const R_FLO_DIV: u32 = 1 << 15;
-pub const R_FLO_LT: u32 = 1 << 16;
-pub const R_FLO_LE: u32 = 1 << 17;
-pub const R_FLO_GT: u32 = 1 << 18;
-pub const R_FLO_GE: u32 = 1 << 19;
-pub const R_FLO_EQ: u32 = 1 << 20;
-pub const R_ARY_LTLT: u32 = 1 << 21;
-pub const R_ARY_AREF: u32 = 1 << 22;
-pub const R_ARY_ASET: u32 = 1 << 23;
-pub const R_HASH_AREF: u32 = 1 << 24;
-pub const R_HASH_ASET: u32 = 1 << 25;
-pub const R_INT_LSHIFT: u32 = 1 << 26;
-pub const R_INT_RSHIFT: u32 = 1 << 27;
-pub const R_INT_XOR: u32 = 1 << 28;
-pub const R_STR_LTLT: u32 = 1 << 29;
-pub const R_FLO_POW: u32 = 1 << 30;
-pub const R_IMM_EQ: u32 = 1 << 31;
+pub const R_INT_PLUS: u64 = 1 << 0;
+pub const R_INT_MINUS: u64 = 1 << 1;
+pub const R_INT_MUL: u64 = 1 << 2;
+pub const R_INT_DIV: u64 = 1 << 3;
+pub const R_INT_MOD: u64 = 1 << 4;
+pub const R_INT_LT: u64 = 1 << 5;
+pub const R_INT_LE: u64 = 1 << 6;
+pub const R_INT_GT: u64 = 1 << 7;
+pub const R_INT_GE: u64 = 1 << 8;
+pub const R_INT_EQ: u64 = 1 << 9;
+pub const R_INT_AND: u64 = 1 << 10;
+pub const R_INT_OR: u64 = 1 << 11;
+pub const R_FLO_PLUS: u64 = 1 << 12;
+pub const R_FLO_MINUS: u64 = 1 << 13;
+pub const R_FLO_MUL: u64 = 1 << 14;
+pub const R_FLO_DIV: u64 = 1 << 15;
+pub const R_FLO_LT: u64 = 1 << 16;
+pub const R_FLO_LE: u64 = 1 << 17;
+pub const R_FLO_GT: u64 = 1 << 18;
+pub const R_FLO_GE: u64 = 1 << 19;
+pub const R_FLO_EQ: u64 = 1 << 20;
+pub const R_ARY_LTLT: u64 = 1 << 21;
+pub const R_ARY_AREF: u64 = 1 << 22;
+pub const R_ARY_ASET: u64 = 1 << 23;
+pub const R_HASH_AREF: u64 = 1 << 24;
+pub const R_HASH_ASET: u64 = 1 << 25;
+pub const R_INT_LSHIFT: u64 = 1 << 26;
+pub const R_INT_RSHIFT: u64 = 1 << 27;
+pub const R_INT_XOR: u64 = 1 << 28;
+pub const R_STR_LTLT: u64 = 1 << 29;
+pub const R_FLO_POW: u64 = 1 << 30;
+// == of nil / true / false / Symbol
+pub const R_IMM_EQ: u64 = 1 << 31;
+// === of the patterns `when` decides without a call (BOP_EQQ)
+pub const R_INT_EQQ: u64 = 1 << 32;
+pub const R_SYM_EQQ: u64 = 1 << 33;
+pub const R_NIL_EQQ: u64 = 1 << 34;
+pub const R_TRUE_EQQ: u64 = 1 << 35;
+pub const R_FALSE_EQQ: u64 = 1 << 36;
+pub const R_STR_EQQ: u64 = 1 << 37;
 
-pub static REDEF: AtomicU32 = AtomicU32::new(0);
+pub static REDEF: AtomicU64 = AtomicU64::new(0);
 pub static BOOTED: AtomicBool = AtomicBool::new(false);
 #[inline(always)] pub fn booted() -> bool { BOOTED.load(Relaxed) }
 
 // Integer#+ - * / % < <= > >= == & | << >> ^: the fixnum paths of operator nodes test all of them at once
 // (c.int_redef()), so that one test covers every operator of a straight run of baked code
-pub const R_INT_ALL: u32 = R_INT_PLUS | R_INT_MINUS | R_INT_MUL | R_INT_DIV | R_INT_MOD | R_INT_LT | R_INT_LE | R_INT_GT
+pub const R_INT_ALL: u64 = R_INT_PLUS | R_INT_MINUS | R_INT_MUL | R_INT_DIV | R_INT_MOD | R_INT_LT | R_INT_LE | R_INT_GT
     | R_INT_GE | R_INT_EQ | R_INT_AND | R_INT_OR | R_INT_LSHIFT | R_INT_RSHIFT | R_INT_XOR;
+// === of the immediate patterns (node_when_lit, eqq_imm): one test, as CRuby's opt_case_dispatch
+pub const R_EQQ_IMM: u64 = R_INT_EQQ | R_SYM_EQQ | R_NIL_EQQ | R_TRUE_EQQ | R_FALSE_EQQ;
 
 #[inline(always)]
-pub fn redef(f: u32) -> bool { REDEF.load(Relaxed) & f != 0 }
-pub fn redef_word() -> u32 { REDEF.load(Relaxed) }
+pub fn redef(f: u64) -> bool { REDEF.load(Relaxed) & f != 0 }
+pub fn redef_word() -> u64 { REDEF.load(Relaxed) }
 
 /// Called when a method is (re)defined after boot: disable affected fast paths.
 pub fn note_redefinition(c: &mut Ctx, klass: Value, mid: Sym) {
@@ -74,18 +84,21 @@ pub fn redef_note(c: &Ctx, klass: Value, mid: Sym) -> bool {
     // a refinement of a basic operation turns its inline fast path off everywhere
     let klass = if c.class(klass).refined { c.class(klass).attached } else { klass };
     let vm = vm();
-    let table: &[(Value, Sym, u32)] = &[
-        (vm.c_integer.get(), s::plus, R_INT_PLUS), (vm.c_integer.get(), s::minus, R_INT_MINUS), (vm.c_integer.get(), s::mul, R_INT_MUL),
-        (vm.c_integer.get(), s::div, R_INT_DIV), (vm.c_integer.get(), s::modulo, R_INT_MOD), (vm.c_integer.get(), s::lt, R_INT_LT),
-        (vm.c_integer.get(), s::le, R_INT_LE), (vm.c_integer.get(), s::gt, R_INT_GT), (vm.c_integer.get(), s::ge, R_INT_GE),
-        (vm.c_integer.get(), s::eq, R_INT_EQ), (vm.c_integer.get(), s::and, R_INT_AND), (vm.c_integer.get(), s::or, R_INT_OR),
-        (vm.c_float.get(), s::plus, R_FLO_PLUS), (vm.c_float.get(), s::minus, R_FLO_MINUS), (vm.c_float.get(), s::mul, R_FLO_MUL),
-        (vm.c_float.get(), s::div, R_FLO_DIV), (vm.c_float.get(), s::lt, R_FLO_LT), (vm.c_float.get(), s::le, R_FLO_LE),
-        (vm.c_float.get(), s::gt, R_FLO_GT), (vm.c_float.get(), s::ge, R_FLO_GE), (vm.c_float.get(), s::eq, R_FLO_EQ),
-        (vm.c_array.get(), s::ltlt, R_ARY_LTLT), (vm.c_array.get(), s::aref, R_ARY_AREF), (vm.c_array.get(), s::aset, R_ARY_ASET),
-        (vm.c_integer.get(), s::ltlt, R_INT_LSHIFT), (vm.c_integer.get(), s::gtgt, R_INT_RSHIFT), (vm.c_integer.get(), s::xor, R_INT_XOR),
-        (vm.c_hash.get(), s::aref, R_HASH_AREF), (vm.c_hash.get(), s::aset, R_HASH_ASET), (vm.c_string.get(), s::ltlt, R_STR_LTLT), (vm.c_float.get(), s::pow, R_FLO_POW),
-        (vm.c_nil.get(), s::eq, R_IMM_EQ), (vm.c_true.get(), s::eq, R_IMM_EQ), (vm.c_false.get(), s::eq, R_IMM_EQ), (vm.c_symbol.get(), s::eq, R_IMM_EQ),
+    let (int, flo, ary, hash, str) = (vm.c_integer.get(), vm.c_float.get(), vm.c_array.get(), vm.c_hash.get(), vm.c_string.get());
+    let (nil, tru, fal, sym) = (vm.c_nil.get(), vm.c_true.get(), vm.c_false.get(), vm.c_symbol.get());
+    let table: &[(Value, Sym, u64)] = &[
+        (int, s::plus, R_INT_PLUS), (int, s::minus, R_INT_MINUS), (int, s::mul, R_INT_MUL), (int, s::div, R_INT_DIV),
+        (int, s::modulo, R_INT_MOD), (int, s::lt, R_INT_LT), (int, s::le, R_INT_LE), (int, s::gt, R_INT_GT),
+        (int, s::ge, R_INT_GE), (int, s::eq, R_INT_EQ), (int, s::and, R_INT_AND), (int, s::or, R_INT_OR),
+        (int, s::ltlt, R_INT_LSHIFT), (int, s::gtgt, R_INT_RSHIFT), (int, s::xor, R_INT_XOR), (int, s::eqq, R_INT_EQQ),
+        (flo, s::plus, R_FLO_PLUS), (flo, s::minus, R_FLO_MINUS), (flo, s::mul, R_FLO_MUL), (flo, s::div, R_FLO_DIV),
+        (flo, s::lt, R_FLO_LT), (flo, s::le, R_FLO_LE), (flo, s::gt, R_FLO_GT), (flo, s::ge, R_FLO_GE),
+        (flo, s::eq, R_FLO_EQ), (flo, s::pow, R_FLO_POW),
+        (ary, s::ltlt, R_ARY_LTLT), (ary, s::aref, R_ARY_AREF), (ary, s::aset, R_ARY_ASET),
+        (hash, s::aref, R_HASH_AREF), (hash, s::aset, R_HASH_ASET),
+        (str, s::ltlt, R_STR_LTLT), (str, s::eqq, R_STR_EQQ),
+        (nil, s::eq, R_IMM_EQ), (tru, s::eq, R_IMM_EQ), (fal, s::eq, R_IMM_EQ), (sym, s::eq, R_IMM_EQ),
+        (nil, s::eqq, R_NIL_EQQ), (tru, s::eqq, R_TRUE_EQQ), (fal, s::eqq, R_FALSE_EQQ), (sym, s::eqq, R_SYM_EQQ),
     ];
     for &(k, m, f) in table {
         if m == mid && (klass == k || ancestors(c, k).contains(&klass)) { REDEF.fetch_or(f, Relaxed); }
@@ -583,10 +596,12 @@ pub fn srb_when_splat(c: &mut Ctx, p: Value, subj: Value) -> Result<bool, Esc> {
 
 #[cold]
 pub fn srb_eqq(c: &mut Ctx, p: Value, subj: Value, cc: &CallCache) -> Result<bool, Esc> {
-    if p.is_fixnum() && subj.is_fixnum() { return Ok(p == subj); }
-    if p.is_sym() { return Ok(p == subj); }
-    if p == NIL || p == TRUE || p == FALSE { return Ok(p == subj); }
-    if is_string(p) && is_string(subj) && obj_klass(p) == vm().c_string.get() { return Ok(c.str_eq(p, subj)); }
+    if !redef(R_EQQ_IMM) {
+        if p.is_fixnum() && subj.is_fixnum() { return Ok(p == subj); }
+        if p.is_sym() { return Ok(p == subj); }
+        if p == NIL || p == TRUE || p == FALSE { return Ok(p == subj); }
+    }
+    if is_string(p) && is_string(subj) && obj_klass(p) == vm().c_string.get() && !redef(R_STR_EQQ) { return Ok(c.str_eq(p, subj)); }
     let base = stage(c, 3)?;
     base[0].set(p); base[2].set(subj);
     let r = call_cached(c, cc, s::eqq, base, 1, std::ptr::null(), 0)?;

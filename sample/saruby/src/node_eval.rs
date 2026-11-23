@@ -812,7 +812,7 @@ pub fn EVAL_node_when<D_pats: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, subj_sl
         if kinds[i] == 1 {
             if srb_when_splat(c, p, subj)? { return Ok(TRUE); }
         } else {
-            let hit = match eqq_imm(p, subj) {
+            let hit = match if c.redef_any(R_EQQ_IMM) { None } else { eqq_imm(p, subj) } {
                 Some(b) => b,
                 None => {
                     // Module#=== asked of the same subject class again: d is 0 (no) or 1 (yes)
@@ -833,16 +833,20 @@ pub fn EVAL_node_when<D_pats: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, subj_sl
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_when_lit(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, v: Value, cc: &CallCache) -> RV {
     let subj = slot(fp, subj_slot).get();
-    if subj == v { return Ok(TRUE); }
-    if !v.is_fixnum() || subj.is_fixnum() { return Ok(FALSE); }
+    if !c.redef_any(R_EQQ_IMM) {
+        if subj == v { return Ok(TRUE); }
+        if !v.is_fixnum() || subj.is_fixnum() { return Ok(FALSE); }
+    }
     Ok(Value::bool(srb_eqq(c, v, subj, cc)?))
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_TEST_node_when_lit(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, v: Value, cc: &CallCache) -> Result<bool, Esc> {
     let subj = slot(fp, subj_slot).get();
-    if subj == v { return Ok(true); }
-    if !v.is_fixnum() || subj.is_fixnum() { return Ok(false); }
+    if !c.redef_any(R_EQQ_IMM) {
+        if subj == v { return Ok(true); }
+        if !v.is_fixnum() || subj.is_fixnum() { return Ok(false); }
+    }
     srb_eqq(c, v, subj, cc)
 }
 

@@ -379,7 +379,7 @@ pub struct Ctx {
     pub last_match: Value,
     pub in_ensure: u32,
     // copy of rt::REDEF, so that baked code tests it from the (noalias) context: rt::note_redefinition, fiber::leave
-    pub redef: u32,
+    pub redef: u64,
     pub tok: crate::heap::Token,   // makes this the heap token (heap.rs)
 }
 
@@ -426,6 +426,8 @@ impl Ctx {
     #[inline(always)] pub fn next_serial(&mut self) -> u64 { self.serial += 1; self.serial }
     /// Is any of Integer's basic operators redefined (rt::R_INT_ALL)?
     #[inline(always)] pub fn int_redef(&self) -> bool { self.redef & crate::rt::R_INT_ALL != 0 }
+    /// Is any of the basic operations in `f` (rt::R_*) redefined?  From the context's copy, as int_redef.
+    #[inline(always)] pub fn redef_any(&self, f: u64) -> bool { self.redef & f != 0 }
     // SAFETY: H5; the borrow of the context excludes every call that pushes, pops or switches frames
     #[inline(always)] pub fn frame(&self) -> &Frame { unsafe { &*self.frame } }
     #[inline(always)] pub fn frame_mut(&mut self) -> &mut Frame { unsafe { &mut *self.frame } }
