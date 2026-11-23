@@ -309,7 +309,7 @@ fn sched_writer(c: &Ctx, io_v: Value) -> Value {
     let s = crate::builtins::thread::scheduler_current(c);
     if s == NIL || !crate::builtins::thread::sched_has(c, s, "io_write") || rio(c, io_v).is_none_or(|io| out_fd(io) <= 2) { NIL } else { s }
 }
-fn discard_rbuf(io: &mut RIo) {
+pub(crate) fn discard_rbuf(io: &mut RIo) {
     // give unread bytes back to the kernel offset before writing / seeking
     let unread = (io.rbuf.len() - io.rpos) as i64;
     if unread > 0 && !io.data { sys::lseek(io.fd, -unread, 1); }
@@ -1794,10 +1794,24 @@ pub fn open_with_block(c: &mut Ctx, klass: Value, a: &[Value], blk: Blk) -> RV {
     let (ek, ev) = (c.esc, c.esc_val);
     let cr = funcall(c, f, intern(b"close"), &[], std::ptr::null());
     if r.is_err() { c.esc = ek; c.esc_val = ev; return r; }
-    cr?;
+    if let Err(e) = cr {
+        // ignore_closed_stream: an IOError "closed stream" from #close is dropped
+        let x = c.esc_val;
+        let closed = is_kind_of(c, x, c.vm().c_io_error.get()) && { let m = ivar_get(c, x, crate::symbol::s::mesg); is_string(m) && c.str_bytes(m) == b"closed stream" };
+        if !closed { return Err(e); }
+        c.esc = EscKind::None;
+    }
     r
 }
 fn io_s_open(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV { open_with_block(c, slf, a, blk) }
+/// rb_io_s_new: a block is ignored, with a warning.
+fn io_s_new(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+    if !blk.is_null() {
+        let n = crate::builtins::kernel::inspect_str(c, slf)?;
+        crate::builtins::kernel::gvar_warn(c, &format!("{}::new() does not take block; use {}::open() instead", n, n), false)?;
+    }
+    crate::builtins::object::c_new(c, slf, a, Blk::NONE)
+}
 /// Kernel#open: a file, "|command", or anything with #to_open.
 fn k_open(c: &mut Ctx, _s: Value, a: &[Value], blk: Blk) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
@@ -2180,7 +2194,7 @@ pub fn init(c: &mut Ctx) {
     define_private_cfunc(c, io, "initialize_copy", io_init_copy, 1);
     define_private_cfunc(c, f, "initialize", file_initialize, -1);
     let ds = |c: &mut Ctx, n: &str, fun: CFunc, a: i32| define_singleton_cfunc(c, io, n, fun, a);
-    ds(c, "open", io_s_open, -1); ds(c, "for_fd", crate::builtins::object::c_new, -1); ds(c, "sysopen", io_s_sysopen, -1); ds(c, "pipe", io_s_pipe, -1); ds(c, "popen", io_s_popen, -1);
+    ds(c, "open", io_s_open, -1); ds(c, "new", io_s_new, -1); ds(c, "for_fd", crate::builtins::object::c_new, -1); ds(c, "sysopen", io_s_sysopen, -1); ds(c, "pipe", io_s_pipe, -1); ds(c, "popen", io_s_popen, -1);
     ds(c, "select", io_s_select, -1); ds(c, "read", io_s_read, -1); ds(c, "binread", io_s_binread, -1); ds(c, "readlines", io_s_readlines, -1); ds(c, "foreach", io_s_foreach, -1);
     ds(c, "write", io_s_write, -1); ds(c, "binwrite", io_s_binwrite, -1); ds(c, "copy_stream", io_s_copy_stream, -1); ds(c, "try_convert", io_s_try_convert, 1);
     define_module_function(c, vmr.m_kernel.get(), "select", io_s_select, -1);

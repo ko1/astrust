@@ -38,6 +38,8 @@ fn fd_meta(fd: i32) -> std::io::Result<std::fs::Metadata> {
 }
 /// Metadata of a path or an IO argument.
 fn meta_of(c: &mut Ctx, v: Value, follow: bool) -> Result<Result<std::fs::Metadata, (std::io::Error, PathArg)>, Esc> {
+    // rb_stat: an IO, or what to_io gives, is fstat'ed
+    let v = if rio(c, v).is_none() && v.is_heap() && !is_string(v) && respond_to(c, v, intern(b"to_io"), true) { funcall(c, v, intern(b"to_io"), &[], std::ptr::null())? } else { v };
     if let Some(io) = rio(c, v) {
         if io.closed { return err(c, c.vm().c_io_error.get(), "closed stream"); }
         return Ok(fd_meta(io.fd).map_err(|e| (e, PathArg(io.path.clone()))));
@@ -75,6 +77,8 @@ stat_fn!(st_dev, |c, m| Value::fix(m.dev() as i64));
 stat_fn!(st_dev_major, |c, m| Value::fix(((m.dev() >> 8) & 0xfff) as i64));
 stat_fn!(st_dev_minor, |c, m| Value::fix(((m.dev() & 0xff) | ((m.dev() >> 12) & 0xfff00)) as i64));
 stat_fn!(st_rdev, |c, m| Value::fix(m.rdev() as i64));
+stat_fn!(st_rdev_major, |c, m| Value::fix((((m.rdev() >> 32) & 0xffff_f000) | ((m.rdev() >> 8) & 0xfff)) as i64));
+stat_fn!(st_rdev_minor, |c, m| Value::fix((((m.rdev() >> 12) & 0xffff_ff00) | (m.rdev() & 0xff)) as i64));
 stat_fn!(st_nlink, |c, m| Value::fix(m.nlink() as i64));
 stat_fn!(st_blksize, |c, m| Value::fix(m.blksize() as i64));
 stat_fn!(st_blocks, |c, m| Value::fix(m.blocks() as i64));
@@ -103,7 +107,7 @@ stat_fn!(st_setuid, |c, m| Value::bool(m.mode() & 0o4000 != 0));
 stat_fn!(st_setgid, |c, m| Value::bool(m.mode() & 0o2000 != 0));
 stat_fn!(st_sticky, |c, m| Value::bool(m.mode() & 0o1000 != 0));
 stat_fn!(st_owned, |c, m| Value::bool(m.uid() == sys::geteuid()));
-stat_fn!(st_grpowned, |c, m| Value::bool(m.gid() == sys::getegid()));
+stat_fn!(st_grpowned, |c, m| Value::bool(group_member(m.gid())));
 fn st_birthtime(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let m = stat_md(c, s)?;
     birthtime(c, &m)
@@ -175,7 +179,16 @@ test_fn!(f_s_setuid, true, |m| Value::bool(m.mode() & 0o4000 != 0));
 test_fn!(f_s_setgid, true, |m| Value::bool(m.mode() & 0o2000 != 0));
 test_fn!(f_s_sticky, true, |m| Value::bool(m.mode() & 0o1000 != 0));
 test_fn!(f_s_owned, true, |m| Value::bool(m.uid() == sys::geteuid()));
-test_fn!(f_s_grpowned, true, |m| Value::bool(m.gid() == sys::getegid()));
+test_fn!(f_s_grpowned, true, |m| Value::bool(group_member(m.gid())));
+/// rb_group_member: the effective gid or one of the supplementary groups.
+fn group_member(g: u32) -> bool {
+    if g == sys::getegid() { return true; }
+    let n = sys::getgroups(&mut []);
+    if n <= 0 { return false; }
+    let mut l = vec![0u32; n as usize];
+    let n = sys::getgroups(&mut l);
+    n > 0 && l[..n as usize].contains(&g)
+}
 fn f_s_size_p(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { Ok(match meta_of(c, a[0], true)? { Ok(m) if m.len() > 0 => Value::fix(m.len() as i64), _ => NIL }) }
 fn f_s_world_readable(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { Ok(match meta_of(c, a[0], true)? { Ok(m) if m.mode() & 4 != 0 => Value::fix((m.mode() & 0o777) as i64), _ => NIL }) }
 fn f_s_world_writable(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { Ok(match meta_of(c, a[0], true)? { Ok(m) if m.mode() & 2 != 0 => Value::fix((m.mode() & 0o777) as i64), _ => NIL }) }
@@ -198,7 +211,12 @@ fn f_s_birthtime(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     }
 }
 fn birthtime(c: &mut Ctx, m: &std::fs::Metadata) -> RV {
-    match m.created().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()) { Some(d) => Ok(time_of(c, d.as_secs() as i64, d.subsec_nanos() as i64)), None => err(c, c.vm().c_not_impl_error.get(), "birthtime() function is unimplemented on this machine") }
+    // statx without STATX_BTIME in the answer: the filesystem keeps no birth time
+    match m.created().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()) { Some(d) => Ok(time_of(c, d.as_secs() as i64, d.subsec_nanos() as i64)), None => err(c, c.vm().c_not_impl_error.get(), "birthtime is unimplemented on this filesystem") }
+}
+fn f_birthtime(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
+    let fd = crate::builtins::io::get_io(c, s)?.fd;
+    match fd_meta(fd) { Ok(m) => birthtime(c, &m), Err(e) => Err(os_err(c, &e, "")) }
 }
 fn f_s_ftype(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     match meta_of(c, a[0], false)? { Ok(m) => Ok(c.str_new(ftype(&m).as_bytes())), Err((e, p)) => Err(os_err_at(c, &e, "rb_file_s_ftype - ", p.as_bytes())) }
@@ -250,6 +268,7 @@ fn f_s_truncate(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     Ok(Value::fix(0))
 }
 fn f_s_umask(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
+    check_argc(c, a, 0, 1)?;
     if let Some(&m) = a.first() { let m = mode_arg(c, m)?; return Ok(Value::fix(sys::umask(m) as i64)); }
     let old = sys::umask(0); sys::umask(old);
     Ok(Value::fix(old as i64))
@@ -280,9 +299,21 @@ fn trim_end(b: &[u8]) -> &[u8] { let mut n = b.len(); while n > 0 && b[n - 1] ==
 fn trim_start(b: &[u8]) -> &[u8] { let n = b.iter().position(|&x| x != b'/').unwrap_or(b.len()); &b[n..] }
 fn last_comp(b: &[u8]) -> &[u8] { match b.iter().rposition(|&x| x == b'/') { Some(i) => &b[i + 1..], None => b } }
 fn str_like(c: &mut Ctx, src: Value, b: &[u8]) -> Value { if is_string(src) { let e = c.str_enc(src); c.str_new_enc(b, e) } else { c.str_new(b) } }
+/// rb_get_path: the path as a String (to_path / to_str), without NUL, in an ASCII-compatible encoding.
+fn path_str(c: &mut Ctx, v: Value) -> RV {
+    let sv = if is_string(v) { v } else if respond_to(c, v, intern(b"to_path"), true) { let p = funcall(c, v, intern(b"to_path"), &[], std::ptr::null())?; expect_str(c, p)? } else { expect_str(c, v)? };
+    let enc = c.str_enc(sv);
+    if !crate::builtins::encoding::ascii_compat(enc) {
+        let d = inspect_str(c, sv)?;
+        return err(c, c.vm().c_compat_error.get(), format!("path name must be ASCII-compatible ({}): {}", crate::builtins::encoding::enc_name(enc), d));
+    }
+    if c.str_bytes(sv).contains(&0) { return arg_err(c, "path name contains null byte"); }
+    Ok(sv)
+}
 fn f_s_basename(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
-    let p = path_arg(c, a[0])?.0;
+    let sv = path_str(c, a[0])?;
+    let p = c.str_bytes(sv).to_vec();
     let t = trim_end(&p);
     let mut base = if t.is_empty() && p.starts_with(b"/") { b"/".to_vec() } else { last_comp(t).to_vec() };
     if a.len() > 1 {
@@ -290,7 +321,7 @@ fn f_s_basename(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
         if suf == b".*" { if let Some(i) = base.iter().rposition(|&x| x == b'.') { if i > 0 { base.truncate(i); } } }
         else if base.ends_with(&suf) && base != suf { base.truncate(base.len() - suf.len()); }
     }
-    Ok(str_like(c, a[0], &base))
+    Ok(str_like(c, sv, &base))
 }
 fn dirname_of(p: &[u8]) -> Vec<u8> {
     let t = trim_end(p);
@@ -300,10 +331,11 @@ fn dirname_of(p: &[u8]) -> Vec<u8> {
 }
 fn f_s_dirname(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
-    let mut p = path_arg(c, a[0])?.0;
+    let sv = path_str(c, a[0])?;
+    let mut p = c.str_bytes(sv).to_vec();
     let n = match a.get(1) { Some(&l) => { let n = num_to_long(c, l)?; if n < 0 { return arg_err(c, format!("negative level: {}", n)); } n } None => 1 };
     for _ in 0..n { let d = dirname_of(&p); if d == p { break; } p = d; }
-    Ok(str_like(c, a[0], &p))
+    Ok(str_like(c, sv, &p))
 }
 fn f_s_extname(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     let p = path_arg(c, a[0])?.0;
@@ -313,27 +345,40 @@ fn f_s_extname(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     Ok(str_like(c, a[0], e))
 }
 fn f_s_split(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
-    let d = f_s_dirname(c, slf, &a[..1], b)?;
-    let bn = f_s_basename(c, slf, &a[..1], b)?;
+    let sv = path_str(c, a[0])?;
+    let d = f_s_dirname(c, slf, &[sv], b)?;
+    let bn = f_s_basename(c, slf, &[sv], b)?;
     Ok(c.ary_new_from(&[d, bn]))
 }
-fn f_s_join(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
-    let mut parts: Vec<Vec<u8>> = vec![];
-    fn flat(c: &mut Ctx, v: Value, out: &mut Vec<Vec<u8>>, depth: usize) -> Result<(), Esc> {
-        if depth > 1000 { return arg_err(c, "recursive array"); }
-        if is_array(v) {
-            let mut i = 0;
-            while i < c.ary_len(v) { let x = c.ary_get(v, i); i += 1; if x == v { return arg_err(c, "recursive array"); } flat(c, x, out, depth + 1)?; }
-            Ok(())
-        } else { out.push(path_arg(c, v)?.0); Ok(()) }
-    }
-    for &x in a { flat(c, x, &mut parts, 0)?; }
+/// rb_file_join: arrays join recursively; one separator between parts (a part's leading
+/// separator replaces the trailing ones before it); the first part's encoding.
+fn join_parts(c: &mut Ctx, a: &[Value], depth: usize, enc: &mut Option<u8>) -> Result<Vec<u8>, Esc> {
+    if depth > 1000 { return arg_err(c, "recursive array"); }
     let mut out: Vec<u8> = vec![];
-    for (i, p) in parts.iter().enumerate() {
-        if i == 0 { out.extend_from_slice(p); continue; }
-        match (out.ends_with(b"/"), p.starts_with(b"/")) { (true, true) => { while out.ends_with(b"/") { out.pop(); } out.extend_from_slice(p) } (false, false) => { out.push(b'/'); out.extend_from_slice(p); } _ => out.extend_from_slice(p) }
+    for (i, &x) in a.iter().enumerate() {
+        let part = if is_array(x) {
+            let items = c.ary(x).to_vec();
+            if items.contains(&x) { return arg_err(c, "recursive array"); }
+            join_parts(c, &items, depth + 1, enc)?
+        } else {
+            let sv = if is_string(x) { x } else { path_str(c, x)? };
+            if enc.is_none() { *enc = Some(c.str_enc(sv)); }
+            let b = c.str_bytes(sv).to_vec();
+            if b.contains(&0) { return arg_err(c, "string contains null byte"); }
+            b
+        };
+        if i > 0 {
+            if part.first() == Some(&b'/') { while out.last() == Some(&b'/') { out.pop(); } }
+            else if out.last() != Some(&b'/') { out.push(b'/'); }
+        }
+        out.extend_from_slice(&part);
     }
-    Ok(c.str_new(&out))
+    Ok(out)
+}
+fn f_s_join(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
+    let mut enc = None;
+    let out = join_parts(c, a, 0, &mut enc)?;
+    Ok(c.str_new_enc(&out, enc.unwrap_or(ENC_BINARY)))
 }
 fn home_of(c: &mut Ctx, user: &str) -> Result<Vec<u8>, Esc> {
     // without HOME: the password entry of the real uid (rb_default_home_dir)
@@ -346,49 +391,180 @@ fn home_of(c: &mut Ctx, user: &str) -> Result<Vec<u8>, Esc> {
     arg_err(c, format!("user {} doesn't exist", user))
 }
 fn cwd() -> Vec<u8> { std::env::current_dir().map(|d| d.into_os_string().into_vec()).unwrap_or(b"/".to_vec()) }
-pub(crate) fn expand(c: &mut Ctx, a: &[Value], tilde: bool) -> Result<Vec<u8>, Esc> {
-    let mut p = path_arg(c, a[0])?.0;
-    if tilde && p.starts_with(b"~") {
-        let end = p.iter().position(|&x| x == b'/').unwrap_or(p.len());
-        let user = String::from_utf8_lossy(&p[1..end]).into_owned();
-        let mut h = home_of(c, &user)?;
-        if !h.starts_with(b"/") { return arg_err(c, "non-absolute home"); }
-        h.extend_from_slice(&p[end..]);
-        p = h;
+/// rb_file_expand_path_internal's normalization (Unix): `buf[..p]` is the root or base directory
+/// (a NUL after the end), `s` the rest of the path.
+fn expand_norm(mut buf: Vec<u8>, mut p: usize, s: &[u8]) -> Vec<u8> {
+    fn at(b: &[u8], i: usize) -> u8 { *b.get(i).unwrap_or(&0) }
+    fn put(b: &mut Vec<u8>, i: usize, x: u8) { if b.len() <= i { b.resize(i + 1, 0); } b[i] = x; }
+    fn copy(b: &mut Vec<u8>, p: &mut usize, src: &[u8]) {
+        let skip = (at(b, *p) != 0) as usize;
+        *p += skip;
+        b.truncate(*p);
+        b.extend_from_slice(src);
+        *p += src.len();
     }
-    let full = if p.starts_with(b"/") { p } else {
-        let mut base = if a.len() > 1 && a[1] != NIL { expand(c, &a[1..2], tilde)? } else { cwd() };
-        base.push(b'/'); base.extend_from_slice(&p);
-        base
-    };
-    let mut comps: Vec<&[u8]> = vec![];
-    for x in full.split(|&b| b == b'/') { match x { b"" | b"." => {} b".." => { comps.pop(); } y => comps.push(y) } }
-    let mut out = b"/".to_vec(); out.extend_from_slice(&comps.join(&b'/'));
-    Ok(out)
-}
-fn f_s_expand_path(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 1, 2)?; let r = expand(c, a, true)?; Ok(c.str_new(&r)) }
-fn f_s_absolute_path(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 1, 2)?; let r = expand(c, a, false)?; Ok(c.str_new(&r)) }
-fn f_s_absolute_path_p(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV { let p = path_arg(c, a[0])?; Ok(Value::bool(p.as_bytes().starts_with(b"/"))) }
-fn realpath_impl(c: &mut Ctx, a: &[Value], strict: bool) -> RV {
-    check_argc(c, a, 1, 2)?;
-    let p = PathArg(expand(c, a, false)?);
-    match std::fs::canonicalize(&p) {
-        Ok(r) => Ok(c.str_new(r.as_os_str().as_bytes())),
-        Err(e) => {
-            if !strict { // the last component may be missing
-                let d = PathArg(dirname_of(p.as_bytes()));
-                if let Ok(r) = std::fs::canonicalize(&d) {
-                    let mut o = trim_end(r.as_os_str().as_bytes()).to_vec(); o.push(b'/'); o.extend_from_slice(last_comp(p.as_bytes()));
-                    return Ok(c.str_new(&o));
+    if p > 0 && buf[p - 1] == b'/' { p -= 1; } else { buf.truncate(p); put(&mut buf, p, b'/'); }
+    buf.truncate(p + 1);
+    put(&mut buf, p + 1, 0);
+    let root = 0;
+    let (mut i, mut b) = (0, 0);
+    while i < s.len() {
+        match s[i] {
+            b'.' => {
+                let begin = b == i;
+                i += 1;
+                if begin {
+                    if i == s.len() { b = i; continue; }
+                    match s[i] {
+                        b'.' if i + 1 == s.len() || s[i + 1] == b'/' => {
+                            // go back to the parent (dir.c strrdirsep over buf[root..p])
+                            put(&mut buf, p, 0);
+                            let mut cur = p as isize - 1;
+                            while cur >= root as isize && buf[cur as usize] == b'/' { cur -= 1; }
+                            let mut found = None;
+                            while cur >= root as isize {
+                                if buf[cur as usize] == b'/' { while cur > root as isize && buf[cur as usize - 1] == b'/' { cur -= 1; } found = Some(cur as usize); break; }
+                                cur -= 1;
+                            }
+                            match found { None => put(&mut buf, p, b'/'), Some(n) => p = n }
+                            i += 1; b = i;
+                        }
+                        b'/' => { i += 1; b = i; }
+                        _ => {}
+                    }
                 }
             }
-            Err(os_err_at(c, &e, "rb_check_realpath_internal - ", p.as_bytes()))
+            b'/' => {
+                if i > b { copy(&mut buf, &mut p, &s[b..i]); put(&mut buf, p, b'/'); }
+                i += 1; b = i;
+            }
+            _ => i += 1,
         }
+    }
+    if i > b { copy(&mut buf, &mut p, &s[b..i]); buf.truncate(p); }
+    // keep the root separator
+    let end = p + (at(&buf, p) != 0) as usize;
+    let mut sr = 0; while sr < end && at(&buf, sr) == b'/' { sr += 1; }
+    if sr >= 1 && p == sr - 1 { p += 1; }
+    buf.resize(p.max(buf.len()), 0);
+    buf.truncate(p);
+    buf
+}
+/// The trailing-separator trim of a base directory (chompdirsep(skiproot(buf))): its end.
+fn base_end(b: &[u8]) -> usize {
+    let mut i = 0; while i < b.len() && b[i] == b'/' { i += 1; }
+    let mut q = i;
+    while q < b.len() {
+        if b[q] == b'/' { let last = q; while q < b.len() && b[q] == b'/' { q += 1; } if q >= b.len() { return last; } } else { q += 1; }
+    }
+    q
+}
+/// File.expand_path (tilde) / absolute_path: (bytes, encoding).
+pub(crate) fn expand_enc(c: &mut Ctx, a: &[Value], tilde: bool) -> Result<(Vec<u8>, u8), Esc> {
+    let sv = path_str(c, a[0])?;
+    let mut enc = c.str_enc(sv);
+    let f = c.str_bytes(sv).to_vec();
+    let relative = |c: &mut Ctx| -> Result<(), Esc> {
+        let de = crate::builtins::encoding::default_external();
+        if !crate::builtins::encoding::ascii_compat(de) {
+            return err(c, c.vm().c_compat_error.get(), format!("incompatible character encodings: {} and {}", crate::builtins::encoding::enc_name(enc), crate::builtins::encoding::enc_name(de)));
+        }
+        Ok(())
+    };
+    let (buf, p, rest): (Vec<u8>, usize, &[u8]) = if tilde && f.first() == Some(&b'~') {
+        let end = f.iter().position(|&x| x == b'/').unwrap_or(f.len());
+        let user = String::from_utf8_lossy(&f[1..end]).into_owned();
+        let h = home_of(c, &user)?;
+        if !h.starts_with(b"/") {
+            if user.is_empty() { return arg_err(c, "non-absolute home"); }
+            return arg_err(c, format!("non-absolute home of {}", user));
+        }
+        relative(c)?;
+        // "~" and "~/" skip the separator; "~user" keeps it for the loop
+        let rest = if user.is_empty() { &f[(end + 1).min(f.len())..] } else { &f[end..] };
+        let n = h.len();
+        (h, n, rest)
+    } else if f.first() != Some(&b'/') {
+        let base = if a.len() > 1 && a[1] != NIL {
+            // fs_enc_check: an ASCII-only path takes the base directory's encoding
+            let (d, de) = expand_enc(c, &a[1..2], tilde)?;
+            if crate::string::is_ascii(&f) { enc = de; }
+            d
+        } else { relative(c)?; cwd() };
+        let n = base_end(&base);
+        (base, n, &f[..])
+    } else {
+        let n = f.iter().position(|&x| x != b'/').unwrap_or(f.len());
+        (vec![b'/'; n], n, &f[n..])
+    };
+    Ok((expand_norm(buf, p, rest), enc))
+}
+pub(crate) fn expand(c: &mut Ctx, a: &[Value], tilde: bool) -> Result<Vec<u8>, Esc> { Ok(expand_enc(c, a, tilde)?.0) }
+fn f_s_expand_path(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 1, 2)?; let (r, e) = expand_enc(c, a, true)?; Ok(c.str_new_enc(&r, e)) }
+fn f_s_absolute_path(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 1, 2)?; let (r, e) = expand_enc(c, a, false)?; Ok(c.str_new_enc(&r, e)) }
+fn f_s_absolute_path_p(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV { let p = path_arg(c, a[0])?; Ok(Value::bool(p.as_bytes().starts_with(b"/"))) }
+/// file.c realpath_rec: resolve `unresolved` onto `resolved` component by component; a missing
+/// last component is allowed unless `strict`. `seen`: links being or already resolved (None: in progress).
+fn realpath_rec(resolved: &mut Vec<u8>, unresolved: &[u8], strict: bool, last: bool, seen: &mut Vec<(Vec<u8>, Option<Vec<u8>>)>) -> Result<(), (i64, Vec<u8>)> {
+    let comps: Vec<&[u8]> = unresolved.split(|&b| b == b'/').filter(|x| !x.is_empty()).collect();
+    for (k, &comp) in comps.iter().enumerate() {
+        if comp == b"." { continue; }
+        if comp == b".." {
+            if let Some(i) = resolved.iter().rposition(|&b| b == b'/') { resolved.truncate(if i == 0 { 1 } else { i }); }
+            continue;
+        }
+        let mut test = resolved.clone();
+        if test.last() != Some(&b'/') { test.push(b'/'); }
+        test.extend_from_slice(comp);
+        let is_last = last && comps[k + 1..].iter().all(|x| *x == b".");
+        if let Some((_, r)) = seen.iter().find(|(p, _)| *p == test) {
+            match r { None => return Err((40, test)), Some(r) => { *resolved = r.clone(); continue; } }
+        }
+        match std::fs::symlink_metadata(std::ffi::OsStr::from_bytes(&test)) {
+            Err(e) => {
+                let en = e.raw_os_error().unwrap_or(2) as i64;
+                if en == 2 && !strict && is_last { *resolved = test; continue; }
+                return Err((en, test));
+            }
+            Ok(m) if m.file_type().is_symlink() => {
+                let target = match std::fs::read_link(std::ffi::OsStr::from_bytes(&test)) { Ok(t) => t.into_os_string().into_vec(), Err(e) => return Err((e.raw_os_error().unwrap_or(2) as i64, test)) };
+                seen.push((test.clone(), None));
+                if target.first() == Some(&b'/') { *resolved = b"/".to_vec(); }
+                realpath_rec(resolved, &target, strict, is_last, seen)?;
+                if let Some(e) = seen.iter_mut().find(|(p, _)| *p == test) { e.1 = Some(resolved.clone()); }
+            }
+            Ok(_) => *resolved = test,
+        }
+    }
+    Ok(())
+}
+fn realpath_impl(c: &mut Ctx, a: &[Value], strict: bool) -> RV {
+    check_argc(c, a, 1, 2)?;
+    let sv = path_str(c, a[0])?;
+    let enc = c.str_enc(sv);
+    let orig = c.str_bytes(sv).to_vec();
+    let mut ea = a.to_vec(); ea[0] = sv;
+    let p = PathArg(expand(c, &ea, false)?);
+    if strict {
+        return match std::fs::canonicalize(&p) {
+            Ok(r) => Ok(c.str_new_enc(r.as_os_str().as_bytes(), enc)),
+            Err(e) => Err(os_err_at(c, &e, "rb_check_realpath_internal - ", if a.len() > 1 && a[1] != NIL { p.as_bytes() } else { &orig })),
+        };
+    }
+    let mut r = b"/".to_vec();
+    match realpath_rec(&mut r, p.as_bytes(), false, true, &mut vec![]) {
+        // a resolved path the argument's encoding cannot hold stays in the filesystem encoding
+        Ok(()) => {
+            let fs = crate::builtins::encoding::default_external();
+            if crate::string::is_ascii(&r) || enc == fs { return Ok(c.str_new_enc(&r, enc)); }
+            match crate::builtins::econv::convert_string(crate::builtins::encoding::enc_name(fs), crate::builtins::encoding::enc_name(enc), &r) { Some(o) => Ok(c.str_new_enc(&o, enc)), None => Ok(c.str_new_enc(&r, fs)) }
+        }
+        Err((e, path)) => Err(crate::builtins::io::raise_errno_at(c, e, "realpath_rec - ", &path)),
     }
 }
 fn f_s_realpath(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV { realpath_impl(c, a, true) }
 fn f_s_realdirpath(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV { realpath_impl(c, a, false) }
-fn f_s_path(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV { let p = path_arg(c, a[0])?; Ok(str_like(c, a[0], p.as_bytes())) }
+fn f_s_path(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV { let sv = path_str(c, a[0])?; Ok(c.str_dup(sv)) }
 fn f_s_open(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV { crate::builtins::io::open_with_block(c, slf, a, blk) }
 
 // ---- File instance methods --------------------------------------------------------------------
@@ -403,6 +579,7 @@ fn f_truncate(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     funcall(c, s, intern(b"flush"), &[], std::ptr::null())?;
     let io = crate::builtins::io::get_io(c, s)?;
     if !io.writable { return err(c, c.vm().c_io_error.get(), "not opened for writing"); }
+    crate::builtins::io::discard_rbuf(io);
     if sys::ftruncate(io.fd, n) < 0 { let p = io.path.clone(); return Err(last_err_at(c, "", &p)); }
     Ok(Value::fix(0))
 }
@@ -1065,7 +1242,7 @@ pub fn init_stat(c: &mut Ctx) {
     define_private_cfunc(c, st, "initialize", st_initialize, 1);
     define_private_cfunc(c, st, "initialize_copy", st_init_copy, 1);
     sd(c, "size", st_size, 0); sd(c, "mode", st_mode, 0); sd(c, "uid", st_uid, 0); sd(c, "gid", st_gid, 0); sd(c, "ino", st_ino, 0); sd(c, "dev", st_dev, 0);
-    sd(c, "dev_major", st_dev_major, 0); sd(c, "dev_minor", st_dev_minor, 0); sd(c, "rdev", st_rdev, 0); sd(c, "nlink", st_nlink, 0); sd(c, "blksize", st_blksize, 0);
+    sd(c, "dev_major", st_dev_major, 0); sd(c, "dev_minor", st_dev_minor, 0); sd(c, "rdev", st_rdev, 0); sd(c, "rdev_major", st_rdev_major, 0); sd(c, "rdev_minor", st_rdev_minor, 0); sd(c, "nlink", st_nlink, 0); sd(c, "blksize", st_blksize, 0);
     sd(c, "blocks", st_blocks, 0); sd(c, "atime", st_atime, 0); sd(c, "mtime", st_mtime, 0); sd(c, "ctime", st_ctime, 0); sd(c, "birthtime", st_birthtime, 0);
     sd(c, "file?", st_file, 0); sd(c, "directory?", st_dir, 0); sd(c, "symlink?", st_symlink, 0); sd(c, "pipe?", st_pipe, 0); sd(c, "socket?", st_socket, 0);
     sd(c, "chardev?", st_chardev, 0); sd(c, "blockdev?", st_blockdev, 0); sd(c, "readable?", st_readable, 0); sd(c, "writable?", st_writable, 0);
@@ -1091,7 +1268,7 @@ pub fn init(c: &mut Ctx) {
     df(c, "fnmatch", f_s_fnmatch, -1); df(c, "fnmatch?", f_s_fnmatch, -1);
     let di = |c: &mut Ctx, n: &str, fun: CFunc, a: i32| define_cfunc(c, f, n, fun, a);
     di(c, "size", f_size, 0); di(c, "truncate", f_truncate, 1); di(c, "flock", f_flock, 1); di(c, "chmod", f_chmod, 1); di(c, "chown", f_chown, 2); di(c, "mtime", f_mtime, 0);
-    di(c, "atime", f_atime, 0); di(c, "ctime", f_ctime, 0); di(c, "lstat", f_lstat, 0);
+    di(c, "atime", f_atime, 0); di(c, "ctime", f_ctime, 0); di(c, "lstat", f_lstat, 0); di(c, "birthtime", f_birthtime, 0);
     define_cfunc(c, io, "stat", f_stat, 0);
     let sep = c.str_new_frozen(b"/");
     const_set(c, f, intern(b"SEPARATOR"), sep);
