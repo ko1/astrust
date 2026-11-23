@@ -252,7 +252,7 @@ unsafe fn drop_body(p: *mut RObj) {
         match &mut (*p).body {
             Body::Free(_) | Body::Float(_) | Body::Range(..) => {}
             Body::Object(x) => d(x),
-            Body::Class(x) => d(x),
+            Body::Class(x) => { crate::vm::class_freed(x); d(x) }
             Body::String(x) => d(x),
             Body::Array(x) => d(x),
             // in place (entries, index: its only fields with drop glue): Box<RHash>'s glue was left out of line by some partitions

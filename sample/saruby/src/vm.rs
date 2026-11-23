@@ -749,6 +749,15 @@ pub fn prepend_module(c: &mut Ctx, klass: Value, m: Value) {
     c.class_mut(klass).prepends.push(m);
     bump_hierarchy();
 }
+/// A class dies (GC finalize): its slot may next hold another class, so no cache keyed by its address
+/// may hit again.  CRuby clears cc->klass, a weak reference; here the serial every inline cache compares.
+pub fn class_freed(cd: &ClassData) {
+    // IvarCache keys by class without a serial: it holds only real classes, which subclasses keeps alive
+    assert!(cd.is_singleton || cd.is_module, "a real class died");
+    bump_method_serial();
+    let mut m = vm().mcache.borrow_mut();
+    if !m.is_empty() { m.clear(); }
+}
 pub fn bump_hierarchy() {
     let vm = vm();
     vm.hierarchy_serial.set(vm.hierarchy_serial.get() + 1);
