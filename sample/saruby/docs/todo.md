@@ -53,9 +53,10 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [x] main ctx の root 走査が、確保側の生きている `&mut Ctx` と重なる: 確保は全部 `gc::alloc(c, ..)`（context-free の 90 か所を段階的に変換、NO_CTX・str_legacy.rs・legacy の生成関数を削除。unsafe 382 → 380、static mut 10 → 9）。main ctx の by-place 読みは fiber が確保するときだけ。master 比: 15 ベンチ中 10・起動・optcarrot は同じ、object AOT +0.62 %（焼いたコードのレジスタ割り当て）、nesteddata AOT +1.0 %（Hash の malloc 越しに c を保持）、hash AOT +1.4 %（hash_set のレジスタ割り当て。旧 base と同じ値で、無関係な cold 編集で反転）。途中の事故 2 件（drop_body の Box<RHash> drop glue が外に出る、RHash::with_capacity が inline されない）は修正（trials/2026-11-22-saruby-static-mut「NO_CTX」）
 - [ ] vm 分割後の poly AOT +0.29%（mcache の RefCell 検査の推定、未検証）。sp4 の時間で要確認
 - [x] 生成コード（astrustgen のテンプレート）: ノードアクセスを node_head.rs の監査済みプリミティブ（node_u::<T> ほか 13 個）に集約、@ref は NodeCell（UnsafeCell）、SD の子は wrapping_byte_offset。saruby 生成 1165 → 93、fib の焼き all.rs 75 → 7。命令数は全セル ±0.016% 以内（poly のみ -0.58%、call_slow の cgu 分割、cgu1 では 0）。L_::nth の unreachable_unchecked は safe 形が optcarrot .text +1% のため残す（unsafe_catalog.md 8）
-- [ ] 生成コード残り: @ref の &mut は再入（再帰呼び出しサイト）で一意でない（base から同じ UB）。body に &NodeCell + Cell のキャッシュを渡す形は node.def / vm.rs のキャッシュ API の変更が要る。NodePtr を &'static Node / NonNull にする案は手書き側の変更が大きく未着手（unsafe_catalog.md 8.3）
+- [ ] 生成コード残り: NodePtr を &'static Node / NonNull にする案は手書き側の変更が大きく未着手（unsafe_catalog.md 8.3）
 - [ ] 見送り中: safe な Value::fix/sym/flonum（hash +0.6〜1.4%、regalloc の変化）、ConstCache.val の Option 化（+0.1〜0.3%）
-- [ ] 再帰呼び出しの call site が、自分の inline cache（@ref）への &mut を、先の &mut が生きている間にもう 1 つ作る（base からの UB。NodeCell 化後も残る。node.def・vm.rs で cache の借用を呼び出しの前に終える必要）
+- [x] 再入した node の inline cache（@ref）への &mut の二重化: @ref は T のまま置き body に &T、キャッシュは全部 Cell フィールド（OpCc・poly 表は OnceCell<Box>）。NodeCell 削除。再入は t/hand 119 ファイル（call/call_blk/yield/call_x/opt_ltlt/opt_eq/opt_aref/call_kw/send_sym/iasgn）。実害あり: base の AOT で call_spec_out が呼び出し前の cc.klass を再利用し A に B#f を実行（-Zmutable-noalias=no で正常、tools/aot/ic_reentry_spec_klass_1123.rb）。命令数: block AOT +3.65%（焼いた SD 1 個のレジスタ割り当て、ループ変種 4 本は ±0.005%）以外は同等か減（ivar AOT -2.6%）。optcarrot -0.07%（unsafe_catalog.md 8.4、trials/2026-11-23-saruby-ic-borrow）
+- [ ] block AOT +3.65%（SD_f634 のループで &blk.info.line がスタック再読込、1 命令/step）: 原因はレジスタ割り当てで意味的コストではないが未解消
 
 ## 3. CRuby 互換性
 

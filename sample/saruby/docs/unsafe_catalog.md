@@ -355,19 +355,20 @@ it.
 | 41 | gc heap | `p [:a, :b].cycle(2**62).size` | debug build: panic (i64 overflow in `len * n`); release: wrapped (CRuby master 9223372036854775808) | integer overflow | c-test | e521210: the dev-build panic scan of the gc heap conversion (`cycle_nb_io_timeout_1020.rb`, trial README "gc heap"); fixed in the NO_CTX work |
 | 42 | gc heap | `p({a: 1, b: 2}.cycle(2**62).size)` | 0 (`Enumerable.__int` made a Fixnum of a long past the Fixnum range) | integer overflow | c-test | e521210: the first smoke test of row 41's fix (both `cycle` sizes printed side by side) printed 0; the cause read in `e_int` |
 | 43 | gc heap | `p [:a, :b].cycle(2**62).size` after row 41's fix | nil (`Enumerator#size` passed only Fixnum / Float sizes) | compatibility | c-test | e521210: the same smoke test printed nil; the cause read in `e_size` |
+| 44 | inline caches | AOT: a call site re-entered by recursion while the method serial changes refills its cache; then `x.f` with an A runs B#f (`tools/aot/ic_reentry_spec_klass_1123.rb`) | `[:A, :A, :B, :B]` (CRuby `[:A, :A, :A, :B]`; `--plain` right) | **undefined behaviour used by LLVM: `&mut CallCache` (`noalias`) live across a call that re-enters the same node** | c-read | f507c19: named in 8.3 item 4 while the generated code's `unsafe` was removed; the repro was written after reading `call_spec_out`'s machine code (pre-call `cc.klass` reused after the call), failed on base, passed on base rebuilt with `-Zmutable-noalias=no` and on the Cell form (trial `2026-11-23-saruby-ic-borrow`) |
 
 Rows 22, 25, 27, 29, 30, 33 to 37 are the "10 more compatibility differences" of earlier versions of
 this table; row 16 was counted in wave 3's 7 but missing from the table.
 
 Counts (rows of the table above; no row is undetermined; the "found later" row below is c-test and not counted):
 
-| found by | rows | SIGSEGV | UB (incl. latent) | GC rooting / UAF | wave 2 | String | wave 3 | wave 4 | fiber | method layer | object accessors | gc heap |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| a: run-time check of the safe API | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
-| b: borrow checker (compile time) | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
-| c-read: reading while rewriting | 23 | 5 | 2 | 2 | 5 | 2 | 5 | 9 | 0 | 1 | 1 | 0 |
-| c-test: a test run during the work | 18 | 0 | 0 | 2 | 1 | 4 | 1 | 8 | 1 | 0 | 0 | 3 |
-| **total** | **43** | 5 | 2 | 4 | 6 | 7 | 7 | 17 | 1 | 1 | 1 | 3 |
+| found by | rows | SIGSEGV | UB (incl. latent) | GC rooting / UAF | wave 2 | String | wave 3 | wave 4 | fiber | method layer | object accessors | gc heap | inline caches |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| a: run-time check of the safe API | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| b: borrow checker (compile time) | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| c-read: reading while rewriting | 24 | 5 | 3 | 2 | 5 | 2 | 5 | 9 | 0 | 1 | 1 | 0 | 1 |
+| c-test: a test run during the work | 18 | 0 | 0 | 2 | 1 | 4 | 1 | 8 | 1 | 0 | 0 | 3 | 0 |
+| **total** | **44** | 5 | 3 | 4 | 6 | 7 | 7 | 17 | 1 | 1 | 1 | 3 | 1 |
 
 Borrow errors that were not defects. The first `cargo check` of string_methods.rs gave 21 E0502 and
 16 E0499 at about 50 lines; those in `chomp_impl` and `split` are row 7, the others are not tied to any
@@ -1236,8 +1237,9 @@ Node access goes through primitives in node_head.rs, each one `unsafe` with the 
 `node_u::<T>(n) -> &'a T` (the operand struct; T's kind checked by `debug_assert`), `node_u_mut` (CHILDREN on
 layout_tree's copy, REPLACE), `node_kind` / `node_dispatcher` / `node_flags` / `node_set_flags` /
 `node_hash_get` / `node_hash_set` (head fields one at a time, so no borrow of the head overlaps the dispatcher
-write of patch binding), `node_head_line` (a head hole), and `NodeCell<T>` (`UnsafeCell`) for @ref operands, whose
-`body_mut()` gives the body its `&mut T` (`Deref` for bake-time hooks). Children in SDs are
+write of patch binding), and `node_head_line` (a head hole). @ref operands were `NodeCell<T>` (`UnsafeCell`) with
+`body_mut()` giving the body its `&mut T`; since 8.4 they are plain `T` with `Cell` fields and the body gets `&T`
+(no primitive). Children in SDs are
 `n.wrapping_byte_offset(K)` (an address, safe; the child's own `node_u` reads it). Head holes are set by
 `node_allocate_with` before the node is shared. Lists in CHILDREN / REPLACE are copied, not written in place
 (the base wrote through a pointer derived from a shared slice: undefined behaviour under Stacked / Tree Borrows;
@@ -1273,13 +1275,12 @@ soundness argument is an invariant of the program, not of the types.
 2. Kind = struct: the generator emits `node_u::<x_struct>` only in code for kind x, and an SD only runs on a node
    of its hash; `debug_assert` checks it (a debug build over every 8th t/hand file, plain and AOT with the SD
    crates built with `-C debug-assertions=on`: 0 failures).
-3. Operand fields other than @ref cells are not written while a borrow lives: only CHILDREN (on a copy not yet
-   published) and REPLACE (no caller at run time in any sample) write.
-4. **`NodeCell::body_mut` is not unique under re-entry** (pre-existing: the base's `&mut (*np).u.cc` is the
-   same): a recursive call site passes its `&mut CallCache` into `call_cached`, the callee reaches the same node
-   and makes a second `&mut` while the first is a live (protected) argument. Undefined behaviour under both
-   aliasing models; a sound form gives the bodies `&NodeCell<T>` and caches with `Cell` fields, which changes
-   node.def and the vm.rs cache API (not done, cost unmeasured).
+3. Operand fields other than the `Cell` state of @ref operands are not written while a borrow lives: only
+   CHILDREN (on a copy not yet published) and REPLACE (no caller at run time in any sample) write.
+4. (Closed by 8.4.) `NodeCell::body_mut` was not unique under re-entry: a recursive call site passed its
+   `&mut CallCache` into `call_cached`, the callee reached the same node and made a second `&mut` while the first
+   was a live (protected) argument. It was not only a model violation: LLVM used the `noalias` and an AOT run
+   called the wrong method (8.4, bug table row 44).
 5. SD child offsets: K is taken from the laid-out tree at bake time; valid because an SD is named by the tree's
    hash (its shape) and installed only on laid-out trees (`NF_LAID`).
 6. `L_::nth`: i < len (EVAL_NTH! in bodies).
@@ -1290,3 +1291,32 @@ Designs considered and not built (the trial README has the arguments): a `NodeRe
 `&'static Node` / `NonNull` with an arena lifetime (makes 1 a type invariant; needs `Cell` head fields,
 `Option` children, a lifetime parameter for astrogre's freed patterns through every signature, and changes to
 every hand-written user of NodePtr); a checked swap for REPLACE (no run-time caller).
+
+### 8.4 Inline caches under re-entry (closed)
+
+Trial: `2026-11-23-saruby-ic-borrow` (base `b459991`, commit `f507c19`). A node's EVAL body held `&mut` to its own
+@ref cache across calls; a re-entered dispatch of the same node made a second `&mut` while the first was live.
+A detector build (each DISPATCH of a kind with @ref counts the node's live dispatches) found re-entry in 119 of
+1896 t/hand files (`--plain`): node_call 76, node_call_blk 51, node_yield 25, node_call_x 21, node_opt_ltlt 5,
+node_opt_eq 3, node_opt_aref 2, node_call_kw 2, node_send_sym 2, node_iasgn 1 (FrozenError's message runs
+`#inspect`, which runs the same `@x = ..`). It was miscompiled, not only unsound: `call_spec_out` reused the
+pre-call `cc.klass` after a re-entered call had refilled the cache, so an AOT site ran B#f for an A (bug table
+row 44; correct with `-Zmutable-noalias=no`, which isolates the cause).
+
+Fix: @ref operands are stored as `T` and the body receives `&T`; every cache keeps its state in `Cell` fields
+(CallCache, YieldCache, ConstCache, IvarCache, KindMemo, SendGuard, LitCache, TyFb; OpCc and the polymorphic
+table are `OnceCell<Box<..>>`). No `&mut` to a cache exists, so re-entry is sound by type, with no `unsafe` and no
+invariant; `NodeCell` / `body_mut` are gone (generated sources 93 -> 91 `unsafe`, hand-written 380 -> 378: the
+poly table's raw `Box` pointer). It is the semantics of ASTro's C version (a plain `struct method_cache *` the
+compiler must assume a call may write), stated in the type. Option (a), ending the borrow before each call
+with short `&mut` scopes, keeps an `UnsafeCell` primitive and a manual "no call in the scope" rule at every cache
+API, so it was not built.
+
+Cost (instructions:u, 15 benches interp and AOT, base twice, cgu16 and cgu1 builds): interpreter within
++0.13 / -0.85 %; AOT cells equal or faster (ivar -2.6 %: LLVM no longer speculates the `ic.idx` load that
+`noalias` allowed; hash -1.4 / -2.7 %, iterators -1.7 %, gcchurn -1.6 %) except **block AOT +3.65 %** in both
+builds: one stack reload per block step in one baked SD (`(1..N).each` with the block compiled in), a register
+allocation of that function (the loop body has no cache access); four variants of the same loop (`times`,
+`upto`, nested, two accumulators) are within 0.005 %. optcarrot (59662) per frame 82.91 M against 82.97 M /
+82.97 M (base, base2); SARUBY_PATCH=0 82.37 M against 82.31 M / 82.30 M. Startup (cgu1) +16.5 k of 18.0 M.
+Regression test: `tools/aot/ic_reentry_spec_klass_1123.rb` (run by `tools/aot_fork_test.sh`).
