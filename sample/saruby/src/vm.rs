@@ -227,7 +227,8 @@ pub static TRACE_COMPILE: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 // Inline caches (node @ref operands) keep their state in Cells: a site re-entered by recursion while it
 // calls holds only `&` to its cache, so the callee's fills alias nothing.
 #[derive(Default)]
-// spec_klass: cc.klass while the entry it holds is the one baked into the site (call_spec_out)
+// spec_klass: cc.klass while the entry it holds is the one baked into the site (call_spec_out); every
+// write of fast clears it, since the baked callee reads that entry's nodes by its own layout
 // bi: which inlinable builtin it holds, and for which receivers (inline_builtin::cache_key)
 // poly: the other classes of a polymorphic site (call_slow)
 pub struct CallCache {
@@ -1839,6 +1840,7 @@ pub fn kw_dense_fill(cc: &CallCache, me: *const MethodEntry, npos: usize, names:
     let is = unsafe { &*is };
     if is.kentry.is_null() || is.params.lead.len() != npos || is.params.kw.len() != names.len()
         || !is.params.kw.iter().zip(names).all(|(k, n)| k.name == *n) { return; }
+    cc.spec_klass.set(0);
     cc.fast.set(is.kentry as usize);
     cc.fast_argc.set(KW_DENSE | (npos + names.len()) as u32);
     cc.fast_hash.set(crate::node::hash_node(is.kentry));
@@ -1903,6 +1905,8 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, re
 #[inline(never)]
 fn fill_cc(c: &mut Ctx, cc: &CallCache, recv: Value, klass: Value, me: *const MethodEntry, serial: u64, flags: u32) {
     cc.klass.set(klass.raw()); cc.serial.set(serial); cc.me.set(me as usize); cc.fast.set(0); cc.fast_argc.set(u32::MAX); cc.fast_hash.set(0); cc.cfunc.set(None); cc.bi.set(0);
+    // a callee this fill runs may re-enter the site before call_spec_out sets it again
+    cc.spec_klass.set(0);
     // calls traced: the entry never hits (baked fast paths trust what a hit implies, e.g. a NewInfo),
     // so every call goes out of line to invoke (tracepoint::invoke_traced)
     if trace_mask() & EV_CALLS != 0 { cc.serial.set(0); return; }

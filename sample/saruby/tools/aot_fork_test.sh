@@ -3,6 +3,7 @@
 # SARUBY_PATCH=0); every run must exit 0 and print what --plain prints.
 # fork_patch_arena_1122.rb: patch binding after fork wrote the parent's code pages (shared memfd).
 # ic_reentry_spec_klass_1123.rb: a recursive site's stale spec_klass (`&mut` cache under re-entry).
+# spec_klass_refill_1124.rb: a refill kept spec_klass; the refilled entry re-entered the site (baked callee over another entry).
 K=$(realpath "${1:-$(dirname "$0")/../saruby}"); N=${2:-5}; D=$(cd "$(dirname "$0")/aot" && pwd)
 w=$(mktemp -d); trap 'rm -rf "$w"' EXIT
 cp "$D"/*.rb "$w"/; cd "$w" || exit 1
