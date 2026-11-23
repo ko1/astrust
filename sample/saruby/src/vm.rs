@@ -1023,6 +1023,7 @@ pub fn ivar_list(c: &Ctx, v: Value) -> Vec<(Sym, Value)> {
 
 // ---- constants -----------------------------------------------------------------------------
 
+#[inline]
 pub fn const_set(c: &mut Ctx, klass: Value, name: Sym, val: Value) { const_set_at(c, klass, name, val, None) }
 /// const_set from Ruby code: remembers where (Module#const_source_location), warns on a redefinition.
 pub fn const_set_here(c: &mut Ctx, klass: Value, name: Sym, val: Value) -> Result<(), Esc> {
@@ -1031,7 +1032,7 @@ pub fn const_set_here(c: &mut Ctx, klass: Value, name: Sym, val: Value) -> Resul
         let at = |l: Option<SrcLoc>| l.map_or(String::new(), |(f, n)| format!("{}:{}: ", f, n));
         let path = if klass == vm().c_object.get() { sym_str(name).to_string() } else { format!("{}::{}", class_path(c, klass), sym_str(name)) };
         let mut msg = format!("{}warning: already initialized constant {}\n", at(loc), path);
-        if let Some(prev) = c.class(klass).const_loc.get(&name).copied() {
+        if let Some(prev) = c.class(klass).const_loc_of(name) {
             msg.push_str(&format!("{}warning: previous definition of {} was here\n", at(Some(prev)), sym_str(name)));
         }
         crate::builtins::kernel::warning_write(c, msg.as_bytes())?;
@@ -1048,10 +1049,11 @@ pub fn call_const_added(c: &mut Ctx, klass: Value, name: Sym) -> Result<(), Esc>
         _ => Ok(()),
     }
 }
+#[inline]
 fn const_set_at(c: &mut Ctx, klass: Value, name: Sym, val: Value, loc: Option<SrcLoc>) {
-    if !c.class(klass).autoloading.is_empty() {
+    if !c.class(klass).autoload_runs().is_empty() {
         let me = crate::builtins::thread::current_thread(c);
-        if let Some(r) = c.class_mut(klass).autoloading.iter_mut().find(|r| r.name == name && r.thread == me) {
+        if let Some(r) = c.class_mut(klass).cx_mut().autoloading.iter_mut().find(|r| r.name == name && r.thread == me) {
             // published when the autoload's require ends (other threads keep waiting on it)
             r.value = val; r.loc = loc;
             vm().const_serial.set(vm().const_serial.get() + 1);
@@ -1062,7 +1064,7 @@ fn const_set_at(c: &mut Ctx, klass: Value, name: Sym, val: Value, loc: Option<Sr
     let cd = c.class_mut(klass);
     if cd.consts.insert(name, val).is_none() { cd.const_order.push(name); }
     cd.autoload.remove(&name);
-    match loc { Some(l) => { cd.const_loc.insert(name, l); } None => { if !cd.const_loc.is_empty() { cd.const_loc.remove(&name); } } }
+    match loc { Some(l) => { cd.cx_mut().const_loc.insert(name, l); } None => { if let Some(x) = cd.cx.as_mut() { x.const_loc.remove(&name); } } }
     vm().const_serial.set(vm().const_serial.get() + 1);
     if is_class_or_module(val) && !has_perm_name(c, val) { name_class(c, val, klass, name); }
 }
@@ -1106,7 +1108,7 @@ pub enum Autoload {
 pub fn autoload_state(c: &Ctx, k: Value, name: Sym) -> Autoload {
     let Some(&path) = c.class(k).autoload.get(&name) else { return Autoload::Absent };
     let me = crate::builtins::thread::current_thread(c);
-    if let Some(r) = c.class(k).autoloading.iter().find(|r| r.name == name) {
+    if let Some(r) = c.class(k).autoload_runs().iter().find(|r| r.name == name) {
         return if r.thread == me { Autoload::Own((r.value != UNDEF).then_some(r.value), r.loc) } else { Autoload::Ready(path) };
     }
     match crate::builtins::kernel::feature_state(c, path) {
@@ -1131,9 +1133,9 @@ fn autoload_key(k: Value, name: Sym) -> u64 { (k.raw() as u64) ^ ((name.0 as u64
 pub fn do_autoload(c: &mut Ctx, k: Value, name: Sym) -> Result<Option<Value>, Esc> {
     let me = crate::builtins::thread::current_thread(c);
     let path = loop {
-        if c.class(k).autoloading.iter().any(|r| r.name == name && r.thread != me) {
+        if c.class(k).autoload_runs().iter().any(|r| r.name == name && r.thread != me) {
             let key = autoload_key(k, name);
-            crate::builtins::thread::block_on(c, |c| Ok(!c.class(k).autoloading.iter().any(|r| r.name == name)), Some(key), None, true)?;
+            crate::builtins::thread::block_on(c, |c| Ok(!c.class(k).autoload_runs().iter().any(|r| r.name == name)), Some(key), None, true)?;
             continue;
         }
         match autoload_state(c, k, name) {
@@ -1142,16 +1144,16 @@ pub fn do_autoload(c: &mut Ctx, k: Value, name: Sym) -> Result<Option<Value>, Es
             Autoload::Absent | Autoload::Done => return Ok(const_get_at(c, k, name)),
         }
     };
-    c.class_mut(k).autoloading.push(AutoloadRun { name, thread: me, value: UNDEF, loc: None });
+    c.class_mut(k).cx_mut().autoloading.push(AutoloadRun { name, thread: me, value: UNDEF, loc: None });
     let r = crate::builtins::kernel::autoload_require(c, path);
-    let runs = &mut c.class_mut(k).autoloading;
+    let runs = &mut c.class_mut(k).cx_mut().autoloading;
     let run = runs.iter().position(|r| r.name == name && r.thread == me).map(|i| runs.remove(i));
     crate::builtins::blop::notify(c, autoload_key(k, name));
     r?;
     match run {
         Some(run) if run.value != UNDEF => const_set_at(c, k, name, run.value, run.loc),
         // loaded without defining it: the autoload is gone
-        _ => if const_get_at(c, k, name).is_none() && c.class_mut(k).autoload.remove(&name).is_some() { c.class_mut(k).const_loc.remove(&name); },
+        _ => if const_get_at(c, k, name).is_none() && c.class_mut(k).autoload.remove(&name).is_some() { if let Some(x) = c.class_mut(k).cx.as_mut() { x.const_loc.remove(&name); } },
     }
     Ok(const_get_at(c, k, name))
 }
@@ -1175,7 +1177,7 @@ fn const_access_slow(c: &mut Ctx, parent: Value, name: Sym, scoped: bool) -> Res
         let e = make_name_error(c, vm().c_name_error.get(), &msg, Value::sym(name), parent)?;
         return Err(raise_exc(c, e));
     }
-    if c.class(owner).deprecated_consts.contains(&name) { warn_deprecated_const(c, owner, name)?; }
+    if c.class(owner).is_deprecated(name) { warn_deprecated_const(c, owner, name)?; }
     Ok(())
 }
 pub fn warn_deprecated_const(c: &mut Ctx, owner: Value, name: Sym) -> Result<(), Esc> {
@@ -2827,7 +2829,7 @@ pub fn visit_class<V: EdgeVisitor<Saruby> + ?Sized>(m: &mut V, cd: &mut ClassDat
     for (_, &me) in cd.mtbl.iter() { visit_me(m, me); }
     for v in cd.consts.values_mut() { m.visit(v); }
     for v in cd.autoload.values_mut() { m.visit(v); }
-    for r in cd.autoloading.iter_mut() { m.visit(&mut r.thread); m.visit(&mut r.value); }
+    if let Some(x) = cd.cx.as_mut() { for r in x.autoloading.iter_mut() { m.visit(&mut r.thread); m.visit(&mut r.value); } }
     for v in cd.cvars.values_mut() { m.visit(v); }
     for v in cd.includes.iter_mut() { m.visit(v); }
     for v in cd.prepends.iter_mut() { m.visit(v); }

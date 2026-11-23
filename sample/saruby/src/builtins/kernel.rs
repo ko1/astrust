@@ -1420,7 +1420,7 @@ fn m_autoload(c: &mut Ctx, k: Value, args: &[Value], _b: Blk) -> RV {
     if c.str_len(path) == 0 { return arg_err(c, "empty feature name"); }
     if const_get_at(c, k, nm).is_some() { return Ok(NIL); }
     c.class_mut(k).autoload.insert(nm, path);
-    if let Some(l) = source_location(c) { c.class_mut(k).const_loc.insert(nm, l); }
+    if let Some(l) = source_location(c) { c.class_mut(k).cx_mut().const_loc.insert(nm, l); }
     call_const_added(c, k, nm)?;
     Ok(NIL)
 }

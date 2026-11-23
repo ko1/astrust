@@ -107,10 +107,16 @@ pub struct ClassData {
     pub alloc: AllocKind,
     pub subclasses: Vec<Value>,
     pub private_consts: Vec<Sym>,
-    pub deprecated_consts: Vec<Sym>,
     pub refined: bool,
+    pub cx: Option<Box<ConstExtra>>,   // made by the first constant defined from Ruby code (most classes have none)
+}
+
+/// Constant bookkeeping beside the table: locations, deprecations, autoloads in progress.
+#[derive(Default)]
+pub struct ConstExtra {
     pub const_loc: HashMap<Sym, SrcLoc>,   // where each constant (or its autoload) was defined
-    pub autoloading: Vec<AutoloadRun>,     // autoloads of this class's constants in progress
+    pub deprecated: Vec<Sym>,
+    pub autoloading: Vec<AutoloadRun>,
 }
 
 pub type SrcLoc = (&'static str, u32);
@@ -118,13 +124,16 @@ pub type SrcLoc = (&'static str, u32);
 pub struct AutoloadRun { pub name: Sym, pub thread: Value, pub value: Value, pub loc: Option<SrcLoc> }
 
 impl ClassData {
+    pub fn cx_mut(&mut self) -> &mut ConstExtra { self.cx.get_or_insert_with(Default::default) }
+    pub fn const_loc_of(&self, n: Sym) -> Option<SrcLoc> { self.cx.as_ref()?.const_loc.get(&n).copied() }
+    pub fn autoload_runs(&self) -> &[AutoloadRun] { self.cx.as_deref().map_or(&[], |x| &x.autoloading) }
+    pub fn is_deprecated(&self, n: Sym) -> bool { self.cx.as_ref().is_some_and(|x| x.deprecated.contains(&n)) }
     pub fn new(superclass: Value, is_module: bool, alloc: AllocKind) -> ClassData {
         ClassData {
             name: None, temp_name: false, base_name: Sym(0), lexical_parent: NIL, superclass, is_module, is_singleton: false, attached: NIL,
             mtbl: HashMap::default(), consts: HashMap::default(), const_order: vec![], autoload: HashMap::default(), cvars: HashMap::default(),
             includes: vec![], prepends: vec![], extended_by: vec![], ivar_index: HashMap::default(), ivar_names: vec![],
-            ancestors: std::cell::RefCell::new(None), alloc, subclasses: vec![], private_consts: vec![], deprecated_consts: vec![], refined: false,
-            const_loc: HashMap::default(), autoloading: vec![],
+            ancestors: std::cell::RefCell::new(None), alloc, subclasses: vec![], private_consts: vec![], refined: false, cx: None,
         }
     }
 }

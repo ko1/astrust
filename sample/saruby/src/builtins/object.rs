@@ -1020,11 +1020,11 @@ fn m_const_source_location(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV 
         let mut list: Vec<Value> = if inherit { ancestors(c, cur).to_vec() } else { vec![cur] };
         if inherit && c.class(cur).is_module { list.push(c.vm().c_object.get()); }
         for k in list {
-            let loc = if c.class(k).consts.contains_key(&sym) { Some(c.class(k).const_loc.get(&sym).copied()) }
+            let loc = if c.class(k).consts.contains_key(&sym) { Some(c.class(k).const_loc_of(sym)) }
                 else if c.class(k).autoload.contains_key(&sym) {
                     match autoload_state(c, k, sym) {
                         Autoload::Own(Some(_), l) => Some(l),
-                        Autoload::Ready(_) | Autoload::Own(None, _) => Some(c.class(k).const_loc.get(&sym).copied()),
+                        Autoload::Ready(_) | Autoload::Own(None, _) => Some(c.class(k).const_loc_of(sym)),
                         _ => None,
                     }
                 } else { None };
@@ -1087,12 +1087,12 @@ fn m_remove_const(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
         Some(v) => Some(v),
         None => c.class_mut(slf).autoload.remove(&n).map(|_| NIL),   // an autoload: nil
     };
-    if removed.is_some() && c.class(slf).deprecated_consts.contains(&n) { warn_deprecated_const(c, slf, n)?; }
+    if removed.is_some() && c.class(slf).is_deprecated(n) { warn_deprecated_const(c, slf, n)?; }
     match removed {
         Some(v) => {
             let cd = c.class_mut(slf);
-            cd.deprecated_consts.retain(|x| *x != n);
-            cd.const_order.retain(|x| *x != n); cd.const_loc.remove(&n); cd.private_consts.retain(|x| *x != n);
+            if let Some(x) = cd.cx.as_mut() { x.deprecated.retain(|y| *y != n); x.const_loc.remove(&n); }
+            cd.const_order.retain(|x| *x != n); cd.private_consts.retain(|x| *x != n);
             c.vm().const_serial.set(c.vm().const_serial.get() + 1);
             Ok(v)
         }
