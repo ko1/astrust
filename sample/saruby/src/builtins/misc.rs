@@ -325,7 +325,10 @@ pub fn init(c: &mut Ctx) {
     crate::builtins::objspace::init_core(c);
     let wn = define_module(c, "Warning");
     vmr.m_warning.set(wn);
-    define_module_function(c, wn, "warn", warning_warn, -1);
+    // rb_define_method + rb_extend_object: a Warning#warn defined later is what Warning.warn calls
+    define_cfunc(c, wn, "warn", warning_warn, -1);
+    let wsc = singleton_class(c, wn);
+    include_module(c, wsc, wn);
     define_singleton_cfunc(c, wn, "[]", |c, _s, a, _b| { let i = warning_category(c, a[0])?; Ok(Value::bool(WARN_CATS.load(Relaxed) & (1 << i) != 0)) }, 1);
     define_singleton_cfunc(c, wn, "[]=", |c, _s, a, _b| {
         let i = warning_category(c, a[0])?;

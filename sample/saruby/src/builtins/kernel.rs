@@ -125,6 +125,9 @@ pub fn nomethod_desc(c: &mut Ctx, v: Value) -> Result<String, Esc> {
         let cd = c.class(v);
         return Ok(format!("{} {}", if cd.is_module { "module" } else { "class" }, class_path(c, v)));
     }
+    // name_err_mesg_to_str: an object with a singleton class is shown by rb_any_to_s.  saruby makes one where
+    // CRuby does not (instance_eval), so only one with methods or modules counts
+    if v.is_heap() { let k = c.class(class_of(v)); if k.is_singleton && (!k.mtbl.is_empty() || !k.includes.is_empty() || !k.prepends.is_empty()) { return Ok(any_to_s_str(c, v)); } }
     Ok(format!("an instance of {}", class_path(c, real_class_of(c, v))))
 }
 
