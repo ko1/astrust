@@ -249,7 +249,7 @@ pub struct Frame {
     pub kind: u8,
     pub visi: u8,
     pub lite: bool,
-    pub pad: u8,          // written with kind..lite as one word
+    pub pad: std::cell::Cell<u8>,   // written with kind..lite as one word; bit 0: svar.rs
 }
 
 /// A source line as a frame keeps it: a reference to the line operand of the node being run (or of an
@@ -304,7 +304,7 @@ impl Frame {
     pub fn empty(st: Stk) -> FrameFull {
         FrameFull {
             h: Frame { prev: std::ptr::null_mut(), fp: head(st), me: std::ptr::null(), blk: std::ptr::null(),
-                       id: 0, pos: Pos::at(&LINE_0), kind: FK_TOP, visi: VISI_PRIVATE, lite: false, pad: 0 },
+                       id: 0, pos: Pos::at(&LINE_0), kind: FK_TOP, visi: VISI_PRIVATE, lite: false, pad: std::cell::Cell::new(0) },
             cref: std::ptr::null(), iseq: std::ptr::null(), self_blk: std::ptr::null(), defined_class: NIL,
         }
     }
@@ -331,7 +331,7 @@ impl Frame {
     /// The frame of a cfunc called from frame `pf`.
     #[inline(always)]
     pub fn cfunc(pf: *mut Frame, me: *const MethodEntry, blk: *const Block) -> Frame {
-        unsafe { Frame { prev: pf, fp: (*pf).fp, me, blk, id: (*pf).id, pos: (*pf).pos, kind: FK_CFUNC, visi: (*pf).visi, lite: true, pad: 0 } }
+        unsafe { Frame { prev: pf, fp: (*pf).fp, me, blk, id: (*pf).id, pos: (*pf).pos, kind: FK_CFUNC, visi: (*pf).visi, lite: true, pad: std::cell::Cell::new(0) } }
     }
     /// Replace the lexical scope (`using`): of the frame that owns one.
     pub fn set_cref(&mut self, cr: *const Cref) {
@@ -1720,7 +1720,7 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, re
     for j in 0..names.len() { vals[j] = base[2 + npos + j].get(); }
     let id = c.next_serial();
     let mut fr = FrameFull {
-        h: Frame { prev: c.frame, fp: head(base), me, blk, id, pos: Pos::at(&is.info.line), kind: FK_METHOD, visi: VISI_PUBLIC, lite: false, pad: 0 },
+        h: Frame { prev: c.frame, fp: head(base), me, blk, id, pos: Pos::at(&is.info.line), kind: FK_METHOD, visi: VISI_PUBLIC, lite: false, pad: std::cell::Cell::new(0) },
         cref: unsafe { (*me).cref }, iseq: is, self_blk: std::ptr::null(), defined_class: NIL,
     };
     base[0].set(recv);

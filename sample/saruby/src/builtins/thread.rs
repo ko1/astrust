@@ -29,6 +29,7 @@ pub struct RThread {
     waiting: bool, wake: bool, pending: Value, killed: bool,
     report: Value, abort: bool, loc: String,
     start: Value,   // [proc, args] until the first run makes the fiber (stacks only for threads that run)
+    last_status: u64,   // $? (process.rs)
 }
 impl RData for RThread {
     fn visit(&mut self, m: &mut crate::gc::Visitor) { for v in [&mut self.fiber, &mut self.inner, &mut self.value, &mut self.exc, &mut self.locals, &mut self.tvars, &mut self.name, &mut self.pending, &mut self.report, &mut self.start] { m.visit(v); } }
@@ -38,7 +39,8 @@ impl RData for RThread {
 impl RThread {
     fn blank(locals: Value, tvars: Value) -> RThread {
         RThread { fiber: NIL, inner: NIL, started: false, dead: false, value: NIL, exc: NIL, locals, tvars, name: NIL,
-            blop: None, waiting: false, wake: false, pending: NIL, killed: false, report: UNDEF, abort: false, loc: String::new(), start: NIL }
+            blop: None, waiting: false, wake: false, pending: NIL, killed: false, report: UNDEF, abort: false, loc: String::new(), start: NIL,
+            last_status: crate::builtins::process::NO_STATUS }
     }
     fn interrupted(&self) -> bool { self.pending != NIL || self.killed }
     /// The scheduler should switch it in: not started, yielded, its op completed, or interrupted.
@@ -61,6 +63,8 @@ fn thr(c: &mut Ctx, v: Value) -> Result<(), Esc> { if c.data::<RThread>(v).is_so
 fn cur(c: &Ctx) -> Value { CURRENT.get(c) }
 /// Thread.current
 pub fn current_thread(c: &Ctx) -> Value { cur(c) }
+pub fn last_status(c: &Ctx) -> u64 { c.data::<RThread>(cur(c)).map_or(crate::builtins::process::NO_STATUS, |r| r.last_status) }
+pub fn set_last_status(c: &mut Ctx, w: u64) { let t = cur(c); if let Some(r) = c.data_mut::<RThread>(t) { r.last_status = w; } }
 #[inline]
 fn is_main(c: &Ctx) -> bool { CURRENT.get(c) == MAIN.get(c) }
 /// Other threads exist (or we are inside one): blocking calls must go through the scheduler.

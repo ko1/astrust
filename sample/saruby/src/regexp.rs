@@ -497,9 +497,9 @@ pub fn search_timed(c: &mut Ctx, re: Value, s: Value, start: usize) -> Result<Op
 /// Search re in str from byte `start`; returns a MatchData or NIL, and sets $~.
 pub fn search(c: &mut Ctx, re: Value, s: Value, start: usize, set_last: bool) -> RV {
     let groups = search_timed(c, re, s, start)?;
-    let Some(groups) = groups else { if set_last { c.last_match = NIL; } return Ok(NIL) };
+    let Some(groups) = groups else { if set_last { crate::builtins::svar::set_last_match(c, NIL); } return Ok(NIL) };
     let m = match_new(c, re, s, groups);
-    if set_last { c.last_match = m; }
+    if set_last { crate::builtins::svar::set_last_match(c, m); }
     Ok(m)
 }
 

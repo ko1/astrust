@@ -644,7 +644,7 @@ fn io_gets(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let la = line_args(c, a)?;
     let (v, lineno) = gets_value(c, slf, &la)?;
     if v != NIL { global_set("$.", Value::fix(lineno)); }
-    c.vm().globals.borrow_mut().insert(intern(b"$_"), v);
+    crate::builtins::svar::set_last_line(c, v);
     Ok(v)
 }
 fn eof_err<T>(c: &mut Ctx) -> Result<T, Esc> { err(c, c.vm().c_eof_error.get(), "end of file reached") }

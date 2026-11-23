@@ -21,9 +21,9 @@ use crate::vm::*;
 use std::ffi::CString;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
-// (pid << 32) | raw status; pid -1: none yet
-static LAST_STATUS: AtomicU64 = AtomicU64::new(0xffff_ffff_0000_0000);
-pub fn set_last_status(pid: i32, raw: i32) { LAST_STATUS.store(((pid as u32 as u64) << 32) | raw as u32 as u64, Ordering::Relaxed); }
+// $? is thread-local: (pid << 32) | raw status in the current Thread (thread.rs); pid -1: none yet
+pub const NO_STATUS: u64 = 0xffff_ffff_0000_0000;
+pub fn set_last_status(c: &mut Ctx, pid: i32, raw: i32) { crate::builtins::thread::set_last_status(c, ((pid as u32 as u64) << 32) | raw as u32 as u64); }
 fn new_status(c: &mut Ctx, pid: i32, raw: i32) -> Value {
     let k = const_get_at(c, c.vm().m_process.get(), intern(b"Status")).unwrap();
     let o = new_object(c, k);
@@ -31,8 +31,27 @@ fn new_status(c: &mut Ctx, pid: i32, raw: i32) -> Value {
     ivar_set_raw(c, o, intern(b"@st"), Value::fix(raw as i64));
     o
 }
+/// Process.argv0: $0 before the first `$0 =`.
+static ARGV0: Global = Global::new();
+/// `$0 =` / Process.setproctitle: the process name (`ps -o comm`, top; the kernel keeps 15 bytes).
+/// Ruby runs on a spawned thread, so not prctl(PR_SET_NAME): /proc/self/comm is the leader's.
+/// CRuby rewrites the argv area instead (ps's command line), which needs writes to memory Rust does not own.
+pub fn set_proctitle(c: &mut Ctx, title: Value) {
+    let b = c.str_bytes(title);
+    let _ = std::fs::write("/proc/self/comm", &b[..b.iter().position(|&x| x == 0).unwrap_or(b.len())]);
+}
+/// `$0 = v`: a frozen String, and the process title.
+pub fn set_dollar_zero(c: &mut Ctx, v: Value) -> RV {
+    let s = expect_str(c, v)?;
+    if ARGV0.get(c) == NIL { let o = c.vm().dollar_zero.get(); ARGV0.set(c, o); }
+    let s = c.str_copy(s);
+    crate::heap::obj_set_flags(s, crate::object::FL_FROZEN);
+    c.vm().dollar_zero.set(s);
+    set_proctitle(c, s);
+    Ok(s)
+}
 pub fn last_status(c: &mut Ctx) -> Value {
-    let w = LAST_STATUS.load(Ordering::Relaxed);
+    let w = crate::builtins::thread::last_status(c);
     let (pid, raw) = ((w >> 32) as u32 as i32, w as u32 as i32);
     if pid < 0 { return NIL; }
     new_status(c, pid, raw)
@@ -375,7 +394,7 @@ pub fn spawn_exec(c: &mut Ctx, sp: &Spec) -> Result<i32, Esc> {
     if n == 4 {
         let mut st = 0;
         sys::waitpid(pid, &mut st, 0);
-        set_last_status(pid, 127 << 8);
+        set_last_status(c, pid, 127 << 8);
         return Err(raise_errno_plain(c, i32::from_ne_bytes(eb) as i64, &sp.prog.to_string_lossy()));
     }
     Ok(pid)
@@ -419,14 +438,14 @@ fn waitpid_coop(c: &mut Ctx, pid: i32, flags: i32) -> Result<Result<(i32, i32), 
 }
 /// Reap a popen child from IO#close (other threads run meanwhile).
 pub fn reap_child(c: &mut Ctx, pid: i32) -> Result<(), Esc> {
-    if !crate::builtins::thread::active(c) { wait_child(pid); return Ok(()); }
-    if let Ok((_, st)) = waitpid_coop(c, pid, 0)? { set_last_status(pid, st); }
+    if !crate::builtins::thread::active(c) { wait_child(c, pid); return Ok(()); }
+    if let Ok((_, st)) = waitpid_coop(c, pid, 0)? { set_last_status(c, pid, st); }
     Ok(())
 }
 /// Reap a popen child (called from IO#close).
-pub fn wait_child(pid: i32) {
+pub fn wait_child(c: &mut Ctx, pid: i32) {
     let mut st = 0;
-    loop { let r = sys::waitpid(pid, &mut st, 0); if r >= 0 { set_last_status(pid, st); break; } if sys::errno() != sys::EINTR { break; } }
+    loop { let r = sys::waitpid(pid, &mut st, 0); if r >= 0 { set_last_status(c, pid, st); break; } if sys::errno() != sys::EINTR { break; } }
 }
 fn k_spawn(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let (env, cmd, opts) = split_args(a);
@@ -442,7 +461,7 @@ fn k_system(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
         Err(e) => { if exc { return Err(e); } c.esc = EscKind::None; return Ok(NIL); }
     };
     let (_, st) = waitpid_retry(c, pid, 0)?;
-    set_last_status(pid, st);
+    set_last_status(c, pid, st);
     if exc && !(exited(st) && exitstatus(st) == 0) {
         let ns = new_status(c, pid, st); let d = st_desc(c, ns);
         return err(c, c.vm().c_runtime_error.get(), format!("Command failed with {}: {}", d.splitn(3, ' ').nth(2).unwrap_or(""), sp.argv.last().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default()));
@@ -465,7 +484,7 @@ fn k_backtick(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     }
     sys::close(p[0]);
     let (_, st) = waitpid_retry(c, pid, 0)?;
-    set_last_status(pid, st);
+    set_last_status(c, pid, st);
     Ok(c.str_from_vec_enc(out, crate::builtins::encoding::default_external()))
 }
 fn k_exec(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
@@ -516,7 +535,7 @@ fn wait_impl(c: &mut Ctx, a: &[Value]) -> Result<Option<(i32, i32)>, Esc> {
     out_flush();
     let (r, st) = waitpid_retry(c, pid, flags)?;
     if r == 0 { return Ok(None); }
-    set_last_status(r, st);
+    set_last_status(c, r, st);
     Ok(Some((r, st)))
 }
 fn p_wait(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { Ok(match wait_impl(c, a)? { Some((p, _)) => Value::fix(p as i64), None => NIL }) }
@@ -529,7 +548,7 @@ fn p_waitall(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
         let mut st = 0;
         let r = sys::waitpid(-1, &mut st, 0);
         if r < 0 { if sys::errno() == sys::EINTR { run_pending_signals(c)?; continue; } break; }
-        set_last_status(r, st);
+        set_last_status(c, r, st);
         let s = new_status(c, r, st);
         let pair = c.ary_new_from(&[Value::fix(r as i64), s]);
         c.ary_push(out, pair);
@@ -644,8 +663,8 @@ pub fn init(c: &mut Ctx) {
     mf(c, "kill", p_kill, -1); mf(c, "wait", p_wait, -1); mf(c, "waitpid", p_wait, -1); mf(c, "wait2", p_wait2, -1); mf(c, "waitpid2", p_wait2, -1); mf(c, "waitall", p_waitall, 0);
     mf(c, "detach", p_detach, 1); mf(c, "fork", k_fork, 0); mf(c, "spawn", k_spawn, -1); mf(c, "exec", k_exec, -1); mf(c, "exit!", p_exit_bang, -1); mf(c, "exit", k_exit, -1);
     mf(c, "abort", k_abort, -1);
-    mf(c, "getrlimit", p_getrlimit, 1); mf(c, "__itimer", p_itimer, 1); mf(c, "setproctitle", |_c, _s, a, _b| Ok(a[0]), 1); mf(c, "last_status", |c, _s, _a, _b| Ok(last_status(c)), 0);
-    mf(c, "argv0", |c, _s, _a, _b| Ok(c.vm().dollar_zero.get()), 0); mf(c, "warmup", |_c, _s, _a, _b| Ok(TRUE), 0);
+    mf(c, "getrlimit", p_getrlimit, 1); mf(c, "__itimer", p_itimer, 1); mf(c, "setproctitle", |c, _s, a, _b| { let s = expect_str(c, a[0])?; set_proctitle(c, s); Ok(a[0]) }, 1); mf(c, "last_status", |c, _s, _a, _b| Ok(last_status(c)), 0);
+    mf(c, "argv0", |c, _s, _a, _b| Ok(match ARGV0.get(c) { NIL => c.vm().dollar_zero.get(), v => v }), 0); mf(c, "warmup", |_c, _s, _a, _b| Ok(TRUE), 0);
     mf(c, "groups", |c, _s, _a, _b| Ok(c.ary_new_from(&[Value::fix(sys::getgid() as i64)])), 0);
     mf(c, "daemon", |c, _s, _a, _b| err(c, c.vm().c_not_impl_error.get(), "daemon() function is unimplemented on this machine"), -1);
     for (n, v) in [("CLOCK_REALTIME", 0), ("CLOCK_MONOTONIC", 1), ("CLOCK_PROCESS_CPUTIME_ID", 2), ("CLOCK_THREAD_CPUTIME_ID", 3), ("CLOCK_MONOTONIC_RAW", 4),

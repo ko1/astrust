@@ -473,7 +473,7 @@ fn k_gets(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     // no file arguments: plain stdin without loading ARGF
     let src = if argf_plain(c) { *c.vm().globals.borrow().get(&intern(b"$stdin")).unwrap_or(&c.vm().stdin.get()) } else { argf(c)? };
     let v = funcall(c, src, intern(b"gets"), args, std::ptr::null())?;
-    c.vm().globals.borrow_mut().insert(intern(b"$_"), v);
+    crate::builtins::svar::set_last_line(c, v);
     Ok(v)
 }
 fn k_readline(c: &mut Ctx, s: Value, args: &[Value], b: *const Block) -> RV {
@@ -706,11 +706,12 @@ pub fn gvar_get(c: &mut Ctx, name: Sym) -> RV {
     match b {
         b"$!" => return Ok(c.errinfo),
         b"$@" => { return Ok(if c.errinfo == NIL { NIL } else { exc_bt(c, c.errinfo) }); }
-        b"$~" => return Ok(c.last_match),
-        b"$&" => return Ok(crate::regexp::nth_match(c, c.last_match, 0)),
-        b"$`" => { let m = c.last_match; return Ok(if m == NIL { NIL } else { crate::regexp::match_pre(c, m) }); }
-        b"$'" => { let m = c.last_match; return Ok(if m == NIL { NIL } else { crate::regexp::match_post(c, m) }); }
-        b"$+" => { let m = c.last_match; return Ok(if m == NIL { NIL } else { crate::regexp::match_last_group(c, m) }); }
+        b"$~" => return Ok(crate::builtins::svar::last_match(c)),
+        b"$_" => return Ok(crate::builtins::svar::last_line(c)),
+        b"$&" => return Ok(crate::regexp::nth_match(c, crate::builtins::svar::last_match(c), 0)),
+        b"$`" => { let m = crate::builtins::svar::last_match(c); return Ok(if m == NIL { NIL } else { crate::regexp::match_pre(c, m) }); }
+        b"$'" => { let m = crate::builtins::svar::last_match(c); return Ok(if m == NIL { NIL } else { crate::regexp::match_post(c, m) }); }
+        b"$+" => { let m = crate::builtins::svar::last_match(c); return Ok(if m == NIL { NIL } else { crate::regexp::match_last_group(c, m) }); }
         b"$0" => return Ok(c.vm().dollar_zero.get()),
         b"$:" => return Ok(c.vm().load_path.get()),
         b"$\"" => return Ok(c.vm().loaded_features.get()),
@@ -751,8 +752,9 @@ pub fn gvar_set(c: &mut Ctx, shown: Sym, v: Value) -> RV {
             if v != NIL && !(v.is_heap() && is_kind_of(c, v, c.vm().c_match_data.get())) {
                 return type_err(c, format!("wrong argument type {} (expected MatchData)", class_name_for_err(c, v)));
             }
-            c.last_match = v; return Ok(v);
+            crate::builtins::svar::set_last_match(c, v); return Ok(v);
         }
+        b"$_" => { crate::builtins::svar::set_last_line(c, v); return Ok(v); }
         b"$@" => {
             if c.errinfo == NIL { return arg_err(c, "$! not set"); }
             let e = c.errinfo;
@@ -761,7 +763,7 @@ pub fn gvar_set(c: &mut Ctx, shown: Sym, v: Value) -> RV {
         }
         b"$VERBOSE" => { c.vm().verbose.set(if v == NIL { NIL } else { Value::bool(v.truthy()) }); return Ok(v); }
         b"$DEBUG" => { c.vm().debug_flag.set(v.truthy()); crate::vm::update_raise_hooks(); }
-        b"$0" => { let s = expect_str(c, v)?; c.vm().dollar_zero.set(s); return Ok(v); }
+        b"$0" => { crate::builtins::process::set_dollar_zero(c, v)?; return Ok(v); }
         b"$stdout" | b"$stderr" => {
             if !respond_to(c, v, intern(b"write"), true) {
                 return type_err(c, format!("{} must have write method, {} given", sym_str(shown), class_path(c, real_class_of(c, v))));

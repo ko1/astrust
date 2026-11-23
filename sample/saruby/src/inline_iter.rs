@@ -77,7 +77,7 @@ pub fn block_frame(b: &Block, bfp: Fp, prev: *mut Frame, is: &'static Iseq) -> F
     bfp[0].set(b.self_);
     bfp[1].set(b.env);
     FrameFull {
-        h: Frame { prev, fp: head(bfp), me: b.me, blk: b.outer_blk, id: b.home_id, pos: crate::vm::Pos::at(&is.info.line), kind: FK_BLOCK, visi: VISI_PUBLIC, lite: false, pad: 0 },
+        h: Frame { prev, fp: head(bfp), me: b.me, blk: b.outer_blk, id: b.home_id, pos: crate::vm::Pos::at(&is.info.line), kind: FK_BLOCK, visi: VISI_PUBLIC, lite: false, pad: std::cell::Cell::new(0) },
         cref: b.cref, iseq: std::ptr::null(), self_blk: b, defined_class: b.defined_class,
     }
 }

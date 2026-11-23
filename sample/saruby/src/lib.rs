@@ -230,7 +230,7 @@ fn run_main(o: Opts) -> i32 {
         (b, "-".into())
     };
     *vm.main_file.borrow_mut() = file.clone();
-    vm.dollar_zero.set(string::str_new(file.as_bytes()));
+    let z = string::str_new(file.as_bytes()); heap::obj_set_flags(z, object::FL_FROZEN); vm.dollar_zero.set(z);
     let file: &'static str = Box::leak(file.into_boxed_str());
 
     inline_builtin::init(&c);
