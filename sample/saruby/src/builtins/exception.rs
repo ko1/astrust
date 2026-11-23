@@ -290,7 +290,7 @@ fn exc_set_backtrace(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let v = a[0];
     // a captured backtrace still tells NameError#local_variables where it was raised
     let old = ivar_get(c, slf, s::bt);
-    if c.data::<RawBt>(old).is_some() { ivar_set_raw(c, slf, intern(b"__bt_raw"), old); }
+    if c.data::<RawBt>(old).is_some() { keep_raw_bt(c, slf, old); }
     let bt = if is_string(v) { c.ary_new_from(&[v]) } else if v == NIL || is_array(v) { v } else { return type_err(c, "backtrace must be an Array of String or an Array of Thread::Backtrace::Location"); };
     let loc = c.vm().c_location.get();
     if is_array(bt) && !c.ary(bt).iter().all(|&x| is_string(x)) && !c.ary(bt).iter().all(|&x| x.is_heap() && is_kind_of(c, x, loc)) {
@@ -579,7 +579,7 @@ fn name_err_init(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if real_class_of(c, slf) == nme || is_kind_of(c, slf, nme) {
         let args = match pos.get(2) { Some(&x) => x, None => c.ary_new() };
         ivar_set_raw(c, slf, intern(b"args"), args);
-        if pos.get(3).is_some_and(|p| p.truthy()) { ivar_set_raw(c, slf, intern(b"private_call"), TRUE); }
+        if pos.get(3).is_some_and(|p| p.truthy()) { crate::heap::obj_set_flags(slf, crate::object::FL_PRIVATE_CALL); }
     }
     if let Some(h) = kw {
         if let Some(r) = crate::hash::hash_get_opt(c, h, sym_value("receiver"))? { ivar_set_raw(c, slf, s::receiver, r); ivar_set_raw(c, slf, intern(b"__has_recv"), TRUE); }
@@ -602,21 +602,23 @@ fn ruby_level_iseq(c: &Ctx) -> *const Iseq {
     while let Some(x) = f { if x.kind != FK_CFUNC && !x.iseq().is_null() { return x.iseq(); } f = c.prev_frame(x); }
     std::ptr::null()
 }
-/// NameError#local_variables: the locals where it was made; one raised by the VM has no LvAt, its backtrace's top
-/// Ruby frame is that place.
+/// NameError#local_variables: the locals where it was made (`__lv_at`: NameError.new's LvAt, or the captured backtrace
+/// of a raise by the VM once it is formatted); one raised by the VM and not formatted: its backtrace's top Ruby frame.
 fn name_err_local_variables(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
-    let cache = intern(b"__lvars");
-    let v = ivar_get(c, slf, cache);
-    if v != NIL { return Ok(v); }
     let at = ivar_get(c, slf, intern(b"__lv_at"));
-    let mut is = c.data::<LvAt>(at).map_or(std::ptr::null(), |l| l.0);
-    if is.is_null() { is = raw_bt_ruby_iseq(c, ivar_get(c, slf, s::bt)); }
-    if is.is_null() { is = raw_bt_ruby_iseq(c, ivar_get(c, slf, intern(b"__bt_raw"))); }
+    let is = match c.data::<LvAt>(at) {
+        Some(l) => l.0,
+        None => { let r = raw_bt_ruby_iseq(c, at); if r.is_null() { raw_bt_ruby_iseq(c, ivar_get(c, slf, s::bt)) } else { r } }
+    };
     let names = crate::builtins::binding::iseq_var_names(c, is);
     let a = c.ary_new_capa(names.len());
     for n in names { c.ary_push(a, Value::sym(n)); }
-    ivar_set_raw(c, slf, cache, a);
     Ok(a)
+}
+/// A NameError's captured backtrace about to be replaced: kept for local_variables unless NameError.new kept the place.
+pub fn keep_raw_bt(c: &mut Ctx, e: Value, raw: Value) {
+    let k = intern(b"__lv_at");
+    if ivar_get(c, e, k) == NIL && is_kind_of(c, e, c.vm().c_name_error.get()) { ivar_set_raw(c, e, k, raw); }
 }
 fn name_err_receiver(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if !ivar_defined(c, slf, s::receiver) { return arg_err(c, "no receiver is available"); }

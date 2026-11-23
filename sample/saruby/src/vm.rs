@@ -1300,8 +1300,8 @@ pub fn raw_bt_ruby_iseq(c: &Ctx, v: Value) -> *const Iseq {
     raw.frames.iter().find(|f| f.kind != FK_CFUNC && !f.iseq.is_null()).map_or(std::ptr::null(), |f| f.iseq)
 }
 
-/// An exception's backtrace (Array of String, or nil), formatting a captured one in place (kept in `__bt_raw`); the
-/// lines' node ids go to `__bt_nids` (backtrace_locations).
+/// An exception's backtrace (Array of String, or nil), formatting a captured one in place (a NameError keeps it for
+/// local_variables); the lines' node ids go to `__bt_nids` (backtrace_locations).
 pub fn exc_bt(c: &mut Ctx, e: Value) -> Value {
     let v = ivar_get(c, e, s::bt);
     let Some(raw) = c.data::<RawBt>(v) else { return v };
@@ -1311,7 +1311,7 @@ pub fn exc_bt(c: &mut Ctx, e: Value) -> Value {
     for l in &lines { let s = c.str_new(l.to_string().as_bytes()); c.ary_push(a, s); c.ary_push(ns, nid_value(l.nid)); }
     ivar_set_raw(c, e, s::bt, a);
     ivar_set_raw(c, e, intern(b"__bt_nids"), ns);
-    ivar_set_raw(c, e, intern(b"__bt_raw"), v);
+    crate::builtins::exception::keep_raw_bt(c, e, v);
     a
 }
 
@@ -2068,7 +2068,7 @@ pub fn no_method_error(c: &mut Ctx, recv: Value, mid: Sym, flags: u32) -> RV {
         (vm().c_no_method_error.get(), format!("undefined method '{}' for {}", sym_str(mid), desc))
     };
     let e = make_name_error(c, cls, &msg, Value::sym(mid), recv)?;
-    if flags & (CF_FCALL | CF_VCALL) != 0 { ivar_set_raw(c, e, intern(b"private_call"), TRUE); }
+    if flags & (CF_FCALL | CF_VCALL) != 0 { obj_set_flags(e, crate::object::FL_PRIVATE_CALL); }
     Err(raise_exc(c, e))
 }
 

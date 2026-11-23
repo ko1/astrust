@@ -11,7 +11,8 @@ pub const FL_TMPLOCK: u32 = 2;   // String: rb_str_locktmp (IO::Buffer.for / .st
 pub const FL_CHILLED: u32 = 16;   // string literal: frozen-on-write warning semantics (treated as mutable)
 pub const FL_KWHASH: u32 = 32;    // ruby2_keywords flagged hash
 pub const FL_SHAREABLE: u32 = 64;   // Ractor.shareable? said yes (ractor.rs); never copied by dup / clone
-// bits 4, 8, 128 are unused.  The flags below name side tables and weak tables; they share one
+pub const FL_PRIVATE_CALL: u32 = 4;  // NoMethodError#private_call? (no ivar: a raise stays as cheap)
+// bits 8, 128 are unused.  The flags below name side tables and weak tables; they share one
 // byte so that finalize and scan_edges test them with one byte-wide instruction.
 pub const FL_EXIVAR: u32 = 0x100;
 pub const FL_TRACED: u32 = 0x200;    // has an entry in objspace's allocation table (removed on free)

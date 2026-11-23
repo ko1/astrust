@@ -44,7 +44,7 @@ fn m_undefined_instance_methods(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) ->
     Ok(c.ary_from_vec(names))
 }
 fn le_path(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, s, intern(b"path"))) }
-fn nme_private_call(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(ivar_get(c, s, intern(b"private_call")).truthy())) }
+fn nme_private_call(_c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(s.is_heap() && crate::heap::obj_flags(s) & crate::object::FL_PRIVATE_CALL != 0)) }
 fn sig_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, 2); }
     let (no, name) = if a[0].is_fixnum() {
