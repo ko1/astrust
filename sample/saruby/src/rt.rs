@@ -69,6 +69,7 @@ pub fn note_redefinition(c: &mut Ctx, klass: Value, mid: Sym) {
 /// REDEF for (klass, mid); true if it changed.  The running context must then copy it (note_redefinition).
 pub fn redef_note(c: &Ctx, klass: Value, mid: Sym) -> bool {
     if !booted() { return false; }
+    if mid == s::puts || matches!(crate::symbol::sym_bytes(mid), b"write" | b"putc") { crate::builtins::io::note_out_method(c, klass); }
     let before = redef_word();
     // a refinement of a basic operation turns its inline fast path off everywhere
     let klass = if c.class(klass).refined { c.class(klass).attached } else { klass };

@@ -712,7 +712,6 @@ pub fn ancestors(c: &Ctx, klass: Value) -> std::rc::Rc<[Value]> {
 
 pub fn define_method_me(c: &mut Ctx, klass: Value, name: Sym, me: *const MethodEntry) {
     c.class_mut(klass).mtbl.insert(name, me);
-    if crate::rt::booted() && (name == s::puts || matches!(crate::symbol::sym_bytes(name), b"write" | b"putc")) { crate::builtins::io::note_out_method(c, klass); }
     let vm = vm();
     bump_method_serial();
     vm.mcache.borrow_mut().clear();
