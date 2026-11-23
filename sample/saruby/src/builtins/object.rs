@@ -449,7 +449,6 @@ fn k_define_singleton_method(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV
     let k = singleton_class(c, slf);
     m_define_method(c, k, a, b)
 }
-fn k_instance_variables_hash(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(NIL) }
 fn k_enum_for(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let mid = if a.is_empty() { s::each } else { to_sym_arg(c, a[0])? };
     let size_fn = if b.is_null() { NIL } else { block_to_proc(c, b)? };
@@ -1412,7 +1411,6 @@ pub fn init(c: &mut Ctx) -> InitIds {
     d(c, "define_singleton_method", k_define_singleton_method, -1);
     d(c, "enum_for", k_enum_for, -1);
     d(c, "to_enum", k_enum_for, -1);
-    let _ = k_instance_variables_hash;
 
     let m = vmr.c_module.get();
     let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, m, n, f, a);
