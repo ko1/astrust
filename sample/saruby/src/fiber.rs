@@ -44,12 +44,13 @@ pub struct FiberData {
     locals: Value,                  // fiber-local Thread#[] (a non-root fiber's; roots use RThread's)
     owner: Value,                   // root fiber of the thread the fiber belongs to
     blocking: bool,
+    killed: bool,                   // Fiber#kill was called (a second call returns false)
 }
 impl FiberData {
     fn new(proc_: Value) -> FiberData {
         FiberData { ctx: None, stack: None, vstack: None, sp: 0, running: false, main: false, started: false, done: false, yielding: false,
                     prev: NIL, resuming: NIL, proc_, xfer: NIL, exc: false, peek: None, enum_src: NIL,
-                    storage: NIL, locals: NIL, owner: NIL, blocking: false }
+                    storage: NIL, locals: NIL, owner: NIL, blocking: false, killed: false }
     }
     /// Becoming the running fiber: (saved stack pointer, stack top).
     fn enter(&mut self) -> (usize, usize) {
@@ -200,6 +201,8 @@ pub(crate) fn fiber_main(c: &mut Ctx, args: Value, exc: bool) -> ! {
         tb.and_then(|_| call_proc(c, p, &argv, std::ptr::null()))
     };
     std::hint::black_box(args);   // keeps argv's values on this stack
+    // a thread's scheduler is closed at its end, before thread_end (thread_start_func_2); its error wins
+    let r = if thread && crate::builtins::thread::schedulers_set() { thread_scheduler_end(c, r) } else { r };
     let r = if thread && trace_mask() & EV_THREAD_END != 0 { crate::builtins::tracepoint::trace_thread(c, EV_THREAD_END).and(r) } else { r };
     let kill = KILL.get(c);
     let (v, failed) = match r {
@@ -221,6 +224,16 @@ pub(crate) fn fiber_main(c: &mut Ctx, args: Value, exc: bool) -> ! {
     unreachable!("a finished fiber was switched to");
 }
 
+#[inline(never)]
+fn thread_scheduler_end(c: &mut Ctx, r: RV) -> RV {
+    if crate::builtins::thread::thread_scheduler(c) == NIL { return r; }
+    let (ek, ev) = (c.esc, c.esc_val);
+    c.esc = EscKind::None;
+    if let Err(e) = crate::builtins::thread::scheduler_finalize(c) { return Err(e); }
+    c.esc = ek; c.esc_val = ev;
+    r
+}
+
 /// Where control goes when `cur` ends (CRuby return_fiber(true); fiber_yield does the other case).
 fn return_fiber(c: &mut Ctx, cur: Value) -> Value {
     let prev = fd(c, cur).prev;
@@ -237,6 +250,10 @@ fn return_fiber(c: &mut Ctx, cur: Value) -> Value {
 }
 
 fn owner_of(c: &Ctx, f: Value) -> Value { let d = fd(c, f); if d.main { MAIN_ROOT.get(c) } else { d.owner } }
+/// The root fiber of the thread `f` belongs to.
+pub fn thread_root_of(c: &Ctx, f: Value) -> Value { owner_of(c, f) }
+/// The root fiber of the running thread.
+pub fn current_thread_root(c: &Ctx) -> Value { THREAD_ROOT.get(c) }
 
 fn fiber_err<T>(c: &mut Ctx, msg: &str) -> Result<T, Esc> { let k = c.vm().c_fiber_error.get(); err(c, k, msg) }
 
@@ -393,7 +410,7 @@ fn f_alive(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(V
 fn f_s_current(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(CUR.get(c)) }
 /// Fiber#raise: resume a yielding fiber (transfer to a transferring one) raising there.
 fn f_raise(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    let e = if a.is_empty() { let k = c.vm().c_runtime_error.get(); make_exception(c, k, "unhandled exception") } else { crate::builtins::kernel::make_exception_from_args(c, a)? };
+    let e = crate::builtins::kernel::exception_setup(c, a)?;
     raise_in(c, slf, e)
 }
 /// CRuby fiber_raise: a fiber that resumed another passes it on to that one.
@@ -403,9 +420,23 @@ fn raise_in(c: &mut Ctx, f: Value, e: Value) -> RV {
     if d.resuming != NIL { let r = d.resuming; return raise_in(c, r, e); }
     if d.started && !d.done && !d.running && !d.yielding { transfer_kw(c, f, e, true) } else { resume_kw(c, f, e, &[], true) }
 }
+/// Fiber#backtrace(start = 0, length = nil) / #backtrace_locations: the running fiber's frames ([] for
+/// a terminated one; a suspended fiber's frames are not walked: [] too).
+fn f_backtrace_any(c: &mut Ctx, slf: Value, a: &[Value], locs: bool) -> RV {
+    if slf != CUR.get(c) { return Ok(c.ary_new()); }
+    let (start, len) = if a.is_empty() { (0, None) } else { crate::builtins::exception::caller_range(c, a)? };
+    let Some(lines) = backtrace_lines_n(c, start, len) else { return Ok(NIL) };
+    if locs { return Ok(crate::builtins::exception::locations_from_lines(c, lines)); }
+    let v: Vec<Value> = lines.into_iter().map(|l| c.str_new(l.as_bytes())).collect();
+    Ok(c.ary_from_vec(v))
+}
+fn f_backtrace(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { f_backtrace_any(c, slf, a, false) }
+fn f_backtrace_locations(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { f_backtrace_any(c, slf, a, true) }
 /// Fiber#kill: unwind the fiber (its ensure clauses run) and let it end.
 fn f_kill(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let d = fd(c, slf);
+    let d = fdm(c, slf);
+    if d.killed { return Ok(FALSE); }
+    d.killed = true;
     if d.done { return Ok(slf); }
     if !d.started { fdm(c, slf).done = true; return Ok(slf); }
     let kill = KILL.get(c);
@@ -441,6 +472,9 @@ fn enum_fiber(c: &mut Ctx, e: Value) -> Value {
     c.proc_data_mut(p).blk.proc_val = p;
     let fk = c.vm().c_fiber.get();
     let f = new_fiber(c, fk, p);
+    // a copy of the storage of the fiber that calls next (as Fiber.new)
+    let st = storage(c, CUR.get(c));
+    if st != NIL { let st = crate::builtins::object::obj_dup(c, st, false, None).unwrap_or(NIL); fdm(c, f).storage = st; }
     c.data_mut::<REnum>(e).expect("an Enumerator").fiber = f;
     f
 }
@@ -486,6 +520,8 @@ pub fn init(c: &mut Ctx) {
     define_cfunc(c, k, "raise", f_raise, -1);
     define_cfunc(c, k, "kill", f_kill, 0);
     define_cfunc(c, k, "alive?", f_alive, 0);
+    define_cfunc(c, k, "backtrace", f_backtrace, -1);
+    define_cfunc(c, k, "backtrace_locations", f_backtrace_locations, -1);
     let mut d = FiberData::new(NIL);
     d.main = true; d.started = true; d.running = true; d.blocking = true;
     let root = c.alloc(k, Body::Data(Box::new(d)));

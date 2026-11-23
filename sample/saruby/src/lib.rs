@@ -285,6 +285,8 @@ fn run_main(o: Opts) -> i32 {
 /// at_exit procs (LIFO), the EXIT trap, then flush every stream.
 pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
     let vm = vm();
+    // the main thread's scheduler runs to completion first (rb_ec_fiber_scheduler_finalize)
+    if builtins::thread::scheduler_finalize(c).is_err() { status = handle_toplevel_error(c); }
     loop {
         let ae = vm.at_exit.get();
         let Some(p) = c.ary_mut(ae).pop() else { break };

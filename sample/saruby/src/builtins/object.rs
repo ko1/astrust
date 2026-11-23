@@ -239,6 +239,7 @@ pub fn obj_dup(c: &mut Ctx, slf: Value, clone: bool, freeze: Option<bool>) -> RV
 }
 
 fn finish_dup(c: &mut Ctx, slf: Value, n: Value, clone: bool, freeze: Option<bool>) -> RV {
+    crate::builtins::misc::copy_finalizer(c, slf, n)?;
     if obj_flags(slf) & FL_EXIVAR != 0 { for (k, v) in ivar_list(c, slf) { ivar_set_raw(c, n, k, v); } }
     if clone {
         // singleton class copy

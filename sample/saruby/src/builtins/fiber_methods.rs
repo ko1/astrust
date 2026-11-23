@@ -16,6 +16,7 @@ use crate::heap::is_frozen;
 use crate::object::*;
 use crate::value::*;
 use crate::vm::*;
+use crate::symbol::intern;
 
 fn dup(c: &mut Ctx, v: Value) -> RV { if v == NIL { Ok(NIL) } else { crate::builtins::object::obj_dup(c, v, false, None) } }
 
@@ -82,7 +83,7 @@ fn f_storage(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
 }
 
 fn f_storage_set(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    if let Some(f) = c.caller_frame() {
+    if let (Some(f), true) = (c.caller_frame(), crate::builtins::misc::warning_category_enabled(1)) {
         let msg = format!("{}:{}: warning: Fiber#storage= is experimental and may be removed in the future!\n", frame_file(f), f.line());
         warn_str(c, &msg);
     }
@@ -109,6 +110,20 @@ fn f_s_blocking(c: &mut Ctx, _s: Value, _a: &[Value], b: *const Block) -> RV {
     r
 }
 
+/// Fiber.set_scheduler(s): the old one is closed first.
+fn f_s_set_scheduler(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { crate::builtins::thread::set_scheduler(c, a[0]) }
+fn f_s_scheduler(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(crate::builtins::thread::thread_scheduler(c)) }
+fn f_s_current_scheduler(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(crate::builtins::thread::scheduler_current(c)) }
+/// Fiber.schedule(*args, &b): the scheduler's #fiber makes and starts the fiber (rb_fiber_s_schedule).
+fn f_s_schedule(c: &mut Ctx, _s: Value, a: &[Value], b: *const Block) -> RV {
+    let s = crate::builtins::thread::thread_scheduler(c);
+    if s == NIL { return err(c, c.vm().c_runtime_error.get(), "No scheduler is available!"); }
+    match kw_arg(a) {
+        Some(_) => funcall_kw(c, s, intern(b"fiber"), a, b, true),
+        None => funcall(c, s, intern(b"fiber"), a, b),
+    }
+}
+
 /// CRuby fiber_to_s: "#<Fiber:0x... file:line (status)>", no location for a thread's root fiber.
 fn f_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let (st, resuming) = crate::fiber::status(c, slf);
@@ -128,6 +143,10 @@ pub fn init(c: &mut Ctx) {
     define_singleton_cfunc(c, k, "[]=", f_s_aset, 2);
     define_singleton_cfunc(c, k, "blocking?", f_s_blocking_p, 0);
     define_singleton_cfunc(c, k, "blocking", f_s_blocking, 0);
+    define_singleton_cfunc(c, k, "set_scheduler", f_s_set_scheduler, 1);
+    define_singleton_cfunc(c, k, "scheduler", f_s_scheduler, 0);
+    define_singleton_cfunc(c, k, "current_scheduler", f_s_current_scheduler, 0);
+    define_singleton_cfunc(c, k, "schedule", f_s_schedule, -1);
     define_cfunc(c, k, "storage", f_storage, 0);
     define_cfunc(c, k, "storage=", f_storage_set, 1);
     define_cfunc(c, k, "blocking?", f_blocking_p, 0);

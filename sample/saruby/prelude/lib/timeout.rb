@@ -47,7 +47,12 @@ module Timeout
     return yield(sec) if sec == nil or sec.zero?
     raise ArgumentError, "Timeout sec must be a non-negative number" if sec < 0
     message ||= "execution expired"
-    ent = [__now + sec, klass || Error, message, false]
+    # a non-blocking fiber's scheduler may run the timeout (CRuby's timeout.rb)
+    if (scheduler = Fiber.current_scheduler)&.respond_to?(:timeout_after)
+      perform = Proc.new { |exc| scheduler.timeout_after(sec, exc, message, &block) }
+      return klass ? perform.call(klass) : Error.handle_timeout(message, &perform)
+    end
+    ent =[__now + sec, klass || Error, message, false]
     @stack << ent
     trap("ALRM") { Timeout.__fire }
     __arm

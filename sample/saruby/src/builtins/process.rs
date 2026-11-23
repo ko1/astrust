@@ -207,18 +207,30 @@ fn p_kill(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 
 // ---- sleep ------------------------------------------------------------------------------------
 
+/// rb_time_interval: seconds of a Numeric, or of what #divmod(1) gives; never negative.
+pub fn time_interval(c: &mut Ctx, v: Value) -> Result<f64, Esc> {
+    let secs = if crate::numeric::is_numeric(v) || crate::builtins::rational::is_rational(c, v) {
+        crate::builtins::numeric_methods::to_f(c, v)?
+    } else if !is_string(v) && v != NIL && respond_to(c, v, intern(b"divmod"), true) {
+        let r = funcall(c, v, intern(b"divmod"), &[Value::fix(1)], std::ptr::null())?;
+        if !is_array(r) || c.ary_len(r) != 2 { return type_err(c, format!("can't convert {} into time interval", class_name_for_err(c, v))); }
+        let (i, f) = (c.ary_get(r, 0), c.ary_get(r, 1));
+        crate::builtins::numeric_methods::to_f(c, i)? + crate::builtins::numeric_methods::to_f(c, f)?
+    } else { return type_err(c, format!("can't convert {} into time interval", class_name_for_err(c, v))); };
+    if secs < 0.0 { return arg_err(c, "time interval must not be negative"); }
+    Ok(secs)
+}
+
 fn k_sleep(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
-    check_argc(c, args, 0, 1)?;
     let t0 = std::time::Instant::now();
-    let dur = match args.first() {
-        Some(&v) if v != NIL => {
-            if !crate::numeric::is_numeric(v) && !crate::builtins::rational::is_rational(c, v) { return type_err(c, format!("can't convert {} into time interval", class_name_for_err(c, v))); }
-            let secs = crate::builtins::numeric_methods::to_f(c, v)?;
-            if secs < 0.0 { return arg_err(c, "time interval must not be negative"); }
-            Some(secs)
-        }
-        _ => None,
-    };
+    // rb_f_sleep: a non-blocking fiber's scheduler gets the arguments as they are
+    let sch = crate::builtins::thread::scheduler_current(c);
+    if sch != NIL {
+        crate::builtins::thread::sched_kernel_sleep(c, sch, args)?;
+        return Ok(Value::fix(t0.elapsed().as_secs() as i64));
+    }
+    check_argc(c, args, 0, 1)?;
+    let dur = match args.first() { Some(&v) if v != NIL => Some(time_interval(c, v)?), _ => None };
     out_flush();
     run_pending_signals(c)?;
     // a TIMER blop with or without other threads: the pump wakes for trap handlers (eventfd), which run
@@ -400,6 +412,18 @@ fn split_args(a: &[Value]) -> (Option<Value>, &[Value], Option<Value>) {
     match rest.last() { Some(&l) if is_hash(l) && rest.len() > 1 => (env, &rest[..rest.len() - 1], Some(l)), _ => (env, rest, None) }
 }
 fn waitpid_retry(c: &mut Ctx, pid: i32, flags: i32) -> Result<(i32, i32), Esc> {
+    // rb_process_status_wait: a blocking wait in a non-blocking fiber asks its scheduler's process_wait
+    if flags & WNOHANG == 0 {
+        let s = crate::builtins::thread::scheduler_current(c);
+        if s != NIL {
+            if let Some(st) = crate::builtins::thread::sched_hook(c, s, "process_wait", &[Value::fix(pid as i64), Value::fix(flags as i64)])? {
+                if st == NIL { return Ok((0, 0)); }
+                let k = const_get_at(c, c.vm().m_process.get(), intern(b"Status")).unwrap_or(NIL);
+                if !is_kind_of(c, st, k) { return type_err(c, format!("wrong argument type {} (expected Process::Status)", class_name_for_err(c, st))); }
+                return Ok((st_pid_of(c, st) as i32, st_raw(c, st)));
+            }
+        }
+    }
     if flags & WNOHANG == 0 && crate::builtins::thread::active(c) { return waitpid_coop(c, pid, flags)?.map_err(|e| raise_errno(c, e, "")); }
     loop {
         let mut st = 0;
@@ -473,11 +497,18 @@ fn k_backtick(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     let pid = match pid { Ok(p) => p, Err(e) => { sys::close(p[0]); return Err(e); } };
     let mut out = vec![]; let mut buf = [0u8; 65536];
     let coop = crate::builtins::thread::active(c);
+    // a non-blocking fiber waits for the pipe in its scheduler's io_wait (CRuby reads a popen IO)
+    let sch = crate::builtins::thread::scheduler_current(c);
+    let pio = if sch != NIL { crate::builtins::io::io_for_fd_noclose(c, p[0], true, false) } else { NIL };
     loop {
-        if coop { if let Err(e) = crate::builtins::thread::wait_readable(c, p[0]) { sys::close(p[0]); return Err(e); } }
+        if sch != NIL && !crate::builtins::io::fd_ready(p[0], sys::POLLIN) {
+            if let Err(e) = crate::builtins::thread::sched_io_wait(c, sch, pio, sys::POLLIN, NIL) { sys::close(p[0]); return Err(e); }
+        } else if coop { if let Err(e) = crate::builtins::thread::wait_readable(c, p[0]) { sys::close(p[0]); return Err(e); } }
         match sys::read_fd(p[0], &mut buf) { Ok(0) | Err(_) => break, Ok(n) => out.extend_from_slice(&buf[..n]) }
     }
-    sys::close(p[0]);
+    // the scheduler may close the descriptor itself (io_close), as for the popen IO CRuby reads
+    let closed = sch != NIL && crate::builtins::thread::sched_hook(c, sch, "io_close", &[Value::fix(p[0] as i64)])?.is_some_and(|r| r.truthy());
+    if !closed { sys::close(p[0]); }
     let (_, st) = waitpid_retry(c, pid, 0)?;
     set_last_status(c, pid, st);
     Ok(c.str_from_vec_enc(out, crate::builtins::encoding::default_external()))
@@ -533,6 +564,15 @@ fn wait_impl(c: &mut Ctx, a: &[Value]) -> Result<Option<(i32, i32)>, Esc> {
     if r == 0 { return Ok(None); }
     set_last_status(c, r, st);
     Ok(Some((r, st)))
+}
+/// Process::Status.wait(pid = -1, flags = 0): the status ($? is left alone); pid -1 when there is no such child.
+fn st_s_wait(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+    check_argc(c, a, 0, 2)?;
+    let pid = match a.first() { Some(&p) if p != NIL => num_to_long(c, p)? as i32, _ => -1 };
+    let flags = match a.get(1) { Some(&f) if f != NIL => num_to_long(c, f)? as i32, _ => 0 };
+    let (r, st) = match waitpid_retry(c, pid, flags) { Ok(x) => x, Err(e) => { if !is_kind_of(c, c.esc_val, c.vm().c_system_call_error.get()) { return Err(e); } c.esc = EscKind::None; (-1, 0) } };
+    if r == 0 { return Ok(NIL); }
+    Ok(new_status(c, r, st))
 }
 fn p_wait(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { Ok(match wait_impl(c, a)? { Some((p, _)) => Value::fix(p as i64), None => NIL }) }
 fn p_wait2(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
@@ -677,6 +717,7 @@ pub fn init(c: &mut Ctx) {
     sd(c, "exitstatus", st_exitstatus, 0); sd(c, "to_i", st_to_i, 0); sd(c, "pid", st_pid, 0); sd(c, "success?", st_success, 0); sd(c, "exited?", st_exited, 0);
     sd(c, "signaled?", st_signaled, 0); sd(c, "stopped?", st_stopped, 0); sd(c, "termsig", st_termsig, 0); sd(c, "stopsig", st_stopsig, 0); sd(c, "coredump?", st_coredump, 0);
     sd(c, "to_s", st_to_s, 0); sd(c, "inspect", st_inspect, 0); sd(c, "==", st_eq, 1);
+    define_singleton_cfunc(c, st, "wait", st_s_wait, -1);
     let tms = define_class_under(c, p, "Tms", vmr.c_object.get());
     for n in ["utime", "stime", "cutime", "cstime"] { define_method_me(c, tms, intern(n.as_bytes()), new_me(intern(n.as_bytes()), tms, VISI_PUBLIC, MKind::AttrReader(intern(format!("@{}", n).as_bytes())))); }
     let w = define_class_under(c, p, "Waiter", vmr.c_object.get());

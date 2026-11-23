@@ -50,7 +50,7 @@ HEAP_RULES = [
   [/me\.as_ref|cr\.as_ref|is\.as_ref|blk\.as_ref|MethodEntry|Cref|lookup_method|is\.as_ref|REFINEMENTS_ON/, 'entry / iseq / block / cref reads (leaked, H4)'],
   [/\(\*robj\(v\)\)\.body|\(\*v\.ptr\(\)\)\.body/, 'payload accessor (body / body_mut / *_mut_and / kind test)'],
   [/GcLang|finalize|drop_body|new_unchecked|with_current_stack|drop_in_place/, 'GC binding (gc.rs)'],
-  [/unreachable_unchecked|&mut \*v\.ptr\(\)/, 'legacy accessor (&\'static mut, unchecked kind)'],
+  [/unreachable_unchecked|&mut \*v\.ptr\(\)/, 'unchecked kind (env *_unchecked, unreachable_unchecked)'],
 ]
 
 occ = []   # [file, line, category]

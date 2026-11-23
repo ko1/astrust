@@ -15,6 +15,7 @@ use crate::hash::*;
 use crate::symbol::intern;
 use crate::value::*;
 use crate::vm::*;
+use std::sync::atomic::AtomicBool;
 
 // ---- Encoding (the methods and objects are encoding.rs's) --------------------------------
 
@@ -49,10 +50,11 @@ pub fn unbase64(s2: &[u8]) -> Vec<u8> {
 }
 // ---- GC / ObjectSpace -----------------------------------------------------------------------
 
-fn gc_start(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { crate::gc::collect(c); Ok(NIL) }
+fn gc_start(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { crate::gc::collect(c); run_finalizer_queue(c, FinAt::Internal(44)); Ok(NIL) }
 // GC.__start(full_mark), behind the prelude's GC.start (keywords as in CRuby's gc.rb, no Hash)
 fn gc_start_full(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     if a[0].truthy() { crate::gc::collect(c) } else { crate::gc::collect_minor(c) }
+    run_finalizer_queue(c, FinAt::Internal(44));
     Ok(NIL)
 }
 fn gc_count(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(crate::gc::collections() as i64)) }
@@ -96,6 +98,7 @@ fn os_garbage_collect(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> 
         if !unknown.is_empty() { return arg_err(c, format!("unknown keyword{}: {}", if unknown.len() > 1 { "s" } else { "" }, unknown.join(", "))); }
     }
     if full { crate::gc::collect(c) } else { crate::gc::collect_minor(c) }
+    run_finalizer_queue(c, FinAt::Internal(595));
     Ok(NIL)
 }
 
@@ -116,11 +119,34 @@ fn warning_warn(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     if !is_string(a[0]) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(c, a[0]))); }
     let b = c.str_bytes(a[0]).to_vec(); stderr_write(c, &b)?; Ok(NIL)
 }
-static FINALIZERS: Global = Global::new(); // Array of [object, callable]; run at exit
-fn finalizers(c: &mut Ctx) -> Value {
-    let f = FINALIZERS.get(c);
-    if f != NIL { return f; }
-    let a = c.ary_new(); FINALIZERS.set(c, a); a
+// Finalizers (gc/default.c): FIN_TABLE maps an object to [object_id, callable...] by identity with weak
+// keys; the collector moves the array of an object that died to FIN_QUEUE (gc.rs sweep_weak) and sets the
+// interrupt bit, so the queue runs at the next check point (thread::poll), or at once after GC.start.
+static FIN_TABLE: Global = Global::new();
+static FIN_QUEUE: Global = Global::new();
+static FIN_ANY: AtomicBool = AtomicBool::new(false);       // some finalizer was ever defined
+static FIN_PENDING: AtomicBool = AtomicBool::new(false);   // FIN_QUEUE is not empty
+static FIN_RUNNING: AtomicBool = AtomicBool::new(false);   // CRuby's `finalizing`: the queue is not re-entered
+fn fin_table(c: &mut Ctx) -> Value {
+    let t = FIN_TABLE.get(c);
+    if t != NIL { return t; }
+    let h = c.alloc(NIL, Body::Hash(Box::new(RHash::with_capacity(0))));
+    c.hash_mut(h).identity = true;
+    obj_set_flags(h, FL_WEAK_KEYS);
+    FIN_TABLE.set(c, h);
+    let q = c.ary_new();
+    FIN_QUEUE.set(c, q);
+    FIN_ANY.store(true, Relaxed);
+    h
+}
+/// The finalizer table (gc.rs tells it from the other weak tables), nil before the first define.
+pub fn fin_table_value(c: &Ctx) -> Value { FIN_TABLE.get(c) }
+/// The collector found these tables' objects dead: queue them (no allocation, no Ruby code).
+pub fn fin_enqueue(c: &mut Ctx, dead: Vec<Value>) {
+    let q = FIN_QUEUE.get(c);
+    c.ary_mut(q).extend(dead);
+    FIN_PENDING.store(true, Relaxed);
+    crate::vm::set_ints();
 }
 fn os_define_finalizer(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
     check_argc(c, a, 1, 2)?;
@@ -132,50 +158,100 @@ fn os_define_finalizer(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -
     // the callable keeps the object alive: CRuby warns (it then runs only at exit)
     let recv = if is_proc(p) { c.proc_data(p).blk.self_ } else if is_method_obj(p) { c.method_obj(p).recv } else { NIL };
     if recv == o { gvar_warn(c, "finalizer references object to be finalized", false)?; }
-    let f = finalizers(c);
-    // an equal callable is defined once
-    let mut i = 0;
-    while i < c.ary_len(f) {
-        let pair = c.ary_get(f, i);
-        let (x, q) = (c.ary_get(pair, 0), c.ary_get(pair, 1));
-        if x == o && funcall(c, q, intern(b"=="), &[p], std::ptr::null())?.truthy() { return Ok(c.ary_new_from(&[Value::fix(0), q])); }
-        i += 1;
-    }
-    let pair = c.ary_new_from(&[o, p]);
-    c.ary_push(f, pair);
-    Ok(c.ary_new_from(&[Value::fix(0), p]))
+    let t = fin_table(c);
+    let p = match hash_get_opt(c, t, o)? {
+        Some(fs) => {
+            // an equal callable is defined once
+            let mut found = None;
+            let mut i = 1;
+            while i < c.ary_len(fs) {
+                let q = c.ary_get(fs, i);
+                if funcall(c, q, intern(b"=="), &[p], std::ptr::null())?.truthy() { found = Some(q); break; }
+                i += 1;
+            }
+            match found { Some(q) => q, None => { c.ary_push(fs, p); p } }
+        }
+        None => { let id = Value::fix(object_id(o) as i64); let fs = c.ary_new_from(&[id, p]); hash_set(c, t, o, fs)?; p }
+    };
+    let r = c.ary_new_from(&[Value::fix(0), p]);
+    obj_set_flags(r, FL_FROZEN);
+    Ok(r)
 }
 fn os_undefine_finalizer(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     if a[0].is_heap() && is_frozen(a[0]) { return Err(raise_frozen(c, a[0])); }
-    let f = finalizers(c);
-    let (v, others) = c.ary_mut_and(f);
-    v.retain(|&p| others.ary(p).and_then(|x| x.first()) != Some(&a[0]));
+    let t = FIN_TABLE.get(c);
+    if t != NIL { hash_delete(c, t, a[0])?; }
     Ok(a[0])
 }
-/// Finalizers of objects still registered at exit.
-pub fn run_finalizers(c: &mut Ctx) {
-    let f = FINALIZERS.get(c);
-    if f == NIL { return; }
-    loop {
-        let Some(pair) = c.ary_mut(f).pop() else { break };
-        let (o, p) = (c.ary_get(pair, 0), c.ary_get(pair, 1));
-        let id = Value::fix(object_id(o) as i64);
-        if funcall(c, p, intern(b"call"), &[id], std::ptr::null()).is_err() {
-            let e = c.esc_val;
+/// dup / clone: the copy gets the finalizers too, called with its own id (rb_gc_copy_finalizer).
+pub fn copy_finalizer(c: &mut Ctx, from: Value, to: Value) -> Result<(), Esc> {
+    if !FIN_ANY.load(Relaxed) { return Ok(()); }
+    let t = FIN_TABLE.get(c);
+    let Some(fs) = hash_get_opt(c, t, from)? else { return Ok(()) };
+    let v = c.ary(fs).to_vec();
+    let n = c.ary_from_vec(v);
+    c.ary_mut(n)[0] = Value::fix(object_id(to) as i64);
+    hash_set(c, t, to, n)
+}
+/// Where a finalizer's exception is reported: the current frame, CRuby's gc.rb line, or the script (exit).
+#[derive(Clone, Copy)]
+pub enum FinAt { Here, Internal(u32), Exit }
+/// rb_gc_run_obj_finalizer: each callable of `fs` with the id; an exception is reported and the next one runs.
+fn run_one(c: &mut Ctx, fs: Value, at: FinAt) {
+    let id = c.ary_get(fs, 0);
+    let saved = c.errinfo;
+    let mut i = 1;
+    while i < c.ary_len(fs) {
+        let p = c.ary_get(fs, i);
+        i += 1;
+        if funcall(c, p, intern(b"call"), &[id], std::ptr::null()).is_ok() { continue; }
+        let e = c.esc_val;
+        c.esc = EscKind::None;
+        if c.vm().verbose.get() != NIL {
+            let pi = inspect_str(c, p).unwrap_or_default();
             c.esc = EscKind::None;
-            // as gc.c: a warning naming the finalizer, then the exception as an uncaught one is shown
-            if c.vm().verbose.get() != NIL {
-                let pi = inspect_str(c, p).unwrap_or_default();
-                c.esc = EscKind::None;
-                let z = c.vm().dollar_zero.get();
-                let z = if is_string(z) { String::from_utf8_lossy(c.str_bytes(z)).into_owned() } else { String::new() };
-                let msg = format!("{}: warning: Exception in finalizer {}\n", z, pi);
-                err_write(msg.as_bytes());
-                crate::report_exception(c, e);
-            }
-            c.esc = EscKind::None;
+            let loc = match at {
+                FinAt::Here => c.cur_frame().map(|f| format!("{}:{}", frame_file(f), f.line())).unwrap_or_default(),
+                FinAt::Internal(l) => format!("<internal:gc>:{}", l),
+                FinAt::Exit => { let z = c.vm().dollar_zero.get(); if is_string(z) { String::from_utf8_lossy(c.str_bytes(z)).into_owned() } else { String::new() } }
+            };
+            let msg = format!("{}: warning: Exception in finalizer {}\n", loc, pi);
+            if warning_write(c, msg.as_bytes()).is_err() { c.esc = EscKind::None; }
+            crate::report_exception(c, e);
         }
+        c.esc = EscKind::None;
     }
+    c.errinfo = saved;
+}
+/// Run the finalizers of objects collected so far (gc_finalize_deferred); a no-op while they run.
+pub fn run_finalizer_queue(c: &mut Ctx, at: FinAt) {
+    if !FIN_PENDING.load(Relaxed) || FIN_RUNNING.swap(true, Relaxed) { return; }
+    drain_queue(c, at);
+    FIN_RUNNING.store(false, Relaxed);
+}
+fn drain_queue(c: &mut Ctx, at: FinAt) {
+    loop {
+        let q = FIN_QUEUE.get(c);
+        if c.ary_len(q) == 0 { break; }
+        let fs = c.ary_mut(q).remove(0);
+        run_one(c, fs, at);
+    }
+    FIN_PENDING.store(false, Relaxed);
+}
+/// At exit: the finalizers of every object still registered (in the order defined, including ones
+/// defined meanwhile), then those of objects collected but not finalized yet.
+pub fn run_finalizers(c: &mut Ctx) {
+    if !FIN_ANY.load(Relaxed) { return; }
+    FIN_RUNNING.store(true, Relaxed);
+    let t = FIN_TABLE.get(c);
+    loop {
+        let first = (0..).map_while(|i| c.hash_entry_at(t, i)).find(|e| e.0 != UNDEF);
+        let Some((o, fs)) = first else { break };
+        let _ = hash_delete(c, t, o);
+        run_one(c, fs, FinAt::Exit);
+    }
+    drain_queue(c, FinAt::Exit);
+    FIN_RUNNING.store(false, Relaxed);
 }
 fn rbconfig_ruby(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "saruby".into());

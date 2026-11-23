@@ -166,7 +166,7 @@ fn io_wait(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     if events & 1 != 0 && buffered { return Ok(if int_form { Value::fix(1) } else { s }); }
     let dl = crate::builtins::io::wait_deadline(c, if timeout == NIL { None } else { Some(&timeout) })?;
     let ev = (if events & 1 != 0 { sys::POLLIN } else { 0 }) | (if events & 4 != 0 { sys::POLLOUT } else { 0 }) | (if events & 2 != 0 { 2 } else { 0 });
-    let Some(rev) = crate::builtins::io::wait_one(c, fd, ev, dl)? else { return Ok(NIL) };
+    let Some(rev) = crate::builtins::io::wait_one(c, s, fd, ev, dl, timeout)? else { return Ok(NIL) };
     crate::builtins::io::get_io(c, s)?;
     if !int_form { return Ok(s); }
     let mut r = 0;
@@ -193,11 +193,6 @@ fn p_setrlimit(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     if sys::setrlimit(res, &sys::Rlimit { cur, max }) < 0 { return Err(raise_errno(c, sys::errno(), "setrlimit")); }
     Ok(NIL)
 }
-fn st_s_wait(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
-    let r = funcall(c, c.vm().m_process.get(), intern(b"wait2"), a, std::ptr::null())?;
-    Ok(if is_array(r) { c.ary_get(r, 1) } else { NIL })
-}
-
 pub fn init(c: &mut Ctx) {
     let vmr = c.vm();
     let md = vmr.c_module.get();
@@ -235,8 +230,6 @@ pub fn init(c: &mut Ctx) {
     define_module_function(c, p, "getpriority", |_c, _s, _a, _b| Ok(Value::fix(0)), 2);
     define_module_function(c, p, "setpgrp", |_c, _s, _a, _b| { sys::setpgid(0, 0); Ok(Value::fix(0)) }, 0);
     define_module_function(c, p, "maxgroups", |_c, _s, _a, _b| Ok(Value::fix(65536)), 0);
-    let st = const_get_at(c, p, intern(b"Status")).unwrap();
-    define_singleton_cfunc(c, st, "wait", st_s_wait, -1);
     define_singleton_cfunc(c, vmr.c_thread.get(), "ignore_deadlock", |_c, _s, _a, _b| Ok(Value::bool(crate::builtins::thread::IGNORE_DEADLOCK.load(std::sync::atomic::Ordering::Relaxed))), 0);
     define_singleton_cfunc(c, vmr.c_thread.get(), "ignore_deadlock=", |_c, _s, a, _b| { crate::builtins::thread::IGNORE_DEADLOCK.store(a[0].truthy(), std::sync::atomic::Ordering::Relaxed); Ok(a[0]) }, 1);
 }

@@ -428,6 +428,8 @@ warning, so "compiles" below is a clean check.
 
 #### 2.4.2 What the attribution says
 
+(This paragraph covers rows 1–39, the original conversion. Rows 40–44 came later: 40 and 44 were found by reading, 41–43 by tests; the totals for all 44 are 1 / 1 / 24 / 18.)
+
 Of the 39 rows, the borrow checker found one at compile time (row 7: a receiver's bytes held across
 `to_str` in `chomp`, `chomp!` and `split`), the safe accessors' run-time kind check found one (row 18,
 a panic where the code had segfaulted before the conversion), and the other 37 were found in the
