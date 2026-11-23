@@ -229,6 +229,10 @@ pub fn getpriority_raw(which: c_int, who: c_int) -> c_int { unsafe { ffi::syscal
 pub fn setpriority(which: c_int, who: c_int, prio: c_int) -> c_int { unsafe { ffi::syscall(nr_cred::SETPRIORITY, which as i64, who as i64, prio as i64) as c_int } }
 pub fn chroot(p: &CStr) -> c_int { unsafe { ffi::syscall(nr_cred::CHROOT, p.as_ptr()) as c_int } }
 pub fn fchdir(fd: c_int) -> c_int { unsafe { ffi::syscall(nr_cred::FCHDIR, fd as i64) as c_int } }
+#[cfg(target_arch = "x86_64")] const NR_FADVISE64: i64 = 221;
+#[cfg(target_arch = "aarch64")] const NR_FADVISE64: i64 = 223;
+/// posix_fadvise(2) (IO#advise); -1 and errno on failure.
+pub fn fadvise(fd: c_int, off: i64, len: i64, advice: c_int) -> c_int { unsafe { ffi::syscall(NR_FADVISE64, fd as i64, off, len, advice as i64) as c_int } }   // SAFETY: integers
 
 // ---- signals and time -----------------------------------------------------------------------
 /// Disposition for `signal`.
