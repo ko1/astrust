@@ -26,16 +26,25 @@ fn redirect_tag() -> Value { Value::fix(-1) }
 fn home(c: &Ctx, mark: bool) -> (usize, u64, bool) {
     let mut f = c.cur_frame();
     while let Some(x) = f {
-        if x.kind != FK_CFUNC && builtin_code(x) { f = c.prev_frame(x); continue; }
         let hid = match x.kind {
             FK_CFUNC => { f = c.prev_frame(x); continue; }
             FK_EVAL => match redirect_of(c, x) { Some(h) => h, None => { f = c.prev_frame(x); continue; } },
-            FK_BLOCK | FK_LAMBDA => match block_home(c, x) { Some(h) => h, None => return own(x, mark) },
+            FK_BLOCK | FK_LAMBDA => match block_home(c, x) {
+                Some(h) => h,
+                None if builtin_code(x) => { f = c.prev_frame(x); continue; }
+                None => return own(x, mark),
+            },
+            // a block of builtin code reaches its home here, which is skipped too
+            _ if builtin_code(x) => { f = c.prev_frame(x); continue; }
             _ => return own(x, mark),
         };
         let mut g = c.prev_frame(x);
         while let Some(y) = g { if y.id == hid && y.kind != FK_CFUNC && y.kind != FK_BLOCK { break; } g = c.prev_frame(y); }
-        if g.is_none() { return (0, hid, false); }
+        if g.is_none() {
+            // builtin code's escaped block (a Lazy step) runs for whoever called it
+            if builtin_code(x) { f = c.prev_frame(x); continue; }
+            return (0, hid, false);
+        }
         f = g;   // a lambda or eval home resolves further
     }
     (0, 0, false)
