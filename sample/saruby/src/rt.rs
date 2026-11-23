@@ -480,6 +480,8 @@ pub fn srb_back_ref(c: &mut Ctx, kind: u32) -> RV {
 // ---- control ------------------------------------------------------------------------------
 
 pub fn srb_has_custom_not(c: &Ctx, v: Value) -> bool {
+    // a refined ! is not in the class's table: the call finds it
+    if crate::vm::refinements_on() { return true; }
     let me = lookup_method(c, class_of(v), s::not);
     !me.is_null() && unsafe { (*me).owner } != vm().c_basic_object.get()
 }
