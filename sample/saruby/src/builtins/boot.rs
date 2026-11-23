@@ -189,6 +189,7 @@ fn boot_classes(c: &mut Ctx) {
     vmr.c_rational.set(rational::init(c));
     vmr.c_complex.set(complex::init(c));
     enum_native::init(c, vmr.m_enumerable.get());
+    lazy::init(c, vmr.c_lazy.get(), vmr.m_enumerable.get());
     enum_native::init_comparable(c, vmr.m_comparable.get());
     crate::fiber::init(c);
     fiber_methods::init(c);

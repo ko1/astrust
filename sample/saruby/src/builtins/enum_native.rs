@@ -99,8 +99,12 @@ pub fn each_overridden(c: &Ctx, recv: Value, native: CFunc) -> bool {
 
 /// Call Enumerable's own implementation of mid on recv (for natives whose #each was overridden).
 pub fn call_enumerable(c: &mut Ctx, recv: Value, mid: &str, args: &[Value], blk: Blk) -> RV {
-    let mid = crate::symbol::intern(mid.as_bytes());
-    let me = lookup_method(c, c.vm().m_enumerable.get(), mid);
+    let m = c.vm().m_enumerable.get();
+    call_method_of(c, m, recv, crate::symbol::intern(mid.as_bytes()), args, blk)
+}
+/// Call `klass`'s implementation of mid (found from klass up) on recv, as rb_call_super does.
+pub fn call_method_of(c: &mut Ctx, klass: Value, recv: Value, mid: Sym, args: &[Value], blk: Blk) -> RV {
+    let me = lookup_method(c, klass, mid);
     if me.is_null() { return funcall(c, recv, mid, args, blk); }
     let base = c.top();
     if !c.has_room(args.len() + 2) { return funcall(c, recv, mid, args, blk); }
