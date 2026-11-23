@@ -380,8 +380,7 @@ class Enumerator
     # RB_SCAN_ARGS_LAST_HASH_KEYWORDS: a trailing Hash is the keywords
     kw = args.pop if kw.empty? && Hash === args.last
     Enumerable.__argc(args.size, 0, 1) if args.size > 1
-    ks = kw.keys - [:size]
-    raise ArgumentError, "unknown keyword#{ks.size > 1 ? 's' : ''}: #{ks.map(&:inspect).join(", ")}" unless ks.empty?
+    Enumerable.__kw(kw, :size) unless kw.empty?
     Enumerator.new(kw.fetch(:size, Float::INFINITY)) do |y|
       v = args.empty? ? b.call(nil) : args[0]
       begin

@@ -2171,7 +2171,7 @@ fn io_reopen(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     io.readable = acc != sys::O_WRONLY; io.writable = acc != sys::O_RDONLY;
     io.path = p.0; io.has_path = true; io.rbuf.clear(); io.rpos = 0;
     cv::clear_codeconv(io);
-    if a.len() >= 2 {
+    if a.len() >= 2 || opts.is_some() {
         io.binmode = om.bin;
         (io.enc, io.enc2) = om.encs.unwrap_or_else(|| if om.bin { (Some(ENC_BINARY), None) } else { ext_int_to_encs(None, IntEnc::Default, false) });
         io.ecflags = om.ecflags; io.ecrep = om.ecrep; io.textmode = om.text;

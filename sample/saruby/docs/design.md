@@ -73,8 +73,13 @@ uses that API; see docs/safe_heap.md (design, recipe, what is left).
 * Builtins are `CFunc = fn(&mut Ctx, self: Value, args: &[Value], blk: *const Block) -> RV`,
   registered with `define_cfunc(klass, "name", f, arity)` (arity -1 = variadic; checked).
   `args` comes from `with_args`: the staged slots themselves, or a copy of them with the checked stack.
-  Keyword args to a cfunc arrive as a trailing Hash; `kw_arg(args)` returns it if the caller
-  passed keywords.
+  Keyword args to a cfunc arrive as a trailing Hash.  Whether the caller passed keywords is a bit of
+  the cfunc's frame (`FR_KW`, set by `invoke_cfunc` from the call flag `CF_KW`, as CRuby's
+  `VM_FRAME_FLAG_CFRAME_KW`): `kw_given(c)` is `rb_keyword_given_p()`, `kw_arg(c, args)` the Hash,
+  `kw_split(c, args)` = rb_scan_args' `":"`, `kw_unknown` rb_get_kwargs' check.  A positional Hash
+  (ruby2_keywords-flagged or not) is never keywords.  A Rust helper reading it must run in the
+  cfunc's own frame with the cfunc's own `args` (or a slice ending at the same last argument).
+  To pass keywords on: `funcall_kw(.., kw_given(c))`, `call_proc_kw`, `yield_with_self_kw`.
 * Call Ruby from Rust: `funcall(c, recv, sym, &args, blk)`, `yield1(c, blk, v)`,
   `yield_block(c, blk, &args)`, `call_proc(c, proc, &args, blk)`.
 * Raise: `return err(c, vm().c_argument_error, "msg")`, `arg_err`, `type_err`, or

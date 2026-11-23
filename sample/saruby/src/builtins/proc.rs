@@ -186,8 +186,9 @@ fn proc_compose_left(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     Ok(new_proc(c, c.vm().c_proc.get(), b, true, NIL))
 }
 fn compose_call(c: &mut Ctx, data: Value, args: &[Value], blk: Blk, _o: Blk) -> RV {
+    let kw = block_kw(c);
     let f = c.ary_get(data, 0); let g = c.ary_get(data, 1);
-    let x = funcall(c, f, s::call, args, blk)?;
+    let x = funcall_kw(c, f, s::call, args, blk, kw)?;
     funcall(c, g, s::call, &[x], std::ptr::null())
 }
 fn proc_s_new(c: &mut Ctx, slf: Value, _a: &[Value], b: Blk) -> RV {

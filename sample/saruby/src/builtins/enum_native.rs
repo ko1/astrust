@@ -25,6 +25,13 @@ fn e_hash(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
 fn e_argc(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     argc_err(c, a[0].as_fix() as usize, a[1].as_fix() as i32, a[2].as_fix() as i32)
 }
+// Enumerable.__kw(hash, *known): rb_get_kwargs' "unknown keyword(s)" ArgumentError.
+fn e_kw(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
+    let names: Vec<String> = a[1..].iter().filter(|v| v.is_sym()).map(|v| crate::symbol::sym_str(v.as_sym())).collect();
+    let known: Vec<&str> = names.iter().map(|n| n.as_str()).collect();
+    kw_unknown(c, a[0], &known)?;
+    Ok(NIL)
+}
 
 // ---- Comparable (compar.c): x <=> y always called, rb_cmpint of its answer ----
 fn cmpint(c: &mut Ctx, x: Value, y: Value) -> Result<i64, Esc> {
@@ -105,14 +112,15 @@ pub fn call_enumerable(c: &mut Ctx, recv: Value, mid: &str, args: &[Value], blk:
 /// Call `klass`'s implementation of mid (found from klass up) on recv, as rb_call_super does.
 pub fn call_method_of(c: &mut Ctx, klass: Value, recv: Value, mid: Sym, args: &[Value], blk: Blk) -> RV {
     let me = lookup_method(c, klass, mid);
-    if me.is_null() { return funcall(c, recv, mid, args, blk); }
+    // the forwarding cfunc's own arguments: its keywords go on
+    let kw = kw_arg(c, args).is_some();
+    if me.is_null() || !c.has_room(args.len() + 2) { return funcall_kw(c, recv, mid, args, blk, kw); }
     let base = c.top();
-    if !c.has_room(args.len() + 2) { return funcall(c, recv, mid, args, blk); }
     base[0].set(recv);
     base[1].set(NIL);
     for (i, a) in args.iter().enumerate() { base[2 + i].set(*a); }
     c.set_sp(base, 2 + args.len());
-    let r = invoke(c, me, recv, base, args.len() as u32, blk, CF_FCALL);
+    let r = invoke(c, me, recv, base, args.len() as u32, blk, CF_FCALL | if kw { CF_KW } else { 0 });
     c.set_sp(base, 0);
     r
 }
@@ -136,7 +144,8 @@ fn run_each(c: &mut Ctx, recv: Value, f: CBlockFn, data: Value, args: &[Value], 
         r
     } else {
         let b = Block::cfunc_for(c, f, data, blk);
-        funcall(c, recv, s::each, args, &b)
+        let kw = kw_arg(c, args).is_some();
+        funcall_kw(c, recv, s::each, args, &b, kw)
     };
     match r {
         Ok(_) => Ok(false),
@@ -563,6 +572,7 @@ pub fn init(c: &mut Ctx, m: Value) {
     define_singleton_cfunc(c, m, "__int", e_int, 1);
     define_singleton_cfunc(c, m, "__hash", e_hash, 1);
     define_singleton_cfunc(c, m, "__argc", e_argc, 3);
+    define_singleton_cfunc(c, m, "__kw", e_kw, -1);
     define_singleton_cfunc(c, m, "__sort_by", e_sort_by, 1);
     define_singleton_cfunc(c, m, "__to_a", e_to_a, 1);
     define_singleton_cfunc(c, m, "__range_sum", |c, _s, a, b| crate::builtins::range_methods::r_sum(c, a[0], &a[1..], b), 2);

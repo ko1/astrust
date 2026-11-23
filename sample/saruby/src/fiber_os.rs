@@ -170,7 +170,7 @@ impl FiberCtx {
         let c = Box::new(Ctx {
             sp: crate::stack::NO_SP, stk: crate::stack::NO_STACK, frame: std::ptr::null_mut(),
             esc: EscKind::None, esc_val: NIL, esc_tag: 0, esc_tag_v: NIL, serial: 1 << 40, errinfo: NIL, last_match: NIL,
-            native_limit, in_ensure: 0, redef: crate::rt::redef_word(), call_me: std::ptr::null(), call_blk: std::ptr::null(),
+            native_limit, in_ensure: 0, cblk_kw: false, redef: crate::rt::redef_word(), call_me: std::ptr::null(), call_blk: std::ptr::null(),
             // SAFETY: a fiber's context runs only on its stack, while the one that switched to it is suspended in switch
             tok: unsafe { crate::heap::Token::mint() },
         });

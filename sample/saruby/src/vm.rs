@@ -442,6 +442,8 @@ pub struct Ctx {
     pub errinfo: Value,
     pub last_match: Value,
     pub in_ensure: u32,
+    // a Cfunc block (CBlockFn) was called with keywords: read once by block_kw at its entry
+    pub cblk_kw: bool,
     // copy of rt::REDEF, so that baked code tests it from the (noalias) context: rt::note_redefinition, fiber::leave
     pub redef: u64,
     pub tok: crate::heap::Token,   // makes this the heap token (heap.rs)
@@ -2340,6 +2342,10 @@ pub fn kw_unknown(c: &mut Ctx, h: Value, known: &[&str]) -> Result<(), Esc> {
     arg_err(c, format!("unknown keyword{}: {}", if unknown.len() > 1 { "s" } else { "" }, unknown.join(", ")))
 }
 
+/// At the entry of a Cfunc block (CBlockFn): was it called with keywords?
+#[inline]
+pub fn block_kw(c: &mut Ctx) -> bool { std::mem::replace(&mut c.cblk_kw, false) }
+
 /// A cfunc's arguments split as rb_scan_args does with ":": (positionals, keyword Hash).
 pub fn kw_split<'a>(c: &Ctx, args: &'a [Value]) -> (&'a [Value], Option<Value>) {
     match kw_arg(c, args) { Some(h) => (&args[..args.len() - 1], Some(h)), None => (args, None) }
@@ -2750,7 +2756,7 @@ pub fn invoke_block_full_raw(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *co
             c.set_sp(base, 0);
             r
         }
-        BlockKind::Cfunc(f, data) => f(c, data, args, vm_blk(blkarg), vm_blk(b.outer_blk)),
+        BlockKind::Cfunc(f, data) => { c.cblk_kw = kw; f(c, data, args, vm_blk(blkarg), vm_blk(b.outer_blk)) }
         BlockKind::Proc(p) => {
             let (inner, p_lambda) = { let pd = c.proc_data(p); (pd.blk, pd.is_lambda) };
             invoke_block_full(c, &inner, args, blkarg, if self_ == b.self_ { inner.self_ } else { self_ }, p_lambda || lambda_call, bme, kw)

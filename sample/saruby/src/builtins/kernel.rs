@@ -636,7 +636,7 @@ fn k_gets(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     out_flush();
     // no file arguments: plain stdin without loading ARGF
     let src = if argf_plain(c) { *c.vm().globals.borrow().get(&intern(b"$stdin")).unwrap_or(&c.vm().stdin.get()) } else { argf(c)? };
-    let v = funcall(c, src, intern(b"gets"), args, std::ptr::null())?;
+    let v = funcall_kw(c, src, intern(b"gets"), args, std::ptr::null(), kw_given(c))?;
     crate::builtins::svar::set_last_line(c, v);
     Ok(v)
 }
@@ -648,7 +648,7 @@ fn k_readline(c: &mut Ctx, s: Value, args: &[Value], b: Blk) -> RV {
 fn k_readlines(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     out_flush();
     let src = if argf_plain(c) { *c.vm().globals.borrow().get(&intern(b"$stdin")).unwrap_or(&c.vm().stdin.get()) } else { argf(c)? };
-    funcall(c, src, intern(b"readlines"), args, std::ptr::null())
+    funcall_kw(c, src, intern(b"readlines"), args, std::ptr::null(), kw_given(c))
 }
 
 /// Print a warning line unless $VERBOSE is nil.
