@@ -18,27 +18,36 @@ macro_rules! cfn { ($(#[$m:meta])* $name:ident, |$c:ident, $s:ident, $a:ident, $
     pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], $b: *const Block) -> RV { $body }
 }; }
 
+/// Must an Enumerable method of slf go through its #each (a subclass's or a redefined Array#each)?
+#[inline]
+fn ary_each_redef(c: &Ctx, slf: Value) -> bool {
+    (obj_klass(slf) != c.vm().c_array.get() || crate::rt::redef(crate::rt::R_ARY_EACH)) && crate::builtins::enum_native::each_overridden(c, slf, a_each)
+}
 fn enum_or<F: FnOnce(&mut Ctx) -> RV>(c: &mut Ctx, slf: Value, mid: &str, a: &[Value], blk: *const Block, f: F) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for_sized(c, slf, intern(mid.as_bytes()), a); }
     f(c)
 }
 
-/// Ruby equality (==) with fast paths.
+/// Ruby equality (==) with rb_equal's fast paths (identity, then the unredefined builtins).
 pub fn rb_eq(c: &mut Ctx, a: Value, b: Value) -> Result<bool, Esc> {
+    use crate::rt::*;
     if a == b { return Ok(!(a.is_flonum() && a.flonum_val().is_nan())); }
-    if a.is_fixnum() && b.is_fixnum() { return Ok(false); }
-    if a.is_sym() || b.is_sym() { return Ok(false); }
-    if is_string(a) && is_string(b) && obj_klass(a) == c.vm().c_string.get() { return Ok(c.str_eq(a, b)); }
+    let r = redef_word();
+    if a.is_fixnum() && r & R_INT_EQ == 0 && (b.is_fixnum() || b.is_sym() || b == NIL || b == TRUE || b == FALSE) { return Ok(false); }
+    if (a.is_sym() || a == NIL || a == TRUE || a == FALSE) && r & R_IMM_EQ == 0 { return Ok(false); }
+    if is_string(a) && is_string(b) && obj_klass(a) == c.vm().c_string.get() && r & R_STR_EQ == 0 { return Ok(c.str_eq(a, b)); }
     let r = funcall(c, a, s::eq, &[b], std::ptr::null())?;
     Ok(r.truthy())
 }
 
-/// <=> returning an Ordering (raises ArgumentError when incomparable).
+/// <=> returning an Ordering (raises ArgumentError when incomparable): CRuby's OPTIMIZED_CMP.
 pub fn rb_cmp(c: &mut Ctx, a: Value, b: Value) -> Result<std::cmp::Ordering, Esc> {
+    use crate::rt::*;
     use std::cmp::Ordering;
-    if a.is_fixnum() && b.is_fixnum() { return Ok(a.as_fix().cmp(&b.as_fix())); }
-    if is_string(a) && is_string(b) { return Ok(c.str_bytes(a).cmp(c.str_bytes(b))); }
-    if a.is_flonum() && b.is_flonum() { if let Some(o) = a.flonum_val().partial_cmp(&b.flonum_val()) { return Ok(o); } }
+    let r = redef_word();
+    if a.is_fixnum() && b.is_fixnum() && r & R_INT_CMP == 0 { return Ok(a.as_fix().cmp(&b.as_fix())); }
+    if is_string(a) && is_string(b) && r & R_STR_CMP == 0 { return Ok(c.str_bytes(a).cmp(c.str_bytes(b))); }
+    if a.is_flonum() && b.is_flonum() && r & R_FLO_CMP == 0 { if let Some(o) = a.flonum_val().partial_cmp(&b.flonum_val()) { return Ok(o); } }
     let r = funcall(c, a, s::cmp, &[b], std::ptr::null())?;
     cmp_result(c, r, a, b).map(|x| if x < 0 { Ordering::Less } else if x > 0 { Ordering::Greater } else { Ordering::Equal })
 }
@@ -86,9 +95,11 @@ pub fn sort_values(c: &mut Ctx, v: &mut Vec<Value>, cmp: &mut dyn FnMut(&mut Ctx
 
 pub fn sort_array(c: &mut Ctx, v: &mut Vec<Value>, blk: *const Block) -> Result<(), Esc> {
     if blk.is_null() {
-        if v.iter().all(|x| x.is_fixnum()) { v.sort_by_key(|x| x.as_fix()); return Ok(()); }
-        if v.iter().all(|x| is_string(*x)) { v.sort_by(|a, b| c.str_bytes(*a).cmp(c.str_bytes(*b))); return Ok(()); }
-        if v.iter().all(|x| x.is_flonum() && !x.flonum_val().is_nan()) { v.sort_by(|a, b| a.flonum_val().partial_cmp(&b.flonum_val()).unwrap()); return Ok(()); }
+        use crate::rt::*;
+        let r = redef_word();
+        if r & R_INT_CMP == 0 && v.iter().all(|x| x.is_fixnum()) { v.sort_by_key(|x| x.as_fix()); return Ok(()); }
+        if r & R_STR_CMP == 0 && v.iter().all(|x| is_string(*x)) { v.sort_by(|a, b| c.str_bytes(*a).cmp(c.str_bytes(*b))); return Ok(()); }
+        if r & R_FLO_CMP == 0 && v.iter().all(|x| x.is_flonum() && !x.flonum_val().is_nan()) { v.sort_by(|a, b| a.flonum_val().partial_cmp(&b.flonum_val()).unwrap()); return Ok(()); }
         sort_values(c, v, &mut |c, a, b| rb_cmp(c, a, b))
     } else {
         sort_values(c, v, &mut |c, a, b| { let r = yield_block(c, blk, &[a, b])?; cmp_result(c, r, a, b).map(|x| x.cmp(&0)) })
@@ -337,7 +348,7 @@ cfn!(a_each, |c, slf, a, blk| {
     a_each_loop(c, slf, &mut |c, a| yield1(c, blk, a[0]))
 });
 cfn!(a_each_index, |c, slf, a, blk| enum_or(c, slf, "each_index", a, blk, |c| { let mut i = 0; while i < c.ary_len(slf) { yield1(c, blk, Value::fix(i as i64))?; i += 1; } Ok(slf) }));
-cfn!(a_each_with_index, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array.get() && crate::builtins::enum_native::each_overridden(c, slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "each_with_index", a, blk) } else { enum_or(c, slf, "each_with_index", a, blk, |c| a_each_wi_loop(c, slf, &mut |c, a| yield_block(c, blk, a))) });
+cfn!(a_each_with_index, |c, slf, a, blk| if ary_each_redef(c, slf) { crate::builtins::enum_native::call_enumerable(c, slf, "each_with_index", a, blk) } else { enum_or(c, slf, "each_with_index", a, blk, |c| a_each_wi_loop(c, slf, &mut |c, a| yield_block(c, blk, a))) });
 cfn!(a_reverse_each, |c, slf, a, blk| enum_or(c, slf, "reverse_each", a, blk, |c| { let mut i = c.ary_len(slf); while i > 0 { i -= 1; if i >= c.ary_len(slf) { i = c.ary_len(slf); continue; } let x = c.ary_get(slf, i); yield1(c, blk, x)?; } Ok(slf) }));
 cfn!(a_map, |c, slf, a, blk| enum_or(c, slf, "map", a, blk, |c| a_map_loop(c, slf, &mut |c, a| yield1(c, blk, a[0]))));
 cfn!(a_map_b, |c, slf, a, blk| enum_or(c, slf, "map!", a, blk, |c| {
@@ -445,7 +456,7 @@ fn uniq_vec(c: &mut Ctx, slf: Value, blk: *const Block) -> Result<Vec<Value>, Es
     while let Some(&x) = c.ary(slf).get(i) {
         let k = if blk.is_null() { x } else { yield1(c, blk, x)? };
         c.ary_push(keep, k);
-        if hash_lookup(c, seen, k)?.is_none() { hash_set(c, seen, k, TRUE)?; out.push(x); }
+        if hash_add_new(c, seen, k, TRUE)? { out.push(x); }
         i += 1;
     }
     Ok(out)
@@ -571,7 +582,7 @@ cfn!(a_eql, |c, slf, a, blk| {
     recursion_leave(slf, s::eql_p);
     Ok(Value::bool(r?))
 });
-cfn!(a_hash, |c, slf, a, blk| { let h = key_hash(c, slf)?; Ok(Value::fix((h >> 2) as i64)) });
+cfn!(a_hash, |c, slf, a, blk| { let h = ary_hash(c, slf)?; Ok(Value::fix((h >> 2) as i64)) });
 cfn!(a_cmp, |c, slf, a, blk| {
     let o = if is_array(a[0]) { a[0] } else if a[0].is_heap() { match check_array(c, a[0])? { Some(o) => o, None => return Ok(NIL) } } else { return Ok(NIL) };
     let mut i = 0;
@@ -678,31 +689,120 @@ cfn!(a_slice_b, |c, slf, a, blk| {
     let i = num_to_long(c, a[0])?;
     match norm_index(i, n) { Some(i) if i < n => Ok(c.ary_mut(slf).remove(i)), _ => Ok(NIL) }
 });
-fn minmax_impl(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, want_max: bool) -> RV {
+pub fn minmax_impl(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, want_max: bool) -> RV {
     let cmpf = |c: &mut Ctx, x: Value, y: Value| -> Result<std::cmp::Ordering, Esc> {
         if blk.is_null() { rb_cmp(c, x, y) } else { let r = yield_block(c, blk, &[x, y])?; cmp_result(c, r, x, y).map(|v| v.cmp(&0)) }
     };
     if !a.is_empty() && a[0] != NIL {
-        let n = num_to_long(c, a[0])?;
-        if n < 0 { return arg_err(c, format!("negative size ({})", n)); }
-        if n == 0 { return Ok(c.ary_new()); }
-        let mut v = c.ary(slf).to_vec();
-        let keep = c.ary_from_vec(v.clone());
-        let mut f = cmpf;
-        sort_values(c, &mut v, &mut f)?;
-        if want_max { v.reverse(); }
-        v.truncate(n.max(0) as usize);
-        std::hint::black_box(keep);
-        return Ok(c.ary_from_vec(v));
+        let Some(mut d) = Nmin::new(c, a[0], false, want_max, blk)? else { return Ok(c.ary_new()); };
+        let mut i = 0;
+        while let Some(&x) = c.ary(slf).get(i) { d.add(c, x, NIL)?; i += 1; }
+        return d.finish(c);
     }
     let mut best = NIL; let mut first = true;
     let mut i = 0;
     while let Some(&x) = c.ary(slf).get(i) {
         if first { best = x; first = false; }
-        else { let o = cmpf(c, x, best)?; if (want_max && o.is_gt()) || (!want_max && o.is_lt()) { best = x; } }
+        else if blk.is_null() {
+            // ary_max_generic / ary_min_generic: the current best is the receiver of <=>
+            let o = rb_cmp(c, best, x)?; if (want_max && o.is_lt()) || (!want_max && o.is_gt()) { best = x; }
+        } else { let o = cmpf(c, x, best)?; if (want_max && o.is_gt()) || (!want_max && o.is_lt()) { best = x; } }
         i += 1;
     }
     Ok(best)
+}
+/// rb_nmin_run (enum.c): the n smallest (rev: largest) of the values given to `add`, compared in
+/// CRuby's order (a quickselect over a buffer of 4n, then a sort).  by: the values come with keys.
+pub struct Nmin { n: usize, bufmax: usize, buf: Value, curlen: usize, limit: Option<Value>, rev: bool, by: bool, blk: *const Block }
+impl Nmin {
+    /// None when n is 0 (nothing to collect, as CRuby returns before iterating).
+    pub fn new(c: &mut Ctx, num: Value, by: bool, rev: bool, blk: *const Block) -> Result<Option<Nmin>, Esc> {
+        let n = num_to_long(c, num)?;
+        if n < 0 { return arg_err(c, format!("negative size ({})", n)); }
+        if n == 0 { return Ok(None); }
+        if i64::MAX / 4 / (if by { 2 } else { 1 }) < n { return arg_err(c, "too big size"); }
+        let buf = c.ary_new();
+        Ok(Some(Nmin { n: n as usize, bufmax: n as usize * 4, buf, curlen: 0, limit: None, rev, by, blk }))
+    }
+    /// The state as a Ruby Array, for a block function that gets only a Value (enum_native.rs)
+    pub fn save(&self, c: &mut Ctx) -> Value {
+        let l = self.limit.unwrap_or(NIL);
+        let fl = (self.limit.is_some() as i64) | (self.rev as i64) << 1 | (self.by as i64) << 2;
+        c.ary_new_from(&[self.buf, Value::fix(self.n as i64), Value::fix(self.curlen as i64), l, Value::fix(fl), Value::fix(self.blk as usize as i64)])
+    }
+    pub fn load(c: &Ctx, d: Value) -> Nmin {
+        let n = c.ary_get(d, 1).as_fix() as usize;
+        let fl = c.ary_get(d, 4).as_fix();
+        Nmin { n, bufmax: n * 4, buf: c.ary_get(d, 0), curlen: c.ary_get(d, 2).as_fix() as usize,
+               limit: if fl & 1 != 0 { Some(c.ary_get(d, 3)) } else { None }, rev: fl & 2 != 0, by: fl & 4 != 0,
+               blk: c.ary_get(d, 5).as_fix() as usize as *const Block }
+    }
+    pub fn store(&self, c: &mut Ctx, d: Value) {
+        let fl = (self.limit.is_some() as i64) | (self.rev as i64) << 1 | (self.by as i64) << 2;
+        let a = c.ary_mut(d);
+        a[2] = Value::fix(self.curlen as i64); a[3] = self.limit.unwrap_or(NIL); a[4] = Value::fix(fl);
+    }
+    pub fn blk(&self) -> *const Block { self.blk }
+    fn cmp(&self, c: &mut Ctx, a: Value, b: Value) -> Result<i64, Esc> {
+        if !self.by && !self.blk.is_null() { let r = yield_block(c, self.blk, &[a, b])?; return cmp_result(c, r, a, b); }
+        Ok(rb_cmp(c, a, b)? as i64)
+    }
+    pub fn add(&mut self, c: &mut Ctx, v: Value, key: Value) -> Result<(), Esc> {
+        let cv = if self.by { key } else { v };
+        if let Some(l) = self.limit {
+            let k = self.cmp(c, cv, l)?;
+            if (if self.rev { -k } else { k }) >= 0 { return Ok(()); }
+        }
+        if self.by { c.ary_push(self.buf, key); }
+        c.ary_push(self.buf, v);
+        self.curlen += 1;
+        if self.curlen == self.bufmax { self.filter(c)?; }
+        Ok(())
+    }
+    fn filter(&mut self, c: &mut Ctx) -> Result<(), Esc> {
+        if self.curlen <= self.n { return Ok(()); }
+        let (n, w, buf) = (self.n, if self.by { 2 } else { 1 }, self.buf);
+        let swap = |c: &mut Ctx, i: usize, j: usize| { let b = c.ary_mut(buf); for k in 0..w { b.swap(i * w + k, j * w + k); } };
+        let (mut left, mut right) = (0usize, self.curlen - 1);
+        let store_index;
+        loop {
+            let mut pivot = left + (right - left) / 2;
+            let mut pivots = 1;
+            swap(c, pivot, right);
+            pivot = right;
+            let mut store = left;
+            let mut i = left;
+            while i + pivots <= right {
+                let (x, y) = (c.ary_get(buf, i * w), c.ary_get(buf, pivot * w));
+                let k = self.cmp(c, x, y)?;
+                let k = if self.rev { -k } else { k };
+                if k == 0 { swap(c, i, right - pivots); pivots += 1; continue; }
+                if k < 0 { swap(c, i, store); store += 1; }
+                i += 1;
+            }
+            let mut j = store;
+            let mut i = right;
+            while right < i + pivots { if i <= j { break; } swap(c, j, i); j += 1; i -= 1; }
+            if store <= n && n <= store + pivots { store_index = store; break; }
+            if n < store { right = store - 1; } else { left = store + pivots; }
+        }
+        self.limit = Some(c.ary_get(buf, store_index * w));
+        self.curlen = n;
+        c.ary_mut(buf).truncate(n * w);
+        Ok(())
+    }
+    pub fn finish(mut self, c: &mut Ctx) -> RV {
+        self.filter(c)?;
+        let (buf, w) = (self.buf, if self.by { 2 } else { 1 });
+        let mut idx: Vec<Value> = (0..c.ary_len(buf) / w).map(|i| Value::fix(i as i64)).collect();
+        sort_values(c, &mut idx, &mut |c, x, y| {
+            let (a, b) = (c.ary_get(buf, x.as_fix() as usize * w), c.ary_get(buf, y.as_fix() as usize * w));
+            Ok(self.cmp(c, a, b)?.cmp(&0))
+        })?;
+        let mut out: Vec<Value> = idx.iter().map(|i| c.ary_get(buf, i.as_fix() as usize * w + w - 1)).collect();
+        if self.rev { out.reverse(); }
+        Ok(c.ary_from_vec(out))
+    }
 }
 cfn!(a_min, |c, slf, a, blk| minmax_impl(c, slf, a, blk, false));
 cfn!(a_max, |c, slf, a, blk| minmax_impl(c, slf, a, blk, true));
@@ -1002,9 +1102,9 @@ cfn!(a_bsearch, |c, slf, a, blk| enum_or(c, slf, "bsearch", a, blk, |c| {
 }));
 cfn!(a_pack, |c, slf, a, blk| crate::builtins::pack::pack(c, slf, a));
 cfn!(a_frozen_dup, |c, slf, a, blk| Ok(slf));
-cfn!(a_flat_map, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array.get() && crate::builtins::enum_native::each_overridden(c, slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "flat_map", a, blk) } else { enum_or(c, slf, "flat_map", a, blk, |c| {
+cfn!(a_flat_map, |c, slf, a, blk| if ary_each_redef(c, slf) { crate::builtins::enum_native::call_enumerable(c, slf, "flat_map", a, blk) } else { enum_or(c, slf, "flat_map", a, blk, |c| {
     let out = c.ary_new(); let mut i = 0;
-    while let Some(&x) = c.ary(slf).get(i) { let y = yield1(c, blk, x)?; if is_array(y) { c.ary_concat(out, y); } else if let Some(arr) = if y.is_heap() { check_array(c, y)? } else { None } { c.ary_concat(out, arr); } else { c.ary_push(out, y); } i += 1; }
+    while let Some(&x) = c.ary(slf).get(i) { let y = yield1(c, blk, x)?; if is_array(y) { c.ary_concat(out, y); } else if let Some(arr) = check_array(c, y)? { c.ary_concat(out, arr); } else { c.ary_push(out, y); } i += 1; }
     Ok(out)
 }) });
 cfn!(a_any, |c, slf, a, blk| {
@@ -1029,7 +1129,7 @@ cfn!(a_all, |c, slf, a, blk| {
 });
 cfn!(a_none, |c, slf, a, blk| { let r = a_any(c, slf, a, blk)?; Ok(Value::bool(r == FALSE)) });
 cfn!(a_find, |c, slf, a, blk| enum_or(c, slf, "find", a, blk, |c| { let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { if yield1(c, blk, x)?.truthy() { return Ok(x); } i += 1; } Ok(NIL) }));
-cfn!(a_each_slice, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array.get() && crate::builtins::enum_native::each_overridden(c, slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "each_slice", a, blk) } else { enum_or(c, slf, "each_slice", a, blk, |c| {
+cfn!(a_each_slice, |c, slf, a, blk| if ary_each_redef(c, slf) { crate::builtins::enum_native::call_enumerable(c, slf, "each_slice", a, blk) } else { enum_or(c, slf, "each_slice", a, blk, |c| {
     let n = num_to_long(c, a[0])?;
     if n <= 0 { return arg_err(c, "invalid slice size"); }
     let mut i = 0;
@@ -1037,7 +1137,7 @@ cfn!(a_each_slice, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array.get() &&
     Ok(slf)
 }) });
 cfn!(a_inject, |c, slf, a, blk| {
-    if obj_klass(slf) != c.vm().c_array.get() && crate::builtins::enum_native::each_overridden(c, slf, a_each) { return crate::builtins::enum_native::call_enumerable(c, slf, "inject", a, blk); }
+    if ary_each_redef(c, slf) { return crate::builtins::enum_native::call_enumerable(c, slf, "inject", a, blk); }
     if !blk.is_null() { if let Some(r) = a_inject_loop(c, slf, a, &mut |c, a| yield_block(c, blk, a)) { return r; } }
     let (mut acc, mut i, op) = match (a.len(), blk.is_null()) {
         (0, _) => { if c.ary_len(slf) == 0 { return Ok(NIL); } (c.ary_get(slf, 0), 1, None) }
@@ -1047,25 +1147,27 @@ cfn!(a_inject, |c, slf, a, blk| {
     };
     while let Some(&x) = c.ary(slf).get(i) {
         acc = match op {
-            Some(m) => { if m == s::plus && acc.is_fixnum() && x.is_fixnum() { if let Some(r) = acc.as_fix().checked_add(x.as_fix()) { if Value::fixable(r) { i += 1; acc = Value::fix(r); continue; } } } funcall(c, acc, m, &[x], std::ptr::null())? }
+            Some(m) => { if m == s::plus && acc.is_fixnum() && x.is_fixnum() && !crate::rt::redef(crate::rt::R_INT_PLUS) { if let Some(r) = acc.as_fix().checked_add(x.as_fix()) { if Value::fixable(r) { i += 1; acc = Value::fix(r); continue; } } } funcall(c, acc, m, &[x], std::ptr::null())? }
             None => yield_block(c, blk, &[acc, x])?,
         };
         i += 1;
     }
     Ok(acc)
 });
-cfn!(a_sort_by_native, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array.get() && crate::builtins::enum_native::each_overridden(c, slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "sort_by", a, blk) } else { enum_or(c, slf, "sort_by", a, blk, |c| {
+cfn!(a_sort_by_native, |c, slf, a, blk| if ary_each_redef(c, slf) { crate::builtins::enum_native::call_enumerable(c, slf, "sort_by", a, blk) } else { enum_or(c, slf, "sort_by", a, blk, |c| sort_by_body(c, slf, blk)) });
+/// The elements of slf ordered by the block's keys (sort_by_cmp: OPTIMIZED_CMP on the keys).
+pub fn sort_by_body(c: &mut Ctx, slf: Value, blk: *const Block) -> RV {
     let n = c.ary_len(slf);
     let keys = c.ary_new_capa(n);
     let mut i = 0;
     while let Some(&x) = c.ary(slf).get(i) { let k = yield1(c, blk, x)?; c.ary_push(keys, k); i += 1; }
     let mut idx: Vec<Value> = (0..c.ary_len(keys).min(c.ary_len(slf))).map(|i| Value::fix(i as i64)).collect();
     let src = c.ary_from_vec(c.ary(slf).to_vec());
-    if c.ary(keys).iter().all(|k| k.is_fixnum()) { let ks = c.ary(keys); idx.sort_by_key(|i| ks[i.as_fix() as usize].as_fix()); }
+    if !crate::rt::redef(crate::rt::R_INT_CMP) && c.ary(keys).iter().all(|k| k.is_fixnum()) { let ks = c.ary(keys); idx.sort_by_key(|i| ks[i.as_fix() as usize].as_fix()); }
     else { sort_values(c, &mut idx, &mut |c, x, y| rb_cmp(c, c.ary_get(keys, x.as_fix() as usize), c.ary_get(keys, y.as_fix() as usize)))?; }
     Ok(c.ary_from_vec(idx.iter().map(|i| c.ary_get(src, i.as_fix() as usize)).collect()))
-}) });
-cfn!(a_each_cons, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array.get() && crate::builtins::enum_native::each_overridden(c, slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "each_cons", a, blk) } else { enum_or(c, slf, "each_cons", a, blk, |c| {
+}
+cfn!(a_each_cons, |c, slf, a, blk| if ary_each_redef(c, slf) { crate::builtins::enum_native::call_enumerable(c, slf, "each_cons", a, blk) } else { enum_or(c, slf, "each_cons", a, blk, |c| {
     let n = num_to_long(c, a[0])?;
     if n <= 0 { return arg_err(c, "invalid size"); }
     let n = n as usize;
@@ -1073,9 +1175,19 @@ cfn!(a_each_cons, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array.get() && 
     while i + n <= c.ary_len(slf) { let sl = c.ary_from_vec(c.ary(slf)[i..i + n].to_vec()); yield1(c, blk, sl)?; i += 1; }
     Ok(slf)
 }) });
-cfn!(a_filter_map, |c, slf, a, blk| if obj_klass(slf) != c.vm().c_array.get() && crate::builtins::enum_native::each_overridden(c, slf, a_each) { crate::builtins::enum_native::call_enumerable(c, slf, "filter_map", a, blk) } else { enum_or(c, slf, "filter_map", a, blk, |c| { let out = c.ary_new(); let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { let y = yield1(c, blk, x)?; if y.truthy() { c.ary_push(out, y); } i += 1; } Ok(out) }) });
-// CRuby's pairwise minmax (enum.c minmax_ii): the block sees the same call sequence.
+cfn!(a_filter_map, |c, slf, a, blk| if ary_each_redef(c, slf) { crate::builtins::enum_native::call_enumerable(c, slf, "filter_map", a, blk) } else { enum_or(c, slf, "filter_map", a, blk, |c| { let out = c.ary_new(); let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { let y = yield1(c, blk, x)?; if y.truthy() { c.ary_push(out, y); } i += 1; } Ok(out) }) });
+// Without a block rb_ary_minmax is [min, max]; with one, CRuby's pairwise minmax (enum.c minmax_ii).
 cfn!(a_minmax, |c, slf, a, blk| {
+    if blk.is_null() {
+        // rb_assoc_new(rb_ary_min(..), rb_ary_max(..)): CRuby's build runs the max first
+        let mx = minmax_impl(c, slf, &[], blk, true)?;
+        let mn = minmax_impl(c, slf, &[], blk, false)?;
+        return Ok(c.ary_new_from(&[mn, mx]));
+    }
+    minmax_pairs(c, slf, blk)
+});
+/// Enumerable#minmax (enum.c minmax_i / minmax_ii) over the elements of slf: taken in pairs.
+pub fn minmax_pairs(c: &mut Ctx, slf: Value, blk: *const Block) -> RV {
     let cmp = |c: &mut Ctx, x: Value, y: Value| -> Result<i64, Esc> {
         if blk.is_null() { Ok(rb_cmp(c, x, y)? as i64) } else { let r = yield_block(c, blk, &[x, y])?; cmp_result(c, r, x, y) }
     };
@@ -1102,7 +1214,7 @@ cfn!(a_minmax, |c, slf, a, blk| {
     }
     if mn == UNDEF { return Ok(c.ary_new_from(&[NIL, NIL])); }
     Ok(c.ary_new_from(&[mn, mx]))
-});
+}
 cfn!(a_fetch_values, |c, slf, a, blk| {
     let out = c.ary_new_capa(a.len());
     for &x in a { let v = a_fetch(c, slf, &[x], blk)?; c.ary_push(out, v); }

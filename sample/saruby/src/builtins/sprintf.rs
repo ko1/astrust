@@ -345,7 +345,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                         Some(v) => v,
                         None => {
                             // rb_hash_default_value; a nil default is "not found"
-                            let d = if c.hash(h).default_proc != NIL || c.hash(h).default != NIL { crate::hash::hash_aref(c, h, key)? } else { NIL };
+                            let d = crate::hash::hash_default_value(c, h, key)?;
                             if d == NIL {
                                 let m = c.str_new_enc(&[b"key", label, b" not found"].concat(), fenc);
                                 let e2 = funcall(c, c.vm().c_key_error.get(), intern(b"new"), &[m], std::ptr::null())?;

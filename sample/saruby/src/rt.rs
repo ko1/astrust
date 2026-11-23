@@ -59,6 +59,27 @@ pub const R_STR_EQ: u64 = 1 << 40;
 pub const R_IMM_NOT: u64 = 1 << 41;
 // to_s of Integer / Symbol / nil in an interpolation (srb_tostr, srb_dstr_append)
 pub const R_IMM_TO_S: u64 = 1 << 42;
+// <=> of Integer / Float / String: OPTIMIZED_CMP's BOP_CMP (sort, min, max, sort_by, ...)
+pub const R_INT_CMP: u64 = 1 << 43;
+pub const R_FLO_CMP: u64 = 1 << 44;
+pub const R_STR_CMP: u64 = 1 << 45;
+// inspect of Integer / nil (inspect_value answers them without a call)
+pub const R_IMM_INSPECT: u64 = 1 << 46;
+// Hash#default (rb_hash_default_value)
+pub const R_HASH_DEFAULT: u64 = 1 << 47;
+// String#freeze / String#-@ ("lit".freeze, -"lit": opt_str_freeze / opt_str_uminus)
+pub const R_STR_FREEZE: u64 = 1 << 48;
+pub const R_STR_UMINUS: u64 = 1 << 49;
+// Symbol#to_proc (a block argument `&:sym`)
+pub const R_SYM_TO_PROC: u64 = 1 << 50;
+// to_str / to_ary on Integer / Float / Symbol / nil / true / false, nil.to_a (the conversions skip immediates)
+pub const R_IMM_CONV: u64 = 1 << 51;
+// Array#each / Range#each (the Enumerable methods Array / Range answer natively)
+pub const R_ARY_EACH: u64 = 1 << 52;
+pub const R_RANGE_EACH: u64 = 1 << 53;
+// Array#max / Array#min (`[a, b].max`: opt_newarray_send)
+pub const R_ARY_MAX: u64 = 1 << 54;
+pub const R_ARY_MIN: u64 = 1 << 55;
 
 pub static REDEF: AtomicU64 = AtomicU64::new(0);
 pub static BOOTED: AtomicBool = AtomicBool::new(false);
@@ -110,6 +131,14 @@ pub fn redef_note(c: &Ctx, klass: Value, mid: Sym) -> bool {
         (nil, s::not, R_IMM_NOT), (tru, s::not, R_IMM_NOT), (fal, s::not, R_IMM_NOT), (int, s::not, R_IMM_NOT),
         (flo, s::not, R_IMM_NOT), (sym, s::not, R_IMM_NOT),
         (int, s::to_s, R_IMM_TO_S), (sym, s::to_s, R_IMM_TO_S), (nil, s::to_s, R_IMM_TO_S),
+        (int, s::cmp, R_INT_CMP), (flo, s::cmp, R_FLO_CMP), (str, s::cmp, R_STR_CMP),
+        (int, s::inspect, R_IMM_INSPECT), (nil, s::inspect, R_IMM_INSPECT),
+        (hash, s::default, R_HASH_DEFAULT), (str, s::freeze, R_STR_FREEZE), (str, s::uminus, R_STR_UMINUS),
+        (sym, s::to_proc, R_SYM_TO_PROC), (ary, s::each, R_ARY_EACH), (ary, s::max, R_ARY_MAX), (ary, s::min, R_ARY_MIN), (vm.c_range.get(), s::each, R_RANGE_EACH),
+        (int, s::to_str, R_IMM_CONV), (flo, s::to_str, R_IMM_CONV), (sym, s::to_str, R_IMM_CONV), (nil, s::to_str, R_IMM_CONV),
+        (tru, s::to_str, R_IMM_CONV), (fal, s::to_str, R_IMM_CONV), (int, s::to_ary, R_IMM_CONV), (flo, s::to_ary, R_IMM_CONV),
+        (sym, s::to_ary, R_IMM_CONV), (nil, s::to_ary, R_IMM_CONV), (tru, s::to_ary, R_IMM_CONV), (fal, s::to_ary, R_IMM_CONV),
+        (nil, s::to_a, R_IMM_CONV),
     ];
     for &(k, m, f) in table {
         if m == mid && (klass == k || ancestors(c, k).contains(&klass)) { REDEF.fetch_or(f, Relaxed); }
@@ -487,6 +516,19 @@ pub fn srb_has_custom_not(c: &Ctx, v: Value) -> bool {
 }
 
 #[cold]
+/// vm_opt_newarray_max / _min: OPTIMIZED_CMP(v, best) for each later element v.
+#[inline(never)]
+pub fn srb_newarray_minmax(c: &mut Ctx, a: Value, mx: bool, cc: &OpCc) -> RV {
+    if redef(if mx { R_ARY_MAX } else { R_ARY_MIN }) { return srb_call0(c, a, if mx { s::max } else { s::min }, cc); }
+    let mut best = match c.ary(a).first() { Some(&v) => v, None => return Ok(NIL) };
+    for i in 1..c.ary_len(a) {
+        let v = c.ary_get(a, i);
+        let o = crate::builtins::array_methods::rb_cmp(c, v, best)?;
+        if if mx { o.is_gt() } else { o.is_lt() } { best = v; }
+    }
+    Ok(best)
+}
+
 pub fn srb_call0(c: &mut Ctx, v: Value, mid: Sym, cc: &OpCc) -> RV {
     let base = stage(c, 2)?;
     base[0].set(v);
@@ -786,7 +828,7 @@ pub fn srb_callx_arg(c: &mut Ctx, ci: CiRef, i: usize, v: Value, tmp: Value, kw:
 fn block_from_value(c: &mut Ctx, blkv: Value, holder: &mut Block) -> Result<*const Block, Esc> {
     if blkv == NIL { return Ok(std::ptr::null()); }
     if is_proc(blkv) { return Ok(proc_block(c, blkv)); }
-    if blkv.is_sym() {
+    if blkv.is_sym() && !redef(R_SYM_TO_PROC) {
         // &:sym under refinements remembers the scope it was written in
         let cref = unsafe { (*c.frame).cref() };
         if crate::vm::refinements_on() && cref_refinements(cref) != NIL {

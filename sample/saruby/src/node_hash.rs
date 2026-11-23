@@ -130,6 +130,24 @@ fn PROF_node_fstr(pc: &mut ProfCtx, n: NodePtr) -> u64 {
 
 
 #[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_fstr_recv(n: NodePtr) -> u64 {
+    let u = node_u::<node_fstr_recv_struct>(n);
+    let mut h = hash_str("node_fstr_recv");
+    h = hash_merge(h, hash_bytes(u.s));
+    h = hash_merge(h, hash_u64(u.enc as u64));
+    h = hash_merge(h, hash_u64(u.um as u64));
+    h
+}
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut, unused_braces, unused_parens)]
+fn PROF_node_fstr_recv(pc: &mut ProfCtx, n: NodePtr) -> u64 {
+    let u = node_u::<node_fstr_recv_struct>(n);
+    let mut h = hash_str("node_fstr_recv");
+
+    h
+}
+
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_dstr(n: NodePtr) -> u64 {
     let u = node_u::<node_dstr_struct>(n);
     let mut h = hash_str("node_dstr");
@@ -771,6 +789,23 @@ fn PROF_node_or(pc: &mut ProfCtx, n: NodePtr) -> u64 {
     let mut h = hash_str("node_or");
     h = hash_merge(h, profile_node(pc, u.a));
     h = hash_merge(h, profile_node(pc, u.b));
+    h
+}
+
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_newarray_minmax(n: NodePtr) -> u64 {
+    let u = node_u::<node_newarray_minmax_struct>(n);
+    let mut h = hash_str("node_newarray_minmax");
+    h = hash_merge(h, hash_node(u.a));
+    h = hash_merge(h, hash_u64(u.mx as u64));
+    h
+}
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut, unused_braces, unused_parens)]
+fn PROF_node_newarray_minmax(pc: &mut ProfCtx, n: NodePtr) -> u64 {
+    let u = node_u::<node_newarray_minmax_struct>(n);
+    let mut h = hash_str("node_newarray_minmax");
+    h = hash_merge(h, profile_node(pc, u.a));
     h
 }
 

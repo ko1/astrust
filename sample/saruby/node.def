@@ -72,6 +72,15 @@ node_fstr(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32, lc@ref: LitCache)
     Ok(srb_fstr(c, s, enc, lc))
 }
 
+// the receiver of "lit".freeze (um 0) / -"lit" (um 1): a fresh String once that method is redefined, as opt_str_freeze
+NODE_DEF
+node_fstr_recv(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32, um: u32, lc@ref: LitCache)
+{
+    if c.redef_any(if um == 0 { R_STR_FREEZE } else { R_STR_UMINUS }) { return Ok(c.str_new_enc(s, enc as u8)); }
+    if let Some(v) = lc.v.get() { return Ok(v); }
+    Ok(srb_fstr(c, s, enc, lc))
+}
+
 NODE_DEF
 node_dstr(c: &mut Ctx, n: NodePtr, fp: Fp, parts: NODES, enc: u32, cap: u32)
 {
@@ -428,6 +437,15 @@ NODE_TEST
     if EVAL_TEST!(c, a)? { Ok(true) } else { EVAL_TEST!(c, b) }
 }
 
+// [a, b, ...].max / .min of a literal built at run time: CRuby's opt_newarray_send (each element
+// receives <=> against the best so far, and no Array#max frame)
+NODE_DEF
+node_newarray_minmax(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, mx: u32, line@hole: u32, cc@ref: OpCc)
+{
+    line.store(c.frame_mut());
+    srb_newarray_minmax(c, a, mx != 0, cc)
+}
+
 NODE_DEF
 node_not(c: &mut Ctx, n: NodePtr, fp: Fp, v@child: Value, cc@ref: OpCc)
 {
@@ -609,12 +627,13 @@ node_ensure(c: &mut Ctx, n: NodePtr, fp: Fp, body: NODE, ens: NODE)
 
 // case/when: one `when` clause's test against the subject in a hidden local
 NODE_DEF
-node_when(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, pats: NODES, kinds: Str, cc@ref: CallCache, km@ref: KindMemo)
+node_when(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, pats: NODES, kinds: Str, line@hole: u32, cc@ref: CallCache, km@ref: KindMemo)
 {
     let subj = slot(fp, subj_slot).get();
     for i in 0..EVAL_LEN!(pats) {
         let p = EVAL_NTH!(c, pats, i)?;
         if kinds[i] == 1 {
+            line.store(c.frame_mut());
             if srb_when_splat(c, p, subj)? { return Ok(TRUE); }
         } else {
             let hit = match if c.redef_any(R_EQQ_IMM) { None } else { eqq_imm(p, subj) } {
@@ -624,7 +643,11 @@ node_when(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, pats: NODES, kinds: S
                     let k = class_of(subj).raw();
                     let d = km.memo[kind_way(k)].get() ^ k;
                     // is_class: the slot of a dead pattern class may be another object by now (a new class would move the serial)
-                    if p.raw() == km.pat.get() && d <= 1 && km.ser.get() == kind_serial() && is_class_or_module(p) { d == 1 } else { srb_eqq_class(c, p, subj, cc, km)? }
+                    if p.raw() == km.pat.get() && d <= 1 && km.ser.get() == kind_serial() && is_class_or_module(p) { d == 1 } else {
+                        // === raises from the pattern's line
+                        line.store(c.frame_mut());
+                        srb_eqq_class(c, p, subj, cc, km)?
+                    }
                 }
             };
             if hit { return Ok(TRUE); }
@@ -635,13 +658,14 @@ node_when(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, pats: NODES, kinds: S
 
 // `when LIT` for one immediate literal (Integer / Symbol / nil / true / false)
 NODE_DEF
-node_when_lit(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, v: Value, cc@ref: CallCache)
+node_when_lit(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, v: Value, line@hole: u32, cc@ref: CallCache)
 {
     let subj = slot(fp, subj_slot).get();
     if !c.redef_any(R_EQQ_IMM) {
         if subj == v { return Ok(TRUE); }
         if !v.is_fixnum() || subj.is_fixnum() { return Ok(FALSE); }
     }
+    line.store(c.frame_mut());
     Ok(Value::bool(srb_eqq(c, v, subj, cc)?))
 }
 NODE_TEST
@@ -651,6 +675,7 @@ NODE_TEST
         if subj == v { return Ok(true); }
         if !v.is_fixnum() || subj.is_fixnum() { return Ok(false); }
     }
+    line.store(c.frame_mut());
     srb_eqq(c, v, subj, cc)
 }
 

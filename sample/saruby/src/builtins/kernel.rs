@@ -102,11 +102,15 @@ pub fn inspect_str(c: &mut Ctx, v: Value) -> Result<String, Esc> {
     Ok(String::from_utf8_lossy(c.str_bytes(r)).into_owned())
 }
 
+/// rb_inspect: v.inspect, as a String by rb_obj_as_string.
 pub fn inspect_value(c: &mut Ctx, v: Value) -> RV {
-    if v == NIL { return Ok(c.str_new(b"nil")); }
-    if v.is_fixnum() && !crate::rt::redef(0) { return Ok(c.str_new(v.as_fix().to_string().as_bytes())); }
+    if (v == NIL || v.is_fixnum()) && !crate::rt::redef(crate::rt::R_IMM_INSPECT) {
+        return Ok(if v == NIL { c.str_new(b"nil") } else { c.str_new(v.as_fix().to_string().as_bytes()) });
+    }
     let r = funcall(c, v, s::inspect, &[], std::ptr::null())?;
-    if is_string(r) { Ok(r) } else { Ok(c.str_new(any_to_s_str(c, v).as_bytes())) }
+    if is_string(r) { return Ok(r); }
+    let t = funcall(c, r, s::to_s, &[], std::ptr::null())?;
+    if is_string(t) { Ok(t) } else { Ok(c.str_new(any_to_s_str(c, r).as_bytes())) }
 }
 
 pub fn to_s_value(c: &mut Ctx, v: Value) -> RV { crate::rt::srb_tostr(c, v) }

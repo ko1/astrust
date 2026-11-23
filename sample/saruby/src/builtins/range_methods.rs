@@ -136,6 +136,10 @@ cfn!(r_reverse_each, |c, slf, a, blk| {
 cfn!(r_to_a, |c, slf, a, blk| {
     let (b, e, _) = c.range_parts(slf);
     if e == NIL { return err(c, c.vm().c_range_error.get(), "cannot convert endless range to an array"); }
+    // range_to_a is Enumerable#to_a: a redefined or subclass #each is called
+    if (obj_klass(slf) != c.vm().c_range.get() || crate::rt::redef(crate::rt::R_RANGE_EACH)) && crate::builtins::enum_native::each_overridden(c, slf, r_each) {
+        return crate::builtins::enum_native::call_enumerable(c, slf, "to_a", a, blk);
+    }
     let out = c.ary_new();
     range_each(c, slf, |c, v| { c.ary_push(out, v); Ok(true) })?;
     let _ = b;
@@ -170,7 +174,7 @@ cfn!(r_count, |c, slf, a, blk| {
 });
 /// range.c r_less: <=> as -1/0/1, or i64::MAX when incomparable (nil).
 fn r_less(c: &mut Ctx, a: Value, b: Value) -> Result<i64, Esc> {
-    if a.is_fixnum() && b.is_fixnum() { return Ok(a.as_fix().cmp(&b.as_fix()) as i64); }
+    if a.is_fixnum() && b.is_fixnum() && !crate::rt::redef(crate::rt::R_INT_CMP) { return Ok(a.as_fix().cmp(&b.as_fix()) as i64); }
     let r = funcall(c, a, s::cmp, &[b], std::ptr::null())?;
     if r == NIL { return Ok(i64::MAX); }
     crate::builtins::array_methods::cmp_result(c, r, a, b)
@@ -373,6 +377,8 @@ cfn!(r_sum, |c, slf, a, blk| {
         if hi < lo { return Ok(init); }
         let s2 = (lo + hi) * (hi - lo + 1) / 2;
         let n = c.int_from_i128(s2);
+        // int_range_sum: rb_int_plus, no call of a redefined Integer#+
+        if is_integer(init) { return crate::builtins::numeric_methods::int_plus(c, init, &[n], std::ptr::null()); }
         return funcall(c, init, s::plus, &[n], std::ptr::null());
     }
     let arr = r_to_a(c, slf, &[], std::ptr::null())?;

@@ -64,6 +64,14 @@ pub fn DISPATCH_node_fstr(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
 }
 
 #[allow(non_snake_case, unused_variables)]
+pub fn DISPATCH_node_fstr_recv(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_fstr_recv");
+    let u = node_u::<node_fstr_recv_struct>(n);
+
+    EVAL_node_fstr_recv(c, n, fp, u.s, u.enc, u.um, &u.lc)
+}
+
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_dstr(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_dstr");
     let u = node_u::<node_dstr_struct>(n);
@@ -370,6 +378,14 @@ pub fn DISPATCH_node_or(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
 }
 
 #[allow(non_snake_case, unused_variables)]
+pub fn DISPATCH_node_newarray_minmax(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_newarray_minmax");
+    let u = node_u::<node_newarray_minmax_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    EVAL_node_newarray_minmax::<crate::vm::LineAt>(c, n, fp, v_a, u.mx, crate::vm::LineAt(&(*node_head_line(n))), &u.cc)
+}
+
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_not(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_not");
     let u = node_u::<node_not_struct>(n);
@@ -478,7 +494,7 @@ pub fn DISPATCH_node_when(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_when");
     let u = node_u::<node_when_struct>(n);
 
-    EVAL_node_when::<DynList>(c, n, fp, u.subj_slot, u.pats, u.kinds, &u.cc, &u.km)
+    EVAL_node_when::<DynList, crate::vm::LineAt>(c, n, fp, u.subj_slot, u.pats, u.kinds, crate::vm::LineAt(&(*node_head_line(n))), &u.cc, &u.km)
 }
 
 #[allow(non_snake_case, unused_variables)]
@@ -486,7 +502,7 @@ pub fn DISPATCH_node_when_lit(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_when_lit");
     let u = node_u::<node_when_lit_struct>(n);
 
-    EVAL_node_when_lit(c, n, fp, u.subj_slot, u.v, &u.cc)
+    EVAL_node_when_lit::<crate::vm::LineAt>(c, n, fp, u.subj_slot, u.v, crate::vm::LineAt(&(*node_head_line(n))), &u.cc)
 }
 
 #[allow(non_snake_case, unused_variables)]
