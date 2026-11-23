@@ -202,6 +202,7 @@ pub fn puts_bytes(c: &mut Ctx, args: &[Value]) -> Result<Vec<u8>, Esc> {
 #[inline(always)]
 fn stdout_slow() -> bool { crate::builtins::io::STDOUT_CONV.load(std::sync::atomic::Ordering::Relaxed) != 0 }
 fn k_puts(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+    crate::builtins::thread::blocking_point(c)?;
     let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
     if so != c.vm().stdout.get() && (so != c.vm().stderr.get() || crate::builtins::io::out_redef()) || so == c.vm().stdout.get() && stdout_slow() {
         return funcall(c, so, s::puts, args, std::ptr::null());
@@ -213,6 +214,7 @@ fn k_puts(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
 
 fn k_print(c: &mut Ctx, _s: Value, args: &[Value], b: *const Block) -> RV {
     use crate::builtins::io;
+    crate::builtins::thread::blocking_point(c)?;
     let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
     // rb_io_print to $stdout: $_, $, and $\, and a #write of $stdout's own
     if so != c.vm().stdout.get() || stdout_slow() || args.is_empty() || io::OUTPUT_SEPS.load(std::sync::atomic::Ordering::Relaxed) {

@@ -564,8 +564,9 @@ pub fn EVAL_node_trace<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut Ctx, n
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_poll<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, body: NodePtr) -> RV {
-    if ints_pending() { srb_poll(c)?; }
+pub fn EVAL_node_poll<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, line: H_line, body: NodePtr) -> RV {
+    // an interrupt raised here is at the loop's line, as at CRuby's backward jump
+    if ints_pending() { line.store(c.frame_mut()); srb_poll(c)?; }
     <D_body as Disp>::call(c, body, fp)
 }
 

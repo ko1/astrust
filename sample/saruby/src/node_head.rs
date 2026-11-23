@@ -1288,8 +1288,8 @@ pub fn ALLOC_node_trace(ev: u32, line: u32, body: NodePtr) -> NodePtr {
 }
 
 #[allow(non_snake_case)]
-pub fn ALLOC_node_poll(body: NodePtr) -> NodePtr {
-    node_allocate_with(&KIND_node_poll, node_poll_struct { body }, |_| { })
+pub fn ALLOC_node_poll(line: u32, body: NodePtr) -> NodePtr {
+    node_allocate_with(&KIND_node_poll, node_poll_struct { body }, |h| { h.line = line; })
 }
 
 #[allow(non_snake_case)]

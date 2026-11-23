@@ -109,6 +109,8 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     Ok(None)
 }
 fn list_remove(c: &mut Ctx, t: Value) {
+    let q = std::mem::replace(&mut th_mut(c, t).pending, NIL);
+    if q != NIL { let n = c.ary_len(q); QUEUED.fetch_sub(n, Relaxed); }
     let l = LIST.get(c);
     c.ary_mut(l).retain(|&x| x != t);
     if c.ary_len(l) == 0 { timer_run(false); }
@@ -127,15 +129,26 @@ fn deliver_interrupt(c: &mut Ctx, t: Value, blocking: bool) -> Result<(), Esc> {
     let Some(i) = r.deliverable(c, blocking) else { return Ok(()) };
     let q = r.pending;
     let e = c.ary_mut(q).remove(i);
+    QUEUED.fetch_sub(1, Relaxed);
     if c.ary_len(q) == 0 { th_mut(c, t).pending = NIL; }
     if e == kill_mark() { let k = make_exception(c, C_KILL.get(c), "killed"); return Err(raise_exc(c, k)); }
     Err(raise_exc(c, e))
 }
 fn check_interrupt(c: &mut Ctx, t: Value) -> Result<(), Esc> { check_interrupt_at(c, t, true) }
+/// Interrupts queued in all threads: lets a blocking IO call skip the queue test.
+static QUEUED: AtomicUsize = AtomicUsize::new(0);
+/// puts / print / IO#write are blocking calls: :on_blocking interrupts are delivered before the write.
+#[inline]
+pub fn blocking_point(c: &mut Ctx) -> Result<(), Esc> {
+    if QUEUED.load(Relaxed) == 0 { return Ok(()); }
+    let me = cur(c);
+    check_interrupt_at(c, me, true)
+}
 /// Queue an interrupt for t (rb_threadptr_pending_interrupt_enque) and wake it if it may take it.
 fn enqueue_interrupt(c: &mut Ctx, t: Value, e: Value) {
     let q = th(c, t).pending;
     if q == NIL { let q = c.ary_new_from(&[e]); th_mut(c, t).pending = q; } else { c.ary_push(q, e); }
+    QUEUED.fetch_add(1, Relaxed);
     if th(c, t).interrupted(c) { kick(c, t); }
 }
 /// Make a parked thread runnable (an interrupt or a wakeup was posted for it).
@@ -335,7 +348,9 @@ pub fn after_fork_child(c: &mut Ctx) {
     let me = cur(c);
     let l = LIST.get(c);
     let others: Vec<Value> = c.ary(l).iter().copied().filter(|&t| t != me).collect();
-    for t in others { let r = th_mut(c, t); r.dead = true; r.blop = None; r.waiting = false; }
+    for t in others { let r = th_mut(c, t); r.dead = true; r.blop = None; r.waiting = false; r.pending = NIL; }
+    let q = th(c, me).pending;
+    QUEUED.store(if q == NIL { 0 } else { c.ary_len(q) }, Relaxed);
     c.ary_mut(l).clear();
     // the timer thread did not survive the fork: timer_run spawns another
     TIMER_RUN.store(false, SeqCst);

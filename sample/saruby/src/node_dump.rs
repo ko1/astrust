@@ -376,6 +376,7 @@ fn DUMP_node_trace(out: &mut String, n: NodePtr) {
 fn DUMP_node_poll(out: &mut String, n: NodePtr) {
     let u = node_u::<node_poll_struct>(n);
     out.push_str("(node_poll");
+    out.push(' '); out.push_str(&format!("{:?}", (*node_head_line(n))));
     out.push(' '); dump_node(out, u.body);
     out.push(')');
 }

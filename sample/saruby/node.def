@@ -385,9 +385,10 @@ node_trace(c: &mut Ctx, n: NodePtr, fp: Fp, ev: u32, line@hole: u32, body: NODE)
 // over locals its body assigns, nor one whose condition calls): CRuby's RUBY_VM_CHECK_INTS at the back
 // edge, here before each body.
 NODE_DEF
-node_poll(c: &mut Ctx, n: NodePtr, fp: Fp, body: NODE)
+node_poll(c: &mut Ctx, n: NodePtr, fp: Fp, line@hole: u32, body: NODE)
 {
-    if ints_pending() { srb_poll(c)?; }
+    // an interrupt raised here is at the loop's line, as at CRuby's backward jump
+    if ints_pending() { line.store(c.frame_mut()); srb_poll(c)?; }
     EVAL_ARG!(c, body)
 }
 

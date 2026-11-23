@@ -773,7 +773,7 @@ impl<'a> Compiler<'a> {
                 let body = self.stmts_flat(statements.as_deref(), n.loc.start >= predicate.loc.start);
                 self.cur().loop_depth -= 1;
                 let body = self.btarget(bb, "body", |c| match statements { Some(s) => c.ploc(s), None => c.ploc(n) }, body);
-                let body = if loop_needs_no_poll(cnd, body) { body } else { ALLOC_node_poll(body) };
+                let body = if loop_needs_no_poll(cnd, body) { body } else { ALLOC_node_poll(self.line(predicate.loc), body) };
                 if n.flags & pa::LOOP_FLAGS_BEGIN_MODIFIER != 0 { ALLOC_node_dowhile(cnd, body, until) } else { ALLOC_node_while(cnd, body, until) }
             }
             Kind::ForNode { index, collection, statements } => self.for_loop(n, index, collection, statements.as_deref(), line),

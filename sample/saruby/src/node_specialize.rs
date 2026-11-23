@@ -1246,8 +1246,10 @@ fn SPECIALIZE_node_poll(sc: &mut SpecCtx, n: NodePtr) -> String {
     let own_hash = hash_node(n);
     let was_open = !sc.open.insert(own_hash);
     let u = node_u::<node_poll_struct>(n);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let t_body = specialize_node(sc, u.body);
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
+    if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_poll_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_poll_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
     a.push(child_ptr_expr(n, u.body));
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
@@ -1256,7 +1258,7 @@ fn SPECIALIZE_node_poll(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for @SELF@ {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{\n"));
     body.push_str(&format!("        let u = node_u::<node_poll_struct>({});\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_poll{}({})\n    }}\n", format!("::<{}>", t_body), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_poll{}({})\n    }}\n", format!("::<{}, {}>", t_line, t_body), a.join(", ")));
 
 
     body.push_str("}
