@@ -57,6 +57,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [ ] 見送り中: safe な Value::fix/sym/flonum（hash +0.6〜1.4%、regalloc の変化）、ConstCache.val の Option 化（+0.1〜0.3%）
 - [x] 再入した node の inline cache（@ref）への &mut の二重化: @ref は T のまま置き body に &T、キャッシュは全部 Cell フィールド（OpCc・poly 表は OnceCell<Box>）。NodeCell 削除。再入は t/hand 119 ファイル（call/call_blk/yield/call_x/opt_ltlt/opt_eq/opt_aref/call_kw/send_sym/iasgn）。実害あり: base の AOT で call_spec_out が呼び出し前の cc.klass を再利用し A に B#f を実行（-Zmutable-noalias=no で正常、tools/aot/ic_reentry_spec_klass_1123.rb）。命令数: block AOT +3.65%（焼いた SD 1 個のレジスタ割り当て、ループ変種 4 本は ±0.005%）以外は同等か減（ivar AOT -2.6%）。optcarrot -0.07%（unsafe_catalog.md 8.4、trials/2026-11-23-saruby-ic-borrow）
 - [ ] block AOT +3.65%（SD_f634 のループで &blk.info.line がスタック再読込、1 命令/step）: 原因はレジスタ割り当てで意味的コストではないが未解消
+- [ ] メソッドキャッシュ（mcache）が、解放されたクラスと同じアドレスに確保された新しいクラスで古いエントリを再利用する疑い（GC stress で新しいクラスの inspect が Kernel#inspect になる、base でも再現: ~/ruby/src/trials/2026-11-24-saruby-lazy/mcache_stale_repro.rb）。通常 GC でもアドレス再利用で起きうる
 
 ## 3. CRuby 互換性
 
