@@ -700,7 +700,9 @@ pub fn name_class(c: &mut Ctx, k: Value, outer: Value, name: Sym) {
     let vm = vm();
     let perm = outer == vm.c_object.get() || outer == NIL || has_perm_name(c, outer);
     if !perm && c.class(k).name.is_some() { return; }
-    let path = if outer == vm.c_object.get() || outer == NIL { sym_str(name).to_string() } else { format!("{}::{}", class_path(c, outer), sym_str(name)) };
+    let path = if outer == vm.c_object.get() || outer == NIL { sym_str(name).to_string() } else {
+        match c.class(outer).name { Some(n) => format!("{}::{}", String::from_utf8_lossy(c.str_bytes(n)), sym_str(name)), None => format!("{}::{}", class_path(c, outer), sym_str(name)) }
+    };
     let s = c.str_new_frozen(path.as_bytes());
     let cd = c.class_mut(k);
     cd.name = Some(s);
@@ -1023,7 +1025,6 @@ pub fn ivar_list(c: &Ctx, v: Value) -> Vec<(Sym, Value)> {
 
 // ---- constants -----------------------------------------------------------------------------
 
-#[inline]
 pub fn const_set(c: &mut Ctx, klass: Value, name: Sym, val: Value) { const_set_at(c, klass, name, val, None) }
 /// const_set from Ruby code: remembers where (Module#const_source_location), warns on a redefinition.
 pub fn const_set_here(c: &mut Ctx, klass: Value, name: Sym, val: Value) -> Result<(), Esc> {
@@ -1049,8 +1050,17 @@ pub fn call_const_added(c: &mut Ctx, klass: Value, name: Sym) -> Result<(), Esc>
         _ => Ok(()),
     }
 }
-#[inline]
 fn const_set_at(c: &mut Ctx, klass: Value, name: Sym, val: Value, loc: Option<SrcLoc>) {
+    let cd = c.class_mut(klass);
+    if loc.is_some() || cd.cx.is_some() { return const_set_extra(c, klass, name, val, loc); }
+    if cd.consts.insert(name, val).is_none() { cd.const_order.push(name); }
+    cd.autoload.remove(&name);
+    vm().const_serial.set(vm().const_serial.get() + 1);
+    if is_class_or_module(val) && !has_perm_name(c, val) { name_class(c, val, klass, name); }
+}
+/// const_set_at with a location to record, or a class with constant bookkeeping (ClassData::cx).
+#[inline(never)]
+fn const_set_extra(c: &mut Ctx, klass: Value, name: Sym, val: Value, loc: Option<SrcLoc>) {
     if !c.class(klass).autoload_runs().is_empty() {
         let me = crate::builtins::thread::current_thread(c);
         if let Some(r) = c.class_mut(klass).cx_mut().autoloading.iter_mut().find(|r| r.name == name && r.thread == me) {
