@@ -183,3 +183,51 @@ forward scan (CRuby has a `left_adjust_char_head` per encoding; UTF-8/16/32, EUC
 the single-byte ones follow CRuby's).  File reads take 64 KiB at a time where CRuby takes 8 KiB, so
 CRuby's quirk of a limit cut inside a UTF-16 newline swallowing the rest of its 8 KiB buffer gives a
 longer line here.
+
+## IO::Buffer
+
+`src/builtins/io_buffer.rs` (`forbid(unsafe_code)`) is io_buffer.c of CRuby 4.0.2, loaded on first
+reference of `IO::Buffer` (an internal autoload of `saruby/io_buffer`; startup does not change).
+Measurements, the differential scripts and the cases where 4.0.2 crashes:
+`~/ruby/src/trials/2026-11-23-saruby-io-buffer/`.
+
+**Where the bytes are.** A buffer that owns memory holds it as a `Vec<u8>` (INTERNAL) or a
+`sys::Mapping` (MAPPED: anonymous, or a file for `IO::Buffer.map`), which unmaps on drop. A buffer of
+`IO::Buffer.for` / `.string` owns nothing: its bytes are the String's own buffer. A slice owns
+nothing either. Every buffer keeps what CRuby's struct keeps: `base` (an address), `size`, `flags`
+and `source` (nil, the String, or the root buffer of a slice; a GC-traced Value).
+
+**Validity without dangling pointers.** CRuby validates a slice by checking that `[base, base+size)`
+still lies inside its source's current memory (`io_buffer_validate_slice`), then dereferences `base`.
+saruby does the same check (`at`), but `base` is only compared, never dereferenced: the bytes are
+taken from the source's current `Vec` / mapping / String with a bounds-checked `get(off..off+size)`,
+`off = base - source.base`. So `free`, `transfer` and `resize` invalidate slices exactly when 4.0.2
+does (a resize that keeps the address keeps them valid; a realloc that moves the memory invalidates
+them), and no outcome of that check can reach memory the source does not own now: at worst a slice
+reads the source's current bytes at the same offset, as CRuby does when a new allocation lands on the
+old address. The GC keeps the source alive while a slice names it; no reference count is needed.
+
+**Re-entry.** Every method takes its borrow of the bytes after the arguments are converted, and takes
+it again after anything that can run Ruby code (`to_int` / `to_f` in `set_value`, the block of `each`,
+a thread switch while `read` / `write` wait). Where 4.0.2 keeps the pointer it took first and writes
+into freed memory (a `to_int` that frees the buffer, an `each` block that frees it), saruby raises
+the error the new state calls for (`Type extends beyond end of buffer!`, `InvalidatedError`). Other
+deliberate differences: `each_byte` with a count past the end raises instead of reading past it;
+`and!` / `or!` / `xor!` with an invalid mask raise instead of reading freed memory; `slice.resize(0)`
+gives a null buffer instead of a copy of uninitialized memory; growing a private file mapping past the
+end of the file copies it into anonymous memory instead of faulting (SIGBUS) on the new tail.
+
+**Blocking.** `read` / `write` / `pread` / `pwrite` lock the buffer for the call (as CRuby's blocking
+region) and loop over the system call until `length` bytes. With other threads, a blocking fd is
+first waited on through the blop layer (`io::wait_one`), a write takes at most PIPE_BUF bytes per
+wake-up (POLLOUT promises no more), and the bytes are resolved again after each wait. A nonblocking
+fd returns `-EAGAIN` as in CRuby. CRuby's `IO.pipe` fds are O_NONBLOCK; saruby's are not, so the same
+program blocks here where CRuby gets `-11` (a difference of `IO.pipe`, not of IO::Buffer).
+
+**Strings.** `IO::Buffer.for(str) { }` and `.string` lock the String (`FL_TMPLOCK`, rb_str_locktmp):
+`str_modify`, `check_frozen` and `String#freeze` raise "can't modify string; temporarily locked".
+Not covered: the String#<< fast path of `node_opt_ltlt` (node.def) appends to a locked String.
+
+**Unsafe.** Five `unsafe` in `sys.rs` (`Mapping::new` mmap, `remap` mremap, `Drop` munmap — the three
+through the imported `syscall(2)`, no new libc symbol — and the slice views `bytes`, `bytes_mut`);
+`docs/unsafe_catalog.md` 1.3.
