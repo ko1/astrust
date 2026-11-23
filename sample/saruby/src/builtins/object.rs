@@ -116,17 +116,17 @@ pub fn k_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV 
     let ivs: Vec<(Sym, Value)> = ivs.into_iter().filter(|(n, _)| sym_bytes(*n).first() == Some(&b'@')).collect();
     let k = real_class_of(c, slf);
     if ivs.is_empty() { return Ok(c.str_new(format!("#<{}:{:#018x}>", class_path(c, k), slf.raw()).as_bytes())); }
-    if !recursion_enter(slf, s::inspect) { return Ok(c.str_new(format!("#<{}:{:#018x} ...>", class_path(c, k), slf.raw()).as_bytes())); }
+    if !rec_enter(c, slf, s::inspect)? { return Ok(c.str_new(format!("#<{}:{:#018x} ...>", class_path(c, k), slf.raw()).as_bytes())); }
     let mut out = format!("#<{}:{:#018x}", class_path(c, k), slf.raw());
     let keep = c.ary_new();
     for (i, (n, v)) in ivs.iter().enumerate() {
         c.ary_push(keep, *v);
         let r = inspect_str(c, *v);
-        let r = match r { Ok(r) => r, Err(e) => { recursion_leave(slf, s::inspect); return Err(e); } };
+        let r = match r { Ok(r) => r, Err(e) => { rec_leave(c, slf, s::inspect); return Err(e); } };
         out.push_str(if i == 0 { " " } else { ", " });
         out.push_str(&sym_str(*n)); out.push('='); out.push_str(&r);
     }
-    recursion_leave(slf, s::inspect);
+    rec_leave(c, slf, s::inspect);
     out.push('>');
     Ok(c.str_new(out.as_bytes()))
 }

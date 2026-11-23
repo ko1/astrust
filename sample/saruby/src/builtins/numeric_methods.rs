@@ -280,7 +280,11 @@ cfn!(int_eq, |c, s, a| {
     let r = funcall(c, b, s::eq, &[s], std::ptr::null())?;
     Ok(Value::bool(r.truthy()))
 });
-cfn!(int_eql, |c, s, a| Ok(Value::bool(is_integer(a[0]) && c.to_big(s) == c.to_big(a[0]))));
+cfn!(int_eql, |c, s, a| {
+    // num_eql: rb_equal for fixnums, which calls a redefined Integer#==
+    if s.is_fixnum() && a[0].is_fixnum() && s != a[0] && crate::rt::redef(crate::rt::R_INT_EQ) { return Ok(Value::bool(funcall(c, s, s::eq, &[a[0]], std::ptr::null())?.truthy())); }
+    Ok(Value::bool(is_integer(a[0]) && c.to_big(s) == c.to_big(a[0])))
+});
 cfn!(int_cmp, |c, s, a| {
     match int_cmp_val(c, s, a[0])? {
         Some(o) => Ok(Value::fix(o as i64)),
@@ -362,7 +366,7 @@ cfn!(int_ord, |c, s, _a| Ok(s));
 /// The fixnum loop of Integer#times, yielding through `y` (inline_iter.rs: a baked site's block); None: not a fixnum.
 #[inline(always)]
 pub fn int_times_loop(c: &mut Ctx, s: Value, y: &mut impl FnMut(&mut Ctx, &[Value]) -> RV) -> Option<RV> {
-    if !s.is_fixnum() { return None; }
+    if !s.is_fixnum() || crate::rt::redef(crate::rt::R_INT_LT | crate::rt::R_INT_SUCC) { return None; }
     let n = s.as_fix();
     let mut i = 0;
     while i < n { if let Err(e) = y(c, &[Value::fix(i)]) { return Some(Err(e)); } i += 1; }
@@ -379,6 +383,12 @@ pub fn int_upto_loop(c: &mut Ctx, s: Value, e: Value, dir: i64, y: &mut impl FnM
 fn int_times(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
     if b.is_null() { return crate::builtins::enumerator::enum_for(c, s, s::times, &[], NIL); }
     if let Some(r) = int_times_loop(c, s, &mut |c, a| yield1(c, b, a[0])) { return r; }
+    if crate::rt::redef(crate::rt::R_INT_LT | crate::rt::R_INT_SUCC) {
+        // numeric.rb: `while i < self; yield i; i = i.succ; end`
+        let mut i = Value::fix(0);
+        while funcall(c, i, s::lt, &[s], std::ptr::null())?.truthy() { yield1(c, b, i)?; i = funcall(c, i, s::succ, &[], std::ptr::null())?; }
+        return Ok(s);
+    }
     let mut i = Value::fix(0);
     loop {
         if int_cmp_val(c, i, s)? != Some(std::cmp::Ordering::Less) { break; }
@@ -517,9 +527,11 @@ cfn!(int_floor, |c, s, a| round_int(c, s, a, b'f'));
 cfn!(int_ceil, |c, s, a| round_int(c, s, a, b'c'));
 cfn!(int_truncate, |c, s, a| round_int(c, s, a, b't'));
 cfn!(int_digits, |c, s, a| {
+    // rb_num_negative_int_p (`self < 0` once Integer#< is redefined) before the base
+    let neg = if crate::rt::redef(crate::rt::R_INT_LT) { funcall(c, s, s::lt, &[Value::fix(0)], std::ptr::null())?.truthy() } else { c.to_big(s).neg };
+    if neg { return err(c, c.vm().c_math_domain_error.get(), "out of domain"); }
     let base = if a.is_empty() { 10 } else { num_to_long(c, a[0])? };
     if base < 2 { return arg_err(c, format!("invalid radix {}", base)); }
-    if c.to_big(s).neg { return err(c, c.vm().c_math_domain_error.get(), "out of domain"); }
     let out = c.ary_new();
     let mut x = c.to_big(s);
     let b = BigInt::from_i64(base);
@@ -826,7 +838,8 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
         if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("by"))? { if pos.len() > 1 { return arg_err(c, "step is given twice"); } st = v; }
     }
     if st == NIL { st = Value::fix(1); }
-    else if st == Value::fix(0) || (!st.is_fixnum() && funcall(c, st, s::eq, &[Value::fix(0)], std::ptr::null())?.truthy()) { return arg_err(c, "step can't be 0"); }
+    // rb_equal(step, 0): Integer#== once redefined
+    else if st == Value::fix(0) || ((!st.is_fixnum() || crate::rt::redef(crate::rt::R_INT_EQ)) && funcall(c, st, s::eq, &[Value::fix(0)], std::ptr::null())?.truthy()) { return arg_err(c, "step can't be 0"); }
     let numc = c.vm().c_numeric.get();
     let numeric = |v: Value| v.is_fixnum() || is_float(v) || is_kind_of(c, v, numc);
     if b.is_null() {
@@ -836,6 +849,11 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     }
     // num_step_negative_p: `step > 0` decides the direction (and rejects e.g. a String step)
     if !numeric(st) { funcall(c, st, s::gt, &[Value::fix(0)], std::ptr::null())?; }
+    else if st.is_fixnum() && crate::rt::redef(crate::rt::R_INT_LT | crate::rt::R_INT_EQ) {
+        // num_step_negative_p asks `step > 0` once Integer#< is redefined, then num_step's own rb_equal(step, 0)
+        if crate::rt::redef(crate::rt::R_INT_LT) { funcall(c, st, s::gt, &[Value::fix(0)], std::ptr::null())?; }
+        if crate::rt::redef(crate::rt::R_INT_EQ) { funcall(c, st, s::eq, &[Value::fix(0)], std::ptr::null())?; }
+    }
     if s.is_fixnum() && st.is_fixnum() && (lim.is_fixnum() || lim == NIL) {
         let (mut i, d) = (s.as_fix(), st.as_fix());
         if lim == NIL {

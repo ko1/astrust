@@ -221,11 +221,11 @@ thread_local! {
 /// rb_exec_recursive_outer for #hash of `v`: a recursion met anywhere inside makes the outermost
 /// call answer `rec`, so equal recursive structures hash alike.
 pub fn hash_outer(c: &mut Ctx, v: Value, rec: u64, f: impl FnOnce(&mut Ctx) -> Result<u64, Esc>) -> Result<u64, Esc> {
-    if !crate::builtins::kernel::recursion_enter(v, s::hash) { HASH_RECURSED.with(|r| r.set(true)); return Ok(rec); }
+    if !crate::builtins::kernel::rec_enter(c, v, s::hash)? { HASH_RECURSED.with(|r| r.set(true)); return Ok(rec); }
     let d = HASH_DEPTH.with(|x| { let d = x.get(); x.set(d + 1); d });
     let r = f(c);
     HASH_DEPTH.with(|x| x.set(d));
-    crate::builtins::kernel::recursion_leave(v, s::hash);
+    crate::builtins::kernel::rec_leave(c, v, s::hash);
     if d == 0 && HASH_RECURSED.with(|x| x.replace(false)) { return r.map(|_| rec); }
     r
 }
@@ -345,6 +345,32 @@ pub fn hash_add_new(c: &mut Ctx, h: Value, k: Value, v: Value) -> Result<bool, E
     if r.iter_lev != 0 { return err(c, c.vm().c_runtime_error.get(), "can't add a new key into hash during iteration"); }
     if r.insert_new(k, v, hc) % 64 == 0 { c.malloc_increase(64 * 24); }
     Ok(true)
+}
+
+/// rb_enum_tally_up: k hashed once, its count + 1 (no key copy); an existing count must be an Integer.
+pub fn hash_tally_up(c: &mut Ctx, h: Value, k: Value) -> Result<(), Esc> {
+    let (found, hc) = if imm_key(k) { (c.hash(h).find_imm(k), mix(k.raw())) } else {
+        let hc = if c.hash(h).identity { identity_hash(k) } else { key_hash(c, k)? };
+        (lookup_with_hash(c, h, k, hc)?, hc)
+    };
+    if let Some(i) = found {
+        let n = c.hash(h).entries[i].val;
+        // tally_up: FIXNUM_MAX itself fails its Check_Type(T_BIGNUM), as in CRuby
+        let at_max = crate::heap::is_bignum(n) && c.big(n).to_i64() == Some(FIXNUM_MAX);
+        let n1 = if n.is_fixnum() && n.as_fix() < FIXNUM_MAX { Value::fix(n.as_fix() + 1) } else if crate::heap::is_bignum(n) && !at_max {
+            let b = c.big(n).add(&crate::bignum::BigInt::from_i64(1));
+            c.big_to_value(b)
+        } else {
+            return type_err(c, format!("wrong argument type {} (expected Integer)", crate::builtins::kernel::class_name_for_err(c, n)));
+        };
+        // no Ruby code ran since the lookup: slot i is still k's
+        c.hash_mut(h).entries[i].val = n1;
+        return Ok(());
+    }
+    let r = c.hash_mut(h);
+    if r.iter_lev != 0 { return err(c, c.vm().c_runtime_error.get(), "can't add a new key into hash during iteration"); }
+    if r.insert_new(k, Value::fix(1), hc) % 64 == 0 { c.malloc_increase(64 * 24); }
+    Ok(())
 }
 
 /// `dst[k] = v` for each entry of `src`, slot by slot: hashing a key runs Ruby code, which may

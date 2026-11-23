@@ -80,6 +80,11 @@ pub const R_RANGE_EACH: u64 = 1 << 53;
 // Array#max / Array#min (`[a, b].max`: opt_newarray_send)
 pub const R_ARY_MAX: u64 = 1 << 54;
 pub const R_ARY_MIN: u64 = 1 << 55;
+// Integer#succ / #coerce: numeric.rb's times loop, ArithmeticSequence#each's rb_num_coerce_relop
+pub const R_INT_SUCC: u64 = 1 << 56;
+pub const R_INT_COERCE: u64 = 1 << 57;
+// Array#size: each_slice / each_cons ask for it (limit_by_enum_size)
+pub const R_ARY_SIZE: u64 = 1 << 58;
 
 pub static REDEF: AtomicU64 = AtomicU64::new(0);
 pub static BOOTED: AtomicBool = AtomicBool::new(false);
@@ -141,7 +146,7 @@ pub fn redef_note(c: &Ctx, klass: Value, mid: Sym) -> bool {
         (int, s::to_str, R_IMM_CONV), (flo, s::to_str, R_IMM_CONV), (sym, s::to_str, R_IMM_CONV), (nil, s::to_str, R_IMM_CONV),
         (tru, s::to_str, R_IMM_CONV), (fal, s::to_str, R_IMM_CONV), (int, s::to_ary, R_IMM_CONV), (flo, s::to_ary, R_IMM_CONV),
         (sym, s::to_ary, R_IMM_CONV), (nil, s::to_ary, R_IMM_CONV), (tru, s::to_ary, R_IMM_CONV), (fal, s::to_ary, R_IMM_CONV),
-        (nil, s::to_a, R_IMM_CONV),
+        (nil, s::to_a, R_IMM_CONV), (int, s::succ, R_INT_SUCC), (int, s::coerce, R_INT_COERCE), (ary, s::size, R_ARY_SIZE),
     ];
     for &(k, m, f) in table {
         if m == mid && (klass == k || ancestors(c, k).contains(&klass)) { REDEF.fetch_or(f, Relaxed); }

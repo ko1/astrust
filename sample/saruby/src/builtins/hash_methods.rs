@@ -202,7 +202,7 @@ cfn!(h_to_h, |c, slf, a, blk| {
 cfn!(h_to_hash, |c, slf, a, blk| Ok(slf));
 pub fn hash_inspect(c: &mut Ctx, slf: Value) -> RV {
     if c.hash_len(slf) == 0 { return Ok(c.str_new(b"{}")); }
-    if !recursion_enter(slf, s::inspect) { return Ok(c.str_new(b"{...}")); }
+    if !rec_enter(c, slf, s::inspect)? { return Ok(c.str_new(b"{...}")); }
     let mut out = vec![b'{'];
     let mut first = true;
     let r = each_entry(c, slf, |c, k, v| {
@@ -222,7 +222,7 @@ pub fn hash_inspect(c: &mut Ctx, slf: Value) -> RV {
         out.extend_from_slice(c.str_bytes(vs));
         Ok(true)
     });
-    recursion_leave(slf, s::inspect);
+    rec_leave(c, slf, s::inspect);
     r?;
     out.push(b'}');
     Ok(c.str_from_vec(out))
@@ -235,7 +235,7 @@ fn hash_equal(c: &mut Ctx, slf: Value, o: Value, eql: bool) -> RV {
     if slf == o { return Ok(TRUE); }
     if !is_hash(o) { if o.is_heap() && respond_to(c, o, s::to_hash, true) { let r = funcall(c, o, s::eq, &[slf], std::ptr::null())?; return Ok(Value::bool(r.truthy())); } return Ok(FALSE); }
     if c.hash_len(slf) != c.hash_len(o) { return Ok(FALSE); }
-    if !recursion_enter(slf, s::eq) { return Ok(TRUE); }
+    if !rec_enter(c, slf, s::eq)? { return Ok(TRUE); }
     let mut ok = true;
     let r = each_entry(c, slf, |c, k, v| {
         match hash_get_opt(c, o, k)? {
@@ -244,7 +244,7 @@ fn hash_equal(c: &mut Ctx, slf: Value, o: Value, eql: bool) -> RV {
         }
         Ok(true)
     });
-    recursion_leave(slf, s::eq);
+    rec_leave(c, slf, s::eq);
     r?;
     Ok(Value::bool(ok))
 }

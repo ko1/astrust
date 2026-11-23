@@ -874,9 +874,16 @@ fn locals(c: &mut Ctx, t: Value) -> RV {
     if f == NIL || crate::fiber::is_root(c, f) { return Ok(th(c, t).locals); }
     Ok(crate::fiber::locals(c, f))
 }
+pub fn current_locals(c: &mut Ctx) -> RV { let t = cur(c); locals(c, t) }
 fn tvars(c: &mut Ctx, t: Value) -> RV { thr(c, t)?; Ok(th(c, t).tvars) }
 fn hash_keys(c: &mut Ctx, h: Value) -> Value { let v: Vec<Value> = c.hash_pairs(h).into_iter().map(|p| p.0).collect(); c.ary_from_vec(v) }
-fn th_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let k = key_sym(c, a[0])?; let h = locals(c, slf)?; Ok(hash_get_opt(c, h, k)?.unwrap_or(NIL)) }
+fn th_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+    let k = key_sym(c, a[0])?;
+    if k == recursive_key() && slf == cur(c) { return crate::builtins::kernel::rec_outer(c); }
+    let h = locals(c, slf)?; Ok(hash_get_opt(c, h, k)?.unwrap_or(NIL))
+}
+/// :__recursive_key__ (the recursion guard's Hash) is hidden from key? and keys, as in CRuby
+fn recursive_key() -> Value { Value::sym(crate::symbol::intern(b"__recursive_key__")) }
 fn th_aset(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let k = key_sym(c, a[0])?;
     if is_frozen(slf) { return Err(frozen_locals(c, slf)); }
@@ -884,8 +891,12 @@ fn th_aset(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if a[1] == NIL { hash_delete(c, h, k)?; } else { hash_set(c, h, k, a[1])?; }
     Ok(a[1])
 }
-fn th_key_p(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let k = key_sym(c, a[0])?; let h = locals(c, slf)?; Ok(Value::bool(hash_lookup(c, h, k)?.is_some())) }
-fn th_keys(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let h = locals(c, slf)?; Ok(hash_keys(c, h)) }
+fn th_key_p(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let k = key_sym(c, a[0])?; if k == recursive_key() { return Ok(FALSE); } let h = locals(c, slf)?; Ok(Value::bool(hash_lookup(c, h, k)?.is_some())) }
+fn th_keys(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    let h = locals(c, slf)?;
+    let v: Vec<Value> = c.hash_pairs(h).into_iter().map(|p| p.0).filter(|&k| k != recursive_key()).collect();
+    Ok(c.ary_from_vec(v))
+}
 fn th_tv_get(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let k = key_sym(c, a[0])?; let h = tvars(c, slf)?; Ok(hash_get_opt(c, h, k)?.unwrap_or(NIL)) }
 fn th_tv_set(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let k = key_sym(c, a[0])?;

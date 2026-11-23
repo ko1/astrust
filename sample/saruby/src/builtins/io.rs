@@ -590,11 +590,11 @@ pub fn puts_dyn(c: &mut Ctx, io: Value, a: &[Value]) -> Result<(), Esc> {
     for &x in a {
         let line = if is_string(x) { x } else {
             if let Some(ary) = crate::array::check_array(c, x)? {
-                if !recursion_enter(ary, s::puts) { let l = c.str_new(b"[...]"); puts_dyn(c, io, &[l])?; continue; }
+                if !rec_enter(c, ary, s::puts)? { let l = c.str_new(b"[...]"); puts_dyn(c, io, &[l])?; continue; }
                 // each element on its own (io_puts_ary): an empty Array writes nothing
                 let mut i = 0;
                 let r = loop { if i >= c.ary_len(ary) { break Ok(()); } let e = c.ary_get(ary, i); if let Err(e) = puts_dyn(c, io, &[e]) { break Err(e); } i += 1; };
-                recursion_leave(ary, s::puts);
+                rec_leave(c, ary, s::puts);
                 r?; continue;
             }
             to_s_value(c, x)?
@@ -637,10 +637,10 @@ fn io_puts(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 }
 fn puts_conv(c: &mut Ctx, slf: Value, x: Value) -> Result<(), Esc> {
     let line = if is_string(x) { x } else if is_array(x) {
-        if !recursion_enter(x, s::puts) { let l = c.str_new(b"[...]"); return puts_conv(c, slf, l); }
+        if !rec_enter(c, x, s::puts)? { let l = c.str_new(b"[...]"); return puts_conv(c, slf, l); }
         let n = c.ary_len(x);
-        for i in 0..n { let y = c.ary_get(x, i); let r = puts_conv(c, slf, y); if r.is_err() { recursion_leave(x, s::puts); return r; } }
-        recursion_leave(x, s::puts);
+        for i in 0..n { let y = c.ary_get(x, i); let r = puts_conv(c, slf, y); if r.is_err() { rec_leave(c, x, s::puts); return r; } }
+        rec_leave(c, x, s::puts);
         return Ok(());
     } else {
         if let Some(a) = crate::array::check_array(c, x)? { return puts_conv(c, slf, a); }

@@ -119,6 +119,10 @@ pub fn arith_seq_slice(c: &mut Ctx, seq: Value, ary: Value) -> RV {
 pub fn enum_each_with(c: &mut Ctx, e: Value, blk: *const Block) -> RV {
     let en = renum(c, e);
     if let Some((b, en_, st, excl)) = en.arith {
+        if b.is_fixnum() && en_.is_fixnum() && st.is_fixnum() && crate::rt::redef(crate::rt::R_INT_EQ | crate::rt::R_INT_LT | crate::rt::R_INT_GE | crate::rt::R_INT_COERCE) {
+            arith_each_calls(c, b, en_, st, excl, blk)?;
+            return Ok(e);
+        }
         let r = c.range_new(b, en_, excl);
         let bp = block_to_proc(c, blk)?;
         let fwd = Block::cfunc(c, |c, d, args, _b| { let bb = c.proc_data(d).blk; invoke_block_full(c, &bb, args, std::ptr::null(), bb.self_, false, std::ptr::null(), false) }, bp);
@@ -144,6 +148,32 @@ pub fn enum_each_with(c: &mut Ctx, e: Value, blk: *const Block) -> RV {
     let r = funcall_flags(c, en.recv, en.mid, &args, blk, kw);
     std::hint::black_box(en.args);
     r
+}
+
+/// enumerator.c arith_seq_each on Integers once ==, <, >= or coerce is redefined: the calls it makes.
+fn arith_each_calls(c: &mut Ctx, b: Value, e: Value, st: Value, x: bool, blk: *const Block) -> RV {
+    let eq0 = |c: &mut Ctx, v: Value| -> Result<bool, Esc> { Ok(v == Value::fix(0) || (crate::rt::redef(crate::rt::R_INT_EQ) && funcall(c, v, s::eq, &[Value::fix(0)], std::ptr::null())?.truthy())) };
+    if eq0(c, st)? { loop { yield1(c, blk, b)?; } }
+    let (bi, ei, si) = (b.as_fix() as i128, e.as_fix() as i128, st.as_fix() as i128);
+    let d = ei - bi;
+    let len_1 = d / si - if d % si != 0 && ((d < 0) != (si < 0)) { 1 } else { 0 };
+    let mut last = c.int_from_i64((bi + si * len_1) as i64);
+    if x && (last == e || (crate::rt::redef(crate::rt::R_INT_EQ) && funcall(c, last, s::eq, &[e], std::ptr::null())?.truthy())) {
+        last = c.int_from_i64((bi + si * (len_1 - 1)) as i64);
+    }
+    let neg = if crate::rt::redef(crate::rt::R_INT_LT) { funcall(c, st, s::lt, &[Value::fix(0)], std::ptr::null())?.truthy() } else { si < 0 };
+    let mut cur = b;
+    loop {
+        let (p, q) = if neg { (cur, last) } else { (last, cur) };
+        // NUM_GE: rb_num_coerce_relop asks q.coerce(p), then [0] >= [1]
+        let ary = funcall(c, q, s::coerce, &[p], std::ptr::null())?;
+        if !is_array(ary) || c.ary_len(ary) != 2 { return type_err(c, "coerce must return [x, y]"); }
+        let (p2, q2) = (c.ary_get(ary, 0), c.ary_get(ary, 1));
+        if !funcall(c, p2, s::ge, &[q2], std::ptr::null())?.truthy() { break; }
+        yield1(c, blk, cur)?;
+        cur = if cur.is_fixnum() { c.int_from_i64(cur.as_fix() + si as i64) } else { funcall(c, cur, s::plus, &[st], std::ptr::null())? };
+    }
+    Ok(NIL)
 }
 
 fn e_each(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
@@ -265,6 +295,7 @@ fn e_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
             let sz = funcall(c, recv, s::size, &[], std::ptr::null())?;
             let k = c.ary_get(en.args, 0).as_fix();
             if sz.is_fixnum() && k > 0 { let n = sz.as_fix(); return Ok(Value::fix(if mid == intern(b"each_slice") { (n + k - 1) / k } else { (n - k + 1).max(0) })); }
+            return Ok(sz);
         }
     }
     if mid == s::upto || mid == s::downto {
@@ -310,12 +341,18 @@ fn e_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
         return Ok(c.str_new(format!("(({}{}{}).step({}))", bs, if x { "..." } else { ".." }, es, ss).as_bytes()));
     }
     if en.gen != NIL { return Ok(c.str_new(format!("#<Enumerator: #<Enumerator::Generator:{:#018x}>:each>", en.gen.raw()).as_bytes())); }
-    let r = inspect_str(c, en.recv)?;
-    let args = c.ary(en.args).to_vec();
-    let mut a = String::new();
-    if !args.is_empty() { a.push('('); for (i, x) in args.iter().enumerate() { if i > 0 { a.push_str(", "); } a.push_str(&inspect_str(c, *x)?); } a.push(')'); }
     let cls = class_path(c, real_class_of(c, slf));
-    Ok(c.str_new(format!("#<{}: {}:{}{}>", cls, r, sym_str(en.mid), a).as_bytes()))
+    // inspect_enumerator runs under rb_exec_recursive
+    if !rec_enter(c, slf, s::inspect)? { return Ok(c.str_new(format!("#<{}: ...>", cls).as_bytes())); }
+    let r = (|| -> RV {
+        let r = inspect_str(c, en.recv)?;
+        let args = c.ary(en.args).to_vec();
+        let mut a = String::new();
+        if !args.is_empty() { a.push('('); for (i, x) in args.iter().enumerate() { if i > 0 { a.push_str(", "); } a.push_str(&inspect_str(c, *x)?); } a.push(')'); }
+        Ok(c.str_new(format!("#<{}: {}:{}{}>", cls, r, sym_str(en.mid), a).as_bytes()))
+    })();
+    rec_leave(c, slf, s::inspect);
+    r
 }
 fn is_range_origin(_v: Value) -> bool { false }
 fn e_initialize(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {

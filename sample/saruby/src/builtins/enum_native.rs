@@ -420,14 +420,11 @@ fn slice_cons(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, cons: boo
     let n = num_to_long(c, a[0])?;
     if n <= 0 { return arg_err(c, if cons { "invalid size" } else { "invalid slice size" }); }
     let mid = if cons { "each_cons" } else { "each_slice" };
-    if blk.is_null() {
-        let mut size = NIL;
-        if respond_to(c, slf, s::size, true) {
-            let sz = funcall(c, slf, s::size, &[], std::ptr::null())?;
-            size = if sz.is_fixnum() { Value::fix(if cons { (sz.as_fix() - n + 1).max(0) } else { (sz.as_fix() + n - 1) / n }) } else { sz };
-        }
-        return crate::builtins::enumerator::enum_for(c, slf, crate::symbol::intern(mid.as_bytes()), &[Value::fix(n)], size);
-    }
+    // the size is asked for when wanted (enum_each_slice_size), not now
+    if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, crate::symbol::intern(mid.as_bytes()), &[Value::fix(n)], NIL); }
+    // limit_by_enum_size / enum_size_over_p: rb_check_funcall(obj, :size); each_cons stops on a short one
+    let sz = if respond_to(c, slf, s::size, true) { funcall(c, slf, s::size, &[], std::ptr::null())? } else { NIL };
+    if cons && sz.is_fixnum() && (n as u64) > sz.as_fix() as u64 { return Ok(slf); }
     let acc0 = c.ary_new();
     let d = c.ary_new_from(&[acc0, bptr(blk), Value::fix(n), Value::bool(cons)]);
     run_each(c, slf, |c, d, args, _| {
@@ -451,7 +448,99 @@ fn slice_cons(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, cons: boo
 fn en_each_slice(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV { slice_cons(c, slf, a, blk, false) }
 fn en_each_cons(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV { slice_cons(c, slf, a, blk, true) }
 
+// enum.c partition_i / tally_i (no Ruby-level packing: ENUM_WANT_SVALUE is `pack`)
+fn en_partition(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+    if blk.is_null() { return no_blk(c, slf, "partition", a); }
+    let (t, f) = (c.ary_new(), c.ary_new());
+    // the block as a Proc: #each may keep its block past this call (enum_each_pack_1123p.rb)
+    let p = block_to_proc(c, blk)?;
+    let d = c.ary_new_from(&[t, f, p]);
+    run_each(c, slf, |c, d, args, _| {
+        let v = pack(c, args);
+        let i = if call_proc(c, c.ary_get(d, 2), &[v], std::ptr::null())?.truthy() { 0 } else { 1 };
+        c.ary_push(c.ary_get(d, i), v);
+        Ok(NIL)
+    }, d, &[])?;
+    Ok(c.ary_new_from(&[t, f]))
+}
+fn en_tally(c: &mut Ctx, slf: Value, a: &[Value], _blk: *const Block) -> RV {
+    check_argc(c, a, 0, 1)?;
+    let h = if a.is_empty() { c.hash_new() } else {
+        let h = e_hash(c, NIL, a, std::ptr::null())?;
+        if is_frozen(h) { return Err(raise_frozen(c, h)); }
+        h
+    };
+    run_each(c, slf, |c, h, args, _| { let v = pack(c, args); crate::hash::hash_tally_up(c, h, v)?; Ok(NIL) }, h, &[])?;
+    Ok(h)
+}
+
+// Enumerable.__each(obj, *args) { |v| }: obj.each(*args) with each yield packed (ENUM_WANT_SVALUE)
+fn e_each(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
+    if a.is_empty() { return argc_err(c, 0, 1, -1); }
+    // a Proc, not the Block's address: #each may keep the block and call it after this returns
+    let p = block_to_proc(c, blk)?;
+    let d = c.ary_new_from(&[p]);
+    run_each(c, a[0], |c, d, args, _| { let v = pack(c, args); call_proc(c, c.ary_get(d, 0), &[v], std::ptr::null()) }, d, &a[1..])?;
+    Ok(a[0])
+}
+// Enumerable.__set_init(h, enum) { |x| }: set.c set_i_initialize (an Array is read directly, no #each)
+fn e_set_init(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
+    let (h, e) = (a[0], a[1]);
+    set_merge_one(c, h, e, blk)
+}
+/// set_merge_enum_into (a Set's table or an Array read directly), or set_i_initialize with a block
+fn set_merge_one(c: &mut Ctx, h: Value, e: Value, blk: *const Block) -> RV {
+    if blk.is_null() && e.is_heap() && !is_array(e) {
+        let src = ivar_get(c, e, crate::symbol::intern(b"__h"));
+        if is_hash(src) {
+            let mut slot = 0;
+            while let Some((k, _)) = c.hash_entry_at(src, slot) { slot += 1; if k != UNDEF { crate::hash::hash_aset(c, h, k, TRUE)?; } }
+            return Ok(NIL);
+        }
+    }
+    if is_array(e) {
+        let mut i = 0;
+        while i < c.ary_len(e) {
+            let x = c.ary_get(e, i);
+            let k = if blk.is_null() { x } else { yield1(c, blk, x)? };
+            crate::hash::hash_aset(c, h, k, TRUE)?;
+            i += 1;
+        }
+        return Ok(NIL);
+    }
+    if !respond_to(c, e, crate::symbol::intern(b"each_entry"), true) && !respond_to(c, e, s::each, true) { return arg_err(c, "value must be enumerable"); }
+    let p = if blk.is_null() { NIL } else { block_to_proc(c, blk)? };
+    let d = c.ary_new_from(&[h, p]);
+    run_each(c, e, |c, d, args, _| {
+        let v = pack(c, args);
+        let p = c.ary_get(d, 1);
+        let k = if p == NIL { v } else { call_proc(c, p, &[v], std::ptr::null())? };
+        crate::hash::hash_aset(c, c.ary_get(d, 0), k, TRUE)?;
+        Ok(NIL)
+    }, d, &[])?;
+    Ok(NIL)
+}
+// Enumerable.__set_merge(h, enums): set_i_merge's loop over its arguments
+fn e_set_merge(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+    let mut i = 0;
+    while i < c.ary_len(a[1]) { let e = c.ary_get(a[1], i); set_merge_one(c, a[0], e, std::ptr::null())?; i += 1; }
+    Ok(NIL)
+}
+// Enumerable.__set_eq(h1, h2): set_i_eq after the class test (sizes, identity, then each key looked up)
+fn e_set_eq(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+    let (h1, h2) = (a[0], a[1]);
+    if c.hash_len(h1) != c.hash_len(h2) || c.hash(h1).identity != c.hash(h2).identity { return Ok(FALSE); }
+    let mut slot = 0;
+    while let Some((k, _)) = c.hash_entry_at(h1, slot) {
+        slot += 1;
+        if k == UNDEF { continue; }
+        if crate::hash::hash_lookup(c, h2, k)?.is_none() { return Ok(FALSE); }
+    }
+    Ok(TRUE)
+}
+
 fn define_enumerable_natives(c: &mut Ctx, m: Value) {
+    define_cfunc(c, m, "partition", en_partition, 0); define_cfunc(c, m, "tally", en_tally, -1);
     define_cfunc(c, m, "each_slice", en_each_slice, 1); define_cfunc(c, m, "each_cons", en_each_cons, 1);
     define_cfunc(c, m, "map", en_map, 0); define_cfunc(c, m, "collect", en_map, 0);
     define_cfunc(c, m, "flat_map", en_flat_map, 0); define_cfunc(c, m, "collect_concat", en_flat_map, 0);
@@ -481,5 +570,9 @@ pub fn init(c: &mut Ctx, m: Value) {
     define_singleton_cfunc(c, m, "__to_a", e_to_a, 1);
     define_singleton_cfunc(c, m, "__range_sum", |c, _s, a, b| crate::builtins::range_methods::r_sum(c, a[0], &a[1..], b), 2);
     define_singleton_cfunc(c, m, "__ivget", e_ivget, 2);
+    define_singleton_cfunc(c, m, "__set_init", e_set_init, 2);
+    define_singleton_cfunc(c, m, "__each", e_each, -1);
+    define_singleton_cfunc(c, m, "__set_eq", e_set_eq, 2);
+    define_singleton_cfunc(c, m, "__set_merge", e_set_merge, 2);
     define_singleton_cfunc(c, m, "__ivset", e_ivset, 3);
 }

@@ -35,18 +35,25 @@ fn nul() -> *const Block { std::ptr::null() }
 // ---- generic helpers (CRuby's f_add & co. with their shortcuts) -----------------------------
 
 fn fz(v: Value) -> bool { v == Value::fix(0) }
+// complex.c's shortcuts hold while the receiver's operator is the builtin (rb_method_basic_definition_p)
+fn op_redef(x: Value, int_bit: u64, flo_bit: u64) -> bool {
+    (is_integer(x) && crate::rt::redef(int_bit)) || (is_float(x) && crate::rt::redef(flo_bit))
+}
 fn f_add(c: &mut Ctx, x: Value, y: Value) -> RV {
+    if op_redef(x, crate::rt::R_INT_PLUS, crate::rt::R_FLO_PLUS) { return funcall(c, x, s::plus, &[y], nul()); }
     if is_integer(x) { if fz(x) { return Ok(y); } if fz(y) { return Ok(x); } }
     else if (is_float(x) || is_rational(c, x)) && fz(y) { return Ok(x); }
     if x.is_fixnum() && y.is_fixnum() { return Ok(iadd(c, x, y)); }
     funcall(c, x, s::plus, &[y], nul())
 }
 fn f_sub(c: &mut Ctx, x: Value, y: Value) -> RV {
+    if op_redef(x, crate::rt::R_INT_MINUS, crate::rt::R_FLO_MINUS) { return funcall(c, x, s::minus, &[y], nul()); }
     if fz(y) && (is_integer(x) || is_float(x) || is_rational(c, x)) { return Ok(x); }
     if x.is_fixnum() && y.is_fixnum() { return Ok(isub(c, x, y)); }
     funcall(c, x, s::minus, &[y], nul())
 }
 fn f_mul(c: &mut Ctx, x: Value, y: Value) -> RV {
+    if op_redef(x, crate::rt::R_INT_MUL, crate::rt::R_FLO_MUL) { return funcall(c, x, s::mul, &[y], nul()); }
     if fz(y) && is_integer(x) { return Ok(Value::fix(0)); }
     if y == Value::fix(1) { return Ok(x); }
     if fz(x) && is_integer(y) { return Ok(Value::fix(0)); }
@@ -191,7 +198,8 @@ fn comp_mul(c: &mut Ctx, ar: Value, ai: Value, br: Value, bi: Value) -> Result<(
 fn cpx_mul_v(c: &mut Ctx, s: Value, o: Value) -> RV {
     let (re, im) = cpx_parts(c, s);
     if is_complex(c, o) { let (or, oi) = cpx_parts(c, o); let (r, i) = comp_mul(c, re, im, or, oi)?; return Ok(cpx_raw(c, r, i)); }
-    if k_numeric(c, o) && f_real_p(c, o)? { let r = f_mul(c, re, o)?; let i = f_mul(c, im, o)?; return Ok(cpx_raw(c, r, i)); }
+    // CRuby's binary (gcc) evaluates f_complex_new2's arguments imaginary part first
+    if k_numeric(c, o) && f_real_p(c, o)? { let i = f_mul(c, im, o)?; let r = f_mul(c, re, o)?; return Ok(cpx_raw(c, r, i)); }
     coerce(c, s, o, s::mul)
 }
 fn cpx_mul(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { cpx_mul_v(c, s, a[0]) }
