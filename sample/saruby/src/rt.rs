@@ -1098,8 +1098,8 @@ pub fn srb_def(c: &mut Ctx, mid: Sym, is: &'static Iseq, _fp: Fp) -> RV {
     let mut visi = if f.kind == FK_CLASS || f.kind == FK_TOP || f.kind == FK_EVAL || (f.kind == FK_BLOCK && f.defined_class() == klass) { f.visi } else { VISI_PUBLIC };
     // eval at top level defines private methods; a def in a method body is public
     if klass == vm().c_object.get() && f.kind == FK_EVAL && unsafe { (*f.cref()).prev.is_null() } { visi = VISI_PRIVATE; }
-    if mid == s::initialize || mid == s::initialize_copy || mid == s::respond_to_missing_p
-        || mid == s::mid_initialize_dup || mid == s::mid_initialize_clone { visi = VISI_PRIVATE; }
+    if visi != VISI_MODFUNC && (mid == s::initialize || mid == s::initialize_copy || mid == s::respond_to_missing_p
+        || mid == s::mid_initialize_dup || mid == s::mid_initialize_clone) { visi = VISI_PRIVATE; }
     if visi == VISI_MODFUNC {
         define_iseq_method(c, klass, mid, is, VISI_PRIVATE);
         let sk = singleton_class(c, klass);

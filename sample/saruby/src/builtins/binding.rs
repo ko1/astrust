@@ -17,7 +17,8 @@ use crate::vm::*;
 pub struct RBinding { pub self_: Value, pub env: Value, pub names: Vec<Vec<(Sym, u32, u32)>>, pub cref: *const Cref, pub me: *const MethodEntry, pub file: &'static str, pub line: u32, pub extra: Value, pub dc: Value,
     pub svar: u64,    // its frame's home id for $~ / $_ (svar.rs); 0: none
     pub ret: u64,     // its frame's id (return target of code eval'd in it); 0: the caller's
-    pub blk: Value }  // its frame's block as a Proc (rb_vm_make_binding escapes it), or nil
+    pub blk: Value,   // its frame's block as a Proc (rb_vm_make_binding escapes it), or nil
+    pub visi: u8 }    // its scope's default visibility (CRuby keeps it in the cref)
 impl RData for RBinding {
     fn visit(&mut self, m: &mut crate::gc::Visitor) { m.visit(&mut self.self_); m.visit(&mut self.env); m.visit(&mut self.extra); m.visit(&mut self.dc); m.visit(&mut self.blk); }
     fn as_any(&self) -> &dyn std::any::Any { self }
@@ -71,9 +72,9 @@ fn new_binding(c: &mut Ctx, b: RBinding) -> Value {
 /// Binding#dup / #clone: the same scope; locals defined by eval so far are carried over, later ones are not shared.
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     let Some(b) = c.data::<RBinding>(v) else { return Ok(None) };
-    let (self_, env, names, cref, me, file, line, extra, dc, svar, blk) = (b.self_, b.env, b.names.clone(), b.cref, b.me, b.file, b.line, b.extra, b.dc, (b.svar, b.ret), b.blk);
+    let (self_, env, names, cref, me, file, line, extra, dc, svar, blk, visi) = (b.self_, b.env, b.names.clone(), b.cref, b.me, b.file, b.line, b.extra, b.dc, (b.svar, b.ret), b.blk, b.visi);
     let extra = if extra == NIL { NIL } else { c.hash_dup(extra) };
-    Ok(Some(new_binding(c, RBinding { self_, env, names, cref, me, file, line, extra, dc, svar: svar.0, ret: svar.1, blk })))
+    Ok(Some(new_binding(c, RBinding { self_, env, names, cref, me, file, line, extra, dc, svar: svar.0, ret: svar.1, blk, visi })))
 }
 
 /// TOPLEVEL_BINDING when the main script does not name it (so its locals were not captured):
@@ -83,7 +84,7 @@ pub fn init_toplevel(c: &mut Ctx) {
     let env = c.alloc(ek, Body::Env(crate::envvals::EnvVals::new(0), NIL));
     let (slf, cref) = (c.vm().main_obj.get(), c.vm().top_cref.get());
     let file: &'static str = "<main>";
-    let b = new_binding(c, RBinding { self_: slf, env, names: vec![vec![]], cref, me: std::ptr::null(), file, line: 0, extra: NIL, dc: NIL, svar: 0, ret: 0, blk: NIL });
+    let b = new_binding(c, RBinding { self_: slf, env, names: vec![vec![]], cref, me: std::ptr::null(), file, line: 0, extra: NIL, dc: NIL, svar: 0, ret: 0, blk: NIL, visi: VISI_PUBLIC });
     let ob = c.vm().c_object.get();
     const_set(c, ob, crate::symbol::intern(b"TOPLEVEL_BINDING"), b);
 }
@@ -91,7 +92,8 @@ pub fn init_toplevel(c: &mut Ctx) {
 /// A frame's Binding and its block, which the caller promotes (`with_block`) once the frame borrow ends.
 fn frame_binding(c: &Ctx, f: &Frame) -> (RBinding, *const Block) {   // blk-audit: the frame's block (H5)
     (RBinding { self_: f.fp[0].get(), env: f.fp[1].get(), names: vec![iseq_names(c, f.iseq(), true)], cref: f.cref(), me: f.me, file: frame_file(f), line: f.line(), extra: NIL, dc: f.defined_class(),
-               svar: crate::builtins::svar::frame_home_id(c, f), ret: f.id, blk: NIL }, f.blk)
+               svar: crate::builtins::svar::frame_home_id(c, f), ret: f.id, blk: NIL,
+               visi: if matches!(f.kind, FK_CLASS | FK_TOP | FK_EVAL | FK_BLOCK) { f.visi } else { VISI_PUBLIC } }, f.blk)
 }
 /// The Binding with its frame's block as a Proc: eval'd `yield` after the frame returned runs the copy.
 fn with_block(c: &mut Ctx, (mut b, blk): (RBinding, *const Block)) -> Result<RBinding, Esc> {   // blk-audit: promoted before the frame can return
@@ -120,7 +122,7 @@ pub fn binding_of_proc(c: &mut Ctx, p: Value) -> RV {
     };
     // a Proc's outer block was promoted with it
     let blk = block_to_proc(c, b.outer_blk)?;
-    Ok(new_binding(c, RBinding { self_: b.self_, env: b.env, names: vec![names], cref: b.cref, me: b.me, file, line, extra: NIL, dc: b.defined_class, svar: b.home_id, ret: b.home_id, blk }))
+    Ok(new_binding(c, RBinding { self_: b.self_, env: b.env, names: vec![names], cref: b.cref, me: b.me, file, line, extra: NIL, dc: b.defined_class, svar: b.home_id, ret: b.home_id, blk, visi: VISI_PUBLIC }))
 }
 
 fn env_names(names: &[Vec<(Sym, u32, u32)>]) -> Vec<(Sym, u32, u32)> {
@@ -140,14 +142,14 @@ pub fn eval_file(c: &Ctx) -> &'static str {
 pub fn eval_in_binding(c: &mut Ctx, bind: Value, src: &[u8], enc: u8, file: &'static str, line: i32) -> RV {
     let b = rbind(c, bind);
     let outer = vec![env_names(&b.names)];
-    let (slf, env, cref, me, dc, svar, blk) = (b.self_, b.env, b.cref, b.me, b.dc, (b.svar, b.ret), b.blk);
+    let (slf, env, cref, me, dc, svar, blk, visi) = (b.self_, b.env, b.cref, b.me, b.dc, (b.svar, b.ret), b.blk, b.visi);
     let is = match crate::compile::compile_source_enc(src, enc, file, line, IseqKind::Eval, outer) {
         Ok(is) => is,
         Err(m) => return err(c, c.vm().c_syntax_error.get(), m),
     };
     crate::builtins::tracepoint::trace_script_compiled(c, src)?;
     let mut new_env = NIL;
-    let r = run_eval_iseq_env(c, is, slf, env, cref, me, VISI_PUBLIC, &mut new_env, dc, svar, blk);
+    let r = run_eval_iseq_env(c, is, slf, env, cref, me, visi, &mut new_env, dc, svar, blk);
     // locals the eval introduced stay visible through this Binding
     if is.env_size > 0 && new_env != NIL {
         let b = rbind_mut(c, bind);

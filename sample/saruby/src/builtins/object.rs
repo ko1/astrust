@@ -16,10 +16,14 @@ use crate::symbol::{intern, s, sym_bytes, sym_str};
 use crate::value::*;
 use crate::vm::*;
 
+fn str_sym_checked(c: &mut Ctx, s: Value) -> Result<Sym, Esc> {
+    if c.str_enc(s) == crate::object::ENC_UTF8 { return crate::builtins::string_methods::utf8_to_sym(c, s).map(|v| v.as_sym()); }
+    Ok(c.str_to_sym(s).as_sym())
+}
 pub fn to_sym_arg(c: &mut Ctx, v: Value) -> Result<Sym, Esc> {
     if v.is_sym() { return Ok(v.as_sym()); }
-    if is_string(v) { return Ok(c.str_to_sym(v).as_sym()); }
-    if v.is_heap() && respond_to(c, v, s::to_str, true) { let s2 = expect_str(c, v)?; return Ok(c.str_to_sym(s2).as_sym()); }
+    if is_string(v) { return str_sym_checked(c, v); }
+    if v.is_heap() && respond_to(c, v, s::to_str, true) { let s2 = expect_str(c, v)?; return str_sym_checked(c, s2); }
     let ins = inspect_str(c, v)?;
     type_err(c, format!("{} is not a symbol nor a string", ins))
 }
@@ -472,6 +476,7 @@ pub fn boot_alias(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) {
     define_method_me(c, klass, newname, n);
 }
 pub fn alias_method(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) -> Result<(), Esc> {
+    check_frozen(c, klass)?;
     let mut me = search_method(c, klass, oldname);
     if (me.is_null() || matches!(me_kind(c, me), Some(MKind::Undef))) && c.class(klass).is_module {
         me = search_method(c, c.vm().c_object.get(), oldname);
@@ -481,7 +486,8 @@ pub fn alias_method(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) -> Re
         let e = make_name_error(c, c.vm().c_name_error.get(), &msg, Value::sym(oldname), klass)?;
         return Err(raise_exc(c, e));
     }
-    let Some(o) = me_copy(c, me) else { return Ok(()) };
+    let Some(mut o) = me_copy(c, me) else { return Ok(()) };
+    if is_special_private(newname) { o.visi = VISI_PRIVATE; }
     let oname = o.name;
     let n = Box::into_raw(Box::new(o)) as *const MethodEntry;
     if newname != oname { c.vm().alias_names.borrow_mut().insert(n as usize, newname); }
@@ -492,11 +498,15 @@ pub fn alias_method(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) -> Re
 }
 
 pub fn undef_method(c: &mut Ctx, klass: Value, mid: Sym) -> Result<(), Esc> {
+    if crate::rt::booted() { check_frozen(c, klass)?; }
     let mut me = search_method(c, klass, mid);
     // a refinement may undef a method of the class it refines
     if me.is_null() && c.class(klass).refined { me = search_method(c, c.class(klass).attached, mid); }
     if me.is_null() || matches!(me_kind(c, me), Some(MKind::Undef)) {
-        let msg = format!("undefined method '{}' for {} '{}'", sym_str(mid), if c.class(klass).is_module { "module" } else { "class" }, class_path(c, klass));
+        // rb_print_undef: a class's (module's) singleton class is named by the class
+        let att = c.class(klass).attached;
+        let shown = if c.class(klass).is_singleton && is_class_or_module(att) { class_path(c, att) } else { class_path(c, klass) };
+        let msg = format!("undefined method '{}' for {} '{}'", sym_str(mid), if c.class(klass).is_module { "module" } else { "class" }, shown);
         let e = make_name_error(c, c.vm().c_name_error.get(), &msg, Value::sym(mid), klass)?;
         return Err(raise_exc(c, e));
     }
@@ -627,6 +637,7 @@ fn set_visibility(c: &mut Ctx, slf: Value, a: &[Value], visi: u8) -> RV {
             continue;
         }
         if o.owner == slf { c.me_set_visi(me, visi); bump_method_serial(); c.vm().mcache.borrow_mut().clear(); }
+        else if o.visi == visi { continue; }   // rb_export_method: an inherited one already so is left alone
         else {
             let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
             keep_alias_name(c, me, n);
@@ -648,10 +659,26 @@ fn top_public(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV { set_visibi
 fn m_private_class_method(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let k = singleton_class(c, slf); set_visibility(c, k, a, VISI_PRIVATE)?; Ok(NIL) }
 fn m_public_class_method(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let k = singleton_class(c, slf); set_visibility(c, k, a, VISI_PUBLIC)?; Ok(NIL) }
 
+/// The scope visibility define_method uses (rb_vm_cref_in_context(mod, mod)): the caller's default when it
+/// runs in `m` itself (class body, class_exec block), public otherwise.
+fn scope_visi(c: &Ctx, m: Value) -> u8 {
+    let Some(p) = c.caller_frame() else { return VISI_PUBLIC };
+    if p.fp[0].get() != m { return VISI_PUBLIC; }
+    let in_m = if p.kind == FK_BLOCK { p.defined_class() == m } else { c.cref_ref(p.cref()).map_or(c.vm().c_object.get(), |r| r.klass) == m };
+    if !in_m { return VISI_PUBLIC; }
+    p.visi
+}
+fn is_special_private(mid: Sym) -> bool {
+    mid == s::initialize || mid == s::initialize_copy || mid == s::respond_to_missing_p || mid == s::mid_initialize_dup || mid == s::mid_initialize_clone
+}
 pub fn m_define_method(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let mid = to_sym_arg(c, a[0])?;
-    let visi = { let v = cur_default_visi(c); if mid == s::initialize { VISI_PRIVATE } else { v } };
+    let sv = scope_visi(c, slf);
+    let visi = if is_special_private(mid) && sv != VISI_MODFUNC { VISI_PRIVATE } else { sv };
+    let modfunc = visi == VISI_MODFUNC;
+    let visi = if modfunc { VISI_PRIVATE } else { visi };
+    check_frozen(c, slf)?;
     let me = if a.len() == 2 {
         let body = a[1];
         if is_proc(body) {
@@ -659,6 +686,7 @@ pub fn m_define_method(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
         } else if is_method_obj(body) {
             let Some(o) = me_copy(c, c.method_obj(body).me) else { return type_err(c, "bad method object") };
             if !c.class(o.owner).is_module && !is_kind_of_class(c, slf, o.owner) {
+                if c.class(o.owner).is_singleton { return type_err(c, "can't bind singleton method to a different class"); }
                 return type_err(c, format!("bind argument must be a subclass of {}", class_path(c, o.owner)));
             }
             // like an alias: __method__ stays the original name, __callee__ is the new one
@@ -666,7 +694,7 @@ pub fn m_define_method(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
             if mid != o.name { c.vm().alias_names.borrow_mut().insert(n as usize, mid); }
             n as *const MethodEntry
         } else {
-            return type_err(c, format!("wrong argument type {} (expected Proc/Method/UnboundMethod)", class_name_for_err(c, body)));
+            return type_err(c, format!("wrong argument type {} (expected Proc/Method/UnboundMethod)", class_path(c, real_class_of(c, body))));
         }
     } else {
         if b.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
@@ -678,6 +706,14 @@ pub fn m_define_method(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     };
     crate::rt::note_redefinition(c, slf, mid);
     define_method_me(c, slf, mid, me);
+    if modfunc {
+        let Some(o) = me_copy(c, me) else { return Ok(Value::sym(mid)) };
+        let sk = singleton_class(c, slf);
+        let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: sk, visi: VISI_PUBLIC, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
+        keep_alias_name(c, me, n);
+        crate::rt::note_redefinition(c, sk, mid);
+        define_method_me(c, sk, mid, n);
+    }
     call_method_added(c, slf, mid)?;
     Ok(Value::sym(mid))
 }
@@ -841,36 +877,79 @@ fn m_class_exec(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     yield_with_self(c, b, a, slf, slf)
 }
 /// The symbol of a constant name without "::" (a String keeps its encoding); None for a path.
-fn one_const_name(c: &mut Ctx, v: Value) -> Result<Option<Sym>, Esc> {
-    if v.is_sym() { return Ok(if crate::symbol::sym_bytes(v.as_sym()).windows(2).any(|w| w == b"::") { None } else { Some(v.as_sym()) }); }
-    if is_string(v) && !c.str_bytes(v).windows(2).any(|w| w == b"::") { return Ok(Some(to_sym_arg(c, v)?)); }
+/// rb_is_const_name: an uppercase letter, then identifier characters.
+pub fn is_const_name(b: &[u8]) -> bool {
+    let t = String::from_utf8_lossy(b);
+    let mut ch = t.chars();
+    ch.next().is_some_and(|f| f.is_uppercase()) && ch.all(|x| x.is_alphanumeric() || x == '_' || !x.is_ascii())
+}
+fn wrong_const_name(c: &mut Ctx, slf: Value, p: &[u8]) -> Esc {
+    let n = Value::sym(intern(p));
+    match make_name_error(c, c.vm().c_name_error.get(), &format!("wrong constant name {}", String::from_utf8_lossy(p)), n, slf) { Ok(e) => raise_exc(c, e), Err(e) => e }
+}
+/// One constant of `cur` for const_get / const_defined? (rb_const_get / _from / _at): `top` is the first
+/// part of a path not starting with "::" (a module then sees Object's constants); later parts skip Object's.
+fn const_part(c: &mut Ctx, cur: Value, sym: Sym, inherit: bool, top: bool, define_only: bool) -> Result<Option<Value>, Esc> {
+    let o = c.vm().c_object.get();
+    if !inherit {
+        if let Some(v) = const_get_at(c, cur, sym) { return Ok(Some(v)); }
+        if !c.class(cur).autoload.contains_key(&sym) { return Ok(None); }
+        if define_only { return Ok(autoload_defined(c, cur, sym).then_some(NIL)); }
+        return do_autoload(c, cur, sym);
+    }
+    for &k in ancestors(c, cur).iter() {
+        if !top && k == o && cur != o { break; }
+        if let Some(v) = const_get_at(c, k, sym) { return Ok(Some(v)); }
+        if c.class(k).autoload.contains_key(&sym) {
+            if define_only { if autoload_defined(c, k, sym) { return Ok(Some(NIL)); } continue; }
+            if let Some(v) = do_autoload(c, k, sym)? { return Ok(Some(v)); }
+        }
+    }
+    if top && c.class(cur).is_module {
+        if let Some(v) = const_get_at(c, o, sym) { return Ok(Some(v)); }
+        if c.class(o).autoload.contains_key(&sym) {
+            if define_only { return Ok(autoload_defined(c, o, sym).then_some(NIL)); }
+            return do_autoload(c, o, sym);
+        }
+    }
     Ok(None)
 }
-fn m_const_get(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+/// rb_mod_const_get / rb_mod_const_defined: a Symbol is one name; a String may be a path "A::B" / "::A".
+fn const_path(c: &mut Ctx, slf: Value, a: &[Value], defined: bool) -> RV {
     check_argc(c, a, 1, 2)?;
     let inherit = a.len() < 2 || a[1].truthy();
-    let name = if a[0].is_sym() { sym_str(a[0].as_sym()) } else { to_rstring(c, a[0])? };
-    let one = one_const_name(c, a[0])?;
-    let mut cur = slf;
-    let parts: Vec<&str> = name.split("::").collect();
-    for (i, p) in parts.iter().enumerate() {
-        if p.is_empty() { if i == 0 { cur = c.vm().c_object.get(); continue; } return err(c, c.vm().c_name_error.get(), format!("wrong constant name {}", name)); }
-        if !p.chars().next().unwrap().is_uppercase() {
-            let e = make_name_error(c, c.vm().c_name_error.get(), &format!("wrong constant name {}", p), Value::sym(intern(p.as_bytes())), slf)?;
-            return Err(raise_exc(c, e));
-        }
-        let sym = one.unwrap_or_else(|| intern(p.as_bytes()));
-        if !is_class_or_module(cur) { return type_err(c, format!("{} does not refer to class/module", name)); }
-        let parent = cur;
-        cur = if inherit {
-            match const_get_inherit(c, cur, sym)? { Some(v) => v, None => const_missing(c, cur, sym)? }
-        } else {
-            match const_get_at(c, cur, sym) { Some(v) => v, None => const_missing(c, cur, sym)? }
+    let (name, is_sym, sval) = if a[0].is_sym() { (sym_bytes(a[0].as_sym()).to_vec(), true, a[0]) } else { let s = expect_str(c, a[0])?; (c.str_bytes(s).to_vec(), false, s) };
+    if is_sym || !name.windows(2).any(|w| w == b"::") {
+        if !is_const_name(&name) { return Err(wrong_const_name(c, slf, &name)); }
+        let sym = if is_sym { sval.as_sym() } else { c.str_to_sym(sval).as_sym() };
+        return match const_part(c, slf, sym, inherit, true, defined)? {
+            Some(v) => Ok(if defined { TRUE } else { v }),
+            None if defined => Ok(FALSE),
+            None => const_missing(c, slf, sym),
         };
-        if crate::builtins::ractor::multi() { crate::builtins::ractor::const_check(c, parent, false, sym, cur)?; }
     }
-    Ok(cur)
+    let mut cur = slf;
+    let mut rest: &[u8] = &name;
+    let mut top = true;
+    if rest.starts_with(b"::") { cur = c.vm().c_object.get(); rest = &rest[2..]; top = false; if rest.is_empty() { return Err(wrong_const_name(c, slf, &name)); } }
+    let parts: Vec<&[u8]> = { let mut v = vec![]; let mut r = rest; loop { match r.windows(2).position(|w| w == b"::") { Some(i) => { v.push(&r[..i]); r = &r[i + 2..]; } None => { v.push(r); break; } } } v };
+    for (i, p) in parts.iter().enumerate() {
+        if !is_const_name(p) { return Err(wrong_const_name(c, slf, if p.is_empty() { &name } else { p })); }
+        if !is_class_or_module(cur) { return type_err(c, format!("{} does not refer to class/module", String::from_utf8_lossy(&name))); }
+        let sym = intern(p);
+        let last = i + 1 == parts.len();
+        let parent = cur;
+        match const_part(c, cur, sym, inherit, top && i == 0, defined && last)? {
+            Some(v) => cur = v,
+            None if defined => return Ok(FALSE),
+            None => cur = const_missing(c, cur, sym)?,
+        }
+        if !defined && crate::builtins::ractor::multi() { crate::builtins::ractor::const_check(c, parent, false, sym, cur)?; }
+    }
+    Ok(if defined { TRUE } else { cur })
 }
+fn m_const_get(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { const_path(c, slf, a, false) }
+fn m_const_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { const_path(c, slf, a, true) }
 /// rb_mod_const_source_location: [file, line] of the constant, [] for one defined in Rust, nil when undefined.
 fn m_const_source_location(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
@@ -928,34 +1007,6 @@ fn m_const_set(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     const_set_here(c, slf, n, a[1])?;
     Ok(a[1])
 }
-fn m_const_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    let name = if a[0].is_sym() { sym_str(a[0].as_sym()) } else { to_rstring(c, a[0])? };
-    let one = one_const_name(c, a[0])?;
-    let inherit = a.len() < 2 || a[1].truthy();
-    let mut cur = slf;
-    for p in name.split("::") {
-        if p.is_empty() { cur = c.vm().c_object.get(); continue; }
-        if !p.chars().next().unwrap().is_uppercase() {
-            let e = make_name_error(c, c.vm().c_name_error.get(), &format!("wrong constant name {}", p), Value::sym(intern(p.as_bytes())), slf)?;
-            return Err(raise_exc(c, e));
-        }
-        let sym = one.unwrap_or_else(|| intern(p.as_bytes()));
-        if !is_class_or_module(cur) { return Ok(FALSE); }
-        let found = if inherit {
-            let mut r = None;
-            for &k in ancestors(c, cur).iter() {
-                if let Some(v) = const_get_at(c, k, sym) { r = Some(v); break; }
-                if c.class(k).autoload.contains_key(&sym) { if autoload_defined(c, k, sym) { r = Some(NIL); break; } }
-            }
-            if r.is_none() && c.class(cur).is_module { r = const_get_at(c, c.vm().c_object.get(), sym); }
-            r
-        } else {
-            match const_get_at(c, cur, sym) { Some(v) => Some(v), None if c.class(cur).autoload.contains_key(&sym) && autoload_defined(c, cur, sym) => Some(NIL), None => None }
-        };
-        match found { Some(v) => cur = v, None => return Ok(FALSE) }
-    }
-    Ok(TRUE)
-}
 fn m_constants(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let inherit = a.first().map(|v| v.truthy()).unwrap_or(true);
     let out = c.ary_new();
@@ -964,10 +1015,26 @@ fn m_constants(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     for k in list {
         if inherit && k == c.vm().c_object.get() && slf != c.vm().c_object.get() { break; }
         for &n in c.class(k).const_order.clone().iter() {
-            if c.class(k).consts.contains_key(&n) && !c.class(k).private_consts.contains(&n) && seen.insert(n) { c.ary_push(out, Value::sym(n)); }
+            if c.class(k).consts.contains_key(&n) && !c.class(k).private_consts.contains(&n) && is_const_name(sym_bytes(n)) && seen.insert(n) { c.ary_push(out, Value::sym(n)); }
         }
-        for (&n, _) in c.class(k).autoload.clone().iter() { if seen.insert(n) { c.ary_push(out, Value::sym(n)); } }
+        for (&n, _) in c.class(k).autoload.clone().iter() { if is_const_name(sym_bytes(n)) && seen.insert(n) { c.ary_push(out, Value::sym(n)); } }
     }
+    Ok(out)
+}
+/// Module.constants: with no argument, the constants of the caller's lexical scopes and Object's.
+fn m_s_constants(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
+    if !a.is_empty() { return m_constants(c, slf, a, b); }
+    let mut scopes = vec![];
+    let mut cr = c.caller_frame().map_or(std::ptr::null(), |f| f.cref());
+    while let Some(r) = c.cref_ref(cr) { if !r.prev.is_null() { scopes.push(r.klass); } cr = r.prev; }
+    let out = c.ary_new();
+    let o = c.vm().c_object.get();
+    for k in scopes {
+        let l = m_constants(c, k, &[FALSE], Blk::NONE)?;
+        for v in c.ary(l).to_vec() { if !c.ary(out).contains(&v) { c.ary_push(out, v); } }
+    }
+    let l = m_constants(c, o, &[], Blk::NONE)?;
+    for v in c.ary(l).to_vec() { if !c.ary(out).contains(&v) { c.ary_push(out, v); } }
     Ok(out)
 }
 fn m_remove_const(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
@@ -1291,10 +1358,10 @@ pub fn init(c: &mut Ctx) -> InitIds {
     d(c, "attr_writer", m_attr_writer, -1);
     d(c, "attr_accessor", m_attr_accessor, -1);
     d(c, "attr", m_attr, -1);
-    d(c, "private", m_private, -1);
-    d(c, "public", m_public, -1);
-    d(c, "protected", m_protected, -1);
-    d(c, "module_function", m_module_function, -1);
+    define_private_cfunc(c, m, "private", m_private, -1);
+    define_private_cfunc(c, m, "public", m_public, -1);
+    define_private_cfunc(c, m, "protected", m_protected, -1);
+    define_private_cfunc(c, m, "module_function", m_module_function, -1);
     d(c, "private_class_method", m_private_class_method, -1);
     d(c, "public_class_method", m_public_class_method, -1);
     d(c, "define_method", m_define_method, -1);
@@ -1343,7 +1410,7 @@ pub fn init(c: &mut Ctx) -> InitIds {
     d(c, "const_source_location", m_const_source_location, -1);
     d(c, "const_defined?", m_const_defined, -1);
     d(c, "constants", m_constants, -1);
-    d(c, "remove_const", m_remove_const, 1);
+    define_private_cfunc(c, m, "remove_const", m_remove_const, 1);
     d(c, "private_constant", m_private_constant, -1);
     d(c, "public_constant", m_hook_noop, -1);
     d(c, "const_missing", m_const_missing, 1);
@@ -1354,17 +1421,19 @@ pub fn init(c: &mut Ctx) -> InitIds {
     d(c, "freeze", m_freeze, 0);
     d(c, "hash", m_hash, 0);
     d(c, "singleton_class?", m_singleton_class_p, 0);
-    d(c, "refine", m_refine, 1);
-    d(c, "using", m_using, 1);
+    define_private_cfunc(c, m, "refine", m_refine, 1);
+    define_private_cfunc(c, m, "using", m_using, 1);
     d(c, "refinements", m_refinements, 0);
     let rf = define_class(c, "Refinement", vmr.c_module.get());
     define_cfunc(c, rf, "target", refinement_target, 0);
     define_private_cfunc(c, rf, "import_methods", refinement_import_methods, -1);
-    d(c, "attached_object", m_attached_object, 0);
+    define_cfunc(c, vmr.c_class.get(), "attached_object", m_attached_object, 0);
     d(c, "instance_variable_names", m_instance_variable_names, 0);
     define_singleton_cfunc(c, m, "new", m_module_new, -1);
+    define_singleton_cfunc(c, m, "constants", m_s_constants, -1);
 
     let kc = vmr.c_class.get();
+    for n in ["module_function", "extend_object", "append_features", "prepend_features", "refine"] { undef_method(c, kc, intern(n.as_bytes())).expect("Module's method"); }
     define_cfunc(c, kc, "allocate", c_allocate, 0);
     define_cfunc(c, kc, "new", c_new, -1);
     let id_c_new = search_method(c, kc, crate::symbol::intern_str("new"));
