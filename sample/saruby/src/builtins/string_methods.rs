@@ -1636,7 +1636,11 @@ wide_m!(w_chop, s_chop, false, false); wide_m!(w_chop_b, s_chop_b, true, false);
 fn broken_strip(c: &mut Ctx, slf: Value, l: bool, r: bool) -> Result<Option<usize>, Esc> {
     use crate::builtins::encoding as en;
     let x = c.rstring(slf);
-    if en::min_len(x.enc) == 1 && x.b.is_ascii() || en::is_valid(x.enc, &x.b) { return Ok(None); }
+    if !r && en::min_len(x.enc) == 1 {
+        // lstrip alone looks at its first non-space character only
+        let i = x.b.iter().position(|&b| !is_ws(b)).unwrap_or(x.b.len());
+        if i == x.b.len() || x.b[i] < 0x80 || en::is_single_byte(x.enc) || en::precise_len(x.enc, &x.b, i).is_some() { return Ok(None); }
+    } else if en::min_len(x.enc) == 1 && x.b.is_ascii() || en::is_valid(x.enc, &x.b) { return Ok(None); }
     broken_strip_err(c, slf, l && !en::is_single_byte(x.enc), r)
 }
 #[cold]
