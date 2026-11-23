@@ -103,7 +103,7 @@ impl Ctx {
     /// String `v` for writing; FrozenError when frozen.
     #[inline]
     pub fn str_modify(&mut self, v: Value) -> Result<&mut RString, Esc> {
-        if obj_flags(v) & FL_FROZEN != 0 { return Err(raise_frozen(self, v)); }
+        if obj_flags(v) & (FL_FROZEN | FL_TMPLOCK) != 0 { return Err(raise_frozen_or_locked(self, v)); }
         Ok(self.rstring_mut(v))
     }
     /// acc << s with the result encoding already decided; they may be the same String.

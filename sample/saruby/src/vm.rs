@@ -1115,8 +1115,15 @@ pub fn raise_frozen(c: &mut Ctx, v: Value) -> Esc {
 
 #[inline]
 pub fn check_frozen(c: &mut Ctx, v: Value) -> Result<(), Esc> {
-    if is_frozen(v) { return Err(raise_frozen(c, v)); }
+    if !v.is_heap() || obj_flags(v) & (FL_FROZEN | FL_TMPLOCK) != 0 { return Err(raise_frozen_or_locked(c, v)); }
     Ok(())
+}
+/// FrozenError, or str_modifiable's error for a String locked by IO::Buffer (FL_TMPLOCK).
+#[cold]
+pub fn raise_frozen_or_locked(c: &mut Ctx, v: Value) -> Esc {
+    if is_frozen(v) { return raise_frozen(c, v); }
+    let e = make_exception(c, vm().c_runtime_error.get(), "can't modify string; temporarily locked");
+    raise_exc(c, e)
 }
 
 pub fn frame_label(c: &Ctx, f: &Frame) -> String { frame_label_of(c, f.kind, f.me, f.iseq()) }

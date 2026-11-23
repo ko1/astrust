@@ -7,7 +7,8 @@ use std::any::Any;
 use crate::fxhash::HashMap;
 
 pub const FL_FROZEN: u32 = 1;
-// bits 2 and 4 are unused (GC state is in RObj::gc)
+pub const FL_TMPLOCK: u32 = 2;   // String: rb_str_locktmp (IO::Buffer.for / .string); modification raises
+// bit 4 is unused (GC state is in RObj::gc)
 pub const FL_EXIVAR: u32 = 8;
 pub const FL_CHILLED: u32 = 16;   // string literal: frozen-on-write warning semantics (treated as mutable)
 pub const FL_KWHASH: u32 = 32;    // ruby2_keywords flagged hash

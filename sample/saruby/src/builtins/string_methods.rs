@@ -1097,7 +1097,10 @@ cfn!(s_oct, |c, slf, a, b_| {
     let r = str_to_inum(c, body.as_bytes(), if body.starts_with("0x") || body.starts_with("0b") || body.starts_with("0o") { 0 } else { base }, false).unwrap_or(Value::fix(0));
     if neg { funcall(c, r, s::uminus, &[], std::ptr::null()) } else { Ok(r) }
 });
-cfn!(s_freeze, |c, slf, a, b_| { obj_set_flags(slf, FL_FROZEN); Ok(slf) });
+cfn!(s_freeze, |c, slf, a, b_| {
+    if obj_flags(slf) & (FL_FROZEN | FL_TMPLOCK) == FL_TMPLOCK { return Err(raise_frozen_or_locked(c, slf)); }
+    obj_set_flags(slf, FL_FROZEN); Ok(slf)
+});
 cfn!(s_uplus, |c, slf, a, b_| if is_frozen(slf) { Ok(c.str_copy(slf)) } else { Ok(slf) });
 cfn!(s_uminus, |c, slf, a, b_| {
     let has_iv = c.vm().gen_ivars.borrow().get(&(slf.raw() as usize)).map(|v| !v.is_empty()).unwrap_or(false);
