@@ -55,6 +55,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [x] 生成コード（astrustgen のテンプレート）: ノードアクセスを node_head.rs の監査済みプリミティブ（node_u::<T> ほか 13 個）に集約、@ref は NodeCell（UnsafeCell）、SD の子は wrapping_byte_offset。saruby 生成 1165 → 93、fib の焼き all.rs 75 → 7。命令数は全セル ±0.016% 以内（poly のみ -0.58%、call_slow の cgu 分割、cgu1 では 0）。L_::nth の unreachable_unchecked は safe 形が optcarrot .text +1% のため残す（unsafe_catalog.md 8）
 - [ ] 生成コード残り: @ref の &mut は再入（再帰呼び出しサイト）で一意でない（base から同じ UB）。body に &NodeCell + Cell のキャッシュを渡す形は node.def / vm.rs のキャッシュ API の変更が要る。NodePtr を &'static Node / NonNull にする案は手書き側の変更が大きく未着手（unsafe_catalog.md 8.3）
 - [ ] 見送り中: safe な Value::fix/sym/flonum（hash +0.6〜1.4%、regalloc の変化）、ConstCache.val の Option 化（+0.1〜0.3%）
+- [ ] 再帰呼び出しの call site が、自分の inline cache（@ref）への &mut を、先の &mut が生きている間にもう 1 つ作る（base からの UB。NodeCell 化後も残る。node.def・vm.rs で cache の借用を呼び出しの前に終える必要）
 
 ## 3. CRuby 互換性
 
