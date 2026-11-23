@@ -501,6 +501,8 @@ pub fn enum_next(c: &mut Ctx, e: Value) -> Result<Option<Value>, Esc> {
     match enum_pull(c, e)? { Some(v) => Ok(Some(v)), None => Err(stop_iteration(c, e)) }
 }
 pub fn enum_has_fiber(_e: Value) -> bool { true }
+/// Enumerator `e` is between #next calls (CRuby's e->fib, cleared when the iteration ended).
+pub fn enum_fiber_live(c: &Ctx, e: Value) -> bool { let f = renum(c, e).fiber; f != NIL && !fd(c, f).done }
 pub fn enum_peek(c: &mut Ctx, e: Value) -> RV {
     match enum_pull(c, e)? {
         Some(v) => { let f = renum(c, e).fiber; fdm(c, f).peek = Some(v); Ok(v) }

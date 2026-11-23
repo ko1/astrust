@@ -261,9 +261,11 @@ module Enumerable
     to_a(*args).reverse_each(&b)
     self
   end
-  def cycle(n = nil)
+  def cycle(*args)
+    Enumerable.__argc(args.size, 0, 1) if args.size > 1
+    n = args[0]
     unless block_given?
-      return enum_for(:cycle, n) do
+      return enum_for(:cycle, *args) do
         if n.nil? then (s = __size) == 0 ? 0 : Float::INFINITY
         else s = __size; k = Enumerable.__int(n); s && (k < 0 ? 0 : s * k) end
       end
@@ -282,8 +284,7 @@ module Enumerable
     end
     nil
   end
-  def chain(*enums) = Enumerator::Chain.new(self, *enums)
-  def lazy = Enumerator::Lazy.__from(self, :each, [], :__src_size)
+  def chain(*enums) = Enumerable.__chain([self, *enums])
   def compact
     a = []
     Enumerable.__each(self) { |v| a << v unless v.nil? }
@@ -372,7 +373,7 @@ class Exception
 end
 
 class Enumerator
-  def +(other) = Enumerator::Chain.new(self, other)
+  def +(other) = Enumerable.__chain([self, other])
   def next_values
     v = self.next
     [v]
@@ -459,256 +460,9 @@ class Enumerator
         t + s
       end
     end
-    def +(other) = Chain.new(self, other)
     def rewind = (@__enums.reverse_each { |e| e.rewind if e.respond_to?(:rewind) }; self)
     def inspect = @__enums ? "#<Enumerator::Chain: [#{@__enums.map(&:inspect).join(', ')}]>" : "#<#{self.class}: uninitialized>"
     alias to_s inspect
-  end
-
-  class Lazy < Enumerator
-    # A Lazy is a source (@__src, iterated with @__meth/@__margs) or a parent Lazy plus one stage (@__op).
-    def initialize(obj, size = nil, &blk)
-      raise ArgumentError, "tried to call lazy new without a block" unless blk
-      @__src = obj; @__size = size; @__gen = blk; @__meth = :each; @__margs = []
-      @__parent = nil; @__op = nil; @__mid = :each; @__args = nil
-    end
-    def self.__from(src, meth = :each, margs = [], size = nil)
-      l = allocate
-      l.__init_src(src, meth, margs, size)
-      l
-    end
-    def __init_src(src, meth, margs, size)
-      @__src = src; @__meth = meth; @__margs = margs; @__size = size; @__gen = nil
-      @__parent = nil; @__op = nil; @__mid = nil; @__args = nil
-    end
-    def __init_op(parent, op, mid, args)
-      @__parent = parent; @__op = op; @__mid = mid; @__args = args
-    end
-    def __add(mid, args, *op)
-      l = Lazy.allocate
-      l.__init_op(self, op, mid, args)
-      l
-    end
-    def __stages
-      st = []; l = self
-      while l.instance_variable_get(:@__parent)
-        st.unshift(l.instance_variable_get(:@__op))
-        l = l.instance_variable_get(:@__parent)
-      end
-      [l, st]
-    end
-    def __src_each(&sink)
-      if @__gen
-        y = Enumerator::Yielder.new { |*v| sink.call(v.size <= 1 ? v[0] : v) }
-        @__src.each { |*x| @__gen.call(y, *x) }
-      else
-        @__src.__send__(@__meth, *@__margs) { |*x| sink.call(x.size <= 1 ? x[0] : x) }
-      end
-    end
-
-    def each(*args, &blk)
-      unless args.empty?
-        l = @__parent ? self : Lazy.__from(@__src, @__meth, @__margs + args, @__size)
-        l = Lazy.__from(self, :each, args) if @__parent || @__gen
-        return blk ? l.each(&blk) : l
-      end
-      return self unless blk
-      return @__src.__send__(@__meth, *@__margs, &blk) if Enumerable.__ivget(self, :__blkmeth)
-      root, ops = __stages
-      return self if ops.any? { |o| o[0] == :take && o[1] == 0 }
-      tag = Object.new
-      sink = blk
-      ops.reverse_each { |op| sink = Lazy.__stage(op, sink, tag) }
-      catch(tag) { root.__src_each(&sink) }
-      self
-    end
-
-    # a packed multi-value element is spread for a lambda that takes several (rb_yield_force_blockarg)
-    def self.__fc(f, x) = (x.is_a?(Array) && f.lambda? && f.arity != 1 && f.arity != -1 ? f.call(*x) : f.call(x))
-    def self.__stage(op, nxt, tag)
-      kind, f, g = op
-      case kind
-      when :map then ->(x) { nxt.call(Lazy.__fc(f, x)) }
-      when :select then ->(x) { nxt.call(x) if Lazy.__fc(f, x) }
-      when :reject then ->(x) { nxt.call(x) unless Lazy.__fc(f, x) }
-      when :grep then ->(x) { nxt.call(g ? Lazy.__fc(g, x) : x) if f === x }
-      when :grep_v then ->(x) { nxt.call(g ? Lazy.__fc(g, x) : x) unless f === x }
-      when :filter_map then ->(x) { r = Lazy.__fc(f, x); nxt.call(r) if r }
-      when :compact then ->(x) { nxt.call(x) unless x.nil? }
-      when :flat_map
-        lambda do |x|
-          r = Lazy.__fc(f, x)
-          if (ra = Array.try_convert(r)) then ra.each { |y| nxt.call(y) }
-          elsif r.respond_to?(:force) && r.respond_to?(:each) then r.each { |y| nxt.call(y) }
-          else nxt.call(r)
-          end
-        end
-      when :take_while then ->(x) { Lazy.__fc(f, x) ? nxt.call(x) : throw(tag) }
-      when :drop_while
-        dropping = true
-        ->(x) { dropping = false if dropping && !Lazy.__fc(f, x); nxt.call(x) unless dropping }
-      when :take
-        n = 0
-        ->(x) { n += 1; nxt.call(x); throw(tag) if n >= f }
-      when :drop
-        n = 0
-        ->(x) { n += 1; nxt.call(x) if n > f }
-      when :with_index
-        i = f
-        if g then ->(x) { g.call(x, i); i += 1; nxt.call(x) }
-        else ->(x) { j = i; i += 1; nxt.call([x, j]) }
-        end
-      when :uniq
-        seen = {}
-        ->(x) { k = f ? Lazy.__fc(f, x) : x; unless seen.key?(k) then seen[k] = true; nxt.call(x) end }
-      when :zip
-        i = 0
-        ->(x) { row = [x] + f.map { |o| o[i] }; i += 1; nxt.call(row) }
-      end
-    end
-
-    def __args_s = (@__args.nil? || @__args.empty? ? "" : "(#{@__args.map(&:inspect).join(', ')})")
-    def inspect
-      if @__parent
-        "#<#{self.class}: #{@__parent.inspect}:#{@__mid}#{__args_s}>"
-      elsif @__margs.nil? && !@__gen
-        "#<#{self.class}: uninitialized>"
-      elsif @__gen
-        "#<#{self.class}: #{@__src.inspect}:each>"
-      elsif @__meth == :each && @__margs.empty?
-        "#<#{self.class}: #{@__src.inspect}>"
-      else
-        "#<#{self.class}: #{@__src.inspect}:#{@__meth}#{@__margs.empty? ? '' : "(#{@__margs.map(&:inspect).join(', ')})"}>"
-      end
-    end
-    alias to_s inspect
-    private :__args_s
-
-    def size
-      if @__parent
-        ps = @__parent.size
-        case @__op[0]
-        when :map, :with_index, :zip then ps
-        when :take then ps.nil? ? nil : [ps, @__op[1]].min
-        when :drop then ps.nil? ? nil : [ps - @__op[1], 0].max
-        else nil
-        end
-      else
-        s = @__size
-        if s.equal?(:__src_size) then @__src.respond_to?(:size) ? @__src.size : nil
-        elsif s.respond_to?(:call) then s.call
-        else s
-        end
-      end
-    end
-
-    def map(&f)
-      raise ArgumentError, "tried to call lazy map without a block" unless f
-      __add(:map, nil, :map, f)
-    end
-    alias collect map
-    def select(&f)
-      raise ArgumentError, "tried to call lazy select without a block" unless f
-      __add(:select, nil, :select, f)
-    end
-    alias filter select
-    alias find_all select
-    def reject(&f)
-      raise ArgumentError, "tried to call lazy reject without a block" unless f
-      __add(:reject, nil, :reject, f)
-    end
-    def grep(pat, &f) = __add(:grep, [pat], :grep, pat, f)
-    def grep_v(pat, &f) = __add(:grep_v, [pat], :grep_v, pat, f)
-    def filter_map(&f)
-      raise ArgumentError, "tried to call lazy filter_map without a block" unless f
-      __add(:filter_map, nil, :filter_map, f)
-    end
-    def flat_map(&f)
-      raise ArgumentError, "tried to call lazy flat_map without a block" unless f
-      __add(:flat_map, nil, :flat_map, f)
-    end
-    alias collect_concat flat_map
-    def take_while(&f)
-      raise ArgumentError, "tried to call lazy take_while without a block" unless f
-      __add(:take_while, nil, :take_while, f)
-    end
-    def drop_while(&f)
-      raise ArgumentError, "tried to call lazy drop_while without a block" unless f
-      __add(:drop_while, nil, :drop_while, f)
-    end
-    def take(n)
-      n = Enumerable.__int(n)
-      raise ArgumentError, "attempt to take negative size" if n < 0
-      __add(:take, [n], :take, n)
-    end
-    def drop(n)
-      n = Enumerable.__int(n)
-      raise ArgumentError, "attempt to drop negative size" if n < 0
-      __add(:drop, [n], :drop, n)
-    end
-    def with_index(off = 0, &f)
-      off = off.nil? ? 0 : Enumerable.__int(off)
-      __add(:with_index, [off], :with_index, off, f)
-    end
-    def each_with_index(&f) = __add(:each_with_index, nil, :with_index, 0, f)
-    def compact = __add(:compact, nil, :compact)
-    def uniq(&f) = __add(:uniq, nil, :uniq, f)
-    def zip(*others, &b)
-      return super if b
-      arrs = others.map do |o|
-        if (oa = Array.try_convert(o)) then oa
-        elsif o.respond_to?(:each) then o
-        else raise TypeError, "wrong argument type #{o.class} (must respond to :each)"
-        end
-      end
-      if arrs.all? { |o| o.is_a?(Array) }
-        __add(:zip, others, :zip, arrs)
-      else
-        __add(:zip, others, :zip, arrs.map { |o| o.is_a?(Array) ? o : __zip_cache(o) })
-      end
-    end
-    def __zip_cache(o)
-      c = Object.new
-      c.instance_variable_set(:@e, o.each_entry.lazy)
-      c.instance_variable_set(:@buf, [])
-      def c.[](i)
-        while @buf.size <= i
-          more = @e.first(@buf.size + 1)
-          return nil if more.size <= @buf.size
-          @buf = more
-        end
-        @buf[i]
-      end
-      c
-    end
-    private :__zip_cache
-    def chunk(*a, &b)
-      return super.lazy if b
-      l = Lazy.__from(self, :chunk, a, :__src_size)
-      Enumerable.__ivset(l, :__blkmeth, true)
-      l
-    end
-    def chunk_while(*a, &b) = super.lazy
-    def slice_after(*a, &b) = super.lazy
-    def slice_before(*a, &b) = super.lazy
-    def slice_when(*a, &b) = super.lazy
-    def to_enum(meth = :each, *args, &sz) = Lazy.__from(self, meth, args, sz)
-    alias enum_for to_enum
-    def lazy = self
-    def eager
-      lz = self
-      Kernel.instance_method(:to_enum).bind_call(self, :each) { lz.size }
-    end
-    def to_a = (a = []; each { |x| a << x }; a)
-    alias force to_a
-    def first(*args)
-      if args.empty?
-        each { |x| return x }
-        return nil
-      end
-      super
-    end
-    def +(other) = Chain.new(self, other).lazy
   end
 end
 

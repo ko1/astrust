@@ -416,7 +416,9 @@ fn k_instance_variables_hash(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> 
 fn k_enum_for(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let mid = if a.is_empty() { s::each } else { to_sym_arg(c, a[0])? };
     let size_fn = if b.is_null() { NIL } else { block_to_proc(c, b)? };
-    crate::builtins::enumerator::enum_for(c, slf, mid, if a.is_empty() { &[] } else { &a[1..] }, size_fn)
+    let e = crate::builtins::enumerator::enum_for(c, slf, mid, if a.is_empty() { &[] } else { &a[1..] }, size_fn)?;
+    if b.is_null() { crate::builtins::enumerator::renum_mut(c, e).lz |= crate::builtins::lazy::SIZE_EXACT; }
+    Ok(e)
 }
 
 // ---- Module --------------------------------------------------------------------------------

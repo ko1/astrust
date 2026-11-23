@@ -38,7 +38,9 @@ fn int_end(c: &mut Ctx, e: Value) -> Result<Option<i64>, Esc> {
 }
 pub fn range_each(c: &mut Ctx, slf: Value, mut f: impl FnMut(&mut Ctx, Value) -> Result<bool, Esc>) -> Result<(), Esc> {
     let (b, e, excl) = c.range_parts(slf);
-    if b.is_fixnum() && (e.is_fixnum() || e == NIL || is_float(e)) {
+    // Integer..Float is range.c's generic path: rb_check_string_type(beg), then <=> and succ per element
+    let generic = is_float(e) && crate::rt::redef(crate::rt::R_INT_CMP | crate::rt::R_INT_SUCC | crate::rt::R_IMM_CONV);
+    if b.is_fixnum() && !generic && (e.is_fixnum() || e == NIL || is_float(e)) {
         let mut i = b.as_fix();
         let last = int_end(c, e)?;
         let excl = excl && e.is_fixnum() || (is_float(e) && excl && float_val(e).fract() == 0.0);
@@ -87,6 +89,17 @@ pub fn range_each(c: &mut Ctx, slf: Value, mut f: impl FnMut(&mut Ctx, Value) ->
         for i in 0..c.ary_len(blk_data) { let v = c.ary_get(blk_data, i); if !f(c, v)? { break; } }
         return Ok(());
     }
+    if generic && respond_to(c, b, s::to_str, true) {
+        let tmp = funcall(c, b, s::to_str, &[], Blk::NONE)?;
+        if is_string(tmp) {
+            let blk_data = c.ary_new();
+            let collect = Block::cfunc(c, |c, d, args, _b, _o| { c.ary_push(d, args[0]); Ok(NIL) }, blk_data);
+            let ev = if excl { TRUE } else { FALSE };
+            funcall(c, tmp, s::upto, &[e, ev], &collect)?;
+            for i in 0..c.ary_len(blk_data) { let v = c.ary_get(blk_data, i); if !f(c, v)? { break; } }
+            return Ok(());
+        }
+    }
     if b == NIL || is_float(b) { return type_err(c, format!("can't iterate from {}", class_path(c, real_class_of(c, b)))); }
     if !respond_to(c, b, s::succ, true) { return type_err(c, format!("can't iterate from {}", class_path(c, real_class_of(c, b)))); }
     let mut cur = b;
@@ -94,7 +107,7 @@ pub fn range_each(c: &mut Ctx, slf: Value, mut f: impl FnMut(&mut Ctx, Value) ->
         if e != NIL {
             let cmp = funcall(c, cur, s::cmp, &[e], std::ptr::null())?;
             if cmp == NIL { break; }
-            let v = cmp.as_fix();
+            let v = crate::builtins::array_methods::cmp_result(c, cmp, cur, e)?;
             if v > 0 || (excl && v == 0) { break; }
         }
         if !f(c, cur)? { break; }

@@ -1,4 +1,4 @@
-// Enumerator / Enumerator::Yielder / ArithmeticSequence / Enumerator::Lazy (eager subset).
+// Enumerator / Enumerator::Yielder / ArithmeticSequence; Enumerator::Lazy's own methods are in lazy.rs.
 // On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
 #![forbid(unsafe_code)]
 #[allow(unused_imports)]
@@ -16,12 +16,13 @@ pub struct REnum {
     pub recv: Value, pub mid: Sym, pub args: Value, pub size: Value, pub gen: Value,
     pub buf: Value, pub pos: usize, pub fiber: Value,
     pub arith: Option<(Value, Value, Value, bool)>,
-    pub lazy: bool,
+    pub lz: u8,       // LZ_* (lazy.rs)
     pub kw: bool,     // the last of args was given as keywords
+    pub procs: Value, // a chained Lazy: its stage entries (lazy.rs); recv is the root Lazy
 }
 impl RData for REnum {
     fn visit(&mut self, m: &mut crate::gc::Visitor) {
-        m.visit(&mut self.recv); m.visit(&mut self.args); m.visit(&mut self.size); m.visit(&mut self.gen); m.visit(&mut self.buf); m.visit(&mut self.fiber);
+        m.visit(&mut self.recv); m.visit(&mut self.args); m.visit(&mut self.size); m.visit(&mut self.gen); m.visit(&mut self.buf); m.visit(&mut self.fiber); m.visit(&mut self.procs);
         if let Some((a, b, c, _)) = &mut self.arith { m.visit(a); m.visit(b); m.visit(c); }
     }
     fn as_any(&self) -> &dyn std::any::Any { self }
@@ -35,22 +36,26 @@ impl RData for RYielder {
 }
 
 /// The state of Enumerator `v`, copied out (every field is Copy): nothing is borrowed across the calls that follow.
-fn renum(c: &Ctx, v: Value) -> REnum { *c.data::<REnum>(v).expect("an Enumerator") }
-fn renum_mut(c: &mut Ctx, v: Value) -> &mut REnum { c.data_mut::<REnum>(v).expect("an Enumerator") }
+pub(crate) fn renum(c: &Ctx, v: Value) -> REnum { *c.data::<REnum>(v).expect("an Enumerator") }
+pub(crate) fn renum_mut(c: &mut Ctx, v: Value) -> &mut REnum { c.data_mut::<REnum>(v).expect("an Enumerator") }
 
-fn new_enum(c: &mut Ctx, klass: Value, recv: Value, mid: Sym, args: &[Value], size: Value) -> Value {
+pub(crate) fn new_enum(c: &mut Ctx, klass: Value, recv: Value, mid: Sym, args: &[Value], size: Value) -> Value {
     let kw = kw_arg(args).is_some();
     let a = c.ary_new_from(args);
-    c.alloc(klass, Body::Data(Box::new(REnum { recv, mid, args: a, size, gen: NIL, buf: NIL, pos: 0, fiber: NIL, arith: None, lazy: false, kw })))
+    c.alloc(klass, Body::Data(Box::new(REnum { recv, mid, args: a, size, gen: NIL, buf: NIL, pos: 0, fiber: NIL, arith: None, lz: 0, kw, procs: NIL })))
 }
 
+/// rb_enumeratorize_with_size_kw: an enumerator of a Lazy is a Lazy.
+fn enum_class_for(c: &Ctx, recv: Value) -> Value {
+    if crate::builtins::lazy::is_lazy(c, recv) { c.vm().c_lazy.get() } else { c.vm().c_enumerator.get() }
+}
 pub fn enum_for(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], size_fn: Value) -> RV {
-    let k = c.vm().c_enumerator.get();
+    let k = enum_class_for(c, recv);
     Ok(new_enum(c, k, recv, mid, args, size_fn))
 }
 /// An enumerator whose size is the receiver's size.
 pub fn enum_for_sized(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value]) -> RV {
-    let k = c.vm().c_enumerator.get();
+    let k = enum_class_for(c, recv);
     Ok(new_enum(c, k, recv, mid, args, TRUE))
 }
 pub fn enum_from_array(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], arr: Value) -> RV {
@@ -118,6 +123,9 @@ pub fn arith_seq_slice(c: &mut Ctx, seq: Value, ary: Value) -> RV {
 /// Run the enumerator, feeding each yielded value to blk.
 pub fn enum_each_with(c: &mut Ctx, e: Value, blk: Blk) -> RV {
     let en = renum(c, e);
+    if en.procs != NIL || en.lz & (crate::builtins::lazy::LZ_GEN | crate::builtins::lazy::LZ_UNINIT) != 0 {
+        return crate::builtins::lazy::each_with(c, e, en, blk);
+    }
     if let Some((b, en_, st, excl)) = en.arith {
         if b.is_fixnum() && en_.is_fixnum() && st.is_fixnum() && crate::rt::redef(crate::rt::R_INT_EQ | crate::rt::R_INT_LT | crate::rt::R_INT_GE | crate::rt::R_INT_COERCE) {
             arith_each_calls(c, b, en_, st, excl, blk)?;
@@ -177,6 +185,11 @@ fn arith_each_calls(c: &mut Ctx, b: Value, e: Value, st: Value, x: bool, blk: Bl
 }
 
 fn e_each(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+    if !a.is_empty() && crate::builtins::lazy::is_lazy(c, slf) {
+        // enumerator_each: a dup with the arguments appended, then that is iterated
+        let d = crate::builtins::lazy::dup_with_args(c, slf, a)?;
+        return if blk.is_null() { Ok(d) } else { enum_each_with(c, d, blk) };
+    }
     if blk.is_null() {
         if a.is_empty() { return Ok(slf); }
         let en = renum(c, slf);
@@ -212,7 +225,7 @@ fn e_each_with_index(c: &mut Ctx, slf: Value, _a: &[Value], blk: Blk) -> RV {
     e_with_index(c, slf, &[], blk)
 }
 fn e_with_object(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
-    if blk.is_null() { return enum_for(c, slf, intern(b"with_object"), a, NIL); }
+    if blk.is_null() { let mid = this_mid(c, intern(b"with_object")); return enum_for_sized(c, slf, mid, a); }
     let memo = a[0];
     let bp = block_to_proc(c, blk)?;
     let data = c.ary_new_from(&[memo, bp]);
@@ -258,8 +271,13 @@ fn e_rewind(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     en.pos = 0; en.buf = NIL; en.fiber = NIL;
     Ok(slf)
 }
+/// rb_frame_this_func: the name the running builtin was called by (an alias's own).
+pub(crate) fn this_mid(c: &Ctx, dflt: Sym) -> Sym {
+    match c.cur_frame() { Some(f) if c.me_ref(f.me).is_some() => crate::builtins::object::callee_name(c, f.me), _ => dflt }
+}
 fn e_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let en = renum(c, slf);
+    if en.procs != NIL || en.lz & crate::builtins::lazy::LZ_UNINIT != 0 { return crate::builtins::lazy::size(c, slf, en); }
     if let Some((b, e, st, x)) = en.arith {
         if b.is_fixnum() && e.is_fixnum() && st.is_fixnum() {
             let (b, e, s2) = (b.as_fix(), e.as_fix(), st.as_fix());
@@ -282,11 +300,17 @@ fn e_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
         if respond_to(c, r, s::size, true) { return funcall(c, r, s::size, &[], std::ptr::null()); }
         return Ok(NIL);
     }
-    if is_proc(en.size) { let p = en.size; return call_proc(c, p, &[], std::ptr::null()); }
+    // rb_check_funcall_kw(e->size, :call, *args)
+    if is_proc(en.size) { let p = en.size; let args = c.ary(en.args).to_vec(); return call_proc(c, p, &args, std::ptr::null()); }
     if en.size.is_sym() && crate::symbol::sym_bytes(en.size.as_sym()) == crate::builtins::array_methods::ARY_CYCLE_SIZE {
         return crate::builtins::array_methods::ary_cycle_size(c, en.recv, en.args);
     }
     if is_integer(en.size) || is_float(en.size) { return Ok(en.size); }
+    if en.size != NIL && !en.size.is_sym() {
+        if respond_to(c, en.size, s::call, true) { let args = c.ary(en.args).to_vec(); return funcall(c, en.size, s::call, &args, std::ptr::null()); }
+        return Ok(en.size);
+    }
+    if en.lz & crate::builtins::lazy::SIZE_EXACT != 0 { return Ok(NIL); }
     if en.mid == s::loop_ { return Ok(c.float_new(f64::INFINITY)); }
     let (recv, mid) = (en.recv, en.mid);
     if (mid == s::times) && recv.is_fixnum() { return Ok(Value::fix(recv.as_fix().max(0))); }
@@ -323,6 +347,7 @@ pub fn float_step_size(beg: f64, end: f64, unit: f64, excl: bool) -> f64 {
 }
 fn e_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let en = renum(c, slf);
+    if en.procs != NIL || en.lz & crate::builtins::lazy::LZ_ANY != 0 { return crate::builtins::lazy::inspect(c, slf, en); }
     if let Some((b, e, st, x)) = en.arith {
         let r = if en.mid == s::step && crate::numeric::is_numeric(b) && !is_range(en.recv) && false { String::new() } else { String::new() };
         let _ = r;
@@ -345,16 +370,42 @@ fn e_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     // inspect_enumerator runs under rb_exec_recursive
     if !rec_enter(c, slf, s::inspect)? { return Ok(c.str_new(format!("#<{}: ...>", cls).as_bytes())); }
     let r = (|| -> RV {
-        let r = inspect_str(c, en.recv)?;
-        let args = c.ary(en.args).to_vec();
-        let mut a = String::new();
-        if !args.is_empty() { a.push('('); for (i, x) in args.iter().enumerate() { if i > 0 { a.push_str(", "); } a.push_str(&inspect_str(c, *x)?); } a.push(')'); }
-        Ok(c.str_new(format!("#<{}: {}:{}{}>", cls, r, sym_str(en.mid), a).as_bytes()))
+        let r = inspect_value(c, en.recv)?;
+        let mut out = format!("#<{}: ", cls).into_bytes();
+        out.extend_from_slice(c.str_bytes(r));
+        out.push(b':');
+        out.extend_from_slice(sym_str(en.mid).as_bytes());
+        append_args(c, &mut out, en.args)?;
+        out.push(b'>');
+        Ok(c.str_new(&out))
     })();
     rec_leave(c, slf, s::inspect);
     r
 }
 fn is_range_origin(_v: Value) -> bool { false }
+/// append_method's argument list: "(a, b, k: v)"; a last non-empty Hash of Symbol keys prints as keywords.
+pub(crate) fn append_args(c: &mut Ctx, out: &mut Vec<u8>, args: Value) -> Result<(), Esc> {
+    let mut argv = c.ary(args).to_vec();
+    if argv.is_empty() { return Ok(()); }
+    let mut kw = NIL;
+    if let Some(&h) = argv.last() {
+        if is_hash(h) && c.hash_len(h) > 0 && c.hash_pairs(h).iter().all(|(k, _)| k.is_sym()) { kw = h; argv.pop(); }
+    }
+    out.push(b'(');
+    for x in argv { let r = inspect_value(c, x)?; out.extend_from_slice(c.str_bytes(r)); out.extend_from_slice(b", "); }
+    if kw != NIL {
+        for (k, v) in c.hash_pairs(kw) {
+            out.extend_from_slice(sym_str(k.as_sym()).as_bytes());
+            out.extend_from_slice(b": ");
+            let r = to_s_value(c, v)?;
+            out.extend_from_slice(c.str_bytes(r));
+            out.extend_from_slice(b", ");
+        }
+    }
+    out.truncate(out.len() - 2);
+    out.push(b')');
+    Ok(())
+}
 fn e_initialize(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     if blk.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
@@ -363,8 +414,9 @@ fn e_initialize(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if size != NIL && !size.is_fixnum() && !is_float(size) && !is_bignum(size) && !is_proc(size) && !respond_to(c, size, s::call, true) {
         crate::builtins::numeric_methods::num_to_long(c, size)?;
     }
+    if obj_flags(slf) & FL_FROZEN != 0 { return Err(raise_frozen(c, slf)); }
     let Some(en) = c.data_mut::<REnum>(slf) else { return type_err(c, "wrong argument type (expected Enumerator)") };
-    en.gen = g; en.size = size; en.recv = NIL; en.mid = s::each; en.buf = NIL; en.pos = 0;
+    en.gen = g; en.size = size; en.recv = NIL; en.mid = s::each; en.buf = NIL; en.pos = 0; en.lz = 0; en.procs = NIL;
     Ok(slf)
 }
 fn y_s_new(c: &mut Ctx, slf: Value, _a: &[Value], blk: Blk) -> RV {
@@ -451,13 +503,20 @@ fn arith_to_a(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { collect_al
 
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if let Some(&e) = c.data::<REnum>(v) {
-        let n = c.alloc(obj_klass(v), Body::Data(Box::new(REnum { buf: NIL, pos: 0, fiber: NIL, ..e })));
+        // enumerator_init_copy
+        if crate::fiber::enum_fiber_live(c, v) { return type_err(c, "can't copy execution context"); }
+        let lz = if e.procs != NIL { e.lz | crate::builtins::lazy::LZ_DUP } else { e.lz };
+        let n = c.alloc(obj_klass(v), Body::Data(Box::new(REnum { buf: NIL, pos: 0, fiber: NIL, lz, ..e })));
         return Ok(Some(n));
     }
     Ok(None)
 }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
-    if crate::builtins::inherits(c, klass, c.vm().c_enumerator.get()) { return Ok(Some(new_enum(c, klass, NIL, s::each, &[], NIL))); }
+    if crate::builtins::inherits(c, klass, c.vm().c_enumerator.get()) {
+        let e = new_enum(c, klass, NIL, s::each, &[], NIL);
+        if crate::builtins::inherits(c, klass, c.vm().c_lazy.get()) { renum_mut(c, e).lz = crate::builtins::lazy::LZ_UNINIT; }
+        return Ok(Some(e));
+    }
     Ok(None)
 }
 
@@ -486,7 +545,6 @@ pub fn init(c: &mut Ctx, e: Value, object: Value, enumerable: Value) -> Classes 
     let y = k.yielder;
     define_singleton_cfunc(c, y, "new", y_s_new, 0);
     define_cfunc(c, y, "yield", y_yield, -1);
-    define_cfunc(c, y, "call", y_yield, -1);
     define_cfunc(c, y, "<<", y_ltlt, -1);
     define_cfunc(c, y, "to_proc", y_to_proc, 0);
     let a = k.arith_seq;

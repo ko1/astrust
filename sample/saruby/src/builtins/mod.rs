@@ -11,6 +11,7 @@ pub mod array_methods;
 pub mod hash_methods;
 pub mod range_methods;
 pub mod enumerator;
+pub mod lazy;
 pub mod sprintf;
 pub mod io;
 pub mod io_conv;
