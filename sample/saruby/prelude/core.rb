@@ -786,7 +786,9 @@ class Data
   end
   def hash = [self.class, *deconstruct].hash
   def inspect
-    name = self.class.name
+    # rb_class_path, not #name; a path under an anonymous module is left out
+    name = Module.instance_method(:name).bind_call(self.class)
+    name = nil if name&.start_with?("#")
     seen = (Enumerable.__ivget(Data, :__insp) || Enumerable.__ivset(Data, :__insp, {}))
     return "#<data #{name}:...>" if seen.key?(object_id)
     seen[object_id] = true

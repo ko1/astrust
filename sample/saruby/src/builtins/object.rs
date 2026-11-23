@@ -1336,6 +1336,11 @@ fn c_subclasses(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     Ok(c.ary_from_vec(v))
 }
 fn c_inherited(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(NIL) }
+/// Class#initialize: every class saruby has is made initialized (Class.new does not call this).
+fn c_initialize(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
+    if a.first() == Some(&c.vm().c_class.get()) { return type_err(c, "can't make subclass of Class"); }
+    type_err(c, "already initialized class")
+}
 
 /// Method identities object::init records (Vm.ids).
 pub struct InitIds { pub bo_init: *const MethodEntry, pub bo_eq: *const MethodEntry, pub kernel_hash: *const MethodEntry, pub m_eqq: *const MethodEntry, pub c_new: *const MethodEntry }
@@ -1503,6 +1508,7 @@ pub fn init(c: &mut Ctx) -> InitIds {
     define_cfunc(c, kc, "superclass", c_superclass, 0);
     define_cfunc(c, kc, "subclasses", c_subclasses, 0);
     define_private_cfunc(c, kc, "inherited", c_inherited, 1);
+    define_private_cfunc(c, kc, "initialize", c_initialize, -1);
     define_singleton_cfunc(c, kc, "new", c_class_new, -1);
 
     let main = vmr.main_obj.get();
