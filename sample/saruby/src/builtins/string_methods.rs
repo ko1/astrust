@@ -334,7 +334,17 @@ cfn!(s_to_s, |c, slf, a, b_| {
     if obj_klass(slf) == c.vm().c_string.get() { return Ok(slf); }
     Ok(c.str_copy(slf))
 });
-cfn!(s_to_sym, |c, slf, a, b_| Ok(c.str_to_sym(slf)));
+// UTF-8 first, with nothing to do after intern (a broken UTF-8 String is not checked: a scan per call)
+cfn!(s_to_sym, |c, slf, a, b_| { if c.str_enc(slf) == ENC_UTF8 { return Ok(Value::sym(intern(c.str_bytes(slf)))); } s_to_sym_enc(c, slf) });
+#[inline(never)]
+fn s_to_sym_enc(c: &mut Ctx, slf: Value) -> RV { let s = c.str_intern(slf); if s == crate::symbol::BAD_SYM { return sym_enc_err(c, slf); } Ok(Value::sym(s)) }
+#[cold]
+#[inline(never)]
+fn sym_enc_err(c: &mut Ctx, s: Value) -> RV {
+    let i = crate::builtins::kernel::inspect_str(c, s)?;
+    let m = format!("invalid symbol in encoding {} :{}", crate::builtins::encoding::enc_name(c.str_enc(s)), i);
+    err(c, c.vm().c_encoding_error.get(), m)
+}
 cfn!(s_to_i, |c, slf, a, b_| {
     need_ascii_compat(c, slf)?;
     let base = if a.is_empty() { 10 } else { num_to_long(c, a[0])? };

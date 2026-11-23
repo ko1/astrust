@@ -18,8 +18,8 @@ use crate::vm::*;
 
 pub fn to_sym_arg(c: &mut Ctx, v: Value) -> Result<Sym, Esc> {
     if v.is_sym() { return Ok(v.as_sym()); }
-    if is_string(v) { return Ok(intern(c.str_bytes(v))); }
-    if v.is_heap() && respond_to(c, v, s::to_str, true) { let s2 = expect_str(c, v)?; return Ok(intern(c.str_bytes(s2))); }
+    if is_string(v) { return Ok(c.str_to_sym(v).as_sym()); }
+    if v.is_heap() && respond_to(c, v, s::to_str, true) { let s2 = expect_str(c, v)?; return Ok(c.str_to_sym(s2).as_sym()); }
     let ins = inspect_str(c, v)?;
     type_err(c, format!("{} is not a symbol nor a string", ins))
 }

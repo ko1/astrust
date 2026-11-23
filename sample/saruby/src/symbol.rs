@@ -17,20 +17,48 @@ const CHUNK: usize = 1 << CHUNK_BITS;
 const NCHUNK: usize = 1 << 12;   // 16M symbols
 type Chunk = Box<[OnceLock<&'static [u8]>]>;
 static NAMES: [OnceLock<Chunk>; NCHUNK] = [const { OnceLock::new() }; NCHUNK];
-struct Map { ids: HashMap<&'static [u8], u32>, n: u32 }
+// `encs`: symbols whose String is in an encoding other than US-ASCII / UTF-8 (CRuby keeps the encoding
+// in the symbol); their names are not in `ids`, so the same bytes make a different symbol
+struct Map { ids: HashMap<&'static [u8], u32>, n: u32, enc_ids: HashMap<(&'static [u8], u8), u32>, encs: HashMap<u32, u8> }
 static MAP: Mutex<Option<Map>> = Mutex::new(None);
 
 #[inline(never)]
 fn add(m: &mut Map, b: &[u8]) -> Sym {
     if let Some(&i) = m.ids.get(b) { return Sym(i); }
+    let (s, i) = push_name(m, b);
+    m.ids.insert(s, i);
+    Sym(i)
+}
+#[inline(always)]
+fn push_name(m: &mut Map, b: &[u8]) -> (&'static [u8], u32) {
     let i = m.n;
     assert!((i as usize) < CHUNK * NCHUNK, "saruby: symbol table full");
     let s: &'static [u8] = Box::leak(b.to_vec().into_boxed_slice());
     let chunk = NAMES[i as usize >> CHUNK_BITS].get_or_init(|| (0..CHUNK).map(|_| OnceLock::new()).collect());
     let _ = chunk[i as usize & (CHUNK - 1)].set(s);
-    m.ids.insert(s, i);
     m.n = i + 1;
-    Sym(i)
+    (s, i)
+}
+/// Whether any symbol has an encoding of its own (sym_enc answers None without a lock until then).
+static ANY_ENC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The symbol of `b` in encoding `enc`, for a String that is neither ASCII-only in an ASCII-compatible
+/// encoding nor UTF-8 (those are `intern`'s).
+#[cold]
+pub fn intern_enc(b: &[u8], enc: u8) -> Sym {
+    with_map(|m| {
+        if let Some(&i) = m.enc_ids.get(&(b, enc)) { return Sym(i); }
+        let (s, i) = push_name(m, b);
+        m.enc_ids.insert((s, enc), i);
+        m.encs.insert(i, enc);
+        ANY_ENC.store(true, Ordering::Release);
+        Sym(i)
+    })
+}
+/// The encoding of a symbol made by `intern_enc`; None for the others.
+#[inline]
+pub fn sym_enc(s: Sym) -> Option<u8> {
+    if !ANY_ENC.load(Ordering::Acquire) { return None; }
+    with_map(|m| m.encs.get(&s.0).copied())
 }
 #[inline]
 fn with_map<R>(f: impl FnOnce(&mut Map) -> R) -> R {
@@ -40,7 +68,7 @@ fn with_map<R>(f: impl FnOnce(&mut Map) -> R) -> R {
 #[cold]
 fn new_map() -> Map {
     // ~1600 symbols exist after boot; 1700 is what 2048 buckets hold
-    let mut m = Map { ids: HashMap::with_capacity_and_hasher(1700, Default::default()), n: 0 };
+    let mut m = Map { ids: HashMap::with_capacity_and_hasher(1700, Default::default()), n: 0, enc_ids: HashMap::default(), encs: HashMap::default() };
     for s in PREDEF { add(&mut m, s.as_bytes()); }
     m
 }
@@ -72,6 +100,8 @@ fn intern_slow(b: &[u8], slot: &AtomicU32) -> Sym {
     slot.store(s.0 + 1, Ordering::Release);
     s
 }
+/// String#to_sym's answer for a String that is no symbol.
+pub const BAD_SYM: Sym = Sym(u32::MAX);
 #[inline] pub fn intern_str(s: &str) -> Sym { intern(s.as_bytes()) }
 #[inline]
 pub fn sym_bytes(s: Sym) -> &'static [u8] {

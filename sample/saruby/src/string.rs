@@ -83,8 +83,20 @@ impl Ctx {
     pub fn str_eq(&self, a: Value, b: Value) -> bool { self.rstring(a).b == self.rstring(b).b }
     #[inline(always)]
     pub fn str_hash(&self, v: Value) -> u64 { crate::astrust::hash_bytes(&self.rstring(v).b) }
+    /// String#to_sym: symbol::BAD_SYM for a broken String of an ASCII-compatible encoding other than UTF-8
+    /// (sym_check_asciionly)
     #[inline(always)]
-    pub fn str_to_sym(&self, v: Value) -> Value { Value::sym(intern(&self.rstring(v).b)) }
+    pub fn str_intern(&self, v: Value) -> Sym {
+        let r = self.rstring(v);
+        if r.enc != ENC_UTF8 { return str_intern_enc(&r.b, r.enc); }
+        intern(&r.b)
+    }
+    #[inline(always)]
+    pub fn str_to_sym(&self, v: Value) -> Value {
+        let r = self.rstring(v);
+        if r.enc != ENC_UTF8 && r.enc != ENC_ASCII { return str_to_sym_enc(&r.b, r.enc); }
+        Value::sym(intern(&r.b))
+    }
     #[inline(always)]
     pub fn str_cmp(&self, a: Value, b: Value) -> std::cmp::Ordering { self.rstring(a).b.cmp(&self.rstring(b).b) }
 
@@ -166,6 +178,24 @@ pub fn str_append_str(c: &mut Ctx, acc: Value, s: Value) -> Result<(), Esc> {
 
 #[inline]
 pub fn is_ascii(b: &[u8]) -> bool { b.is_ascii() }
+
+/// A String in another encoding as a symbol: ASCII-only in an ASCII-compatible encoding is the plain
+/// symbol (US-ASCII), anything else keeps its encoding (rb_str_intern).
+#[cold]
+#[inline(never)]
+fn str_intern_enc(b: &[u8], enc: u8) -> Sym {
+    use crate::builtins::encoding as en;
+    // US-ASCII with high bytes is a symbol of its own, not an error
+    if enc == ENC_ASCII { return if b.is_ascii() { intern(b) } else { crate::symbol::intern_enc(b, ENC_ASCII) }; }
+    if en::ascii_compat(enc) && !b.is_ascii() && !en::is_valid(enc, b) { return crate::symbol::BAD_SYM; }
+    str_to_sym_enc(b, enc).as_sym()
+}
+#[cold]
+#[inline(never)]
+fn str_to_sym_enc(b: &[u8], enc: u8) -> Value {
+    if crate::builtins::encoding::ascii_compat(enc) && is_ascii(b) { return Value::sym(intern(b)); }
+    Value::sym(crate::symbol::intern_enc(b, enc))
+}
 
 pub fn utf8_len(b: &[u8]) -> usize {
     if is_ascii(b) { return b.len(); }

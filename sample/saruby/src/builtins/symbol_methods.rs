@@ -11,7 +11,12 @@ use crate::symbol::sym_bytes;
 use crate::value::*;
 use crate::vm::*;
 
-fn sym_str_v(c: &mut Ctx, v: Value) -> Value { let b = sym_bytes(v.as_sym()); c.str_new_enc(b, if is_ascii(b) { ENC_ASCII } else { ENC_UTF8 }) }
+/// The encoding of a symbol's String: its own (crate::symbol::intern_enc), else US-ASCII or UTF-8.
+pub fn sym_encoding(s: crate::value::Sym) -> u8 {
+    if let Some(e) = crate::symbol::sym_enc(s) { return e; }
+    if is_ascii(sym_bytes(s)) { ENC_ASCII } else { ENC_UTF8 }
+}
+fn sym_str_v(c: &mut Ctx, v: Value) -> Value { let s = v.as_sym(); c.str_new_enc(sym_bytes(s), sym_encoding(s)) }
 
 fn sym_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(sym_str_v(c, s)) }
 fn sym_name(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
@@ -21,11 +26,23 @@ fn sym_name(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
     c.vm().sym_names.borrow_mut().insert(k, v);
     Ok(v)
 }
-fn sym_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.str_new(crate::string::sym_inspect(sym_bytes(s.as_sym())).as_bytes())) }
+fn sym_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+    // a symbol with an encoding of its own is never a plain name: ":" + String#inspect (rb_str_symname_p)
+    if crate::symbol::sym_enc(s.as_sym()).is_some() {
+        let st = sym_str_v(c, s);
+        let i = inspect_value(c, st)?;
+        let mut out = b":".to_vec(); out.extend_from_slice(c.str_bytes(i));
+        return Ok(c.str_new(&out));
+    }
+    Ok(c.str_new(crate::string::sym_inspect(sym_bytes(s.as_sym())).as_bytes()))
+}
 fn sym_to_proc(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { crate::builtins::proc::sym_to_proc(c, s) }
 fn sym_eq(_c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(s == a[0])) }
 fn sym_to_sym(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(s) }
-fn sym_length(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(utf8_len(sym_bytes(s.as_sym())) as i64)) }
+fn sym_length(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+    if crate::symbol::sym_enc(s.as_sym()).is_some() { return via_str(c, s, crate::builtins::string_methods::s_length, a, b); }
+    Ok(Value::fix(utf8_len(sym_bytes(s.as_sym())) as i64))
+}
 fn sym_cmp(_c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     if !a[0].is_sym() { return Ok(NIL); }
     Ok(Value::fix(sym_bytes(s.as_sym()).cmp(sym_bytes(a[0].as_sym())) as i64))
@@ -54,10 +71,7 @@ fn sym_all(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     for i in 1..crate::symbol::all_count() { c.ary_push(a, Value::sym(Sym(i as u32))); }
     Ok(a)
 }
-fn sym_encoding(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let b = sym_bytes(s.as_sym());
-    crate::builtins::misc::encoding_value(c, if is_ascii(b) { ENC_ASCII } else { ENC_UTF8 })
-}
+fn sym_encoding_m(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { crate::builtins::misc::encoding_value(c, sym_encoding(s.as_sym())) }
 
 pub fn init(c: &mut Ctx, k: Value) {
     let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, k, n, f, a);
@@ -67,7 +81,7 @@ pub fn init(c: &mut Ctx, k: Value) {
     d(c, "swapcase", sym_swapcase, -1); d(c, "succ", sym_succ, 0); d(c, "next", sym_succ, 0); d(c, "[]", sym_aref, -1); d(c, "slice", sym_aref, -1);
     d(c, "start_with?", sym_start_with, -1); d(c, "end_with?", sym_end_with, -1); d(c, "=~", sym_match, 1); d(c, "match", sym_match_m, -1);
     d(c, "match?", sym_match_p, -1); d(c, "empty?", sym_empty, 0); d(c, "casecmp", sym_casecmp, 1); d(c, "casecmp?", sym_casecmp_p, 1);
-    d(c, "encoding", sym_encoding, 0); d(c, "==", sym_eq, 1); d(c, "===", sym_eq, 1); d(c, "intern", sym_to_sym, 0);
+    d(c, "encoding", sym_encoding_m, 0); d(c, "==", sym_eq, 1); d(c, "===", sym_eq, 1); d(c, "intern", sym_to_sym, 0);
     define_singleton_cfunc(c, k, "all_symbols", sym_all, 0);
     let _ = inspect_str;
 }
