@@ -82,7 +82,7 @@ fn bo_singleton_method_added(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> 
 fn k_class(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(real_class_of(c, slf)) }
 fn k_singleton_class(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if slf.is_fixnum() || slf.is_sym() || slf.is_flonum() || is_bignum(slf) || is_heap_float(slf) { return type_err(c, "can't define singleton"); }
-    if obj_flags(slf) & FL_CHILLED_ANY != 0 { crate::vm::unchill(c, slf)?; }
+    if slf.is_heap() && obj_flags(slf) & FL_CHILLED_ANY != 0 { crate::vm::unchill(c, slf)?; }
     Ok(singleton_class(c, slf))
 }
 fn k_frozen(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(is_frozen(slf))) }

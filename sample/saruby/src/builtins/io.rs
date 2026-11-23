@@ -63,7 +63,9 @@ pub fn raise_errno_at(c: &mut Ctx, no: i64, pre: &str, path: &[u8]) -> Esc {
     let mut m = crate::builtins::exception::errno_text(Value::fix(no)).into_bytes();
     if !pre.is_empty() || !path.is_empty() { m.extend_from_slice(b" @ "); m.extend_from_slice(pre.as_bytes()); m.extend_from_slice(path); }
     let e = make_exception(c, k, "");
-    let ms = c.str_new(&m);
+    // a path that is not UTF-8 makes the message BINARY (CRuby appends the path in its encoding)
+    let enc = if std::str::from_utf8(&m).is_ok() { crate::object::ENC_UTF8 } else { crate::object::ENC_BINARY };
+    let ms = c.str_new_enc(&m, enc);
     ivar_set_raw(c, e, s::mesg, ms);
     ivar_set_raw(c, e, s::errno, Value::fix(no));
     raise_exc(c, e)

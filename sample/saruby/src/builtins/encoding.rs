@@ -692,10 +692,8 @@ pub fn init(c: &mut Ctx) {
         }
     }
     let (u0, u1, u2) = char::UNICODE_VERSION;
-    for (n, v) in [("UNICODE_VERSION", format!("{}.{}.{}", u0, u1, u2)), ("UNICODE_EMOJI_VERSION", format!("{}.{}", u0, u1))] {
-        let s = c.str_new_enc(v.as_bytes(), ENC_ASCII); obj_set_flags(s, FL_FROZEN);
-        const_set(c, ek, intern(n.as_bytes()), s);
-    }
+    let uv = c.str_new_enc(format!("{}.{}.{}", u0, u1, u2).as_bytes(), ENC_ASCII); obj_set_flags(uv, FL_FROZEN);
+    const_set(c, ek, intern(b"UNICODE_VERSION"), uv);
     define_cfunc(c, ek, "to_s", enc_to_s, 0);
     define_cfunc(c, ek, "name", enc_to_s, 0);
     define_cfunc(c, ek, "inspect", enc_inspect, 0);
