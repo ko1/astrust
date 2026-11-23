@@ -87,6 +87,7 @@ and exits when it ends (`Thread.current == Thread.main` in the child, as CRuby).
 |---|---|
 | `Kernel#sleep` (with or without other threads), `Thread.stop`, `Mutex#sleep` | `Timer` (deadline or none) |
 | `Thread#join(t)` / `#value` | `Wake(thread)`, notified at thread end |
+| `Ractor.receive`, `Ractor::Port#receive`, `Ractor#join` / `#value`, `Ractor.select` (docs/ractor.md) | `Wake(main Ractor's address \| 2)`, notified by every send, close and Ractor end; not deadlockable (CRuby's Ractor waits hang) |
 | `Mutex#lock` / `Monitor#enter`, `ConditionVariable#wait`, `Queue#pop`, `SizedQueue#push` | `Wake(mutex / cv token / queue)` with the timeout as deadline |
 | IO reads with an empty buffer (`read`, `readpartial`, `gets`, `getc`, `each_line`, …) on a fd that is not ready | `Read` into a 64 KiB owned buffer, appended to the IO's read buffer |
 | buffered writes / flush to a fd that is not writable | `Write` of ≤ 4096 bytes (POLLOUT promises PIPE_BUF) |

@@ -12,7 +12,7 @@ interpreter thread, so **nothing runs in parallel**. What CRuby makes observable
 | CRuby 4.0 | saruby |
 |---|---|
 | `rb_ractor_t` (id, name, loc, threads, ports, monitors, value, local storage) | `RRactor` (RData); a thread knows its Ractor (`RThread.ractor`, nil = main) |
-| Ractor.new: `rb_proc_isolate_bang` (outer variables / `yield` → ArgumentError), self = the Ractor, arguments sent to the default port | the same; outer variables come from the compiler (`Iseq::outer_vars`, compile.rs: every block strictly inside the owner of a variable it reads or writes, `yield` marks every enclosing block; a read in void context is no use, as CRuby's compiler drops it; listed in ID order ≈ first appearance in the source) |
+| Ractor.new: `rb_proc_isolate_bang` (outer variables / `yield` → ArgumentError), self = the Ractor, arguments sent to the default port | the same; outer variables come from the compiler (`Iseq::outer_vars`, compile.rs `outer_rec`: every block strictly inside the owner of a variable it reads or writes; `yield` marks every enclosing block; a read whose value is unused does not count, as CRuby's compiler drops it; listed by prism constant id ≈ CRuby's ID order). Collected only for sources whose constant pool names `Ractor` (see cost below) |
 | new Ractor runs at once on another core | it gets a first turn at once (`Thread.pass`), so `inspect` shows `blocking` / `running`, not `created` |
 | Port: owner + id, queue per port, `receive` only by the owner, `close` only by the owner, queued messages stay receivable after close | the same (`PortQ`, a VecDeque traced by the GC) |
 | Ractor#join / #value through a monitor port; `value` only for the successor; exception → RemoteError (cause, `#ractor`) | waits on the Ractor's end directly; join / value / select still use up a port id, so ids in `inspect` match |
@@ -60,14 +60,23 @@ and sit on paths that are already slow:
 | constant assignment of a non-shareable value | `srb_cdecl`, `Module#const_set` |
 | global variables except the Ractor-local ones (`$~ $_ $! $@ $1.. $stdout $stderr $stdin $> $/ $VERBOSE $DEBUG $$ $? ...`) | `srb_gvar_get / set` (node_gvar is always a call), `global_variables` |
 | class variables | `srb_cvar_get / set`, `class_variable_get / set` |
-| class / module ivars: non-shareable read, any write | `srb_ivar_get` (node_ivar's miss path: a class's ivars never hit the object cache), `srb_ivar_set`, attr reader / writer on a singleton class (`invoke_untraced`; the attr fast path is for plain objects only), `instance_variable_get / set` |
+| class / module ivars: non-shareable read, any write | writes: `srb_ivar_set`; reads: attr reader on a singleton class (`ractor::attr_get`, out of line from `invoke_untraced`; the attr fast path is for plain objects only) and `instance_variable_get` raise at once. `@x` itself (node_ivar's miss path: a class's ivars never hit the object cache) is `&Ctx -> Value` and cannot raise: it records the read and sets the interrupt bit, so the error is raised at the Ractor's next check point (the next call site, loop back edge, or the end of its block), before the value reaches a method call. Making that path return `RV` cost poly 1.4-2 % (baked code) |
+
+## Cost (trial `2026-11-23-saruby-ractor`, instruction counts, CODEGEN_UNITS=1)
+
+The 15 icount benchmarks, interp and AOT, startup and optcarrot are in the trial's README. What did not
+fit the 0.3 % budget and was changed: an `RV` from node_ivar's miss path (poly AOT +2.1 %); outer variables
+collected in `resolve()` for every block (startup +1.8 %); any arm added to `analyze_rec` (startup +0.5 %).
 
 ## Differences from CRuby 4.0.2 (known)
 
 - No parallelism; a Ractor is preempted only at the green threads' check points.
 - `$stdout` / `$stderr` / `$VERBOSE` are not per-Ractor objects; `require` in a non-main Ractor runs there.
-- A method `def x = @x` runs without a frame (compile.rs `leaf_body`): an isolation error raised in it
-  has no line for that method in its backtrace.
+- A class ivar read with `@x` by a non-main Ractor raises at the next check point, not at the read
+  (the value is held until then; no method can be called with it first). Its backtrace starts there.
+- The outer-variable check needs the source of the block to name `Ractor`: `Ractor.new(&pr)` with a `pr`
+  made in a file that never mentions Ractor is not rejected, and `make_shareable` of such a proc checks
+  only its self.
 - `p moved_obj` raises MovedError (CRuby: NoMethodError, its C-level funcall skips the boot-time
   `method_missing`).
 - Copying a Mutex raises (`allocator undefined`; CRuby makes a new Mutex); `Ractor::Port#dup` says
