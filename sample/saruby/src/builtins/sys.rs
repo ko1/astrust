@@ -201,6 +201,35 @@ pub fn getrlimit(res: c_int, r: &mut Rlimit) -> c_int { unsafe { ffi::getrlimit(
 pub fn setrlimit(res: c_int, r: &Rlimit) -> c_int { unsafe { ffi::setrlimit(res, r) } }   // SAFETY: r is live
 pub fn times(t: &mut Tms) -> i64 { unsafe { ffi::times(t) } }   // SAFETY: t is live
 
+// ---- credentials, priority, chroot / fchdir (Process.uid= etc., Dir.chroot / fchdir) ---------
+mod ffi_cred {
+    extern "C" {
+        // glibc's set*id apply to every thread of the process (a raw syscall changes only the caller)
+        pub fn setresuid(r: u32, e: u32, s: u32) -> i32;
+        pub fn setresgid(r: u32, e: u32, s: u32) -> i32;
+        pub fn setgroups(n: usize, list: *const u32) -> i32;
+        pub fn initgroups(user: *const i8, g: u32) -> i32;
+    }
+}
+#[cfg(target_arch = "x86_64")]
+mod nr_cred { pub const GETGROUPS: i64 = 115; pub const GETRESUID: i64 = 118; pub const GETRESGID: i64 = 120; pub const GETPRIORITY: i64 = 140; pub const SETPRIORITY: i64 = 141; pub const CHROOT: i64 = 161; pub const FCHDIR: i64 = 81; }
+#[cfg(target_arch = "aarch64")]
+mod nr_cred { pub const GETGROUPS: i64 = 158; pub const GETRESUID: i64 = 148; pub const GETRESGID: i64 = 150; pub const GETPRIORITY: i64 = 141; pub const SETPRIORITY: i64 = 140; pub const CHROOT: i64 = 51; pub const FCHDIR: i64 = 50; }
+// SAFETY (each): integers, or a live slice / array whose length is the count passed.
+pub fn setresuid(r: u32, e: u32, s: u32) -> c_int { unsafe { ffi_cred::setresuid(r, e, s) } }
+pub fn setresgid(r: u32, e: u32, s: u32) -> c_int { unsafe { ffi_cred::setresgid(r, e, s) } }
+pub fn setgroups(list: &[u32]) -> c_int { unsafe { ffi_cred::setgroups(list.len(), list.as_ptr()) } }
+pub fn initgroups(user: &CStr, g: u32) -> c_int { unsafe { ffi_cred::initgroups(user.as_ptr(), g) } }
+/// getgroups(2) into `list` (empty: the count only).
+pub fn getgroups(list: &mut [u32]) -> c_int { unsafe { ffi::syscall(nr_cred::GETGROUPS, list.len() as i64, list.as_mut_ptr()) as c_int } }
+pub fn getresuid(ids: &mut [u32; 3]) -> c_int { let p = ids.as_mut_ptr(); unsafe { ffi::syscall(nr_cred::GETRESUID, p, p.add(1), p.add(2)) as c_int } }
+pub fn getresgid(ids: &mut [u32; 3]) -> c_int { let p = ids.as_mut_ptr(); unsafe { ffi::syscall(nr_cred::GETRESGID, p, p.add(1), p.add(2)) as c_int } }
+/// The kernel's getpriority: 20 - nice (1..40), or -1 and errno.
+pub fn getpriority_raw(which: c_int, who: c_int) -> c_int { unsafe { ffi::syscall(nr_cred::GETPRIORITY, which as i64, who as i64) as c_int } }
+pub fn setpriority(which: c_int, who: c_int, prio: c_int) -> c_int { unsafe { ffi::syscall(nr_cred::SETPRIORITY, which as i64, who as i64, prio as i64) as c_int } }
+pub fn chroot(p: &CStr) -> c_int { unsafe { ffi::syscall(nr_cred::CHROOT, p.as_ptr()) as c_int } }
+pub fn fchdir(fd: c_int) -> c_int { unsafe { ffi::syscall(nr_cred::FCHDIR, fd as i64) as c_int } }
+
 // ---- signals and time -----------------------------------------------------------------------
 /// Disposition for `signal`.
 pub enum SigAction { Default, Ignore, Catch(extern "C" fn(c_int)) }

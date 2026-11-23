@@ -559,7 +559,13 @@ fn k_exit_bang(_c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
 }
 
 pub fn k_abort(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
-    let msg = if let Some(&m) = args.first() { let m = expect_str(c, m)?; let mut b = c.str_bytes(m).to_vec(); b.push(b'\n'); err_write(&b); m } else { c.str_new(b"exit") };
+    let msg = if let Some(&m) = args.first() {
+        let m = expect_str(c, m)?;
+        // rb_f_abort: $stderr.puts(msg)
+        let se = *c.vm().globals.borrow().get(&intern(b"$stderr")).unwrap_or(&c.vm().stderr.get());
+        if se == c.vm().stderr.get() { let mut b = c.str_bytes(m).to_vec(); b.push(b'\n'); err_write(&b); } else { funcall(c, se, intern(b"puts"), &[m], std::ptr::null())?; }
+        m
+    } else { c.str_new(b"exit") };
     let e = new_object(c, c.vm().c_system_exit.get());
     ivar_set_raw(c, e, s::mesg, msg);
     ivar_set_raw(c, e, s::status, Value::fix(1));

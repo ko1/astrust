@@ -1876,7 +1876,7 @@ fn io_s_popen(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
         // the pipe goes first so err: [:child, :out] refers to it
         if rd { spec.redirect.insert(0, (1, pr[1])); }
         if wr { spec.redirect.insert(0, (0, pw[0])); }
-        crate::builtins::process::spawn_exec(c, &spec)?
+        crate::builtins::process::spawn_exec(c, &mut spec)?
     };
     if rd { sys::close(pr[1]); } if wr { sys::close(pw[0]); }
     if pid < 0 { return Err(raise_errno(c, sys::errno(), "fork(2)")); }
