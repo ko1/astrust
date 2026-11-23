@@ -54,15 +54,22 @@ pub const R_NIL_EQQ: u64 = 1 << 34;
 pub const R_TRUE_EQQ: u64 = 1 << 35;
 pub const R_FALSE_EQQ: u64 = 1 << 36;
 pub const R_STR_EQQ: u64 = 1 << 37;
+pub const R_INT_NEQ: u64 = 1 << 38;
+pub const R_FLO_NEQ: u64 = 1 << 39;
+pub const R_STR_EQ: u64 = 1 << 40;
+// ! of nil / true / false / Integer / Float / Symbol (node_not decides it for them without a lookup)
+pub const R_IMM_NOT: u64 = 1 << 41;
+// to_s of Integer / Symbol / nil in an interpolation (srb_tostr, srb_dstr_append)
+pub const R_IMM_TO_S: u64 = 1 << 42;
 
 pub static REDEF: AtomicU64 = AtomicU64::new(0);
 pub static BOOTED: AtomicBool = AtomicBool::new(false);
 #[inline(always)] pub fn booted() -> bool { BOOTED.load(Relaxed) }
 
-// Integer#+ - * / % < <= > >= == & | << >> ^: the fixnum paths of operator nodes test all of them at once
+// Integer#+ - * / % < <= > >= == != & | << >> ^: the fixnum paths of operator nodes test all of them at once
 // (c.int_redef()), so that one test covers every operator of a straight run of baked code
 pub const R_INT_ALL: u64 = R_INT_PLUS | R_INT_MINUS | R_INT_MUL | R_INT_DIV | R_INT_MOD | R_INT_LT | R_INT_LE | R_INT_GT
-    | R_INT_GE | R_INT_EQ | R_INT_AND | R_INT_OR | R_INT_LSHIFT | R_INT_RSHIFT | R_INT_XOR;
+    | R_INT_GE | R_INT_EQ | R_INT_NEQ | R_INT_AND | R_INT_OR | R_INT_LSHIFT | R_INT_RSHIFT | R_INT_XOR;
 // === of the immediate patterns (node_when_lit, eqq_imm): one test, as CRuby's opt_case_dispatch
 pub const R_EQQ_IMM: u64 = R_INT_EQQ | R_SYM_EQQ | R_NIL_EQQ | R_TRUE_EQQ | R_FALSE_EQQ;
 
@@ -91,14 +98,18 @@ pub fn redef_note(c: &Ctx, klass: Value, mid: Sym) -> bool {
         (int, s::modulo, R_INT_MOD), (int, s::lt, R_INT_LT), (int, s::le, R_INT_LE), (int, s::gt, R_INT_GT),
         (int, s::ge, R_INT_GE), (int, s::eq, R_INT_EQ), (int, s::and, R_INT_AND), (int, s::or, R_INT_OR),
         (int, s::ltlt, R_INT_LSHIFT), (int, s::gtgt, R_INT_RSHIFT), (int, s::xor, R_INT_XOR), (int, s::eqq, R_INT_EQQ),
+        (int, s::neq, R_INT_NEQ),
         (flo, s::plus, R_FLO_PLUS), (flo, s::minus, R_FLO_MINUS), (flo, s::mul, R_FLO_MUL), (flo, s::div, R_FLO_DIV),
         (flo, s::lt, R_FLO_LT), (flo, s::le, R_FLO_LE), (flo, s::gt, R_FLO_GT), (flo, s::ge, R_FLO_GE),
-        (flo, s::eq, R_FLO_EQ), (flo, s::pow, R_FLO_POW),
+        (flo, s::eq, R_FLO_EQ), (flo, s::neq, R_FLO_NEQ), (flo, s::pow, R_FLO_POW),
         (ary, s::ltlt, R_ARY_LTLT), (ary, s::aref, R_ARY_AREF), (ary, s::aset, R_ARY_ASET),
         (hash, s::aref, R_HASH_AREF), (hash, s::aset, R_HASH_ASET),
-        (str, s::ltlt, R_STR_LTLT), (str, s::eqq, R_STR_EQQ),
+        (str, s::ltlt, R_STR_LTLT), (str, s::eqq, R_STR_EQQ), (str, s::eq, R_STR_EQ),
         (nil, s::eq, R_IMM_EQ), (tru, s::eq, R_IMM_EQ), (fal, s::eq, R_IMM_EQ), (sym, s::eq, R_IMM_EQ),
         (nil, s::eqq, R_NIL_EQQ), (tru, s::eqq, R_TRUE_EQQ), (fal, s::eqq, R_FALSE_EQQ), (sym, s::eqq, R_SYM_EQQ),
+        (nil, s::not, R_IMM_NOT), (tru, s::not, R_IMM_NOT), (fal, s::not, R_IMM_NOT), (int, s::not, R_IMM_NOT),
+        (flo, s::not, R_IMM_NOT), (sym, s::not, R_IMM_NOT),
+        (int, s::to_s, R_IMM_TO_S), (sym, s::to_s, R_IMM_TO_S), (nil, s::to_s, R_IMM_TO_S),
     ];
     for &(k, m, f) in table {
         if m == mid && (klass == k || ancestors(c, k).contains(&klass)) { REDEF.fetch_or(f, Relaxed); }
@@ -194,7 +205,7 @@ pub fn srb_dstr_append(c: &mut Ctx, acc: Value, v: Value) -> Result<(), Esc> {
         c.malloc_increase(n);
         return Ok(());
     }
-    if v.is_fixnum() {
+    if v.is_fixnum() && !redef(R_IMM_TO_S) {
         // an empty acc would take the Integer string's US-ASCII encoding: left to the slow path
         let a = c.rstring_mut(acc);
         if !a.b.is_empty() && a.enc <= ENC_ASCII {
@@ -217,9 +228,11 @@ pub fn srb_tostr(c: &mut Ctx, v: Value) -> RV {
     if crate::vm::refinements_on() {
         if let Some(r) = funcall_refined(c, std::ptr::null(), v, s::to_s, &[], std::ptr::null(), CF_FCALL) { let r = r?; if is_string(r) { return Ok(r); } }
     }
-    if v.is_fixnum() { return Ok(c.str_new(v.as_fix().to_string().as_bytes())); }
-    if v.is_sym() { return Ok(c.str_new(crate::symbol::sym_bytes(v.as_sym()))); }
-    if v == NIL { return Ok(c.str_new(b"")); }
+    if !redef(R_IMM_TO_S) {
+        if v.is_fixnum() { return Ok(c.str_new(v.as_fix().to_string().as_bytes())); }
+        if v.is_sym() { return Ok(c.str_new(crate::symbol::sym_bytes(v.as_sym()))); }
+        if v == NIL { return Ok(c.str_new(b"")); }
+    }
     let r = funcall(c, v, s::to_s, &[], std::ptr::null())?;
     if is_string(r) { return Ok(r); }
     let t = crate::builtins::kernel::any_to_s_str(c, v);
@@ -970,7 +983,7 @@ pub fn srb_binop(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: Pos, cc: &OpCc
 
 #[cold]
 pub fn srb_eq(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &OpCc) -> RV {
-    if is_string(a) && is_string(b) && obj_klass(a) == vm().c_string.get() { return Ok(Value::bool(c.str_eq(a, b))); }
+    if is_string(a) && is_string(b) && obj_klass(a) == vm().c_string.get() && !redef(R_STR_EQ) { return Ok(Value::bool(c.str_eq(a, b))); }
 
     srb_binop(c, a, b, s::eq, line, cc)
 }
