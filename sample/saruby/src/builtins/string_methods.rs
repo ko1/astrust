@@ -302,6 +302,7 @@ cfn!(s_aset, |c, slf, a, b_| {
         return Ok(val);
     }
     if is_string(a[0]) {
+        compat(c, slf, a[0])?;
         let p = match find_on_boundary(c, slf, c.str_bytes(a[0]), 0) { Some(p) => p, None => return err(c, c.vm().c_index_error.get(), "string not matched") };
         let beg = byte_to_char(c, slf, p) as i64;
         let ln = c.str_char_len(a[0]) as i64;
@@ -504,6 +505,7 @@ fn reg_rsearch(c: &mut Ctx, re: Value, slf: Value, bs: usize) -> Result<Option<(
 }
 /// rb_str_rindex on bytes: the last hit of `o` starting at or before byte `upto` on a character boundary.
 fn rindex_bytes(c: &Ctx, slf: Value, o: Value, upto: usize) -> Option<usize> {
+    if !crate::builtins::encoding::is_valid(c.str_enc(o), c.str_bytes(o)) { return None; }   // a broken needle never matches
     let mut upto = upto;
     loop {
         let p = rfind_bytes(c.str_bytes(slf), c.str_bytes(o), upto)?;
@@ -659,16 +661,17 @@ fn lines_of(v: &[u8], enc: u8, ls: &LineSep, chomp: bool) -> Vec<Vec<u8>> {
         if v[st..e].ends_with(rs) { e -= rs.len(); if v[st..e].ends_with(&ls.cr) { e -= ls.cr.len(); } }
         e
     };
-    let mut subptr = 0;
-    while subptr < len {
-        let Some(hit) = find_bytes(v, rs, subptr) else { break };
-        // a hit inside a character: search again from the next character head
+    let (mut subptr, mut from) = (0, 0);
+    while from < len {
+        let Some(hit) = find_bytes(v, rs, from) else { break };
+        // a hit inside a character: search again from the next character head (CRuby also moves the
+        // line start there, dropping those bytes; the line keeps them here)
         let mut adj = subptr; while adj < hit { adj += clen(adj).max(1); }
-        if adj != hit { subptr = adj; continue; }
+        if adj != hit { from = adj; continue; }
         let next = hit + rs.len();
         let e = if !chomp { next } else if ls.nl { chomp_nl(subptr, next) } else { hit };
         out.push(v[subptr..e].to_vec());
-        subptr = next;
+        subptr = next; from = next;
     }
     if subptr < len {
         let mut e = len;
@@ -1357,7 +1360,8 @@ cfn!(s_partition, |c, slf, a, b_| {
     } else {
         let sep = get_pat(c, a[0])?;
         compat(c, slf, sep)?;
-        find_on_boundary(c, slf, c.str_bytes(sep), 0).map(|i| (i, i + c.str_len(sep), sep))
+        if !crate::builtins::encoding::is_valid(c.str_enc(sep), c.str_bytes(sep)) { None }
+        else { find_on_boundary(c, slf, c.str_bytes(sep), 0).map(|i| (i, i + c.str_len(sep), sep)) }
     };
     Ok(match found {
         Some((ms, me, sep)) => part3(c, slf, ms, me, sep),

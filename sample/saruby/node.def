@@ -1168,6 +1168,8 @@ node_opt_ltlt(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, l
         // the common case of String#<< (a String of the same encoding onto a modifiable one: neither frozen nor
         // locked, one test as str_modify); the rest, which may raise, is String#<<
         if is_string(b) && obj_flags(a) & FL_MODIFY_CHECK == 0 && c.str_enc(a) == c.str_enc(b) { c.str_append_same_enc(a, b); return Ok(a); }
+        // a chilled literal's first write: the warning (if on), then the same append
+        if is_string(b) && obj_flags(a) & (FL_FROZEN | FL_TMPLOCK) == 0 && c.str_enc(a) == c.str_enc(b) { line.store(c.frame_mut()); crate::vm::unchill(c, a)?; c.str_append_same_enc(a, b); return Ok(a); }
         line.store(c.frame_mut());
         return crate::builtins::string_methods::s_ltlt(c, a, &[b], Blk::NONE);
     }

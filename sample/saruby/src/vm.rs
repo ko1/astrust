@@ -1216,6 +1216,7 @@ pub fn unchill(c: &mut Ctx, v: Value) -> Result<(), Esc> {
     let f = obj_flags(v);
     if f & FL_CHILLED_ANY == 0 { return Ok(()); }
     obj_clear_flags(v, FL_CHILLED_ANY);
+    if c.vm().verbose.get() == NIL || !crate::builtins::misc::warning_category_enabled(0) { return Ok(()); }
     let m = if f & FL_CHILLED_SYM != 0 { format!("string returned by :{}.to_s will be frozen in the future", String::from_utf8_lossy(c.str_bytes(v))) }
         else { "literal string will be frozen in the future (run with --debug-frozen-string-literal for more information)".to_string() };
     crate::builtins::kernel::warn_deprecated(c, &m)

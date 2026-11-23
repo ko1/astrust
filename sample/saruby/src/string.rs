@@ -88,8 +88,9 @@ impl Ctx {
     pub fn str_len(&self, v: Value) -> usize { self.rstring(v).b.len() }
     #[inline(always)]
     pub fn str_eq(&self, a: Value, b: Value) -> bool {
+        // the encodings first: nothing stays live across the byte compare
         let (x, y) = (self.rstring(a), self.rstring(b));
-        x.b == y.b && (x.enc == y.enc || str_comparable(&x.b, x.enc, y.enc))
+        if x.enc == y.enc { x.b == y.b } else { str_eq_enc(&x.b, &y.b, x.enc, y.enc) }
     }
     #[inline(always)]
     pub fn str_hash(&self, v: Value) -> u64 { crate::astrust::hash_bytes(&self.rstring(v).b) }
@@ -178,6 +179,9 @@ impl std::ops::Deref for ByteSnap {
     fn deref(&self) -> &[u8] { if self.n <= ByteSnap::INLINE { &self.buf[..self.n] } else { &self.heap } }
 }
 
+#[cold]
+#[inline(never)]
+fn str_eq_enc(a: &[u8], b: &[u8], ea: u8, eb: u8) -> bool { a == b && str_comparable(a, ea, eb) }
 /// rb_str_comparable for two Strings holding the same bytes `b` in encodings `ea` and `eb`.
 #[cold]
 pub fn str_comparable(b: &[u8], ea: u8, eb: u8) -> bool {
