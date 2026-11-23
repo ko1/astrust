@@ -1258,13 +1258,26 @@ impl<'a> Compiler<'a> {
                 return self.send_sym(recv, mid, self.sym_lit(unescaped, f), &args[1..], flags, line);
             }
         }
+        // [a, b].max / .min of a literal built at run time (no splat): CRuby's opt_newarray_send
+        if (mid == s::max || mid == s::min) && args.is_empty() && block.is_none() && !safe {
+            if let Some(PNode { kind: Kind::ArrayNode { elements }, flags: rf, .. }) = recv {
+                let st = |e: &PNode| e.flags & pa::FLAG_STATIC_LITERAL != 0;
+                // a run of 0x40 static elements is built by duparray + concat (pm_compile_array_node)
+                let dup_run = (0..elements.len()).any(|i| i + 0x40 < elements.len() && (i == 0 || !st(&elements[i - 1])) && elements[i..i + 0x40].iter().all(st));
+                if rf & pa::FLAG_STATIC_LITERAL == 0 && elements.len() < 0x100 && !dup_run
+                    && !elements.iter().any(|e| matches!(e.kind, Kind::SplatNode { .. })) {
+                    let a = self.array(elements);
+                    return ALLOC_node_newarray_minmax(a, (mid == s::max) as u32, line);
+                }
+            }
+        }
         // receiver
         let sl = if safe { Some(self.hidden_slot()) } else { None };
         let recv_node = match recv {
             // "lit".freeze / -"lit": the receiver is the interned literal
             Some(PNode { kind: Kind::StringNode { unescaped }, flags: rf, .. }) if args.is_empty() && block.is_none() && (mid == s::freeze || mid == s::uminus) => {
                 let enc = self.lit_enc(*rf);
-                ALLOC_node_fstr(lstr(unescaped), enc)
+                ALLOC_node_fstr_recv(lstr(unescaped), enc, (mid == s::uminus) as u32)
             }
             Some(r) => self.c(r),
             None => ALLOC_node_self(),
@@ -1466,18 +1479,26 @@ impl<'a> Compiler<'a> {
                 for w in conds.iter().rev() {
                     let body = bodies.pop().unwrap();
                     if let Kind::WhenNode { conditions, .. } = &w.kind {
-                        let mut pats = vec![]; let mut kinds = vec![];
+                        // one test per run of patterns on one line: === raises from its pattern's line
+                        let mut groups: Vec<(u32, Vec<NodePtr>, Vec<u8>)> = vec![];
                         for cnd in conditions {
+                            let l = self.line(cnd.loc);
+                            if groups.last().is_none_or(|g| g.0 != l) { groups.push((l, vec![], vec![])); }
+                            let g = groups.last_mut().unwrap();
                             match &cnd.kind {
-                                Kind::SplatNode { expression: Some(x) } => { pats.push(self.c(x)); kinds.push(1u8); }
-                                _ => { pats.push(self.c(cnd)); kinds.push(0); }
+                                Kind::SplatNode { expression: Some(x) } => { g.1.push(self.c(x)); g.2.push(1u8); }
+                                _ => { g.1.push(self.c(cnd)); g.2.push(0); }
                             }
                         }
-                        let test = match lit_imm(&pats, &kinds) {
-                            Some(v) => ALLOC_node_when_lit(sl, v),
-                            None => ALLOC_node_when(sl, leak(pats), lstr(&kinds)),
-                        };
-                        tail = ALLOC_node_if(test, body, tail);
+                        let mut test: Option<NodePtr> = None;
+                        for (l, pats, kinds) in groups.into_iter().rev() {
+                            let t = match lit_imm(&pats, &kinds) {
+                                Some(v) => ALLOC_node_when_lit(sl, v, l),
+                                None => ALLOC_node_when(sl, leak(pats), lstr(&kinds), l),
+                            };
+                            test = Some(match test { None => t, Some(rest) => ALLOC_node_or(t, rest) });
+                        }
+                        tail = ALLOC_node_if(test.unwrap_or_else(ALLOC_node_false), body, tail);
                     }
                 }
                 self.seq(vec![set, tail])
@@ -1554,10 +1575,11 @@ impl<'a> Compiler<'a> {
     /// `pat === subject` for a value pattern.
     fn eqq_pattern(&mut self, p: &PNode, sl: u32) -> NodePtr {
         let v = self.c(p);
-        if self.pm_err.is_none() { return self.eqq_test(v, sl); }
+        let line = self.line(p.loc);
+        if self.pm_err.is_none() { return self.eqq_test(v, sl, line); }
         // keep the pattern value for the message (evaluated once)
         let psl = self.hidden_slot();
-        let t = self.eqq_test(ALLOC_node_lasgn(psl, v), sl);
+        let t = self.eqq_test(ALLOC_node_lasgn(psl, v), sl, line);
         self.pm_fail(t, PM_EQQ, vec![ALLOC_node_lvar(psl), ALLOC_node_lvar(sl)])
     }
 
@@ -1753,8 +1775,8 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn eqq_test(&mut self, pat: NodePtr, sl: u32) -> NodePtr {
-        ALLOC_node_when(sl, leak(vec![pat]), lstr(&[0]))
+    fn eqq_test(&mut self, pat: NodePtr, sl: u32, line: u32) -> NodePtr {
+        ALLOC_node_when(sl, leak(vec![pat]), lstr(&[0]), line)
     }
     fn and_all(&mut self, v: Vec<NodePtr>) -> NodePtr {
         let mut it = v.into_iter().rev();
@@ -2150,7 +2172,7 @@ fn has_lit_cache(body: NodePtr) -> bool {
     let mut d = String::new();
     dump_node(&mut d, body);
     d.split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
-        .any(|w| matches!(w, "node_fstr" | "node_regex" | "node_dregex" | "node_biglit" | "node_range_lit"))
+        .any(|w| matches!(w, "node_fstr" | "node_fstr_recv" | "node_regex" | "node_dregex" | "node_biglit" | "node_range_lit"))
 }
 
 fn leaf_body(body: NodePtr) -> bool {

@@ -67,6 +67,17 @@ fn DUMP_node_fstr(out: &mut String, n: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_fstr_recv(out: &mut String, n: NodePtr) {
+    let u = node_u::<node_fstr_recv_struct>(n);
+    out.push_str("(node_fstr_recv");
+    out.push(' '); out.push_str(&format!("{:?}", String::from_utf8_lossy(u.s)));
+    out.push(' '); out.push_str(&format!("{:?}", u.enc));
+    out.push(' '); out.push_str(&format!("{:?}", u.um));
+    out.push(' '); out.push_str("<lc>");
+    out.push(')');
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_dstr(out: &mut String, n: NodePtr) {
     let u = node_u::<node_dstr_struct>(n);
     out.push_str("(node_dstr");
@@ -419,6 +430,17 @@ fn DUMP_node_or(out: &mut String, n: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_newarray_minmax(out: &mut String, n: NodePtr) {
+    let u = node_u::<node_newarray_minmax_struct>(n);
+    out.push_str("(node_newarray_minmax");
+    out.push(' '); dump_node(out, u.a);
+    out.push(' '); out.push_str(&format!("{:?}", u.mx));
+    out.push(' '); out.push_str(&format!("{:?}", (*node_head_line(n))));
+    out.push(' '); out.push_str("<cc>");
+    out.push(')');
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_not(out: &mut String, n: NodePtr) {
     let u = node_u::<node_not_struct>(n);
     out.push_str("(node_not");
@@ -541,6 +563,7 @@ fn DUMP_node_when(out: &mut String, n: NodePtr) {
     out.push(' '); out.push_str(&format!("{:?}", u.subj_slot));
     out.push(' '); out.push('['); for (i, x) in u.pats.iter().enumerate() { if i > 0 { out.push(' '); } dump_node(out, *x); } out.push(']');
     out.push(' '); out.push_str(&format!("{:?}", String::from_utf8_lossy(u.kinds)));
+    out.push(' '); out.push_str(&format!("{:?}", (*node_head_line(n))));
     out.push(' '); out.push_str("<cc>");
     out.push(' '); out.push_str("<km>");
     out.push(')');
@@ -552,6 +575,7 @@ fn DUMP_node_when_lit(out: &mut String, n: NodePtr) {
     out.push_str("(node_when_lit");
     out.push(' '); out.push_str(&format!("{:?}", u.subj_slot));
     out.push(' '); out.push_str(&format!("{:?}", u.v));
+    out.push(' '); out.push_str(&format!("{:?}", (*node_head_line(n))));
     out.push(' '); out.push_str("<cc>");
     out.push(')');
 }

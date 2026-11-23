@@ -32,6 +32,8 @@ use crate::symbol::s;
 
 
 
+// the receiver of "lit".freeze (um 0) / -"lit" (um 1): a fresh String once that method is redefined, as opt_str_freeze
+
 
 
 
@@ -86,6 +88,9 @@ use crate::symbol::s;
 
 
 
+
+// [a, b, ...].max / .min of a literal built at run time: CRuby's opt_newarray_send (each element
+// receives <=> against the best so far, and no Array#max frame)
 
 
 
@@ -230,6 +235,14 @@ pub fn EVAL_node_str(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32) -> RV {
 pub fn EVAL_node_fstr(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32, lc: &LitCache) -> RV {
     if let Some(v) = lc.v.get() { return Ok(v); }
     Ok(srb_fstr(c, s, enc, lc))
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_fstr_recv(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32, um: u32, lc: &LitCache) -> RV {
+    if let Some(v) = lc.v.get() { if !c.redef_any(R_STR_FREEZE | R_STR_UMINUS) { return Ok(v); } }
+    Ok(srb_fstr_recv(c, s, enc, um, lc))
 }
 
 
@@ -614,6 +627,14 @@ pub fn EVAL_TEST_node_or<D_a: Disp, D_b: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_newarray_minmax<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, a: Value, mx: u32, line: H_line, cc: &OpCc) -> RV {
+    line.store(c.frame_mut());
+    srb_newarray_minmax(c, a, mx != 0, cc)
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_not(c: &mut Ctx, n: NodePtr, fp: Fp, v: Value, cc: &OpCc) -> RV {
     if (v.is_heap() || c.redef_any(R_IMM_NOT)) && srb_has_custom_not(c, v) { return srb_call0(c, v, s::not, cc); }
     Ok(Value::bool(v.falsy()))
@@ -805,11 +826,12 @@ pub fn EVAL_node_ensure<D_body: Disp, D_ens: Disp>(c: &mut Ctx, n: NodePtr, fp: 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_when<D_pats: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, pats: NodeList, kinds: Str, cc: &CallCache, km: &KindMemo) -> RV {
+pub fn EVAL_node_when<D_pats: DispList, H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, pats: NodeList, kinds: Str, line: H_line, cc: &CallCache, km: &KindMemo) -> RV {
     let subj = slot(fp, subj_slot).get();
     for i in 0..<D_pats as DispList>::len(pats) {
         let p = <D_pats as DispList>::nth(c, pats, i, fp)?;
         if kinds[i] == 1 {
+            line.store(c.frame_mut());
             if srb_when_splat(c, p, subj)? { return Ok(TRUE); }
         } else {
             let hit = match if c.redef_any(R_EQQ_IMM) { None } else { eqq_imm(p, subj) } {
@@ -819,7 +841,11 @@ pub fn EVAL_node_when<D_pats: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, subj_sl
                     let k = class_of(subj).raw();
                     let d = km.memo[kind_way(k)].get() ^ k;
                     // is_class: the slot of a dead pattern class may be another object by now (a new class would move the serial)
-                    if p.raw() == km.pat.get() && d <= 1 && km.ser.get() == kind_serial() && is_class_or_module(p) { d == 1 } else { srb_eqq_class(c, p, subj, cc, km)? }
+                    if p.raw() == km.pat.get() && d <= 1 && km.ser.get() == kind_serial() && is_class_or_module(p) { d == 1 } else {
+                        // === raises from the pattern's line
+                        line.store(c.frame_mut());
+                        srb_eqq_class(c, p, subj, cc, km)?
+                    }
                 }
             };
             if hit { return Ok(TRUE); }
@@ -831,22 +857,24 @@ pub fn EVAL_node_when<D_pats: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, subj_sl
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_when_lit(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, v: Value, cc: &CallCache) -> RV {
+pub fn EVAL_node_when_lit<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, v: Value, line: H_line, cc: &CallCache) -> RV {
     let subj = slot(fp, subj_slot).get();
     if !c.redef_any(R_EQQ_IMM) {
         if subj == v { return Ok(TRUE); }
         if !v.is_fixnum() || subj.is_fixnum() { return Ok(FALSE); }
     }
+    line.store(c.frame_mut());
     Ok(Value::bool(srb_eqq(c, v, subj, cc)?))
 }
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_TEST_node_when_lit(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, v: Value, cc: &CallCache) -> Result<bool, Esc> {
+pub fn EVAL_TEST_node_when_lit<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, v: Value, line: H_line, cc: &CallCache) -> Result<bool, Esc> {
     let subj = slot(fp, subj_slot).get();
     if !c.redef_any(R_EQQ_IMM) {
         if subj == v { return Ok(true); }
         if !v.is_fixnum() || subj.is_fixnum() { return Ok(false); }
     }
+    line.store(c.frame_mut());
     srb_eqq(c, v, subj, cc)
 }
 

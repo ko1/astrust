@@ -48,6 +48,12 @@ fn REPLACE_node_fstr(n: NodePtr, old: NodePtr, new: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_fstr_recv(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = node_u_mut::<node_fstr_recv_struct>(n);
+
+}
+
+#[allow(non_snake_case, unused_variables)]
 fn REPLACE_node_dstr(n: NodePtr, old: NodePtr, new: NodePtr) {
     let u = node_u_mut::<node_dstr_struct>(n);
     if u.parts.contains(&old) { u.parts = Box::leak(u.parts.iter().map(|&x| if x == old { new } else { x }).collect::<Vec<_>>().into_boxed_slice()); }
@@ -279,6 +285,12 @@ fn REPLACE_node_or(n: NodePtr, old: NodePtr, new: NodePtr) {
     let u = node_u_mut::<node_or_struct>(n);
     if u.a == old { u.a = new; }
     if u.b == old { u.b = new; }
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_newarray_minmax(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = node_u_mut::<node_newarray_minmax_struct>(n);
+    if u.a == old { u.a = new; }
 }
 
 #[allow(non_snake_case, unused_variables)]

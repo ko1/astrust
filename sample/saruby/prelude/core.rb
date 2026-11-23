@@ -13,31 +13,6 @@ module Comparable
     end
     r.nil? ? false : r == 0
   end
-  def >(o)  = __cmp_or_fail(o) > 0
-  def >=(o) = __cmp_or_fail(o) >= 0
-  def <(o)  = __cmp_or_fail(o) < 0
-  def <=(o) = __cmp_or_fail(o) <= 0
-  def between?(a, b) = self >= a && self <= b
-  def clamp(a, b = nil)
-    if b.nil? && a.is_a?(Range)
-      lo, hi = a.begin, a.end
-      raise ArgumentError, "cannot clamp with an exclusive range" if a.exclude_end? && !hi.nil?
-    else
-      lo, hi = a, b
-    end
-    raise ArgumentError, "min argument must be less than or equal to max argument" if !lo.nil? && !hi.nil? && (lo <=> hi) > 0
-    return lo if !lo.nil? && (self <=> lo) < 0
-    return hi if !hi.nil? && (self <=> hi) > 0
-    self
-  end
-  private def __cmp_or_fail(o)
-    r = (self <=> o)
-    if r.nil?
-      on = o.nil? || o == true || o == false || o.is_a?(Numeric) ? o.inspect : o.class
-      raise ArgumentError, "comparison of #{self.class} with #{on} failed"
-    end
-    r
-  end
 end
 
 module Enumerable
@@ -136,40 +111,10 @@ module Enumerable
     each { |*x| v = x.size <= 1 ? x[0] : x; dropping = false if dropping && !yield(v); a << v unless dropping }
     a
   end
-  def min(n = nil, &b) = to_a.min(n, &b)
-  def max(n = nil, &b) = to_a.max(n, &b)
-  def minmax(&b) = to_a.minmax(&b)
-  def sort(&b) = to_a.sort(&b)
+  def sort(&b) = Enumerable.__to_a(self).sort(&b)
   def sort_by(&b)
     return enum_for(:sort_by) { __size } unless b
-    to_a.sort_by(&b)
-  end
-  def min_by(n = nil, &b)
-    return enum_for(:min_by, *n) { __size } unless b
-    return sort_by(&b).first(Enumerable.__int(n)) if n
-    best = nil; bk = nil; first = true
-    each { |*x| v = x.size <= 1 ? x[0] : x; k = b.call(v); if first || Enumerable.__cmp(k, bk) < 0 then best = v; bk = k; first = false end }
-    best
-  end
-  def max_by(n = nil, &b)
-    return enum_for(:max_by, *n) { __size } unless b
-    return sort_by(&b).reverse.first(Enumerable.__int(n)) if n
-    best = nil; bk = nil; first = true
-    each { |*x| v = x.size <= 1 ? x[0] : x; k = b.call(v); if first || Enumerable.__cmp(k, bk) > 0 then best = v; bk = k; first = false end }
-    best
-  end
-  def minmax_by(&b)
-    return enum_for(:minmax_by) { __size } unless b
-    mn = mx = nil; mnk = mxk = nil; first = true
-    each do |*x|
-      v = x.size <= 1 ? x[0] : x; k = b.call(v)
-      if first then mn = mx = v; mnk = mxk = k; first = false
-      else
-        if Enumerable.__cmp(k, mnk) < 0 then mn = v; mnk = k end
-        if Enumerable.__cmp(k, mxk) > 0 then mx = v; mxk = k end
-      end
-    end
-    [mn, mx]
+    Enumerable.__sort_by(self, &b)
   end
   def partition
     return enum_for(:partition) { __size } unless block_given?

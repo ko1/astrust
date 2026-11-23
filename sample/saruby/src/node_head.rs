@@ -328,6 +328,15 @@ pub struct node_fstr_struct {
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
+pub struct node_fstr_recv_struct {
+    pub s: Str,
+    pub enc: u32,
+    pub um: u32,
+    pub lc: LitCache,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
 pub struct node_dstr_struct {
     pub parts: NodeList,
     pub enc: u32,
@@ -591,6 +600,14 @@ pub struct node_and_struct {
 pub struct node_or_struct {
     pub a: NodePtr,
     pub b: NodePtr,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct node_newarray_minmax_struct {
+    pub a: NodePtr,
+    pub mx: u32,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -1123,6 +1140,11 @@ pub fn ALLOC_node_fstr(s: Str, enc: u32) -> NodePtr {
 }
 
 #[allow(non_snake_case)]
+pub fn ALLOC_node_fstr_recv(s: Str, enc: u32, um: u32) -> NodePtr {
+    node_allocate_with(&KIND_node_fstr_recv, node_fstr_recv_struct { s, enc, um, lc: Default::default() }, |_| { })
+}
+
+#[allow(non_snake_case)]
 pub fn ALLOC_node_dstr(parts: NodeList, enc: u32, cap: u32) -> NodePtr {
     node_allocate_with(&KIND_node_dstr, node_dstr_struct { parts, enc, cap }, |_| { })
 }
@@ -1313,6 +1335,11 @@ pub fn ALLOC_node_or(a: NodePtr, b: NodePtr) -> NodePtr {
 }
 
 #[allow(non_snake_case)]
+pub fn ALLOC_node_newarray_minmax(a: NodePtr, mx: u32, line: u32) -> NodePtr {
+    node_allocate_with(&KIND_node_newarray_minmax, node_newarray_minmax_struct { a, mx, cc: Default::default() }, |h| { h.line = line; })
+}
+
+#[allow(non_snake_case)]
 pub fn ALLOC_node_not(v: NodePtr) -> NodePtr {
     node_allocate_with(&KIND_node_not, node_not_struct { v, cc: Default::default() }, |_| { })
 }
@@ -1378,13 +1405,13 @@ pub fn ALLOC_node_ensure(body: NodePtr, ens: NodePtr) -> NodePtr {
 }
 
 #[allow(non_snake_case)]
-pub fn ALLOC_node_when(subj_slot: u32, pats: NodeList, kinds: Str) -> NodePtr {
-    node_allocate_with(&KIND_node_when, node_when_struct { subj_slot, pats, kinds, cc: Default::default(), km: Default::default() }, |_| { })
+pub fn ALLOC_node_when(subj_slot: u32, pats: NodeList, kinds: Str, line: u32) -> NodePtr {
+    node_allocate_with(&KIND_node_when, node_when_struct { subj_slot, pats, kinds, cc: Default::default(), km: Default::default() }, |h| { h.line = line; })
 }
 
 #[allow(non_snake_case)]
-pub fn ALLOC_node_when_lit(subj_slot: u32, v: Value) -> NodePtr {
-    node_allocate_with(&KIND_node_when_lit, node_when_lit_struct { subj_slot, v, cc: Default::default() }, |_| { })
+pub fn ALLOC_node_when_lit(subj_slot: u32, v: Value, line: u32) -> NodePtr {
+    node_allocate_with(&KIND_node_when_lit, node_when_lit_struct { subj_slot, v, cc: Default::default() }, |h| { h.line = line; })
 }
 
 #[allow(non_snake_case)]
@@ -1661,6 +1688,12 @@ fn CHILDREN_node_fstr(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
 }
 
 #[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_fstr_recv(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = node_u_mut::<node_fstr_recv_struct>(n);
+
+}
+
+#[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_dstr(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = node_u_mut::<node_dstr_struct>(n);
     if own { let mut l = u.parts.to_vec(); for x in l.iter_mut() { f(x); } u.parts = Box::leak(l.into_boxed_slice()); } else { for &x in u.parts.iter() { f(&mut { x }); } }
@@ -1892,6 +1925,12 @@ fn CHILDREN_node_or(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = node_u_mut::<node_or_struct>(n);
     f(&mut u.a);
     f(&mut u.b);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_newarray_minmax(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = node_u_mut::<node_newarray_minmax_struct>(n);
+    f(&mut u.a);
 }
 
 #[allow(non_snake_case, unused_variables)]
@@ -2418,6 +2457,22 @@ pub static KIND_node_fstr: NodeKind = NodeKind {
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_fstr_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_fstr_struct>>() <= 8);
 impl NodeStruct for node_fstr_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_fstr } }
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_fstr_recv: NodeKind = NodeKind {
+    name: "node_fstr_recv",
+    default_dispatcher: DISPATCH_node_fstr_recv,
+    hash_func: HASH_node_fstr_recv,
+    profile: PROF_node_fstr_recv,
+    specializer: SPECIALIZE_node_fstr_recv,
+    dumper: DUMP_node_fstr_recv,
+    replacer: REPLACE_node_fstr_recv,
+    no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_fstr_recv_struct>>(),
+    children: CHILDREN_node_fstr_recv,
+};
+const _: () = assert!(std::mem::size_of::<NodeOf<node_fstr_recv_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_fstr_recv_struct>>() <= 8);
+impl NodeStruct for node_fstr_recv_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_fstr_recv } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_dstr: NodeKind = NodeKind {
@@ -3026,6 +3081,22 @@ pub static KIND_node_or: NodeKind = NodeKind {
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_or_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_or_struct>>() <= 8);
 impl NodeStruct for node_or_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_or } }
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_newarray_minmax: NodeKind = NodeKind {
+    name: "node_newarray_minmax",
+    default_dispatcher: DISPATCH_node_newarray_minmax,
+    hash_func: HASH_node_newarray_minmax,
+    profile: PROF_node_newarray_minmax,
+    specializer: SPECIALIZE_node_newarray_minmax,
+    dumper: DUMP_node_newarray_minmax,
+    replacer: REPLACE_node_newarray_minmax,
+    no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_newarray_minmax_struct>>(),
+    children: CHILDREN_node_newarray_minmax,
+};
+const _: () = assert!(std::mem::size_of::<NodeOf<node_newarray_minmax_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_newarray_minmax_struct>>() <= 8);
+impl NodeStruct for node_newarray_minmax_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_newarray_minmax } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_not: NodeKind = NodeKind {

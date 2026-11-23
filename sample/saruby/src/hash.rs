@@ -187,7 +187,8 @@ fn hash_of(c: &mut Ctx, k: Value) -> Result<Hv, Esc> {
     if is_float(k) { let f = float_val(k); return Ok(Hv::Raw(mix(if f == 0.0 { 0 } else { f.to_bits() }))); }
     if is_bignum(k) { return Ok(Hv::Raw(big_hash(c, k))); }
     let (kernel, array) = match c.method_entry(class_of(k), s::hash) {
-        Some(me) => (std::ptr::eq(me, c.vm().ids.kernel_hash.get()), me.owner == c.vm().c_array.get()),
+        Some(me) => (std::ptr::eq(me, c.vm().ids.kernel_hash.get()),
+            matches!(me.kind, MKind::Cfunc(f, _) if f as *const () as usize == crate::builtins::array_methods::a_hash as *const () as usize)),
         None => (false, false),
     };
     if kernel { return Ok(Hv::Raw(mix(k.raw()))); }
@@ -203,7 +204,7 @@ fn hash_of(c: &mut Ctx, k: Value) -> Result<Hv, Esc> {
     type_err(c, format!("no implicit conversion of {} into Integer", crate::builtins::kernel::class_name_for_err(c, r)))
 }
 /// Array#hash over the elements' #hash values; a recursive array hashes by its length alone.
-fn ary_hash(c: &mut Ctx, k: Value) -> Result<u64, Esc> {
+pub fn ary_hash(c: &mut Ctx, k: Value) -> Result<u64, Esc> {
     let n = c.ary_len(k);
     let start: u64 = 0x345678 ^ n as u64;
     hash_outer(c, k, crate::astrust::hash_merge(start, 0x41727261), |c| {
@@ -268,11 +269,20 @@ pub fn hash_get_opt(c: &mut Ctx, h: Value, k: Value) -> Result<Option<Value>, Es
     Ok(hash_lookup(c, h, k)?.map(|i| c.hash(h).entries[i].val))
 }
 
+/// rb_hash_default_value: a redefined #default is called, the builtin one is read here.
 pub fn hash_default_value(c: &mut Ctx, h: Value, k: Value) -> RV {
+    if (obj_klass(h) != c.vm().c_hash.get() || crate::rt::redef(crate::rt::R_HASH_DEFAULT)) && default_redefined(c, h) {
+        return funcall(c, h, s::default, &[k], std::ptr::null());
+    }
     let r = c.hash(h);
     let (p, d) = (r.default_proc, r.default);
     if p != NIL { return call_proc(c, p, &[h, k], std::ptr::null()); }
     Ok(d)
+}
+
+#[cold]
+fn default_redefined(c: &Ctx, h: Value) -> bool {
+    !matches!(c.method_entry(class_of(h), s::default), Some(me) if matches!(me.kind, MKind::Cfunc(f, _) if f as *const () as usize == crate::builtins::hash_methods::h_default as *const () as usize))
 }
 
 pub fn hash_aref(c: &mut Ctx, h: Value, k: Value) -> RV {
@@ -282,13 +292,7 @@ pub fn hash_aref(c: &mut Ctx, h: Value, k: Value) -> RV {
     } else { hash_lookup(c, h, k)? };
     match found {
         Some(i) => Ok(c.hash(h).entries[i].val),
-        None => {
-            if obj_klass(h) != c.vm().c_hash.get() {
-                let user = matches!(c.method_entry(class_of(h), s::default), Some(me) if !matches!(me.kind, MKind::Cfunc(..)));
-                if user { return funcall(c, h, s::default, &[k], std::ptr::null()); }
-            }
-            hash_default_value(c, h, k)
-        }
+        None => hash_default_value(c, h, k),
     }
 }
 
@@ -325,6 +329,22 @@ pub fn hash_set(c: &mut Ctx, h: Value, k: Value, v: Value) -> Result<(), Esc> {
     if r.iter_lev != 0 { return err(c, c.vm().c_runtime_error.get(), "can't add a new key into hash during iteration"); }
     if r.insert_new(k, v, hc) % 64 == 0 { c.malloc_increase(64 * 24); }
     Ok(())
+}
+
+/// rb_hash_add_new_element: insert k unless present (k hashed once); true if inserted.
+pub fn hash_add_new(c: &mut Ctx, h: Value, k: Value, v: Value) -> Result<bool, Esc> {
+    let hc = if imm_key(k) {
+        if c.hash(h).find_imm(k).is_some() { return Ok(false); }
+        mix(k.raw())
+    } else {
+        let hc = if c.hash(h).identity { identity_hash(k) } else { key_hash(c, k)? };
+        if lookup_with_hash(c, h, k, hc)?.is_some() { return Ok(false); }
+        hc
+    };
+    let r = c.hash_mut(h);
+    if r.iter_lev != 0 { return err(c, c.vm().c_runtime_error.get(), "can't add a new key into hash during iteration"); }
+    if r.insert_new(k, v, hc) % 64 == 0 { c.malloc_increase(64 * 24); }
+    Ok(true)
 }
 
 /// `dst[k] = v` for each entry of `src`, slot by slot: hashing a key runs Ruby code, which may

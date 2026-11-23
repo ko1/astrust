@@ -102,11 +102,15 @@ pub fn inspect_str(c: &mut Ctx, v: Value) -> Result<String, Esc> {
     Ok(String::from_utf8_lossy(c.str_bytes(r)).into_owned())
 }
 
+/// rb_inspect: v.inspect, as a String by rb_obj_as_string.
 pub fn inspect_value(c: &mut Ctx, v: Value) -> RV {
-    if v == NIL { return Ok(c.str_new(b"nil")); }
-    if v.is_fixnum() && !crate::rt::redef(0) { return Ok(c.str_new(v.as_fix().to_string().as_bytes())); }
+    if (v == NIL || v.is_fixnum()) && !crate::rt::redef(crate::rt::R_IMM_INSPECT) {
+        return Ok(if v == NIL { c.str_new(b"nil") } else { c.str_new(v.as_fix().to_string().as_bytes()) });
+    }
     let r = funcall(c, v, s::inspect, &[], std::ptr::null())?;
-    if is_string(r) { Ok(r) } else { Ok(c.str_new(any_to_s_str(c, v).as_bytes())) }
+    if is_string(r) { return Ok(r); }
+    let t = funcall(c, r, s::to_s, &[], std::ptr::null())?;
+    if is_string(t) { Ok(t) } else { Ok(c.str_new(any_to_s_str(c, r).as_bytes())) }
 }
 
 pub fn to_s_value(c: &mut Ctx, v: Value) -> RV { crate::rt::srb_tostr(c, v) }
@@ -181,9 +185,7 @@ fn puts_one(c: &mut Ctx, v: Value, out: &mut Vec<u8>) -> Result<(), Esc> {
         recursion_leave(v, s::puts);
         return Ok(());
     }
-    if v.is_heap() && !is_string(v) {
-        if let Some(a) = crate::array::check_array(c, v)? { return puts_one(c, a, out); }
-    }
+    if let Some(a) = crate::array::check_array(c, v)? { return puts_one(c, a, out); }
     let s = to_s_value(c, v)?;
     out.extend_from_slice(&c.str_bytes(s));
     if !c.str_bytes(s).ends_with(b"\n") { out.push(b'\n'); }
@@ -670,7 +672,7 @@ fn k_string(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     check_argc(c, args, 1, 1)?;
     let v = args[0];
     if is_string(v) { return Ok(v); }
-    if v.is_heap() && respond_to(c, v, s::to_str, true) { return funcall(c, v, s::to_str, &[], std::ptr::null()); }
+    if crate::rt::conv_target(v) && respond_to(c, v, s::to_str, true) { return funcall(c, v, s::to_str, &[], std::ptr::null()); }
     if respond_to(c, v, s::to_s, true) {
         let r = funcall(c, v, s::to_s, &[], std::ptr::null())?;
         if !is_string(r) { return type_err(c, format!("can't convert {} to String ({}#to_s gives {})", class_name_for_err(c, v), class_name_for_err(c, v), class_name_for_err(c, r))); }
@@ -683,7 +685,7 @@ fn k_array(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     check_argc(c, args, 1, 1)?;
     let v = args[0];
     if is_array(v) { return Ok(v); }
-    if v == NIL { return Ok(c.ary_new()); }
+    if v == NIL && !crate::rt::redef(crate::rt::R_IMM_CONV) { return Ok(c.ary_new()); }
     if let Some(a) = check_array(c, v)? { return Ok(a); }
     if respond_to(c, v, s::to_a, true) {
         let r = funcall(c, v, s::to_a, &[], std::ptr::null())?;

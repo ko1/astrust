@@ -2142,7 +2142,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
     if is_block && args.len() == 1 && (flags & CF_KW == 0 || simple_block) && (lead + post + opt > 1 || (p.rest.is_some() && lead + post + opt > 0) || p.has_trailing_comma || (lead == 1 && p.rest.is_some()))
         && !p.forwarding {
         let a = args[0];
-        let arr = if is_array(a) { Some(a) } else if a.is_heap() && !is_hash(a) && respond_to(c, a, s::to_ary, true) {
+        let arr = if is_array(a) { Some(a) } else if crate::rt::conv_target(a) && !is_hash(a) && respond_to(c, a, s::to_ary, true) {
             let r = funcall(c, a, s::to_ary, &[], std::ptr::null())?;
             if is_array(r) { Some(r) } else if r == NIL { None } else {
                 return type_err(c, format!("can't convert {} to Array ({}#to_ary gives {})", class_path(c, real_class_of(c, a)), class_path(c, real_class_of(c, a)), class_path(c, real_class_of(c, r))));

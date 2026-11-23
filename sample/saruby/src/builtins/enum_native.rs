@@ -26,10 +26,59 @@ fn e_argc(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     argc_err(c, a[0].as_fix() as usize, a[1].as_fix() as i32, a[2].as_fix() as i32)
 }
 
-// Enumerable.__cmp(a, b): a <=> b as -1/0/1, ArgumentError "comparison of X with Y failed" on nil.
-fn e_cmp(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
-    let o = crate::builtins::array_methods::rb_cmp(c, a[0], a[1])?;
-    Ok(Value::fix(o as i64))
+// ---- Comparable (compar.c): x <=> y always called, rb_cmpint of its answer ----
+fn cmpint(c: &mut Ctx, x: Value, y: Value) -> Result<i64, Esc> {
+    let r = funcall(c, x, crate::symbol::s::cmp, &[y], std::ptr::null())?;
+    crate::builtins::array_methods::cmp_result(c, r, x, y)
+}
+fn cmp_gt(c: &mut Ctx, x: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(cmpint(c, x, a[0])? > 0)) }
+fn cmp_ge(c: &mut Ctx, x: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(cmpint(c, x, a[0])? >= 0)) }
+fn cmp_lt(c: &mut Ctx, x: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(cmpint(c, x, a[0])? < 0)) }
+fn cmp_le(c: &mut Ctx, x: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(cmpint(c, x, a[0])? <= 0)) }
+fn cmp_between(c: &mut Ctx, x: Value, a: &[Value], _b: *const Block) -> RV {
+    Ok(Value::bool(cmpint(c, x, a[0])? >= 0 && cmpint(c, x, a[1])? <= 0))
+}
+fn cmp_clamp(c: &mut Ctx, x: Value, a: &[Value], _b: *const Block) -> RV {
+    check_argc(c, a, 1, 2)?;
+    let (min, max) = if a.len() == 1 {
+        let r = a[0];
+        let (b, e, excl) = if crate::object::is_range(r) { c.range_parts(r) } else {
+            let s = crate::symbol::s::begin;
+            let ok = r.is_heap() && respond_to(c, r, s, false) && respond_to(c, r, crate::symbol::s::end_, false) && respond_to(c, r, crate::symbol::intern(b"exclude_end?"), false);
+            if !ok { return type_err(c, format!("wrong argument type {} (expected Range)", crate::builtins::kernel::class_name_for_err(c, r))); }
+            let b = funcall(c, r, s, &[], std::ptr::null())?;
+            let e = funcall(c, r, crate::symbol::s::end_, &[], std::ptr::null())?;
+            let x = funcall(c, r, crate::symbol::intern(b"exclude_end?"), &[], std::ptr::null())?.truthy();
+            (b, e, x)
+        };
+        if e != NIL && excl { return arg_err(c, "cannot clamp with an exclusive range"); }
+        (b, e)
+    } else { (a[0], a[1]) };
+    if min != NIL && max != NIL && cmpint(c, min, max)? > 0 { return arg_err(c, "min argument must be less than or equal to max argument"); }
+    if min != NIL {
+        let n = cmpint(c, x, min)?;
+        if n == 0 { return Ok(x); }
+        if n < 0 { return Ok(min); }
+    }
+    if max != NIL && cmpint(c, x, max)? > 0 { return Ok(max); }
+    Ok(x)
+}
+// Enumerable.__sort_by(obj) { |x| key }: obj's #each collected, then ordered by the keys (enum_sort_by)
+// Enumerable.__to_a(obj): obj's #each collected (enum_to_a), for the Enumerable methods that sort
+fn e_to_a(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+    let acc = c.ary_new();
+    run_each(c, a[0], |c, d, args, _| { let v = pack(c, args); c.ary_push(d, v); Ok(NIL) }, acc, &[])?;
+    Ok(acc)
+}
+fn e_sort_by(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
+    let acc = c.ary_new();
+    run_each(c, a[0], |c, d, args, _| { let v = pack(c, args); c.ary_push(d, v); Ok(NIL) }, acc, &[])?;
+    crate::builtins::array_methods::sort_by_body(c, acc, blk)
+}
+pub fn init_comparable(c: &mut Ctx, m: Value) {
+    define_cfunc(c, m, ">", cmp_gt, 1); define_cfunc(c, m, ">=", cmp_ge, 1);
+    define_cfunc(c, m, "<", cmp_lt, 1); define_cfunc(c, m, "<=", cmp_le, 1);
+    define_cfunc(c, m, "between?", cmp_between, 2); define_cfunc(c, m, "clamp", cmp_clamp, -1);
 }
 
 // Enumerable.__ivget / __ivset: hidden (non-@) instance slots for Data members; set ignores frozen.
@@ -140,7 +189,7 @@ fn en_flat_map(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     run_each(c, slf, |c, d, args, _| {
         let r = yield_block(c, ublk(c, d, 1), args)?;
         let out = c.ary_get(d, 0);
-        match if r.is_heap() { check_array(c, r)? } else { None } { Some(ra) => c.ary_concat(out, ra), None => c.ary_push(out, r) }
+        match check_array(c, r)? { Some(ra) => c.ary_concat(out, ra), None => c.ary_push(out, r) }
         Ok(NIL)
     }, d, &[])?;
     Ok(c.ary_get(d, 0))
@@ -230,6 +279,96 @@ fn en_count(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     }, d, &[])?;
     Ok(c.ary_get(d, 0))
 }
+// enum.c minmax_by: elements taken in pairs, the smaller key against the minimum, the larger against the maximum.
+// d: [blk, min, max, min_key, max_key, last, last_key, state (bit 0: min/max set, bit 1: last set)]
+fn minmax_by_update(c: &mut Ctx, d: Value, v1: Value, v2: Value, i1: Value, i2: Value) -> Result<(), Esc> {
+    use crate::builtins::array_methods::rb_cmp;
+    let st = c.ary_get(d, 7).as_fix();
+    if st & 1 == 0 {
+        for (k, v) in [(1, i1), (2, i2), (3, v1), (4, v2)] { c.ary_mut(d)[k] = v; }
+        c.ary_mut(d)[7] = Value::fix(st | 1);
+        return Ok(());
+    }
+    let mn = c.ary_get(d, 3);
+    if rb_cmp(c, v1, mn)?.is_lt() { c.ary_mut(d)[3] = v1; c.ary_mut(d)[1] = i1; }
+    let mx = c.ary_get(d, 4);
+    if rb_cmp(c, v2, mx)?.is_gt() { c.ary_mut(d)[4] = v2; c.ary_mut(d)[2] = i2; }
+    Ok(())
+}
+fn en_minmax_by(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+    if blk.is_null() { return no_blk(c, slf, "minmax_by", a); }
+    let d = c.ary_new_from(&[bptr(blk), NIL, NIL, NIL, NIL, NIL, NIL, Value::fix(0)]);
+    run_each(c, slf, |c, d, args, _| {
+        let mut i = pack(c, args);
+        let mut vi = yield1(c, ublk(c, d, 0), i)?;
+        let st = c.ary_get(d, 7).as_fix();
+        if st & 2 == 0 { c.ary_mut(d)[5] = i; c.ary_mut(d)[6] = vi; c.ary_mut(d)[7] = Value::fix(st | 2); return Ok(NIL); }
+        let (mut j, mut vj) = (c.ary_get(d, 5), c.ary_get(d, 6));
+        c.ary_mut(d)[7] = Value::fix(st & !2);
+        let n = crate::builtins::array_methods::rb_cmp(c, vj, vi)?;
+        if n.is_eq() { i = j; vi = vj; } else if n.is_lt() { std::mem::swap(&mut i, &mut j); std::mem::swap(&mut vi, &mut vj); }
+        minmax_by_update(c, d, vi, vj, i, j)?;
+        Ok(NIL)
+    }, d, &[])?;
+    if c.ary_get(d, 7).as_fix() & 2 != 0 { let (l, lv) = (c.ary_get(d, 5), c.ary_get(d, 6)); minmax_by_update(c, d, lv, lv, l, l)?; }
+    Ok(c.ary_new_from(&[c.ary_get(d, 1), c.ary_get(d, 2)]))
+}
+// enum.c min_by / max_by: OPTIMIZED_CMP(key, best key); with n, rb_nmin_run over (key, value) pairs
+fn minmax_by_one(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, mx: bool) -> RV {
+    use crate::builtins::array_methods::Nmin;
+    check_argc(c, a, 0, 1)?;
+    let name = if mx { "max_by" } else { "min_by" };
+    if blk.is_null() { return no_blk(c, slf, name, a); }
+    if let Some(&n) = a.first().filter(|n| **n != NIL) {
+        let Some(nm) = Nmin::new(c, n, true, mx, blk)? else { return Ok(c.ary_new()); };
+        let d = nm.save(c);
+        run_each(c, slf, |c, d, args, _| {
+            let mut nm = Nmin::load(c, d);
+            let v = pack(c, args);
+            let k = yield1(c, nm.blk(), v)?;
+            nm.add(c, v, k)?;
+            nm.store(c, d);
+            Ok(NIL)
+        }, d, &[])?;
+        return Nmin::load(c, d).finish(c);
+    }
+    // d: [blk, best, best key, set?, max?]
+    let d = c.ary_new_from(&[bptr(blk), NIL, NIL, FALSE, Value::bool(mx)]);
+    run_each(c, slf, |c, d, args, _| {
+        let v = pack(c, args);
+        let k = yield1(c, ublk(c, d, 0), v)?;
+        let take = if c.ary_get(d, 3) == FALSE { true } else {
+            let o = crate::builtins::array_methods::rb_cmp(c, k, c.ary_get(d, 2))?;
+            if c.ary_get(d, 4) == TRUE { o.is_gt() } else { o.is_lt() }
+        };
+        if take { let a = c.ary_mut(d); a[1] = v; a[2] = k; a[3] = TRUE; }
+        Ok(NIL)
+    }, d, &[])?;
+    Ok(c.ary_get(d, 1))
+}
+// Enumerable#min / #max: min_i (OPTIMIZED_CMP(element, best)) / min_ii; with n, rb_nmin_run
+fn en_min_max(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, mx: bool) -> RV {
+    use crate::builtins::array_methods::{cmp_result, minmax_impl, rb_cmp};
+    check_argc(c, a, 0, 1)?;
+    let all = e_to_a(c, NIL, &[slf], std::ptr::null())?;
+    if a.first().is_some_and(|n| *n != NIL) { return minmax_impl(c, all, a, blk, mx); }
+    let mut best = match c.ary(all).first() { Some(&v) => v, None => return Ok(NIL) };
+    let mut i = 1;
+    while let Some(&x) = c.ary(all).get(i) {
+        let k = if blk.is_null() { rb_cmp(c, x, best)? as i64 } else { let r = yield_block(c, blk, &[x, best])?; cmp_result(c, r, x, best)? };
+        if (mx && k > 0) || (!mx && k < 0) { best = x; }
+        i += 1;
+    }
+    Ok(best)
+}
+fn en_min(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV { en_min_max(c, slf, a, blk, false) }
+fn en_max(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV { en_min_max(c, slf, a, blk, true) }
+fn en_minmax(c: &mut Ctx, slf: Value, _a: &[Value], blk: *const Block) -> RV {
+    let all = e_to_a(c, NIL, &[slf], std::ptr::null())?;
+    crate::builtins::array_methods::minmax_pairs(c, all, blk)
+}
+fn en_min_by(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV { minmax_by_one(c, slf, a, blk, false) }
+fn en_max_by(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV { minmax_by_one(c, slf, a, blk, true) }
 fn en_group_by(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return no_blk(c, slf, "group_by", a); }
     let acc0 = c.hash_new();
@@ -238,10 +377,9 @@ fn en_group_by(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
         let v = pack(c, args);
         let k = yield1(c, ublk(c, d, 1), v)?;
         let h = c.ary_get(d, 0);
-        match crate::hash::hash_get_opt(c, h, k)? {
-            Some(arr) => c.ary_push(arr, v),
-            None => { let arr = c.ary_new_from(&[v]); crate::hash::hash_aset(c, h, k, arr)?; }
-        }
+        // group_by_i: rb_hash_aref (a redefined Hash#default answers a miss)
+        let got = match crate::hash::hash_get_opt(c, h, k)? { Some(x) => x, None => crate::hash::hash_default_value(c, h, k)? };
+        if is_array(got) { c.ary_push(got, v); } else { let arr = c.ary_new_from(&[v]); crate::hash::hash_aset(c, h, k, arr)?; }
         Ok(NIL)
     }, d, &[])?;
     Ok(c.ary_get(d, 0))
@@ -327,6 +465,9 @@ fn define_enumerable_natives(c: &mut Ctx, m: Value) {
     define_cfunc(c, m, "find", en_find, -1); define_cfunc(c, m, "detect", en_find, -1);
     define_cfunc(c, m, "count", en_count, -1);
     define_cfunc(c, m, "group_by", en_group_by, 0);
+    define_cfunc(c, m, "minmax_by", en_minmax_by, 0);
+    define_cfunc(c, m, "min_by", en_min_by, -1);
+    define_cfunc(c, m, "min", en_min, -1); define_cfunc(c, m, "max", en_max, -1); define_cfunc(c, m, "minmax", en_minmax, 0); define_cfunc(c, m, "max_by", en_max_by, -1);
     define_cfunc(c, m, "inject", en_inject, -1); define_cfunc(c, m, "reduce", en_inject, -1);
 }
 
@@ -336,7 +477,8 @@ pub fn init(c: &mut Ctx, m: Value) {
     define_singleton_cfunc(c, m, "__int", e_int, 1);
     define_singleton_cfunc(c, m, "__hash", e_hash, 1);
     define_singleton_cfunc(c, m, "__argc", e_argc, 3);
-    define_singleton_cfunc(c, m, "__cmp", e_cmp, 2);
+    define_singleton_cfunc(c, m, "__sort_by", e_sort_by, 1);
+    define_singleton_cfunc(c, m, "__to_a", e_to_a, 1);
     define_singleton_cfunc(c, m, "__range_sum", |c, _s, a, b| crate::builtins::range_methods::r_sum(c, a[0], &a[1..], b), 2);
     define_singleton_cfunc(c, m, "__ivget", e_ivget, 2);
     define_singleton_cfunc(c, m, "__ivset", e_ivset, 3);

@@ -235,6 +235,38 @@ fn SPECIALIZE_node_fstr(sc: &mut SpecCtx, n: NodePtr) -> String {
 }
 
 #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
+fn SPECIALIZE_node_fstr_recv(sc: &mut SpecCtx, n: NodePtr) -> String {
+    let own_hash = hash_node(n);
+    let was_open = !sc.open.insert(own_hash);
+    let u = node_u::<node_fstr_recv_struct>(n);
+
+    let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
+    a.push("u.s".to_string());
+    a.push(format!("{}u32", u.enc));
+    a.push(format!("{}u32", u.um));
+    a.push("&u.lc".to_string());
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by its code (children's names, baked operands, bound holes are in it): equal code is
+    // one item, whichever entry or position it was reached from
+    let mut body = String::new();
+    body.push_str(&format!("impl Disp for @SELF@ {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{\n"));
+    body.push_str(&format!("        let u = node_u::<node_fstr_recv_struct>({});\n", "n"));
+
+    body.push_str(&format!("        EVAL_node_fstr_recv{}({})\n    }}\n", "", a.join(", ")));
+
+
+    body.push_str("}
+");
+    let name = format!("T_{:016x}", hash_str(&body));
+    if sc.emitted.insert(name.clone()) {
+        sc.out.push_str(&format!("pub struct {};\n", name));
+        if sc.comments { sc.out.push_str("// "); dump_node(&mut sc.out, n); sc.out.push('\n'); }
+        sc.out.push_str(&body.replace("@SELF@", &name));
+    }
+    name
+}
+
+#[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
 fn SPECIALIZE_node_dstr(sc: &mut SpecCtx, n: NodePtr) -> String {
     let own_hash = hash_node(n);
     let was_open = !sc.open.insert(own_hash);
@@ -1404,6 +1436,39 @@ fn SPECIALIZE_node_or(sc: &mut SpecCtx, n: NodePtr) -> String {
 }
 
 #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
+fn SPECIALIZE_node_newarray_minmax(sc: &mut SpecCtx, n: NodePtr) -> String {
+    let own_hash = hash_node(n);
+    let was_open = !sc.open.insert(own_hash);
+    let u = node_u::<node_newarray_minmax_struct>(n);
+    let t_a = specialize_node(sc, u.a);
+    let mut t_line = "crate::vm::LineAt".to_string();
+    let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
+    a.push("v_a".to_string());
+    a.push(format!("{}u32", u.mx));
+    if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_newarray_minmax_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_newarray_minmax_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
+    a.push("&u.cc".to_string());
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by its code (children's names, baked operands, bound holes are in it): equal code is
+    // one item, whichever entry or position it was reached from
+    let mut body = String::new();
+    body.push_str(&format!("impl Disp for @SELF@ {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{\n"));
+    body.push_str(&format!("        let u = node_u::<node_newarray_minmax_struct>({});\n", "n"));
+    body.push_str(&format!("        let v_a = <{} as Disp>::call(c, {}, fp)?;\n", t_a, child_ptr_expr(n, u.a)));
+    body.push_str(&format!("        EVAL_node_newarray_minmax{}({})\n    }}\n", format!("::<{}>", t_line), a.join(", ")));
+
+
+    body.push_str("}
+");
+    let name = format!("T_{:016x}", hash_str(&body));
+    if sc.emitted.insert(name.clone()) {
+        sc.out.push_str(&format!("pub struct {};\n", name));
+        if sc.comments { sc.out.push_str("// "); dump_node(&mut sc.out, n); sc.out.push('\n'); }
+        sc.out.push_str(&body.replace("@SELF@", &name));
+    }
+    name
+}
+
+#[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
 fn SPECIALIZE_node_not(sc: &mut SpecCtx, n: NodePtr) -> String {
     let own_hash = hash_node(n);
     let was_open = !sc.open.insert(own_hash);
@@ -1808,10 +1873,12 @@ fn SPECIALIZE_node_when(sc: &mut SpecCtx, n: NodePtr) -> String {
     let was_open = !sc.open.insert(own_hash);
     let u = node_u::<node_when_struct>(n);
     let t_pats = specialize_list(sc, &u.pats, n);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     a.push(format!("{}u32", u.subj_slot));
     a.push("list_base(n)".to_string());
     a.push("u.kinds".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_when_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_when_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
     a.push("&u.cc".to_string());
     a.push("&u.km".to_string());
     if !was_open { sc.open.remove(&own_hash); }
@@ -1821,7 +1888,7 @@ fn SPECIALIZE_node_when(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for @SELF@ {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{\n"));
     body.push_str(&format!("        let u = node_u::<node_when_struct>({});\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_when{}({})\n    }}\n", format!("::<{}>", t_pats), a.join(", ")));
+    body.push_str(&format!("        EVAL_node_when{}({})\n    }}\n", format!("::<{}, {}>", t_pats, t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -1840,10 +1907,11 @@ fn SPECIALIZE_node_when_lit(sc: &mut SpecCtx, n: NodePtr) -> String {
     let own_hash = hash_node(n);
     let was_open = !sc.open.insert(own_hash);
     let u = node_u::<node_when_lit_struct>(n);
-
+    let mut t_line = "crate::vm::LineAt".to_string();
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     a.push(format!("{}u32", u.subj_slot));
     a.push(crate::compile::value_bake(u.v).unwrap_or_else(|| "u.v".to_string()));
+    if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_when_lit_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_when_lit_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
     a.push("&u.cc".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
@@ -1852,11 +1920,11 @@ fn SPECIALIZE_node_when_lit(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for @SELF@ {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{\n"));
     body.push_str(&format!("        let u = node_u::<node_when_lit_struct>({});\n", "n"));
 
-    body.push_str(&format!("        EVAL_node_when_lit{}({})\n    }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_when_lit{}({})\n    }}\n", format!("::<{}>", t_line), a.join(", ")));
     body.push_str(&format!("    #[inline(always)]\n    fn test(c: &mut Ctx, n: NodePtr, fp: Fp) -> Result<bool, Esc> {{\n"));
     body.push_str(&format!("        let u = node_u::<node_when_lit_struct>({});\n", "n"));
 
-    body.push_str(&format!("        EVAL_TEST_node_when_lit{}({})\n    }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_TEST_node_when_lit{}({})\n    }}\n", format!("::<{}>", t_line), a.join(", ")));
 
     body.push_str("}
 ");
