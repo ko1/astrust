@@ -67,7 +67,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [x] TracePoint の thread_begin / thread_end（fiber_main で発火、フックの例外はスレッドを終わらせる。tracepoint 74 → 76 / 76、~/ruby/src/trials/2026-11-23-saruby-compat-bundle/）
 - [ ] TracePoint の残り: トレース用にコンパイルされていないコードは line と演算子の c_call を出さない。CRuby が内部で呼ぶ Exception#initialize・Module#===（rescue）・const_added / inherited の c_call は出ない
 - [x] IO::Buffer（io_buffer.c 4.0.2 の移植、builtins/io_buffer.rs は forbid、docs/io_design.md「IO::Buffer」、~/ruby/src/trials/2026-11-23-saruby-io-buffer/）: rubyspec core/io/buffer 0 → 198 / 198（CRuby 4.0.2 も 198 / 198）。バイトは Vec / sys::Mapping（munmap on drop）/ String 自身、スライスはアドレス範囲を元の現在のメモリで検証して bounds-checked に取る（アドレスは比較だけ）。CRuby との差分スクリプト 7,300 行一致。4.0.2 が解放済みメモリ・範囲外を触る 6 ケースは例外にした（deviations.rb）。sys.rs +5 unsafe（mmap / mremap / slice 2 / munmap）。str / hash / nesteddata の命令数は同じ、起動（cgu1）は +1〜3k 命令（.so が大きくなった分の ld.so・maps 読み。走るコードの差ではない）
-  - [ ] ロックした String への `<<` が node_opt_ltlt の近道（node.def、`!is_frozen(a)`）で通る（他は str_modify / check_frozen / String#freeze で "temporarily locked"）
+  - [x] ロックした String への `<<` が node_opt_ltlt の近道で通る → FL_FROZEN | FL_TMPLOCK を 1 回の検査に（str_modify と同じ、~/ruby/src/trials/2026-11-23-saruby-redef-flags/）
   - [ ] IO.pipe の fd が CRuby（O_NONBLOCK）と違いブロッキング: IO::Buffer#read が CRuby では -EAGAIN を返す所で待つ
 - [x] Regexp のエンコーディング（~/ruby/src/trials/2026-11-23-saruby-regexp/）: /e /s /u /n・FIXEDENCODING / NOENCODING・rb_reg_preprocess / prepare_enc 相当（astrogre に UTF-8 / 1 バイト / EUC-JP / Shift_JIS / 2 バイト系 / EUC-TW / GB18030 の読み方）、UTF-16/32 は UTF-8 形で照合、inspect / to_s / union、Regexp.timeout（実行時に強制）、try_convert・linear_time?・MatchData#match 等。core/regexp 164 → 252 / 256、matchdata 165 → 185 / 185、language/regexp 224 → 251 / 258
   - [ ] 残り: 旧来マルチバイトの文字に \p{..}、ISO-8859-x の文字種・大小文字、[[:punct:]] Ps 等の表、gsub / scan / split の素の探索は timeout 無し、CRuby がメモ化で線形にする指数バックトラック（`(a*)*$`）、eval した非 UTF-8 文字列のソースエンコーディング（regexp リテラルが UTF-8 扱い）
@@ -98,7 +98,9 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [x] Fiber storage、`Fiber#blocking?`、fiber-local `Thread#[]`、`Fiber#inspect` の状態、fiber called across threads
 - [ ] Fiber scheduler、`Fiber#raise(cause:)`
 - [x] Enumerator がキーワード引数を渡さない・private メソッドを呼べない（rb_block_call と同じに、stdlib-2）
-- [ ] case/when が再定義された `Integer#===` を無視する（再定義フラグ 32bit が満杯 → 64bit に）
+- [x] 再定義フラグを 64bit に（REDEF / Ctx::redef、~/ruby/src/trials/2026-11-23-saruby-redef-flags/ README に CRuby 4.0 の BOP 表と saruby の近道の対照）。case/when・case/in・splat when が再定義・refine された Integer / Symbol / nil / true / false / String#=== を呼ぶ（即値は R_EQQ_IMM 1 回の検査、CRuby の opt_case_dispatch と同じ）。近道の棚卸しで: Integer#!= / Float#!=（== のフラグに相乗り: R_INT_ALL を bit 0..30 に収めて imm32 の test 1 つのまま。bit 38 に置いた版は movabs が増え +0.6〜1.8 % 命令で撤回）、String#==、条件形の Symbol#==、即値の `!`、refine された `!`、式展開の Integer / Symbol / nil#to_s、attr_* / private 等の可視性変更 / import_methods が再定義を通知しなかった。15 ベンチ interp / AOT は ±0.01 % 以内（mapreduce AOT −1.0 %）、起動同じ、optcarrot +0.11 %/frame。t/hand で既存 5 本が CRuby と一致に
+  - [ ] 残り（組み込みメソッド側、node の近道ではない）: `p` / Array#inspect が Integer#inspect の再定義を見ない（kernel.rs inspect_value の `redef(0)`）、Hash#[] の未登録キーが再定義された Hash#default を呼ばない、Array#sort / max / min が Integer#<=> の再定義を見ない（CRuby は OPTIMIZED_CMP で BOP_CMP を見る）、`"lit".freeze` の String#freeze が再定義されたとき凍結済みリテラルを受け手にする（CRuby は新しい複製）
+  - [ ] when の `===` が例外を出したときの backtrace の行が when の行でなく case の外側（node_when / node_when_lit に行オペランドが無い）
 - [x] 再帰的な正規表現サブ式呼び出し `(?<a>a\g<a>?)`・`\g<0>`・レベル付き後方参照 `\k<a+0>`・absent 演算子 `(?~x)`（2026-11-23-saruby-regexp）
 - [x] blop 層（docs/io_design.md）: 待ちを 1 か所に、slab + Id + 所有権ごと渡すバッファ、engine trait（poll 既定・epoll）。待機中の CPU ほぼ 0、外部 cat との往復 1k → 45k/s。rubyspec file/flock・file/open・io-wait/wait・process/status/wait のタイムアウト解消
 - [ ] blop の残り: Mutex/CV/Queue の受け渡しが重い（vm_thread_condvar2 +59%、condvar1 +28%、sized_queue4 +26% 命令）、epoll の登録キャッシュ、io_uring engine、worker thread（flock・FIFO open・Process.wait(-1) は back-off の仮実装）
