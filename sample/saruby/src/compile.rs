@@ -2255,6 +2255,7 @@ pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind,
     compile_source_enc(src, crate::object::ENC_UTF8, file, line, kind, outer)
 }
 /// compile_source of an eval'd String: its encoding is the source's unless a magic comment says otherwise.
+#[inline(always)]
 pub fn compile_source_enc(src: &[u8], enc: u8, file: &'static str, line: i32, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, String> {
     let ename = if enc == crate::object::ENC_UTF8 { "" } else { crate::builtins::encoding::enc_name(enc) };
     let mut scopes: Vec<Vec<Vec<u8>>> = outer.iter().rev().map(|sc| sc.iter().map(|(n, _, _)| crate::symbol::sym_bytes(*n).to_vec()).collect()).collect();
