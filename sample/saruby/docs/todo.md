@@ -78,7 +78,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
   - [x] Symbol のエンコーディング（UTF-16/32、非 ASCII の BINARY / ISO-8859-x / EUC-JP / SJIS / 高位バイトの US-ASCII は別 Symbol: symbol.rs の副表、intern は不変）、Symbol#encoding / to_s / inspect / length、非 UTF-8 ソースの識別子・リテラル・ラベル、eval の文字列のエンコーディング、Marshal、sprintf の %<name>、const_get。壊れた文字列の strip / lstrip / rstrip の ArgumentError / CompatibilityError（全エンコーディング、~/ruby/src/trials/2026-11-23-saruby-compat-bundle-2/）
   - [ ] 残り: 壊れた UTF-8 の String#to_sym が EncodingError を出さない（検査は to_sym 1 回 +6 命令、見送り）、interpolation `:"#{...}"` の壊れたバイト（node_dsym）、Struct / TracePoint 等が文字列名を intern する所はエンコーディングを見ない、UTF-32 で 0x80000000 以上の符号（Onigmo は符号付きで比較して有効扱い）の valid_encoding?
 - [x] blop 層（docs/io_design.md、~/ruby/src/trials/2026-11-22-saruby-blop/）: 待ちは全部 slab 所有の op、エンジンは poll（既定）/ epoll。1 ms ポーリング廃止。file/flock・file/open・io-wait/wait・process/status/wait のタイムアウト解消
-- [ ] まだタイムアウト: kernel/require（並行 require: ロード中 feature の待ちと他スレッドの Thread#backtrace が要る）、mutex/lock・thread/list（グリーンスレッドに横取りが無い: ループ後方枝 / メソッド入口のタイムスライス検査が要る）
+- [ ] まだタイムアウト: kernel/require（並行 require: ロード中 feature の待ちと他スレッドの Thread#backtrace が要る）
 - [ ] blop: epoll の登録を fd 単位で持ち越す、io_uring エンジン、CFUNC ワーカー（flock / FIFO open / waitpid(-1) のバックオフ代替、getaddrinfo）
 - [ ] Queue ping-pong 1.7M → 1.0M round trips/s（blop の簿記）
 - [x] `$~` / `$_` をメソッドのフレームローカルに（ブロックと共有、builtins/svar.rs: 呼び出しごとのコスト 0、`$~` を書く照合ごと +101〜151 命令）、`$?` はスレッドローカル、`$0 =` は /proc/self/comm（~/ruby/src/trials/2026-11-23-saruby-compat-bundle/）
@@ -100,7 +100,8 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [x] 再帰的な正規表現サブ式呼び出し `(?<a>a\g<a>?)`・`\g<0>`・レベル付き後方参照 `\k<a+0>`・absent 演算子 `(?~x)`（2026-11-23-saruby-regexp）
 - [x] blop 層（docs/io_design.md）: 待ちを 1 か所に、slab + Id + 所有権ごと渡すバッファ、engine trait（poll 既定・epoll）。待機中の CPU ほぼ 0、外部 cat との往復 1k → 45k/s。rubyspec file/flock・file/open・io-wait/wait・process/status/wait のタイムアウト解消
 - [ ] blop の残り: Mutex/CV/Queue の受け渡しが重い（vm_thread_condvar2 +59%、condvar1 +28%、sized_queue4 +26% 命令）、epoll の登録キャッシュ、io_uring engine、worker thread（flock・FIFO open・Process.wait(-1) は back-off の仮実装）
-- [ ] 時分割がない: ブロックしないスレッドが他を飢えさせる（rubyspec mutex/lock・thread/list がタイムアウト）。node.def に時分割のチェックが要る（ASTro 原則と相談: 無効時コスト 0 の形で）
+- [x] 時分割（docs/io_design.md「Time slice」、~/ruby/src/trials/2026-11-23-saruby-timeslice/）: 割り込みフラグはメソッドシリアルの最上位ビット（呼び出しサイトのキャッシュ比較がすでに読む語: ヒット側の命令 0、ミス側 call_slow で poll）、相手を待ちうる while / until には compile.rs が node_poll を被せる（数えるループと条件が必ず呼ぶループには付けない）、Kernel#loop は 1 周ごと。タイマーは 10 ms ごとの std::thread（他スレッドがいて pump で寝ていない間だけ、fork 後は作り直し）、量子 100 ms を Thread#priority で伸縮。Thread#raise / #kill はキュー、Thread.handle_interrupt（:immediate / :on_blocking / :never）、pending_interrupt?、trap / Timeout が忙しいループを割り込む。rubyspec mutex/lock・thread/list のタイムアウト解消、handle_interrupt 1 → 7/7、pending_interrupt 2 → 3/3、priority 4 → 7/7、:on_blocking は puts / print / IO#write でも配る。icount の 15 ベンチは interp / AOT とも +0.015 % 以内（poly は −0.4 / −0.9 %）、起動 +0.18〜0.27 %（AST の drop glue のインライン化が動いた分）、optcarrot +0.08 %/frame、vm_thread_* は close +19 %（1000 スレッドが動くようになり IO#close が cancel_fd を通る）・create_join +1.6 %・pass_flood +1.8 % 以外は −0.7〜−2.1 %、puts_loop +0.37 %（呼び出しごとに待ち割り込み数の load 1 回）。全後方枝に検査を置いた版は +1〜9 % で却下（機械語は trial の results/）
+- [ ] 時分割の残り: 呼び出しの無いブロックを回す組み込みイテレータ（`10**8.times { x += 1 }`）と、本体が代入するローカルだけを条件に読むループは終わるまで横取りされない（CRuby は後方枝ごとに検査）。他スレッドの Thread#backtrace が空
 - [ ] `Array#shift` が O(n)（so_lists）。O(1) 版 2 案は他の配列アクセスを遅くして却下済み
 - [ ] 大きな左シフト（CRuby は NoMemoryError、saruby は 2^26 bit 超を RangeError）
 - [x] `__callee__` on alias、`WeakMap#inspect`、`detailed_message` / `full_message` の書式（eval_error.c / error.c の移植、~/ruby/src/trials/2026-11-23-saruby-compat-bundle/）
