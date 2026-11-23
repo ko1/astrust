@@ -35,7 +35,7 @@ const LIBS: &[(&str, &str)] = &[lib!("etc"), lib!("timeout"), lib!("monitor"), l
 /// Features whose implementation is native and always present (require is a no-op).
 const NATIVE: &[&str] = &["set", "stringio", "rbconfig", "thread", "fiber", "enumerator", "rational", "complex", "continuation",
     "io/wait", "io/nonblock", "fcntl", "etc.so", "monitor.so", "strscan", "strscan.so", "bigdecimal.so", "psych.so", "socket.so", "json/ext/parser", "json/ext/parser.so", "json/ext/generator", "json/ext/generator.so", "zlib", "saruby/errno", "saruby/env", "saruby/rbconfig", "saruby/filetest", "saruby/stat", "saruby/sync", "saruby/econv", "saruby/tracepoint",
-    "coverage.so", "cgi/escape.so", "saruby/toplevel_binding", "saruby/etc", "saruby/syslog", "saruby/digest", "saruby/digest/md5", "saruby/digest/sha1", "saruby/digest/sha2", "saruby/digest/rmd160", "saruby/digest/bubblebabble"];
+    "coverage.so", "cgi/escape.so", "saruby/toplevel_binding", "saruby/etc", "saruby/syslog", "saruby/digest", "saruby/digest/md5", "saruby/digest/sha1", "saruby/digest/sha2", "saruby/digest/rmd160", "saruby/digest/bubblebabble", "saruby/io_buffer"];
 
 /// Constant `name` under `owner` whose native definition runs on first reference (boot time: builtins/mod.rs).
 pub use crate::builtins::lazy_const;
@@ -74,6 +74,7 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
         "saruby/digest/bubblebabble" => crate::builtins::digest::init_bubblebabble(c),
         _ if name.starts_with("saruby/digest/") => crate::builtins::digest::init_algo(c, &name[14..]),
         "io/nonblock" => crate::builtins::io::init_nonblock(c),
+        "saruby/io_buffer" => crate::builtins::io_buffer::init(c),
         _ => {}
     }
     Ok(NIL)

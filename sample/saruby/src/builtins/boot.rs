@@ -164,6 +164,7 @@ fn boot_classes(c: &mut Ctx) {
     vmr.c_enumerator.set(k.enumerator); vmr.c_yielder.set(k.yielder); vmr.c_generator.set(k.generator);
     vmr.c_lazy.set(k.lazy); vmr.c_chain.set(k.chain); vmr.c_arith_seq.set(k.arith_seq);
     io::init(c);
+    lazy_const(c, vmr.c_io.get(), "Buffer", "saruby/io_buffer");
     process::init(c);
     vmr.m_marshal.set(marshal::init(c));
     let (r, d) = random::init(c);
@@ -211,6 +212,7 @@ pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if let Some(r) = strscan::dup_data(c, v)? { return Ok(Some(r)); }
     if let Some(r) = zlib::dup_data(c, v)? { return Ok(Some(r)); }
     if let Some(r) = json_generator::dup_data(c, v)? { return Ok(Some(r)); }
+    if let Some(r) = io_buffer::dup_data(c, v)? { return Ok(Some(r)); }
     Ok(None)
 }
 
@@ -236,6 +238,7 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     if let Some(r) = zlib::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = json_parser::alloc_data(c, klass)? { return Ok(Some(r)); }
     if let Some(r) = json_generator::alloc_data(c, klass)? { return Ok(Some(r)); }
+    if let Some(r) = io_buffer::alloc_data(c, klass)? { return Ok(Some(r)); }
     Ok(None)
 }
 

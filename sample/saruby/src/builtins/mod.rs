@@ -15,6 +15,7 @@ pub mod sprintf;
 pub mod pp;
 pub mod io;
 pub mod io_conv;
+pub mod io_buffer;
 pub mod marshal;
 pub mod strscan;
 pub mod psych;

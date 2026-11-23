@@ -728,6 +728,13 @@ pub fn gvar_warn(c: &mut Ctx, msg: &str, deprecated: bool) -> Result<(), Esc> {
 }
 
 pub fn warn_deprecated(c: &mut Ctx, msg: &str) -> Result<(), Esc> { gvar_warn(c, msg, true) }
+/// rb_category_warn for Warning[`name`] (bit `cat` of misc::WARN_CATS).
+pub fn category_warn(c: &mut Ctx, msg: &str, cat: usize, name: &str) -> Result<(), Esc> {
+    if c.vm().verbose.get() == NIL || !crate::builtins::misc::warning_category_enabled(cat) { return Ok(()); }
+    let loc = c.cur_frame().map(|f| format!("{}:{}: ", frame_file(f), f.line())).unwrap_or_default();
+    let m = format!("{}warning: {}\n", loc, msg);
+    warning_write_cat(c, m.as_bytes(), sym_value(name))
+}
 
 pub fn gvar_get(c: &mut Ctx, name: Sym) -> RV {
     let name = resolve_gvar(c, name);

@@ -462,3 +462,42 @@ pub fn getifaddrs(salen: impl Fn(u16) -> usize) -> Result<Vec<IfAddr>, i64> {
     unsafe { sffi::freeifaddrs(res) };   // SAFETY: freed once
     Ok(out)
 }
+
+// ---- IO::Buffer: memory mappings (builtins/io_buffer.rs) ------------------------------------
+// through the imported syscall(2): no new libc reference for ld.so to resolve
+#[cfg(target_arch = "x86_64")] mod nr_map { pub const MMAP: i64 = 9; pub const MUNMAP: i64 = 11; pub const MREMAP: i64 = 25; }
+#[cfg(target_arch = "aarch64")] mod nr_map { pub const MMAP: i64 = 222; pub const MUNMAP: i64 = 215; pub const MREMAP: i64 = 216; }
+/// An mmap(2) region of `len` > 0 bytes owned by this value: unmapped on drop, never aliased by
+/// another `Mapping`. Its bytes are reached only through `bytes` / `bytes_mut`, which borrow `self`.
+pub struct Mapping { ptr: *mut u8, len: usize, writable: bool }
+impl Mapping {
+    /// mmap(NULL, len, PROT_READ [| PROT_WRITE], MAP_SHARED or MAP_PRIVATE [| MAP_ANONYMOUS if fd < 0], fd, off).
+    pub fn new(len: usize, writable: bool, shared: bool, fd: c_int, off: i64) -> Result<Mapping, i64> {
+        if len == 0 { return Err(22); }
+        let prot = 1 | if writable { 2 } else { 0 };
+        let flags = (if shared { 1 } else { 2 }) | if fd < 0 { 0x20 } else { 0 };
+        let p = unsafe { ffi::syscall(nr_map::MMAP, 0i64, len, prot as i64, flags as i64, fd as i64, off) };   // SAFETY: a new mapping at an address the kernel picks; nothing refers to it yet
+        if p == -1 { Err(errno()) } else { Ok(Mapping { ptr: p as *mut u8, len, writable }) }
+    }
+    pub fn len(&self) -> usize { self.len }
+    pub fn addr(&self) -> usize { self.ptr as usize }
+    /// mremap(2) with MREMAP_MAYMOVE; new anonymous pages are zero.
+    pub fn remap(&mut self, len: usize) -> Result<(), i64> {
+        if len == 0 { return Err(22); }
+        let p = unsafe { ffi::syscall(nr_map::MREMAP, self.ptr, self.len, len, 1i64) };   // SAFETY: our own mapping; `&mut self`: no slice of it is alive
+        if p == -1 { return Err(errno()); }
+        self.ptr = p as *mut u8; self.len = len;
+        Ok(())
+    }
+    /// SAFETY: [ptr, ptr+len) stays mapped and readable while `self` lives, and u8 has no invalid values.
+    /// Not dischargeable here: a shared file mapping may change under the slice (another process) and a
+    /// file truncated by someone else faults on access (SIGBUS) — the OS interface, as in CRuby and memmap2.
+    pub fn bytes(&self) -> &[u8] { unsafe { std::slice::from_raw_parts(self.ptr, self.len) } }
+    /// SAFETY: as `bytes`, for a PROT_WRITE mapping; `&mut self` makes the slice the only one in this process.
+    pub fn bytes_mut(&mut self) -> Option<&mut [u8]> {
+        if self.writable { Some(unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }) } else { None }
+    }
+}
+impl Drop for Mapping {
+    fn drop(&mut self) { unsafe { ffi::syscall(nr_map::MUNMAP, self.ptr, self.len); } }   // SAFETY: our mapping, unmapped once; no slice outlives `self`
+}
