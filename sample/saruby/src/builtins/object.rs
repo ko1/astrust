@@ -367,29 +367,33 @@ fn k_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
 fn k_public_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { Ok(method_list(c, class_of(slf), |v| v == VISI_PUBLIC, a.first().is_none_or(|v| v.truthy()))) }
 fn k_private_methods(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(method_list(c, class_of(slf), |v| v == VISI_PRIVATE, true)) }
 fn k_protected_methods(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(method_list(c, class_of(slf), |v| v == VISI_PROTECTED, true)) }
-fn k_singleton_methods(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
-    let a = c.ary_new();
-    if !slf.is_heap() { return Ok(a); }
+/// rb_obj_singleton_methods: the singleton class, then (all = true) the modules and singleton classes
+/// above it up to the first ordinary class; the first entry of a name decides, private / undef ones hide it.
+fn k_singleton_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    check_argc(c, a, 0, 1)?;
+    let all = a.first().is_none_or(|v| v.truthy());
+    let out = c.ary_new();
+    if !slf.is_heap() { return Ok(out); }
     let k = obj_klass(slf);
-    if !c.class(k).is_singleton { return Ok(a); }
-    let mut names: Vec<(Sym, *const MethodEntry)> = c.class(k).mtbl.iter().map(|(a, b)| (*a, *b)).collect();
-    names.sort_by_key(|x| x.0);
-    for (n, me) in names { if me_visi(c, me) != VISI_PRIVATE && !matches!(me_kind(c, me), Some(MKind::Undef)) { c.ary_push(a, Value::sym(n)); } }
-    // singleton_methods(false): the singleton class's own methods only
-    if !_a.first().is_none_or(|v| v.truthy()) { return Ok(a); }
-    for &m in c.class(k).includes.clone().iter() {
-        for (n, v) in mtbl_entries(c, m) { if v == VISI_PUBLIC && !c.ary(a).contains(&Value::sym(n)) { c.ary_push(a, Value::sym(n)); } }
-    }
-    if is_class_or_module(slf) {
-        // class methods inherited through the metaclass chain
-        let mut sup = c.class(slf).superclass;
-        while sup != NIL {
-            let mk = obj_klass(sup);
-            if c.class(mk).is_singleton { for (n, v) in mtbl_entries(c, mk) { if v == VISI_PUBLIC && !c.ary(a).contains(&Value::sym(n)) { c.ary_push(a, Value::sym(n)); } } }
-            sup = c.class(sup).superclass;
+    if !c.class(k).is_singleton { return Ok(out); }
+    let chain: Vec<Value> = ancestors(c, k).to_vec();
+    let start = chain.iter().position(|&x| x == k).unwrap_or(0);
+    // up to the first ordinary class, less the modules prepended to it
+    let mut end = chain.iter().skip(start + 1).position(|&x| !c.class(x).is_singleton && !c.class(x).is_module).map_or(chain.len(), |j| j + start + 1);
+    if end < chain.len() { let ce = chain[end]; end -= ancestors(c, ce).iter().position(|&x| x == ce).unwrap_or(0); }
+    if !all { end = start + 1; }
+    let mut seen: Vec<Sym> = vec![];
+    for (i, &m) in chain.iter().enumerate().take(end) {
+        if i < start { continue; }   // prepended to the singleton class: CRuby's origin is skipped too
+        let mut names: Vec<(Sym, *const MethodEntry)> = c.class(m).mtbl.iter().map(|(a, b)| (*a, *b)).collect();
+        names.sort_by_key(|x| x.0);
+        for (n, me) in names {
+            if seen.contains(&n) { continue; }
+            seen.push(n);
+            if me_visi(c, me) != VISI_PRIVATE && !matches!(me_kind(c, me), Some(MKind::Undef)) { c.ary_push(out, Value::sym(n)); }
         }
     }
-    Ok(a)
+    Ok(out)
 }
 fn k_method(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let mid = to_sym_arg(c, a[0])?;
@@ -718,6 +722,36 @@ fn m_protected_instance_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -
 
 fn m_name(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     match c.class(slf).name { Some(n) => Ok(n), None => Ok(NIL) }
+}
+/// Module#set_temporary_name: a name for an anonymous module (nil removes it); modules named under it follow.
+fn m_set_temporary_name(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    if has_perm_name(c, slf) { return err(c, c.vm().c_runtime_error.get(), "can't change permanent name"); }
+    let name = if a[0] == NIL { None } else {
+        let s = expect_str(c, a[0])?;
+        let b = c.str_bytes(s).to_vec();
+        if b.is_empty() { return arg_err(c, "empty class/module name"); }
+        let seg_ok = |p: &[u8]| !p.is_empty() && p[0].is_ascii_uppercase() && p.iter().all(|x| x.is_ascii_alphanumeric() || *x == b'_' || *x >= 0x80);
+        let t = b.strip_prefix(b"::").unwrap_or(&b);
+        let segs: Vec<&[u8]> = t.split(|&x| x == b':').collect();
+        // "A::B": the parts between "::" (pairs of ':') are all constant names
+        if segs.len() % 2 == 1 && segs.iter().enumerate().all(|(i, p)| if i % 2 == 1 { p.is_empty() } else { seg_ok(p) }) {
+            return arg_err(c, "the temporary name must not be a constant path to avoid confusion");
+        }
+        Some(String::from_utf8_lossy(&b).into_owned())
+    };
+    set_temp_name(c, slf, name);
+    Ok(slf)
+}
+fn set_temp_name(c: &mut Ctx, k: Value, name: Option<String>) {
+    let v = name.as_ref().map(|n| c.str_new_frozen(n.as_bytes()));
+    let cd = c.class_mut(k);
+    cd.name = v; cd.temp_name = v.is_some();
+    let consts: Vec<(Sym, Value)> = cd.consts.iter().map(|(a, b)| (*a, *b)).collect();
+    for (cn, cv) in consts {
+        if is_class_or_module(cv) && c.class(cv).temp_name && c.class(cv).lexical_parent == k && c.class(cv).base_name == cn {
+            set_temp_name(c, cv, name.as_ref().map(|n| format!("{}::{}", n, sym_str(cn))));
+        }
+    }
 }
 fn m_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let cd = c.class(slf);
@@ -1275,6 +1309,7 @@ pub fn init(c: &mut Ctx) -> InitIds {
     d(c, "private_instance_methods", m_private_instance_methods, -1);
     d(c, "protected_instance_methods", m_protected_instance_methods, -1);
     d(c, "name", m_name, 0);
+    d(c, "set_temporary_name", m_set_temporary_name, 1);
     d(c, "to_s", m_to_s, 0);
     d(c, "inspect", m_to_s, 0);
     d(c, "===", m_eqq, 1);

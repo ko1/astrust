@@ -74,8 +74,10 @@ impl Dumper {
         }
     }
     fn class_name(&mut self, c: &mut Ctx, k: Value) -> Result<String, Esc> {
-        if c.class(k).name.is_none() { let a = any_to_s_anon(c, k); return type_err(c, format!("can't dump anonymous {} {}", if c.class(k).is_module { "module" } else { "class" }, a)); }
-        Ok(class_path(c, k))
+        let p = class_path(c, k);
+        if c.class(k).name.is_none() || p.starts_with("#<") { let a = if c.class(k).name.is_none() { any_to_s_anon(c, k) } else { p }; return type_err(c, format!("can't dump anonymous {} {}", if c.class(k).is_module { "module" } else { "class" }, a)); }
+        if c.class(k).temp_name { return arg_err(c, format!("undefined class/module {}", p)); }
+        Ok(p)
     }
     fn uniq_class(&mut self, c: &mut Ctx, k: Value) -> Result<(), Esc> { let n = self.class_name(c, k)?; self.sym(intern(n.as_bytes())); Ok(()) }
     /// 'e' markers for modules a singleton class includes; a singleton with state can't be dumped.

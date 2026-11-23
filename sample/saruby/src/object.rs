@@ -85,6 +85,7 @@ pub enum AllocKind { Object, String, Array, Hash, Exception, Class, Module, Proc
 
 pub struct ClassData {
     pub name: Option<Value>,          // String (the path) once named
+    pub temp_name: bool,              // `name` is temporary (set_temporary_name, or under an anonymous module)
     pub base_name: Sym,
     pub lexical_parent: Value,
     pub superclass: Value,            // NIL for BasicObject / modules
@@ -118,7 +119,7 @@ pub struct AutoloadRun { pub name: Sym, pub thread: Value, pub value: Value, pub
 impl ClassData {
     pub fn new(superclass: Value, is_module: bool, alloc: AllocKind) -> ClassData {
         ClassData {
-            name: None, base_name: Sym(0), lexical_parent: NIL, superclass, is_module, is_singleton: false, attached: NIL,
+            name: None, temp_name: false, base_name: Sym(0), lexical_parent: NIL, superclass, is_module, is_singleton: false, attached: NIL,
             mtbl: HashMap::default(), consts: HashMap::default(), const_order: vec![], autoload: HashMap::default(), cvars: HashMap::default(),
             includes: vec![], prepends: vec![], extended_by: vec![], ivar_index: HashMap::default(), ivar_names: vec![],
             ancestors: std::cell::RefCell::new(None), alloc, subclasses: vec![], private_consts: vec![], refined: false,

@@ -1280,6 +1280,7 @@ fn m_autoload(c: &mut Ctx, k: Value, args: &[Value], _b: Blk) -> RV {
     if const_get_at(c, k, nm).is_some() { return Ok(NIL); }
     c.class_mut(k).autoload.insert(nm, path);
     if let Some(l) = source_location(c) { c.class_mut(k).const_loc.insert(nm, l); }
+    call_const_added(c, k, nm)?;
     Ok(NIL)
 }
 /// Run an autoload's require: `main.require(path)` as CRuby (so an overridden require sees it);

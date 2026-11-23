@@ -690,21 +690,28 @@ pub fn define_module_under(c: &mut Ctx, outer: Value, name: &str) -> Value {
 }
 pub fn define_module(c: &mut Ctx, name: &str) -> Value { define_module_under(c, vm().c_object.get(), name) }
 
+/// The class has a permanent name (not none, not a temporary one).
+#[inline] pub fn has_perm_name(c: &Ctx, k: Value) -> bool { let cd = c.class(k); cd.name.is_some() && !cd.temp_name }
+
+/// k is assigned to outer::name: a permanent path under a named outer (and its nested modules with it),
+/// else a temporary one "#<Module:0x...>::name" unless it has a name already.
 pub fn name_class(c: &mut Ctx, k: Value, outer: Value, name: Sym) {
-    if c.class(k).name.is_some() { return; }
+    if has_perm_name(c, k) { return; }
     let vm = vm();
-    let path = if outer == vm.c_object.get() || outer == NIL { sym_str(name) } else {
-        match c.class(outer).name { Some(n) => format!("{}::{}", String::from_utf8_lossy(c.str_bytes(n)), sym_str(name)), None => return }
-    };
+    let perm = outer == vm.c_object.get() || outer == NIL || has_perm_name(c, outer);
+    if !perm && c.class(k).name.is_some() { return; }
+    let path = if outer == vm.c_object.get() || outer == NIL { sym_str(name).to_string() } else { format!("{}::{}", class_path(c, outer), sym_str(name)) };
     let s = c.str_new_frozen(path.as_bytes());
     let cd = c.class_mut(k);
     cd.name = Some(s);
+    cd.temp_name = !perm;
     cd.base_name = name;
     cd.lexical_parent = outer;
-    // name nested anonymous modules too (still in k's table: rooted while name_class allocates)
+    if !perm { return; }
+    // name nested modules too (still in k's table: rooted while name_class allocates)
     let consts: Vec<(Sym, Value)> = cd.consts.iter().map(|(a, b)| (*a, *b)).collect();
     for (cn, cv) in consts {
-        if is_class_or_module(cv) && c.class(cv).name.is_none() { name_class(c, cv, k, cn); }
+        if is_class_or_module(cv) && !has_perm_name(c, cv) { name_class(c, cv, k, cn); }
     }
 }
 
@@ -1030,7 +1037,16 @@ pub fn const_set_here(c: &mut Ctx, klass: Value, name: Sym, val: Value) -> Resul
         crate::builtins::kernel::warning_write(c, msg.as_bytes())?;
     }
     const_set_at(c, klass, name, val, loc);
-    Ok(())
+    call_const_added(c, klass, name)
+}
+/// klass.const_added(name), unless it is Module's own (empty) one.
+pub fn call_const_added(c: &mut Ctx, klass: Value, name: Sym) -> Result<(), Esc> {
+    let mid = intern(b"const_added");
+    let me = lookup_method(c, class_of(klass), mid);
+    match c.me_ref(me) {
+        Some(m) if !(m.owner == vm().c_module.get() && matches!(m.kind, MKind::Cfunc(..))) => { funcall(c, klass, mid, &[Value::sym(name)], std::ptr::null())?; Ok(()) }
+        _ => Ok(()),
+    }
 }
 fn const_set_at(c: &mut Ctx, klass: Value, name: Sym, val: Value, loc: Option<SrcLoc>) {
     if !c.class(klass).autoloading.is_empty() {
@@ -1039,7 +1055,7 @@ fn const_set_at(c: &mut Ctx, klass: Value, name: Sym, val: Value, loc: Option<Sr
             // published when the autoload's require ends (other threads keep waiting on it)
             r.value = val; r.loc = loc;
             vm().const_serial.set(vm().const_serial.get() + 1);
-            if is_class_or_module(val) && c.class(val).name.is_none() { name_class(c, val, klass, name); }
+            if is_class_or_module(val) && !has_perm_name(c, val) { name_class(c, val, klass, name); }
             return;
         }
     }
@@ -1048,7 +1064,7 @@ fn const_set_at(c: &mut Ctx, klass: Value, name: Sym, val: Value, loc: Option<Sr
     cd.autoload.remove(&name);
     match loc { Some(l) => { cd.const_loc.insert(name, l); } None => { if !cd.const_loc.is_empty() { cd.const_loc.remove(&name); } } }
     vm().const_serial.set(vm().const_serial.get() + 1);
-    if is_class_or_module(val) && c.class(val).name.is_none() { name_class(c, val, klass, name); }
+    if is_class_or_module(val) && !has_perm_name(c, val) { name_class(c, val, klass, name); }
 }
 
 /// File and line of the innermost Ruby-level frame (rb_source_location).
@@ -1358,7 +1374,7 @@ fn method_owner_label(c: &Ctx, owner: Value) -> String {
         if is_class_or_module(cd.attached) { return format!("{}.", class_path(c, cd.attached)); }
         return String::new();
     }
-    if cd.name.is_none() { return String::new(); }
+    if cd.name.is_none() || cd.temp_name { return String::new(); }
     if owner == vm().c_object.get() { return "Object#".into(); }
     format!("{}#", class_path(c, owner))
 }
