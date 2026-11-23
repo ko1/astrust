@@ -26,7 +26,8 @@ pub enum EscKind { None, Raise, Break, Next, Return, LoopBreak, LoopNext, Retry,
 
 // ---- code descriptors --------------------------------------------------------------
 
-pub struct CodeInfo { pub file: &'static str, pub label: String, pub line: u32, pub end_line: u32 }
+/// nid: the prism node id of the definition (error_highlight of an ArgumentError at the callee)
+pub struct CodeInfo { pub file: &'static str, pub label: String, pub line: u32, pub end_line: u32, pub nid: u32 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IseqKind { Method, Block, Lambda, Class, Top, Eval, Main }
@@ -272,21 +273,41 @@ pub struct Frame {
 /// A source line as a frame keeps it: a reference to the line operand of the node being run (or of an
 /// iseq), not the number.  A site then stores its own address, which specialized code shared by sites
 /// at other lines computes from the tree's root, and no line number enters specialized code or its hash.
-/// A body's patch-bound copy (aot.rs) stores the number itself instead, tagged: `line << 1 | 1`.
+/// Tags: `i << 1 | 1`, a body's patch-bound copy (aot.rs): entry i of BOUND, a node's line; bit 1, a line
+/// that is not a node's (an iseq's, LINE_0/1).  An untagged Pos is a node's: where error_highlight looks.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct Pos(*const u32);
+thread_local! {
+    // the node lines of bound line holes, by the index their code stores
+    static BOUND: RefCell<Vec<&'static u32>> = const { RefCell::new(Vec::new()) };
+}
 impl Pos {
+    /// A node's line hole: `l` is the line field of its head.
     #[inline(always)] pub fn at(l: &'static u32) -> Pos { Pos(l) }
+    /// A line that is not a node's (folds into the address computation: no extra instruction).
+    #[inline(always)] pub fn info(l: &'static u32) -> Pos { Pos((l as *const u32).wrapping_byte_add(2)) }
     /// # Safety
-    /// `p` is `line << 1 | 1` (a hole the loader bound: aot.rs `hole_value`).
+    /// `p` is `i << 1 | 1` from `bind` (a hole the loader bound: aot.rs `hole_value`).
     #[inline(always)] pub const unsafe fn bound(p: *const u8) -> Pos { Pos(p as *const u32) }
-    #[inline]
-    pub fn line(self) -> u32 {
-        let a = self.0.addr();
-        // SAFETY: an untagged Pos is made only by `at`, from a &'static u32.
-        if a & 1 != 0 { (a >> 1) as u32 } else { unsafe { *self.0 } }
+    /// The immediate a bound copy stores for the line hole `l` of a node (None: too many for an imm32).
+    pub fn bind(l: &'static u32) -> Option<u64> {
+        BOUND.with_borrow_mut(|t| { let i = t.len() as u64; if i >= 1 << 30 { return None; } t.push(l); Some(i << 1 | 1) })
     }
+    fn cell(self) -> &'static u32 {
+        let a = self.0.addr();
+        if a & 1 != 0 { return BOUND.with_borrow(|t| t[a >> 1]); }
+        // SAFETY: an untagged Pos is made only by `at`, a 2-tagged one by `info`, from a &'static u32.
+        unsafe { &*self.0.map_addr(|a| a & !2) }
+    }
+    #[inline]
+    pub fn line(self) -> u32 { *self.cell() }
+    /// The node at this position (its line is at offset 0 of the head); None: not a node's line.
+    pub fn node(self) -> Option<NodePtr> {
+        if self.0.addr() & 3 == 2 { None } else { Some(self.cell() as *const u32 as NodePtr) }
+    }
+    /// At the line `l` (not a node's)?
+    pub fn is_info(self, l: &u32) -> bool { self.0.addr() & 3 == 2 && std::ptr::eq(self.cell(), l) }
 }
 pub static LINE_0: u32 = 0;
 pub static LINE_1: u32 = 1;
@@ -321,7 +342,7 @@ impl Frame {
     pub fn empty(st: Stk) -> FrameFull {
         FrameFull {
             h: Frame { prev: std::ptr::null_mut(), fp: head(st), me: std::ptr::null(), blk: std::ptr::null(),
-                       id: 0, pos: Pos::at(&LINE_0), kind: FK_TOP, visi: VISI_PRIVATE, lite: false, pad: std::cell::Cell::new(0) },
+                       id: 0, pos: Pos::info(&LINE_0), kind: FK_TOP, visi: VISI_PRIVATE, lite: false, pad: std::cell::Cell::new(0) },
             cref: std::ptr::null(), iseq: std::ptr::null(), self_blk: std::ptr::null(), defined_class: NIL,
         }
     }
@@ -1213,7 +1234,7 @@ fn lines_to_array(c: &mut Ctx, lines: Vec<String>) -> Value {
 
 /// One frame of a captured backtrace: what frame_label needs, plus the file/line.
 #[derive(Clone, Copy)]
-pub struct RawFrame { kind: u8, me: *const MethodEntry, iseq: *const Iseq, file: &'static str, line: u32 }
+pub struct RawFrame { kind: u8, me: *const MethodEntry, iseq: *const Iseq, file: &'static str, line: u32, nid: u32 }
 
 /// An exception's backtrace kept as raw frames: formatted when first read (most never are).
 pub struct RawBt { frames: Vec<RawFrame>, skip: usize }
@@ -1233,10 +1254,12 @@ pub fn make_backtrace_lazy(c: &mut Ctx, skip: usize) -> Value {
 pub fn exc_bt(c: &mut Ctx, e: Value) -> Value {
     let v = ivar_get(c, e, s::bt);
     let Some(raw) = c.data::<RawBt>(v) else { return v };
-    let lines = format_frames(c, &raw.frames, raw.skip);
+    let (lines, nids): (Vec<String>, Vec<u32>) = format_frames_n(c, &raw.frames, raw.skip, usize::MAX).unwrap_or_default().into_iter().unzip();
     let a = lines_to_array(c, lines);
-
+    let ns = c.ary_new_capa(nids.len());
+    for n in nids { c.ary_push(ns, Value::fix(n as i64)); }
     ivar_set_raw(c, e, s::bt, a);
+    ivar_set_raw(c, e, intern(b"__bt_nids"), ns);
     a
 }
 
@@ -1246,23 +1269,34 @@ fn capture_frames(c: &Ctx) -> Vec<RawFrame> {
     unsafe {
         while !f.is_null() {
             let fr = &*f;
-            frames.push(RawFrame { kind: fr.kind, me: fr.me, iseq: fr.iseq(), file: frame_file(fr), line: fr.line() });
+            let iseq = fr.iseq();
+            frames.push(RawFrame { kind: fr.kind, me: fr.me, iseq, file: frame_file(fr), line: fr.line(), nid: frame_nid(fr.pos, iseq.as_ref().map(|i| &i.info)) });
             f = fr.prev;
         }
     }
     // cfunc frames take the file/line of the nearest Ruby caller
     let mut last_file: &'static str = "-";
-    let mut last_line = 0;
+    let (mut last_line, mut last_nid) = (0, 0);
     for fr in frames.iter_mut().rev() {
-        if fr.kind == FK_CFUNC { fr.file = last_file; fr.line = last_line; } else { last_file = fr.file; last_line = fr.line; }
+        if fr.kind == FK_CFUNC { fr.file = last_file; fr.line = last_line; fr.nid = last_nid; } else { last_file = fr.file; last_line = fr.line; last_nid = fr.nid; }
     }
     frames
 }
 
-fn format_frames(c: &Ctx, frames: &[RawFrame], skip: usize) -> Vec<String> { format_frames_n(c, frames, skip, usize::MAX).unwrap_or_default() }
+/// The prism node id of the code at `pos` (CRuby's node_id_for_backtrace_location; 0: none): a node's tag, or
+/// at a body's own line its definition's.
+fn frame_nid(pos: Pos, info: Option<&CodeInfo>) -> u32 {
+    match (pos.node(), info) {
+        (Some(n), _) => crate::node::node_tag(n),
+        (None, Some(i)) if pos.is_info(&i.line) => i.nid,
+        _ => 0,
+    }
+}
+
+fn format_frames(c: &Ctx, frames: &[RawFrame], skip: usize) -> Vec<String> { format_frames_n(c, frames, skip, usize::MAX).unwrap_or_default().into_iter().map(|l| l.0).collect() }
 /// Lines skip..skip+n only: the others are not formatted (caller(0, 1) deep in a stack).
 /// None: fewer than `skip` frames (caller's nil).
-fn format_frames_n(c: &Ctx, frames: &[RawFrame], skip: usize, n: usize) -> Option<Vec<String>> {
+fn format_frames_n(c: &Ctx, frames: &[RawFrame], skip: usize, n: usize) -> Option<Vec<(String, u32)>> {
     let mut out = vec![];
     let mut seen = 0usize;
     unsafe {
@@ -1275,7 +1309,7 @@ fn format_frames_n(c: &Ctx, frames: &[RawFrame], skip: usize, n: usize) -> Optio
             if fr.kind == FK_CFUNC && !fr.me.is_null() && (*fr.me).owner == vm().c_proc.get() && matches!(sym_str((*fr.me).name).as_ref(), "call" | "yield" | "===" | "[]") { continue; }
             seen += 1;
             if seen <= skip { continue; }
-            out.push(format!("{}:{}:in '{}'", fr.file, fr.line, frame_label_of(c, fr.kind, fr.me, fr.iseq)));
+            out.push((format!("{}:{}:in '{}'", fr.file, fr.line, frame_label_of(c, fr.kind, fr.me, fr.iseq)), fr.nid));
         }
     }
     if seen < skip { None } else { Some(out) }
@@ -1283,6 +1317,10 @@ fn format_frames_n(c: &Ctx, frames: &[RawFrame], skip: usize, n: usize) -> Optio
 
 pub fn backtrace_lines(c: &Ctx, skip: usize) -> Vec<String> { format_frames(c, &capture_frames(c), skip) }
 pub fn backtrace_lines_n(c: &Ctx, skip: usize, n: Option<usize>) -> Option<Vec<String>> {
+    backtrace_locs_n(c, skip, n).map(|v| v.into_iter().map(|l| l.0).collect())
+}
+/// backtrace_lines_n with each line's prism node id.
+pub fn backtrace_locs_n(c: &Ctx, skip: usize, n: Option<usize>) -> Option<Vec<(String, u32)>> {
     if n == Some(0) { return Some(vec![]); }   // CRuby: [] before the range is checked
     format_frames_n(c, &capture_frames(c), skip, n.unwrap_or(usize::MAX))
 }
@@ -1758,7 +1796,7 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, re
     for j in 0..names.len() { vals[j] = base[2 + npos + j].get(); }
     let id = c.next_serial();
     let mut fr = FrameFull {
-        h: Frame { prev: c.frame, fp: head(base), me, blk, id, pos: Pos::at(&is.info.line), kind: FK_METHOD, visi: VISI_PUBLIC, lite: false, pad: std::cell::Cell::new(0) },
+        h: Frame { prev: c.frame, fp: head(base), me, blk, id, pos: Pos::info(&is.info.line), kind: FK_METHOD, visi: VISI_PUBLIC, lite: false, pad: std::cell::Cell::new(0) },
         cref: unsafe { (*me).cref }, iseq: is, self_blk: std::ptr::null(), defined_class: NIL,
     };
     base[0].set(recv);
@@ -2036,7 +2074,7 @@ pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, recv:
     fr.visi = VISI_PUBLIC;
     fr.id = c.next_serial();
     fr.cref = unsafe { (*me).cref };
-    fr.pos = Pos::at(&is.info.line);
+    fr.pos = Pos::info(&is.info.line);
     base[0].set(recv);
     c.frame = &mut fr.h;
     let r = if is.simple && argc as usize == is.params.lead.len() && flags & CF_KW == 0 {
@@ -2429,7 +2467,7 @@ pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &'static Iseq, base: Stk, argc
     fr.visi = VISI_PUBLIC;
     fr.id = if lambda { c.next_serial() } else { b.home_id };
     fr.self_blk = b;
-    fr.pos = Pos::at(&is.info.line);
+    fr.pos = Pos::info(&is.info.line);
     fr.defined_class = b.defined_class;
     c.frame = &mut fr.h;
     let fast = is.lead_only && is.env_size == 0 && argc as usize == is.params.lead.len() && (argc != 1 || is.params.lead.len() == 1) && !kw;

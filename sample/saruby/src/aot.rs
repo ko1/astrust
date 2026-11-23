@@ -45,13 +45,13 @@ fn first_dispatch(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     d(c, n, fp)
 }
 
-/// A hole's value for the loader: a line as `Pos` keeps a bound one (vm.rs).
+/// A hole's value for the loader: a line as `Pos` keeps a bound one (vm.rs), an imm32 naming the node.
 fn hole_value(op: &str, root: usize, off: usize) -> Option<u64> {
     if op != "line" { return None; }
-    // SAFETY: off is a hole of this entry's binding descriptor: a u32 inside the laid-out tree at root.
-    let line = unsafe { *((root + off) as *const u32) } as u64;
-    // as an immediate of R_X86_64_32S
-    if line < 1 << 30 { Some(line << 1 | 1) } else { None }
+    // SAFETY: off is a hole of this entry's binding descriptor: a u32 inside the laid-out tree at root,
+    // which is never freed.
+    let line: &'static u32 = unsafe { &*((root + off) as *const u32) };
+    Pos::bind(line)
 }
 
 thread_local! {

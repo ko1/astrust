@@ -21,6 +21,7 @@ pub const NF_HAS_HASH: u32 = 1;
 pub const NF_SPECIALIZING: u32 = 2;
 pub const NF_NO_INLINE: u32 = 4;
 pub const NF_LAID: u32 = 8;        // part of a block made by layout_tree
+pub const NF_TAG_SHIFT: u32 = 8;   // bits 8..: the embedder's tag
 
 #[repr(C)]
 pub struct NodeHead {

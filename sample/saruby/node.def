@@ -776,7 +776,7 @@ node_call_blk(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym
                 let r = iter_loop(c, it, r0, &a[..k.min(2)], &mut |c: &mut Ctx, v: &[Value]| {
                     put_args(c, bb, bfp, np, v);
                     // a step starts at the block's line
-                    if share { c.frame_mut().pos = Pos::at(&blk.info.line); }
+                    if share { c.frame_mut().pos = Pos::info(&blk.info.line); }
                     EVAL_SPEC!(c, body, blk.bentry, bfp, CallArgs { me: std::ptr::null(), blk: bp, shared: share, inl: true })
                 });
                 c.frame = pf;

@@ -977,7 +977,7 @@ pub fn EVAL_node_call_blk<D_recv: Disp, D_args: DispList, H_line: crate::vm::Lin
                 let r = iter_loop(c, it, r0, &a[..k.min(2)], &mut |c: &mut Ctx, v: &[Value]| {
                     put_args(c, bb, bfp, np, v);
                     // a step starts at the block's line
-                    if share { c.frame_mut().pos = Pos::at(&blk.info.line); }
+                    if share { c.frame_mut().pos = Pos::info(&blk.info.line); }
                     <D_body as Disp>::spec(c, blk.bentry, bfp, CallArgs { me: std::ptr::null(), blk: bp, shared: share, inl: true })
                 });
                 c.frame = pf;

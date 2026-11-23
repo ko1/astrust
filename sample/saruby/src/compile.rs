@@ -550,7 +550,7 @@ impl<'a> Compiler<'a> {
         } else { (layout_tree(body), entry, bentry, kentry) };
         let is = Box::leak(Box::new(Iseq {
             body, entry, bentry, kentry, dentry, body_used: std::cell::Cell::new(false), nlocals: sc.nslots, params, env_size: sc.env_size, env_params,
-            info: CodeInfo { file: self.file, label, line, end_line: sc.end_line }, kind, simple, lead_only, name, local_names, arity, uses_block: false, traced: self.trace,
+            info: CodeInfo { file: self.file, label, line, end_line: sc.end_line, nid: node_tag_current() }, kind, simple, lead_only, name, local_names, arity, uses_block: false, traced: self.trace,
             parent: std::cell::Cell::new(std::ptr::null()), ruby2_keywords: std::cell::Cell::new(false),
             outer_names: if kind == IseqKind::Eval { self.eval_outer.iter().flatten().cloned().collect() } else { vec![] },
             outer_vars: std::mem::take(&mut self.pending_outer),
@@ -584,7 +584,14 @@ impl<'a> Compiler<'a> {
 
     fn dconst(&self, kind: u32) -> NodePtr { ALLOC_node_defined(kind, Sym(0), ALLOC_node_nil()) }
 
+    /// n's nodes, tagged with its prism node id (CRuby's node id of an instruction: error_highlight)
     pub fn c(&mut self, n: &PNode) -> NodePtr {
+        let saved = node_tag_swap(n.id);
+        let r = self.c_node(n);
+        node_tag_swap(saved);
+        r
+    }
+    fn c_node(&mut self, n: &PNode) -> NodePtr {
         let line = self.line(n.loc);
         match &n.kind {
             Kind::StatementsNode { body } => self.statements(body),

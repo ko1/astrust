@@ -66,6 +66,9 @@ require 'optparse'
 # tree's shape (which the hash covers), so specialized code addresses every node, and so every inline cache,
 # as `root + constant` instead of loading child pointers level by level.  Only laid-out trees are specialized.
 #
+# Node tag: bits NF_TAG_SHIFT.. of a head's flags are the embedder's (`node_allocated` may set them): not hashed,
+# copied by layout_tree, read by no generated code (saruby: the prism node id error_highlight looks up).
+#
 # Node access: generated code (and the code it emits) reads a node only through the primitives of node_head.rs
 # (node_u::<T>(n) -> &T, node_u_mut, node_kind / node_dispatcher / node_flags / node_hash_*, node_head_<lead
 # field>), whose `unsafe` carries the contract on NodePtr; the per-node templates have none.
@@ -720,6 +723,7 @@ module ASTrustGen
       pub const NF_SPECIALIZING: u32 = 2;
       pub const NF_NO_INLINE: u32 = 4;
       pub const NF_LAID: u32 = 8;        // part of a block made by layout_tree
+      pub const NF_TAG_SHIFT: u32 = 8;   // bits 8..: the embedder's tag
 
       #[repr(C)]
       pub struct NodeHead {

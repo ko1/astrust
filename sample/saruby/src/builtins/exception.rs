@@ -312,9 +312,15 @@ fn exc_backtrace_locations(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Blo
     let bt = exc_bt(c, slf);
     if bt == NIL || ivar_get(c, slf, intern(b"__bt_set")) == TRUE { return Ok(NIL); }
     let out = c.ary_new();
+    let nids = ivar_get(c, slf, intern(b"__bt_nids"));
     let mut i = 0;
     while let Some(&l) = c.ary(bt).get(i) {
-        if is_string(l) { let s = String::from_utf8_lossy(c.str_bytes(l)).into_owned(); let loc = location_from_str(c, &s); c.ary_push(out, loc); }
+        if is_string(l) {
+            let s = String::from_utf8_lossy(c.str_bytes(l)).into_owned();
+            let loc = location_from_str(c, &s);
+            if is_array(nids) { let n = c.ary_get(nids, i); ivar_set_raw(c, loc, intern(b"__nid"), n); }
+            c.ary_push(out, loc);
+        }
         else { c.ary_push(out, l); }
         i += 1;
     }
@@ -339,6 +345,12 @@ pub fn location_from_str(c: &mut Ctx, s: &str) -> Value {
 pub fn locations_from_lines(c: &mut Ctx, lines: Vec<String>) -> Value {
     let out = c.ary_new();
     for l in lines { let v = location_from_str(c, &l); c.ary_push(out, v); }
+    out
+}
+/// Locations with their prism node ids (error_highlight).
+pub fn locations_from_locs(c: &mut Ctx, locs: Vec<(String, u32)>) -> Value {
+    let out = c.ary_new();
+    for (l, n) in locs { let v = location_from_str(c, &l); ivar_set_raw(c, v, intern(b"__nid"), Value::fix(n as i64)); c.ary_push(out, v); }
     out
 }
 fn loc_path(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, slf, intern(b"path"))) }
@@ -369,8 +381,8 @@ fn loc_inspect(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
 }
 fn k_caller_locations(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let (start, len) = caller_range(c, args)?;
-    let Some(lines) = backtrace_lines_n(c, 1 + start, len) else { return Ok(NIL) };
-    Ok(locations_from_lines(c, lines))
+    let Some(locs) = backtrace_locs_n(c, 1 + start, len) else { return Ok(NIL) };
+    Ok(locations_from_locs(c, locs))
 }
 /// caller / caller_locations arguments: (start = 1, length = nil) or (range)
 pub fn caller_range(c: &mut Ctx, args: &[Value]) -> Result<(usize, Option<usize>), Esc> {

@@ -62,8 +62,21 @@ pub mod node {
     include!("node_specialize.rs");
     include!("node_dump.rs");
     include!("node_replace.rs");
+    thread_local! {
+        // the prism node id being compiled (compile.rs `c`): every node made meanwhile is tagged with it
+        static NODE_TAG: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+    /// Set the tag of nodes made from now on (a prism node id; 0: none) and return the previous one.
     #[inline(always)]
-    pub fn node_allocated(_n: NodePtr) {}
+    pub fn node_tag_swap(id: u32) -> u32 { NODE_TAG.replace(if id < 1 << (32 - NF_TAG_SHIFT) { id } else { 0 }) }
+    pub fn node_tag_current() -> u32 { NODE_TAG.get() }
+    /// The prism node id a node was compiled from (0: unknown).
+    pub fn node_tag(n: NodePtr) -> u32 { node_flags(n) >> NF_TAG_SHIFT }
+    #[inline(always)]
+    pub fn node_allocated(n: NodePtr) {
+        let t = NODE_TAG.get();
+        if t != 0 { node_set_flags(n, node_flags(n) | t << NF_TAG_SHIFT); }
+    }
     pub use crate::eval::*;
 }
 #[allow(unused_imports)]
@@ -89,7 +102,7 @@ pub fn run_top_iseq_cref(c: &mut Ctx, is: &'static Iseq, slf: Value, cref: *cons
     fr.visi = VISI_PRIVATE;
     fr.id = c.next_serial();
     fr.cref = cref;
-    fr.pos = Pos::at(&LINE_1);
+    fr.pos = Pos::info(&LINE_1);
     base[0].set(slf);
     base[1].set(NIL);
     nil_fill(base, 2, is.nlocals as usize);
