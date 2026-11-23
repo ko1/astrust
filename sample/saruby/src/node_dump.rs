@@ -57,6 +57,15 @@ fn DUMP_node_str(out: &mut String, n: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_cstr(out: &mut String, n: NodePtr) {
+    let u = node_u::<node_cstr_struct>(n);
+    out.push_str("(node_cstr");
+    out.push(' '); out.push_str(&format!("{:?}", String::from_utf8_lossy(u.s)));
+    out.push(' '); out.push_str(&format!("{:?}", u.enc));
+    out.push(')');
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_fstr(out: &mut String, n: NodePtr) {
     let u = node_u::<node_fstr_struct>(n);
     out.push_str("(node_fstr");

@@ -9,10 +9,14 @@ use crate::fxhash::HashMap;
 pub const FL_FROZEN: u32 = 1;
 pub const FL_TMPLOCK: u32 = 2;   // String: rb_str_locktmp (IO::Buffer.for / .string); modification raises
 pub const FL_CHILLED: u32 = 16;   // string literal: frozen-on-write warning semantics (treated as mutable)
+pub const FL_CHILLED_SYM: u32 = 8; // ... a String from Symbol#to_s (its own warning)
+pub const FL_CHILLED_ANY: u32 = FL_CHILLED | FL_CHILLED_SYM;
+/// Bits that send a write to the slow check (frozen / locked raise; chilled warns once).
+pub const FL_MODIFY_CHECK: u32 = FL_FROZEN | FL_TMPLOCK | FL_CHILLED_ANY;
 pub const FL_KWHASH: u32 = 32;    // ruby2_keywords flagged hash
 pub const FL_SHAREABLE: u32 = 64;   // Ractor.shareable? said yes (ractor.rs); never copied by dup / clone
 pub const FL_PRIVATE_CALL: u32 = 4;  // NoMethodError#private_call? (no ivar: a raise stays as cheap)
-// bits 8, 128 are unused.  The flags below name side tables and weak tables; they share one
+// bit 128 is unused.  The flags below name side tables and weak tables; they share one
 // byte so that finalize and scan_edges test them with one byte-wide instruction.
 pub const FL_EXIVAR: u32 = 0x100;
 pub const FL_TRACED: u32 = 0x200;    // has an entry in objspace's allocation table (removed on free)

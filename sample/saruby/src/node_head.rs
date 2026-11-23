@@ -324,6 +324,13 @@ pub struct node_str_struct {
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
+pub struct node_cstr_struct {
+    pub s: Str,
+    pub enc: u32,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
 pub struct node_fstr_struct {
     pub s: Str,
     pub enc: u32,
@@ -1139,6 +1146,11 @@ pub fn ALLOC_node_str(s: Str, enc: u32) -> NodePtr {
 }
 
 #[allow(non_snake_case)]
+pub fn ALLOC_node_cstr(s: Str, enc: u32) -> NodePtr {
+    node_allocate_with(&KIND_node_cstr, node_cstr_struct { s, enc }, |_| { })
+}
+
+#[allow(non_snake_case)]
 pub fn ALLOC_node_fstr(s: Str, enc: u32) -> NodePtr {
     node_allocate_with(&KIND_node_fstr, node_fstr_struct { s, enc, lc: Default::default() }, |_| { })
 }
@@ -1682,6 +1694,12 @@ fn CHILDREN_node_float(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_str(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = node_u_mut::<node_str_struct>(n);
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_cstr(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = node_u_mut::<node_cstr_struct>(n);
 
 }
 
@@ -2445,6 +2463,22 @@ pub static KIND_node_str: NodeKind = NodeKind {
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_str_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_str_struct>>() <= 8);
 impl NodeStruct for node_str_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_str } }
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_cstr: NodeKind = NodeKind {
+    name: "node_cstr",
+    default_dispatcher: DISPATCH_node_cstr,
+    hash_func: HASH_node_cstr,
+    profile: PROF_node_cstr,
+    specializer: SPECIALIZE_node_cstr,
+    dumper: DUMP_node_cstr,
+    replacer: REPLACE_node_cstr,
+    no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_cstr_struct>>(),
+    children: CHILDREN_node_cstr,
+};
+const _: () = assert!(std::mem::size_of::<NodeOf<node_cstr_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_cstr_struct>>() <= 8);
+impl NodeStruct for node_cstr_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_cstr } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_fstr: NodeKind = NodeKind {

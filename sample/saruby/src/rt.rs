@@ -1118,7 +1118,7 @@ pub fn srb_sdef(c: &mut Ctx, recv: Value, mid: Sym, is: &'static Iseq) -> RV {
     if (!recv.is_heap() || recv.is_fixnum()) && recv != NIL && recv != TRUE && recv != FALSE {
         return type_err(c, format!("can't define singleton"));
     }
-    if recv.is_heap() && is_frozen(recv) { return Err(raise_frozen(c, recv)); }
+    if recv.is_heap() && obj_flags(recv) & (FL_FROZEN | FL_CHILLED_ANY) != 0 { crate::vm::modify_check_slow(c, recv)?; }
     let k = singleton_class(c, recv);
     define_iseq_method(c, k, mid, is, VISI_PUBLIC);
     crate::builtins::coverage::on_def(c, is as *const Iseq as usize, k, mid);

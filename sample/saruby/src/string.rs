@@ -35,6 +35,13 @@ impl Ctx {
         let k = self.vm().c_string.get();
         self.alloc_with(k, move || Body::String(RString { b: SBuf::from_slice(b), enc }))
     }
+    /// A chilled string literal (FL_CHILLED / FL_CHILLED_SYM).
+    #[inline]
+    pub fn str_new_chilled(&mut self, b: &[u8], enc: u8, fl: u32) -> Value {
+        self.str_account(b.len());
+        let k = self.vm().c_string.get();
+        self.alloc_with_flags(k, fl, move || Body::String(RString { b: SBuf::from_slice(b), enc }))
+    }
     #[inline]
     pub fn str_with_capa(&mut self, n: usize, enc: u8) -> Value {
         self.str_account(n);
@@ -103,7 +110,7 @@ impl Ctx {
     /// String `v` for writing; FrozenError when frozen.
     #[inline]
     pub fn str_modify(&mut self, v: Value) -> Result<&mut RString, Esc> {
-        if obj_flags(v) & (FL_FROZEN | FL_TMPLOCK) != 0 { return Err(raise_frozen_or_locked(self, v)); }
+        if obj_flags(v) & FL_MODIFY_CHECK != 0 { modify_check_slow(self, v)?; }
         Ok(self.rstring_mut(v))
     }
     /// acc << s with the result encoding already decided; they may be the same String.

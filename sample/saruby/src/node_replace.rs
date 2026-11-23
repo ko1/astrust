@@ -42,6 +42,12 @@ fn REPLACE_node_str(n: NodePtr, old: NodePtr, new: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_cstr(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = node_u_mut::<node_cstr_struct>(n);
+
+}
+
+#[allow(non_snake_case, unused_variables)]
 fn REPLACE_node_fstr(n: NodePtr, old: NodePtr, new: NodePtr) {
     let u = node_u_mut::<node_fstr_struct>(n);
 

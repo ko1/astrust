@@ -1111,9 +1111,9 @@ cfn!(s_oct, |c, slf, a, b_| {
 });
 cfn!(s_freeze, |c, slf, a, b_| {
     if obj_flags(slf) & (FL_FROZEN | FL_TMPLOCK) == FL_TMPLOCK { return Err(raise_frozen_or_locked(c, slf)); }
-    obj_set_flags(slf, FL_FROZEN); Ok(slf)
+    obj_set_flags(slf, FL_FROZEN); obj_clear_flags(slf, FL_CHILLED_ANY); Ok(slf)
 });
-cfn!(s_uplus, |c, slf, a, b_| if is_frozen(slf) { Ok(c.str_copy(slf)) } else { Ok(slf) });
+cfn!(s_uplus, |c, slf, a, b_| if obj_flags(slf) & (FL_FROZEN | FL_CHILLED_ANY) != 0 { Ok(c.str_copy(slf)) } else { Ok(slf) });
 cfn!(s_uminus, |c, slf, a, b_| {
     let has_iv = c.vm().gen_ivars.borrow().get(&(slf.raw() as usize)).map(|v| !v.is_empty()).unwrap_or(false);
     if obj_klass(slf) != c.vm().c_string.get() || has_iv {

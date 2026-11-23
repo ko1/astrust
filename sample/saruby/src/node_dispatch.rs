@@ -56,6 +56,14 @@ pub fn DISPATCH_node_str(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
 }
 
 #[allow(non_snake_case, unused_variables)]
+pub fn DISPATCH_node_cstr(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_cstr");
+    let u = node_u::<node_cstr_struct>(n);
+
+    EVAL_node_cstr(c, n, fp, u.s, u.enc)
+}
+
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_fstr(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_fstr");
     let u = node_u::<node_fstr_struct>(n);

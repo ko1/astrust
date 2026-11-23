@@ -73,7 +73,9 @@ pub fn malloc_increase(n: usize) { heap(&mut Scope).account_external(n); }
 #[inline(always)]
 pub fn alloc(c: &mut Ctx, klass: Value, body: Body) -> Value { alloc_by(c, klass, body) }
 #[inline(always)]
-pub fn alloc_with(c: &mut Ctx, klass: Value, make: impl FnOnce() -> Body) -> Value { alloc_with_by(c, klass, make) }
+pub fn alloc_with(c: &mut Ctx, klass: Value, make: impl FnOnce() -> Body) -> Value { alloc_with_by(c, klass, 0, make) }
+#[inline(always)]
+pub fn alloc_with_flags(c: &mut Ctx, klass: Value, flags: u32, make: impl FnOnce() -> Body) -> Value { alloc_with_by(c, klass, flags, make) }
 
 #[inline]
 fn alloc_by(c: &mut Ctx, klass: Value, body: Body) -> Value {
@@ -85,8 +87,8 @@ fn alloc_by(c: &mut Ctx, klass: Value, body: Body) -> Value {
 /// alloc, with the body built by `make` once the slot is known: a body built first and passed
 /// in sits on the stack and is copied with wide loads its narrow stores cannot forward to.
 #[inline(always)]
-fn alloc_with_by(c: &mut Ctx, klass: Value, make: impl FnOnce() -> Body) -> Value {
-    let p = heap(&mut Scope).alloc(c, move || RObj { klass, flags: 0, gc: GcHeader::new(), body: make() });
+fn alloc_with_by(c: &mut Ctx, klass: Value, flags: u32, make: impl FnOnce() -> Body) -> Value {
+    let p = heap(&mut Scope).alloc(c, move || RObj { klass, flags, gc: GcHeader::new(), body: make() });
     // SAFETY: the object just allocated
     unsafe { Value::from_ptr(p.as_ptr()) }
 }
