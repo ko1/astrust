@@ -1510,6 +1510,12 @@ fn m_autoload_p(c: &mut Ctx, k: Value, args: &[Value], _b: Blk) -> RV {
 
 fn k_dir(c: &mut Ctx, _s: Value, _args: &[Value], _b: Blk) -> RV {
     let f = c.caller_frame().map_or("-", frame_file).to_string();
+    // code from eval: no real path; a given file name's dirname as is
+    if c.caller_frame().is_some_and(|x| x.kind == FK_EVAL) {
+        if f.starts_with("(eval") { return Ok(NIL); }
+        let d = match f.rfind('/') { Some(0) => "/".to_string(), Some(i) => f[..i].to_string(), None => ".".to_string() };
+        return Ok(c.str_new(d.as_bytes()));
+    }
     let p = std::path::Path::new(&f);
     let abs = std::fs::canonicalize(p).unwrap_or(p.to_path_buf());
     Ok(c.str_new(abs.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or(".".into()).as_bytes()))

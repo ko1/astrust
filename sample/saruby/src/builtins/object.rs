@@ -192,7 +192,12 @@ fn k_ivars(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 }
 fn k_remove_ivar(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = to_sym_arg(c, a[0])?;
-    check_frozen(c, slf)?;
+    let nb = sym_bytes(n);
+    if !(nb.len() > 1 && nb[0] == b'@' && nb[1] != b'@' && !nb[1].is_ascii_digit() && nb[1..].iter().all(|x| x.is_ascii_alphanumeric() || *x == b'_' || *x >= 0x80)) {
+        let e = make_name_error(c, c.vm().c_name_error.get(), &format!("'{}' is not allowed as an instance variable name", sym_str(n)), Value::sym(n), slf)?;
+        return Err(raise_exc(c, e));
+    }
+    if !slf.is_heap() || is_frozen(slf) { return Err(raise_frozen(c, slf)); }
     match ivar_remove(c, slf, n) {
         Some(v) => Ok(v),
         None => {
