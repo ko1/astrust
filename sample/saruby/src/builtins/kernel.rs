@@ -56,8 +56,8 @@ pub fn err_write(b: &[u8]) {
 /// Write to $stdout (dispatching when it was reassigned).
 pub fn stdout_write(c: &mut Ctx, b: &[u8]) -> Result<(), Esc> {
     let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
-    if so == c.vm().stdout.get() && !stdout_conv() { out_write(b); return out_check(c); }
-    if so == c.vm().stderr.get() { err_write(b); return Ok(()); }
+    if so == c.vm().stdout.get() && !stdout_slow() { out_write(b); return out_check(c); }
+    if so == c.vm().stderr.get() && !crate::builtins::io::out_redef() { err_write(b); return Ok(()); }
     let st = c.str_new(b);
     funcall(c, so, intern(b"write"), &[st], std::ptr::null())?;
     Ok(())
@@ -197,11 +197,13 @@ pub fn puts_bytes(c: &mut Ctx, args: &[Value]) -> Result<Vec<u8>, Esc> {
     Ok(out)
 }
 
-/// STDOUT converts what is written to it (set_encoding): go through IO#write / #puts.
-fn stdout_conv() -> bool { crate::builtins::io::STDOUT_CONV.load(std::sync::atomic::Ordering::Relaxed) }
+/// STDOUT converts what is written to it (set_encoding) or an output method may be overridden:
+/// go through IO#write / #puts.
+#[inline(always)]
+fn stdout_slow() -> bool { crate::builtins::io::STDOUT_CONV.load(std::sync::atomic::Ordering::Relaxed) != 0 }
 fn k_puts(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
-    if so != c.vm().stdout.get() && so != c.vm().stderr.get() || so == c.vm().stdout.get() && stdout_conv() {
+    if so != c.vm().stdout.get() && (so != c.vm().stderr.get() || crate::builtins::io::out_redef()) || so == c.vm().stdout.get() && stdout_slow() {
         return funcall(c, so, s::puts, args, std::ptr::null());
     }
     let out = puts_bytes(c, args)?;
@@ -209,21 +211,41 @@ fn k_puts(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     Ok(NIL)
 }
 
-fn k_print(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
-    if stdout_conv() {
-        let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
-        if so == c.vm().stdout.get() { return funcall(c, so, intern(b"print"), args, std::ptr::null()); }
+fn k_print(c: &mut Ctx, _s: Value, args: &[Value], b: *const Block) -> RV {
+    use crate::builtins::io;
+    let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
+    // rb_io_print to $stdout: $_, $, and $\, and a #write of $stdout's own
+    if so != c.vm().stdout.get() || stdout_slow() || args.is_empty() || io::OUTPUT_SEPS.load(std::sync::atomic::Ordering::Relaxed) {
+        if c.data::<io::RIo>(so).is_some() { return io::io_print(c, so, args, b); }
+        io::print_dyn(c, so, args)?; return Ok(NIL);
     }
     let mut out = vec![];
     for &a in args { let s = to_s_value(c, a)?; out.extend_from_slice(&c.str_bytes(s)); }
-    stdout_write(c, &out)?;
+    out_write(&out); out_check(c)?;
     Ok(NIL)
 }
 
 fn k_p(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
+    let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
+    if so != c.vm().stdout.get() || stdout_slow() { return p_dyn(c, args); }
     let mut out = vec![];
     for &a in args { let s = inspect_value(c, a)?; out.extend_from_slice(&c.str_bytes(s)); out.push(b'\n'); }
-    stdout_write(c, &out)?;
+    out_write(&out); out_check(c)?;
+    Ok(match args.len() { 0 => NIL, 1 => args[0], _ => c.ary_new_from(args) })
+}
+
+/// rb_p_write for each object, then rb_p_result's flush of a File $stdout.
+#[cold]
+fn p_dyn(c: &mut Ctx, args: &[Value]) -> RV {
+    use crate::builtins::io;
+    let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
+    let is_io = c.data::<io::RIo>(so).is_some();
+    for &a in args {
+        let s = inspect_value(c, a)?;
+        let rs = c.str_new_enc(b"\n", ENC_ASCII);
+        if is_io && !io::dyn_write(c, so) { funcall(c, so, intern(b"write"), &[s, rs], std::ptr::null())?; } else { io::writev_dyn(c, so, &[s, rs])?; }
+    }
+    if is_io { funcall(c, so, intern(b"flush"), &[], std::ptr::null())?; }
     Ok(match args.len() { 0 => NIL, 1 => args[0], _ => c.ary_new_from(args) })
 }
 
@@ -239,6 +261,11 @@ fn k_pp(c: &mut Ctx, s: Value, args: &[Value], b: *const Block) -> RV {
 fn k_putc(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     check_argc(c, args, 1, 1)?;
     let v = args[0];
+    let so = *c.vm().globals.borrow().get(&intern(b"$stdout")).unwrap_or(&c.vm().stdout.get());
+    // rb_f_putc: $stdout.putc unless writing to STDOUT as is; a String gives its first character
+    if so != c.vm().stdout.get() || stdout_slow() || is_string(v) && c.str_bytes(v).first().is_some_and(|&b| b >= 0x80) {
+        return funcall(c, so, intern(b"putc"), args, std::ptr::null());
+    }
     let b = if is_string(v) { vec![*c.str_bytes(v).first().unwrap_or(&0)] } else { vec![(crate::builtins::numeric_methods::num_to_long(c, v)? & 0xff) as u8] };
     stdout_write(c, &b)?;
     Ok(v)
@@ -693,12 +720,14 @@ pub fn gvar_alias(c: &mut Ctx, new: Sym, old: Sym) {
 }
 
 /// "file:line: warning: msg" through Warning.warn, unless $VERBOSE is nil (or the category is off).
-fn gvar_warn(c: &mut Ctx, msg: &str, deprecated: bool) -> Result<(), Esc> {
+pub fn gvar_warn(c: &mut Ctx, msg: &str, deprecated: bool) -> Result<(), Esc> {
     if c.vm().verbose.get() == NIL || (deprecated && !crate::builtins::misc::warning_category_enabled(0)) { return Ok(()); }
     let loc = c.cur_frame().map(|f| format!("{}:{}: ", frame_file(f), f.line())).unwrap_or_default();
     let m = format!("{}warning: {}\n", loc, msg);
     if deprecated { warning_write_cat(c, m.as_bytes(), sym_value("deprecated")) } else { warning_write(c, m.as_bytes()) }
 }
+
+pub fn warn_deprecated(c: &mut Ctx, msg: &str) -> Result<(), Esc> { gvar_warn(c, msg, true) }
 
 pub fn gvar_get(c: &mut Ctx, name: Sym) -> RV {
     let name = resolve_gvar(c, name);

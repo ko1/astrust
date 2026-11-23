@@ -55,7 +55,7 @@ fn blank_vm() -> Box<Vm> {
         rand_state: 0x2545F4914F6CDD1D,
         fiber_roots: vec![],
         blop: None,
-        ids: MethodIds { bo_eq: n.into(), bo_init: n.into(), c_new: n.into(), m_eqq: n.into(), kernel_hash: n.into(), r_each: n.into() },
+        ids: MethodIds { bo_eq: n.into(), bo_init: n.into(), c_new: n.into(), m_eqq: n.into(), kernel_hash: n.into(), r_each: n.into(), io_write: n.into() },
         send_cache: crate::vm::send_cache_new(),
         main_ctx: std::ptr::null_mut::<Ctx>(),
     )

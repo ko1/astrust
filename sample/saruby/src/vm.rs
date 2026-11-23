@@ -502,6 +502,7 @@ pub struct Vm {
 pub struct MethodIds {
     pub bo_eq: Cell<*const MethodEntry>, pub bo_init: Cell<*const MethodEntry>, pub c_new: Cell<*const MethodEntry>,
     pub m_eqq: Cell<*const MethodEntry>, pub kernel_hash: Cell<*const MethodEntry>, pub r_each: Cell<*const MethodEntry>,
+    pub io_write: Cell<*const MethodEntry>,
 }
 
 pub static mut VM: Option<Box<Vm>> = None;
@@ -711,6 +712,7 @@ pub fn ancestors(c: &Ctx, klass: Value) -> std::rc::Rc<[Value]> {
 
 pub fn define_method_me(c: &mut Ctx, klass: Value, name: Sym, me: *const MethodEntry) {
     c.class_mut(klass).mtbl.insert(name, me);
+    if crate::rt::booted() && (name == s::puts || matches!(crate::symbol::sym_bytes(name), b"write" | b"putc")) { crate::builtins::io::note_out_method(c, klass); }
     let vm = vm();
     bump_method_serial();
     vm.mcache.borrow_mut().clear();
