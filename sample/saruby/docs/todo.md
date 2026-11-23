@@ -60,6 +60,8 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 
 ## 3. CRuby 互換性
 
+- 全体（2026-11-24, 066161b, ~/ruby/src/trials/2026-11-24-saruby-compat-snapshot）: rubyspec core 21321/23005（CRuby 23144）、language 2757/2933（2934）、library 6204/6376（6401）。差の大きい順: core/module 249、core/kernel 231、core/string 182、library/openssl 173、language 169、core/process 145、core/io 121
+
 - [x] rubyspec を実 mspec で計測（runner: ~/ruby/src/trials/2026-11-22-saruby-rubyspec/bin/、SPEC_RUBY_VERSION=4.0.2）。core 19542/22373、language 2592/2933、library 1922/3188（CRuby 4.0.2: 23144/23155、2934/2934、6401/6402）
 - [x] AOT で knucleotide が segfault → loader の Arena を fork 後に共有していた（3ea7ec4）
 - [x] rubyspec 第 2 回（~/ruby/src/trials/2026-11-22-saruby-rubyspec-2/）: 特殊グローバル変数、IO の外部/内部エンコーディング（io.c 移植、読み書きの変換）、マジックコメントのソースエンコーディング、再帰構造の #hash、Range#step/#max、Kernel#Float、タイムアウト 10 ファイル。core 19617 → 20324、language 2592 → 2720
