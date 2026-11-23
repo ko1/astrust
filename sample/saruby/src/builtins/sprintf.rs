@@ -420,8 +420,11 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                 };
                 // result encoding negotiation
                 let (senc, mut bb) = { let r = c.rstring(sv); (r.enc, r.b.to_vec()) };
-                if senc != renc && !is_ascii(&bb) {
-                    if !en::ascii_compat(senc) { return err(c, c.vm().c_compat_error.get(), format!("incompatible character encodings: {} and {}", en::enc_name_msg(renc), en::enc_name_msg(senc))); }
+                // rb_enc_check(result, str): an ASCII-incompatible one is compatible only with nothing
+                if senc != renc && !bb.is_empty() && (!en::ascii_compat(senc) || !en::ascii_compat(renc)) {
+                    if !out.is_empty() { return err(c, c.vm().c_compat_error.get(), format!("incompatible character encodings: {} and {}", en::enc_name_msg(renc), en::enc_name_msg(senc))); }
+                    renc = senc;
+                } else if senc != renc && !is_ascii(&bb) {
                     if is_ascii(&out) && is_ascii(&fmt[i..]) && is_ascii(&fmt[..start]) || out.is_empty() && is_ascii(&fmt) { renc = senc; }
                     else { return err(c, c.vm().c_compat_error.get(), format!("incompatible character encodings: {} and {}", en::enc_name_msg(renc), en::enc_name_msg(senc))); }
                 }
