@@ -209,12 +209,11 @@ pub fn srb_aset_out(c: &mut Ctx, a: Value, b: Value, v: Value, line: Pos, cc: &O
 
 // ---- literals ----------------------------------------------------------------------------
 
-/// node_fstr_recv once String#freeze or #-@ is redefined: a fresh copy for the redefined one, else None.
-#[cold]
+/// node_fstr_recv off its cached path: a fresh copy once the method (freeze: um 0, -@: um 1) is redefined.
 #[inline(never)]
-pub fn srb_fstr_fresh(c: &mut Ctx, s: Str, enc: u32, um: u32) -> Option<Value> {
-    if !c.redef_any(if um == 0 { R_STR_FREEZE } else { R_STR_UMINUS }) { return None; }
-    Some(c.str_new_enc(s, enc as u8))
+pub fn srb_fstr_recv(c: &mut Ctx, s: Str, enc: u32, um: u32, lc: &LitCache) -> Value {
+    if c.redef_any(if um == 0 { R_STR_FREEZE } else { R_STR_UMINUS }) { return c.str_new_enc(s, enc as u8); }
+    match lc.v.get() { Some(v) => v, None => srb_fstr(c, s, enc, lc) }
 }
 
 pub fn srb_fstr(c: &mut Ctx, s: Str, enc: u32, lc: &LitCache) -> Value {

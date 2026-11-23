@@ -241,9 +241,8 @@ pub fn EVAL_node_fstr(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32, lc: &Li
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_fstr_recv(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32, um: u32, lc: &LitCache) -> RV {
-    if c.redef_any(R_STR_FREEZE | R_STR_UMINUS) { if let Some(v) = srb_fstr_fresh(c, s, enc, um) { return Ok(v); } }
-    if let Some(v) = lc.v.get() { return Ok(v); }
-    Ok(srb_fstr(c, s, enc, lc))
+    if let Some(v) = lc.v.get() { if !c.redef_any(R_STR_FREEZE | R_STR_UMINUS) { return Ok(v); } }
+    Ok(srb_fstr_recv(c, s, enc, um, lc))
 }
 
 
