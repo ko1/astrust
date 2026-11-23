@@ -8,7 +8,7 @@
 // grants are added only when the free list runs dry (`reserve`), so a short run
 // touches only what it uses; collections come at the same allocation counts.
 use super::pages::Pages;
-use super::{header, Control, EdgeVisitor, GcBackend, GcLang, HeapStats, RootVisitor};
+use super::{header, Control, EdgeVisitor, GcBackend, GcHeader, GcLang, HeapStats, RootVisitor, WeakVisitor};
 use std::ptr::NonNull;
 
 const MARK: u32 = 1;
@@ -122,8 +122,7 @@ struct Marker<'a, L: GcLang> {
 impl<L: GcLang> Marker<'_, L> {
     #[inline(always)]
     fn mark(&mut self, p: *mut L::Obj) {
-        // SAFETY: p is a slot of this heap (GcLang::as_object contract, or resolved from our pages)
-        let h = unsafe { header::<L>(p) };
+        let h = slot_header::<L>(p);
         let f = h.get();
         if f & (MARK | FREE) != 0 { return; }
         h.set(f | MARK);
@@ -155,6 +154,21 @@ impl<L: GcLang> RootVisitor<L> for Marker<'_, L> {
             if w == 0 { continue; }
             if let Some((base, i)) = self.pages.resolve(w) { self.mark(Pages::<L::Obj, 0>::slot(base, i)); }
         }
+    }
+}
+
+/// The header of `p`, a slot of this heap (GcLang::as_object contract, or resolved from our pages).
+#[inline(always)]
+fn slot_header<'a, L: GcLang>(p: *mut L::Obj) -> &'a GcHeader {
+    // SAFETY: as above; every slot of our pages has an initialized header
+    unsafe { header::<L>(p) }
+}
+
+// between mark and sweep: marked means alive
+struct Survivors;
+impl<L: GcLang> WeakVisitor<L> for Survivors {
+    fn alive(&mut self, slot: &mut L::Ref) -> bool {
+        L::as_object(*slot).is_none_or(|p| slot_header::<L>(p.as_ptr()).get() & MARK != 0)
     }
 }
 
@@ -209,6 +223,7 @@ impl<L: GcLang> GcBackend<L> for MarkSweep<L> {
             if let Some(o) = pending { m.pending(lang, o); }
             m.drain(lang);
         }
+        lang.sweep_weak(&mut Survivors);
         self.sweep(lang);
         self.allocs_since_gc = 0;
         self.external_since_gc = 0;

@@ -62,6 +62,20 @@ pub unsafe trait GcLang: Sized {
     /// # Safety
     /// `obj` is an initialized object that no visited slot referred to; it is not used again.
     unsafe fn finalize(&mut self, obj: NonNull<Self::Obj>);
+    /// After marking, before any object is finalized: clear the weak references to objects that
+    /// died (`w.alive(slot)`).  Must not allocate from the heap.
+    #[inline(always)]
+    fn sweep_weak<W: WeakVisitor<Self>>(&mut self, _w: &mut W) {}
+    /// `obj` was just allocated, while `Gc::set_alloc_hook(true)`.  Must not allocate from the heap.
+    #[inline(always)]
+    fn allocated(&mut self, _obj: NonNull<Self::Obj>, _ctl: &Control) {}
+}
+
+/// What `GcLang::sweep_weak` asks the backend.
+pub trait WeakVisitor<L: GcLang> {
+    /// Does the slot's referent survive this collection (immediates do)?  A moving backend
+    /// also writes the new reference into the slot.
+    fn alive(&mut self, slot: &mut L::Ref) -> bool;
 }
 
 /// Receives reference slots.  The same enumeration serves marking, forwarding and
@@ -121,6 +135,8 @@ pub struct HeapStats {
 
 /// What every backend shares: stress mode, GC.disable, collection count and time.
 pub struct Control {
+    slow: bool,                // stress or the allocation hook: Gc::alloc goes out of line
+    hook: bool,                // GcLang::allocated is called (Gc::set_alloc_hook)
     stress: usize,             // collect at every `stress`-th allocation; 0 = off
     stress_count: usize,
     disabled: bool,
@@ -159,7 +175,7 @@ impl<L: GcLang, B: GcBackend<L>> Gc<L, B> {
 
     pub fn new() -> Self {
         let () = Self::CHECK;
-        Gc { ctl: Control { stress: 0, stress_count: 0, disabled: false, collections: 0, minors: 0, allocated_at_gc: 0, time: Duration::ZERO }, backend: B::new(), _lang: PhantomData }
+        Gc { ctl: Control { slow: false, hook: false, stress: 0, stress_count: 0, disabled: false, collections: 0, minors: 0, allocated_at_gc: 0, time: Duration::ZERO }, backend: B::new(), _lang: PhantomData }
     }
 
     /// Put `obj` in the heap.  May collect: everything the caller still needs must be
@@ -167,15 +183,18 @@ impl<L: GcLang, B: GcBackend<L>> Gc<L, B> {
     /// The returned pointer is valid until a collection finds the object unreachable.
     #[inline(always)]
     pub fn alloc<F: FnOnce() -> L::Obj>(&mut self, lang: &mut L, make: F) -> NonNull<L::Obj> {
-        if self.ctl.stress != 0 { return self.alloc_stressed(lang, make()); }
+        if self.ctl.slow { return self.alloc_slow(lang, make()); }
         self.backend.alloc(lang, &mut self.ctl, make)
     }
 
+    // stress mode and the allocation hook share the one test on the fast path
     #[cold]
     #[inline(never)]
-    fn alloc_stressed(&mut self, lang: &mut L, obj: L::Obj) -> NonNull<L::Obj> {
-        let obj = self.stress_alloc(lang, obj);
-        self.backend.alloc(lang, &mut self.ctl, move || obj)
+    fn alloc_slow(&mut self, lang: &mut L, obj: L::Obj) -> NonNull<L::Obj> {
+        let obj = if self.ctl.stress != 0 { self.stress_alloc(lang, obj) } else { obj };
+        let p = self.backend.alloc(lang, &mut self.ctl, move || obj);
+        if self.ctl.hook { lang.allocated(p, &self.ctl); }
+        p
     }
 
     #[cold]
@@ -206,7 +225,9 @@ impl<L: GcLang, B: GcBackend<L>> Gc<L, B> {
     }
 
     /// Stress mode: collect at every `n`-th allocation (0 = off).  The test for the rooting discipline.
-    pub fn set_stress(&mut self, n: usize) { self.ctl.stress = n; self.ctl.stress_count = 0; }
+    pub fn set_stress(&mut self, n: usize) { self.ctl.stress = n; self.ctl.stress_count = 0; self.ctl.slow = n != 0 || self.ctl.hook; }
+    /// Call `GcLang::allocated` for every allocation from now on (or stop).  Costs nothing when off.
+    pub fn set_alloc_hook(&mut self, on: bool) { self.ctl.hook = on; self.ctl.slow = on || self.ctl.stress != 0; }
     pub fn stress(&self) -> usize { self.ctl.stress }
     /// GC.disable / GC.enable; returns the previous state.
     pub fn set_disabled(&mut self, d: bool) -> bool { std::mem::replace(&mut self.ctl.disabled, d) }

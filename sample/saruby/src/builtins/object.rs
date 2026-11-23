@@ -452,6 +452,14 @@ fn keep_alias_name(c: &Ctx, from: *const MethodEntry, to: *const MethodEntry) {
     if let Some(n) = n { c.vm().alias_names.borrow_mut().insert(to as usize, n); }
 }
 
+/// An alias made at boot: the entry is `klass`'s own, nobody listens to method_added yet.
+pub fn boot_alias(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) {
+    let Some(&me) = c.class(klass).mtbl.get(&oldname) else { return };
+    let Some(o) = me_copy(c, me) else { return };
+    let n = Box::into_raw(Box::new(o)) as *const MethodEntry;
+    c.vm().alias_names.borrow_mut().insert(n as usize, newname);
+    define_method_me(c, klass, newname, n);
+}
 pub fn alias_method(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) -> Result<(), Esc> {
     let mut me = search_method(c, klass, oldname);
     if (me.is_null() || matches!(me_kind(c, me), Some(MKind::Undef))) && c.class(klass).is_module {

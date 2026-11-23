@@ -12,7 +12,7 @@ use crate::array::*;
 use crate::builtins::kernel::*;
 use crate::builtins::numeric_methods::num_to_long;
 use crate::hash::*;
-use crate::symbol::{intern, s};
+use crate::symbol::intern;
 use crate::value::*;
 use crate::vm::*;
 
@@ -68,7 +68,8 @@ fn gc_stat(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     if let Some(&k) = a.first() { if k.is_sym() { return Ok(hash_get_opt(c, st, k)?.unwrap_or(Value::fix(0))); } }
     Ok(st)
 }
-fn os_each_object(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV {
+fn os_each_object(c: &mut Ctx, s2: Value, a: &[Value], blk: *const Block) -> RV {
+    if blk.is_null() { return crate::builtins::enumerator::enum_for(c, s2, intern(b"each_object"), a, NIL); }
     let k = a.first().copied();
     // nothing allocates between the walk and the Array that roots the result
     let mut vs = vec![];
@@ -80,18 +81,23 @@ fn os_each_object(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -> RV 
     });
     let n = vs.len();
     let list = c.ary_from_vec(vs);
-    if blk.is_null() { return funcall(c, list, s::each, &[], std::ptr::null()); }
     for i in 0..n { let x = c.ary_get(list, i); yield1(c, blk, x)?; }
     Ok(Value::fix(n as i64))
 }
-fn os_count_objects(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let h = crate::gc::stats();
-    let st = c.hash_new();
-    hash_set(c, st, sym_value("TOTAL"), Value::fix(h.slots as i64))?;
-    hash_set(c, st, sym_value("FREE"), Value::fix(h.free as i64))?;
-    Ok(st)
+// ObjectSpace.garbage_collect(full_mark: true, immediate_mark: true, immediate_sweep: true), as gc.rb
+fn os_garbage_collect(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+    let mut full = true;
+    if let Some(&h) = a.last().filter(|&&h| is_hash(h)) {
+        let mut unknown = vec![];
+        for (k, v) in c.hash_pairs(h) {
+            if k == sym_value("full_mark") { full = v.truthy(); }
+            else if k != sym_value("immediate_mark") && k != sym_value("immediate_sweep") { unknown.push(inspect_str(c, k)?); }
+        }
+        if !unknown.is_empty() { return arg_err(c, format!("unknown keyword{}: {}", if unknown.len() > 1 { "s" } else { "" }, unknown.join(", "))); }
+    }
+    if full { crate::gc::collect(c) } else { crate::gc::collect_minor(c) }
+    Ok(NIL)
 }
-fn os_garbage_collect(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { crate::gc::collect(c); Ok(NIL) }
 
 // Warning[category] flags (bit = index in WARN_CAT_NAMES); experimental is on by default, -w turns on deprecated.
 static WARN_CATS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0b0010);
@@ -110,11 +116,6 @@ fn warning_warn(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     if !is_string(a[0]) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(c, a[0]))); }
     let b = c.str_bytes(a[0]).to_vec(); stderr_write(c, &b)?; Ok(NIL)
 }
-fn objspace_wm_init(c: &mut Ctx, s2: Value, _a: &[Value], _b: *const Block) -> RV { let h = c.hash_new(); c.hash_mut(h).identity = true; ivar_set_raw(c, s2, intern(b"@h"), h); Ok(NIL) }
-fn wm_aref(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(c, s2, intern(b"@h")); Ok(hash_get_opt(c, h, a[0])?.unwrap_or(NIL)) }
-fn wm_aset(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(c, s2, intern(b"@h")); hash_set(c, h, a[0], a[1])?; Ok(a[1]) }
-fn wm_key(c: &mut Ctx, s2: Value, a: &[Value], _b: *const Block) -> RV { let h = ivar_get(c, s2, intern(b"@h")); Ok(Value::bool(hash_lookup(c, h, a[0])?.is_some())) }
-
 static FINALIZERS: Global = Global::new(); // Array of [object, callable]; run at exit
 fn finalizers(c: &mut Ctx) -> Value {
     let f = FINALIZERS.get(c);
@@ -128,8 +129,19 @@ fn os_define_finalizer(c: &mut Ctx, _s: Value, a: &[Value], blk: *const Block) -
     if is_frozen(o) { return Err(raise_frozen(c, o)); }
     let p = if a.len() > 1 { a[1] } else if !blk.is_null() { block_to_proc(c, blk)? } else { return arg_err(c, "tried to create Proc object without a block"); };
     if !respond_to(c, p, intern(b"call"), true) { let d = inspect_str(c, p)?; return arg_err(c, format!("wrong type argument {} (should be callable)", d)); }
-    let pair = c.ary_new_from(&[o, p]);
+    // the callable keeps the object alive: CRuby warns (it then runs only at exit)
+    let recv = if is_proc(p) { c.proc_data(p).blk.self_ } else if is_method_obj(p) { c.method_obj(p).recv } else { NIL };
+    if recv == o { gvar_warn(c, "finalizer references object to be finalized", false)?; }
     let f = finalizers(c);
+    // an equal callable is defined once
+    let mut i = 0;
+    while i < c.ary_len(f) {
+        let pair = c.ary_get(f, i);
+        let (x, q) = (c.ary_get(pair, 0), c.ary_get(pair, 1));
+        if x == o && funcall(c, q, intern(b"=="), &[p], std::ptr::null())?.truthy() { return Ok(c.ary_new_from(&[Value::fix(0), q])); }
+        i += 1;
+    }
+    let pair = c.ary_new_from(&[o, p]);
     c.ary_push(f, pair);
     Ok(c.ary_new_from(&[Value::fix(0), p]))
 }
@@ -148,7 +160,21 @@ pub fn run_finalizers(c: &mut Ctx) {
         let Some(pair) = c.ary_mut(f).pop() else { break };
         let (o, p) = (c.ary_get(pair, 0), c.ary_get(pair, 1));
         let id = Value::fix(object_id(o) as i64);
-        if funcall(c, p, intern(b"call"), &[id], std::ptr::null()).is_err() { c.esc = EscKind::None; }
+        if funcall(c, p, intern(b"call"), &[id], std::ptr::null()).is_err() {
+            let e = c.esc_val;
+            c.esc = EscKind::None;
+            // as gc.c: a warning naming the finalizer, then the exception as an uncaught one is shown
+            if c.vm().verbose.get() != NIL {
+                let pi = inspect_str(c, p).unwrap_or_default();
+                c.esc = EscKind::None;
+                let z = c.vm().dollar_zero.get();
+                let z = if is_string(z) { String::from_utf8_lossy(c.str_bytes(z)).into_owned() } else { String::new() };
+                let msg = format!("{}: warning: Exception in finalizer {}\n", z, pi);
+                err_write(msg.as_bytes());
+                crate::report_exception(c, e);
+            }
+            c.esc = EscKind::None;
+        }
     }
 }
 fn rbconfig_ruby(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
@@ -216,17 +242,11 @@ pub fn init(c: &mut Ctx) {
     let os = define_module(c, "ObjectSpace");
     vmr.m_object_space.set(os);
     define_module_function(c, os, "each_object", os_each_object, -1);
-    define_module_function(c, os, "count_objects", os_count_objects, -1);
+    define_module_function(c, os, "count_objects", crate::builtins::objspace::count_objects, -1);
     define_module_function(c, os, "garbage_collect", os_garbage_collect, -1);
     define_module_function(c, os, "define_finalizer", os_define_finalizer, -1);
     define_module_function(c, os, "undefine_finalizer", os_undefine_finalizer, 1);
-    let wm = define_class_under(c, os, "WeakMap", ob);
-    vmr.c_object_space_weak_map.set(wm);
-    define_private_cfunc(c, wm, "initialize", objspace_wm_init, 0);
-    define_cfunc(c, wm, "[]", wm_aref, 1);
-    define_cfunc(c, wm, "[]=", wm_aset, 2);
-    define_cfunc(c, wm, "key?", wm_key, 1);
-    define_cfunc(c, wm, "include?", wm_key, 1);
+    crate::builtins::objspace::init_core(c);
     let wn = define_module(c, "Warning");
     vmr.m_warning.set(wn);
     define_module_function(c, wn, "warn", warning_warn, -1);

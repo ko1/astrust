@@ -1019,6 +1019,8 @@ pub fn object_id(v: Value) -> u64 {
     vm.next_object_id.set(vm.next_object_id.get() + 8);
     let id = vm.next_object_id.get();
     vm.object_ids.borrow_mut().insert(key, id);
+    // the entry goes when the object does (gc.rs forget): its address may hold another object later
+    obj_set_flags(v, FL_HAS_ID);
     id
 }
 

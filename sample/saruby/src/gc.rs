@@ -10,7 +10,8 @@
 // in a Rust heap buffer (Vec<Value> etc.) across an allocation — use a Ruby Array.
 // (The body passed to `alloc` is the exception: its values are roots during that call.)
 use crate::astrust_gc::{self as rt, Gc, GcLang};
-pub use crate::astrust_gc::{EdgeVisitor, GcHeader, RootVisitor};
+pub use crate::astrust_gc::{EdgeVisitor, GcHeader, RootVisitor, WeakVisitor};
+use crate::heap::{obj_flags, obj_klass};
 use crate::object::*;
 use crate::value::*;
 use crate::vm::Ctx;
@@ -124,6 +125,34 @@ pub fn store(holder: Value, slot: &mut Value, v: Value) {
     heap(&mut Scope).store(unsafe { NonNull::new_unchecked(holder.ptr()) }, slot, v);
 }
 
+/// Call `GcLang::allocated` (objspace's allocation tracer) for every allocation, or stop.
+pub fn set_alloc_hook(on: bool) { heap(&mut Scope).set_alloc_hook(on); }
+
+// Heap references in visiting order, once each; ambiguous words are left out.
+struct Collect(Vec<Value>);
+impl EdgeVisitor<Saruby> for Collect {
+    fn visit(&mut self, s: &mut Value) { if s.is_heap() && !self.0.contains(s) { self.0.push(*s); } }
+}
+impl RootVisitor<Saruby> for Collect { fn visit_ambiguous(&mut self, _: &[usize]) {} }
+
+/// The exact roots (ObjectSpace.reachable_objects_from_root, dump_all): machine stacks are not resolved.
+pub fn exact_roots(c: &mut Ctx) -> Vec<Value> {
+    let mut col = Collect(vec![]);
+    crate::vm::visit_roots(&mut col, c);
+    col.0
+}
+
+/// The objects `v` refers to (ObjectSpace.reachable_objects_from): what marking would visit, once each.
+pub fn reachable_from(c: &mut Ctx, v: Value) -> Vec<Value> {
+    let mut col = Collect(vec![]);
+    let (mut k, fl) = (obj_klass(v), obj_flags(v));
+    col.visit(&mut k);
+    if fl & FL_EXIVAR != 0 { visit_gen_ivars(v.raw() as usize, &mut col); }
+    // a weak table's entries are not references
+    if fl & (FL_WEAK_KEYS | FL_WEAK_VALS) == 0 { scan_body(c.body_mut_of(v), &mut col); }
+    col.0
+}
+
 /// Iterate live objects (ObjectSpace.each_object).  `f` must not allocate objects.
 pub fn each_object(mut f: impl FnMut(Value)) {
     // SAFETY: the backend enumerates allocated objects
@@ -134,14 +163,62 @@ pub fn each_object(mut f: impl FnMut(Value)) {
 // address.  Rare, so kept out of the mark and sweep loops.
 #[cold]
 #[inline(never)]
-fn visit_gen_ivars<V: EdgeVisitor<Saruby>>(o: *mut RObj, v: &mut V) {
-    if let Some(iv) = crate::vm::vm().gen_ivars.borrow_mut().get_mut(&(o as usize)) {
+fn visit_gen_ivars<V: EdgeVisitor<Saruby>>(addr: usize, v: &mut V) {
+    if let Some(iv) = crate::vm::vm().gen_ivars.borrow_mut().get_mut(&addr) {
         for (_, x) in iv.iter_mut() { v.visit(x); }
     }
 }
+
+thread_local! {
+    // the weak tables marked by the collection running (scan_edges), pruned by sweep_weak
+    static WEAK_SEEN: std::cell::RefCell<Vec<Value>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+// The edges behind rare flags: generic ivars, a weak table (true: the body is not to be scanned).
 #[cold]
 #[inline(never)]
-fn remove_gen_ivars(p: *mut RObj) { crate::vm::vm().gen_ivars.borrow_mut().remove(&(p as usize)); }
+fn rare_edges<V: EdgeVisitor<Saruby>>(o: &mut RObj, v: &mut V) -> bool {
+    if o.flags & FL_EXIVAR != 0 { visit_gen_ivars(o as *mut RObj as usize, v); }
+    if o.flags & (FL_WEAK_KEYS | FL_WEAK_VALS) == 0 { return false; }
+    let Body::Hash(h) = &mut o.body else { return false };
+    v.visit(&mut h.default); v.visit(&mut h.default_proc);
+    if o.flags & FL_WEAK_VALS == 0 { for e in &mut h.entries { v.visit(&mut e.val); } }
+    let t = <Saruby as GcLang>::from_object(NonNull::from(o));
+    WEAK_SEEN.with_borrow_mut(|w| w.push(t));
+    true
+}
+
+// What a dead object leaves in side tables (generic ivars, the allocation tracer, object ids).
+#[cold]
+#[inline(never)]
+fn forget(p: NonNull<RObj>) {
+    // the flags are read here, not passed: finalize then tests them in memory (one instruction)
+    let (addr, flags) = (p.as_ptr() as usize, obj_flags(<Saruby as GcLang>::from_object(p)));
+    let vm = crate::vm::vm();
+    if flags & FL_EXIVAR != 0 { vm.gen_ivars.borrow_mut().remove(&addr); }
+    if flags & FL_TRACED != 0 { crate::builtins::objspace::forget(addr); }
+    if flags & FL_HAS_ID != 0 { vm.object_ids.borrow_mut().remove(&(addr as u64)); }
+}
+
+/// The edges of a body (scan_edges without the class and the rare flags).
+#[inline(always)]
+fn scan_body<V: RootVisitor<Saruby>>(b: &mut Body, v: &mut V) {
+    match b {
+        Body::Object(ivs) => for x in ivs.iter_mut() { v.visit(x) },
+        Body::Array(a) => for x in a { v.visit(x) },
+        Body::Hash(h) => {
+            for e in &mut h.entries { v.visit(&mut e.key); v.visit(&mut e.val); }
+            v.visit(&mut h.default); v.visit(&mut h.default_proc);
+        }
+        Body::Range(a, b, _) => { v.visit(a); v.visit(b); }
+        Body::Proc(pd) => { crate::vm::visit_block(v, &mut pd.blk); v.visit(&mut pd.from_method); }
+        Body::Env(vals, parent) => { for x in vals.iter_mut() { v.visit(x) } v.visit(parent); }
+        Body::Method(m) => { v.visit(&mut m.recv); v.visit(&mut m.owner); crate::vm::visit_me(v, m.me); }
+        Body::Class(cd) => crate::vm::visit_class(v, cd),
+        Body::Data(d) => d.visit(v),
+        Body::String(_) | Body::Float(_) | Body::Bignum(_) | Body::Free(_) => {}
+    }
+}
 
 // The kinds that die most often own nothing when small; drop_in_place would dispatch through a jump table.
 #[inline(always)]
@@ -209,30 +286,30 @@ unsafe impl GcLang for Saruby {
     #[inline(always)]
     fn scan_edges<V: RootVisitor<Self>>(&mut self, o: &mut RObj, v: &mut V) {
         v.visit(&mut o.klass);
-        if o.flags & FL_EXIVAR != 0 { visit_gen_ivars(o, v); }
-        match &mut o.body {
-            Body::Object(ivs) => for x in ivs.iter_mut() { v.visit(x) },
-            Body::Array(a) => for x in a { v.visit(x) },
-            Body::Hash(h) => {
-                for e in &mut h.entries { v.visit(&mut e.key); v.visit(&mut e.val); }
-                v.visit(&mut h.default); v.visit(&mut h.default_proc);
-            }
-            Body::Range(a, b, _) => { v.visit(a); v.visit(b); }
-            Body::Proc(pd) => { crate::vm::visit_block(v, &mut pd.blk); v.visit(&mut pd.from_method); }
-            Body::Env(vals, parent) => { for x in vals.iter_mut() { v.visit(x) } v.visit(parent); }
-            Body::Method(m) => { v.visit(&mut m.recv); v.visit(&mut m.owner); crate::vm::visit_me(v, m.me); }
-            Body::Class(cd) => crate::vm::visit_class(v, cd),
-            Body::Data(d) => d.visit(v),
-            Body::String(_) | Body::Float(_) | Body::Bignum(_) | Body::Free(_) => {}
+        if o.flags & (FL_EXIVAR | FL_WEAK_KEYS | FL_WEAK_VALS) != 0 && rare_edges(o, v) { return; }
+        scan_body(&mut o.body, v);
+    }
+
+    /// Weak tables (WeakMap, WeakKeyMap) lose the entries whose weak key or value died.
+    fn sweep_weak<W: WeakVisitor<Self>>(&mut self, w: &mut W) {
+        let seen = WEAK_SEEN.take();
+        for t in seen {
+            let vals = obj_flags(t) & FL_WEAK_VALS != 0;
+            self.hash_mut(t).prune(|e| w.alive(&mut e.key) && (!vals || w.alive(&mut e.val)));
         }
     }
 
+    #[inline(never)]
+    fn allocated(&mut self, p: NonNull<RObj>, ctl: &rt::Control) {
+        crate::builtins::objspace::allocated(self, Self::from_object(p), ctl.collections());
+    }
+
     #[inline(always)]
-    unsafe fn finalize(&mut self, p: NonNull<RObj>) {
-        let p = p.as_ptr();
+    unsafe fn finalize(&mut self, obj: NonNull<RObj>) {
+        let p = obj.as_ptr();
         // SAFETY: the collector hands us a dead, initialized object exactly once
         unsafe {
-            if (*p).flags & FL_EXIVAR != 0 { remove_gen_ivars(p); }
+            if (*p).flags & (FL_EXIVAR | FL_TRACED | FL_HAS_ID) != 0 { forget(obj); }
             if !owns_nothing(&(*p).body) { drop_body(p); }
             // poison: a stale reference finds a Free body, not a dropped payload
             std::ptr::write(&mut (*p).body, Body::Free(std::ptr::null_mut()));

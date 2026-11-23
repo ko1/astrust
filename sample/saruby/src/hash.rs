@@ -115,6 +115,14 @@ impl RHash {
         }
         self.entries.len()
     }
+    /// Delete the live entries `keep` refuses, in place: no Ruby code, no allocation (gc::sweep_weak).
+    pub fn prune(&mut self, mut keep: impl FnMut(&mut HEntry) -> bool) {
+        let mut i = self.first;
+        while i < self.entries.len() {
+            if self.entries[i].key != UNDEF && !keep(&mut self.entries[i]) { self.remove_slot(i); }
+            i += 1;
+        }
+    }
     /// Empty slot i (a live one).
     fn remove_slot(&mut self, i: usize) -> Value {
         let v = self.entries[i].val;

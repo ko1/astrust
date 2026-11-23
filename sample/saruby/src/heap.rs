@@ -253,6 +253,9 @@ impl Ctx {
     /// The whole body of `v`, any kind (Object#dup, Object#inspect dispatch on it); `body` made public.
     #[inline(always)]
     pub fn body_of(&self, v: Value) -> &Body { body(self, v) }
+    /// The whole body of `v` for writing (gc::reachable_from runs the collector's edge scan on it).
+    #[inline(always)]
+    pub fn body_mut_of(&mut self, v: Value) -> &mut Body { body_mut(self, v) }
     /// The ivars of heap object `v` when it is a plain object, None for any other kind.
     #[inline(always)]
     pub fn obj_ivars(&self, v: Value) -> Option<&crate::ivbuf::IvBuf> { match body(self, v) { Body::Object(x) => Some(x), _ => None } }

@@ -34,10 +34,13 @@ pub unsafe trait GcLang: Sized {
     fn visit_roots<V: RootVisitor<Self>>(&mut self, v: &mut V);
     fn scan_edges<V: RootVisitor<Self>>(&mut self, obj: &mut Self::Obj, v: &mut V);  // + words it owns
     unsafe fn finalize(&mut self, obj: NonNull<Self::Obj>);      // a dead object: release what it owns
+    fn sweep_weak<W: WeakVisitor<Self>>(&mut self, w: &mut W) {}  // after mark: clear weak refs to the dead
+    fn allocated(&mut self, obj: NonNull<Self::Obj>, ctl: &Control) {}  // while set_alloc_hook(true)
 }
 
 pub trait EdgeVisitor<L: GcLang> { fn visit(&mut self, slot: &mut L::Ref); }
 pub trait RootVisitor<L: GcLang>: EdgeVisitor<L> { fn visit_ambiguous(&mut self, words: &[usize]); }
+pub trait WeakVisitor<L: GcLang> { fn alive(&mut self, slot: &mut L::Ref) -> bool; }
 
 pub trait GcBackend<L: GcLang>: Sized {
     const NAME: &'static str;
@@ -63,6 +66,7 @@ impl Gc<L, B> {
     fn barrier_holder(&mut self, holder: NonNull<L::Obj>);
     fn pin / account_external / each_object / stats / backend_name
     fn set_stress(&mut self, n: usize);  fn set_disabled(&mut self, d: bool) -> bool;
+    fn set_alloc_hook(&mut self, on: bool);
 }
 ```
 
@@ -89,6 +93,18 @@ Points of the design:
   through the same `Control::collect` every backend uses.  `Control` also holds GC.disable
   (backends ask `ctl.disabled()` before an allocation-driven collection), the collection count
   and the time spent.
+* **Allocation hook.**  `set_alloc_hook(true)` makes every allocation call `GcLang::allocated`
+  with the new object (and `Control`, for the collection count).  Stress mode and the hook share
+  one flag (`Control::slow`) that the inlined `Gc::alloc` already tested for stress mode alone: the
+  hook adds no instruction to an allocation while it is off.  The hook runs inside the heap borrow:
+  it must not allocate from the heap.  saruby uses it for `ObjectSpace.trace_object_allocations`.
+* **Weak references.**  The binding does not visit a weak slot when it scans an object; after
+  marking and before any finalization the backend calls `GcLang::sweep_weak` with a `WeakVisitor`
+  whose `alive(slot)` says whether the referent was marked (immediates always are; a moving backend
+  would also write the new reference back).  The binding clears or drops the slots whose referents
+  died.  Both backends implement it (a header bit / a bitmap bit); the read goes through the helper
+  that `Marker::mark` uses, so it added no `unsafe`.  Which slots are weak, and where they are, is
+  the binding's business (saruby: below).
 * **Write barrier.** `Gc::store(holder, slot, v)` writes the slot and calls the backend's
   `barrier`; `barrier_holder` is the barrier alone, for payloads written in bulk.  Both backends
   have an empty barrier and **nothing calls `store` yet** (saruby exposes it as `gc::store`).  A
@@ -96,7 +112,7 @@ Points of the design:
   heap object; inserting those calls is future work.
 * **What is not there yet.** One fixed-size `Obj` per object: there is no variable-size or
   byte allocation, so payloads stay Rust-owned (`Vec`, `Box`) and are released by `finalize`.
-  No weak references or ephemerons.  One heap per process is assumed by nothing in the framework,
+  Weak references, but no ephemerons (a weak-keyed table holds its values strongly).  One heap per process is assumed by nothing in the framework,
   but saruby keeps its heap in a global.
 
 ## Writing a backend
@@ -182,8 +198,20 @@ Gc<Saruby, Backend>`, `gc::alloc(c, klass, body)` (through `Ctx::alloc`), `gc::c
 * Edges (`GcLang::scan_edges`): the match over `Body`, `vm::visit_class` / `visit_me` /
   `visit_block`, and `RData::visit(&mut self, &mut gc::Visitor)` for native payloads
   (`gc::Visitor` is `dyn EdgeVisitor<Saruby>`: one virtual call per edge of a Data object).
-* Finalization: generic ivars and `data_free_hooks`, then `drop_in_place` of the body; the slot
-  is left holding `Body::Free` so a stale reference does not find a dropped payload.
+* Finalization: side tables named by flag bits — generic ivars (`FL_EXIVAR`), the allocation
+  tracer (`FL_TRACED`), object ids (`FL_HAS_ID`), tested with one mask so the common object pays
+  the one test it paid for `FL_EXIVAR` alone —, `data_free_hooks`, then `drop_in_place` of the
+  body; the slot is left holding `Body::Free` so a stale reference does not find a dropped payload.
+* Weak tables (`ObjectSpace::WeakMap`, `WeakKeyMap`, and `WeakRef` on top of WeakMap): a hidden
+  Hash (no class) flagged `FL_WEAK_KEYS` (WeakKeyMap: keys weak, values strong, compared by
+  `eql?`) or `FL_WEAK_KEYS | FL_WEAK_VALS` (WeakMap: both weak, by identity).  `scan_edges` tests
+  those flags in the same mask as `FL_EXIVAR` (`rare_edges`, out of line): the table's weak parts
+  are not visited and the table is recorded; `sweep_weak` prunes the recorded tables' entries
+  whose weak referent died (`RHash::prune`: no Ruby code, no allocation).  Limit: the machine
+  stacks are ambiguous roots, so an object whose address is still in a dead stack word survives a
+  collection; a test can only observe "most entries go" (rubyspec library/weakref does exactly that).
+* Allocation hook: `GcLang::allocated` records file / line / method / class path / GC count of
+  the object in objspace's table (`builtins/objspace.rs`) and flags it `FL_TRACED`.
 * Backend: `make` (marksweep) or `make GC=bitmap`.  `SARUBY_GC_STRESS=n` arms stress mode once
   the VM has booted.
 

@@ -26,7 +26,7 @@ pub fn load_prelude(c: &mut Ctx) -> RV {
 macro_rules! lib { ($n:literal) => { ($n, include_str!(concat!("../../prelude/lib/", $n, ".rb"))) }; }
 /// Features implemented by saruby itself: Ruby source compiled on first require.
 const LIBS: &[(&str, &str)] = &[lib!("etc"), lib!("timeout"), lib!("monitor"), lib!("time"), lib!("bundler"), ("bundler/setup", "require \"bundler\"; Bundler.setup\n"), lib!("date"), ("date_core", "require \"date\"\n"), lib!("pathname"), ("saruby/pathname", include_str!("../../prelude/lib/pathname_core.rb")), ("saruby/argf", include_str!("../../prelude/lib/argf.rb")),
-    ("coverage", "require 'coverage.so'\n"), ("rbconfig/sizeof", include_str!("../../prelude/lib/rbconfig_sizeof.rb")),
+    ("coverage", "require 'coverage.so'\n"), lib!("objspace"), ("objspace/trace", include_str!("../../prelude/lib/objspace_trace.rb")), ("rbconfig/sizeof", include_str!("../../prelude/lib/rbconfig_sizeof.rb")),
     ("syslog", "require 'syslog_ext'\n"), lib!("syslog_ext"), ("syslog/logger", include_str!("../../prelude/lib/syslog_logger.rb")),
     lib!("digest"), ("digest/version", "module Digest\n  VERSION = \"3.2.1\"\nend\n"), ("digest/loader", "require 'saruby/digest'\n"),
     ("digest/md5", "require 'digest'\nrequire 'saruby/digest/md5'\n"), ("digest/sha1", "require 'digest'\nrequire 'saruby/digest/sha1'\n"),
@@ -35,7 +35,7 @@ const LIBS: &[(&str, &str)] = &[lib!("etc"), lib!("timeout"), lib!("monitor"), l
 /// Features whose implementation is native and always present (require is a no-op).
 const NATIVE: &[&str] = &["set", "stringio", "rbconfig", "thread", "fiber", "enumerator", "rational", "complex", "continuation",
     "io/wait", "io/nonblock", "fcntl", "etc.so", "monitor.so", "strscan", "strscan.so", "bigdecimal.so", "psych.so", "socket.so", "json/ext/parser", "json/ext/parser.so", "json/ext/generator", "json/ext/generator.so", "zlib", "saruby/errno", "saruby/env", "saruby/rbconfig", "saruby/filetest", "saruby/stat", "saruby/sync", "saruby/econv", "saruby/tracepoint",
-    "coverage.so", "cgi/escape.so", "saruby/toplevel_binding", "saruby/etc", "saruby/syslog", "saruby/digest", "saruby/digest/md5", "saruby/digest/sha1", "saruby/digest/sha2", "saruby/digest/rmd160", "saruby/digest/bubblebabble", "saruby/io_buffer"];
+    "coverage.so", "objspace.so", "saruby/weakmap", "cgi/escape.so", "saruby/toplevel_binding", "saruby/etc", "saruby/syslog", "saruby/digest", "saruby/digest/md5", "saruby/digest/sha1", "saruby/digest/sha2", "saruby/digest/rmd160", "saruby/digest/bubblebabble", "saruby/io_buffer"];
 
 /// Constant `name` under `owner` whose native definition runs on first reference (boot time: builtins/mod.rs).
 pub use crate::builtins::lazy_const;
@@ -68,6 +68,8 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
         "saruby/etc" => crate::builtins::etc::init(c),
         "cgi/escape.so" => crate::builtins::cgi_escape::init(c)?,
         "coverage.so" => crate::builtins::coverage::init(c),
+        "objspace.so" => crate::builtins::objspace::init_ext(c),
+        "saruby/weakmap" => crate::builtins::objspace::init_weak(c),
         "saruby/toplevel_binding" => crate::builtins::binding::init_toplevel(c),
         "saruby/syslog" => crate::builtins::syslog::init(c),
         "saruby/digest" => crate::builtins::digest::init(c),

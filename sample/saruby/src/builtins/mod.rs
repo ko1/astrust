@@ -59,6 +59,7 @@ pub mod etc;
 pub mod syslog;
 pub mod cgi_escape;
 pub mod coverage;
+pub mod objspace;
 pub mod zlib;
 pub mod zlib_check;
 pub mod zlib_deflate;
