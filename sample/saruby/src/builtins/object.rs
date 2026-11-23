@@ -560,7 +560,7 @@ fn attr_names(c: &mut Ctx, a: &[Value]) -> Result<Vec<Sym>, Esc> {
     Ok(v)
 }
 fn def_attr(c: &mut Ctx, k: Value, n: Sym, reader: bool, writer: bool) -> Result<(), Esc> {
-    let visi = cur_default_visi(c);
+    let visi = match scope_visi(c, k) { VISI_MODFUNC => VISI_PRIVATE, v => v };
     let iv = intern(format!("@{}", sym_str(n)).as_bytes());
     if reader { crate::rt::note_redefinition(c, k, n); define_method_me(c, k, n, new_me(n, k, visi, MKind::AttrReader(iv))); call_method_added(c, k, n)?; }
     if writer {
@@ -595,8 +595,13 @@ fn m_attr_accessor(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
 }
 fn m_attr(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if a.len() == 2 && (a[1] == TRUE || a[1] == FALSE) {
+        if c.vm().verbose.get() == TRUE {
+            let at = c.caller_frame().map(|f| format!("{}:{}: ", frame_file(f), f.line())).unwrap_or_default();
+            crate::builtins::kernel::warning_write(c, format!("{}warning: optional boolean argument is obsoleted\n", at).as_bytes())?;
+        }
         let n = to_sym_arg(c, a[0])?;
         def_attr(c, slf, n, true, a[1] == TRUE)?;
+        if a[1] == TRUE { let w = Value::sym(intern(format!("{}=", sym_str(n)).as_bytes())); return Ok(c.ary_new_from(&[Value::sym(n), w])); }
         return Ok(c.ary_new_from(&[Value::sym(n)]));
     }
     m_attr_reader(c, slf, a, b)
@@ -923,7 +928,7 @@ fn const_path(c: &mut Ctx, slf: Value, a: &[Value], defined: bool) -> RV {
         if !is_const_name(&name) { return Err(wrong_const_name(c, slf, &name)); }
         let sym = if is_sym { sval.as_sym() } else { c.str_to_sym(sval).as_sym() };
         return match const_part(c, slf, sym, inherit, true, defined)? {
-            Some(v) => Ok(if defined { TRUE } else { v }),
+            Some(v) => { if !defined { const_access_check(c, slf, sym, false)?; } Ok(if defined { TRUE } else { v }) }
             None if defined => Ok(FALSE),
             None => const_missing(c, slf, sym),
         };
@@ -1043,9 +1048,11 @@ fn m_remove_const(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
         Some(v) => Some(v),
         None => c.class_mut(slf).autoload.remove(&n).map(|_| NIL),   // an autoload: nil
     };
+    if removed.is_some() && c.class(slf).deprecated_consts.contains(&n) { warn_deprecated_const(c, slf, n)?; }
     match removed {
         Some(v) => {
             let cd = c.class_mut(slf);
+            cd.deprecated_consts.retain(|x| *x != n);
             cd.const_order.retain(|x| *x != n); cd.const_loc.remove(&n); cd.private_consts.retain(|x| *x != n);
             c.vm().const_serial.set(c.vm().const_serial.get() + 1);
             Ok(v)
@@ -1056,8 +1063,20 @@ fn m_remove_const(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
         }
     }
 }
-fn m_private_constant(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    for &x in a { let n = to_sym_arg(c, x)?; c.class_mut(slf).private_consts.push(n); }
+fn m_private_constant(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { set_const_visi(c, slf, a, true) }
+fn m_public_constant(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { set_const_visi(c, slf, a, false) }
+fn set_const_visi(c: &mut Ctx, slf: Value, a: &[Value], private: bool) -> RV {
+    for &x in a {
+        let n = to_sym_arg(c, x)?;
+        if !c.class(slf).consts.contains_key(&n) && !c.class(slf).autoload.contains_key(&n) {
+            let e = make_name_error(c, c.vm().c_name_error.get(), &format!("constant {}::{} not defined", class_path(c, slf), sym_str(n)), Value::sym(n), slf)?;
+            return Err(raise_exc(c, e));
+        }
+        if !private { c.class_mut(slf).private_consts.retain(|x| *x != n); }
+        else if !c.class(slf).private_consts.contains(&n) { c.class_mut(slf).private_consts.push(n); }
+        CONST_VIS.store(true, std::sync::atomic::Ordering::Relaxed);
+        c.vm().const_serial.set(c.vm().const_serial.get() + 1);
+    }
     Ok(NIL)
 }
 fn m_const_missing(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
@@ -1412,7 +1431,7 @@ pub fn init(c: &mut Ctx) -> InitIds {
     d(c, "constants", m_constants, -1);
     define_private_cfunc(c, m, "remove_const", m_remove_const, 1);
     d(c, "private_constant", m_private_constant, -1);
-    d(c, "public_constant", m_hook_noop, -1);
+    d(c, "public_constant", m_public_constant, -1);
     d(c, "const_missing", m_const_missing, 1);
     d(c, "class_variable_get", m_cvar_get, 1);
     d(c, "class_variable_set", m_cvar_set, 2);

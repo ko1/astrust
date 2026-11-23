@@ -1156,6 +1156,33 @@ pub fn do_autoload(c: &mut Ctx, k: Value, name: Sym) -> Result<Option<Value>, Es
     Ok(const_get_at(c, k, name))
 }
 
+/// Some constant was made private or deprecated (const_access_check has work to do).
+pub static CONST_VIS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// `parent::name` (scoped) or const_get found a constant: a private one is an error when scoped, a deprecated one warns.
+#[inline]
+pub fn const_access_check(c: &mut Ctx, parent: Value, name: Sym, scoped: bool) -> Result<(), Esc> {
+    if !CONST_VIS.load(std::sync::atomic::Ordering::Relaxed) { return Ok(()); }
+    const_access_slow(c, parent, name, scoped)
+}
+#[cold]
+fn const_access_slow(c: &mut Ctx, parent: Value, name: Sym, scoped: bool) -> Result<(), Esc> {
+    let o = vm().c_object.get();
+    let owner = ancestors(c, parent).iter().copied().find(|&k| c.class(k).consts.contains_key(&name))
+        .or_else(|| (c.class(parent).is_module && c.class(o).consts.contains_key(&name)).then_some(o));
+    let Some(owner) = owner else { return Ok(()) };
+    if scoped && c.class(owner).private_consts.contains(&name) {
+        let msg = format!("private constant {}::{} referenced", class_path(c, parent), sym_str(name));
+        let e = make_name_error(c, vm().c_name_error.get(), &msg, Value::sym(name), parent)?;
+        return Err(raise_exc(c, e));
+    }
+    if c.class(owner).deprecated_consts.contains(&name) { warn_deprecated_const(c, owner, name)?; }
+    Ok(())
+}
+pub fn warn_deprecated_const(c: &mut Ctx, owner: Value, name: Sym) -> Result<(), Esc> {
+    let path = if owner == vm().c_object.get() { sym_str(name).to_string() } else { format!("{}::{}", class_path(c, owner), sym_str(name)) };
+    crate::builtins::kernel::category_warn(c, &format!("constant {} is deprecated", path), 0, "deprecated")
+}
+
 /// Lexical scope first (not including the top level), then the cref class's ancestors, then Object.
 pub fn const_lookup(c: &mut Ctx, cref: *const Cref, name: Sym) -> RV {
     let vm = vm();

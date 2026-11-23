@@ -949,7 +949,70 @@ pub fn gvar_set(c: &mut Ctx, shown: Sym, v: Value) -> RV {
         _ => {}
     }
     c.vm().globals.borrow_mut().insert(name, v);
+    if TRACING.load(std::sync::atomic::Ordering::Relaxed) { run_traces(c, name, v)?; }
     Ok(v)
+}
+
+// trace_var: { $name => [command, ...] } (oldest first; the newest runs first)
+static TRACES: crate::heap::Global = crate::heap::Global::new();
+static TRACING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn traces_of(c: &mut Ctx, name: Sym) -> Result<Option<Value>, Esc> {
+    let t = TRACES.get(c);
+    if t == NIL { return Ok(None); }
+    let l = hash_get_opt(c, t, Value::sym(name))?;
+    Ok(l.filter(|&l| c.ary_len(l) > 0))
+}
+#[cold]
+fn run_traces(c: &mut Ctx, name: Sym, v: Value) -> Result<(), Esc> {
+    let Some(l) = traces_of(c, name)? else { return Ok(()) };
+    let cmds: Vec<Value> = c.ary(l).iter().rev().copied().collect();
+    let keep = c.ary_new_from(&cmds);
+    for cmd in cmds {
+        if is_string(cmd) { let m = c.vm().main_obj.get(); funcall(c, m, intern(b"eval"), &[cmd], std::ptr::null())?; }
+        else { funcall(c, cmd, intern(b"call"), &[v], std::ptr::null())?; }
+    }
+    std::hint::black_box(keep);
+    Ok(())
+}
+/// Kernel#trace_var(name, cmd = block): cmd (a Proc or a String to eval) runs at each assignment.
+fn k_trace_var(c: &mut Ctx, _s: Value, a: &[Value], b: Blk) -> RV {
+    check_argc(c, a, 1, 2)?;
+    let name = crate::builtins::object::to_sym_arg(c, a[0])?;
+    let name = resolve_gvar(c, name);
+    let cmd = if a.len() == 2 { a[1] } else if !b.is_null() { block_to_proc(c, b)? } else { return arg_err(c, "tried to create Proc object without a block"); };
+    if cmd == NIL { return untrace(c, name, None); }
+    if TRACES.get(c) == NIL { let h = c.hash_new(); TRACES.set(c, h); }
+    let t = TRACES.get(c);
+    let l = match hash_get_opt(c, t, Value::sym(name))? { Some(l) => l, None => { let l = c.ary_new(); hash_set(c, t, Value::sym(name), l)?; l } };
+    c.ary_push(l, cmd);
+    TRACING.store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(NIL)
+}
+/// Kernel#untrace_var(name, cmd = nil): the commands removed (all of them without cmd).
+fn k_untrace_var(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
+    check_argc(c, a, 1, 2)?;
+    let name = crate::builtins::object::to_sym_arg(c, a[0])?;
+    let name = resolve_gvar(c, name);
+    if !gvar_defined(c, name) {
+        let e = make_name_error(c, c.vm().c_name_error.get(), &format!("undefined global variable {}", sym_str(name)), Value::sym(name), NIL)?;
+        return Err(raise_exc(c, e));
+    }
+    untrace(c, name, a.get(1).copied())
+}
+fn untrace(c: &mut Ctx, name: Sym, cmd: Option<Value>) -> RV {
+    let Some(l) = traces_of(c, name)? else { return Ok(if cmd.is_some() { NIL } else { c.ary_new() }) };
+    match cmd {
+        Some(x) => {
+            let Some(i) = c.ary(l).iter().position(|&y| y == x) else { return Ok(NIL) };
+            c.ary_mut(l).remove(i);
+            Ok(c.ary_new_from(&[x]))
+        }
+        None => {
+            let all: Vec<Value> = c.ary(l).iter().rev().copied().collect();
+            c.ary_mut(l).clear();
+            Ok(c.ary_from_vec(all))
+        }
+    }
 }
 
 pub fn gvar_defined(c: &Ctx, name: Sym) -> bool {
@@ -1471,6 +1534,8 @@ pub fn init(c: &mut Ctx) {
     mf(c, "sprintf", k_sprintf, -1);
     mf(c, "format", k_sprintf, -1);
     mf(c, "warn", k_warn, -1);
+    mf(c, "trace_var", k_trace_var, -1);
+    mf(c, "untrace_var", k_untrace_var, -1);
     mf(c, "raise", k_raise, -1);
     mf(c, "fail", k_raise, -1);
     mf(c, "loop", k_loop, 0);

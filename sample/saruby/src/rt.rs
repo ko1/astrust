@@ -502,6 +502,7 @@ pub fn srb_const_path(c: &mut Ctx, parent: Value, name: Sym) -> RV {
         return type_err(c, format!("{} is not a class/module", s));
     }
     if let Some(v) = const_get_inherit(c, parent, name)? {
+        const_access_check(c, parent, name, true)?;
         if crate::builtins::ractor::multi() { crate::builtins::ractor::const_check(c, parent, false, name, v)?; }
         return Ok(v);
     }

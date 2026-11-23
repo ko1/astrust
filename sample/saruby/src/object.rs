@@ -107,6 +107,7 @@ pub struct ClassData {
     pub alloc: AllocKind,
     pub subclasses: Vec<Value>,
     pub private_consts: Vec<Sym>,
+    pub deprecated_consts: Vec<Sym>,
     pub refined: bool,
     pub const_loc: HashMap<Sym, SrcLoc>,   // where each constant (or its autoload) was defined
     pub autoloading: Vec<AutoloadRun>,     // autoloads of this class's constants in progress
@@ -122,7 +123,7 @@ impl ClassData {
             name: None, temp_name: false, base_name: Sym(0), lexical_parent: NIL, superclass, is_module, is_singleton: false, attached: NIL,
             mtbl: HashMap::default(), consts: HashMap::default(), const_order: vec![], autoload: HashMap::default(), cvars: HashMap::default(),
             includes: vec![], prepends: vec![], extended_by: vec![], ivar_index: HashMap::default(), ivar_names: vec![],
-            ancestors: std::cell::RefCell::new(None), alloc, subclasses: vec![], private_consts: vec![], refined: false,
+            ancestors: std::cell::RefCell::new(None), alloc, subclasses: vec![], private_consts: vec![], deprecated_consts: vec![], refined: false,
             const_loc: HashMap::default(), autoloading: vec![],
         }
     }

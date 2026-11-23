@@ -25,6 +25,9 @@ fn m_deprecate_constant(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
             let e = make_name_error(c, c.vm().c_name_error.get(), &format!("constant {}::{} not defined", class_path(c, s), sym_str(n)), Value::sym(n), s)?;
             return Err(raise_exc(c, e));
         }
+        if !c.class(s).deprecated_consts.contains(&n) { c.class_mut(s).deprecated_consts.push(n); }
+        CONST_VIS.store(true, std::sync::atomic::Ordering::Relaxed);
+        c.vm().const_serial.set(c.vm().const_serial.get() + 1);
     }
     Ok(s)
 }
