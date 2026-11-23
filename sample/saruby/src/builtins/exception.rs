@@ -632,6 +632,21 @@ fn key_err_init(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     }
     Ok(NIL)
 }
+/// NoMatchingPatternKeyError.new(msg = nil, matchee: , key: )
+fn nmpk_err_init(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    let (pos, kw) = match kw_arg(a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
+    check_argc(c, pos, 0, 1)?;
+    ivar_set_raw(c, slf, s::mesg, pos.first().copied().unwrap_or(NIL));
+    if let Some(h) = kw {
+        if let Some(r) = crate::hash::hash_get_opt(c, h, sym_value("matchee"))? { ivar_set_raw(c, slf, s::receiver, r); }
+        if let Some(k) = crate::hash::hash_get_opt(c, h, sym_value("key"))? { ivar_set_raw(c, slf, s::key, k); }
+    }
+    Ok(NIL)
+}
+fn nmpk_err_matchee(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
+    if !ivar_defined(c, slf, s::receiver) { return arg_err(c, "no matchee is available"); }
+    Ok(ivar_get(c, slf, s::receiver))
+}
 fn key_err_key(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if !ivar_defined(c, slf, s::key) { return arg_err(c, "no key is available"); }
     Ok(ivar_get(c, slf, s::key))
@@ -706,7 +721,8 @@ pub fn init(c: &mut Ctx) {
     define_private_cfunc(c, vmr.c_frozen_error.get(), "initialize", frozen_err_init, -1);
     define_cfunc(c, vmr.c_frozen_error.get(), "receiver", name_err_receiver, 0);
     define_cfunc(c, vmr.c_no_matching_pattern_key_error.get(), "key", key_err_key, 0);
-    define_cfunc(c, vmr.c_no_matching_pattern_key_error.get(), "matchee", name_err_receiver, 0);
+    define_private_cfunc(c, vmr.c_no_matching_pattern_key_error.get(), "initialize", nmpk_err_init, -1);
+    define_cfunc(c, vmr.c_no_matching_pattern_key_error.get(), "matchee", nmpk_err_matchee, 0);
     define_cfunc(c, vmr.c_stop_iteration.get(), "result", stop_iter_result, 0);
     define_private_cfunc(c, vmr.c_system_exit.get(), "initialize", sysexit_init, -1);
     define_cfunc(c, vmr.c_system_exit.get(), "status", sysexit_status, 0);
