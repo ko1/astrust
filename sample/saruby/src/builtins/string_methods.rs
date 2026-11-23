@@ -363,7 +363,9 @@ cfn!(s_to_s, |c, slf, a, b_| {
 // UTF-8 first, with nothing to do after intern (a broken UTF-8 String is not checked: a scan per call)
 cfn!(s_to_sym, |c, slf, a, b_| { if c.str_enc(slf) == ENC_UTF8 && (is_ascii(c.str_bytes(slf)) || std::str::from_utf8(c.str_bytes(slf)).is_ok()) { return Ok(Value::sym(intern(c.str_bytes(slf)))); } s_to_sym_enc(c, slf) });
 #[inline(never)]
-fn s_to_sym_enc(c: &mut Ctx, slf: Value) -> RV { let s = c.str_intern(slf); if s == crate::symbol::BAD_SYM { return sym_enc_err(c, slf); } Ok(Value::sym(s)) }
+fn s_to_sym_enc(c: &mut Ctx, slf: Value) -> RV {
+    if c.str_enc(slf) == ENC_UTF8 { return sym_enc_err(c, slf); }   // broken UTF-8 (s_to_sym checked)
+    let s = c.str_intern(slf); if s == crate::symbol::BAD_SYM { return sym_enc_err(c, slf); } Ok(Value::sym(s)) }
 #[cold]
 #[inline(never)]
 fn sym_enc_err(c: &mut Ctx, s: Value) -> RV {
@@ -724,16 +726,17 @@ cfn!(s_split, |c, slf, a, blk| {
         if !blk.is_null() { if c.ary_len(arr) > 0 { yield1(c, blk, c.ary_get(arr, 0))?; } return Ok(slf); }
         return Ok(arr);
     }
-    if c.str_bytes(slf).is_empty() {
-        if a.first().is_some_and(|&p| split_searches(c, p)) { crate::builtins::svar::set_last_match(c, NIL); }   // the one search fails
-        return Ok(if blk.is_null() { c.ary_new() } else { slf });
-    }
-    let mut out: Vec<Vec<u8>> = vec![];
+    // the pattern ($; warns) is settled before an empty receiver returns
     let pat = if a.is_empty() || a[0] == NIL {
         let fs = gvar_get(c, intern(b"$;"))?;
         if fs == NIL { c.str_new(b" ") } else { warn_deprecated(c, "$; is set to non-nil value")?; fs }
     } else { a[0] };
     let pat = get_pat(c, pat)?;
+    if c.str_bytes(slf).is_empty() {
+        if a.first().is_some_and(|&p| split_searches(c, p)) { crate::builtins::svar::set_last_match(c, NIL); }   // the one search fails
+        return Ok(if blk.is_null() { c.ary_new() } else { slf });
+    }
+    let mut out: Vec<Vec<u8>> = vec![];
     if is_string(pat) { check_valid(c, pat)?; }
     check_valid(c, slf)?;
     let default_pat = a.is_empty() || a[0] == NIL;
