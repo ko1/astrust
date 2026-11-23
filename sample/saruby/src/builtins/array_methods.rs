@@ -418,7 +418,7 @@ fn flatten_into(c: &mut Ctx, v: Value, depth: i64, out: Value, stack: &mut Vec<V
     let n = c.ary_len(v);
     for i in 0..n {
         let x = c.ary_get(v, i);
-        let sub = if depth != 0 { if is_array(x) { Some(x) } else if x.is_heap() && !is_hash(x) && !is_string(x) { check_array(c, x)? } else { None } } else { None };
+        let sub = if depth != 0 { if is_array(x) { Some(x) } else if crate::rt::conv_target(x) && !is_hash(x) && !is_string(x) { check_array(c, x)? } else { None } } else { None };
         match sub {
             Some(arr) => {
                 if depth < 0 && stack.contains(&arr) { return arg_err(c, "tried to flatten recursive array"); }
@@ -485,7 +485,8 @@ cfn!(a_rotate_b, |c, slf, a, blk| {
     if !v.is_empty() { let n = v.len() as i64; let r = ((k % n) + n) % n; v.rotate_left(r as usize); }
     Ok(slf)
 });
-pub fn ary_join(c: &mut Ctx, slf: Value, sep: &[u8], out: &mut Vec<u8>, enc: &mut u8) -> Result<(), Esc> {
+/// first: rb_ary_join's first pass has yet to meet a non-String (it asks that element for to_str once more).
+pub fn ary_join(c: &mut Ctx, slf: Value, sep: &[u8], out: &mut Vec<u8>, enc: &mut u8, first: &mut bool) -> Result<(), Esc> {
     if !recursion_enter(slf, s::join) { return arg_err(c, "recursive array join"); }
     let mut i = 0;
     let r: Result<(), Esc> = (|| {
@@ -493,11 +494,12 @@ pub fn ary_join(c: &mut Ctx, slf: Value, sep: &[u8], out: &mut Vec<u8>, enc: &mu
             if i > 0 { out.extend_from_slice(sep); }
             let x = c.ary_get(slf, i);
             if is_string(x) { out.extend_from_slice(c.str_bytes(x)); if c.rstring(x).enc == ENC_BINARY && !is_ascii(c.str_bytes(x)) { *enc = ENC_BINARY; } }
-            else if is_array(x) { ary_join(c, x, sep, out, enc)?; }
+            else if is_array(x) { *first = false; ary_join(c, x, sep, out, enc, &mut false)?; }
             else {
-                let sub = if x.is_heap() && !x.is_fixnum() { if let Some(s2) = check_str_conv(c, x)? { Some(s2) } else { None } } else { None };
+                if std::mem::take(first) && crate::rt::conv_target(x) && respond_to(c, x, s::to_str, true) { funcall(c, x, s::to_str, &[], std::ptr::null())?; }
+                let sub = if crate::rt::conv_target(x) { check_str_conv(c, x)? } else { None };
                 if let Some(s2) = sub { out.extend_from_slice(c.str_bytes(s2)); }
-                else if let Some(arr) = if x.is_heap() { check_array(c, x)? } else { None } { ary_join(c, arr, sep, out, enc)?; }
+                else if let Some(arr) = check_array(c, x)? { ary_join(c, arr, sep, out, enc, &mut false)?; }
                 else { let s2 = crate::rt::srb_tostr(c, x)?; out.extend_from_slice(c.str_bytes(s2)); }
             }
             i += 1;
@@ -517,7 +519,7 @@ cfn!(a_join, |c, slf, a, blk| {
     let sepv = if a.is_empty() || a[0] == NIL { gvar_get(c, intern(b"$,"))? } else { a[0] };
     let sep = if sepv == NIL { vec![] } else { let s2 = expect_str(c, sepv)?; c.str_bytes(s2).to_vec() };
     let mut out = vec![]; let mut enc = ENC_UTF8;
-    ary_join(c, slf, &sep, &mut out, &mut enc)?;
+    ary_join(c, slf, &sep, &mut out, &mut enc, &mut true)?;
     Ok(c.str_from_vec_enc(out, enc))
 });
 cfn!(a_to_a, |c, slf, a, blk| if obj_klass(slf) == c.vm().c_array.get() { Ok(slf) } else { Ok(c.ary_from_vec(c.ary(slf).to_vec())) });
@@ -928,8 +930,8 @@ cfn!(a_transpose, |c, slf, a, blk| {
     for j in 0..w { let col = c.ary_from_vec(rows.iter().map(|r| c.ary_get(*r, j)).collect()); c.ary_push(out, col); }
     Ok(out)
 });
-cfn!(a_assoc, |c, slf, a, blk| { let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { if let Some(x) = if x.is_heap() { check_array(c, x)? } else { None } { if c.ary_len(x) > 0 && rb_eq(c, c.ary_get(x, 0), a[0])? { return Ok(x); } } i += 1; } Ok(NIL) });
-cfn!(a_rassoc, |c, slf, a, blk| { let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { if let Some(x) = if x.is_heap() { check_array(c, x)? } else { None } { if c.ary_len(x) > 1 && rb_eq(c, c.ary_get(x, 1), a[0])? { return Ok(x); } } i += 1; } Ok(NIL) });
+cfn!(a_assoc, |c, slf, a, blk| { let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { if let Some(x) = check_array(c, x)? { if c.ary_len(x) > 0 && rb_eq(c, c.ary_get(x, 0), a[0])? { return Ok(x); } } i += 1; } Ok(NIL) });
+cfn!(a_rassoc, |c, slf, a, blk| { let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { if let Some(x) = check_array(c, x)? { if c.ary_len(x) > 1 && rb_eq(c, c.ary_get(x, 1), a[0])? { return Ok(x); } } i += 1; } Ok(NIL) });
 cfn!(a_values_at, |c, slf, a, blk| {
     let out = c.ary_new();
     for &x in a {

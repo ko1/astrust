@@ -496,7 +496,7 @@ pub fn puts_dyn(c: &mut Ctx, io: Value, a: &[Value]) -> Result<(), Esc> {
     if a.is_empty() { let rs = c.str_new_enc(b"\n", ENC_ASCII); return writev_dyn(c, io, &[rs]); }
     for &x in a {
         let line = if is_string(x) { x } else {
-            if let Some(ary) = if x.is_heap() { crate::array::check_array(c, x)? } else { None } {
+            if let Some(ary) = crate::array::check_array(c, x)? {
                 if !recursion_enter(ary, s::puts) { let l = c.str_new(b"[...]"); puts_dyn(c, io, &[l])?; continue; }
                 // each element on its own (io_puts_ary): an empty Array writes nothing
                 let mut i = 0;
@@ -550,7 +550,7 @@ fn puts_conv(c: &mut Ctx, slf: Value, x: Value) -> Result<(), Esc> {
         recursion_leave(x, s::puts);
         return Ok(());
     } else {
-        if x.is_heap() { if let Some(a) = crate::array::check_array(c, x)? { return puts_conv(c, slf, a); } }
+        if let Some(a) = crate::array::check_array(c, x)? { return puts_conv(c, slf, a); }
         to_s_value(c, x)?
     };
     if !c.str_bytes(line).is_empty() { io_write_str(c, slf, line)?; }

@@ -185,9 +185,7 @@ fn puts_one(c: &mut Ctx, v: Value, out: &mut Vec<u8>) -> Result<(), Esc> {
         recursion_leave(v, s::puts);
         return Ok(());
     }
-    if v.is_heap() && !is_string(v) {
-        if let Some(a) = crate::array::check_array(c, v)? { return puts_one(c, a, out); }
-    }
+    if let Some(a) = crate::array::check_array(c, v)? { return puts_one(c, a, out); }
     let s = to_s_value(c, v)?;
     out.extend_from_slice(&c.str_bytes(s));
     if !c.str_bytes(s).ends_with(b"\n") { out.push(b'\n'); }
@@ -674,7 +672,7 @@ fn k_string(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     check_argc(c, args, 1, 1)?;
     let v = args[0];
     if is_string(v) { return Ok(v); }
-    if v.is_heap() && respond_to(c, v, s::to_str, true) { return funcall(c, v, s::to_str, &[], std::ptr::null()); }
+    if crate::rt::conv_target(v) && respond_to(c, v, s::to_str, true) { return funcall(c, v, s::to_str, &[], std::ptr::null()); }
     if respond_to(c, v, s::to_s, true) {
         let r = funcall(c, v, s::to_s, &[], std::ptr::null())?;
         if !is_string(r) { return type_err(c, format!("can't convert {} to String ({}#to_s gives {})", class_name_for_err(c, v), class_name_for_err(c, v), class_name_for_err(c, r))); }
@@ -687,7 +685,7 @@ fn k_array(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     check_argc(c, args, 1, 1)?;
     let v = args[0];
     if is_array(v) { return Ok(v); }
-    if v == NIL { return Ok(c.ary_new()); }
+    if v == NIL && !crate::rt::redef(crate::rt::R_IMM_CONV) { return Ok(c.ary_new()); }
     if let Some(a) = check_array(c, v)? { return Ok(a); }
     if respond_to(c, v, s::to_a, true) {
         let r = funcall(c, v, s::to_a, &[], std::ptr::null())?;

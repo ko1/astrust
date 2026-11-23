@@ -181,7 +181,7 @@ cfn!(s_mul, |c, slf, a, b_| {
 });
 cfn!(s_mod, |c, slf, a, b_| {
     let x = a[0];
-    let arr = if is_array(x) { x } else if x.is_heap() && !is_string(x) && respond_to(c, x, intern(b"to_ary"), true) {
+    let arr = if is_array(x) { x } else if crate::rt::conv_target(x) && !is_string(x) && respond_to(c, x, intern(b"to_ary"), true) {
         let r = funcall(c, x, intern(b"to_ary"), &[], std::ptr::null())?;
         if is_array(r) || r == NIL { r } else { return type_err(c, format!("can't convert {} to Array ({}#to_ary gives {})", class_name_for_err(c, x), class_name_for_err(c, x), class_name_for_err(c, r))); }
     } else { NIL };

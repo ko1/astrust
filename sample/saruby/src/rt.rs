@@ -96,6 +96,9 @@ pub const R_EQQ_IMM: u64 = R_INT_EQQ | R_SYM_EQQ | R_NIL_EQQ | R_TRUE_EQQ | R_FA
 #[inline(always)]
 pub fn redef(f: u64) -> bool { REDEF.load(Relaxed) & f != 0 }
 pub fn redef_word() -> u64 { REDEF.load(Relaxed) }
+/// Might v answer to_str / to_ary?  Immediates only once one of those is defined for them.
+#[inline(always)]
+pub fn conv_target(v: Value) -> bool { v.is_heap() || redef(R_IMM_CONV) }
 
 /// Called when a method is (re)defined after boot: disable affected fast paths.
 pub fn note_redefinition(c: &mut Ctx, klass: Value, mid: Sym) {
@@ -1229,7 +1232,7 @@ pub fn srb_undef(c: &mut Ctx, v: Value) -> Result<(), Esc> {
 
 pub fn srb_masgn_array(c: &mut Ctx, rhs: Value, _splat: bool) -> RV {
     if is_array(rhs) { return Ok(rhs); }
-    if rhs.is_heap() && !is_hash(rhs) && !is_string(rhs) && respond_to(c, rhs, s::to_ary, true) {
+    if conv_target(rhs) && !is_hash(rhs) && !is_string(rhs) && respond_to(c, rhs, s::to_ary, true) {
         let r = funcall(c, rhs, s::to_ary, &[], std::ptr::null())?;
         if is_array(r) { return Ok(r); }
         if r != NIL { return type_err(c, format!("can't convert {} to Array", class_path(c, real_class_of(c, rhs)))); }

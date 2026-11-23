@@ -88,7 +88,7 @@ impl Ctx {
 /// Implicit conversion to Array (to_ary); None when not convertible.
 pub fn check_array(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if is_array(v) { return Ok(Some(v)); }
-    if v.is_heap() && respond_to(c, v, crate::symbol::s::to_ary, true) {
+    if crate::rt::conv_target(v) && respond_to(c, v, crate::symbol::s::to_ary, true) {
         let r = funcall(c, v, crate::symbol::s::to_ary, &[], std::ptr::null())?;
         if is_array(r) { return Ok(Some(r)); }
         if r == NIL { return Ok(None); }

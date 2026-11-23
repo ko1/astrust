@@ -189,7 +189,7 @@ fn en_flat_map(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     run_each(c, slf, |c, d, args, _| {
         let r = yield_block(c, ublk(c, d, 1), args)?;
         let out = c.ary_get(d, 0);
-        match if r.is_heap() { check_array(c, r)? } else { None } { Some(ra) => c.ary_concat(out, ra), None => c.ary_push(out, r) }
+        match check_array(c, r)? { Some(ra) => c.ary_concat(out, ra), None => c.ary_push(out, r) }
         Ok(NIL)
     }, d, &[])?;
     Ok(c.ary_get(d, 0))
