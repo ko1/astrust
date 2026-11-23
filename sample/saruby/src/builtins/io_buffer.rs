@@ -173,6 +173,24 @@ fn new_instance(c: &mut Ctx, klass: Value) -> RV {
     experimental(c)?;
     Ok(c.alloc(klass, Body::Data(Box::new(empty()))))
 }
+/// A locked buffer over `bytes` (rb_io_buffer_new(base, size, LOCKED[|READONLY])): what a Fiber
+/// scheduler's io_read / io_write is given.  Taken back with `take_locked`.
+pub fn new_locked(c: &mut Ctx, bytes: Vec<u8>, readonly: bool) -> RV {
+    if CLASS.get(c) == NIL { let io = c.vm().c_io.get(); funcall(c, io, intern(b"const_get"), &[sym_value("Buffer")], nb())?; }
+    let k = CLASS.get(c);
+    let size = bytes.len();
+    let mem = if size == 0 { Mem::None } else { Mem::Heap(bytes) };
+    let base = mem.addr();
+    let flags = (if size == 0 { 0 } else { INTERNAL }) | LOCKED | if readonly { READONLY } else { 0 };
+    Ok(c.alloc(k, Body::Data(Box::new(RBuf { mem, base, size, flags, source: NIL }))))
+}
+/// The bytes of a `new_locked` buffer; the buffer is left null (rb_io_buffer_free_locked).
+pub fn take_locked(c: &mut Ctx, v: Value) -> Vec<u8> {
+    let Some(b) = c.data_mut::<RBuf>(v) else { return vec![] };
+    let m = std::mem::replace(&mut b.mem, Mem::None);
+    b.base = 0; b.size = 0; b.flags = 0;
+    match m { Mem::Heap(v) => v, _ => vec![] }
+}
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     let k = CLASS.get(c);
     if k != NIL && crate::builtins::inherits(c, klass, k) { return Ok(Some(new_instance(c, klass)?)); }
@@ -1054,7 +1072,7 @@ fn transfer_loop(c: &mut Ctx, slf: Value, fd: i32, dir: Dir, mut from: Option<i6
         let mut cap = usize::MAX;
         if blocking && crate::builtins::thread::active(c) {
             let ev = match dir { Dir::Read => sys::POLLIN, Dir::Write => sys::POLLOUT };
-            crate::builtins::io::wait_one(c, fd, ev, None)?;
+            crate::builtins::io::wait_one(c, NIL, fd, ev, None, NIL)?;
             if matches!(dir, Dir::Write) { cap = 4096; }
         }
         let start = off + total;

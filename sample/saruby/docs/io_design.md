@@ -195,6 +195,53 @@ mask lets through before the block and what it held back after it (replacing the
 exception, as CRuby). `Thread.pending_interrupt?(klass)`, `Thread#pending_interrupt?`.
 `Thread#priority` is kept per thread (inherited, clamped to -3..3) and scales the quantum.
 
+## Fiber scheduler
+
+`Fiber.set_scheduler` (scheduler.c of CRuby 4.0.2; `thread.rs` "Fiber scheduler", trial
+`~/ruby/src/trials/2026-11-23-saruby-finalizer-scheduler/`). The scheduler is per thread (`RThread.scheduler`);
+`thread::scheduler_current` is CRuby's `rb_fiber_scheduler_current`: the thread's scheduler while a non-blocking
+fiber runs (`Fiber.new` default, `Fiber.schedule`), else nil — one load of a count of threads that have one
+(`SCHEDULERS`) when none does. `thread::active` ("take the cooperative branch", asked several times per I/O
+call) is now one load of `COOP`, the live non-main threads plus the threads with a scheduler (it was two `Global`
+reads and the length of the thread list), so the I/O paths reach the points below when a scheduler is set.
+
+| blocking point (saruby) | hook | as CRuby |
+|---|---|---|
+| `Kernel#sleep` | `kernel_sleep(*args)` (arguments as given) | `rb_f_sleep` |
+| `Mutex#sleep`, `ConditionVariable#wait` (through the mutex) | `kernel_sleep(timeout)`; `ConditionVariable#signal` → `unblock(mutex, fiber)` | `mutex_sleep_begin`, `rb_condvar_wait` |
+| `Mutex#lock`, `Queue#pop`, `SizedQueue#push`, `Monitor#enter` | `block(obj, timeout)`; the notify that frees it → `unblock(obj, fiber)` | `do_mutex_lock`, `queue_sleep`, `sync_wakeup` |
+| `Thread#join` / `#value` | `block(thread, timeout)`; the thread's end → `unblock(waiting thread, fiber)` | `thread_join_sleep`, `rb_threadptr_join_list_wakeup` |
+| read with an empty buffer, flush of a full / sync buffer, `IO#wait_*`, `IO#wait`, sockets (accept / connect / recv / send), `` ` `` | `io_wait(io, events, IO#timeout or the timeout given)`; `io_read(io, buffer, 0, 0)` / `io_write(io, buffer, 0, 0)` take the read(2) / write(2) itself when defined (-EAGAIN: `io_wait`, then again) | `rb_io_wait`, `rb_io_read_memory`, `rb_io_write_memory` |
+| `IO.select` | `io_select(*args)` if defined, else it blocks the thread | `rb_f_select` |
+| `IO#close` | `io_close(fd)` (true: the scheduler closed it); a fiber waiting on the IO in `io_wait` gets `fiber_interrupt(fiber, IOError)` and the close waits until it left | `rb_io_close`, `rb_thread_io_close_interrupt / _wait` |
+| `Process.wait*`, `system`, `` ` `` | `process_wait(pid, flags)` (a `Process::Status`, else TypeError) | `rb_process_status_wait` |
+| `Addrinfo.getaddrinfo`, `TCPSocket.new`, ... (a name, not an address) | `address_resolve(name)`, then each address numerically | `rb_scheduler_getaddrinfo` |
+| `Timeout.timeout` | `timeout_after(sec, exc, message, &block)` | timeout.rb |
+| `Fiber.schedule` | `fiber(*args, &block)` | `rb_fiber_s_schedule` |
+| `Fiber.set_scheduler(x)`, thread end (before thread_end events), process exit (before at_exit) | `scheduler_close`, else `close` | `rb_fiber_scheduler_set`, `thread_start_func_2`, `rb_ec_teardown` |
+
+**block / unblock on the blop wait list.** A fiber that blocks through `block` submits a `Wake(key)` op exactly as a
+parked thread would (`blop::submit_fiber`: FIFO with the threads waiting on the same object, not deadlockable) and
+records `[op id, unblock blocker, fiber, thread]` in a Ruby Array (`FWAITS`); then it calls the hook. A notify that
+completes such an op (only after it found a waiter, so the notify paths test nothing new) queues its id and sets the
+interrupt bit; the waker's next check point, or its next wait / scheduler pass, calls that thread's
+`scheduler.unblock(blocker, fiber)` (`run_unblocks`). CRuby calls unblock inside the notify; here it is at the next
+check point of the same waker (and a thread's end wakes its joiners from the main thread's scheduler, so a join's
+unblock runs there, where CRuby runs it in the ending thread). A fiber that leaves `block` with an exception passes
+a wake-up it received on, as a thread does.
+
+**Mutex ownership is per fiber** (CRuby's ec): `owned?` is false in another fiber of the same thread; locking it
+there without a scheduler is "deadlock; lock already owned by another fiber belonging to the same thread"; a
+dead thread releases the locks of all its fibers, a forked child the locks of the threads that did not survive
+(rb_mutex_abandon_all).
+
+**fork**: the child has no scheduler and the forking fiber becomes blocking (rb_thread_atfork).
+
+Not done: `blocking_operation_wait` (CRuby offloads `rb_nogvl` work to it; saruby has no such work items),
+`io_pread` / `io_pwrite`, `yield` (Thread.pass in a non-blocking fiber), `IO::Buffer#read` / `#write` asking
+`io_read` / `io_write`, writes to stdout / stderr through `io_write` (they go to the process buffers),
+`Fiber#backtrace` of a fiber other than the current one (`[]`).
+
 ## Limits
 
 1. Preemption is at check points only (below, "Time slice"): a loop over locals its body assigns

@@ -200,6 +200,15 @@ fn forget(p: NonNull<RObj>) {
     if flags & FL_HAS_ID != 0 { vm.object_ids.borrow_mut().remove(&(addr as u64)); }
 }
 
+// The finalizer table: an entry whose object died goes to the queue (its callables stay marked).
+#[cold]
+#[inline(never)]
+fn sweep_finalizers<W: WeakVisitor<Saruby>>(c: &mut Ctx, t: Value, w: &mut W) {
+    let mut dead = vec![];
+    c.hash_mut(t).prune(|e| w.alive(&mut e.key) || { dead.push(e.val); false });
+    if !dead.is_empty() { crate::builtins::misc::fin_enqueue(c, dead); }
+}
+
 /// The edges of a body (scan_edges without the class and the rare flags).
 #[inline(always)]
 fn scan_body<V: RootVisitor<Saruby>>(b: &mut Body, v: &mut V) {
@@ -294,6 +303,7 @@ unsafe impl GcLang for Saruby {
     fn sweep_weak<W: WeakVisitor<Self>>(&mut self, w: &mut W) {
         let seen = WEAK_SEEN.take();
         for t in seen {
+            if t == crate::builtins::misc::fin_table_value(self) { sweep_finalizers(self, t, w); continue; }
             let vals = obj_flags(t) & FL_WEAK_VALS != 0;
             self.hash_mut(t).prune(|e| w.alive(&mut e.key) && (!vals || w.alive(&mut e.val)));
         }
