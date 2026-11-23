@@ -429,6 +429,7 @@ pub fn poll(c: &mut Ctx) -> Result<(), Esc> {
         slice_start();
     }
     if main && crate::builtins::process::signals_pending() { crate::builtins::process::run_pending_signals(c)?; }
+    crate::builtins::misc::run_finalizer_queue(c, crate::builtins::misc::FinAt::Here);
     check_interrupt_at(c, me, false)
 }
 

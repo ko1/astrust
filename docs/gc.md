@@ -210,6 +210,18 @@ Gc<Saruby, Backend>`, `gc::alloc(c, klass, body)` (through `Ctx::alloc`), `gc::c
   whose weak referent died (`RHash::prune`: no Ruby code, no allocation).  Limit: the machine
   stacks are ambiguous roots, so an object whose address is still in a dead stack word survives a
   collection; a test can only observe "most entries go" (rubyspec library/weakref does exactly that).
+* Finalizers (`ObjectSpace.define_finalizer`, `builtins/misc.rs`): one more weak table, by identity,
+  object → `[object_id, callable...]` (the id is taken at the first define, as CRuby).  Its
+  `sweep_weak` turn (`gc.rs sweep_finalizers`) moves the array of every entry whose object died to a
+  queue (a Ruby Array made with the table: no allocation during the collection) and sets the interrupt
+  bit (the method serial's top bit, docs/io_design.md "Time slice"), so the queue runs at the next check
+  point (`thread::poll`), or at once at the end of `GC.start` (CRuby's `gc_finalize_deferred`).  No test
+  was added to an allocation, sweep or call path.  The callables stay marked (they are the table's
+  values): a callable that refers to its object keeps it alive, so it runs only at exit, as in CRuby.
+  While the queue runs, a collection only appends to it (CRuby's `finalizing` flag); an exception is
+  reported (`Exception in finalizer`, unless `$VERBOSE` is nil) and the next callable runs; `$!` is
+  restored.  At exit: the registered entries in definition order (and ones defined meanwhile), then the
+  queue.  `dup` / `clone` copy the entry with the copy's id (`rb_gc_copy_finalizer`).
 * Allocation hook: `GcLang::allocated` records file / line / method / class path / GC count of
   the object in objspace's table (`builtins/objspace.rs`) and flags it `FL_TRACED`.
 * Backend: `make` (marksweep) or `make GC=bitmap`.  `SARUBY_GC_STRESS=n` arms stress mode once
