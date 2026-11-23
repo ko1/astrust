@@ -154,6 +154,52 @@ pub fn rb_respond_to(c: &mut Ctx, v: Value, mid: Sym) -> Result<bool, Esc> {
 // context-free (legacy.rs): converted modules of earlier waves call them without a context
 pub use crate::legacy::{recursion_enter, recursion_leave};
 
+// CRuby's exec_recursive keeps {tag => {obj => true}} in a per-fiber Hash, readable as
+// Thread.current[:__recursive_key__]. saruby keeps that Hash too once it is observable: after lib/pp.rb
+// is loaded (it shares the :inspect list) or Hash#default is redefined (each new tag misses: rb_hash_aref).
+pub static REC_PP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn rec_hash_on(tag: Sym) -> bool {
+    crate::rt::redef(crate::rt::R_HASH_DEFAULT) || (tag == s::inspect && REC_PP.load(std::sync::atomic::Ordering::Relaxed))
+}
+fn ident_hash(c: &mut Ctx) -> Value { let h = c.hash_new(); c.hash_mut(h).identity = true; h }
+/// The fiber's recursion Hash; a new one holds the tags the reference ruby's boot (rubygems) has used.
+pub fn rec_outer(c: &mut Ctx) -> RV {
+    let loc = crate::builtins::thread::current_locals(c)?;
+    let key = Value::sym(intern(b"__recursive_key__"));
+    if let Some(h) = hash_get_opt(c, loc, key)? { if is_hash(h) { return Ok(h); } }
+    let h = ident_hash(c);
+    for t in [&b"nonzero?"[..], b"hash", b"==", b"join", b"inspect"] { let l = ident_hash(c); hash_set(c, h, Value::sym(intern(t)), l)?; }
+    hash_set(c, loc, key, h)?;
+    Ok(h)
+}
+/// recursive_list_access
+fn rec_list(c: &mut Ctx, tag: Sym) -> RV {
+    let h = rec_outer(c)?;
+    let l = hash_aref(c, h, Value::sym(tag))?;
+    if is_hash(l) { return Ok(l); }
+    let l = ident_hash(c);
+    hash_aset(c, h, Value::sym(tag), l)?;
+    Ok(l)
+}
+/// recursion_enter that also keeps the Hash above when it is observable.
+pub fn rec_enter(c: &mut Ctx, v: Value, tag: Sym) -> Result<bool, Esc> {
+    if !rec_hash_on(tag) { return Ok(recursion_enter(v, tag)); }
+    let l = rec_list(c, tag)?;
+    if hash_lookup(c, l, v)?.is_some() || !recursion_enter(v, tag) { return Ok(false); }
+    hash_set(c, l, v, TRUE)?;
+    Ok(true)
+}
+pub fn rec_leave(c: &mut Ctx, v: Value, tag: Sym) {
+    recursion_leave(v, tag);
+    if !rec_hash_on(tag) { return; }
+    // identity Hashes: no Ruby code runs here
+    let Ok(loc) = crate::builtins::thread::current_locals(c) else { return };
+    let key = Value::sym(intern(b"__recursive_key__"));
+    if let Ok(Some(h)) = hash_get_opt(c, loc, key) {
+        if is_hash(h) { if let Ok(Some(l)) = hash_get_opt(c, h, Value::sym(tag)) { if is_hash(l) { let _ = hash_delete(c, l, v); } } }
+    }
+}
+
 // ---- puts / print / p -------------------------------------------------------------------
 
 /// rb_str_end_with_asciichar(str, '\n')
@@ -179,10 +225,10 @@ fn puts_one(c: &mut Ctx, v: Value, out: &mut Vec<u8>) -> Result<(), Esc> {
         return Ok(());
     }
     if is_array(v) {
-        if !recursion_enter(v, s::puts) { out.extend_from_slice(b"[...]\n"); return Ok(()); }
+        if !rec_enter(c, v, s::puts)? { out.extend_from_slice(b"[...]\n"); return Ok(()); }
         let n = c.ary_len(v);
-        for i in 0..n { let x = c.ary_get(v, i); let r = puts_one(c, x, out); if r.is_err() { recursion_leave(v, s::puts); return r; } }
-        recursion_leave(v, s::puts);
+        for i in 0..n { let x = c.ary_get(v, i); let r = puts_one(c, x, out); if r.is_err() { rec_leave(c, v, s::puts); return r; } }
+        rec_leave(c, v, s::puts);
         return Ok(());
     }
     if let Some(a) = crate::array::check_array(c, v)? { return puts_one(c, a, out); }
@@ -251,15 +297,6 @@ fn p_dyn(c: &mut Ctx, args: &[Value]) -> RV {
     }
     if is_io { funcall(c, so, intern(b"flush"), &[], std::ptr::null())?; }
     Ok(match args.len() { 0 => NIL, 1 => args[0], _ => c.ary_new_from(args) })
-}
-
-fn k_pp(c: &mut Ctx, s: Value, args: &[Value], b: *const Block) -> RV {
-    if args.len() == 1 {
-        let txt = crate::builtins::pp::pretty_inspect(c, args[0], 80)?;
-        stdout_write(c, txt.as_bytes())?;
-        return Ok(args[0]);
-    }
-    k_p(c, s, args, b)
 }
 
 fn k_putc(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
@@ -1210,7 +1247,6 @@ pub fn init(c: &mut Ctx) {
     mf(c, "puts", k_puts, -1);
     mf(c, "print", k_print, -1);
     mf(c, "p", k_p, -1);
-    mf(c, "pp", k_pp, -1);
     mf(c, "putc", k_putc, 1);
     mf(c, "printf", k_printf, -1);
     mf(c, "sprintf", k_sprintf, -1);

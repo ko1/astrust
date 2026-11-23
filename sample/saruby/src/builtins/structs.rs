@@ -159,7 +159,7 @@ fn st_cmp_members(c: &mut Ctx, slf: Value, o: Value, eql: bool) -> RV {
     if slf == o { return Ok(TRUE); }
     if !o.is_heap() || real_class_of(c, o) != real_class_of(c, slf) { return Ok(FALSE); }
     let tag = if eql { s::eql_p } else { s::eq };
-    if !recursion_enter(slf, tag) { return Ok(TRUE); }
+    if !rec_enter(c, slf, tag)? { return Ok(TRUE); }
     let mem = members_of(c, real_class_of(c, slf));
     let r: Result<bool, Esc> = (|| {
         for i in 0..c.ary_len(mem) {
@@ -170,7 +170,7 @@ fn st_cmp_members(c: &mut Ctx, slf: Value, o: Value, eql: bool) -> RV {
         }
         Ok(true)
     })();
-    recursion_leave(slf, tag);
+    rec_leave(c, slf, tag);
     Ok(Value::bool(r?))
 }
 fn st_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { st_cmp_members(c, slf, a[0], false) }
@@ -206,7 +206,7 @@ fn st_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let mem = members_of(c, k);
     let mut out = String::from("#<struct ");
     if c.class(k).name.is_some() { out.push_str(&class_path(c, k)); }
-    if !recursion_enter(slf, s::inspect) { out.push_str(":...>"); return Ok(c.str_new(out.as_bytes())); }
+    if !rec_enter(c, slf, s::inspect)? { out.push_str(":...>"); return Ok(c.str_new(out.as_bytes())); }
     if c.class(k).name.is_some() { out.push(' '); }
     for i in 0..c.ary_len(mem) {
         if i > 0 { out.push_str(", "); }
@@ -214,9 +214,9 @@ fn st_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
         let nb = sym_bytes(n);
         if crate::string::sym_is_simple(nb) && !nb.ends_with(b"=") { out.push_str(&sym_str(n)); } else { out.push_str(&crate::string::inspect_bytes(nb, ENC_UTF8)); }
         out.push('=');
-        match inspect_str(c, ivar_get(c, slf, n)) { Ok(s2) => out.push_str(&s2), Err(e) => { recursion_leave(slf, s::inspect); return Err(e); } }
+        match inspect_str(c, ivar_get(c, slf, n)) { Ok(s2) => out.push_str(&s2), Err(e) => { rec_leave(c, slf, s::inspect); return Err(e); } }
     }
-    recursion_leave(slf, s::inspect);
+    rec_leave(c, slf, s::inspect);
     out.push('>');
     Ok(c.str_new(out.as_bytes()))
 }

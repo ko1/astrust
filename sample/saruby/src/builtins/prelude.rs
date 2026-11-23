@@ -25,7 +25,7 @@ pub fn load_prelude(c: &mut Ctx) -> RV {
 
 macro_rules! lib { ($n:literal) => { ($n, include_str!(concat!("../../prelude/lib/", $n, ".rb"))) }; }
 /// Features implemented by saruby itself: Ruby source compiled on first require.
-const LIBS: &[(&str, &str)] = &[lib!("etc"), lib!("timeout"), lib!("monitor"), lib!("time"), lib!("bundler"), ("bundler/setup", "require \"bundler\"; Bundler.setup\n"), lib!("date"), ("date_core", "require \"date\"\n"), lib!("pathname"), ("saruby/pathname", include_str!("../../prelude/lib/pathname_core.rb")), ("saruby/argf", include_str!("../../prelude/lib/argf.rb")),
+const LIBS: &[(&str, &str)] = &[lib!("pp"), lib!("prettyprint"), lib!("etc"), lib!("timeout"), lib!("monitor"), lib!("time"), lib!("bundler"), ("bundler/setup", "require \"bundler\"; Bundler.setup\n"), lib!("date"), ("date_core", "require \"date\"\n"), lib!("pathname"), ("saruby/pathname", include_str!("../../prelude/lib/pathname_core.rb")), ("saruby/argf", include_str!("../../prelude/lib/argf.rb")),
     ("coverage", "require 'coverage.so'\n"), lib!("objspace"), ("objspace/trace", include_str!("../../prelude/lib/objspace_trace.rb")), ("rbconfig/sizeof", include_str!("../../prelude/lib/rbconfig_sizeof.rb")),
     ("syslog", "require 'syslog_ext'\n"), lib!("syslog_ext"), ("syslog/logger", include_str!("../../prelude/lib/syslog_logger.rb")),
     lib!("digest"), ("digest/version", "module Digest\n  VERSION = \"3.2.1\"\nend\n"), ("digest/loader", "require 'saruby/digest'\n"),
@@ -41,6 +41,8 @@ const NATIVE: &[&str] = &["set", "stringio", "rbconfig", "thread", "fiber", "enu
 pub use crate::builtins::lazy_const;
 pub fn has_feature(name: &str) -> bool { NATIVE.contains(&name) || LIBS.iter().any(|l| l.0 == name) }
 pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
+    // lib/pp.rb shares the inspect recursion list (kernel::rec_enter)
+    if name == "pp" { crate::builtins::kernel::REC_PP.store(true, std::sync::atomic::Ordering::Relaxed); }
     if let Some(l) = LIBS.iter().find(|l| l.0 == name) {
         let file: &'static str = Box::leak(format!("<internal:{}>", name).into_boxed_str());
         return crate::builtins::kernel::run_source(c, l.1.as_bytes(), file, 1);

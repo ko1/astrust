@@ -756,11 +756,11 @@ fn puts_one(c: &mut Ctx, io: Value, x: Value) -> Result<(), Esc> {
     let mut line = check_string_type(c, x)?;
     if line == NIL {
         if let Some(ary) = crate::array::check_array(c, x)? {
-            if !crate::builtins::kernel::recursion_enter(ary, s::puts) { let r = c.str_new(b"[...]"); return puts_one(c, io, r); }
+            if !crate::builtins::kernel::rec_enter(c, ary, s::puts)? { let r = c.str_new(b"[...]"); return puts_one(c, io, r); }
             let n = c.ary_len(ary);
             let mut res = Ok(());
             for i in 0..n { let e = c.ary_get(ary, i); res = puts_one(c, io, e); if res.is_err() { break; } }
-            crate::builtins::kernel::recursion_leave(ary, s::puts);
+            crate::builtins::kernel::rec_leave(c, ary, s::puts);
             return res;
         }
         line = crate::rt::srb_tostr(c, x)?;

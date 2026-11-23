@@ -12,7 +12,6 @@ pub mod hash_methods;
 pub mod range_methods;
 pub mod enumerator;
 pub mod sprintf;
-pub mod pp;
 pub mod io;
 pub mod io_conv;
 pub mod io_buffer;

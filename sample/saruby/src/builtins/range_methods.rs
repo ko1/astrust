@@ -391,6 +391,8 @@ cfn!(r_step, |c, slf, a, blk| {
     let isnum = |c: &Ctx, v: Value| v.is_fixnum() || v.is_flonum() || (v.is_heap() && is_kind_of(c, v, numk));
     let (b_num, e_num) = (isnum(c, b), isnum(c, e));
     let str_b = if is_string(b) { Some(b) } else { None };
+    // rb_check_string_type(b): a numeric begin that answers to_str is asked too
+    if b_num && crate::rt::conv_target(b) && respond_to(c, b, s::to_str, true) { funcall(c, b, s::to_str, &[], std::ptr::null())?; }
     check_argc(c, a, 0, 1)?;
     let st = match a.first() {
         Some(&v) => v,
