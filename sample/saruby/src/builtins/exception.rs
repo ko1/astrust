@@ -390,32 +390,39 @@ fn loc_inspect(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     funcall(c, s, intern(b"inspect"), &[], std::ptr::null())
 }
 fn k_caller_locations(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
-    let (start, len) = caller_range(c, args)?;
+    let (start, len, drop) = caller_range(c, args)?;
     let Some(locs) = backtrace_locs_n(c, 1 + start, len) else { return Ok(NIL) };
-    Ok(locations_from_locs(c, locs))
+    Ok(locations_from_locs(c, drop_last(locs, drop)))
 }
-/// caller / caller_locations arguments: (start = 1, length = nil) or (range)
-pub fn caller_range(c: &mut Ctx, args: &[Value]) -> Result<(usize, Option<usize>), Esc> {
-    if args.is_empty() { return Ok((1, None)); }
+/// caller / caller_locations arguments: (start = 1, length = nil) or (range); the third part is how many
+/// frames a range with a negative end leaves off the end.
+pub fn caller_range(c: &mut Ctx, args: &[Value]) -> Result<(usize, Option<usize>, usize), Esc> {
+    if args.is_empty() { return Ok((1, None, 0)); }
     let a = args[0];
-    if a.is_fixnum() {
-        if a.as_fix() < 0 { return arg_err(c, format!("negative level ({})", a.as_fix())); }
-        let len = match args.get(1) { Some(&l) if l.is_fixnum() => { if l.as_fix() < 0 { return arg_err(c, format!("negative size ({})", l.as_fix())); } Some(l.as_fix() as usize) }, _ => None };
-        return Ok((a.as_fix() as usize, len));
-    }
-    if is_kind_of(c, a, c.vm().c_range.get()) {
+    let long = crate::builtins::numeric_methods::num_to_long;
+    if args.len() == 1 && is_kind_of(c, a, c.vm().c_range.get()) {
         let b = funcall(c, a, intern(b"begin"), &[], std::ptr::null())?;
         let e = funcall(c, a, intern(b"end"), &[], std::ptr::null())?;
         let excl = funcall(c, a, intern(b"exclude_end?"), &[], std::ptr::null())?.truthy();
-        let b = if b == NIL { 0 } else { b.as_fix().max(0) as usize };
-        if e == NIL { return Ok((b, None)); }
-        let e = e.as_fix();
-        if e < 0 { return Ok((b, None)); }
+        let b = if b == NIL { 0 } else { long(c, b)? };
+        if b < 0 { return arg_err(c, format!("negative level ({})", b)); }
+        let b = b as usize;
+        if e == NIL { return Ok((b, None, 0)); }
+        let e = long(c, e)?;
+        if e < 0 { return Ok((b, None, (-e) as usize - if excl { 0 } else { 1 })); }
         let n = (e as usize + if excl { 0 } else { 1 }).saturating_sub(b);
-        return Ok((b, Some(n)));
+        return Ok((b, Some(n), 0));
     }
-    Ok((crate::builtins::numeric_methods::num_to_long(c, a)?.max(0) as usize, None))
+    let lev = long(c, a)?;
+    if lev < 0 { return arg_err(c, format!("negative level ({})", lev)); }
+    let len = match args.get(1) {
+        Some(&l) if l != NIL => { let n = long(c, l)?; if n < 0 { return arg_err(c, format!("negative size ({})", n)); } Some(n as usize) }
+        _ => None,
+    };
+    Ok((lev as usize, len, 0))
 }
+/// Drop `drop` entries off the end (a range with a negative end).
+pub fn drop_last<T>(mut v: Vec<T>, drop: usize) -> Vec<T> { let n = v.len().saturating_sub(drop); v.truncate(n); v }
 
 /// Thread::Backtrace::Location; returns the class.
 pub fn init_location(c: &mut Ctx) -> Value {

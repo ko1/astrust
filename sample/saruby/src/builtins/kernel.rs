@@ -588,8 +588,9 @@ fn k_callee_name(c: &mut Ctx, _s: Value, _args: &[Value], _b: Blk) -> RV {
 }
 
 fn k_caller(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
-    let (start, len) = crate::builtins::exception::caller_range(c, args)?;
+    let (start, len, drop) = crate::builtins::exception::caller_range(c, args)?;
     let Some(lines) = backtrace_lines_n(c, 1 + start, len) else { return Ok(NIL) };
+    let lines = crate::builtins::exception::drop_last(lines, drop);
     Ok(c.ary_of_strs(lines.into_iter().map(|l| l.into_bytes()).collect(), ENC_UTF8))
 }
 

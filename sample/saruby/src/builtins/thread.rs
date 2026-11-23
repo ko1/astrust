@@ -1263,7 +1263,7 @@ pub fn init(c: &mut Ctx) {
 /// Thread#backtrace / #backtrace_locations: the current thread's, or a parked thread's own frames.
 fn th_backtrace(c: &mut Ctx, t: Value, a: &[Value], locs: bool) -> RV {
     thr(c, t)?;
-    let (start, len) = if a.is_empty() { (0, None) } else { crate::builtins::exception::caller_range(c, a)? };
+    let (start, len, drop) = if a.is_empty() { (0, None, 0) } else { crate::builtins::exception::caller_range(c, a)? };
     let r = th(c, t);
     if r.dead { return Ok(NIL); }
     let lines = if t == cur(c) { backtrace_locs_n(c, start, len) } else {
@@ -1272,6 +1272,7 @@ fn th_backtrace(c: &mut Ctx, t: Value, a: &[Value], locs: bool) -> RV {
         match crate::fiber::suspended_backtrace(c, f, start, len) { Some(l) => l, None => return Ok(c.ary_new()) }
     };
     let Some(lines) = lines else { return Ok(NIL) };
+    let lines = crate::builtins::exception::drop_last(lines, drop);
     if locs { return Ok(crate::builtins::exception::locations_from_locs(c, lines)); }
     let v: Vec<Value> = lines.into_iter().map(|l| c.str_new(l.to_string().as_bytes())).collect();
     Ok(c.ary_from_vec(v))
