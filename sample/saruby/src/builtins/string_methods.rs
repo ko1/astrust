@@ -525,6 +525,10 @@ fn is_newline(c: &Ctx, v: Value) -> bool {
 fn chomp_impl(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<Vec<u8>, Esc> {
     check_argc(c, a, 0, 1)?;
     if c.str_bytes(slf).is_empty() { return Ok(vec![]); }
+    if a.is_empty() && crate::builtins::kernel::RS_SET.load(std::sync::atomic::Ordering::Relaxed) {
+        let rs = global_get("$/");
+        if !(is_string(rs) && c.str_bytes(rs) == b"\n") { return chomp_impl(c, slf, &[rs]); }
+    }
     if a.is_empty() || (a[0] != NIL && is_string(a[0]) && is_newline(c, a[0])) {
         let v = c.str_bytes(slf);
         if v.ends_with(b"\r\n") { return Ok(v[..v.len() - 2].to_vec()); }

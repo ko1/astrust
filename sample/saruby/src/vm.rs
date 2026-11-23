@@ -1222,14 +1222,22 @@ pub fn raise_exc(c: &mut Ctx, e: Value) -> Esc {
         let bt = make_backtrace_lazy(c, 0);
         ivar_set_raw(c, e, s::bt, bt);
     }
-    if is_exception(c, e) && c.errinfo != NIL && c.errinfo != e && ivar_get(c, e, s::cause) == NIL && !ivar_defined(c, e, s::cause) {
-        ivar_set_raw(c, e, s::cause, c.errinfo);
-    }
+    if c.errinfo != NIL && c.errinfo != e && is_exception(c, e) { implicit_cause(c, e); }
     // one test here (raise_exc is inlined everywhere): $DEBUG or a raise hook
     if vm().raise_hooks.get() && is_exception(c, e) { raise_hooks(c, e); }
     c.esc = EscKind::Raise;
     c.esc_val = e;
     Esc
+}
+
+/// $! becomes the cause of an exception that has none (and is then a cause itself: its own is nil).
+#[cold]
+#[inline(never)]
+fn implicit_cause(c: &mut Ctx, e: Value) {
+    if ivar_defined(c, e, s::cause) { return; }
+    let x = c.errinfo;
+    ivar_set_raw(c, e, s::cause, x);
+    if !ivar_defined(c, x, s::cause) { ivar_set_raw(c, x, s::cause, NIL); }
 }
 
 #[cold]

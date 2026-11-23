@@ -335,39 +335,49 @@ fn k_sprintf(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     crate::builtins::sprintf::format(c, args[0], &args[1..])
 }
 
-fn k_warn(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
+/// Kernel#warn (warning.rb + rb_warn_m).
+fn k_warn(c: &mut Ctx, slf: Value, args: &[Value], _b: Blk) -> RV {
     let (args, kw) = match kw_arg(args) { Some(h) => (&args[..args.len() - 1], Some(h)), None => (args, None) };
-    let mut uplevel = None;
-    let mut cat = NIL;
+    let (mut uplevel, mut cat) = (NIL, NIL);
     if let Some(h) = kw {
-        if let Some(u) = hash_get_opt(c, h, crate::vm::sym_value("uplevel"))? { if u != NIL { uplevel = Some(u.as_fix()); } }
-        if let Some(k) = hash_get_opt(c, h, crate::vm::sym_value("category"))? { cat = k; }
+        for (k, v) in c.hash_pairs(h) {
+            if k == sym_value("uplevel") { uplevel = v; }
+            else if k == sym_value("category") { cat = v; }
+            else { let ks = inspect_str(c, k)?; return arg_err(c, format!("unknown keyword: {}", ks)); }
+        }
     }
-    // warning.rb: a category is a Symbol (or String) and the warning needs Warning[category]
     if cat != NIL {
-        if is_string(cat) { cat = c.str_to_sym(cat); }
-        if !cat.is_sym() { return type_err(c, format!("no implicit conversion of {} into Symbol", class_name_for_err(c, cat))); }
+        cat = if cat.is_sym() { cat } else if is_string(cat) { c.str_to_sym(cat) } else if cat.is_heap() && respond_to(c, cat, intern(b"to_sym"), true) {
+            let r = funcall(c, cat, intern(b"to_sym"), &[], std::ptr::null())?;
+            if !r.is_sym() { let k = class_name_for_err(c, cat); return type_err(c, format!("can't convert {} to Symbol ({}#to_sym gives {})", k, k, class_name_for_err(c, r))); }
+            r
+        } else { return type_err(c, format!("no implicit conversion of {} into Symbol", class_name_for_err(c, cat))); };
         let i = crate::builtins::misc::warning_category(c, cat)?;
         if !crate::builtins::misc::warning_category_enabled(i) { return Ok(NIL); }
     }
-    if c.vm().verbose.get() == NIL { return Ok(NIL); }
-    let mut out = puts_bytes(c, if args.is_empty() { return Ok(NIL) } else { args })?;
-    if let Some(u) = uplevel {
-        let lines = backtrace_lines(c, 1 + u as usize);
-        if let Some(l) = lines.first() {
-            let loc = l.split(":in ").next().unwrap_or("").to_string();
-            let mut pre = format!("{}: warning: ", loc).into_bytes();
-            pre.extend(out); out = pre;
-        }
+    if c.vm().verbose.get() == NIL || args.is_empty() { return Ok(NIL); }
+    let mut loc = None;
+    if uplevel != NIL {
+        let lev = crate::builtins::numeric_methods::num_to_long(c, uplevel)?;
+        if lev < 0 { return arg_err(c, format!("negative level ({})", lev)); }
+        loc = Some(backtrace_locs_n(c, 1 + lev as usize, Some(1)).and_then(|v| v.into_iter().next()));
     }
+    let single = args.len() == 1 && uplevel == NIL && is_string(args[0]) && c.str_bytes(args[0]).last() == Some(&b'\n');
+    let out = if single { c.str_bytes(args[0]).to_vec() } else {
+        let mut pre = match &loc { None => vec![], Some(None) => b"warning: ".to_vec(), Some(Some(l)) => format!("{}:{}: warning: ", l.file, l.line).into_bytes() };
+        pre.extend(puts_bytes(c, args)?);
+        pre
+    };
+    if slf == c.vm().m_warning.get() { return stderr_write(c, &out).map(|_| NIL); }
     warning_write_cat(c, &out, cat)?;
     Ok(NIL)
 }
 
 // ---- raise ------------------------------------------------------------------------------
 
+/// rb_make_exception: the arguments are positional (a keyword Hash goes to #exception as is).
 pub fn make_exception_from_args(c: &mut Ctx, args: &[Value]) -> RV {
-    let (args, kw) = match kw_arg(args) { Some(h) => (&args[..args.len() - 1], Some(h)), None => (args, None) };
+    if args.len() > 3 { return arg_err(c, format!("wrong number of arguments (given {}, expected 0..3)", args.len())); }
     let e = match args.len() {
         0 => {
             if c.errinfo != NIL { c.errinfo }
@@ -390,15 +400,43 @@ pub fn make_exception_from_args(c: &mut Ctx, args: &[Value]) -> RV {
             e
         }
     };
-    if let Some(h) = kw {
-        if let Some(cause) = hash_get_opt(c, h, crate::vm::sym_value("cause"))? {
-            if cause != NIL && !is_exception(c, cause) { return type_err(c, "exception object expected"); }
-            ivar_set_raw(c, e, s::cause, cause);
-        } else if args.is_empty() {
-            return arg_err(c, "only cause is given with no arguments");
+    Ok(e)
+}
+
+/// extract_raise_opts: `cause:` taken out of a trailing keyword Hash (UNDEF: not given).
+fn take_cause(c: &mut Ctx, args: &[Value]) -> Result<(Vec<Value>, Value), Esc> {
+    let mut a = args.to_vec();
+    let mut cause = UNDEF;
+    if let Some(h) = kw_arg(args) {
+        let k = crate::vm::sym_value("cause");
+        if let Some(v) = hash_get_opt(c, h, k)? {
+            cause = v;
+            a.pop();
+            if c.hash_len(h) > 1 { let o = c.hash_dup(h); hash_delete(c, o, k)?; a.push(o); }
         }
     }
-    Ok(e)
+    Ok((a, cause))
+}
+/// setup_exception's cause: an explicit one (nil keeps what the exception has), else $! unless it has one;
+/// a cause that leads back to the exception is an error.
+fn setup_cause(c: &mut Ctx, e: Value, cause: Value) -> Result<(), Esc> {
+    let cause = if cause == UNDEF {
+        if ivar_defined(c, e, s::cause) { return Ok(()); }
+        c.errinfo
+    } else {
+        if cause != NIL && !is_exception(c, cause) { return type_err(c, "exception object expected"); }
+        if cause == NIL { if !ivar_defined(c, e, s::cause) { ivar_set_raw(c, e, s::cause, NIL); } return Ok(()); }
+        cause
+    };
+    if cause == NIL || cause == e { return Ok(()); }
+    let mut x = cause;
+    while x != NIL && is_exception(c, x) {
+        if x == e { return arg_err(c, "circular causes"); }
+        x = ivar_get(c, x, s::cause);
+    }
+    ivar_set_raw(c, e, s::cause, cause);
+    if !ivar_defined(c, cause, s::cause) { ivar_set_raw(c, cause, s::cause, NIL); }
+    Ok(())
 }
 
 /// rb_exception_setup: the exception of a cross-context raise (Thread#raise, Fiber#raise); `cause:`
@@ -438,7 +476,13 @@ pub fn exception_setup(c: &mut Ctx, args: &[Value]) -> RV {
 }
 
 fn k_raise(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
-    let e = make_exception_from_args(c, args)?;
+    let (mut a, cause) = take_cause(c, args)?;
+    if a.is_empty() {
+        if cause != UNDEF { return arg_err(c, "only cause is given with no arguments"); }
+        if c.errinfo != NIL { a.push(c.errinfo); }
+    }
+    let e = if a.is_empty() { let k = c.vm().c_runtime_error.get(); make_exception(c, k, "") } else { make_exception_from_args(c, &a)? };
+    setup_cause(c, e, cause)?;
     // the backtrace starts at the caller of raise
     if ivar_get(c, e, s::bt) == NIL {
         let bt = make_backtrace_lazy(c, 1);
@@ -888,6 +932,7 @@ pub fn gvar_set(c: &mut Ctx, shown: Sym, v: Value) -> RV {
             }
         }
         b"$/" | b"$\\" | b"$," | b"$;" => {
+            if nb == b"$/" { RS_SET.store(true, std::sync::atomic::Ordering::Relaxed); }
             if v != NIL {
                 let re_ok = nb == b"$;" && crate::regexp::is_regexp(c, v);
                 if !is_string(v) && !re_ok {
@@ -1256,6 +1301,21 @@ fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     Ok(TRUE)
 }
 
+/// $/ was assigned (String#chomp reads it only then).
+pub static RS_SET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// -n / -p: Kernel#chomp and #chop on $_ (module functions, as CRuby's rb_define_global_function).
+pub fn define_dash_n(c: &mut Ctx) {
+    fn on_line(c: &mut Ctx, a: &[Value], m: &[u8]) -> RV {
+        let l = crate::builtins::svar::last_line(c);
+        let s = expect_str(c, l)?;
+        let r = funcall(c, s, intern(m), a, std::ptr::null())?;
+        crate::builtins::svar::set_last_line(c, r);
+        Ok(r)
+    }
+    let k = c.vm().m_kernel.get();
+    define_module_function(c, k, "chomp", |c, _s, a, _b| on_line(c, a, b"chomp"), -1);
+    define_module_function(c, k, "chop", |c, _s, a, _b| { check_argc(c, a, 0, 0)?; on_line(c, a, b"chop") }, -1);
+}
 /// rb_class_real(rb_vm_cbase()): where Kernel#autoload / #autoload? work.
 fn autoload_cbase(c: &Ctx) -> Value {
     let Some(f) = c.caller_frame() else { return c.vm().c_object.get() };
