@@ -533,9 +533,10 @@ fn attr_names(c: &mut Ctx, a: &[Value]) -> Result<Vec<Sym>, Esc> {
 fn def_attr(c: &mut Ctx, k: Value, n: Sym, reader: bool, writer: bool) -> Result<(), Esc> {
     let visi = cur_default_visi(c);
     let iv = intern(format!("@{}", sym_str(n)).as_bytes());
-    if reader { define_method_me(c, k, n, new_me(n, k, visi, MKind::AttrReader(iv))); call_method_added(c, k, n)?; }
+    if reader { crate::rt::note_redefinition(c, k, n); define_method_me(c, k, n, new_me(n, k, visi, MKind::AttrReader(iv))); call_method_added(c, k, n)?; }
     if writer {
         let w = intern(format!("{}=", sym_str(n)).as_bytes());
+        crate::rt::note_redefinition(c, k, w);
         define_method_me(c, k, w, new_me(w, k, visi, MKind::AttrWriter(iv)));
         call_method_added(c, k, w)?;
     }
@@ -594,6 +595,8 @@ fn set_visibility(c: &mut Ctx, slf: Value, a: &[Value], visi: u8) -> RV {
             return Err(raise_exc(c, e));
         }
         let Some(o) = me_copy(c, me) else { continue };
+        // a private Integer#+ leaves the fast path too (CRuby raises NoMethodError)
+        crate::rt::note_redefinition(c, slf, m);
         if visi == VISI_MODFUNC {
             let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi: VISI_PRIVATE, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
             keep_alias_name(c, me, n);
@@ -1002,6 +1005,7 @@ fn refinement_import_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Bl
                     // the copies run under the refine block's scope (its refinements are active)
                     let cref = if c.caller_frame().is_none() { me.cref } else { caller_cref(c) };
                     let n = new_me_cref(name, slf, me.visi, me.kind, cref);
+                    crate::rt::note_redefinition(c, slf, name);
                     define_method_me(c, slf, name, n);
                 }
                 _ => return arg_err(c, format!("Can't import method which is not defined with Ruby code: {}#{}", class_path(c, m), sym_str(name))),
