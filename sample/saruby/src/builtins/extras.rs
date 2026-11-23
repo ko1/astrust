@@ -9,7 +9,6 @@ use crate::heap::no_legacy_hn::*;
 use crate::heap::no_legacy_str::*;
 use crate::array::*;
 use crate::builtins::exception::raise_errno;
-use crate::builtins::kernel::*;
 use crate::builtins::numeric_methods::num_to_long;
 use crate::builtins::object::to_sym_arg;
 use crate::builtins::sys;
@@ -184,47 +183,6 @@ fn io_each_codepoint(c: &mut Ctx, s: Value, a: &[Value], blk: *const Block) -> R
     }
     Ok(s)
 }
-fn wm_h(c: &Ctx, s: Value) -> Value { ivar_get(c, s, intern(b"@h")) }
-fn wm_size(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(c.hash_len(wm_h(c, s)) as i64)) }
-fn wm_delete(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
-    match hash_delete(c, wm_h(c, s), a[0])? { Some(v) => Ok(v), None => if b.is_null() { Ok(NIL) } else { yield1(c, b, a[0]) } }
-}
-fn wm_keys(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let v = c.hash_pairs(wm_h(c, s)).into_iter().map(|p| p.0).collect(); Ok(c.ary_from_vec(v)) }
-fn wm_values(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let v = c.hash_pairs(wm_h(c, s)).into_iter().map(|p| p.1).collect(); Ok(c.ary_from_vec(v)) }
-/// The pairs of the map's table, slot by slot (the block may change it).
-fn wm_walk(c: &mut Ctx, s: Value, mut f: impl FnMut(&mut Ctx, Value, Value) -> Result<(), Esc>) -> Result<(), Esc> {
-    let h = wm_h(c, s);
-    let mut i = 0;
-    while let Some((k, v)) = c.hash_entry_at(h, i) { if k != UNDEF { f(c, k, v)?; } i += 1; }
-    Ok(())
-}
-fn wm_each(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
-    if b.is_null() { return err(c, c.vm().c_local_jump_error.get(), "no block given (yield)"); }
-    let name = c.cur_method_name().unwrap_or(crate::symbol::s::each);
-    wm_walk(c, s, |c, k, v| {
-        match sym_bytes(name) { b"each_key" => { yield1(c, b, k)?; } b"each_value" => { yield1(c, b, v)?; } _ => { yield_block(c, b, &[k, v])?; } }
-        Ok(())
-    })?;
-    Ok(s)
-}
-fn wm_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
-    let mut parts = vec![];
-    // as weakmap.c: immediates by #inspect, objects by rb_any_to_s
-    let show = |c: &mut Ctx, v: Value| if v.is_imm() { inspect_str(c, v) } else { Ok(crate::builtins::kernel::any_to_s_str(c, v)) };
-    wm_walk(c, s, |c, k, v| { parts.push(format!("{} => {}", show(c, k)?, show(c, v)?)); Ok(()) })?;
-    Ok(c.str_new(format!("#<{}:0x{:016x}{}{}>", class_path(c, real_class_of(c, s)), s.raw(), if parts.is_empty() { "" } else { ": " }, parts.join(", ")).as_bytes()))
-}
-fn wkm_init(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let h = c.hash_new(); ivar_set_raw(c, s, intern(b"@h"), h); Ok(NIL) }
-fn wkm_aref(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { Ok(hash_get_opt(c, wm_h(c, s), a[0])?.unwrap_or(NIL)) }
-fn wkm_aset(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
-    if a[0].is_imm() || is_float(a[0]) || is_bignum(a[0]) { return arg_err(c, "WeakKeyMap keys must be garbage collectable"); }
-    hash_set(c, wm_h(c, s), a[0], a[1])?;
-    Ok(a[1])
-}
-fn wkm_getkey(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { Ok(match hash_lookup(c, wm_h(c, s), a[0])? { Some(i) => c.hash_entry_at(wm_h(c, s), i).map(|e| e.0).unwrap_or(NIL), None => NIL }) }
-fn wkm_key_p(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(hash_lookup(c, wm_h(c, s), a[0])?.is_some())) }
-fn wkm_clear(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { c.hash_clear(wm_h(c, s)); Ok(s) }
-fn wkm_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let n = c.hash_len(wm_h(c, s)); Ok(c.str_new(format!("#<{}:0x{:016x} size={}>", class_path(c, real_class_of(c, s)), s.raw(), n).as_bytes())) }
 fn p_setrlimit(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 2, 3)?;
     let res = num_to_long(c, a[0])? as i32;
@@ -270,17 +228,6 @@ pub fn init(c: &mut Ctx) {
     define_module_function(c, k, "gem", |_c, _s, _a, _b| Ok(TRUE), -1);
     define_cfunc(c, vmr.c_io.get(), "wait", io_wait, -1);
     define_cfunc(c, vmr.c_io.get(), "each_codepoint", io_each_codepoint, 0);
-    let wm = vmr.c_object_space_weak_map.get();
-    include_module(c, wm, vmr.m_enumerable.get());
-    for n in ["size", "length"] { define_cfunc(c, wm, n, wm_size, 0); }
-    define_cfunc(c, wm, "delete", wm_delete, 1); define_cfunc(c, wm, "keys", wm_keys, 0); define_cfunc(c, wm, "values", wm_values, 0);
-    for n in ["each", "each_pair", "each_key", "each_value"] { define_cfunc(c, wm, n, wm_each, 0); }
-    define_cfunc(c, wm, "inspect", wm_inspect, 0);
-    define_cfunc(c, wm, "member?", |c, s, a, _b| Ok(Value::bool(hash_lookup(c, wm_h(c, s), a[0])?.is_some())), 1);
-    let wk = define_class_under(c, vmr.m_object_space.get(), "WeakKeyMap", vmr.c_object.get());
-    define_private_cfunc(c, wk, "initialize", wkm_init, 0);
-    define_cfunc(c, wk, "[]", wkm_aref, 1); define_cfunc(c, wk, "[]=", wkm_aset, 2); define_cfunc(c, wk, "getkey", wkm_getkey, 1); define_cfunc(c, wk, "key?", wkm_key_p, 1);
-    define_cfunc(c, wk, "delete", wm_delete, 1); define_cfunc(c, wk, "clear", wkm_clear, 0); define_cfunc(c, wk, "inspect", wkm_inspect, 0);
     let p = vmr.m_process.get();
     define_module_function(c, p, "setrlimit", p_setrlimit, -1);
     define_module_function(c, p, "getsid", |_c, _s, _a, _b| Ok(Value::fix(sys::getsid(0) as i64)), -1);

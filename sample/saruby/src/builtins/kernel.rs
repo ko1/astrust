@@ -839,12 +839,12 @@ pub fn gvar_defined(c: &Ctx, name: Sym) -> bool {
 
 pub const BUILTIN_FEATURES: &[&str] = &["set", "enumerator", "rational", "complex", "thread", "fiber", "continuation",
     "pp", "prettyprint", "stringio", "rbconfig", "etc", "io/console", "io/wait", "monitor", "timeout", "securerandom",
-    "objspace", "coverage", "ripper", "tempfile", "tmpdir", "english", "English", "bigdecimal", "date", "json", "time",
+    "coverage", "ripper", "tempfile", "tmpdir", "english", "English", "bigdecimal", "date", "json", "time",
     "benchmark", "fileutils", "shellwords", "strscan", "digest", "digest/md5", "digest/sha1", "digest/sha2", "zlib", "base64",
     "optparse", "ostruct", "forwardable", "singleton", "observer", "delegate", "socket", "open3", "logger", "uri", "net/http",
     "erb", "cgi", "abbrev", "matrix", "prime", "tsort", "weakref", "find", "pathname", "io/nonblock", "fcntl",
     "nkf", "racc", "racc/parser", "readline", "reline", "win32ole", "openssl", "mkmf", "rubygems",
-    "objspace", "did_you_mean", "error_highlight", "syntax_suggest", "-test-/memory_status", "random/formatter",
+    "did_you_mean", "error_highlight", "syntax_suggest", "-test-/memory_status", "random/formatter",
     "date_core", "socket.so", "io/console/size", "digest/sha2", "digest/sha1", "digest/md5", "digest/rmd160", "digest/bubblebabble", "net/protocol", "net/https",
     "open-uri", "resolv", "ipaddr", "pty", "syslog", "expect", "io/console", "bigdecimal/util", "date/format",
 ];

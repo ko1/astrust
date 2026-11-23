@@ -8,10 +8,13 @@ use crate::fxhash::HashMap;
 
 pub const FL_FROZEN: u32 = 1;
 pub const FL_TMPLOCK: u32 = 2;   // String: rb_str_locktmp (IO::Buffer.for / .string); modification raises
-// bit 4 is unused (GC state is in RObj::gc)
+pub const FL_TRACED: u32 = 4;    // has an entry in objspace's allocation table (removed on free)
 pub const FL_EXIVAR: u32 = 8;
 pub const FL_CHILLED: u32 = 16;   // string literal: frozen-on-write warning semantics (treated as mutable)
 pub const FL_KWHASH: u32 = 32;    // ruby2_keywords flagged hash
+pub const FL_WEAK_KEYS: u32 = 64; // hidden Hash of a WeakMap / WeakKeyMap: the collector does not mark its keys
+pub const FL_WEAK_VALS: u32 = 128; // ... nor its values (WeakMap)
+pub const FL_HAS_ID: u32 = 256;   // has an entry in Vm::object_ids (removed on free)
 
 #[repr(C)]
 pub struct RObj {

@@ -118,6 +118,7 @@ struct Opts {
     quiet: bool,
     verbose_astro: bool,
     warn: bool,
+    nowarn: bool,   // -W0: $VERBOSE = nil
     store: String,
     compiled_only: bool,
     requires: Vec<String>,
@@ -148,7 +149,7 @@ fn parse_args() -> Opts {
     let raw: Vec<Vec<u8>> = std::env::args_os().map(|a| std::os::unix::ffi::OsStrExt::as_bytes(a.as_os_str()).to_vec()).collect();
     let argv: Vec<String> = raw.iter().map(|a| String::from_utf8_lossy(a).into_owned()).collect();
     let mut o = Opts { e: vec![], script: None, args: vec![], plain: false, aot: false, dump_ast: false, quiet: false,
-        verbose_astro: false, warn: false, store: "code_store".into(), compiled_only: false, requires: vec![], incdirs: vec![], check_syntax: false };
+        verbose_astro: false, warn: false, nowarn: false, store: "code_store".into(), compiled_only: false, requires: vec![], incdirs: vec![], check_syntax: false };
     let mut i = 1;
     while i < argv.len() {
         let a = &argv[i];
@@ -162,7 +163,7 @@ fn parse_args() -> Opts {
             "-q" | "--quiet" => o.quiet = true,
             "--astro-verbose" => o.verbose_astro = true,
             "-w" | "-W" | "-W2" | "-v" | "--verbose" => { o.warn = true; if a == "-v" { println!("{}", version()); } }
-            "-W0" => {}
+            "-W0" => o.nowarn = true,
             "-c" => o.check_syntax = true,
             "--code-store" => { i += 1; o.store = argv.get(i).cloned().unwrap_or_else(|| usage()); }
             "--version" => { println!("{}", version()); std::process::exit(0); }
@@ -207,7 +208,7 @@ fn run_main(o: Opts) -> i32 {
     builtins::boot(&mut c);
 
     let vm = vm();
-    vm.verbose.set(if o.warn { TRUE } else { FALSE });
+    vm.verbose.set(if o.warn { TRUE } else if o.nowarn { NIL } else { FALSE });
     if o.warn { builtins::misc::warning_enable_deprecated(); }
     for d in &o.incdirs { let s = c.str_new(d.as_bytes()); c.ary_push(vm.load_path.get(), s); }
     builtins::prelude::setup_load_path(&mut c);

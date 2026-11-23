@@ -2276,9 +2276,9 @@ pub fn compile_parsed(pr: &ParseResult, src: &[u8], file: &'static str, kind: Is
     }
     let mut cm = Compiler::new(pr, file);
     cm.src = src;
-    // compiled for tracing once a source names the hooks (zero cost for every other program)
+    // compiled for tracing once a source names the hooks or the allocation tracer (zero cost for every other program)
     use std::sync::atomic::Ordering::Relaxed;
-    if file != "<internal:prelude>" && (TRACE_COMPILE.load(Relaxed) || [&b"TracePoint"[..], b"set_trace_func"].iter().any(|w| src.windows(w.len()).any(|x| x == *w))) {
+    if file != "<internal:prelude>" && (TRACE_COMPILE.load(Relaxed) || [&b"TracePoint"[..], b"set_trace_func", b"trace_object_allocations", b"objspace/trace"].iter().any(|w| src.windows(w.len()).any(|x| x == *w))) {
         TRACE_COMPILE.store(true, Relaxed);
         cm.trace = true;
     }
