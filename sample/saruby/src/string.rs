@@ -190,6 +190,10 @@ fn str_intern_enc(b: &[u8], enc: u8) -> Sym {
     if en::ascii_compat(enc) && !b.is_ascii() && !en::is_valid(enc, b) { return crate::symbol::BAD_SYM; }
     str_to_sym_enc(b, enc).as_sym()
 }
+/// The symbol of bytes `b` of a String in `enc` (as String#to_sym without its check).
+pub fn sym_of(b: &[u8], enc: u8) -> crate::value::Sym {
+    if enc == ENC_UTF8 || enc == ENC_ASCII { intern(b) } else { str_to_sym_enc(b, enc).as_sym() }
+}
 #[cold]
 #[inline(never)]
 fn str_to_sym_enc(b: &[u8], enc: u8) -> Value {

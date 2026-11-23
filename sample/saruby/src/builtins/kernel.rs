@@ -1016,8 +1016,10 @@ fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
 
 /// rb_class_real(rb_vm_cbase()): where Kernel#autoload / #autoload? work.
 fn autoload_cbase(c: &Ctx) -> Value {
-    let cr = c.caller_frame().map_or(std::ptr::null(), |f| f.cref());
-    let mut k = c.cref_ref(cr).map_or(c.vm().c_object.get(), |r| r.klass);
+    let Some(f) = c.caller_frame() else { return c.vm().c_object.get() };
+    // the class a `def` there would define on (rt::srb_def): instance_eval's singleton included
+    let mut k = c.cref_ref(f.cref()).map_or(c.vm().c_object.get(), |r| r.klass);
+    if f.defined_class() != NIL && f.kind != FK_CLASS { k = f.defined_class(); }
     while c.class(k).is_singleton { k = c.class(k).superclass; }
     k
 }
@@ -1138,11 +1140,11 @@ fn k_eval(c: &mut Ctx, slf: Value, args: &[Value], _b: *const Block) -> RV {
     }
     let file: &'static str = if args.len() > 2 && args[2] != NIL { let f = expect_str(c, args[2])?; Box::leak(String::from_utf8_lossy(c.str_bytes(f)).into_owned().into_boxed_str()) } else { crate::builtins::binding::eval_file(c) };
     let line = if args.len() > 3 { crate::builtins::numeric_methods::num_to_long(c, args[3])? as i32 } else { 1 };
-    let srcb = c.str_bytes(src).to_vec();
-    if bind != NIL { return crate::builtins::binding::eval_in_binding(c, bind, &srcb, file, line); }
+    let (srcb, enc) = (c.str_bytes(src).to_vec(), c.str_enc(src));
+    if bind != NIL { return crate::builtins::binding::eval_in_binding(c, bind, &srcb, enc, file, line); }
     let b = crate::builtins::binding::binding_of_caller(c)?;
     let _ = slf;
-    crate::builtins::binding::eval_in_binding(c, b, &srcb, file, line)
+    crate::builtins::binding::eval_in_binding(c, b, &srcb, enc, file, line)
 }
 
 fn k_binding(c: &mut Ctx, _s: Value, _args: &[Value], _b: *const Block) -> RV { crate::builtins::binding::binding_of_caller(c) }

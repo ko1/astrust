@@ -85,7 +85,7 @@ fn serialize_prelude(out: &std::path::Path, inc: &std::path::Path, lib: &std::pa
         .arg("tools/prism_serialize.c").arg(lib).arg("-o").arg(&exe).status().unwrap();
     assert!(st.success(), "tools/prism_serialize.c: compile failed");
     let opts = out.join("core.options");
-    let o = ParseOpts { filepath: b"<internal:prelude>", line: 1, scopes: vec![], main_script: false, frozen_string_literal: 0 };
+    let o = ParseOpts { filepath: b"<internal:prelude>", line: 1, scopes: vec![], main_script: false, frozen_string_literal: 0, encoding: b"" };
     std::fs::write(&opts, build_options(&o)).unwrap();
     let st = Command::new(&exe).arg("prelude/core.rb").arg(&opts).arg(out.join("core.prism")).status().unwrap();
     assert!(st.success(), "prism_serialize prelude/core.rb failed");

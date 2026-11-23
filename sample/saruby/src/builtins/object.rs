@@ -59,7 +59,8 @@ fn bo_instance_eval(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV
         let src = expect_str(c, a[0])?;
         let bytes = c.str_bytes(src).to_vec();
         let file: &'static str = if a.len() > 1 { Box::leak(to_rstring(c, a[1])?.into_boxed_str()) } else { crate::builtins::binding::eval_file(c) };
-        return crate::builtins::binding::eval_with_self(c, slf, &bytes, file, if a.len() > 2 { a[2].as_fix() as i32 } else { 1 });
+        let enc = c.str_enc(src);
+        return crate::builtins::binding::eval_with_self(c, slf, &bytes, enc, file, if a.len() > 2 { a[2].as_fix() as i32 } else { 1 });
     }
     let dc = if slf.is_heap() && !slf.is_flonum() { singleton_class(c, slf) } else { NIL };
     yield_with_self(c, b, &[slf], slf, dc)
@@ -778,7 +779,8 @@ fn m_class_eval(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
         let src = expect_str(c, a[0])?;
         let bytes = c.str_bytes(src).to_vec();
         let file: &'static str = if a.len() > 1 { Box::leak(to_rstring(c, a[1])?.into_boxed_str()) } else { crate::builtins::binding::eval_file(c) };
-        return crate::builtins::binding::eval_in_class(c, slf, &bytes, file, if a.len() > 2 { a[2].as_fix() as i32 } else { 1 });
+        let enc = c.str_enc(src);
+        return crate::builtins::binding::eval_in_class(c, slf, &bytes, enc, file, if a.len() > 2 { a[2].as_fix() as i32 } else { 1 });
     }
     yield_with_self(c, b, &[slf], slf, slf)
 }
@@ -786,10 +788,17 @@ fn m_class_exec(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     if b.is_null() { return err(c, c.vm().c_local_jump_error.get(), "no block given (yield)"); }
     yield_with_self(c, b, a, slf, slf)
 }
+/// The symbol of a constant name without "::" (a String keeps its encoding); None for a path.
+fn one_const_name(c: &mut Ctx, v: Value) -> Result<Option<Sym>, Esc> {
+    if v.is_sym() { return Ok(if crate::symbol::sym_bytes(v.as_sym()).windows(2).any(|w| w == b"::") { None } else { Some(v.as_sym()) }); }
+    if is_string(v) && !c.str_bytes(v).windows(2).any(|w| w == b"::") { return Ok(Some(to_sym_arg(c, v)?)); }
+    Ok(None)
+}
 fn m_const_get(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     check_argc(c, a, 1, 2)?;
     let inherit = a.len() < 2 || a[1].truthy();
     let name = if a[0].is_sym() { sym_str(a[0].as_sym()) } else { to_rstring(c, a[0])? };
+    let one = one_const_name(c, a[0])?;
     let mut cur = slf;
     let parts: Vec<&str> = name.split("::").collect();
     for (i, p) in parts.iter().enumerate() {
@@ -798,7 +807,7 @@ fn m_const_get(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
             let e = make_name_error(c, c.vm().c_name_error.get(), &format!("wrong constant name {}", p), Value::sym(intern(p.as_bytes())), slf)?;
             return Err(raise_exc(c, e));
         }
-        let sym = intern(p.as_bytes());
+        let sym = one.unwrap_or_else(|| intern(p.as_bytes()));
         if !is_class_or_module(cur) { return type_err(c, format!("{} does not refer to class/module", name)); }
         cur = if inherit {
             match const_get_inherit(c, cur, sym)? { Some(v) => v, None => const_missing(c, cur, sym)? }
@@ -821,6 +830,7 @@ fn m_const_set(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 }
 fn m_const_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let name = if a[0].is_sym() { sym_str(a[0].as_sym()) } else { to_rstring(c, a[0])? };
+    let one = one_const_name(c, a[0])?;
     let inherit = a.len() < 2 || a[1].truthy();
     let mut cur = slf;
     for p in name.split("::") {
@@ -829,7 +839,7 @@ fn m_const_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV
             let e = make_name_error(c, c.vm().c_name_error.get(), &format!("wrong constant name {}", p), Value::sym(intern(p.as_bytes())), slf)?;
             return Err(raise_exc(c, e));
         }
-        let sym = intern(p.as_bytes());
+        let sym = one.unwrap_or_else(|| intern(p.as_bytes()));
         if !is_class_or_module(cur) { return Ok(FALSE); }
         let found = if inherit {
             let mut r = None;
