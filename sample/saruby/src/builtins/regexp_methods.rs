@@ -156,9 +156,9 @@ fn subject(c: &mut Ctx, v: Value) -> RV {
 }
 fn re_match(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if a.is_empty() || a.len() > 2 { return argc_err(c, a.len(), 1, 2); }
-    if a[0] == NIL { c.last_match = NIL; return Ok(NIL); }
+    if a[0] == NIL { crate::builtins::svar::set_last_match(c, NIL); return Ok(NIL); }
     let sv = subject(c, a[0])?;
-    let pos = if a.len() > 1 { let p = crate::builtins::numeric_methods::num_to_long(c, a[1])?; let n = c.str_char_len(sv) as i64; let p = if p < 0 { p + n } else { p }; if p < 0 || p > n { c.last_match = NIL; return Ok(NIL); } c.char_offsets(sv)[p as usize] } else { 0 };
+    let pos = if a.len() > 1 { let p = crate::builtins::numeric_methods::num_to_long(c, a[1])?; let n = c.str_char_len(sv) as i64; let p = if p < 0 { p + n } else { p }; if p < 0 || p > n { crate::builtins::svar::set_last_match(c, NIL); return Ok(NIL); } c.char_offsets(sv)[p as usize] } else { 0 };
     let m = search(c, slf, sv, pos, true)?;
     if m != NIL && !blk.is_null() { return yield1(c, blk, m); }
     Ok(m)
@@ -171,7 +171,7 @@ fn re_match_p(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(Value::bool(search_timed(c, slf, sv, pos)?.is_some()))
 }
 fn re_match_op(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    if a[0] == NIL { c.last_match = NIL; return Ok(NIL); }
+    if a[0] == NIL { crate::builtins::svar::set_last_match(c, NIL); return Ok(NIL); }
     let sv = subject(c, a[0])?;
     let m = search(c, slf, sv, 0, true)?;
     if m == NIL { return Ok(NIL); }
@@ -181,7 +181,7 @@ fn re_match_op(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
 /// Regexp#~: match against $_.
 fn re_tilde(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let line = gvar_get(c, intern(b"$_"))?;
-    if !is_string(line) { c.last_match = NIL; return Ok(NIL); }
+    if !is_string(line) { crate::builtins::svar::set_last_match(c, NIL); return Ok(NIL); }
     re_match_op(c, slf, &[line], std::ptr::null())
 }
 fn re_eqq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -238,13 +238,13 @@ fn re_named_captures(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) ->
 }
 fn re_s_last_match(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     if let Some(&i) = a.first() {
-        let lm = c.last_match;
+        let lm = crate::builtins::svar::last_match(c);
         if lm == NIL { return Ok(NIL); }
         if i.is_sym() || is_string(i) { return md_aref(c, lm, &[i], std::ptr::null()); }
         let i = crate::builtins::numeric_methods::num_to_long(c, i)?;
         return Ok(nth_match(c, lm, i));
     }
-    Ok(c.last_match)
+    Ok(crate::builtins::svar::last_match(c))
 }
 fn re_freeze(_c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { obj_set_flags(slf, FL_FROZEN); Ok(slf) }
 fn re_timeout(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let t = rx(c, slf).timeout; Ok(t.map_or(NIL, |f| c.float_new(f))) }

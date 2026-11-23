@@ -8,7 +8,6 @@ use crate::array::*;
 use crate::bignum::*;
 use crate::builtins::kernel::*;
 use crate::numeric::*;
-use crate::string::*;
 use crate::symbol::{intern, s};
 use crate::value::*;
 use crate::vm::*;
@@ -316,15 +315,48 @@ cfn!(int_to_s, |c, s, a| {
 });
 cfn!(#[inline] int_to_f, |c, s, _a| Ok(c.float_new(c.num_to_f64(s).unwrap())));
 cfn!(#[inline] int_to_i, |c, s, _a| Ok(s));
-cfn!(int_chr, |c, s, a| {
-    let i = num_to_long(c, s)?;
-    if !a.is_empty() || i > 255 {
-        if i < 0 || i > 0x10ffff { return err(c, c.vm().c_range_error.get(), format!("{} out of char range", i)); }
-        let mut b = vec![]; encode_utf8(i as u32, &mut b);
-        return Ok(c.str_from_vec(b));
+/// rb_enc_uint_chr: the character `cp` in `enc`; Err(true): "out of char range", Err(false): "invalid codepoint".
+fn enc_chr(enc: u8, cp: u64) -> Result<Vec<u8>, bool> {
+    use crate::builtins::encoding::{self as en, EK};
+    if cp > u32::MAX as u64 { return Err(true); }
+    let cp = cp as u32;
+    let sur = (0xd800..0xe000).contains(&cp);
+    if en::is_dummy(enc) || en::is_single_byte(enc) {
+        if cp > 0xff { return Err(true); }
+        if en::kind(enc) == EK::Ascii && cp > 0x7f { return Err(false); }
+        return Ok(vec![cp as u8]);
     }
-    if i < 0 { return err(c, c.vm().c_range_error.get(), format!("{} out of char range", i)); }
-    Ok(c.str_new_enc(&[i as u8], if i < 128 { ENC_ASCII } else { ENC_BINARY }))
+    match en::kind(enc) {
+        // Onigmo's code_to_mbclen: 0xfffffffe / 0xffffffff are one (invalid) byte in UTF-8
+        EK::Utf8 => if cp >= 0xffff_fffe || sur { Err(false) } else if cp > 0x10ffff { Err(true) } else { en::code_to_bytes(enc, cp).ok_or(false) },
+        EK::U16LE | EK::U16BE => if cp > 0x10ffff || sur { Err(false) } else { en::code_to_bytes(enc, cp).ok_or(false) },
+        // the validity check reads the code as a signed int: 0x80000000.. pass
+        EK::U32LE | EK::U32BE => {
+            if (cp > 0x10ffff && cp < 0x8000_0000) || sur { return Err(false); }
+            Ok(if en::kind(enc) == EK::U32LE { cp.to_le_bytes().to_vec() } else { cp.to_be_bytes().to_vec() })
+        }
+        k => {
+            let max: u32 = match k { EK::Gb18030 | EK::EucTw | EK::EmacsMule => u32::MAX, EK::EucJp(_) => 0xff_ffff, _ => 0xffff };
+            if cp > max { return Err(true); }
+            en::code_to_bytes(enc, cp).ok_or(false)
+        }
+    }
+}
+cfn!(int_chr, |c, s, a| {
+    if a.len() > 1 { return argc_err(c, a.len(), 0, 1); }
+    let i = if s.is_fixnum() { s.as_fix() } else { -1 };
+    let range = |c: &mut Ctx| -> RV { let n = crate::builtins::kernel::inspect_str(c, s)?; err(c, c.vm().c_range_error.get(), format!("{} out of char range", n)) };
+    if i < 0 { return range(c); }
+    let enc = match a.first() {
+        Some(&e) => crate::builtins::encoding::to_enc(c, e)?,
+        None if i < 0x100 => return Ok(c.str_new_enc(&[i as u8], if i < 128 { ENC_ASCII } else { ENC_BINARY })),
+        None => match crate::builtins::encoding::default_internal() { Some(e) => e, None => return range(c) },
+    };
+    match enc_chr(enc, i as u64) {
+        Ok(b) => Ok(c.str_new_enc(&b, enc)),
+        Err(true) => range(c),
+        Err(false) => err(c, c.vm().c_range_error.get(), format!("invalid codepoint 0x{:X} in {}", i, crate::builtins::encoding::enc_name(enc))),
+    }
 });
 cfn!(int_ord, |c, s, _a| Ok(s));
 /// The fixnum loop of Integer#times, yielding through `y` (inline_iter.rs: a baked site's block); None: not a fixnum.

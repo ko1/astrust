@@ -218,17 +218,65 @@ fn exc_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     to_s_value(c, m)
 }
 fn exc_message(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { funcall(c, slf, s::to_s, &[], std::ptr::null()) }
+/// rb_check_string_type
+fn check_str(c: &mut Ctx, v: Value) -> RV {
+    if is_string(v) { return Ok(v); }
+    if v.is_heap() && respond_to(c, v, s::to_str, true) { let r = funcall(c, v, s::to_str, &[], std::ptr::null())?; if is_string(r) { return Ok(r); } }
+    Ok(NIL)
+}
+/// check_highlight_keyword: nil when not given.
+fn highlight_kw(c: &mut Ctx, opt: Option<Value>) -> RV {
+    let Some(h) = opt else { return Ok(NIL) };
+    let v = crate::hash::hash_get_opt(c, h, sym_value("highlight"))?.unwrap_or(NIL);
+    if v != TRUE && v != FALSE && v != NIL { let ins = inspect_str(c, v)?; return arg_err(c, format!("expected true or false as highlight: {}", ins)); }
+    Ok(v)
+}
+fn stderr_tty() -> bool { crate::builtins::sys::isatty(2) == 1 }
+const BOLD: &[u8] = b"\x1b[1m";
+const UNDERLINE: &[u8] = b"\x1b[1;4m";
+const RESET: &[u8] = b"\x1b[m";
+fn underlined(o: &mut Vec<u8>, t: &[u8], highlight: bool) { if highlight { o.extend_from_slice(UNDERLINE); } o.extend_from_slice(t); if highlight { o.extend_from_slice(RESET); } }
+/// rb_decorate_message (eval_error.c)
+fn decorate_message(c: &mut Ctx, e: Value, emesg: Value, highlight: bool) -> Vec<u8> {
+    let msg: Vec<u8> = if is_string(emesg) && crate::builtins::encoding::ascii_compat(c.str_enc(emesg)) { c.str_bytes(emesg).to_vec() } else { vec![] };
+    let klass = real_class_of(c, e);
+    let mut o = vec![];
+    if klass == c.vm().c_runtime_error.get() && msg.is_empty() { underlined(&mut o, b"unhandled exception", highlight); return o; }
+    let epath = class_path(c, klass);
+    if msg.is_empty() { underlined(&mut o, epath.as_bytes(), highlight); return o; }
+    if highlight { o.extend_from_slice(BOLD); }
+    let nl = msg.iter().position(|&b| b == b'\n');
+    o.extend_from_slice(&msg[..nl.unwrap_or(msg.len())]);
+    if !epath.starts_with('#') {
+        o.extend_from_slice(b" (");
+        if highlight { o.extend_from_slice(UNDERLINE); }
+        o.extend_from_slice(epath.as_bytes());
+        if highlight { o.extend_from_slice(RESET); o.extend_from_slice(BOLD); }
+        o.push(b')');
+        if highlight { o.extend_from_slice(RESET); }
+    }
+    let Some(nl) = nl else { return o };
+    let tail = &msg[nl + 1..];
+    if tail.is_empty() { return o; }
+    o.push(b'\n');
+    if !highlight { o.extend_from_slice(tail); return o; }
+    // each line bold, the newlines outside
+    let mut t = tail;
+    while !t.is_empty() {
+        let n = t.iter().position(|&b| b == b'\n').unwrap_or(t.len());
+        if n > 0 { o.extend_from_slice(BOLD); o.extend_from_slice(&t[..n]); o.extend_from_slice(RESET); }
+        let m = t[n..].iter().take_while(|&&b| b == b'\n').count();
+        o.extend_from_slice(&t[n..n + m]);
+        t = &t[n + m..];
+    }
+    o
+}
 fn exc_detailed_message(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
-    let m = exc_message_str(c, slf)?;
-    let highlight = match kw_arg(a) { Some(h) => crate::hash::hash_get_opt(c, h, sym_value("highlight"))?.map(|v| v.truthy()).unwrap_or(false), None => false };
-    let cls = class_path(c, real_class_of(c, slf));
-    if m.is_empty() { return Ok(c.str_new(if highlight { format!("\x1b[1;4m{}\x1b[m", cls) } else { cls }.as_bytes())); }
-    let mut lines = m.splitn(2, '\n');
-    let first = lines.next().unwrap_or("");
-    let rest = lines.next();
-    let mut s = if highlight { format!("\x1b[1m{} (\x1b[1;4m{}\x1b[m\x1b[1m)\x1b[m", first, cls) } else { format!("{} ({})", first, cls) };
-    if let Some(r) = rest { s.push('\n'); s.push_str(&if highlight { format!("\x1b[1m{}\x1b[m", r) } else { r.to_string() }); }
-    Ok(c.str_new(s.as_bytes()))
+    let highlight = highlight_kw(c, kw_arg(a))?.truthy();
+    let m = funcall(c, slf, s::message, &[], std::ptr::null())?;
+    let m = check_str(c, m)?;
+    let o = decorate_message(c, slf, m, highlight);
+    Ok(c.str_new(&o))
 }
 fn exc_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     let cls = class_path(c, real_class_of(c, slf));
@@ -376,29 +424,129 @@ fn exc_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(Value::bool(e2.truthy()))
 }
 
-pub fn full_message(c: &mut Ctx, e: Value, _highlight: bool) -> Result<String, Esc> {
-    let bt = exc_bt(c, e);
-    let mut lines: Vec<String> = vec![];
-    if is_array(bt) { for &l in c.ary(bt) { if is_string(l) { lines.push(String::from_utf8_lossy(c.str_bytes(l)).into_owned()); } } }
-    let dm = funcall(c, e, s::detailed_message, &[], std::ptr::null())?;
-    let msg = if is_string(dm) { String::from_utf8_lossy(c.str_bytes(dm)).into_owned() } else { exc_message_str(c, e)? };
-    let mut out = String::new();
-    let first = lines.first().cloned().unwrap_or_else(|| "-e:1:in '<main>'".into());
-    if lines.is_empty() { out.push_str(&format!("{}: {}\n", c.vm().main_file.borrow(), msg)); }
-    else { out.push_str(&format!("{}: {}\n", first, msg)); }
-    for l in lines.iter().skip(1) { out.push_str(&format!("\tfrom {}\n", l)); }
-    let cause = ivar_get(c, e, s::cause);
-    if cause != NIL && cause != e && is_exception(c, cause) {
-        let cs = full_message(c, cause, false)?;
-        out.push_str(&cs);
+/// error_pos (eval_error.c): the caller's position and the running method.
+fn error_pos(c: &Ctx) -> String {
+    let callee = c.cur_frame().and_then(|f| c.me_ref(f.me)).map(|m| m.name);
+    let mut f = c.cur_frame();
+    while let Some(x) = f { if x.kind != FK_CFUNC && !x.iseq().is_null() { break; } f = c.prev_frame(x); }
+    let Some(x) = f else { return format!("{}: ", c.vm().main_file.borrow()) };
+    match (x.line(), callee) {
+        (0, _) => format!("{}: ", frame_file(x)),
+        (l, Some(n)) => format!("{}:{}:in '{}': ", frame_file(x), l, sym_str(n)),
+        (l, None) => format!("{}:{}: ", frame_file(x), l),
     }
-    Ok(out)
 }
-fn exc_full_message(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
-    let s = full_message(c, slf, false)?;
-    Ok(c.str_new(s.as_bytes()))
+/// print_errinfo
+fn print_errinfo(c: &mut Ctx, o: &mut Vec<u8>, e: Value, bt: &[Vec<u8>], emesg: Value, highlight: bool) {
+    match bt.first() { Some(l) => { o.extend_from_slice(l); o.extend_from_slice(b": "); } None => o.extend_from_slice(error_pos(c).as_bytes()) }
+    let msg_empty = !is_string(emesg) || c.str_bytes(emesg).is_empty();
+    let klass = real_class_of(c, e);
+    // (4.0.2 has no "unhandled exception" here, only in decorate_message)
+    if msg_empty { let p = class_path(c, klass); underlined(o, p.as_bytes(), highlight); }
+    else { o.extend_from_slice(c.str_bytes(emesg)); }
+    o.push(b'\n');
 }
-fn exc_s_to_tty(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(FALSE) }
+/// print_backtrace
+fn print_backtrace(c: &Ctx, o: &mut Vec<u8>, e: Value, bt: &[Vec<u8>], reverse: bool) {
+    let len = bt.len();
+    let width = if len <= 1 { 0 } else { (len - 1).to_string().len() };
+    let (mut skip_start, mut skip_len) = (usize::MAX, 0);
+    if is_kind_of(c, e, c.vm().c_system_stack_error.get()) && len > 9 + 4 + 5 { skip_start = 9; skip_len = len - (9 + 4 + 5) + 5; }
+    let mut i = 1;
+    while i < len {
+        if i == skip_start {
+            o.extend_from_slice(format!("\t ... {} levels...\n", skip_len).as_bytes());
+            i += skip_len;
+            if i >= len { break; }
+        }
+        let l = &bt[if reverse { len - i } else { i }];
+        o.push(b'\t');
+        if reverse { o.extend_from_slice(format!("{:>w$}: ", len - i, w = width).as_bytes()); }
+        o.extend_from_slice(b"from "); o.extend_from_slice(l); o.push(b'\n');
+        i += 1;
+    }
+}
+fn bt_lines(c: &mut Ctx, e: Value) -> Result<Vec<Vec<u8>>, Esc> {
+    let bt = funcall(c, e, s::backtrace, &[], std::ptr::null())?;
+    if !is_array(bt) { return Ok(vec![]); }
+    Ok(c.ary(bt).iter().map_while(|&l| if is_string(l) { Some(c.str_bytes(l).to_vec()) } else { None }).collect())
+}
+/// rb_get_detailed_message
+fn get_detailed_message(c: &mut Ctx, e: Value, opt: Value) -> RV {
+    if !respond_to(c, e, s::detailed_message, true) { return Ok(NIL); }
+    let m = funcall_kw(c, e, s::detailed_message, &[opt], std::ptr::null(), true)?;
+    check_str(c, m)
+}
+/// show_cause
+fn show_cause(c: &mut Ctx, o: &mut Vec<u8>, e: Value, opt: Value, highlight: bool, reverse: bool, shown: &mut Vec<Value>) -> Result<(), Esc> {
+    let cause = ivar_get(c, e, s::cause);
+    if cause == NIL || !is_exception(c, cause) || shown.contains(&cause) { return Ok(()); }
+    shown.push(cause);
+    let bt = bt_lines(c, cause)?;
+    let m = get_detailed_message(c, cause, opt)?;
+    if reverse {
+        show_cause(c, o, cause, opt, highlight, reverse, shown)?;
+        print_backtrace(c, o, cause, &bt, true);
+        print_errinfo(c, o, cause, &bt, m, highlight);
+    } else {
+        print_errinfo(c, o, cause, &bt, m, highlight);
+        print_backtrace(c, o, cause, &bt, false);
+        show_cause(c, o, cause, opt, highlight, reverse, shown)?;
+    }
+    Ok(())
+}
+/// rb_error_write
+fn error_write(c: &mut Ctx, e: Value, opt: Value, highlight: bool, reverse: bool, protect: bool) -> Result<Vec<u8>, Esc> {
+    let bt = bt_lines(c, e)?;
+    let saved = (c.esc, c.esc_val, c.esc_tag, c.esc_tag_v, c.errinfo);
+    let m = match get_detailed_message(c, e, opt) {
+        // the uncaught report falls back to the class name (rb_ec_error_print's EC_PUSH_TAG)
+        Err(_) if protect => { (c.esc, c.esc_val, c.esc_tag, c.esc_tag_v, c.errinfo) = saved; NIL }
+        r => r?,
+    };
+    let mut o = vec![];
+    let mut shown = vec![e];
+    if reverse {
+        if highlight { o.extend_from_slice(BOLD); o.extend_from_slice(b"Traceback"); o.extend_from_slice(RESET); } else { o.extend_from_slice(b"Traceback"); }
+        o.extend_from_slice(b" (most recent call last):\n");
+        show_cause(c, &mut o, e, opt, highlight, reverse, &mut shown)?;
+        print_backtrace(c, &mut o, e, &bt, true);
+        print_errinfo(c, &mut o, e, &bt, m, highlight);
+    } else {
+        print_errinfo(c, &mut o, e, &bt, m, highlight);
+        print_backtrace(c, &mut o, e, &bt, false);
+        show_cause(c, &mut o, e, opt, highlight, reverse, &mut shown)?;
+    }
+    Ok(o)
+}
+/// The report of an uncaught exception (rb_ec_error_print): highlighted when stderr is a tty.
+pub fn full_message(c: &mut Ctx, e: Value) -> Result<String, Esc> {
+    let hl = stderr_tty();
+    let opt = c.hash_new();
+    crate::hash::hash_set(c, opt, sym_value("highlight"), Value::bool(hl))?;
+    let o = error_write(c, e, opt, hl, false, true)?;
+    Ok(String::from_utf8_lossy(&o).into_owned())
+}
+fn exc_full_message(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+    let kw = kw_arg(a);
+    let mut hl = highlight_kw(c, kw)?;
+    if hl == NIL { hl = Value::bool(stderr_tty()); }
+    let mut reverse = false;
+    if let Some(h) = kw {
+        let ord = crate::hash::hash_get_opt(c, h, sym_value("order"))?.unwrap_or(NIL);
+        if ord != NIL {
+            let id = if ord.is_sym() { Some(ord) } else if is_string(ord) { Some(Value::sym(intern(c.str_bytes(ord)))) } else { None };
+            if id == Some(sym_value("bottom")) { reverse = true; }
+            else if id != Some(sym_value("top")) { let ins = inspect_str(c, ord)?; return arg_err(c, format!("expected :top or :bottom as order: {}", ins)); }
+        }
+    }
+    let opt = c.hash_new();
+    if let Some(h) = kw { for (k, v) in c.hash_pairs(h) { crate::hash::hash_set(c, opt, k, v)?; } }
+    crate::hash::hash_set(c, opt, sym_value("highlight"), hl)?;
+    let o = error_write(c, slf, opt, hl.truthy(), reverse, false)?;
+    Ok(c.str_new(&o))
+}
+fn exc_s_to_tty(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(stderr_tty())) }
 
 // NameError / NoMethodError / KeyError / FrozenError / StopIteration / SystemExit / etc.
 fn name_err_init(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {

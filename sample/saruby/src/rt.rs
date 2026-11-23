@@ -440,7 +440,7 @@ pub fn srb_cdecl(c: &mut Ctx, parent: Value, name: Sym, v: Value) -> RV {
 }
 
 pub fn srb_back_ref(c: &mut Ctx, kind: u32) -> RV {
-    let m = c.last_match;
+    let m = crate::builtins::svar::last_match(c);
     if m == NIL { return Ok(NIL); }
     Ok(match kind {
         0 => crate::regexp::nth_match(c, m, 0),
@@ -1236,7 +1236,7 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
             Ok(c.str_new(msg.as_bytes()))
         }
         SP_NAMED_CAPTURE => {
-            let m = c.last_match;
+            let m = crate::builtins::svar::last_match(c);
             if m == NIL { return Ok(NIL); }
             Ok(crate::regexp::named_match(c, m, v.as_sym()))
         }

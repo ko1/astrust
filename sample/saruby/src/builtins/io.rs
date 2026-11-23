@@ -477,7 +477,7 @@ pub static OUTPUT_SEPS: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 fn io_print(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let (fs, ors) = if OUTPUT_SEPS.load(std::sync::atomic::Ordering::Relaxed) { (global_get("$,"), global_get("$\\")) } else { (NIL, NIL) };
     let last;
-    let a = if a.is_empty() { last = [global_get("$_")]; &last[..] } else { a };
+    let a = if a.is_empty() { last = [crate::builtins::svar::last_line(c)]; &last[..] } else { a };
     if fs == NIL && ors == NIL && !rio(c, slf).is_some_and(wconv) {
         let mut out = vec![];
         for &x in a { let sv = crate::rt::srb_tostr(c, x)?; out.extend_from_slice(c.str_bytes(sv)); }
@@ -644,7 +644,7 @@ fn io_gets(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let la = line_args(c, a)?;
     let (v, lineno) = gets_value(c, slf, &la)?;
     if v != NIL { global_set("$.", Value::fix(lineno)); }
-    c.vm().globals.borrow_mut().insert(intern(b"$_"), v);
+    crate::builtins::svar::set_last_line(c, v);
     Ok(v)
 }
 fn eof_err<T>(c: &mut Ctx) -> Result<T, Esc> { err(c, c.vm().c_eof_error.get(), "end of file reached") }

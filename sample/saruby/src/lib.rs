@@ -186,7 +186,7 @@ pub fn version() -> String { format!("saruby 0.1.0 (ASTrust; Ruby 3.4 compatible
 pub fn report_exception(c: &mut Ctx, e: Value) {
     builtins::kernel::out_flush();
     // as CRuby's error_print (C), the message is made without trace events
-    let msg = builtins::tracepoint::quiet(|| builtins::exception::full_message(c, e, true)).unwrap_or_else(|_| "exception\n".into());
+    let msg = builtins::tracepoint::quiet(|| builtins::exception::full_message(c, e)).unwrap_or_else(|_| "exception\n".into());
     builtins::kernel::err_write(msg.as_bytes());
 }
 
@@ -229,7 +229,7 @@ fn run_main(o: Opts) -> i32 {
         (b, "-".into())
     };
     *vm.main_file.borrow_mut() = file.clone();
-    vm.dollar_zero.set(c.str_new(file.as_bytes()));
+    let z = c.str_new(file.as_bytes()); heap::obj_set_flags(z, object::FL_FROZEN); vm.dollar_zero.set(z);
     let file: &'static str = Box::leak(file.into_boxed_str());
 
     inline_builtin::init(&c);

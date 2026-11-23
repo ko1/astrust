@@ -345,7 +345,7 @@ node_errinfo(c: &mut Ctx, n: NodePtr, fp: Fp)
 NODE_DEF
 node_nth_ref(c: &mut Ctx, n: NodePtr, fp: Fp, nth: u32)
 {
-    Ok(crate::regexp::nth_match(c, c.last_match, nth as i64))
+    Ok(crate::regexp::nth_match(c, crate::builtins::svar::last_match(c), nth as i64))
 }
 
 NODE_DEF
@@ -1203,7 +1203,7 @@ node_method_entry(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, f
     // id 0: no block can return to this frame, and its own `return` is caught by the innermost entry
     let id = if flags & ME_ID != 0 { c.next_serial() } else { 0 };
     let prev = c.frame;
-    let mut fr = Frame { prev, fp: head(fp), me, blk, id, pos: line.pos(), kind: FK_METHOD, visi: VISI_PUBLIC, lite: true, pad: 0 };
+    let mut fr = Frame { prev, fp: head(fp), me, blk, id, pos: line.pos(), kind: FK_METHOD, visi: VISI_PUBLIC, lite: true, pad: std::cell::Cell::new(0) };
     // no native stack check here: whoever calls an entry out of line makes it (run_entry, site_fast)
     // a shared frame (the caller's, CallArgs) has no slots of its own and keeps the caller's env
     if !(shareable(nlocals, nparams, flags) && ca.shared) {
@@ -1237,7 +1237,7 @@ node_block_entry(c: &mut Ctx, n: NodePtr, fp: Fp, nlocals: u32, nparams: u32, fl
     let id = if lambda { c.next_serial() } else { b.home_id };
     // iseq null: Frame::iseq() takes it from self_blk when asked
     let mut fr = FrameFull {
-        h: Frame { prev: c.frame, fp: head(fp), me: b.me, blk: b.outer_blk, id, pos: line.pos(), kind: if lambda { FK_LAMBDA } else { FK_BLOCK }, visi: VISI_PUBLIC, lite: false, pad: 0 },
+        h: Frame { prev: c.frame, fp: head(fp), me: b.me, blk: b.outer_blk, id, pos: line.pos(), kind: if lambda { FK_LAMBDA } else { FK_BLOCK }, visi: VISI_PUBLIC, lite: false, pad: std::cell::Cell::new(0) },
         cref: b.cref, iseq: std::ptr::null(), self_blk: b, defined_class: b.defined_class,
     };
     if !shared {
