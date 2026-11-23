@@ -116,6 +116,8 @@ pub fn iter_loop(c: &mut Ctx, it: u32, r0: Value, a: &[Value], y: &mut impl FnMu
         IT_ARY_MAP => Some(am::a_map_loop(c, r0, y)),
         IT_ARY_SELECT => Some(am::a_select_loop(c, r0, true, y)),
         IT_ARY_REJECT => Some(am::a_select_loop(c, r0, false, y)),
+        // Enumerable methods: a redefined Array#each is theirs to call (the cfunc out of line)
+        IT_ARY_INJECT | IT_ARY_EACH_WI if crate::rt::redef(crate::rt::R_ARY_EACH) => None,
         IT_ARY_INJECT => am::a_inject_loop(c, r0, a, y),
         IT_ARY_EACH_WI => Some(am::a_each_wi_loop(c, r0, y)),
         IT_HASH_EACH => Some(hm::h_each_loop(c, r0, y)),
