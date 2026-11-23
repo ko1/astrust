@@ -10,6 +10,9 @@ module Process
       t
     end
     def pid = self[:pid]
+    # CRuby's watcher thread has no Ruby block: no location in #inspect
+    def inspect = super.sub(%r{ <internal:saruby/process>:\d+}, "")
+    alias to_s inspect
   end
 
   module UID

@@ -301,13 +301,25 @@ fn last_comp(b: &[u8]) -> &[u8] { match b.iter().rposition(|&x| x == b'/') { Som
 fn str_like(c: &mut Ctx, src: Value, b: &[u8]) -> Value { if is_string(src) { let e = c.str_enc(src); c.str_new_enc(b, e) } else { c.str_new(b) } }
 /// rb_get_path: the path as a String (to_path / to_str), without NUL, in an ASCII-compatible encoding.
 fn path_str(c: &mut Ctx, v: Value) -> RV {
+    let sv = path_str_nul_ok(c, v)?;
+    if c.str_bytes(sv).contains(&0) { return arg_err(c, "path name contains null byte"); }
+    Ok(sv)
+}
+/// `i` is a character boundary of `b` in `enc` (a suffix must start at one).
+fn char_boundary(b: &[u8], enc: u8, i: usize) -> bool {
+    if crate::string::is_ascii(b) || crate::builtins::encoding::max_len(enc) == 1 { return true; }
+    let mut k = 0;
+    while k < i { k += crate::builtins::encoding::mbclen(enc, b, k).max(1); }
+    k == i
+}
+/// rb_get_path without the NUL check (File.join and basename's suffix do their own).
+fn path_str_nul_ok(c: &mut Ctx, v: Value) -> RV {
     let sv = if is_string(v) { v } else if respond_to(c, v, intern(b"to_path"), true) { let p = funcall(c, v, intern(b"to_path"), &[], std::ptr::null())?; expect_str(c, p)? } else { expect_str(c, v)? };
     let enc = c.str_enc(sv);
     if !crate::builtins::encoding::ascii_compat(enc) {
         let d = inspect_str(c, sv)?;
         return err(c, c.vm().c_compat_error.get(), format!("path name must be ASCII-compatible ({}): {}", crate::builtins::encoding::enc_name(enc), d));
     }
-    if c.str_bytes(sv).contains(&0) { return arg_err(c, "path name contains null byte"); }
     Ok(sv)
 }
 fn f_s_basename(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
@@ -317,9 +329,11 @@ fn f_s_basename(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     let t = trim_end(&p);
     let mut base = if t.is_empty() && p.starts_with(b"/") { b"/".to_vec() } else { last_comp(t).to_vec() };
     if a.len() > 1 {
-        let suf = path_arg(c, a[1])?.0;
-        if suf == b".*" { if let Some(i) = base.iter().rposition(|&x| x == b'.') { if i > 0 { base.truncate(i); } } }
-        else if base.ends_with(&suf) && base != suf { base.truncate(base.len() - suf.len()); }
+        let ss = path_str_nul_ok(c, a[1])?;
+        let suf = c.str_bytes(ss).to_vec();
+        let enc = c.str_enc(sv);
+        if suf == b".*" { if let Some(i) = base.iter().rposition(|&x| x == b'.') { if i > 0 && char_boundary(&base, enc, i) { base.truncate(i); } } }
+        else if base.ends_with(&suf) && base != suf && char_boundary(&base, enc, base.len() - suf.len()) { base.truncate(base.len() - suf.len()); }
     }
     Ok(str_like(c, sv, &base))
 }
@@ -361,7 +375,7 @@ fn join_parts(c: &mut Ctx, a: &[Value], depth: usize, enc: &mut Option<u8>) -> R
             if items.contains(&x) { return arg_err(c, "recursive array"); }
             join_parts(c, &items, depth + 1, enc)?
         } else {
-            let sv = if is_string(x) { x } else { path_str(c, x)? };
+            let sv = path_str_nul_ok(c, x)?;
             if enc.is_none() { *enc = Some(c.str_enc(sv)); }
             let b = c.str_bytes(sv).to_vec();
             if b.contains(&0) { return arg_err(c, "string contains null byte"); }
@@ -480,6 +494,7 @@ pub(crate) fn expand_enc(c: &mut Ctx, a: &[Value], tilde: bool) -> Result<(Vec<u
             return arg_err(c, format!("non-absolute home of {}", user));
         }
         relative(c)?;
+        if enc == ENC_ASCII { enc = crate::builtins::encoding::default_external(); }   // the home directory's (filesystem) encoding
         // "~" and "~/" skip the separator; "~user" keeps it for the loop
         let rest = if user.is_empty() { &f[(end + 1).min(f.len())..] } else { &f[end..] };
         let n = h.len();
@@ -490,7 +505,7 @@ pub(crate) fn expand_enc(c: &mut Ctx, a: &[Value], tilde: bool) -> Result<(Vec<u
             let (d, de) = expand_enc(c, &a[1..2], tilde)?;
             if crate::string::is_ascii(&f) { enc = de; }
             d
-        } else { relative(c)?; cwd() };
+        } else { relative(c)?; if enc == ENC_ASCII { enc = crate::builtins::encoding::default_external(); } cwd() };
         let n = base_end(&base);
         (base, n, &f[..])
     } else {
@@ -917,7 +932,8 @@ fn glob_helper(g: &mut Glob, path: &[u8], dirsep: bool, mut pt: PType, list: &[G
 fn unescape(seg: &[u8], noescape: bool) -> Vec<u8> {
     if noescape { return seg.to_vec(); }
     let mut o = vec![]; let mut i = 0;
-    while i < seg.len() { if seg[i] == b'\\' && i + 1 < seg.len() { i += 1; } o.push(seg[i]); i += 1; }
+    // remove_backslashes: a trailing backslash is dropped too
+    while i < seg.len() { if seg[i] == b'\\' { i += 1; if i >= seg.len() { break; } } o.push(seg[i]); i += 1; }
     o
 }
 /// ruby_glob0 for one pattern (braces included).
@@ -1031,7 +1047,7 @@ fn dir_enc(c: &mut Ctx, opts: Option<Value>) -> Result<u8, Esc> {
 fn dir_list(c: &mut Ctx, p: &PathArg, children: bool) -> Result<Vec<Vec<u8>>, Esc> {
     match read_dir_raw(p.as_bytes()) {
         Ok(e) => Ok(e.into_iter().map(|x| x.0).filter(|n| !children || (n != b"." && n != b"..")).collect()),
-        Err(e) => Err(crate::builtins::io::raise_errno_at(c, e, "rb_dir_initialize - ", p.as_bytes())),
+        Err(e) => Err(crate::builtins::io::raise_errno_at(c, e, "dir_initialize - ", p.as_bytes())),
     }
 }
 /// Entry names as Strings in `enc` (or default_internal).
