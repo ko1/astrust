@@ -132,6 +132,8 @@ pub struct Compiler<'a> {
     cov: Option<usize>,           // Coverage file id: lines / methods get node_cov counters
     trace: bool,                  // compiled for tracing (vm::TRACE_COMPILE): trace points, no entries, locals in envs
     flat_stmts: bool,             // the next statements are no lines of their own (modifier / ternary forms)
+    tag: bool,                    // tag nodes with prism node ids: not saruby's own <internal:..> code (no path to
+                                  // re-read), nor a parse whose ids overflow the tag (the root's id is the largest)
     pub errors: Vec<String>,
     csyms: Vec<std::cell::Cell<Sym>>,   // pr.constants interned, on first use (NOSYM: not yet)
     src_enc: u32,                       // the source encoding (magic comment)
@@ -160,7 +162,7 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), outer: HashMap::default(), pending_outer: vec![], ractor_src: std::cell::OnceCell::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, errors: vec![],
+        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), outer: HashMap::default(), pending_outer: vec![], ractor_src: std::cell::OnceCell::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, tag: !file.starts_with("<internal:") && pr.root.id < 1 << (32 - NF_TAG_SHIFT), errors: vec![],
                    csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()],
                    src_enc: crate::builtins::encoding::find_enc(pr.encoding.as_bytes()).unwrap_or(crate::object::ENC_UTF8) as u32 };
         // identifiers of a non-UTF-8 source are symbols in its encoding (as its symbol literals)
@@ -585,7 +587,9 @@ impl<'a> Compiler<'a> {
     fn dconst(&self, kind: u32) -> NodePtr { ALLOC_node_defined(kind, Sym(0), ALLOC_node_nil()) }
 
     /// n's nodes, tagged with its prism node id (CRuby's node id of an instruction: error_highlight)
+    #[inline(always)]
     pub fn c(&mut self, n: &PNode) -> NodePtr {
+        if !self.tag { return self.c_node(n); }
         let saved = node_tag_swap(n.id);
         let r = self.c_node(n);
         node_tag_swap(saved);
@@ -788,7 +792,7 @@ impl<'a> Compiler<'a> {
             Kind::ConstantPathNode { parent, name } => {
                 let nm = self.cst(name.unwrap_or(0));
                 // CRuby's opt_getconstant_path: a path from a constant (or ::) is one instruction, at the whole path
-                match parent { None => ALLOC_node_top_const(nm, line), Some(p) => { let pv = if static_cpath(p) { self.c_node(p) } else { self.c(p) }; ALLOC_node_const_path(pv, nm, line) } }
+                match parent { None => ALLOC_node_top_const(nm, line), Some(p) => { let pv = self.c(p); if static_cpath(p) { retag_cpath(pv, node_tag_current()); } ALLOC_node_const_path(pv, nm, line) } }
             }
             Kind::ConstantPathWriteNode { target, value } => {
                 let v = self.c(value);
@@ -907,10 +911,12 @@ impl<'a> Compiler<'a> {
                 ALLOC_node_if(st, on_state, off_state)
             }
             // calls
-            Kind::CallNode { receiver, name, arguments, block, message_loc } => {
+            Kind::CallNode { receiver, name, arguments, block, message_start } => {
                 let nm = self.cst(*name);
                 // a call is at its message's line (CRuby: `x\n  .foo` raises at line 2)
-                let line = message_loc.map_or(line, |l| self.line(l));
+                let m = *message_start;
+                let next = self.pr.line_offsets.get((line as i32 - self.pr.start_line) as usize + 1).copied().unwrap_or(u32::MAX);
+                let line = if m != u32::MAX && m >= next { self.pr.line_of(m) } else { line };
                 self.call(n, receiver.as_deref(), nm, arguments.as_deref(), block.as_deref(), line)
             }
             Kind::SuperNode { arguments, block } => self.super_call(arguments.as_deref(), block.as_deref(), false, line),
@@ -2080,7 +2086,7 @@ impl<'a> Compiler<'a> {
 
     fn compile_block(&mut self, n: &PNode, locals: &[u32], params: Option<&PNode>, body: Option<&PNode>, kind: IseqKind, line: u32) -> &'static Iseq {
         // the block's own node (its entry and frame line: error_highlight's block_node), not the call's
-        let saved = node_tag_swap(n.id);
+        let saved = if self.tag { node_tag_swap(n.id) } else { 0 };
         let sk = if kind == IseqKind::Lambda { SK::Lambda } else { SK::Block };
         let label = self.block_label();
         self.push_scope(sk, n, locals);
@@ -2118,7 +2124,7 @@ impl<'a> Compiler<'a> {
         let is = self.finish_iseq(b, ps, kind, label, line, Sym(0));
         // the block's home frame: `return` in the block targets it by id
         if let Some(p) = self.scopes.last_mut() { p.needs_id = true; }
-        node_tag_swap(saved);
+        if self.tag { node_tag_swap(saved); }
         is
     }
 
@@ -2433,6 +2439,12 @@ fn lit_imm(pats: &[NodePtr], kinds: &[u8]) -> Option<Value> {
     if !std::ptr::eq(unsafe { (*n).head.kind }, &KIND_node_lit) { return None; }
     let v = unsafe { (*(n as *mut NodeOf<node_lit_struct>)).u.v };
     if v.is_fixnum() || v.is_special() { Some(v) } else { None }
+}
+
+/// The nodes of a constant path's static parent take the path's tag (one instruction in CRuby).
+fn retag_cpath(n: NodePtr, tag: u32) {
+    node_set_flags(n, node_flags(n) & ((1 << NF_TAG_SHIFT) - 1) | tag << NF_TAG_SHIFT);
+    if std::ptr::eq(node_kind(n), &KIND_node_const_path) { retag_cpath(node_u::<node_const_path_struct>(n).parent, tag); }
 }
 
 /// A constant path from a constant or `::` only (CRuby compiles it as one opt_getconstant_path).

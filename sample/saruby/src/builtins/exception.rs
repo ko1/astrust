@@ -334,12 +334,19 @@ fn exc_backtrace_locations(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Blo
 pub fn location_from_str(c: &mut Ctx, s: &str) -> Value {
     let (head, label) = match s.rfind(":in '") { Some(p) => (&s[..p], s[p + 5..].trim_end_matches('\'')), None => (s, "") };
     let (path, line) = match head.rsplit_once(':') { Some((p, l)) if l.parse::<i64>().is_ok() => (p, l.parse::<i64>().unwrap()), _ => (head, 0) };
+    location_new(c, path, line, label, NIL)
+}
+/// A Location of its parts; nid its prism node id (nil: unknown, false: code from eval).
+fn location_new(c: &mut Ctx, path: &str, line: i64, label: &str, nid: Value) -> Value {
+    static SYMS: std::sync::OnceLock<[crate::value::Sym; 4]> = std::sync::OnceLock::new();
+    let [sp, sl, sb, sn] = *SYMS.get_or_init(|| [intern(b"path"), intern(b"lineno"), intern(b"label"), intern(b"__nid")]);
     let o = new_object(c, c.vm().c_location.get());
     let p = c.str_new(path.as_bytes());
-    ivar_set_raw(c, o, intern(b"path"), p);
-    ivar_set_raw(c, o, intern(b"lineno"), Value::fix(line));
+    ivar_set_raw(c, o, sp, p);
+    ivar_set_raw(c, o, sl, Value::fix(line));
     let l = c.str_new(label.as_bytes());
-    ivar_set_raw(c, o, intern(b"label"), l);
+    ivar_set_raw(c, o, sb, l);
+    if nid != NIL { ivar_set_raw(c, o, sn, nid); }
     o
 }
 pub fn locations_from_lines(c: &mut Ctx, lines: Vec<String>) -> Value {
@@ -348,9 +355,9 @@ pub fn locations_from_lines(c: &mut Ctx, lines: Vec<String>) -> Value {
     out
 }
 /// Locations with their prism node ids (error_highlight).
-pub fn locations_from_locs(c: &mut Ctx, locs: Vec<(String, u32)>) -> Value {
-    let out = c.ary_new();
-    for (l, n) in locs { let v = location_from_str(c, &l); ivar_set_raw(c, v, intern(b"__nid"), nid_value(n)); c.ary_push(out, v); }
+pub fn locations_from_locs(c: &mut Ctx, locs: Vec<BtLine>) -> Value {
+    let out = c.ary_new_capa(locs.len());
+    for l in locs { let v = location_new(c, l.file, l.line as i64, &l.label, nid_value(l.nid)); c.ary_push(out, v); }
     out
 }
 fn loc_path(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(ivar_get(c, slf, intern(b"path"))) }

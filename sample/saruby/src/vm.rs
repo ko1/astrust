@@ -278,10 +278,11 @@ pub struct Frame {
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct Pos(*const u32);
-thread_local! {
-    // the node lines of bound line holes, by the index their code stores
-    static BOUND: RefCell<Vec<&'static u32>> = const { RefCell::new(Vec::new()) };
-}
+/// The node lines of bound line holes, by the index their code stores: chunks that never move, so a read is
+/// two loads and no lock (a raise reads one per bound frame).  Written by the interpreter thread only.
+const BOUND_CHUNK: usize = 1 << 12;
+static BOUND: [std::sync::OnceLock<Box<[std::sync::atomic::AtomicPtr<u32>]>>; 4096] = [const { std::sync::OnceLock::new() }; 4096];
+static BOUND_LEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 impl Pos {
     /// A node's line hole: `l` is the line field of its head.
     #[inline(always)] pub fn at(l: &'static u32) -> Pos { Pos(l) }
@@ -290,21 +291,31 @@ impl Pos {
     /// # Safety
     /// `p` is `i << 1 | 1` from `bind` (a hole the loader bound: aot.rs `hole_value`).
     #[inline(always)] pub const unsafe fn bound(p: *const u8) -> Pos { Pos(p as *const u32) }
-    /// The immediate a bound copy stores for the line hole `l` of a node (None: too many for an imm32).
+    /// The immediate a bound copy stores for the line hole `l` of a node (None: the table is full).
     pub fn bind(l: &'static u32) -> Option<u64> {
-        BOUND.with_borrow_mut(|t| { let i = t.len() as u64; if i >= 1 << 30 { return None; } t.push(l); Some(i << 1 | 1) })
+        use std::sync::atomic::{AtomicPtr, Ordering::Relaxed};
+        let i = BOUND_LEN.load(Relaxed);
+        let chunk = BOUND.get(i / BOUND_CHUNK)?.get_or_init(|| (0..BOUND_CHUNK).map(|_| AtomicPtr::new(std::ptr::null_mut())).collect());
+        chunk[i % BOUND_CHUNK].store((l as *const u32).cast_mut(), Relaxed);
+        BOUND_LEN.store(i + 1, Relaxed);
+        Some((i as u64) << 1 | 1)
     }
     fn cell(self) -> &'static u32 {
         let a = self.0.addr();
-        if a & 1 != 0 { return BOUND.with_borrow(|t| t[a >> 1]); }
-        // SAFETY: an untagged Pos is made only by `at`, a 2-tagged one by `info`, from a &'static u32.
-        unsafe { &*self.0.map_addr(|a| a & !2) }
+        let p = if a & 1 != 0 {
+            let i = a >> 1;
+            BOUND[i / BOUND_CHUNK].get().expect("bound line").get(i % BOUND_CHUNK).expect("bound line").load(std::sync::atomic::Ordering::Relaxed).cast_const()
+        } else { self.0.map_addr(|a| a & !2) };
+        // SAFETY: an untagged Pos is made only by `at`, a 2-tagged one by `info`, from a &'static u32; a bound one
+        // names a BOUND entry, stored by `bind` from a &'static u32.
+        unsafe { &*p }
     }
     #[inline]
     pub fn line(self) -> u32 { *self.cell() }
-    /// The node at this position (its line is at offset 0 of the head); None: not a node's line.
-    pub fn node(self) -> Option<NodePtr> {
-        if self.0.addr() & 3 == 2 { None } else { Some(self.cell() as *const u32 as NodePtr) }
+    /// The line, and the node at this position (its line is at offset 0 of the head; None: not a node's line).
+    pub fn line_node(self) -> (u32, Option<NodePtr>) {
+        let l = self.cell();
+        (*l, if self.0.addr() & 3 == 2 { None } else { Some(l as *const u32 as NodePtr) })
     }
     /// At the line `l` (not a node's)?
     pub fn is_info(self, l: &u32) -> bool { self.0.addr() & 3 == 2 && std::ptr::eq(self.cell(), l) }
@@ -1232,9 +1243,11 @@ fn lines_to_array(c: &mut Ctx, lines: Vec<String>) -> Value {
     a
 }
 
-/// One frame of a captured backtrace: what frame_label needs, plus the file/line.
+/// One frame of a captured backtrace: what frame_label needs, plus where it is: its Pos, read (line, node id)
+/// only when the backtrace is formatted; `at` is the iseq whose own line a Pos::info is (a cfunc frame takes
+/// its caller's file and position).
 #[derive(Clone, Copy)]
-pub struct RawFrame { kind: u8, me: *const MethodEntry, iseq: *const Iseq, file: &'static str, line: u32, nid: u32 }
+pub struct RawFrame { kind: u8, me: *const MethodEntry, iseq: *const Iseq, file: &'static str, pos: Pos, at: *const Iseq }
 
 /// An exception's backtrace kept as raw frames: formatted when first read (most never are).
 pub struct RawBt { frames: Vec<RawFrame>, skip: usize }
@@ -1250,14 +1263,15 @@ pub fn make_backtrace_lazy(c: &mut Ctx, skip: usize) -> Value {
     c.alloc(vm().c_object.get(), Body::Data(Box::new(RawBt { frames, skip })))
 }
 
-/// An exception's backtrace (Array of String, or nil), formatting a captured one in place.
+/// An exception's backtrace (Array of String, or nil), formatting a captured one in place; the lines' node ids
+/// go to `__bt_nids` (backtrace_locations).
 pub fn exc_bt(c: &mut Ctx, e: Value) -> Value {
     let v = ivar_get(c, e, s::bt);
     let Some(raw) = c.data::<RawBt>(v) else { return v };
-    let (lines, nids): (Vec<String>, Vec<u32>) = format_frames_n(c, &raw.frames, raw.skip, usize::MAX).unwrap_or_default().into_iter().unzip();
-    let a = lines_to_array(c, lines);
-    let ns = c.ary_new_capa(nids.len());
-    for n in nids { c.ary_push(ns, nid_value(n)); }
+    let lines = format_frames_n(c, &raw.frames, raw.skip, usize::MAX).unwrap_or_default();
+    let a = c.ary_new_capa(lines.len());
+    let ns = c.ary_new_capa(lines.len());
+    for l in &lines { let s = c.str_new(l.to_string().as_bytes()); c.ary_push(a, s); c.ary_push(ns, nid_value(l.nid)); }
     ivar_set_raw(c, e, s::bt, a);
     ivar_set_raw(c, e, intern(b"__bt_nids"), ns);
     a
@@ -1270,15 +1284,14 @@ fn capture_frames(c: &Ctx) -> Vec<RawFrame> {
         while !f.is_null() {
             let fr = &*f;
             let iseq = fr.iseq();
-            frames.push(RawFrame { kind: fr.kind, me: fr.me, iseq, file: frame_file(fr), line: fr.line(), nid: frame_nid(fr.pos, iseq.as_ref().map(|i| &i.info)) });
+            frames.push(RawFrame { kind: fr.kind, me: fr.me, iseq, file: frame_file(fr), pos: fr.pos, at: iseq });
             f = fr.prev;
         }
     }
     // cfunc frames take the file/line of the nearest Ruby caller
-    let mut last_file: &'static str = "-";
-    let (mut last_line, mut last_nid) = (0, 0);
+    let (mut last_file, mut last_pos, mut last_at): (&'static str, Pos, *const Iseq) = ("-", Pos::info(&LINE_0), std::ptr::null());
     for fr in frames.iter_mut().rev() {
-        if fr.kind == FK_CFUNC { fr.file = last_file; fr.line = last_line; fr.nid = last_nid; } else { last_file = fr.file; last_line = fr.line; last_nid = fr.nid; }
+        if fr.kind == FK_CFUNC { fr.file = last_file; fr.pos = last_pos; fr.at = last_at; } else { last_file = fr.file; last_pos = fr.pos; last_at = fr.at; }
     }
     frames
 }
@@ -1288,20 +1301,27 @@ pub const NID_EVAL: u32 = u32::MAX;
 /// A Location's __nid: the id, or false for code from eval.
 pub fn nid_value(n: u32) -> Value { if n == NID_EVAL { FALSE } else { Value::fix(n as i64) } }
 
-/// The prism node id of the code at `pos` (CRuby's node_id_for_backtrace_location; 0: none): a node's tag, or
-/// at a body's own line its definition's.
-fn frame_nid(pos: Pos, info: Option<&CodeInfo>) -> u32 {
-    match (pos.node(), info) {
+/// The line of `pos` and the prism node id of its code (CRuby's node_id_for_backtrace_location; 0: none): a
+/// node's tag, or at a body's own line its definition's.
+fn line_nid(pos: Pos, info: Option<&CodeInfo>) -> (u32, u32) {
+    let (line, node) = pos.line_node();
+    (line, match (node, info) {
         (Some(n), _) => crate::node::node_tag(n),
         (None, Some(i)) if pos.is_info(&i.line) => i.nid,
         _ => 0,
-    }
+    })
 }
 
-fn format_frames(c: &Ctx, frames: &[RawFrame], skip: usize) -> Vec<String> { format_frames_n(c, frames, skip, usize::MAX).unwrap_or_default().into_iter().map(|l| l.0).collect() }
+/// A line of a backtrace (Thread::Backtrace::Location's parts).
+pub struct BtLine { pub file: &'static str, pub line: u32, pub label: String, pub nid: u32 }
+impl std::fmt::Display for BtLine {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { write!(f, "{}:{}:in '{}'", self.file, self.line, self.label) }
+}
+
+fn format_frames(c: &Ctx, frames: &[RawFrame], skip: usize) -> Vec<String> { format_frames_n(c, frames, skip, usize::MAX).unwrap_or_default().iter().map(|l| l.to_string()).collect() }
 /// Lines skip..skip+n only: the others are not formatted (caller(0, 1) deep in a stack).
 /// None: fewer than `skip` frames (caller's nil).
-fn format_frames_n(c: &Ctx, frames: &[RawFrame], skip: usize, n: usize) -> Option<Vec<(String, u32)>> {
+fn format_frames_n(c: &Ctx, frames: &[RawFrame], skip: usize, n: usize) -> Option<Vec<BtLine>> {
     let mut out = vec![];
     let mut seen = 0usize;
     unsafe {
@@ -1314,10 +1334,11 @@ fn format_frames_n(c: &Ctx, frames: &[RawFrame], skip: usize, n: usize) -> Optio
             if fr.kind == FK_CFUNC && !fr.me.is_null() && (*fr.me).owner == vm().c_proc.get() && matches!(sym_str((*fr.me).name).as_ref(), "call" | "yield" | "===" | "[]") { continue; }
             seen += 1;
             if seen <= skip { continue; }
+            let (line, nid) = line_nid(fr.pos, fr.at.as_ref().map(|i| &i.info));
             // code from eval has no absolute path (CRuby: realpath nil), so no node to look up either
             let mut is = fr.iseq;
             while !is.is_null() && (*is).kind != IseqKind::Eval { is = (*is).parent.get(); }
-            out.push((format!("{}:{}:in '{}'", fr.file, fr.line, frame_label_of(c, fr.kind, fr.me, fr.iseq)), if is.is_null() { fr.nid } else { NID_EVAL }));
+            out.push(BtLine { file: fr.file, line, label: frame_label_of(c, fr.kind, fr.me, fr.iseq), nid: if is.is_null() { nid } else { NID_EVAL } });
         }
     }
     if seen < skip { None } else { Some(out) }
@@ -1325,10 +1346,10 @@ fn format_frames_n(c: &Ctx, frames: &[RawFrame], skip: usize, n: usize) -> Optio
 
 pub fn backtrace_lines(c: &Ctx, skip: usize) -> Vec<String> { format_frames(c, &capture_frames(c), skip) }
 pub fn backtrace_lines_n(c: &Ctx, skip: usize, n: Option<usize>) -> Option<Vec<String>> {
-    backtrace_locs_n(c, skip, n).map(|v| v.into_iter().map(|l| l.0).collect())
+    backtrace_locs_n(c, skip, n).map(|v| v.iter().map(|l| l.to_string()).collect())
 }
-/// backtrace_lines_n with each line's prism node id.
-pub fn backtrace_locs_n(c: &Ctx, skip: usize, n: Option<usize>) -> Option<Vec<(String, u32)>> {
+/// backtrace_lines_n as its parts (with each line's prism node id).
+pub fn backtrace_locs_n(c: &Ctx, skip: usize, n: Option<usize>) -> Option<Vec<BtLine>> {
     if n == Some(0) { return Some(vec![]); }   // CRuby: [] before the range is checked
     format_frames_n(c, &capture_frames(c), skip, n.unwrap_or(usize::MAX))
 }

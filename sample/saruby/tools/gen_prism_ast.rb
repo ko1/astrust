@@ -63,15 +63,20 @@ out = +<<~RS
 RS
 LOCF = [T::LocationField, T::OptionalLocationField]
 # locations the compiler reads (a call's line is its message's, as CRuby's)
+# locations the compiler reads, as their start offset `x_start` (u32::MAX: none; a Loc would grow the node):
+# a call's line is its message's, as CRuby's
 KEEP_LOC = { 'CallNode' => ['message_loc'] }
 def loc_kept?(n, f) = KEEP_LOC.fetch(n.name, []).include?(f.name)
+def kname(n, f) = loc_kept?(n, f) ? f.name.sub(/_loc\z/, '_start') : fname(f.name)
+def ktype(n, f) = loc_kept?(n, f) ? 'u32' : ftype(f)
+def kreader(n, f) = loc_kept?(n, f) ? (f.is_a?(T::OptionalLocationField) ? 'r.opt_loc().map_or(u32::MAX, |l| l.start)' : 'r.loc().start') : freader(f)
 def kept(n) = n.fields.select(&:should_be_serialized?).reject { LOCF.include?(it.class) && !loc_kept?(n, it) }
 nodes.each do |n|
   fs = kept(n)
   if fs.empty?
     out << "    #{n.name},\n"
   else
-    out << "    #{n.name} { #{fs.map { "#{fname(it.name)}: #{ftype(it)}" }.join(', ')} },\n"
+    out << "    #{n.name} { #{fs.map { "#{kname(n, it)}: #{ktype(n, it)}" }.join(', ')} },\n"
   end
 end
 out << "}\n\n"
@@ -92,8 +97,8 @@ nodes.each.with_index(1) do |n, i|
     out << "            #{i} => { #{pre}let flags = r.varu(); Node { id, loc, flags, kind: Kind::#{n.name} } }\n"
   else
     out << "            #{i} => { #{pre}let flags = r.varu();\n"
-    all.each { out << (LOCF.include?(it.class) && !loc_kept?(n, it) ? "                let _ = #{freader(it)};\n" : "                let #{fname(it.name)} = #{freader(it)};\n") }
-    out << "                Node { id, loc, flags, kind: Kind::#{n.name} { #{fs.map { fname(it.name) }.join(', ')} } } }\n"
+    all.each { out << (LOCF.include?(it.class) && !loc_kept?(n, it) ? "                let _ = #{freader(it)};\n" : "                let #{kname(n, it)} = #{kreader(n, it)};\n") }
+    out << "                Node { id, loc, flags, kind: Kind::#{n.name} { #{fs.map { kname(n, it) }.join(', ')} } } }\n"
   end
 end
 out << "            _ => panic!(\"prism: unknown node type {}\", ty),\n        }\n    }\n}\n\n"

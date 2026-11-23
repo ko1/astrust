@@ -63,19 +63,25 @@ pub mod node {
     include!("node_specialize.rs");
     include!("node_dump.rs");
     include!("node_replace.rs");
-    thread_local! {
-        // the prism node id being compiled (compile.rs `c`): every node made meanwhile is tagged with it
-        static NODE_TAG: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-    }
+    // the prism node id being compiled (compile.rs `c`): every node made meanwhile is tagged with it.  A static,
+    // not a thread_local: in libsaruby.so a TLS access is a __tls_get_addr call per node; only the
+    // interpreter thread compiles.
+    static NODE_TAG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    use std::sync::atomic::Ordering::Relaxed;
     /// Set the tag of nodes made from now on (a prism node id; 0: none) and return the previous one.
     #[inline(always)]
-    pub fn node_tag_swap(id: u32) -> u32 { NODE_TAG.replace(if id < 1 << (32 - NF_TAG_SHIFT) { id } else { 0 }) }
-    pub fn node_tag_current() -> u32 { NODE_TAG.get() }
+    pub fn node_tag_swap(id: u32) -> u32 {
+        // load + store, not swap (a locked xchg): no other thread writes it
+        let old = NODE_TAG.load(Relaxed);
+        NODE_TAG.store(id, Relaxed);   // < 1 << (32 - NF_TAG_SHIFT): compile.rs checks the parse's largest
+        old
+    }
+    pub fn node_tag_current() -> u32 { NODE_TAG.load(Relaxed) }
     /// The prism node id a node was compiled from (0: unknown).
     pub fn node_tag(n: NodePtr) -> u32 { node_flags(n) >> NF_TAG_SHIFT }
     #[inline(always)]
     pub fn node_allocated(n: NodePtr) {
-        let t = NODE_TAG.get();
+        let t = NODE_TAG.load(Relaxed);
         if t != 0 { node_set_flags(n, node_flags(n) | t << NF_TAG_SHIFT); }
     }
     pub use crate::eval::*;

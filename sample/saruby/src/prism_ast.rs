@@ -26,7 +26,7 @@ pub enum Kind {
     BlockParametersNode { parameters: Option<Box<Node>>, locals: Vec<Node> },
     BreakNode { arguments: Option<Box<Node>> },
     CallAndWriteNode { receiver: Option<Box<Node>>, read_name: Cst, write_name: Cst, value: Box<Node> },
-    CallNode { receiver: Option<Box<Node>>, name: Cst, message_loc: Option<Loc>, arguments: Option<Box<Node>>, block: Option<Box<Node>> },
+    CallNode { receiver: Option<Box<Node>>, name: Cst, message_start: u32, arguments: Option<Box<Node>>, block: Option<Box<Node>> },
     CallOperatorWriteNode { receiver: Option<Box<Node>>, read_name: Cst, write_name: Cst, binary_operator: Cst, value: Box<Node> },
     CallOrWriteNode { receiver: Option<Box<Node>>, read_name: Cst, write_name: Cst, value: Box<Node> },
     CallTargetNode { receiver: Box<Node>, name: Cst },
@@ -314,13 +314,13 @@ impl<'a> Reader<'a> {
                 let receiver = r.opt_node();
                 let _ = r.opt_loc();
                 let name = r.varu() - 1;
-                let message_loc = r.opt_loc();
+                let message_start = r.opt_loc().map_or(u32::MAX, |l| l.start);
                 let _ = r.opt_loc();
                 let arguments = r.opt_node();
                 let _ = r.opt_loc();
                 let _ = r.opt_loc();
                 let block = r.opt_node();
-                Node { id, loc, flags, kind: Kind::CallNode { receiver, name, message_loc, arguments, block } } }
+                Node { id, loc, flags, kind: Kind::CallNode { receiver, name, message_start, arguments, block } } }
             20 => { let flags = r.varu();
                 let receiver = r.opt_node();
                 let _ = r.opt_loc();
