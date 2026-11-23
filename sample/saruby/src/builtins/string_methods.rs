@@ -478,6 +478,31 @@ cfn!(s_index, |c, slf, a, b_| {
     compat(c, slf, o)?;
     Ok(match find_on_boundary(c, slf, c.str_bytes(o), bs) { Some(p) => Value::fix(byte_to_char(c, slf, p) as i64), None => NIL })
 });
+/// rb_reg_search backward from byte `bs` (\G at `bs`), over character starts; sets $~.
+fn reg_rsearch(c: &mut Ctx, re: Value, slf: Value, bs: usize) -> Result<Option<(usize, usize)>, Esc> {
+    let md = regexp::prepare(c, re, slf)?;
+    let offs = c.char_offsets(slf);
+    for &p in offs.iter().rev().filter(|&&p| p <= bs) {
+        if let Some(g) = regexp::match_at_gpos_e(c, re, c.str_bytes(slf), p, bs, md) {
+            let r = g[0].unwrap();
+            let m = regexp::match_new(c, re, slf, g); crate::builtins::svar::set_last_match(c, m);
+            return Ok(Some(r));
+        }
+    }
+    crate::builtins::svar::set_last_match(c, NIL);
+    Ok(None)
+}
+/// rb_str_rindex on bytes: the last hit of `o` starting at or before byte `upto` on a character boundary.
+fn rindex_bytes(c: &Ctx, slf: Value, o: Value, upto: usize) -> Option<usize> {
+    let mut upto = upto;
+    loop {
+        let p = rfind_bytes(c.str_bytes(slf), c.str_bytes(o), upto)?;
+        let r = c.rstring(slf);
+        if enc_single(&r.b, r.enc) || { let mut i = 0; while i < p { i += enc_char_len(&r.b, i, r.enc); } i == p } { return Some(p); }
+        if p == 0 { return None; }
+        upto = p - 1;
+    }
+}
 cfn!(s_rindex, |c, slf, a, b_| {
     check_argc(c, a, 1, 2)?;
     let n = c.str_char_len(slf) as i64;
@@ -488,32 +513,11 @@ cfn!(s_rindex, |c, slf, a, b_| {
         if st < 0 { st += n; if st < 0 { if is_re { crate::builtins::svar::set_last_match(c, NIL); } return Ok(NIL); } }
         if st > n { st = n; }
     }
-    if is_re {
-        let bs = char_to_byte(c, slf, st as usize).unwrap();
-        let md = regexp::prepare(c, a[0], slf)?;
-        let offs = c.char_offsets(slf);
-        // backward over char starts; \G stays at the search start
-        for &p in offs.iter().rev().filter(|&&p| p <= bs) {
-            if let Some(g) = regexp::match_at_gpos_e(c, a[0], c.str_bytes(slf), p, bs, md) {
-                let m = regexp::match_new(c, a[0], slf, g); crate::builtins::svar::set_last_match(c, m);
-                return Ok(Value::fix(byte_to_char(c, slf, p) as i64));
-            }
-        }
-        crate::builtins::svar::set_last_match(c, NIL);
-        return Ok(NIL);
-    }
+    let bs = char_to_byte(c, slf, st as usize).unwrap();
+    if is_re { return Ok(match reg_rsearch(c, a[0], slf, bs)? { Some((p, _)) => Value::fix(byte_to_char(c, slf, p) as i64), None => NIL }); }
     let o = expect_str(c, a[0])?;
     compat(c, slf, o)?;
-    let bs = char_to_byte(c, slf, st as usize).unwrap();
-    // hits off a character boundary are skipped
-    let mut upto = bs;
-    loop {
-        let Some(p) = rfind_bytes(c.str_bytes(slf), c.str_bytes(o), upto) else { return Ok(NIL) };
-        let r = c.rstring(slf);
-        if enc_single(&r.b, r.enc) || { let mut i = 0; while i < p { i += enc_char_len(&r.b, i, r.enc); } i == p } { return Ok(Value::fix(byte_to_char(c, slf, p) as i64)); }
-        if p == 0 { return Ok(NIL); }
-        upto = p - 1;
-    }
+    Ok(match rindex_bytes(c, slf, o, bs) { Some(p) => Value::fix(byte_to_char(c, slf, p) as i64), None => NIL })
 });
 fn is_ws(x: u8) -> bool { x == b' ' || (9..=13).contains(&x) || x == 0 }
 /// strip core; `sel` = tr-style selector sets (empty: whitespace and NUL).
@@ -600,56 +604,101 @@ cfn!(s_each_byte, |c, slf, a, blk| {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"each_byte"), &[], NIL); }
     s_bytes(c, slf, a, blk)
 });
-fn lines_of(v: &[u8], sep: &[u8], chomp: bool) -> Vec<Vec<u8>> {
+/// How lines are cut (rb_str_enumerate_lines): `rs` empty is paragraph mode; `nl` / `cr` are "\n" / "\r"
+/// in the string's encoding when `rs` is that newline (chomp then also drops a "\r" before it).
+struct LineSep { rs: Vec<u8>, nl: bool, cr: Vec<u8> }
+fn lines_of(v: &[u8], enc: u8, ls: &LineSep, chomp: bool) -> Vec<Vec<u8>> {
     let mut out = vec![];
-    if v.is_empty() { return out; }
-    if sep.is_empty() {
-        // paragraph mode
-        let mut i = 0;
-        while i < v.len() {
-            let j = i;
+    let len = v.len();
+    if len == 0 { return out; }
+    let clen = |p: usize| if p < len { enc_char_len(v, p, enc).min(len - p) } else { 0 };
+    if ls.rs.is_empty() {
+        // paragraph mode, transcribed from string.c
+        let (mut subptr, mut eol): (Option<usize>, Option<usize>) = (Some(0), None);
+        let mut subend = 0usize;
+        while subend < len {
+            let mut chomp_rslen: i64 = 0;
+            let mut rslen: usize;
             loop {
-                match find_bytes(v, b"\n\n", j) {
-                    Some(p) => { let mut e = p + 2; while e < v.len() && v[e] == b'\n' { e += 1; } out.push(if chomp { v[i..p].to_vec() } else { v[i..p + 2].to_vec() }); i = e; break; }
-                    None => { out.push(v[i..].to_vec()); i = v.len(); break; }
+                let n = if v[subend] == b'\r' { 1 } else { 0 };
+                rslen = n + clen(subend + n);
+                if subend + n < len && v[subend + n] == b'\n' {
+                    if eol == Some(subend) { break; }
+                    subend += rslen;
+                    if subptr.is_some() { eol = Some(subend); chomp_rslen = -(rslen as i64); }
+                } else {
+                    if subptr.is_none() { subptr = Some(subend); }
+                    subend += rslen;
                 }
-                #[allow(unreachable_code)] { j += 1; }
+                rslen = 0;
+                if subend >= len { break; }
             }
+            let Some(sp) = subptr else { break };
+            if rslen == 0 { chomp_rslen = 0; }
+            let e = (subend as i64 + if chomp { chomp_rslen } else { rslen as i64 }).clamp(sp as i64, len as i64) as usize;
+            out.push(v[sp..e].to_vec());
+            subptr = None; eol = None;
         }
         return out;
     }
-    let mut i = 0;
-    while i < v.len() {
-        match find_bytes(v, sep, i) {
-            Some(p) => {
-                let e = p + sep.len();
-                let mut line = v[i..e].to_vec();
-                if chomp { line.truncate(line.len() - sep.len()); if sep == b"\n" && line.ends_with(b"\r") { line.pop(); } }
-                out.push(line); i = e;
-            }
-            None => { out.push(v[i..].to_vec()); break; }
-        }
+    let rs = &ls.rs[..];
+    let chomp_nl = |st: usize, mut e: usize| {
+        if v[st..e].ends_with(rs) { e -= rs.len(); if v[st..e].ends_with(&ls.cr) { e -= ls.cr.len(); } }
+        e
+    };
+    let mut subptr = 0;
+    while subptr < len {
+        let Some(hit) = find_bytes(v, rs, subptr) else { break };
+        // a hit inside a character: search again from the next character head
+        let mut adj = subptr; while adj < hit { adj += clen(adj).max(1); }
+        if adj != hit { subptr = adj; continue; }
+        let next = hit + rs.len();
+        let e = if !chomp { next } else if ls.nl { chomp_nl(subptr, next) } else { hit };
+        out.push(v[subptr..e].to_vec());
+        subptr = next;
+    }
+    if subptr < len {
+        let mut e = len;
+        if chomp { if ls.nl { e = chomp_nl(subptr, e); } else if v[subptr..].ends_with(rs) { e -= rs.len(); } }
+        out.push(v[subptr..e].to_vec());
     }
     out
 }
-fn lines_args(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<(Vec<u8>, bool), Esc> {
-    let mut sep = b"\n".to_vec(); let mut chomp = false;
+/// The separator of lines / each_line: None for a nil one (the whole string is one line).
+fn lines_args(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<(Option<LineSep>, bool), Esc> {
+    use crate::builtins::encoding as en;
+    let mut chomp = false;
     let kw = kw_arg(a).or_else(|| a.last().copied().filter(|v| is_hash(*v)));
     let pos: &[Value] = if kw.is_some() { &a[..a.len() - 1] } else { a };
     check_argc(c, pos, 0, 1)?;
     if let Some(h) = kw { if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("chomp"))? { chomp = v.truthy(); } }
-    if pos.first() == Some(&NIL) { return Ok((vec![0xff, 0xfe, 0xfd], chomp)); }
-    if c.str_bytes(slf).is_empty() { return Ok((sep, chomp)); }
-    if let Some(&x) = pos.first() {
-        if x == NIL { sep = vec![0xff, 0xfe, 0xfd]; } else { let s2 = expect_str(c, x)?; compat(c, slf, s2)?; sep = c.str_bytes(s2).to_vec(); }
-    }
-    Ok((sep, chomp))
+    let rsv = match pos.first() { Some(&x) => x, None => gvar_get(c, intern(b"$/"))? };
+    if rsv == NIL { return Ok((None, chomp)); }
+    let enc = c.str_enc(slf);
+    if c.str_bytes(slf).is_empty() { return Ok((Some(LineSep { rs: vec![], nl: false, cr: vec![] }), chomp)); }
+    let rs = expect_str(c, rsv)?;
+    let default_rs = pos.is_empty() && c.str_bytes(rs) == b"\n";
+    let rsb = if default_rs && !en::ascii_compat(enc) {
+        // the default "\n" in the string's encoding (a dummy UTF-16 gets a BOM; no converter raises)
+        let nl = c.str_new(b"\n");
+        let ev = en::encoding_value(c, enc);
+        let x = funcall(c, nl, intern(b"encode"), &[ev], std::ptr::null())?;
+        c.str_bytes(x).to_vec()
+    } else {
+        if !default_rs { compat(c, slf, rs)?; }
+        c.str_bytes(rs).to_vec()
+    };
+    let nlb = en::code_to_bytes(enc, 10).unwrap_or_else(|| b"\n".to_vec());
+    let nl = rsb.len() == en::min_len(enc) && rsb == nlb;
+    let cr = en::code_to_bytes(enc, 13).unwrap_or_else(|| b"\r".to_vec());
+    Ok((Some(LineSep { rs: rsb, nl, cr }), chomp))
 }
 cfn!(s_lines, |c, slf, a, blk| {
-    let (sep, chomp) = lines_args(c, slf, a)?;
-    let ls = if sep == [0xff, 0xfe, 0xfd] { vec![c.str_bytes(slf).to_vec()] } else { lines_of(c.str_bytes(slf), &sep, chomp) };
+    let (ls, chomp) = lines_args(c, slf, a)?;
+    let enc = c.str_enc(slf);
+    let ls = match ls { None => vec![c.str_bytes(slf).to_vec()], Some(ls) => lines_of(c.str_bytes(slf), enc, &ls, chomp) };
     if !blk.is_null() { for l in ls { let s2 = c.str_new_like(slf, l); yield1(c, blk, s2)?; } return Ok(slf); }
-    Ok(c.ary_of_strs(ls, c.str_enc(slf)))
+    Ok(c.ary_of_strs(ls, enc))
 });
 cfn!(s_each_line, |c, slf, a, blk| {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"each_line"), a, NIL); }
@@ -1241,28 +1290,38 @@ fn split3(c: &mut Ctx, slf: Value, v: &[u8], ms: usize, me: usize) -> Value {
     let (x, y, z) = (c.str_new_like(slf, v[..ms].to_vec()), c.str_new_like(slf, v[ms..me].to_vec()), c.str_new_like(slf, v[me..].to_vec()));
     c.ary_from_vec(vec![x, y, z])
 }
+fn part3(c: &mut Ctx, slf: Value, ms: usize, me: usize, sep: Value) -> Value {
+    let (x, z) = (c.str_sub(slf, 0..ms), c.str_sub(slf, me..c.str_len(slf)));
+    let y = if sep == NIL { c.str_sub(slf, ms..me) } else { sep };
+    c.ary_from_vec(vec![x, y, z])
+}
 cfn!(s_partition, |c, slf, a, b_| {
-    let sep = if regexp::is_regexp(c, a[0]) { NIL } else { expect_str(c, a[0])? };
-    let v = c.str_bytes(slf).to_vec();
-    let (ms, me) = if regexp::is_regexp(c, a[0]) {
-        match regexp::search(c, a[0], slf, 0, true)? { m if m == NIL => (usize::MAX, 0), m => regexp::rmatch(c, m).unwrap().groups[0].unwrap() }
-    } else { let p = sep; match find_bytes(&v, c.str_bytes(p), 0) { Some(i) => (i, i + c.str_bytes(p).len()), None => (usize::MAX, 0) } };
-    if ms == usize::MAX { let (x, y, z) = (c.str_new_like(slf, v), c.str_new(b""), c.str_new(b"")); return Ok(c.ary_from_vec(vec![x, y, z])); }
-    Ok(split3(c, slf, &v, ms, me))
+    let found = if regexp::is_regexp(c, a[0]) {
+        let m = regexp::search(c, a[0], slf, 0, true)?;
+        if m == NIL { None } else { let g = regexp::rmatch(c, m).unwrap().groups[0].unwrap(); Some((g.0, g.1, NIL)) }
+    } else {
+        let sep = get_pat(c, a[0])?;
+        compat(c, slf, sep)?;
+        find_on_boundary(c, slf, c.str_bytes(sep), 0).map(|i| (i, i + c.str_len(sep), sep))
+    };
+    Ok(match found {
+        Some((ms, me, sep)) => part3(c, slf, ms, me, sep),
+        None => { let (x, y, z) = (c.str_copy(slf), c.str_sub(slf, 0..0), c.str_sub(slf, 0..0)); c.ary_from_vec(vec![x, y, z]) }
+    })
 });
 cfn!(s_rpartition, |c, slf, a, b_| {
-    let sep = if regexp::is_regexp(c, a[0]) { NIL } else { expect_str(c, a[0])? };
-    let v = c.str_bytes(slf).to_vec();
+    let len = c.str_len(slf);
     let found = if regexp::is_regexp(c, a[0]) {
-        let md = regexp::prepare(c, a[0], slf)?;
-        let mut p = v.len() as i64; let mut r = None;
-        while p >= 0 { if let Some(g) = regexp::match_at_e(c, a[0], &v, p as usize, md) { r = Some(g[0].unwrap()); break; } p -= 1; }
-        r
-    } else { let p = sep; rfind_bytes(&v, c.str_bytes(p), v.len()).map(|i| (i, i + c.str_bytes(p).len())) };
-    match found {
-        None => { let (x, y, z) = (c.str_new(b""), c.str_new(b""), c.str_new_like(slf, v)); Ok(c.ary_from_vec(vec![x, y, z])) }
-        Some((ms, me)) => Ok(split3(c, slf, &v, ms, me)),
-    }
+        reg_rsearch(c, a[0], slf, len)?.map(|(x, y)| (x, y, NIL))
+    } else {
+        let sep = get_pat(c, a[0])?;
+        compat(c, slf, sep)?;
+        rindex_bytes(c, slf, sep, len).map(|i| (i, i + c.str_len(sep), sep))
+    };
+    Ok(match found {
+        Some((ms, me, sep)) => part3(c, slf, ms, me, sep),
+        None => { let (x, y, z) = (c.str_sub(slf, 0..0), c.str_sub(slf, 0..0), c.str_copy(slf)); c.ary_from_vec(vec![x, y, z]) }
+    })
 });
 cfn!(s_delete_prefix, |c, slf, a, b_| { let p = expect_str(c, a[0])?; let v = c.str_bytes(slf); Ok(c.str_new_like(slf, if v.starts_with(c.str_bytes(p)) { v[c.str_bytes(p).len()..].to_vec() } else { v.to_vec() })) });
 cfn!(s_delete_suffix, |c, slf, a, b_| { let p = expect_str(c, a[0])?; let v = c.str_bytes(slf); Ok(c.str_new_like(slf, if v.ends_with(c.str_bytes(p)) { v[..v.len() - c.str_bytes(p).len()].to_vec() } else { v.to_vec() })) });
@@ -1590,19 +1649,7 @@ cfn!(s_byterindex, |c, slf, a, b_| {
     if st < 0 { st += n; if st < 0 { if regexp::is_regexp(c, a[0]) { crate::builtins::svar::set_last_match(c, NIL); } return Ok(NIL); } }
     if st > n { st = n; }
     check_char_boundary(c, slf, st as usize, "offset")?;
-    if regexp::is_regexp(c, a[0]) {
-        let md = regexp::prepare(c, a[0], slf)?;
-        let mut p = st;
-        while p >= 0 {
-            if let Some(g) = regexp::match_at_e(c, a[0], c.str_bytes(slf), p as usize, md) {
-                let m = regexp::match_new(c, a[0], slf, g); crate::builtins::svar::set_last_match(c, m);
-                return Ok(Value::fix(p));
-            }
-            p -= 1;
-        }
-        crate::builtins::svar::set_last_match(c, NIL);
-        return Ok(NIL);
-    }
+    if regexp::is_regexp(c, a[0]) { return Ok(match reg_rsearch(c, a[0], slf, st as usize)? { Some((p, _)) => Value::fix(p as i64), None => NIL }); }
     let o = expect_str(c, a[0])?;
     compat(c, slf, o)?;
     Ok(match rfind_bytes(c.str_bytes(slf), c.str_bytes(o), st as usize) { Some(p) => Value::fix(p as i64), None => NIL })

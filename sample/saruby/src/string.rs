@@ -370,10 +370,31 @@ pub fn to_rstring(c: &mut Ctx, v: Value) -> Result<String, Esc> {
 }
 
 /// Implicit conversion to String (to_str).
+/// rb_check_funcall without arguments: None when `v` does not respond to `mid`.  A respond_to? of its
+/// own is asked first; a method_missing of its own is tried when there is no method (NoMethodError: None).
+pub fn check_funcall(c: &mut Ctx, v: Value, mid: Sym) -> Result<Option<Value>, Esc> {
+    let k = class_of(v);
+    let rt = lookup_method(c, k, s::respond_to_p);
+    if c.me_ref(rt).is_some_and(|m| m.owner != c.vm().m_kernel.get()) {
+        let ar = crate::builtins::proc::method_arity(c, rt);
+        let r = if ar == 1 { funcall(c, v, s::respond_to_p, &[Value::sym(mid)], std::ptr::null())? }
+            else { funcall(c, v, s::respond_to_p, &[Value::sym(mid), TRUE], std::ptr::null())? };
+        if !r.truthy() { return Ok(None); }
+    }
+    if respond_to(c, v, mid, true) { return funcall(c, v, mid, &[], std::ptr::null()).map(Some); }
+    let mm = lookup_method(c, k, s::method_missing);
+    if !c.me_ref(mm).is_some_and(|m| m.owner != c.vm().c_basic_object.get()) { return Ok(None); }
+    match funcall(c, v, s::method_missing, &[Value::sym(mid)], std::ptr::null()) {
+        Ok(r) => Ok(Some(r)),
+        Err(e) => {
+            if c.esc == EscKind::Raise && is_kind_of(c, c.esc_val, c.vm().c_no_method_error.get()) { c.esc = EscKind::None; return Ok(None); }
+            Err(e)
+        }
+    }
+}
 pub fn expect_str(c: &mut Ctx, v: Value) -> RV {
     if is_string(v) { return Ok(v); }
-    if crate::rt::conv_target(v) && respond_to(c, v, s::to_str, true) {
-        let r = funcall(c, v, s::to_str, &[], std::ptr::null())?;
+    if let Some(r) = if crate::rt::conv_target(v) { check_funcall(c, v, s::to_str)? } else { None } {
         if is_string(r) { return Ok(r); }
         let cls = class_path(c, real_class_of(c, v));
         return type_err(c, format!("can't convert {} to String ({}#to_str gives {})", cls, cls, class_path(c, real_class_of(c, r))));
