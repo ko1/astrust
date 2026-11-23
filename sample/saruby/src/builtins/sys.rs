@@ -142,6 +142,7 @@ pub fn pidfd_open(pid: c_int) -> c_int { unsafe { ffi::syscall(434, pid as i64, 
 /// Metadata of an open fd without taking ownership of it.
 pub fn fd_metadata(fd: c_int) -> std::io::Result<std::fs::Metadata> {
     use std::os::unix::io::FromRawFd;
+    if fd < 0 { return Err(std::io::Error::from_raw_os_error(9)); }   // from_raw_fd asserts fd != -1
     // SAFETY: ManuallyDrop: the File never closes the fd it borrows; a bad fd is an Err (EBADF)
     let f = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
     f.metadata()

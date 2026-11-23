@@ -74,7 +74,7 @@ fn check_str(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if !v.is_heap() || !respond_to(c, v, intern(b"to_str"), true) { return Ok(None); }
     let s = funcall(c, v, intern(b"to_str"), &[], std::ptr::null())?;
     if s == NIL { return Ok(None); }
-    if !is_string(s) { let k = crate::builtins::kernel::class_name_for_err(c, v); return type_err(c, format!("can't convert {} to String ({}#to_str gives {})", k, k, crate::builtins::kernel::class_name_for_err(c, s))); }
+    if !is_string(s) { let k = crate::builtins::kernel::class_name_for_err(c, v); return type_err(c, format!("can't convert {} to String ({}#to_str gives {})", k, k, class_path(c, real_class_of(c, s)))); }
     Ok(Some(s))
 }
 fn env_value_p(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {

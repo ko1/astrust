@@ -481,7 +481,7 @@ fn check_hash(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if !v.is_heap() || is_string(v) || !respond_to(c, v, intern(b"to_hash"), true) { return Ok(None); }
     let h = funcall(c, v, intern(b"to_hash"), &[], std::ptr::null())?;
     if h == NIL { return Ok(None); }
-    if !is_hash(h) { let k = class_name_for_err(c, v); return type_err(c, format!("can't convert {} to Hash ({}#to_hash gives {})", k, k, class_name_for_err(c, h))); }
+    if !is_hash(h) { let k = class_name_for_err(c, v); return type_err(c, format!("can't convert {} to Hash ({}#to_hash gives {})", k, k, class_path(c, real_class_of(c, h)))); }
     Ok(Some(h))
 }
 /// Split spawn-style arguments into (env, command words, options) as rb_exec_getargs: the options first.
@@ -713,7 +713,9 @@ fn clock_id(c: &mut Ctx, v: Value) -> Result<i32, Esc> {
 }
 fn timespec_value(c: &mut Ctx, t: &sys::Timespec, unit: Value) -> RV {
     let ns = t.sec as i128 * 1_000_000_000 + t.nsec as i128;
-    let secs = t.sec as f64 + t.nsec as f64 * 1e-9;
+    // timetick2dblnum: sec * 1e9 + nsec, then divided (CRuby's rounding)
+    let d = t.sec as f64 * 1e9 + t.nsec as f64;
+    let secs = d / 1e9;
     if unit == NIL { return Ok(c.float_new(secs)); }
     if !unit.is_sym() { return arg_err(c, "unexpected unit"); }
     Ok(match crate::symbol::sym_str(unit.as_sym()).as_str() {
@@ -721,8 +723,8 @@ fn timespec_value(c: &mut Ctx, t: &sys::Timespec, unit: Value) -> RV {
         "microsecond" => c.int_from_i128(ns / 1000),
         "millisecond" => c.int_from_i128(ns / 1_000_000),
         "second" => Value::fix(t.sec),
-        "float_millisecond" => c.float_new(ns as f64 / 1e6),
-        "float_microsecond" => c.float_new(ns as f64 / 1e3),
+        "float_millisecond" => c.float_new(d / 1e6),
+        "float_microsecond" => c.float_new(d / 1e3),
         "float_second" => c.float_new(secs),
         o => return arg_err(c, format!("unexpected unit: {}", o)),
     })
@@ -767,7 +769,7 @@ fn name_arg(c: &mut Ctx, v: Value) -> Result<Option<Vec<u8>>, Esc> {
     if !v.is_heap() || !respond_to(c, v, intern(b"to_str"), true) { return Ok(None); }
     let s = funcall(c, v, intern(b"to_str"), &[], std::ptr::null())?;
     if s == NIL { return Ok(None); }
-    if !is_string(s) { let k = class_name_for_err(c, v); return type_err(c, format!("can't convert {} to String ({}#to_str gives {})", k, k, class_name_for_err(c, s))); }
+    if !is_string(s) { let k = class_name_for_err(c, v); return type_err(c, format!("can't convert {} to String ({}#to_str gives {})", k, k, class_path(c, real_class_of(c, s)))); }
     Ok(Some(c.str_bytes(s).to_vec()))
 }
 fn rlimit_resource(c: &mut Ctx, v: Value) -> Result<i32, Esc> {
@@ -780,7 +782,7 @@ fn rlimit_resource(c: &mut Ctx, v: Value) -> Result<i32, Esc> {
 fn rlim_num(c: &mut Ctx, v: Value) -> Result<u64, Esc> {
     let v = if is_integer(v) { v } else if v.is_heap() && !is_float(v) && respond_to(c, v, intern(b"to_int"), true) {
         let r = funcall(c, v, intern(b"to_int"), &[], std::ptr::null())?;
-        if !is_integer(r) { let k = class_name_for_err(c, v); return type_err(c, format!("can't convert {} to Integer ({}#to_int gives {})", k, k, class_name_for_err(c, r))); }
+        if !is_integer(r) { let k = class_name_for_err(c, v); return type_err(c, format!("can't convert {} to Integer ({}#to_int gives {})", k, k, class_path(c, real_class_of(c, r)))); }
         r
     } else { return Ok(num_to_long(c, v)? as u64) };
     if v.is_fixnum() { return Ok(v.as_fix() as u64); }
