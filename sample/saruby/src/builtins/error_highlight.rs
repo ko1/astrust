@@ -55,24 +55,56 @@ fn eh_node_id(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 static STATE: AtomicU8 = AtomicU8::new(0);
 pub fn disable() { STATE.store(2, Relaxed); }
 
-/// Exception#detailed_message of a NameError / TypeError / ArgumentError before error_highlight is loaded:
-/// load it (CRuby loads it at boot; here on first use) and answer as its CoreExt would.  None: not such an
-/// exception, or already loaded (then CoreExt is in front of the caller already).
-pub fn detailed_message(c: &mut Ctx, e: Value, a: &[Value]) -> Result<Option<Value>, Esc> {
-    if STATE.load(Relaxed) != 0 { return Ok(None); }
+/// Boot: what gem_prelude's `require "error_highlight"` makes visible, without compiling the library: CoreExt
+/// prepended to NameError / TypeError / ArgumentError (so a detailed_message defined on them is behind it, as in
+/// CRuby) and ErrorHighlight's entry points, each a stub that loads the library (which redefines them) and calls
+/// the real one.
+pub fn boot(c: &mut Ctx) {
+    if STATE.load(Relaxed) == 2 { return; }
+    let m = define_module(c, "ErrorHighlight");
+    let ce = define_module_under(c, m, "CoreExt");
+    define_cfunc(c, ce, "detailed_message", stub_detailed_message, -1);
     let v = c.vm();
-    if ![v.c_name_error.get(), v.c_type_error.get(), v.c_argument_error.get()].iter().any(|&k| is_kind_of(c, e, k)) { return Ok(None); }
-    STATE.store(1, Relaxed);   // once, even if it fails
-    let f = c.str_new(b"error_highlight");
-    crate::builtins::kernel::require_feature(c, f, false)?;
-    let Some(m) = const_get_inherit(c, c.vm().c_object.get(), intern(b"ErrorHighlight"))? else { return Ok(None) };
-    let kw = match kw_arg(a) { Some(h) => h, None => c.hash_new() };
-    Ok(Some(funcall(c, m, intern(b"__detailed_message"), &[e, kw], std::ptr::null())?))
+    for k in [v.c_name_error.get(), v.c_type_error.get(), v.c_argument_error.get()] { prepend_module(c, k, ce); }
+    define_singleton_cfunc(c, m, "spot", |c, s, a, b| stub_call(c, s, a, b, b"spot"), -1);
+    define_singleton_cfunc(c, m, "formatter", |c, s, a, b| stub_call(c, s, a, b, b"formatter"), -1);
+    define_singleton_cfunc(c, m, "formatter=", |c, s, a, b| stub_call(c, s, a, b, b"formatter="), -1);
+    crate::builtins::lazy_consts(c, m, &["DefaultFormatter", "VERSION"], "error_highlight");
 }
 
+/// Load the library; false: it did not define the real methods (then the stubs answer as Exception would).
+fn load(c: &mut Ctx) -> Result<bool, Esc> {
+    if STATE.load(Relaxed) == 0 {
+        let f = c.str_new(b"error_highlight");
+        crate::builtins::kernel::require_feature(c, f, false)?;
+    }
+    Ok(STATE.load(Relaxed) == 1)
+}
+
+/// CoreExt#detailed_message before the library is loaded: its CoreExt#detailed_message, bound to this exception
+/// (its super is then what is behind CoreExt, as for this call).
+fn stub_detailed_message(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+    if !load(c)? { return crate::builtins::exception::exc_detailed_message(c, slf, a, b); }
+    let m = c.vm().c_object.get();
+    let Some(m) = const_get_inherit(c, m, intern(b"ErrorHighlight"))? else { return crate::builtins::exception::exc_detailed_message(c, slf, a, b) };
+    let kw = match kw_arg(a) { Some(h) => h, None => c.hash_new() };
+    funcall(c, m, intern(b"__detailed_message"), &[slf, kw], std::ptr::null())
+}
+
+/// ErrorHighlight.spot / .formatter / .formatter= before the library is loaded: the library's, which replaced this.
+fn stub_call(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block, name: &[u8]) -> RV {
+    if !load(c)? { return Ok(NIL); }
+    match kw_arg(a) {
+        Some(_) => funcall_kw(c, slf, intern(name), a, b, true),
+        None => funcall(c, slf, intern(name), a, b),
+    }
+}
+
+/// The library's native part (required by error_highlight/saruby.rb).
 pub fn init(c: &mut Ctx) {
-    if STATE.load(Relaxed) == 0 { STATE.store(1, Relaxed); }
-    let m = define_module(c, "ErrorHighlight");
+    STATE.store(1, Relaxed);
+    let o = c.vm().c_object.get();
+    let m = match const_get_at(c, o, intern(b"ErrorHighlight")) { Some(m) if crate::array::is_class_or_module(m) => m, _ => define_module(c, "ErrorHighlight") };
     define_singleton_cfunc(c, m, "__find", eh_find, 2);
     define_singleton_cfunc(c, m, "__node_id", eh_node_id, 1);
 }

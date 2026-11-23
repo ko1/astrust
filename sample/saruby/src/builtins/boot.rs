@@ -172,7 +172,7 @@ fn boot_classes(c: &mut Ctx) {
     binding::init(c);
     thread::init(c);
     lazy_const(c, ob, "Ractor", "saruby/ractor");
-    lazy_const(c, ob, "ErrorHighlight", "error_highlight");
+    crate::builtins::error_highlight::boot(c);
     misc::init(c);
     lazy_const(c, ob, "ENV", "saruby/env");
     lazy_const(c, ob, "RbConfig", "saruby/rbconfig");

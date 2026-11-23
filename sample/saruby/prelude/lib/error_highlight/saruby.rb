@@ -5,7 +5,7 @@
 require "saruby/error_highlight"
 
 module ErrorHighlight
-  # Exception#detailed_message that loaded this file on first use (builtins/error_highlight.rs): CoreExt's
+  # the boot stub of CoreExt#detailed_message (builtins/error_highlight.rs), once this file is loaded: the real one
   def self.__detailed_message(exc, opts)
     CoreExt.instance_method(:detailed_message).bind_call(exc, **opts)
   end
