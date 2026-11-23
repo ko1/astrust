@@ -205,9 +205,11 @@ fn st_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let k = real_class_of(c, slf);
     let mem = members_of(c, k);
     let mut out = String::from("#<struct ");
-    if c.class(k).name.is_some() { out.push_str(&class_path(c, k)); }
+    // rb_struct_inspect: the class path unless anonymous (or under an anonymous module)
+    let named = c.class(k).name.is_some() && !class_path(c, k).starts_with('#');
+    if named { out.push_str(&class_path(c, k)); }
     if !rec_enter(c, slf, s::inspect)? { out.push_str(":...>"); return Ok(c.str_new(out.as_bytes())); }
-    if c.class(k).name.is_some() { out.push(' '); }
+    if named { out.push(' '); }
     for i in 0..c.ary_len(mem) {
         if i > 0 { out.push_str(", "); }
         let n = c.ary_get(mem, i).as_sym();

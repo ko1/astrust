@@ -335,39 +335,49 @@ fn k_sprintf(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     crate::builtins::sprintf::format(c, args[0], &args[1..])
 }
 
-fn k_warn(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
+/// Kernel#warn (warning.rb + rb_warn_m).
+fn k_warn(c: &mut Ctx, slf: Value, args: &[Value], _b: Blk) -> RV {
     let (args, kw) = match kw_arg(args) { Some(h) => (&args[..args.len() - 1], Some(h)), None => (args, None) };
-    let mut uplevel = None;
-    let mut cat = NIL;
+    let (mut uplevel, mut cat) = (NIL, NIL);
     if let Some(h) = kw {
-        if let Some(u) = hash_get_opt(c, h, crate::vm::sym_value("uplevel"))? { if u != NIL { uplevel = Some(u.as_fix()); } }
-        if let Some(k) = hash_get_opt(c, h, crate::vm::sym_value("category"))? { cat = k; }
+        for (k, v) in c.hash_pairs(h) {
+            if k == sym_value("uplevel") { uplevel = v; }
+            else if k == sym_value("category") { cat = v; }
+            else { let ks = inspect_str(c, k)?; return arg_err(c, format!("unknown keyword: {}", ks)); }
+        }
     }
-    // warning.rb: a category is a Symbol (or String) and the warning needs Warning[category]
     if cat != NIL {
-        if is_string(cat) { cat = c.str_to_sym(cat); }
-        if !cat.is_sym() { return type_err(c, format!("no implicit conversion of {} into Symbol", class_name_for_err(c, cat))); }
+        cat = if cat.is_sym() { cat } else if is_string(cat) { c.str_to_sym(cat) } else if cat.is_heap() && respond_to(c, cat, intern(b"to_sym"), true) {
+            let r = funcall(c, cat, intern(b"to_sym"), &[], std::ptr::null())?;
+            if !r.is_sym() { let k = class_name_for_err(c, cat); return type_err(c, format!("can't convert {} to Symbol ({}#to_sym gives {})", k, k, class_name_for_err(c, r))); }
+            r
+        } else { return type_err(c, format!("no implicit conversion of {} into Symbol", class_name_for_err(c, cat))); };
         let i = crate::builtins::misc::warning_category(c, cat)?;
         if !crate::builtins::misc::warning_category_enabled(i) { return Ok(NIL); }
     }
-    if c.vm().verbose.get() == NIL { return Ok(NIL); }
-    let mut out = puts_bytes(c, if args.is_empty() { return Ok(NIL) } else { args })?;
-    if let Some(u) = uplevel {
-        let lines = backtrace_lines(c, 1 + u as usize);
-        if let Some(l) = lines.first() {
-            let loc = l.split(":in ").next().unwrap_or("").to_string();
-            let mut pre = format!("{}: warning: ", loc).into_bytes();
-            pre.extend(out); out = pre;
-        }
+    if c.vm().verbose.get() == NIL || args.is_empty() { return Ok(NIL); }
+    let mut loc = None;
+    if uplevel != NIL {
+        let lev = crate::builtins::numeric_methods::num_to_long(c, uplevel)?;
+        if lev < 0 { return arg_err(c, format!("negative level ({})", lev)); }
+        loc = Some(backtrace_locs_n(c, 1 + lev as usize, Some(1)).and_then(|v| v.into_iter().next()));
     }
+    let single = args.len() == 1 && uplevel == NIL && is_string(args[0]) && c.str_bytes(args[0]).last() == Some(&b'\n');
+    let out = if single { c.str_bytes(args[0]).to_vec() } else {
+        let mut pre = match &loc { None => vec![], Some(None) => b"warning: ".to_vec(), Some(Some(l)) => format!("{}:{}: warning: ", l.file, l.line).into_bytes() };
+        pre.extend(puts_bytes(c, args)?);
+        pre
+    };
+    if slf == c.vm().m_warning.get() { return stderr_write(c, &out).map(|_| NIL); }
     warning_write_cat(c, &out, cat)?;
     Ok(NIL)
 }
 
 // ---- raise ------------------------------------------------------------------------------
 
+/// rb_make_exception: the arguments are positional (a keyword Hash goes to #exception as is).
 pub fn make_exception_from_args(c: &mut Ctx, args: &[Value]) -> RV {
-    let (args, kw) = match kw_arg(args) { Some(h) => (&args[..args.len() - 1], Some(h)), None => (args, None) };
+    if args.len() > 3 { return arg_err(c, format!("wrong number of arguments (given {}, expected 0..3)", args.len())); }
     let e = match args.len() {
         0 => {
             if c.errinfo != NIL { c.errinfo }
@@ -390,15 +400,43 @@ pub fn make_exception_from_args(c: &mut Ctx, args: &[Value]) -> RV {
             e
         }
     };
-    if let Some(h) = kw {
-        if let Some(cause) = hash_get_opt(c, h, crate::vm::sym_value("cause"))? {
-            if cause != NIL && !is_exception(c, cause) { return type_err(c, "exception object expected"); }
-            ivar_set_raw(c, e, s::cause, cause);
-        } else if args.is_empty() {
-            return arg_err(c, "only cause is given with no arguments");
+    Ok(e)
+}
+
+/// extract_raise_opts: `cause:` taken out of a trailing keyword Hash (UNDEF: not given).
+fn take_cause(c: &mut Ctx, args: &[Value]) -> Result<(Vec<Value>, Value), Esc> {
+    let mut a = args.to_vec();
+    let mut cause = UNDEF;
+    if let Some(h) = kw_arg(args) {
+        let k = crate::vm::sym_value("cause");
+        if let Some(v) = hash_get_opt(c, h, k)? {
+            cause = v;
+            a.pop();
+            if c.hash_len(h) > 1 { let o = c.hash_dup(h); hash_delete(c, o, k)?; a.push(o); }
         }
     }
-    Ok(e)
+    Ok((a, cause))
+}
+/// setup_exception's cause: an explicit one (nil keeps what the exception has), else $! unless it has one;
+/// a cause that leads back to the exception is an error.
+fn setup_cause(c: &mut Ctx, e: Value, cause: Value) -> Result<(), Esc> {
+    let cause = if cause == UNDEF {
+        if ivar_defined(c, e, s::cause) { return Ok(()); }
+        c.errinfo
+    } else {
+        if cause != NIL && !is_exception(c, cause) { return type_err(c, "exception object expected"); }
+        if cause == NIL { if !ivar_defined(c, e, s::cause) { ivar_set_raw(c, e, s::cause, NIL); } return Ok(()); }
+        cause
+    };
+    if cause == NIL || cause == e { return Ok(()); }
+    let mut x = cause;
+    while x != NIL && is_exception(c, x) {
+        if x == e { return arg_err(c, "circular causes"); }
+        x = ivar_get(c, x, s::cause);
+    }
+    ivar_set_raw(c, e, s::cause, cause);
+    if !ivar_defined(c, cause, s::cause) { ivar_set_raw(c, cause, s::cause, NIL); }
+    Ok(())
 }
 
 /// rb_exception_setup: the exception of a cross-context raise (Thread#raise, Fiber#raise); `cause:`
@@ -438,7 +476,13 @@ pub fn exception_setup(c: &mut Ctx, args: &[Value]) -> RV {
 }
 
 fn k_raise(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
-    let e = make_exception_from_args(c, args)?;
+    let (mut a, cause) = take_cause(c, args)?;
+    if a.is_empty() {
+        if cause != UNDEF { return arg_err(c, "only cause is given with no arguments"); }
+        if c.errinfo != NIL { a.push(c.errinfo); }
+    }
+    let e = if a.is_empty() { let k = c.vm().c_runtime_error.get(); make_exception(c, k, "") } else { make_exception_from_args(c, &a)? };
+    setup_cause(c, e, cause)?;
     // the backtrace starts at the caller of raise
     if ivar_get(c, e, s::bt) == NIL {
         let bt = make_backtrace_lazy(c, 1);
@@ -510,9 +554,13 @@ fn k_block_given(c: &mut Ctx, _s: Value, _args: &[Value], _b: Blk) -> RV {
     Ok(Value::bool(c.caller_frame().is_some_and(|p| !p.blk.is_null())))
 }
 
+/// Kernel#lambda called as a method (send, a block-pass): a literal block becomes a lambda; a Proc must be one.
 fn k_lambda(c: &mut Ctx, _s: Value, _args: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
+    let literal = c.block_copy(blk).is_some_and(|b| b.proc_val == UNDEF && matches!(b.kind, BlockKind::Iseq(_)));
     let p = block_to_proc(c, blk)?;
+    if literal { c.proc_data_mut(p).is_lambda = true; }
+    else if !c.proc_data(p).is_lambda { return arg_err(c, "the lambda method requires a literal block"); }
     Ok(p)
 }
 
@@ -540,8 +588,9 @@ fn k_callee_name(c: &mut Ctx, _s: Value, _args: &[Value], _b: Blk) -> RV {
 }
 
 fn k_caller(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
-    let (start, len) = crate::builtins::exception::caller_range(c, args)?;
+    let (start, len, drop) = crate::builtins::exception::caller_range(c, args)?;
     let Some(lines) = backtrace_lines_n(c, 1 + start, len) else { return Ok(NIL) };
+    let lines = crate::builtins::exception::drop_last(lines, drop);
     Ok(c.ary_of_strs(lines.into_iter().map(|l| l.into_bytes()).collect(), ENC_UTF8))
 }
 
@@ -650,9 +699,22 @@ fn k_integer(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
             Ok(crate::builtins::numeric_methods::f64_to_int(c, f))
         } else if v == NIL { type_err(c, "can't convert nil into Integer") }
         else {
-            if respond_to(c, v, s::to_int, true) { let r = funcall(c, v, s::to_int, &[], std::ptr::null())?; if is_integer(r) { return Ok(r); } }
-            if respond_to(c, v, s::to_i, true) { let r = funcall(c, v, s::to_i, &[], std::ptr::null())?; if is_integer(r) { return Ok(r); } }
-            type_err(c, format!("can't convert {} into Integer", class_name_for_err(c, v)))
+            // rb_convert_to_integer: to_int (its errors ignored), then to_str, then to_i
+            if respond_to(c, v, s::to_int, true) {
+                match funcall(c, v, s::to_int, &[], std::ptr::null()) {
+                    Ok(r) if is_integer(r) => return Ok(r),
+                    Err(_) if c.esc == EscKind::Raise => { c.esc = EscKind::None; c.esc_val = NIL; }
+                    Err(e) => return Err(e),
+                    _ => {}
+                }
+            }
+            if v.is_heap() && respond_to(c, v, s::to_str, true) { let sv = expect_str(c, v)?; return k_integer(c, _s, &[sv], _b); }
+            let cn = class_path(c, real_class_of(c, v));
+            if !respond_to(c, v, s::to_i, true) { return type_err(c, format!("can't convert {} into Integer", cn)); }
+            let r = funcall(c, v, s::to_i, &[], std::ptr::null())?;
+            if is_integer(r) { return Ok(r); }
+            let rn = class_path(c, real_class_of(c, r));
+            type_err(c, format!("can't convert {} to Integer ({}#to_i gives {})", cn, cn, rn))
         }
     })();
     match r { Err(e) if !exc && c.esc == EscKind::Raise => { let _ = e; c.esc = EscKind::None; Ok(NIL) } r => r }
@@ -894,6 +956,7 @@ pub fn gvar_set(c: &mut Ctx, shown: Sym, v: Value) -> RV {
             }
         }
         b"$/" | b"$\\" | b"$," | b"$;" => {
+            if nb == b"$/" { RS_SET.store(true, std::sync::atomic::Ordering::Relaxed); }
             if v != NIL {
                 let re_ok = nb == b"$;" && crate::regexp::is_regexp(c, v);
                 if !is_string(v) && !re_ok {
@@ -910,7 +973,70 @@ pub fn gvar_set(c: &mut Ctx, shown: Sym, v: Value) -> RV {
         _ => {}
     }
     c.vm().globals.borrow_mut().insert(name, v);
+    if TRACING.load(std::sync::atomic::Ordering::Relaxed) { run_traces(c, name, v)?; }
     Ok(v)
+}
+
+// trace_var: { $name => [command, ...] } (oldest first; the newest runs first)
+static TRACES: crate::heap::Global = crate::heap::Global::new();
+static TRACING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn traces_of(c: &mut Ctx, name: Sym) -> Result<Option<Value>, Esc> {
+    let t = TRACES.get(c);
+    if t == NIL { return Ok(None); }
+    let l = hash_get_opt(c, t, Value::sym(name))?;
+    Ok(l.filter(|&l| c.ary_len(l) > 0))
+}
+#[cold]
+fn run_traces(c: &mut Ctx, name: Sym, v: Value) -> Result<(), Esc> {
+    let Some(l) = traces_of(c, name)? else { return Ok(()) };
+    let cmds: Vec<Value> = c.ary(l).iter().rev().copied().collect();
+    let keep = c.ary_new_from(&cmds);
+    for cmd in cmds {
+        if is_string(cmd) { let m = c.vm().main_obj.get(); funcall(c, m, intern(b"eval"), &[cmd], std::ptr::null())?; }
+        else { funcall(c, cmd, intern(b"call"), &[v], std::ptr::null())?; }
+    }
+    std::hint::black_box(keep);
+    Ok(())
+}
+/// Kernel#trace_var(name, cmd = block): cmd (a Proc or a String to eval) runs at each assignment.
+fn k_trace_var(c: &mut Ctx, _s: Value, a: &[Value], b: Blk) -> RV {
+    check_argc(c, a, 1, 2)?;
+    let name = crate::builtins::object::to_sym_arg(c, a[0])?;
+    let name = resolve_gvar(c, name);
+    let cmd = if a.len() == 2 { a[1] } else if !b.is_null() { block_to_proc(c, b)? } else { return arg_err(c, "tried to create Proc object without a block"); };
+    if cmd == NIL { return untrace(c, name, None); }
+    if TRACES.get(c) == NIL { let h = c.hash_new(); TRACES.set(c, h); }
+    let t = TRACES.get(c);
+    let l = match hash_get_opt(c, t, Value::sym(name))? { Some(l) => l, None => { let l = c.ary_new(); hash_set(c, t, Value::sym(name), l)?; l } };
+    c.ary_push(l, cmd);
+    TRACING.store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(NIL)
+}
+/// Kernel#untrace_var(name, cmd = nil): the commands removed (all of them without cmd).
+fn k_untrace_var(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
+    check_argc(c, a, 1, 2)?;
+    let name = crate::builtins::object::to_sym_arg(c, a[0])?;
+    let name = resolve_gvar(c, name);
+    if !gvar_defined(c, name) {
+        let e = make_name_error(c, c.vm().c_name_error.get(), &format!("undefined global variable {}", sym_str(name)), Value::sym(name), NIL)?;
+        return Err(raise_exc(c, e));
+    }
+    untrace(c, name, a.get(1).copied())
+}
+fn untrace(c: &mut Ctx, name: Sym, cmd: Option<Value>) -> RV {
+    let Some(l) = traces_of(c, name)? else { return Ok(if cmd.is_some() { NIL } else { c.ary_new() }) };
+    match cmd {
+        Some(x) => {
+            let Some(i) = c.ary(l).iter().position(|&y| y == x) else { return Ok(NIL) };
+            c.ary_mut(l).remove(i);
+            Ok(c.ary_new_from(&[x]))
+        }
+        None => {
+            let all: Vec<Value> = c.ary(l).iter().rev().copied().collect();
+            c.ary_mut(l).clear();
+            Ok(c.ary_from_vec(all))
+        }
+    }
 }
 
 pub fn gvar_defined(c: &Ctx, name: Sym) -> bool {
@@ -937,47 +1063,106 @@ pub const BUILTIN_FEATURES: &[&str] = &["set", "enumerator", "rational", "comple
     "open-uri", "resolv", "ipaddr", "pty", "syslog", "expect", "io/console", "bigdecimal/util", "date/format",
 ];
 
-fn resolve_feature(c: &Ctx, name: &str, relative_to: Option<&str>) -> Option<std::path::PathBuf> {
-    let with_rb = |p: std::path::PathBuf| -> Option<std::path::PathBuf> {
-        if p.extension().map(|e| e == "rb").unwrap_or(false) && p.is_file() { return Some(p); }
-        let mut q = p.clone().into_os_string(); q.push(".rb");
-        let q = std::path::PathBuf::from(q);
-        if q.is_file() { return Some(q); }
-        if p.is_file() && p.extension().is_none() { return Some(p); }
-        None
+/// File.expand_path without a Ruby call: `~` is $HOME, a relative name is under `base` (or the cwd),
+/// and `.` / `..` are folded lexically (symlinks stay).
+pub fn expand_path_str(name: &str, base: Option<&str>) -> String {
+    let joined = if let Some(rest) = name.strip_prefix('~').filter(|r| r.is_empty() || r.starts_with('/')) {
+        format!("{}{}", std::env::var("HOME").unwrap_or_default(), rest)
+    } else if name.starts_with('/') { name.to_string() } else {
+        let b = match base { Some(b) if b.starts_with('/') => b.to_string(), Some(b) => expand_path_str(b, None),
+            None => std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_else(|_| "/".into()) };
+        format!("{}/{}", b, name)
     };
-    if let Some(base) = relative_to {
-        let dir = std::path::Path::new(base).parent().unwrap_or(std::path::Path::new("."));
-        return with_rb(dir.join(name));
-    }
-    let p = std::path::Path::new(name);
-    if p.is_absolute() || name.starts_with("./") || name.starts_with("../") { return with_rb(p.to_path_buf()); }
-    let lp = c.vm().load_path.get();
-    for i in 0..c.ary_len(lp) {
-        let d = c.ary_get(lp, i);
-        if !is_string(d) { continue; }
-        let dir = String::from_utf8_lossy(c.str_bytes(d)).into_owned();
-        if let Some(f) = with_rb(std::path::Path::new(&dir).join(name)) { return Some(f); }
-    }
-    None
+    let mut out: Vec<&str> = vec![];
+    for seg in joined.split('/') { match seg { "" | "." => {} ".." => { out.pop(); } s => out.push(s) } }
+    format!("/{}", out.join("/"))
 }
 
-enum Feature { File(std::path::PathBuf), Native(String), Missing }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ext { None, Rb, So }
+const SO_EXTS: &[&str] = &[".so", ".o", ".bundle", ".dll", ".dylib"];
+/// The feature's extension (rb_feature_p's ext): only .rb and the shared-library ones count.
+fn split_ext(f: &str) -> (&str, Ext) {
+    let tail = f.rsplit('/').next().unwrap_or(f);
+    if let Some(dot) = tail.rfind('.') {
+        let (b, e) = f.split_at(f.len() - (tail.len() - dot));
+        if e == ".rb" { return (b, Ext::Rb); }
+        if SO_EXTS.contains(&e) { return (b, Ext::So); }
+    }
+    (f, Ext::None)
+}
+fn is_explicit(name: &str) -> bool { name.starts_with('/') || name.starts_with("./") || name.starts_with("../") || name.starts_with('~') }
 
-fn locate_feature(c: &Ctx, name: &str, caller_file: Option<&str>) -> Feature {
-    let relative = caller_file.is_some();
-    if let Some(f) = resolve_feature(c, name, caller_file) { return Feature::File(f); }
-    let is_rb = name.ends_with(".rb");
+/// $LOAD_PATH as CRuby's expanded load path: each entry (to_path) expanded and with symlinks resolved.
+fn expanded_load_path(c: &mut Ctx, call: bool) -> Result<Vec<String>, Esc> {
+    let lp = c.vm().load_path.get();
+    let mut out = vec![];
+    for i in 0..c.ary_len(lp) {
+        let d = c.ary_get(lp, i);
+        let s = if is_string(d) { String::from_utf8_lossy(c.str_bytes(d)).into_owned() } else if call { feature_name(c, d)? } else { continue };
+        let e = expand_path_str(&s, None);
+        out.push(std::fs::canonicalize(&e).map(|p| p.to_string_lossy().into_owned()).unwrap_or(e));
+    }
+    Ok(out)
+}
+
+/// rb_feature_p: a feature in $LOADED_FEATURES (or being loaded) that `name` names.  For a name without
+/// an extension only a .rb feature is returned; feature_present says whether any other matched.
+fn feature_provided(name: &str, lp: &[String], list: &[String]) -> Option<usize> {
+    let (_, ne) = split_ext(name);
+    let i = feature_match(name, lp, list, |fe| ne != Ext::None || fe == Ext::Rb);
+    i
+}
+fn feature_present(name: &str, lp: &[String], list: &[String]) -> bool { feature_match(name, lp, list, |_| true).is_some() }
+fn feature_match(name: &str, lp: &[String], list: &[String], take: impl Fn(Ext) -> bool) -> Option<usize> {
+    let (nb, ne) = split_ext(name);
+    let expanded = name.starts_with('/');
+    list.iter().position(|f| {
+        if !take(split_ext(f).1) { return false; }
+        let (fb, fe) = split_ext(f);
+        if fe == Ext::None { if ne != Ext::None || fb != nb { return false; } return true; }
+        if ne != Ext::None && fe != ne { return false; }
+        if fb == nb { return true; }
+        if expanded || fb.len() <= nb.len() + 1 || !fb.ends_with(nb) { return false; }
+        let pre = &fb[..fb.len() - nb.len()];
+        pre.ends_with('/') && lp.iter().any(|d| d.as_str() == &pre[..pre.len() - 1])
+    })
+}
+fn loaded_list(c: &Ctx) -> Vec<String> {
+    let lf = c.vm().loaded_features.get();
+    c.ary(lf).iter().filter(|&&x| is_string(x)).map(|&x| String::from_utf8_lossy(c.str_bytes(x)).into_owned()).collect()
+}
+
+/// The file `name` resolves to (rb_find_file): explicit paths as given, others under each load path entry.
+fn find_file(name: &str, lp: &[String]) -> Option<String> {
+    let (_, ext) = split_ext(name);
+    let cands = |base: String| -> Option<String> {
+        match ext {
+            Ext::Rb => std::path::Path::new(&base).is_file().then_some(base),
+            Ext::None => { let r = format!("{}.rb", base); std::path::Path::new(&r).is_file().then_some(r) }
+            Ext::So => None,
+        }
+    };
+    if is_explicit(name) { return cands(expand_path_str(name, None)); }
+    lp.iter().find_map(|d| cands(expand_path_str(name, Some(d))))
+}
+
+enum Feature { File(String), Native(String), Missing, SoOnly }
+
+fn locate_feature(name: &str, lp: &[String], relative: bool) -> Feature {
+    if let Some(f) = find_file(name, lp) { return Feature::File(f); }
+    let (base, ext) = split_ext(name);
     let is_so = name.ends_with(".so");
-    let base = name.trim_end_matches(".rb").trim_end_matches(".so");
     // "foo.so" may name a native part of its own, below a pure-Ruby "foo" (psych.so)
     let so_native = is_so && crate::builtins::prelude::has_feature(name);
-    let native = !is_rb && (crate::builtins::prelude::has_feature(base) || so_native);
+    let native = ext != Ext::Rb && (crate::builtins::prelude::has_feature(base) || so_native);
     // the reference ruby's pure-Ruby stdlib, unless saruby implements the feature itself
-    let std_file = if native || is_so || relative || name.starts_with('/') || name.starts_with('.') { None } else { crate::builtins::prelude::stdlib_file(name) };
+    let std_file = if native || is_so || relative || is_explicit(name) { None } else { crate::builtins::prelude::stdlib_file(name) };
     match std_file {
-        Some(f) => Feature::File(f),
+        Some(f) => Feature::File(std::fs::canonicalize(&f).unwrap_or(f).to_string_lossy().into_owned()),
         None if native || BUILTIN_FEATURES.contains(&base) => Feature::Native(if so_native { name.to_string() } else { base.to_string() }),
+        // an explicit path with only a native library beside it: dlopen would fail (LoadError without a path)
+        None if ext == Ext::None && is_explicit(name) && SO_EXTS.iter().any(|e| std::path::Path::new(&format!("{}{}", expand_path_str(name, None), e)).is_file()) => Feature::SoOnly,
         None => Feature::Missing,
     }
 }
@@ -1003,49 +1188,146 @@ pub fn require_feature(c: &mut Ctx, path: Value, relative: bool) -> RV {
         let rel = rel.join("/");
         if crate::builtins::prelude::has_feature(&rel) { let r = c.str_new(rel.as_bytes()); return require_feature(c, r, false); }
     }
-    let file = match locate_feature(c, &name, caller_file.as_deref()) {
+    // require_relative: the path from the caller's directory (File.absolute_path(name, dir))
+    let name = match &caller_file {
+        Some(cf) => {
+            // rb_current_realfilepath: the caller's file with symlinks resolved
+            let real = std::fs::canonicalize(cf).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| cf.clone());
+            let dir = match real.rfind('/') { Some(0) => "/".to_string(), Some(i) => real[..i].to_string(), None => ".".to_string() };
+            expand_path_str(&name, Some(&dir))
+        }
+        None => name,
+    };
+    let lp = expanded_load_path(c, true)?;
+    let me = crate::builtins::thread::current_thread(c);
+    // already provided under this name, or being loaded
+    loop {
+        if feature_provided(&name, &lp, &loaded_list(c)).is_some() { return Ok(FALSE); }
+        let loading: Vec<String> = LOADING.with_borrow(|l| l.iter().map(|e| e.0.clone()).collect());
+        let Some(i) = feature_provided(&name, &lp, &loading) else { break };
+        if !wait_loading(c, &loading[i], me)? { return Ok(FALSE); }
+    }
+    let file = match locate_feature(&name, &lp, caller_file.is_some()) {
         Feature::File(f) => f,
         Feature::Native(base) => {
             if base == "did_you_mean" { if let Some(r) = crate::builtins::did_you_mean::require(c) { return r; } }
+            // a .so of that name is there and no .rb exists (pathname.so but pathname.rb loads)
+            if !crate::builtins::prelude::has_lib(&base) && feature_present(&name, &lp, &loaded_list(c)) { return Ok(FALSE); }
+            // saruby's own parts ("saruby/...") are not features of CRuby's: kept out of $LOADED_FEATURES
+            if base.starts_with("saruby/") {
+                if INTERNAL_LOADED.with_borrow(|l| l.contains(&base)) { return Ok(FALSE); }
+                INTERNAL_LOADED.with_borrow_mut(|l| l.push(base.clone()));
+                crate::builtins::prelude::load_feature(c, &base)?;
+                return Ok(TRUE);
+            }
             let lf = c.vm().loaded_features.get();
-            if c.ary(lf).iter().any(|&x| is_string(x) && c.str_bytes(x) == base.as_bytes()) { return Ok(FALSE); }
-            let key = c.str_new(base.as_bytes());
+            // one with Ruby code is recorded as its .rb (as CRuby's lib/<name>.rb)
+            let feat = if crate::builtins::prelude::has_lib(&base) { format!("{}.rb", base) } else { base.clone() };
+            if c.ary(lf).iter().any(|&x| is_string(x) && (c.str_bytes(x) == base.as_bytes() || c.str_bytes(x) == feat.as_bytes())) { return Ok(FALSE); }
+            let key = c.str_new(feat.as_bytes());
             c.ary_push(lf, key);
             crate::builtins::prelude::load_feature(c, &base)?;
             return Ok(TRUE);
         }
+        Feature::SoOnly => {
+            let e = make_exception(c, c.vm().c_load_error.get(), &format!("{}.so: cannot load a native extension", expand_path_str(&name, None)));
+            return Err(raise_exc(c, e));
+        }
+        // a feature of that name without .rb (a .so, or no extension) is already there
+        Feature::Missing if feature_present(&name, &lp, &loaded_list(c)) => return Ok(FALSE),
         Feature::Missing => {
-            // require_relative reports the absolute path it tried (File.absolute_path(name, dir))
-            let shown = match &caller_file {
-                Some(cf) => {
-                    let dir = std::path::Path::new(cf).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
-                    let (nv, dv) = (c.str_new(name.as_bytes()), c.str_new(dir.as_bytes()));
-                    String::from_utf8_lossy(&crate::builtins::file::expand(c, &[nv, dv], false)?).into_owned()
-                }
-                None => name.clone(),
-            };
-            let e = make_exception(c, c.vm().c_load_error.get(), &format!("cannot load such file -- {}", shown));
-            { let p = c.str_new(shown.as_bytes()); ivar_set_raw(c, e, intern(b"path"), p); }
+            let e = make_exception(c, c.vm().c_load_error.get(), &format!("cannot load such file -- {}", name));
+            { let p = c.str_new(name.as_bytes()); ivar_set_raw(c, e, intern(b"path"), p); }
             return Err(raise_exc(c, e));
         }
     };
-    let abs = std::fs::canonicalize(&file).unwrap_or(file.clone());
-    let key = abs.to_string_lossy().into_owned();
+    let key = file;
+    let real = std::fs::canonicalize(&key).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| key.clone());
+    loop {
+        let list = loaded_list(c);
+        if list.iter().any(|f| *f == key) { return Ok(FALSE); }
+        // the same file under another path (CRuby's loaded_features_realpaths)
+        if REALPATHS.with_borrow(|r| r.iter().any(|(f, rp)| *rp == real && list.contains(f))) { return Ok(FALSE); }
+        if loading_thread(&key).is_none() { break; }
+        if !wait_loading(c, &key, me)? { return Ok(FALSE); }
+    }
+    LOADING.with_borrow_mut(|l| l.push((key.clone(), me)));
+    let r = load_file(c, &key);
+    LOADING.with_borrow_mut(|l| { if let Some(i) = l.iter().position(|(k, t)| *k == key && *t == me) { l.remove(i); } });
+    crate::builtins::blop::notify(c, loading_key(&key));
+    r?;
+    let ks = c.str_new(key.as_bytes());
     let lf = c.vm().loaded_features.get();
-    if c.ary(lf).iter().any(|&x| is_string(x) && c.str_bytes(x) == key.as_bytes()) { return Ok(FALSE); }
-    let ks = c.str_new(key.as_bytes()); c.ary_push(lf, ks);
-    load_file(c, &key)?;
+    c.ary_push(lf, ks);
+    REALPATHS.with_borrow_mut(|r| r.push((key, real)));
     Ok(TRUE)
+}
+
+/// A feature another thread is loading: wait for it (Ok(true): look again); this thread's own: circular.
+fn wait_loading(c: &mut Ctx, key: &str, me: Value) -> Result<bool, Esc> {
+    match loading_thread(key) {
+        None => Ok(true),
+        Some(t) if t == me => { warn_circular(c, key)?; Ok(false) }
+        Some(_) => {
+            let k = loading_key(key);
+            crate::builtins::thread::block_on(c, |_| Ok(loading_thread(key).is_none()), Some(k), None, true)?;
+            Ok(true)
+        }
+    }
+}
+
+// saruby's internal features already loaded
+thread_local! { static INTERNAL_LOADED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) }; }
+// features being required, and by which thread (CRuby's loading table)
+thread_local! { static LOADING: std::cell::RefCell<Vec<(String, Value)>> = const { std::cell::RefCell::new(Vec::new()) }; }
+// (feature, its realpath) of the files require loaded
+thread_local! { static REALPATHS: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) }; }
+fn loading_thread(key: &str) -> Option<Value> { LOADING.with_borrow(|l| l.iter().find(|(k, _)| k == key).map(|e| e.1)) }
+fn loading_key(key: &str) -> u64 { key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3)) | 1 }
+
+fn warn_circular(c: &mut Ctx, key: &str) -> Result<(), Esc> {
+    if !c.vm().verbose.get().truthy() { return Ok(()); }
+    let at = c.caller_frame().map(|f| format!("{}:{}", frame_file(f), f.line())).unwrap_or_default();
+    let mut msg = format!("{}: warning: {}: warning: loading in progress, circular require considered harmful - {}\n", at, at, key);
+    for l in backtrace_locs_n(c, 0, None).unwrap_or_default().iter().rev() { msg.push_str(&format!("\tfrom {}:{}:in  '{}'\n", l.file, l.line, l.label)); }
+    msg.push('\n');
+    warning_write(c, msg.as_bytes())
+}
+
+pub enum FeatureState { LoadingByMe, LoadingByOther, Provided, None }
+/// Whether the feature an autoload names is loaded or being loaded (check_autoload_required).
+pub fn feature_state(c: &Ctx, path: Value) -> FeatureState {
+    let name = String::from_utf8_lossy(c.str_bytes(path)).into_owned();
+    let lp = {
+        let lpv = c.vm().load_path.get();
+        (0..c.ary_len(lpv)).map(|i| c.ary_get(lpv, i)).filter(|&d| is_string(d)).map(|d| {
+            let e = expand_path_str(&String::from_utf8_lossy(c.str_bytes(d)), None);
+            std::fs::canonicalize(&e).map(|p| p.to_string_lossy().into_owned()).unwrap_or(e)
+        }).collect::<Vec<_>>()
+    };
+    let loading: Vec<(String, Value)> = LOADING.with_borrow(|l| l.clone());
+    let keys: Vec<String> = loading.iter().map(|e| e.0.clone()).collect();
+    if let Some(i) = feature_provided(&name, &lp, &keys).or_else(|| match locate_feature(&name, &lp, false) {
+        Feature::File(f) | Feature::Native(f) => keys.iter().position(|k| *k == f), _ => None }) {
+        return if loading[i].1 == crate::builtins::thread::current_thread(c) { FeatureState::LoadingByMe } else { FeatureState::LoadingByOther };
+    }
+    let list = loaded_list(c);
+    if feature_provided(&name, &lp, &list).is_some() { return FeatureState::Provided; }
+    match locate_feature(&name, &lp, false) {
+        Feature::File(f) | Feature::Native(f) if list.contains(&f) => FeatureState::Provided,
+        _ => FeatureState::None,
+    }
 }
 
 /// $LOAD_PATH.resolve_feature_path: [:rb, path], [:so, "name.so"] for a feature saruby provides, or nil.
 fn lp_resolve_feature_path(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let sv = expect_str(c, a[0])?;
     let name = String::from_utf8_lossy(c.str_bytes(sv)).into_owned();
-    let (kind, path) = match locate_feature(c, &name, None) {
-        Feature::File(f) => ("rb", std::path::absolute(&f).unwrap_or(f).to_string_lossy().into_owned()),
+    let lp = expanded_load_path(c, true)?;
+    let (kind, path) = match locate_feature(&name, &lp, false) {
+        Feature::File(f) => ("rb", f),
         Feature::Native(base) => ("so", format!("{}.so", base)),
-        Feature::Missing => return Ok(NIL),
+        Feature::Missing | Feature::SoOnly => return Ok(NIL),
     };
     let ps = c.str_new(path.as_bytes());
     Ok(c.ary_new_from(&[Value::sym(intern(kind.as_bytes())), ps]))
@@ -1118,6 +1400,21 @@ fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     Ok(TRUE)
 }
 
+/// $/ was assigned (String#chomp reads it only then).
+pub static RS_SET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// -n / -p: Kernel#chomp and #chop on $_ (module functions, as CRuby's rb_define_global_function).
+pub fn define_dash_n(c: &mut Ctx) {
+    fn on_line(c: &mut Ctx, a: &[Value], m: &[u8]) -> RV {
+        let l = crate::builtins::svar::last_line(c);
+        let s = expect_str(c, l)?;
+        let r = funcall(c, s, intern(m), a, std::ptr::null())?;
+        crate::builtins::svar::set_last_line(c, r);
+        Ok(r)
+    }
+    let k = c.vm().m_kernel.get();
+    define_module_function(c, k, "chomp", |c, _s, a, _b| on_line(c, a, b"chomp"), -1);
+    define_module_function(c, k, "chop", |c, _s, a, _b| { check_argc(c, a, 0, 0)?; on_line(c, a, b"chop") }, -1);
+}
 /// rb_class_real(rb_vm_cbase()): where Kernel#autoload / #autoload? work.
 fn autoload_cbase(c: &Ctx) -> Value {
     let Some(f) = c.caller_frame() else { return c.vm().c_object.get() };
@@ -1141,6 +1438,8 @@ fn m_autoload(c: &mut Ctx, k: Value, args: &[Value], _b: Blk) -> RV {
     if c.str_len(path) == 0 { return arg_err(c, "empty feature name"); }
     if const_get_at(c, k, nm).is_some() { return Ok(NIL); }
     c.class_mut(k).autoload.insert(nm, path);
+    if let Some(l) = source_location(c) { c.class_mut(k).cx_mut().const_loc.insert(nm, l); }
+    call_const_added(c, k, nm)?;
     Ok(NIL)
 }
 /// Run an autoload's require: `main.require(path)` as CRuby (so an overridden require sees it);
@@ -1221,13 +1520,20 @@ fn m_autoload_p(c: &mut Ctx, k: Value, args: &[Value], _b: Blk) -> RV {
     let list: Vec<Value> = if inherit { ancestors(c, k).to_vec() } else { vec![k] };
     for kk in list {
         if const_get_at(c, kk, nm).is_some() { return Ok(NIL); }
-        if let Some(&p) = c.class(kk).autoload.get(&nm) { return Ok(if c.str_bytes(p).starts_with(b"saruby/") { NIL } else { p }); }
+        if let Autoload::Ready(p) = autoload_state(c, kk, nm) { return Ok(if c.str_bytes(p).starts_with(b"saruby/") { NIL } else { p }); }
+        if c.class(kk).autoload.contains_key(&nm) { return Ok(NIL); }
     }
     Ok(NIL)
 }
 
 fn k_dir(c: &mut Ctx, _s: Value, _args: &[Value], _b: Blk) -> RV {
     let f = c.caller_frame().map_or("-", frame_file).to_string();
+    // code from eval: no real path; a given file name's dirname as is
+    if c.caller_frame().is_some_and(|x| x.kind == FK_EVAL) {
+        if f.starts_with("(eval") { return Ok(NIL); }
+        let d = match f.rfind('/') { Some(0) => "/".to_string(), Some(i) => f[..i].to_string(), None => ".".to_string() };
+        return Ok(c.str_new(d.as_bytes()));
+    }
     let p = std::path::Path::new(&f);
     let abs = std::fs::canonicalize(p).unwrap_or(p.to_path_buf());
     Ok(c.str_new(abs.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or(".".into()).as_bytes()))
@@ -1270,6 +1576,8 @@ pub fn init(c: &mut Ctx) {
     mf(c, "sprintf", k_sprintf, -1);
     mf(c, "format", k_sprintf, -1);
     mf(c, "warn", k_warn, -1);
+    mf(c, "trace_var", k_trace_var, -1);
+    mf(c, "untrace_var", k_untrace_var, -1);
     mf(c, "raise", k_raise, -1);
     mf(c, "fail", k_raise, -1);
     mf(c, "loop", k_loop, 0);

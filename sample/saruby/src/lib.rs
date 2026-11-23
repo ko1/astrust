@@ -144,6 +144,7 @@ struct Opts {
     requires: Vec<String>,
     incdirs: Vec<String>,
     check_syntax: bool,
+    cmdline: u8,   // prism's -a -l -n -p bits
 }
 
 fn usage() -> ! {
@@ -169,7 +170,7 @@ fn parse_args() -> Opts {
     let raw: Vec<Vec<u8>> = std::env::args_os().map(|a| std::os::unix::ffi::OsStrExt::as_bytes(a.as_os_str()).to_vec()).collect();
     let argv: Vec<String> = raw.iter().map(|a| String::from_utf8_lossy(a).into_owned()).collect();
     let mut o = Opts { e: vec![], script: None, args: vec![], plain: false, aot: false, dump_ast: false, quiet: false,
-        verbose_astro: false, warn: false, nowarn: false, store: "code_store".into(), compiled_only: false, requires: vec![], incdirs: vec![], check_syntax: false };
+        verbose_astro: false, warn: false, nowarn: false, store: "code_store".into(), compiled_only: false, requires: vec![], incdirs: vec![], check_syntax: false, cmdline: 0 };
     let mut i = 1;
     while i < argv.len() {
         let a = &argv[i];
@@ -185,6 +186,13 @@ fn parse_args() -> Opts {
             "-w" | "-W" | "-W2" | "-v" | "--verbose" => { o.warn = true; if a == "-v" { println!("{}", version()); } }
             "-W0" => o.nowarn = true,
             "-c" => o.check_syntax = true,
+            // -n / -p / -l / -a, also combined ("-ne", "-lane")
+            s if s.len() > 1 && s.starts_with('-') && !s.starts_with("--") && s[1..].bytes().all(|b| b"nple".contains(&b) || b == b'a') && s[1..].bytes().any(|b| b != b'e') => {
+                for b in s[1..].bytes() {
+                    match b { b'a' => o.cmdline |= 0x1, b'l' => o.cmdline |= 0x4, b'n' => o.cmdline |= 0x8, b'p' => o.cmdline |= 0x18,
+                        _ => { i += 1; o.e.push(raw.get(i).cloned().unwrap_or_else(|| usage())); } }
+                }
+            }
             "--code-store" => { i += 1; o.store = argv.get(i).cloned().unwrap_or_else(|| usage()); }
             "--version" => { println!("{}", version()); std::process::exit(0); }
             "-h" | "--help" => usage(),
@@ -239,6 +247,10 @@ fn run_main(o: Opts) -> i32 {
 
     let vm = vm();
     vm.verbose.set(if o.warn { TRUE } else if o.nowarn { NIL } else { FALSE });
+    if o.cmdline != 0 {
+        prism::COMMAND_LINE.store(o.cmdline, std::sync::atomic::Ordering::Relaxed);
+        if o.cmdline & 0x18 != 0 { builtins::kernel::define_dash_n(&mut c); }
+    }
     if o.warn { builtins::misc::warning_enable_deprecated(); }
     for d in &o.incdirs { let s = c.str_new(d.as_bytes()); c.ary_push(vm.load_path.get(), s); }
     builtins::prelude::setup_load_path(&mut c);

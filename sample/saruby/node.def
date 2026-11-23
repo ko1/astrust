@@ -334,14 +334,16 @@ node_top_const(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, line@hole: u32)
 }
 
 NODE_DEF
-node_cdecl(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v@child: Value)
+node_cdecl(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v@child: Value, line@hole: u32)
 {
+    line.store(c.frame_mut());
     srb_cdecl(c, NIL, name, v)
 }
 
 NODE_DEF
-node_cdecl_path(c: &mut Ctx, n: NodePtr, fp: Fp, parent@child: Value, name: Sym, v@child: Value)
+node_cdecl_path(c: &mut Ctx, n: NodePtr, fp: Fp, parent@child: Value, name: Sym, v@child: Value, line@hole: u32)
 {
+    line.store(c.frame_mut());
     srb_cdecl_path(c, parent, name, v)
 }
 

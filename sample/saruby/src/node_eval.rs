@@ -517,14 +517,16 @@ pub fn EVAL_node_top_const<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr,
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_cdecl(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value) -> RV {
+pub fn EVAL_node_cdecl<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v: Value, line: H_line) -> RV {
+    line.store(c.frame_mut());
     srb_cdecl(c, NIL, name, v)
 }
 
 
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
-pub fn EVAL_node_cdecl_path(c: &mut Ctx, n: NodePtr, fp: Fp, parent: Value, name: Sym, v: Value) -> RV {
+pub fn EVAL_node_cdecl_path<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, fp: Fp, parent: Value, name: Sym, v: Value, line: H_line) -> RV {
+    line.store(c.frame_mut());
     srb_cdecl_path(c, parent, name, v)
 }
 

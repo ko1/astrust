@@ -424,11 +424,20 @@ fn raise_in(c: &mut Ctx, f: Value, e: Value) -> RV {
 /// a terminated one; a suspended fiber's frames are not walked: [] too).
 fn f_backtrace_any(c: &mut Ctx, slf: Value, a: &[Value], locs: bool) -> RV {
     if slf != CUR.get(c) { return Ok(c.ary_new()); }
-    let (start, len) = if a.is_empty() { (0, None) } else { crate::builtins::exception::caller_range(c, a)? };
+    let (start, len, drop) = if a.is_empty() { (0, None, 0) } else { crate::builtins::exception::caller_range(c, a)? };
     let Some(lines) = backtrace_lines_n(c, start, len) else { return Ok(NIL) };
+    let lines = crate::builtins::exception::drop_last(lines, drop);
     if locs { return Ok(crate::builtins::exception::locations_from_lines(c, lines)); }
     let v: Vec<Value> = lines.into_iter().map(|l| c.str_new(l.as_bytes())).collect();
     Ok(c.ary_from_vec(v))
+}
+/// The frames of suspended fiber `f`, read through its own context (None: it has none, e.g. the main root).
+pub fn suspended_backtrace(c: &mut Ctx, f: Value, skip: usize, n: Option<usize>) -> Option<Option<Vec<BtLine>>> {
+    if f == CUR.get(c) || fd(c, f).running { return None; }
+    let mut ctx = fdm(c, f).ctx.take()?;
+    let r = backtrace_locs_n(ctx.get(), skip, n);
+    fdm(c, f).ctx = Some(ctx);
+    Some(r)
 }
 fn f_backtrace(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { f_backtrace_any(c, slf, a, false) }
 fn f_backtrace_locations(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { f_backtrace_any(c, slf, a, true) }

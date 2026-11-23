@@ -135,6 +135,11 @@ fn boot_classes(c: &mut Ctx) {
 
     vmr.main_obj.set(new_object(c, ob));
     vmr.loaded_features.set(boot_ary(c));
+    // the features CRuby 4.0 provides at boot
+    for f in ["enumerator.so", "thread.rb", "fiber.so", "rational.so", "complex.so", "pathname.so", "ruby2_keywords.rb", "set.rb"] {
+        let s = c.str_new(f.as_bytes());
+        c.ary_push(vmr.loaded_features.get(), s);
+    }
     vmr.load_path.set(boot_ary(c));
     kernel::init_load_path(c, vmr.load_path.get());
     vmr.at_exit.set(boot_ary(c));

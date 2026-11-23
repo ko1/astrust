@@ -690,21 +690,30 @@ pub fn define_module_under(c: &mut Ctx, outer: Value, name: &str) -> Value {
 }
 pub fn define_module(c: &mut Ctx, name: &str) -> Value { define_module_under(c, vm().c_object.get(), name) }
 
+/// The class has a permanent name (not none, not a temporary one).
+#[inline] pub fn has_perm_name(c: &Ctx, k: Value) -> bool { let cd = c.class(k); cd.name.is_some() && !cd.temp_name }
+
+/// k is assigned to outer::name: a permanent path under a named outer (and its nested modules with it),
+/// else a temporary one "#<Module:0x...>::name" unless it has a name already.
 pub fn name_class(c: &mut Ctx, k: Value, outer: Value, name: Sym) {
-    if c.class(k).name.is_some() { return; }
+    if has_perm_name(c, k) { return; }
     let vm = vm();
-    let path = if outer == vm.c_object.get() || outer == NIL { sym_str(name) } else {
-        match c.class(outer).name { Some(n) => format!("{}::{}", String::from_utf8_lossy(c.str_bytes(n)), sym_str(name)), None => return }
+    let perm = outer == vm.c_object.get() || outer == NIL || has_perm_name(c, outer);
+    if !perm && c.class(k).name.is_some() { return; }
+    let path = if outer == vm.c_object.get() || outer == NIL { sym_str(name).to_string() } else {
+        match c.class(outer).name { Some(n) => format!("{}::{}", String::from_utf8_lossy(c.str_bytes(n)), sym_str(name)), None => format!("{}::{}", class_path(c, outer), sym_str(name)) }
     };
     let s = c.str_new_frozen(path.as_bytes());
     let cd = c.class_mut(k);
     cd.name = Some(s);
+    cd.temp_name = !perm;
     cd.base_name = name;
     cd.lexical_parent = outer;
-    // name nested anonymous modules too (still in k's table: rooted while name_class allocates)
+    if !perm { return; }
+    // name nested modules too (still in k's table: rooted while name_class allocates)
     let consts: Vec<(Sym, Value)> = cd.consts.iter().map(|(a, b)| (*a, *b)).collect();
     for (cn, cv) in consts {
-        if is_class_or_module(cv) && c.class(cv).name.is_none() { name_class(c, cv, k, cn); }
+        if is_class_or_module(cv) && !has_perm_name(c, cv) { name_class(c, cv, k, cn); }
     }
 }
 
@@ -1016,12 +1025,68 @@ pub fn ivar_list(c: &Ctx, v: Value) -> Vec<(Sym, Value)> {
 
 // ---- constants -----------------------------------------------------------------------------
 
-pub fn const_set(c: &mut Ctx, klass: Value, name: Sym, val: Value) {
+pub fn const_set(c: &mut Ctx, klass: Value, name: Sym, val: Value) { const_set_at(c, klass, name, val, None) }
+/// const_set from Ruby code: remembers where (Module#const_source_location), warns on a redefinition.
+pub fn const_set_here(c: &mut Ctx, klass: Value, name: Sym, val: Value) -> Result<(), Esc> {
+    let loc = if crate::rt::booted() { source_location(c) } else { None };
+    if c.class(klass).consts.contains_key(&name) && vm().verbose.get() != NIL {
+        let at = |l: Option<SrcLoc>| l.map_or(String::new(), |(f, n)| format!("{}:{}: ", f, n));
+        let path = if klass == vm().c_object.get() { sym_str(name).to_string() } else { format!("{}::{}", class_path(c, klass), sym_str(name)) };
+        let mut msg = format!("{}warning: already initialized constant {}\n", at(loc), path);
+        if let Some(prev) = c.class(klass).const_loc_of(name) {
+            msg.push_str(&format!("{}warning: previous definition of {} was here\n", at(Some(prev)), sym_str(name)));
+        }
+        crate::builtins::kernel::warning_write(c, msg.as_bytes())?;
+    }
+    const_set_at(c, klass, name, val, loc);
+    call_const_added(c, klass, name)
+}
+/// klass.const_added(name), unless it is Module's own (empty) one.
+pub fn call_const_added(c: &mut Ctx, klass: Value, name: Sym) -> Result<(), Esc> {
+    let mid = intern(b"const_added");
+    let me = lookup_method(c, class_of(klass), mid);
+    match c.me_ref(me) {
+        Some(m) if !(m.owner == vm().c_module.get() && matches!(m.kind, MKind::Cfunc(..))) => { funcall(c, klass, mid, &[Value::sym(name)], std::ptr::null())?; Ok(()) }
+        _ => Ok(()),
+    }
+}
+fn const_set_at(c: &mut Ctx, klass: Value, name: Sym, val: Value, loc: Option<SrcLoc>) {
     let cd = c.class_mut(klass);
+    if loc.is_some() || cd.cx.is_some() { return const_set_extra(c, klass, name, val, loc); }
     if cd.consts.insert(name, val).is_none() { cd.const_order.push(name); }
     cd.autoload.remove(&name);
     vm().const_serial.set(vm().const_serial.get() + 1);
-    if is_class_or_module(val) && c.class(val).name.is_none() { name_class(c, val, klass, name); }
+    if is_class_or_module(val) && !has_perm_name(c, val) { name_class(c, val, klass, name); }
+}
+/// const_set_at with a location to record, or a class with constant bookkeeping (ClassData::cx).
+#[inline(never)]
+fn const_set_extra(c: &mut Ctx, klass: Value, name: Sym, val: Value, loc: Option<SrcLoc>) {
+    if !c.class(klass).autoload_runs().is_empty() {
+        let me = crate::builtins::thread::current_thread(c);
+        if let Some(r) = c.class_mut(klass).cx_mut().autoloading.iter_mut().find(|r| r.name == name && r.thread == me) {
+            // published when the autoload's require ends (other threads keep waiting on it)
+            r.value = val; r.loc = loc;
+            vm().const_serial.set(vm().const_serial.get() + 1);
+            if is_class_or_module(val) && !has_perm_name(c, val) { name_class(c, val, klass, name); }
+            return;
+        }
+    }
+    let cd = c.class_mut(klass);
+    if cd.consts.insert(name, val).is_none() { cd.const_order.push(name); }
+    cd.autoload.remove(&name);
+    match loc { Some(l) => { cd.cx_mut().const_loc.insert(name, l); } None => { if let Some(x) = cd.cx.as_mut() { x.const_loc.remove(&name); } } }
+    vm().const_serial.set(vm().const_serial.get() + 1);
+    if is_class_or_module(val) && !has_perm_name(c, val) { name_class(c, val, klass, name); }
+}
+
+/// File and line of the innermost Ruby-level frame (rb_source_location).
+pub fn source_location(c: &Ctx) -> Option<SrcLoc> {
+    let mut f = c.cur_frame();
+    while let Some(fr) = f {
+        if fr.kind != FK_CFUNC && !fr.iseq().is_null() { return Some((frame_file(fr), fr.line())); }
+        f = c.prev_frame(fr);
+    }
+    None
 }
 
 pub fn const_get_at(c: &Ctx, klass: Value, name: Sym) -> Option<Value> { c.class(klass).consts.get(&name).copied() }
@@ -1029,20 +1094,114 @@ pub fn const_get_at(c: &Ctx, klass: Value, name: Sym) -> Option<Value> { c.class
 pub fn const_get_inherit(c: &mut Ctx, klass: Value, name: Sym) -> Result<Option<Value>, Esc> {
     for &k in ancestors(c, klass).iter() {
         if let Some(v) = const_get_at(c, k, name) { return Ok(Some(v)); }
-        if let Some(&path) = c.class(k).autoload.get(&name) { return do_autoload(c, k, name, path); }
+        if c.class(k).autoload.contains_key(&name) { if let Some(v) = do_autoload(c, k, name)? { return Ok(Some(v)); } }
     }
     if c.class(klass).is_module {
         let o = vm().c_object.get();
         if let Some(v) = const_get_at(c, o, name) { return Ok(Some(v)); }
-        if let Some(&path) = c.class(o).autoload.get(&name) { return do_autoload(c, o, name, path); }
+        if c.class(o).autoload.contains_key(&name) { return do_autoload(c, o, name); }
     }
     Ok(None)
 }
 
-fn do_autoload(c: &mut Ctx, k: Value, name: Sym, path: Value) -> Result<Option<Value>, Esc> {
-    c.class_mut(k).autoload.remove(&name);
-    crate::builtins::kernel::autoload_require(c, path)?;
+/// An autoload constant as the running thread sees it (rb_autoloading_value / check_autoload_required).
+pub enum Autoload {
+    /// no autoload entry
+    Absent,
+    /// would load `path` (or waits for another thread loading it)
+    Ready(Value),
+    /// this thread is loading it: the value it assigned so far (None: still undefined)
+    Own(Option<Value>, Option<SrcLoc>),
+    /// its feature is already loaded: the constant is undefined
+    Done,
+}
+pub fn autoload_state(c: &Ctx, k: Value, name: Sym) -> Autoload {
+    let Some(&path) = c.class(k).autoload.get(&name) else { return Autoload::Absent };
+    let me = crate::builtins::thread::current_thread(c);
+    if let Some(r) = c.class(k).autoload_runs().iter().find(|r| r.name == name) {
+        return if r.thread == me { Autoload::Own((r.value != UNDEF).then_some(r.value), r.loc) } else { Autoload::Ready(path) };
+    }
+    match crate::builtins::kernel::feature_state(c, path) {
+        crate::builtins::kernel::FeatureState::LoadingByMe => Autoload::Own(None, None),
+        crate::builtins::kernel::FeatureState::Provided => Autoload::Done,
+        _ => Autoload::Ready(path),
+    }
+}
+/// The constant is defined for `defined?` / const_defined? (an autoload counts until it is known to fail).
+pub fn autoload_defined(c: &Ctx, k: Value, name: Sym) -> bool {
+    match autoload_state(c, k, name) { Autoload::Ready(_) => true, Autoload::Own(v, _) => v.is_some(), _ => false }
+}
+/// k has constant `name` itself, a live autoload counting.
+pub fn has_const(c: &Ctx, k: Value, name: Sym) -> bool {
+    let cd = c.class(k);
+    cd.consts.contains_key(&name) || (cd.autoload.contains_key(&name) && autoload_defined(c, k, name))
+}
+
+fn autoload_key(k: Value, name: Sym) -> u64 { (k.raw() as u64) ^ ((name.0 as u64) << 1) ^ 0x5a5a_0000_0000_0001 }
+
+/// Run the autoload of k::name (rb_autoload_load): one thread loads, the others wait for it.
+pub fn do_autoload(c: &mut Ctx, k: Value, name: Sym) -> Result<Option<Value>, Esc> {
+    let me = crate::builtins::thread::current_thread(c);
+    let path = loop {
+        if c.class(k).autoload_runs().iter().any(|r| r.name == name && r.thread != me) {
+            let key = autoload_key(k, name);
+            crate::builtins::thread::block_on(c, |c| Ok(!c.class(k).autoload_runs().iter().any(|r| r.name == name)), Some(key), None, true)?;
+            continue;
+        }
+        match autoload_state(c, k, name) {
+            Autoload::Ready(p) => break p,
+            Autoload::Own(v, _) => return Ok(v),
+            Autoload::Absent | Autoload::Done => return Ok(const_get_at(c, k, name)),
+        }
+    };
+    // saruby's own lazy features define their constants directly (several per feature, by name)
+    if c.str_bytes(path).starts_with(b"saruby/") {
+        c.class_mut(k).autoload.remove(&name);
+        crate::builtins::kernel::autoload_require(c, path)?;
+        return Ok(const_get_at(c, k, name));
+    }
+    c.class_mut(k).cx_mut().autoloading.push(AutoloadRun { name, thread: me, value: UNDEF, loc: None });
+    let r = crate::builtins::kernel::autoload_require(c, path);
+    let runs = &mut c.class_mut(k).cx_mut().autoloading;
+    let run = runs.iter().position(|r| r.name == name && r.thread == me).map(|i| runs.remove(i));
+    crate::builtins::blop::notify(c, autoload_key(k, name));
+    r?;
+    match run {
+        Some(run) if run.value != UNDEF => const_set_at(c, k, name, run.value, run.loc),
+        // loaded without defining it: the autoload is gone
+        _ => if const_get_at(c, k, name).is_none() && c.class_mut(k).autoload.remove(&name).is_some() { if let Some(x) = c.class_mut(k).cx.as_mut() { x.const_loc.remove(&name); } },
+    }
     Ok(const_get_at(c, k, name))
+}
+
+/// Some constant was made private or deprecated (const_access_check has work to do).
+pub static CONST_VIS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// `parent::name` (scoped) or const_get found a constant: a private one is an error when scoped, a deprecated one warns.
+#[inline]
+/// Some(v): a private constant was replaced by const_missing's value.
+pub fn const_access_check(c: &mut Ctx, parent: Value, name: Sym, scoped: bool) -> Result<Option<Value>, Esc> {
+    if !CONST_VIS.load(std::sync::atomic::Ordering::Relaxed) { return Ok(None); }
+    const_access_slow(c, parent, name, scoped)
+}
+#[cold]
+fn const_access_slow(c: &mut Ctx, parent: Value, name: Sym, scoped: bool) -> Result<Option<Value>, Esc> {
+    let o = vm().c_object.get();
+    let owner = ancestors(c, parent).iter().copied().find(|&k| c.class(k).consts.contains_key(&name))
+        .or_else(|| (c.class(parent).is_module && c.class(o).consts.contains_key(&name)).then_some(o));
+    let Some(owner) = owner else { return Ok(None) };
+    if scoped && c.class(owner).private_consts.contains(&name) {
+        // parent.const_missing(name); Module's own raises the private-constant error
+        crate::builtins::object::PRIVATE_REF.set(Some((parent, name)));
+        let r = const_missing(c, parent, name);
+        crate::builtins::object::PRIVATE_REF.set(None);
+        return r.map(Some);
+    }
+    if c.class(owner).is_deprecated(name) { warn_deprecated_const(c, owner, name)?; }
+    Ok(None)
+}
+pub fn warn_deprecated_const(c: &mut Ctx, owner: Value, name: Sym) -> Result<(), Esc> {
+    let path = if owner == vm().c_object.get() { sym_str(name).to_string() } else { format!("{}::{}", class_path(c, owner), sym_str(name)) };
+    crate::builtins::kernel::category_warn(c, &format!("constant {} is deprecated", path), 0, "deprecated")
 }
 
 /// Lexical scope first (not including the top level), then the cref class's ancestors, then Object.
@@ -1053,7 +1212,7 @@ pub fn const_lookup(c: &mut Ctx, cref: *const Cref, name: Sym) -> RV {
         while !cr.is_null() && !(*cr).prev.is_null() {
             let k = (*cr).klass;
             if let Some(v) = const_get_at(c, k, name) { return Ok(v); }
-            if let Some(&path) = c.class(k).autoload.get(&name) { if let Some(v) = do_autoload(c, k, name, path)? { return Ok(v); } }
+            if c.class(k).autoload.contains_key(&name) { if let Some(v) = do_autoload(c, k, name)? { return Ok(v); } }
             cr = (*cr).prev;
         }
     }
@@ -1068,6 +1227,7 @@ pub fn const_missing(c: &mut Ctx, klass: Value, name: Sym) -> RV {
     if !me.is_null() && !matches!(unsafe { (*me).kind }, MKind::Cfunc(..)) {
         return funcall(c, klass, s::const_missing, &[Value::sym(name)], std::ptr::null());
     }
+    if let Some(e) = crate::builtins::object::private_ref_error(c, klass, name)? { return Err(e); }
     let msg = if klass == vm().c_object.get() { format!("uninitialized constant {}", sym_str(name)) }
               else { format!("uninitialized constant {}::{}", class_path(c, klass), sym_str(name)) };
     let e = make_name_error(c, vm().c_name_error.get(), &msg, Value::sym(name), klass)?;
@@ -1111,14 +1271,22 @@ pub fn raise_exc(c: &mut Ctx, e: Value) -> Esc {
         let bt = make_backtrace_lazy(c, 0);
         ivar_set_raw(c, e, s::bt, bt);
     }
-    if is_exception(c, e) && c.errinfo != NIL && c.errinfo != e && ivar_get(c, e, s::cause) == NIL && !ivar_defined(c, e, s::cause) {
-        ivar_set_raw(c, e, s::cause, c.errinfo);
-    }
+    if c.errinfo != NIL && c.errinfo != e && is_exception(c, e) { implicit_cause(c, e); }
     // one test here (raise_exc is inlined everywhere): $DEBUG or a raise hook
     if vm().raise_hooks.get() && is_exception(c, e) { raise_hooks(c, e); }
     c.esc = EscKind::Raise;
     c.esc_val = e;
     Esc
+}
+
+/// $! becomes the cause of an exception that has none (and is then a cause itself: its own is nil).
+#[cold]
+#[inline(never)]
+fn implicit_cause(c: &mut Ctx, e: Value) {
+    if ivar_defined(c, e, s::cause) { return; }
+    let x = c.errinfo;
+    ivar_set_raw(c, e, s::cause, x);
+    if !ivar_defined(c, x, s::cause) { ivar_set_raw(c, x, s::cause, NIL); }
 }
 
 #[cold]
@@ -1263,7 +1431,7 @@ fn method_owner_label(c: &Ctx, owner: Value) -> String {
         if is_class_or_module(cd.attached) { return format!("{}.", class_path(c, cd.attached)); }
         return String::new();
     }
-    if cd.name.is_none() { return String::new(); }
+    if cd.name.is_none() || cd.temp_name { return String::new(); }
     if owner == vm().c_object.get() { return "Object#".into(); }
     format!("{}#", class_path(c, owner))
 }
@@ -2681,6 +2849,7 @@ pub fn visit_class<V: EdgeVisitor<Saruby> + ?Sized>(m: &mut V, cd: &mut ClassDat
     for (_, &me) in cd.mtbl.iter() { visit_me(m, me); }
     for v in cd.consts.values_mut() { m.visit(v); }
     for v in cd.autoload.values_mut() { m.visit(v); }
+    if let Some(x) = cd.cx.as_mut() { for r in x.autoloading.iter_mut() { m.visit(&mut r.thread); m.visit(&mut r.value); } }
     for v in cd.cvars.values_mut() { m.visit(v); }
     for v in cd.includes.iter_mut() { m.visit(v); }
     for v in cd.prepends.iter_mut() { m.visit(v); }

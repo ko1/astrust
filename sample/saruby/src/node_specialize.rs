@@ -1038,9 +1038,11 @@ fn SPECIALIZE_node_cdecl(sc: &mut SpecCtx, n: NodePtr) -> String {
     let was_open = !sc.open.insert(own_hash);
     let u = node_u::<node_cdecl_struct>(n);
     let t_v = specialize_node(sc, u.v);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     a.push("u.name".to_string());
     a.push("v_v".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_cdecl_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_cdecl_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -1048,7 +1050,7 @@ fn SPECIALIZE_node_cdecl(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("impl Disp for @SELF@ {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{\n"));
     body.push_str(&format!("        let u = node_u::<node_cdecl_struct>({});\n", "n"));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, {}, fp)?;\n", t_v, child_ptr_expr(n, u.v)));
-    body.push_str(&format!("        EVAL_node_cdecl{}({})\n    }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_cdecl{}({})\n    }}\n", format!("::<{}>", t_line), a.join(", ")));
 
 
     body.push_str("}
@@ -1069,10 +1071,12 @@ fn SPECIALIZE_node_cdecl_path(sc: &mut SpecCtx, n: NodePtr) -> String {
     let u = node_u::<node_cdecl_path_struct>(n);
     let t_parent = specialize_node(sc, u.parent);
     let t_v = specialize_node(sc, u.v);
+    let mut t_line = "crate::vm::LineAt".to_string();
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     a.push("v_parent".to_string());
     a.push("u.name".to_string());
     a.push("v_v".to_string());
+    if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_cdecl_path_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_cdecl_path_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -1081,7 +1085,7 @@ fn SPECIALIZE_node_cdecl_path(sc: &mut SpecCtx, n: NodePtr) -> String {
     body.push_str(&format!("        let u = node_u::<node_cdecl_path_struct>({});\n", "n"));
     body.push_str(&format!("        let v_parent = <{} as Disp>::call(c, {}, fp)?;\n", t_parent, child_ptr_expr(n, u.parent)));
     body.push_str(&format!("        let v_v = <{} as Disp>::call(c, {}, fp)?;\n", t_v, child_ptr_expr(n, u.v)));
-    body.push_str(&format!("        EVAL_node_cdecl_path{}({})\n    }}\n", "", a.join(", ")));
+    body.push_str(&format!("        EVAL_node_cdecl_path{}({})\n    }}\n", format!("::<{}>", t_line), a.join(", ")));
 
 
     body.push_str("}

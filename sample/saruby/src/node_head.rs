@@ -1274,13 +1274,13 @@ pub fn ALLOC_node_top_const(name: Sym, line: u32) -> NodePtr {
 }
 
 #[allow(non_snake_case)]
-pub fn ALLOC_node_cdecl(name: Sym, v: NodePtr) -> NodePtr {
-    node_allocate_with(&KIND_node_cdecl, node_cdecl_struct { name, v }, |_| { })
+pub fn ALLOC_node_cdecl(name: Sym, v: NodePtr, line: u32) -> NodePtr {
+    node_allocate_with(&KIND_node_cdecl, node_cdecl_struct { name, v }, |h| { h.line = line; })
 }
 
 #[allow(non_snake_case)]
-pub fn ALLOC_node_cdecl_path(parent: NodePtr, name: Sym, v: NodePtr) -> NodePtr {
-    node_allocate_with(&KIND_node_cdecl_path, node_cdecl_path_struct { parent, name, v }, |_| { })
+pub fn ALLOC_node_cdecl_path(parent: NodePtr, name: Sym, v: NodePtr, line: u32) -> NodePtr {
+    node_allocate_with(&KIND_node_cdecl_path, node_cdecl_path_struct { parent, name, v }, |h| { h.line = line; })
 }
 
 #[allow(non_snake_case)]

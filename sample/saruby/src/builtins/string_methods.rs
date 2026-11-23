@@ -335,7 +335,14 @@ cfn!(s_to_s, |c, slf, a, b_| {
     Ok(c.str_copy(slf))
 });
 // UTF-8 first, with nothing to do after intern (a broken UTF-8 String is not checked: a scan per call)
-cfn!(s_to_sym, |c, slf, a, b_| { if c.str_enc(slf) == ENC_UTF8 { return Ok(Value::sym(intern(c.str_bytes(slf)))); } s_to_sym_enc(c, slf) });
+cfn!(s_to_sym, |c, slf, a, b_| { if c.str_enc(slf) == ENC_UTF8 { return utf8_to_sym(c, slf); } s_to_sym_enc(c, slf) });
+/// A UTF-8 String's Symbol; EncodingError when it is not valid UTF-8.
+#[inline]
+pub fn utf8_to_sym(c: &mut Ctx, s: Value) -> RV {
+    let b = c.str_bytes(s);
+    if b.is_ascii() || std::str::from_utf8(b).is_ok() { return Ok(Value::sym(intern(b))); }
+    sym_enc_err(c, s)
+}
 #[inline(never)]
 fn s_to_sym_enc(c: &mut Ctx, slf: Value) -> RV { let s = c.str_intern(slf); if s == crate::symbol::BAD_SYM { return sym_enc_err(c, slf); } Ok(Value::sym(s)) }
 #[cold]
@@ -525,6 +532,10 @@ fn is_newline(c: &Ctx, v: Value) -> bool {
 fn chomp_impl(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<Vec<u8>, Esc> {
     check_argc(c, a, 0, 1)?;
     if c.str_bytes(slf).is_empty() { return Ok(vec![]); }
+    if a.is_empty() && crate::builtins::kernel::RS_SET.load(std::sync::atomic::Ordering::Relaxed) {
+        let rs = global_get("$/");
+        if !(is_string(rs) && c.str_bytes(rs) == b"\n") { return chomp_impl(c, slf, &[rs]); }
+    }
     if a.is_empty() || (a[0] != NIL && is_string(a[0]) && is_newline(c, a[0])) {
         let v = c.str_bytes(slf);
         if v.ends_with(b"\r\n") { return Ok(v[..v.len() - 2].to_vec()); }

@@ -277,7 +277,7 @@ pub fn DISPATCH_node_cdecl(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_cdecl");
     let u = node_u::<node_cdecl_struct>(n);
     let v_v = <Dyn as Disp>::call(c, u.v, fp)?;
-    EVAL_node_cdecl(c, n, fp, u.name, v_v)
+    EVAL_node_cdecl::<crate::vm::LineAt>(c, n, fp, u.name, v_v, crate::vm::LineAt(&(*node_head_line(n))))
 }
 
 #[allow(non_snake_case, unused_variables)]
@@ -286,7 +286,7 @@ pub fn DISPATCH_node_cdecl_path(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     let u = node_u::<node_cdecl_path_struct>(n);
     let v_parent = <Dyn as Disp>::call(c, u.parent, fp)?;
     let v_v = <Dyn as Disp>::call(c, u.v, fp)?;
-    EVAL_node_cdecl_path(c, n, fp, v_parent, u.name, v_v)
+    EVAL_node_cdecl_path::<crate::vm::LineAt>(c, n, fp, v_parent, u.name, v_v, crate::vm::LineAt(&(*node_head_line(n))))
 }
 
 #[allow(non_snake_case, unused_variables)]

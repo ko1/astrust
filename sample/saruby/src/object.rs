@@ -85,6 +85,7 @@ pub enum AllocKind { Object, String, Array, Hash, Exception, Class, Module, Proc
 
 pub struct ClassData {
     pub name: Option<Value>,          // String (the path) once named
+    pub temp_name: bool,              // `name` is temporary (set_temporary_name, or under an anonymous module)
     pub base_name: Sym,
     pub lexical_parent: Value,
     pub superclass: Value,            // NIL for BasicObject / modules
@@ -107,15 +108,32 @@ pub struct ClassData {
     pub subclasses: Vec<Value>,
     pub private_consts: Vec<Sym>,
     pub refined: bool,
+    pub cx: Option<Box<ConstExtra>>,   // made by the first constant defined from Ruby code (most classes have none)
 }
 
+/// Constant bookkeeping beside the table: locations, deprecations, autoloads in progress.
+#[derive(Default)]
+pub struct ConstExtra {
+    pub const_loc: HashMap<Sym, SrcLoc>,   // where each constant (or its autoload) was defined
+    pub deprecated: Vec<Sym>,
+    pub autoloading: Vec<AutoloadRun>,
+}
+
+pub type SrcLoc = (&'static str, u32);
+/// An autoload being run by `thread`: a constant it assigns waits here until the require ends.
+pub struct AutoloadRun { pub name: Sym, pub thread: Value, pub value: Value, pub loc: Option<SrcLoc> }
+
 impl ClassData {
+    pub fn cx_mut(&mut self) -> &mut ConstExtra { self.cx.get_or_insert_with(Default::default) }
+    pub fn const_loc_of(&self, n: Sym) -> Option<SrcLoc> { self.cx.as_ref()?.const_loc.get(&n).copied() }
+    pub fn autoload_runs(&self) -> &[AutoloadRun] { self.cx.as_deref().map_or(&[], |x| &x.autoloading) }
+    pub fn is_deprecated(&self, n: Sym) -> bool { self.cx.as_ref().is_some_and(|x| x.deprecated.contains(&n)) }
     pub fn new(superclass: Value, is_module: bool, alloc: AllocKind) -> ClassData {
         ClassData {
-            name: None, base_name: Sym(0), lexical_parent: NIL, superclass, is_module, is_singleton: false, attached: NIL,
+            name: None, temp_name: false, base_name: Sym(0), lexical_parent: NIL, superclass, is_module, is_singleton: false, attached: NIL,
             mtbl: HashMap::default(), consts: HashMap::default(), const_order: vec![], autoload: HashMap::default(), cvars: HashMap::default(),
             includes: vec![], prepends: vec![], extended_by: vec![], ivar_index: HashMap::default(), ivar_names: vec![],
-            ancestors: std::cell::RefCell::new(None), alloc, subclasses: vec![], private_consts: vec![], refined: false,
+            ancestors: std::cell::RefCell::new(None), alloc, subclasses: vec![], private_consts: vec![], refined: false, cx: None,
         }
     }
 }

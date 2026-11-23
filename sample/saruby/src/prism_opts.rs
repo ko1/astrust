@@ -3,13 +3,17 @@
 /// `encoding`: the default source encoding (an eval'd String's), empty for UTF-8.
 pub struct ParseOpts<'a> { pub filepath: &'a [u8], pub line: i32, pub scopes: Vec<Vec<Vec<u8>>>, pub main_script: bool, pub frozen_string_literal: i8, pub encoding: &'a [u8] }
 
+/// The main script's -n / -p / -l / -a (prism's PM_OPTIONS_COMMAND_LINE_* bits).
+#[allow(dead_code)]
+pub static COMMAND_LINE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
 fn build_options(o: &ParseOpts) -> Vec<u8> {
     let mut d = vec![];
     d.extend((o.filepath.len() as u32).to_le_bytes()); d.extend(o.filepath);
     d.extend(o.line.to_le_bytes());
     d.extend((o.encoding.len() as u32).to_le_bytes()); d.extend(o.encoding);
     d.push(o.frozen_string_literal as u8); // frozen_string_literal
-    d.push(0);                             // command_line
+    d.push(if o.main_script { COMMAND_LINE.load(std::sync::atomic::Ordering::Relaxed) } else { 0 });   // command_line
     d.push(3);                             // version: CRuby 4.0 (the oracle; "latest" is 4.1 syntax)
     d.push(0);                             // encoding_locked
     d.push(o.main_script as u8);

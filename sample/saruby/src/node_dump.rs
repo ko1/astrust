@@ -320,6 +320,7 @@ fn DUMP_node_cdecl(out: &mut String, n: NodePtr) {
     out.push_str("(node_cdecl");
     out.push(' '); out.push(':'); out.push_str(&crate::symbol::sym_str(u.name));
     out.push(' '); dump_node(out, u.v);
+    out.push(' '); out.push_str(&format!("{:?}", (*node_head_line(n))));
     out.push(')');
 }
 
@@ -330,6 +331,7 @@ fn DUMP_node_cdecl_path(out: &mut String, n: NodePtr) {
     out.push(' '); dump_node(out, u.parent);
     out.push(' '); out.push(':'); out.push_str(&crate::symbol::sym_str(u.name));
     out.push(' '); dump_node(out, u.v);
+    out.push(' '); out.push_str(&format!("{:?}", (*node_head_line(n))));
     out.push(')');
 }
 
