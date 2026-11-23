@@ -32,7 +32,14 @@ const LIBS: &[(&str, &str)] = &[lib!("pp"), lib!("prettyprint"), lib!("etc"), li
     ("digest/md5", "require 'digest'\nrequire 'saruby/digest/md5'\n"), ("digest/sha1", "require 'digest'\nrequire 'saruby/digest/sha1'\n"),
     ("digest/rmd160", "require 'digest'\nrequire 'saruby/digest/rmd160'\n"), ("digest/bubblebabble", "require 'digest'\nrequire 'saruby/digest/bubblebabble'\n"),
     ("digest/sha2", include_str!("../../prelude/lib/digest_sha2.rb")), ("digest/sha2/loader", "require 'digest'\nrequire 'saruby/digest/sha2'\n"),
-    lib!("error_highlight"), lib!("error_highlight/base"), lib!("error_highlight/core_ext"), lib!("error_highlight/formatter"), lib!("error_highlight/version"), lib!("error_highlight/saruby")];
+    lib!("error_highlight"), lib!("error_highlight/base"), lib!("error_highlight/core_ext"), lib!("error_highlight/formatter"), lib!("error_highlight/version"), lib!("error_highlight/saruby"),
+    lib!("did_you_mean"), lib!("did_you_mean/version"), lib!("did_you_mean/core_ext/name_error"), lib!("did_you_mean/spell_checker"),
+    lib!("did_you_mean/levenshtein"), lib!("did_you_mean/jaro_winkler"), lib!("did_you_mean/spell_checkers/name_error_checkers"),
+    lib!("did_you_mean/spell_checkers/name_error_checkers/class_name_checker"), lib!("did_you_mean/spell_checkers/name_error_checkers/variable_name_checker"),
+    lib!("did_you_mean/spell_checkers/method_name_checker"), lib!("did_you_mean/spell_checkers/key_error_checker"), lib!("did_you_mean/spell_checkers/null_checker"),
+    lib!("did_you_mean/spell_checkers/require_path_checker"), lib!("did_you_mean/spell_checkers/pattern_key_name_checker"), lib!("did_you_mean/formatter"),
+    lib!("did_you_mean/tree_spell_checker"), lib!("did_you_mean/experimental"), lib!("did_you_mean/verbose"),
+    lib!("did_you_mean/formatters/plain_formatter"), lib!("did_you_mean/formatters/verbose_formatter")];
 /// Features whose implementation is native and always present (require is a no-op).
 const NATIVE: &[&str] = &["set", "stringio", "rbconfig", "thread", "fiber", "enumerator", "rational", "complex", "continuation",
     "io/wait", "io/nonblock", "fcntl", "etc.so", "monitor.so", "strscan", "strscan.so", "bigdecimal.so", "psych.so", "socket.so", "json/ext/parser", "json/ext/parser.so", "json/ext/generator", "json/ext/generator.so", "zlib", "saruby/errno", "saruby/env", "saruby/rbconfig", "saruby/filetest", "saruby/stat", "saruby/sync", "saruby/econv", "saruby/tracepoint",

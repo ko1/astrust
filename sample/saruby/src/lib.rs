@@ -189,8 +189,8 @@ fn parse_args() -> Opts {
             "--version" => { println!("{}", version()); std::process::exit(0); }
             "-h" | "--help" => usage(),
             "--" => { i += 1; if i < argv.len() && o.e.is_empty() { o.script = Some(argv[i].clone()); } else if i < argv.len() { o.args.push(raw[i].clone()); } }
-            "--disable-gems" | "--disable=gems" | "--enable-frozen-string-literal" | "--yjit" => {}
-            "--disable-all" | "--disable-error_highlight" | "--disable=error_highlight" => crate::builtins::error_highlight::disable(),
+            "--enable-frozen-string-literal" | "--yjit" => {}
+            s if s.starts_with("--disable-") || s.starts_with("--disable=") => disable_features(&s[10..]),
             s if s.starts_with("-I") => { if s.len() > 2 { o.incdirs.push(s[2..].into()); } else { i += 1; o.incdirs.push(argv.get(i).cloned().unwrap_or_else(|| usage())); } }
             s if s.starts_with("-r") => { if s.len() > 2 { o.requires.push(s[2..].into()); } else { i += 1; o.requires.push(argv.get(i).cloned().unwrap_or_else(|| usage())); } }
             s if s.starts_with("--disable") || s.starts_with("--enable") => {}
@@ -200,6 +200,15 @@ fn parse_args() -> Opts {
         i += 1;
     }
     o
+}
+
+/// --disable-X / --disable=X,Y: gems (gem_prelude, so error_highlight and did_you_mean too, as CRuby 4.0), all, or one.
+fn disable_features(list: &str) {
+    for f in list.split(',') {
+        let (eh, dym) = match f { "all" | "gems" => (true, true), "error_highlight" => (true, false), "did_you_mean" => (false, true), _ => (false, false) };
+        if eh { crate::builtins::error_highlight::disable(); }
+        if dym { crate::builtins::did_you_mean::disable(); }
+    }
 }
 
 pub fn version() -> String { format!("saruby 0.1.0 (ASTrust; Ruby 3.4 compatible subset) [{}]", env!("SARUBY_TARGET")) }
@@ -233,6 +242,7 @@ fn run_main(o: Opts) -> i32 {
     if o.warn { builtins::misc::warning_enable_deprecated(); }
     for d in &o.incdirs { let s = c.str_new(d.as_bytes()); c.ary_push(vm.load_path.get(), s); }
     builtins::prelude::setup_load_path(&mut c);
+    builtins::did_you_mean::snapshot_load_path(&mut c);
     for a in &o.args { let s = c.str_new(a); c.ary_push(vm.argv.get(), s); }
     aot::init(if o.plain { None } else { Some(&o.store) }, o.aot);
     vm.aot_collect.set(o.aot);
