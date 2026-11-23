@@ -32,10 +32,11 @@ fn enum_or<F: FnOnce(&mut Ctx) -> RV>(c: &mut Ctx, slf: Value, mid: &str, a: &[V
 pub fn rb_eq(c: &mut Ctx, a: Value, b: Value) -> Result<bool, Esc> {
     use crate::rt::*;
     if a == b { return Ok(!(a.is_flonum() && a.flonum_val().is_nan())); }
-    let r = redef_word();
-    if a.is_fixnum() && r & R_INT_EQ == 0 && (b.is_fixnum() || b.is_sym() || b == NIL || b == TRUE || b == FALSE) { return Ok(false); }
-    if (a.is_sym() || a == NIL || a == TRUE || a == FALSE) && r & R_IMM_EQ == 0 { return Ok(false); }
-    if is_string(a) && is_string(b) && obj_klass(a) == c.vm().c_string.get() && r & R_STR_EQ == 0 { return Ok(c.str_eq(a, b)); }
+    if a.is_fixnum() {
+        if (b.is_fixnum() || b.is_sym() || b == NIL || b == TRUE || b == FALSE) && !redef(R_INT_EQ) { return Ok(false); }
+    } else if a.is_sym() || a == NIL || a == TRUE || a == FALSE {
+        if !redef(R_IMM_EQ) { return Ok(false); }
+    } else if is_string(a) && is_string(b) && obj_klass(a) == c.vm().c_string.get() && !redef(R_STR_EQ) { return Ok(c.str_eq(a, b)); }
     let r = funcall(c, a, s::eq, &[b], std::ptr::null())?;
     Ok(r.truthy())
 }
@@ -396,7 +397,18 @@ cfn!(a_rindex, |c, slf, a, blk| {
     }
     Ok(NIL)
 });
-cfn!(a_include, |c, slf, a, blk| { let mut i = 0; while i < c.ary_len(slf) { if rb_eq(c, c.ary_get(slf, i), a[0])? { return Ok(TRUE); } i += 1; } Ok(FALSE) });
+cfn!(a_include, |c, slf, a, blk| {
+    let t = a[0];
+    let mut i = 0;
+    // a fixnum element answers Integer#== without a call (a different fixnum: false)
+    let fix = t.is_fixnum() && !crate::rt::redef(crate::rt::R_INT_EQ);
+    while let Some(&x) = c.ary(slf).get(i) {
+        if x == t { return Ok(TRUE); }
+        if !(fix && x.is_fixnum()) && rb_eq(c, x, t)? { return Ok(TRUE); }
+        i += 1;
+    }
+    Ok(FALSE)
+});
 cfn!(a_delete, |c, slf, a, blk| {
     let mut found = NIL; let mut keep = vec![]; let mut i = 0;
     while let Some(&x) = c.ary(slf).get(i) { if rb_eq(c, x, a[0])? { found = x; } else { keep.push(x); } i += 1; }
@@ -485,8 +497,7 @@ cfn!(a_rotate_b, |c, slf, a, blk| {
     if !v.is_empty() { let n = v.len() as i64; let r = ((k % n) + n) % n; v.rotate_left(r as usize); }
     Ok(slf)
 });
-/// first: rb_ary_join's first pass has yet to meet a non-String (it asks that element for to_str once more).
-pub fn ary_join(c: &mut Ctx, slf: Value, sep: &[u8], out: &mut Vec<u8>, enc: &mut u8, first: &mut bool) -> Result<(), Esc> {
+pub fn ary_join(c: &mut Ctx, slf: Value, sep: &[u8], out: &mut Vec<u8>, enc: &mut u8) -> Result<(), Esc> {
     if !recursion_enter(slf, s::join) { return arg_err(c, "recursive array join"); }
     let mut i = 0;
     let r: Result<(), Esc> = (|| {
@@ -494,12 +505,12 @@ pub fn ary_join(c: &mut Ctx, slf: Value, sep: &[u8], out: &mut Vec<u8>, enc: &mu
             if i > 0 { out.extend_from_slice(sep); }
             let x = c.ary_get(slf, i);
             if is_string(x) { out.extend_from_slice(c.str_bytes(x)); if c.rstring(x).enc == ENC_BINARY && !is_ascii(c.str_bytes(x)) { *enc = ENC_BINARY; } }
-            else if is_array(x) { *first = false; ary_join(c, x, sep, out, enc, &mut false)?; }
+            else if is_array(x) { ary_join(c, x, sep, out, enc)?; }
             else {
-                if std::mem::take(first) && crate::rt::conv_target(x) && respond_to(c, x, s::to_str, true) { funcall(c, x, s::to_str, &[], std::ptr::null())?; }
-                let sub = if crate::rt::conv_target(x) { check_str_conv(c, x)? } else { None };
+                let conv = crate::rt::conv_target(x);
+                let sub = if conv { check_str_conv(c, x)? } else { None };
                 if let Some(s2) = sub { out.extend_from_slice(c.str_bytes(s2)); }
-                else if let Some(arr) = check_array(c, x)? { ary_join(c, arr, sep, out, enc, &mut false)?; }
+                else if let Some(arr) = if conv { check_array(c, x)? } else { None } { ary_join(c, arr, sep, out, enc)?; }
                 else { let s2 = crate::rt::srb_tostr(c, x)?; out.extend_from_slice(c.str_bytes(s2)); }
             }
             i += 1;
@@ -519,7 +530,11 @@ cfn!(a_join, |c, slf, a, blk| {
     let sepv = if a.is_empty() || a[0] == NIL { gvar_get(c, intern(b"$,"))? } else { a[0] };
     let sep = if sepv == NIL { vec![] } else { let s2 = expect_str(c, sepv)?; c.str_bytes(s2).to_vec() };
     let mut out = vec![]; let mut enc = ENC_UTF8;
-    ary_join(c, slf, &sep, &mut out, &mut enc, &mut true)?;
+    // rb_ary_join's first pass: the first non-String is asked for to_str before anything is joined
+    if let Some(&x) = c.ary(slf).iter().find(|x| !is_string(**x)) {
+        if !is_array(x) && crate::rt::conv_target(x) && respond_to(c, x, s::to_str, true) { funcall(c, x, s::to_str, &[], std::ptr::null())?; }
+    }
+    ary_join(c, slf, &sep, &mut out, &mut enc)?;
     Ok(c.str_from_vec_enc(out, enc))
 });
 cfn!(a_to_a, |c, slf, a, blk| if obj_klass(slf) == c.vm().c_array.get() { Ok(slf) } else { Ok(c.ary_from_vec(c.ary(slf).to_vec())) });
@@ -703,6 +718,16 @@ pub fn minmax_impl(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block, want
     }
     let mut best = NIL; let mut first = true;
     let mut i = 0;
+    if blk.is_null() && c.ary(slf).first().is_some_and(|v| v.is_fixnum()) && !crate::rt::redef(crate::rt::R_INT_CMP) {
+        // ary_max_opt_fixnum / ary_min_opt_fixnum: up to the first non-fixnum, then the generic loop
+        let v = c.ary(slf);
+        best = v[0]; first = false; i = 1;
+        while let Some(&x) = v.get(i) {
+            if !x.is_fixnum() { break; }
+            if (want_max && x.as_fix() > best.as_fix()) || (!want_max && x.as_fix() < best.as_fix()) { best = x; }
+            i += 1;
+        }
+    }
     while let Some(&x) = c.ary(slf).get(i) {
         if first { best = x; first = false; }
         else if blk.is_null() {

@@ -209,6 +209,14 @@ pub fn srb_aset_out(c: &mut Ctx, a: Value, b: Value, v: Value, line: Pos, cc: &O
 
 // ---- literals ----------------------------------------------------------------------------
 
+/// node_fstr_recv once String#freeze or #-@ is redefined: a fresh copy for the redefined one, else None.
+#[cold]
+#[inline(never)]
+pub fn srb_fstr_fresh(c: &mut Ctx, s: Str, enc: u32, um: u32) -> Option<Value> {
+    if !c.redef_any(if um == 0 { R_STR_FREEZE } else { R_STR_UMINUS }) { return None; }
+    Some(c.str_new_enc(s, enc as u8))
+}
+
 pub fn srb_fstr(c: &mut Ctx, s: Str, enc: u32, lc: &LitCache) -> Value {
     // frozen literals share the -"str" pool, like CRuby's fstring table
     let found = vm().frozen_lits.borrow().get(s).copied();   // not borrowed across the allocation below

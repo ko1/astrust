@@ -2172,7 +2172,7 @@ fn has_lit_cache(body: NodePtr) -> bool {
     let mut d = String::new();
     dump_node(&mut d, body);
     d.split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
-        .any(|w| matches!(w, "node_fstr" | "node_regex" | "node_dregex" | "node_biglit" | "node_range_lit"))
+        .any(|w| matches!(w, "node_fstr" | "node_fstr_recv" | "node_regex" | "node_dregex" | "node_biglit" | "node_range_lit"))
 }
 
 fn leaf_body(body: NodePtr) -> bool {
