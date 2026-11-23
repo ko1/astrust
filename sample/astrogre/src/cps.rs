@@ -944,14 +944,17 @@ impl Regex {
     /// Match anchored at `pos`.
     pub fn match_at(&self, s: &[u8], pos: usize) -> Option<Captures> { self.match_at_enc(s, pos, self.enc) }
 
-    pub fn match_at_enc(&self, s: &[u8], pos: usize, enc: Enc) -> Option<Captures> {
+    pub fn match_at_enc(&self, s: &[u8], pos: usize, enc: Enc) -> Option<Captures> { self.match_at_gpos(s, pos, pos, enc) }
+
+    /// match_at_enc with \G at `gpos`.
+    pub fn match_at_gpos(&self, s: &[u8], pos: usize, gpos: usize, enc: Enc) -> Option<Captures> {
         if pos > s.len() || !self.vm.must_ok_from(s, pos) { return None; }
-        let mut c = Ctx::new(s, self.vm.group_count(), pos, enc);
+        let mut c = Ctx::new(s, self.vm.group_count(), gpos, enc);
         if self.vm.rec { rs(|r| { r.mstk.clear(); r.rets.clear(); r.entries.clone_from(&self.entries); }); }
         match call(&mut c, self.at_root, pos) {
             OK => Some(self.captures(&c)),
             FAIL => None,
-            _ => self.vm.match_at(s, pos, enc, None).unwrap_or(None),
+            _ => self.vm.match_at_gpos(s, pos, gpos, enc, None).unwrap_or(None),
         }
     }
 

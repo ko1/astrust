@@ -479,26 +479,41 @@ cfn!(s_index, |c, slf, a, b_| {
     Ok(match find_on_boundary(c, slf, c.str_bytes(o), bs) { Some(p) => Value::fix(byte_to_char(c, slf, p) as i64), None => NIL })
 });
 cfn!(s_rindex, |c, slf, a, b_| {
+    check_argc(c, a, 1, 2)?;
     let n = c.str_char_len(slf) as i64;
-    let mut st = if a.len() > 1 { num_to_long(c, a[1])? } else { n };
-    if st < 0 { st += n; if st < 0 { return Ok(NIL); } }
-    if st > n { st = n; }
-    let bs = char_to_byte(c, slf, st as usize).unwrap();
-    if regexp::is_regexp(c, a[0]) {
+    let is_re = regexp::is_regexp(c, a[0]);
+    let mut st = n;
+    if a.len() > 1 {
+        st = num_to_long(c, a[1])?;
+        if st < 0 { st += n; if st < 0 { if is_re { crate::builtins::svar::set_last_match(c, NIL); } return Ok(NIL); } }
+        if st > n { st = n; }
+    }
+    if is_re {
+        let bs = char_to_byte(c, slf, st as usize).unwrap();
         let md = regexp::prepare(c, a[0], slf)?;
-        let mut p = bs as i64;
-        while p >= 0 {
-            if let Some(g) = regexp::match_at_e(c, a[0], c.str_bytes(slf), p as usize, md) {
+        let offs = c.char_offsets(slf);
+        // backward over char starts; \G stays at the search start
+        for &p in offs.iter().rev().filter(|&&p| p <= bs) {
+            if let Some(g) = regexp::match_at_gpos_e(c, a[0], c.str_bytes(slf), p, bs, md) {
                 let m = regexp::match_new(c, a[0], slf, g); crate::builtins::svar::set_last_match(c, m);
-                return Ok(Value::fix(byte_to_char(c, slf, p as usize) as i64));
+                return Ok(Value::fix(byte_to_char(c, slf, p) as i64));
             }
-            p -= 1;
         }
         crate::builtins::svar::set_last_match(c, NIL);
         return Ok(NIL);
     }
     let o = expect_str(c, a[0])?;
-    Ok(match rfind_bytes(c.str_bytes(slf), c.str_bytes(o), bs) { Some(p) => Value::fix(byte_to_char(c, slf, p) as i64), None => NIL })
+    compat(c, slf, o)?;
+    let bs = char_to_byte(c, slf, st as usize).unwrap();
+    // hits off a character boundary are skipped
+    let mut upto = bs;
+    loop {
+        let Some(p) = rfind_bytes(c.str_bytes(slf), c.str_bytes(o), upto) else { return Ok(NIL) };
+        let r = c.rstring(slf);
+        if enc_single(&r.b, r.enc) || { let mut i = 0; while i < p { i += enc_char_len(&r.b, i, r.enc); } i == p } { return Ok(Value::fix(byte_to_char(c, slf, p) as i64)); }
+        if p == 0 { return Ok(NIL); }
+        upto = p - 1;
+    }
 });
 fn is_ws(x: u8) -> bool { x == b' ' || (9..=13).contains(&x) || x == 0 }
 /// strip core; `sel` = tr-style selector sets (empty: whitespace and NUL).
@@ -643,8 +658,9 @@ cfn!(s_each_line, |c, slf, a, blk| {
 cfn!(s_split, |c, slf, a, blk| {
     check_argc(c, a, 0, 2)?;
     let limit = if a.len() > 1 { num_to_long(c, a[1])? } else { 0 };
+    if limit > i32::MAX as i64 || limit < i32::MIN as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too {} to convert to 'int'", limit, if limit > 0 { "big" } else { "small" })); }
     if limit == 1 {
-        let arr = if c.str_bytes(slf).is_empty() { c.ary_new() } else { let d = c.str_dup(slf); c.ary_from_vec(vec![d]) };
+        let arr = if c.str_bytes(slf).is_empty() { c.ary_new() } else { let d = c.str_copy(slf); c.ary_from_vec(vec![d]) };
         if !blk.is_null() { if c.ary_len(arr) > 0 { yield1(c, blk, c.ary_get(arr, 0))?; } return Ok(slf); }
         return Ok(arr);
     }
@@ -653,7 +669,10 @@ cfn!(s_split, |c, slf, a, blk| {
         return Ok(if blk.is_null() { c.ary_new() } else { slf });
     }
     let mut out: Vec<Vec<u8>> = vec![];
-    let pat = if a.is_empty() || a[0] == NIL { let fs = gvar_get(c, intern(b"$;"))?; if fs == NIL { c.str_new(b" ") } else { fs } } else { a[0] };
+    let pat = if a.is_empty() || a[0] == NIL {
+        let fs = gvar_get(c, intern(b"$;"))?;
+        if fs == NIL { c.str_new(b" ") } else { warn_deprecated(c, "$; is set to non-nil value")?; fs }
+    } else { a[0] };
     let pat = get_pat(c, pat)?;
     if is_string(pat) { check_valid(c, pat)?; }
     check_valid(c, slf)?;
@@ -718,7 +737,7 @@ cfn!(s_split, |c, slf, a, blk| {
         if p.is_empty() {
             for ch in c.chars_of(slf) { if limit > 0 && out.len() as i64 == limit - 1 { break; } out.push(ch); }
             let used: usize = out.iter().map(|x| x.len()).sum();
-            if used < v.len() && limit > 0 { out.push(v[used..].to_vec()); }
+            if used < v.len() && limit > 0 { out.push(v[used..].to_vec()); } else if used == v.len() && limit != 0 { out.push(vec![]); }
         } else {
             let mut i = 0;
             loop {
@@ -1103,11 +1122,13 @@ cfn!(s_upto, |c, slf, a, blk| {
 cfn!(s_hex, |c, slf, a, b_| { need_ascii_compat(c, slf)?; let n = str_to_big(c.str_bytes(slf), 16, false); Ok(n.map_or(Value::fix(0), |n| c.big_to_value(n))) });
 cfn!(s_oct, |c, slf, a, b_| {
     need_ascii_compat(c, slf)?;
-    let v = String::from_utf8_lossy(c.str_bytes(slf)).trim().to_ascii_lowercase();
-    let (neg, body) = if let Some(r) = v.strip_prefix('-') { (true, r.to_string()) } else { (false, v.clone()) };
-    let base = if body.starts_with("0x") { 16 } else if body.starts_with("0b") { 2 } else if body.starts_with("0o") || body.starts_with('0') { 8 } else { 8 };
-    let r = str_to_inum(c, body.as_bytes(), if body.starts_with("0x") || body.starts_with("0b") || body.starts_with("0o") { 0 } else { base }, false).unwrap_or(Value::fix(0));
-    if neg { funcall(c, r, s::uminus, &[], std::ptr::null()) } else { Ok(r) }
+    // rb_str_to_inum(str, -8): octal unless a 0x / 0b / 0o / 0d prefix follows the sign
+    let b = c.str_bytes(slf);
+    let mut i = 0; while i < b.len() && (b[i] == b' ' || (9..=13).contains(&b[i])) { i += 1; }
+    if i < b.len() && (b[i] == b'+' || b[i] == b'-') { i += 1; }
+    let base = if i + 1 < b.len() && b[i] == b'0' { match b[i + 1] | 0x20 { b'x' => 16, b'b' => 2, b'd' => 10, _ => 8 } } else { 8 };
+    let n = str_to_big(b, base, false);
+    Ok(n.map_or(Value::fix(0), |n| c.big_to_value(n)))
 });
 cfn!(s_freeze, |c, slf, a, b_| {
     if obj_flags(slf) & (FL_FROZEN | FL_TMPLOCK) == FL_TMPLOCK { return Err(raise_frozen_or_locked(c, slf)); }
