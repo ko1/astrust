@@ -60,25 +60,29 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [x] AOT で knucleotide が segfault → loader の Arena を fork 後に共有していた（3ea7ec4）
 - [x] rubyspec 第 2 回（~/ruby/src/trials/2026-11-22-saruby-rubyspec-2/）: 特殊グローバル変数、IO の外部/内部エンコーディング（io.c 移植、読み書きの変換）、マジックコメントのソースエンコーディング、再帰構造の #hash、Range#step/#max、Kernel#Float、タイムアウト 10 ファイル。core 19617 → 20324、language 2592 → 2720
 - [x] Encoding::Converter / String#encode を CRuby 4.0 の transcode.c から移植（econv.rs、表は enc/trans/*.c から tools/gen_trans_tables.rb で生成、9.5 MB）、TracePoint / set_trace_func（tracepoint.rs）。converter 142/142、tracepoint 74/76（~/ruby/src/trials/2026-11-22-saruby-converter-tracepoint/）
-- [ ] TracePoint の残り: thread_begin / thread_end。トレース用にコンパイルされていないコードは line と演算子の c_call を出さない。CRuby が内部で呼ぶ Exception#initialize・Module#===（rescue）・const_added / inherited の c_call は出ない
+- [x] TracePoint の thread_begin / thread_end（fiber_main で発火、フックの例外はスレッドを終わらせる。tracepoint 74 → 76 / 76、~/ruby/src/trials/2026-11-23-saruby-compat-bundle/）
+- [ ] TracePoint の残り: トレース用にコンパイルされていないコードは line と演算子の c_call を出さない。CRuby が内部で呼ぶ Exception#initialize・Module#===（rescue）・const_added / inherited の c_call は出ない
 - [ ] rubyspec の大きな塊: IO::Buffer 180
 - [x] Regexp のエンコーディング（~/ruby/src/trials/2026-11-23-saruby-regexp/）: /e /s /u /n・FIXEDENCODING / NOENCODING・rb_reg_preprocess / prepare_enc 相当（astrogre に UTF-8 / 1 バイト / EUC-JP / Shift_JIS / 2 バイト系 / EUC-TW / GB18030 の読み方）、UTF-16/32 は UTF-8 形で照合、inspect / to_s / union、Regexp.timeout（実行時に強制）、try_convert・linear_time?・MatchData#match 等。core/regexp 164 → 252 / 256、matchdata 165 → 185 / 185、language/regexp 224 → 251 / 258
   - [ ] 残り: 旧来マルチバイトの文字に \p{..}、ISO-8859-x の文字種・大小文字、[[:punct:]] Ps 等の表、gsub / scan / split の素の探索は timeout 無し、CRuby がメモ化で線形にする指数バックトラック（`(a*)*$`）、eval した非 UTF-8 文字列のソースエンコーディング（regexp リテラルが UTF-8 扱い）
   - [ ] liquid-compile +0.47 % 命令（StringScanner#scan +42 / =~ +44 命令/呼び出し: 照合ごとのエンコーディング判定・timeout・モード引数）。String に coderange のキャッシュがあれば判定の走査が消える
 - [x] IO の変換を変換エンジン経由に（io.c の readconv / cbuf / writeconv、builtins/io_conv.rs、docs/io_design.md「Encoding conversion」、~/ruby/src/trials/2026-11-23-saruby-io-transcode/）: 変換してから分ける（gets / getc / read / ungetc の cbuf、AFTER_OUTPUT、行の一般分岐を変換なしの IO にも）、newline: / xml: / replace: 装飾、ISO-2022-JP・UTF-16/32 への書き出し（close で終端）、byte 読みと char 読みの区別、BOM|、IO.pipe / popen / IO.read・write のエンコーディングとオプション、open_args:。CRuby との差分コーパス 28,412 件で base 16,669 → 28,343 一致（残りは sprintf の UTF-16 引数・GB18030 の limit 切り・CRuby の 8 KiB バッファ依存）、rubyspec core/io 1286 → 1325（他の 5 dir は増減なし）。gets 系は read_line の毎行コピーをやめて −62〜76 % 命令、io_pipe_rw −56 %
   - [ ] 残り: 変換ありの gets が遅い（econv の AFTER_OUTPUT 呼び出しが 1 文字ずつ: Shift_JIS→UTF-8 の gets が base（行ごとに変換、CRuby と違う結果）の 2.3 倍の命令）、GB18030 / Big5 / EUC-KR の limit 切り（Onigmo の left_adjust_char_head 未移植）、生の UTF-16 の limit 切りで CRuby の 8 KiB バッファ依存の挙動、File.open + close が +1.1 %（open ごと +43 命令: parse_mode と RIo の 4 欄）
-  - [ ] IO#puts / #print / #p が上書きされた #write を呼ばない（rubyspec io/puts 14 件）、sprintf の UTF-16 引数、Integer#chr(UTF-32BE)、String#chomp の UTF-16（コーパスで見つけた IO 外の差）
+  - [ ] IO#puts / #print / #p が上書きされた #write を呼ばない（rubyspec io/puts 14 件）
+  - [x] UTF-16 / UTF-32 の String メソッド（chomp / chop / strip 系 / lines / 揃え / partition / 大小文字を UTF-8 形で）、Integer#chr(enc)、sprintf の非 ASCII 互換引数（~/ruby/src/trials/2026-11-23-saruby-compat-bundle/、差分調査 407 → 33 行）
+  - [ ] 残り: 幅広文字列の to_sym（Symbol にエンコーディングが無い）、壊れた UTF-8 などの strip が CRuby の ArgumentError / CompatibilityError を出さない（coderange が無いので全走査が要る）
 - [x] blop 層（docs/io_design.md、~/ruby/src/trials/2026-11-22-saruby-blop/）: 待ちは全部 slab 所有の op、エンジンは poll（既定）/ epoll。1 ms ポーリング廃止。file/flock・file/open・io-wait/wait・process/status/wait のタイムアウト解消
 - [ ] まだタイムアウト: kernel/require（並行 require: ロード中 feature の待ちと他スレッドの Thread#backtrace が要る）、mutex/lock・thread/list（グリーンスレッドに横取りが無い: ループ後方枝 / メソッド入口のタイムスライス検査が要る）
 - [ ] blop: epoll の登録を fd 単位で持ち越す、io_uring エンジン、CFUNC ワーカー（flock / FIFO open / waitpid(-1) のバックオフ代替、getaddrinfo）
 - [ ] Queue ping-pong 1.7M → 1.0M round trips/s（blop の簿記）
-- [ ] `$_` / `$?` のスレッドローカル化、`$0 =` でプロセス名
+- [x] `$~` / `$_` をメソッドのフレームローカルに（ブロックと共有、builtins/svar.rs: 呼び出しごとのコスト 0、照合ごと約 +60 命令）、`$?` はスレッドローカル、`$0 =` は /proc/self/comm（~/ruby/src/trials/2026-11-23-saruby-compat-bundle/）
+- [ ] svar の残り: 生きているメソッドのフレームのブロックを別ファイバー / スレッドで呼ぶと `$~` を共有しない（id だけで引く）、死んだ Binding への eval の return（base と同じくプロセスが黙って終わる）、`b.binding.local_variable_set` した変数を eval から見えない、`$0 =` は CRuby と違い argv 領域（ps の COMMAND）でなく comm を変える
 - [x] library/ 2496 → 6156 / 6376（CRuby 6401 / 6402、~/ruby/src/trials/2026-11-22-saruby-stdlib-2/）: digest、zlib（zlib 1.3 の deflate / inflate を移植、出力はバイト一致）、psych / yaml（libyaml 0.2.5 の移植）、bigdecimal（bigdecimal.c の移植）、socket（+ net-http / net-ftp / ipaddr / resolv）、StringIO（stringio.c 3.2.0 の移植に置き換え）、syslog、etc の sysconf / confstr、cgi/escape.so、coverage（lines / oneshot / methods / branches / eval）、rbconfig/sizeof
 - [ ] library/ の残り: openssl 173（部分実装は `defined?(OpenSSL::SSL)` 判定を壊すので丸ごと）、objectspace 46（trace_object_allocations は割り当てフックが要る）、weakref の回収、`Coverage.line_stub`（RubyVM::InstructionSequence）
 - [ ] 起動の命令数が codegen-units=16 の分割で ±0.8M 動く（`__rust_alloc` がどの呼び出し元に inline されるか）。比較は `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1` で（base 16.177M → stdlib-2 16.190M。既定ビルドの先頭は json の FxHash 化で 15.91M）
 - [ ] 値を使わない式（`if` の値など、外側から決まるもの）の line イベントがまだ CRuby より多い（文単位の省略はした）
 - [ ] autoload が `main.require` を呼ばない（core/kernel/autoload_spec）、Enumerator#first を別スレッドから供給したときの break（enum_first_cross_thread_1022）
-- [ ] RUBY_VERSION を 4.0.x にするか（いまは 3.4.0。mspec は SPEC_RUBY_VERSION で回避）
+- [ ] RUBY_VERSION を 4.0.x にするか（いまは 3.4.0。mspec は SPEC_RUBY_VERSION で回避）。変わるもの（調査のみ、~/ruby/src/trials/2026-11-23-saruby-compat-bundle/ README）: RbConfig の MAJOR/MINOR/ruby_version/RUBY_API_VERSION も揃える必要（Gem.default_dir が lib/ruby/gems/3.4.0 を指し 4.0.2 の gem が見えない）、4.0.2 の rbconfig.rb は 4.0.x 以外で raise、bundled_gems.rb の SINCE 判定（ostruct / logger / benchmark / pstore / irb 等が 3.4.0 では :warning、4.0 では :error 側）、gem の `require "cgi/util" if RUBY_VERSION < "3.5"`（3.4.0 だと 4.0 で消えた CGI::Util を読みに行く）、prism ffi の version 3、Bundler の ruby_40?、RUBY_DESCRIPTION の "Ruby 3.4 compatible"
 - [x] CRuby benchmark/*.rb 148/148（yml は 228/236: IO::Buffer、RubyVM、irb、Pathname、fiber_chain）
 - [ ] ruby-bench 67/88（check、plain。stdlib-2 で zlib・psych・json/ext が入り chunky-png・hexapdf・psych-load・liquid-*・json_parse_* が一致）。残り: Ractor 3 本、未インストール gem 18 本
 - [x] `Date` / `DateTime`（prelude/lib/date.rb、ext/date の Ruby 移植）、`Pathname`（CRuby 4.0 同様に組み込み、遅延ロード）、`require 'time'` は CRuby の time.rb
@@ -92,7 +96,8 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [ ] 時分割がない: ブロックしないスレッドが他を飢えさせる（rubyspec mutex/lock・thread/list がタイムアウト）。node.def に時分割のチェックが要る（ASTro 原則と相談: 無効時コスト 0 の形で）
 - [ ] `Array#shift` が O(n)（so_lists）。O(1) 版 2 案は他の配列アクセスを遅くして却下済み
 - [ ] 大きな左シフト（CRuby は NoMemoryError、saruby は 2^26 bit 超を RangeError）
-- [ ] `__callee__` on alias、`WeakMap#inspect`、`detailed_message` / `full_message` の書式
+- [x] `__callee__` on alias、`WeakMap#inspect`、`detailed_message` / `full_message` の書式（eval_error.c / error.c の移植、~/ruby/src/trials/2026-11-23-saruby-compat-bundle/）
+- [ ] error_highlight（CRuby の未捕捉例外に出るソースの ^^^ 表示）が無い
 - [ ] t/hand: 約 23,400 PASS / 10,200 FAIL
 - [ ] 解説書『saruby でわかる Rust』（~/ruby/src/trials/2026-11-21-saruby-rust-book）: vm/heap 分割の反映、trait と Ruby の module の対比・dispatch（Dyn と T_… の Disp）の説明を追加（2026-11-22 の会話）
 - [ ] `Array#cycle(n).size` が i64 で `len * n` してあふれる（array_methods.rs:969。debug で panic、release では折り返し。CRuby は Bignum）
