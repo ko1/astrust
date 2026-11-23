@@ -75,7 +75,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [ ] まだタイムアウト: kernel/require（並行 require: ロード中 feature の待ちと他スレッドの Thread#backtrace が要る）、mutex/lock・thread/list（グリーンスレッドに横取りが無い: ループ後方枝 / メソッド入口のタイムスライス検査が要る）
 - [ ] blop: epoll の登録を fd 単位で持ち越す、io_uring エンジン、CFUNC ワーカー（flock / FIFO open / waitpid(-1) のバックオフ代替、getaddrinfo）
 - [ ] Queue ping-pong 1.7M → 1.0M round trips/s（blop の簿記）
-- [x] `$~` / `$_` をメソッドのフレームローカルに（ブロックと共有、builtins/svar.rs: 呼び出しごとのコスト 0、照合ごと約 +60 命令）、`$?` はスレッドローカル、`$0 =` は /proc/self/comm（~/ruby/src/trials/2026-11-23-saruby-compat-bundle/）
+- [x] `$~` / `$_` をメソッドのフレームローカルに（ブロックと共有、builtins/svar.rs: 呼び出しごとのコスト 0、`$~` を書く照合ごと +101〜151 命令）、`$?` はスレッドローカル、`$0 =` は /proc/self/comm（~/ruby/src/trials/2026-11-23-saruby-compat-bundle/）
 - [ ] svar の残り: 生きているメソッドのフレームのブロックを別ファイバー / スレッドで呼ぶと `$~` を共有しない（id だけで引く）、死んだ Binding への eval の return（base と同じくプロセスが黙って終わる）、`b.binding.local_variable_set` した変数を eval から見えない、`$0 =` は CRuby と違い argv 領域（ps の COMMAND）でなく comm を変える
 - [x] library/ 2496 → 6156 / 6376（CRuby 6401 / 6402、~/ruby/src/trials/2026-11-22-saruby-stdlib-2/）: digest、zlib（zlib 1.3 の deflate / inflate を移植、出力はバイト一致）、psych / yaml（libyaml 0.2.5 の移植）、bigdecimal（bigdecimal.c の移植）、socket（+ net-http / net-ftp / ipaddr / resolv）、StringIO（stringio.c 3.2.0 の移植に置き換え）、syslog、etc の sysconf / confstr、cgi/escape.so、coverage（lines / oneshot / methods / branches / eval）、rbconfig/sizeof
 - [ ] library/ の残り: openssl 173（部分実装は `defined?(OpenSSL::SSL)` 判定を壊すので丸ごと）、objectspace 46（trace_object_allocations は割り当てフックが要る）、weakref の回収、`Coverage.line_stub`（RubyVM::InstructionSequence）
@@ -104,6 +104,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 
 ## 性能（上 3 つの後。新規には起こさない）
 - [ ] IO 変換 round 1 の代償: io_file_create（File.open+close）+1.07%（open 1 回 ~43 命令）、io_select2/3 +0.33/+0.23%、変換付き gets 2.3×・puts 1.6×（io.c 同様に 1 文字ずつ受け渡すため）
+- [ ] svar の代償: `=~` 1 回 +101〜151 命令（rb_t / rb_m / rb_b で +4.9 / +5.0 / +10.4 %、~/ruby/src/trials/2026-11-23-saruby-compat-bundle/）。家の解決を活性化ごとにキャッシュすれば大半が消える
 - [ ] 正規表現 round 1 の代償: liquid-compile +0.47%・liquid-render +0.16%（マッチごとのエンコーディング判定 ~44 命令、timeout 参照、ステップ計数）。String の coderange キャッシュで判定を省ける
 - [ ] rclass 除去（a1217f5）の代償を取り戻す: poly +0.85%（interp）/ +1.17%（AOT）、object +0.3%、optcarrot +0.36%/フレーム（命令数）。原因は call_slow のキャッシュ hit 経路で c を引き回すレジスタ移動 ~2.7 命令/呼び出し、ivar 読みの miss 呼び出しに c を渡す 1 命令、new_object のクラスの ivar 数読み 1 命令（user 2026-11-22「高速化は別途考えましょう」）
 
