@@ -477,7 +477,7 @@ pub static OUTPUT_SEPS: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 fn io_print(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let (fs, ors) = if OUTPUT_SEPS.load(std::sync::atomic::Ordering::Relaxed) { (global_get("$,"), global_get("$\\")) } else { (NIL, NIL) };
     let last;
-    let a = if a.is_empty() { last = [global_get("$_")]; &last[..] } else { a };
+    let a = if a.is_empty() { last = [crate::builtins::svar::last_line(c)]; &last[..] } else { a };
     if fs == NIL && ors == NIL && !rio(c, slf).is_some_and(wconv) {
         let mut out = vec![];
         for &x in a { let sv = crate::rt::srb_tostr(c, x)?; out.extend_from_slice(c.str_bytes(sv)); }

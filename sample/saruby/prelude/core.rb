@@ -50,7 +50,10 @@ module Enumerable
     if block_given?
       each { |*x| v = x.size <= 1 ? x[0] : x; a << yield(v) if pat === v }
     else
+      # without a block the caller's $~ stays (CRuby's rb_reg_match_p); this frame shares it (svar.rs)
+      lm = $~
       each { |*x| v = x.size <= 1 ? x[0] : x; a << v if pat === v }
+      $~ = lm
     end
     a
   end
@@ -59,7 +62,9 @@ module Enumerable
     if block_given?
       each { |*x| v = x.size <= 1 ? x[0] : x; a << yield(v) unless pat === v }
     else
+      lm = $~
       each { |*x| v = x.size <= 1 ? x[0] : x; a << v unless pat === v }
+      $~ = lm
     end
     a
   end

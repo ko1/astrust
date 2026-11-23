@@ -6,7 +6,7 @@
 // dead frame left at the same address.  Entries of frames below the innermost one are dropped on a
 // write (they returned).  A block finds its home on the frame chain by home id; a home that is not
 // live there (an escaped proc, a block run by another fiber or thread) is keyed by id alone.
-// Builtin and eval frames are transparent, but an eval in a Binding sees the binding's home (a
+// Builtin (cfunc, prelude, ARGF) and eval frames are transparent, but an eval in a Binding sees the binding's home (a
 // redirect entry [eval frame, -1, home id, nil] while it runs); a define_method body is its own home.
 #![forbid(unsafe_code)]
 #[allow(unused_imports)]
@@ -26,6 +26,7 @@ fn redirect_tag() -> Value { Value::fix(-1) }
 fn home(c: &Ctx, mark: bool) -> (usize, u64, bool) {
     let mut f = c.cur_frame();
     while let Some(x) = f {
+        if x.kind != FK_CFUNC && builtin_code(x) { f = c.prev_frame(x); continue; }
         let hid = match x.kind {
             FK_CFUNC => { f = c.prev_frame(x); continue; }
             FK_EVAL => match redirect_of(c, x) { Some(h) => h, None => { f = c.prev_frame(x); continue; } },
@@ -38,6 +39,12 @@ fn home(c: &Ctx, mark: bool) -> (usize, u64, bool) {
         f = g;   // a lambda or eval home resolves further
     }
     (0, 0, false)
+}
+/// Ruby code standing in for CRuby's C methods (the prelude, ARGF) sets and reads its caller's.
+#[inline(always)]
+fn builtin_code(x: &Frame) -> bool {
+    let f = frame_file(x);
+    f.as_bytes().first() == Some(&b'<') && (f == "<internal:prelude>" || f == "<internal:saruby/argf>")
 }
 /// The home id of a block frame; None for a define_method body (its own home).
 fn block_home(c: &Ctx, x: &Frame) -> Option<u64> {
