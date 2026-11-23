@@ -68,7 +68,7 @@ node_str(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32)
 NODE_DEF
 node_fstr(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32, lc@ref: LitCache)
 {
-    if let Some(v) = lc.v { return Ok(v); }
+    if let Some(v) = lc.v.get() { return Ok(v); }
     Ok(srb_fstr(c, s, enc, lc))
 }
 
@@ -100,21 +100,21 @@ node_dsym(c: &mut Ctx, n: NodePtr, fp: Fp, s@child: Value)
 NODE_DEF
 node_regex(c: &mut Ctx, n: NodePtr, fp: Fp, src: Str, opts: u32, lc@ref: LitCache)
 {
-    if let Some(v) = lc.v { return Ok(v); }
+    if let Some(v) = lc.v.get() { return Ok(v); }
     srb_regex_lit(c, src, opts, lc)
 }
 
 NODE_DEF
 node_dregex(c: &mut Ctx, n: NodePtr, fp: Fp, s@child: Value, opts: u32, once: bool, lc@ref: LitCache)
 {
-    if once { if let Some(v) = lc.v { return Ok(v); } }
+    if once { if let Some(v) = lc.v.get() { return Ok(v); } }
     srb_dregex(c, s, opts, once, lc)
 }
 
 NODE_DEF
 node_biglit(c: &mut Ctx, n: NodePtr, fp: Fp, digits: Str, lc@ref: LitCache)
 {
-    if let Some(v) = lc.v { return Ok(v); }
+    if let Some(v) = lc.v.get() { return Ok(v); }
     Ok(srb_biglit(c, digits, lc))
 }
 
@@ -186,7 +186,7 @@ node_range(c: &mut Ctx, n: NodePtr, fp: Fp, b@child: Value, e@child: Value, excl
 NODE_DEF
 node_range_lit(c: &mut Ctx, n: NodePtr, fp: Fp, b: Value, e: Value, excl: bool, lc@ref: LitCache)
 {
-    if let Some(v) = lc.v { return Ok(v); }
+    if let Some(v) = lc.v.get() { return Ok(v); }
     Ok(srb_range_lit(c, b, e, excl, lc))
 }
 
@@ -229,12 +229,12 @@ NODE_DEF
 node_ivar(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, ic@ref: IvarCache, slot@bake: u32)
 {
     let slf = fp[0].get();
-    if slf.is_heap() && obj_klass(slf).raw() == ic.klass {
+    if slf.is_heap() && obj_klass(slf).raw() == ic.klass.get() {
         if let Some(ivs) = c.obj_ivars(slf) {
             if slot == 0 {
-                if let Some(v) = ivs.get(ic.idx as usize) { return Ok(if v == UNDEF { NIL } else { v }); }
+                if let Some(v) = ivs.get(ic.idx.get() as usize) { return Ok(if v == UNDEF { NIL } else { v }); }
                 return Ok(NIL);
-            } else if ic.idx == slot - 1 {
+            } else if ic.idx.get() == slot - 1 {
                 // an unset slot leaves through the miss path (a branch to code the site already has, not a select)
                 if let Some(v) = ivs.get((slot - 1) as usize) { if v != UNDEF { return Ok(v); } }
             }
@@ -247,10 +247,10 @@ NODE_DEF
 node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, v@child: Value, ic@ref: IvarCache, slot@bake: u32)
 {
     let slf = fp[0].get();
-    if slf.is_heap() && obj_klass(slf).raw() == ic.klass && obj_flags(slf) & FL_FROZEN == 0 {
+    if slf.is_heap() && obj_klass(slf).raw() == ic.klass.get() && obj_flags(slf) & FL_FROZEN == 0 {
         if let Some(ivs) = c.obj_ivars_mut(slf) {
-            if slot == 0 { if ivs.set(ic.idx as usize, v) { return Ok(v); } }
-            else if ic.idx == slot - 1 && ivs.set((slot - 1) as usize, v) { return Ok(v); }
+            if slot == 0 { if ivs.set(ic.idx.get() as usize, v) { return Ok(v); } }
+            else if ic.idx.get() == slot - 1 && ivs.set((slot - 1) as usize, v) { return Ok(v); }
         }
     }
     srb_ivar_set_out(c, slf, name, v, ic)
@@ -263,10 +263,10 @@ node_ivar_arith(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, sub: bool, v@child: 
 {
     let slf = fp[0].get();
     if slf.is_heap() && v.is_fixnum() && !c.int_redef() {
-        if obj_klass(slf).raw() == ic.klass && obj_flags(slf) & FL_FROZEN == 0 && (slot == 0 || ic.idx == slot - 1) {
+        if obj_klass(slf).raw() == ic.klass.get() && obj_flags(slf) & FL_FROZEN == 0 && (slot == 0 || ic.idx.get() == slot - 1) {
             if let Some(ivs) = c.obj_ivars_mut(slf) {
 
-                let i = (if slot == 0 { ic.idx } else { slot - 1 }) as usize;
+                let i = (if slot == 0 { ic.idx.get() } else { slot - 1 }) as usize;
                 if let Some(cur) = ivs.get(i) {
                     if cur.is_fixnum() {
                         if let Some(r) = if sub { cur.fix_sub(v) } else { cur.fix_add(v) } { ivs.set(i, r); return Ok(r); }
@@ -306,7 +306,7 @@ NODE_DEF
 node_const(c: &mut Ctx, n: NodePtr, fp: Fp, name: Sym, line@hole: u32, cc@ref: ConstCache)
 {
     let cref = unsafe { (*c.frame).cref() };
-    if cc.serial == vm().const_serial.get() && cc.cref == cref as usize { return Ok(unsafe { Value::from_raw(cc.val) }); }
+    if cc.serial.get() == vm().const_serial.get() && cc.cref.get() == cref as usize { return Ok(unsafe { Value::from_raw(cc.val.get()) }); }
     line.store(c.frame_mut());
     srb_const_get(c, cref, name, cc)
 }
@@ -611,9 +611,9 @@ node_when(c: &mut Ctx, n: NodePtr, fp: Fp, subj_slot: u32, pats: NODES, kinds: S
                 None => {
                     // Module#=== asked of the same subject class again: d is 0 (no) or 1 (yes)
                     let k = class_of(subj).raw();
-                    let d = km.memo[kind_way(k)] ^ k;
+                    let d = km.memo[kind_way(k)].get() ^ k;
                     // is_class: the slot of a dead pattern class may be another object by now (a new class would move the serial)
-                    if p.raw() == km.pat && d <= 1 && km.ser == kind_serial() && is_class_or_module(p) { d == 1 } else { srb_eqq_class(c, p, subj, cc, km)? }
+                    if p.raw() == km.pat.get() && d <= 1 && km.ser.get() == kind_serial() && is_class_or_module(p) { d == 1 } else { srb_eqq_class(c, p, subj, cc, km)? }
                 }
             };
             if hit { return Ok(TRUE); }
@@ -655,7 +655,7 @@ node_call(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, fl
         let r0 = fp[0].get();
         if spec_hit(cc, r0, kind) {
             if shared == 1 { line.store(c.frame_mut()); }
-            return EVAL_SPEC!(c, callee, cc.fast as NodePtr, fp, CallArgs { me: cc.me as *const MethodEntry, blk: std::ptr::null(), shared: true, inl: true });
+            return EVAL_SPEC!(c, callee, cc.fast.get() as NodePtr, fp, CallArgs { me: cc.me.get() as *const MethodEntry, blk: std::ptr::null(), shared: true, inl: true });
         }
     }
     let k = EVAL_LEN!(args);
@@ -691,7 +691,7 @@ node_call(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym, fl
         if shared == 0 && spec_hit(cc, r0, kind) {
             // sp is where stage() left it: what the entry expects
             let callee_fp = frame(c, base)?;
-            let r = EVAL_SPEC!(c, callee, cc.fast as NodePtr, callee_fp, CallArgs::inline(cc.me as *const MethodEntry, std::ptr::null()));
+            let r = EVAL_SPEC!(c, callee, cc.fast.get() as NodePtr, callee_fp, CallArgs::inline(cc.me.get() as *const MethodEntry, std::ptr::null()));
             c.set_sp(base, 0);
             return r;
         }
@@ -720,12 +720,12 @@ node_call_blk(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym
         // baked builtin iterator (inline_iter.rs): the builtin's own loop under its cfunc frame, the block's entry compiled in
         let bp: *const Block = &b;
         // fast_hash: iter_refill checked this entry; the tree hash implies it now (iseq_hash), kept as one cheap compare
-        let hit = (bi_hit(cc, r0, it & 0xff) && cc.fast_hash == SPEC_HASH!(body)) || iter_refill(c, cc, r0, mid, flags, it, blk, SPEC_HASH!(body));
+        let hit = (bi_hit(cc, r0, it & 0xff) && cc.fast_hash.get() == SPEC_HASH!(body)) || iter_refill(c, cc, r0, mid, flags, it, blk, SPEC_HASH!(body));
         let bb = c.top();
         match if hit { frame(c, bb).ok() } else { None } {
             Some(bfp) => {
                 let pf = c.frame;
-                let mut fr = Frame::cfunc(pf, cc.me as *const MethodEntry, bp);
+                let mut fr = Frame::cfunc(pf, cc.me.get() as *const MethodEntry, bp);
                 let frp: *mut Frame = &mut fr;
                 // IT_SHARE: the block's frame made once, every step runs in it (the loops of iter_loop
                 // neither raise nor stage between steps, so they may run in that frame too)
@@ -753,7 +753,7 @@ node_call_blk(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym
     else if SPEC_HASH!(callee) != 0 {
         if spec_hit(cc, r0, kind) {
             let callee_fp = frame(c, base)?;
-            let r = EVAL_SPEC!(c, callee, cc.fast as NodePtr, callee_fp, CallArgs::new(cc.me as *const MethodEntry, &b));
+            let r = EVAL_SPEC!(c, callee, cc.fast.get() as NodePtr, callee_fp, CallArgs::new(cc.me.get() as *const MethodEntry, &b));
             c.set_sp(base, 0);
             r
         } else { call_spec_out(c, cc, mid, base, k as u32, &b, flags, SPEC_HASH!(callee)) }
@@ -780,7 +780,7 @@ node_call_kw(c: &mut Ctx, n: NodePtr, fp: Fp, recv: NODE, args: NODES, mid: Sym,
         let r0 = base[0].get();
         if spec_hit(cc, r0, kind) {
             let callee_fp = frame(c, base)?;
-            let r = EVAL_SPEC!(c, callee, cc.fast as NodePtr, callee_fp, CallArgs::inline(cc.me as *const MethodEntry, std::ptr::null()));
+            let r = EVAL_SPEC!(c, callee, cc.fast.get() as NodePtr, callee_fp, CallArgs::inline(cc.me.get() as *const MethodEntry, std::ptr::null()));
             c.set_sp(base, 0);
             return r;
         }
@@ -869,7 +869,7 @@ node_yield(c: &mut Ctx, n: NodePtr, fp: Fp, args: NODES, yc@ref: YieldCache, cal
     // baked, one block seen: its entry compiled in, guarded by the iseq (yc.fast is set once its hash matched)
     let b = unsafe { &*blk };
     if let BlockKind::Iseq(is) = b.kind {
-        if is as usize == yc.fast && (b.proc_val == UNDEF || !c.proc_data(b.proc_val).is_lambda) {
+        if is as usize == yc.fast.get() && (b.proc_val == UNDEF || !c.proc_data(b.proc_val).is_lambda) {
 
             // np = 1 + the block's lead parameter count: missing arguments are nil
             if (k as u32) + 1 < np { nil_fill(base, 2 + k, 1 + np as usize); }
@@ -921,7 +921,7 @@ node_opt_plus(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, l
 {
     if a.is_fixnum() && b.is_fixnum() && !c.int_redef() { if let Some(r) = a.fix_add(b) { return Ok(r); } }
     if tf_flo(ty) {
-        if let Some((x, y)) = flo2(a, b, R_FLO_PLUS, R_INT_PLUS) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(c.float_new(x + y)); }
+        if let Some((x, y)) = flo2(a, b, R_FLO_PLUS, R_INT_PLUS) { if ty == 0 { tf.add(TF_FLO); } return Ok(c.float_new(x + y)); }
         return srb_binop(c, a, b, s::plus, line.pos(), cc);
     }
     srb_arith_out(c, a, b, s::plus, line.pos(), cc)
@@ -932,7 +932,7 @@ node_opt_minus(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, 
 {
     if a.is_fixnum() && b.is_fixnum() && !c.int_redef() { if let Some(r) = a.fix_sub(b) { return Ok(r); } }
     if tf_flo(ty) {
-        if let Some((x, y)) = flo2(a, b, R_FLO_MINUS, R_INT_MINUS) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(c.float_new(x - y)); }
+        if let Some((x, y)) = flo2(a, b, R_FLO_MINUS, R_INT_MINUS) { if ty == 0 { tf.add(TF_FLO); } return Ok(c.float_new(x - y)); }
         return srb_binop(c, a, b, s::minus, line.pos(), cc);
     }
     srb_arith_out(c, a, b, s::minus, line.pos(), cc)
@@ -943,7 +943,7 @@ node_opt_mul(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, li
 {
     if a.both_fix(b) && !c.int_redef() { if let Some(r) = a.fix_mul(b) { return Ok(r); } }
     if tf_flo(ty) {
-        if let Some((x, y)) = flo2(a, b, R_FLO_MUL, R_INT_MUL) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(c.float_new(x * y)); }
+        if let Some((x, y)) = flo2(a, b, R_FLO_MUL, R_INT_MUL) { if ty == 0 { tf.add(TF_FLO); } return Ok(c.float_new(x * y)); }
         return srb_binop(c, a, b, s::mul, line.pos(), cc);
     }
     srb_arith_out(c, a, b, s::mul, line.pos(), cc)
@@ -958,7 +958,7 @@ node_opt_div(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, li
         if Value::fixable(q) { return Ok(Value::fix(q)); }
     }
     if tf_flo(ty) {
-        if let Some((x, y)) = flo2(a, b, R_FLO_DIV, R_INT_DIV) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(c.float_new(x / y)); }
+        if let Some((x, y)) = flo2(a, b, R_FLO_DIV, R_INT_DIV) { if ty == 0 { tf.add(TF_FLO); } return Ok(c.float_new(x / y)); }
         return srb_binop(c, a, b, s::div, line.pos(), cc);
     }
     srb_arith_out(c, a, b, s::div, line.pos(), cc)
@@ -992,7 +992,7 @@ node_opt_lt(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, lin
 {
     if a.both_fix(b) && !c.int_redef() { return Ok(Value::bool(a.fix_ord() < b.fix_ord())); }
     if tf_flo(ty) {
-        if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LT, R_INT_LT) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x < y)); }
+        if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LT, R_INT_LT) { if ty == 0 { tf.add(TF_FLO); } return Ok(Value::bool(x < y)); }
         return srb_binop(c, a, b, s::lt, line.pos(), cc);
     }
     srb_arith_out(c, a, b, s::lt, line.pos(), cc)
@@ -1001,7 +1001,7 @@ NODE_TEST
 {
     if a.both_fix(b) && !c.int_redef() { return Ok(a.fix_ord() < b.fix_ord()); }
     if tf_flo(ty) {
-        if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LT) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() < b.flonum_val()); }
+        if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LT) { if ty == 0 { tf.add(TF_FLO); } return Ok(a.flonum_val() < b.flonum_val()); }
         if ty == 0 { return Ok(srb_binop(c, a, b, s::lt, line.pos(), cc)?.truthy()); }
     }
     Ok(srb_arith_out(c, a, b, s::lt, line.pos(), cc)?.truthy())
@@ -1012,7 +1012,7 @@ node_opt_le(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, lin
 {
     if a.both_fix(b) && !c.int_redef() { return Ok(Value::bool(a.fix_ord() <= b.fix_ord())); }
     if tf_flo(ty) {
-        if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LE, R_INT_LE) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x <= y)); }
+        if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LE, R_INT_LE) { if ty == 0 { tf.add(TF_FLO); } return Ok(Value::bool(x <= y)); }
         return srb_binop(c, a, b, s::le, line.pos(), cc);
     }
     srb_arith_out(c, a, b, s::le, line.pos(), cc)
@@ -1021,7 +1021,7 @@ NODE_TEST
 {
     if a.both_fix(b) && !c.int_redef() { return Ok(a.fix_ord() <= b.fix_ord()); }
     if tf_flo(ty) {
-        if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LE) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() <= b.flonum_val()); }
+        if a.is_flonum() && b.is_flonum() && !redef(R_FLO_LE) { if ty == 0 { tf.add(TF_FLO); } return Ok(a.flonum_val() <= b.flonum_val()); }
         if ty == 0 { return Ok(srb_binop(c, a, b, s::le, line.pos(), cc)?.truthy()); }
     }
     Ok(srb_arith_out(c, a, b, s::le, line.pos(), cc)?.truthy())
@@ -1032,7 +1032,7 @@ node_opt_gt(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, lin
 {
     if a.both_fix(b) && !c.int_redef() { return Ok(Value::bool(a.fix_ord() > b.fix_ord())); }
     if tf_flo(ty) {
-        if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GT, R_INT_GT) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x > y)); }
+        if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GT, R_INT_GT) { if ty == 0 { tf.add(TF_FLO); } return Ok(Value::bool(x > y)); }
         return srb_binop(c, a, b, s::gt, line.pos(), cc);
     }
     srb_arith_out(c, a, b, s::gt, line.pos(), cc)
@@ -1041,7 +1041,7 @@ NODE_TEST
 {
     if a.both_fix(b) && !c.int_redef() { return Ok(a.fix_ord() > b.fix_ord()); }
     if tf_flo(ty) {
-        if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GT) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() > b.flonum_val()); }
+        if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GT) { if ty == 0 { tf.add(TF_FLO); } return Ok(a.flonum_val() > b.flonum_val()); }
         if ty == 0 { return Ok(srb_binop(c, a, b, s::gt, line.pos(), cc)?.truthy()); }
     }
     Ok(srb_arith_out(c, a, b, s::gt, line.pos(), cc)?.truthy())
@@ -1052,7 +1052,7 @@ node_opt_ge(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, lin
 {
     if a.both_fix(b) && !c.int_redef() { return Ok(Value::bool(a.fix_ord() >= b.fix_ord())); }
     if tf_flo(ty) {
-        if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GE, R_INT_GE) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x >= y)); }
+        if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GE, R_INT_GE) { if ty == 0 { tf.add(TF_FLO); } return Ok(Value::bool(x >= y)); }
         return srb_binop(c, a, b, s::ge, line.pos(), cc);
     }
     srb_arith_out(c, a, b, s::ge, line.pos(), cc)
@@ -1061,7 +1061,7 @@ NODE_TEST
 {
     if a.both_fix(b) && !c.int_redef() { return Ok(a.fix_ord() >= b.fix_ord()); }
     if tf_flo(ty) {
-        if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GE) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() >= b.flonum_val()); }
+        if a.is_flonum() && b.is_flonum() && !redef(R_FLO_GE) { if ty == 0 { tf.add(TF_FLO); } return Ok(a.flonum_val() >= b.flonum_val()); }
         if ty == 0 { return Ok(srb_binop(c, a, b, s::ge, line.pos(), cc)?.truthy()); }
     }
     Ok(srb_arith_out(c, a, b, s::ge, line.pos(), cc)?.truthy())
@@ -1071,7 +1071,7 @@ NODE_DEF
 node_opt_eq(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, line@hole: u32, cc@ref: OpCc, tf@ref: TyFb, ty@bake: u32)
 {
     if a.both_fix(b) && !c.int_redef() { return Ok(Value::bool(a == b)); }
-    if tf_flo(ty) { if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x == y)); } }
+    if tf_flo(ty) { if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { if ty == 0 { tf.add(TF_FLO); } return Ok(Value::bool(x == y)); } }
     // nil / true / false / Symbol receivers: == is identity
     if a.is_special() && !redef(R_IMM_EQ) { return Ok(Value::bool(a == b)); }
     if ty == 0 { return srb_eq(c, a, b, line.pos(), cc); }
@@ -1080,7 +1080,7 @@ node_opt_eq(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, lin
 NODE_TEST
 {
     if a.both_fix(b) && !c.int_redef() { return Ok(a == b); }
-    if tf_flo(ty) { if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() == b.flonum_val()); } }
+    if tf_flo(ty) { if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { if ty == 0 { tf.add(TF_FLO); } return Ok(a.flonum_val() == b.flonum_val()); } }
     if a.is_sym() && b.is_sym() { return Ok(a == b); }
     if ty == 0 { return Ok(srb_eq(c, a, b, line.pos(), cc)?.truthy()); }
     Ok(srb_arith_out(c, a, b, s::eq, line.pos(), cc)?.truthy())
@@ -1091,7 +1091,7 @@ node_opt_neq(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, li
 {
     if a.both_fix(b) && !c.int_redef() { return Ok(Value::bool(a != b)); }
     if tf_flo(ty) {
-        if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(Value::bool(x != y)); }
+        if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { if ty == 0 { tf.add(TF_FLO); } return Ok(Value::bool(x != y)); }
         return srb_binop(c, a, b, s::neq, line.pos(), cc);
     }
     srb_arith_out(c, a, b, s::neq, line.pos(), cc)
@@ -1100,7 +1100,7 @@ NODE_TEST
 {
     if a.both_fix(b) && !c.int_redef() { return Ok(a != b); }
     if tf_flo(ty) {
-        if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { if ty == 0 { tf.0 |= TF_FLO; } return Ok(a.flonum_val() != b.flonum_val()); }
+        if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { if ty == 0 { tf.add(TF_FLO); } return Ok(a.flonum_val() != b.flonum_val()); }
         if ty == 0 { return Ok(srb_binop(c, a, b, s::neq, line.pos(), cc)?.truthy()); }
     }
     Ok(srb_arith_out(c, a, b, s::neq, line.pos(), cc)?.truthy())
@@ -1167,7 +1167,7 @@ node_opt_aref(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, l
     if a.is_heap() && obj_klass(a).raw() == fast_ary_aref() && b.is_fixnum() {
         return Ok(crate::builtins::array_methods::ary_entry(c, a, b.as_fix()));
     } else if tf_hash(ty) && is_hash(a) && obj_klass(a) == vm().c_hash.get() && !redef(R_HASH_AREF) {
-        if ty == 0 { tf.0 |= TF_HASH; }
+        if ty == 0 { tf.add(TF_HASH); }
         line.store(c.frame_mut());
         return crate::builtins::hash_methods::h_aref(c, a, &[b], std::ptr::null());
     }
@@ -1181,7 +1181,7 @@ node_opt_aset(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, v
     if a.is_heap() && obj_klass(a).raw() == fast_ary_aset() && b.is_fixnum() {
         if crate::builtins::array_methods::ary_set_in(c, a, b.as_fix(), v) { return Ok(v); }
     } else if tf_hash(ty) && is_hash(a) && obj_klass(a) == vm().c_hash.get() && !redef(R_HASH_ASET) {
-        if ty == 0 { tf.0 |= TF_HASH; }
+        if ty == 0 { tf.add(TF_HASH); }
         line.store(c.frame_mut());
         return crate::builtins::hash_methods::h_aset(c, a, &[b, v], std::ptr::null());
     }

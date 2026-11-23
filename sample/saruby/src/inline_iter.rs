@@ -58,7 +58,7 @@ fn it_params(it: u32, np: usize) -> bool {
 /// `it | np << 8` (0: none).
 pub fn site_iter(cc: &CallCache, argc: usize, kind: u32, blk: &Iseq) -> u32 {
     if std::env::var_os("SARUBY_NO_IT").is_some() { return 0; }
-    let b = cc.bi & 0xff;
+    let b = cc.bi.get() & 0xff;
     if kind & 15 != SITE_CFUNC || b < IT_FIRST || !it_argc(b, argc) { return 0; }
     if blk.bentry.is_null() || blk.kind == IseqKind::Lambda { return 0; }
     let np = blk.params.lead.len();
@@ -129,13 +129,13 @@ pub fn iter_loop(c: &mut Ctx, it: u32, r0: Value, a: &[Value], y: &mut impl FnMu
 /// baked code: the entry's hash `h` must be this site's, remembered in cc.fast_hash (0 for a cfunc
 /// entry, reset by every fill).
 #[inline(never)]
-pub fn iter_refill(c: &mut Ctx, cc: &mut CallCache, r0: Value, mid: Sym, flags: u32, it: u32, blk: &Iseq, h: u64) -> bool {
+pub fn iter_refill(c: &mut Ctx, cc: &CallCache, r0: Value, mid: Sym, flags: u32, it: u32, blk: &Iseq, h: u64) -> bool {
     if !crate::inline_builtin::bi_hit(cc, r0, it & 0xff) {
-        if cc.klass != 0 && cc.serial == crate::vm::method_serial() { return false; }
+        if cc.klass.get() != 0 && cc.serial.get() == crate::vm::method_serial() { return false; }
         crate::vm::lookup_cc(c, cc, r0, mid, flags);
         if !crate::inline_builtin::bi_hit(cc, r0, it & 0xff) { return false; }
     }
     if crate::node::hash_node(blk.bentry) != h { return false; }
-    cc.fast_hash = h;
+    cc.fast_hash.set(h);
     true
 }

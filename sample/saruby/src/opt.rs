@@ -37,7 +37,10 @@ pub fn flo2_cmp(a: Value, b: Value, rf: u32, ri: u32) -> Option<(f64, f64)> {
 
 /// What an operator site's operands were besides fixnums; set by the interpreter, read when the site is baked.
 #[derive(Default)]
-pub struct TyFb(pub u32);
+pub struct TyFb(pub std::cell::Cell<u32>);
+impl TyFb {
+    #[inline(always)] pub fn add(&self, f: u32) { self.0.set(self.0.get() | f); }
+}
 pub const TF_FLO: u32 = 1;
 pub const TF_HASH: u32 = 2;
 
@@ -51,7 +54,7 @@ pub fn tf_hash(ty: u32) -> bool { ty == 0 || (ty - 1) & TF_HASH != 0 }
 /// A site whose recorded kinds are stale or absent ends up here, slower but right.
 #[inline(never)]
 #[cold]
-pub fn srb_arith_out(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: Pos, cc: &mut OpCc) -> RV {
+pub fn srb_arith_out(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: Pos, cc: &OpCc) -> RV {
     match mid {
         s::plus => if let Some((x, y)) = flo2(a, b, R_FLO_PLUS, R_INT_PLUS) { return Ok(c.float_new(x + y)); }
         s::minus => if let Some((x, y)) = flo2(a, b, R_FLO_MINUS, R_INT_MINUS) { return Ok(c.float_new(x - y)); }

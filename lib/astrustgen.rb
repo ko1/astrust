@@ -50,7 +50,8 @@ require 'optparse'
 #                     specialized list (its length known) makes the calls in a row (ASTroGen's FOR_EACH_NODE_ARG):
 #                     the body keeps the plain loop and the generator unrolls it.  The closure returns the
 #                     embedder's `each_type`; `each_stmt` says how a step stops the walk (`?`, say).
-#   x@ref: T          T stored inline in the node, in a NodeCell<T>; the body receives `&mut T` (caches etc.); not hashed
+#   x@ref: T          T (Default) stored inline in the node; the body receives `&T`, so T keeps its mutable state
+#                     in Cell fields (caches etc.): a call site re-entered by recursion holds no `&mut`; not hashed
 #   x@hole: T         a bound operand (a site's own value: a line number, say): stored in the node, not hashed,
 #                     the body receives `&'static T`, its address in the node.  Code is then shared by every site
 #                     of the shape (the node is the binding table: root + constant in a laid-out tree), and the
@@ -67,7 +68,7 @@ require 'optparse'
 #
 # Node access: generated code (and the code it emits) reads a node only through the primitives of node_head.rs
 # (node_u::<T>(n) -> &T, node_u_mut, node_kind / node_dispatcher / node_flags / node_hash_*, node_head_<lead
-# field>, NodeCell::body_mut), whose `unsafe` carries the contract on NodePtr; the per-node templates have none.
+# field>), whose `unsafe` carries the contract on NodePtr; the per-node templates have none.
 module ASTrustGen
   class << self; attr_accessor :value_type; end
   self.value_type = 'Value'
@@ -131,7 +132,6 @@ module ASTrustGen
 
         # Rust type of the field in the node's operand struct.
         def storage_type
-          return "NodeCell<#{@type}>" if ref?
           return 'NodePtr' if child? || node?
           return 'NodeList' if nodes?
           @type
@@ -139,7 +139,7 @@ module ASTrustGen
 
         # Parameter(s) of EVAL_<name>.
         def eval_param
-          if ref? then "#{@name}: &mut #{@type}"
+          if ref? then "#{@name}: &#{@type}"
           elsif hole? then @owner.hole_trait(self) ? "#{@name}: H_#{@name}" : "#{@name}: #{@owner.hole_param_type(self)}"
           elsif spec? then "#{@name}_hash: u64"
           elsif child? then "#{@name}: #{@type}"
@@ -174,7 +174,7 @@ module ASTrustGen
         # to `a` (a Vec<String>) — the baked literal, or a read from the node.
         def specialize_arg
           f = "u.#{@name}"
-          if ref? then "a.push(\"u.#{@name}.body_mut()\".to_string());"
+          if ref? then "a.push(\"&u.#{@name}\".to_string());"
           elsif hole?
             at = "n as usize + std::mem::offset_of!(NodeOf<#{@owner.struct_name}>, #{hole_place})"
             read = "a.push(\"#{ASTrustGen.rust_str(@owner.hole_arg_expr(self, hole_place_expr))}\".to_string());"
@@ -451,7 +451,7 @@ module ASTrustGen
       def eval_call_args
         args = prefix_names.dup
         @operands.each do |op|
-          if op.ref? then args << "u.#{op.name}.body_mut()"
+          if op.ref? then args << "&u.#{op.name}"
           elsif op.hole? then args << hole_arg_expr(op, op.hole_place_expr)
           elsif op.spec? then args << "0u64"
           elsif op.bake? then args << "0"
@@ -754,7 +754,7 @@ module ASTrustGen
       // node_allocate / layout_tree, and live for as long as the returned borrow is used.
       /// The operand struct type of a node kind.
       pub trait NodeStruct { fn kind() -> &'static NodeKind; }
-      /// n's operand struct; n is of T's kind (checked in debug builds).  Operand fields other than @ref cells
+      /// n's operand struct; n is of T's kind (checked in debug builds).  Operand fields other than the Cell state of @ref
       /// are not written while a borrow lives (only CHILDREN / REPLACE write, through node_u_mut).
       #[inline(always)]
       pub fn node_u<'a, T: NodeStruct>(n: NodePtr) -> &'a T {
@@ -777,24 +777,6 @@ module ASTrustGen
       #[inline(always)] pub fn node_hash_set(n: NodePtr, h: u64) { unsafe { (*n).head.hash = h; } }
       #[inline(always)] pub fn node_hash_get(n: NodePtr) -> u64 { unsafe { (*n).head.hash } }
       #{head_lead_accessors}
-      /// An @ref operand: the mutable inline state (a cache) of an otherwise immutable node.
-      #[repr(transparent)]
-      #[derive(Default)]
-      pub struct NodeCell<T> { cell: std::cell::UnsafeCell<T> }
-      impl<T> NodeCell<T> {
-          /// The body's `&mut T`, dead when the body returns.  Not unique when the node is re-entered while its
-          /// body runs (a recursive call site): known, sample/saruby/docs/unsafe_catalog.md "generated code".
-          #[inline(always)]
-          #[allow(clippy::mut_from_ref)]
-          pub fn body_mut(&self) -> &mut T { unsafe { &mut *self.cell.get() } }
-      }
-      /// Reads at specialize time (hooks): no dispatch of the node is running.
-      impl<T> std::ops::Deref for NodeCell<T> {
-          type Target = T;
-          #[inline(always)]
-          fn deref(&self) -> &T { unsafe { &*self.cell.get() } }
-      }
-
       /// Copy the tree under `root` into one block, parents before children in operand order, and
       /// return the copy.  The original stays valid (other holders of its nodes are unaffected).
       pub fn layout_tree(root: NodePtr) -> NodePtr {

@@ -55,7 +55,7 @@ pub fn node_allocate_with<T>(kind: &'static NodeKind, u: T, init: impl FnOnce(&m
 // node_allocate / layout_tree, and live for as long as the returned borrow is used.
 /// The operand struct type of a node kind.
 pub trait NodeStruct { fn kind() -> &'static NodeKind; }
-/// n's operand struct; n is of T's kind (checked in debug builds).  Operand fields other than @ref cells
+/// n's operand struct; n is of T's kind (checked in debug builds).  Operand fields other than the Cell state of @ref
 /// are not written while a borrow lives (only CHILDREN / REPLACE write, through node_u_mut).
 #[inline(always)]
 pub fn node_u<'a, T: NodeStruct>(n: NodePtr) -> &'a T {
@@ -78,24 +78,6 @@ pub fn node_u_mut<'a, T: NodeStruct>(n: NodePtr) -> &'a mut T {
 #[inline(always)] pub fn node_hash_set(n: NodePtr, h: u64) { unsafe { (*n).head.hash = h; } }
 #[inline(always)] pub fn node_hash_get(n: NodePtr) -> u64 { unsafe { (*n).head.hash } }
 #[inline(always)] pub fn node_head_line<'a>(n: NodePtr) -> &'a u32 { unsafe { &(*n).head.line } }
-/// An @ref operand: the mutable inline state (a cache) of an otherwise immutable node.
-#[repr(transparent)]
-#[derive(Default)]
-pub struct NodeCell<T> { cell: std::cell::UnsafeCell<T> }
-impl<T> NodeCell<T> {
-    /// The body's `&mut T`, dead when the body returns.  Not unique when the node is re-entered while its
-    /// body runs (a recursive call site): known, sample/saruby/docs/unsafe_catalog.md "generated code".
-    #[inline(always)]
-    #[allow(clippy::mut_from_ref)]
-    pub fn body_mut(&self) -> &mut T { unsafe { &mut *self.cell.get() } }
-}
-/// Reads at specialize time (hooks): no dispatch of the node is running.
-impl<T> std::ops::Deref for NodeCell<T> {
-    type Target = T;
-    #[inline(always)]
-    fn deref(&self) -> &T { unsafe { &*self.cell.get() } }
-}
-
 /// Copy the tree under `root` into one block, parents before children in operand order, and
 /// return the copy.  The original stays valid (other holders of its nodes are unaffected).
 pub fn layout_tree(root: NodePtr) -> NodePtr {
@@ -341,7 +323,7 @@ pub struct node_str_struct {
 pub struct node_fstr_struct {
     pub s: Str,
     pub enc: u32,
-    pub lc: NodeCell<LitCache>,
+    pub lc: LitCache,
 }
 
 #[allow(non_camel_case_types)]
@@ -369,7 +351,7 @@ pub struct node_dsym_struct {
 pub struct node_regex_struct {
     pub src: Str,
     pub opts: u32,
-    pub lc: NodeCell<LitCache>,
+    pub lc: LitCache,
 }
 
 #[allow(non_camel_case_types)]
@@ -378,14 +360,14 @@ pub struct node_dregex_struct {
     pub s: NodePtr,
     pub opts: u32,
     pub once: bool,
-    pub lc: NodeCell<LitCache>,
+    pub lc: LitCache,
 }
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
 pub struct node_biglit_struct {
     pub digits: Str,
-    pub lc: NodeCell<LitCache>,
+    pub lc: LitCache,
 }
 
 #[allow(non_camel_case_types)]
@@ -422,7 +404,7 @@ pub struct node_range_lit_struct {
     pub b: Value,
     pub e: Value,
     pub excl: bool,
-    pub lc: NodeCell<LitCache>,
+    pub lc: LitCache,
 }
 
 #[allow(non_camel_case_types)]
@@ -457,7 +439,7 @@ pub struct node_dasgn_struct {
 #[repr(C)]
 pub struct node_ivar_struct {
     pub name: Sym,
-    pub ic: NodeCell<IvarCache>,
+    pub ic: IvarCache,
 }
 
 #[allow(non_camel_case_types)]
@@ -465,7 +447,7 @@ pub struct node_ivar_struct {
 pub struct node_iasgn_struct {
     pub name: Sym,
     pub v: NodePtr,
-    pub ic: NodeCell<IvarCache>,
+    pub ic: IvarCache,
 }
 
 #[allow(non_camel_case_types)]
@@ -474,8 +456,8 @@ pub struct node_ivar_arith_struct {
     pub name: Sym,
     pub sub: bool,
     pub v: NodePtr,
-    pub ic: NodeCell<IvarCache>,
-    pub cc: NodeCell<OpCc>,
+    pub ic: IvarCache,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -508,7 +490,7 @@ pub struct node_cvasgn_struct {
 #[repr(C)]
 pub struct node_const_struct {
     pub name: Sym,
-    pub cc: NodeCell<ConstCache>,
+    pub cc: ConstCache,
 }
 
 #[allow(non_camel_case_types)]
@@ -609,7 +591,7 @@ pub struct node_or_struct {
 #[repr(C)]
 pub struct node_not_struct {
     pub v: NodePtr,
-    pub cc: NodeCell<OpCc>,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -701,8 +683,8 @@ pub struct node_when_struct {
     pub subj_slot: u32,
     pub pats: NodeList,
     pub kinds: Str,
-    pub cc: NodeCell<CallCache>,
-    pub km: NodeCell<KindMemo>,
+    pub cc: CallCache,
+    pub km: KindMemo,
 }
 
 #[allow(non_camel_case_types)]
@@ -710,7 +692,7 @@ pub struct node_when_struct {
 pub struct node_when_lit_struct {
     pub subj_slot: u32,
     pub v: Value,
-    pub cc: NodeCell<CallCache>,
+    pub cc: CallCache,
 }
 
 #[allow(non_camel_case_types)]
@@ -728,7 +710,7 @@ pub struct node_call_struct {
     pub args: NodeList,
     pub mid: Sym,
     pub flags: u32,
-    pub cc: NodeCell<CallCache>,
+    pub cc: CallCache,
 }
 
 #[allow(non_camel_case_types)]
@@ -739,7 +721,7 @@ pub struct node_call_blk_struct {
     pub mid: Sym,
     pub flags: u32,
     pub blk: IseqRef,
-    pub cc: NodeCell<CallCache>,
+    pub cc: CallCache,
 }
 
 #[allow(non_camel_case_types)]
@@ -750,7 +732,7 @@ pub struct node_call_kw_struct {
     pub mid: Sym,
     pub flags: u32,
     pub ci: CiRef,
-    pub cc: NodeCell<CallCache>,
+    pub cc: CallCache,
 }
 
 #[allow(non_camel_case_types)]
@@ -761,7 +743,7 @@ pub struct node_call_x_struct {
     pub mid: Sym,
     pub flags: u32,
     pub ci: CiRef,
-    pub cc: NodeCell<CallCache>,
+    pub cc: CallCache,
 }
 
 #[allow(non_camel_case_types)]
@@ -771,7 +753,7 @@ pub struct node_send_sym_struct {
     pub smid: Sym,
     pub call: NodePtr,
     pub general: NodePtr,
-    pub g: NodeCell<SendGuard>,
+    pub g: SendGuard,
 }
 
 #[allow(non_camel_case_types)]
@@ -781,7 +763,7 @@ pub struct node_attrasgn_struct {
     pub args: NodeList,
     pub mid: Sym,
     pub flags: u32,
-    pub cc: NodeCell<CallCache>,
+    pub cc: CallCache,
 }
 
 #[allow(non_camel_case_types)]
@@ -796,7 +778,7 @@ pub struct node_super_struct {
 #[repr(C)]
 pub struct node_yield_struct {
     pub args: NodeList,
-    pub yc: NodeCell<YieldCache>,
+    pub yc: YieldCache,
 }
 
 #[allow(non_camel_case_types)]
@@ -823,8 +805,8 @@ pub struct node_lambda_struct {
 pub struct node_opt_plus_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub cc: NodeCell<OpCc>,
-    pub tf: NodeCell<TyFb>,
+    pub cc: OpCc,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -832,8 +814,8 @@ pub struct node_opt_plus_struct {
 pub struct node_opt_minus_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub cc: NodeCell<OpCc>,
-    pub tf: NodeCell<TyFb>,
+    pub cc: OpCc,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -841,8 +823,8 @@ pub struct node_opt_minus_struct {
 pub struct node_opt_mul_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub cc: NodeCell<OpCc>,
-    pub tf: NodeCell<TyFb>,
+    pub cc: OpCc,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -850,8 +832,8 @@ pub struct node_opt_mul_struct {
 pub struct node_opt_div_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub cc: NodeCell<OpCc>,
-    pub tf: NodeCell<TyFb>,
+    pub cc: OpCc,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -859,7 +841,7 @@ pub struct node_opt_div_struct {
 pub struct node_opt_pow_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub cc: NodeCell<OpCc>,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -867,7 +849,7 @@ pub struct node_opt_pow_struct {
 pub struct node_opt_mod_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub cc: NodeCell<OpCc>,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -875,8 +857,8 @@ pub struct node_opt_mod_struct {
 pub struct node_opt_lt_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub cc: NodeCell<OpCc>,
-    pub tf: NodeCell<TyFb>,
+    pub cc: OpCc,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -884,8 +866,8 @@ pub struct node_opt_lt_struct {
 pub struct node_opt_le_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub cc: NodeCell<OpCc>,
-    pub tf: NodeCell<TyFb>,
+    pub cc: OpCc,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -893,8 +875,8 @@ pub struct node_opt_le_struct {
 pub struct node_opt_gt_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub cc: NodeCell<OpCc>,
-    pub tf: NodeCell<TyFb>,
+    pub cc: OpCc,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -902,8 +884,8 @@ pub struct node_opt_gt_struct {
 pub struct node_opt_ge_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub cc: NodeCell<OpCc>,
-    pub tf: NodeCell<TyFb>,
+    pub cc: OpCc,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -911,8 +893,8 @@ pub struct node_opt_ge_struct {
 pub struct node_opt_eq_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub cc: NodeCell<OpCc>,
-    pub tf: NodeCell<TyFb>,
+    pub cc: OpCc,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -920,8 +902,8 @@ pub struct node_opt_eq_struct {
 pub struct node_opt_neq_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub cc: NodeCell<OpCc>,
-    pub tf: NodeCell<TyFb>,
+    pub cc: OpCc,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -929,7 +911,7 @@ pub struct node_opt_neq_struct {
 pub struct node_opt_ltlt_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub cc: NodeCell<OpCc>,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -937,7 +919,7 @@ pub struct node_opt_ltlt_struct {
 pub struct node_opt_gtgt_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub cc: NodeCell<OpCc>,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -945,7 +927,7 @@ pub struct node_opt_gtgt_struct {
 pub struct node_opt_xor_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub cc: NodeCell<OpCc>,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -953,7 +935,7 @@ pub struct node_opt_xor_struct {
 pub struct node_opt_and_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub cc: NodeCell<OpCc>,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -961,7 +943,7 @@ pub struct node_opt_and_struct {
 pub struct node_opt_or_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub cc: NodeCell<OpCc>,
+    pub cc: OpCc,
 }
 
 #[allow(non_camel_case_types)]
@@ -969,8 +951,8 @@ pub struct node_opt_or_struct {
 pub struct node_opt_aref_struct {
     pub a: NodePtr,
     pub b: NodePtr,
-    pub cc: NodeCell<OpCc>,
-    pub tf: NodeCell<TyFb>,
+    pub cc: OpCc,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]
@@ -979,8 +961,8 @@ pub struct node_opt_aset_struct {
     pub a: NodePtr,
     pub b: NodePtr,
     pub v: NodePtr,
-    pub cc: NodeCell<OpCc>,
-    pub tf: NodeCell<TyFb>,
+    pub cc: OpCc,
+    pub tf: TyFb,
 }
 
 #[allow(non_camel_case_types)]

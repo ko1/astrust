@@ -107,7 +107,7 @@ pub fn fast_ary_aset() -> u64 { FAST_ARY_ASET.load(Relaxed) }
 /// `a[b]` when the site's inline path did not apply: everything, starting with the Array and Hash cases.
 #[inline(never)]
 #[cold]
-pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -> RV {
+pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &OpCc) -> RV {
     if booted() && !redef(R_ARY_AREF) { FAST_ARY_AREF.store(vm().c_array.get().raw(), Relaxed); }
     use crate::builtins::{array_methods as am, hash_methods as hm};
     if b.is_fixnum() && is_array(a) && obj_klass(a) == vm().c_array.get() && !redef(R_ARY_AREF) { return Ok(am::ary_entry(c, a, b.as_fix())); }
@@ -124,7 +124,7 @@ pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -
 /// `a << b` when the site's inline path did not apply: Array#<< of a frozen Array raises from this line, as CRuby.
 #[inline(never)]
 #[cold]
-pub fn srb_ltlt_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -> RV {
+pub fn srb_ltlt_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &OpCc) -> RV {
     if is_array(a) && obj_klass(a) == vm().c_array.get() && !redef(R_ARY_LTLT) {
         c.frame_mut().pos = line;
         return crate::builtins::array_methods::a_ltlt(c, a, &[b], std::ptr::null());
@@ -135,7 +135,7 @@ pub fn srb_ltlt_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -
 /// `a[b] = v`, as srb_aref_out.
 #[inline(never)]
 #[cold]
-pub fn srb_aset_out(c: &mut Ctx, a: Value, b: Value, v: Value, line: Pos, cc: &mut OpCc) -> RV {
+pub fn srb_aset_out(c: &mut Ctx, a: Value, b: Value, v: Value, line: Pos, cc: &OpCc) -> RV {
     if booted() && !redef(R_ARY_ASET) { FAST_ARY_ASET.store(vm().c_array.get().raw(), Relaxed); }
     use crate::builtins::{array_methods as am, hash_methods as hm};
     // Array#[]= / Hash#[]= themselves: errors (frozen, index) with this line and no frame of their own, as CRuby
@@ -152,7 +152,7 @@ pub fn srb_aset_out(c: &mut Ctx, a: Value, b: Value, v: Value, line: Pos, cc: &m
 
 // ---- literals ----------------------------------------------------------------------------
 
-pub fn srb_fstr(c: &mut Ctx, s: Str, enc: u32, lc: &mut LitCache) -> Value {
+pub fn srb_fstr(c: &mut Ctx, s: Str, enc: u32, lc: &LitCache) -> Value {
     // frozen literals share the -"str" pool, like CRuby's fstring table
     let found = vm().frozen_lits.borrow().get(s).copied();   // not borrowed across the allocation below
     let v = match found {
@@ -165,7 +165,7 @@ pub fn srb_fstr(c: &mut Ctx, s: Str, enc: u32, lc: &mut LitCache) -> Value {
             v
         }
     };
-    lc.v = Some(v);
+    lc.v.set(Some(v));
     v
 }
 
@@ -212,25 +212,25 @@ pub fn srb_tostr(c: &mut Ctx, v: Value) -> RV {
     Ok(c.str_new(t.as_bytes()))
 }
 
-pub fn srb_regex_lit(c: &mut Ctx, src: Str, opts: u32, lc: &mut LitCache) -> RV {
+pub fn srb_regex_lit(c: &mut Ctx, src: Str, opts: u32, lc: &LitCache) -> RV {
     let r = crate::regexp::regexp_new_lit(c, src, opts)?;
     obj_set_flags(r, FL_FROZEN);
     vm().node_values.borrow_mut().push(r);
-    lc.v = Some(r);
+    lc.v.set(Some(r));
     Ok(r)
 }
 
-pub fn srb_dregex(c: &mut Ctx, s: Value, opts: u32, once: bool, lc: &mut LitCache) -> RV {
+pub fn srb_dregex(c: &mut Ctx, s: Value, opts: u32, once: bool, lc: &LitCache) -> RV {
     let r = crate::regexp::regexp_new_dyn(c, s, opts)?;
-    if once { vm().node_values.borrow_mut().push(r); lc.v = Some(r); }
+    if once { vm().node_values.borrow_mut().push(r); lc.v.set(Some(r)); }
     Ok(r)
 }
 
-pub fn srb_biglit(c: &mut Ctx, digits: Str, lc: &mut LitCache) -> Value {
+pub fn srb_biglit(c: &mut Ctx, digits: Str, lc: &LitCache) -> Value {
     let b = crate::bignum::BigInt::parse(std::str::from_utf8(digits).unwrap(), 10).unwrap();
     let v = c.big_to_value(b);
     vm().node_values.borrow_mut().push(v);
-    lc.v = Some(v);
+    lc.v.set(Some(v));
     v
 }
 
@@ -275,21 +275,21 @@ pub fn srb_range_new(c: &mut Ctx, b: Value, e: Value, excl: bool) -> RV {
     crate::range::range_new_checked(c, b, e, excl)
 }
 
-pub fn srb_range_lit(c: &mut Ctx, b: Value, e: Value, excl: bool, lc: &mut LitCache) -> Value {
+pub fn srb_range_lit(c: &mut Ctx, b: Value, e: Value, excl: bool, lc: &LitCache) -> Value {
     let r = c.range_new(b, e, excl);
     obj_set_flags(r, FL_FROZEN);
     vm().node_values.borrow_mut().push(r);
-    lc.v = Some(r);
+    lc.v.set(Some(r));
     r
 }
 
 // ---- variables ----------------------------------------------------------------------------
 
-pub fn srb_ivar_get(c: &Ctx, slf: Value, name: Sym, ic: &mut IvarCache) -> Value {
+pub fn srb_ivar_get(c: &Ctx, slf: Value, name: Sym, ic: &IvarCache) -> Value {
     if is_object(slf) {
         let k = real_class_of(c, slf);
         if let Some(&i) = c.class(k).ivar_index.get(&name) {
-            if obj_klass(slf) == k { ic.klass = k.raw(); ic.idx = i; }
+            if obj_klass(slf) == k { ic.klass.set(k.raw()); ic.idx.set(i); }
         }
     }
     ivar_get(c, slf, name)
@@ -298,10 +298,10 @@ pub fn srb_ivar_get(c: &Ctx, slf: Value, name: Sym, ic: &mut IvarCache) -> Value
 /// A site's way out of its inline path: the cache without the baked slot first (a stale slot stays cheap), then the miss.
 #[cold]
 #[inline(never)]
-pub fn srb_ivar_get_out(slf: Value, name: Sym, ic: &mut IvarCache, c: &Ctx) -> Value {
-    if slf.is_heap() && obj_klass(slf).raw() == ic.klass {
+pub fn srb_ivar_get_out(slf: Value, name: Sym, ic: &IvarCache, c: &Ctx) -> Value {
+    if slf.is_heap() && obj_klass(slf).raw() == ic.klass.get() {
         if let Some(ivs) = c.obj_ivars(slf) {
-            return match ivs.get(ic.idx as usize) { Some(v) if v != UNDEF => v, _ => NIL };
+            return match ivs.get(ic.idx.get() as usize) { Some(v) if v != UNDEF => v, _ => NIL };
         }
     }
     srb_ivar_get(c, slf, name, ic)
@@ -309,10 +309,10 @@ pub fn srb_ivar_get_out(slf: Value, name: Sym, ic: &mut IvarCache, c: &Ctx) -> V
 
 #[cold]
 #[inline(never)]
-pub fn srb_ivar_set_out(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &mut IvarCache) -> RV {
-    if slf.is_heap() && obj_klass(slf).raw() == ic.klass && obj_flags(slf) & FL_FROZEN == 0 {
+pub fn srb_ivar_set_out(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &IvarCache) -> RV {
+    if slf.is_heap() && obj_klass(slf).raw() == ic.klass.get() && obj_flags(slf) & FL_FROZEN == 0 {
         if let Some(ivs) = c.obj_ivars_mut(slf) {
-            if ivs.set(ic.idx as usize, v) { return Ok(v); }
+            if ivs.set(ic.idx.get() as usize, v) { return Ok(v); }
         }
     }
     srb_ivar_set(c, slf, name, v, ic)
@@ -321,18 +321,18 @@ pub fn srb_ivar_set_out(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &mut I
 /// `@x += v` / `@x -= v` outside node_ivar_arith's inline path: read, operate, write.
 #[inline(never)]
 #[cold]
-pub fn srb_ivar_arith_out(c: &mut Ctx, slf: Value, name: Sym, sub: bool, v: Value, line: Pos, ic: &mut IvarCache, cc: &mut OpCc) -> RV {
+pub fn srb_ivar_arith_out(c: &mut Ctx, slf: Value, name: Sym, sub: bool, v: Value, line: Pos, ic: &IvarCache, cc: &OpCc) -> RV {
     let cur = srb_ivar_get_out(slf, name, ic, c);
     let r = crate::opt::srb_arith_out(c, cur, v, if sub { s::minus } else { s::plus }, line, cc)?;
     srb_ivar_set_out(c, slf, name, r, ic)
 }
 
-pub fn srb_ivar_set(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &mut IvarCache) -> RV {
+pub fn srb_ivar_set(c: &mut Ctx, slf: Value, name: Sym, v: Value, ic: &IvarCache) -> RV {
     ivar_set(c, slf, name, v)?;
     if is_object(slf) {
         let k = real_class_of(c, slf);
         if obj_klass(slf) == k {
-            ic.klass = k.raw(); ic.idx = ivar_index_for(c, k, name);
+            ic.klass.set(k.raw()); ic.idx.set(ivar_index_for(c, k, name));
         }
     }
     Ok(v)
@@ -396,11 +396,11 @@ pub fn srb_cvar_set(c: &mut Ctx, name: Sym, v: Value) -> RV {
 }
 
 #[cold]
-pub fn srb_const_get(c: &mut Ctx, cref: *const Cref, name: Sym, cc: &mut ConstCache) -> RV {
+pub fn srb_const_get(c: &mut Ctx, cref: *const Cref, name: Sym, cc: &ConstCache) -> RV {
     let v = const_lookup(c, cref, name)?;
-    cc.serial = vm().const_serial.get();
-    cc.cref = cref as usize;
-    cc.val = v.raw();
+    cc.serial.set(vm().const_serial.get());
+    cc.cref.set(cref as usize);
+    cc.val.set(v.raw());
     Ok(v)
 }
 
@@ -458,7 +458,7 @@ pub fn srb_has_custom_not(c: &Ctx, v: Value) -> bool {
 }
 
 #[cold]
-pub fn srb_call0(c: &mut Ctx, v: Value, mid: Sym, cc: &mut OpCc) -> RV {
+pub fn srb_call0(c: &mut Ctx, v: Value, mid: Sym, cc: &OpCc) -> RV {
     let base = stage(c, 2)?;
     base[0].set(v);
     call_cached(c, cc.get(), mid, base, 0, std::ptr::null(), 0)
@@ -570,13 +570,13 @@ pub fn srb_rescue_match(c: &mut Ctx, k: Value, exc: Value, splat: bool) -> Resul
 pub fn srb_when_splat(c: &mut Ctx, p: Value, subj: Value) -> Result<bool, Esc> {
     let a = splat_to_array(c, p)?;
     let n = c.ary(a).len();
-    let mut cc = CallCache::default();
-    for i in 0..n { let x = c.ary(a)[i]; if srb_eqq(c, x, subj, &mut cc)? { return Ok(true); } }
+    let cc = CallCache::default();
+    for i in 0..n { let x = c.ary(a)[i]; if srb_eqq(c, x, subj, &cc)? { return Ok(true); } }
     Ok(false)
 }
 
 #[cold]
-pub fn srb_eqq(c: &mut Ctx, p: Value, subj: Value, cc: &mut CallCache) -> Result<bool, Esc> {
+pub fn srb_eqq(c: &mut Ctx, p: Value, subj: Value, cc: &CallCache) -> Result<bool, Esc> {
     if p.is_fixnum() && subj.is_fixnum() { return Ok(p == subj); }
     if p.is_sym() { return Ok(p == subj); }
     if p == NIL || p == TRUE || p == FALSE { return Ok(p == subj); }
@@ -590,13 +590,13 @@ pub fn srb_eqq(c: &mut Ctx, p: Value, subj: Value, cc: &mut CallCache) -> Result
 /// srb_eqq for a `when` site; an answer of the builtin Module#=== is kept in the site's memo.
 #[inline(never)]
 #[cold]
-pub fn srb_eqq_class(c: &mut Ctx, p: Value, subj: Value, cc: &mut CallCache, km: &mut KindMemo) -> Result<bool, Esc> {
+pub fn srb_eqq_class(c: &mut Ctx, p: Value, subj: Value, cc: &CallCache, km: &KindMemo) -> Result<bool, Esc> {
     let r = srb_eqq(c, p, subj, cc)?;
     // cc.me is what the call just ran when the cache is p's (a polymorphic site keeps others elsewhere)
-    if p.is_heap() && cc.klass == obj_klass(p).raw() && cc.me == vm().ids.m_eqq.get() as usize {
+    if p.is_heap() && cc.klass.get() == obj_klass(p).raw() && cc.me.get() == vm().ids.m_eqq.get() as usize {
         let (k, ser) = (class_of(subj).raw(), kind_serial());
-        if km.pat != p.raw() || km.ser != ser { *km = KindMemo { pat: p.raw(), ser, memo: [0; KIND_WAYS] }; }
-        km.memo[kind_way(k)] = k | r as u64;
+        if km.pat.get() != p.raw() || km.ser.get() != ser { km.pat.set(p.raw()); km.ser.set(ser); for m in &km.memo { m.set(0); } }
+        km.memo[kind_way(k)].set(k | r as u64);
     }
     Ok(r)
 }
@@ -777,7 +777,7 @@ fn block_from_value(c: &mut Ctx, blkv: Value, holder: &mut Block) -> Result<*con
 }
 
 /// Stage tmp (+ kw) as arguments at base and call.
-pub fn srb_call_x(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, tmp: Value, kw: Value, blkv: Value, ci: CiRef, flags: u32, fp: Fp) -> RV {
+pub fn srb_call_x(c: &mut Ctx, cc: &CallCache, mid: Sym, base: Stk, tmp: Value, kw: Value, blkv: Value, ci: CiRef, flags: u32, fp: Fp) -> RV {
     let n = c.ary(tmp).len();
     let has_kw = kw != NIL && (c.hash(kw).live > 0 || ci.kinds.contains(&AK_KW));
     let total = n + if has_kw { 1 } else { 0 };
@@ -812,7 +812,7 @@ pub fn srb_splat1(ci: CiRef, flags: u32) -> bool {
 
 /// `f(*a)` (srb_splat1): an Array's elements staged directly; anything else as srb_call_x.
 #[inline(never)]
-pub fn srb_call_splat1(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, v: Value, ci: CiRef, flags: u32, fp: Fp) -> RV {
+pub fn srb_call_splat1(c: &mut Ctx, cc: &CallCache, mid: Sym, base: Stk, v: Value, ci: CiRef, flags: u32, fp: Fp) -> RV {
     let n = if is_array(v) { c.ary_len(v) } else { usize::MAX };
     // a ruby2_keywords hash at the end is passed as keywords: the general path
     let kwh = n != usize::MAX && n > 0 && { let l = c.ary(v)[n - 1]; is_hash(l) && crate::heap::obj_flags(l) & FL_KWHASH != 0 };
@@ -879,18 +879,18 @@ pub fn srb_no_block(c: &mut Ctx) -> RV { err(c, vm().c_local_jump_error.get(), "
 
 /// A yield site's feedback: which block iseq it ran.
 #[inline(always)]
-pub fn srb_yield_note(yc: &mut YieldCache, blk: *const Block) {
-    if let BlockKind::Iseq(is) = unsafe { (*blk).kind } { yc.note(is as usize); } else { yc.seen = 1; }
+pub fn srb_yield_note(yc: &YieldCache, blk: *const Block) {
+    if let BlockKind::Iseq(is) = unsafe { (*blk).kind } { yc.note(is as usize); } else { yc.seen.set(1); }
 }
 
 /// A baked yield site whose compiled-in block (entry hash h) did not match: arm the site's
 /// guard if this block is that one, then yield out of line.
 #[inline(never)]
-pub fn srb_yield_miss(c: &mut Ctx, yc: &mut YieldCache, h: u64, blk: *const Block, base: Stk, k: u32) -> RV {
+pub fn srb_yield_miss(c: &mut Ctx, yc: &YieldCache, h: u64, blk: *const Block, base: Stk, k: u32) -> RV {
     srb_yield_note(yc, blk);
     if let BlockKind::Iseq(is) = unsafe { (*blk).kind } {
         let bentry = unsafe { (*is).bentry };
-        if !bentry.is_null() && crate::node::hash_node(bentry) == h { yc.fast = is as usize; }
+        if !bentry.is_null() && crate::node::hash_node(bentry) == h { yc.fast.set(is as usize); }
     }
     srb_yield_staged(c, blk, base, k)
 }
@@ -940,7 +940,7 @@ pub fn srb_lambda(c: &mut Ctx, is: &'static Iseq, fp: Fp) -> RV {
 }
 
 #[cold]
-pub fn srb_binop(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: Pos, cc: &mut OpCc) -> RV {
+pub fn srb_binop(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: Pos, cc: &OpCc) -> RV {
     let base = stage(c, 3)?;
     base[0].set(a); base[2].set(b);
     c.frame_mut().pos = line;
@@ -948,13 +948,13 @@ pub fn srb_binop(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: Pos, cc: &mut 
 }
 
 #[cold]
-pub fn srb_eq(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &mut OpCc) -> RV {
+pub fn srb_eq(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &OpCc) -> RV {
     if is_string(a) && is_string(b) && obj_klass(a) == vm().c_string.get() { return Ok(Value::bool(c.str_eq(a, b))); }
 
     srb_binop(c, a, b, s::eq, line, cc)
 }
 
-pub fn srb_aset(c: &mut Ctx, a: Value, b: Value, v: Value, line: Pos, cc: &mut OpCc) -> RV {
+pub fn srb_aset(c: &mut Ctx, a: Value, b: Value, v: Value, line: Pos, cc: &OpCc) -> RV {
     let base = stage(c, 4)?;
     base[0].set(a); base[2].set(b); base[3].set(v);
     c.frame_mut().pos = line;
@@ -1305,7 +1305,7 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
 
 /// Call with literal keywords staged as values: an Iseq callee taking only required +
 /// keyword params gets them directly in its slots; otherwise a keyword Hash is built.
-pub fn srb_call_kw(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, k: usize, ci: CiRef, flags: u32, fp: Fp) -> RV {
+pub fn srb_call_kw(c: &mut Ctx, cc: &CallCache, mid: Sym, base: Stk, k: usize, ci: CiRef, flags: u32, fp: Fp) -> RV {
     let nkw = ci.kw_names.len();
     let npos = k - nkw;
     let recv = base[0].get();
@@ -1313,11 +1313,11 @@ pub fn srb_call_kw(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, k: usiz
     let blk: *const Block = match ci.blk { Some(is) => { lit = make_block(c, is, fp); &lit } None => std::ptr::null() };
     let me = lookup_cc(c, cc, recv, mid, flags);
     // every keyword in declared order to a dense method: its kentry with the staged values as params
-    if cc.fast_argc != KW_DENSE | k as u32 && !me.is_null() { kw_dense_fill(cc, me, npos, &ci.kw_names, flags); }
-    let r = if cc.fast_argc == KW_DENSE | k as u32 {
+    if cc.fast_argc.get() != KW_DENSE | k as u32 && !me.is_null() { kw_dense_fill(cc, me, npos, &ci.kw_names, flags); }
+    let r = if cc.fast_argc.get() == KW_DENSE | k as u32 {
         c.call_me = me; c.call_blk = blk;
         native_check(c)?;
-        let r = run_body(c, cc.fast as NodePtr, base);
+        let r = run_body(c, cc.fast.get() as NodePtr, base);
         c.set_sp(base, 0);
         r
     } else if !me.is_null() && kw_direct_ok(me, npos, &ci.kw_names, flags) {
@@ -1343,8 +1343,8 @@ pub fn srb_call_kw(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, k: usiz
 
 /// A keyword site whose compiled-in callee (entry hash h) was not hit: srb_call_kw, then spec_klass.
 #[inline(never)]
-pub fn srb_call_kw_spec(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, k: usize, ci: CiRef, flags: u32, fp: Fp, h: u64) -> RV {
+pub fn srb_call_kw_spec(c: &mut Ctx, cc: &CallCache, mid: Sym, base: Stk, k: usize, ci: CiRef, flags: u32, fp: Fp, h: u64) -> RV {
     let r = srb_call_kw(c, cc, mid, base, k, ci, flags, fp);
-    cc.spec_klass = if cc.fast_hash == h && cc.fast_argc == KW_DENSE | k as u32 { cc.klass } else { 0 };
+    cc.spec_klass.set(if cc.fast_hash.get() == h && cc.fast_argc.get() == KW_DENSE | k as u32 { cc.klass.get() } else { 0 });
     r
 }

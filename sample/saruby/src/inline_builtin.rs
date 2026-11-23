@@ -117,11 +117,11 @@ pub fn bi_run(c: &mut Ctx, cc: &CallCache, m: u32, r: Value, a0: Value) -> Optio
 #[inline(always)]
 pub fn bi_hit(cc: &CallCache, r: Value, bi: u32) -> bool {
     let k = match recv_of(bi) {
-        C_INT => r.is_fixnum() && cc.bi == bi | K_INT,
-        C_FLO => r.is_flonum() && cc.bi == bi | K_FLO,
-        _ => r.is_heap() && obj_klass(r).raw() == cc.klass && cc.bi == bi,
+        C_INT => r.is_fixnum() && cc.bi.get() == bi | K_INT,
+        C_FLO => r.is_flonum() && cc.bi.get() == bi | K_FLO,
+        _ => r.is_heap() && obj_klass(r).raw() == cc.klass.get() && cc.bi.get() == bi,
     };
-    k && cc.serial == method_serial()
+    k && cc.serial.get() == method_serial()
 }
 
 /// The body of builtin `bi` (a constant in baked code) on receiver r (bi_hit: of the class the body

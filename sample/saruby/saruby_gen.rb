@@ -50,9 +50,9 @@ class SarubyNodeDef < ASTrustGen::NodeDef
     def bake_value_expr(op)
       case @name
       # 1 + the slot index in the site's cache (0: the site never ran); in the SD's name (profile_node)
-      when 'node_ivar', 'node_iasgn', 'node_ivar_arith' then "{ if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }"
+      when 'node_ivar', 'node_iasgn', 'node_ivar_arith' then "{ if u.ic.klass.get() != 0 { u.ic.idx.get() + 1 } else { 0 } }"
       # 1 + the operand kinds the interpreter recorded at an operator site (opt.rs TyFb)
-      when /\Anode_opt_/ then "{ 1 + u.tf.0 }"
+      when /\Anode_opt_/ then "{ 1 + u.tf.0.get() }"
       # 1 + the lead parameter count of the block compiled into a yield site
       when 'node_call'
         case op.name

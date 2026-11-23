@@ -212,7 +212,7 @@ fn SPECIALIZE_node_fstr(sc: &mut SpecCtx, n: NodePtr) -> String {
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     a.push("u.s".to_string());
     a.push(format!("{}u32", u.enc));
-    a.push("u.lc.body_mut()".to_string());
+    a.push("&u.lc".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -332,7 +332,7 @@ fn SPECIALIZE_node_regex(sc: &mut SpecCtx, n: NodePtr) -> String {
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     a.push("u.src".to_string());
     a.push(format!("{}u32", u.opts));
-    a.push("u.lc.body_mut()".to_string());
+    a.push("&u.lc".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -364,7 +364,7 @@ fn SPECIALIZE_node_dregex(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_s".to_string());
     a.push(format!("{}u32", u.opts));
     a.push(format!("{}", u.once));
-    a.push("u.lc.body_mut()".to_string());
+    a.push("&u.lc".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -394,7 +394,7 @@ fn SPECIALIZE_node_biglit(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     a.push("u.digits".to_string());
-    a.push("u.lc.body_mut()".to_string());
+    a.push("&u.lc".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -548,7 +548,7 @@ fn SPECIALIZE_node_range_lit(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push(crate::compile::value_bake(u.b).unwrap_or_else(|| "u.b".to_string()));
     a.push(crate::compile::value_bake(u.e).unwrap_or_else(|| "u.e".to_string()));
     a.push(format!("{}", u.excl));
-    a.push("u.lc.body_mut()".to_string());
+    a.push("&u.lc".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -698,8 +698,8 @@ fn SPECIALIZE_node_ivar(sc: &mut SpecCtx, n: NodePtr) -> String {
 
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     a.push("u.name".to_string());
-    a.push("u.ic.body_mut()".to_string());
-    a.push(format!("{}u32", { if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }));
+    a.push("&u.ic".to_string());
+    a.push(format!("{}u32", { if u.ic.klass.get() != 0 { u.ic.idx.get() + 1 } else { 0 } }));
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -730,8 +730,8 @@ fn SPECIALIZE_node_iasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     a.push("u.name".to_string());
     a.push("v_v".to_string());
-    a.push("u.ic.body_mut()".to_string());
-    a.push(format!("{}u32", { if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }));
+    a.push("&u.ic".to_string());
+    a.push(format!("{}u32", { if u.ic.klass.get() != 0 { u.ic.idx.get() + 1 } else { 0 } }));
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -765,9 +765,9 @@ fn SPECIALIZE_node_ivar_arith(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push(format!("{}", u.sub));
     a.push("v_v".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_ivar_arith_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_ivar_arith_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.ic.body_mut()".to_string());
-    a.push("u.cc.body_mut()".to_string());
-    a.push(format!("{}u32", { if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }));
+    a.push("&u.ic".to_string());
+    a.push("&u.cc".to_string());
+    a.push(format!("{}u32", { if u.ic.klass.get() != 0 { u.ic.idx.get() + 1 } else { 0 } }));
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -916,7 +916,7 @@ fn SPECIALIZE_node_const(sc: &mut SpecCtx, n: NodePtr) -> String {
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     a.push("u.name".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_const_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_const_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
+    a.push("&u.cc".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -1380,7 +1380,7 @@ fn SPECIALIZE_node_not(sc: &mut SpecCtx, n: NodePtr) -> String {
     let t_v = specialize_node(sc, u.v);
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     a.push("v_v".to_string());
-    a.push("u.cc.body_mut()".to_string());
+    a.push("&u.cc".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -1781,8 +1781,8 @@ fn SPECIALIZE_node_when(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push(format!("{}u32", u.subj_slot));
     a.push("list_base(n)".to_string());
     a.push("u.kinds".to_string());
-    a.push("u.cc.body_mut()".to_string());
-    a.push("u.km.body_mut()".to_string());
+    a.push("&u.cc".to_string());
+    a.push("&u.km".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -1813,7 +1813,7 @@ fn SPECIALIZE_node_when_lit(sc: &mut SpecCtx, n: NodePtr) -> String {
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     a.push(format!("{}u32", u.subj_slot));
     a.push(crate::compile::value_bake(u.v).unwrap_or_else(|| "u.v".to_string()));
-    a.push("u.cc.body_mut()".to_string());
+    a.push("&u.cc".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -1884,7 +1884,7 @@ fn SPECIALIZE_node_call(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("u.mid".to_string());
     a.push(format!("{}u32", u.flags));
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_call_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_call_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
+    a.push("&u.cc".to_string());
     a.push(format!("{}u64", h_callee));
     a.push(format!("{}u32", { crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }));
     a.push(format!("{}u32", { crate::vm::spec_shared(u.recv, u.args.len(), crate::vm::spec_callee(&u.cc, u.args.len(), u.flags)) }));
@@ -1927,7 +1927,7 @@ fn SPECIALIZE_node_call_blk(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push(format!("{}u32", u.flags));
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_call_blk_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_call_blk_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
     a.push("u.blk".to_string());
-    a.push("u.cc.body_mut()".to_string());
+    a.push("&u.cc".to_string());
     a.push(format!("{}u64", h_callee));
     a.push(format!("{}u32", { crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }));
     a.push(format!("{}u64", h_body));
@@ -1969,7 +1969,7 @@ fn SPECIALIZE_node_call_kw(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push(format!("{}u32", u.flags));
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_call_kw_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_call_kw_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
     a.push("u.ci".to_string());
-    a.push("u.cc.body_mut()".to_string());
+    a.push("&u.cc".to_string());
     a.push(format!("{}u64", h_callee));
     a.push(format!("{}u32", { crate::vm::site_kind_kw(&u.cc, u.args.len(), u.ci) }));
     if !was_open { sc.open.remove(&own_hash); }
@@ -2008,7 +2008,7 @@ fn SPECIALIZE_node_call_x(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push(format!("{}u32", u.flags));
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_call_x_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_call_x_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
     a.push("u.ci".to_string());
-    a.push("u.cc.body_mut()".to_string());
+    a.push("&u.cc".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2043,7 +2043,7 @@ fn SPECIALIZE_node_send_sym(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("u.smid".to_string());
     a.push(child_ptr_expr(n, u.call));
     a.push(child_ptr_expr(n, u.general));
-    a.push("u.g.body_mut()".to_string());
+    a.push("&u.g".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2079,7 +2079,7 @@ fn SPECIALIZE_node_attrasgn(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("u.mid".to_string());
     a.push(format!("{}u32", u.flags));
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_attrasgn_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_attrasgn_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
+    a.push("&u.cc".to_string());
     a.push(format!("{}u32", { crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }));
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
@@ -2144,7 +2144,7 @@ fn SPECIALIZE_node_yield(sc: &mut SpecCtx, n: NodePtr) -> String {
     let (t_callee, h_callee) = { let p: NodePtr = { crate::vm::spec_block(&u.yc, u.args.len()) }; if p.is_null() || sc.spec_depth >= sc.spec_max_depth { ("Dyn".to_string(), 0u64) } else if sc.open.contains(&hash_node(p)) { ("Dyn".to_string(), 0u64) } else { sc.spec_depth += 1; let t = specialize_node(sc, p); sc.spec_depth -= 1; (t, hash_node(p)) } };
     let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
     a.push("list_base(n)".to_string());
-    a.push("u.yc.body_mut()".to_string());
+    a.push("&u.yc".to_string());
     a.push(format!("{}u64", h_callee));
     a.push(format!("{}u32", { crate::vm::spec_block_np(&u.yc, u.args.len()) }));
     if !was_open { sc.open.remove(&own_hash); }
@@ -2268,9 +2268,9 @@ fn SPECIALIZE_node_opt_plus(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_plus_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_plus_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
-    a.push("u.tf.body_mut()".to_string());
-    a.push(format!("{}u32", { 1 + u.tf.0 }));
+    a.push("&u.cc".to_string());
+    a.push("&u.tf".to_string());
+    a.push(format!("{}u32", { 1 + u.tf.0.get() }));
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2305,9 +2305,9 @@ fn SPECIALIZE_node_opt_minus(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_minus_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_minus_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
-    a.push("u.tf.body_mut()".to_string());
-    a.push(format!("{}u32", { 1 + u.tf.0 }));
+    a.push("&u.cc".to_string());
+    a.push("&u.tf".to_string());
+    a.push(format!("{}u32", { 1 + u.tf.0.get() }));
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2342,9 +2342,9 @@ fn SPECIALIZE_node_opt_mul(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_mul_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_mul_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
-    a.push("u.tf.body_mut()".to_string());
-    a.push(format!("{}u32", { 1 + u.tf.0 }));
+    a.push("&u.cc".to_string());
+    a.push("&u.tf".to_string());
+    a.push(format!("{}u32", { 1 + u.tf.0.get() }));
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2379,9 +2379,9 @@ fn SPECIALIZE_node_opt_div(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_div_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_div_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
-    a.push("u.tf.body_mut()".to_string());
-    a.push(format!("{}u32", { 1 + u.tf.0 }));
+    a.push("&u.cc".to_string());
+    a.push("&u.tf".to_string());
+    a.push(format!("{}u32", { 1 + u.tf.0.get() }));
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2416,7 +2416,7 @@ fn SPECIALIZE_node_opt_pow(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_pow_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_pow_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
+    a.push("&u.cc".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2451,7 +2451,7 @@ fn SPECIALIZE_node_opt_mod(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_mod_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_mod_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
+    a.push("&u.cc".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2486,9 +2486,9 @@ fn SPECIALIZE_node_opt_lt(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_lt_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_lt_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
-    a.push("u.tf.body_mut()".to_string());
-    a.push(format!("{}u32", { 1 + u.tf.0 }));
+    a.push("&u.cc".to_string());
+    a.push("&u.tf".to_string());
+    a.push(format!("{}u32", { 1 + u.tf.0.get() }));
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2527,9 +2527,9 @@ fn SPECIALIZE_node_opt_le(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_le_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_le_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
-    a.push("u.tf.body_mut()".to_string());
-    a.push(format!("{}u32", { 1 + u.tf.0 }));
+    a.push("&u.cc".to_string());
+    a.push("&u.tf".to_string());
+    a.push(format!("{}u32", { 1 + u.tf.0.get() }));
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2568,9 +2568,9 @@ fn SPECIALIZE_node_opt_gt(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_gt_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_gt_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
-    a.push("u.tf.body_mut()".to_string());
-    a.push(format!("{}u32", { 1 + u.tf.0 }));
+    a.push("&u.cc".to_string());
+    a.push("&u.tf".to_string());
+    a.push(format!("{}u32", { 1 + u.tf.0.get() }));
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2609,9 +2609,9 @@ fn SPECIALIZE_node_opt_ge(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_ge_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_ge_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
-    a.push("u.tf.body_mut()".to_string());
-    a.push(format!("{}u32", { 1 + u.tf.0 }));
+    a.push("&u.cc".to_string());
+    a.push("&u.tf".to_string());
+    a.push(format!("{}u32", { 1 + u.tf.0.get() }));
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2650,9 +2650,9 @@ fn SPECIALIZE_node_opt_eq(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_eq_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_eq_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
-    a.push("u.tf.body_mut()".to_string());
-    a.push(format!("{}u32", { 1 + u.tf.0 }));
+    a.push("&u.cc".to_string());
+    a.push("&u.tf".to_string());
+    a.push(format!("{}u32", { 1 + u.tf.0.get() }));
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2691,9 +2691,9 @@ fn SPECIALIZE_node_opt_neq(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_neq_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_neq_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
-    a.push("u.tf.body_mut()".to_string());
-    a.push(format!("{}u32", { 1 + u.tf.0 }));
+    a.push("&u.cc".to_string());
+    a.push("&u.tf".to_string());
+    a.push(format!("{}u32", { 1 + u.tf.0.get() }));
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2732,7 +2732,7 @@ fn SPECIALIZE_node_opt_ltlt(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_ltlt_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_ltlt_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
+    a.push("&u.cc".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2767,7 +2767,7 @@ fn SPECIALIZE_node_opt_gtgt(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_gtgt_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_gtgt_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
+    a.push("&u.cc".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2802,7 +2802,7 @@ fn SPECIALIZE_node_opt_xor(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_xor_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_xor_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
+    a.push("&u.cc".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2837,7 +2837,7 @@ fn SPECIALIZE_node_opt_and(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_and_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_and_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
+    a.push("&u.cc".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2872,7 +2872,7 @@ fn SPECIALIZE_node_opt_or(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_or_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_or_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
+    a.push("&u.cc".to_string());
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2907,9 +2907,9 @@ fn SPECIALIZE_node_opt_aref(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_a".to_string());
     a.push("v_b".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_aref_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_aref_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
-    a.push("u.tf.body_mut()".to_string());
-    a.push(format!("{}u32", { 1 + u.tf.0 }));
+    a.push("&u.cc".to_string());
+    a.push("&u.tf".to_string());
+    a.push(format!("{}u32", { 1 + u.tf.0.get() }));
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from
@@ -2946,9 +2946,9 @@ fn SPECIALIZE_node_opt_aset(sc: &mut SpecCtx, n: NodePtr) -> String {
     a.push("v_b".to_string());
     a.push("v_v".to_string());
     if sc.spec_depth == 0 { sc.holes.push((n as usize + std::mem::offset_of!(NodeOf<node_opt_aset_struct>, head.line), std::mem::size_of::<u32>())); } if let Some(s) = sc.hole_sym("line", n as usize + std::mem::offset_of!(NodeOf<node_opt_aset_struct>, head.line), "impl Clone for H_%SYM% { #[inline(always)] fn clone(&self) -> Self { *self } } impl Copy for H_%SYM% {} impl crate::vm::LineHole for H_%SYM% {   #[inline(always)] fn pos(self) -> crate::vm::Pos { unsafe { crate::vm::Pos::bound(&raw const %SYM%) } }   #[inline(always)] fn store(self, f: &mut crate::vm::Frame) { unsafe {     std::arch::asm!(\"mov qword ptr [{0} + {1}], offset {2}\", in(reg) f, const std::mem::offset_of!(crate::vm::Frame, pos), sym %SYM%, options(nostack, preserves_flags)) } } } ") { t_line = "H_%SYM%".replace("%SYM%", &s); a.push("H_%SYM%".replace("%SYM%", &s)); } else { a.push("crate::vm::LineAt(&(*node_head_line(n)))".to_string()); }
-    a.push("u.cc.body_mut()".to_string());
-    a.push("u.tf.body_mut()".to_string());
-    a.push(format!("{}u32", { 1 + u.tf.0 }));
+    a.push("&u.cc".to_string());
+    a.push("&u.tf".to_string());
+    a.push(format!("{}u32", { 1 + u.tf.0.get() }));
     if !was_open { sc.open.remove(&own_hash); }
     // named by its code (children's names, baked operands, bound holes are in it): equal code is
     // one item, whichever entry or position it was reached from

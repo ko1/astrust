@@ -55,7 +55,7 @@ pub fn node_allocate_with<T>(kind: &'static NodeKind, u: T, init: impl FnOnce(&m
 // node_allocate / layout_tree, and live for as long as the returned borrow is used.
 /// The operand struct type of a node kind.
 pub trait NodeStruct { fn kind() -> &'static NodeKind; }
-/// n's operand struct; n is of T's kind (checked in debug builds).  Operand fields other than @ref cells
+/// n's operand struct; n is of T's kind (checked in debug builds).  Operand fields other than the Cell state of @ref
 /// are not written while a borrow lives (only CHILDREN / REPLACE write, through node_u_mut).
 #[inline(always)]
 pub fn node_u<'a, T: NodeStruct>(n: NodePtr) -> &'a T {
@@ -77,24 +77,6 @@ pub fn node_u_mut<'a, T: NodeStruct>(n: NodePtr) -> &'a mut T {
 #[inline(always)] pub fn node_set_flags(n: NodePtr, f: u32) { unsafe { (*n).head.flags = f; } }
 #[inline(always)] pub fn node_hash_set(n: NodePtr, h: u64) { unsafe { (*n).head.hash = h; } }
 #[inline(always)] pub fn node_hash_get(n: NodePtr) -> u64 { unsafe { (*n).head.hash } }
-
-/// An @ref operand: the mutable inline state (a cache) of an otherwise immutable node.
-#[repr(transparent)]
-#[derive(Default)]
-pub struct NodeCell<T> { cell: std::cell::UnsafeCell<T> }
-impl<T> NodeCell<T> {
-    /// The body's `&mut T`, dead when the body returns.  Not unique when the node is re-entered while its
-    /// body runs (a recursive call site): known, sample/saruby/docs/unsafe_catalog.md "generated code".
-    #[inline(always)]
-    #[allow(clippy::mut_from_ref)]
-    pub fn body_mut(&self) -> &mut T { unsafe { &mut *self.cell.get() } }
-}
-/// Reads at specialize time (hooks): no dispatch of the node is running.
-impl<T> std::ops::Deref for NodeCell<T> {
-    type Target = T;
-    #[inline(always)]
-    fn deref(&self) -> &T { unsafe { &*self.cell.get() } }
-}
 
 /// Copy the tree under `root` into one block, parents before children in operand order, and
 /// return the copy.  The original stays valid (other holders of its nodes are unaffected).

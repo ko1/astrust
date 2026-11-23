@@ -396,7 +396,7 @@ fn HASH_node_ivar(n: NodePtr) -> u64 {
 fn PROF_node_ivar(pc: &mut ProfCtx, n: NodePtr) -> u64 {
     let u = node_u::<node_ivar_struct>(n);
     let mut h = hash_str("node_ivar");
-    h = hash_merge(h, hash_u64(({ if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }) as u64));
+    h = hash_merge(h, hash_u64(({ if u.ic.klass.get() != 0 { u.ic.idx.get() + 1 } else { 0 } }) as u64));
     h
 }
 
@@ -414,7 +414,7 @@ fn PROF_node_iasgn(pc: &mut ProfCtx, n: NodePtr) -> u64 {
     let u = node_u::<node_iasgn_struct>(n);
     let mut h = hash_str("node_iasgn");
     h = hash_merge(h, profile_node(pc, u.v));
-    h = hash_merge(h, hash_u64(({ if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }) as u64));
+    h = hash_merge(h, hash_u64(({ if u.ic.klass.get() != 0 { u.ic.idx.get() + 1 } else { 0 } }) as u64));
     h
 }
 
@@ -433,7 +433,7 @@ fn PROF_node_ivar_arith(pc: &mut ProfCtx, n: NodePtr) -> u64 {
     let u = node_u::<node_ivar_arith_struct>(n);
     let mut h = hash_str("node_ivar_arith");
     h = hash_merge(h, profile_node(pc, u.v));
-    h = hash_merge(h, hash_u64(({ if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }) as u64));
+    h = hash_merge(h, hash_u64(({ if u.ic.klass.get() != 0 { u.ic.idx.get() + 1 } else { 0 } }) as u64));
     h
 }
 
@@ -1275,7 +1275,7 @@ fn PROF_node_opt_plus(pc: &mut ProfCtx, n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_plus");
     h = hash_merge(h, profile_node(pc, u.a));
     h = hash_merge(h, profile_node(pc, u.b));
-    h = hash_merge(h, hash_u64(({ 1 + u.tf.0 }) as u64));
+    h = hash_merge(h, hash_u64(({ 1 + u.tf.0.get() }) as u64));
     h
 }
 
@@ -1294,7 +1294,7 @@ fn PROF_node_opt_minus(pc: &mut ProfCtx, n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_minus");
     h = hash_merge(h, profile_node(pc, u.a));
     h = hash_merge(h, profile_node(pc, u.b));
-    h = hash_merge(h, hash_u64(({ 1 + u.tf.0 }) as u64));
+    h = hash_merge(h, hash_u64(({ 1 + u.tf.0.get() }) as u64));
     h
 }
 
@@ -1313,7 +1313,7 @@ fn PROF_node_opt_mul(pc: &mut ProfCtx, n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_mul");
     h = hash_merge(h, profile_node(pc, u.a));
     h = hash_merge(h, profile_node(pc, u.b));
-    h = hash_merge(h, hash_u64(({ 1 + u.tf.0 }) as u64));
+    h = hash_merge(h, hash_u64(({ 1 + u.tf.0.get() }) as u64));
     h
 }
 
@@ -1332,7 +1332,7 @@ fn PROF_node_opt_div(pc: &mut ProfCtx, n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_div");
     h = hash_merge(h, profile_node(pc, u.a));
     h = hash_merge(h, profile_node(pc, u.b));
-    h = hash_merge(h, hash_u64(({ 1 + u.tf.0 }) as u64));
+    h = hash_merge(h, hash_u64(({ 1 + u.tf.0.get() }) as u64));
     h
 }
 
@@ -1387,7 +1387,7 @@ fn PROF_node_opt_lt(pc: &mut ProfCtx, n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_lt");
     h = hash_merge(h, profile_node(pc, u.a));
     h = hash_merge(h, profile_node(pc, u.b));
-    h = hash_merge(h, hash_u64(({ 1 + u.tf.0 }) as u64));
+    h = hash_merge(h, hash_u64(({ 1 + u.tf.0.get() }) as u64));
     h
 }
 
@@ -1406,7 +1406,7 @@ fn PROF_node_opt_le(pc: &mut ProfCtx, n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_le");
     h = hash_merge(h, profile_node(pc, u.a));
     h = hash_merge(h, profile_node(pc, u.b));
-    h = hash_merge(h, hash_u64(({ 1 + u.tf.0 }) as u64));
+    h = hash_merge(h, hash_u64(({ 1 + u.tf.0.get() }) as u64));
     h
 }
 
@@ -1425,7 +1425,7 @@ fn PROF_node_opt_gt(pc: &mut ProfCtx, n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_gt");
     h = hash_merge(h, profile_node(pc, u.a));
     h = hash_merge(h, profile_node(pc, u.b));
-    h = hash_merge(h, hash_u64(({ 1 + u.tf.0 }) as u64));
+    h = hash_merge(h, hash_u64(({ 1 + u.tf.0.get() }) as u64));
     h
 }
 
@@ -1444,7 +1444,7 @@ fn PROF_node_opt_ge(pc: &mut ProfCtx, n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_ge");
     h = hash_merge(h, profile_node(pc, u.a));
     h = hash_merge(h, profile_node(pc, u.b));
-    h = hash_merge(h, hash_u64(({ 1 + u.tf.0 }) as u64));
+    h = hash_merge(h, hash_u64(({ 1 + u.tf.0.get() }) as u64));
     h
 }
 
@@ -1463,7 +1463,7 @@ fn PROF_node_opt_eq(pc: &mut ProfCtx, n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_eq");
     h = hash_merge(h, profile_node(pc, u.a));
     h = hash_merge(h, profile_node(pc, u.b));
-    h = hash_merge(h, hash_u64(({ 1 + u.tf.0 }) as u64));
+    h = hash_merge(h, hash_u64(({ 1 + u.tf.0.get() }) as u64));
     h
 }
 
@@ -1482,7 +1482,7 @@ fn PROF_node_opt_neq(pc: &mut ProfCtx, n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_neq");
     h = hash_merge(h, profile_node(pc, u.a));
     h = hash_merge(h, profile_node(pc, u.b));
-    h = hash_merge(h, hash_u64(({ 1 + u.tf.0 }) as u64));
+    h = hash_merge(h, hash_u64(({ 1 + u.tf.0.get() }) as u64));
     h
 }
 
@@ -1591,7 +1591,7 @@ fn PROF_node_opt_aref(pc: &mut ProfCtx, n: NodePtr) -> u64 {
     let mut h = hash_str("node_opt_aref");
     h = hash_merge(h, profile_node(pc, u.a));
     h = hash_merge(h, profile_node(pc, u.b));
-    h = hash_merge(h, hash_u64(({ 1 + u.tf.0 }) as u64));
+    h = hash_merge(h, hash_u64(({ 1 + u.tf.0.get() }) as u64));
     h
 }
 
@@ -1612,7 +1612,7 @@ fn PROF_node_opt_aset(pc: &mut ProfCtx, n: NodePtr) -> u64 {
     h = hash_merge(h, profile_node(pc, u.a));
     h = hash_merge(h, profile_node(pc, u.b));
     h = hash_merge(h, profile_node(pc, u.v));
-    h = hash_merge(h, hash_u64(({ 1 + u.tf.0 }) as u64));
+    h = hash_merge(h, hash_u64(({ 1 + u.tf.0.get() }) as u64));
     h
 }
 

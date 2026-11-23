@@ -10,7 +10,7 @@ use crate::symbol::{intern, intern_str, s, sym_str};
 use crate::value::*;
 pub use crate::stack::*;
 use crate::fxhash::HashMap;
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 
 // ---- non-local exits -----------------------------------------------------------
 
@@ -183,33 +183,40 @@ pub fn set_trace_mask(m: u32) {
 /// TracePoint or set_trace_func, or by creating a hook.
 pub static TRACE_COMPILE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+// Inline caches (node @ref operands) keep their state in Cells: a site re-entered by recursion while it
+// calls holds only `&` to its cache, so the callee's fills alias nothing.
 #[derive(Default)]
 // spec_klass: cc.klass while the entry it holds is the one baked into the site (call_spec_out)
 // bi: which inlinable builtin it holds, and for which receivers (inline_builtin::cache_key)
-pub struct CallCache { pub klass: u64, pub serial: u64, pub me: usize, pub fast: usize, pub fast_hash: u64, pub fast_argc: u32, pub poly_next: u32, pub poly: usize, pub cfunc: Option<CFunc>, pub arity: i32, pub bi: u32, pub spec_klass: u64 }
+// poly: the other classes of a polymorphic site (call_slow)
+pub struct CallCache {
+    pub klass: Cell<u64>, pub serial: Cell<u64>, pub me: Cell<usize>, pub fast: Cell<usize>, pub fast_hash: Cell<u64>,
+    pub fast_argc: Cell<u32>, pub poly_next: Cell<u32>, pub poly: OnceCell<Box<[CallCache; POLY_WAYS]>>,
+    pub cfunc: Cell<Option<CFunc>>, pub arity: Cell<i32>, pub bi: Cell<u32>, pub spec_klass: Cell<u64>,
+}
 /// An operator site's call cache, made when the site first calls a method: most sites stay on
 /// their Integer / Float / Array paths, and a node holding one word keeps the tree dense.
 #[derive(Default)]
-pub struct OpCc(Option<Box<CallCache>>);
+pub struct OpCc(OnceCell<Box<CallCache>>);
 impl OpCc {
-    #[inline(always)] pub fn get(&mut self) -> &mut CallCache { self.0.get_or_insert_with(Default::default) }
-    #[inline(always)] pub fn peek(&self) -> Option<&CallCache> { self.0.as_deref() }
+    #[inline(always)] pub fn get(&self) -> &CallCache { self.0.get_or_init(Default::default) }
+    #[inline(always)] pub fn peek(&self) -> Option<&CallCache> { self.0.get().map(|b| &**b) }
 }
 /// A `yield` site: `seen` = the block iseq it ran (1: several), what the bake speculates on;
 /// `fast` = the iseq whose entry is compiled into the site, set once its hash was checked.
 #[derive(Default)]
-pub struct YieldCache { pub fast: usize, pub seen: usize }
+pub struct YieldCache { pub fast: Cell<usize>, pub seen: Cell<usize> }
 impl YieldCache {
     #[inline(always)]
-    pub fn note(&mut self, is: usize) { if self.seen != is && self.seen != 1 { self.seen = if self.seen == 0 { is } else { 1 }; } }
+    pub fn note(&self, is: usize) { let s = self.seen.get(); if s != is && s != 1 { self.seen.set(if s == 0 { is } else { 1 }); } }
 }
 #[derive(Default)]
-pub struct ConstCache { pub serial: u64, pub cref: usize, pub val: u64 }
+pub struct ConstCache { pub serial: Cell<u64>, pub cref: Cell<usize>, pub val: Cell<u64> }
 #[derive(Default)]
-pub struct IvarCache { pub klass: u64, pub idx: u32 }
+pub struct IvarCache { pub klass: Cell<u64>, pub idx: Cell<u32> }
 /// `when Klass` site: the class tested (pat), kind_serial then, and subject classes asked with the answer in bit 0
 #[derive(Default)]
-pub struct KindMemo { pub pat: u64, pub ser: u64, pub memo: [u64; KIND_WAYS] }
+pub struct KindMemo { pub pat: Cell<u64>, pub ser: Cell<u64>, pub memo: [Cell<u64>; KIND_WAYS] }
 pub const KIND_WAYS: usize = 8;
 /// The memo entry of a subject class (classes sit 56 bytes apart: multiply to spread them).
 #[inline(always)]
@@ -1341,10 +1348,10 @@ pub fn funcall_kw(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *cons
 
 /// Call on a staged frame: base[0] = recv, base[2..2+argc] = args; sp is above them.
 #[inline(always)]
-pub fn call_cached(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
+pub fn call_cached(c: &mut Ctx, cc: &CallCache, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     let recv = base[0].get();
     let klass = class_of(recv);
-    let hit = cc.klass == klass.raw() && cc.serial == method_serial();
+    let hit = cc.klass.get() == klass.raw() && cc.serial.get() == method_serial();
     #[cfg(feature = "nodeprof")] if hit && cc.cfunc.is_some() { crate::nodeprof::hit_cfunc(c, klass, mid, argc); }
     if hit {
         if let Some(r) = cc_fast(c, cc, recv, base, argc, blk, flags) { return r; }
@@ -1356,18 +1363,18 @@ pub fn call_cached(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u
 #[inline(always)]
 fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> Option<RV> {
     // fast_argc matches only when cc.fast is a method entry node
-    if argc == cc.fast_argc && flags & CF_KW == 0 {
+    if argc == cc.fast_argc.get() && flags & CF_KW == 0 {
         #[cfg(feature = "nodeprof")] crate::nodeprof::hit("site: entry");
-        c.call_me = cc.me as *const MethodEntry; c.call_blk = blk;
-        let r = run_entry(c, cc.fast as NodePtr, base, argc);
+        c.call_me = cc.me.get() as *const MethodEntry; c.call_blk = blk;
+        let r = run_entry(c, cc.fast.get() as NodePtr, base, argc);
         c.set_sp(base, 0);
         return Some(r);
     }
-    if cc.fast != 0 && flags & CF_KW == 0 {
-        match cc.fast & 3 {
+    if cc.fast.get() != 0 && flags & CF_KW == 0 {
+        match cc.fast.get() & 3 {
             // tag 0 is also a method entry called with the wrong argc (fast_argc set): not ours
-            0 if cc.fast_argc == u32::MAX => {
-                let ni = unsafe { &*(cc.fast as *const NewInfo) };
+            0 if cc.fast_argc.get() == u32::MAX => {
+                let ni = unsafe { &*(cc.fast.get() as *const NewInfo) };
                 if argc == ni.init_argc {
                     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("site: new");
                     let o = new_object(c, ni.klass);
@@ -1383,7 +1390,7 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
                 // (is_heap first: the accessors' own check would add a panic path to every call site)
                 if let Some(ivs) = if recv.is_heap() { c.obj_ivars(recv) } else { None } {
                     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("site: attr_reader");
-                    let v = ivs.get(cc.fast >> 2).unwrap_or(UNDEF);
+                    let v = ivs.get(cc.fast.get() >> 2).unwrap_or(UNDEF);
                     c.set_sp(base, 0);
                     return Some(Ok(if v == UNDEF { NIL } else { v }));
                 }
@@ -1391,7 +1398,7 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
             2 if argc == 1 => {
                 if recv.is_heap() && obj_flags(recv) & FL_FROZEN == 0 {
                     if let Some(ivs) = c.obj_ivars_mut(recv) {
-                        let i = cc.fast >> 2;
+                        let i = cc.fast.get() >> 2;
                         let v = base[2].get();
                         #[cfg(feature = "nodeprof")] crate::nodeprof::hit("site: attr_writer");
                         if ivs.set(i, v) { c.set_sp(base, 0); return Some(Ok(v)); }
@@ -1407,11 +1414,11 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
             _ => {}
         }
     }
-    if let (Some(f), true) = (cc.cfunc, flags & CF_KW == 0 && (cc.arity < 0 || cc.arity == argc as i32)) {
-        if cc.bi >= BI_SEND { if let Some(r) = send_fast(c, recv, base, argc, blk) { return Some(r); } }
+    if let (Some(f), true) = (cc.cfunc.get(), flags & CF_KW == 0 && (cc.arity.get() < 0 || cc.arity.get() == argc as i32)) {
+        if cc.bi.get() >= BI_SEND { if let Some(r) = send_fast(c, recv, base, argc, blk) { return Some(r); } }
         #[cfg(feature = "nodeprof")] crate::nodeprof::hit(if blk.is_null() { "site: cfunc" } else { "site: cfunc +blk" });
         let pf = c.frame;
-        let mut fr = Frame::cfunc(pf, cc.me as *const MethodEntry, blk);
+        let mut fr = Frame::cfunc(pf, cc.me.get() as *const MethodEntry, blk);
         c.frame = &mut fr;
         let r = with_args(base, argc as usize, |a| f(c, recv, a, blk));
         c.frame = pf;
@@ -1435,18 +1442,18 @@ pub const SITE_SEND: u32 = 7;     // Kernel#send / __send__ (send_fast)
 pub const SITE_IMM: u32 = 16;      // flag: the cached receiver class is an immediate's (Integer, Symbol, nil, ...)
 
 pub fn site_kind(cc: &CallCache, argc: usize, flags: u32) -> u32 {
-    if flags & CF_KW != 0 || cc.klass == 0 { return SITE_OTHER; }
+    if flags & CF_KW != 0 || cc.klass.get() == 0 { return SITE_OTHER; }
     let v = vm();
-    let imm = [v.c_integer.get(), v.c_float.get(), v.c_symbol.get(), v.c_nil.get(), v.c_true.get(), v.c_false.get()].iter().any(|k| k.raw() == cc.klass);
-    let k = if cc.fast_argc as usize == argc { SITE_ENTRY }
-        else if cc.fast != 0 { match cc.fast & 3 { 1 if argc == 0 => SITE_ATTR_R, 2 if argc == 1 => SITE_ATTR_W,
-            0 if cc.fast_argc == u32::MAX => SITE_NEW, _ => return SITE_OTHER } }
-        else if cc.cfunc.is_some() { if cc.bi >= BI_SEND && argc >= 1 { SITE_SEND } else { SITE_CFUNC } } else { return SITE_OTHER };
+    let imm = [v.c_integer.get(), v.c_float.get(), v.c_symbol.get(), v.c_nil.get(), v.c_true.get(), v.c_false.get()].iter().any(|k| k.raw() == cc.klass.get());
+    let k = if cc.fast_argc.get() as usize == argc { SITE_ENTRY }
+        else if cc.fast.get() != 0 { match cc.fast.get() & 3 { 1 if argc == 0 => SITE_ATTR_R, 2 if argc == 1 => SITE_ATTR_W,
+            0 if cc.fast_argc.get() == u32::MAX => SITE_NEW, _ => return SITE_OTHER } }
+        else if cc.cfunc.get().is_some() { if cc.bi.get() >= BI_SEND && argc >= 1 { SITE_SEND } else { SITE_CFUNC } } else { return SITE_OTHER };
     k | if imm { SITE_IMM } else { 0 }
 }
 
 #[inline(never)]
-pub fn call_cached_out(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
+pub fn call_cached_out(c: &mut Ctx, cc: &CallCache, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     call_cached(c, cc, mid, base, argc, blk, flags)
 }
 
@@ -1456,18 +1463,18 @@ fn class_of_imm(v: Value) -> u64 { class_of(v).raw() }
 /// Does the site's cache hold recv's class?  `kind` (baked) says which receivers the site saw,
 /// so only that test is in the baked code.
 #[inline(always)]
-pub fn site_hit(cc: &CallCache, recv: Value, kind: u32) -> bool { klass_hit(cc.klass, cc, recv, kind) }
+pub fn site_hit(cc: &CallCache, recv: Value, kind: u32) -> bool { klass_hit(cc.klass.get(), cc, recv, kind) }
 
 /// site_hit for the callee compiled into the site: spec_klass also says the entry is that callee.
 #[inline(always)]
-pub fn spec_hit(cc: &CallCache, recv: Value, kind: u32) -> bool { klass_hit(cc.spec_klass, cc, recv, kind) }
+pub fn spec_hit(cc: &CallCache, recv: Value, kind: u32) -> bool { klass_hit(cc.spec_klass.get(), cc, recv, kind) }
 
 /// A call site whose compiled-in callee (entry hash h) was not hit: the call out of line (which
 /// refills the cache), then spec_klass from what the cache holds now.
 #[inline(never)]
-pub fn call_spec_out(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32, h: u64) -> RV {
+pub fn call_spec_out(c: &mut Ctx, cc: &CallCache, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32, h: u64) -> RV {
     let r = call_cached(c, cc, mid, base, argc, blk, flags);
-    cc.spec_klass = if cc.fast_hash == h && cc.fast_argc == argc { cc.klass } else { 0 };
+    cc.spec_klass.set(if cc.fast_hash.get() == h && cc.fast_argc.get() == argc { cc.klass.get() } else { 0 });
     r
 }
 
@@ -1480,23 +1487,23 @@ fn klass_hit(ck: u64, cc: &CallCache, recv: Value, kind: u32) -> bool {
         else if recv.is_heap() { obj_klass(recv).raw() } else { class_of_imm(recv) }
     }
             else { if !recv.is_heap() { return false; } obj_klass(recv).raw() };
-    ck == k && cc.serial == method_serial()
+    ck == k && cc.serial.get() == method_serial()
 }
 
 /// The one fast path of a site whose cache matched (site_hit); None: go out of line.
 #[inline(always)]
-pub fn site_fast(c: &mut Ctx, cc: &mut CallCache, recv: Value, base: Stk, argc: u32, blk: *const Block, kind: u32) -> Option<RV> {
+pub fn site_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: *const Block, kind: u32) -> Option<RV> {
     match kind & 15 {
-        SITE_ENTRY => if argc == cc.fast_argc {
-            c.call_me = cc.me as *const MethodEntry; c.call_blk = blk;
+        SITE_ENTRY => if argc == cc.fast_argc.get() {
+            c.call_me = cc.me.get() as *const MethodEntry; c.call_blk = blk;
             if let Err(e) = native_check(c) { return Some(Err(e)); }
             // the site just staged: sp is where the entry expects it (no at_entry)
-            let r = run_body(c, cc.fast as NodePtr, base);
+            let r = run_body(c, cc.fast.get() as NodePtr, base);
             c.set_sp(base, 0);
             return Some(r);
         }
-        SITE_NEW => if cc.fast & 3 == 0 && cc.fast_argc == u32::MAX {
-            let ni = unsafe { &*(cc.fast as *const NewInfo) };
+        SITE_NEW => if cc.fast.get() & 3 == 0 && cc.fast_argc.get() == u32::MAX {
+            let ni = unsafe { &*(cc.fast.get() as *const NewInfo) };
             if argc == ni.init_argc {
                 let o = new_object(c, ni.klass);
                 base[0].set(o);   // self of initialize: keeps o alive and gives it back
@@ -1506,26 +1513,26 @@ pub fn site_fast(c: &mut Ctx, cc: &mut CallCache, recv: Value, base: Stk, argc: 
                 return Some(match r { Ok(_) => Ok(base[0].get()), Err(e) => Err(e) });
             }
         }
-        SITE_SEND => if cc.bi >= BI_SEND { return send_fast(c, recv, base, argc, blk); }
-        SITE_ATTR_R => if cc.fast & 3 == 1 {
+        SITE_SEND => if cc.bi.get() >= BI_SEND { return send_fast(c, recv, base, argc, blk); }
+        SITE_ATTR_R => if cc.fast.get() & 3 == 1 {
             if let Some(ivs) = if recv.is_heap() { c.obj_ivars(recv) } else { None } {
-                let v = ivs.get(cc.fast >> 2).unwrap_or(UNDEF);
+                let v = ivs.get(cc.fast.get() >> 2).unwrap_or(UNDEF);
                 c.set_sp(base, 0);
                 return Some(Ok(if v == UNDEF { NIL } else { v }));
             }
         }
-        SITE_ATTR_W => if cc.fast & 3 == 2 {
+        SITE_ATTR_W => if cc.fast.get() & 3 == 2 {
             if recv.is_heap() && obj_flags(recv) & FL_FROZEN == 0 {
 
                 if let Some(ivs) = c.obj_ivars_mut(recv) {
                     let v = base[2].get();
-                    if ivs.set(cc.fast >> 2, v) { c.set_sp(base, 0); return Some(Ok(v)); }
+                    if ivs.set(cc.fast.get() >> 2, v) { c.set_sp(base, 0); return Some(Ok(v)); }
                 }
             }
         }
-        _ => if let (0, Some(f), true) = (cc.fast, cc.cfunc, cc.arity < 0 || cc.arity == argc as i32) {
+        _ => if let (0, Some(f), true) = (cc.fast.get(), cc.cfunc.get(), cc.arity.get() < 0 || cc.arity.get() == argc as i32) {
             let pf = c.frame;
-            let mut fr = Frame::cfunc(pf, cc.me as *const MethodEntry, blk);
+            let mut fr = Frame::cfunc(pf, cc.me.get() as *const MethodEntry, blk);
             c.frame = &mut fr;
             let r = with_args(base, argc as usize, |a| f(c, recv, a, blk));
             c.frame = pf;
@@ -1561,21 +1568,21 @@ pub fn send_fast(c: &mut Ctx, recv: Value, base: Stk, argc: u32, blk: *const Blo
 
 /// node_send_sym: the receiver class whose #send (or #__send__) was Kernel's, at a method serial.
 #[derive(Default)]
-pub struct SendGuard { klass: u64, serial: u64 }
+pub struct SendGuard { klass: Cell<u64>, serial: Cell<u64> }
 
 /// Is recv's `smid` (send / __send__) the builtin?  Refinements in scope: no (the call of send decides).
 #[inline(always)]
-pub fn send_guard(c: &Ctx, g: &mut SendGuard, recv: Value, smid: Sym) -> bool {
+pub fn send_guard(c: &Ctx, g: &SendGuard, recv: Value, smid: Sym) -> bool {
     let k = class_of(recv);
-    if g.klass == k.raw() && g.serial == method_serial() && !c.refinements_on() { return true; }
+    if g.klass.get() == k.raw() && g.serial.get() == method_serial() && !c.refinements_on() { return true; }
     send_guard_fill(c, g, k, smid)
 }
 
 #[inline(never)]
-fn send_guard_fill(c: &Ctx, g: &mut SendGuard, k: Value, smid: Sym) -> bool {
+fn send_guard_fill(c: &Ctx, g: &SendGuard, k: Value, smid: Sym) -> bool {
     if c.refinements_on() { return false; }
     let ok = crate::inline_builtin::cache_key(c, lookup_method(c, k, smid), k) == BI_SEND;
-    if ok { g.klass = k.raw(); g.serial = method_serial(); }
+    if ok { g.klass.set(k.raw()); g.serial.set(method_serial()); }
     ok
 }
 
@@ -1619,33 +1626,32 @@ const POLY_WAYS: usize = 4;
 /// The rest of call_cached: a hit without an inline fast path, or a miss.  A site that misses
 /// with a filled cache is polymorphic: its other classes go to a small table behind the cache.
 #[inline(never)]
-pub fn call_slow(c: &mut Ctx, cc: &mut CallCache, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32, hit: bool) -> RV {
+pub fn call_slow(c: &mut Ctx, cc: &CallCache, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32, hit: bool) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit(if hit { "site: slow (cache hit, no fast path)" } else { "site: slow (miss)" });
     let recv = base[0].get();
-    let me = if hit { cc.me as *const MethodEntry } else {
+    let me = if hit { cc.me.get() as *const MethodEntry } else {
         let klass = class_of(recv);
         let serial = method_serial();
-        let e: &mut CallCache = if cc.klass == 0 || cc.serial != serial {
-            if cc.poly != 0 { for w in unsafe { &mut *(cc.poly as *mut [CallCache; POLY_WAYS]) }.iter_mut() { w.klass = 0; } }
+        let e: &CallCache = if cc.klass.get() == 0 || cc.serial.get() != serial {
+            if let Some(t) = cc.poly.get() { for w in t.iter() { w.klass.set(0); } }
             let me = lookup_site(c, klass, mid);
             fill_cc(c, cc, recv, klass, me, serial, flags);
             cc
         } else {
-            if cc.poly == 0 { cc.poly = Box::into_raw(Box::new(<[CallCache; POLY_WAYS]>::default())) as usize; }
-            let t = unsafe { &mut *(cc.poly as *mut [CallCache; POLY_WAYS]) };
-            match t.iter().position(|w| w.klass == klass.raw() && w.serial == serial) {
-                Some(i) => &mut t[i],
+            let t = cc.poly.get_or_init(Default::default);
+            match t.iter().position(|w| w.klass.get() == klass.raw() && w.serial.get() == serial) {
+                Some(i) => &t[i],
                 None => {
-                    let i = cc.poly_next as usize % POLY_WAYS;
-                    cc.poly_next = cc.poly_next.wrapping_add(1);
+                    let i = cc.poly_next.get() as usize % POLY_WAYS;
+                    cc.poly_next.set(cc.poly_next.get().wrapping_add(1));
                     let me = lookup_site(c, klass, mid);
-                    fill_cc(c, &mut t[i], recv, klass, me, serial, flags);
-                    &mut t[i]
+                    fill_cc(c, &t[i], recv, klass, me, serial, flags);
+                    &t[i]
                 }
             }
         };
         if let Some(r) = cc_fast(c, e, recv, base, argc, blk, flags) { return r; }
-        e.me as *const MethodEntry
+        e.me.get() as *const MethodEntry
     };
     if me.is_null() {
         let r = method_missing(c, recv, mid, base, argc, blk, flags);
@@ -1672,10 +1678,10 @@ fn lookup_site(c: &Ctx, klass: Value, mid: Sym) -> *const MethodEntry {
 
 /// Method entry for recv.mid through the call cache (null: not found).
 #[inline(always)]
-pub fn lookup_cc(c: &mut Ctx, cc: &mut CallCache, recv: Value, mid: Sym, flags: u32) -> *const MethodEntry {
+pub fn lookup_cc(c: &mut Ctx, cc: &CallCache, recv: Value, mid: Sym, flags: u32) -> *const MethodEntry {
     let klass = class_of(recv);
     let serial = method_serial();
-    if cc.klass == klass.raw() && cc.serial == serial { return cc.me as *const MethodEntry; }
+    if cc.klass.get() == klass.raw() && cc.serial.get() == serial { return cc.me.get() as *const MethodEntry; }
     let me = lookup_site(c, klass, mid);
     fill_cc(c, cc, recv, klass, me, serial, flags);
     me
@@ -1687,16 +1693,16 @@ pub const KW_DENSE: u32 = 1 << 30;
 /// A keyword site passing `names` after npos positionals: if they are the callee's keywords in
 /// declared order, put its kentry in the cache (checked once per fill).
 #[inline(never)]
-pub fn kw_dense_fill(cc: &mut CallCache, me: *const MethodEntry, npos: usize, names: &[Sym], flags: u32) {
+pub fn kw_dense_fill(cc: &CallCache, me: *const MethodEntry, npos: usize, names: &[Sym], flags: u32) {
     let m = unsafe { &*me };
     if m.visi != VISI_PUBLIC && flags & CF_FCALL == 0 { return; }
     let MKind::Iseq(is) = m.kind else { return };
     let is = unsafe { &*is };
     if is.kentry.is_null() || is.params.lead.len() != npos || is.params.kw.len() != names.len()
         || !is.params.kw.iter().zip(names).all(|(k, n)| k.name == *n) { return; }
-    cc.fast = is.kentry as usize;
-    cc.fast_argc = KW_DENSE | (npos + names.len()) as u32;
-    cc.fast_hash = crate::node::hash_node(is.kentry);
+    cc.fast.set(is.kentry as usize);
+    cc.fast_argc.set(KW_DENSE | (npos + names.len()) as u32);
+    cc.fast_hash.set(crate::node::hash_node(is.kentry));
 }
 
 /// Can the staged literal keywords go straight into the callee's slots?
@@ -1756,11 +1762,11 @@ pub fn invoke_iseq_kw(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, re
 }
 
 #[inline(never)]
-fn fill_cc(c: &mut Ctx, cc: &mut CallCache, recv: Value, klass: Value, me: *const MethodEntry, serial: u64, flags: u32) {
-    cc.klass = klass.raw(); cc.serial = serial; cc.me = me as usize; cc.fast = 0; cc.fast_argc = u32::MAX; cc.fast_hash = 0; cc.cfunc = None; cc.bi = 0;
+fn fill_cc(c: &mut Ctx, cc: &CallCache, recv: Value, klass: Value, me: *const MethodEntry, serial: u64, flags: u32) {
+    cc.klass.set(klass.raw()); cc.serial.set(serial); cc.me.set(me as usize); cc.fast.set(0); cc.fast_argc.set(u32::MAX); cc.fast_hash.set(0); cc.cfunc.set(None); cc.bi.set(0);
     // calls traced: the entry never hits (baked fast paths trust what a hit implies, e.g. a NewInfo),
     // so every call goes out of line to invoke (tracepoint::invoke_traced)
-    if trace_mask() & EV_CALLS != 0 { cc.serial = 0; return; }
+    if trace_mask() & EV_CALLS != 0 { cc.serial.set(0); return; }
     if me.is_null() { return; }
     let m = unsafe { &*me };
     if m.visi != VISI_PUBLIC && flags & CF_FCALL == 0 { return; }
@@ -1768,11 +1774,11 @@ fn fill_cc(c: &mut Ctx, cc: &mut CallCache, recv: Value, klass: Value, me: *cons
         MKind::Iseq(is) => {
             let is = unsafe { &*is };
             let e = is.plain_entry();
-            if !e.is_null() { cc.fast = e as usize; cc.fast_argc = is.params.lead.len() as u32; cc.fast_hash = crate::node::hash_node(e); }
+            if !e.is_null() { cc.fast.set(e as usize); cc.fast_argc.set(is.params.lead.len() as u32); cc.fast_hash.set(crate::node::hash_node(e)); }
         }
-        MKind::Cfunc(..) if me == vm().ids.bo_eq.get() => { cc.fast = 3; }
+        MKind::Cfunc(..) if me == vm().ids.bo_eq.get() => { cc.fast.set(3); }
         MKind::Cfunc(f, arity) if me == vm().ids.c_new.get() => {
-            cc.cfunc = Some(f); cc.arity = arity;
+            cc.cfunc.set(Some(f)); cc.arity.set(arity);
             // Class#new of a plain-object class whose initialize has a method entry
             let cd = c.class(recv);
             if cd.alloc == AllocKind::Object && !cd.is_singleton && !cd.is_module {
@@ -1781,17 +1787,17 @@ fn fill_cc(c: &mut Ctx, cc: &mut CallCache, recv: Value, klass: Value, me: *cons
                     let is = unsafe { &*is };
                     if !is.plain_entry().is_null() {
                         let ni = Box::new(NewInfo { klass: recv, init_me: im, init_entry: is.plain_entry(), init_argc: is.params.lead.len() as u32 });
-                        cc.fast = Box::into_raw(ni) as usize;
+                        cc.fast.set(Box::into_raw(ni) as usize);
                     }
                 }
             }
         }
-        MKind::Cfunc(f, arity) => { cc.cfunc = Some(f); cc.arity = arity; cc.bi = crate::inline_builtin::cache_key(c, me, klass); }
+        MKind::Cfunc(f, arity) => { cc.cfunc.set(Some(f)); cc.arity.set(arity); cc.bi.set(crate::inline_builtin::cache_key(c, me, klass)); }
         MKind::AttrReader(name) | MKind::AttrWriter(name) => {
             let cd = c.class(klass);
             if !cd.is_singleton && cd.alloc == AllocKind::Object {
                 let i = ivar_index_for(c, klass, name) as usize;
-                cc.fast = (i << 2) | if matches!(m.kind, MKind::AttrReader(_)) { 1 } else { 2 };
+                cc.fast.set((i << 2) | if matches!(m.kind, MKind::AttrReader(_)) { 1 } else { 2 });
             }
         }
         _ => {}
@@ -1800,23 +1806,23 @@ fn fill_cc(c: &mut Ctx, cc: &mut CallCache, recv: Value, klass: Value, me: *cons
 
 /// The method entry node a call site's cache holds, as the callee to compile into the site (null: none).
 pub fn spec_callee(cc: &CallCache, argc: usize, flags: u32) -> NodePtr {
-    if cc.fast_argc as usize != argc || flags & CF_KW != 0 { return std::ptr::null_mut(); }
+    if cc.fast_argc.get() as usize != argc || flags & CF_KW != 0 { return std::ptr::null_mut(); }
     // only small callees: the site inlines them (size by the length of the dump)
     let mut d = String::new();
-    crate::node::dump_node(&mut d, cc.fast as NodePtr);
-    if d.len() <= 600 { cc.fast as NodePtr } else { std::ptr::null_mut() }
+    crate::node::dump_node(&mut d, cc.fast.get() as NodePtr);
+    if d.len() <= 600 { cc.fast.get() as NodePtr } else { std::ptr::null_mut() }
 }
 
 /// spec_callee without the size limit: a recursive site calls its callee, it does not compile it in.
 pub fn spec_callee_rec(cc: &CallCache, argc: usize, flags: u32) -> NodePtr {
-    if cc.fast_argc as usize != argc || flags & CF_KW != 0 { std::ptr::null_mut() } else { cc.fast as NodePtr }
+    if cc.fast_argc.get() as usize != argc || flags & CF_KW != 0 { std::ptr::null_mut() } else { cc.fast.get() as NodePtr }
 }
 
 /// site_kind of a literal keyword site: SITE_ENTRY when its cache holds a kentry it can compile in.
 pub fn site_kind_kw(cc: &CallCache, argc: usize, ci: &crate::compile::CallInfo) -> u32 {
-    if cc.klass == 0 || ci.blk.is_some() || cc.fast_argc != KW_DENSE | argc as u32 { return SITE_OTHER; }
+    if cc.klass.get() == 0 || ci.blk.is_some() || cc.fast_argc.get() != KW_DENSE | argc as u32 { return SITE_OTHER; }
     let v = vm();
-    let imm = [v.c_integer.get(), v.c_float.get(), v.c_symbol.get(), v.c_nil.get(), v.c_true.get(), v.c_false.get()].iter().any(|k| k.raw() == cc.klass);
+    let imm = [v.c_integer.get(), v.c_float.get(), v.c_symbol.get(), v.c_nil.get(), v.c_true.get(), v.c_false.get()].iter().any(|k| k.raw() == cc.klass.get());
     SITE_ENTRY | if imm { SITE_IMM } else { 0 }
 }
 
@@ -1824,20 +1830,20 @@ pub fn site_kind_kw(cc: &CallCache, argc: usize, ci: &crate::compile::CallInfo) 
 pub fn spec_callee_kw(cc: &CallCache, argc: usize, ci: &crate::compile::CallInfo) -> NodePtr {
     if site_kind_kw(cc, argc, ci) == SITE_OTHER { return std::ptr::null_mut(); }
     let mut d = String::new();
-    crate::node::dump_node(&mut d, cc.fast as NodePtr);
-    if d.len() <= 600 { cc.fast as NodePtr } else { std::ptr::null_mut() }
+    crate::node::dump_node(&mut d, cc.fast.get() as NodePtr);
+    if d.len() <= 600 { cc.fast.get() as NodePtr } else { std::ptr::null_mut() }
 }
 
 /// spec_callee_kw without the size limit (recursion).
 pub fn spec_callee_kw_rec(cc: &CallCache, argc: usize, ci: &crate::compile::CallInfo) -> NodePtr {
-    if site_kind_kw(cc, argc, ci) == SITE_OTHER { std::ptr::null_mut() } else { cc.fast as NodePtr }
+    if site_kind_kw(cc, argc, ci) == SITE_OTHER { std::ptr::null_mut() } else { cc.fast.get() as NodePtr }
 }
 
 /// The block entry a yield site has always run, as the callee to compile into it (null: none).
 /// Only where block_fast would take it with argc arguments; lambda-ness is tested at run time.
 pub fn spec_block(yc: &YieldCache, argc: usize) -> NodePtr {
-    if yc.seen <= 1 { return std::ptr::null_mut(); }
-    let is = unsafe { &*(yc.seen as *const Iseq) };
+    if yc.seen.get() <= 1 { return std::ptr::null_mut(); }
+    let is = unsafe { &*(yc.seen.get() as *const Iseq) };
     if is.bentry.is_null() || is.kind == IseqKind::Lambda || (argc == 1 && is.params.lead.len() >= 2) { return std::ptr::null_mut(); }
     let mut d = String::new();
     crate::node::dump_node(&mut d, is.bentry);
@@ -1845,7 +1851,7 @@ pub fn spec_block(yc: &YieldCache, argc: usize) -> NodePtr {
 }
 /// 1 + the lead parameter count of spec_block's block (0: none).
 pub fn spec_block_np(yc: &YieldCache, argc: usize) -> u32 {
-    if spec_block(yc, argc).is_null() { 0 } else { 1 + unsafe { (*(yc.seen as *const Iseq)).params.lead.len() as u32 } }
+    if spec_block(yc, argc).is_null() { 0 } else { 1 + unsafe { (*(yc.seen.get() as *const Iseq)).params.lead.len() as u32 } }
 }
 
 /// The heap Env of a frame whose variables are captured by blocks; params copied in.
