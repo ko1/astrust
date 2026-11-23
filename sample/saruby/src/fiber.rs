@@ -430,6 +430,14 @@ fn f_backtrace_any(c: &mut Ctx, slf: Value, a: &[Value], locs: bool) -> RV {
     let v: Vec<Value> = lines.into_iter().map(|l| c.str_new(l.as_bytes())).collect();
     Ok(c.ary_from_vec(v))
 }
+/// The frames of suspended fiber `f`, read through its own context (None: it has none, e.g. the main root).
+pub fn suspended_backtrace(c: &mut Ctx, f: Value, skip: usize, n: Option<usize>) -> Option<Option<Vec<BtLine>>> {
+    if f == CUR.get(c) || fd(c, f).running { return None; }
+    let mut ctx = fdm(c, f).ctx.take()?;
+    let r = backtrace_locs_n(ctx.get(), skip, n);
+    fdm(c, f).ctx = Some(ctx);
+    Some(r)
+}
 fn f_backtrace(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { f_backtrace_any(c, slf, a, false) }
 fn f_backtrace_locations(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { f_backtrace_any(c, slf, a, true) }
 /// Fiber#kill: unwind the fiber (its ensure clauses run) and let it end.

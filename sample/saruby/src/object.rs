@@ -107,7 +107,13 @@ pub struct ClassData {
     pub subclasses: Vec<Value>,
     pub private_consts: Vec<Sym>,
     pub refined: bool,
+    pub const_loc: HashMap<Sym, SrcLoc>,   // where each constant (or its autoload) was defined
+    pub autoloading: Vec<AutoloadRun>,     // autoloads of this class's constants in progress
 }
+
+pub type SrcLoc = (&'static str, u32);
+/// An autoload being run by `thread`: a constant it assigns waits here until the require ends.
+pub struct AutoloadRun { pub name: Sym, pub thread: Value, pub value: Value, pub loc: Option<SrcLoc> }
 
 impl ClassData {
     pub fn new(superclass: Value, is_module: bool, alloc: AllocKind) -> ClassData {
@@ -116,6 +122,7 @@ impl ClassData {
             mtbl: HashMap::default(), consts: HashMap::default(), const_order: vec![], autoload: HashMap::default(), cvars: HashMap::default(),
             includes: vec![], prepends: vec![], extended_by: vec![], ivar_index: HashMap::default(), ivar_names: vec![],
             ancestors: std::cell::RefCell::new(None), alloc, subclasses: vec![], private_consts: vec![], refined: false,
+            const_loc: HashMap::default(), autoloading: vec![],
         }
     }
 }

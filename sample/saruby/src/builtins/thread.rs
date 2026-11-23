@@ -1252,13 +1252,29 @@ pub fn init(c: &mut Ctx) {
     d(c, "wakeup", th_wakeup, 0); d(c, "run", th_run, 0); d(c, "report_on_exception", th_report, 0); d(c, "report_on_exception=", th_set_report, 1);
     d(c, "abort_on_exception", th_abort, 0); d(c, "abort_on_exception=", th_set_abort, 1); d(c, "group", th_group, 0);
     d(c, "priority", th_priority, 0); d(c, "priority=", th_set_priority, 1);
-    d(c, "backtrace", |c, _s, _a, _b| Ok(c.ary_new()), -1); d(c, "backtrace_locations", |c, _s, _a, _b| Ok(c.ary_new()), -1);
+    d(c, "backtrace", |c, s, a, _b| th_backtrace(c, s, a, false), -1); d(c, "backtrace_locations", |c, s, a, _b| th_backtrace(c, s, a, true), -1);
     d(c, "native_thread_id", |_c, _s, _a, _b| Ok(Value::fix(crate::builtins::sys::getpid() as i64)), 0);
     d(c, "pending_interrupt?", |c, s, a, _b| { thr(c, s)?; pending_interrupt_p(c, s, a) }, -1);
     d(c, "fetch", |c, s, a, b| { check_argc(c, a, 1, 2)?; let k = key_sym(c, a[0])?; let h = locals(c, s)?; match hash_get_opt(c, h, k)? { Some(v) => Ok(v), None if !b.is_null() => yield1(c, b, a[0]), None if a.len() > 1 => Ok(a[1]), None => { let d = inspect_str(c, k)?; err(c, c.vm().c_key_error.get(), format!("key not found: {}", d)) } } }, -1);
     for n in ["Mutex", "Queue", "SizedQueue", "ConditionVariable"] { crate::builtins::prelude::lazy_const(c, th, n, "saruby/sync"); crate::builtins::prelude::lazy_const(c, ob, n, "saruby/sync"); }
     crate::builtins::prelude::lazy_const(c, ob, "Monitor", "saruby/sync");
     crate::builtins::prelude::lazy_const(c, ob, "ThreadGroup", "saruby/sync");
+}
+/// Thread#backtrace / #backtrace_locations: the current thread's, or a parked thread's own frames.
+fn th_backtrace(c: &mut Ctx, t: Value, a: &[Value], locs: bool) -> RV {
+    thr(c, t)?;
+    let (start, len) = if a.is_empty() { (0, None) } else { crate::builtins::exception::caller_range(c, a)? };
+    let r = th(c, t);
+    if r.dead { return Ok(NIL); }
+    let lines = if t == cur(c) { backtrace_locs_n(c, start, len) } else {
+        let f = if r.inner != NIL { r.inner } else { r.fiber };
+        if f == NIL { return Ok(c.ary_new()); }
+        match crate::fiber::suspended_backtrace(c, f, start, len) { Some(l) => l, None => return Ok(c.ary_new()) }
+    };
+    let Some(lines) = lines else { return Ok(NIL) };
+    if locs { return Ok(crate::builtins::exception::locations_from_locs(c, lines)); }
+    let v: Vec<Value> = lines.into_iter().map(|l| c.str_new(l.to_string().as_bytes())).collect();
+    Ok(c.ary_from_vec(v))
 }
 /// ThreadGroup, Mutex, Monitor, Queue, SizedQueue, ConditionVariable (the "saruby/sync" feature).
 pub fn init_sync(c: &mut Ctx) {

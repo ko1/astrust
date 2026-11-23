@@ -528,7 +528,7 @@ pub fn srb_cdecl(c: &mut Ctx, parent: Value, name: Sym, v: Value) -> RV {
         return type_err(c, format!("{} is not a class/module", s));
     }
     if crate::builtins::ractor::multi() { crate::builtins::ractor::cdecl_check(c, v)?; }
-    const_set(c, k, name, v);
+    const_set_here(c, k, name, v)?;
     Ok(v)
 }
 
@@ -752,7 +752,7 @@ pub fn srb_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, name: S
             let p = match D::call(c, recv, fp) { Ok(v) => v, Err(_) => { c.esc = EscKind::None; return Ok(NIL); } };
             let p = if p == UNDEF { vm().c_object.get() } else { p };
             if !is_class_or_module(p) { return Ok(NIL); }
-            if ancestors(c, p).iter().any(|&k| c.class(k).consts.contains_key(&name) || c.class(k).autoload.contains_key(&name))
+            if ancestors(c, p).iter().any(|&k| has_const(c, k, name))
                 || (c.class(p).is_module && c.class(vm().c_object.get()).consts.contains_key(&name)) { yes(c, b"constant") } else { Ok(NIL) }
         }
         DEF_FCALL => {
@@ -800,14 +800,13 @@ fn const_defined_lex(c: &mut Ctx, cref: *const Cref, name: Sym) -> bool {
     unsafe {
         while !cr.is_null() && !(*cr).prev.is_null() {
             let k = (*cr).klass;
-            if c.class(k).consts.contains_key(&name) || c.class(k).autoload.contains_key(&name) { return true; }
+            if has_const(c, k, name) { return true; }
             cr = (*cr).prev;
         }
     }
     let start = if cref.is_null() { vm().c_object.get() } else { unsafe { (*cref).klass } };
     let _ = c;
-    ancestors(c, start).iter().any(|&k| c.class(k).consts.contains_key(&name) || c.class(k).autoload.contains_key(&name))
-        || c.class(vm().c_object.get()).consts.contains_key(&name) || c.class(vm().c_object.get()).autoload.contains_key(&name)
+    ancestors(c, start).iter().any(|&k| has_const(c, k, name)) || has_const(c, vm().c_object.get(), name)
 }
 
 // ---- calls ---------------------------------------------------------------------------------
@@ -1168,11 +1167,7 @@ pub fn srb_class(c: &mut Ctx, outer: Value, name: Sym, sup: Value, is: &'static 
     let existing = match existing {
         Some(v) => Some(v),
         None => {
-            if let Some(&path) = c.class(outer).autoload.get(&name) {
-                c.class_mut(outer).autoload.remove(&name);
-                crate::builtins::kernel::autoload_require(c, path)?;
-                const_get_at(c, outer, name)
-            } else { None }
+            if c.class(outer).autoload.contains_key(&name) { do_autoload(c, outer, name)? } else { None }
         }
     };
     let klass = match existing {
@@ -1193,7 +1188,7 @@ pub fn srb_class(c: &mut Ctx, outer: Value, name: Sym, sup: Value, is: &'static 
             if c.class(s).is_singleton { return type_err(c, "can't make subclass of singleton class"); }
             let k = new_class(c, s);
             name_class(c, k, outer, name);
-            const_set(c, outer, name, k);
+            const_set_here(c, outer, name, k)?;
             crate::builtins::object::call_inherited(c, s, k)?;
             k
         }
@@ -1211,10 +1206,11 @@ pub fn srb_module(c: &mut Ctx, outer: Value, name: Sym, is: &'static Iseq, _fp: 
         return type_err(c, format!("{} is not a class/module", s));
     }
     // reopening an autoload constant loads it first (as srb_class does)
-    if const_get_at(c, outer, name).is_none() {
-        if let Some(path) = c.class_mut(outer).autoload.remove(&name) { crate::builtins::kernel::autoload_require(c, path)?; }
-    }
-    let m = match const_get_at(c, outer, name) {
+    let existing = match const_get_at(c, outer, name) {
+        None if c.class(outer).autoload.contains_key(&name) => do_autoload(c, outer, name)?,
+        x => x,
+    };
+    let m = match existing {
         Some(m) => {
             if !is_class_or_module(m) || !c.class(m).is_module { return type_err(c, format!("{} is not a module", sym_str(name))); }
             m
@@ -1222,7 +1218,7 @@ pub fn srb_module(c: &mut Ctx, outer: Value, name: Sym, is: &'static Iseq, _fp: 
         None => {
             let m = new_module(c);
             name_class(c, m, outer, name);
-            const_set(c, outer, name, m);
+            const_set_here(c, outer, name, m)?;
             m
         }
     };

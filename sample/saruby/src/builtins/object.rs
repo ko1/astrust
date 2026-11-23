@@ -837,6 +837,51 @@ fn m_const_get(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     }
     Ok(cur)
 }
+/// rb_mod_const_source_location: [file, line] of the constant, [] for one defined in Rust, nil when undefined.
+fn m_const_source_location(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    check_argc(c, a, 1, 2)?;
+    let inherit = a.len() < 2 || a[1].truthy();
+    let name = if a[0].is_sym() { sym_str(a[0].as_sym()).to_string() } else { let s = expect_str(c, a[0])?; String::from_utf8_lossy(c.str_bytes(s)).into_owned() };
+    let bad = |c: &mut Ctx, p: &str| -> RV {
+        let e = make_name_error(c, c.vm().c_name_error.get(), &format!("wrong constant name {}", p), Value::sym(intern(p.as_bytes())), slf)?;
+        Err(raise_exc(c, e))
+    };
+    if a[0].is_sym() && name.contains("::") { return bad(c, &name); }
+    let parts: Vec<&str> = name.split("::").collect();
+    let mut cur = slf;
+    for (i, p) in parts.iter().enumerate() {
+        if p.is_empty() { if i == 0 && parts.len() > 1 { cur = c.vm().c_object.get(); continue; } return bad(c, &name); }
+        let b = p.as_bytes();
+        if !(b[0].is_ascii_uppercase() || (b[0] >= 0x80 && p.chars().next().is_some_and(|ch| ch.is_uppercase()))) || !b.iter().all(|x| x.is_ascii_alphanumeric() || *x == b'_' || *x >= 0x80) { return bad(c, p); }
+        let sym = intern(b);
+        if !is_class_or_module(cur) { return type_err(c, format!("{} does not refer to class/module", name)); }
+        if i + 1 < parts.len() {
+            cur = if inherit { match const_get_inherit(c, cur, sym)? { Some(v) => v, None => const_missing(c, cur, sym)? } }
+                  else { match const_get_at(c, cur, sym) { Some(v) => v, None => const_missing(c, cur, sym)? } };
+            continue;
+        }
+        let mut list: Vec<Value> = if inherit { ancestors(c, cur).to_vec() } else { vec![cur] };
+        if inherit && c.class(cur).is_module { list.push(c.vm().c_object.get()); }
+        for k in list {
+            let loc = if c.class(k).consts.contains_key(&sym) { Some(c.class(k).const_loc.get(&sym).copied()) }
+                else if c.class(k).autoload.contains_key(&sym) {
+                    match autoload_state(c, k, sym) {
+                        Autoload::Own(Some(_), l) => Some(l),
+                        Autoload::Ready(_) | Autoload::Own(None, _) => Some(c.class(k).const_loc.get(&sym).copied()),
+                        _ => None,
+                    }
+                } else { None };
+            if let Some(loc) = loc {
+                return Ok(match loc {
+                    Some((f, l)) => { let fs = c.str_new(f.as_bytes()); c.ary_new_from(&[fs, Value::fix(l as i64)]) }
+                    None => c.ary_new(),
+                });
+            }
+        }
+        return Ok(NIL);
+    }
+    Ok(NIL)
+}
 fn m_const_set(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = to_sym_arg(c, a[0])?;
     let b = sym_bytes(n);
@@ -846,7 +891,7 @@ fn m_const_set(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     }
     check_frozen(c, slf)?;
     if crate::builtins::ractor::multi() { crate::builtins::ractor::cdecl_check(c, a[1])?; }
-    const_set(c, slf, n, a[1]);
+    const_set_here(c, slf, n, a[1])?;
     Ok(a[1])
 }
 fn m_const_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
@@ -864,10 +909,15 @@ fn m_const_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
         if !is_class_or_module(cur) { return Ok(FALSE); }
         let found = if inherit {
             let mut r = None;
-            for &k in ancestors(c, cur).iter() { if let Some(v) = const_get_at(c, k, sym) { r = Some(v); break; } if c.class(k).autoload.contains_key(&sym) { r = Some(NIL); break; } }
+            for &k in ancestors(c, cur).iter() {
+                if let Some(v) = const_get_at(c, k, sym) { r = Some(v); break; }
+                if c.class(k).autoload.contains_key(&sym) { if autoload_defined(c, k, sym) { r = Some(NIL); break; } }
+            }
             if r.is_none() && c.class(cur).is_module { r = const_get_at(c, c.vm().c_object.get(), sym); }
             r
-        } else { const_get_at(c, cur, sym).or_else(|| c.class(cur).autoload.get(&sym).map(|_| NIL)) };
+        } else {
+            match const_get_at(c, cur, sym) { Some(v) => Some(v), None if c.class(cur).autoload.contains_key(&sym) && autoload_defined(c, cur, sym) => Some(NIL), None => None }
+        };
         match found { Some(v) => cur = v, None => return Ok(FALSE) }
     }
     Ok(TRUE)
@@ -888,8 +938,17 @@ fn m_constants(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
 }
 fn m_remove_const(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = to_sym_arg(c, a[0])?;
-    match c.class_mut(slf).consts.remove(&n) {
-        Some(v) => { c.class_mut(slf).const_order.retain(|x| *x != n); c.vm().const_serial.set(c.vm().const_serial.get() + 1); Ok(v) }
+    let removed = match c.class_mut(slf).consts.remove(&n) {
+        Some(v) => Some(v),
+        None => c.class_mut(slf).autoload.remove(&n).map(|_| NIL),   // an autoload: nil
+    };
+    match removed {
+        Some(v) => {
+            let cd = c.class_mut(slf);
+            cd.const_order.retain(|x| *x != n); cd.const_loc.remove(&n); cd.private_consts.retain(|x| *x != n);
+            c.vm().const_serial.set(c.vm().const_serial.get() + 1);
+            Ok(v)
+        }
         None => {
             let e = make_name_error(c, c.vm().c_name_error.get(), &format!("constant {}::{} not defined", class_path(c, slf), sym_str(n)), Value::sym(n), slf)?;
             Err(raise_exc(c, e))
@@ -1246,6 +1305,7 @@ pub fn init(c: &mut Ctx) -> InitIds {
     d(c, "module_exec", m_class_exec, -1);
     d(c, "const_get", m_const_get, -1);
     d(c, "const_set", m_const_set, 2);
+    d(c, "const_source_location", m_const_source_location, -1);
     d(c, "const_defined?", m_const_defined, -1);
     d(c, "constants", m_constants, -1);
     d(c, "remove_const", m_remove_const, 1);

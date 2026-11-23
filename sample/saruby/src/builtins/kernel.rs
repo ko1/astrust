@@ -931,47 +931,106 @@ pub const BUILTIN_FEATURES: &[&str] = &["set", "enumerator", "rational", "comple
     "open-uri", "resolv", "ipaddr", "pty", "syslog", "expect", "io/console", "bigdecimal/util", "date/format",
 ];
 
-fn resolve_feature(c: &Ctx, name: &str, relative_to: Option<&str>) -> Option<std::path::PathBuf> {
-    let with_rb = |p: std::path::PathBuf| -> Option<std::path::PathBuf> {
-        if p.extension().map(|e| e == "rb").unwrap_or(false) && p.is_file() { return Some(p); }
-        let mut q = p.clone().into_os_string(); q.push(".rb");
-        let q = std::path::PathBuf::from(q);
-        if q.is_file() { return Some(q); }
-        if p.is_file() && p.extension().is_none() { return Some(p); }
-        None
+/// File.expand_path without a Ruby call: `~` is $HOME, a relative name is under `base` (or the cwd),
+/// and `.` / `..` are folded lexically (symlinks stay).
+pub fn expand_path_str(name: &str, base: Option<&str>) -> String {
+    let joined = if let Some(rest) = name.strip_prefix('~').filter(|r| r.is_empty() || r.starts_with('/')) {
+        format!("{}{}", std::env::var("HOME").unwrap_or_default(), rest)
+    } else if name.starts_with('/') { name.to_string() } else {
+        let b = match base { Some(b) if b.starts_with('/') => b.to_string(), Some(b) => expand_path_str(b, None),
+            None => std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_else(|_| "/".into()) };
+        format!("{}/{}", b, name)
     };
-    if let Some(base) = relative_to {
-        let dir = std::path::Path::new(base).parent().unwrap_or(std::path::Path::new("."));
-        return with_rb(dir.join(name));
-    }
-    let p = std::path::Path::new(name);
-    if p.is_absolute() || name.starts_with("./") || name.starts_with("../") { return with_rb(p.to_path_buf()); }
-    let lp = c.vm().load_path.get();
-    for i in 0..c.ary_len(lp) {
-        let d = c.ary_get(lp, i);
-        if !is_string(d) { continue; }
-        let dir = String::from_utf8_lossy(c.str_bytes(d)).into_owned();
-        if let Some(f) = with_rb(std::path::Path::new(&dir).join(name)) { return Some(f); }
-    }
-    None
+    let mut out: Vec<&str> = vec![];
+    for seg in joined.split('/') { match seg { "" | "." => {} ".." => { out.pop(); } s => out.push(s) } }
+    format!("/{}", out.join("/"))
 }
 
-enum Feature { File(std::path::PathBuf), Native(String), Missing }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ext { None, Rb, So }
+const SO_EXTS: &[&str] = &[".so", ".o", ".bundle", ".dll", ".dylib"];
+/// The feature's extension (rb_feature_p's ext): only .rb and the shared-library ones count.
+fn split_ext(f: &str) -> (&str, Ext) {
+    let tail = f.rsplit('/').next().unwrap_or(f);
+    if let Some(dot) = tail.rfind('.') {
+        let (b, e) = f.split_at(f.len() - (tail.len() - dot));
+        if e == ".rb" { return (b, Ext::Rb); }
+        if SO_EXTS.contains(&e) { return (b, Ext::So); }
+    }
+    (f, Ext::None)
+}
+fn is_explicit(name: &str) -> bool { name.starts_with('/') || name.starts_with("./") || name.starts_with("../") || name.starts_with('~') }
 
-fn locate_feature(c: &Ctx, name: &str, caller_file: Option<&str>) -> Feature {
-    let relative = caller_file.is_some();
-    if let Some(f) = resolve_feature(c, name, caller_file) { return Feature::File(f); }
-    let is_rb = name.ends_with(".rb");
+/// $LOAD_PATH as CRuby's expanded load path: each entry (to_path) expanded and with symlinks resolved.
+fn expanded_load_path(c: &mut Ctx, call: bool) -> Result<Vec<String>, Esc> {
+    let lp = c.vm().load_path.get();
+    let mut out = vec![];
+    for i in 0..c.ary_len(lp) {
+        let d = c.ary_get(lp, i);
+        let s = if is_string(d) { String::from_utf8_lossy(c.str_bytes(d)).into_owned() } else if call { feature_name(c, d)? } else { continue };
+        let e = expand_path_str(&s, None);
+        out.push(std::fs::canonicalize(&e).map(|p| p.to_string_lossy().into_owned()).unwrap_or(e));
+    }
+    Ok(out)
+}
+
+/// rb_feature_p: a feature in $LOADED_FEATURES (or being loaded) that `name` names.  For a name without
+/// an extension only a .rb feature is returned; feature_present says whether any other matched.
+fn feature_provided(name: &str, lp: &[String], list: &[String]) -> Option<usize> {
+    let (_, ne) = split_ext(name);
+    let i = feature_match(name, lp, list, |fe| ne != Ext::None || fe == Ext::Rb);
+    i
+}
+fn feature_present(name: &str, lp: &[String], list: &[String]) -> bool { feature_match(name, lp, list, |_| true).is_some() }
+fn feature_match(name: &str, lp: &[String], list: &[String], take: impl Fn(Ext) -> bool) -> Option<usize> {
+    let (nb, ne) = split_ext(name);
+    let expanded = name.starts_with('/');
+    list.iter().position(|f| {
+        if !take(split_ext(f).1) { return false; }
+        let (fb, fe) = split_ext(f);
+        if fe == Ext::None { if ne != Ext::None || fb != nb { return false; } return true; }
+        if ne != Ext::None && fe != ne { return false; }
+        if fb == nb { return true; }
+        if expanded || fb.len() <= nb.len() + 1 || !fb.ends_with(nb) { return false; }
+        let pre = &fb[..fb.len() - nb.len()];
+        pre.ends_with('/') && lp.iter().any(|d| d.as_str() == &pre[..pre.len() - 1])
+    })
+}
+fn loaded_list(c: &Ctx) -> Vec<String> {
+    let lf = c.vm().loaded_features.get();
+    c.ary(lf).iter().filter(|&&x| is_string(x)).map(|&x| String::from_utf8_lossy(c.str_bytes(x)).into_owned()).collect()
+}
+
+/// The file `name` resolves to (rb_find_file): explicit paths as given, others under each load path entry.
+fn find_file(name: &str, lp: &[String]) -> Option<String> {
+    let (_, ext) = split_ext(name);
+    let cands = |base: String| -> Option<String> {
+        match ext {
+            Ext::Rb => std::path::Path::new(&base).is_file().then_some(base),
+            Ext::None => { let r = format!("{}.rb", base); std::path::Path::new(&r).is_file().then_some(r) }
+            Ext::So => None,
+        }
+    };
+    if is_explicit(name) { return cands(expand_path_str(name, None)); }
+    lp.iter().find_map(|d| cands(expand_path_str(name, Some(d))))
+}
+
+enum Feature { File(String), Native(String), Missing, SoOnly }
+
+fn locate_feature(name: &str, lp: &[String], relative: bool) -> Feature {
+    if let Some(f) = find_file(name, lp) { return Feature::File(f); }
+    let (base, ext) = split_ext(name);
     let is_so = name.ends_with(".so");
-    let base = name.trim_end_matches(".rb").trim_end_matches(".so");
     // "foo.so" may name a native part of its own, below a pure-Ruby "foo" (psych.so)
     let so_native = is_so && crate::builtins::prelude::has_feature(name);
-    let native = !is_rb && (crate::builtins::prelude::has_feature(base) || so_native);
+    let native = ext != Ext::Rb && (crate::builtins::prelude::has_feature(base) || so_native);
     // the reference ruby's pure-Ruby stdlib, unless saruby implements the feature itself
-    let std_file = if native || is_so || relative || name.starts_with('/') || name.starts_with('.') { None } else { crate::builtins::prelude::stdlib_file(name) };
+    let std_file = if native || is_so || relative || is_explicit(name) { None } else { crate::builtins::prelude::stdlib_file(name) };
     match std_file {
-        Some(f) => Feature::File(f),
+        Some(f) => Feature::File(std::fs::canonicalize(&f).unwrap_or(f).to_string_lossy().into_owned()),
         None if native || BUILTIN_FEATURES.contains(&base) => Feature::Native(if so_native { name.to_string() } else { base.to_string() }),
+        // an explicit path with only a native library beside it: dlopen would fail (LoadError without a path)
+        None if ext == Ext::None && is_explicit(name) && SO_EXTS.iter().any(|e| std::path::Path::new(&format!("{}{}", expand_path_str(name, None), e)).is_file()) => Feature::SoOnly,
         None => Feature::Missing,
     }
 }
@@ -997,10 +1056,30 @@ pub fn require_feature(c: &mut Ctx, path: Value, relative: bool) -> RV {
         let rel = rel.join("/");
         if crate::builtins::prelude::has_feature(&rel) { let r = c.str_new(rel.as_bytes()); return require_feature(c, r, false); }
     }
-    let file = match locate_feature(c, &name, caller_file.as_deref()) {
+    // require_relative: the path from the caller's directory (File.absolute_path(name, dir))
+    let name = match &caller_file {
+        Some(cf) => {
+            // rb_current_realfilepath: the caller's file with symlinks resolved
+            let real = std::fs::canonicalize(cf).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| cf.clone());
+            let dir = match real.rfind('/') { Some(0) => "/".to_string(), Some(i) => real[..i].to_string(), None => ".".to_string() };
+            expand_path_str(&name, Some(&dir))
+        }
+        None => name,
+    };
+    let lp = expanded_load_path(c, true)?;
+    let me = crate::builtins::thread::current_thread(c);
+    // already provided under this name, or being loaded
+    loop {
+        if feature_provided(&name, &lp, &loaded_list(c)).is_some() { return Ok(FALSE); }
+        let loading: Vec<String> = LOADING.with_borrow(|l| l.iter().map(|e| e.0.clone()).collect());
+        let Some(i) = feature_provided(&name, &lp, &loading) else { break };
+        if !wait_loading(c, &loading[i], me)? { return Ok(FALSE); }
+    }
+    let file = match locate_feature(&name, &lp, caller_file.is_some()) {
         Feature::File(f) => f,
         Feature::Native(base) => {
             if base == "did_you_mean" { if let Some(r) = crate::builtins::did_you_mean::require(c) { return r; } }
+            if feature_present(&name, &lp, &loaded_list(c)) { return Ok(FALSE); }
             let lf = c.vm().loaded_features.get();
             if c.ary(lf).iter().any(|&x| is_string(x) && c.str_bytes(x) == base.as_bytes()) { return Ok(FALSE); }
             let key = c.str_new(base.as_bytes());
@@ -1008,38 +1087,103 @@ pub fn require_feature(c: &mut Ctx, path: Value, relative: bool) -> RV {
             crate::builtins::prelude::load_feature(c, &base)?;
             return Ok(TRUE);
         }
+        Feature::SoOnly => {
+            let e = make_exception(c, c.vm().c_load_error.get(), &format!("{}.so: cannot load a native extension", expand_path_str(&name, None)));
+            return Err(raise_exc(c, e));
+        }
+        // a feature of that name without .rb (a .so, or no extension) is already there
+        Feature::Missing if feature_present(&name, &lp, &loaded_list(c)) => return Ok(FALSE),
         Feature::Missing => {
-            // require_relative reports the absolute path it tried (File.absolute_path(name, dir))
-            let shown = match &caller_file {
-                Some(cf) => {
-                    let dir = std::path::Path::new(cf).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
-                    let (nv, dv) = (c.str_new(name.as_bytes()), c.str_new(dir.as_bytes()));
-                    String::from_utf8_lossy(&crate::builtins::file::expand(c, &[nv, dv], false)?).into_owned()
-                }
-                None => name.clone(),
-            };
-            let e = make_exception(c, c.vm().c_load_error.get(), &format!("cannot load such file -- {}", shown));
-            { let p = c.str_new(shown.as_bytes()); ivar_set_raw(c, e, intern(b"path"), p); }
+            let e = make_exception(c, c.vm().c_load_error.get(), &format!("cannot load such file -- {}", name));
+            { let p = c.str_new(name.as_bytes()); ivar_set_raw(c, e, intern(b"path"), p); }
             return Err(raise_exc(c, e));
         }
     };
-    let abs = std::fs::canonicalize(&file).unwrap_or(file.clone());
-    let key = abs.to_string_lossy().into_owned();
+    let key = file;
+    let real = std::fs::canonicalize(&key).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| key.clone());
+    loop {
+        let list = loaded_list(c);
+        if list.iter().any(|f| *f == key) { return Ok(FALSE); }
+        // the same file under another path (CRuby's loaded_features_realpaths)
+        if REALPATHS.with_borrow(|r| r.iter().any(|(f, rp)| *rp == real && list.contains(f))) { return Ok(FALSE); }
+        if loading_thread(&key).is_none() { break; }
+        if !wait_loading(c, &key, me)? { return Ok(FALSE); }
+    }
+    LOADING.with_borrow_mut(|l| l.push((key.clone(), me)));
+    let r = load_file(c, &key);
+    LOADING.with_borrow_mut(|l| { if let Some(i) = l.iter().position(|(k, t)| *k == key && *t == me) { l.remove(i); } });
+    crate::builtins::blop::notify(c, loading_key(&key));
+    r?;
+    let ks = c.str_new(key.as_bytes());
     let lf = c.vm().loaded_features.get();
-    if c.ary(lf).iter().any(|&x| is_string(x) && c.str_bytes(x) == key.as_bytes()) { return Ok(FALSE); }
-    let ks = c.str_new(key.as_bytes()); c.ary_push(lf, ks);
-    load_file(c, &key)?;
+    c.ary_push(lf, ks);
+    REALPATHS.with_borrow_mut(|r| r.push((key, real)));
     Ok(TRUE)
+}
+
+/// A feature another thread is loading: wait for it (Ok(true): look again); this thread's own: circular.
+fn wait_loading(c: &mut Ctx, key: &str, me: Value) -> Result<bool, Esc> {
+    match loading_thread(key) {
+        None => Ok(true),
+        Some(t) if t == me => { warn_circular(c, key)?; Ok(false) }
+        Some(_) => {
+            let k = loading_key(key);
+            crate::builtins::thread::block_on(c, |_| Ok(loading_thread(key).is_none()), Some(k), None, true)?;
+            Ok(true)
+        }
+    }
+}
+
+// features being required, and by which thread (CRuby's loading table)
+thread_local! { static LOADING: std::cell::RefCell<Vec<(String, Value)>> = const { std::cell::RefCell::new(Vec::new()) }; }
+// (feature, its realpath) of the files require loaded
+thread_local! { static REALPATHS: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) }; }
+fn loading_thread(key: &str) -> Option<Value> { LOADING.with_borrow(|l| l.iter().find(|(k, _)| k == key).map(|e| e.1)) }
+fn loading_key(key: &str) -> u64 { key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3)) | 1 }
+
+fn warn_circular(c: &mut Ctx, key: &str) -> Result<(), Esc> {
+    if !c.vm().verbose.get().truthy() { return Ok(()); }
+    let at = c.caller_frame().map(|f| format!("{}:{}", frame_file(f), f.line())).unwrap_or_default();
+    let mut msg = format!("{}: warning: {}: warning: loading in progress, circular require considered harmful - {}\n", at, at, key);
+    for l in backtrace_locs_n(c, 0, None).unwrap_or_default().iter().rev() { msg.push_str(&format!("\tfrom {}:{}:in  '{}'\n", l.file, l.line, l.label)); }
+    msg.push('\n');
+    warning_write(c, msg.as_bytes())
+}
+
+pub enum FeatureState { LoadingByMe, LoadingByOther, Provided, None }
+/// Whether the feature an autoload names is loaded or being loaded (check_autoload_required).
+pub fn feature_state(c: &Ctx, path: Value) -> FeatureState {
+    let name = String::from_utf8_lossy(c.str_bytes(path)).into_owned();
+    let lp = {
+        let lpv = c.vm().load_path.get();
+        (0..c.ary_len(lpv)).map(|i| c.ary_get(lpv, i)).filter(|&d| is_string(d)).map(|d| {
+            let e = expand_path_str(&String::from_utf8_lossy(c.str_bytes(d)), None);
+            std::fs::canonicalize(&e).map(|p| p.to_string_lossy().into_owned()).unwrap_or(e)
+        }).collect::<Vec<_>>()
+    };
+    let loading: Vec<(String, Value)> = LOADING.with_borrow(|l| l.clone());
+    let keys: Vec<String> = loading.iter().map(|e| e.0.clone()).collect();
+    if let Some(i) = feature_provided(&name, &lp, &keys).or_else(|| match locate_feature(&name, &lp, false) {
+        Feature::File(f) | Feature::Native(f) => keys.iter().position(|k| *k == f), _ => None }) {
+        return if loading[i].1 == crate::builtins::thread::current_thread(c) { FeatureState::LoadingByMe } else { FeatureState::LoadingByOther };
+    }
+    let list = loaded_list(c);
+    if feature_provided(&name, &lp, &list).is_some() { return FeatureState::Provided; }
+    match locate_feature(&name, &lp, false) {
+        Feature::File(f) | Feature::Native(f) if list.contains(&f) => FeatureState::Provided,
+        _ => FeatureState::None,
+    }
 }
 
 /// $LOAD_PATH.resolve_feature_path: [:rb, path], [:so, "name.so"] for a feature saruby provides, or nil.
 fn lp_resolve_feature_path(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let sv = expect_str(c, a[0])?;
     let name = String::from_utf8_lossy(c.str_bytes(sv)).into_owned();
-    let (kind, path) = match locate_feature(c, &name, None) {
-        Feature::File(f) => ("rb", std::path::absolute(&f).unwrap_or(f).to_string_lossy().into_owned()),
+    let lp = expanded_load_path(c, true)?;
+    let (kind, path) = match locate_feature(&name, &lp, false) {
+        Feature::File(f) => ("rb", f),
         Feature::Native(base) => ("so", format!("{}.so", base)),
-        Feature::Missing => return Ok(NIL),
+        Feature::Missing | Feature::SoOnly => return Ok(NIL),
     };
     let ps = c.str_new(path.as_bytes());
     Ok(c.ary_new_from(&[Value::sym(intern(kind.as_bytes())), ps]))
@@ -1135,6 +1279,7 @@ fn m_autoload(c: &mut Ctx, k: Value, args: &[Value], _b: Blk) -> RV {
     if c.str_len(path) == 0 { return arg_err(c, "empty feature name"); }
     if const_get_at(c, k, nm).is_some() { return Ok(NIL); }
     c.class_mut(k).autoload.insert(nm, path);
+    if let Some(l) = source_location(c) { c.class_mut(k).const_loc.insert(nm, l); }
     Ok(NIL)
 }
 /// Run an autoload's require: `main.require(path)` as CRuby (so an overridden require sees it);
@@ -1215,7 +1360,8 @@ fn m_autoload_p(c: &mut Ctx, k: Value, args: &[Value], _b: Blk) -> RV {
     let list: Vec<Value> = if inherit { ancestors(c, k).to_vec() } else { vec![k] };
     for kk in list {
         if const_get_at(c, kk, nm).is_some() { return Ok(NIL); }
-        if let Some(&p) = c.class(kk).autoload.get(&nm) { return Ok(if c.str_bytes(p).starts_with(b"saruby/") { NIL } else { p }); }
+        if let Autoload::Ready(p) = autoload_state(c, kk, nm) { return Ok(if c.str_bytes(p).starts_with(b"saruby/") { NIL } else { p }); }
+        if c.class(kk).autoload.contains_key(&nm) { return Ok(NIL); }
     }
     Ok(NIL)
 }

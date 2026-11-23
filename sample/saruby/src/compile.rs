@@ -465,7 +465,7 @@ impl<'a> Compiler<'a> {
         if self.tl_binding {
             // the main script mentions TOPLEVEL_BINDING: bind it before anything runs
             let b = self.fcall("binding", vec![], 1);
-            body = self.seq(vec![ALLOC_node_cdecl(intern(b"TOPLEVEL_BINDING"), b), body]);
+            body = self.seq(vec![ALLOC_node_cdecl(intern(b"TOPLEVEL_BINDING"), b, 0), body]);
         }
         let label = if kind == IseqKind::Eval { "<main>".to_string() } else { "<main>".to_string() };
         self.finish_iseq(body, Params::default(), kind, label, 1, Sym(0))
@@ -774,20 +774,20 @@ impl<'a> Compiler<'a> {
                 ALLOC_node_and(ALLOC_node_cvar(nm), ALLOC_node_cvasgn(nm, v))
             }
             Kind::ConstantReadNode { name } => ALLOC_node_const(self.cst(*name), line),
-            Kind::ConstantWriteNode { name, value } => { let v = self.c(value); ALLOC_node_cdecl(self.cst(*name), v) }
+            Kind::ConstantWriteNode { name, value } => { let v = self.c(value); ALLOC_node_cdecl(self.cst(*name), v, line) }
             Kind::ConstantOrWriteNode { name, value } => {
                 let nm = self.cst(*name); let v = self.c(value);
                 let d = ALLOC_node_defined(DEF_CONST, nm, ALLOC_node_nil());
-                ALLOC_node_if(d, ALLOC_node_const(nm, line), ALLOC_node_cdecl(nm, v))
+                ALLOC_node_if(d, ALLOC_node_const(nm, line), ALLOC_node_cdecl(nm, v, line))
             }
             Kind::ConstantAndWriteNode { name, value } => {
                 let nm = self.cst(*name); let v = self.c(value);
-                ALLOC_node_and(ALLOC_node_const(nm, line), ALLOC_node_cdecl(nm, v))
+                ALLOC_node_and(ALLOC_node_const(nm, line), ALLOC_node_cdecl(nm, v, line))
             }
             Kind::ConstantOperatorWriteNode { name, value, binary_operator } => {
                 let nm = self.cst(*name); let v = self.c(value);
                 let e = self.binop(ALLOC_node_const(nm, line), self.cst(*binary_operator), v, line);
-                ALLOC_node_cdecl(nm, e)
+                ALLOC_node_cdecl(nm, e, line)
             }
             Kind::ConstantPathNode { parent, name } => {
                 let nm = self.cst(name.unwrap_or(0));
@@ -796,24 +796,24 @@ impl<'a> Compiler<'a> {
             }
             Kind::ConstantPathWriteNode { target, value } => {
                 let v = self.c(value);
-                self.cpath_write(target, v)
+                self.cpath_write(target, v, line)
             }
             Kind::ConstantPathOrWriteNode { target, value } => {
                 let v = self.c(value);
                 let rd = self.cpath_read(target, line);
-                let w = self.cpath_write(target, v);
+                let w = self.cpath_write(target, v, line);
                 let (p, nm) = self.cpath_parts(target);
                 let d = ALLOC_node_defined(DEF_CPATH, nm, p);
                 ALLOC_node_if(d, rd, w)
             }
             Kind::ConstantPathAndWriteNode { target, value } => {
-                let v = self.c(value); let rd = self.cpath_read(target, line); let w = self.cpath_write(target, v);
+                let v = self.c(value); let rd = self.cpath_read(target, line); let w = self.cpath_write(target, v, line);
                 ALLOC_node_and(rd, w)
             }
             Kind::ConstantPathOperatorWriteNode { target, value, binary_operator } => {
                 let v = self.c(value); let rd = self.cpath_read(target, line);
                 let e = self.binop(rd, self.cst(*binary_operator), v, line);
-                self.cpath_write(target, e)
+                self.cpath_write(target, e, line)
             }
             Kind::ShareableConstantNode { write } => self.c(write),
             Kind::BackReferenceReadNode { name } => {
@@ -1196,9 +1196,9 @@ impl<'a> Compiler<'a> {
             _ => self.c(t),
         }
     }
-    fn cpath_write(&mut self, target: &PNode, v: NodePtr) -> NodePtr {
+    fn cpath_write(&mut self, target: &PNode, v: NodePtr, line: u32) -> NodePtr {
         let (p, nm) = self.cpath_parts(target);
-        ALLOC_node_cdecl_path(p, nm, v)
+        ALLOC_node_cdecl_path(p, nm, v, line)
     }
 
     // ---- calls ---------------------------------------------------------------------------
@@ -1529,8 +1529,8 @@ impl<'a> Compiler<'a> {
             Kind::InstanceVariableTargetNode { name } => ALLOC_node_iasgn(self.cst(*name), v),
             Kind::GlobalVariableTargetNode { name } => ALLOC_node_gasgn(self.cst(*name), v),
             Kind::ClassVariableTargetNode { name } => ALLOC_node_cvasgn(self.cst(*name), v),
-            Kind::ConstantTargetNode { name } => ALLOC_node_cdecl(self.cst(*name), v),
-            Kind::ConstantPathTargetNode { .. } => self.cpath_write(t, v),
+            Kind::ConstantTargetNode { name } => ALLOC_node_cdecl(self.cst(*name), v, line),
+            Kind::ConstantPathTargetNode { .. } => self.cpath_write(t, v, line),
             Kind::CallTargetNode { receiver, name } => {
                 let r = self.c(receiver);
                 let fl = if matches!(receiver.kind, Kind::SelfNode) { CF_FCALL } else { 0 };
