@@ -5,7 +5,7 @@
 // (granted pages are added when every slot is taken, `reserve`).
 // It exists to show that a binding does not depend on a backend's object layout.
 use super::pages::Pages;
-use super::{Control, EdgeVisitor, GcBackend, GcLang, HeapStats, RootVisitor};
+use super::{Control, EdgeVisitor, GcBackend, GcLang, HeapStats, RootVisitor, WeakVisitor};
 use std::ptr::NonNull;
 
 const R: usize = 1024;            // bytes reserved per page: 2 bitmaps of 4096 bits
@@ -151,11 +151,10 @@ struct Marker<'a, L: GcLang> {
 impl<L: GcLang> Marker<'_, L> {
     #[inline(always)]
     fn mark(&mut self, base: usize, i: usize) {
-        // SAFETY: base is one of our pages; the reference ends with this call
-        let b = unsafe { bits(base) };
-        let (w, m) = (i / 64, 1u64 << (i % 64));
-        if b.live[w] & m == 0 || b.mark[w] & m != 0 { return; }
-        b.mark[w] |= m;
+        let (live, mark) = mark_word(base, i);
+        let m = 1u64 << (i % 64);
+        if live & m == 0 || *mark & m != 0 { return; }
+        *mark |= m;
         self.stack.push(Pages::<L::Obj, R>::slot(base, i));
     }
 
@@ -188,6 +187,26 @@ impl<L: GcLang> RootVisitor<L> for Marker<'_, L> {
             if w == 0 { continue; }
             if let Some((base, i)) = self.pages.resolve(w) { self.mark(base, i); }
         }
+    }
+}
+
+/// The live word and the mark word of slot `i` of page `base`, one of our pages.
+#[inline(always)]
+fn mark_word<'a>(base: usize, i: usize) -> (u64, &'a mut u64) {
+    // SAFETY: base is one of our pages; the caller's use of the reference ends before the next call
+    let b = unsafe { bits(base) };
+    (b.live[i / 64], &mut b.mark[i / 64])
+}
+
+// between mark and sweep: a set mark bit means alive
+struct Survivors;
+impl<L: GcLang> WeakVisitor<L> for Survivors {
+    fn alive(&mut self, slot: &mut L::Ref) -> bool {
+        L::as_object(*slot).is_none_or(|p| {
+            // GcLang::as_object contract: p is a slot of this heap
+            let (base, i) = Pages::<L::Obj, R>::locate(p.as_ptr());
+            *mark_word(base, i).1 & 1u64 << (i % 64) != 0
+        })
     }
 }
 
@@ -227,6 +246,7 @@ impl<L: GcLang> GcBackend<L> for MarkBitmap<L> {
             if let Some(o) = pending { m.pending(lang, o); }
             m.drain(lang);
         }
+        lang.sweep_weak(&mut Survivors);
         self.sweep(lang);
         self.allocs_since_gc = 0;
         self.external_since_gc = 0;
