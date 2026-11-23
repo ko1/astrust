@@ -135,6 +135,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [ ] `$0 =` / setproctitle: CRuby は argv 領域を書き換える（ps のコマンド行）。saruby は何もしない（comm を変えるのは CRuby と逆の振る舞いなので外した）。Rust が持たないメモリへの書き込みが要る
 
 ## 性能（上 3 つの後。新規には起こさない）
+- [ ] sp4 再計測（d709f50、2026-11-24）で 1cdddb3 より遅くなったもの（長いベンチ safe AOT）: strcmp +17.8%、method_call +6.6%、send +6.0%、strops +5.2%、array_access/ivar/hash/gc_wb/while 約 +3%。原因未調査（rclass・NO_CTX 除去の代償が候補）。koruby に対して長いベンチで binary_trees・ivar・object・poly が新たに負け（koruby 側が 2〜10% 速くなった）。~/ruby/src/trials/2026-11-20-astrust-vs-astro/README.md
 - [ ] error_highlight の代償: 起動 +0.72%（コンパイラ側のコード生成のずれ ~70K と、ノードごとのタグ検査）。NoMethodError の生成 +3〜4% cycles（特異クラス付き受け手の検査、未追跡）
 - [ ] NO_CTX 除去の代償: hash +1.4%（hash_set の regalloc、コード配置がもろい）、nesteddata +1.0%（Hash の malloc をまたいで c を保持）、object +0.62%（AOT 命令数）
 - [ ] `$~` を設定する正規表現マッチ 1 回 +101〜151 命令（frame-local 化、1M マッチで +5〜10%）。メソッド起動ごとにフレーム探索をキャッシュすれば大半が消える見込み
