@@ -1132,9 +1132,18 @@ cfn!(s_force_encoding, |c, slf, a, b_| { let e = crate::builtins::encoding::to_e
 cfn!(s_b, |c, slf, a, b_| Ok(c.str_copy_enc(slf, ENC_BINARY)));
 cfn!(s_valid_encoding, |c, slf, a, b_| Ok(Value::bool(crate::builtins::encoding::is_valid(c.str_enc(slf), c.str_bytes(slf)))));
 cfn!(s_ascii_only, |c, slf, a, b_| Ok(Value::bool(crate::builtins::encoding::ascii_compat(c.str_enc(slf)) && is_ascii(c.str_bytes(slf)))));
-cfn!(s_unicode_normalize, |c, slf, a, b_| { unicode_check(c, slf)?; Ok(c.str_new_like(slf, c.str_bytes(slf).to_vec())) });
-cfn!(s_unicode_normalize_b, |c, slf, a, b_| { unicode_check(c, slf)?; check_frozen(c, slf)?; Ok(slf) });
-cfn!(s_unicode_normalized_p, |c, slf, a, b_| { unicode_check(c, slf)?; Ok(TRUE) });
+/// unicode_normalize_common: the work is done by the stdlib's unicode_normalize/normalize.rb.
+fn unicode_normalize_common(c: &mut Ctx, slf: Value, a: &[Value], id: &[u8]) -> RV {
+    check_argc(c, a, 0, 1)?;
+    let f = c.str_new(b"unicode_normalize/normalize.rb");
+    crate::builtins::kernel::require_feature(c, f, false)?;
+    let m = const_get_at(c, c.vm().c_object.get(), intern(b"UnicodeNormalize")).unwrap_or(NIL);
+    let mut args = vec![slf]; args.extend_from_slice(a);
+    funcall(c, m, intern(id), &args, std::ptr::null())
+}
+cfn!(s_unicode_normalize, |c, slf, a, b_| unicode_normalize_common(c, slf, a, b"normalize"));
+cfn!(s_unicode_normalize_b, |c, slf, a, b_| { let r = unicode_normalize_common(c, slf, a, b"normalize")?; s_replace(c, slf, &[r], b_) });
+cfn!(s_unicode_normalized_p, |c, slf, a, b_| unicode_normalize_common(c, slf, a, b"normalized?"));
 fn unicode_check(c: &mut Ctx, slf: Value) -> Result<(), Esc> {
     let e = c.str_enc(slf);
     if !crate::builtins::encoding::is_unicode(e) && !(e == ENC_ASCII || is_ascii(c.str_bytes(slf)) && crate::builtins::encoding::ascii_compat(e)) {
@@ -1779,6 +1788,7 @@ fn w_rpartition(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { if is_stri
 pub fn init(c: &mut Ctx, k: Value) {
     let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, k, n, f, a);
     define_private_cfunc(c, k, "initialize", s_initialize, -1);
+    define_module(c, "UnicodeNormalize");
     d(c, "length", s_length, 0); d(c, "size", s_length, 0); d(c, "bytesize", s_bytesize, 0); d(c, "+", s_plus, 1); d(c, "*", s_mul, 1); d(c, "%", s_mod, 1);
     d(c, "==", s_eq, 1); d(c, "===", s_eq, 1); d(c, "eql?", s_eql, 1); d(c, "hash", s_hash, 0); d(c, "<=>", s_cmp, 1); d(c, "=~", s_match_op, 1);
     d(c, "match", s_match, -1); d(c, "match?", s_match_p, -1); d(c, "[]", s_aref, -1); d(c, "slice", s_aref, -1); d(c, "[]=", s_aset, -1);
