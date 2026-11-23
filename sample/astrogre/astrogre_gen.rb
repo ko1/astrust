@@ -24,7 +24,7 @@ class AstrogreNodeDef < ASTrustGen::NodeDef
       if op.type == 'Bytes'
         "a.push(bytes_lit(#{f}));"
       else
-        "a.push(\"(*np).u.#{op.name}\".to_string());"
+        "a.push(\"u.#{op.name}\".to_string());"
       end
     end
 

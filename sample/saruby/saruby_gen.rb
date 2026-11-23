@@ -50,44 +50,44 @@ class SarubyNodeDef < ASTrustGen::NodeDef
     def bake_value_expr(op)
       case @name
       # 1 + the slot index in the site's cache (0: the site never ran); in the SD's name (profile_node)
-      when 'node_ivar', 'node_iasgn', 'node_ivar_arith' then "{ let u = &(*np).u; if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }"
+      when 'node_ivar', 'node_iasgn', 'node_ivar_arith' then "{ if u.ic.klass != 0 { u.ic.idx + 1 } else { 0 } }"
       # 1 + the operand kinds the interpreter recorded at an operator site (opt.rs TyFb)
-      when /\Anode_opt_/ then "{ 1 + (*np).u.tf.0 }"
+      when /\Anode_opt_/ then "{ 1 + u.tf.0 }"
       # 1 + the lead parameter count of the block compiled into a yield site
       when 'node_call'
         case op.name
-        when 'shared' then "{ let u = &(*np).u; crate::vm::spec_shared(u.recv, u.args.len(), crate::vm::spec_callee(&u.cc, u.args.len(), u.flags)) }"
+        when 'shared' then "{ crate::vm::spec_shared(u.recv, u.args.len(), crate::vm::spec_callee(&u.cc, u.args.len(), u.flags)) }"
         # 1 + the inline_builtin.rs table index of the builtin the site's cache holds (0: none)
-        when 'bi' then "{ let u = &(*np).u; crate::inline_builtin::site_builtin(u.args.len(), crate::vm::site_kind(&u.cc, u.args.len(), u.flags), u.mid) }"
-        else "{ let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
+        when 'bi' then "{ crate::inline_builtin::site_builtin(u.args.len(), crate::vm::site_kind(&u.cc, u.args.len(), u.flags), u.mid) }"
+        else "{ crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
         end
-      when 'node_yield' then "{ let u = &(*np).u; crate::vm::spec_block_np(&u.yc, u.args.len()) }"
+      when 'node_yield' then "{ crate::vm::spec_block_np(&u.yc, u.args.len()) }"
       # the builtin iterator the site's cache holds, with the block's parameter count (inline_iter.rs; 0: none)
       when 'node_call_blk'
-        if op.name == 'it' then "{ let u = &(*np).u; crate::inline_iter::site_iter(&u.cc, u.args.len(), crate::vm::site_kind(&u.cc, u.args.len(), u.flags), u.blk) }"
-        else "{ let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
+        if op.name == 'it' then "{ crate::inline_iter::site_iter(&u.cc, u.args.len(), crate::vm::site_kind(&u.cc, u.args.len(), u.flags), u.blk) }"
+        else "{ crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
         end
-      when 'node_call_kw' then "{ let u = &(*np).u; crate::vm::site_kind_kw(&u.cc, u.args.len(), u.ci) }"
-      else "{ let u = &(*np).u; crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
+      when 'node_call_kw' then "{ crate::vm::site_kind_kw(&u.cc, u.args.len(), u.ci) }"
+      else "{ crate::vm::site_kind(&u.cc, u.args.len(), u.flags) }"
       end
     end
     # an entry's (me, blk): passed by a call that compiled the entry in, else in c.call_me / c.call_blk
     def spec_in_load_expr(op) = "crate::vm::CallArgs::load(c)"
     def spec_in_store_stmt(var) = "#{var}.store(c);"
     def spec_target_expr(op)
-      if @name == %q(node_yield) then "{ let u = &(*np).u; crate::vm::spec_block(&u.yc, u.args.len()) }"
-      elsif @name == %q(node_call_blk) && op.name == 'body' then "{ let u = &(*np).u; crate::inline_iter::spec_iter_block(&u.cc, u.args.len(), crate::vm::site_kind(&u.cc, u.args.len(), u.flags), u.blk) }"
-      elsif @name == %q(node_call_kw) then "{ let u = &(*np).u; crate::vm::spec_callee_kw(&u.cc, u.args.len(), u.ci) }"
-      else "{ let u = &(*np).u; crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) }"
+      if @name == %q(node_yield) then "{ crate::vm::spec_block(&u.yc, u.args.len()) }"
+      elsif @name == %q(node_call_blk) && op.name == 'body' then "{ crate::inline_iter::spec_iter_block(&u.cc, u.args.len(), crate::vm::site_kind(&u.cc, u.args.len(), u.flags), u.blk) }"
+      elsif @name == %q(node_call_kw) then "{ crate::vm::spec_callee_kw(&u.cc, u.args.len(), u.ci) }"
+      else "{ crate::vm::spec_callee(&u.cc, u.args.len(), u.flags) }"
       end
     end
 
     # a call site inside its own callee (recursion): a direct call, whatever the callee's size
     def spec_rec_target_expr(op)
       case @name
-      when 'node_call' then "{ let u = &(*np).u; crate::vm::spec_callee_rec(&u.cc, u.args.len(), u.flags) }"
-      when 'node_call_blk' then op.name == 'callee' ? "{ let u = &(*np).u; crate::vm::spec_callee_rec(&u.cc, u.args.len(), u.flags) }" : nil
-      when 'node_call_kw' then "{ let u = &(*np).u; crate::vm::spec_callee_kw_rec(&u.cc, u.args.len(), u.ci) }"
+      when 'node_call' then "{ crate::vm::spec_callee_rec(&u.cc, u.args.len(), u.flags) }"
+      when 'node_call_blk' then op.name == 'callee' ? "{ crate::vm::spec_callee_rec(&u.cc, u.args.len(), u.flags) }" : nil
+      when 'node_call_kw' then "{ crate::vm::spec_callee_kw_rec(&u.cc, u.args.len(), u.ci) }"
       end
     end
     # that call adds a native frame (a compiled-in callee does not)
@@ -111,9 +111,9 @@ class SarubyNodeDef < ASTrustGen::NodeDef
     def opaque_specialize_arg(op, f)
       case op.type
       when 'Value'
-        "a.push(crate::compile::value_bake(#{f}).unwrap_or_else(|| \"(*np).u.#{op.name}\".to_string()));"
+        "a.push(crate::compile::value_bake(#{f}).unwrap_or_else(|| \"u.#{op.name}\".to_string()));"
       else
-        "a.push(\"(*np).u.#{op.name}\".to_string());"
+        "a.push(\"u.#{op.name}\".to_string());"
       end
     end
 

@@ -36,14 +36,64 @@ pub struct Node { pub head: NodeHead }
 #[repr(C)]
 pub struct NodeOf<T> { pub head: NodeHead, pub u: T }
 
-pub fn node_allocate<T>(kind: &'static NodeKind, u: T) -> NodePtr {
-    let n = Box::into_raw(Box::new(NodeOf { head: NodeHead {
+pub fn node_allocate<T>(kind: &'static NodeKind, u: T) -> NodePtr { node_allocate_with(kind, u, |_| {}) }
+/// node_allocate, `init` setting head fields (head holes) before the node is shared.
+pub fn node_allocate_with<T>(kind: &'static NodeKind, u: T, init: impl FnOnce(&mut NodeHead)) -> NodePtr {
+    let mut b = Box::new(NodeOf { head: NodeHead {
         dispatcher: kind.default_dispatcher, kind, hash: 0,
         flags: if kind.no_inline { NF_NO_INLINE } else { 0 },
         
-    }, u })) as NodePtr;
+    }, u });
+    init(&mut b.head);
+    let n = Box::into_raw(b) as NodePtr;
     node_allocated(n);
     n
+}
+
+// ---- node access: the generated code's only unsafe (sample/saruby/docs/unsafe_catalog.md "generated code") ----
+// Contract on every NodePtr given to these (the generator's manual invariant): non-null, made by
+// node_allocate / layout_tree, and live for as long as the returned borrow is used.
+/// The operand struct type of a node kind.
+pub trait NodeStruct { fn kind() -> &'static NodeKind; }
+/// n's operand struct; n is of T's kind (checked in debug builds).  Operand fields other than @ref cells
+/// are not written while a borrow lives (only CHILDREN / REPLACE write, through node_u_mut).
+#[inline(always)]
+pub fn node_u<'a, T: NodeStruct>(n: NodePtr) -> &'a T {
+    debug_assert!(std::ptr::eq(node_kind(n), T::kind()));
+    // SAFETY: the contract above
+    unsafe { &(*(n as *const NodeOf<T>)).u }
+}
+/// n's operand struct to rewrite (a copy in layout_tree, REPLACE): no other borrow of it lives.
+#[inline(always)]
+pub fn node_u_mut<'a, T: NodeStruct>(n: NodePtr) -> &'a mut T {
+    debug_assert!(std::ptr::eq(node_kind(n), T::kind()));
+    // SAFETY: the contract above, and unique
+    unsafe { &mut (*(n as *mut NodeOf<T>)).u }
+}
+// head fields one at a time, so no borrow of the head overlaps a write of another field
+#[inline(always)] pub fn node_kind(n: NodePtr) -> &'static NodeKind { unsafe { (*n).head.kind } }
+#[inline(always)] pub fn node_dispatcher(n: NodePtr) -> DispatchFn { unsafe { (*n).head.dispatcher } }
+#[inline(always)] pub fn node_flags(n: NodePtr) -> u32 { unsafe { (*n).head.flags } }
+#[inline(always)] pub fn node_set_flags(n: NodePtr, f: u32) { unsafe { (*n).head.flags = f; } }
+#[inline(always)] pub fn node_hash_set(n: NodePtr, h: u64) { unsafe { (*n).head.hash = h; } }
+#[inline(always)] pub fn node_hash_get(n: NodePtr) -> u64 { unsafe { (*n).head.hash } }
+
+/// An @ref operand: the mutable inline state (a cache) of an otherwise immutable node.
+#[repr(transparent)]
+#[derive(Default)]
+pub struct NodeCell<T> { cell: std::cell::UnsafeCell<T> }
+impl<T> NodeCell<T> {
+    /// The body's `&mut T`, dead when the body returns.  Not unique when the node is re-entered while its
+    /// body runs (a recursive call site): known, sample/saruby/docs/unsafe_catalog.md "generated code".
+    #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
+    pub fn body_mut(&self) -> &mut T { unsafe { &mut *self.cell.get() } }
+}
+/// Reads at specialize time (hooks): no dispatch of the node is running.
+impl<T> std::ops::Deref for NodeCell<T> {
+    type Target = T;
+    #[inline(always)]
+    fn deref(&self) -> &T { unsafe { &*self.cell.get() } }
 }
 
 /// Copy the tree under `root` into one block, parents before children in operand order, and
@@ -51,31 +101,30 @@ pub fn node_allocate<T>(kind: &'static NodeKind, u: T) -> NodePtr {
 pub fn layout_tree(root: NodePtr) -> NodePtr {
     fn size(n: NodePtr) -> usize {
         if n.is_null() { return 0; }
-        let k = unsafe { (*n).head.kind };
+        let k = node_kind(n);
         let mut s = k.size;
         (k.children)(n, false, &mut |c| s += size(*c));
         s
     }
     fn copy(n: NodePtr, at: &mut *mut u8) -> NodePtr {
-        unsafe {
-            let k = (*n).head.kind;
-            let d = *at;
-            std::ptr::copy_nonoverlapping(n as *const u8, d, k.size);
-            *at = d.add(k.size);
-            let d = d as NodePtr;
-            (*d).head.flags |= NF_LAID;
-            (k.children)(d, true, &mut |c| if !c.is_null() { *c = copy(*c, at); });
-            d
-        }
+        let k = node_kind(n);
+        let d = *at;
+        // SAFETY: n is k.size bytes; d has k.size bytes left of the block size() measured
+        unsafe { std::ptr::copy_nonoverlapping(n as *const u8, d, k.size); }
+        *at = d.wrapping_add(k.size);
+        let d = d as NodePtr;
+        node_set_flags(d, node_flags(d) | NF_LAID);
+        (k.children)(d, true, &mut |c| if !c.is_null() { *c = copy(*c, at); });
+        d
     }
     if root.is_null() { return root; }
     let mut at = Box::leak(vec![0u64; size(root) / 8].into_boxed_slice()).as_mut_ptr() as *mut u8;
     copy(root, &mut at)
 }
-pub fn node_laid(n: NodePtr) -> bool { !n.is_null() && unsafe { (*n).head.flags & NF_LAID != 0 } }
-/// Specialized code's pointer to child `c` of `n` (contiguous trees).
+pub fn node_laid(n: NodePtr) -> bool { !n.is_null() && node_flags(n) & NF_LAID != 0 }
+/// Specialized code's pointer to child `c` of `n` (contiguous trees): an address only, node_u reads it.
 pub fn child_ptr_expr(n: NodePtr, c: NodePtr) -> String {
-    if c.is_null() { "std::ptr::null_mut()".to_string() } else { format!("n.byte_offset({}isize)", c as isize - n as isize) }
+    if c.is_null() { "std::ptr::null_mut()".to_string() } else { format!("n.wrapping_byte_offset({}isize)", c as isize - n as isize) }
 }
 /// A list operand in specialized code over a contiguous tree: no elements, the parent's address.
 #[inline(always)]
@@ -84,18 +133,16 @@ pub fn list_base(n: NodePtr) -> NodeList { unsafe { std::slice::from_raw_parts(n
 /// Structural (Merkle) hash, cached in the head.
 pub fn hash_node(n: NodePtr) -> u64 {
     if n.is_null() { return hash_str("null"); }
-    unsafe {
-        if (*n).head.flags & NF_HAS_HASH != 0 { return (*n).head.hash; }
-        let h = ((*n).head.kind.hash_func)(n);
-        (*n).head.hash = h;
-        (*n).head.flags |= NF_HAS_HASH;
-        h
-    }
+    if node_flags(n) & NF_HAS_HASH != 0 { return node_hash_get(n); }
+    let h = (node_kind(n).hash_func)(n);
+    node_hash_set(n, h);
+    node_set_flags(n, node_flags(n) | NF_HAS_HASH);
+    h
 }
 /// What specialization bakes into the subtree at n (PROF_<name>); each node once per ProfCtx.
 pub fn profile_node(pc: &mut ProfCtx, n: NodePtr) -> u64 {
     if n.is_null() || !pc.seen.insert(n as usize) { return 0; }
-    unsafe { ((*n).head.kind.profile)(pc, n) }
+    (node_kind(n).profile)(pc, n)
 }
 pub fn hash_node_list(ns: NodeList) -> u64 {
     let mut h = hash_u64(ns.len() as u64);
@@ -104,20 +151,20 @@ pub fn hash_node_list(ns: NodeList) -> u64 {
 }
 pub fn dump_node(out: &mut String, n: NodePtr) {
     if n.is_null() { out.push_str("null"); return; }
-    unsafe { ((*n).head.kind.dumper)(out, n) }
+    (node_kind(n).dumper)(out, n)
 }
 pub fn node_replace_child(parent: NodePtr, old: NodePtr, new: NodePtr) {
-    unsafe { ((*parent).head.kind.replacer)(parent, old, new) }
+    (node_kind(parent).replacer)(parent, old, new)
 }
 /// SD type name for the subtree rooted at n ("Dyn" when it must stay dynamic).
 pub fn specialize_node(sc: &mut SpecCtx, n: NodePtr) -> String {
-    unsafe {
-        if n.is_null() || (*n).head.flags & NF_NO_INLINE != 0 || ((*n).head.flags & NF_SPECIALIZING != 0 && sc.reenter == 0) { return "Dyn".to_string(); }
-        (*n).head.flags |= NF_SPECIALIZING;
-        let t = ((*n).head.kind.specializer)(sc, n);
-        (*n).head.flags &= !NF_SPECIALIZING;
-        t
-    }
+    if n.is_null() { return "Dyn".to_string(); }
+    let f = node_flags(n);
+    if f & NF_NO_INLINE != 0 || (f & NF_SPECIALIZING != 0 && sc.reenter == 0) { return "Dyn".to_string(); }
+    node_set_flags(n, f | NF_SPECIALIZING);
+    let t = (node_kind(n).specializer)(sc, n);
+    node_set_flags(n, node_flags(n) & !NF_SPECIALIZING);
+    t
 }
 /// specialize_node for a node being specialized already (a recursion target compiled into itself):
 /// its subtree again; the copy's recursive sites see the target in sc.unrolled and call it instead.
@@ -125,7 +172,7 @@ pub fn specialize_open(sc: &mut SpecCtx, n: NodePtr) -> String {
     sc.reenter += 1;
     let t = specialize_node(sc, n);
     sc.reenter -= 1;
-    unsafe { (*n).head.flags |= NF_SPECIALIZING; }
+    node_set_flags(n, node_flags(n) | NF_SPECIALIZING);
     t
 }
 /// Specialize n as a public entry: an exported `SD_<hash>` with the dispatcher's signature.
@@ -220,7 +267,7 @@ pub trait DispList {
 pub struct Dyn;
 impl Disp for Dyn {
     #[inline(always)]
-    fn call(c: &mut Ctx, n: NodePtr) -> i64 { unsafe { ((*n).head.dispatcher)(c, n) } }
+    fn call(c: &mut Ctx, n: NodePtr) -> i64 { node_dispatcher(n)(c, n) }
 }
 pub struct DynList;
 impl DispList for DynList {
@@ -228,17 +275,17 @@ impl DispList for DynList {
     #[inline(always)]
     fn nth(c: &mut Ctx, ns: NodeList, i: usize) -> i64 {
         let x = ns[i];
-        unsafe { ((*x).head.dispatcher)(c, x) }
+        node_dispatcher(x)(c, x)
     }
     #[inline(always)]
     fn each<F: FnMut(&mut Ctx, usize, i64) -> ()>(c: &mut Ctx, ns: NodeList, mut f: F) -> () {
         // the first ones in a row, as ASTroGen's per-arity dispatchers (short lists are the common case)
-        if ns.len() > 0 { let x = ns[0]; let r = unsafe { ((*x).head.dispatcher)(c, x) }; f(c, 0, r); }
-        if ns.len() > 1 { let x = ns[1]; let r = unsafe { ((*x).head.dispatcher)(c, x) }; f(c, 1, r); }
-        if ns.len() > 2 { let x = ns[2]; let r = unsafe { ((*x).head.dispatcher)(c, x) }; f(c, 2, r); }
+        if ns.len() > 0 { let x = ns[0]; let r = node_dispatcher(x)(c, x); f(c, 0, r); }
+        if ns.len() > 1 { let x = ns[1]; let r = node_dispatcher(x)(c, x); f(c, 1, r); }
+        if ns.len() > 2 { let x = ns[2]; let r = node_dispatcher(x)(c, x); f(c, 2, r); }
         for i in 3..ns.len() {
             let x = ns[i];
-            let r = unsafe { ((*x).head.dispatcher)(c, x) };
+            let r = node_dispatcher(x)(c, x);
             f(c, i, r);
         }
         ()
@@ -307,113 +354,104 @@ pub struct node_times_struct {
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_num(v: i64) -> NodePtr {
-    let n = node_allocate(&KIND_node_num, node_num_struct { v });
-    n
+    node_allocate_with(&KIND_node_num, node_num_struct { v }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_add(l: NodePtr, r: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_add, node_add_struct { l, r });
-    n
+    node_allocate_with(&KIND_node_add, node_add_struct { l, r }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_sub(l: NodePtr, r: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_sub, node_sub_struct { l, r });
-    n
+    node_allocate_with(&KIND_node_sub, node_sub_struct { l, r }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_mul(l: NodePtr, r: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_mul, node_mul_struct { l, r });
-    n
+    node_allocate_with(&KIND_node_mul, node_mul_struct { l, r }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_mod(l: NodePtr, r: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_mod, node_mod_struct { l, r });
-    n
+    node_allocate_with(&KIND_node_mod, node_mod_struct { l, r }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_var(idx: u32) -> NodePtr {
-    let n = node_allocate(&KIND_node_var, node_var_struct { idx });
-    n
+    node_allocate_with(&KIND_node_var, node_var_struct { idx }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_set(idx: u32, v: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_set, node_set_struct { idx, v });
-    n
+    node_allocate_with(&KIND_node_set, node_set_struct { idx, v }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_seq(xs: NodeList) -> NodePtr {
-    let n = node_allocate(&KIND_node_seq, node_seq_struct { xs });
-    n
+    node_allocate_with(&KIND_node_seq, node_seq_struct { xs }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_times(cnt: NodePtr, body: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_times, node_times_struct { cnt, body });
-    n
+    node_allocate_with(&KIND_node_times, node_times_struct { cnt, body }, |_| { })
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_num(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_num_struct>)).u };
+    let u = node_u_mut::<node_num_struct>(n);
 
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_add(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_add_struct>)).u };
+    let u = node_u_mut::<node_add_struct>(n);
     f(&mut u.l);
     f(&mut u.r);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_sub(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_sub_struct>)).u };
+    let u = node_u_mut::<node_sub_struct>(n);
     f(&mut u.l);
     f(&mut u.r);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_mul(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_mul_struct>)).u };
+    let u = node_u_mut::<node_mul_struct>(n);
     f(&mut u.l);
     f(&mut u.r);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_mod(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_mod_struct>)).u };
+    let u = node_u_mut::<node_mod_struct>(n);
     f(&mut u.l);
     f(&mut u.r);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_var(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_var_struct>)).u };
+    let u = node_u_mut::<node_var_struct>(n);
 
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_set(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_set_struct>)).u };
+    let u = node_u_mut::<node_set_struct>(n);
     f(&mut u.v);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_seq(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_seq_struct>)).u };
-    { if own { u.xs = Box::leak(u.xs.to_vec().into_boxed_slice()); } let l = u.xs; let p = l.as_ptr() as *mut NodePtr; for i in 0..l.len() { unsafe { f(&mut *p.add(i)); } } }
+    let u = node_u_mut::<node_seq_struct>(n);
+    if own { let mut l = u.xs.to_vec(); for x in l.iter_mut() { f(x); } u.xs = Box::leak(l.into_boxed_slice()); } else { for &x in u.xs.iter() { f(&mut { x }); } }
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_times(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_times_struct>)).u };
+    let u = node_u_mut::<node_times_struct>(n);
     f(&mut u.cnt);
     f(&mut u.body);
 }
@@ -432,6 +470,7 @@ pub static KIND_node_num: NodeKind = NodeKind {
     children: CHILDREN_node_num,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_num_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_num_struct>>() <= 8);
+impl NodeStruct for node_num_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_num } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_add: NodeKind = NodeKind {
@@ -447,6 +486,7 @@ pub static KIND_node_add: NodeKind = NodeKind {
     children: CHILDREN_node_add,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_add_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_add_struct>>() <= 8);
+impl NodeStruct for node_add_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_add } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_sub: NodeKind = NodeKind {
@@ -462,6 +502,7 @@ pub static KIND_node_sub: NodeKind = NodeKind {
     children: CHILDREN_node_sub,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_sub_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_sub_struct>>() <= 8);
+impl NodeStruct for node_sub_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_sub } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_mul: NodeKind = NodeKind {
@@ -477,6 +518,7 @@ pub static KIND_node_mul: NodeKind = NodeKind {
     children: CHILDREN_node_mul,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_mul_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_mul_struct>>() <= 8);
+impl NodeStruct for node_mul_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_mul } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_mod: NodeKind = NodeKind {
@@ -492,6 +534,7 @@ pub static KIND_node_mod: NodeKind = NodeKind {
     children: CHILDREN_node_mod,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_mod_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_mod_struct>>() <= 8);
+impl NodeStruct for node_mod_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_mod } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_var: NodeKind = NodeKind {
@@ -507,6 +550,7 @@ pub static KIND_node_var: NodeKind = NodeKind {
     children: CHILDREN_node_var,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_var_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_var_struct>>() <= 8);
+impl NodeStruct for node_var_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_var } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_set: NodeKind = NodeKind {
@@ -522,6 +566,7 @@ pub static KIND_node_set: NodeKind = NodeKind {
     children: CHILDREN_node_set,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_set_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_set_struct>>() <= 8);
+impl NodeStruct for node_set_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_set } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_seq: NodeKind = NodeKind {
@@ -537,6 +582,7 @@ pub static KIND_node_seq: NodeKind = NodeKind {
     children: CHILDREN_node_seq,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_seq_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_seq_struct>>() <= 8);
+impl NodeStruct for node_seq_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_seq } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_times: NodeKind = NodeKind {
@@ -552,4 +598,5 @@ pub static KIND_node_times: NodeKind = NodeKind {
     children: CHILDREN_node_times,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_times_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_times_struct>>() <= 8);
+impl NodeStruct for node_times_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_times } }
 

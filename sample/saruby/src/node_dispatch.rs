@@ -1,1073 +1,863 @@
 // This file is auto-generated from node.def by astrustgen. Do not edit.
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_nil(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_nil");
-    let np = n as *mut NodeOf<node_nil_struct>;
-    unsafe {
+    let u = node_u::<node_nil_struct>(n);
 
     EVAL_node_nil(c, n, fp)
-    }
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_true(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_true");
-    let np = n as *mut NodeOf<node_true_struct>;
-    unsafe {
+    let u = node_u::<node_true_struct>(n);
 
     EVAL_node_true(c, n, fp)
-    }
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_false(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_false");
-    let np = n as *mut NodeOf<node_false_struct>;
-    unsafe {
+    let u = node_u::<node_false_struct>(n);
 
     EVAL_node_false(c, n, fp)
-    }
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_self(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_self");
-    let np = n as *mut NodeOf<node_self_struct>;
-    unsafe {
+    let u = node_u::<node_self_struct>(n);
 
     EVAL_node_self(c, n, fp)
-    }
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_lit(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_lit");
-    let np = n as *mut NodeOf<node_lit_struct>;
-    unsafe {
+    let u = node_u::<node_lit_struct>(n);
 
-    EVAL_node_lit(c, n, fp, (*np).u.v)
-    }
+    EVAL_node_lit(c, n, fp, u.v)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_float(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_float");
-    let np = n as *mut NodeOf<node_float_struct>;
-    unsafe {
+    let u = node_u::<node_float_struct>(n);
 
-    EVAL_node_float(c, n, fp, (*np).u.v)
-    }
+    EVAL_node_float(c, n, fp, u.v)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_str(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_str");
-    let np = n as *mut NodeOf<node_str_struct>;
-    unsafe {
+    let u = node_u::<node_str_struct>(n);
 
-    EVAL_node_str(c, n, fp, (*np).u.s, (*np).u.enc)
-    }
+    EVAL_node_str(c, n, fp, u.s, u.enc)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_fstr(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_fstr");
-    let np = n as *mut NodeOf<node_fstr_struct>;
-    unsafe {
+    let u = node_u::<node_fstr_struct>(n);
 
-    EVAL_node_fstr(c, n, fp, (*np).u.s, (*np).u.enc, &mut (*np).u.lc)
-    }
+    EVAL_node_fstr(c, n, fp, u.s, u.enc, u.lc.body_mut())
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_dstr(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_dstr");
-    let np = n as *mut NodeOf<node_dstr_struct>;
-    unsafe {
+    let u = node_u::<node_dstr_struct>(n);
 
-    EVAL_node_dstr::<DynList>(c, n, fp, (*np).u.parts, (*np).u.enc, (*np).u.cap)
-    }
+    EVAL_node_dstr::<DynList>(c, n, fp, u.parts, u.enc, u.cap)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_tostr(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_tostr");
-    let np = n as *mut NodeOf<node_tostr_struct>;
-    unsafe {
-    let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
+    let u = node_u::<node_tostr_struct>(n);
+    let v_v = <Dyn as Disp>::call(c, u.v, fp)?;
     EVAL_node_tostr(c, n, fp, v_v)
-    }
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_dsym(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_dsym");
-    let np = n as *mut NodeOf<node_dsym_struct>;
-    unsafe {
-    let v_s = <Dyn as Disp>::call(c, (*np).u.s, fp)?;
+    let u = node_u::<node_dsym_struct>(n);
+    let v_s = <Dyn as Disp>::call(c, u.s, fp)?;
     EVAL_node_dsym(c, n, fp, v_s)
-    }
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_regex(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_regex");
-    let np = n as *mut NodeOf<node_regex_struct>;
-    unsafe {
+    let u = node_u::<node_regex_struct>(n);
 
-    EVAL_node_regex(c, n, fp, (*np).u.src, (*np).u.opts, &mut (*np).u.lc)
-    }
+    EVAL_node_regex(c, n, fp, u.src, u.opts, u.lc.body_mut())
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_dregex(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_dregex");
-    let np = n as *mut NodeOf<node_dregex_struct>;
-    unsafe {
-    let v_s = <Dyn as Disp>::call(c, (*np).u.s, fp)?;
-    EVAL_node_dregex(c, n, fp, v_s, (*np).u.opts, (*np).u.once, &mut (*np).u.lc)
-    }
+    let u = node_u::<node_dregex_struct>(n);
+    let v_s = <Dyn as Disp>::call(c, u.s, fp)?;
+    EVAL_node_dregex(c, n, fp, v_s, u.opts, u.once, u.lc.body_mut())
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_biglit(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_biglit");
-    let np = n as *mut NodeOf<node_biglit_struct>;
-    unsafe {
+    let u = node_u::<node_biglit_struct>(n);
 
-    EVAL_node_biglit(c, n, fp, (*np).u.digits, &mut (*np).u.lc)
-    }
+    EVAL_node_biglit(c, n, fp, u.digits, u.lc.body_mut())
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_ary(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_ary");
-    let np = n as *mut NodeOf<node_ary_struct>;
-    unsafe {
+    let u = node_u::<node_ary_struct>(n);
 
-    EVAL_node_ary::<DynList>(c, n, fp, (*np).u.elems)
-    }
+    EVAL_node_ary::<DynList>(c, n, fp, u.elems)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_ary_build(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_ary_build");
-    let np = n as *mut NodeOf<node_ary_build_struct>;
-    unsafe {
+    let u = node_u::<node_ary_build_struct>(n);
 
-    EVAL_node_ary_build::<DynList>(c, n, fp, (*np).u.elems, (*np).u.kinds)
-    }
+    EVAL_node_ary_build::<DynList>(c, n, fp, u.elems, u.kinds)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_hash(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_hash");
-    let np = n as *mut NodeOf<node_hash_struct>;
-    unsafe {
+    let u = node_u::<node_hash_struct>(n);
 
-    EVAL_node_hash::<DynList>(c, n, fp, (*np).u.items, (*np).u.kinds)
-    }
+    EVAL_node_hash::<DynList>(c, n, fp, u.items, u.kinds)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_range(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_range");
-    let np = n as *mut NodeOf<node_range_struct>;
-    unsafe {
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    let v_e = <Dyn as Disp>::call(c, (*np).u.e, fp)?;
-    EVAL_node_range(c, n, fp, v_b, v_e, (*np).u.excl)
-    }
+    let u = node_u::<node_range_struct>(n);
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    let v_e = <Dyn as Disp>::call(c, u.e, fp)?;
+    EVAL_node_range(c, n, fp, v_b, v_e, u.excl)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_range_lit(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_range_lit");
-    let np = n as *mut NodeOf<node_range_lit_struct>;
-    unsafe {
+    let u = node_u::<node_range_lit_struct>(n);
 
-    EVAL_node_range_lit(c, n, fp, (*np).u.b, (*np).u.e, (*np).u.excl, &mut (*np).u.lc)
-    }
+    EVAL_node_range_lit(c, n, fp, u.b, u.e, u.excl, u.lc.body_mut())
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_lvar(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_lvar");
-    let np = n as *mut NodeOf<node_lvar_struct>;
-    unsafe {
+    let u = node_u::<node_lvar_struct>(n);
 
-    EVAL_node_lvar(c, n, fp, (*np).u.idx)
-    }
+    EVAL_node_lvar(c, n, fp, u.idx)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_lasgn(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_lasgn");
-    let np = n as *mut NodeOf<node_lasgn_struct>;
-    unsafe {
-    let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
-    EVAL_node_lasgn(c, n, fp, (*np).u.idx, v_v)
-    }
+    let u = node_u::<node_lasgn_struct>(n);
+    let v_v = <Dyn as Disp>::call(c, u.v, fp)?;
+    EVAL_node_lasgn(c, n, fp, u.idx, v_v)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_dvar(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_dvar");
-    let np = n as *mut NodeOf<node_dvar_struct>;
-    unsafe {
+    let u = node_u::<node_dvar_struct>(n);
 
-    EVAL_node_dvar(c, n, fp, (*np).u.hops, (*np).u.idx)
-    }
+    EVAL_node_dvar(c, n, fp, u.hops, u.idx)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_dasgn(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_dasgn");
-    let np = n as *mut NodeOf<node_dasgn_struct>;
-    unsafe {
-    let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
-    EVAL_node_dasgn(c, n, fp, (*np).u.hops, (*np).u.idx, v_v)
-    }
+    let u = node_u::<node_dasgn_struct>(n);
+    let v_v = <Dyn as Disp>::call(c, u.v, fp)?;
+    EVAL_node_dasgn(c, n, fp, u.hops, u.idx, v_v)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_ivar(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_ivar");
-    let np = n as *mut NodeOf<node_ivar_struct>;
-    unsafe {
+    let u = node_u::<node_ivar_struct>(n);
 
-    EVAL_node_ivar(c, n, fp, (*np).u.name, &mut (*np).u.ic, 0)
-    }
+    EVAL_node_ivar(c, n, fp, u.name, u.ic.body_mut(), 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_iasgn(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_iasgn");
-    let np = n as *mut NodeOf<node_iasgn_struct>;
-    unsafe {
-    let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
-    EVAL_node_iasgn(c, n, fp, (*np).u.name, v_v, &mut (*np).u.ic, 0)
-    }
+    let u = node_u::<node_iasgn_struct>(n);
+    let v_v = <Dyn as Disp>::call(c, u.v, fp)?;
+    EVAL_node_iasgn(c, n, fp, u.name, v_v, u.ic.body_mut(), 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_ivar_arith(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_ivar_arith");
-    let np = n as *mut NodeOf<node_ivar_arith_struct>;
-    unsafe {
-    let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
-    EVAL_node_ivar_arith::<crate::vm::LineAt>(c, n, fp, (*np).u.name, (*np).u.sub, v_v, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.ic, &mut (*np).u.cc, 0)
-    }
+    let u = node_u::<node_ivar_arith_struct>(n);
+    let v_v = <Dyn as Disp>::call(c, u.v, fp)?;
+    EVAL_node_ivar_arith::<crate::vm::LineAt>(c, n, fp, u.name, u.sub, v_v, crate::vm::LineAt(&(*node_head_line(n))), u.ic.body_mut(), u.cc.body_mut(), 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_gvar(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_gvar");
-    let np = n as *mut NodeOf<node_gvar_struct>;
-    unsafe {
+    let u = node_u::<node_gvar_struct>(n);
 
-    EVAL_node_gvar(c, n, fp, (*np).u.name)
-    }
+    EVAL_node_gvar(c, n, fp, u.name)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_gasgn(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_gasgn");
-    let np = n as *mut NodeOf<node_gasgn_struct>;
-    unsafe {
-    let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
-    EVAL_node_gasgn(c, n, fp, (*np).u.name, v_v)
-    }
+    let u = node_u::<node_gasgn_struct>(n);
+    let v_v = <Dyn as Disp>::call(c, u.v, fp)?;
+    EVAL_node_gasgn(c, n, fp, u.name, v_v)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_cvar(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_cvar");
-    let np = n as *mut NodeOf<node_cvar_struct>;
-    unsafe {
+    let u = node_u::<node_cvar_struct>(n);
 
-    EVAL_node_cvar(c, n, fp, (*np).u.name)
-    }
+    EVAL_node_cvar(c, n, fp, u.name)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_cvasgn(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_cvasgn");
-    let np = n as *mut NodeOf<node_cvasgn_struct>;
-    unsafe {
-    let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
-    EVAL_node_cvasgn(c, n, fp, (*np).u.name, v_v)
-    }
+    let u = node_u::<node_cvasgn_struct>(n);
+    let v_v = <Dyn as Disp>::call(c, u.v, fp)?;
+    EVAL_node_cvasgn(c, n, fp, u.name, v_v)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_const(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_const");
-    let np = n as *mut NodeOf<node_const_struct>;
-    unsafe {
+    let u = node_u::<node_const_struct>(n);
 
-    EVAL_node_const::<crate::vm::LineAt>(c, n, fp, (*np).u.name, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc)
-    }
+    EVAL_node_const::<crate::vm::LineAt>(c, n, fp, u.name, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut())
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_const_path(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_const_path");
-    let np = n as *mut NodeOf<node_const_path_struct>;
-    unsafe {
-    let v_parent = <Dyn as Disp>::call(c, (*np).u.parent, fp)?;
-    EVAL_node_const_path::<crate::vm::LineAt>(c, n, fp, v_parent, (*np).u.name, crate::vm::LineAt(&(*np).head.line))
-    }
+    let u = node_u::<node_const_path_struct>(n);
+    let v_parent = <Dyn as Disp>::call(c, u.parent, fp)?;
+    EVAL_node_const_path::<crate::vm::LineAt>(c, n, fp, v_parent, u.name, crate::vm::LineAt(&(*node_head_line(n))))
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_top_const(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_top_const");
-    let np = n as *mut NodeOf<node_top_const_struct>;
-    unsafe {
+    let u = node_u::<node_top_const_struct>(n);
 
-    EVAL_node_top_const(c, n, fp, (*np).u.name)
-    }
+    EVAL_node_top_const(c, n, fp, u.name)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_cdecl(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_cdecl");
-    let np = n as *mut NodeOf<node_cdecl_struct>;
-    unsafe {
-    let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
-    EVAL_node_cdecl(c, n, fp, (*np).u.name, v_v)
-    }
+    let u = node_u::<node_cdecl_struct>(n);
+    let v_v = <Dyn as Disp>::call(c, u.v, fp)?;
+    EVAL_node_cdecl(c, n, fp, u.name, v_v)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_cdecl_path(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_cdecl_path");
-    let np = n as *mut NodeOf<node_cdecl_path_struct>;
-    unsafe {
-    let v_parent = <Dyn as Disp>::call(c, (*np).u.parent, fp)?;
-    let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
-    EVAL_node_cdecl_path(c, n, fp, v_parent, (*np).u.name, v_v)
-    }
+    let u = node_u::<node_cdecl_path_struct>(n);
+    let v_parent = <Dyn as Disp>::call(c, u.parent, fp)?;
+    let v_v = <Dyn as Disp>::call(c, u.v, fp)?;
+    EVAL_node_cdecl_path(c, n, fp, v_parent, u.name, v_v)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_errinfo(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_errinfo");
-    let np = n as *mut NodeOf<node_errinfo_struct>;
-    unsafe {
+    let u = node_u::<node_errinfo_struct>(n);
 
     EVAL_node_errinfo(c, n, fp)
-    }
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_nth_ref(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_nth_ref");
-    let np = n as *mut NodeOf<node_nth_ref_struct>;
-    unsafe {
+    let u = node_u::<node_nth_ref_struct>(n);
 
-    EVAL_node_nth_ref(c, n, fp, (*np).u.nth)
-    }
+    EVAL_node_nth_ref(c, n, fp, u.nth)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_back_ref(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_back_ref");
-    let np = n as *mut NodeOf<node_back_ref_struct>;
-    unsafe {
+    let u = node_u::<node_back_ref_struct>(n);
 
-    EVAL_node_back_ref(c, n, fp, (*np).u.kind)
-    }
+    EVAL_node_back_ref(c, n, fp, u.kind)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_block(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_block");
-    let np = n as *mut NodeOf<node_block_struct>;
-    unsafe {
+    let u = node_u::<node_block_struct>(n);
 
-    EVAL_node_block::<DynList>(c, n, fp, (*np).u.stmts)
-    }
+    EVAL_node_block::<DynList>(c, n, fp, u.stmts)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_line(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_line");
-    let np = n as *mut NodeOf<node_line_struct>;
-    unsafe {
+    let u = node_u::<node_line_struct>(n);
 
-    EVAL_node_line::<crate::vm::LineAt, Dyn>(c, n, fp, crate::vm::LineAt(&(*np).head.line), (*np).u.body)
-    }
+    EVAL_node_line::<crate::vm::LineAt, Dyn>(c, n, fp, crate::vm::LineAt(&(*node_head_line(n))), u.body)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_trace(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_trace");
-    let np = n as *mut NodeOf<node_trace_struct>;
-    unsafe {
+    let u = node_u::<node_trace_struct>(n);
 
-    EVAL_node_trace::<crate::vm::LineAt, Dyn>(c, n, fp, (*np).u.ev, crate::vm::LineAt(&(*np).head.line), (*np).u.body)
-    }
+    EVAL_node_trace::<crate::vm::LineAt, Dyn>(c, n, fp, u.ev, crate::vm::LineAt(&(*node_head_line(n))), u.body)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_cov(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_cov");
-    let np = n as *mut NodeOf<node_cov_struct>;
-    unsafe {
+    let u = node_u::<node_cov_struct>(n);
 
-    EVAL_node_cov::<Dyn>(c, n, fp, (*np).u.id, (*np).u.body)
-    }
+    EVAL_node_cov::<Dyn>(c, n, fp, u.id, u.body)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_if(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_if");
-    let np = n as *mut NodeOf<node_if_struct>;
-    unsafe {
+    let u = node_u::<node_if_struct>(n);
 
-    EVAL_node_if::<Dyn, Dyn, Dyn>(c, n, fp, (*np).u.cond, (*np).u.then_b, (*np).u.else_b)
-    }
+    EVAL_node_if::<Dyn, Dyn, Dyn>(c, n, fp, u.cond, u.then_b, u.else_b)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_and(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_and");
-    let np = n as *mut NodeOf<node_and_struct>;
-    unsafe {
+    let u = node_u::<node_and_struct>(n);
 
-    EVAL_node_and::<Dyn, Dyn>(c, n, fp, (*np).u.a, (*np).u.b)
-    }
+    EVAL_node_and::<Dyn, Dyn>(c, n, fp, u.a, u.b)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_or(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_or");
-    let np = n as *mut NodeOf<node_or_struct>;
-    unsafe {
+    let u = node_u::<node_or_struct>(n);
 
-    EVAL_node_or::<Dyn, Dyn>(c, n, fp, (*np).u.a, (*np).u.b)
-    }
+    EVAL_node_or::<Dyn, Dyn>(c, n, fp, u.a, u.b)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_not(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_not");
-    let np = n as *mut NodeOf<node_not_struct>;
-    unsafe {
-    let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
-    EVAL_node_not(c, n, fp, v_v, &mut (*np).u.cc)
-    }
+    let u = node_u::<node_not_struct>(n);
+    let v_v = <Dyn as Disp>::call(c, u.v, fp)?;
+    EVAL_node_not(c, n, fp, v_v, u.cc.body_mut())
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_while(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_while");
-    let np = n as *mut NodeOf<node_while_struct>;
-    unsafe {
+    let u = node_u::<node_while_struct>(n);
 
-    EVAL_node_while::<Dyn, Dyn>(c, n, fp, (*np).u.cond, (*np).u.body, (*np).u.until)
-    }
+    EVAL_node_while::<Dyn, Dyn>(c, n, fp, u.cond, u.body, u.until)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_dowhile(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_dowhile");
-    let np = n as *mut NodeOf<node_dowhile_struct>;
-    unsafe {
+    let u = node_u::<node_dowhile_struct>(n);
 
-    EVAL_node_dowhile::<Dyn, Dyn>(c, n, fp, (*np).u.cond, (*np).u.body, (*np).u.until)
-    }
+    EVAL_node_dowhile::<Dyn, Dyn>(c, n, fp, u.cond, u.body, u.until)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_loop_break(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_loop_break");
-    let np = n as *mut NodeOf<node_loop_break_struct>;
-    unsafe {
-    let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
+    let u = node_u::<node_loop_break_struct>(n);
+    let v_v = <Dyn as Disp>::call(c, u.v, fp)?;
     EVAL_node_loop_break(c, n, fp, v_v)
-    }
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_loop_next(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_loop_next");
-    let np = n as *mut NodeOf<node_loop_next_struct>;
-    unsafe {
-    let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
+    let u = node_u::<node_loop_next_struct>(n);
+    let v_v = <Dyn as Disp>::call(c, u.v, fp)?;
     EVAL_node_loop_next(c, n, fp, v_v)
-    }
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_break(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_break");
-    let np = n as *mut NodeOf<node_break_struct>;
-    unsafe {
-    let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
+    let u = node_u::<node_break_struct>(n);
+    let v_v = <Dyn as Disp>::call(c, u.v, fp)?;
     EVAL_node_break(c, n, fp, v_v)
-    }
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_next(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_next");
-    let np = n as *mut NodeOf<node_next_struct>;
-    unsafe {
-    let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
+    let u = node_u::<node_next_struct>(n);
+    let v_v = <Dyn as Disp>::call(c, u.v, fp)?;
     EVAL_node_next(c, n, fp, v_v)
-    }
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_return(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_return");
-    let np = n as *mut NodeOf<node_return_struct>;
-    unsafe {
-    let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
+    let u = node_u::<node_return_struct>(n);
+    let v_v = <Dyn as Disp>::call(c, u.v, fp)?;
     EVAL_node_return(c, n, fp, v_v)
-    }
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_retry(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_retry");
-    let np = n as *mut NodeOf<node_retry_struct>;
-    unsafe {
+    let u = node_u::<node_retry_struct>(n);
 
     EVAL_node_retry(c, n, fp)
-    }
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_redo(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_redo");
-    let np = n as *mut NodeOf<node_redo_struct>;
-    unsafe {
+    let u = node_u::<node_redo_struct>(n);
 
     EVAL_node_redo(c, n, fp)
-    }
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_rescue(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_rescue");
-    let np = n as *mut NodeOf<node_rescue_struct>;
-    unsafe {
+    let u = node_u::<node_rescue_struct>(n);
 
-    EVAL_node_rescue::<Dyn, DynList, Dyn>(c, n, fp, (*np).u.body, (*np).u.clauses, (*np).u.else_b, (*np).u.has_else)
-    }
+    EVAL_node_rescue::<Dyn, DynList, Dyn>(c, n, fp, u.body, u.clauses, u.else_b, u.has_else)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_resbody(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_resbody");
-    let np = n as *mut NodeOf<node_resbody_struct>;
-    unsafe {
+    let u = node_u::<node_resbody_struct>(n);
 
-    EVAL_node_resbody::<DynList, Dyn, Dyn>(c, n, fp, (*np).u.classes, (*np).u.kinds, (*np).u.assign, (*np).u.body)
-    }
+    EVAL_node_resbody::<DynList, Dyn, Dyn>(c, n, fp, u.classes, u.kinds, u.assign, u.body)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_ensure(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_ensure");
-    let np = n as *mut NodeOf<node_ensure_struct>;
-    unsafe {
+    let u = node_u::<node_ensure_struct>(n);
 
-    EVAL_node_ensure::<Dyn, Dyn>(c, n, fp, (*np).u.body, (*np).u.ens)
-    }
+    EVAL_node_ensure::<Dyn, Dyn>(c, n, fp, u.body, u.ens)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_when(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_when");
-    let np = n as *mut NodeOf<node_when_struct>;
-    unsafe {
+    let u = node_u::<node_when_struct>(n);
 
-    EVAL_node_when::<DynList>(c, n, fp, (*np).u.subj_slot, (*np).u.pats, (*np).u.kinds, &mut (*np).u.cc, &mut (*np).u.km)
-    }
+    EVAL_node_when::<DynList>(c, n, fp, u.subj_slot, u.pats, u.kinds, u.cc.body_mut(), u.km.body_mut())
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_when_lit(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_when_lit");
-    let np = n as *mut NodeOf<node_when_lit_struct>;
-    unsafe {
+    let u = node_u::<node_when_lit_struct>(n);
 
-    EVAL_node_when_lit(c, n, fp, (*np).u.subj_slot, (*np).u.v, &mut (*np).u.cc)
-    }
+    EVAL_node_when_lit(c, n, fp, u.subj_slot, u.v, u.cc.body_mut())
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_defined(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_defined");
-    let np = n as *mut NodeOf<node_defined_struct>;
-    unsafe {
+    let u = node_u::<node_defined_struct>(n);
 
-    EVAL_node_defined::<Dyn>(c, n, fp, (*np).u.kind, (*np).u.name, (*np).u.recv)
-    }
+    EVAL_node_defined::<Dyn>(c, n, fp, u.kind, u.name, u.recv)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_call");
-    let np = n as *mut NodeOf<node_call_struct>;
-    unsafe {
+    let u = node_u::<node_call_struct>(n);
 
-    EVAL_node_call::<Dyn, DynList, crate::vm::LineAt, Dyn>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc, 0u64, 0, 0, 0)
-    }
+    EVAL_node_call::<Dyn, DynList, crate::vm::LineAt, Dyn>(c, n, fp, u.recv, u.args, u.mid, u.flags, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut(), 0u64, 0, 0, 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_call_blk(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_call_blk");
-    let np = n as *mut NodeOf<node_call_blk_struct>;
-    unsafe {
+    let u = node_u::<node_call_blk_struct>(n);
 
-    EVAL_node_call_blk::<Dyn, DynList, crate::vm::LineAt, Dyn, Dyn>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, crate::vm::LineAt(&(*np).head.line), (*np).u.blk, &mut (*np).u.cc, 0u64, 0, 0u64, 0)
-    }
+    EVAL_node_call_blk::<Dyn, DynList, crate::vm::LineAt, Dyn, Dyn>(c, n, fp, u.recv, u.args, u.mid, u.flags, crate::vm::LineAt(&(*node_head_line(n))), u.blk, u.cc.body_mut(), 0u64, 0, 0u64, 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_call_kw(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_call_kw");
-    let np = n as *mut NodeOf<node_call_kw_struct>;
-    unsafe {
+    let u = node_u::<node_call_kw_struct>(n);
 
-    EVAL_node_call_kw::<Dyn, DynList, crate::vm::LineAt, Dyn>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, crate::vm::LineAt(&(*np).head.line), (*np).u.ci, &mut (*np).u.cc, 0u64, 0)
-    }
+    EVAL_node_call_kw::<Dyn, DynList, crate::vm::LineAt, Dyn>(c, n, fp, u.recv, u.args, u.mid, u.flags, crate::vm::LineAt(&(*node_head_line(n))), u.ci, u.cc.body_mut(), 0u64, 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_call_x(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_call_x");
-    let np = n as *mut NodeOf<node_call_x_struct>;
-    unsafe {
+    let u = node_u::<node_call_x_struct>(n);
 
-    EVAL_node_call_x::<Dyn, DynList, crate::vm::LineAt>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, crate::vm::LineAt(&(*np).head.line), (*np).u.ci, &mut (*np).u.cc)
-    }
+    EVAL_node_call_x::<Dyn, DynList, crate::vm::LineAt>(c, n, fp, u.recv, u.args, u.mid, u.flags, crate::vm::LineAt(&(*node_head_line(n))), u.ci, u.cc.body_mut())
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_send_sym(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_send_sym");
-    let np = n as *mut NodeOf<node_send_sym_struct>;
-    unsafe {
-    let v_recv = <Dyn as Disp>::call(c, (*np).u.recv, fp)?;
-    EVAL_node_send_sym::<Dyn, Dyn>(c, n, fp, v_recv, (*np).u.smid, (*np).u.call, (*np).u.general, &mut (*np).u.g)
-    }
+    let u = node_u::<node_send_sym_struct>(n);
+    let v_recv = <Dyn as Disp>::call(c, u.recv, fp)?;
+    EVAL_node_send_sym::<Dyn, Dyn>(c, n, fp, v_recv, u.smid, u.call, u.general, u.g.body_mut())
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_attrasgn(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_attrasgn");
-    let np = n as *mut NodeOf<node_attrasgn_struct>;
-    unsafe {
+    let u = node_u::<node_attrasgn_struct>(n);
 
-    EVAL_node_attrasgn::<Dyn, DynList, crate::vm::LineAt>(c, n, fp, (*np).u.recv, (*np).u.args, (*np).u.mid, (*np).u.flags, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc, 0)
-    }
+    EVAL_node_attrasgn::<Dyn, DynList, crate::vm::LineAt>(c, n, fp, u.recv, u.args, u.mid, u.flags, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut(), 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_super(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_super");
-    let np = n as *mut NodeOf<node_super_struct>;
-    unsafe {
+    let u = node_u::<node_super_struct>(n);
 
-    EVAL_node_super::<DynList, crate::vm::LineAt>(c, n, fp, (*np).u.args, crate::vm::LineAt(&(*np).head.line), (*np).u.ci, (*np).u.zsuper)
-    }
+    EVAL_node_super::<DynList, crate::vm::LineAt>(c, n, fp, u.args, crate::vm::LineAt(&(*node_head_line(n))), u.ci, u.zsuper)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_yield(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_yield");
-    let np = n as *mut NodeOf<node_yield_struct>;
-    unsafe {
+    let u = node_u::<node_yield_struct>(n);
 
-    EVAL_node_yield::<DynList, Dyn>(c, n, fp, (*np).u.args, &mut (*np).u.yc, 0u64, 0)
-    }
+    EVAL_node_yield::<DynList, Dyn>(c, n, fp, u.args, u.yc.body_mut(), 0u64, 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_yield_x(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_yield_x");
-    let np = n as *mut NodeOf<node_yield_x_struct>;
-    unsafe {
+    let u = node_u::<node_yield_x_struct>(n);
 
-    EVAL_node_yield_x::<DynList>(c, n, fp, (*np).u.args, (*np).u.ci)
-    }
+    EVAL_node_yield_x::<DynList>(c, n, fp, u.args, u.ci)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_block_given(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_block_given");
-    let np = n as *mut NodeOf<node_block_given_struct>;
-    unsafe {
+    let u = node_u::<node_block_given_struct>(n);
 
     EVAL_node_block_given(c, n, fp)
-    }
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_lambda(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_lambda");
-    let np = n as *mut NodeOf<node_lambda_struct>;
-    unsafe {
+    let u = node_u::<node_lambda_struct>(n);
 
-    EVAL_node_lambda(c, n, fp, (*np).u.blk)
-    }
+    EVAL_node_lambda(c, n, fp, u.blk)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_plus(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_plus");
-    let np = n as *mut NodeOf<node_opt_plus_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_plus::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc, &mut (*np).u.tf, 0)
-    }
+    let u = node_u::<node_opt_plus_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    EVAL_node_opt_plus::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut(), u.tf.body_mut(), 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_minus(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_minus");
-    let np = n as *mut NodeOf<node_opt_minus_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_minus::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc, &mut (*np).u.tf, 0)
-    }
+    let u = node_u::<node_opt_minus_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    EVAL_node_opt_minus::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut(), u.tf.body_mut(), 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_mul(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_mul");
-    let np = n as *mut NodeOf<node_opt_mul_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_mul::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc, &mut (*np).u.tf, 0)
-    }
+    let u = node_u::<node_opt_mul_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    EVAL_node_opt_mul::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut(), u.tf.body_mut(), 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_div(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_div");
-    let np = n as *mut NodeOf<node_opt_div_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_div::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc, &mut (*np).u.tf, 0)
-    }
+    let u = node_u::<node_opt_div_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    EVAL_node_opt_div::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut(), u.tf.body_mut(), 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_pow(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_pow");
-    let np = n as *mut NodeOf<node_opt_pow_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_pow::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc)
-    }
+    let u = node_u::<node_opt_pow_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    EVAL_node_opt_pow::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut())
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_mod(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_mod");
-    let np = n as *mut NodeOf<node_opt_mod_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_mod::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc)
-    }
+    let u = node_u::<node_opt_mod_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    EVAL_node_opt_mod::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut())
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_lt(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_lt");
-    let np = n as *mut NodeOf<node_opt_lt_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_lt::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc, &mut (*np).u.tf, 0)
-    }
+    let u = node_u::<node_opt_lt_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    EVAL_node_opt_lt::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut(), u.tf.body_mut(), 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_le(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_le");
-    let np = n as *mut NodeOf<node_opt_le_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_le::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc, &mut (*np).u.tf, 0)
-    }
+    let u = node_u::<node_opt_le_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    EVAL_node_opt_le::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut(), u.tf.body_mut(), 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_gt(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_gt");
-    let np = n as *mut NodeOf<node_opt_gt_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_gt::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc, &mut (*np).u.tf, 0)
-    }
+    let u = node_u::<node_opt_gt_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    EVAL_node_opt_gt::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut(), u.tf.body_mut(), 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_ge(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_ge");
-    let np = n as *mut NodeOf<node_opt_ge_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_ge::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc, &mut (*np).u.tf, 0)
-    }
+    let u = node_u::<node_opt_ge_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    EVAL_node_opt_ge::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut(), u.tf.body_mut(), 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_eq(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_eq");
-    let np = n as *mut NodeOf<node_opt_eq_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_eq::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc, &mut (*np).u.tf, 0)
-    }
+    let u = node_u::<node_opt_eq_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    EVAL_node_opt_eq::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut(), u.tf.body_mut(), 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_neq(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_neq");
-    let np = n as *mut NodeOf<node_opt_neq_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_neq::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc, &mut (*np).u.tf, 0)
-    }
+    let u = node_u::<node_opt_neq_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    EVAL_node_opt_neq::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut(), u.tf.body_mut(), 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_ltlt(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_ltlt");
-    let np = n as *mut NodeOf<node_opt_ltlt_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_ltlt::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc)
-    }
+    let u = node_u::<node_opt_ltlt_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    EVAL_node_opt_ltlt::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut())
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_gtgt(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_gtgt");
-    let np = n as *mut NodeOf<node_opt_gtgt_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_gtgt::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc)
-    }
+    let u = node_u::<node_opt_gtgt_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    EVAL_node_opt_gtgt::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut())
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_xor(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_xor");
-    let np = n as *mut NodeOf<node_opt_xor_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_xor::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc)
-    }
+    let u = node_u::<node_opt_xor_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    EVAL_node_opt_xor::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut())
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_and(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_and");
-    let np = n as *mut NodeOf<node_opt_and_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_and::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc)
-    }
+    let u = node_u::<node_opt_and_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    EVAL_node_opt_and::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut())
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_or(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_or");
-    let np = n as *mut NodeOf<node_opt_or_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_or::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc)
-    }
+    let u = node_u::<node_opt_or_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    EVAL_node_opt_or::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut())
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_aref(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_aref");
-    let np = n as *mut NodeOf<node_opt_aref_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    EVAL_node_opt_aref::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc, &mut (*np).u.tf, 0)
-    }
+    let u = node_u::<node_opt_aref_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    EVAL_node_opt_aref::<crate::vm::LineAt>(c, n, fp, v_a, v_b, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut(), u.tf.body_mut(), 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_opt_aset(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_opt_aset");
-    let np = n as *mut NodeOf<node_opt_aset_struct>;
-    unsafe {
-    let v_a = <Dyn as Disp>::call(c, (*np).u.a, fp)?;
-    let v_b = <Dyn as Disp>::call(c, (*np).u.b, fp)?;
-    let v_v = <Dyn as Disp>::call(c, (*np).u.v, fp)?;
-    EVAL_node_opt_aset::<crate::vm::LineAt>(c, n, fp, v_a, v_b, v_v, crate::vm::LineAt(&(*np).head.line), &mut (*np).u.cc, &mut (*np).u.tf, 0)
-    }
+    let u = node_u::<node_opt_aset_struct>(n);
+    let v_a = <Dyn as Disp>::call(c, u.a, fp)?;
+    let v_b = <Dyn as Disp>::call(c, u.b, fp)?;
+    let v_v = <Dyn as Disp>::call(c, u.v, fp)?;
+    EVAL_node_opt_aset::<crate::vm::LineAt>(c, n, fp, v_a, v_b, v_v, crate::vm::LineAt(&(*node_head_line(n))), u.cc.body_mut(), u.tf.body_mut(), 0)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_method_entry(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_method_entry");
-    let np = n as *mut NodeOf<node_method_entry_struct>;
-    unsafe {
+    let u = node_u::<node_method_entry_struct>(n);
 
-    EVAL_node_method_entry::<crate::vm::LineAt, Dyn>(c, n, fp, (*np).u.nlocals, (*np).u.nparams, (*np).u.flags, crate::vm::LineAt(&(*np).head.line), (*np).u.body, crate::vm::CallArgs::load(c))
-    }
+    EVAL_node_method_entry::<crate::vm::LineAt, Dyn>(c, n, fp, u.nlocals, u.nparams, u.flags, crate::vm::LineAt(&(*node_head_line(n))), u.body, crate::vm::CallArgs::load(c))
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_block_entry(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_block_entry");
-    let np = n as *mut NodeOf<node_block_entry_struct>;
-    unsafe {
+    let u = node_u::<node_block_entry_struct>(n);
 
-    EVAL_node_block_entry::<crate::vm::LineAt, Dyn>(c, n, fp, (*np).u.nlocals, (*np).u.nparams, (*np).u.flags, crate::vm::LineAt(&(*np).head.line), (*np).u.body, crate::vm::CallArgs::load(c))
-    }
+    EVAL_node_block_entry::<crate::vm::LineAt, Dyn>(c, n, fp, u.nlocals, u.nparams, u.flags, crate::vm::LineAt(&(*node_head_line(n))), u.body, crate::vm::CallArgs::load(c))
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_def(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_def");
-    let np = n as *mut NodeOf<node_def_struct>;
-    unsafe {
+    let u = node_u::<node_def_struct>(n);
 
-    EVAL_node_def(c, n, fp, (*np).u.mid, (*np).u.body)
-    }
+    EVAL_node_def(c, n, fp, u.mid, u.body)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_sdef(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_sdef");
-    let np = n as *mut NodeOf<node_sdef_struct>;
-    unsafe {
-    let v_recv = <Dyn as Disp>::call(c, (*np).u.recv, fp)?;
-    EVAL_node_sdef(c, n, fp, v_recv, (*np).u.mid, (*np).u.body)
-    }
+    let u = node_u::<node_sdef_struct>(n);
+    let v_recv = <Dyn as Disp>::call(c, u.recv, fp)?;
+    EVAL_node_sdef(c, n, fp, v_recv, u.mid, u.body)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_class(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_class");
-    let np = n as *mut NodeOf<node_class_struct>;
-    unsafe {
+    let u = node_u::<node_class_struct>(n);
 
-    EVAL_node_class::<Dyn, Dyn>(c, n, fp, (*np).u.cpath, (*np).u.name, (*np).u.superclass, (*np).u.body, (*np).u.has_cpath, (*np).u.has_super)
-    }
+    EVAL_node_class::<Dyn, Dyn>(c, n, fp, u.cpath, u.name, u.superclass, u.body, u.has_cpath, u.has_super)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_module(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_module");
-    let np = n as *mut NodeOf<node_module_struct>;
-    unsafe {
+    let u = node_u::<node_module_struct>(n);
 
-    EVAL_node_module::<Dyn>(c, n, fp, (*np).u.cpath, (*np).u.name, (*np).u.body, (*np).u.has_cpath)
-    }
+    EVAL_node_module::<Dyn>(c, n, fp, u.cpath, u.name, u.body, u.has_cpath)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_sclass(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_sclass");
-    let np = n as *mut NodeOf<node_sclass_struct>;
-    unsafe {
-    let v_recv = <Dyn as Disp>::call(c, (*np).u.recv, fp)?;
-    EVAL_node_sclass(c, n, fp, v_recv, (*np).u.body)
-    }
+    let u = node_u::<node_sclass_struct>(n);
+    let v_recv = <Dyn as Disp>::call(c, u.recv, fp)?;
+    EVAL_node_sclass(c, n, fp, v_recv, u.body)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_alias(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_alias");
-    let np = n as *mut NodeOf<node_alias_struct>;
-    unsafe {
-    let v_newname = <Dyn as Disp>::call(c, (*np).u.newname, fp)?;
-    let v_oldname = <Dyn as Disp>::call(c, (*np).u.oldname, fp)?;
+    let u = node_u::<node_alias_struct>(n);
+    let v_newname = <Dyn as Disp>::call(c, u.newname, fp)?;
+    let v_oldname = <Dyn as Disp>::call(c, u.oldname, fp)?;
     EVAL_node_alias(c, n, fp, v_newname, v_oldname)
-    }
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_valias(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_valias");
-    let np = n as *mut NodeOf<node_valias_struct>;
-    unsafe {
+    let u = node_u::<node_valias_struct>(n);
 
-    EVAL_node_valias(c, n, fp, (*np).u.newname, (*np).u.oldname)
-    }
+    EVAL_node_valias(c, n, fp, u.newname, u.oldname)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_undef(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_undef");
-    let np = n as *mut NodeOf<node_undef_struct>;
-    unsafe {
+    let u = node_u::<node_undef_struct>(n);
 
-    EVAL_node_undef::<DynList>(c, n, fp, (*np).u.names)
-    }
+    EVAL_node_undef::<DynList>(c, n, fp, u.names)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_masgn(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_masgn");
-    let np = n as *mut NodeOf<node_masgn_struct>;
-    unsafe {
-    let v_rhs = <Dyn as Disp>::call(c, (*np).u.rhs, fp)?;
-    EVAL_node_masgn::<DynList>(c, n, fp, v_rhs, (*np).u.tmp, (*np).u.targets, (*np).u.splat_rhs)
-    }
+    let u = node_u::<node_masgn_struct>(n);
+    let v_rhs = <Dyn as Disp>::call(c, u.rhs, fp)?;
+    EVAL_node_masgn::<DynList>(c, n, fp, v_rhs, u.tmp, u.targets, u.splat_rhs)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_masgn_elem(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_masgn_elem");
-    let np = n as *mut NodeOf<node_masgn_elem_struct>;
-    unsafe {
+    let u = node_u::<node_masgn_elem_struct>(n);
 
-    EVAL_node_masgn_elem(c, n, fp, (*np).u.tmp, (*np).u.idx, (*np).u.kind, (*np).u.post)
-    }
+    EVAL_node_masgn_elem(c, n, fp, u.tmp, u.idx, u.kind, u.post)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_unsupported(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_unsupported");
-    let np = n as *mut NodeOf<node_unsupported_struct>;
-    unsafe {
+    let u = node_u::<node_unsupported_struct>(n);
 
-    EVAL_node_unsupported(c, n, fp, (*np).u.what)
-    }
+    EVAL_node_unsupported(c, n, fp, u.what)
 }
 
-#[allow(non_snake_case, unused_variables, unused_unsafe)]
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_special(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_special");
-    let np = n as *mut NodeOf<node_special_struct>;
-    unsafe {
+    let u = node_u::<node_special_struct>(n);
 
-    EVAL_node_special::<Dyn>(c, n, fp, (*np).u.kind, (*np).u.arg)
-    }
+    EVAL_node_special::<Dyn>(c, n, fp, u.kind, u.arg)
 }

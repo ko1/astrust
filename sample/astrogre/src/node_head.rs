@@ -36,14 +36,64 @@ pub struct Node { pub head: NodeHead }
 #[repr(C)]
 pub struct NodeOf<T> { pub head: NodeHead, pub u: T }
 
-pub fn node_allocate<T>(kind: &'static NodeKind, u: T) -> NodePtr {
-    let n = Box::into_raw(Box::new(NodeOf { head: NodeHead {
+pub fn node_allocate<T>(kind: &'static NodeKind, u: T) -> NodePtr { node_allocate_with(kind, u, |_| {}) }
+/// node_allocate, `init` setting head fields (head holes) before the node is shared.
+pub fn node_allocate_with<T>(kind: &'static NodeKind, u: T, init: impl FnOnce(&mut NodeHead)) -> NodePtr {
+    let mut b = Box::new(NodeOf { head: NodeHead {
         dispatcher: kind.default_dispatcher, kind, hash: 0,
         flags: if kind.no_inline { NF_NO_INLINE } else { 0 },
         
-    }, u })) as NodePtr;
+    }, u });
+    init(&mut b.head);
+    let n = Box::into_raw(b) as NodePtr;
     node_allocated(n);
     n
+}
+
+// ---- node access: the generated code's only unsafe (sample/saruby/docs/unsafe_catalog.md "generated code") ----
+// Contract on every NodePtr given to these (the generator's manual invariant): non-null, made by
+// node_allocate / layout_tree, and live for as long as the returned borrow is used.
+/// The operand struct type of a node kind.
+pub trait NodeStruct { fn kind() -> &'static NodeKind; }
+/// n's operand struct; n is of T's kind (checked in debug builds).  Operand fields other than @ref cells
+/// are not written while a borrow lives (only CHILDREN / REPLACE write, through node_u_mut).
+#[inline(always)]
+pub fn node_u<'a, T: NodeStruct>(n: NodePtr) -> &'a T {
+    debug_assert!(std::ptr::eq(node_kind(n), T::kind()));
+    // SAFETY: the contract above
+    unsafe { &(*(n as *const NodeOf<T>)).u }
+}
+/// n's operand struct to rewrite (a copy in layout_tree, REPLACE): no other borrow of it lives.
+#[inline(always)]
+pub fn node_u_mut<'a, T: NodeStruct>(n: NodePtr) -> &'a mut T {
+    debug_assert!(std::ptr::eq(node_kind(n), T::kind()));
+    // SAFETY: the contract above, and unique
+    unsafe { &mut (*(n as *mut NodeOf<T>)).u }
+}
+// head fields one at a time, so no borrow of the head overlaps a write of another field
+#[inline(always)] pub fn node_kind(n: NodePtr) -> &'static NodeKind { unsafe { (*n).head.kind } }
+#[inline(always)] pub fn node_dispatcher(n: NodePtr) -> DispatchFn { unsafe { (*n).head.dispatcher } }
+#[inline(always)] pub fn node_flags(n: NodePtr) -> u32 { unsafe { (*n).head.flags } }
+#[inline(always)] pub fn node_set_flags(n: NodePtr, f: u32) { unsafe { (*n).head.flags = f; } }
+#[inline(always)] pub fn node_hash_set(n: NodePtr, h: u64) { unsafe { (*n).head.hash = h; } }
+#[inline(always)] pub fn node_hash_get(n: NodePtr) -> u64 { unsafe { (*n).head.hash } }
+
+/// An @ref operand: the mutable inline state (a cache) of an otherwise immutable node.
+#[repr(transparent)]
+#[derive(Default)]
+pub struct NodeCell<T> { cell: std::cell::UnsafeCell<T> }
+impl<T> NodeCell<T> {
+    /// The body's `&mut T`, dead when the body returns.  Not unique when the node is re-entered while its
+    /// body runs (a recursive call site): known, sample/saruby/docs/unsafe_catalog.md "generated code".
+    #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
+    pub fn body_mut(&self) -> &mut T { unsafe { &mut *self.cell.get() } }
+}
+/// Reads at specialize time (hooks): no dispatch of the node is running.
+impl<T> std::ops::Deref for NodeCell<T> {
+    type Target = T;
+    #[inline(always)]
+    fn deref(&self) -> &T { unsafe { &*self.cell.get() } }
 }
 
 /// Copy the tree under `root` into one block, parents before children in operand order, and
@@ -51,31 +101,30 @@ pub fn node_allocate<T>(kind: &'static NodeKind, u: T) -> NodePtr {
 pub fn layout_tree(root: NodePtr) -> NodePtr {
     fn size(n: NodePtr) -> usize {
         if n.is_null() { return 0; }
-        let k = unsafe { (*n).head.kind };
+        let k = node_kind(n);
         let mut s = k.size;
         (k.children)(n, false, &mut |c| s += size(*c));
         s
     }
     fn copy(n: NodePtr, at: &mut *mut u8) -> NodePtr {
-        unsafe {
-            let k = (*n).head.kind;
-            let d = *at;
-            std::ptr::copy_nonoverlapping(n as *const u8, d, k.size);
-            *at = d.add(k.size);
-            let d = d as NodePtr;
-            (*d).head.flags |= NF_LAID;
-            (k.children)(d, true, &mut |c| if !c.is_null() { *c = copy(*c, at); });
-            d
-        }
+        let k = node_kind(n);
+        let d = *at;
+        // SAFETY: n is k.size bytes; d has k.size bytes left of the block size() measured
+        unsafe { std::ptr::copy_nonoverlapping(n as *const u8, d, k.size); }
+        *at = d.wrapping_add(k.size);
+        let d = d as NodePtr;
+        node_set_flags(d, node_flags(d) | NF_LAID);
+        (k.children)(d, true, &mut |c| if !c.is_null() { *c = copy(*c, at); });
+        d
     }
     if root.is_null() { return root; }
     let mut at = Box::leak(vec![0u64; size(root) / 8].into_boxed_slice()).as_mut_ptr() as *mut u8;
     copy(root, &mut at)
 }
-pub fn node_laid(n: NodePtr) -> bool { !n.is_null() && unsafe { (*n).head.flags & NF_LAID != 0 } }
-/// Specialized code's pointer to child `c` of `n` (contiguous trees).
+pub fn node_laid(n: NodePtr) -> bool { !n.is_null() && node_flags(n) & NF_LAID != 0 }
+/// Specialized code's pointer to child `c` of `n` (contiguous trees): an address only, node_u reads it.
 pub fn child_ptr_expr(n: NodePtr, c: NodePtr) -> String {
-    if c.is_null() { "std::ptr::null_mut()".to_string() } else { format!("n.byte_offset({}isize)", c as isize - n as isize) }
+    if c.is_null() { "std::ptr::null_mut()".to_string() } else { format!("n.wrapping_byte_offset({}isize)", c as isize - n as isize) }
 }
 /// A list operand in specialized code over a contiguous tree: no elements, the parent's address.
 #[inline(always)]
@@ -84,18 +133,16 @@ pub fn list_base(n: NodePtr) -> NodeList { unsafe { std::slice::from_raw_parts(n
 /// Structural (Merkle) hash, cached in the head.
 pub fn hash_node(n: NodePtr) -> u64 {
     if n.is_null() { return hash_str("null"); }
-    unsafe {
-        if (*n).head.flags & NF_HAS_HASH != 0 { return (*n).head.hash; }
-        let h = ((*n).head.kind.hash_func)(n);
-        (*n).head.hash = h;
-        (*n).head.flags |= NF_HAS_HASH;
-        h
-    }
+    if node_flags(n) & NF_HAS_HASH != 0 { return node_hash_get(n); }
+    let h = (node_kind(n).hash_func)(n);
+    node_hash_set(n, h);
+    node_set_flags(n, node_flags(n) | NF_HAS_HASH);
+    h
 }
 /// What specialization bakes into the subtree at n (PROF_<name>); each node once per ProfCtx.
 pub fn profile_node(pc: &mut ProfCtx, n: NodePtr) -> u64 {
     if n.is_null() || !pc.seen.insert(n as usize) { return 0; }
-    unsafe { ((*n).head.kind.profile)(pc, n) }
+    (node_kind(n).profile)(pc, n)
 }
 pub fn hash_node_list(ns: NodeList) -> u64 {
     let mut h = hash_u64(ns.len() as u64);
@@ -104,20 +151,20 @@ pub fn hash_node_list(ns: NodeList) -> u64 {
 }
 pub fn dump_node(out: &mut String, n: NodePtr) {
     if n.is_null() { out.push_str("null"); return; }
-    unsafe { ((*n).head.kind.dumper)(out, n) }
+    (node_kind(n).dumper)(out, n)
 }
 pub fn node_replace_child(parent: NodePtr, old: NodePtr, new: NodePtr) {
-    unsafe { ((*parent).head.kind.replacer)(parent, old, new) }
+    (node_kind(parent).replacer)(parent, old, new)
 }
 /// SD type name for the subtree rooted at n ("Dyn" when it must stay dynamic).
 pub fn specialize_node(sc: &mut SpecCtx, n: NodePtr) -> String {
-    unsafe {
-        if n.is_null() || (*n).head.flags & NF_NO_INLINE != 0 || ((*n).head.flags & NF_SPECIALIZING != 0 && sc.reenter == 0) { return "Dyn".to_string(); }
-        (*n).head.flags |= NF_SPECIALIZING;
-        let t = ((*n).head.kind.specializer)(sc, n);
-        (*n).head.flags &= !NF_SPECIALIZING;
-        t
-    }
+    if n.is_null() { return "Dyn".to_string(); }
+    let f = node_flags(n);
+    if f & NF_NO_INLINE != 0 || (f & NF_SPECIALIZING != 0 && sc.reenter == 0) { return "Dyn".to_string(); }
+    node_set_flags(n, f | NF_SPECIALIZING);
+    let t = (node_kind(n).specializer)(sc, n);
+    node_set_flags(n, node_flags(n) & !NF_SPECIALIZING);
+    t
 }
 /// specialize_node for a node being specialized already (a recursion target compiled into itself):
 /// its subtree again; the copy's recursive sites see the target in sc.unrolled and call it instead.
@@ -125,7 +172,7 @@ pub fn specialize_open(sc: &mut SpecCtx, n: NodePtr) -> String {
     sc.reenter += 1;
     let t = specialize_node(sc, n);
     sc.reenter -= 1;
-    unsafe { (*n).head.flags |= NF_SPECIALIZING; }
+    node_set_flags(n, node_flags(n) | NF_SPECIALIZING);
     t
 }
 /// Specialize n as a public entry: an exported `SD_<hash>` with the dispatcher's signature.
@@ -220,7 +267,7 @@ pub trait DispList {
 pub struct Dyn;
 impl Disp for Dyn {
     #[inline(always)]
-    fn call(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 { unsafe { ((*n).head.dispatcher)(c, n, pos) } }
+    fn call(c: &mut Ctx, n: NodePtr, pos: usize) -> u32 { node_dispatcher(n)(c, n, pos) }
 }
 pub struct DynList;
 impl DispList for DynList {
@@ -228,17 +275,17 @@ impl DispList for DynList {
     #[inline(always)]
     fn nth(c: &mut Ctx, ns: NodeList, i: usize, pos: usize) -> u32 {
         let x = ns[i];
-        unsafe { ((*x).head.dispatcher)(c, x, pos) }
+        node_dispatcher(x)(c, x, pos)
     }
     #[inline(always)]
     fn each<F: FnMut(&mut Ctx, usize, u32) -> ()>(c: &mut Ctx, ns: NodeList, pos: usize, mut f: F) -> () {
         // the first ones in a row, as ASTroGen's per-arity dispatchers (short lists are the common case)
-        if ns.len() > 0 { let x = ns[0]; let r = unsafe { ((*x).head.dispatcher)(c, x, pos) }; f(c, 0, r); }
-        if ns.len() > 1 { let x = ns[1]; let r = unsafe { ((*x).head.dispatcher)(c, x, pos) }; f(c, 1, r); }
-        if ns.len() > 2 { let x = ns[2]; let r = unsafe { ((*x).head.dispatcher)(c, x, pos) }; f(c, 2, r); }
+        if ns.len() > 0 { let x = ns[0]; let r = node_dispatcher(x)(c, x, pos); f(c, 0, r); }
+        if ns.len() > 1 { let x = ns[1]; let r = node_dispatcher(x)(c, x, pos); f(c, 1, r); }
+        if ns.len() > 2 { let x = ns[2]; let r = node_dispatcher(x)(c, x, pos); f(c, 2, r); }
         for i in 3..ns.len() {
             let x = ns[i];
-            let r = unsafe { ((*x).head.dispatcher)(c, x, pos) };
+            let r = node_dispatcher(x)(c, x, pos);
             f(c, i, r);
         }
         ()
@@ -480,379 +527,348 @@ pub struct node_match_at_struct {
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_succ() -> NodePtr {
-    let n = node_allocate(&KIND_node_re_succ, node_re_succ_struct {  });
-    n
+    node_allocate_with(&KIND_node_re_succ, node_re_succ_struct {  }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_sub_succ() -> NodePtr {
-    let n = node_allocate(&KIND_node_re_sub_succ, node_re_sub_succ_struct {  });
-    n
+    node_allocate_with(&KIND_node_re_sub_succ, node_re_sub_succ_struct {  }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_sub_succ_at() -> NodePtr {
-    let n = node_allocate(&KIND_node_re_sub_succ_at, node_re_sub_succ_at_struct {  });
-    n
+    node_allocate_with(&KIND_node_re_sub_succ_at, node_re_sub_succ_at_struct {  }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_byte(b: u8, next: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_byte, node_re_byte_struct { b, next });
-    n
+    node_allocate_with(&KIND_node_re_byte, node_re_byte_struct { b, next }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_lit(bytes: Bytes, next: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_lit, node_re_lit_struct { bytes, next });
-    n
+    node_allocate_with(&KIND_node_re_lit, node_re_lit_struct { bytes, next }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_one(kind: u32, ch: u32, cls: ClassRef, next: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_one, node_re_one_struct { kind, ch, cls, next });
-    n
+    node_allocate_with(&KIND_node_re_one, node_re_one_struct { kind, ch, cls, next }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_grapheme(next: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_grapheme, node_re_grapheme_struct { next });
-    n
+    node_allocate_with(&KIND_node_re_grapheme, node_re_grapheme_struct { next }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_rep1(kind: u32, ch: u32, cls: ClassRef, min: u32, max: u32, greedy: bool, nb: i32, next: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_rep1, node_re_rep1_struct { kind, ch, cls, min, max, greedy, nb, next });
-    n
+    node_allocate_with(&KIND_node_re_rep1, node_re_rep1_struct { kind, ch, cls, min, max, greedy, nb, next }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_assert(kind: u32, next: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_assert, node_re_assert_struct { kind, next });
-    n
+    node_allocate_with(&KIND_node_re_assert, node_re_assert_struct { kind, next }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_keep(next: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_keep, node_re_keep_struct { next });
-    n
+    node_allocate_with(&KIND_node_re_keep, node_re_keep_struct { next }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_open(g: u32, next: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_open, node_re_open_struct { g, next });
-    n
+    node_allocate_with(&KIND_node_re_open, node_re_open_struct { g, next }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_open_nr(g: u32, next: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_open_nr, node_re_open_nr_struct { g, next });
-    n
+    node_allocate_with(&KIND_node_re_open_nr, node_re_open_nr_struct { g, next }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_close(g: u32, next: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_close, node_re_close_struct { g, next });
-    n
+    node_allocate_with(&KIND_node_re_close, node_re_close_struct { g, next }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_backref(groups: Groups, icase: bool, next: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_backref, node_re_backref_struct { groups, icase, next });
-    n
+    node_allocate_with(&KIND_node_re_backref, node_re_backref_struct { groups, icase, next }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_open_rec(g: u32, next: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_open_rec, node_re_open_rec_struct { g, next });
-    n
+    node_allocate_with(&KIND_node_re_open_rec, node_re_open_rec_struct { g, next }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_close_rec(g: u32, next: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_close_rec, node_re_close_rec_struct { g, next });
-    n
+    node_allocate_with(&KIND_node_re_close_rec, node_re_close_rec_struct { g, next }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_call(g: u32, next: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_call, node_re_call_struct { g, next });
-    n
+    node_allocate_with(&KIND_node_re_call, node_re_call_struct { g, next }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_ret() -> NodePtr {
-    let n = node_allocate(&KIND_node_re_ret, node_re_ret_struct {  });
-    n
+    node_allocate_with(&KIND_node_re_ret, node_re_ret_struct {  }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_backref_lv(groups: Groups, icase: bool, nest: i32, next: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_backref_lv, node_re_backref_lv_struct { groups, icase, nest, next });
-    n
+    node_allocate_with(&KIND_node_re_backref_lv, node_re_backref_lv_struct { groups, icase, nest, next }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_cond(groups: Groups, yes: NodePtr, no: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_cond, node_re_cond_struct { groups, yes, no });
-    n
+    node_allocate_with(&KIND_node_re_cond, node_re_cond_struct { groups, yes, no }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_alt(a: NodePtr, b: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_alt, node_re_alt_struct { a, b });
-    n
+    node_allocate_with(&KIND_node_re_alt, node_re_alt_struct { a, b }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_opt(body: NodePtr, skip: NodePtr, greedy: bool) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_opt, node_re_opt_struct { body, skip, greedy });
-    n
+    node_allocate_with(&KIND_node_re_opt, node_re_opt_struct { body, skip, greedy }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_rep(body: NodePtr, outer: NodePtr, min: u32, max: u32, greedy: bool, mem: bool, shape: u32, cost: u32) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_rep, node_re_rep_struct { body, outer, min, max, greedy, mem, shape, cost });
-    n
+    node_allocate_with(&KIND_node_re_rep, node_re_rep_struct { body, outer, min, max, greedy, mem, shape, cost }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_rep_cont() -> NodePtr {
-    let n = node_allocate(&KIND_node_re_rep_cont, node_re_rep_cont_struct {  });
-    n
+    node_allocate_with(&KIND_node_re_rep_cont, node_re_rep_cont_struct {  }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_look(kind: u32, body: NodePtr, next: NodePtr, minlen: u32, maxlen: u32) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_look, node_re_look_struct { kind, body, next, minlen, maxlen });
-    n
+    node_allocate_with(&KIND_node_re_look, node_re_look_struct { kind, body, next, minlen, maxlen }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_re_absent(body: NodePtr, next: NodePtr, minlen: u32, maxlen: u32) -> NodePtr {
-    let n = node_allocate(&KIND_node_re_absent, node_re_absent_struct { body, next, minlen, maxlen });
-    n
+    node_allocate_with(&KIND_node_re_absent, node_re_absent_struct { body, next, minlen, maxlen }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_search(body: NodePtr, anchor: u32) -> NodePtr {
-    let n = node_allocate(&KIND_node_search, node_search_struct { body, anchor });
-    n
+    node_allocate_with(&KIND_node_search, node_search_struct { body, anchor }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_search_memchr(body: NodePtr, b: u8) -> NodePtr {
-    let n = node_allocate(&KIND_node_search_memchr, node_search_memchr_struct { body, b });
-    n
+    node_allocate_with(&KIND_node_search_memchr, node_search_memchr_struct { body, b }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_search_memmem(body: NodePtr, needle: Bytes) -> NodePtr {
-    let n = node_allocate(&KIND_node_search_memmem, node_search_memmem_struct { body, needle });
-    n
+    node_allocate_with(&KIND_node_search_memmem, node_search_memmem_struct { body, needle }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_search_byteset(body: NodePtr, set: ByteSet) -> NodePtr {
-    let n = node_allocate(&KIND_node_search_byteset, node_search_byteset_struct { body, set });
-    n
+    node_allocate_with(&KIND_node_search_byteset, node_search_byteset_struct { body, set }, |_| { })
 }
 
 #[allow(non_snake_case)]
 pub fn ALLOC_node_match_at(body: NodePtr) -> NodePtr {
-    let n = node_allocate(&KIND_node_match_at, node_match_at_struct { body });
-    n
+    node_allocate_with(&KIND_node_match_at, node_match_at_struct { body }, |_| { })
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_succ(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_succ_struct>)).u };
+    let u = node_u_mut::<node_re_succ_struct>(n);
 
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_sub_succ(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_sub_succ_struct>)).u };
+    let u = node_u_mut::<node_re_sub_succ_struct>(n);
 
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_sub_succ_at(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_sub_succ_at_struct>)).u };
+    let u = node_u_mut::<node_re_sub_succ_at_struct>(n);
 
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_byte(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_byte_struct>)).u };
+    let u = node_u_mut::<node_re_byte_struct>(n);
     f(&mut u.next);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_lit(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_lit_struct>)).u };
+    let u = node_u_mut::<node_re_lit_struct>(n);
     f(&mut u.next);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_one(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_one_struct>)).u };
+    let u = node_u_mut::<node_re_one_struct>(n);
     f(&mut u.next);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_grapheme(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_grapheme_struct>)).u };
+    let u = node_u_mut::<node_re_grapheme_struct>(n);
     f(&mut u.next);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_rep1(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_rep1_struct>)).u };
+    let u = node_u_mut::<node_re_rep1_struct>(n);
     f(&mut u.next);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_assert(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_assert_struct>)).u };
+    let u = node_u_mut::<node_re_assert_struct>(n);
     f(&mut u.next);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_keep(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_keep_struct>)).u };
+    let u = node_u_mut::<node_re_keep_struct>(n);
     f(&mut u.next);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_open(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_open_struct>)).u };
+    let u = node_u_mut::<node_re_open_struct>(n);
     f(&mut u.next);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_open_nr(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_open_nr_struct>)).u };
+    let u = node_u_mut::<node_re_open_nr_struct>(n);
     f(&mut u.next);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_close(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_close_struct>)).u };
+    let u = node_u_mut::<node_re_close_struct>(n);
     f(&mut u.next);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_backref(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_backref_struct>)).u };
+    let u = node_u_mut::<node_re_backref_struct>(n);
     f(&mut u.next);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_open_rec(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_open_rec_struct>)).u };
+    let u = node_u_mut::<node_re_open_rec_struct>(n);
     f(&mut u.next);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_close_rec(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_close_rec_struct>)).u };
+    let u = node_u_mut::<node_re_close_rec_struct>(n);
     f(&mut u.next);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_call(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_call_struct>)).u };
+    let u = node_u_mut::<node_re_call_struct>(n);
     f(&mut u.next);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_ret(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_ret_struct>)).u };
+    let u = node_u_mut::<node_re_ret_struct>(n);
 
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_backref_lv(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_backref_lv_struct>)).u };
+    let u = node_u_mut::<node_re_backref_lv_struct>(n);
     f(&mut u.next);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_cond(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_cond_struct>)).u };
+    let u = node_u_mut::<node_re_cond_struct>(n);
     f(&mut u.yes);
     f(&mut u.no);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_alt(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_alt_struct>)).u };
+    let u = node_u_mut::<node_re_alt_struct>(n);
     f(&mut u.a);
     f(&mut u.b);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_opt(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_opt_struct>)).u };
+    let u = node_u_mut::<node_re_opt_struct>(n);
     f(&mut u.body);
     f(&mut u.skip);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_rep(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_rep_struct>)).u };
+    let u = node_u_mut::<node_re_rep_struct>(n);
     f(&mut u.body);
     f(&mut u.outer);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_rep_cont(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_rep_cont_struct>)).u };
+    let u = node_u_mut::<node_re_rep_cont_struct>(n);
 
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_look(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_look_struct>)).u };
+    let u = node_u_mut::<node_re_look_struct>(n);
     f(&mut u.body);
     f(&mut u.next);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_re_absent(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_re_absent_struct>)).u };
+    let u = node_u_mut::<node_re_absent_struct>(n);
     f(&mut u.body);
     f(&mut u.next);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_search(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_search_struct>)).u };
+    let u = node_u_mut::<node_search_struct>(n);
     f(&mut u.body);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_search_memchr(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_search_memchr_struct>)).u };
+    let u = node_u_mut::<node_search_memchr_struct>(n);
     f(&mut u.body);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_search_memmem(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_search_memmem_struct>)).u };
+    let u = node_u_mut::<node_search_memmem_struct>(n);
     f(&mut u.body);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_search_byteset(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_search_byteset_struct>)).u };
+    let u = node_u_mut::<node_search_byteset_struct>(n);
     f(&mut u.body);
 }
 
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_match_at(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
-    let u = unsafe { &mut (*(n as *mut NodeOf<node_match_at_struct>)).u };
+    let u = node_u_mut::<node_match_at_struct>(n);
     f(&mut u.body);
 }
 
@@ -870,6 +886,7 @@ pub static KIND_node_re_succ: NodeKind = NodeKind {
     children: CHILDREN_node_re_succ,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_succ_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_succ_struct>>() <= 8);
+impl NodeStruct for node_re_succ_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_succ } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_sub_succ: NodeKind = NodeKind {
@@ -885,6 +902,7 @@ pub static KIND_node_re_sub_succ: NodeKind = NodeKind {
     children: CHILDREN_node_re_sub_succ,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_sub_succ_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_sub_succ_struct>>() <= 8);
+impl NodeStruct for node_re_sub_succ_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_sub_succ } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_sub_succ_at: NodeKind = NodeKind {
@@ -900,6 +918,7 @@ pub static KIND_node_re_sub_succ_at: NodeKind = NodeKind {
     children: CHILDREN_node_re_sub_succ_at,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_sub_succ_at_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_sub_succ_at_struct>>() <= 8);
+impl NodeStruct for node_re_sub_succ_at_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_sub_succ_at } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_byte: NodeKind = NodeKind {
@@ -915,6 +934,7 @@ pub static KIND_node_re_byte: NodeKind = NodeKind {
     children: CHILDREN_node_re_byte,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_byte_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_byte_struct>>() <= 8);
+impl NodeStruct for node_re_byte_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_byte } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_lit: NodeKind = NodeKind {
@@ -930,6 +950,7 @@ pub static KIND_node_re_lit: NodeKind = NodeKind {
     children: CHILDREN_node_re_lit,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_lit_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_lit_struct>>() <= 8);
+impl NodeStruct for node_re_lit_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_lit } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_one: NodeKind = NodeKind {
@@ -945,6 +966,7 @@ pub static KIND_node_re_one: NodeKind = NodeKind {
     children: CHILDREN_node_re_one,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_one_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_one_struct>>() <= 8);
+impl NodeStruct for node_re_one_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_one } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_grapheme: NodeKind = NodeKind {
@@ -960,6 +982,7 @@ pub static KIND_node_re_grapheme: NodeKind = NodeKind {
     children: CHILDREN_node_re_grapheme,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_grapheme_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_grapheme_struct>>() <= 8);
+impl NodeStruct for node_re_grapheme_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_grapheme } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_rep1: NodeKind = NodeKind {
@@ -975,6 +998,7 @@ pub static KIND_node_re_rep1: NodeKind = NodeKind {
     children: CHILDREN_node_re_rep1,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_rep1_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_rep1_struct>>() <= 8);
+impl NodeStruct for node_re_rep1_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_rep1 } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_assert: NodeKind = NodeKind {
@@ -990,6 +1014,7 @@ pub static KIND_node_re_assert: NodeKind = NodeKind {
     children: CHILDREN_node_re_assert,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_assert_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_assert_struct>>() <= 8);
+impl NodeStruct for node_re_assert_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_assert } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_keep: NodeKind = NodeKind {
@@ -1005,6 +1030,7 @@ pub static KIND_node_re_keep: NodeKind = NodeKind {
     children: CHILDREN_node_re_keep,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_keep_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_keep_struct>>() <= 8);
+impl NodeStruct for node_re_keep_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_keep } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_open: NodeKind = NodeKind {
@@ -1020,6 +1046,7 @@ pub static KIND_node_re_open: NodeKind = NodeKind {
     children: CHILDREN_node_re_open,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_open_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_open_struct>>() <= 8);
+impl NodeStruct for node_re_open_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_open } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_open_nr: NodeKind = NodeKind {
@@ -1035,6 +1062,7 @@ pub static KIND_node_re_open_nr: NodeKind = NodeKind {
     children: CHILDREN_node_re_open_nr,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_open_nr_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_open_nr_struct>>() <= 8);
+impl NodeStruct for node_re_open_nr_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_open_nr } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_close: NodeKind = NodeKind {
@@ -1050,6 +1078,7 @@ pub static KIND_node_re_close: NodeKind = NodeKind {
     children: CHILDREN_node_re_close,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_close_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_close_struct>>() <= 8);
+impl NodeStruct for node_re_close_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_close } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_backref: NodeKind = NodeKind {
@@ -1065,6 +1094,7 @@ pub static KIND_node_re_backref: NodeKind = NodeKind {
     children: CHILDREN_node_re_backref,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_backref_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_backref_struct>>() <= 8);
+impl NodeStruct for node_re_backref_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_backref } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_open_rec: NodeKind = NodeKind {
@@ -1080,6 +1110,7 @@ pub static KIND_node_re_open_rec: NodeKind = NodeKind {
     children: CHILDREN_node_re_open_rec,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_open_rec_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_open_rec_struct>>() <= 8);
+impl NodeStruct for node_re_open_rec_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_open_rec } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_close_rec: NodeKind = NodeKind {
@@ -1095,6 +1126,7 @@ pub static KIND_node_re_close_rec: NodeKind = NodeKind {
     children: CHILDREN_node_re_close_rec,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_close_rec_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_close_rec_struct>>() <= 8);
+impl NodeStruct for node_re_close_rec_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_close_rec } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_call: NodeKind = NodeKind {
@@ -1110,6 +1142,7 @@ pub static KIND_node_re_call: NodeKind = NodeKind {
     children: CHILDREN_node_re_call,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_call_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_call_struct>>() <= 8);
+impl NodeStruct for node_re_call_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_call } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_ret: NodeKind = NodeKind {
@@ -1125,6 +1158,7 @@ pub static KIND_node_re_ret: NodeKind = NodeKind {
     children: CHILDREN_node_re_ret,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_ret_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_ret_struct>>() <= 8);
+impl NodeStruct for node_re_ret_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_ret } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_backref_lv: NodeKind = NodeKind {
@@ -1140,6 +1174,7 @@ pub static KIND_node_re_backref_lv: NodeKind = NodeKind {
     children: CHILDREN_node_re_backref_lv,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_backref_lv_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_backref_lv_struct>>() <= 8);
+impl NodeStruct for node_re_backref_lv_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_backref_lv } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_cond: NodeKind = NodeKind {
@@ -1155,6 +1190,7 @@ pub static KIND_node_re_cond: NodeKind = NodeKind {
     children: CHILDREN_node_re_cond,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_cond_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_cond_struct>>() <= 8);
+impl NodeStruct for node_re_cond_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_cond } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_alt: NodeKind = NodeKind {
@@ -1170,6 +1206,7 @@ pub static KIND_node_re_alt: NodeKind = NodeKind {
     children: CHILDREN_node_re_alt,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_alt_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_alt_struct>>() <= 8);
+impl NodeStruct for node_re_alt_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_alt } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_opt: NodeKind = NodeKind {
@@ -1185,6 +1222,7 @@ pub static KIND_node_re_opt: NodeKind = NodeKind {
     children: CHILDREN_node_re_opt,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_opt_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_opt_struct>>() <= 8);
+impl NodeStruct for node_re_opt_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_opt } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_rep: NodeKind = NodeKind {
@@ -1200,6 +1238,7 @@ pub static KIND_node_re_rep: NodeKind = NodeKind {
     children: CHILDREN_node_re_rep,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_rep_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_rep_struct>>() <= 8);
+impl NodeStruct for node_re_rep_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_rep } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_rep_cont: NodeKind = NodeKind {
@@ -1215,6 +1254,7 @@ pub static KIND_node_re_rep_cont: NodeKind = NodeKind {
     children: CHILDREN_node_re_rep_cont,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_rep_cont_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_rep_cont_struct>>() <= 8);
+impl NodeStruct for node_re_rep_cont_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_rep_cont } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_look: NodeKind = NodeKind {
@@ -1230,6 +1270,7 @@ pub static KIND_node_re_look: NodeKind = NodeKind {
     children: CHILDREN_node_re_look,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_look_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_look_struct>>() <= 8);
+impl NodeStruct for node_re_look_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_look } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_re_absent: NodeKind = NodeKind {
@@ -1245,6 +1286,7 @@ pub static KIND_node_re_absent: NodeKind = NodeKind {
     children: CHILDREN_node_re_absent,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_re_absent_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_re_absent_struct>>() <= 8);
+impl NodeStruct for node_re_absent_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_re_absent } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_search: NodeKind = NodeKind {
@@ -1260,6 +1302,7 @@ pub static KIND_node_search: NodeKind = NodeKind {
     children: CHILDREN_node_search,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_search_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_search_struct>>() <= 8);
+impl NodeStruct for node_search_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_search } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_search_memchr: NodeKind = NodeKind {
@@ -1275,6 +1318,7 @@ pub static KIND_node_search_memchr: NodeKind = NodeKind {
     children: CHILDREN_node_search_memchr,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_search_memchr_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_search_memchr_struct>>() <= 8);
+impl NodeStruct for node_search_memchr_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_search_memchr } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_search_memmem: NodeKind = NodeKind {
@@ -1290,6 +1334,7 @@ pub static KIND_node_search_memmem: NodeKind = NodeKind {
     children: CHILDREN_node_search_memmem,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_search_memmem_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_search_memmem_struct>>() <= 8);
+impl NodeStruct for node_search_memmem_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_search_memmem } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_search_byteset: NodeKind = NodeKind {
@@ -1305,6 +1350,7 @@ pub static KIND_node_search_byteset: NodeKind = NodeKind {
     children: CHILDREN_node_search_byteset,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_search_byteset_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_search_byteset_struct>>() <= 8);
+impl NodeStruct for node_search_byteset_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_search_byteset } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_match_at: NodeKind = NodeKind {
@@ -1320,4 +1366,5 @@ pub static KIND_node_match_at: NodeKind = NodeKind {
     children: CHILDREN_node_match_at,
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_match_at_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_match_at_struct>>() <= 8);
+impl NodeStruct for node_match_at_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_match_at } }
 
