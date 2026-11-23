@@ -12,10 +12,7 @@ impl<'a> Compiler<'a> {
                     // a side-effect-free statement whose value is unused compiles to nothing in CRuby: no line event
                     let elided = self.trace && i < last && pure_static(x);
                     let traced = self.trace && !flat && !elided && !matches!(x.kind, Kind::BeginNode { .. }) && std::mem::replace(&mut self.cur().trace_line, l) != l;
-                    let void_read = i < last && matches!(x.kind, Kind::LocalVariableReadNode { .. });
-                    if void_read { self.void_read = true; }
                     let r = if elided { self.trace = false; let r = self.c(x); self.trace = true; r } else { self.c(x) };
-                    self.void_read = false;
                     if traced {
                         let t = ALLOC_node_trace(EV_LINE, l, r);
                         match self.cov { Some(f) => ALLOC_node_cov(crate::builtins::coverage::line_slot(f, l), t), None => t }

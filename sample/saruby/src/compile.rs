@@ -104,14 +104,13 @@ struct Scope {
     param_names: Vec<(u32, Sym)>, // parameter slot -> name (for #parameters)
     needs_id: bool,               // a block literal or an eval-like call inside: its frame needs an id
     end_line: u32,                // the line of the scope's last byte (TracePoint return / end events)
-    outer: Vec<(u64, Sym)>,       // block: (order key, outer variable) it uses, `yield` if it yields (Iseq::outer_vars)
     trace_line: u32,              // the line of the last line event put in (one per line, as CRuby's)
 }
 
 impl Scope {
     fn new(kind: SK, captured: HashSet<Sym>) -> Scope {
         Scope { kind, vars: HashMap::default(), names: vec![], nslots: 2, env_size: 0, captured, loop_depth: 0,
-                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![], children: vec![], params_seen: HashSet::default(), param_names: vec![], needs_id: false, end_line: 0, trace_line: 0, outer: vec![] }
+                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![], children: vec![], params_seen: HashSet::default(), param_names: vec![], needs_id: false, end_line: 0, trace_line: 0 }
     }
     fn has_env(&self) -> bool { self.env_size > 0 }
 }
@@ -123,7 +122,9 @@ pub struct Compiler<'a> {
     src_key: std::cell::OnceCell<u64>,   // hash of src: the program key of its bodies in hopt_index.txt (aot.rs)
     scopes: Vec<Scope>,
     captures: HashMap<usize, HashSet<Sym>>,
-    void_read: bool,              // compiling a variable read whose value is unused: no use of it (Iseq::outer_vars)
+    outer: HashMap<usize, Vec<(u32, Sym)>>,   // block -> outer variables it uses (prism constant id, name), `yield` too
+    pending_outer: Vec<Sym>,      // the next finish_iseq's Iseq::outer_vars
+    ractor_src: std::cell::OnceCell<bool>,   // the source names `Ractor` (only then are outer variables collected)
     pub eval_outer: Vec<Vec<(Sym, u32, u32)>>,  // eval: outer scopes' (name, hops, idx), innermost first
     in_def: u32,
     pm_err: Option<u32>,          // single-pattern match: slot receiving the failure description
@@ -159,7 +160,7 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), void_read: false, eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, errors: vec![],
+        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), outer: HashMap::default(), pending_outer: vec![], ractor_src: std::cell::OnceCell::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, errors: vec![],
                    csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()],
                    src_enc: crate::builtins::encoding::find_enc(pr.encoding.as_bytes()).unwrap_or(crate::object::ENC_UTF8) as u32 };
         // identifiers of a non-UTF-8 source are symbols in its encoding (as its symbol literals)
@@ -197,6 +198,10 @@ impl<'a> Compiler<'a> {
         let mut stack: Vec<(usize, bool)> = vec![(key(root), false)];
         let mut uses_binding = false;
         for b in body { self.analyze_rec(b, &mut stack, &mut uses_binding); }
+        if *self.ractor_src.get_or_init(|| self.pr.constants.iter().any(|c| &c[..] == b"Ractor")) {
+            let mut os = vec![(key(root), false, vec![])];
+            for b in body { self.outer_rec(b, &mut os, false); }
+        }
         if uses_binding || self.trace {
             // every local of every scope in this tree becomes env-resident
             self.captures.entry(key(root)).or_default().insert(Sym(u32::MAX));
@@ -283,6 +288,64 @@ impl<'a> Compiler<'a> {
         for ch in n.children() { self.analyze_rec(ch, stack, ub); }
     }
 
+    /// Iseq::outer_vars (Ractor.new's isolation check): per block, the outer variables it (or a block in it)
+    /// reads or writes and `yield`; a read whose value is unused does not count (CRuby's compiler drops it).
+    /// Its own walk, run only for sources that name Ractor: analyze_rec pays for every node it visits.
+    fn outer_rec(&mut self, n: &PNode, os: &mut Vec<(usize, bool, Vec<(u32, Sym)>)>, void: bool) {
+        let name_depth = match &n.kind {
+            Kind::LocalVariableReadNode { name, depth } if !void => Some((*name, *depth)),
+            Kind::LocalVariableTargetNode { name, depth } | Kind::LocalVariableWriteNode { name, depth, .. } | Kind::LocalVariableOperatorWriteNode { name, depth, .. }
+            | Kind::LocalVariableOrWriteNode { name, depth, .. } | Kind::LocalVariableAndWriteNode { name, depth, .. } => Some((*name, *depth)),
+            _ => None,
+        };
+        if let Some((name, depth)) = name_depth {
+            let mut d = depth as i64;
+            let mut i = os.len() as i64 - 1;
+            while i >= 0 && (os[i as usize].1 || d > 0) { if !os[i as usize].1 { d -= 1; } i -= 1; }
+            let nm = self.cst(name);
+            for e in os.iter_mut().skip((i + 1).max(0) as usize) { if !e.1 { e.2.push((name, nm)); } }
+        }
+        let scope = |os: &mut Vec<(usize, bool, Vec<(u32, Sym)>)>, k: usize, t: bool| os.push((k, t, vec![]));
+        match &n.kind {
+            Kind::YieldNode { .. } => { for e in os.iter_mut().skip(1) { if !e.1 { e.2.push((u32::MAX, s::yield_)); } } }
+            Kind::StatementsNode { body } => {
+                for (i, ch) in body.iter().enumerate() { self.outer_rec(ch, os, i + 1 < body.len()); }
+                return;
+            }
+            Kind::BlockNode { .. } | Kind::LambdaNode { .. } => {
+                scope(os, key(n), false);
+                for ch in n.children() { self.outer_rec(ch, os, false); }
+                let (k, _, v) = os.pop().unwrap();
+                if !v.is_empty() { self.outer.insert(k, v); }
+                return;
+            }
+            Kind::ForNode { index, collection, statements } => {
+                self.outer_rec(collection, os, false);
+                scope(os, key(n), true);
+                self.outer_rec(index, os, false);
+                if let Some(st) = statements { self.outer_rec(st, os, false); }
+                os.pop();
+                return;
+            }
+            Kind::PostExecutionNode { statements } => {
+                scope(os, key(n), true);
+                if let Some(st) = statements { self.outer_rec(st, os, false); }
+                os.pop();
+                return;
+            }
+            Kind::DefNode { receiver, .. } => { if let Some(r) = receiver { self.outer_rec(r, os, false); } return; }
+            Kind::ClassNode { constant_path, superclass, .. } => {
+                self.outer_rec(constant_path, os, false);
+                if let Some(s) = superclass { self.outer_rec(s, os, false); }
+                return;
+            }
+            Kind::ModuleNode { constant_path, .. } => { self.outer_rec(constant_path, os, false); return; }
+            Kind::SingletonClassNode { expression, .. } => { self.outer_rec(expression, os, false); return; }
+            _ => {}
+        }
+        for ch in n.children() { self.outer_rec(ch, os, false); }
+    }
+
     fn mark_all_captured(&mut self, stack: &[(usize, bool)]) {
         for (k, _) in stack { self.captures.entry(*k).or_default().insert(Sym(u32::MAX)); }
     }
@@ -326,21 +389,8 @@ impl<'a> Compiler<'a> {
         loc
     }
 
-    /// Resolve a variable at prism depth → (hops, loc); the blocks between its owner and here use an
-    /// outer variable (Iseq::outer_vars, keyed by owner and index: declaration order, as CRuby's ID order).
+    /// Resolve a variable at prism depth → (hops, loc).
     fn resolve(&mut self, nm: Sym, depth: u32) -> (u32, VarLoc) {
-        let mut d = depth as i64;
-        let mut i = self.scopes.len() as i64 - 1;
-        while i >= 0 && (self.scopes[i as usize].transparent || d > 0) { if !self.scopes[i as usize].transparent { d -= 1; } i -= 1; }
-        let r = self.resolve_loc(nm, depth);
-        if !self.void_read && (i + 1) < self.scopes.len() as i64 {
-            let idx = match r.1 { VarLoc::Slot(x) => x, VarLoc::Env(x) => x | 1 << 31 };
-            let key = ((i + 1) as u64) << 32 | idx as u64;
-            for sc in &mut self.scopes[(i + 1).max(0) as usize..] { if matches!(sc.kind, SK::Block | SK::Lambda) { sc.outer.push((key, nm)); } }
-        }
-        r
-    }
-    fn resolve_loc(&mut self, nm: Sym, depth: u32) -> (u32, VarLoc) {
         let mut d = depth as i64;
         let mut i = self.scopes.len() as i64 - 1;
         let mut hops = 0;
@@ -503,7 +553,7 @@ impl<'a> Compiler<'a> {
             info: CodeInfo { file: self.file, label, line, end_line: sc.end_line }, kind, simple, lead_only, name, local_names, arity, uses_block: false, traced: self.trace,
             parent: std::cell::Cell::new(std::ptr::null()), ruby2_keywords: std::cell::Cell::new(false),
             outer_names: if kind == IseqKind::Eval { self.eval_outer.iter().flatten().cloned().collect() } else { vec![] },
-            outer_vars: { let mut v = std::mem::take(&mut sc.outer); v.sort_unstable(); v.dedup_by_key(|x| x.1); v.into_iter().map(|x| x.1).collect() },
+            outer_vars: std::mem::take(&mut self.pending_outer),
         }));
         for ch in &sc.children { ch.parent.set(is); }
         if let Some(p) = self.scopes.last_mut() { p.children.push(is); }
@@ -856,7 +906,6 @@ impl<'a> Compiler<'a> {
             Kind::SuperNode { arguments, block } => self.super_call(arguments.as_deref(), block.as_deref(), false, line),
             Kind::ForwardingSuperNode { block } => self.super_call(None, block.as_deref(), true, line),
             Kind::YieldNode { arguments } => {
-                for sc in self.scopes.iter_mut().rev() { if !matches!(sc.kind, SK::Block | SK::Lambda) { break; } sc.outer.push((u64::MAX, s::yield_)); }
                 let args: Vec<&PNode> = match arguments.as_deref() { Some(PNode { kind: Kind::ArgumentsNode { arguments }, .. }) => arguments.iter().collect(), _ => vec![] };
                 if args.iter().all(|a| self.simple_arg(a)) {
                     let v: Vec<NodePtr> = args.iter().map(|a| self.c(a)).collect();
@@ -2042,6 +2091,10 @@ impl<'a> Compiler<'a> {
             None => Params::default(),
         };
         let b = self.stmts(body);
+        if !self.outer.is_empty() {
+            // in CRuby's order (ID order ~ first appearance in the source)
+            if let Some(mut ov) = self.outer.remove(&key(n)) { ov.sort_unstable(); ov.dedup_by_key(|x| x.1); self.pending_outer = ov.into_iter().map(|x| x.1).collect(); }
+        }
         let is = self.finish_iseq(b, ps, kind, label, line, Sym(0));
         // the block's home frame: `return` in the block targets it by id
         if let Some(p) = self.scopes.last_mut() { p.needs_id = true; }
