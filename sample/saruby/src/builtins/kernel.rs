@@ -359,6 +359,42 @@ pub fn make_exception_from_args(c: &mut Ctx, args: &[Value]) -> RV {
     Ok(e)
 }
 
+/// rb_exception_setup: the exception of a cross-context raise (Thread#raise, Fiber#raise); `cause:`
+/// is taken out (other keywords stay as a Hash argument) and the cause is the caller's `$!` unless given.
+pub fn exception_setup(c: &mut Ctx, args: &[Value]) -> RV {
+    let mut a = args.to_vec();
+    let mut cause = UNDEF;
+    // the copied options Hash is held here (a Value only in `a` is no root)
+    let mut opts = NIL;
+    if let Some(h) = kw_arg(args) {
+        a.pop();
+        let k = crate::vm::sym_value("cause");
+        if let Some(v) = hash_get_opt(c, h, k)? {
+            cause = v;
+            if c.hash_len(h) > 1 { opts = c.hash_dup(h); hash_delete(c, opts, k)?; a.push(opts); }
+        } else if c.hash_len(h) > 0 { opts = c.hash_dup(h); a.push(opts); }
+    }
+    if a.is_empty() && cause != UNDEF { return arg_err(c, "only cause is given with no arguments"); }
+    let mut e = if a.is_empty() { let k = c.vm().c_runtime_error.get(); make_exception(c, k, "") } else { make_exception_from_args(c, &a)? };
+    let resolved = if cause == UNDEF {
+        if c.errinfo == e { NIL } else { c.errinfo }
+    } else if cause == NIL { NIL } else {
+        if !is_exception(c, cause) { return type_err(c, "exception object expected"); }
+        if cause == e { NIL } else {
+            let mut x = cause;
+            while x != NIL && is_exception(c, x) {
+                if x == e { return arg_err(c, "circular causes"); }
+                x = ivar_get(c, x, s::cause);
+            }
+            cause
+        }
+    };
+    if crate::heap::is_frozen(e) { e = crate::builtins::object::obj_dup(c, e, false, None)?; }
+    ivar_set_raw(c, e, s::cause, resolved);
+    std::hint::black_box(opts);
+    Ok(e)
+}
+
 fn k_raise(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
     let e = make_exception_from_args(c, args)?;
     // the backtrace starts at the caller of raise

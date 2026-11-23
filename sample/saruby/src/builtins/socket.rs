@@ -242,9 +242,9 @@ fn numeric_getaddrinfo(node: Option<&[u8]>, serv: Option<&[u8]>, h: (i32, i32, i
             if (st == 0 || st == t) && (pr == 0 || p == 0 || pr == p) { out.push((0, f, t, if pr != 0 { pr } else { p }, sa.clone(), None)); }
         }
     };
-    if (fam == AF_UNSPEC || fam == AF_INET6) && node.bytes().all(|b| b.is_ascii_hexdigit() || b == b'.' || b == b':') {
-        if let Some(a) = parse_ipv6(node) { push(AF_INET6, sockaddr_in6(a, port)); }
-    } else if (fam == AF_UNSPEC || fam == AF_INET) && node.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+    let v6 = if (fam == AF_UNSPEC || fam == AF_INET6) && node.bytes().all(|b| b.is_ascii_hexdigit() || b == b'.' || b == b':') { parse_ipv6(node) } else { None };
+    if let Some(a) = v6 { push(AF_INET6, sockaddr_in6(a, port)); }
+    else if (fam == AF_UNSPEC || fam == AF_INET) && node.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
         if let Some(a) = parse_ipv4(node) { push(AF_INET, sockaddr_in(a, port)); }
     }
     if out.is_empty() { None } else { Some(out) }
@@ -348,6 +348,22 @@ fn getaddrinfo(c: &mut Ctx, host: Value, port: Value, mut h: (i32, i32, i32, i32
     if socktype_hack && h.2 == 0 && pp.as_ref().is_some_and(|p| !p.is_empty() && p.iter().all(|b| b.is_ascii_digit())) { h.2 = SOCK_DGRAM; }
     h.0 |= extra;
     if let Some(r) = numeric_getaddrinfo(hp.as_deref(), pp.as_deref(), h) { return Ok(r); }
+    // a non-blocking fiber's scheduler resolves the name (address_resolve), each address then numerically
+    let s = crate::builtins::thread::scheduler_current(c);
+    if s != NIL && hp.is_some() && h.0 & k("AI_NUMERICHOST") == 0 {
+        if let Some(res) = crate::builtins::thread::sched_hook(c, s, "address_resolve", &[host])? {
+            let mut out = vec![];
+            let ips = if is_array(res) { c.ary(res).to_vec() } else { vec![] };
+            for ip in ips {
+                let mut x = 0;
+                let ib = host_str(c, ip, &mut x)?;
+                if let Some(r) = numeric_getaddrinfo(ib.as_deref(), pp.as_deref(), h) { out.extend(r); }
+            }
+            std::hint::black_box(res);   // keeps the addresses alive while they are read
+            if out.is_empty() { return Err(resolution_error(c, reason, k("EAI_NONAME"), 0)); }
+            return Ok(out);
+        }
+    }
     match real_getaddrinfo(c, hp.clone(), pp, h)? {
         Ok(r) => Ok(r),
         Err((code, eno)) => {
@@ -856,7 +872,8 @@ fn is_dgram(c: &mut Ctx, fd: i32) -> Result<bool, Esc> {
 fn wait(c: &mut Ctx, v: Value, ev: i16) -> Result<(), Esc> {
     let fd = sfd(c, v)?;
     let dl = io::io_timeout(c, v).map(|t| std::time::Instant::now() + t);
-    let r = io::wait_one(c, fd, ev, dl)?;
+    let tv = io::io_timeout_value(c, v);
+    let r = io::wait_one(c, v, fd, ev, dl, tv)?;
     sfd(c, v)?;
     // rb_io_wait with the IO's timeout
     if r.is_none() { return Err(timeout_error(c, if ev == sys::POLLOUT { "Timed out waiting for IO to become writable!" } else { "Timed out waiting for IO to become readable!" })); }
@@ -872,7 +889,7 @@ fn do_connect(c: &mut Ctx, v: Value, sa: &[u8], deadline: Option<std::time::Inst
     if e != sys::EINTR && e != sys::EAGAIN && e != EINPROGRESS { return Ok(Err(e)); }
     // wait_connectable
     match so_error(fd) { Err(e) => return Ok(Err(e)), Ok(0) => {} Ok(x) if [114, 106, 111, 113].contains(&x) => return Ok(Err(x)), Ok(_) => {} }
-    let r = io::wait_one(c, fd, sys::POLLIN | sys::POLLOUT, deadline)?;
+    let r = io::wait_one(c, v, fd, sys::POLLIN | sys::POLLOUT, deadline, UNDEF)?;
     let fd = sfd(c, v)?;
     if r.is_none() {
         let s = inspect_sockaddr(c, sa)?;

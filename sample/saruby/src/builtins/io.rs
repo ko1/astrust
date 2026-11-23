@@ -94,6 +94,13 @@ pub fn new_io(c: &mut Ctx, klass: Value, fd: i32, path: &[u8], r: bool, w: bool)
     let io = opened(fd, path, r, w);
     c.alloc(klass, Body::Data(Box::new(io)))
 }
+/// An IO for a descriptor its owner closes (what a scheduler's io_wait is given for a bare fd).
+pub fn io_for_fd_noclose(c: &mut Ctx, fd: i32, r: bool, w: bool) -> Value {
+    let k = c.vm().c_io.get();
+    let mut io = opened(fd, b"", r, w);
+    io.autoclose = false;
+    c.alloc(k, Body::Data(Box::new(io)))
+}
 /// IO#dup / #clone: a blank IO of the class; initialize_copy dups the descriptor.
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if !is_io(c, v) { return Ok(None); }
@@ -179,6 +186,8 @@ pub fn timeout_error_class(c: &mut Ctx) -> Value {
     let io = c.vm().c_io.get();
     match const_get_at(c, io, intern(b"TimeoutError")) { Some(k) => k, None => define_class_under(c, io, "TimeoutError", c.vm().c_io_error.get()) }
 }
+/// IO#timeout as set (nil: none).
+pub fn io_timeout_value(c: &Ctx, v: Value) -> Value { if TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed) { ivar_get(c, v, timeout_sym()) } else { NIL } }
 fn io_get_timeout(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { get_io(c, slf)?; Ok(if TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed) { ivar_get(c, slf, timeout_sym()) } else { NIL }) }
 fn io_set_timeout(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let t = a[0];
@@ -200,12 +209,21 @@ thread_local! { static SPARE: std::cell::RefCell<Vec<u8>> = const { std::cell::R
 /// With other threads running, an empty read buffer is filled by a READ blop: this thread parks,
 /// the engine reads when the fd is ready, and the bytes are appended to rbuf.
 fn coop_fill(c: &mut Ctx, v: Value, fd: i32) -> Result<(), Esc> {
+    if crate::builtins::thread::schedulers_set() && sched_reads(c) && io_mut(c, v).rpos >= io_mut(c, v).rbuf.len() { return sched_fill(c, v); }
     if fd_ready(fd, sys::POLLIN) { return Ok(()); }   // fill reads it now
     if let Some(t) = io_timeout(c, v) {
-        if wait_one(c, fd, sys::POLLIN, Some(std::time::Instant::now() + t))?.is_none() {
+        let tv = io_timeout_value(c, v);
+        if wait_one(c, v, fd, sys::POLLIN, Some(std::time::Instant::now() + t), tv)?.is_none() {
             let k = timeout_error_class(c);
             return err(c, k, "Blocking operation timed out!");
         }
+        return check_open(c, v, false);
+    }
+    let s = crate::builtins::thread::scheduler_current(c);
+    if s != NIL {
+        // a non-blocking fiber: its scheduler's io_wait (rb_io_wait_readable), then the fill reads
+        let tv = io_timeout_value(c, v);
+        crate::builtins::thread::sched_io_wait(c, s, v, sys::POLLIN, tv)?;
         return check_open(c, v, false);
     }
     if fd == 0 { out_flush(); }
@@ -226,6 +244,70 @@ fn coop_fill(c: &mut Ctx, v: Value, fd: i32) -> Result<(), Esc> {
     });
     SPARE.with(|s| *s.borrow_mut() = buf);
     r
+}
+/// A non-blocking fiber's scheduler has io_read: a read that finds the buffer empty fills it through
+/// io_read (rb_io_read_memory; readable_check_b and a fill that would block both reach coop_fill).
+#[cold]
+#[inline(never)]
+fn sched_reads(c: &Ctx) -> bool {
+    let s = crate::builtins::thread::scheduler_current(c);
+    s != NIL && crate::builtins::thread::sched_has(c, s, "io_read")
+}
+/// Fill the read buffer through the scheduler's io_read(io, buffer, 0, 0); after a zero read the fill
+/// finds the end itself, a negative result is the errno of the read.
+#[cold]
+fn sched_fill(c: &mut Ctx, v: Value) -> Result<(), Esc> {
+    let s = crate::builtins::thread::scheduler_current(c);
+    let cap = { let io = io_mut(c, v); if io.rcap == 0 { io.rcap = if cv::need_readconv(io) { 128 * 1024 } else { 8192 }; } io.rcap as usize };
+    let (n, bytes) = loop {
+        let b = crate::builtins::io_buffer::new_locked(c, vec![0u8; cap], false)?;
+        let r = funcall(c, s, intern(b"io_read"), &[v, b, Value::fix(0), Value::fix(0)], std::ptr::null());
+        let bytes = crate::builtins::io_buffer::take_locked(c, b);
+        let r = r?;
+        check_open(c, v, false)?;
+        let n = if r.is_fixnum() { r.as_fix() } else { 0 };
+        // EAGAIN: wait in io_wait and ask io_read again (io_fillbuf's retry)
+        if n != -sys::EAGAIN && n != -sys::EINTR { break (n, bytes); }
+        let tv = io_timeout_value(c, v);
+        crate::builtins::thread::sched_io_wait(c, s, v, sys::POLLIN, tv)?;
+        check_open(c, v, false)?;
+    };
+    let io = io_mut(c, v);
+    if n > 0 {
+        if io.rpos >= io.rbuf.len() { io.rbuf.clear(); io.rpos = 0; }
+        io.rbuf.extend_from_slice(&bytes[..(n as usize).min(bytes.len())]);
+    } else if n < 0 { io.rerr = -n; }
+    Ok(())
+}
+/// Write `io_v`'s buffered bytes through the scheduler's io_write(io, buffer, 0, 0) (rb_io_write_memory).
+#[cold]
+fn sched_flush(c: &mut Ctx, s: Value, io_v: Value) -> Result<(), Esc> {
+    loop {
+        let b = { let io = io_mut(c, io_v); if io.wbuf.is_empty() { return Ok(()); } io.wbuf.clone() };
+        let buf = crate::builtins::io_buffer::new_locked(c, b, true)?;
+        let r = funcall(c, s, intern(b"io_write"), &[io_v, buf, Value::fix(0), Value::fix(0)], std::ptr::null());
+        crate::builtins::io_buffer::take_locked(c, buf);
+        let r = r?;
+        check_open(c, io_v, true)?;
+        let n = if r.is_fixnum() { r.as_fix() } else { 0 };
+        if n == -sys::EAGAIN || n == -sys::EINTR {
+            let tv = io_timeout_value(c, io_v);
+            crate::builtins::thread::sched_io_wait(c, s, io_v, sys::POLLOUT, tv)?;
+            check_open(c, io_v, true)?;
+            continue;
+        }
+        let io = io_mut(c, io_v);
+        if n < 0 { io.wbuf.clear(); return Err(raise_errno(c, -n, "")); }
+        if n == 0 { return Ok(()); }
+        io.wbuf.drain(..(n as usize).min(io.wbuf.len()));
+    }
+}
+/// The scheduler that takes `io_v`'s writes (a non-blocking fiber's, with io_write), or nil.
+#[cold]
+#[inline(never)]
+fn sched_writer(c: &Ctx, io_v: Value) -> Value {
+    let s = crate::builtins::thread::scheduler_current(c);
+    if s == NIL || !crate::builtins::thread::sched_has(c, s, "io_write") || rio(c, io_v).is_none_or(|io| out_fd(io) <= 2) { NIL } else { s }
 }
 fn discard_rbuf(io: &mut RIo) {
     // give unread bytes back to the kernel offset before writing / seeking
@@ -249,9 +331,20 @@ fn buffer_write(io: &mut RIo, b: &[u8], coop: bool) -> Option<i64> {
 /// Flush with other threads running while the fd is not writable (a full pipe would block them all).
 #[cold]
 fn coop_flush(c: &mut Ctx, io_v: Value) -> Result<(), Esc> {
+    if crate::builtins::thread::schedulers_set() {
+        let s = sched_writer(c, io_v);
+        if s != NIL { return sched_flush(c, s, io_v); }
+    }
     loop {
         let fd = { let io = io_mut(c, io_v); if io.wbuf.is_empty() { return Ok(()); } out_fd(io) };
         // POLLOUT on a pipe promises PIPE_BUF bytes, so a write of that much does not block
+        let s = crate::builtins::thread::scheduler_current(c);
+        if s != NIL && !fd_ready(fd, sys::POLLOUT) {
+            let tv = io_timeout_value(c, io_v);
+            crate::builtins::thread::sched_io_wait(c, s, io_v, sys::POLLOUT, tv)?;
+            check_open(c, io_v, true)?;
+            continue;
+        }
         let w = if fd_ready(fd, sys::POLLOUT) {
             let io = io_mut(c, io_v);
             let n = io.wbuf.len().min(4096);
@@ -367,7 +460,7 @@ pub(crate) fn fill(io: &mut RIo) -> bool {
     // pipes / ttys reach EOF only on a zero read; regular files may grow, so never latch eof
     n > 0
 }
-fn fd_ready(fd: i32, ev: i16) -> bool { let mut p = [sys::PollFd { fd, events: ev, revents: 0 }]; sys::poll(&mut p, 0) > 0 }
+pub fn fd_ready(fd: i32, ev: i16) -> bool { let mut p = [sys::PollFd { fd, events: ev, revents: 0 }]; sys::poll(&mut p, 0) > 0 }
 /// Give consumed bytes back to the read buffer (a read that would block is redone after the wait).
 fn unread(io: &mut RIo, mut b: Vec<u8>) {
     if b.is_empty() { return; }
@@ -622,6 +715,11 @@ fn io_putc(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(a[0])
 }
 fn io_flush(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+    get_io(c, slf)?;
+    if crate::builtins::thread::schedulers_set() {
+        let s = sched_writer(c, slf);
+        if s != NIL { sched_flush(c, s, slf)?; return Ok(slf); }
+    }
     let io = get_io(c, slf)?;
     if out_fd(io) == 1 { out_flush(); } else if let Some(e) = io_flush_one(io) { return Err(raise_errno(c, e, "")); }
     Ok(slf)
@@ -938,7 +1036,7 @@ fn io_sysread(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if io.rpos < io.rbuf.len() { return err(c, c.vm().c_io_error.get(), "sysread for buffered IO"); }
     let fd = io.fd;
     if n == 0 { return into_outbuf(c, a.get(1).copied(), vec![], ENC_BINARY); }
-    if crate::builtins::thread::active(c) { crate::builtins::thread::wait_readable(c, fd)?; check_open(c, slf, false)?; }
+    if crate::builtins::thread::active(c) { let tv = io_timeout_value(c, slf); wait_one(c, slf, fd, sys::POLLIN, None, tv)?; check_open(c, slf, false)?; }
     let mut v = vec![0u8; n as usize];
     match sys::read_fd(fd, &mut v) {
         Ok(0) => eof_err(c),
@@ -1081,6 +1179,7 @@ pub fn close_io(c: &mut Ctx, slf: Value) -> RV {
     if !io.init || io.closed { return Ok(NIL); }
     if io.conv.is_some() { return close_io_conv(c, slf); }
     if out_fd(io) == 1 { out_flush(); }
+    if crate::builtins::thread::schedulers_set() { return close_io_sched(c, slf); }
     let e = io_flush_one(io);
     io.closed = true;
     let (fd, wfd) = (io.fd, io.wfd);
@@ -1088,6 +1187,35 @@ pub fn close_io(c: &mut Ctx, slf: Value) -> RV {
     let io = io_mut(c, slf);
     let pid = std::mem::take(&mut io.pid);
     if pid > 0 { crate::builtins::process::reap_child(c, pid)?; }
+    if let Some(e) = e { return Err(raise_errno(c, e, "")); }
+    Ok(NIL)
+}
+/// close_io while some thread has a Fiber scheduler: io_write for the flush, fiber_interrupt for fibers
+/// waiting on the IO, io_close.
+#[cold]
+#[inline(never)]
+fn close_io_sched(c: &mut Ctx, slf: Value) -> RV {
+    let s = sched_writer(c, slf);
+    let hooked = if s != NIL { sched_flush(c, s, slf) } else { Ok(()) };
+    let failed = (c.esc, c.esc_val);
+    let io = io_mut(c, slf);
+    let e = io_flush_one(io);
+    io.closed = true;
+    let (fd, wfd) = (io.fd, io.wfd);
+    if fd > 2 || wfd > 2 {
+        cancel_waits(c, fd, wfd);
+        crate::builtins::thread::io_close_interrupt(c, slf)?;
+        // a non-blocking fiber's scheduler may close the descriptor itself (io_close)
+        let s = crate::builtins::thread::scheduler_current(c);
+        let done = s != NIL && fd > 2 && crate::builtins::thread::sched_hook(c, s, "io_close", &[Value::fix(fd as i64)])?.is_some_and(|r| r.truthy());
+        let io = io_mut(c, slf);
+        if done { io.fd = -1; }
+        close_fds(io);
+    }
+    let io = io_mut(c, slf);
+    let pid = std::mem::take(&mut io.pid);
+    if pid > 0 { crate::builtins::process::reap_child(c, pid)?; }
+    if hooked.is_err() { c.esc = failed.0; c.esc_val = failed.1; return hooked.map(|_| NIL); }
     if let Some(e) = e { return Err(raise_errno(c, e, "")); }
     Ok(NIL)
 }
@@ -1437,8 +1565,17 @@ pub fn wait_deadline(c: &mut Ctx, v: Option<&Value>) -> Result<Option<std::time:
     } _ => None })
 }
 /// Wait for `events` on one fd through the scheduler (other threads run; signals are handled).
-pub fn wait_one(c: &mut Ctx, fd: i32, events: i16, deadline: Option<std::time::Instant>) -> Result<Option<i16>, Esc> {
+/// A non-blocking fiber with a Fiber scheduler calls its io_wait(`io`, events, `tv`) instead
+/// (`tv`: the timeout as given; UNDEF: the time left to `deadline`).
+pub fn wait_one(c: &mut Ctx, io: Value, fd: i32, events: i16, deadline: Option<std::time::Instant>, tv: Value) -> Result<Option<i16>, Esc> {
     out_flush();
+    if io != NIL {
+        let s = crate::builtins::thread::scheduler_current(c);
+        if s != NIL {
+            let tv = if tv != UNDEF { tv } else { match deadline { Some(d) => c.float_new(d.saturating_duration_since(std::time::Instant::now()).as_secs_f64()), None => NIL } };
+            return crate::builtins::thread::sched_io_wait(c, s, io, events, tv);
+        }
+    }
     let r = crate::builtins::thread::poll_wait(c, vec![sys::PollFd { fd, events, revents: 0 }], deadline)?;
     Ok(r.map(|p| p[0].revents))
 }
@@ -1447,7 +1584,7 @@ fn io_wait_readable(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> R
     let io = readable_nowait(c, slf)?;
     if io.rpos < io.rbuf.len() { return Ok(slf); }
     let fd = io.fd;
-    let r = wait_one(c, fd, sys::POLLIN, dl)?;
+    let r = wait_one(c, slf, fd, sys::POLLIN, dl, a.first().copied().unwrap_or(NIL))?;
     check_open(c, slf, false)?;
     Ok(if r.is_some() { slf } else { NIL })
 }
@@ -1455,7 +1592,7 @@ fn io_wait_writable(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> R
     let dl = wait_deadline(c, a.first())?;
     let io = get_io(c, slf)?;
     let fd = out_fd(io);
-    let r = wait_one(c, fd, sys::POLLOUT, dl)?;
+    let r = wait_one(c, slf, fd, sys::POLLOUT, dl, a.first().copied().unwrap_or(NIL))?;
     check_open(c, slf, false)?;
     Ok(if r.is_some() { slf } else { NIL })
 }
@@ -1782,6 +1919,9 @@ fn select_timeout(c: &mut Ctx, v: Option<&Value>) -> Result<i32, Esc> {
     Ok(if f * 1000.0 >= i32::MAX as f64 { -1 } else { (f * 1000.0).ceil() as i32 })
 }
 fn io_s_select(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
+    // a non-blocking fiber's scheduler may take the whole call (io_select), else it blocks as usual
+    let s = crate::builtins::thread::scheduler_current(c);
+    if s != NIL { if let Some(r) = crate::builtins::thread::sched_hook(c, s, "io_select", a)? { return Ok(r); } }
     let ms = select_timeout(c, a.get(3))?;
     let mut pfds: Vec<sys::PollFd> = vec![];
     let mut who: Vec<(usize, Value)> = vec![];

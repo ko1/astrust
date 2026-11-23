@@ -45,6 +45,10 @@ pub type Res = Result<usize, i64>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Id { idx: u32, gen: u32 }
+impl Id {
+    /// As two Integers (thread.rs keeps the ops of fibers blocked through a scheduler in a Ruby Array).
+    pub fn parts(self) -> (i64, i64) { (self.idx as i64, self.gen as i64) }
+}
 
 struct Pending { op: Op, deadline: Option<Instant>, deadlockable: bool }
 enum Slot { Free, Pending(Pending), Done(Op, Res) }
@@ -237,7 +241,13 @@ impl Engine for EpollEngine {
     }
 }
 
-pub struct Blop { slab: Slab, engine: Box<dyn Engine>, wake: i32, ready: Vec<Ready>, waiters: Vec<(u64, Id)> }   // waiters: Wake ops by key, oldest first
+pub struct Blop {
+    slab: Slab, engine: Box<dyn Engine>, wake: i32, ready: Vec<Ready>,
+    waiters: Vec<(u64, Id)>,   // Wake ops by key, oldest first
+    fibers: Vec<Id>,           // Wake ops of fibers blocked through a Fiber scheduler (thread.rs)
+    unblocks: Vec<Id>,         // those a notify completed: the scheduler's unblock is still to be called
+}
+static UNBLOCKS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// The wake channel (an eventfd) for the signal handler: -1 before the first blop.
 static WAKE_FD: AtomicI32 = AtomicI32::new(-1);
 
@@ -257,7 +267,7 @@ fn new_engine(wake: i32) -> Box<dyn Engine> {
 /// The VM's blop state (made at the first use; `Vm::blop`).
 fn with<R>(c: &mut Ctx, f: impl FnOnce(&mut Blop) -> R) -> R {
     let mut g = c.vm().blop.borrow_mut();
-    let b = g.get_or_insert_with(|| { let wake = new_wake(); Box::new(Blop { slab: Slab::new(), engine: new_engine(wake), wake, ready: vec![], waiters: vec![] }) });
+    let b = g.get_or_insert_with(|| { let wake = new_wake(); Box::new(Blop { slab: Slab::new(), engine: new_engine(wake), wake, ready: vec![], waiters: vec![], fibers: vec![], unblocks: vec![] }) });
     let r = f(b);
     b.retire_done();
     r
@@ -285,6 +295,22 @@ pub fn submit(c: &mut Ctx, op: Op, deadline: Option<Instant>, deadlockable: bool
         id
     })
 }
+/// A Wake(key) op of a fiber blocked through its scheduler: the notify that completes it queues it
+/// for the scheduler's unblock, called at the next check point or wait (`take_unblocks`).
+pub fn submit_fiber(c: &mut Ctx, key: u64) -> Id {
+    let id = submit(c, Op::Wake(key), None, false);
+    with(c, |b| b.fibers.push(id));
+    id
+}
+/// Some fiber's op was completed by a notify and not unblocked yet.  Not #[inline]: UNBLOCKS stays local.
+pub fn unblocks_pending() -> bool { UNBLOCKS.load(Relaxed) }
+pub fn take_unblocks(c: &mut Ctx) -> Vec<Id> { UNBLOCKS.store(false, Relaxed); with(c, |b| std::mem::take(&mut b.unblocks)) }
+// After a notify: completed fiber ops wait for their unblock (set_ints: the next check point calls it).
+#[cold]
+fn queue_unblocks(b: &mut Blop, done: &[Id]) {
+    for id in done { if b.fibers.contains(id) { b.unblocks.push(*id); } }
+    if !b.unblocks.is_empty() { UNBLOCKS.store(true, Relaxed); crate::vm::set_ints(); }
+}
 pub fn is_done(c: &Ctx, id: Id) -> bool { c.vm().blop.borrow().as_ref().is_some_and(|b| matches!(b.slab.get(id), Some(Slot::Done(..)))) }
 /// Take the op back: its result, or Err(ECANCELED) if it had not completed (it is withdrawn).
 pub fn take(c: &mut Ctx, id: Id) -> (Option<Op>, Res) {
@@ -294,7 +320,10 @@ pub fn take(c: &mut Ctx, id: Id) -> (Option<Op>, Res) {
             Some(Slot::Done(Op::Wake(k), _)) => Some(*k),
             _ => None,
         };
-        if wake.is_some() { if let Some(i) = b.waiters.iter().position(|w| w.1 == id) { b.waiters.remove(i); } }
+        if wake.is_some() {
+            if let Some(i) = b.waiters.iter().position(|w| w.1 == id) { b.waiters.remove(i); }
+            if !b.fibers.is_empty() { b.fibers.retain(|&f| f != id); b.unblocks.retain(|&f| f != id); }
+        }
         match b.slab.release(id) {
             Some(Slot::Done(op, r)) => (Some(op), r),
             Some(Slot::Pending(p)) => (Some(p.op), Err(ECANCELED)),
@@ -305,17 +334,25 @@ pub fn take(c: &mut Ctx, id: Id) -> (Option<Op>, Res) {
 /// Complete a pending op with Err(errno) (Thread#raise / #kill / #wakeup): its waiter becomes runnable.
 pub fn interrupt(c: &mut Ctx, id: Id, errno: i64) { with(c, |b| b.slab.complete(id, Err(errno))) }
 /// Complete every Wake(key) op.
+#[inline]
 pub fn notify(c: &mut Ctx, key: u64) {
     let mut g = c.vm().blop.borrow_mut();
     let Some(b) = g.as_mut() else { return };
     {
         if b.waiters.is_empty() { return; }
         let slab = &mut b.slab;
-        b.waiters.retain(|&(k, id)| { if k == key { slab.complete(id, Ok(0)); } k != key });
+        if b.fibers.is_empty() {
+            b.waiters.retain(|&(k, id)| { if k == key { slab.complete(id, Ok(0)); } k != key });
+        } else {
+            let mut done = vec![];
+            b.waiters.retain(|&(k, id)| { if k == key { slab.complete(id, Ok(0)); done.push(id); } k != key });
+            queue_unblocks(b, &done);
+        }
     }
 }
 /// Complete the oldest pending Wake(key) op (one item / one slot / an unlocked Mutex: one waiter
 /// re-checks, not all). A woken waiter that leaves without taking it passes it on (`thread::wait`).
+#[inline]
 pub fn notify_one(c: &mut Ctx, key: u64) {
     let mut g = c.vm().blop.borrow_mut();
     let Some(b) = g.as_mut() else { return };
@@ -323,6 +360,7 @@ pub fn notify_one(c: &mut Ctx, key: u64) {
         let Some(i) = b.waiters.iter().position(|w| w.0 == key && matches!(b.slab.get(w.1), Some(Slot::Pending(_)))) else { return };
         let (_, id) = b.waiters.remove(i);
         b.slab.complete(id, Ok(0));
+        if !b.fibers.is_empty() { queue_unblocks(b, &[id]); }
     }
 }
 /// IO#close: every op on `fd` completes with Err(EBADF) (before the fd number can be reused).
@@ -368,7 +406,8 @@ pub fn after_fork(c: &mut Ctx) {
     {
         for i in 0..b.slab.ents.len() as u32 { let gen = b.slab.ents[i as usize].gen; if !matches!(b.slab.ents[i as usize].slot, Slot::Free) { b.slab.release(Id { idx: i, gen }); } }
         b.slab.just_done.clear();
-        b.waiters.clear();
+        b.waiters.clear(); b.fibers.clear(); b.unblocks.clear();
+        UNBLOCKS.store(false, Relaxed);
         sys::close(b.wake);
         b.wake = new_wake();
         b.engine.after_fork(b.wake);
