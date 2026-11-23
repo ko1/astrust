@@ -149,7 +149,7 @@ fn qpencode(out: &mut Vec<u8>, s: &[u8], len: usize) {
 
 /// Split off a trailing keyword hash and read its only allowed key.
 fn one_kw(c: &mut Ctx, a: &[Value], key: &str) -> Result<(usize, Option<Value>), Esc> {
-    let Some(h) = kw_arg(a) else { return Ok((a.len(), None)); };
+    let Some(h) = kw_arg(c, a) else { return Ok((a.len(), None)); };
     let mut val = None; let mut unknown = vec![]; let mut i = 0;
     while let Some((k, v)) = c.hash_entry_at(h, i) {
         i += 1;

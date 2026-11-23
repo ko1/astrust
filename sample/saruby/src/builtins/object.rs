@@ -42,7 +42,7 @@ fn bo_id(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.int_from_i12
 fn bo_send(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if a.is_empty() { return arg_err(c, "no method name given"); }
     let mid = to_sym_arg(c, a[0])?;
-    let kw = kw_arg(a).is_some();
+    let kw = kw_arg(c, a).is_some();
     if c.refinements_on() {
         if let Some(r) = funcall_refined(c, std::ptr::null(), slf, mid, &a[1..], b, CF_FCALL | if kw { CF_KW } else { 0 }) { return r; }
     }
@@ -51,7 +51,7 @@ fn bo_send(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
 fn k_public_send(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if a.is_empty() { return arg_err(c, "no method name given"); }
     let mid = to_sym_arg(c, a[0])?;
-    let kw = kw_arg(a).is_some();
+    let kw = kw_arg(c, a).is_some();
     if c.refinements_on() {
         if let Some(r) = funcall_refined(c, std::ptr::null(), slf, mid, &a[1..], b, if kw { CF_KW } else { 0 }) { return r; }
     }
@@ -72,7 +72,8 @@ fn bo_instance_eval(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
 fn bo_instance_exec(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if b.is_null() { return err(c, c.vm().c_local_jump_error.get(), "no block given (yield)"); }
     let dc = if slf.is_heap() { singleton_class(c, slf) } else { NIL };
-    yield_with_self(c, b, a, slf, dc)
+    let kw = kw_given(c);
+    yield_with_self_kw(c, b, a, slf, dc, kw)
 }
 fn bo_method_missing(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() { return arg_err(c, "no method name given"); }
@@ -285,7 +286,7 @@ fn finish_dup(c: &mut Ctx, slf: Value, n: Value, clone: bool, freeze: Option<boo
 fn k_dup(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { obj_dup(c, slf, false, None) }
 fn k_clone(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let mut fz = None;
-    if let Some(h) = kw_arg(a) {
+    if let Some(h) = kw_arg(c, a) {
         if let Some(v) = hash_get_opt(c, h, sym_value("freeze"))? {
             if v != NIL && v != TRUE && v != FALSE { let i = inspect_str(c, v)?; return arg_err(c, format!("unexpected value for freeze: {}", i)); }
             if v != NIL { fz = Some(v == TRUE); }
@@ -931,7 +932,8 @@ fn m_class_eval(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
 }
 fn m_class_exec(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if b.is_null() { return err(c, c.vm().c_local_jump_error.get(), "no block given (yield)"); }
-    yield_with_self(c, b, a, slf, slf)
+    let kw = kw_given(c);
+    yield_with_self_kw(c, b, a, slf, slf, kw)
 }
 /// rb_is_const_name: an uppercase letter, then identifier characters.
 pub fn is_const_name(b: &[u8]) -> bool {
@@ -1312,7 +1314,7 @@ pub fn alloc_instance(c: &mut Ctx, klass: Value) -> RV {
 fn c_allocate(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { alloc_instance(c, slf) }
 pub fn c_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let o = alloc_instance(c, slf)?;
-    let kw = kw_arg(a).is_some();
+    let kw = kw_arg(c, a).is_some();
     let me = lookup_method(c, class_of(o), s::initialize);
     match me_kind(c, me) {
         Some(MKind::Cfunc(..)) => if me == c.vm().ids.bo_init.get() {

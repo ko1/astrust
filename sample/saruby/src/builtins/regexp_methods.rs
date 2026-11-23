@@ -35,7 +35,7 @@ fn rxc(c: &mut Ctx, v: Value) -> Result<&RRegexp, Esc> {
 
 /// The pattern argument of Regexp.new / #initialize: (src, encoding, options, timeout).
 fn reg_init_args(c: &mut Ctx, a: &[Value]) -> Result<(Vec<u8>, u8, u32, Option<f64>), Esc> {
-    let (a, kw) = match kw_arg(a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
+    let (a, kw) = match kw_arg(c, a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
     if a.is_empty() || a.len() > 2 { return argc_err(c, a.len(), 1, 2); }
     let mut timeout = None;
     if let Some(h) = kw {
@@ -264,7 +264,7 @@ fn re_s_set_timeout(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
 /// Regexp.linear_time?: Onigmo's memoization applies unless the pattern has backrefs,
 /// subexpression calls, the absent operator or captures inside lookarounds.
 fn re_s_linear_time(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
-    let (args, _kw) = match kw_arg(a) { Some(_) => (&a[..a.len() - 1], true), None => (a, false) };
+    let (args, _kw) = match kw_arg(c, a) { Some(_) => (&a[..a.len() - 1], true), None => (a, false) };
     if args.is_empty() || args.len() > 2 { return argc_err(c, args.len(), 1, 2); }
     let r = if is_regexp(c, args[0]) {
         if args.len() > 1 { reg_warn(c, "flags ignored")?; }
@@ -319,7 +319,7 @@ fn md_to_a(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 fn md_captures(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(match_groups_array(c, slf)) }
 fn md_named_captures(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let h = c.hash_new();
-    let symk = match kw_arg(a) { Some(hh) => crate::hash::hash_get_opt(c, hh, sym_value("symbolize_names"))?.map(|v| v.truthy()).unwrap_or(false), None => false };
+    let symk = match kw_arg(c, a) { Some(hh) => crate::hash::hash_get_opt(c, hh, sym_value("symbolize_names"))?.map(|v| v.truthy()).unwrap_or(false), None => false };
     let names = rregexp(c, md(c, slf).regexp).and_then(|r| r.re.as_ref()).map(|r| r.names()).unwrap_or_default();
     for (n, idx) in names {
         let mut v = NIL;

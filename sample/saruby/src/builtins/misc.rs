@@ -89,7 +89,7 @@ fn os_each_object(c: &mut Ctx, s2: Value, a: &[Value], blk: Blk) -> RV {
 // ObjectSpace.garbage_collect(full_mark: true, immediate_mark: true, immediate_sweep: true), as gc.rb
 fn os_garbage_collect(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let mut full = true;
-    if let Some(&h) = a.last().filter(|&&h| is_hash(h)) {
+    if let Some(h) = kw_arg(c, a) {
         let mut unknown = vec![];
         for (k, v) in c.hash_pairs(h) {
             if k == sym_value("full_mark") { full = v.truthy(); }

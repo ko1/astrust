@@ -325,7 +325,7 @@ fn r_by_mode(c: &mut Ctx, mode: u8, half: u8, n: Value, d: Value) -> Value {
 }
 fn rat_round_common(c: &mut Ctx, s: Value, a: &[Value], mode: u8) -> RV {
     let half = if mode == b'r' { round_half_mode(c, a)? } else { 0 };
-    let pos: Vec<Value> = a.iter().copied().filter(|v| !is_hash(*v)).collect();
+    let (pos, _) = if mode == b'r' { kw_split(c, a) } else { (a, None) };
     if pos.len() > 1 { return arg_err(c, format!("wrong number of arguments (given {}, expected 0..1)", pos.len())); }
     let (n, d) = rat_parts(c, s);
     if pos.is_empty() { return Ok(r_by_mode(c, mode, half, n, d)); }
@@ -639,7 +639,7 @@ pub fn convert_rational(c: &mut Ctx, a1: Value, a2: Option<Value>, raise: bool) 
 }
 /// Split off a trailing `exception:` keyword.
 pub fn kw_exception(c: &mut Ctx, a: &[Value]) -> Result<(usize, bool), Esc> {
-    if let Some(h) = kw_arg(a) {
+    if let Some(h) = kw_arg(c, a) {
         if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("exception"))? {
             if v != TRUE && v != FALSE { let ins = inspect_str(c, v)?; return arg_err(c, format!("expected true or false as exception: {}", ins)); }
             return Ok((a.len() - 1, v == TRUE));

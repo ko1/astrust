@@ -375,10 +375,14 @@ class Enumerator
     [v]
   end
   def peek_values = [peek]
-  def self.produce(*args, &b)
+  def self.produce(*args, **kw, &b)
     raise ArgumentError, "no block given" unless b
+    # RB_SCAN_ARGS_LAST_HASH_KEYWORDS: a trailing Hash is the keywords
+    kw = args.pop if kw.empty? && Hash === args.last
     Enumerable.__argc(args.size, 0, 1) if args.size > 1
-    Enumerator.new(Float::INFINITY) do |y|
+    ks = kw.keys - [:size]
+    raise ArgumentError, "unknown keyword#{ks.size > 1 ? 's' : ''}: #{ks.map(&:inspect).join(", ")}" unless ks.empty?
+    Enumerator.new(kw.fetch(:size, Float::INFINITY)) do |y|
       v = args.empty? ? b.call(nil) : args[0]
       begin
         loop { y << v; v = b.call(v) }

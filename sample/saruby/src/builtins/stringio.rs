@@ -179,14 +179,12 @@ fn set_encoding_by_bom(c: &mut Ctx, slf: Value) -> Option<u8> {
     found.map(|x| x.0)
 }
 fn strio_init(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
-    let kw = kw_arg(a);
+    let kw = kw_arg(c, a);
     let pos: &[Value] = if kw.is_some() { &a[..a.len() - 1] } else { a };
     check_argc(c, pos, 0, 2)?;
     let mut string = pos.first().copied().unwrap_or(NIL);
     let vmode = pos.get(1).copied().unwrap_or(NIL);
-    let mut margs = vec![vmode];
-    if let Some(h) = kw { margs.push(h); }
-    let om = crate::builtins::io::parse_mode(c, &margs)?;
+    let om = crate::builtins::io::parse_mode(c, &[vmode], kw)?;
     let mode_given = vmode != NIL || match kw { Some(h) => crate::hash::hash_get_opt(c, h, sym_value("mode"))?.is_some_and(|m| m != NIL), None => false };
     let acc = om.flags & 3;
     let mut flags = if acc == 0 { FM_R } else if acc == 1 { FM_W } else { FM_RW };
@@ -209,7 +207,7 @@ fn strio_init(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
 }
 fn class_new(c: &mut Ctx, klass: Value, a: &[Value]) -> RV {
     let o = crate::builtins::object::alloc_instance(c, klass)?;
-    funcall_kw(c, o, s::initialize, a, nb(), kw_arg(a).is_some())?;
+    funcall_kw(c, o, s::initialize, a, nb(), kw_arg(c, a).is_some())?;
     Ok(o)
 }
 fn sio_s_new(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
@@ -452,7 +450,7 @@ fn check_string_type(c: &mut Ctx, v: Value) -> RV {
     Ok(NIL)
 }
 fn prepare_getline_args(c: &mut Ctx, p: &SState, a: &[Value]) -> Result<GetlineArg, Esc> {
-    let kw = kw_arg(a);
+    let kw = kw_arg(c, a);
     let pos: &[Value] = if kw.is_some() { &a[..a.len() - 1] } else { a };
     check_argc(c, pos, 0, 2)?;
     let rs_g = gvar_get_rs(c)?;
@@ -575,7 +573,7 @@ fn sio_gets(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     Ok(r)
 }
 fn sio_readline(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    let r = funcall_kw(c, slf, intern(b"gets"), a, nb(), kw_arg(a).is_some())?;
+    let r = funcall_kw(c, slf, intern(b"gets"), a, nb(), kw_arg(c, a).is_some())?;
     if r == NIL { return eof_error(c); }
     Ok(r)
 }
@@ -661,12 +659,12 @@ fn sio_pread(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     Ok(buf)
 }
 fn sio_sysread(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    let r = funcall_kw(c, slf, intern(b"read"), a, nb(), kw_arg(a).is_some())?;
+    let r = funcall_kw(c, slf, intern(b"read"), a, nb(), kw_arg(c, a).is_some())?;
     if r == NIL { return eof_error(c); }
     Ok(r)
 }
 fn sio_read_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    let kw = kw_arg(a);
+    let kw = kw_arg(c, a);
     let pos: &[Value] = if kw.is_some() { &a[..a.len() - 1] } else { a };
     check_argc(c, pos, 1, 2)?;
     let r = read_impl(c, slf, pos)?;
@@ -793,7 +791,7 @@ fn sio_printf(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
 fn sio_addstr(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { io_write(c, slf, a[0])?; Ok(slf) }
 fn sio_syswrite(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { io_write(c, slf, a[0]) }
 fn sio_write_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    let pos: &[Value] = if kw_arg(a).is_some() { &a[..a.len() - 1] } else { a };
+    let pos: &[Value] = if kw_arg(c, a).is_some() { &a[..a.len() - 1] } else { a };
     check_argc(c, pos, 1, 1)?;
     io_write(c, slf, pos[0])
 }
@@ -813,7 +811,7 @@ fn sio_external_encoding(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 fn sio_internal_encoding(_c: &mut Ctx, _slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(NIL) }
 fn sio_set_encoding(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let p = strio(c, slf)?;
-    let pos: &[Value] = if kw_arg(a).is_some() { &a[..a.len() - 1] } else { a };
+    let pos: &[Value] = if kw_arg(c, a).is_some() { &a[..a.len() - 1] } else { a };
     check_argc(c, pos, 1, 2)?;
     let ext = pos[0];
     let enc = if ext == NIL { Some(en::default_external()) } else {
@@ -823,7 +821,7 @@ fn sio_set_encoding(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
                 let es = expect_str(c, ext)?;
                 let mut m = b"r:".to_vec(); m.extend_from_slice(c.str_bytes(es));
                 let ms = c.str_new(&m);
-                let om = crate::builtins::io::parse_mode(c, &[ms])?;
+                let om = crate::builtins::io::parse_mode(c, &[ms], None)?;
                 om.encs.and_then(|e| e.1)
             }
         }

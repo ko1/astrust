@@ -337,7 +337,7 @@ fn k_sprintf(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
 
 /// Kernel#warn (warning.rb + rb_warn_m).
 fn k_warn(c: &mut Ctx, slf: Value, args: &[Value], _b: Blk) -> RV {
-    let (args, kw) = match kw_arg(args) { Some(h) => (&args[..args.len() - 1], Some(h)), None => (args, None) };
+    let (args, kw) = match kw_arg(c, args) { Some(h) => (&args[..args.len() - 1], Some(h)), None => (args, None) };
     let (mut uplevel, mut cat) = (NIL, NIL);
     if let Some(h) = kw {
         for (k, v) in c.hash_pairs(h) {
@@ -407,7 +407,7 @@ pub fn make_exception_from_args(c: &mut Ctx, args: &[Value]) -> RV {
 fn take_cause(c: &mut Ctx, args: &[Value]) -> Result<(Vec<Value>, Value), Esc> {
     let mut a = args.to_vec();
     let mut cause = UNDEF;
-    if let Some(h) = kw_arg(args) {
+    if let Some(h) = kw_arg(c, args) {
         let k = crate::vm::sym_value("cause");
         if let Some(v) = hash_get_opt(c, h, k)? {
             cause = v;
@@ -446,7 +446,7 @@ pub fn exception_setup(c: &mut Ctx, args: &[Value]) -> RV {
     let mut cause = UNDEF;
     // the copied options Hash is held here (a Value only in `a` is no root)
     let mut opts = NIL;
-    if let Some(h) = kw_arg(args) {
+    if let Some(h) = kw_arg(c, args) {
         a.pop();
         let k = crate::vm::sym_value("cause");
         if let Some(v) = hash_get_opt(c, h, k)? {
@@ -1493,11 +1493,11 @@ fn h_s_r2k_hash_p(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
 }
 fn h_s_r2k_hash(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     if !is_hash(args[0]) { return type_err(c, format!("wrong argument type {} (expected Hash)", class_name_for_err(c, args[0]))); }
-    let d = c.hash_new();
-    let pairs = c.hash_pairs(args[0]);
-    let keep = c.ary_new_from(&pairs.iter().flat_map(|&(k, x)| [k, x]).collect::<Vec<_>>());   // pairs is not scanned
-    for (k, x) in pairs { crate::hash::hash_aset(c, d, k, x)?; }
-    std::hint::black_box(keep);
+    // rb_hash_dup: class, ivars, default / default_proc, compare_by_identity kept
+    let h = args[0];
+    let d = c.hash_dup(h);
+    obj_set_klass(d, real_class_of(c, h));
+    if obj_flags(h) & crate::object::FL_EXIVAR != 0 { for (k, v) in ivar_list(c, h) { ivar_set_raw(c, d, k, v); } }
     obj_set_flags(d, FL_KWHASH);
     Ok(d)
 }

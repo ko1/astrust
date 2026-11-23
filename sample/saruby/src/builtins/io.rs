@@ -737,19 +737,21 @@ fn io_set_sync(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
 struct LineArgs { sep: Option<Vec<u8>>, limit: Option<usize>, chomp: bool, senc: u8, dflt: bool }
 fn line_args(c: &mut Ctx, a: &[Value]) -> Result<LineArgs, Esc> {
     let mut sep: Option<Vec<u8>> = Some(b"\n".to_vec()); let mut chomp = false; let mut limit = None; let mut senc = ENC_ASCII; let mut dflt = false;
-    let mut pos = a;
-    if let Some(&l) = a.last() { if is_hash(l) { if let Some(v) = crate::hash::hash_get_opt(c, l, sym_value("chomp"))? { chomp = v.truthy(); } pos = &a[..a.len() - 1]; } }
+    let (pos, kw) = kw_split(c, a);
+    if let Some(l) = kw { if let Some(v) = crate::hash::hash_get_opt(c, l, sym_value("chomp"))? { chomp = v.truthy(); } }
     if pos.len() > 2 { return argc_err(c, pos.len(), 0, 2); }
     let set_limit = |c: &mut Ctx, x: Value| -> Result<Option<usize>, Esc> { let n = num_to_long(c, x)?; Ok(if n < 0 { None } else { Some(n as usize) }) };
     match pos.len() {
         1 => {
             let x = pos[0];
-            if x == NIL { sep = None; } else if is_string(x) { sep = Some(c.str_bytes(x).to_vec()); senc = c.str_enc(x); }
-            else if x.is_fixnum() {
+            // prepare_getline_args: a String (to_str) is the separator, anything else the limit
+            let sv = if x == NIL || x.is_fixnum() { None } else { crate::builtins::env::check_str(c, x)? };
+            if x == NIL { sep = None; } else if let Some(sv) = sv { sep = Some(c.str_bytes(sv).to_vec()); senc = c.str_enc(sv); }
+            else {
                 limit = set_limit(c, x)?;
                 let rs = global_get("$/"); dflt = true;
                 if rs == NIL { sep = None; } else if is_string(rs) { sep = Some(c.str_bytes(rs).to_vec()); senc = c.str_enc(rs); }
-            } else { let sv = expect_str(c, x)?; sep = Some(c.str_bytes(sv).to_vec()); senc = c.str_enc(sv); }
+            }
         }
         2 => { let x = pos[0]; if x == NIL { sep = None; } else { let sv = expect_str(c, x)?; sep = Some(c.str_bytes(sv).to_vec()); senc = c.str_enc(sv); } if pos[1] != NIL { limit = set_limit(c, pos[1])?; } }
         _ => { let rs = global_get("$/"); dflt = true; if rs == NIL { sep = None; } else if is_string(rs) { sep = Some(c.str_bytes(rs).to_vec()); senc = c.str_enc(rs); } }
@@ -965,11 +967,11 @@ fn read_unbuffered(io: &mut RIo, n: usize) -> Option<Result<Vec<u8>, i64>> {
     Some(sys::read_fd(io.fd, &mut v).map(|k| { v.truncate(k); v }))
 }
 fn wait_fd(fd: i32, ev: i16, ms: i32) -> bool { let mut p = [sys::PollFd { fd, events: ev, revents: 0 }]; sys::poll(&mut p, ms) > 0 }
-fn exception_opt(c: &mut Ctx, a: &[Value]) -> Result<bool, Esc> {
-    if let Some(&l) = a.last() { if is_hash(l) { if let Some(v) = crate::hash::hash_get_opt(c, l, sym_value("exception"))? {
+fn exception_opt(c: &mut Ctx, kw: Option<Value>) -> Result<bool, Esc> {
+    if let Some(l) = kw { if let Some(v) = crate::hash::hash_get_opt(c, l, sym_value("exception"))? {
         if v != TRUE && v != FALSE { let d = inspect_str(c, v)?; return arg_err(c, format!("expected true or false as exception: {}", d)); }
         return Ok(v == TRUE);
-    } } }
+    } }
     Ok(true)
 }
 fn wait_error(c: &mut Ctx, name: &str, msg: &str) -> Esc {
@@ -979,8 +981,9 @@ fn wait_error(c: &mut Ctx, name: &str, msg: &str) -> Esc {
     raise_exc(c, e)
 }
 fn io_read_nonblock(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
-    let exc = exception_opt(c, a)?;
-    let pos: Vec<Value> = a.iter().copied().filter(|x| !is_hash(*x)).collect();
+    let (pos, kw) = kw_split(c, a);
+    if pos.len() > 2 { return argc_err(c, pos.len(), 1, 2); }
+    let exc = exception_opt(c, kw)?;
     let n = match pos.first() { Some(&n) => num_to_long(c, n)?, None => return argc_err(c, 0, 1, 2) };
     if n < 0 { return arg_err(c, format!("negative length {} given", n)); }
     // no wait for other threads here: this read must not block
@@ -1009,7 +1012,9 @@ fn io_read_nonblock(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     io_readpartial(c, slf, &pos, b)
 }
 fn io_write_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    let exc = exception_opt(c, a)?;
+    let (a, kw) = kw_split(c, a);
+    if a.len() != 1 { return argc_err(c, a.len(), 1, 1); }
+    let exc = exception_opt(c, kw)?;
     let sv = crate::rt::srb_tostr(c, a[0])?;
     check_open(c, slf, true)?;
     let io = io_mut(c, slf);
@@ -1495,7 +1500,7 @@ pub fn conv_note(io: &mut RIo) {
 }
 fn io_set_encoding(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_open(c, slf, false)?;
-    let (pos, opts) = match a.last() { Some(&l) if is_hash(l) => (&a[..a.len() - 1], Some(l)), _ => (a, None) };
+    let (pos, opts) = kw_split(c, a);
     if pos.is_empty() || pos.len() > 2 { return argc_err(c, pos.len(), 1, 2); }
     let base = rio(c, slf).map_or(0, |io| io.ecflags);
     let (e, eo) = encoding_set(c, pos[0], pos.get(1).copied().unwrap_or(NIL), opts, base)?;
@@ -1651,9 +1656,8 @@ fn mode_str_flags(c: &mut Ctx, mode: &str) -> Result<(i32, bool, bool), Esc> {
     Ok((flags, bin, text))
 }
 /// Parse (mode = "r", perm = 0666, **opts) as File.open / IO.new take them (rb_io_extract_modeenc).
-pub fn parse_mode(c: &mut Ctx, a: &[Value]) -> Result<OpenMode, Esc> {
+pub fn parse_mode(c: &mut Ctx, pos: &[Value], opts: Option<Value>) -> Result<OpenMode, Esc> {
     let mut om = OpenMode::new(sys::O_RDONLY, false);
-    let (pos, opts) = match a.last() { Some(&l) if is_hash(l) => (&a[..a.len() - 1], Some(l)), _ => (a, None) };
     let mut mode = pos.first().copied().unwrap_or(NIL);
     if let Some(&p) = pos.get(1) { if p != NIL { om.perm = num_to_long(c, p)? as u32; } }
     let g = |c: &mut Ctx, h: Value, k: &str| crate::hash::hash_get_opt(c, h, sym_value(k));
@@ -1770,8 +1774,10 @@ fn open_fifo_coop(c: &mut Ctx, path: &PathArg, om: &OpenMode) -> Result<i32, Esc
 fn file_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, 3); }
     if a[0].is_fixnum() { return io_initialize(c, slf, a, _b); }
+    let (pos, opts) = kw_split(c, a);
+    if pos.len() > 3 { return argc_err(c, pos.len(), 1, 3); }
     let p = path_arg(c, a[0])?;
-    let om = parse_mode(c, &a[1..])?;
+    let om = parse_mode(c, &pos[1..], opts)?;
     let fd = sysopen(c, &p, &om)?;
     // an O_TMPFILE file has no path
     let path = if om.flags & 0o20000000 != 0 { None } else { Some(p.as_bytes()) };
@@ -1779,19 +1785,21 @@ fn file_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     Ok(NIL)
 }
 fn io_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    if a.is_empty() { return argc_err(c, 0, 1, 2); }
+    let (a, opts) = kw_split(c, a);
+    if a.is_empty() || a.len() > 2 { return argc_err(c, a.len(), 1, 2); }
     let fd = num_to_long(c, a[0])? as i32;
     let fl = sys::fcntl(fd, sys::F_GETFL, 0);
     if fl < 0 { return Err(raise_errno(c, sys::errno(), "")); }
-    let mut om = parse_mode(c, &a[1..])?;
-    if a.len() < 2 || is_hash(a[1]) && crate::hash::hash_get_opt(c, a[1], sym_value("mode"))?.is_none() {
+    let mut om = parse_mode(c, &a[1..], opts)?;
+    let mode_opt = match opts { Some(h) => crate::hash::hash_get_opt(c, h, sym_value("mode"))?.is_some(), None => false };
+    if a.len() < 2 && !mode_opt {
         om.flags = (om.flags & !sys::O_ACCMODE) | (fl & sys::O_ACCMODE);
         if om.encs.is_none() { om.encs = Some(if om.bin { (Some(ENC_BINARY), None) } else { ext_int_to_encs(None, IntEnc::Default, false) }); }
         om.text = false; om.bin = false;
     }
     else if (fl & sys::O_ACCMODE) != sys::O_RDWR && (om.flags & sys::O_ACCMODE) != (fl & sys::O_ACCMODE) { return Err(raise_errno(c, 22, "")); }
     setup_io(c, slf, fd, None, &om)?;
-    if let Some(&l) = a.last() { if is_hash(l) {
+    if let Some(l) = opts { {
         if let Some(v) = crate::hash::hash_get_opt(c, l, sym_value("autoclose"))? { if let Some(io) = rio_mut(c, slf) { io.autoclose = v.truthy(); } }
         if let Some(v) = crate::hash::hash_get_opt(c, l, sym_value("path"))? {
             if v != NIL { let ps = expect_str(c, v)?; let b = c.str_bytes(ps).to_vec(); if let Some(io) = rio_mut(c, slf) { io.path = b; io.has_path = true; } }
@@ -1841,14 +1849,15 @@ fn io_s_new(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
 fn k_open(c: &mut Ctx, _s: Value, a: &[Value], blk: Blk) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
     if !is_string(a[0]) && respond_to(c, a[0], intern(b"to_open"), true) {
-        let r = funcall(c, a[0], intern(b"to_open"), &a[1..], std::ptr::null())?;
+        let r = funcall_kw(c, a[0], intern(b"to_open"), &a[1..], std::ptr::null(), kw_given(c))?;
         return if blk.is_null() { Ok(r) } else { yield1(c, blk, r) };
     }
     open_with_block(c, c.vm().c_file.get(), a, blk)
 }
 fn io_s_sysopen(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
+    check_argc(c, a, 1, 3)?;
     let p = path_arg(c, a[0])?;
-    let om = parse_mode(c, &a[1..])?;
+    let om = parse_mode(c, &a[1..], None)?;
     Ok(Value::fix(sysopen(c, &p, &om)? as i64))
 }
 fn io_s_pipe(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
@@ -1857,7 +1866,7 @@ fn io_s_pipe(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     let r = new_io(c, slf, fds[0], b"", true, false);
     let w = new_io(c, slf, fds[1], b"", false, true);
     io_mut(c, w).sync = true;
-    let (pos, opt) = match a.last() { Some(&l) if is_hash(l) => (&a[..a.len() - 1], Some(l)), _ => (a, None) };
+    let (pos, opt) = kw_split(c, a);
     if pos.len() > 2 { return argc_err(c, pos.len(), 0, 2); }
     let v1 = pos.first().copied().unwrap_or(NIL);
     // with nothing given and no default_internal the read end keeps the defaults it was made with
@@ -2005,25 +2014,28 @@ fn with_file<R>(c: &mut Ctx, klass: Value, path: Value, om: OpenMode, f: impl Fn
     cr?;
     r
 }
-fn split_opts(a: &[Value]) -> (&[Value], Option<Value>) { match a.last() { Some(&l) if is_hash(l) => (&a[..a.len() - 1], Some(l)), _ => (a, None) } }
+/// A trailing Hash as the options (RB_SCAN_ARGS_LAST_HASH_KEYWORDS: open_args:).
+fn last_hash_opts(a: &[Value]) -> (&[Value], Option<Value>) { match a.last() { Some(&l) if is_hash(l) => (&a[..a.len() - 1], Some(l)), _ => (a, None) } }
 /// The open_args: option (File.open's arguments after the path), if given.
 fn open_args(c: &mut Ctx, opts: Option<Value>) -> Result<Option<Vec<Value>>, Esc> {
     let Some(h) = opts else { return Ok(None) };
     match crate::hash::hash_get_opt(c, h, sym_value("open_args"))? { Some(v) if v != NIL => { let a = expect_array(c, v)?; Ok(Some(c.ary(a).to_vec())) } _ => Ok(None) }
 }
 fn read_mode(c: &mut Ctx, opts: Option<Value>, bin: bool) -> Result<OpenMode, Esc> {
-    if let Some(oa) = open_args(c, opts)? { let mut om = parse_mode(c, &oa)?; om.bin |= bin; return Ok(om); }
-    let mut om = match opts { Some(h) => parse_mode(c, &[h])?, None => OpenMode::new(0, false) };
+    if let Some(oa) = open_args(c, opts)? { let (p, o) = last_hash_opts(&oa); let mut om = parse_mode(c, p, o)?; om.bin |= bin; return Ok(om); }
+    let mut om = match opts { Some(h) => parse_mode(c, &[], Some(h))?, None => OpenMode::new(0, false) };
     om.bin |= bin;
     Ok(om)
 }
 fn io_s_read_impl(c: &mut Ctx, slf: Value, a: &[Value], bin: bool) -> RV {
-    let (pos, opts) = split_opts(a);
-    if pos.is_empty() || pos.len() > 3 { return argc_err(c, pos.len(), 1, 3); }
+    let (pos, opts) = kw_split(c, a);
+    // "13:" takes a 4th positional, which IO#read then refuses (given 3, expected 0..2) once the file is open
+    if pos.is_empty() || pos.len() > 4 { return argc_err(c, pos.len(), 1, 4); }
     let om = read_mode(c, opts, bin)?;
     let (len, off) = (pos.get(1).copied().unwrap_or(NIL), pos.get(2).copied().unwrap_or(NIL));
     if len != NIL { let n = num_to_long(c, len)?; if n < 0 { return arg_err(c, format!("negative length {} given", n)); } }
     with_file(c, slf, pos[0], om, |c, io| {
+        if pos.len() == 4 { return argc_err(c, 3, 0, 2); }
         if off != NIL { let o = num_to_long(c, off)?; if o < 0 { if bin { let p = rio(c, io).map(|i| lossy(&i.path)).unwrap_or_default(); return Err(raise_errno(c, 22, &p)); } return arg_err(c, format!("negative offset {} given", o)); } do_seek(c, io, o, 0)?; }
         let r = io_read(c, io, if len == NIL { &[] } else { std::slice::from_ref(&len) }, Blk::NONE)?;
         Ok(r)
@@ -2039,7 +2051,7 @@ fn line_opts(c: &mut Ctx, pos: &[Value], opts: Option<Value>) -> Result<Vec<Valu
     Ok(la)
 }
 fn io_s_readlines(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    let (pos, opts) = split_opts(a);
+    let (pos, opts) = kw_split(c, a);
     if pos.is_empty() { return argc_err(c, 0, 1, 3); }
     let om = read_mode(c, opts, false)?;
     let la = line_opts(c, pos, opts)?;
@@ -2050,7 +2062,7 @@ fn io_s_readlines(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
 }
 fn io_s_foreach(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"foreach"), a, NIL); }
-    let (pos, opts) = split_opts(a);
+    let (pos, opts) = kw_split(c, a);
     if pos.is_empty() { return argc_err(c, 0, 1, 3); }
     let om = read_mode(c, opts, false)?;
     let la = line_opts(c, pos, opts)?;
@@ -2061,13 +2073,13 @@ fn io_s_foreach(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     Ok(NIL)
 }
 fn io_s_write_impl(c: &mut Ctx, slf: Value, a: &[Value], bin: bool) -> RV {
-    let (pos, opts) = split_opts(a);
+    let (pos, opts) = kw_split(c, a);
     if pos.len() < 2 || pos.len() > 3 { return argc_err(c, pos.len(), 2, 3); }
     let off = pos.get(2).copied().unwrap_or(NIL);
     // without a mode: option the file is opened write-only (flags: adds to that)
     let wmode = Value::fix((sys::O_WRONLY | sys::O_CREAT | if off == NIL { sys::O_TRUNC } else { 0 }) as i64);
     let has_mode = match opts { Some(h) => crate::hash::hash_get_opt(c, h, sym_value("mode"))?.is_some_and(|m| m != NIL), None => false };
-    let mut om = match (open_args(c, opts)?, opts) { (Some(oa), _) => parse_mode(c, &oa)?, (_, Some(h)) if has_mode => parse_mode(c, &[h])?, (_, Some(h)) => parse_mode(c, &[wmode, h])?, (_, None) => parse_mode(c, &[wmode])? };
+    let mut om = match (open_args(c, opts)?, opts) { (Some(oa), _) => { let (p, o) = last_hash_opts(&oa); parse_mode(c, p, o)? } (_, Some(h)) if has_mode => parse_mode(c, &[], Some(h))?, (_, o) => parse_mode(c, &[wmode], o)? };
     om.bin |= bin;
     let data = pos[1];
     with_file(c, slf, pos[0], om, |c, io| {
@@ -2129,7 +2141,8 @@ fn io_s_try_convert(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     Ok(NIL)
 }
 fn io_reopen(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    if a.is_empty() { return argc_err(c, 0, 1, 2); }
+    let (a, opts) = kw_split(c, a);
+    if a.is_empty() || a.len() > 2 { return argc_err(c, a.len(), 1, 2); }
     { let io = io_mut(c, slf); if io.init && !io.closed { if out_fd(io) == 1 { out_flush(); } io_flush_one(io); } }
     if let Some(src) = rio(c, a[0]) {
         if !src.init || src.closed { return err(c, c.vm().c_io_error.get(), "closed stream"); }
@@ -2148,7 +2161,7 @@ fn io_reopen(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
         return Ok(slf);
     }
     let p = path_arg(c, a[0])?;
-    let mut om = parse_mode(c, &a[1..])?;
+    let mut om = parse_mode(c, &a[1..], opts)?;
     let (init, rd, wr) = { let io = io_mut(c, slf); (io.init, io.readable, io.writable) };
     if a.len() < 2 && init { om.flags = if rd && wr { sys::O_RDWR } else if wr { sys::O_WRONLY | sys::O_CREAT | sys::O_TRUNC } else { 0 }; }
     let fd = sysopen(c, &p, &om)?;

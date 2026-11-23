@@ -198,7 +198,8 @@ pub(crate) fn fiber_main(c: &mut Ctx, args: Value, exc: bool) -> ! {
     let r = if exc { received(c, (args, true)) } else {
         let argv: Vec<Value> = if is_array(args) { c.ary(args).to_vec() } else { vec![args] };
         let tb = if thread && trace_mask() & EV_THREAD_BEGIN != 0 { crate::builtins::tracepoint::trace_thread(c, EV_THREAD_BEGIN) } else { Ok(()) };
-        tb.and_then(|_| call_proc(c, p, &argv, std::ptr::null()))
+        let kw = is_array(args) && crate::heap::obj_flags(args) & crate::object::FL_KWHASH != 0;
+        tb.and_then(|_| call_proc_kw(c, p, &argv, std::ptr::null(), kw))
     };
     std::hint::black_box(args);   // keeps argv's values on this stack
     // a thread's scheduler is closed at its end, before thread_end (thread_start_func_2); its error wins
@@ -273,7 +274,7 @@ fn resume_kw(c: &mut Ctx, f: Value, v: Value, a: &[Value], exc: bool) -> RV {
         else { "" };
     if !e.is_empty() { return fiber_err(c, e); }
     let d = if started && (v != UNDEF || a.len() <= 1) { d } else {
-        let v2 = if v != UNDEF { v } else if started { args_value(c, a) } else { c.ary_new_from(a) };
+        let v2 = if v != UNDEF { v } else if started { args_value(c, a) } else { start_args(c, a) };
         if !started { start(c, f)?; }
         return resume_started(c, cur, f, v2, exc);
     };
@@ -369,7 +370,13 @@ pub fn thread_switch_out(c: &mut Ctx) {
 
 fn args_value(c: &mut Ctx, a: &[Value]) -> Value { match a.len() { 0 => NIL, 1 => a[0], _ => c.ary_new_from(a) } }
 /// A fiber's first run gets its block's arguments as an Array.
-fn pass_args(c: &mut Ctx, f: Value, a: &[Value]) -> Value { if fd(c, f).started { args_value(c, a) } else { c.ary_new_from(a) } }
+fn pass_args(c: &mut Ctx, f: Value, a: &[Value]) -> Value { if fd(c, f).started { args_value(c, a) } else { start_args(c, a) } }
+/// The block arguments of a fiber's (or thread's) start; FL_KWHASH on the Array: the last is keywords.
+pub fn start_args(c: &mut Ctx, a: &[Value]) -> Value {
+    let r = c.ary_new_from(a);
+    if kw_arg(c, a).is_some() { crate::heap::obj_set_flags(r, crate::object::FL_KWHASH); }
+    r
+}
 
 /// Fiber.new (builtins/fiber_methods.rs): storage is nil or a Hash already copied.
 pub fn new_user_fiber(c: &mut Ctx, klass: Value, proc_: Value, blocking: bool, storage: Value) -> Value {

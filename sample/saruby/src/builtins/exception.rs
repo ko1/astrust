@@ -272,7 +272,7 @@ fn decorate_message(c: &mut Ctx, e: Value, emesg: Value, highlight: bool) -> Vec
     o
 }
 pub fn exc_detailed_message(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    let highlight = highlight_kw(c, kw_arg(a))?.truthy();
+    let highlight = highlight_kw(c, kw_arg(c, a))?.truthy();
     let m = funcall(c, slf, s::message, &[], std::ptr::null())?;
     let m = check_str(c, m)?;
     let o = decorate_message(c, slf, m, highlight);
@@ -557,7 +557,7 @@ pub fn full_message(c: &mut Ctx, e: Value) -> Result<String, Esc> {
     Ok(String::from_utf8_lossy(&o).into_owned())
 }
 fn exc_full_message(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    let kw = kw_arg(a);
+    let kw = kw_arg(c, a);
     let mut hl = highlight_kw(c, kw)?;
     if hl == NIL { hl = Value::bool(stderr_tty()); }
     let mut reverse = false;
@@ -579,7 +579,7 @@ fn exc_s_to_tty(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value
 
 // NameError / NoMethodError / KeyError / FrozenError / StopIteration / SystemExit / etc.
 fn name_err_init(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    let (pos, kw) = match kw_arg(a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
+    let (pos, kw) = match kw_arg(c, a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
     ivar_set_raw(c, slf, s::mesg, pos.first().copied().unwrap_or(NIL));
     ivar_set_raw(c, slf, s::name, pos.get(1).copied().unwrap_or(NIL));
     let nme = c.vm().c_no_method_error.get();
@@ -633,7 +633,7 @@ fn name_err_receiver(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 }
 fn nm_err_args(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let v = ivar_get(c, slf, intern(b"args")); Ok(if v == NIL { c.ary_new() } else { v }) }
 fn key_err_init(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    let (pos, kw) = match kw_arg(a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
+    let (pos, kw) = match kw_arg(c, a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
     ivar_set_raw(c, slf, s::mesg, pos.first().copied().unwrap_or(NIL));
     if let Some(h) = kw {
         if let Some(r) = crate::hash::hash_get_opt(c, h, sym_value("receiver"))? { ivar_set_raw(c, slf, s::receiver, r); }
@@ -643,7 +643,7 @@ fn key_err_init(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
 }
 /// NoMatchingPatternKeyError.new(msg = nil, matchee: , key: )
 fn nmpk_err_init(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    let (pos, kw) = match kw_arg(a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
+    let (pos, kw) = match kw_arg(c, a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
     check_argc(c, pos, 0, 1)?;
     ivar_set_raw(c, slf, s::mesg, pos.first().copied().unwrap_or(NIL));
     if let Some(h) = kw {
@@ -661,7 +661,7 @@ fn key_err_key(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     Ok(ivar_get(c, slf, s::key))
 }
 fn frozen_err_init(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    let (pos, kw) = match kw_arg(a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
+    let (pos, kw) = match kw_arg(c, a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
     ivar_set_raw(c, slf, s::mesg, pos.first().copied().unwrap_or(NIL));
     if let Some(h) = kw { if let Some(r) = crate::hash::hash_get_opt(c, h, sym_value("receiver"))? { ivar_set_raw(c, slf, s::receiver, r); } }
     Ok(NIL)

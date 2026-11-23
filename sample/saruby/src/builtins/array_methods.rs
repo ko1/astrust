@@ -1087,7 +1087,7 @@ cfn!(a_dig, |c, slf, a, blk| {
 cfn!(a_first_n_compat, |c, slf, a, blk| Ok(NIL));
 // CRuby's ary_sample: same random draws, so a seeded generator picks the same elements
 cfn!(a_sample, |c, slf, a, blk| {
-    let kw = kw_arg(a);
+    let kw = kw_arg(c, a);
     let pos = if kw.is_some() { &a[..a.len() - 1] } else { a };
     check_argc(c, pos, 0, 1)?;
     let gen = match kw { Some(h) => hash_get_opt(c, h, sym_value("random"))?.unwrap_or(c.vm().c_random.get()), None => c.vm().c_random.get() };
@@ -1164,7 +1164,7 @@ cfn!(a_sample, |c, slf, a, blk| {
 });
 /// The `random:` keyword (the Random class when absent); no positional arguments.
 fn random_kw(c: &mut Ctx, a: &[Value]) -> RV {
-    let kw = kw_arg(a);
+    let kw = kw_arg(c, a);
     let npos = a.len() - kw.is_some() as usize;
     if npos != 0 { return argc_err(c, npos, 0, 0); }
     let Some(h) = kw else { return Ok(c.vm().c_random.get()) };

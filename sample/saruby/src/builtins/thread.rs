@@ -723,7 +723,7 @@ fn th_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if b.is_null() { return err(c, c.vm().c_thread_error.get(), "must be called with a block"); }
     let p = block_to_proc(c, b)?;
     let t = new_thread(c, slf);
-    let args = c.ary_new_from(a);
+    let args = crate::fiber::start_args(c, a);
     // the new thread gets a copy of the creating fiber's storage (rb_fiber_inherit_storage)
     let storage = crate::builtins::fiber_methods::inherited_storage(c)?;
     let start = c.ary_new_from(&[p, args, storage]);
@@ -1149,7 +1149,7 @@ fn sq_init(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     Ok(NIL)
 }
 fn q_opts(c: &mut Ctx, a: &[Value]) -> Result<(bool, Option<Instant>), Esc> {
-    let (pos, opts) = match a.last() { Some(&l) if is_hash(l) => (&a[..a.len() - 1], Some(l)), _ => (a, None) };
+    let (pos, opts) = kw_split(c, a);
     let nb = pos.first().map(|v| v.truthy()).unwrap_or(false);
     let mut deadline = None;
     if let Some(h) = opts { if let Some(t) = hash_get_opt(c, h, sym_value("timeout"))? { if t != NIL {

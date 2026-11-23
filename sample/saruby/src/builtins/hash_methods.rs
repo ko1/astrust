@@ -57,7 +57,8 @@ fn yield_kv(c: &mut Ctx, blk: Blk, two: bool, k: Value, v: Value) -> RV {
 
 cfn!(h_initialize, |c, slf, a, blk| {
     modify(c, slf)?;
-    let pos: Vec<Value> = a.iter().copied().filter(|x| kw_arg(a) != Some(*x)).collect();
+    let (pos, kw) = kw_split(c, a);
+    if let Some(h) = kw { kw_unknown(c, h, &["capacity"])?; }
     if !blk.is_null() {
         if !pos.is_empty() { return argc_err(c, pos.len(), 0, 0); }
         let p = block_to_proc(c, blk)?;
@@ -410,7 +411,7 @@ cfn!(h_to_proc, |c, slf, a, blk| {
 cfn!(h_s_try_convert, |c, slf, a, blk| Ok(check_hash(c, a[0])?.unwrap_or(NIL)));
 cfn!(h_s_new, |c, slf, a, blk| {
     let h = c.hash_new(); obj_set_klass(h, slf);
-    funcall_kw(c, h, s::initialize, a, blk, kw_arg(a).is_some())?;
+    funcall_kw(c, h, s::initialize, a, blk, kw_arg(c, a).is_some())?;
     Ok(h)
 });
 cfn!(h_initialize_copy, |c, slf, a, blk| h_replace(c, slf, a, blk));

@@ -357,7 +357,7 @@ fn t_now(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
     let w = c.int_from_i128(d.as_secs() as i128 * NS as i128 + d.subsec_nanos() as i128);
     let t = new_time(c, slf, w, LOCAL, NIL);
-    if let Some(h) = kw_arg(a) { if let Some(z) = crate::hash::hash_get_opt(c, h, sym_value("in"))? { if z != NIL { zonelocal(c, t, z)?; } } }
+    if let Some(h) = kw_arg(c, a) { if let Some(z) = crate::hash::hash_get_opt(c, h, sym_value("in"))? { if z != NIL { zonelocal(c, t, z)?; } } }
     Ok(t)
 }
 fn get_scale(c: &mut Ctx, unit: Value) -> Result<i64, Esc> {
@@ -370,7 +370,7 @@ fn get_scale(c: &mut Ctx, unit: Value) -> Result<i64, Esc> {
     arg_err(c, format!("unexpected unit: {}", ins))
 }
 fn t_at(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    let kw = kw_arg(a);
+    let kw = kw_arg(c, a);
     let a = if kw.is_some() { &a[..a.len() - 1] } else { a };
     check_argc(c, a, 1, 3)?;
     let t = if a.len() >= 2 {
@@ -487,7 +487,7 @@ fn init_parse(c: &mut Ctx, slf: Value, sv: Value, zone: Value, prec: Option<usiz
     init_vtm(c, slf, a, zone)
 }
 fn t_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    let kw = kw_arg(a);
+    let kw = kw_arg(c, a);
     let a = if kw.is_some() { &a[..a.len() - 1] } else { a };
     if a.len() > 7 { return arg_err(c, format!("wrong number of arguments (given {}, expected 0..7)", a.len())); }
     let mut zone = a.get(6).copied().unwrap_or(NIL);

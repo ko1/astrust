@@ -321,7 +321,7 @@ fn transcode1(c: &mut Ctx, slf: Value, dname: String, denc: Option<u8>, src: Opt
 
 /// (positional args, ecflags, opts) of an encode call.
 fn encode_args<'a>(c: &mut Ctx, a: &'a [Value]) -> Result<(&'a [Value], u32, Opts), Esc> {
-    match kw_arg(a) {
+    match kw_arg(c, a) {
         Some(h) => { let (f, o) = prepare_options(c, h, 0)?; Ok((&a[..a.len() - 1], f, o)) }
         None => Ok((a, 0, Opts::default())),
     }
@@ -392,7 +392,7 @@ fn to_i32(c: &mut Ctx, v: Value) -> Result<i64, Esc> { crate::builtins::numeric_
 /// econv_args: (sname, dname, senc, denc, ecflags, opts)
 #[allow(clippy::type_complexity)]
 fn econv_args(c: &mut Ctx, a: &[Value]) -> Result<(String, String, Option<u8>, Option<u8>, u32, Opts), Esc> {
-    let kw = kw_arg(a);
+    let kw = kw_arg(c, a);
     let pos = if kw.is_some() { &a[..a.len() - 1] } else { a };
     if pos.len() < 2 || pos.len() > 3 { return argc_err(c, pos.len(), 2, 3); }
     let (ecflags, o) = if pos.len() == 3 && pos[2] != NIL {
@@ -489,7 +489,7 @@ fn res_sym(r: Res) -> Value {
 
 /// econv_primitive_convert
 fn ec_primitive_convert(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    let kw = kw_arg(a);
+    let kw = kw_arg(c, a);
     let pos = if kw.is_some() { &a[..a.len() - 1] } else { a };
     if pos.len() < 2 || pos.len() > 5 { return argc_err(c, a.len(), 2, 5); }
     let (input, output) = (pos[0], pos[1]);

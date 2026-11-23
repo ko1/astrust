@@ -31,7 +31,7 @@ fn st_s_new(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     let mut kwinit = NIL;
     let mut cname = NIL;
     let mut a = a;
-    if let Some(h) = kw_arg(a) {
+    if let Some(h) = kw_arg(c, a) {
         a = &a[..a.len() - 1];
         let mut unknown = vec![];
         let mut i = 0;
@@ -96,7 +96,7 @@ fn st_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = c.ary_len(mem);
     let kw = kw_init(c, k);
     for i in 0..n { ivar_set_raw(c, slf, c.ary_get(mem, i).as_sym(), NIL); }
-    if (kw.truthy() || (kw == NIL && a.len() == 1 && kw_arg(a).is_some())) && !a.is_empty() {
+    if (kw.truthy() || (kw == NIL && a.len() == 1 && kw_arg(c, a).is_some())) && !a.is_empty() {
         if a.len() > 1 || !is_hash(a[0]) { return argc_err(c, a.len(), 0, 0); }
         let mut unknown = vec![];
         let mut i = 0;

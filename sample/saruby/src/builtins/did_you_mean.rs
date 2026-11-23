@@ -84,7 +84,7 @@ pub fn require(c: &mut Ctx) -> Option<RV> {
 }
 
 fn call(c: &mut Ctx, recv: Value, mid: &[u8], args: &[Value], b: Blk) -> RV {
-    match kw_arg(args) {
+    match kw_arg(c, args) {
         Some(_) => funcall_kw(c, recv, intern(mid), args, b, true),
         None => funcall(c, recv, intern(mid), args, b),
     }

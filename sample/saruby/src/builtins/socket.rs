@@ -120,9 +120,6 @@ fn cstr_arg(c: &mut Ctx, v: Value) -> Result<Vec<u8>, Esc> {
 }
 fn sym_arg(v: Value) -> Option<Vec<u8>> { if v.is_sym() { Some(sym_bytes(v.as_sym()).to_vec()) } else { None } }
 fn blk_given(b: Blk) -> bool { !b.is_null() }
-fn kwargs(a: &[Value]) -> (&[Value], Option<Value>) {
-    match kw_arg(a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) }
-}
 fn kwget(c: &mut Ctx, h: Option<Value>, name: &str) -> Result<Value, Esc> {
     match h { Some(h) => Ok(crate::hash::hash_get_opt(c, h, sym_value(name))?.unwrap_or(NIL)), None => Ok(NIL) }
 }
@@ -629,7 +626,7 @@ fn addrinfo_firstonly(c: &mut Ctx, node: Value, service: Value, family: i32, soc
     addrinfo_new(c, Ai { sa: r.4.clone(), pfamily: r.1, socktype: r.2, protocol: r.3, canonname: cn, inspectname: iname })
 }
 fn ai_s_getaddrinfo(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
-    let (a, _kw) = kwargs(a);
+    let (a, _kw) = kw_split(c, a);
     check_argc(c, a, 2, 6)?;
     let g = |i: usize| a.get(i).copied().unwrap_or(NIL);
     let res = call_getaddrinfo(c, a[0], a[1], g(2), g(3), g(4), g(5), false)?;
@@ -1412,7 +1409,7 @@ fn init_inetsock(c: &mut Ctx, slf: Value, rhost: Value, rserv: Value, lhost: Val
     Ok(slf)
 }
 fn tcp_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    let (a, kw) = kwargs(a);
+    let (a, kw) = kw_split(c, a);
     check_argc(c, a, 2, 4)?;
     let g = |i: usize| a.get(i).copied().unwrap_or(NIL);
     init_inetsock(c, slf, a[0], a[1], g(2), g(3), false, kw)

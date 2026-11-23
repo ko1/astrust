@@ -1,6 +1,6 @@
 // VM core: execution context, frames, blocks, methods, classes, calls, exceptions.
 #![allow(clippy::missing_safety_doc)]
-use crate::heap::{obj_clear_flags, obj_flags, obj_klass, obj_set_flags, obj_set_klass};
+use crate::heap::{obj_flags, obj_klass, obj_set_flags, obj_set_klass};
 use crate::gc::{EdgeVisitor, Saruby, RootVisitor};
 use crate::node::{NodePtr, DispatchFn};
 use crate::object::*;
@@ -2297,29 +2297,52 @@ fn invoke_bmethod(c: &mut Ctx, me: *const MethodEntry, p: Value, recv: Value, ba
 #[inline]
 pub fn invoke_cfunc(c: &mut Ctx, me: *const MethodEntry, f: CFunc, arity: i32, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     let mut argc = argc;
+    let mut kwf = 0;
     if flags & CF_KW != 0 && argc > 0 {
         // keywords to a cfunc: an empty **h passes nothing
         let last = base[1 + argc as usize].get();
         if flags & CF_KW_SPLAT != 0 && is_hash(last) && c.hash(last).live == 0 { argc -= 1; }
-        else if is_hash(last) { obj_set_flags(last, FL_KWHASH); }
+        else if is_hash(last) { kwf = FR_KW; }
     }
     if arity >= 0 && argc as i32 != arity { return argc_err(c, argc as usize, arity, arity); }
     let pf = c.frame;
     let mut fr = Frame::cfunc(pf, me, blk);
+    fr.pad.set(kwf);
     c.frame = &mut fr;
     let r = with_args(base, argc as usize, |a| f(c, recv, a, vm_blk(blk)));
     c.frame = pf;
-    if flags & CF_KW != 0 && argc > 0 {
-        let last = base[1 + argc as usize].get();
-        if is_hash(last) { obj_clear_flags(last, FL_KWHASH); }
-    }
     r
 }
 
-/// Is the last argument of a cfunc a keyword hash?
-pub fn kw_arg(args: &[Value]) -> Option<Value> {
+/// A cfunc frame's `pad` bit: its last argument is keywords (CRuby's VM_FRAME_FLAG_CFRAME_KW).
+pub const FR_KW: u8 = 2;
+
+/// rb_keyword_given_p: was the running cfunc given keywords?
+#[inline]
+pub fn kw_given(c: &Ctx) -> bool { c.frame().kind == FK_CFUNC && c.frame().pad.get() & FR_KW != 0 }
+
+/// The running cfunc's keyword Hash: the last of its `args` when it was given keywords.
+pub fn kw_arg(c: &Ctx, args: &[Value]) -> Option<Value> {
     let l = *args.last()?;
-    if is_hash(l) && obj_flags(l) & FL_KWHASH != 0 { Some(l) } else { None }
+    if kw_given(c) && is_hash(l) { Some(l) } else { None }
+}
+
+/// rb_get_kwargs' check: ArgumentError naming the keys of `h` not in `known`.
+pub fn kw_unknown(c: &mut Ctx, h: Value, known: &[&str]) -> Result<(), Esc> {
+    let mut unknown = vec![];
+    let mut i = 0;
+    while let Some((k, _)) = c.hash_entry_at(h, i) {
+        i += 1;
+        if k == UNDEF || k.is_sym() && known.iter().any(|n| sym_str(k.as_sym()) == *n) { continue; }
+        unknown.push(crate::builtins::kernel::inspect_str(c, k)?);
+    }
+    if unknown.is_empty() { return Ok(()); }
+    arg_err(c, format!("unknown keyword{}: {}", if unknown.len() > 1 { "s" } else { "" }, unknown.join(", ")))
+}
+
+/// A cfunc's arguments split as rb_scan_args does with ":": (positionals, keyword Hash).
+pub fn kw_split<'a>(c: &Ctx, args: &'a [Value]) -> (&'a [Value], Option<Value>) {
+    match kw_arg(c, args) { Some(h) => (&args[..args.len() - 1], Some(h)), None => (args, None) }
 }
 
 pub fn invoke_iseq(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
@@ -2430,10 +2453,6 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
         } else if p.forwarding {
             // keep as positional for forwarding; remember it's keywords
         }
-    } else if accepts_kw && !p.forwarding && is_block && args.len() > p.lead.len() + p.post.len() + p.opt.len() && p.rest.is_none() {
-        // block given a trailing hash
-        let h = *args.last().unwrap();
-        if is_hash(h) && p.kw.iter().all(|k| !k.required) { kwh = h; args.pop(); }
     }
     if p.no_kw && flags & CF_KW != 0 && args.last().is_some_and(|&h| is_hash(h) && c.hash(h).live > 0) {
         return arg_err(c, "no keywords accepted");
@@ -2662,11 +2681,15 @@ pub fn yield1_raw(c: &mut Ctx, blk: *const Block, a: Value) -> RV {
 #[inline(always)]
 pub fn yield_with_self(c: &mut Ctx, blk: impl BlkArg, args: &[Value], self_: Value, defined_class: Value) -> RV { yield_with_self_raw(c, blk.ptr(), args, self_, defined_class) }
 pub fn yield_with_self_raw(c: &mut Ctx, blk: *const Block, args: &[Value], self_: Value, defined_class: Value) -> RV {
-    let b = unsafe { &*blk };
+    yield_with_self_kw(c, blk, args, self_, defined_class, false)
+}
+/// yield_with_self passing `kw` on (instance_exec / class_exec: the running cfunc's kw_given).
+pub fn yield_with_self_kw(c: &mut Ctx, blk: impl BlkArg, args: &[Value], self_: Value, defined_class: Value, kw: bool) -> RV {
+    let b = unsafe { &*blk.ptr() };
     let mut b2 = *b;
     b2.self_ = self_;
     if defined_class != NIL { b2.defined_class = defined_class; }
-    invoke_block_full(c, &b2, args, std::ptr::null(), self_, false, std::ptr::null(), false)
+    invoke_block_full(c, &b2, args, std::ptr::null(), self_, false, std::ptr::null(), kw)
 }
 
 #[inline(always)]

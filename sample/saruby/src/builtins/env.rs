@@ -69,7 +69,7 @@ fn env_delete(c: &mut Ctx, _s: Value, a: &[Value], b: Blk) -> RV {
 }
 fn env_key_p(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let k = name_arg(c, a[0], "name")?; Ok(Value::bool(get(&k).is_some())) }
 /// rb_check_string_type: the String (to_str), or None.
-fn check_str(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
+pub fn check_str(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if is_string(v) { return Ok(Some(v)); }
     if !v.is_heap() || !respond_to(c, v, intern(b"to_str"), true) { return Ok(None); }
     let s = funcall(c, v, intern(b"to_str"), &[], std::ptr::null())?;
@@ -230,7 +230,7 @@ fn env_freeze(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { type_err(c,
 fn env_dup(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { type_err(c, "Cannot dup ENV, use ENV.to_h to get a copy of ENV as a hash") }
 fn env_clone(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     // rb_get_freeze_opt first
-    if let Some(&h) = a.last() { if is_hash(h) {
+    if let Some(h) = kw_arg(c, a) { {
         let mut i = 0;
         while let Some((k, v)) = c.hash_entry_at(h, i) {
             i += 1;

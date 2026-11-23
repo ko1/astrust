@@ -146,7 +146,7 @@ fn rfind_bytes(h: &[u8], n: &[u8], upto: usize) -> Option<usize> {
 }
 
 cfn!(s_initialize, |c, slf, a, _b| {
-    let kw = kw_arg(a);
+    let kw = kw_arg(c, a);
     let pos: &[Value] = if kw.is_some() { &a[..a.len() - 1] } else { a };
     check_argc(c, pos, 0, 1)?;
     if let Some(&v) = pos.first() {
@@ -162,7 +162,7 @@ cfn!(s_initialize, |c, slf, a, _b| {
 cfn!(s_s_new, |c, slf, a, blk| {
     let o = crate::builtins::object::alloc_instance(c, slf)?;
     if is_string(o) { c.rstring_mut(o).enc = ENC_BINARY; }
-    funcall_kw(c, o, s::initialize, a, blk, kw_arg(a).is_some())?;
+    funcall_kw(c, o, s::initialize, a, blk, kw_arg(c, a).is_some())?;
     Ok(o)
 });
 cfn!(#[inline] s_length, |c, slf, a, b_| Ok(Value::fix(c.str_char_len(slf) as i64)));
@@ -614,8 +614,7 @@ fn lines_of(v: &[u8], sep: &[u8], chomp: bool) -> Vec<Vec<u8>> {
 }
 fn lines_args(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<(Vec<u8>, bool), Esc> {
     let mut sep = b"\n".to_vec(); let mut chomp = false;
-    let kw = kw_arg(a).or_else(|| a.last().copied().filter(|v| is_hash(*v)));
-    let pos: &[Value] = if kw.is_some() { &a[..a.len() - 1] } else { a };
+    let (pos, kw) = kw_split(c, a);
     check_argc(c, pos, 0, 1)?;
     if let Some(h) = kw { if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("chomp"))? { chomp = v.truthy(); } }
     if pos.first() == Some(&NIL) { return Ok((vec![0xff, 0xfe, 0xfd], chomp)); }
@@ -1715,7 +1714,7 @@ fn w_center(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { w_justify(c, s
 // lines(chomp: true) of a wide string drops the separator only (not a "\r" before "\n"), as CRuby
 fn w_lines(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if !wide(c, slf) { return s_lines(c, slf, a, blk); }
-    let kw = kw_arg(a);
+    let kw = kw_arg(c, a);
     let chomp = match kw { Some(h) => crate::hash::hash_get_opt(c, h, sym_value("chomp"))?.is_some_and(|v| v.truthy()), None => false };
     let pos: Vec<Value> = if kw.is_some() { a[..a.len() - 1].to_vec() } else { a.to_vec() };
     let sep = match pos.first() { Some(&x) if is_string(x) => Some(c.str_bytes(x).to_vec()), Some(_) => None, None => crate::builtins::encoding::code_to_bytes(c.str_enc(slf), 10) };

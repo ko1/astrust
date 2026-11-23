@@ -410,7 +410,7 @@ fn p_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
 }
 /// (positional args, move:) of a send.
 fn move_kw<'a>(c: &mut Ctx, a: &'a [Value]) -> Result<(&'a [Value], bool), Esc> {
-    let Some(h) = kw_arg(a) else { return Ok((a, false)) };
+    let Some(h) = kw_arg(c, a) else { return Ok((a, false)) };
     let mut mv = false;
     for (k, v) in c.hash_pairs(h) {
         if k == sym_value("move") { mv = v.truthy(); } else { let s = inspect_str(c, k)?; return arg_err(c, format!("unknown keyword: {}", s)); }
@@ -434,7 +434,7 @@ fn alloc_ractor(c: &mut Ctx, klass: Value, id: u64, name: Value, loc: Value) -> 
 
 /// Ractor.new(*args, name: nil) { |*args| }: the block runs isolated, self = the new Ractor.
 fn r_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
-    let (args, kw) = match kw_arg(a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
+    let (args, kw) = match kw_arg(c, a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
     let mut name = NIL;
     if let Some(h) = kw {
         for (k, v) in c.hash_pairs(h) {
@@ -645,7 +645,7 @@ fn r_s_store_if_absent(c: &mut Ctx, _s: Value, a: &[Value], b: Blk) -> RV {
 }
 fn r_s_shareable_p(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { Ok(Value::bool(shareable(c, a[0]))) }
 fn r_s_make_shareable(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
-    let (pos, copy) = match kw_arg(a) {
+    let (pos, copy) = match kw_arg(c, a) {
         Some(h) => {
             let mut cp = false;
             for (k, v) in c.hash_pairs(h) { if k == sym_value("copy") { cp = v.truthy(); } else { let s = inspect_str(c, k)?; return arg_err(c, format!("unknown keyword: {}", s)); } }
@@ -662,7 +662,7 @@ fn r_s_make_shareable(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
 fn shareable_proc(c: &mut Ctx, a: &[Value], b: Blk, lambda: bool) -> RV {
     if b.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
     let mut slf = NIL;
-    if let Some(h) = kw_arg(a) { if let Some(v) = hash_get_opt(c, h, sym_value("self"))? { slf = v; } }
+    if let Some(h) = kw_arg(c, a) { if let Some(v) = hash_get_opt(c, h, sym_value("self"))? { slf = v; } }
     if !shareable(c, slf) { let s = inspect_str(c, slf)?; return isolation(c, format!("self should be shareable: {}", s)); }
     let p = block_to_proc(c, b)?;
     let blk = c.proc_data(p).blk;

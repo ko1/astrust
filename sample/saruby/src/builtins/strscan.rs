@@ -51,7 +51,7 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     Ok(None)
 }
 fn ss_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
-    let (pos, opts) = match a.last() { Some(&l) if is_hash(l) => (&a[..a.len() - 1], Some(l)), _ => (a, None) };
+    let (pos, opts) = kw_split(c, a);
     check_argc(c, pos, 1, 2)?;
     let sv = expect_str(c, pos[0])?;
     let fixed = match opts { Some(h) => crate::hash::hash_get_opt(c, h, sym_value("fixed_anchor"))?.map(|v| v.truthy()).unwrap_or(false), None => false };
@@ -268,7 +268,7 @@ fn ss_named_captures(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 }
 fn ss_scan_integer(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     // def scan_integer(base: 10) (strscan.rb)
-    let kw = kw_arg(a);
+    let kw = kw_arg(c, a);
     let npos = a.len() - kw.is_some() as usize;
     if npos > 0 { return argc_err(c, npos, 0, 0); }
     let base = match kw { Some(h) => {

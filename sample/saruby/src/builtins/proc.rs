@@ -120,7 +120,7 @@ fn rows_to_ary(c: &mut Ctx, rows: Vec<Vec<Value>>) -> Value {
 }
 
 fn proc_call(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
-    let kw = kw_arg(a).is_some();
+    let kw = kw_arg(c, a).is_some();
     call_proc_kw(c, slf, a, b, kw)
 }
 fn proc_arity_m(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(proc_arity(c, slf))) }
@@ -128,7 +128,7 @@ fn proc_lambda_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Valu
 fn proc_to_proc(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(slf) }
 fn proc_parameters(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let (mut lambda, kind) = { let pd = c.proc_data(slf); (pd.is_lambda, pd.blk.kind) };
-    if let Some(h) = kw_arg(a) { if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("lambda"))? { if v != NIL { lambda = v.truthy(); } } }
+    if let Some(h) = kw_arg(c, a) { if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("lambda"))? { if v != NIL { lambda = v.truthy(); } } }
     match kind {
         BlockKind::Iseq(is) => Ok(params_list(c, is, lambda)),
         BlockKind::Sym(_) => Ok(rows_to_ary(c, vec![vec![sym_value("req")], vec![sym_value("rest")]])),
@@ -226,7 +226,19 @@ fn proc_source_location(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     }
 }
 fn proc_binding(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { crate::builtins::binding::binding_of_proc(c, slf) }
-fn proc_ruby2kw(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(slf) }
+/// Proc#ruby2_keywords: flags the block's iseq (shared by dups), as rb_proc_ruby2_keywords.
+fn proc_ruby2kw(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
+    check_frozen(c, slf)?;
+    let BlockKind::Iseq(is) = c.proc_data(slf).blk.kind else {
+        gvar_warn(c, "Skipping set of ruby2_keywords flag for proc (proc not defined in Ruby)", false)?;
+        return Ok(slf);
+    };
+    let Some(is) = c.iseq_ref(is) else { return Ok(slf) };
+    let p = &is.params;
+    if p.rest.is_some() && p.post.is_empty() && p.kw.is_empty() && p.kwrest.is_none() && !p.no_kw { is.ruby2_keywords.set(true); }
+    else { gvar_warn(c, "Skipping set of ruby2_keywords flag for proc (proc accepts keywords or post arguments or proc does not accept argument splat)", false)?; }
+    Ok(slf)
+}
 
 // ---- Method / UnboundMethod -----------------------------------------------------------------
 
@@ -276,7 +288,7 @@ fn meth_call(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     base[0].set(recv); base[1].set(NIL);
     for (i, x) in a.iter().enumerate() { base[2 + i].set(*x); }
     c.set_sp(base, 2 + a.len());
-    let kw = kw_arg(a).is_some();
+    let kw = kw_arg(c, a).is_some();
     let r = invoke(c, me, recv, base, a.len() as u32, b, CF_FCALL | if kw { CF_KW } else { 0 });
     c.set_sp(base, 0);
     r

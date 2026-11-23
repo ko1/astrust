@@ -446,7 +446,7 @@ fn target_iseq(c: &mut Ctx, v: Value) -> Result<usize, Esc> {
 }
 
 fn tp_enable(c: &mut Ctx, t: Value, a: &[Value], blk: Blk) -> RV {
-    let kw = kw_arg(a);
+    let kw = kw_arg(c, a);
     let pos = if kw.is_some() { &a[..a.len() - 1] } else { a };
     if !pos.is_empty() { return argc_err(c, pos.len(), 0, 0); }
     let get = |c: &mut Ctx, k: &str| -> Result<Option<Value>, Esc> { match kw { Some(h) => crate::hash::hash_get_opt(c, h, sym_value(k)), None => Ok(None) } };

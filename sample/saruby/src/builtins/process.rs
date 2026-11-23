@@ -374,7 +374,7 @@ pub fn spawn_spec(c: &mut Ctx, env: Option<Value>, args: &[Value], opts: Option<
             let (path, rest): (Value, Vec<Value>) = if is_string(v) { (v, vec![]) } else { (c.ary_get(v, 0), c.ary(v)[1..].to_vec()) };
             for &x in &rest { c.ary_push(keep, x); }
             let p = crate::builtins::io::path_arg(c, path)?;
-            let mut om = crate::builtins::io::parse_mode(c, &rest)?;
+            let mut om = crate::builtins::io::parse_mode(c, &rest, None)?;
             if rest.is_empty() { om.flags = if reading { 0 } else { sys::O_WRONLY | sys::O_CREAT | sys::O_TRUNC }; om.perm = 0o644; }
             let fd = crate::builtins::io::sysopen(c, &p, &om)?;
             sp.opened.push(fd);

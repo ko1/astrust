@@ -651,7 +651,7 @@ fn load_time(c: &mut Ctx, k: Value, data: Value) -> RV {
 }
 
 fn m_load(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
-    let (pos, opts) = match a.last() { Some(&l) if is_hash(l) && a.len() > 1 => (&a[..a.len() - 1], Some(l)), _ => (a, None) };
+    let (pos, opts) = kw_split(c, a);
     check_argc(c, pos, 1, 2)?;
     let objs = c.ary_new();
     let mut l = Loader { src: pos[0], data: vec![], io: false, pos: 0, syms: vec![], objs, proc_: pos.get(1).copied().unwrap_or(NIL), freeze: false, symbolize: false };

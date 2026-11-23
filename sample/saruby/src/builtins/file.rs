@@ -946,7 +946,7 @@ fn glob_one(pat: &[u8], flags: i64, base: Option<&[u8]>, sort: bool, out: &mut V
     glob_helper(&mut g, &buf, dirsep, PType::Unknown, &[(list, 0)], flags);
 }
 fn d_s_glob(c: &mut Ctx, _slf: Value, a: &[Value], blk: Blk) -> RV {
-    let (pos, opts) = match a.last() { Some(&l) if is_hash(l) => (&a[..a.len() - 1], Some(l)), _ => (a, None) };
+    let (pos, opts) = kw_split(c, a);
     if pos.is_empty() || pos.len() > 2 { return argc_err(c, pos.len(), 1, 2); }
     glob_impl(c, pos[0], pos.get(1).copied(), opts, blk)
 }
@@ -993,7 +993,7 @@ fn glob_impl(c: &mut Ctx, pats_v: Value, flags_v: Option<Value>, opts: Option<Va
     Ok(NIL)
 }
 fn d_s_aref(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
-    let (pos, opts) = match a.last() { Some(&l) if is_hash(l) => (&a[..a.len() - 1], Some(l)), _ => (a, None) };
+    let (pos, opts) = kw_split(c, a);
     let l = c.ary_new_from(pos);
     glob_impl(c, l, None, opts, Blk::NONE)
 }
@@ -1037,8 +1037,6 @@ fn d_s_rmdir(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let p = path_arg(c, a[0])?;
     match std::fs::remove_dir(&p) { Ok(_) => Ok(Value::fix(0)), Err(e) => Err(os_err_at(c, &e, "rb_dir_s_rmdir - ", p.as_bytes())) }
 }
-/// The last argument when it is a Hash (keywords).
-fn split_kw(a: &[Value]) -> (&[Value], Option<Value>) { match a.last() { Some(&l) if is_hash(l) => (&a[..a.len() - 1], Some(l)), _ => (a, None) } }
 /// The `encoding:` keyword of Dir methods, or the filesystem encoding.
 fn dir_enc(c: &mut Ctx, opts: Option<Value>) -> Result<u8, Esc> {
     if let Some(h) = opts { if let Some(e) = crate::hash::hash_get_opt(c, h, sym_value("encoding"))? { if e != NIL { return crate::builtins::encoding::to_enc(c, e); } } }
@@ -1063,7 +1061,7 @@ fn each_elem(c: &mut Ctx, l: Value, blk: Blk) -> Result<(), Esc> {
     Ok(())
 }
 fn dir_list_args(c: &mut Ctx, a: &[Value], children: bool) -> RV {
-    let (pos, o) = split_kw(a);
+    let (pos, o) = kw_split(c, a);
     if pos.len() != 1 { return argc_err(c, pos.len(), 1, 1); }
     let p = path_arg(c, pos[0])?;
     let enc = dir_enc(c, o)?;
@@ -1109,7 +1107,7 @@ fn dir_setup(c: &mut Ctx, s: Value, path: Value, ents: Value, fd: Value) {
     ivar_set_raw(c, s, iv("@closed"), FALSE); ivar_set_raw(c, s, iv("@fd"), fd);
 }
 fn d_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
-    let (pos, o) = split_kw(a);
+    let (pos, o) = kw_split(c, a);
     if pos.len() != 1 { return argc_err(c, pos.len(), 1, 1); }
     let p = path_arg(c, pos[0])?;
     let enc = dir_enc(c, o)?;

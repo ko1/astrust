@@ -480,7 +480,10 @@ cfn!(int_lcm, |c, s, a| {
     Ok(c.big_to_value(x.mul(&y).abs().divmod(&g).0))
 });
 fn round_int(c: &mut Ctx, s: Value, a: &[Value], mode: u8) -> RV {
-    let digits = match a.iter().find(|v| !is_hash(**v)) { Some(&d) => num_to_long(c, d)?, None => 0 };
+    // only round takes keywords (half:)
+    let (pos, _) = if mode == b'r' { kw_split(c, a) } else { (a, None) };
+    if pos.len() > 1 { return argc_err(c, pos.len(), 0, 1); }
+    let digits = match pos.first() { Some(&d) => num_to_long(c, d)?, None => 0 };
     if digits >= 0 { return Ok(s); }
     let half = round_half_mode(c, a)?;
     let m = BigInt::from_i64(10).pow((-digits) as u64);
@@ -504,8 +507,8 @@ fn round_int(c: &mut Ctx, s: Value, a: &[Value], mode: u8) -> RV {
 }
 /// half: mode from kw (0 = up (default), 1 = even, 2 = down)
 pub fn round_half_mode(c: &mut Ctx, a: &[Value]) -> Result<u8, Esc> {
-    if let Some(h) = a.iter().rev().find(|v| is_hash(**v)) {
-        if let Some(v) = crate::hash::hash_get_opt(c, *h, crate::vm::sym_value("half"))? {
+    if let Some(h) = kw_arg(c, a) {
+        if let Some(v) = crate::hash::hash_get_opt(c, h, crate::vm::sym_value("half"))? {
             if v == NIL { return Ok(0); }
             let sv = if v.is_sym() { Some(c.str_new(crate::symbol::sym_str(v.as_sym()).as_bytes())) } else if is_string(v) { Some(v) }
                      else if v.is_heap() && respond_to(c, v, s::to_str, true) { let r = funcall(c, v, s::to_str, &[], std::ptr::null())?; if is_string(r) { Some(r) } else { None } } else { None };
@@ -715,7 +718,7 @@ fn flo_by_rational(c: &mut Ctx, f: f64, nd: i64, mode: u8, half: u8) -> RV {
     Ok(c.float_new(if is_integer(x) { crate::builtins::rational::int_to_f(c, x) } else { crate::builtins::rational::rat_to_f(c, x) }))
 }
 fn flo_ndigits(c: &mut Ctx, a: &[Value]) -> Result<i64, Esc> {
-    let pos: Vec<Value> = a.iter().copied().filter(|v| !is_hash(*v)).collect();
+    let (pos, _) = kw_split(c, a);
     if pos.len() > 1 { return arg_err(c, format!("wrong number of arguments (given {}, expected 0..1)", pos.len())); }
     match pos.first() {
         None => Ok(0),
@@ -762,8 +765,10 @@ cfn!(flo_round, |c, s, a| {
     if x == 0.0 { return Ok(if nd > 0 { s } else { Value::fix(0) }); }
     if nd < 0 {
         let i = dbl2ival(c, x.trunc())?;
-        let h = if let Some(&hv) = a.iter().rev().find(|v| is_hash(**v)) { hv } else { c.hash_new() };
-        return round_int(c, i, &[Value::fix(nd), h], b'r');
+        // this frame's keywords, if any, go on with nd
+        let kw = kw_arg(c, a);
+        let args = [Value::fix(nd), kw.unwrap_or(NIL)];
+        return round_int(c, i, &args[..1 + kw.is_some() as usize], b'r');
     }
     if nd == 0 { return dbl2ival(c, round_by_mode(x, 1.0, half)); }
     if x.is_finite() {
@@ -825,7 +830,7 @@ pub fn num_step_loop(c: &mut Ctx, s: Value, lim: Value, st: Value, y: &mut impl 
     Some(Ok(s))
 }
 fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
-    let kw = kw_arg(a);
+    let kw = kw_arg(c, a);
     let pos = if kw.is_some() { &a[..a.len() - 1] } else { a };
     if pos.len() > 2 { return arg_err(c, format!("wrong number of arguments (given {}, expected 0..2)", pos.len())); }
     let mut lim = pos.first().copied().unwrap_or(NIL);

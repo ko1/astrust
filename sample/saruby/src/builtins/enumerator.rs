@@ -40,7 +40,7 @@ pub(crate) fn renum(c: &Ctx, v: Value) -> REnum { *c.data::<REnum>(v).expect("an
 pub(crate) fn renum_mut(c: &mut Ctx, v: Value) -> &mut REnum { c.data_mut::<REnum>(v).expect("an Enumerator") }
 
 pub(crate) fn new_enum(c: &mut Ctx, klass: Value, recv: Value, mid: Sym, args: &[Value], size: Value) -> Value {
-    let kw = kw_arg(args).is_some();
+    let kw = kw_arg(c, args).is_some();
     let a = c.ary_new_from(args);
     c.alloc(klass, Body::Data(Box::new(REnum { recv, mid, args: a, size, gen: NIL, buf: NIL, pos: 0, fiber: NIL, arith: None, lz: 0, kw, procs: NIL })))
 }
@@ -424,14 +424,15 @@ fn y_s_new(c: &mut Ctx, slf: Value, _a: &[Value], blk: Blk) -> RV {
     let p = block_to_proc(c, blk)?;
     Ok(c.alloc(slf, Body::Data(Box::new(RYielder { blk: p }))))
 }
-fn y_yield(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+fn y_yield(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let kw = kw_given(c); y_yield_kw(c, slf, a, kw) }
+fn y_yield_kw(c: &mut Ctx, slf: Value, a: &[Value], kw: bool) -> RV {
     let p = c.data::<RYielder>(slf).expect("a Yielder").blk;
     let bb = c.proc_data(p).blk;
-    invoke_block_full(c, &bb, a, std::ptr::null(), bb.self_, false, std::ptr::null(), false)
+    invoke_block_full(c, &bb, a, std::ptr::null(), bb.self_, false, std::ptr::null(), kw)
 }
-fn y_ltlt(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { y_yield(c, slf, a, b)?; Ok(slf) }
+fn y_ltlt(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { y_yield_kw(c, slf, a, false)?; Ok(slf) }
 fn y_to_proc(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
-    let b = Block::cfunc(c, |c, d, args, _b, _o| y_yield(c, d, args, Blk::NONE), slf);
+    let b = Block::cfunc(c, |c, d, args, _b, _o| y_yield_kw(c, d, args, false), slf);
     let k = c.vm().c_proc.get();
     let p = c.alloc(k, Body::Proc(Box::new(ProcData { blk: b, is_lambda: true, from_method: NIL })));
     c.proc_data_mut(p).blk.proc_val = p;

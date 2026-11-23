@@ -87,14 +87,14 @@ fn stub_detailed_message(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if !load(c)? { return crate::builtins::exception::exc_detailed_message(c, slf, a, b); }
     let m = c.vm().c_object.get();
     let Some(m) = const_get_inherit(c, m, intern(b"ErrorHighlight"))? else { return crate::builtins::exception::exc_detailed_message(c, slf, a, b) };
-    let kw = match kw_arg(a) { Some(h) => h, None => c.hash_new() };
+    let kw = match kw_arg(c, a) { Some(h) => h, None => c.hash_new() };
     funcall(c, m, intern(b"__detailed_message"), &[slf, kw], std::ptr::null())
 }
 
 /// ErrorHighlight.spot / .formatter / .formatter= before the library is loaded: the library's, which replaced this.
 fn stub_call(c: &mut Ctx, slf: Value, a: &[Value], b: Blk, name: &[u8]) -> RV {
     if !load(c)? { return Ok(NIL); }
-    match kw_arg(a) {
+    match kw_arg(c, a) {
         Some(_) => funcall_kw(c, slf, intern(name), a, b, true),
         None => funcall(c, slf, intern(name), a, b),
     }

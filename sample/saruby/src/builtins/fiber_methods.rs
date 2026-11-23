@@ -36,7 +36,7 @@ pub fn inherited_storage(c: &mut Ctx) -> RV { let f = current(c); let s = storag
 fn f_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let mut blocking = false;
     let mut st = UNDEF;
-    if let Some(h) = kw_arg(a) {
+    if let Some(h) = kw_arg(c, a) {
         let (kb, kp, ks) = (sym_value("blocking"), sym_value("pool"), sym_value("storage"));
         let mut unknown = vec![];
         for (k, v) in c.hash_pairs(h) {
@@ -118,7 +118,7 @@ fn f_s_current_scheduler(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { 
 fn f_s_schedule(c: &mut Ctx, _s: Value, a: &[Value], b: Blk) -> RV {
     let s = crate::builtins::thread::thread_scheduler(c);
     if s == NIL { return err(c, c.vm().c_runtime_error.get(), "No scheduler is available!"); }
-    match kw_arg(a) {
+    match kw_arg(c, a) {
         Some(_) => funcall_kw(c, s, intern(b"fiber"), a, b, true),
         None => funcall(c, s, intern(b"fiber"), a, b),
     }
