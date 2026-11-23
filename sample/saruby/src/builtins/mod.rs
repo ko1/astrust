@@ -51,6 +51,7 @@ pub mod enum_native;
 pub mod encoding;
 pub mod stringio;
 pub mod enc_tables;
+pub mod case_tables;
 pub mod trans_tables;
 pub mod econv;
 pub mod transcode;

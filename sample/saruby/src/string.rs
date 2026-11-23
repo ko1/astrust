@@ -383,32 +383,44 @@ pub fn map_case(b: &[u8], enc: u8, f: impl Fn(char) -> String, ascii: impl Fn(u8
         Err(_) => b.iter().map(|&x| ascii(x)).collect(),
     }
 }
+fn case_lookup(t: &'static [(u32, &'static str)], ch: char) -> Option<&'static str> {
+    t.binary_search_by_key(&(ch as u32), |e| e.0).ok().map(|i| t[i].1)
+}
+/// Per-character mappings matching CRuby (`turkic`: dotted/dotless i).
+pub fn up_char(ch: char, turkic: bool, out: &mut String) { if turkic && ch == 'i' { out.push('İ') } else { out.extend(ch.to_uppercase()) } }
+pub fn down_char(ch: char, turkic: bool, out: &mut String) {
+    if turkic && ch == 'I' { out.push('ı') } else if turkic && ch == 'İ' { out.push('i') } else { out.extend(ch.to_lowercase()) }
+}
+pub fn title_char(ch: char, turkic: bool, out: &mut String) {
+    match case_lookup(&crate::builtins::case_tables::TITLE, ch) { Some(t) => out.push_str(t), None => up_char(ch, turkic, out) }
+}
+pub fn swap_char(ch: char, turkic: bool, out: &mut String) {
+    if let Some(t) = case_lookup(&crate::builtins::case_tables::SWAP, ch) { out.push_str(t) }
+    else if ch.is_uppercase() { down_char(ch, turkic, out) } else { up_char(ch, turkic, out) }
+}
+pub fn fold_char(ch: char, out: &mut String) {
+    match case_lookup(&crate::builtins::case_tables::FOLD, ch) { Some(t) => out.push_str(t), None => out.extend(ch.to_lowercase()) }
+}
+/// UTF-8 case mapping: `first` for the first character, `rest` for the others; None if not valid UTF-8.
+pub fn map_utf8(b: &[u8], first: impl Fn(char, &mut String), rest: impl Fn(char, &mut String)) -> Option<Vec<u8>> {
+    let s = std::str::from_utf8(b).ok()?;
+    let mut out = String::with_capacity(b.len());
+    for (i, ch) in s.chars().enumerate() { if i == 0 { first(ch, &mut out) } else { rest(ch, &mut out) } }
+    Some(out.into_bytes())
+}
 pub fn upcase(b: &[u8], enc: u8) -> Vec<u8> { map_case(b, enc, |c| c.to_uppercase().collect(), |x| x.to_ascii_uppercase()) }
 pub fn downcase(b: &[u8], enc: u8) -> Vec<u8> { map_case(b, enc, |c| c.to_lowercase().collect(), |x| x.to_ascii_lowercase()) }
 pub fn swapcase(b: &[u8], enc: u8) -> Vec<u8> {
-    map_case(b, enc, |c| if c.is_uppercase() { c.to_lowercase().collect() } else { c.to_uppercase().collect() },
+    map_case(b, enc, |c| { let mut o = String::new(); swap_char(c, false, &mut o); o },
              |x| if x.is_ascii_uppercase() { x.to_ascii_lowercase() } else { x.to_ascii_uppercase() })
 }
-/// Unicode simple+full case folding approximation (for casecmp?).
-pub fn fold_case(b: &[u8], enc: u8) -> Vec<u8> {
-    if enc != ENC_UTF8 || is_ascii(b) { return b.iter().map(|x| x.to_ascii_lowercase()).collect(); }
-    match std::str::from_utf8(b) {
-        Ok(s) => {
-            let mut out = String::new();
-            for ch in s.chars() {
-                match ch { 'ß' | 'ẞ' => out.push_str("ss"), 'ς' => out.push('σ'), _ => out.extend(ch.to_lowercase()) }
-            }
-            out.into_bytes()
-        }
-        Err(_) => b.iter().map(|x| x.to_ascii_lowercase()).collect(),
-    }
-}
+/// Full Unicode case folding (downcase(:fold), casecmp?).
+pub fn fold_case(b: &[u8], enc: u8) -> Vec<u8> { map_case(b, enc, |c| { let mut o = String::new(); fold_char(c, &mut o); o }, |x| x.to_ascii_lowercase()) }
 pub fn capitalize(b: &[u8], enc: u8) -> Vec<u8> {
-    if b.is_empty() { return vec![]; }
-    let l = if enc == ENC_UTF8 { char_len_at(b, 0) } else { 1 };
-    let mut out = upcase(&b[..l], enc);
-    out.extend(downcase(&b[l..], enc));
-    out
+    if enc == ENC_UTF8 && !is_ascii(b) { if let Some(v) = map_utf8(b, |c, o| title_char(c, false, o), |c, o| down_char(c, false, o)) { return v; } }
+    let mut v: Vec<u8> = b.iter().map(|x| x.to_ascii_lowercase()).collect();
+    if let Some(f) = v.first_mut() { *f = f.to_ascii_uppercase(); }
+    v
 }
 
 #[derive(PartialEq, Clone, Copy)]

@@ -247,48 +247,66 @@ cfn!(s_match_p, |c, slf, a, b_| {
     Ok(Value::bool(regexp::search_raw_e(c, re, c.str_bytes(slf), pos, md).is_some()))
 });
 cfn!(s_aref, |c, slf, a, b_| str_aref(c, slf, a));
-cfn!(s_aset, |c, slf, a, b_| {
-    check_argc(c, a, 2, 3)?;
-    let val = expect_str(c, *a.last().unwrap())?;
-    // conversions first: to_int may change self, the length is read after it
-    let nums = if a.len() == 3 && !regexp::is_regexp(c, a[0]) { Some((num_to_long(c, a[0])?, num_to_long(c, a[1])?)) } else { None };
+/// rb_str_update: replace `len` chars at char index `beg` with `vraw`; the result takes the compatible encoding.
+fn str_update(c: &mut Ctx, slf: Value, beg: i64, len: i64, vraw: Value) -> Result<(), Esc> {
+    if len < 0 { return err(c, c.vm().c_index_error.get(), format!("negative length {}", len)); }
+    let val = expect_str(c, vraw)?;
+    let enc = compat(c, slf, val)?;
     let n = c.str_char_len(slf) as i64;
-    let (bs, be) = if a.len() == 3 {
-        if regexp::is_regexp(c, a[0]) {
-            let m = regexp::search(c, a[0], slf, 0, true)?;
-            if m == NIL { return err(c, c.vm().c_index_error.get(), "regexp not matched"); }
-            let g = num_to_long(c, a[1])?;
-            // rb_str_subpat_set: negative counts from the end, but never reaches group 0
-            let n = regexp::rmatch(c, m).unwrap().groups.len() as i64;
-            if g >= n || (g < 0 && -g >= n) { return err(c, c.vm().c_index_error.get(), format!("index {} out of regexp", g)); }
-            let g = if g < 0 { g + n } else { g };
-            match regexp::rmatch(c, m).unwrap().groups[g as usize] { Some(x) => x, None => return err(c, c.vm().c_index_error.get(), format!("regexp group {} not matched", g)) }
-        } else {
-            let (st0, ln) = nums.unwrap();
-            let mut st = st0;
-            if st < 0 { st += n; }
-            if st < 0 || st > n { return err(c, c.vm().c_index_error.get(), format!("index {} out of string", st0)); }
-            if ln < 0 { return err(c, c.vm().c_index_error.get(), format!("negative length {}", ln)); }
-            (char_to_byte_at(c, slf, st as usize)?, char_to_byte_at(c, slf, (st + ln).min(n) as usize)?)
-        }
-    } else if a[0].is_fixnum() {
-        let mut i = a[0].as_fix();
-        if i < 0 { i += n; }
-        if i < 0 || i > n { return err(c, c.vm().c_index_error.get(), format!("index {} out of string", a[0].as_fix())); }
-        let bs = char_to_byte_at(c, slf, i as usize)?; (bs, char_to_byte(c, slf, i as usize + 1).unwrap_or(bs))
-    } else if is_range(a[0]) {
-        match crate::range::range_beg_len(c, a[0], n, 1)? { Some((st, ln)) => (char_to_byte_at(c, slf, st as usize)?, char_to_byte_at(c, slf, (st + ln).min(n) as usize)?), None => return Ok(val) }
-    } else if is_string(a[0]) {
-        match find_bytes(c.str_bytes(slf), c.str_bytes(a[0]), 0) { Some(p) => (p, p + c.str_bytes(a[0]).len()), None => return err(c, c.vm().c_index_error.get(), "string not matched") }
-    } else if regexp::is_regexp(c, a[0]) {
-        let m = regexp::search(c, a[0], slf, 0, true)?;
-        if m == NIL { return err(c, c.vm().c_index_error.get(), "regexp not matched"); }
-        regexp::rmatch(c, m).unwrap().groups[0].unwrap()
-    } else { let i = num_to_long(c, a[0])?; return s_aset(c, slf, &[Value::fix(i), val], b_); };
+    if n < beg || (beg < 0 && beg + n < 0) { return err(c, c.vm().c_index_error.get(), format!("index {} out of string", beg)); }
+    let beg = if beg < 0 { beg + n } else { beg };
+    let len = len.min(n - beg);
+    let (bs, be) = (char_to_byte_at(c, slf, beg as usize)?, char_to_byte_at(c, slf, (beg + len) as usize)?);
+    splice_enc(c, slf, bs, be, val, enc)
+}
+fn splice_enc(c: &mut Ctx, slf: Value, bs: usize, be: usize, val: Value, enc: u8) -> Result<(), Esc> {
     let vb = c.str_bytes(val).to_vec();
-    if bs > be || be > c.str_len(slf) { return err(c, c.vm().c_index_error.get(), format!("index {} out of string", bs)); }
     let r = c.str_modify(slf)?;
     r.b.splice(bs..be, vb);
+    r.enc = enc;
+    Ok(())
+}
+cfn!(s_aset, |c, slf, a, b_| {
+    check_argc(c, a, 2, 3)?;
+    let val = *a.last().unwrap();
+    if regexp::is_regexp(c, a[0]) {
+        // rb_str_subpat_set: the match is checked before val is converted
+        let m = regexp::search(c, a[0], slf, 0, true)?;
+        if m == NIL { return err(c, c.vm().c_index_error.get(), "regexp not matched"); }
+        let ng = regexp::rmatch(c, m).unwrap().groups.len() as i64;
+        let g = if a.len() == 2 { 0 }
+            else if a[1].is_sym() || is_string(a[1]) { crate::builtins::regexp_methods::group_index(c, m, a[1])?.unwrap_or(0) as i64 }
+            else {
+                let g = num_to_long(c, a[1])?;
+                if g >= ng || (g < 0 && -g >= ng) { return err(c, c.vm().c_index_error.get(), format!("index {} out of regexp", g)); }
+                if g < 0 { g + ng } else { g }
+            };
+        let (bs, be) = match regexp::rmatch(c, m).unwrap().groups[g as usize] { Some(x) => x, None => return err(c, c.vm().c_index_error.get(), format!("regexp group {} not matched", g)) };
+        let val = expect_str(c, val)?;
+        if be > c.str_len(slf) { return err(c, c.vm().c_runtime_error.get(), "string modified"); }
+        let enc = compat(c, slf, val)?;
+        splice_enc(c, slf, bs, be, val, enc)?;
+        return Ok(val);
+    }
+    if a.len() == 3 {
+        let (st, ln) = (num_to_long(c, a[0])?, num_to_long(c, a[1])?);
+        str_update(c, slf, st, ln, val)?;
+        return Ok(val);
+    }
+    if is_string(a[0]) {
+        let p = match find_on_boundary(c, slf, c.str_bytes(a[0]), 0) { Some(p) => p, None => return err(c, c.vm().c_index_error.get(), "string not matched") };
+        let beg = byte_to_char(c, slf, p) as i64;
+        let ln = c.str_char_len(a[0]) as i64;
+        str_update(c, slf, beg, ln, val)?;
+        return Ok(val);
+    }
+    if is_range(a[0]) {
+        let n = c.str_char_len(slf) as i64;
+        if let Some((st, ln)) = crate::range::range_beg_len(c, a[0], n, 2)? { str_update(c, slf, st, ln, val)?; }
+        return Ok(val);
+    }
+    let i = num_to_long(c, a[0])?;
+    str_update(c, slf, i, 1, val)?;
     Ok(val)
 });
 cfn!(s_concat, |c, slf, a, b_| {
@@ -379,23 +397,21 @@ cfn!(s_dump, |c, slf, a, b_| {
     if !en::ascii_compat(enc) { out.push_str(&format!(".dup.force_encoding(\"{}\")", en::enc_name(enc))); return Ok(c.str_new_enc(out.as_bytes(), ENC_BINARY)); }
     Ok(c.str_new_enc(out.as_bytes(), enc))
 });
-/// Case-mapping options (:ascii / :turkic / :lithuanian / :fold): returns (ascii, turkic, fold).
+/// check_case_options: returns (ascii, turkic, fold).
 fn case_opts(c: &mut Ctx, a: &[Value], fold_ok: bool) -> Result<(bool, bool, bool), Esc> {
+    if a.is_empty() { return Ok((false, false, false)); }
     if a.len() > 2 { return arg_err(c, "too many options"); }
-    let name = |v: Value| if v.is_sym() { String::from_utf8_lossy(crate::symbol::sym_bytes(v.as_sym())).into_owned() } else { String::new() };
-    let mut r = (false, false, false);
-    for (i, &v) in a.iter().enumerate() {
-        if !v.is_sym() { return type_err(c, format!("no implicit conversion of {} into Symbol", class_name_for_err(c, v))); }
-        match name(v).as_str() {
-            "ascii" if a.len() == 1 => r.0 = true,
-            "turkic" | "lithuanian" if a.len() == 1 || i == 0 || name(a[0]) == "turkic" || name(a[0]) == "lithuanian" => { if name(v) == "turkic" { r.1 = true; } }
-            "fold" if fold_ok && a.len() == 1 => r.2 = true,
-            "ascii" | "fold" if a.len() > 1 => return arg_err(c, "too many options"),
-            "fold" => return arg_err(c, "option :fold only allowed for downcasing"),
-            _ => { let s = crate::builtins::kernel::inspect_str(c, v)?; return arg_err(c, format!("invalid option: {}", s)); }
-        }
+    let is = |v: Value, n: &[u8]| v.is_sym() && crate::symbol::sym_bytes(v.as_sym()) == n;
+    if is(a[0], b"turkic") || is(a[0], b"lithuanian") {
+        let other: &[u8] = if is(a[0], b"turkic") { b"lithuanian" } else { b"turkic" };
+        if a.len() == 2 && !is(a[1], other) { return arg_err(c, "invalid second option"); }
+        // :lithuanian adds nothing over the default mapping
+        return Ok((false, is(a[0], b"turkic") || a.len() == 2, false));
     }
-    Ok(r)
+    if a.len() > 1 { return arg_err(c, "too many options"); }
+    if is(a[0], b"ascii") { return Ok((true, false, false)); }
+    if is(a[0], b"fold") { return if fold_ok { Ok((false, false, true)) } else { arg_err(c, "option :fold only allowed for downcasing") }; }
+    arg_err(c, "invalid option")
 }
 fn case_apply(b: &[u8], enc: u8, which: u8, o: (bool, bool, bool)) -> Vec<u8> {
     if o.0 || enc != ENC_UTF8 {
@@ -408,14 +424,14 @@ fn case_apply(b: &[u8], enc: u8, which: u8, o: (bool, bool, bool)) -> Vec<u8> {
     }
     if o.2 { return fold_case(b, enc); }
     if o.1 {
-        // Turkic dotted/dotless i
-        let s = String::from_utf8_lossy(b);
-        let m: String = match which {
-            b'u' => s.chars().map(|ch| if ch == 'i' { "İ".to_string() } else { ch.to_uppercase().collect() }).collect(),
-            b'd' => s.chars().map(|ch| if ch == 'I' { "ı".to_string() } else if ch == 'İ' { "i".to_string() } else { ch.to_lowercase().collect() }).collect(),
-            _ => return case_apply(b, enc, which, (false, false, false)),
+        let t = true;
+        let r = match which {
+            b'u' => map_utf8(b, |ch, o| up_char(ch, t, o), |ch, o| up_char(ch, t, o)),
+            b'd' => map_utf8(b, |ch, o| down_char(ch, t, o), |ch, o| down_char(ch, t, o)),
+            b's' => map_utf8(b, |ch, o| swap_char(ch, t, o), |ch, o| swap_char(ch, t, o)),
+            _ => map_utf8(b, |ch, o| title_char(ch, t, o), |ch, o| down_char(ch, t, o)),
         };
-        return m.into_bytes();
+        if let Some(v) = r { return v; }
     }
     match which { b'u' => upcase(b, enc), b'd' => downcase(b, enc), b's' => swapcase(b, enc), _ => capitalize(b, enc) }
 }
@@ -1032,13 +1048,9 @@ cfn!(#[inline] s_empty, |c, slf, a, b_| Ok(Value::bool(c.str_bytes(slf).is_empty
 cfn!(s_replace, |c, slf, a, b_| { let o = expect_str(c, a[0])?; let nb = c.str_bytes(o).to_vec(); let e = c.str_enc(o); let r = c.str_modify(slf)?; r.b = nb.into(); r.enc = e; Ok(slf) });
 cfn!(s_clear, |c, slf, a, b_| { c.str_modify(slf)?.b.clear(); Ok(slf) });
 cfn!(s_insert, |c, slf, a, b_| {
-    let idx = num_to_long(c, a[0])?; let o = expect_str(c, a[1])?;
-    let n = c.str_char_len(slf) as i64;
-    let pos = if idx < 0 { idx + n + 1 } else { idx };
-    if pos < 0 || pos > n { return err(c, c.vm().c_index_error.get(), format!("index {} out of string", idx)); }
-    let bp = char_to_byte(c, slf, pos as usize).unwrap();
-    let ob = c.str_bytes(o).to_vec();
-    c.str_modify(slf)?.b.splice(bp..bp, ob);
+    let pos = num_to_long(c, a[0])?;
+    let beg = if pos == -1 { c.str_char_len(slf) as i64 } else if pos < 0 { pos + 1 } else { pos };
+    str_update(c, slf, beg, 0, a[1])?;
     Ok(slf)
 });
 cfn!(s_prepend, |c, slf, a, b_| { let mut pre = vec![]; for &x in a { let o = expect_str(c, x)?; pre.extend_from_slice(c.str_bytes(o)); } c.str_modify(slf)?.b.splice(0..0, pre); Ok(slf) });
@@ -1226,18 +1238,51 @@ cfn!(s_delete_prefix, |c, slf, a, b_| { let p = expect_str(c, a[0])?; let v = c.
 cfn!(s_delete_suffix, |c, slf, a, b_| { let p = expect_str(c, a[0])?; let v = c.str_bytes(slf); Ok(c.str_new_like(slf, if v.ends_with(c.str_bytes(p)) { v[..v.len() - c.str_bytes(p).len()].to_vec() } else { v.to_vec() })) });
 cfn!(s_delete_prefix_b, |c, slf, a, b_| { let p = expect_str(c, a[0])?; check_frozen(c, slf)?; let n = c.str_bytes(p).len(); if c.str_bytes(slf).starts_with(c.str_bytes(p)) { c.rstring_mut(slf).b.remove_front(n); Ok(slf) } else { Ok(NIL) } });
 cfn!(s_delete_suffix_b, |c, slf, a, b_| { let p = expect_str(c, a[0])?; check_frozen(c, slf)?; let n = c.str_bytes(p).len(); if c.str_bytes(slf).ends_with(c.str_bytes(p)) { let l = c.str_bytes(slf).len(); c.rstring_mut(slf).b.truncate(l - n); Ok(slf) } else { Ok(NIL) } });
+/// rb_str_subpos: char (start, len) -> byte range.
+fn subpos(c: &Ctx, v: Value, start: i64, len: i64) -> Option<(usize, usize)> {
+    let n = c.str_char_len(v) as i64;
+    let st = if start < 0 { start + n } else { start };
+    if st < 0 || st > n || len < 0 { return None; }
+    Some((char_to_byte(c, v, st as usize)?, char_to_byte(c, v, (st + len).min(n) as usize)?))
+}
 cfn!(s_slice_b, |c, slf, a, b_| {
-    let r = str_aref(c, slf, a)?;
-    if r == NIL { return Ok(NIL); }
-    let lm = crate::builtins::svar::last_match(c);
-    if regexp::is_regexp(c, a[0]) {
+    check_argc(c, a, 1, 2)?;
+    check_frozen(c, slf)?;
+    let x = a[0];
+    let mut res = NIL;
+    let (bs, be) = if regexp::is_regexp(c, x) {
+        let m = regexp::search(c, x, slf, 0, true)?;
+        if m == NIL { return Ok(NIL); }
+        let ng = regexp::rmatch(c, m).unwrap().groups.len() as i64;
+        let mut nth = 0;
+        if a.len() > 1 {
+            nth = if a[1].is_sym() || is_string(a[1]) { crate::builtins::regexp_methods::group_index(c, m, a[1])?.unwrap_or(0) as i64 } else { num_to_long(c, a[1])? };
+            if nth < 0 { nth += ng; if nth <= 0 { return Ok(NIL); } }
+        }
+        if nth >= ng { return Ok(NIL); }
         // $~ keeps the pre-mutation text
-        if regexp::rmatch(c, lm).map(|md| md.str == slf).unwrap_or(false) { let cp = c.str_copy(slf); obj_set_flags(cp, FL_FROZEN); if let Some(md) = regexp::rmatch_mut(c, lm) { md.str = cp; } }
-    }
-    let mut args: Vec<Value> = a.to_vec(); args.push(c.str_new(b""));
-    s_aset(c, slf, &args, b_)?;
-    if regexp::is_regexp(c, a[0]) { crate::builtins::svar::set_last_match(c, lm); }
-    Ok(r)
+        if regexp::rmatch(c, m).map(|md| md.str == slf).unwrap_or(false) { let cp = c.str_copy(slf); obj_set_flags(cp, FL_FROZEN); if let Some(md) = regexp::rmatch_mut(c, m) { md.str = cp; } }
+        match regexp::rmatch(c, m).unwrap().groups[nth as usize] { Some(g) => g, None => return Ok(c.str_new_like(slf, vec![])) }
+    } else if a.len() == 2 {
+        let (st, ln) = (num_to_long(c, x)?, num_to_long(c, a[1])?);
+        match subpos(c, slf, st, ln) { Some(r) => r, None => return Ok(NIL) }
+    } else if is_string(x) {
+        let p = match find_on_boundary(c, slf, c.str_bytes(x), 0) { Some(p) => p, None => return Ok(NIL) };
+        res = c.str_copy(x);
+        (p, p + c.str_len(x))
+    } else {
+        let r = if is_range(x) {
+            let n = c.str_char_len(slf) as i64;
+            match crate::range::range_beg_len(c, x, n, 0)? { Some((st, ln)) => subpos(c, slf, st, ln), None => return Ok(NIL) }
+        } else {
+            let i = if x.is_fixnum() { x.as_fix() } else { num_to_long(c, x)? };
+            subpos(c, slf, i, 1).filter(|r| r.0 < r.1)
+        };
+        match r { Some(r) => r, None => return Ok(NIL) }
+    };
+    if res == NIL { res = c.str_sub(slf, bs..be); }
+    if be > bs { c.str_modify(slf)?.b.splice(bs..be, std::iter::empty()); }
+    Ok(res)
 });
 cfn!(s_getbyte, |c, slf, a, b_| { let i = num_to_long(c, a[0])?; let n = c.str_bytes(slf).len() as i64; let i = if i < 0 { i + n } else { i }; Ok(if i >= 0 && i < n { Value::fix(c.str_bytes(slf)[i as usize] as i64) } else { NIL }) });
 cfn!(s_setbyte, |c, slf, a, b_| { let i = num_to_long(c, a[0])?; let v = num_to_long(c, a[1])?; let n = c.str_bytes(slf).len() as i64; let i2 = if i < 0 { i + n } else { i }; if i2 < 0 || i2 >= n { return err(c, c.vm().c_index_error.get(), format!("index {} out of string", i)); } c.str_modify(slf)?.b[i2 as usize] = v as u8; Ok(a[1]) });
