@@ -336,8 +336,13 @@ fn f_s_join(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     Ok(c.str_new(&out))
 }
 fn home_of(c: &mut Ctx, user: &str) -> Result<Vec<u8>, Esc> {
-    if user.is_empty() { return match std::env::var_os("HOME") { Some(h) => Ok(h.into_vec()), None => arg_err(c, "couldn't find HOME environment -- expanding '~'") }; }
-    if let Ok(pw) = std::fs::read_to_string("/etc/passwd") { for l in pw.lines() { let f: Vec<&str> = l.split(':').collect(); if f.len() > 5 && f[0] == user { return Ok(f[5].as_bytes().to_vec()); } } }
+    // without HOME: the password entry of the real uid (rb_default_home_dir)
+    let me = sys::getuid().to_string();
+    if user.is_empty() { if let Some(h) = std::env::var_os("HOME") { return Ok(h.into_vec()); } }
+    if let Ok(pw) = std::fs::read_to_string("/etc/passwd") {
+        for l in pw.lines() { let f: Vec<&str> = l.split(':').collect(); if f.len() > 5 && (if user.is_empty() { f[2] == me } else { f[0] == user }) { return Ok(f[5].as_bytes().to_vec()); } }
+    }
+    if user.is_empty() { return arg_err(c, "couldn't find HOME environment -- expanding '~'"); }
     arg_err(c, format!("user {} doesn't exist", user))
 }
 fn cwd() -> Vec<u8> { std::env::current_dir().map(|d| d.into_os_string().into_vec()).unwrap_or(b"/".to_vec()) }
@@ -563,87 +568,199 @@ fn f_s_fnmatch(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
 
 /// Directory entries in readdir order (with "." and ".."), like CRuby.
 fn read_dir_raw(path: &[u8]) -> Result<Vec<(Vec<u8>, u8)>, i64> { sys::read_dir_raw(&sys::cstr(path)) }
-fn has_magic(seg: &[u8]) -> bool { seg.iter().any(|&b| matches!(b, b'*' | b'?' | b'[')) }
+// Dir.glob: dir.c's glob_make_pattern / glob_helper over byte paths.
+#[derive(Clone, PartialEq)]
+enum GPat { Plain(Vec<u8>), Brace(Vec<u8>), Magical(Vec<u8>), Recursive, MatchAll, MatchDir }
+#[derive(Clone, Copy, PartialEq)]
+enum PType { Unknown, NoEnt, Dir, Symlink, Other }
+/// A position in a pattern list (the node and the ones after it).
+type GCur = (std::rc::Rc<Vec<GPat>>, usize);
+const FNM_GLOB_SKIPDOT: i64 = 0x80;   // as dir.c: "." of directories below the first one read is skipped
+
+/// dir.c find_dirsep: the next '/' outside brackets (escapes honoured), or the end.
+fn find_dirsep(p: &[u8], mut i: usize, flags: i64) -> usize {
+    let esc = flags & FNM_NOESCAPE == 0;
+    let mut open = false;
+    while i < p.len() {
+        match p[i] {
+            b'[' => open = true,
+            b']' => open = false,
+            b'/' if !open => return i,
+            b'\\' if esc => { i += 1; if i >= p.len() { return p.len(); } }
+            _ => {}
+        }
+        i += 1;
+    }
+    p.len()
+}
+/// 0 plain, 2 brace, 3 magical (dir.c has_magic; ALPHA is plain on Linux).
+fn glob_magic(seg: &[u8], flags: i64) -> u8 {
+    let esc = flags & FNM_NOESCAPE == 0;
+    let mut magical = false;
+    let mut i = 0;
+    while i < seg.len() {
+        match seg[i] {
+            b'{' => return 2,
+            b'*' | b'?' | b'[' => magical = true,
+            b'\\' if esc => i += 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    if magical { 3 } else { 0 }
+}
+fn glob_make_pattern(p: &[u8], flags: i64) -> Vec<GPat> {
+    let mut out = vec![];
+    let (mut i, mut dirsep, mut recursive) = (0, false, false);
+    while i < p.len() {
+        if i + 2 < p.len() && p[i] == b'*' && p[i + 1] == b'*' && p[i + 2] == b'/' {
+            // fold continuous RECURSIVEs
+            loop { i += 3; while i < p.len() && p[i] == b'/' { i += 1; } if !(i + 2 < p.len() && p[i] == b'*' && p[i + 1] == b'*' && p[i + 2] == b'/') { break; } }
+            out.push(GPat::Recursive);
+            dirsep = true; recursive = true;
+            continue;
+        }
+        let mut m = find_dirsep(p, i, flags);
+        let magic = glob_magic(&p[i..m], flags);
+        // consecutive plain segments (before any **/) stay one node
+        if magic == 0 && !recursive && m < p.len() {
+            loop {
+                let m2 = find_dirsep(p, m + 1, flags);
+                if glob_magic(&p[m + 1..m2], flags) == 0 && m2 < p.len() { m = m2; } else { break; }
+            }
+        }
+        let s = p[i..m].to_vec();
+        out.push(match magic { 3 => GPat::Magical(s), 2 => GPat::Brace(s), _ => GPat::Plain(s) });
+        if m < p.len() { dirsep = true; i = m + 1; } else { dirsep = false; i = m; }
+    }
+    out.push(if dirsep { GPat::MatchDir } else { GPat::MatchAll });
+    out
+}
+/// dir.c join_path_from_pattern: the pattern text from a position.
+fn join_pattern(cur: &GCur) -> Vec<u8> {
+    let mut path: Option<Vec<u8>> = None;
+    for n in &cur.0[cur.1..] {
+        let s: &[u8] = match n { GPat::Recursive => b"**", GPat::MatchDir => b"", GPat::MatchAll => continue, GPat::Plain(s) | GPat::Brace(s) | GPat::Magical(s) => s };
+        match &mut path { None => path = Some(s.to_vec()), Some(p) => { p.push(b'/'); p.extend_from_slice(s); } }
+    }
+    path.unwrap_or_default()
+}
+struct Glob<'a> { flags: i64, sort: bool, baselen: usize, out: &'a mut Vec<Vec<u8>> }
+fn ptype_of(m: &std::fs::Metadata) -> PType { let t = m.file_type(); if t.is_dir() { PType::Dir } else if t.is_symlink() { PType::Symlink } else { PType::Other } }
+fn os(p: &[u8]) -> &std::ffi::OsStr { std::ffi::OsStr::from_bytes(p) }
+fn join_path(path: &[u8], dirsep: bool, name: &[u8]) -> Vec<u8> { let mut b = path.to_vec(); if dirsep { b.push(b'/'); } b.extend_from_slice(name); b }
+fn glob_helper(g: &mut Glob, path: &[u8], dirsep: bool, mut pt: PType, list: &[GCur], flags: i64) {
+    let (mut plain, mut brace, mut magical, mut recursive, mut match_all, mut match_dir) = (false, false, false, false, false, false);
+    for cur in list {
+        let mut n = &cur.0[cur.1];
+        if *n == GPat::Recursive { recursive = true; n = &cur.0[cur.1 + 1]; }
+        match n {
+            GPat::Plain(_) => plain = true,
+            GPat::Brace(s) => { if !recursive || s.contains(&b'/') { brace = true; } }
+            GPat::Magical(_) => magical = true,
+            GPat::MatchAll => match_all = true,
+            GPat::MatchDir => match_dir = true,
+            GPat::Recursive => {}
+        }
+    }
+    if brace {
+        let mut alts = vec![];
+        brace_expand(&join_pattern(&list[0]), flags & FNM_NOESCAPE != 0, &mut alts);
+        for a in alts {
+            let l = std::rc::Rc::new(glob_make_pattern(&a, flags));
+            glob_helper(g, path, dirsep, pt, &[(l, 0)], flags);
+        }
+        return;
+    }
+    if !path.is_empty() {
+        if match_all && pt == PType::Unknown { pt = std::fs::symlink_metadata(os(path)).map(|m| ptype_of(&m)).unwrap_or(PType::NoEnt); }
+        if match_dir && matches!(pt, PType::Unknown | PType::Symlink) { pt = std::fs::metadata(os(path)).map(|m| ptype_of(&m)).unwrap_or(PType::NoEnt); }
+        let seplen = (g.baselen > 0 && path.get(g.baselen) == Some(&b'/')) as usize;
+        let sub = &path[(g.baselen + seplen).min(path.len())..];
+        if match_all && pt != PType::NoEnt { g.out.push(sub.to_vec()); }
+        if match_dir && pt == PType::Dir { g.out.push(join_path(sub, dirsep, b"")); }
+    }
+    if pt == PType::NoEnt { return; }
+    let dot = flags & FNM_DOTMATCH != 0;
+    if magical || recursive {
+        let dpath: &[u8] = if path.is_empty() { b"." } else { path };
+        let Ok(mut ents) = read_dir_raw(dpath) else { return };
+        if g.sort { ents.sort(); }
+        let skipdot = flags & FNM_GLOB_SKIPDOT != 0;
+        let cflags = flags | FNM_GLOB_SKIPDOT;
+        for (name, dtype) in ents {
+            let mut npt = PType::Unknown;
+            let mut dotfile = 0;
+            if name[0] == b'.' {
+                dotfile += 1;
+                if name.len() == 1 {
+                    if recursive && !dot { continue; }
+                    if skipdot { continue; }
+                    dotfile += 1;
+                    npt = PType::Dir;
+                } else if name == b".." { continue; }
+            }
+            let buf = join_path(path, dirsep, &name);
+            match dtype { 0 => {} 4 => npt = PType::Dir, 10 => npt = PType::Symlink, _ => npt = PType::Other }
+            let lim = if dot { 2 } else { 1 };
+            if recursive && dotfile < lim && npt == PType::Unknown {
+                npt = std::fs::symlink_metadata(os(&buf)).map(|m| ptype_of(&m)).unwrap_or(PType::NoEnt);
+            }
+            let mut nl: Vec<GCur> = vec![];
+            for cur in list {
+                let mut k = cur.1;
+                if cur.0[k] == GPat::Recursive {
+                    if npt == PType::Dir && dotfile < lim { nl.push(cur.clone()); }
+                    k += 1;
+                }
+                let hit = match &cur.0[k] {
+                    GPat::Brace(s) => { let mut alts = vec![]; brace_expand(s, flags & FNM_NOESCAPE != 0, &mut alts); alts.iter().any(|a| fnm(a, &name, cflags & !FNM_PATHNAME, true)) }
+                    GPat::Plain(s) | GPat::Magical(s) => fnm(s, &name, cflags & !FNM_PATHNAME, true),
+                    _ => false,
+                };
+                if hit { nl.push((cur.0.clone(), k + 1)); }
+            }
+            glob_helper(g, &buf, true, npt, &nl, cflags);
+        }
+    } else if plain {
+        let mut copy: Vec<Option<GCur>> = list.iter().map(|c| if matches!(c.0[c.1], GPat::Plain(_)) { Some(c.clone()) } else { None }).collect();
+        for i in 0..copy.len() {
+            let Some(cur) = copy[i].clone() else { continue };
+            let GPat::Plain(s) = &cur.0[cur.1] else { continue };
+            let name = unescape(s, flags & FNM_NOESCAPE != 0);
+            let mut nl = vec![(cur.0.clone(), cur.1 + 1)];
+            for j in i + 1..copy.len() {
+                if let Some(c2) = &copy[j] { if let GPat::Plain(s2) = &c2.0[c2.1] { if fnm(s2, &name, flags & !FNM_PATHNAME, true) { nl.push((c2.0.clone(), c2.1 + 1)); copy[j] = None; } } }
+            }
+            let buf = join_path(path, dirsep, &name);
+            glob_helper(g, &buf, true, PType::Unknown, &nl, flags);
+        }
+    }
+}
 fn unescape(seg: &[u8], noescape: bool) -> Vec<u8> {
     if noescape { return seg.to_vec(); }
     let mut o = vec![]; let mut i = 0;
     while i < seg.len() { if seg[i] == b'\\' && i + 1 < seg.len() { i += 1; } o.push(seg[i]); i += 1; }
     o
 }
-fn is_dir_at(base: &str, rel: &[u8], follow: bool) -> bool {
-    let p = join_base(base, rel);
-    if follow { std::fs::metadata(&p).map(|m| m.is_dir()).unwrap_or(false) } else { std::fs::symlink_metadata(&p).map(|m| m.is_dir()).unwrap_or(false) }
-}
-fn join_base(base: &str, rel: &[u8]) -> String {
-    let r = String::from_utf8_lossy(rel);
-    if rel.starts_with(b"/") || base.is_empty() { if rel.is_empty() { ".".into() } else { r.into_owned() } } else if rel.is_empty() { base.to_string() } else { format!("{}/{}", base, r) }
-}
-fn glob_walk(base: &str, prefix: &[u8], segs: &[&[u8]], flags: i64, out: &mut Vec<Vec<u8>>) {
-    let Some(&seg) = segs.first() else { return };
-    let rest = &segs[1..];
-    let noesc = flags & FNM_NOESCAPE != 0;
-    let dirp = if prefix.is_empty() { b"".to_vec() } else { prefix.to_vec() };
-    if seg.is_empty() {
-        // trailing slash: directories only
-        if rest.is_empty() { if is_dir_at(base, &dirp, true) { out.push(dirp); } } else { glob_walk(base, prefix, rest, flags, out); }
-        return;
-    }
-    if seg == b"**" && !rest.is_empty() {
-        glob_walk(base, prefix, rest, flags, out);
-        let dp = join_base(base, &dirp);
-        let Ok(mut ents) = read_dir_raw(dp.as_bytes()) else { return };
-        ents.sort();
-        for (n, t) in ents {
-            if n == b"." || n == b".." || (n[0] == b'.' && flags & FNM_DOTMATCH == 0) { continue; }
-            let mut np = dirp.clone(); np.extend_from_slice(&n);
-            let isd = if t == 4 { true } else if t == 0 { is_dir_at(base, &np, false) } else { false };
-            if !isd { continue; }
-            np.push(b'/');
-            glob_walk(base, &np, segs, flags, out);
-        }
-        return;
-    }
-    if !has_magic(seg) {
-        let mut np = dirp.clone(); np.extend_from_slice(&unescape(seg, noesc));
-        if rest.is_empty() { if std::fs::symlink_metadata(join_base(base, &np)).is_ok() { out.push(np); } }
-        else if is_dir_at(base, &np, true) { np.push(b'/'); glob_walk(base, &np, rest, flags, out); }
-        return;
-    }
-    let dp = join_base(base, &dirp);
-    let Ok(mut ents) = read_dir_raw(dp.as_bytes()) else { return };
-    ents.sort();
-    for (n, t) in ents {
-        if n == b".." { continue; }
-        if n == b"." && !(rest.is_empty() && (seg[0] == b'.' || flags & FNM_DOTMATCH != 0)) { continue; }
-        if !fnm(seg, &n, flags & !FNM_PATHNAME, true) { continue; }
-        let mut np = dirp.clone(); np.extend_from_slice(&n);
-        if rest.is_empty() { out.push(np); continue; }
-        let isd = if t == 4 { true } else if t == 8 { false } else { is_dir_at(base, &np, true) };
-        if isd { np.push(b'/'); glob_walk(base, &np, rest, flags, out); }
-    }
-}
-fn glob_one(pat: &[u8], flags: i64, base: &str, out: &mut Vec<Vec<u8>>) {
-    let mut alts = vec![];
-    brace_expand(pat, flags & FNM_NOESCAPE != 0, &mut alts);
-    for p in alts {
-        if p.is_empty() { continue; }
-        let (prefix, body): (&[u8], &[u8]) = if p[0] == b'/' { let n = p.iter().position(|&b| b != b'/').unwrap_or(p.len()); (b"/", &p[n..]) } else { (b"", &p[..]) };
-        // collapse "//" except for the trailing-slash marker
-        let mut segs: Vec<&[u8]> = vec![];
-        let parts: Vec<&[u8]> = body.split(|&b| b == b'/').collect();
-        for (i, s) in parts.iter().enumerate() { if s.is_empty() && i + 1 != parts.len() { continue; } if *s == b"**" && segs.last() == Some(&&b"**"[..]) { continue; } segs.push(s); }
-        if segs.is_empty() || (segs.len() == 1 && segs[0].is_empty()) { if !prefix.is_empty() { out.push(prefix.to_vec()); } continue; }
-        let mut found = vec![];
-        glob_walk(base, prefix, &segs, flags, &mut found);
-        for f in found { let f = if segs.last().map(|s| s.is_empty()).unwrap_or(false) && !f.ends_with(b"/") { let mut g = f; g.push(b'/'); g } else { f }; out.push(f); }
-    }
+/// ruby_glob0 for one pattern (braces included).
+fn glob_one(pat: &[u8], flags: i64, base: Option<&[u8]>, sort: bool, out: &mut Vec<Vec<u8>>) {
+    let (root, start): (&[u8], &[u8]) = if pat.first() == Some(&b'/') { (&pat[1..], b"/") } else { (pat, b"") };
+    let (buf, baselen, dirsep) = match base { Some(b) if start.is_empty() => (b.to_vec(), b.len(), true), _ => (start.to_vec(), 0, false) };
+    let list = std::rc::Rc::new(glob_make_pattern(root, flags));
+    let mut g = Glob { flags, sort, baselen, out };
+    let _ = g.flags;
+    glob_helper(&mut g, &buf, dirsep, PType::Unknown, &[(list, 0)], flags);
 }
 fn d_s_glob(c: &mut Ctx, _slf: Value, a: &[Value], blk: Blk) -> RV {
     let (pos, opts) = match a.last() { Some(&l) if is_hash(l) => (&a[..a.len() - 1], Some(l)), _ => (a, None) };
-    if pos.is_empty() { return argc_err(c, 0, 1, 2); }
-    let mut flags = match pos.get(1) { Some(&f) if !is_array(pos[0]) || pos.len() == 2 && f.is_fixnum() => num_to_long(c, f)?, _ => 0 };
-    let mut base = String::new();
+    if pos.is_empty() || pos.len() > 2 { return argc_err(c, pos.len(), 1, 2); }
+    glob_impl(c, pos[0], pos.get(1).copied(), opts, blk)
+}
+fn glob_impl(c: &mut Ctx, pats_v: Value, flags_v: Option<Value>, opts: Option<Value>, blk: Blk) -> RV {
+    let mut base: Option<Vec<u8>> = None;
     let mut sort = true;
+    let mut kwflags = None;
     if let Some(h) = opts {
         let mut unknown = vec![];
         let mut i = 0;
@@ -653,26 +770,39 @@ fn d_s_glob(c: &mut Ctx, _slf: Value, a: &[Value], blk: Blk) -> RV {
             unknown.push(inspect_str(c, k)?);
         }
         if !unknown.is_empty() { return arg_err(c, format!("unknown keyword{}: {}", if unknown.len() > 1 { "s" } else { "" }, unknown.join(", "))); }
-        if let Some(b) = crate::hash::hash_get_opt(c, h, sym_value("base"))? { if b != NIL { base = String::from_utf8_lossy(path_arg(c, b)?.as_bytes()).into_owned(); } }
-        if let Some(f) = crate::hash::hash_get_opt(c, h, sym_value("flags"))? { if f != NIL { flags |= num_to_long(c, f)?; } }
-        if let Some(s) = crate::hash::hash_get_opt(c, h, sym_value("sort"))? { sort = s.truthy(); }
+        if let Some(b) = crate::hash::hash_get_opt(c, h, sym_value("base"))? { if b != NIL { let p = path_arg(c, b)?; if !p.as_bytes().is_empty() { base = Some(p.0); } } }
+        if let Some(f) = crate::hash::hash_get_opt(c, h, sym_value("flags"))? { kwflags = Some(f); }
+        if let Some(s) = crate::hash::hash_get_opt(c, h, sym_value("sort"))? {
+            if s == TRUE || s == FALSE { sort = s == TRUE; } else { let d = inspect_str(c, s)?; return arg_err(c, format!("expected true or false as sort: {}", d)); }
+        }
     }
-    let _ = sort;
-    let mut pats: Vec<Vec<u8>> = vec![];
-    if is_array(pos[0]) { let mut i = 0; while i < c.ary_len(pos[0]) { let x = c.ary_get(pos[0], i); i += 1; pats.push(path_arg(c, x)?.0); } }
-    else { let p = path_arg(c, pos[0])?; pats.extend(p.as_bytes().split(|&b| b == 0).map(|x| x.to_vec())); }
-    let mut found = vec![];
-    for p in &pats { glob_one(p, flags, &base, &mut found); }
-    let out = c.ary_of_strs(found, crate::builtins::encoding::default_external());
+    // the flags: keyword wins over the positional argument
+    let flags = match kwflags.or(flags_v) { Some(f) if f != NIL => num_to_long(c, f)?, _ => 0 };
+    let items: Vec<Value> = if is_array(pats_v) { c.ary(pats_v).to_vec() } else { vec![pats_v] };
+    let keep = c.ary_new_from(&items);
+    let out = c.ary_new();
+    for i in 0..c.ary_len(keep) {
+        let x = c.ary_get(keep, i);
+        let s = if is_string(x) { x } else { let p = path_arg(c, x)?; c.str_new(p.as_bytes()) };
+        let enc = c.str_enc(s);
+        if !crate::builtins::encoding::ascii_compat(enc) {
+            return err(c, c.vm().c_compat_error.get(), format!("incompatible character encodings: {} and US-ASCII", crate::builtins::encoding::enc_name(enc)));
+        }
+        let pb = c.str_bytes(s).to_vec();
+        if pb.contains(&0) { return arg_err(c, "nul-separated glob pattern is deprecated"); }
+        let renc = if enc == crate::object::ENC_ASCII { crate::builtins::encoding::default_external() } else { enc };
+        let mut found = vec![];
+        glob_one(&pb, flags, base.as_deref(), sort, &mut found);
+        for f in found { let v = crate::builtins::encoding::external_str(c, f, renc); c.ary_push(out, v); }
+    }
     if blk.is_null() { return Ok(out); }
     each_elem(c, out, blk)?;
     Ok(NIL)
 }
-fn d_s_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+fn d_s_aref(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     let (pos, opts) = match a.last() { Some(&l) if is_hash(l) => (&a[..a.len() - 1], Some(l)), _ => (a, None) };
-    let mut args = vec![c.ary_new_from(pos)];
-    if let Some(o) = opts { args.push(o); }
-    d_s_glob(c, slf, &args, Blk::NONE)
+    let l = c.ary_new_from(pos);
+    glob_impl(c, l, None, opts, Blk::NONE)
 }
 
 // ---- Dir ----------------------------------------------------------------------------------------
@@ -714,37 +844,60 @@ fn d_s_rmdir(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let p = path_arg(c, a[0])?;
     match std::fs::remove_dir(&p) { Ok(_) => Ok(Value::fix(0)), Err(e) => Err(os_err_at(c, &e, "rb_dir_s_rmdir - ", p.as_bytes())) }
 }
-fn dir_list(c: &mut Ctx, v: Value, children: bool) -> Result<Vec<Vec<u8>>, Esc> {
-    let p = path_arg(c, v)?;
+/// The last argument when it is a Hash (keywords).
+fn split_kw(a: &[Value]) -> (&[Value], Option<Value>) { match a.last() { Some(&l) if is_hash(l) => (&a[..a.len() - 1], Some(l)), _ => (a, None) } }
+/// The `encoding:` keyword of Dir methods, or the filesystem encoding.
+fn dir_enc(c: &mut Ctx, opts: Option<Value>) -> Result<u8, Esc> {
+    if let Some(h) = opts { if let Some(e) = crate::hash::hash_get_opt(c, h, sym_value("encoding"))? { if e != NIL { return crate::builtins::encoding::to_enc(c, e); } } }
+    Ok(crate::builtins::encoding::default_external())
+}
+fn dir_list(c: &mut Ctx, p: &PathArg, children: bool) -> Result<Vec<Vec<u8>>, Esc> {
     match read_dir_raw(p.as_bytes()) {
         Ok(e) => Ok(e.into_iter().map(|x| x.0).filter(|n| !children || (n != b"." && n != b"..")).collect()),
         Err(e) => Err(crate::builtins::io::raise_errno_at(c, e, "rb_dir_initialize - ", p.as_bytes())),
     }
 }
-fn strs(c: &mut Ctx, v: Vec<Vec<u8>>) -> Value { c.ary_of_strs(v, crate::builtins::encoding::default_external()) }
+/// Entry names as Strings in `enc` (or default_internal).
+fn strs(c: &mut Ctx, v: Vec<Vec<u8>>, enc: u8) -> Value {
+    let out = c.ary_new();
+    for n in v { let s = crate::builtins::encoding::external_str(c, n, enc); c.ary_push(out, s); }
+    out
+}
 /// yield each element of Array `l`, re-reading its length at every step
 fn each_elem(c: &mut Ctx, l: Value, blk: Blk) -> Result<(), Esc> {
     let mut i = 0;
     while let Some(&x) = c.ary(l).get(i) { yield1(c, blk, x)?; i += 1; }
     Ok(())
 }
-fn d_s_entries(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let l = dir_list(c, a[0], false)?; Ok(strs(c, l)) }
-fn d_s_children(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let l = dir_list(c, a[0], true)?; Ok(strs(c, l)) }
+fn dir_list_args(c: &mut Ctx, a: &[Value], children: bool) -> RV {
+    let (pos, o) = split_kw(a);
+    if pos.len() != 1 { return argc_err(c, pos.len(), 1, 1); }
+    let p = path_arg(c, pos[0])?;
+    let enc = dir_enc(c, o)?;
+    let l = dir_list(c, &p, children)?;
+    Ok(strs(c, l, enc))
+}
+fn d_s_entries(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { dir_list_args(c, a, false) }
+fn d_s_children(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { dir_list_args(c, a, true) }
 fn d_s_each_child(c: &mut Ctx, s: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, s, intern(b"each_child"), a, NIL); }
-    let l = dir_list(c, a[0], true)?; let l = strs(c, l);
+    let l = dir_list_args(c, a, true)?;
     each_elem(c, l, blk)?;
     Ok(NIL)
 }
 fn d_s_foreach(c: &mut Ctx, s: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, s, intern(b"foreach"), a, NIL); }
-    let l = dir_list(c, a[0], false)?; let l = strs(c, l);
+    let l = dir_list_args(c, a, false)?;
     each_elem(c, l, blk)?;
     Ok(NIL)
 }
 fn d_s_empty(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let p = path_arg(c, a[0])?;
-    Ok(Value::bool(read_dir_raw(p.as_bytes()).map(|e| e.len() <= 2).unwrap_or(false)))
+    match read_dir_raw(p.as_bytes()) {
+        Ok(e) => Ok(Value::bool(e.len() <= 2)),
+        Err(20) => Ok(FALSE),
+        Err(e) => Err(crate::builtins::io::raise_errno_at(c, e, "rb_dir_s_empty_p - ", p.as_bytes())),
+    }
 }
 fn d_s_home(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let u = match a.first() { Some(&v) if v != NIL => to_rstring(c, v)?, _ => String::new() };
@@ -752,21 +905,58 @@ fn d_s_home(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     Ok(c.str_new(&h))
 }
 fn d_s_exist(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV { f_s_dir_p(c, s, a, b) }
+fn d_s_chroot(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
+    let p = path_arg(c, a[0])?;
+    if sys::chroot(&p.cstr()) < 0 { return Err(last_err_at(c, "dir_s_chroot - ", p.as_bytes())); }
+    Ok(Value::fix(0))
+}
 fn iv(n: &str) -> crate::value::Sym { intern(n.as_bytes()) }
+fn dir_setup(c: &mut Ctx, s: Value, path: Value, ents: Value, fd: Value) {
+    ivar_set_raw(c, s, iv("@path"), path); ivar_set_raw(c, s, iv("@ents"), ents); ivar_set_raw(c, s, iv("@pos"), Value::fix(0));
+    ivar_set_raw(c, s, iv("@closed"), FALSE); ivar_set_raw(c, s, iv("@fd"), fd);
+}
 fn d_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
-    let (pos, _) = match a.last() { Some(&l) if is_hash(l) => (&a[..a.len() - 1], Some(l)), _ => (a, None) };
+    let (pos, o) = split_kw(a);
     if pos.len() != 1 { return argc_err(c, pos.len(), 1, 1); }
     let p = path_arg(c, pos[0])?;
-    let l = dir_list(c, pos[0], false)?; let l = strs(c, l);
-    let ps = c.str_new(p.as_bytes());
-    ivar_set_raw(c, s, iv("@path"), ps); ivar_set_raw(c, s, iv("@ents"), l); ivar_set_raw(c, s, iv("@pos"), Value::fix(0)); ivar_set_raw(c, s, iv("@closed"), FALSE);
+    let enc = dir_enc(c, o)?;
+    let l = dir_list(c, &p, false)?; let l = strs(c, l, enc);
+    let penc = if is_string(pos[0]) { c.str_enc(pos[0]) } else { crate::builtins::encoding::default_external() };
+    let ps = c.str_new_enc(p.as_bytes(), penc);
+    dir_setup(c, s, ps, l, NIL);
     Ok(NIL)
+}
+/// Dir.for_fd: a Dir over an open directory descriptor (owned: Dir#close closes it).
+fn d_s_for_fd(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    let fd = num_to_long(c, a[0])? as i32;
+    match sys::fd_metadata(fd) {
+        Err(e) => return Err(crate::builtins::exception::raise_errno_plain(c, e.raw_os_error().unwrap_or(9) as i64, "fdopendir")),
+        Ok(m) if !m.is_dir() => return Err(crate::builtins::exception::raise_errno_plain(c, 20, "fdopendir")),
+        Ok(_) => {}
+    }
+    let l = match read_dir_raw(format!("/proc/self/fd/{}", fd).as_bytes()) { Ok(e) => e.into_iter().map(|x| x.0).collect(), Err(e) => return Err(crate::builtins::exception::raise_errno_plain(c, e, "fdopendir")) };
+    let l = strs(c, l, crate::builtins::encoding::default_external());
+    let d = new_object(c, slf);
+    dir_setup(c, d, NIL, l, Value::fix(fd as i64));
+    Ok(d)
 }
 fn d_check(c: &mut Ctx, s: Value) -> Result<(Value, usize), Esc> {
     let e = ivar_get(c, s, iv("@ents"));
     if e == NIL { return err(c, c.vm().c_io_error.get(), "uninitialized Dir"); }
     if ivar_get(c, s, iv("@closed")).truthy() { return err(c, c.vm().c_io_error.get(), "closed directory"); }
     Ok((e, ivar_get(c, s, iv("@pos")).as_fix() as usize))
+}
+/// Dir#fileno: the directory's descriptor, opened on first use (close-on-exec).
+fn d_fileno(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
+    d_check(c, s)?;
+    let fd = ivar_get(c, s, iv("@fd"));
+    if fd != NIL { return Ok(fd); }
+    let p = ivar_get(c, s, iv("@path"));
+    let pb = c.str_bytes(p).to_vec();
+    let n = sys::open(&sys::cstr(&pb), sys::O_RDONLY | sys::O_CLOEXEC | 0o200000, 0);
+    if n < 0 { return Err(last_err_at(c, "dirfd - ", &pb)); }
+    ivar_set_raw(c, s, iv("@fd"), Value::fix(n as i64));
+    Ok(Value::fix(n as i64))
 }
 fn d_read(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let (e, p) = d_check(c, s)?;
@@ -775,8 +965,11 @@ fn d_read(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let x = c.ary_get(e, p);
     Ok(c.str_dup(x))
 }
+/// Dir#each / #children / #each_child start from the first entry (rewinddir) and leave the position at the end.
 fn d_each(c: &mut Ctx, s: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, s, intern(b"each"), a, NIL); }
+    d_check(c, s)?;
+    ivar_set_raw(c, s, iv("@pos"), Value::fix(0));
     loop { let v = d_read(c, s, &[], Blk::NONE)?; if v == NIL { break; } yield1(c, blk, v)?; }
     Ok(s)
 }
@@ -785,6 +978,7 @@ fn d_children(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let out = c.ary_new();
     let mut i = 0;
     while let Some(&x) = c.ary(e).get(i) { i += 1; if c.str_bytes(x) != b"." && c.str_bytes(x) != b".." { let d = c.str_dup(x); c.ary_push(out, d); } }
+    ivar_set_raw(c, s, iv("@pos"), Value::fix(c.ary_len(e) as i64));
     Ok(out)
 }
 fn d_each_child(c: &mut Ctx, s: Value, a: &[Value], blk: Blk) -> RV {
@@ -797,20 +991,54 @@ fn d_rewind(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { d_check(c, s)?
 fn d_tell(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let (_, p) = d_check(c, s)?; Ok(Value::fix(p as i64)) }
 fn d_seek(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { d_check(c, s)?; let n = num_to_long(c, a[0])?; ivar_set_raw(c, s, iv("@pos"), Value::fix(n.max(0))); Ok(s) }
 fn d_set_pos(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV { d_seek(c, s, a, b)?; Ok(a[0]) }
-fn d_close(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { ivar_set_raw(c, s, iv("@closed"), TRUE); Ok(NIL) }
+fn d_close(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
+    if ivar_get(c, s, iv("@closed")).truthy() { return Ok(NIL); }
+    ivar_set_raw(c, s, iv("@closed"), TRUE);
+    let fd = ivar_get(c, s, iv("@fd"));
+    if fd.is_fixnum() && sys::close(fd.as_fix() as i32) < 0 { return Err(crate::builtins::exception::raise_errno_plain(c, sys::errno(), "closedir")); }
+    Ok(NIL)
+}
 fn d_path(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let p = ivar_get(c, s, iv("@path")); Ok(if p == NIL { NIL } else { c.str_dup(p) }) }
 fn d_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let p = ivar_get(c, s, iv("@path"));
     let k = class_path(c, real_class_of(c, s));
-    let s = if p == NIL { format!("#<{}: uninitialized>", k) } else { format!("#<{}:{}>", k, String::from_utf8_lossy(c.str_bytes(p))) };
+    let s = if p != NIL { format!("#<{}:{}>", k, String::from_utf8_lossy(c.str_bytes(p))) }
+        else if ivar_get(c, s, iv("@ents")) == NIL { format!("#<{}: uninitialized>", k) } else { crate::builtins::kernel::any_to_s_str(c, s) };
     Ok(c.str_new(s.as_bytes()))
 }
-fn d_chdir(c: &mut Ctx, s: Value, _a: &[Value], blk: Blk) -> RV { d_check(c, s)?; let p = ivar_get(c, s, iv("@path")); d_s_chdir(c, s, &[p], blk) }
+/// Dir.fchdir(fd) [{ }]: a block runs there and returns to the directory it came from (by descriptor).
+fn d_s_fchdir(c: &mut Ctx, _s: Value, a: &[Value], blk: Blk) -> RV {
+    let fd = num_to_long(c, a[0])? as i32;
+    if blk.is_null() {
+        if sys::fchdir(fd) < 0 { return Err(crate::builtins::exception::raise_errno_plain(c, sys::errno(), "fchdir")); }
+        return Ok(Value::fix(0));
+    }
+    let save = sys::open(c".", sys::O_RDONLY | sys::O_CLOEXEC | 0o200000, 0);
+    if save < 0 { return Err(last_err_at(c, "", b".")); }
+    if sys::fchdir(fd) < 0 { let e = sys::errno(); sys::close(save); return Err(crate::builtins::exception::raise_errno_plain(c, e, "fchdir")); }
+    CHDIR_DEPTH.fetch_add(1, Relaxed);
+    let r = yield_block(c, blk, &[]);
+    CHDIR_DEPTH.fetch_sub(1, Relaxed);
+    let back = sys::fchdir(save);
+    let e = sys::errno();
+    sys::close(save);
+    if r.is_err() { return r; }
+    if back < 0 { return Err(crate::builtins::exception::raise_errno_plain(c, e, "fchdir")); }
+    r
+}
+fn d_chdir(c: &mut Ctx, s: Value, _a: &[Value], blk: Blk) -> RV {
+    let fd = d_fileno(c, s, &[], Blk::NONE)?;
+    let r = d_s_fchdir(c, s, &[fd], blk)?;
+    Ok(if blk.is_null() { Value::fix(0) } else { r })
+}
 fn d_s_open(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     let d = crate::builtins::object::c_new(c, slf, a, Blk::NONE)?;
     if blk.is_null() { return Ok(d); }
     let r = yield1(c, blk, d);
-    ivar_set_raw(c, d, iv("@closed"), TRUE);
+    let (ek, ev) = (c.esc, c.esc_val);
+    let cl = d_close(c, d, &[], Blk::NONE);
+    if r.is_err() { c.esc = ek; c.esc_val = ev; return r; }
+    cl?;
     r
 }
 
@@ -889,10 +1117,10 @@ pub fn init(c: &mut Ctx) {
     dd(c, "pwd", d_s_pwd, 0); dd(c, "getwd", d_s_pwd, 0); dd(c, "glob", d_s_glob, -1); dd(c, "[]", d_s_aref, -1); dd(c, "exist?", d_s_exist, 1); dd(c, "mkdir", d_s_mkdir, -1);
     dd(c, "rmdir", d_s_rmdir, 1); dd(c, "delete", d_s_rmdir, 1); dd(c, "unlink", d_s_rmdir, 1); dd(c, "entries", d_s_entries, -1); dd(c, "children", d_s_children, -1);
     dd(c, "each_child", d_s_each_child, -1); dd(c, "foreach", d_s_foreach, -1); dd(c, "empty?", d_s_empty, 1); dd(c, "home", d_s_home, -1); dd(c, "chdir", d_s_chdir, -1);
-    dd(c, "open", d_s_open, -1);
+    dd(c, "open", d_s_open, -1); dd(c, "for_fd", d_s_for_fd, 1); dd(c, "fchdir", d_s_fchdir, 1); dd(c, "chroot", d_s_chroot, 1);
     let dm = |c: &mut Ctx, n: &str, fun: CFunc, a: i32| define_cfunc(c, dir, n, fun, a);
     define_private_cfunc(c, dir, "initialize", d_initialize, -1);
     dm(c, "read", d_read, 0); dm(c, "each", d_each, 0); dm(c, "children", d_children, 0); dm(c, "each_child", d_each_child, 0); dm(c, "rewind", d_rewind, 0);
     dm(c, "tell", d_tell, 0); dm(c, "pos", d_tell, 0); dm(c, "seek", d_seek, 1); dm(c, "pos=", d_set_pos, 1); dm(c, "close", d_close, 0); dm(c, "path", d_path, 0);
-    dm(c, "to_path", d_path, 0); dm(c, "inspect", d_inspect, 0); dm(c, "chdir", d_chdir, 0);
+    dm(c, "to_path", d_path, 0); dm(c, "inspect", d_inspect, 0); dm(c, "chdir", d_chdir, 0); dm(c, "fileno", d_fileno, 0);
 }

@@ -497,6 +497,17 @@ pub fn find_enc(name: &[u8]) -> Option<u8> {
 }
 pub fn default_external() -> u8 { DEFAULT_EXTERNAL.load(Relaxed) }
 pub fn default_internal() -> Option<u8> { let d = DEFAULT_INTERNAL.load(Relaxed); if d < 0 { None } else { Some(d as u8) } }
+/// rb_external_str_new_with_enc: bytes in `enc`, converted to default_internal when one is set
+/// (kept in `enc` when that conversion fails).
+pub fn external_str(c: &mut Ctx, b: Vec<u8>, enc: u8) -> Value {
+    if let Some(i) = default_internal() {
+        if i != enc && enc != ENC_BINARY && ascii_compat(enc) {
+            if crate::string::is_ascii(&b) && ascii_compat(i) { return c.str_from_vec_enc(b, i); }
+            if let Some(o) = crate::builtins::econv::convert_string(enc_name(enc), enc_name(i), &b) { return c.str_from_vec_enc(o, i); }
+        }
+    }
+    c.str_from_vec_enc(b, enc)
+}
 
 pub fn encoding_value(c: &Ctx, id: u8) -> Value { c.vm().enc_objs.borrow()[id as usize] }
 pub fn is_encoding(c: &Ctx, v: Value) -> bool { c.data::<REnc>(v).is_some() }
