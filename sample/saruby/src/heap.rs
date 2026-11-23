@@ -6,8 +6,7 @@
 //   H2  one `Ctx` runs at a time, and every payload reference is a borrow of it:
 //       `&Ctx` reads, `&mut Ctx` writes, allocates, collects and runs Ruby code;
 //   H3  the header (klass, flags, body kind) is read and written by value, never borrowed.
-// The accessors of object.rs (`rary`, `obj`, ...) break H2; a converted module cannot name them
-// (`no_legacy`).
+// The old object.rs accessors that broke H2 are gone; `no_legacy` keeps them from coming back.
 use crate::object::*;
 use crate::value::*;
 use crate::vm::{Block, BlockKind, Cref, Ctx, Frame, Iseq, MethodEntry, Params, Vm};
