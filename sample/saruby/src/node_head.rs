@@ -560,6 +560,12 @@ pub struct node_trace_struct {
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
+pub struct node_poll_struct {
+    pub body: NodePtr,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
 pub struct node_cov_struct {
     pub id: u32,
     pub body: NodePtr,
@@ -1282,6 +1288,11 @@ pub fn ALLOC_node_trace(ev: u32, line: u32, body: NodePtr) -> NodePtr {
 }
 
 #[allow(non_snake_case)]
+pub fn ALLOC_node_poll(line: u32, body: NodePtr) -> NodePtr {
+    node_allocate_with(&KIND_node_poll, node_poll_struct { body }, |h| { h.line = line; })
+}
+
+#[allow(non_snake_case)]
 pub fn ALLOC_node_cov(id: u32, body: NodePtr) -> NodePtr {
     node_allocate_with(&KIND_node_cov, node_cov_struct { id, body }, |_| { })
 }
@@ -1846,6 +1857,12 @@ fn CHILDREN_node_line(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_trace(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = node_u_mut::<node_trace_struct>(n);
+    f(&mut u.body);
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_poll(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = node_u_mut::<node_poll_struct>(n);
     f(&mut u.body);
 }
 
@@ -2929,6 +2946,22 @@ pub static KIND_node_trace: NodeKind = NodeKind {
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_trace_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_trace_struct>>() <= 8);
 impl NodeStruct for node_trace_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_trace } }
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_poll: NodeKind = NodeKind {
+    name: "node_poll",
+    default_dispatcher: DISPATCH_node_poll,
+    hash_func: HASH_node_poll,
+    profile: PROF_node_poll,
+    specializer: SPECIALIZE_node_poll,
+    dumper: DUMP_node_poll,
+    replacer: REPLACE_node_poll,
+    no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_poll_struct>>(),
+    children: CHILDREN_node_poll,
+};
+const _: () = assert!(std::mem::size_of::<NodeOf<node_poll_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_poll_struct>>() <= 8);
+impl NodeStruct for node_poll_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_poll } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_cov: NodeKind = NodeKind {

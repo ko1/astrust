@@ -330,6 +330,14 @@ pub fn DISPATCH_node_trace(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
 }
 
 #[allow(non_snake_case, unused_variables)]
+pub fn DISPATCH_node_poll(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_poll");
+    let u = node_u::<node_poll_struct>(n);
+
+    EVAL_node_poll::<crate::vm::LineAt, Dyn>(c, n, fp, crate::vm::LineAt(&(*node_head_line(n))), u.body)
+}
+
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_cov(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_cov");
     let u = node_u::<node_cov_struct>(n);

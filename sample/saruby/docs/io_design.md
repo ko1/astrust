@@ -142,12 +142,64 @@ contract is a `Send + 'static` bound on the closure — `Ctx` and heap borrows a
 compiler checks what koruby needs a CodeQL rule for. The back-off emulations above are its
 placeholders.
 
+## Time slice (preemption)
+
+CRuby gives each thread a 100 ms quantum: its timer thread sets `ec->interrupt_flag`, and the VM
+checks it (`RUBY_VM_CHECK_INTS`) at backward jumps, method returns and a few other places. saruby does
+the same with two pieces (`~/ruby/src/trials/2026-11-23-saruby-timeslice/`):
+
+**The flag is the top bit of the method serial** (`vm.rs` `METHOD_SERIAL`, `ints_pending` /
+`set_ints` / `clear_ints`). Every call site's cache test already loads that static and compares it with
+the serial its cache was filled at (`spec_hit`, `site_hit`, `bi_hit`, `call_cached`); with the bit set
+every compare misses, so a call site is a check point at no cost: the miss path (`call_slow`,
+`iter_refill`) polls first, clears the bit and re-runs the call, whose cache is still valid. A cache filled
+while the bit is set holds the same method state (it misses once after the clear). This is CRuby's
+flag in a word the hot paths read anyway; a separate flag (an atomic in the static, reached through the
+GOT from libsaruby.so and the baked code) costs 2-4 instructions per test, which is +1-9 % on loop
+benchmarks (measured, the trial's `results/v1-while-backedge-asm.txt`).
+
+**Check points**: call sites (method calls and recursion: fib, `Thread.list` in a loop, `m.synchronize`);
+`Kernel#loop` per step (CRuby's `while true; yield; end`); and `node_poll`, a node the compiler wraps
+around the body of a `while` / `until` that may spin on another thread's state. A loop whose condition
+reads only locals (and literals, constants, operators) that its body assigns ends or not by itself, and
+a loop whose condition always makes a call polls there: those get no node (`compile.rs`
+`loop_needs_no_poll`), so counting loops cost nothing. `node_poll` is one load and branch in baked code;
+before polling it stores the loop condition's line (a hole), so an interrupt raised there is at the loop's line,
+as at CRuby's backward jump.
+
+**The timer** (`thread.rs`): an OS thread (`std::thread`, signals blocked) that, while other threads
+exist and the interpreter is not idle in the blocking pump, sleeps 10 ms, counts a tick and sets the bit.
+It touches only atomics, so no `unsafe` and no shared heap state. Idle for 100 ms it parks (no wake-ups
+while the program waits); `timer_run(true)` unparks it. After fork the child has no timer thread: the
+next `timer_run` sees another pid and spawns one.
+
+**poll** (`thread::poll`): clear the bit; if the current thread's quantum is used up (100 ms, `<< priority`
+or `>> -priority` as CRuby's `rb_threadptr_execute_interrupts`, counted in ticks since the thread was
+switched in) give the others a turn, as `Thread.pass` (the main thread pumps the engine and runs a pass;
+another thread switches out to the main thread); run trap handlers (main thread only: another thread
+yields to it when a signal is pending); then deliver the current thread's first interrupt the masks let
+through at a non-blocking point. `on_signal` sets the bit too (one atomic RMW), so a trap handler or
+Timeout (SIGALRM) now interrupts a busy loop even without threads.
+
+**Interrupt queue and Thread.handle_interrupt**: Thread#raise / #kill queue into `RThread.pending`
+(kill as the Integer 0, CRuby's `RUBY_FATAL_THREAD_KILLED`, so `Object => :never` holds it back and
+`Exception => :never` does not). `RThread.masks` is the handle_interrupt stack (a Symbol for
+`Exception => sym`, else `[mod, sym, ...]`); the timing of a queued item is the innermost mask naming an
+ancestor of its class (`rb_threadptr_pending_interrupt_check_mask`). Blocking calls (`thread::wait`)
+deliver `:immediate` and `:on_blocking` ones, check points and `Thread.pass` only `:immediate` ones;
+a parked thread is woken only for an interrupt it would take. Kernel#puts / #print and IO#write / #puts /
+#print are blocking calls too (CRuby's blocking region around the write): `thread::blocking_point` delivers
+`:on_blocking` ones before writing, one load of the count of queued interrupts when there is none (`p` is not
+a point: CRuby runs it uninterruptible). handle_interrupt delivers what the new
+mask lets through before the block and what it held back after it (replacing the block's result or
+exception, as CRuby). `Thread.pending_interrupt?(klass)`, `Thread#pending_interrupt?`.
+`Thread#priority` is kept per thread (inherited, clamped to -3..3) and scales the quantum.
+
 ## Limits
 
-1. No preemption (unchanged): a thread that never blocks (`loop { m.synchronize {} }`, a busy
-   `while` in the main thread) starves the others. rubyspec core/mutex/lock and core/thread/list
-   still time out on exactly this; it needs a time-slice check at loop back-edges / method entry
-   (koruby's timer thread + `korb_loop_wants_yield`), which is a node.def change left for later.
+1. Preemption is at check points only (below, "Time slice"): a loop over locals its body assigns
+   (`while i < n; ...; i += 1; end` without calls) and a builtin iterator over a block without calls
+   (`10**8.times { x += 1 }`) run to their end before another thread gets a turn.
 2. Regular-file disk waits block the interpreter (poll / epoll); io_uring would fix it.
 3. `IO.select` on a fd another thread closes raises IOError here; CRuby 4.0.2 hangs in that case.
 4. Readiness writes are ≤ 4096 bytes per wake-up (a socket's POLLOUT promises less than a pipe's).

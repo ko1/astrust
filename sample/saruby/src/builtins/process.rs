@@ -90,7 +90,7 @@ const SIGNALS: &[(&str, i32)] = &[("EXIT", 0), ("HUP", 1), ("INT", 2), ("QUIT", 
 pub fn signame(n: i32) -> Option<&'static str> { SIGNALS.iter().find(|s| s.1 == n).map(|s| s.0) }
 static PENDING: AtomicU64 = AtomicU64::new(0);
 static HANDLERS: Global = Global::new(); // Array indexed by signo: nil (default) / String / Proc
-extern "C" fn on_signal(sig: i32) { PENDING.fetch_or(1 << sig, Ordering::SeqCst); crate::builtins::blop::signal_wake(); }
+extern "C" fn on_signal(sig: i32) { PENDING.fetch_or(1 << sig, Ordering::SeqCst); crate::vm::set_ints(); crate::builtins::blop::signal_wake(); }
 
 pub fn signo_arg(c: &mut Ctx, v: Value) -> Result<i32, Esc> {
     if v.is_fixnum() { let n = v.as_fix(); if !(0..65).contains(&n) { return arg_err(c, format!("invalid signal number ({})", n)); } return Ok(n as i32); }

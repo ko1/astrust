@@ -773,6 +773,7 @@ impl<'a> Compiler<'a> {
                 let body = self.stmts_flat(statements.as_deref(), n.loc.start >= predicate.loc.start);
                 self.cur().loop_depth -= 1;
                 let body = self.btarget(bb, "body", |c| match statements { Some(s) => c.ploc(s), None => c.ploc(n) }, body);
+                let body = if loop_needs_no_poll(cnd, body) { body } else { ALLOC_node_poll(self.line(predicate.loc), body) };
                 if n.flags & pa::LOOP_FLAGS_BEGIN_MODIFIER != 0 { ALLOC_node_dowhile(cnd, body, until) } else { ALLOC_node_while(cnd, body, until) }
             }
             Kind::ForNode { index, collection, statements } => self.for_loop(n, index, collection, statements.as_deref(), line),
@@ -2166,6 +2167,25 @@ fn nocall_body(body: NodePtr) -> bool {
     d.split(|ch: char| !(ch.is_alphanumeric() || ch == '_')).filter(|w| w.starts_with("node_"))
         .all(|w| w.starts_with("node_opt_") || matches!(w, "node_nil" | "node_true" | "node_false" | "node_self" | "node_lit" | "node_lvar"
             | "node_lasgn" | "node_ivar" | "node_iasgn" | "node_block" | "node_line" | "node_if" | "node_and" | "node_or"))
+}
+
+/// A loop whose condition reads only variables, literals, constants and operators, one of the variables
+/// a local its body assigns (a counter), ends or not by itself: it needs no time-slice check point
+/// (node_poll).  A spin on another thread's state does, unless its condition always calls.
+fn loop_needs_no_poll(cond: NodePtr, body: NodePtr) -> bool {
+    let mut dc = String::new();
+    dump_node(&mut dc, cond);
+    let ok = dc.split(|ch: char| !(ch.is_alphanumeric() || ch == '_')).filter(|w| w.starts_with("node_"))
+        .all(|w| w.starts_with("node_opt_") || matches!(w, "node_lvar" | "node_dvar" | "node_lit" | "node_const" | "node_true" | "node_false" | "node_nil" | "node_and" | "node_or" | "node_not" | "node_line"));
+    if ok {
+        let mut db = String::new();
+        dump_node(&mut db, body);
+        // "(node_lvar 3)" is written as "(node_lasgn 3 ...", "(node_dvar 1 2)" as "(node_dasgn 1 2 ..."
+        let assigned = |kind: &str, set: &str| dc.split(kind).skip(1).filter_map(|r| r.split(')').next()).any(|v| db.contains(&format!("{}{} ", set, v)));
+        return assigned("(node_lvar ", "(node_lasgn ") || assigned("(node_dvar ", "(node_dasgn ");
+    }
+    // a call site the condition always runs is a check point already (call_slow)
+    dc.contains("(node_call ") && !["(node_and ", "(node_or ", "(node_if "].iter().any(|w| dc.contains(w))
 }
 
 /// Statements that can raise without passing through a node that records the line.

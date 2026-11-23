@@ -438,6 +438,7 @@ fn read_all(io: &mut RIo) -> Vec<u8> {
 fn enc_of(io: &RIo) -> u8 { io.enc.unwrap_or_else(crate::builtins::encoding::default_external) }
 
 fn io_write(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+    crate::builtins::thread::blocking_point(c)?;
     if a.len() > 1 && !rio(c, slf).is_some_and(wconv) {
         let mut out = vec![];
         for &x in a { let sv = crate::rt::srb_tostr(c, x)?; out.extend_from_slice(c.str_bytes(sv)); }
@@ -531,6 +532,7 @@ pub fn print_dyn(c: &mut Ctx, io: Value, a: &[Value]) -> Result<(), Esc> {
 fn print_fs_warn(c: &mut Ctx) -> Result<(), Esc> { crate::builtins::kernel::warn_deprecated(c, "$, is set to non-nil value") }
 
 fn io_puts(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+    crate::builtins::thread::blocking_point(c)?;
     if out_redef() && dyn_write_slow(c, slf) { puts_dyn(c, slf, a)?; return Ok(NIL); }
     if rio(c, slf).is_some_and(wconv) {
         // each line and its newline are converted on their own (rb_io_puts -> rb_io_writev)
@@ -558,6 +560,7 @@ fn puts_conv(c: &mut Ctx, slf: Value, x: Value) -> Result<(), Esc> {
 /// $, or $\ has been set non-nil (IO#print looks them up only then)
 pub static OUTPUT_SEPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub fn io_print(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+    crate::builtins::thread::blocking_point(c)?;
     let (fs, ors) = if OUTPUT_SEPS.load(std::sync::atomic::Ordering::Relaxed) { (global_get("$,"), global_get("$\\")) } else { (NIL, NIL) };
     let last;
     let a = if a.is_empty() { last = [crate::builtins::svar::last_line(c)]; &last[..] } else { a };

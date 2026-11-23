@@ -151,6 +151,15 @@ static METHOD_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 #[inline(always)]
 pub fn method_serial() -> u64 { METHOD_SERIAL.load(std::sync::atomic::Ordering::Relaxed) }
 pub fn bump_method_serial() { METHOD_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+// The serial's top bit is the pending-interrupt flag (CRuby's ec->interrupt_flag): set by the timer
+// thread, a signal or handle_interrupt, it makes every cache compare miss, and the miss paths poll
+// (thread::poll).  A cache filled while it is set holds the same method state, so stays valid.
+const INT_BIT: u64 = 1 << 63;
+#[inline(always)]
+pub fn ints_pending() -> bool { (method_serial() as i64) < 0 }
+/// Async-signal-safe (one atomic RMW).
+pub fn set_ints() { METHOD_SERIAL.fetch_or(INT_BIT, std::sync::atomic::Ordering::Relaxed); }
+pub fn clear_ints() { METHOD_SERIAL.fetch_and(!INT_BIT, std::sync::atomic::Ordering::Relaxed); }
 
 // ---- tracing (TracePoint, set_trace_func; builtins/tracepoint.rs) --------------------------------
 // Event bits as CRuby's RUBY_EVENT_*.  The mask is the union of the enabled hooks' events; it is
@@ -1641,6 +1650,8 @@ pub fn call_slow(c: &mut Ctx, cc: &CallCache, mid: Sym, base: Stk, argc: u32, bl
         let klass = class_of(recv);
         let serial = method_serial();
         let e: &CallCache = if cc.klass.get() == 0 || cc.serial.get() != serial {
+            // a call is a check point: the interrupt bit made the compare miss
+            if (serial as i64) < 0 { return call_polled(c, cc, mid, base, argc, blk, flags); }
             if let Some(t) = cc.poly.get() { for w in t.iter() { w.klass.set(0); } }
             let me = lookup_site(c, klass, mid);
             fill_cc(c, cc, recv, klass, me, serial, flags);
@@ -1676,6 +1687,14 @@ pub fn call_slow(c: &mut Ctx, cc: &CallCache, mid: Sym, base: Stk, argc: u32, bl
     let r = invoke_impl(c, me, recv, base, argc, blk, flags);
     c.set_sp(base, 0);
     r
+}
+
+/// call_slow saw the interrupt bit: poll, then the call again (its cache is still valid).
+#[cold]
+#[inline(never)]
+fn call_polled(c: &mut Ctx, cc: &CallCache, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
+    if let Err(e) = crate::builtins::thread::poll(c) { c.set_sp(base, 0); return Err(e); }
+    call_cached(c, cc, mid, base, argc, blk, flags)
 }
 
 /// Method lookup for a call site: refinements active in the frame's cref come first.
