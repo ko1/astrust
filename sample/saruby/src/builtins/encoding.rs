@@ -544,13 +544,13 @@ pub fn check_compatible(c: &mut Ctx, a: Value, b: Value) -> Result<u8, Esc> {
 
 fn push_name(c: &mut Ctx, out: Value, name: &str) { let s = c.str_new_enc(name.as_bytes(), ENC_ASCII); c.ary_push(out, s); }
 fn id_of(c: &Ctx, v: Value) -> u8 { c.data::<REnc>(v).map(|e| e.id).unwrap_or(ENC_BINARY) }
-fn enc_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.str_new_enc(enc_name(id_of(c, slf)).as_bytes(), ENC_ASCII)) }
-fn enc_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn enc_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.str_new_enc(enc_name(id_of(c, slf)).as_bytes(), ENC_ASCII)) }
+fn enc_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let id = id_of(c, slf);
     let s = format!("#<Encoding:{}{}>", enc_name_msg(id), if is_dummy(id) { " (dummy)" } else { "" });
     Ok(c.str_new_enc(s.as_bytes(), ENC_ASCII))
 }
-fn enc_names(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn enc_names(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let id = id_of(c, slf);
     let d = &ENCS[id as usize];
     let out = c.ary_new();
@@ -562,9 +562,9 @@ fn enc_names(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     if id == default_external() && id != ENC_UTF8 { for a in ["locale", "external", "filesystem"] { push_name(c, out, a); } }
     Ok(out)
 }
-fn enc_dummy_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(is_dummy(id_of(c, slf)))) }
-fn enc_ascii_compat_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(ascii_compat(id_of(c, slf)))) }
-fn enc_s_find(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn enc_dummy_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(is_dummy(id_of(c, slf)))) }
+fn enc_ascii_compat_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(ascii_compat(id_of(c, slf)))) }
+fn enc_s_find(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     if c.data::<REnc>(a[0]).is_some() { return Ok(a[0]); }
     let s = expect_str(c, a[0])?;
     if c.str_bytes(s).eq_ignore_ascii_case(b"internal") { return Ok(match default_internal() { Some(e) => encoding_value(c, e), None => NIL }); }
@@ -572,12 +572,12 @@ fn enc_s_find(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(encoding_value(c, id))
 }
 fn list_order() -> Vec<u8> { let mut v: Vec<u8> = (0..NENC as u8).collect(); v.swap(0, 1); v }
-fn enc_s_list(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn enc_s_list(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     let out = c.ary_new();
     for i in list_order() { c.ary_push(out, encoding_value(c, i)); }
     Ok(out)
 }
-fn enc_s_name_list(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn enc_s_name_list(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     let out = c.ary_new();
     for i in list_order() {
         let d = &ENCS[i as usize];
@@ -587,7 +587,7 @@ fn enc_s_name_list(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV
     push_name(c, out, "internal");
     Ok(out)
 }
-fn enc_s_aliases(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn enc_s_aliases(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     let h = c.hash_new();
     for i in list_order() {
         let d = &ENCS[i as usize];
@@ -600,21 +600,21 @@ fn enc_s_aliases(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     }
     Ok(h)
 }
-fn enc_s_default_external(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(encoding_value(c, default_external())) }
-fn enc_s_default_internal(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(match default_internal() { Some(e) => encoding_value(c, e), None => NIL }) }
-fn enc_s_set_default_external(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn enc_s_default_external(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(encoding_value(c, default_external())) }
+fn enc_s_default_internal(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(match default_internal() { Some(e) => encoding_value(c, e), None => NIL }) }
+fn enc_s_set_default_external(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     if a[0] == NIL { return arg_err(c, "default external can not be nil"); }
     let e = to_enc(c, a[0])?;
     DEFAULT_EXTERNAL.store(e, Relaxed);
     Ok(a[0])
 }
-fn enc_s_set_default_internal(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn enc_s_set_default_internal(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     if a[0] == NIL { DEFAULT_INTERNAL.store(-1, Relaxed); return Ok(NIL); }
     let e = to_enc(c, a[0])?;
     DEFAULT_INTERNAL.store(e as i32, Relaxed);
     Ok(a[0])
 }
-fn enc_s_locale_charmap(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.str_new_enc(b"UTF-8", ENC_ASCII)) }
+fn enc_s_locale_charmap(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.str_new_enc(b"UTF-8", ENC_ASCII)) }
 /// Encoding of an object for compatible?: strings, symbols, regexps, encodings.
 fn obj_enc(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if is_string(v) { return Ok(Some(v)); }
@@ -623,7 +623,7 @@ fn obj_enc(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if crate::regexp::is_regexp(c, v) { let s = funcall(c, v, intern(b"source"), &[], std::ptr::null())?; return Ok(Some(s)); }
     Ok(None)
 }
-fn enc_s_compatible_p(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn enc_s_compatible_p(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (Some(x), Some(y)) = (obj_enc(c, a[0])?, obj_enc(c, a[1])?) else { return Ok(NIL) };
     // Encoding objects behave as empty strings that still need ASCII compatibility.
     if c.data::<REnc>(a[0]).is_some() || c.data::<REnc>(a[1]).is_some() {
@@ -636,8 +636,8 @@ fn enc_s_compatible_p(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> 
     }
     Ok(match compatible(c, x, y) { Some(e) => encoding_value(c, e), None => NIL })
 }
-fn enc_dump(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.str_new(enc_name(id_of(c, slf)).as_bytes())) }
-fn enc_s_load(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let e = to_enc(c, a[0])?; Ok(encoding_value(c, e)) }
+fn enc_dump(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.str_new(enc_name(id_of(c, slf)).as_bytes())) }
+fn enc_s_load(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let e = to_enc(c, a[0])?; Ok(encoding_value(c, e)) }
 
 /// Constant names for an encoding name (CRuby's set_encoding_const).
 fn const_names(n: &str) -> Vec<String> {

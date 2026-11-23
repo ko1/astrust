@@ -14,11 +14,11 @@ use crate::vm::*;
 
 macro_rules! cfn { ($(#[$m:meta])* $name:ident, |$c:ident, $s:ident, $a:ident, $b:ident| $body:expr) => {
     $(#[$m])* #[allow(unused_variables)]
-    pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], $b: *const Block) -> RV { $body }
+    pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], $b: Blk) -> RV { $body }
 }; }
 
 fn modify(c: &mut Ctx, h: Value) -> Result<(), Esc> { if obj_flags(h) & FL_FROZEN != 0 { return Err(raise_frozen(c, h)); } Ok(()) }
-fn enum_or<F: FnOnce(&mut Ctx) -> RV>(c: &mut Ctx, slf: Value, mid: &str, a: &[Value], blk: *const Block, f: F) -> RV {
+fn enum_or<F: FnOnce(&mut Ctx) -> RV>(c: &mut Ctx, slf: Value, mid: &str, a: &[Value], blk: Blk, f: F) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for_sized(c, slf, intern(mid.as_bytes()), a); }
     f(c)
 }
@@ -44,12 +44,12 @@ fn copy_entries(c: &mut Ctx, dst: Value, src: Value, dup_keys: bool) -> Result<(
     Ok(())
 }
 /// |k, v| blocks receive two args; |pair| receives [k, v]
-fn wants_two(c: &Ctx, blk: *const Block) -> bool {
+fn wants_two(c: &Ctx, blk: Blk) -> bool {
     matches!(c.block_params(blk), Some(p) if p.lead.len() + p.post.len() + p.opt.len() >= 2 || p.rest.is_some() && p.lead.len() >= 1)
 }
-fn yield_pair(c: &mut Ctx, blk: *const Block, k: Value, v: Value) -> RV { let two = wants_two(c, blk); yield_kv(c, blk, two, k, v) }
+fn yield_pair(c: &mut Ctx, blk: Blk, k: Value, v: Value) -> RV { let two = wants_two(c, blk); yield_kv(c, blk, two, k, v) }
 #[inline]
-fn yield_kv(c: &mut Ctx, blk: *const Block, two: bool, k: Value, v: Value) -> RV {
+fn yield_kv(c: &mut Ctx, blk: Blk, two: bool, k: Value, v: Value) -> RV {
     if two { return yield_block(c, blk, &[k, v]); }
     let p = c.ary_new_from(&[k, v]);
     yield_block(c, blk, &[p])
@@ -135,14 +135,14 @@ cfn!(h_each_with_index, |c, slf, a, blk| if crate::builtins::enum_native::each_o
 }) });
 cfn!(h_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(c, slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "map", a, blk) } else { enum_or(c, slf, "map", a, blk, |c| { let out = c.ary_new(); let two = wants_two(c, blk); each_entry(c, slf, |c, k, v| { let r = yield_kv(c, blk, two, k, v)?; c.ary_push(out, r); Ok(true) })?; Ok(out) }) });
 cfn!(h_flat_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(c, slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "flat_map", a, blk) } else { enum_or(c, slf, "flat_map", a, blk, |c| { let out = c.ary_new(); each_entry(c, slf, |c, k, v| { let r = yield_pair(c, blk, k, v)?; if is_array(r) { c.ary_concat(out, r); } else { c.ary_push(out, r); } Ok(true) })?; Ok(out) }) });
-fn sel(c: &mut Ctx, slf: Value, blk: *const Block, want: bool) -> RV {
+fn sel(c: &mut Ctx, slf: Value, blk: Blk, want: bool) -> RV {
     let out = c.hash_new();
     each_entry(c, slf, |c, k, v| { if yield_block(c, blk, &[k, v])?.truthy() == want { hash_set(c, out, k, v)?; } Ok(true) })?;
     Ok(out)
 }
 cfn!(h_select, |c, slf, a, blk| enum_or(c, slf, "select", a, blk, |c| sel(c, slf, blk, true)));
 cfn!(h_reject, |c, slf, a, blk| enum_or(c, slf, "reject", a, blk, |c| sel(c, slf, blk, false)));
-fn sel_b(c: &mut Ctx, slf: Value, blk: *const Block, want: bool) -> Result<bool, Esc> {
+fn sel_b(c: &mut Ctx, slf: Value, blk: Blk, want: bool) -> Result<bool, Esc> {
     modify(c, slf)?;
     let mut changed = false;
     let mut i = 0;
@@ -202,7 +202,7 @@ cfn!(h_to_h, |c, slf, a, blk| {
 cfn!(h_to_hash, |c, slf, a, blk| Ok(slf));
 pub fn hash_inspect(c: &mut Ctx, slf: Value) -> RV {
     if c.hash_len(slf) == 0 { return Ok(c.str_new(b"{}")); }
-    if !recursion_enter(slf, s::inspect) { return Ok(c.str_new(b"{...}")); }
+    if !rec_enter(c, slf, s::inspect)? { return Ok(c.str_new(b"{...}")); }
     let mut out = vec![b'{'];
     let mut first = true;
     let r = each_entry(c, slf, |c, k, v| {
@@ -222,7 +222,7 @@ pub fn hash_inspect(c: &mut Ctx, slf: Value) -> RV {
         out.extend_from_slice(c.str_bytes(vs));
         Ok(true)
     });
-    recursion_leave(slf, s::inspect);
+    rec_leave(c, slf, s::inspect);
     r?;
     out.push(b'}');
     Ok(c.str_from_vec(out))
@@ -235,7 +235,7 @@ fn hash_equal(c: &mut Ctx, slf: Value, o: Value, eql: bool) -> RV {
     if slf == o { return Ok(TRUE); }
     if !is_hash(o) { if o.is_heap() && respond_to(c, o, s::to_hash, true) { let r = funcall(c, o, s::eq, &[slf], std::ptr::null())?; return Ok(Value::bool(r.truthy())); } return Ok(FALSE); }
     if c.hash_len(slf) != c.hash_len(o) { return Ok(FALSE); }
-    if !recursion_enter(slf, s::eq) { return Ok(TRUE); }
+    if !rec_enter(c, slf, s::eq)? { return Ok(TRUE); }
     let mut ok = true;
     let r = each_entry(c, slf, |c, k, v| {
         match hash_get_opt(c, o, k)? {
@@ -244,7 +244,7 @@ fn hash_equal(c: &mut Ctx, slf: Value, o: Value, eql: bool) -> RV {
         }
         Ok(true)
     });
-    recursion_leave(slf, s::eq);
+    rec_leave(c, slf, s::eq);
     r?;
     Ok(Value::bool(ok))
 }
@@ -401,7 +401,7 @@ cfn!(h_ge, |c, slf, a, blk| { if !is_hash(a[0]) { return type_err(c, "no implici
 cfn!(h_gt, |c, slf, a, blk| { if !is_hash(a[0]) { return type_err(c, "no implicit conversion into Hash"); } if c.hash_len(slf) <= c.hash_len(a[0]) { return Ok(FALSE); } h_lt_le(c, a[0], &[slf], blk) });
 cfn!(h_freeze, |c, slf, a, blk| { obj_set_flags(slf, FL_FROZEN); Ok(slf) });
 cfn!(h_to_proc, |c, slf, a, blk| {
-    let b = Block::cfunc(c, |c, d, args, _b| { if args.is_empty() { return argc_err(c, 0, 1, 1); } hash_aref(c, d, args[0]) }, slf);
+    let b = Block::cfunc(c, |c, d, args, _b, _o| { if args.is_empty() { return argc_err(c, 0, 1, 1); } hash_aref(c, d, args[0]) }, slf);
     let k = c.vm().c_proc.get();
     let p = c.alloc(k, Body::Proc(Box::new(ProcData { blk: b, is_lambda: true, from_method: NIL })));
     c.proc_data_mut(p).blk.proc_val = p;

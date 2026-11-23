@@ -29,7 +29,7 @@ fn node_value(c: &mut Ctx, n: &GNode, consts: &[Vec<u8>]) -> RV {
 }
 
 /// ErrorHighlight.__find(path, node_id): [source, line offsets, node] or nil (no such file or node)
-fn eh_find(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn eh_find(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let p = crate::string::expect_str(c, a[0])?;
     let path = c.str_bytes(p).to_vec();
     if !a[1].is_fixnum() { return Ok(NIL); }
@@ -45,7 +45,7 @@ fn eh_find(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
 }
 
 /// ErrorHighlight.__node_id(location): its prism node id (RubyVM::AbstractSyntaxTree.node_id_for_backtrace_location), or nil
-fn eh_node_id(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn eh_node_id(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     if !a[0].is_heap() { return Ok(NIL); }
     let n = ivar_get(c, a[0], intern(b"__nid"));
     Ok(if n.is_fixnum() && n.as_fix() > 0 { n } else { NIL })
@@ -83,7 +83,7 @@ fn load(c: &mut Ctx) -> Result<bool, Esc> {
 
 /// CoreExt#detailed_message before the library is loaded: its CoreExt#detailed_message, bound to this exception
 /// (its super is then what is behind CoreExt, as for this call).
-fn stub_detailed_message(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn stub_detailed_message(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if !load(c)? { return crate::builtins::exception::exc_detailed_message(c, slf, a, b); }
     let m = c.vm().c_object.get();
     let Some(m) = const_get_inherit(c, m, intern(b"ErrorHighlight"))? else { return crate::builtins::exception::exc_detailed_message(c, slf, a, b) };
@@ -92,7 +92,7 @@ fn stub_detailed_message(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) 
 }
 
 /// ErrorHighlight.spot / .formatter / .formatter= before the library is loaded: the library's, which replaced this.
-fn stub_call(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block, name: &[u8]) -> RV {
+fn stub_call(c: &mut Ctx, slf: Value, a: &[Value], b: Blk, name: &[u8]) -> RV {
     if !load(c)? { return Ok(NIL); }
     match kw_arg(a) {
         Some(_) => funcall_kw(c, slf, intern(name), a, b, true),

@@ -87,7 +87,31 @@ impl Iseq {
 
 // ---- blocks ---------------------------------------------------------------------------
 
-pub type CBlockFn = fn(&mut Ctx, Value, &[Value], *const Block) -> RV;
+/// (data, args, the block passed to this block, `outer`: the block this one was made for, or null).
+/// A builtin reaches its caller's block only through `outer`: capturing the Cfunc block promotes it with it.
+pub type CBlockFn = for<'a> fn(&mut Ctx, Value, &[Value], Blk<'a>, Blk<'a>) -> RV;
+
+/// The block a builtin was given (H4 as a type): valid for the call `'a` only, so the compiler rejects
+/// keeping it in anything that outlives the call, and it has no conversion to an integer. To keep a
+/// block, make it a Proc (`block_to_proc`), which copies it to the heap with its outer blocks.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct Blk<'a>(*const Block, std::marker::PhantomData<&'a Block>);
+impl<'a> Blk<'a> {
+    pub const NONE: Blk<'static> = Blk(std::ptr::null(), std::marker::PhantomData);
+    #[inline(always)] pub fn is_null(self) -> bool { self.0.is_null() }
+    #[inline(always)] pub fn of(b: &'a Block) -> Blk<'a> { Blk(b, std::marker::PhantomData) }
+}
+/// The VM's side of H4: a frame's or a call's block pointer, alive while the callee runs.
+/// heap_audit.rb keeps it out of builtins (a builtin must not turn an address into a block).
+#[inline(always)]
+pub(crate) fn vm_blk<'a>(p: *const Block) -> Blk<'a> { Blk(p, std::marker::PhantomData) }
+
+/// What the block-taking VM entry points accept: a builtin's `Blk`, or the VM's own pointer.
+pub trait BlkArg: Copy { fn ptr(self) -> *const Block; }
+impl BlkArg for *const Block { #[inline(always)] fn ptr(self) -> *const Block { self } }
+impl BlkArg for Blk<'_> { #[inline(always)] fn ptr(self) -> *const Block { self.0 } }
+impl BlkArg for &Block { #[inline(always)] fn ptr(self) -> *const Block { self } }
 
 #[derive(Clone, Copy)]
 pub enum BlockKind { Iseq(*const Iseq), Sym(Sym), Method(Value), Cfunc(CBlockFn, Value), Proc(Value) }
@@ -112,11 +136,17 @@ impl Block {
         Block { kind: BlockKind::Cfunc(f, data), self_: NIL, env: NIL, me: std::ptr::null(), outer_blk: std::ptr::null(),
                 cref: std::ptr::null(), home_id: 0, tag, proc_val: UNDEF, defined_class: NIL }
     }
+    /// A Cfunc block that runs `outer` (the builtin's own block): `f` gets it as its last argument.
+    pub fn cfunc_for(c: &mut Ctx, f: CBlockFn, data: Value, outer: impl BlkArg) -> Block {
+        let mut b = Block::cfunc(c, f, data);
+        b.outer_blk = outer.ptr();
+        b
+    }
 }
 
 // ---- methods ------------------------------------------------------------------------------
 
-pub type CFunc = fn(&mut Ctx, Value, &[Value], *const Block) -> RV;
+pub type CFunc = for<'a> fn(&mut Ctx, Value, &[Value], Blk<'a>) -> RV;
 
 pub const VISI_PUBLIC: u8 = 0;
 pub const VISI_PRIVATE: u8 = 1;
@@ -1383,11 +1413,15 @@ pub fn raise_stack_overflow(c: &mut Ctx) -> Esc {
 }
 
 /// Call a method from Rust.  args are copied into the VM stack.
-pub fn funcall(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const Block) -> RV {
+#[inline(always)]
+pub fn funcall(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: impl BlkArg) -> RV { funcall_raw(c, recv, mid, args, blk.ptr()) }
+pub fn funcall_raw(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const Block) -> RV {
     funcall_flags(c, recv, mid, args, blk, CF_FCALL)
 }
 
-pub fn funcall_flags(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const Block, flags: u32) -> RV {
+#[inline(always)]
+pub fn funcall_flags(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: impl BlkArg, flags: u32) -> RV { funcall_flags_raw(c, recv, mid, args, blk.ptr(), flags) }
+pub fn funcall_flags_raw(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const Block, flags: u32) -> RV {
     stack_check(c, args.len() + 2)?;   // native depth too: cfunc -> funcall recursion uses little VM stack
     let base = stage(c, 2 + args.len())?;
     base[0].set(recv);
@@ -1411,7 +1445,9 @@ pub fn funcall_flags(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *c
 }
 
 /// send / public_send from a scope with refinements: a refined method is called directly.
-pub fn funcall_refined(c: &mut Ctx, cref: *const Cref, recv: Value, mid: Sym, args: &[Value], blk: *const Block, flags: u32) -> Option<RV> {
+#[inline(always)]
+pub fn funcall_refined(c: &mut Ctx, cref: *const Cref, recv: Value, mid: Sym, args: &[Value], blk: impl BlkArg, flags: u32) -> Option<RV> { funcall_refined_raw(c, cref, recv, mid, args, blk.ptr(), flags) }
+pub fn funcall_refined_raw(c: &mut Ctx, cref: *const Cref, recv: Value, mid: Sym, args: &[Value], blk: *const Block, flags: u32) -> Option<RV> {
     // null: the current frame's scope (a cfunc frame carries its caller's cref)
     let cref = if cref.is_null() { unsafe { (*c.frame).cref() } } else { cref };
     let me = lookup_method_refined(c, cref, class_of(recv), mid);
@@ -1427,11 +1463,15 @@ pub fn funcall_refined(c: &mut Ctx, cref: *const Cref, recv: Value, mid: Sym, ar
 }
 
 /// Public call from Rust (respects visibility).
-pub fn funcall_public(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const Block) -> RV {
+#[inline(always)]
+pub fn funcall_public(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: impl BlkArg) -> RV { funcall_public_raw(c, recv, mid, args, blk.ptr()) }
+pub fn funcall_public_raw(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const Block) -> RV {
     funcall_flags(c, recv, mid, args, blk, 0)
 }
 
-pub fn funcall_kw(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const Block, kw: bool) -> RV {
+#[inline(always)]
+pub fn funcall_kw(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: impl BlkArg, kw: bool) -> RV { funcall_kw_raw(c, recv, mid, args, blk.ptr(), kw) }
+pub fn funcall_kw_raw(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], blk: *const Block, kw: bool) -> RV {
     funcall_flags(c, recv, mid, args, blk, CF_FCALL | if kw { CF_KW } else { 0 })
 }
 
@@ -1509,7 +1549,7 @@ fn cc_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32, blk: 
         let pf = c.frame;
         let mut fr = Frame::cfunc(pf, cc.me.get() as *const MethodEntry, blk);
         c.frame = &mut fr;
-        let r = with_args(base, argc as usize, |a| f(c, recv, a, blk));
+        let r = with_args(base, argc as usize, |a| f(c, recv, a, vm_blk(blk)));
         c.frame = pf;
         c.set_sp(base, 0);
         return Some(r);
@@ -1623,7 +1663,7 @@ pub fn site_fast(c: &mut Ctx, cc: &CallCache, recv: Value, base: Stk, argc: u32,
             let pf = c.frame;
             let mut fr = Frame::cfunc(pf, cc.me.get() as *const MethodEntry, blk);
             c.frame = &mut fr;
-            let r = with_args(base, argc as usize, |a| f(c, recv, a, blk));
+            let r = with_args(base, argc as usize, |a| f(c, recv, a, vm_blk(blk)));
             c.frame = pf;
             c.set_sp(base, 0);
             return Some(r);
@@ -1963,7 +2003,9 @@ pub fn make_env(c: &mut Ctx, is: &Iseq, base: Stk, parent: Value) {
 
 /// Call of an Iseq method with only required, slot-contiguous params.
 #[inline(always)]
-pub fn invoke_iseq_simple(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, recv: Value, base: Stk, argc: u32, blk: *const Block) -> RV {
+pub fn invoke_iseq_simple(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, recv: Value, base: Stk, argc: u32, blk: impl BlkArg) -> RV { invoke_iseq_simple_raw(c, me, is, recv, base, argc, blk.ptr()) }
+#[inline(always)]
+pub fn invoke_iseq_simple_raw(c: &mut Ctx, me: *const MethodEntry, is: &'static Iseq, recv: Value, base: Stk, argc: u32, blk: *const Block) -> RV {
     if is.plain_entry().is_null() { return invoke_iseq(c, me, is, recv, base, argc, blk, 0); }
     base[0].set(recv);
     c.call_me = me; c.call_blk = blk;
@@ -1987,7 +2029,9 @@ fn visibility_error(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk,
     Err(raise_exc(c, e))
 }
 
-pub fn method_missing(c: &mut Ctx, recv: Value, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
+#[inline(always)]
+pub fn method_missing(c: &mut Ctx, recv: Value, mid: Sym, base: Stk, argc: u32, blk: impl BlkArg, flags: u32) -> RV { method_missing_raw(c, recv, mid, base, argc, blk.ptr(), flags) }
+pub fn method_missing_raw(c: &mut Ctx, recv: Value, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     let klass = class_of(recv);
     let mm = lookup_method(c, klass, s::method_missing);
     if !mm.is_null() && unsafe { (*mm).owner } != vm().c_basic_object.get() {
@@ -2016,20 +2060,24 @@ pub fn no_method_error(c: &mut Ctx, recv: Value, mid: Sym, flags: u32) -> RV {
     Err(raise_exc(c, e))
 }
 
+#[inline(always)]
+pub fn invoke(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: impl BlkArg, flags: u32) -> RV { invoke_raw(c, me, recv, base, argc, blk.ptr(), flags) }
 #[inline]
-pub fn invoke(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
+pub fn invoke_raw(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     invoke_impl(c, me, recv, base, argc, blk, flags)
 }
 
 #[inline(always)]
 fn invoke_impl(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
-    if trace_mask() & EV_CALLS != 0 { return crate::builtins::tracepoint::invoke_traced(c, me, recv, base, argc, blk, flags); }
+    if trace_mask() & EV_CALLS != 0 { return crate::builtins::tracepoint::invoke_traced(c, me, recv, base, argc, vm_blk(blk), flags); }
     invoke_untraced(c, me, recv, base, argc, blk, flags)
 }
 
 /// invoke without the call events (tracepoint::invoke_traced reports them around this).
 #[inline(always)]
-pub fn invoke_untraced(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
+pub fn invoke_untraced(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: impl BlkArg, flags: u32) -> RV { invoke_untraced_raw(c, me, recv, base, argc, blk.ptr(), flags) }
+#[inline(always)]
+pub fn invoke_untraced_raw(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     let mer = unsafe { &*me };
     match mer.kind {
         MKind::Iseq(is) => invoke_iseq(c, me, unsafe { &*is }, recv, base, argc, blk, flags),
@@ -2070,7 +2118,7 @@ pub fn invoke_cfunc(c: &mut Ctx, me: *const MethodEntry, f: CFunc, arity: i32, r
     let pf = c.frame;
     let mut fr = Frame::cfunc(pf, me, blk);
     c.frame = &mut fr;
-    let r = with_args(base, argc as usize, |a| f(c, recv, a, blk));
+    let r = with_args(base, argc as usize, |a| f(c, recv, a, vm_blk(blk)));
     c.frame = pf;
     if flags & CF_KW != 0 && argc > 0 {
         let last = base[1 + argc as usize].get();
@@ -2328,7 +2376,9 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
 
 // ---- blocks and procs ------------------------------------------------------------------------
 
-pub fn block_to_proc(c: &mut Ctx, blk: *const Block) -> RV {
+#[inline(always)]
+pub fn block_to_proc(c: &mut Ctx, blk: impl BlkArg) -> RV { block_to_proc_raw(c, blk.ptr()) }
+pub fn block_to_proc_raw(c: &mut Ctx, blk: *const Block) -> RV {
     if blk.is_null() { return Ok(NIL); }
     let b = unsafe { &*blk };
     if b.proc_val != UNDEF { return Ok(b.proc_val); }
@@ -2348,7 +2398,9 @@ pub fn block_to_proc(c: &mut Ctx, blk: *const Block) -> RV {
 /// A Block view of a Proc value (for passing a proc as &blk).
 pub fn proc_block(c: &Ctx, p: Value) -> *const Block { &c.proc_data(p).blk }
 
-pub fn is_lambda_block(c: &Ctx, b: *const Block) -> bool {
+#[inline(always)]
+pub fn is_lambda_block(c: &Ctx, b: impl BlkArg) -> bool { is_lambda_block_raw(c, b.ptr()) }
+pub fn is_lambda_block_raw(c: &Ctx, b: *const Block) -> bool {
     let b = unsafe { &*b };
     if b.proc_val != UNDEF && is_proc(b.proc_val) { return c.proc_data(b.proc_val).is_lambda; }
     matches!(b.kind, BlockKind::Iseq(is) if unsafe { (*is).kind } == IseqKind::Lambda)
@@ -2356,8 +2408,10 @@ pub fn is_lambda_block(c: &Ctx, b: *const Block) -> bool {
 
 /// yield: run the block with args (copied to the VM stack).  One copy: its callers are in every codegen unit,
 /// and an #[inline] copy per unit made a builtin's instruction count depend on how cargo split them.
+#[inline(always)]
+pub fn yield_block(c: &mut Ctx, blk: impl BlkArg, args: &[Value]) -> RV { yield_block_raw(c, blk.ptr(), args) }
 #[inline(never)]
-pub fn yield_block(c: &mut Ctx, blk: *const Block, args: &[Value]) -> RV {
+pub fn yield_block_raw(c: &mut Ctx, blk: *const Block, args: &[Value]) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("yield: from a builtin (yield_block)");
     if blk.is_null() { return err(c, vm().c_local_jump_error.get(), "no block given (yield)"); }
     let b = unsafe { &*blk };
@@ -2397,8 +2451,10 @@ pub fn run_block_fast(c: &mut Ctx, b: &Block, is: &Iseq, base: Stk, argc: u32) -
 }
 
 /// One out-of-line copy of the one-argument fast path (not left to yield_block's inlining luck).
+#[inline(always)]
+pub fn yield1(c: &mut Ctx, blk: impl BlkArg, a: Value) -> RV { yield1_raw(c, blk.ptr(), a) }
 #[inline(never)]
-pub fn yield1(c: &mut Ctx, blk: *const Block, a: Value) -> RV {
+pub fn yield1_raw(c: &mut Ctx, blk: *const Block, a: Value) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("yield: from a builtin, 1 arg (yield1)");
     if !blk.is_null() {
         let b = unsafe { &*blk };
@@ -2414,7 +2470,9 @@ pub fn yield1(c: &mut Ctx, blk: *const Block, a: Value) -> RV {
     yield_block(c, blk, &[a])
 }
 
-pub fn yield_with_self(c: &mut Ctx, blk: *const Block, args: &[Value], self_: Value, defined_class: Value) -> RV {
+#[inline(always)]
+pub fn yield_with_self(c: &mut Ctx, blk: impl BlkArg, args: &[Value], self_: Value, defined_class: Value) -> RV { yield_with_self_raw(c, blk.ptr(), args, self_, defined_class) }
+pub fn yield_with_self_raw(c: &mut Ctx, blk: *const Block, args: &[Value], self_: Value, defined_class: Value) -> RV {
     let b = unsafe { &*blk };
     let mut b2 = *b;
     b2.self_ = self_;
@@ -2422,9 +2480,13 @@ pub fn yield_with_self(c: &mut Ctx, blk: *const Block, args: &[Value], self_: Va
     invoke_block_full(c, &b2, args, std::ptr::null(), self_, false, std::ptr::null(), false)
 }
 
-pub fn call_proc(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block) -> RV { call_proc_kw(c, p, args, blk, false) }
+#[inline(always)]
+pub fn call_proc(c: &mut Ctx, p: Value, args: &[Value], blk: impl BlkArg) -> RV { call_proc_raw(c, p, args, blk.ptr()) }
+pub fn call_proc_raw(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block) -> RV { call_proc_kw(c, p, args, blk, false) }
 
-pub fn call_proc_kw(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block, kw: bool) -> RV {
+#[inline(always)]
+pub fn call_proc_kw(c: &mut Ctx, p: Value, args: &[Value], blk: impl BlkArg, kw: bool) -> RV { call_proc_kw_raw(c, p, args, blk.ptr(), kw) }
+pub fn call_proc_kw_raw(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block, kw: bool) -> RV {
     let (b, p_lambda) = { let pd = c.proc_data(p); (pd.blk, pd.is_lambda) };
     // a `->` lambda called with its exact arity: its block entry (lambda frame, sizes baked)
     if let BlockKind::Iseq(is) = b.kind {
@@ -2443,7 +2505,9 @@ pub fn call_proc_kw(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block, kw
 }
 
 /// Run a block.  `lambda_call`: strict arity / own return target (lambda procs, bmethods).
-pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const Block, self_: Value, lambda_call: bool, bme: *const MethodEntry, kw: bool) -> RV {
+#[inline(always)]
+pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: impl BlkArg, self_: Value, lambda_call: bool, bme: *const MethodEntry, kw: bool) -> RV { invoke_block_full_raw(c, b, args, blkarg.ptr(), self_, lambda_call, bme, kw) }
+pub fn invoke_block_full_raw(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const Block, self_: Value, lambda_call: bool, bme: *const MethodEntry, kw: bool) -> RV {
     match b.kind {
         BlockKind::Iseq(is) => {
             let is = unsafe { &*is };
@@ -2474,7 +2538,7 @@ pub fn invoke_block_full(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *const 
             c.set_sp(base, 0);
             r
         }
-        BlockKind::Cfunc(f, data) => f(c, data, args, blkarg),
+        BlockKind::Cfunc(f, data) => f(c, data, args, vm_blk(blkarg), vm_blk(b.outer_blk)),
         BlockKind::Proc(p) => {
             let (inner, p_lambda) = { let pd = c.proc_data(p); (pd.blk, pd.is_lambda) };
             invoke_block_full(c, &inner, args, blkarg, if self_ == b.self_ { inner.self_ } else { self_ }, p_lambda || lambda_call, bme, kw)

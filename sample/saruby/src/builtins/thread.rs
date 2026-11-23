@@ -472,7 +472,7 @@ pub fn poll(c: &mut Ctx) -> Result<(), Esc> {
 
 /// Thread.handle_interrupt(hash) { }: push a mask; queued interrupts it lets through are delivered
 /// before the block, the ones it held back when it is popped (rb_thread_s_handle_interrupt).
-fn th_s_handle_interrupt(c: &mut Ctx, _s: Value, a: &[Value], b: *const Block) -> RV {
+fn th_s_handle_interrupt(c: &mut Ctx, _s: Value, a: &[Value], b: Blk) -> RV {
     check_argc(c, a, 1, 1)?;
     if b.is_null() { return arg_err(c, "block is needed."); }
     if !is_hash(a[0]) { return type_err(c, format!("no implicit conversion of {} into Hash", class_name_for_err(c, a[0]))); }
@@ -508,8 +508,8 @@ fn pending_interrupt_p(c: &mut Ctx, t: Value, a: &[Value]) -> RV {
     let es = c.ary(q).to_vec();
     Ok(Value::bool(es.into_iter().any(|e| is_kind_of(c, e, k))))
 }
-fn th_priority(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { thr(c, s)?; Ok(Value::fix(th(c, s).priority as i64)) }
-fn th_set_priority(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn th_priority(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { thr(c, s)?; Ok(Value::fix(th(c, s).priority as i64)) }
+fn th_set_priority(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     thr(c, s)?;
     let p = num_to_long(c, a[0])?.clamp(-3, 3) as i32;
     th_mut(c, s).priority = p;
@@ -719,7 +719,7 @@ fn inspect_thread(c: &Ctx, t: Value, status: &str) -> String {
     let loc = if r.loc.is_empty() { String::new() } else { format!(" {}", r.loc) };
     format!("#<{}:0x{:016x}{}{} {}>", class_path(c, real_class_of(c, t)), t.raw(), name, loc, status)
 }
-fn th_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn th_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if b.is_null() { return err(c, c.vm().c_thread_error.get(), "must be called with a block"); }
     let p = block_to_proc(c, b)?;
     let t = new_thread(c, slf);
@@ -751,7 +751,7 @@ pub fn spawn_ractor_thread(c: &mut Ctx, p: Value, ractor: Value) -> RV {
     timer_run(true);
     Ok(t)
 }
-fn th_join(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn th_join(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     thr(c, slf)?;
     if slf == cur(c) { return err(c, c.vm().c_thread_error.get(), "Target thread must not be current thread"); }
     if slf == MAIN.get(c) { return err(c, c.vm().c_thread_error.get(), "Target thread must not be main thread"); }
@@ -761,20 +761,20 @@ fn th_join(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if e != NIL { return Err(raise_exc(c, e)); }
     Ok(slf)
 }
-fn th_value(c: &mut Ctx, slf: Value, _a: &[Value], b: *const Block) -> RV { th_join(c, slf, &[], b)?; Ok(th(c, slf).value) }
-fn th_current(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(cur(c)) }
+fn th_value(c: &mut Ctx, slf: Value, _a: &[Value], b: Blk) -> RV { th_join(c, slf, &[], b)?; Ok(th(c, slf).value) }
+fn th_current(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(cur(c)) }
 /// Thread.main / Thread.list see the current Ractor's threads only.
-fn th_main(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn th_main(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     let r = current_ractor(c);
     Ok(if r == NIL { MAIN.get(c) } else { crate::builtins::ractor::main_thread(c, r) })
 }
-fn th_list(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn th_list(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     let r = current_ractor(c);
     let mut v = if r == NIL { vec![MAIN.get(c)] } else { vec![] };
     v.extend(c.ary(LIST.get(c)).iter().copied().filter(|&t| !th(c, t).dead && th(c, t).ractor == r));
     Ok(c.ary_from_vec(v))
 }
-fn th_pass(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn th_pass(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     let me = cur(c);
     if is_main(c) { run_pass(c)?; blop::pump(c, false); } else {
         check_interrupt_at(c, me, false)?;
@@ -785,8 +785,8 @@ fn th_pass(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(NIL)
 }
 /// Thread.pass
-pub fn pass(c: &mut Ctx) -> Result<(), Esc> { th_pass(c, NIL, &[], std::ptr::null()).map(|_| ()) }
-fn th_stop(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+pub fn pass(c: &mut Ctx) -> Result<(), Esc> { th_pass(c, NIL, &[], Blk::NONE).map(|_| ()) }
+fn th_stop(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     let me = cur(c);
     th_mut(c, me).wake = false;
     block_on(c, |c| Ok(std::mem::take(&mut th_mut(c, me).wake)), None, None, true)?;
@@ -819,10 +819,10 @@ fn kill_thread(c: &mut Ctx, t: Value) -> RV {
     enqueue_interrupt(c, t, kill_mark());
     Ok(t)
 }
-fn th_kill(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { kill_thread(c, slf) }
-fn th_s_kill(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { kill_thread(c, a[0]) }
-fn th_s_exit(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { let t = cur(c); kill_thread(c, t) }
-fn th_raise(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn th_kill(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { kill_thread(c, slf) }
+fn th_s_kill(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { kill_thread(c, a[0]) }
+fn th_s_exit(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { let t = cur(c); kill_thread(c, t) }
+fn th_raise(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     thr(c, slf)?;
     if th(c, slf).dead { return Ok(NIL); }
     let e = exception_setup(c, a)?;
@@ -830,24 +830,24 @@ fn th_raise(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     enqueue_interrupt(c, slf, e);
     Ok(NIL)
 }
-fn th_wakeup(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn th_wakeup(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     thr(c, slf)?;
     if th(c, slf).dead { return err(c, c.vm().c_thread_error.get(), "killed thread"); }
     th_mut(c, slf).wake = true;
     kick(c, slf);
     Ok(slf)
 }
-fn th_run(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV { th_wakeup(c, slf, a, b)?; th_pass(c, slf, a, b)?; Ok(slf) }
-fn th_alive(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { thr(c, s)?; Ok(Value::bool(!th(c, s).dead)) }
-fn th_stop_p(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { thr(c, s)?; let r = th(c, s); Ok(Value::bool(r.dead || (r.waiting && s != cur(c)))) }
-fn th_status(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn th_run(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { th_wakeup(c, slf, a, b)?; th_pass(c, slf, a, b)?; Ok(slf) }
+fn th_alive(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { thr(c, s)?; Ok(Value::bool(!th(c, s).dead)) }
+fn th_stop_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { thr(c, s)?; let r = th(c, s); Ok(Value::bool(r.dead || (r.waiting && s != cur(c)))) }
+fn th_status(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     thr(c, s)?;
     let r = th(c, s);
     if r.dead { return Ok(if r.exc != NIL { NIL } else { FALSE }); }
     let st = status_str(c, s);
     Ok(c.str_new(st.as_bytes()))
 }
-fn th_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { thr(c, s)?; let t = inspect_thread(c, s, status_str(c, s)); Ok(c.str_new(t.as_bytes())) }
+fn th_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { thr(c, s)?; let t = inspect_thread(c, s, status_str(c, s)); Ok(c.str_new(t.as_bytes())) }
 /// rb_frozen_error_raise(thread, "can't modify frozen thread locals")
 fn frozen_locals(c: &mut Ctx, t: Value) -> Esc {
     let e = make_exception(c, c.vm().c_frozen_error.get(), "can't modify frozen thread locals");
@@ -874,46 +874,57 @@ fn locals(c: &mut Ctx, t: Value) -> RV {
     if f == NIL || crate::fiber::is_root(c, f) { return Ok(th(c, t).locals); }
     Ok(crate::fiber::locals(c, f))
 }
+pub fn current_locals(c: &mut Ctx) -> RV { let t = cur(c); locals(c, t) }
 fn tvars(c: &mut Ctx, t: Value) -> RV { thr(c, t)?; Ok(th(c, t).tvars) }
 fn hash_keys(c: &mut Ctx, h: Value) -> Value { let v: Vec<Value> = c.hash_pairs(h).into_iter().map(|p| p.0).collect(); c.ary_from_vec(v) }
-fn th_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let k = key_sym(c, a[0])?; let h = locals(c, slf)?; Ok(hash_get_opt(c, h, k)?.unwrap_or(NIL)) }
-fn th_aset(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn th_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    let k = key_sym(c, a[0])?;
+    if k == recursive_key() && slf == cur(c) { return crate::builtins::kernel::rec_outer(c); }
+    let h = locals(c, slf)?; Ok(hash_get_opt(c, h, k)?.unwrap_or(NIL))
+}
+/// :__recursive_key__ (the recursion guard's Hash) is hidden from key? and keys, as in CRuby
+fn recursive_key() -> Value { Value::sym(crate::symbol::intern(b"__recursive_key__")) }
+fn th_aset(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let k = key_sym(c, a[0])?;
     if is_frozen(slf) { return Err(frozen_locals(c, slf)); }
     let h = locals(c, slf)?;
     if a[1] == NIL { hash_delete(c, h, k)?; } else { hash_set(c, h, k, a[1])?; }
     Ok(a[1])
 }
-fn th_key_p(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let k = key_sym(c, a[0])?; let h = locals(c, slf)?; Ok(Value::bool(hash_lookup(c, h, k)?.is_some())) }
-fn th_keys(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let h = locals(c, slf)?; Ok(hash_keys(c, h)) }
-fn th_tv_get(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let k = key_sym(c, a[0])?; let h = tvars(c, slf)?; Ok(hash_get_opt(c, h, k)?.unwrap_or(NIL)) }
-fn th_tv_set(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn th_key_p(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let k = key_sym(c, a[0])?; if k == recursive_key() { return Ok(FALSE); } let h = locals(c, slf)?; Ok(Value::bool(hash_lookup(c, h, k)?.is_some())) }
+fn th_keys(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
+    let h = locals(c, slf)?;
+    let v: Vec<Value> = c.hash_pairs(h).into_iter().map(|p| p.0).filter(|&k| k != recursive_key()).collect();
+    Ok(c.ary_from_vec(v))
+}
+fn th_tv_get(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let k = key_sym(c, a[0])?; let h = tvars(c, slf)?; Ok(hash_get_opt(c, h, k)?.unwrap_or(NIL)) }
+fn th_tv_set(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let k = key_sym(c, a[0])?;
     if is_frozen(slf) { return Err(frozen_locals(c, slf)); }
     let h = tvars(c, slf)?;
     if a[1] == NIL { hash_delete(c, h, k)?; } else { hash_set(c, h, k, a[1])?; }
     Ok(a[1])
 }
-fn th_tv_p(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let k = key_sym(c, a[0])?; let h = tvars(c, slf)?; Ok(Value::bool(hash_lookup(c, h, k)?.is_some())) }
-fn th_tvs(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let h = tvars(c, slf)?; Ok(hash_keys(c, h)) }
-fn th_name(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { thr(c, s)?; Ok(th(c, s).name) }
-fn th_set_name(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn th_tv_p(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let k = key_sym(c, a[0])?; let h = tvars(c, slf)?; Ok(Value::bool(hash_lookup(c, h, k)?.is_some())) }
+fn th_tvs(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let h = tvars(c, slf)?; Ok(hash_keys(c, h)) }
+fn th_name(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { thr(c, s)?; Ok(th(c, s).name) }
+fn th_set_name(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let n = if a[0] == NIL { NIL } else { let v = expect_str(c, a[0])?; c.str_dup(v) };
     thr(c, s)?;
     th_mut(c, s).name = n;
     Ok(a[0])
 }
-fn th_report(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { thr(c, s)?; let r = th(c, s).report; Ok(if r == UNDEF { Value::bool(REPORT_ALL.load(Relaxed)) } else { r }) }
-fn th_set_report(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { thr(c, s)?; th_mut(c, s).report = Value::bool(a[0].truthy()); Ok(a[0]) }
-fn th_abort(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { thr(c, s)?; Ok(Value::bool(th(c, s).abort)) }
-fn th_set_abort(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { thr(c, s)?; th_mut(c, s).abort = a[0].truthy(); Ok(a[0]) }
-fn th_group(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn th_report(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { thr(c, s)?; let r = th(c, s).report; Ok(if r == UNDEF { Value::bool(REPORT_ALL.load(Relaxed)) } else { r }) }
+fn th_set_report(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { thr(c, s)?; th_mut(c, s).report = Value::bool(a[0].truthy()); Ok(a[0]) }
+fn th_abort(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { thr(c, s)?; Ok(Value::bool(th(c, s).abort)) }
+fn th_set_abort(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { thr(c, s)?; th_mut(c, s).abort = a[0].truthy(); Ok(a[0]) }
+fn th_group(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     thr(c, s)?;
     if th(c, s).dead { return Ok(NIL); }
     init_sync(c);
     Ok(const_get_at(c, const_get_at(c, c.vm().c_object.get(), intern(b"ThreadGroup")).unwrap(), intern(b"Default")).unwrap())
 }
-fn tg_list(c: &mut Ctx, _s: Value, a: &[Value], b: *const Block) -> RV { th_list(c, NIL, a, b) }
+fn tg_list(c: &mut Ctx, _s: Value, a: &[Value], b: Blk) -> RV { th_list(c, NIL, a, b) }
 
 // ---- Mutex / Monitor --------------------------------------------------------------------------
 // Owned by a fiber, as CRuby's (the ec): another fiber of the same thread does not own it.
@@ -987,18 +998,18 @@ fn release(c: &mut Ctx, m: Value) -> Result<(), Esc> {
     if l.count == 0 { l.owner = NIL; held_dec(); wake_one(c, m.raw())?; }
     Ok(())
 }
-fn mx_lock(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { acquire(c, s)?; Ok(s) }
-fn mx_unlock(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { release(c, s)?; Ok(s) }
-fn mx_try_lock(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn mx_lock(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { acquire(c, s)?; Ok(s) }
+fn mx_unlock(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { release(c, s)?; Ok(s) }
+fn mx_try_lock(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let me = cur_fiber(c);
     let l = lk_mut(c, s);
     if l.owner == NIL { l.owner = me; l.count = 1; HELD.fetch_add(1, Relaxed); return Ok(TRUE); }
     if l.owner == me && l.monitor { l.count += 1; return Ok(TRUE); }
     Ok(FALSE)
 }
-fn mx_locked(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(lk(c, s).owner != NIL)) }
-fn mx_owned(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(lk(c, s).owner == cur_fiber(c))) }
-fn mx_sync(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
+fn mx_locked(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(lk(c, s).owner != NIL)) }
+fn mx_owned(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(lk(c, s).owner == cur_fiber(c))) }
+fn mx_sync(c: &mut Ctx, s: Value, _a: &[Value], b: Blk) -> RV {
     if b.is_null() { return err(c, c.vm().c_thread_error.get(), "must be called with a block"); }
     acquire(c, s)?;
     let r = yield_block(c, b, &[]);
@@ -1008,7 +1019,7 @@ fn mx_sync(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
     r
 }
 /// monitor_synchronize: rb_ensure(yield, monitor_exit), so leaving unowned raises.
-fn mon_sync(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
+fn mon_sync(c: &mut Ctx, s: Value, _a: &[Value], b: Blk) -> RV {
     acquire(c, s)?;
     if b.is_null() { release(c, s)?; return err(c, c.vm().c_local_jump_error.get(), "no block given"); }
     let r = yield_block(c, b, &[]);
@@ -1017,7 +1028,7 @@ fn mon_sync(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
     if r.is_err() { c.esc = ek; c.esc_val = ev; }
     r
 }
-fn mx_sleep(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn mx_sleep(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let t = a.first().copied().unwrap_or(NIL);
     let dur = if t != NIL { Some(crate::builtins::process::time_interval(c, t)?) } else { None };
     let t0 = Instant::now();
@@ -1030,12 +1041,12 @@ fn mx_sleep(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     r?;
     Ok(Value::fix(t0.elapsed().as_secs_f64().round() as i64))
 }
-fn mon_check_owner(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn mon_check_owner(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     if lk(c, s).owner != cur_fiber(c) { return err(c, c.vm().c_thread_error.get(), "current fiber not owner"); }
     Ok(NIL)
 }
 /// Monitor#wait_for_cond(cond, timeout): fully release, wait on cond, re-enter with the old count.
-fn mon_wait_for_cond(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn mon_wait_for_cond(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let count = lk(c, s).count;
     let l = lk_mut(c, s);
     l.owner = NIL; l.count = 0;
@@ -1071,7 +1082,7 @@ fn cv_wait_raw(c: &mut Ctx, cv: Value, timeout: Value, mutex: Value) -> Result<b
     c.ary_mut(w).retain(|&x| x != token);
     r
 }
-fn cv_wait(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn cv_wait(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let m = a[0];
     let native = c.data::<RLock>(m).is_some();
@@ -1082,12 +1093,12 @@ fn cv_wait(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     if r.is_err() { c.esc = ek; c.esc_val = ev; }
     Ok(if r? { s } else { NIL })
 }
-fn cv_signal(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn cv_signal(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let w = cv_waiters(c, s);
     if c.ary_len(w) > 0 { let t = c.ary_mut(w).remove(0); c.ary_mut(t)[0] = TRUE; wake_all(c, t.raw())?; }
     Ok(s)
 }
-fn cv_broadcast(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn cv_broadcast(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let w = cv_waiters(c, s);
     let ts = c.ary(w).to_vec();
     for &t in &ts { c.ary_mut(t)[0] = TRUE; }
@@ -1118,7 +1129,7 @@ pub fn alloc_queue(c: &mut Ctx, klass: Value) -> Option<Value> {
     }
     None
 }
-fn q_init(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn q_init(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     if let Some(&init) = a.first() {
         if !respond_to(c, init, intern(b"to_a"), true) { return type_err(c, format!("can't convert {} into Array", class_name_for_err(c, init))); }
@@ -1131,7 +1142,7 @@ fn q_init(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     }
     Ok(NIL)
 }
-fn sq_init(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn sq_init(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let m = num_to_long(c, a[0])?;
     if m <= 0 { return arg_err(c, "queue size must be positive"); }
     qu_mut(c, s).max = m as usize;
@@ -1150,7 +1161,7 @@ fn q_opts(c: &mut Ctx, a: &[Value]) -> Result<(bool, Option<Instant>), Esc> {
 /// SizedQueue pushers wait on this key, poppers on the queue's address (heap addresses are 8-aligned).
 fn space_key(q: Value) -> u64 { q.raw() | 1 }
 fn q_closed_err<T>(c: &mut Ctx) -> Result<T, Esc> { err(c, c.vm().c_closed_queue_error.get(), "queue closed") }
-fn q_push(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn q_push(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, 2); }
     let q = qu(c, s);
     if q.closed { return q_closed_err(c); }
@@ -1168,7 +1179,7 @@ fn q_push(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     wake_one(c, s.raw())?;
     Ok(s)
 }
-fn q_pop(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn q_pop(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let (nb, deadline) = q_opts(c, a)?;
     if q_len(c, s) == 0 {
         if nb { return err(c, c.vm().c_thread_error.get(), "queue empty"); }
@@ -1189,15 +1200,15 @@ fn q_pop(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     if q.max > 0 { wake_one(c, space_key(s))?; }
     Ok(x)
 }
-fn q_size(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(q_len(c, s) as i64)) }
-fn q_empty(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(q_len(c, s) == 0)) }
-fn q_clear(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let items = qu(c, s).items; c.ary_mut(items).clear(); qu_mut(c, s).head = 0; wake_all(c, space_key(s))?; Ok(s) }
-fn q_close(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { qu_mut(c, s).closed = true; wake_all(c, s.raw())?; wake_all(c, space_key(s))?; Ok(s) }
-fn q_closed(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(qu(c, s).closed)) }
-fn q_num_waiting(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(qu(c, s).waiting as i64)) }
-fn q_freeze(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { type_err(c, format!("cannot freeze #<{}:0x{:016x}>", class_path(c, real_class_of(c, s)), s.raw())) }
-fn sq_max(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(qu(c, s).max as i64)) }
-fn sq_set_max(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn q_size(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(q_len(c, s) as i64)) }
+fn q_empty(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(q_len(c, s) == 0)) }
+fn q_clear(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let items = qu(c, s).items; c.ary_mut(items).clear(); qu_mut(c, s).head = 0; wake_all(c, space_key(s))?; Ok(s) }
+fn q_close(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { qu_mut(c, s).closed = true; wake_all(c, s.raw())?; wake_all(c, space_key(s))?; Ok(s) }
+fn q_closed(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(qu(c, s).closed)) }
+fn q_num_waiting(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(qu(c, s).waiting as i64)) }
+fn q_freeze(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { type_err(c, format!("cannot freeze #<{}:0x{:016x}>", class_path(c, real_class_of(c, s)), s.raw())) }
+fn sq_max(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(qu(c, s).max as i64)) }
+fn sq_set_max(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let m = num_to_long(c, a[0])?;
     if m <= 0 { return arg_err(c, "queue size must be positive"); }
     qu_mut(c, s).max = m as usize;

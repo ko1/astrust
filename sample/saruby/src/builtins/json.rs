@@ -209,15 +209,15 @@ fn generate_with(c: &mut Ctx, x: Value, opts: Value) -> RV {
     g.value(c, x)?;
     Ok(c.str_from_vec(std::mem::take(&mut g.out)))
 }
-fn j_generate(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { check_argc(c, a, 1, 2)?; generate_with(c, a[0], a.get(1).copied().unwrap_or(NIL)) }
+fn j_generate(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 1, 2)?; generate_with(c, a[0], a.get(1).copied().unwrap_or(NIL)) }
 fn pretty_opts(c: &mut Ctx, extra: Value) -> RV {
     let h = c.hash_new();
     for (k, v) in [("indent", "  "), ("space", " "), ("object_nl", "\n"), ("array_nl", "\n")] { let s = c.str_new(v.as_bytes()); hash_set(c, h, sym_value(k), s)?; }
     if extra != NIL { let e = if is_hash(extra) { extra } else { funcall(c, extra, intern(b"to_h"), &[], std::ptr::null())? }; merge_into(c, h, e)?; }
     Ok(h)
 }
-fn j_pretty_generate(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { check_argc(c, a, 1, 2)?; let o = pretty_opts(c, a.get(1).copied().unwrap_or(NIL))?; generate_with(c, a[0], o) }
-fn j_dump(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn j_pretty_generate(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 1, 2)?; let o = pretty_opts(c, a.get(1).copied().unwrap_or(NIL))?; generate_with(c, a[0], o) }
+fn j_dump(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (pos, kw) = match a.last() { Some(&l) if is_hash(l) && a.len() > 1 => (&a[..a.len() - 1], Some(l)), _ => (a, None) };
     let h = c.hash_new();
     hash_set(c, h, sym_value("allow_nan"), TRUE)?; hash_set(c, h, sym_value("max_nesting"), FALSE)?;
@@ -230,7 +230,7 @@ fn j_dump(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(io)
 }
 /// obj.to_json(state = nil) for the core classes.
-fn o_to_json(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn o_to_json(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let st = a.first().copied().unwrap_or(NIL);
     let core = s.is_imm() || is_float(s) || is_bignum(s) || ((is_string(s) || is_array(s) || is_hash(s)) && [c.vm().c_string.get(), c.vm().c_array.get(), c.vm().c_hash.get()].contains(&real_class_of(c, s)));
     if core { return generate_with(c, s, st); }
@@ -240,15 +240,15 @@ fn o_to_json(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     else { let t = crate::rt::srb_tostr(c, s)?; if !g.string(c.str_bytes(t)) { return Err(bad_utf8(c, t)); } }
     Ok(c.str_from_vec(std::mem::take(&mut g.out)))
 }
-fn st_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn st_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let h = c.hash_new();
     if let Some(&o) = a.first() { if o != NIL { let o = if is_hash(o) { o } else { funcall(c, o, intern(b"to_h"), &[], std::ptr::null())? }; merge_into(c, h, o)?; } }
     ivar_set_raw(c, s, intern(b"@opts"), h); ivar_set_raw(c, s, intern(b"@depth"), Value::fix(0));
     Ok(NIL)
 }
-fn st_generate(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { generate_with(c, a[0], s) }
+fn st_generate(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { generate_with(c, a[0], s) }
 /// State readers / writers are keyed by the called method's name.
-fn st_get(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn st_get(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let name = c.cur_method_name().map(crate::symbol::sym_str).unwrap_or_default();
     let key = name.trim_end_matches('?');
     if key == "depth" { return Ok(ivar_get(c, s, intern(b"@depth"))); }
@@ -262,15 +262,15 @@ fn st_get(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
         _ => NIL,
     })
 }
-fn st_set(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn st_set(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let name = c.cur_method_name().map(crate::symbol::sym_str).unwrap_or_default();
     let key = name.trim_end_matches('=');
     if key == "depth" { ivar_set_raw(c, s, intern(b"@depth"), a[0]); return Ok(a[0]); }
     hash_set(c, ivar_get(c, s, intern(b"@opts")), sym_value(key), a[0])?;
     Ok(a[0])
 }
-fn st_aref(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { let k = if is_string(a[0]) { c.str_to_sym(a[0]) } else { a[0] }; Ok(hash_get_opt(c, ivar_get(c, s, intern(b"@opts")), k)?.unwrap_or(NIL)) }
-fn st_to_h(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.hash_dup(ivar_get(c, s, intern(b"@opts")))) }
+fn st_aref(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { let k = if is_string(a[0]) { c.str_to_sym(a[0]) } else { a[0] }; Ok(hash_get_opt(c, ivar_get(c, s, intern(b"@opts")), k)?.unwrap_or(NIL)) }
+fn st_to_h(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.hash_dup(ivar_get(c, s, intern(b"@opts")))) }
 
 // ---- parser -----------------------------------------------------------------------------------
 
@@ -397,7 +397,7 @@ impl Parser {
     fn array(&mut self, c: &mut Ctx) -> RV {
         self.enter(c)?;
         self.pos += 1;
-        let out = if self.ary_class == NIL { c.ary_new() } else { crate::builtins::object::c_new(c, self.ary_class, &[], std::ptr::null())? };
+        let out = if self.ary_class == NIL { c.ary_new() } else { crate::builtins::object::c_new(c, self.ary_class, &[], Blk::NONE)? };
         self.ws();
         if self.src.get(self.pos) == Some(&b']') { self.pos += 1; self.depth -= 1; return Ok(out); }
         loop {
@@ -419,7 +419,7 @@ impl Parser {
         self.enter(c)?;
         let start = self.pos;
         self.pos += 1;
-        let out = if self.obj_class == NIL { c.hash_new() } else { crate::builtins::object::c_new(c, self.obj_class, &[], std::ptr::null())? };
+        let out = if self.obj_class == NIL { c.hash_new() } else { crate::builtins::object::c_new(c, self.obj_class, &[], Blk::NONE)? };
         self.ws();
         if self.src.get(self.pos) == Some(&b'}') { self.pos += 1; self.depth -= 1; return Ok(out); }
         let mut after_comma = false;
@@ -486,9 +486,9 @@ fn parse_with(c: &mut Ctx, src: Value, opts: Value, bang: bool) -> RV {
     if p.pos < p.src.len() { return p.fail(c, &format!("unexpected token at end of stream '{}'", p.frag(p.pos)), p.pos); }
     Ok(v)
 }
-fn j_parse(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { check_argc(c, a, 1, 2)?; parse_with(c, a[0], a.get(1).copied().unwrap_or(NIL), false) }
-fn j_parse_bang(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { check_argc(c, a, 1, 2)?; parse_with(c, a[0], a.get(1).copied().unwrap_or(NIL), true) }
-fn j_load(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn j_parse(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 1, 2)?; parse_with(c, a[0], a.get(1).copied().unwrap_or(NIL), false) }
+fn j_parse_bang(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 1, 2)?; parse_with(c, a[0], a.get(1).copied().unwrap_or(NIL), true) }
+fn j_load(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (pos, kw) = match a.last() { Some(&l) if is_hash(l) && a.len() > 1 => (&a[..a.len() - 1], l), _ => (a, NIL) };
     let mut src = pos[0];
     let blank_ok = if kw != NIL { hash_get_opt(c, kw, sym_value("allow_blank"))?.map_or(true, |v| v.truthy()) } else { true };
@@ -506,12 +506,12 @@ fn j_load(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     if kw != NIL { merge_into(c, h, kw)?; }
     parse_with(c, src, h, false)
 }
-fn j_load_file(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn j_load_file(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let s = funcall(c, c.vm().c_file.get(), intern(b"read"), &a[..1], std::ptr::null())?;
     parse_with(c, s, a.get(1).copied().unwrap_or(NIL), false)
 }
 // JSON::Coder: options plus a callback for values JSON has no notation for
-fn coder_initialize(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+fn coder_initialize(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     let o = a.first().copied().unwrap_or(NIL);
     let o = if o == NIL { c.hash_new() } else { o };
     ivar_set_raw(c, s, intern(b"@opts"), o);
@@ -519,7 +519,7 @@ fn coder_initialize(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     ivar_set_raw(c, s, intern(b"@proc"), pr);
     Ok(NIL)
 }
-fn coder_dump(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn coder_dump(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let mut g = gen_from(c, ivar_get(c, s, intern(b"@opts")))?;
     g.coder = ivar_get(c, s, intern(b"@proc")); g.strict = true;
     if g.opts == NIL || opt(c, g.opts, "max_nesting")?.is_none() { g.max_nesting = 100; }
@@ -527,13 +527,13 @@ fn coder_dump(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     let out = c.str_from_vec(std::mem::take(&mut g.out));
     match a.get(1) { Some(&io) if io != NIL => { funcall(c, io, intern(b"write"), &[out], std::ptr::null())?; Ok(io) } _ => Ok(out) }
 }
-fn coder_load(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { parse_with(c, a[0], ivar_get(c, s, intern(b"@opts")), false) }
-fn j_aref(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { if is_string(a[0]) { j_parse(c, s, a, b) } else { j_generate(c, s, a, b) } }
-fn k_j(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn coder_load(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { parse_with(c, a[0], ivar_get(c, s, intern(b"@opts")), false) }
+fn j_aref(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV { if is_string(a[0]) { j_parse(c, s, a, b) } else { j_generate(c, s, a, b) } }
+fn k_j(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     for &x in a { let s = generate_with(c, x, NIL)?; let mut b = c.str_bytes(s).to_vec(); b.push(b'\n'); stdout_write(c, &b)?; }
     Ok(NIL)
 }
-fn k_jj(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn k_jj(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     for &x in a { let o = pretty_opts(c, NIL)?; let s = generate_with(c, x, o)?; let mut b = c.str_bytes(s).to_vec(); b.push(b'\n'); stdout_write(c, &b)?; }
     Ok(NIL)
 }

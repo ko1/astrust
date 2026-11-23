@@ -216,8 +216,10 @@ moved, and no `&mut` to a payload coexists with another reference to it.
   new assumption, **H4: the `blk` a builtin receives is null or its caller's `Block`, alive for
   the call** (and iseqs are never freed). It is the assumption `yield_block(c, blk, ..)`, a safe
   function, already makes on every yield; the frame chain is the separate surface listed under
-  "What is still open". A builtin that manufactures a `*const Block` from an integer
-  (`enum_native::ublk`) is inside that same trust.
+  "What is still open". A builtin that manufactured a `*const Block` from an integer
+  (`enum_native::ublk`) was inside that same trust, and broke it: an `#each` that kept its block
+  called it after the builtin returned (unsafe_catalog.md rows 45, 46). Since 2026-11-23 H4 is a type
+  on the builtin side (section "Block escape" below).
 
 ### What Rust cannot check (assumptions)
 
@@ -234,7 +236,9 @@ moved, and no `&mut` to a payload coexists with another reference to it.
   another valid object, but `obj_klass` of a freed slot reads the free-list link.
 * **H2, the mint contract**: the fiber switch (fiber.rs) and the collector's own access to
   contexts (`visit_ctx`) are trusted code.
-* **H4** (above): a builtin's `blk` argument.
+* **H4** (above): a builtin's `blk` argument. Now `Blk<'call>`: a builtin can neither keep it past the
+  call nor make one from an address without the compiler (E0106 / E0521 / E0605) or heap_audit.rb
+  (`*const Block`, `.ptr()`, `as *const _` in src/builtins) objecting; the VM side still trusts it.
 * **H5** (third wave): the frames from `c.frame` down are alive while a builtin reads them; and
   the in-place writes to a caller frame or a method entry assume the evaluator holds no Rust
   reference to it across the call (section "Third wave").
@@ -969,7 +973,8 @@ frame chain or VM-global data, not object payloads.
   shared reference conflicts with nothing `&mut Ctx` reaches; the closure scopes it. `Class#new`
   calls `invoke_iseq_simple(c, me, is, ..)` through it (an `&Iseq` from `iseq_ref` would borrow
   `c` and conflict).
-* `c.block_copy(blk) -> Option<Block>`: the builtin's Block by value (H4).
+* `c.block_copy(blk) -> Option<Block>`: the builtin's Block by value (H4). Takes `impl BlkArg` since the
+  block-escape work.
 
 Not in heap.rs, and safe code: `symbol.rs`. Names are leaked byte strings (`&'static [u8]` is
 literally true) in an append-only table of `OnceLock` chunks, so `sym_bytes` reads without a
@@ -1733,6 +1738,33 @@ strscan.rs, symbol_methods.rs):
 
 Met in the third wave: patterns 21 to 28 in "Third wave", above. Met in the fourth wave:
 patterns 29 to 35 in "Fourth wave", above.
+
+## Block escape: a block becomes a Proc when it is captured (2026-11-23)
+
+Trial `~/ruby/src/trials/2026-11-23-saruby-block-escape/`; defect and attribution in
+unsafe_catalog.md 2.4.3 (rows 45–49).
+
+* **Rule (CRuby's).** A Block lives in the Rust frame of whoever made it (a block literal in the call
+  node, a Cfunc block in a builtin, a `&:sym` / `&method` holder in `srb_call_x`). The only way to keep
+  one is `block_to_proc`, which copies it into the Proc's box and promotes its `outer_blk` chain the
+  same way (CRuby: `rb_vm_make_proc` escaping the env and the block handler). Its `env` is a heap Env
+  already, its `me` / `cref` / iseq are leaked, so the copy refers to nothing on the stack.
+* **Cfunc blocks** reach their builtin's block only as their own `outer_blk` (`Block::cfunc_for`; the
+  fifth argument of `CBlockFn`). A captured Cfunc block is then promoted with the user's block, and
+  its data Array holds Values only. This replaced `ublk` / `bptr` (enum_native) and the address in
+  `Nmin`'s state, and the Proc that 981310b made per call of `Enumerable.__each`, partition and
+  `Set.new`.
+* **Binding**: `RBinding.blk` is the frame's block as a Proc (`rb_vm_make_binding`), so eval'd
+  `yield` / `block_given?` see it after the frame returned; Proc#binding takes the proc's promoted
+  outer block.
+* **H4 as a type.** `CFunc` / `CBlockFn` take `Blk<'a>` (vm.rs). The VM entry points take
+  `impl BlkArg` (`Blk`, `*const Block` or `&Block`) in an `#[inline(always)]` front that calls the old
+  body, renamed `*_raw`; generated code and rt.rs call through the front with raw pointers as before.
+  `vm_blk` (raw to `Blk`, VM side only) is used where the VM calls a cfunc, a Cfunc block or the tracer.
+  heap_audit.rb fails on `*const Block`, `vm_blk`, `BlkArg`, `.ptr()`, `as *const _` and the
+  address-to-pointer functions in src/builtins, except on lines marked `// blk-audit:`.
+* **Left trusted**: frames' `blk`, `CallArgs.blk`, `proc_block` (a pointer into a Proc's box, alive with
+  the Proc Value), and the write of the cached Proc into the caller's Block (`block_to_proc`).
 
 ## What is still open
 

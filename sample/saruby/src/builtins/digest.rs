@@ -247,7 +247,7 @@ impl RData for RDigest {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
 
-fn nb() -> *const Block { std::ptr::null() }
+fn nb() -> Blk<'static> { Blk::NONE }
 fn call0(c: &mut Ctx, v: Value, m: &[u8]) -> RV { funcall(c, v, intern(m), &[], nb()) }
 fn call1(c: &mut Ctx, v: Value, m: &[u8], a: Value) -> RV { funcall(c, v, intern(m), &[a], nb()) }
 fn hidden(n: &[u8]) -> Sym { intern(n) }
@@ -269,12 +269,12 @@ fn check_str(c: &mut Ctx, v: Value) -> RV {
     if is_string(v) || (v.is_heap() && respond_to(c, v, intern(b"to_str"), true)) { expect_str(c, v) } else { Ok(NIL) }
 }
 
-fn s_hexencode(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { hexencode(c, a[0]) }
-fn i_update(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { unimpl(c, s, "update") }
-fn i_finish(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { unimpl(c, s, "finish") }
-fn i_reset(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { unimpl(c, s, "reset") }
-fn i_block_length(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { unimpl(c, s, "block_length") }
-fn i_new(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let n = obj_clone(c, s)?; call0(c, n, b"reset")?; Ok(n) }
+fn s_hexencode(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { hexencode(c, a[0]) }
+fn i_update(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { unimpl(c, s, "update") }
+fn i_finish(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { unimpl(c, s, "finish") }
+fn i_reset(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { unimpl(c, s, "reset") }
+fn i_block_length(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { unimpl(c, s, "block_length") }
+fn i_new(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let n = obj_clone(c, s)?; call0(c, n, b"reset")?; Ok(n) }
 fn digest_of(c: &mut Ctx, s: Value, a: &[Value]) -> RV {
     check_argc(c, a, 0, 1)?;
     if let Some(&str) = a.first() {
@@ -288,19 +288,19 @@ fn digest_of(c: &mut Ctx, s: Value, a: &[Value]) -> RV {
         call0(c, n, b"finish")
     }
 }
-fn i_digest(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { digest_of(c, s, a) }
-fn i_digest_bang(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let v = call0(c, s, b"finish")?; call0(c, s, b"reset")?; Ok(v) }
-fn i_hexdigest(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { let v = digest_of(c, s, a)?; hexencode(c, v) }
-fn i_hexdigest_bang(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { let v = i_digest_bang(c, s, a, b)?; hexencode(c, v) }
-fn i_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { call0(c, s, b"hexdigest") }
-fn i_inspect(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
+fn i_digest(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { digest_of(c, s, a) }
+fn i_digest_bang(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let v = call0(c, s, b"finish")?; call0(c, s, b"reset")?; Ok(v) }
+fn i_hexdigest(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { let v = digest_of(c, s, a)?; hexencode(c, v) }
+fn i_hexdigest_bang(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV { let v = i_digest_bang(c, s, a, b)?; hexencode(c, v) }
+fn i_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { call0(c, s, b"hexdigest") }
+fn i_inspect(c: &mut Ctx, s: Value, _a: &[Value], b: Blk) -> RV {
     let h = i_hexdigest(c, s, &[], b)?;
     let mut out = format!("#<{}: ", class_path(c, real_class_of(c, s))).into_bytes();
     out.extend_from_slice(c.str_bytes(h));
     out.push(b'>');
     Ok(c.str_new(&out))
 }
-fn i_equal(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+fn i_equal(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     let dm = digest_mod(c);
     let inst = const_get_at(c, dm, intern(b"Instance")).unwrap_or(NIL);
     let (s1, s2) = if is_kind_of(c, a[0], inst) {
@@ -314,22 +314,22 @@ fn i_equal(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     let (s1, s2) = (expect_str(c, s1)?, expect_str(c, s2)?);
     Ok(Value::bool(c.str_bytes(s1) == c.str_bytes(s2)))
 }
-fn i_digest_length(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
+fn i_digest_length(c: &mut Ctx, s: Value, _a: &[Value], b: Blk) -> RV {
     let d = i_digest(c, s, &[], b)?;
     let d = expect_str(c, d)?;
     Ok(Value::fix(c.str_bytes(d).len() as i64))
 }
-fn i_length(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { call0(c, s, b"digest_length") }
+fn i_length(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { call0(c, s, b"digest_length") }
 
-fn c_s_digest(c: &mut Ctx, k: Value, a: &[Value], _b: *const Block) -> RV {
+fn c_s_digest(c: &mut Ctx, k: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() { return arg_err(c, "no data given"); }
     let str = expect_str(c, a[0])?;
     let o = call0(c, k, b"allocate")?;
     funcall(c, o, intern(b"initialize"), &a[1..], nb())?;
     call1(c, o, b"digest", str)
 }
-fn c_s_hexdigest(c: &mut Ctx, k: Value, a: &[Value], _b: *const Block) -> RV { let v = funcall(c, k, intern(b"digest"), a, nb())?; hexencode(c, v) }
-fn c_init(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(s) }
+fn c_s_hexdigest(c: &mut Ctx, k: Value, a: &[Value], _b: Blk) -> RV { let v = funcall(c, k, intern(b"digest"), a, nb())?; hexencode(c, v) }
+fn c_init(_c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(s) }
 
 fn superclass(c: &Ctx, k: Value) -> Value {
     let mut s = c.class(k).superclass;
@@ -370,7 +370,7 @@ fn ctx(c: &mut Ctx, s: Value) -> Result<&mut RDigest, Esc> {
     if c.data::<RDigest>(s).is_none() { return type_err(c, format!("wrong argument type {} (expected digest)", class_path(c, real_class_of(c, s)))); }
     Ok(c.data_mut::<RDigest>(s).unwrap())
 }
-fn b_copy(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_copy(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     if s == a[0] { return Ok(s); }
     check_frozen(c, s)?;
     let k1 = real_class_of(c, s); let k2 = real_class_of(c, a[0]);
@@ -380,27 +380,27 @@ fn b_copy(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     ctx(c, s)?.st = st;
     Ok(s)
 }
-fn b_reset(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn b_reset(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let a = algo_of_class(c, real_class_of(c, s))?;
     ctx(c, s)?.st = Hasher::new(a);
     Ok(s)
 }
-fn b_update(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn b_update(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     algo_of_class(c, real_class_of(c, s))?;
     let str = expect_str(c, a[0])?;
     let bytes = c.str_bytes(str).to_vec();
     ctx(c, s)?.st.update(&bytes);
     Ok(s)
 }
-fn b_finish(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn b_finish(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let a = algo_of_class(c, real_class_of(c, s))?;
     let d = ctx(c, s)?;
     let st = std::mem::replace(&mut d.st, Hasher::new(a));
     let out = st.finish();
     Ok(c.str_new_enc(&out, ENC_BINARY))
 }
-fn b_digest_length(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let a = algo_of_class(c, real_class_of(c, s))?; Ok(Value::fix(a.digest_len() as i64)) }
-fn b_block_length(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let a = algo_of_class(c, real_class_of(c, s))?; Ok(Value::fix(a.block_len() as i64)) }
+fn b_digest_length(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let a = algo_of_class(c, real_class_of(c, s))?; Ok(Value::fix(a.digest_len() as i64)) }
+fn b_block_length(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let a = algo_of_class(c, real_class_of(c, s))?; Ok(Value::fix(a.block_len() as i64)) }
 
 /// Init_digest
 pub fn init(c: &mut Ctx) {
@@ -466,9 +466,9 @@ fn bubblebabble(c: &mut Ctx, v: Value) -> RV {
     p.push(b'x');
     Ok(c.str_new_enc(&p, ENC_BINARY))
 }
-fn bb_s(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { bubblebabble(c, a[0]) }
-fn bb_class(c: &mut Ctx, k: Value, a: &[Value], _b: *const Block) -> RV { let v = funcall(c, k, intern(b"digest"), a, nb())?; bubblebabble(c, v) }
-fn bb_inst(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let v = call0(c, s, b"digest")?; bubblebabble(c, v) }
+fn bb_s(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { bubblebabble(c, a[0]) }
+fn bb_class(c: &mut Ctx, k: Value, a: &[Value], _b: Blk) -> RV { let v = funcall(c, k, intern(b"digest"), a, nb())?; bubblebabble(c, v) }
+fn bb_inst(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let v = call0(c, s, b"digest")?; bubblebabble(c, v) }
 /// Init_bubblebabble
 pub fn init_bubblebabble(c: &mut Ctx) {
     let m = digest_mod(c);

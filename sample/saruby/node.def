@@ -1155,14 +1155,14 @@ node_opt_ltlt(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, l
     // Array#<< / String#<< themselves.  They raise with this node's line and no frame of their own, as CRuby;
     // a frozen Array (the only raise of Array#<<) goes out of line, keeping the line's store off this path
     if is_array(a) && obj_klass(a) == vm().c_array.get() && !redef(R_ARY_LTLT) && obj_flags(a) & FL_FROZEN == 0 {
-        return crate::builtins::array_methods::a_ltlt(c, a, &[b], std::ptr::null());
+        return crate::builtins::array_methods::a_ltlt(c, a, &[b], Blk::NONE);
     }
     if is_string(a) && obj_klass(a) == vm().c_string.get() && !redef(R_STR_LTLT) {
         // the common case of String#<< (a String of the same encoding onto a modifiable one: neither frozen nor
         // locked, one test as str_modify); the rest, which may raise, is String#<<
         if is_string(b) && obj_flags(a) & (FL_FROZEN | FL_TMPLOCK) == 0 && c.str_enc(a) == c.str_enc(b) { c.str_append_same_enc(a, b); return Ok(a); }
         line.store(c.frame_mut());
-        return crate::builtins::string_methods::s_ltlt(c, a, &[b], std::ptr::null());
+        return crate::builtins::string_methods::s_ltlt(c, a, &[b], Blk::NONE);
     }
     srb_ltlt_out(c, a, b, line.pos(), cc)
 }
@@ -1210,7 +1210,7 @@ node_opt_aref(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, l
     } else if tf_hash(ty) && is_hash(a) && obj_klass(a) == vm().c_hash.get() && !redef(R_HASH_AREF) {
         if ty == 0 { tf.add(TF_HASH); }
         line.store(c.frame_mut());
-        return crate::builtins::hash_methods::h_aref(c, a, &[b], std::ptr::null());
+        return crate::builtins::hash_methods::h_aref(c, a, &[b], Blk::NONE);
     }
     srb_aref_out(c, a, b, line.pos(), cc)
 }
@@ -1224,7 +1224,7 @@ node_opt_aset(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, v
     } else if tf_hash(ty) && is_hash(a) && obj_klass(a) == vm().c_hash.get() && !redef(R_HASH_ASET) {
         if ty == 0 { tf.add(TF_HASH); }
         line.store(c.frame_mut());
-        return crate::builtins::hash_methods::h_aset(c, a, &[b, v], std::ptr::null());
+        return crate::builtins::hash_methods::h_aset(c, a, &[b, v], Blk::NONE);
     }
     srb_aset_out(c, a, b, v, line.pos(), cc)
 }

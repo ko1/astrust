@@ -16,18 +16,18 @@ module Comparable
 end
 
 module Enumerable
-  # `each { |*x| v = x.size <= 1 ? x[0] : x }` packs a multi-value yield into one element
-  # (CRuby's ENUM_WANT_SVALUE); methods that hand raw values to the block use yield(*x).
+  # Enumerable.__each(self) { |v| } packs a multi-value yield into one element (CRuby's ENUM_WANT_SVALUE)
+  # without Ruby-level calls; methods that hand raw values to the block use each { |*x| yield(*x) }.
   def __size = (respond_to?(:size) ? size : nil)
   private :__size
   def grep(pat)
     a = []
     if block_given?
-      each { |*x| v = x.size <= 1 ? x[0] : x; a << yield(v) if pat === v }
+      Enumerable.__each(self) { |v| a << yield(v) if pat === v }
     else
       # without a block the caller's $~ stays (CRuby's rb_reg_match_p); this frame shares it (svar.rs)
       lm = $~
-      each { |*x| v = x.size <= 1 ? x[0] : x; a << v if pat === v }
+      Enumerable.__each(self) { |v| a << v if pat === v }
       $~ = lm
     end
     a
@@ -35,10 +35,10 @@ module Enumerable
   def grep_v(pat)
     a = []
     if block_given?
-      each { |*x| v = x.size <= 1 ? x[0] : x; a << yield(v) unless pat === v }
+      Enumerable.__each(self) { |v| a << yield(v) unless pat === v }
     else
       lm = $~
-      each { |*x| v = x.size <= 1 ? x[0] : x; a << v unless pat === v }
+      Enumerable.__each(self) { |v| a << v unless pat === v }
       $~ = lm
     end
     a
@@ -52,28 +52,28 @@ module Enumerable
     else
       warn("warning: given block not used", uplevel: 1) if block_given? && false
       i = 0
-      each { |*x| v = x.size <= 1 ? x[0] : x; return i if v == args[0]; i += 1 }
+      Enumerable.__each(self) { |v| return i if v == args[0]; i += 1 }
     end
     nil
   end
   def each_entry(*args)
     return enum_for(:each_entry, *args) { __size } unless block_given?
-    each(*args) { |*x| yield(x.size <= 1 ? x[0] : x) }
+    Enumerable.__each(self, *args) { |v| yield v }
     self
   end
   def sum(init = 0, &b)
     return Enumerable.__range_sum(self, init) if !b && Range === self
     a = []
     if b
-      each { |*x| a << b.call(x.size <= 1 ? x[0] : x) }
+      Enumerable.__each(self) { |v| a << b.call(v) }
     else
-      each { |*x| a << (x.size <= 1 ? x[0] : x) }
+      Enumerable.__each(self) { |v| a << v }
     end
     a.sum(init)
   end
   def first(*args)
     if args.empty?
-      each { |*x| return x.size <= 1 ? x[0] : x }
+      Enumerable.__each(self) { |v| return v }
       return nil
     end
     Enumerable.__argc(args.size, 0, 1) if args.size > 1
@@ -81,7 +81,7 @@ module Enumerable
     raise ArgumentError, "attempt to take negative size" if n < 0
     a = []
     return a if n == 0
-    each { |*x| a << (x.size <= 1 ? x[0] : x); break if a.size >= n }
+    Enumerable.__each(self) { |v| a << v; break if a.size == n }
     a
   end
   def take(n)
@@ -89,7 +89,7 @@ module Enumerable
     raise ArgumentError, "attempt to take negative size" if n < 0
     a = []
     return a if n == 0
-    each { |*x| a << (x.size <= 1 ? x[0] : x); break if a.size >= n }
+    Enumerable.__each(self) { |v| a << v; break if a.size == n }
     a
   end
   def take_while
@@ -102,13 +102,13 @@ module Enumerable
     n = Enumerable.__int(n)
     raise ArgumentError, "attempt to drop negative size" if n < 0
     a = []; i = 0
-    each { |*x| a << (x.size <= 1 ? x[0] : x) if i >= n; i += 1 }
+    Enumerable.__each(self) { |v| a << v if i >= n; i += 1 }
     a
   end
   def drop_while
     return enum_for(:drop_while) unless block_given?
     a = []; dropping = true
-    each { |*x| v = x.size <= 1 ? x[0] : x; dropping = false if dropping && !yield(v); a << v unless dropping }
+    Enumerable.__each(self) { |v| dropping = false if dropping && !yield(v); a << v unless dropping }
     a
   end
   def sort(&b) = Enumerable.__to_a(self).sort(&b)
@@ -116,19 +116,12 @@ module Enumerable
     return enum_for(:sort_by) { __size } unless b
     Enumerable.__sort_by(self, &b)
   end
-  def partition
-    return enum_for(:partition) { __size } unless block_given?
-    t = []; f = []
-    each { |*x| v = x.size <= 1 ? x[0] : x; (yield(v) ? t : f) << v }
-    [t, f]
-  end
   def chunk_while(&b)
     raise ArgumentError, "tried to create Proc object without a block" unless b
     src = self
     Enumerator.new do |y|
       cur = nil
-      src.each do |*x|
-        v = x.size <= 1 ? x[0] : x
+      Enumerable.__each(src) do |v|
         if cur.nil? then cur = [v]
         elsif b.call(cur.last, v) then cur << v
         else y << cur; cur = [v] end
@@ -145,8 +138,7 @@ module Enumerable
     src = self
     Enumerator.new do |y|
       ck = nil; cur = nil
-      src.each do |*x|
-        v = x.size <= 1 ? x[0] : x
+      Enumerable.__each(src) do |v|
         k = b.call(v)
         if k.nil? || k == :_separator
           y << [ck, cur] if cur
@@ -177,8 +169,7 @@ module Enumerable
     src = self
     Enumerator.new do |y|
       cur = nil
-      src.each do |*x|
-        v = x.size <= 1 ? x[0] : x
+      Enumerable.__each(src) do |v|
         hit = b ? b.call(v) : (pat === v)
         if cur && hit then y << cur; cur = nil end
         (cur ||= []) << v
@@ -196,56 +187,40 @@ module Enumerable
     src = self
     Enumerator.new do |y|
       cur = nil
-      src.each do |*x|
-        v = x.size <= 1 ? x[0] : x
+      Enumerable.__each(src) do |v|
         (cur ||= []) << v
         if b ? b.call(v) : (pat === v) then y << cur; cur = nil end
       end
       y << cur if cur
     end
   end
-  def tally(h = nil)
-    if nil.equal?(h)
-      h = {}
-    else
-      h = Enumerable.__hash(h)
-      raise FrozenError.new("can't modify frozen #{h.class}: #{h.inspect}", receiver: h) if h.frozen?
-    end
-    each do |*x|
-      v = x.size <= 1 ? x[0] : x
-      n = h.key?(v) ? h[v] : 0
-      raise TypeError, "wrong argument type #{n.class} (expected Integer)" unless n.is_a?(Integer)
-      h[v] = n + 1
-    end
-    h
-  end
   def all?(*pat)
     Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
-    if !pat.empty? then each { |*x| v = x.size <= 1 ? x[0] : x; return false unless pat[0] === v }
+    if !pat.empty? then Enumerable.__each(self) { |v| return false unless pat[0] === v }
     elsif block_given? then each { |*x| return false unless yield(*x) }
-    else each { |*x| v = x.size <= 1 ? x[0] : x; return false unless v } end
+    else Enumerable.__each(self) { |v| return false unless v } end
     true
   end
   def any?(*pat)
     Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
-    if !pat.empty? then each { |*x| v = x.size <= 1 ? x[0] : x; return true if pat[0] === v }
+    if !pat.empty? then Enumerable.__each(self) { |v| return true if pat[0] === v }
     elsif block_given? then each { |*x| return true if yield(*x) }
-    else each { |*x| v = x.size <= 1 ? x[0] : x; return true if v } end
+    else Enumerable.__each(self) { |v| return true if v } end
     false
   end
   def none?(*pat)
     Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
-    if !pat.empty? then each { |*x| v = x.size <= 1 ? x[0] : x; return false if pat[0] === v }
+    if !pat.empty? then Enumerable.__each(self) { |v| return false if pat[0] === v }
     elsif block_given? then each { |*x| return false if yield(*x) }
-    else each { |*x| v = x.size <= 1 ? x[0] : x; return false if v } end
+    else Enumerable.__each(self) { |v| return false if v } end
     true
   end
   def one?(*pat)
     Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
     n = 0
-    if !pat.empty? then each { |*x| v = x.size <= 1 ? x[0] : x; n += 1 if pat[0] === v; return false if n > 1 }
+    if !pat.empty? then Enumerable.__each(self) { |v| n += 1 if pat[0] === v; return false if n > 1 }
     elsif block_given? then each { |*x| n += 1 if yield(*x); return false if n > 1 }
-    else each { |*x| v = x.size <= 1 ? x[0] : x; n += 1 if v; return false if n > 1 } end
+    else Enumerable.__each(self) { |v| n += 1 if v; return false if n > 1 } end
     n == 1
   end
   def zip(*others, &b)
@@ -263,7 +238,7 @@ module Enumerable
     if block_given?
       each { |*x| k = yield(*x); h[k] = (x.size <= 1 ? x[0] : x) unless h.key?(k) }
     else
-      each { |*x| v = x.size <= 1 ? x[0] : x; h[v] = v unless h.key?(v) }
+      Enumerable.__each(self) { |v| h[v] = v unless h.key?(v) }
     end
     h.values
   end
@@ -298,7 +273,7 @@ module Enumerable
       return nil if n <= 0
     end
     saved = []
-    each { |*x| v = x.size <= 1 ? x[0] : x; saved << v; yield v }
+    Enumerable.__each(self) { |v| saved << v; yield v }
     return nil if saved.empty?
     if n.nil?
       loop { saved.each { |v| yield v } }
@@ -311,7 +286,7 @@ module Enumerable
   def lazy = Enumerator::Lazy.__from(self, :each, [], :__src_size)
   def compact
     a = []
-    each { |*x| v = x.size <= 1 ? x[0] : x; a << v unless v.nil? }
+    Enumerable.__each(self) { |v| a << v unless v.nil? }
     a
   end
 end
@@ -333,6 +308,16 @@ module Kernel
   def pp_inspect = inspect
   def instance_variable_names = instance_variables.map(&:to_s)
   def require_optional(f) = (require f rescue nil)
+end
+
+module Kernel
+  # CRuby's prelude.rb: lib/pp.rb (prelude/lib/pp.rb) loads on the first call and redefines pp
+  def pp(*objs)
+    require 'pp'
+    pp(*objs)
+  end
+  alias pp pp
+  private :pp
 end
 
 module Kernel
@@ -734,11 +719,7 @@ class Set
     Enumerable.__ivset(self, :__h, {})
     return if enum.nil?
     raise ArgumentError, "value must be enumerable" unless enum.respond_to?(:each_entry) || enum.respond_to?(:each)
-    if b
-      enum.each { |*x| add(b.call(x.size <= 1 ? x[0] : x)) }
-    else
-      enum.each { |*x| add(x.size <= 1 ? x[0] : x) }
-    end
+    Enumerable.__set_init(__hash, enum, &b)
   end
   def initialize_copy(o)
     super
@@ -755,7 +736,8 @@ class Set
   end
   def __new_like = self.class.new
   def __frozen! = (raise FrozenError.new("can't modify frozen #{self.class}: #{inspect}", receiver: self) if frozen?)
-  def __iterating? = Enumerable.__ivget(self, :__it).to_i > 0
+  # nil, or true while #each runs (restored on exit: no Integer arithmetic)
+  def __iterating? = Enumerable.__ivget(self, :__it)
   private :__enum, :__set, :__new_like, :__frozen!, :__iterating?
   def compare_by_identity
     __frozen!
@@ -789,11 +771,12 @@ class Set
   def empty? = __hash.empty?
   def each(&b)
     return enum_for(:each) { size } unless b
-    Enumerable.__ivset(self, :__it, Enumerable.__ivget(self, :__it).to_i + 1)
+    it = Enumerable.__ivget(self, :__it)
+    Enumerable.__ivset(self, :__it, true)
     begin
       __hash.each_key(&b)
     ensure
-      Enumerable.__ivset(self, :__it, Enumerable.__ivget(self, :__it) - 1)
+      Enumerable.__ivset(self, :__it, it)
     end
     self
   end
@@ -841,7 +824,8 @@ class Set
   end
   def merge(*es)
     raise RuntimeError, "cannot add to set during iteration" if __iterating?
-    es.each { |e| __enum(e).each { |x| add(x) } }
+    __frozen!
+    Enumerable.__set_merge(__hash, es)
     self
   end
   def subtract(e) = (__enum(e).each { |x| delete(x) }; self)
@@ -856,11 +840,8 @@ class Set
   end
   def ==(o)
     return true if equal?(o)
-    return false unless o.is_a?(Set) && size == o.size
-    return false if compare_by_identity? != o.compare_by_identity?
-    oh = o.__hash
-    __hash.each_key { |x| return false unless oh.key?(x) }
-    true
+    return false unless o.is_a?(Set)
+    Enumerable.__set_eq(__hash, o.__hash)
   end
   def hash = to_a.map(&:hash).sort.hash
   def eql?(o) = o.is_a?(Set) && __hash.eql?(o.__hash)
@@ -964,7 +945,7 @@ class Data
       syms.each { |m| k.define_method(m) { Enumerable.__ivget(self, m) } }
       class << k
         define_method(:new) do |*args, **kw, &blk|
-          mem = members
+          mem = __members
           if !args.empty?
             raise ArgumentError, "wrong number of arguments (given #{args.size + 1}, expected 0)" unless kw.empty?
             if args.size > mem.size
@@ -977,18 +958,19 @@ class Data
           o
         end
         alias_method :[], :new
-        def members
+        def __members
           k = self
           k = k.superclass while Enumerable.__ivget(k, :__members__).nil?
           Enumerable.__ivget(k, :__members__)
         end
+        def members = __members.dup
       end
       k.class_eval(&blk) if blk
       k
     end
   end
   def initialize(**kw)
-    mem = self.class.members
+    mem = self.class.__members
     missing = mem.reject { |m| kw.key?(m) }
     unknown = kw.keys.reject { |m| mem.include?(m.is_a?(String) ? m.to_sym : m) }
     unless unknown.empty?

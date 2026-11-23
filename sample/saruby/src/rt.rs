@@ -80,6 +80,11 @@ pub const R_RANGE_EACH: u64 = 1 << 53;
 // Array#max / Array#min (`[a, b].max`: opt_newarray_send)
 pub const R_ARY_MAX: u64 = 1 << 54;
 pub const R_ARY_MIN: u64 = 1 << 55;
+// Integer#succ / #coerce: numeric.rb's times loop, ArithmeticSequence#each's rb_num_coerce_relop
+pub const R_INT_SUCC: u64 = 1 << 56;
+pub const R_INT_COERCE: u64 = 1 << 57;
+// Array#size: each_slice / each_cons ask for it (limit_by_enum_size)
+pub const R_ARY_SIZE: u64 = 1 << 58;
 
 pub static REDEF: AtomicU64 = AtomicU64::new(0);
 pub static BOOTED: AtomicBool = AtomicBool::new(false);
@@ -141,7 +146,7 @@ pub fn redef_note(c: &Ctx, klass: Value, mid: Sym) -> bool {
         (int, s::to_str, R_IMM_CONV), (flo, s::to_str, R_IMM_CONV), (sym, s::to_str, R_IMM_CONV), (nil, s::to_str, R_IMM_CONV),
         (tru, s::to_str, R_IMM_CONV), (fal, s::to_str, R_IMM_CONV), (int, s::to_ary, R_IMM_CONV), (flo, s::to_ary, R_IMM_CONV),
         (sym, s::to_ary, R_IMM_CONV), (nil, s::to_ary, R_IMM_CONV), (tru, s::to_ary, R_IMM_CONV), (fal, s::to_ary, R_IMM_CONV),
-        (nil, s::to_a, R_IMM_CONV),
+        (nil, s::to_a, R_IMM_CONV), (int, s::succ, R_INT_SUCC), (int, s::coerce, R_INT_COERCE), (ary, s::size, R_ARY_SIZE),
     ];
     for &(k, m, f) in table {
         if m == mid && (klass == k || ancestors(c, k).contains(&klass)) { REDEF.fetch_or(f, Relaxed); }
@@ -170,7 +175,7 @@ pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &OpCc) -> RV
     if b.is_fixnum() && is_array(a) && obj_klass(a) == vm().c_array.get() && !redef(R_ARY_AREF) { return Ok(am::ary_entry(c, a, b.as_fix())); }
     if is_hash(a) && obj_klass(a) == vm().c_hash.get() && !redef(R_HASH_AREF) {
         c.frame_mut().pos = line;
-        return hm::h_aref(c, a, &[b], std::ptr::null());
+        return hm::h_aref(c, a, &[b], Blk::NONE);
     }
     // Integer#[] (optcarrot's bit tests): its body when the site's cache holds it, without the call
     use crate::inline_builtin::*;
@@ -184,7 +189,7 @@ pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &OpCc) -> RV
 pub fn srb_ltlt_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &OpCc) -> RV {
     if is_array(a) && obj_klass(a) == vm().c_array.get() && !redef(R_ARY_LTLT) {
         c.frame_mut().pos = line;
-        return crate::builtins::array_methods::a_ltlt(c, a, &[b], std::ptr::null());
+        return crate::builtins::array_methods::a_ltlt(c, a, &[b], Blk::NONE);
     }
     srb_binop(c, a, b, s::ltlt, line, cc)
 }
@@ -202,7 +207,7 @@ pub fn srb_aset_out(c: &mut Ctx, a: Value, b: Value, v: Value, line: Pos, cc: &O
     }
     if is_hash(a) && obj_klass(a) == vm().c_hash.get() && !redef(R_HASH_ASET) {
         c.frame_mut().pos = line;
-        return hm::h_aset(c, a, &[b, v], std::ptr::null());
+        return hm::h_aset(c, a, &[b, v], Blk::NONE);
     }
     srb_aset(c, a, b, v, line, cc)
 }
@@ -864,7 +869,7 @@ fn block_from_value(c: &mut Ctx, blkv: Value, holder: &mut Block) -> Result<*con
         // &:sym under refinements remembers the scope it was written in
         let cref = unsafe { (*c.frame).cref() };
         if crate::vm::refinements_on() && cref_refinements(cref) != NIL {
-            *holder = Block::cfunc(c, |_c, _d, _a, _b| Ok(NIL), NIL);
+            *holder = Block::cfunc(c, |_c, _d, _a, _b, _o| Ok(NIL), NIL);
             holder.kind = BlockKind::Sym(blkv.as_sym());
             holder.cref = cref;
             return Ok(holder as *const Block);
@@ -873,7 +878,7 @@ fn block_from_value(c: &mut Ctx, blkv: Value, holder: &mut Block) -> Result<*con
         return Ok(proc_block(c, p));
     }
     if is_method_obj(blkv) {
-        *holder = Block::cfunc(c, |_c, _d, _a, _b| Ok(NIL), NIL);
+        *holder = Block::cfunc(c, |_c, _d, _a, _b, _o| Ok(NIL), NIL);
         holder.kind = BlockKind::Method(blkv);
         return Ok(holder as *const Block);
     }
@@ -896,7 +901,7 @@ pub fn srb_call_x(c: &mut Ctx, cc: &CallCache, mid: Sym, base: Stk, tmp: Value, 
     for i in 0..n { base[2 + i].set(c.ary(tmp)[i]); }
     if has_kw { base[2 + n].set(kw); }
     c.set_sp(base, 2 + total);
-    let mut holder = Block::cfunc(c, |_c, _d, _a, _b| Ok(NIL), NIL);
+    let mut holder = Block::cfunc(c, |_c, _d, _a, _b, _o| Ok(NIL), NIL);
     let mut lit;
     let blk: *const Block = if let Some(is) = ci.blk {
         lit = make_block(c, is, fp);
@@ -958,7 +963,7 @@ pub fn srb_super(c: &mut Ctx, base: Stk, tmp: Value, kw: Value, blkv: Value, ci:
     for i in 0..n { base[2 + i].set(c.ary(tmp)[i]); }
     if has_kw { base[2 + n].set(kw); }
     c.set_sp(base, 2 + total);
-    let mut holder = Block::cfunc(c, |_c, _d, _a, _b| Ok(NIL), NIL);
+    let mut holder = Block::cfunc(c, |_c, _d, _a, _b, _o| Ok(NIL), NIL);
     let lit;
     let blk: *const Block = if let Some(is) = ci.blk {
         lit = make_block(c, is, fp);

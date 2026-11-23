@@ -178,7 +178,7 @@ fn int_cmp_val(c: &mut Ctx, a: Value, b: Value) -> Result<Option<std::cmp::Order
 
 macro_rules! cfn { ($(#[$m:meta])* $name:ident, |$c:ident, $s:ident, $a:ident| $body:expr) => {
     $(#[$m])* #[allow(unused_variables)]
-    pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], _b: *const Block) -> RV { $body }
+    pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], _b: Blk) -> RV { $body }
 }; }
 
 cfn!(int_plus, |c, s, a| int_arith(c, s, a[0], Op::Add));
@@ -280,7 +280,11 @@ cfn!(int_eq, |c, s, a| {
     let r = funcall(c, b, s::eq, &[s], std::ptr::null())?;
     Ok(Value::bool(r.truthy()))
 });
-cfn!(int_eql, |c, s, a| Ok(Value::bool(is_integer(a[0]) && c.to_big(s) == c.to_big(a[0]))));
+cfn!(int_eql, |c, s, a| {
+    // num_eql: rb_equal for fixnums, which calls a redefined Integer#==
+    if s.is_fixnum() && a[0].is_fixnum() && s != a[0] && crate::rt::redef(crate::rt::R_INT_EQ) { return Ok(Value::bool(funcall(c, s, s::eq, &[a[0]], std::ptr::null())?.truthy())); }
+    Ok(Value::bool(is_integer(a[0]) && c.to_big(s) == c.to_big(a[0])))
+});
 cfn!(int_cmp, |c, s, a| {
     match int_cmp_val(c, s, a[0])? {
         Some(o) => Ok(Value::fix(o as i64)),
@@ -362,7 +366,7 @@ cfn!(int_ord, |c, s, _a| Ok(s));
 /// The fixnum loop of Integer#times, yielding through `y` (inline_iter.rs: a baked site's block); None: not a fixnum.
 #[inline(always)]
 pub fn int_times_loop(c: &mut Ctx, s: Value, y: &mut impl FnMut(&mut Ctx, &[Value]) -> RV) -> Option<RV> {
-    if !s.is_fixnum() { return None; }
+    if !s.is_fixnum() || crate::rt::redef(crate::rt::R_INT_LT | crate::rt::R_INT_SUCC) { return None; }
     let n = s.as_fix();
     let mut i = 0;
     while i < n { if let Err(e) = y(c, &[Value::fix(i)]) { return Some(Err(e)); } i += 1; }
@@ -376,9 +380,15 @@ pub fn int_upto_loop(c: &mut Ctx, s: Value, e: Value, dir: i64, y: &mut impl FnM
     while if dir > 0 { i <= e } else { i >= e } { if let Err(e) = y(c, &[Value::fix(i)]) { return Some(Err(e)); } i += dir; }
     Some(Ok(s))
 }
-fn int_times(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
+fn int_times(c: &mut Ctx, s: Value, _a: &[Value], b: Blk) -> RV {
     if b.is_null() { return crate::builtins::enumerator::enum_for(c, s, s::times, &[], NIL); }
     if let Some(r) = int_times_loop(c, s, &mut |c, a| yield1(c, b, a[0])) { return r; }
+    if crate::rt::redef(crate::rt::R_INT_LT | crate::rt::R_INT_SUCC) {
+        // numeric.rb: `while i < self; yield i; i = i.succ; end`
+        let mut i = Value::fix(0);
+        while funcall(c, i, s::lt, &[s], std::ptr::null())?.truthy() { yield1(c, b, i)?; i = funcall(c, i, s::succ, &[], std::ptr::null())?; }
+        return Ok(s);
+    }
     let mut i = Value::fix(0);
     loop {
         if int_cmp_val(c, i, s)? != Some(std::cmp::Ordering::Less) { break; }
@@ -387,7 +397,7 @@ fn int_times(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
     }
     Ok(s)
 }
-fn int_upto(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+fn int_upto(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     if b.is_null() { return crate::builtins::enumerator::enum_for(c, s, s::upto, a, NIL); }
     if let Some(r) = int_upto_loop(c, s, a[0], 1, &mut |c, a| yield1(c, b, a[0])) { return r; }
     if is_float(a[0]) {
@@ -403,7 +413,7 @@ fn int_upto(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     }
     Ok(s)
 }
-fn int_downto(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+fn int_downto(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     if b.is_null() { return crate::builtins::enumerator::enum_for(c, s, s::downto, a, NIL); }
     if let Some(r) = int_upto_loop(c, s, a[0], -1, &mut |c, a| yield1(c, b, a[0])) { return r; }
     let mut i = s;
@@ -422,7 +432,7 @@ cfn!(#[inline] int_odd, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() 
 cfn!(int_positive, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() > 0 } else { !c.big(s).neg })));
 cfn!(int_negative, |c, s, _a| Ok(Value::bool(if s.is_fixnum() { s.as_fix() < 0 } else { c.big(s).neg })));
 cfn!(int_divmod, |c, s, a| {
-    if is_float(a[0]) { let f = c.float_new(c.num_to_f64(s).unwrap()); return flo_divmod(c, f, a, std::ptr::null()); }
+    if is_float(a[0]) { let f = c.float_new(c.num_to_f64(s).unwrap()); return flo_divmod(c, f, a, Blk::NONE); }
     if !is_integer(a[0]) { return coerce_bin(c, s, a[0], s::divmod, false); }
     let q = int_arith(c, s, a[0], Op::Div)?; let m = int_arith(c, s, a[0], Op::Mod)?;
     Ok(c.ary_new_from(&[q, m]))
@@ -447,7 +457,7 @@ cfn!(int_fdiv, |c, s, a| {
 });
 cfn!(int_remainder, |c, s, a| {
     if is_float(a[0]) { if float_val(a[0]) == 0.0 { return err(c, c.vm().c_zero_div_error.get(), "divided by 0"); } return Ok(c.float_new(c.num_to_f64(s).unwrap() % float_val(a[0]))); }
-    if !is_integer(a[0]) { return num_remainder(c, s, a, std::ptr::null()); }
+    if !is_integer(a[0]) { return num_remainder(c, s, a, Blk::NONE); }
     let y = c.to_big(a[0]);
     if y.is_zero() { return err(c, c.vm().c_zero_div_error.get(), "divided by 0"); }
     Ok(c.big_to_value(c.to_big(s).divrem_trunc(&y).1))
@@ -517,9 +527,11 @@ cfn!(int_floor, |c, s, a| round_int(c, s, a, b'f'));
 cfn!(int_ceil, |c, s, a| round_int(c, s, a, b'c'));
 cfn!(int_truncate, |c, s, a| round_int(c, s, a, b't'));
 cfn!(int_digits, |c, s, a| {
+    // rb_num_negative_int_p (`self < 0` once Integer#< is redefined) before the base
+    let neg = if crate::rt::redef(crate::rt::R_INT_LT) { funcall(c, s, s::lt, &[Value::fix(0)], std::ptr::null())?.truthy() } else { c.to_big(s).neg };
+    if neg { return err(c, c.vm().c_math_domain_error.get(), "out of domain"); }
     let base = if a.is_empty() { 10 } else { num_to_long(c, a[0])? };
     if base < 2 { return arg_err(c, format!("invalid radix {}", base)); }
-    if c.to_big(s).neg { return err(c, c.vm().c_math_domain_error.get(), "out of domain"); }
     let out = c.ary_new();
     let mut x = c.to_big(s);
     let b = BigInt::from_i64(base);
@@ -544,8 +556,8 @@ cfn!(int_coerce, |c, s, a| {
 });
 cfn!(int_gcdlcm, |c, s, a| {
     if !is_integer(a[0]) { return type_err(c, "not an integer"); }
-    let g = int_gcd(c, s, a, std::ptr::null())?;
-    let l = int_lcm(c, s, a, std::ptr::null())?;
+    let g = int_gcd(c, s, a, Blk::NONE)?;
+    let l = int_lcm(c, s, a, Blk::NONE)?;
     Ok(c.ary_new_from(&[g, l]))
 });
 cfn!(int_allbits, |c, s, a| { let m = to_integer(c, a[0])?; let r = int_bitop(c, s, m, b'&')?; Ok(Value::bool(c.to_big(r) == c.to_big(m))) });
@@ -637,7 +649,7 @@ cfn!(flo_finite, |c, s, _a| Ok(Value::bool(float_val(s).is_finite())));
 cfn!(flo_zero, |c, s, _a| Ok(Value::bool(float_val(s) == 0.0)));
 cfn!(flo_positive, |c, s, _a| Ok(Value::bool(float_val(s) > 0.0)));
 cfn!(flo_negative, |c, s, _a| Ok(Value::bool(float_val(s) < 0.0)));
-fn flo_divmod(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn flo_divmod(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let x = float_val(s);
     let Some(y) = c.num_to_f64(a[0]) else { return coerce_bin(c, s, a[0], s::divmod, false) };
     let (q, m) = flodivmod(c, x, y)?;
@@ -812,7 +824,7 @@ pub fn num_step_loop(c: &mut Ctx, s: Value, lim: Value, st: Value, y: &mut impl 
     while n > 0 { if let Err(e) = y(c, &[Value::fix(i)]) { return Some(Err(e)); } i += d; n -= 1; }
     Some(Ok(s))
 }
-fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     let kw = kw_arg(a);
     let pos = if kw.is_some() { &a[..a.len() - 1] } else { a };
     if pos.len() > 2 { return arg_err(c, format!("wrong number of arguments (given {}, expected 0..2)", pos.len())); }
@@ -826,7 +838,8 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
         if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("by"))? { if pos.len() > 1 { return arg_err(c, "step is given twice"); } st = v; }
     }
     if st == NIL { st = Value::fix(1); }
-    else if st == Value::fix(0) || (!st.is_fixnum() && funcall(c, st, s::eq, &[Value::fix(0)], std::ptr::null())?.truthy()) { return arg_err(c, "step can't be 0"); }
+    // rb_equal(step, 0): Integer#== once redefined
+    else if st == Value::fix(0) || ((!st.is_fixnum() || crate::rt::redef(crate::rt::R_INT_EQ)) && funcall(c, st, s::eq, &[Value::fix(0)], std::ptr::null())?.truthy()) { return arg_err(c, "step can't be 0"); }
     let numc = c.vm().c_numeric.get();
     let numeric = |v: Value| v.is_fixnum() || is_float(v) || is_kind_of(c, v, numc);
     if b.is_null() {
@@ -836,6 +849,11 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     }
     // num_step_negative_p: `step > 0` decides the direction (and rejects e.g. a String step)
     if !numeric(st) { funcall(c, st, s::gt, &[Value::fix(0)], std::ptr::null())?; }
+    else if st.is_fixnum() && crate::rt::redef(crate::rt::R_INT_LT | crate::rt::R_INT_EQ) {
+        // num_step_negative_p asks `step > 0` once Integer#< is redefined, then num_step's own rb_equal(step, 0)
+        if crate::rt::redef(crate::rt::R_INT_LT) { funcall(c, st, s::gt, &[Value::fix(0)], std::ptr::null())?; }
+        if crate::rt::redef(crate::rt::R_INT_EQ) { funcall(c, st, s::eq, &[Value::fix(0)], std::ptr::null())?; }
+    }
     if s.is_fixnum() && st.is_fixnum() && (lim.is_fixnum() || lim == NIL) {
         let (mut i, d) = (s.as_fix(), st.as_fix());
         if lim == NIL {
@@ -866,7 +884,7 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     }
     num_step_generic(c, s, s, lim, st, b)
 }
-fn num_step_generic(c: &mut Ctx, s: Value, from: Value, lim: Value, st: Value, b: *const Block) -> RV {
+fn num_step_generic(c: &mut Ctx, s: Value, from: Value, lim: Value, st: Value, b: Blk) -> RV {
     let neg = lim != NIL && funcall(c, st, s::lt, &[Value::fix(0)], std::ptr::null())?.truthy();
     let mut i = from;
     loop {
@@ -897,10 +915,10 @@ cfn!(num_coerce, |c, s, a| {
     let (x, y) = (c.float_new(x), c.float_new(y));
     Ok(c.ary_new_from(&[x, y]))
 });
-cfn!(num_floor, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_floor(c, f, a, std::ptr::null()) });
-cfn!(num_ceil, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_ceil(c, f, a, std::ptr::null()) });
-cfn!(num_round, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_round(c, f, a, std::ptr::null()) });
-cfn!(num_truncate, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_truncate(c, f, a, std::ptr::null()) });
+cfn!(num_floor, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_floor(c, f, a, Blk::NONE) });
+cfn!(num_ceil, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_ceil(c, f, a, Blk::NONE) });
+cfn!(num_round, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_round(c, f, a, Blk::NONE) });
+cfn!(num_truncate, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_truncate(c, f, a, Blk::NONE) });
 cfn!(num_div, |c, s, a| {
     let q = funcall(c, s, s::div, &[a[0]], std::ptr::null())?;
     funcall(c, q, intern(b"floor"), &[], std::ptr::null())

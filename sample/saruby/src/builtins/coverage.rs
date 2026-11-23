@@ -136,11 +136,11 @@ fn set_state(s: u8) {
     SETUP.store(s != 0, Relaxed);
     RUNNING.store(s == 2, Relaxed);
 }
-fn cv_supported(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn cv_supported(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     if !a[0].is_sym() { return type_err(c, format!("wrong argument type {} (expected Symbol)", crate::builtins::kernel::class_name_for_err(c, a[0]))); }
     Ok(Value::bool(matches!(crate::symbol::sym_bytes(a[0].as_sym()), b"lines" | b"oneshot_lines" | b"branches" | b"methods" | b"eval")))
 }
-fn cv_setup(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn cv_setup(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     if state(c) != 0 { return rt_err(c, "coverage measurement is already setup"); }
     check_argc(c, a, 0, 1)?;
     let mode = if a.is_empty() { 0 } else if a[0] == Value::sym(intern(b"all")) { T_LINES | T_BRANCHES | T_METHODS | T_EVAL } else {
@@ -165,13 +165,13 @@ fn cv_setup(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     set_state(1);
     Ok(NIL)
 }
-fn cv_resume(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn cv_resume(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     match state(c) { 0 => return rt_err(c, "coverage measurement is not set up yet"), 2 => return rt_err(c, "coverage measurement is already running"), _ => {} }
     set_state(2);
     Ok(NIL)
 }
-fn cv_start(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV { cv_setup(c, s, a, b)?; cv_resume(c, s, &[], b) }
-fn cv_suspend(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn cv_start(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV { cv_setup(c, s, a, b)?; cv_resume(c, s, &[], b) }
+fn cv_suspend(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     if state(c) != 2 { return rt_err(c, "coverage measurement is not running"); }
     set_state(1);
     Ok(NIL)
@@ -240,8 +240,8 @@ fn peek(c: &mut Ctx) -> RV {
     obj_set_flags(out, FL_FROZEN);
     Ok(out)
 }
-fn cv_peek_result(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { peek(c) }
-fn cv_result(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn cv_peek_result(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { peek(c) }
+fn cv_result(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     if state(c) == 0 { return rt_err(c, "coverage measurement is not enabled"); }
     check_argc(c, a, 0, 1)?;
     let (mut stop, mut clear) = (true, true);
@@ -263,10 +263,10 @@ fn cv_result(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     }
     Ok(r)
 }
-fn cv_state(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn cv_state(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     Ok(sym_value(match state(c) { 0 => "idle", 1 => "suspended", _ => "running" }))
 }
-fn cv_running(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(state(c) == 2)) }
+fn cv_running(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(state(c) == 2)) }
 
 /// Init_coverage
 pub fn init(c: &mut Ctx) {

@@ -33,7 +33,7 @@ fn validate(c: &mut Ctx, v: Value) -> Result<(), Esc> {
 /// A copy of the running fiber's storage, for a new fiber or thread.
 pub fn inherited_storage(c: &mut Ctx) -> RV { let f = current(c); let s = storage(c, f); dup(c, s) }
 
-fn f_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn f_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let mut blocking = false;
     let mut st = UNDEF;
     if let Some(h) = kw_arg(a) {
@@ -50,14 +50,14 @@ fn f_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     Ok(crate::fiber::new_user_fiber(c, slf, p, blocking, st))
 }
 
-fn f_s_aref(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn f_s_aref(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let k = key_sym(c, a[0])?;
     let h = storage(c, current(c));
     if h == NIL { return Ok(NIL); }
     Ok(hash_get_opt(c, h, k)?.unwrap_or(NIL))
 }
 
-fn f_s_aset(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn f_s_aset(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (k, v) = (key_sym(c, a[0])?, a[1]);
     let f = current(c);
     let mut h = storage(c, f);
@@ -76,13 +76,13 @@ fn same_fiber(c: &mut Ctx, f: Value) -> Result<(), Esc> {
     Ok(())
 }
 
-fn f_storage(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn f_storage(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     same_fiber(c, slf)?;
     let h = storage(c, slf);
     dup(c, h)
 }
 
-fn f_storage_set(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn f_storage_set(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if let (Some(f), true) = (c.caller_frame(), crate::builtins::misc::warning_category_enabled(1)) {
         let msg = format!("{}:{}: warning: Fiber#storage= is experimental and may be removed in the future!\n", frame_file(f), f.line());
         warn_str(c, &msg);
@@ -94,14 +94,14 @@ fn f_storage_set(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(a[0])
 }
 
-fn f_blocking_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(crate::fiber::is_blocking(c, slf))) }
+fn f_blocking_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(crate::fiber::is_blocking(c, slf))) }
 
 /// The thread's blocking count, which is 1 while a blocking fiber runs (CRuby th->blocking).
-fn f_s_blocking_p(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn f_s_blocking_p(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     Ok(if crate::fiber::is_blocking(c, current(c)) { Value::fix(1) } else { FALSE })
 }
 
-fn f_s_blocking(c: &mut Ctx, _s: Value, _a: &[Value], b: *const Block) -> RV {
+fn f_s_blocking(c: &mut Ctx, _s: Value, _a: &[Value], b: Blk) -> RV {
     let f = current(c);
     if crate::fiber::is_blocking(c, f) { return yield1(c, b, f); }
     crate::fiber::set_blocking(c, f, true);
@@ -111,11 +111,11 @@ fn f_s_blocking(c: &mut Ctx, _s: Value, _a: &[Value], b: *const Block) -> RV {
 }
 
 /// Fiber.set_scheduler(s): the old one is closed first.
-fn f_s_set_scheduler(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { crate::builtins::thread::set_scheduler(c, a[0]) }
-fn f_s_scheduler(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(crate::builtins::thread::thread_scheduler(c)) }
-fn f_s_current_scheduler(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(crate::builtins::thread::scheduler_current(c)) }
+fn f_s_set_scheduler(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { crate::builtins::thread::set_scheduler(c, a[0]) }
+fn f_s_scheduler(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(crate::builtins::thread::thread_scheduler(c)) }
+fn f_s_current_scheduler(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(crate::builtins::thread::scheduler_current(c)) }
 /// Fiber.schedule(*args, &b): the scheduler's #fiber makes and starts the fiber (rb_fiber_s_schedule).
-fn f_s_schedule(c: &mut Ctx, _s: Value, a: &[Value], b: *const Block) -> RV {
+fn f_s_schedule(c: &mut Ctx, _s: Value, a: &[Value], b: Blk) -> RV {
     let s = crate::builtins::thread::thread_scheduler(c);
     if s == NIL { return err(c, c.vm().c_runtime_error.get(), "No scheduler is available!"); }
     match kw_arg(a) {
@@ -125,7 +125,7 @@ fn f_s_schedule(c: &mut Ctx, _s: Value, a: &[Value], b: *const Block) -> RV {
 }
 
 /// CRuby fiber_to_s: "#<Fiber:0x... file:line (status)>", no location for a thread's root fiber.
-fn f_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn f_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let (st, resuming) = crate::fiber::status(c, slf);
     let p = crate::fiber::first_proc(c, slf);
     let loc = if p != NIL && is_proc(p) {

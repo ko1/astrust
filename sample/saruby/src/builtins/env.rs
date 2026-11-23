@@ -40,8 +40,8 @@ fn to_hash(c: &mut Ctx) -> RV {
     for (k, v) in pairs() { let ks = env_str(c, &k); let vs = env_str(c, &v); hash_set(c, h, ks, vs)?; }
     Ok(h)
 }
-fn env_aref(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let k = name_arg(c, a[0], "name")?; Ok(match get(&k) { Some(v) => env_str(c, &v), None => NIL }) }
-fn env_fetch(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+fn env_aref(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let k = name_arg(c, a[0], "name")?; Ok(match get(&k) { Some(v) => env_str(c, &v), None => NIL }) }
+fn env_fetch(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let k = name_arg(c, a[0], "name")?;
     if let Some(v) = get(&k) { return Ok(env_str(c, &v)); }
@@ -51,33 +51,33 @@ fn env_fetch(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     ivar_set_raw(c, e, intern(b"receiver"), s); ivar_set_raw(c, e, intern(b"key"), a[0]);
     Err(raise_exc(c, e))
 }
-fn env_aset(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn env_aset(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let k = name_arg(c, a[0], "name")?;
     if a[1] == NIL { set(c, &k, None)?; return Ok(NIL); }
     let v = name_arg(c, a[1], "value")?;
     set(c, &k, Some(&v))?;
     Ok(a[1])
 }
-fn env_delete(c: &mut Ctx, _s: Value, a: &[Value], b: *const Block) -> RV {
+fn env_delete(c: &mut Ctx, _s: Value, a: &[Value], b: Blk) -> RV {
     let k = name_arg(c, a[0], "name")?;
     match get(&k) {
         Some(v) => { set(c, &k, None)?; Ok(env_str(c, &v)) }
         None => if b.is_null() { Ok(NIL) } else { yield1(c, b, a[0]) },
     }
 }
-fn env_key_p(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let k = name_arg(c, a[0], "name")?; Ok(Value::bool(get(&k).is_some())) }
-fn env_value_p(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { if !is_string(a[0]) { return Ok(NIL); } let v = c.str_bytes(a[0]); Ok(Value::bool(pairs().iter().any(|p| p.1 == v))) }
-fn env_key(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { let v = name_arg(c, a[0], "value")?; Ok(match pairs().into_iter().find(|p| p.1 == v) { Some(p) => env_str(c, &p.0), None => NIL }) }
-fn env_keys(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { let out = c.ary_new(); for (k, _) in pairs() { let s = env_str(c, &k); c.ary_push(out, s); } Ok(out) }
-fn env_values(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { let out = c.ary_new(); for (_, v) in pairs() { let s = env_str(c, &v); c.ary_push(out, s); } Ok(out) }
-fn env_to_h(c: &mut Ctx, _s: Value, _a: &[Value], b: *const Block) -> RV { let h = to_hash(c)?; if b.is_null() { Ok(h) } else { funcall(c, h, intern(b"to_h"), &[], b) } }
-fn env_size(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(pairs().len() as i64)) }
-fn env_empty(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(pairs().is_empty())) }
-fn env_clear(_c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { sys::clearenv(); Ok(s) }
-fn env_inspect(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { let h = to_hash(c)?; crate::builtins::hash_methods::hash_inspect(c, h) }
-fn env_to_s(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.str_new(b"ENV")) }
+fn env_key_p(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let k = name_arg(c, a[0], "name")?; Ok(Value::bool(get(&k).is_some())) }
+fn env_value_p(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { if !is_string(a[0]) { return Ok(NIL); } let v = c.str_bytes(a[0]); Ok(Value::bool(pairs().iter().any(|p| p.1 == v))) }
+fn env_key(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let v = name_arg(c, a[0], "value")?; Ok(match pairs().into_iter().find(|p| p.1 == v) { Some(p) => env_str(c, &p.0), None => NIL }) }
+fn env_keys(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { let out = c.ary_new(); for (k, _) in pairs() { let s = env_str(c, &k); c.ary_push(out, s); } Ok(out) }
+fn env_values(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { let out = c.ary_new(); for (_, v) in pairs() { let s = env_str(c, &v); c.ary_push(out, s); } Ok(out) }
+fn env_to_h(c: &mut Ctx, _s: Value, _a: &[Value], b: Blk) -> RV { let h = to_hash(c)?; if b.is_null() { Ok(h) } else { funcall(c, h, intern(b"to_h"), &[], b) } }
+fn env_size(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(pairs().len() as i64)) }
+fn env_empty(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(pairs().is_empty())) }
+fn env_clear(_c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { sys::clearenv(); Ok(s) }
+fn env_inspect(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { let h = to_hash(c)?; crate::builtins::hash_methods::hash_inspect(c, h) }
+fn env_to_s(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.str_new(b"ENV")) }
 /// Iterators and queries answered by a snapshot Hash (the method keeps its own name).
-fn env_delegate(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+fn env_delegate(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     let Some(name) = c.cur_method_name() else { return Ok(NIL) };
     if b.is_null() && matches!(crate::symbol::sym_bytes(name), b"each" | b"each_pair" | b"each_key" | b"each_value" | b"select" | b"filter" | b"reject" | b"delete_if" | b"keep_if" | b"select!" | b"filter!" | b"reject!" | b"filter_map") {
         return crate::builtins::enumerator::enum_for(c, s, name, a, NIL);
@@ -99,7 +99,7 @@ fn sync_from(c: &mut Ctx, h: Value) -> Result<(), Esc> {
     }
     Ok(())
 }
-fn env_mutate(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+fn env_mutate(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     let Some(name) = c.cur_method_name() else { return Ok(NIL) };
     if b.is_null() && !matches!(crate::symbol::sym_bytes(name), b"replace") { return crate::builtins::enumerator::enum_for(c, s, name, a, NIL); }
     let h = to_hash(c)?;
@@ -108,7 +108,7 @@ fn env_mutate(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     Ok(if r == h { s } else { r })
 }
 /// ENV.update / merge!: like ENV[k] = v per pair (nil deletes), the block resolves existing names.
-fn env_update(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+fn env_update(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     for &x in a {
         let Some(h) = check_hash(c, x)? else { return type_err(c, format!("no implicit conversion of {} into Hash", crate::builtins::kernel::class_name_for_err(c, x))) };
         let mut i = 0;
@@ -123,9 +123,9 @@ fn env_update(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
     }
     Ok(s)
 }
-fn env_freeze(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { type_err(c, "cannot freeze ENV") }
-fn env_dup(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { type_err(c, "Cannot dup ENV, use ENV.to_h to get a copy of ENV as a hash") }
-fn env_clone(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { type_err(c, "Cannot clone ENV, use ENV.to_h to get a copy of ENV as a hash") }
+fn env_freeze(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { type_err(c, "cannot freeze ENV") }
+fn env_dup(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { type_err(c, "Cannot dup ENV, use ENV.to_h to get a copy of ENV as a hash") }
+fn env_clone(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { type_err(c, "Cannot clone ENV, use ENV.to_h to get a copy of ENV as a hash") }
 
 pub fn init(c: &mut Ctx) {
     let env = new_object(c, c.vm().c_object.get());

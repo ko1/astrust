@@ -109,7 +109,7 @@ fn syntax_error(c: &mut Ctx, e: &yp::YError, path: Value) -> Esc {
 
 struct Ids { loc: Sym, ss: Sym, es: Sym, sd: Sym, ed: Sym, al: Sym, sc: Sym, sq: Sym, eq: Sym, sm: Sym, em: Sym }
 
-fn p_native_parse(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn p_native_parse(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let (handler, yaml, path) = (a[0], a[1], a[2]);
     let (io, bytes, enc) = if respond_to(c, yaml, intern(b"read"), false) {
         let ee = funcall(c, yaml, intern(b"external_encoding"), &[], std::ptr::null())?;
@@ -186,13 +186,13 @@ fn p_native_parse(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV 
     }
 }
 /// Parser#parse(yaml, path = ...) of psych 4's psych.so (psych 5 defines it in parser.rb).
-fn p_parse(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn p_parse(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let path = if a.len() == 2 { a[1] } else if respond_to(c, a[0], intern(b"path"), false) { funcall(c, a[0], intern(b"path"), &[], std::ptr::null())? } else { c.str_new(b"<unknown>") };
     let h = ivar_get(c, slf, intern(b"@handler"));
     p_native_parse(c, slf, &[h, a[0], path], b)
 }
-fn p_mark(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn p_mark(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let m = c.data::<PParser>(slf).map(|d| d.mark).unwrap_or_default();
     let k = match const_get_at(c, C_PARSER.get(c), intern(b"Mark")) { Some(k) => k, None => return err(c, c.vm().c_name_error.get(), "uninitialized constant Psych::Parser::Mark") };
     funcall(c, k, intern(b"new"), &[Value::fix(m.index as i64), Value::fix(m.line as i64), Value::fix(m.column as i64)], std::ptr::null())
@@ -226,7 +226,7 @@ fn num2int(c: &mut Ctx, v: Value) -> Result<i64, Esc> {
     if n > i32::MAX as i64 || n < i32::MIN as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too {} to convert to 'int'", n, if n < 0 { "small" } else { "big" })); }
     Ok(n)
 }
-fn e_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn e_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     if a.len() == 2 {
         let o = a[1];
@@ -243,13 +243,13 @@ fn e_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     em_mut(c, slf)?.io = a[0];
     Ok(slf)
 }
-fn e_start_stream(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn e_start_stream(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if !a[0].is_fixnum() { return check_type(c, a[0], "Integer"); }
     let e = num2int(c, a[0])?;
     emit(c, slf, EventData::StreamStart { encoding: e as i32 })
 }
-fn e_end_stream(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { emit(c, slf, EventData::StreamEnd) }
-fn e_start_document(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn e_end_stream(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { emit(c, slf, EventData::StreamEnd) }
+fn e_start_document(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let (version, tags, imp) = (a[0], a[1], a[2]);
     if !crate::array::is_array(version) { return check_type(c, version, "Array"); }
     let vl = c.ary(version).len();
@@ -277,8 +277,8 @@ fn e_start_document(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> R
     }
     emit(c, slf, EventData::DocumentStart { version: ver, tags: tl, implicit: ctrue(imp) })
 }
-fn e_end_document(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { emit(c, slf, EventData::DocumentEnd { implicit: ctrue(a[0]) }) }
-fn e_scalar(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn e_end_document(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { emit(c, slf, EventData::DocumentEnd { implicit: ctrue(a[0]) }) }
+fn e_scalar(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if !is_string(a[0]) { return check_type(c, a[0], "String"); }
     let value = export_utf8(c, a[0]);
     let anchor = opt_str(c, a[1])?;
@@ -286,40 +286,40 @@ fn e_scalar(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     let style = num2int(c, a[5])?;
     emit(c, slf, EventData::Scalar { anchor, tag, value, plain_implicit: ctrue(a[3]), quoted_implicit: ctrue(a[4]), style: style as i32 })
 }
-fn e_start_sequence(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn e_start_sequence(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let anchor = opt_str(c, a[0])?;
     let tag = opt_str(c, a[1])?;
     let style = num2int(c, a[3])?;
     emit(c, slf, EventData::SequenceStart { anchor, tag, implicit: ctrue(a[2]), style: style as i32 })
 }
-fn e_end_sequence(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { emit(c, slf, EventData::SequenceEnd) }
-fn e_start_mapping(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn e_end_sequence(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { emit(c, slf, EventData::SequenceEnd) }
+fn e_start_mapping(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let anchor = opt_str(c, a[0])?;
     let tag = opt_str(c, a[1])?;
     let style = num2int(c, a[3])?;
     emit(c, slf, EventData::MappingStart { anchor, tag, implicit: ctrue(a[2]), style: style as i32 })
 }
-fn e_end_mapping(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { emit(c, slf, EventData::MappingEnd) }
-fn e_alias(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn e_end_mapping(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { emit(c, slf, EventData::MappingEnd) }
+fn e_alias(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let anchor = opt_str(c, a[0])?.unwrap_or_default();
     emit(c, slf, EventData::Alias { anchor })
 }
-fn e_canonical(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(em_mut(c, slf)?.em.canonical)) }
-fn e_set_canonical(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { em_mut(c, slf)?.em.canonical = a[0] == TRUE; Ok(a[0]) }
-fn e_indentation(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(em_mut(c, slf)?.em.best_indent as i64)) }
-fn e_set_indentation(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let n = num2int(c, a[0])?; em_mut(c, slf)?.em.set_indent(n); Ok(a[0]) }
-fn e_line_width(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(em_mut(c, slf)?.em.best_width as i64)) }
-fn e_set_line_width(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let n = num2int(c, a[0])?; em_mut(c, slf)?.em.set_width(n); Ok(a[0]) }
+fn e_canonical(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(em_mut(c, slf)?.em.canonical)) }
+fn e_set_canonical(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { em_mut(c, slf)?.em.canonical = a[0] == TRUE; Ok(a[0]) }
+fn e_indentation(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(em_mut(c, slf)?.em.best_indent as i64)) }
+fn e_set_indentation(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let n = num2int(c, a[0])?; em_mut(c, slf)?.em.set_indent(n); Ok(a[0]) }
+fn e_line_width(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(em_mut(c, slf)?.em.best_width as i64)) }
+fn e_set_line_width(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let n = num2int(c, a[0])?; em_mut(c, slf)?.em.set_width(n); Ok(a[0]) }
 
 // ---- to_ruby / class_loader ---------------------------------------------------------------------
 
-fn tr_build_exception(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn tr_build_exception(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     let e = funcall(c, a[0], intern(b"allocate"), &[], std::ptr::null())?;
     ivar_set_raw(c, e, intern(b"mesg"), a[1]);
     Ok(e)
 }
 /// rb_path_to_class.
-fn cl_path2class(c: &mut Ctx, _slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn cl_path2class(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     let path = expect_str(c, a[0])?;
     let enc = c.str_enc(path);
     if !crate::builtins::encoding::ascii_compat(enc) { return arg_err(c, "invalid class path encoding (non ASCII)"); }
@@ -369,7 +369,7 @@ fn class_under(c: &mut Ctx, outer: Value, name: &str, sup: Value) -> Value {
     match const_get_at(c, outer, intern(name.as_bytes())) { Some(k) if is_class_or_module(k) => k, _ => define_class_under(c, outer, name, sup) }
 }
 
-fn libyaml_version(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(c.ary_new_from(&[Value::fix(0), Value::fix(2), Value::fix(5)])) }
+fn libyaml_version(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.ary_new_from(&[Value::fix(0), Value::fix(2), Value::fix(5)])) }
 
 /// Run by the first `require "psych.so"`.
 pub fn init(c: &mut Ctx) -> RV {

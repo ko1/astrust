@@ -393,17 +393,17 @@ fn port_close(c: &mut Ctx, pt: Value) -> RV {
     Ok(pt)
 }
 
-fn p_s_new(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { let r = current(c); Ok(new_port(c, r)) }
-fn p_send(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn p_s_new(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { let r = current(c); Ok(new_port(c, r)) }
+fn p_send(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let (pos, mv) = move_kw(c, a)?;
     check_argc(c, pos, 1, 1)?;
     port_send(c, s, pos[0], mv)?;
     Ok(s)
 }
-fn p_receive(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { port_receive(c, s) }
-fn p_close(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { port_close(c, s) }
-fn p_closed(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let (o, id) = port(c, s); Ok(Value::bool(port_closed(c, o, id))) }
-fn p_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn p_receive(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { port_receive(c, s) }
+fn p_close(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { port_close(c, s) }
+fn p_closed(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let (o, id) = port(c, s); Ok(Value::bool(port_closed(c, o, id))) }
+fn p_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let (o, id) = port(c, s);
     let t = format!("#<Ractor::Port to:#{} id:{}>", rr(c, o).id, id);
     Ok(c.str_new(t.as_bytes()))
@@ -433,7 +433,7 @@ fn alloc_ractor(c: &mut Ctx, klass: Value, id: u64, name: Value, loc: Value) -> 
 }
 
 /// Ractor.new(*args, name: nil) { |*args| }: the block runs isolated, self = the new Ractor.
-fn r_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn r_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let (args, kw) = match kw_arg(a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
     let mut name = NIL;
     if let Some(h) = kw {
@@ -501,7 +501,7 @@ fn isolate(c: &mut Ctx, p: Value) -> RV {
 }
 
 /// The body of a Ractor's main thread.
-fn ractor_main(c: &mut Ctx, r: Value, _a: &[Value], _b: *const Block) -> RV {
+fn ractor_main(c: &mut Ctx, r: Value, _a: &[Value], _b: Blk, _o: Blk) -> RV {
     let st = std::mem::replace(&mut rr_mut(c, r).start, NIL);
     let p = c.ary_get(st, 0);
     let args = c.ary_get(st, 1);
@@ -532,29 +532,29 @@ fn finish(c: &mut Ctx, r: Value, v: Value, aborted: bool) {
     crate::builtins::blop::notify(c, k);
 }
 
-fn r_s_current(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(current(c)) }
-fn r_s_main(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(MAIN_R.get(c)) }
-fn r_s_main_p(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(thread::current_ractor(c) == NIL)) }
-fn r_s_count(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(1 + LIVE.load(Relaxed) as i64)) }
-fn r_s_receive(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { let p = rr(c, current(c)).default_port; port_receive(c, p) }
-fn r_receive(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let p = rr(c, s).default_port; port_receive(c, p) }
-fn r_send(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn r_s_current(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(current(c)) }
+fn r_s_main(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(MAIN_R.get(c)) }
+fn r_s_main_p(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(thread::current_ractor(c) == NIL)) }
+fn r_s_count(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(1 + LIVE.load(Relaxed) as i64)) }
+fn r_s_receive(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { let p = rr(c, current(c)).default_port; port_receive(c, p) }
+fn r_receive(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let p = rr(c, s).default_port; port_receive(c, p) }
+fn r_send(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let (pos, mv) = move_kw(c, a)?;
     check_argc(c, pos, 1, 1)?;
     let p = rr(c, s).default_port;
     port_send(c, p, pos[0], mv)?;
     Ok(s)
 }
-fn r_close(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let p = rr(c, s).default_port; port_close(c, p) }
-fn r_default_port(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(rr(c, s).default_port) }
-fn r_name(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { Ok(rr(c, s).name) }
+fn r_close(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let p = rr(c, s).default_port; port_close(c, p) }
+fn r_default_port(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(rr(c, s).default_port) }
+fn r_name(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(rr(c, s).name) }
 fn status(c: &Ctx, r: Value) -> &'static str {
     let x = rr(c, r);
     if x.done { return "terminated"; }
     if x.thread == NIL || r == current(c) { return "running"; }
     match thread::thread_state(c, x.thread) { (false, _, _) => "created", (_, _, true) => "terminated", (_, true, _) => "blocking", _ => "running" }
 }
-fn r_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn r_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let x = rr(c, s);
     let name = if x.name != NIL { format!(" {}", String::from_utf8_lossy(c.str_bytes(x.name))) } else { String::new() };
     let loc = if x.loc != NIL { format!(" {}", String::from_utf8_lossy(c.str_bytes(x.loc))) } else { String::new() };
@@ -583,14 +583,14 @@ fn take_value(c: &mut Ctx, r: Value) -> RV {
 }
 /// CRuby's join / select make a Port in the caller to monitor with: its id is used up.
 fn burn_port_id(c: &mut Ctx) { let me = current(c); rr_mut(c, me).next_port += 1; }
-fn r_join(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn r_join(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     burn_port_id(c);
     wait_end(c, s)?;
     if rr(c, s).aborted { take_value(c, s)?; }
     Ok(s)
 }
-fn r_value(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { burn_port_id(c); wait_end(c, s)?; take_value(c, s) }
-fn r_monitor(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn r_value(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { burn_port_id(c); wait_end(c, s)?; take_value(c, s) }
+fn r_monitor(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     if !is_port(c, a[0]) { return type_err(c, "wrong argument type (expected Ractor::Port)"); }
     let x = rr(c, s);
     if !x.done { rr_mut(c, s).monitors.push(a[0]); return Ok(TRUE); }
@@ -598,13 +598,13 @@ fn r_monitor(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
     port_send(c, a[0], tok, false)?;
     Ok(FALSE)
 }
-fn r_unmonitor(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn r_unmonitor(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     if !is_port(c, a[0]) { return type_err(c, "wrong argument type (expected Ractor::Port)"); }
     rr_mut(c, s).monitors.retain(|&m| m != a[0]);
     Ok(s)
 }
 /// Ractor.select(*ports_or_ractors): [port, message] or [ractor, its value], the first ready in order.
-fn r_s_select(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn r_s_select(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() { return arg_err(c, "specify at least one Ractor::Port or Ractor"); }
     for &x in a { if !is_ractor(c, x) && !is_port(c, x) { return arg_err(c, "should be Ractor::Port or Ractor"); } }
     let me = current(c);
@@ -618,22 +618,22 @@ fn r_s_select(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(c.ary_new_from(&[x, v]))
 }
 fn local_key(c: &mut Ctx, k: Value) -> RV { thread::key_sym(c, k) }
-fn r_aref(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn r_aref(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     if s != current(c) { return err(c, c.vm().c_runtime_error.get(), "Cannot get ractor local storage for non-current ractor"); }
     let k = local_key(c, a[0])?;
     let h = rr(c, s).locals;
     Ok(hash_get_opt(c, h, k)?.unwrap_or(NIL))
 }
-fn r_aset(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn r_aset(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     if s != current(c) { return err(c, c.vm().c_runtime_error.get(), "Cannot set ractor local storage for non-current ractor"); }
     let k = local_key(c, a[0])?;
     let h = rr(c, s).locals;
     hash_aset(c, h, k, a[1])?;
     Ok(a[1])
 }
-fn r_s_aref(c: &mut Ctx, _s: Value, a: &[Value], b: *const Block) -> RV { let r = current(c); r_aref(c, r, a, b) }
-fn r_s_aset(c: &mut Ctx, _s: Value, a: &[Value], b: *const Block) -> RV { let r = current(c); r_aset(c, r, a, b) }
-fn r_s_store_if_absent(c: &mut Ctx, _s: Value, a: &[Value], b: *const Block) -> RV {
+fn r_s_aref(c: &mut Ctx, _s: Value, a: &[Value], b: Blk) -> RV { let r = current(c); r_aref(c, r, a, b) }
+fn r_s_aset(c: &mut Ctx, _s: Value, a: &[Value], b: Blk) -> RV { let r = current(c); r_aset(c, r, a, b) }
+fn r_s_store_if_absent(c: &mut Ctx, _s: Value, a: &[Value], b: Blk) -> RV {
     let r = current(c);
     let k = local_key(c, a[0])?;
     let h = rr(c, r).locals;
@@ -643,8 +643,8 @@ fn r_s_store_if_absent(c: &mut Ctx, _s: Value, a: &[Value], b: *const Block) -> 
     hash_aset(c, h, k, v)?;
     Ok(v)
 }
-fn r_s_shareable_p(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::bool(shareable(c, a[0]))) }
-fn r_s_make_shareable(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn r_s_shareable_p(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { Ok(Value::bool(shareable(c, a[0]))) }
+fn r_s_make_shareable(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (pos, copy) = match kw_arg(a) {
         Some(h) => {
             let mut cp = false;
@@ -659,7 +659,7 @@ fn r_s_make_shareable(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> 
     Ok(v)
 }
 /// Ractor.shareable_proc / shareable_lambda(self: nil) { }
-fn shareable_proc(c: &mut Ctx, a: &[Value], b: *const Block, lambda: bool) -> RV {
+fn shareable_proc(c: &mut Ctx, a: &[Value], b: Blk, lambda: bool) -> RV {
     if b.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
     let mut slf = NIL;
     if let Some(h) = kw_arg(a) { if let Some(v) = hash_get_opt(c, h, sym_value("self"))? { slf = v; } }
@@ -791,7 +791,7 @@ pub fn class_ivar_set_check(c: &mut Ctx, k: Value, name: Sym) -> Result<(), Esc>
 
 // ---- Ractor::MovedObject ----------------------------------------------------------------------
 
-fn moved_missing(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV { error(c, &E_MOVED, "can not send any methods to a moved object") }
+fn moved_missing(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { error(c, &E_MOVED, "can not send any methods to a moved object") }
 
 /// The "saruby/ractor" feature: Ractor is defined on first reference.
 pub fn init(c: &mut Ctx) {

@@ -309,7 +309,7 @@ fn utf8_to_uv(c: &mut Ctx, s: &[u8]) -> Result<(u64, usize), Esc> {
 enum Mode { Array, Block, One }
 
 /// String#unpack (with or without a block) and String#unpack1.
-pub fn unpack(c: &mut Ctx, str: Value, a: &[Value], blk: *const Block, one: bool) -> RV {
+pub fn unpack(c: &mut Ctx, str: Value, a: &[Value], blk: Blk, one: bool) -> RV {
     let (n, off) = one_kw(c, a, "offset")?;
     if n != 1 { return argc_err(c, n, 1, 1); }
     let fv = expect_str(c, a[0])?;

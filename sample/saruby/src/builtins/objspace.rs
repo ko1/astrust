@@ -83,7 +83,7 @@ fn with_info<R>(v: Value, f: impl FnOnce(&Info) -> R) -> Option<R> {
     TABLE.with_borrow(|t| t.get(&(v.raw() as usize)).map(f))
 }
 
-fn tr_start(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn tr_start(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     if RUNNING.replace(RUNNING.get() + 1) == 0 {
         crate::gc::set_alloc_hook(true);
         // code compiled from now on keeps each statement's line in its frame (as for TracePoint)
@@ -91,30 +91,30 @@ fn tr_start(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     }
     Ok(NIL)
 }
-fn tr_stop(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn tr_stop(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     match RUNNING.get() { 0 => {} 1 => { RUNNING.set(0); crate::gc::set_alloc_hook(false); } n => RUNNING.set(n - 1) }
     Ok(NIL)
 }
-fn tr_clear(_c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn tr_clear(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     // flags stay: forget and lookups tolerate a missing entry
     TABLE.with_borrow_mut(|t| t.clear());
     Ok(NIL)
 }
-fn tr_block(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
+fn tr_block(c: &mut Ctx, s: Value, _a: &[Value], b: Blk) -> RV {
     tr_start(c, s, &[], b)?;
     let r = if b.is_null() { err(c, c.vm().c_local_jump_error.get(), "no block given (yield)") } else { yield1(c, b, NIL) };
     tr_stop(c, s, &[], b)?;
     r
 }
-fn alloc_file(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn alloc_file(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     match with_info(a[0], |i| i.file) { Some(f) => Ok(c.str_new(f.as_bytes())), None => Ok(NIL) }
 }
-fn alloc_line(_c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { Ok(with_info(a[0], |i| Value::fix(i.line as i64)).unwrap_or(NIL)) }
-fn alloc_path(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn alloc_line(_c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { Ok(with_info(a[0], |i| Value::fix(i.line as i64)).unwrap_or(NIL)) }
+fn alloc_path(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     match with_info(a[0], |i| i.path.clone()).flatten() { Some(p) => Ok(c.str_new(p.as_bytes())), None => Ok(NIL) }
 }
-fn alloc_mid(_c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { Ok(with_info(a[0], |i| i.mid.map(Value::sym)).flatten().unwrap_or(NIL)) }
-fn alloc_gen(_c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { Ok(with_info(a[0], |i| Value::fix(i.generation as i64)).unwrap_or(NIL)) }
+fn alloc_mid(_c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { Ok(with_info(a[0], |i| i.mid.map(Value::sym)).flatten().unwrap_or(NIL)) }
+fn alloc_gen(_c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { Ok(with_info(a[0], |i| Value::fix(i.generation as i64)).unwrap_or(NIL)) }
 
 // ---- object kinds and sizes ---------------------------------------------------------------------
 
@@ -178,8 +178,8 @@ fn visible(c: &Ctx, v: Value) -> bool {
     obj_klass(v) != NIL && !matches!(c.body_of(v), Body::Env(..) | Body::Free(_)) && !(is_class_or_module(v) && c.class(v).is_singleton)
 }
 
-fn memsize_of(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { Ok(Value::fix(memsize(c, a[0]) as i64)) }
-fn memsize_of_all(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn memsize_of(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { Ok(Value::fix(memsize(c, a[0]) as i64)) }
+fn memsize_of_all(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     let k = a.first().copied();
     let total: usize = all_objects().into_iter().filter(|&v| visible(c, v) && k.is_none_or(|k| is_kind_of(c, v, k))).map(|v| memsize(c, v)).sum();
@@ -195,7 +195,7 @@ fn tally<K: PartialEq + Copy>(out: &mut Vec<(K, usize)>, k: K, n: usize) {
     match out.iter_mut().find(|e| e.0 == k) { Some(e) => e.1 += n, None => out.push((k, n)) }
 }
 /// ObjectSpace.count_objects: slots, free slots, and objects by type.
-pub fn count_objects(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+pub fn count_objects(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let st = crate::gc::stats();
     let mut by: Vec<(&'static str, usize)> = vec![];
     for v in all_objects() { tally(&mut by, type_name(c, v), 1); }
@@ -205,7 +205,7 @@ pub fn count_objects(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> R
     }
     count_hash(c, a, counts)
 }
-fn count_objects_size(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn count_objects_size(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let mut by: Vec<(&'static str, usize)> = vec![];
     let mut total = 0;
     for v in all_objects() { let n = memsize(c, v); total += n; tally(&mut by, type_name(c, v), n); }
@@ -213,7 +213,7 @@ fn count_objects_size(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> 
     counts.push((sym_value("TOTAL"), total));
     count_hash(c, a, counts)
 }
-fn count_tdata_objects(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn count_tdata_objects(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let mut by: Vec<(Value, usize)> = vec![];
     for v in all_objects() {
         if matches!(c.body_of(v), Body::Data(_) | Body::Proc(_) | Body::Method(_)) && type_name(c, v) == "DATA" {
@@ -224,11 +224,11 @@ fn count_tdata_objects(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) ->
     }
     count_hash(c, a, by)
 }
-fn count_imemo_objects(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn count_imemo_objects(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let n = all_objects().into_iter().filter(|&v| matches!(c.body_of(v), Body::Env(..))).count();
     count_hash(c, a, if n > 0 { vec![(sym_value("imemo_env"), n)] } else { vec![] })
 }
-fn count_symbols(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn count_symbols(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     // saruby's symbols are never collected: all immortal
     let n = crate::symbol::all_count();
     count_hash(c, a, vec![(sym_value("mortal_dynamic_symbol"), 0), (sym_value("immortal_dynamic_symbol"), 0), (sym_value("immortal_static_symbol"), n), (sym_value("immortal_symbol"), n)])
@@ -247,14 +247,14 @@ fn wrap_internal(c: &mut Ctx, v: Value) -> Value {
     w
 }
 fn iow_obj(c: &Ctx, s: Value) -> Value { ivar_get(c, s, intern(b"__obj")) }
-fn iow_type(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let o = iow_obj(c, s); Ok(sym_value(&format!("T_{}", type_name(c, o)))) }
-fn iow_id(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let o = iow_obj(c, s); Ok(Value::fix(object_id(o) as i64)) }
-fn iow_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn iow_type(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let o = iow_obj(c, s); Ok(sym_value(&format!("T_{}", type_name(c, o)))) }
+fn iow_id(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let o = iow_obj(c, s); Ok(Value::fix(object_id(o) as i64)) }
+fn iow_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let o = iow_obj(c, s);
     Ok(c.str_new(format!("#<InternalObject:0x{:016x} T_{}>", o.raw(), type_name(c, o)).as_bytes()))
 }
 
-fn reachable_objects_from(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn reachable_objects_from(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let o = a[0];
     if !o.is_heap() { return Ok(NIL); }
     // weak tables are not shown (CRuby's WeakMap keeps its table outside the heap)
@@ -264,7 +264,7 @@ fn reachable_objects_from(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block)
     for i in 0..n { let v = c.ary_get(r, i); let w = wrap_internal(c, v); c.ary_mut(r).vec()[i] = w; }
     Ok(r)
 }
-fn reachable_objects_from_root(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn reachable_objects_from_root(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     let vs = crate::gc::exact_roots(c);
     let r = c.ary_from_vec(vs);
     let h = c.hash_new();
@@ -272,11 +272,11 @@ fn reachable_objects_from_root(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const 
     hash_set(c, h, k, r)?;
     Ok(h)
 }
-fn internal_class_of(_c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn internal_class_of(_c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let k = class_of(a[0]);
     Ok(if k == NIL { NIL } else { k })
 }
-fn internal_super_of(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn internal_super_of(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     if !is_class_or_module(a[0]) { return arg_err(c, "class or module is expected"); }
     Ok(c.class(a[0]).superclass)
 }
@@ -363,7 +363,7 @@ fn emit(c: &mut Ctx, out: Value, b: &[u8]) -> Result<(), Esc> {
     if is_string(out) { c.str_modify(out)?.b.extend_from_slice(b); Ok(()) } else { let st = c.str_new(b); funcall(c, out, intern(b"write"), &[st], std::ptr::null()).map(|_| ()) }
 }
 // ObjectSpace._dump(obj, out)
-fn os_dump(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn os_dump(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let mut line = dump_obj(c, a[0]);
     // dump.c ends the line of a heap object only
     if a[0].is_heap() { line.push('\n'); }
@@ -371,7 +371,7 @@ fn os_dump(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(a[1])
 }
 // ObjectSpace._dump_all(out, full, since, shapes)
-fn os_dump_all(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn os_dump_all(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let out = a[0];
     let since = if a[2] == NIL { None } else { Some(a[2].as_fix().max(0) as usize) };
     let roots: Vec<String> = crate::gc::exact_roots(c).into_iter().map(addr).collect();
@@ -389,7 +389,7 @@ fn os_dump_all(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
     Ok(out)
 }
 // ObjectSpace._dump_shapes(out, since): saruby has no shapes
-fn os_dump_shapes(_c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV { Ok(a[0]) }
+fn os_dump_shapes(_c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { Ok(a[0]) }
 
 /// `require 'objspace.so'`.
 pub fn init_ext(c: &mut Ctx) {
@@ -430,12 +430,12 @@ fn table(c: &mut Ctx, s: Value) -> Value {
     ivar_set_raw(c, s, intern(b"__h"), h);
     h
 }
-fn wm_init(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { table(c, s); Ok(NIL) }
-fn wm_aref(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { let h = table(c, s); Ok(hash_get_opt(c, h, a[0])?.unwrap_or(NIL)) }
-fn wm_aset(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { let h = table(c, s); hash_set(c, h, a[0], a[1])?; Ok(a[1]) }
-fn wm_key(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV { let h = table(c, s); Ok(Value::bool(hash_lookup(c, h, a[0])?.is_some())) }
-fn wm_size(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let h = table(c, s); Ok(Value::fix(c.hash_len(h) as i64)) }
-fn wm_delete(c: &mut Ctx, s: Value, a: &[Value], b: *const Block) -> RV {
+fn wm_init(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { table(c, s); Ok(NIL) }
+fn wm_aref(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { let h = table(c, s); Ok(hash_get_opt(c, h, a[0])?.unwrap_or(NIL)) }
+fn wm_aset(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { let h = table(c, s); hash_set(c, h, a[0], a[1])?; Ok(a[1]) }
+fn wm_key(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { let h = table(c, s); Ok(Value::bool(hash_lookup(c, h, a[0])?.is_some())) }
+fn wm_size(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let h = table(c, s); Ok(Value::fix(c.hash_len(h) as i64)) }
+fn wm_delete(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     let h = table(c, s);
     match hash_delete(c, h, a[0])? { Some(v) => Ok(v), None => if b.is_null() { Ok(NIL) } else { yield1(c, b, a[0]) } }
 }
@@ -451,9 +451,9 @@ fn wm_list(c: &mut Ctx, s: Value, vals: bool) -> RV {
     wm_walk(c, s, |c, k, v| { c.ary_push(r, if vals { v } else { k }); Ok(()) })?;
     Ok(r)
 }
-fn wm_keys(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { wm_list(c, s, false) }
-fn wm_values(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { wm_list(c, s, true) }
-fn wm_each(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
+fn wm_keys(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { wm_list(c, s, false) }
+fn wm_values(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { wm_list(c, s, true) }
+fn wm_each(c: &mut Ctx, s: Value, _a: &[Value], b: Blk) -> RV {
     if b.is_null() {
         // CRuby yields only when there is an entry
         let h = table(c, s);
@@ -467,25 +467,25 @@ fn wm_each(c: &mut Ctx, s: Value, _a: &[Value], b: *const Block) -> RV {
     })?;
     Ok(s)
 }
-fn wm_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn wm_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let mut parts = vec![];
     // as weakmap.c: immediates by #inspect, objects by rb_any_to_s
     let show = |c: &mut Ctx, v: Value| if v.is_imm() { inspect_str(c, v) } else { Ok(any_to_s_str(c, v)) };
     wm_walk(c, s, |c, k, v| { parts.push(format!("{} => {}", show(c, k)?, show(c, v)?)); Ok(()) })?;
     Ok(c.str_new(format!("#<{}:0x{:016x}{}{}>", class_path(c, real_class_of(c, s)), s.raw(), if parts.is_empty() { "" } else { ": " }, parts.join(", ")).as_bytes()))
 }
-fn wkm_aset(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn wkm_aset(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     if a[0].is_imm() || is_float(a[0]) || is_bignum(a[0]) { return arg_err(c, "WeakKeyMap keys must be garbage collectable"); }
     let h = table(c, s);
     hash_set(c, h, a[0], a[1])?;
     Ok(a[1])
 }
-fn wkm_getkey(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+fn wkm_getkey(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let h = table(c, s);
     Ok(match hash_lookup(c, h, a[0])? { Some(i) => c.hash_entry_at(h, i).map(|e| e.0).unwrap_or(NIL), None => NIL })
 }
-fn wkm_clear(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { let h = table(c, s); c.hash_clear(h); Ok(s) }
-fn wkm_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV {
+fn wkm_clear(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let h = table(c, s); c.hash_clear(h); Ok(s) }
+fn wkm_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let h = table(c, s);
     let n = c.hash_len(h);
     Ok(c.str_new(format!("#<{}:0x{:016x} size={}>", class_path(c, real_class_of(c, s)), s.raw(), n).as_bytes()))
@@ -504,7 +504,7 @@ fn imm_of_id(n: u64) -> Option<Value> {
 }
 
 // ObjectSpace._id2ref (deprecated in 4.0)
-fn os_id2ref(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn os_id2ref(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     warn_deprecated(c, "ObjectSpace._id2ref is deprecated")?;
     let id = a[0];
     if !is_integer(id) { return type_err(c, format!("wrong argument type {} (expected Integer)", class_name_for_err(c, id))); }

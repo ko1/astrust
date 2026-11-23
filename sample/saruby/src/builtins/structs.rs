@@ -26,7 +26,7 @@ fn kw_init(c: &Ctx, k: Value) -> Value {
     NIL
 }
 
-fn st_s_new(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
+fn st_s_new(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     let mut names = vec![];
     let mut kwinit = NIL;
     let mut cname = NIL;
@@ -90,7 +90,7 @@ fn st_s_new(c: &mut Ctx, slf: Value, a: &[Value], blk: *const Block) -> RV {
     if !blk.is_null() { yield_with_self(c, blk, &[k], k, k)?; }
     Ok(k)
 }
-fn st_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn st_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let k = real_class_of(c, slf);
     let mem = members_of(c, k);
     let n = c.ary_len(mem);
@@ -115,11 +115,11 @@ fn st_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     for (i, &x) in a.iter().enumerate() { ivar_set_raw(c, slf, c.ary_get(mem, i).as_sym(), x); }
     Ok(NIL)
 }
-fn st_to_a(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn st_to_a(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let mem = members_of(c, real_class_of(c, slf));
     Ok(c.ary_from_vec((0..c.ary_len(mem)).map(|i| ivar_get(c, slf, c.ary_get(mem, i).as_sym())).collect()))
 }
-fn st_to_h(c: &mut Ctx, slf: Value, _a: &[Value], blk: *const Block) -> RV {
+fn st_to_h(c: &mut Ctx, slf: Value, _a: &[Value], blk: Blk) -> RV {
     let mem = members_of(c, real_class_of(c, slf));
     let h = c.hash_new();
     for i in 0..c.ary_len(mem) {
@@ -153,13 +153,13 @@ fn idx_of(c: &mut Ctx, slf: Value, k: Value) -> Result<Sym, Esc> {
     }
     Ok(c.ary_get(mem, j as usize).as_sym())
 }
-fn st_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let n = idx_of(c, slf, a[0])?; Ok(ivar_get(c, slf, n)) }
-fn st_aset(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { let n = idx_of(c, slf, a[0])?; check_frozen(c, slf)?; ivar_set_raw(c, slf, n, a[1]); Ok(a[1]) }
+fn st_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let n = idx_of(c, slf, a[0])?; Ok(ivar_get(c, slf, n)) }
+fn st_aset(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let n = idx_of(c, slf, a[0])?; check_frozen(c, slf)?; ivar_set_raw(c, slf, n, a[1]); Ok(a[1]) }
 fn st_cmp_members(c: &mut Ctx, slf: Value, o: Value, eql: bool) -> RV {
     if slf == o { return Ok(TRUE); }
     if !o.is_heap() || real_class_of(c, o) != real_class_of(c, slf) { return Ok(FALSE); }
     let tag = if eql { s::eql_p } else { s::eq };
-    if !recursion_enter(slf, tag) { return Ok(TRUE); }
+    if !rec_enter(c, slf, tag)? { return Ok(TRUE); }
     let mem = members_of(c, real_class_of(c, slf));
     let r: Result<bool, Esc> = (|| {
         for i in 0..c.ary_len(mem) {
@@ -170,16 +170,16 @@ fn st_cmp_members(c: &mut Ctx, slf: Value, o: Value, eql: bool) -> RV {
         }
         Ok(true)
     })();
-    recursion_leave(slf, tag);
+    rec_leave(c, slf, tag);
     Ok(Value::bool(r?))
 }
-fn st_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { st_cmp_members(c, slf, a[0], false) }
-fn st_eql(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV { st_cmp_members(c, slf, a[0], true) }
-fn st_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn st_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { st_cmp_members(c, slf, a[0], false) }
+fn st_eql(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { st_cmp_members(c, slf, a[0], true) }
+fn st_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let seed = real_class_of(c, slf).raw();
     // a recursive struct hashes by its class alone (rb_exec_recursive_outer)
     let h = crate::hash::hash_outer(c, slf, seed, |c| {
-        let vals = st_to_a(c, slf, &[], std::ptr::null())?;
+        let vals = st_to_a(c, slf, &[], Blk::NONE)?;
         let mut h = seed;
         let mut i = 0;
         while i < c.ary_len(vals) { let x = c.ary_get(vals, i); h = crate::astrust::hash_merge(h, crate::hash::ruby_hash(c, x)?); i += 1; }
@@ -187,26 +187,26 @@ fn st_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
     })?;
     Ok(Value::fix((h >> 2) as i64))
 }
-fn st_members(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let m = members_of(c, real_class_of(c, slf)); Ok(c.ary_from_vec(c.ary(m).to_vec())) }
-fn st_each(c: &mut Ctx, slf: Value, _a: &[Value], blk: *const Block) -> RV {
+fn st_members(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let m = members_of(c, real_class_of(c, slf)); Ok(c.ary_from_vec(c.ary(m).to_vec())) }
+fn st_each(c: &mut Ctx, slf: Value, _a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for_sized(c, slf, s::each, &[]); }
-    let v = st_to_a(c, slf, &[], std::ptr::null())?;
+    let v = st_to_a(c, slf, &[], Blk::NONE)?;
     let mut i = 0;
     while let Some(&x) = c.ary(v).get(i) { yield1(c, blk, x)?; i += 1; }
     Ok(slf)
 }
-fn st_each_pair(c: &mut Ctx, slf: Value, _a: &[Value], blk: *const Block) -> RV {
+fn st_each_pair(c: &mut Ctx, slf: Value, _a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for_sized(c, slf, s::each_pair, &[]); }
     let mem = members_of(c, real_class_of(c, slf));
     for i in 0..c.ary_len(mem) { let k = c.ary_get(mem, i); let p = c.ary_new_from(&[k, ivar_get(c, slf, k.as_sym())]); yield1(c, blk, p)?; }
     Ok(slf)
 }
-fn st_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
+fn st_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let k = real_class_of(c, slf);
     let mem = members_of(c, k);
     let mut out = String::from("#<struct ");
     if c.class(k).name.is_some() { out.push_str(&class_path(c, k)); }
-    if !recursion_enter(slf, s::inspect) { out.push_str(":...>"); return Ok(c.str_new(out.as_bytes())); }
+    if !rec_enter(c, slf, s::inspect)? { out.push_str(":...>"); return Ok(c.str_new(out.as_bytes())); }
     if c.class(k).name.is_some() { out.push(' '); }
     for i in 0..c.ary_len(mem) {
         if i > 0 { out.push_str(", "); }
@@ -214,14 +214,14 @@ fn st_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
         let nb = sym_bytes(n);
         if crate::string::sym_is_simple(nb) && !nb.ends_with(b"=") { out.push_str(&sym_str(n)); } else { out.push_str(&crate::string::inspect_bytes(nb, ENC_UTF8)); }
         out.push('=');
-        match inspect_str(c, ivar_get(c, slf, n)) { Ok(s2) => out.push_str(&s2), Err(e) => { recursion_leave(slf, s::inspect); return Err(e); } }
+        match inspect_str(c, ivar_get(c, slf, n)) { Ok(s2) => out.push_str(&s2), Err(e) => { rec_leave(c, slf, s::inspect); return Err(e); } }
     }
-    recursion_leave(slf, s::inspect);
+    rec_leave(c, slf, s::inspect);
     out.push('>');
     Ok(c.str_new(out.as_bytes()))
 }
-fn st_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { let m = members_of(c, real_class_of(c, slf)); Ok(Value::fix(c.ary_len(m) as i64)) }
-fn st_dig(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn st_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let m = members_of(c, real_class_of(c, slf)); Ok(Value::fix(c.ary_len(m) as i64)) }
+fn st_dig(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
     let mem = members_of(c, real_class_of(c, slf));
     let v = if a[0].is_sym() || is_string(a[0]) {
@@ -237,7 +237,7 @@ fn st_dig(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     if !respond_to(c, v, intern(b"dig"), true) { return type_err(c, format!("{} does not have #dig method", class_name_for_err(c, v))); }
     funcall(c, v, intern(b"dig"), &a[1..], std::ptr::null())
 }
-fn st_values_at(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
+fn st_values_at(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let arr = st_to_a(c, slf, &[], b)?;
     let len = c.ary_len(arr) as i64;
     for &x in a {
@@ -248,7 +248,7 @@ fn st_values_at(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     }
     crate::builtins::array_methods::a_values_at(c, arr, a, b)
 }
-fn st_deconstruct_keys(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn st_deconstruct_keys(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let h = c.hash_new();
     let mem = members_of(c, real_class_of(c, slf));
     if a[0] == NIL {
@@ -278,7 +278,7 @@ fn st_deconstruct_keys(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -
     }
     Ok(h)
 }
-fn st_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
+fn st_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     for (n, v) in ivar_list(c, a[0]) { ivar_set_raw(c, slf, n, v); }
     Ok(slf)
 }

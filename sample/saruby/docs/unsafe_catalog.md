@@ -178,7 +178,7 @@ fiber.rs went from 21 to 1 `unsafe` in that trial (`deny(unsafe_code)` on the fi
 |---|---|---|---|---|
 | frame chain (39) | `(*c.frame).cref()`, `(*c.frame).blk`, `(*self.prev).cref()`, `&*(self as *const Frame as *const FrameFull)` (vm.rs:277), `(*g).prev` walks in rt.rs:500–519 | `Frame` records live on the native stack, one per Rust activation of a call, linked by raw `prev` pointers; `Ctx` holds the innermost. A reference with a lifetime cannot be stored in `Ctx` while the frame's owner (a Rust stack frame below) also uses it: the chain is self-referential through the machine stack. Lite frames are a prefix of `FrameFull`, distinguished by a flag. | frames in a `Vec<Frame>` owned by `Ctx`, linked by index (the value stack's `emu_idx` shape) | A: not built. The value stack's measurement of the same shape is the closest number: `emu_idx` AOT +16 to +89 % instructions (safe_stack.md, step 1), because the base and length are reloaded after every call. |
 | method entry, leaked `Box` (36) | `&*me`, `(*me).kind`, `(*me).visi`, `(*me).owner` in `invoke*`, lookup, `respond_to`, `defined?` | `MethodEntry` is `Box::leak`ed and never freed, but kept as `*const` because `visi` is written in place (`Module#private`) | `&'static MethodEntry` with `visi: Cell<u8>` | A: no instruction change expected (a `Cell` read is a load). Not built. |
-| block pointer, H4 (17) | `&*blk`, `(*blk).tag`, `(*blk).kind` | a `Block` lives in its creator's Rust frame or in a Proc; the callee receives `*const Block` and assumes it alive for the call (H4) | lifetimes on every builtin signature (`&'a Block`) | A: not attempted; it changes the `CFunc` type of every builtin. |
+| block pointer, H4 (17) | `&*blk`, `(*blk).tag`, `(*blk).kind` | a `Block` lives in its creator's Rust frame or in a Proc; the callee receives `*const Block` and assumes it alive for the call (H4) | lifetimes on every builtin signature: done for the builtin side as `Blk<'a>` (2.4.3); the dereferences stay in the VM's raw bodies | M: 2.4.3 and T/README.md (15 benches on sp4). |
 | iseq, never freed (16) | `&*is`, `(*is).bentry` | iseqs are leaked and immutable after build except `Cell` fields | `&'static Iseq` | A: zero; `c.iseq_ref` already returns `&'static Iseq` (heap.rs:271). |
 | cref chain, leaked (11) | `(*cr).klass`, `(*cr).prev` loops (vm.rs:727, 917; rt.rs:350, 675) | leaked, `refinements` written in place | `&'static Cref` with a `Cell` | A: zero. |
 | static mut global (10; 1 after 4.4) | `vm()` (vm.rs:470), `REFINEMENTS_ON` (vm.rs:1589, 2253; rt.rs:180, 746) and `BOOTED` (rt.rs:67, 107, 125) became `AtomicBool` in 4.4 | `static mut` | atomics (done); `Vm` owned by `Ctx` | M: section 4 (`atomic`, `vmchk`). Precedent: REDEF as `AtomicU32`, identical instruction counts (`2026-11-21-saruby-loops-arith`, step 0007, commit c9c69a5). |
@@ -358,19 +358,24 @@ it.
 | 42 | gc heap | `p({a: 1, b: 2}.cycle(2**62).size)` | 0 (`Enumerable.__int` made a Fixnum of a long past the Fixnum range) | integer overflow | c-test | e521210: the first smoke test of row 41's fix (both `cycle` sizes printed side by side) printed 0; the cause read in `e_int` |
 | 43 | gc heap | `p [:a, :b].cycle(2**62).size` after row 41's fix | nil (`Enumerator#size` passed only Fixnum / Float sizes) | compatibility | c-test | e521210: the same smoke test printed nil; the cause read in `e_size` |
 | 44 | inline caches | AOT: a call site re-entered by recursion while the method serial changes refills its cache; then `x.f` with an A runs B#f (`tools/aot/ic_reentry_spec_klass_1123.rb`) | `[:A, :A, :B, :B]` (CRuby `[:A, :A, :A, :B]`; `--plain` right) | **undefined behaviour used by LLVM: `&mut CallCache` (`noalias`) live across a call that re-enters the same node** | c-read | f507c19: named in 8.3 item 4 while the generated code's `unsafe` was removed; the repro was written after reading `call_spec_out`'s machine code (pre-call `cc.klass` reused after the call), failed on base, passed on base rebuilt with `-Zmutable-noalias=no` and on the Cell form (trial `2026-11-23-saruby-ic-borrow`) |
+| 45 | block escape | `class K; include Enumerable; attr_reader :blk; def each(&b) = (@blk = b; yield 1); end; k = K.new; k.map { _1 }; k.blk.call(9)` | **SIGSEGV** (the Cfunc block's data held the caller's Block address as an Integer; the late call rebuilt a pointer into freed stack) | **use after return: a stack Block's address made from an Integer (H4)**; map, flat_map, filter_map, select, reject, each_with_index, each_with_object, find, count, minmax_by, min_by, max_by, group_by, inject, each_slice, each_cons | c-test | 2d21e95: a SIGSEGV of t/hand `break_kept_each_block_1122` in the per-file run of the pp-prelude trial (its first build moved `first` onto `Enumerable.__each`; 981310b patched that helper with a Proc); the older natives were then read to have the same shape (docs/todo.md). Rebuilt on the `Blk<'call>` type: E0605 at the cast (2.4.3) |
+| 46 | block escape | `k.min_by(2) { -_1 }; k.blk.call(9)` (`K` of row 45; also `max_by(n)`, `min(n) { }`, `max(n) { }`) | **SIGSEGV** (`Nmin::save` put the Block address into its state Array). CRuby 4.0.2 segfaults here too (`struct nmin_data` on the C stack) | as row 45 | c-read | 2d21e95: a grep for `as usize as *const Block` while listing the H4 sites for this work; the repro was written after the fix. Rebuilt on `Blk<'call>`: E0605 at `self.blk as usize` |
+| 47 | block escape | `def m = eval("yield 2"); p m { _1 * 5 }`; `binding.eval("yield")`, `1.instance_eval("yield self")`, `proc { }.binding.eval("yield")` in a method given a block | LocalJumpError "no block given (yield)", `block_given?` false (CRuby: 10, true) | compatibility: a Binding did not keep its frame's block (not a dangling pointer: eval took the block of the frame calling eval) | c-test | 2504d49: the differential test of the capture paths written for this work (`T/t/kept_capture_paths_1123b.rb`, T = `2026-11-23-saruby-block-escape`) |
+| 48 | block escape | `k.find { _1 == 1 }; k.blk.call(1)` (also `include?`, `Enumerator#first`) | UncaughtThrowError whose tag is an internal Array (CRuby: LocalJumpError "unexpected break") | compatibility | c-test | 2d21e95: the first run of `T/t/kept_enum_native_1123b.rb` after row 45's fix |
+| 49 | block escape | `k.each_with_index { }; k.blk.call(9)` (also each_with_object, each_slice, each_cons); `k.first(2); k.blk.call(9)` | nil (CRuby: the block's value); `first(n)`: LocalJumpError (CRuby: nil, its count is past 0) | compatibility | c-test | 2d21e95: the same run |
 
 Rows 22, 25, 27, 29, 30, 33 to 37 are the "10 more compatibility differences" of earlier versions of
 this table; row 16 was counted in wave 3's 7 but missing from the table.
 
 Counts (rows of the table above; no row is undetermined; the "found later" row below is c-test and not counted):
 
-| found by | rows | SIGSEGV | UB (incl. latent) | GC rooting / UAF | wave 2 | String | wave 3 | wave 4 | fiber | method layer | object accessors | gc heap | inline caches |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| a: run-time check of the safe API | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
-| b: borrow checker (compile time) | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| c-read: reading while rewriting | 24 | 5 | 3 | 2 | 5 | 2 | 5 | 9 | 0 | 1 | 1 | 0 | 1 |
-| c-test: a test run during the work | 18 | 0 | 0 | 2 | 1 | 4 | 1 | 8 | 1 | 0 | 0 | 3 | 0 |
-| **total** | **44** | 5 | 3 | 4 | 6 | 7 | 7 | 17 | 1 | 1 | 1 | 3 | 1 |
+| found by | rows | SIGSEGV | UB (incl. latent) | GC rooting / UAF | wave 2 | String | wave 3 | wave 4 | fiber | method layer | object accessors | gc heap | inline caches | block escape |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| a: run-time check of the safe API | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| b: borrow checker (compile time) | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| c-read: reading while rewriting | 25 | 6 | 3 | 2 | 5 | 2 | 5 | 9 | 0 | 1 | 1 | 0 | 1 | 1 |
+| c-test: a test run during the work | 22 | 1 | 0 | 2 | 1 | 4 | 1 | 8 | 1 | 0 | 0 | 3 | 0 | 4 |
+| **total** | **49** | 7 | 3 | 4 | 6 | 7 | 7 | 17 | 1 | 1 | 1 | 3 | 1 | 5 |
 
 Borrow errors that were not defects. The first `cargo check` of string_methods.rs gave 21 E0502 and
 16 E0499 at about 50 lines; those in `chomp_impl` and `split` are row 7, the others are not tied to any
@@ -428,7 +433,7 @@ warning, so "compiles" below is a clean check.
 
 #### 2.4.2 What the attribution says
 
-(This paragraph covers rows 1–39, the original conversion. Rows 40–44 came later: 40 and 44 were found by reading, 41–43 by tests; the totals for all 44 are 1 / 1 / 24 / 18.)
+(This paragraph covers rows 1–39, the original conversion. Rows 40–44 came later: 40 and 44 were found by reading, 41–43 by tests; rows 45–49 (block escape, 2.4.3) one by reading and four by tests; the totals for all 49 are 1 / 1 / 25 / 22.)
 
 Of the 39 rows, the borrow checker found one at compile time (row 7: a receiver's bytes held across
 `to_str` in `chomp`, `chomp!` and `split`), the safe accessors' run-time kind check found one (row 18,
@@ -442,6 +447,74 @@ the borrow checker rejects three
 rows 2, 10, 11): a length, an index or a snapshot copied out of the borrow compiles and keeps the defect.
 The rooting shapes (rows 20, 32) compile. Row 24's shape would have been rejected, but io.rs was written
 anew, so the compiler never saw it.
+
+#### 2.4.3 Block escape: H4 as a type (2026-11-23)
+
+Trial `~/ruby/src/trials/2026-11-23-saruby-block-escape/` (T below). Rows 45–49.
+
+**The defect.** A builtin that iterates with `#each` passes a Cfunc block (`Block::cfunc`) whose data
+is a Ruby Array. The native Enumerable methods put the caller's block into that Array as its address
+(`enum_native::bptr`, an Integer; `Nmin::save` the same) and turned it back into a `*const Block`
+per element (`ublk`). An `#each` that keeps its block (`def each(&b) = @blk = b`) and calls it after the
+method returned made `yield_block` read a Block in a popped Rust frame. No `unsafe` was at the
+defect's site: `yield_block` is a safe function taking a raw pointer, and the cast is safe Rust.
+
+**The fix (2d21e95) is CRuby's rule: a block becomes heap data when it is captured.**
+`block_to_proc` (the `&b` parameter, `proc`, `Proc.new`, `lambda`, `define_method`, `Fiber.new`,
+`Enumerator.new`, `Thread.new`, all through it) already copied the Block into the Proc's box and
+promoted its `outer_blk` chain the same way (rb_vm_make_proc escaping the env; a Block's `env` is a heap
+Env from the start). The missing piece was that a Cfunc block reached its builtin's block outside
+that chain. `CBlockFn` now gets a fifth argument, the Cfunc block's `outer_blk`, set by
+`Block::cfunc_for`; a captured Cfunc block therefore carries a promoted copy of the user's block, and
+no builtin stores a block anywhere else. A Binding now keeps its frame's block as a Proc (2504d49), as
+`rb_vm_make_binding` does; before, eval took the block of the frame calling eval (row 47: not a
+dangling read, a missing feature).
+
+**The type (H4 as a type).** `CFunc` and `CBlockFn` take `Blk<'a>` (vm.rs): a `#[repr(transparent)]`
+raw pointer with a `PhantomData<&'a Block>`, no `as` conversion and no public constructor from an
+address (`vm_blk` is `pub(crate)` and banned in builtins by `tools/heap_audit.rb`). The VM entry points
+a builtin calls with a block (`funcall*`, `yield*`, `block_to_proc`, `call_proc*`, `invoke*`,
+`invoke_block_full`, `is_lambda_block`, `method_missing`, `c.block_copy`, `c.block_params`) take
+`impl BlkArg` and forward to the unchanged raw bodies (`*_raw`), so the VM's own callers (rt.rs,
+node.def) are unchanged. `unsafe` count unchanged (no site added, none removed).
+
+Cost (sp4, CU=1, 7 rounds; T/README.md): instructions on the 15 benchmarks within ±0.001 % interp and AOT
+(mapreduce interp −0.063 %). Minimum cycles moved −2.7 % … +3.4 % interp at equal instructions; for the
+largest (send interp) the six hottest functions are the same machine code at the same 64-byte alignment,
+shifted 0x240 bytes, and runs of one binary fall into two modes ~18 % apart: placement, not code. Native
+Enumerable over a Ruby `#each`: map −3.4 % / −6.3 % instructions (interp / AOT), select, inject, find,
+each_with_index −0.6 … −3.6 %. `binding` / `eval` in a method given a block +2.3 % / +1.9 % (a Proc of the
+block, as CRuby).
+
+What the compiler said when the type was introduced (all of `src/builtins` switched by `sed`, then
+built on top of 2d21e95): about 100 `std::ptr::null()` arguments that had to become `Blk::NONE` (89 rewritten by a
+script from the compiler's spans, the rest by hand, among them four in node.def's opt_ltlt / opt_aref / opt_aset), and
+**3 E0106 "missing lifetime specifier"** at places that hold a builtin's block in a type:
+`array_methods::Nmin`, `zlib::RunCx` (both Rust-local, given a lifetime parameter, no defect left after
+2d21e95) and `binding::frame_binding` (the frame's block read under H5 and promoted at once; kept raw,
+`// blk-audit:`). Since the fix was already in, it found no further site. The pre-fix shapes, written against the new
+type and checked with `cargo check` (T/README.md, "type probe"):
+
+| shape | `cargo check` |
+|---|---|
+| `fn bptr(b: Blk) -> Value { Value::fix(b as usize as i64) }` (row 45) | E0605 non-primitive cast |
+| `Nmin { .., blk: Blk }` without a lifetime (row 46's holder) | E0106 |
+| a builtin's `Blk` stored in a `'static` (`thread_local!` `Cell<Blk<'static>>`) | E0521 borrowed data escapes |
+
+What the type does not stop, so `heap_audit.rb` does (a reading rule, not the compiler): a builtin
+naming `*const Block` (it can still make one with `as`), calling `.ptr()` (the `BlkArg` method is in
+scope through `vm::*`), `as *const _` or an address-to-pointer function. Two lines are allowed with
+`// blk-audit:` (binding.rs, above). `proc_block(c, p)` still returns a raw pointer into the Proc's box:
+it is alive as long as the Proc Value is (H1), which a lifetime cannot say.
+
+Found by, against the categories above: row 45 by a test (c-test), row 46 by reading (c-read); with the
+type in place both would have been compile errors at the cast (E0605), which is the attribution "b"
+that this work makes possible for the next site of this kind, not one it earned.
+
+Not fixed here: `block_to_proc` writes the cached Proc into the caller's Block through the `*const`
+it was given (`(*(blk as *mut Block)).proc_val = p`, vm.rs), a write through a pointer derived from a
+shared reference. `Block` is `Copy`, so `proc_val` cannot be a `Cell`; the write keeps one Proc per
+captured block (identity, as CRuby).
 
 ## 3. The checked value stack against the raw one on sp4
 
@@ -943,7 +1016,7 @@ Each item is a cost that this document states only by argument (section 1.3 mark
 |---|---:|---|---|
 | frame records in an indexed arena owned by `Ctx` (the safe form of the frame chain) | 39 call path + 5 heap.rs, and `Ctx::frame()` | a redesign of every call path; the closest measured shape is the value stack's `emu_idx` (+16 to +89 % AOT instructions) | an emulation like the stack's step 1: frames in a `Vec` with `prev` as an index, only on the call path |
 | `&'static` + `Cell` for method entries, crefs, iseqs | 36 + 11 + 16 (+12 in heap.rs) | many signatures (`*const MethodEntry` is in `CallCache`, `Frame`, `MKind`, the generated code) | iseqs first: `c.iseq_ref` already returns `&'static Iseq` |
-| block pointers with lifetimes (H4) | 17 | changes the `CFunc` type of every builtin | — |
+| block pointers with lifetimes (H4) | 17 | builtin side done (`Blk<'a>`, 2.4.3); the VM side (frames, `CallArgs`, node.def) still passes raw pointers | a `Blk` in `Frame::blk` / `CallArgs` (generated code) |
 | nodes in an index arena (generated code) | 1131 generated + per-bake SD code | the node address is part of the design (laid-out trees, baked `root + offset`, patch holes) | — |
 | removing the 449 legacy-accessor call sites (rt.rs, vm.rs, node.def) | the 10 unsound safe functions | large mechanical conversion; the pilot's per-access cost (2 instructions, 0 to +2.1 %) is the estimate | convert rt.rs's env / cref helpers first |
 | `unreachable_unchecked` -> `unreachable!()` (rt.rs env 3, generated `DispList::nth`) | 3 + one per baked list | generator owned by other work | one generator line; count instructions |

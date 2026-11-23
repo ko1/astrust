@@ -130,7 +130,7 @@ pub fn bi_hit(cc: &CallCache, r: Value, bi: u32) -> bool {
 #[inline(always)]
 pub fn bi_body(c: &mut Ctx, bi: u32, r: Value, a0: Value) -> Option<Value> {
     use crate::builtins::{array_methods as am, hash_methods as hm, numeric_methods as nm, string_methods as sm};
-    let nb = std::ptr::null();
+    let nb = crate::vm::Blk::NONE;
     let fix = r.is_fixnum();
     match bi {
         1 => nm::int_even(c, r, &[], nb).ok(),

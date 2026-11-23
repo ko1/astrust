@@ -334,7 +334,7 @@ pub fn each_pair(c: &mut Ctx, h: Value, mut f: impl FnMut(&mut Ctx, Value, Value
 fn any_to_s_anon(c: &Ctx, k: Value) -> String { format!("#<{}:0x{:016x}>", if c.class(k).is_module { "Module" } else { "Class" }, k.raw()) }
 fn struct_get(c: &Ctx, v: Value, m: Sym) -> Value { ivar_get(c, v, m) }
 
-fn m_dump(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_dump(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 3)?;
     let mut io = NIL; let mut limit = -1;
     for &x in &a[1..] {
@@ -648,7 +648,7 @@ fn load_time(c: &mut Ctx, k: Value, data: Value) -> RV {
     Ok(t)
 }
 
-fn m_load(c: &mut Ctx, _s: Value, a: &[Value], _b: *const Block) -> RV {
+fn m_load(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (pos, opts) = match a.last() { Some(&l) if is_hash(l) && a.len() > 1 => (&a[..a.len() - 1], Some(l)), _ => (a, None) };
     check_argc(c, pos, 1, 2)?;
     let objs = c.ary_new();
