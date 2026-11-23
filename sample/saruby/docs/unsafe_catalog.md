@@ -36,6 +36,7 @@ How to read the numbers:
 5. [What remains unmeasured](#5-what-remains-unmeasured)
 6. [Findings for a paper](#6-findings-for-a-paper)
 7. [Design note: the `&'static mut` accessors](#7-design-note-the-static-mut-accessors)
+8. [Generated code](#8-generated-code)
 
 ## 1. Inventory of the remaining `unsafe`
 
@@ -50,7 +51,7 @@ with `--list`, the category of every occurrence.
 |---|---:|---|
 | `sample/saruby/src/**/*.rs` + `node.def`, hand-written | **342** | `heap_audit.rb` total after section 4.4 (master `d983d25`: 371; `f88d3e6`: 365) |
 | of which compiled only with `FEATURES=raw_stack` | 5 | `src/stack_raw.rs`; the default build uses the checked `src/stack.rs` (0) |
-| generated `src/node_*.rs` (from node.def by `lib/astrustgen.rb`) | 1152 | after 4.4: node_specialize 402, node_hash 239, node_head 170, node_replace 122, node_dispatch 104, node_dump 104, node_eval 11; `prism_ast.rs` 0 (`f88d3e6`: 1131) |
+| generated `src/node_*.rs` (from node.def by `lib/astrustgen.rb`) | 1152 | **93 after section 8** (`15ad997`: 1165); before it, after 4.4: node_specialize 402, node_hash 239, node_head 170, node_replace 122, node_dispatch 104, node_dump 104, node_eval 11; `prism_ast.rs` 0 (`f88d3e6`: 1131) |
 | generated per bake: the code store's SD crates | 259 for `fib.rb` | `all.rs` items 100 (83 files), `patch.rs` items 159 (119 files); grows with the program |
 | `runtime/` (ASTrust runtime shared by the samples) | 49 | `astrust.rs` 5 (dlopen / dlsym), `astrust_loader.rs` 10 (memfd / mmap), `gc/` 34 |
 | `lib/astrustgen.rb` (templates of the generated code) | 32 | |
@@ -192,6 +193,8 @@ fiber.rs went from 21 to 1 `unsafe` in that trial (`deny(unsafe_code)` on the fi
 The default build uses `stack.rs` (`#![forbid(unsafe_code)]`); its cost is section 3.
 
 #### Generated code
+
+Superseded by section 8 (the per-node templates hold no `unsafe` any more); the table is the state before it.
 
 | where | count | what | why | alternative |
 |---|---:|---|---|---|
@@ -1195,3 +1198,95 @@ either of two unrelated cold edits flips it). Rows 41 to 43 of 2.4 were fixed al
 three builds 0 warnings, t/hand only the `cycle` fix differs, AOT vs `--plain` 0 after masking
 addresses, panic scan and GC stress 0 panics, dev build 0 nested heap borrows, reuse / fork tests
 pass.
+
+## 8. Generated code
+
+Trial: `2026-11-23-astrust-gen-unsafe` (classification, designs, measurements, patches). Base `15ad997`.
+`ruby tools/gen_unsafe_catalog.rb [--root SAMPLE] [CODE_STORE...]` classifies every `unsafe` of the generated
+sources and of baked crates by the astrustgen template that emits it (counted as in 1.1).
+
+### 8.1 Where it came from
+
+All of it traced back to a handful of templates of `lib/astrustgen.rb`: `NodePtr` is `*mut Node`, a node is a
+`NodeOf<T>` behind it, and each per-node function cast and dereferenced it itself.
+
+| template (saruby, base `15ad997`) | file | `unsafe` | what it does |
+|---|---|---:|---|
+| SPECIALIZE: operand struct, argument block, @spec hooks | node_specialize.rs | 221 | `&(*(n as *mut NodeOf<T>)).u`, raw field reads at bake time |
+| emitted SD `call` / `test` / `spec` block, L_ text | node_specialize.rs | 120 | text: `unsafe { let np = ..; (*np).u.x, &mut (*np).u.cc, n.byte_offset(K) }` |
+| emitted hole patch item (saruby hook) | node_specialize.rs | 64 | text: `asm!` store and `Pos::bound` of a bound line |
+| HASH / PROF: operand struct, @bake hooks | node_hash.rs | 241 | `&(*(n as *mut NodeOf<T>)).u`, `(*np).u.tf.0` |
+| CHILDREN: `&mut` operand struct, list elements | node_head.rs | 123 | `&mut (*(n as *mut NodeOf<T>)).u`; list slots written through the shared `&'static [NodePtr]` |
+| ALLOC: head-hole store | node_head.rs | 32 | `(*n).head.line = line` after allocation |
+| helpers: Dyn / DynList, kind table, flags, layout_tree, list_base | node_head.rs | 16 | head reads and writes through `NodePtr` |
+| REPLACE: `&mut` operand struct, list element write | node_replace.rs | 123 | as CHILDREN |
+| DISPATCH glue block | node_dispatch.rs | 105 | field reads, `&mut (*np).u.<ref>`, `&(*np).head.line` |
+| DUMP | node_dump.rs | 105 | field reads |
+| EVAL (node.def bodies, counted there) | node_eval.rs | 15 | |
+| **total** | | **1165** | |
+
+Baked crates (`all.rs` / `patch.rs`): fib 75 / 124, optcarrot 16990 / 22331. Per item: one per `T_` function
+(call, test, spec; the block reads fields, takes `&mut` of @ref fields, the head line, children at
+`n.byte_offset(K)`), in `L_` one per `nth` arm and `each` step plus the `unreachable_unchecked` arm, two per `H_`
+hole item.
+
+### 8.2 What replaced them
+
+Node access goes through primitives in node_head.rs, each one `unsafe` with the contract stated once:
+`node_u::<T>(n) -> &'a T` (the operand struct; T's kind checked by `debug_assert`), `node_u_mut` (CHILDREN on
+layout_tree's copy, REPLACE), `node_kind` / `node_dispatcher` / `node_flags` / `node_set_flags` /
+`node_hash_get` / `node_hash_set` (head fields one at a time, so no borrow of the head overlaps the dispatcher
+write of patch binding), `node_head_line` (a head hole), and `NodeCell<T>` (`UnsafeCell`) for @ref operands, whose
+`body_mut()` gives the body its `&mut T` (`Deref` for bake-time hooks). Children in SDs are
+`n.wrapping_byte_offset(K)` (an address, safe; the child's own `node_u` reads it). Head holes are set by
+`node_allocate_with` before the node is shared. Lists in CHILDREN / REPLACE are copied, not written in place
+(the base wrote through a pointer derived from a shared slice: undefined behaviour under Stacked / Tree Borrows;
+fixed). Embedder hooks get `u` (the operand struct) in safe code; saruby_gen.rb / astrogre_gen.rb updated.
+
+| | base | now |
+|---|---:|---:|
+| saruby generated sources | 1165 | 93 (node_head 13 primitives, node_specialize 64 hole-item text + 1 L_ text, node_eval 15 from node.def) |
+| astrogre generated sources | 303 | 20 (12 primitives, 1 L_ text, 3 hash hooks of the embedder, node_free 1, node_eval 1) |
+| calc generated sources | 102 | 15 |
+| fib all.rs / patch.rs | 75 / 124 | 7 / 35 (L_ unreachable arms; H_ items 26) |
+| optcarrot all.rs / patch.rs | 16990 / 22331 | 1274 / 3600 (L_ unreachable arms 1274 / 1402; H_ items 2198) |
+
+Kept, for a measured cost: the `unreachable_unchecked` default arm of `L_::nth` (one per baked list). The safe
+forms (`_ =>` the last child, or `unreachable!()`) add a range check where the index is not a constant (case
+dispatch, loops LLVM does not unroll): optcarrot's main SD grew 377640 -> 399961 bytes (+402 `ja`, +393 `cmp`,
++72 `movslq`), all.so .text +1.04 %, +0.07 % instructions per frame against the kept form (base2 against base: 0.00 % / 0.02 % with SARUBY_PATCH=0).
+
+Cost (instructions:u, 15 benches interp and AOT, base twice): every cell within 0.016 % except poly (-0.25 %
+interp, -0.58 % AOT, faster); with `codegen-units=1` builds every cell within 0.008 %, poly included, and all 105
+DISPATCH functions are identical machine code. The poly difference is `vm::call_slow` (hand-written), whose
+register allocation differs between the two 16-unit builds (799 -> 785 instructions). fib's baked all.so is
+identical machine code (addresses normalized). Startup (cgu1) +4.3 k instructions of 18.0 M (+0.02 %).
+optcarrot (checksum 59662) per frame: 82.98 M against 83.02 M (base) and 83.02 M (base2); with SARUBY_PATCH=0 82.29 M against 82.25 M / 82.27 M.
+
+### 8.3 What is left manual
+
+The primitives are safe functions over a raw pointer, as the base's DISPATCH_* / hash_node already were: the
+soundness argument is an invariant of the program, not of the types.
+
+1. NodePtr validity: non-null, made by node_allocate / layout_tree, alive while a borrow is used (saruby never
+   frees nodes; astrogre frees a pattern's nodes only after it ran).
+2. Kind = struct: the generator emits `node_u::<x_struct>` only in code for kind x, and an SD only runs on a node
+   of its hash; `debug_assert` checks it (a debug build over every 8th t/hand file, plain and AOT with the SD
+   crates built with `-C debug-assertions=on`: 0 failures).
+3. Operand fields other than @ref cells are not written while a borrow lives: only CHILDREN (on a copy not yet
+   published) and REPLACE (no caller at run time in any sample) write.
+4. **`NodeCell::body_mut` is not unique under re-entry** (pre-existing: the base's `&mut (*np).u.cc` is the
+   same): a recursive call site passes its `&mut CallCache` into `call_cached`, the callee reaches the same node
+   and makes a second `&mut` while the first is a live (protected) argument. Undefined behaviour under both
+   aliasing models; a sound form gives the bodies `&NodeCell<T>` and caches with `Cell` fields, which changes
+   node.def and the vm.rs cache API (not done, cost unmeasured).
+5. SD child offsets: K is taken from the laid-out tree at bake time; valid because an SD is named by the tree's
+   hash (its shape) and installed only on laid-out trees (`NF_LAID`).
+6. `L_::nth`: i < len (EVAL_NTH! in bodies).
+7. Patch binding copies and relocates code at run time; the hole items keep `asm!` and `Pos::bound`.
+
+Designs considered and not built (the trial README has the arguments): a `NodeRef<'a, T>` handle made by an
+`unsafe fn` per dispatch (the same obligations, one `unsafe` per dispatcher instead of none); `NodePtr` as
+`&'static Node` / `NonNull` with an arena lifetime (makes 1 a type invariant; needs `Cell` head fields,
+`Option` children, a lifetime parameter for astrogre's freed patterns through every signature, and changes to
+every hand-written user of NodePtr); a checked swap for REPLACE (no run-time caller).

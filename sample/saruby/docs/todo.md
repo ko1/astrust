@@ -52,6 +52,8 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
   - with_heap の +23% の原因: クロージャ（alloc の fast path 全体）が AOT 側で inline されず、1 確保ごとに呼び出し + body のスタック経由コピー。`#[inline(always)]` を付けると gcchurn は戻るが、str は内側クロージャの捕獲変数のストアが空きリスト判定の前に出て node_str +3 命令/回（str interp +0.85%・AOT +1.4%）。クロージャ形は不採用
 - [x] main ctx の root 走査が、確保側の生きている `&mut Ctx` と重なる: 確保は全部 `gc::alloc(c, ..)`（context-free の 90 か所を段階的に変換、NO_CTX・str_legacy.rs・legacy の生成関数を削除。unsafe 382 → 380、static mut 10 → 9）。main ctx の by-place 読みは fiber が確保するときだけ。master 比: 15 ベンチ中 10・起動・optcarrot は同じ、object AOT +0.62 %（焼いたコードのレジスタ割り当て）、nesteddata AOT +1.0 %（Hash の malloc 越しに c を保持）、hash AOT +1.4 %（hash_set のレジスタ割り当て。旧 base と同じ値で、無関係な cold 編集で反転）。途中の事故 2 件（drop_body の Box<RHash> drop glue が外に出る、RHash::with_capacity が inline されない）は修正（trials/2026-11-22-saruby-static-mut「NO_CTX」）
 - [ ] vm 分割後の poly AOT +0.29%（mcache の RefCell 検査の推定、未検証）。sp4 の時間で要確認
+- [x] 生成コード（astrustgen のテンプレート）: ノードアクセスを node_head.rs の監査済みプリミティブ（node_u::<T> ほか 13 個）に集約、@ref は NodeCell（UnsafeCell）、SD の子は wrapping_byte_offset。saruby 生成 1165 → 93、fib の焼き all.rs 75 → 7。命令数は全セル ±0.016% 以内（poly のみ -0.58%、call_slow の cgu 分割、cgu1 では 0）。L_::nth の unreachable_unchecked は safe 形が optcarrot .text +1% のため残す（unsafe_catalog.md 8）
+- [ ] 生成コード残り: @ref の &mut は再入（再帰呼び出しサイト）で一意でない（base から同じ UB）。body に &NodeCell + Cell のキャッシュを渡す形は node.def / vm.rs のキャッシュ API の変更が要る。NodePtr を &'static Node / NonNull にする案は手書き側の変更が大きく未着手（unsafe_catalog.md 8.3）
 - [ ] 見送り中: safe な Value::fix/sym/flonum（hash +0.6〜1.4%、regalloc の変化）、ConstCache.val の Option 化（+0.1〜0.3%）
 
 ## 3. CRuby 互換性
