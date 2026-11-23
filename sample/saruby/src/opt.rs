@@ -64,7 +64,7 @@ pub fn srb_arith_out(c: &mut Ctx, a: Value, b: Value, mid: Sym, line: Pos, cc: &
         s::le => if let Some((x, y)) = flo2_cmp(a, b, R_FLO_LE, R_INT_LE) { return Ok(Value::bool(x <= y)); }
         s::gt => if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GT, R_INT_GT) { return Ok(Value::bool(x > y)); }
         s::ge => if let Some((x, y)) = flo2_cmp(a, b, R_FLO_GE, R_INT_GE) { return Ok(Value::bool(x >= y)); }
-        s::neq => if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ | R_FLO_NEQ, R_INT_EQ | R_INT_NEQ) { return Ok(Value::bool(x != y)); }
+        s::neq => if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { return Ok(Value::bool(x != y)); }
         s::eq => {
             if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { return Ok(Value::bool(x == y)); }
             return srb_eq(c, a, b, line, cc);

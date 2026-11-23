@@ -1106,7 +1106,7 @@ node_opt_neq(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, li
 {
     if a.both_fix(b) && !c.int_redef() { return Ok(Value::bool(a != b)); }
     if tf_flo(ty) {
-        if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ | R_FLO_NEQ, R_INT_EQ | R_INT_NEQ) { if ty == 0 { tf.add(TF_FLO); } return Ok(Value::bool(x != y)); }
+        if let Some((x, y)) = flo2_cmp(a, b, R_FLO_EQ, R_INT_EQ) { if ty == 0 { tf.add(TF_FLO); } return Ok(Value::bool(x != y)); }
         return srb_binop(c, a, b, s::neq, line.pos(), cc);
     }
     srb_arith_out(c, a, b, s::neq, line.pos(), cc)
@@ -1115,7 +1115,7 @@ NODE_TEST
 {
     if a.both_fix(b) && !c.int_redef() { return Ok(a != b); }
     if tf_flo(ty) {
-        if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ | R_FLO_NEQ) { if ty == 0 { tf.add(TF_FLO); } return Ok(a.flonum_val() != b.flonum_val()); }
+        if a.is_flonum() && b.is_flonum() && !redef(R_FLO_EQ) { if ty == 0 { tf.add(TF_FLO); } return Ok(a.flonum_val() != b.flonum_val()); }
         if ty == 0 { return Ok(srb_binop(c, a, b, s::neq, line.pos(), cc)?.truthy()); }
     }
     Ok(srb_arith_out(c, a, b, s::neq, line.pos(), cc)?.truthy())

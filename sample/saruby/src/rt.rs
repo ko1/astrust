@@ -54,8 +54,6 @@ pub const R_NIL_EQQ: u64 = 1 << 34;
 pub const R_TRUE_EQQ: u64 = 1 << 35;
 pub const R_FALSE_EQQ: u64 = 1 << 36;
 pub const R_STR_EQQ: u64 = 1 << 37;
-pub const R_INT_NEQ: u64 = 1 << 38;
-pub const R_FLO_NEQ: u64 = 1 << 39;
 pub const R_STR_EQ: u64 = 1 << 40;
 // ! of nil / true / false / Integer / Float / Symbol (node_not decides it for them without a lookup)
 pub const R_IMM_NOT: u64 = 1 << 41;
@@ -66,10 +64,11 @@ pub static REDEF: AtomicU64 = AtomicU64::new(0);
 pub static BOOTED: AtomicBool = AtomicBool::new(false);
 #[inline(always)] pub fn booted() -> bool { BOOTED.load(Relaxed) }
 
-// Integer#+ - * / % < <= > >= == != & | << >> ^: the fixnum paths of operator nodes test all of them at once
+// Integer#+ - * / % < <= > >= == & | << >> ^: the fixnum paths of operator nodes test all of them at once
 // (c.int_redef()), so that one test covers every operator of a straight run of baked code
 pub const R_INT_ALL: u64 = R_INT_PLUS | R_INT_MINUS | R_INT_MUL | R_INT_DIV | R_INT_MOD | R_INT_LT | R_INT_LE | R_INT_GT
-    | R_INT_GE | R_INT_EQ | R_INT_NEQ | R_INT_AND | R_INT_OR | R_INT_LSHIFT | R_INT_RSHIFT | R_INT_XOR;
+    | R_INT_GE | R_INT_EQ | R_INT_AND | R_INT_OR | R_INT_LSHIFT | R_INT_RSHIFT | R_INT_XOR;
+// (R_INT_ALL stays in bits 0..30: one `test` with an imm32 against the 64-bit word)
 // === of the immediate patterns (node_when_lit, eqq_imm): one test, as CRuby's opt_case_dispatch
 pub const R_EQQ_IMM: u64 = R_INT_EQQ | R_SYM_EQQ | R_NIL_EQQ | R_TRUE_EQQ | R_FALSE_EQQ;
 
@@ -98,10 +97,11 @@ pub fn redef_note(c: &Ctx, klass: Value, mid: Sym) -> bool {
         (int, s::modulo, R_INT_MOD), (int, s::lt, R_INT_LT), (int, s::le, R_INT_LE), (int, s::gt, R_INT_GT),
         (int, s::ge, R_INT_GE), (int, s::eq, R_INT_EQ), (int, s::and, R_INT_AND), (int, s::or, R_INT_OR),
         (int, s::ltlt, R_INT_LSHIFT), (int, s::gtgt, R_INT_RSHIFT), (int, s::xor, R_INT_XOR), (int, s::eqq, R_INT_EQQ),
-        (int, s::neq, R_INT_NEQ),
+        // != takes the == flag: the != shortcuts test that one (a bit of its own in R_INT_ALL would not fit an imm32)
+        (int, s::neq, R_INT_EQ),
         (flo, s::plus, R_FLO_PLUS), (flo, s::minus, R_FLO_MINUS), (flo, s::mul, R_FLO_MUL), (flo, s::div, R_FLO_DIV),
         (flo, s::lt, R_FLO_LT), (flo, s::le, R_FLO_LE), (flo, s::gt, R_FLO_GT), (flo, s::ge, R_FLO_GE),
-        (flo, s::eq, R_FLO_EQ), (flo, s::neq, R_FLO_NEQ), (flo, s::pow, R_FLO_POW),
+        (flo, s::eq, R_FLO_EQ), (flo, s::neq, R_FLO_EQ), (flo, s::pow, R_FLO_POW),
         (ary, s::ltlt, R_ARY_LTLT), (ary, s::aref, R_ARY_AREF), (ary, s::aset, R_ARY_ASET),
         (hash, s::aref, R_HASH_AREF), (hash, s::aset, R_HASH_ASET),
         (str, s::ltlt, R_STR_LTLT), (str, s::eqq, R_STR_EQQ), (str, s::eq, R_STR_EQ),
