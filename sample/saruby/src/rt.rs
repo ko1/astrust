@@ -115,6 +115,7 @@ pub fn note_redefinition(c: &mut Ctx, klass: Value, mid: Sym) {
 pub fn redef_note(c: &Ctx, klass: Value, mid: Sym) -> bool {
     if !booted() { return false; }
     if mid == s::puts || matches!(crate::symbol::sym_bytes(mid), b"write" | b"putc") { crate::builtins::io::note_out_method(c, klass); }
+    if mid == s::lambda { LAMBDA_REDEF.store(true, Relaxed); }
     let before = redef_word();
     // a refinement of a basic operation turns its inline fast path off everywhere
     let klass = if c.class(klass).refined { c.class(klass).attached } else { klass };
@@ -1046,8 +1047,15 @@ pub fn srb_yield_x(c: &mut Ctx, tmp: Value, kw: Value) -> RV {
     invoke_block_full(c, b, &args, std::ptr::null(), b.self_, false, std::ptr::null(), has_kw)
 }
 
+/// `lambda` was defined somewhere after boot: a literal `lambda { }` asks which method it calls.
+pub static LAMBDA_REDEF: AtomicBool = AtomicBool::new(false);
 pub fn srb_lambda(c: &mut Ctx, is: &'static Iseq, fp: Fp) -> RV {
     let b = make_block(c, is, fp);
+    if LAMBDA_REDEF.load(Relaxed) {
+        let slf = fp[0].get();
+        let me = lookup_method(c, class_of(slf), s::lambda);
+        if c.me_ref(me).is_some_and(|m| m.owner != vm().m_kernel.get()) { return funcall(c, slf, s::lambda, &[], &b); }
+    }
     let p = block_to_proc(c, &b)?;
     c.proc_data_mut(p).is_lambda = true;
 

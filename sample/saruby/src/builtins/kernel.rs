@@ -554,9 +554,13 @@ fn k_block_given(c: &mut Ctx, _s: Value, _args: &[Value], _b: Blk) -> RV {
     Ok(Value::bool(c.caller_frame().is_some_and(|p| !p.blk.is_null())))
 }
 
+/// Kernel#lambda called as a method (send, a block-pass): a literal block becomes a lambda; a Proc must be one.
 fn k_lambda(c: &mut Ctx, _s: Value, _args: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
+    let literal = c.block_copy(blk).is_some_and(|b| b.proc_val == UNDEF && matches!(b.kind, BlockKind::Iseq(_)));
     let p = block_to_proc(c, blk)?;
+    if literal { c.proc_data_mut(p).is_lambda = true; }
+    else if !c.proc_data(p).is_lambda { return arg_err(c, "the lambda method requires a literal block"); }
     Ok(p)
 }
 
@@ -688,9 +692,22 @@ fn k_integer(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
             Ok(crate::builtins::numeric_methods::f64_to_int(c, f))
         } else if v == NIL { type_err(c, "can't convert nil into Integer") }
         else {
-            if respond_to(c, v, s::to_int, true) { let r = funcall(c, v, s::to_int, &[], std::ptr::null())?; if is_integer(r) { return Ok(r); } }
-            if respond_to(c, v, s::to_i, true) { let r = funcall(c, v, s::to_i, &[], std::ptr::null())?; if is_integer(r) { return Ok(r); } }
-            type_err(c, format!("can't convert {} into Integer", class_name_for_err(c, v)))
+            // rb_convert_to_integer: to_int (its errors ignored), then to_str, then to_i
+            if respond_to(c, v, s::to_int, true) {
+                match funcall(c, v, s::to_int, &[], std::ptr::null()) {
+                    Ok(r) if is_integer(r) => return Ok(r),
+                    Err(_) if c.esc == EscKind::Raise => { c.esc = EscKind::None; c.esc_val = NIL; }
+                    Err(e) => return Err(e),
+                    _ => {}
+                }
+            }
+            if v.is_heap() && respond_to(c, v, s::to_str, true) { let sv = expect_str(c, v)?; return k_integer(c, _s, &[sv], _b); }
+            let cn = class_path(c, real_class_of(c, v));
+            if !respond_to(c, v, s::to_i, true) { return type_err(c, format!("can't convert {} into Integer", cn)); }
+            let r = funcall(c, v, s::to_i, &[], std::ptr::null())?;
+            if is_integer(r) { return Ok(r); }
+            let rn = class_path(c, real_class_of(c, r));
+            type_err(c, format!("can't convert {} to Integer ({}#to_i gives {})", cn, cn, rn))
         }
     })();
     match r { Err(e) if !exc && c.esc == EscKind::Raise => { let _ = e; c.esc = EscKind::None; Ok(NIL) } r => r }

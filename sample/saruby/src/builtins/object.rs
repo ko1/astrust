@@ -868,20 +868,21 @@ fn m_included_modules(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 }
 fn m_class_eval(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if b.is_null() {
-        if a.is_empty() { return argc_err(c, 0, 1, 3); }
+        if a.is_empty() || a.len() > 3 { return argc_err(c, a.len(), 1, 3); }
         let src = expect_str(c, a[0])?;
         let bytes = c.str_bytes(src).to_vec();
-        let file: &'static str = if a.len() > 1 { Box::leak(to_rstring(c, a[1])?.into_boxed_str()) } else { crate::builtins::binding::eval_file(c) };
+        let file: &'static str = if a.len() > 1 { let f = expect_str(c, a[1])?; Box::leak(String::from_utf8_lossy(c.str_bytes(f)).into_owned().into_boxed_str()) } else { crate::builtins::binding::eval_file(c) };
+        let line = if a.len() > 2 { crate::builtins::numeric_methods::num_to_long(c, a[2])? as i32 } else { 1 };
         let enc = c.str_enc(src);
-        return crate::builtins::binding::eval_in_class(c, slf, &bytes, enc, file, if a.len() > 2 { a[2].as_fix() as i32 } else { 1 });
+        return crate::builtins::binding::eval_in_class(c, slf, &bytes, enc, file, line);
     }
+    if !a.is_empty() { return argc_err(c, a.len(), 0, 0); }
     yield_with_self(c, b, &[slf], slf, slf)
 }
 fn m_class_exec(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if b.is_null() { return err(c, c.vm().c_local_jump_error.get(), "no block given (yield)"); }
     yield_with_self(c, b, a, slf, slf)
 }
-/// The symbol of a constant name without "::" (a String keeps its encoding); None for a path.
 /// rb_is_const_name: an uppercase letter, then identifier characters.
 pub fn is_const_name(b: &[u8]) -> bool {
     let t = String::from_utf8_lossy(b);
