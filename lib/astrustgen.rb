@@ -849,11 +849,14 @@ module ASTrustGen
       }
       /// specialize_node for a node being specialized already (a recursion target compiled into itself):
       /// its subtree again; the copy's recursive sites see the target in sc.unrolled and call it instead.
+      /// `open` is by hash: n may be another node of the same shape, whose flag must not stay set (it would be Dyn
+      /// as an entry of its own, an SD that dispatches to itself).
       pub fn specialize_open(sc: &mut SpecCtx, n: NodePtr) -> String {
+          let was = node_flags(n) & NF_SPECIALIZING;
           sc.reenter += 1;
           let t = specialize_node(sc, n);
           sc.reenter -= 1;
-          node_set_flags(n, node_flags(n) | NF_SPECIALIZING);
+          node_set_flags(n, node_flags(n) & !NF_SPECIALIZING | was);
           t
       }
       /// Specialize n as a public entry: an exported `SD_<hash>` with the dispatcher's signature.
