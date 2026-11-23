@@ -248,6 +248,12 @@ fn REPLACE_node_trace(n: NodePtr, old: NodePtr, new: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_poll(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = node_u_mut::<node_poll_struct>(n);
+    if u.body == old { u.body = new; }
+}
+
+#[allow(non_snake_case, unused_variables)]
 fn REPLACE_node_cov(n: NodePtr, old: NodePtr, new: NodePtr) {
     let u = node_u_mut::<node_cov_struct>(n);
     if u.body == old { u.body = new; }

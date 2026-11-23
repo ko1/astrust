@@ -78,6 +78,10 @@ use crate::symbol::s;
 // Only in code compiled for tracing (vm::TRACE_COMPILE): a statement's line (ev = EV_LINE) or a
 // rescue clause (EV_RESCUE), reported when a hook has that event.
 
+// The check point of a loop that may wait for another thread (compile.rs loop_needs_no_poll: not a loop
+// over locals its body assigns, nor one whose condition calls): CRuby's RUBY_VM_CHECK_INTS at the back
+// edge, here before each body.
+
 // Only in code compiled while Coverage is set up: counts a line or a method call (counter `id`).
 
 
@@ -554,6 +558,14 @@ pub fn EVAL_node_line<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut Ctx, n:
 pub fn EVAL_node_trace<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, ev: u32, line: H_line, body: NodePtr) -> RV {
     line.store(c.frame_mut());
     if trace_mask() & ev != 0 { crate::builtins::tracepoint::trace_point(c, ev)?; }
+    <D_body as Disp>::call(c, body, fp)
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_poll<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, body: NodePtr) -> RV {
+    if ints_pending() { srb_poll(c)?; }
     <D_body as Disp>::call(c, body, fp)
 }
 

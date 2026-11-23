@@ -381,6 +381,16 @@ node_trace(c: &mut Ctx, n: NodePtr, fp: Fp, ev: u32, line@hole: u32, body: NODE)
     EVAL_ARG!(c, body)
 }
 
+// The check point of a loop that may wait for another thread (compile.rs loop_needs_no_poll: not a loop
+// over locals its body assigns, nor one whose condition calls): CRuby's RUBY_VM_CHECK_INTS at the back
+// edge, here before each body.
+NODE_DEF
+node_poll(c: &mut Ctx, n: NodePtr, fp: Fp, body: NODE)
+{
+    if ints_pending() { srb_poll(c)?; }
+    EVAL_ARG!(c, body)
+}
+
 // Only in code compiled while Coverage is set up: counts a line or a method call (counter `id`).
 NODE_DEF
 node_cov(c: &mut Ctx, n: NodePtr, fp: Fp, id: u32, body: NODE)

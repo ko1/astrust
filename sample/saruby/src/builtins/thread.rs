@@ -1,6 +1,6 @@
 // Green threads: each Thread is a fiber chain switched by the main thread's scheduler at
-// blocking points (join, Queue, Mutex, ConditionVariable, sleep, pipe reads, Thread.pass).
-// There is no preemption: a thread runs until it blocks or ends.
+// blocking points (join, Queue, Mutex, ConditionVariable, sleep, pipe reads, Thread.pass), and
+// preempted at check points after its time slice (the timer thread below, docs/io_design.md).
 // On the context-borrowing heap accessors (heap.rs, docs/safe_heap.md).
 #![forbid(unsafe_code)]
 #[allow(unused_imports)]
@@ -18,7 +18,7 @@ use crate::string::*;
 use crate::symbol::intern;
 use crate::value::*;
 use crate::vm::*;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering::{Relaxed, SeqCst}};
 use std::time::{Duration, Instant};
 use crate::builtins::blop::{self, Id, Op, Res};
 use crate::builtins::sys::{self, PollFd};
@@ -26,25 +26,46 @@ use crate::builtins::sys::{self, PollFd};
 pub struct RThread {
     fiber: Value, inner: Value, started: bool, dead: bool, value: Value, exc: Value, locals: Value, tvars: Value, name: Value,
     blop: Option<Id>,   // the op it is parked on (None: runnable when switched out)
-    waiting: bool, wake: bool, pending: Value, killed: bool,
+    waiting: bool, wake: bool,
+    pending: Value,   // queued Thread#raise exceptions and KILL (an Array, or nil when empty)
+    masks: Value,     // Thread.handle_interrupt stack: Symbol (every exception) or [mod, sym, ...] (nil: empty)
+    priority: i32,
     report: Value, abort: bool, loc: String,
     start: Value,   // [proc, args] until the first run makes the fiber (stacks only for threads that run)
     last_status: u64,   // $? (process.rs)
 }
 impl RData for RThread {
-    fn visit(&mut self, m: &mut crate::gc::Visitor) { for v in [&mut self.fiber, &mut self.inner, &mut self.value, &mut self.exc, &mut self.locals, &mut self.tvars, &mut self.name, &mut self.pending, &mut self.report, &mut self.start] { m.visit(v); } }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) { for v in [&mut self.fiber, &mut self.inner, &mut self.value, &mut self.exc, &mut self.locals, &mut self.tvars, &mut self.name, &mut self.pending, &mut self.masks, &mut self.report, &mut self.start] { m.visit(v); } }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
 impl RThread {
     fn blank(locals: Value, tvars: Value) -> RThread {
         RThread { fiber: NIL, inner: NIL, started: false, dead: false, value: NIL, exc: NIL, locals, tvars, name: NIL,
-            blop: None, waiting: false, wake: false, pending: NIL, killed: false, report: UNDEF, abort: false, loc: String::new(), start: NIL,
+            blop: None, waiting: false, wake: false, pending: NIL, masks: NIL, priority: 0, report: UNDEF, abort: false, loc: String::new(), start: NIL,
             last_status: crate::builtins::process::NO_STATUS }
     }
-    fn interrupted(&self) -> bool { self.pending != NIL || self.killed }
+    /// An interrupt a blocking call would deliver is queued.
+    fn interrupted(&self, c: &Ctx) -> bool { self.pending != NIL && self.deliverable(c, true).is_some() }
     /// The scheduler should switch it in: not started, yielded, its op completed, or interrupted.
-    fn runnable(&self, c: &Ctx) -> bool { !self.dead && (!self.started || self.blop.is_none_or(|id| blop::is_done(c, id)) || self.interrupted()) }
+    fn runnable(&self, c: &Ctx) -> bool { !self.dead && (!self.started || self.blop.is_none_or(|id| blop::is_done(c, id)) || self.interrupted(c)) }
+    /// Index of the first queued interrupt the masks let through now (rb_threadptr_pending_interrupt_deque).
+    fn deliverable(&self, c: &Ctx, blocking: bool) -> Option<usize> {
+        if self.pending == NIL { return None; }
+        c.ary(self.pending).iter().position(|&e| match self.timing(c, e) { Timing::Never => false, Timing::OnBlocking => blocking, Timing::Immediate => true })
+    }
+    /// rb_threadptr_pending_interrupt_check_mask: the innermost mask naming an ancestor of e's class.
+    fn timing(&self, c: &Ctx, e: Value) -> Timing {
+        if self.masks == NIL { return Timing::Immediate; }
+        let anc = crate::vm::ancestors(c, class_of(e));
+        for &m in c.ary(self.masks).iter().rev() {
+            // a bare symbol does not cover Thread#kill (queued as an Integer, as CRuby's)
+            if m.is_sym() { if e != kill_mark() { return Timing::of(m); } continue; }
+            let pairs = c.ary(m);
+            for &k in anc.iter() { if let Some(p) = pairs.chunks(2).find(|p| p[0] == k) { return Timing::of(p[1]); } }
+        }
+        Timing::Immediate
+    }
 }
 static LIST: Global = Global::new();      // Array of live non-main threads
 static MAIN: Global = Global::new();
@@ -56,6 +77,13 @@ static REPORT_ALL: AtomicBool = AtomicBool::new(true);
 /// Thread.ignore_deadlock: a deadlock waits (for a signal) instead of raising fatal.
 pub static IGNORE_DEADLOCK: AtomicBool = AtomicBool::new(false);
 static FORKED: AtomicBool = AtomicBool::new(false);   // a forked child whose main thread was a green thread
+#[derive(Clone, Copy, PartialEq)]
+enum Timing { Immediate, OnBlocking, Never }
+impl Timing {
+    fn of(sym: Value) -> Timing { if sym == sym_value("never") { Timing::Never } else if sym == sym_value("on_blocking") { Timing::OnBlocking } else { Timing::Immediate } }
+}
+/// Thread#kill in the interrupt queue (CRuby's RUBY_FATAL_THREAD_KILLED, INT2FIX(0)).
+fn kill_mark() -> Value { Value::fix(0) }
 
 fn th(c: &Ctx, v: Value) -> &RThread { c.data::<RThread>(v).expect("a Thread") }
 fn th_mut(c: &mut Ctx, v: Value) -> &mut RThread { c.data_mut::<RThread>(v).expect("a Thread") }
@@ -80,13 +108,35 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     if k != NIL && crate::builtins::inherits(c, klass, k) { return Ok(Some(new_thread(c, klass))); }
     Ok(None)
 }
-fn list_remove(c: &mut Ctx, t: Value) { let l = LIST.get(c); c.ary_mut(l).retain(|&x| x != t); }
+fn list_remove(c: &mut Ctx, t: Value) {
+    let l = LIST.get(c);
+    c.ary_mut(l).retain(|&x| x != t);
+    if c.ary_len(l) == 0 { timer_run(false); }
+}
 
-fn check_interrupt(c: &mut Ctx, t: Value) -> Result<(), Esc> {
-    let r = th_mut(c, t);
-    if r.pending != NIL { let e = r.pending; r.pending = NIL; return Err(raise_exc(c, e)); }
-    if r.killed { r.killed = false; let e = make_exception(c, C_KILL.get(c), "killed"); return Err(raise_exc(c, e)); }
-    Ok(())
+/// Deliver t's first interrupt the masks let through (`blocking`: at a blocking call, where
+/// :on_blocking ones go too).
+#[inline]
+fn check_interrupt_at(c: &mut Ctx, t: Value, blocking: bool) -> Result<(), Esc> {
+    if th(c, t).pending == NIL { return Ok(()); }
+    deliver_interrupt(c, t, blocking)
+}
+#[inline(never)]
+fn deliver_interrupt(c: &mut Ctx, t: Value, blocking: bool) -> Result<(), Esc> {
+    let r = th(c, t);
+    let Some(i) = r.deliverable(c, blocking) else { return Ok(()) };
+    let q = r.pending;
+    let e = c.ary_mut(q).remove(i);
+    if c.ary_len(q) == 0 { th_mut(c, t).pending = NIL; }
+    if e == kill_mark() { let k = make_exception(c, C_KILL.get(c), "killed"); return Err(raise_exc(c, k)); }
+    Err(raise_exc(c, e))
+}
+fn check_interrupt(c: &mut Ctx, t: Value) -> Result<(), Esc> { check_interrupt_at(c, t, true) }
+/// Queue an interrupt for t (rb_threadptr_pending_interrupt_enque) and wake it if it may take it.
+fn enqueue_interrupt(c: &mut Ctx, t: Value, e: Value) {
+    let q = th(c, t).pending;
+    if q == NIL { let q = c.ary_new_from(&[e]); th_mut(c, t).pending = q; } else { c.ary_push(q, e); }
+    if th(c, t).interrupted(c) { kick(c, t); }
 }
 /// Make a parked thread runnable (an interrupt or a wakeup was posted for it).
 fn kick(c: &mut Ctx, t: Value) { if let Some(id) = th(c, t).blop { blop::interrupt(c, id, blop::ECANCELED); } }
@@ -141,6 +191,7 @@ fn run_pass(c: &mut Ctx) -> Result<bool, Esc> {
         let r = th(c, t);
         let (f, inner) = (r.fiber, r.inner);
         CURRENT.set(c, t);
+        slice_start();
         let r = crate::fiber::thread_switch_in(c, f, inner);
         CURRENT.set(c, main);
         r?;
@@ -163,14 +214,14 @@ pub fn wait(c: &mut Ctx, op: Op, deadline: Option<Instant>, deadlockable: bool) 
     let r = park(c, me, id);
     let out = blop::take(c, id);
     // a notify_one this thread got but will not act on goes to the next waiter
-    if r.is_err() || th(c, me).interrupted() { if let (Some(Op::Wake(k)), Ok(_)) = &out { blop::notify_one(c, *k); } }
+    if r.is_err() || th(c, me).interrupted(c) { if let (Some(Op::Wake(k)), Ok(_)) = &out { blop::notify_one(c, *k); } }
     r?;
     check_interrupt(c, me)?;
     Ok(out)
 }
 fn park(c: &mut Ctx, me: Value, id: Id) -> Result<(), Esc> {
     if !is_main(c) {
-        while !blop::is_done(c, id) && !th(c, me).interrupted() {
+        while !blop::is_done(c, id) && !th(c, me).interrupted(c) {
             let r = th_mut(c, me);
             r.blop = Some(id); r.waiting = true;
             crate::fiber::thread_switch_out(c);
@@ -188,14 +239,17 @@ fn park(c: &mut Ctx, me: Value, id: Id) -> Result<(), Esc> {
 /// engine's pump (the only place the interpreter sleeps) when nobody can run.
 fn schedule(c: &mut Ctx, me: Value, id: Id) -> Result<(), Esc> {
     loop {
-        if blop::is_done(c, id) || th(c, me).interrupted() { return Ok(()); }
+        if blop::is_done(c, id) || th(c, me).interrupted(c) { return Ok(()); }
         if crate::builtins::process::signals_pending() {
             crate::builtins::process::run_pending_signals(c)?;
-            if blop::is_done(c, id) || th(c, me).interrupted() { return Ok(()); }
+            if blop::is_done(c, id) || th(c, me).interrupted(c) { return Ok(()); }
         }
         if run_pass(c)? { blop::pump(c, false); continue; }
         if !blop::can_finish_alone(c) && !IGNORE_DEADLOCK.load(Relaxed) { return err(c, C_FATAL.get(c), "No live threads left. Deadlock?"); }
+        // idle: no time slice to measure
+        timer_run(false);
         blop::pump(c, true);
+        timer_run(c.ary_len(LIST.get(c)) > 0);
     }
 }
 /// Block the current thread until cond holds (Ok(true)) or the deadline passes (Ok(false)).
@@ -283,6 +337,9 @@ pub fn after_fork_child(c: &mut Ctx) {
     let others: Vec<Value> = c.ary(l).iter().copied().filter(|&t| t != me).collect();
     for t in others { let r = th_mut(c, t); r.dead = true; r.blop = None; r.waiting = false; }
     c.ary_mut(l).clear();
+    // the timer thread did not survive the fork: timer_run spawns another
+    TIMER_RUN.store(false, SeqCst);
+    TIMER_UP.store(false, SeqCst);
     let main = MAIN.get(c);
     if me != main {
         let r = th_mut(c, main); r.dead = true; r.waiting = false;
@@ -290,6 +347,118 @@ pub fn after_fork_child(c: &mut Ctx) {
         MAIN.set(c, me);
         FORKED.store(true, Relaxed);
     }
+}
+
+// ---- time slice -------------------------------------------------------------------------------
+// CRuby's timer thread: while other threads exist and the interpreter is not idle in the pump, an
+// OS thread ticks every TICK and sets the interrupt bit (vm::set_ints).  The check points (a call
+// site's cache miss, a loop's back edge, Kernel#loop) then poll: after the current thread's quantum
+// it gives the others a turn.  The timer touches nothing but atomics.
+
+const TICK: Duration = Duration::from_millis(10);
+static TIMER_RUN: AtomicBool = AtomicBool::new(false);
+static TIMER_PARKED: AtomicBool = AtomicBool::new(false);
+static TIMER_UP: AtomicBool = AtomicBool::new(false);   // spawned in this process
+static TIMER: std::sync::Mutex<Option<std::thread::Thread>> = std::sync::Mutex::new(None);
+static TICKS: AtomicU32 = AtomicU32::new(0);
+static SLICE_START: AtomicU32 = AtomicU32::new(0);   // TICKS when the running thread was switched in
+
+fn timer_main() {
+    sys::block_all_signals();   // signals stay with the interpreter thread (EINTR, trap)
+    let mut idle = 0;
+    loop {
+        std::thread::sleep(TICK);
+        if TIMER_RUN.load(Relaxed) { idle = 0; TICKS.fetch_add(1, Relaxed); crate::vm::set_ints(); continue; }
+        // park after a while idle: no wake-ups while nothing runs (the store / load pairs with timer_run's)
+        idle += 1;
+        if idle < 10 { continue; }
+        TIMER_PARKED.store(true, SeqCst);
+        if !TIMER_RUN.load(SeqCst) { std::thread::park(); }
+        TIMER_PARKED.store(false, SeqCst);
+        idle = 0;
+    }
+}
+/// Ticks wanted (other threads exist, the interpreter is not idle) or not.
+fn timer_run(on: bool) {
+    if TIMER_RUN.load(Relaxed) == on { return; }
+    TIMER_RUN.store(on, SeqCst);
+    if !on { return; }
+    let mut t = TIMER.lock().unwrap_or_else(|e| e.into_inner());
+    if !TIMER_UP.load(Relaxed) {
+        // first use, or a forked child (the thread is not copied)
+        TIMER_PARKED.store(false, SeqCst);
+        if let Ok(h) = std::thread::Builder::new().name("saruby-timer".into()).spawn(timer_main) { *t = Some(h.thread().clone()); TIMER_UP.store(true, Relaxed); }
+    } else if TIMER_PARKED.load(SeqCst) { if let Some(h) = &*t { h.unpark(); } }
+}
+fn slice_start() { SLICE_START.store(TICKS.load(Relaxed), Relaxed); }
+/// The running thread used its quantum: CRuby's 100 ms, << priority (>> for a negative one).
+fn slice_over(pri: i32) -> bool {
+    let us: u64 = if pri >= 0 { 100_000 << pri } else { 100_000 >> -pri };
+    let ticks = us.div_ceil(TICK.as_micros() as u64) as u32;
+    TICKS.load(Relaxed).wrapping_sub(SLICE_START.load(Relaxed)) >= ticks
+}
+/// A check point saw the interrupt bit (vm::ints_pending): the time slice, trap handlers, then the
+/// current thread's immediate interrupts (rb_threadptr_execute_interrupts).
+#[cold]
+#[inline(never)]
+pub fn poll(c: &mut Ctx) -> Result<(), Esc> {
+    crate::vm::clear_ints();
+    let me = cur(c);
+    let main = is_main(c);
+    let sig = crate::builtins::process::signals_pending();
+    if active(c) && (slice_over(th(c, me).priority) || (sig && !main)) {
+        // the others' turn; trap handlers run in the main thread
+        if main { blop::pump(c, false); run_pass(c)?; } else { crate::fiber::thread_switch_out(c); }
+        slice_start();
+    }
+    if main && crate::builtins::process::signals_pending() { crate::builtins::process::run_pending_signals(c)?; }
+    check_interrupt_at(c, me, false)
+}
+
+/// Thread.handle_interrupt(hash) { }: push a mask; queued interrupts it lets through are delivered
+/// before the block, the ones it held back when it is popped (rb_thread_s_handle_interrupt).
+fn th_s_handle_interrupt(c: &mut Ctx, _s: Value, a: &[Value], b: *const Block) -> RV {
+    check_argc(c, a, 1, 1)?;
+    if b.is_null() { return arg_err(c, "block is needed."); }
+    if !is_hash(a[0]) { return type_err(c, format!("no implicit conversion of {} into Hash", class_name_for_err(c, a[0]))); }
+    let (imm, onb, nev) = (sym_value("immediate"), sym_value("on_blocking"), sym_value("never"));
+    let pairs = c.hash_pairs(a[0]);
+    if pairs.iter().any(|p| p.1 != imm && p.1 != onb && p.1 != nev) { return arg_err(c, "unknown mask signature"); }
+    if pairs.is_empty() { return yield_block(c, b, &[NIL]); }
+    let exc = c.vm().c_exception.get();
+    let mask = if pairs.len() == 1 && pairs[0].0 == exc { pairs[0].1 } else {
+        let v: Vec<Value> = pairs.iter().flat_map(|p| [p.0, p.1]).collect();
+        c.ary_from_vec(v)
+    };
+    let me = cur(c);
+    let ms = th(c, me).masks;
+    if ms == NIL { let ms = c.ary_new_from(&[mask]); th_mut(c, me).masks = ms; } else { c.ary_push(ms, mask); }
+    let r = check_interrupt_at(c, me, false).and_then(|_| yield_block(c, b, &[NIL]));
+    let (ek, ev) = (c.esc, c.esc_val);
+    let ms = th(c, me).masks;
+    c.ary_mut(ms).pop();
+    if c.ary_len(ms) == 0 { th_mut(c, me).masks = NIL; }
+    // a held-back interrupt replaces the block's result or exception
+    check_interrupt_at(c, me, false)?;
+    if r.is_err() { c.esc = ek; c.esc_val = ev; }
+    r
+}
+/// Thread.pending_interrupt?(err = nil) / Thread#pending_interrupt?
+fn pending_interrupt_p(c: &mut Ctx, t: Value, a: &[Value]) -> RV {
+    check_argc(c, a, 0, 1)?;
+    let q = th(c, t).pending;
+    if q == NIL { return Ok(FALSE); }
+    let Some(&k) = a.first() else { return Ok(TRUE) };
+    if !is_class_or_module(k) { return type_err(c, "class or module required for rescue clause"); }
+    let es = c.ary(q).to_vec();
+    Ok(Value::bool(es.into_iter().any(|e| is_kind_of(c, e, k))))
+}
+fn th_priority(c: &mut Ctx, s: Value, _a: &[Value], _b: *const Block) -> RV { thr(c, s)?; Ok(Value::fix(th(c, s).priority as i64)) }
+fn th_set_priority(c: &mut Ctx, s: Value, a: &[Value], _b: *const Block) -> RV {
+    thr(c, s)?;
+    let p = num_to_long(c, a[0])?.clamp(-3, 3) as i32;
+    th_mut(c, s).priority = p;
+    Ok(Value::fix(p as i64))
 }
 
 // ---- Thread ---------------------------------------------------------------------------------
@@ -310,10 +479,12 @@ fn th_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: *const Block) -> RV {
     let storage = crate::builtins::fiber_methods::inherited_storage(c)?;
     let start = c.ary_new_from(&[p, args, storage]);
     let loc = c.caller_frame().map(|f| format!("{}:{}", frame_file(f), f.line())).unwrap_or_default();
+    let pri = th(c, cur(c)).priority;
     let r = th_mut(c, t);
-    r.start = start; r.loc = loc;
+    r.start = start; r.loc = loc; r.priority = pri;
     let l = LIST.get(c);
     c.ary_push(l, t);
+    timer_run(true);
     Ok(t)
 }
 fn th_join(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
@@ -335,11 +506,13 @@ fn th_list(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
     Ok(c.ary_from_vec(v))
 }
 fn th_pass(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
-    if is_main(c) { run_pass(c)?; blop::pump(c, false); return Ok(NIL); }
     let me = cur(c);
-    check_interrupt(c, me)?;
-    crate::fiber::thread_switch_out(c);
-    check_interrupt(c, me)?;
+    if is_main(c) { run_pass(c)?; blop::pump(c, false); } else {
+        check_interrupt_at(c, me, false)?;
+        crate::fiber::thread_switch_out(c);
+    }
+    // not a blocking call: :on_blocking interrupts wait (rb_thread_schedule's RUBY_VM_CHECK_INTS)
+    check_interrupt_at(c, me, false)?;
     Ok(NIL)
 }
 fn th_stop(c: &mut Ctx, _s: Value, _a: &[Value], _b: *const Block) -> RV {
@@ -361,7 +534,7 @@ fn kill_thread(c: &mut Ctx, t: Value) -> RV {
         let e = make_exception(c, C_KILL.get(c), "killed");
         return Err(raise_exc(c, e));
     }
-    if t == MAIN.get(c) { let e = exit_exception(c); th_mut(c, t).pending = e; return Ok(t); }
+    if t == MAIN.get(c) { let e = exit_exception(c); enqueue_interrupt(c, t, e); return Ok(t); }
     if !th(c, t).started {
         let r = th_mut(c, t);
         r.dead = true;
@@ -372,9 +545,7 @@ fn kill_thread(c: &mut Ctx, t: Value) -> RV {
         if f != NIL { crate::fiber::discard(c, f); }
         return Ok(t);
     }
-    let r = th_mut(c, t);
-    r.killed = true; r.wake = true;
-    kick(c, t);
+    enqueue_interrupt(c, t, kill_mark());
     Ok(t)
 }
 fn th_kill(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV { kill_thread(c, slf) }
@@ -385,9 +556,7 @@ fn th_raise(c: &mut Ctx, slf: Value, a: &[Value], _b: *const Block) -> RV {
     thr(c, slf)?;
     if th(c, slf).dead { return Ok(NIL); }
     if slf == cur(c) { return Err(raise_exc(c, e)); }
-    let r = th_mut(c, slf);
-    r.pending = e; r.wake = true;
-    kick(c, slf);
+    enqueue_interrupt(c, slf, e);
     Ok(NIL)
 }
 fn th_wakeup(c: &mut Ctx, slf: Value, _a: &[Value], _b: *const Block) -> RV {
@@ -757,8 +926,8 @@ pub fn init(c: &mut Ctx) {
     ds(c, "abort_on_exception=", |_c, _s, a, _b| { ABORT_ALL.store(a[0].truthy(), Relaxed); Ok(a[0]) }, 1);
     ds(c, "report_on_exception", |_c, _s, _a, _b| Ok(Value::bool(REPORT_ALL.load(Relaxed))), 0);
     ds(c, "report_on_exception=", |_c, _s, a, _b| { REPORT_ALL.store(a[0].truthy(), Relaxed); Ok(a[0]) }, 1);
-    ds(c, "handle_interrupt", |c, _s, _a, b| yield_block(c, b, &[]), -1);
-    ds(c, "pending_interrupt?", |_c, _s, _a, _b| Ok(FALSE), -1);
+    ds(c, "handle_interrupt", th_s_handle_interrupt, -1);
+    ds(c, "pending_interrupt?", |c, _s, a, _b| { let t = cur(c); pending_interrupt_p(c, t, a) }, -1);
     let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, th, n, f, a);
     d(c, "join", th_join, -1); d(c, "value", th_value, 0); d(c, "[]", th_aref, 1); d(c, "[]=", th_aset, 2); d(c, "key?", th_key_p, 1); d(c, "keys", th_keys, 0);
     d(c, "thread_variable_get", th_tv_get, 1); d(c, "thread_variable_set", th_tv_set, 2); d(c, "thread_variable?", th_tv_p, 1); d(c, "thread_variables", th_tvs, 0);
@@ -766,10 +935,10 @@ pub fn init(c: &mut Ctx) {
     d(c, "name", th_name, 0); d(c, "name=", th_set_name, 1); d(c, "kill", th_kill, 0); d(c, "terminate", th_kill, 0); d(c, "exit", th_kill, 0); d(c, "raise", th_raise, -1);
     d(c, "wakeup", th_wakeup, 0); d(c, "run", th_run, 0); d(c, "report_on_exception", th_report, 0); d(c, "report_on_exception=", th_set_report, 1);
     d(c, "abort_on_exception", th_abort, 0); d(c, "abort_on_exception=", th_set_abort, 1); d(c, "group", th_group, 0);
-    d(c, "priority", |_c, _s, _a, _b| Ok(Value::fix(0)), 0); d(c, "priority=", |_c, _s, a, _b| Ok(a[0]), 1);
+    d(c, "priority", th_priority, 0); d(c, "priority=", th_set_priority, 1);
     d(c, "backtrace", |c, _s, _a, _b| Ok(c.ary_new()), -1); d(c, "backtrace_locations", |c, _s, _a, _b| Ok(c.ary_new()), -1);
     d(c, "native_thread_id", |_c, _s, _a, _b| Ok(Value::fix(crate::builtins::sys::getpid() as i64)), 0);
-    d(c, "pending_interrupt?", |_c, _s, _a, _b| Ok(FALSE), -1);
+    d(c, "pending_interrupt?", |c, s, a, _b| { thr(c, s)?; pending_interrupt_p(c, s, a) }, -1);
     d(c, "fetch", |c, s, a, b| { check_argc(c, a, 1, 2)?; let k = key_sym(c, a[0])?; let h = locals(c, s)?; match hash_get_opt(c, h, k)? { Some(v) => Ok(v), None if !b.is_null() => yield1(c, b, a[0]), None if a.len() > 1 => Ok(a[1]), None => { let d = inspect_str(c, k)?; err(c, c.vm().c_key_error.get(), format!("key not found: {}", d)) } } }, -1);
     for n in ["Mutex", "Queue", "SizedQueue", "ConditionVariable"] { crate::builtins::prelude::lazy_const(c, th, n, "saruby/sync"); crate::builtins::prelude::lazy_const(c, ob, n, "saruby/sync"); }
     crate::builtins::prelude::lazy_const(c, ob, "Monitor", "saruby/sync");

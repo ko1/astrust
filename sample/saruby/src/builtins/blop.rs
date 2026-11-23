@@ -51,16 +51,17 @@ enum Slot { Free, Pending(Pending), Done(Op, Res) }
 struct Entry { gen: u32, slot: Slot }
 
 /// In-flight operations keyed by Id (generation-checked: a stale Id never names a reused slot).
-pub struct Slab { ents: Vec<Entry>, free: Vec<u32>, npending: usize, just_done: Vec<Id> }
+pub struct Slab { ents: Vec<Entry>, free: Vec<u32>, npending: usize, nfd: usize, just_done: Vec<Id> }   // nfd: pending ops on fds
 /// One fd of a pending op became ready (engine → slab).
 pub struct Ready { pub id: Id, pub idx: u32, pub revents: i16 }
 
 impl Slab {
-    fn new() -> Slab { Slab { ents: vec![], free: vec![], npending: 0, just_done: vec![] } }
+    fn new() -> Slab { Slab { ents: vec![], free: vec![], npending: 0, nfd: 0, just_done: vec![] } }
     fn get(&self, id: Id) -> Option<&Slot> { self.ents.get(id.idx as usize).filter(|e| e.gen == id.gen).map(|e| &e.slot) }
     fn get_mut(&mut self, id: Id) -> Option<&mut Slot> { self.ents.get_mut(id.idx as usize).filter(|e| e.gen == id.gen).map(|e| &mut e.slot) }
     fn insert(&mut self, p: Pending) -> Id {
         self.npending += 1;
+        if p.op.interest().next().is_some() { self.nfd += 1; }
         if let Some(i) = self.free.pop() { let e = &mut self.ents[i as usize]; e.slot = Slot::Pending(p); return Id { idx: i, gen: e.gen }; }
         self.ents.push(Entry { gen: 0, slot: Slot::Pending(p) });
         Id { idx: self.ents.len() as u32 - 1, gen: 0 }
@@ -70,14 +71,16 @@ impl Slab {
         let Some(s) = self.get_mut(id) else { return };
         if !matches!(s, Slot::Pending(_)) { return; }
         let Slot::Pending(p) = std::mem::replace(s, Slot::Free) else { unreachable!() };
+        let fd = p.op.interest().next().is_some();
         *s = Slot::Done(p.op, r);
         self.npending -= 1;
+        if fd { self.nfd -= 1; }
         self.just_done.push(id);
     }
     fn release(&mut self, id: Id) -> Option<Slot> {
         let e = self.ents.get_mut(id.idx as usize).filter(|e| e.gen == id.gen)?;
         let s = std::mem::replace(&mut e.slot, Slot::Free);
-        if matches!(s, Slot::Pending(_)) { self.npending -= 1; }
+        if let Slot::Pending(p) = &s { self.npending -= 1; if p.op.interest().next().is_some() { self.nfd -= 1; } }
         e.gen = e.gen.wrapping_add(1);
         self.free.push(id.idx);
         Some(s)
@@ -327,6 +330,8 @@ pub fn cancel_fd(c: &mut Ctx, fd: i32) {
     if fd < 0 { return; }
     let mut g = c.vm().blop.borrow_mut();
     let Some(b) = g.as_mut() else { return };
+    // no scan of the slab when nothing waits on a fd (1000 sleeping threads: vm_thread_close)
+    if b.slab.nfd == 0 { return; }
     {
         let ids: Vec<Id> = b.slab.pending().filter(|(_, p)| p.op.has_fd(fd)).map(|(id, _)| id).collect();
         for id in ids { b.slab.complete(id, Err(EBADF)); }

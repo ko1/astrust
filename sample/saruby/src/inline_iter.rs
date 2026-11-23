@@ -130,6 +130,8 @@ pub fn iter_loop(c: &mut Ctx, it: u32, r0: Value, a: &[Value], y: &mut impl FnMu
 /// entry, reset by every fill).
 #[inline(never)]
 pub fn iter_refill(c: &mut Ctx, cc: &CallCache, r0: Value, mid: Sym, flags: u32, it: u32, blk: &Iseq, h: u64) -> bool {
+    // the out-of-line call polls (call_slow)
+    if crate::vm::ints_pending() { return false; }
     if !crate::inline_builtin::bi_hit(cc, r0, it & 0xff) {
         if cc.klass.get() != 0 && cc.serial.get() == crate::vm::method_serial() { return false; }
         crate::vm::lookup_cc(c, cc, r0, mid, flags);

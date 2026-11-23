@@ -466,6 +466,11 @@ pub fn srb_call0(c: &mut Ctx, v: Value, mid: Sym, cc: &OpCc) -> RV {
 }
 
 /// `redo` in a block entered through its entry node: run the body again until it ends otherwise.
+/// A loop's back edge saw the interrupt bit (vm::ints_pending).
+#[cold]
+#[inline(never)]
+pub fn srb_poll(c: &mut Ctx) -> Result<(), Esc> { crate::builtins::thread::poll(c) }
+
 #[cold]
 #[inline(never)]
 pub fn srb_block_redo(c: &mut Ctx, body: NodePtr, fp: Fp) -> RV {

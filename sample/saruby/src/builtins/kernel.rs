@@ -372,6 +372,8 @@ fn k_raise(c: &mut Ctx, _s: Value, args: &[Value], _b: *const Block) -> RV {
 fn k_loop(c: &mut Ctx, slf: Value, _args: &[Value], blk: *const Block) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, s::loop_, &[], NIL); }
     loop {
+        // a check point per step, as the back edge of CRuby's `while true; yield; end`
+        if crate::vm::ints_pending() { crate::builtins::thread::poll(c)?; }
         match yield_block(c, blk, &[]) {
             Ok(_) => {}
             Err(e) => {
