@@ -244,7 +244,11 @@ read only on paths that are slow anyway.  Measurements: `~/ruby/src/trials/2026-
   `thread::wait` on a blop (builtins/blop.rs: an op owned by a slab, named by an Id — Poll /
   Read / Write / Timer / Wake), or calls `Thread.pass`; there is no preemption.  The scheduler
   switches in only runnable threads and sleeps in the engine's pump (poll or epoll).  See
-  [io_design.md](io_design.md).
+  [io_design.md](io_design.md).  Thread#kill unwinds with an internal exception that `rescue` skips
+  and `ensure` does not put in `$!` (`srb_rescuable`, node_ensure).  A deadlock (the main thread's
+  scheduler finds nothing runnable) raises `fatal` with CRuby's thread dump; a joiner is found by the
+  Wake key of its parked op (the joined Thread's address).  ConditionVariable#wait queues a waiter
+  and sleeps as Mutex#sleep does (a signal or Thread#wakeup ends it; the re-lock defers interrupts).
 
 ## Testing
 Differential tests against CRuby (oracle): `../../../astro/sample/rubyharness`.
