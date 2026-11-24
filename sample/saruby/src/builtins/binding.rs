@@ -181,7 +181,7 @@ pub fn eval_file(c: &Ctx) -> &'static str {
     while let Some(x) = f { if !x.iseq().is_null() { break; } f = c.prev_frame(x); }
     let Some(f) = f else { return "(eval)" };
     let name = format!("(eval at {}:{})", frame_file(f), f.line());
-    NAMES.with(|m| *m.borrow_mut().entry(name.clone()).or_insert_with(|| Box::leak(name.into_boxed_str())))
+    NAMES.with(|m| *m.borrow_mut().entry(name.clone()).or_insert_with(|| { crate::compile::set_file_enc(&name, crate::object::ENC_BINARY); Box::leak(name.into_boxed_str()) }))
 }
 
 pub fn eval_in_binding(c: &mut Ctx, bind: Value, src: &[u8], enc: u8, file: &'static str, line: i32) -> RV {
@@ -368,7 +368,13 @@ fn b_eval(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
 /// eval's file and line arguments (StringValue / NUM2INT); no file or nil: "(eval at FILE:LINE)".
 pub fn eval_file_line(c: &mut Ctx, file: Option<Value>, line: Option<Value>) -> Result<(&'static str, i32), Esc> {
     let f = match file {
-        Some(v) if v != NIL => { let s = expect_str(c, v)?; let n = String::from_utf8_lossy(c.str_bytes(s)).into_owned(); intern_file(n) }
+        Some(v) if v != NIL => {
+            let s = expect_str(c, v)?;
+            let n = String::from_utf8_lossy(c.str_bytes(s)).into_owned();
+            let e = c.str_enc(s);
+            if e != crate::object::ENC_UTF8 || crate::compile::file_enc(&n) != e { crate::compile::set_file_enc(&n, e); }
+            intern_file(n)
+        }
         _ => eval_file(c),
     };
     let l = match line { Some(v) => crate::builtins::numeric_methods::num_to_long(c, v)? as i32, None => 1 };

@@ -24,7 +24,7 @@ use std::os::unix::ffi::OsStrExt;
 pub static STDOUT_SYNC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub struct RIo {
-    pub fd: i32, pub wfd: i32, pub path: Vec<u8>, pub rbuf: Vec<u8>, pub rpos: usize, pub eof: bool, pub wbuf: Vec<u8>,
+    pub fd: i32, pub wfd: i32, pub path: Vec<u8>, pub path_enc: u8, pub rbuf: Vec<u8>, pub rpos: usize, pub eof: bool, pub wbuf: Vec<u8>,
     pub closed: bool, pub init: bool, pub lineno: i64, pub writable: bool, pub readable: bool, pub binmode: bool, pub sync: bool,
     pub pid: i32, pub enc: Option<u8>, pub enc2: Option<u8>, pub ecflags: u32, pub autoclose: bool, pub has_path: bool, pub data: bool, pub rerr: i64,
     pub coop: bool, pub wouldblock: bool,   // coop: fill does not block, it sets wouldblock (other threads must run)
@@ -58,22 +58,37 @@ fn rio_mut(c: &mut Ctx, v: Value) -> Option<&mut RIo> { c.data_mut::<RIo>(v) }
 fn io_mut(c: &mut Ctx, v: Value) -> &mut RIo { c.data_mut::<RIo>(v).expect("saruby: not an IO") }
 fn lossy(b: &[u8]) -> String { String::from_utf8_lossy(b).into_owned() }
 
-/// raise_errno whose detail ends with a path, kept as bytes (CRuby's message carries the path as given).
-pub fn raise_errno_at(c: &mut Ctx, no: i64, pre: &str, path: &[u8]) -> Esc {
+/// A path in an Errno message: its bytes and encoding.
+pub trait ErrPath { fn bytes_enc(&self) -> (&[u8], u8); }
+// bytes of unknown encoding: UTF-8 if they are, else BINARY
+fn guess_enc(b: &[u8]) -> u8 { if std::str::from_utf8(b).is_ok() { ENC_UTF8 } else { ENC_BINARY } }
+impl ErrPath for &[u8] { fn bytes_enc(&self) -> (&[u8], u8) { (self, guess_enc(self)) } }
+impl<const N: usize> ErrPath for &[u8; N] { fn bytes_enc(&self) -> (&[u8], u8) { (&self[..], guess_enc(&self[..])) } }
+impl ErrPath for &Vec<u8> { fn bytes_enc(&self) -> (&[u8], u8) { (&self[..], guess_enc(self)) } }
+impl ErrPath for &PathArg { fn bytes_enc(&self) -> (&[u8], u8) { (&self.0, self.1) } }
+impl ErrPath for (&[u8], u8) { fn bytes_enc(&self) -> (&[u8], u8) { (self.0, self.1) } }
+/// The encoding of strerror text in the locale with `b` (of `enc`) appended (rb_str_catf).
+pub fn errno_msg_enc(b: &[u8], enc: u8) -> u8 {
+    if is_ascii(b) && crate::builtins::encoding::ascii_compat(enc) { crate::builtins::encoding::locale_enc() } else { enc }
+}
+/// raise_errno whose detail ends with a path (CRuby's message carries the path in its encoding).
+pub fn raise_errno_at(c: &mut Ctx, no: i64, pre: &str, path: impl ErrPath) -> Esc {
+    let (path, penc) = path.bytes_enc();
     let k = crate::builtins::exception::errno_class(c, no);
     let mut m = crate::builtins::exception::errno_text(Value::fix(no)).into_bytes();
     if !pre.is_empty() || !path.is_empty() { m.extend_from_slice(b" @ "); m.extend_from_slice(pre.as_bytes()); m.extend_from_slice(path); }
     let e = make_exception(c, k, "");
-    // a path that is not UTF-8 makes the message BINARY (CRuby appends the path in its encoding)
-    let enc = if std::str::from_utf8(&m).is_ok() { crate::object::ENC_UTF8 } else { crate::object::ENC_BINARY };
+    let enc = errno_msg_enc(path, penc);
     let ms = c.str_new_enc(&m, enc);
     ivar_set_raw(c, e, s::mesg, ms);
     ivar_set_raw(c, e, s::errno, Value::fix(no));
     raise_exc(c, e)
 }
-/// A path argument: the String's bytes (any but NUL, as CRuby takes them).
-pub struct PathArg(pub Vec<u8>);
+/// A path argument: the String's bytes (any but NUL, as CRuby takes them) and encoding.
+pub struct PathArg(pub Vec<u8>, pub u8);
 impl PathArg {
+    /// A path the system gave (in the filesystem encoding).
+    pub fn sys(b: Vec<u8>) -> PathArg { PathArg(b, crate::builtins::encoding::default_external()) }
     pub fn as_bytes(&self) -> &[u8] { &self.0 }
     pub fn path(&self) -> &std::path::Path { std::path::Path::new(std::ffi::OsStr::from_bytes(&self.0)) }
     pub fn cstr(&self) -> std::ffi::CString { sys::cstr(&self.0) }
@@ -84,7 +99,7 @@ impl std::fmt::Display for PathArg {
 }
 
 fn blank() -> RIo {
-    RIo { fd: -1, wfd: -1, path: vec![], rbuf: vec![], rpos: 0, eof: false, wbuf: vec![], closed: false, init: false, lineno: 0, writable: false,
+    RIo { fd: -1, wfd: -1, path: vec![], path_enc: ENC_UTF8, rbuf: vec![], rpos: 0, eof: false, wbuf: vec![], closed: false, init: false, lineno: 0, writable: false,
           readable: false, binmode: false, sync: false, pid: 0, enc: None, enc2: None, ecflags: 0, autoclose: true, has_path: false, data: false, rerr: 0, coop: false, wouldblock: false,
           ecrep: None, conv: None, rcap: 0, textmode: false, wc_need: false, rfull: true, tty: false }
 }
@@ -802,7 +817,7 @@ fn gets_value(c: &mut Ctx, slf: Value, la: &LineArgs) -> Result<(Value, i64), Es
 #[cold]
 fn fillbuf_err(c: &mut Ctx, slf: Value) -> Esc {
     let io = io_mut(c, slf);
-    let e = std::mem::take(&mut io.rerr); let (m, p) = (format!("io_fillbuf - fd:{} ", io.fd), io.path.clone());
+    let e = std::mem::take(&mut io.rerr); let (m, p) = (format!("io_fillbuf - fd:{} ", io.fd), PathArg(io.path.clone(), io.path_enc));
     raise_errno_at(c, e, &m, &p)
 }
 /// prepare_getline_args: a separator the read encoding `enc` cannot take as it is.
@@ -1330,8 +1345,8 @@ fn io_closed(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 fn io_fileno(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = get_io(c, slf)?; Ok(Value::fix(io.fd as i64)) }
 fn io_tty(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = get_io(c, slf)?; Ok(Value::bool(sys::isatty(io.fd) == 1)) }
 fn io_path(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
-    let p = match rio(c, slf) { Some(i) if i.has_path => i.path.clone(), _ => return Ok(NIL) };
-    Ok(c.str_new(&p))
+    let (p, e) = match rio(c, slf) { Some(i) if i.has_path => (i.path.clone(), i.path_enc), _ => return Ok(NIL) };
+    Ok(c.str_new_enc(&p, e))
 }
 fn io_binmode(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let io = get_io(c, slf)?;
@@ -1384,7 +1399,7 @@ fn do_seek_at(c: &mut Ctx, slf: Value, off: i64, whence: i32, func: &str) -> Res
     if io.rpos < io.rbuf.len() { cv::clear_codeconv(io); }
     io.rbuf.clear(); io.rpos = 0; io.eof = false;
     let r = sys::lseek(io.fd, off, whence);
-    if r < 0 { let (e, p) = (sys::errno(), io.path.clone()); return Err(raise_errno_at(c, e, func, &p)); }
+    if r < 0 { let (e, p) = (sys::errno(), PathArg(io.path.clone(), io.path_enc)); return Err(raise_errno_at(c, e, func, &p)); }
     Ok(r)
 }
 fn whence_arg(c: &mut Ctx, v: Option<&Value>) -> Result<i32, Esc> {
@@ -1817,6 +1832,12 @@ fn validate_enc_binmode(c: &mut Ctx, readable: bool, bin: bool, encs: Option<Enc
 
 pub fn path_arg(c: &mut Ctx, v: Value) -> Result<PathArg, Esc> {
     let sv = if is_string(v) { v } else if respond_to(c, v, intern(b"to_path"), true) { let p = funcall(c, v, intern(b"to_path"), &[], std::ptr::null())?; expect_str(c, p)? } else { expect_str(c, v)? };
+    // check_path_encoding
+    if !crate::builtins::encoding::ascii_compat(c.str_enc(sv)) {
+        let e = crate::builtins::encoding::enc_name(c.str_enc(sv));
+        let ins = crate::builtins::kernel::inspect_str(c, sv)?;
+        return err(c, c.vm().c_compat_error.get(), format!("path name must be ASCII-compatible ({}): {}", e, ins));
+    }
     let b = c.str_bytes(sv);
     if b.contains(&0) { return arg_err(c, "path name contains null byte"); }   // rb_get_path
     // file_path_convert: with a default_internal, a non-ASCII path goes to the system in the filesystem encoding
@@ -1824,12 +1845,12 @@ pub fn path_arg(c: &mut Ctx, v: Value) -> Result<PathArg, Esc> {
         use crate::builtins::encoding as en;
         let (enc, fs) = (c.str_enc(sv), en::default_external());
         if enc != ENC_ASCII && enc != ENC_BINARY && enc != fs && !is_ascii(b) {
-            if let Some(o) = crate::builtins::econv::convert_string(en::enc_name(enc), en::enc_name(fs), b) { return Ok(PathArg(o)); }
+            if let Some(o) = crate::builtins::econv::convert_string(en::enc_name(enc), en::enc_name(fs), b) { return Ok(PathArg(o, fs)); }
         }
     }
-    Ok(PathArg(b.to_vec()))
+    Ok(PathArg(b.to_vec(), c.str_enc(sv)))
 }
-fn setup_io(c: &mut Ctx, v: Value, fd: i32, path: Option<&[u8]>, om: &OpenMode) -> Result<(), Esc> {
+fn setup_io(c: &mut Ctx, v: Value, fd: i32, path: Option<&PathArg>, om: &OpenMode) -> Result<(), Esc> {
     let io = io_mut(c, v);
     // a fresh object is blank already; a reinitialized one is reset
     if io.init { if !io.closed && io.fd > 2 { close_fds(io); } *io = blank(); }
@@ -1840,7 +1861,7 @@ fn setup_io(c: &mut Ctx, v: Value, fd: i32, path: Option<&[u8]>, om: &OpenMode) 
     (io.enc, io.enc2) = om.encs.unwrap_or_else(|| if om.bin { (Some(ENC_BINARY), None) } else { ext_int_to_encs(None, IntEnc::Default, false) });
     io.ecflags = om.ecflags; io.ecrep = om.ecrep.clone(); io.textmode = om.text;
     conv_note(io);
-    if let Some(p) = path { io.path = p.to_vec(); io.has_path = true; }
+    if let Some(p) = path { io.path = p.0.clone(); io.path_enc = p.1; io.has_path = true; }
     if om.bom && io.readable { set_encoding_by_bom(c, v); }
     Ok(())
 }
@@ -1852,7 +1873,7 @@ pub fn sysopen(c: &mut Ctx, path: &PathArg, om: &OpenMode) -> Result<i32, Esc> {
         if fd >= 0 { return Ok(fd); }
         let e = sys::errno();
         if e == sys::EINTR { continue; }
-        return Err(raise_errno_at(c, e, "rb_sysopen - ", path.as_bytes()));
+        return Err(raise_errno_at(c, e, "rb_sysopen - ", path));
     }
 }
 fn is_fifo(path: &PathArg) -> bool { use std::os::unix::fs::FileTypeExt; std::fs::metadata(path.path()).is_ok_and(|m| m.file_type().is_fifo()) }
@@ -1867,7 +1888,7 @@ fn open_fifo_coop(c: &mut Ctx, path: &PathArg, om: &OpenMode) -> Result<i32, Esc
         if fd >= 0 { let fl = sys::fcntl(fd, sys::F_GETFL, 0); sys::fcntl(fd, sys::F_SETFL, fl & !sys::O_NONBLOCK); return Ok(fd); }
         let e = sys::errno();
         if e == sys::EINTR { continue; }
-        if e != 6 { return Err(raise_errno_at(c, e, "rb_sysopen - ", path.as_bytes())); }   // ENXIO: no reader yet
+        if e != 6 { return Err(raise_errno_at(c, e, "rb_sysopen - ", path)); }   // ENXIO: no reader yet
         crate::builtins::thread::sleep_for(c, nap)?;
         nap = (nap * 2).min(std::time::Duration::from_millis(50));
     }
@@ -1882,7 +1903,7 @@ fn file_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let om = parse_mode(c, &pos[1..], opts)?;
     let fd = sysopen(c, &p, &om)?;
     // an O_TMPFILE file has no path
-    let path = if om.flags & 0o20000000 != 0 { None } else { Some(p.as_bytes()) };
+    let path = if om.flags & 0o20000000 != 0 { None } else { Some(&p) };
     setup_io(c, slf, fd, path, &om)?;
     Ok(NIL)
 }
@@ -1904,7 +1925,7 @@ fn io_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if let Some(l) = opts { {
         if let Some(v) = crate::hash::hash_get_opt(c, l, sym_value("autoclose"))? { if let Some(io) = rio_mut(c, slf) { io.autoclose = v.truthy(); } }
         if let Some(v) = crate::hash::hash_get_opt(c, l, sym_value("path"))? {
-            if v != NIL { let ps = expect_str(c, v)?; let b = c.str_bytes(ps).to_vec(); if let Some(io) = rio_mut(c, slf) { io.path = b; io.has_path = true; } }
+            if v != NIL { let ps = expect_str(c, v)?; let (b, e) = (c.str_bytes(ps).to_vec(), c.str_enc(ps)); if let Some(io) = rio_mut(c, slf) { io.path = b; io.path_enc = e; io.has_path = true; } }
         }
     } }
     Ok(NIL)
@@ -2122,7 +2143,7 @@ fn with_file<R>(c: &mut Ctx, klass: Value, path: Value, om: OpenMode, f: impl Fn
     let fd = sysopen(c, &p, &om)?;
     let k = if klass == c.vm().c_io.get() { c.vm().c_file.get() } else { klass };
     let io = new_io(c, k, -1, p.as_bytes(), true, true);
-    setup_io(c, io, fd, Some(p.as_bytes()), &om)?;
+    setup_io(c, io, fd, Some(&p), &om)?;
     let r = f(c, io);
     let (ek, ev) = (c.esc, c.esc_val);
     let cr = close_io(c, io);
@@ -2336,11 +2357,11 @@ fn io_reopen_io(c: &mut Ctx, slf: Value, src: Value) -> RV {
     if out_fd(src_io) == 1 { out_flush(); }
     io_flush_one(src_io);
     let pos = if sr { sys::lseek(src_io.fd, 0, 1) - (src_io.rbuf.len() - src_io.rpos) as i64 } else { 0 };
-    let (sfd, spath, shas, lineno) = (src_io.fd, src_io.path.clone(), src_io.has_path, src_io.lineno);
+    let (sfd, spath, spe, shas, lineno) = (src_io.fd, src_io.path.clone(), src_io.path_enc, src_io.has_path, src_io.lineno);
     let encs = (src_io.enc, src_io.enc2, src_io.ecflags, src_io.ecrep.clone(), src_io.textmode, src_io.binmode, src_io.sync);
     let io = io_mut(c, slf);
     io.readable = sr; io.writable = sw; io.lineno = lineno;
-    if shas { io.path = spath; io.has_path = true; } else if !std { io.path.clear(); io.has_path = false; }
+    if shas { io.path = spath; io.path_enc = spe; io.has_path = true; } else if !std { io.path.clear(); io.has_path = false; }
     (io.enc, io.enc2, io.ecflags, io.ecrep, io.textmode, io.binmode, io.sync) = encs;
     conv_note(io);
     if io.fd != sfd {
@@ -2353,7 +2374,7 @@ fn io_reopen_io(c: &mut Ctx, slf: Value, src: Value) -> RV {
     crate::heap::obj_set_klass(slf, k);
     Ok(slf)
 }
-fn spath_of(c: &Ctx, v: Value) -> Vec<u8> { rio(c, v).map(|i| i.path.clone()).unwrap_or_default() }
+fn spath_of(c: &Ctx, v: Value) -> PathArg { rio(c, v).map(|i| PathArg(i.path.clone(), i.path_enc)).unwrap_or(PathArg(vec![], ENC_UTF8)) }
 fn io_reopen(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let (a, opts) = kw_split(c, a);
     if a.is_empty() || a.len() > 2 { return argc_err(c, a.len(), 1, 2); }
@@ -2379,7 +2400,7 @@ fn io_reopen(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if !io.closed && io.fd >= 0 { dup2_cloexec(fd, io.fd); sys::close(fd); } else { io.fd = fd; io.closed = false; }
     let acc = om.flags & sys::O_ACCMODE;
     io.readable = acc != sys::O_WRONLY; io.writable = acc != sys::O_RDONLY;
-    io.path = p.0; io.has_path = true; io.rbuf.clear(); io.rpos = 0;
+    io.path = p.0; io.path_enc = p.1; io.has_path = true; io.rbuf.clear(); io.rpos = 0;
     cv::clear_codeconv(io);
     if a.len() >= 2 || opts.is_some() {
         io.binmode = om.bin;

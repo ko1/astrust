@@ -1658,8 +1658,9 @@ fn k_dir(c: &mut Ctx, _s: Value, _args: &[Value], _b: Blk) -> RV {
         let d = match f.rfind('/') { Some(0) => "/".to_string(), Some(i) => f[..i].to_string(), None => ".".to_string() };
         return Ok(c.str_new(d.as_bytes()));
     }
+    let e = crate::compile::file_enc(&f);
     let abs = std::path::PathBuf::from(crate::builtins::exception::realpath(&f).unwrap_or(f));
-    Ok(c.str_new(abs.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or(".".into()).as_bytes()))
+    Ok(c.str_new_enc(abs.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or(".".into()).as_bytes(), e))
 }
 
 // ---- eval / binding --------------------------------------------------------------------
