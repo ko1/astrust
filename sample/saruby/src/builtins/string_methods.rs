@@ -1916,11 +1916,11 @@ fn broken_strip_err(c: &mut Ctx, slf: Value, l: bool, r: bool) -> Result<Option<
     if l {
         while i < b.len() {
             let (n, code) = if en::min_len(enc) == 4 {
-                // Onigmo's utf32 mbc_enc_len tests the code as a signed int: 0x80000000.. pass
+                // 4.0.10's utf32 mbc_to_code is unsigned: 0x80000000.. are invalid too
                 if b.len() - i < 4 { return arg_err(c, msg); }
                 let w = [b[i], b[i + 1], b[i + 2], b[i + 3]];
                 let k = if enc == en::ENC_UTF32LE { u32::from_le_bytes(w) } else { u32::from_be_bytes(w) };
-                if k as i32 > 0x10ffff || (0xd800..=0xdfff).contains(&k) { return arg_err(c, msg); }
+                if k > 0x10ffff || (0xd800..=0xdfff).contains(&k) { return arg_err(c, msg); }
                 (4, k)
             } else {
                 let Some(n) = en::precise_len(enc, &b, i) else { return arg_err(c, msg) };
