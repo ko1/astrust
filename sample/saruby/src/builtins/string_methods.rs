@@ -188,7 +188,7 @@ cfn!(s_mod, |c, slf, a, b_| {
     } else { NIL };
     // the elements stay reachable through `arr`, kept alive past the call
     let args: Vec<Value> = if arr != NIL { c.ary(arr).to_vec() } else { vec![x] };
-    let r = crate::builtins::sprintf::format(c, slf, &args);
+    let r = crate::builtins::sprintf::format_ary(c, slf, &args, arr);
     std::hint::black_box(arr);
     r
 });
