@@ -177,18 +177,21 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [ ] 上の残り: CRuby は rescue した deadlock の後の 2 度目の deadlock を検出しない（trial の cruby_oddities/）。ConditionVariable#wait の費用（上）、Kernel#p が stdout を flush しない（CRuby は毎回、SIGPIPE の spec）、Thread#native_thread_id は走っていないスレッドで nil（CRuby 1:1 は整数）、GC.stat_heap はヒープ 1 つ（CRuby は 5）、latest_gc_info / Profiler の GC_FLAGS は固定値、Mutex.dup した class の new が allocator undefined、ユーザー定義の Exception#set_backtrace を backtrace 無しの raise でも呼ぶ（CRuby、raise_exc の経路）、at_exit 中のエラー表示が cause を連ねる（CRuby は出さない）、for_loop_preempt_1120 の時分割
 
 ## 性能（上 3 つの後。新規には起こさない）
-- [ ] sp4 再計測（d709f50、2026-11-24）で 1cdddb3 より遅くなったもの（長いベンチ safe AOT）: strcmp +17.8%、method_call +6.6%、send +6.0%、strops +5.2%、array_access/ivar/hash/gc_wb/while 約 +3%。原因未調査（rclass・NO_CTX 除去の代償が候補）。koruby に対して長いベンチで binary_trees・ivar・object・poly が新たに負け（koruby 側が 2〜10% 速くなった）。~/ruby/src/trials/2026-11-20-astrust-vs-astro/README.md
+- [x] sp4 再計測（d709f50）で 1cdddb3 より遅く見えた長いベンチ: master（4b03fb9）と 1cdddb3 を同じ sp4・CU=1 で比べると method_call −6.3%・send −5.9%・ivar −2.5%・poly −2.6%・strcmp −12.1%・strops −0.6%・array_access −1.6%・while −2.0%（cycles）。method_call/send の「+6%」は下の配置の二峰性（M1）で、コードではない。残るのは hash +3.2%（命令 +2.1%、01a5319）と gc_wb +2.8%（命令 −0.4%、未特定）。~/ruby/src/trials/2026-11-25-saruby-perf-layout/
+- [ ] koruby に対して長いベンチで binary_trees・ivar・object・poly が新たに負け（d709f50 の再計測、koruby 側が 2〜10% 速くなった）。~/ruby/src/trials/2026-11-20-astrust-vs-astro/README.md
+- [ ] AOT サイクルの二峰性（同じ命令数で ±4〜8%）の機構（2026-11-24 観測で確定）: M1 = LLVM が Frame の (blk, id)（普通の呼び出しでは 0, 0）を 1 つの 16 バイトストアにまとめ、Frame が 8 境界・blk がオフセット 24 なので 4 通りの置き場所の 1 つで 64 バイト境界をまたぐ。置き場所は呼び出し側（焼いた SD）のフレームの大きさで決まり、トップレベルに文を足すと変わる。1 呼び出し ~1 cycle（load-queue のディスパッチ停止、IBS の DcMisAcc がその 1 命令にだけ立つ）。M2 = ネイティブスタックと値スタックの 4K エイリアス（ls_bad_status2.stli_other が 15 倍、ivar +8%）。コード配置・ASLR・L1i・libsaruby の .text 配置は無関係（実測で否定）。Frame を align(16) にして (blk, id) を 16 境界に置くと M1 は消え 1cdddb3 の遅いモードは −6% になるが、master では object +4.5%・ary +10〜15%（機構未特定、object は stli_other 倍増）なので入れていない。パッチと数字は trials の patches/
 - [ ] error_highlight の代償: 起動 +0.72%（コンパイラ側のコード生成のずれ ~70K と、ノードごとのタグ検査）。NoMethodError の生成 +3〜4% cycles（特異クラス付き受け手の検査、未追跡）
-- [ ] NO_CTX 除去の代償: hash +1.4%（hash_set の regalloc、コード配置がもろい）、nesteddata +1.0%（Hash の malloc をまたいで c を保持）、object +0.62%（AOT 命令数）
+- [ ] NO_CTX 除去の代償: hash +1.4%（hash_set の regalloc、コード配置がもろい）、nesteddata +1.0%（Hash の malloc をまたいで c を保持）、object +0.62%（AOT 命令数）。2026-11-24 sp4 の命令数二分探索では 652ccab 単体は hash/ary/str とも ±0.00%
 - [ ] `$~` を設定する正規表現マッチ 1 回 +101〜151 命令（frame-local 化、1M マッチで +5〜10%）。メソッド起動ごとにフレーム探索をキャッシュすれば大半が消える見込み
 - [ ] IO 変換 round 1 の代償: io_file_create（File.open+close）+1.07%（open 1 回 ~43 命令）、io_select2/3 +0.33/+0.23%、変換付き gets 2.3×・puts 1.6×（io.c 同様に 1 文字ずつ受け渡すため）
 - [ ] svar の代償: `=~` 1 回 +101〜151 命令（rb_t / rb_m / rb_b で +4.9 / +5.0 / +10.4 %、~/ruby/src/trials/2026-11-23-saruby-compat-bundle/）。家の解決を活性化ごとにキャッシュすれば大半が消える
 - [ ] 正規表現 round 1 の代償: liquid-compile +0.47%・liquid-render +0.16%（マッチごとのエンコーディング判定 ~44 命令、timeout 参照、ステップ計数）。String の coderange キャッシュで判定を省ける
+- [ ] `<<` `[]` `[]=` の演算子ノードが組み込みの関数を呼ぶようにした代償（01a5319、ASTro 原則）: hash の `h[k] = v` +3.5%（~2.5 命令/回）、ary の `a << x` +3.1%（~2 命令/回）、str の `s << "x"` +10%（後で d983d25 が大半を回収）。行の保存（例外が呼び出し側の行を持つため）と組み込み側の検査の重複。行を例外の経路だけで保存できる形（組み込みに行を渡す等）が要る
 - [ ] rclass 除去（a1217f5）の代償を取り戻す: poly +0.85%（interp）/ +1.17%（AOT）、object +0.3%、optcarrot +0.36%/フレーム（命令数）。原因は call_slow のキャッシュ hit 経路で c を引き回すレジスタ移動 ~2.7 命令/呼び出し、ivar 読みの miss 呼び出しに c を渡す 1 命令、new_object のクラスの ivar 数読み 1 命令（user 2026-11-22「高速化は別途考えましょう」）
 
 - [x] sp4 の退行 ary: glibc がメモリをカーネルに返して再フォルト → `M_TOP_PAD` 64 MiB（ary 110 → 68 ms）
 - [x] sp4 の退行 ackermann: patch 束縛ではなく all.so と patch.o で引数リストの名前付けが違い別の木を比べていた → 名前付けを揃えた（a1246fd）
-- [ ] method_call/send の 3dd858b 退行（Zen 4）: 1 呼び出しあたりストアが 1 つ多い、出所未特定（Zen 3 の memory disambiguation とは別）
+- [ ] method_call/send の 3dd858b 退行（Zen 4）: 1 呼び出しあたりストアが 1 つ多い、出所未特定（Zen 3 の memory disambiguation とは別）。仮説: 上の M1（Frame の 16 バイトストア）と同じものか、IBS の DcMisAcc で確かめられる
 - [ ] bake を SD 単位にコンパイル・キャッシュ（いまはプログラムごとに all.rs 4.6 MB + patch.rs 7.9 MB を 1 crate で。optcarrot 47 秒、30k_* は rustc がメモリ不足）
 - [x] 長いベンチ（`bench_long/`、本体約 1 秒）での比較を artifact に（long.html）
 - [ ] koruby との差（起動差し引き、sp4）: tak・gcd・fib・ackermann（呼び出し 1 回の命令数）、bitops・intdiv（slow path 合流後の再検査）、optcarrot の L1d
