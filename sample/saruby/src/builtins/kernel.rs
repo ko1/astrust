@@ -881,7 +881,7 @@ fn k_string(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     type_err(c, format!("can't convert {} into String", class_name_for_err(c, v)))
 }
 
-fn k_array(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
+pub fn k_array(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     check_argc(c, args, 1, 1)?;
     let v = args[0];
     if is_array(v) { return Ok(v); }
@@ -1131,7 +1131,7 @@ pub const BUILTIN_FEATURES: &[&str] = &["set", "enumerator", "rational", "comple
     "erb", "cgi", "abbrev", "matrix", "prime", "tsort", "weakref", "find", "pathname", "io/nonblock", "fcntl",
     "nkf", "racc", "racc/parser", "win32ole", "openssl", "mkmf", "rubygems",
     "did_you_mean", "error_highlight", "syntax_suggest", "-test-/memory_status", "random/formatter",
-    "date_core", "socket.so", "io/console/size", "digest/sha2", "digest/sha1", "digest/md5", "digest/rmd160", "digest/bubblebabble", "net/protocol", "net/https",
+    "date_core", "socket.so", "digest/sha2", "digest/sha1", "digest/md5", "digest/rmd160", "digest/bubblebabble", "net/protocol", "net/https",
     "open-uri", "resolv", "ipaddr", "pty", "syslog", "expect", "io/console", "bigdecimal/util", "date/format",
 ];
 

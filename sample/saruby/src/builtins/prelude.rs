@@ -26,7 +26,7 @@ pub fn load_prelude(c: &mut Ctx) -> RV {
 macro_rules! lib { ($n:literal) => { ($n, include_str!(concat!("../../prelude/lib/", $n, ".rb"))) }; }
 /// Features implemented by saruby itself: Ruby source compiled on first require.
 const LIBS: &[(&str, &str)] = &[lib!("pp"), lib!("fcntl"), lib!("prettyprint"), lib!("etc"), lib!("timeout"), lib!("monitor"), lib!("time"), lib!("bundler"), ("bundler/setup", "require \"bundler\"; Bundler.setup\n"), lib!("date"), ("date_core", "require \"date\"\n"), lib!("pathname"), ("saruby/pathname", include_str!("../../prelude/lib/pathname_core.rb")), ("saruby/argf", include_str!("../../prelude/lib/argf.rb")), ("saruby/data", include_str!("../../prelude/lib/data.rb")), ("saruby/enum_product", include_str!("../../prelude/lib/enum_product.rb")), ("saruby/process", include_str!("../../prelude/lib/process_ext.rb")),
-    ("coverage", "require 'coverage.so'\n"), lib!("objspace"), ("objspace/trace", include_str!("../../prelude/lib/objspace_trace.rb")), ("rbconfig/sizeof", include_str!("../../prelude/lib/rbconfig_sizeof.rb")),
+    ("coverage", "require 'coverage.so'\n"), lib!("objspace"), ("io/console/size", include_str!("../../prelude/lib/io_console_size.rb")), ("objspace/trace", include_str!("../../prelude/lib/objspace_trace.rb")), ("rbconfig/sizeof", include_str!("../../prelude/lib/rbconfig_sizeof.rb")),
     ("syslog", "require 'syslog_ext'\n"), lib!("syslog_ext"), ("syslog/logger", include_str!("../../prelude/lib/syslog_logger.rb")),
     lib!("digest"), ("digest/version", "module Digest\n  VERSION = \"3.2.1\"\nend\n"), ("digest/loader", "require 'saruby/digest'\n"),
     ("digest/md5", "require 'digest'\nrequire 'saruby/digest/md5'\n"), ("digest/sha1", "require 'digest'\nrequire 'saruby/digest/sha1'\n"),
@@ -76,7 +76,7 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
         "saruby/sync" => crate::builtins::thread::init_sync(c),
         "saruby/econv" => crate::builtins::transcode::init(c),
         "saruby/tracepoint" => crate::builtins::tracepoint::init_class(c),
-        "io/console" => crate::builtins::stringio::init_console(c),
+        "io/console" => crate::builtins::io_console::init(c),
         "saruby/etc" => crate::builtins::etc::init(c),
         "cgi/escape.so" => crate::builtins::cgi_escape::init(c)?,
         "coverage.so" => crate::builtins::coverage::init(c),
