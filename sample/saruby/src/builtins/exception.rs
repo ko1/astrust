@@ -178,7 +178,9 @@ pub fn raise_errno(c: &mut Ctx, no: i64, detail: &str) -> Esc {
     let k = errno_class(c, no);
     let base = errno_text(Value::fix(no));
     let msg = if detail.is_empty() { base } else { format!("{} @ {}", base, detail) };
-    let e = make_exception(c, k, &msg);
+    let e = make_exception(c, k, "");
+    let m = c.str_new_enc(msg.as_bytes(), crate::builtins::io::errno_msg_enc(msg.as_bytes(), ENC_UTF8));
+    ivar_set_raw(c, e, s::mesg, m);
     ivar_set_raw(c, e, s::errno, Value::fix(no));
     raise_exc(c, e)
 }
@@ -187,7 +189,10 @@ pub fn raise_errno(c: &mut Ctx, no: i64, detail: &str) -> Esc {
 pub fn raise_errno_plain(c: &mut Ctx, no: i64, detail: &str) -> Esc {
     let k = errno_class(c, no);
     let base = errno_text(Value::fix(no));
-    let e = make_exception(c, k, &format!("{} - {}", base, detail));
+    let msg = format!("{} - {}", base, detail);
+    let e = make_exception(c, k, "");
+    let m = c.str_new_enc(msg.as_bytes(), crate::builtins::io::errno_msg_enc(msg.as_bytes(), ENC_UTF8));
+    ivar_set_raw(c, e, s::mesg, m);
     ivar_set_raw(c, e, s::errno, Value::fix(no));
     raise_exc(c, e)
 }
@@ -328,10 +333,21 @@ fn exc_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let cls = class_path(c, real_class_of(c, slf));
     // rb_obj_as_string(exc): #to_s, not #message
     let sv = to_s_value(c, slf)?;
-    let m = String::from_utf8_lossy(c.str_bytes(sv)).into_owned();
-    if m.is_empty() { return Ok(c.str_new(cls.as_bytes())); }
-    if m.contains('\n') { return Ok(c.str_new(format!("#<{}:{}>", cls, inspect_bytes(m.as_bytes(), ENC_UTF8)).as_bytes())); }
-    Ok(c.str_new(format!("#<{}: {}>", cls, m).as_bytes()))
+    if c.str_bytes(sv).is_empty() { return Ok(c.str_new_enc(cls.as_bytes(), if cls.is_ascii() { crate::object::ENC_ASCII } else { ENC_UTF8 })); }
+    // rb_str_buf_new2("#<") + appends: the encodings follow the parts
+    let acc = c.str_new_enc(b"#<", ENC_BINARY);
+    let cs = c.str_new_enc(cls.as_bytes(), if cls.is_ascii() { crate::object::ENC_ASCII } else { ENC_UTF8 });
+    crate::string::str_append_str(c, acc, cs)?;
+    let part = if c.str_bytes(sv).contains(&b'\n') {
+        c.rstring_mut(acc).b.push(b':');
+        let r = crate::string::inspect_resenc();
+        let r = if crate::builtins::encoding::ascii_compat(r) { r } else { crate::object::ENC_ASCII };
+        let v = crate::string::inspect_vec(c.str_bytes(sv), c.str_enc(sv));
+        c.str_new_enc(&v, r)
+    } else { c.rstring_mut(acc).b.extend_from_slice(b": "); sv };
+    crate::string::str_append_str(c, acc, part)?;
+    c.rstring_mut(acc).b.push(b'>');
+    Ok(acc)
 }
 fn exc_backtrace(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(exc_bt(c, slf)) }
 pub fn exc_set_backtrace(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
@@ -392,7 +408,7 @@ fn location_new(c: &mut Ctx, path: &str, line: i64, label: &str, nid: Value) -> 
     static SYMS: std::sync::OnceLock<[crate::value::Sym; 4]> = std::sync::OnceLock::new();
     let [sp, sl, sb, sn] = *SYMS.get_or_init(|| [intern(b"path"), intern(b"lineno"), intern(b"label"), intern(b"__nid")]);
     let o = new_object(c, c.vm().c_location.get());
-    let p = c.str_new(path.as_bytes());
+    let p = c.str_new_enc(path.as_bytes(), crate::compile::file_enc(path));
     ivar_set_raw(c, o, sp, p);
     ivar_set_raw(c, o, sl, Value::fix(line));
     let l = c.str_new(label.as_bytes());
@@ -785,14 +801,21 @@ fn syscallerr_init(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
         error = NIL;
         for &kk in ancestors(c, k).iter() { if let Some(v) = const_get_at(c, kk, intern(b"Errno")) { error = v; break; } }
     }
-    let mut msg = if error == NIL { "unknown error".to_string() } else { let n = crate::builtins::numeric_methods::num_to_long(c, error)?; errno_text(Value::fix(n)) };
+    let msg = if error == NIL { "unknown error".to_string() } else { let n = crate::builtins::numeric_methods::num_to_long(c, error)?; errno_text(Value::fix(n)) };
+    // the strerror text in the locale; a non-ASCII func / mesg brings its encoding (rb_str_catf)
+    let mut msg = msg.into_bytes();
+    let mut enc = crate::builtins::encoding::locale_enc();
     if mesg != NIL {
         let s = expect_str(c, mesg)?;
-        let ds = String::from_utf8_lossy(c.str_bytes(s)).into_owned();
-        if func != NIL { let f = to_rstring(c, func)?; msg = format!("{} @ {}", msg, f); }
-        msg = format!("{} - {}", msg, ds);
+        if func != NIL {
+            let f = crate::rt::srb_tostr(c, func)?;
+            msg.extend_from_slice(b" @ "); msg.extend_from_slice(c.str_bytes(f));
+            enc = crate::builtins::io::errno_msg_enc(c.str_bytes(f), c.str_enc(f));
+        }
+        msg.extend_from_slice(b" - "); msg.extend_from_slice(c.str_bytes(s));
+        if !is_ascii(c.str_bytes(s)) || !crate::builtins::encoding::ascii_compat(c.str_enc(s)) { enc = c.str_enc(s); }
     }
-    let m = c.str_new(msg.as_bytes());
+    let m = c.str_new_enc(&msg, enc);
     ivar_set_raw(c, slf, s::mesg, m);
     ivar_set_raw(c, slf, s::errno, error);
     Ok(NIL)

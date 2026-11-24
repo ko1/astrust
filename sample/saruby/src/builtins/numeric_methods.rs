@@ -412,6 +412,7 @@ pub fn enc_chr(enc: u8, cp: u64) -> Result<Vec<u8>, bool> {
         // Onigmo's code_to_mbclen: 0xfffffffe / 0xffffffff are one (invalid) byte in UTF-8
         EK::Utf8 => if cp >= 0xffff_fffe || sur { Err(false) } else if cp > 0x10ffff { Err(true) } else { en::code_to_bytes(enc, cp).ok_or(false) },
         EK::U16LE | EK::U16BE => if cp > 0x10ffff || sur { Err(false) } else { en::code_to_bytes(enc, cp).ok_or(false) },
+        EK::Cesu8 => if sur { Err(false) } else if cp > 0x10ffff { Err(true) } else { en::code_to_bytes(enc, cp).ok_or(false) },
         EK::U32LE | EK::U32BE => {
             if cp > 0x10ffff || sur { return Err(false); }
             Ok(if en::kind(enc) == EK::U32LE { cp.to_le_bytes().to_vec() } else { cp.to_be_bytes().to_vec() })

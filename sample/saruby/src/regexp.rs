@@ -75,7 +75,7 @@ pub fn engine_enc(enc: u8) -> Enc {
     use crate::builtins::encoding::{kind, EK};
     match kind(enc) {
         EK::Utf8 => Enc::UTF8,
-        EK::U16LE | EK::U16BE | EK::U32LE | EK::U32BE => Enc(WIDE + enc),
+        EK::U16LE | EK::U16BE | EK::U32LE | EK::U32BE | EK::Cesu8 => Enc(WIDE + enc),
         EK::EucJp(_) => Enc::EUCJP,
         EK::Sjis(_) => Enc::SJIS,
         EK::Dbcs | EK::Big5 | EK::Gbk => Enc::DBCS,
@@ -124,8 +124,15 @@ pub fn regexp_new_lit(c: &mut Ctx, src: &[u8], opts: u32) -> RV {
 pub fn regexp_new_enc(c: &mut Ctx, src: &[u8], enc: u8, opts: u32) -> RV {
     match regexp_build(src, enc, opts) {
         Ok(x) => Ok(regexp_alloc(c, x)),
-        Err(e) => err(c, c.vm().c_regexp_error.get(), e),
+        Err(m) => Err(regexp_error(c, &m, enc)),
     }
+}
+/// RegexpError from rb_enc_reg_error_desc: the message is in the pattern's encoding (even UTF-16).
+pub fn regexp_error(c: &mut Ctx, m: &str, enc: u8) -> Esc {
+    let e = make_exception(c, c.vm().c_regexp_error.get(), "");
+    let ms = c.str_new_enc(m.as_bytes(), enc);
+    ivar_set_raw(c, e, crate::symbol::s::mesg, ms);
+    raise_exc(c, e)
 }
 
 fn regexp_alloc(c: &mut Ctx, (src, opts, enc, re): (Vec<u8>, u32, u8, Regex)) -> Value {
@@ -152,12 +159,8 @@ fn regexp_prep(src: &[u8], enc: u8, opts: u32) -> Result<(Vec<u8>, u32, u8, Enc)
     }
     if en::is_dummy(enc) { return Err(desc("can't make regexp with dummy encoding")); }
     // an ASCII-incompatible pattern is read in UTF-8 (its chars are the same)
-    let conv;
-    let (body, benc) = if en::ascii_compat(enc) { (src, enc) } else {
-        conv = wide_to_utf8(src, enc).ok_or_else(|| desc("invalid multibyte character"))?;
-        (&conv[..], ENC_UTF8)
-    };
-    let (unesc, fixed) = preprocess(body, benc, opts & 2 != 0).map_err(|e| desc(&e))?;
+    // a UTF-16/32 pattern is not preprocessed (each character is multibyte): Onigmo reads its escapes
+    let (unesc, fixed) = if en::ascii_compat(enc) { preprocess(src, enc, opts & 2 != 0) } else { wide_unescape(src, enc, opts & 2 != 0).map(|u| (u, Some(enc))) }.map_err(|e| desc(&e))?;
     let fixed = if !en::ascii_compat(enc) { Some(enc) } else { fixed };
     match fixed {
         Some(fe) => {
@@ -171,6 +174,8 @@ fn regexp_prep(src: &[u8], enc: u8, opts: u32) -> Result<(Vec<u8>, u32, u8, Enc)
     }
     // an ASCII-only pattern is used on any ASCII-compatible string; most strings are UTF-8
     let mode = if opts & RE_OPT_FIXED != 0 && en::ascii_compat(enc) { engine_enc(enc) } else { Enc::UTF8 };
+    // CESU-8 is matched in its UTF-8 form, as UTF-16/32
+    let unesc = if mode.0 >= WIDE && en::ascii_compat(enc) { wide_to_utf8(&unesc, enc).ok_or_else(|| desc("invalid multibyte character"))? } else { unesc };
     Ok((unesc, opts, enc, mode))
 }
 
@@ -185,6 +190,155 @@ fn wide_to_utf8(src: &[u8], enc: u8) -> Option<Vec<u8>> {
         i += l;
     }
     Some(out)
+}
+
+/// A UTF-16/32 pattern in UTF-8 for the engine, with the escapes Onigmo reads itself in such a pattern
+/// (rb_reg_preprocess leaves them): \x{H..} and \cX / \C-X / \M-X are code points, \xHH / \OOO are raw
+/// bytes that must make whole characters, \u is a plain "u".  Comments are copied unread.
+fn wide_unescape(src: &[u8], enc: u8, ext: bool) -> Result<Vec<u8>, String> {
+    use crate::builtins::encoding as en;
+    let mut cs: Vec<u32> = vec![];
+    let mut i = 0;
+    while i < src.len() {
+        let l = en::precise_len(enc, src, i).ok_or("invalid multibyte character")?;
+        cs.push(en::char_code(enc, &src[i..i + l]));
+        i += l;
+    }
+    let ch = |k: usize| cs.get(k).copied();
+    let is_x = |v: Option<u32>| v.is_some_and(|v| v < 0x80 && (v as u8).is_ascii_hexdigit());
+    let mut out = Vec::with_capacity(cs.len());
+    let put = |out: &mut Vec<u8>, v: u32| { if let Some(c) = char::from_u32(v) { out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()); } };
+    // a code point from an escape: ASCII as \xHH so it stays a literal
+    let code = |out: &mut Vec<u8>, v: u32| { if v < 0x80 { out.extend_from_slice(format!("\\x{:02X}", v).as_bytes()); } else { put(out, v); } };
+    let (mut ext, mut class, mut groups) = (ext, 0u32, 0u32);
+    // one raw byte escape at cs[p] (after the backslash at p - 1): (byte, base, next index), or None if it is not one
+    let raw_at = |p: usize, groups: u32| -> Result<Option<(u8, u8, usize)>, String> {
+        if ch(p.wrapping_sub(1)) != Some(b'\\' as u32) { return Ok(None); }
+        match ch(p) {
+            Some(0x78) if ch(p + 1) != Some(b'{' as u32) => {
+                let (mut v, mut q) = (0u32, p + 1);
+                while q < p + 3 && is_x(ch(q)) { v = v * 16 + (ch(q).unwrap() as u8 as char).to_digit(16).unwrap(); q += 1; }
+                Ok(Some((v as u8, 16, q)))
+            }
+            Some(d @ 0x30..=0x39) => {
+                let mut q = p;
+                let mut n: u64 = 0;
+                while let Some(x @ 0x30..=0x39) = ch(q) { n = (n * 10 + (x - 0x30) as u64).min(1 << 40); q += 1; }
+                if d != 0x30 && (n <= 9 || n <= groups as u64) { return Ok(None); }   // a back reference
+                if d == 0x38 || d == 0x39 { return Ok(None); }
+                let (mut v, mut q) = (0u32, if d == 0x30 { p + 1 } else { p });
+                let max = if d == 0x30 { p + 3 } else { p + 3 };
+                while q < max && matches!(ch(q), Some(0x30..=0x37)) { v = v * 8 + ch(q).unwrap() - 0x30; q += 1; }
+                if v > 0xff { return Err("too big number".into()); }
+                Ok(Some((v as u8, 8, q)))
+            }
+            _ => Ok(None),
+        }
+    };
+    let mut p = 0;
+    while p < cs.len() {
+        let c = cs[p];
+        if c != b'\\' as u32 {
+            p += 1;
+            match c {
+                0x28 if class == 0 => {
+                    // (?#...) is skipped by Onigmo as it is
+                    if ch(p) == Some(0x3f) && ch(p + 1) == Some(0x23) {
+                        out.extend_from_slice(b"(?#");
+                        p += 2;
+                        while p < cs.len() && cs[p] != 0x29 { if cs[p] == 0x5c && p + 1 < cs.len() { put(&mut out, cs[p]); p += 1; } put(&mut out, cs[p]); p += 1; }
+                        if p < cs.len() { out.push(b')'); p += 1; }
+                        continue;
+                    }
+                    if ch(p) != Some(0x3f) || (ch(p + 1) == Some(0x3c) && !matches!(ch(p + 2), Some(0x3d) | Some(0x21))) || ch(p + 1) == Some(0x27) { groups += 1; }
+                    // (?x) / (?-x) for the rest of the pattern
+                    let mut q = p + 1;
+                    if ch(p) == Some(0x3f) {
+                        let mut neg = false;
+                        while let Some(x) = ch(q) { match x { 0x2d => neg = true, 0x78 => { if ch(q + 1).is_some_and(|y| y == 0x29 || y == 0x3a || y == 0x2d || (y as u8).is_ascii_alphabetic()) { ext = !neg; } } 0x69 | 0x6d | 0x61 | 0x64 | 0x75 => {} _ => break } q += 1; }
+                    }
+                    let _ = q;
+                }
+                0x5b => class += 1,
+                0x5d => class = class.saturating_sub(1),
+                0x23 if ext && class == 0 => {
+                    while p < cs.len() && cs[p] != 0x0a { p += 1; }
+                    continue;
+                }
+                _ => {}
+            }
+            put(&mut out, c);
+            continue;
+        }
+        let Some(e) = ch(p + 1) else { return Err("end pattern at escape".into()) };
+        if e >= 0x80 { out.push(b'\\'); put(&mut out, e); p += 2; continue; }
+        // raw bytes: as many as make whole characters
+        if let Some((b0, base, mut q)) = raw_at(p + 1, groups)? {
+            let mut bytes = vec![b0];
+            loop {
+                let need = if bytes.len() >= en::min_len(enc) { match en::precise_len(enc, &bytes, 0) { Some(l) => l, None => if en::needmore(enc, &bytes) { bytes.len() + 1 } else { bytes.len() } } } else { en::min_len(enc) };
+                if bytes.len() >= need { break; }
+                match raw_at(q + 1, groups)? { Some((b, bb, q2)) if ch(q) == Some(0x5c) && (class == 0 || bb == base) => { bytes.push(b); q = q2; } _ => return Err("too short multibyte code string".into()) }
+            }
+            if en::precise_len(enc, &bytes, 0) != Some(bytes.len()) { return Err("invalid code point value".into()); }
+            code(&mut out, en::char_code(enc, &bytes));
+            p = q;
+            continue;
+        }
+        match e as u8 {
+            b'x' => {
+                // \x{H..}: up to 8 digits, then a code point of the encoding
+                let (mut v, mut q) = (0u64, p + 3);
+                while q < p + 11 && is_x(ch(q)) { v = v * 16 + (ch(q).unwrap() as u8 as char).to_digit(16).unwrap() as u64; if v > i32::MAX as u64 { return Err("too big wide-char value".into()); } q += 1; }
+                if is_x(ch(q)) { return Err("too long wide-char value".into()); }
+                if q > p + 3 && ch(q) == Some(0x7d) {
+                    let v = v as u32;
+                    if v > 0x10ffff || (0xd800..0xe000).contains(&v) { return Err("invalid code point value".into()); }
+                    code(&mut out, v);
+                    p = q + 1;
+                } else { out.push(b'x'); p += 2; }
+            }
+            b'u' => { out.push(b'u'); p += 2; }
+            b'c' | b'C' | b'M' => {
+                // fetch_escaped_value
+                fn esc(cs: &[u32], p: &mut usize) -> Result<u32, String> {
+                    let c = cs[*p]; *p += 1;
+                    let at = |k: usize| cs.get(k).copied();
+                    match c {
+                        0x4d => {
+                            if *p >= cs.len() { return Err("end pattern at meta".into()); }
+                            if at(*p) != Some(0x2d) { return Err("invalid meta-code syntax".into()); }
+                            *p += 1;
+                            if *p >= cs.len() { return Err("end pattern at meta".into()); }
+                            let mut v = cs[*p]; *p += 1;
+                            if v == 0x5c { v = esc(cs, p)?; }
+                            Ok((v & 0xff) | 0x80)
+                        }
+                        0x43 | 0x63 => {
+                            if c == 0x43 {
+                                if *p >= cs.len() { return Err("end pattern at control".into()); }
+                                if at(*p) != Some(0x2d) { return Err("invalid control-code syntax".into()); }
+                                *p += 1;
+                            }
+                            if *p >= cs.len() { return Err("end pattern at control".into()); }
+                            let mut v = cs[*p]; *p += 1;
+                            if v == 0x3f { return Ok(0x7f); }
+                            if v == 0x5c { v = esc(cs, p)?; }
+                            Ok(v & 0x9f)
+                        }
+                        0x6e => Ok(0x0a), 0x74 => Ok(0x09), 0x72 => Ok(0x0d), 0x66 => Ok(0x0c), 0x76 => Ok(0x0b), 0x61 => Ok(0x07), 0x62 => Ok(0x08), 0x65 => Ok(0x1b),
+                        x => Ok(x),
+                    }
+                }
+                let mut q = p + 1;
+                let v = esc(&cs, &mut q)?;
+                code(&mut out, v);
+                p = q;
+            }
+            _ => { out.push(b'\\'); put(&mut out, e); p += 2; }
+        }
+    }
+    Ok(out)
 }
 
 /// "/src/mix" as RegexpError messages show the pattern (rb_reg_error_desc).
@@ -751,7 +905,8 @@ pub fn utf8_to_wide(u: &[u8], enc: u8) -> Vec<u8> {
 
 /// The UTF-8 form of `b` in `enc` (as is when ASCII-compatible).
 pub fn to_utf8_form(b: &[u8], enc: u8) -> Vec<u8> {
-    if crate::builtins::encoding::ascii_compat(enc) { b.to_vec() } else { wide_to_utf8(b, enc).unwrap_or_default() }
+    use crate::builtins::encoding as en;
+    if en::ascii_compat(enc) && en::kind(enc) != en::EK::Cesu8 { b.to_vec() } else { wide_to_utf8(b, enc).unwrap_or_default() }
 }
 
 fn to_s_of(src: &[u8], opts: u32, enc: u8) -> Vec<u8> {

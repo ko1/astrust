@@ -93,7 +93,11 @@ impl Ctx {
         if x.enc == y.enc { x.b == y.b } else { str_eq_enc(&x.b, &y.b, x.enc, y.enc) }
     }
     #[inline(always)]
-    pub fn str_hash(&self, v: Value) -> u64 { crate::astrust::hash_bytes(&self.rstring(v).b) }
+    pub fn str_hash(&self, v: Value) -> u64 {
+        let r = self.rstring(v);
+        let h = crate::astrust::hash_bytes(&r.b);
+        if r.enc == ENC_UTF8 { h } else { str_hash_enc(h, &r.b, r.enc) }
+    }
     /// String#to_sym: symbol::BAD_SYM for a broken String of an ASCII-compatible encoding other than UTF-8
     /// (sym_check_asciionly)
     #[inline(always)]
@@ -109,7 +113,11 @@ impl Ctx {
         Value::sym(intern(&r.b))
     }
     #[inline(always)]
-    pub fn str_cmp(&self, a: Value, b: Value) -> std::cmp::Ordering { self.rstring(a).b.cmp(&self.rstring(b).b) }
+    pub fn str_cmp(&self, a: Value, b: Value) -> std::cmp::Ordering {
+        let (x, y) = (self.rstring(a), self.rstring(b));
+        let o = x.b.cmp(&y.b);
+        if o != std::cmp::Ordering::Equal || x.enc == y.enc { o } else { str_cmp_tie(&x.b, x.enc, y.enc) }
+    }
 
     /// String `v` for writing; FrozenError when frozen.
     #[inline]
@@ -182,6 +190,18 @@ impl std::ops::Deref for ByteSnap {
 #[cold]
 #[inline(never)]
 fn str_eq_enc(a: &[u8], b: &[u8], ea: u8, eb: u8) -> bool { a == b && str_comparable(a, ea, eb) }
+/// rb_str_hash's encoding part: a non-ASCII String hashes apart from the same bytes in another encoding.
+#[cold]
+fn str_hash_enc(h: u64, b: &[u8], enc: u8) -> u64 {
+    if b.is_empty() || (crate::builtins::encoding::ascii_compat(enc) && is_ascii(b)) { h } else { crate::astrust::hash_merge(h, enc as u64 + 1) }
+}
+/// CRuby's encoding index (BINARY 0, UTF-8 1: saruby swaps them).
+pub fn cruby_enc_index(e: u8) -> u8 { match e { ENC_UTF8 => 1, ENC_BINARY => 0, e => e } }
+/// rb_str_cmp for equal bytes in different encodings: incomparable ones order by encoding index.
+#[cold]
+fn str_cmp_tie(b: &[u8], ea: u8, eb: u8) -> std::cmp::Ordering {
+    if str_comparable(b, ea, eb) { std::cmp::Ordering::Equal } else { cruby_enc_index(ea).cmp(&cruby_enc_index(eb)) }
+}
 /// rb_str_comparable for two Strings holding the same bytes `b` in encodings `ea` and `eb`.
 #[cold]
 pub fn str_comparable(b: &[u8], ea: u8, eb: u8) -> bool {
@@ -283,61 +303,70 @@ pub fn encode_utf8(cp: u32, out: &mut Vec<u8>) {
 
 pub fn valid_utf8(b: &[u8]) -> bool { std::str::from_utf8(b).is_ok() }
 
-/// String#inspect body.
+/// String#inspect body, as a Rust String (lossy if a character was kept raw in a non-UTF-8 result encoding).
 pub fn inspect_bytes(b: &[u8], enc: u8) -> String {
+    match String::from_utf8(inspect_vec(b, enc)) { Ok(s) => s, Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned() }
+}
+/// rb_str_inspect: the body in the result encoding (inspect_resenc).
+pub fn inspect_vec(b: &[u8], enc: u8) -> Vec<u8> {
     use crate::builtins::encoding as en;
-    let mut out = String::with_capacity(b.len() + 2);
-    out.push('"');
+    let mut out = Vec::with_capacity(b.len() + 2);
+    out.push(b'"');
     let uni = en::is_unicode(enc) && !en::is_dummy(enc);
     let ac = en::ascii_compat(enc);
     // non-ASCII characters print raw only in the result encoding (default_internal, else default_external)
-    let same = en::kind(enc) == en::EK::Utf8 && enc == inspect_resenc();
+    let same = enc == inspect_resenc();
+    let same_u8 = same && en::kind(enc) == en::EK::Utf8;
     let code_at = |i: usize| -> Option<u32> { en::precise_len(enc, b, i).map(|l| en::char_code(enc, &b[i..i + l])) };
     let mut i = 0;
     while i < b.len() {
         let Some(l) = en::precise_len(enc, b, i) else {
             let n = en::mbclen(enc, b, i);
-            for k in 0..n { out.push_str(&format!("\\x{:02X}", b[i + k])); }
+            for k in 0..n { push_fmt(&mut out, format_args!("\\x{:02X}", b[i + k])); }
             i += n; continue;
         };
         let cp = en::char_code(enc, &b[i..i + l]);
         let is_asc = (ac && l == 1 && cp < 0x80) || (uni && cp < 0x80);
         // rb_str_inspect escapes these controls whatever the encoding
         let ctl = match cp { 0x0a => "\\n", 0x0d => "\\r", 0x09 => "\\t", 0x0c => "\\f", 0x0b => "\\v", 0x08 => "\\b", 0x07 => "\\a", 0x1b => "\\e", _ => "" };
-        if !is_asc && !ctl.is_empty() { out.push_str(ctl); i += l; continue; }
+        if !is_asc && !ctl.is_empty() { out.extend_from_slice(ctl.as_bytes()); i += l; continue; }
         if is_asc {
             match cp as u8 {
-                b'"' => out.push_str("\\\""),
-                b'\\' => out.push_str("\\\\"),
-                b'\n' => out.push_str("\\n"),
-                b'\t' => out.push_str("\\t"),
-                b'\r' => out.push_str("\\r"),
-                0x0c => out.push_str("\\f"),
-                0x0b => out.push_str("\\v"),
-                0x08 => out.push_str("\\b"),
-                0x07 => out.push_str("\\a"),
-                0x1b => out.push_str("\\e"),
+                b'"' => out.extend_from_slice(b"\\\""),
+                b'\\' => out.extend_from_slice(b"\\\\"),
+                b'\n' => out.extend_from_slice(b"\\n"),
+                b'\t' => out.extend_from_slice(b"\\t"),
+                b'\r' => out.extend_from_slice(b"\\r"),
+                0x0c => out.extend_from_slice(b"\\f"),
+                0x0b => out.extend_from_slice(b"\\v"),
+                0x08 => out.extend_from_slice(b"\\b"),
+                0x07 => out.extend_from_slice(b"\\a"),
+                0x1b => out.extend_from_slice(b"\\e"),
                 b'#' => {
                     let nx = if i + l < b.len() { code_at(i + l) } else { None };
-                    if matches!(nx, Some(0x7b) | Some(0x24) | Some(0x40)) { out.push_str("\\#"); } else { out.push('#'); }
+                    if matches!(nx, Some(0x7b) | Some(0x24) | Some(0x40)) { out.extend_from_slice(b"\\#"); } else { out.push(b'#'); }
                 }
-                x @ 0x20..=0x7e => out.push(x as char),
-                x => if uni { out.push_str(&format!("\\u{:04X}", x)) } else { out.push_str(&format!("\\x{:02X}", x)) },
+                x @ 0x20..=0x7e => out.push(x),
+                x => if uni { push_fmt(&mut out, format_args!("\\u{:04X}", x)) } else { push_fmt(&mut out, format_args!("\\x{:02X}", x)) },
             }
         } else if uni {
-            if same && uni_printable(cp) { out.push(char::from_u32(cp).unwrap_or('?')); }
-            else if cp > 0xffff { out.push_str(&format!("\\u{{{:X}}}", cp)); }
-            else { out.push_str(&format!("\\u{:04X}", cp)); }
+            if same_u8 && uni_printable(cp) { out.extend_from_slice(&b[i..i + l]); }
+            else if cp > 0xffff { push_fmt(&mut out, format_args!("\\u{{{:X}}}", cp)); }
+            else { push_fmt(&mut out, format_args!("\\u{:04X}", cp)); }
+        } else if same && (l > 1 || en::hi_byte_print(enc, b[i])) {
+            // a multibyte character of a legacy encoding is always printable (Onigmo's mb2 / mb4 ctype)
+            out.extend_from_slice(&b[i..i + l]);
         } else if l == 1 {
-            out.push_str(&format!("\\x{:02X}", b[i]));
+            push_fmt(&mut out, format_args!("\\x{:02X}", b[i]));
         } else {
-            out.push_str(&format!("\\x{{{:X}}}", cp));
+            push_fmt(&mut out, format_args!("\\x{{{:X}}}", cp));
         }
         i += l;
     }
-    out.push('"');
+    out.push(b'"');
     out
 }
+fn push_fmt(out: &mut Vec<u8>, a: std::fmt::Arguments) { use std::io::Write; let _ = out.write_fmt(a); }
 
 /// Is Unicode scalar `cp` printable (Onigmo print class; approximates "not Cc/Cn/Zl/Zp/Cs")?
 pub fn uni_printable(cp: u32) -> bool {
@@ -353,9 +382,21 @@ pub fn uni_printable(cp: u32) -> bool {
 
 /// rb_str_inspect's resenc.
 pub fn inspect_resenc() -> u8 { crate::builtins::encoding::default_internal().unwrap_or_else(crate::builtins::encoding::default_external) }
-pub fn sym_inspect(name: &[u8]) -> String {
+/// Symbol#inspect of a name in `enc`: the bytes and the result's encoding.
+pub fn sym_inspect(name: &[u8], enc: u8) -> (Vec<u8>, u8) {
+    use crate::builtins::encoding as en;
     // rb_str_symname_p: a non-ASCII name is quoted unless the result encoding is the symbol's
-    if sym_is_simple(name) && (inspect_resenc() == ENC_UTF8 || is_ascii(name)) { format!(":{}", String::from_utf8_lossy(name)) } else { format!(":{}", inspect_bytes(name, if is_ascii(name) { crate::object::ENC_ASCII } else { ENC_UTF8 })) }
+    let ascii = is_ascii(name) && en::ascii_compat(enc);
+    let simple = if enc == ENC_UTF8 || ascii { sym_is_simple(name) } else {
+        en::is_valid(enc, name) && crate::builtins::econv::convert_string(en::enc_name(enc), "UTF-8", name).is_some_and(|u| sym_is_simple(&u))
+    };
+    if simple && (ascii || inspect_resenc() == enc) {
+        let mut v = b":".to_vec(); v.extend_from_slice(name);
+        return (v, if ascii { crate::object::ENC_ASCII } else { enc });
+    }
+    let mut v = b":".to_vec(); v.extend_from_slice(&inspect_vec(name, if ascii { crate::object::ENC_ASCII } else { enc }));
+    let r = inspect_resenc();
+    (v, if en::ascii_compat(r) { r } else { crate::object::ENC_ASCII })
 }
 
 pub fn sym_is_simple(n: &[u8]) -> bool {

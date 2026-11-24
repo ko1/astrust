@@ -335,6 +335,7 @@ fn run_main(o: Opts) -> i32 {
     *vm.main_file.borrow_mut() = file.clone();
     let z = c.str_new_enc(file.as_bytes(), builtins::encoding::locale_enc()); heap::obj_set_flags(z, object::FL_FROZEN); vm.dollar_zero.set(z);
     let file: &'static str = Box::leak(file.into_boxed_str());
+    compile::set_file_enc(file, builtins::encoding::locale_enc());
 
     inline_builtin::init(&c);
     // prelude (Ruby-level built-ins)

@@ -28,10 +28,18 @@ impl RData for RStat {
 }
 fn io_errno(e: &std::io::Error) -> i64 { e.raw_os_error().map(|x| x as i64).unwrap_or(5) }
 fn os_err(c: &mut Ctx, e: &std::io::Error, detail: &str) -> Esc { raise_errno(c, io_errno(e), detail) }
-fn os_err_at(c: &mut Ctx, e: &std::io::Error, pre: &str, p: &[u8]) -> Esc { crate::builtins::io::raise_errno_at(c, io_errno(e), pre, p) }
-fn last_err_at(c: &mut Ctx, pre: &str, p: &[u8]) -> Esc { let e = sys::errno(); crate::builtins::io::raise_errno_at(c, e, pre, p) }
+fn os_err_at(c: &mut Ctx, e: &std::io::Error, pre: &str, p: impl crate::builtins::io::ErrPath) -> Esc { crate::builtins::io::raise_errno_at(c, io_errno(e), pre, p) }
+fn last_err_at(c: &mut Ctx, pre: &str, p: impl crate::builtins::io::ErrPath) -> Esc { let e = sys::errno(); crate::builtins::io::raise_errno_at(c, e, pre, p) }
 /// "(x, y)" of two paths, for the messages of rename / link
-fn pair(x: &PathArg, y: &PathArg) -> Vec<u8> { let mut v = b"(".to_vec(); v.extend_from_slice(x.as_bytes()); v.extend_from_slice(b", "); v.extend_from_slice(y.as_bytes()); v.push(b')'); v }
+fn pair(c: &mut Ctx, x: &PathArg, y: &PathArg) -> Result<PathArg, Esc> {
+    let mut v = b"(".to_vec(); v.extend_from_slice(x.as_bytes()); v.extend_from_slice(b", "); v.extend_from_slice(y.as_bytes()); v.push(b')');
+    let (xa, ya) = (is_ascii(x.as_bytes()), is_ascii(y.as_bytes()));
+    if !xa && !ya && x.1 != y.1 {
+        use crate::builtins::encoding::enc_name_msg;
+        return err(c, c.vm().c_compat_error.get(), format!("incompatible character encodings: {} and {}", enc_name_msg(x.1), enc_name_msg(y.1)));
+    }
+    Ok(PathArg(v, if !xa { x.1 } else { y.1 }))
+}
 fn new_stat(c: &mut Ctx, md: std::fs::Metadata) -> Value { init_stat(c); c.alloc(c.vm().c_stat.get(), Body::Data(Box::new(RStat { md: Some(md) }))) }
 fn fd_meta(fd: i32) -> std::io::Result<std::fs::Metadata> {
     sys::fd_metadata(fd)
@@ -42,7 +50,7 @@ fn meta_of(c: &mut Ctx, v: Value, follow: bool) -> Result<Result<std::fs::Metada
     let v = if rio(c, v).is_none() && v.is_heap() && !is_string(v) && respond_to(c, v, intern(b"to_io"), true) { funcall(c, v, intern(b"to_io"), &[], std::ptr::null())? } else { v };
     if let Some(io) = rio(c, v) {
         if io.closed { return err(c, c.vm().c_io_error.get(), "closed stream"); }
-        return Ok(fd_meta(io.fd).map_err(|e| (e, PathArg(io.path.clone()))));
+        return Ok(fd_meta(io.fd).map_err(|e| (e, PathArg(io.path.clone(), io.path_enc))));
     }
     let p = path_arg(c, v)?;
     Ok(if follow { std::fs::metadata(&p) } else { std::fs::symlink_metadata(&p) }.map_err(|e| (e, p)))
@@ -127,7 +135,7 @@ fn st_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
 }
 fn st_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let p = path_arg(c, a[0])?;
-    match std::fs::metadata(&p) { Ok(m) => { if let Some(st) = c.data_mut::<RStat>(s) { st.md = Some(m); } Ok(NIL) } Err(e) => Err(os_err_at(c, &e, "rb_file_s_stat - ", p.as_bytes())) }
+    match std::fs::metadata(&p) { Ok(m) => { if let Some(st) = c.data_mut::<RStat>(s) { st.md = Some(m); } Ok(NIL) } Err(e) => Err(os_err_at(c, &e, "rb_file_s_stat - ", &p)) }
 }
 fn st_init_copy(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     if let Some(md) = c.data::<RStat>(a[0]).map(|o| o.md.clone()) { if let Some(st) = c.data_mut::<RStat>(s) { st.md = md; } }
@@ -142,18 +150,18 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
 // ---- File class methods -----------------------------------------------------------------------
 
 fn f_s_stat(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
-    match meta_of(c, a[0], true)? { Ok(m) => Ok(new_stat(c, m)), Err((e, p)) => Err(os_err_at(c, &e, "rb_file_s_stat - ", p.as_bytes())) }
+    match meta_of(c, a[0], true)? { Ok(m) => Ok(new_stat(c, m)), Err((e, p)) => Err(os_err_at(c, &e, "rb_file_s_stat - ", &p)) }
 }
 fn f_s_lstat(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
-    match meta_of(c, a[0], false)? { Ok(m) => Ok(new_stat(c, m)), Err((e, p)) => Err(os_err_at(c, &e, "rb_file_s_lstat - ", p.as_bytes())) }
+    match meta_of(c, a[0], false)? { Ok(m) => Ok(new_stat(c, m)), Err((e, p)) => Err(os_err_at(c, &e, "rb_file_s_lstat - ", &p)) }
 }
 fn f_stat(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let fd = crate::builtins::io::get_io(c, s)?.fd;
     match fd_meta(fd) { Ok(m) => Ok(new_stat(c, m)), Err(e) => Err(os_err(c, &e, "")) }
 }
 fn f_lstat(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
-    let p = PathArg(crate::builtins::io::get_io(c, s)?.path.clone());
-    match std::fs::symlink_metadata(&p) { Ok(m) => Ok(new_stat(c, m)), Err(e) => Err(os_err_at(c, &e, "rb_file_lstat - ", p.as_bytes())) }
+    let p = { let io = crate::builtins::io::get_io(c, s)?; PathArg(io.path.clone(), io.path_enc) };
+    match std::fs::symlink_metadata(&p) { Ok(m) => Ok(new_stat(c, m)), Err(e) => Err(os_err_at(c, &e, "rb_file_lstat - ", &p)) }
 }
 macro_rules! test_fn {
     ($name:ident, $follow:expr, |$m:ident| $e:expr) => {
@@ -207,7 +215,7 @@ meta_fn!(f_s_ctime, "rb_file_s_ctime", |c, m| time_of(c, m.ctime(), m.ctime_nsec
 fn f_s_birthtime(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     match meta_of(c, a[0], true)? {
         Ok(m) => birthtime(c, &m),
-        Err((e, p)) => Err(os_err_at(c, &e, "rb_file_s_birthtime - ", p.as_bytes())),
+        Err((e, p)) => Err(os_err_at(c, &e, "rb_file_s_birthtime - ", &p)),
     }
 }
 fn birthtime(c: &mut Ctx, m: &std::fs::Metadata) -> RV {
@@ -219,52 +227,52 @@ fn f_birthtime(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     match fd_meta(fd) { Ok(m) => birthtime(c, &m), Err(e) => Err(os_err(c, &e, "")) }
 }
 fn f_s_ftype(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
-    match meta_of(c, a[0], false)? { Ok(m) => Ok(c.str_new(ftype(&m).as_bytes())), Err((e, p)) => Err(os_err_at(c, &e, "rb_file_s_ftype - ", p.as_bytes())) }
+    match meta_of(c, a[0], false)? { Ok(m) => Ok(c.str_new(ftype(&m).as_bytes())), Err((e, p)) => Err(os_err_at(c, &e, "rb_file_s_ftype - ", &p)) }
 }
 fn f_s_delete(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
-    for &x in a { let p = path_arg(c, x)?; if let Err(e) = std::fs::remove_file(&p) { return Err(os_err_at(c, &e, "rb_file_s_unlink - ", p.as_bytes())); } }
+    for &x in a { let p = path_arg(c, x)?; if let Err(e) = std::fs::remove_file(&p) { return Err(os_err_at(c, &e, "apply2files - ", &p)); } }
     Ok(Value::fix(a.len() as i64))
 }
 fn f_s_rename(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     let (x, y) = (path_arg(c, a[0])?, path_arg(c, a[1])?);
-    match std::fs::rename(&x, &y) { Ok(_) => Ok(Value::fix(0)), Err(e) => Err(os_err_at(c, &e, "rb_file_s_rename - ", &pair(&x, &y))) }
+    match std::fs::rename(&x, &y) { Ok(_) => Ok(Value::fix(0)), Err(e) => { let p = pair(c, &x, &y)?; Err(os_err_at(c, &e, "rb_file_s_rename - ", &p)) } }
 }
 fn f_s_symlink(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     let (x, y) = (path_arg(c, a[0])?, path_arg(c, a[1])?);
-    match std::os::unix::fs::symlink(&x, &y) { Ok(_) => Ok(Value::fix(0)), Err(e) => Err(os_err_at(c, &e, "rb_file_s_symlink - ", &pair(&x, &y))) }
+    match std::os::unix::fs::symlink(&x, &y) { Ok(_) => Ok(Value::fix(0)), Err(e) => { let p = pair(c, &x, &y)?; Err(os_err_at(c, &e, "rb_file_s_symlink - ", &p)) } }
 }
 fn f_s_link(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     let (x, y) = (path_arg(c, a[0])?, path_arg(c, a[1])?);
-    match std::fs::hard_link(&x, &y) { Ok(_) => Ok(Value::fix(0)), Err(e) => Err(os_err_at(c, &e, "rb_file_s_link - ", &pair(&x, &y))) }
+    match std::fs::hard_link(&x, &y) { Ok(_) => Ok(Value::fix(0)), Err(e) => { let p = pair(c, &x, &y)?; Err(os_err_at(c, &e, "rb_file_s_link - ", &p)) } }
 }
 fn f_s_readlink(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     let p = path_arg(c, a[0])?;
-    match std::fs::read_link(&p) { Ok(t) => Ok(c.str_new(t.as_os_str().as_bytes())), Err(e) => Err(os_err_at(c, &e, "rb_readlink - ", p.as_bytes())) }
+    match std::fs::read_link(&p) { Ok(t) => Ok(c.str_new(t.as_os_str().as_bytes())), Err(e) => Err(os_err_at(c, &e, "rb_readlink - ", &p)) }
 }
 fn mode_arg(c: &mut Ctx, v: Value) -> Result<u32, Esc> { Ok(num_to_long(c, v)? as u32) }
 fn f_s_chmod(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
     let m = mode_arg(c, a[0])?;
-    for &x in &a[1..] { let p = path_arg(c, x)?; if sys::chmod(&p.cstr(), m) < 0 { return Err(last_err_at(c, "rb_file_s_chmod - ", p.as_bytes())); } }
+    for &x in &a[1..] { let p = path_arg(c, x)?; if sys::chmod(&p.cstr(), m) < 0 { return Err(last_err_at(c, "apply2files - ", &p)); } }
     Ok(Value::fix(a.len() as i64 - 1))
 }
 fn id_arg(c: &mut Ctx, v: Value) -> Result<u32, Esc> { if v == NIL { Ok(u32::MAX) } else { Ok(num_to_long(c, v)? as u32) } }
 fn f_s_chown(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     if a.len() < 2 { return argc_err(c, a.len(), 2, -1); }
     let (u, g) = (id_arg(c, a[0])?, id_arg(c, a[1])?);
-    for &x in &a[2..] { let p = path_arg(c, x)?; if sys::chown(&p.cstr(), u, g) < 0 { return Err(last_err_at(c, "rb_file_s_chown - ", p.as_bytes())); } }
+    for &x in &a[2..] { let p = path_arg(c, x)?; if sys::chown(&p.cstr(), u, g) < 0 { return Err(last_err_at(c, "apply2files - ", &p)); } }
     Ok(Value::fix(a.len() as i64 - 2))
 }
 fn f_s_lchown(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     if a.len() < 2 { return argc_err(c, a.len(), 2, -1); }
     let (u, g) = (id_arg(c, a[0])?, id_arg(c, a[1])?);
-    for &x in &a[2..] { let p = path_arg(c, x)?; if sys::lchown(&p.cstr(), u, g) < 0 { return Err(last_err_at(c, "rb_file_s_lchown - ", p.as_bytes())); } }
+    for &x in &a[2..] { let p = path_arg(c, x)?; if sys::lchown(&p.cstr(), u, g) < 0 { return Err(last_err_at(c, "apply2files - ", &p)); } }
     Ok(Value::fix(a.len() as i64 - 2))
 }
 fn f_s_lchmod(c: &mut Ctx, _slf: Value, _a: &[Value], _b: Blk) -> RV { err(c, c.vm().c_not_impl_error.get(), "lchmod() function is unimplemented on this machine") }
 fn f_s_truncate(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     let p = path_arg(c, a[0])?; let n = num_to_long(c, a[1])?;
-    if sys::truncate(&p.cstr(), n) < 0 { return Err(last_err_at(c, "rb_file_s_truncate - ", p.as_bytes())); }
+    if sys::truncate(&p.cstr(), n) < 0 { return Err(last_err_at(c, "rb_file_s_truncate - ", &p)); }
     Ok(Value::fix(0))
 }
 fn f_s_umask(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
@@ -276,7 +284,7 @@ fn f_s_umask(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
 fn f_s_mkfifo(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     let p = path_arg(c, a[0])?;
     let m = match a.get(1) { Some(&m) => mode_arg(c, m)?, None => 0o666 };
-    if sys::mkfifo(&p.cstr(), m) < 0 { return Err(last_err_at(c, "rb_file_s_mkfifo - ", p.as_bytes())); }
+    if sys::mkfifo(&p.cstr(), m) < 0 { return Err(last_err_at(c, "rb_file_s_mkfifo - ", &p)); }
     Ok(Value::fix(0))
 }
 fn timespec_arg(c: &mut Ctx, v: Value) -> Result<sys::Timespec, Esc> {
@@ -288,7 +296,7 @@ fn timespec_arg(c: &mut Ctx, v: Value) -> Result<sys::Timespec, Esc> {
 fn utime_impl(c: &mut Ctx, a: &[Value], nofollow: bool) -> RV {
     if a.len() < 2 { return argc_err(c, a.len(), 2, -1); }
     let ts = [timespec_arg(c, a[0])?, timespec_arg(c, a[1])?];
-    for &x in &a[2..] { let p = path_arg(c, x)?; if sys::utimensat_cwd(&p.cstr(), &ts, if nofollow { 0x100 } else { 0 }) < 0 { return Err(last_err_at(c, "rb_file_s_utime - ", p.as_bytes())); } }
+    for &x in &a[2..] { let p = path_arg(c, x)?; if sys::utimensat_cwd(&p.cstr(), &ts, if nofollow { 0x100 } else { 0 }) < 0 { return Err(last_err_at(c, "apply2files - ", &p)); } }
     Ok(Value::fix(a.len() as i64 - 2))
 }
 fn f_s_utime(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV { utime_impl(c, a, false) }
@@ -559,11 +567,11 @@ fn realpath_impl(c: &mut Ctx, a: &[Value], strict: bool) -> RV {
     let enc = c.str_enc(sv);
     let orig = c.str_bytes(sv).to_vec();
     let mut ea = a.to_vec(); ea[0] = sv;
-    let p = PathArg(expand(c, &ea, false)?);
+    let p = PathArg(expand(c, &ea, false)?, enc);
     if strict {
         return match std::fs::canonicalize(&p) {
             Ok(r) => Ok(c.str_new_enc(r.as_os_str().as_bytes(), enc)),
-            Err(e) => Err(os_err_at(c, &e, "rb_check_realpath_internal - ", if a.len() > 1 && a[1] != NIL { p.as_bytes() } else { &orig })),
+            Err(e) => Err(os_err_at(c, &e, "rb_check_realpath_internal - ", if a.len() > 1 && a[1] != NIL { (p.as_bytes(), p.1) } else { (&orig[..], enc) })),
         };
     }
     let mut r = b"/".to_vec();
@@ -574,7 +582,7 @@ fn realpath_impl(c: &mut Ctx, a: &[Value], strict: bool) -> RV {
             if crate::string::is_ascii(&r) || enc == fs { return Ok(c.str_new_enc(&r, enc)); }
             match crate::builtins::econv::convert_string(crate::builtins::encoding::enc_name(fs), crate::builtins::encoding::enc_name(enc), &r) { Some(o) => Ok(c.str_new_enc(&o, enc)), None => Ok(c.str_new_enc(&r, fs)) }
         }
-        Err((e, path)) => Err(crate::builtins::io::raise_errno_at(c, e, "realpath_rec - ", &path)),
+        Err((e, path)) => Err(crate::builtins::io::raise_errno_at(c, e, "realpath_rec - ", (&path[..], enc))),
     }
 }
 fn f_s_realpath(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV { realpath_impl(c, a, true) }
@@ -1008,16 +1016,16 @@ fn d_s_pwd(c: &mut Ctx, _slf: Value, _a: &[Value], _b: Blk) -> RV {
 }
 static CHDIR_DEPTH: AtomicI32 = AtomicI32::new(0);
 fn chdir_to(c: &mut Ctx, p: &PathArg) -> Result<(), Esc> {
-    if sys::chdir(&p.cstr()) < 0 { return Err(last_err_at(c, "rb_dir_s_chdir - ", p.as_bytes())); }
+    if sys::chdir(&p.cstr()) < 0 { return Err(last_err_at(c, "chdir_path - ", p)); }
     Ok(())
 }
 fn d_s_chdir(c: &mut Ctx, _slf: Value, a: &[Value], blk: Blk) -> RV {
-    let p = match a.first() { Some(&v) => path_arg(c, v)?, None => PathArg(home_of(c, "")?) };
+    let p = match a.first() { Some(&v) => path_arg(c, v)?, None => PathArg::sys(home_of(c, "")?) };
     if blk.is_null() {
         if CHDIR_DEPTH.load(Relaxed) > 0 { crate::builtins::kernel::warn_str(c, "warning: conflicting chdir during another chdir block\n"); }
         chdir_to(c, &p)?; return Ok(Value::fix(0));
     }
-    let old = PathArg(cwd());
+    let old = PathArg::sys(cwd());
     chdir_to(c, &p)?;
     CHDIR_DEPTH.fetch_add(1, Relaxed);
     let arg = c.str_new(p.as_bytes());
@@ -1034,11 +1042,11 @@ fn d_s_mkdir(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let p = path_arg(c, a[0])?;
     let mode = match a.get(1) { Some(&m) if m != NIL => mode_arg(c, m)?, _ => 0o777 };
     use std::os::unix::fs::DirBuilderExt;
-    match std::fs::DirBuilder::new().mode(mode).create(&p) { Ok(_) => Ok(Value::fix(0)), Err(e) => Err(os_err_at(c, &e, "rb_dir_s_mkdir - ", p.as_bytes())) }
+    match std::fs::DirBuilder::new().mode(mode).create(&p) { Ok(_) => Ok(Value::fix(0)), Err(e) => Err(os_err_at(c, &e, "dir_s_mkdir - ", &p)) }
 }
 fn d_s_rmdir(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let p = path_arg(c, a[0])?;
-    match std::fs::remove_dir(&p) { Ok(_) => Ok(Value::fix(0)), Err(e) => Err(os_err_at(c, &e, "rb_dir_s_rmdir - ", p.as_bytes())) }
+    match std::fs::remove_dir(&p) { Ok(_) => Ok(Value::fix(0)), Err(e) => Err(os_err_at(c, &e, "dir_s_rmdir - ", &p)) }
 }
 /// The `encoding:` keyword of Dir methods, or the filesystem encoding.
 fn dir_enc(c: &mut Ctx, opts: Option<Value>) -> Result<u8, Esc> {
@@ -1048,7 +1056,7 @@ fn dir_enc(c: &mut Ctx, opts: Option<Value>) -> Result<u8, Esc> {
 fn dir_list(c: &mut Ctx, p: &PathArg, children: bool) -> Result<Vec<Vec<u8>>, Esc> {
     match read_dir_raw(p.as_bytes()) {
         Ok(e) => Ok(e.into_iter().map(|x| x.0).filter(|n| !children || (n != b"." && n != b"..")).collect()),
-        Err(e) => Err(crate::builtins::io::raise_errno_at(c, e, "dir_initialize - ", p.as_bytes())),
+        Err(e) => Err(crate::builtins::io::raise_errno_at(c, e, "dir_initialize - ", p)),
     }
 }
 /// Entry names as Strings in `enc` (or default_internal).
@@ -1090,7 +1098,7 @@ fn d_s_empty(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     match read_dir_raw(p.as_bytes()) {
         Ok(e) => Ok(Value::bool(e.len() <= 2)),
         Err(20) => Ok(FALSE),
-        Err(e) => Err(crate::builtins::io::raise_errno_at(c, e, "rb_dir_s_empty_p - ", p.as_bytes())),
+        Err(e) => Err(crate::builtins::io::raise_errno_at(c, e, "rb_dir_s_empty_p - ", &p)),
     }
 }
 fn d_s_home(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
@@ -1101,7 +1109,7 @@ fn d_s_home(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
 fn d_s_exist(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV { f_s_dir_p(c, s, a, b) }
 fn d_s_chroot(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let p = path_arg(c, a[0])?;
-    if sys::chroot(&p.cstr()) < 0 { return Err(last_err_at(c, "dir_s_chroot - ", p.as_bytes())); }
+    if sys::chroot(&p.cstr()) < 0 { return Err(last_err_at(c, "dir_s_chroot - ", &p)); }
     Ok(Value::fix(0))
 }
 fn iv(n: &str) -> crate::value::Sym { intern(n.as_bytes()) }
@@ -1196,8 +1204,14 @@ fn d_path(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let p = ivar_get
 fn d_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let p = ivar_get(c, s, iv("@path"));
     let k = class_path(c, real_class_of(c, s));
-    let s = if p != NIL { format!("#<{}:{}>", k, String::from_utf8_lossy(c.str_bytes(p))) }
-        else if ivar_get(c, s, iv("@ents")) == NIL { format!("#<{}: uninitialized>", k) } else { crate::builtins::kernel::any_to_s_str(c, s) };
+    if p != NIL {
+        // dir_inspect: rb_str_buf_new + appends, so a non-ASCII path brings its encoding
+        let out = c.str_new_enc(format!("#<{}:", k).as_bytes(), crate::object::ENC_BINARY);
+        crate::string::str_append_str(c, out, p)?;
+        c.rstring_mut(out).b.push(b'>');
+        return Ok(out);
+    }
+    let s = if ivar_get(c, s, iv("@ents")) == NIL { format!("#<{}: uninitialized>", k) } else { crate::builtins::kernel::any_to_s_str(c, s) };
     Ok(c.str_new(s.as_bytes()))
 }
 /// Dir.fchdir(fd) [{ }]: a block runs there and returns to the directory it came from (by descriptor).

@@ -337,7 +337,6 @@ end
 class NilClass
   def to_a = []
   def to_h = {}
-  def inspect = "nil"
   def &(o) = false
   def |(o) = !!o
   alias ^ |

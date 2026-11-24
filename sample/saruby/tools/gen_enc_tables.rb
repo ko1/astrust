@@ -40,3 +40,15 @@ LEADS = (0x81..0x9f).to_a + (0xe0..0xfc).to_a
   LEADS.each { |h| (0x40..0xfc).each { |l| t << u([h, l].pack('C*'), enc) } }
   puts "pub static #{enc == 'Shift_JIS' ? 'SJIS' : 'CP932'}: [u16; #{t.size}] = [", words(t), "];"
 end
+
+# rb_enc_isprint of the single high bytes (0x80-0xFF) per encoding, as bitmaps; encodings with none are left out.
+# ([[:print:]] in an ASCII-only regexp takes the subject's encoding, as rb_enc_isprint does.)
+pr = Encoding.list.select { |e| e.ascii_compatible? && !e.dummy? }.filter_map do |e|
+  bits = (0x80..0xff).select { |b| s = b.chr.force_encoding(e); s.valid_encoding? && /\A[[:print:]]\z/.match?(s) }
+  next if bits.empty?
+  m = Array.new(16, 0); bits.each { |b| m[(b - 0x80) >> 3] |= 1 << (b & 7) }
+  [e.name, m]
+end
+puts "pub const PRINT_HI: [(&str, [u8; 16]); #{pr.size}] = ["
+pr.each { |n, m| puts "  (#{n.inspect}, [#{m.map { "0x%02x" % _1 }.join(', ')}])," }
+puts "];"

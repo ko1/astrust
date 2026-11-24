@@ -79,6 +79,17 @@ pub fn ci_hash(c: CiRef) -> u64 {
 }
 
 fn leak<T>(v: Vec<T>) -> &'static [T] { Box::leak(v.into_boxed_slice()) }
+/// Encodings of file names that are not UTF-8 (the main script's is the locale's, eval's as given).
+static FILE_ENCS: std::sync::Mutex<Option<HashMap<String, u8>>> = std::sync::Mutex::new(None);
+pub fn set_file_enc(f: &str, e: u8) {
+    let mut t = FILE_ENCS.lock().unwrap_or_else(|x| x.into_inner());
+    let t = t.get_or_insert_with(HashMap::default);
+    if e == crate::object::ENC_UTF8 { t.remove(f); } else { t.insert(f.to_string(), e); }
+}
+/// The encoding of `__FILE__` / Location#path for file name `f`.
+pub fn file_enc(f: &str) -> u8 {
+    FILE_ENCS.lock().unwrap_or_else(|x| x.into_inner()).as_ref().and_then(|t| t.get(f).copied()).unwrap_or(crate::object::ENC_UTF8)
+}
 fn lstr(b: &[u8]) -> Str { Box::leak(b.to_vec().into_boxed_slice()) }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -741,7 +752,10 @@ impl<'a> Compiler<'a> {
                 let b = match right { Some(x) => self.c(x), None => ALLOC_node_nil() };
                 ALLOC_node_range(a, b, excl)
             }
-            Kind::SourceFileNode { filepath } => if n.flags & pa::STRING_FLAGS_MUTABLE != 0 { ALLOC_node_str(lstr(filepath), 0) } else { ALLOC_node_cstr(lstr(filepath), 0) },
+            Kind::SourceFileNode { filepath } => {
+                let e = file_enc(self.file) as u32;
+                if n.flags & pa::STRING_FLAGS_MUTABLE != 0 { ALLOC_node_str(lstr(filepath), e) } else { ALLOC_node_cstr(lstr(filepath), e) }
+            }
             Kind::SourceLineNode => ALLOC_node_lit(Value::fix(line as i32 as i64)),
             Kind::SourceEncodingNode => {
                 let e = ALLOC_node_top_const(intern(b"Encoding"), line);
