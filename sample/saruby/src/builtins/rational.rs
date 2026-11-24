@@ -214,12 +214,17 @@ fn rat_pow(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     if exact_zero(c, o) { return Ok(rat_raw(c, Value::fix(1), Value::fix(1))); }
     if is_rational(c, o) && rat_parts(c, o).1 == Value::fix(1) { o = rat_parts(c, o).0; }
     let (n, d) = rat_parts(c, s);
-    if is_integer(o) {
-        if d == Value::fix(1) {
-            if n == Value::fix(1) { return Ok(rat_raw(c, Value::fix(1), Value::fix(1))); }
-            if n == Value::fix(-1) { let x = Value::fix(if iodd(c, o) { -1 } else { 1 }); return Ok(rat_raw(c, x, Value::fix(1))); }
-            if iszero(n) { if isneg(c, o) { return zerodiv(c); } return Ok(rat_raw(c, Value::fix(0), Value::fix(1))); }
+    // 0**n and 1**n of an exact n
+    if d == Value::fix(1) && (is_integer(o) || is_rational(c, o)) {
+        if n == Value::fix(1) { return Ok(rat_raw(c, Value::fix(1), Value::fix(1))); }
+        if n == Value::fix(-1) && is_integer(o) { let x = Value::fix(if iodd(c, o) { -1 } else { 1 }); return Ok(rat_raw(c, x, Value::fix(1))); }
+        if iszero(n) {
+            let neg = if is_integer(o) { isneg(c, o) } else { isneg(c, rat_parts(c, o).0) };
+            if neg { return zerodiv(c); }
+            return Ok(rat_raw(c, Value::fix(0), Value::fix(1)));
         }
+    }
+    if is_integer(o) {
         if !o.is_fixnum() { return arg_err(c, "exponent is too large"); }
         let e = o.as_fix();
         let ea = e.unsigned_abs();
@@ -249,12 +254,12 @@ pub fn rat_cmp_v(c: &mut Ctx, s: Value, o: Value) -> RV {
         return Ok(match x.partial_cmp(&y) { Some(ord) => Value::fix(ord as i64), None => NIL });
     }
     if o.is_heap() && respond_to(c, o, s::coerce, true) && !is_string(o) {
-        let r = funcall(c, o, s::coerce, &[s], std::ptr::null());
-        return match r {
-            Ok(r) if is_array(r) && c.ary_len(r) == 2 => { let (x, y) = (c.ary(r)[0], c.ary(r)[1]); funcall(c, x, s::cmp, &[y], std::ptr::null()) }
-            Ok(_) => type_err(c, "coerce must return [x, y]"),
-            Err(_) => { c.esc = EscKind::None; Ok(NIL) }
-        };
+        // rb_num_coerce_cmp: an exception in #coerce goes through
+        let r = funcall(c, o, s::coerce, &[s], std::ptr::null())?;
+        if r == NIL { return Ok(NIL); }
+        if !is_array(r) || c.ary_len(r) != 2 { return type_err(c, "coerce must return [x, y]"); }
+        let (x, y) = (c.ary(r)[0], c.ary(r)[1]);
+        return funcall(c, x, s::cmp, &[y], std::ptr::null());
     }
     Ok(NIL)
 }
@@ -466,8 +471,7 @@ fn flo_numerator(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
 }
 fn flo_denominator(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let f = float_val(s);
-    if f.is_nan() { return Ok(s); }
-    if f.is_infinite() { return Ok(c.float_new(1.0)); }
+    if !f.is_finite() { return Ok(Value::fix(1)); }
     let r = float_to_r(c, f)?; Ok(rat_parts(c, r).1)
 }
 
@@ -676,6 +680,7 @@ pub fn init(c: &mut Ctx) -> Value {
     d(c, "to_s", rat_to_s, 0); d(c, "inspect", rat_inspect, 0); d(c, "to_f", rat_to_f_m, 0); d(c, "to_i", rat_to_i, 0); d(c, "to_r", rat_to_r, 0);
     d(c, "numerator", rat_num, 0); d(c, "denominator", rat_den, 0); d(c, "zero?", rat_zero_p, 0); d(c, "positive?", rat_pos_p, 0);
     d(c, "negative?", rat_neg_p, 0); d(c, "hash", rat_hash, 0); d(c, "rationalize", rat_rationalize, -1);
+    define_private_cfunc(c, k, "marshal_dump", |c, s, _a, _b| { let (n, d) = rat_parts(c, s); Ok(c.ary_new_from(&[n, d])) }, 0);
     define_cfunc(c, vmr.c_float.get(), "to_r", flo_to_r, 0);
     define_cfunc(c, vmr.c_float.get(), "rationalize", flo_rationalize, -1);
     define_cfunc(c, vmr.c_float.get(), "numerator", flo_numerator, 0);

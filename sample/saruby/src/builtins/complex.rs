@@ -232,7 +232,7 @@ fn divide(c: &mut Ctx, s: Value, o: Value, fdiv: bool) -> RV {
         let x = func(c, ar, o)?; let y = func(c, ai, o)?;
         return Ok(cpx_raw(c, rat_canon(c, x), rat_canon(c, y)));
     }
-    coerce(c, s, o, if fdiv { intern(b"fdiv") } else { s::div })
+    coerce(c, s, o, if fdiv { intern(b"fdiv") } else { intern(b"quo") })
 }
 fn cpx_div(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { divide(c, s, a[0], false) }
 fn cpx_fdiv(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { divide(c, s, a[0], true) }
@@ -415,25 +415,31 @@ fn range_err_conv<T>(c: &mut Ctx, s: Value, into: &str) -> Result<T, Esc> {
     let t = format(c, s, false)?;
     err(c, c.vm().c_range_error.get(), format!("can't convert {} into {}", t, into))
 }
+/// k_exact_zero_p: not a Float, and == 0
+fn k_exact_zero(c: &mut Ctx, x: Value) -> Result<bool, Esc> { Ok(!is_float(x) && f_zero_p(c, x)?) }
 fn cpx_to_i(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let (re, im) = cpx_parts(c, s);
-    if !exact_zero(c, im) { return range_err_conv(c, s, "Integer"); }
+    if !k_exact_zero(c, im)? { return range_err_conv(c, s, "Integer"); }
     funcall(c, re, s::to_i, &[], nul())
 }
 fn cpx_to_f(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let (re, im) = cpx_parts(c, s);
-    if !exact_zero(c, im) { return range_err_conv(c, s, "Float"); }
+    if !k_exact_zero(c, im)? { return range_err_conv(c, s, "Float"); }
     funcall(c, re, s::to_f, &[], nul())
 }
 fn cpx_to_r(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let (re, im) = cpx_parts(c, s);
-    if !(is_float(im) && float_val(im) == 0.0) && !exact_zero(c, im) { return range_err_conv(c, s, "Rational"); }
+    if !(is_float(im) && float_val(im) == 0.0) && !k_exact_zero(c, im)? {
+        // the imaginary part's #to_r may still be an exact zero
+        let r = if im.is_heap() && respond_to(c, im, intern(b"to_r"), true) { funcall(c, im, intern(b"to_r"), &[], nul())? } else { NIL };
+        if r == NIL || !k_exact_zero(c, r)? { return range_err_conv(c, s, "Rational"); }
+    }
     funcall(c, re, intern(b"to_r"), &[], nul())
 }
 fn cpx_rationalize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     let (re, im) = cpx_parts(c, s);
-    if !(is_float(im) && float_val(im) == 0.0) && !exact_zero(c, im) { return range_err_conv(c, s, "Rational"); }
+    if !k_exact_zero(c, im)? { return range_err_conv(c, s, "Rational"); }
     funcall(c, re, intern(b"rationalize"), a, nul())
 }
 fn cpx_to_c(_c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(s) }
@@ -626,6 +632,7 @@ pub fn init(c: &mut Ctx) -> Value {
     d(c, "inspect", cpx_inspect, 0); d(c, "to_i", cpx_to_i, 0); d(c, "to_f", cpx_to_f, 0); d(c, "to_r", cpx_to_r, 0);
     d(c, "rationalize", cpx_rationalize, -1); d(c, "to_c", cpx_to_c, 0); d(c, "numerator", cpx_numerator, 0);
     d(c, "denominator", cpx_denominator, 0);
+    define_private_cfunc(c, k, "marshal_dump", |c, s, _a, _b| { let (re, im) = cpx_parts(c, s); Ok(c.ary_new_from(&[re, im])) }, 0);
     for nm in ["%", "<", "<=", ">", ">=", "between?", "clamp", "div", "divmod", "floor", "ceil", "modulo", "remainder",
                "round", "step", "truncate", "i", "positive?", "negative?"] {
         let id = intern(nm.as_bytes());

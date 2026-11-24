@@ -301,7 +301,7 @@ fn k_clone(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let mut fz = None;
     if let Some(h) = kw_arg(c, a) {
         if let Some(v) = hash_get_opt(c, h, sym_value("freeze"))? {
-            if v != NIL && v != TRUE && v != FALSE { let i = inspect_str(c, v)?; return arg_err(c, format!("unexpected value for freeze: {}", i)); }
+            if v != NIL && v != TRUE && v != FALSE { let i = class_path(c, real_class_of(c, v)); return arg_err(c, format!("unexpected value for freeze: {}", i)); }
             if v != NIL { fz = Some(v == TRUE); }
         }
     }

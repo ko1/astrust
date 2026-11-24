@@ -20,7 +20,8 @@ impl Ctx {
     #[inline]
     pub fn range_parts(&self, r: Value) -> (Value, Value, bool) { if is_range(r) { self.range(r) } else { (NIL, NIL, false) } }
 }
-pub fn range_new_checked(c: &mut Ctx, b: Value, e: Value, excl: bool) -> RV {
+/// range_init's check: the ends must be comparable.
+pub fn range_check(c: &mut Ctx, b: Value, e: Value) -> Result<(), Esc> {
     let ok = (b.is_fixnum() && e.is_fixnum()) || b == NIL || e == NIL
         || (crate::numeric::is_numeric(b) && crate::numeric::is_numeric(e))
         || (is_string(b) && is_string(e));
@@ -28,6 +29,10 @@ pub fn range_new_checked(c: &mut Ctx, b: Value, e: Value, excl: bool) -> RV {
         let r = funcall(c, b, crate::symbol::s::cmp, &[e], std::ptr::null())?;
         if r == NIL { return arg_err(c, "bad value for range"); }
     }
+    Ok(())
+}
+pub fn range_new_checked(c: &mut Ctx, b: Value, e: Value, excl: bool) -> RV {
+    range_check(c, b, e)?;
     let r = c.range_new(b, e, excl);
     obj_set_flags(r, FL_FROZEN);
     Ok(r)
