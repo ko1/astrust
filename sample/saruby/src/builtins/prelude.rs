@@ -122,7 +122,16 @@ fn newest_gem_file(gem: &str, top: &str, rb: &str) -> Option<std::path::PathBuf>
     }
     best.map(|b| b.1.join(rb)).filter(|f| f.is_file())
 }
+/// The stdlib / bundled gem file for `name`, looked up once per name (the gem dirs are read, as rubygems
+/// reads its specs once).
 pub fn stdlib_file(name: &str) -> Option<std::path::PathBuf> {
+    static CACHE: std::sync::Mutex<Option<std::collections::HashMap<String, Option<std::path::PathBuf>>>> = std::sync::Mutex::new(None);
+    if let Some(r) = CACHE.lock().unwrap().as_ref().and_then(|m| m.get(name)) { return r.clone(); }
+    let r = stdlib_file_scan(name);
+    CACHE.lock().unwrap().get_or_insert_with(Default::default).insert(name.to_string(), r.clone());
+    r
+}
+fn stdlib_file_scan(name: &str) -> Option<std::path::PathBuf> {
     if EXT_BACKED.contains(&name.split('/').next().unwrap_or(name).trim_end_matches(".rb")) { return None; }
     let (lib, gem) = stdlib_dirs()?;
     let rb = if name.ends_with(".rb") { name.to_string() } else { format!("{}.rb", name) };
@@ -144,8 +153,8 @@ pub fn stdlib_file(name: &str) -> Option<std::path::PathBuf> {
     best
 }
 
-/// The reference ruby's default $LOAD_PATH (site, vendor, then rubylibdir and archdir: the last two
-/// stay out of saruby's $LOAD_PATH, require falls back to them after its own features).
+/// The reference ruby's default $LOAD_PATH: site, vendor, then rubylibdir and archdir (require resolves the
+/// last two through stdlib_file, after saruby's own features).
 pub fn default_load_path() -> Vec<String> {
     let Some((lib, _)) = stdlib_dirs() else { return vec![] };
     let p = std::path::Path::new(&lib);
@@ -154,11 +163,16 @@ pub fn default_load_path() -> Vec<String> {
     vec![format!("{base}/site_ruby/{ver}"), format!("{base}/site_ruby/{ver}/{arch}"), format!("{base}/site_ruby"), format!("{base}/vendor_ruby/{ver}"),
          format!("{base}/vendor_ruby/{ver}/{arch}"), format!("{base}/vendor_ruby"), lib.clone(), format!("{lib}/{arch}")]
 }
-/// $LOAD_PATH: -I dirs (already added), RUBYLIB, the site and vendor dirs.
+/// $LOAD_PATH: -I dirs (already added), RUBYLIB, the reference ruby's default load path.
 pub fn setup_load_path(c: &mut Ctx) {
     let lp = c.vm().load_path.get();
     if let Ok(p) = std::env::var("RUBYLIB") {
         for d in p.split(':') { let s = c.str_new(d.as_bytes()); c.ary_push(lp, s); }
     }
-    for d in default_load_path().iter().take(6) { let s = c.str_new(d.as_bytes()); c.ary_push(lp, s); }
+    for d in default_load_path() { let s = c.str_new(d.as_bytes()); c.ary_push(lp, s); }
+}
+/// rubylibdir and archdir of the reference ruby as the expanded load path has them (realpath).
+pub fn stdlib_lp_dirs() -> &'static [String] {
+    static D: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    D.get_or_init(|| default_load_path().into_iter().skip(6).map(|d| std::fs::canonicalize(&d).map(|p| p.to_string_lossy().into_owned()).unwrap_or(d)).collect())
 }

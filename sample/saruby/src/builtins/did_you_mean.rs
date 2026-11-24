@@ -48,15 +48,11 @@ pub fn snapshot_load_path(c: &mut Ctx) {
     ivar_set_raw(c, m, intern(b"__initial_load_path"), d);
 }
 
-/// DidYouMean.__initial_load_path: CRuby's $LOAD_PATH at boot, the reference ruby's dirs after the boot snapshot.
+/// DidYouMean.__initial_load_path: $LOAD_PATH at boot.
 fn initial_load_path(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let s = ivar_get(c, slf, intern(b"__initial_load_path"));
     let v = if s == NIL { vec![] } else { c.ary(s).to_vec() };
-    let out = c.ary_from_vec(v);
-    // the site / vendor dirs are in $LOAD_PATH already
-    let dl = crate::builtins::prelude::default_load_path();
-    for d in dl.iter().skip(6) { let s = c.str_new(d.as_bytes()); c.ary_push(out, s); }
-    Ok(out)
+    Ok(c.ary_from_vec(v))
 }
 
 /// Load the library once; false: it is not (yet) there, so a stub answers by itself.

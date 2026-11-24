@@ -442,13 +442,11 @@ fn rbconfig_from_ref(c: &mut Ctx, archdir: &str, bindir: &str, name: &str) -> bo
     if crate::builtins::kernel::run_source(c, &src, file, 1).is_err() { return false; }
     let Some(rbc) = const_get_at(c, c.vm().c_object.get(), intern(b"RbConfig")) else { return false };
     let libruby = format!("lib{}.so", name);
-    for t in [&b"CONFIG"[..], b"MAKEFILE_CONFIG"] {
-        let Some(h) = const_get_at(c, rbc, intern(t)) else { return false };
-        if !is_hash(h) { return false; }
-        for (k, v) in [("ruby_install_name", name), ("RUBY_INSTALL_NAME", name), ("bindir", bindir), ("libdir", bindir), ("LIBRUBY_SO", &libruby), ("LIBRUBY", &libruby)] {
-            let (ks, vs) = (c.str_new_frozen(k.as_bytes()), c.str_new(v.as_bytes()));
-            if hash_set(c, h, ks, vs).is_err() { return false; }
-        }
+    // MAKEFILE_CONFIG keeps the $(...) forms (fire_update! recomputes from them)
+    let Some(h) = const_get_at(c, rbc, intern(b"CONFIG")).filter(|&h| is_hash(h)) else { return false };
+    for (k, v) in [("ruby_install_name", name), ("RUBY_INSTALL_NAME", name), ("bindir", bindir), ("libdir", bindir), ("LIBRUBY_SO", &libruby), ("LIBRUBY", &libruby)] {
+        let (ks, vs) = (c.str_new_frozen(k.as_bytes()), c.str_new(v.as_bytes()));
+        if hash_set(c, h, ks, vs).is_err() { return false; }
     }
     true
 }
