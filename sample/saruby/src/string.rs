@@ -388,6 +388,10 @@ pub fn to_rstring(c: &mut Ctx, v: Value) -> Result<String, Esc> {
     Ok(String::from_utf8_lossy(c.str_bytes(s)).into_owned())
 }
 
+// set once a method_missing / respond_to? is defined after boot (check_array's fast path until then)
+static MM_REDEF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[inline] pub fn mm_redef() -> bool { MM_REDEF.load(std::sync::atomic::Ordering::Relaxed) }
+pub fn note_mm_redef() { MM_REDEF.store(true, std::sync::atomic::Ordering::Relaxed) }
 /// Implicit conversion to String (to_str).
 /// rb_check_funcall without arguments: None when `v` does not respond to `mid`.  A respond_to? of its
 /// own is asked first; a method_missing of its own is tried when there is no method (NoMethodError: None).
