@@ -25,6 +25,7 @@ fn identity_hash(k: Value) -> u64 { mix(k.raw()) }
 enum Probe { Found(usize), Miss, Ask(usize, Value) }
 
 impl RHash {
+    pub const EMPTY: RHash = RHash { entries: Vec::new(), index: Vec::new(), live: 0, default: NIL, default_proc: NIL, identity: false, iter_lev: 0, first: 0 };
     #[inline]
     pub fn with_capacity(n: usize) -> RHash {
         RHash { entries: Vec::with_capacity(n), index: Vec::new(), live: 0, default: NIL, default_proc: NIL, identity: false, iter_lev: 0, first: 0 }
@@ -139,7 +140,10 @@ impl Ctx {
     pub fn hash_new(&mut self) -> Value { self.hash_new_capa(0) }
     pub fn hash_new_capa(&mut self, n: usize) -> Value {
         let k = self.vm().c_hash.get();
-        self.alloc(k, Body::Hash(Box::new(RHash::with_capacity(n))))
+        // filled in the Box: built on the stack, it was copied with 64-byte loads that wait for its stores
+        let mut h = Box::new(RHash::EMPTY);
+        h.entries = Vec::with_capacity(n);
+        self.alloc(k, Body::Hash(h))
     }
     pub fn hash_len(&self, h: Value) -> usize { self.hash(h).live }
     /// Number of slots, deleted ones included: the bound of an iteration by slot number.
