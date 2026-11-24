@@ -74,7 +74,14 @@ fn sym_all(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
 }
 fn sym_encoding_m(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { crate::builtins::misc::encoding_value(c, sym_encoding(s.as_sym())) }
 
+// nil / true / false #to_s: one frozen US-ASCII String each (rb_cNilClass_to_s ...)
+static NIL_S: crate::heap::Global = crate::heap::Global::new();
+static TRUE_S: crate::heap::Global = crate::heap::Global::new();
+static FALSE_S: crate::heap::Global = crate::heap::Global::new();
+fn special_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(if s == NIL { NIL_S.get(c) } else if s == TRUE { TRUE_S.get(c) } else { FALSE_S.get(c) }) }
 pub fn init(c: &mut Ctx, k: Value) {
+    for (g, t) in [(&NIL_S, &b""[..]), (&TRUE_S, b"true"), (&FALSE_S, b"false")] { let v = c.str_new_enc(t, ENC_ASCII); obj_set_flags(v, crate::object::FL_FROZEN); g.set(c, v); }
+    for kk in [c.vm().c_nil.get(), c.vm().c_true.get(), c.vm().c_false.get()] { define_cfunc(c, kk, "to_s", special_to_s, 0); }
     // rb_undef_method(CLASS_OF(rb_cSymbol / rb_cNilClass / rb_cTrueClass / rb_cFalseClass), "new")
     let vmr = c.vm();
     for kk in [k, vmr.c_nil.get(), vmr.c_true.get(), vmr.c_false.get()] { let sk = singleton_class(c, kk); define_method_me(c, sk, crate::symbol::s::new, new_me(crate::symbol::s::new, sk, VISI_PUBLIC, MKind::Undef)); }

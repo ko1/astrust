@@ -1155,10 +1155,11 @@ cfn!(s_delete, |c, slf, a, b_| {
     Ok(c.str_new_like(slf, v))
 });
 cfn!(s_delete_b, |c, slf, a, b_| {
-    check_frozen(c, slf)?;
+    // rb_str_delete_bang: an empty receiver first, then the sets, then str_modify
     if c.str_bytes(slf).is_empty() { return Ok(NIL); }
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
     let sets = sets_of(c, slf, a)?;
+    check_frozen(c, slf)?;
     let v = filter_chars(c, slf, &sets)?;
     if v.len() == c.str_bytes(slf).len() { return Ok(NIL); }
     c.str_modify(slf)?.b = v.into(); Ok(slf)

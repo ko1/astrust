@@ -337,7 +337,6 @@ end
 class NilClass
   def to_a = []
   def to_h = {}
-  def to_s = "".freeze
   def inspect = "nil"
   def &(o) = false
   def |(o) = !!o
@@ -348,7 +347,6 @@ class NilClass
   def =~(o) = nil
 end
 class TrueClass
-  def to_s = "true".freeze
   alias inspect to_s
   def &(o) = !!o
   def |(o) = true
@@ -356,7 +354,6 @@ class TrueClass
   def ===(o) = equal?(o)
 end
 class FalseClass
-  def to_s = "false".freeze
   alias inspect to_s
   def &(o) = false
   def |(o) = !!o
