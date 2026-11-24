@@ -424,13 +424,13 @@ pub fn srb_gvar_set(c: &mut Ctx, name: Sym, v: Value) -> RV {
     crate::builtins::kernel::gvar_set(c, name, v)
 }
 
-/// The class whose class variables the current code sees (lexical cref, skipping singletons).
+/// The class whose class variables the current code sees (lexical cref, skipping singletons and instance_eval's).
 fn cvar_base(c: &Ctx) -> Value {
     let mut cr = unsafe { (*c.frame).cref() };
     unsafe {
         while !cr.is_null() {
             let k = (*cr).klass;
-            if !c.class(k).is_singleton || (*cr).prev.is_null() {
+            if (!c.class(k).is_singleton && !lazy_target((*cr).def_target)) || (*cr).prev.is_null() {
                 if c.class(k).is_singleton { let a = c.class(k).attached; if is_class_or_module(a) { return a; } }
                 return k;
             }
@@ -533,10 +533,15 @@ pub fn srb_cdecl_path(c: &mut Ctx, parent: Value, name: Sym, v: Value) -> RV {
     srb_cdecl(c, k, name, v)
 }
 
+/// vm_get_cbase: where `X = ...` / `class X` define; instance_eval(String)'s lazy cref makes the singleton class now.
+fn cbase(c: &mut Ctx) -> Value {
+    let Some((k, t)) = c.cref_ref(c.frame().cref()).map(|r| (r.klass, r.def_target)) else { return vm().c_object.get() };
+    if lazy_target(t) { return singleton_class(c, t); }
+    k
+}
 pub fn srb_cdecl(c: &mut Ctx, parent: Value, name: Sym, v: Value) -> RV {
     let k = if parent == NIL {
-        let cr = unsafe { (*c.frame).cref() };
-        if cr.is_null() { vm().c_object.get() } else { unsafe { (*cr).klass } }
+        cbase(c)
     } else if parent == UNDEF { vm().c_object.get() } else { parent };
     if !is_class_or_module(k) {
         let s = crate::builtins::kernel::inspect_str(c, k)?;
@@ -645,6 +650,33 @@ pub fn srb_block_return(c: &mut Ctx, v: Value) -> RV {
         g = unsafe { (*g).prev };
     }
     if !alive || home_is_class_body(c, id) { return Err(raise_local_jump(c, "unexpected return", "return", v)); }
+    c.esc = EscKind::Return;
+    c.esc_val = v;
+    c.esc_tag = id;
+    Err(Esc)
+}
+
+/// `return` in eval'd code: as node_return, except that the top level reached through a block is
+/// "unexpected return" (vm_throw_start: no method or lambda frame to return from).
+#[cold]
+pub fn srb_eval_return(c: &mut Ctx, v: Value) -> RV {
+    let id = c.frame().id;
+    let mut g = c.cur_frame();
+    let mut via_block = false;
+    while let Some(f) = g {
+        if f.id == id {
+            match f.kind {
+                FK_BLOCK => via_block = true,
+                FK_EVAL | FK_CFUNC => {}
+                k => {
+                    if k == FK_TOP && via_block { return Err(raise_local_jump(c, "unexpected return", "return", v)); }
+                    break;
+                }
+            }
+        }
+        g = c.prev_frame(f);
+    }
+    if c.frame().kind == FK_BLOCK { return srb_block_return(c, v); }
     c.esc = EscKind::Return;
     c.esc_val = v;
     c.esc_tag = id;
@@ -806,7 +838,7 @@ pub fn srb_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, name: S
             let f = c.frame();
             if f.me.is_null() { return Ok(NIL); }
             let me = unsafe { &*f.me };
-            let sm = super_method(c, class_of(fp[0].get()), me.owner, me.name);
+            let sm = super_method(c, class_of(fp[0].get()), me.orig_owner, me.name);
             if sm.is_null() { Ok(NIL) } else { yes(c, b"super") }
         }
         _ => yes(c, b"expression"),
@@ -817,14 +849,14 @@ fn const_defined_lex(c: &mut Ctx, cref: *const Cref, name: Sym) -> bool {
     let mut cr = cref;
     unsafe {
         while !cr.is_null() && !(*cr).prev.is_null() {
-            let k = (*cr).klass;
+            let k = cref_klass(c, &*cr);
             if has_const(c, k, name) { return true; }
             cr = (*cr).prev;
         }
     }
-    let start = if cref.is_null() { vm().c_object.get() } else { unsafe { (*cref).klass } };
+    let start = if cref.is_null() { vm().c_object.get() } else { cref_klass(c, unsafe { &*cref }) };
     let _ = c;
-    ancestors(c, start).iter().any(|&k| has_const(c, k, name)) || has_const(c, vm().c_object.get(), name)
+    ancestors(c, start).iter().any(|&k| has_const(c, k, name)) || (c.class(start).is_module && has_const(c, vm().c_object.get(), name))
 }
 
 // ---- calls ---------------------------------------------------------------------------------
@@ -969,7 +1001,7 @@ pub fn srb_super(c: &mut Ctx, base: Stk, tmp: Value, kw: Value, blkv: Value, ci:
     let slf = fp[0].get();
     let klass = class_of(slf);
     // a define_method body searches from its own owner, not the class its block was made under
-    let owner = if f.defined_class() != NIL && !matches!(me.kind, MKind::Bmethod(_)) { f.defined_class() } else { me.owner };
+    let owner = if f.defined_class().is_heap() && !matches!(me.kind, MKind::Bmethod(_)) { f.defined_class() } else { me.orig_owner };
     let sm = super_method(c, klass, owner, me.name);
     let fblk = f.blk;
     let n = c.ary(tmp).len();
@@ -1124,7 +1156,7 @@ pub fn define_iseq_method(c: &mut Ctx, klass: Value, mid: Sym, is: &'static Iseq
     let mut cref = c.frame().cref();
     // defined in instance_eval / class_exec: nested defs in its body go to the same target
     let dc = c.frame().defined_class();
-    if dc != NIL && c.frame().kind != FK_CLASS && dc != cref_class(c) { cref = crate::vm::cref_with_def_target(c, cref, dc); }
+    if dc.is_heap() && c.frame().kind != FK_CLASS && dc != cref_class(c) { cref = crate::vm::cref_with_def_target(c, cref, dc); }
     let me = new_me_cref(mid, klass, visi, MKind::Iseq(is), cref);
     note_redefinition(c, klass, mid);
     define_method_me(c, klass, mid, me);
@@ -1151,13 +1183,56 @@ fn home_scope_visi(c: &Ctx) -> u8 {
     VISI_PUBLIC
 }
 
-pub fn srb_def(c: &mut Ctx, mid: Sym, is: &'static Iseq, _fp: Fp) -> RV {
+/// A frame's definee when instance_eval / instance_exec ran on an object without a singleton class (CRuby's nil cref class).
+pub const NO_DEFINEE: Value = FALSE;
+/// instance_eval / instance_exec's definee: the singleton class, nil / true / false's class, or NO_DEFINEE.
+pub fn eval_definee(c: &mut Ctx, v: Value) -> Value {
+    if v == NIL || v == TRUE || v == FALSE { return class_of(v); }
+    if lacks_singleton(c, v) { return NO_DEFINEE; }
+    singleton_class(c, v)
+}
+/// Integer / Float / Symbol: no singleton class (singleton_class_for_eval's nil).
+pub fn lacks_singleton(_c: &Ctx, v: Value) -> bool {
+    if v == NIL || v == TRUE || v == FALSE { return false; }
+    if !v.is_heap() { return true; }
+    let k = class_of(v);
+    k == vm().c_float.get() || k == vm().c_integer.get() || k == vm().c_symbol.get() || is_fstring(_c, v)
+}
+/// A string of the -"str" pool (CRuby's fstring table): it cannot have a singleton class.
+pub fn is_fstring(c: &Ctx, v: Value) -> bool {
+    if !crate::object::is_string(v) || obj_flags(v) & FL_FROZEN == 0 { return false; }
+    vm().frozen_lits.borrow().get(c.str_bytes(v)).is_some_and(|&p| p == v)
+}
+/// The class `def` / alias / undef work on in this frame.
+fn def_class(c: &mut Ctx) -> Result<Value, Esc> {
     let f = c.frame();
-    let mut klass = cref_class(c);
-    let cr = f.cref();
-    if let Some(t) = c.cref_ref(cr).map(|x| x.def_target).filter(|&t| t != NIL) { klass = t; }
-    // `def` inside a method body defines on the cref class; inside instance_eval, on the singleton
-    if f.defined_class() != NIL && f.kind != FK_CLASS { klass = f.defined_class(); }
+    // a block run by instance_eval / class_exec: its definee
+    if f.kind != FK_CLASS && f.defined_class() != NIL {
+        if f.defined_class() == NO_DEFINEE { return type_err(c, "can't define singleton"); }
+        return Ok(f.defined_class());
+    }
+    let t = c.cref_ref(f.cref()).map_or(NIL, |x| x.def_target);
+    if t == NIL { return Ok(cref_class(c)); }
+    // instance_eval with a String on an object without a singleton class yet (cref: its class)
+    if lazy_target(t) { return Ok(singleton_class(c, t)); }
+    Ok(t)
+}
+
+/// block_given? in frame `f`: a define_method body's frame holds the call's block (break / &b), but
+/// block_given? asks about the defining scope's block, as yield does.
+pub fn frame_block_given(c: &Ctx, f: &Frame) -> bool {
+    // the body and the blocks in it run with the define_method entry as their me
+    match c.me_ref(f.me).map(|m| m.kind) {
+        Some(MKind::Bmethod(p)) => !c.proc_data(p).blk.outer_blk.is_null(),
+        _ => !f.blk.is_null(),
+    }
+}
+#[cold]
+pub fn srb_block_given_slow(c: &Ctx) -> bool { frame_block_given(c, c.frame()) }
+
+pub fn srb_def(c: &mut Ctx, mid: Sym, is: &'static Iseq, _fp: Fp) -> RV {
+    let klass = def_class(c)?;
+    let f = c.frame();
     let mut visi = if f.kind == FK_CLASS || f.kind == FK_TOP || f.kind == FK_EVAL || (f.kind == FK_BLOCK && f.defined_class() == klass) { f.visi } else { VISI_PUBLIC };
     // a block (or lambda) run where it was made: the scope visibility of its class body / top level
     if (f.kind == FK_BLOCK || f.kind == FK_LAMBDA) && f.defined_class() == NIL && f.visi == VISI_PUBLIC { visi = home_scope_visi(c); }
@@ -1180,17 +1255,13 @@ pub fn srb_def(c: &mut Ctx, mid: Sym, is: &'static Iseq, _fp: Fp) -> RV {
 
 pub fn srb_sdef(c: &mut Ctx, recv: Value, mid: Sym, is: &'static Iseq) -> RV {
     // nil / true / false: their class, as CRuby's singleton_class
-    if ((!recv.is_heap() || recv.is_fixnum()) && recv != NIL && recv != TRUE && recv != FALSE) || is_bignum(recv) || is_heap_float(recv) {
-        return type_err(c, format!("can't define singleton"));
-    }
+    if lacks_singleton(c, recv) { return type_err(c, "can't define singleton"); }
     if recv.is_heap() && obj_flags(recv) & (FL_FROZEN | FL_CHILLED_ANY) != 0 { crate::vm::modify_check_slow(c, recv)?; }
     let k = singleton_class(c, recv);
     if k.is_heap() { class_modify_check(c, k)?; }
     define_iseq_method(c, k, mid, is, VISI_PUBLIC);
     crate::builtins::coverage::on_def(c, is as *const Iseq as usize, k, mid);
-    if crate::vm::respond_to(c, recv, s::singleton_method_added, true) {
-        funcall(c, recv, s::singleton_method_added, &[Value::sym(mid)], std::ptr::null())?;
-    }
+    crate::builtins::object::call_method_added(c, k, mid)?;
     Ok(Value::sym(mid))
 }
 
@@ -1235,8 +1306,7 @@ fn scoped_private_reopen(c: &mut Ctx, outer: Value, name: Sym) -> RV {
 pub fn srb_class(c: &mut Ctx, outer: Value, name: Sym, sup: Value, is: &'static Iseq, _fp: Fp) -> RV {
     let scoped = outer != UNDEF;
     let outer = if outer == UNDEF {
-        let cr = unsafe { (*c.frame).cref() };
-        if outer == UNDEF && false { vm().c_object.get() } else if cr.is_null() { vm().c_object.get() } else { unsafe { (*cr).klass } }
+        cbase(c)
     } else { outer };
     let outer = if outer == NIL && !scoped { vm().c_object.get() } else { outer };
     if !is_class_or_module(outer) {
@@ -1281,8 +1351,7 @@ pub fn srb_class(c: &mut Ctx, outer: Value, name: Sym, sup: Value, is: &'static 
 pub fn srb_module(c: &mut Ctx, outer: Value, name: Sym, is: &'static Iseq, _fp: Fp) -> RV {
     let scoped = outer != UNDEF;
     let outer = if outer == UNDEF {
-        let cr = unsafe { (*c.frame).cref() };
-        if cr.is_null() { vm().c_object.get() } else { unsafe { (*cr).klass } }
+        cbase(c)
     } else { outer };
     if !is_class_or_module(outer) {
         let s = crate::builtins::kernel::inspect_str(c, outer)?;
@@ -1326,20 +1395,14 @@ pub fn srb_sclass(c: &mut Ctx, recv: Value, is: &'static Iseq, _fp: Fp) -> RV {
 }
 
 pub fn srb_alias(c: &mut Ctx, newname: Value, oldname: Value) -> RV {
-    let klass = {
-        let f = c.frame();
-        if f.defined_class() != NIL && f.kind != FK_CLASS { f.defined_class() } else { cref_class(c) }
-    };
+    let klass = def_class(c)?;
     crate::builtins::object::alias_method(c, klass, newname.as_sym(), oldname.as_sym())?;
     Ok(NIL)
 }
 
 pub fn srb_undef(c: &mut Ctx, v: Value) -> Result<(), Esc> {
-    let klass = {
-        let f = c.frame();
-        if f.defined_class() != NIL && f.kind != FK_CLASS { f.defined_class() } else { cref_class(c) }
-    };
-    let mid = if v.is_sym() { v.as_sym() } else { c.str_to_sym(v).as_sym() };
+    let klass = def_class(c)?;
+    let mid =if v.is_sym() { v.as_sym() } else { c.str_to_sym(v).as_sym() };
     crate::builtins::object::undef_method(c, klass, mid)
 }
 
@@ -1420,6 +1483,7 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
             err(c, vm().c_no_matching_pattern_error.get(), msg)
         }
         SP_TOPLEVEL_BINDING => { crate::builtins::binding::set_main_toplevel(c, v)?; Ok(NIL) }
+        SP_EVAL_RETURN => srb_eval_return(c, v),
         SP_SPLAT_ANY => {
             let a = splat_to_array(c, v)?;
             Ok(Value::bool(c.ary(a).iter().any(|x| x.truthy())))

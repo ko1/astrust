@@ -68,6 +68,29 @@ pub fn iseq_arity(is: &Iseq, lambda: bool) -> i64 {
     if min == max { min } else { -min - 1 }
 }
 
+/// rb_iseq_min_max_arity: (min, max; None: unlimited).
+fn iseq_min_max(is: &Iseq) -> (i64, Option<i64>) {
+    let p = &is.params;
+    let min = (p.lead.len() + p.post.len()) as i64 + if p.kw.iter().any(|k| k.required) { 1 } else { 0 };
+    if p.rest.is_some() { return (min, None); }
+    (min, Some((p.lead.len() + p.opt.len() + p.post.len()) as i64 + if !p.kw.is_empty() || p.kwrest.is_some() { 1 } else { 0 }))
+}
+/// rb_proc_min_max_arity of a lambda (a Method's proc: its method).
+fn proc_min_max(c: &Ctx, p: Value) -> (i64, Option<i64>) {
+    let is = match c.proc_data(p).blk.kind {
+        BlockKind::Iseq(is) => Some(is),
+        BlockKind::Method(m) => match c.me_ref(c.method_obj(m).me).map(|e| e.kind) {
+            Some(MKind::Iseq(is)) => Some(is),
+            Some(MKind::Bmethod(q)) => return proc_min_max(c, q),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(i) = is.and_then(|is| c.iseq_ref(is)) { return iseq_min_max(i); }
+    let a = proc_arity(c, p);
+    if a >= 0 { (a, Some(a)) } else { (-a - 1, None) }
+}
+
 pub fn method_arity(c: &Ctx, me: *const MethodEntry) -> i64 {
     let Some(me) = c.me_ref(me) else { return -1 };
     match me.kind {
@@ -139,8 +162,12 @@ fn proc_parameters(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
 fn proc_curry(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let arity = if !a.is_empty() { a[0].as_fix() } else { let ar = proc_arity(c, slf); if ar < 0 { -ar - 1 } else { ar } };
     if c.proc_data(slf).is_lambda && !a.is_empty() {
-        let ar = proc_arity(c, slf);
-        if (ar >= 0 && arity != ar) || (ar < 0 && arity < -ar - 1) { return arg_err(c, format!("wrong number of arguments (given {}, expected {})", arity, if ar >= 0 { ar.to_string() } else { format!("{}+", -ar - 1) })); }
+        // rb_check_arity(sarity, min, max)
+        let (min, max) = proc_min_max(c, slf);
+        if arity < min || max.is_some_and(|m| arity > m) {
+            let exp = match max { Some(m) if m == min => min.to_string(), Some(m) => format!("{}..{}", min, m), None => format!("{}+", min) };
+            return arg_err(c, format!("wrong number of arguments (given {}, expected {})", arity, exp));
+        }
     }
     let got = c.ary_new();
     make_curry(c, slf, arity, got)
@@ -162,8 +189,11 @@ fn make_curry(c: &mut Ctx, p: Value, arity: i64, got: Value) -> RV {
 fn proc_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let (kind, lambda) = { let pd = c.proc_data(slf); (pd.blk.kind, pd.is_lambda) };
     let loc = match kind { BlockKind::Iseq(is) => c.iseq_ref(is).map_or(String::new(), |is| format!(" {}:{}", is.info.file, is.info.line)), BlockKind::Sym(s) => { let i = crate::builtins::kernel::inspect_str(c, Value::sym(s))?; format!("(&{})", i) } _ => String::new() };
-    let t = format!("#<Proc:{:#018x}{}{}>", slf.raw(), loc, if lambda { " (lambda)" } else { "" });
-    Ok(c.str_new(t.as_bytes()))
+    let cls = class_path(c, real_class_of(c, slf));
+    let t = format!("#<{}:{:#018x}{}{}>", cls, slf.raw(), loc, if lambda { " (lambda)" } else { "" });
+    // rb_sprintf gives ASCII-8BIT; a non-ASCII name or path brings its own encoding in
+    let enc = if t.is_ascii() { crate::object::ENC_BINARY } else { crate::object::ENC_UTF8 };
+    Ok(c.str_new_enc(t.as_bytes(), enc))
 }
 fn callable_check(c: &mut Ctx, g: Value) -> Result<(), Esc> {
     if !is_proc(g) && !is_method_obj(g) && !respond_to(c, g, s::call, true) { return type_err(c, "callable object is expected"); }
@@ -183,7 +213,9 @@ fn proc_compose_left(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     callable_check(c, g)?;
     let data = c.ary_new_from(&[g, slf, TRUE]);
     let b = Block::cfunc(c, compose_call, data);
-    Ok(new_proc(c, c.vm().c_proc.get(), b, true, NIL))
+    // lambda-ness of the proc called first (rb_proc_compose_to_left)
+    let lambda = !is_proc(g) || c.proc_data(g).is_lambda;
+    Ok(new_proc(c, c.vm().c_proc.get(), b, lambda, NIL))
 }
 fn compose_call(c: &mut Ctx, data: Value, args: &[Value], blk: Blk, _o: Blk) -> RV {
     let kw = block_kw(c);
@@ -191,22 +223,25 @@ fn compose_call(c: &mut Ctx, data: Value, args: &[Value], blk: Blk, _o: Blk) -> 
     let x = funcall_kw(c, f, s::call, args, blk, kw)?;
     funcall(c, g, s::call, &[x], std::ptr::null())
 }
-fn proc_s_new(c: &mut Ctx, slf: Value, _a: &[Value], b: Blk) -> RV {
+/// rb_proc_s_new: proc_new (a Proc of another class is copied into `slf`), then #initialize with the arguments.
+fn proc_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if b.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
     let p = block_to_proc(c, b)?;
-    if slf != c.vm().c_proc.get() {
+    if slf == c.vm().c_proc.get() && a.is_empty() { return Ok(p); }
+    let np = if real_class_of(c, p) == slf { p } else {
         let np = crate::builtins::object::obj_dup(c, p, false, None)?;
         obj_set_klass(np, slf);
-        funcall(c, np, s::initialize, &[], std::ptr::null())?;
-        return Ok(np);
-    }
-    Ok(p)
+        np
+    };
+    let kw = kw_arg(c, a).is_some();
+    funcall_kw(c, np, s::initialize, a, std::ptr::null(), kw)?;
+    Ok(np)
 }
 fn proc_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if slf == a[0] { return Ok(TRUE); }
     if !is_proc(a[0]) { return Ok(FALSE); }
     let (x, y) = (c.proc_data(slf), c.proc_data(a[0]));
-    let same = match (x.blk.kind, y.blk.kind) { (BlockKind::Iseq(p), BlockKind::Iseq(q)) => p == q && x.blk.env == y.blk.env && x.blk.self_ == y.blk.self_, _ => false };
+    let same = match (x.blk.kind, y.blk.kind) { (BlockKind::Iseq(p), BlockKind::Iseq(q)) => p == q && x.blk.env == y.blk.env && x.blk.self_ == y.blk.self_ && x.blk.home_id == y.blk.home_id, _ => false };
     Ok(Value::bool(same && x.is_lambda == y.is_lambda))
 }
 fn proc_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
@@ -223,10 +258,14 @@ fn iseq_location(c: &mut Ctx, is: *const Iseq) -> RV {
 fn proc_source_location(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     match c.proc_data(slf).blk.kind {
         BlockKind::Iseq(is) => iseq_location(c, is),
+        BlockKind::Method(m) => meth_source_location(c, m, &[], Blk::NONE),
         _ => Ok(NIL),
     }
 }
-fn proc_binding(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { crate::builtins::binding::binding_of_proc(c, slf) }
+fn proc_binding(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
+    if !matches!(c.proc_data(slf).blk.kind, BlockKind::Iseq(_) | BlockKind::Method(_)) { return arg_err(c, "Can't create Binding from C level Proc"); }
+    crate::builtins::binding::binding_of_proc(c, slf)
+}
 /// Proc#ruby2_keywords: flags the block's iseq (shared by dups), as rb_proc_ruby2_keywords.
 fn proc_ruby2kw(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     check_frozen(c, slf)?;
@@ -248,7 +287,7 @@ pub fn method_object(c: &mut Ctx, recv: Value, mid: Sym, public_only: bool) -> R
     if c.me_ref(me).is_none_or(|m| public_only && m.visi != VISI_PUBLIC) {
         // respond_to_missing? → a method that goes through method_missing
         if respond_to(c, recv, s::respond_to_missing_p, true) {
-            let r = funcall(c, recv, s::respond_to_missing_p, &[Value::sym(mid), TRUE], std::ptr::null())?;
+            let r = funcall(c, recv, s::respond_to_missing_p, &[Value::sym(mid), Value::bool(!public_only)], std::ptr::null())?;
             if r.truthy() {
                 let mm = new_me(mid, class_of(recv), VISI_PUBLIC, MKind::Cfunc(mm_forward, -1));
                 return Ok(new_method_obj(c, c.vm().c_method.get(), MethodObj { recv, me: mm, name: mid, unbound: false, owner: class_of(recv) }));
@@ -384,7 +423,9 @@ fn meth_sig(c: &mut Ctx, slf: Value) -> Result<String, Esc> {
 }
 fn meth_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let m = mo(c, slf);
-    let (owner, me_name) = match c.me_ref(m.me) { Some(me) => (me.owner, me.name), None => (NIL, m.name) };
+    // an alias shows the class of the method it names (method_inspect's defined_class)
+    let is_alias = c.vm().alias_names.borrow().contains_key(&(m.me as usize));
+    let (owner, me_name) = match c.me_ref(m.me) { Some(me) => (if is_alias { me.orig_owner } else { me.owner }, me.name), None => (NIL, m.name) };
     let sig = meth_sig(c, slf)?;
     let nm = if me_name != m.name { format!("{}({})", sym_str(m.name), sym_str(me_name)) } else { sym_str(m.name).to_string() };
     let s = if m.unbound {
@@ -393,35 +434,52 @@ fn meth_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
         let r = inspect_str(c, m.recv)?;
         format!("#<Method: {}.{}{}>", r, nm, sig)
     } else {
-        let rc = real_class_of(c, m.recv);
+        // method_inspect's mklass: a class / module receiver is shown by its singleton class
+        let rc = if is_class_or_module(m.recv) { singleton_class(c, m.recv) } else { real_class_of(c, m.recv) };
         if rc == owner { format!("#<Method: {}#{}{}>", class_path(c, owner), nm, sig) }
         else { format!("#<Method: {}({})#{}{}>", class_path(c, rc), class_path(c, owner), nm, sig) }
     };
     Ok(c.str_new(s.as_bytes()))
 }
+/// The method definition behind an entry (rb_method_definition_eq / rb_hash_method_definition): aliases and
+/// visibility copies share it; 0 for none.
+fn def_key(c: &Ctx, me: *const MethodEntry) -> u64 {
+    match c.me_ref(me).map(|m| m.kind) {
+        Some(MKind::Iseq(p)) => p as u64,
+        // a respond_to_missing? method is its name
+        Some(MKind::Cfunc(f, _)) if f as *const () as usize == mm_forward as *const () as usize => c.me_ref(me).map_or(0, |m| (m.name.0 as u64) << 3 | 4),
+        Some(MKind::Cfunc(f, _)) => f as usize as u64,
+        Some(MKind::Bmethod(p)) => p.raw(),
+        Some(MKind::AttrReader(s)) => (s.0 as u64) << 3 | 1,
+        Some(MKind::AttrWriter(s)) => (s.0 as u64) << 3 | 2,
+        _ => me as u64,
+    }
+}
+/// Method#== / UnboundMethod#==: the same kind of object, definition and (Method) receiver.
 fn meth_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if !is_method_obj(a[0]) { return Ok(FALSE); }
     let (x, y) = (mo(c, slf), mo(c, a[0]));
-    let same_body = x.me == y.me || match (c.me_ref(x.me).map(|m| m.kind), c.me_ref(y.me).map(|m| m.kind)) {
-        (Some(MKind::Iseq(p)), Some(MKind::Iseq(q))) => p == q,
-        (Some(MKind::Cfunc(f, _)), Some(MKind::Cfunc(g, _))) => f as usize == g as usize,
-        (Some(MKind::Bmethod(p)), Some(MKind::Bmethod(q))) => p == q,
-        (Some(MKind::AttrReader(p)), Some(MKind::AttrReader(q))) | (Some(MKind::AttrWriter(p)), Some(MKind::AttrWriter(q))) => p == q,
-        _ => false,
-    };
-    Ok(Value::bool(x.recv == y.recv && same_body && obj_klass(slf) == obj_klass(a[0])))
+    if real_class_of(c, slf) != real_class_of(c, a[0]) || x.unbound != y.unbound { return Ok(FALSE); }
+    let same_body = x.me == y.me || def_key(c, x.me) == def_key(c, y.me);
+    Ok(Value::bool(same_body && (x.unbound || x.recv == y.recv)))
 }
 fn meth_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
-    let m = c.method_obj(slf);
-    Ok(Value::fix((crate::astrust::hash_u64(m.recv.raw() ^ (m.me as u64)) >> 2) as i64))
+    let m = mo(c, slf);
+    let r = if m.unbound { 0 } else { m.recv.raw() };
+    Ok(Value::fix((crate::astrust::hash_u64(r ^ def_key(c, m.me).rotate_left(17)) >> 2) as i64))
 }
 fn meth_super_method(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let m = mo(c, slf);
     let klass = if m.unbound { m.recv } else { class_of(m.recv) };
-    let sm = super_method(c, klass, me_owner(c, m.me), m.name);
+    // CRuby: an alias of a class's method is a copy defined in the aliasing class (unlike `super` itself)
+    let (owner, orig) = c.me_ref(m.me).map_or((NIL, NIL), |e| (e.owner, e.orig_owner));
+    let is_alias = c.vm().alias_names.borrow().contains_key(&(m.me as usize));
+    let from = if is_alias && is_class_or_module(orig) && !c.class(orig).is_module { owner } else { orig };
+    let mid = c.me_ref(m.me).map_or(m.name, |e| e.name);   // an alias searches for the original name
+    let sm = super_method(c, klass, from, mid);
     if sm.is_null() { return Ok(NIL); }
     let owner = me_owner(c, sm);
-    Ok(new_method_obj(c, obj_klass(slf), MethodObj { recv: m.recv, me: sm, name: m.name, unbound: m.unbound, owner }))
+    Ok(new_method_obj(c, obj_klass(slf), MethodObj { recv: m.recv, me: sm, name: mid, unbound: m.unbound, owner }))
 }
 fn meth_curry(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let p = meth_to_proc(c, slf, &[], b)?;
@@ -431,7 +489,8 @@ fn um_bind(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let m = mo(c, slf);
     let owner = me_owner(c, m.me);
     let (is_module, is_singleton) = if is_class_or_module(owner) { let k = c.class(owner); (k.is_module, k.is_singleton) } else { (false, false) };
-    if !is_module && !is_kind_of(c, a[0], owner) && !is_singleton {
+    if !is_module && !is_kind_of(c, a[0], owner) {
+        if is_singleton { return type_err(c, "singleton method called for a different object"); }
         return type_err(c, format!("bind argument must be an instance of {}", class_path(c, owner)));
     }
     Ok(new_method_obj(c, c.vm().c_method.get(), MethodObj { recv: a[0], me: m.me, name: m.name, unbound: false, owner: m.owner }))

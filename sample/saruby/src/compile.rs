@@ -487,7 +487,8 @@ impl<'a> Compiler<'a> {
             let b = self.fcall("binding", vec![], 1);
             body = self.seq(vec![ALLOC_node_special(SP_TOPLEVEL_BINDING, b), body]);
         }
-        let label = if kind == IseqKind::Eval { "<main>".to_string() } else { "<main>".to_string() };
+        // eval: the label of the frame its binding came from (EVAL_LABEL)
+        let label = if kind == IseqKind::Eval { EVAL_LABEL.with(|l| l.borrow().clone()).unwrap_or_else(|| "<main>".to_string()) } else { "<main>".to_string() };
         self.finish_iseq(body, Params::default(), kind, label, 1, Sym(0))
     }
 
@@ -578,6 +579,10 @@ impl<'a> Compiler<'a> {
             outer_vars: std::mem::take(&mut self.pending_outer),
         }));
         for ch in &sc.children { ch.parent.set(is); }
+        // a method whose locals all live in its env (it calls eval / binding) may run an eval "super"
+        if kind == IseqKind::Method && sc.captured.contains(&Sym(u32::MAX)) && !sc.zsuper.is_empty() {
+            METHOD_ZSUPER.with(|m| m.borrow_mut().insert(is as *const Iseq as usize, sc.zsuper.clone()));
+        }
         if let Some(p) = self.scopes.last_mut() { p.children.push(is); }
         crate::aot::register_iseq(is, &|| *self.src_key.get_or_init(|| crate::astrust::hash_bytes(self.src)));
         is
@@ -726,7 +731,7 @@ impl<'a> Compiler<'a> {
                 ALLOC_node_range(a, b, excl)
             }
             Kind::SourceFileNode { filepath } => if n.flags & pa::STRING_FLAGS_MUTABLE != 0 { ALLOC_node_str(lstr(filepath), 0) } else { ALLOC_node_cstr(lstr(filepath), 0) },
-            Kind::SourceLineNode => ALLOC_node_lit(Value::fix(line as i64)),
+            Kind::SourceLineNode => ALLOC_node_lit(Value::fix(line as i32 as i64)),
             Kind::SourceEncodingNode => {
                 let e = ALLOC_node_top_const(intern(b"Encoding"), line);
                 let nm = crate::builtins::encoding::enc_name(self.src_enc as u8).to_ascii_uppercase().replace('-', "_");
@@ -924,6 +929,10 @@ impl<'a> Compiler<'a> {
                     PARSE_WARNINGS.with(|w| w.borrow_mut().push((format!("{}: warning: argument of top-level return is ignored\n", self.file), false)));
                 }
                 let v = self.args_value(arguments.as_deref());
+                // directly in eval code: its target is checked at run time (rt::srb_eval_return)
+                if self.scopes.iter().rev().find(|s| s.kind != SK::For).is_some_and(|s| s.kind == SK::Eval) {
+                    return ALLOC_node_line(line, ALLOC_node_special(SP_EVAL_RETURN, v));
+                }
                 ALLOC_node_return(v)
             }
             Kind::CaseNode { predicate, conditions, else_clause } => self.case_when(n, predicate.as_deref(), conditions, else_clause.as_deref(), line),
@@ -1559,9 +1568,13 @@ impl<'a> Compiler<'a> {
         if zsuper {
             // forward the method's parameters (current values)
             let mi = self.scopes.iter().rposition(|s| s.kind == SK::Method);
-            if let Some(mi) = mi {
-                let zs = self.scopes[mi].zsuper.clone();
-                let depth = self.scopes[mi + 1..].iter().filter(|s| !s.transparent).count() as u32;
+            // eval "super" in a method's binding: its parameters are the binding's outer variables
+            let ev = if mi.is_none() { EVAL_ZSUPER.with(|z| z.borrow().clone()) } else { None };
+            if mi.is_some() || ev.is_some() {
+                let (zs, depth) = match mi {
+                    Some(mi) => (self.scopes[mi].zsuper.clone(), self.scopes[mi + 1..].iter().filter(|s| !s.transparent).count() as u32),
+                    None => (ev.unwrap_or_default(), self.scopes.iter().filter(|s| !s.transparent).count() as u32),
+                };
                 let mut kwpairs: Vec<NodePtr> = vec![];
                 let mut kwkinds: Vec<u8> = vec![];
                 for (k, nm) in zs {
@@ -2226,7 +2239,8 @@ impl<'a> Compiler<'a> {
             match sc.kind {
                 SK::Method => return METHOD_LABEL.with(|m| m.borrow().last().cloned().unwrap_or_default()),
                 SK::Class => return CLASS_LABEL.with(|m| m.borrow().last().cloned().unwrap_or_default()),
-                SK::Top | SK::Eval => return "<main>".into(),
+                SK::Top => return "<main>".into(),
+                SK::Eval => return EVAL_LABEL.with(|l| l.borrow().clone()).unwrap_or_else(|| "<main>".into()),
                 _ => {}
             }
         }
@@ -2571,6 +2585,7 @@ pub const SP_PM_MSG: u32 = 17;
 pub const SP_ZSUPER_NO_METHOD: u32 = 18;
 pub const SP_SPLAT_ANY: u32 = 19;
 pub const SP_TOPLEVEL_BINDING: u32 = 20;
+pub const SP_EVAL_RETURN: u32 = 21;
 
 // SP_PM_MSG kinds: why a single pattern did not match
 pub const PM_EQQ: i64 = 0;
@@ -2620,6 +2635,12 @@ pub fn regex_opts(flags: u32, src_enc: u32) -> u32 {
 thread_local! {
     /// An eval whose binding is not in a method: a yield in it is invalid (set around its compile).
     pub static EVAL_NO_YIELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// zsuper lists of methods that call eval / binding, by iseq address (iseqs are never freed).
+    pub static METHOD_ZSUPER: std::cell::RefCell<std::collections::HashMap<usize, Vec<(u8, Sym)>>> = std::cell::RefCell::new(Default::default());
+    /// An eval in a method's binding: that method's zsuper list (set around its compile).
+    pub static EVAL_ZSUPER: std::cell::RefCell<Option<Vec<(u8, Sym)>>> = const { std::cell::RefCell::new(None) };
+    /// An eval's frame label (its binding's frame's), set around its compile.
+    pub static EVAL_LABEL: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
     /// The last parse's warnings (message, verbose-only), shown by flush_parse_warnings.
     static PARSE_WARNINGS: std::cell::RefCell<Vec<(String, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -2654,14 +2675,14 @@ pub fn compile_parsed(pr: &ParseResult, src: &[u8], file: &'static str, kind: Is
     if file != "<internal:prelude>" && !pr.warnings.is_empty() {
         PARSE_WARNINGS.with(|w| {
             let mut w = w.borrow_mut();
-            for d in &pr.warnings { w.push((format!("{}:{}: warning: {}\n", file, pr.line_of(d.loc.start), d.msg), d.level != 0)); }
+            for d in &pr.warnings { w.push((format!("{}:{}: warning: {}\n", file, pr.line_of(d.loc.start) as i32, d.msg), d.level != 0)); }
         });
     }
     if !pr.errors.is_empty() {
         let mut msg = String::new();
         for e in &pr.errors {
             if !msg.is_empty() { msg.push('\n'); }
-            msg.push_str(&format!("{}:{}: {}", file, pr.line_of(e.loc.start), e.msg));
+            msg.push_str(&format!("{}:{}: {}", file, pr.line_of(e.loc.start) as i32, e.msg));
         }
         return Err(msg);
     }

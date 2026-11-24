@@ -172,8 +172,19 @@ pub fn new_me_cref(name: Sym, owner: Value, visi: u8, kind: MKind, cref: *const 
 /// def_target: where a `def` in this scope defines (instance_eval / class_exec's target; NIL: klass).
 pub struct Cref { pub klass: Value, pub prev: *const Cref, pub refinements: Value, pub def_target: Value }
 
-pub fn new_cref(klass: Value, prev: *const Cref) -> *const Cref {
-    let p = Box::into_raw(Box::new(Cref { klass, prev, refinements: NIL, def_target: NIL })) as *const Cref;
+pub fn new_cref(klass: Value, prev: *const Cref) -> *const Cref { new_cref_target(klass, prev, NIL) }
+/// instance_eval(String) on an object that had no singleton class pushes its class, with the object as
+/// def_target: `def` / constant definitions make the singleton class (CRuby 4.0's lazy singleton cref).
+#[inline] pub fn lazy_target(t: Value) -> bool { t.is_heap() && !is_class_or_module(t) }
+/// The class of a lexical scope for constants: a lazy cref's singleton class counts once it exists.
+pub fn cref_klass(c: &Ctx, cr: &Cref) -> Value {
+    let o = cr.def_target;
+    if !lazy_target(o) { return cr.klass; }
+    let k = class_of(o);
+    if c.class(k).is_singleton && c.class(k).attached == o { k } else { cr.klass }
+}
+pub fn new_cref_target(klass: Value, prev: *const Cref, def_target: Value) -> *const Cref {
+    let p = Box::into_raw(Box::new(Cref { klass, prev, refinements: NIL, def_target })) as *const Cref;
     vm().crefs.borrow_mut().push(p);
     p
 }
@@ -934,6 +945,14 @@ pub fn super_method(c: &Ctx, klass: Value, owner: Value, mid: Sym) -> *const Met
             }
         } else if k == owner { found = true; }
     }
+    // a module method bound to an object without that module (bind's temporary iclass): klass's chain
+    if !found && is_class_or_module(owner) && c.class(owner).is_module {
+        for &k in anc.iter() {
+            if let Some(&me) = c.class(k).mtbl.get(&mid) {
+                match c.me_ref(me).map(|m| m.kind) { Some(MKind::ZSuper) => continue, Some(MKind::Undef) => return std::ptr::null(), _ => return me }
+            }
+        }
+    }
     std::ptr::null()
 }
 
@@ -1250,15 +1269,15 @@ pub fn const_lookup(c: &mut Ctx, cref: *const Cref, name: Sym) -> RV {
     let mut cr = cref;
     unsafe {
         while !cr.is_null() && !(*cr).prev.is_null() {
-            let k = (*cr).klass;
+            let k = cref_klass(c, &*cr);
             if let Some(v) = const_get_at(c, k, name) { return Ok(v); }
             if c.class(k).autoload.contains_key(&name) { if let Some(v) = do_autoload(c, k, name)? { return Ok(v); } }
             cr = (*cr).prev;
         }
     }
-    let start = if cref.is_null() { vm.c_object.get() } else { unsafe { (*cref).klass } };
+    let start = if cref.is_null() { vm.c_object.get() } else { cref_klass(c, unsafe { &*cref }) };
     if let Some(v) = const_get_inherit(c, start, name)? { return Ok(v); }
-    if let Some(v) = const_get_inherit(c, vm.c_object.get(), name)? { return Ok(v); }
+    if c.class(start).is_module { if let Some(v) = const_get_inherit(c, vm.c_object.get(), name)? { return Ok(v); } }
     const_missing(c, start, name)
 }
 
@@ -1379,6 +1398,13 @@ pub fn raise_msg(c: &mut Ctx, klass: Value, msg: &str) -> Esc {
 }
 
 pub fn err<T>(c: &mut Ctx, klass: Value, msg: impl AsRef<str>) -> Result<T, Esc> { Err(raise_msg(c, klass, msg.as_ref())) }
+/// A SyntaxError from compiling `path` (SyntaxError#path).
+pub fn syntax_err<T>(c: &mut Ctx, msg: impl AsRef<str>, path: &str) -> Result<T, Esc> {
+    let e = make_exception(c, vm().c_syntax_error.get(), msg.as_ref());
+    let p = c.str_new(path.as_bytes());
+    ivar_set_raw(c, e, crate::symbol::intern(b"path"), p);
+    Err(raise_exc(c, e))
+}
 pub fn arg_err<T>(c: &mut Ctx, msg: impl AsRef<str>) -> Result<T, Esc> { err(c, vm().c_argument_error.get(), msg) }
 pub fn type_err<T>(c: &mut Ctx, msg: impl AsRef<str>) -> Result<T, Esc> { err(c, vm().c_type_error.get(), msg) }
 
@@ -1439,7 +1465,15 @@ pub fn raise_frozen_or_locked(c: &mut Ctx, v: Value) -> Esc {
 
 pub fn frame_label(c: &Ctx, f: &Frame) -> String { frame_label_of(c, f.kind, f.me, f.iseq()) }
 
-fn frame_label_of(c: &Ctx, kind: u8, fme: *const MethodEntry, iseq: *const Iseq) -> String {
+/// The class a method entry counts as defined in (labels, Method#inspect): an alias of a module's method
+/// stays the module's; an alias of a class's method is a copy in the aliasing class (CRuby's rb_alias).
+pub fn alias_def_class(c: &Ctx, me: *const MethodEntry) -> Value {
+    let Some(m) = c.me_ref(me) else { return NIL };
+    if m.owner != m.orig_owner && vm().alias_names.borrow().contains_key(&(me as usize))
+        && is_class_or_module(m.orig_owner) && c.class(m.orig_owner).is_module { return m.orig_owner; }
+    m.owner
+}
+pub fn frame_label_of(c: &Ctx, kind: u8, fme: *const MethodEntry, iseq: *const Iseq) -> String {
     unsafe {
         if kind == FK_CFUNC {
             let k = real_class_of_for_label(c, NIL, fme);
@@ -1451,7 +1485,7 @@ fn frame_label_of(c: &Ctx, kind: u8, fme: *const MethodEntry, iseq: *const Iseq)
             IseqKind::Method => {
                 if !fme.is_null() {
                     let me = &*fme;
-                    let owner = me.owner;
+                    let owner = alias_def_class(c, fme);
                     let pre = method_owner_label(c, owner);
                     return format!("{}{}", pre, sym_str(me.name));
                 }
@@ -1463,7 +1497,7 @@ fn frame_label_of(c: &Ctx, kind: u8, fme: *const MethodEntry, iseq: *const Iseq)
                 let l = &is.info.label;
                 let mname = sym_str(me.name);
                 match l.find(" in ") {
-                    Some(p) if l[p + 4..] == *mname => format!("{}{}{}", &l[..p + 4], method_owner_label(c, me.owner), mname),
+                    Some(p) if l[p + 4..] == *mname => format!("{}{}{}", &l[..p + 4], method_owner_label(c, alias_def_class(c, fme)), mname),
                     _ => l.clone(),
                 }
             }
@@ -1587,7 +1621,7 @@ fn line_nid(pos: Pos, info: Option<&CodeInfo>) -> (u32, u32) {
 /// A line of a backtrace (Thread::Backtrace::Location's parts).
 pub struct BtLine { pub file: &'static str, pub line: u32, pub label: String, pub nid: u32 }
 impl std::fmt::Display for BtLine {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { write!(f, "{}:{}:in '{}'", self.file, self.line, self.label) }
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { write!(f, "{}:{}:in '{}'", self.file, self.line as i32, self.label) }
 }
 
 fn format_frames(c: &Ctx, frames: &[RawFrame], skip: usize) -> Vec<String> { format_frames_n(c, frames, skip, usize::MAX).unwrap_or_default().iter().map(|l| l.to_string()).collect() }
@@ -1634,6 +1668,7 @@ pub const CF_KW: u32 = 4;          // last arg is a keyword Hash
 pub const CF_SAFE: u32 = 8;
 pub const CF_SUPER: u32 = 16;
 pub const CF_KW_SPLAT: u32 = 32;   // keywords came from **h (an empty hash passes nothing)
+pub const CF_PUBLIC_SEND: u32 = 128; // public_send: protected is not callable even from a kind_of? self (64: compile.rs CF_ATTR)
 
 #[inline(always)]
 pub fn stack_check(c: &mut Ctx, need: usize) -> Result<(), Esc> {
@@ -2258,41 +2293,67 @@ pub fn invoke_iseq_simple_raw(c: &mut Ctx, me: *const MethodEntry, is: &'static 
 }
 
 #[cold]
+#[inline(never)]
 fn visibility_error(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     let me_r = unsafe { &*me };
-    if me_r.visi == VISI_PROTECTED {
+    if me_r.visi == VISI_PROTECTED && flags & CF_PUBLIC_SEND == 0 {
         let slf = c.self_val();
         let owner = if c.class(me_r.owner).is_module { me_r.owner } else { me_r.owner };
         if is_kind_of(c, slf, owner) { return invoke(c, me, recv, base, argc, blk, flags); }
     }
     // private setters may be called with self as explicit receiver
     if me_r.visi == VISI_PRIVATE && flags & CF_SUPER != 0 { return invoke(c, me, recv, base, argc, blk, flags); }
-    let kind = if me_r.visi == VISI_PROTECTED { "protected" } else { "private" };
+    // a user method_missing gets the call (vm_call_method's MISSING_PRIVATE / PROTECTED); its `super` reports the visibility
+    let mm = lookup_method(c, class_of(recv), s::method_missing);
+    if c.me_ref(mm).is_some_and(|m| m.owner != vm().c_basic_object.get()) { return method_missing_why(c, recv, me_r.name, base, argc, blk, flags, me_r.visi | MM_VISI); }
+    visibility_raise(c, me_r.visi, me_r.name, recv)
+}
+const MM_VISI: u8 = 0x80;
+thread_local! {
+    /// Why method_missing was called (MM_VISI | visibility: MISSING_PRIVATE / PROTECTED), read by BasicObject#method_missing.
+    static MM_REASON: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+#[cold]
+pub fn visibility_raise(c: &mut Ctx, visi: u8, name: Sym, recv: Value) -> RV {
+    let kind = if visi == VISI_PROTECTED { "protected" } else { "private" };
     let desc = crate::builtins::kernel::nomethod_desc(c, recv)?;
-    let msg = format!("{} method '{}' called for {}", kind, sym_str(me_r.name), desc);
-    let e = make_name_error(c, vm().c_no_method_error.get(), &msg, Value::sym(me_r.name), recv)?;
+    let msg = format!("{} method '{}' called for {}", kind, sym_str(name), desc);
+    let e = make_name_error(c, vm().c_no_method_error.get(), &msg, Value::sym(name), recv)?;
     Err(raise_exc(c, e))
 }
+/// BasicObject#method_missing: the visibility of a private / protected call that reached it (rb_method_missing's last call status).
+pub fn mm_reason_take() -> Option<u8> { let r = MM_REASON.with(|m| m.replace(0)); (r & MM_VISI != 0).then_some(r & !MM_VISI) }
 
 #[inline(always)]
 pub fn method_missing(c: &mut Ctx, recv: Value, mid: Sym, base: Stk, argc: u32, blk: impl BlkArg, flags: u32) -> RV { method_missing_raw(c, recv, mid, base, argc, blk.ptr(), flags) }
+#[inline(never)]
 pub fn method_missing_raw(c: &mut Ctx, recv: Value, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
+    method_missing_why(c, recv, mid, base, argc, blk, flags, 0)
+}
+#[allow(clippy::too_many_arguments)]
+fn method_missing_why(c: &mut Ctx, recv: Value, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32, why: u8) -> RV {
     let klass = class_of(recv);
     let mm = lookup_method(c, klass, s::method_missing);
     if !mm.is_null() && unsafe { (*mm).owner } != vm().c_basic_object.get() {
+        MM_REASON.with(|m| m.set(why));
         // shift args up by one to insert the method name
         let argc = argc as usize;
         let new_base = stage(c, 3 + argc)?;
         new_base[0].set(recv); new_base[1].set(NIL); new_base[2].set(Value::sym(mid));
         for i in 0..argc { new_base[3 + i].set(base[2 + i].get()); }
         let r = invoke(c, mm, recv, new_base, argc as u32 + 1, blk, (flags & CF_KW) | CF_FCALL);
+        if why != 0 { MM_REASON.with(|m| m.set(0)); }
         c.set_sp(base, 0);
         return r;
     }
-    no_method_error(c, recv, mid, flags)
+    let args: Vec<Value> = (0..argc as usize).map(|i| base[2 + i].get()).collect();
+    no_method_error_args(c, recv, mid, flags, &args)
 }
 
-pub fn no_method_error(c: &mut Ctx, recv: Value, mid: Sym, flags: u32) -> RV {
+pub fn no_method_error(c: &mut Ctx, recv: Value, mid: Sym, flags: u32) -> RV { no_method_error_args(c, recv, mid, flags, &[]) }
+/// `args`: the call's arguments (NoMethodError#args).
+#[cold]
+pub fn no_method_error_args(c: &mut Ctx, recv: Value, mid: Sym, flags: u32, args: &[Value]) -> RV {
     let desc = crate::builtins::kernel::nomethod_desc(c, recv)?;
     let (cls, msg) = if flags & CF_VCALL != 0 {
         (vm().c_name_error.get(), format!("undefined local variable or method '{}' for {}", sym_str(mid), desc))
@@ -2303,6 +2364,7 @@ pub fn no_method_error(c: &mut Ctx, recv: Value, mid: Sym, flags: u32) -> RV {
     };
     let e = make_name_error(c, cls, &msg, Value::sym(mid), recv)?;
     if flags & (CF_FCALL | CF_VCALL) != 0 { obj_set_flags(e, crate::object::FL_PRIVATE_CALL); }
+    if !args.is_empty() && cls == vm().c_no_method_error.get() { let a = c.ary_new_from(args); ivar_set_raw(c, e, crate::symbol::intern(b"args"), a); }
     Err(raise_exc(c, e))
 }
 

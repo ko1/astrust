@@ -557,7 +557,7 @@ fn k_spawn(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
 }
 fn k_system(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (env, cmd, opts) = split_args(c, a)?;
-    let exc = match opts { Some(h) => crate::hash::hash_get_opt(c, h, sym_value("exception"))?.map(|v| v.truthy()).unwrap_or(false), None => false };
+    let exc = match opts { Some(h) => match crate::hash::hash_get_opt(c, h, sym_value("exception"))? { Some(v) => bool_opt(c, v, "exception")?, None => false }, None => false };
     let mut sp = spawn_spec(c, env, &cmd, opts)?;
     let pid = match spawn_exec(c, &mut sp) {
         Ok(p) => p,

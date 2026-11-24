@@ -33,7 +33,7 @@ fn m_deprecate_constant(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
 fn m_remove_cvar(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let n = to_sym_arg(c, a[0])?;
     if !sym_bytes(n).starts_with(b"@@") {
-        let e = make_name_error(c, c.vm().c_name_error.get(), &format!("'{}' is not allowed as a class variable name", sym_str(n)), Value::sym(n), s)?;
+        let e = make_name_error(c, c.vm().c_name_error.get(), &format!("wrong class variable name {}", sym_str(n)), a[0], s)?;
         return Err(raise_exc(c, e));
     }
     match c.class_mut(s).cvars.remove(&n) {
@@ -62,6 +62,12 @@ fn sig_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let m = c.str_new(name.as_bytes());
     ivar_set_raw(c, s, crate::symbol::s::mesg, m);
     Ok(NIL)
+}
+/// interrupt_init: SignalException#initialize(SIGINT, message = "Interrupt").
+fn interrupt_init(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
+    check_argc(c, a, 0, 1)?;
+    let m = match a.first() { Some(&m) => m, None => c.str_new(b"Interrupt") };
+    sig_initialize(c, s, &[Value::fix(2), m], b)
 }
 fn sig_signo(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, s, intern(b"signo"))) }
 fn sig_signm(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { funcall(c, s, intern(b"message"), &[], std::ptr::null()) }
@@ -194,6 +200,7 @@ pub fn init(c: &mut Ctx) {
     let se = vmr.c_signal_exception.get();
     define_private_cfunc(c, se, "initialize", sig_initialize, -1);
     define_cfunc(c, se, "signo", sig_signo, 0); define_cfunc(c, se, "signm", sig_signm, 0);
+    define_private_cfunc(c, vmr.c_interrupt.get(), "initialize", interrupt_init, -1);
     define_module_function(c, vmr.m_math.get(), "expm1", m_expm1, 1);
     for (n, f) in [("erf", m_erf as CFunc), ("erfc", m_erfc), ("cbrt", m_cbrt), ("gamma", m_gamma), ("lgamma", m_lgamma)] { define_module_function(c, vmr.m_math.get(), n, f, 1); }
     let gc = vmr.m_gc.get();

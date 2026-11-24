@@ -333,8 +333,14 @@ fn run_main(o: Opts) -> i32 {
     let is = match is {
         Ok(is) => is,
         Err(msg) => {
+            // -r libraries are loaded before the main script is parsed: their at_exit handlers still run
+            for r in &o.requires {
+                let s = c.str_new(r.as_bytes());
+                if builtins::kernel::require_feature(&mut c, s, false).is_err() { let e = c.esc_val; report_exception(&mut c, e); return 1; }
+            }
             builtins::kernel::err_write(format!("{}\n", msg).as_bytes());
             builtins::kernel::err_write(format!("{}: compile error (SyntaxError)\n", file).as_bytes());
+            if !o.requires.is_empty() { run_exit_handlers(&mut c, 1); }
             return 1;
         }
     };
@@ -346,14 +352,12 @@ fn run_main(o: Opts) -> i32 {
         println!("{}", out);
         return 0;
     }
-    let mut status = 0;
     for r in &o.requires {
         let s = c.str_new(r.as_bytes());
         if builtins::kernel::require_feature(&mut c, s, false).is_err() { let e = c.esc_val; report_exception(&mut c, e); return 1; }
     }
     let r = run_top_iseq(&mut c, is, vm.main_obj.get());
-    if r.is_err() { status = handle_toplevel_error(&mut c); }
-    status = run_exit_handlers(&mut c, status);
+    let status = finish(&mut c, r.is_err());
     #[cfg(feature = "nodeprof")] nodeprof::report();
     if o.aot {
         match aot::bake(&o.store) {
@@ -368,6 +372,10 @@ fn run_main(o: Opts) -> i32 {
     status
 }
 
+thread_local! {
+    /// The error that ended the main script while the at_exit handlers run, and whether one showed it as its cause.
+    static ORIG_ERR: std::cell::Cell<(Value, bool)> = const { std::cell::Cell::new((NIL, false)) };
+}
 /// at_exit procs (LIFO), the EXIT trap, then flush every stream.
 pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
     let vm = vm();
@@ -380,11 +388,14 @@ pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
         if call_proc(c, p, &[], std::ptr::null()).is_err() {
             // the next handlers see this error in $! (rb_ec_exec_end_proc)
             let raised = (c.esc == EscKind::Raise).then_some(c.esc_val);
+            // shown as its cause: the error that ended the script is not reported again
+            if let Some(e) = raised { let o = ORIG_ERR.get(); if o.0 != NIL && ivar_get(c, e, symbol::s::cause) == o.0 && !is_kind_of(c, e, c.vm().c_system_exit.get()) { ORIG_ERR.set((o.0, true)); } }
             status = handle_toplevel_error(c);
             if let Some(e) = raised { c.errinfo = e; }
         }
     }
     if builtins::process::run_exit_trap(c).is_err() { status = handle_toplevel_error(c); }
+    builtins::thread::terminate_all(c);
     builtins::kernel::out_flush();
     builtins::io::flush_all(c);
     builtins::process::die_if_signaled();
@@ -392,8 +403,18 @@ pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
 }
 /// End of a forked child's block: report an error, run the exit handlers.
 pub fn finish(c: &mut Ctx, errored: bool) -> i32 {
-    let st = if errored { handle_toplevel_error(c) } else { 0 };
-    run_exit_handlers(c, st)
+    if !errored { return run_exit_handlers(c, 0); }
+    // rb_ec_cleanup: the at_exit handlers run first and see the error in $!; it is reported after them
+    let saved = (c.esc, c.esc_val, c.esc_tag, c.esc_tag_v);
+    if c.esc == EscKind::Raise { c.errinfo = c.esc_val; ORIG_ERR.set((c.esc_val, false)); }
+    c.esc = EscKind::None;
+    let st = run_exit_handlers(c, i32::MIN);
+    (c.esc, c.esc_val, c.esc_tag, c.esc_tag_v) = saved;
+    // a handler's status (exit / error) wins; the error is reported unless a handler's error showed it as its cause
+    let st0 = if ORIG_ERR.get().1 { 1 } else { handle_toplevel_error(c) };
+    // an uncaught SignalException ends the process by its signal (after the handlers)
+    builtins::process::die_if_signaled();
+    if st == i32::MIN { st0 } else { st }
 }
 
 fn handle_toplevel_error(c: &mut Ctx) -> i32 {

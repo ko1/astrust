@@ -573,6 +573,17 @@ fn scheduler_close(c: &mut Ctx, s: Value) -> RV {
     Ok(NIL)
 }
 /// The thread ends (or the process exits): its scheduler runs to completion (set_scheduler(nil)).
+/// rb_thread_terminate_all at process end: kill the other threads and wait, so their current fibers' ensure clauses run.
+pub fn terminate_all(c: &mut Ctx) {
+    if cur(c) != MAIN.get(c) { return; }
+    let ts: Vec<Value> = c.ary(LIST.get(c)).iter().copied().filter(|&t| !th(c, t).dead && th(c, t).ractor == NIL).collect();
+    if ts.is_empty() { return; }
+    TERMINATING.store(true, Relaxed);
+    for &t in &ts { if kill_thread(c, t).is_err() { c.esc = EscKind::None; } }
+    for &t in &ts {
+        if block_on_by(c, Hook::Join(t), NIL, |c| Ok(th(c, t).dead), Some(t.raw()), None, true).is_err() { c.esc = EscKind::None; }
+    }
+}
 pub fn scheduler_finalize(c: &mut Ctx) -> Result<(), Esc> {
     if thread_scheduler(c) == NIL { return Ok(()); }
     set_scheduler(c, NIL).map(|_| ())
@@ -712,7 +723,10 @@ pub fn sched_kernel_sleep(c: &mut Ctx, s: Value, args: &[Value]) -> Result<(), E
 
 // ---- Thread ---------------------------------------------------------------------------------
 
-fn status_str(c: &Ctx, t: Value) -> &'static str { let r = th(c, t); if r.dead { "dead" } else if t == cur(c) { "run" } else if r.waiting || !r.started { if r.started { "sleep" } else { "run" } } else { "run" } }
+// at process end (terminate_all) the main thread counts as dead and the others as being killed
+static TERMINATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn terminating_main(c: &Ctx, t: Value) -> bool { TERMINATING.load(Relaxed) && t == MAIN.get(c) }
+fn status_str(c: &Ctx, t: Value) -> &'static str { let r = th(c, t); if r.dead { "dead" } else if TERMINATING.load(Relaxed) { if t == MAIN.get(c) { "dead" } else { "aborting" } } else if t == cur(c) { "run" } else if r.waiting || !r.started { if r.started { "sleep" } else { "run" } } else { "run" } }
 fn inspect_thread(c: &Ctx, t: Value, status: &str) -> String {
     let r = th(c, t);
     let name = if r.name != NIL { format!("@{}", String::from_utf8_lossy(c.str_bytes(r.name))) } else { String::new() };
@@ -838,12 +852,12 @@ fn th_wakeup(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     Ok(slf)
 }
 fn th_run(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { th_wakeup(c, slf, a, b)?; th_pass(c, slf, a, b)?; Ok(slf) }
-fn th_alive(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { thr(c, s)?; Ok(Value::bool(!th(c, s).dead)) }
+fn th_alive(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { thr(c, s)?; Ok(Value::bool(!th(c, s).dead && !terminating_main(c, s))) }
 fn th_stop_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { thr(c, s)?; let r = th(c, s); Ok(Value::bool(r.dead || (r.waiting && s != cur(c)))) }
 fn th_status(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     thr(c, s)?;
     let r = th(c, s);
-    if r.dead { return Ok(if r.exc != NIL { NIL } else { FALSE }); }
+    if r.dead || terminating_main(c, s) { return Ok(if r.exc != NIL { NIL } else { FALSE }); }
     let st = status_str(c, s);
     Ok(c.str_new(st.as_bytes()))
 }
