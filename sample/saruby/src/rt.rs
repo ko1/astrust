@@ -174,7 +174,12 @@ pub fn fast_ary_aset() -> u64 { FAST_ARY_ASET.load(Relaxed) }
 pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &OpCc) -> RV {
     if booted() && !redef(R_ARY_AREF) { FAST_ARY_AREF.store(vm().c_array.get().raw(), Relaxed); }
     use crate::builtins::{array_methods as am, hash_methods as hm};
-    if b.is_fixnum() && is_array(a) && obj_klass(a) == vm().c_array.get() && !redef(R_ARY_AREF) { return Ok(am::ary_entry(c, a, b.as_fix())); }
+    if is_array(a) && obj_klass(a) == vm().c_array.get() && !redef(R_ARY_AREF) {
+        if b.is_fixnum() { return Ok(am::ary_entry(c, a, b.as_fix())); }
+        // rb_ary_aref1: any index, raising from this line
+        c.frame_mut().pos = line;
+        return am::a_aref(c, a, &[b], Blk::NONE);
+    }
     if is_hash(a) && obj_klass(a) == vm().c_hash.get() && !redef(R_HASH_AREF) {
         c.frame_mut().pos = line;
         return hm::h_aref(c, a, &[b], Blk::NONE);

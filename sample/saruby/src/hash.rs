@@ -300,7 +300,9 @@ pub fn hash_aref_at(c: &mut Ctx, h: Value, k: Value, line: impl AtLine) -> RV {
     hash_aref_rest(c, h, k)
 }
 fn hash_aref_rest(c: &mut Ctx, h: Value, k: Value) -> RV {
-    let found = if imm_key(k) { None } else { hash_lookup(c, h, k)? };
+    // ar_lookup: an empty small table answers without the key's #hash
+    let r = c.hash(h);
+    let found = if imm_key(k) || r.live == 0 && r.index.is_empty() { None } else { hash_lookup(c, h, k)? };
     match found {
         Some(i) => Ok(c.hash(h).entries[i].val),
         None => hash_default_value(c, h, k),
