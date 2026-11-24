@@ -396,9 +396,12 @@ impl Econv {
     }
     fn open0(sname: &str, dname: &str, ecflags: u32) -> Option<Econv> {
         let mut ec = Econv::empty();
+        let (mut sname, mut dname) = (sname, dname);
         if sname.is_empty() && dname.is_empty() {
         } else {
             let path = search_path(sname, dname)?;
+            // 4.0.10: the names are the transcoders' (WINDOWS-1252, not Windows-1252)
+            if let (Some(f), Some(l)) = (path.first(), path.last()) { sname = f.src; dname = l.dst; }
             for tr in path { let n = ec.elems.len(); ec.add_at(tr, n); }
         }
         ec.flags = ecflags;
