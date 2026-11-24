@@ -11,7 +11,7 @@ module Comparable
     ensure
       seen.delete(key)
     end
-    r.nil? ? false : r == 0
+    r.nil? ? false : Comparable.__cmpint(r) == 0
   end
 end
 
@@ -672,10 +672,3 @@ class Set
   alias to_s inspect
 end
 
-class Range
-  # range.c: an endless range has no set (Enumerable#to_set would never end)
-  def to_set(*args, &b)
-    raise RangeError, "cannot convert endless range to a set" if self.end.nil?
-    super
-  end
-end

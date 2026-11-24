@@ -1,5 +1,5 @@
 // Out-of-line runtime support for the nodes in node.def (slow paths).
-use crate::heap::{obj_flags, obj_klass, obj_set_flags};
+use crate::heap::{is_heap_float, obj_flags, obj_klass, obj_set_flags};
 use crate::compile::*;
 use crate::hash::*;
 use crate::node::*;
@@ -1180,7 +1180,7 @@ pub fn srb_def(c: &mut Ctx, mid: Sym, is: &'static Iseq, _fp: Fp) -> RV {
 
 pub fn srb_sdef(c: &mut Ctx, recv: Value, mid: Sym, is: &'static Iseq) -> RV {
     // nil / true / false: their class, as CRuby's singleton_class
-    if (!recv.is_heap() || recv.is_fixnum()) && recv != NIL && recv != TRUE && recv != FALSE {
+    if ((!recv.is_heap() || recv.is_fixnum()) && recv != NIL && recv != TRUE && recv != FALSE) || is_bignum(recv) || is_heap_float(recv) {
         return type_err(c, format!("can't define singleton"));
     }
     if recv.is_heap() && obj_flags(recv) & (FL_FROZEN | FL_CHILLED_ANY) != 0 { crate::vm::modify_check_slow(c, recv)?; }
@@ -1310,7 +1310,7 @@ pub fn srb_module(c: &mut Ctx, outer: Value, name: Sym, is: &'static Iseq, _fp: 
 }
 
 pub fn srb_sclass(c: &mut Ctx, recv: Value, is: &'static Iseq, _fp: Fp) -> RV {
-    if recv.is_fixnum() || recv.is_sym() || recv.is_flonum() {
+    if recv.is_fixnum() || recv.is_sym() || recv.is_flonum() || is_bignum(recv) || is_heap_float(recv) {
         return type_err(c, "can't define singleton");
     }
     let k = singleton_class(c, recv);

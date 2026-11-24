@@ -17,14 +17,21 @@ macro_rules! cfn { ($name:ident, |$c:ident, $s:ident, $a:ident, $b:ident| $body:
     pub fn $name($c: &mut Ctx, $s: Value, $a: &[Value], $b: Blk) -> RV { $body }
 }; }
 
+/// RANGE_FL_INIT (a bit of the exception-only FL_PRIVATE_CALL); a range with an end is initialized too
+const FL_RANGE_INIT: u32 = crate::object::FL_PRIVATE_CALL;
 cfn!(r_initialize, |c, slf, a, blk| {
     check_argc(c, a, 2, 3)?;
+    // range_modify
+    check_frozen(c, slf)?;
     let (b0, e0, _) = c.range(slf);
-    if is_frozen(slf) && !(b0 == NIL && e0 == NIL) { return Err(raise_frozen(c, slf)); }
-    let r = range_new_checked(c, a[0], a[1], a.len() > 2 && a[2].truthy())?;
-    let (b, e, x) = c.range(r);
-    c.range_set(slf, b, e, x);
-    obj_set_flags(slf, FL_FROZEN);
+    if obj_flags(slf) & FL_RANGE_INIT != 0 || b0 != NIL || e0 != NIL {
+        let e = make_name_error(c, c.vm().c_name_error.get(), "'initialize' called twice", Value::sym(s::initialize), slf)?;
+        return Err(raise_exc(c, e));
+    }
+    range_check(c, a[0], a[1])?;
+    c.range_set(slf, a[0], a[1], a.len() > 2 && a[2].truthy());
+    obj_set_flags(slf, FL_RANGE_INIT);
+    if obj_klass(slf) == c.vm().c_range.get() { obj_set_flags(slf, FL_FROZEN); }
     Ok(NIL)
 });
 cfn!(r_begin, |c, slf, a, blk| Ok(c.range_parts(slf).0));
@@ -102,15 +109,16 @@ pub fn range_each(c: &mut Ctx, slf: Value, mut f: impl FnMut(&mut Ctx, Value) ->
     }
     if b == NIL || is_float(b) { return type_err(c, format!("can't iterate from {}", class_path(c, real_class_of(c, b)))); }
     if !respond_to(c, b, s::succ, true) { return type_err(c, format!("can't iterate from {}", class_path(c, real_class_of(c, b)))); }
+    // range_each_func: no #succ past the end
     let mut cur = b;
     loop {
+        let mut last = false;
         if e != NIL {
-            let cmp = funcall(c, cur, s::cmp, &[e], std::ptr::null())?;
-            if cmp == NIL { break; }
-            let v = crate::builtins::array_methods::cmp_result(c, cmp, cur, e)?;
+            let v = r_less(c, cur, e)?;
             if v > 0 || (excl && v == 0) { break; }
+            last = v == 0;
         }
-        if !f(c, cur)? { break; }
+        if !f(c, cur)? || last { break; }
         cur = funcall(c, cur, s::succ, &[], std::ptr::null())?;
     }
     Ok(())
@@ -132,8 +140,20 @@ cfn!(r_each, |c, slf, a, blk| {
     range_each(c, slf, |c, v| { yield1(c, blk, v)?; Ok(true) })?;
     Ok(slf)
 });
+fn cant_iterate<T>(c: &mut Ctx, v: Value) -> Result<T, Esc> { type_err(c, format!("can't iterate from {}", class_path(c, real_class_of(c, v)))) }
+fn discrete(c: &mut Ctx, v: Value) -> bool { v.is_fixnum() || respond_to(c, v, s::succ, false) }
+fn is_numeric_obj(c: &Ctx, v: Value) -> bool { crate::numeric::is_numeric(v) || (v.is_heap() && is_kind_of(c, v, c.vm().c_numeric.get())) }
+/// range_reverse_size
+fn reverse_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk, _o: Blk) -> RV {
+    let (b, e, x) = c.range_parts(slf);
+    if e == NIL { return cant_iterate(c, e); }
+    if is_integer(b) { if is_numeric_obj(c, e) { return crate::builtins::numeric_methods::interval_step_size(c, b, e, Value::fix(1), x); } return cant_iterate(c, e); }
+    if b == NIL { if is_integer(e) { return Ok(c.float_new(f64::INFINITY)); } return cant_iterate(c, e); }
+    if !discrete(c, b) { return cant_iterate(c, e); }
+    Ok(NIL)
+}
 cfn!(r_reverse_each, |c, slf, a, blk| {
-    if blk.is_null() { return crate::builtins::enumerator::enum_for_sized(c, slf, intern(b"reverse_each"), a); }
+    if blk.is_null() { let sz = crate::builtins::numeric_methods::size_proc(c, reverse_size, slf); return crate::builtins::enumerator::enum_for(c, slf, intern(b"reverse_each"), a, sz); }
     let (b, e, excl) = c.range_parts(slf);
     if e.is_fixnum() && (b.is_fixnum() || b == NIL) {
         let mut i = if excl { e.as_fix() - 1 } else { e.as_fix() };
@@ -158,23 +178,16 @@ cfn!(r_to_a, |c, slf, a, blk| {
     let _ = b;
     Ok(out)
 });
+// range_size
 cfn!(r_size, |c, slf, a, blk| {
     let (b, e, excl) = c.range_parts(slf);
-    if !crate::numeric::is_numeric(b) { if b == NIL && (crate::numeric::is_numeric(e)) { return Ok(c.float_new(f64::INFINITY)); } return Ok(NIL); }
-    if e == NIL { return Ok(c.float_new(f64::INFINITY)); }
-    if !crate::numeric::is_numeric(e) { return Ok(NIL); }
-    if is_float(b) { return type_err(c, "can't iterate from Float"); }
     if b.is_fixnum() && e.is_fixnum() { let n = e.as_fix() - b.as_fix() + if excl { 0 } else { 1 }; return Ok(Value::fix(n.max(0))); }
-    let ef = c.num_to_f64(e).unwrap();
-    if ef.is_infinite() { return Ok(c.float_new(f64::INFINITY)); }
-    let bf = c.num_to_f64(b).unwrap();
-    let mut n = (ef - bf).floor() + 1.0;
-    if excl && (ef - bf).fract() == 0.0 { n -= 1.0; }
-    if is_integer(b) && is_integer(e) {
-        let x = c.to_big(e).sub(&c.to_big(b)).add(&crate::bignum::BigInt::from_i64(if excl { 0 } else { 1 }));
-        return Ok(c.big_to_value(if x.neg { crate::bignum::BigInt::zero() } else { x }));
+    if is_integer(b) {
+        if is_numeric_obj(c, e) { return crate::builtins::numeric_methods::interval_step_size(c, b, e, Value::fix(1), excl); }
+        if e == NIL { return Ok(c.float_new(f64::INFINITY)); }
     }
-    Ok(Value::fix(n.max(0.0) as i64))
+    if !discrete(c, b) { return cant_iterate(c, b); }
+    Ok(NIL)
 });
 cfn!(r_count, |c, slf, a, blk| {
     if a.is_empty() && blk.is_null() {
@@ -278,7 +291,7 @@ cfn!(r_eql, |c, slf, a, blk| {
 });
 cfn!(r_hash, |c, slf, a, blk| {
     let (b, e, x) = c.range_parts(slf);
-    let h = crate::astrust::hash_merge(crate::hash::key_hash(c, b)?, crate::hash::key_hash(c, e)?) ^ (x as u64);
+    let h = crate::astrust::hash_merge(crate::astrust::hash_merge(crate::hash::key_hash(c, b)?, crate::hash::key_hash(c, e)?), (x as u64) << 24);
     Ok(Value::fix((h >> 2) as i64))
 });
 fn range_to_s(c: &mut Ctx, slf: Value, insp: bool) -> RV {
@@ -316,7 +329,7 @@ cfn!(r_min, |c, slf, a, blk| {
     if !blk.is_null() || !a.is_empty() {
         check_argc(c, a, 0, 1)?;
         if let Some(&n) = a.first() { if n != NIL && crate::builtins::numeric_methods::num_to_long(c, n)? < 0 { return arg_err(c, "negative array size (or size too big)"); } }
-        if blk.is_null() && is_integer(b) { return r_first(c, slf, a, blk); }
+        if blk.is_null() { return r_first(c, slf, a, blk); }
         if e == NIL { return err(c, c.vm().c_range_error.get(), "cannot get the minimum of endless range with custom comparison method"); }
         return crate::builtins::enum_native::call_enumerable(c, slf, "min", a, blk);
     }
@@ -492,7 +505,6 @@ cfn!(r_step, |c, slf, a, blk| {
 thread_local!(static PCT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
 fn mid_of(_a: &[Value]) -> crate::value::Sym { if PCT.with(|p| p.get()) { intern(b"%") } else { s::step } }
 cfn!(r_pct, |c, slf, a, blk| { PCT.with(|p| p.set(true)); let r = r_step(c, slf, a, blk); PCT.with(|p| p.set(false)); r });
-cfn!(r_dup_frozen, |c, slf, a, blk| Ok(slf));
 // Range#bsearch after CRuby range.c (same probe order: BSEARCH / bsearch_integer_range / doubling for endless).
 enum Probe { Found(Value), Smaller(bool) }
 fn bs_check(c: &mut Ctx, blk: Blk, val: Value, satisfied: &mut Value) -> Result<Probe, Esc> {
@@ -550,8 +562,13 @@ fn bs_int_range(c: &mut Ctx, blk: Blk, beg: Value, end: Value, excl: bool) -> RV
 fn dbl_as_i64(d: f64) -> i64 { let i = d.abs().to_bits() as i64; if d < 0.0 { -i } else { i } }
 fn i64_as_dbl(c: &mut Ctx, i: i64) -> Value { if i < 0 { c.float_new(-f64::from_bits((-i) as u64)) } else { c.float_new(f64::from_bits(i as u64)) } }
 cfn!(r_bsearch, |c, slf, a, blk| {
-    if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"bsearch"), a, NIL); }
     let (b, e, x) = c.range_parts(slf);
+    if blk.is_null() {
+        // RETURN_ENUMERATOR only for the searchable kinds
+        let ok = is_float(b) || is_float(e) || (is_integer(b) && (is_integer(e) || e == NIL)) || (b == NIL && is_integer(e));
+        if !ok { return type_err(c, format!("can't do binary search for {}", class_path(c, real_class_of(c, b)))); }
+        return crate::builtins::enumerator::enum_for(c, slf, intern(b"bsearch"), a, NIL);
+    }
     if b.is_fixnum() && e.is_fixnum() { return bs_int_range(c, blk, b, e, x); }
     if is_float(b) || is_float(e) {
         let tof = |c: &mut Ctx, v: Value, dflt: f64| -> Result<f64, Esc> {
@@ -601,6 +618,14 @@ cfn!(r_overlap, |c, slf, a, blk| {
     Ok(Value::bool(lt(c, b2, e1, x1)? && lt(c, b1, e2, x2)?))
 });
 
+// range.c: an endless range has no set; Enumerable#to_set(klass, *args) of 4.0 warns
+cfn!(r_to_set, |c, slf, a, blk| {
+    if c.range_parts(slf).1 == NIL { return err(c, c.vm().c_range_error.get(), "cannot convert endless range to a set"); }
+    if a.is_empty() || (a.len() == 1 && kw_arg(c, a).is_some()) { return crate::builtins::enum_native::call_enumerable(c, slf, "to_set", a, blk); }
+    crate::builtins::kernel::gvar_warn(c, "passing arguments to Enumerable#to_set is deprecated", false)?;
+    let mut args = vec![slf]; args.extend_from_slice(&a[1..]);
+    funcall(c, a[0], s::new, &args, blk)
+});
 /// Defines the methods of Range `k`; the entry of Range#each, for `vm.ids`.
 pub fn init(c: &mut Ctx, k: Value) -> *const MethodEntry {
     let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, k, n, f, a);
@@ -611,6 +636,6 @@ pub fn init(c: &mut Ctx, k: Value) -> *const MethodEntry {
     d(c, "reverse_each", r_reverse_each, 0); d(c, "to_a", r_to_a, 0); d(c, "entries", r_to_a, 0); d(c, "size", r_size, 0); d(c, "count", r_count, -1);
     d(c, "include?", r_include, 1); d(c, "member?", r_include, 1); d(c, "cover?", r_cover, 1); d(c, "===", r_eqq, 1); d(c, "==", r_eq, 1); d(c, "eql?", r_eql, 1);
     d(c, "hash", r_hash, 0); d(c, "to_s", r_to_s, 0); d(c, "inspect", r_inspect, 0); d(c, "min", r_min, -1); d(c, "minmax", r_minmax, 0); d(c, "max", r_max, -1); 
-    d(c, "step", r_step, -1); d(c, "%", r_pct, 1); d(c, "dup", r_dup_frozen, 0); d(c, "bsearch", r_bsearch, 0); d(c, "overlap?", r_overlap, 1);
+    d(c, "step", r_step, -1); d(c, "%", r_pct, 1); d(c, "bsearch", r_bsearch, 0); d(c, "overlap?", r_overlap, 1); d(c, "to_set", r_to_set, -1);
     each
 }

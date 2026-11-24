@@ -38,6 +38,24 @@ pub fn num_to_long(c: &mut Ctx, v: Value) -> Result<i64, Esc> {
     type_err(c, format!("no implicit conversion of {} into Integer", class_name_for_err(c, v)))
 }
 
+/// rb_to_int: an Integer as is, else #to_int, which must give an Integer.
+pub fn rb_to_int(c: &mut Ctx, v: Value) -> RV {
+    if is_integer(v) { return Ok(v); }
+    if is_float(v) { let f = float_val(v); check_finite(c, f)?; return Ok(f64_to_int(c, f)); }
+    if let Some(r) = if v.is_heap() { crate::string::check_funcall(c, v, s::to_int)? } else { None } {
+        if is_integer(r) { return Ok(r); }
+        let cls = class_name_for_err(c, v);
+        return type_err(c, format!("can't convert {} to Integer ({}#to_int gives {})", cls, cls, class_name_for_err(c, r)));
+    }
+    type_err(c, format!("no implicit conversion of {} into Integer", class_name_for_err(c, v)))
+}
+/// NUM2INT: an `int` argument (ndigits).
+pub fn num_to_int32(c: &mut Ctx, v: Value) -> Result<i64, Esc> {
+    let n = num_to_long(c, v)?;
+    if n < i32::MIN as i64 || n > i32::MAX as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too {} to convert to 'int'", n, if n < 0 { "small" } else { "big" })); }
+    Ok(n)
+}
+
 pub fn to_integer(c: &mut Ctx, v: Value) -> RV {
     if is_integer(v) { return Ok(v); }
     if is_float(v) { return Ok(f64_to_int(c, float_val(v))); }
@@ -60,7 +78,8 @@ pub fn to_f(c: &mut Ctx, v: Value) -> Result<f64, Esc> {
 
 fn coerce_fail<T>(c: &mut Ctx, a: Value, b: Value, cmp: bool) -> Result<T, Esc> {
     let bdesc = if b == NIL || b == TRUE || b == FALSE { class_name_for_err(c, b) } else if is_float(b) || b.is_fixnum() || b.is_sym() { inspect_str(c, b)? } else { class_path(c, real_class_of(c, b)) };
-    if cmp { let bs = if b == NIL { "nil".into() } else { inspect_str(c, b).unwrap_or(bdesc) }; return arg_err(c, format!("comparison of {} with {} failed", class_path(c, real_class_of(c, a)), bs)); }
+    // rb_cmperr: special constants and Floats by inspect, others by class
+    if cmp { let bs = if !b.is_heap() || is_float(b) { inspect_str(c, b).unwrap_or(bdesc) } else { class_path(c, real_class_of(c, b)) }; return arg_err(c, format!("comparison of {} with {} failed", class_path(c, real_class_of(c, a)), bs)); }
     type_err(c, format!("{} can't be coerced into {}", bdesc, class_path(c, real_class_of(c, a))))
 }
 
@@ -188,13 +207,13 @@ cfn!(int_mod, |c, s, a| int_arith(c, s, a[0], Op::Mod));
 cfn!(int_pow_m, |c, s, a| {
     if a.len() == 2 {
         // modular exponentiation
-        let int = |v: Value| v.is_fixnum() || is_bignum(v);
-        if !int(a[0]) || !int(a[1]) { return type_err(c, "Integer#pow() 2nd argument not allowed unless all arguments are integers"); }
+        if !is_integer(a[0]) { return type_err(c, "Integer#pow() 2nd argument not allowed unless a 1st argument is integer"); }
+        let mut e = c.to_big(a[0]);
+        if e.neg { return err(c, c.vm().c_range_error.get(), "Integer#pow() 1st argument cannot be negative when 2nd argument specified"); }
+        if !is_integer(a[1]) { return type_err(c, "Integer#pow() 2nd argument not allowed unless all arguments are integers"); }
         let m = c.to_big(a[1]);
         if m.is_zero() { return err(c, c.vm().c_zero_div_error.get(), "divided by 0"); }
         let mut base = c.to_big(s).divmod(&m).1;
-        let mut e = c.to_big(a[0]);
-        if e.neg { return err(c, c.vm().c_range_error.get(), "Integer#pow() 2nd argument not allowed to be negative when 3rd argument specified"); }
         let mut r = BigInt::from_i64(1).divmod(&m).1;
         while !e.is_zero() {
             if e.is_odd() { r = r.mul(&base).divmod(&m).1; }
@@ -234,6 +253,7 @@ fn int_shift(c: &mut Ctx, a: Value, n: i64) -> RV {
             let x = a.as_fix() as i128;
             return Ok(c.int_from_i128(x << n));
         }
+        if a == Value::fix(0) { return Ok(a); }
         if n > 1 << 26 { return err(c, c.vm().c_range_error.get(), "shift width too big"); }
         Ok(c.big_to_value(c.to_big(a).shl(n as usize)))
     } else {
@@ -250,26 +270,68 @@ fn int_shift_big(c: &mut Ctx, a: Value, w: Value, left: bool) -> RV {
     if a == Value::fix(0) { return Ok(a); }
     err(c, c.vm().c_range_error.get(), "shift width too big")
 }
-cfn!(int_lshift, |c, s, a| { if is_bignum(a[0]) { return int_shift_big(c, s, a[0], true); } let n = num_to_long(c, a[0])?; int_shift(c, s, n) });
-cfn!(int_rshift, |c, s, a| { if is_bignum(a[0]) { return int_shift_big(c, s, a[0], false); } let n = num_to_long(c, a[0])?; int_shift(c, s, -n) });
-cfn!(int_aref, |c, s, a| {
-    if a.len() == 2 || is_range(a[0]) {
-        let (start, len) = if a.len() == 2 { (num_to_long(c, a[0])?, Some(num_to_long(c, a[1])?)) } else {
-            let (b, e, x) = c.range_parts(a[0]);
-            let b = if b == NIL { 0 } else { num_to_long(c, b)? };
-            if e == NIL { (b, None) } else { let e = num_to_long(c, e)?; (b, Some(e - b + if x { 0 } else { 1 })) }
-        };
-        let shifted = int_shift(c, s, -start)?;
-        return match len { None => Ok(shifted), Some(l) => {
-            if l <= 0 { return Ok(Value::fix(0)); }
-            let mask = c.big_to_value(BigInt::from_i64(1).shl(l as usize).sub(&BigInt::from_i64(1)));
-            int_bitop(c, shifted, mask, b'&')
-        } };
+fn shift_by(c: &mut Ctx, s: Value, w: Value, left: bool) -> RV {
+    let w = if w.is_fixnum() { w } else { rb_to_int(c, w)? };
+    if is_bignum(w) { return int_shift_big(c, s, w, left); }
+    int_shift(c, s, if left { w.as_fix() } else { -w.as_fix() })
+}
+cfn!(int_lshift, |c, s, a| shift_by(c, s, a[0], true));
+cfn!(int_rshift, |c, s, a| shift_by(c, s, a[0], false));
+/// generate_mask: (1 << len) - 1
+fn gen_mask(c: &mut Ctx, len: Value) -> RV { let one = shift_by(c, Value::fix(1), len, true)?; int_arith(c, one, Value::fix(1), Op::Sub) }
+/// int_aref2 / rb_big_aref2
+fn int_aref2(c: &mut Ctx, num: Value, beg: Value, len: Value) -> RV {
+    if !is_bignum(num) {
+        let sh = shift_by(c, num, beg, false)?;
+        let m = gen_mask(c, len)?;
+        return int_bitop(c, sh, m, b'&');
     }
-    let i = if is_bignum(a[0]) { if c.big(a[0]).neg { return Ok(Value::fix(0)); } else { return Ok(Value::fix(if c.to_big(s).neg { 1 } else { 0 })); } } else { num_to_long(c, a[0])? };
+    let (bv, lv) = (rb_to_int(c, beg)?, rb_to_int(c, len)?);
+    let (b, l) = (num_to_long(c, bv)?, num_to_long(c, lv)?);
+    let Some(end) = b.checked_add(l) else { return err(c, c.vm().c_range_error.get(), "bignum too big to convert into 'long'") };
+    if l < 0 { return shift_by(c, num, bv, false); }
+    if l == 0 || end <= 0 { return Ok(Value::fix(0)); }
+    let sh = shift_by(c, num, bv, false)?;
+    // a positive one has no bits above its length
+    let bits = if c.big(num).neg { l } else { l.min((c.big(num).bit_length() as i64 + 1).saturating_sub(b)) };
+    let m = gen_mask(c, Value::fix(bits))?;
+    int_bitop(c, sh, m, b'&')
+}
+/// rb_fix_aref / rb_big_aref: one bit
+fn int_bit(c: &mut Ctx, s: Value, idx: Value) -> RV {
+    let idx = rb_to_int(c, idx)?;
+    let sneg = if s.is_fixnum() { s.as_fix() < 0 } else { c.big(s).neg };
+    if is_bignum(idx) { return Ok(Value::fix(if !c.big(idx).neg && sneg { 1 } else { 0 })); }
+    let i = idx.as_fix();
     if i < 0 { return Ok(Value::fix(0)); }
-    if s.is_fixnum() { return Ok(Value::fix(if i >= 63 { if s.as_fix() < 0 { 1 } else { 0 } } else { (s.as_fix() >> i) & 1 })); }
+    if s.is_fixnum() { return Ok(Value::fix(if i >= 63 { sneg as i64 } else { (s.as_fix() >> i) & 1 })); }
     Ok(Value::fix(c.big(s).bit(i as usize) as i64))
+}
+cfn!(int_aref, |c, s, a| {
+    check_argc(c, a, 1, 2)?;
+    if a.len() == 2 { return int_aref2(c, s, a[0], a[1]); }
+    if a[0].is_fixnum() { return int_bit(c, s, a[0]); }
+    if !is_range(a[0]) { return int_bit(c, s, a[0]); }
+    let (b, e, x) = c.range_parts(a[0]);
+    if b == NIL {
+        if neg_int_p(c, e)? { return Ok(Value::fix(0)); }
+        let e = if x { e } else { funcall(c, e, s::plus, &[Value::fix(1)], std::ptr::null())? };
+        let m = gen_mask(c, e)?;
+        if int_bitop(c, s, m, b'&')? == Value::fix(0) { return Ok(Value::fix(0)); }
+        return arg_err(c, "The beginless range for Integer#[] results in infinity");
+    }
+    // compare_indexes: <=> (nil: incomparable)
+    let cmp = if b.is_fixnum() && e.is_fixnum() { b.as_fix().cmp(&e.as_fix()) as i64 } else {
+        let r = funcall(c, b, s::cmp, &[e], std::ptr::null())?;
+        if r == NIL { i64::MAX } else { crate::builtins::array_methods::cmp_result(c, r, b, e)? }
+    };
+    if e != NIL && cmp < 0 {
+        let mut len = funcall(c, e, s::minus, &[b], std::ptr::null())?;
+        if !x { len = funcall(c, len, s::plus, &[Value::fix(1)], std::ptr::null())?; }
+        return int_aref2(c, s, b, len);
+    }
+    if cmp == 0 { return if x { Ok(Value::fix(0)) } else { int_bit(c, s, b) }; }
+    shift_by(c, s, b, false)
 });
 cfn!(int_eq, |c, s, a| {
     let b = a[0];
@@ -288,10 +350,12 @@ cfn!(int_cmp, |c, s, a| {
     match int_cmp_val(c, s, a[0])? {
         Some(o) => Ok(Value::fix(o as i64)),
         None => {
-            if a[0].is_heap() && respond_to(c, a[0], s::coerce, true) && !is_string(a[0]) {
-                let r = funcall(c, a[0], s::coerce, &[s], std::ptr::null());
-                match r { Ok(r) if is_array(r) && c.ary_len(r) == 2 => { let x = c.ary_get(r, 0); return funcall(c, x, s::cmp, &[c.ary_get(r, 1)], std::ptr::null()); }
-                          Ok(_) => return Ok(NIL), Err(_) => { c.esc = EscKind::None; return Ok(NIL); } }
+            if a[0].is_heap() && !is_string(a[0]) {
+                // do_coerce(err = false): rb_check_funcall; nil is nil, an exception goes through
+                let Some(r) = crate::string::check_funcall_args(c, a[0], s::coerce, &[s])? else { return Ok(NIL) };
+                if r == NIL { return Ok(NIL); }
+                if !is_array(r) || c.ary_len(r) != 2 { return type_err(c, "coerce must return [x, y]"); }
+                let x = c.ary_get(r, 0); return funcall(c, x, s::cmp, &[c.ary_get(r, 1)], std::ptr::null());
             }
             Ok(NIL)
         }
@@ -348,7 +412,7 @@ fn enc_chr(enc: u8, cp: u64) -> Result<Vec<u8>, bool> {
 cfn!(int_chr, |c, s, a| {
     if a.len() > 1 { return argc_err(c, a.len(), 0, 1); }
     let i = if s.is_fixnum() { s.as_fix() } else { -1 };
-    let range = |c: &mut Ctx| -> RV { let n = crate::builtins::kernel::inspect_str(c, s)?; err(c, c.vm().c_range_error.get(), format!("{} out of char range", n)) };
+    let range = |c: &mut Ctx| -> RV { let n = if s.is_fixnum() { s.as_fix().to_string() } else { "bignum".into() }; err(c, c.vm().c_range_error.get(), format!("{} out of char range", n)) };
     if i < 0 { return range(c); }
     let enc = match a.first() {
         Some(&e) => crate::builtins::encoding::to_enc(c, e)?,
@@ -396,8 +460,44 @@ fn int_times(c: &mut Ctx, s: Value, _a: &[Value], b: Blk) -> RV {
     }
     Ok(s)
 }
+/// A Proc running `f(data, enumerator args)`: an Enumerator's size function.
+pub fn size_proc(c: &mut Ctx, f: CBlockFn, data: Value) -> Value {
+    let b = Block::cfunc(c, f, data);
+    let k = c.vm().c_proc.get();
+    let p = c.alloc(k, Body::Proc(Box::new(ProcData { blk: b, is_lambda: true, from_method: NIL })));
+    c.proc_data_mut(p).blk.proc_val = p;
+    p
+}
+/// ruby_num_interval_step_size
+pub fn interval_step_size(c: &mut Ctx, from: Value, to: Value, step: Value, excl: bool) -> RV {
+    if from.is_fixnum() && to.is_fixnum() && step.is_fixnum() {
+        let mut d = step.as_fix() as i128;
+        if d == 0 { return Ok(c.float_new(f64::INFINITY)); }
+        let mut delta = to.as_fix() as i128 - from.as_fix() as i128;
+        if d < 0 { d = -d; delta = -delta; }
+        if excl { delta -= 1; }
+        if delta < 0 { return Ok(Value::fix(0)); }
+        return Ok(c.int_from_i128(delta / d + 1));
+    }
+    if is_float(from) || is_float(to) || is_float(step) {
+        let n = float_step_size(to_f(c, from)?, to_f(c, to)?, to_f(c, step)?, excl);
+        if n.is_infinite() { return Ok(c.float_new(n)); }
+        return Ok(f64_to_int(c, n));
+    }
+    let r = funcall(c, step, s::cmp, &[Value::fix(0)], std::ptr::null())?;
+    if r == NIL { return coerce_fail(c, step, Value::fix(0), true); }
+    let cmp = match crate::builtins::array_methods::cmp_result(c, r, step, Value::fix(0))? { 0 => return Ok(c.float_new(f64::INFINITY)), -1 => s::lt, _ => s::gt };
+    if funcall(c, from, cmp, &[to], std::ptr::null())?.truthy() { return Ok(Value::fix(0)); }
+    let d = funcall(c, to, s::minus, &[from], std::ptr::null())?;
+    let mut res = funcall(c, d, intern(b"div"), &[step], std::ptr::null())?;
+    let add = !excl || { let m = funcall(c, res, s::mul, &[step], std::ptr::null())?; let l = funcall(c, from, s::plus, &[m], std::ptr::null())?; funcall(c, to, cmp, &[l], std::ptr::null())?.truthy() };
+    if add { res = funcall(c, res, s::plus, &[Value::fix(1)], std::ptr::null())?; }
+    Ok(res)
+}
+fn upto_size(c: &mut Ctx, d: Value, a: &[Value], _b: Blk, _o: Blk) -> RV { interval_step_size(c, d, a[0], Value::fix(1), false) }
+fn downto_size(c: &mut Ctx, d: Value, a: &[Value], _b: Blk, _o: Blk) -> RV { interval_step_size(c, d, a[0], Value::fix(-1), false) }
 fn int_upto(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
-    if b.is_null() { return crate::builtins::enumerator::enum_for(c, s, s::upto, a, NIL); }
+    if b.is_null() { let sz = if s.is_fixnum() && a[0].is_fixnum() { NIL } else { size_proc(c, upto_size, s) }; return crate::builtins::enumerator::enum_for(c, s, s::upto, a, sz); }
     if let Some(r) = int_upto_loop(c, s, a[0], 1, &mut |c, a| yield1(c, b, a[0])) { return r; }
     if is_float(a[0]) {
         let e = float_val(a[0]); let mut i = s;
@@ -413,7 +513,7 @@ fn int_upto(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     Ok(s)
 }
 fn int_downto(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
-    if b.is_null() { return crate::builtins::enumerator::enum_for(c, s, s::downto, a, NIL); }
+    if b.is_null() { let sz = if s.is_fixnum() && a[0].is_fixnum() { NIL } else { size_proc(c, downto_size, s) }; return crate::builtins::enumerator::enum_for(c, s, s::downto, a, sz); }
     if let Some(r) = int_upto_loop(c, s, a[0], -1, &mut |c, a| yield1(c, b, a[0])) { return r; }
     let mut i = s;
     loop {
@@ -442,6 +542,7 @@ cfn!(int_idiv, |c, s, a| {
         if y == 0.0 { return err(c, c.vm().c_zero_div_error.get(), "divided by 0"); }
         return Ok(f64_to_int(c, (c.num_to_f64(s).unwrap() / y).floor()));
     }
+    if !is_integer(a[0]) { return coerce_bin(c, s, a[0], intern(b"div"), false); }
     int_arith(c, s, a[0], Op::Div)
 });
 cfn!(int_fdiv, |c, s, a| {
@@ -482,11 +583,20 @@ fn round_int(c: &mut Ctx, s: Value, a: &[Value], mode: u8) -> RV {
     // only round takes keywords (half:)
     let (pos, _) = if mode == b'r' { kw_split(c, a) } else { (a, None) };
     if pos.len() > 1 { return argc_err(c, pos.len(), 0, 1); }
-    let digits = match pos.first() { Some(&d) => num_to_long(c, d)?, None => 0 };
+    let Some(&d) = pos.first() else { return Ok(s) };
+    let digits = num_to_int32(c, d)?;
+    let half = if mode == b'r' { round_half_mode(c, a)? } else { 0 };
     if digits >= 0 { return Ok(s); }
-    let half = round_half_mode(c, a)?;
-    let m = BigInt::from_i64(10).pow((-digits) as u64);
     let x = c.to_big(s);
+    // int_round_zero_p: 10**-digits / 2 > |self|
+    let bytes = if s.is_fixnum() { 8 } else { (x.mag.len() as i64 + 1) / 2 * 8 };
+    if (mode == b'r' || mode == b't') && -0.415241 * digits as f64 - 0.125 > bytes as f64 { return Ok(Value::fix(0)); }
+    if -digits as u64 * 4 > 1u64 << 34 {
+        // floor / ceil toward 0 are 0; the other way is 10**-digits itself
+        if (mode == b'f' && !x.neg) || (mode == b'c' && x.neg) || x.is_zero() { return Ok(Value::fix(0)); }
+        return arg_err(c, "exponent is too large");
+    }
+    let m = BigInt::from_i64(10).pow((-digits) as u64);
     let (q, r) = x.divmod(&m);
     let res = match mode {
         b'f' => q.mul(&m),
@@ -532,17 +642,34 @@ cfn!(int_digits, |c, s, a| {
     // rb_num_negative_int_p (`self < 0` once Integer#< is redefined) before the base
     let neg = if crate::rt::redef(crate::rt::R_INT_LT) { funcall(c, s, s::lt, &[Value::fix(0)], std::ptr::null())?.truthy() } else { c.to_big(s).neg };
     if neg { return err(c, c.vm().c_math_domain_error.get(), "out of domain"); }
-    let base = if a.is_empty() { 10 } else { num_to_long(c, a[0])? };
-    if base < 2 { return arg_err(c, format!("invalid radix {}", base)); }
+    let b = if a.is_empty() { BigInt::from_i64(10) } else {
+        let bv = rb_to_int(c, a[0])?;
+        let b = c.to_big(bv);
+        if b.neg { return arg_err(c, "negative radix"); }
+        if let Some(i) = b.to_i64() { if i < 2 { return arg_err(c, format!("invalid radix {}", i)); } }
+        b
+    };
     let out = c.ary_new();
     let mut x = c.to_big(s);
-    let b = BigInt::from_i64(base);
     if x.is_zero() { c.ary_push(out, Value::fix(0)); }
     while !x.is_zero() { let (q, r) = x.divmod(&b); let d = c.big_to_value(r); c.ary_push(out, d); x = q; }
     Ok(out)
 });
 cfn!(int_bit_length, |c, s, _a| Ok(Value::fix(if s.is_fixnum() { let x = s.as_fix(); (64 - if x < 0 { (!x).leading_zeros() } else { x.leading_zeros() }) as i64 } else { c.big(s).bit_length() as i64 })));
-cfn!(int_size, |c, s, _a| Ok(Value::fix(if s.is_fixnum() { 8 } else { ((c.big(s).mag.len() * 4 + 7) / 8 * 8) as i64 })));
+// rb_big_size_m: the bytes of |self|
+cfn!(int_size, |c, s, _a| Ok(Value::fix(if s.is_fixnum() { 8 } else {
+    let m = &c.big(s).mag;
+    match m.last() { None => 0, Some(&top) => (((m.len() - 1) * 32 + 32 - top.leading_zeros() as usize + 7) / 8) as i64 }
+})));
+cfn!(int_s_try_convert, |c, _s, a| {
+    let v = a[0];
+    if is_integer(v) { return Ok(v); }
+    if is_float(v) { return rb_to_int(c, v); }
+    let Some(r) = (if v.is_heap() { crate::string::check_funcall(c, v, s::to_int)? } else { None }) else { return Ok(NIL) };
+    if r == NIL || is_integer(r) { return Ok(r); }
+    let cls = class_name_for_err(c, v);
+    type_err(c, format!("can't convert {} to Integer ({}#to_int gives {})", cls, cls, class_name_for_err(c, r)))
+});
 cfn!(int_hash, |c, s, _a| Ok(Value::fix((crate::hash::key_hash(c, s)? >> 2) as i64)));
 /// Kernel#Float semantics (rb_Float)
 pub fn rb_float(c: &mut Ctx, v: Value) -> Result<f64, Esc> {
@@ -721,7 +848,7 @@ fn flo_ndigits(c: &mut Ctx, a: &[Value]) -> Result<i64, Esc> {
     if pos.len() > 1 { return arg_err(c, format!("wrong number of arguments (given {}, expected 0..1)", pos.len())); }
     match pos.first() {
         None => Ok(0),
-        Some(&v) => { let n = num_to_long(c, v)?; if n < i32::MIN as i64 || n > i32::MAX as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too {} to convert to 'int'", n, if n < 0 { "small" } else { "big" })); } Ok(n) }
+        Some(&v) => num_to_int32(c, v),
     }
 }
 fn flo_floor_nd(c: &mut Ctx, s: Value, nd: i64) -> RV {
@@ -773,7 +900,7 @@ cfn!(flo_round, |c, s, a| {
     if x.is_finite() {
         let be = frexp_exp(x);
         if float_round_overflow(nd, be) { return Ok(s); }
-        if float_round_underflow(nd, be) { return Ok(Value::fix(0)); }
+        if float_round_underflow(nd, be) { return Ok(c.float_new(0.0)); }
         if nd >= 15 { return flo_by_rational(c, x, nd, b'r', half); }
         let f = 10f64.powi(nd as i32);
         return Ok(c.float_new(round_by_mode(x, f, half) / f));
@@ -847,9 +974,10 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     let numc = c.vm().c_numeric.get();
     let numeric = |v: Value| v.is_fixnum() || is_float(v) || is_kind_of(c, v, numc);
     if b.is_null() {
-        if (lim == NIL || numeric(lim)) && numeric(st) { return crate::builtins::enumerator::arith_seq(c, s, lim, st, false, s::step); }
+        if (lim == NIL || numeric(lim)) && numeric(st) { return crate::builtins::enumerator::arith_seq_from(c, s, s, lim, st, false, s::step, a); }
         // a non-Numeric limit or step: a plain Enumerator (numeric.c num_step)
-        return crate::builtins::enumerator::enum_for(c, s, s::step, &[lim, st], NIL);
+        let sz = size_proc(c, step_size, s);
+        return crate::builtins::enumerator::enum_for(c, s, s::step, &[lim, st], sz);
     }
     // num_step_negative_p: `step > 0` decides the direction (and rejects e.g. a String step)
     if !numeric(st) { funcall(c, st, s::gt, &[Value::fix(0)], std::ptr::null())?; }
@@ -888,6 +1016,14 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     }
     num_step_generic(c, s, s, lim, st, b)
 }
+/// num_step_size: num_step_negative_p (`step > 0`) first
+fn step_size(c: &mut Ctx, d: Value, a: &[Value], _b: Blk, _o: Blk) -> RV {
+    let (lim, st) = (a[0], a[1]);
+    let neg = if is_integer(st) && !crate::rt::redef(crate::rt::R_INT_LT) { if st.is_fixnum() { st.as_fix() < 0 } else { c.big(st).neg } }
+        else if respond_to(c, st, s::gt, true) { !funcall(c, st, s::gt, &[Value::fix(0)], std::ptr::null())?.truthy() } else { return coerce_fail(c, st, Value::fix(0), false) };
+    let lim = if lim == NIL { c.float_new(if neg { f64::NEG_INFINITY } else { f64::INFINITY }) } else { lim };
+    interval_step_size(c, d, lim, st, false)
+}
 fn num_step_generic(c: &mut Ctx, s: Value, from: Value, lim: Value, st: Value, b: Blk) -> RV {
     let neg = lim != NIL && funcall(c, st, s::lt, &[Value::fix(0)], std::ptr::null())?.truthy();
     let mut i = from;
@@ -908,6 +1044,16 @@ cfn!(num_positive_p, |c, s, _a| funcall(c, s, s::gt, &[Value::fix(0)], std::ptr:
 cfn!(num_negative_p, |c, s, _a| funcall(c, s, s::lt, &[Value::fix(0)], std::ptr::null()));
 cfn!(num_abs, |c, s, _a| { let neg = funcall(c, s, s::lt, &[Value::fix(0)], std::ptr::null())?; if neg.truthy() { funcall(c, s, s::uminus, &[], std::ptr::null()) } else { Ok(s) } });
 cfn!(num_uplus, |c, s, _a| Ok(s));
+// num_clone: Numerics are immutable; freeze: false cannot be honoured
+cfn!(num_clone, |c, s, a| {
+    if let Some(h) = kw_arg(c, a) {
+        if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("freeze"))? {
+            if v != NIL && v != TRUE && v != FALSE { let i = class_path(c, real_class_of(c, v)); return arg_err(c, format!("unexpected value for freeze: {}", i)); }
+            if v == FALSE { return arg_err(c, format!("can't unfreeze {}", class_path(c, real_class_of(c, s)))); }
+        }
+    }
+    Ok(s)
+});
 cfn!(num_uminus, |c, s, _a| {
     let r = funcall(c, Value::fix(0), s::coerce, &[s], std::ptr::null());
     match r { Ok(r) if is_array(r) => { let x = c.ary_get(r, 0); funcall(c, x, s::minus, &[c.ary_get(r, 1)], std::ptr::null()) }
@@ -924,6 +1070,7 @@ cfn!(num_ceil, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_
 cfn!(num_round, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_round(c, f, a, Blk::NONE) });
 cfn!(num_truncate, |c, s, a| { let f = rb_float(c, s)?; let f = c.float_new(f); flo_truncate(c, f, a, Blk::NONE) });
 cfn!(num_div, |c, s, a| {
+    if a[0] == Value::fix(0) || funcall(c, Value::fix(0), s::eq, &[a[0]], std::ptr::null())?.truthy() { return err(c, c.vm().c_zero_div_error.get(), "divided by 0"); }
     let q = funcall(c, s, s::div, &[a[0]], std::ptr::null())?;
     funcall(c, q, intern(b"floor"), &[], std::ptr::null())
 });
@@ -980,6 +1127,15 @@ cfn!(num_quo, |c, s, a| {
     funcall(c, r, s::div, &[a[0]], std::ptr::null())
 });
 cfn!(num_to_int, |c, s, _a| funcall(c, s, s::to_i, &[], std::ptr::null()));
+cfn!(num_numerator, |c, s, _a| { let r = funcall(c, s, intern(b"to_r"), &[], std::ptr::null())?; funcall(c, r, intern(b"numerator"), &[], std::ptr::null()) });
+cfn!(num_denominator, |c, s, _a| { let r = funcall(c, s, intern(b"to_r"), &[], std::ptr::null())?; funcall(c, r, intern(b"denominator"), &[], std::ptr::null()) });
+// num_sadded: Numerics have no singleton methods
+cfn!(num_sadded, |c, s, a| {
+    let mid = if a[0].is_sym() { a[0].as_sym() } else { return type_err(c, "can't define singleton") };
+    let k = singleton_class(c, s);
+    funcall(c, k, intern(b"remove_method"), &[a[0]], std::ptr::null())?;
+    type_err(c, format!("can't define singleton method \"{}\" for {}", crate::symbol::sym_str(mid), class_path(c, real_class_of(c, s))))
+});
 cfn!(num_real_p, |_c, _s, _a| Ok(TRUE));
 cfn!(num_finite_p, |_c, _s, _a| Ok(TRUE));
 cfn!(num_infinite_p, |_c, _s, _a| Ok(NIL));
@@ -1012,6 +1168,8 @@ pub fn init(c: &mut Ctx, n: Value, k: Value, f: Value) {
     define_cfunc(c, n, "abs", num_abs, 0);
     define_cfunc(c, n, "magnitude", num_abs, 0);
     define_cfunc(c, n, "+@", num_uplus, 0);
+    define_cfunc(c, n, "dup", num_uplus, 0);
+    define_cfunc(c, n, "clone", num_clone, -1);
     define_cfunc(c, n, "-@", num_uminus, 0);
     define_cfunc(c, n, "coerce", num_coerce, 1);
     define_cfunc(c, n, "div", num_div, 1);
@@ -1022,6 +1180,9 @@ pub fn init(c: &mut Ctx, n: Value, k: Value, f: Value) {
     define_cfunc(c, n, "remainder", num_remainder, 1);
     define_cfunc(c, n, "quo", num_quo, 1);
     define_cfunc(c, n, "to_int", num_to_int, 0);
+    define_cfunc(c, n, "numerator", num_numerator, 0);
+    define_cfunc(c, n, "denominator", num_denominator, 0);
+    define_private_cfunc(c, n, "singleton_method_added", num_sadded, 1);
     define_cfunc(c, n, "real?", num_real_p, 0);
     define_cfunc(c, n, "finite?", num_finite_p, 0);
     define_cfunc(c, n, "infinite?", num_infinite_p, 0);
@@ -1055,6 +1216,12 @@ pub fn init(c: &mut Ctx, n: Value, k: Value, f: Value) {
     d(c, "coerce", int_coerce, 1); d(c, "allbits?", int_allbits, 1); d(c, "anybits?", int_anybits, 1); d(c, "nobits?", int_nobits, 1);
     d(c, "integer?", int_integer_p, 0); d(c, "ceildiv", int_ceildiv, 1); d(c, "gcdlcm", int_gcdlcm, 1);
     define_singleton_cfunc(c, k, "sqrt", int_s_sqrt, 1);
+    define_singleton_cfunc(c, k, "try_convert", int_s_try_convert, 1);
+    // rb_cmpint for the prelude's Comparable#==
+    let cm = c.vm().m_comparable.get();
+    define_singleton_cfunc(c, cm, "__cmpint", |c, _s, a, _b| Ok(Value::fix(crate::builtins::array_methods::cmp_result(c, a[0], NIL, NIL)?)), 1);
+    // rb_undef_method(CLASS_OF(rb_cInteger / rb_cFloat), "new")
+    for kk in [k, f] { let sk = singleton_class(c, kk); define_method_me(c, sk, s::new, new_me(s::new, sk, VISI_PUBLIC, MKind::Undef)); }
 
     let d = |c: &mut Ctx, nm: &str, fun: CFunc, a: i32| define_cfunc(c, f, nm, fun, a);
     d(c, "+", flo_plus, 1); d(c, "-", flo_minus, 1); d(c, "*", flo_mul, 1); d(c, "/", flo_div, 1); d(c, "%", flo_mod, 1); d(c, "modulo", flo_mod, 1);

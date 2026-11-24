@@ -379,8 +379,14 @@ fn e_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
         }
         let bs = inspect_str(c, b)?; let es = if e == NIL { String::new() } else { inspect_str(c, e)? }; let ss = inspect_str(c, st)?;
         if en.mid == s::step && !en.recv.is_heap() && en.recv == b && crate::numeric::is_numeric(b) && is_range_origin(slf) == false {
-            let args = if e == NIL { format!("(by: {})", ss) } else { format!("({}, {})", es, ss) };
-            return Ok(c.str_new(format!("({}.step{})", bs, args).as_bytes()));
+            // Numeric#step's own arguments, keywords as `k: v`
+            let args = c.ary(en.args).to_vec();
+            let kw = if en.kw { args.last().copied().filter(|&h| crate::object::is_hash(h)) } else { None };
+            let mut parts = vec![];
+            for &v in &args[..args.len() - kw.is_some() as usize] { parts.push(inspect_str(c, v)?); }
+            if let Some(h) = kw { for (k, v) in c.hash_pairs(h) { let vs = inspect_str(c, v)?; parts.push(format!("{}: {}", sym_str(k.as_sym()), vs)); } }
+            let a = if parts.is_empty() { String::new() } else { format!("({})", parts.join(", ")) };
+            return Ok(c.str_new(format!("({}.step{})", bs, a).as_bytes()));
         }
         return Ok(c.str_new(format!("(({}{}{}).step({}))", bs, if x { "..." } else { ".." }, es, ss).as_bytes()));
     }

@@ -1003,9 +1003,10 @@ fn time_dump(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
         let off = if c.ary_get(dm, 1) == Value::fix(0) { c.ary_get(dm, 0) } else { off };
         ivar_set_raw(c, str, intern(b"offset"), off);
     }
+    // a zone object by its #name (NoMethodError without one)
     let mut zone = call0(c, slf, "zone")?;
-    if zone != NIL && !is_string(zone) && respond_to(c, zone, intern(b"name"), true) { zone = call0(c, zone, "name")?; }
-    if is_string(zone) && is_ascii(c.str_bytes(zone)) { zone = c.str_copy_enc(zone, ENC_ASCII); }
+    if zone != NIL && !is_string(zone) { zone = call0(c, zone, "name")?; }
+    else if is_string(zone) && is_ascii(c.str_bytes(zone)) { zone = c.str_copy_enc(zone, ENC_ASCII); }
     ivar_set_raw(c, str, intern(b"zone"), zone);
     Ok(str)
 }
@@ -1056,11 +1057,8 @@ fn time_load(c: &mut Ctx, k: Value, a: &[Value], _b: Blk) -> RV {
         if gmt { call0(c, t, "utc")?; offset = NIL; }
         t
     };
-    if offset != NIL {
-        // the local zone is kept when it gives the same offset; otherwise a fixed offset
-        let local = call0(c, t, "utc_offset")?;
-        if local != offset || zone == NIL { call1(c, t, "localtime", offset)?; }
-    }
+    if offset != NIL { call1(c, t, "localtime", offset)?; }
+    if zone != NIL { crate::builtins::time::mload_zone(c, t, zone)?; }
     for (n, x) in ivar_list(c, str) { ivar_set_raw(c, t, n, x); }
     Ok(t)
 }

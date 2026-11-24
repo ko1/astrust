@@ -65,28 +65,24 @@ fn sig_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
 }
 fn sig_signo(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, s, intern(b"signo"))) }
 fn sig_signm(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { funcall(c, s, intern(b"message"), &[], std::ptr::null()) }
-fn m_expm1(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; Ok(c.float_new(f.exp_m1())) }
-fn m_log1p(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
-    let f = crate::builtins::numeric_methods::rb_float(c, a[0])?;
-    if f < -1.0 { return err(c, c.vm().c_math_domain_error.get(), "Numerical argument is out of domain - \"log1p\""); }
-    Ok(c.float_new(f.ln_1p()))
-}
+use crate::builtins::math::{num_to_dbl, domain_err};
+fn m_expm1(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let f = num_to_dbl(c, a[0])?; Ok(c.float_new(f.exp_m1())) }
 fn m_gamma(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
-    let f = crate::builtins::numeric_methods::rb_float(c, a[0])?;
-    if f == f64::NEG_INFINITY || (f < 0.0 && f == f.floor()) { return err(c, c.vm().c_math_domain_error.get(), "Numerical argument is out of domain - \"gamma\""); }
+    let f = num_to_dbl(c, a[0])?;
+    if f == f64::NEG_INFINITY || (f < 0.0 && f == f.floor()) { return domain_err(c, "gamma"); }
     if f == f.floor() && (1.0..=23.0).contains(&f) { let mut r = 1.0f64; let mut k = 2.0; while k < f { r *= k; k += 1.0; } return Ok(c.float_new(r)); }
     Ok(c.float_new(sys::tgamma(f)))
 }
 fn m_lgamma(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
-    let f = crate::builtins::numeric_methods::rb_float(c, a[0])?;
-    if f == f64::NEG_INFINITY { return err(c, c.vm().c_math_domain_error.get(), "Numerical argument is out of domain - \"lgamma\""); }
+    let f = num_to_dbl(c, a[0])?;
+    if f == f64::NEG_INFINITY { return domain_err(c, "lgamma"); }
     let (r, sign) = if f == 0.0 { (f64::INFINITY, if f.is_sign_negative() { -1 } else { 1 }) } else { let mut sign = 1i32; let r = sys::lgamma_r(f, &mut sign); (r, if sign < 0 { -1 } else { 1 }) };
     let rv = c.float_new(r);
     Ok(c.ary_new_from(&[rv, Value::fix(sign)]))
 }
-fn m_erf(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; Ok(c.float_new(sys::erf(f))) }
-fn m_erfc(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; Ok(c.float_new(sys::erfc(f))) }
-fn m_cbrt(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let f = crate::builtins::numeric_methods::rb_float(c, a[0])?; let mut r = sys::cbrt(f); if r.is_finite() && !(f == 0.0 && r == 0.0) { r = (2.0 * r + (f / r / r)) / 3.0; } Ok(c.float_new(r)) }
+fn m_erf(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let f = num_to_dbl(c, a[0])?; Ok(c.float_new(sys::erf(f))) }
+fn m_erfc(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let f = num_to_dbl(c, a[0])?; Ok(c.float_new(sys::erfc(f))) }
+fn m_cbrt(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let f = num_to_dbl(c, a[0])?; let mut r = sys::cbrt(f); if r.is_finite() && !(f == 0.0 && r == 0.0) { r = (2.0 * r + (f / r / r)) / 3.0; } Ok(c.float_new(r)) }
 /// GC.stat_heap([heap [, key]]): saruby has one heap of fixed-size slots (heap 0).
 fn gc_stat_heap(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let h = crate::gc::stats();
@@ -199,7 +195,6 @@ pub fn init(c: &mut Ctx) {
     define_private_cfunc(c, se, "initialize", sig_initialize, -1);
     define_cfunc(c, se, "signo", sig_signo, 0); define_cfunc(c, se, "signm", sig_signm, 0);
     define_module_function(c, vmr.m_math.get(), "expm1", m_expm1, 1);
-    define_module_function(c, vmr.m_math.get(), "log1p", m_log1p, 1);
     for (n, f) in [("erf", m_erf as CFunc), ("erfc", m_erfc), ("cbrt", m_cbrt), ("gamma", m_gamma), ("lgamma", m_lgamma)] { define_module_function(c, vmr.m_math.get(), n, f, 1); }
     let gc = vmr.m_gc.get();
     define_module_function(c, gc, "auto_compact", |_c, _s, _a, _b| Ok(FALSE), 0);
