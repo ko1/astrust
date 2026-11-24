@@ -110,7 +110,13 @@ pub fn sort_array(c: &mut Ctx, v: &mut Vec<Value>, blk: Blk) -> Result<(), Esc> 
         use crate::rt::*;
         let r = redef_word();
         if r & R_INT_CMP == 0 && v.iter().all(|x| x.is_fixnum()) { v.sort_by_key(|x| x.as_fix()); return Ok(()); }
-        if r & R_STR_CMP == 0 && v.iter().all(|x| is_string(*x)) { v.sort_by(|a, b| c.str_cmp(*a, *b)); return Ok(()); }
+        // one pass: all Strings, and whether all share one encoding (rb_str_cmp's encoding tie-break never applies then)
+        let e0 = match v.first() { Some(&x) if is_string(x) => c.str_enc(x), _ => 0xff };
+        let mut same = true;
+        if r & R_STR_CMP == 0 && v.iter().all(|&x| is_string(x) && { same &= c.str_enc(x) == e0; true }) {
+            if same { v.sort_by(|a, b| c.str_bytes(*a).cmp(c.str_bytes(*b))); } else { v.sort_by(|a, b| c.str_cmp(*a, *b)); }
+            return Ok(());
+        }
         if r & R_FLO_CMP == 0 && v.iter().all(|x| x.is_flonum() && !x.flonum_val().is_nan()) { v.sort_by(|a, b| a.flonum_val().partial_cmp(&b.flonum_val()).unwrap()); return Ok(()); }
         sort_values(c, v, &mut |c, a, b| rb_cmp(c, a, b))
     } else {
