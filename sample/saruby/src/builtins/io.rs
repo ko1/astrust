@@ -1380,7 +1380,7 @@ fn do_seek(c: &mut Ctx, slf: Value, off: i64, whence: i32) -> Result<i64, Esc> {
     Ok(r)
 }
 fn whence_arg(c: &mut Ctx, v: Option<&Value>) -> Result<i32, Esc> {
-    Ok(match v { None => 0, Some(&w) if w.is_sym() => match crate::symbol::sym_str(w.as_sym()).as_str() { "SET" => 0, "CUR" => 1, "END" => 2, o => return arg_err(c, format!("unknown whence: {}", o)) }, Some(&w) => num_to_long(c, w)? as i32 })
+    Ok(match v { None => 0, Some(&w) if w.is_sym() => match crate::symbol::sym_str(w.as_sym()).as_str() { "SET" => 0, "CUR" => 1, "END" => 2, "DATA" => 3, "HOLE" => 4, _ => num_to_long(c, w)? as i32 }, Some(&w) => num_to_long(c, w)? as i32 })
 }
 fn io_rewind(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { do_seek(c, slf, 0, 0)?; let io = get_io(c, slf)?; io.lineno = 0; cv::clear_readconv(io); Ok(Value::fix(0)) }
 fn io_seek(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 1, 2)?; let off = num_to_long(c, a[0])?; let w = whence_arg(c, a.get(1))?; do_seek(c, slf, off, w)?; Ok(Value::fix(0)) }
@@ -1394,7 +1394,7 @@ fn io_sysseek(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let (fd, pending) = (io.fd, io.writable && !io.wbuf.is_empty());
     if pending { enc_warn(c, "sysseek for buffered IO")?; }
     let r = sys::lseek(fd, off, w);
-    if r < 0 { let (e, p) = (sys::errno(), spath_of(c, slf)); return Err(raise_errno_at(c, e, "", &p)); }
+    if r < 0 { let (e, p) = (sys::errno(), spath_of(c, slf)); return Err(raise_errno_at(c, e, "rb_io_sysseek - ", &p)); }
     Ok(Value::fix(r))
 }
 fn io_set_pos(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let off = num_to_long(c, a[0])?; do_seek(c, slf, off, 0)?; Ok(a[0]) }
@@ -1638,7 +1638,7 @@ fn io_ioctl(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     };
     let fd = get_io(c, slf)?.fd;
     let r = match &mut buf { Some(b) => sys::ioctl_buf(fd, req, b), None => sys::ioctl_int(fd, req, narg) };
-    if r < 0 { let (e, p) = (sys::errno(), spath_of(c, slf)); return Err(raise_errno_at(c, e, "", &p)); }
+    if r < 0 { let (e, p) = (sys::errno(), spath_of(c, slf)); return Err(raise_errno_at(c, e, "finish_narg - ", &p)); }
     if let (Some(s), Some(mut b)) = (sbuf, buf) {
         let n = b.len();
         if b[n - 1] != 17 { return arg_err(c, "return value overflowed string"); }
@@ -2299,7 +2299,7 @@ fn dup2_cloexec(from: i32, to: i32) -> i32 {
 }
 fn std_name(c: &Ctx, v: Value) -> Option<&'static str> {
     let m = c.vm();
-    if v == m.stdin.get() { Some("STDIN") } else if v == m.stdout.get() { Some("STDOUT") } else if v == m.stderr.get() { Some("STDERR") } else { None }
+    if v == m.stdin.get() { Some("<STDIN>") } else if v == m.stdout.get() { Some("<STDOUT>") } else if v == m.stderr.get() { Some("<STDERR>") } else { None }
 }
 fn fmode_str(r: bool, w: bool) -> &'static str { match (r, w) { (true, true) => "r+", (false, true) => "w", _ => "r" } }
 /// io_reopen: `slf` takes over `src`'s stream (a dup of its descriptor) and class.
@@ -2310,7 +2310,7 @@ fn io_reopen_io(c: &mut Ctx, slf: Value, src: Value) -> RV {
     let (sr, sw) = { let s = io_mut(c, src); (s.readable, s.writable) };
     if let Some(n) = std_name(c, slf) {
         let (r, w) = { let io = io_mut(c, slf); (io.readable, io.writable) };
-        if if n == "STDIN" { !sr } else { !sw } {
+        if if n == "<STDIN>" { !sr } else { !sw } {
             return arg_err(c, format!("{} can't change access mode from \"{}\" to \"{}\"", n, fmode_str(r, w), fmode_str(sr, sw)));
         }
     }
