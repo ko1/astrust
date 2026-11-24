@@ -1202,7 +1202,9 @@ impl<'a> Compiler<'a> {
         }).sum();
         // short results start inside the object slot (spilling copies at most 23 bytes)
         let cap = if cap <= 48 { 0 } else { cap.min(4096) };
-        ALLOC_node_dstr(leak(v), self.src_enc, cap as u32)
+        // rb_str_concat_literals: a result of 2+ parts starting with an interpolation takes the first part's encoding (flag 0x100)
+        let lead = v.len() >= 2 && !unsafe { std::ptr::eq((*v[0]).head.kind, &KIND_node_fstr) };
+        ALLOC_node_dstr(leak(v), self.src_enc | if lead { 0x100 } else { 0 }, cap as u32)
     }
     /// Bytes of an all-literal string concatenation whose parts share one encoding.
     fn static_concat(&self, parts: &[PNode]) -> Option<(Vec<u8>, u32)> {
@@ -1222,7 +1224,11 @@ impl<'a> Compiler<'a> {
                     let enc = self.lit_enc(p.flags);
                     v.push(ALLOC_node_fstr(lstr(unescaped), enc))
                 }
-                Kind::InterpolatedStringNode { parts } => self.dstr_parts(parts, v),
+                Kind::InterpolatedStringNode { parts } => {
+                    // a lone "#{x}" is a UTF-8 String of its own in CRuby
+                    if parts.len() == 1 && !matches!(parts[0].kind, Kind::StringNode { .. }) { v.push(ALLOC_node_fstr(lstr(b""), self.src_enc as u32)); }
+                    self.dstr_parts(parts, v)
+                }
                 // srb_dstr_append converts (no intermediate String for Integers)
                 Kind::EmbeddedStatementsNode { statements } => { let e = self.stmts(statements.as_deref()); v.push(e); }
                 Kind::EmbeddedVariableNode { variable } => { let e = self.c(variable); v.push(e); }

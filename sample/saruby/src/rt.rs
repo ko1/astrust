@@ -116,6 +116,7 @@ pub fn redef_note(c: &Ctx, klass: Value, mid: Sym) -> bool {
     if !booted() { return false; }
     if mid == s::puts || matches!(crate::symbol::sym_bytes(mid), b"write" | b"putc") { crate::builtins::io::note_out_method(c, klass); }
     if mid == s::lambda { LAMBDA_REDEF.store(true, Relaxed); }
+    if mid == s::set_backtrace { crate::vm::SET_BACKTRACE_DEFINED.store(true, Relaxed); }
     if mid == s::method_missing || mid == s::respond_to_p || mid == s::respond_to_missing_p { crate::string::note_mm_redef(); }
     let before = redef_word();
     // a refinement of a basic operation turns its inline fast path off everywhere
@@ -266,7 +267,7 @@ pub fn srb_dstr_append(c: &mut Ctx, acc: Value, v: Value) -> Result<(), Esc> {
         let (a, others) = c.str_mut_and(acc);
         let n = match others.rstring(v) {
             Some(b) if a.enc == b.enc => { a.b.extend_from_slice(&b.b); b.b.len() }
-            _ => return str_append_str(c, acc, v),
+            _ => return dstr_append_slow(c, acc, v),
         };
         c.malloc_increase(n);
         return Ok(());
@@ -286,7 +287,24 @@ pub fn srb_dstr_append(c: &mut Ctx, acc: Value, v: Value) -> Result<(), Esc> {
         }
     }
     let s = srb_tostr(c, v)?;
-    str_append_str(c, acc, s)
+    dstr_append_slow(c, acc, s)
+}
+
+/// The first part of a dstr that starts with an interpolation: the result takes its encoding.
+pub fn srb_dstr_lead(c: &mut Ctx, acc: Value, v: Value) -> Result<(), Esc> {
+    let s = srb_tostr(c, v)?;
+    let e = c.str_enc(s);
+    c.str_append_enc(acc, s, e);
+    Ok(())
+}
+
+/// rb_str_concat_literals: a US-ASCII result takes the encoding of a later part that is not US-ASCII.
+#[inline(never)]
+fn dstr_append_slow(c: &mut Ctx, acc: Value, s: Value) -> Result<(), Esc> {
+    str_append_str(c, acc, s)?;
+    let e = c.str_enc(s);
+    if e != ENC_ASCII && c.str_enc(acc) == ENC_ASCII { c.rstring_mut(acc).enc = e; }
+    Ok(())
 }
 
 pub fn srb_tostr(c: &mut Ctx, v: Value) -> RV {
@@ -717,7 +735,7 @@ fn home_is_class_body(c: &Ctx, id: u64) -> bool {
 
 #[cold]
 pub fn raise_local_jump(c: &mut Ctx, msg: &str, reason: &str, v: Value) -> Esc {
-    let e = make_exception(c, vm().c_local_jump_error.get(), msg);
+    let e = make_exception_rb(c, vm().c_local_jump_error.get(), msg);
     ivar_set_raw(c, e, crate::symbol::intern(b"__reason"), sym_value(reason));
     ivar_set_raw(c, e, crate::symbol::intern(b"__exit_value"), v);
     raise_exc(c, e)

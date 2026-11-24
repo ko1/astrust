@@ -118,7 +118,7 @@ cfn!(h_fetch, |c, slf, a, blk| {
             if !blk.is_null() { return yield1(c, blk, a[0]); }
             if a.len() > 1 { return Ok(a[1]); }
             let ins = inspect_str(c, a[0])?;
-            let e = make_exception(c, c.vm().c_key_error.get(), &format!("key not found: {}", ins));
+            let e = make_exception_rb(c, c.vm().c_key_error.get(), &format!("key not found: {}", ins));
             ivar_set_raw(c, e, s::key, a[0]); ivar_set_raw(c, e, s::receiver, slf);
             Err(raise_exc(c, e))
         }

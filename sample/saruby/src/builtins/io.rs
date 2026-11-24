@@ -1370,7 +1370,7 @@ pub fn io_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
             }
         }
     };
-    Ok(c.str_new(s.as_bytes()))
+    Ok(str_new_rb(c, &s))
 }
 fn io_lineno(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = readable_nowait(c, slf)?; Ok(Value::fix(io.lineno)) }
 fn io_set_lineno(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {

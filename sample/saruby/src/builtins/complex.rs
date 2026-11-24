@@ -408,8 +408,8 @@ fn format(c: &mut Ctx, s: Value, insp: bool) -> Result<String, Esc> {
     out.push('i');
     Ok(out)
 }
-fn cpx_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let t = format(c, s, false)?; Ok(c.str_new(t.as_bytes())) }
-fn cpx_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let t = format(c, s, true)?; Ok(c.str_new(format!("({})", t).as_bytes())) }
+fn cpx_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let t = format(c, s, false)?; Ok(c.str_new_enc(t.as_bytes(), if t.is_ascii() { ENC_ASCII } else { ENC_UTF8 })) }
+fn cpx_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let t = format(c, s, true)?; Ok(c.str_new_enc(format!("({})", t).as_bytes(), if t.is_ascii() { ENC_ASCII } else { ENC_UTF8 })) }
 
 fn range_err_conv<T>(c: &mut Ctx, s: Value, into: &str) -> Result<T, Esc> {
     let t = format(c, s, false)?;

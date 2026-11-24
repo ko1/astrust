@@ -218,7 +218,7 @@ pub fn exc_message_str(c: &mut Ctx, e: Value) -> Result<String, Esc> {
 }
 fn exc_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let m = ivar_get(c, slf, s::mesg);
-    if m == NIL { return Ok(c.str_new(class_path(c, real_class_of(c, slf)).as_bytes())); }
+    if m == NIL { let n = class_path(c, real_class_of(c, slf)); return Ok(c.str_new_enc(n.as_bytes(), if n.is_ascii() { ENC_ASCII } else { ENC_UTF8 })); }
     if is_string(m) { return Ok(m); }
     to_s_value(c, m)
 }
@@ -373,6 +373,7 @@ pub fn exc_set_backtrace(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     ivar_set_raw(c, slf, intern(b"__bt_set"), TRUE);
     Ok(bt)
 }
+pub fn exc_locations(c: &mut Ctx, slf: Value) -> Value { exc_backtrace_locations(c, slf, &[], Blk::NONE).unwrap_or(NIL) }
 fn exc_backtrace_locations(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let locs = ivar_get(c, slf, intern(b"__bt_locs"));
     if locs != NIL { return Ok(locs); }

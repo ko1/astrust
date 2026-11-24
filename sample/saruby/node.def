@@ -91,9 +91,16 @@ NODE_DEF
 node_dstr(c: &mut Ctx, n: NodePtr, fp: Fp, parts: NODES, enc: u32, cap: u32)
 {
     let acc = c.str_with_capa(cap as usize, enc as u8);
-    for i in 0..EVAL_LEN!(parts) {
+    let mut i = 0;
+    if enc & 0x100 != 0 {
+        let v = EVAL_NTH!(c, parts, 0)?;
+        srb_dstr_lead(c, acc, v)?;
+        i = 1;
+    }
+    while i < EVAL_LEN!(parts) {
         let v = EVAL_NTH!(c, parts, i)?;
         srb_dstr_append(c, acc, v)?;
+        i += 1;
     }
     Ok(acc)
 }

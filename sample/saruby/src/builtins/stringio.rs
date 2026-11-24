@@ -863,8 +863,12 @@ pub fn init_console(c: &mut Ctx) {
     define_cfunc(c, gr, "getpass", gr_getpass, -1);
 }
 
-/// Boot: no context runs yet.
-pub fn init(c: &mut Ctx) {
+/// The StringIO constant is built on first reference (CRuby: not loaded until required); `require "stringio"` shares it.
+pub fn init_once(c: &mut Ctx) { if !DONE.swap(true, std::sync::atomic::Ordering::Relaxed) { init(c); } }
+static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn loaded() -> bool { DONE.load(std::sync::atomic::Ordering::Relaxed) }
+
+fn init(c: &mut Ctx) {
     let vmr = c.vm();
     let k = define_class(c, "StringIO", vmr.c_object.get());
     class_set_alloc(c, k, AllocKind::None);
@@ -893,7 +897,8 @@ pub fn init(c: &mut Ctx) {
     d(c, "isatty", sio_false, 0); d(c, "tty?", sio_false, 0); d(c, "pid", sio_nil, 0); d(c, "fileno", sio_nil, 0); d(c, "size", sio_size, 0); d(c, "length", sio_size, 0);
     d(c, "truncate", sio_truncate, 1); d(c, "external_encoding", sio_external_encoding, 0); d(c, "internal_encoding", sio_internal_encoding, 0);
     d(c, "set_encoding", sio_set_encoding, -1); d(c, "set_encoding_by_bom", sio_set_encoding_by_bom, 0);
-    let gr = define_module_under(c, io, "generic_readable");
+    // io/console may have made it (and added getch / getpass) first
+    let gr = const_get_at(c, io, intern(b"generic_readable")).unwrap_or_else(|| define_module_under(c, io, "generic_readable"));
     let r = |c: &mut Ctx, n: &str, f: CFunc, ar: i32| define_cfunc(c, gr, n, f, ar);
     r(c, "readchar", sio_readchar, 0); r(c, "readbyte", sio_readbyte, 0); r(c, "readline", sio_readline, -1); r(c, "sysread", sio_sysread, -1);
     r(c, "readpartial", sio_sysread, -1); r(c, "read_nonblock", sio_read_nonblock, -1);

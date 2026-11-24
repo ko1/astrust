@@ -259,9 +259,16 @@ pub fn EVAL_node_fstr_recv(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32, um
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_dstr<D_parts: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, parts: NodeList, enc: u32, cap: u32) -> RV {
     let acc = c.str_with_capa(cap as usize, enc as u8);
-    for i in 0..<D_parts as DispList>::len(parts) {
+    let mut i = 0;
+    if enc & 0x100 != 0 {
+        let v = <D_parts as DispList>::nth(c, parts, 0, fp)?;
+        srb_dstr_lead(c, acc, v)?;
+        i = 1;
+    }
+    while i < <D_parts as DispList>::len(parts) {
         let v = <D_parts as DispList>::nth(c, parts, i, fp)?;
         srb_dstr_append(c, acc, v)?;
+        i += 1;
     }
     Ok(acc)
 }

@@ -298,8 +298,9 @@ pub fn method_object(c: &mut Ctx, recv: Value, mid: Sym, public_only: bool) -> R
                 return Ok(new_method_obj(c, c.vm().c_method.get(), MethodObj { recv, me: mm, name: mid, unbound: false, owner: class_of(recv) }));
             }
         }
-        let desc = nomethod_desc(c, recv)?;
-        let e = make_name_error(c, c.vm().c_name_error.get(), &format!("undefined method '{}' for {}", sym_str(mid), desc), Value::sym(mid), recv)?;
+        // rb_method_name_error: the class of the receiver (its singleton class when it has one)
+        let k = class_of(recv);
+        let e = make_name_error(c, c.vm().c_name_error.get(), &format!("undefined method '{}' for class '{}'", sym_str(mid), class_path(c, k)), Value::sym(mid), recv)?;
         return Err(raise_exc(c, e));
     }
     let owner = me_owner(c, me);
@@ -446,7 +447,7 @@ fn meth_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
         if rc == owner { format!("#<Method: {}#{}{}>", class_path(c, owner), nm, sig) }
         else { format!("#<Method: {}({})#{}{}>", class_path(c, rc), class_path(c, owner), nm, sig) }
     };
-    Ok(c.str_new(s.as_bytes()))
+    Ok(str_new_rb(c, &s))
 }
 /// The method definition behind an entry (rb_method_definition_eq / rb_hash_method_definition): aliases and
 /// visibility copies share it; 0 for none.

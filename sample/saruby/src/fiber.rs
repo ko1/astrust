@@ -207,7 +207,7 @@ pub(crate) fn fiber_main(c: &mut Ctx, args: Value, exc: bool) -> ! {
         Ok(v) => (v, false),
         Err(_) if c.esc == EscKind::Throw && c.esc_tag_v == kill => (NIL, false),
         Err(_) if c.esc == EscKind::Raise => (c.esc_val, true),
-        Err(_) => { let k = c.vm().c_local_jump_error.get(); (make_exception(c, k, "break from proc-closure"), true) }
+        Err(_) => { let k = c.vm().c_local_jump_error.get(); (make_exception_rb(c, k, "break from proc-closure"), true) }
     };
     c.esc = EscKind::None;
     c.frame = std::ptr::null_mut();
@@ -473,7 +473,7 @@ fn enum_body(c: &mut Ctx, e: Value, _args: &[Value], _b: Blk, _o: Blk) -> RV {
     let blk = Block::cfunc(c, enum_feed, e);
     let r = crate::builtins::enumerator::enum_each_with(c, e, Blk::of(&blk))?;
     let k = c.vm().c_stop_iteration.get();
-    let ex = make_exception(c, k, "iteration reached an end");
+    let ex = make_exception_rb(c, k, "iteration reached an end");
     ivar_set_raw(c, ex, crate::symbol::intern(b"result"), r);
     c.data_mut::<REnum>(e).expect("an Enumerator").stop = ex;
     Ok(UNDEF)
