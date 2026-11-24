@@ -338,7 +338,12 @@ pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
         let ae = vm.at_exit.get();
         let Some(p) = c.ary_mut(ae).pop() else { break };
         c.esc = EscKind::None;
-        if call_proc(c, p, &[], std::ptr::null()).is_err() { status = handle_toplevel_error(c); }
+        if call_proc(c, p, &[], std::ptr::null()).is_err() {
+            // the next handlers see this error in $! (rb_ec_exec_end_proc)
+            let raised = (c.esc == EscKind::Raise).then_some(c.esc_val);
+            status = handle_toplevel_error(c);
+            if let Some(e) = raised { c.errinfo = e; }
+        }
     }
     if builtins::process::run_exit_trap(c).is_err() { status = handle_toplevel_error(c); }
     builtins::kernel::out_flush();

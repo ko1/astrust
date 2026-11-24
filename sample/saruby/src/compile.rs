@@ -466,7 +466,7 @@ impl<'a> Compiler<'a> {
         if self.tl_binding {
             // the main script mentions TOPLEVEL_BINDING: bind it before anything runs
             let b = self.fcall("binding", vec![], 1);
-            body = self.seq(vec![ALLOC_node_cdecl(intern(b"TOPLEVEL_BINDING"), b, 0), body]);
+            body = self.seq(vec![ALLOC_node_special(SP_TOPLEVEL_BINDING, b), body]);
         }
         let label = if kind == IseqKind::Eval { "<main>".to_string() } else { "<main>".to_string() };
         self.finish_iseq(body, Params::default(), kind, label, 1, Sym(0))
@@ -554,7 +554,7 @@ impl<'a> Compiler<'a> {
         let is = Box::leak(Box::new(Iseq {
             body, entry, bentry, kentry, dentry, body_used: std::cell::Cell::new(false), nlocals: sc.nslots, params, env_size: sc.env_size, env_params,
             info: CodeInfo { file: self.file, label, line, end_line: sc.end_line, nid: node_tag_current() }, kind, simple, lead_only, name, local_names, arity, uses_block: false, traced: self.trace,
-            parent: std::cell::Cell::new(std::ptr::null()), ruby2_keywords: std::cell::Cell::new(false), arrow: std::cell::Cell::new(false),
+            parent: std::cell::Cell::new(std::ptr::null()), ruby2_keywords: std::cell::Cell::new(false), arrow: std::cell::Cell::new(false), end_once: std::cell::Cell::new(0),
             outer_names: if kind == IseqKind::Eval { self.eval_outer.iter().flatten().cloned().collect() } else { vec![] },
             outer_vars: std::mem::take(&mut self.pending_outer),
         }));
@@ -1087,6 +1087,7 @@ impl<'a> Compiler<'a> {
                 self.scopes.push(sc);
                 let b = self.stmts(statements.as_deref());
                 let is = self.finish_iseq(b, Params::default(), IseqKind::Block, self.block_label(), line, Sym(0));
+                is.end_once.set(1);
                 ALLOC_node_call_blk(ALLOC_node_self(), leak(vec![]), intern(b"at_exit"), CF_FCALL, line, is)
             }
             Kind::EmbeddedStatementsNode { statements } => self.stmts(statements.as_deref()),
@@ -2510,6 +2511,7 @@ pub const SP_NOMATCH_MSG: u32 = 16;
 pub const SP_PM_MSG: u32 = 17;
 pub const SP_ZSUPER_NO_METHOD: u32 = 18;
 pub const SP_SPLAT_ANY: u32 = 19;
+pub const SP_TOPLEVEL_BINDING: u32 = 20;
 
 // SP_PM_MSG kinds: why a single pattern did not match
 pub const PM_EQQ: i64 = 0;

@@ -1416,6 +1416,7 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
             let msg = if why == NIL { s } else { format!("{}: {}", s, String::from_utf8_lossy(c.str_bytes(why))) };
             err(c, vm().c_no_matching_pattern_error.get(), msg)
         }
+        SP_TOPLEVEL_BINDING => { crate::builtins::binding::set_main_toplevel(c, v)?; Ok(NIL) }
         SP_SPLAT_ANY => {
             let a = splat_to_array(c, v)?;
             Ok(Value::bool(c.ary(a).iter().any(|x| x.truthy())))

@@ -78,6 +78,7 @@ pub struct Iseq {
     pub ruby2_keywords: std::cell::Cell<bool>,         // Module#ruby2_keywords: flag a trailing keyword Hash in *rest
     pub traced: bool,                                  // compiled with trace points (TRACE_COMPILE)
     pub arrow: std::cell::Cell<bool>,                  // a `->` literal's (never a Kernel#lambda call)
+    pub end_once: std::cell::Cell<u8>,                 // END { }'s body: 1, 2 once registered (it registers once)
 }
 
 impl Iseq {

@@ -77,6 +77,21 @@ pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     Ok(Some(new_binding(c, RBinding { self_, env, names, cref, me, file, line, extra, dc, svar: svar.0, ret: svar.1, blk, visi })))
 }
 
+/// The main script's own TOPLEVEL_BINDING (it names the constant): replaces one a required file used,
+/// keeping what local_variable_set put there, without a redefinition warning.
+pub fn set_main_toplevel(c: &mut Ctx, b: Value) -> Result<(), Esc> {
+    let ob = c.vm().c_object.get();
+    let name = crate::symbol::intern(b"TOPLEVEL_BINDING");
+    if let Some(old) = const_get_at(c, ob, name) {
+        if c.data::<RBinding>(old).is_some() {
+            let ex = rbind(c, old).extra;
+            if ex != NIL { let d = c.hash_dup(ex); rbind_mut(c, b).extra = d; }
+        }
+    }
+    const_set(c, ob, name, b);
+    Ok(())
+}
+
 /// TOPLEVEL_BINDING when the main script does not name it (so its locals were not captured):
 /// self is main, no locals of its own.
 pub fn init_toplevel(c: &mut Ctx) {
@@ -227,6 +242,12 @@ pub fn local_variables(c: &mut Ctx, b: Value) -> RV {
     for (n, _, _) in names {
         let s = crate::symbol::sym_bytes(n);
         if (!s.starts_with(b"_") || s.len() > 1 && !s.starts_with(b"__")) && !numparam(n) { c.ary_push(out, Value::sym(n)); }
+    }
+    // variables made by local_variable_set
+    let extra = rbind(c, b).extra;
+    if extra != NIL {
+        let ks: Vec<Value> = c.hash_pairs(extra).into_iter().map(|p| p.0).collect();
+        for k in ks { if !c.ary(out).contains(&k) { c.ary_push(out, k); } }
     }
     Ok(out)
 }
