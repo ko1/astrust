@@ -37,6 +37,7 @@ pub mod sys;
 pub mod blop;
 pub mod file;
 pub mod process;
+pub mod pty;
 pub mod pack;
 pub mod random;
 pub mod binding;

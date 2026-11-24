@@ -282,6 +282,7 @@ pub struct Spec {
     pub redirect: Vec<(i32, i32)>, pub close: Vec<i32>, pub opened: Vec<i32>, pub pgroup: Option<i32>, pub umask: Option<u32>,
     pub close_others: Vec<i32>,   // close_others: true: fds >= 3 the child gets with close-on-exec
     pub rlimits: Vec<(i32, sys::Rlimit)>, pub path: Option<CString>,   // path: the PATH search result (None: not found)
+    pub pty: Option<(i32, i32)>,   // PTY.spawn: (master, slave) the child takes as its terminal
 }
 impl Drop for Spec { fn drop(&mut self) { for &fd in &self.opened { sys::close(fd); } } }
 
@@ -316,7 +317,7 @@ fn pairs_kept(c: &mut Ctx, h: Value, keep: Value) -> Vec<(Value, Value)> {
 }
 /// Build the child description from (env, cmd..., opts) as Kernel#spawn takes them.
 pub fn spawn_spec(c: &mut Ctx, env: Option<Value>, args: &[Value], opts: Option<Value>) -> Result<Spec, Esc> {
-    let mut sp = Spec { argv: vec![], prog: CString::new("").unwrap(), env: vec![], clear_env: false, chdir: None, redirect: vec![], close: vec![], opened: vec![], pgroup: None, umask: None, close_others: vec![], rlimits: vec![], path: None };
+    let mut sp = Spec { argv: vec![], prog: CString::new("").unwrap(), env: vec![], clear_env: false, chdir: None, redirect: vec![], close: vec![], opened: vec![], pgroup: None, umask: None, close_others: vec![], rlimits: vec![], path: None, pty: None };
     if args.is_empty() { return argc_err(c, 0, 1, -1); }
     // rb_check_argv: a first argument with to_ary is [prog, argv0]
     let mut args = args.to_vec();
@@ -425,9 +426,17 @@ pub fn spawn_spec(c: &mut Ctx, env: Option<Value>, args: &[Value], opts: Option<
 #[derive(Clone, Copy)]
 enum Stage { Exec = 0, Chdir = 1, Setpgid = 2, Setrlimit = 3, Dup2 = 4 }
 fn stage_msg(sp: &Spec, st: u32) -> String {
-    match st { 1 => sp.chdir.as_ref().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default(), 2 => "setpgid".into(), 3 => "setrlimit".into(), 4 => "dup2".into(), _ => sp.prog.to_string_lossy().into_owned() }
+    match st { 1 => sp.chdir.as_ref().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default(), 2 => "setpgid".into(), 3 => "setrlimit".into(), 4 => "dup2".into(), _ if sp.pty.is_some() => "fork failed".into(), _ => sp.prog.to_string_lossy().into_owned() }
 }
 fn child_setup(sp: &Spec) -> Result<(), Stage> {
+    // pty.c's chfunc: a new session whose controlling terminal is the slave
+    if let Some((m, s)) = sp.pty {
+        sys::setsid();
+        sys::close(m);
+        sys::ioctl_int(s, 0x540e, 0);
+        for fd in 0..3 { sys::dup2(s, fd); }
+        if s > 2 { sys::close(s); }
+    }
     if let Some(pg) = sp.pgroup { if sys::setpgid(0, pg) < 0 { return Err(Stage::Setpgid); } }
     for (res, l) in &sp.rlimits { if sys::setrlimit(*res, l) < 0 { return Err(Stage::Setrlimit); } }
     if let Some(m) = sp.umask { sys::umask(m); }
@@ -515,7 +524,7 @@ fn check_hash(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     Ok(Some(h))
 }
 /// Split spawn-style arguments into (env, command words, options) as rb_exec_getargs: the options first.
-fn split_args(c: &mut Ctx, a: &[Value]) -> Result<(Option<Value>, Vec<Value>, Option<Value>), Esc> {
+pub fn split_args(c: &mut Ctx, a: &[Value]) -> Result<(Option<Value>, Vec<Value>, Option<Value>), Esc> {
     let mut rest = a.to_vec();
     let opts = match rest.last() { Some(&l) => check_hash(c, l)?, None => None };
     if opts.is_some() { rest.pop(); }

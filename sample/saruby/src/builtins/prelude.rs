@@ -77,6 +77,7 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
         "saruby/econv" => crate::builtins::transcode::init(c),
         "saruby/tracepoint" => crate::builtins::tracepoint::init_class(c),
         "io/console" => crate::builtins::io_console::init(c),
+        "pty" => crate::builtins::pty::init(c),
         "saruby/etc" => crate::builtins::etc::init(c),
         "cgi/escape.so" => crate::builtins::cgi_escape::init(c)?,
         "coverage.so" => crate::builtins::coverage::init(c),
