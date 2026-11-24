@@ -416,8 +416,9 @@ pub fn seed(c: &mut Ctx, s: u64) { let d = default_rnd(c); let v = c.int_from_i1
 fn bytes_of(c: &mut Ctx, r: Value, n: Value) -> RV {
     let n = crate::builtins::numeric_methods::num_to_long(c, n)?;
     if n < 0 { return arg_err(c, format!("negative string size (or size too big)")); }
+    let mut out = Vec::new();
+    if out.try_reserve_exact(n as usize).is_err() { return err(c, c.vm().c_no_memory_error.get(), "failed to allocate memory"); }
     let mt = &mut rr(c, r).mt;
-    let mut out = Vec::with_capacity(n as usize);
     let mut left = n as usize;
     while left > 0 { let mut x = mt.genrand_int32(); for _ in 0..left.min(4) { out.push(x as u8); x >>= 8; } left -= left.min(4); }
     Ok(c.str_from_vec_enc(out, ENC_BINARY))
