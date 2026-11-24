@@ -44,32 +44,36 @@ class Data
       k
     end
   end
-  # rb_struct_pos (4.0.2, not name_only): a Symbol or String names a member, anything else is an index
-  # (NUM2LEN); [index or nil, the key an unknown one is reported as]
+  # rb_struct_pos(name_only = true): a Symbol, a String or a #to_str names a member; [index or nil, the key]
   def self.__pos(mem, k)
-    if k.is_a?(Symbol) || k.is_a?(String)
-      [mem.index(k.to_sym), k]
-    else
-      i = Enumerable.__int(k)
-      n = mem.size
-      return [nil, i] if i < -n || i >= n
-      [i < 0 ? i + n : i, k]
+    unless k.is_a?(Symbol) || k.is_a?(String)
+      s = String.try_convert(k)
+      raise TypeError, "#{k.inspect} is not a symbol nor a string" unless s
+      k = s
     end
+    [mem.index(k.to_sym), k]
   end
-  # rb_data_initialize_m: too few keys is "missing" before any key is looked at
+  # rb_data_initialize_m: every key is looked at, then missing before unknown
   def initialize(**kw)
     mem = self.class.__members
-    if kw.size < mem.size
-      missing = mem - kw.keys
-      raise ArgumentError, "missing keyword#{missing.size > 1 ? 's' : ''}: #{missing.map(&:inspect).join(', ')}"
-    end
-    unknown = []
+    missing = mem.dup
+    left = mem.size
+    unknown = nil
     kw.each do |k, v|
       i, key = Data.__pos(mem, k)
-      if i then Enumerable.__ivset(self, mem[i], v) else unknown << key end
+      if i
+        Enumerable.__ivset(self, mem[i], v)
+        if missing[i] then missing[i] = nil; left -= 1 end
+      else
+        (unknown ||= []) << key
+      end
     end
     freeze
-    unless unknown.empty?
+    if left > 0
+      missing.compact!
+      raise ArgumentError, "missing keyword#{left > 1 ? 's' : ''}: #{missing.map(&:inspect).join(', ')}"
+    end
+    if unknown
       raise ArgumentError, "unknown keyword#{unknown.size > 1 ? 's' : ''}: #{unknown.map(&:inspect).join(', ')}"
     end
   end
@@ -104,7 +108,7 @@ class Data
     mem = members
     return h if keys.size > mem.size
     keys.each do |k|
-      i, = Data.__pos(mem, k)
+      i, k = Data.__pos(mem, k)
       break unless i
       h[k] = Enumerable.__ivget(self, mem[i])
     end
