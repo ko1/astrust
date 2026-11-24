@@ -61,6 +61,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 
 ## 3. CRuby 互換性
 
+- [ ] panic: 範囲の終端が LONG_MAX（2**63-1）のとき String のスライス（src/string.rs:81、byteslice / [] 系）で `range end index 9223372036854775808 out of range`。t/hand range_end_long_max_1124 が panic（Array#[] と values_at は直した: range_beg_len の end+1 を飽和に）。b + len や end + 1 を素で足している所を全部洗う
 - 全体（2026-11-24, 066161b, ~/ruby/src/trials/2026-11-24-saruby-compat-snapshot）: rubyspec core 21321/23005（CRuby 23144）、language 2757/2933（2934）、library 6204/6376（6401）。差の大きい順: core/module 249、core/kernel 231、core/string 182、library/openssl 173、language 169、core/process 145、core/io 121
 
 - [x] 照合先を CRuby 4.0.10（4.0 系の最新、2026-11-19 a704b7cd95）に（user 決定 2026-11-24、~/ruby/src/trials/2026-11-24-saruby-cruby-4010/）。rubyspec（spec は wt-master-1123 の固定 tree、2 jobs）: core 22807 → 22832 / 23247、language 2927 / 2947、library 6387 → 6389 / 6600（CRuby 4.0.10 同 tree: 23275、2946、6626）。起動命令数 +0.22 %（Set の prelude 行は Rust へ）。それまでは rbenv 既定の 4.0.2 と照合していた。rubyspec の CRuby 側は `~/ruby/src/trials/2026-11-22-saruby-rubyspec/results/cruby-4.0.10.tsv`（core 23155/23155、language 2934/2934、library 6401/6402）。4.0.2 との差は core/data の 11 例だけ（initialize +6、deconstruct_keys +5: 4.0.10 で直った）
