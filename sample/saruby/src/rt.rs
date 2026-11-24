@@ -1310,7 +1310,7 @@ pub fn srb_sclass(c: &mut Ctx, recv: Value, is: &'static Iseq, _fp: Fp) -> RV {
     if recv.is_fixnum() || recv.is_sym() || recv.is_flonum() {
         return type_err(c, "can't define singleton");
     }
-    let k = singleton_class_exposed(c, recv);
+    let k = singleton_class(c, recv);
     let body_id = c.serial + 1;   // the id run_class_body gives its frame
     let r = run_class_body(c, k, is);
     // `return` in `class << x` returns from the enclosing method

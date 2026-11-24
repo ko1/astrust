@@ -462,7 +462,17 @@ impl<'a> Compiler<'a> {
         self.analyze(root, &[stmts]);
         let sk = if kind == IseqKind::Eval { SK::Eval } else { SK::Top };
         self.push_scope(sk, root, &locals);
+        // BEGIN { } (top level only) runs first in its code unit; c_node leaves it out of its place
+        let begins: Vec<&PNode> = match &stmts.kind {
+            Kind::StatementsNode { body } => body.iter().filter_map(|x| match &x.kind { Kind::PreExecutionNode { statements } => statements.as_deref(), _ => None }).collect(),
+            _ => vec![],
+        };
         let mut body = self.c(stmts);
+        if !begins.is_empty() {
+            let mut v: Vec<NodePtr> = begins.into_iter().map(|b| self.c(b)).collect();
+            v.push(body);
+            body = self.seq(v);
+        }
         if self.tl_binding {
             // the main script mentions TOPLEVEL_BINDING: bind it before anything runs
             let b = self.fcall("binding", vec![], 1);
@@ -1078,7 +1088,7 @@ impl<'a> Compiler<'a> {
                 is.arrow.set(true);
                 ALLOC_node_lambda(is)
             }
-            Kind::PreExecutionNode { statements } => self.stmts(statements.as_deref()),
+            Kind::PreExecutionNode { .. } => ALLOC_node_nil(),
             Kind::PostExecutionNode { statements } => {
                 // END { } → at_exit { }
                 // no scope of its own in prism: like a `for` body it shares the enclosing variables
@@ -2305,8 +2315,15 @@ impl<'a> Compiler<'a> {
 
     /// The name zsuper reads parameter `nm` in slot `sl` by (a repeated one's own).
     fn zname(&mut self, nm: Sym, sl: u32) -> Sym {
-        let hn = intern(format!("__dup{}", sl).as_bytes());
-        if matches!(self.cur().vars.get(&hn), Some(&VarLoc::Slot(s)) if s == sl) { hn } else { nm }
+        let sc = self.cur();
+        // no repeated name in this parameter list (the common case)
+        if sc.param_names.len() == sc.params_seen.len() { return nm; }
+        let first = match sc.vars.get(&nm) {
+            Some(&VarLoc::Slot(s)) => s == sl,
+            Some(&VarLoc::Env(_)) => sc.param_env.iter().any(|&(n, s)| n == nm && s == sl),
+            None => true,
+        };
+        if first { nm } else { intern(format!("__dup{}", sl).as_bytes()) }
     }
     fn params(&mut self, p: Option<&PNode>, is_block: bool) -> Params {
         let mut ps = Params::default();
