@@ -512,13 +512,15 @@ fn k_loop(c: &mut Ctx, slf: Value, _args: &[Value], blk: Blk) -> RV {
     }
 }
 
-thread_local! { static CATCH_TAGS: std::cell::RefCell<Vec<Value>> = const { std::cell::RefCell::new(vec![]) }; }
+// (Ruby thread, tag): a throw only reaches a catch of its own thread
+thread_local! { static CATCH_TAGS: std::cell::RefCell<Vec<(Value, Value)>> = const { std::cell::RefCell::new(vec![]) }; }
 
 fn k_catch(c: &mut Ctx, _s: Value, args: &[Value], blk: Blk) -> RV {
     let tag = if args.is_empty() { new_object(c, c.vm().c_object.get()) } else { args[0] };
-    CATCH_TAGS.with(|t| t.borrow_mut().push(tag));
+    let th = crate::builtins::thread::current_thread(c);
+    CATCH_TAGS.with(|t| t.borrow_mut().push((th, tag)));
     let r = yield_block(c, blk, &[tag]);
-    CATCH_TAGS.with(|t| t.borrow_mut().pop());
+    CATCH_TAGS.with(|t| { let mut t = t.borrow_mut(); if let Some(i) = t.iter().rposition(|&x| x == (th, tag)) { t.remove(i); } });
     match r {
         Err(e) => {
             if c.esc == EscKind::Throw && (c.esc_tag_v == tag || (is_string(tag) && is_string(c.esc_tag_v) && false)) {
@@ -535,7 +537,8 @@ fn k_throw(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     check_argc(c, args, 1, 2)?;
     let tag = args[0];
     let val = if args.len() > 1 { args[1] } else { NIL };
-    let found = CATCH_TAGS.with(|t| t.borrow().iter().any(|&x| x == tag));
+    let th = crate::builtins::thread::current_thread(c);
+    let found = CATCH_TAGS.with(|t| t.borrow().iter().any(|&x| x == (th, tag)));
     if !found {
         let ins = inspect_str(c, tag)?;
         let e = make_exception(c, c.vm().c_uncaught_throw_error.get(), &format!("uncaught throw {}", ins));
@@ -1381,9 +1384,11 @@ fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
             if f.is_file() { found = Some(f.to_string_lossy().into_owned()); break; }
         }
     }
+    // rb_find_file expands what it found in $LOAD_PATH and an explicitly relative name
+    let abs = |c: &mut Ctx, f: &str| -> Result<String, Esc> { let v = c.str_new(f.as_bytes()); Ok(String::from_utf8_lossy(&crate::builtins::file::expand(c, &[v], true)?).into_owned()) };
     let p = match found {
-        Some(f) => f,
-        None if std::path::Path::new(&ex).is_file() => ex,
+        Some(f) => abs(c, &f)?,
+        None if std::path::Path::new(&ex).is_file() => if ex.starts_with("./") || ex.starts_with("../") { abs(c, &ex)? } else { ex },
         None => {
             let e = make_exception(c, c.vm().c_load_error.get(), &format!("cannot load such file -- {}", name));
             { let p = c.str_new(name.as_bytes()); ivar_set_raw(c, e, intern(b"path"), p); }

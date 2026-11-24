@@ -554,7 +554,7 @@ impl<'a> Compiler<'a> {
         let is = Box::leak(Box::new(Iseq {
             body, entry, bentry, kentry, dentry, body_used: std::cell::Cell::new(false), nlocals: sc.nslots, params, env_size: sc.env_size, env_params,
             info: CodeInfo { file: self.file, label, line, end_line: sc.end_line, nid: node_tag_current() }, kind, simple, lead_only, name, local_names, arity, uses_block: false, traced: self.trace,
-            parent: std::cell::Cell::new(std::ptr::null()), ruby2_keywords: std::cell::Cell::new(false),
+            parent: std::cell::Cell::new(std::ptr::null()), ruby2_keywords: std::cell::Cell::new(false), arrow: std::cell::Cell::new(false),
             outer_names: if kind == IseqKind::Eval { self.eval_outer.iter().flatten().cloned().collect() } else { vec![] },
             outer_vars: std::mem::take(&mut self.pending_outer),
         }));
@@ -580,6 +580,15 @@ impl<'a> Compiler<'a> {
         match v.len() { 0 => ALLOC_node_nil(), 1 => v[0], _ => ALLOC_node_block(leak(v)) }
     }
 
+    /// A flip-flop end: an Integer literal is compared with $. (CRuby).
+    fn ff_cond(&mut self, x: &PNode) -> NodePtr {
+        if matches!(x.kind, Kind::IntegerNode { .. }) {
+            let l = self.line(x.loc);
+            let v = self.c(x);
+            return ALLOC_node_opt_eq(v, ALLOC_node_gvar(intern(b"$.")), l);
+        }
+        self.cond(x)
+    }
     /// pm_compile_yield_node: a yield whose local scope is the top level or a class body is a SyntaxError.
     fn yield_invalid(&self) -> bool {
         match self.scopes.iter().rev().find(|s| !matches!(s.kind, SK::Block | SK::Lambda | SK::For)).map(|s| s.kind) {
@@ -647,7 +656,9 @@ impl<'a> Compiler<'a> {
                 if n.flags & pa::STRING_FLAGS_FROZEN != 0 { ALLOC_node_fstr(lstr(unescaped), enc) } else { ALLOC_node_str(lstr(unescaped), enc) }
             }
             Kind::XStringNode { unescaped } => {
-                let s = ALLOC_node_str(lstr(unescaped), 0);
+                // the command is a frozen literal (putobject)
+                let enc = self.lit_enc(n.flags);
+                let s = ALLOC_node_fstr(lstr(unescaped), enc);
                 self.fcall("`", vec![s], line)
             }
             Kind::InterpolatedXStringNode { parts } => {
@@ -883,7 +894,13 @@ impl<'a> Compiler<'a> {
             }
             Kind::RedoNode => ALLOC_node_redo(),
             Kind::RetryNode => ALLOC_node_retry(),
-            Kind::ReturnNode { arguments } => { let v = self.args_value(arguments.as_deref()); ALLOC_node_return(v) }
+            Kind::ReturnNode { arguments } => {
+                if arguments.is_some() && self.scopes.last().is_some_and(|s| s.kind == SK::Top) {
+                    PARSE_WARNINGS.with(|w| w.borrow_mut().push((format!("{}: warning: argument of top-level return is ignored\n", self.file), false)));
+                }
+                let v = self.args_value(arguments.as_deref());
+                ALLOC_node_return(v)
+            }
             Kind::CaseNode { predicate, conditions, else_clause } => self.case_when(n, predicate.as_deref(), conditions, else_clause.as_deref(), line),
             Kind::CaseMatchNode { predicate, conditions, else_clause } => self.case_in(n, predicate.as_deref(), conditions, else_clause.as_deref(), line),
             Kind::MatchPredicateNode { value, pattern } => {
@@ -915,13 +932,13 @@ impl<'a> Compiler<'a> {
                 let depth = self.scopes.iter().rev().filter(|s| !s.transparent).take_while(|s| matches!(s.kind, SK::Block | SK::Lambda)).count() as u32;
                 if depth == 0 && !self.cur().vars.contains_key(&nm) { let sl = self.hidden_slot(); self.cur().vars.insert(nm, VarLoc::Slot(sl)); }
                 let excl = n.flags & pa::RANGE_FLAGS_EXCLUDE_END != 0;
-                let a = match left { Some(x) => self.cond(x), None => ALLOC_node_nil() };
-                let b1 = match right { Some(x) => self.cond(x), None => ALLOC_node_nil() };
+                let a = match left { Some(x) => self.ff_cond(x), None => ALLOC_node_nil() };
+                let b1 = match right { Some(x) => self.ff_cond(x), None => ALLOC_node_nil() };
                 let off = self.var_write(nm, depth, ALLOC_node_false());
                 let on_state = self.seq(vec![ALLOC_node_if(b1, off, ALLOC_node_nil()), ALLOC_node_true()]);
                 let on = self.var_write(nm, depth, ALLOC_node_true());
                 let start = if excl { on } else {
-                    let b2 = match right { Some(x) => self.cond(x), None => ALLOC_node_nil() };
+                    let b2 = match right { Some(x) => self.ff_cond(x), None => ALLOC_node_nil() };
                     ALLOC_node_if(b2, ALLOC_node_nil(), on)
                 };
                 let off_state = ALLOC_node_if(a, self.seq(vec![start, ALLOC_node_true()]), ALLOC_node_false());
@@ -1058,6 +1075,7 @@ impl<'a> Compiler<'a> {
             Kind::UndefNode { names } => { let v: Vec<NodePtr> = names.iter().map(|x| self.c(x)).collect(); ALLOC_node_line(line, ALLOC_node_undef(leak(v))) }
             Kind::LambdaNode { locals, parameters, body } => {
                 let is = self.compile_block(n, locals, parameters.as_deref(), body.as_deref(), IseqKind::Lambda, line);
+                is.arrow.set(true);
                 ALLOC_node_lambda(is)
             }
             Kind::PreExecutionNode { statements } => self.stmts(statements.as_deref()),

@@ -77,6 +77,7 @@ pub struct Iseq {
     pub outer_vars: Vec<Sym>,                          // block: outer variables it uses, `yield` if it yields (Ractor.new)
     pub ruby2_keywords: std::cell::Cell<bool>,         // Module#ruby2_keywords: flag a trailing keyword Hash in *rest
     pub traced: bool,                                  // compiled with trace points (TRACE_COMPILE)
+    pub arrow: std::cell::Cell<bool>,                  // a `->` literal's (never a Kernel#lambda call)
 }
 
 impl Iseq {

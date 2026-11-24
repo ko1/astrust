@@ -269,8 +269,7 @@ pub fn EVAL_node_tostr(c: &mut Ctx, n: NodePtr, fp: Fp, v: Value) -> RV {
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_dsym(c: &mut Ctx, n: NodePtr, fp: Fp, s: Value) -> RV {
-    Ok(c.str_to_sym(s))
-
+    srb_dsym(c, s)
 }
 
 

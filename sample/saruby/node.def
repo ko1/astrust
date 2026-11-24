@@ -101,8 +101,7 @@ node_tostr(c: &mut Ctx, n: NodePtr, fp: Fp, v@child: Value)
 NODE_DEF
 node_dsym(c: &mut Ctx, n: NodePtr, fp: Fp, s@child: Value)
 {
-    Ok(c.str_to_sym(s))
-
+    srb_dsym(c, s)
 }
 
 NODE_DEF

@@ -1180,7 +1180,7 @@ fn m_const_missing(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
 fn m_cvar_get(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = to_sym_arg(c, a[0])?;
     if crate::builtins::ractor::multi() { crate::builtins::ractor::cvar_check(c, slf, n)?; }
-    match crate::rt::cvar_lookup(c, slf, n) {
+    match crate::rt::cvar_lookup_checked(c, slf, n)? {
         Some((_, v)) => Ok(v),
         None => {
             let e = make_name_error(c, c.vm().c_name_error.get(), &format!("uninitialized class variable {} in {}", sym_str(n), class_path(c, slf)), Value::sym(n), slf)?;
@@ -1197,7 +1197,7 @@ fn m_cvar_set(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     }
     check_frozen(c, slf)?;
     if crate::builtins::ractor::multi() { crate::builtins::ractor::cvar_check(c, slf, n)?; }
-    match crate::rt::cvar_lookup(c, slf, n) { Some((o, _)) => { c.class_mut(o).cvars.insert(n, a[1]); } None => { c.class_mut(slf).cvars.insert(n, a[1]); } }
+    match crate::rt::cvar_lookup_checked(c, slf, n)? { Some((o, _)) => { c.class_mut(o).cvars.insert(n, a[1]); } None => { c.class_mut(slf).cvars.insert(n, a[1]); } }
     Ok(a[1])
 }
 fn m_cvar_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {

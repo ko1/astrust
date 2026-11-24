@@ -446,6 +446,19 @@ pub fn cvar_lookup(c: &Ctx, k: Value, name: Sym) -> Option<(Value, Value)> {
     None
 }
 
+/// cvar_lookup as CVAR_LOOKUP + cvar_overtaken: the topmost holder wins; one also held lower down is an error.
+pub fn cvar_lookup_checked(c: &mut Ctx, k: Value, name: Sym) -> Result<Option<(Value, Value)>, Esc> {
+    let anc = ancestors(c, k);
+    let mut found: Vec<Value> = vec![];
+    for &a in anc.iter() { if c.class(a).cvars.contains_key(&name) { found.push(a); } }
+    let (Some(&front), Some(&target)) = (found.first(), found.last()) else { return Ok(None) };
+    if front != target {
+        let msg = format!("class variable {} of {} is overtaken by {}", sym_str(name), class_path(c, front), class_path(c, target));
+        return err(c, vm().c_runtime_error.get(), msg).map(|_: Value| None);
+    }
+    Ok(c.class(target).cvars.get(&name).map(|&v| (target, v)))
+}
+
 /// @@x where the lexical scope is the top level (whatever self is) is an error.
 fn cvar_toplevel_check(c: &mut Ctx) -> Result<(), Esc> {
     let cr = unsafe { (*c.frame).cref() };
@@ -457,7 +470,7 @@ pub fn srb_cvar_get(c: &mut Ctx, name: Sym) -> RV {
     cvar_toplevel_check(c)?;
     let k = cvar_base(c);
     if crate::builtins::ractor::multi() { crate::builtins::ractor::cvar_check(c, k, name)?; }
-    match cvar_lookup(c, k, name) {
+    match cvar_lookup_checked(c, k, name)? {
         Some((_, v)) => Ok(v),
         None => {
             let msg = format!("uninitialized class variable {} in {}", sym_str(name), class_path(c, k));
@@ -471,7 +484,7 @@ pub fn srb_cvar_set(c: &mut Ctx, name: Sym, v: Value) -> RV {
     cvar_toplevel_check(c)?;
     let k = cvar_base(c);
     if crate::builtins::ractor::multi() { crate::builtins::ractor::cvar_check(c, k, name)?; }
-    match cvar_lookup(c, k, name) {
+    match cvar_lookup_checked(c, k, name)? {
         Some((owner, _)) => { c.class_mut(owner).cvars.insert(name, v); }
         None => { c.class_mut(k).cvars.insert(name, v); }
     }
@@ -1051,9 +1064,20 @@ pub fn srb_yield_x(c: &mut Ctx, tmp: Value, kw: Value) -> RV {
 
 /// `lambda` was defined somewhere after boot: a literal `lambda { }` asks which method it calls.
 pub static LAMBDA_REDEF: AtomicBool = AtomicBool::new(false);
+/// :"#{...}": a String with invalid bytes is no Symbol (rb_str_intern's EncodingError).
+pub fn srb_dsym(c: &mut Ctx, s: Value) -> RV {
+    let enc = c.str_enc(s);
+    if !crate::builtins::encoding::is_valid(enc, c.str_bytes(s)) {
+        let ins = crate::builtins::kernel::inspect_str(c, s)?;
+        let msg = format!("invalid symbol in encoding {} :{}", crate::builtins::encoding::enc_name(enc), ins);
+        return err(c, vm().c_encoding_error.get(), msg);
+    }
+    Ok(c.str_to_sym(s))
+}
+
 pub fn srb_lambda(c: &mut Ctx, is: &'static Iseq, fp: Fp) -> RV {
     let b = make_block(c, is, fp);
-    if LAMBDA_REDEF.load(Relaxed) {
+    if LAMBDA_REDEF.load(Relaxed) && !is.arrow.get() {
         let slf = fp[0].get();
         let me = lookup_method(c, class_of(slf), s::lambda);
         if c.me_ref(me).is_some_and(|m| m.owner != vm().m_kernel.get()) { return funcall(c, slf, s::lambda, &[], &b); }

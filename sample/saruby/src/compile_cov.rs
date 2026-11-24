@@ -7,7 +7,12 @@ impl<'a> Compiler<'a> {
     pub(super) fn statements(&mut self, body: &[PNode]) -> NodePtr {
                 let flat = std::mem::take(&mut self.flat_stmts);
                 let last = body.len().saturating_sub(1);
-                let v: Vec<NodePtr> = body.iter().enumerate().map(|(i, x)| {
+                // BEGIN { } runs first in its code unit
+                let pre = body.iter().filter(|x| matches!(x.kind, Kind::PreExecutionNode { .. }));
+                let order: Vec<&PNode> = if body.iter().any(|x| matches!(x.kind, Kind::PreExecutionNode { .. })) {
+                    pre.chain(body.iter().filter(|x| !matches!(x.kind, Kind::PreExecutionNode { .. }))).collect()
+                } else { body.iter().collect() };
+                let v: Vec<NodePtr> = order.into_iter().enumerate().map(|(i, x)| {
                     let l = if self.trace { self.line(x.loc) } else { 0 };
                     // a side-effect-free statement whose value is unused compiles to nothing in CRuby: no line event
                     let elided = self.trace && i < last && pure_static(x);
