@@ -13,6 +13,10 @@ $(GEN): node.def saruby_gen.rb ../../lib/astrustgen.rb
 src/prism_ast.rs: tools/gen_prism_ast.rb vendor/prism/config.yml
 	ruby tools/gen_prism_ast.rb
 
+# the CRuby saruby follows (src/lib.rs RUBY_VERSION): its stdlib and gems are what require loads
+REF_RUBY ?= $(firstword $(wildcard $(HOME)/.rbenv/versions/4.0.10/bin/ruby) ruby)
+export SARUBY_REF_RUBY := $(REF_RUBY)
+
 # cargo features, e.g. FEATURES=raw_stack; a change of FEATURES rebuilds
 FEATURES ?=
 .features: FORCE

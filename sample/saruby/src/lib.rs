@@ -249,7 +249,16 @@ fn disable_features(list: &str) {
     }
 }
 
-pub fn version() -> String { format!("saruby 0.1.0 (ASTrust; Ruby 3.4 compatible subset) [{}]", env!("SARUBY_TARGET")) }
+/// The CRuby release saruby follows (RUBY_VERSION, RbConfig, -v); RUBY_ENGINE stays "saruby".
+pub const RUBY_VERSION: &str = "4.0.10";
+pub const RUBY_RELEASE_DATE: &str = "2026-11-19";
+pub const RUBY_REVISION: &str = "a704b7cd95a42cc0cf5f307137bf3aac0285b915";
+pub const ENGINE_VERSION: &str = "0.1.0";
+pub const RUBY_PLATFORM: &str = if cfg!(target_arch = "aarch64") { "aarch64-linux" } else { "x86_64-linux" };
+/// RUBY_DESCRIPTION, also what -v / --version print.
+pub fn version() -> String {
+    format!("saruby {} (ASTrust) like ruby {} ({} revision {}) +PRISM [{}]", ENGINE_VERSION, RUBY_VERSION, RUBY_RELEASE_DATE, &RUBY_REVISION[..10], RUBY_PLATFORM)
+}
 
 /// Print an uncaught exception CRuby-style.
 pub fn report_exception(c: &mut Ctx, e: Value) {

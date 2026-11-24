@@ -272,10 +272,13 @@ pub fn rbconfig_init(c: &mut Ctx) {
     // the Unicode version of the case / property tables (Rust's char)
     let (u0, u1, u2) = char::UNICODE_VERSION;
     let (uv, uev) = (format!("{}.{}.{}", u0, u1, u2), format!("{}.{}", u0, u1));
+    let mut ver = crate::RUBY_VERSION.split('.');
+    let (major, minor, teeny) = (ver.next().unwrap_or("0"), ver.next().unwrap_or("0"), ver.next().unwrap_or("0"));
+    let (abi, api) = (format!("{}.{}.0", major, minor), format!("{}.{}", major, minor));
     let entries: &[(&str, &str)] = &[("ruby_install_name", &name), ("RUBY_INSTALL_NAME", &name), ("RUBY_BASE_NAME", "ruby"), ("bindir", &bindir), ("EXEEXT", ""),
         ("host_os", "linux"), ("target_os", "linux"), ("host_cpu", arch), ("target_cpu", arch), ("arch", &archname), ("host", &archname),
-        ("MAJOR", "3"), ("MINOR", "4"), ("TEENY", "0"), ("PATCHLEVEL", "0"), ("ruby_version", "3.4.0"), ("RUBY_PROGRAM_VERSION", "3.4.0"),
-        ("RUBY_API_VERSION", "3.4"), ("rubylibdir", &lib), ("rubylibprefix", &libprefix), ("archdir", &archdir), ("rubyarchdir", &archdir), ("DLEXT", "so"), ("SOEXT", "so"),
+        ("MAJOR", major), ("MINOR", minor), ("TEENY", teeny), ("PATCHLEVEL", "0"), ("ruby_version", &abi), ("RUBY_PROGRAM_VERSION", crate::RUBY_VERSION),
+        ("RUBY_API_VERSION", &api), ("rubylibdir", &lib), ("rubylibprefix", &libprefix), ("archdir", &archdir), ("rubyarchdir", &archdir), ("DLEXT", "so"), ("SOEXT", "so"),
         ("LIBEXT", "a"), ("OBJEXT", "o"), ("PATH_SEPARATOR", ":"), ("SHELL", "/bin/sh"), ("CC", "gcc"), ("CPP", "gcc -E"), ("ENABLE_SHARED", "yes"),
         ("build_os", "linux"), ("build_cpu", arch), ("build", &archname), ("LIBRUBY_SO", "libsaruby.so"), ("LIBRUBY", "libsaruby.so"), ("libdirname", "libdir"), ("LIBPATHENV", "LD_LIBRARY_PATH"), ("AR", "ar"), ("STRIP", "strip"), ("UNICODE_VERSION", &uv), ("UNICODE_EMOJI_VERSION", &uev), ("prefix", &bindir), ("exec_prefix", &bindir),
         ("libdir", &bindir), ("sitedir", ""), ("sitelibdir", ""), ("sitearchdir", ""), ("vendordir", ""), ("vendorlibdir", ""), ("vendorarchdir", ""),
@@ -339,11 +342,18 @@ pub fn init(c: &mut Ctx) {
     define_singleton_cfunc(c, wn, "categories", |c, _s, _a, _b| { let v: Vec<Value> = WARN_CAT_NAMES.iter().map(|n| sym_value(n)).collect(); Ok(c.ary_new_from(&v)) }, 0);
     // constants
     let set = |c: &mut Ctx, n: &str, v: Value| const_set(c, ob, intern(n.as_bytes()), v);
-    for (n, v) in [("RUBY_VERSION", "3.4.0"), ("RUBY_RELEASE_DATE", "2026-11-20"), ("RUBY_PLATFORM", "x86_64-linux"), ("RUBY_ENGINE", "saruby"),
-                   ("RUBY_ENGINE_VERSION", "0.1.0"), ("RUBY_COPYRIGHT", "saruby - Copyright (C) 2026 Koichi Sasada")] { let s = boot_str(c, v.as_bytes()); set(c, n, s); }
-    let s = boot_str(c, crate::version().as_bytes());
-    set(c, "RUBY_DESCRIPTION", s);
+    // Ruby::VERSION and co. are the same objects (4.0)
+    let rb = define_module(c, "Ruby");
+    let desc = crate::version();
+    for (n, v) in [("VERSION", crate::RUBY_VERSION), ("RELEASE_DATE", crate::RUBY_RELEASE_DATE), ("PLATFORM", crate::RUBY_PLATFORM), ("ENGINE", "saruby"),
+                   ("ENGINE_VERSION", crate::ENGINE_VERSION), ("COPYRIGHT", "saruby - Copyright (C) 2026 Koichi Sasada"),
+                   ("REVISION", crate::RUBY_REVISION), ("DESCRIPTION", &desc)] {
+        let s = boot_str(c, v.as_bytes());
+        set(c, &format!("RUBY_{}", n), s);
+        const_set(c, rb, intern(n.as_bytes()), s);
+    }
     set(c, "RUBY_PATCHLEVEL", Value::fix(0));
+    const_set(c, rb, intern(b"PATCHLEVEL"), Value::fix(0));
     set(c, "ARGV", vmr.argv.get());
     crate::builtins::lazy_const(c, ob, "TOPLEVEL_BINDING", "saruby/toplevel_binding");
     let _ = (intern, num_to_long);
