@@ -1493,6 +1493,7 @@ pub fn compile_error_exc(c: &mut Ctx, ce: crate::compile::CompileError, path: &s
     let enc = if ce.level == 2 { en::locale_enc() } else { en::find_enc(ce.enc.as_bytes()).unwrap_or(crate::object::ENC_UTF8) };
     let m = c.str_new_enc(&ce.msg, enc);
     ivar_set_raw(c, e, s::mesg, m);
+    if ce.compile { let p = c.str_new(path.as_bytes()); let bt = c.ary_new_from(&[p]); let _ = crate::builtins::exception::exc_set_backtrace(c, e, &[bt], Blk::NONE); }
     match ce.level {
         0 => { let p = c.str_new(path.as_bytes()); ivar_set_raw(c, e, crate::symbol::intern(b"path"), p); }
         2 => ivar_set_raw(c, e, crate::symbol::intern(b"path"), NIL),

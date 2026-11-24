@@ -2687,9 +2687,10 @@ pub fn flush_parse_warnings(c: &mut Ctx) -> Result<(), Esc> {
 
 /// A source that does not compile (pm_parse_process_error): prism's error level (0 SyntaxError,
 /// 1 ArgumentError, 2 LoadError), the message and the name of its encoding (the source's).
-pub struct CompileError { pub level: u8, pub msg: Vec<u8>, pub enc: String }
+/// `compile`: an error of the compiler (not the parser), whose backtrace is the path alone (finish_iseq_build).
+pub struct CompileError { pub level: u8, pub msg: Vec<u8>, pub enc: String, pub compile: bool }
 impl CompileError {
-    fn syntax(msg: String) -> Self { CompileError { level: 0, msg: msg.into_bytes(), enc: String::new() } }
+    fn syntax(msg: String) -> Self { CompileError { level: 0, msg: msg.into_bytes(), enc: String::new(), compile: false } }
     pub fn text(&self) -> String { String::from_utf8_lossy(&self.msg).into_owned() }
 }
 
@@ -2711,7 +2712,7 @@ pub fn compile_source_enc(src: &[u8], enc: u8, file: &'static str, line: i32, ki
         // highlighted as CRuby's: when stderr is a tty at parse time (bold only under NO_COLOR)
         let fmt = if crate::builtins::sys::isatty(2) != 1 { 1 } else if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) { 2 } else { 3 };
         let (level, msg, enc) = prism::format_errors(src, &po, fmt);
-        return Err(CompileError { level, msg, enc });
+        return Err(CompileError { level, msg, enc, compile: false });
     }
     compile_parsed(&pr, src, file, kind, outer)
 }
@@ -2744,7 +2745,7 @@ pub fn compile_parsed(pr: &ParseResult, src: &[u8], file: &'static str, kind: Is
         cm.captures.entry(key(&pr.root)).or_default().insert(Sym(u32::MAX));
     }
     let is = cm.compile_program(&pr.root, kind);
-    if cm.errors.is_empty() { Ok(is) } else { Err(CompileError::syntax(cm.errors.join("\n"))) }
+    if cm.errors.is_empty() { Ok(is) } else { Err(CompileError { compile: true, ..CompileError::syntax(cm.errors.join("\n")) }) }
 }
 
 /// The value of a single non-splat `when` pattern that is an immediate literal.
