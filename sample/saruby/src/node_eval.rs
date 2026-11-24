@@ -598,7 +598,7 @@ pub fn EVAL_node_poll<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut Ctx, n:
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_cov<D_body: Disp>(c: &mut Ctx, n: NodePtr, fp: Fp, id: u32, body: NodePtr) -> RV {
-    crate::builtins::coverage::hit(id);
+    crate::builtins::coverage::hit(c, id);
     <D_body as Disp>::call(c, body, fp)
 }
 

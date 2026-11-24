@@ -934,8 +934,10 @@ fn block_from_value(c: &mut Ctx, blkv: Value, holder: &mut Block) -> Result<*con
         holder.kind = BlockKind::Method(blkv);
         return Ok(holder as *const Block);
     }
-    if respond_to(c, blkv, s::to_proc, true) {
-        let p = funcall(c, blkv, s::to_proc, &[], std::ptr::null())?;
+    // a refined #to_proc in scope
+    let refined = if crate::vm::refinements_on() { funcall_refined(c, c.cur_frame().map_or(std::ptr::null(), |f| f.cref()), blkv, s::to_proc, &[], std::ptr::null(), CF_FCALL) } else { None };
+    if refined.is_some() || respond_to(c, blkv, s::to_proc, true) {
+        let p = match refined { Some(r) => r?, None => funcall(c, blkv, s::to_proc, &[], std::ptr::null())? };
         if is_proc(p) { return Ok(proc_block(c, p)); }
         let cls = class_path(c, real_class_of(c, blkv));
         return type_err(c, format!("can't convert {} to Proc ({}#to_proc gives {})", cls, cls, class_path(c, real_class_of(c, p))));
@@ -1162,7 +1164,7 @@ pub fn define_iseq_method(c: &mut Ctx, klass: Value, mid: Sym, is: &'static Iseq
     if dc.is_heap() && c.frame().kind != FK_CLASS && dc != cref_class(c) { cref = crate::vm::cref_with_def_target(c, cref, dc); }
     let me = new_me_cref(mid, klass, visi, MKind::Iseq(is), cref);
     note_redefinition(c, klass, mid);
-    define_method_me(c, klass, mid, me);
+    define_user_method(c, klass, mid, me);
 }
 
 /// rb_class_modify_check: a frozen class (a singleton one: named by its object) cannot get methods.
@@ -1248,10 +1250,11 @@ pub fn srb_def(c: &mut Ctx, mid: Sym, is: &'static Iseq, _fp: Fp) -> RV {
         define_iseq_method(c, klass, mid, is, VISI_PRIVATE);
         let sk = singleton_class(c, klass);
         define_iseq_method(c, sk, mid, is, VISI_PUBLIC);
-    } else {
-        define_iseq_method(c, klass, mid, is, visi);
+        crate::builtins::object::call_method_added(c, klass, mid)?;
+        crate::builtins::object::call_method_added(c, sk, mid)?;
+        return Ok(Value::sym(mid));
     }
-    crate::builtins::coverage::on_def(c, is as *const Iseq as usize, klass, mid);
+    define_iseq_method(c, klass, mid, is, visi);
     crate::builtins::object::call_method_added(c, klass, mid)?;
     Ok(Value::sym(mid))
 }
@@ -1263,7 +1266,6 @@ pub fn srb_sdef(c: &mut Ctx, recv: Value, mid: Sym, is: &'static Iseq) -> RV {
     let k = singleton_class(c, recv);
     if k.is_heap() { class_modify_check(c, k)?; }
     define_iseq_method(c, k, mid, is, VISI_PUBLIC);
-    crate::builtins::coverage::on_def(c, is as *const Iseq as usize, k, mid);
     crate::builtins::object::call_method_added(c, k, mid)?;
     Ok(Value::sym(mid))
 }

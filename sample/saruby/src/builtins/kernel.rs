@@ -934,6 +934,12 @@ pub fn gvar_warn(c: &mut Ctx, msg: &str, deprecated: bool) -> Result<(), Esc> {
 }
 
 pub fn warn_deprecated(c: &mut Ctx, msg: &str) -> Result<(), Esc> { gvar_warn(c, msg, true) }
+/// gvar_warn with more lines in the same Warning.warn message.
+pub fn warn_with_tail(c: &mut Ctx, msg: &str, tail: &str) -> Result<(), Esc> {
+    if c.vm().verbose.get() == NIL { return Ok(()); }
+    let loc = c.cur_frame().map(|f| format!("{}:{}: ", frame_file(f), f.line())).unwrap_or_default();
+    warning_write(c, format!("{}warning: {}\n{}", loc, msg, tail).as_bytes())
+}
 /// rb_category_warn for Warning[`name`] (bit `cat` of misc::WARN_CATS).
 pub fn category_warn(c: &mut Ctx, msg: &str, cat: usize, name: &str) -> Result<(), Esc> {
     if c.vm().verbose.get() == NIL || !crate::builtins::misc::warning_category_enabled(cat) { return Ok(()); }
@@ -1424,11 +1430,17 @@ pub fn run_source(c: &mut Ctx, src: &[u8], file: &'static str, line: i32) -> RV 
         Ok(is) => is,
         Err(msg) => { return syntax_err(c, msg, file); }
     };
-    crate::run_top_iseq(c, is, c.vm().main_obj.get())
+    let saved = TOP_WRAPPER.with(|w| w.replace(NIL));
+    let r = crate::run_top_iseq(c, is, c.vm().main_obj.get());
+    TOP_WRAPPER.with(|w| w.set(saved));
+    r
 }
 
 fn k_require(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV { check_argc(c, args, 1, 1)?; require_feature(c, args[0], false) }
 fn k_require_relative(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV { check_argc(c, args, 1, 1)?; require_feature(c, args[0], true) }
+thread_local! { static TOP_WRAPPER: std::cell::Cell<Value> = const { std::cell::Cell::new(NIL) }; }
+/// th->top_wrapper: the module of the wrapped load running (NIL outside one; rooted by its cref).
+pub fn top_wrapper() -> Value { TOP_WRAPPER.with(|w| w.get()) }
 fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     check_argc(c, args, 1, 2)?;
     let name = feature_name(c, args[0])?;
@@ -1474,7 +1486,10 @@ fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
         crate::compile::flush_parse_warnings(c)?;
         let is = match is { Ok(is) => is, Err(msg) => return syntax_err(c, msg, file) };
         let cref = new_cref(m, c.vm().top_cref.get());
-        crate::run_top_iseq_cref(c, is, slf, cref)?;
+        let saved = TOP_WRAPPER.with(|w| w.replace(m));
+        let r = crate::run_top_iseq_cref(c, is, slf, cref);
+        TOP_WRAPPER.with(|w| w.set(saved));
+        r?;
         return Ok(TRUE);
     }
     load_file(c, &p)?;

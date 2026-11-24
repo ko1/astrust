@@ -341,12 +341,15 @@ fn k_extend(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
         if !is_class_or_module(m) || !c.class(m).is_module {
             return type_err(c, format!("wrong argument type {} (expected Module)", class_name_for_err(c, m)));
         }
+        if c.class(m).refined { return type_err(c, "Cannot extend object with refinement"); }
         funcall(c, m, intern(b"extend_object"), &[slf], std::ptr::null())?;
         funcall(c, m, s::extended, &[slf], std::ptr::null())?;
     }
     Ok(slf)
 }
 fn m_extend_object(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    if !c.class(slf).is_module { return type_err(c, format!("wrong argument type {} (expected Module)", class_name_for_err(c, slf))); }
+    if c.class(slf).refined { return arg_err(c, "refinement module is not allowed"); }
     if is_frozen(a[0]) && a[0].is_heap() { return Err(raise_frozen(c, a[0])); }
     let k = singleton_class(c, a[0]);
     if k == NIL { return type_err(c, "can't define singleton"); }
@@ -380,7 +383,10 @@ fn caller_cref(c: &Ctx) -> *const Cref { c.caller_frame().map_or(std::ptr::null(
 pub fn method_list(c: &mut Ctx, slf_class: Value, filter: impl Fn(u8) -> bool, inherit: bool) -> Value {
     let a = c.ary_new();
     let mut seen = std::collections::HashSet::new();
-    let anc = ancestors(c, slf_class).to_vec();
+    let mut anc = ancestors(c, slf_class).to_vec();
+    // without inherited ones: from the origin (modules prepended to the class are not its own)
+    if !inherit { if let Some(i) = anc.iter().position(|&k| k == slf_class) { anc.drain(..i); } }
+    else if c.class(slf_class).refined { let k = c.class(slf_class).attached; anc.extend(ancestors(c, k).iter().copied()); }
     for k in anc {
         if !inherit && k != slf_class && !(c.class(k).is_singleton) && !c.class(slf_class).is_singleton { break; }
         let mut names: Vec<(Sym, *const MethodEntry)> = c.class(k).mtbl.iter().map(|(a, b)| (*a, *b)).collect();
@@ -548,7 +554,7 @@ pub fn alias_method(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) -> Re
     let n = Box::into_raw(Box::new(o)) as *const MethodEntry;
     if newname != oname { c.vm().alias_names.borrow_mut().insert(n as usize, newname); }
     crate::rt::note_redefinition(c, klass, newname);
-    define_method_me(c, klass, newname, n);
+    define_user_method(c, klass, newname, n);
     call_method_added(c, klass, newname)?;
     Ok(())
 }
@@ -615,11 +621,11 @@ fn attr_names(c: &mut Ctx, a: &[Value]) -> Result<Vec<Sym>, Esc> {
 fn def_attr(c: &mut Ctx, k: Value, n: Sym, reader: bool, writer: bool) -> Result<(), Esc> {
     let visi = match scope_visi(c, k) { VISI_MODFUNC => VISI_PRIVATE, v => v };
     let iv = intern(format!("@{}", sym_str(n)).as_bytes());
-    if reader { crate::rt::note_redefinition(c, k, n); define_method_me(c, k, n, new_me(n, k, visi, MKind::AttrReader(iv))); call_method_added(c, k, n)?; }
+    if reader { crate::rt::note_redefinition(c, k, n); define_user_method(c, k, n, new_me(n, k, visi, MKind::AttrReader(iv))); call_method_added(c, k, n)?; }
     if writer {
         let w = intern(format!("{}=", sym_str(n)).as_bytes());
         crate::rt::note_redefinition(c, k, w);
-        define_method_me(c, k, w, new_me(w, k, visi, MKind::AttrWriter(iv)));
+        define_user_method(c, k, w, new_me(w, k, visi, MKind::AttrWriter(iv)));
         call_method_added(c, k, w)?;
     }
     Ok(())
@@ -673,7 +679,14 @@ fn set_visibility(c: &mut Ctx, slf: Value, a: &[Value], visi: u8) -> RV {
     let keep = c.ary_new_from(&list);   // to_sym_arg may run Ruby code; list is not scanned
     for &x in &list {
         let m = to_sym_arg(c, x)?;
-        let me = search_method(c, slf, m);
+        // from the origin: a prepended module's method is not the one changed
+        let anc = ancestors(c, slf);
+        let first = anc[anc.iter().position(|&k| k == slf).unwrap_or(0)..].iter().find_map(|&k| c.class(k).mtbl.get(&m).copied());
+        let me = match first {
+            Some(f) if matches!(me_kind(c, f), Some(MKind::ZSuper)) => if me_owner(c, f) == slf { f } else { search_method(c, slf, m) },
+            Some(f) => f,
+            None => search_method(c, slf, m),
+        };
         // a refinement changes the visibility of the refined class's method
         let me = if me.is_null() && c.class(slf).refined { search_method(c, c.class(slf).attached, m) } else { me };
         let me = if me.is_null() && c.class(slf).is_module { search_method(c, c.vm().c_object.get(), m) } else { me };
@@ -688,19 +701,26 @@ fn set_visibility(c: &mut Ctx, slf: Value, a: &[Value], visi: u8) -> RV {
         if visi == VISI_MODFUNC {
             let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi: VISI_PRIVATE, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
             keep_alias_name(c, me, n);
-            define_method_me(c, slf, m, n);
+            define_method_me(c, slf, m, n);   // its own entry turns private in place: no redefinition
             let sk = singleton_class(c, slf);
             let n2 = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: sk, visi: VISI_PUBLIC, kind: o.kind, orig_owner: sk, cref: o.cref }));
             keep_alias_name(c, me, n2);
-            define_method_me(c, sk, m, n2);
+            define_user_method(c, sk, m, n2);
+            call_method_added(c, sk, m)?;
             continue;
         }
+        // rb_export_method: the entry found first (a ZSuper one included) changes in place when it is slf's own
         if o.owner == slf { c.me_set_visi(me, visi); bump_method_serial(); c.vm().mcache.borrow_mut().clear(); }
-        else if o.visi == visi { continue; }   // rb_export_method: an inherited one already so is left alone
-        else {
+        else if o.visi == visi { continue; }   // an inherited one already so is left alone
+        else if c.class(slf).refined {
+            // in a refinement: a copy with the new visibility (refined lookups do not follow ZSuper entries)
             let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
             keep_alias_name(c, me, n);
             define_method_me(c, slf, m, n);
+        } else {
+            // a ZSuper entry: calls reach the method above (a later redefinition there too)
+            define_method_me(c, slf, m, new_me(m, slf, visi, MKind::ZSuper));
+            crate::builtins::object::call_method_added(c, slf, m)?;
         }
     }
     std::hint::black_box(keep);
@@ -775,14 +795,14 @@ pub fn m_define_method(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
         new_me(mid, slf, visi, MKind::Bmethod(np))
     };
     crate::rt::note_redefinition(c, slf, mid);
-    define_method_me(c, slf, mid, me);
+    define_user_method(c, slf, mid, me);
     if modfunc {
         let Some(o) = me_copy(c, me) else { return Ok(Value::sym(mid)) };
         let sk = singleton_class(c, slf);
         let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: sk, visi: VISI_PUBLIC, kind: o.kind, orig_owner: sk, cref: o.cref }));
         keep_alias_name(c, me, n);
         crate::rt::note_redefinition(c, sk, mid);
-        define_method_me(c, sk, mid, n);
+        define_user_method(c, sk, mid, n);
     }
     call_method_added(c, slf, mid)?;
     Ok(Value::sym(mid))
@@ -864,9 +884,14 @@ fn set_temp_name(c: &mut Ctx, k: Value, name: Option<String>, seen: &mut Vec<Val
 }
 fn m_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let cd = c.class(slf);
+    if cd.refined {
+        let (k, at) = (cd.attached, ivar_get(c, slf, intern(b"__defined_at__")));
+        let s = format!("#<refinement:{}@{}>", inspect_str(c, k)?, inspect_str(c, at)?);
+        return Ok(c.str_new(s.as_bytes()));
+    }
     if cd.is_singleton {
         let att = cd.attached;
-        let inner = if is_class_or_module(att) { inspect_str(c, att)? } else { inspect_str(c, att)? };
+        let inner = if is_class_or_module(att) { inspect_str(c, att)? } else { crate::builtins::kernel::any_to_s_str(c, att) };
         return Ok(c.str_new(format!("#<Class:{}>", inner).as_bytes()));
     }
     Ok(c.str_new(class_path(c, slf).as_bytes()))
@@ -894,15 +919,17 @@ fn m_cmp(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     Ok(NIL)
 }
 fn m_ancestors(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
-    let v: Vec<Value> = ancestors(c, slf).iter().copied().filter(|&k| !c.class(k).is_singleton || slf == k || true).collect();
+    let v = ancestors_listed(c, slf);
     Ok(c.ary_from_vec(v))
 }
 fn m_include(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    if c.class(slf).refined { return type_err(c, "Refinement#include has been removed"); }
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
     for &m in a.iter() {
         if !is_class_or_module(m) || !c.class(m).is_module {
             return type_err(c, format!("wrong argument type {} (expected Module)", class_name_for_err(c, m)));
         }
+        if c.class(m).refined { return type_err(c, "Cannot include refinement"); }
         if m == slf { return arg_err(c, "cyclic include detected"); }
     }
     for &m in a.iter().rev() {
@@ -915,12 +942,14 @@ fn m_append_features(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { feat
 /// rb_include_module / rb_prepend_module's checks: a class receiver (rebound), frozen target, cycles.
 fn features_check(c: &mut Ctx, m: Value, target: Value, what: &str) -> Result<(), Esc> {
     if !c.class(m).is_module { return type_err(c, format!("wrong argument type {} (expected Module)", class_name_for_err(c, m))); }
+    if c.class(m).refined { return arg_err(c, "refinement module is not allowed"); }
     if !is_class_or_module(target) { return type_err(c, format!("wrong argument type {} (expected Class)", class_name_for_err(c, target))); }
     check_frozen(c, target)?;
     if m == target || ancestors(c, m).contains(&target) { return arg_err(c, format!("cyclic {} detected", what)); }
     Ok(())
 }
 fn m_prepend(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    if c.class(slf).refined { return type_err(c, "Refinement#prepend has been removed"); }
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
     for &m in a.iter() {
         if !is_class_or_module(m) || !c.class(m).is_module {
@@ -941,7 +970,7 @@ fn m_include_p(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     Ok(Value::bool(slf != a[0] && ancestors(c, slf).contains(&a[0])))
 }
 fn m_included_modules(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
-    let v: Vec<Value> = ancestors(c, slf).iter().copied().filter(|&k| c.class(k).is_module).collect();
+    let v: Vec<Value> = ancestors(c, slf).iter().copied().filter(|&k| k != slf && c.class(k).is_module).collect();
     Ok(c.ary_from_vec(v))
 }
 fn m_class_eval(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
@@ -1228,9 +1257,12 @@ fn m_cvar_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_cvar_name(c, n, slf, a[0])?;
     Ok(Value::bool(crate::rt::cvar_lookup(c, slf, n).is_some()))
 }
-fn m_cvars(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
+fn m_cvars(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    check_argc(c, a, 0, 1)?;
+    let inherit = a.first().is_none_or(|v| v.truthy());
     let out = c.ary_new();
-    for &k in ancestors(c, slf).to_vec().iter() {
+    let anc = if inherit { ancestors(c, slf).to_vec() } else { vec![slf] };
+    for &k in anc.iter() {
         let names: Vec<Sym> = c.class(k).cvars.keys().copied().collect();
         for n in names { if !c.ary(out).contains(&Value::sym(n)) { c.ary_push(out, Value::sym(n)); } }
     }
@@ -1240,9 +1272,20 @@ fn m_freeze(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { k_freeze(c, sl
 fn m_module_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if c.class(slf).is_singleton { return c_new(c, slf, a, b); }
     let m = new_module(c);
-    obj_set_klass(m, if slf == c.vm().c_module.get() { c.vm().c_module.get() } else { slf });
-    if !b.is_null() { yield_with_self(c, b, &[m], m, m)?; }
+    if slf == c.vm().c_module.get() {
+        obj_set_klass(m, slf);
+        if !b.is_null() { yield_with_self(c, b, &[m], m, m)?; }
+        return Ok(m);
+    }
+    // a subclass of Module: its #initialize runs (rb_class_new_instance)
+    obj_set_klass(m, slf);
+    funcall(c, m, s::initialize, a, b)?;
     Ok(m)
+}
+/// Module#initialize: the block runs as module_eval.
+fn m_initialize(c: &mut Ctx, slf: Value, _a: &[Value], b: Blk) -> RV {
+    if !b.is_null() { yield_with_self(c, b, &[slf], slf, slf)?; }
+    Ok(NIL)
 }
 fn m_instance_variable_names(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.ary_new()) }
 fn m_singleton_class_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(c.class(slf).is_singleton)) }
@@ -1266,10 +1309,13 @@ fn m_refine(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
         None => {
             let r = new_module(c);
             if let Some(rc) = const_get_at(c, c.vm().c_object.get(), intern(b"Refinement")) { obj_set_klass(r, rc); }
-            let nm = c.str_new_frozen(format!("#<refinement:{}@{}>", class_path(c, k), class_path(c, slf)).as_bytes());
             let cd = c.class_mut(r);
-            cd.refined = true; cd.attached = k; cd.name = Some(nm);
+            cd.refined = true; cd.attached = k;
+            ivar_set_raw(c, r, intern(b"__defined_at__"), slf);
             c.ary_push(list, r);
+            // refine blocks run before see it too (a module's refinements are activated together)
+            let act = ivar_get(c, slf, intern(b"__activated"));
+            if act != NIL { for a in c.ary(act).to_vec() { if !c.ary(a).contains(&r) { c.ary_push(a, r); } } }
             r
         }
     };
@@ -1279,12 +1325,31 @@ fn m_refine(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let mut v = if outer != NIL { c.ary(outer).to_vec() } else { vec![] };
     for &x in c.ary(list) { if !v.contains(&x) { v.push(x); } }
     let active = c.ary_from_vec(v);
+    let act = match ivar_get(c, slf, intern(b"__activated")) { NIL => { let a = c.ary_new(); ivar_set_raw(c, slf, intern(b"__activated"), a); a } a => a };
+    c.ary_push(act, active);
     let cr = new_cref(r, blk.cref);
     c.cref_set_refinements(cr, active);
     c.set_refinements_on();
     blk.cref = cr;
     yield_with_self(c, &blk, &[r], r, r)?;
     Ok(r)
+}
+/// rb_top_main_class: the wrapper module in a wrapped load, else Object.
+fn top_main_class(c: &mut Ctx, method: &str) -> RV {
+    let w = crate::builtins::kernel::top_wrapper();
+    if w == NIL { return Ok(c.vm().c_object.get()); }
+    if c.vm().verbose.get() == TRUE { crate::builtins::kernel::gvar_warn(c, &format!("main.{} in the wrapped load is effective only in wrapper module", method), false)?; }
+    Ok(w)
+}
+/// main.using: only at the top level (of a wrapped load too).
+fn top_using(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
+    let cr = caller_cref(c);
+    let next = c.cref_ref(cr).map_or(std::ptr::null(), |x| x.prev);
+    let next = if crate::builtins::kernel::top_wrapper() != NIL { c.cref_ref(next).map_or(std::ptr::null(), |x| x.prev) } else { next };
+    if !next.is_null() || c.caller_frame().is_some_and(|f| f.kind == FK_METHOD) {
+        return err(c, c.vm().c_runtime_error.get(), "main.using is permitted only at toplevel");
+    }
+    m_using(c, slf, a, b)
 }
 /// `using mod`: the caller's cref is replaced by a copy that has mod's refinements activated.
 fn m_using(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
@@ -1309,6 +1374,13 @@ fn m_using(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     bump_method_serial();
     Ok(slf)
 }
+/// Module.used_refinements: the refinements active where it is called.
+fn m_s_used_refinements(c: &mut Ctx, _slf: Value, _a: &[Value], _b: Blk) -> RV {
+    let r = cref_refinements(caller_cref(c));
+    let mut v: Vec<Value> = vec![];
+    if r != NIL { for &x in c.ary(r).iter() { if !v.contains(&x) { v.push(x); } } }
+    Ok(c.ary_from_vec(v))
+}
 fn m_refinements(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let l = ivar_get(c, slf, intern(b"__refinements"));
     Ok(if l == NIL { c.ary_new() } else { c.ary_from_vec(c.ary(l).to_vec()) })
@@ -1316,8 +1388,15 @@ fn m_refinements(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 fn refinement_target(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.class(slf).attached) }
 /// Refinement#import_methods: copies of the modules' Ruby-defined methods.
 fn refinement_import_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    if a.is_empty() { return argc_err(c, 0, 1, -1); }
     for &m in a {
         if !is_class_or_module(m) || !c.class(m).is_module { return type_err(c, format!("wrong argument type {} (expected Module)", class_name_for_err(c, m))); }
+        if ancestors(c, m).len() > 1 {
+            let msg = format!("{} has ancestors, but Refinement#import_methods doesn't import their methods", class_path(c, m));
+            crate::builtins::kernel::gvar_warn(c, &msg, false)?;
+        }
+    }
+    for &m in a {
         let mt: Vec<(Sym, *const MethodEntry)> = c.class(m).mtbl.iter().map(|(a, b)| (*a, *b)).collect();
         for (name, me) in mt {
             let Some(me) = me_copy(c, me) else { continue };
@@ -1327,7 +1406,7 @@ fn refinement_import_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> R
                     let cref = if c.caller_frame().is_none() { me.cref } else { caller_cref(c) };
                     let n = new_me_cref(name, slf, me.visi, me.kind, cref);
                     crate::rt::note_redefinition(c, slf, name);
-                    define_method_me(c, slf, name, n);
+                    define_user_method(c, slf, name, n);
                 }
                 _ => return arg_err(c, format!("Can't import method which is not defined with Ruby code: {}#{}", class_path(c, m), sym_str(name))),
             }
@@ -1351,7 +1430,8 @@ pub fn alloc_instance(c: &mut Ctx, klass: Value) -> RV {
         AllocKind::Array => c.alloc(klass, Body::Array(crate::avec::AVec::new())),
         AllocKind::Hash => { let h = c.hash_new(); obj_set_klass(h, klass); h }
         AllocKind::Range => c.alloc(klass, Body::Range(NIL, NIL, false)),
-        AllocKind::Class => { let k = new_class(c, c.vm().c_object.get()); k }
+        // rb_class_s_alloc: no superclass until Class#initialize
+        AllocKind::Class => new_class(c, NIL),
         AllocKind::Module => { let m = new_module(c); obj_set_klass(m, klass); m }
         AllocKind::Proc | AllocKind::None => {
             if let Some(v) = crate::builtins::alloc_data(c, klass)? { return Ok(v); }
@@ -1362,6 +1442,7 @@ pub fn alloc_instance(c: &mut Ctx, klass: Value) -> RV {
 
 fn c_allocate(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { alloc_instance(c, slf) }
 pub fn c_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
+    if uninit_class(c, slf) { return type_err(c, "can't instantiate uninitialized class"); }
     let o = alloc_instance(c, slf)?;
     let kw = kw_arg(c, a).is_some();
     let me = lookup_method(c, class_of(o), s::initialize);
@@ -1405,7 +1486,10 @@ fn c_class_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if !b.is_null() { yield_with_self(c, b, &[k], k, k)?; }
     Ok(k)
 }
+/// A class from Class.allocate (no superclass yet).
+fn uninit_class(c: &Ctx, k: Value) -> bool { let cd = c.class(k); cd.superclass == NIL && !cd.is_module && !cd.is_singleton && k != c.vm().c_basic_object.get() }
 fn c_superclass(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
+    if uninit_class(c, slf) { return type_err(c, "uninitialized class"); }
     let mut s = c.class(slf).superclass;
     while s != NIL && c.class(s).is_module { s = c.class(s).superclass; }
     Ok(s)
@@ -1574,6 +1658,8 @@ pub fn init(c: &mut Ctx) -> InitIds {
     let rf = define_class(c, "Refinement", vmr.c_module.get());
     define_cfunc(c, rf, "target", refinement_target, 0);
     define_private_cfunc(c, rf, "import_methods", refinement_import_methods, -1);
+    for n in ["extend_object", "append_features", "prepend_features"] { undef_method(c, rf, intern(n.as_bytes())).expect("Module's method"); }
+    define_singleton_cfunc(c, m, "used_refinements", m_s_used_refinements, 0);
     define_cfunc(c, vmr.c_class.get(), "attached_object", m_attached_object, 0);
     d(c, "instance_variable_names", m_instance_variable_names, 0);
     define_singleton_cfunc(c, m, "new", m_module_new, -1);
@@ -1588,6 +1674,7 @@ pub fn init(c: &mut Ctx) -> InitIds {
     define_cfunc(c, kc, "subclasses", c_subclasses, 0);
     define_private_cfunc(c, kc, "inherited", c_inherited, 1);
     define_private_cfunc(c, kc, "initialize", c_initialize, -1);
+    define_private_cfunc(c, vmr.c_module.get(), "initialize", m_initialize, 0);
     define_singleton_cfunc(c, kc, "new", c_class_new, -1);
 
     let main = vmr.main_obj.get();
@@ -1596,8 +1683,8 @@ pub fn init(c: &mut Ctx) -> InitIds {
     let sk = singleton_class(c, main);
     define_private_cfunc(c, sk, "private", top_private, -1);
     define_private_cfunc(c, sk, "public", top_public, -1);
-    define_private_cfunc(c, sk, "include", |c, _s, a, b| m_include(c, c.vm().c_object.get(), a, b), -1);
+    define_private_cfunc(c, sk, "include", |c, _s, a, b| { let k = top_main_class(c, "include")?; m_include(c, k, a, b) }, -1);
     define_private_cfunc(c, sk, "define_method", |c, _s, a, b| m_define_method(c, c.vm().c_object.get(), a, b), -1);
-    define_private_cfunc(c, sk, "using", m_using, 1);
+    define_private_cfunc(c, sk, "using", top_using, 1);
     InitIds { bo_init: id_bo_init, bo_eq: id_bo_eq, kernel_hash: id_kernel_hash, m_eqq: id_m_eqq, c_new: id_c_new }
 }

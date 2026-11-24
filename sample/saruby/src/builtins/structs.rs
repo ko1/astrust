@@ -64,6 +64,7 @@ fn st_s_new(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
         names.push(n);
     }
     let k = new_class(c, slf);
+    crate::builtins::object::call_inherited(c, slf, k)?;
     let mem = c.ary_from_vec(names.iter().map(|n| Value::sym(*n)).collect());
     obj_set_flags(mem, FL_FROZEN);
     let consts = &mut c.class_mut(k).consts;
