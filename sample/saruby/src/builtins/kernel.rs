@@ -112,12 +112,49 @@ pub fn inspect_str(c: &mut Ctx, v: Value) -> Result<String, Esc> {
 /// rb_inspect: v.inspect, as a String by rb_obj_as_string.
 pub fn inspect_value(c: &mut Ctx, v: Value) -> RV {
     if (v == NIL || v.is_fixnum()) && !crate::rt::redef(crate::rt::R_IMM_INSPECT) {
-        return Ok(if v == NIL { c.str_new(b"nil") } else { c.str_new(v.as_fix().to_string().as_bytes()) });
+        return Ok(if v == NIL { c.str_new_enc(b"nil", crate::object::ENC_ASCII) } else { c.str_new_enc(v.as_fix().to_string().as_bytes(), crate::object::ENC_ASCII) });
     }
     let r = funcall(c, v, s::inspect, &[], std::ptr::null())?;
-    if is_string(r) { return Ok(r); }
-    let t = funcall(c, r, s::to_s, &[], std::ptr::null())?;
-    if is_string(t) { Ok(t) } else { Ok(c.str_new(any_to_s_str(c, r).as_bytes())) }
+    let r = if is_string(r) { r } else {
+        let t = funcall(c, r, s::to_s, &[], std::ptr::null())?;
+        if is_string(t) { t } else { c.str_new(any_to_s_str(c, r).as_bytes()) }
+    };
+    // rb_inspect: a result not in the default internal / external encoding is escaped
+    use crate::builtins::encoding as en;
+    let e = en::default_internal().unwrap_or_else(en::default_external);
+    let re = c.str_enc(r);
+    if (!en::ascii_compat(e) || re != e) && !(en::ascii_compat(re) && c.str_bytes(r).is_ascii()) { return Ok(str_escape(c, r)); }
+    Ok(r)
+}
+/// rb_str_escape: a US-ASCII copy with non-printable / non-ASCII characters escaped.
+pub fn str_escape(c: &mut Ctx, v: Value) -> Value {
+    use crate::builtins::encoding as en;
+    let enc = c.str_enc(v);
+    let b = c.str_bytes(v).to_vec();
+    let (uni, ac) = (en::is_unicode(enc), en::ascii_compat(enc));
+    let mut out = Vec::with_capacity(b.len());
+    let mut p = 0;
+    while p < b.len() {
+        let Some(n) = en::precise_len(enc, &b, p) else {
+            let n = en::min_len(enc).min(b.len() - p);
+            for &x in &b[p..p + n] { out.extend_from_slice(format!("\\x{:02X}", x).as_bytes()); }
+            p += n;
+            continue;
+        };
+        let ch = &b[p..p + n];
+        let cp = en::char_code(enc, ch);
+        p += n;
+        let esc: Option<&str> = match cp { 0 => Some("\\0"), 0x0a => Some("\\n"), 0x0d => Some("\\r"), 0x09 => Some("\\t"), 0x0c => Some("\\f"), 0x0b => Some("\\v"), 0x08 => Some("\\b"), 0x07 => Some("\\a"), 0x1b => Some("\\e"), 0x7f => Some("\\c?"), _ => None };
+        if let Some(e) = esc { out.extend_from_slice(e.as_bytes()); }
+        else if ac && cp < 0x80 && (0x20..0x7f).contains(&cp) { out.extend_from_slice(ch); }
+        else if uni {
+            if cp < 0x7f && (0x20..0x7f).contains(&cp) { out.push(cp as u8); }
+            else if cp < 0x10000 { out.extend_from_slice(format!("\\u{:04X}", cp).as_bytes()); }
+            else { out.extend_from_slice(format!("\\u{{{:X}}}", cp).as_bytes()); }
+        } else if cp < 0x100 { out.extend_from_slice(format!("\\x{:02X}", cp).as_bytes()); }
+        else { out.extend_from_slice(format!("\\x{{{:X}}}", cp).as_bytes()); }
+    }
+    c.str_from_vec_enc(out, crate::object::ENC_ASCII)
 }
 
 pub fn to_s_value(c: &mut Ctx, v: Value) -> RV { crate::rt::srb_tostr(c, v) }

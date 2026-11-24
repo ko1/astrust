@@ -166,7 +166,7 @@ fn vtm_of(c: &mut Ctx, t: RTime) -> Vtm {
     let secs = ex_div(c, t.w, ns());
     let (off, isdst, zone) = match t.mode {
         UTC => (Value::fix(0), false, Some("UTC".to_string())),
-        FIXED => (t.off, false, None),
+        FIXED => (t.off, false, if is_string(t.zone) { Some(String::from_utf8_lossy(c.str_bytes(t.zone)).into_owned()) } else { None }),
         ZONE => (t.off, t.dst, None),
         _ if t.off != NIL => (t.off, t.dst, Some(String::from_utf8_lossy(c.str_bytes(t.zone)).into_owned())),
         _ => { let (o, d, z) = local_info(secs_floor(c, t.w)); (Value::fix(o), d, Some(z)) }
@@ -965,36 +965,19 @@ fn t_xmlschema(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     }
     Ok(ascii(c, s2))
 }
-/// Time#_dump: two little-endian words (time_mdump without its ivars)
-fn t_dump(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    check_argc(c, a, 0, 1)?;
-    let t = rt(c, slf);
-    let g = RTime { w: t.w, mode: UTC, off: NIL, zone: NIL, dst: false };
-    let v = vtm_of(c, g);
-    if !(1900..=1900 + 0xffff).contains(&v.year) { return arg_err(c, format!("year too {} to marshal: {} UTC", if v.year < 1900 { "small" } else { "big" }, v.year)); }
-    let n = subns(c, t); let n = ex_floor(c, n);
-    let usec = n.as_fix() / 1000;
-    let p: u32 = 1 << 31 | ((t.mode == UTC) as u32) << 30 | ((v.year - 1900) as u32) << 14 | ((v.mon - 1) as u32) << 10 | (v.mday as u32) << 5 | v.hour as u32;
-    let sw: u32 = (v.min as u32) << 26 | (v.sec as u32) << 20 | usec as u32;
-    let mut b = p.to_le_bytes().to_vec(); b.extend_from_slice(&sw.to_le_bytes());
-    Ok(c.str_new_enc(&b, crate::object::ENC_BINARY))
-}
-/// Time._load: the new layout (top bit set) or the old one (seconds, microseconds)
-fn t_s_load(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    let sv = expect_str(c, a[0])?;
-    let b = c.str_bytes(sv).to_vec();
-    if b.len() != 8 { return type_err(c, "marshaled time format differ"); }
-    let p = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-    let sw = u32::from_le_bytes([b[4], b[5], b[6], b[7]]);
-    if p & (1 << 31) == 0 {
-        let w = c.int_from_i128(p as i128 * NS as i128 + sw as i128 * 1000);
-        return Ok(new_time(c, slf, w, LOCAL, NIL));
-    }
-    let utc = p & (1 << 30) != 0;
-    let (year, mon, mday, hour) = (((p >> 14) & 0xffff) as i128 + 1900, ((p >> 10) & 0xf) as i64 + 1, ((p >> 5) & 0x1f) as i64, (p & 0x1f) as i64);
-    let (min, sec, usec) = ((sw >> 26) as i64, ((sw >> 20) & 0x3f) as i64, (sw & 0xfffff) as i128);
-    let w = c.int_from_i128(timegm_fields(year, mon, mday, hour, min, sec) * NS as i128 + usec * 1000);
-    Ok(new_time(c, slf, w, if utc { UTC } else { LOCAL }, NIL))
+/// mload_zone: a loaded Time's zone name, as Class.find_timezone's zone or kept as the name
+pub fn mload_zone(c: &mut Ctx, t: Value, zone: Value) -> Result<(), Esc> {
+    let z = match find_timezone(c, t, zone) {
+        Ok(z) => z,
+        Err(e) => { if c.esc == EscKind::Raise && is_kind_of(c, c.esc_val, c.vm().c_standard_error.get()) { c.esc = EscKind::None; NIL } else { return Err(e); } }
+    };
+    if z != NIL && !is_string(z) { zone_localtime(c, t, z)?; return Ok(()); }
+    let name = if is_string(z) { z } else { zone };
+    if !is_string(name) { return Ok(()); }
+    let m = rt(c, t).mode;
+    if m == LOCAL { cache_local(c, t); }
+    if m == LOCAL || m == FIXED { rt_mut(c, t).zone = name; }
+    Ok(())
 }
 fn t_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if slf == a[0] { return Ok(slf); }
@@ -1027,9 +1010,6 @@ pub fn init(c: &mut Ctx) -> Value {
     define_singleton_cfunc(c, k, "gm", t_utc_s, -1);
     define_private_cfunc(c, k, "initialize", t_initialize, -1);
     define_private_cfunc(c, k, "initialize_copy", t_init_copy, 1);
-    define_private_cfunc(c, k, "_dump", t_dump, -1);
-    let sk = singleton_class(c, k);
-    define_private_cfunc(c, sk, "_load", t_s_load, 1);
     let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, k, n, f, a);
     d(c, "to_f", t_to_f, 0); d(c, "to_i", t_to_i, 0); d(c, "to_r", t_to_r, 0); d(c, "tv_sec", t_to_i, 0); d(c, "usec", t_usec, 0); d(c, "tv_usec", t_usec, 0);
     d(c, "nsec", t_nsec, 0); d(c, "tv_nsec", t_nsec, 0); d(c, "subsec", t_subsec, 0); d(c, "-", t_minus, 1); d(c, "+", t_plus, 1);

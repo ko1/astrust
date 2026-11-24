@@ -456,6 +456,38 @@ fn r_init_copy(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     }
     Ok(s)
 }
+fn r_state(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
+    let w = rr(c, s).mt.state.to_vec();
+    Ok(c.big_to_value(BigInt::from_words(false, &w)))
+}
+fn r_left(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(rr(c, s).mt.left as i64)) }
+/// rand_mt_dump: [state, left, seed]
+fn r_mdump(c: &mut Ctx, s: Value, _a: &[Value], b: Blk) -> RV {
+    let st = r_state(c, s, &[], b)?;
+    let l = r_left(c, s, &[], b)?;
+    let sd = rr(c, s).seed;
+    Ok(c.ary_from_vec(vec![st, l, sd]))
+}
+fn r_mload(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
+    let d = a[0];
+    check_frozen(c, s)?;
+    if !is_array(d) { return type_err(c, format!("wrong argument type {} (expected Array)", class_name_for_err(c, d))); }
+    let n = c.ary_len(d);
+    if !(1..=3).contains(&n) { return arg_err(c, "wrong dump data"); }
+    let state = c.ary_get(d, 0);
+    let left = if n >= 2 { c.ary_get(d, 1) } else { Value::fix(1) };
+    let seed = if n >= 3 { c.ary_get(d, 2) } else { Value::fix(0) };
+    let big = c.to_big(state);
+    let x = crate::builtins::numeric_methods::num_to_long(c, left)?;
+    if !(0..=N as i64).contains(&x) { return arg_err(c, "wrong value"); }
+    let seed = check_to_int(c, seed)?.unwrap_or(Value::fix(0));
+    let r = rr(c, s);
+    for (i, w) in r.mt.state.iter_mut().enumerate() { *w = big.mag.get(i).copied().unwrap_or(0); }
+    r.mt.left = x as i32;
+    r.mt.next = N - x as usize + 1;
+    r.seed = seed;
+    Ok(s)
+}
 fn s_new_seed(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(make_seed_value(c, fill_random_words(4))) }
 fn s_seed(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { let d = default_rnd(c); Ok(rr(c, d).seed) }
 fn s_bytes(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { bytes_of(c, default_rnd(c), a[0]) }
@@ -496,6 +528,10 @@ pub fn init(c: &mut Ctx) -> (Value, Value) {
     define_cfunc(c, base, "bytes", r_bytes, 1);
     define_cfunc(c, base, "seed", r_seed, 0);
     define_private_cfunc(c, r, "initialize_copy", r_init_copy, 1);
+    define_private_cfunc(c, r, "marshal_dump", r_mdump, 0);
+    define_private_cfunc(c, r, "marshal_load", r_mload, 1);
+    define_private_cfunc(c, r, "state", r_state, 0);
+    define_private_cfunc(c, r, "left", r_left, 0);
     define_cfunc(c, r, "==", r_eq, 1);
     define_singleton_cfunc(c, r, "srand", k_srand, -1);
     define_singleton_cfunc(c, r, "rand", r_rand, -1);

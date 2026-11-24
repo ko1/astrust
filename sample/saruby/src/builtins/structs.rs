@@ -158,8 +158,9 @@ fn st_aset(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let n = idx_of
 fn st_cmp_members(c: &mut Ctx, slf: Value, o: Value, eql: bool) -> RV {
     if slf == o { return Ok(TRUE); }
     if !o.is_heap() || real_class_of(c, o) != real_class_of(c, slf) { return Ok(FALSE); }
-    let tag = if eql { s::eql_p } else { s::eq };
-    if !rec_enter(c, slf, tag)? { return Ok(TRUE); }
+    // rb_exec_recursive_paired: a pair met again compares equal
+    let tag = intern(if eql { b"__struct_eql" } else { b"__struct_eq" });
+    if !crate::legacy::recursion_enter_paired(slf, o, tag) { return Ok(TRUE); }
     let mem = members_of(c, real_class_of(c, slf));
     let r: Result<bool, Esc> = (|| {
         for i in 0..c.ary_len(mem) {
@@ -170,7 +171,7 @@ fn st_cmp_members(c: &mut Ctx, slf: Value, o: Value, eql: bool) -> RV {
         }
         Ok(true)
     })();
-    rec_leave(c, slf, tag);
+    crate::legacy::recursion_leave_paired(slf, o, tag);
     Ok(Value::bool(r?))
 }
 fn st_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { st_cmp_members(c, slf, a[0], false) }
@@ -268,12 +269,13 @@ fn st_deconstruct_keys(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
             let n = if k.is_sym() { k.as_sym() } else { intern(c.str_bytes(k)) };
             if !c.ary(mem).contains(&Value::sym(n)) { break; }
             n
-        } else if k.is_fixnum() {
-            let j = k.as_fix();
+        } else {
+            // NUM2LEN: anything else through to_int
+            let j = crate::builtins::numeric_methods::num_to_long(c, k)?;
             let j = if j < 0 { j + len } else { j };
             if j < 0 || j >= len { break; }
             c.ary_get(mem, j as usize).as_sym()
-        } else { break };
+        };
         let v = ivar_get(c, slf, n);
         hash_aset(c, h, k, v)?;
         i += 1;

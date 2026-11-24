@@ -181,6 +181,22 @@ fn run_each_stop(c: &mut Ctx, recv: Value, f: CBlockFn, data: Value, blk: Blk) -
     r
 }
 
+/// Array#zip's take_items for a non-Array: the first n values of obj.each (packed); None if no #each.
+pub fn take_items(c: &mut Ctx, obj: Value, n: usize) -> Result<Option<Value>, Esc> {
+    if !crate::rt::check_respond(c, obj, s::each)? { return Ok(None); }
+    let out = c.ary_new();
+    if n == 0 { return Ok(Some(out)); }
+    let d = c.ary_new_from(&[out, Value::fix(n as i64)]);
+    run_each_stop(c, obj, |c, d, args, _, _| {
+        let v = pack(c, args);
+        let out = c.ary_get(d, 0);
+        c.ary_push(out, v);
+        if c.ary_len(out) as i64 >= c.ary_get(d, 1).as_fix() { return enum_stop(c, d); }
+        Ok(NIL)
+    }, d, Blk::NONE)?;
+    Ok(Some(out))
+}
+
 fn no_blk(c: &mut Ctx, slf: Value, mid: &str, a: &[Value]) -> RV {
     crate::builtins::enumerator::enum_for_sized(c, slf, crate::symbol::intern(mid.as_bytes()), a)
 }
@@ -282,6 +298,7 @@ fn en_find(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
 }
 fn en_count(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
+    if !a.is_empty() && !blk.is_null() { crate::builtins::kernel::gvar_warn(c, "given block not used", false)?; }
     let mode = if !a.is_empty() { 1 } else if !blk.is_null() { 2 } else { 0 };
     let d = c.ary_new_from(&[Value::fix(0), Value::fix(mode), a.first().copied().unwrap_or(NIL)]);
     run_each(c, slf, |c, d, args, _, o| {
@@ -399,7 +416,7 @@ fn en_group_by(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     Ok(acc0)
 }
 fn en_inject(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
-    if a.len() > 2 || (a.is_empty() && blk.is_null()) { return argc_err(c, a.len(), 1, 2); }
+    if blk.is_null() { check_argc(c, a, 1, 2)?; } else { check_argc(c, a, 0, 2)?; if a.len() == 2 && c.vm().verbose.get() == TRUE { crate::builtins::kernel::gvar_warn(c, "given block not used", false)?; } }
     // d = [acc (UNDEF = first element pending), op (nil = block)]
     let (acc, op) = match (a.len(), blk.is_null()) {
         (2, _) => (a[0], a[1]),
@@ -407,10 +424,7 @@ fn en_inject(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
         (1, false) => (a[0], NIL),
         _ => (UNDEF, NIL),
     };
-    let op = if op == NIL || op.is_sym() { op } else if is_string(op) { Value::sym(crate::symbol::intern(c.str_bytes(op))) } else {
-        let ins = crate::builtins::kernel::inspect_str(c, op)?;
-        return type_err(c, format!("{} is not a symbol nor a string", ins));
-    };
+    let op = if op == NIL || op.is_sym() { op } else { Value::sym(crate::builtins::object::to_sym_arg(c, op)?) };
     let d = c.ary_new_from(&[acc, op]);
     run_each(c, slf, |c, d, args, _, o| {
         let v = pack(c, args);

@@ -974,7 +974,7 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     let numc = c.vm().c_numeric.get();
     let numeric = |v: Value| v.is_fixnum() || is_float(v) || is_kind_of(c, v, numc);
     if b.is_null() {
-        if (lim == NIL || numeric(lim)) && numeric(st) { return crate::builtins::enumerator::arith_seq(c, s, lim, st, false, s::step); }
+        if (lim == NIL || numeric(lim)) && numeric(st) { return crate::builtins::enumerator::arith_seq_from(c, s, s, lim, st, false, s::step, a); }
         // a non-Numeric limit or step: a plain Enumerator (numeric.c num_step)
         let sz = size_proc(c, step_size, s);
         return crate::builtins::enumerator::enum_for(c, s, s::step, &[lim, st], sz);

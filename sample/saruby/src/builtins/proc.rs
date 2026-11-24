@@ -52,7 +52,7 @@ pub fn proc_arity(c: &Ctx, p: Value) -> i64 {
         BlockKind::Iseq(is) => c.iseq_ref(is).map_or(-1, |is| iseq_arity(is, pd.is_lambda)),
         BlockKind::Sym(_) => -2,
         BlockKind::Method(m) => method_arity(c, c.method_obj(m).me),
-        BlockKind::Cfunc(..) => -1,
+        BlockKind::Cfunc(f, _) => if f as *const () as usize == crate::builtins::hash_methods::hash_proc_call as *const () as usize { 1 } else { -1 },
         BlockKind::Proc(q) => proc_arity(c, q),
     }
 }

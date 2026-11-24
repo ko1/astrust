@@ -38,8 +38,6 @@ pub struct FiberData {
     proc_: Value,
     xfer: Value,                    // a green thread's arguments, then its result
     exc: bool,                      // the result is an exception
-    pub peek: Option<Value>,
-    pub enum_src: Value,
     storage: Value,                 // Fiber[] / Fiber#storage: nil or a Hash
     locals: Value,                  // fiber-local Thread#[] (a non-root fiber's; roots use RThread's)
     owner: Value,                   // root fiber of the thread the fiber belongs to
@@ -49,7 +47,7 @@ pub struct FiberData {
 impl FiberData {
     fn new(proc_: Value) -> FiberData {
         FiberData { ctx: None, stack: None, vstack: None, sp: 0, running: false, main: false, started: false, done: false, yielding: false,
-                    prev: NIL, resuming: NIL, proc_, xfer: NIL, exc: false, peek: None, enum_src: NIL,
+                    prev: NIL, resuming: NIL, proc_, xfer: NIL, exc: false,
                     storage: NIL, locals: NIL, owner: NIL, blocking: false, killed: false }
     }
     /// Becoming the running fiber: (saved stack pointer, stack top).
@@ -62,8 +60,7 @@ impl FiberData {
 }
 impl RData for FiberData {
     fn visit(&mut self, m: &mut crate::gc::Visitor) {
-        for v in [&mut self.proc_, &mut self.xfer, &mut self.prev, &mut self.resuming, &mut self.enum_src, &mut self.storage, &mut self.locals, &mut self.owner] { m.visit(v); }
-        if let Some(p) = &mut self.peek { m.visit(p); }
+        for v in [&mut self.proc_, &mut self.xfer, &mut self.prev, &mut self.resuming, &mut self.storage, &mut self.locals, &mut self.owner] { m.visit(v); }
         if let Some(c) = &mut self.ctx { if c.ptr() != crate::vm::scan_ctx() { visit_ctx(m, c.get()); } }
         if self.running || self.sp == 0 { return; }
         match &self.stack {
@@ -463,16 +460,22 @@ fn f_kill(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 
 // ---- Enumerator#next / #peek ----------------------------------------------------------------
 
-fn enum_feed(c: &mut Ctx, _data: Value, args: &[Value], _b: Blk, _o: Blk) -> RV {
-    let v = args_value(c, args);
+/// next_ii: hand the packed values to #next, then give yield the value #feed left.
+fn enum_feed(c: &mut Ctx, e: Value, args: &[Value], _b: Blk, _o: Blk) -> RV {
+    let v = c.ary_new_from(args);
     fiber_yield(c, v)?;
-    Ok(NIL)
+    let en = c.data_mut::<REnum>(e).expect("an Enumerator");
+    let f = std::mem::replace(&mut en.feed, UNDEF);
+    Ok(if f == UNDEF { NIL } else { f })
 }
+/// next_i: the iteration's result goes into the StopIteration kept for #next.
 fn enum_body(c: &mut Ctx, e: Value, _args: &[Value], _b: Blk, _o: Blk) -> RV {
-    let blk = Block::cfunc(c, enum_feed, NIL);
+    let blk = Block::cfunc(c, enum_feed, e);
     let r = crate::builtins::enumerator::enum_each_with(c, e, Blk::of(&blk))?;
-    let f = CUR.get(c);
-    fdm(c, f).enum_src = r;
+    let k = c.vm().c_stop_iteration.get();
+    let ex = make_exception(c, k, "iteration reached an end");
+    ivar_set_raw(c, ex, crate::symbol::intern(b"result"), r);
+    c.data_mut::<REnum>(e).expect("an Enumerator").stop = ex;
     Ok(UNDEF)
 }
 
@@ -480,8 +483,6 @@ use crate::builtins::enumerator::REnum;
 fn renum(c: &Ctx, e: Value) -> &REnum { c.data::<REnum>(e).expect("an Enumerator") }
 
 fn enum_fiber(c: &mut Ctx, e: Value) -> Value {
-    let f = renum(c, e).fiber;
-    if f != NIL { return f; }
     let blk = Block::cfunc(c, enum_body, e);
     let pk = c.vm().c_proc.get();
     let p = c.alloc(pk, Body::Proc(Box::new(ProcData { blk, is_lambda: false, from_method: NIL })));
@@ -491,40 +492,38 @@ fn enum_fiber(c: &mut Ctx, e: Value) -> Value {
     // a copy of the storage of the fiber that calls next (as Fiber.new)
     let st = storage(c, CUR.get(c));
     if st != NIL { let st = crate::builtins::object::obj_dup(c, st, false, None).unwrap_or(NIL); fdm(c, f).storage = st; }
-    c.data_mut::<REnum>(e).expect("an Enumerator").fiber = f;
+    let en = c.data_mut::<REnum>(e).expect("an Enumerator");
+    en.fiber = f; en.look = UNDEF;
     f
 }
 
-fn enum_pull(c: &mut Ctx, e: Value) -> Result<Option<Value>, Esc> {
-    let f = enum_fiber(c, e);
-    if let Some(v) = fdm(c, f).peek.take() { return Ok(Some(v)); }
-    if fd(c, f).done { return Ok(None); }
-    let v = resume(c, f, NIL)?;
-    if fd(c, f).done { return Ok(None); }
-    Ok(Some(v))
-}
-
-fn stop_iteration(c: &mut Ctx, e: Value) -> Esc {
+/// get_next_values: the next yielded values (an Array); a fiber ended by an exception starts over.
+pub fn enum_next_values(c: &mut Ctx, e: Value) -> RV {
+    let stop = renum(c, e).stop;
+    if stop != NIL {
+        let res = ivar_get(c, stop, crate::symbol::intern(b"result"));
+        let m = ivar_get(c, stop, crate::symbol::s::mesg);
+        let m = if is_string(m) { c.str_copy(m) } else { m };
+        let k = c.vm().c_stop_iteration.get();
+        let ex = crate::vm::new_object(c, k);
+        ivar_set_raw(c, ex, crate::symbol::s::mesg, m);
+        ivar_set_raw(c, ex, crate::symbol::s::cause, stop);
+        ivar_set_raw(c, ex, crate::symbol::intern(b"result"), res);
+        return Err(raise_exc(c, ex));
+    }
     let f = renum(c, e).fiber;
-    let res = if f != NIL { fd(c, f).enum_src } else { NIL };
-    let k = c.vm().c_stop_iteration.get();
-    let ex = make_exception(c, k, "iteration reached an end");
-    ivar_set_raw(c, ex, crate::symbol::intern(b"result"), res);
-    raise_exc(c, ex)
+    let f = if f == NIL || fd(c, f).done { enum_fiber(c, e) } else { f };
+    let v = resume(c, f, NIL)?;
+    let stop = renum(c, e).stop;
+    if stop != NIL {
+        let en = c.data_mut::<REnum>(e).expect("an Enumerator");
+        en.fiber = NIL; en.look = UNDEF; en.feed = UNDEF;
+        return Err(raise_exc(c, stop));
+    }
+    Ok(v)
 }
-
-pub fn enum_next(c: &mut Ctx, e: Value) -> Result<Option<Value>, Esc> {
-    match enum_pull(c, e)? { Some(v) => Ok(Some(v)), None => Err(stop_iteration(c, e)) }
-}
-pub fn enum_has_fiber(_e: Value) -> bool { true }
 /// Enumerator `e` is between #next calls (CRuby's e->fib, cleared when the iteration ended).
 pub fn enum_fiber_live(c: &Ctx, e: Value) -> bool { let f = renum(c, e).fiber; f != NIL && !fd(c, f).done }
-pub fn enum_peek(c: &mut Ctx, e: Value) -> RV {
-    match enum_pull(c, e)? {
-        Some(v) => { let f = renum(c, e).fiber; fdm(c, f).peek = Some(v); Ok(v) }
-        None => Err(stop_iteration(c, e)),
-    }
-}
 
 pub fn init(c: &mut Ctx) {
     let vmr = c.vm();

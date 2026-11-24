@@ -430,10 +430,14 @@ pub fn hash_to_a(c: &mut Ctx, h: Value) -> RV {
 /// Implicit conversion to Hash (to_hash).
 pub fn check_hash(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if is_hash(v) { return Ok(Some(v)); }
-    if v.is_heap() && respond_to(c, v, s::to_hash, true) {
-        let r = funcall(c, v, s::to_hash, &[], std::ptr::null())?;
-        if is_hash(r) { return Ok(Some(r)); }
-        return type_err(c, "can't convert to Hash");
+    if !crate::rt::conv_target(v) { return Ok(None); }
+    // rb_check_hash_type: to_hash through rb_check_funcall; nil is "not convertible"
+    let r = if crate::string::mm_redef() { crate::string::check_funcall(c, v, s::to_hash)? }
+        else if respond_to(c, v, s::to_hash, true) { Some(funcall(c, v, s::to_hash, &[], std::ptr::null())?) } else { None };
+    match r {
+        None => Ok(None),
+        Some(r) if r == NIL => Ok(None),
+        Some(r) if is_hash(r) => Ok(Some(r)),
+        Some(r) => { let cls = class_path(c, real_class_of(c, v)); type_err(c, format!("can't convert {} to Hash ({}#to_hash gives {})", cls, cls, class_path(c, real_class_of(c, r)))) }
     }
-    Ok(None)
 }

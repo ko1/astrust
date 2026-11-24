@@ -50,7 +50,7 @@ module Enumerable
       i = 0
       each { |*x| return i if yield(*x); i += 1 }
     else
-      warn("warning: given block not used", uplevel: 1) if block_given? && false
+      warn("given block not used", uplevel: 1) if block_given?
       i = 0
       Enumerable.__each(self) { |v| return i if v == args[0]; i += 1 }
     end
@@ -196,6 +196,7 @@ module Enumerable
   end
   def all?(*pat)
     Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
+    warn("given block not used", uplevel: 1) if !pat.empty? && block_given?
     if !pat.empty? then Enumerable.__each(self) { |v| return false unless pat[0] === v }
     elsif block_given? then each { |*x| return false unless yield(*x) }
     else Enumerable.__each(self) { |v| return false unless v } end
@@ -203,6 +204,7 @@ module Enumerable
   end
   def any?(*pat)
     Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
+    warn("given block not used", uplevel: 1) if !pat.empty? && block_given?
     if !pat.empty? then Enumerable.__each(self) { |v| return true if pat[0] === v }
     elsif block_given? then each { |*x| return true if yield(*x) }
     else Enumerable.__each(self) { |v| return true if v } end
@@ -210,6 +212,7 @@ module Enumerable
   end
   def none?(*pat)
     Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
+    warn("given block not used", uplevel: 1) if !pat.empty? && block_given?
     if !pat.empty? then Enumerable.__each(self) { |v| return false if pat[0] === v }
     elsif block_given? then each { |*x| return false if yield(*x) }
     else Enumerable.__each(self) { |v| return false if v } end
@@ -217,6 +220,7 @@ module Enumerable
   end
   def one?(*pat)
     Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
+    warn("given block not used", uplevel: 1) if !pat.empty? && block_given?
     n = 0
     if !pat.empty? then Enumerable.__each(self) { |v| n += 1 if pat[0] === v; return false if n > 1 }
     elsif block_given? then each { |*x| n += 1 if yield(*x); return false if n > 1 }
@@ -227,7 +231,7 @@ module Enumerable
     a = to_a
     others = others.map do |o|
       if (oa = Array.try_convert(o)) then oa
-      elsif o.respond_to?(:each) then o.respond_to?(:first) ? o.first(a.size) : o.to_enum(:each).first(a.size)
+      elsif o.respond_to?(:each) then o.to_enum(:each).first(a.size)
       else raise TypeError, "wrong argument type #{o.class} (must respond to :each)"
       end
     end
@@ -255,7 +259,11 @@ module Enumerable
     end
     h
   end
-  def to_set(*args, &b) = Set.new(self, *args, &b)
+  def to_set(*args, &b)
+    warn("passing arguments to Enumerable#to_set is deprecated", uplevel: 1) unless args.empty?
+    klass = args.empty? ? Set : args.shift
+    klass.new(self, *args, &b)
+  end
   def reverse_each(*args, &b)
     return enum_for(:reverse_each, *args) { __size } unless b
     to_a(*args).reverse_each(&b)
@@ -266,7 +274,7 @@ module Enumerable
     n = args[0]
     unless block_given?
       return enum_for(:cycle, *args) do
-        if n.nil? then (s = __size) == 0 ? 0 : Float::INFINITY
+        if n.nil? then (s = __size).nil? ? nil : s == 0 ? 0 : Float::INFINITY
         else s = __size; k = Enumerable.__int(n); s && (k < 0 ? 0 : s * k) end
       end
     end
@@ -370,11 +378,6 @@ end
 
 class Enumerator
   def +(other) = Enumerable.__chain([self, other])
-  def next_values
-    v = self.next
-    [v]
-  end
-  def peek_values = [peek]
   def self.produce(*args, **kw, &b)
     raise ArgumentError, "no block given" unless b
     # RB_SCAN_ARGS_LAST_HASH_KEYWORDS: a trailing Hash is the keywords
@@ -413,43 +416,16 @@ class Enumerator
     def each(*args, &blk) = @__b.call(Enumerator::Yielder.new(&blk), *args)
   end
 
-  class Product < Enumerator
-    def initialize(*enums)
-      @__enums = enums
-    end
-    def each(&b)
-      return self unless b
-      __each_rec(0, [], &b)
-      self
-    end
-    def __each_rec(i, acc, &b)
-      if i == @__enums.size
-        b.call(acc.dup)
-      else
-        @__enums[i].each_entry { |v| acc.push(v); __each_rec(i + 1, acc, &b); acc.pop }
-      end
-    end
-    private :__each_rec
-    def size
-      @__enums.inject(1) do |t, e|
-        return nil unless e.respond_to?(:size)
-        s = e.size
-        return s if s.nil?
-        t * s
-      end
-    end
-    def rewind = (@__enums.reverse_each { |e| e.rewind if e.respond_to?(:rewind) }; self)
-    def inspect = @__enums ? "#<Enumerator::Product: #{@__enums.inspect}>" : "#<#{self.class}: uninitialized>"
-    alias to_s inspect
-  end
-
   class Chain < Enumerator
+    undef_method :feed, :next, :next_values, :peek, :peek_values
     def initialize(*enums)
       @__enums = enums.freeze
+      @__pos = -1
+      self
     end
     def each(*args, &b)
       return self unless b
-      @__enums.each { |e| e.each(*args, &b) }
+      @__enums.each_with_index { |e, i| @__pos = i; e.each(*args, &b) }
       self
     end
     def size
@@ -459,8 +435,27 @@ class Enumerator
         t + s
       end
     end
-    def rewind = (@__enums.reverse_each { |e| e.rewind if e.respond_to?(:rewind) }; self)
-    def inspect = @__enums ? "#<Enumerator::Chain: [#{@__enums.map(&:inspect).join(', ')}]>" : "#<#{self.class}: uninitialized>"
+    # enum_chain_rewind: the ones iterated so far, last first
+    def rewind
+      i = @__pos || -1
+      while i >= 0 && i < @__enums.size
+        e = @__enums[i]
+        e.rewind if e.respond_to?(:rewind)
+        @__pos = (i -= 1)
+      end
+      self
+    end
+    def inspect
+      return "#<#{self.class}: uninitialized>" unless @__enums
+      seen = (Enumerable.__ivget(Enumerator::Chain, :__insp) || Enumerable.__ivset(Enumerator::Chain, :__insp, {}))
+      return "#<#{self.class}: ...>" if seen.key?(object_id)
+      seen[object_id] = true
+      begin
+        "#<#{self.class}: #{@__enums.inspect}>"
+      ensure
+        seen.delete(object_id)
+      end
+    end
     alias to_s inspect
   end
 end
@@ -670,139 +665,6 @@ class Set
     begin
       body = to_a.map(&:inspect).join(", ")
       sub ? "#<#{self.class}: {#{body}}>" : "#{self.class}[#{body}]"
-    ensure
-      seen.delete(object_id)
-    end
-  end
-  alias to_s inspect
-end
-
-class Data
-  class << self
-    undef_method :new
-    def define(*syms, &blk)
-      syms = syms.map do |s|
-        if s.is_a?(Symbol) then s
-        elsif s.is_a?(String) then s.to_sym
-        else raise TypeError, "#{s.inspect} is not a symbol nor a string"
-        end
-      end
-      seen = {}
-      syms.each do |s|
-        raise ArgumentError, "invalid data member: #{s}" if s.end_with?("=")
-        raise ArgumentError, "duplicate member: #{s}" if seen[s]
-        seen[s] = true
-      end
-      k = Class.new(self)
-      Enumerable.__ivset(k, :__members__, syms.freeze)
-      syms.each { |m| k.define_method(m) { Enumerable.__ivget(self, m) } }
-      class << k
-        define_method(:new) do |*args, **kw, &blk|
-          mem = __members
-          if !args.empty?
-            raise ArgumentError, "wrong number of arguments (given #{args.size + 1}, expected 0)" unless kw.empty?
-            if args.size > mem.size
-              raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0#{mem.empty? ? '' : "..#{mem.size}"})"
-            end
-            args.each_with_index { |v, i| kw[mem[i]] = v }
-          end
-          o = allocate
-          o.__send__(:initialize, **kw, &blk)
-          o
-        end
-        alias_method :[], :new
-        def __members
-          k = self
-          k = k.superclass while Enumerable.__ivget(k, :__members__).nil?
-          Enumerable.__ivget(k, :__members__)
-        end
-        def members = __members.dup
-      end
-      k.class_eval(&blk) if blk
-      k
-    end
-  end
-  def initialize(**kw)
-    mem = self.class.__members
-    missing = mem.reject { |m| kw.key?(m) }
-    unknown = kw.keys.reject { |m| mem.include?(m.is_a?(String) ? m.to_sym : m) }
-    unless unknown.empty?
-      raise ArgumentError, "unknown keyword#{unknown.size > 1 ? 's' : ''}: #{unknown.map(&:inspect).join(', ')}"
-    end
-    unless missing.empty?
-      raise ArgumentError, "missing keyword#{missing.size > 1 ? 's' : ''}: #{missing.map(&:inspect).join(', ')}"
-    end
-    kw.each { |k, v| Enumerable.__ivset(self, k.to_sym, v) }
-    freeze
-  end
-  private :initialize
-  def initialize_copy(o)
-    o.class.members.each { |m| Enumerable.__ivset(self, m, Enumerable.__ivget(o, m)) }
-    freeze
-  end
-  private :initialize_copy
-  def members = self.class.members
-  def to_h(&b)
-    h = {}
-    members.each do |m|
-      v = Enumerable.__ivget(self, m)
-      if b
-        pr = b.call(m, v)
-        ar = Array.try_convert(pr)
-        raise TypeError, "wrong element type #{pr.class} (expected array)" unless ar
-        raise ArgumentError, "element has wrong array length (expected 2, was #{ar.size})" if ar.size != 2
-        h[ar[0]] = ar[1]
-      else
-        h[m] = v
-      end
-    end
-    h
-  end
-  def deconstruct = members.map { |m| Enumerable.__ivget(self, m) }
-  def deconstruct_keys(keys)
-    return to_h if keys.nil?
-    raise TypeError, "wrong argument type #{keys.class} (expected Array or nil)" unless keys.is_a?(Array)
-    h = {}
-    mem = members
-    return h if keys.size > mem.size
-    keys.each do |k|
-      s = k.is_a?(String) ? k.to_sym : k
-      break unless s.is_a?(Symbol) && mem.include?(s)
-      h[k] = Enumerable.__ivget(self, s)
-    end
-    h
-  end
-  def with(*args, **kw)
-    raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0)" unless args.empty?
-    return self if kw.empty?
-    self.class.new(**to_h.merge(kw))
-  end
-  def ==(o)
-    return true if equal?(o)
-    return false unless o.class == self.class
-    members.all? { |m| Enumerable.__ivget(self, m) == Enumerable.__ivget(o, m) }
-  end
-  def eql?(o)
-    return true if equal?(o)
-    return false unless o.class == self.class
-    members.all? { |m| Enumerable.__ivget(self, m).eql?(Enumerable.__ivget(o, m)) }
-  end
-  def hash = [self.class, *deconstruct].hash
-  def inspect
-    # rb_class_path, not #name; a path under an anonymous module is left out
-    name = Module.instance_method(:name).bind_call(self.class)
-    name = nil if name&.start_with?("#")
-    seen = (Enumerable.__ivget(Data, :__insp) || Enumerable.__ivset(Data, :__insp, {}))
-    return "#<data #{name}:...>" if seen.key?(object_id)
-    seen[object_id] = true
-    begin
-      parts = members.map do |m|
-        v = Enumerable.__ivget(self, m)
-        "#{m}=#{v.inspect}"
-      end
-      s = "#<data "
-      s << name << (parts.empty? ? "" : " ") if name
-      s << parts.join(", ") << ">"
     ensure
       seen.delete(object_id)
     end
