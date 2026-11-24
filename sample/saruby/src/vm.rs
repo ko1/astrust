@@ -1437,8 +1437,11 @@ pub fn raise_exc(c: &mut Ctx, e: Value) -> Esc {
     Esc
 }
 
+/// Some method named set_backtrace was defined after boot (raise then looks for a user-defined one).
+pub static SET_BACKTRACE_DEFINED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// A #set_backtrace other than Exception's own (setup_exception calls it with the captured lines).
 pub fn user_set_backtrace(c: &Ctx, e: Value) -> bool {
+    if !SET_BACKTRACE_DEFINED.load(std::sync::atomic::Ordering::Relaxed) { return false; }
     let me = lookup_method(c, class_of(e), s::set_backtrace);
     match c.me_ref(me).map(|m| m.kind) {
         Some(MKind::Cfunc(f, _)) => f as *const () as usize != crate::builtins::exception::exc_set_backtrace as *const () as usize,
@@ -1513,12 +1516,11 @@ pub fn str_new_rb(c: &mut Ctx, s: &str) -> Value { c.str_new_enc(s.as_bytes(), i
 pub fn make_exception_rb(c: &mut Ctx, klass: Value, msg: &str) -> Value {
     let e = new_object(c, klass);
     let enc = if !msg.is_ascii() { ENC_UTF8 }
-        else if is_kind_of_cls(c, klass, vm().c_name_error.get()) { ENC_ASCII } else { ENC_BINARY };
+        else if klass == vm().c_name_error.get() || klass == vm().c_no_method_error.get() { ENC_ASCII } else { ENC_BINARY };
     let m = c.str_new_enc(msg.as_bytes(), enc);
     ivar_set_raw(c, e, s::mesg, m);
     e
 }
-fn is_kind_of_cls(c: &Ctx, k: Value, anc: Value) -> bool { k == anc || ancestors(c, k).contains(&anc) }
 
 pub fn make_name_error(c: &mut Ctx, klass: Value, msg: &str, name: Value, recv: Value) -> RV {
     let e = make_exception_rb(c, klass, msg);
