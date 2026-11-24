@@ -310,7 +310,9 @@ fn mm_forward(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
 }
 
 pub fn unbound_method_object(c: &mut Ctx, klass: Value, mid: Sym, public_only: bool) -> RV {
-    let me = search_method(c, klass, mid);
+    // refinements active where instance_method is called
+    let me = if c.refinements_on() { lookup_method_refined(c, c.caller_frame().map_or(std::ptr::null(), |f| f.cref()), klass, mid) } else { std::ptr::null() };
+    let me = if me.is_null() { search_method(c, klass, mid) } else { me };
     if c.me_ref(me).is_none_or(|m| matches!(m.kind, MKind::Undef) || (public_only && m.visi != VISI_PUBLIC)) {
         let kind = if c.class(klass).is_module { "module" } else { "class" };
         let e = make_name_error(c, c.vm().c_name_error.get(), &format!("undefined method '{}' for {} '{}'", sym_str(mid), kind, class_path(c, klass)), Value::sym(mid), klass)?;
@@ -341,7 +343,7 @@ fn meth_to_proc(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 }
 fn meth_arity(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(method_arity(c, c.method_obj(slf).me))) }
 fn meth_name(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::sym(c.method_obj(slf).name)) }
-fn meth_owner(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(me_owner(c, c.method_obj(slf).me)) }
+fn meth_owner(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let me = c.method_obj(slf).me; Ok(zsuper_owner(me).unwrap_or_else(|| me_owner(c, me))) }
 fn meth_receiver(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.method_obj(slf).recv) }
 fn meth_unbind(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let m = mo(c, slf);

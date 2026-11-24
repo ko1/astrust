@@ -11,6 +11,7 @@ use crate::vm::*;
 
 /// Module#dup / Class#dup: a fresh class with copies of the tables.
 pub fn clone_class(c: &mut Ctx, k: Value) -> RV {
+    if k == c.vm().c_basic_object.get() { return type_err(c, "can't copy the root class"); }
     let (is_module, sup) = { let cd = c.class(k); (cd.is_module, cd.superclass) };
     let n = if is_module { new_module(c) } else { new_class(c, sup) };
     if is_module { obj_set_klass(n, obj_klass(k)); }
@@ -36,6 +37,9 @@ pub fn clone_class(c: &mut Ctx, k: Value) -> RV {
         let tbl: Vec<(Sym, *const MethodEntry)> = c.class(sk).mtbl.iter().map(|(a, b)| (*a, *b)).collect();
         let nt = &mut c.class_mut(nsk).mtbl;
         for (m, me) in tbl { nt.insert(m, me); }
+        // modules the class was extended with
+        let inc = c.class(sk).includes.clone();
+        c.class_mut(nsk).includes = inc;
     }
     bump_hierarchy();
     Ok(n)

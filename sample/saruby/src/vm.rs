@@ -831,12 +831,15 @@ pub fn ancestors(c: &Ctx, klass: Value) -> std::rc::Rc<[Value]> {
     let ser = vm().hierarchy_serial.get();
     if let Some((s, a)) = &*c.class(klass).ancestors.borrow() { if *s == ser { return a.clone(); } }
     let mut out = vec![];
+    let mut seen = vec![];   // entries other than prepended ones: a module prepended to k may repeat one of them
     let mut k = klass;
     while k != NIL {
         let mut part = vec![];
         module_chain(c, k, &mut part);
-        for x in part {
-            if !out.contains(&x) { out.push(x); }
+        let np = part.iter().position(|&x| x == k).unwrap_or(0);
+        for (i, x) in part.into_iter().enumerate() {
+            if i < np { if !out[out.len() - out.len().min(i)..].contains(&x) { out.push(x); } continue; }
+            if !seen.contains(&x) { seen.push(x); out.push(x); }
         }
         k = c.class(k).superclass;
     }
@@ -846,12 +849,28 @@ pub fn ancestors(c: &Ctx, klass: Value) -> std::rc::Rc<[Value]> {
 }
 
 pub fn define_method_me(c: &mut Ctx, klass: Value, name: Sym, me: *const MethodEntry) {
-    c.class_mut(klass).mtbl.insert(name, me);
+    let old = c.class_mut(klass).mtbl.insert(name, me);
+    if let Some(old) = old { if vm().verbose.get() == TRUE { warn_redefined(c, klass, name, old, me); } }
+    if crate::builtins::coverage::setup() { crate::builtins::coverage::on_me(c, me); }
     let vm = vm();
     bump_method_serial();
     vm.mcache.borrow_mut().clear();
 }
 
+/// rb_method_entry_make's "method redefined" warning: not for an alias, an aliased body, undef / ZSuper.
+#[inline(never)]
+fn warn_redefined(c: &mut Ctx, klass: Value, name: Sym, old: *const MethodEntry, new: *const MethodEntry) {
+    let (Some(o), Some(n)) = (c.me_ref(old), c.me_ref(new)) else { return };
+    if matches!(n.kind, MKind::Undef) || matches!(o.kind, MKind::Undef | MKind::ZSuper) || vm().alias_names.borrow().contains_key(&(old as usize)) { return; }
+    let ok = o.kind;
+    let shared = |k: MKind| match (k, ok) { (MKind::Iseq(a), MKind::Iseq(b)) => std::ptr::eq(a, b), (MKind::Bmethod(a), MKind::Bmethod(b)) => a == b, _ => false };
+    if c.class(klass).mtbl.iter().any(|(&m, &e)| m != name && c.me_ref(e).is_some_and(|x| shared(x.kind))) { return; }
+    let prev = match ok { MKind::Iseq(is) => c.iseq_ref(is).map(|i| (i.info.file, i.info.line)), _ => None };
+    let _ = crate::builtins::kernel::gvar_warn(c, &format!("method redefined; discarding old {}", sym_str(name)), false);
+    if let Some((f, l)) = prev {
+        let _ = crate::builtins::kernel::warning_write(c, format!("{}:{}: warning: previous definition of {} was here\n", f, l, sym_str(name)).as_bytes());
+    }
+}
 pub fn define_cfunc(c: &mut Ctx, klass: Value, name: &str, f: CFunc, arity: i32) {
     let s = intern_str(name);
     define_method_me(c, klass, s, new_me(s, klass, VISI_PUBLIC, MKind::Cfunc(f, arity)));
@@ -870,13 +889,40 @@ pub fn define_module_function(c: &mut Ctx, m: Value, name: &str, f: CFunc, arity
 }
 
 pub fn search_method(c: &Ctx, klass: Value, mid: Sym) -> *const MethodEntry {
+    let mut zs: *const MethodEntry = std::ptr::null();
     for &k in ancestors(c, klass).iter() {
         if let Some(&me) = c.class(k).mtbl.get(&mid) {
-            if let MKind::ZSuper = unsafe { (*me).kind } { continue; }
+            if let MKind::ZSuper = unsafe { (*me).kind } { if zs.is_null() { zs = me; } continue; }
+            if !zs.is_null() && !matches!(c.me_ref(me).map(|m| m.kind), Some(MKind::Undef)) { return zsuper_me(c, zs, me); }
             return me;
         }
     }
+    // a refinement's superclass is the class it refines
+    if c.class(klass).refined { return search_method(c, c.class(klass).attached, mid); }
     std::ptr::null()
+}
+/// search_method in a refinement's own table and modules (not the refined class).
+fn search_refinement(c: &Ctx, r: Value, mid: Sym) -> *const MethodEntry {
+    ancestors(c, r).iter().find_map(|&k| c.class(k).mtbl.get(&mid).copied().filter(|&me| !matches!(c.me_ref(me).map(|m| m.kind), Some(MKind::ZSuper)))).unwrap_or(std::ptr::null())
+}
+thread_local! {
+    static ZSUPER_MES: RefCell<HashMap<(usize, usize), usize>> = RefCell::new(HashMap::default());
+    static ZSUPER_OWNER: RefCell<HashMap<usize, Value>> = RefCell::new(HashMap::default());
+}
+/// Method#owner of an entry reached through a ZSuper one: the class of the ZSuper entry (CRuby 4.0).
+pub fn zsuper_owner(me: *const MethodEntry) -> Option<Value> { ZSUPER_OWNER.with(|t| t.borrow().get(&(me as usize)).copied()) }
+/// A method reached through a ZSuper entry (visibility changed in a subclass): the method found above it
+/// with the entry's visibility, one per pair (the lookup follows a later redefinition above).
+#[inline(never)]
+fn zsuper_me(c: &Ctx, zs: *const MethodEntry, me: *const MethodEntry) -> *const MethodEntry {
+    let (Some(z), Some(m)) = (c.me_ref(zs), c.me_ref(me)) else { return me };
+    if z.visi == m.visi { return me; }
+    let key = (zs as usize, me as usize);
+    if let Some(p) = ZSUPER_MES.with(|t| t.borrow().get(&key).copied()) { return p as *const MethodEntry; }
+    let p = Box::into_raw(Box::new(MethodEntry { name: m.name, owner: m.owner, visi: z.visi, kind: m.kind, orig_owner: m.orig_owner, cref: m.cref })) as *const MethodEntry;
+    ZSUPER_MES.with(|t| t.borrow_mut().insert(key, p as usize));
+    ZSUPER_OWNER.with(|t| t.borrow_mut().insert(p as usize, z.owner));
+    p
 }
 
 /// Lookup with the global method cache; undefined entries come back null.
@@ -919,7 +965,7 @@ pub fn lookup_method_refined(c: &Ctx, cref: *const Cref, klass: Value, mid: Sym)
         for i in (0..n).rev() {
             let r = c.ary(refs)[i];
             if c.class(r).attached != k { continue; }
-            let me = search_method(c, r, mid);
+            let me = search_refinement(c, r, mid);
             if me.is_null() { continue; }
             // `undef` in the refine block hides the method
             return if matches!(unsafe { (*me).kind }, MKind::Undef) { std::ptr::null() } else { me };

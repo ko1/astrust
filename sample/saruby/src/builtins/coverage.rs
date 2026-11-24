@@ -7,7 +7,7 @@ use crate::heap::no_legacy::*;   // the old accessors cannot be named here
 use crate::symbol::intern;
 use crate::value::*;
 use crate::vm::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
@@ -20,7 +20,7 @@ const T_EVAL: u32 = 16;
 static SETUP: AtomicBool = AtomicBool::new(false);
 static RUNNING: AtomicBool = AtomicBool::new(false);
 
-struct FileCov { nlines: usize, oneshot: Vec<u32> }
+struct FileCov { nlines: usize, oneshot: Vec<u32>, of: usize }   // of: the measured file whose methods these are
 #[derive(Clone, Copy)]
 enum Slot { Line(usize, u32), Method(usize, [u32; 4]), Branch }
 #[derive(Default)]
@@ -33,18 +33,28 @@ struct Cov {
     slots: Vec<Slot>,
     counts: Vec<i64>,
     iseq_slot: HashMap<usize, u32>,
-    defs: Vec<(u32, Value, Sym)>,
+    defs: Vec<(u32, Value, Sym, Sym)>,   // (method slot, owner, entry name, original name)
+    mcounts: HashMap<(u32, Value), i64>, // calls per (method slot, owner of the entry called)
     bases: Vec<(usize, &'static str, [u32; 4], Vec<(&'static str, [u32; 4], u32)>)>,   // branch bases in declaration order
 }
-thread_local! { static COV: RefCell<Cov> = RefCell::new(Cov::default()); }
+thread_local! {
+    static COV: RefCell<Cov> = RefCell::new(Cov::default());
+    static STUB: Cell<bool> = const { Cell::new(false) };   // Coverage.line_stub is compiling
+}
 
 /// node_cov: one more execution of counter `id`.
-pub fn hit(id: u32) {
+pub fn hit(c: &Ctx, id: u32) {
     if !RUNNING.load(Relaxed) { return; }
     COV.with(|cv| {
         let mut g = cv.borrow_mut();
         let i = id as usize;
         if i >= g.counts.len() { return; }
+        // a method counts per entry called (a module_function's copy, define_method's)
+        if let Slot::Method(..) = g.slots[i] {
+            let o = c.cur_frame().and_then(|f| c.me_ref(f.me)).map_or(NIL, |m| m.owner);
+            *g.mcounts.entry((id, o)).or_insert(0) += 1;
+            return;
+        }
         g.counts[i] += 1;
         if g.mode & T_ONESHOT != 0 && g.counts[i] == 1 {
             if let Slot::Line(f, l) = g.slots[i] { g.files[f].oneshot.push(l); }
@@ -54,17 +64,25 @@ pub fn hit(id: u32) {
 
 /// Compiling `file` (from `line`): Some(file id) when its lines are to be counted.
 pub fn compile_wants(file: &str, eval: bool, src: &[u8], line: i32) -> Option<usize> {
+    if STUB.get() { return COV.with(|cv| { let mut g = cv.borrow_mut(); let id = g.files.len(); g.files.push(FileCov { nlines: 0, oneshot: vec![], of: id }); Some(id) }); }
     if !SETUP.load(Relaxed) || file.starts_with("<internal:") { return None; }
     COV.with(|cv| {
         let mut g = cv.borrow_mut();
         if eval {
-            if g.mode & T_EVAL == 0 { return None; }
-            if let Some(&f) = g.by_name.get(file) { return Some(f); }
+            let known = g.by_name.get(file).copied();
+            if g.mode & T_EVAL == 0 {
+                // methods of an eval under a measured file's name count there (its lines do not)
+                let of = known.filter(|_| g.mode & T_METHODS != 0)?;
+                let id = g.files.len();
+                g.files.push(FileCov { nlines: 0, oneshot: vec![], of });
+                return Some(id);
+            }
+            if let Some(f) = known { return Some(f); }
         }
         // the parser's line count: a last line without a newline is not counted
         let nlines = src.iter().filter(|&&b| b == b'\n').count() + if eval { (line.max(1) - 1) as usize } else { 0 };
         let id = g.files.len();
-        g.files.push(FileCov { nlines, oneshot: vec![] });
+        g.files.push(FileCov { nlines, oneshot: vec![], of: id });
         if g.by_name.insert(file.to_string(), id).is_none() { g.order.push(file.to_string()); }
         Some(id)
     })
@@ -78,7 +96,7 @@ pub fn line_slot(file: usize, line: u32) -> u32 {
 pub fn method_slot(file: usize, pos: [u32; 4]) -> Option<u32> {
     COV.with(|cv| {
         let mut g = cv.borrow_mut();
-        if g.mode & T_METHODS == 0 { return None; }
+        if g.mode & T_METHODS == 0 || STUB.get() { return None; }
         Some(new_slot(&mut g, Slot::Method(file, pos)))
     })
 }
@@ -86,7 +104,7 @@ pub fn method_slot(file: usize, pos: [u32; 4]) -> Option<u32> {
 pub fn branch_base(file: usize, ty: &'static str, pos: [u32; 4]) -> Option<usize> {
     COV.with(|cv| {
         let mut g = cv.borrow_mut();
-        if g.mode & T_BRANCHES == 0 { return None; }
+        if g.mode & T_BRANCHES == 0 || STUB.get() { return None; }
         g.bases.push((file, ty, pos, vec![]));
         Some(g.bases.len() - 1)
     })
@@ -101,14 +119,18 @@ pub fn branch_target(base: usize, label: &'static str, pos: [u32; 4]) -> u32 {
     })
 }
 pub fn bind_iseq(is: usize, slot: u32) { COV.with(|cv| { cv.borrow_mut().iseq_slot.insert(is, slot); }) }
-/// A def ran: the method entry (klass, name) counts with its body's counter.
-pub fn on_def(c: &mut Ctx, is: usize, klass: Value, name: Sym) {
-    if !SETUP.load(Relaxed) { return; }
+/// A method entry was added (def, module_function's copy, define_method of a Method): it is reported
+/// under its owner and the body's original name, as CRuby's method_coverage_i walks the entries.
+#[inline(always)]
+pub fn setup() -> bool { SETUP.load(Relaxed) }
+#[inline(never)]
+pub fn on_me(c: &mut Ctx, me: *const MethodEntry) {
+    let Some((is, klass, name, orig)) = c.me_ref(me).and_then(|m| match m.kind { MKind::Iseq(is) => c.iseq_ref(is).map(|i| (is as usize, m.owner, m.name, i.name)), _ => None }) else { return };
     let found = COV.with(|cv| {
         let mut g = cv.borrow_mut();
         let Some(&s) = g.iseq_slot.get(&is) else { return false };
         g.defs.retain(|d| !(d.1 == klass && d.2 == name));
-        g.defs.push((s, klass, name));
+        g.defs.push((s, klass, name, orig));
         true
     });
     if found { root(c, klass); }
@@ -191,8 +213,14 @@ fn peek(c: &mut Ctx) -> RV {
             for (i, s) in g.slots.iter().enumerate() {
                 if let Slot::Line(ff, l) = *s { if ff == f && (l as usize) >= 1 && (l as usize) <= lines.len() { let e = &mut lines[l as usize - 1]; *e = Some(e.unwrap_or(0) + g.counts[i]); } }
             }
-            for &(s, k, n) in &g.defs {
-                if let Slot::Method(ff, pos) = g.slots[s as usize] { if ff == f { methods.push((k, n, pos, g.counts[s as usize])); } }
+            for &(s, k, _, n) in &g.defs {
+                if let Slot::Method(ff, pos) = g.slots[s as usize] {
+                    if g.files[ff].of == f {
+                        let cnt = g.mcounts.get(&(s, k)).copied().unwrap_or(0);
+                        // entries with one key (an alias) add up
+                        match methods.iter_mut().find(|m| m.0 == k && m.1 == n && m.2 == pos) { Some(m) => m.3 += cnt, None => methods.push((k, n, pos, cnt)) }
+                    }
+                }
             }
             let branches: Branches = g.bases.iter().filter(|b| b.0 == f)
                 .map(|b| (b.1, b.2, b.3.iter().map(|t| (t.0, t.1, g.counts[t.2 as usize])).collect())).collect();
@@ -256,12 +284,35 @@ fn cv_result(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
         crate::builtins::kernel::warning_write(c, format!("{}: warning: stop implies clear\n", loc).as_bytes())?;
         clear = true;
     }
-    if clear { COV.with(|cv| { let mut g = cv.borrow_mut(); for x in g.counts.iter_mut() { *x = 0; } for f in g.files.iter_mut() { f.oneshot.clear(); } }); }
+    if clear { COV.with(|cv| { let mut g = cv.borrow_mut(); for x in g.counts.iter_mut() { *x = 0; } g.mcounts.clear(); for f in g.files.iter_mut() { f.oneshot.clear(); } }); }
     if stop {
         COV.with(|cv| { let mut g = cv.borrow_mut(); g.order.clear(); g.by_name.clear(); g.defs.clear(); g.iseq_slot.clear(); g.bases.retain(|_| false); });
         set_state(0);
     }
     Ok(r)
+}
+/// Coverage.line_stub (coverage.rb): 0 for each line a line event counts in the compiled file, nil elsewhere.
+fn cv_line_stub(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
+    let path = crate::builtins::io::path_arg(c, a[0])?.0;
+    let src = match std::fs::read(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&path)) {
+        Ok(s) => s,
+        Err(e) => return Err(crate::builtins::io::raise_errno_at(c, crate::builtins::exception::io_err_to_errno(&e), "rb_sysopen - ", &path)),
+    };
+    // File.foreach: a last line without a newline is a line
+    let n = src.iter().filter(|&&b| b == b'\n').count() + (src.last().is_some_and(|&b| b != b'\n')) as usize;
+    let file: &'static str = Box::leak(String::from_utf8_lossy(&path).into_owned().into_boxed_str());
+    let (s0, f0) = COV.with(|cv| { let g = cv.borrow(); (g.slots.len(), g.files.len()) });
+    STUB.set(true);
+    let r = crate::compile::compile_source(&src, file, 1, IseqKind::Top, vec![]);
+    STUB.set(false);
+    let mut lines = vec![NIL; n];
+    COV.with(|cv| {
+        let mut g = cv.borrow_mut();
+        for s in &g.slots[s0..] { if let Slot::Line(f, l) = *s { if f >= f0 && l >= 1 && (l as usize) <= n { lines[l as usize - 1] = Value::fix(0); } } }
+        g.slots.truncate(s0); g.counts.truncate(s0); g.files.truncate(f0);
+    });
+    if let Err(m) = r { return syntax_err(c, m, file); }
+    Ok(c.ary_from_vec(lines))
 }
 fn cv_state(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     Ok(sym_value(match state(c) { 0 => "idle", 1 => "suspended", _ => "running" }))
@@ -273,6 +324,7 @@ pub fn init(c: &mut Ctx) {
     let ob = c.vm().c_object.get();
     let m = const_get_at(c, ob, intern(b"Coverage")).unwrap_or_else(|| define_module(c, "Coverage"));
     define_singleton_cfunc(c, m, "supported?", cv_supported, 1);
+    define_singleton_cfunc(c, m, "line_stub", cv_line_stub, 1);
     let f = |c: &mut Ctx, n: &str, fun: CFunc, ar: i32| define_module_function(c, m, n, fun, ar);
     f(c, "setup", cv_setup, -1); f(c, "start", cv_start, -1); f(c, "resume", cv_resume, 0); f(c, "suspend", cv_suspend, 0);
     f(c, "result", cv_result, -1); f(c, "peek_result", cv_peek_result, 0); f(c, "state", cv_state, 0); f(c, "running?", cv_running, 0);

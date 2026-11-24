@@ -105,12 +105,15 @@ struct Scope {
     needs_id: bool,               // a block literal or an eval-like call inside: its frame needs an id
     end_line: u32,                // the line of the scope's last byte (TracePoint return / end events)
     trace_line: u32,              // the line of the last line event put in (one per line, as CRuby's)
+    cov_line: u32,                // Coverage: ISEQ_COMPILE_DATA(iseq)->last_line
+    cov_pending: bool,            // Coverage: a line event waits for the next instruction
+    cov_leaf: u32,                // Coverage: prism id of the node whose instruction has the last counter
 }
 
 impl Scope {
     fn new(kind: SK, captured: HashSet<Sym>) -> Scope {
         Scope { kind, vars: HashMap::default(), names: vec![], nslots: 2, env_size: 0, captured, loop_depth: 0,
-                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![], children: vec![], params_seen: HashSet::default(), param_names: vec![], needs_id: false, end_line: 0, trace_line: 0 }
+                zsuper: vec![], fwd: false, transparent: kind == SK::For, param_env: vec![], children: vec![], params_seen: HashSet::default(), param_names: vec![], needs_id: false, end_line: 0, trace_line: 0, cov_line: 0, cov_pending: false, cov_leaf: u32::MAX }
     }
     fn has_env(&self) -> bool { self.env_size > 0 }
 }
@@ -132,6 +135,7 @@ pub struct Compiler<'a> {
     pm_dcache: Option<(u32, u32)>, // case/in: (subject slot, slot caching its #deconstruct)
     tl_binding: bool,
     cov: Option<usize>,           // Coverage file id: lines / methods get node_cov counters
+    cov_popped: bool,             // Coverage: the next c() compiles a statement whose value is unused
     trace: bool,                  // compiled for tracing (vm::TRACE_COMPILE): trace points, no entries, locals in envs
     flat_stmts: bool,             // the next statements are no lines of their own (modifier / ternary forms)
     tag: bool,                    // tag nodes with prism node ids: not saruby's own <internal:..> code (no path to
@@ -164,7 +168,7 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), outer: HashMap::default(), pending_outer: vec![], ractor_src: std::cell::OnceCell::new(), eval_outer: vec![], in_def: 0, pm_err: None, yields: false, pm_dcache: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, tag: !file.starts_with("<internal:") && pr.root.id < 1 << (32 - NF_TAG_SHIFT), errors: vec![],
+        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), outer: HashMap::default(), pending_outer: vec![], ractor_src: std::cell::OnceCell::new(), eval_outer: vec![], in_def: 0, pm_err: None, yields: false, pm_dcache: None, tl_binding: false, cov: None, cov_popped: false, trace: false, flat_stmts: false, tag: !file.starts_with("<internal:") && pr.root.id < 1 << (32 - NF_TAG_SHIFT), errors: vec![],
                    csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()],
                    src_enc: crate::builtins::encoding::find_enc(pr.encoding.as_bytes()).unwrap_or(crate::object::ENC_UTF8) as u32 };
         // identifiers of a non-UTF-8 source are symbols in its encoding (as its symbol literals)
@@ -631,6 +635,11 @@ impl<'a> Compiler<'a> {
     /// n's nodes, tagged with its prism node id (CRuby's node id of an instruction: error_highlight)
     #[inline(always)]
     pub fn c(&mut self, n: &PNode) -> NodePtr {
+        if self.cov.is_some() { return self.c_cov(n); }
+        self.c_tagged(n)
+    }
+    #[inline(always)]
+    fn c_tagged(&mut self, n: &PNode) -> NodePtr {
         if !self.tag { return self.c_node(n); }
         let saved = node_tag_swap(n.id);
         let r = self.c_node(n);
@@ -1495,8 +1504,20 @@ impl<'a> Compiler<'a> {
         let (recv_node, pre) = match sl { Some(sl) => (ALLOC_node_lvar(sl), Some(ALLOC_node_lasgn(sl, recv_node))), None => (recv_node, None) };
         // branch coverage of `&.`: the call without its block
         let qcall = if sl.is_some() && self.cov.is_some() {
-            let mut end = match block { Some(b @ PNode { kind: Kind::BlockNode { .. }, .. }) => b.loc.start, _ => n.loc.start + n.loc.len };
-            while end > n.loc.start && self.src.get(end as usize - 1).is_some_and(|b| b.is_ascii_whitespace()) { end -= 1; }
+            // the later of the closing paren / arguments when there are arguments, else the message (CRuby 4.0)
+            let (ms, an) = match &n.kind { Kind::CallNode { message_start, arguments, .. } => (*message_start, arguments.as_deref()), _ => (n.loc.start, None) };
+            let mut me = ms as usize;
+            while self.src.get(me).is_some_and(|&b| b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80) { me += 1; }
+            if self.src.get(me).is_some_and(|&b| b == b'?' || b == b'!') { me += 1; }
+            let end = match an {
+                Some(a) if self.src.get(me) == Some(&b'(') => {
+                    let mut end = match block { Some(b @ PNode { kind: Kind::BlockNode { .. }, .. }) => b.loc.start, _ => n.loc.start + n.loc.len };
+                    while end > n.loc.start && self.src.get(end as usize - 1).is_some_and(|b| b.is_ascii_whitespace()) { end -= 1; }
+                    end.max(a.loc.start + a.loc.len)
+                }
+                Some(a) => a.loc.start + a.loc.len,
+                None => me as u32,
+            };
             let p = self.pos4(n.loc.start, end);
             self.cov.and_then(|f| crate::builtins::coverage::branch_base(f, "&.", p)).map(|b| (b, p))
         } else { None };
@@ -1803,7 +1824,8 @@ impl<'a> Compiler<'a> {
     }
     fn case_in_body(&mut self, case: &PNode, conds: &[PNode], els: Option<&PNode>, _line: u32, sl: u32) -> NodePtr {
         let bb = self.bbase("case", case);
-        if bb.is_some() {
+        // under Coverage the arms compile in source order (the line events follow it)
+        if bb.is_some() || self.cov.is_some() {
             let (mut bodies, mut tail) = self.clause_bodies(bb, "in", case, conds, els, ALLOC_node_special(SP_NOMATCH, ALLOC_node_lvar(sl)));
             for w in conds.iter().rev() {
                 let body = bodies.pop().unwrap();

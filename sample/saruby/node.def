@@ -413,7 +413,7 @@ node_poll(c: &mut Ctx, n: NodePtr, fp: Fp, line@hole: u32, body: NODE)
 NODE_DEF
 node_cov(c: &mut Ctx, n: NodePtr, fp: Fp, id: u32, body: NODE)
 {
-    crate::builtins::coverage::hit(id);
+    crate::builtins::coverage::hit(c, id);
     EVAL_ARG!(c, body)
 }
 

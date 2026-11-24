@@ -100,7 +100,7 @@ pub struct ClassData {
     pub consts: HashMap<Sym, Value>,
     pub const_order: Vec<Sym>,
     pub autoload: HashMap<Sym, Value>,
-    pub cvars: HashMap<Sym, Value>,
+    pub cvars: CvarTbl,
     pub includes: Vec<Value>,         // directly included modules, in include order
     pub prepends: Vec<Value>,
     pub extended_by: Vec<Value>,
@@ -114,6 +114,19 @@ pub struct ClassData {
     pub refined: bool,
     pub cx: Option<Box<ConstExtra>>,   // made by the first constant defined from Ruby code (most classes have none)
 }
+
+/// Class variables in definition order (Module#class_variables lists them so).
+#[derive(Clone, Default)]
+pub struct CvarTbl(Vec<(Sym, Value)>);
+impl CvarTbl {
+    pub fn get(&self, n: &Sym) -> Option<&Value> { self.0.iter().find(|e| e.0 == *n).map(|e| &e.1) }
+    pub fn contains_key(&self, n: &Sym) -> bool { self.0.iter().any(|e| e.0 == *n) }
+    pub fn insert(&mut self, n: Sym, v: Value) { match self.0.iter_mut().find(|e| e.0 == n) { Some(e) => e.1 = v, None => self.0.push((n, v)) } }
+    pub fn remove(&mut self, n: &Sym) -> Option<Value> { let i = self.0.iter().position(|e| e.0 == *n)?; Some(self.0.remove(i).1) }
+    pub fn keys(&self) -> impl Iterator<Item = &Sym> { self.0.iter().map(|e| &e.0) }
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Value> { self.0.iter_mut().map(|e| &mut e.1) }
+}
+impl IntoIterator for CvarTbl { type Item = (Sym, Value); type IntoIter = std::vec::IntoIter<(Sym, Value)>; fn into_iter(self) -> Self::IntoIter { self.0.into_iter() } }
 
 /// Constant bookkeeping beside the table: locations, deprecations, autoloads in progress.
 #[derive(Default)]
@@ -135,7 +148,7 @@ impl ClassData {
     pub fn new(superclass: Value, is_module: bool, alloc: AllocKind) -> ClassData {
         ClassData {
             name: None, temp_name: false, base_name: Sym(0), lexical_parent: NIL, superclass, is_module, is_singleton: false, attached: NIL,
-            mtbl: HashMap::default(), consts: HashMap::default(), const_order: vec![], autoload: HashMap::default(), cvars: HashMap::default(),
+            mtbl: HashMap::default(), consts: HashMap::default(), const_order: vec![], autoload: HashMap::default(), cvars: CvarTbl::default(),
             includes: vec![], prepends: vec![], extended_by: vec![], ivar_index: HashMap::default(), ivar_names: vec![],
             ancestors: std::cell::RefCell::new(None), alloc, subclasses: vec![], private_consts: vec![], refined: false, cx: None,
         }
