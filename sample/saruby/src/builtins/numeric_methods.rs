@@ -907,7 +907,7 @@ cfn!(flo_round, |c, s, a| {
     if x.is_finite() {
         let be = frexp_exp(x);
         if float_round_overflow(nd, be) { return Ok(s); }
-        if float_round_underflow(nd, be) { return Ok(Value::fix(0)); }
+        if float_round_underflow(nd, be) { return Ok(c.float_new(0.0)); }
         if nd >= 15 { return flo_by_rational(c, x, nd, b'r', half); }
         let f = 10f64.powi(nd as i32);
         return Ok(c.float_new(round_by_mode(x, f, half) / f));
