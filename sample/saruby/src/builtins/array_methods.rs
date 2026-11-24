@@ -4,7 +4,7 @@
 #![forbid(unsafe_code)]
 use crate::array::*;
 use crate::builtins::kernel::*;
-use crate::builtins::numeric_methods::num_to_long;
+use crate::builtins::numeric_methods::{num_to_int32, num_to_long};
 use crate::hash::*;
 #[allow(unused_imports)]
 use crate::heap::no_legacy::*;   // the old accessors cannot be named here
@@ -184,7 +184,7 @@ pub fn ary_store(c: &mut Ctx, slf: Value, i: i64, val: Value) -> RV {
     c.ary_modify(slf)?;
     let n = c.ary_len(slf);
     let i2 = if i < 0 { i + n as i64 } else { i };
-    if i2 < 0 { return err(c, c.vm().c_index_error.get(), format!("index {} too small for array; minimum: -{}", i, n)); }
+    if i2 < 0 { return err(c, c.vm().c_index_error.get(), format!("index {} too small for array; minimum: {}", i, -(n as i64))); }
     if i2 >= ARY_MAX { return err(c, c.vm().c_index_error.get(), format!("index {} too big", i)); }
     if i2 > n as i64 { alloc_check(c, i2 + 1)?; }
     let i2 = i2 as usize;
@@ -226,7 +226,7 @@ cfn!(a_aset, |c, slf, a, blk| {
         let st = num_to_long(c, a[0])?; let l = num_to_long(c, a[1])?; let n = c.ary_len(slf);
         if l < 0 { return err(c, c.vm().c_index_error.get(), format!("negative length ({})", l)); }
         let st2 = if st < 0 { st + n as i64 } else { st };
-        if st2 < 0 { return err(c, c.vm().c_index_error.get(), format!("index {} too small for array; minimum: -{}", st, n)); }
+        if st2 < 0 { return err(c, c.vm().c_index_error.get(), format!("index {} too small for array; minimum: {}", st, -(n as i64))); }
         (st2 as usize, l as usize, a[2])
     } else if is_range(a[0]) {
         match crate::range::range_beg_len(c, a[0], n as i64, 1)? { Some((st, l)) => (st as usize, l as usize, a[1]), None => return Ok(a[1]) }
@@ -315,7 +315,10 @@ cfn!(a_insert, |c, slf, a, blk| {
     let n = v.len() as i64;
     let pos = if i < 0 { i + n + 1 } else { i };
     if pos < 0 { return err(c, c.vm().c_index_error.get(), format!("index {} too small for array; minimum: -{}", i, n + 1)); }
+    if pos >= ARY_MAX { return err(c, c.vm().c_index_error.get(), format!("index {} too big", pos)); }
+    if pos > n { alloc_check(c, pos + 1)?; }
     let pos = pos as usize;
+    let v = c.ary_mut(slf);
     if pos > v.len() { v.resize(pos, NIL); }
     v.splice(pos..pos, a[1..].iter().copied());
     Ok(slf)
@@ -480,7 +483,7 @@ fn flatten_into(c: &mut Ctx, v: Value, depth: i64, out: Value, stack: &mut Vec<V
     Ok(changed)
 }
 cfn!(a_flatten, |c, slf, a, blk| {
-    let depth = if a.is_empty() || a[0] == NIL { -1 } else { num_to_long(c, a[0])? };
+    let depth = if a.is_empty() || a[0] == NIL { -1 } else { num_to_int32(c, a[0])? };
     let out = c.ary_new();
     let mut st = vec![slf];
     flatten_into(c, slf, depth, out, &mut st)?;
@@ -488,7 +491,7 @@ cfn!(a_flatten, |c, slf, a, blk| {
 });
 cfn!(a_flatten_b, |c, slf, a, blk| {
     c.ary_modify(slf)?;
-    let depth = if a.is_empty() || a[0] == NIL { -1 } else { num_to_long(c, a[0])? };
+    let depth = if a.is_empty() || a[0] == NIL { -1 } else { num_to_int32(c, a[0])? };
     let out = c.ary_new();
     let mut st = vec![slf];
     let ch = flatten_into(c, slf, depth, out, &mut st)?;
@@ -860,7 +863,7 @@ cfn!(a_fill, |c, slf, a, blk| {
     if l < 0 { return Ok(slf); }
     if st >= ARY_MAX || l > ARY_MAX - st { return arg_err(c, "argument too big"); }
     let e = st + l;
-    if e > n { alloc_check(c, e)?; }
+    if e > n { alloc_check(c, e)?; c.ary_mut(slf).resize(e as usize, NIL); }
     for i in st..e {
         let v = if blk.is_null() { val } else { yield1(c, blk, Value::fix(i))? };
         let arr = c.ary_mut(slf);
@@ -1102,36 +1105,89 @@ cfn!(a_product, |c, slf, a, blk| {
     std::hint::black_box(keep);
     Ok(if blk.is_null() { out } else { slf })
 });
-fn combos(n: usize, k: usize) -> Vec<Vec<usize>> {
-    let mut out = vec![]; let mut cur = vec![];
-    fn rec(st: usize, n: usize, k: usize, cur: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) { if cur.len() == k { out.push(cur.clone()); return; } for i in st..n { cur.push(i); rec(i + 1, n, k, cur, out); cur.pop(); } }
-    rec(0, n, k, &mut cur, &mut out); out
+#[derive(Clone, Copy, PartialEq)]
+enum Gen { Comb, Perm, RComb, RPerm }
+/// Next index list in order (idx starts as the first one); false at the end.
+fn gen_next(g: Gen, n: usize, idx: &mut [usize], used: &mut [bool]) -> bool {
+    let k = idx.len();
+    match g {
+        Gen::Comb => {
+            let Some(i) = (0..k).rev().find(|&i| idx[i] < n - k + i) else { return false };
+            idx[i] += 1;
+            for j in i + 1..k { idx[j] = idx[j - 1] + 1; }
+        }
+        Gen::RComb => {
+            let Some(i) = (0..k).rev().find(|&i| idx[i] + 1 < n) else { return false };
+            let v = idx[i] + 1;
+            for x in &mut idx[i..] { *x = v; }
+        }
+        Gen::RPerm => {
+            let Some(i) = (0..k).rev().find(|&i| idx[i] + 1 < n) else { return false };
+            idx[i] += 1;
+            for x in &mut idx[i + 1..] { *x = 0; }
+        }
+        Gen::Perm => {
+            for i in (0..k).rev() {
+                used[idx[i]] = false;
+                if let Some(v) = (idx[i] + 1..n).find(|&v| !used[v]) {
+                    idx[i] = v; used[v] = true;
+                    for j in i + 1..k { let w = (0..n).find(|&w| !used[w]).unwrap(); idx[j] = w; used[w] = true; }
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+    true
 }
-fn perms(n: usize, k: usize) -> Vec<Vec<usize>> {
-    let mut out = vec![]; let mut cur = vec![]; let mut used = vec![false; n];
-    fn rec(n: usize, k: usize, cur: &mut Vec<usize>, used: &mut Vec<bool>, out: &mut Vec<Vec<usize>>) { if cur.len() == k { out.push(cur.clone()); return; } for i in 0..n { if !used[i] { used[i] = true; cur.push(i); rec(n, k, cur, used, out); cur.pop(); used[i] = false; } } }
-    rec(n, k, &mut cur, &mut used, &mut out); out
+fn int_op(c: &mut Ctx, x: Value, op: &[u8], y: Value) -> RV { funcall(c, x, intern(op), &[y], std::ptr::null()) }
+/// C(top, r) as an Integer, `top` an Integer Value (the loop runs r times).
+fn binom(c: &mut Ctx, top: Value, r: i64) -> RV {
+    let mut acc = Value::fix(1);
+    for i in 1..=r {
+        let off = c.int_from_i64(r - i); let t = int_op(c, top, b"-", off)?;
+        acc = int_op(c, acc, b"*", t)?;
+        acc = int_op(c, acc, b"/", Value::fix(i))?;
+    }
+    Ok(acc)
 }
-fn emit_index_lists(c: &mut Ctx, slf: Value, lists: Vec<Vec<usize>>, blk: Blk, mid: &str, a: &[Value]) -> RV {
-    if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(mid.as_bytes()), a, Value::fix(lists.len() as i64)); }
+/// Enumerator#size of combination / permutation / repeated_* (k < 0: 0).
+fn gen_size(c: &mut Ctx, g: Gen, n: i64, k: i64) -> RV {
+    if k < 0 { return Ok(Value::fix(0)); }
+    match g {
+        Gen::Comb => if k > n { Ok(Value::fix(0)) } else { binom(c, Value::fix(n), k.min(n - k)) },
+        Gen::Perm => {
+            if k > n { return Ok(Value::fix(0)); }
+            let mut acc = Value::fix(1);
+            for i in 0..k { acc = int_op(c, acc, b"*", Value::fix(n - i))?; }
+            Ok(acc)
+        }
+        Gen::RPerm => { let kv = c.int_from_i64(k); int_op(c, Value::fix(n), b"**", kv) }
+        Gen::RComb => if k == 0 { Ok(Value::fix(1)) } else if n == 0 { Ok(Value::fix(0)) } else { let kv = c.int_from_i64(k); let top = int_op(c, kv, b"+", Value::fix(n - 1))?; binom(c, top, n - 1) },
+    }
+}
+fn emit_gen(c: &mut Ctx, slf: Value, g: Gen, k: i64, blk: Blk, mid: &str, a: &[Value]) -> RV {
+    let n = c.ary_len(slf);
+    if blk.is_null() { let sz = gen_size(c, g, n as i64, k)?; return crate::builtins::enumerator::enum_for(c, slf, intern(mid.as_bytes()), a, sz); }
+    let none = k < 0 || (matches!(g, Gen::Comb | Gen::Perm) && k as usize > n) || (matches!(g, Gen::RComb | Gen::RPerm) && n == 0 && k > 0);
+    if none { return Ok(slf); }
+    alloc_check(c, k)?;
+    let k = k as usize;
     let snapshot = c.ary_from_vec(c.ary(slf).to_vec());
-    for l in lists { let row = c.ary_from_vec(l.iter().map(|&i| c.ary_get(snapshot, i)).collect()); yield1(c, blk, row)?; }
+    let mut idx: Vec<usize> = match g { Gen::Comb | Gen::Perm => (0..k).collect(), _ => vec![0; k] };
+    let mut used = vec![false; if g == Gen::Perm { n } else { 0 }];
+    for x in used.iter_mut().take(k) { *x = true; }
+    loop {
+        let row = c.ary_from_vec(idx.iter().map(|&i| c.ary_get(snapshot, i)).collect());
+        yield1(c, blk, row)?;
+        if !gen_next(g, n, &mut idx, &mut used) { break; }
+    }
     Ok(slf)
 }
-cfn!(a_combination, |c, slf, a, blk| { let k = num_to_long(c, a[0])?; let l = if k < 0 || k as usize > c.ary_len(slf) { vec![] } else { combos(c.ary_len(slf), k as usize) }; emit_index_lists(c, slf, l, blk, "combination", a) });
-cfn!(a_permutation, |c, slf, a, blk| { let k = if a.is_empty() { c.ary_len(slf) as i64 } else { num_to_long(c, a[0])? }; let l = if k < 0 || k as usize > c.ary_len(slf) { vec![] } else { perms(c.ary_len(slf), k as usize) }; emit_index_lists(c, slf, l, blk, "permutation", a) });
-cfn!(a_repeated_combination, |c, slf, a, blk| {
-    let k = num_to_long(c, a[0])?; let n = c.ary_len(slf);
-    let mut out = vec![];
-    if k >= 0 { let mut cur = vec![]; fn rec(st: usize, n: usize, k: usize, cur: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) { if cur.len() == k { out.push(cur.clone()); return; } for i in st..n { cur.push(i); rec(i, n, k, cur, out); cur.pop(); } } rec(0, n, k as usize, &mut cur, &mut out); }
-    emit_index_lists(c, slf, out, blk, "repeated_combination", a)
-});
-cfn!(a_repeated_permutation, |c, slf, a, blk| {
-    let k = num_to_long(c, a[0])?; let n = c.ary_len(slf);
-    let mut out = vec![];
-    if k >= 0 { let mut cur = vec![]; fn rec(n: usize, k: usize, cur: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) { if cur.len() == k { out.push(cur.clone()); return; } for i in 0..n { cur.push(i); rec(n, k, cur, out); cur.pop(); } } rec(n, k as usize, &mut cur, &mut out); }
-    emit_index_lists(c, slf, out, blk, "repeated_permutation", a)
-});
+cfn!(a_combination, |c, slf, a, blk| { let k = num_to_long(c, a[0])?; emit_gen(c, slf, Gen::Comb, k, blk, "combination", a) });
+cfn!(a_permutation, |c, slf, a, blk| { let k = if a.is_empty() || a[0] == NIL { c.ary_len(slf) as i64 } else { num_to_long(c, a[0])? }; emit_gen(c, slf, Gen::Perm, k, blk, "permutation", a) });
+cfn!(a_repeated_combination, |c, slf, a, blk| { let k = num_to_long(c, a[0])?; emit_gen(c, slf, Gen::RComb, k, blk, "repeated_combination", a) });
+cfn!(a_repeated_permutation, |c, slf, a, blk| { let k = num_to_long(c, a[0])?; emit_gen(c, slf, Gen::RPerm, k, blk, "repeated_permutation", a) });
 cfn!(a_transpose, |c, slf, a, blk| {
     let n = c.ary_len(slf);
     if n == 0 { return Ok(c.ary_new()); }
@@ -1368,7 +1424,7 @@ cfn!(a_each_slice, |c, slf, a, blk| if ary_each_redef(c, slf) { crate::builtins:
     if n <= 0 { return arg_err(c, "invalid slice size"); }
     ary_size_call(c, slf)?;
     let mut i = 0;
-    while i < c.ary_len(slf) { let e = (i + n as usize).min(c.ary_len(slf)); let sl = c.ary_from_vec(c.ary(slf)[i..e].to_vec()); yield1(c, blk, sl)?; i = e; }
+    while i < c.ary_len(slf) { let e = i.saturating_add(n as usize).min(c.ary_len(slf)); let sl = c.ary_from_vec(c.ary(slf)[i..e].to_vec()); yield1(c, blk, sl)?; i = e; }
     Ok(slf)
 }) } });
 cfn!(a_inject, |c, slf, a, blk| {
@@ -1408,8 +1464,8 @@ cfn!(a_each_cons, |c, slf, a, blk| if ary_each_redef(c, slf) { crate::builtins::
     if n <= 0 { return arg_err(c, "invalid size"); }
     let n = n as usize;
     if let Some(sz) = ary_size_call(c, slf)? { if sz.is_fixnum() && n as u64 > sz.as_fix() as u64 { return Ok(slf); } }
-    let mut i = 0;
-    while i + n <= c.ary_len(slf) { let sl = c.ary_from_vec(c.ary(slf)[i..i + n].to_vec()); yield1(c, blk, sl)?; i += 1; }
+    let mut i: usize = 0;
+    while i.saturating_add(n) <= c.ary_len(slf) { let sl = c.ary_from_vec(c.ary(slf)[i..i + n].to_vec()); yield1(c, blk, sl)?; i += 1; }
     Ok(slf)
 }) } });
 cfn!(a_filter_map, |c, slf, a, blk| if ary_each_redef(c, slf) { crate::builtins::enum_native::call_enumerable(c, slf, "filter_map", a, blk) } else { enum_or(c, slf, "filter_map", a, blk, |c| { let out = c.ary_new(); let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { let y = yield1(c, blk, x)?; if y.truthy() { c.ary_push(out, y); } i += 1; } Ok(out) }) });

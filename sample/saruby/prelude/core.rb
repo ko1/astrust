@@ -79,6 +79,7 @@ module Enumerable
     Enumerable.__argc(args.size, 0, 1) if args.size > 1
     n = Enumerable.__int(args[0])
     raise ArgumentError, "attempt to take negative size" if n < 0
+    raise ArgumentError, "array size too big" if n >= 1 << 60
     a = []
     return a if n == 0
     Enumerable.__each(self) { |v| a << v; break if a.size == n }
@@ -87,6 +88,7 @@ module Enumerable
   def take(n)
     n = Enumerable.__int(n)
     raise ArgumentError, "attempt to take negative size" if n < 0
+    raise ArgumentError, "array size too big" if n >= 1 << 60
     a = []
     return a if n == 0
     Enumerable.__each(self) { |v| a << v; break if a.size == n }

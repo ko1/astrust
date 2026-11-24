@@ -449,12 +449,12 @@ fn slice_cons(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk, cons: bool) -> RV 
     if n <= 0 { return arg_err(c, if cons { "invalid size" } else { "invalid slice size" }); }
     let mid = if cons { "each_cons" } else { "each_slice" };
     // the size is asked for when wanted (enum_each_slice_size), not now
-    if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, crate::symbol::intern(mid.as_bytes()), &[Value::fix(n)], NIL); }
+    if blk.is_null() { let nv = c.int_from_i64(n); return crate::builtins::enumerator::enum_for(c, slf, crate::symbol::intern(mid.as_bytes()), &[nv], NIL); }
     // limit_by_enum_size / enum_size_over_p: rb_check_funcall(obj, :size); each_cons stops on a short one
     let sz = if respond_to(c, slf, s::size, true) { funcall(c, slf, s::size, &[], std::ptr::null())? } else { NIL };
     if cons && sz.is_fixnum() && (n as u64) > sz.as_fix() as u64 { return Ok(slf); }
     let acc0 = c.ary_new();
-    let d = c.ary_new_from(&[acc0, Value::fix(n), Value::bool(cons)]);
+    let d = c.ary_new_from(&[acc0, Value::fix(n.min(1 << 60)), Value::bool(cons)]);
     run_each(c, slf, |c, d, args, _, o| {
         let v = pack(c, args);
         let buf = c.ary_get(d, 0);

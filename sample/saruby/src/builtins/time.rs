@@ -662,6 +662,7 @@ fn ndigits_den(c: &mut Ctx, a: &[Value]) -> RV {
             let nd = crate::builtins::numeric_methods::num_to_long(c, v)?;
             if nd < 0 { return arg_err(c, "negative ndigits given"); }
             if nd == 0 { return Ok(Value::fix(1)); }
+            if (nd as u64).saturating_mul(4) > 1u64 << 34 { return arg_err(c, "exponent is too large"); }
             let p = ipow(c, Value::fix(10), nd as u64);
             Ok(rat_raw(c, Value::fix(1), p))
         }

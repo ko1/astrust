@@ -311,6 +311,7 @@ cfn!(r_first, |c, slf, a, blk| {
     if a.is_empty() { if b == NIL { return err(c, c.vm().c_range_error.get(), "cannot get the first element of beginless range"); } return Ok(b); }
     let n = crate::builtins::numeric_methods::num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, "negative array size (or size too big)"); }
+    if n >= 1 << 60 { return arg_err(c, "array size too big"); }
     let out = c.ary_new();
     if n == 0 { return Ok(out); }
     range_each(c, slf, |c, v| { c.ary_push(out, v); Ok((c.ary_len(out) as i64) < n) })?;
@@ -322,6 +323,27 @@ cfn!(r_last, |c, slf, a, blk| {
     if a.is_empty() {
         return Ok(e);
     }
+    // rb_int_range_last: counted back from the end, never materialized
+    let each_user = (obj_klass(slf) != c.vm().c_range.get() || crate::rt::redef(crate::rt::R_RANGE_EACH)) && crate::builtins::enum_native::each_overridden(c, slf, r_each);
+    if a.len() == 1 && is_integer(b) && is_integer(e) && !each_user {
+        let (zero, one) = (Value::fix(0), Value::fix(1));
+        let last = if x { funcall(c, e, s::minus, &[one], std::ptr::null())? } else { e };
+        let span = funcall(c, last, s::minus, &[b], std::ptr::null())?;
+        let len = funcall(c, span, s::plus, &[one], std::ptr::null())?;
+        if !funcall(c, len, intern(b">"), &[zero], std::ptr::null())?.truthy() { return Ok(c.ary_new()); }
+        let n = crate::builtins::numeric_methods::num_to_long(c, a[0])?;
+        if n < 0 { return arg_err(c, "negative array size"); }
+        let nv = c.int_from_i64(n);
+        let cntv = if funcall(c, len, intern(b">"), &[nv], std::ptr::null())?.truthy() { nv } else { len };
+        if !cntv.is_fixnum() || cntv.as_fix() >= 1 << 60 { return arg_err(c, "array size too big"); }
+        let cnt = cntv.as_fix();
+        if cnt > 1 << 31 { return err(c, c.vm().c_no_memory_error.get(), "failed to allocate memory"); }
+        let back = funcall(c, cntv, s::minus, &[one], std::ptr::null())?;
+        let mut cur = funcall(c, last, s::minus, &[back], std::ptr::null())?;
+        let out = c.ary_new();
+        for _ in 0..cnt { c.ary_push(out, cur); cur = funcall(c, cur, s::plus, &[one], std::ptr::null())?; }
+        return Ok(out);
+    }
     let arr = r_to_a(c, slf, &[], Blk::NONE)?;
     let _ = (b, x);
     funcall(c, arr, intern(b"last"), a, std::ptr::null())
@@ -331,7 +353,7 @@ cfn!(r_min, |c, slf, a, blk| {
     if b == NIL { return err(c, c.vm().c_range_error.get(), "cannot get the minimum of beginless range"); }
     if !blk.is_null() || !a.is_empty() {
         check_argc(c, a, 0, 1)?;
-        if let Some(&n) = a.first() { if n != NIL && crate::builtins::numeric_methods::num_to_long(c, n)? < 0 { return arg_err(c, "negative array size (or size too big)"); } }
+        if let Some(&n) = a.first() { if n != NIL { let nn = crate::builtins::numeric_methods::num_to_long(c, n)?; if nn < 0 { return arg_err(c, "negative array size (or size too big)"); } if nn >= 1 << 60 { return arg_err(c, "array size too big"); } } }
         if blk.is_null() { return r_first(c, slf, a, blk); }
         if e == NIL { return err(c, c.vm().c_range_error.get(), "cannot get the minimum of endless range with custom comparison method"); }
         return crate::builtins::enum_native::call_enumerable(c, slf, "min", a, blk);
@@ -346,7 +368,7 @@ cfn!(r_max, |c, slf, a, blk| {
     if e == NIL { return err(c, c.vm().c_range_error.get(), "cannot get the maximum of endless range"); }
     if !blk.is_null() || !a.is_empty() {
         check_argc(c, a, 0, 1)?;
-        if let Some(&n) = a.first() { if n != NIL && crate::builtins::numeric_methods::num_to_long(c, n)? < 0 { return arg_err(c, "negative array size (or size too big)"); } }
+        if let Some(&n) = a.first() { if n != NIL { let nn = crate::builtins::numeric_methods::num_to_long(c, n)?; if nn < 0 { return arg_err(c, "negative array size (or size too big)"); } if nn >= 1 << 60 { return arg_err(c, "array size too big"); } } }
         if blk.is_null() && e.is_fixnum() && (b == NIL || b.is_fixnum()) {
             let n = crate::builtins::numeric_methods::num_to_long(c, a[0])?;
             let out = c.ary_new();
