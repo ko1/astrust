@@ -811,6 +811,8 @@ fn th_initialize(c: &mut Ctx, t: Value, a: &[Value], b: Blk) -> RV {
     Ok(NIL)
 }
 fn thread_setup(c: &mut Ctx, t: Value, a: &[Value], b: Blk) -> Result<(), Esc> {
+    let g = th(c, cur(c)).group;
+    if g != NIL && is_frozen(g) { return err(c, c.vm().c_thread_error.get(), "can't start a new thread (frozen ThreadGroup)"); }
     let p = block_to_proc(c, b)?;
     let args = crate::fiber::start_args(c, a);
     // the new thread gets a copy of the creating fiber's storage (rb_fiber_inherit_storage)

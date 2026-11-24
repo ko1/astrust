@@ -47,7 +47,9 @@ fn m_undefined_instance_methods(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) ->
 fn le_path(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, s, intern(b"path"))) }
 fn nme_private_call(_c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(s.is_heap() && crate::heap::obj_flags(s) & crate::object::FL_PRIVATE_CALL != 0)) }
 fn sig_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
-    if a.is_empty() { return argc_err(c, 0, 1, 2); }
+    // esignal_init: a signal number takes a name too, a name alone
+    if a.is_empty() || (!a[0].is_fixnum() && a.len() > 1) { return argc_err(c, a.len(), 1, 1); }
+    if a.len() > 2 { return argc_err(c, a.len(), 1, 2); }
     let (no, name) = if a[0].is_fixnum() {
         let n = a[0].as_fix();
         let nm = match a.get(1) { Some(&m) => to_rstring(c, m)?, None => match crate::builtins::process::signame(n as i32) { Some(x) => format!("SIG{}", x), None => return arg_err(c, format!("invalid signal number ({})", n)) } };

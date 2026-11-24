@@ -218,10 +218,14 @@ fn parse_args() -> Opts {
             s if s.starts_with("-E") => enc_opt(&mut o, "-E", &s[2..]),
             s if s.starts_with("-r") => { if s.len() > 2 { o.requires.push(s[2..].into()); } else { i += 1; o.requires.push(argv.get(i).cloned().unwrap_or_else(|| usage())); } }
             s if s.starts_with("--disable") || s.starts_with("--enable") => {}
-            s if s.starts_with("--backtrace-limit=") => match s[18..].parse::<i64>() {
-                Ok(n) if n >= -1 => crate::builtins::exception::BT_LIMIT.store(n, std::sync::atomic::Ordering::Relaxed),
-                _ => cli_fail(&format!("wrong limit for backtrace length: {}", &s[18..])),
-            },
+            s if s == "--backtrace-limit" || s.starts_with("--backtrace-limit=") => {
+                let v = if s.len() > 17 { s[18..].to_string() } else { i += 1; argv.get(i).cloned().unwrap_or_default() };
+                if v.is_empty() { cli_fail("missing argument for --backtrace-limit"); }
+                match v.parse::<i64>() {
+                    Ok(n) if n >= -1 => crate::builtins::exception::BT_LIMIT.store(n, std::sync::atomic::Ordering::Relaxed),
+                    _ => cli_fail("wrong limit for backtrace length"),
+                }
+            }
             s if s.starts_with('-') && s.len() > 1 => { eprintln!("saruby: invalid option {}  (-h will show valid options)", s); std::process::exit(2); }
             _ => { if o.e.is_empty() { o.script = Some(a.clone()); } else { o.args.push(raw[i].clone()); } }
         }
@@ -381,12 +385,18 @@ thread_local! {
     static ORIG_ERR: std::cell::Cell<(Value, bool)> = const { std::cell::Cell::new((NIL, false)) };
 }
 /// The EXIT trap, at_exit procs (LIFO), finalizers, then flush every stream (rb_ec_teardown).
+static TRAP_ERR: heap::Global = heap::Global::new();
 pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
     let vm = vm();
     // the main thread's scheduler runs to completion first (rb_ec_fiber_scheduler_finalize)
     if builtins::thread::scheduler_finalize(c).is_err() { status = handle_toplevel_error(c); }
-    let trap_ok = builtins::process::run_exit_trap(c).is_ok();
-    if !trap_ok { status = handle_toplevel_error(c); }
+    // what the EXIT trap raises is reported after the at_exit procs (which do not see it in $!)
+    let trap_err = if builtins::process::run_exit_trap(c).is_err() {
+        let e = (c.esc, c.esc_tag, c.esc_tag_v);
+        TRAP_ERR.set(c, c.esc_val);
+        c.esc = EscKind::None;
+        Some(e)
+    } else { None };
     loop {
         let ae = vm.at_exit.get();
         let Some(p) = c.ary_mut(ae).pop() else { break };
@@ -400,7 +410,10 @@ pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
             if let Some(e) = raised { c.errinfo = e; }
         }
     }
-    if trap_ok { builtins::misc::run_finalizers(c); }
+    match trap_err {
+        Some((k, t, tv)) => { c.esc = k; c.esc_val = TRAP_ERR.get(c); c.esc_tag = t; c.esc_tag_v = tv; TRAP_ERR.set(c, NIL); status = handle_toplevel_error(c); }
+        None => builtins::misc::run_finalizers(c),
+    }
     builtins::thread::terminate_all(c);
     builtins::kernel::out_flush();
     builtins::io::flush_all(c);

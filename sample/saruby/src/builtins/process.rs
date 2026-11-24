@@ -200,7 +200,8 @@ pub fn run_exit_trap(c: &mut Ctx) -> Result<(), Esc> {
 }
 fn signal_list(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     let h = c.hash_new();
-    for (n, v) in SIGNALS { let k = c.str_new(n.as_bytes()); crate::hash::hash_set(c, h, k, Value::fix(*v as i64))?; }
+    // the names are fstrings (the same objects every call)
+    for (n, v) in SIGNALS { let s = c.str_new(n.as_bytes()); let k = funcall(c, s, intern(b"-@"), &[], std::ptr::null())?; crate::hash::hash_set(c, h, k, Value::fix(*v as i64))?; }
     Ok(h)
 }
 fn signal_signame(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
