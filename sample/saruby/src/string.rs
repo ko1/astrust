@@ -93,7 +93,11 @@ impl Ctx {
         if x.enc == y.enc { x.b == y.b } else { str_eq_enc(&x.b, &y.b, x.enc, y.enc) }
     }
     #[inline(always)]
-    pub fn str_hash(&self, v: Value) -> u64 { crate::astrust::hash_bytes(&self.rstring(v).b) }
+    pub fn str_hash(&self, v: Value) -> u64 {
+        let r = self.rstring(v);
+        let h = crate::astrust::hash_bytes(&r.b);
+        if r.enc == ENC_UTF8 { h } else { h ^ str_hash_enc(&r.b, r.enc) }
+    }
     /// String#to_sym: symbol::BAD_SYM for a broken String of an ASCII-compatible encoding other than UTF-8
     /// (sym_check_asciionly)
     #[inline(always)]
@@ -109,7 +113,11 @@ impl Ctx {
         Value::sym(intern(&r.b))
     }
     #[inline(always)]
-    pub fn str_cmp(&self, a: Value, b: Value) -> std::cmp::Ordering { self.rstring(a).b.cmp(&self.rstring(b).b) }
+    pub fn str_cmp(&self, a: Value, b: Value) -> std::cmp::Ordering {
+        let (x, y) = (self.rstring(a), self.rstring(b));
+        let o = x.b.cmp(&y.b);
+        if o != std::cmp::Ordering::Equal || x.enc == y.enc { o } else { str_cmp_tie(&x.b, x.enc, y.enc) }
+    }
 
     /// String `v` for writing; FrozenError when frozen.
     #[inline]
@@ -182,6 +190,18 @@ impl std::ops::Deref for ByteSnap {
 #[cold]
 #[inline(never)]
 fn str_eq_enc(a: &[u8], b: &[u8], ea: u8, eb: u8) -> bool { a == b && str_comparable(a, ea, eb) }
+/// rb_str_hash's encoding part: a non-ASCII String hashes apart from the same bytes in another encoding.
+#[cold]
+fn str_hash_enc(b: &[u8], enc: u8) -> u64 {
+    if b.is_empty() || (crate::builtins::encoding::ascii_compat(enc) && is_ascii(b)) { 0 } else { (enc as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15) }
+}
+/// CRuby's encoding index (BINARY 0, UTF-8 1: saruby swaps them).
+pub fn cruby_enc_index(e: u8) -> u8 { match e { ENC_UTF8 => 1, ENC_BINARY => 0, e => e } }
+/// rb_str_cmp for equal bytes in different encodings: incomparable ones order by encoding index.
+#[cold]
+fn str_cmp_tie(b: &[u8], ea: u8, eb: u8) -> std::cmp::Ordering {
+    if str_comparable(b, ea, eb) { std::cmp::Ordering::Equal } else { cruby_enc_index(ea).cmp(&cruby_enc_index(eb)) }
+}
 /// rb_str_comparable for two Strings holding the same bytes `b` in encodings `ea` and `eb`.
 #[cold]
 pub fn str_comparable(b: &[u8], ea: u8, eb: u8) -> bool {

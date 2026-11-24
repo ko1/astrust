@@ -58,7 +58,7 @@ pub fn rb_cmp(c: &mut Ctx, a: Value, b: Value) -> Result<std::cmp::Ordering, Esc
     use std::cmp::Ordering;
     let r = redef_word();
     if a.is_fixnum() && b.is_fixnum() && r & R_INT_CMP == 0 { return Ok(a.as_fix().cmp(&b.as_fix())); }
-    if is_string(a) && is_string(b) && r & R_STR_CMP == 0 { return Ok(c.str_bytes(a).cmp(c.str_bytes(b))); }
+    if is_string(a) && is_string(b) && r & R_STR_CMP == 0 { return Ok(c.str_cmp(a, b)); }
     if a.is_flonum() && b.is_flonum() && r & R_FLO_CMP == 0 { if let Some(o) = a.flonum_val().partial_cmp(&b.flonum_val()) { return Ok(o); } }
     let r = funcall(c, a, s::cmp, &[b], std::ptr::null())?;
     cmp_result(c, r, a, b).map(|x| if x < 0 { Ordering::Less } else if x > 0 { Ordering::Greater } else { Ordering::Equal })
@@ -110,7 +110,7 @@ pub fn sort_array(c: &mut Ctx, v: &mut Vec<Value>, blk: Blk) -> Result<(), Esc> 
         use crate::rt::*;
         let r = redef_word();
         if r & R_INT_CMP == 0 && v.iter().all(|x| x.is_fixnum()) { v.sort_by_key(|x| x.as_fix()); return Ok(()); }
-        if r & R_STR_CMP == 0 && v.iter().all(|x| is_string(*x)) { v.sort_by(|a, b| c.str_bytes(*a).cmp(c.str_bytes(*b))); return Ok(()); }
+        if r & R_STR_CMP == 0 && v.iter().all(|x| is_string(*x)) { v.sort_by(|a, b| c.str_cmp(*a, *b)); return Ok(()); }
         if r & R_FLO_CMP == 0 && v.iter().all(|x| x.is_flonum() && !x.flonum_val().is_nan()) { v.sort_by(|a, b| a.flonum_val().partial_cmp(&b.flonum_val()).unwrap()); return Ok(()); }
         sort_values(c, v, &mut |c, a, b| rb_cmp(c, a, b))
     } else {
@@ -696,7 +696,7 @@ pub fn rb_eql(c: &mut Ctx, a: Value, b: Value) -> Result<bool, Esc> {
     if a.is_heap() {
         let k = obj_klass(a);
         if k == c.vm().c_float.get() && is_float(b) && !redef(R_FLO_EQ) { return Ok(float_val(a) == float_val(b)); }
-        if k == c.vm().c_string.get() && is_string(b) && !redef(R_STR_EQ) { return Ok(c.str_bytes(a) == c.str_bytes(b)); }
+        if k == c.vm().c_string.get() && is_string(b) && !redef(R_STR_EQ) { return Ok(c.str_eq(a, b)); }
     }
     Ok(funcall(c, a, s::eql_p, &[b], std::ptr::null())?.truthy())
 }

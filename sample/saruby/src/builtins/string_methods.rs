@@ -143,11 +143,16 @@ fn find_mb_head(h: &[u8], n: &[u8], from: usize, enc: u8) -> Option<usize> {
     }
 }
 /// find_bytes, but only hits that start on a character boundary of `slf`.
-fn find_on_boundary(c: &Ctx, slf: Value, n: &[u8], from: usize) -> Option<usize> {
+fn find_on_boundary(c: &Ctx, slf: Value, o: Value, from: usize) -> Option<usize> {
+    use crate::builtins::encoding as en;
     let r = c.rstring(slf);
-    if enc_single(&r.b, r.enc) || crate::builtins::encoding::kind(r.enc) == crate::builtins::encoding::EK::Utf8 && crate::builtins::encoding::is_valid(r.enc, n) {
-        return find_bytes(&r.b, n, from);
-    }
+    let n = c.str_bytes(o);
+    if enc_single(&r.b, r.enc) { return find_bytes(&r.b, n, from); }
+    // rb_strseq_index: a broken needle never matches
+    let oe = c.str_enc(o);
+    let valid = en::is_valid(oe, n);
+    if !valid { return None; }
+    if en::kind(r.enc) == en::EK::Utf8 && (oe == r.enc || en::is_valid(r.enc, n)) { return find_bytes(&r.b, n, from); }
     let off = char_offsets_of(&r.b, r.enc);
     let mut i = from;
     loop {
@@ -222,13 +227,7 @@ cfn!(s_eq, |c, slf, a, b_| {
 });
 cfn!(s_eql, |c, slf, a, b_| Ok(Value::bool(is_string(a[0]) && c.str_eq(slf, a[0]))));
 cfn!(s_hash, |c, slf, a, b_| Ok(Value::fix((c.str_hash(slf) >> 2) as i64)));
-fn str_cmp_enc(c: &Ctx, a: Value, b: Value) -> i64 {
-    let r = c.str_bytes(a).cmp(c.str_bytes(b)) as i64;
-    if r != 0 || c.str_enc(a) == c.str_enc(b) || str_comparable(c.str_bytes(a), c.str_enc(a), c.str_enc(b)) { return r; }
-    // CRuby's encoding index: BINARY 0, UTF-8 1 (saruby swaps them)
-    let ix = |e: u8| match e { ENC_UTF8 => 1, ENC_BINARY => 0, e => e };
-    if ix(c.str_enc(a)) > ix(c.str_enc(b)) { 1 } else { -1 }
-}
+fn str_cmp_enc(c: &Ctx, a: Value, b: Value) -> i64 { c.str_cmp(a, b) as i64 }
 cfn!(s_cmp, |c, slf, a, b_| {
     if is_string(a[0]) { return Ok(Value::fix(str_cmp_enc(c, slf, a[0]))); }
     if a[0].is_heap() && respond_to(c, a[0], s::to_str, true) {
@@ -321,7 +320,7 @@ cfn!(s_aset, |c, slf, a, b_| {
     }
     if is_string(a[0]) {
         compat(c, slf, a[0])?;
-        let p = match find_on_boundary(c, slf, c.str_bytes(a[0]), 0) { Some(p) => p, None => return err(c, c.vm().c_index_error.get(), "string not matched") };
+        let p = match find_on_boundary(c, slf, a[0], 0) { Some(p) => p, None => return err(c, c.vm().c_index_error.get(), "string not matched") };
         let beg = byte_to_char(c, slf, p) as i64;
         let ln = c.str_char_len(a[0]) as i64;
         str_update(c, slf, beg, ln, val)?;
@@ -493,7 +492,7 @@ fn reverse_bytes(bv: &[u8], enc: u8) -> Vec<u8> {
 }
 cfn!(s_reverse, |c, slf, a, b_| { let r = c.rstring(slf); let nv = reverse_bytes(&r.b, r.enc); Ok(c.str_new_like(slf, nv)) });
 cfn!(s_reverse_b, |c, slf, a, b_| { let r = c.str_modify(slf)?; let nv = reverse_bytes(&r.b, r.enc); r.b = nv.into(); Ok(slf) });
-cfn!(s_include, |c, slf, a, b_| { let o = expect_str(c, a[0])?; compat(c, slf, o)?; Ok(Value::bool(find_on_boundary(c, slf, c.str_bytes(o), 0).is_some())) });
+cfn!(s_include, |c, slf, a, b_| { let o = expect_str(c, a[0])?; compat(c, slf, o)?; Ok(Value::bool(find_on_boundary(c, slf, o, 0).is_some())) });
 cfn!(s_start_with, |c, slf, a, b_| {
     for &x in a {
         if regexp::is_regexp(c, x) { let md = regexp::prepare(c, x, slf)?; if let Some(g) = regexp::match_at_e(c, x, c.str_bytes(slf), 0, md) { let m = regexp::match_new(c, x, slf, g); crate::builtins::svar::set_last_match(c, m); return Ok(TRUE); } crate::builtins::svar::set_last_match(c, NIL); continue; }
@@ -517,7 +516,7 @@ cfn!(s_index, |c, slf, a, b_| {
     }
     let o = expect_str(c, a[0])?;
     compat(c, slf, o)?;
-    Ok(match find_on_boundary(c, slf, c.str_bytes(o), bs) { Some(p) => Value::fix(byte_to_char(c, slf, p) as i64), None => NIL })
+    Ok(match find_on_boundary(c, slf, o, bs) { Some(p) => Value::fix(byte_to_char(c, slf, p) as i64), None => NIL })
 });
 /// rb_reg_search backward from byte `bs` (\G at `bs`), over character starts; sets $~.
 fn reg_rsearch(c: &mut Ctx, re: Value, slf: Value, bs: usize) -> Result<Option<(usize, usize)>, Esc> {
@@ -1394,8 +1393,7 @@ cfn!(s_partition, |c, slf, a, b_| {
     } else {
         let sep = get_pat(c, a[0])?;
         compat(c, slf, sep)?;
-        if !crate::builtins::encoding::is_valid(c.str_enc(sep), c.str_bytes(sep)) { None }
-        else { find_on_boundary(c, slf, c.str_bytes(sep), 0).map(|i| (i, i + c.str_len(sep), sep)) }
+        find_on_boundary(c, slf, sep, 0).map(|i| (i, i + c.str_len(sep), sep))
     };
     Ok(match found {
         Some((ms, me, sep)) => part3(c, slf, ms, me, sep),
@@ -1463,7 +1461,7 @@ cfn!(s_slice_b, |c, slf, a, b_| {
         let (st, ln) = (num_to_long(c, x)?, num_to_long(c, a[1])?);
         match subpos(c, slf, st, ln) { Some(r) => r, None => return Ok(NIL) }
     } else if is_string(x) {
-        let p = match find_on_boundary(c, slf, c.str_bytes(x), 0) { Some(p) => p, None => return Ok(NIL) };
+        let p = match find_on_boundary(c, slf, x, 0) { Some(p) => p, None => return Ok(NIL) };
         res = c.str_copy(x);
         (p, p + c.str_len(x))
     } else {
@@ -1791,7 +1789,7 @@ cfn!(s_byteindex, |c, slf, a, b_| {
     }
     let o = expect_str(c, a[0])?;
     compat(c, slf, o)?;
-    Ok(match find_on_boundary(c, slf, c.str_bytes(o), st as usize) { Some(p) => Value::fix(p as i64), None => NIL })
+    Ok(match find_on_boundary(c, slf, o, st as usize) { Some(p) => Value::fix(p as i64), None => NIL })
 });
 cfn!(s_byterindex, |c, slf, a, b_| {
     check_argc(c, a, 1, 2)?;

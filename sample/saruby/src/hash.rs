@@ -183,7 +183,7 @@ fn hash_of(c: &mut Ctx, k: Value) -> Result<Hv, Esc> {
         if k.is_flonum() { let f = k.flonum_val(); return Ok(Hv::Raw(mix(if f == 0.0 { 0 } else { f.to_bits() }))); }
         return Ok(Hv::Raw(mix(k.raw())));
     }
-    if is_string(k) { return Ok(Hv::Raw(crate::astrust::hash_bytes(c.str_bytes(k)))); }
+    if is_string(k) { return Ok(Hv::Raw(c.str_hash(k))); }
     if is_float(k) { let f = float_val(k); return Ok(Hv::Raw(mix(if f == 0.0 { 0 } else { f.to_bits() }))); }
     if is_bignum(k) { return Ok(Hv::Raw(big_hash(c, k))); }
     hash_of_obj(c, k)
@@ -242,7 +242,7 @@ pub fn key_eql(c: &mut Ctx, a: Value, b: Value) -> Result<bool, Esc> {
         if a.is_flonum() && is_float(b) { return Ok(a.flonum_val() == float_val(b)); }
         return Ok(false);
     }
-    if is_string(a) { return Ok(is_string(b) && c.rstring(a).b == c.rstring(b).b); }
+    if is_string(a) { return Ok(is_string(b) && c.str_eq(a, b)); }
     if is_float(a) { return Ok(is_float(b) && float_val(a) == float_val(b)); }
     if is_bignum(a) && b.is_heap() { return Ok(is_bignum(b) && c.big(a) == c.big(b)); }
     let r = funcall(c, a, s::eql_p, &[b], std::ptr::null())?;
