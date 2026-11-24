@@ -312,19 +312,26 @@ pub const FK_EVAL: u8 = 6;
 #[repr(C)]
 /// The part of a frame every call writes.  A `lite` frame (node_method_entry) is only this;
 /// any other frame is the head of a FrameFull.
+/// (blk, id) at 16: see FrameA16.
 #[repr(C)]
 pub struct Frame {
     pub prev: *mut Frame,
-    pub fp: FpHead,       // the frame's self and env slots
     pub me: *const MethodEntry,
     pub blk: *const Block,
     pub id: u64,          // return target: method frame id (blocks: the home method's; lambdas: own)
+    pub fp: FpHead,       // the frame's self and env slots
     pub pos: Pos,         // the current line: where it is kept (a node's), read only when it is needed
     pub kind: u8,
     pub visi: u8,
     pub lite: bool,
     pub pad: std::cell::Cell<u8>,   // written with kind..lite as one word; bit 0: svar.rs
 }
+
+/// node_method_entry's frame, 16-aligned: (blk, id), which LLVM stores as one 16-byte word (0, 0 on a plain
+/// call), cannot cross a cache line.  Crossing, on Zen 4 it costs a store slot (~1 cycle per call) in a
+/// quarter of the stack positions, which the callers' frame sizes set.
+#[repr(C, align(16))]
+pub struct FrameA16 { pub f: Frame }
 
 /// A source line as a frame keeps it: a reference to the line operand of the node being run (or of an
 /// iseq), not the number.  A site then stores its own address, which specialized code shared by sites

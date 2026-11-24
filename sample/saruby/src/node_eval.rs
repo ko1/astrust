@@ -1480,7 +1480,8 @@ pub fn EVAL_node_method_entry<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut
     // id 0: no block can return to this frame, and its own `return` is caught by the innermost entry
     let id = if flags & ME_ID != 0 { c.next_serial() } else { 0 };
     let prev = c.frame;
-    let mut fr = Frame { prev, fp: head(fp), me, blk, id, pos: line.pos(), kind: FK_METHOD, visi: VISI_PUBLIC, lite: true, pad: std::cell::Cell::new(0) };
+    let mut fs = FrameA16 { f: Frame { prev, fp: head(fp), me, blk, id, pos: line.pos(), kind: FK_METHOD, visi: VISI_PUBLIC, lite: true, pad: std::cell::Cell::new(0) } };
+    let fr = &mut fs.f;
     // no native stack check here: whoever calls an entry out of line makes it (run_entry, site_fast)
     // a shared frame (the caller's, CallArgs) has no slots of its own and keeps the caller's env
     if !(shareable(nlocals, nparams, flags) && ca.shared) {
@@ -1490,7 +1491,7 @@ pub fn EVAL_node_method_entry<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut
     let mut i = 2 + nparams;
     while i < nlocals { slot(fp, i).set(NIL); i += 1; }
     if flags & ME_ENV != 0 { make_env(c, unsafe { &*fr.iseq() }, fp, NIL); }
-    c.frame = &mut fr;
+    c.frame = &mut *fr;
     let r = <D_body as Disp>::call(c, body, fp);
     // compiled in and no call in the body: `prev` stays in a register and the reload of fr.prev (a store-load
     // round trip) goes; out of line it would cost a saved register
