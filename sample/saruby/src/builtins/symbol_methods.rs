@@ -34,7 +34,8 @@ fn sym_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
         let mut out = b":".to_vec(); out.extend_from_slice(c.str_bytes(i));
         return Ok(c.str_new(&out));
     }
-    Ok(c.str_new(crate::string::sym_inspect(sym_bytes(s.as_sym())).as_bytes()))
+    let r = crate::string::sym_inspect(sym_bytes(s.as_sym()));
+    Ok(c.str_new_enc(r.as_bytes(), if r.is_ascii() { ENC_ASCII } else { ENC_UTF8 }))
 }
 fn sym_to_proc(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { crate::builtins::proc::sym_to_proc(c, s) }
 fn sym_eq(_c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { Ok(Value::bool(s == a[0])) }

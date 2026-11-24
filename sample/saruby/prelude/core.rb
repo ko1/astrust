@@ -196,6 +196,7 @@ module Enumerable
   end
   def all?(*pat)
     Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
+    warn("given block not used", uplevel: 1) if !pat.empty? && block_given?
     if !pat.empty? then Enumerable.__each(self) { |v| return false unless pat[0] === v }
     elsif block_given? then each { |*x| return false unless yield(*x) }
     else Enumerable.__each(self) { |v| return false unless v } end
@@ -203,6 +204,7 @@ module Enumerable
   end
   def any?(*pat)
     Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
+    warn("given block not used", uplevel: 1) if !pat.empty? && block_given?
     if !pat.empty? then Enumerable.__each(self) { |v| return true if pat[0] === v }
     elsif block_given? then each { |*x| return true if yield(*x) }
     else Enumerable.__each(self) { |v| return true if v } end
@@ -210,6 +212,7 @@ module Enumerable
   end
   def none?(*pat)
     Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
+    warn("given block not used", uplevel: 1) if !pat.empty? && block_given?
     if !pat.empty? then Enumerable.__each(self) { |v| return false if pat[0] === v }
     elsif block_given? then each { |*x| return false if yield(*x) }
     else Enumerable.__each(self) { |v| return false if v } end
@@ -217,6 +220,7 @@ module Enumerable
   end
   def one?(*pat)
     Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
+    warn("given block not used", uplevel: 1) if !pat.empty? && block_given?
     n = 0
     if !pat.empty? then Enumerable.__each(self) { |v| n += 1 if pat[0] === v; return false if n > 1 }
     elsif block_given? then each { |*x| n += 1 if yield(*x); return false if n > 1 }

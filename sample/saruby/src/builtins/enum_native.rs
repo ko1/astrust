@@ -181,6 +181,22 @@ fn run_each_stop(c: &mut Ctx, recv: Value, f: CBlockFn, data: Value, blk: Blk) -
     r
 }
 
+/// Array#zip's take_items for a non-Array: the first n values of obj.each (packed); None if no #each.
+pub fn take_items(c: &mut Ctx, obj: Value, n: usize) -> Result<Option<Value>, Esc> {
+    if !crate::rt::check_respond(c, obj, s::each)? { return Ok(None); }
+    let out = c.ary_new();
+    if n == 0 { return Ok(Some(out)); }
+    let d = c.ary_new_from(&[out, Value::fix(n as i64)]);
+    run_each_stop(c, obj, |c, d, args, _, _| {
+        let v = pack(c, args);
+        let out = c.ary_get(d, 0);
+        c.ary_push(out, v);
+        if c.ary_len(out) as i64 >= c.ary_get(d, 1).as_fix() { return enum_stop(c, d); }
+        Ok(NIL)
+    }, d, Blk::NONE)?;
+    Ok(Some(out))
+}
+
 fn no_blk(c: &mut Ctx, slf: Value, mid: &str, a: &[Value]) -> RV {
     crate::builtins::enumerator::enum_for_sized(c, slf, crate::symbol::intern(mid.as_bytes()), a)
 }

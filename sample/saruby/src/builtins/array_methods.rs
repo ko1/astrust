@@ -23,8 +23,19 @@ macro_rules! cfn { ($(#[$m:meta])* $name:ident, |$c:ident, $s:ident, $a:ident, $
 fn ary_each_redef(c: &Ctx, slf: Value) -> bool {
     (obj_klass(slf) != c.vm().c_array.get() || crate::rt::redef(crate::rt::R_ARY_EACH)) && crate::builtins::enum_native::each_overridden(c, slf, a_each)
 }
+/// rb_warn("given block not used") for a method given both an argument and a block.
+fn warn_unused_block(c: &mut Ctx, a: &[Value], blk: Blk) -> Result<(), Esc> {
+    if !a.is_empty() && !blk.is_null() { gvar_warn(c, "given block not used", false)?; }
+    Ok(())
+}
 fn enum_or<F: FnOnce(&mut Ctx) -> RV>(c: &mut Ctx, slf: Value, mid: &str, a: &[Value], blk: Blk, f: F) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for_sized(c, slf, intern(mid.as_bytes()), a); }
+    f(c)
+}
+
+/// RETURN_ENUMERATOR without a size function.
+fn enum_unsized<F: FnOnce(&mut Ctx) -> RV>(c: &mut Ctx, slf: Value, mid: &str, a: &[Value], blk: Blk, f: F) -> RV {
+    if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(mid.as_bytes()), a, NIL); }
     f(c)
 }
 
@@ -181,13 +192,17 @@ cfn!(a_s_new, |c, slf, a, blk| crate::builtins::object::c_new(c, slf, a, blk));
 cfn!(a_initialize, |c, slf, a, blk| {
     check_argc(c, a, 0, 2)?;
     let v = c.ary_modify(slf)?; v.clear();
-    if a.is_empty() { return Ok(slf); }
+    if a.is_empty() {
+        if !blk.is_null() && c.vm().verbose.get() == TRUE { gvar_warn(c, "given block not used", false)?; }
+        return Ok(slf);
+    }
     if a.len() == 1 && is_array(a[0]) { let src = c.ary(a[0]).to_vec(); *c.ary_mut(slf) = src.into(); return Ok(slf); }
     if a.len() == 1 && !a[0].is_fixnum() { if let Some(arr) = check_array(c, a[0])? { let src = c.ary(arr).to_vec(); *c.ary_mut(slf) = src.into(); return Ok(slf); } }
     let n = num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, "negative array size"); }
     if n > 1 << 32 { return arg_err(c, "array size too big"); }
     if !blk.is_null() {
+        if a.len() == 2 { gvar_warn(c, "block supersedes default value argument", false)?; }
         for i in 0..n { let x = yield1(c, blk, Value::fix(i))?; c.ary_push(slf, x); }
     } else {
         let fillv = if a.len() > 1 { a[1] } else { NIL };
@@ -233,6 +248,7 @@ cfn!(a_aset, |c, slf, a, blk| {
 cfn!(a_at, |c, slf, a, blk| { let i = num_to_long(c, a[0])?; Ok(norm_index(i, c.ary_len(slf)).and_then(|i| c.ary(slf).get(i).copied()).unwrap_or(NIL)) });
 cfn!(a_fetch, |c, slf, a, blk| {
     check_argc(c, a, 1, 2)?;
+    if !blk.is_null() && a.len() == 2 { gvar_warn(c, "block supersedes default value argument", false)?; }
     let i = num_to_long(c, a[0])?;
     match norm_index(i, c.ary_len(slf)).and_then(|i| c.ary(slf).get(i).copied()) {
         Some(v) => Ok(v),
@@ -266,6 +282,7 @@ cfn!(#[inline] a_ltlt, |c, slf, a, blk| { c.ary_modify(slf)?; c.ary_push(slf, a[
 cfn!(a_pop, |c, slf, a, blk| {
     let v = c.ary_modify(slf)?;
     if a.is_empty() { return Ok(v.pop().unwrap_or(NIL)); }
+    check_argc(c, a, 0, 1)?;
     let n = num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, "negative array size"); }
     let v = c.ary_mut(slf); let k = (n as usize).min(v.len());
@@ -275,6 +292,7 @@ cfn!(a_pop, |c, slf, a, blk| {
 cfn!(a_shift, |c, slf, a, blk| {
     let v = c.ary_modify(slf)?;
     if a.is_empty() { return Ok(if v.is_empty() { NIL } else { v.remove(0) }); }
+    check_argc(c, a, 0, 1)?;
     let n = num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, "negative array size"); }
     let v = c.ary_mut(slf); let k = (n as usize).min(v.len());
@@ -378,6 +396,8 @@ cfn!(a_reject_b, |c, slf, a, blk| enum_or(c, slf, "reject!", a, blk, |c| { let c
 cfn!(a_delete_if, |c, slf, a, blk| enum_or(c, slf, "delete_if", a, blk, |c| { filter_in_place(c, slf, blk, false)?; Ok(slf) }));
 cfn!(a_index, |c, slf, a, blk| {
     if a.is_empty() && blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"index"), a, NIL); }
+    check_argc(c, a, 0, 1)?;
+    warn_unused_block(c, a, blk)?;
     let mut i = 0;
     while let Some(&x) = c.ary(slf).get(i) {
         let hit = if a.is_empty() { yield1(c, blk, x)?.truthy() } else { rb_eq(c, x, a[0])? };
@@ -388,6 +408,8 @@ cfn!(a_index, |c, slf, a, blk| {
 });
 cfn!(a_rindex, |c, slf, a, blk| {
     if a.is_empty() && blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"rindex"), a, NIL); }
+    check_argc(c, a, 0, 1)?;
+    warn_unused_block(c, a, blk)?;
     let mut i = c.ary_len(slf);
     while i > 0 {
         i -= 1;
@@ -504,45 +526,80 @@ cfn!(a_rotate_b, |c, slf, a, blk| {
     if !v.is_empty() { let n = v.len() as i64; let r = ((k % n) + n) % n; v.rotate_left(r as usize); }
     Ok(slf)
 });
-pub fn ary_join(c: &mut Ctx, slf: Value, sep: &[u8], out: &mut Vec<u8>, enc: &mut u8) -> Result<(), Esc> {
-    if !rec_enter(c, slf, s::join)? { return arg_err(c, "recursive array join"); }
-    let mut i = 0;
-    let r: Result<(), Esc> = (|| {
-        while i < c.ary_len(slf) {
-            if i > 0 { out.extend_from_slice(sep); }
-            let x = c.ary_get(slf, i);
-            if is_string(x) { out.extend_from_slice(c.str_bytes(x)); if c.rstring(x).enc == ENC_BINARY && !is_ascii(c.str_bytes(x)) { *enc = ENC_BINARY; } }
-            else if is_array(x) { ary_join(c, x, sep, out, enc)?; }
-            else {
-                let conv = crate::rt::conv_target(x);
-                let sub = if conv { check_str_conv(c, x)? } else { None };
-                if let Some(s2) = sub { out.extend_from_slice(c.str_bytes(s2)); }
-                else if let Some(arr) = if conv { check_array(c, x)? } else { None } { ary_join(c, arr, sep, out, enc)?; }
-                else { let s2 = crate::rt::srb_tostr(c, x)?; out.extend_from_slice(c.str_bytes(s2)); }
-            }
-            i += 1;
-        }
-        Ok(())
-    })();
-    rec_leave(c, slf, s::join);
+/// rb_check_string_type: a String, the result of #to_str, or None (to_str gave nil / is not there).
+fn check_string_type(c: &mut Ctx, x: Value) -> Result<Option<Value>, Esc> {
+    if is_string(x) { return Ok(Some(x)); }
+    if !crate::rt::conv_target(x) { return Ok(None); }
+    let r = if crate::string::mm_redef() { crate::string::check_funcall(c, x, s::to_str)? }
+        else if respond_to(c, x, s::to_str, true) { Some(funcall(c, x, s::to_str, &[], std::ptr::null())?) } else { None };
+    match r {
+        None => Ok(None),
+        Some(r) if r == NIL => Ok(None),
+        Some(r) if is_string(r) => Ok(Some(r)),
+        Some(r) => { let cls = class_path(c, real_class_of(c, x)); type_err(c, format!("can't convert {} to String ({}#to_str gives {})", cls, cls, class_path(c, real_class_of(c, r)))) }
+    }
+}
+/// ary_join_1_str: append, the first String also gives its encoding.
+fn join_str(c: &mut Ctx, out: Value, x: Value, first: &mut bool) -> Result<(), Esc> {
+    crate::string::str_append_str(c, out, x)?;
+    if *first { let e = c.str_enc(x); c.rstring_mut(out).enc = e; *first = false; }
+    Ok(())
+}
+fn join_ary(c: &mut Ctx, obj: Value, ary: Value, sep: Value, out: Value, val: Value, first: &mut bool) -> Result<(), Esc> {
+    if val == ary { return arg_err(c, "recursive array join"); }
+    *first = false;
+    if !rec_enter(c, obj, s::join)? { return arg_err(c, "recursive array join"); }
+    let r = join_1(c, obj, val, sep, 0, out, first);
+    rec_leave(c, obj, s::join);
     r
 }
-fn check_str_conv(c: &mut Ctx, x: Value) -> Result<Option<Value>, Esc> {
-    if respond_to(c, x, s::to_str, true) { return Ok(Some(expect_str(c, x)?)); }
-    Ok(None)
+/// ary_join_1: from element i on, converting non-Strings.
+fn join_1(c: &mut Ctx, obj: Value, ary: Value, sep: Value, mut i: usize, out: Value, first: &mut bool) -> Result<(), Esc> {
+    while i < c.ary_len(ary) {
+        if i > 0 && sep != NIL { crate::string::str_append_str(c, out, sep)?; }
+        let x = c.ary_get(ary, i);
+        if is_string(x) { join_str(c, out, x, first)?; }
+        else if is_array(x) { join_ary(c, x, ary, sep, out, x, first)?; }
+        else if let Some(t) = check_string_type(c, x)? { join_str(c, out, t, first)?; }
+        else if let Some(t) = if crate::rt::conv_target(x) { check_array(c, x)? } else { None } { join_ary(c, obj, ary, sep, out, t, first)?; }
+        else { let t = crate::rt::srb_tostr(c, x)?; join_str(c, out, t, first)?; }
+        i += 1;
+    }
+    Ok(())
+}
+/// rb_ary_join: the leading Strings as they are, the rest by join_1.
+pub fn ary_join_value(c: &mut Ctx, ary: Value, sep: Value) -> RV {
+    if c.ary_len(ary) == 0 { return Ok(c.str_new_enc(b"", ENC_ASCII)); }
+    let sep = if sep != NIL { expect_str(c, sep)? } else { NIL };
+    let out = c.str_new_enc(b"", ENC_ASCII);
+    let mut i = 0;
+    while i < c.ary_len(ary) {
+        let x = c.ary_get(ary, i);
+        if check_string_type(c, x)? != Some(x) { break; }
+        i += 1;
+    }
+    let max = i.min(c.ary_len(ary));
+    // ary_join_0
+    if max > 0 { let e = c.str_enc(c.ary_get(ary, 0)); c.rstring_mut(out).enc = e; }
+    let mut j = 0;
+    while j < max {
+        let x = c.ary_get(ary, j);
+        if !is_string(x) { break; }
+        if j > 0 && sep != NIL { crate::string::str_append_str(c, out, sep)?; }
+        crate::string::str_append_str(c, out, x)?;
+        j += 1;
+    }
+    if j < c.ary_len(ary) { let mut first = j == 0; join_1(c, ary, ary, sep, j, out, &mut first)?; }
+    Ok(out)
 }
 cfn!(a_join, |c, slf, a, blk| {
     check_argc(c, a, 0, 1)?;
-    if c.ary_len(slf) == 0 { return Ok(c.str_new(b"")); }
-    let sepv = if a.is_empty() || a[0] == NIL { gvar_get(c, intern(b"$,"))? } else { a[0] };
-    let sep = if sepv == NIL { vec![] } else { let s2 = expect_str(c, sepv)?; c.str_bytes(s2).to_vec() };
-    let mut out = vec![]; let mut enc = ENC_UTF8;
-    // rb_ary_join's first pass: the first non-String is asked for to_str before anything is joined
-    if let Some(&x) = c.ary(slf).iter().find(|x| !is_string(**x)) {
-        if !is_array(x) && crate::rt::conv_target(x) && respond_to(c, x, s::to_str, true) { funcall(c, x, s::to_str, &[], std::ptr::null())?; }
-    }
-    ary_join(c, slf, &sep, &mut out, &mut enc)?;
-    Ok(c.str_from_vec_enc(out, enc))
+    let sep = if a.is_empty() || a[0] == NIL {
+        let s2 = gvar_get(c, intern(b"$,"))?;
+        if s2 != NIL { warn_deprecated(c, "$, is set to non-nil value")?; }
+        s2
+    } else { a[0] };
+    ary_join_value(c, slf, sep)
 });
 cfn!(a_to_a, |c, slf, a, blk| if obj_klass(slf) == c.vm().c_array.get() { Ok(slf) } else { Ok(c.ary_from_vec(c.ary(slf).to_vec())) });
 cfn!(a_to_ary, |c, slf, a, blk| Ok(slf));
@@ -560,23 +617,24 @@ cfn!(a_to_h, |c, slf, a, blk| {
     Ok(h)
 });
 pub fn ary_inspect(c: &mut Ctx, slf: Value) -> RV {
-    if c.ary_len(slf) == 0 { return Ok(c.str_new(b"[]")); }
-    if !rec_enter(c, slf, s::inspect)? { return Ok(c.str_new(b"[...]")); }
-    let mut out = vec![b'['];
+    if c.ary_len(slf) == 0 { return Ok(c.str_new_enc(b"[]", ENC_ASCII)); }
+    if !rec_enter(c, slf, s::inspect)? { return Ok(c.str_new_enc(b"[...]", ENC_ASCII)); }
+    let out = c.str_new_enc(b"[", ENC_BINARY);
     let mut i = 0;
     let r: Result<(), Esc> = (|| {
         while i < c.ary_len(slf) {
-            if i > 0 { out.extend_from_slice(b", "); }
             let s2 = inspect_value(c, c.ary_get(slf, i))?;
-            out.extend_from_slice(c.str_bytes(s2));
+            if i > 0 { c.rstring_mut(out).b.extend_from_slice(b", "); }
+            else { let e = c.str_enc(s2); c.rstring_mut(out).enc = e; }
+            crate::string::str_append_str(c, out, s2)?;
             i += 1;
         }
         Ok(())
     })();
     rec_leave(c, slf, s::inspect);
     r?;
-    out.push(b']');
-    Ok(c.str_from_vec(out))
+    c.rstring_mut(out).b.extend_from_slice(b"]");
+    Ok(out)
 }
 cfn!(a_inspect, |c, slf, a, blk| ary_inspect(c, slf));
 cfn!(a_eq, |c, slf, a, blk| {
@@ -695,7 +753,7 @@ cfn!(a_difference, |c, slf, a, blk| {
 });
 cfn!(a_mul, |c, slf, a, blk| {
     if is_string(a[0]) { return a_join(c, slf, a, blk); }
-    if a[0].is_heap() && !a[0].is_fixnum() { if let Some(sv) = check_str_conv(c, a[0])? { return a_join(c, slf, &[sv], blk); } }
+    if a[0].is_heap() && !a[0].is_fixnum() { if let Some(sv) = check_string_type(c, a[0])? { return ary_join_value(c, slf, sv); } }
     let n = num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, "negative argument"); }
     let l = c.ary_len(slf) as i64;
@@ -779,16 +837,23 @@ cfn!(a_replace, |c, slf, a, blk| {
 });
 cfn!(a_fill, |c, slf, a, blk| {
     c.ary_modify(slf)?;
-    let (val, rest) = if blk.is_null() { if a.is_empty() { return argc_err(c, 0, 1, 3); } (a[0], &a[1..]) } else { (NIL, a) };
+    let (val, rest) = if blk.is_null() { check_argc(c, a, 1, 3)?; (a[0], &a[1..]) } else { check_argc(c, a, 0, 2)?; (NIL, a) };
     let n = c.ary_len(slf) as i64;
-    let (st, e) = if rest.is_empty() { (0, n) } else if is_range(rest[0]) {
-        match crate::range::range_beg_len(c, rest[0], n, 1)? { Some((s2, l)) => (s2, s2 + l), None => return Ok(slf) }
-    } else {
-        let s2 = if rest[0] == NIL { 0 } else { num_to_long(c, rest[0])? };
-        let s2 = if s2 < 0 { (s2 + n).max(0) } else { s2 };
-        let l = if rest.len() > 1 && rest[1] != NIL { num_to_long(c, rest[1])? } else { n - s2 };
-        (s2, s2 + l.max(0))
+    let range = if rest.len() == 1 && is_range(rest[0]) { Some(crate::range::range_beg_len(c, rest[0], n, 1)?) } else { None };
+    let (st, l) = match range {
+        Some(Some((s2, l))) => (s2, l),
+        Some(None) => return Ok(slf),
+        None if rest.is_empty() => (0, n),
+        None => {
+            let s2 = if rest[0] == NIL { 0 } else { num_to_long(c, rest[0])? };
+            let s2 = if s2 < 0 { (s2 + n).max(0) } else { s2 };
+            let l = if rest.len() > 1 && rest[1] != NIL { num_to_long(c, rest[1])? } else { n - s2 };
+            (s2, l)
+        }
     };
+    if l < 0 { return Ok(slf); }
+    if st >= ARY_MAX || l > ARY_MAX - st { return arg_err(c, "argument too big"); }
+    let e = st + l;
     if e > n { alloc_check(c, e)?; }
     for i in st..e {
         let v = if blk.is_null() { val } else { yield1(c, blk, Value::fix(i))? };
@@ -986,6 +1051,8 @@ cfn!(a_sum, |c, slf, a, blk| {
     Ok(acc)
 });
 cfn!(a_count, |c, slf, a, blk| {
+    check_argc(c, a, 0, 1)?;
+    warn_unused_block(c, a, blk)?;
     if a.is_empty() && blk.is_null() { return Ok(Value::fix(c.ary_len(slf) as i64)); }
     let mut n = 0; let mut i = 0;
     while let Some(&x) = c.ary(slf).get(i) { let hit = if !a.is_empty() { rb_eq(c, x, a[0])? } else { yield1(c, blk, x)?.truthy() }; if hit { n += 1; } i += 1; }
@@ -999,7 +1066,10 @@ cfn!(a_zip, |c, slf, a, blk| {
     if c.ary_len(slf) == 0 { return Ok(if blk.is_null() { c.ary_new() } else { NIL }); }
     let mut others = vec![];
     for &x in a {
-        let arr = if is_array(x) { x } else if let Some(arr) = check_array(c, x)? { arr } else if respond_to(c, x, s::each, true) { { let n = Value::fix(c.ary_len(slf) as i64); if respond_to(c, x, intern(b"first"), true) { funcall(c, x, intern(b"first"), &[n], std::ptr::null())? } else { funcall(c, x, s::to_a, &[], std::ptr::null())? } } } else { return type_err(c, format!("wrong argument type {} (must respond to :each)", class_name_for_err(c, x))); };
+        let n = c.ary_len(slf);
+        let arr = if is_array(x) { x } else if let Some(arr) = check_array(c, x)? { arr }
+            else if let Some(arr) = crate::builtins::enum_native::take_items(c, x, n)? { arr }
+            else { let k = class_path(c, real_class_of(c, x)); return type_err(c, format!("wrong argument type {} (must respond to :each)", k)); };
         others.push(arr);
     }
     let keep = c.ary_from_vec(others.clone());
@@ -1222,7 +1292,7 @@ cfn!(a_cycle, |c, slf, a, blk| {
     while n < 0 || k < n { if c.ary_len(slf) == 0 { break; } let mut i = 0; while i < c.ary_len(slf) { yield1(c, blk, c.ary_get(slf, i))?; i += 1; } k += 1; }
     Ok(NIL)
 }) });
-cfn!(a_bsearch, |c, slf, a, blk| enum_or(c, slf, "bsearch", a, blk, |c| {
+cfn!(a_bsearch, |c, slf, a, blk| enum_unsized(c, slf, "bsearch", a, blk, |c| {
     let (mut lo, mut hi) = (0usize, c.ary_len(slf));
     let mut found = NIL;
     while lo < hi {
@@ -1248,6 +1318,7 @@ cfn!(a_flat_map, |c, slf, a, blk| if ary_each_redef(c, slf) { crate::builtins::e
 }) });
 cfn!(a_any, |c, slf, a, blk| {
     check_argc(c, a, 0, 1)?;
+    warn_unused_block(c, a, blk)?;
     let mut i = 0;
     while let Some(&x) = c.ary(slf).get(i) {
         let t = if !a.is_empty() { crate::rt::srb_eqq(c, a[0], x, &mut CallCache::default())? } else if blk.is_null() { x.truthy() } else { yield1(c, blk, x)?.truthy() };
@@ -1258,6 +1329,7 @@ cfn!(a_any, |c, slf, a, blk| {
 });
 cfn!(a_all, |c, slf, a, blk| {
     check_argc(c, a, 0, 1)?;
+    warn_unused_block(c, a, blk)?;
     let mut i = 0;
     while let Some(&x) = c.ary(slf).get(i) {
         let t = if !a.is_empty() { crate::rt::srb_eqq(c, a[0], x, &mut CallCache::default())? } else if blk.is_null() { x.truthy() } else { yield1(c, blk, x)?.truthy() };
@@ -1267,7 +1339,13 @@ cfn!(a_all, |c, slf, a, blk| {
     Ok(TRUE)
 });
 cfn!(a_none, |c, slf, a, blk| { let r = a_any(c, slf, a, blk)?; Ok(Value::bool(r == FALSE)) });
-cfn!(a_find, |c, slf, a, blk| enum_or(c, slf, "find", a, blk, |c| { let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { if yield1(c, blk, x)?.truthy() { return Ok(x); } i += 1; } Ok(NIL) }));
+cfn!(a_find, |c, slf, a, blk| {
+    if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"find"), a, NIL); }
+    check_argc(c, a, 0, 1)?;
+    let mut i = 0;
+    while let Some(&x) = c.ary(slf).get(i) { if yield1(c, blk, x)?.truthy() { return Ok(x); } i += 1; }
+    match a.first() { Some(&f) if f != NIL => funcall(c, f, s::call, &[], std::ptr::null()), _ => Ok(NIL) }
+});
 /// limit_by_enum_size / enum_size_over_p's rb_check_funcall(ary, :size), made only when it is not the builtin.
 fn ary_size_call(c: &mut Ctx, slf: Value) -> Result<Option<Value>, Esc> {
     if obj_klass(slf) == c.vm().c_array.get() && !crate::rt::redef(crate::rt::R_ARY_SIZE) { return Ok(None); }
@@ -1380,7 +1458,7 @@ cfn!(a_rfind, |c, slf, a, blk| {
     if let Some(&ifnone) = a.first() { if ifnone != NIL { return funcall(c, ifnone, s::call, &[], std::ptr::null()); } }
     Ok(NIL)
 });
-cfn!(a_bsearch_index, |c, slf, a, blk| enum_or(c, slf, "bsearch_index", a, blk, |c| {
+cfn!(a_bsearch_index, |c, slf, a, blk| enum_unsized(c, slf, "bsearch_index", a, blk, |c| {
     let (mut lo, mut hi) = (0usize, c.ary_len(slf));
     let mut found = NIL;
     while lo < hi {
