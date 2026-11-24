@@ -78,7 +78,7 @@ fn os_each_object(c: &mut Ctx, s2: Value, a: &[Value], blk: Blk) -> RV {
     crate::gc::each_object(|v| vs.push(v));
     vs.retain(|&v| {
         if matches!(c.body_of(v), Body::Env(..)) || obj_klass(v) == NIL { return false; }
-        if is_class_or_module(v) && c.class(v).is_singleton { return false; }
+        if is_class_or_module(v) && crate::builtins::objspace::singleton_internal(c, v) { return false; }
         match k { Some(k) => is_class_or_module(obj_klass(v)) && is_kind_of(c, v, k), None => true }
     });
     let n = vs.len();

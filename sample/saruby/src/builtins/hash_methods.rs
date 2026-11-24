@@ -227,33 +227,39 @@ cfn!(h_to_h, |c, slf, a, blk| {
 });
 cfn!(h_to_hash, |c, slf, a, blk| Ok(slf));
 pub fn hash_inspect(c: &mut Ctx, slf: Value) -> RV {
-    if c.hash_len(slf) == 0 { return Ok(c.str_new(b"{}")); }
-    if !rec_enter(c, slf, s::inspect)? { return Ok(c.str_new(b"{...}")); }
-    let mut out = vec![b'{'];
+    if c.hash_len(slf) == 0 { return Ok(c.str_new_enc(b"{}", ENC_ASCII)); }
+    if !rec_enter(c, slf, s::inspect)? { return Ok(c.str_new_enc(b"{...}", ENC_ASCII)); }
+    // inspect_hash: the first key's inspect gives the encoding, the rest is appended (rb_str_buf_append)
+    let out = c.str_new_enc(b"{", ENC_BINARY);
     let mut first = true;
     let r = each_entry(c, slf, |c, k, v| {
-        if !first { out.extend_from_slice(b", "); }
-        first = false;
-        if k.is_sym() {
+        if !first { c.rstring_mut(out).b.extend_from_slice(b", "); }
+        let ks = if k.is_sym() {
             let nm = crate::symbol::sym_bytes(k.as_sym());
             let simple = crate::string::sym_is_simple(nm) && !nm.ends_with(b"=") || (nm.ends_with(b"?") || nm.ends_with(b"!"));
             // rb_str_symname_p: a non-ASCII name is quoted unless the inspect result encoding is UTF-8
             let printable = crate::string::inspect_resenc() == ENC_UTF8 || crate::string::is_ascii(nm);
-            if simple && printable && !nm.is_empty() && (nm[0].is_ascii_alphabetic() || nm[0] == b'_' || nm[0] >= 0x80) { out.extend_from_slice(nm); out.extend_from_slice(b": "); }
-            else { out.extend_from_slice(inspect_bytes(nm, ENC_UTF8).as_bytes()); out.extend_from_slice(b": "); }
+            let mut b = if simple && printable && !nm.is_empty() && (nm[0].is_ascii_alphabetic() || nm[0] == b'_' || nm[0] >= 0x80) { nm.to_vec() } else { inspect_bytes(nm, ENC_UTF8).into_bytes() };
+            b.extend_from_slice(b": ");
+            let e = if b.is_ascii() { ENC_ASCII } else { ENC_UTF8 };
+            c.str_new_enc(&b, e)
         } else {
             let ks = inspect_value(c, k)?;
-            out.extend_from_slice(c.str_bytes(ks));
-            out.extend_from_slice(b" => ");
-        }
+            if first { let e = c.str_enc(ks); c.rstring_mut(out).enc = e; }
+            crate::string::str_append_str(c, out, ks)?;
+            c.str_new_enc(b" => ", ENC_ASCII)
+        };
+        if first && k.is_sym() { let e = c.str_enc(ks); c.rstring_mut(out).enc = e; }
+        first = false;
+        crate::string::str_append_str(c, out, ks)?;
         let vs = inspect_value(c, v)?;
-        out.extend_from_slice(c.str_bytes(vs));
+        crate::string::str_append_str(c, out, vs)?;
         Ok(true)
     });
     rec_leave(c, slf, s::inspect);
     r?;
-    out.push(b'}');
-    Ok(c.str_from_vec(out))
+    c.rstring_mut(out).b.extend_from_slice(b"}");
+    Ok(out)
 }
 cfn!(h_inspect, |c, slf, a, blk| hash_inspect(c, slf));
 cfn!(h_eq, |c, slf, a, blk| hash_equal(c, slf, a[0], false));

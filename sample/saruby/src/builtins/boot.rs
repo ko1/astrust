@@ -183,6 +183,8 @@ fn boot_classes(c: &mut Ctx) {
     lazy_const(c, ob, "ENV", "saruby/env");
     lazy_const(c, ob, "RbConfig", "saruby/rbconfig");
     lazy_const(c, ob, "Pathname", "saruby/pathname");
+    lazy_const(c, ob, "Data", "saruby/data");
+    lazy_const(c, vmr.c_enumerator.get(), "Product", "saruby/enum_product");
     encoding::init(c);
     lazy_const(c, vmr.c_encoding.get(), "Converter", "saruby/econv");
     tracepoint::init(c);
