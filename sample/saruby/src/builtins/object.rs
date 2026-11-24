@@ -1212,7 +1212,7 @@ fn m_cvars(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     }
     Ok(out)
 }
-fn m_freeze(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { obj_set_flags(slf, FL_FROZEN); Ok(slf) }
+fn m_freeze(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { k_freeze(c, slf, a, b) }
 fn m_module_new(c: &mut Ctx, slf: Value, _a: &[Value], b: Blk) -> RV {
     let m = new_module(c);
     obj_set_klass(m, if slf == c.vm().c_module.get() { c.vm().c_module.get() } else { slf });

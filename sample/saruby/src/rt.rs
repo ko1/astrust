@@ -1094,20 +1094,51 @@ fn cref_class(c: &Ctx) -> Value {
 }
 
 pub fn define_iseq_method(c: &mut Ctx, klass: Value, mid: Sym, is: &'static Iseq, visi: u8) {
-    let cref = unsafe { (*c.frame).cref() };
+    let mut cref = unsafe { (*c.frame).cref() };
+    // defined in instance_eval / class_exec: nested defs in its body go to the same target
+    let dc = c.frame().defined_class();
+    if dc != NIL && c.frame().kind != FK_CLASS && dc != cref_class(c) { cref = crate::vm::cref_with_def_target(cref, dc); }
     let me = new_me_cref(mid, klass, visi, MKind::Iseq(is), cref);
     note_redefinition(c, klass, mid);
     define_method_me(c, klass, mid, me);
 }
 
+/// rb_class_modify_check: a frozen class (a singleton one: named by its object) cannot get methods.
+pub fn class_modify_check(c: &mut Ctx, klass: Value) -> Result<(), Esc> {
+    if !is_frozen(klass) { return Ok(()); }
+    let t = if c.class(klass).is_singleton { c.class(klass).attached } else { klass };
+    Err(raise_frozen(c, t))
+}
+
+/// The visibility of the class body / top level a block frame comes from (public: a method's, or gone).
+fn home_scope_visi(c: &Ctx) -> u8 {
+    let f = c.frame();
+    let b = f.self_blk();
+    let home = if b.is_null() { f.id } else { unsafe { (*b).home_id } };
+    let mut p = f.prev;
+    while !p.is_null() {
+        let pf = unsafe { &*p };
+        if pf.id == home && pf.kind != FK_BLOCK && pf.kind != FK_LAMBDA && pf.kind != FK_CFUNC {
+            return if pf.kind == FK_CLASS || pf.kind == FK_TOP || pf.kind == FK_EVAL { pf.visi } else { VISI_PUBLIC };
+        }
+        p = pf.prev;
+    }
+    VISI_PUBLIC
+}
+
 pub fn srb_def(c: &mut Ctx, mid: Sym, is: &'static Iseq, _fp: Fp) -> RV {
     let f = c.frame();
     let mut klass = cref_class(c);
+    let cr = f.cref();
+    if !cr.is_null() && unsafe { (*cr).def_target } != NIL { klass = unsafe { (*cr).def_target }; }
     // `def` inside a method body defines on the cref class; inside instance_eval, on the singleton
     if f.defined_class() != NIL && f.kind != FK_CLASS { klass = f.defined_class(); }
     let mut visi = if f.kind == FK_CLASS || f.kind == FK_TOP || f.kind == FK_EVAL || (f.kind == FK_BLOCK && f.defined_class() == klass) { f.visi } else { VISI_PUBLIC };
+    // a block (or lambda) run where it was made: the scope visibility of its class body / top level
+    if (f.kind == FK_BLOCK || f.kind == FK_LAMBDA) && f.defined_class() == NIL && f.visi == VISI_PUBLIC { visi = home_scope_visi(c); }
     // eval at top level defines private methods; a def in a method body is public
     if klass == vm().c_object.get() && f.kind == FK_EVAL && unsafe { (*f.cref()).prev.is_null() } { visi = VISI_PRIVATE; }
+    class_modify_check(c, klass)?;
     if visi != VISI_MODFUNC && (mid == s::initialize || mid == s::initialize_copy || mid == s::respond_to_missing_p
         || mid == s::mid_initialize_dup || mid == s::mid_initialize_clone) { visi = VISI_PRIVATE; }
     if visi == VISI_MODFUNC {
@@ -1127,8 +1158,8 @@ pub fn srb_sdef(c: &mut Ctx, recv: Value, mid: Sym, is: &'static Iseq) -> RV {
     if (!recv.is_heap() || recv.is_fixnum()) && recv != NIL && recv != TRUE && recv != FALSE {
         return type_err(c, format!("can't define singleton"));
     }
-    if recv.is_heap() && is_frozen(recv) { return Err(raise_frozen(c, recv)); }
     let k = singleton_class(c, recv);
+    if k.is_heap() { class_modify_check(c, k)?; }
     define_iseq_method(c, k, mid, is, VISI_PUBLIC);
     crate::builtins::coverage::on_def(c, is as *const Iseq as usize, k, mid);
     if crate::vm::respond_to(c, recv, s::singleton_method_added, true) {

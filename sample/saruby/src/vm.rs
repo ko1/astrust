@@ -167,10 +167,22 @@ pub fn new_me_cref(name: Sym, owner: Value, visi: u8, kind: MKind, cref: *const 
 
 // ---- lexical scope -------------------------------------------------------------------------
 
-pub struct Cref { pub klass: Value, pub prev: *const Cref, pub refinements: Value }
+/// def_target: where a `def` in this scope defines (instance_eval / class_exec's target; NIL: klass).
+pub struct Cref { pub klass: Value, pub prev: *const Cref, pub refinements: Value, pub def_target: Value }
 
 pub fn new_cref(klass: Value, prev: *const Cref) -> *const Cref {
-    let p = Box::into_raw(Box::new(Cref { klass, prev, refinements: NIL })) as *const Cref;
+    let p = Box::into_raw(Box::new(Cref { klass, prev, refinements: NIL, def_target: NIL })) as *const Cref;
+    vm().crefs.borrow_mut().push(p);
+    p
+}
+/// `cur` with `def` going to `t` (a method defined in instance_eval / class_exec keeps it for nested defs);
+/// constants still resolve through cur's chain.
+pub fn cref_with_def_target(cur: *const Cref, t: Value) -> *const Cref {
+    let (klass, prev, refinements) = if cur.is_null() { (vm().c_object.get(), std::ptr::null(), NIL) } else { unsafe { ((*cur).klass, (*cur).prev, (*cur).refinements) } };
+    let found = vm().crefs.borrow().iter().rev().copied().find(|&p| unsafe {
+        (*p).def_target == t && (*p).klass == klass && std::ptr::eq((*p).prev, prev) && (*p).refinements == refinements });
+    if let Some(p) = found { return p; }
+    let p = Box::into_raw(Box::new(Cref { klass, prev, refinements, def_target: t })) as *const Cref;
     vm().crefs.borrow_mut().push(p);
     p
 }
@@ -2856,7 +2868,7 @@ pub fn visit_roots<V: RootVisitor<Saruby>>(m: &mut V, cur: &mut Ctx) {
     for v in vm.frozen_lits.borrow_mut().values_mut() { m.visit(v); }
     for v in vm.symproc_cache.borrow_mut().values_mut() { m.visit(v); }
     for v in vm.sym_names.borrow_mut().values_mut() { m.visit(v); }
-    for &cr in vm.crefs.borrow().iter() { let cr = unsafe { &mut *(cr as *mut Cref) }; m.visit(&mut cr.klass); m.visit(&mut cr.refinements); }
+    for &cr in vm.crefs.borrow().iter() { let cr = unsafe { &mut *(cr as *mut Cref) }; m.visit(&mut cr.klass); m.visit(&mut cr.refinements); m.visit(&mut cr.def_target); }
     // every builtin class field (nil until boot fills it in)
     let nclass_fields = (std::mem::offset_of!(Vm, main_obj)) / 8;
     // SAFETY: Vm is repr(C) and starts with nclass_fields Cell<Value> fields

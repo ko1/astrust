@@ -286,7 +286,7 @@ fn exc_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     Ok(c.str_new(format!("#<{}: {}>", cls, m).as_bytes()))
 }
 fn exc_backtrace(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(exc_bt(c, slf)) }
-fn exc_set_backtrace(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+pub fn exc_set_backtrace(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let v = a[0];
     // a captured backtrace still tells NameError#local_variables where it was raised
     let old = ivar_get(c, slf, s::bt);

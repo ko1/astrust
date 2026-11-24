@@ -393,9 +393,9 @@ pub fn make_exception_from_args(c: &mut Ctx, args: &[Value]) -> RV {
             if !respond_to(c, k, s::exception, true) { return type_err(c, "exception class/object expected"); }
             let e = funcall(c, k, s::exception, &args[1..args.len().min(2)], std::ptr::null())?;
             if !is_exception(c, e) { return type_err(c, "exception object expected"); }
-            if args.len() >= 3 {
-                let bt = if is_string(args[2]) { c.ary_new_from(&[args[2]]) } else { args[2] };
-                ivar_set_raw(c, e, s::bt, bt);
+            // rb_check_backtrace: nil leaves the backtrace to raise
+            if args.len() >= 3 && args[2] != NIL {
+                crate::builtins::exception::exc_set_backtrace(c, e, &args[2..3], crate::vm::Blk::NONE)?;
             }
             e
         }
