@@ -710,7 +710,7 @@ fn iso_week(v: &Vtm) -> (i128, i64) {
     if w < 1 { (v.year - 1, weeks(v.year - 1)) } else if w > weeks(v.year) { (v.year + 1, 1) } else { (v.year, w) }
 }
 /// strftime's result: bytes in `enc` (the format's, or what a %Z zone name makes it).
-struct Out { b: Vec<u8>, enc: u8 }
+struct Out { b: Vec<u8>, enc: u8, max: usize }
 impl Out {
     fn push(&mut self, ch: char) { let mut t = [0u8; 4]; self.b.extend_from_slice(ch.encode_utf8(&mut t).as_bytes()); }
     fn push_str(&mut self, s: &str) { self.b.extend_from_slice(s.as_bytes()); }
@@ -748,7 +748,7 @@ fn strftime_into(c: &mut Ctx, out: &mut Out, t: &RTime, v: &Vtm, fmt: &[u8]) -> 
             let ch = fmt[i];
             macro_rules! num { ($val:expr, $dp:expr, $prec:expr) => {{ fmt_num(out, $val as i128, $dp, $prec, left, padding, precision); break; }} }
             macro_rules! sub { ($f:expr) => {{
-                let mut sbuf = Out { b: vec![], enc: out.enc }; strftime_into(c, &mut sbuf, t, v, $f)?;
+                let mut sbuf = Out { b: vec![], enc: out.enc, max: out.max }; strftime_into(c, &mut sbuf, t, v, $f)?;
                 let mut sbuf = sbuf.b;
                 if upper { sbuf.make_ascii_uppercase(); } else if lower { sbuf.make_ascii_lowercase(); }
                 if precision > sbuf.len() as i64 { for _ in 0..(precision as usize - sbuf.len()) { out.push(if padding != 0 { padding as char } else { ' ' }); } }
@@ -859,8 +859,10 @@ fn strftime_into(c: &mut Ctx, out: &mut Out, t: &RTime, v: &Vtm, fmt: &[u8]) -> 
                 b'0'..=b'9' => {
                     if ch == b'0' { padding = b'0'; }
                     let st = i; while i < fmt.len() && fmt[i].is_ascii_digit() { i += 1; }
-                    precision = String::from_utf8_lossy(&fmt[st..i]).parse().unwrap_or(0);
+                    precision = String::from_utf8_lossy(&fmt[st..i]).parse().unwrap_or(i64::MAX);
                     i -= 1;
+                    // strftime_size_limit: the buffer may not grow past it (ERANGE)
+                    if precision as u64 >= (out.max - out.b.len().min(out.max)) as u64 { return Err(strf_range(c, fmt)); }
                 }
                 _ => { tp = Some(fmt[sp..=i].to_vec()); precision = -1; padding = 0; left = false; upper = false; lower = false; break; }
             }
@@ -906,9 +908,12 @@ fn zone_abbr(c: &mut Ctx, t: &RTime) -> Result<Option<Value>, Esc> {
     let sv = funcall(c, r, s::to_s, &[], std::ptr::null())?;
     Ok(if is_string(sv) { Some(sv) } else { None })
 }
+#[cold]
+fn strf_range(c: &mut Ctx, fmt: &[u8]) -> Esc { crate::builtins::exception::raise_errno_plain(c, 34, &String::from_utf8_lossy(fmt)) }
 fn strf_enc(c: &mut Ctx, slf: Value, fmt: &[u8], enc: u8) -> Result<Out, Esc> {
     let t = rt(c, slf); let v = vtm_of(c, t);
-    let mut out = Out { b: vec![], enc };
+    let max = fmt.len().saturating_mul(1024 * 1024).max(1024);
+    let mut out = Out { b: vec![], enc, max };
     strftime_into(c, &mut out, &t, &v, fmt)?;
     Ok(out)
 }

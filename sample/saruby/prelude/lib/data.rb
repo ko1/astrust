@@ -16,6 +16,7 @@ class Data
         seen[s] = true
       end
       k = Class.new(self)
+      k.singleton_class.send(:undef_method, :define)
       Enumerable.__ivset(k, :__members__, syms.freeze)
       syms.each { |m| k.define_method(m) { Enumerable.__ivget(self, m) } }
       class << k
@@ -154,9 +155,10 @@ class Data
     return "#<data #{name || Module.instance_method(:to_s).bind_call(self.class)}:...>" if seen.key?(object_id)
     seen[object_id] = true
     begin
+      # rb_data_inspect: a member that is not a local / constant name shows as a Symbol
       parts = members.map do |m|
         v = Enumerable.__ivget(self, m)
-        "#{m}=#{v.inspect}"
+        "#{m.match?(/\A(?:[A-Za-z_]|[^\x00-\x7F])(?:\w|[^\x00-\x7F])*\z/) ? m : m.inspect}=#{v.inspect}"
       end
       s = "#<data "
       s << name << (parts.empty? ? "" : " ") if name

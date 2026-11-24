@@ -213,9 +213,13 @@ fn st_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if named { out.push(' '); }
     for i in 0..c.ary_len(mem) {
         if i > 0 { out.push_str(", "); }
-        let n = c.ary_get(mem, i).as_sym();
+        let mv = c.ary_get(mem, i);
+        let n = mv.as_sym();
         let nb = sym_bytes(n);
-        if crate::string::sym_is_simple(nb) && !nb.ends_with(b"=") { out.push_str(&sym_str(n)); } else { out.push_str(&crate::string::inspect_bytes(nb, ENC_UTF8)); }
+        // rb_is_local_id || rb_is_const_id: the bare name, else the Symbol's inspect
+        let word = |x: u8| x.is_ascii_alphanumeric() || x == b'_' || x >= 0x80;
+        if nb.first().is_some_and(|&x| !x.is_ascii_digit() && word(x)) && nb.iter().all(|&x| word(x)) { out.push_str(&sym_str(n)); }
+        else { match inspect_str(c, mv) { Ok(s2) => out.push_str(&s2), Err(e) => { rec_leave(c, slf, s::inspect); return Err(e); } } }
         out.push('=');
         match inspect_str(c, ivar_get(c, slf, n)) { Ok(s2) => out.push_str(&s2), Err(e) => { rec_leave(c, slf, s::inspect); return Err(e); } }
     }

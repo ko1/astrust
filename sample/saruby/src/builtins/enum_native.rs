@@ -541,6 +541,14 @@ fn set_merge_one(c: &mut Ctx, h: Value, e: Value, blk: Blk) -> RV {
     Ok(NIL)
 }
 // Enumerable.__set_merge(h, enums): set_i_merge's loop over its arguments
+// Enumerable.__set_like(set): set.class.new, compare_by_identity when set is (4.0.10's &, classify, divide, flatten)
+fn e_set_like(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
+    let k = funcall(c, a[0], crate::symbol::intern(b"class"), &[], std::ptr::null())?;
+    let n = funcall(c, k, crate::symbol::intern(b"new"), &[], std::ptr::null())?;
+    let h = ivar_get(c, a[0], crate::symbol::intern(b"__h"));
+    if is_hash(h) && c.hash(h).identity { funcall(c, n, crate::symbol::intern(b"compare_by_identity"), &[], std::ptr::null())?; }
+    Ok(n)
+}
 fn e_set_merge(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let mut i = 0;
     while i < c.ary_len(a[1]) { let e = c.ary_get(a[1], i); set_merge_one(c, a[0], e, Blk::NONE)?; i += 1; }
@@ -595,5 +603,6 @@ pub fn init(c: &mut Ctx, m: Value) {
     define_singleton_cfunc(c, m, "__each", e_each, -1);
     define_singleton_cfunc(c, m, "__set_eq", e_set_eq, 2);
     define_singleton_cfunc(c, m, "__set_merge", e_set_merge, 2);
+    define_singleton_cfunc(c, m, "__set_like", e_set_like, 1);
     define_singleton_cfunc(c, m, "__ivset", e_ivset, 3);
 }

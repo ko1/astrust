@@ -482,8 +482,7 @@ class Set
     raise ArgumentError, "value must be a set" unless o.is_a?(Set)
     o
   end
-  # 4.0.10: &, classify, divide, flatten keep compare_by_identity
-  def __new_like = (s = self.class.new; s.__hash.compare_by_identity if compare_by_identity?; s)
+  def __new_like = Enumerable.__set_like(self)
   def __frozen! = (raise FrozenError.new("can't modify frozen #{self.class}: #{inspect}", receiver: self) if frozen?)
   # nil, or true while #each runs (restored on exit: no Integer arithmetic)
   def __iterating? = Enumerable.__ivget(self, :__it)
@@ -600,9 +599,7 @@ class Set
     return enum_for(:map!) { size } unless b
     a = to_a.map(&b)
     __frozen!
-    h = {}
-    h.compare_by_identity if compare_by_identity?
-    Enumerable.__ivset(self, :__h, h)
+    __hash.clear
     a.each { |x| add(x) }
     self
   end
