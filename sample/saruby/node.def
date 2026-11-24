@@ -1372,7 +1372,7 @@ node_masgn(c: &mut Ctx, n: NodePtr, fp: Fp, rhs@child: Value, tmp: u32, targets:
     Ok(rhs)
 }
 
-// kind: 0 = element idx (from front), 1 = splat [idx, len - post), 2 = element from back (post)
+// kind: 0 = element idx (from front), 1 = splat [idx, len - post), 2 + k = post element idx after k front ones
 NODE_DEF
 node_masgn_elem(c: &mut Ctx, n: NodePtr, fp: Fp, tmp: u32, idx: u32, kind: u32, post: u32)
 {

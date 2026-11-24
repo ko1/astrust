@@ -317,8 +317,7 @@ pub fn srb_splat_into(c: &mut Ctx, a: Value, v: Value) -> Result<(), Esc> {
 pub fn splat_to_array(c: &mut Ctx, v: Value) -> RV {
     if is_array(v) { return Ok(v); }
     if v == NIL { return Ok(c.ary_new()); }
-    if is_hash(v) { return crate::hash::hash_to_a(c, v); }
-    if respond_to(c, v, s::to_a, true) {
+    if check_respond(c, v, s::to_a)? {
         let r = funcall(c, v, s::to_a, &[], std::ptr::null())?;
         if is_array(r) { return Ok(r); }
         if r == NIL { return Ok(c.ary_new_from(&[v])); }
@@ -1270,9 +1269,18 @@ pub fn srb_undef(c: &mut Ctx, v: Value) -> Result<(), Esc> {
 
 // ---- multiple assignment ------------------------------------------------------------------
 
+/// rb_check_funcall's test: a redefined respond_to? is asked (mid, true); else the method table.
+pub fn check_respond(c: &mut Ctx, v: Value, mid: Sym) -> Result<bool, Esc> {
+    let rt = lookup_method(c, class_of(v), s::respond_to_p);
+    if rt != search_method(c, vm().m_kernel.get(), s::respond_to_p) {
+        return Ok(funcall(c, v, s::respond_to_p, &[Value::sym(mid), TRUE], std::ptr::null())?.truthy());
+    }
+    Ok(respond_to(c, v, mid, true))
+}
+
 pub fn srb_masgn_array(c: &mut Ctx, rhs: Value, _splat: bool) -> RV {
     if is_array(rhs) { return Ok(rhs); }
-    if conv_target(rhs) && !is_hash(rhs) && !is_string(rhs) && respond_to(c, rhs, s::to_ary, true) {
+    if conv_target(rhs) && !is_hash(rhs) && !is_string(rhs) && check_respond(c, rhs, s::to_ary)? {
         let r = funcall(c, rhs, s::to_ary, &[], std::ptr::null())?;
         if is_array(r) { return Ok(r); }
         if r != NIL { return type_err(c, format!("can't convert {} to Array", class_path(c, real_class_of(c, rhs)))); }
@@ -1290,13 +1298,9 @@ pub fn srb_masgn_elem(c: &mut Ctx, a: Value, idx: u32, kind: u32, post: u32) -> 
             if s < e { c.ary_from_vec(c.ary(a)[s..e].to_vec()) } else { c.ary_new() }
         }
         _ => {
-            // post element i: from the back, but not overlapping the front part
-            let pre = n.saturating_sub(post as usize);
-            let i = pre + idx as usize;
-            if (n as i64) < (post as i64) {
-                // fewer elements than needed: posts take what's after the pre part
-                c.ary_get(a, idx as usize + n.saturating_sub(post as usize))
-            } else { c.ary_get(a, i) }
+            // post element idx after kind - 2 front elements; too few: posts take the rest from its start
+            let front = kind as usize - 2;
+            if n >= front + post as usize { c.ary_get(a, n - post as usize + idx as usize) } else { c.ary_get(a, front + idx as usize) }
         }
     }
 }

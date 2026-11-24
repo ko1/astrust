@@ -912,7 +912,16 @@ pub fn gvar_get(c: &mut Ctx, name: Sym) -> RV {
         b"$=" => { gvar_warn(c, "variable $= is no longer effective", true)?; return Ok(FALSE); }
         _ => {}
     }
-    Ok(*c.vm().globals.borrow().get(&name).unwrap_or(&NIL))
+    let v = c.vm().globals.borrow().get(&name).copied();
+    match v {
+        Some(v) => Ok(v),
+        None => {
+            if c.vm().verbose.get() == TRUE && !gvar_defined(c, name) {
+                gvar_warn(c, &format!("global variable '{}' not initialized", String::from_utf8_lossy(b)), false)?;
+            }
+            Ok(NIL)
+        }
+    }
 }
 
 /// $/ holds a plain frozen String: a subclass instance, an ivar holder or a mutable one is copied.
