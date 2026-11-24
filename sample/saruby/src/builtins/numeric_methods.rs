@@ -350,9 +350,9 @@ cfn!(int_cmp, |c, s, a| {
     match int_cmp_val(c, s, a[0])? {
         Some(o) => Ok(Value::fix(o as i64)),
         None => {
-            if a[0].is_heap() && respond_to(c, a[0], s::coerce, true) && !is_string(a[0]) {
-                // do_coerce(err = false): nil is nil, an exception goes through
-                let r = funcall(c, a[0], s::coerce, &[s], std::ptr::null())?;
+            if a[0].is_heap() && !is_string(a[0]) {
+                // do_coerce(err = false): rb_check_funcall; nil is nil, an exception goes through
+                let Some(r) = crate::string::check_funcall_args(c, a[0], s::coerce, &[s])? else { return Ok(NIL) };
                 if r == NIL { return Ok(NIL); }
                 if !is_array(r) || c.ary_len(r) != 2 { return type_err(c, "coerce must return [x, y]"); }
                 let x = c.ary_get(r, 0); return funcall(c, x, s::cmp, &[c.ary_get(r, 1)], std::ptr::null());

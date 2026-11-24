@@ -395,7 +395,9 @@ pub fn note_mm_redef() { MM_REDEF.store(true, std::sync::atomic::Ordering::Relax
 /// Implicit conversion to String (to_str).
 /// rb_check_funcall without arguments: None when `v` does not respond to `mid`.  A respond_to? of its
 /// own is asked first; a method_missing of its own is tried when there is no method (NoMethodError: None).
-pub fn check_funcall(c: &mut Ctx, v: Value, mid: Sym) -> Result<Option<Value>, Esc> {
+pub fn check_funcall(c: &mut Ctx, v: Value, mid: Sym) -> Result<Option<Value>, Esc> { check_funcall_args(c, v, mid, &[]) }
+/// rb_check_funcall with arguments.
+pub fn check_funcall_args(c: &mut Ctx, v: Value, mid: Sym, args: &[Value]) -> Result<Option<Value>, Esc> {
     let k = class_of(v);
     let rt = lookup_method(c, k, s::respond_to_p);
     if c.me_ref(rt).is_some_and(|m| m.owner != c.vm().m_kernel.get()) {
@@ -404,10 +406,11 @@ pub fn check_funcall(c: &mut Ctx, v: Value, mid: Sym) -> Result<Option<Value>, E
             else { funcall(c, v, s::respond_to_p, &[Value::sym(mid), TRUE], std::ptr::null())? };
         if !r.truthy() { return Ok(None); }
     }
-    if respond_to(c, v, mid, true) { return funcall(c, v, mid, &[], std::ptr::null()).map(Some); }
+    if respond_to(c, v, mid, true) { return funcall(c, v, mid, args, std::ptr::null()).map(Some); }
     let mm = lookup_method(c, k, s::method_missing);
     if !c.me_ref(mm).is_some_and(|m| m.owner != c.vm().c_basic_object.get()) { return Ok(None); }
-    match funcall(c, v, s::method_missing, &[Value::sym(mid)], std::ptr::null()) {
+    let mut ma = vec![Value::sym(mid)]; ma.extend_from_slice(args);
+    match funcall(c, v, s::method_missing, &ma, std::ptr::null()) {
         Ok(r) => Ok(Some(r)),
         Err(e) => {
             if c.esc == EscKind::Raise && is_kind_of(c, c.esc_val, c.vm().c_no_method_error.get()) { c.esc = EscKind::None; return Ok(None); }
