@@ -26,7 +26,7 @@ pub fn load_prelude(c: &mut Ctx) -> RV {
 macro_rules! lib { ($n:literal) => { ($n, include_str!(concat!("../../prelude/lib/", $n, ".rb"))) }; }
 /// Features implemented by saruby itself: Ruby source compiled on first require.
 const LIBS: &[(&str, &str)] = &[lib!("pp"), lib!("fcntl"), lib!("prettyprint"), lib!("etc"), lib!("timeout"), lib!("monitor"), lib!("time"), lib!("bundler"), ("bundler/setup", "require \"bundler\"; Bundler.setup\n"), lib!("date"), ("date_core", "require \"date\"\n"), lib!("pathname"), ("saruby/pathname", include_str!("../../prelude/lib/pathname_core.rb")), ("saruby/argf", include_str!("../../prelude/lib/argf.rb")), ("saruby/data", include_str!("../../prelude/lib/data.rb")), ("saruby/enum_product", include_str!("../../prelude/lib/enum_product.rb")), ("saruby/process", include_str!("../../prelude/lib/process_ext.rb")),
-    ("coverage", "require 'coverage.so'\n"), lib!("objspace"), ("objspace/trace", include_str!("../../prelude/lib/objspace_trace.rb")), ("rbconfig/sizeof", include_str!("../../prelude/lib/rbconfig_sizeof.rb")),
+    ("coverage", "require 'coverage.so'\n"), lib!("objspace"), ("io/console/size", include_str!("../../prelude/lib/io_console_size.rb")), ("objspace/trace", include_str!("../../prelude/lib/objspace_trace.rb")), ("rbconfig/sizeof", include_str!("../../prelude/lib/rbconfig_sizeof.rb")),
     ("syslog", "require 'syslog_ext'\n"), lib!("syslog_ext"), ("syslog/logger", include_str!("../../prelude/lib/syslog_logger.rb")),
     lib!("digest"), ("digest/version", "module Digest\n  VERSION = \"3.2.1\"\nend\n"), ("digest/loader", "require 'saruby/digest'\n"),
     ("digest/md5", "require 'digest'\nrequire 'saruby/digest/md5'\n"), ("digest/sha1", "require 'digest'\nrequire 'saruby/digest/sha1'\n"),
@@ -76,7 +76,8 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
         "saruby/sync" => crate::builtins::thread::init_sync(c),
         "saruby/econv" => crate::builtins::transcode::init(c),
         "saruby/tracepoint" => crate::builtins::tracepoint::init_class(c),
-        "io/console" => crate::builtins::stringio::init_console(c),
+        "io/console" => crate::builtins::io_console::init(c),
+        "pty" => crate::builtins::pty::init(c),
         "saruby/etc" => crate::builtins::etc::init(c),
         "cgi/escape.so" => crate::builtins::cgi_escape::init(c)?,
         "coverage.so" => crate::builtins::coverage::init(c),
@@ -103,9 +104,9 @@ pub fn stdlib_dirs() -> Option<(String, String)> {
     Some((lib.to_string(), gem.to_string()))
 }
 /// Bundled gems that live outside rubylibdir.
-const BUNDLED: &[&str] = &["ostruct", "base64", "benchmark", "logger", "observer", "abbrev", "pstore", "csv", "matrix", "prime", "getoptlong", "mutex_m", "drb", "rinda", "racc", "bigdecimal", "nkf", "syslog", "rexml", "rss", "net-ftp", "net-imap", "net-pop", "net-smtp"];
+const BUNDLED: &[&str] = &["ostruct", "base64", "benchmark", "logger", "observer", "abbrev", "pstore", "csv", "matrix", "prime", "getoptlong", "mutex_m", "drb", "rinda", "racc", "bigdecimal", "nkf", "syslog", "rexml", "rss", "net-ftp", "net-imap", "net-pop", "net-smtp", "readline", "reline"];
 const EXT_BACKED: &[&str] = &["openssl", "date", "ripper", "digest", "pathname", "pty", "coverage",
-    "objspace", "readline", "reline", "nkf", "fiddle", "syslog", "io"];
+    "objspace", "nkf", "fiddle", "syslog", "io"];
 /// Default gems that the reference ruby (rubygems) activates from a newer installed gem.
 const GEM_FIRST: &[&str] = &["psych", "json"];
 /// lib/<rb> of the highest installed version of gem `top` (the one activated: it has lib/<top>.rb).
@@ -121,7 +122,16 @@ fn newest_gem_file(gem: &str, top: &str, rb: &str) -> Option<std::path::PathBuf>
     }
     best.map(|b| b.1.join(rb)).filter(|f| f.is_file())
 }
+/// The stdlib / bundled gem file for `name`, looked up once per name (the gem dirs are read, as rubygems
+/// reads its specs once).
 pub fn stdlib_file(name: &str) -> Option<std::path::PathBuf> {
+    static CACHE: std::sync::Mutex<Option<std::collections::HashMap<String, Option<std::path::PathBuf>>>> = std::sync::Mutex::new(None);
+    if let Some(r) = CACHE.lock().unwrap().as_ref().and_then(|m| m.get(name)) { return r.clone(); }
+    let r = stdlib_file_scan(name);
+    CACHE.lock().unwrap().get_or_insert_with(Default::default).insert(name.to_string(), r.clone());
+    r
+}
+fn stdlib_file_scan(name: &str) -> Option<std::path::PathBuf> {
     if EXT_BACKED.contains(&name.split('/').next().unwrap_or(name).trim_end_matches(".rb")) { return None; }
     let (lib, gem) = stdlib_dirs()?;
     let rb = if name.ends_with(".rb") { name.to_string() } else { format!("{}.rb", name) };
@@ -143,9 +153,27 @@ pub fn stdlib_file(name: &str) -> Option<std::path::PathBuf> {
     best
 }
 
-/// $LOAD_PATH: -I dirs (already added), RUBYLIB.
+/// The reference ruby's default $LOAD_PATH: site, vendor, then rubylibdir and archdir (require resolves the
+/// last two through stdlib_file, after saruby's own features).
+pub fn default_load_path() -> Vec<String> {
+    let Some((lib, _)) = stdlib_dirs() else { return vec![] };
+    let p = std::path::Path::new(&lib);
+    let (base, ver) = (p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default(), p.file_name().map(|v| v.to_string_lossy().into_owned()).unwrap_or_default());
+    let arch = format!("{}-linux", if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" });
+    vec![format!("{base}/site_ruby/{ver}"), format!("{base}/site_ruby/{ver}/{arch}"), format!("{base}/site_ruby"), format!("{base}/vendor_ruby/{ver}"),
+         format!("{base}/vendor_ruby/{ver}/{arch}"), format!("{base}/vendor_ruby"), lib.clone(), format!("{lib}/{arch}")]
+}
+/// $LOAD_PATH: -I dirs (already added), RUBYLIB, the reference ruby's default load path.
 pub fn setup_load_path(c: &mut Ctx) {
+    let lp = c.vm().load_path.get();
     if let Ok(p) = std::env::var("RUBYLIB") {
-        for d in p.split(':') { let s = c.str_new(d.as_bytes()); let lp = c.vm().load_path.get(); c.ary_push(lp, s); }
+        for d in p.split(':') { let s = c.str_new(d.as_bytes()); c.ary_push(lp, s); }
     }
+    // gem_prelude marks each default entry with itself (rubygems finds its insert position by it)
+    for d in default_load_path() { let s = c.str_new(d.as_bytes()); crate::vm::ivar_set_raw(c, s, crate::symbol::intern(b"@gem_prelude_index"), s); c.ary_push(lp, s); }
+}
+/// rubylibdir and archdir of the reference ruby as the expanded load path has them (realpath).
+pub fn stdlib_lp_dirs() -> &'static [String] {
+    static D: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    D.get_or_init(|| default_load_path().into_iter().skip(6).map(|d| std::fs::canonicalize(&d).map(|p| p.to_string_lossy().into_owned()).unwrap_or(d)).collect())
 }

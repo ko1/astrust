@@ -218,8 +218,12 @@ read only on paths that are slow anyway.  Measurements: `~/ruby/src/trials/2026-
   (`etc`, `timeout`, `monitor`, `time`; ARGF is autoloaded from `saruby/argf`).
 * Everything else pure-Ruby comes from the reference ruby's stdlib: `build.rs` records
   `rubylibdir` and the gem dir (override at run time with `SARUBY_STDLIB=libdir:gemdir`);
-  `require` falls back to it after `$LOAD_PATH`.  Libraries whose C half is missing
-  (`prelude::EXT_BACKED`: socket, date, openssl, ...) stay no-op requires.
+  `$LOAD_PATH` is that ruby's default load path (site, vendor, rubylibdir, archdir); `require` searches
+  the entries other than rubylibdir / archdir, then saruby's own features, then the stdlib and the
+  bundled / newest gems (`prelude::stdlib_file`, looked up once per name).  The expanded load path is
+  kept until `$LOAD_PATH` (or the cwd, for relative entries) changes.  `RbConfig` is that ruby's
+  rbconfig.rb with saruby's binary, libdir and libsaruby.so in CONFIG.  Libraries whose C half is
+  missing (`prelude::EXT_BACKED`: openssl, ripper, fiddle, nkf, ...) stay no-op requires.
 
 ## IO, processes, threads
 * `RIo` (builtins/io.rs) is a raw fd plus read/write buffers; fd 1 writes go through the

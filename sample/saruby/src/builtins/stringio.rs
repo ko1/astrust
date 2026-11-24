@@ -382,7 +382,8 @@ fn sio_ungetc(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
         let enc = c.str_enc(p.string);
         let cp = cc as u32;
         // rb_enc_codelen + rb_enc_mbcput (UTF-8's 0xfe / 0xff are one byte), rb_enc_uint_chr's error otherwise
-        let bs = if en::kind(enc) == en::EK::Utf8 && cp >= 0xffff_fffe { vec![cp as u8] } else if let Some(bs) = en::code_to_bytes(enc, cp).filter(|_| !(en::is_single_byte(enc) && cp > 0xff)) { bs } else {
+        let wide = !en::is_single_byte(enc) && en::kind(enc) != en::EK::Utf8;
+        let bs = if en::kind(enc) == en::EK::Utf8 && cp >= 0xffff_fffe { vec![cp as u8] } else if let Some(bs) = if wide { en::onig_mbcput(enc, cp) } else { en::code_to_bytes(enc, cp).filter(|_| !(en::is_single_byte(enc) && cp > 0xff)) } { bs } else {
             let m = match crate::builtins::numeric_methods::enc_chr(enc, cp as u64) {
                 Err(true) => format!("{} out of char range", cp),
                 _ => format!("invalid codepoint 0x{:X} in {}", cp, en::enc_name(enc)),

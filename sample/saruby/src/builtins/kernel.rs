@@ -881,7 +881,7 @@ fn k_string(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     type_err(c, format!("can't convert {} into String", class_name_for_err(c, v)))
 }
 
-fn k_array(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
+pub fn k_array(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     check_argc(c, args, 1, 1)?;
     let v = args[0];
     if is_array(v) { return Ok(v); }
@@ -1135,9 +1135,9 @@ pub const BUILTIN_FEATURES: &[&str] = &["set", "enumerator", "rational", "comple
     "benchmark", "fileutils", "shellwords", "strscan", "digest", "digest/md5", "digest/sha1", "digest/sha2", "zlib", "base64",
     "optparse", "ostruct", "forwardable", "singleton", "observer", "delegate", "socket", "open3", "logger", "uri", "net/http",
     "erb", "cgi", "abbrev", "matrix", "prime", "tsort", "weakref", "find", "pathname", "io/nonblock", "fcntl",
-    "nkf", "racc", "racc/parser", "readline", "reline", "win32ole", "openssl", "mkmf", "rubygems",
+    "nkf", "racc", "racc/parser", "win32ole", "openssl", "mkmf", "rubygems",
     "did_you_mean", "error_highlight", "syntax_suggest", "-test-/memory_status", "random/formatter",
-    "date_core", "socket.so", "io/console/size", "digest/sha2", "digest/sha1", "digest/md5", "digest/rmd160", "digest/bubblebabble", "net/protocol", "net/https",
+    "date_core", "socket.so", "digest/sha2", "digest/sha1", "digest/md5", "digest/rmd160", "digest/bubblebabble", "net/protocol", "net/https",
     "open-uri", "resolv", "ipaddr", "pty", "syslog", "expect", "io/console", "bigdecimal/util", "date/format",
 ];
 
@@ -1172,7 +1172,28 @@ fn split_ext(f: &str) -> (&str, Ext) {
 fn is_explicit(name: &str) -> bool { name.starts_with('/') || name.starts_with("./") || name.starts_with("../") || name.starts_with('~') }
 
 /// $LOAD_PATH as CRuby's expanded load path: each entry (to_path) expanded and with symlinks resolved.
-fn expanded_load_path(c: &mut Ctx, call: bool) -> Result<Vec<String>, Esc> {
+fn expanded_load_path(c: &mut Ctx, call: bool) -> Result<std::sync::Arc<Vec<String>>, Esc> {
+    let lp = c.vm().load_path.get();
+    // rb_get_expanded_load_path's snapshot: the same entries (and cwd, for relative ones) expand the same
+    let n = c.ary_len(lp);
+    let all_str = (0..n).all(|i| is_string(c.ary_get(lp, i)));
+    let rel = all_str && (0..n).any(|i| !c.str_bytes(c.ary_get(lp, i)).starts_with(b"/"));
+    let cwd = if rel { std::env::current_dir().ok() } else { None };
+    if all_str {
+        if let Some((r, w, e)) = LP_CACHE.lock().unwrap().as_ref() {
+            if r.len() == n && *w == cwd && (0..n).all(|i| c.str_bytes(c.ary_get(lp, i)) == &r[i][..]) { return Ok(e.clone()); }
+        }
+    }
+    let out = std::sync::Arc::new(expand_load_path(c, call)?);
+    if all_str {
+        let raw = (0..n).map(|i| c.str_bytes(c.ary_get(lp, i)).to_vec()).collect();
+        *LP_CACHE.lock().unwrap() = Some((raw, cwd, out.clone()));
+    }
+    Ok(out)
+}
+type LpCache = (Vec<Vec<u8>>, Option<std::path::PathBuf>, std::sync::Arc<Vec<String>>);
+static LP_CACHE: std::sync::Mutex<Option<LpCache>> = std::sync::Mutex::new(None);
+fn expand_load_path(c: &mut Ctx, call: bool) -> Result<Vec<String>, Esc> {
     let lp = c.vm().load_path.get();
     let mut out = vec![];
     for i in 0..c.ary_len(lp) {
@@ -1222,7 +1243,9 @@ fn find_file(name: &str, lp: &[String]) -> Option<String> {
         }
     };
     if is_explicit(name) { return cands(expand_path_str(name, None)); }
-    lp.iter().find_map(|d| cands(expand_path_str(name, Some(d))))
+    // the reference ruby's rubylibdir / archdir: its files go through stdlib_file (saruby's own features first)
+    let std = crate::builtins::prelude::stdlib_lp_dirs();
+    lp.iter().filter(|d| !std.contains(d)).find_map(|d| cands(expand_path_str(name, Some(d))))
 }
 
 enum Feature { File(String), Native(String), Missing, SoOnly }
@@ -1285,6 +1308,9 @@ pub fn require_feature(c: &mut Ctx, path: Value, relative: bool) -> RV {
         let Some(i) = feature_provided(&name, &lp, &loading) else { break };
         if !wait_loading(c, &loading[i], me)? { return Ok(FALSE); }
     }
+    // a native feature of saruby's, recorded under its bare name, is provided (rb_feature_p finds the .so before any file)
+    let native = crate::builtins::prelude::has_feature(&name) || BUILTIN_FEATURES.contains(&name.as_str());
+    if native && !crate::builtins::prelude::has_lib(&name) && split_ext(&name).1 == Ext::None && loaded_list(c).iter().any(|f| *f == name) { return Ok(FALSE); }
     let file = match locate_feature(&name, &lp, caller_file.is_some()) {
         Feature::File(f) => f,
         Feature::Native(base) => {

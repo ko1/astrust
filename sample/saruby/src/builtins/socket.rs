@@ -866,8 +866,18 @@ fn is_dgram(c: &mut Ctx, fd: i32) -> Result<bool, Esc> {
     Ok(i32::from_ne_bytes(b) == SOCK_DGRAM)
 }
 /// Wait for `ev` on the socket's fd (other threads run); IOError if it was closed meanwhile.
-fn wait(c: &mut Ctx, v: Value, ev: i16) -> Result<(), Esc> {
+fn wait(c: &mut Ctx, v: Value, ev: i16, sc: &str) -> Result<(), Esc> {
     let fd = sfd(c, v)?;
+    // rb_io_maybe_wait_*: a scheduler's nil means "raise the errno", false a timeout
+    let s = crate::builtins::thread::scheduler_current(c);
+    if s != NIL {
+        let tv = io::io_timeout_value(c, v);
+        let r = crate::builtins::thread::sched_io_wait_v(c, s, v, ev, tv)?;
+        sfd(c, v)?;
+        if r == NIL { return Err(sys_fail(c, sys::EAGAIN, sc)); }
+        if r == FALSE { return Err(timeout_error(c, if ev == sys::POLLOUT { "Timed out waiting for IO to become writable!" } else { "Timed out waiting for IO to become readable!" })); }
+        return Ok(());
+    }
     let dl = io::io_timeout(c, v).map(|t| std::time::Instant::now() + t);
     let tv = io::io_timeout_value(c, v);
     let r = io::wait_one(c, v, fd, ev, dl, tv)?;
@@ -878,7 +888,8 @@ fn wait(c: &mut Ctx, v: Value, ev: i16) -> Result<(), Esc> {
 }
 fn so_error(fd: i32) -> Result<i64, i64> { let mut b = [0u8; 4]; sys::getsockopt(fd, SOL_SOCKET, k("SO_ERROR"), &mut b)?; Ok(i32::from_ne_bytes(b) as i64) }
 /// rsock_connect: Ok(Err(errno)) when connect(2) failed.
-fn do_connect(c: &mut Ctx, v: Value, sa: &[u8], deadline: Option<std::time::Instant>) -> Result<Result<(), i64>, Esc> {
+/// `tv`: the timeout value a fiber scheduler's #io_wait gets (UNDEF: from the deadline).
+fn do_connect(c: &mut Ctx, v: Value, sa: &[u8], deadline: Option<std::time::Instant>, tv: Value) -> Result<Result<(), i64>, Esc> {
     let deadline = deadline.or_else(|| io::io_timeout(c, v).map(|t| std::time::Instant::now() + t));
     let fd = sfd(c, v)?;
     if sys::connect(fd, sa) == 0 { return Ok(Ok(())); }
@@ -886,7 +897,7 @@ fn do_connect(c: &mut Ctx, v: Value, sa: &[u8], deadline: Option<std::time::Inst
     if e != sys::EINTR && e != sys::EAGAIN && e != EINPROGRESS { return Ok(Err(e)); }
     // wait_connectable
     match so_error(fd) { Err(e) => return Ok(Err(e)), Ok(0) => {} Ok(x) if [114, 106, 111, 113].contains(&x) => return Ok(Err(x)), Ok(_) => {} }
-    let r = io::wait_one(c, v, fd, sys::POLLIN | sys::POLLOUT, deadline, UNDEF)?;
+    let r = io::wait_one(c, v, fd, sys::POLLIN | sys::POLLOUT, deadline, tv)?;
     let fd = sfd(c, v)?;
     if r.is_none() {
         let s = inspect_sockaddr(c, sa)?;
@@ -901,7 +912,7 @@ fn do_accept(c: &mut Ctx, srv: Value) -> Result<(i32, Vec<u8>), Esc> {
         let mut b = [0u8; SS_LEN];
         match sys::accept4(fd, &mut b, k("SOCK_CLOEXEC") | k("SOCK_NONBLOCK")) {
             Ok((nfd, n)) => return Ok((nfd, b[..n.min(SS_LEN)].to_vec())),
-            Err(e) if e == sys::EAGAIN || e == sys::EINTR || e == 103 || e == 71 => { if e != sys::EINTR { wait(c, srv, sys::POLLIN)?; } }
+            Err(e) if e == sys::EAGAIN || e == sys::EINTR || e == 103 || e == 71 => { if e != sys::EINTR { wait(c, srv, sys::POLLIN, "accept(2)")?; } }
             Err(e) => return Err(sys_fail(c, e, "accept(2)")),
         }
     }
@@ -1017,7 +1028,7 @@ fn send_all(c: &mut Ctx, s: Value, msg: &[u8], flags: i32, to: &[u8]) -> Result<
         let n = sys::sendto(fd, msg, flags, to);
         if n >= 0 { return Ok(Ok(n as usize)); }
         let e = sys::errno();
-        if e == sys::EAGAIN { wait(c, s, sys::POLLOUT)?; continue; }
+        if e == sys::EAGAIN { wait(c, s, sys::POLLOUT, "sendto(2)")?; continue; }
         if e == sys::EINTR { continue; }
         return Ok(Err(e));
     }
@@ -1066,7 +1077,7 @@ fn s_recvfrom(c: &mut Ctx, sock: Value, a: &[Value], from: From) -> RV {
         let fd = sfd(c, sock)?;
         match sys::recvfrom(fd, &mut buf, flags, &mut sa) {
             Ok(r) => break r,
-            Err(e) if e == sys::EAGAIN => wait(c, sock, sys::POLLIN)?,
+            Err(e) if e == sys::EAGAIN => wait(c, sock, sys::POLLIN, "recvfrom(2)")?,
             Err(e) if e == sys::EINTR => {}
             Err(e) => return Err(sys_fail(c, e, "recvfrom(2)")),
         }
@@ -1191,7 +1202,7 @@ fn sendmsg_common(c: &mut Ctx, s: Value, a: &[Value], nonblock: bool) -> RV {
         let e = sys::errno();
         if e == sys::EAGAIN {
             if nonblock { if a.get(4) == Some(&FALSE) { return Ok(sym_value("wait_writable")); } return Err(rw_fail(c, false, e, "sendmsg(2) would block")); }
-            wait(c, s, sys::POLLOUT)?; continue;
+            wait(c, s, sys::POLLOUT, "sendmsg(2)")?; continue;
         }
         if e == sys::EINTR { continue; }
         return Err(sys_fail(c, e, "sendmsg(2)"));
@@ -1231,7 +1242,7 @@ fn recvmsg_common(c: &mut Ctx, s: Value, a: &[Value], nonblock: bool) -> RV {
         let fd = sfd(c, s)?;
         let (n, nl, cl, mf) = match sys::recvmsg(fd, &mut data, &mut name, &mut ctl, flags | MSG_CMSG_CLOEXEC) {
             Ok(r) => r,
-            Err(e) if e == sys::EAGAIN && !nonblock => { wait(c, s, sys::POLLIN)?; continue; }
+            Err(e) if e == sys::EAGAIN && !nonblock => { wait(c, s, sys::POLLIN, "recvmsg(2)")?; continue; }
             Err(e) if e == sys::EINTR => continue,
             Err(e) if e == sys::EAGAIN => { if !ex { return Ok(sym_value("wait_readable")); } return Err(rw_fail(c, true, e, "recvmsg(2) would block")); }
             Err(e) => return Err(sys_fail(c, e, "recvmsg(2)")),
@@ -1387,7 +1398,7 @@ fn init_inetsock(c: &mut Ctx, slf: Value, rhost: Value, rserv: Value, lhost: Val
                     return Err(timeout_error(c, &format!("user specified timeout for {}", String::from_utf8_lossy(&s))));
                 } }
                 syscall = "connect(2)";
-                match do_connect(c, slf, &r.4, dl) {
+                match do_connect(c, slf, &r.4, dl, if open_dl.is_some() { UNDEF } else { connect_t }) {
                     Ok(Ok(())) => status = 0,
                     Ok(Err(e)) => { status = -1; error = e; }
                     Err(x) => { let _ = io::close_io(c, slf); return Err(x); }
@@ -1462,7 +1473,7 @@ fn udp_connect(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let fd = sfd(c, s)?;
     let res = addrinfo_list(c, a[0], a[1], fd_family(fd), SOCK_DGRAM, 0)?;
     let mut last = 0;
-    for r in &res { match do_connect(c, s, &r.4, None)? { Ok(()) => return Ok(Value::fix(0)), Err(e) => last = e } }
+    for r in &res { match do_connect(c, s, &r.4, None, UNDEF)? { Ok(()) => return Ok(Value::fix(0)), Err(e) => last = e } }
     Err(fail_host_port(c, last, "connect(2)", a[0], a[1]))
 }
 fn udp_bind(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
@@ -1499,7 +1510,7 @@ fn init_unixsock(c: &mut Ctx, slf: Value, path: Value, server: bool) -> RV {
     if fd < 0 { return Err(fail_path(c, sys::errno(), "socket(2)", Some(&p))); }
     init_sock(c, slf, fd)?;
     let r = if server { if sys::bind(fd, &sa) == 0 { Ok(()) } else { Err(sys::errno()) } } else {
-        match do_connect(c, slf, &sa, None) { Ok(r) => r, Err(x) => { let _ = io::close_io(c, slf); return Err(x); } }
+        match do_connect(c, slf, &sa, None, UNDEF) { Ok(r) => r, Err(x) => { let _ = io::close_io(c, slf); return Err(x); } }
     };
     if let Err(e) = r { io::close_io(c, slf)?; return Err(fail_path(c, e, "connect(2)", Some(&p))); }
     if server {
@@ -1547,7 +1558,7 @@ fn unix_send_io(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
         let sf = sfd(c, s)?;
         if sys::sendmsg(sf, &[0], &[], &ctl, 0) >= 0 { return Ok(NIL); }
         let e = sys::errno();
-        if e == sys::EAGAIN { wait(c, s, sys::POLLOUT)?; continue; }
+        if e == sys::EAGAIN { wait(c, s, sys::POLLOUT, "sendmsg(2)")?; continue; }
         if e == sys::EINTR { continue; }
         let p = io_path(c, s);
         return Err(fail_path(c, e, "sendmsg(2)", p.as_deref()));
@@ -1564,7 +1575,7 @@ fn unix_recv_io(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
         let mut ctl = vec![0u8; space];
         match sys::recvmsg(sf, &mut d, &mut [], &mut ctl, MSG_CMSG_CLOEXEC) {
             Ok((_, _, cl, _)) => break (cl, ctl),
-            Err(e) if e == sys::EAGAIN => wait(c, s, sys::POLLIN)?,
+            Err(e) if e == sys::EAGAIN => wait(c, s, sys::POLLIN, "recvmsg(2)")?,
             Err(e) if e == sys::EINTR => {}
             Err(e) => { let p = io_path(c, s); return Err(fail_path(c, e, "recvmsg(2)", p.as_deref())); }
         }
@@ -1628,7 +1639,7 @@ fn sock_s_socketpair(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
 }
 fn sock_connect(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let (sa, _) = sockaddr_arg(c, a[0])?;
-    match do_connect(c, s, &sa, None)? { Ok(()) => Ok(Value::fix(0)), Err(e) => Err(fail_sockaddr(c, e, "connect(2)", &sa)) }
+    match do_connect(c, s, &sa, None, UNDEF)? { Ok(()) => Ok(Value::fix(0)), Err(e) => Err(fail_sockaddr(c, e, "connect(2)", &sa)) }
 }
 fn sock_connect_nonblock(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let (sa, _) = sockaddr_arg(c, a[0])?;

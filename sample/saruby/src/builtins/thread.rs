@@ -654,6 +654,11 @@ fn timeout_value(c: &mut Ctx, deadline: Option<Instant>) -> Value {
 static FIOS: Global = Global::new();   // [io, fiber, thread] per fiber in a scheduler's io_wait (IO#close interrupts them)
 /// rb_fiber_scheduler_io_wait(io, events, timeout): Some(ready events) or None (timed out).
 pub fn sched_io_wait(c: &mut Ctx, s: Value, io: Value, events: i16, timeout: Value) -> Result<Option<i16>, Esc> {
+    let r = sched_io_wait_v(c, s, io, events, timeout)?;
+    Ok(if r.is_fixnum() { Some(r.as_fix() as i16) } else if r.truthy() { Some(events) } else { None })
+}
+/// The scheduler's #io_wait result as is (nil and false differ for rb_io_maybe_wait_*).
+pub fn sched_io_wait_v(c: &mut Ctx, s: Value, io: Value, events: i16, timeout: Value) -> RV {
     let l = match FIOS.get(c) { NIL => { let l = c.ary_new(); FIOS.set(c, l); l } l => l };
     let (f, me) = (crate::fiber::current(c), cur(c));
     let ent = c.ary_new_from(&[io, f, me]);
@@ -662,8 +667,7 @@ pub fn sched_io_wait(c: &mut Ctx, s: Value, io: Value, events: i16, timeout: Val
     c.ary_mut(l).retain(|&e| e != ent);
     // an IO#close waiting for this fiber to leave io_wait goes on
     if CLOSING.load(Relaxed) != 0 { pass_on_all(c, io.raw() | 2); }
-    let r = r?;
-    Ok(if r.is_fixnum() { Some(r.as_fix() as i16) } else if r.truthy() { Some(events) } else { None })
+    r
 }
 static CLOSING: AtomicUsize = AtomicUsize::new(0);   // IO#close calls waiting in io_close_interrupt
 fn fio_waiting(c: &Ctx, io: Value) -> bool { let l = FIOS.get(c); l != NIL && c.ary(l).iter().any(|&e| c.ary_get(e, 0) == io) }

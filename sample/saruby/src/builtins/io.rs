@@ -33,6 +33,7 @@ pub struct RIo {
     pub textmode: bool,   // FMODE_TEXTMODE
     pub wc_need: bool,   // writes are converted (conv_note keeps it)
     pub rfull: bool,   // the last fill read at least rcap bytes (or none yet)
+    pub tty: bool,   // FMODE_TTY (io_check_tty at open): every write goes out at once
     pub conv: Option<Box<cv::IoConv>>,
 }
 impl RData for RIo {
@@ -85,11 +86,12 @@ impl std::fmt::Display for PathArg {
 fn blank() -> RIo {
     RIo { fd: -1, wfd: -1, path: vec![], rbuf: vec![], rpos: 0, eof: false, wbuf: vec![], closed: false, init: false, lineno: 0, writable: false,
           readable: false, binmode: false, sync: false, pid: 0, enc: None, enc2: None, ecflags: 0, autoclose: true, has_path: false, data: false, rerr: 0, coop: false, wouldblock: false,
-          ecrep: None, conv: None, rcap: 0, textmode: false, wc_need: false, rfull: true }
+          ecrep: None, conv: None, rcap: 0, textmode: false, wc_need: false, rfull: true, tty: false }
 }
 fn opened(fd: i32, path: &[u8], r: bool, w: bool) -> RIo {
     let mut io = blank();
     io.fd = fd; io.path = path.to_vec(); io.readable = r; io.writable = w; io.init = true;
+    io.tty = fd > 2 && sys::isatty(fd) == 1;
     io
 }
 pub fn new_io(c: &mut Ctx, klass: Value, fd: i32, path: &[u8], r: bool, w: bool) -> Value {
@@ -337,7 +339,7 @@ fn buffer_write(io: &mut RIo, b: &[u8], coop: bool) -> Option<i64> {
     if fd == 2 { return err_write_io(b); }
     if !io.rbuf.is_empty() { discard_rbuf(io); }
     io.wbuf.extend_from_slice(b);
-    if io.wbuf.len() > 1 << 16 || io.sync { return if coop { Some(FLUSH_COOP) } else { io_flush_one(io) }; }
+    if io.wbuf.len() > 1 << 16 || io.sync || io.tty { return if coop { Some(FLUSH_COOP) } else { io_flush_one(io) }; }
     None
 }
 /// Flush with other threads running while the fd is not writable (a full pipe would block them all).
@@ -1720,8 +1722,6 @@ fn io_wait_writable(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_open(c, slf, false)?;
     Ok(if r.is_some() { slf } else { NIL })
 }
-fn io_ready_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = readable_nowait(c, slf)?; Ok(Value::bool(io.rpos < io.rbuf.len() || wait_fd(io.fd, sys::POLLIN, 0))) }
-fn io_nread(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = readable_nowait(c, slf)?; Ok(Value::fix((io.rbuf.len() - io.rpos) as i64)) }
 
 // ---- opening --------------------------------------------------------------------------------
 
@@ -1833,7 +1833,7 @@ fn setup_io(c: &mut Ctx, v: Value, fd: i32, path: Option<&[u8]>, om: &OpenMode) 
     let io = io_mut(c, v);
     // a fresh object is blank already; a reinitialized one is reset
     if io.init { if !io.closed && io.fd > 2 { close_fds(io); } *io = blank(); }
-    io.fd = fd; io.init = true;
+    io.fd = fd; io.init = true; io.tty = fd > 2 && sys::isatty(fd) == 1;
     let acc = om.flags & sys::O_ACCMODE;
     io.readable = acc != sys::O_WRONLY; io.writable = acc != sys::O_RDONLY;
     io.binmode = om.bin;
@@ -2437,7 +2437,7 @@ pub fn init(c: &mut Ctx) {
     d(c, "set_encoding_by_bom", io_set_encoding_by_bom, 0);
     d(c, "autoclose?", io_autoclose_p, 0); d(c, "autoclose=", io_set_autoclose, 1); d(c, "close_on_exec?", io_cloexec_p, 0); d(c, "close_on_exec=", io_set_cloexec, 1);
     d(c, "fcntl", io_fcntl, -1); d(c, "ioctl", io_ioctl, -1); d(c, "reopen", io_reopen, -1); d(c, "wait_readable", io_wait_readable, -1); d(c, "wait_writable", io_wait_writable, -1);
-    d(c, "ready?", io_ready_p, 0); d(c, "nread", io_nread, 0); d(c, "timeout", io_get_timeout, 0); d(c, "timeout=", io_set_timeout, 1);
+    d(c, "timeout", io_get_timeout, 0); d(c, "timeout=", io_set_timeout, 1);
     define_private_cfunc(c, io, "initialize", io_initialize, -1);
     define_private_cfunc(c, io, "initialize_copy", io_init_copy, 1);
     define_private_cfunc(c, f, "initialize", file_initialize, -1);

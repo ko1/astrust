@@ -101,7 +101,7 @@ pub fn str_aref(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
         return match crate::range::range_beg_len(c, x, n, 0)? { Some((st, ln)) => Ok(substr(c, slf, st, ln).unwrap_or(NIL)), None => Ok(NIL) };
     }
     if is_string(x) {
-        return Ok(if find_bytes(c.str_bytes(slf), c.str_bytes(x), 0).is_some() { c.str_new_like(x, c.str_bytes(x).to_vec()) } else { NIL });
+        return Ok(if find_at_head(c.str_bytes(slf), c.str_bytes(x), 0, c.str_enc(slf)).is_some() { c.str_new_like(x, c.str_bytes(x).to_vec()) } else { NIL });
     }
     if regexp::is_regexp(c, x) {
         let m = regexp::search(c, x, slf, 0, true)?;
@@ -123,6 +123,24 @@ pub fn find_bytes(h: &[u8], n: &[u8], from: usize) -> Option<usize> {
         }
     }
     None
+}
+/// Can a needle hit start inside a character (not UTF-8, not single-byte)?
+#[inline]
+pub fn mb_heads(enc: u8) -> bool { enc != ENC_UTF8 && !crate::builtins::encoding::is_single_byte(enc) }
+/// rb_str_index's search: find_bytes, skipping hits inside a character; `from` is a character head.
+#[inline]
+pub fn find_at_head(h: &[u8], n: &[u8], from: usize, enc: u8) -> Option<usize> {
+    if mb_heads(enc) { find_mb_head(h, n, from, enc) } else { find_bytes(h, n, from) }
+}
+#[inline(never)]
+fn find_mb_head(h: &[u8], n: &[u8], from: usize, enc: u8) -> Option<usize> {
+    let (mut i, mut hd) = (from, from);
+    loop {
+        let q = find_bytes(h, n, i)?;
+        while hd < q { hd += crate::builtins::encoding::mbclen(enc, h, hd); }
+        if hd == q { return Some(q); }
+        i = hd;
+    }
 }
 /// find_bytes, but only hits that start on a character boundary of `slf`.
 fn find_on_boundary(c: &Ctx, slf: Value, n: &[u8], from: usize) -> Option<usize> {
@@ -817,10 +835,12 @@ cfn!(s_split, |c, slf, a, blk| {
             let used: usize = out.iter().map(|x| x.len()).sum();
             if used < v.len() && limit > 0 { out.push(v[used..].to_vec()); } else if used == v.len() && limit != 0 { out.push(vec![]); }
         } else {
+            let enc = c.str_enc(slf);
+            let mb = mb_heads(enc);
             let mut i = 0;
             loop {
                 if limit > 0 && out.len() as i64 == limit - 1 { out.push(v[i..].to_vec()); break; }
-                match find_bytes(v, p, i) { Some(q) => { out.push(v[i..q].to_vec()); i = q + p.len(); } None => { out.push(v[i..].to_vec()); break; } }
+                match if mb { find_mb_head(v, p, i, enc) } else { find_bytes(v, p, i) } { Some(q) => { out.push(v[i..q].to_vec()); i = q + p.len(); } None => { out.push(v[i..].to_vec()); break; } }
             }
         }
     } else {
@@ -926,6 +946,7 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk, global: bool, bang: boo
     let enc = c.str_enc(slf);
     let mut renc = enc;
     let src_ascii = is_ascii(&src);
+    let mb = mb_heads(enc);
     // CRuby checks the receiver after a block or a hash lookup, except in sub (which works on its copy)
     let watch = bang || global;
     let mut srcv = NIL; // frozen copy of the source shared by every MatchData
@@ -935,7 +956,7 @@ fn subst(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk, global: bool, bang: boo
     let mut i = 0; let mut last = 0; let mut changed = false;
     loop {
         let g: Vec<Option<(usize, usize)>> = if let Some(l) = &lit {
-            match find_bytes(&src, l, i) { Some(p) => vec![Some((p, p + l.len()))], None => break }
+            match if mb { find_mb_head(&src, l, i, enc) } else { find_bytes(&src, l, i) } { Some(p) => vec![Some((p, p + l.len()))], None => break }
         } else {
             match regexp::search_raw_e(c, re, &src, i, md) { Some(g) => g, None => break }
         };

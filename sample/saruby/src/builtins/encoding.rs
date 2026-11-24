@@ -342,6 +342,35 @@ pub fn char_code(enc: u8, ch: &[u8]) -> u32 {
 }
 
 /// Encode a code (as returned by char_code) into the encoding.  None if not representable.
+/// rb_enc_codelen + rb_enc_mbcput for a multibyte encoding other than UTF-8 (Onigmo's code_to_mbclen /
+/// code_to_mbc): the first `len` bytes it writes whenever the length is positive, even for an invalid character.
+/// None: the length is an error.
+pub fn onig_mbcput(enc: u8, cp: u32) -> Option<Vec<u8>> {
+    let len: usize = match kind(enc) {
+        Sjis(_) => {
+            if cp <= 0x80 || (0xa0..=0xdf).contains(&cp) || (0xfd..=0xff).contains(&cp) { 1 }
+            else if cp < 0x100 || cp > 0xffff || !matches!(cp & 0xff, 0x40..=0x7e | 0x80..=0xfc) { return None }
+            else { 2 }
+        }
+        EucJp(_) => if cp < 0x80 { 1 } else if cp > 0xff_ffff { return None } else if cp & 0xff80_8080 == 0x80_8080 { 3 } else if cp & 0xffff_8080 == 0x8080 { 2 } else { return None },
+        Dbcs | Big5 | Gbk => if cp <= 0xff { 1 } else if cp <= 0xffff { 2 } else { return None },
+        Gb18030 | EucTw => if cp & 0xff00_0000 != 0 { 4 } else if cp & 0xff_0000 != 0 { 3 } else if cp & 0xff00 != 0 { 2 } else { 1 },
+        EmacsMule => if cp < 0x80 { 1 } else if cp & 0xff00_0000 >= 0x8000_0000 { 4 } else if cp & 0xff_0000 >= 0x80_0000 { 3 } else if cp & 0xff00 >= 0x8000 { 2 } else { return None },
+        U16LE | U16BE => {
+            let ws: Vec<u16> = if cp > 0xffff { vec![((cp >> 10) + 0xd7c0) as u16, ((cp & 0x3ff) + 0xdc00) as u16] } else { vec![cp as u16] };
+            return Some(ws.iter().flat_map(|w| if kind(enc) == U16LE { w.to_le_bytes() } else { w.to_be_bytes() }).collect());
+        }
+        U32LE => return Some(cp.to_le_bytes().to_vec()),
+        U32BE => return Some(cp.to_be_bytes().to_vec()),
+        _ => return code_to_bytes(enc, cp),
+    };
+    let b = cp.to_be_bytes();
+    // code_to_mbc: mb4 writes from the highest non-zero byte on, the others each non-zero high byte
+    let mut out: Vec<u8> = if matches!(kind(enc), Gb18030 | EucTw) { b[(cp.leading_zeros() as usize / 8).min(3)..].to_vec() }
+        else { b[..3].iter().copied().filter(|&x| x != 0).chain([b[3]]).collect() };
+    out.resize(len, 0);
+    Some(out)
+}
 pub fn code_to_bytes(enc: u8, cp: u32) -> Option<Vec<u8>> {
     let mut out = vec![];
     match kind(enc) {
