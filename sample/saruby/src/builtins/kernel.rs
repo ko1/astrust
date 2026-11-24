@@ -1004,15 +1004,22 @@ fn traces_of(c: &mut Ctx, name: Sym) -> Result<Option<Value>, Esc> {
 }
 #[cold]
 fn run_traces(c: &mut Ctx, name: Sym, v: Value) -> Result<(), Esc> {
+    // a variable's traces do not run again for an assignment made by one of them (CRuby's block_trace)
+    thread_local! { static RUNNING: std::cell::RefCell<Vec<Sym>> = const { std::cell::RefCell::new(vec![]) }; }
+    if RUNNING.with(|r| r.borrow().contains(&name)) { return Ok(()); }
     let Some(l) = traces_of(c, name)? else { return Ok(()) };
     let cmds: Vec<Value> = c.ary(l).iter().rev().copied().collect();
     let keep = c.ary_new_from(&cmds);
+    RUNNING.with(|r| r.borrow_mut().push(name));
+    let mut r = Ok(());
     for cmd in cmds {
-        if is_string(cmd) { let m = c.vm().main_obj.get(); funcall(c, m, intern(b"eval"), &[cmd], std::ptr::null())?; }
-        else { funcall(c, cmd, intern(b"call"), &[v], std::ptr::null())?; }
+        r = if is_string(cmd) { let m = c.vm().main_obj.get(); funcall(c, m, intern(b"eval"), &[cmd], std::ptr::null()).map(drop) }
+            else { funcall(c, cmd, intern(b"call"), &[v], std::ptr::null()).map(drop) };
+        if r.is_err() { break; }
     }
+    RUNNING.with(|r| { let mut r = r.borrow_mut(); if let Some(i) = r.iter().rposition(|&x| x == name) { r.remove(i); } });
     std::hint::black_box(keep);
-    Ok(())
+    r
 }
 /// Kernel#trace_var(name, cmd = block): cmd (a Proc or a String to eval) runs at each assignment.
 fn k_trace_var(c: &mut Ctx, _s: Value, a: &[Value], b: Blk) -> RV {

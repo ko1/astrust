@@ -1099,7 +1099,7 @@ fn m_constants(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
 }
 /// Module.constants: with no argument, the constants of the caller's lexical scopes and Object's.
 fn m_s_constants(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
-    if !a.is_empty() { return m_constants(c, slf, a, b); }
+    if !a.is_empty() || slf != c.vm().c_module.get() { return m_constants(c, slf, a, b); }
     let mut scopes = vec![];
     let mut cr = c.caller_frame().map_or(std::ptr::null(), |f| f.cref());
     while let Some(r) = c.cref_ref(cr) { if !r.prev.is_null() { scopes.push(r.klass); } cr = r.prev; }
