@@ -68,7 +68,7 @@ fn re_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_frozen(c, slf)?;
     if rregexp(c, slf).map_or(false, |r| r.re.is_some()) { return type_err(c, "already initialized regexp"); }
     let (src, enc, opts, timeout) = reg_init_args(c, a)?;
-    let (src, opts, enc, re) = match regexp_build(&src, enc, opts) { Ok(x) => x, Err(e) => return err(c, c.vm().c_regexp_error.get(), e) };
+    let (src, opts, enc, re) = match regexp_build(&src, enc, opts) { Ok(x) => x, Err(e) => return Err(crate::regexp::regexp_error(c, &e, enc)) };
     let Some(me) = rregexp_mut(c, slf) else { return type_err(c, "wrong argument type (expected Regexp)") };
     me.src = src; me.opts = opts; me.re = Some(re); me.enc = enc; me.timeout = timeout;
     Ok(slf)
