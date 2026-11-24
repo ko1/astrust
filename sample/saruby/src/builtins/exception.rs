@@ -278,6 +278,40 @@ pub fn exc_detailed_message(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV
     let o = decorate_message(c, slf, m, highlight);
     Ok(c.str_new(&o))
 }
+fn syntax_err_init(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    check_argc(c, a, 0, 1)?;
+    let m = match a.first() { Some(&m) => m, None => c.str_new(b"compile error") };
+    ivar_set_raw(c, slf, s::mesg, m);
+    Ok(NIL)
+}
+/// syntax_suggest's SyntaxError#detailed_message(highlight: true, syntax_suggest: true, **): the default gem prepends
+/// it at boot (syntax_suggest/core_ext); the search itself is loaded on the first use.
+fn syntax_err_detailed_message(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
+    if crate::builtins::syntax_suggest::disabled() { return exc_detailed_message(c, slf, a, b); }
+    let kw = kw_arg(c, a);
+    let saved = (c.errinfo, c.esc_tag, c.esc_tag_v);
+    let sup = (|| {
+        let highlight = if hash_has(c, kw, "highlight")? { highlight_kw(c, kw)?.truthy() } else { true };
+        let ss = match kw { Some(h) => crate::hash::hash_get_opt(c, h, sym_value("syntax_suggest"))?.unwrap_or(TRUE), None => TRUE };
+        let m = funcall(c, slf, s::message, &[], std::ptr::null())?;
+        let m = check_str(c, m)?;
+        let o = decorate_message(c, slf, m, highlight);
+        Ok((c.str_new(&o), highlight, ss))
+    })();
+    // its `rescue => e` returns `message`, still nil when `super` raised
+    let (msg, highlight, ss) = match sup {
+        Ok(x) => x,
+        Err(e) if c.esc == EscKind::Raise && is_kind_of(c, c.esc_val, c.vm().c_standard_error.get()) => { let _ = e; c.esc = EscKind::None; (c.errinfo, c.esc_tag, c.esc_tag_v) = saved; return Ok(NIL); }
+        Err(e) => return Err(e),
+    };
+    if !ss.truthy() { return Ok(msg); }
+    let path = funcall(c, slf, intern(b"path"), &[], std::ptr::null())?;
+    if path == NIL { return Ok(msg); }
+    crate::builtins::syntax_suggest::annotate(c, path, highlight, msg)
+}
+fn hash_has(c: &mut Ctx, h: Option<Value>, k: &str) -> Result<bool, Esc> {
+    match h { Some(h) => Ok(crate::hash::hash_get_opt(c, h, sym_value(k))?.is_some()), None => Ok(false) }
+}
 fn exc_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let cls = class_path(c, real_class_of(c, slf));
     // rb_obj_as_string(exc): #to_s, not #message
@@ -763,6 +797,9 @@ pub fn init(c: &mut Ctx) {
     define_cfunc(c, e, "to_s", exc_to_s, 0);
     define_cfunc(c, e, "message", exc_message, 0);
     define_cfunc(c, e, "detailed_message", exc_detailed_message, -1);
+    let se = vmr.c_syntax_error.get();
+    define_private_cfunc(c, se, "initialize", syntax_err_init, -1);
+    define_cfunc(c, se, "detailed_message", syntax_err_detailed_message, -1);
     define_cfunc(c, e, "inspect", exc_inspect, 0);
     define_cfunc(c, e, "backtrace", exc_backtrace, 0);
     define_cfunc(c, e, "set_backtrace", exc_set_backtrace, 1);

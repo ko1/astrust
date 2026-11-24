@@ -18,7 +18,7 @@ pub fn load_prelude(c: &mut Ctx) -> RV {
     let pr = crate::prism::read_serialized(CORE_AST);
     let is = match crate::compile::compile_parsed(&pr, CORE.as_bytes(), "<internal:prelude>", IseqKind::Top, vec![]) {
         Ok(is) => is,
-        Err(msg) => return err(c, c.vm().c_syntax_error.get(), msg),
+        Err(m) => return err(c, c.vm().c_syntax_error.get(), m.text()),
     };
     crate::run_top_iseq(c, is, c.vm().main_obj.get())
 }
@@ -32,7 +32,7 @@ const LIBS: &[(&str, &str)] = &[lib!("pp"), lib!("fcntl"), lib!("prettyprint"), 
     ("digest/md5", "require 'digest'\nrequire 'saruby/digest/md5'\n"), ("digest/sha1", "require 'digest'\nrequire 'saruby/digest/sha1'\n"),
     ("digest/rmd160", "require 'digest'\nrequire 'saruby/digest/rmd160'\n"), ("digest/bubblebabble", "require 'digest'\nrequire 'saruby/digest/bubblebabble'\n"),
     ("digest/sha2", include_str!("../../prelude/lib/digest_sha2.rb")), ("digest/sha2/loader", "require 'digest'\nrequire 'saruby/digest/sha2'\n"),
-    lib!("error_highlight"), lib!("error_highlight/base"), lib!("error_highlight/core_ext"), lib!("error_highlight/formatter"), lib!("error_highlight/version"), lib!("error_highlight/saruby"),
+    lib!("error_highlight"), lib!("error_highlight/base"), lib!("error_highlight/core_ext"), lib!("error_highlight/formatter"), lib!("error_highlight/version"), lib!("error_highlight/saruby"), lib!("syntax_suggest/saruby"),
     lib!("did_you_mean"), lib!("did_you_mean/version"), lib!("did_you_mean/core_ext/name_error"), lib!("did_you_mean/spell_checker"),
     lib!("did_you_mean/levenshtein"), lib!("did_you_mean/jaro_winkler"), lib!("did_you_mean/spell_checkers/name_error_checkers"),
     lib!("did_you_mean/spell_checkers/name_error_checkers/class_name_checker"), lib!("did_you_mean/spell_checkers/name_error_checkers/variable_name_checker"),
@@ -43,7 +43,7 @@ const LIBS: &[(&str, &str)] = &[lib!("pp"), lib!("fcntl"), lib!("prettyprint"), 
 /// Features whose implementation is native and always present (require is a no-op).
 const NATIVE: &[&str] = &["set", "stringio", "rbconfig", "thread", "fiber", "enumerator", "rational", "complex", "continuation",
     "io/wait", "io/nonblock", "etc.so", "monitor.so", "strscan", "strscan.so", "bigdecimal.so", "psych.so", "socket.so", "json/ext/parser", "json/ext/parser.so", "json/ext/generator", "json/ext/generator.so", "zlib", "saruby/errno", "saruby/env", "saruby/rbconfig", "saruby/filetest", "saruby/stat", "saruby/sync", "saruby/econv", "saruby/tracepoint",
-    "coverage.so", "objspace.so", "saruby/weakmap", "cgi/escape.so", "saruby/toplevel_binding", "saruby/etc", "saruby/syslog", "saruby/digest", "saruby/digest/md5", "saruby/digest/sha1", "saruby/digest/sha2", "saruby/digest/rmd160", "saruby/digest/bubblebabble", "saruby/io_buffer", "saruby/ractor", "saruby/error_highlight"];
+    "coverage.so", "objspace.so", "saruby/weakmap", "cgi/escape.so", "saruby/toplevel_binding", "saruby/etc", "saruby/syslog", "saruby/digest", "saruby/digest/md5", "saruby/digest/sha1", "saruby/digest/sha2", "saruby/digest/rmd160", "saruby/digest/bubblebabble", "saruby/io_buffer", "saruby/ractor", "saruby/error_highlight", "saruby/syntax_suggest"];
 
 /// Constant `name` under `owner` whose native definition runs on first reference (boot time: builtins/mod.rs).
 pub use crate::builtins::lazy_const;
@@ -92,6 +92,7 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
         "saruby/io_buffer" => crate::builtins::io_buffer::init(c),
         "saruby/ractor" => crate::builtins::ractor::init(c),
         "saruby/error_highlight" => crate::builtins::error_highlight::init(c),
+        "saruby/syntax_suggest" => crate::builtins::syntax_suggest::init(c),
         _ => {}
     }
     Ok(NIL)

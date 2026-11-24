@@ -248,12 +248,13 @@ fn enc_opt(o: &mut Opts, opt: &str, v: &str) {
         o.enc_int = Some(i.into());
     }
 }
-/// --disable-X / --disable=X,Y: gems (gem_prelude, so error_highlight and did_you_mean too, as CRuby 4.0), all, or one.
+/// --disable-X / --disable=X,Y: gems (gem_prelude, so error_highlight, did_you_mean and syntax_suggest too, as CRuby 4.0), all, or one.
 fn disable_features(list: &str) {
     for f in list.split(',') {
-        let (eh, dym) = match f { "all" | "gems" => (true, true), "error_highlight" => (true, false), "did_you_mean" => (false, true), _ => (false, false) };
+        let (eh, dym, ss) = match f { "all" | "gems" => (true, true, true), "error_highlight" => (true, false, false), "did_you_mean" => (false, true, false), "syntax_suggest" => (false, false, true), _ => (false, false, false) };
         if eh { crate::builtins::error_highlight::disable(); }
         if dym { crate::builtins::did_you_mean::disable(); }
+        if ss { crate::builtins::syntax_suggest::disable(); }
     }
 }
 
@@ -316,7 +317,8 @@ fn run_main(o: Opts) -> i32 {
     vm.aot_collect.set(o.aot);
 
     let (src, file): (Vec<u8>, String) = if !o.e.is_empty() {
-        (o.e.join(&b"\n"[..]), "-e".into())
+        // each -e line ends with a newline (ruby.c)
+        (o.e.iter().flat_map(|l| l.iter().copied().chain([b'\n'])).collect(), "-e".into())
     } else if let Some(s) = o.script.as_ref().filter(|s| s.as_str() != "-") {
         match std::fs::read(s) {
             Ok(b) => { builtins::exception::note_realpath(s); (b, s.clone()) }
@@ -355,8 +357,10 @@ fn run_main(o: Opts) -> i32 {
                 let s = c.str_new(r.as_bytes());
                 if builtins::kernel::require_feature(&mut c, s, false).is_err() { let e = c.esc_val; report_exception(&mut c, e); return 1; }
             }
-            builtins::kernel::err_write(format!("{}\n", msg).as_bytes());
-            builtins::kernel::err_write(format!("{}: compile error (SyntaxError)\n", file).as_bytes());
+            let e = vm::compile_error_exc(&mut c, msg, file);
+            // -c reports at the program's name (the error is raised before ruby_set_script_name)
+            if o.check_syntax { *vm.main_file.borrow_mut() = std::env::args().next().unwrap_or_default(); builtins::syntax_suggest::disable(); }
+            report_exception(&mut c, e);
             if !o.requires.is_empty() { finish(&mut c, false); }
             return 1;
         }

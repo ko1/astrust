@@ -2685,37 +2685,49 @@ pub fn flush_parse_warnings(c: &mut Ctx) -> Result<(), Esc> {
     Ok(())
 }
 
-/// Parse and compile a source file into a top-level iseq.  Err = SyntaxError message.
-pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, String> {
+/// A source that does not compile (pm_parse_process_error): prism's error level (0 SyntaxError,
+/// 1 ArgumentError, 2 LoadError), the message and the name of its encoding (the source's).
+pub struct CompileError { pub level: u8, pub msg: Vec<u8>, pub enc: String }
+impl CompileError {
+    fn syntax(msg: String) -> Self { CompileError { level: 0, msg: msg.into_bytes(), enc: String::new() } }
+    pub fn text(&self) -> String { String::from_utf8_lossy(&self.msg).into_owned() }
+}
+
+/// Parse and compile a source file into a top-level iseq.
+pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, CompileError> {
     compile_source_enc(src, crate::object::ENC_UTF8, file, line, kind, outer)
 }
 /// compile_source of an eval'd String: its encoding is the source's unless a magic comment says otherwise.
 #[inline(always)]
-pub fn compile_source_enc(src: &[u8], enc: u8, file: &'static str, line: i32, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, String> {
+pub fn compile_source_enc(src: &[u8], enc: u8, file: &'static str, line: i32, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, CompileError> {
     let ename = if enc == crate::object::ENC_UTF8 { "" } else { crate::builtins::encoding::enc_name(enc) };
     let mut scopes: Vec<Vec<Vec<u8>>> = outer.iter().rev().map(|sc| sc.iter().map(|(n, _, _)| crate::symbol::sym_bytes(*n).to_vec()).collect()).collect();
     // an eval always parses with an outer scope (prism's parsing_eval: no top-level unused-variable warnings)
     if !scopes.is_empty() || kind == IseqKind::Eval { scopes.push(vec![]); }
-    let pr = prism::parse(src, &prism::ParseOpts { filepath: file.as_bytes(), line, scopes, main_script: kind == IseqKind::Main, frozen_string_literal: 0, encoding: ename.as_bytes() });
+    let po = prism::ParseOpts { filepath: file.as_bytes(), line, scopes, main_script: kind == IseqKind::Main, frozen_string_literal: 0, encoding: ename.as_bytes() };
+    let pr = prism::parse(src, &po);
+    if !pr.errors.is_empty() {
+        push_parse_warnings(&pr, file);
+        // highlighted as CRuby's: when stderr is a tty at parse time (bold only under NO_COLOR)
+        let fmt = if crate::builtins::sys::isatty(2) != 1 { 1 } else if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) { 2 } else { 3 };
+        let (level, msg, enc) = prism::format_errors(src, &po, fmt);
+        return Err(CompileError { level, msg, enc });
+    }
     compile_parsed(&pr, src, file, kind, outer)
 }
 
+fn push_parse_warnings(pr: &ParseResult, file: &str) {
+    if file == "<internal:prelude>" || pr.warnings.is_empty() { return; }
+    PARSE_WARNINGS.with(|w| {
+        let mut w = w.borrow_mut();
+        for d in &pr.warnings { w.push((format!("{}:{}: warning: {}\n", file, pr.line_of(d.loc.start) as i32, d.msg), d.level != 0)); }
+    });
+}
+
 /// compile_source of a parse already made (the prelude's is made at build time).
-pub fn compile_parsed(pr: &ParseResult, src: &[u8], file: &'static str, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, String> {
-    if file != "<internal:prelude>" && !pr.warnings.is_empty() {
-        PARSE_WARNINGS.with(|w| {
-            let mut w = w.borrow_mut();
-            for d in &pr.warnings { w.push((format!("{}:{}: warning: {}\n", file, pr.line_of(d.loc.start) as i32, d.msg), d.level != 0)); }
-        });
-    }
-    if !pr.errors.is_empty() {
-        let mut msg = String::new();
-        for e in &pr.errors {
-            if !msg.is_empty() { msg.push('\n'); }
-            msg.push_str(&format!("{}:{}: {}", file, pr.line_of(e.loc.start) as i32, e.msg));
-        }
-        return Err(msg);
-    }
+pub fn compile_parsed(pr: &ParseResult, src: &[u8], file: &'static str, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, CompileError> {
+    push_parse_warnings(pr, file);
+    if let Some(e) = pr.errors.first() { return Err(CompileError::syntax(format!("{}:{}: {}", file, pr.line_of(e.loc.start) as i32, e.msg))); }
     let mut cm = Compiler::new(pr, file);
     cm.src = src;
     // compiled for tracing once a source names the hooks or the allocation tracer (zero cost for every other program)
@@ -2732,7 +2744,7 @@ pub fn compile_parsed(pr: &ParseResult, src: &[u8], file: &'static str, kind: Is
         cm.captures.entry(key(&pr.root)).or_default().insert(Sym(u32::MAX));
     }
     let is = cm.compile_program(&pr.root, kind);
-    if cm.errors.is_empty() { Ok(is) } else { Err(cm.errors.join("\n")) }
+    if cm.errors.is_empty() { Ok(is) } else { Err(CompileError::syntax(cm.errors.join("\n"))) }
 }
 
 /// The value of a single non-splat `when` pattern that is an immediate literal.

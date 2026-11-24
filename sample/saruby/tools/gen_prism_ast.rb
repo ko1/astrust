@@ -140,5 +140,9 @@ nodes.each do |n|
   out << "    (\"#{n.human}\", #{n.needs_serialized_length?}, &[#{fs.join(', ')}]),\n"
 end
 out << "];\n"
+# token type names by type - 1 (pm_serialize_lex's ids; syntax_suggest's lexer, builtins/syntax_suggest.rs)
+out << "\n/// token type names by type - 1\npub static TOKEN_NAMES: &[&str] = &[\n"
+L[:tokens].each { out << "    \"#{it.name}\",\n" }
+out << "];\n"
 File.write(File.expand_path('../src/prism_ast.rs', __dir__), out)
 
