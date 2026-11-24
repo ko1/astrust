@@ -628,7 +628,7 @@ pub fn k_abort(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
 fn k_at_exit(c: &mut Ctx, _s: Value, _args: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return arg_err(c, "called without a block"); }
     // END { }: registered the first time only
-    if let Some(is) = c.block_copy(blk.ptr()).and_then(|b| match b.kind { BlockKind::Iseq(is) => c.iseq_ref(is), _ => None }) {
+    if let Some(is) = c.block_copy(blk).and_then(|b| match b.kind { BlockKind::Iseq(is) => c.iseq_ref(is), _ => None }) {
         match is.end_once.get() { 2 => return Ok(NIL), 1 => is.end_once.set(2), _ => {} }
     }
     let p = block_to_proc(c, blk)?;
