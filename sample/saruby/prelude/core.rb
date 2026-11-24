@@ -337,18 +337,18 @@ end
 class NilClass
   def to_a = []
   def to_h = {}
-  def to_s = ""
+  def to_s = "".freeze
   def inspect = "nil"
   def &(o) = false
   def |(o) = !!o
-  def ^(o) = !!o
+  alias ^ |
   def nil? = true
   def to_i = 0
   def to_f = 0.0
   def =~(o) = nil
 end
 class TrueClass
-  def to_s = "true"
+  def to_s = "true".freeze
   alias inspect to_s
   def &(o) = !!o
   def |(o) = true
@@ -356,11 +356,11 @@ class TrueClass
   def ===(o) = equal?(o)
 end
 class FalseClass
-  def to_s = "false"
+  def to_s = "false".freeze
   alias inspect to_s
   def &(o) = false
   def |(o) = !!o
-  def ^(o) = !!o
+  alias ^ |
   def ===(o) = equal?(o)
 end
 
@@ -544,7 +544,12 @@ class Set
   alias intersection &
   def ^(o)
     s = dup
-    __enum(o).each { |x| s.add(x) unless s.delete?(x) }
+    unless o.is_a?(Set)
+      t = __new_like
+      Enumerable.__set_init(t.__hash, __enum(o))
+      o = t
+    end
+    o.each { |x| s.add(x) unless s.delete?(x) }
     s
   end
   def subset?(o) = (__set(o); size <= o.size && all? { |x| o.include?(x) })
@@ -581,6 +586,8 @@ class Set
     e = __enum(e)
     __frozen!
     raise RuntimeError, "cannot replace set during iteration" if __iterating?
+    # a Set is copied with its compare_by_identity (set_i_initialize_copy)
+    return (Enumerable.__ivset(self, :__h, e.__hash.dup); self) if e.is_a?(Set)
     a = e.to_a
     __hash.clear
     a.each { |x| add(x) }
@@ -592,7 +599,7 @@ class Set
     Enumerable.__set_eq(__hash, o.__hash)
   end
   def hash = to_a.map(&:hash).sort.hash
-  def eql?(o) = o.is_a?(Set) && __hash.eql?(o.__hash)
+  alias eql? ==
   def clear = (__frozen!; __hash.clear; self)
   def reset = (__frozen!; __hash.rehash; self)
   def map!(&b)
@@ -628,7 +635,7 @@ class Set
       parent = {}
       find = ->(x) { x = parent[x] while parent[x] != x; x }
       items.each { |x| parent[x] = x }
-      items.each { |a| items.each { |c| parent[find.(a)] = find.(c) if b.call(a, c) && find.(a) != find.(c) } }
+      items.each_with_index { |a, i| items[(i + 1)..].each { |c| parent[find.(a)] = find.(c) if b.call(a, c) && b.call(c, a) && find.(a) != find.(c) } }
       groups = {}
       items.each { |x| (groups[find.(x)] ||= __new_like).add(x) }
       s = Set.new; groups.each_value { |g| s.add(g) }; s

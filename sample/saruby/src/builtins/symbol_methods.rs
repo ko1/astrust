@@ -75,6 +75,9 @@ fn sym_all(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
 fn sym_encoding_m(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { crate::builtins::misc::encoding_value(c, sym_encoding(s.as_sym())) }
 
 pub fn init(c: &mut Ctx, k: Value) {
+    // rb_undef_method(CLASS_OF(rb_cSymbol / rb_cNilClass / rb_cTrueClass / rb_cFalseClass), "new")
+    let vmr = c.vm();
+    for kk in [k, vmr.c_nil.get(), vmr.c_true.get(), vmr.c_false.get()] { let sk = singleton_class(c, kk); define_method_me(c, sk, crate::symbol::s::new, new_me(crate::symbol::s::new, sk, VISI_PUBLIC, MKind::Undef)); }
     let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, k, n, f, a);
     d(c, "to_s", sym_to_s, 0); d(c, "id2name", sym_to_s, 0); d(c, "name", sym_name, 0); d(c, "inspect", sym_inspect, 0);
     d(c, "to_proc", sym_to_proc, 0); d(c, "to_sym", sym_to_sym, 0); d(c, "length", sym_length, 0); d(c, "size", sym_length, 0);

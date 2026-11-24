@@ -87,7 +87,16 @@ fn st_s_new(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
         }, 0);
     }
     define_cfunc(c, sk, "keyword_init?", |c, s2, _a, _b| { let v = kw_init(c, s2); Ok(if v == NIL { NIL } else { Value::bool(v.truthy()) }) }, 0);
-    if cname != NIL { let n = intern(c.str_bytes(cname)); const_set(c, slf, n, k); }
+    if cname != NIL {
+        let n = intern(c.str_bytes(cname));
+        // new_struct: rb_warn and remove_const before the new one
+        if c.class(slf).consts.contains_key(&n) && c.vm().verbose.get() != NIL {
+            let at = source_location(c).map_or(String::new(), |(f, l)| format!("{}:{}: ", f, l));
+            let m = format!("{}warning: redefining constant {}::{}\n", at, class_path(c, slf), sym_str(n));
+            crate::builtins::kernel::warning_write(c, m.as_bytes())?;
+        }
+        const_set(c, slf, n, k);
+    }
     if !blk.is_null() { yield_with_self(c, blk, &[k], k, k)?; }
     Ok(k)
 }

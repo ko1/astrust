@@ -531,13 +531,20 @@ fn set_merge_one(c: &mut Ctx, h: Value, e: Value, blk: Blk) -> RV {
         }
         return Ok(NIL);
     }
-    if !respond_to(c, e, crate::symbol::intern(b"each_entry"), true) && !respond_to(c, e, s::each, true) { return arg_err(c, "value must be enumerable"); }
-    run_each(c, e, |c, h, args, _, o| {
+    let ee = crate::symbol::intern(b"each_entry");
+    let has_ee = respond_to(c, e, ee, true);
+    if !has_ee && !respond_to(c, e, s::each, true) { return arg_err(c, "value must be enumerable"); }
+    let f: CBlockFn = |c, h, args, _, o| {
         let v = pack(c, args);
         let k = if o.is_null() { v } else { yield1(c, o, v)? };
         crate::hash::hash_aset(c, h, k, TRUE)?;
         Ok(NIL)
-    }, h, &[], blk)?;
+    };
+    // enum_method_id: #each_entry when it responds (Enumerable's own is #each with the same packing)
+    if has_ee && !c.me_ref(lookup_method(c, class_of(e), ee)).is_some_and(|m| m.owner == c.vm().m_enumerable.get()) {
+        let b = Block::cfunc_for(c, f, h, blk);
+        funcall(c, e, ee, &[], &b)?;
+    } else { run_each(c, e, f, h, &[], blk)?; }
     Ok(NIL)
 }
 // Enumerable.__set_merge(h, enums): set_i_merge's loop over its arguments

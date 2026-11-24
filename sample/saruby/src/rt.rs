@@ -1568,6 +1568,11 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
         SP_HASH_HAS => {
             let h = c.ary(v)[0]; let k = c.ary(v)[1];
             if !is_hash(h) { return Ok(FALSE); }
+            // a #key? of its own (a Hash subclass from deconstruct_keys) is called, as CRuby's send
+            let kq = intern(b"key?");
+            if !c.me_ref(lookup_method(c, class_of(h), kq)).is_some_and(|m| m.owner == vm().c_hash.get() && matches!(m.kind, MKind::Cfunc(..))) {
+                return Ok(Value::bool(funcall(c, h, kq, &[k], std::ptr::null())?.truthy()));
+            }
             Ok(Value::bool(hash_get_opt(c, h, k)?.is_some()))
         }
         SP_HASH_EXCEPT => {

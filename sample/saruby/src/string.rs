@@ -355,7 +355,7 @@ pub fn uni_printable(cp: u32) -> bool {
 pub fn inspect_resenc() -> u8 { crate::builtins::encoding::default_internal().unwrap_or_else(crate::builtins::encoding::default_external) }
 pub fn sym_inspect(name: &[u8]) -> String {
     // rb_str_symname_p: a non-ASCII name is quoted unless the result encoding is the symbol's
-    if sym_is_simple(name) && (inspect_resenc() == ENC_UTF8 || is_ascii(name)) { format!(":{}", String::from_utf8_lossy(name)) } else { format!(":{}", inspect_bytes(name, ENC_UTF8)) }
+    if sym_is_simple(name) && (inspect_resenc() == ENC_UTF8 || is_ascii(name)) { format!(":{}", String::from_utf8_lossy(name)) } else { format!(":{}", inspect_bytes(name, if is_ascii(name) { crate::object::ENC_ASCII } else { ENC_UTF8 })) }
 }
 
 pub fn sym_is_simple(n: &[u8]) -> bool {
