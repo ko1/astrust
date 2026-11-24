@@ -16,7 +16,7 @@ pub fn clone_class(c: &mut Ctx, k: Value) -> RV {
     if is_module { obj_set_klass(n, obj_klass(k)); }
     // entries are rebuilt for the new owner; plain data and Values are copied (no allocation until written)
     let mt: Vec<(Sym, MethodEntry)> = c.class(k).mtbl.iter()
-        .filter_map(|(m, me)| c.me_ref(*me).map(|o| (*m, MethodEntry { name: o.name, owner: n, visi: o.visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref })))
+        .filter_map(|(m, me)| c.me_ref(*me).map(|o| (*m, MethodEntry { name: o.name, owner: n, visi: o.visi, kind: o.kind, orig_owner: if o.orig_owner == k { n } else { o.orig_owner }, cref: o.cref })))
         .collect();
     let cd = c.class(k);
     let (consts, const_order, cvars, includes, prepends, alloc) =

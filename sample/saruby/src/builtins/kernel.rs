@@ -165,14 +165,16 @@ pub fn nomethod_desc(c: &mut Ctx, v: Value) -> Result<String, Esc> {
     if v == TRUE { return Ok("true".into()); }
     if v == FALSE { return Ok("false".into()); }
     if v == c.vm().main_obj.get() { return Ok("main".into()); }
+    // name_err_mesg_receiver_name: a class is named by its #name (then #inspect)
     if is_class_or_module(v) {
-        let cd = c.class(v);
-        return Ok(format!("{} {}", if cd.is_module { "module" } else { "class" }, class_path(c, v)));
+        let kind = if c.class(v).is_module { "module" } else { "class" };
+        return Ok(format!("{} {}", kind, crate::builtins::object::mesg_receiver_name(c, v)));
     }
     // name_err_mesg_to_str: an object with a singleton class is shown by rb_any_to_s.  saruby makes one where
     // CRuby does not (instance_eval), so only one with methods or modules counts
     if v.is_heap() { let k = c.class(class_of(v)); if k.is_singleton && (!k.mtbl.is_empty() || !k.includes.is_empty() || !k.prepends.is_empty()) { return Ok(any_to_s_str(c, v)); } }
-    Ok(format!("an instance of {}", class_path(c, real_class_of(c, v))))
+    let k = real_class_of(c, v);
+    Ok(format!("an instance of {}", crate::builtins::object::mesg_receiver_name(c, k)))
 }
 
 pub fn class_name_for_err(c: &Ctx, v: Value) -> String {
@@ -598,7 +600,7 @@ fn k_throw(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
 
 fn k_block_given(c: &mut Ctx, _s: Value, _args: &[Value], _b: Blk) -> RV {
     // the cfunc frame's caller
-    Ok(Value::bool(c.caller_frame().is_some_and(|p| !p.blk.is_null())))
+    Ok(Value::bool(c.caller_frame().is_some_and(|p| crate::rt::frame_block_given(c, p))))
 }
 
 /// Kernel#lambda called as a method (send, a block-pass): a literal block becomes a lambda; a Proc must be one.
@@ -691,9 +693,12 @@ fn k_gets(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     crate::builtins::svar::set_last_line(c, v);
     Ok(v)
 }
-fn k_readline(c: &mut Ctx, s: Value, args: &[Value], b: Blk) -> RV {
-    let v = k_gets(c, s, args, b)?;
-    if v == NIL { return err(c, c.vm().c_eof_error.get(), "end of file reached"); }
+/// rb_f_readline: ARGF.readline (or $stdin's, without file arguments)
+fn k_readline(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
+    out_flush();
+    let src = if argf_plain(c) { *c.vm().globals.borrow().get(&intern(b"$stdin")).unwrap_or(&c.vm().stdin.get()) } else { argf(c)? };
+    let v = funcall_kw(c, src, intern(b"readline"), args, std::ptr::null(), kw_given(c))?;
+    crate::builtins::svar::set_last_line(c, v);
     Ok(v)
 }
 fn k_readlines(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
@@ -868,8 +873,8 @@ fn k_string(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     let v = args[0];
     if is_string(v) { return Ok(v); }
     if crate::rt::conv_target(v) && respond_to(c, v, s::to_str, true) { return funcall(c, v, s::to_str, &[], std::ptr::null()); }
-    if respond_to(c, v, s::to_s, true) {
-        let r = funcall(c, v, s::to_s, &[], std::ptr::null())?;
+    // convert_type_with_id: rb_check_funcall (a respond_to? / method_missing of its own count)
+    if let Some(r) = crate::string::check_funcall(c, v, s::to_s)? {
         if !is_string(r) { return type_err(c, format!("can't convert {} to String ({}#to_s gives {})", class_name_for_err(c, v), class_name_for_err(c, v), class_name_for_err(c, r))); }
         return Ok(r);
     }
@@ -1416,7 +1421,7 @@ pub fn run_source(c: &mut Ctx, src: &[u8], file: &'static str, line: i32) -> RV 
     crate::compile::flush_parse_warnings(c)?;
     let is = match is {
         Ok(is) => is,
-        Err(msg) => { return err(c, c.vm().c_syntax_error.get(), msg); }
+        Err(msg) => { return syntax_err(c, msg, file); }
     };
     crate::run_top_iseq(c, is, c.vm().main_obj.get())
 }
@@ -1452,9 +1457,10 @@ fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     };
     let wrap = args.get(1).copied().unwrap_or(FALSE);
     if wrap.truthy() {
-        // load(file, true): run under an anonymous module, self = a fresh main extended with it
+        // load(file, true): run under an anonymous module, self = a clone of main extended with it
         let m = if is_class_or_module(wrap) { wrap } else { new_module(c) };
-        let slf = new_object(c, c.vm().c_object.get());
+        let main = c.vm().main_obj.get();
+        let slf = crate::builtins::object::obj_dup(c, main, true, None)?;
         let sk = singleton_class(c, slf);
         include_module_c(c, sk, m);
         let src = match std::fs::read(&p) {
@@ -1464,7 +1470,7 @@ fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
         let file: &'static str = Box::leak(p.into_boxed_str());
         let is = crate::compile::compile_source(&src, file, 1, IseqKind::Top, vec![]);
         crate::compile::flush_parse_warnings(c)?;
-        let is = match is { Ok(is) => is, Err(msg) => return err(c, c.vm().c_syntax_error.get(), msg) };
+        let is = match is { Ok(is) => is, Err(msg) => return syntax_err(c, msg, file) };
         let cref = new_cref(m, c.vm().top_cref.get());
         crate::run_top_iseq_cref(c, is, slf, cref)?;
         return Ok(TRUE);
@@ -1493,7 +1499,9 @@ fn autoload_cbase(c: &Ctx) -> Value {
     let Some(f) = c.caller_frame() else { return c.vm().c_object.get() };
     // the class a `def` there would define on (rt::srb_def): instance_eval's singleton included
     let mut k = c.cref_ref(f.cref()).map_or(c.vm().c_object.get(), |r| r.klass);
-    if f.defined_class() != NIL && f.kind != FK_CLASS { k = f.defined_class(); }
+    // a method defined in Class.new / class_exec: the cref's def target is its class
+    if let Some(t) = c.cref_ref(f.cref()).map(|r| r.def_target).filter(|&t| is_class_or_module(t)) { k = t; }
+    if f.defined_class().is_heap() && f.kind != FK_CLASS { k = f.defined_class(); }
     while c.class(k).is_singleton { k = c.class(k).superclass; }
     k
 }
@@ -1579,7 +1587,7 @@ fn m_s_nesting(c: &mut Ctx, _s: Value, _args: &[Value], _b: Blk) -> RV {
     let mut cr = c.caller_frame().map_or(std::ptr::null(), |f| f.cref());
     while let Some(r) = c.cref_ref(cr) {
         if r.prev.is_null() { break; }
-        let (k, prev) = (r.klass, r.prev);
+        let (k, prev) = (cref_klass(c, r), r.prev);
         c.ary_push(out, k);
         cr = prev;
     }
@@ -1621,12 +1629,12 @@ fn k_eval(c: &mut Ctx, slf: Value, args: &[Value], _b: Blk) -> RV {
     if bind != NIL && !crate::builtins::binding::is_binding(c, bind) {
         return type_err(c, format!("wrong argument type {} (expected binding)", class_name_for_err(c, bind)));
     }
-    let file: &'static str = if args.len() > 2 && args[2] != NIL { let f = expect_str(c, args[2])?; Box::leak(String::from_utf8_lossy(c.str_bytes(f)).into_owned().into_boxed_str()) } else { crate::builtins::binding::eval_file(c) };
-    let line = if args.len() > 3 { crate::builtins::numeric_methods::num_to_long(c, args[3])? as i32 } else { 1 };
+    let (file, line) = crate::builtins::binding::eval_file_line(c, args.get(2).copied(), args.get(3).copied())?;
     let (srcb, enc) = (c.str_bytes(src).to_vec(), c.str_enc(src));
     if bind != NIL { return crate::builtins::binding::eval_in_binding(c, bind, &srcb, enc, file, line); }
     let b = crate::builtins::binding::binding_of_caller(c)?;
-    let _ = slf;
+    // eval_string_with_cref(self, ...): the receiver (Kernel.eval) is self, the locals are the caller's
+    crate::builtins::binding::set_receiver(c, b, slf);
     crate::builtins::binding::eval_in_binding(c, b, &srcb, enc, file, line)
 }
 

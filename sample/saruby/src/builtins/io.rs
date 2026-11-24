@@ -1950,6 +1950,8 @@ fn k_open(c: &mut Ctx, _s: Value, a: &[Value], blk: Blk) -> RV {
         let r = funcall_kw(c, a[0], intern(b"to_open"), &a[1..], std::ptr::null(), kw_given(c))?;
         return if blk.is_null() { Ok(r) } else { yield1(c, blk, r) };
     }
+    // rb_f_open: FilePathValue first (an Integer is not an fd here)
+    if !is_string(a[0]) { path_arg(c, a[0])?; }
     open_with_block(c, c.vm().c_file.get(), a, blk)
 }
 fn io_s_sysopen(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {

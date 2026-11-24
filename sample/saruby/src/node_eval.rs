@@ -1158,7 +1158,9 @@ pub fn EVAL_node_yield_x<D_args: DispList>(c: &mut Ctx, n: NodePtr, fp: Fp, args
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_block_given(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
-    Ok(Value::bool(unsafe { !(*c.frame).blk.is_null() }))
+    // a block or lambda frame may run a define_method body (rt::frame_block_given)
+    let (has, kind) = unsafe { (!(*c.frame).blk.is_null(), (*c.frame).kind) };
+    Ok(Value::bool(if kind != FK_LAMBDA && kind != FK_BLOCK { has } else { srb_block_given_slow(c) }))
 }
 
 

@@ -91,6 +91,8 @@ fn boot_classes(c: &mut Ctx) {
         name_class(c, k, ob, intern_str(n));
         const_set(c, ob, intern_str(n), k);
     }
+    // BasicObject::BasicObject (Init_class_hierarchy): a BasicObject subclass does not see Object's constants
+    const_set(c, bo, intern_str("BasicObject"), bo);
     boot_subclass(c, ob, md); boot_subclass(c, md, cl); boot_subclass(c, bo, ob);
     vmr.m_kernel.set(define_module(c, "Kernel"));
     include_module(c, ob, vmr.m_kernel.get());

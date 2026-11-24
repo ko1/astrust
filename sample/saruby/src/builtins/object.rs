@@ -53,32 +53,34 @@ fn k_public_send(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let mid = to_sym_arg(c, a[0])?;
     let kw = kw_arg(c, a).is_some();
     if c.refinements_on() {
-        if let Some(r) = funcall_refined(c, std::ptr::null(), slf, mid, &a[1..], b, if kw { CF_KW } else { 0 }) { return r; }
+        if let Some(r) = funcall_refined(c, std::ptr::null(), slf, mid, &a[1..], b, CF_PUBLIC_SEND | if kw { CF_KW } else { 0 }) { return r; }
     }
-    funcall_flags(c, slf, mid, &a[1..], b, if kw { CF_KW } else { 0 })
+    funcall_flags(c, slf, mid, &a[1..], b, CF_PUBLIC_SEND | if kw { CF_KW } else { 0 })
 }
 fn bo_instance_eval(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if b.is_null() {
-        if a.is_empty() { return argc_err(c, 0, 1, 3); }
+        if a.is_empty() || a.len() > 3 { return argc_err(c, a.len(), 1, 3); }
         let src = expect_str(c, a[0])?;
+        let (file, line) = crate::builtins::binding::eval_file_line(c, a.get(1).copied(), a.get(2).copied())?;
         let bytes = c.str_bytes(src).to_vec();
-        let file: &'static str = if a.len() > 1 { Box::leak(to_rstring(c, a[1])?.into_boxed_str()) } else { crate::builtins::binding::eval_file(c) };
         let enc = c.str_enc(src);
-        return crate::builtins::binding::eval_with_self(c, slf, &bytes, enc, file, if a.len() > 2 { a[2].as_fix() as i32 } else { 1 });
+        return crate::builtins::binding::eval_with_self(c, slf, &bytes, enc, file, line);
     }
-    let dc = if slf.is_heap() && !slf.is_flonum() { singleton_class(c, slf) } else { NIL };
+    if !a.is_empty() { return argc_err(c, a.len(), 0, 0); }
+    let dc = crate::rt::eval_definee(c, slf);
     yield_with_self(c, b, &[slf], slf, dc)
 }
 fn bo_instance_exec(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if b.is_null() { return err(c, c.vm().c_local_jump_error.get(), "no block given (yield)"); }
-    let dc = if slf.is_heap() { singleton_class(c, slf) } else { NIL };
+    let dc = crate::rt::eval_definee(c, slf);
     let kw = kw_given(c);
     yield_with_self_kw(c, b, a, slf, dc, kw)
 }
 fn bo_method_missing(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() { return arg_err(c, "no method name given"); }
     if !a[0].is_sym() { return arg_err(c, format!("method name must be a Symbol but {} is given", class_name_for_err(c, a[0]))); }
-    no_method_error(c, slf, a[0].as_sym(), 0)
+    if let Some(v) = crate::vm::mm_reason_take() { return crate::vm::visibility_raise(c, v, a[0].as_sym(), slf); }
+    no_method_error_args(c, slf, a[0].as_sym(), 0, &a[1..])
 }
 fn bo_singleton_method_added(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(NIL) }
 
@@ -86,7 +88,7 @@ fn bo_singleton_method_added(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> 
 
 fn k_class(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(real_class_of(c, slf)) }
 fn k_singleton_class(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
-    if slf.is_fixnum() || slf.is_sym() || slf.is_flonum() || is_bignum(slf) || is_heap_float(slf) { return type_err(c, "can't define singleton"); }
+    if slf.is_fixnum() || slf.is_sym() || slf.is_flonum() || is_bignum(slf) || is_heap_float(slf) || crate::rt::is_fstring(c, slf) { return type_err(c, "can't define singleton"); }
     if slf.is_heap() && obj_flags(slf) & FL_CHILLED_ANY != 0 { crate::vm::unchill(c, slf)?; }
     Ok(singleton_class_exposed(c, slf))
 }
@@ -124,7 +126,17 @@ fn k_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 pub fn k_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if slf == c.vm().main_obj.get() { return Ok(c.str_new(b"main")); }
     let ivs = ivar_list(c, slf);
-    let ivs: Vec<(Sym, Value)> = ivs.into_iter().filter(|(n, _)| sym_bytes(*n).first() == Some(&b'@')).collect();
+    let mut ivs: Vec<(Sym, Value)> = ivs.into_iter().filter(|(n, _)| sym_bytes(*n).first() == Some(&b'@')).collect();
+    // 4.0: a (private) #instance_variables_to_inspect picks the ivars, in its order
+    let vti = intern(b"instance_variables_to_inspect");
+    if !ivs.is_empty() && !lookup_method(c, class_of(slf), vti).is_null() {
+        let r = funcall(c, slf, vti, &[], std::ptr::null())?;
+        if r != NIL {
+            if !crate::array::is_array(r) { return type_err(c, format!("Expected #instance_variables_to_inspect to return an Array or nil, but it returned {}", class_name_for_err(c, r))); }
+            let names = c.ary(r).to_vec();
+            ivs = names.iter().filter_map(|&n| if n.is_sym() { ivs.iter().find(|x| x.0 == n.as_sym()).copied() } else { None }).collect();
+        }
+    }
     let k = real_class_of(c, slf);
     if ivs.is_empty() { return Ok(c.str_new(format!("#<{}:{:#018x}>", class_path(c, k), slf.raw()).as_bytes())); }
     if !rec_enter(c, slf, s::inspect)? { return Ok(c.str_new(format!("#<{}:{:#018x} ...>", class_path(c, k), slf.raw()).as_bytes())); }
@@ -168,28 +180,28 @@ fn k_respond_to(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
 fn k_respond_to_missing(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(FALSE) }
 fn k_ivar_get(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = to_sym_arg(c, a[0])?;
-    check_ivar_name(c, n)?;
+    check_ivar_name(c, n, slf, a[0])?;
     let v = ivar_get(c, slf, n);
     if crate::builtins::ractor::multi() { crate::builtins::ractor::class_ivar_get_check(c, slf, n, v)?; }
     Ok(v)
 }
-fn check_ivar_name(c: &mut Ctx, n: Sym) -> Result<(), Esc> {
+fn check_ivar_name(c: &mut Ctx, n: Sym, slf: Value, orig: Value) -> Result<(), Esc> {
     let b = sym_bytes(n);
     if b.len() < 2 || b[0] != b'@' || b[1] == b'@' || b[1].is_ascii_digit() {
-        let e = make_name_error(c, c.vm().c_name_error.get(), &format!("'{}' is not allowed as an instance variable name", sym_str(n)), Value::sym(n), NIL)?;
+        let e = make_name_error(c, c.vm().c_name_error.get(), &format!("'{}' is not allowed as an instance variable name", sym_str(n)), orig, slf)?;
         return Err(raise_exc(c, e));
     }
     Ok(())
 }
 fn k_ivar_set(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = to_sym_arg(c, a[0])?;
-    check_ivar_name(c, n)?;
+    check_ivar_name(c, n, slf, a[0])?;
     if crate::builtins::ractor::multi() { crate::builtins::ractor::class_ivar_set_check(c, slf, n)?; }
     ivar_set(c, slf, n, a[1])
 }
 fn k_ivar_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = to_sym_arg(c, a[0])?;
-    check_ivar_name(c, n)?;
+    check_ivar_name(c, n, slf, a[0])?;
     Ok(Value::bool(ivar_defined(c, slf, n)))
 }
 fn k_ivars(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
@@ -216,7 +228,7 @@ fn k_remove_ivar(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
 }
 fn k_tap(c: &mut Ctx, slf: Value, _a: &[Value], b: Blk) -> RV { yield1(c, b, slf)?; Ok(slf) }
 fn k_then(c: &mut Ctx, slf: Value, _a: &[Value], b: Blk) -> RV {
-    if b.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"then"), &[], NIL); }
+    if b.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"then"), &[], Value::fix(1)); }
     yield1(c, b, slf)
 }
 fn k_itself(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(slf) }
@@ -301,7 +313,7 @@ fn k_clone(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let mut fz = None;
     if let Some(h) = kw_arg(c, a) {
         if let Some(v) = hash_get_opt(c, h, sym_value("freeze"))? {
-            if v != NIL && v != TRUE && v != FALSE { let i = inspect_str(c, v)?; return arg_err(c, format!("unexpected value for freeze: {}", i)); }
+            if v != NIL && v != TRUE && v != FALSE { let n = crate::builtins::kernel::class_name_for_err(c, v); return arg_err(c, format!("unexpected value for freeze: {}", n)); }
             if v != NIL { fz = Some(v == TRUE); }
         }
     }
@@ -474,17 +486,16 @@ fn k_enum_for(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
 // ---- Module --------------------------------------------------------------------------------
 
 pub fn call_method_added(c: &mut Ctx, klass: Value, mid: Sym) -> Result<(), Esc> {
-    if c.class(klass).is_singleton {
-        let att = c.class(klass).attached;
-        let me = lookup_method(c, class_of(att), s::singleton_method_added);
-        if !me.is_null() && me_owner(c, me) != c.vm().c_basic_object.get() {
-            funcall(c, att, s::singleton_method_added, &[Value::sym(mid)], std::ptr::null())?;
-        }
-        return Ok(());
-    }
-    let me = lookup_method(c, class_of(klass), s::method_added);
-    if !me.is_null() && me_owner(c, me) != c.vm().c_module.get() {
-        funcall(c, klass, s::method_added, &[Value::sym(mid)], std::ptr::null())?;
+    call_method_hook(c, klass, mid, s::method_added, s::singleton_method_added)
+}
+/// CALL_METHOD_HOOK: klass.hook(mid), or the attached object's singleton_hook(mid) for a singleton class.
+/// The default (Module's / BasicObject's empty one) is skipped; an undefined hook goes to method_missing.
+pub fn call_method_hook(c: &mut Ctx, klass: Value, mid: Sym, hook: Sym, singleton_hook: Sym) -> Result<(), Esc> {
+    let (recv, h, dflt) = if c.class(klass).is_singleton { (c.class(klass).attached, singleton_hook, c.vm().c_basic_object.get()) } else { (klass, hook, c.vm().c_module.get()) };
+    let me = lookup_method(c, class_of(recv), h);
+    // the default runs only when traced (its c-call event)
+    if (me.is_null() && crate::rt::booted()) || (!me.is_null() && (me_owner(c, me) != dflt || crate::vm::trace_mask() & crate::vm::EV_C_CALL != 0)) {
+        funcall(c, recv, h, &[Value::sym(mid)], std::ptr::null())?;
     }
     Ok(())
 }
@@ -529,6 +540,8 @@ pub fn alias_method(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) -> Re
     }
     let Some(mut o) = me_copy(c, me) else { return Ok(()) };
     if is_special_private(newname) { o.visi = VISI_PRIVATE; }
+    // the alias belongs to klass (Method#owner); super still searches from the original's class (orig_owner)
+    o.owner = klass;
     let oname = o.name;
     let n = Box::into_raw(Box::new(o)) as *const MethodEntry;
     if newname != oname { c.vm().alias_names.borrow_mut().insert(n as usize, newname); }
@@ -553,6 +566,7 @@ pub fn undef_method(c: &mut Ctx, klass: Value, mid: Sym) -> Result<(), Esc> {
     }
     define_method_me(c, klass, mid, new_me(mid, klass, VISI_PUBLIC, MKind::Undef));
     crate::rt::note_redefinition(c, klass, mid);
+    if crate::rt::booted() { call_method_hook(c, klass, mid, intern(b"method_undefined"), intern(b"singleton_method_undefined"))?; }
     Ok(())
 }
 
@@ -577,12 +591,7 @@ fn m_remove_method(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
         }
         bump_method_serial(); c.vm().mcache.borrow_mut().clear();
         crate::rt::note_redefinition(c, slf, m);
-        if c.class(slf).is_singleton {
-            let att = c.class(slf).attached;
-            if respond_to(c, att, intern(b"singleton_method_removed"), true) { funcall(c, att, intern(b"singleton_method_removed"), &[Value::sym(m)], std::ptr::null())?; }
-        } else if respond_to(c, slf, intern(b"method_removed"), true) {
-            funcall(c, slf, intern(b"method_removed"), &[Value::sym(m)], std::ptr::null())?;
-        }
+        call_method_hook(c, slf, m, intern(b"method_removed"), intern(b"singleton_method_removed"))?;
     }
     Ok(slf)
 }
@@ -679,7 +688,7 @@ fn set_visibility(c: &mut Ctx, slf: Value, a: &[Value], visi: u8) -> RV {
             keep_alias_name(c, me, n);
             define_method_me(c, slf, m, n);
             let sk = singleton_class(c, slf);
-            let n2 = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: sk, visi: VISI_PUBLIC, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
+            let n2 = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: sk, visi: VISI_PUBLIC, kind: o.kind, orig_owner: sk, cref: o.cref }));
             keep_alias_name(c, me, n2);
             define_method_me(c, sk, m, n2);
             continue;
@@ -749,7 +758,7 @@ pub fn m_define_method(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
                 return type_err(c, format!("bind argument must be a subclass of {}", class_path(c, o.owner)));
             }
             // like an alias: __method__ stays the original name, __callee__ is the new one
-            let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
+            let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi, kind: o.kind, orig_owner: slf, cref: o.cref }));
             if mid != o.name { c.vm().alias_names.borrow_mut().insert(n as usize, mid); }
             n as *const MethodEntry
         } else {
@@ -768,7 +777,7 @@ pub fn m_define_method(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if modfunc {
         let Some(o) = me_copy(c, me) else { return Ok(Value::sym(mid)) };
         let sk = singleton_class(c, slf);
-        let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: sk, visi: VISI_PUBLIC, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
+        let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: sk, visi: VISI_PUBLIC, kind: o.kind, orig_owner: sk, cref: o.cref }));
         keep_alias_name(c, me, n);
         crate::rt::note_redefinition(c, sk, mid);
         define_method_me(c, sk, mid, n);
@@ -834,17 +843,20 @@ fn m_set_temporary_name(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
         }
         Some(String::from_utf8_lossy(&b).into_owned())
     };
-    set_temp_name(c, slf, name);
+    set_temp_name(c, slf, name, &mut vec![]);
     Ok(slf)
 }
-fn set_temp_name(c: &mut Ctx, k: Value, name: Option<String>) {
+/// `seen`: modules renamed so far (a nested module may refer back: m::N::Back = m).
+fn set_temp_name(c: &mut Ctx, k: Value, name: Option<String>, seen: &mut Vec<Value>) {
+    if seen.contains(&k) { return; }
+    seen.push(k);
     let v = name.as_ref().map(|n| c.str_new_frozen(n.as_bytes()));
     let cd = c.class_mut(k);
     cd.name = v; cd.temp_name = v.is_some();
     let consts: Vec<(Sym, Value)> = cd.consts.iter().map(|(a, b)| (*a, *b)).collect();
     for (cn, cv) in consts {
         if is_class_or_module(cv) && c.class(cv).temp_name && c.class(cv).lexical_parent == k && c.class(cv).base_name == cn {
-            set_temp_name(c, cv, name.as_ref().map(|n| format!("{}::{}", n, sym_str(cn))));
+            set_temp_name(c, cv, name.as_ref().map(|n| format!("{}::{}", n, sym_str(cn))), seen);
         }
     }
 }
@@ -934,9 +946,8 @@ fn m_class_eval(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if b.is_null() {
         if a.is_empty() || a.len() > 3 { return argc_err(c, a.len(), 1, 3); }
         let src = expect_str(c, a[0])?;
+        let (file, line) = crate::builtins::binding::eval_file_line(c, a.get(1).copied(), a.get(2).copied())?;
         let bytes = c.str_bytes(src).to_vec();
-        let file: &'static str = if a.len() > 1 { let f = expect_str(c, a[1])?; Box::leak(String::from_utf8_lossy(c.str_bytes(f)).into_owned().into_boxed_str()) } else { crate::builtins::binding::eval_file(c) };
-        let line = if a.len() > 2 { crate::builtins::numeric_methods::num_to_long(c, a[2])? as i32 } else { 1 };
         let enc = c.str_enc(src);
         return crate::builtins::binding::eval_in_class(c, slf, &bytes, enc, file, line);
     }
@@ -1179,8 +1190,16 @@ fn m_const_missing(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let e = make_name_error(c, c.vm().c_name_error.get(), &msg, a[0], slf)?;
     Err(raise_exc(c, e))
 }
+/// rb_is_class_name: NameError naming the argument as given (a String stays a String).
+pub fn check_cvar_name(c: &mut Ctx, n: Sym, slf: Value, orig: Value) -> Result<(), Esc> {
+    let nb = sym_bytes(n);
+    if nb.len() > 2 && nb.starts_with(b"@@") && !nb[2].is_ascii_digit() && nb[2..].iter().all(|x| x.is_ascii_alphanumeric() || *x == b'_' || *x >= 0x80) { return Ok(()); }
+    let e = make_name_error(c, c.vm().c_name_error.get(), &format!("'{}' is not allowed as a class variable name", sym_str(n)), orig, slf)?;
+    Err(raise_exc(c, e))
+}
 fn m_cvar_get(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = to_sym_arg(c, a[0])?;
+    check_cvar_name(c, n, slf, a[0])?;
     if crate::builtins::ractor::multi() { crate::builtins::ractor::cvar_check(c, slf, n)?; }
     match crate::rt::cvar_lookup_checked(c, slf, n)? {
         Some((_, v)) => Ok(v),
@@ -1194,7 +1213,7 @@ fn m_cvar_set(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = to_sym_arg(c, a[0])?;
     let nb = sym_bytes(n);
     if !(nb.len() > 2 && nb.starts_with(b"@@") && !nb[2].is_ascii_digit() && nb[2..].iter().all(|x| x.is_ascii_alphanumeric() || *x == b'_' || *x >= 0x80)) {
-        let e = make_name_error(c, c.vm().c_name_error.get(), &format!("'{}' is not allowed as a class variable name", sym_str(n)), Value::sym(n), slf)?;
+        let e = make_name_error(c, c.vm().c_name_error.get(), &format!("'{}' is not allowed as a class variable name", sym_str(n)), a[0], slf)?;
         return Err(raise_exc(c, e));
     }
     check_frozen(c, slf)?;
@@ -1204,6 +1223,7 @@ fn m_cvar_set(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
 }
 fn m_cvar_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = to_sym_arg(c, a[0])?;
+    check_cvar_name(c, n, slf, a[0])?;
     Ok(Value::bool(crate::rt::cvar_lookup(c, slf, n).is_some()))
 }
 fn m_cvars(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
@@ -1430,7 +1450,7 @@ pub fn init(c: &mut Ctx) -> InitIds {
     d(c, "freeze", k_freeze, 0);
     d(c, "nil?", k_nil_p, 0);
     d(c, "===", k_eqq, 1);
-    d(c, "=~", k_match, 1);
+    // Kernel#=~ is gone (4.0); NilClass#=~ is in core.rb
     d(c, "!~", k_nmatch, 1);
     d(c, "<=>", k_cmp, 1);
     d(c, "eql?", k_eql, 1);

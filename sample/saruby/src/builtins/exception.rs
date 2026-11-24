@@ -280,7 +280,9 @@ pub fn exc_detailed_message(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV
 }
 fn exc_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let cls = class_path(c, real_class_of(c, slf));
-    let m = exc_message_str(c, slf)?;
+    // rb_obj_as_string(exc): #to_s, not #message
+    let sv = to_s_value(c, slf)?;
+    let m = String::from_utf8_lossy(c.str_bytes(sv)).into_owned();
     if m.is_empty() { return Ok(c.str_new(cls.as_bytes())); }
     if m.contains('\n') { return Ok(c.str_new(format!("#<{}:{}>", cls, inspect_bytes(m.as_bytes(), ENC_UTF8)).as_bytes())); }
     Ok(c.str_new(format!("#<{}: {}>", cls, m).as_bytes()))
@@ -360,7 +362,7 @@ pub fn locations_from_lines(c: &mut Ctx, lines: Vec<String>) -> Value {
 /// Locations with their prism node ids (error_highlight).
 pub fn locations_from_locs(c: &mut Ctx, locs: Vec<BtLine>) -> Value {
     let out = c.ary_new_capa(locs.len());
-    for l in locs { let v = location_new(c, l.file, l.line as i64, &l.label, nid_value(l.nid)); c.ary_push(out, v); }
+    for l in locs { let v = location_new(c, l.file, l.line as i32 as i64, &l.label, nid_value(l.nid)); c.ary_push(out, v); }
     out
 }
 fn loc_path(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, slf, intern(b"path"))) }
@@ -683,20 +685,34 @@ fn sysexit_success(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let v
 fn uncaught_tag(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, slf, intern(b"tag"))) }
 fn uncaught_value(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, slf, intern(b"value"))) }
 fn syscallerr_init(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    // syserr_initialize
     let k = real_class_of(c, slf);
-    let mut no = NIL;
-    for &kk in ancestors(c, k).iter() { if let Some(v) = const_get_at(c, kk, intern(b"Errno")) { if v.is_fixnum() { no = v; break; } } }
-    let mut detail = a.first().copied().unwrap_or(NIL);
+    let (mut mesg, mut error, func);
     if k == c.vm().c_system_call_error.get() {
-        if a.len() == 1 && detail.is_fixnum() { no = detail; detail = NIL; } else if a.len() >= 2 && a[1].is_fixnum() { no = a[1]; }
-        // a known errno turns the instance into Errno::X, as CRuby
-        if no.is_fixnum() && errno_message(no.as_fix()).is_some() { let ek = errno_class(c, no.as_fix()); obj_set_klass(slf, ek); }
+        check_argc(c, a, 1, 3)?;
+        (mesg, error, func) = (a[0], a.get(1).copied().unwrap_or(NIL), a.get(2).copied().unwrap_or(NIL));
+        if a.len() == 1 && mesg.is_fixnum() { error = mesg; mesg = NIL; }
+        if error != NIL {
+            // a known errno turns the instance into Errno::X
+            let n = crate::builtins::numeric_methods::num_to_long(c, error)?;
+            if errno_message(n).is_some() { let ek = errno_class(c, n); obj_set_klass(slf, ek); }
+        }
+    } else {
+        check_argc(c, a, 0, 2)?;
+        (mesg, func) = (a.first().copied().unwrap_or(NIL), a.get(1).copied().unwrap_or(NIL));
+        error = NIL;
+        for &kk in ancestors(c, k).iter() { if let Some(v) = const_get_at(c, kk, intern(b"Errno")) { error = v; break; } }
     }
-    let mut msg = errno_text(no);
-    if detail != NIL { let ds = to_rstring(c, detail)?; msg = format!("{} - {}", msg, ds); }
+    let mut msg = if error == NIL { "unknown error".to_string() } else { let n = crate::builtins::numeric_methods::num_to_long(c, error)?; errno_text(Value::fix(n)) };
+    if mesg != NIL {
+        let s = expect_str(c, mesg)?;
+        let ds = String::from_utf8_lossy(c.str_bytes(s)).into_owned();
+        if func != NIL { let f = to_rstring(c, func)?; msg = format!("{} @ {}", msg, f); }
+        msg = format!("{} - {}", msg, ds);
+    }
     let m = c.str_new(msg.as_bytes());
     ivar_set_raw(c, slf, s::mesg, m);
-    ivar_set_raw(c, slf, s::errno, no);
+    ivar_set_raw(c, slf, s::errno, error);
     Ok(NIL)
 }
 fn syscallerr_errno(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, slf, s::errno)) }
