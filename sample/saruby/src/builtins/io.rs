@@ -1369,7 +1369,8 @@ fn io_advise(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if sys::fadvise(fd, off, len, adv) < 0 { return Err(raise_errno(c, sys::errno(), "")); }
     Ok(NIL)
 }
-fn do_seek(c: &mut Ctx, slf: Value, off: i64, whence: i32) -> Result<i64, Esc> {
+fn do_seek(c: &mut Ctx, slf: Value, off: i64, whence: i32) -> Result<i64, Esc> { do_seek_at(c, slf, off, whence, "rb_io_seek - ") }
+fn do_seek_at(c: &mut Ctx, slf: Value, off: i64, whence: i32, func: &str) -> Result<i64, Esc> {
     let io = get_io(c, slf)?;
     if io.data { io.rpos = match whence { 0 => off, 1 => io.rpos as i64 + off, _ => io.rbuf.len() as i64 + off }.clamp(0, io.rbuf.len() as i64) as usize; return Ok(io.rpos as i64); }
     io_flush_one(io);
@@ -1377,7 +1378,7 @@ fn do_seek(c: &mut Ctx, slf: Value, off: i64, whence: i32) -> Result<i64, Esc> {
     if io.rpos < io.rbuf.len() { cv::clear_codeconv(io); }
     io.rbuf.clear(); io.rpos = 0; io.eof = false;
     let r = sys::lseek(io.fd, off, whence);
-    if r < 0 { let (e, p) = (sys::errno(), io.path.clone()); return Err(raise_errno_at(c, e, "", &p)); }
+    if r < 0 { let (e, p) = (sys::errno(), io.path.clone()); return Err(raise_errno_at(c, e, func, &p)); }
     Ok(r)
 }
 fn whence_arg(c: &mut Ctx, v: Option<&Value>) -> Result<i32, Esc> {
@@ -1398,7 +1399,7 @@ fn io_sysseek(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if r < 0 { let (e, p) = (sys::errno(), spath_of(c, slf)); return Err(raise_errno_at(c, e, "rb_io_sysseek - ", &p)); }
     Ok(Value::fix(r))
 }
-fn io_set_pos(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let off = num_to_long(c, a[0])?; do_seek(c, slf, off, 0)?; Ok(a[0]) }
+fn io_set_pos(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let off = num_to_long(c, a[0])?; do_seek_at(c, slf, off, 0, "rb_io_set_pos - ")?; Ok(a[0]) }
 fn io_pos(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let io = get_io(c, slf)?;
     if io.data { return Ok(Value::fix(io.rpos as i64)); }
@@ -2145,7 +2146,7 @@ fn io_s_read_impl(c: &mut Ctx, slf: Value, a: &[Value], bin: bool) -> RV {
     if off != NIL && !bin { let o = num_to_long(c, off)?; if o < 0 { return arg_err(c, format!("negative offset {} given", o)); } }
     with_file(c, slf, pos[0], om, |c, io| {
         if pos.len() == 4 { return argc_err(c, 3, 0, 2); }
-        if off != NIL { let o = num_to_long(c, off)?; if o < 0 { if bin { let p = rio(c, io).map(|i| lossy(&i.path)).unwrap_or_default(); return Err(raise_errno(c, 22, &p)); } return arg_err(c, format!("negative offset {} given", o)); } do_seek(c, io, o, 0)?; }
+        if off != NIL { let o = num_to_long(c, off)?; if o < 0 { if bin { let p = spath_of(c, io); return Err(raise_errno_at(c, 22, "rb_io_seek - ", &p)); } return arg_err(c, format!("negative offset {} given", o)); } do_seek(c, io, o, 0)?; }
         let r = io_read(c, io, if len == NIL { &[] } else { std::slice::from_ref(&len) }, Blk::NONE)?;
         Ok(r)
     })
