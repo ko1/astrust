@@ -1720,8 +1720,6 @@ fn io_wait_writable(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_open(c, slf, false)?;
     Ok(if r.is_some() { slf } else { NIL })
 }
-fn io_ready_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = readable_nowait(c, slf)?; Ok(Value::bool(io.rpos < io.rbuf.len() || wait_fd(io.fd, sys::POLLIN, 0))) }
-fn io_nread(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = readable_nowait(c, slf)?; Ok(Value::fix((io.rbuf.len() - io.rpos) as i64)) }
 
 // ---- opening --------------------------------------------------------------------------------
 
@@ -2437,7 +2435,7 @@ pub fn init(c: &mut Ctx) {
     d(c, "set_encoding_by_bom", io_set_encoding_by_bom, 0);
     d(c, "autoclose?", io_autoclose_p, 0); d(c, "autoclose=", io_set_autoclose, 1); d(c, "close_on_exec?", io_cloexec_p, 0); d(c, "close_on_exec=", io_set_cloexec, 1);
     d(c, "fcntl", io_fcntl, -1); d(c, "ioctl", io_ioctl, -1); d(c, "reopen", io_reopen, -1); d(c, "wait_readable", io_wait_readable, -1); d(c, "wait_writable", io_wait_writable, -1);
-    d(c, "ready?", io_ready_p, 0); d(c, "nread", io_nread, 0); d(c, "timeout", io_get_timeout, 0); d(c, "timeout=", io_set_timeout, 1);
+    d(c, "timeout", io_get_timeout, 0); d(c, "timeout=", io_set_timeout, 1);
     define_private_cfunc(c, io, "initialize", io_initialize, -1);
     define_private_cfunc(c, io, "initialize_copy", io_init_copy, 1);
     define_private_cfunc(c, f, "initialize", file_initialize, -1);
