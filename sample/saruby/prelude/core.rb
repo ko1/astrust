@@ -374,11 +374,6 @@ end
 
 class Enumerator
   def +(other) = Enumerable.__chain([self, other])
-  def next_values
-    v = self.next
-    [v]
-  end
-  def peek_values = [peek]
   def self.produce(*args, **kw, &b)
     raise ArgumentError, "no block given" unless b
     # RB_SCAN_ARGS_LAST_HASH_KEYWORDS: a trailing Hash is the keywords
@@ -418,9 +413,24 @@ class Enumerator
   end
 
   class Product < Enumerator
-    def initialize(*enums)
-      @__enums = enums
+    undef_method :feed, :next, :next_values, :peek, :peek_values
+    def initialize(*enums, **kw)
+      unless kw.empty?
+        ks = kw.keys.map(&:inspect).join(", ")
+        raise ArgumentError, "unknown keyword#{kw.size > 1 ? 's' : ''}: #{ks}"
+      end
+      @__enums = enums.freeze
+      self
     end
+    def initialize_copy(o)
+      return self if equal?(o)
+      raise TypeError, "initialize_copy should take same class object" unless o.class == self.class
+      oe = o.instance_variable_get(:@__enums)
+      raise ArgumentError, "uninitialized product" unless oe
+      @__enums = oe
+      self
+    end
+    private :initialize_copy
     def each(&b)
       return self unless b
       __each_rec(0, [], &b)
@@ -434,26 +444,40 @@ class Enumerator
       end
     end
     private :__each_rec
+    # enum_product_total_size
     def size
-      @__enums.inject(1) do |t, e|
-        return nil unless e.respond_to?(:size)
-        s = e.size
-        return s if s.nil?
+      sizes = @__enums.map { |e| s = e.respond_to?(:size) ? e.size : nil; return s if s == 0; s }
+      sizes.inject(1) do |t, s|
+        return s if s.nil? || (s.is_a?(Float) && s.infinite?)
+        return nil unless s.is_a?(Integer)
         t * s
       end
     end
-    def rewind = (@__enums.reverse_each { |e| e.rewind if e.respond_to?(:rewind) }; self)
-    def inspect = @__enums ? "#<Enumerator::Product: #{@__enums.inspect}>" : "#<#{self.class}: uninitialized>"
+    def rewind = (@__enums.each { |e| e.rewind if e.respond_to?(:rewind) }; self)
+    def inspect
+      return "#<#{self.class}: uninitialized>" unless @__enums
+      seen = (Enumerable.__ivget(Enumerator::Product, :__insp) || Enumerable.__ivset(Enumerator::Product, :__insp, {}))
+      return "#<#{self.class}: ...>" if seen.key?(object_id)
+      seen[object_id] = true
+      begin
+        "#<#{self.class}: #{@__enums.inspect}>"
+      ensure
+        seen.delete(object_id)
+      end
+    end
     alias to_s inspect
   end
 
   class Chain < Enumerator
+    undef_method :feed, :next, :next_values, :peek, :peek_values
     def initialize(*enums)
       @__enums = enums.freeze
+      @__pos = -1
+      self
     end
     def each(*args, &b)
       return self unless b
-      @__enums.each { |e| e.each(*args, &b) }
+      @__enums.each_with_index { |e, i| @__pos = i; e.each(*args, &b) }
       self
     end
     def size
@@ -463,8 +487,27 @@ class Enumerator
         t + s
       end
     end
-    def rewind = (@__enums.reverse_each { |e| e.rewind if e.respond_to?(:rewind) }; self)
-    def inspect = @__enums ? "#<Enumerator::Chain: [#{@__enums.map(&:inspect).join(', ')}]>" : "#<#{self.class}: uninitialized>"
+    # enum_chain_rewind: the ones iterated so far, last first
+    def rewind
+      i = @__pos || -1
+      while i >= 0 && i < @__enums.size
+        e = @__enums[i]
+        e.rewind if e.respond_to?(:rewind)
+        @__pos = (i -= 1)
+      end
+      self
+    end
+    def inspect
+      return "#<#{self.class}: uninitialized>" unless @__enums
+      seen = (Enumerable.__ivget(Enumerator::Chain, :__insp) || Enumerable.__ivset(Enumerator::Chain, :__insp, {}))
+      return "#<#{self.class}: ...>" if seen.key?(object_id)
+      seen[object_id] = true
+      begin
+        "#<#{self.class}: #{@__enums.inspect}>"
+      ensure
+        seen.delete(object_id)
+      end
+    end
     alias to_s inspect
   end
 end

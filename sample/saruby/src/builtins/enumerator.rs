@@ -19,10 +19,15 @@ pub struct REnum {
     pub lz: u8,       // LZ_* (lazy.rs)
     pub kw: bool,     // the last of args was given as keywords
     pub procs: Value, // a chained Lazy: its stage entries (lazy.rs); recv is the root Lazy
+    pub look: Value,  // #peek's lookahead (UNDEF: none)
+    pub feed: Value,  // #feed's value (UNDEF: none)
+    pub stop: Value,  // the StopIteration of a finished #next iteration (nil: none)
+    pub init: bool,   // initialized (allocate leaves it false)
 }
 impl RData for REnum {
     fn visit(&mut self, m: &mut crate::gc::Visitor) {
         m.visit(&mut self.recv); m.visit(&mut self.args); m.visit(&mut self.size); m.visit(&mut self.gen); m.visit(&mut self.buf); m.visit(&mut self.fiber); m.visit(&mut self.procs);
+        m.visit(&mut self.look); m.visit(&mut self.feed); m.visit(&mut self.stop);
         if let Some((a, b, c, _)) = &mut self.arith { m.visit(a); m.visit(b); m.visit(c); }
     }
     fn as_any(&self) -> &dyn std::any::Any { self }
@@ -42,7 +47,7 @@ pub(crate) fn renum_mut(c: &mut Ctx, v: Value) -> &mut REnum { c.data_mut::<REnu
 pub(crate) fn new_enum(c: &mut Ctx, klass: Value, recv: Value, mid: Sym, args: &[Value], size: Value) -> Value {
     let kw = kw_arg(c, args).is_some();
     let a = c.ary_new_from(args);
-    c.alloc(klass, Body::Data(Box::new(REnum { recv, mid, args: a, size, gen: NIL, buf: NIL, pos: 0, fiber: NIL, arith: None, lz: 0, kw, procs: NIL })))
+    c.alloc(klass, Body::Data(Box::new(REnum { recv, mid, args: a, size, gen: NIL, buf: NIL, pos: 0, fiber: NIL, arith: None, lz: 0, kw, procs: NIL, look: UNDEF, feed: UNDEF, stop: NIL, init: true })))
 }
 
 /// rb_enumeratorize_with_size_kw: an enumerator of a Lazy is a Lazy.
@@ -202,13 +207,14 @@ fn e_each(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
         let mut args = c.ary(en.args).to_vec(); args.extend_from_slice(a);
         return funcall_public(c, en.recv, en.mid, &args, blk);
     }
-    enum_each_with(c, slf, blk)
+    let r = enum_each_with(c, slf, blk)?;
+    Ok(if renum(c, slf).arith.is_some() { slf } else { r })
 }
 
 fn e_with_index(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
-    let off = if a.is_empty() || a[0] == NIL { 0 } else { crate::builtins::numeric_methods::num_to_long(c, a[0])? };
+    check_argc(c, a, 0, 1)?;
     if blk.is_null() { return enum_for_sized(c, slf, intern(b"with_index"), a); }
-    let offv = if a.is_empty() || a[0] == NIL { Value::fix(0) } else if a[0].is_fixnum() || is_bignum(a[0]) { a[0] } else { Value::fix(off) };
+    let offv = if a.is_empty() || a[0] == NIL { Value::fix(0) } else { crate::builtins::numeric_methods::to_integer(c, a[0])? };
     let bp = block_to_proc(c, blk)?;
     let data = c.ary_new_from(&[offv, bp]);
     let b = Block::cfunc(c, |c, d, args, _b, _o| {
@@ -243,32 +249,37 @@ fn collect_all(c: &mut Ctx, slf: Value) -> RV {
     enum_each_with(c, slf, Blk::of(&b))?;
     Ok(out)
 }
-fn e_next(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
-    if obj_flags(slf) & FL_FROZEN != 0 { return Err(raise_frozen(c, slf)); }
-    if renum(c, slf).buf == NIL {
-        if let Some(r) = crate::fiber::enum_next(c, slf)? { return Ok(r); }
-        let all = collect_all(c, slf)?;
-        renum_mut(c, slf).buf = all;
-    }
-    let en = renum(c, slf);
-    if en.pos >= c.ary_len(en.buf) {
-        let e = make_exception(c, c.vm().c_stop_iteration.get(), "iteration reached an end");
-        return Err(raise_exc(c, e));
-    }
-    let v = c.ary_get(en.buf, en.pos);
-    renum_mut(c, slf).pos += 1;
-    Ok(v)
+/// ary2sv: the values #next / #peek return for the packed Array vs.
+fn ary2sv(c: &mut Ctx, vs: Value, dup: bool) -> Value {
+    if !is_array(vs) { return vs; }
+    match c.ary_len(vs) { 0 => NIL, 1 => c.ary_get(vs, 0), _ => if dup { let v = c.ary(vs).to_vec(); c.ary_from_vec(v) } else { vs } }
 }
-fn e_peek(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
+fn e_next_values(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if obj_flags(slf) & FL_FROZEN != 0 { return Err(raise_frozen(c, slf)); }
-    if crate::fiber::enum_has_fiber(slf) { return crate::fiber::enum_peek(c, slf); }
-    let v = e_next(c, slf, a, b)?;
-    renum_mut(c, slf).pos -= 1;
-    Ok(v)
+    let l = renum(c, slf).look;
+    if l != UNDEF { renum_mut(c, slf).look = UNDEF; return Ok(l); }
+    crate::fiber::enum_next_values(c, slf)
+}
+fn e_next(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { let vs = e_next_values(c, slf, a, b)?; Ok(ary2sv(c, vs, false)) }
+fn peek_values(c: &mut Ctx, slf: Value) -> RV {
+    if obj_flags(slf) & FL_FROZEN != 0 { return Err(raise_frozen(c, slf)); }
+    if renum(c, slf).look == UNDEF { let vs = crate::fiber::enum_next_values(c, slf)?; renum_mut(c, slf).look = vs; }
+    Ok(renum(c, slf).look)
+}
+fn e_peek_values(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let vs = peek_values(c, slf)?; let v = c.ary(vs).to_vec(); Ok(c.ary_from_vec(v)) }
+fn e_peek(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let vs = peek_values(c, slf)?; Ok(ary2sv(c, vs, true)) }
+fn e_feed(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    if obj_flags(slf) & FL_FROZEN != 0 { return Err(raise_frozen(c, slf)); }
+    if renum(c, slf).feed != UNDEF { return type_err(c, "feed value already set"); }
+    renum_mut(c, slf).feed = a[0];
+    Ok(NIL)
 }
 fn e_rewind(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
+    if obj_flags(slf) & FL_FROZEN != 0 { return Err(raise_frozen(c, slf)); }
+    let r = renum(c, slf).recv;
+    if crate::rt::check_respond(c, r, intern(b"rewind"))? { funcall(c, r, intern(b"rewind"), &[], std::ptr::null())?; }
     let en = renum_mut(c, slf);
-    en.pos = 0; en.buf = NIL; en.fiber = NIL;
+    en.pos = 0; en.buf = NIL; en.fiber = NIL; en.look = UNDEF; en.feed = UNDEF; en.stop = NIL;
     Ok(slf)
 }
 /// rb_frame_this_func: the name the running builtin was called by (an alias's own).
@@ -375,6 +386,7 @@ fn e_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     }
     if en.gen != NIL { return Ok(c.str_new(format!("#<Enumerator: #<Enumerator::Generator:{:#018x}>:each>", en.gen.raw()).as_bytes())); }
     let cls = class_path(c, real_class_of(c, slf));
+    if !en.init { return Ok(c.str_new(format!("#<{}: uninitialized>", cls).as_bytes())); }
     // inspect_enumerator runs under rb_exec_recursive
     if !rec_enter(c, slf, s::inspect)? { return Ok(c.str_new(format!("#<{}: ...>", cls).as_bytes())); }
     let r = (|| -> RV {
@@ -424,7 +436,7 @@ fn e_initialize(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     }
     if obj_flags(slf) & FL_FROZEN != 0 { return Err(raise_frozen(c, slf)); }
     let Some(en) = c.data_mut::<REnum>(slf) else { return type_err(c, "wrong argument type (expected Enumerator)") };
-    en.gen = g; en.size = size; en.recv = NIL; en.mid = s::each; en.buf = NIL; en.pos = 0; en.lz = 0; en.procs = NIL;
+    en.gen = g; en.size = size; en.recv = NIL; en.mid = s::each; en.buf = NIL; en.pos = 0; en.lz = 0; en.procs = NIL; en.init = true;
     Ok(slf)
 }
 fn y_s_new(c: &mut Ctx, slf: Value, _a: &[Value], blk: Blk) -> RV {
@@ -503,6 +515,11 @@ fn arith_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     use crate::builtins::array_methods::rb_eq;
     Ok(Value::bool(x1 == x2 && rb_eq(c, b1, b2)? && rb_eq(c, e1, e2)? && rb_eq(c, s1, s2)?))
 }
+fn arith_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
+    let (b, e, st, x) = renum(c, slf).arith.unwrap();
+    let a = c.ary_new_from(&[Value::bool(x), b, e, st]);
+    funcall(c, a, intern(b"hash"), &[], std::ptr::null())
+}
 fn arith_last(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let all = collect_all(c, slf)?;
     funcall(c, all, intern(b"last"), a, b)
@@ -515,14 +532,16 @@ pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
         // enumerator_init_copy
         if crate::fiber::enum_fiber_live(c, v) { return type_err(c, "can't copy execution context"); }
         let lz = if e.procs != NIL { e.lz | crate::builtins::lazy::LZ_DUP } else { e.lz };
-        let n = c.alloc(obj_klass(v), Body::Data(Box::new(REnum { buf: NIL, pos: 0, fiber: NIL, lz, ..e })));
+        let n = c.alloc(obj_klass(v), Body::Data(Box::new(REnum { buf: NIL, pos: 0, fiber: NIL, lz, look: UNDEF, feed: UNDEF, stop: NIL, ..e })));
         return Ok(Some(n));
     }
     Ok(None)
 }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     if crate::builtins::inherits(c, klass, c.vm().c_enumerator.get()) {
+        if crate::builtins::inherits(c, klass, c.vm().c_arith_seq.get()) { return type_err(c, format!("allocator undefined for {}", class_path(c, klass))); }
         let e = new_enum(c, klass, NIL, s::each, &[], NIL);
+        renum_mut(c, e).init = false;
         if crate::builtins::inherits(c, klass, c.vm().c_lazy.get()) { renum_mut(c, e).lz = crate::builtins::lazy::LZ_UNINIT; }
         return Ok(Some(e));
     }
@@ -545,6 +564,9 @@ pub fn init(c: &mut Ctx, e: Value, object: Value, enumerable: Value) -> Classes 
     define_cfunc(c, e, "each_with_object", e_with_object, 1);
     define_cfunc(c, e, "next", e_next, 0);
     define_cfunc(c, e, "peek", e_peek, 0);
+    define_cfunc(c, e, "next_values", e_next_values, 0);
+    define_cfunc(c, e, "peek_values", e_peek_values, 0);
+    define_cfunc(c, e, "feed", e_feed, 1);
     define_cfunc(c, e, "rewind", e_rewind, 0);
     define_cfunc(c, e, "size", e_size, 0);
     define_cfunc(c, e, "inspect", e_inspect, 0);
@@ -554,7 +576,7 @@ pub fn init(c: &mut Ctx, e: Value, object: Value, enumerable: Value) -> Classes 
     let y = k.yielder;
     define_singleton_cfunc(c, y, "new", y_s_new, 0);
     define_cfunc(c, y, "yield", y_yield, -1);
-    define_cfunc(c, y, "<<", y_ltlt, -1);
+    define_cfunc(c, y, "<<", y_ltlt, 1);
     define_cfunc(c, y, "to_proc", y_to_proc, 0);
     let a = k.arith_seq;
     define_cfunc(c, a, "begin", arith_begin, 0);
@@ -564,9 +586,12 @@ pub fn init(c: &mut Ctx, e: Value, object: Value, enumerable: Value) -> Classes 
     define_cfunc(c, a, "==", arith_eq, 1);
     define_cfunc(c, a, "===", arith_eq, 1);
     define_cfunc(c, a, "eql?", arith_eq, 1);
+    define_cfunc(c, a, "hash", arith_hash, 0);
     define_cfunc(c, a, "last", arith_last, -1);
     define_cfunc(c, a, "first", arith_first, -1);
     define_cfunc(c, a, "to_a", arith_to_a, 0);
     define_cfunc(c, a, "entries", arith_to_a, 0);
+    let sa = singleton_class(c, a);
+    crate::builtins::object::undef_method(c, sa, intern(b"new")).expect("ArithmeticSequence.new");
     k
 }
