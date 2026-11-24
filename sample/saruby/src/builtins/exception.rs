@@ -366,10 +366,24 @@ pub fn locations_from_locs(c: &mut Ctx, locs: Vec<BtLine>) -> Value {
     out
 }
 fn loc_path(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, slf, intern(b"path"))) }
+/// Real paths of the files loaded from disk, taken when they were read (an iseq's realpath).
+static REALPATHS: std::sync::Mutex<Vec<(String, Option<String>)>> = std::sync::Mutex::new(vec![]);
+pub fn note_realpath(file: &str) {
+    let rp = std::fs::canonicalize(file).ok().map(|p| p.to_string_lossy().into_owned());
+    let mut t = REALPATHS.lock().unwrap_or_else(|e| e.into_inner());
+    match t.iter_mut().find(|e| e.0 == file) { Some(e) => e.1 = rp, None => t.push((file.to_string(), rp)) }
+}
+/// A loaded file's real path as of its load (else as of now).
+pub fn realpath(file: &str) -> Option<String> {
+    let known = REALPATHS.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|e| e.0 == file).map(|e| e.1.clone());
+    known.unwrap_or_else(|| std::fs::canonicalize(file).ok().map(|p| p.to_string_lossy().into_owned()))
+}
 fn loc_abs_path(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let p = ivar_get(c, slf, intern(b"path"));
     let ps = String::from_utf8_lossy(c.str_bytes(p)).into_owned();
     if ps.starts_with('<') || ps.starts_with('(') || ps == "-e" || ivar_get(c, slf, intern(b"__nid")) == FALSE { return Ok(NIL); }
+    let known = REALPATHS.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|e| e.0 == ps).map(|e| e.1.clone());
+    if let Some(rp) = known { return Ok(match rp { Some(r) => c.str_new(r.as_bytes()), None => p }); }
     match std::fs::canonicalize(&ps) { Ok(a) => Ok(c.str_new(a.to_string_lossy().as_bytes())), Err(_) => Ok(p) }
 }
 fn loc_lineno(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, slf, intern(b"lineno"))) }
@@ -395,6 +409,21 @@ fn k_caller_locations(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     let (start, len, drop) = caller_range(c, args)?;
     let Some(locs) = backtrace_locs_n(c, 1 + start, len) else { return Ok(NIL) };
     Ok(locations_from_locs(c, drop_last(locs, drop)))
+}
+/// Thread.each_caller_location(start = 1, length = nil) { |loc| }
+fn th_each_caller_location(c: &mut Ctx, _s: Value, args: &[Value], b: Blk) -> RV {
+    if let Some(h) = kw_arg(c, args) {
+        let k = c.hash_pairs(h).first().map(|p| p.0).unwrap_or(NIL);
+        let ks = inspect_str(c, k)?;
+        return arg_err(c, format!("unknown keyword: {}", ks));
+    }
+    if b.is_null() { return err(c, c.vm().c_local_jump_error.get(), "no block given"); }
+    let (start, len, drop) = caller_range(c, args)?;
+    let Some(locs) = backtrace_locs_n(c, 1 + start, len) else { return Ok(NIL) };
+    let a = locations_from_locs(c, drop_last(locs, drop));
+    let mut i = 0;
+    while let Some(&l) = c.ary(a).get(i) { i += 1; yield1(c, b, l)?; }
+    Ok(NIL)
 }
 /// caller / caller_locations arguments: (start = 1, length = nil) or (range); the third part is how many
 /// frames a range with a negative end leaves off the end.
@@ -439,6 +468,8 @@ pub fn init_location(c: &mut Ctx) -> Value {
     define_cfunc(c, k, "to_s", loc_to_s, 0);
     define_cfunc(c, k, "inspect", loc_inspect, 0);
     define_module_function(c, vmr.m_kernel.get(), "caller_locations", k_caller_locations, -1);
+    define_singleton_cfunc(c, vmr.c_thread.get(), "each_caller_location", th_each_caller_location, -1);
+    define_singleton_cfunc(c, bt, "limit", |_c, _s, _a, _b| Ok(Value::fix(BT_LIMIT.load(std::sync::atomic::Ordering::Relaxed))), 0);
     k
 }
 fn exc_cause(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, slf, s::cause)) }
@@ -478,11 +509,15 @@ fn print_errinfo(c: &mut Ctx, o: &mut Vec<u8>, e: Value, bt: &[Vec<u8>], emesg: 
     o.push(b'\n');
 }
 /// print_backtrace
+/// --backtrace-limit (-1: none)
+pub static BT_LIMIT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
 fn print_backtrace(c: &Ctx, o: &mut Vec<u8>, e: Value, bt: &[Vec<u8>], reverse: bool) {
     let len = bt.len();
     let width = if len <= 1 { 0 } else { (len - 1).to_string().len() };
     let (mut skip_start, mut skip_len) = (usize::MAX, 0);
     if is_kind_of(c, e, c.vm().c_system_stack_error.get()) && len > 9 + 4 + 5 { skip_start = 9; skip_len = len - (9 + 4 + 5) + 5; }
+    let lim = BT_LIMIT.load(std::sync::atomic::Ordering::Relaxed);
+    if lim >= 0 && len as i64 > lim + 2 { skip_start = lim as usize + 1; skip_len = len - skip_start; }
     let mut i = 1;
     while i < len {
         if i == skip_start {

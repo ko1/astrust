@@ -625,7 +625,8 @@ node_ensure(c: &mut Ctx, n: NodePtr, fp: Fp, body: NODE, ens: NODE)
     let r = EVAL_ARG!(c, body);
     let (k, v, t, tv) = (c.esc, c.esc_val, c.esc_tag, c.esc_tag_v);
     let saved_err = c.errinfo;
-    if r.is_err() && k == EscKind::Raise { c.errinfo = v; }
+    // Thread#kill unwinds without setting $!
+    if r.is_err() && k == EscKind::Raise && !srb_is_kill(c, v) { c.errinfo = v; }
     c.esc = EscKind::None;
     EVAL_ARG!(c, ens)?;
     c.errinfo = saved_err;

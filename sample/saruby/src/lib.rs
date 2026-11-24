@@ -218,6 +218,10 @@ fn parse_args() -> Opts {
             s if s.starts_with("-E") => enc_opt(&mut o, "-E", &s[2..]),
             s if s.starts_with("-r") => { if s.len() > 2 { o.requires.push(s[2..].into()); } else { i += 1; o.requires.push(argv.get(i).cloned().unwrap_or_else(|| usage())); } }
             s if s.starts_with("--disable") || s.starts_with("--enable") => {}
+            s if s.starts_with("--backtrace-limit=") => match s[18..].parse::<i64>() {
+                Ok(n) if n >= -1 => crate::builtins::exception::BT_LIMIT.store(n, std::sync::atomic::Ordering::Relaxed),
+                _ => cli_fail(&format!("wrong limit for backtrace length: {}", &s[18..])),
+            },
             s if s.starts_with('-') && s.len() > 1 => { eprintln!("saruby: invalid option {}  (-h will show valid options)", s); std::process::exit(2); }
             _ => { if o.e.is_empty() { o.script = Some(a.clone()); } else { o.args.push(raw[i].clone()); } }
         }
@@ -302,7 +306,7 @@ fn run_main(o: Opts) -> i32 {
         (o.e.join(&b"\n"[..]), "-e".into())
     } else if let Some(s) = o.script.as_ref().filter(|s| s.as_str() != "-") {
         match std::fs::read(s) {
-            Ok(b) => (b, s.clone()),
+            Ok(b) => { builtins::exception::note_realpath(s); (b, s.clone()) }
             Err(_) => { eprintln!("saruby: No such file or directory -- {} (LoadError)", s); return 1; }
         }
     } else {
@@ -376,11 +380,13 @@ thread_local! {
     /// The error that ended the main script while the at_exit handlers run, and whether one showed it as its cause.
     static ORIG_ERR: std::cell::Cell<(Value, bool)> = const { std::cell::Cell::new((NIL, false)) };
 }
-/// at_exit procs (LIFO), the EXIT trap, then flush every stream.
+/// The EXIT trap, at_exit procs (LIFO), finalizers, then flush every stream (rb_ec_teardown).
 pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
     let vm = vm();
     // the main thread's scheduler runs to completion first (rb_ec_fiber_scheduler_finalize)
     if builtins::thread::scheduler_finalize(c).is_err() { status = handle_toplevel_error(c); }
+    let trap_ok = builtins::process::run_exit_trap(c).is_ok();
+    if !trap_ok { status = handle_toplevel_error(c); }
     loop {
         let ae = vm.at_exit.get();
         let Some(p) = c.ary_mut(ae).pop() else { break };
@@ -394,7 +400,7 @@ pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
             if let Some(e) = raised { c.errinfo = e; }
         }
     }
-    if builtins::process::run_exit_trap(c).is_err() { status = handle_toplevel_error(c); }
+    if trap_ok { builtins::misc::run_finalizers(c); }
     builtins::thread::terminate_all(c);
     builtins::kernel::out_flush();
     builtins::io::flush_all(c);

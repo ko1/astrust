@@ -66,6 +66,21 @@ pub fn to_integer(c: &mut Ctx, v: Value) -> RV {
     type_err(c, format!("no implicit conversion of {} into Integer", class_name_for_err(c, v)))
 }
 
+/// rb_num2dbl.
+pub fn num2dbl(c: &mut Ctx, v: Value) -> Result<f64, Esc> {
+    if v.is_fixnum() { return Ok(v.as_fix() as f64); }
+    if is_float(v) { return Ok(float_val(v)); }
+    if is_bignum(v) { return Ok(c.big(v).to_f64()); }
+    if v == NIL || v == TRUE || v == FALSE { return type_err(c, format!("no implicit conversion to float from {}", class_name_for_err(c, v))); }
+    if is_string(v) { return type_err(c, "no implicit conversion to float from string"); }
+    if respond_to(c, v, s::to_f, true) {
+        let r = funcall(c, v, s::to_f, &[], std::ptr::null())?;
+        if is_float(r) { return Ok(float_val(r)); }
+        let k = class_name_for_err(c, v);
+        return type_err(c, format!("can't convert {} to Float ({}#to_f gives {})", k, k, class_name_for_err(c, r)));
+    }
+    type_err(c, format!("can't convert {} into Float", class_name_for_err(c, v)))
+}
 pub fn to_f(c: &mut Ctx, v: Value) -> Result<f64, Esc> {
     if let Some(f) = c.num_to_f64(v) { return Ok(f); }
     if v == NIL { return type_err(c, "can't convert nil into Float"); }

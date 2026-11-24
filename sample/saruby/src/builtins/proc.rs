@@ -255,6 +255,11 @@ fn iseq_location(c: &mut Ctx, is: *const Iseq) -> RV {
     let f = c.str_new(file.as_bytes());
     Ok(c.ary_new_from(&[f, Value::fix(line as i64)]))
 }
+/// rb_proc_location of a block proc: (file, line), or None.
+pub fn proc_location(c: &Ctx, p: Value) -> Option<(&'static str, u32)> {
+    let BlockKind::Iseq(is) = c.proc_data(p).blk.kind else { return None };
+    c.iseq_ref(is).map(|is| (is.info.file, is.info.line))
+}
 fn proc_source_location(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     match c.proc_data(slf).blk.kind {
         BlockKind::Iseq(is) => iseq_location(c, is),

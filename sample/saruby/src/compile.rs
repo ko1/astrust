@@ -131,6 +131,7 @@ pub struct Compiler<'a> {
     yields: bool,                 // a yield in the iseq being compiled (a block's includes its inner blocks')
     pm_dcache: Option<(u32, u32)>, // case/in: (subject slot, slot caching its #deconstruct)
     tl_binding: bool,
+    required: bool,               // a loaded / required file: its top level is "<top (required)>"
     cov: Option<usize>,           // Coverage file id: lines / methods get node_cov counters
     trace: bool,                  // compiled for tracing (vm::TRACE_COMPILE): trace points, no entries, locals in envs
     flat_stmts: bool,             // the next statements are no lines of their own (modifier / ternary forms)
@@ -164,7 +165,7 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), outer: HashMap::default(), pending_outer: vec![], ractor_src: std::cell::OnceCell::new(), eval_outer: vec![], in_def: 0, pm_err: None, yields: false, pm_dcache: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, tag: !file.starts_with("<internal:") && pr.root.id < 1 << (32 - NF_TAG_SHIFT), errors: vec![],
+        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), outer: HashMap::default(), pending_outer: vec![], ractor_src: std::cell::OnceCell::new(), eval_outer: vec![], in_def: 0, pm_err: None, yields: false, pm_dcache: None, tl_binding: false, required: false, cov: None, trace: false, flat_stmts: false, tag: !file.starts_with("<internal:") && pr.root.id < 1 << (32 - NF_TAG_SHIFT), errors: vec![],
                    csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()],
                    src_enc: crate::builtins::encoding::find_enc(pr.encoding.as_bytes()).unwrap_or(crate::object::ENC_UTF8) as u32 };
         // identifiers of a non-UTF-8 source are symbols in its encoding (as its symbol literals)
@@ -462,6 +463,7 @@ impl<'a> Compiler<'a> {
         let (locals, stmts) = match &root.kind { Kind::ProgramNode { locals, statements } => (locals.clone(), statements), _ => panic!() };
         self.analyze(root, &[stmts]);
         let sk = if kind == IseqKind::Eval { SK::Eval } else { SK::Top };
+        self.required = kind == IseqKind::Top && !self.file.starts_with("<internal:");
         self.push_scope(sk, root, &locals);
         // BEGIN { } (top level, or in the loop -n / -p wrap it in) runs first in its code unit; c_node leaves it
         // out of its place
@@ -488,7 +490,7 @@ impl<'a> Compiler<'a> {
             body = self.seq(vec![ALLOC_node_special(SP_TOPLEVEL_BINDING, b), body]);
         }
         // eval: the label of the frame its binding came from (EVAL_LABEL)
-        let label = if kind == IseqKind::Eval { EVAL_LABEL.with(|l| l.borrow().clone()).unwrap_or_else(|| "<main>".to_string()) } else { "<main>".to_string() };
+        let label = if kind == IseqKind::Eval { EVAL_LABEL.with(|l| l.borrow().clone()).unwrap_or_else(|| "<main>".to_string()) } else { self.top_label().into() };
         self.finish_iseq(body, Params::default(), kind, label, 1, Sym(0))
     }
 
@@ -2234,12 +2236,13 @@ impl<'a> Compiler<'a> {
         if depth >= 1 { format!("block ({} levels) in {}", depth + 1, base) } else { format!("block in {}", base) }
     }
 
+    fn top_label(&self) -> &'static str { if self.required { "<top (required)>" } else { "<main>" } }
     fn method_label(&self) -> String {
         for sc in self.scopes.iter().rev() {
             match sc.kind {
                 SK::Method => return METHOD_LABEL.with(|m| m.borrow().last().cloned().unwrap_or_default()),
                 SK::Class => return CLASS_LABEL.with(|m| m.borrow().last().cloned().unwrap_or_default()),
-                SK::Top => return "<main>".into(),
+                SK::Top => return self.top_label().into(),
                 SK::Eval => return EVAL_LABEL.with(|l| l.borrow().clone()).unwrap_or_else(|| "<main>".into()),
                 _ => {}
             }

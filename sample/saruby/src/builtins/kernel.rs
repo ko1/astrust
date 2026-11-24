@@ -441,7 +441,7 @@ pub fn make_exception_from_args(c: &mut Ctx, args: &[Value]) -> RV {
             if !is_exception(c, e) { return type_err(c, "exception object expected"); }
             // rb_check_backtrace: nil leaves the backtrace to raise
             if args.len() >= 3 && args[2] != NIL {
-                crate::builtins::exception::exc_set_backtrace(c, e, &args[2..3], crate::vm::Blk::NONE)?;
+                funcall(c, e, intern(b"set_backtrace"), &args[2..3], std::ptr::null())?;
             }
             e
         }
@@ -1264,7 +1264,7 @@ pub fn require_feature(c: &mut Ctx, path: Value, relative: bool) -> RV {
     let name = match &caller_file {
         Some(cf) => {
             // rb_current_realfilepath: the caller's file with symlinks resolved
-            let real = std::fs::canonicalize(cf).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| cf.clone());
+            let real = crate::builtins::exception::realpath(cf).unwrap_or_else(|| cf.clone());
             let dir = match real.rfind('/') { Some(0) => "/".to_string(), Some(i) => real[..i].to_string(), None => ".".to_string() };
             expand_path_str(&name, Some(&dir))
         }
@@ -1412,6 +1412,7 @@ pub fn load_file(c: &mut Ctx, path: &str) -> RV {
         Err(_) => { let e = make_exception(c, c.vm().c_load_error.get(), &format!("cannot load such file -- {}", path)); return Err(raise_exc(c, e)); }
     };
     let file: &'static str = Box::leak(path.to_string().into_boxed_str());
+    crate::builtins::exception::note_realpath(file);
     run_source(c, &src, file, 1)
 }
 
@@ -1468,6 +1469,7 @@ fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
             Err(_) => { let e = make_exception(c, c.vm().c_load_error.get(), &format!("cannot load such file -- {}", p)); return Err(raise_exc(c, e)); }
         };
         let file: &'static str = Box::leak(p.into_boxed_str());
+        crate::builtins::exception::note_realpath(file);
         let is = crate::compile::compile_source(&src, file, 1, IseqKind::Top, vec![]);
         crate::compile::flush_parse_warnings(c)?;
         let is = match is { Ok(is) => is, Err(msg) => return syntax_err(c, msg, file) };
@@ -1615,8 +1617,7 @@ fn k_dir(c: &mut Ctx, _s: Value, _args: &[Value], _b: Blk) -> RV {
         let d = match f.rfind('/') { Some(0) => "/".to_string(), Some(i) => f[..i].to_string(), None => ".".to_string() };
         return Ok(c.str_new(d.as_bytes()));
     }
-    let p = std::path::Path::new(&f);
-    let abs = std::fs::canonicalize(p).unwrap_or(p.to_path_buf());
+    let abs = std::path::PathBuf::from(crate::builtins::exception::realpath(&f).unwrap_or(f));
     Ok(c.str_new(abs.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or(".".into()).as_bytes()))
 }
 

@@ -92,9 +92,10 @@ fn st_eq(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
 
 // ---- signals ----------------------------------------------------------------------------------
 
-const SIGNALS: &[(&str, i32)] = &[("EXIT", 0), ("HUP", 1), ("INT", 2), ("QUIT", 3), ("ILL", 4), ("TRAP", 5), ("ABRT", 6), ("IOT", 6), ("BUS", 7), ("FPE", 8), ("KILL", 9),
-    ("USR1", 10), ("SEGV", 11), ("USR2", 12), ("PIPE", 13), ("ALRM", 14), ("TERM", 15), ("STKFLT", 16), ("CHLD", 17), ("CLD", 17), ("CONT", 18), ("STOP", 19), ("TSTP", 20),
-    ("TTIN", 21), ("TTOU", 22), ("URG", 23), ("XCPU", 24), ("XFSZ", 25), ("VTALRM", 26), ("PROF", 27), ("WINCH", 28), ("IO", 29), ("POLL", 29), ("PWR", 30), ("SYS", 31)];
+// signal.c siglist order (Linux numbers)
+const SIGNALS: &[(&str, i32)] = &[("EXIT", 0), ("HUP", 1), ("INT", 2), ("QUIT", 3), ("ILL", 4), ("TRAP", 5), ("ABRT", 6), ("IOT", 6), ("FPE", 8), ("KILL", 9), ("BUS", 7),
+    ("SEGV", 11), ("SYS", 31), ("PIPE", 13), ("ALRM", 14), ("TERM", 15), ("URG", 23), ("STOP", 19), ("TSTP", 20), ("CONT", 18), ("CHLD", 17), ("CLD", 17),
+    ("TTIN", 21), ("TTOU", 22), ("IO", 29), ("XCPU", 24), ("XFSZ", 25), ("VTALRM", 26), ("PROF", 27), ("WINCH", 28), ("USR1", 10), ("USR2", 12), ("PWR", 30), ("POLL", 29)];
 pub fn signame(n: i32) -> Option<&'static str> { SIGNALS.iter().find(|s| s.1 == n).map(|s| s.0) }
 static PENDING: AtomicU64 = AtomicU64::new(0);
 static HANDLERS: Global = Global::new(); // Array indexed by signo: nil (default) / String / Proc
@@ -103,7 +104,10 @@ extern "C" fn on_signal(sig: i32) { PENDING.fetch_or(1 << sig, Ordering::SeqCst)
 pub fn signo_arg(c: &mut Ctx, v: Value) -> Result<i32, Esc> {
     if v.is_fixnum() { let n = v.as_fix(); if !(0..65).contains(&n) { return arg_err(c, format!("invalid signal number ({})", n)); } return Ok(n as i32); }
     let name = if v.is_sym() { crate::symbol::sym_str(v.as_sym()) } else if is_string(v) { String::from_utf8_lossy(c.str_bytes(v)).into_owned() } else {
-        return arg_err(c, format!("bad signal type {}", class_name_for_err(c, v)));
+        // rb_check_string_type
+        let s = if v.is_heap() && !is_class_or_module(v) && respond_to(c, v, intern(b"to_str"), true) { funcall(c, v, intern(b"to_str"), &[], std::ptr::null())? } else { NIL };
+        if !is_string(s) { let k = class_path(c, real_class_of(c, v)); return arg_err(c, format!("bad signal type {}", k)); }
+        String::from_utf8_lossy(c.str_bytes(s)).into_owned()
     };
     let (neg, n) = match name.strip_prefix('-') { Some(r) => (true, r), None => (false, name.as_str()) };
     let n = n.strip_prefix("SIG").unwrap_or(n);
@@ -111,6 +115,18 @@ pub fn signo_arg(c: &mut Ctx, v: Value) -> Result<i32, Esc> {
         Some(s) => Ok(if neg { -s.1 } else { s.1 }),
         None => arg_err(c, format!("unsupported signal 'SIG{}'", n)),
     }
+}
+// What a signal's OS handler is, as CRuby's trap() tells them apart for the old value it returns:
+// SIG_DFL ("SYSTEM_DEFAULT"), SIG_IGN ("IGNORE"), Ruby's sighandler ("DEFAULT"), another (nil).
+const F_DFL: u8 = 0; const F_IGN: u8 = 1; const F_RUBY: u8 = 2; const F_OTHER: u8 = 3;
+/// The handlers CRuby installs at boot (and "DEFAULT" reinstalls): sighandler, sig_do_nothing for PIPE / SYS, SIGABRT's own.
+fn boot_func(sig: i32) -> u8 { match sig { 1 | 2 | 3 | 10 | 12 | 14 | 15 | 17 => F_RUBY, 6 | 13 | 31 => F_OTHER, _ => F_DFL } }
+static FUNCS: std::sync::Mutex<[u8; 65]> = std::sync::Mutex::new([u8::MAX; 65]);
+fn swap_func(sig: i32, f: u8) -> u8 {
+    let mut t = FUNCS.lock().unwrap_or_else(|e| e.into_inner());
+    let old = if t[sig as usize] == u8::MAX { boot_func(sig) } else { t[sig as usize] };
+    t[sig as usize] = f;
+    old
 }
 fn signal_trap(c: &mut Ctx, _s: Value, a: &[Value], blk: Blk) -> RV {
     if a.is_empty() || a.len() > 2 || (a.len() == 1 && blk.is_null()) { if a.len() == 1 { return arg_err(c, "tried to create Proc object without a block"); } return argc_err(c, a.len(), 1, 2); }
@@ -123,22 +139,31 @@ fn signal_trap(c: &mut Ctx, _s: Value, a: &[Value], blk: Blk) -> RV {
     if matches!(sig, 9 | 19) { return Err(raise_errno_plain(c, 22, &format!("SIG{}", signame(sig).unwrap()))); }
     let cmd = if a.len() == 2 { a[1] } else { block_to_proc(c, blk)? };
     // normalize: nil / "IGNORE" / "DEFAULT" strings or a callable
-    let (store, action): (Value, sys::SigAction) = if cmd == NIL { (NIL, sys::SigAction::Ignore) } else if is_string(cmd) || cmd.is_sym() {
+    let (store, action, func): (Value, sys::SigAction, u8) = if cmd == NIL { (NIL, sys::SigAction::Ignore, F_IGN) } else if is_string(cmd) || cmd.is_sym() {
         let sname = if cmd.is_sym() { crate::symbol::sym_str(cmd.as_sym()) } else { String::from_utf8_lossy(c.str_bytes(cmd)).into_owned() };
         match sname.as_str() {
-            "" | "IGNORE" | "SIG_IGN" => (c.str_new(b"IGNORE"), sys::SigAction::Ignore),
-            "DEFAULT" | "SIG_DFL" => (UNDEF, sys::SigAction::Default),
-            "SYSTEM_DEFAULT" => (c.str_new(b"SYSTEM_DEFAULT"), sys::SigAction::Default),
-            "EXIT" => (c.str_new(b"EXIT"), sys::SigAction::Catch(on_signal)),
+            "" | "IGNORE" | "SIG_IGN" => (c.str_new(b"IGNORE"), sys::SigAction::Ignore, F_IGN),
+            // SIGPIPE / SIGSYS get sig_do_nothing: a write still sees EPIPE
+            "DEFAULT" | "SIG_DFL" => match boot_func(sig) {
+                F_OTHER if sig != 6 => (UNDEF, sys::SigAction::Ignore, F_OTHER),
+                F_RUBY => (UNDEF, sys::SigAction::Default, F_RUBY),
+                _ => (UNDEF, sys::SigAction::Default, F_DFL),
+            },
+            "SYSTEM_DEFAULT" => (c.str_new(b"SYSTEM_DEFAULT"), sys::SigAction::Default, F_DFL),
+            "EXIT" => (c.str_new(b"EXIT"), sys::SigAction::Catch(on_signal), F_RUBY),
             _ => return arg_err(c, format!("wrong trap - {}", sname)),
         }
-    } else { (cmd, sys::SigAction::Catch(on_signal)) };
+    } else { (cmd, sys::SigAction::Catch(on_signal), F_RUBY) };
     let h = HANDLERS.get(c);
     while c.ary_len(h) <= sig as usize { c.ary_push(h, UNDEF); }
     let old = c.ary_get(h, sig as usize);
     c.ary_mut(h)[sig as usize] = store;
-    if sig != 0 { sys::signal(sig, action); }
-    Ok(if old == UNDEF { if sig == 0 { NIL } else { c.str_new(b"DEFAULT") } } else { old })
+    if sig == 0 { return Ok(if old == UNDEF { NIL } else { old }); }
+    sys::signal(sig, action);
+    let oldf = swap_func(sig, func);
+    // a command other than these strings is returned as it is (nil too)
+    if old != UNDEF && !(is_string(old) && matches!(c.str_bytes(old), b"IGNORE" | b"SYSTEM_DEFAULT")) { return Ok(old); }
+    Ok(match oldf { F_DFL => c.str_new(b"SYSTEM_DEFAULT"), F_IGN => c.str_new(b"IGNORE"), F_RUBY => c.str_new(b"DEFAULT"), _ => NIL })
 }
 fn run_handler(c: &mut Ctx, sig: i32) -> Result<(), Esc> {
     let h = c.ary_get(HANDLERS.get(c), sig as usize);
@@ -162,16 +187,13 @@ pub fn run_pending_signals(c: &mut Ctx) -> Result<(), Esc> {
 }
 /// For syscall-retry loops without a Ctx: handlers stay pending until the next check.
 pub fn run_pending_signals_nothrow() {}
-/// trap("EXIT") handler, run after the at_exit procs.
+/// trap("EXIT") handler, run before the at_exit procs.
 pub fn run_exit_trap(c: &mut Ctx) -> Result<(), Esc> {
     let hs = HANDLERS.get(c);
     let h = c.ary_get(hs, 0);
-    let r = if h == NIL || h == UNDEF || is_string(h) { Ok(()) } else {
-        c.ary_mut(hs)[0] = NIL;
-        funcall(c, h, intern(b"call"), &[Value::fix(0)], std::ptr::null()).map(|_| ())
-    };
-    if r.is_ok() { crate::builtins::misc::run_finalizers(c); }
-    r
+    if h == NIL || h == UNDEF || is_string(h) { return Ok(()); }
+    c.ary_mut(hs)[0] = NIL;
+    funcall(c, h, intern(b"call"), &[Value::fix(0)], std::ptr::null()).map(|_| ())
 }
 fn signal_list(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     let h = c.hash_new();
@@ -221,10 +243,10 @@ pub fn time_interval(c: &mut Ctx, v: Value) -> Result<f64, Esc> {
         crate::builtins::numeric_methods::to_f(c, v)?
     } else if !is_string(v) && v != NIL && respond_to(c, v, intern(b"divmod"), true) {
         let r = funcall(c, v, intern(b"divmod"), &[Value::fix(1)], std::ptr::null())?;
-        if !is_array(r) || c.ary_len(r) != 2 { return type_err(c, format!("can't convert {} into time interval", class_name_for_err(c, v))); }
+        if !is_array(r) || c.ary_len(r) != 2 { let k = class_path(c, real_class_of(c, v)); return type_err(c, format!("can't convert {} into time interval", k)); }
         let (i, f) = (c.ary_get(r, 0), c.ary_get(r, 1));
         crate::builtins::numeric_methods::to_f(c, i)? + crate::builtins::numeric_methods::to_f(c, f)?
-    } else { return type_err(c, format!("can't convert {} into time interval", class_name_for_err(c, v))); };
+    } else { let k = class_path(c, real_class_of(c, v)); return type_err(c, format!("can't convert {} into time interval", k)); };
     if secs < 0.0 { return arg_err(c, "time interval must not be negative"); }
     Ok(secs)
 }

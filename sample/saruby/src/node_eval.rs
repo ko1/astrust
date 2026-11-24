@@ -826,7 +826,8 @@ pub fn EVAL_node_ensure<D_body: Disp, D_ens: Disp>(c: &mut Ctx, n: NodePtr, fp: 
     let r = <D_body as Disp>::call(c, body, fp);
     let (k, v, t, tv) = (c.esc, c.esc_val, c.esc_tag, c.esc_tag_v);
     let saved_err = c.errinfo;
-    if r.is_err() && k == EscKind::Raise { c.errinfo = v; }
+    // Thread#kill unwinds without setting $!
+    if r.is_err() && k == EscKind::Raise && !srb_is_kill(c, v) { c.errinfo = v; }
     c.esc = EscKind::None;
     <D_ens as Disp>::call(c, ens, fp)?;
     c.errinfo = saved_err;

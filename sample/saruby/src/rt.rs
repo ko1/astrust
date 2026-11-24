@@ -703,7 +703,10 @@ pub fn raise_local_jump(c: &mut Ctx, msg: &str, reason: &str, v: Value) -> Esc {
     raise_exc(c, e)
 }
 
-pub fn srb_rescuable(c: &Ctx, exc: Value) -> bool { is_exception(c, exc) }
+/// Thread#kill's unwinding is not rescued.
+pub fn srb_rescuable(c: &Ctx, exc: Value) -> bool { is_exception(c, exc) && !srb_is_kill(c, exc) }
+#[inline]
+pub fn srb_is_kill(c: &Ctx, exc: Value) -> bool { crate::builtins::thread::is_kill(c, exc) }
 
 pub fn srb_is_standard_error(c: &Ctx, exc: Value) -> bool { is_kind_of(c, exc, vm().c_standard_error.get()) }
 
