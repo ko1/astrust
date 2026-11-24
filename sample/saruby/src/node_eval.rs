@@ -1445,8 +1445,7 @@ pub fn EVAL_node_opt_aref<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, 
         return Ok(crate::builtins::array_methods::ary_entry(c, a, b.as_fix()));
     } else if tf_hash(ty) && is_hash(a) && obj_klass(a) == vm().c_hash.get() && !redef(R_HASH_AREF) {
         if ty == 0 { tf.add(TF_HASH); }
-        line.store(c.frame_mut());
-        return crate::builtins::hash_methods::h_aref(c, a, &[b], Blk::NONE);
+        return crate::builtins::hash_methods::h_aref_at(c, a, b, line);
     }
     srb_aref_out(c, a, b, line.pos(), cc)
 }
@@ -1460,8 +1459,7 @@ pub fn EVAL_node_opt_aset<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, 
         if crate::builtins::array_methods::ary_set_in(c, a, b.as_fix(), v) { return Ok(v); }
     } else if tf_hash(ty) && is_hash(a) && obj_klass(a) == vm().c_hash.get() && !redef(R_HASH_ASET) {
         if ty == 0 { tf.add(TF_HASH); }
-        line.store(c.frame_mut());
-        return crate::builtins::hash_methods::h_aset(c, a, &[b, v], Blk::NONE);
+        return crate::builtins::hash_methods::h_aset_at(c, a, b, v, line);
     }
     srb_aset_out(c, a, b, v, line.pos(), cc)
 }

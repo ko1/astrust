@@ -105,8 +105,11 @@ cfn!(h_s_aref, |c, slf, a, blk| {
     for i in (0..a.len()).step_by(2) { hash_aset(c, h, a[i], a[i + 1])?; }
     Ok(h)
 });
-cfn!(#[inline] h_aref, |c, slf, a, blk| hash_aref(c, slf, a[0]));
-cfn!(#[inline] h_aset, |c, slf, a, blk| { hash_aset(c, slf, a[0], a[1])?; Ok(a[1]) });   // hash_aset raises for a frozen Hash
+cfn!(#[inline] h_aref, |c, slf, a, blk| h_aref_at(c, slf, a[0], ()));
+cfn!(#[inline] h_aset, |c, slf, a, blk| h_aset_at(c, slf, a[0], a[1], ()));
+/// Hash#[] / Hash#[]= with the line an operator node stores only where they raise or call out.
+#[inline] pub fn h_aref_at(c: &mut Ctx, slf: Value, k: Value, line: impl AtLine) -> RV { crate::hash::hash_aref_at(c, slf, k, line) }
+#[inline] pub fn h_aset_at(c: &mut Ctx, slf: Value, k: Value, v: Value, line: impl AtLine) -> RV { crate::hash::hash_aset_at(c, slf, k, v, line)?; Ok(v) }
 cfn!(h_fetch, |c, slf, a, blk| {
     check_argc(c, a, 1, 2)?;
     if !blk.is_null() && a.len() == 2 { gvar_warn(c, "block supersedes default value argument", false)?; }
