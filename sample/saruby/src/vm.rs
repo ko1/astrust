@@ -1274,7 +1274,14 @@ pub fn do_autoload(c: &mut Ctx, k: Value, name: Sym) -> Result<Option<Value>, Es
     match run {
         Some(run) if run.value != UNDEF => const_set_at(c, k, name, run.value, run.loc),
         // loaded without defining it: the autoload is gone
-        _ => if const_get_at(c, k, name).is_none() && c.class_mut(k).autoload.remove(&name).is_some() { if let Some(x) = c.class_mut(k).cx.as_mut() { x.const_loc.remove(&name); } },
+        _ => if const_get_at(c, k, name).is_none() && c.class_mut(k).autoload.remove(&name).is_some() {
+            if let Some(x) = c.class_mut(k).cx.as_mut() { x.const_loc.remove(&name); }
+            if vm().verbose.get() == TRUE {
+                let f = String::from_utf8_lossy(c.str_bytes(path)).into_owned();
+                let what = if k == vm().c_object.get() { sym_str(name).to_string() } else { format!("{}::{}", class_path(c, k), sym_str(name)) };
+                crate::builtins::kernel::gvar_warn(c, &format!("Expected {} to define {} but it didn't", f, what), false)?;
+            }
+        },
     }
     Ok(const_get_at(c, k, name))
 }

@@ -20,11 +20,13 @@ pub fn clone_class(c: &mut Ctx, k: Value) -> RV {
         .filter_map(|(m, me)| c.me_ref(*me).map(|o| (*m, MethodEntry { name: o.name, owner: n, visi: o.visi, kind: o.kind, orig_owner: if o.orig_owner == k { n } else { o.orig_owner }, cref: o.cref })))
         .collect();
     let cd = c.class(k);
+    let autoload = cd.autoload.clone();
     let (consts, const_order, cvars, includes, prepends, alloc) =
         (cd.consts.clone(), cd.const_order.clone(), cd.cvars.clone(), cd.includes.clone(), cd.prepends.clone(), cd.alloc);
     let nd = c.class_mut(n);
     for (m, e) in mt { nd.mtbl.insert(m, Box::into_raw(Box::new(e))); }
     for (a, b) in consts { nd.consts.insert(a, b); }
+    nd.autoload = autoload;
     nd.const_order = const_order;
     for (a, b) in cvars { nd.cvars.insert(a, b); }
     nd.includes = includes;
