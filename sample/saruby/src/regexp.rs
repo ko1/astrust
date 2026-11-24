@@ -75,7 +75,7 @@ pub fn engine_enc(enc: u8) -> Enc {
     use crate::builtins::encoding::{kind, EK};
     match kind(enc) {
         EK::Utf8 => Enc::UTF8,
-        EK::U16LE | EK::U16BE | EK::U32LE | EK::U32BE => Enc(WIDE + enc),
+        EK::U16LE | EK::U16BE | EK::U32LE | EK::U32BE | EK::Cesu8 => Enc(WIDE + enc),
         EK::EucJp(_) => Enc::EUCJP,
         EK::Sjis(_) => Enc::SJIS,
         EK::Dbcs | EK::Big5 | EK::Gbk => Enc::DBCS,
@@ -171,6 +171,8 @@ fn regexp_prep(src: &[u8], enc: u8, opts: u32) -> Result<(Vec<u8>, u32, u8, Enc)
     }
     // an ASCII-only pattern is used on any ASCII-compatible string; most strings are UTF-8
     let mode = if opts & RE_OPT_FIXED != 0 && en::ascii_compat(enc) { engine_enc(enc) } else { Enc::UTF8 };
+    // CESU-8 is matched in its UTF-8 form, as UTF-16/32
+    let unesc = if mode.0 >= WIDE && en::ascii_compat(enc) { wide_to_utf8(&unesc, enc).ok_or_else(|| desc("invalid multibyte character"))? } else { unesc };
     Ok((unesc, opts, enc, mode))
 }
 
@@ -751,7 +753,8 @@ pub fn utf8_to_wide(u: &[u8], enc: u8) -> Vec<u8> {
 
 /// The UTF-8 form of `b` in `enc` (as is when ASCII-compatible).
 pub fn to_utf8_form(b: &[u8], enc: u8) -> Vec<u8> {
-    if crate::builtins::encoding::ascii_compat(enc) { b.to_vec() } else { wide_to_utf8(b, enc).unwrap_or_default() }
+    use crate::builtins::encoding as en;
+    if en::ascii_compat(enc) && en::kind(enc) != en::EK::Cesu8 { b.to_vec() } else { wide_to_utf8(b, enc).unwrap_or_default() }
 }
 
 fn to_s_of(src: &[u8], opts: u32, enc: u8) -> Vec<u8> {

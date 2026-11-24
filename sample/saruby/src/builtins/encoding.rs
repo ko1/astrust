@@ -18,6 +18,7 @@ use crate::vm::*;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EK {
     Utf8, Bin, Ascii,
+    Cesu8,           // UTF-8 with surrogate pairs (6 bytes) for U+10000.., no 4-byte forms
     Single,          // ASCII-compatible single-byte (table looked up by name)
     U16LE, U16BE, U32LE, U32BE,
     EucJp(bool),     // true = CP51932 table
@@ -49,7 +50,7 @@ pub static ENCS: [EncDef; 103] = [
     e!("Big5", [], Big5),
     e!("Big5-HKSCS", ["Big5-HKSCS:2008"], Big5),
     e!("Big5-UAO", [], Big5),
-    e!("CESU-8", [], Utf8),
+    e!("CESU-8", [], Cesu8),
     e!("CP949", [], Gbk),
     e!("Emacs-Mule", [], EmacsMule),
     e!("EUC-KR", ["eucKR"], Dbcs),
@@ -178,11 +179,11 @@ pub fn enc_name(enc: u8) -> &'static str { ENCS.get(enc as usize).map(|d| d.name
 pub fn enc_name_msg(enc: u8) -> String { if enc == ENC_BINARY { "BINARY (ASCII-8BIT)".into() } else { enc_name(enc).into() } }
 pub fn is_dummy(enc: u8) -> bool { kind(enc) == Dummy || enc == ENC_UTF16 || enc == ENC_UTF32 }
 pub fn ascii_compat(enc: u8) -> bool { !matches!(kind(enc), U16LE | U16BE | U32LE | U32BE | Dummy) }
-pub fn is_unicode(enc: u8) -> bool { matches!(kind(enc), Utf8 | U16LE | U16BE | U32LE | U32BE) || enc == ENC_UTF16 || enc == ENC_UTF32 }
+pub fn is_unicode(enc: u8) -> bool { matches!(kind(enc), Utf8 | Cesu8 | U16LE | U16BE | U32LE | U32BE) || enc == ENC_UTF16 || enc == ENC_UTF32 }
 /// Every byte is one character.
 #[inline] pub fn is_single_byte(enc: u8) -> bool { matches!(kind(enc), Bin | Ascii | Single | Dummy) }
 pub fn min_len(enc: u8) -> usize { match kind(enc) { U16LE | U16BE => 2, U32LE | U32BE => 4, _ => 1 } }
-pub fn max_len(enc: u8) -> usize { match kind(enc) { Utf8 | U32LE | U32BE | U16LE | U16BE | Gb18030 | EucTw | EmacsMule => 4, EucJp(_) => 3, Sjis(_) | Dbcs | Big5 | Gbk => 2, _ => 1 } }
+pub fn max_len(enc: u8) -> usize { match kind(enc) { Cesu8 => 6, Utf8 | U32LE | U32BE | U16LE | U16BE | Gb18030 | EucTw | EmacsMule => 4, EucJp(_) => 3, Sjis(_) | Dbcs | Big5 | Gbk => 2, _ => 1 } }
 
 fn single_table(enc: u8) -> Option<&'static [u16; 128]> {
     let idx = SINGLE_IDX.get_or_init(|| {
@@ -217,6 +218,7 @@ pub fn precise_len(enc: u8, b: &[u8], i: usize) -> Option<usize> {
         Bin | Single | Dummy => Some(1),
         Ascii => if x < 0x80 { Some(1) } else { None },
         Utf8 => utf8_precise(r),
+        Cesu8 => cesu8_precise(r),
         U16LE | U16BE => {
             if n < 2 { return None; }
             let w = if kind(enc) == U16LE { u16::from_le_bytes([r[0], r[1]]) } else { u16::from_be_bytes([r[0], r[1]]) };
@@ -266,6 +268,17 @@ pub fn precise_len(enc: u8, b: &[u8], i: usize) -> Option<usize> {
     }
 }
 
+/// enc/cesu_8.c's mbc_enc_len: UTF-8 up to 3 bytes (ED A0.. only as the first half of a pair), and
+/// a high surrogate followed by a low one (6 bytes).
+pub fn cesu8_precise(r: &[u8]) -> Option<usize> {
+    let x = *r.first()?;
+    if x == 0xed && r.len() >= 2 && (0xa0..=0xaf).contains(&r[1]) {
+        let ok = r.len() >= 6 && r[2] & 0xc0 == 0x80 && r[3] == 0xed && (0xb0..=0xbf).contains(&r[4]) && r[5] & 0xc0 == 0x80;
+        return if ok { Some(6) } else { None };
+    }
+    if (0xf0..=0xff).contains(&x) { return None; }
+    utf8_precise(r)
+}
 pub fn utf8_precise(r: &[u8]) -> Option<usize> {
     let x = *r.first()?;
     let l = if x < 0x80 { return Some(1) } else if (0xc2..=0xdf).contains(&x) { 2 } else if (0xe0..=0xef).contains(&x) { 3 } else if (0xf0..=0xf4).contains(&x) { 4 } else { return None };
@@ -289,6 +302,14 @@ pub fn needmore(enc: u8, p: &[u8]) -> bool {
     if n == 0 { return true; }
     let r = |k: usize, lo: u8, hi: u8| p[k] >= lo && p[k] <= hi;
     match kind(enc) {
+        Cesu8 => {
+            // the first half of a pair needs the rest of the 6 bytes
+            if p[0] == 0xed && n >= 2 && (0xa0..=0xaf).contains(&p[1]) {
+                let pat: [(u8, u8); 6] = [(0xed, 0xed), (0xa0, 0xaf), (0x80, 0xbf), (0xed, 0xed), (0xb0, 0xbf), (0x80, 0xbf)];
+                return n < 6 && (0..n).all(|k| r(k, pat[k].0, pat[k].1));
+            }
+            p[0] < 0xf0 && needmore(ENC_UTF8, p)
+        }
         Utf8 => {
             let x = p[0];
             let l = if (0xc2..=0xdf).contains(&x) { 2 } else if (0xe0..=0xef).contains(&x) { 3 } else if (0xf0..=0xf4).contains(&x) { 4 } else { return false };
@@ -342,6 +363,10 @@ pub fn is_valid(enc: u8, b: &[u8]) -> bool {
 pub fn char_code(enc: u8, ch: &[u8]) -> u32 {
     match kind(enc) {
         Utf8 => decode_utf8(ch, 0).0,
+        Cesu8 => {
+            let d3 = |p: &[u8]| ((p[0] as u32 & 0x0f) << 12) | ((p[1] as u32 & 0x3f) << 6) | (p[2] as u32 & 0x3f);
+            match ch.len() { 6 => 0x10000 + ((d3(ch) & 0x3ff) << 10) + (d3(&ch[3..]) & 0x3ff), 3 => d3(ch), _ => decode_utf8(ch, 0).0 }
+        }
         U16LE | U16BE => {
             let le = kind(enc) == U16LE;
             let w = |k: usize| if le { u16::from_le_bytes([ch[k], ch[k + 1]]) } else { u16::from_be_bytes([ch[k], ch[k + 1]]) } as u32;
@@ -386,6 +411,10 @@ pub fn code_to_bytes(enc: u8, cp: u32) -> Option<Vec<u8>> {
     let mut out = vec![];
     match kind(enc) {
         Utf8 => { if cp > 0x10ffff { return None; } encode_utf8(cp, &mut out); }
+        Cesu8 => {
+            if cp > 0x10ffff || (0xd800..0xe000).contains(&cp) { return None; }
+            if cp < 0x10000 { encode_utf8(cp, &mut out); } else { encode_utf8((cp >> 10) + 0xd7c0, &mut out); encode_utf8((cp & 0x3ff) + 0xdc00, &mut out); }
+        }
         Bin | Single | Dummy => { if cp > 0xff { return None; } out.push(cp as u8); }
         Ascii => { if cp > 0xff { return None; } out.push(cp as u8); }
         U16LE | U16BE => {
@@ -419,7 +448,7 @@ fn sjis_index(h: u8, l: u8) -> Option<usize> {
 pub fn to_unicode(enc: u8, ch: &[u8]) -> Option<u32> {
     let k = kind(enc);
     match k {
-        Utf8 | U16LE | U16BE | U32LE | U32BE => Some(char_code(enc, ch)),
+        Utf8 | Cesu8 | U16LE | U16BE | U32LE | U32BE => Some(char_code(enc, ch)),
         Bin | Dummy => if ch[0] < 0x80 { Some(ch[0] as u32) } else { None },
         Ascii => if ch[0] < 0x80 { Some(ch[0] as u32) } else { None },
         Single => {
@@ -480,7 +509,7 @@ fn build_rev_map(enc: u8) -> RevMap {
 /// Bytes for Unicode scalar `u` in `enc`, None if undefined there.
 pub fn from_unicode(enc: u8, u: u32) -> Option<Vec<u8>> {
     match kind(enc) {
-        Utf8 | U16LE | U16BE | U32LE | U32BE => code_to_bytes(enc, u),
+        Utf8 | Cesu8 | U16LE | U16BE | U32LE | U32BE => code_to_bytes(enc, u),
         _ if u < 0x80 && ascii_compat(enc) => Some(vec![u as u8]),
         Bin | Ascii | Dummy => None,
         _ => rev_map(enc).get(&u).cloned(),

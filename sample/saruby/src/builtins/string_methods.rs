@@ -1326,7 +1326,8 @@ fn scrub_impl(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> Result<Option<V
         if !en::is_valid(re, c.str_bytes(r)) { return arg_err(c, format!("replacement must be valid byte sequence '{}'", inspect_bytes(c.str_bytes(r), c.str_enc(r)))); }
         if re != enc && !(is_ascii(c.str_bytes(r)) && en::ascii_compat(enc)) { return Err(en::compat_error(c, enc, re)); }
     }
-    let default_rep = if en::is_unicode(enc) { en::code_to_bytes(enc, 0xfffd).unwrap() } else { en::from_unicode(enc, '?' as u32).unwrap_or(vec![b'?']) };
+    // str_scrub: U+FFFD for UTF-8 / 16 / 32 only (not CESU-8)
+    let default_rep = if en::is_unicode(enc) && en::kind(enc) != en::EK::Cesu8 { en::code_to_bytes(enc, 0xfffd).unwrap() } else { en::from_unicode(enc, '?' as u32).unwrap_or(vec![b'?']) };
     let src = c.str_bytes(slf).to_vec();
     let mut out = Vec::with_capacity(src.len());
     let mut i = 0;
@@ -1374,7 +1375,9 @@ cfn!(s_casecmp, |c, slf, a, b_| {
 cfn!(s_casecmp_p, |c, slf, a, b_| {
     if !is_string(a[0]) && !(a[0].is_heap() && respond_to(c, a[0], s::to_str, true)) { return Ok(NIL); }
     let Some(o) = casecmp_other(c, slf, a[0])? else { return Ok(NIL) };
-    Ok(Value::bool(fold_case(c.str_bytes(slf), c.str_enc(slf)) == fold_case(c.str_bytes(o), c.str_enc(o))))
+    // a Unicode encoding other than UTF-8 folds by its characters too
+    let f = |c: &Ctx, v: Value| { let r = c.rstring(v); if r.enc != ENC_UTF8 && crate::builtins::encoding::is_unicode(r.enc) && crate::builtins::encoding::is_valid(r.enc, &r.b) { fold_case(&regexp::to_utf8_form(&r.b, r.enc), ENC_UTF8) } else { fold_case(&r.b, r.enc) } };
+    Ok(Value::bool(f(c, slf) == f(c, o)))
 });
 /// [v[..ms], v[ms..me], v[me..]] as Strings of slf's encoding.
 fn split3(c: &mut Ctx, slf: Value, v: &[u8], ms: usize, me: usize) -> Value {
@@ -1864,8 +1867,9 @@ cfn!(s_s_try_convert, |c, slf, a, b_| {
 // and convert the Strings they return back.  String arguments must be in the receiver's encoding
 // (or empty), as rb_enc_check; chomp also takes "\n" / "" in any encoding.
 fn wide(c: &Ctx, v: Value) -> bool {
+    use crate::builtins::encoding as en;
     let r = c.rstring(v);
-    crate::builtins::encoding::min_len(r.enc) > 1 && crate::builtins::encoding::is_valid(r.enc, &r.b)
+    (en::min_len(r.enc) > 1 || en::kind(r.enc) == en::EK::Cesu8 && !r.b.is_ascii()) && en::is_valid(r.enc, &r.b)
 }
 fn to_u8(c: &mut Ctx, v: Value) -> Value { let r = c.rstring(v); let u = regexp::to_utf8_form(&r.b, r.enc); c.str_new_enc(&u, ENC_UTF8) }
 fn from_u8(c: &mut Ctx, v: Value, enc: u8) -> Value {
@@ -1881,6 +1885,7 @@ fn wide_args(c: &mut Ctx, slf: Value, a: &[Value], chomp: bool) -> Result<Vec<Va
         let (xe, xb) = { let r = c.rstring(x); (r.enc, r.b.to_vec()) };
         if xe == enc { out.push(to_u8(c, x)); }
         else if xb.is_empty() { out.push(c.str_new(b"")); }
+        else if crate::builtins::encoding::ascii_compat(enc) && crate::builtins::encoding::ascii_compat(xe) && xb.is_ascii() { out.push(c.str_new(&xb)); }
         else if chomp && is_newline(c, x) { out.push(c.str_new(b"\n")); }
         else { return err(c, c.vm().c_compat_error.get(), format!("incompatible character encodings: {} and {}", crate::builtins::encoding::enc_name_msg(enc), crate::builtins::encoding::enc_name_msg(xe))); }
     }
