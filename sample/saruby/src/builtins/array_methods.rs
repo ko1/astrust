@@ -1362,6 +1362,7 @@ cfn!(a_each_slice, |c, slf, a, blk| if ary_each_redef(c, slf) { crate::builtins:
 }) } });
 cfn!(a_inject, |c, slf, a, blk| {
     if ary_each_redef(c, slf) { return crate::builtins::enum_native::call_enumerable(c, slf, "inject", a, blk); }
+    if blk.is_null() { check_argc(c, a, 1, 2)?; } else { check_argc(c, a, 0, 2)?; if a.len() == 2 && c.vm().verbose.get() == TRUE { gvar_warn(c, "given block not used", false)?; } }
     if !blk.is_null() { if let Some(r) = a_inject_loop(c, slf, a, &mut |c, a| yield_block(c, blk, a)) { return r; } }
     let (mut acc, mut i, op) = match (a.len(), blk.is_null()) {
         (0, _) => { if c.ary_len(slf) == 0 { return Ok(NIL); } (c.ary_get(slf, 0), 1, None) }

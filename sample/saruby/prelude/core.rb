@@ -50,7 +50,7 @@ module Enumerable
       i = 0
       each { |*x| return i if yield(*x); i += 1 }
     else
-      warn("warning: given block not used", uplevel: 1) if block_given? && false
+      warn("given block not used", uplevel: 1) if block_given?
       i = 0
       Enumerable.__each(self) { |v| return i if v == args[0]; i += 1 }
     end
@@ -231,7 +231,7 @@ module Enumerable
     a = to_a
     others = others.map do |o|
       if (oa = Array.try_convert(o)) then oa
-      elsif o.respond_to?(:each) then o.respond_to?(:first) ? o.first(a.size) : o.to_enum(:each).first(a.size)
+      elsif o.respond_to?(:each) then o.to_enum(:each).first(a.size)
       else raise TypeError, "wrong argument type #{o.class} (must respond to :each)"
       end
     end
@@ -259,7 +259,11 @@ module Enumerable
     end
     h
   end
-  def to_set(*args, &b) = Set.new(self, *args, &b)
+  def to_set(*args, &b)
+    warn("passing arguments to Enumerable#to_set is deprecated", uplevel: 1) unless args.empty?
+    klass = args.empty? ? Set : args.shift
+    klass.new(self, *args, &b)
+  end
   def reverse_each(*args, &b)
     return enum_for(:reverse_each, *args) { __size } unless b
     to_a(*args).reverse_each(&b)
@@ -270,7 +274,7 @@ module Enumerable
     n = args[0]
     unless block_given?
       return enum_for(:cycle, *args) do
-        if n.nil? then (s = __size) == 0 ? 0 : Float::INFINITY
+        if n.nil? then (s = __size).nil? ? nil : s == 0 ? 0 : Float::INFINITY
         else s = __size; k = Enumerable.__int(n); s && (k < 0 ? 0 : s * k) end
       end
     end
@@ -769,18 +773,34 @@ class Data
       k
     end
   end
+  # rb_struct_pos (4.0.2, not name_only): a Symbol or String names a member, anything else is an index
+  # (NUM2LEN); [index or nil, the key an unknown one is reported as]
+  def self.__pos(mem, k)
+    if k.is_a?(Symbol) || k.is_a?(String)
+      [mem.index(k.to_sym), k]
+    else
+      i = Enumerable.__int(k)
+      n = mem.size
+      return [nil, i] if i < -n || i >= n
+      [i < 0 ? i + n : i, k]
+    end
+  end
+  # rb_data_initialize_m: too few keys is "missing" before any key is looked at
   def initialize(**kw)
     mem = self.class.__members
-    missing = mem.reject { |m| kw.key?(m) }
-    unknown = kw.keys.reject { |m| mem.include?(m.is_a?(String) ? m.to_sym : m) }
+    if kw.size < mem.size
+      missing = mem - kw.keys
+      raise ArgumentError, "missing keyword#{missing.size > 1 ? 's' : ''}: #{missing.map(&:inspect).join(', ')}"
+    end
+    unknown = []
+    kw.each do |k, v|
+      i, key = Data.__pos(mem, k)
+      if i then Enumerable.__ivset(self, mem[i], v) else unknown << key end
+    end
+    freeze
     unless unknown.empty?
       raise ArgumentError, "unknown keyword#{unknown.size > 1 ? 's' : ''}: #{unknown.map(&:inspect).join(', ')}"
     end
-    unless missing.empty?
-      raise ArgumentError, "missing keyword#{missing.size > 1 ? 's' : ''}: #{missing.map(&:inspect).join(', ')}"
-    end
-    kw.each { |k, v| Enumerable.__ivset(self, k.to_sym, v) }
-    freeze
   end
   private :initialize
   def initialize_copy(o)
@@ -813,26 +833,42 @@ class Data
     mem = members
     return h if keys.size > mem.size
     keys.each do |k|
-      s = k.is_a?(String) ? k.to_sym : k
-      break unless s.is_a?(Symbol) && mem.include?(s)
-      h[k] = Enumerable.__ivget(self, s)
+      i, = Data.__pos(mem, k)
+      break unless i
+      h[k] = Enumerable.__ivget(self, mem[i])
     end
     h
   end
+  # rb_data_with: allocate + initialize, not .new
   def with(*args, **kw)
     raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0)" unless args.empty?
     return self if kw.empty?
-    self.class.new(**to_h.merge(kw))
+    o = self.class.allocate
+    o.__send__(:initialize, **to_h.merge(kw))
+    o
   end
+  # rb_exec_recursive_paired: a pair met again compares equal
+  def __paired(o, tag)
+    seen = (Enumerable.__ivget(Data, tag) || Enumerable.__ivset(Data, tag, {}))
+    key = [object_id, o.object_id]
+    return true if seen.key?(key)
+    seen[key] = true
+    begin
+      yield
+    ensure
+      seen.delete(key)
+    end
+  end
+  private :__paired
   def ==(o)
     return true if equal?(o)
     return false unless o.class == self.class
-    members.all? { |m| Enumerable.__ivget(self, m) == Enumerable.__ivget(o, m) }
+    __paired(o, :__eq) { members.all? { |m| Enumerable.__ivget(self, m) == Enumerable.__ivget(o, m) } }
   end
   def eql?(o)
     return true if equal?(o)
     return false unless o.class == self.class
-    members.all? { |m| Enumerable.__ivget(self, m).eql?(Enumerable.__ivget(o, m)) }
+    __paired(o, :__eql) { members.all? { |m| Enumerable.__ivget(self, m).eql?(Enumerable.__ivget(o, m)) } }
   end
   def hash = [self.class, *deconstruct].hash
   def inspect
@@ -840,7 +876,7 @@ class Data
     name = Module.instance_method(:name).bind_call(self.class)
     name = nil if name&.start_with?("#")
     seen = (Enumerable.__ivget(Data, :__insp) || Enumerable.__ivset(Data, :__insp, {}))
-    return "#<data #{name}:...>" if seen.key?(object_id)
+    return "#<data #{name || Module.instance_method(:to_s).bind_call(self.class)}:...>" if seen.key?(object_id)
     seen[object_id] = true
     begin
       parts = members.map do |m|

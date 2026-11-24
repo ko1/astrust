@@ -221,7 +221,7 @@ fn e_with_index(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
         let i = c.ary_get(d, 0); let p = c.ary_get(d, 1);
         let next = if i.is_fixnum() && Value::fixable(i.as_fix() + 1) { Value::fix(i.as_fix() + 1) } else { funcall(c, i, s::plus, &[Value::fix(1)], std::ptr::null())? };
         c.ary_mut(d)[0] = next;
-        let v = if args.len() == 1 { args[0] } else { c.ary_new_from(args) };
+        let v = match args.len() { 0 => NIL, 1 => args[0], _ => c.ary_new_from(args) };
         call_proc(c, p, &[v, i], std::ptr::null())
     }, data);
     enum_each_with(c, slf, Blk::of(&b))
@@ -236,7 +236,7 @@ fn e_with_object(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     let bp = block_to_proc(c, blk)?;
     let data = c.ary_new_from(&[memo, bp]);
     let b = Block::cfunc(c, |c, d, args, _b, _o| {
-        let v = if args.len() == 1 { args[0] } else { c.ary_new_from(args) };
+        let v = match args.len() { 0 => NIL, 1 => args[0], _ => c.ary_new_from(args) };
         let (p, memo) = (c.ary_get(d, 1), c.ary_get(d, 0));
         call_proc(c, p, &[v, memo], std::ptr::null())
     }, data);
@@ -245,7 +245,7 @@ fn e_with_object(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
 }
 fn collect_all(c: &mut Ctx, slf: Value) -> RV {
     let out = c.ary_new();
-    let b = Block::cfunc(c, |c, d, args, _b, _o| { let v = if args.len() == 1 { args[0] } else { c.ary_new_from(args) }; c.ary_push(d, v); Ok(NIL) }, out);
+    let b = Block::cfunc(c, |c, d, args, _b, _o| { let v = match args.len() { 0 => NIL, 1 => args[0], _ => c.ary_new_from(args) }; c.ary_push(d, v); Ok(NIL) }, out);
     enum_each_with(c, slf, Blk::of(&b))?;
     Ok(out)
 }
@@ -467,7 +467,7 @@ fn e_take(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let data = c.ary_new_from(&[out, Value::fix(n), fib]);
     let b = Block::cfunc(c, |c, d, args, _b, _o| {
         let out = c.ary_get(d, 0);
-        let v = if args.len() == 1 { args[0] } else { c.ary_new_from(args) };
+        let v = match args.len() { 0 => NIL, 1 => args[0], _ => c.ary_new_from(args) };
         c.ary_push(out, v);
         // CRuby's `--n == 0` then rb_iter_break: from another thread / fiber the break is a LocalJumpError there
         let left = c.ary_get(d, 1).as_fix() - 1;
@@ -489,7 +489,7 @@ fn e_first(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let fib = crate::fiber::current(c);
     let data = c.ary_new_from(&[NIL, fib]);
     let b = Block::cfunc(c, |c, d, args, _b, _o| {
-        let v = if args.len() == 1 { args[0] } else { c.ary_new_from(args) };
+        let v = match args.len() { 0 => NIL, 1 => args[0], _ => c.ary_new_from(args) };
         c.ary_mut(d)[0] = v;
         let f = c.ary_get(d, 1);
         // nil: #first has returned (a kept block called late)

@@ -12,6 +12,20 @@ pub fn recursion_enter(v: Value, tag: crate::value::Sym) -> bool {
     g.push((v.raw(), tag));
     true
 }
+/// rb_exec_recursive_paired's guard: the pair (a, b) under `tag`.
+fn paired_key(a: Value, b: Value) -> u64 { a.raw() ^ b.raw().rotate_left(29) ^ 0x9e37_79b9_7f4a_7c15 }
+pub fn recursion_enter_paired(a: Value, b: Value, tag: crate::value::Sym) -> bool {
+    let k = paired_key(a, b);
+    let mut g = crate::vm::vm().recursive_guard.borrow_mut();
+    if g.iter().any(|&(x, t)| x == k && t == tag) { return false; }
+    g.push((k, tag));
+    true
+}
+pub fn recursion_leave_paired(a: Value, b: Value, tag: crate::value::Sym) {
+    let k = paired_key(a, b);
+    let mut g = crate::vm::vm().recursive_guard.borrow_mut();
+    if let Some(p) = g.iter().rposition(|&(x, t)| x == k && t == tag) { g.remove(p); }
+}
 pub fn recursion_leave(v: Value, tag: crate::value::Sym) {
     let mut g = crate::vm::vm().recursive_guard.borrow_mut();
     if let Some(p) = g.iter().rposition(|&(x, t)| x == v.raw() && t == tag) { g.remove(p); }
