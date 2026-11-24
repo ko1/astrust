@@ -355,14 +355,12 @@ fn run_main(o: Opts) -> i32 {
         println!("{}", out);
         return 0;
     }
-    let mut status = 0;
     for r in &o.requires {
         let s = c.str_new(r.as_bytes());
         if builtins::kernel::require_feature(&mut c, s, false).is_err() { let e = c.esc_val; report_exception(&mut c, e); return 1; }
     }
     let r = run_top_iseq(&mut c, is, vm.main_obj.get());
-    if r.is_err() { status = handle_toplevel_error(&mut c); }
-    status = run_exit_handlers(&mut c, status);
+    let status = finish(&mut c, r.is_err());
     #[cfg(feature = "nodeprof")] nodeprof::report();
     if o.aot {
         match aot::bake(&o.store) {
@@ -377,11 +375,18 @@ fn run_main(o: Opts) -> i32 {
     status
 }
 
-/// at_exit procs (LIFO), the EXIT trap, then flush every stream.
-pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
+/// rb_ec_cleanup: the EXIT trap, at_exit procs (LIFO; each error reported as it happens), the trap's error,
+/// then the main error (`errored`: c.esc holds it) is reported last; a later error's status wins.
+pub fn finish(c: &mut Ctx, errored: bool) -> i32 {
     let vm = vm();
+    let take = |c: &mut Ctx| { let s = (c.esc, c.esc_val, c.esc_tag, c.esc_tag_v); c.esc = EscKind::None; s };
+    let put = |c: &mut Ctx, s: (EscKind, Value, u64, Value)| { c.esc = s.0; c.esc_val = s.1; c.esc_tag = s.2; c.esc_tag_v = s.3; };
+    let main_err = errored.then(|| take(c));
+    if let Some((EscKind::Raise, e, _, _)) = main_err { c.errinfo = e; }
+    let mut later: Option<i32> = None;
     // the main thread's scheduler runs to completion first (rb_ec_fiber_scheduler_finalize)
-    if builtins::thread::scheduler_finalize(c).is_err() { status = handle_toplevel_error(c); }
+    if builtins::thread::scheduler_finalize(c).is_err() { later = Some(handle_toplevel_error(c)); }
+    let trap_err = builtins::process::run_exit_trap(c).is_err().then(|| take(c));
     loop {
         let ae = vm.at_exit.get();
         let Some(p) = c.ary_mut(ae).pop() else { break };
@@ -389,20 +394,18 @@ pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
         if call_proc(c, p, &[], std::ptr::null()).is_err() {
             // the next handlers see this error in $! (rb_ec_exec_end_proc)
             let raised = (c.esc == EscKind::Raise).then_some(c.esc_val);
-            status = handle_toplevel_error(c);
+            later = Some(handle_toplevel_error(c));
             if let Some(e) = raised { c.errinfo = e; }
         }
     }
-    if builtins::process::run_exit_trap(c).is_err() { status = handle_toplevel_error(c); }
+    if let Some(t) = trap_err { put(c, t); later = Some(handle_toplevel_error(c)); }
+    else { builtins::misc::run_finalizers(c); }
+    let mut status = later.unwrap_or(0);
+    if let Some(m) = main_err { put(c, m); let st = handle_toplevel_error(c); if later.is_none() { status = st; } }
     builtins::kernel::out_flush();
     builtins::io::flush_all(c);
     builtins::process::die_if_signaled();
     status
-}
-/// End of a forked child's block: report an error, run the exit handlers.
-pub fn finish(c: &mut Ctx, errored: bool) -> i32 {
-    let st = if errored { handle_toplevel_error(c) } else { 0 };
-    run_exit_handlers(c, st)
 }
 
 fn handle_toplevel_error(c: &mut Ctx) -> i32 {

@@ -170,7 +170,6 @@ pub fn run_exit_trap(c: &mut Ctx) -> Result<(), Esc> {
         c.ary_mut(hs)[0] = NIL;
         funcall(c, h, intern(b"call"), &[Value::fix(0)], std::ptr::null()).map(|_| ())
     };
-    if r.is_ok() { crate::builtins::misc::run_finalizers(c); }
     r
 }
 fn signal_list(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
