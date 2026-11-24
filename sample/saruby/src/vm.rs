@@ -1485,12 +1485,26 @@ pub fn raise_msg(c: &mut Ctx, klass: Value, msg: &str) -> Esc {
 }
 
 pub fn err<T>(c: &mut Ctx, klass: Value, msg: impl AsRef<str>) -> Result<T, Esc> { Err(raise_msg(c, klass, msg.as_ref())) }
-/// A SyntaxError from compiling `path` (SyntaxError#path).
-pub fn syntax_err<T>(c: &mut Ctx, msg: impl AsRef<str>, path: &str) -> Result<T, Esc> {
-    let e = make_exception(c, vm().c_syntax_error.get(), msg.as_ref());
-    let p = c.str_new(path.as_bytes());
-    ivar_set_raw(c, e, crate::symbol::intern(b"path"), p);
+/// The error of compiling `path` (pm_parse_process_error): a SyntaxError with #path, or prism's ArgumentError / LoadError.
+pub fn syntax_err<T>(c: &mut Ctx, ce: crate::compile::CompileError, path: &str) -> Result<T, Esc> {
+    let e = compile_error_exc(c, ce, path);
     Err(raise_exc(c, e))
+}
+pub fn compile_error_exc(c: &mut Ctx, ce: crate::compile::CompileError, path: &str) -> Value {
+    use crate::builtins::encoding as en;
+    let vmr = vm();
+    let klass = match ce.level { 1 => vmr.c_argument_error.get(), 2 => vmr.c_load_error.get(), _ => vmr.c_syntax_error.get() };
+    let e = new_object(c, klass);
+    let enc = if ce.level == 2 { en::locale_enc() } else { en::find_enc(ce.enc.as_bytes()).unwrap_or(crate::object::ENC_UTF8) };
+    let m = c.str_new_enc(&ce.msg, enc);
+    ivar_set_raw(c, e, s::mesg, m);
+    if ce.compile { let p = c.str_new(path.as_bytes()); let bt = c.ary_new_from(&[p]); let _ = crate::builtins::exception::exc_set_backtrace(c, e, &[bt], Blk::NONE); }
+    match ce.level {
+        0 => { let p = c.str_new(path.as_bytes()); ivar_set_raw(c, e, crate::symbol::intern(b"path"), p); }
+        2 => ivar_set_raw(c, e, crate::symbol::intern(b"path"), NIL),
+        _ => {}
+    }
+    e
 }
 pub fn arg_err<T>(c: &mut Ctx, msg: impl AsRef<str>) -> Result<T, Esc> { err(c, vm().c_argument_error.get(), msg) }
 pub fn type_err<T>(c: &mut Ctx, msg: impl AsRef<str>) -> Result<T, Esc> { err(c, vm().c_type_error.get(), msg) }

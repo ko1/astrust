@@ -22,7 +22,7 @@ use std::ffi::CString;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 // $? is thread-local: (pid << 32) | raw status in the current Thread (thread.rs); pid -1: none yet
-pub const NO_STATUS: u64 = 0xffff_ffff_0000_0000;
+pub const NO_STATUS: u64 = 0x8000_0000_0000_0000;
 pub fn set_last_status(c: &mut Ctx, pid: i32, raw: i32) { crate::builtins::thread::set_last_status(c, ((pid as u32 as u64) << 32) | raw as u32 as u64); }
 fn new_status(c: &mut Ctx, pid: i32, raw: i32) -> Value {
     let k = const_get_at(c, c.vm().m_process.get(), intern(b"Status")).unwrap();
@@ -50,7 +50,7 @@ static LAST_ST: Global = Global::new();
 pub fn last_status(c: &mut Ctx) -> Value {
     let w = crate::builtins::thread::last_status(c);
     let (pid, raw) = ((w >> 32) as u32 as i32, w as u32 as i32);
-    if pid < 0 { return NIL; }
+    if w == NO_STATUS { return NIL; }
     let key = Value::fix(w as i64);
     let cache = LAST_ST.get(c);
     if cache != NIL && c.ary_get(cache, 0) == key { return c.ary_get(cache, 1); }
@@ -122,9 +122,11 @@ const F_DFL: u8 = 0; const F_IGN: u8 = 1; const F_RUBY: u8 = 2; const F_OTHER: u
 /// The handlers CRuby installs at boot (and "DEFAULT" reinstalls): sighandler, sig_do_nothing for PIPE / SYS, SIGABRT's own.
 fn boot_func(sig: i32) -> u8 { match sig { 1 | 2 | 3 | 10 | 12 | 14 | 15 | 17 => F_RUBY, 6 | 13 | 31 => F_OTHER, _ => F_DFL } }
 static FUNCS: std::sync::Mutex<[u8; 65]> = std::sync::Mutex::new([u8::MAX; 65]);
-fn swap_func(sig: i32, f: u8) -> u8 {
+/// `os_old`: the disposition signal(2) replaced; before the first trap it is the inherited one, and CRuby keeps an
+/// inherited SIG_IGN (install_sighandler) but for PIPE (forced; Rust's runtime ignores it before main anyway).
+fn swap_func(sig: i32, f: u8, os_old: usize) -> u8 {
     let mut t = FUNCS.lock().unwrap_or_else(|e| e.into_inner());
-    let old = if t[sig as usize] == u8::MAX { boot_func(sig) } else { t[sig as usize] };
+    let old = if t[sig as usize] != u8::MAX { t[sig as usize] } else if os_old == 1 && sig != 13 { F_IGN } else { boot_func(sig) };
     t[sig as usize] = f;
     old
 }
@@ -161,8 +163,8 @@ fn signal_trap(c: &mut Ctx, _s: Value, a: &[Value], blk: Blk) -> RV {
     let old = c.ary_get(h, sig as usize);
     c.ary_mut(h)[sig as usize] = store;
     if sig == 0 { return Ok(if old == UNDEF { NIL } else { old }); }
-    sys::signal(sig, action);
-    let oldf = swap_func(sig, func);
+    let os_old = sys::signal(sig, action);
+    let oldf = swap_func(sig, func, os_old);
     // a command other than these strings is returned as it is (nil too)
     if old != UNDEF && !(is_string(old) && matches!(c.str_bytes(old), b"IGNORE" | b"SYSTEM_DEFAULT")) { return Ok(old); }
     Ok(match oldf { F_DFL => c.str_new(b"SYSTEM_DEFAULT"), F_IGN => c.str_new(b"IGNORE"), F_RUBY => c.str_new(b"DEFAULT"), _ => NIL })
@@ -453,7 +455,8 @@ fn child_setup(sp: &Spec) -> Result<(), Stage> {
         if f >= 0 { sys::fcntl(fd, sys::F_SETFD, f | sys::FD_CLOEXEC); }
     }
     if let Some(d) = &sp.chdir { if sys::chdir(d) < 0 { return Err(Stage::Chdir); } }
-    for sig in [13, 2, 3, 15, 1, 10, 12, 14, 17] { sys::signal(sig, sys::SigAction::Default); }
+    // disable_child_handler_fork_child: handlers back to SIG_DFL, ignored signals stay ignored but PIPE
+    for sig in 1..65 { if sys::signal(sig, sys::SigAction::Default) == 1 && sig != 13 { sys::signal(sig, sys::SigAction::Ignore); } }
     Ok(())
 }
 /// exec the PATH search result; a name not found there is ENOENT (a non-executable match is skipped, as dln_find_exe_r does).
@@ -532,7 +535,10 @@ pub fn split_args(c: &mut Ctx, a: &[Value]) -> Result<(Option<Value>, Vec<Value>
     if env.is_some() { rest.remove(0); }
     Ok((env, rest, opts))
 }
-fn waitpid_retry(c: &mut Ctx, pid: i32, flags: i32) -> Result<(i32, i32), Esc> {
+const ECHILD: i64 = 10;
+fn waitpid_retry(c: &mut Ctx, pid: i32, flags: i32) -> Result<(i32, i32), Esc> { waitpid_q(c, pid, flags, false) }
+/// `quiet`: no child to wait for (SIGCHLD ignored) is pid -1, status 0 (rb_process_status_wait for system / ``).
+fn waitpid_q(c: &mut Ctx, pid: i32, flags: i32, quiet: bool) -> Result<(i32, i32), Esc> {
     // rb_process_status_wait: a blocking wait in a non-blocking fiber asks its scheduler's process_wait
     if flags & WNOHANG == 0 {
         let s = crate::builtins::thread::scheduler_current(c);
@@ -545,11 +551,12 @@ fn waitpid_retry(c: &mut Ctx, pid: i32, flags: i32) -> Result<(i32, i32), Esc> {
             }
         }
     }
-    if flags & WNOHANG == 0 && crate::builtins::thread::active(c) { return waitpid_coop(c, pid, flags)?.map_err(|e| raise_errno(c, e, "")); }
+    if flags & WNOHANG == 0 && crate::builtins::thread::active(c) { return waitpid_coop(c, pid, flags)?.or_else(|e| if e == ECHILD && quiet { Ok((-1, 0)) } else { Err(raise_errno(c, e, "")) }); }
     loop {
         let mut st = 0;
         let r = sys::waitpid(pid, &mut st, flags);
         if r < 0 && sys::errno() == sys::EINTR { run_pending_signals(c)?; continue; }
+        if r < 0 && quiet && sys::errno() == ECHILD { return Ok((-1, 0)); }
         if r < 0 { return Err(raise_errno(c, sys::errno(), "")); }
         return Ok((r, st));
     }
@@ -600,7 +607,8 @@ fn k_system(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
         Ok(p) => p,
         Err(e) => { if exc { return Err(e); } c.esc = EscKind::None; return Ok(NIL); }
     };
-    let (_, st) = waitpid_retry(c, pid, 0)?;
+    let (rp, st) = waitpid_q(c, pid, 0, true)?;
+    let pid = if rp < 0 { rp } else { pid };
     set_last_status(c, pid, st);
     if exc && !(exited(st) && exitstatus(st) == 0) {
         let ns = new_status(c, pid, st); let d = st_desc(c, ns);
@@ -630,8 +638,9 @@ fn k_backtick(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     // the scheduler may close the descriptor itself (io_close), as for the popen IO CRuby reads
     let closed = sch != NIL && crate::builtins::thread::sched_hook(c, sch, "io_close", &[Value::fix(p[0] as i64)])?.is_some_and(|r| r.truthy());
     if !closed { sys::close(p[0]); }
-    let (_, st) = waitpid_retry(c, pid, 0)?;
-    set_last_status(c, pid, st);
+    let (rp, st) = waitpid_q(c, pid, 0, true)?;
+    // `` leaves no status when there was no child to wait for
+    if rp < 0 { crate::builtins::thread::set_last_status(c, NO_STATUS); } else { set_last_status(c, pid, st); }
     Ok(c.str_from_vec_enc(out, crate::builtins::encoding::default_external()))
 }
 fn k_exec(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
@@ -962,7 +971,10 @@ fn p_exit_bang(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
 }
 
 /// Boot.
+extern "C" fn sig_do_nothing(_sig: i32) {}
 pub fn init(c: &mut Ctx) {
+    // CRuby's SIGPIPE handler (a write sees EPIPE) in place of the SIG_IGN Rust's runtime set before main
+    sys::signal(13, sys::SigAction::Catch(sig_do_nothing));
     let vmr = c.vm();
     let p = define_module(c, "Process");
     vmr.m_process.set(p);

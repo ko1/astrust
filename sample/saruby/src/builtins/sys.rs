@@ -244,11 +244,12 @@ pub fn ioctl_buf(fd: c_int, req: u64, buf: &mut [u8]) -> c_int { unsafe { ffi::s
 // ---- signals and time -----------------------------------------------------------------------
 /// Disposition for `signal`.
 pub enum SigAction { Default, Ignore, Catch(extern "C" fn(c_int)) }
-/// signal(2). SAFETY: a handler is an `extern "C" fn`, so the address is valid; what it may do
+/// signal(2); the old disposition (SIG_DFL 0, SIG_IGN 1, SIG_ERR usize::MAX, else a handler's address).
+/// SAFETY: a handler is an `extern "C" fn`, so the address is valid; what it may do
 /// is its own contract (the one handler, process::on_signal, only sets an atomic).
-pub fn signal(sig: c_int, a: SigAction) {
+pub fn signal(sig: c_int, a: SigAction) -> usize {
     let h = match a { SigAction::Default => 0, SigAction::Ignore => 1, SigAction::Catch(f) => f as usize };
-    unsafe { ffi::signal(sig, h); }
+    unsafe { ffi::signal(sig, h) }
 }
 /// Block every signal in the calling thread.
 pub fn block_all_signals() {

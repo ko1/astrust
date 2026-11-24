@@ -198,16 +198,18 @@ fn env_shift(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
 /// ENV.replace: every name and value is checked before the environment changes.
 fn env_replace(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let Some(h) = check_hash(c, a[0])? else { return type_err(c, format!("no implicit conversion of {} into Hash", crate::builtins::kernel::class_name_for_err(c, a[0]))) };
+    // env_replace_i: each pair is set as it comes (an error keeps the ones before it), the rest deleted after
+    let old = pairs();
     let mut want = vec![];
     let mut i = 0;
     while let Some((k, v)) = c.hash_entry_at(h, i) {
         i += 1;
         if k == UNDEF { continue; }
         let kb = name_arg(c, k, "name")?; let vb = name_arg(c, v, "value")?;
-        want.push((kb, vb));
+        set(c, &kb, Some(&vb))?;
+        want.push(kb);
     }
-    for (k, v) in &want { set(c, k, Some(v))?; }
-    for (k, _) in pairs() { if !want.iter().any(|w| w.0 == k) { set(c, &k, None)?; } }
+    for (k, _) in old { if !want.contains(&k) { set(c, &k, None)?; } }
     Ok(s)
 }
 /// ENV.update / merge!: like ENV[k] = v per pair (nil deletes), the block resolves existing names.

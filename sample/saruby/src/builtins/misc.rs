@@ -294,6 +294,11 @@ pub fn warning_category_enabled(i: usize) -> bool { WARN_CATS.load(Relaxed) & (1
 fn warning_warn(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     if !is_string(a[0]) { return type_err(c, format!("wrong argument type {} (expected String)", class_name_for_err(c, a[0]))); }
+    // rb_warning_s_warn: nothing for a category that is off
+    if let Some(h) = kw_arg(c, a) {
+        let cat = crate::hash::hash_get_opt(c, h, sym_value("category"))?.unwrap_or(NIL);
+        if cat != NIL { let i = warning_category(c, cat)?; if !warning_category_enabled(i) { return Ok(NIL); } }
+    }
     let b = c.str_bytes(a[0]).to_vec(); stderr_write(c, &b)?; Ok(NIL)
 }
 // Finalizers (gc/default.c): FIN_TABLE maps an object to [object_id, callable...] by identity with weak

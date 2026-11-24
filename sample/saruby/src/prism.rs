@@ -10,6 +10,8 @@ extern "C" {
     fn pm_buffer_value(b: *const PmBuffer) -> *const c_char;
     fn pm_buffer_length(b: *const PmBuffer) -> usize;
     fn pm_serialize_parse(b: *mut PmBuffer, src: *const u8, size: usize, data: *const c_char);
+    fn pm_serialize_lex(b: *mut PmBuffer, src: *const u8, size: usize, data: *const c_char);
+    fn pm_serialize_parse_errors_format(b: *mut PmBuffer, src: *const u8, size: usize, data: *const c_char, format: i32) -> i8;
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -76,14 +78,46 @@ include!("prism_opts.rs");
 pub fn parse(src: &[u8], o: &ParseOpts) -> ParseResult { read_serialized(&serialize(src, o)) }
 
 /// pm_serialize_parse's output for `src`.
-pub fn serialize(src: &[u8], o: &ParseOpts) -> Vec<u8> {
+pub fn serialize(src: &[u8], o: &ParseOpts) -> Vec<u8> { call(src, o, 0).1 }
+
+/// The error level and message prism (pm_errors_format) gives a source's errors, as CRuby's
+/// pm_parse_process_error: `format` 1 plain, 2 bold, 3 color.  The source is parsed again (errors only).
+pub fn format_errors(src: &[u8], o: &ParseOpts, format: i32) -> (u8, Vec<u8>, String) {
+    let (lv, v) = call(src, o, format);
+    // the buffer: the source encoding's name, NUL, the message
+    let z = v.iter().position(|&b| b == 0).unwrap_or(0);
+    (lv.max(0) as u8, v[(z + 1).min(v.len())..].to_vec(), String::from_utf8_lossy(&v[..z]).into_owned())
+}
+
+/// The tokens of pm_serialize_lex (the lexer's callback, in lexing order): (type, start, length, lex state).
+pub fn lex(src: &[u8], o: &ParseOpts) -> Vec<(u32, u32, u32, u32)> {
+    let v = call(src, o, -1).1;
+    let mut r = Reader { buf: &v, pos: 0 };
+    let mut t = vec![];
+    loop {
+        let ty = r.varu();
+        if ty == 0 { break; }
+        t.push((ty, r.varu(), r.varu(), r.varu()));
+    }
+    t
+}
+/// The messages of a parse's errors, in prism's order.
+pub fn error_messages(src: &[u8], o: &ParseOpts) -> Vec<String> {
+    let v = serialize(src, o);
+    read_prefix(&mut Reader { buf: &v, pos: 0 }).errors.into_iter().map(|d| d.msg).collect()
+}
+
+/// `format` 0: pm_serialize_parse; -1: pm_serialize_lex; else pm_serialize_parse_errors_format.
+fn call(src: &[u8], o: &ParseOpts, format: i32) -> (i8, Vec<u8>) {
     let opts = build_options(o);
+    // SAFETY: prism reads `src` / `opts` and writes only the buffer it allocated, copied out before it is freed
     unsafe {
         let b = pm_buffer_new();
-        pm_serialize_parse(b, src.as_ptr(), src.len(), opts.as_ptr() as *const c_char);
+        let (s, n, d) = (src.as_ptr(), src.len(), opts.as_ptr() as *const c_char);
+        let lv = match format { 0 => { pm_serialize_parse(b, s, n, d); 0 } -1 => { pm_serialize_lex(b, s, n, d); 0 } f => pm_serialize_parse_errors_format(b, s, n, d, f) };
         let v = std::slice::from_raw_parts(pm_buffer_value(b) as *const u8, pm_buffer_length(b)).to_vec();
         pm_buffer_free(b);
-        v
+        (lv, v)
     }
 }
 
