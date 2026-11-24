@@ -284,30 +284,42 @@ fn syntax_err_init(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     ivar_set_raw(c, slf, s::mesg, m);
     Ok(NIL)
 }
-/// syntax_suggest's SyntaxError#detailed_message(highlight: true, syntax_suggest: true, **): the default gem prepends
-/// it at boot (syntax_suggest/core_ext); the search itself is loaded on the first use.
+/// syntax_suggest's SyntaxError#detailed_message(highlight: true, syntax_suggest: true, **kwargs), in a module
+/// prepended to SyntaxError at boot as the default gem's core_ext; the search itself is loaded on the first use.
+static SS_MOD: crate::heap::Global = crate::heap::Global::new();
 fn syntax_err_detailed_message(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
-    if crate::builtins::syntax_suggest::disabled() { return exc_detailed_message(c, slf, a, b); }
     let kw = kw_arg(c, a);
+    if crate::builtins::syntax_suggest::disabled() { return super_from_ss(c, slf, a, b, kw.is_some()); }
+    // `super` passes highlight:, syntax_suggest: and the rest as keywords
+    let h = c.hash_new();
+    if let Some(k) = kw { for (x, v) in c.hash_pairs(k) { crate::hash::hash_set(c, h, x, v)?; } }
+    let highlight = match crate::hash::hash_get_opt(c, h, sym_value("highlight"))? { Some(v) => v, None => { crate::hash::hash_set(c, h, sym_value("highlight"), TRUE)?; TRUE } };
+    let ss = match crate::hash::hash_get_opt(c, h, sym_value("syntax_suggest"))? { Some(v) => v, None => { crate::hash::hash_set(c, h, sym_value("syntax_suggest"), TRUE)?; TRUE } };
     let saved = (c.errinfo, c.esc_tag, c.esc_tag_v);
-    let sup = (|| {
-        let highlight = if hash_has(c, kw, "highlight")? { highlight_kw(c, kw)?.truthy() } else { true };
-        let ss = match kw { Some(h) => crate::hash::hash_get_opt(c, h, sym_value("syntax_suggest"))?.unwrap_or(TRUE), None => TRUE };
-        let m = funcall(c, slf, s::message, &[], std::ptr::null())?;
-        let m = check_str(c, m)?;
-        let o = decorate_message(c, slf, m, highlight);
-        Ok((c.str_new(&o), highlight, ss))
-    })();
     // its `rescue => e` returns `message`, still nil when `super` raised
-    let (msg, highlight, ss) = match sup {
-        Ok(x) => x,
+    let msg = match super_from_ss(c, slf, &[h], b, true) {
+        Ok(m) => m,
         Err(e) if c.esc == EscKind::Raise && is_kind_of(c, c.esc_val, c.vm().c_standard_error.get()) => { let _ = e; c.esc = EscKind::None; (c.errinfo, c.esc_tag, c.esc_tag_v) = saved; return Ok(NIL); }
         Err(e) => return Err(e),
     };
     if !ss.truthy() { return Ok(msg); }
     let path = funcall(c, slf, intern(b"path"), &[], std::ptr::null())?;
-    if path == NIL { return Ok(msg); }
-    crate::builtins::syntax_suggest::annotate(c, path, highlight, msg)
+    if path == NIL || !is_string(msg) { return Ok(msg); }
+    crate::builtins::syntax_suggest::annotate(c, path, highlight.truthy(), msg)
+}
+/// `super` from the prepended module's #detailed_message.
+fn super_from_ss(c: &mut Ctx, slf: Value, a: &[Value], b: Blk, kw: bool) -> RV {
+    let mid = s::detailed_message;
+    let me = super_method(c, class_of(slf), SS_MOD.get(c), mid);
+    if me.is_null() { return exc_detailed_message(c, slf, a, b); }
+    let base = c.top();
+    stack_check(c, a.len() + 4)?;
+    base[0].set(slf); base[1].set(NIL);
+    for (i, x) in a.iter().enumerate() { base[2 + i].set(*x); }
+    c.set_sp(base, 2 + a.len());
+    let r = invoke(c, me, slf, base, a.len() as u32, b, CF_FCALL | if kw { CF_KW } else { 0 });
+    c.set_sp(base, 0);
+    r
 }
 fn hash_has(c: &mut Ctx, h: Option<Value>, k: &str) -> Result<bool, Esc> {
     match h { Some(h) => Ok(crate::hash::hash_get_opt(c, h, sym_value(k))?.is_some()), None => Ok(false) }
@@ -799,7 +811,10 @@ pub fn init(c: &mut Ctx) {
     define_cfunc(c, e, "detailed_message", exc_detailed_message, -1);
     let se = vmr.c_syntax_error.get();
     define_private_cfunc(c, se, "initialize", syntax_err_init, -1);
-    define_cfunc(c, se, "detailed_message", syntax_err_detailed_message, -1);
+    let m = new_module(c);
+    define_cfunc(c, m, "detailed_message", syntax_err_detailed_message, -1);
+    prepend_module(c, se, m);
+    SS_MOD.set(c, m);
     define_cfunc(c, e, "inspect", exc_inspect, 0);
     define_cfunc(c, e, "backtrace", exc_backtrace, 0);
     define_cfunc(c, e, "set_backtrace", exc_set_backtrace, 1);
