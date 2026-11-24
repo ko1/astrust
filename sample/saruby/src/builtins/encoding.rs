@@ -152,6 +152,25 @@ pub const ENC_ISO_8859_1: u8 = 22;
 static SINGLE_IDX: OnceLock<[u8; NENC]> = OnceLock::new();
 static DEFAULT_EXTERNAL: AtomicU8 = AtomicU8::new(ENC_UTF8);
 static DEFAULT_INTERNAL: AtomicI32 = AtomicI32::new(-1);
+// the locale's encoding (rb_locale_encindex) and nl_langinfo(CODESET), set once at boot
+static LOCALE: AtomicU8 = AtomicU8::new(ENC_UTF8);
+static LOCALE_CHARMAP: OnceLock<Vec<u8>> = OnceLock::new();
+/// setlocale + nl_langinfo once; default_external starts as the locale's encoding (an unknown charmap is UTF-8).
+pub fn init_locale() {
+    let cs = LOCALE_CHARMAP.get_or_init(crate::builtins::sys::locale_codeset);
+    let special = std::str::from_utf8(cs).is_ok_and(|n| ["locale", "external", "filesystem", "internal"].iter().any(|x| x.eq_ignore_ascii_case(n)));
+    let e = if special { None } else { find_enc(cs) }.unwrap_or(ENC_UTF8);
+    LOCALE.store(e, Relaxed);
+    DEFAULT_EXTERNAL.store(e, Relaxed);
+}
+pub fn locale_enc() -> u8 { LOCALE.load(Relaxed) }
+/// -E ext[:int] / -U (command line, after boot): unknown names are an error as in CRuby.
+pub fn set_cmdline_encodings(ext: Option<&str>, int: Option<&str>) -> Result<(), String> {
+    let f = |n: &str| find_enc(n.as_bytes()).ok_or_else(|| format!("unknown encoding name - {}", n));
+    if let Some(e) = ext.filter(|e| !e.is_empty()) { DEFAULT_EXTERNAL.store(f(e)?, Relaxed); }
+    if let Some(i) = int.filter(|i| !i.is_empty()) { DEFAULT_INTERNAL.store(f(i)? as i32, Relaxed); }
+    Ok(())
+}
 
 #[inline] pub fn kind(enc: u8) -> EK { ENCS.get(enc as usize).map(|d| d.kind).unwrap_or(Bin) }
 pub fn enc_name(enc: u8) -> &'static str { ENCS.get(enc as usize).map(|d| d.name).unwrap_or("ASCII-8BIT") }
@@ -489,7 +508,7 @@ pub fn transcode(c: &mut Ctx, src: &[u8], from: u8, to: u8, o: &TcOpts) -> Resul
 pub fn find_enc(name: &[u8]) -> Option<u8> {
     let n = std::str::from_utf8(name).ok()?;
     if n.eq_ignore_ascii_case("internal") { return Some(default_internal().unwrap_or(ENC_BINARY)); }   // unset: BINARY (force_encoding)
-    if n.eq_ignore_ascii_case("locale") { return Some(ENC_UTF8); }
+    if n.eq_ignore_ascii_case("locale") { return Some(locale_enc()); }
     if n.eq_ignore_ascii_case("external") || n.eq_ignore_ascii_case("filesystem") { return Some(default_external()); }
     for (i, d) in ENCS.iter().enumerate() {
         if d.name.eq_ignore_ascii_case(n) || d.aliases.iter().any(|a| a.eq_ignore_ascii_case(n)) { return Some(i as u8); }
@@ -627,7 +646,10 @@ fn enc_s_set_default_internal(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> R
     DEFAULT_INTERNAL.store(e as i32, Relaxed);
     Ok(a[0])
 }
-fn enc_s_locale_charmap(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.str_new_enc(b"UTF-8", ENC_ASCII)) }
+fn enc_s_locale_charmap(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
+    let cs = LOCALE_CHARMAP.get().map(|v| v.as_slice()).unwrap_or(b"UTF-8");
+    Ok(c.str_new_enc(cs, ENC_ASCII))
+}
 /// Encoding of an object for compatible?: strings, symbols, regexps, encodings.
 /// rb_enc_get_index for Encoding.compatible?: (index, Some(String) when `v` is a String).
 fn obj_enc(c: &mut Ctx, v: Value) -> Result<Option<(u8, Option<Value>)>, Esc> {

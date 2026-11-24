@@ -212,7 +212,9 @@ pub fn hash_inspect(c: &mut Ctx, slf: Value) -> RV {
         if k.is_sym() {
             let nm = crate::symbol::sym_bytes(k.as_sym());
             let simple = crate::string::sym_is_simple(nm) && !nm.ends_with(b"=") || (nm.ends_with(b"?") || nm.ends_with(b"!"));
-            if simple && !nm.is_empty() && (nm[0].is_ascii_alphabetic() || nm[0] == b'_' || nm[0] >= 0x80) { out.extend_from_slice(nm); out.extend_from_slice(b": "); }
+            // rb_str_symname_p: a non-ASCII name is quoted unless the inspect result encoding is UTF-8
+            let printable = crate::string::inspect_resenc() == ENC_UTF8 || crate::string::is_ascii(nm);
+            if simple && printable && !nm.is_empty() && (nm[0].is_ascii_alphabetic() || nm[0] == b'_' || nm[0] >= 0x80) { out.extend_from_slice(nm); out.extend_from_slice(b": "); }
             else { out.extend_from_slice(inspect_bytes(nm, ENC_UTF8).as_bytes()); out.extend_from_slice(b": "); }
         } else {
             let ks = inspect_value(c, k)?;

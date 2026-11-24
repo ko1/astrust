@@ -290,8 +290,8 @@ pub fn inspect_bytes(b: &[u8], enc: u8) -> String {
     out.push('"');
     let uni = en::is_unicode(enc) && !en::is_dummy(enc);
     let ac = en::ascii_compat(enc);
-    // result encoding is UTF-8: only UTF-8 strings may print non-ASCII characters raw
-    let same = en::kind(enc) == en::EK::Utf8;
+    // non-ASCII characters print raw only in the result encoding (default_internal, else default_external)
+    let same = en::kind(enc) == en::EK::Utf8 && enc == inspect_resenc();
     let code_at = |i: usize| -> Option<u32> { en::precise_len(enc, b, i).map(|l| en::char_code(enc, &b[i..i + l])) };
     let mut i = 0;
     while i < b.len() {
@@ -351,8 +351,11 @@ pub fn uni_printable(cp: u32) -> bool {
     }
 }
 
+/// rb_str_inspect's resenc.
+pub fn inspect_resenc() -> u8 { crate::builtins::encoding::default_internal().unwrap_or_else(crate::builtins::encoding::default_external) }
 pub fn sym_inspect(name: &[u8]) -> String {
-    if sym_is_simple(name) { format!(":{}", String::from_utf8_lossy(name)) } else { format!(":{}", inspect_bytes(name, ENC_UTF8)) }
+    // rb_str_symname_p: a non-ASCII name is quoted unless the result encoding is the symbol's
+    if sym_is_simple(name) && (inspect_resenc() == ENC_UTF8 || is_ascii(name)) { format!(":{}", String::from_utf8_lossy(name)) } else { format!(":{}", inspect_bytes(name, ENC_UTF8)) }
 }
 
 pub fn sym_is_simple(n: &[u8]) -> bool {
@@ -385,6 +388,10 @@ pub fn to_rstring(c: &mut Ctx, v: Value) -> Result<String, Esc> {
     Ok(String::from_utf8_lossy(c.str_bytes(s)).into_owned())
 }
 
+// set once a method_missing / respond_to? is defined after boot (check_array's fast path until then)
+static MM_REDEF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[inline] pub fn mm_redef() -> bool { MM_REDEF.load(std::sync::atomic::Ordering::Relaxed) }
+pub fn note_mm_redef() { MM_REDEF.store(true, std::sync::atomic::Ordering::Relaxed) }
 /// Implicit conversion to String (to_str).
 /// rb_check_funcall without arguments: None when `v` does not respond to `mid`.  A respond_to? of its
 /// own is asked first; a method_missing of its own is tried when there is no method (NoMethodError: None).

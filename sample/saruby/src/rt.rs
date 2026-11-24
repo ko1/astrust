@@ -116,6 +116,7 @@ pub fn redef_note(c: &Ctx, klass: Value, mid: Sym) -> bool {
     if !booted() { return false; }
     if mid == s::puts || matches!(crate::symbol::sym_bytes(mid), b"write" | b"putc") { crate::builtins::io::note_out_method(c, klass); }
     if mid == s::lambda { LAMBDA_REDEF.store(true, Relaxed); }
+    if mid == s::method_missing || mid == s::respond_to_p { crate::string::note_mm_redef(); }
     let before = redef_word();
     // a refinement of a basic operation turns its inline fast path off everywhere
     let klass = if c.class(klass).refined { c.class(klass).attached } else { klass };
@@ -967,7 +968,8 @@ pub fn srb_super(c: &mut Ctx, base: Stk, tmp: Value, kw: Value, blkv: Value, ci:
     let me = unsafe { &*f.me };
     let slf = fp[0].get();
     let klass = class_of(slf);
-    let owner = if f.defined_class() != NIL { f.defined_class() } else { me.owner };
+    // a define_method body searches from its own owner, not the class its block was made under
+    let owner = if f.defined_class() != NIL && !matches!(me.kind, MKind::Bmethod(_)) { f.defined_class() } else { me.owner };
     let sm = super_method(c, klass, owner, me.name);
     let fblk = f.blk;
     let n = c.ary(tmp).len();
