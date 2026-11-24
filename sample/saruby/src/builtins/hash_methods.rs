@@ -7,7 +7,6 @@ use crate::heap::no_legacy_hn::*;
 use crate::array::*;
 use crate::builtins::kernel::*;
 use crate::hash::*;
-use crate::string::*;
 use crate::symbol::{intern, s};
 use crate::value::*;
 use crate::vm::*;
@@ -239,12 +238,18 @@ pub fn hash_inspect(c: &mut Ctx, slf: Value) -> RV {
         if !first { c.rstring_mut(out).b.extend_from_slice(b", "); }
         let ks = if k.is_sym() {
             let nm = crate::symbol::sym_bytes(k.as_sym());
-            let simple = crate::string::sym_is_simple(nm) && !nm.ends_with(b"=") || (nm.ends_with(b"?") || nm.ends_with(b"!"));
-            // rb_str_symname_p: a non-ASCII name is quoted unless the inspect result encoding is UTF-8
-            let printable = crate::string::inspect_resenc() == ENC_UTF8 || crate::string::is_ascii(nm);
-            let mut b = if simple && printable && !nm.is_empty() && (nm[0].is_ascii_alphabetic() || nm[0] == b'_' || nm[0] >= 0x80) { nm.to_vec() } else { inspect_bytes(nm, ENC_UTF8).into_bytes() };
+            let enc = crate::builtins::symbol_methods::sym_encoding(k.as_sym());
+            // the name is checked in its UTF-8 form (a symbol of another encoding is converted)
+            let u8nm = if enc == ENC_UTF8 || enc == ENC_ASCII { Some(nm.to_vec()) } else { crate::builtins::econv::convert_string(crate::builtins::encoding::enc_name(enc), "UTF-8", nm) };
+            let simple = u8nm.as_deref().is_some_and(|u| (crate::string::sym_is_simple(u) && !u.ends_with(b"=") || (u.ends_with(b"?") || u.ends_with(b"!"))) && !u.is_empty() && (u[0].is_ascii_alphabetic() || u[0] == b'_' || u[0] >= 0x80));
+            // rb_str_symname_p: a non-ASCII name is quoted unless the inspect result encoding is the symbol's
+            let printable = crate::string::inspect_resenc() == enc || crate::string::is_ascii(nm);
+            let (mut b, e) = if simple && printable { (nm.to_vec(), if nm.is_ascii() { ENC_ASCII } else { enc }) } else {
+                let r = crate::string::inspect_resenc();
+                (crate::string::inspect_vec(nm, if nm.is_ascii() { ENC_ASCII } else { enc }), if crate::builtins::encoding::ascii_compat(r) { r } else { ENC_ASCII })
+            };
             b.extend_from_slice(b": ");
-            let e = if b.is_ascii() { ENC_ASCII } else { ENC_UTF8 };
+            let e = if b.is_ascii() { ENC_ASCII } else { e };
             c.str_new_enc(&b, e)
         } else {
             let ks = inspect_value(c, k)?;

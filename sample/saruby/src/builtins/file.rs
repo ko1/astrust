@@ -1204,8 +1204,14 @@ fn d_path(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let p = ivar_get
 fn d_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let p = ivar_get(c, s, iv("@path"));
     let k = class_path(c, real_class_of(c, s));
-    let s = if p != NIL { format!("#<{}:{}>", k, String::from_utf8_lossy(c.str_bytes(p))) }
-        else if ivar_get(c, s, iv("@ents")) == NIL { format!("#<{}: uninitialized>", k) } else { crate::builtins::kernel::any_to_s_str(c, s) };
+    if p != NIL {
+        // dir_inspect: rb_str_buf_new + appends, so a non-ASCII path brings its encoding
+        let out = c.str_new_enc(format!("#<{}:", k).as_bytes(), crate::object::ENC_BINARY);
+        crate::string::str_append_str(c, out, p)?;
+        c.rstring_mut(out).b.push(b'>');
+        return Ok(out);
+    }
+    let s = if ivar_get(c, s, iv("@ents")) == NIL { format!("#<{}: uninitialized>", k) } else { crate::builtins::kernel::any_to_s_str(c, s) };
     Ok(c.str_new(s.as_bytes()))
 }
 /// Dir.fchdir(fd) [{ }]: a block runs there and returns to the directory it came from (by descriptor).
