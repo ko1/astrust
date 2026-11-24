@@ -336,8 +336,9 @@ fn rat_round_common(c: &mut Ctx, s: Value, a: &[Value], mode: u8) -> RV {
     if pos.is_empty() { return Ok(r_by_mode(c, mode, half, n, d)); }
     let nd = pos[0];
     if !is_integer(nd) { return type_err(c, "not an integer"); }
-    if !nd.is_fixnum() { return if isneg(c, nd) { Ok(Value::fix(0)) } else { Ok(s) }; }
-    Ok(rat_round_nd(c, s, nd.as_fix(), mode, half))
+    let nd = match if nd.is_fixnum() { Some(nd.as_fix()) } else { c.to_big(nd).to_i64() } { Some(k) => k, None => return arg_err(c, "exponent is too large") };
+    if nd.unsigned_abs().saturating_mul(4) > 1u64 << 34 { return arg_err(c, "exponent is too large"); }
+    Ok(rat_round_nd(c, s, nd, mode, half))
 }
 /// round/floor/ceil/truncate (mode r/f/c/t) of a Rational to k decimal digits
 pub fn rat_round_nd(c: &mut Ctx, s: Value, k: i64, mode: u8, half: u8) -> Value {

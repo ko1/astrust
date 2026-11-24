@@ -353,6 +353,7 @@ fn sio_getbyte(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 fn unget_bytes(c: &mut Ctx, slf: Value, cp: Option<&[u8]>, cl: usize) -> RV {
     let p = *st_mut(c, slf);
     let pos = p.pos as usize;
+    room(c, pos.saturating_add(cl))?;
     let r = c.str_modify(p.string)?;
     let len = r.b.len();
     let npos;
@@ -707,6 +708,7 @@ fn write_one(c: &mut Ctx, slf: Value, x: Value) -> Result<i64, Esc> {
         let de = if enc == ENC_BINARY || enc2 == ENC_BINARY { enc } else { c.str_enc(s2) };
         cat_enc(c, p.string, &data, de)?;
     } else {
+        room(c, (pos as usize).saturating_add(len))?;
         let r = c.str_modify(p.string)?;
         let pu = pos as usize;
         if pu + len > r.b.len() { r.b.resize(pu + len, 0); }
@@ -802,11 +804,18 @@ fn sio_write_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     io_write(c, slf, pos[0])
 }
 fn sio_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let p = strio(c, slf)?; Ok(Value::fix(slen(c, &p))) }
+/// NoMemoryError for a buffer CRuby's malloc would refuse (> 1 TiB).
+fn room(c: &mut Ctx, n: usize) -> Result<(), Esc> {
+    if n >= i64::MAX as usize { return arg_err(c, "string size too big"); }
+    if n > 1usize << 40 { return err(c, c.vm().c_no_memory_error.get(), "failed to allocate memory"); }
+    Ok(())
+}
 fn sio_truncate(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let p = writable(c, slf)?;
     let l = num_to_long(c, a[0])?;
     if l < 0 { return error_inval(c, Some("negative length")); }
     if p.string == NIL { return Ok(FALSE); }
+    room(c, l as usize)?;
     c.str_modify(p.string)?.b.resize(l as usize, 0);
     Ok(Value::fix(0))
 }

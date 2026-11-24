@@ -373,8 +373,8 @@ pub fn format_ary(c: &mut Ctx, fmtv: Value, args: &[Value], ary: Value) -> RV {
                     if flags & FWIDTH != 0 { return arg_err(c, "width given twice"); }
                     i += 1;
                     let wv = aster(c, &fmt, &mut i, &mut st)?;
-                    let w = num_to_long(c, wv)?;
-                    if w < 0 { flags |= FMINUS; width = -w; } else { width = w; }
+                    let w = crate::builtins::numeric_methods::num_to_int32(c, wv)?;
+                    if w < 0 { flags |= FMINUS; width = -w; if width > i32::MAX as i64 { return arg_err(c, "width too big"); } } else { width = w; }
                     flags |= FWIDTH;
                 }
                 b'.' => {
@@ -384,7 +384,7 @@ pub fn format_ary(c: &mut Ctx, fmtv: Value, args: &[Value], ary: Value) -> RV {
                     if i < fmt.len() && fmt[i] == b'*' {
                         i += 1;
                         let pv = aster(c, &fmt, &mut i, &mut st)?;
-                        let p = num_to_long(c, pv)?;
+                        let p = crate::builtins::numeric_methods::num_to_int32(c, pv)?;
                         if p < 0 { flags &= !FPREC; } else { prec = p; }
                     } else {
                         let s0 = i; while i < fmt.len() && fmt[i].is_ascii_digit() { i += 1; }

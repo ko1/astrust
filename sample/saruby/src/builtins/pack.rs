@@ -167,6 +167,21 @@ fn one_kw(c: &mut Ctx, a: &[Value], key: &str) -> Result<(usize, Option<Value>),
     Ok((a.len() - 1, val))
 }
 
+/// Room for `add` more bytes: ArgumentError past the long range, NoMemoryError when malloc would fail.
+fn reserve_more(c: &mut Ctx, res: &mut Vec<u8>, add: usize) -> Result<(), Esc> {
+    if res.len().saturating_add(add) >= i64::MAX as usize { return arg_err(c, "string size too big"); }
+    if res.try_reserve(add).is_err() { return err(c, c.vm().c_no_memory_error.get(), "failed to allocate memory"); }
+    Ok(())
+}
+/// unpack's trailing nils for a count beyond the data: the Array limits first (rb_ary_store).
+fn nil_fill(c: &mut Ctx, ary: Value, avail: usize, extra: usize) -> Result<(), Esc> {
+    let req = avail.saturating_add(extra);
+    if req - 1 >= (i64::MAX / 8) as usize { return err(c, c.vm().c_index_error.get(), format!("index {} too big", req - 1)); }
+    if req > 1 << 31 { return err(c, c.vm().c_no_memory_error.get(), "failed to allocate memory"); }
+    for _ in 0..extra { c.ary_push(ary, NIL); }
+    Ok(())
+}
+
 pub fn pack(c: &mut Ctx, ary: Value, a: &[Value]) -> RV {
     let (n, buffer) = one_kw(c, a, "buffer")?;
     if n != 1 { return argc_err(c, n, 1, 1); }
@@ -210,7 +225,7 @@ pub fn pack(c: &mut Ctx, ary: Value, a: &[Value]) -> RV {
                 let grow = match ty {
                     b'a' | b'A' | b'Z' => {
                         if plen >= len { res.extend_from_slice(&src[..len]); if d.star && ty == b'Z' { res.push(0); } }
-                        else { res.extend_from_slice(&src); res.resize(res.len() + len - plen, if ty == b'A' { b' ' } else { 0 }); }
+                        else { reserve_more(c, &mut res, len)?; res.extend_from_slice(&src); res.resize(res.len() + len - plen, if ty == b'A' { b' ' } else { 0 }); }
                         0
                     }
                     b'b' | b'B' => {
@@ -249,9 +264,9 @@ pub fn pack(c: &mut Ctx, ary: Value, a: &[Value]) -> RV {
                 let v = nextfrom!(); let f = to_float(c, v)?;
                 res.extend_from_slice(&if ty == b'G' { f.to_be_bytes() } else { f.to_le_bytes() });
             },
-            b'x' => res.resize(res.len() + len, 0),
+            b'x' => { reserve_more(c, &mut res, len)?; res.resize(res.len() + len, 0) }
             b'X' => { if res.len() < len { return arg_err(c, "X outside of string"); } res.truncate(res.len() - len); }
-            b'@' => { if len >= res.len() { res.resize(len, 0); } else { res.truncate(len); } }
+            b'@' => { if len >= res.len() { let add = len - res.len(); reserve_more(c, &mut res, add)?; res.resize(len, 0); } else { res.truncate(len); } }
             b'%' => return arg_err(c, "% is not supported"),
             b'U' => for _ in 0..len {
                 let v = nextfrom!(); let v = to_integer(c, v)?;
@@ -373,7 +388,7 @@ pub fn unpack(c: &mut Ctx, str: Value, a: &[Value], blk: Blk, one: bool) -> RV {
                 let v = if signed { let sh = 64 - sz * 8; c.int_from_i64(((x << sh) as i64) >> sh) } else { c.int_from_i128(x as i128) };
                 push!(v);
             }
-            if mode == Mode::Array { for _ in 0..extra { c.ary_push(ary, NIL); } }
+            if mode == Mode::Array && extra > 0 { nil_fill(c, ary, len, extra)?; }
             continue;
         }
         match ty {
@@ -426,7 +441,7 @@ pub fn unpack(c: &mut Ctx, str: Value, a: &[Value], blk: Blk, one: bool) -> RV {
                     };
                     let v = c.float_new(f); push!(v);
                 }
-                if mode == Mode::Array { for _ in 0..extra { c.ary_push(ary, NIL); } }
+                if mode == Mode::Array && extra > 0 { nil_fill(c, ary, len, extra)?; }
             }
             b'U' => {
                 if len > send - s { len = send - s; }

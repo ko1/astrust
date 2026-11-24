@@ -4,7 +4,7 @@
 #![forbid(unsafe_code)]
 use crate::array::*;
 use crate::builtins::kernel::*;
-use crate::builtins::numeric_methods::num_to_long;
+use crate::builtins::numeric_methods::{num_to_int32, num_to_long};
 #[allow(unused_imports)]
 use crate::heap::no_legacy::*;   // the old accessors cannot be named here
 #[allow(unused_imports)]
@@ -70,7 +70,7 @@ fn substr(c: &mut Ctx, v: Value, start: i64, len: i64) -> Option<Value> {
     let mut st = start;
     if st < 0 { st += n; }
     if st < 0 || st > n || len < 0 { return None; }
-    let e = (st + len).min(n);
+    let e = st.saturating_add(len).min(n);
     let bs = char_to_byte(c, v, st as usize)?; let be = char_to_byte(c, v, e as usize)?;
     Some(c.str_from_vec_enc(c.str_bytes(v)[bs..be].to_vec(), c.str_enc(v)))
 }
@@ -108,7 +108,13 @@ pub fn str_aref(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
         return Ok(if m == NIL { NIL } else { regexp::nth_match(c, m, 0) });
     }
     let i = num_to_long(c, x)?;
-    str_aref(c, slf, &[Value::fix(i)])
+    Ok(str_index1(c, slf, i))
+}
+fn str_index1(c: &mut Ctx, slf: Value, i: i64) -> Value {
+    let n = c.str_char_len(slf) as i64;
+    let i = if i < 0 { i + n } else { i };
+    if i < 0 || i >= n { return NIL; }
+    substr(c, slf, i, 1).unwrap_or(NIL)
 }
 
 pub fn find_bytes(h: &[u8], n: &[u8], from: usize) -> Option<usize> {
@@ -179,7 +185,7 @@ cfn!(s_initialize, |c, slf, a, _b| {
     }
     if let Some(h) = kw {
         if let Some(e) = crate::hash::hash_get_opt(c, h, sym_value("encoding"))? { let e = crate::builtins::encoding::to_enc(c, e)?; c.str_modify(slf)?.enc = e; }
-        if let Some(cap) = crate::hash::hash_get_opt(c, h, sym_value("capacity"))? { num_to_long(c, cap)?; }
+        if let Some(cap) = crate::hash::hash_get_opt(c, h, sym_value("capacity"))? { let n = num_to_long(c, cap)?; if n > 1 << 40 { return err(c, c.vm().c_no_memory_error.get(), "failed to allocate memory"); } }
     }
     Ok(slf)
 });
@@ -200,8 +206,13 @@ cfn!(s_plus, |c, slf, a, b_| {
 cfn!(s_mul, |c, slf, a, b_| {
     let n = num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, "negative argument"); }
-    if (c.str_bytes(slf).len() as u128) * (n as u128) > (1u128 << 31) * 64 { return arg_err(c, "argument too big"); }
-    Ok(c.str_new_like(slf, c.str_bytes(slf).repeat(n as usize)))
+    let Some(total) = c.str_bytes(slf).len().checked_mul(n as usize).filter(|&t| t <= isize::MAX as usize) else { return arg_err(c, "argument too big") };
+    let mut out = reserve_bytes(c, total)?;
+    if total > 0 {
+        out.extend_from_slice(c.str_bytes(slf));
+        while out.len() < total { let k = out.len().min(total - out.len()); out.extend_from_within(..k); }
+    }
+    Ok(c.str_new_like(slf, out))
 });
 cfn!(s_mod, |c, slf, a, b_| {
     let x = a[0];
@@ -400,7 +411,7 @@ fn sym_enc_err(c: &mut Ctx, s: Value) -> RV {
 }
 cfn!(s_to_i, |c, slf, a, b_| {
     need_ascii_compat(c, slf)?;
-    let base = if a.is_empty() { 10 } else { num_to_long(c, a[0])? };
+    let base = if a.is_empty() { 10 } else { num_to_int32(c, a[0])? };
     if base == 1 || base > 36 || base < 0 { return arg_err(c, format!("invalid radix {}", base)); }
     let n = str_to_big(c.str_bytes(slf), base as u32, false);
     Ok(n.map_or(Value::fix(0), |n| c.big_to_value(n)))
@@ -1183,6 +1194,12 @@ fn squeeze_impl(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<Vec<u8>, Esc> {
 }
 cfn!(s_squeeze, |c, slf, a, b_| { let v = squeeze_impl(c, slf, a)?; Ok(c.str_new_like(slf, v)) });
 cfn!(s_squeeze_b, |c, slf, a, b_| { let v = squeeze_impl(c, slf, a)?; check_frozen(c, slf)?; if v.len() == c.str_bytes(slf).len() { return Ok(NIL); } c.str_modify(slf)?.b = v.into(); Ok(slf) });
+/// A Vec with room for `n` bytes, or NoMemoryError (CRuby's failed malloc).
+fn reserve_bytes(c: &mut Ctx, n: usize) -> Result<Vec<u8>, Esc> {
+    let mut v = Vec::new();
+    if v.try_reserve_exact(n).is_err() { return err(c, c.vm().c_no_memory_error.get(), "failed to allocate memory"); }
+    Ok(v)
+}
 fn justify(c: &mut Ctx, slf: Value, a: &[Value], mode: u8) -> RV {
     check_argc(c, a, 1, 2)?;
     let w = num_to_long(c, a[0])?;
@@ -1195,9 +1212,12 @@ fn justify(c: &mut Ctx, slf: Value, a: &[Value], mode: u8) -> RV {
     let n = c.str_char_len(slf) as i64;
     if w <= n { return Ok(c.str_copy(slf)); }
     let total = (w - n) as usize;
-    let mk = |k: usize| -> Vec<u8> { let mut v = vec![]; for i in 0..k { v.extend_from_slice(&padchars[i % padchars.len()]); } v };
+    let maxw = padchars.iter().map(|p| p.len()).max().unwrap_or(1);
+    let Some(bytes) = total.checked_mul(maxw).and_then(|t| t.checked_add(c.str_bytes(slf).len())).filter(|&t| t < isize::MAX as usize) else { return arg_err(c, "argument too big") };
+    let mut out = reserve_bytes(c, bytes)?;
+    let mk = |out: &mut Vec<u8>, k: usize| { for i in 0..k { out.extend_from_slice(&padchars[i % padchars.len()]); } };
     let (l, r) = match mode { b'l' => (0, total), b'r' => (total, 0), _ => (total / 2, total - total / 2) };
-    let mut out = mk(l); out.extend_from_slice(c.str_bytes(slf)); out.extend(mk(r));
+    mk(&mut out, l); out.extend_from_slice(c.str_bytes(slf)); mk(&mut out, r);
     Ok(c.str_from_vec_enc(out, enc))
 }
 cfn!(s_ljust, |c, slf, a, b_| justify(c, slf, a, b'l'));
@@ -1222,7 +1242,7 @@ cfn!(s_ord, |c, slf, a, b_| {
         None => arg_err(c, format!("invalid byte sequence in {}", crate::builtins::encoding::enc_name(enc))),
     }
 });
-cfn!(s_sum, |c, slf, a, b_| { let bits = if a.is_empty() { 16 } else { num_to_long(c, a[0])? }; let s2: u64 = c.str_bytes(slf).iter().map(|&x| x as u64).sum(); Ok(Value::fix(if bits > 0 && bits < 63 { (s2 & ((1 << bits) - 1)) as i64 } else { s2 as i64 })) });
+cfn!(s_sum, |c, slf, a, b_| { let bits = if a.is_empty() { 16 } else { num_to_int32(c, a[0])? }; let s2: u64 = c.str_bytes(slf).iter().map(|&x| x as u64).sum(); Ok(Value::fix(if bits > 0 && bits < 63 { (s2 & ((1 << bits) - 1)) as i64 } else { s2 as i64 })) });
 cfn!(s_succ, |c, slf, a, b_| Ok(c.str_new_like(slf, succ_enc(c.str_bytes(slf), c.str_enc(slf)))));
 cfn!(s_succ_b, |c, slf, a, b_| { let v = succ_enc(c.str_bytes(slf), c.str_enc(slf)); c.str_modify(slf)?.b = v.into(); Ok(slf) });
 cfn!(s_upto, |c, slf, a, blk| {
@@ -1440,7 +1460,7 @@ fn subpos(c: &Ctx, v: Value, start: i64, len: i64) -> Option<(usize, usize)> {
     let n = c.str_char_len(v) as i64;
     let st = if start < 0 { start + n } else { start };
     if st < 0 || st > n || len < 0 { return None; }
-    Some((char_to_byte(c, v, st as usize)?, char_to_byte(c, v, (st + len).min(n) as usize)?))
+    Some((char_to_byte(c, v, st as usize)?, char_to_byte(c, v, st.saturating_add(len).min(n) as usize)?))
 }
 cfn!(s_slice_b, |c, slf, a, b_| {
     check_argc(c, a, 1, 2)?;
@@ -1482,7 +1502,19 @@ cfn!(s_slice_b, |c, slf, a, b_| {
     Ok(res)
 });
 cfn!(s_getbyte, |c, slf, a, b_| { let i = num_to_long(c, a[0])?; let n = c.str_bytes(slf).len() as i64; let i = if i < 0 { i + n } else { i }; Ok(if i >= 0 && i < n { Value::fix(c.str_bytes(slf)[i as usize] as i64) } else { NIL }) });
-cfn!(s_setbyte, |c, slf, a, b_| { let i = num_to_long(c, a[0])?; let v = num_to_long(c, a[1])?; let n = c.str_bytes(slf).len() as i64; let i2 = if i < 0 { i + n } else { i }; if i2 < 0 || i2 >= n { return err(c, c.vm().c_index_error.get(), format!("index {} out of string", i)); } c.str_modify(slf)?.b[i2 as usize] = v as u8; Ok(a[1]) });
+cfn!(s_setbyte, |c, slf, a, b_| {
+    let i = num_to_long(c, a[0])?;
+    let n = c.str_bytes(slf).len() as i64;
+    let i2 = if i < 0 { i + n } else { i };
+    if i2 < 0 || i2 >= n { return err(c, c.vm().c_index_error.get(), format!("index {} out of string", i)); }
+    // only the low byte matters: a bignum is masked, not range-checked
+    let v = if !a[1].is_fixnum() && is_integer(a[1]) { funcall(c, a[1], intern(b"&"), &[Value::fix(255)], std::ptr::null())?.as_fix() } else { num_to_long(c, a[1])? };
+    let n = c.str_bytes(slf).len() as i64;
+    let i2 = if i < 0 { i + n } else { i };
+    if i2 < 0 || i2 >= n { return err(c, c.vm().c_index_error.get(), format!("index {} out of string", i)); }
+    c.str_modify(slf)?.b[i2 as usize] = v as u8;
+    Ok(a[1])
+});
 cfn!(s_byteslice, |c, slf, a, b_| {
     let n = c.str_bytes(slf).len() as i64;
     check_argc(c, a, 1, 2)?;
@@ -1491,7 +1523,7 @@ cfn!(s_byteslice, |c, slf, a, b_| {
     let n = c.str_bytes(slf).len() as i64;   // again: a conversion may have changed self
     let st = if st < 0 { st + n } else { st };
     if st < 0 || st > n || ln < 0 || (single && st == n) { return Ok(NIL); }
-    let e = (st + ln).min(n);
+    let e = st.saturating_add(ln).min(n);
     Ok(c.str_sub(slf, st as usize..e as usize))
 });
 cfn!(s_unpack, |c, slf, a, b_| crate::builtins::pack::unpack(c, slf, a, b_, false));
@@ -1810,7 +1842,7 @@ cfn!(s_byterindex, |c, slf, a, b_| {
 fn byte_range(c: &mut Ctx, slf: Value, a: &[Value], n: i64) -> Result<(usize, usize), Esc> {
     let (st, ln) = if a.len() == 1 {
         if !is_range(a[0]) { return type_err(c, format!("wrong argument type {} (expected Range)", class_name_for_err(c, a[0]))); }
-        crate::range::range_beg_len(c, a[0], n, 1)?.unwrap()
+        crate::range::range_beg_len(c, a[0], n, 2)?.unwrap()
     } else {
         let (mut st, ln) = (num_to_long(c, a[0])?, num_to_long(c, a[1])?);
         if ln < 0 { return err(c, c.vm().c_index_error.get(), format!("negative length {}", ln)); }
@@ -1818,7 +1850,7 @@ fn byte_range(c: &mut Ctx, slf: Value, a: &[Value], n: i64) -> Result<(usize, us
         if st < 0 || st > n { let o = num_to_long(c, a[0])?; return err(c, c.vm().c_index_error.get(), format!("index {} out of string", o)); }
         (st, ln)
     };
-    let e = (st + ln).min(n);
+    let e = st.saturating_add(ln).min(n);
     check_char_boundary(c, slf, st as usize, "offset")?;
     check_char_boundary(c, slf, e as usize, "offset")?;
     Ok((st as usize, e as usize - st as usize))
@@ -1980,7 +2012,9 @@ fn w_justify(c: &mut Ctx, slf: Value, a: &[Value], b: Blk, f: CFunc, mode: u8) -
     let n = c.str_char_len(slf) as i64;
     let total = if w > n { (w - n) as usize } else { 0 };
     let (l, r) = match mode { b'l' => (0, total), b'r' => (total, 0), _ => (total / 2, total - total / 2) };
-    let mut out = vec![b' '; l]; out.extend_from_slice(c.str_bytes(slf)); out.extend(std::iter::repeat(b' ').take(r));
+    let Some(bytes) = total.checked_add(c.str_bytes(slf).len()).filter(|&t| t < isize::MAX as usize) else { return arg_err(c, "argument too big") };
+    let mut out = reserve_bytes(c, bytes)?;
+    out.resize(l, b' '); out.extend_from_slice(c.str_bytes(slf)); out.resize(out.len() + r, b' ');
     Ok(c.str_new_like(slf, out))
 }
 fn w_ljust(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { w_justify(c, slf, a, b, s_ljust, b'l') }

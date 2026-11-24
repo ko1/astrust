@@ -388,7 +388,7 @@ cfn!(int_gt, |c, s, a| int_rel(c, s, a[0], |o| o.is_gt(), s::gt));
 cfn!(int_ge, |c, s, a| int_rel(c, s, a[0], |o| o.is_ge(), s::ge));
 cfn!(#[inline] int_abs, |c, s, _a| Ok(if s.is_fixnum() { c.int_from_i64(s.as_fix().abs()) } else { c.big_to_value(c.big(s).abs()) }));
 cfn!(int_to_s, |c, s, a| {
-    let base = if a.is_empty() { 10 } else { num_to_long(c, a[0])? };
+    let base = if a.is_empty() { 10 } else { num_to_int32(c, a[0])? };
     if !(2..=36).contains(&base) { return arg_err(c, format!("invalid radix {}", base)); }
     let st = if s.is_fixnum() && base == 10 { s.as_fix().to_string() } else { c.to_big(s).to_string_radix(base as u32) };
     let v = c.str_new(st.as_bytes());

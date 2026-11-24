@@ -92,7 +92,7 @@ pub fn arith_seq_slice(c: &mut Ctx, seq: Value, ary: Value) -> RV {
     let alen = c.ary_len(ary) as i64;
     let step = if st == NIL { 1 } else { num_to_long(c, st)? };
     if step < 0 {
-        if excl && e != NIL { e = Value::fix(num_to_long(c, e)? + 1); excl = false; }
+        if excl && e != NIL { let e1 = num_to_long(c, e)?.saturating_add(1); e = c.int_from_i64(e1); excl = false; }
         std::mem::swap(&mut b, &mut e);
     }
     let oor = |c: &mut Ctx| -> RV { let s2 = inspect_str(c, seq)?; err(c, c.vm().c_range_error.get(), format!("{} out of range", s2)) };
@@ -103,7 +103,7 @@ pub fn arith_seq_slice(c: &mut Ctx, seq: Value, ary: Value) -> RV {
     let strict = step < -1 || step > 1;
     if beg < 0 { beg += alen; if beg < 0 { return if strict { oor(c) } else { Ok(NIL) }; } }
     if end < 0 { end += alen; }
-    if !ex { end += 1; }
+    if !ex { end = end.saturating_add(1); }
     if !strict { if beg > alen { return Ok(NIL); } if end > alen { end = alen; } }
     let mut len = (end - beg).max(0);
     if strict && (beg > alen || len > alen) { return oor(c); }
@@ -286,22 +286,37 @@ fn e_rewind(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 pub(crate) fn this_mid(c: &Ctx, dflt: Sym) -> Sym {
     match c.cur_frame() { Some(f) if c.me_ref(f.me).is_some() => crate::builtins::object::callee_name(c, f.me), _ => dflt }
 }
+/// Length of an all-Integer arithmetic sequence (bignum ends too), Float::INFINITY for step 0.
+fn arith_int_len(c: &mut Ctx, b: Value, e: Value, st: Value, x: bool) -> RV {
+    let z = Value::fix(0);
+    let call = |c: &mut Ctx, r: Value, op: &[u8], a: Value| funcall(c, r, intern(op), &[a], std::ptr::null());
+    let sgn = call(c, st, b"<=>", z)?.as_fix();
+    if sgn == 0 { return Ok(c.float_new(f64::INFINITY)); }
+    let (d, k) = if sgn > 0 { (call(c, e, b"-", b)?, st) } else { (call(c, b, b"-", e)?, call(c, z, b"-", st)?) };
+    if call(c, d, b"<", z)?.truthy() { return Ok(z); }
+    let q = call(c, d, b"/", k)?;
+    let n = call(c, q, b"+", Value::fix(1))?;
+    if x && call(c, d, b"%", k)? == z { return call(c, n, b"-", Value::fix(1)); }
+    Ok(n)
+}
 fn e_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let en = renum(c, slf);
     if en.procs != NIL || en.lz & crate::builtins::lazy::LZ_UNINIT != 0 { return crate::builtins::lazy::size(c, slf, en); }
     if let Some((b, e, st, x)) = en.arith {
         if b.is_fixnum() && e.is_fixnum() && st.is_fixnum() {
-            let (b, e, s2) = (b.as_fix(), e.as_fix(), st.as_fix());
+            let (b, e, s2) = (b.as_fix() as i128, e.as_fix() as i128, st.as_fix() as i128);
             if s2 == 0 { return Ok(c.float_new(f64::INFINITY)); }
-            let n = if s2 > 0 { if e < b { 0 } else { (e - b) / s2 + 1 - if x && (e - b) % s2 == 0 { 1 } else { 0 } } } else { if e > b { 0 } else { (b - e) / (-s2) + 1 - if x && (b - e) % (-s2) == 0 { 1 } else { 0 } } };
-            return Ok(Value::fix(n.max(0)));
+            let (d, k) = if s2 > 0 { (e - b, s2) } else { (b - e, -s2) };
+            let n = if d < 0 { 0 } else { d / k + 1 - if x && d % k == 0 { 1 } else { 0 } };
+            return Ok(c.int_from_i128(n.max(0)));
         }
+        if e != NIL && is_integer(b) && is_integer(e) && is_integer(st) { return arith_int_len(c, b, e, st, x); }
         if e == NIL { return Ok(c.float_new(f64::INFINITY)); }
         if is_float(b) || is_float(e) || is_float(st) {
             if let (Some(bf), Some(ef), Some(sf)) = (c.num_to_f64(b), c.num_to_f64(e), c.num_to_f64(st)) {
                 let n = float_step_size(bf, ef, sf, x);
                 if n.is_infinite() { return Ok(c.float_new(n)); }
-                return Ok(Value::fix(n as i64));
+                return Ok(crate::builtins::numeric_methods::f64_to_int(c, n));
             }
         }
         let a = collect_all(c, slf)?; return Ok(Value::fix(c.ary_len(a) as i64));
@@ -467,6 +482,7 @@ fn y_to_proc(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 fn e_take(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = crate::builtins::numeric_methods::num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, "attempt to take negative size"); }
+    if n >= 1 << 60 { return arg_err(c, "array size too big"); }
     let out = c.ary_new();
     if n == 0 { return Ok(out); }
     let fib = crate::fiber::current(c);
@@ -527,6 +543,34 @@ fn arith_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     funcall(c, a, intern(b"hash"), &[], std::ptr::null())
 }
 fn arith_last(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
+    // all-Integer: counted back from the end, not enumerated
+    if let Some((bg, e, st, x)) = renum(c, slf).arith {
+        if e != NIL && is_integer(bg) && is_integer(e) && is_integer(st) && a.len() <= 1 {
+            let len = arith_int_len(c, bg, e, st, x)?;
+            if is_integer(len) {
+                let (z, one) = (Value::fix(0), Value::fix(1));
+                let call = |c: &mut Ctx, r: Value, op: &[u8], a: Value| funcall(c, r, intern(op), &[a], std::ptr::null());
+                let pos = call(c, len, b">", z)?.truthy();
+                let lastv = |c: &mut Ctx, idx: Value| -> RV { let m = call(c, idx, b"*", st)?; call(c, bg, b"+", m) };
+                if a.is_empty() {
+                    if !pos { return Ok(NIL); }
+                    let i = call(c, len, b"-", one)?;
+                    return lastv(c, i);
+                }
+                let n = crate::builtins::numeric_methods::num_to_long(c, a[0])?;
+                if n < 0 { return arg_err(c, "negative array size"); }
+                let nv = c.int_from_i64(n);
+                let cntv = if call(c, len, b">", nv)?.truthy() { nv } else { len };
+                if !cntv.is_fixnum() || cntv.as_fix() >= 1 << 60 { return arg_err(c, "array size too big"); }
+                let cnt = cntv.as_fix();
+                if cnt > 1 << 31 { return err(c, c.vm().c_no_memory_error.get(), "failed to allocate memory"); }
+                let out = c.ary_new();
+                let mut i = call(c, len, b"-", cntv)?;
+                for _ in 0..cnt { let v = lastv(c, i)?; c.ary_push(out, v); i = call(c, i, b"+", one)?; }
+                return Ok(out);
+            }
+        }
+    }
     let all = collect_all(c, slf)?;
     funcall(c, all, intern(b"last"), a, b)
 }
