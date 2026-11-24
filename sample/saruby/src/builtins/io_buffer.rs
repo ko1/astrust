@@ -157,8 +157,9 @@ fn wr(c: &mut Ctx, a: At, size: usize) -> Result<&mut [u8], Esc> {
     if bytes_at_mut(c, a, size).is_none() { return raise(c, &E_ACCESS, "Buffer is not writable!"); }
     Ok(bytes_at_mut(c, a, size).unwrap_or_default())
 }
-/// io_buffer_validate_range (4.0.2: the range only; validity is checked where the bytes are taken).
+/// io_buffer_validate_range (4.0.10: an invalidated buffer first, then the range).
 fn validate_range(c: &mut Ctx, v: Value, off: usize, len: usize) -> Result<(), Esc> {
+    for_reading(c, v)?;
     if off.checked_add(len).is_none_or(|e| e > buf(c, v).size) { return arg_err(c, "Specified offset+length is bigger than the buffer size!"); }
     Ok(())
 }
@@ -694,6 +695,7 @@ fn b_hexdump(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let width = if a.len() >= 3 {
         let w = extract(c, a[2], "Width")?;
         if w < 1 { return arg_err(c, "Width must be at least 1!"); }
+        if w > 1024 { return arg_err(c, "Width must be at most 1024!"); }
         w
     } else { 16 };
     validate_range(c, slf, off, len)?;
@@ -722,8 +724,8 @@ fn b_locked(c: &mut Ctx, slf: Value, _a: &[Value], blk: Blk) -> RV {
     if buf(c, slf).flags & LOCKED != 0 { return raise(c, &E_LOCKED, "Buffer already locked!"); }
     buf_mut(c, slf).flags |= LOCKED;
     let r = if blk.is_null() { err(c, c.vm().c_local_jump_error.get(), "no block given") } else { yield1(c, blk, slf) };
-    // 4.0.2 unlocks only on a normal return (no rb_ensure): a raise, break or throw leaves it locked
-    if r.is_ok() { buf_mut(c, slf).flags &= !LOCKED; }
+    // 4.0.10: rb_ensure, unlocked after a raise / break / throw too
+    buf_mut(c, slf).flags &= !LOCKED;
     r
 }
 /// rb_io_buffer_free.
@@ -908,11 +910,18 @@ fn b_each_byte(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     }
     Ok(slf)
 }
+/// io_buffer_try_lock + rb_ensure (4.0.10): the conversions in `f` cannot free or resize the buffer.
+fn with_lock(c: &mut Ctx, slf: Value, f: impl FnOnce(&mut Ctx) -> RV) -> RV {
+    if buf(c, slf).flags & LOCKED != 0 { return f(c); }
+    buf_mut(c, slf).flags |= LOCKED;
+    let r = f(c);
+    buf_mut(c, slf).flags &= !LOCKED;
+    r
+}
 fn b_set_value(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     for_writing(c, slf)?;
     let mut off = extract(c, a[1], "Offset")?;
-    set_one(c, slf, a[0], &mut off, a[2])?;
-    Ok(u64_value(c, off as u64))
+    with_lock(c, slf, |c| { set_one(c, slf, a[0], &mut off, a[2])?; Ok(u64_value(c, off as u64)) })
 }
 fn b_set_values(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     for_writing(c, slf)?;
@@ -920,13 +929,15 @@ fn b_set_values(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let mut off = extract(c, a[1], "Offset")?;
     if !is_array(a[2]) { return arg_err(c, "Argument values should be an array!"); }
     if c.ary_len(a[0]) != c.ary_len(a[2]) { return arg_err(c, "Argument buffer_types and values should have the same length!"); }
-    let mut i = 0;
-    while i < c.ary_len(a[0]) {
-        let (tv, v) = (c.ary_get(a[0], i), c.ary_get(a[2], i));
-        set_one(c, slf, tv, &mut off, v)?;
-        i += 1;
-    }
-    Ok(u64_value(c, off as u64))
+    with_lock(c, slf, |c| {
+        let mut i = 0;
+        while i < c.ary_len(a[0]) {
+            let (tv, v) = (c.ary_get(a[0], i), c.ary_get(a[2], i));
+            set_one(c, slf, tv, &mut off, v)?;
+            i += 1;
+        }
+        Ok(u64_value(c, off as u64))
+    })
 }
 
 /// io_buffer_copy_from: `src` (a copy of the source bytes) into the buffer; (offset, length, source_offset).
