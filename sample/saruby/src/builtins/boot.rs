@@ -191,6 +191,7 @@ fn boot_classes(c: &mut Ctx) {
     vmr.c_regexp.set(r); vmr.c_match_data.set(m);
     vmr.c_struct.set(structs::init(c, vmr.c_object.get(), vmr.m_enumerable.get()));
     vmr.c_time.set(time::init(c));
+    marshal::init_time(c, vmr.c_time.get());
     math::init(c, vmr.m_math.get());
     vmr.c_rational.set(rational::init(c));
     vmr.c_complex.set(complex::init(c));
