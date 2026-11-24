@@ -26,6 +26,11 @@ pub fn slots_new(n: usize) -> &'static [Slot] {
         .unwrap_or_else(|| Box::leak(vec![Cell::new(NIL); n].into_boxed_slice()))
 }
 
+/// `s` from its first slot at the page offset of `at`.
+pub fn slots_at(s: &'static [Slot], at: usize) -> &'static [Slot] {
+    &s[(at.wrapping_sub(s.as_ptr() as usize) & 4095) / std::mem::size_of::<Slot>()..]
+}
+
 pub fn slots_release(s: &'static [Slot]) {
     if s.is_empty() { return; }
     POOL.with(|p| {

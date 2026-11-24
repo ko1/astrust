@@ -290,11 +290,19 @@ fn default_redefined(c: &Ctx, h: Value) -> bool {
     !matches!(c.method_entry(class_of(h), s::default), Some(me) if matches!(me.kind, MKind::Cfunc(f, _) if f as *const () as usize == crate::builtins::hash_methods::h_default as *const () as usize))
 }
 
-pub fn hash_aref(c: &mut Ctx, h: Value, k: Value) -> RV {
+pub fn hash_aref(c: &mut Ctx, h: Value, k: Value) -> RV { hash_aref_at(c, h, k, ()) }
+
+/// Hash#[]: `line` is stored before Ruby code can run (a key's hash / eql?, the default proc).
+#[inline]
+pub fn hash_aref_at(c: &mut Ctx, h: Value, k: Value, line: impl AtLine) -> RV {
+    if imm_key(k) { if let Some(v) = c.hash(h).get_imm(k) { return Ok(v); } }
+    line.at(c);
+    hash_aref_rest(c, h, k)
+}
+fn hash_aref_rest(c: &mut Ctx, h: Value, k: Value) -> RV {
+    // ar_lookup: an empty small table answers without the key's #hash
     let r = c.hash(h);
-    let found = if imm_key(k) {
-        match r.get_imm(k) { Some(v) => return Ok(v), None => None }
-    } else { hash_lookup(c, h, k)? };
+    let found = if imm_key(k) || r.live == 0 && r.index.is_empty() { None } else { hash_lookup(c, h, k)? };
     match found {
         Some(i) => Ok(c.hash(h).entries[i].val),
         None => hash_default_value(c, h, k),
@@ -302,7 +310,16 @@ pub fn hash_aref(c: &mut Ctx, h: Value, k: Value) -> RV {
 }
 
 #[inline]
-pub fn hash_aset(c: &mut Ctx, h: Value, k: Value, v: Value) -> Result<(), Esc> {
+pub fn hash_aset(c: &mut Ctx, h: Value, k: Value, v: Value) -> Result<(), Esc> { hash_aset_at(c, h, k, v, ()) }
+
+/// Hash#[]=: `line` is stored before it raises or Ruby code can run; an immediate key needs neither.
+#[inline]
+pub fn hash_aset_at(c: &mut Ctx, h: Value, k: Value, v: Value, line: impl AtLine) -> Result<(), Esc> {
+    if imm_key(k) && obj_flags(h) & FL_FROZEN == 0 && set_imm(c, h, k, v) { return Ok(()); }
+    line.at(c);
+    hash_aset_rest(c, h, k, v)
+}
+fn hash_aset_rest(c: &mut Ctx, h: Value, k: Value, v: Value) -> Result<(), Esc> {
     if obj_flags(h) & FL_FROZEN != 0 { return Err(raise_frozen(c, h)); }
     let k = if is_string(k) { str_key(c, h, k) } else { k };
     hash_set(c, h, k, v)
@@ -321,9 +338,7 @@ fn str_key(c: &mut Ctx, h: Value, k: Value) -> Value {
 /// Insert without key dup / frozen check.
 pub fn hash_set(c: &mut Ctx, h: Value, k: Value, v: Value) -> Result<(), Esc> {
     let hc = if imm_key(k) {
-        // the whole update under one borrow
-        let r = c.hash_mut(h);
-        if let Some(i) = r.find_imm(k) { r.entries[i].val = v; return Ok(()); }
+        if set_imm(c, h, k, v) { return Ok(()); }
         mix(k.raw())
     } else {
         let hc = if c.hash(h).identity { identity_hash(k) } else { key_hash(c, k)? };
@@ -334,6 +349,16 @@ pub fn hash_set(c: &mut Ctx, h: Value, k: Value, v: Value) -> Result<(), Esc> {
     if r.iter_lev != 0 { return err(c, c.vm().c_runtime_error.get(), "can't add a new key into hash during iteration"); }
     if r.insert_new(k, v, hc) % 64 == 0 { c.malloc_increase(64 * 24); }
     Ok(())
+}
+
+/// Set an immediate key, under one borrow; false (nothing done) when it is new and the Hash is being iterated.
+#[inline(always)]
+fn set_imm(c: &mut Ctx, h: Value, k: Value, v: Value) -> bool {
+    let r = c.hash_mut(h);
+    if let Some(i) = r.find_imm(k) { r.entries[i].val = v; return true; }
+    if r.iter_lev != 0 { return false; }
+    if r.insert_new(k, v, mix(k.raw())) % 64 == 0 { c.malloc_increase(64 * 24); }
+    true
 }
 
 /// rb_hash_add_new_element: insert k unless present (k hashed once); true if inserted.

@@ -48,6 +48,7 @@ impl Index<Range<usize>> for Stk {
 }
 
 pub fn stack_new(n: usize) -> Stack { Stack(slots_new(n)) }
+pub fn stack_new_at(n: usize, at: usize) -> Stack { Stack(slots_at(slots_new(n), at)) }
 pub fn stack_release(s: Stack) { slots_release(s.0) }
 
 #[inline(always)]

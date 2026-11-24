@@ -386,6 +386,11 @@ pub trait LineHole: Copy {
     /// The frame is at the current line.
     fn store(self, f: &mut Frame);
 }
+/// Where a builtin stores the caller's line before it raises or runs Ruby code: an operator node's
+/// line, or `()` when the method call stored it already.
+pub trait AtLine: Copy { fn at(self, c: &mut Ctx); }
+impl AtLine for () { #[inline(always)] fn at(self, _: &mut Ctx) {} }
+impl<L: LineHole> AtLine for L { #[inline(always)] fn at(self, c: &mut Ctx) { self.store(c.frame_mut()) } }
 #[derive(Clone, Copy)]
 pub struct LineAt(pub &'static u32);
 impl LineHole for LineAt {

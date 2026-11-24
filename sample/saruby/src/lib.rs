@@ -284,7 +284,9 @@ fn run_main(o: Opts) -> i32 {
         // SAFETY: the main context; fibers run instead of it, never beside it
         tok: unsafe { heap::Token::mint() },
     };
-    c.attach_stack(stack_new(8 << 20));
+    // the value stack grows up from the 64-byte line above `c` (the hottest native-stack data), the native stack
+    // down: their lines alias mod 4096 (store-to-load stalls) only when the two hot depths add up to a page
+    c.attach_stack(stack_new_at(8 << 20, (&raw const c as usize + std::mem::size_of::<Ctx>()).next_multiple_of(64)));
     let probe = 0u8;
     c.native_limit = (&probe as *const u8 as usize).saturating_sub(STACK_BYTES - (4 << 20));
     vm().main_ctx.set(&mut c);
