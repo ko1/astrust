@@ -103,9 +103,9 @@ pub fn stdlib_dirs() -> Option<(String, String)> {
     Some((lib.to_string(), gem.to_string()))
 }
 /// Bundled gems that live outside rubylibdir.
-const BUNDLED: &[&str] = &["ostruct", "base64", "benchmark", "logger", "observer", "abbrev", "pstore", "csv", "matrix", "prime", "getoptlong", "mutex_m", "drb", "rinda", "racc", "bigdecimal", "nkf", "syslog", "rexml", "rss", "net-ftp", "net-imap", "net-pop", "net-smtp"];
+const BUNDLED: &[&str] = &["ostruct", "base64", "benchmark", "logger", "observer", "abbrev", "pstore", "csv", "matrix", "prime", "getoptlong", "mutex_m", "drb", "rinda", "racc", "bigdecimal", "nkf", "syslog", "rexml", "rss", "net-ftp", "net-imap", "net-pop", "net-smtp", "readline", "reline"];
 const EXT_BACKED: &[&str] = &["openssl", "date", "ripper", "digest", "pathname", "pty", "coverage",
-    "objspace", "readline", "reline", "nkf", "fiddle", "syslog", "io"];
+    "objspace", "nkf", "fiddle", "syslog", "io"];
 /// Default gems that the reference ruby (rubygems) activates from a newer installed gem.
 const GEM_FIRST: &[&str] = &["psych", "json"];
 /// lib/<rb> of the highest installed version of gem `top` (the one activated: it has lib/<top>.rb).
@@ -143,9 +143,21 @@ pub fn stdlib_file(name: &str) -> Option<std::path::PathBuf> {
     best
 }
 
-/// $LOAD_PATH: -I dirs (already added), RUBYLIB.
+/// The reference ruby's default $LOAD_PATH (site, vendor, then rubylibdir and archdir: the last two
+/// stay out of saruby's $LOAD_PATH, require falls back to them after its own features).
+pub fn default_load_path() -> Vec<String> {
+    let Some((lib, _)) = stdlib_dirs() else { return vec![] };
+    let p = std::path::Path::new(&lib);
+    let (base, ver) = (p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default(), p.file_name().map(|v| v.to_string_lossy().into_owned()).unwrap_or_default());
+    let arch = format!("{}-linux", if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" });
+    vec![format!("{base}/site_ruby/{ver}"), format!("{base}/site_ruby/{ver}/{arch}"), format!("{base}/site_ruby"), format!("{base}/vendor_ruby/{ver}"),
+         format!("{base}/vendor_ruby/{ver}/{arch}"), format!("{base}/vendor_ruby"), lib.clone(), format!("{lib}/{arch}")]
+}
+/// $LOAD_PATH: -I dirs (already added), RUBYLIB, the site and vendor dirs.
 pub fn setup_load_path(c: &mut Ctx) {
+    let lp = c.vm().load_path.get();
     if let Ok(p) = std::env::var("RUBYLIB") {
-        for d in p.split(':') { let s = c.str_new(d.as_bytes()); let lp = c.vm().load_path.get(); c.ary_push(lp, s); }
+        for d in p.split(':') { let s = c.str_new(d.as_bytes()); c.ary_push(lp, s); }
     }
+    for d in default_load_path().iter().take(6) { let s = c.str_new(d.as_bytes()); c.ary_push(lp, s); }
 }

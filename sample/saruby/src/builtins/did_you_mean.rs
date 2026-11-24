@@ -53,16 +53,9 @@ fn initial_load_path(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let s = ivar_get(c, slf, intern(b"__initial_load_path"));
     let v = if s == NIL { vec![] } else { c.ary(s).to_vec() };
     let out = c.ary_from_vec(v);
-    if let Some((lib, _)) = crate::builtins::prelude::stdlib_dirs() {
-        let p = std::path::Path::new(&lib);
-        let (base, ver) = (p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default(), p.file_name().map(|v| v.to_string_lossy().into_owned()).unwrap_or_default());
-        let arch = format!("{}-linux", if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" });
-        for d in [format!("{base}/site_ruby/{ver}"), format!("{base}/site_ruby/{ver}/{arch}"), format!("{base}/site_ruby"), format!("{base}/vendor_ruby/{ver}"),
-                  format!("{base}/vendor_ruby/{ver}/{arch}"), format!("{base}/vendor_ruby"), lib.clone(), format!("{lib}/{arch}")] {
-            let s = c.str_new(d.as_bytes());
-            c.ary_push(out, s);
-        }
-    }
+    // the site / vendor dirs are in $LOAD_PATH already
+    let dl = crate::builtins::prelude::default_load_path();
+    for d in dl.iter().skip(6) { let s = c.str_new(d.as_bytes()); c.ary_push(out, s); }
     Ok(out)
 }
 

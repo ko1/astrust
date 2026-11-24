@@ -434,6 +434,24 @@ fn rbconfig_ruby(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "saruby".into());
     Ok(c.str_new(exe.as_bytes()))
 }
+/// false when there is no such file or it rejects this version (then the built-in table is used).
+fn rbconfig_from_ref(c: &mut Ctx, archdir: &str, bindir: &str, name: &str) -> bool {
+    let path = format!("{}/rbconfig.rb", archdir);
+    let Ok(src) = std::fs::read(&path) else { return false };
+    let file: &'static str = Box::leak(path.into_boxed_str());
+    if crate::builtins::kernel::run_source(c, &src, file, 1).is_err() { return false; }
+    let Some(rbc) = const_get_at(c, c.vm().c_object.get(), intern(b"RbConfig")) else { return false };
+    let libruby = format!("lib{}.so", name);
+    for t in [&b"CONFIG"[..], b"MAKEFILE_CONFIG"] {
+        let Some(h) = const_get_at(c, rbc, intern(t)) else { return false };
+        if !is_hash(h) { return false; }
+        for (k, v) in [("ruby_install_name", name), ("RUBY_INSTALL_NAME", name), ("bindir", bindir), ("libdir", bindir), ("LIBRUBY_SO", &libruby), ("LIBRUBY", &libruby)] {
+            let (ks, vs) = (c.str_new_frozen(k.as_bytes()), c.str_new(v.as_bytes()));
+            if hash_set(c, h, ks, vs).is_err() { return false; }
+        }
+    }
+    true
+}
 pub fn rbconfig_init(c: &mut Ctx) {
     if const_get_at(c, c.vm().c_object.get(), intern(b"RbConfig")).is_some() { return; }
     let rbc = define_module(c, "RbConfig");
@@ -445,6 +463,8 @@ pub fn rbconfig_init(c: &mut Ctx) {
     let arch = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" };
     let archname = format!("{}-linux", arch);
     let archdir = format!("{}/{}", lib, archname);
+    // the reference ruby's own rbconfig.rb (every key, expand, fire_update!), saruby's binary and library in place of ruby's
+    if !lib.is_empty() && rbconfig_from_ref(c, &archdir, &bindir, &name) { return; }
     let libprefix = std::path::Path::new(&lib).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     // the Unicode version of the case / property tables (Rust's char)
     let (u0, u1, u2) = char::UNICODE_VERSION;
