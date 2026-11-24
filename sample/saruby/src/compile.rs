@@ -463,11 +463,19 @@ impl<'a> Compiler<'a> {
         self.analyze(root, &[stmts]);
         let sk = if kind == IseqKind::Eval { SK::Eval } else { SK::Top };
         self.push_scope(sk, root, &locals);
-        // BEGIN { } (top level only) runs first in its code unit; c_node leaves it out of its place
-        let begins: Vec<&PNode> = match &stmts.kind {
-            Kind::StatementsNode { body } => body.iter().filter_map(|x| match &x.kind { Kind::PreExecutionNode { statements } => statements.as_deref(), _ => None }).collect(),
-            _ => vec![],
-        };
+        // BEGIN { } (top level, or in the loop -n / -p wrap it in) runs first in its code unit; c_node leaves it
+        // out of its place
+        fn begins<'p>(n: &'p PNode, out: &mut Vec<&'p PNode>) {
+            match &n.kind {
+                Kind::StatementsNode { body } => for x in body { begins(x, out) },
+                Kind::WhileNode { statements: Some(s), .. } => begins(s, out),
+                Kind::PreExecutionNode { statements: Some(s) } => out.push(s),
+                _ => {}
+            }
+        }
+        let mut begins_v = vec![];
+        begins(stmts, &mut begins_v);
+        let begins = begins_v;
         let mut body = self.c(stmts);
         if !begins.is_empty() {
             let mut v: Vec<NodePtr> = begins.into_iter().map(|b| self.c(b)).collect();
