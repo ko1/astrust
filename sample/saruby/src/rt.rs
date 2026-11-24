@@ -156,17 +156,26 @@ pub fn redef_note(c: &Ctx, klass: Value, mid: Sym) -> bool {
     if redef_word() == before { return false; }
     if redef(R_ARY_AREF) { FAST_ARY_AREF.store(0, Relaxed); }
     if redef(R_ARY_ASET) { FAST_ARY_ASET.store(0, Relaxed); }
+    if redef(R_ARY_LTLT) { FAST_ARY_LTLT.store(0, Relaxed); }
+    if redef(R_STR_LTLT) { FAST_STR_LTLT.store(0, Relaxed); }
     true
 }
 
-// The Array class while Array#[] / Array#[]= are the builtins, else 0 (no object's class): an index
-// site tests the receiver's class and the redefinition in one compare.  Set on the first miss after boot.
+// The Array class while Array#[] / Array#[]= / Array#<< are the builtins, else 0 (no object's class): an index
+// or `<<` site tests the receiver's class and the redefinition in one compare.  Set on the first miss after boot.
 pub static FAST_ARY_AREF: AtomicU64 = AtomicU64::new(0);
 pub static FAST_ARY_ASET: AtomicU64 = AtomicU64::new(0);
+pub static FAST_ARY_LTLT: AtomicU64 = AtomicU64::new(0);
+/// The String class while String#<< is the builtin, else 0: as FAST_ARY_LTLT.
+pub static FAST_STR_LTLT: AtomicU64 = AtomicU64::new(0);
 #[inline(always)]
 pub fn fast_ary_aref() -> u64 { FAST_ARY_AREF.load(Relaxed) }
 #[inline(always)]
 pub fn fast_ary_aset() -> u64 { FAST_ARY_ASET.load(Relaxed) }
+#[inline(always)]
+pub fn fast_ary_ltlt() -> u64 { FAST_ARY_LTLT.load(Relaxed) }
+#[inline(always)]
+pub fn fast_str_ltlt() -> u64 { FAST_STR_LTLT.load(Relaxed) }
 
 /// `a[b]` when the site's inline path did not apply: everything, starting with the Array and Hash cases.
 #[inline(never)]
@@ -190,13 +199,19 @@ pub fn srb_aref_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &OpCc) -> RV
     srb_binop(c, a, b, s::aref, line, cc)
 }
 
-/// `a << b` when the site's inline path did not apply: Array#<< of a frozen Array raises from this line, as CRuby.
+/// `a << b` when the site's inline path did not apply: Array#<< / String#<< raise from this line, as CRuby.
 #[inline(never)]
 #[cold]
 pub fn srb_ltlt_out(c: &mut Ctx, a: Value, b: Value, line: Pos, cc: &OpCc) -> RV {
+    if booted() && !redef(R_ARY_LTLT) { FAST_ARY_LTLT.store(vm().c_array.get().raw(), Relaxed); }
+    if booted() && !redef(R_STR_LTLT) { FAST_STR_LTLT.store(vm().c_string.get().raw(), Relaxed); }
     if is_array(a) && obj_klass(a) == vm().c_array.get() && !redef(R_ARY_LTLT) {
         c.frame_mut().pos = line;
         return crate::builtins::array_methods::a_ltlt(c, a, &[b], Blk::NONE);
+    }
+    if is_string(a) && obj_klass(a) == vm().c_string.get() && !redef(R_STR_LTLT) {
+        c.frame_mut().pos = line;
+        return crate::builtins::string_methods::s_ltlt(c, a, &[b], Blk::NONE);
     }
     srb_binop(c, a, b, s::ltlt, line, cc)
 }
