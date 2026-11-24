@@ -143,7 +143,9 @@ pub fn eval_in_binding(c: &mut Ctx, bind: Value, src: &[u8], enc: u8, file: &'st
     let b = rbind(c, bind);
     let outer = vec![env_names(&b.names)];
     let (slf, env, cref, me, dc, svar, blk, visi) = (b.self_, b.env, b.cref, b.me, b.dc, (b.svar, b.ret), b.blk, b.visi);
+    crate::compile::EVAL_NO_YIELD.set(me.is_null());
     let is = crate::compile::compile_source_enc(src, enc, file, line, IseqKind::Eval, outer);
+    crate::compile::EVAL_NO_YIELD.set(false);
     crate::compile::flush_parse_warnings(c)?;
     let is = match is {
         Ok(is) => is,

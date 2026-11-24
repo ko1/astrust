@@ -579,6 +579,14 @@ impl<'a> Compiler<'a> {
         match v.len() { 0 => ALLOC_node_nil(), 1 => v[0], _ => ALLOC_node_block(leak(v)) }
     }
 
+    /// pm_compile_yield_node: a yield whose local scope is the top level or a class body is a SyntaxError.
+    fn yield_invalid(&self) -> bool {
+        match self.scopes.iter().rev().find(|s| !matches!(s.kind, SK::Block | SK::Lambda | SK::For)).map(|s| s.kind) {
+            Some(SK::Top) | Some(SK::Class) => true,
+            Some(SK::Eval) => EVAL_NO_YIELD.get(),
+            _ => false,
+        }
+    }
     fn unsupported(&mut self, what: &str, l: Loc) -> NodePtr {
         let msg = format!("{}:{}: {} is not supported", self.file, self.line(l), what);
         ALLOC_node_unsupported(lstr(msg.as_bytes()))
@@ -930,6 +938,10 @@ impl<'a> Compiler<'a> {
             }
             Kind::SuperNode { arguments, block } => self.super_call(arguments.as_deref(), block.as_deref(), false, line),
             Kind::ForwardingSuperNode { block } => self.super_call(None, block.as_deref(), true, line),
+            Kind::YieldNode { .. } if self.yield_invalid() => {
+                self.errors.push(format!("{}:{}: Invalid yield", self.file, line));
+                ALLOC_node_nil()
+            }
             Kind::YieldNode { arguments } => {
                 let args: Vec<&PNode> = match arguments.as_deref() { Some(PNode { kind: Kind::ArgumentsNode { arguments }, .. }) => arguments.iter().collect(), _ => vec![] };
                 if args.iter().all(|a| self.simple_arg(a)) {
@@ -2488,6 +2500,8 @@ pub fn regex_opts(flags: u32, src_enc: u32) -> u32 {
 }
 
 thread_local! {
+    /// An eval whose binding is not in a method: a yield in it is invalid (set around its compile).
+    pub static EVAL_NO_YIELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The last parse's warnings (message, verbose-only), shown by flush_parse_warnings.
     static PARSE_WARNINGS: std::cell::RefCell<Vec<(String, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
