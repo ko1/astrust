@@ -47,7 +47,7 @@ pub fn range_beg_len(c: &mut Ctx, r: Value, len: i64, err: i32) -> Result<Option
     let ob = beg; let oe = end;
     if beg < 0 { beg += len; if beg < 0 { return out_of_range(c, r, err, ob, oe); } }
     if end < 0 { end += len; }
-    if !excl { end += 1; }
+    if !excl { end = end.saturating_add(1); }
     if err == 0 || err == 2 {
         if beg > len { return out_of_range(c, r, err, ob, oe); }
         if end > len { end = len; }

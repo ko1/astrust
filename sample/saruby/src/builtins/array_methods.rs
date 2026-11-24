@@ -1149,13 +1149,18 @@ cfn!(a_values_at, |c, slf, a, blk| {
     let out = c.ary_new();
     for &x in a {
         if is_range(x) {
+            // append_values_at_single: copy what exists, then rb_ary_store(result, prevlen + len - 1, nil)
             let n = c.ary_len(slf) as i64;
-            let (b, e, excl) = c.range_parts(x);
-            let st0 = if b == NIL { 0 } else { num_to_long(c, b)? };
-            let st = if st0 < 0 { st0 + n } else { st0 };
-            if st < 0 { let s2 = inspect_str(c, x)?; return err(c, c.vm().c_range_error.get(), format!("{} out of range", s2)); }
-            let en = if e == NIL { n } else { let e2 = num_to_long(c, e)?; let e2 = if e2 < 0 { e2 + n } else { e2 }; if excl { e2 } else { e2 + 1 } };
-            for i in st..en.max(st) { c.ary_push(out, c.ary_get(slf, i as usize)); }
+            let Some((beg, len)) = crate::range::range_beg_len(c, x, n, 1)? else { continue };
+            if len > 0 {
+                let prev = c.ary_len(out) as i64;
+                for i in beg..(beg + len).min(n) { c.ary_push(out, c.ary_get(slf, i as usize)); }
+                if beg + len > n {
+                    let last = prev + len - 1;
+                    if last >= ARY_MAX { return err(c, c.vm().c_index_error.get(), format!("index {} too big", last)); }
+                    while (c.ary_len(out) as i64) <= last { c.ary_push(out, NIL); }
+                }
+            }
         } else { let i = num_to_long(c, x)?; c.ary_push(out, norm_index(i, c.ary_len(slf)).map(|i| c.ary_get(slf, i)).unwrap_or(NIL)); }
     }
     Ok(out)
