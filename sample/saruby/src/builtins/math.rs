@@ -39,7 +39,20 @@ macro_rules! m1 { ($name:ident, $f:expr, $dom:expr, $nm:expr) => {
 fn any(_: f64) -> bool { true }
 m1!(m_sin, f64::sin, any, "sin"); m1!(m_cos, f64::cos, any, "cos"); m1!(m_tan, f64::tan, any, "tan");
 m1!(m_asin, f64::asin, |x: f64| (-1.0..=1.0).contains(&x) || x.is_nan(), "asin"); m1!(m_acos, f64::acos, |x: f64| (-1.0..=1.0).contains(&x) || x.is_nan(), "acos");
-m1!(m_atan, f64::atan, any, "atan"); m1!(m_exp, f64::exp, any, "exp"); m1!(m_sqrt, f64::sqrt, |x: f64| x >= 0.0 || x.is_nan(), "sqrt");
+m1!(m_atan, f64::atan, any, "atan"); m1!(m_exp, f64::exp, any, "exp"); m1!(m_sqrt_real, f64::sqrt, |x: f64| x >= 0.0 || x.is_nan(), "sqrt");
+/// rb_math_sqrt: a Complex by its absolute value
+fn m_sqrt(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
+    // a zero (-0.0 too) is 0.0
+    if !crate::builtins::complex::is_complex(c, a[0]) { let r = m_sqrt_real(c, s, a, b)?; return Ok(if crate::object::is_float(r) && crate::heap::float_val(r) == 0.0 { c.float_new(0.0) } else { r }); }
+    let (re, im) = crate::builtins::complex::cpx_parts(c, a[0]);
+    let neg = if crate::object::is_float(im) { crate::heap::float_val(im).is_sign_negative() } else { funcall(c, im, crate::symbol::s::lt, &[Value::fix(0)], std::ptr::null())?.truthy() };
+    let r = num_to_dbl(c, re)?;
+    let av = funcall(c, a[0], crate::symbol::intern(b"abs"), &[], std::ptr::null())?;
+    let d = num_to_dbl(c, av)?;
+    let i = ((d - r) / 2.0).sqrt();
+    let (x, y) = (c.float_new(((d + r) / 2.0).sqrt()), c.float_new(if neg { -i } else { i }));
+    Ok(crate::builtins::complex::cpx_raw(c, x, y))
+}
 m1!(m_cbrt, f64::cbrt, any, "cbrt"); m1!(m_sinh, f64::sinh, any, "sinh"); m1!(m_cosh, f64::cosh, any, "cosh"); m1!(m_tanh, f64::tanh, any, "tanh");
 m1!(m_asinh, f64::asinh, any, "asinh"); m1!(m_acosh, f64::acosh, |x: f64| x >= 1.0 || x.is_nan(), "acosh"); m1!(m_atanh, f64::atanh, |x: f64| (-1.0..=1.0).contains(&x) || x.is_nan(), "atanh");
 fn m_log2(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {

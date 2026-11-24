@@ -395,14 +395,7 @@ fn enc_chr(enc: u8, cp: u64) -> Result<Vec<u8>, bool> {
     }
     match en::kind(enc) {
         // Onigmo's code_to_mbclen: 0xfffffffe / 0xffffffff are one (invalid) byte in UTF-8
-        EK::Utf8 => if cp >= 0xffff_fffe || sur { Err(false) } else if cp > 0x10ffff { Err(true) }
-            else if cp > 0xffff && en::enc_name(enc) == "CESU-8" {
-                // a surrogate pair, each half in three bytes
-                let v = cp - 0x10000;
-                let mut out = vec![];
-                for h in [0xd800 | (v >> 10), 0xdc00 | (v & 0x3ff)] { out.extend_from_slice(&[0xe0 | (h >> 12) as u8, 0x80 | ((h >> 6) & 0x3f) as u8, 0x80 | (h & 0x3f) as u8]); }
-                Ok(out)
-            } else { en::code_to_bytes(enc, cp).ok_or(false) },
+        EK::Utf8 => if cp >= 0xffff_fffe || sur { Err(false) } else if cp > 0x10ffff { Err(true) } else { en::code_to_bytes(enc, cp).ok_or(false) },
         EK::U16LE | EK::U16BE => if cp > 0x10ffff || sur { Err(false) } else { en::code_to_bytes(enc, cp).ok_or(false) },
         // the validity check reads the code as a signed int: 0x80000000.. pass
         EK::U32LE | EK::U32BE => {
