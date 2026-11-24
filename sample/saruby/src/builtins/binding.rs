@@ -132,8 +132,21 @@ fn with_block(c: &mut Ctx, (mut b, blk): (RBinding, *const Block)) -> Result<RBi
     Ok(b)
 }
 pub fn set_receiver(c: &mut Ctx, b: Value, slf: Value) { rbind_mut(c, b).self_ = slf; }
+/// C methods CRuby runs without a frame of their own (send, Proc#call, Method#call): binding / eval look past them.
+fn frameless_cfunc(c: &Ctx, f: &Frame) -> bool {
+    if f.kind != FK_CFUNC { return false; }
+    let Some(m) = c.me_ref(f.me) else { return false };
+    let n = crate::symbol::sym_bytes(m.name);
+    match n {
+        b"send" | b"__send__" | b"public_send" => true,
+        b"call" | b"()" | b"yield" | b"===" | b"[]" => m.owner == c.vm().c_proc.get() || m.owner == c.vm().c_method.get(),
+        _ => false,
+    }
+}
 pub fn binding_of_caller(c: &mut Ctx) -> RV {
-    let b = frame_binding(c, c.caller_frame().expect("binding: no caller frame"));
+    let mut f = c.caller_frame().expect("binding: no caller frame");
+    while frameless_cfunc(c, f) { match c.prev_frame(f) { Some(p) => f = p, None => break } }
+    let b = frame_binding(c, f);
     let b = with_block(c, b)?;
     Ok(new_binding(c, b))
 }

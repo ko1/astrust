@@ -275,9 +275,11 @@ fn finish_dup(c: &mut Ctx, slf: Value, n: Value, clone: bool, freeze: Option<boo
         let k = obj_klass(slf);
         if c.class(k).is_singleton && !is_class_or_module(slf) {
             let sk = singleton_class(c, n);
-            let mt: Vec<(Sym, *const MethodEntry)> = c.class(k).mtbl.iter().map(|(a, b)| (*a, *b)).collect();
+            // entries owned by the copy (rb_singleton_class_clone: Method#owner is the new singleton class)
+            let mt: Vec<(Sym, MethodEntry)> = c.class(k).mtbl.iter().filter_map(|(a, b)| c.me_ref(*b).map(|o| (*a, MethodEntry {
+                name: o.name, owner: sk, visi: o.visi, kind: o.kind, orig_owner: if o.orig_owner == k { sk } else { o.orig_owner }, cref: o.cref }))).collect();
             let nt = &mut c.class_mut(sk).mtbl;
-            for (m, me) in mt { nt.insert(m, me); }
+            for (m, e) in mt { nt.insert(m, Box::into_raw(Box::new(e))); }
             let inc = c.class(k).includes.clone();
             for m in inc { include_module_c(c, sk, m); }
             let cs: Vec<(Sym, Value)> = c.class(k).consts.iter().map(|(a, b)| (*a, *b)).collect();
