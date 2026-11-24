@@ -652,6 +652,25 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Skips one `(?#...)`; Onigmo drops it at the token level, so `a(?#x)+` is `a+`.
+    fn skip_comment(&mut self) -> Result<bool, String> {
+        if !self.at(b"(?#") {
+            return Ok(false);
+        }
+        self.i += 3;
+        loop {
+            match self.peek() {
+                None => return err("end pattern in group"),
+                Some(b')') => {
+                    self.i += 1;
+                    return Ok(true);
+                }
+                Some(b'\\') => self.i += 2,
+                _ => self.i += 1,
+            }
+        }
+    }
+
     fn parse_alt(&mut self) -> Result<Ast, String> {
         let mut alts = vec![self.parse_seq()?];
         while self.peek() == Some(b'|') {
@@ -680,19 +699,7 @@ impl<'a> Parser<'a> {
                     Ast::Char(b'{' as u32, false)
                 }
                 b'(' => {
-                    if self.at(b"(?#") {
-                        self.i += 3;
-                        loop {
-                            match self.peek() {
-                                None => return err("end pattern in group"),
-                                Some(b')') => {
-                                    self.i += 1;
-                                    break;
-                                }
-                                Some(b'\\') => self.i += 2,
-                                _ => self.i += 1,
-                            }
-                        }
+                    if self.skip_comment()? {
                         continue;
                     }
                     if self.at(b"(?") && matches!(self.peek_at(2), Some(b'i' | b'm' | b'x' | b'-' | b'a' | b'd' | b'u')) {
@@ -942,6 +949,9 @@ impl<'a> Parser<'a> {
     fn parse_quant(&mut self, mut atom: Ast) -> Result<Ast, String> {
         loop {
             self.skip_ext();
+            if self.skip_comment()? {
+                continue;
+            }
             let (min, max, brace) = match self.peek() {
                 Some(b'*') => {
                     self.i += 1;
@@ -2612,54 +2622,22 @@ fn flatten_head<'a>(n: &'a Ast, out: &mut Vec<&'a Ast>, backrefed: &[usize]) {
     }
 }
 
-/// Where a match can start, from the pattern head. Also reproduces Onigmo's implicit /m `.*`
-/// anchor, which it keeps even after some zero-width prefixes (e.g. /(?=a).*/m only tries the
-/// search start).
+/// Where a match can start, from the pattern head. A leading greedy `.*` is an implicit anchor
+/// only when nothing precedes it (CRuby 4.0.10, Bug #22494; 4.0.2 also kept it after e.g. (?=b)).
 fn head_anchor(ast: &Ast, backrefed: &[usize]) -> Anchor {
     let mut items = Vec::new();
     flatten_head(ast, &mut items, backrefed);
-    let star = |n: &Ast| match n {
-        Ast::Repeat(b, 0, INF, k) if *k != Kind::Lazy => match **b {
-            Ast::Any(ml) => Some(ml),
-            _ => None,
-        },
-        _ => None,
-    };
     match items.first() {
-        None => return Anchor::None,
-        Some(Ast::Assert(As::StrBegin)) => return Anchor::StrBegin,
-        Some(Ast::Assert(As::Gpos)) => return Anchor::Start,
-        Some(Ast::Assert(As::Bol)) => return Anchor::Line,
-        Some(n) => {
-            if let Some(ml) = star(n) {
-                return if ml { Anchor::Start } else { Anchor::Line };
-            }
-        }
+        Some(Ast::Assert(As::StrBegin)) => Anchor::StrBegin,
+        Some(Ast::Assert(As::Gpos)) => Anchor::Start,
+        Some(Ast::Assert(As::Bol)) => Anchor::Line,
+        Some(Ast::Repeat(b, 0, INF, k)) if *k != Kind::Lazy => match **b {
+            Ast::Any(true) => Anchor::Start,
+            Ast::Any(false) => Anchor::Line,
+            _ => Anchor::None,
+        },
+        _ => Anchor::None,
     }
-    let (mut trigger, mut cancel) = (false, false);
-    for n in &items {
-        let n = match n {
-            Ast::Repeat(b, mn, _, _) if matches!(**b, Ast::Look(..) | Ast::Assert(_)) => {
-                if *mn == 0 {
-                    continue;
-                }
-                &**b
-            }
-            n => *n,
-        };
-        match n {
-            Ast::Look(false, false, _) | Ast::Assert(As::Eol | As::StrEnd | As::StrEndNl) => trigger = true,
-            Ast::Look(true, false, _) => cancel = true,
-            Ast::Look(..) | Ast::Assert(_) | Ast::Keep | Ast::Empty => {}
-            _ => {
-                if star(n) == Some(true) && trigger && !cancel {
-                    return Anchor::Start;
-                }
-                break;
-            }
-        }
-    }
-    Anchor::None
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

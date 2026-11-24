@@ -414,6 +414,25 @@ t '(?=b).*', 'ab', M
 t '(?=(b)).*+', 'axb', M
 t '\b.*x', '-ax', M
 t '$\b(?<!a){2,3}.*', 'aA', M
+# a leading .* after an assertion is not an implicit anchor (CRuby 4.0.10, Bug #22494)
+t '^.*\0', "xxx\n\0", M, 1
+t '\b.*\0', "aaaa \0", M, 1
+t '\b.*x', 'aaaa bx', 0, 1
+t '(?=b).*\0', "aa\nb\0", M
+t '$.*\0', "ab\n\0", M
+t '(?!a).*\0', "aa\0", M
+t '(?:^|\b).*\0', "xxx \0", M, 1
+t '^.*x', "x\nyx", 0, 1
+t '(?<=a).*', 'xab', M, 1
+# (?#...) is dropped at the token level: a following quantifier applies to the atom before it
+t 'a(?#x)+b', 'aaab'
+t 'a(?#x)(?#y){2}b', 'aab'
+t 'a(?#x)?+b', 'aab'
+t 'a+(?#x)?b', 'aab'
+t 'a (?#x) + b', 'aab', X
+t '(?#x)+', 'a'
+t '\3(?#)43', 'a'
+t '(a)(b)(c)\3(?#)43', 'abcc43'
 t '(.*)\1x', 'zaax'
 t '(?=ab\K)', 'abc'
 t 'a\Kb|ac', 'ac'
