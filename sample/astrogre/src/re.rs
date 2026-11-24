@@ -328,7 +328,8 @@ fn is_uword(c: u32) -> bool {
         return b.is_ascii_alphanumeric() || b == b'_';
     }
     match char::from_u32(c) {
-        Some(ch) => ch.is_alphanumeric() || is_mark(c) || matches!(c, 0x203F | 0x2040 | 0x2054 | 0xFE33 | 0xFE34 | 0xFE4D..=0xFE4F | 0xFF3F),
+        // Onigmo's Word: Alphabetic, Mark, Nd, Pc and Join_Control (not No)
+        Some(ch) => ch.is_alphabetic() || is_nd(c) || is_mark(c) || matches!(c, 0x200C | 0x200D | 0x203F | 0x2040 | 0x2054 | 0xFE33 | 0xFE34 | 0xFE4D..=0xFE4F | 0xFF3F),
         None => false,
     }
 }
@@ -341,6 +342,7 @@ fn is_upunct(c: u32) -> bool {
         0xA1 | 0xA7 | 0xAB | 0xB6 | 0xB7 | 0xBB | 0xBF | 0x37E | 0x387 | 0x55A..=0x55F | 0x589 | 0x58A
         | 0x5BE | 0x5C0 | 0x5C3 | 0x5C6 | 0x5F3 | 0x5F4 | 0x609 | 0x60A | 0x60C | 0x60D | 0x61B
         | 0x61E | 0x61F | 0x66A..=0x66D | 0x6D4 | 0x964 | 0x965 | 0x970 | 0xE4F | 0xE5A | 0xE5B
+        | 0xF04..=0xF12 | 0xF14 | 0xF3A..=0xF3D | 0xF85 | 0xFD0..=0xFD4 | 0xFD9 | 0xFDA
         | 0x2010..=0x2027 | 0x2030..=0x2043 | 0x2045..=0x2051 | 0x2053..=0x205E | 0x207D | 0x207E
         | 0x208D | 0x208E | 0x2308..=0x230B | 0x2329 | 0x232A | 0x2768..=0x2775 | 0x27C5 | 0x27C6
         | 0x27E6..=0x27EF | 0x2983..=0x2998 | 0x29D8..=0x29DB | 0x29FC | 0x29FD | 0x2E00..=0x2E4F
@@ -605,7 +607,7 @@ struct Parser<'a> {
     pending_u_list: bool,             // \u{61 62}: more code points follow
     u_list_prefix: Vec<Ast>,         // leading code points of a \u{...} list, emitted before the atom
     enc: Enc,
-    ascii: bool, // (?a): POSIX brackets match ASCII only
+    ascii: u8, // 1: (?a), POSIX brackets match ASCII only; 2: (?u), \w \d \s are Unicode; 0: (?d)
 }
 
 enum Lit {
@@ -704,8 +706,9 @@ impl<'a> Parser<'a> {
                                 Some(b'i') => self.icase = on,
                                 Some(b'm') => self.ml = on,
                                 Some(b'x') => self.ext = on,
-                                Some(b'a') => self.ascii = true,
-                                Some(b'd' | b'u') => self.ascii = false,
+                                Some(b'a') => self.ascii = 1,
+                                Some(b'd') => self.ascii = 0,
+                                Some(b'u') => self.ascii = 2,
                                 Some(b'-') => on = false,
                                 Some(b':') => {
                                     term = b':';
@@ -1225,12 +1228,12 @@ impl<'a> Parser<'a> {
             b'v' => 11,
             b'a' => 7,
             b'e' => 0x1b,
-            b'd' => return Ok(Lit::Item(CItem::Prop(Prop::Digit, false))),
-            b'D' => return Ok(Lit::Item(CItem::Prop(Prop::Digit, true))),
-            b'w' => return Ok(Lit::Item(CItem::Prop(Prop::Word, false))),
-            b'W' => return Ok(Lit::Item(CItem::Prop(Prop::Word, true))),
-            b's' => return Ok(Lit::Item(CItem::Prop(Prop::Space, false))),
-            b'S' => return Ok(Lit::Item(CItem::Prop(Prop::Space, true))),
+            b'd' => return Ok(Lit::Item(CItem::Prop(if self.ascii == 2 { Prop::UDigit } else { Prop::Digit }, false))),
+            b'D' => return Ok(Lit::Item(CItem::Prop(if self.ascii == 2 { Prop::UDigit } else { Prop::Digit }, true))),
+            b'w' => return Ok(Lit::Item(CItem::Prop(if self.ascii == 2 { Prop::UWord } else { Prop::Word }, false))),
+            b'W' => return Ok(Lit::Item(CItem::Prop(if self.ascii == 2 { Prop::UWord } else { Prop::Word }, true))),
+            b's' => return Ok(Lit::Item(CItem::Prop(if self.ascii == 2 { Prop::USpace } else { Prop::Space }, false))),
+            b'S' => return Ok(Lit::Item(CItem::Prop(if self.ascii == 2 { Prop::USpace } else { Prop::Space }, true))),
             b'h' => return Ok(Lit::Item(CItem::Prop(Prop::Hex, false))),
             b'H' => return Ok(Lit::Item(CItem::Prop(Prop::Hex, true))),
             b'p' | b'P' => {
@@ -1479,7 +1482,7 @@ impl<'a> Parser<'a> {
         }
         let name = std::str::from_utf8(&self.p[st..j]).unwrap();
         match posix_by_name(name) {
-            Some(p) if self.ascii => {
+            Some(p) if self.ascii == 1 => {
                 self.i = j + 2;
                 let only = CClass { neg, icase: false, parts: vec![vec![CItem::Prop(p, false)], vec![CItem::Range(0, 127)]], bits: [0; 2] };
                 Ok(Some(CItem::Class(Box::new(only))))
@@ -1490,6 +1493,11 @@ impl<'a> Parser<'a> {
             }
             None => err("invalid POSIX bracket type"),
         }
+    }
+
+    /// A '-' that would make a range follows (not before ']' or "&&").
+    fn range_follows(&self) -> bool {
+        self.peek() == Some(b'-') && !matches!(self.peek_at(1), Some(b']') | None) && !(self.peek_at(1) == Some(b'&') && self.peek_at(2) == Some(b'&'))
     }
 
     /// Parses a bracket class; position is just after '['.
@@ -1524,6 +1532,8 @@ impl<'a> Parser<'a> {
             }
             if c == b'[' {
                 if let Some(it) = self.try_posix()? {
+                    // a class cannot start a range (Onigmo)
+                    if self.range_follows() { return err("unmatched range specifier in char-class"); }
                     parts.last_mut().unwrap().push(it);
                     continue;
                 }
@@ -1534,9 +1544,7 @@ impl<'a> Parser<'a> {
             }
             match self.class_atom()? {
                 Lit::Item(it) => {
-                    if self.peek() == Some(b'-') && !matches!(self.peek_at(1), Some(b']') | None) && !(self.peek_at(1) == Some(b'&') && self.peek_at(2) == Some(b'&')) && self.peek_at(1) != Some(b'[') {
-                        return err("char-class value at end of range");
-                    }
+                    if self.range_follows() { return err("unmatched range specifier in char-class"); }
                     parts.last_mut().unwrap().push(it)
                 }
                 Lit::Ch(lo) if self.pending_u_list => {
@@ -1557,6 +1565,9 @@ impl<'a> Parser<'a> {
                     }
                 }
                 Lit::Ch(lo) => {
+                    if self.peek() == Some(b'-') && self.p[self.i + 1..].starts_with(b"[:") && self.p[self.i + 3..].contains(&b']') {
+                        return err("char-class value at end of range");
+                    }
                     if self.peek() == Some(b'-') && !matches!(self.peek_at(1), Some(b']') | None | Some(b'['))
                         && !(self.peek_at(1) == Some(b'&') && self.peek_at(2) == Some(b'&'))
                     {
@@ -1625,7 +1636,7 @@ impl<'a> Parser<'a> {
     fn new(p: &'a [u8], opts: u32, enc: Enc) -> Parser<'a> {
         Parser {
             enc,
-            ascii: false,
+            ascii: 0,
             p,
             i: 0,
             icase: opts & OPT_I != 0,
