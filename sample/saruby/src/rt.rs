@@ -1161,7 +1161,7 @@ pub fn define_iseq_method(c: &mut Ctx, klass: Value, mid: Sym, is: &'static Iseq
     if dc.is_heap() && c.frame().kind != FK_CLASS && dc != cref_class(c) { cref = crate::vm::cref_with_def_target(c, cref, dc); }
     let me = new_me_cref(mid, klass, visi, MKind::Iseq(is), cref);
     note_redefinition(c, klass, mid);
-    define_method_me(c, klass, mid, me);
+    define_user_method(c, klass, mid, me);
 }
 
 /// rb_class_modify_check: a frozen class (a singleton one: named by its object) cannot get methods.

@@ -1509,6 +1509,11 @@ impl<'a> Compiler<'a> {
             let mut me = ms as usize;
             while self.src.get(me).is_some_and(|&b| b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80) { me += 1; }
             if self.src.get(me).is_some_and(|&b| b == b'?' || b == b'!') { me += 1; }
+            // an operator message (`&.[]`, `&.+`)
+            if me == ms as usize {
+                if self.src.get(me) == Some(&b'[') { me += 2; if self.src.get(me) == Some(&b'=') && self.src.get(me + 1) != Some(&b'=') { me += 1; } }
+                else { while self.src.get(me).is_some_and(|b| b"=+-*/%<>!~^&|".contains(b)) { me += 1; } }
+            }
             let end = match an {
                 Some(a) if self.src.get(me) == Some(&b'(') => {
                     let mut end = match block { Some(b @ PNode { kind: Kind::BlockNode { .. }, .. }) => b.loc.start, _ => n.loc.start + n.loc.len };

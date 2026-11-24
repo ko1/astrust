@@ -831,15 +831,23 @@ pub fn ancestors(c: &Ctx, klass: Value) -> std::rc::Rc<[Value]> {
     let ser = vm().hierarchy_serial.get();
     if let Some((s, a)) = &*c.class(klass).ancestors.borrow() { if *s == ser { return a.clone(); } }
     let mut out = vec![];
-    let mut seen = vec![];   // entries other than prepended ones: a module prepended to k may repeat one of them
+    // entries other than prepended ones, once there is a prepended one (it may repeat one of them)
+    let mut seen: Option<Vec<Value>> = None;
     let mut k = klass;
     while k != NIL {
         let mut part = vec![];
         module_chain(c, k, &mut part);
         let np = part.iter().position(|&x| x == k).unwrap_or(0);
         for (i, x) in part.into_iter().enumerate() {
-            if i < np { if !out[out.len() - out.len().min(i)..].contains(&x) { out.push(x); } continue; }
-            if !seen.contains(&x) { seen.push(x); out.push(x); }
+            if i < np {
+                if seen.is_none() { seen = Some(out.clone()); }
+                if !out[out.len() - out.len().min(i)..].contains(&x) { out.push(x); }
+                continue;
+            }
+            match &mut seen {
+                None => if !out.contains(&x) { out.push(x); },
+                Some(s) => if !s.contains(&x) { s.push(x); out.push(x); },
+            }
         }
         k = c.class(k).superclass;
     }
@@ -849,6 +857,14 @@ pub fn ancestors(c: &Ctx, klass: Value) -> std::rc::Rc<[Value]> {
 }
 
 pub fn define_method_me(c: &mut Ctx, klass: Value, name: Sym, me: *const MethodEntry) {
+    c.class_mut(klass).mtbl.insert(name, me);
+    let vm = vm();
+    bump_method_serial();
+    vm.mcache.borrow_mut().clear();
+}
+/// define_method_me for a definition made by Ruby code (def, alias, attr_*, define_method, module_function,
+/// import_methods): the redefinition warning and Coverage's method entries (boot definitions skip both).
+pub fn define_user_method(c: &mut Ctx, klass: Value, name: Sym, me: *const MethodEntry) {
     let old = c.class_mut(klass).mtbl.insert(name, me);
     if let Some(old) = old { if vm().verbose.get() == TRUE { warn_redefined(c, klass, name, old, me); } }
     if crate::builtins::coverage::setup() { crate::builtins::coverage::on_me(c, me); }
@@ -866,6 +882,9 @@ fn warn_redefined(c: &mut Ctx, klass: Value, name: Sym, old: *const MethodEntry,
     let shared = |k: MKind| match (k, ok) { (MKind::Iseq(a), MKind::Iseq(b)) => std::ptr::eq(a, b), (MKind::Bmethod(a), MKind::Bmethod(b)) => a == b, _ => false };
     if c.class(klass).mtbl.iter().any(|(&m, &e)| m != name && c.me_ref(e).is_some_and(|x| shared(x.kind))) { return; }
     let prev = match ok { MKind::Iseq(is) => c.iseq_ref(is).map(|i| (i.info.file, i.info.line)), _ => None };
+    // saruby's own lazy stubs replacing themselves
+    let internal = |k: MKind| matches!(k, MKind::Iseq(is) if c.iseq_ref(is).is_some_and(|i| i.info.file.starts_with("<internal:")));
+    if internal(ok) || internal(n.kind) { return; }
     let _ = crate::builtins::kernel::gvar_warn(c, &format!("method redefined; discarding old {}", sym_str(name)), false);
     if let Some((f, l)) = prev {
         let _ = crate::builtins::kernel::warning_write(c, format!("{}:{}: warning: previous definition of {} was here\n", f, l, sym_str(name)).as_bytes());
@@ -906,7 +925,7 @@ fn search_refinement(c: &Ctx, r: Value, mid: Sym) -> *const MethodEntry {
     ancestors(c, r).iter().find_map(|&k| c.class(k).mtbl.get(&mid).copied().filter(|&me| !matches!(c.me_ref(me).map(|m| m.kind), Some(MKind::ZSuper)))).unwrap_or(std::ptr::null())
 }
 thread_local! {
-    static ZSUPER_MES: RefCell<HashMap<(usize, usize), usize>> = RefCell::new(HashMap::default());
+    static ZSUPER_MES: RefCell<HashMap<(usize, usize, u8), usize>> = RefCell::new(HashMap::default());
     static ZSUPER_OWNER: RefCell<HashMap<usize, Value>> = RefCell::new(HashMap::default());
 }
 /// Method#owner of an entry reached through a ZSuper one: the class of the ZSuper entry (CRuby 4.0).
@@ -916,8 +935,7 @@ pub fn zsuper_owner(me: *const MethodEntry) -> Option<Value> { ZSUPER_OWNER.with
 #[inline(never)]
 fn zsuper_me(c: &Ctx, zs: *const MethodEntry, me: *const MethodEntry) -> *const MethodEntry {
     let (Some(z), Some(m)) = (c.me_ref(zs), c.me_ref(me)) else { return me };
-    if z.visi == m.visi { return me; }
-    let key = (zs as usize, me as usize);
+    let key = (zs as usize, me as usize, z.visi);   // visibility: the ZSuper entry may change in place
     if let Some(p) = ZSUPER_MES.with(|t| t.borrow().get(&key).copied()) { return p as *const MethodEntry; }
     let p = Box::into_raw(Box::new(MethodEntry { name: m.name, owner: m.owner, visi: z.visi, kind: m.kind, orig_owner: m.orig_owner, cref: m.cref })) as *const MethodEntry;
     ZSUPER_MES.with(|t| t.borrow_mut().insert(key, p as usize));

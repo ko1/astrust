@@ -554,7 +554,7 @@ pub fn alias_method(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) -> Re
     let n = Box::into_raw(Box::new(o)) as *const MethodEntry;
     if newname != oname { c.vm().alias_names.borrow_mut().insert(n as usize, newname); }
     crate::rt::note_redefinition(c, klass, newname);
-    define_method_me(c, klass, newname, n);
+    define_user_method(c, klass, newname, n);
     call_method_added(c, klass, newname)?;
     Ok(())
 }
@@ -621,11 +621,11 @@ fn attr_names(c: &mut Ctx, a: &[Value]) -> Result<Vec<Sym>, Esc> {
 fn def_attr(c: &mut Ctx, k: Value, n: Sym, reader: bool, writer: bool) -> Result<(), Esc> {
     let visi = match scope_visi(c, k) { VISI_MODFUNC => VISI_PRIVATE, v => v };
     let iv = intern(format!("@{}", sym_str(n)).as_bytes());
-    if reader { crate::rt::note_redefinition(c, k, n); define_method_me(c, k, n, new_me(n, k, visi, MKind::AttrReader(iv))); call_method_added(c, k, n)?; }
+    if reader { crate::rt::note_redefinition(c, k, n); define_user_method(c, k, n, new_me(n, k, visi, MKind::AttrReader(iv))); call_method_added(c, k, n)?; }
     if writer {
         let w = intern(format!("{}=", sym_str(n)).as_bytes());
         crate::rt::note_redefinition(c, k, w);
-        define_method_me(c, k, w, new_me(w, k, visi, MKind::AttrWriter(iv)));
+        define_user_method(c, k, w, new_me(w, k, visi, MKind::AttrWriter(iv)));
         call_method_added(c, k, w)?;
     }
     Ok(())
@@ -701,18 +701,23 @@ fn set_visibility(c: &mut Ctx, slf: Value, a: &[Value], visi: u8) -> RV {
         if visi == VISI_MODFUNC {
             let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi: VISI_PRIVATE, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
             keep_alias_name(c, me, n);
-            define_method_me(c, slf, m, n);
+            define_user_method(c, slf, m, n);
             let sk = singleton_class(c, slf);
             let n2 = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: sk, visi: VISI_PUBLIC, kind: o.kind, orig_owner: sk, cref: o.cref }));
             keep_alias_name(c, me, n2);
-            define_method_me(c, sk, m, n2);
+            define_user_method(c, sk, m, n2);
             call_method_added(c, sk, m)?;
             continue;
         }
         // rb_export_method: the entry found first (a ZSuper one included) changes in place when it is slf's own
         if o.owner == slf { c.me_set_visi(me, visi); bump_method_serial(); c.vm().mcache.borrow_mut().clear(); }
         else if o.visi == visi { continue; }   // an inherited one already so is left alone
-        else {
+        else if c.class(slf).refined {
+            // in a refinement: a copy with the new visibility (refined lookups do not follow ZSuper entries)
+            let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
+            keep_alias_name(c, me, n);
+            define_method_me(c, slf, m, n);
+        } else {
             // a ZSuper entry: calls reach the method above (a later redefinition there too)
             define_method_me(c, slf, m, new_me(m, slf, visi, MKind::ZSuper));
             crate::builtins::object::call_method_added(c, slf, m)?;
@@ -790,14 +795,14 @@ pub fn m_define_method(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
         new_me(mid, slf, visi, MKind::Bmethod(np))
     };
     crate::rt::note_redefinition(c, slf, mid);
-    define_method_me(c, slf, mid, me);
+    define_user_method(c, slf, mid, me);
     if modfunc {
         let Some(o) = me_copy(c, me) else { return Ok(Value::sym(mid)) };
         let sk = singleton_class(c, slf);
         let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: sk, visi: VISI_PUBLIC, kind: o.kind, orig_owner: sk, cref: o.cref }));
         keep_alias_name(c, me, n);
         crate::rt::note_redefinition(c, sk, mid);
-        define_method_me(c, sk, mid, n);
+        define_user_method(c, sk, mid, n);
     }
     call_method_added(c, slf, mid)?;
     Ok(Value::sym(mid))
@@ -1401,7 +1406,7 @@ fn refinement_import_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> R
                     let cref = if c.caller_frame().is_none() { me.cref } else { caller_cref(c) };
                     let n = new_me_cref(name, slf, me.visi, me.kind, cref);
                     crate::rt::note_redefinition(c, slf, name);
-                    define_method_me(c, slf, name, n);
+                    define_user_method(c, slf, name, n);
                 }
                 _ => return arg_err(c, format!("Can't import method which is not defined with Ruby code: {}#{}", class_path(c, m), sym_str(name))),
             }
