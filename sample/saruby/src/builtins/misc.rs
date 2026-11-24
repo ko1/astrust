@@ -151,7 +151,7 @@ fn gc_config(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
 }
 fn gc_set_stress(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     crate::gc::set_stress(if a[0].truthy() { 1 } else { 0 });
-    STRESS_V.set(c, if a[0] == NIL { FALSE } else { a[0] });
+    STRESS_V.set(c, if a[0] == NIL { UNDEF } else { a[0] });   // UNDEF: set to nil (NIL: never set)
     Ok(a[0])
 }
 /// GC.compact's answer: nothing moves in saruby's heap.
@@ -184,21 +184,24 @@ fn prof_raw_data(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     Ok(out)
 }
 /// gc_profile_dump_on
-fn prof_result_bytes() -> Vec<u8> {
+/// gc_profile_dump_on's pieces (each one rb_io_write to the report's output)
+fn prof_result_pieces() -> Vec<String> {
     let Some(rs) = crate::gc::profile_records() else { return vec![] };
     if rs.is_empty() { return vec![]; }
     let slot = std::mem::size_of::<RObj>();
-    let mut o = format!("GC {} invokes.\nIndex    Invoke Time(sec)       Use Size(byte)     Total Size(byte)         Total Object                    GC Time(ms)\n", crate::gc::collections());
+    let mut o = vec![format!("GC {} invokes.\n", crate::gc::collections()),
+        "Index    Invoke Time(sec)       Use Size(byte)     Total Size(byte)         Total Object                    GC Time(ms)\n".to_string()];
     for (i, r) in rs.iter().enumerate() {
-        o.push_str(&format!("{:5} {:19.3} {:20} {:20} {:20} {:30.20}\n", i + 1, crate::gc::since_start(r.at), (r.stats.slots - r.stats.free) * slot, r.stats.slots * slot, r.stats.slots, r.time.as_secs_f64() * 1000.0));
+        o.push(format!("{:5} {:19.3} {:20} {:20} {:20} {:30.20}\n", i + 1, crate::gc::since_start(r.at), (r.stats.slots - r.stats.free) * slot, r.stats.slots * slot, r.stats.slots, r.time.as_secs_f64() * 1000.0));
     }
-    o.into_bytes()
+    o
 }
+fn prof_result_bytes() -> Vec<u8> { prof_result_pieces().concat().into_bytes() }
 fn prof_report(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
-    let b = prof_result_bytes();
-    let s = c.str_new(&b);
-    match a.first() { Some(&out) => { funcall(c, out, intern(b"write"), &[s], std::ptr::null())?; } None => { stdout_write(c, &b)?; } }
+    for p in prof_result_pieces() {
+        match a.first() { Some(&out) => { let s = c.str_new(p.as_bytes()); funcall(c, out, intern(b"write"), &[s], std::ptr::null())?; } None => { stdout_write(c, p.as_bytes())?; } }
+    }
     Ok(NIL)
 }
 fn prof_total_time(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
@@ -213,7 +216,7 @@ fn init_gc_extras(c: &mut Ctx, gc: Value) {
     define_singleton_cfunc(c, gc, "auto_compact=", |_c, _s, a, _b| { AUTO_COMPACT.store(a[0].truthy(), Relaxed); Ok(a[0]) }, 1);
     define_singleton_cfunc(c, gc, "measure_total_time", |_c, _s, _a, _b| Ok(Value::bool(MEASURE_TIME.load(Relaxed))), 0);
     define_singleton_cfunc(c, gc, "measure_total_time=", |_c, _s, a, _b| { MEASURE_TIME.store(a[0].truthy(), Relaxed); Ok(a[0]) }, 1);
-    define_singleton_cfunc(c, gc, "stress", |c, _s, _a, _b| { let v = STRESS_V.get(c); Ok(if v == NIL { FALSE } else { v }) }, 0);
+    define_singleton_cfunc(c, gc, "stress", |c, _s, _a, _b| { let v = STRESS_V.get(c); Ok(if v == NIL { FALSE } else if v == UNDEF { NIL } else { v }) }, 0);
     define_singleton_cfunc(c, gc, "stress=", gc_set_stress, 1);
     define_singleton_cfunc(c, gc, "compact", |c, _s, _a, _b| { explicit_gc(c, true); compact_info(c) }, 0);
     define_singleton_cfunc(c, gc, "latest_compact_info", |c, _s, _a, _b| compact_info(c), 0);

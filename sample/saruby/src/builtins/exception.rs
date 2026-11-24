@@ -417,10 +417,11 @@ fn th_each_caller_location(c: &mut Ctx, _s: Value, args: &[Value], b: Blk) -> RV
         let ks = inspect_str(c, k)?;
         return arg_err(c, format!("unknown keyword: {}", ks));
     }
-    if b.is_null() { return err(c, c.vm().c_local_jump_error.get(), "no block given"); }
     let (start, len, drop) = caller_range(c, args)?;
     let Some(locs) = backtrace_locs_n(c, 1 + start, len) else { return Ok(NIL) };
     let a = locations_from_locs(c, drop_last(locs, drop));
+    // the missing block is found at the first yield (nothing to yield: no error)
+    if b.is_null() && c.ary_len(a) > 0 { return err(c, c.vm().c_local_jump_error.get(), "no block given"); }
     let mut i = 0;
     while let Some(&l) = c.ary(a).get(i) { i += 1; yield1(c, b, l)?; }
     Ok(NIL)

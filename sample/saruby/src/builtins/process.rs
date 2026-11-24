@@ -151,6 +151,8 @@ fn signal_trap(c: &mut Ctx, _s: Value, a: &[Value], blk: Blk) -> RV {
             },
             "SYSTEM_DEFAULT" => (c.str_new(b"SYSTEM_DEFAULT"), sys::SigAction::Default, F_DFL),
             "EXIT" => (c.str_new(b"EXIT"), sys::SigAction::Catch(on_signal), F_RUBY),
+            // another String is Ruby code the handler evals (rb_eval_cmd_kw)
+            _ if is_string(cmd) => { let d = c.str_dup(cmd); (d, sys::SigAction::Catch(on_signal), F_RUBY) }
             _ => return arg_err(c, format!("wrong trap - {}", sname)),
         }
     } else { (cmd, sys::SigAction::Catch(on_signal), F_RUBY) };
@@ -169,6 +171,7 @@ fn run_handler(c: &mut Ctx, sig: i32) -> Result<(), Esc> {
     let h = c.ary_get(HANDLERS.get(c), sig as usize);
     if is_string(h) {
         if c.str_bytes(h) == b"EXIT" { let e = make_exception(c, c.vm().c_system_exit.get(), "exit"); ivar_set_raw(c, e, crate::symbol::s::status, Value::fix(0)); return Err(raise_exc(c, e)); }
+        if !matches!(c.str_bytes(h), b"IGNORE" | b"SYSTEM_DEFAULT") { let m = c.vm().main_obj.get(); funcall(c, m, intern(b"eval"), &[h], std::ptr::null())?; }
         return Ok(());
     }
     if h == NIL || h == UNDEF { return Ok(()); }
