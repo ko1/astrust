@@ -49,7 +49,7 @@ fn env_fetch(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     if let Some(v) = get(&k) { return Ok(env_str(c, &v)); }
     if !b.is_null() { return yield1(c, b, a[0]); }
     if a.len() > 1 { return Ok(a[1]); }
-    let e = make_exception(c, c.vm().c_key_error.get(), &format!("key not found: {}", inspect_bytes(&k, ENC_UTF8)));
+    let e = make_exception_rb(c, c.vm().c_key_error.get(), &format!("key not found: {}", inspect_bytes(&k, ENC_UTF8)));
     ivar_set_raw(c, e, intern(b"receiver"), s); ivar_set_raw(c, e, intern(b"key"), a[0]);
     Err(raise_exc(c, e))
 }

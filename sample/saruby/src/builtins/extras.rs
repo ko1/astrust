@@ -60,14 +60,14 @@ fn sig_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
         (n as i64, format!("SIG{}", crate::builtins::process::signame(n).unwrap_or("")))
     };
     ivar_set_raw(c, s, intern(b"signo"), Value::fix(no));
-    let m = c.str_new(name.as_bytes());
+    let m = match a.get(1) { Some(&m) if a[0].is_fixnum() && is_string(m) => m, _ => c.str_new(name.as_bytes()) };
     ivar_set_raw(c, s, crate::symbol::s::mesg, m);
     Ok(NIL)
 }
 /// interrupt_init: SignalException#initialize(SIGINT, message = "Interrupt").
 fn interrupt_init(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
-    let m = match a.first() { Some(&m) => m, None => c.str_new(b"Interrupt") };
+    let m = match a.first() { Some(&m) => m, None => c.str_new_enc(b"Interrupt", crate::object::ENC_ASCII) };
     sig_initialize(c, s, &[Value::fix(2), m], b)
 }
 fn sig_signo(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, s, intern(b"signo"))) }

@@ -440,7 +440,7 @@ pub fn make_exception_from_args(c: &mut Ctx, args: &[Value]) -> RV {
             let e = funcall(c, k, s::exception, &args[1..args.len().min(2)], std::ptr::null())?;
             if !is_exception(c, e) { return type_err(c, "exception object expected"); }
             // rb_check_backtrace: nil leaves the backtrace to raise
-            if args.len() >= 3 && args[2] != NIL {
+            if args.len() >= 3 && (args[2] != NIL || user_set_backtrace(c, e)) {
                 funcall(c, e, intern(b"set_backtrace"), &args[2..3], std::ptr::null())?;
             }
             e
@@ -533,6 +533,7 @@ fn k_raise(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     if ivar_get(c, e, s::bt) == NIL {
         let bt = make_backtrace_lazy(c, 1);
         ivar_set_raw(c, e, s::bt, bt);
+        if user_set_backtrace(c, e) { call_set_backtrace(c, e); }
     }
     Err(raise_exc(c, e))
 }
@@ -587,7 +588,7 @@ fn k_throw(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     let found = CATCH_TAGS.with(|t| t.borrow().iter().any(|&x| x == (th, tag)));
     if !found {
         let ins = inspect_str(c, tag)?;
-        let e = make_exception(c, c.vm().c_uncaught_throw_error.get(), &format!("uncaught throw {}", ins));
+        let e = make_exception_rb(c, c.vm().c_uncaught_throw_error.get(), &format!("uncaught throw {}", ins));
         ivar_set_raw(c, e, intern(b"tag"), tag);
         ivar_set_raw(c, e, intern(b"value"), val);
         return Err(raise_exc(c, e));

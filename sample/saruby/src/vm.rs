@@ -1376,6 +1376,10 @@ pub fn const_lookup(c: &mut Ctx, cref: *const Cref, name: Sym) -> RV {
 }
 
 pub fn const_missing(c: &mut Ctx, klass: Value, name: Sym) -> RV {
+    if &*sym_str(name) == "StringIO" && !crate::builtins::stringio::loaded() {
+        crate::builtins::stringio::init_once(c);
+        if let Some(v) = const_get_at(c, vm().c_object.get(), name) { return Ok(v); }
+    }
     let me = lookup_method(c, class_of(klass), s::const_missing);
     if !me.is_null() && !matches!(unsafe { (*me).kind }, MKind::Cfunc(..)) {
         return funcall(c, klass, s::const_missing, &[Value::sym(name)], std::ptr::null());
@@ -1423,6 +1427,7 @@ pub fn raise_exc(c: &mut Ctx, e: Value) -> Esc {
     if ivar_get(c, e, s::bt) == NIL && is_exception(c, e) {
         let bt = make_backtrace_lazy(c, 0);
         ivar_set_raw(c, e, s::bt, bt);
+        if user_set_backtrace(c, e) { call_set_backtrace(c, e); }
     }
     if c.errinfo != NIL && c.errinfo != e && is_exception(c, e) { implicit_cause(c, e); }
     // one test here (raise_exc is inlined everywhere): $DEBUG or a raise hook
@@ -1430,6 +1435,29 @@ pub fn raise_exc(c: &mut Ctx, e: Value) -> Esc {
     c.esc = EscKind::Raise;
     c.esc_val = e;
     Esc
+}
+
+/// A #set_backtrace other than Exception's own (setup_exception calls it with the captured lines).
+pub fn user_set_backtrace(c: &Ctx, e: Value) -> bool {
+    let me = lookup_method(c, class_of(e), s::set_backtrace);
+    match c.me_ref(me).map(|m| m.kind) {
+        Some(MKind::Cfunc(f, _)) => f as *const () as usize != crate::builtins::exception::exc_set_backtrace as *const () as usize,
+        Some(_) => true,
+        None => false,
+    }
+}
+/// setup_exception's set_backtrace call: the Locations stay, a failure inside is dropped.
+#[cold]
+#[inline(never)]
+pub fn call_set_backtrace(c: &mut Ctx, e: Value) {
+    let locs = crate::builtins::exception::exc_locations(c, e);
+    let lines = exc_bt(c, e);
+    ivar_set_raw(c, e, s::bt, NIL);
+    let saved = (c.esc, c.esc_val, c.esc_tag, c.esc_tag_v, c.errinfo);
+    let _ = funcall(c, e, s::set_backtrace, &[lines], std::ptr::null());
+    (c.esc, c.esc_val, c.esc_tag, c.esc_tag_v, c.errinfo) = saved;
+    ivar_set_raw(c, e, crate::symbol::intern(b"__bt_locs"), locs);
+    ivar_set_raw(c, e, crate::symbol::intern(b"__bt_set"), NIL);
 }
 
 /// $! becomes the cause of an exception that has none (and is then a cause itself: its own is nil).
@@ -1478,8 +1506,22 @@ pub fn make_exception(c: &mut Ctx, klass: Value, msg: &str) -> Value {
     e
 }
 
+/// rb_sprintf's result: ASCII text is BINARY, else UTF-8.
+pub fn str_new_rb(c: &mut Ctx, s: &str) -> Value { c.str_new_enc(s.as_bytes(), if s.is_ascii() { ENC_BINARY } else { ENC_UTF8 }) }
+
+/// rb_raise's message: ASCII text is BINARY (NameError's lazily built message: US-ASCII), else UTF-8.
+pub fn make_exception_rb(c: &mut Ctx, klass: Value, msg: &str) -> Value {
+    let e = new_object(c, klass);
+    let enc = if !msg.is_ascii() { ENC_UTF8 }
+        else if is_kind_of_cls(c, klass, vm().c_name_error.get()) { ENC_ASCII } else { ENC_BINARY };
+    let m = c.str_new_enc(msg.as_bytes(), enc);
+    ivar_set_raw(c, e, s::mesg, m);
+    e
+}
+fn is_kind_of_cls(c: &Ctx, k: Value, anc: Value) -> bool { k == anc || ancestors(c, k).contains(&anc) }
+
 pub fn make_name_error(c: &mut Ctx, klass: Value, msg: &str, name: Value, recv: Value) -> RV {
-    let e = make_exception(c, klass, msg);
+    let e = make_exception_rb(c, klass, msg);
     ivar_set_raw(c, e, s::name, name);
     ivar_set_raw(c, e, s::receiver, recv);
     let _ = c;
@@ -1487,7 +1529,7 @@ pub fn make_name_error(c: &mut Ctx, klass: Value, msg: &str, name: Value, recv: 
 }
 
 pub fn raise_msg(c: &mut Ctx, klass: Value, msg: &str) -> Esc {
-    let e = make_exception(c, klass, msg);
+    let e = make_exception_rb(c, klass, msg);
     raise_exc(c, e)
 }
 
@@ -1536,7 +1578,7 @@ pub fn raise_frozen(c: &mut Ctx, v: Value) -> Esc {
         match r { Ok(s) => s, Err(e) => return e }
     } else { " ...".into() };
     let msg = format!("can't modify frozen {}: {}", class_path(c, real_class_of(c, v)), insp);
-    let e = make_exception(c, vm().c_frozen_error.get(), &msg);
+    let e = make_exception_rb(c, vm().c_frozen_error.get(), &msg);
     ivar_set_raw(c, e, s::receiver, v);
     raise_exc(c, e)
 }

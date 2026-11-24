@@ -93,6 +93,7 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
         "saruby/ractor" => crate::builtins::ractor::init(c),
         "saruby/error_highlight" => crate::builtins::error_highlight::init(c),
         "saruby/syntax_suggest" => crate::builtins::syntax_suggest::init(c),
+        "stringio" | "saruby/stringio" => crate::builtins::stringio::init_once(c),
         _ => {}
     }
     Ok(NIL)

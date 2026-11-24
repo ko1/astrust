@@ -121,7 +121,7 @@ fn k_cmp(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
 fn k_eql(_c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { Ok(Value::bool(slf == a[0])) }
 fn k_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if slf == c.vm().main_obj.get() { return Ok(c.str_new(b"main")); }
-    Ok(c.str_new(any_to_s_str(c, slf).as_bytes()))
+    Ok(str_new_rb(c, &any_to_s_str(c, slf)))
 }
 pub fn k_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if slf == c.vm().main_obj.get() { return Ok(c.str_new(b"main")); }
@@ -138,8 +138,8 @@ pub fn k_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
         }
     }
     let k = real_class_of(c, slf);
-    if ivs.is_empty() { return Ok(c.str_new(format!("#<{}:{:#018x}>", class_path(c, k), slf.raw()).as_bytes())); }
-    if !rec_enter(c, slf, s::inspect)? { return Ok(c.str_new(format!("#<{}:{:#018x} ...>", class_path(c, k), slf.raw()).as_bytes())); }
+    if ivs.is_empty() { return Ok(str_new_rb(c, &format!("#<{}:{:#018x}>", class_path(c, k), slf.raw()))); }
+    if !rec_enter(c, slf, s::inspect)? { return Ok(str_new_rb(c, &format!("#<{}:{:#018x} ...>", class_path(c, k), slf.raw()))); }
     let mut out = format!("#<{}:{:#018x}", class_path(c, k), slf.raw());
     let keep = c.ary_new();
     for (i, (n, v)) in ivs.iter().enumerate() {
@@ -151,7 +151,7 @@ pub fn k_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     }
     rec_leave(c, slf, s::inspect);
     out.push('>');
-    Ok(c.str_new(out.as_bytes()))
+    Ok(str_new_rb(c, &out))
 }
 fn k_is_a(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if !is_class_or_module(a[0]) { return type_err(c, "class or module required"); }
@@ -892,9 +892,11 @@ fn m_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if cd.is_singleton {
         let att = cd.attached;
         let inner = if is_class_or_module(att) { inspect_str(c, att)? } else { crate::builtins::kernel::any_to_s_str(c, att) };
-        return Ok(c.str_new(format!("#<Class:{}>", inner).as_bytes()));
+        return Ok(str_new_rb(c, &format!("#<Class:{}>", inner)));
     }
-    Ok(c.str_new(class_path(c, slf).as_bytes()))
+    let n = class_path(c, slf);
+    if c.class(slf).name.is_some() { return Ok(c.str_new_enc(n.as_bytes(), if n.is_ascii() { ENC_ASCII } else { ENC_UTF8 })); }
+    Ok(str_new_rb(c, &n))
 }
 fn m_eqq(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { Ok(Value::bool(is_kind_of(c, a[0], slf))) }
 fn m_lt(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
