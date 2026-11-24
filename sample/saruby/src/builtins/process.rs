@@ -170,7 +170,6 @@ pub fn run_exit_trap(c: &mut Ctx) -> Result<(), Esc> {
         c.ary_mut(hs)[0] = NIL;
         funcall(c, h, intern(b"call"), &[Value::fix(0)], std::ptr::null()).map(|_| ())
     };
-    if r.is_ok() { crate::builtins::misc::run_finalizers(c); }
     r
 }
 fn signal_list(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
@@ -638,7 +637,10 @@ fn p_underscore_fork(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
 }
 fn k_fork(c: &mut Ctx, _s: Value, _a: &[Value], blk: Blk) -> RV {
     if crate::builtins::ractor::isolated(c) { return err(c, crate::builtins::ractor::isolation_error_class(c), "can not fork from non-main Ractors"); }
-    let pv = funcall(c, c.vm().m_process.get(), intern(b"_fork"), &[], std::ptr::null())?;
+    let parent = sys::getpid();
+    let pv = funcall(c, c.vm().m_process.get(), intern(b"_fork"), &[], std::ptr::null());
+    // rb_call_proc__fork: a _fork hook raising in the child stops the child there (ruby_stop)
+    let pv = match pv { Err(e) if sys::getpid() != parent => child_exit(c, Err(e)), r => r? };
     let pid = num_to_long(c, pv)?;
     if pid == 0 {
         if blk.is_null() { return Ok(NIL); }

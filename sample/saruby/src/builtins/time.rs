@@ -709,7 +709,13 @@ fn iso_week(v: &Vtm) -> (i128, i64) {
     };
     if w < 1 { (v.year - 1, weeks(v.year - 1)) } else if w > weeks(v.year) { (v.year + 1, 1) } else { (v.year, w) }
 }
-fn fmt_num(out: &mut String, v: i128, def_pad: u8, def_prec: usize, left: bool, padding: u8, precision: i64) {
+/// strftime's result: bytes in `enc` (the format's, or what a %Z zone name makes it).
+struct Out { b: Vec<u8>, enc: u8, max: usize }
+impl Out {
+    fn push(&mut self, ch: char) { let mut t = [0u8; 4]; self.b.extend_from_slice(ch.encode_utf8(&mut t).as_bytes()); }
+    fn push_str(&mut self, s: &str) { self.b.extend_from_slice(s.as_bytes()); }
+}
+fn fmt_num(out: &mut Out, v: i128, def_pad: u8, def_prec: usize, left: bool, padding: u8, precision: i64) {
     let prec = if left { 1 } else if precision <= 0 { def_prec } else { precision as usize };
     let zero = padding == b'0' || (padding == 0 && def_pad == b'0');
     let s = v.abs().to_string();
@@ -725,35 +731,36 @@ fn fmt_num(out: &mut String, v: i128, def_pad: u8, def_prec: usize, left: bool, 
         out.push_str(&s);
     }
 }
-fn strftime_into(c: &mut Ctx, out: &mut String, t: &RTime, v: &Vtm, fmt: &[u8]) -> Result<(), Esc> {
+fn strftime_into(c: &mut Ctx, out: &mut Out, t: &RTime, v: &Vtm, fmt: &[u8]) -> Result<(), Esc> {
     let gmt = t.mode == UTC;
     let mut i = 0;
     while i < fmt.len() {
         if fmt[i] != b'%' {
             let st = i; while i < fmt.len() && fmt[i] != b'%' { i += 1; }
-            out.push_str(&String::from_utf8_lossy(&fmt[st..i])); continue;
+            out.b.extend_from_slice(&fmt[st..i]); continue;
         }
         let sp = i;
         let (mut precision, mut left, mut upper, mut lower, mut chcase, mut padding, mut colons) = (-1i64, false, false, false, false, 0u8, 0usize);
-        let mut tp: Option<String> = None;
+        let mut tp: Option<Vec<u8>> = None;
         loop {
             i += 1;
             if i >= fmt.len() { return arg_err(c, format!("invalid format: {}", String::from_utf8_lossy(fmt))); }
             let ch = fmt[i];
             macro_rules! num { ($val:expr, $dp:expr, $prec:expr) => {{ fmt_num(out, $val as i128, $dp, $prec, left, padding, precision); break; }} }
             macro_rules! sub { ($f:expr) => {{
-                let mut sbuf = String::new(); strftime_into(c, &mut sbuf, t, v, $f)?;
-                if upper { sbuf = sbuf.to_uppercase(); } else if lower { sbuf = sbuf.to_lowercase(); }
+                let mut sbuf = Out { b: vec![], enc: out.enc, max: out.max }; strftime_into(c, &mut sbuf, t, v, $f)?;
+                let mut sbuf = sbuf.b;
+                if upper { sbuf.make_ascii_uppercase(); } else if lower { sbuf.make_ascii_lowercase(); }
                 if precision > sbuf.len() as i64 { for _ in 0..(precision as usize - sbuf.len()) { out.push(if padding != 0 { padding as char } else { ' ' }); } }
-                out.push_str(&sbuf); break;
+                out.b.extend_from_slice(&sbuf); break;
             }} }
             let flag_ok = precision <= 0;
             match ch {
-                b'%' => { tp = Some("%".into()); break; }
-                b'a' => { if chcase { upper = true; } tp = Some(DAYS[v.wday as usize][..3].into()); break; }
-                b'A' => { if chcase { upper = true; } tp = Some(DAYS[v.wday as usize].into()); break; }
-                b'b' | b'h' => { if chcase { upper = true; } tp = Some(MONTHS[v.mon as usize - 1][..3].into()); break; }
-                b'B' => { if chcase { upper = true; } tp = Some(MONTHS[v.mon as usize - 1].into()); break; }
+                b'%' => { tp = Some(b"%".to_vec()); break; }
+                b'a' => { if chcase { upper = true; } tp = Some(DAYS[v.wday as usize].as_bytes()[..3].to_vec()); break; }
+                b'A' => { if chcase { upper = true; } tp = Some(DAYS[v.wday as usize].as_bytes().to_vec()); break; }
+                b'b' | b'h' => { if chcase { upper = true; } tp = Some(MONTHS[v.mon as usize - 1].as_bytes()[..3].to_vec()); break; }
+                b'B' => { if chcase { upper = true; } tp = Some(MONTHS[v.mon as usize - 1].as_bytes().to_vec()); break; }
                 b'c' => sub!(b"%a %b %e %H:%M:%S %Y"),
                 b'd' => num!(v.mday, b'0', 2),
                 b'H' => num!(v.hour, b'0', 2),
@@ -763,7 +770,7 @@ fn strftime_into(c: &mut Ctx, out: &mut String, t: &RTime, v: &Vtm, fmt: &[u8]) 
                 b'M' => num!(v.min, b'0', 2),
                 b'p' | b'P' => {
                     if (ch == b'p' && chcase) || (ch == b'P' && !chcase && !upper) { upper = false; lower = true; }
-                    tp = Some(if v.hour < 12 { "AM".into() } else { "PM".into() }); break;
+                    tp = Some(if v.hour < 12 { b"AM".to_vec() } else { b"PM".to_vec() }); break;
                 }
                 b's' => { let sx = secs_floor(c, t.w); num!(sx, b'0', 1) }
                 b'S' => num!(v.sec, b'0', 2),
@@ -806,10 +813,15 @@ fn strftime_into(c: &mut Ctx, out: &mut String, t: &RTime, v: &Vtm, fmt: &[u8]) 
                 }
                 b'Z' => {
                     if chcase { upper = false; lower = true; }
-                    tp = Some(if gmt { "UTC".into() } else if t.mode == ZONE { zone_abbr(c, t)? } else { v.zone.clone().unwrap_or_default() }); break;
+                    let z = if gmt { None } else if t.mode == ZONE { zone_abbr(c, t)? } else { None };
+                    tp = Some(match z {
+                        Some(z) => zone_for(c, out, z)?,
+                        None => if gmt { b"UTC".to_vec() } else { v.zone.clone().unwrap_or_default().into_bytes() },
+                    });
+                    break;
                 }
-                b'n' => { tp = Some("\n".into()); break; }
-                b't' => { tp = Some("\t".into()); break; }
+                b'n' => { tp = Some(b"\n".to_vec()); break; }
+                b't' => { tp = Some(b"\t".to_vec()); break; }
                 b'e' => num!(v.mday, b' ', 2),
                 b'r' => sub!(b"%I:%M:%S %p"),
                 b'R' => sub!(b"%H:%M"),
@@ -817,8 +829,8 @@ fn strftime_into(c: &mut Ctx, out: &mut String, t: &RTime, v: &Vtm, fmt: &[u8]) 
                 b'l' => num!(if v.hour % 12 == 0 { 12 } else { v.hour % 12 }, b' ', 2),
                 b'v' => sub!(b"%e-%^b-%4Y"),
                 b'C' => num!(v.year.div_euclid(100), b'0', 2),
-                b'E' => { if i + 1 < fmt.len() && b"cCxXyY".contains(&fmt[i + 1]) { continue; } tp = Some(String::from_utf8_lossy(&fmt[sp..=i]).into_owned()); precision = -1; padding = 0; left = false; upper = false; lower = false; break; }
-                b'O' => { if i + 1 < fmt.len() && b"deHkIlmMSuUVwWy".contains(&fmt[i + 1]) { continue; } tp = Some(String::from_utf8_lossy(&fmt[sp..=i]).into_owned()); precision = -1; padding = 0; left = false; upper = false; lower = false; break; }
+                b'E' => { if i + 1 < fmt.len() && b"cCxXyY".contains(&fmt[i + 1]) { continue; } tp = Some(fmt[sp..=i].to_vec()); precision = -1; padding = 0; left = false; upper = false; lower = false; break; }
+                b'O' => { if i + 1 < fmt.len() && b"deHkIlmMSuUVwWy".contains(&fmt[i + 1]) { continue; } tp = Some(fmt[sp..=i].to_vec()); precision = -1; padding = 0; left = false; upper = false; lower = false; break; }
                 b'V' => num!(iso_week(v).1, b'0', 2),
                 b'u' => num!(if v.wday == 0 { 7 } else { v.wday }, b'0', 1),
                 b'G' => { let y = iso_week(v).0; num!(y, b'0', if y >= 0 { 4 } else { 5 }) }
@@ -841,23 +853,25 @@ fn strftime_into(c: &mut Ctx, out: &mut String, t: &RTime, v: &Vtm, fmt: &[u8]) 
                     let mut k = 1;
                     let mut ok = false;
                     while k <= 3 { if i + k >= fmt.len() { break; } if fmt[i + k] == b'z' { ok = true; break; } if fmt[i + k] != b':' { break; } k += 1; }
-                    if !ok { tp = Some(String::from_utf8_lossy(&fmt[sp..=i]).into_owned()); precision = -1; padding = 0; left = false; upper = false; lower = false; break; }
+                    if !ok { tp = Some(fmt[sp..=i].to_vec()); precision = -1; padding = 0; left = false; upper = false; lower = false; break; }
                     colons = k; i += k - 1;
                 }
                 b'0'..=b'9' => {
                     if ch == b'0' { padding = b'0'; }
                     let st = i; while i < fmt.len() && fmt[i].is_ascii_digit() { i += 1; }
-                    precision = String::from_utf8_lossy(&fmt[st..i]).parse().unwrap_or(0);
+                    precision = String::from_utf8_lossy(&fmt[st..i]).parse().unwrap_or(i64::MAX);
                     i -= 1;
+                    // strftime_size_limit: the buffer may not grow past it (ERANGE)
+                    if precision as u64 >= (out.max - out.b.len().min(out.max)) as u64 { return Err(strf_range(c, fmt)); }
                 }
-                _ => { tp = Some(String::from_utf8_lossy(&fmt[sp..=i]).into_owned()); precision = -1; padding = 0; left = false; upper = false; lower = false; break; }
+                _ => { tp = Some(fmt[sp..=i].to_vec()); precision = -1; padding = 0; left = false; upper = false; lower = false; break; }
             }
         }
         i += 1;
         if let Some(mut s2) = tp {
-            if !left && precision > s2.chars().count() as i64 { for _ in 0..(precision as usize - s2.chars().count()) { out.push(if padding != 0 { padding as char } else { ' ' }); } }
-            if upper { s2 = s2.to_ascii_uppercase(); } else if lower { s2 = s2.to_ascii_lowercase(); }
-            out.push_str(&s2);
+            if !left && precision > s2.len() as i64 { for _ in 0..(precision as usize - s2.len()) { out.push(if padding != 0 { padding as char } else { ' ' }); } }
+            if upper { s2.make_ascii_uppercase(); } else if lower { s2.make_ascii_lowercase(); }
+            out.b.extend_from_slice(&s2);
         }
     }
     Ok(())
@@ -868,7 +882,22 @@ fn subsec_digits(c: &mut Ctx, t: RTime, p: usize) -> Value {
     let m = ipow(c, Value::fix(10), p as u64); let x = ex_mul(c, sub, m);
     ex_floor(c, x)
 }
-fn zone_abbr(c: &mut Ctx, t: &RTime) -> Result<String, Esc> {
+/// %Z of a zone object (4.0.10): the result takes the name's encoding when compatible, else the name is
+/// converted to the format's encoding (undef / invalid replaced).
+fn zone_for(c: &mut Ctx, out: &mut Out, z: Value) -> Result<Vec<u8>, Esc> {
+    use crate::builtins::encoding as en;
+    let (zb, ze) = (c.str_bytes(z).to_vec(), c.str_enc(z));
+    let (oa, za) = (out.b.is_ascii(), zb.is_ascii());
+    let compat = if ze == out.enc || za { Some(out.enc) } else if oa && en::ascii_compat(out.enc) { Some(ze) } else { None };
+    match compat {
+        Some(e) if en::ascii_compat(e) => { out.enc = e; Ok(zb) }
+        _ => {
+            let fl = crate::builtins::econv::UNDEF_REPLACE | crate::builtins::econv::INVALID_REPLACE;
+            crate::builtins::transcode::convert_bytes(c, &zb, ze, out.enc, fl, &Default::default())
+        }
+    }
+}
+fn zone_abbr(c: &mut Ctx, t: &RTime) -> Result<Option<Value>, Esc> {
     let z = t.zone;
     let r = if is_string(z) { z } else {
         let tm = new_time(c, c.vm().c_time.get(), t.w, UTC, NIL);
@@ -877,20 +906,27 @@ fn zone_abbr(c: &mut Ctx, t: &RTime) -> Result<String, Esc> {
         else if respond_to(c, z, s::name, true) { funcall(c, z, s::name, &[], std::ptr::null())? } else { NIL }
     };
     let sv = funcall(c, r, s::to_s, &[], std::ptr::null())?;
-    Ok(if is_string(sv) { String::from_utf8_lossy(c.str_bytes(sv)).into_owned() } else { String::new() })
+    Ok(if is_string(sv) { Some(sv) } else { None })
 }
-fn strf(c: &mut Ctx, slf: Value, fmt: &[u8]) -> Result<String, Esc> {
+#[cold]
+fn strf_range(c: &mut Ctx, fmt: &[u8]) -> Esc { crate::builtins::exception::raise_errno_plain(c, 34, &String::from_utf8_lossy(fmt)) }
+fn strf_enc(c: &mut Ctx, slf: Value, fmt: &[u8], enc: u8) -> Result<Out, Esc> {
     let t = rt(c, slf); let v = vtm_of(c, t);
-    let mut out = String::new();
+    let max = fmt.len().saturating_mul(1024 * 1024).max(1024);
+    let mut out = Out { b: vec![], enc, max };
     strftime_into(c, &mut out, &t, &v, fmt)?;
     Ok(out)
+}
+fn strf(c: &mut Ctx, slf: Value, fmt: &[u8]) -> Result<String, Esc> {
+    let o = strf_enc(c, slf, fmt, crate::object::ENC_UTF8)?;
+    Ok(String::from_utf8_lossy(&o.b).into_owned())
 }
 fn t_strftime(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let f = expect_str(c, a[0])?;
     let fb = c.str_bytes(f).to_vec();
     let enc = c.str_enc(f);
-    let s2 = strf(c, slf, &fb)?;
-    Ok(c.str_new_enc(s2.as_bytes(), if enc == crate::object::ENC_ASCII && !s2.is_ascii() { crate::object::ENC_UTF8 } else { enc }))
+    let o = strf_enc(c, slf, &fb, enc)?;
+    Ok(c.str_new_enc(&o.b, o.enc))
 }
 fn ascii(c: &mut Ctx, s2: String) -> Value { c.str_new_enc(s2.as_bytes(), crate::object::ENC_ASCII) }
 fn t_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {

@@ -381,8 +381,13 @@ fn sio_ungetc(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
         if cc < i32::MIN as i64 || cc > i32::MAX as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too {} to convert to 'int'", cc, if cc < 0 { "small" } else { "big" })); }
         let enc = c.str_enc(p.string);
         let cp = cc as u32;
-        let Some(bs) = en::code_to_bytes(enc, cp) else {
-            return err(c, c.vm().c_range_error.get(), format!("{} out of char range", cp));
+        // rb_enc_codelen + rb_enc_mbcput (UTF-8's 0xfe / 0xff are one byte), rb_enc_uint_chr's error otherwise
+        let bs = if en::kind(enc) == en::EK::Utf8 && cp >= 0xffff_fffe { vec![cp as u8] } else if let Some(bs) = en::code_to_bytes(enc, cp).filter(|_| !(en::is_single_byte(enc) && cp > 0xff)) { bs } else {
+            let m = match crate::builtins::numeric_methods::enc_chr(enc, cp as u64) {
+                Err(true) => format!("{} out of char range", cp),
+                _ => format!("invalid codepoint 0x{:X} in {}", cp, en::enc_name(enc)),
+            };
+            return err(c, c.vm().c_range_error.get(), m);
         };
         return unget_bytes(c, slf, Some(&bs), bs.len());
     }

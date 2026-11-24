@@ -12,8 +12,14 @@ interpreter made fast by partial evaluation). It is a rewrite in Rust of
 
 ## Usage
 
-Requirements: a stable Rust toolchain, Ruby 3.4 or later (for the generator, and as the source of
-the pure-Ruby standard library), and a C compiler (the bundled prism parser is built from source).
+Requirements: a stable Rust toolchain, Ruby 3.4 or later (for the generator), CRuby 4.0.10 as the source of
+the pure-Ruby standard library and gems (`make REF_RUBY=<ruby>`, default `~/.rbenv/versions/4.0.10/bin/ruby`,
+else `ruby`), and a C compiler (the bundled prism parser is built from source).
+
+saruby follows CRuby 4.0.10: `RUBY_VERSION`, `RUBY_RELEASE_DATE`, `RUBY_REVISION`, RbConfig's version
+entries and `-v` say 4.0.10, but `RUBY_ENGINE` is `"saruby"`. Code that tests `RUBY_ENGINE == "ruby"` takes
+its non-CRuby branch (gems choosing a C extension, mspec's `raise_consistent_error` / `fixnum_max`
+helpers, `platform_is :ruby` guards).
 
 ```sh
 make                              # node.def -> src/node_*.rs (astrustgen) -> cargo -> ./saruby
