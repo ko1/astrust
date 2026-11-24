@@ -334,7 +334,7 @@ const FLUSH_COOP: i64 = -1;
 fn buffer_write(io: &mut RIo, b: &[u8], coop: bool) -> Option<i64> {
     let fd = out_fd(io);
     if fd == 1 { out_write(b); return None; }
-    if fd == 2 { err_write(b); return None; }
+    if fd == 2 { return err_write_io(b); }
     if !io.rbuf.is_empty() { discard_rbuf(io); }
     io.wbuf.extend_from_slice(b);
     if io.wbuf.len() > 1 << 16 || io.sync { return if coop { Some(FLUSH_COOP) } else { io_flush_one(io) }; }
@@ -1023,13 +1023,14 @@ fn io_read_nonblock(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let io = io_mut(c, slf);
     if cv::char_pending(io) { return Err(io_error(c, BYTE_READ_MSG)); }
     if !io.wbuf.is_empty() { io_flush_one(io); }
+    // rb_io_set_nonblock: the descriptor stays non-blocking
+    if io.rpos >= io.rbuf.len() && !io.data { set_nonblock(io.fd, true); }
     if io.rpos >= io.rbuf.len() && !io.data && !wait_fd(io.fd, sys::POLLIN, 0) {
         if !exc { return Ok(sym_value("wait_readable")); }
         return Err(wait_error(c, "EAGAINWaitReadable", "read would block"));
     }
     {
         let io = io_mut(c, slf);
-        if io.rpos >= io.rbuf.len() && !io.data { set_nonblock(io.fd, true); }
         if let Some(r) = read_unbuffered(io, n as usize) {
             return match r {
                 Ok(v) if v.is_empty() => { clear_outbuf(c, pos.get(1).copied())?; if !exc { Ok(NIL) } else { eof_err(c) } }
@@ -1813,6 +1814,14 @@ pub fn path_arg(c: &mut Ctx, v: Value) -> Result<PathArg, Esc> {
     let sv = if is_string(v) { v } else if respond_to(c, v, intern(b"to_path"), true) { let p = funcall(c, v, intern(b"to_path"), &[], std::ptr::null())?; expect_str(c, p)? } else { expect_str(c, v)? };
     let b = c.str_bytes(sv);
     if b.contains(&0) { return arg_err(c, "path name contains null byte"); }   // rb_get_path
+    // file_path_convert: with a default_internal, a non-ASCII path goes to the system in the filesystem encoding
+    if crate::builtins::encoding::default_internal().is_some() {
+        use crate::builtins::encoding as en;
+        let (enc, fs) = (c.str_enc(sv), en::default_external());
+        if enc != ENC_ASCII && enc != ENC_BINARY && enc != fs && !is_ascii(b) {
+            if let Some(o) = crate::builtins::econv::convert_string(en::enc_name(enc), en::enc_name(fs), b) { return Ok(PathArg(o)); }
+        }
+    }
     Ok(PathArg(b.to_vec()))
 }
 fn setup_io(c: &mut Ctx, v: Value, fd: i32, path: Option<&[u8]>, om: &OpenMode) -> Result<(), Esc> {

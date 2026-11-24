@@ -222,7 +222,8 @@ cfn!(a_aset, |c, slf, a, blk| {
         c.ary_mut(slf)[st..st + l].copy_from_slice(&buf[..l]);
         return Ok(val);
     }
-    let repl: Vec<Value> = if is_array(val) { c.ary(val).to_vec() } else { vec![val] };
+    // rb_ary_to_ary: #to_ary (rb_check_array_type), else the value itself
+    let repl: Vec<Value> = match crate::array::check_array(c, val)? { Some(x) => c.ary(x).to_vec(), None => vec![val] };
     let v = c.ary_mut(slf);
     if st > v.len() { v.resize(st, NIL); }
     let e = (st + l).min(v.len());

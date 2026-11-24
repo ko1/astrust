@@ -46,6 +46,13 @@ pub fn out_check(c: &mut Ctx) -> Result<(), Esc> {
     if e == 32 { ivar_set_raw(c, c.esc_val, intern(b"signo"), Value::fix(13)); }
     Err(r)
 }
+/// err_write for IO#write and friends on fd 2: the error is the caller's (a closed STDERR raises, as in CRuby).
+pub fn err_write_io(b: &[u8]) -> Option<i64> {
+    out_flush();
+    let mut se = std::io::stderr().lock();
+    let r = se.write_all(b).and_then(|_| se.flush());
+    r.err().map(|e| e.raw_os_error().unwrap_or(5) as i64)
+}
 pub fn err_write(b: &[u8]) {
     out_flush();
     let mut se = std::io::stderr().lock();

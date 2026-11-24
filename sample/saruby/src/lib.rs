@@ -146,7 +146,8 @@ struct Opts {
     check_syntax: bool,
     cmdline: u8,   // prism's -a -l -n -p bits
     inplace: Option<String>,   // -i[ext]: $-i
-    enc: Option<String>,   // -E ext[:int] / --encoding
+    enc_ext: Option<String>,   // -E ext[:int] / --encoding / --external-encoding
+    enc_int: Option<String>,   // -E :int / --internal-encoding
     uflag: bool,   // -U: default_internal UTF-8
 }
 
@@ -173,7 +174,7 @@ fn parse_args() -> Opts {
     let raw: Vec<Vec<u8>> = std::env::args_os().map(|a| std::os::unix::ffi::OsStrExt::as_bytes(a.as_os_str()).to_vec()).collect();
     let argv: Vec<String> = raw.iter().map(|a| String::from_utf8_lossy(a).into_owned()).collect();
     let mut o = Opts { e: vec![], script: None, args: vec![], plain: false, aot: false, dump_ast: false, quiet: false,
-        verbose_astro: false, warn: false, nowarn: false, store: "code_store".into(), compiled_only: false, requires: vec![], incdirs: vec![], check_syntax: false, cmdline: 0, inplace: None, enc: None, uflag: false };
+        verbose_astro: false, warn: false, nowarn: false, store: "code_store".into(), compiled_only: false, requires: vec![], incdirs: vec![], check_syntax: false, cmdline: 0, inplace: None, enc_ext: None, enc_int: None, uflag: false };
     let mut i = 1;
     while i < argv.len() {
         let a = &argv[i];
@@ -205,9 +206,16 @@ fn parse_args() -> Opts {
             s if s.starts_with("-I") => { if s.len() > 2 { o.incdirs.push(s[2..].into()); } else { i += 1; o.incdirs.push(argv.get(i).cloned().unwrap_or_else(|| usage())); } }
             s if s.starts_with("-i") => o.inplace = Some(s[2..].into()),
             "-U" => o.uflag = true,
-            "-E" | "--encoding" => { i += 1; o.enc = Some(argv.get(i).cloned().unwrap_or_else(|| usage())); }
-            s if s.starts_with("--encoding=") => o.enc = Some(s[11..].into()),
-            s if s.starts_with("-E") => o.enc = Some(s[2..].into()),
+            "-E" | "--encoding" | "--external-encoding" | "--internal-encoding" => {
+                i += 1;
+                let v = argv.get(i).cloned().unwrap_or_else(|| cli_fail(&format!("missing argument for {}", a)));
+                enc_opt(&mut o, a, &v);
+            }
+            s if s.starts_with("--encoding=") || s.starts_with("--external-encoding=") || s.starts_with("--internal-encoding=") => {
+                let (k, v) = s.split_once('=').unwrap_or((s, ""));
+                enc_opt(&mut o, k, v);
+            }
+            s if s.starts_with("-E") => enc_opt(&mut o, "-E", &s[2..]),
             s if s.starts_with("-r") => { if s.len() > 2 { o.requires.push(s[2..].into()); } else { i += 1; o.requires.push(argv.get(i).cloned().unwrap_or_else(|| usage())); } }
             s if s.starts_with("--disable") || s.starts_with("--enable") => {}
             s if s.starts_with('-') && s.len() > 1 => { eprintln!("saruby: invalid option {}  (-h will show valid options)", s); std::process::exit(2); }
@@ -218,6 +226,20 @@ fn parse_args() -> Opts {
     o
 }
 
+/// ruby.c's fatal option errors: "PROG: message (RuntimeError)", status 1.
+fn cli_fail(m: &str) -> ! { eprintln!("saruby: {} (RuntimeError)", m); std::process::exit(1) }
+/// -E ext[:int] / --encoding / --external-encoding / --internal-encoding (set_external_encoding_once).
+fn enc_opt(o: &mut Opts, opt: &str, v: &str) {
+    let (e, i) = match opt { "--internal-encoding" => (None, Some(v)), "--external-encoding" => (Some(v), None), _ => match v.split_once(':') { Some((e, i)) => (Some(e), Some(i)), None => (Some(v), None) } };
+    if let Some(e) = e.filter(|e| !e.is_empty()) {
+        if let Some(old) = &o.enc_ext { cli_fail(&format!("default_external already set to {}", old)); }
+        o.enc_ext = Some(e.into());
+    }
+    if let Some(i) = i.filter(|i| !i.is_empty()) {
+        if let Some(old) = &o.enc_int { cli_fail(&format!("default_internal already set to {}", old)); }
+        o.enc_int = Some(i.into());
+    }
+}
 /// --disable-X / --disable=X,Y: gems (gem_prelude, so error_highlight and did_you_mean too, as CRuby 4.0), all, or one.
 fn disable_features(list: &str) {
     for f in list.split(',') {
@@ -260,10 +282,9 @@ fn run_main(o: Opts) -> i32 {
         if o.cmdline & 0x18 != 0 { builtins::kernel::define_dash_n(&mut c); }
     }
     if o.warn { builtins::misc::warning_enable_deprecated(); }
-    if o.enc.is_some() || o.uflag {
-        let (e, i) = match &o.enc { Some(x) => match x.split_once(':') { Some((e, i)) => (Some(e), Some(i)), None => (Some(x.as_str()), None) }, None => (None, None) };
-        let i = if o.uflag && i.is_none_or(|i| i.is_empty()) { Some("UTF-8") } else { i };
-        if let Err(m) = builtins::encoding::set_cmdline_encodings(e, i) { eprintln!("saruby: {} (RuntimeError)", m); std::process::exit(1); }
+    if o.enc_ext.is_some() || o.enc_int.is_some() || o.uflag {
+        let i = if o.uflag && o.enc_int.is_none() { Some("UTF-8") } else { o.enc_int.as_deref() };
+        if let Err(m) = builtins::encoding::set_cmdline_encodings(o.enc_ext.as_deref(), i) { cli_fail(&m); }
         // rb_stdio_set_default_encoding: the standard streams take the defaults as they now are
         for io in [vm.stdin.get(), vm.stdout.get(), vm.stderr.get()] { let _ = funcall(&mut c, io, symbol::intern(b"set_encoding"), &[NIL], std::ptr::null()); }
     }
@@ -402,9 +423,28 @@ fn handle_toplevel_error(c: &mut Ctx) -> i32 {
 /// The main thread's stack size (fiber.rs scans it while a fiber runs).
 pub const STACK_BYTES: usize = 1 << 30;
 
+/// ruby.c's fill_standard_fds: a closed fd 0 reads EOF and a closed 1 / 2 fails with EPIPE (a pipe with the other
+/// end closed).  Rust's runtime has already put a read-write /dev/null there; that is what is replaced.
+fn fill_standard_fds() {
+    use builtins::sys;
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let filled = |fd: i32| sys::fcntl(fd, sys::F_GETFL, 0) & sys::O_ACCMODE == sys::O_RDWR
+        && sys::fd_metadata(fd).is_ok_and(|m| m.file_type().is_char_device() && m.rdev() == 0x103);
+    let (f0, f1, f2) = (filled(0), filled(1), filled(2));
+    let mut p = [0i32; 2];
+    if f0 && sys::pipe2(&mut p, 0) == 0 { sys::close(p[1]); sys::dup2(p[0], 0); sys::close(p[0]); }
+    if (f1 || f2) && sys::pipe2(&mut p, 0) == 0 {
+        sys::close(p[0]);
+        if f1 { sys::dup2(p[1], 1); }
+        if f2 { sys::dup2(p[1], 2); }
+        sys::close(p[1]);
+    }
+}
+
 pub fn main_entry() {
     kalloc::pad_system();
     let o = parse_args();
+    fill_standard_fds();
     // CRuby's main: setlocale(LC_CTYPE, "") before any thread starts
     builtins::encoding::init_locale();
     symbol::init();
