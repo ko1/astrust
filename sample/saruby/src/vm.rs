@@ -177,10 +177,10 @@ pub fn new_cref(klass: Value, prev: *const Cref) -> *const Cref {
 }
 /// `cur` with `def` going to `t` (a method defined in instance_eval / class_exec keeps it for nested defs);
 /// constants still resolve through cur's chain.
-pub fn cref_with_def_target(cur: *const Cref, t: Value) -> *const Cref {
-    let (klass, prev, refinements) = if cur.is_null() { (vm().c_object.get(), std::ptr::null(), NIL) } else { unsafe { ((*cur).klass, (*cur).prev, (*cur).refinements) } };
-    let found = vm().crefs.borrow().iter().rev().copied().find(|&p| unsafe {
-        (*p).def_target == t && (*p).klass == klass && std::ptr::eq((*p).prev, prev) && (*p).refinements == refinements });
+pub fn cref_with_def_target(c: &Ctx, cur: *const Cref, t: Value) -> *const Cref {
+    let (klass, prev, refinements) = c.cref_ref(cur).map_or((vm().c_object.get(), std::ptr::null(), NIL), |x| (x.klass, x.prev, x.refinements));
+    let found = vm().crefs.borrow().iter().rev().copied().find(|&p| c.cref_ref(p).is_some_and(|x|
+        x.def_target == t && x.klass == klass && std::ptr::eq(x.prev, prev) && x.refinements == refinements));
     if let Some(p) = found { return p; }
     let p = Box::into_raw(Box::new(Cref { klass, prev, refinements, def_target: t })) as *const Cref;
     vm().crefs.borrow_mut().push(p);
@@ -2508,7 +2508,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
     if is_block && args.len() == 1 && (flags & CF_KW == 0 || simple_block) && (lead + post + opt > 1 || (p.rest.is_some() && lead + post + opt > 0) || p.has_trailing_comma || (lead == 1 && p.rest.is_some()))
         && !p.forwarding {
         let a = args[0];
-        let arr = if is_array(a) { Some(a) } else if crate::rt::conv_target(a) && !is_hash(a) && respond_to(c, a, s::to_ary, true) {
+        let arr = if is_array(a) { Some(a) } else if crate::rt::conv_target(a) && !is_hash(a) && crate::rt::check_respond(c, a, s::to_ary)? {
             let r = funcall(c, a, s::to_ary, &[], std::ptr::null())?;
             if is_array(r) { Some(r) } else if r == NIL { None } else {
                 return type_err(c, format!("can't convert {} to Array ({}#to_ary gives {})", class_path(c, real_class_of(c, a)), class_path(c, real_class_of(c, a)), class_path(c, real_class_of(c, r))));

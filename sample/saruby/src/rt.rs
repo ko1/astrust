@@ -699,7 +699,8 @@ pub fn srb_eqq(c: &mut Ctx, p: Value, subj: Value, cc: &CallCache) -> Result<boo
     if is_string(p) && is_string(subj) && obj_klass(p) == vm().c_string.get() && !redef(R_STR_EQQ) { return Ok(c.str_eq(p, subj)); }
     let base = stage(c, 3)?;
     base[0].set(p); base[2].set(subj);
-    let r = call_cached(c, cc, s::eqq, base, 1, std::ptr::null(), 0)?;
+    // checkmatch: === is called even when private
+    let r = call_cached(c, cc, s::eqq, base, 1, std::ptr::null(), CF_FCALL)?;
     Ok(r.truthy())
 }
 
@@ -1094,10 +1095,10 @@ fn cref_class(c: &Ctx) -> Value {
 }
 
 pub fn define_iseq_method(c: &mut Ctx, klass: Value, mid: Sym, is: &'static Iseq, visi: u8) {
-    let mut cref = unsafe { (*c.frame).cref() };
+    let mut cref = c.frame().cref();
     // defined in instance_eval / class_exec: nested defs in its body go to the same target
     let dc = c.frame().defined_class();
-    if dc != NIL && c.frame().kind != FK_CLASS && dc != cref_class(c) { cref = crate::vm::cref_with_def_target(cref, dc); }
+    if dc != NIL && c.frame().kind != FK_CLASS && dc != cref_class(c) { cref = crate::vm::cref_with_def_target(c, cref, dc); }
     let me = new_me_cref(mid, klass, visi, MKind::Iseq(is), cref);
     note_redefinition(c, klass, mid);
     define_method_me(c, klass, mid, me);
@@ -1113,15 +1114,13 @@ pub fn class_modify_check(c: &mut Ctx, klass: Value) -> Result<(), Esc> {
 /// The visibility of the class body / top level a block frame comes from (public: a method's, or gone).
 fn home_scope_visi(c: &Ctx) -> u8 {
     let f = c.frame();
-    let b = f.self_blk();
-    let home = if b.is_null() { f.id } else { unsafe { (*b).home_id } };
-    let mut p = f.prev;
-    while !p.is_null() {
-        let pf = unsafe { &*p };
+    let home = c.block_copy(f.self_blk()).map_or(f.id, |b| b.home_id);
+    let mut p = c.prev_frame(f);
+    while let Some(pf) = p {
         if pf.id == home && pf.kind != FK_BLOCK && pf.kind != FK_LAMBDA && pf.kind != FK_CFUNC {
             return if pf.kind == FK_CLASS || pf.kind == FK_TOP || pf.kind == FK_EVAL { pf.visi } else { VISI_PUBLIC };
         }
-        p = pf.prev;
+        p = c.prev_frame(pf);
     }
     VISI_PUBLIC
 }
@@ -1130,7 +1129,7 @@ pub fn srb_def(c: &mut Ctx, mid: Sym, is: &'static Iseq, _fp: Fp) -> RV {
     let f = c.frame();
     let mut klass = cref_class(c);
     let cr = f.cref();
-    if !cr.is_null() && unsafe { (*cr).def_target } != NIL { klass = unsafe { (*cr).def_target }; }
+    if let Some(t) = c.cref_ref(cr).map(|x| x.def_target).filter(|&t| t != NIL) { klass = t; }
     // `def` inside a method body defines on the cref class; inside instance_eval, on the singleton
     if f.defined_class() != NIL && f.kind != FK_CLASS { klass = f.defined_class(); }
     let mut visi = if f.kind == FK_CLASS || f.kind == FK_TOP || f.kind == FK_EVAL || (f.kind == FK_BLOCK && f.defined_class() == klass) { f.visi } else { VISI_PUBLIC };
@@ -1325,7 +1324,13 @@ pub fn check_respond(c: &mut Ctx, v: Value, mid: Sym) -> Result<bool, Esc> {
     if !rt.is_null() && rt != search_method(c, vm().m_kernel.get(), s::respond_to_p) {
         return Ok(funcall(c, v, s::respond_to_p, &[Value::sym(mid), TRUE], std::ptr::null())?.truthy());
     }
-    Ok(respond_to(c, v, mid, true))
+    if respond_to(c, v, mid, true) { return Ok(true); }
+    // check_funcall_missing: a redefined respond_to_missing? may answer for method_missing
+    let rm = lookup_method(c, class_of(v), s::respond_to_missing_p);
+    if c.me_ref(rm).is_some_and(|m| m.owner != vm().c_object.get() && m.owner != vm().m_kernel.get()) {
+        return Ok(funcall(c, v, s::respond_to_missing_p, &[Value::sym(mid), TRUE], std::ptr::null())?.truthy());
+    }
+    Ok(false)
 }
 
 pub fn srb_masgn_array(c: &mut Ctx, rhs: Value, _splat: bool) -> RV {
@@ -1387,6 +1392,16 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
             let msg = if why == NIL { s } else { format!("{}: {}", s, String::from_utf8_lossy(c.str_bytes(why))) };
             err(c, vm().c_no_matching_pattern_error.get(), msg)
         }
+        SP_SPLAT_ANY => {
+            let a = splat_to_array(c, v)?;
+            Ok(Value::bool(c.ary(a).iter().any(|x| x.truthy())))
+        }
+        SP_ZSUPER_NO_METHOD => {
+            if c.me_ref(c.frame().me).is_some_and(|m| matches!(m.kind, MKind::Bmethod(_))) {
+                return err(c, vm().c_runtime_error.get(), "implicit argument passing of super from method defined by define_method() is not supported. Specify all arguments explicitly.");
+            }
+            err(c, vm().c_no_method_error.get(), "super called outside of method")
+        }
         SP_PM_MSG => {
             // elements stay in `v` (GC-visible) while inspect allocates
             let av = c.ary(v).to_vec();
@@ -1416,7 +1431,14 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
             Ok(crate::regexp::named_match(c, m, v.as_sym()))
         }
         SP_DECONSTRUCT => {
-            if is_array(v) { return Ok(v); }
+            let mid = intern(b"deconstruct");
+            // a refinement's #deconstruct is used; an Array whose #deconstruct is Array's own is itself
+            if let Some(r) = funcall_refined(c, std::ptr::null(), v, mid, &[], std::ptr::null(), 0) {
+                let r = r?;
+                if !is_array(r) { return type_err(c, "deconstruct must return Array"); }
+                return Ok(r);
+            }
+            if is_array(v) && c.me_ref(lookup_method(c, class_of(v), mid)).is_some_and(|m| m.owner == vm().c_array.get() && matches!(m.kind, MKind::Cfunc(..))) { return Ok(v); }
             if pm_responds(c, v, b"deconstruct")? {
                 let r = funcall(c, v, intern(b"deconstruct"), &[], std::ptr::null())?;
                 if !is_array(r) { return type_err(c, "deconstruct must return Array"); }
@@ -1432,7 +1454,13 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
         }
         SP_DECONSTRUCT_KEYS => {
             let subj = c.ary(v)[0]; let keys = c.ary(v)[1];
-            if is_hash(subj) { return Ok(subj); }
+            let mid = intern(b"deconstruct_keys");
+            if let Some(r) = funcall_refined(c, std::ptr::null(), subj, mid, &[keys], std::ptr::null(), 0) {
+                let r = r?;
+                if !is_hash(r) { return type_err(c, "deconstruct_keys must return Hash"); }
+                return Ok(r);
+            }
+            if is_hash(subj) && c.me_ref(lookup_method(c, class_of(subj), mid)).is_some_and(|m| m.owner == vm().c_hash.get() && matches!(m.kind, MKind::Cfunc(..))) { return Ok(subj); }
             if pm_responds(c, subj, b"deconstruct_keys")? {
                 let r = funcall(c, subj, intern(b"deconstruct_keys"), &[keys], std::ptr::null())?;
                 if !is_hash(r) { return type_err(c, "deconstruct_keys must return Hash"); }

@@ -128,6 +128,7 @@ pub struct Compiler<'a> {
     pub eval_outer: Vec<Vec<(Sym, u32, u32)>>,  // eval: outer scopes' (name, hops, idx), innermost first
     in_def: u32,
     pm_err: Option<u32>,          // single-pattern match: slot receiving the failure description
+    pm_dcache: Option<(u32, u32)>, // case/in: (subject slot, slot caching its #deconstruct)
     tl_binding: bool,
     cov: Option<usize>,           // Coverage file id: lines / methods get node_cov counters
     trace: bool,                  // compiled for tracing (vm::TRACE_COMPILE): trace points, no entries, locals in envs
@@ -162,7 +163,7 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), outer: HashMap::default(), pending_outer: vec![], ractor_src: std::cell::OnceCell::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, tag: !file.starts_with("<internal:") && pr.root.id < 1 << (32 - NF_TAG_SHIFT), errors: vec![],
+        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), outer: HashMap::default(), pending_outer: vec![], ractor_src: std::cell::OnceCell::new(), eval_outer: vec![], in_def: 0, pm_err: None, pm_dcache: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, tag: !file.starts_with("<internal:") && pr.root.id < 1 << (32 - NF_TAG_SHIFT), errors: vec![],
                    csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()],
                    src_enc: crate::builtins::encoding::find_enc(pr.encoding.as_bytes()).unwrap_or(crate::object::ENC_UTF8) as u32 };
         // identifiers of a non-UTF-8 source are symbols in its encoding (as its symbol literals)
@@ -1522,7 +1523,8 @@ impl<'a> Compiler<'a> {
                 let only_splat = kwkinds.iter().all(|&k| k == 1);
                 if !kwkinds.is_empty() { v.push(ALLOC_node_hash(leak(kwpairs), lstr(&kwkinds))); kinds.push(if only_splat { AK_KWSPLAT } else { AK_KW }); }
             } else {
-                return self.unsupported("super outside of method", Loc::default());
+                // known at run time: a define_method block's (RuntimeError) or none (NoMethodError)
+                return ALLOC_node_line(line, ALLOC_node_special(SP_ZSUPER_NO_METHOD, ALLOC_node_nil()));
             }
         }
         let ci = Box::leak(Box::new(CallInfo { kinds, blk: blk_iseq, kw_splat_only: false, kw_names: vec![] }));
@@ -1704,7 +1706,11 @@ impl<'a> Compiler<'a> {
                     if let Kind::WhenNode { conditions, .. } = &w.kind {
                         let mut test: Option<NodePtr> = None;
                         for cnd in conditions.iter().rev() {
-                            let cv = self.c(cnd);
+                            // `when *a` without a subject: any element true
+                            let cv = match &cnd.kind {
+                                Kind::SplatNode { expression: Some(x) } => { let a = self.c(x); ALLOC_node_special(SP_SPLAT_ANY, a) }
+                                _ => self.c(cnd),
+                            };
                             test = Some(match test { None => cv, Some(t) => ALLOC_node_or(cv, t) });
                         }
                         tail = ALLOC_node_if(test.unwrap_or_else(ALLOC_node_false), body, tail);
@@ -1715,10 +1721,18 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn case_in(&mut self, case: &PNode, pred: Option<&PNode>, conds: &[PNode], els: Option<&PNode>, _line: u32) -> NodePtr {
+    fn case_in(&mut self, case: &PNode, pred: Option<&PNode>, conds: &[PNode], els: Option<&PNode>, line: u32) -> NodePtr {
         let sl = self.hidden_slot();
         let pv = match pred { Some(p) => self.c(p), None => ALLOC_node_nil() };
         let set = ALLOC_node_lasgn(sl, pv);
+        // the subject's #deconstruct is called once for all its array / find patterns
+        let dsl = self.hidden_slot();
+        let saved = self.pm_dcache.replace((sl, dsl));
+        let r = self.case_in_body(case, conds, els, line, sl);
+        self.pm_dcache = saved;
+        self.seq(vec![set, ALLOC_node_lasgn(dsl, ALLOC_node_nil()), r])
+    }
+    fn case_in_body(&mut self, case: &PNode, conds: &[PNode], els: Option<&PNode>, _line: u32, sl: u32) -> NodePtr {
         let bb = self.bbase("case", case);
         if bb.is_some() {
             let (mut bodies, mut tail) = self.clause_bodies(bb, "in", case, conds, els, ALLOC_node_special(SP_NOMATCH, ALLOC_node_lvar(sl)));
@@ -1726,13 +1740,13 @@ impl<'a> Compiler<'a> {
                 let body = bodies.pop().unwrap();
                 if let Kind::InNode { pattern, .. } = &w.kind { let test = self.pattern(pattern, sl); tail = ALLOC_node_if(test, body, tail); }
             }
-            return self.seq(vec![set, tail]);
+            return tail;
         }
         if let (None, [PNode { kind: Kind::InNode { pattern, statements }, .. }]) = (els, conds) {
             // one clause, no else: the error says why it did not match
             let (test, fail) = self.single_pattern(pattern, sl);
             let body = self.stmts(statements.as_deref());
-            return self.seq(vec![set, ALLOC_node_if(test, body, fail)]);
+            return ALLOC_node_if(test, body, fail);
         }
         let mut tail = match els {
             Some(e) => self.else_body(e),
@@ -1745,9 +1759,17 @@ impl<'a> Compiler<'a> {
                 tail = ALLOC_node_if(test, body, tail);
             }
         }
-        self.seq(vec![set, tail])
+        tail
     }
 
+    /// sl's #deconstruct: from the case's cache when sl is its subject.
+    fn deconstruct(&mut self, sl: u32) -> NodePtr {
+        let dec = ALLOC_node_special(SP_DECONSTRUCT, ALLOC_node_lvar(sl));
+        match self.pm_dcache {
+            Some((s, d)) if s == sl => ALLOC_node_or(ALLOC_node_lvar(d), ALLOC_node_lasgn(d, dec)),
+            _ => dec,
+        }
+    }
     /// (test, raise) for a pattern whose failure raises with CRuby's descriptive message.
     fn single_pattern(&mut self, pattern: &PNode, sl: u32) -> (NodePtr, NodePtr) {
         let esl = self.hidden_slot();
@@ -1819,7 +1841,7 @@ impl<'a> Compiler<'a> {
                 if let Some(k) = constant { tests.push(self.eqq_pattern(k, sl)); }
                 // deconstruct → array slot
                 let asl = self.hidden_slot();
-                let dec = ALLOC_node_special(SP_DECONSTRUCT, ALLOC_node_lvar(sl));
+                let dec = self.deconstruct(sl);
                 let set = ALLOC_node_lasgn(asl, dec);
                 let min = (requireds.len() + posts.len()) as i64;
                 let exact = rest.is_none();
@@ -1853,7 +1875,7 @@ impl<'a> Compiler<'a> {
                 let mut tests = vec![];
                 if let Some(k) = constant { tests.push(self.eqq_pattern(k, sl)); }
                 let asl = self.hidden_slot();
-                let dec = ALLOC_node_special(SP_DECONSTRUCT, ALLOC_node_lvar(sl));
+                let dec = self.deconstruct(sl);
                 let dec = self.pm_fail(ALLOC_node_lasgn(asl, dec), PM_DECON, vec![ALLOC_node_lvar(sl)]);
                 tests.push(dec);
                 if self.pm_err.is_some() {
@@ -2241,7 +2263,14 @@ impl<'a> Compiler<'a> {
     /// The frame slot that receives a parameter.  A captured parameter gets a hidden
     /// slot and is copied into the env after setup.
     fn param_slot(&mut self, nm: Sym) -> u32 {
-        if !self.cur().params_seen.insert(nm) { let sl = self.hidden_slot(); self.cur().param_names.push((sl, nm)); return sl; }
+        if !self.cur().params_seen.insert(nm) {
+            // a repeated `_`: its own slot, named for zsuper
+            let sl = self.hidden_slot();
+            self.cur().param_names.push((sl, nm));
+            let hn = intern(format!("__dup{}", sl).as_bytes());
+            self.cur().vars.insert(hn, VarLoc::Slot(sl));
+            return sl;
+        }
         let loc = match self.cur().vars.get(&nm) { Some(&l) => l, None => self.declare(nm) };
         let sl = match loc {
             VarLoc::Slot(i) => i,
@@ -2255,6 +2284,11 @@ impl<'a> Compiler<'a> {
         sl
     }
 
+    /// The name zsuper reads parameter `nm` in slot `sl` by (a repeated one's own).
+    fn zname(&mut self, nm: Sym, sl: u32) -> Sym {
+        let hn = intern(format!("__dup{}", sl).as_bytes());
+        if matches!(self.cur().vars.get(&hn), Some(&VarLoc::Slot(s)) if s == sl) { hn } else { nm }
+    }
     fn params(&mut self, p: Option<&PNode>, is_block: bool) -> Params {
         let mut ps = Params::default();
         let Some(p) = p else { return ps; };
@@ -2265,7 +2299,7 @@ impl<'a> Compiler<'a> {
         let mut zs: Vec<(u8, Sym)> = vec![];
         for r in requireds {
             match &r.kind {
-                Kind::RequiredParameterNode { name } => { let nm = self.cst(*name); ps.lead.push(self.param_slot(nm)); zs.push((AK_ARG, nm)); }
+                Kind::RequiredParameterNode { name } => { let nm = self.cst(*name); let sl = self.param_slot(nm); ps.lead.push(sl); let z = self.zname(nm, sl); zs.push((AK_ARG, z)); }
                 Kind::MultiTargetNode { lefts, rest, rights } => {
                     let sl = self.hidden_slot();
                     ps.lead.push(sl);
@@ -2285,7 +2319,8 @@ impl<'a> Compiler<'a> {
                 let v = self.c(value);
                 let asg = self.var_write(nm, 0, v);
                 ps.opt.push((sl, asg));
-                zs.push((AK_ARG, nm));
+                let z = self.zname(nm, sl);
+                zs.push((AK_ARG, z));
             }
         }
         if let Some(r) = rest {
@@ -2293,8 +2328,10 @@ impl<'a> Compiler<'a> {
                 Kind::RestParameterNode { name } => {
                     let nm = match name { Some(n) => self.cst(*n), None => { ps.anon_rest = true; intern(b"__fwd_rest") } };
                     if name.is_none() { self.declare(nm); }
-                    ps.rest = Some(self.param_slot(nm));
-                    zs.push((AK_SPLAT, nm));
+                    let sl = self.param_slot(nm);
+                    ps.rest = Some(sl);
+                    let z = self.zname(nm, sl);
+                    zs.push((AK_SPLAT, z));
                 }
                 Kind::ImplicitRestNode => { ps.has_trailing_comma = true; }
                 _ => {}
@@ -2302,7 +2339,7 @@ impl<'a> Compiler<'a> {
         }
         for r in posts {
             match &r.kind {
-                Kind::RequiredParameterNode { name } => { let nm = self.cst(*name); ps.post.push(self.param_slot(nm)); zs.push((AK_ARG, nm)); }
+                Kind::RequiredParameterNode { name } => { let nm = self.cst(*name); let sl = self.param_slot(nm); ps.post.push(sl); let z = self.zname(nm, sl); zs.push((AK_ARG, z)); }
                 Kind::MultiTargetNode { lefts, rest, rights } => {
                     let sl = self.hidden_slot();
                     ps.post.push(sl);
@@ -2453,6 +2490,8 @@ pub const SP_FIND_PRE: u32 = 14;
 pub const SP_FIND_POST: u32 = 15;
 pub const SP_NOMATCH_MSG: u32 = 16;
 pub const SP_PM_MSG: u32 = 17;
+pub const SP_ZSUPER_NO_METHOD: u32 = 18;
+pub const SP_SPLAT_ANY: u32 = 19;
 
 // SP_PM_MSG kinds: why a single pattern did not match
 pub const PM_EQQ: i64 = 0;

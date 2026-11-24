@@ -226,9 +226,17 @@ pub fn local_variables(c: &mut Ctx, b: Value) -> RV {
     let out = c.ary_new();
     for (n, _, _) in names {
         let s = crate::symbol::sym_bytes(n);
-        if !s.starts_with(b"_") || s.len() > 1 && !s.starts_with(b"__") { c.ary_push(out, Value::sym(n)); }
+        if (!s.starts_with(b"_") || s.len() > 1 && !s.starts_with(b"__")) && !numparam(n) { c.ary_push(out, Value::sym(n)); }
     }
     Ok(out)
+}
+/// _1 .. _9 (rb_numparam_id_p)
+fn numparam(n: Sym) -> bool { matches!(crate::symbol::sym_bytes(n), [b'_', b'1'..=b'9']) }
+/// check_local_id: a numbered parameter is not a local variable of a binding.
+fn check_local_id(c: &mut Ctx, s: Value, n: Sym) -> Result<(), Esc> {
+    if !numparam(n) { return Ok(()); }
+    let e = make_name_error(c, c.vm().c_name_error.get(), &format!("numbered parameter '{}' is not a local variable", sym_str(n)), Value::sym(n), s)?;
+    Err(raise_exc(c, e))
 }
 fn find_var(b: &RBinding, n: Sym) -> Option<(u32, u32)> {
     for (nm, h, i) in b.names.iter().flatten() { if *nm == n { return Some((*h, *i)); } }
@@ -236,6 +244,7 @@ fn find_var(b: &RBinding, n: Sym) -> Option<(u32, u32)> {
 }
 fn b_lvar_get(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let n = crate::builtins::object::to_sym_arg(c, a[0])?;
+    check_local_id(c, s, n)?;
     let b = rbind(c, s);
     let (var, env, extra) = (find_var(b, n), b.env, b.extra);
     match var {
@@ -250,6 +259,7 @@ fn b_lvar_get(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
 }
 fn b_lvar_set(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let n = crate::builtins::object::to_sym_arg(c, a[0])?;
+    check_local_id(c, s, n)?;
     let b = rbind(c, s);
     let (var, env, extra) = (find_var(b, n), b.env, b.extra);
     match var {
@@ -263,6 +273,7 @@ fn b_lvar_set(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
 }
 fn b_lvar_defined(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let n = crate::builtins::object::to_sym_arg(c, a[0])?;
+    check_local_id(c, s, n)?;
     Ok(Value::bool(find_var(rbind(c, s), n).is_some()))
 }
 fn b_receiver(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(rbind(c, s).self_) }
