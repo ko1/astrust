@@ -383,23 +383,22 @@ cfn!(int_to_s, |c, s, a| {
 cfn!(#[inline] int_to_f, |c, s, _a| Ok(c.float_new(c.num_to_f64(s).unwrap())));
 cfn!(#[inline] int_to_i, |c, s, _a| Ok(s));
 /// rb_enc_uint_chr: the character `cp` in `enc`; Err(true): "out of char range", Err(false): "invalid codepoint".
-fn enc_chr(enc: u8, cp: u64) -> Result<Vec<u8>, bool> {
+pub fn enc_chr(enc: u8, cp: u64) -> Result<Vec<u8>, bool> {
     use crate::builtins::encoding::{self as en, EK};
     if cp > u32::MAX as u64 { return Err(true); }
     let cp = cp as u32;
     let sur = (0xd800..0xe000).contains(&cp);
+    // 4.0.10: a single-byte code_to_mbclen rejects > 0xff as an invalid code point
     if en::is_dummy(enc) || en::is_single_byte(enc) {
-        if cp > 0xff { return Err(true); }
-        if en::kind(enc) == EK::Ascii && cp > 0x7f { return Err(false); }
+        if cp > 0xff || (en::kind(enc) == EK::Ascii && cp > 0x7f) { return Err(false); }
         return Ok(vec![cp as u8]);
     }
     match en::kind(enc) {
         // Onigmo's code_to_mbclen: 0xfffffffe / 0xffffffff are one (invalid) byte in UTF-8
         EK::Utf8 => if cp >= 0xffff_fffe || sur { Err(false) } else if cp > 0x10ffff { Err(true) } else { en::code_to_bytes(enc, cp).ok_or(false) },
         EK::U16LE | EK::U16BE => if cp > 0x10ffff || sur { Err(false) } else { en::code_to_bytes(enc, cp).ok_or(false) },
-        // the validity check reads the code as a signed int: 0x80000000.. pass
         EK::U32LE | EK::U32BE => {
-            if (cp > 0x10ffff && cp < 0x8000_0000) || sur { return Err(false); }
+            if cp > 0x10ffff || sur { return Err(false); }
             Ok(if en::kind(enc) == EK::U32LE { cp.to_le_bytes().to_vec() } else { cp.to_be_bytes().to_vec() })
         }
         k => {

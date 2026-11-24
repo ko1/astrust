@@ -1207,10 +1207,10 @@ fn uint_chr(c: &mut Ctx, x: Value, enc: u8) -> Result<Vec<u8>, Esc> {
     use crate::builtins::encoding as en;
     let i = if x.is_fixnum() { x.as_fix() } else { -1 };
     if !(0..=u32::MAX as i64).contains(&i) { let s = crate::builtins::kernel::inspect_str(c, x)?; return err(c, c.vm().c_range_error.get(), format!("{} out of char range", s)); }
-    if (en::max_len(enc) == 1 && i > 0xff) || (en::is_unicode(enc) && i > 0x10ffff) { return err(c, c.vm().c_range_error.get(), format!("{} out of char range", i)); }
-    match en::code_to_bytes(enc, i as u32) {
-        Some(v) if en::precise_len(enc, &v, 0) == Some(v.len()) => Ok(v),
-        _ => err(c, c.vm().c_range_error.get(), format!("invalid codepoint 0x{:X} in {}", i, en::enc_name(enc))),
+    match crate::builtins::numeric_methods::enc_chr(enc, i as u64) {
+        Ok(v) => Ok(v),
+        Err(true) => err(c, c.vm().c_range_error.get(), format!("{} out of char range", i)),
+        Err(false) => err(c, c.vm().c_range_error.get(), format!("invalid codepoint 0x{:X} in {}", i, en::enc_name(enc))),
     }
 }
 fn io_ungetbyte(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {

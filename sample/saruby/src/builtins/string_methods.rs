@@ -343,10 +343,10 @@ fn int_to_char_str(c: &mut Ctx, slf: Value, x: Value) -> RV {
         if enc == ENC_ASCII && i > 127 { c.rstring_mut(slf).enc = ENC_BINARY; }
         return Ok(c.str_new_enc(&[i as u8], c.str_enc(slf)));
     }
-    if i > u32::MAX as i64 || (en::is_unicode(enc) && i > 0x10ffff) || (en::is_single_byte(enc) && i > 0xff) { return err(c, c.vm().c_range_error.get(), format!("{} out of char range", i)); }
-    match en::code_to_bytes(enc, i as u32) {
-        Some(v) => Ok(c.str_new_enc(&v, enc)),
-        None => err(c, c.vm().c_range_error.get(), format!("invalid codepoint 0x{:X} in {}", i, en::enc_name(enc))),
+    match crate::builtins::numeric_methods::enc_chr(enc, i as u64) {
+        Ok(v) => Ok(c.str_new_enc(&v, enc)),
+        Err(true) => err(c, c.vm().c_range_error.get(), format!("{} out of char range", i)),
+        Err(false) => err(c, c.vm().c_range_error.get(), format!("invalid codepoint 0x{:X} in {}", i, en::enc_name(enc))),
     }
 }
 cfn!(#[inline] s_ltlt, |c, slf, a, b_| {

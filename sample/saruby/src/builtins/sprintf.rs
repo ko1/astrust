@@ -412,11 +412,20 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                             let first = c.chars_of(s2).into_iter().next().unwrap_or_default();
                             c.str_new_enc(&first, c.str_enc(s2))
                         } else {
+                            // NUM2INT, rb_enc_codelen, rb_ascii8bit_appendable_encoding_index
                             let n = num_to_long(c, v)?;
-                            if n < 0 { return err(c, c.vm().c_range_error.get(), format!("{} out of char range", n)); }
-                            match en::code_to_bytes(renc, n as u32) {
-                                Some(bs) => c.str_new_enc(&bs, renc),
-                                None => return err(c, c.vm().c_range_error.get(), if en::is_unicode(renc) && n > 0x10ffff || en::is_single_byte(renc) { format!("{} out of char range", n) } else { format!("invalid character") }),
+                            if n > i32::MAX as i64 || n < i32::MIN as i64 {
+                                return err(c, c.vm().c_range_error.get(), format!("integer {} too {} to convert to 'int'", n, if n < 0 { "small" } else { "big" }));
+                            }
+                            if n < 0 { return arg_err(c, "invalid character"); }
+                            if renc == ENC_BINARY || renc == ENC_ASCII {
+                                if n > 0xff { return err(c, c.vm().c_range_error.get(), format!("{} out of char range", n)); }
+                                c.str_new_enc(&[n as u8], if n > 0x7f { ENC_BINARY } else { renc })
+                            } else {
+                                match en::code_to_bytes(renc, n as u32) {
+                                    Some(bs) if !(en::is_single_byte(renc) && n > 0xff) => c.str_new_enc(&bs, renc),
+                                    _ => return arg_err(c, "invalid character"),
+                                }
                             }
                         }
                     }
