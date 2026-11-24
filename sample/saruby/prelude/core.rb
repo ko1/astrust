@@ -11,10 +11,7 @@ module Comparable
     ensure
       seen.delete(key)
     end
-    return false if r.nil?
-    return r == 0 if Integer === r
-    # rb_cmpint of a non-Integer
-    !(r > 0) && !(r < 0)
+    r.nil? ? false : Comparable.__cmpint(r) == 0
   end
 end
 
@@ -813,14 +810,3 @@ class Data
   alias to_s inspect
 end
 
-class Range
-  # range.c: an endless range has no set (Enumerable#to_set would never end)
-  def to_set(*args, &b)
-    raise RangeError, "cannot convert endless range to a set" if self.end.nil?
-    return super if args.empty?
-    # Enumerable#to_set(klass, *args) of 4.0
-    warn "passing arguments to Enumerable#to_set is deprecated", uplevel: 1
-    klass, *rest = args
-    klass.new(self, *rest, &b)
-  end
-end

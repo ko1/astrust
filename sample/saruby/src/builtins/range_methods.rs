@@ -618,6 +618,14 @@ cfn!(r_overlap, |c, slf, a, blk| {
     Ok(Value::bool(lt(c, b2, e1, x1)? && lt(c, b1, e2, x2)?))
 });
 
+// range.c: an endless range has no set; Enumerable#to_set(klass, *args) of 4.0 warns
+cfn!(r_to_set, |c, slf, a, blk| {
+    if c.range_parts(slf).1 == NIL { return err(c, c.vm().c_range_error.get(), "cannot convert endless range to a set"); }
+    if a.is_empty() || (a.len() == 1 && kw_arg(c, a).is_some()) { return crate::builtins::enum_native::call_enumerable(c, slf, "to_set", a, blk); }
+    crate::builtins::kernel::gvar_warn(c, "passing arguments to Enumerable#to_set is deprecated", false)?;
+    let mut args = vec![slf]; args.extend_from_slice(&a[1..]);
+    funcall(c, a[0], s::new, &args, blk)
+});
 /// Defines the methods of Range `k`; the entry of Range#each, for `vm.ids`.
 pub fn init(c: &mut Ctx, k: Value) -> *const MethodEntry {
     let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, k, n, f, a);
@@ -628,6 +636,6 @@ pub fn init(c: &mut Ctx, k: Value) -> *const MethodEntry {
     d(c, "reverse_each", r_reverse_each, 0); d(c, "to_a", r_to_a, 0); d(c, "entries", r_to_a, 0); d(c, "size", r_size, 0); d(c, "count", r_count, -1);
     d(c, "include?", r_include, 1); d(c, "member?", r_include, 1); d(c, "cover?", r_cover, 1); d(c, "===", r_eqq, 1); d(c, "==", r_eq, 1); d(c, "eql?", r_eql, 1);
     d(c, "hash", r_hash, 0); d(c, "to_s", r_to_s, 0); d(c, "inspect", r_inspect, 0); d(c, "min", r_min, -1); d(c, "minmax", r_minmax, 0); d(c, "max", r_max, -1); 
-    d(c, "step", r_step, -1); d(c, "%", r_pct, 1); d(c, "bsearch", r_bsearch, 0); d(c, "overlap?", r_overlap, 1);
+    d(c, "step", r_step, -1); d(c, "%", r_pct, 1); d(c, "bsearch", r_bsearch, 0); d(c, "overlap?", r_overlap, 1); d(c, "to_set", r_to_set, -1);
     each
 }

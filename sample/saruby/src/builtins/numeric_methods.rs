@@ -1217,6 +1217,9 @@ pub fn init(c: &mut Ctx, n: Value, k: Value, f: Value) {
     d(c, "integer?", int_integer_p, 0); d(c, "ceildiv", int_ceildiv, 1); d(c, "gcdlcm", int_gcdlcm, 1);
     define_singleton_cfunc(c, k, "sqrt", int_s_sqrt, 1);
     define_singleton_cfunc(c, k, "try_convert", int_s_try_convert, 1);
+    // rb_cmpint for the prelude's Comparable#==
+    let cm = c.vm().m_comparable.get();
+    define_singleton_cfunc(c, cm, "__cmpint", |c, _s, a, _b| Ok(Value::fix(crate::builtins::array_methods::cmp_result(c, a[0], NIL, NIL)?)), 1);
     // rb_undef_method(CLASS_OF(rb_cInteger / rb_cFloat), "new")
     for kk in [k, f] { let sk = singleton_class(c, kk); define_method_me(c, sk, s::new, new_me(s::new, sk, VISI_PUBLIC, MKind::Undef)); }
 
