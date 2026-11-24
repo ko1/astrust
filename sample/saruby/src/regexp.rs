@@ -157,7 +157,7 @@ fn regexp_prep(src: &[u8], enc: u8, opts: u32) -> Result<(Vec<u8>, u32, u8, Enc)
         conv = wide_to_utf8(src, enc).ok_or_else(|| desc("invalid multibyte character"))?;
         (&conv[..], ENC_UTF8)
     };
-    let (unesc, fixed) = preprocess(body, benc).map_err(|e| desc(&e))?;
+    let (unesc, fixed) = preprocess(body, benc, opts & 2 != 0).map_err(|e| desc(&e))?;
     let fixed = if !en::ascii_compat(enc) { Some(enc) } else { fixed };
     match fixed {
         Some(fe) => {
@@ -199,17 +199,28 @@ fn regexp_desc(src: &[u8], enc: u8, opts: u32) -> String {
     String::from_utf8_lossy(&s).into_owned()
 }
 
-/// rb_reg_preprocess: non-ASCII escapes become raw chars of `enc` (or UTF-8 for \u), and the
-/// encoding the pattern is fixed to, if any, is found.
-fn preprocess(src: &[u8], enc: u8) -> Result<(Vec<u8>, Option<u8>), String> {
+/// rb_reg_preprocess: non-ASCII escapes become raw chars of `enc` (or UTF-8 for \u), comments
+/// become "(?#)", and the encoding the pattern is fixed to, if any, is found.
+fn preprocess(src: &[u8], enc: u8, ext: bool) -> Result<(Vec<u8>, Option<u8>), String> {
+    let mut st = Unesc { out: Vec::with_capacity(src.len()), fixed: None, has_prop: false };
+    unescape0(src, &mut 0, enc, &mut st, ext, false)?;
+    if st.has_prop && st.fixed.is_none() { st.fixed = Some(enc); }
+    Ok((st.out, st.fixed))
+}
+
+struct Unesc { out: Vec<u8>, fixed: Option<u8>, has_prop: bool }
+
+/// unescape_nonascii0; `recurse`: one (?x:..) group whose ')' ends the scan.
+fn unescape0(src: &[u8], pp: &mut usize, enc: u8, st: &mut Unesc, ext: bool, recurse: bool) -> Result<(), String> {
     use crate::builtins::encoding as en;
-    let mut out = Vec::with_capacity(src.len());
-    let mut fixed: Option<u8> = None;
-    let mut has_prop = false;
+    let mut out = std::mem::take(&mut st.out);
+    let mut fixed = st.fixed;
+    let mut has_prop = st.has_prop;
     let set = |fixed: &mut Option<u8>, e: u8, msg: &str| -> Result<(), String> {
         match *fixed { None => { *fixed = Some(e); Ok(()) } Some(f) if f == e => Ok(()), _ => Err(msg.to_string()) }
     };
-    let mut p = 0;
+    let mut p = *pp;
+    let (mut ext, mut in_class, mut parens) = (ext, 0u32, 1u32);
     while p < src.len() {
         let b = src[p];
         if b >= 0x80 {
@@ -219,7 +230,74 @@ fn preprocess(src: &[u8], enc: u8) -> Result<(Vec<u8>, Option<u8>), String> {
             set(&mut fixed, enc, "non ASCII character in different encoding regexp")?;
             continue;
         }
-        if b != b'\\' { out.push(b); p += 1; continue; }
+        if b != b'\\' {
+            p += 1;
+            match b {
+                b'#' if ext && in_class == 0 => {
+                    while p < src.len() {
+                        let c = src[p];
+                        p += 1;
+                        if c == b'\n' { break; }
+                        if c >= 0x80 && fixed.is_none() && enc == ENC_UTF8 { fixed = Some(enc); }
+                    }
+                    out.extend_from_slice(b"(?#)");
+                    continue;
+                }
+                b'[' => in_class += 1,
+                b']' => in_class = in_class.saturating_sub(1),
+                b')' if in_class == 0 && recurse => {
+                    parens -= 1;
+                    if parens == 0 { out.push(b); break; }
+                }
+                b'(' if in_class == 0 && p + 1 < src.len() && src[p] == b'?' => {
+                    if src[p + 1] == b'#' {
+                        // the content is skipped unchecked except for its characters
+                        let mut q = p;
+                        let mut closed = false;
+                        while q < src.len() {
+                            let c = src[q];
+                            q += 1;
+                            if c == b')' { closed = true; break; }
+                            if c == b'\\' || c >= 0x80 {
+                                if c >= 0x80 {
+                                    if fixed.is_none() && enc == ENC_UTF8 { fixed = Some(enc); }
+                                    q -= 1;
+                                }
+                                q += en::precise_len(enc, src, q).ok_or("invalid multibyte character")?;
+                            }
+                        }
+                        if closed { out.extend_from_slice(b"(?#)"); p = q; } else { out.push(b); }
+                        continue;
+                    }
+                    if recurse { parens += 1; }
+                    // (?x: / (?-x: that flips extended mode: scanned with it up to the ')'
+                    let (mut invert, mut local, mut sub) = (false, 0i8, false);
+                    for &c in &src[p + 1..] {
+                        match c {
+                            b'x' => local = if invert { -1 } else { 1 },
+                            b'-' => invert = true,
+                            b'i' | b'm' | b'a' | b'd' | b'u' => {}
+                            b':' | b')' => {
+                                if local == 0 || (local == 1) == ext { break; }
+                                if c == b')' { ext = local == 1; break; }
+                                out.push(b);
+                                let mut st = Unesc { out: std::mem::take(&mut out), fixed, has_prop };
+                                unescape0(src, &mut p, enc, &mut st, local == 1, true)?;
+                                (out, fixed, has_prop) = (st.out, st.fixed, st.has_prop);
+                                sub = true;
+                                break;
+                            }
+                            _ => break,
+                        }
+                    }
+                    if sub { continue; }
+                }
+                b'(' if in_class == 0 && recurse => parens += 1,
+                _ => {}
+            }
+            out.push(b);
+            continue;
+        }
         if p + 1 >= src.len() { return Err("too short escape sequence".into()); }
         let c = src[p + 1];
         if c >= 0x80 {
@@ -279,8 +357,9 @@ fn preprocess(src: &[u8], enc: u8) -> Result<(Vec<u8>, Option<u8>), String> {
             out.extend_from_slice(format!("\\x{:02X}", ch[0]).as_bytes());
         }
     }
-    if has_prop && fixed.is_none() { fixed = Some(enc); }
-    Ok((out, fixed))
+    *pp = p;
+    *st = Unesc { out, fixed, has_prop };
+    Ok(())
 }
 
 fn scan_oct(b: &[u8], max: usize) -> (u32, usize) {
