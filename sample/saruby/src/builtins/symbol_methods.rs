@@ -18,7 +18,7 @@ pub fn sym_encoding(s: crate::value::Sym) -> u8 {
 }
 fn sym_str_v(c: &mut Ctx, v: Value) -> Value { let s = v.as_sym(); c.str_new_enc(sym_bytes(s), sym_encoding(s)) }
 
-fn sym_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(sym_str_v(c, s)) }
+fn sym_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let k = s.as_sym(); Ok(c.str_new_chilled(sym_bytes(k), sym_encoding(k), crate::object::FL_CHILLED_SYM)) }
 fn sym_name(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let k = s.as_sym();
     if let Some(&v) = c.vm().sym_names.borrow().get(&k) { return Ok(v); }

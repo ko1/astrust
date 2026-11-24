@@ -35,6 +35,13 @@ impl Ctx {
         let k = self.vm().c_string.get();
         self.alloc_with(k, move || Body::String(RString { b: SBuf::from_slice(b), enc }))
     }
+    /// A chilled string literal (FL_CHILLED / FL_CHILLED_SYM).
+    #[inline]
+    pub fn str_new_chilled(&mut self, b: &[u8], enc: u8, fl: u32) -> Value {
+        self.str_account(b.len());
+        let k = self.vm().c_string.get();
+        self.alloc_with_flags(k, fl, move || Body::String(RString { b: SBuf::from_slice(b), enc }))
+    }
     #[inline]
     pub fn str_with_capa(&mut self, n: usize, enc: u8) -> Value {
         self.str_account(n);
@@ -80,7 +87,11 @@ impl Ctx {
     #[inline(always)]
     pub fn str_len(&self, v: Value) -> usize { self.rstring(v).b.len() }
     #[inline(always)]
-    pub fn str_eq(&self, a: Value, b: Value) -> bool { self.rstring(a).b == self.rstring(b).b }
+    pub fn str_eq(&self, a: Value, b: Value) -> bool {
+        // the encodings first: nothing stays live across the byte compare
+        let (x, y) = (self.rstring(a), self.rstring(b));
+        if x.enc == y.enc { x.b == y.b } else { str_eq_enc(&x.b, &y.b, x.enc, y.enc) }
+    }
     #[inline(always)]
     pub fn str_hash(&self, v: Value) -> u64 { crate::astrust::hash_bytes(&self.rstring(v).b) }
     /// String#to_sym: symbol::BAD_SYM for a broken String of an ASCII-compatible encoding other than UTF-8
@@ -103,7 +114,7 @@ impl Ctx {
     /// String `v` for writing; FrozenError when frozen.
     #[inline]
     pub fn str_modify(&mut self, v: Value) -> Result<&mut RString, Esc> {
-        if obj_flags(v) & (FL_FROZEN | FL_TMPLOCK) != 0 { return Err(raise_frozen_or_locked(self, v)); }
+        if obj_flags(v) & FL_MODIFY_CHECK != 0 { modify_check_slow(self, v)?; }
         Ok(self.rstring_mut(v))
     }
     /// acc << s with the result encoding already decided; they may be the same String.
@@ -168,6 +179,18 @@ impl std::ops::Deref for ByteSnap {
     fn deref(&self) -> &[u8] { if self.n <= ByteSnap::INLINE { &self.buf[..self.n] } else { &self.heap } }
 }
 
+#[cold]
+#[inline(never)]
+fn str_eq_enc(a: &[u8], b: &[u8], ea: u8, eb: u8) -> bool { a == b && str_comparable(a, ea, eb) }
+/// rb_str_comparable for two Strings holding the same bytes `b` in encodings `ea` and `eb`.
+#[cold]
+pub fn str_comparable(b: &[u8], ea: u8, eb: u8) -> bool {
+    use crate::builtins::encoding::ascii_compat;
+    if b.is_empty() { return true; }
+    let seven = is_ascii(b);
+    let (a7, b7) = (seven && ascii_compat(ea), seven && ascii_compat(eb));
+    (a7 && (b7 || ascii_compat(eb))) || (b7 && ascii_compat(ea))
+}
 pub fn str_append_str(c: &mut Ctx, acc: Value, s: Value) -> Result<(), Esc> {
     check_frozen(c, acc)?;
     let ea = c.str_enc(acc);
@@ -363,10 +386,31 @@ pub fn to_rstring(c: &mut Ctx, v: Value) -> Result<String, Esc> {
 }
 
 /// Implicit conversion to String (to_str).
+/// rb_check_funcall without arguments: None when `v` does not respond to `mid`.  A respond_to? of its
+/// own is asked first; a method_missing of its own is tried when there is no method (NoMethodError: None).
+pub fn check_funcall(c: &mut Ctx, v: Value, mid: Sym) -> Result<Option<Value>, Esc> {
+    let k = class_of(v);
+    let rt = lookup_method(c, k, s::respond_to_p);
+    if c.me_ref(rt).is_some_and(|m| m.owner != c.vm().m_kernel.get()) {
+        let ar = crate::builtins::proc::method_arity(c, rt);
+        let r = if ar == 1 { funcall(c, v, s::respond_to_p, &[Value::sym(mid)], std::ptr::null())? }
+            else { funcall(c, v, s::respond_to_p, &[Value::sym(mid), TRUE], std::ptr::null())? };
+        if !r.truthy() { return Ok(None); }
+    }
+    if respond_to(c, v, mid, true) { return funcall(c, v, mid, &[], std::ptr::null()).map(Some); }
+    let mm = lookup_method(c, k, s::method_missing);
+    if !c.me_ref(mm).is_some_and(|m| m.owner != c.vm().c_basic_object.get()) { return Ok(None); }
+    match funcall(c, v, s::method_missing, &[Value::sym(mid)], std::ptr::null()) {
+        Ok(r) => Ok(Some(r)),
+        Err(e) => {
+            if c.esc == EscKind::Raise && is_kind_of(c, c.esc_val, c.vm().c_no_method_error.get()) { c.esc = EscKind::None; return Ok(None); }
+            Err(e)
+        }
+    }
+}
 pub fn expect_str(c: &mut Ctx, v: Value) -> RV {
     if is_string(v) { return Ok(v); }
-    if crate::rt::conv_target(v) && respond_to(c, v, s::to_str, true) {
-        let r = funcall(c, v, s::to_str, &[], std::ptr::null())?;
+    if let Some(r) = if crate::rt::conv_target(v) { check_funcall(c, v, s::to_str)? } else { None } {
         if is_string(r) { return Ok(r); }
         let cls = class_path(c, real_class_of(c, v));
         return type_err(c, format!("can't convert {} to String ({}#to_str gives {})", cls, cls, class_path(c, real_class_of(c, r))));
@@ -383,32 +427,44 @@ pub fn map_case(b: &[u8], enc: u8, f: impl Fn(char) -> String, ascii: impl Fn(u8
         Err(_) => b.iter().map(|&x| ascii(x)).collect(),
     }
 }
+fn case_lookup(t: &'static [(u32, &'static str)], ch: char) -> Option<&'static str> {
+    t.binary_search_by_key(&(ch as u32), |e| e.0).ok().map(|i| t[i].1)
+}
+/// Per-character mappings matching CRuby (`turkic`: dotted/dotless i).
+pub fn up_char(ch: char, turkic: bool, out: &mut String) { if turkic && ch == 'i' { out.push('İ') } else { out.extend(ch.to_uppercase()) } }
+pub fn down_char(ch: char, turkic: bool, out: &mut String) {
+    if turkic && ch == 'I' { out.push('ı') } else if turkic && ch == 'İ' { out.push('i') } else { out.extend(ch.to_lowercase()) }
+}
+pub fn title_char(ch: char, turkic: bool, out: &mut String) {
+    match case_lookup(&crate::builtins::case_tables::TITLE, ch) { Some(t) => out.push_str(t), None => up_char(ch, turkic, out) }
+}
+pub fn swap_char(ch: char, turkic: bool, out: &mut String) {
+    if let Some(t) = case_lookup(&crate::builtins::case_tables::SWAP, ch) { out.push_str(t) }
+    else if ch.is_uppercase() { down_char(ch, turkic, out) } else { up_char(ch, turkic, out) }
+}
+pub fn fold_char(ch: char, out: &mut String) {
+    match case_lookup(&crate::builtins::case_tables::FOLD, ch) { Some(t) => out.push_str(t), None => out.extend(ch.to_lowercase()) }
+}
+/// UTF-8 case mapping: `first` for the first character, `rest` for the others; None if not valid UTF-8.
+pub fn map_utf8(b: &[u8], first: impl Fn(char, &mut String), rest: impl Fn(char, &mut String)) -> Option<Vec<u8>> {
+    let s = std::str::from_utf8(b).ok()?;
+    let mut out = String::with_capacity(b.len());
+    for (i, ch) in s.chars().enumerate() { if i == 0 { first(ch, &mut out) } else { rest(ch, &mut out) } }
+    Some(out.into_bytes())
+}
 pub fn upcase(b: &[u8], enc: u8) -> Vec<u8> { map_case(b, enc, |c| c.to_uppercase().collect(), |x| x.to_ascii_uppercase()) }
 pub fn downcase(b: &[u8], enc: u8) -> Vec<u8> { map_case(b, enc, |c| c.to_lowercase().collect(), |x| x.to_ascii_lowercase()) }
 pub fn swapcase(b: &[u8], enc: u8) -> Vec<u8> {
-    map_case(b, enc, |c| if c.is_uppercase() { c.to_lowercase().collect() } else { c.to_uppercase().collect() },
+    map_case(b, enc, |c| { let mut o = String::new(); swap_char(c, false, &mut o); o },
              |x| if x.is_ascii_uppercase() { x.to_ascii_lowercase() } else { x.to_ascii_uppercase() })
 }
-/// Unicode simple+full case folding approximation (for casecmp?).
-pub fn fold_case(b: &[u8], enc: u8) -> Vec<u8> {
-    if enc != ENC_UTF8 || is_ascii(b) { return b.iter().map(|x| x.to_ascii_lowercase()).collect(); }
-    match std::str::from_utf8(b) {
-        Ok(s) => {
-            let mut out = String::new();
-            for ch in s.chars() {
-                match ch { 'ß' | 'ẞ' => out.push_str("ss"), 'ς' => out.push('σ'), _ => out.extend(ch.to_lowercase()) }
-            }
-            out.into_bytes()
-        }
-        Err(_) => b.iter().map(|x| x.to_ascii_lowercase()).collect(),
-    }
-}
+/// Full Unicode case folding (downcase(:fold), casecmp?).
+pub fn fold_case(b: &[u8], enc: u8) -> Vec<u8> { map_case(b, enc, |c| { let mut o = String::new(); fold_char(c, &mut o); o }, |x| x.to_ascii_lowercase()) }
 pub fn capitalize(b: &[u8], enc: u8) -> Vec<u8> {
-    if b.is_empty() { return vec![]; }
-    let l = if enc == ENC_UTF8 { char_len_at(b, 0) } else { 1 };
-    let mut out = upcase(&b[..l], enc);
-    out.extend(downcase(&b[l..], enc));
-    out
+    if enc == ENC_UTF8 && !is_ascii(b) { if let Some(v) = map_utf8(b, |c, o| title_char(c, false, o), |c, o| down_char(c, false, o)) { return v; } }
+    let mut v: Vec<u8> = b.iter().map(|x| x.to_ascii_lowercase()).collect();
+    if let Some(f) = v.first_mut() { *f = f.to_ascii_uppercase(); }
+    v
 }
 
 #[derive(PartialEq, Clone, Copy)]

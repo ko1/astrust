@@ -635,7 +635,9 @@ impl<'a> Compiler<'a> {
             }
             Kind::StringNode { unescaped } => {
                 let enc = self.lit_enc(n.flags);
-                if n.flags & pa::STRING_FLAGS_FROZEN != 0 { ALLOC_node_fstr(lstr(unescaped), enc) } else { ALLOC_node_str(lstr(unescaped), enc) }
+                if n.flags & pa::STRING_FLAGS_FROZEN != 0 { ALLOC_node_fstr(lstr(unescaped), enc) }
+                else if n.flags & pa::STRING_FLAGS_MUTABLE != 0 { ALLOC_node_str(lstr(unescaped), enc) }
+                else { ALLOC_node_cstr(lstr(unescaped), enc) }
             }
             Kind::XStringNode { unescaped } => {
                 let s = ALLOC_node_str(lstr(unescaped), 0);
@@ -647,6 +649,10 @@ impl<'a> Compiler<'a> {
             }
             Kind::SymbolNode { unescaped } => ALLOC_node_lit(Value::sym(self.sym_lit(unescaped, n.flags))),
             Kind::InterpolatedStringNode { parts } => {
+                // "a" "b": one chilled literal, as CRuby
+                if n.flags & (pa::INTERPOLATED_STRING_NODE_FLAGS_FROZEN | pa::INTERPOLATED_STRING_NODE_FLAGS_MUTABLE) == 0 {
+                    if let Some((b, enc)) = self.static_concat(parts) { return ALLOC_node_cstr(lstr(&b), enc); }
+                }
                 let d = self.dstr(parts);
                 if n.flags & pa::INTERPOLATED_STRING_NODE_FLAGS_FROZEN != 0 { self.call_node(d, s::freeze, vec![], 0, line) } else { d }
             }
@@ -680,7 +686,7 @@ impl<'a> Compiler<'a> {
                 let b = match right { Some(x) => self.c(x), None => ALLOC_node_nil() };
                 ALLOC_node_range(a, b, excl)
             }
-            Kind::SourceFileNode { filepath } => ALLOC_node_str(lstr(filepath), 0),
+            Kind::SourceFileNode { filepath } => if n.flags & pa::STRING_FLAGS_MUTABLE != 0 { ALLOC_node_str(lstr(filepath), 0) } else { ALLOC_node_cstr(lstr(filepath), 0) },
             Kind::SourceLineNode => ALLOC_node_lit(Value::fix(line as i64)),
             Kind::SourceEncodingNode => {
                 let e = ALLOC_node_top_const(intern(b"Encoding"), line);
@@ -1100,6 +1106,17 @@ impl<'a> Compiler<'a> {
         // short results start inside the object slot (spilling copies at most 23 bytes)
         let cap = if cap <= 48 { 0 } else { cap.min(4096) };
         ALLOC_node_dstr(leak(v), self.src_enc, cap as u32)
+    }
+    /// Bytes of an all-literal string concatenation whose parts share one encoding.
+    fn static_concat(&self, parts: &[PNode]) -> Option<(Vec<u8>, u32)> {
+        let mut b = vec![]; let mut enc = None;
+        for p in parts {
+            let Kind::StringNode { unescaped } = &p.kind else { return None };
+            let e = self.lit_enc(p.flags);
+            if *enc.get_or_insert(e) != e { return None; }
+            b.extend_from_slice(unescaped);
+        }
+        Some((b, enc?))
     }
     fn dstr_parts(&mut self, parts: &[PNode], v: &mut Vec<NodePtr>) {
         for p in parts {

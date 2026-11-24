@@ -530,6 +530,8 @@ fn parse_complex(c: &mut Ctx, b: &[u8]) -> Result<(Value, bool), Esc> {
     Ok((cpx_raw(c, n1, zero), fin(i)))
 }
 fn str_to_c(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
+    let e = c.str_enc(s);
+    if !crate::builtins::encoding::ascii_compat(e) { return err(c, c.vm().c_compat_error.get(), format!("ASCII incompatible encoding: {}", crate::builtins::encoding::enc_name(e))); }
     let b = c.str_bytes(s).to_vec();
     Ok(parse_complex(c, &b)?.0)
 }

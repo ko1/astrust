@@ -87,11 +87,12 @@ fn bo_singleton_method_added(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> 
 fn k_class(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(real_class_of(c, slf)) }
 fn k_singleton_class(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if slf.is_fixnum() || slf.is_sym() || slf.is_flonum() || is_bignum(slf) || is_heap_float(slf) { return type_err(c, "can't define singleton"); }
+    if slf.is_heap() && obj_flags(slf) & FL_CHILLED_ANY != 0 { crate::vm::unchill(c, slf)?; }
     Ok(singleton_class(c, slf))
 }
 fn k_frozen(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(is_frozen(slf))) }
 fn k_freeze(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
-    if slf.is_heap() { obj_set_flags(slf, FL_FROZEN); obj_clear_flags(slf, FL_CHILLED); }
+    if slf.is_heap() { obj_set_flags(slf, FL_FROZEN); obj_clear_flags(slf, FL_CHILLED_ANY); }
     Ok(slf)
 }
 fn k_nil_p(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(slf == NIL)) }
@@ -279,6 +280,7 @@ fn finish_dup(c: &mut Ctx, slf: Value, n: Value, clone: bool, freeze: Option<boo
     if clone {
         let fz = freeze.unwrap_or(obj_flags(slf) & FL_FROZEN != 0);
         if fz { obj_set_flags(n, FL_FROZEN); } else { obj_clear_flags(n, FL_FROZEN); }
+        if freeze.is_none() { obj_set_flags(n, obj_flags(slf) & FL_CHILLED_ANY); }
     }
     Ok(n)
 }
@@ -1298,7 +1300,7 @@ pub fn alloc_instance(c: &mut Ctx, klass: Value) -> RV {
     if cd.is_singleton { return type_err(c, "can't create instance of singleton class"); }
     Ok(match cd.alloc {
         AllocKind::Object | AllocKind::Exception => new_object(c, klass),
-        AllocKind::String => c.alloc(klass, Body::String(RString { b: crate::sbuf::SBuf::new(), enc: ENC_UTF8 })),
+        AllocKind::String => c.alloc(klass, Body::String(RString { b: crate::sbuf::SBuf::new(), enc: ENC_BINARY })),
         AllocKind::Array => c.alloc(klass, Body::Array(crate::avec::AVec::new())),
         AllocKind::Hash => { let h = c.hash_new(); obj_set_klass(h, klass); h }
         AllocKind::Range => c.alloc(klass, Body::Range(NIL, NIL, false)),

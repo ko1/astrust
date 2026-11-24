@@ -29,8 +29,7 @@ pub fn num_to_long(c: &mut Ctx, v: Value) -> Result<i64, Esc> {
         return Ok(f as i64);
     }
     if v == NIL { return type_err(c, "no implicit conversion from nil to integer"); }
-    if v.is_heap() && respond_to(c, v, s::to_int, true) {
-        let r = funcall(c, v, s::to_int, &[], std::ptr::null())?;
+    if let Some(r) = if v.is_heap() { crate::string::check_funcall(c, v, s::to_int)? } else { None } {
         if r.is_fixnum() { return Ok(r.as_fix()); }
         if is_bignum(r) { return num_to_long(c, r); }
         let cls = class_name_for_err(c, v);

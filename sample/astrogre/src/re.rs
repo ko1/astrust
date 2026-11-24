@@ -3066,6 +3066,11 @@ impl Vm {
     }
 
     pub fn match_at(&self, s: &[u8], pos: usize, enc: Enc, deadline: Option<std::time::Instant>) -> Result<Option<Vec<Option<(usize, usize)>>>, ()> {
+        self.match_at_gpos(s, pos, pos, enc, deadline)
+    }
+
+    /// match_at with \G at `gpos` (a backward search keeps \G at its start).
+    pub fn match_at_gpos(&self, s: &[u8], pos: usize, gpos: usize, enc: Enc, deadline: Option<std::time::Instant>) -> Result<Option<Vec<Option<(usize, usize)>>>, ()> {
         if pos > s.len() {
             return Ok(None);
         }
@@ -3074,7 +3079,7 @@ impl Vm {
                 return Ok(None);
             }
         }
-        let mut cx = self.ctx(s, pos, enc);
+        let mut cx = self.ctx(s, gpos, enc);
         cx.deadline = deadline;
         let r = self.try_at(&mut cx, pos);
         if cx.timed_out { Err(()) } else { Ok(r) }

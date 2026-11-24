@@ -522,6 +522,12 @@ pub fn match_at_e(c: &Ctx, re: Value, bytes: &[u8], pos: usize, e: Enc) -> Optio
     engine_run(rregexp(c, re)?.re.as_ref()?, bytes, pos, e, None, true).unwrap_or(None)
 }
 
+/// match_at_e with \G at `gpos` (backward search); wide encodings keep \G at `pos`.
+pub fn match_at_gpos_e(c: &Ctx, re: Value, bytes: &[u8], pos: usize, gpos: usize, e: Enc) -> Option<Vec<Option<(usize, usize)>>> {
+    if e.0 >= WIDE { return match_at_e(c, re, bytes, pos, e); }
+    rregexp(c, re)?.re.as_ref()?.match_at_gpos(bytes, pos, gpos, e)
+}
+
 pub fn match_new(c: &mut Ctx, re: Value, s: Value, groups: Vec<Option<(usize, usize)>>) -> Value {
     // CRuby's MatchData keeps a frozen snapshot: a String changed after the match must not move its groups
     let s = if is_frozen(s) { s } else { let d = c.str_dup(s); obj_set_flags(d, FL_FROZEN); d };

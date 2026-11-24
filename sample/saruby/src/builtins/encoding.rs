@@ -488,7 +488,7 @@ pub fn transcode(c: &mut Ctx, src: &[u8], from: u8, to: u8, o: &TcOpts) -> Resul
 
 pub fn find_enc(name: &[u8]) -> Option<u8> {
     let n = std::str::from_utf8(name).ok()?;
-    if n.eq_ignore_ascii_case("internal") { return None; }
+    if n.eq_ignore_ascii_case("internal") { return Some(default_internal().unwrap_or(ENC_BINARY)); }   // unset: BINARY (force_encoding)
     if n.eq_ignore_ascii_case("locale") { return Some(ENC_UTF8); }
     if n.eq_ignore_ascii_case("external") || n.eq_ignore_ascii_case("filesystem") { return Some(default_external()); }
     for (i, d) in ENCS.iter().enumerate() {
@@ -517,6 +517,7 @@ pub fn is_encoding(c: &Ctx, v: Value) -> bool { c.data::<REnc>(v).is_some() }
 pub fn to_enc(c: &mut Ctx, v: Value) -> Result<u8, Esc> {
     if let Some(e) = c.data::<REnc>(v) { return Ok(e.id); }
     let s = if is_string(v) { v } else { expect_str(c, v)? };
+    if !ascii_compat(c.str_enc(s)) { return arg_err(c, "invalid encoding name (non ASCII)"); }
     match find_enc(c.str_bytes(s)) {
         Some(e) => Ok(e),
         None => { let nm = String::from_utf8_lossy(c.str_bytes(s)).into_owned(); arg_err(c, format!("unknown encoding name - {}", nm)) }
@@ -628,25 +629,36 @@ fn enc_s_set_default_internal(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> R
 }
 fn enc_s_locale_charmap(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.str_new_enc(b"UTF-8", ENC_ASCII)) }
 /// Encoding of an object for compatible?: strings, symbols, regexps, encodings.
-fn obj_enc(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
-    if is_string(v) { return Ok(Some(v)); }
-    if c.data::<REnc>(v).is_some() { return Ok(Some(c.str_new_enc(b"", id_of(c, v)))); }
-    if v.is_sym() { let b = crate::symbol::sym_bytes(v.as_sym()); return Ok(Some(c.str_new_enc(b, if is_ascii(b) { ENC_ASCII } else { ENC_UTF8 }))); }
-    if crate::regexp::is_regexp(c, v) { let s = funcall(c, v, intern(b"source"), &[], std::ptr::null())?; return Ok(Some(s)); }
+/// rb_enc_get_index for Encoding.compatible?: (index, Some(String) when `v` is a String).
+fn obj_enc(c: &mut Ctx, v: Value) -> Result<Option<(u8, Option<Value>)>, Esc> {
+    if is_string(v) { return Ok(Some((c.str_enc(v), Some(v)))); }
+    if c.data::<REnc>(v).is_some() { return Ok(Some((id_of(c, v), None))); }
+    if v.is_sym() { return Ok(Some((crate::builtins::symbol_methods::sym_encoding(v.as_sym()), None))); }
+    if crate::regexp::is_regexp(c, v) { let e = funcall(c, v, intern(b"encoding"), &[], std::ptr::null())?; return Ok(Some((id_of(c, e), None))); }
     Ok(None)
 }
+/// rb_enc_compatible / enc_compatible_latter, transcribed (the swap leaves enc1/enc2 as they were).
 fn enc_s_compatible_p(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
-    let (Some(x), Some(y)) = (obj_enc(c, a[0])?, obj_enc(c, a[1])?) else { return Ok(NIL) };
-    // Encoding objects behave as empty strings that still need ASCII compatibility.
-    if c.data::<REnc>(a[0]).is_some() || c.data::<REnc>(a[1]).is_some() {
-        let (ex, ey) = (c.str_enc(x), c.str_enc(y));
-        if ex == ey { return Ok(encoding_value(c, ex)); }
-        if !ascii_compat(ex) || !ascii_compat(ey) { return Ok(NIL); }
-        if c.data::<REnc>(a[1]).is_some() { if is_string(a[0]) && is_ascii(c.str_bytes(x)) { return Ok(encoding_value(c, ey)); } return Ok(if c.data::<REnc>(a[0]).is_some() { NIL } else { encoding_value(c, ex) }); }
-        if is_ascii(c.str_bytes(y)) { return Ok(encoding_value(c, ex)); }
-        return Ok(NIL);
+    let (Some((i1, s1)), Some((i2, s2))) = (obj_enc(c, a[0])?, obj_enc(c, a[1])?) else { return Ok(NIL) };
+    let (e1, e2) = (i1, i2);
+    if i1 == i2 { return Ok(encoding_value(c, e1)); }
+    let seven = |c: &Ctx, s: Value| ascii_compat(c.str_enc(s)) && is_ascii(c.str_bytes(s));
+    if let Some(y) = s2 { if c.str_bytes(y).is_empty() { return Ok(encoding_value(c, e1)); } }
+    if let (Some(x), Some(y)) = (s1, s2) { if c.str_bytes(x).is_empty() { return Ok(encoding_value(c, if ascii_compat(e1) && seven(c, y) { e1 } else { e2 })); } }
+    if !ascii_compat(e1) || !ascii_compat(e2) { return Ok(NIL); }
+    if s2.is_none() && i2 == ENC_ASCII { return Ok(encoding_value(c, e1)); }
+    if s1.is_none() && i1 == ENC_ASCII { return Ok(encoding_value(c, e2)); }
+    let (s1, s2) = if s1.is_none() { (s2, s1) } else { (s1, s2) };
+    if let Some(x) = s1 {
+        let cr1 = seven(c, x);
+        if let Some(y) = s2 {
+            let cr2 = seven(c, y);
+            if cr1 != cr2 { return Ok(encoding_value(c, if cr1 { e2 } else { e1 })); }
+            if cr2 { return Ok(encoding_value(c, e1)); }
+        }
+        if cr1 { return Ok(encoding_value(c, e2)); }
     }
-    Ok(match compatible(c, x, y) { Some(e) => encoding_value(c, e), None => NIL })
+    Ok(NIL)
 }
 fn enc_dump(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.str_new(enc_name(id_of(c, slf)).as_bytes())) }
 fn enc_s_load(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let e = to_enc(c, a[0])?; Ok(encoding_value(c, e)) }
@@ -679,6 +691,9 @@ pub fn init(c: &mut Ctx) {
             for cn in const_names(n) { const_set(c, ek, intern(cn.as_bytes()), ev); }
         }
     }
+    let (u0, u1, u2) = char::UNICODE_VERSION;
+    let uv = c.str_new_enc(format!("{}.{}.{}", u0, u1, u2).as_bytes(), ENC_ASCII); obj_set_flags(uv, FL_FROZEN);
+    const_set(c, ek, intern(b"UNICODE_VERSION"), uv);
     define_cfunc(c, ek, "to_s", enc_to_s, 0);
     define_cfunc(c, ek, "name", enc_to_s, 0);
     define_cfunc(c, ek, "inspect", enc_inspect, 0);

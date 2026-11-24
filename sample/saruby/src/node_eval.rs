@@ -31,6 +31,8 @@ use crate::symbol::s;
 
 
 
+// a string literal without a frozen_string_literal comment: chilled (4.0)
+
 
 // the receiver of "lit".freeze (um 0) / -"lit" (um 1): a fresh String once that method is redefined, as opt_str_freeze
 
@@ -227,6 +229,13 @@ pub fn EVAL_node_float(c: &mut Ctx, n: NodePtr, fp: Fp, v: f64) -> RV {
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_str(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32) -> RV {
     Ok(c.str_new_enc(s, enc as u8))
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_cstr(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32) -> RV {
+    Ok(c.str_new_chilled(s, enc as u8, FL_CHILLED))
 }
 
 
@@ -1382,7 +1391,7 @@ pub fn EVAL_node_opt_ltlt<H_line: crate::vm::LineHole>(c: &mut Ctx, n: NodePtr, 
     if is_string(a) && obj_klass(a) == vm().c_string.get() && !redef(R_STR_LTLT) {
         // the common case of String#<< (a String of the same encoding onto a modifiable one: neither frozen nor
         // locked, one test as str_modify); the rest, which may raise, is String#<<
-        if is_string(b) && obj_flags(a) & (FL_FROZEN | FL_TMPLOCK) == 0 && c.str_enc(a) == c.str_enc(b) { c.str_append_same_enc(a, b); return Ok(a); }
+        if is_string(b) && obj_flags(a) & FL_MODIFY_CHECK == 0 && c.str_enc(a) == c.str_enc(b) { c.str_append_same_enc(a, b); return Ok(a); }
         line.store(c.frame_mut());
         return crate::builtins::string_methods::s_ltlt(c, a, &[b], Blk::NONE);
     }

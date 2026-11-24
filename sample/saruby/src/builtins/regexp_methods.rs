@@ -277,7 +277,7 @@ fn re_s_linear_time(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
 }
 
 // MatchData
-fn group_index(c: &mut Ctx, m: Value, k: Value) -> Result<Option<usize>, Esc> {
+pub(crate) fn group_index(c: &mut Ctx, m: Value, k: Value) -> Result<Option<usize>, Esc> {
     if k.is_sym() || is_string(k) {
         let nm = if k.is_sym() { crate::symbol::sym_str(k.as_sym()) } else { String::from_utf8_lossy(c.str_bytes(k)).into_owned() };
         let r = rregexp(c, md(c, m).regexp);

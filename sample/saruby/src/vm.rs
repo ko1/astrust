@@ -965,7 +965,7 @@ pub fn ivar_index_for(c: &mut Ctx, k: Value, name: Sym) -> u32 {
 }
 
 pub fn ivar_set(c: &mut Ctx, v: Value, name: Sym, val: Value) -> RV {
-    if !v.is_heap() || obj_flags(v) & FL_FROZEN != 0 { return Err(raise_frozen(c, v)); }
+    if !v.is_heap() || obj_flags(v) & (FL_FROZEN | FL_CHILLED_ANY) != 0 { modify_check_slow(c, v)?; }
     ivar_set_raw(c, v, name, val);
     Ok(val)
 }
@@ -1371,8 +1371,25 @@ pub fn raise_frozen(c: &mut Ctx, v: Value) -> Esc {
 
 #[inline]
 pub fn check_frozen(c: &mut Ctx, v: Value) -> Result<(), Esc> {
-    if !v.is_heap() || obj_flags(v) & (FL_FROZEN | FL_TMPLOCK) != 0 { return Err(raise_frozen_or_locked(c, v)); }
+    if !v.is_heap() || obj_flags(v) & FL_MODIFY_CHECK != 0 { return modify_check_slow(c, v); }
     Ok(())
+}
+/// check_frozen's slow path: frozen / locked raise, a chilled String warns once.
+#[cold]
+pub fn modify_check_slow(c: &mut Ctx, v: Value) -> Result<(), Esc> {
+    if !v.is_heap() || obj_flags(v) & (FL_FROZEN | FL_TMPLOCK) != 0 { return Err(raise_frozen_or_locked(c, v)); }
+    unchill(c, v)
+}
+/// The first write to a chilled String: the deprecation warning, then an ordinary String.
+#[cold]
+pub fn unchill(c: &mut Ctx, v: Value) -> Result<(), Esc> {
+    let f = obj_flags(v);
+    if f & FL_CHILLED_ANY == 0 { return Ok(()); }
+    obj_clear_flags(v, FL_CHILLED_ANY);
+    if c.vm().verbose.get() == NIL || !crate::builtins::misc::warning_category_enabled(0) { return Ok(()); }
+    let m = if f & FL_CHILLED_SYM != 0 { format!("string returned by :{}.to_s will be frozen in the future", String::from_utf8_lossy(c.str_bytes(v))) }
+        else { "literal string will be frozen in the future (run with --debug-frozen-string-literal for more information)".to_string() };
+    crate::builtins::kernel::warn_deprecated(c, &m)
 }
 /// FrozenError, or str_modifiable's error for a String locked by IO::Buffer (FL_TMPLOCK).
 #[cold]

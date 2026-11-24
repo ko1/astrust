@@ -17,6 +17,13 @@ use crate::vm::*;
 
 const NATSTR: &[u8] = b"sSiIlLqQjJ";
 const TOO_FEW: &str = "too few arguments";
+// p / P: the "pointer" is the String's object address; the packed String keeps the Strings in a hidden
+// ivar (str_associate), and unpack hands back only those
+fn assoc_sym() -> crate::value::Sym { crate::symbol::intern(b"__pack_associated") }
+fn associated_pointer(c: &mut Ctx, assoc: Value, t: u64) -> RV {
+    if crate::object::is_array(assoc) { for i in 0..c.ary_len(assoc) { let s = c.ary_get(assoc, i); if is_string(s) && s.raw() as u64 == t { return Ok(s); } } }
+    arg_err(c, "no associated pointer")
+}
 
 fn is_space(b: u8) -> bool { matches!(b, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r') }
 
@@ -177,6 +184,7 @@ pub fn pack(c: &mut Ctx, ary: Value, a: &[Value]) -> RV {
     let mut idx = 0usize;
     let mut enc_info = 1;   // 0 BINARY, 1 US-ASCII, 2 UTF-8
     let mut p = 0;
+    let mut assoc = NIL;
     macro_rules! nextfrom { () => {{ if idx >= c.ary_len(ary) { return arg_err(c, TOO_FEW); } let v = c.ary_get(ary, idx); idx += 1; v }}; }
     while let Some(d) = next_dir(c, &fmt, &mut p)? {
         let ty = d.ty;
@@ -274,6 +282,25 @@ pub fn pack(c: &mut Ctx, ary: Value, a: &[Value]) -> RV {
                 }
                 for (k, b) in tmp.iter().enumerate().rev() { res.push(if k > 0 { b | 0x80 } else { *b }); }
             },
+            b'P' | b'p' => {
+                if ty == b'P' {
+                    if idx >= c.ary_len(ary) { return arg_err(c, TOO_FEW); }
+                    let from = c.ary_get(ary, idx);
+                    if from != NIL {
+                        let s = expect_str(c, from)?;
+                        let n = c.str_len(s);
+                        if n < len { return arg_err(c, format!("too short buffer for P({} for {})", n, len)); }
+                    }
+                    len = 1;
+                }
+                for _ in 0..len {
+                    let from = nextfrom!();
+                    let t = if from == NIL { 0 } else { expect_str(c, from)?.raw() as u64 };
+                    if assoc == NIL { assoc = c.ary_new(); }
+                    c.ary_push(assoc, from);
+                    res.extend_from_slice(&t.to_le_bytes());
+                }
+            }
             _ => return unknown_directive(c, "pack", ty, &fmt),
         }
     }
@@ -286,6 +313,7 @@ pub fn pack(c: &mut Ctx, ary: Value, a: &[Value]) -> RV {
         }
         None => c.str_from_vec_enc(res, match enc_info { 1 => crate::object::ENC_ASCII, 2 => crate::object::ENC_UTF8, _ => crate::object::ENC_BINARY }),
     };
+    if assoc != NIL { ivar_set_raw(c, out, assoc_sym(), assoc); }
     Ok(out)
 }
 
@@ -514,6 +542,23 @@ pub fn unpack(c: &mut Ctx, str: Value, a: &[Value], blk: Blk, one: bool) -> RV {
                         let v = c.big_to_value(x); push!(v);
                         len -= 1; s0 = s;
                     }
+                }
+            }
+            b'P' => if send - s >= 8 {
+                let t = u64::from_le_bytes(b[s..s + 8].try_into().unwrap()); s += 8;
+                let v = if t == 0 { NIL } else {
+                    let assoc = ivar_get(c, str, assoc_sym());
+                    let o = associated_pointer(c, assoc, t)?;
+                    if len < c.str_len(o) { let n = c.str_from_vec_enc(c.str_bytes(o)[..len].to_vec(), crate::object::ENC_BINARY); ivar_set_raw(c, n, assoc_sym(), assoc); n } else { o }
+                };
+                push!(v);
+            },
+            b'p' => {
+                if len > (send - s) / 8 { len = (send - s) / 8; }
+                for _ in 0..len {
+                    let t = u64::from_le_bytes(b[s..s + 8].try_into().unwrap()); s += 8;
+                    let v = if t == 0 { NIL } else { let assoc = ivar_get(c, str, assoc_sym()); associated_pointer(c, assoc, t)? };
+                    push!(v);
                 }
             }
             _ => return unknown_directive(c, "unpack", ty, &fmt),

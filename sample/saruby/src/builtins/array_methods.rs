@@ -402,8 +402,14 @@ cfn!(a_include, |c, slf, a, blk| {
     let mut i = 0;
     // a fixnum element answers Integer#== without a call (a different fixnum: false)
     let fix = t.is_fixnum() && !crate::rt::redef(crate::rt::R_INT_EQ);
+    // a String needle: String elements of another length are unequal without String#==
+    let sfix = is_string(t) && !crate::rt::redef(crate::rt::R_STR_EQ);
     while let Some(&x) = c.ary(slf).get(i) {
         if x == t { return Ok(TRUE); }
+        if sfix && is_string(x) && obj_klass(x) == c.vm().c_string.get() {
+            if c.str_len(x) == c.str_len(t) && c.str_eq(x, t) { return Ok(TRUE); }
+            i += 1; continue;
+        }
         if !(fix && x.is_fixnum()) && rb_eq(c, x, t)? { return Ok(TRUE); }
         i += 1;
     }

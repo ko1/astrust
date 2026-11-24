@@ -113,6 +113,23 @@ fn PROF_node_str(pc: &mut ProfCtx, n: NodePtr) -> u64 {
 
 
 #[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_cstr(n: NodePtr) -> u64 {
+    let u = node_u::<node_cstr_struct>(n);
+    let mut h = hash_str("node_cstr");
+    h = hash_merge(h, hash_bytes(u.s));
+    h = hash_merge(h, hash_u64(u.enc as u64));
+    h
+}
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut, unused_braces, unused_parens)]
+fn PROF_node_cstr(pc: &mut ProfCtx, n: NodePtr) -> u64 {
+    let u = node_u::<node_cstr_struct>(n);
+    let mut h = hash_str("node_cstr");
+
+    h
+}
+
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_fstr(n: NodePtr) -> u64 {
     let u = node_u::<node_fstr_struct>(n);
     let mut h = hash_str("node_fstr");

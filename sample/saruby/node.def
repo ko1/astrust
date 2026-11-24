@@ -65,6 +65,13 @@ node_str(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32)
     Ok(c.str_new_enc(s, enc as u8))
 }
 
+// a string literal without a frozen_string_literal comment: chilled (4.0)
+NODE_DEF
+node_cstr(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32)
+{
+    Ok(c.str_new_chilled(s, enc as u8, FL_CHILLED))
+}
+
 NODE_DEF
 node_fstr(c: &mut Ctx, n: NodePtr, fp: Fp, s: Str, enc: u32, lc@ref: LitCache)
 {
@@ -1162,7 +1169,7 @@ node_opt_ltlt(c: &mut Ctx, n: NodePtr, fp: Fp, a@child: Value, b@child: Value, l
     if is_string(a) && obj_klass(a) == vm().c_string.get() && !redef(R_STR_LTLT) {
         // the common case of String#<< (a String of the same encoding onto a modifiable one: neither frozen nor
         // locked, one test as str_modify); the rest, which may raise, is String#<<
-        if is_string(b) && obj_flags(a) & (FL_FROZEN | FL_TMPLOCK) == 0 && c.str_enc(a) == c.str_enc(b) { c.str_append_same_enc(a, b); return Ok(a); }
+        if is_string(b) && obj_flags(a) & FL_MODIFY_CHECK == 0 && c.str_enc(a) == c.str_enc(b) { c.str_append_same_enc(a, b); return Ok(a); }
         line.store(c.frame_mut());
         return crate::builtins::string_methods::s_ltlt(c, a, &[b], Blk::NONE);
     }

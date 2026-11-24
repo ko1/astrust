@@ -186,6 +186,11 @@ fn hash_of(c: &mut Ctx, k: Value) -> Result<Hv, Esc> {
     if is_string(k) { return Ok(Hv::Raw(crate::astrust::hash_bytes(c.str_bytes(k)))); }
     if is_float(k) { let f = float_val(k); return Ok(Hv::Raw(mix(if f == 0.0 { 0 } else { f.to_bits() }))); }
     if is_bignum(k) { return Ok(Hv::Raw(big_hash(c, k))); }
+    hash_of_obj(c, k)
+}
+/// hash_of for other objects (#hash), out of line: its frame stays off the String / immediate path.
+#[inline(never)]
+fn hash_of_obj(c: &mut Ctx, k: Value) -> Result<Hv, Esc> {
     let (kernel, array) = match c.method_entry(class_of(k), s::hash) {
         Some(me) => (std::ptr::eq(me, c.vm().ids.kernel_hash.get()),
             matches!(me.kind, MKind::Cfunc(f, _) if f as *const () as usize == crate::builtins::array_methods::a_hash as *const () as usize)),
