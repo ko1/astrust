@@ -26,7 +26,7 @@ fn name_arg(c: &mut Ctx, v: Value, what: &str) -> Result<Vec<u8>, Esc> {
 }
 fn get(name: &[u8]) -> Option<Vec<u8>> { if name.is_empty() || name.contains(&b'=') { return None; } std::env::var_os(std::ffi::OsStr::from_bytes(name)).map(|v| v.into_vec()) }
 /// A name or value: in the locale encoding (UTF-8), converted to default_internal when set; frozen.
-fn env_str(c: &mut Ctx, b: &[u8]) -> Value { let s = crate::builtins::encoding::external_str(c, b.to_vec(), ENC_UTF8); obj_set_flags(s, FL_FROZEN); s }
+fn env_str(c: &mut Ctx, b: &[u8]) -> Value { let s = crate::builtins::encoding::external_str(c, b.to_vec(), crate::builtins::encoding::locale_enc()); obj_set_flags(s, FL_FROZEN); s }
 fn set(c: &mut Ctx, name: &[u8], val: Option<&[u8]>) -> Result<(), Esc> {
     if name.is_empty() || name.contains(&b'=') {
         if val.is_none() { return Ok(()); }

@@ -290,8 +290,8 @@ pub fn inspect_bytes(b: &[u8], enc: u8) -> String {
     out.push('"');
     let uni = en::is_unicode(enc) && !en::is_dummy(enc);
     let ac = en::ascii_compat(enc);
-    // result encoding is UTF-8: only UTF-8 strings may print non-ASCII characters raw
-    let same = en::kind(enc) == en::EK::Utf8;
+    // non-ASCII characters print raw only in the result encoding (default_internal, else default_external)
+    let same = en::kind(enc) == en::EK::Utf8 && enc == inspect_resenc();
     let code_at = |i: usize| -> Option<u32> { en::precise_len(enc, b, i).map(|l| en::char_code(enc, &b[i..i + l])) };
     let mut i = 0;
     while i < b.len() {
@@ -351,8 +351,11 @@ pub fn uni_printable(cp: u32) -> bool {
     }
 }
 
+/// rb_str_inspect's resenc.
+pub fn inspect_resenc() -> u8 { crate::builtins::encoding::default_internal().unwrap_or_else(crate::builtins::encoding::default_external) }
 pub fn sym_inspect(name: &[u8]) -> String {
-    if sym_is_simple(name) { format!(":{}", String::from_utf8_lossy(name)) } else { format!(":{}", inspect_bytes(name, ENC_UTF8)) }
+    // rb_str_symname_p: a non-ASCII name is quoted unless the result encoding is the symbol's
+    if sym_is_simple(name) && (inspect_resenc() == ENC_UTF8 || is_ascii(name)) { format!(":{}", String::from_utf8_lossy(name)) } else { format!(":{}", inspect_bytes(name, ENC_UTF8)) }
 }
 
 pub fn sym_is_simple(n: &[u8]) -> bool {

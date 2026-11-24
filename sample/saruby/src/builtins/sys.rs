@@ -328,6 +328,21 @@ pub fn write_fd(fd: c_int, mut b: &[u8]) -> Result<(), i64> {
     Ok(())
 }
 
+// ---- locale: setlocale(3) / nl_langinfo(3) ---------------------------------------------------------
+mod ffi_locale {
+    extern "C" {
+        pub fn setlocale(cat: i32, name: *const i8) -> *mut i8;
+        pub fn nl_langinfo(item: i32) -> *const i8;
+    }
+}
+/// setlocale(LC_CTYPE, "") then nl_langinfo(CODESET), as CRuby's main does (once, at boot).
+pub fn locale_codeset() -> Vec<u8> {
+    // SAFETY: a static NUL-terminated name; called once at boot before other threads exist (setlocale is not thread-safe)
+    unsafe { ffi_locale::setlocale(0, c"".as_ptr()); }
+    // SAFETY: nl_langinfo returns a NUL-terminated static string, copied at once
+    unsafe { CStr::from_ptr(ffi_locale::nl_langinfo(14)).to_bytes().to_vec() }
+}
+
 // ---- Etc: sysconf(3) / confstr(3) / fpathconf(3) -------------------------------------------------
 mod ffi_etc {
     use super::*;

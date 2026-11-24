@@ -1001,7 +1001,10 @@ fn d_s_aref(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
 // ---- Dir ----------------------------------------------------------------------------------------
 
 fn d_s_pwd(c: &mut Ctx, _slf: Value, _a: &[Value], _b: Blk) -> RV {
-    match std::env::current_dir() { Ok(d) => Ok(c.str_new(d.as_os_str().as_bytes())), Err(e) => Err(os_err(c, &e, "rb_dir_getwd")) }
+    // rb_dir_getwd: the filesystem encoding, BINARY in place of US-ASCII (not converted to default_internal)
+    let fs = crate::builtins::encoding::default_external();
+    let fs = if fs == crate::object::ENC_ASCII { crate::object::ENC_BINARY } else { fs };
+    match std::env::current_dir() { Ok(d) => Ok(c.str_from_vec_enc(d.as_os_str().as_bytes().to_vec(), fs)), Err(e) => Err(os_err(c, &e, "rb_dir_getwd")) }
 }
 static CHDIR_DEPTH: AtomicI32 = AtomicI32::new(0);
 fn chdir_to(c: &mut Ctx, p: &PathArg) -> Result<(), Esc> {

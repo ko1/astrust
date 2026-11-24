@@ -146,6 +146,8 @@ struct Opts {
     check_syntax: bool,
     cmdline: u8,   // prism's -a -l -n -p bits
     inplace: Option<String>,   // -i[ext]: $-i
+    enc: Option<String>,   // -E ext[:int] / --encoding
+    uflag: bool,   // -U: default_internal UTF-8
 }
 
 fn usage() -> ! {
@@ -171,7 +173,7 @@ fn parse_args() -> Opts {
     let raw: Vec<Vec<u8>> = std::env::args_os().map(|a| std::os::unix::ffi::OsStrExt::as_bytes(a.as_os_str()).to_vec()).collect();
     let argv: Vec<String> = raw.iter().map(|a| String::from_utf8_lossy(a).into_owned()).collect();
     let mut o = Opts { e: vec![], script: None, args: vec![], plain: false, aot: false, dump_ast: false, quiet: false,
-        verbose_astro: false, warn: false, nowarn: false, store: "code_store".into(), compiled_only: false, requires: vec![], incdirs: vec![], check_syntax: false, cmdline: 0, inplace: None };
+        verbose_astro: false, warn: false, nowarn: false, store: "code_store".into(), compiled_only: false, requires: vec![], incdirs: vec![], check_syntax: false, cmdline: 0, inplace: None, enc: None, uflag: false };
     let mut i = 1;
     while i < argv.len() {
         let a = &argv[i];
@@ -202,6 +204,10 @@ fn parse_args() -> Opts {
             s if s.starts_with("--disable-") || s.starts_with("--disable=") => disable_features(&s[10..]),
             s if s.starts_with("-I") => { if s.len() > 2 { o.incdirs.push(s[2..].into()); } else { i += 1; o.incdirs.push(argv.get(i).cloned().unwrap_or_else(|| usage())); } }
             s if s.starts_with("-i") => o.inplace = Some(s[2..].into()),
+            "-U" => o.uflag = true,
+            "-E" | "--encoding" => { i += 1; o.enc = Some(argv.get(i).cloned().unwrap_or_else(|| usage())); }
+            s if s.starts_with("--encoding=") => o.enc = Some(s[11..].into()),
+            s if s.starts_with("-E") => o.enc = Some(s[2..].into()),
             s if s.starts_with("-r") => { if s.len() > 2 { o.requires.push(s[2..].into()); } else { i += 1; o.requires.push(argv.get(i).cloned().unwrap_or_else(|| usage())); } }
             s if s.starts_with("--disable") || s.starts_with("--enable") => {}
             s if s.starts_with('-') && s.len() > 1 => { eprintln!("saruby: invalid option {}  (-h will show valid options)", s); std::process::exit(2); }
@@ -254,11 +260,18 @@ fn run_main(o: Opts) -> i32 {
         if o.cmdline & 0x18 != 0 { builtins::kernel::define_dash_n(&mut c); }
     }
     if o.warn { builtins::misc::warning_enable_deprecated(); }
+    if o.enc.is_some() || o.uflag {
+        let (e, i) = match &o.enc { Some(x) => match x.split_once(':') { Some((e, i)) => (Some(e), Some(i)), None => (Some(x.as_str()), None) }, None => (None, None) };
+        let i = if o.uflag && i.is_none_or(|i| i.is_empty()) { Some("UTF-8") } else { i };
+        if let Err(m) = builtins::encoding::set_cmdline_encodings(e, i) { eprintln!("saruby: {} (RuntimeError)", m); std::process::exit(1); }
+        // rb_stdio_set_default_encoding: the standard streams take the defaults as they now are
+        for io in [vm.stdin.get(), vm.stdout.get(), vm.stderr.get()] { let _ = funcall(&mut c, io, symbol::intern(b"set_encoding"), &[NIL], std::ptr::null()); }
+    }
     if let Some(x) = &o.inplace { let s = c.str_new(x.as_bytes()); vm.globals.borrow_mut().insert(crate::symbol::intern(b"$-i"), s); }
     for d in &o.incdirs { let s = c.str_new(d.as_bytes()); c.ary_push(vm.load_path.get(), s); }
     builtins::prelude::setup_load_path(&mut c);
     builtins::did_you_mean::snapshot_load_path(&mut c);
-    for a in &o.args { let s = c.str_new(a); c.ary_push(vm.argv.get(), s); }
+    for a in &o.args { let s = builtins::encoding::external_str(&mut c, a.clone(), builtins::encoding::default_external()); c.ary_push(vm.argv.get(), s); }
     aot::init(if o.plain { None } else { Some(&o.store) }, o.aot);
     vm.aot_collect.set(o.aot);
 
@@ -276,7 +289,7 @@ fn run_main(o: Opts) -> i32 {
         (b, "-".into())
     };
     *vm.main_file.borrow_mut() = file.clone();
-    let z = c.str_new(file.as_bytes()); heap::obj_set_flags(z, object::FL_FROZEN); vm.dollar_zero.set(z);
+    let z = c.str_new_enc(file.as_bytes(), builtins::encoding::locale_enc()); heap::obj_set_flags(z, object::FL_FROZEN); vm.dollar_zero.set(z);
     let file: &'static str = Box::leak(file.into_boxed_str());
 
     inline_builtin::init(&c);
@@ -290,7 +303,9 @@ fn run_main(o: Opts) -> i32 {
     gc::booted();
 
     // DATA / __END__
-    let is = match compile::compile_source(&src, file, 1, IseqKind::Main, vec![]) {
+    // -e is read in the locale encoding (a script file in UTF-8 unless its magic comment says otherwise)
+    let src_enc = if o.e.is_empty() { object::ENC_UTF8 } else { builtins::encoding::locale_enc() };
+    let is = match compile::compile_source_enc(&src, src_enc, file, 1, IseqKind::Main, vec![]) {
         Ok(is) => is,
         Err(msg) => {
             builtins::kernel::err_write(format!("{}\n", msg).as_bytes());
@@ -390,6 +405,8 @@ pub const STACK_BYTES: usize = 1 << 30;
 pub fn main_entry() {
     kalloc::pad_system();
     let o = parse_args();
+    // CRuby's main: setlocale(LC_CTYPE, "") before any thread starts
+    builtins::encoding::init_locale();
     symbol::init();
     fiber_os::nil_fd_init();
     let child = std::thread::Builder::new().stack_size(STACK_BYTES).spawn(move || {
