@@ -317,8 +317,7 @@ pub fn srb_splat_into(c: &mut Ctx, a: Value, v: Value) -> Result<(), Esc> {
 pub fn splat_to_array(c: &mut Ctx, v: Value) -> RV {
     if is_array(v) { return Ok(v); }
     if v == NIL { return Ok(c.ary_new()); }
-    if is_hash(v) { return crate::hash::hash_to_a(c, v); }
-    if respond_to(c, v, s::to_a, true) {
+    if check_respond(c, v, s::to_a)? {
         let r = funcall(c, v, s::to_a, &[], std::ptr::null())?;
         if is_array(r) { return Ok(r); }
         if r == NIL { return Ok(c.ary_new_from(&[v])); }
@@ -447,6 +446,19 @@ pub fn cvar_lookup(c: &Ctx, k: Value, name: Sym) -> Option<(Value, Value)> {
     None
 }
 
+/// cvar_lookup as CVAR_LOOKUP + cvar_overtaken: the topmost holder wins; one also held lower down is an error.
+pub fn cvar_lookup_checked(c: &mut Ctx, k: Value, name: Sym) -> Result<Option<(Value, Value)>, Esc> {
+    let anc = ancestors(c, k);
+    let mut found: Vec<Value> = vec![];
+    for &a in anc.iter() { if c.class(a).cvars.contains_key(&name) { found.push(a); } }
+    let (Some(&front), Some(&target)) = (found.first(), found.last()) else { return Ok(None) };
+    if front != target {
+        let msg = format!("class variable {} of {} is overtaken by {}", sym_str(name), class_path(c, front), class_path(c, target));
+        return err(c, vm().c_runtime_error.get(), msg).map(|_: Value| None);
+    }
+    Ok(c.class(target).cvars.get(&name).map(|&v| (target, v)))
+}
+
 /// @@x where the lexical scope is the top level (whatever self is) is an error.
 fn cvar_toplevel_check(c: &mut Ctx) -> Result<(), Esc> {
     let cr = unsafe { (*c.frame).cref() };
@@ -458,7 +470,7 @@ pub fn srb_cvar_get(c: &mut Ctx, name: Sym) -> RV {
     cvar_toplevel_check(c)?;
     let k = cvar_base(c);
     if crate::builtins::ractor::multi() { crate::builtins::ractor::cvar_check(c, k, name)?; }
-    match cvar_lookup(c, k, name) {
+    match cvar_lookup_checked(c, k, name)? {
         Some((_, v)) => Ok(v),
         None => {
             let msg = format!("uninitialized class variable {} in {}", sym_str(name), class_path(c, k));
@@ -472,7 +484,7 @@ pub fn srb_cvar_set(c: &mut Ctx, name: Sym, v: Value) -> RV {
     cvar_toplevel_check(c)?;
     let k = cvar_base(c);
     if crate::builtins::ractor::multi() { crate::builtins::ractor::cvar_check(c, k, name)?; }
-    match cvar_lookup(c, k, name) {
+    match cvar_lookup_checked(c, k, name)? {
         Some((owner, _)) => { c.class_mut(owner).cvars.insert(name, v); }
         None => { c.class_mut(k).cvars.insert(name, v); }
     }
@@ -502,7 +514,7 @@ pub fn srb_const_path(c: &mut Ctx, parent: Value, name: Sym) -> RV {
         let s = crate::builtins::kernel::inspect_str(c, parent)?;
         return type_err(c, format!("{} is not a class/module", s));
     }
-    if let Some(v) = const_get_inherit(c, parent, name)? {
+    if let Some(v) = const_get_scoped(c, parent, name)? {
         if let Some(m) = const_access_check(c, parent, name, true)? { return Ok(m); }
         if crate::builtins::ractor::multi() { crate::builtins::ractor::const_check(c, parent, false, name, v)?; }
         return Ok(v);
@@ -700,7 +712,8 @@ pub fn srb_eqq(c: &mut Ctx, p: Value, subj: Value, cc: &CallCache) -> Result<boo
     if is_string(p) && is_string(subj) && obj_klass(p) == vm().c_string.get() && !redef(R_STR_EQQ) { return Ok(c.str_eq(p, subj)); }
     let base = stage(c, 3)?;
     base[0].set(p); base[2].set(subj);
-    let r = call_cached(c, cc, s::eqq, base, 1, std::ptr::null(), 0)?;
+    // checkmatch: === is called even when private
+    let r = call_cached(c, cc, s::eqq, base, 1, std::ptr::null(), CF_FCALL)?;
     Ok(r.truthy())
 }
 
@@ -751,11 +764,13 @@ pub fn srb_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, name: S
             match const_defined_lex(c, cref, name) { true => yes(c, b"constant"), false => { c.esc = saved.0; c.esc_val = saved.1; Ok(NIL) } }
         }
         DEF_CPATH => {
-            let p = match D::call(c, recv, fp) { Ok(v) => v, Err(_) => { c.esc = EscKind::None; return Ok(NIL); } };
-            let p = if p == UNDEF { vm().c_object.get() } else { p };
-            if !is_class_or_module(p) { return Ok(NIL); }
-            if ancestors(c, p).iter().any(|&k| has_const(c, k, name))
-                || (c.class(p).is_module && c.class(vm().c_object.get()).consts.contains_key(&name)) { yes(c, b"constant") } else { Ok(NIL) }
+            let p = match D::call(c, recv, fp) { Ok(v) => v, Err(e) => { if c.esc != EscKind::Raise { return Err(e); } c.esc = EscKind::None; return Ok(NIL); } };
+            // UNDEF: the scope itself is undefined
+            if p == UNDEF || !is_class_or_module(p) { return Ok(NIL); }
+            match const_owner_scoped(c, p, name) {
+                Some(o) if !c.class(o).private_consts.contains(&name) => yes(c, b"constant"),
+                _ => Ok(NIL),
+            }
         }
         DEF_FCALL => {
             let slf = fp[0].get();
@@ -768,7 +783,7 @@ pub fn srb_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, name: S
             Ok(NIL)
         }
         DEF_METHOD => {
-            let r = match D::call(c, recv, fp) { Ok(v) => v, Err(_) => { c.esc = EscKind::None; return Ok(NIL); } };
+            let r = match D::call(c, recv, fp) { Ok(v) => v, Err(e) => { if c.esc != EscKind::Raise { return Err(e); } c.esc = EscKind::None; return Ok(NIL); } };
             if r == UNDEF { return Ok(NIL); }
             let me = lookup_method(c, class_of(r), name);
             if me.is_null() {
@@ -889,7 +904,7 @@ fn block_from_value(c: &mut Ctx, blkv: Value, holder: &mut Block) -> Result<*con
         let cls = class_path(c, real_class_of(c, blkv));
         return type_err(c, format!("can't convert {} to Proc ({}#to_proc gives {})", cls, cls, class_path(c, real_class_of(c, p))));
     }
-    type_err(c, format!("wrong argument type {} (expected Proc)", class_path(c, real_class_of(c, blkv))))
+    type_err(c, format!("no implicit conversion of {} into Proc", crate::builtins::kernel::class_name_for_err(c, blkv)))
 }
 
 /// Stage tmp (+ kw) as arguments at base and call.
@@ -1049,9 +1064,20 @@ pub fn srb_yield_x(c: &mut Ctx, tmp: Value, kw: Value) -> RV {
 
 /// `lambda` was defined somewhere after boot: a literal `lambda { }` asks which method it calls.
 pub static LAMBDA_REDEF: AtomicBool = AtomicBool::new(false);
+/// :"#{...}": a String with invalid bytes is no Symbol (rb_str_intern's EncodingError).
+pub fn srb_dsym(c: &mut Ctx, s: Value) -> RV {
+    let enc = c.str_enc(s);
+    if !crate::builtins::encoding::is_valid(enc, c.str_bytes(s)) {
+        let ins = crate::builtins::kernel::inspect_str(c, s)?;
+        let msg = format!("invalid symbol in encoding {} :{}", crate::builtins::encoding::enc_name(enc), ins);
+        return err(c, vm().c_encoding_error.get(), msg);
+    }
+    Ok(c.str_to_sym(s))
+}
+
 pub fn srb_lambda(c: &mut Ctx, is: &'static Iseq, fp: Fp) -> RV {
     let b = make_block(c, is, fp);
-    if LAMBDA_REDEF.load(Relaxed) {
+    if LAMBDA_REDEF.load(Relaxed) && !is.arrow.get() {
         let slf = fp[0].get();
         let me = lookup_method(c, class_of(slf), s::lambda);
         if c.me_ref(me).is_some_and(|m| m.owner != vm().m_kernel.get()) { return funcall(c, slf, s::lambda, &[], &b); }
@@ -1093,20 +1119,49 @@ fn cref_class(c: &Ctx) -> Value {
 }
 
 pub fn define_iseq_method(c: &mut Ctx, klass: Value, mid: Sym, is: &'static Iseq, visi: u8) {
-    let cref = unsafe { (*c.frame).cref() };
+    let mut cref = c.frame().cref();
+    // defined in instance_eval / class_exec: nested defs in its body go to the same target
+    let dc = c.frame().defined_class();
+    if dc != NIL && c.frame().kind != FK_CLASS && dc != cref_class(c) { cref = crate::vm::cref_with_def_target(c, cref, dc); }
     let me = new_me_cref(mid, klass, visi, MKind::Iseq(is), cref);
     note_redefinition(c, klass, mid);
     define_method_me(c, klass, mid, me);
 }
 
+/// rb_class_modify_check: a frozen class (a singleton one: named by its object) cannot get methods.
+pub fn class_modify_check(c: &mut Ctx, klass: Value) -> Result<(), Esc> {
+    if !is_frozen(klass) { return Ok(()); }
+    let t = if c.class(klass).is_singleton { c.class(klass).attached } else { klass };
+    Err(raise_frozen(c, t))
+}
+
+/// The visibility of the class body / top level a block frame comes from (public: a method's, or gone).
+fn home_scope_visi(c: &Ctx) -> u8 {
+    let f = c.frame();
+    let home = c.block_copy(f.self_blk()).map_or(f.id, |b| b.home_id);
+    let mut p = c.prev_frame(f);
+    while let Some(pf) = p {
+        if pf.id == home && pf.kind != FK_BLOCK && pf.kind != FK_LAMBDA && pf.kind != FK_CFUNC {
+            return if pf.kind == FK_CLASS || pf.kind == FK_TOP || pf.kind == FK_EVAL { pf.visi } else { VISI_PUBLIC };
+        }
+        p = c.prev_frame(pf);
+    }
+    VISI_PUBLIC
+}
+
 pub fn srb_def(c: &mut Ctx, mid: Sym, is: &'static Iseq, _fp: Fp) -> RV {
     let f = c.frame();
     let mut klass = cref_class(c);
+    let cr = f.cref();
+    if let Some(t) = c.cref_ref(cr).map(|x| x.def_target).filter(|&t| t != NIL) { klass = t; }
     // `def` inside a method body defines on the cref class; inside instance_eval, on the singleton
     if f.defined_class() != NIL && f.kind != FK_CLASS { klass = f.defined_class(); }
     let mut visi = if f.kind == FK_CLASS || f.kind == FK_TOP || f.kind == FK_EVAL || (f.kind == FK_BLOCK && f.defined_class() == klass) { f.visi } else { VISI_PUBLIC };
+    // a block (or lambda) run where it was made: the scope visibility of its class body / top level
+    if (f.kind == FK_BLOCK || f.kind == FK_LAMBDA) && f.defined_class() == NIL && f.visi == VISI_PUBLIC { visi = home_scope_visi(c); }
     // eval at top level defines private methods; a def in a method body is public
     if klass == vm().c_object.get() && f.kind == FK_EVAL && unsafe { (*f.cref()).prev.is_null() } { visi = VISI_PRIVATE; }
+    class_modify_check(c, klass)?;
     if visi != VISI_MODFUNC && (mid == s::initialize || mid == s::initialize_copy || mid == s::respond_to_missing_p
         || mid == s::mid_initialize_dup || mid == s::mid_initialize_clone) { visi = VISI_PRIVATE; }
     if visi == VISI_MODFUNC {
@@ -1128,6 +1183,7 @@ pub fn srb_sdef(c: &mut Ctx, recv: Value, mid: Sym, is: &'static Iseq) -> RV {
     }
     if recv.is_heap() && obj_flags(recv) & (FL_FROZEN | FL_CHILLED_ANY) != 0 { crate::vm::modify_check_slow(c, recv)?; }
     let k = singleton_class(c, recv);
+    if k.is_heap() { class_modify_check(c, k)?; }
     define_iseq_method(c, k, mid, is, VISI_PUBLIC);
     crate::builtins::coverage::on_def(c, is as *const Iseq as usize, k, mid);
     if crate::vm::respond_to(c, recv, s::singleton_method_added, true) {
@@ -1159,12 +1215,28 @@ pub fn run_class_body(c: &mut Ctx, klass: Value, is: &'static Iseq) -> RV {
     r
 }
 
+/// "X is not a class", with where X was defined (vm_check_if_class).
+fn not_a(c: &mut Ctx, outer: Value, name: Sym, what: &str) -> RV {
+    let mut m = format!("{} is not a {}", sym_str(name), what);
+    if let Some((f, l)) = c.class(outer).const_loc_of(name) { m.push_str(&format!("\n{}:{}: previous definition of {} was here", f, l, sym_str(name))); }
+    type_err(c, m)
+}
+
+/// `class A::B` / `module A::B` reopening a private constant: rb_public_const_get_at's error.
+fn scoped_private_reopen(c: &mut Ctx, outer: Value, name: Sym) -> RV {
+    crate::builtins::object::PRIVATE_REF.set(Some((outer, name)));
+    let r = const_missing(c, outer, name);
+    crate::builtins::object::PRIVATE_REF.set(None);
+    r
+}
+
 pub fn srb_class(c: &mut Ctx, outer: Value, name: Sym, sup: Value, is: &'static Iseq, _fp: Fp) -> RV {
+    let scoped = outer != UNDEF;
     let outer = if outer == UNDEF {
         let cr = unsafe { (*c.frame).cref() };
         if outer == UNDEF && false { vm().c_object.get() } else if cr.is_null() { vm().c_object.get() } else { unsafe { (*cr).klass } }
     } else { outer };
-    let outer = if outer == NIL { vm().c_object.get() } else { outer };
+    let outer = if outer == NIL && !scoped { vm().c_object.get() } else { outer };
     if !is_class_or_module(outer) {
         let s = crate::builtins::kernel::inspect_str(c, outer)?;
         return type_err(c, format!("{} is not a class/module", s));
@@ -1181,9 +1253,8 @@ pub fn srb_class(c: &mut Ctx, outer: Value, name: Sym, sup: Value, is: &'static 
     };
     let klass = match existing {
         Some(k) => {
-            if !is_class_or_module(k) || c.class(k).is_module {
-                return type_err(c, format!("{} is not a class", sym_str(name)));
-            }
+            if scoped && c.class(outer).private_consts.contains(&name) { return scoped_private_reopen(c, outer, name); }
+            if !is_class_or_module(k) || c.class(k).is_module { return not_a(c, outer, name, "class"); }
             if sup != UNDEF && c.class(k).superclass != sup {
                 let mut real_sup = c.class(k).superclass;
                 while real_sup != NIL && c.class(real_sup).is_singleton { real_sup = c.class(real_sup).superclass; }
@@ -1206,6 +1277,7 @@ pub fn srb_class(c: &mut Ctx, outer: Value, name: Sym, sup: Value, is: &'static 
 }
 
 pub fn srb_module(c: &mut Ctx, outer: Value, name: Sym, is: &'static Iseq, _fp: Fp) -> RV {
+    let scoped = outer != UNDEF;
     let outer = if outer == UNDEF {
         let cr = unsafe { (*c.frame).cref() };
         if cr.is_null() { vm().c_object.get() } else { unsafe { (*cr).klass } }
@@ -1221,7 +1293,8 @@ pub fn srb_module(c: &mut Ctx, outer: Value, name: Sym, is: &'static Iseq, _fp: 
     };
     let m = match existing {
         Some(m) => {
-            if !is_class_or_module(m) || !c.class(m).is_module { return type_err(c, format!("{} is not a module", sym_str(name))); }
+            if scoped && c.class(outer).private_consts.contains(&name) { return scoped_private_reopen(c, outer, name); }
+            if !is_class_or_module(m) || !c.class(m).is_module { return not_a(c, outer, name, "module"); }
             m
         }
         None => {
@@ -1270,9 +1343,24 @@ pub fn srb_undef(c: &mut Ctx, v: Value) -> Result<(), Esc> {
 
 // ---- multiple assignment ------------------------------------------------------------------
 
+/// rb_check_funcall's test: a redefined respond_to? is asked (mid, true); else the method table.
+pub fn check_respond(c: &mut Ctx, v: Value, mid: Sym) -> Result<bool, Esc> {
+    let rt = lookup_method(c, class_of(v), s::respond_to_p);
+    if !rt.is_null() && rt != search_method(c, vm().m_kernel.get(), s::respond_to_p) {
+        return Ok(funcall(c, v, s::respond_to_p, &[Value::sym(mid), TRUE], std::ptr::null())?.truthy());
+    }
+    if respond_to(c, v, mid, true) { return Ok(true); }
+    // check_funcall_missing: a redefined respond_to_missing? may answer for method_missing
+    let rm = lookup_method(c, class_of(v), s::respond_to_missing_p);
+    if c.me_ref(rm).is_some_and(|m| m.owner != vm().c_object.get() && m.owner != vm().m_kernel.get()) {
+        return Ok(funcall(c, v, s::respond_to_missing_p, &[Value::sym(mid), TRUE], std::ptr::null())?.truthy());
+    }
+    Ok(false)
+}
+
 pub fn srb_masgn_array(c: &mut Ctx, rhs: Value, _splat: bool) -> RV {
     if is_array(rhs) { return Ok(rhs); }
-    if conv_target(rhs) && !is_hash(rhs) && !is_string(rhs) && respond_to(c, rhs, s::to_ary, true) {
+    if conv_target(rhs) && !is_hash(rhs) && !is_string(rhs) && check_respond(c, rhs, s::to_ary)? {
         let r = funcall(c, rhs, s::to_ary, &[], std::ptr::null())?;
         if is_array(r) { return Ok(r); }
         if r != NIL { return type_err(c, format!("can't convert {} to Array", class_path(c, real_class_of(c, rhs)))); }
@@ -1290,13 +1378,9 @@ pub fn srb_masgn_elem(c: &mut Ctx, a: Value, idx: u32, kind: u32, post: u32) -> 
             if s < e { c.ary_from_vec(c.ary(a)[s..e].to_vec()) } else { c.ary_new() }
         }
         _ => {
-            // post element i: from the back, but not overlapping the front part
-            let pre = n.saturating_sub(post as usize);
-            let i = pre + idx as usize;
-            if (n as i64) < (post as i64) {
-                // fewer elements than needed: posts take what's after the pre part
-                c.ary_get(a, idx as usize + n.saturating_sub(post as usize))
-            } else { c.ary_get(a, i) }
+            // post element idx after kind - 2 front elements; too few: posts take the rest from its start
+            let front = kind as usize - 2;
+            if n >= front + post as usize { c.ary_get(a, n - post as usize + idx as usize) } else { c.ary_get(a, front + idx as usize) }
         }
     }
 }
@@ -1333,6 +1417,17 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
             let msg = if why == NIL { s } else { format!("{}: {}", s, String::from_utf8_lossy(c.str_bytes(why))) };
             err(c, vm().c_no_matching_pattern_error.get(), msg)
         }
+        SP_TOPLEVEL_BINDING => { crate::builtins::binding::set_main_toplevel(c, v)?; Ok(NIL) }
+        SP_SPLAT_ANY => {
+            let a = splat_to_array(c, v)?;
+            Ok(Value::bool(c.ary(a).iter().any(|x| x.truthy())))
+        }
+        SP_ZSUPER_NO_METHOD => {
+            if c.me_ref(c.frame().me).is_some_and(|m| matches!(m.kind, MKind::Bmethod(_))) {
+                return err(c, vm().c_runtime_error.get(), "implicit argument passing of super from method defined by define_method() is not supported. Specify all arguments explicitly.");
+            }
+            err(c, vm().c_no_method_error.get(), "super called outside of method")
+        }
         SP_PM_MSG => {
             // elements stay in `v` (GC-visible) while inspect allocates
             let av = c.ary(v).to_vec();
@@ -1362,7 +1457,14 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
             Ok(crate::regexp::named_match(c, m, v.as_sym()))
         }
         SP_DECONSTRUCT => {
-            if is_array(v) { return Ok(v); }
+            let mid = intern(b"deconstruct");
+            // a refinement's #deconstruct is used; an Array whose #deconstruct is Array's own is itself
+            if let Some(r) = funcall_refined(c, std::ptr::null(), v, mid, &[], std::ptr::null(), 0) {
+                let r = r?;
+                if !is_array(r) { return type_err(c, "deconstruct must return Array"); }
+                return Ok(r);
+            }
+            if is_array(v) && c.me_ref(lookup_method(c, class_of(v), mid)).is_some_and(|m| m.owner == vm().c_array.get() && matches!(m.kind, MKind::Cfunc(..))) { return Ok(v); }
             if pm_responds(c, v, b"deconstruct")? {
                 let r = funcall(c, v, intern(b"deconstruct"), &[], std::ptr::null())?;
                 if !is_array(r) { return type_err(c, "deconstruct must return Array"); }
@@ -1378,7 +1480,13 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
         }
         SP_DECONSTRUCT_KEYS => {
             let subj = c.ary(v)[0]; let keys = c.ary(v)[1];
-            if is_hash(subj) { return Ok(subj); }
+            let mid = intern(b"deconstruct_keys");
+            if let Some(r) = funcall_refined(c, std::ptr::null(), subj, mid, &[keys], std::ptr::null(), 0) {
+                let r = r?;
+                if !is_hash(r) { return type_err(c, "deconstruct_keys must return Hash"); }
+                return Ok(r);
+            }
+            if is_hash(subj) && c.me_ref(lookup_method(c, class_of(subj), mid)).is_some_and(|m| m.owner == vm().c_hash.get() && matches!(m.kind, MKind::Cfunc(..))) { return Ok(subj); }
             if pm_responds(c, subj, b"deconstruct_keys")? {
                 let r = funcall(c, subj, intern(b"deconstruct_keys"), &[keys], std::ptr::null())?;
                 if !is_hash(r) { return type_err(c, "deconstruct_keys must return Hash"); }

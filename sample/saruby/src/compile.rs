@@ -128,6 +128,8 @@ pub struct Compiler<'a> {
     pub eval_outer: Vec<Vec<(Sym, u32, u32)>>,  // eval: outer scopes' (name, hops, idx), innermost first
     in_def: u32,
     pm_err: Option<u32>,          // single-pattern match: slot receiving the failure description
+    yields: bool,                 // a yield in the iseq being compiled (a block's includes its inner blocks')
+    pm_dcache: Option<(u32, u32)>, // case/in: (subject slot, slot caching its #deconstruct)
     tl_binding: bool,
     cov: Option<usize>,           // Coverage file id: lines / methods get node_cov counters
     trace: bool,                  // compiled for tracing (vm::TRACE_COMPILE): trace points, no entries, locals in envs
@@ -162,7 +164,7 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), outer: HashMap::default(), pending_outer: vec![], ractor_src: std::cell::OnceCell::new(), eval_outer: vec![], in_def: 0, pm_err: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, tag: !file.starts_with("<internal:") && pr.root.id < 1 << (32 - NF_TAG_SHIFT), errors: vec![],
+        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), outer: HashMap::default(), pending_outer: vec![], ractor_src: std::cell::OnceCell::new(), eval_outer: vec![], in_def: 0, pm_err: None, yields: false, pm_dcache: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, tag: !file.starts_with("<internal:") && pr.root.id < 1 << (32 - NF_TAG_SHIFT), errors: vec![],
                    csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()],
                    src_enc: crate::builtins::encoding::find_enc(pr.encoding.as_bytes()).unwrap_or(crate::object::ENC_UTF8) as u32 };
         // identifiers of a non-UTF-8 source are symbols in its encoding (as its symbol literals)
@@ -461,11 +463,29 @@ impl<'a> Compiler<'a> {
         self.analyze(root, &[stmts]);
         let sk = if kind == IseqKind::Eval { SK::Eval } else { SK::Top };
         self.push_scope(sk, root, &locals);
+        // BEGIN { } (top level, or in the loop -n / -p wrap it in) runs first in its code unit; c_node leaves it
+        // out of its place
+        fn begins<'p>(n: &'p PNode, out: &mut Vec<&'p PNode>) {
+            match &n.kind {
+                Kind::StatementsNode { body } => for x in body { begins(x, out) },
+                Kind::WhileNode { statements: Some(s), .. } => begins(s, out),
+                Kind::PreExecutionNode { statements: Some(s) } => out.push(s),
+                _ => {}
+            }
+        }
+        let mut begins_v = vec![];
+        begins(stmts, &mut begins_v);
+        let begins = begins_v;
         let mut body = self.c(stmts);
+        if !begins.is_empty() {
+            let mut v: Vec<NodePtr> = begins.into_iter().map(|b| self.c(b)).collect();
+            v.push(body);
+            body = self.seq(v);
+        }
         if self.tl_binding {
             // the main script mentions TOPLEVEL_BINDING: bind it before anything runs
             let b = self.fcall("binding", vec![], 1);
-            body = self.seq(vec![ALLOC_node_cdecl(intern(b"TOPLEVEL_BINDING"), b, 0), body]);
+            body = self.seq(vec![ALLOC_node_special(SP_TOPLEVEL_BINDING, b), body]);
         }
         let label = if kind == IseqKind::Eval { "<main>".to_string() } else { "<main>".to_string() };
         self.finish_iseq(body, Params::default(), kind, label, 1, Sym(0))
@@ -552,8 +572,8 @@ impl<'a> Compiler<'a> {
         } else { (layout_tree(body), entry, bentry, kentry) };
         let is = Box::leak(Box::new(Iseq {
             body, entry, bentry, kentry, dentry, body_used: std::cell::Cell::new(false), nlocals: sc.nslots, params, env_size: sc.env_size, env_params,
-            info: CodeInfo { file: self.file, label, line, end_line: sc.end_line, nid: node_tag_current() }, kind, simple, lead_only, name, local_names, arity, uses_block: false, traced: self.trace,
-            parent: std::cell::Cell::new(std::ptr::null()), ruby2_keywords: std::cell::Cell::new(false),
+            info: CodeInfo { file: self.file, label, line, end_line: sc.end_line, nid: node_tag_current() }, kind, simple, lead_only, name, local_names, arity, uses_block: self.yields, traced: self.trace,
+            parent: std::cell::Cell::new(std::ptr::null()), ruby2_keywords: std::cell::Cell::new(false), arrow: std::cell::Cell::new(false), end_once: std::cell::Cell::new(0),
             outer_names: if kind == IseqKind::Eval { self.eval_outer.iter().flatten().cloned().collect() } else { vec![] },
             outer_vars: std::mem::take(&mut self.pending_outer),
         }));
@@ -579,6 +599,23 @@ impl<'a> Compiler<'a> {
         match v.len() { 0 => ALLOC_node_nil(), 1 => v[0], _ => ALLOC_node_block(leak(v)) }
     }
 
+    /// A flip-flop end: an Integer literal is compared with $. (CRuby).
+    fn ff_cond(&mut self, x: &PNode) -> NodePtr {
+        if matches!(x.kind, Kind::IntegerNode { .. }) {
+            let l = self.line(x.loc);
+            let v = self.c(x);
+            return ALLOC_node_opt_eq(v, ALLOC_node_gvar(intern(b"$.")), l);
+        }
+        self.cond(x)
+    }
+    /// pm_compile_yield_node: a yield whose local scope is the top level or a class body is a SyntaxError.
+    fn yield_invalid(&self) -> bool {
+        match self.scopes.iter().rev().find(|s| !matches!(s.kind, SK::Block | SK::Lambda | SK::For)).map(|s| s.kind) {
+            Some(SK::Top) | Some(SK::Class) => true,
+            Some(SK::Eval) => EVAL_NO_YIELD.get(),
+            _ => false,
+        }
+    }
     fn unsupported(&mut self, what: &str, l: Loc) -> NodePtr {
         let msg = format!("{}:{}: {} is not supported", self.file, self.line(l), what);
         ALLOC_node_unsupported(lstr(msg.as_bytes()))
@@ -640,7 +677,9 @@ impl<'a> Compiler<'a> {
                 else { ALLOC_node_cstr(lstr(unescaped), enc) }
             }
             Kind::XStringNode { unescaped } => {
-                let s = ALLOC_node_str(lstr(unescaped), 0);
+                // the command is a frozen literal (putobject)
+                let enc = self.lit_enc(n.flags);
+                let s = ALLOC_node_fstr(lstr(unescaped), enc);
                 self.fcall("`", vec![s], line)
             }
             Kind::InterpolatedXStringNode { parts } => {
@@ -754,8 +793,10 @@ impl<'a> Compiler<'a> {
                 ALLOC_node_gasgn(nm, e)
             }
             Kind::GlobalVariableOrWriteNode { name, value } => {
+                // defined?($x) && $x || ($x = v): no "not initialized" warning
                 let nm = self.cst(*name); let v = self.c(value);
-                ALLOC_node_or(ALLOC_node_gvar(nm), ALLOC_node_gasgn(nm, v))
+                let d = ALLOC_node_defined(DEF_GVAR, nm, ALLOC_node_nil());
+                ALLOC_node_or(ALLOC_node_if(d, ALLOC_node_gvar(nm), ALLOC_node_nil()), ALLOC_node_gasgn(nm, v))
             }
             Kind::GlobalVariableAndWriteNode { name, value } => {
                 let nm = self.cst(*name); let v = self.c(value);
@@ -782,9 +823,10 @@ impl<'a> Compiler<'a> {
             Kind::ConstantReadNode { name } => ALLOC_node_const(self.cst(*name), line),
             Kind::ConstantWriteNode { name, value } => { let v = self.c(value); ALLOC_node_cdecl(self.cst(*name), v, line) }
             Kind::ConstantOrWriteNode { name, value } => {
+                // defined?(C) && C || (C = v): a nil constant is overwritten
                 let nm = self.cst(*name); let v = self.c(value);
                 let d = ALLOC_node_defined(DEF_CONST, nm, ALLOC_node_nil());
-                ALLOC_node_if(d, ALLOC_node_const(nm, line), ALLOC_node_cdecl(nm, v, line))
+                ALLOC_node_or(ALLOC_node_if(d, ALLOC_node_const(nm, line), ALLOC_node_nil()), ALLOC_node_cdecl(nm, v, line))
             }
             Kind::ConstantAndWriteNode { name, value } => {
                 let nm = self.cst(*name); let v = self.c(value);
@@ -804,22 +846,28 @@ impl<'a> Compiler<'a> {
                 let v = self.c(value);
                 self.cpath_write(target, v, line)
             }
+            // P::C op= v: P is evaluated once
             Kind::ConstantPathOrWriteNode { target, value } => {
+                let (pre, rd, w) = self.cpath_op_parts(target, line);
                 let v = self.c(value);
-                let rd = self.cpath_read(target, line);
-                let w = self.cpath_write(target, v, line);
-                let (p, nm) = self.cpath_parts(target);
+                let w = w(v);
+                let (p, nm) = match pre.1 { Some(sl) => (ALLOC_node_lvar(sl), pre.2), None => (ALLOC_node_top_const(intern(b"Object"), line), pre.2) };
                 let d = ALLOC_node_defined(DEF_CPATH, nm, p);
-                ALLOC_node_if(d, rd, w)
+                let e = ALLOC_node_or(ALLOC_node_if(d, rd, ALLOC_node_nil()), w);
+                match pre.0 { Some(set) => self.seq(vec![set, e]), None => e }
             }
             Kind::ConstantPathAndWriteNode { target, value } => {
-                let v = self.c(value); let rd = self.cpath_read(target, line); let w = self.cpath_write(target, v, line);
-                ALLOC_node_and(rd, w)
+                let (pre, rd, w) = self.cpath_op_parts(target, line);
+                let v = self.c(value);
+                let e = ALLOC_node_and(rd, w(v));
+                match pre.0 { Some(set) => self.seq(vec![set, e]), None => e }
             }
             Kind::ConstantPathOperatorWriteNode { target, value, binary_operator } => {
-                let v = self.c(value); let rd = self.cpath_read(target, line);
+                let (pre, rd, w) = self.cpath_op_parts(target, line);
+                let v = self.c(value);
                 let e = self.binop(rd, self.cst(*binary_operator), v, line);
-                self.cpath_write(target, e, line)
+                let e = w(e);
+                match pre.0 { Some(set) => self.seq(vec![set, e]), None => e }
             }
             Kind::ShareableConstantNode { write } => self.c(write),
             Kind::BackReferenceReadNode { name } => {
@@ -871,7 +919,13 @@ impl<'a> Compiler<'a> {
             }
             Kind::RedoNode => ALLOC_node_redo(),
             Kind::RetryNode => ALLOC_node_retry(),
-            Kind::ReturnNode { arguments } => { let v = self.args_value(arguments.as_deref()); ALLOC_node_return(v) }
+            Kind::ReturnNode { arguments } => {
+                if arguments.is_some() && self.scopes.last().is_some_and(|s| s.kind == SK::Top) {
+                    PARSE_WARNINGS.with(|w| w.borrow_mut().push((format!("{}: warning: argument of top-level return is ignored\n", self.file), false)));
+                }
+                let v = self.args_value(arguments.as_deref());
+                ALLOC_node_return(v)
+            }
             Kind::CaseNode { predicate, conditions, else_clause } => self.case_when(n, predicate.as_deref(), conditions, else_clause.as_deref(), line),
             Kind::CaseMatchNode { predicate, conditions, else_clause } => self.case_in(n, predicate.as_deref(), conditions, else_clause.as_deref(), line),
             Kind::MatchPredicateNode { value, pattern } => {
@@ -903,13 +957,13 @@ impl<'a> Compiler<'a> {
                 let depth = self.scopes.iter().rev().filter(|s| !s.transparent).take_while(|s| matches!(s.kind, SK::Block | SK::Lambda)).count() as u32;
                 if depth == 0 && !self.cur().vars.contains_key(&nm) { let sl = self.hidden_slot(); self.cur().vars.insert(nm, VarLoc::Slot(sl)); }
                 let excl = n.flags & pa::RANGE_FLAGS_EXCLUDE_END != 0;
-                let a = match left { Some(x) => self.cond(x), None => ALLOC_node_nil() };
-                let b1 = match right { Some(x) => self.cond(x), None => ALLOC_node_nil() };
+                let a = match left { Some(x) => self.ff_cond(x), None => ALLOC_node_nil() };
+                let b1 = match right { Some(x) => self.ff_cond(x), None => ALLOC_node_nil() };
                 let off = self.var_write(nm, depth, ALLOC_node_false());
                 let on_state = self.seq(vec![ALLOC_node_if(b1, off, ALLOC_node_nil()), ALLOC_node_true()]);
                 let on = self.var_write(nm, depth, ALLOC_node_true());
                 let start = if excl { on } else {
-                    let b2 = match right { Some(x) => self.cond(x), None => ALLOC_node_nil() };
+                    let b2 = match right { Some(x) => self.ff_cond(x), None => ALLOC_node_nil() };
                     ALLOC_node_if(b2, ALLOC_node_nil(), on)
                 };
                 let off_state = ALLOC_node_if(a, self.seq(vec![start, ALLOC_node_true()]), ALLOC_node_false());
@@ -927,7 +981,12 @@ impl<'a> Compiler<'a> {
             }
             Kind::SuperNode { arguments, block } => self.super_call(arguments.as_deref(), block.as_deref(), false, line),
             Kind::ForwardingSuperNode { block } => self.super_call(None, block.as_deref(), true, line),
+            Kind::YieldNode { .. } if self.yield_invalid() => {
+                self.errors.push(format!("{}:{}: Invalid yield", self.file, line));
+                ALLOC_node_nil()
+            }
             Kind::YieldNode { arguments } => {
+                self.yields = true;
                 let args: Vec<&PNode> = match arguments.as_deref() { Some(PNode { kind: Kind::ArgumentsNode { arguments }, .. }) => arguments.iter().collect(), _ => vec![] };
                 if args.iter().all(|a| self.simple_arg(a)) {
                     let v: Vec<NodePtr> = args.iter().map(|a| self.c(a)).collect();
@@ -993,10 +1052,12 @@ impl<'a> Compiler<'a> {
                 self.seq(v)
             }
             Kind::MultiWriteNode { lefts, rest, rights, value } => {
+                let mut pre = vec![];
                 let v = self.c(value);
                 let splat_rhs = matches!(value.kind, Kind::ArrayNode { .. });
-                let m = self.masgn(lefts, rest.as_deref(), rights, v, splat_rhs);
-                ALLOC_node_line(line, m)
+                let m = self.masgn_h(lefts, rest.as_deref(), rights, v, splat_rhs, Some(&mut pre));
+                let m = ALLOC_node_line(line, m);
+                if pre.is_empty() { m } else { pre.push(m); self.seq(pre) }
             }
             // definitions
             Kind::DefNode { name, receiver, parameters, body, locals } => {
@@ -1040,9 +1101,10 @@ impl<'a> Compiler<'a> {
             Kind::UndefNode { names } => { let v: Vec<NodePtr> = names.iter().map(|x| self.c(x)).collect(); ALLOC_node_line(line, ALLOC_node_undef(leak(v))) }
             Kind::LambdaNode { locals, parameters, body } => {
                 let is = self.compile_block(n, locals, parameters.as_deref(), body.as_deref(), IseqKind::Lambda, line);
+                is.arrow.set(true);
                 ALLOC_node_lambda(is)
             }
-            Kind::PreExecutionNode { statements } => self.stmts(statements.as_deref()),
+            Kind::PreExecutionNode { .. } => ALLOC_node_nil(),
             Kind::PostExecutionNode { statements } => {
                 // END { } → at_exit { }
                 // no scope of its own in prism: like a `for` body it shares the enclosing variables
@@ -1051,6 +1113,7 @@ impl<'a> Compiler<'a> {
                 self.scopes.push(sc);
                 let b = self.stmts(statements.as_deref());
                 let is = self.finish_iseq(b, Params::default(), IseqKind::Block, self.block_label(), line, Sym(0));
+                is.end_once.set(1);
                 ALLOC_node_call_blk(ALLOC_node_self(), leak(vec![]), intern(b"at_exit"), CF_FCALL, line, is)
             }
             Kind::EmbeddedStatementsNode { statements } => self.stmts(statements.as_deref()),
@@ -1150,6 +1213,19 @@ impl<'a> Compiler<'a> {
         let v: Vec<NodePtr> = elements.iter().map(|e| self.c(e)).collect();
         ALLOC_node_ary(leak(v))
     }
+    /// Index arguments with splats as one Array (a[*x] op= v, a[*x], b = ...).
+    fn array_refs(&mut self, elements: &[&PNode]) -> NodePtr {
+        let mut v = vec![]; let mut k = vec![];
+        for e in elements {
+            match &e.kind {
+                Kind::SplatNode { expression } => {
+                    v.push(match expression { Some(x) => self.c(x), None => self.anon_var(b"__fwd_rest") }); k.push(1u8);
+                }
+                _ => { v.push(self.c(e)); k.push(0); }
+            }
+        }
+        ALLOC_node_ary_build(leak(v), lstr(&k))
+    }
 
     fn hash(&mut self, elements: &[PNode]) -> NodePtr {
         let mut items = vec![]; let mut kinds = vec![];
@@ -1211,6 +1287,24 @@ impl<'a> Compiler<'a> {
             Kind::ConstantPathNode { parent: Some(p), name } => { let pv = self.c(p); ALLOC_node_const_path(pv, self.cst(name.unwrap_or(0)), line) }
             Kind::ConstantPathNode { parent: None, name } => ALLOC_node_top_const(self.cst(name.unwrap_or(0)), line),
             _ => self.c(t),
+        }
+    }
+    /// P::C op= v: (P into a hidden slot, the slot, C), the read, and the writer.
+    #[allow(clippy::type_complexity)]
+    fn cpath_op_parts(&mut self, t: &PNode, line: u32) -> ((Option<NodePtr>, Option<u32>, Sym), NodePtr, Box<dyn Fn(NodePtr) -> NodePtr>) {
+        match &t.kind {
+            Kind::ConstantPathNode { parent: Some(p), name } => {
+                let nm = self.cst(name.unwrap_or(0));
+                let sl = self.hidden_slot();
+                let pv = self.c(p);
+                let rd = ALLOC_node_const_path(ALLOC_node_lvar(sl), nm, line);
+                ((Some(ALLOC_node_lasgn(sl, pv)), Some(sl), nm), rd, Box::new(move |v| ALLOC_node_cdecl_path(ALLOC_node_lvar(sl), nm, v, line)))
+            }
+            _ => {
+                let nm = match &t.kind { Kind::ConstantPathNode { name, .. } => self.cst(name.unwrap_or(0)), _ => Sym(0) };
+                let rd = self.cpath_read(t, line);
+                ((None, None, nm), rd, Box::new(move |v| ALLOC_node_cdecl_path(ALLOC_node_lit(UNDEF), nm, v, line)))
+            }
         }
     }
     fn cpath_write(&mut self, target: &PNode, v: NodePtr, line: u32) -> NodePtr {
@@ -1485,7 +1579,8 @@ impl<'a> Compiler<'a> {
                 let only_splat = kwkinds.iter().all(|&k| k == 1);
                 if !kwkinds.is_empty() { v.push(ALLOC_node_hash(leak(kwpairs), lstr(&kwkinds))); kinds.push(if only_splat { AK_KWSPLAT } else { AK_KW }); }
             } else {
-                return self.unsupported("super outside of method", Loc::default());
+                // known at run time: a define_method block's (RuntimeError) or none (NoMethodError)
+                return ALLOC_node_line(line, ALLOC_node_special(SP_ZSUPER_NO_METHOD, ALLOC_node_nil()));
             }
         }
         let ci = Box::leak(Box::new(CallInfo { kinds, blk: blk_iseq, kw_splat_only: false, kw_names: vec![] }));
@@ -1497,17 +1592,32 @@ impl<'a> Compiler<'a> {
         -> (Vec<NodePtr>, NodePtr, Box<dyn Fn(&mut Self, NodePtr) -> NodePtr>) {
         let rs = self.hidden_slot();
         let r = match recv { Some(r) => self.c(r), None => ALLOC_node_self() };
+        // self[...] op= v: private #[] / #[]= are allowed
+        let fl = if recv.is_none_or(|r| matches!(r.kind, Kind::SelfNode)) { CF_FCALL } else { 0 };
         let mut pre = vec![ALLOC_node_lasgn(rs, r)];
         let list: Vec<&PNode> = match args { Some(PNode { kind: Kind::ArgumentsNode { arguments }, .. }) => arguments.iter().collect(), _ => vec![] };
+        if !list.iter().all(|a| self.simple_arg(a)) {
+            // a[*x] op= v: the index list is built (and splatted) once
+            let sl = self.hidden_slot();
+            let ix = self.array_refs(&list);
+            pre.push(ALLOC_node_lasgn(sl, ix));
+            let ci = Box::leak(Box::new(CallInfo { kinds: vec![AK_SPLAT], blk: None, kw_splat_only: false, kw_names: vec![] }));
+            let rd = ALLOC_node_call_x(ALLOC_node_lvar(rs), leak(vec![ALLOC_node_lvar(sl)]), s::aref, fl, line, ci);
+            let mk = Box::new(move |_s: &mut Self, v: NodePtr| {
+                let ci = Box::leak(Box::new(CallInfo { kinds: vec![AK_SPLAT, AK_ARG], blk: None, kw_splat_only: false, kw_names: vec![] }));
+                ALLOC_node_call_x(ALLOC_node_lvar(rs), leak(vec![ALLOC_node_lvar(sl), v]), s::aset, fl | CF_ATTR, line, ci)
+            });
+            return (pre, rd, mk);
+        }
         let mut slots = vec![];
         for a in list { let sl = self.hidden_slot(); let v = self.c(a); pre.push(ALLOC_node_lasgn(sl, v)); slots.push(sl); }
-        let rd = if slots.len() == 1 { ALLOC_node_opt_aref(ALLOC_node_lvar(rs), ALLOC_node_lvar(slots[0]), line) }
-                 else { ALLOC_node_call(ALLOC_node_lvar(rs), leak(slots.iter().map(|&s| ALLOC_node_lvar(s)).collect()), s::aref, 0, line) };
+        let rd = if slots.len() == 1 && fl == 0 { ALLOC_node_opt_aref(ALLOC_node_lvar(rs), ALLOC_node_lvar(slots[0]), line) }
+                 else { ALLOC_node_call(ALLOC_node_lvar(rs), leak(slots.iter().map(|&s| ALLOC_node_lvar(s)).collect()), s::aref, fl, line) };
         let slots2 = slots.clone();
         let mk = Box::new(move |_s: &mut Self, v: NodePtr| {
             let mut a: Vec<NodePtr> = slots2.iter().map(|&s| ALLOC_node_lvar(s)).collect();
             a.push(v);
-            ALLOC_node_attrasgn(ALLOC_node_lvar(rs), leak(a), s::aset, 0, line)
+            ALLOC_node_attrasgn(ALLOC_node_lvar(rs), leak(a), s::aset, fl, line)
         });
         (pre, rd, mk)
     }
@@ -1515,29 +1625,49 @@ impl<'a> Compiler<'a> {
     // ---- multiple assignment ----------------------------------------------------------------
 
     fn masgn(&mut self, lefts: &[PNode], rest: Option<&PNode>, rights: &[PNode], rhs: NodePtr, splat_rhs: bool) -> NodePtr {
+        self.masgn_h(lefts, rest, rights, rhs, splat_rhs, None)
+    }
+    /// `pre` (a statement's masgn): target receivers and index arguments are evaluated into it, before the rhs (CRuby).
+    fn masgn_h(&mut self, lefts: &[PNode], rest: Option<&PNode>, rights: &[PNode], rhs: NodePtr, splat_rhs: bool,
+               mut pre: Option<&mut Vec<NodePtr>>) -> NodePtr {
         let tmp = self.hidden_slot();
         let mut targets = vec![];
         let post = rights.len() as u32;
         for (i, t) in lefts.iter().enumerate() {
             let e = ALLOC_node_masgn_elem(tmp, i as u32, 0, post);
-            targets.push(self.target(t, e));
+            targets.push(self.target_h(t, e, pre.as_deref_mut()));
         }
         if let Some(r) = rest {
             if let Kind::SplatNode { expression: Some(x) } = &r.kind {
                 let e = ALLOC_node_masgn_elem(tmp, lefts.len() as u32, 1, post);
-                targets.push(self.target(x, e));
+                targets.push(self.target_h(x, e, pre.as_deref_mut()));
             }
         }
         for (i, t) in rights.iter().enumerate() {
-            let e = ALLOC_node_masgn_elem(tmp, i as u32, 2, post);
-            targets.push(self.target(t, e));
+            let e = ALLOC_node_masgn_elem(tmp, i as u32, 2 + lefts.len() as u32, post);
+            targets.push(self.target_h(t, e, pre.as_deref_mut()));
         }
         let _ = splat_rhs;
         ALLOC_node_masgn(rhs, tmp, leak(targets), false)
     }
 
+    /// x as is when re-reading it is the same; else evaluated into `pre` and read from a hidden slot.
+    fn hoisted(&mut self, x: &PNode, pre: &mut Option<&mut Vec<NodePtr>>) -> NodePtr {
+        let v = self.c(x);
+        match pre {
+            Some(p) if !matches!(x.kind, Kind::SelfNode | Kind::IntegerNode { .. } | Kind::SymbolNode { .. } | Kind::NilNode
+                                 | Kind::TrueNode | Kind::FalseNode) => {
+                let sl = self.hidden_slot();
+                p.push(ALLOC_node_lasgn(sl, v));
+                ALLOC_node_lvar(sl)
+            }
+            _ => v,
+        }
+    }
+
     /// Assignment of v to a target node (masgn / for / rescue => e).
-    fn target(&mut self, t: &PNode, v: NodePtr) -> NodePtr {
+    fn target(&mut self, t: &PNode, v: NodePtr) -> NodePtr { self.target_h(t, v, None) }
+    fn target_h(&mut self, t: &PNode, v: NodePtr, mut pre: Option<&mut Vec<NodePtr>>) -> NodePtr {
         let line = self.line(t.loc);
         match &t.kind {
             Kind::LocalVariableTargetNode { name, depth } => { let nm = self.cst(*name); self.var_write(nm, *depth, v) }
@@ -1547,9 +1677,13 @@ impl<'a> Compiler<'a> {
             Kind::GlobalVariableTargetNode { name } => ALLOC_node_gasgn(self.cst(*name), v),
             Kind::ClassVariableTargetNode { name } => ALLOC_node_cvasgn(self.cst(*name), v),
             Kind::ConstantTargetNode { name } => ALLOC_node_cdecl(self.cst(*name), v, line),
+            Kind::ConstantPathTargetNode { parent: Some(p), name } => {
+                let pv = self.hoisted(p, &mut pre);
+                ALLOC_node_cdecl_path(pv, self.cst(name.unwrap_or(0)), v, line)
+            }
             Kind::ConstantPathTargetNode { .. } => self.cpath_write(t, v, line),
             Kind::CallTargetNode { receiver, name } => {
-                let r = self.c(receiver);
+                let r = self.hoisted(receiver, &mut pre);
                 let fl = if matches!(receiver.kind, Kind::SelfNode) { CF_FCALL } else { 0 };
                 if t.flags & pa::CALL_NODE_FLAGS_SAFE_NAVIGATION != 0 {
                     // `a&.b = v` as a target: nothing happens for a nil receiver
@@ -1562,13 +1696,25 @@ impl<'a> Compiler<'a> {
                 ALLOC_node_attrasgn(r, leak(vec![v]), self.cst(*name), fl, line)
             }
             Kind::IndexTargetNode { receiver, arguments, .. } => {
-                let r = self.c(receiver);
-                let mut a: Vec<NodePtr> = match arguments.as_deref() { Some(PNode { kind: Kind::ArgumentsNode { arguments }, .. }) => arguments.iter().map(|x| self.c(x)).collect(), _ => vec![] };
-                a.push(v);
-                ALLOC_node_attrasgn(r, leak(a), s::aset, 0, line)
+                let r = self.hoisted(receiver, &mut pre);
+                let fl = if matches!(receiver.kind, Kind::SelfNode) { CF_FCALL } else { 0 };
+                let list: Vec<&PNode> = match arguments.as_deref() { Some(PNode { kind: Kind::ArgumentsNode { arguments }, .. }) => arguments.iter().collect(), _ => vec![] };
+                if list.iter().all(|a| self.simple_arg(a)) {
+                    let mut a: Vec<NodePtr> = list.iter().map(|x| self.hoisted(x, &mut pre)).collect();
+                    a.push(v);
+                    return ALLOC_node_attrasgn(r, leak(a), s::aset, fl, line);
+                }
+                // a[*x] = v: the index list as one splatted Array
+                let ix = self.array_refs(&list);
+                let a = match pre.as_deref_mut() {
+                    Some(p) => { let sl = self.hidden_slot(); p.push(ALLOC_node_lasgn(sl, ix)); ALLOC_node_lvar(sl) }
+                    None => ix,
+                };
+                let ci = Box::leak(Box::new(CallInfo { kinds: vec![AK_SPLAT, AK_ARG], blk: None, kw_splat_only: false, kw_names: vec![] }));
+                ALLOC_node_call_x(r, leak(vec![a, v]), s::aset, fl | CF_ATTR, line, ci)
             }
-            Kind::MultiTargetNode { lefts, rest, rights } => self.masgn(lefts, rest.as_deref(), rights, v, false),
-            Kind::SplatNode { expression: Some(x) } => self.target(x, v),
+            Kind::MultiTargetNode { lefts, rest, rights } => self.masgn_h(lefts, rest.as_deref(), rights, v, false, pre),
+            Kind::SplatNode { expression: Some(x) } => self.target_h(x, v, pre),
             _ => self.unsupported(pa::kind_name(&t.kind), t.loc),
         }
     }
@@ -1616,7 +1762,11 @@ impl<'a> Compiler<'a> {
                     if let Kind::WhenNode { conditions, .. } = &w.kind {
                         let mut test: Option<NodePtr> = None;
                         for cnd in conditions.iter().rev() {
-                            let cv = self.c(cnd);
+                            // `when *a` without a subject: any element true
+                            let cv = match &cnd.kind {
+                                Kind::SplatNode { expression: Some(x) } => { let a = self.c(x); ALLOC_node_special(SP_SPLAT_ANY, a) }
+                                _ => self.c(cnd),
+                            };
                             test = Some(match test { None => cv, Some(t) => ALLOC_node_or(cv, t) });
                         }
                         tail = ALLOC_node_if(test.unwrap_or_else(ALLOC_node_false), body, tail);
@@ -1627,10 +1777,18 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn case_in(&mut self, case: &PNode, pred: Option<&PNode>, conds: &[PNode], els: Option<&PNode>, _line: u32) -> NodePtr {
+    fn case_in(&mut self, case: &PNode, pred: Option<&PNode>, conds: &[PNode], els: Option<&PNode>, line: u32) -> NodePtr {
         let sl = self.hidden_slot();
         let pv = match pred { Some(p) => self.c(p), None => ALLOC_node_nil() };
         let set = ALLOC_node_lasgn(sl, pv);
+        // the subject's #deconstruct is called once for all its array / find patterns
+        let dsl = self.hidden_slot();
+        let saved = self.pm_dcache.replace((sl, dsl));
+        let r = self.case_in_body(case, conds, els, line, sl);
+        self.pm_dcache = saved;
+        self.seq(vec![set, ALLOC_node_lasgn(dsl, ALLOC_node_nil()), r])
+    }
+    fn case_in_body(&mut self, case: &PNode, conds: &[PNode], els: Option<&PNode>, _line: u32, sl: u32) -> NodePtr {
         let bb = self.bbase("case", case);
         if bb.is_some() {
             let (mut bodies, mut tail) = self.clause_bodies(bb, "in", case, conds, els, ALLOC_node_special(SP_NOMATCH, ALLOC_node_lvar(sl)));
@@ -1638,13 +1796,13 @@ impl<'a> Compiler<'a> {
                 let body = bodies.pop().unwrap();
                 if let Kind::InNode { pattern, .. } = &w.kind { let test = self.pattern(pattern, sl); tail = ALLOC_node_if(test, body, tail); }
             }
-            return self.seq(vec![set, tail]);
+            return tail;
         }
         if let (None, [PNode { kind: Kind::InNode { pattern, statements }, .. }]) = (els, conds) {
             // one clause, no else: the error says why it did not match
             let (test, fail) = self.single_pattern(pattern, sl);
             let body = self.stmts(statements.as_deref());
-            return self.seq(vec![set, ALLOC_node_if(test, body, fail)]);
+            return ALLOC_node_if(test, body, fail);
         }
         let mut tail = match els {
             Some(e) => self.else_body(e),
@@ -1657,9 +1815,17 @@ impl<'a> Compiler<'a> {
                 tail = ALLOC_node_if(test, body, tail);
             }
         }
-        self.seq(vec![set, tail])
+        tail
     }
 
+    /// sl's #deconstruct: from the case's cache when sl is its subject.
+    fn deconstruct(&mut self, sl: u32) -> NodePtr {
+        let dec = ALLOC_node_special(SP_DECONSTRUCT, ALLOC_node_lvar(sl));
+        match self.pm_dcache {
+            Some((s, d)) if s == sl => ALLOC_node_or(ALLOC_node_lvar(d), ALLOC_node_lasgn(d, dec)),
+            _ => dec,
+        }
+    }
     /// (test, raise) for a pattern whose failure raises with CRuby's descriptive message.
     fn single_pattern(&mut self, pattern: &PNode, sl: u32) -> (NodePtr, NodePtr) {
         let esl = self.hidden_slot();
@@ -1731,7 +1897,7 @@ impl<'a> Compiler<'a> {
                 if let Some(k) = constant { tests.push(self.eqq_pattern(k, sl)); }
                 // deconstruct → array slot
                 let asl = self.hidden_slot();
-                let dec = ALLOC_node_special(SP_DECONSTRUCT, ALLOC_node_lvar(sl));
+                let dec = self.deconstruct(sl);
                 let set = ALLOC_node_lasgn(asl, dec);
                 let min = (requireds.len() + posts.len()) as i64;
                 let exact = rest.is_none();
@@ -1765,7 +1931,7 @@ impl<'a> Compiler<'a> {
                 let mut tests = vec![];
                 if let Some(k) = constant { tests.push(self.eqq_pattern(k, sl)); }
                 let asl = self.hidden_slot();
-                let dec = ALLOC_node_special(SP_DECONSTRUCT, ALLOC_node_lvar(sl));
+                let dec = self.deconstruct(sl);
                 let dec = self.pm_fail(ALLOC_node_lasgn(asl, dec), PM_DECON, vec![ALLOC_node_lvar(sl)]);
                 tests.push(dec);
                 if self.pm_err.is_some() {
@@ -1920,7 +2086,11 @@ impl<'a> Compiler<'a> {
             Kind::GlobalVariableReadNode { name } => ALLOC_node_defined(DEF_GVAR, self.cst(*name), nil()),
             Kind::ClassVariableReadNode { name } => ALLOC_node_defined(DEF_CVAR, self.cst(*name), nil()),
             Kind::ConstantReadNode { name } => ALLOC_node_defined(DEF_CONST, self.cst(*name), nil()),
-            Kind::ConstantPathNode { .. } => { let (p, nm) = self.cpath_parts(v); ALLOC_node_defined(DEF_CPATH, nm, p) }
+            Kind::ConstantPathNode { parent, name } => {
+                // an undefined scope makes it undefined (no const_missing)
+                let p = match parent { Some(p) => self.defined_guard(p), None => ALLOC_node_top_const(intern(b"Object"), self.line(v.loc)) };
+                ALLOC_node_defined(DEF_CPATH, self.cst(name.unwrap_or(0)), p)
+            }
             Kind::CallNode { block: Some(b), .. } if matches!(b.kind, Kind::BlockNode { .. }) => self.dconst(DEF_EXPR),
             Kind::CallNode { receiver, name, arguments, block, .. } => {
                 let nm = self.cst(*name);
@@ -1991,7 +2161,8 @@ impl<'a> Compiler<'a> {
     /// For `defined?(a.b)`: the receiver must itself be defined; evaluates to the receiver or UNDEF.
     fn defined_guard(&mut self, r: &PNode) -> NodePtr {
         match &r.kind {
-            Kind::CallNode { receiver: _, .. } | Kind::ConstantReadNode { .. } | Kind::ConstantPathNode { .. } | Kind::InstanceVariableReadNode { .. } => {
+            Kind::CallNode { receiver: _, .. } | Kind::ConstantReadNode { .. } | Kind::ConstantPathNode { .. } | Kind::InstanceVariableReadNode { .. }
+            | Kind::GlobalVariableReadNode { .. } | Kind::ClassVariableReadNode { .. } => {
                 let d = self.defined(r);
                 let val = self.c(r);
                 // rescue errors in evaluating the receiver: defined?(a.b) where a raises → nil
@@ -2065,6 +2236,12 @@ impl<'a> Compiler<'a> {
     // ---- scopes with code -------------------------------------------------------------------
 
     fn compile_def(&mut self, n: &PNode, name: Sym, params: Option<&PNode>, body: Option<&PNode>, locals: &[u32], line: u32) -> &'static Iseq {
+        let yields = std::mem::take(&mut self.yields);
+        let is = self.compile_def_body(n, name, params, body, locals, line);
+        self.yields = yields;
+        is
+    }
+    fn compile_def_body(&mut self, n: &PNode, name: Sym, params: Option<&PNode>, body: Option<&PNode>, locals: &[u32], line: u32) -> &'static Iseq {
         let saved = std::mem::take(&mut self.scopes);
         let mut bodies: Vec<&PNode> = vec![];
         if let Some(p) = params { bodies.push(p); }
@@ -2089,6 +2266,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_body(&mut self, n: &PNode, locals: &[u32], body: Option<&PNode>, kind: IseqKind, label: String, line: u32) -> &'static Iseq {
+        let yields = std::mem::take(&mut self.yields);
         let saved = std::mem::take(&mut self.scopes);
         let bodies: Vec<&PNode> = body.into_iter().collect();
         self.analyze(n, &bodies);
@@ -2098,10 +2276,18 @@ impl<'a> Compiler<'a> {
         CLASS_LABEL.with(|m| m.borrow_mut().pop());
         let is = self.finish_iseq(b, Params::default(), kind, label, line, Sym(0));
         self.scopes = saved;
+        self.yields = yields;
         is
     }
 
+    /// A block's iseq; its uses_block (a yield in it or its inner blocks) also counts for the enclosing iseq.
     fn compile_block(&mut self, n: &PNode, locals: &[u32], params: Option<&PNode>, body: Option<&PNode>, kind: IseqKind, line: u32) -> &'static Iseq {
+        let outer = std::mem::take(&mut self.yields);
+        let is = self.compile_block_body(n, locals, params, body, kind, line);
+        self.yields |= outer;
+        is
+    }
+    fn compile_block_body(&mut self, n: &PNode, locals: &[u32], params: Option<&PNode>, body: Option<&PNode>, kind: IseqKind, line: u32) -> &'static Iseq {
         // the block's own node (its entry and frame line: error_highlight's block_node), not the call's
         let saved = if self.tag { node_tag_swap(n.id) } else { 0 };
         let sk = if kind == IseqKind::Lambda { SK::Lambda } else { SK::Block };
@@ -2148,7 +2334,14 @@ impl<'a> Compiler<'a> {
     /// The frame slot that receives a parameter.  A captured parameter gets a hidden
     /// slot and is copied into the env after setup.
     fn param_slot(&mut self, nm: Sym) -> u32 {
-        if !self.cur().params_seen.insert(nm) { let sl = self.hidden_slot(); self.cur().param_names.push((sl, nm)); return sl; }
+        if !self.cur().params_seen.insert(nm) {
+            // a repeated `_`: its own slot, named for zsuper
+            let sl = self.hidden_slot();
+            self.cur().param_names.push((sl, nm));
+            let hn = intern(format!("__dup{}", sl).as_bytes());
+            self.cur().vars.insert(hn, VarLoc::Slot(sl));
+            return sl;
+        }
         let loc = match self.cur().vars.get(&nm) { Some(&l) => l, None => self.declare(nm) };
         let sl = match loc {
             VarLoc::Slot(i) => i,
@@ -2162,6 +2355,18 @@ impl<'a> Compiler<'a> {
         sl
     }
 
+    /// The name zsuper reads parameter `nm` in slot `sl` by (a repeated one's own).
+    fn zname(&mut self, nm: Sym, sl: u32) -> Sym {
+        let sc = self.cur();
+        // no repeated name in this parameter list (the common case)
+        if sc.param_names.len() == sc.params_seen.len() { return nm; }
+        let first = match sc.vars.get(&nm) {
+            Some(&VarLoc::Slot(s)) => s == sl,
+            Some(&VarLoc::Env(_)) => sc.param_env.iter().any(|&(n, s)| n == nm && s == sl),
+            None => true,
+        };
+        if first { nm } else { intern(format!("__dup{}", sl).as_bytes()) }
+    }
     fn params(&mut self, p: Option<&PNode>, is_block: bool) -> Params {
         let mut ps = Params::default();
         let Some(p) = p else { return ps; };
@@ -2172,7 +2377,7 @@ impl<'a> Compiler<'a> {
         let mut zs: Vec<(u8, Sym)> = vec![];
         for r in requireds {
             match &r.kind {
-                Kind::RequiredParameterNode { name } => { let nm = self.cst(*name); ps.lead.push(self.param_slot(nm)); zs.push((AK_ARG, nm)); }
+                Kind::RequiredParameterNode { name } => { let nm = self.cst(*name); let sl = self.param_slot(nm); ps.lead.push(sl); let z = self.zname(nm, sl); zs.push((AK_ARG, z)); }
                 Kind::MultiTargetNode { lefts, rest, rights } => {
                     let sl = self.hidden_slot();
                     ps.lead.push(sl);
@@ -2192,7 +2397,8 @@ impl<'a> Compiler<'a> {
                 let v = self.c(value);
                 let asg = self.var_write(nm, 0, v);
                 ps.opt.push((sl, asg));
-                zs.push((AK_ARG, nm));
+                let z = self.zname(nm, sl);
+                zs.push((AK_ARG, z));
             }
         }
         if let Some(r) = rest {
@@ -2200,8 +2406,10 @@ impl<'a> Compiler<'a> {
                 Kind::RestParameterNode { name } => {
                     let nm = match name { Some(n) => self.cst(*n), None => { ps.anon_rest = true; intern(b"__fwd_rest") } };
                     if name.is_none() { self.declare(nm); }
-                    ps.rest = Some(self.param_slot(nm));
-                    zs.push((AK_SPLAT, nm));
+                    let sl = self.param_slot(nm);
+                    ps.rest = Some(sl);
+                    let z = self.zname(nm, sl);
+                    zs.push((AK_SPLAT, z));
                 }
                 Kind::ImplicitRestNode => { ps.has_trailing_comma = true; }
                 _ => {}
@@ -2209,7 +2417,7 @@ impl<'a> Compiler<'a> {
         }
         for r in posts {
             match &r.kind {
-                Kind::RequiredParameterNode { name } => { let nm = self.cst(*name); ps.post.push(self.param_slot(nm)); zs.push((AK_ARG, nm)); }
+                Kind::RequiredParameterNode { name } => { let nm = self.cst(*name); let sl = self.param_slot(nm); ps.post.push(sl); let z = self.zname(nm, sl); zs.push((AK_ARG, z)); }
                 Kind::MultiTargetNode { lefts, rest, rights } => {
                     let sl = self.hidden_slot();
                     ps.post.push(sl);
@@ -2360,6 +2568,9 @@ pub const SP_FIND_PRE: u32 = 14;
 pub const SP_FIND_POST: u32 = 15;
 pub const SP_NOMATCH_MSG: u32 = 16;
 pub const SP_PM_MSG: u32 = 17;
+pub const SP_ZSUPER_NO_METHOD: u32 = 18;
+pub const SP_SPLAT_ANY: u32 = 19;
+pub const SP_TOPLEVEL_BINDING: u32 = 20;
 
 // SP_PM_MSG kinds: why a single pattern did not match
 pub const PM_EQQ: i64 = 0;
@@ -2406,6 +2617,23 @@ pub fn regex_opts(flags: u32, src_enc: u32) -> u32 {
     o | ((enc + 1) << crate::regexp::RE_LIT_ENC_SHIFT)
 }
 
+thread_local! {
+    /// An eval whose binding is not in a method: a yield in it is invalid (set around its compile).
+    pub static EVAL_NO_YIELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The last parse's warnings (message, verbose-only), shown by flush_parse_warnings.
+    static PARSE_WARNINGS: std::cell::RefCell<Vec<(String, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+/// pm_warning_emit_callback: default-level warnings unless $VERBOSE is nil, verbose-level ones under $VERBOSE = true.
+pub fn flush_parse_warnings(c: &mut Ctx) -> Result<(), Esc> {
+    let ws = PARSE_WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()));
+    for (m, verbose_only) in ws {
+        let v = c.vm().verbose.get();
+        if v == NIL || (verbose_only && v != TRUE) { continue; }
+        crate::builtins::kernel::warning_write(c, m.as_bytes())?;
+    }
+    Ok(())
+}
+
 /// Parse and compile a source file into a top-level iseq.  Err = SyntaxError message.
 pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, String> {
     compile_source_enc(src, crate::object::ENC_UTF8, file, line, kind, outer)
@@ -2415,13 +2643,20 @@ pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind,
 pub fn compile_source_enc(src: &[u8], enc: u8, file: &'static str, line: i32, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, String> {
     let ename = if enc == crate::object::ENC_UTF8 { "" } else { crate::builtins::encoding::enc_name(enc) };
     let mut scopes: Vec<Vec<Vec<u8>>> = outer.iter().rev().map(|sc| sc.iter().map(|(n, _, _)| crate::symbol::sym_bytes(*n).to_vec()).collect()).collect();
-    if !scopes.is_empty() { scopes.push(vec![]); }
+    // an eval always parses with an outer scope (prism's parsing_eval: no top-level unused-variable warnings)
+    if !scopes.is_empty() || kind == IseqKind::Eval { scopes.push(vec![]); }
     let pr = prism::parse(src, &prism::ParseOpts { filepath: file.as_bytes(), line, scopes, main_script: kind == IseqKind::Main, frozen_string_literal: 0, encoding: ename.as_bytes() });
     compile_parsed(&pr, src, file, kind, outer)
 }
 
 /// compile_source of a parse already made (the prelude's is made at build time).
 pub fn compile_parsed(pr: &ParseResult, src: &[u8], file: &'static str, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, String> {
+    if file != "<internal:prelude>" && !pr.warnings.is_empty() {
+        PARSE_WARNINGS.with(|w| {
+            let mut w = w.borrow_mut();
+            for d in &pr.warnings { w.push((format!("{}:{}: warning: {}\n", file, pr.line_of(d.loc.start), d.msg), d.level != 0)); }
+        });
+    }
     if !pr.errors.is_empty() {
         let mut msg = String::new();
         for e in &pr.errors {

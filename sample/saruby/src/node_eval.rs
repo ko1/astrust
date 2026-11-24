@@ -177,7 +177,7 @@ use crate::symbol::s;
 
 // rhs → Array stored in tmp slot; targets read it through node_masgn_elem
 
-// kind: 0 = element idx (from front), 1 = splat [idx, len - post), 2 = element from back (post)
+// kind: 0 = element idx (from front), 1 = splat [idx, len - post), 2 + k = post element idx after k front ones
 
 
 // the value of a method-body-level `__method__`, etc. are cfuncs; this node evaluates an
@@ -278,8 +278,7 @@ pub fn EVAL_node_tostr(c: &mut Ctx, n: NodePtr, fp: Fp, v: Value) -> RV {
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_dsym(c: &mut Ctx, n: NodePtr, fp: Fp, s: Value) -> RV {
-    Ok(c.str_to_sym(s))
-
+    srb_dsym(c, s)
 }
 
 

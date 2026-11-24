@@ -77,6 +77,8 @@ pub struct Iseq {
     pub outer_vars: Vec<Sym>,                          // block: outer variables it uses, `yield` if it yields (Ractor.new)
     pub ruby2_keywords: std::cell::Cell<bool>,         // Module#ruby2_keywords: flag a trailing keyword Hash in *rest
     pub traced: bool,                                  // compiled with trace points (TRACE_COMPILE)
+    pub arrow: std::cell::Cell<bool>,                  // a `->` literal's (never a Kernel#lambda call)
+    pub end_once: std::cell::Cell<u8>,                 // END { }'s body: 1, 2 once registered (it registers once)
 }
 
 impl Iseq {
@@ -167,10 +169,22 @@ pub fn new_me_cref(name: Sym, owner: Value, visi: u8, kind: MKind, cref: *const 
 
 // ---- lexical scope -------------------------------------------------------------------------
 
-pub struct Cref { pub klass: Value, pub prev: *const Cref, pub refinements: Value }
+/// def_target: where a `def` in this scope defines (instance_eval / class_exec's target; NIL: klass).
+pub struct Cref { pub klass: Value, pub prev: *const Cref, pub refinements: Value, pub def_target: Value }
 
 pub fn new_cref(klass: Value, prev: *const Cref) -> *const Cref {
-    let p = Box::into_raw(Box::new(Cref { klass, prev, refinements: NIL })) as *const Cref;
+    let p = Box::into_raw(Box::new(Cref { klass, prev, refinements: NIL, def_target: NIL })) as *const Cref;
+    vm().crefs.borrow_mut().push(p);
+    p
+}
+/// `cur` with `def` going to `t` (a method defined in instance_eval / class_exec keeps it for nested defs);
+/// constants still resolve through cur's chain.
+pub fn cref_with_def_target(c: &Ctx, cur: *const Cref, t: Value) -> *const Cref {
+    let (klass, prev, refinements) = c.cref_ref(cur).map_or((vm().c_object.get(), std::ptr::null(), NIL), |x| (x.klass, x.prev, x.refinements));
+    let found = vm().crefs.borrow().iter().rev().copied().find(|&p| c.cref_ref(p).is_some_and(|x|
+        x.def_target == t && x.klass == klass && std::ptr::eq(x.prev, prev) && x.refinements == refinements));
+    if let Some(p) = found { return p; }
+    let p = Box::into_raw(Box::new(Cref { klass, prev, refinements, def_target: t })) as *const Cref;
     vm().crefs.borrow_mut().push(p);
     p
 }
@@ -631,7 +645,8 @@ pub fn new_class(c: &mut Ctx, superclass: Value) -> Value {
     if superclass != NIL {
         c.class_mut(superclass).subclasses.push(k);
         let sm = singleton_class(c, superclass);
-        let meta = alloc_class(c, vm.c_class.get(), sm, false, AllocKind::Class);
+        let cm = singleton_class(c, vm.c_class.get());
+        let meta = alloc_class(c, cm, sm, false, AllocKind::Class);
         let md = c.class_mut(meta);
         md.is_singleton = true;
         md.attached = k;
@@ -650,27 +665,34 @@ pub fn singleton_class(c: &mut Ctx, v: Value) -> Value {
     let k = obj_klass(v);
     if c.class(k).is_singleton && c.class(k).attached == v { return k; }
     let vm = vm();
-    let superclass = if is_class_or_module(v) && !c.class(v).is_module {
-        if c.class(v).is_singleton {
-            // metaclass of a metaclass
-            k
-        } else {
-            let sup = c.class(v).superclass;
-            if sup == NIL { vm.c_class.get() } else { singleton_class(c, sup) }
-        }
+    let is_class = is_class_or_module(v) && !c.class(v).is_module;
+    // make_metaclass: the superclass's metaclass (Class for a root); an object's: its class
+    let superclass = if is_class {
+        let sup = c.class(v).superclass;
+        if sup == NIL { vm.c_class.get() } else { singleton_class(c, sup) }
     } else { k };
     let a = c.class(superclass).alloc;
     let meta = alloc_class(c, vm.c_class.get(), superclass, false, a);
     c.class_mut(meta).is_singleton = true;
     c.class_mut(meta).attached = v;
-    if is_class_or_module(v) && !c.class(v).is_module && !c.class(v).is_singleton {
-        // keep the metaclass chain consistent for classes created before this metaclass
-    }
-    obj_set_klass(meta, vm.c_class.get());
+    // the metaclass's own class: the next level of Class's metaclass chain (self for the top one),
+    // an object's singleton class: its class's metaclass (CRuby's METACLASS_OF)
+    let mk = if is_class {
+        if k == v { meta } else { singleton_class(c, k) }
+    } else { let r = real_class_of(c, v); singleton_class(c, r) };
+    obj_set_klass(meta, mk);
     obj_set_klass(v, meta);
+    if is_frozen(v) { obj_set_flags(meta, obj_flags(meta) | crate::object::FL_FROZEN); }
     bump_method_serial();
     vm.mcache.borrow_mut().clear();
     meta
+}
+
+/// rb_singleton_class: a class's metaclass, once exposed, gets its own metaclass (ENSURE_EIGENCLASS).
+pub fn singleton_class_exposed(c: &mut Ctx, v: Value) -> Value {
+    let k = singleton_class(c, v);
+    if k != NIL && is_class_or_module(v) && !c.class(v).is_module { singleton_class(c, k); }
+    k
 }
 
 pub fn class_name_sym(c: &Ctx, k: Value) -> Option<Value> { c.class(k).name }
@@ -1093,6 +1115,22 @@ pub fn source_location(c: &Ctx) -> Option<SrcLoc> {
 
 pub fn const_get_at(c: &Ctx, klass: Value, name: Sym) -> Option<Value> { c.class(klass).consts.get(&name).copied() }
 
+/// `klass::Name`: klass's ancestors, but one found in Object itself is not found unless klass is Object
+/// (rb_const_search_from, exclude).
+pub fn const_get_scoped(c: &mut Ctx, klass: Value, name: Sym) -> Result<Option<Value>, Esc> {
+    let o = vm().c_object.get();
+    for &k in ancestors(c, klass).iter() {
+        if k == o && klass != o { if has_const(c, o, name) { return Ok(None); } continue; }
+        if let Some(v) = const_get_at(c, k, name) { return Ok(Some(v)); }
+        if c.class(k).autoload.contains_key(&name) { if let Some(v) = do_autoload(c, k, name)? { return Ok(Some(v)); } }
+    }
+    Ok(None)
+}
+/// The ancestor of klass that holds `name` as `klass::Name` sees it.
+pub fn const_owner_scoped(c: &Ctx, klass: Value, name: Sym) -> Option<Value> {
+    let o = vm().c_object.get();
+    ancestors(c, klass).iter().copied().find(|&k| has_const(c, k, name)).filter(|&k| k != o || klass == o)
+}
 pub fn const_get_inherit(c: &mut Ctx, klass: Value, name: Sym) -> Result<Option<Value>, Esc> {
     for &k in ancestors(c, klass).iter() {
         if let Some(v) = const_get_at(c, k, name) { return Ok(Some(v)); }
@@ -1192,8 +1230,8 @@ fn const_access_slow(c: &mut Ctx, parent: Value, name: Sym, scoped: bool) -> Res
         .or_else(|| (c.class(parent).is_module && c.class(o).consts.contains_key(&name)).then_some(o));
     let Some(owner) = owner else { return Ok(None) };
     if scoped && c.class(owner).private_consts.contains(&name) {
-        // parent.const_missing(name); Module's own raises the private-constant error
-        crate::builtins::object::PRIVATE_REF.set(Some((parent, name)));
+        // parent.const_missing(name); Module's own raises the private-constant error naming the owner
+        crate::builtins::object::PRIVATE_REF.set(Some((owner, name)));
         let r = const_missing(c, parent, name);
         crate::builtins::object::PRIVATE_REF.set(None);
         return r.map(Some);
@@ -1229,9 +1267,9 @@ pub fn const_missing(c: &mut Ctx, klass: Value, name: Sym) -> RV {
     if !me.is_null() && !matches!(unsafe { (*me).kind }, MKind::Cfunc(..)) {
         return funcall(c, klass, s::const_missing, &[Value::sym(name)], std::ptr::null());
     }
-    if let Some(e) = crate::builtins::object::private_ref_error(c, klass, name)? { return Err(e); }
+    if let Some(e) = crate::builtins::object::private_ref_error(c, name)? { return Err(e); }
     let msg = if klass == vm().c_object.get() { format!("uninitialized constant {}", sym_str(name)) }
-              else { format!("uninitialized constant {}::{}", class_path(c, klass), sym_str(name)) };
+              else { format!("uninitialized constant {}::{}", crate::builtins::object::mesg_receiver_name(c, klass), sym_str(name)) };
     let e = make_name_error(c, vm().c_name_error.get(), &msg, Value::sym(name), klass)?;
     Err(raise_exc(c, e))
 }
@@ -2489,7 +2527,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
     if is_block && args.len() == 1 && (flags & CF_KW == 0 || simple_block) && (lead + post + opt > 1 || (p.rest.is_some() && lead + post + opt > 0) || p.has_trailing_comma || (lead == 1 && p.rest.is_some()))
         && !p.forwarding {
         let a = args[0];
-        let arr = if is_array(a) { Some(a) } else if crate::rt::conv_target(a) && !is_hash(a) && respond_to(c, a, s::to_ary, true) {
+        let arr = if is_array(a) { Some(a) } else if crate::rt::conv_target(a) && !is_hash(a) && crate::rt::check_respond(c, a, s::to_ary)? {
             let r = funcall(c, a, s::to_ary, &[], std::ptr::null())?;
             if is_array(r) { Some(r) } else if r == NIL { None } else {
                 return type_err(c, format!("can't convert {} to Array ({}#to_ary gives {})", class_path(c, real_class_of(c, a)), class_path(c, real_class_of(c, a)), class_path(c, real_class_of(c, r))));
@@ -2788,7 +2826,8 @@ pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &'static Iseq, base: Stk, argc
     let mut fr = Frame::empty(base);
     fr.prev = c.frame;
     fr.me = if bme.is_null() { b.me } else { bme };
-    fr.blk = if !bme.is_null() { blkarg } else { b.outer_blk };
+    // a bmethod's frame holds the call's block (break targets it); one that yields sees the defining scope's
+    fr.blk = if !bme.is_null() && !is.uses_block { blkarg } else { b.outer_blk };
     fr.cref = b.cref;
     fr.iseq = is;
     fr.kind = if lambda { FK_LAMBDA } else { FK_BLOCK };
@@ -2849,7 +2888,7 @@ pub fn visit_roots<V: RootVisitor<Saruby>>(m: &mut V, cur: &mut Ctx) {
     for v in vm.frozen_lits.borrow_mut().values_mut() { m.visit(v); }
     for v in vm.symproc_cache.borrow_mut().values_mut() { m.visit(v); }
     for v in vm.sym_names.borrow_mut().values_mut() { m.visit(v); }
-    for &cr in vm.crefs.borrow().iter() { let cr = unsafe { &mut *(cr as *mut Cref) }; m.visit(&mut cr.klass); m.visit(&mut cr.refinements); }
+    for &cr in vm.crefs.borrow().iter() { let cr = unsafe { &mut *(cr as *mut Cref) }; m.visit(&mut cr.klass); m.visit(&mut cr.refinements); m.visit(&mut cr.def_target); }
     // every builtin class field (nil until boot fills it in)
     let nclass_fields = (std::mem::offset_of!(Vm, main_obj)) / 8;
     // SAFETY: Vm is repr(C) and starts with nclass_fields Cell<Value> fields

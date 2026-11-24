@@ -247,8 +247,10 @@ fn run_main(o: Opts) -> i32 {
 
     let vm = vm();
     vm.verbose.set(if o.warn { TRUE } else if o.nowarn { NIL } else { FALSE });
-    if o.cmdline != 0 {
-        prism::COMMAND_LINE.store(o.cmdline, std::sync::atomic::Ordering::Relaxed);
+    // -e: prism's command-line E bit (no unused-variable warnings at its top level)
+    let cmdline = o.cmdline | if o.e.is_empty() { 0 } else { 0x2 };
+    if cmdline != 0 {
+        prism::COMMAND_LINE.store(cmdline, std::sync::atomic::Ordering::Relaxed);
         if o.cmdline & 0x18 != 0 { builtins::kernel::define_dash_n(&mut c); }
     }
     if o.warn { builtins::misc::warning_enable_deprecated(); }
@@ -287,7 +289,9 @@ fn run_main(o: Opts) -> i32 {
     gc::booted();
 
     // DATA / __END__
-    let is = match compile::compile_source(&src, file, 1, IseqKind::Main, vec![]) {
+    let is = compile::compile_source(&src, file, 1, IseqKind::Main, vec![]);
+    let _ = compile::flush_parse_warnings(&mut c);
+    let is = match is {
         Ok(is) => is,
         Err(msg) => {
             builtins::kernel::err_write(format!("{}\n", msg).as_bytes());
@@ -334,7 +338,12 @@ pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
         let ae = vm.at_exit.get();
         let Some(p) = c.ary_mut(ae).pop() else { break };
         c.esc = EscKind::None;
-        if call_proc(c, p, &[], std::ptr::null()).is_err() { status = handle_toplevel_error(c); }
+        if call_proc(c, p, &[], std::ptr::null()).is_err() {
+            // the next handlers see this error in $! (rb_ec_exec_end_proc)
+            let raised = (c.esc == EscKind::Raise).then_some(c.esc_val);
+            status = handle_toplevel_error(c);
+            if let Some(e) = raised { c.errinfo = e; }
+        }
     }
     if builtins::process::run_exit_trap(c).is_err() { status = handle_toplevel_error(c); }
     builtins::kernel::out_flush();

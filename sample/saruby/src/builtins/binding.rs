@@ -77,6 +77,21 @@ pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     Ok(Some(new_binding(c, RBinding { self_, env, names, cref, me, file, line, extra, dc, svar: svar.0, ret: svar.1, blk, visi })))
 }
 
+/// The main script's own TOPLEVEL_BINDING (it names the constant): replaces one a required file used,
+/// keeping what local_variable_set put there, without a redefinition warning.
+pub fn set_main_toplevel(c: &mut Ctx, b: Value) -> Result<(), Esc> {
+    let ob = c.vm().c_object.get();
+    let name = crate::symbol::intern(b"TOPLEVEL_BINDING");
+    if let Some(old) = const_get_at(c, ob, name) {
+        if c.data::<RBinding>(old).is_some() {
+            let ex = rbind(c, old).extra;
+            if ex != NIL { let d = c.hash_dup(ex); rbind_mut(c, b).extra = d; }
+        }
+    }
+    const_set(c, ob, name, b);
+    Ok(())
+}
+
 /// TOPLEVEL_BINDING when the main script does not name it (so its locals were not captured):
 /// self is main, no locals of its own.
 pub fn init_toplevel(c: &mut Ctx) {
@@ -143,7 +158,11 @@ pub fn eval_in_binding(c: &mut Ctx, bind: Value, src: &[u8], enc: u8, file: &'st
     let b = rbind(c, bind);
     let outer = vec![env_names(&b.names)];
     let (slf, env, cref, me, dc, svar, blk, visi) = (b.self_, b.env, b.cref, b.me, b.dc, (b.svar, b.ret), b.blk, b.visi);
-    let is = match crate::compile::compile_source_enc(src, enc, file, line, IseqKind::Eval, outer) {
+    crate::compile::EVAL_NO_YIELD.set(me.is_null());
+    let is = crate::compile::compile_source_enc(src, enc, file, line, IseqKind::Eval, outer);
+    crate::compile::EVAL_NO_YIELD.set(false);
+    crate::compile::flush_parse_warnings(c)?;
+    let is = match is {
         Ok(is) => is,
         Err(m) => return err(c, c.vm().c_syntax_error.get(), m),
     };
@@ -199,7 +218,9 @@ fn eval_under(c: &mut Ctx, slf: Value, k: Value, src: &[u8], enc: u8, file: &'st
     let b = rbind(c, bind);
     let outer = vec![env_names(&b.names)];
     let env = b.env;
-    let is = match crate::compile::compile_source_enc(src, enc, file, line, IseqKind::Eval, outer) { Ok(is) => is, Err(m) => return err(c, c.vm().c_syntax_error.get(), m) };
+    let is = crate::compile::compile_source_enc(src, enc, file, line, IseqKind::Eval, outer);
+    crate::compile::flush_parse_warnings(c)?;
+    let is = match is { Ok(is) => is, Err(m) => return err(c, c.vm().c_syntax_error.get(), m) };
     crate::builtins::tracepoint::trace_script_compiled(c, src)?;
     let cur = c.cur_frame().map_or(std::ptr::null(), |f| f.cref());
     let cref = new_cref(k, cur);
@@ -220,9 +241,23 @@ pub fn local_variables(c: &mut Ctx, b: Value) -> RV {
     let out = c.ary_new();
     for (n, _, _) in names {
         let s = crate::symbol::sym_bytes(n);
-        if !s.starts_with(b"_") || s.len() > 1 && !s.starts_with(b"__") { c.ary_push(out, Value::sym(n)); }
+        if (!s.starts_with(b"_") || s.len() > 1 && !s.starts_with(b"__")) && !numparam(n) { c.ary_push(out, Value::sym(n)); }
+    }
+    // variables made by local_variable_set
+    let extra = rbind(c, b).extra;
+    if extra != NIL {
+        let ks: Vec<Value> = c.hash_pairs(extra).into_iter().map(|p| p.0).collect();
+        for k in ks { if !c.ary(out).contains(&k) { c.ary_push(out, k); } }
     }
     Ok(out)
+}
+/// _1 .. _9 (rb_numparam_id_p)
+fn numparam(n: Sym) -> bool { matches!(crate::symbol::sym_bytes(n), [b'_', b'1'..=b'9']) }
+/// check_local_id: a numbered parameter is not a local variable of a binding.
+fn check_local_id(c: &mut Ctx, s: Value, n: Sym) -> Result<(), Esc> {
+    if !numparam(n) { return Ok(()); }
+    let e = make_name_error(c, c.vm().c_name_error.get(), &format!("numbered parameter '{}' is not a local variable", sym_str(n)), Value::sym(n), s)?;
+    Err(raise_exc(c, e))
 }
 fn find_var(b: &RBinding, n: Sym) -> Option<(u32, u32)> {
     for (nm, h, i) in b.names.iter().flatten() { if *nm == n { return Some((*h, *i)); } }
@@ -230,6 +265,7 @@ fn find_var(b: &RBinding, n: Sym) -> Option<(u32, u32)> {
 }
 fn b_lvar_get(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let n = crate::builtins::object::to_sym_arg(c, a[0])?;
+    check_local_id(c, s, n)?;
     let b = rbind(c, s);
     let (var, env, extra) = (find_var(b, n), b.env, b.extra);
     match var {
@@ -244,6 +280,7 @@ fn b_lvar_get(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
 }
 fn b_lvar_set(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let n = crate::builtins::object::to_sym_arg(c, a[0])?;
+    check_local_id(c, s, n)?;
     let b = rbind(c, s);
     let (var, env, extra) = (find_var(b, n), b.env, b.extra);
     match var {
@@ -257,6 +294,7 @@ fn b_lvar_set(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
 }
 fn b_lvar_defined(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let n = crate::builtins::object::to_sym_arg(c, a[0])?;
+    check_local_id(c, s, n)?;
     Ok(Value::bool(find_var(rbind(c, s), n).is_some()))
 }
 fn b_receiver(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(rbind(c, s).self_) }

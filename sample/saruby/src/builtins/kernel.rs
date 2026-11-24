@@ -393,9 +393,9 @@ pub fn make_exception_from_args(c: &mut Ctx, args: &[Value]) -> RV {
             if !respond_to(c, k, s::exception, true) { return type_err(c, "exception class/object expected"); }
             let e = funcall(c, k, s::exception, &args[1..args.len().min(2)], std::ptr::null())?;
             if !is_exception(c, e) { return type_err(c, "exception object expected"); }
-            if args.len() >= 3 {
-                let bt = if is_string(args[2]) { c.ary_new_from(&[args[2]]) } else { args[2] };
-                ivar_set_raw(c, e, s::bt, bt);
+            // rb_check_backtrace: nil leaves the backtrace to raise
+            if args.len() >= 3 && args[2] != NIL {
+                crate::builtins::exception::exc_set_backtrace(c, e, &args[2..3], crate::vm::Blk::NONE)?;
             }
             e
         }
@@ -512,13 +512,15 @@ fn k_loop(c: &mut Ctx, slf: Value, _args: &[Value], blk: Blk) -> RV {
     }
 }
 
-thread_local! { static CATCH_TAGS: std::cell::RefCell<Vec<Value>> = const { std::cell::RefCell::new(vec![]) }; }
+// (Ruby thread, tag): a throw only reaches a catch of its own thread
+thread_local! { static CATCH_TAGS: std::cell::RefCell<Vec<(Value, Value)>> = const { std::cell::RefCell::new(vec![]) }; }
 
 fn k_catch(c: &mut Ctx, _s: Value, args: &[Value], blk: Blk) -> RV {
     let tag = if args.is_empty() { new_object(c, c.vm().c_object.get()) } else { args[0] };
-    CATCH_TAGS.with(|t| t.borrow_mut().push(tag));
+    let th = crate::builtins::thread::current_thread(c);
+    CATCH_TAGS.with(|t| t.borrow_mut().push((th, tag)));
     let r = yield_block(c, blk, &[tag]);
-    CATCH_TAGS.with(|t| t.borrow_mut().pop());
+    CATCH_TAGS.with(|t| { let mut t = t.borrow_mut(); if let Some(i) = t.iter().rposition(|&x| x == (th, tag)) { t.remove(i); } });
     match r {
         Err(e) => {
             if c.esc == EscKind::Throw && (c.esc_tag_v == tag || (is_string(tag) && is_string(c.esc_tag_v) && false)) {
@@ -535,7 +537,8 @@ fn k_throw(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     check_argc(c, args, 1, 2)?;
     let tag = args[0];
     let val = if args.len() > 1 { args[1] } else { NIL };
-    let found = CATCH_TAGS.with(|t| t.borrow().iter().any(|&x| x == tag));
+    let th = crate::builtins::thread::current_thread(c);
+    let found = CATCH_TAGS.with(|t| t.borrow().iter().any(|&x| x == (th, tag)));
     if !found {
         let ins = inspect_str(c, tag)?;
         let e = make_exception(c, c.vm().c_uncaught_throw_error.get(), &format!("uncaught throw {}", ins));
@@ -624,6 +627,10 @@ pub fn k_abort(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
 
 fn k_at_exit(c: &mut Ctx, _s: Value, _args: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return arg_err(c, "called without a block"); }
+    // END { }: registered the first time only
+    if let Some(is) = c.block_copy(blk).and_then(|b| match b.kind { BlockKind::Iseq(is) => c.iseq_ref(is), _ => None }) {
+        match is.end_once.get() { 2 => return Ok(NIL), 1 => is.end_once.set(2), _ => {} }
+    }
     let p = block_to_proc(c, blk)?;
     c.ary_push(c.vm().at_exit.get(), p);
     Ok(p)
@@ -912,7 +919,16 @@ pub fn gvar_get(c: &mut Ctx, name: Sym) -> RV {
         b"$=" => { gvar_warn(c, "variable $= is no longer effective", true)?; return Ok(FALSE); }
         _ => {}
     }
-    Ok(*c.vm().globals.borrow().get(&name).unwrap_or(&NIL))
+    let v = c.vm().globals.borrow().get(&name).copied();
+    match v {
+        Some(v) => Ok(v),
+        None => {
+            if c.vm().verbose.get() == TRUE && !gvar_defined(c, name) {
+                gvar_warn(c, &format!("global variable '{}' not initialized", String::from_utf8_lossy(b)), false)?;
+            }
+            Ok(NIL)
+        }
+    }
 }
 
 /// $/ holds a plain frozen String: a subclass instance, an ivar holder or a mutable one is copied.
@@ -988,15 +1004,22 @@ fn traces_of(c: &mut Ctx, name: Sym) -> Result<Option<Value>, Esc> {
 }
 #[cold]
 fn run_traces(c: &mut Ctx, name: Sym, v: Value) -> Result<(), Esc> {
+    // a variable's traces do not run again for an assignment made by one of them (CRuby's block_trace)
+    thread_local! { static RUNNING: std::cell::RefCell<Vec<Sym>> = const { std::cell::RefCell::new(vec![]) }; }
+    if RUNNING.with(|r| r.borrow().contains(&name)) { return Ok(()); }
     let Some(l) = traces_of(c, name)? else { return Ok(()) };
     let cmds: Vec<Value> = c.ary(l).iter().rev().copied().collect();
     let keep = c.ary_new_from(&cmds);
+    RUNNING.with(|r| r.borrow_mut().push(name));
+    let mut r = Ok(());
     for cmd in cmds {
-        if is_string(cmd) { let m = c.vm().main_obj.get(); funcall(c, m, intern(b"eval"), &[cmd], std::ptr::null())?; }
-        else { funcall(c, cmd, intern(b"call"), &[v], std::ptr::null())?; }
+        r = if is_string(cmd) { let m = c.vm().main_obj.get(); funcall(c, m, intern(b"eval"), &[cmd], std::ptr::null()).map(drop) }
+            else { funcall(c, cmd, intern(b"call"), &[v], std::ptr::null()).map(drop) };
+        if r.is_err() { break; }
     }
+    RUNNING.with(|r| { let mut r = r.borrow_mut(); if let Some(i) = r.iter().rposition(|&x| x == name) { r.remove(i); } });
     std::hint::black_box(keep);
-    Ok(())
+    r
 }
 /// Kernel#trace_var(name, cmd = block): cmd (a Proc or a String to eval) runs at each assignment.
 fn k_trace_var(c: &mut Ctx, _s: Value, a: &[Value], b: Blk) -> RV {
@@ -1345,7 +1368,9 @@ pub fn load_file(c: &mut Ctx, path: &str) -> RV {
 
 /// Compile and run a source at top level (self = main).
 pub fn run_source(c: &mut Ctx, src: &[u8], file: &'static str, line: i32) -> RV {
-    let is = match crate::compile::compile_source(src, file, line, IseqKind::Top, vec![]) {
+    let is = crate::compile::compile_source(src, file, line, IseqKind::Top, vec![]);
+    crate::compile::flush_parse_warnings(c)?;
+    let is = match is {
         Ok(is) => is,
         Err(msg) => { return err(c, c.vm().c_syntax_error.get(), msg); }
     };
@@ -1370,9 +1395,11 @@ fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
             if f.is_file() { found = Some(f.to_string_lossy().into_owned()); break; }
         }
     }
+    // rb_find_file expands what it found in $LOAD_PATH and an explicitly relative name
+    let abs = |c: &mut Ctx, f: &str| -> Result<String, Esc> { let v = c.str_new(f.as_bytes()); Ok(String::from_utf8_lossy(&crate::builtins::file::expand(c, &[v], true)?).into_owned()) };
     let p = match found {
-        Some(f) => f,
-        None if std::path::Path::new(&ex).is_file() => ex,
+        Some(f) => abs(c, &f)?,
+        None if std::path::Path::new(&ex).is_file() => if ex.starts_with("./") || ex.starts_with("../") { abs(c, &ex)? } else { ex },
         None => {
             let e = make_exception(c, c.vm().c_load_error.get(), &format!("cannot load such file -- {}", name));
             { let p = c.str_new(name.as_bytes()); ivar_set_raw(c, e, intern(b"path"), p); }
@@ -1391,7 +1418,9 @@ fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
             Err(_) => { let e = make_exception(c, c.vm().c_load_error.get(), &format!("cannot load such file -- {}", p)); return Err(raise_exc(c, e)); }
         };
         let file: &'static str = Box::leak(p.into_boxed_str());
-        let is = match crate::compile::compile_source(&src, file, 1, IseqKind::Top, vec![]) { Ok(is) => is, Err(msg) => return err(c, c.vm().c_syntax_error.get(), msg) };
+        let is = crate::compile::compile_source(&src, file, 1, IseqKind::Top, vec![]);
+        crate::compile::flush_parse_warnings(c)?;
+        let is = match is { Ok(is) => is, Err(msg) => return err(c, c.vm().c_syntax_error.get(), msg) };
         let cref = new_cref(m, c.vm().top_cref.get());
         crate::run_top_iseq_cref(c, is, slf, cref)?;
         return Ok(TRUE);

@@ -88,11 +88,16 @@ fn k_class(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(real_class
 fn k_singleton_class(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if slf.is_fixnum() || slf.is_sym() || slf.is_flonum() || is_bignum(slf) || is_heap_float(slf) { return type_err(c, "can't define singleton"); }
     if slf.is_heap() && obj_flags(slf) & FL_CHILLED_ANY != 0 { crate::vm::unchill(c, slf)?; }
-    Ok(singleton_class(c, slf))
+    Ok(singleton_class_exposed(c, slf))
 }
 fn k_frozen(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(is_frozen(slf))) }
-fn k_freeze(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
-    if slf.is_heap() { obj_set_flags(slf, FL_FROZEN); obj_clear_flags(slf, FL_CHILLED_ANY); }
+fn k_freeze(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
+    if slf.is_heap() {
+        obj_set_flags(slf, FL_FROZEN); obj_clear_flags(slf, FL_CHILLED_ANY);
+        // rb_freeze_singleton_class (not on to a metaclass's metaclass)
+        let k = crate::heap::obj_klass(slf);
+        if c.class(k).is_singleton && c.class(k).attached == slf && !(is_class_or_module(slf) && c.class(slf).is_singleton) { obj_set_flags(k, FL_FROZEN); }
+    }
     Ok(slf)
 }
 fn k_nil_p(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(slf == NIL)) }
@@ -263,6 +268,8 @@ fn finish_dup(c: &mut Ctx, slf: Value, n: Value, clone: bool, freeze: Option<boo
             for (m, me) in mt { nt.insert(m, me); }
             let inc = c.class(k).includes.clone();
             for m in inc { include_module_c(c, sk, m); }
+            let cs: Vec<(Sym, Value)> = c.class(k).consts.iter().map(|(a, b)| (*a, *b)).collect();
+            for (n, v) in cs { c.class_mut(sk).consts.insert(n, v); }
         }
     }
     if obj_flags(slf) & FL_KWHASH != 0 { obj_set_flags(n, FL_KWHASH); }
@@ -281,6 +288,10 @@ fn finish_dup(c: &mut Ctx, slf: Value, n: Value, clone: bool, freeze: Option<boo
         let fz = freeze.unwrap_or(obj_flags(slf) & FL_FROZEN != 0);
         if fz { obj_set_flags(n, FL_FROZEN); } else { obj_clear_flags(n, FL_FROZEN); }
         if freeze.is_none() { obj_set_flags(n, obj_flags(slf) & FL_CHILLED_ANY); }
+        let k = obj_klass(n);
+        if c.class(k).is_singleton && c.class(k).attached == n && !is_class_or_module(n) {
+            if fz { obj_set_flags(k, FL_FROZEN); } else { obj_clear_flags(k, FL_FROZEN); }
+        }
     }
     Ok(n)
 }
@@ -941,7 +952,8 @@ fn m_class_exec(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
 pub fn is_const_name(b: &[u8]) -> bool {
     let t = String::from_utf8_lossy(b);
     let mut ch = t.chars();
-    ch.next().is_some_and(|f| f.is_uppercase()) && ch.all(|x| x.is_alphanumeric() || x == '_' || !x.is_ascii())
+    // titlecase (Lt) starts one too
+    ch.next().is_some_and(|f| f.is_uppercase() || (f.is_alphabetic() && !f.is_lowercase() && f.to_lowercase().next() != Some(f))) && ch.all(|x| x.is_alphanumeric() || x == '_' || !x.is_ascii())
 }
 fn wrong_const_name(c: &mut Ctx, slf: Value, p: &[u8]) -> Esc {
     let n = Value::sym(intern(p));
@@ -1064,7 +1076,7 @@ fn m_const_source_location(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV 
 fn m_const_set(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = to_sym_arg(c, a[0])?;
     let b = sym_bytes(n);
-    if b.is_empty() || !b[0].is_ascii_uppercase() || !b.iter().all(|x| x.is_ascii_alphanumeric() || *x == b'_' || *x >= 0x80) {
+    if !is_const_name(b) {
         let e = make_name_error(c, c.vm().c_name_error.get(), &format!("wrong constant name {}", sym_str(n)), Value::sym(n), slf)?;
         return Err(raise_exc(c, e));
     }
@@ -1089,7 +1101,7 @@ fn m_constants(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
 }
 /// Module.constants: with no argument, the constants of the caller's lexical scopes and Object's.
 fn m_s_constants(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
-    if !a.is_empty() { return m_constants(c, slf, a, b); }
+    if !a.is_empty() || slf != c.vm().c_module.get() { return m_constants(c, slf, a, b); }
     let mut scopes = vec![];
     let mut cr = c.caller_frame().map_or(std::ptr::null(), |f| f.cref());
     while let Some(r) = c.cref_ref(cr) { if !r.prev.is_null() { scopes.push(r.klass); } cr = r.prev; }
@@ -1140,25 +1152,37 @@ fn set_const_visi(c: &mut Ctx, slf: Value, a: &[Value], private: bool) -> RV {
     }
     Ok(NIL)
 }
-pub fn private_ref_error(c: &mut Ctx, slf: Value, n: Sym) -> Result<Option<Esc>, Esc> {
+pub fn private_ref_error(c: &mut Ctx, n: Sym) -> Result<Option<Esc>, Esc> {
     let Some((k, pn)) = PRIVATE_REF.take() else { return Ok(None) };
     if pn != n { return Ok(None); }
-    let e = make_name_error(c, c.vm().c_name_error.get(), &format!("private constant {}::{} referenced", class_path(c, k), sym_str(n)), Value::sym(n), slf)?;
+    let e = make_name_error(c, c.vm().c_name_error.get(), &format!("private constant {}::{} referenced", class_path(c, k), sym_str(n)), Value::sym(n), k)?;
     Ok(Some(raise_exc(c, e)))
+}
+/// name_err_mesg_to_str: a module is shown by its #name, else its #inspect (errors fall back to the path).
+pub fn mesg_receiver_name(c: &mut Ctx, k: Value) -> String {
+    let saved = (c.esc, c.esc_val);
+    for m in [intern(b"name"), s::inspect] {
+        match funcall(c, k, m, &[], std::ptr::null()) {
+            Ok(v) if is_string(v) => return String::from_utf8_lossy(c.str_bytes(v)).into_owned(),
+            Ok(_) => {}
+            Err(_) => { c.esc = saved.0; c.esc_val = saved.1; }
+        }
+    }
+    class_path(c, k)
 }
 fn m_const_missing(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     // a private constant referenced with a scope comes here first (rb_const_missing after private_const_reference)
-    if a[0].is_sym() { if let Some(e) = private_ref_error(c, slf, a[0].as_sym())? { return Err(e); } }
+    if a[0].is_sym() { if let Some(e) = private_ref_error(c, a[0].as_sym())? { return Err(e); } }
     // the name may be any object (rb_mod_const_missing formats it with %s)
     let ns = if a[0].is_sym() { sym_str(a[0].as_sym()).to_string() } else { to_rstring(c, a[0])? };
-    let msg = if slf == c.vm().c_object.get() { format!("uninitialized constant {}", ns) } else { format!("uninitialized constant {}::{}", class_path(c, slf), ns) };
+    let msg = if slf == c.vm().c_object.get() { format!("uninitialized constant {}", ns) } else { format!("uninitialized constant {}::{}", mesg_receiver_name(c, slf), ns) };
     let e = make_name_error(c, c.vm().c_name_error.get(), &msg, a[0], slf)?;
     Err(raise_exc(c, e))
 }
 fn m_cvar_get(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = to_sym_arg(c, a[0])?;
     if crate::builtins::ractor::multi() { crate::builtins::ractor::cvar_check(c, slf, n)?; }
-    match crate::rt::cvar_lookup(c, slf, n) {
+    match crate::rt::cvar_lookup_checked(c, slf, n)? {
         Some((_, v)) => Ok(v),
         None => {
             let e = make_name_error(c, c.vm().c_name_error.get(), &format!("uninitialized class variable {} in {}", sym_str(n), class_path(c, slf)), Value::sym(n), slf)?;
@@ -1175,7 +1199,7 @@ fn m_cvar_set(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     }
     check_frozen(c, slf)?;
     if crate::builtins::ractor::multi() { crate::builtins::ractor::cvar_check(c, slf, n)?; }
-    match crate::rt::cvar_lookup(c, slf, n) { Some((o, _)) => { c.class_mut(o).cvars.insert(n, a[1]); } None => { c.class_mut(slf).cvars.insert(n, a[1]); } }
+    match crate::rt::cvar_lookup_checked(c, slf, n)? { Some((o, _)) => { c.class_mut(o).cvars.insert(n, a[1]); } None => { c.class_mut(slf).cvars.insert(n, a[1]); } }
     Ok(a[1])
 }
 fn m_cvar_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
@@ -1190,8 +1214,9 @@ fn m_cvars(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     }
     Ok(out)
 }
-fn m_freeze(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { obj_set_flags(slf, FL_FROZEN); Ok(slf) }
-fn m_module_new(c: &mut Ctx, slf: Value, _a: &[Value], b: Blk) -> RV {
+fn m_freeze(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { k_freeze(c, slf, a, b) }
+fn m_module_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
+    if c.class(slf).is_singleton { return c_new(c, slf, a, b); }
     let m = new_module(c);
     obj_set_klass(m, if slf == c.vm().c_module.get() { c.vm().c_module.get() } else { slf });
     if !b.is_null() { yield_with_self(c, b, &[m], m, m)?; }
@@ -1346,7 +1371,9 @@ pub fn c_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     funcall_kw(c, o, s::initialize, a, b, kw)?;
     Ok(o)
 }
-fn c_class_new(c: &mut Ctx, _slf: Value, a: &[Value], b: Blk) -> RV {
+fn c_class_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
+    // reached from a metaclass (its class is Class's metaclass): Class#new
+    if c.class(slf).is_singleton { return c_new(c, slf, a, b); }
     let sup = if a.is_empty() { c.vm().c_object.get() } else { a[0] };
     if !is_class_or_module(sup) || c.class(sup).is_module { return type_err(c, format!("superclass must be an instance of Class (given an instance of {})", class_name_for_err(c, sup))); }
     if c.class(sup).is_singleton { return type_err(c, "can't make subclass of singleton class"); }

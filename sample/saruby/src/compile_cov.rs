@@ -12,7 +12,8 @@ impl<'a> Compiler<'a> {
                     // a side-effect-free statement whose value is unused compiles to nothing in CRuby: no line event
                     let elided = self.trace && i < last && pure_static(x);
                     let traced = self.trace && !flat && !elided && !matches!(x.kind, Kind::BeginNode { .. }) && std::mem::replace(&mut self.cur().trace_line, l) != l;
-                    let r = if elided { self.trace = false; let r = self.c(x); self.trace = true; r } else { self.c(x) };
+                    // defined?(...) whose value is unused is not evaluated at all (CRuby)
+                    let r = if i < last && matches!(x.kind, Kind::DefinedNode { .. }) { ALLOC_node_nil() } else if elided { self.trace = false; let r = self.c(x); self.trace = true; r } else { self.c(x) };
                     if traced {
                         let t = ALLOC_node_trace(EV_LINE, l, r);
                         match self.cov { Some(f) => ALLOC_node_cov(crate::builtins::coverage::line_slot(f, l), t), None => t }
