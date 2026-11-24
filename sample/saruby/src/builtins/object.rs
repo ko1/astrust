@@ -701,7 +701,7 @@ fn set_visibility(c: &mut Ctx, slf: Value, a: &[Value], visi: u8) -> RV {
         if visi == VISI_MODFUNC {
             let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi: VISI_PRIVATE, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
             keep_alias_name(c, me, n);
-            define_user_method(c, slf, m, n);
+            define_method_me(c, slf, m, n);   // its own entry turns private in place: no redefinition
             let sk = singleton_class(c, slf);
             let n2 = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: sk, visi: VISI_PUBLIC, kind: o.kind, orig_owner: sk, cref: o.cref }));
             keep_alias_name(c, me, n2);
@@ -919,7 +919,7 @@ fn m_cmp(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     Ok(NIL)
 }
 fn m_ancestors(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
-    let v: Vec<Value> = ancestors(c, slf).iter().copied().filter(|&k| !c.class(k).is_singleton || slf == k || true).collect();
+    let v = ancestors_listed(c, slf);
     Ok(c.ary_from_vec(v))
 }
 fn m_include(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {

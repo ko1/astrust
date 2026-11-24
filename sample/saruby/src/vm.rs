@@ -831,29 +831,37 @@ pub fn ancestors(c: &Ctx, klass: Value) -> std::rc::Rc<[Value]> {
     let ser = vm().hierarchy_serial.get();
     if let Some((s, a)) = &*c.class(klass).ancestors.borrow() { if *s == ser { return a.clone(); } }
     let mut out = vec![];
-    // entries other than prepended ones, once there is a prepended one (it may repeat one of them)
-    let mut seen: Option<Vec<Value>> = None;
     let mut k = klass;
     while k != NIL {
         let mut part = vec![];
         module_chain(c, k, &mut part);
-        let np = part.iter().position(|&x| x == k).unwrap_or(0);
-        for (i, x) in part.into_iter().enumerate() {
-            if i < np {
-                if seen.is_none() { seen = Some(out.clone()); }
-                if !out[out.len() - out.len().min(i)..].contains(&x) { out.push(x); }
-                continue;
-            }
-            match &mut seen {
-                None => if !out.contains(&x) { out.push(x); },
-                Some(s) => if !s.contains(&x) { s.push(x); out.push(x); },
-            }
+        for x in part {
+            if !out.contains(&x) { out.push(x); }
         }
         k = c.class(k).superclass;
     }
     let a: std::rc::Rc<[Value]> = out.into();
     *c.class(klass).ancestors.borrow_mut() = Some((ser, a.clone()));
     a
+}
+
+/// Module#ancestors: a module prepended to a class may repeat one included above it (CRuby keeps
+/// both iclasses). Lookup and super use `ancestors`, where each module appears once.
+pub fn ancestors_listed(c: &Ctx, klass: Value) -> Vec<Value> {
+    let mut out = vec![];
+    let mut seen: Vec<Value> = vec![];   // entries other than prepended ones
+    let mut k = klass;
+    while k != NIL {
+        let mut part = vec![];
+        module_chain(c, k, &mut part);
+        let np = part.iter().position(|&x| x == k).unwrap_or(0);
+        for (i, x) in part.into_iter().enumerate() {
+            if i < np { if !out[out.len() - out.len().min(i)..].contains(&x) { out.push(x); } continue; }
+            if !seen.contains(&x) { seen.push(x); out.push(x); }
+        }
+        k = c.class(k).superclass;
+    }
+    out
 }
 
 pub fn define_method_me(c: &mut Ctx, klass: Value, name: Sym, me: *const MethodEntry) {
@@ -881,14 +889,17 @@ fn warn_redefined(c: &mut Ctx, klass: Value, name: Sym, old: *const MethodEntry,
     let ok = o.kind;
     let shared = |k: MKind| match (k, ok) { (MKind::Iseq(a), MKind::Iseq(b)) => std::ptr::eq(a, b), (MKind::Bmethod(a), MKind::Bmethod(b)) => a == b, _ => false };
     if c.class(klass).mtbl.iter().any(|(&m, &e)| m != name && c.me_ref(e).is_some_and(|x| shared(x.kind))) { return; }
-    let prev = match ok { MKind::Iseq(is) => c.iseq_ref(is).map(|i| (i.info.file, i.info.line)), _ => None };
+    let prev = match ok {
+        MKind::Iseq(is) => c.iseq_ref(is).map(|i| (i.info.file, i.info.line)),
+        MKind::Bmethod(p) => match c.proc_data(p).blk.kind { BlockKind::Iseq(is) => c.iseq_ref(is).map(|i| (i.info.file, i.info.line)), _ => None },
+        _ => None,
+    };
     // saruby's own lazy stubs replacing themselves
     let internal = |k: MKind| matches!(k, MKind::Iseq(is) if c.iseq_ref(is).is_some_and(|i| i.info.file.starts_with("<internal:")));
     if internal(ok) || internal(n.kind) { return; }
-    let _ = crate::builtins::kernel::gvar_warn(c, &format!("method redefined; discarding old {}", sym_str(name)), false);
-    if let Some((f, l)) = prev {
-        let _ = crate::builtins::kernel::warning_write(c, format!("{}:{}: warning: previous definition of {} was here\n", f, l, sym_str(name)).as_bytes());
-    }
+    // one message, as rb_method_entry_make's two warnings reach Warning.warn
+    let tail = prev.map_or(String::new(), |(f, l)| format!("{}:{}: warning: previous definition of {} was here\n", f, l, sym_str(name)));
+    let _ = crate::builtins::kernel::warn_with_tail(c, &format!("method redefined; discarding old {}", sym_str(name)), &tail);
 }
 pub fn define_cfunc(c: &mut Ctx, klass: Value, name: &str, f: CFunc, arity: i32) {
     let s = intern_str(name);
