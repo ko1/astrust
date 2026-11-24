@@ -431,7 +431,8 @@ pub fn format_ary(c: &mut Ctx, fmtv: Value, args: &[Value], ary: Value) -> RV {
                                 if n > 0xff { return err(c, c.vm().c_range_error.get(), format!("{} out of char range", n)); }
                                 c.str_new_enc(&[n as u8], if n > 0x7f { ENC_BINARY } else { renc })
                             } else {
-                                match en::code_to_bytes(renc, n as u32) {
+                                let wide = !en::is_single_byte(renc) && en::kind(renc) != en::EK::Utf8;
+                                match if wide { en::onig_mbcput(renc, n as u32) } else { en::code_to_bytes(renc, n as u32) } {
                                     Some(bs) if !(en::is_single_byte(renc) && n > 0xff) => c.str_new_enc(&bs, renc),
                                     _ => return arg_err(c, "invalid character"),
                                 }
