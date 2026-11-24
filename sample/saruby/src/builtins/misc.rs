@@ -441,14 +441,16 @@ fn rbconfig_from_ref(c: &mut Ctx, archdir: &str, bindir: &str, name: &str) -> bo
     let file: &'static str = Box::leak(path.into_boxed_str());
     if crate::builtins::kernel::run_source(c, &src, file, 1).is_err() { return false; }
     let Some(rbc) = const_get_at(c, c.vm().c_object.get(), intern(b"RbConfig")) else { return false };
-    let libruby = format!("lib{}.so", name);
-    // MAKEFILE_CONFIG keeps the $(...) forms (fire_update! recomputes from them)
+    // saruby's binary; the library paths stay the reference ruby's (its libruby.so)
     let Some(h) = const_get_at(c, rbc, intern(b"CONFIG")).filter(|&h| is_hash(h)) else { return false };
-    for (k, v) in [("ruby_install_name", name), ("RUBY_INSTALL_NAME", name), ("bindir", bindir), ("libdir", bindir), ("LIBRUBY_SO", &libruby), ("LIBRUBY", &libruby)] {
+    for (k, v) in [("ruby_install_name", name), ("RUBY_INSTALL_NAME", name), ("bindir", bindir)] {
         let (ks, vs) = (c.str_new_frozen(k.as_bytes()), c.str_new(v.as_bytes()));
         if hash_set(c, h, ks, vs).is_err() { return false; }
     }
-    true
+    // bindir in MAKEFILE_CONFIG too, so that expanding it gives CONFIG's
+    let Some(m) = const_get_at(c, rbc, intern(b"MAKEFILE_CONFIG")).filter(|&m| is_hash(m)) else { return false };
+    let (ks, vs) = (c.str_new_frozen(b"bindir"), c.str_new(bindir.as_bytes()));
+    hash_set(c, m, ks, vs).is_ok()
 }
 pub fn rbconfig_init(c: &mut Ctx) {
     if const_get_at(c, c.vm().c_object.get(), intern(b"RbConfig")).is_some() { return; }
@@ -461,7 +463,7 @@ pub fn rbconfig_init(c: &mut Ctx) {
     let arch = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" };
     let archname = format!("{}-linux", arch);
     let archdir = format!("{}/{}", lib, archname);
-    // the reference ruby's own rbconfig.rb (every key, expand, fire_update!), saruby's binary and library in place of ruby's
+    // the reference ruby's own rbconfig.rb (every key, expand, fire_update!), saruby's binary in place of ruby's
     if !lib.is_empty() && rbconfig_from_ref(c, &archdir, &bindir, &name) { return; }
     let libprefix = std::path::Path::new(&lib).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     // the Unicode version of the case / property tables (Rust's char)

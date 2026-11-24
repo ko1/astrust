@@ -169,7 +169,8 @@ pub fn setup_load_path(c: &mut Ctx) {
     if let Ok(p) = std::env::var("RUBYLIB") {
         for d in p.split(':') { let s = c.str_new(d.as_bytes()); c.ary_push(lp, s); }
     }
-    for d in default_load_path() { let s = c.str_new(d.as_bytes()); c.ary_push(lp, s); }
+    // gem_prelude marks each default entry with itself (rubygems finds its insert position by it)
+    for d in default_load_path() { let s = c.str_new(d.as_bytes()); crate::vm::ivar_set_raw(c, s, crate::symbol::intern(b"@gem_prelude_index"), s); c.ary_push(lp, s); }
 }
 /// rubylibdir and archdir of the reference ruby as the expanded load path has them (realpath).
 pub fn stdlib_lp_dirs() -> &'static [String] {
