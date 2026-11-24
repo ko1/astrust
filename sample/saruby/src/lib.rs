@@ -257,7 +257,16 @@ fn disable_features(list: &str) {
     }
 }
 
-pub fn version() -> String { format!("saruby 0.1.0 (ASTrust; Ruby 3.4 compatible subset) [{}]", env!("SARUBY_TARGET")) }
+/// The CRuby release saruby follows (RUBY_VERSION, RbConfig, -v); RUBY_ENGINE stays "saruby".
+pub const RUBY_VERSION: &str = "4.0.10";
+pub const RUBY_RELEASE_DATE: &str = "2026-11-19";
+pub const RUBY_REVISION: &str = "a704b7cd95a42cc0cf5f307137bf3aac0285b915";
+pub const ENGINE_VERSION: &str = "0.1.0";
+pub const RUBY_PLATFORM: &str = if cfg!(target_arch = "aarch64") { "aarch64-linux" } else { "x86_64-linux" };
+/// RUBY_DESCRIPTION, also what -v / --version print.
+pub fn version() -> String {
+    format!("saruby {} (ASTrust) like ruby {} ({} revision {}) +PRISM [{}]", ENGINE_VERSION, RUBY_VERSION, RUBY_RELEASE_DATE, &RUBY_REVISION[..10], RUBY_PLATFORM)
+}
 
 /// Print an uncaught exception CRuby-style.
 pub fn report_exception(c: &mut Ctx, e: Value) {
@@ -348,7 +357,7 @@ fn run_main(o: Opts) -> i32 {
             }
             builtins::kernel::err_write(format!("{}\n", msg).as_bytes());
             builtins::kernel::err_write(format!("{}: compile error (SyntaxError)\n", file).as_bytes());
-            if !o.requires.is_empty() { run_exit_handlers(&mut c, 1); }
+            if !o.requires.is_empty() { finish(&mut c, false); }
             return 1;
         }
     };
@@ -381,22 +390,22 @@ fn run_main(o: Opts) -> i32 {
 }
 
 thread_local! {
-    /// The error that ended the main script while the at_exit handlers run, and whether one showed it as its cause.
+    /// The error that ended the main script while the exit handlers run, and whether a handler error showed it as its cause.
     static ORIG_ERR: std::cell::Cell<(Value, bool)> = const { std::cell::Cell::new((NIL, false)) };
 }
-/// The EXIT trap, at_exit procs (LIFO), finalizers, then flush every stream (rb_ec_teardown).
-static TRAP_ERR: heap::Global = heap::Global::new();
-pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
+/// rb_ec_cleanup: the EXIT trap, at_exit procs (LIFO; each error reported as it happens), the trap's error,
+/// then the main error (`errored`: c.esc holds it) last, unless a handler error showed it as its cause;
+/// a later error's status wins.
+pub fn finish(c: &mut Ctx, errored: bool) -> i32 {
     let vm = vm();
+    let take = |c: &mut Ctx| { let s = (c.esc, c.esc_val, c.esc_tag, c.esc_tag_v); c.esc = EscKind::None; s };
+    let put = |c: &mut Ctx, s: (EscKind, Value, u64, Value)| { c.esc = s.0; c.esc_val = s.1; c.esc_tag = s.2; c.esc_tag_v = s.3; };
+    let main_err = errored.then(|| take(c));
+    if let Some((EscKind::Raise, e, _, _)) = main_err { c.errinfo = e; ORIG_ERR.set((e, false)); }
+    let mut later: Option<i32> = None;
     // the main thread's scheduler runs to completion first (rb_ec_fiber_scheduler_finalize)
-    if builtins::thread::scheduler_finalize(c).is_err() { status = handle_toplevel_error(c); }
-    // what the EXIT trap raises is reported after the at_exit procs (which do not see it in $!)
-    let trap_err = if builtins::process::run_exit_trap(c).is_err() {
-        let e = (c.esc, c.esc_tag, c.esc_tag_v);
-        TRAP_ERR.set(c, c.esc_val);
-        c.esc = EscKind::None;
-        Some(e)
-    } else { None };
+    if builtins::thread::scheduler_finalize(c).is_err() { later = Some(handle_toplevel_error(c)); }
+    let trap_err = builtins::process::run_exit_trap(c).is_err().then(|| take(c));
     loop {
         let ae = vm.at_exit.get();
         let Some(p) = c.ary_mut(ae).pop() else { break };
@@ -404,36 +413,26 @@ pub fn run_exit_handlers(c: &mut Ctx, mut status: i32) -> i32 {
         if call_proc(c, p, &[], std::ptr::null()).is_err() {
             // the next handlers see this error in $! (rb_ec_exec_end_proc)
             let raised = (c.esc == EscKind::Raise).then_some(c.esc_val);
-            // shown as its cause: the error that ended the script is not reported again
             if let Some(e) = raised { let o = ORIG_ERR.get(); if o.0 != NIL && ivar_get(c, e, symbol::s::cause) == o.0 && !is_kind_of(c, e, c.vm().c_system_exit.get()) { ORIG_ERR.set((o.0, true)); } }
-            status = handle_toplevel_error(c);
+            later = Some(handle_toplevel_error(c));
             if let Some(e) = raised { c.errinfo = e; }
         }
     }
-    match trap_err {
-        Some((k, t, tv)) => { c.esc = k; c.esc_val = TRAP_ERR.get(c); c.esc_tag = t; c.esc_tag_v = tv; TRAP_ERR.set(c, NIL); status = handle_toplevel_error(c); }
-        None => builtins::misc::run_finalizers(c),
-    }
+    let trapped = trap_err.is_some();
+    if let Some(t) = trap_err { put(c, t); later = Some(handle_toplevel_error(c)); }
     builtins::thread::terminate_all(c);
+    if !trapped { builtins::misc::run_finalizers(c); }
+    let mut status = later.unwrap_or(0);
+    if let Some(m) = main_err {
+        put(c, m);
+        let st = if ORIG_ERR.get().1 { 1 } else { handle_toplevel_error(c) };
+        if later.is_none() { status = st; }
+    }
+    ORIG_ERR.set((NIL, false));
     builtins::kernel::out_flush();
     builtins::io::flush_all(c);
     builtins::process::die_if_signaled();
     status
-}
-/// End of a forked child's block: report an error, run the exit handlers.
-pub fn finish(c: &mut Ctx, errored: bool) -> i32 {
-    if !errored { return run_exit_handlers(c, 0); }
-    // rb_ec_cleanup: the at_exit handlers run first and see the error in $!; it is reported after them
-    let saved = (c.esc, c.esc_val, c.esc_tag, c.esc_tag_v);
-    if c.esc == EscKind::Raise { c.errinfo = c.esc_val; ORIG_ERR.set((c.esc_val, false)); }
-    c.esc = EscKind::None;
-    let st = run_exit_handlers(c, i32::MIN);
-    (c.esc, c.esc_val, c.esc_tag, c.esc_tag_v) = saved;
-    // a handler's status (exit / error) wins; the error is reported unless a handler's error showed it as its cause
-    let st0 = if ORIG_ERR.get().1 { 1 } else { handle_toplevel_error(c) };
-    // an uncaught SignalException ends the process by its signal (after the handlers)
-    builtins::process::die_if_signaled();
-    if st == i32::MIN { st0 } else { st }
 }
 
 fn handle_toplevel_error(c: &mut Ctx) -> i32 {
@@ -449,7 +448,8 @@ fn handle_toplevel_error(c: &mut Ctx) -> i32 {
                 let no = ivar_get(c, e, symbol::intern(b"signo"));
                 if no.is_fixnum() {
                     builtins::process::die_by_signal_at_exit(no.as_fix() as i32);
-                    if !is_kind_of(c, e, vm().c_interrupt.get()) { return 128 + no.as_fix() as i32; }
+                    // a signal whose default action does not end the process (CHLD, WINCH): exit 1, as CRuby
+                    if !is_kind_of(c, e, vm().c_interrupt.get()) { return 1; }
                 }
             }
             report_exception(c, e);

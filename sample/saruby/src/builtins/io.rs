@@ -1207,10 +1207,10 @@ fn uint_chr(c: &mut Ctx, x: Value, enc: u8) -> Result<Vec<u8>, Esc> {
     use crate::builtins::encoding as en;
     let i = if x.is_fixnum() { x.as_fix() } else { -1 };
     if !(0..=u32::MAX as i64).contains(&i) { let s = crate::builtins::kernel::inspect_str(c, x)?; return err(c, c.vm().c_range_error.get(), format!("{} out of char range", s)); }
-    if (en::max_len(enc) == 1 && i > 0xff) || (en::is_unicode(enc) && i > 0x10ffff) { return err(c, c.vm().c_range_error.get(), format!("{} out of char range", i)); }
-    match en::code_to_bytes(enc, i as u32) {
-        Some(v) if en::precise_len(enc, &v, 0) == Some(v.len()) => Ok(v),
-        _ => err(c, c.vm().c_range_error.get(), format!("invalid codepoint 0x{:X} in {}", i, en::enc_name(enc))),
+    match crate::builtins::numeric_methods::enc_chr(enc, i as u64) {
+        Ok(v) => Ok(v),
+        Err(true) => err(c, c.vm().c_range_error.get(), format!("{} out of char range", i)),
+        Err(false) => err(c, c.vm().c_range_error.get(), format!("invalid codepoint 0x{:X} in {}", i, en::enc_name(enc))),
     }
 }
 fn io_ungetbyte(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
@@ -1291,7 +1291,10 @@ fn finish_wconv(c: &mut Ctx, slf: Value) -> Option<Value> {
     cv::close_writeconv(io_mut(c, slf));
     x
 }
-fn io_close(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { close_io(c, slf) }
+fn io_close(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
+    if rio(c, slf).is_some_and(|io| !io.init) { return err(c, c.vm().c_io_error.get(), "uninitialized stream"); }
+    close_io(c, slf)
+}
 fn io_close_write(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let Some(io) = rio_mut(c, slf) else { return Ok(NIL) };
     if io.closed { return Ok(NIL); }
@@ -1340,7 +1343,8 @@ pub fn io_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let k = class_path(c, real_class_of(c, slf));
     let s = match rio(c, slf) {
         None => format!("#<{}>", k),
-        Some(i) if !i.init => format!("#<{}: uninitialized>", k),
+        // rb_any_to_s
+        Some(i) if !i.init => crate::builtins::kernel::any_to_s_str(c, slf),
         Some(i) => {
             let named = i.has_path || !i.path.is_empty();
             if !named && i.closed { format!("#<{}:(closed)>", k) } else {
@@ -1414,13 +1418,13 @@ fn io_pos(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 fn io_pid(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let io = get_io(c, slf)?; Ok(if io.pid > 0 { Value::fix(io.pid as i64) } else { NIL }) }
 fn io_to_io(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(slf) }
 fn io_ext_enc(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
-    if rio(c, slf).is_none() { get_io(c, slf)?; }
+    if rio(c, slf).is_none_or(|io| !io.init) { get_io(c, slf)?; }
     let io = rio(c, slf).expect("an IO");
     let e = if io.enc2.is_some() { io.enc2 } else if io.writable { io.enc } else { Some(enc_of(io)) };
     Ok(match e { Some(e) => crate::builtins::encoding::encoding_value(c, e), None => NIL })
 }
 fn io_int_enc(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
-    if rio(c, slf).is_none() { get_io(c, slf)?; }
+    if rio(c, slf).is_none_or(|io| !io.init) { get_io(c, slf)?; }
     let io = rio(c, slf).expect("an IO");
     Ok(if io.enc2.is_none() { NIL } else { crate::builtins::encoding::encoding_value(c, enc_of(io)) })
 }

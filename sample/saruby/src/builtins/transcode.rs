@@ -212,6 +212,11 @@ pub fn open_opts(c: &Ctx, sname: &str, dname: &str, ecflags: u32, o: &Opts) -> O
 
 /// transcode_loop: all of `src` converted; raises the conversion errors.
 pub fn transcode_loop(c: &mut Ctx, src: &[u8], sname: &str, dname: &str, ecflags: u32, o: &Opts) -> Result<Vec<u8>, Esc> {
+    transcode_loop_src(c, src, sname, dname, ecflags, o, None)
+}
+/// `source`: the String being encoded; a fallback that resizes it raises "string modified" (4.0.10).
+fn transcode_loop_src(c: &mut Ctx, src: &[u8], sname: &str, dname: &str, ecflags: u32, o: &Opts, source: Option<Value>) -> Result<Vec<u8>, Esc> {
+    let source_len = source.map(|v| c.str_bytes(v).len());
     let Some(mut ec) = open_opts(c, sname, dname, ecflags, o) else { return Err(open_exc(c, sname, dname, ecflags)) };
     let max_output = ec.last_tc.map(|i| ec.elems[i].tc.tr.max_out as usize).unwrap_or(1);
     let mut out = Vec::with_capacity(src.len() + 30);
@@ -225,6 +230,7 @@ pub fn transcode_loop(c: &mut Ctx, src: &[u8], sname: &str, dname: &str, ecflags
             let r = if is_hash(fb) { crate::hash::hash_aref(c, fb, rep)? }
                     else if is_proc(fb) || is_method_obj(fb) { funcall(c, fb, intern(b"call"), &[rep], std::ptr::null())? }
                     else { funcall_public(c, fb, intern(b"[]"), &[rep], std::ptr::null())? };
+            if let (Some(v), Some(n)) = (source, source_len) { if c.str_bytes(v).len() != n { return err(c, c.vm().c_runtime_error.get(), "string modified"); } }
             let r = if r != NIL && r != UNDEF { Some(expect_str(c, r)?) } else { None };
             if let Some(r) = r {
                 let (b, e) = (c.str_bytes(r).to_vec(), en::enc_name(c.str_enc(r)));
@@ -316,7 +322,7 @@ fn transcode1(c: &mut Ctx, slf: Value, dname: String, denc: Option<u8>, src: Opt
         }
         if ev::enc_eq(&sname, &dname) { sn = String::new(); dn = String::new(); }
     }
-    let out = transcode_loop(c, &src, &sn, &dn, ecflags, o)?;
+    let out = transcode_loop_src(c, &src, &sn, &dn, ecflags, o, Some(slf))?;
     let _ = senc;
     Ok(Some((Some(out), dencidx.unwrap_or(ENC_BINARY))))
 }
@@ -513,6 +519,7 @@ fn ec_primitive_convert(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let output = expect_str(c, output)?;
     let input = if input != NIL { Some(expect_str(c, input)?) } else { None };
     c.str_modify(output)?;
+    if input == Some(output) { return arg_err(c, "cannot convert into the source string"); }
     if size_v == NIL {
         size = (c.str_len(output).max(23)) as i64;
         if let Some(i) = input { size = size.max(c.str_len(i) as i64); }

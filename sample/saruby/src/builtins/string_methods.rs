@@ -188,7 +188,7 @@ cfn!(s_mod, |c, slf, a, b_| {
     } else { NIL };
     // the elements stay reachable through `arr`, kept alive past the call
     let args: Vec<Value> = if arr != NIL { c.ary(arr).to_vec() } else { vec![x] };
-    let r = crate::builtins::sprintf::format(c, slf, &args);
+    let r = crate::builtins::sprintf::format_ary(c, slf, &args, arr);
     std::hint::black_box(arr);
     r
 });
@@ -343,10 +343,10 @@ fn int_to_char_str(c: &mut Ctx, slf: Value, x: Value) -> RV {
         if enc == ENC_ASCII && i > 127 { c.rstring_mut(slf).enc = ENC_BINARY; }
         return Ok(c.str_new_enc(&[i as u8], c.str_enc(slf)));
     }
-    if i > u32::MAX as i64 || (en::is_unicode(enc) && i > 0x10ffff) || (en::is_single_byte(enc) && i > 0xff) { return err(c, c.vm().c_range_error.get(), format!("{} out of char range", i)); }
-    match en::code_to_bytes(enc, i as u32) {
-        Some(v) => Ok(c.str_new_enc(&v, enc)),
-        None => err(c, c.vm().c_range_error.get(), format!("invalid codepoint 0x{:X} in {}", i, en::enc_name(enc))),
+    match crate::builtins::numeric_methods::enc_chr(enc, i as u64) {
+        Ok(v) => Ok(c.str_new_enc(&v, enc)),
+        Err(true) => err(c, c.vm().c_range_error.get(), format!("{} out of char range", i)),
+        Err(false) => err(c, c.vm().c_range_error.get(), format!("invalid codepoint 0x{:X} in {}", i, en::enc_name(enc))),
     }
 }
 cfn!(#[inline] s_ltlt, |c, slf, a, b_| {
@@ -1916,11 +1916,11 @@ fn broken_strip_err(c: &mut Ctx, slf: Value, l: bool, r: bool) -> Result<Option<
     if l {
         while i < b.len() {
             let (n, code) = if en::min_len(enc) == 4 {
-                // Onigmo's utf32 mbc_enc_len tests the code as a signed int: 0x80000000.. pass
+                // 4.0.10's utf32 mbc_to_code is unsigned: 0x80000000.. are invalid too
                 if b.len() - i < 4 { return arg_err(c, msg); }
                 let w = [b[i], b[i + 1], b[i + 2], b[i + 3]];
                 let k = if enc == en::ENC_UTF32LE { u32::from_le_bytes(w) } else { u32::from_be_bytes(w) };
-                if k as i32 > 0x10ffff || (0xd800..=0xdfff).contains(&k) { return arg_err(c, msg); }
+                if k > 0x10ffff || (0xd800..=0xdfff).contains(&k) { return arg_err(c, msg); }
                 (4, k)
             } else {
                 let Some(n) = en::precise_len(enc, &b, i) else { return arg_err(c, msg) };

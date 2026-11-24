@@ -26,7 +26,9 @@ fn main() {
     assert!(st.success());
     }
     // the reference ruby's stdlib: pure-Ruby libraries are loaded from there on require
-    if let Ok(o) = Command::new("ruby").args(["-e", "print RbConfig::CONFIG['rubylibdir'], ':', Gem.default_dir"]).output() {
+    let ref_ruby = std::env::var("SARUBY_REF_RUBY").unwrap_or_else(|_| "ruby".into());
+    println!("cargo:rerun-if-env-changed=SARUBY_REF_RUBY");
+    if let Ok(o) = Command::new(&ref_ruby).args(["-e", "print RbConfig::CONFIG['rubylibdir'], ':', Gem.default_dir"]).output() {
         if o.status.success() { println!("cargo:rustc-env=SARUBY_STDLIB={}", String::from_utf8_lossy(&o.stdout)); }
     }
     println!("cargo:rustc-link-search=native={}", out.display());

@@ -229,9 +229,15 @@ fn fmt_hex_float(f: f64, prec: Option<usize>, upper: bool, alt: bool) -> String 
 
 // ---- format ---------------------------------------------------------------------------------
 
-struct Args<'a> { args: &'a [Value], next: usize, posarg: i64, hash: Option<Value> }
+struct Args<'a> { args: &'a [Value], next: usize, posarg: i64, hash: Option<Value>, ary: Value }
 impl<'a> Args<'a> {
+    /// format_args_check (4.0.10): String#%'s Array must not be resized while formatting.
+    fn check(&self, c: &mut Ctx) -> Result<(), Esc> {
+        if self.ary != NIL && c.ary_len(self.ary) != self.args.len() { return err(c, c.vm().c_runtime_error.get(), "array modified during formatting"); }
+        Ok(())
+    }
     fn next_arg(&mut self, c: &mut Ctx) -> RV {
+        self.check(c)?;
         if self.posarg == -1 { return arg_err(c, format!("unnumbered({}) mixed with numbered", self.next + 1)); }
         if self.posarg == -2 { return arg_err(c, format!("unnumbered({}) mixed with named", self.next + 1)); }
         self.next += 1;
@@ -242,6 +248,7 @@ impl<'a> Args<'a> {
         if self.posarg > 0 { return arg_err(c, format!("numbered({}) after unnumbered({})", n, self.posarg)); }
         if self.posarg == -2 { return arg_err(c, format!("numbered({}) after named", n)); }
         if n < 1 { return arg_err(c, format!("invalid index - {}$", n)); }
+        self.check(c)?;
         self.posarg = -1;
         match self.args.get(n as usize - 1) { Some(&v) => Ok(v), None => arg_err(c, "too few arguments") }
     }
@@ -283,14 +290,16 @@ fn float_arg(c: &mut Ctx, v: Value) -> Result<f64, Esc> {
     to_f(c, v)
 }
 
-pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
+pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV { format_ary(c, fmtv, args, NIL) }
+/// rb_str_format_ary: `ary` (or nil) is the Array `args` were taken from.
+pub fn format_ary(c: &mut Ctx, fmtv: Value, args: &[Value], ary: Value) -> RV {
     use crate::builtins::encoding as en;
     let fmts = expect_str(c, fmtv)?;
     let (fenc, fmt) = { let r = c.rstring(fmts); (r.enc, r.b.to_vec()) };
     if !en::ascii_compat(fenc) { return err(c, c.vm().c_compat_error.get(), format!("ASCII incompatible encoding: {}", en::enc_name(fenc))); }
     let mut out: Vec<u8> = Vec::with_capacity(fmt.len() + 16);
     let mut renc = fenc;
-    let mut st = Args { args, next: 0, posarg: 0, hash: None };
+    let mut st = Args { args, next: 0, posarg: 0, hash: None, ary };
     let mut i = 0;
     while i < fmt.len() {
         let ch = fmt[i];
@@ -412,11 +421,20 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
                             let first = c.chars_of(s2).into_iter().next().unwrap_or_default();
                             c.str_new_enc(&first, c.str_enc(s2))
                         } else {
+                            // NUM2INT, rb_enc_codelen, rb_ascii8bit_appendable_encoding_index
                             let n = num_to_long(c, v)?;
-                            if n < 0 { return err(c, c.vm().c_range_error.get(), format!("{} out of char range", n)); }
-                            match en::code_to_bytes(renc, n as u32) {
-                                Some(bs) => c.str_new_enc(&bs, renc),
-                                None => return err(c, c.vm().c_range_error.get(), if en::is_unicode(renc) && n > 0x10ffff || en::is_single_byte(renc) { format!("{} out of char range", n) } else { format!("invalid character") }),
+                            if n > i32::MAX as i64 || n < i32::MIN as i64 {
+                                return err(c, c.vm().c_range_error.get(), format!("integer {} too {} to convert to 'int'", n, if n < 0 { "small" } else { "big" }));
+                            }
+                            if n < 0 { return arg_err(c, "invalid character"); }
+                            if renc == ENC_BINARY || renc == ENC_ASCII {
+                                if n > 0xff { return err(c, c.vm().c_range_error.get(), format!("{} out of char range", n)); }
+                                c.str_new_enc(&[n as u8], if n > 0x7f { ENC_BINARY } else { renc })
+                            } else {
+                                match en::code_to_bytes(renc, n as u32) {
+                                    Some(bs) if !(en::is_single_byte(renc) && n > 0xff) => c.str_new_enc(&bs, renc),
+                                    _ => return arg_err(c, "invalid character"),
+                                }
                             }
                         }
                     }
@@ -498,6 +516,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV {
             }
         }
     }
+    st.check(c)?;
     if st.posarg >= 0 && st.next < args.len() && !(args.len() == 1 && is_hash(args[0])) {
         let dbg = gvar_get(c, intern(b"$DEBUG"))?;
         if dbg.truthy() { return arg_err(c, "too many arguments for format string"); }

@@ -445,6 +445,12 @@ fn lazy_with_index(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     let args = c.ary_new_from(&[memo]);
     add(c, slf, Kind::WithIndex, blk, memo, args, "with_index")
 }
+/// lazy_each_with_index (4.0.10): with_index(0) without a block, the eager super with one.
+fn lazy_each_with_index(c: &mut Ctx, slf: Value, _a: &[Value], blk: Blk) -> RV {
+    if !blk.is_null() { return lazy_super_call(c, slf, intern(b"each_with_index"), &[], blk); }
+    let args = c.ary_new_from(&[Value::fix(0)]);
+    add(c, slf, Kind::WithIndex, blk, Value::fix(0), args, "each_with_index")
+}
 fn lazy_zip(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if !blk.is_null() { return lazy_super_call(c, slf, intern(b"zip"), a, blk); }
     let ary = c.ary_new_capa(a.len());
@@ -471,8 +477,8 @@ fn lazy_eager(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     Ok(new_enum(c, k, slf, s::each, &[], TRUE))
 }
 /// lazy_use_super_method: to_enum(:map) and co. iterate with Enumerable's eager method.
-const SUPER_NAMES: [&str; 18] = ["map", "collect", "flat_map", "collect_concat", "select", "find_all", "filter", "filter_map", "reject",
-                                 "grep", "grep_v", "zip", "take", "take_while", "drop", "drop_while", "uniq", "with_index"];
+const SUPER_NAMES: [&str; 19] = ["map", "collect", "flat_map", "collect_concat", "select", "find_all", "filter", "filter_map", "reject",
+                                 "grep", "grep_v", "zip", "take", "take_while", "drop", "drop_while", "uniq", "with_index", "each_with_index"];
 fn lazy_to_enum(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     let mut meth = if a.is_empty() { s::each } else { crate::builtins::object::to_sym_arg(c, a[0])? };
     if SUPER_NAMES.iter().any(|n| n.as_bytes() == sym_bytes(meth)) { meth = intern(format!("_enumerable_{}", crate::symbol::sym_str(meth)).as_bytes()); }
@@ -524,6 +530,7 @@ pub fn init(c: &mut Ctx, k: Value, enumerable: Value) {
     enumerable_alias!("map", "collect", "flat_map", "collect_concat", "select", "find_all", "filter", "filter_map", "reject",
                       "grep", "grep_v", "zip", "take", "take_while", "drop", "drop_while", "uniq");
     define_private_cfunc(c, k, "_enumerable_with_index", |c, s, a, b| { let e = c.vm().c_enumerator.get(); call_method_of(c, e, s, intern(b"with_index"), a, b) }, -1);
+    define_private_cfunc(c, k, "_enumerable_each_with_index", |c, s, a, b| { let e = c.vm().c_enumerator.get(); call_method_of(c, e, s, intern(b"each_with_index"), a, b) }, -1);
     define_private_cfunc(c, k, "initialize", lazy_initialize, -1);
     define_cfunc(c, k, "to_enum", lazy_to_enum, -1);
     define_cfunc(c, k, "enum_for", lazy_to_enum, -1);
@@ -553,5 +560,6 @@ pub fn init(c: &mut Ctx, k: Value, enumerable: Value) {
     define_cfunc(c, k, "uniq", lazy_uniq, 0);
     define_cfunc(c, k, "compact", lazy_compact, 0);
     define_cfunc(c, k, "with_index", lazy_with_index, -1);
+    define_cfunc(c, k, "each_with_index", lazy_each_with_index, 0);
     let _ = crate::builtins::object::alias_method(c, k, intern(b"force"), intern(b"to_a"));
 }

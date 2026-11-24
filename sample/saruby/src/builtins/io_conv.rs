@@ -428,11 +428,10 @@ pub fn getline<S: Src>(io: &mut RIo, rs: &Sep, limit: Option<usize>, chomp: bool
     loop {
         c = match appendline::<S>(io, newline, &mut line, &mut limit, enc) { Ok(c) => c, Err(CErr::Block(_)) => return Err(CErr::Block(line)), Err(e) => return Err(e) };
         let Some(ch) = c else { break };
-        if Some(ch) == newline {
-            if line.len() < rsb.len() { continue; }
+        // 4.0.10: a rejected candidate still goes through the limit check
+        if Some(ch) == newline && line.len() >= rsb.len() {
             let p = line.len() - rsb.len();
-            if !at_char_boundary(&line, p, enc) { continue; }
-            if line[p..] == rsb[..] {
+            if at_char_boundary(&line, p, enc) && line[p..] == rsb[..] {
                 if chomp {
                     let mut q = p;
                     if chomp_cr && q > 0 && line[q - 1] == b'\r' { q -= 1; }
