@@ -985,8 +985,8 @@ fn time_dump(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     }
     let str = c.str_from_vec_enc(buf, ENC_BINARY);
     for (n, x) in ivar_list(c, slf) { if sym_bytes(n).starts_with(b"@") { ivar_set_raw(c, str, n, x); } }
-    if nano != Value::fix(0) {
-        let (num, den) = if crate::builtins::rational::is_rational(c, nano) { crate::builtins::rational::rat_parts(c, nano) } else { (nano, Value::fix(1)) };
+    let (num, den) = if crate::builtins::rational::is_rational(c, nano) { crate::builtins::rational::rat_parts(c, nano) } else { (nano, Value::fix(1)) };
+    if num != Value::fix(0) {
         ivar_set_raw(c, str, intern(b"nano_num"), num);
         ivar_set_raw(c, str, intern(b"nano_den"), den);
     }
