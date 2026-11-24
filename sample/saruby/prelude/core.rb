@@ -303,7 +303,7 @@ end
 
 module GC
   # CRuby's gc.rb signature: keywords, no Hash allocated per call
-  def self.start(full_mark: true, immediate_mark: true, immediate_sweep: true) = GC.__start(full_mark)
+  def self.start(full_mark: true, immediate_mark: true, immediate_sweep: true) = __start(full_mark)
 end
 
 module Kernel

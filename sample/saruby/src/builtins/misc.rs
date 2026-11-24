@@ -50,25 +50,199 @@ pub fn unbase64(s2: &[u8]) -> Vec<u8> {
 }
 // ---- GC / ObjectSpace -----------------------------------------------------------------------
 
-fn gc_start(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { crate::gc::collect(c); run_finalizer_queue(c, FinAt::Internal(44)); Ok(NIL) }
+fn gc_start(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { explicit_gc(c, true); Ok(NIL) }
 // GC.__start(full_mark), behind the prelude's GC.start (keywords as in CRuby's gc.rb, no Hash)
-fn gc_start_full(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
-    if a[0].truthy() { crate::gc::collect(c) } else { crate::gc::collect_minor(c) }
+fn gc_start_full(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { explicit_gc(c, a[0].truthy()); Ok(NIL) }
+static LAST_EXPLICIT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);   // GC.count after the last GC.start
+static LAST_FULL: AtomicBool = AtomicBool::new(false);
+fn explicit_gc(c: &mut Ctx, full: bool) {
+    if full { crate::gc::collect(c) } else { crate::gc::collect_minor(c) }
+    LAST_EXPLICIT.store(crate::gc::collections(), Relaxed);
+    LAST_FULL.store(full, Relaxed);
     run_finalizer_queue(c, FinAt::Internal(44));
-    Ok(NIL)
 }
 fn gc_count(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(crate::gc::collections() as i64)) }
 fn gc_disable(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(crate::gc::set_disabled(true))) }
 fn gc_enable(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(crate::gc::set_disabled(false))) }
-fn gc_stat(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
+/// CRuby's heap pages (64 KiB) in slots of this heap's size: the page counts GC.stat reports.
+fn page_slots() -> usize { 65536 / std::mem::size_of::<RObj>() }
+/// GC.stat's keys in CRuby 4.0's order. saruby has one heap without generations, compaction or
+/// malloc accounting: those keys are 0 (limits: CRuby's defaults); marking_time is the whole time.
+fn gc_stat_pairs() -> Vec<(&'static str, i64)> {
     let (n, m, h) = (crate::gc::collections() as i64, crate::gc::minor_collections() as i64, crate::gc::stats());
-    let st = c.hash_new();
-    for (k, v) in [("count", n), ("heap_live_slots", (h.slots - h.free) as i64), ("heap_free_slots", h.free as i64),
-                   ("total_allocated_objects", h.allocated as i64), ("total_freed_objects", h.freed as i64), ("heap_available_slots", h.slots as i64), ("major_gc_count", n - m), ("minor_gc_count", m)] {
-        hash_set(c, st, sym_value(k), Value::fix(v))?;
+    let ms = crate::gc::total_time().as_millis() as i64;
+    let pages = h.slots.div_ceil(page_slots()) as i64;
+    let live = (h.slots - h.free) as i64;
+    vec![("count", n), ("time", ms), ("marking_time", ms), ("sweeping_time", 0), ("heap_allocated_pages", pages), ("heap_empty_pages", 0),
+         ("heap_allocatable_slots", 0), ("heap_available_slots", h.slots as i64), ("heap_live_slots", live), ("heap_free_slots", h.free as i64),
+         ("heap_final_slots", 0), ("heap_marked_slots", live), ("heap_eden_pages", pages), ("total_allocated_pages", pages), ("total_freed_pages", 0),
+         ("total_allocated_objects", h.allocated as i64), ("total_freed_objects", h.freed as i64), ("malloc_increase_bytes", 0),
+         ("malloc_increase_bytes_limit", 16 << 20), ("minor_gc_count", m), ("major_gc_count", n - m), ("compact_count", 0), ("read_barrier_faults", 0),
+         ("total_moved_objects", 0), ("remembered_wb_unprotected_objects", 0), ("remembered_wb_unprotected_objects_limit", 0), ("old_objects", 0),
+         ("old_objects_limit", 0), ("oldmalloc_increase_bytes", 0), ("oldmalloc_increase_bytes_limit", 16 << 20)]
+}
+/// GC.stat / GC.latest_gc_info / GC.stat_heap's argument: nil (a new Hash), a Hash (filled), or a Symbol (that value).
+fn stat_reply(c: &mut Ctx, arg: Option<Value>, pairs: Vec<(&'static str, Value)>) -> RV {
+    match arg {
+        Some(k) if k.is_sym() => match pairs.iter().find(|p| sym_value(p.0) == k) {
+            Some(p) => Ok(p.1),
+            None => arg_err(c, format!("unknown key: {}", crate::symbol::sym_str(k.as_sym()))),
+        },
+        Some(h) if is_hash(h) => { for (k, v) in pairs { hash_set(c, h, sym_value(k), v)?; } Ok(h) }
+        Some(x) if x != NIL => type_err(c, "non-hash or symbol given"),
+        _ => { let h = c.hash_new(); for (k, v) in pairs { hash_set(c, h, sym_value(k), v)?; } Ok(h) }
     }
-    if let Some(&k) = a.first() { if k.is_sym() { return Ok(hash_get_opt(c, st, k)?.unwrap_or(Value::fix(0))); } }
-    Ok(st)
+}
+fn gc_stat(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
+    check_argc(c, a, 0, 1)?;
+    let pairs = gc_stat_pairs().into_iter().map(|(k, v)| (k, Value::fix(v))).collect();
+    stat_reply(c, a.first().copied(), pairs)
+}
+/// GC.latest_gc_info: what saruby knows of the last collection (GC.start or an allocation).
+fn gc_latest_info(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
+    check_argc(c, a, 0, 1)?;
+    let n = crate::gc::collections();
+    let explicit = n != 0 && LAST_EXPLICIT.load(Relaxed) == n;
+    let major = if explicit && LAST_FULL.load(Relaxed) { sym_value("force") } else { NIL };
+    let pairs = vec![("major_by", major), ("need_major_by", NIL), ("gc_by", sym_value(if explicit { "method" } else { "newobj" })),
+        ("have_finalizer", FALSE), ("immediate_sweep", Value::bool(explicit)), ("state", sym_value("none")),
+        ("weak_references_count", Value::fix(0)), ("retained_weak_references_count", Value::fix(0))];
+    stat_reply(c, a.first().copied(), pairs)
+}
+/// GC.stat_heap(heap = nil, hash_or_key = nil): one heap (0).
+fn gc_stat_heap(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
+    check_argc(c, a, 0, 2)?;
+    let h = crate::gc::stats();
+    let pages = h.slots.div_ceil(page_slots()) as i64;
+    let v = |x: i64| Value::fix(x);
+    let pairs = vec![("slot_size", v(std::mem::size_of::<RObj>() as i64)), ("heap_live_slots", v((h.slots - h.free) as i64)), ("heap_free_slots", v(h.free as i64)),
+        ("heap_final_slots", v(0)), ("heap_eden_pages", v(pages)), ("heap_eden_slots", v(h.slots as i64)), ("total_allocated_pages", v(pages)),
+        ("force_major_gc_count", v(0)), ("force_incremental_marking_finish_count", v(0)), ("total_allocated_objects", v(h.allocated as i64)), ("total_freed_objects", v(h.freed as i64))];
+    match a.first().copied() {
+        None | Some(NIL) => {
+            let all = if let Some(&x) = a.get(1) { if !is_hash(x) { return type_err(c, "non-hash given"); } x } else { c.hash_new() };
+            let one = c.hash_new();
+            stat_reply(c, Some(one), pairs)?;
+            hash_set(c, all, Value::fix(0), one)?;
+            Ok(all)
+        }
+        Some(i) if i == Value::fix(0) => stat_reply(c, a.get(1).copied(), pairs),
+        Some(i) if i.is_fixnum() => arg_err(c, "size pool index out of range"),
+        Some(i) => { let k = class_name_for_err(c, i); type_err(c, format!("no implicit conversion of {} into Integer", k)) }
+    }
+}
+// GC.config / auto_compact / measure_total_time / stress: settings saruby keeps (stress is real)
+static ALLOW_FULL_MARK: AtomicBool = AtomicBool::new(true);
+static AUTO_COMPACT: AtomicBool = AtomicBool::new(false);
+static MEASURE_TIME: AtomicBool = AtomicBool::new(true);
+static STRESS_V: Global = Global::new();
+fn gc_config(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
+    check_argc(c, a, 0, 1)?;
+    if let Some(&h) = a.first() { if h != NIL {
+        if !is_hash(h) { return arg_err(c, "ArgumentError"); }
+        if hash_get_opt(c, h, sym_value("implementation"))?.is_some() { return arg_err(c, "Attempting to set read-only key \"Implementation\""); }
+        if let Some(v) = hash_get_opt(c, h, sym_value("rgengc_allow_full_mark"))? { ALLOW_FULL_MARK.store(v.truthy(), Relaxed); }
+    } }
+    let h = c.hash_new();
+    hash_set(c, h, sym_value("rgengc_allow_full_mark"), Value::bool(ALLOW_FULL_MARK.load(Relaxed)))?;
+    let d = c.str_new(b"default");
+    hash_set(c, h, sym_value("implementation"), d)?;
+    Ok(h)
+}
+fn gc_set_stress(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
+    crate::gc::set_stress(if a[0].truthy() { 1 } else { 0 });
+    STRESS_V.set(c, if a[0] == NIL { FALSE } else { a[0] });
+    Ok(a[0])
+}
+/// GC.compact's answer: nothing moves in saruby's heap.
+fn compact_info(c: &mut Ctx) -> RV {
+    let h = c.hash_new();
+    for k in ["considered", "moved", "moved_up", "moved_down"] { let e = c.hash_new(); hash_set(c, h, sym_value(k), e)?; }
+    Ok(h)
+}
+// ---- GC::Profiler (gc.c): records kept by the runtime while enabled ----
+fn prof_raw_data(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
+    let Some(rs) = crate::gc::profile_records() else { return Ok(NIL) };
+    let slot = std::mem::size_of::<RObj>() as i64;
+    let out = c.ary_new();
+    for r in rs {
+        let fl = c.hash_new();
+        for (k, v) in [("major_by", sym_value("force")), ("gc_by", sym_value("newobj")), ("have_finalizer", FALSE), ("immediate_sweep", TRUE),
+                       ("weak_references_count", Value::fix(0)), ("retained_weak_references_count", Value::fix(0))] { hash_set(c, fl, sym_value(k), v)?; }
+        let h = c.hash_new();
+        hash_set(c, h, sym_value("GC_FLAGS"), fl)?;
+        let t = c.float_new(r.time.as_secs_f64());
+        hash_set(c, h, sym_value("GC_TIME"), t)?;
+        let at = c.float_new(crate::gc::since_start(r.at));
+        hash_set(c, h, sym_value("GC_INVOKE_TIME"), at)?;
+        for (k, v) in [("HEAP_USE_SIZE", (r.stats.slots - r.stats.free) as i64 * slot), ("HEAP_TOTAL_SIZE", r.stats.slots as i64 * slot), ("HEAP_TOTAL_OBJECTS", r.stats.slots as i64), ("MOVED_OBJECTS", 0)] {
+            hash_set(c, h, sym_value(k), Value::fix(v))?;
+        }
+        hash_set(c, h, sym_value("GC_IS_MARKED"), TRUE)?;
+        c.ary_push(out, h);
+    }
+    Ok(out)
+}
+/// gc_profile_dump_on
+fn prof_result_bytes() -> Vec<u8> {
+    let Some(rs) = crate::gc::profile_records() else { return vec![] };
+    if rs.is_empty() { return vec![]; }
+    let slot = std::mem::size_of::<RObj>();
+    let mut o = format!("GC {} invokes.\nIndex    Invoke Time(sec)       Use Size(byte)     Total Size(byte)         Total Object                    GC Time(ms)\n", crate::gc::collections());
+    for (i, r) in rs.iter().enumerate() {
+        o.push_str(&format!("{:5} {:19.3} {:20} {:20} {:20} {:30.20}\n", i + 1, crate::gc::since_start(r.at), (r.stats.slots - r.stats.free) * slot, r.stats.slots * slot, r.stats.slots, r.time.as_secs_f64() * 1000.0));
+    }
+    o.into_bytes()
+}
+fn prof_report(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
+    check_argc(c, a, 0, 1)?;
+    let b = prof_result_bytes();
+    let s = c.str_new(&b);
+    match a.first() { Some(&out) => { funcall(c, out, intern(b"write"), &[s], std::ptr::null())?; } None => { stdout_write(c, &b)?; } }
+    Ok(NIL)
+}
+fn prof_total_time(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
+    let t: f64 = crate::gc::profile_records().map_or(0.0, |rs| rs.iter().map(|r| r.time.as_secs_f64()).sum());
+    Ok(c.float_new(t))
+}
+fn init_gc_extras(c: &mut Ctx, gc: Value) {
+    define_singleton_cfunc(c, gc, "latest_gc_info", gc_latest_info, -1);
+    define_singleton_cfunc(c, gc, "stat_heap", gc_stat_heap, -1);
+    define_singleton_cfunc(c, gc, "config", gc_config, -1);
+    define_singleton_cfunc(c, gc, "auto_compact", |_c, _s, _a, _b| Ok(Value::bool(AUTO_COMPACT.load(Relaxed))), 0);
+    define_singleton_cfunc(c, gc, "auto_compact=", |_c, _s, a, _b| { AUTO_COMPACT.store(a[0].truthy(), Relaxed); Ok(a[0]) }, 1);
+    define_singleton_cfunc(c, gc, "measure_total_time", |_c, _s, _a, _b| Ok(Value::bool(MEASURE_TIME.load(Relaxed))), 0);
+    define_singleton_cfunc(c, gc, "measure_total_time=", |_c, _s, a, _b| { MEASURE_TIME.store(a[0].truthy(), Relaxed); Ok(a[0]) }, 1);
+    define_singleton_cfunc(c, gc, "stress", |c, _s, _a, _b| { let v = STRESS_V.get(c); Ok(if v == NIL { FALSE } else { v }) }, 0);
+    define_singleton_cfunc(c, gc, "stress=", gc_set_stress, 1);
+    define_singleton_cfunc(c, gc, "compact", |c, _s, _a, _b| { explicit_gc(c, true); compact_info(c) }, 0);
+    define_singleton_cfunc(c, gc, "latest_compact_info", |c, _s, _a, _b| compact_info(c), 0);
+    define_singleton_cfunc(c, gc, "verify_compaction_references", |c, _s, _a, _b| { explicit_gc(c, true); compact_info(c) }, -1);
+    // gc.c's constants, of saruby's one heap
+    let ic = c.hash_new();
+    let slot = std::mem::size_of::<RObj>() as i64;
+    for (k, v) in [("DEBUG", FALSE), ("BASE_SLOT_SIZE", Value::fix(slot)), ("RBASIC_SIZE", Value::fix(16)), ("RVALUE_OVERHEAD", Value::fix(0)),
+                   ("HEAP_PAGE_OBJ_LIMIT", Value::fix(page_slots() as i64)), ("HEAP_PAGE_BITMAP_SIZE", Value::fix(page_slots().div_ceil(64) as i64 * 8)),
+                   ("HEAP_PAGE_SIZE", Value::fix(65536)), ("HEAP_COUNT", Value::fix(1)), ("RVARGC_MAX_ALLOCATE_SIZE", Value::fix(slot)), ("RVALUE_OLD_AGE", Value::fix(3))] {
+        let _ = hash_set(c, ic, sym_value(k), v);
+    }
+    obj_set_flags(ic, crate::object::FL_FROZEN);
+    const_set(c, gc, intern(b"INTERNAL_CONSTANTS"), ic);
+    let opts = c.ary_new();
+    obj_set_flags(opts, crate::object::FL_FROZEN);
+    const_set(c, gc, intern(b"OPTS"), opts);
+    // GC#garbage_collect (include GC)
+    define_cfunc(c, gc, "garbage_collect", os_garbage_collect, -1);
+    let pr = define_module_under(c, gc, "Profiler");
+    let ds = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_singleton_cfunc(c, pr, n, f, a);
+    ds(c, "enabled?", |_c, _s, _a, _b| Ok(Value::bool(crate::gc::profile_records().is_some())), 0);
+    ds(c, "enable", |_c, _s, _a, _b| { crate::gc::set_profile(true); Ok(NIL) }, 0);
+    ds(c, "disable", |_c, _s, _a, _b| { crate::gc::set_profile(false); Ok(NIL) }, 0);
+    ds(c, "clear", |_c, _s, _a, _b| { crate::gc::profile_clear(); Ok(NIL) }, 0);
+    ds(c, "raw_data", prof_raw_data, 0);
+    ds(c, "result", |c, _s, _a, _b| { let b = prof_result_bytes(); Ok(c.str_new(&b)) }, 0);
+    ds(c, "report", prof_report, -1);
+    ds(c, "total_time", prof_total_time, 0);
 }
 fn os_each_object(c: &mut Ctx, s2: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, s2, intern(b"each_object"), a, NIL); }
@@ -307,15 +481,14 @@ pub fn init(c: &mut Ctx) {
     // GC / ObjectSpace
     let gc = define_module(c, "GC");
     vmr.m_gc.set(gc);
-    define_module_function(c, gc, "start", gc_start, -1);
-    define_singleton_cfunc(c, gc, "__start", gc_start_full, 1);
-    define_module_function(c, gc, "count", gc_count, 0);
-    define_module_function(c, gc, "disable", gc_disable, 0);
-    define_module_function(c, gc, "enable", gc_enable, 0);
-    define_module_function(c, gc, "stat", gc_stat, -1);
-    define_module_function(c, gc, "compact", gc_start, 0);
-    define_module_function(c, gc, "stress", |_c, _s, _a, _b| Ok(FALSE), 0);
-    define_module_function(c, gc, "stress=", |_c, _s, a, _b| Ok(a[0]), 1);
+    define_singleton_cfunc(c, gc, "start", gc_start, -1);
+    let gsk = singleton_class(c, gc);
+    define_private_cfunc(c, gsk, "__start", gc_start_full, 1);
+    define_singleton_cfunc(c, gc, "count", gc_count, 0);
+    define_singleton_cfunc(c, gc, "disable", gc_disable, 0);
+    define_singleton_cfunc(c, gc, "enable", gc_enable, 0);
+    define_singleton_cfunc(c, gc, "stat", gc_stat, -1);
+    init_gc_extras(c, gc);
     let os = define_module(c, "ObjectSpace");
     vmr.m_object_space.set(os);
     define_module_function(c, os, "each_object", os_each_object, -1);

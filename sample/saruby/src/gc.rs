@@ -56,7 +56,12 @@ fn heap(_: &mut Scope) -> &mut Heap {
 #[inline(always)]
 pub fn stack_base() -> usize { STACK_BASE.load(Relaxed) }
 
+static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+/// Seconds from process start to `t` (GC::Profiler's invoke time).
+pub fn since_start(t: std::time::Instant) -> f64 { t.saturating_duration_since(*START.get_or_init(std::time::Instant::now)).as_secs_f64() }
+
 pub fn init(stack_base: usize) {
+    START.get_or_init(std::time::Instant::now);
     unsafe { HEAP = Some(Heap::new()); }
     STACK_BASE.store(stack_base, Relaxed);
     if let Ok(s) = std::env::var("SARUBY_GC_STRESS") { STRESS.store(s.parse().unwrap_or(1).max(1), Relaxed); }
@@ -113,6 +118,18 @@ pub fn stats() -> rt::HeapStats { heap(&mut Scope).stats() }
 pub fn backend_name() -> &'static str { heap(&mut Scope).backend_name() }
 /// GC.disable / GC.enable: the previous state.
 pub fn set_disabled(d: bool) -> bool { heap(&mut Scope).set_disabled(d) }
+
+/// GC.stress=: collect at every allocation (0: off; SARUBY_GC_STRESS's n is replaced).
+pub fn set_stress(n: usize) { heap(&mut Scope).set_stress(n); }
+/// GC::Profiler.enable / .disable (records are dropped when disabled).
+pub fn set_profile(on: bool) {
+    let mut s = Scope;
+    let h = heap(&mut s);
+    if on != h.ctl.profile.is_some() { h.ctl.profile = if on { Some(vec![]) } else { None }; }
+}
+/// GC::Profiler records: None while disabled.
+pub fn profile_records() -> Option<Vec<rt::GcRecord>> { heap(&mut Scope).ctl.profile.clone() }
+pub fn profile_clear() { if let Some(r) = &mut heap(&mut Scope).ctl.profile { r.clear(); } }
 
 /// GC.start(full_mark: false), GC.disable or not.
 pub fn collect_minor(c: &mut Ctx) { heap(&mut Scope).collect_minor(c); }

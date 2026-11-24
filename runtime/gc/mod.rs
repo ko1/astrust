@@ -144,7 +144,13 @@ pub struct Control {
     minors: usize,             // minor collections that found nothing young (collect_minor)
     allocated_at_gc: u64,      // HeapStats::allocated when the last collection ended
     time: Duration,
+    /// GC::Profiler: one record per collection while Some
+    pub profile: Option<Vec<GcRecord>>,
 }
+
+/// A collection as GC::Profiler reports it: when it started, how long it took, the heap after it.
+#[derive(Clone, Copy, Debug)]
+pub struct GcRecord { pub at: Instant, pub time: Duration, pub stats: HeapStats }
 
 impl Control {
     /// GC.disable: allocation-driven triggers must not collect (backends check this).
@@ -159,7 +165,9 @@ impl Control {
         b.collect(lang, pending);
         self.collections += 1;
         self.allocated_at_gc = b.stats().allocated;
-        self.time += t0.elapsed();
+        let t = t0.elapsed();
+        self.time += t;
+        if let Some(r) = &mut self.profile { r.push(GcRecord { at: t0, time: t, stats: b.stats() }); }
     }
 }
 
@@ -175,7 +183,7 @@ impl<L: GcLang, B: GcBackend<L>> Gc<L, B> {
 
     pub fn new() -> Self {
         let () = Self::CHECK;
-        Gc { ctl: Control { slow: false, hook: false, stress: 0, stress_count: 0, disabled: false, collections: 0, minors: 0, allocated_at_gc: 0, time: Duration::ZERO }, backend: B::new(), _lang: PhantomData }
+        Gc { ctl: Control { slow: false, hook: false, stress: 0, stress_count: 0, disabled: false, collections: 0, minors: 0, allocated_at_gc: 0, time: Duration::ZERO, profile: None }, backend: B::new(), _lang: PhantomData }
     }
 
     /// Put `obj` in the heap.  May collect: everything the caller still needs must be

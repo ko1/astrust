@@ -11,7 +11,6 @@ use crate::array::*;
 use crate::builtins::numeric_methods::num_to_long;
 use crate::builtins::object::to_sym_arg;
 use crate::builtins::sys;
-use crate::hash::*;
 use crate::string::*;
 use crate::symbol::{intern, sym_bytes, sym_str};
 use crate::value::*;
@@ -90,29 +89,6 @@ fn m_erf(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let f = num_to_db
 fn m_erfc(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let f = num_to_dbl(c, a[0])?; Ok(c.float_new(sys::erfc(f))) }
 fn m_cbrt(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let f = num_to_dbl(c, a[0])?; let mut r = sys::cbrt(f); if r.is_finite() && !(f == 0.0 && r == 0.0) { r = (2.0 * r + (f / r / r)) / 3.0; } Ok(c.float_new(r)) }
 /// GC.stat_heap([heap [, key]]): saruby has one heap of fixed-size slots (heap 0).
-fn gc_stat_heap(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
-    let h = crate::gc::stats();
-    let st = c.hash_new();
-    for (k, v) in [("slot_size", std::mem::size_of::<RObj>() as i64), ("heap_live_slots", (h.slots - h.free) as i64), ("heap_free_slots", h.free as i64),
-                   ("total_allocated_objects", h.allocated as i64), ("total_freed_objects", h.freed as i64)] {
-        hash_set(c, st, sym_value(k), Value::fix(v))?;
-    }
-    match a.first() {
-        None => { let all = c.hash_new(); hash_set(c, all, Value::fix(0), st)?; Ok(all) }
-        Some(&i) if i == Value::fix(0) => match a.get(1) {
-            Some(&k) if k.is_sym() => match crate::hash::hash_get_opt(c, st, k)? { Some(v) => Ok(v), None => arg_err(c, format!("unknown key: {}", sym_str(k.as_sym()))) },
-            _ => Ok(st),
-        },
-        Some(_) => arg_err(c, "size pool index out of range"),
-    }
-}
-fn gc_config(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
-    let h = c.hash_new();
-    hash_set(c, h, sym_value("rgengc_allow_full_mark"), TRUE)?;
-    let d = c.str_new(b"default");
-    hash_set(c, h, sym_value("implementation"), d)?;
-    Ok(h)
-}
 fn k_global_variables(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     if crate::builtins::ractor::multi() { crate::builtins::ractor::global_variables_check(c)?; }
     let out = c.ary_new();
@@ -204,15 +180,8 @@ pub fn init(c: &mut Ctx) {
     define_module_function(c, vmr.m_math.get(), "expm1", m_expm1, 1);
     for (n, f) in [("erf", m_erf as CFunc), ("erfc", m_erfc), ("cbrt", m_cbrt), ("gamma", m_gamma), ("lgamma", m_lgamma)] { define_module_function(c, vmr.m_math.get(), n, f, 1); }
     let gc = vmr.m_gc.get();
-    define_module_function(c, gc, "auto_compact", |_c, _s, _a, _b| Ok(FALSE), 0);
-    define_module_function(c, gc, "auto_compact=", |_c, _s, a, _b| Ok(a[0]), 1);
-    define_module_function(c, gc, "measure_total_time", |_c, _s, _a, _b| Ok(TRUE), 0);
-    define_module_function(c, gc, "measure_total_time=", |_c, _s, a, _b| Ok(a[0]), 1);
-    define_module_function(c, gc, "total_time", |_c, _s, _a, _b| Ok(Value::fix(crate::gc::total_time().as_nanos() as i64)), 0);
-    define_module_function(c, gc, "config", gc_config, -1);
-    define_module_function(c, gc, "stat_heap", gc_stat_heap, -1);
-    define_module_function(c, gc, "latest_gc_info", |c, _s, _a, _b| Ok(c.hash_new()), -1);
-    define_module_function(c, gc, "verify_internal_consistency", |_c, _s, _a, _b| Ok(NIL), 0);
+    define_singleton_cfunc(c, gc, "total_time", |_c, _s, _a, _b| Ok(Value::fix(crate::gc::total_time().as_nanos() as i64)), 0);
+    define_singleton_cfunc(c, gc, "verify_internal_consistency", |_c, _s, _a, _b| Ok(NIL), 0);
     let k = vmr.m_kernel.get();
     define_module_function(c, k, "global_variables", k_global_variables, 0);
     define_module_function(c, k, "test", k_test, -1);
