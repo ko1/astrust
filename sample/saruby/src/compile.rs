@@ -577,9 +577,12 @@ impl<'a> Compiler<'a> {
             parent: std::cell::Cell::new(std::ptr::null()), ruby2_keywords: std::cell::Cell::new(false), arrow: std::cell::Cell::new(false), end_once: std::cell::Cell::new(0),
             outer_names: if kind == IseqKind::Eval { self.eval_outer.iter().flatten().cloned().collect() } else { vec![] },
             outer_vars: std::mem::take(&mut self.pending_outer),
-            zsuper: if kind == IseqKind::Method { sc.zsuper.clone() } else { vec![] },
         }));
         for ch in &sc.children { ch.parent.set(is); }
+        // a method whose locals all live in its env (it calls eval / binding) may run an eval "super"
+        if kind == IseqKind::Method && sc.captured.contains(&Sym(u32::MAX)) && !sc.zsuper.is_empty() {
+            METHOD_ZSUPER.with(|m| m.borrow_mut().insert(is as *const Iseq as usize, sc.zsuper.clone()));
+        }
         if let Some(p) = self.scopes.last_mut() { p.children.push(is); }
         crate::aot::register_iseq(is, &|| *self.src_key.get_or_init(|| crate::astrust::hash_bytes(self.src)));
         is
@@ -2632,6 +2635,8 @@ pub fn regex_opts(flags: u32, src_enc: u32) -> u32 {
 thread_local! {
     /// An eval whose binding is not in a method: a yield in it is invalid (set around its compile).
     pub static EVAL_NO_YIELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// zsuper lists of methods that call eval / binding, by iseq address (iseqs are never freed).
+    pub static METHOD_ZSUPER: std::cell::RefCell<std::collections::HashMap<usize, Vec<(u8, Sym)>>> = std::cell::RefCell::new(Default::default());
     /// An eval in a method's binding: that method's zsuper list (set around its compile).
     pub static EVAL_ZSUPER: std::cell::RefCell<Option<Vec<(u8, Sym)>>> = const { std::cell::RefCell::new(None) };
     /// An eval's frame label (its binding's frame's), set around its compile.

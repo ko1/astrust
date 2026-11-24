@@ -75,7 +75,6 @@ pub struct Iseq {
     pub parent: std::cell::Cell<*const Iseq>,          // lexically enclosing iseq (set when it is finished)
     pub outer_names: Vec<(Sym, u32, u32)>,             // eval: the binding's names (name, hops, idx)
     pub outer_vars: Vec<Sym>,                          // block: outer variables it uses, `yield` if it yields (Ractor.new)
-    pub zsuper: Vec<(u8, Sym)>,                        // method: how a bare `super` forwards the params (eval "super")
     pub ruby2_keywords: std::cell::Cell<bool>,         // Module#ruby2_keywords: flag a trailing keyword Hash in *rest
     pub traced: bool,                                  // compiled with trace points (TRACE_COMPILE)
     pub arrow: std::cell::Cell<bool>,                  // a `->` literal's (never a Kernel#lambda call)
@@ -2294,6 +2293,7 @@ pub fn invoke_iseq_simple_raw(c: &mut Ctx, me: *const MethodEntry, is: &'static 
 }
 
 #[cold]
+#[inline(never)]
 fn visibility_error(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     let me_r = unsafe { &*me };
     if me_r.visi == VISI_PROTECTED && flags & CF_PUBLIC_SEND == 0 {
@@ -2326,6 +2326,7 @@ pub fn mm_reason_take() -> Option<u8> { let r = MM_REASON.with(|m| m.replace(0))
 
 #[inline(always)]
 pub fn method_missing(c: &mut Ctx, recv: Value, mid: Sym, base: Stk, argc: u32, blk: impl BlkArg, flags: u32) -> RV { method_missing_raw(c, recv, mid, base, argc, blk.ptr(), flags) }
+#[inline(never)]
 pub fn method_missing_raw(c: &mut Ctx, recv: Value, mid: Sym, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
     method_missing_why(c, recv, mid, base, argc, blk, flags, 0)
 }

@@ -189,7 +189,7 @@ pub fn eval_in_binding(c: &mut Ctx, bind: Value, src: &[u8], enc: u8, file: &'st
     let outer = vec![env_names(&b.names)];
     let (slf, env, cref, me, dc, svar, blk, visi) = (b.self_, b.env, b.cref, b.me, b.dc, (b.svar, b.ret), b.blk, b.visi);
     crate::compile::EVAL_NO_YIELD.set(me.is_null());
-    let zs = match c.me_ref(me).map(|m| m.kind) { Some(MKind::Iseq(is)) => c.iseq_ref(is).map(|i| i.zsuper.clone()), _ => None };
+    let zs = match c.me_ref(me).map(|m| m.kind) { Some(MKind::Iseq(is)) => crate::compile::METHOD_ZSUPER.with(|m| m.borrow().get(&(is as usize)).cloned()).or(Some(vec![])), _ => None };
     crate::compile::EVAL_ZSUPER.with(|z| *z.borrow_mut() = zs);
     let fk = rbind(c, bind).fkind;
     let label = if fk.1.is_null() { None } else { Some(frame_label_of(c, fk.0, me, fk.1)) };
