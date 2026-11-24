@@ -128,6 +128,7 @@ pub struct Compiler<'a> {
     pub eval_outer: Vec<Vec<(Sym, u32, u32)>>,  // eval: outer scopes' (name, hops, idx), innermost first
     in_def: u32,
     pm_err: Option<u32>,          // single-pattern match: slot receiving the failure description
+    yields: bool,                 // a yield in the iseq being compiled (a block's includes its inner blocks')
     pm_dcache: Option<(u32, u32)>, // case/in: (subject slot, slot caching its #deconstruct)
     tl_binding: bool,
     cov: Option<usize>,           // Coverage file id: lines / methods get node_cov counters
@@ -163,7 +164,7 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), outer: HashMap::default(), pending_outer: vec![], ractor_src: std::cell::OnceCell::new(), eval_outer: vec![], in_def: 0, pm_err: None, pm_dcache: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, tag: !file.starts_with("<internal:") && pr.root.id < 1 << (32 - NF_TAG_SHIFT), errors: vec![],
+        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), outer: HashMap::default(), pending_outer: vec![], ractor_src: std::cell::OnceCell::new(), eval_outer: vec![], in_def: 0, pm_err: None, yields: false, pm_dcache: None, tl_binding: false, cov: None, trace: false, flat_stmts: false, tag: !file.starts_with("<internal:") && pr.root.id < 1 << (32 - NF_TAG_SHIFT), errors: vec![],
                    csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()],
                    src_enc: crate::builtins::encoding::find_enc(pr.encoding.as_bytes()).unwrap_or(crate::object::ENC_UTF8) as u32 };
         // identifiers of a non-UTF-8 source are symbols in its encoding (as its symbol literals)
@@ -563,7 +564,7 @@ impl<'a> Compiler<'a> {
         } else { (layout_tree(body), entry, bentry, kentry) };
         let is = Box::leak(Box::new(Iseq {
             body, entry, bentry, kentry, dentry, body_used: std::cell::Cell::new(false), nlocals: sc.nslots, params, env_size: sc.env_size, env_params,
-            info: CodeInfo { file: self.file, label, line, end_line: sc.end_line, nid: node_tag_current() }, kind, simple, lead_only, name, local_names, arity, uses_block: false, traced: self.trace,
+            info: CodeInfo { file: self.file, label, line, end_line: sc.end_line, nid: node_tag_current() }, kind, simple, lead_only, name, local_names, arity, uses_block: self.yields, traced: self.trace,
             parent: std::cell::Cell::new(std::ptr::null()), ruby2_keywords: std::cell::Cell::new(false), arrow: std::cell::Cell::new(false), end_once: std::cell::Cell::new(0),
             outer_names: if kind == IseqKind::Eval { self.eval_outer.iter().flatten().cloned().collect() } else { vec![] },
             outer_vars: std::mem::take(&mut self.pending_outer),
@@ -971,6 +972,7 @@ impl<'a> Compiler<'a> {
                 ALLOC_node_nil()
             }
             Kind::YieldNode { arguments } => {
+                self.yields = true;
                 let args: Vec<&PNode> = match arguments.as_deref() { Some(PNode { kind: Kind::ArgumentsNode { arguments }, .. }) => arguments.iter().collect(), _ => vec![] };
                 if args.iter().all(|a| self.simple_arg(a)) {
                     let v: Vec<NodePtr> = args.iter().map(|a| self.c(a)).collect();
@@ -2209,6 +2211,12 @@ impl<'a> Compiler<'a> {
     // ---- scopes with code -------------------------------------------------------------------
 
     fn compile_def(&mut self, n: &PNode, name: Sym, params: Option<&PNode>, body: Option<&PNode>, locals: &[u32], line: u32) -> &'static Iseq {
+        let yields = std::mem::take(&mut self.yields);
+        let is = self.compile_def_body(n, name, params, body, locals, line);
+        self.yields = yields;
+        is
+    }
+    fn compile_def_body(&mut self, n: &PNode, name: Sym, params: Option<&PNode>, body: Option<&PNode>, locals: &[u32], line: u32) -> &'static Iseq {
         let saved = std::mem::take(&mut self.scopes);
         let mut bodies: Vec<&PNode> = vec![];
         if let Some(p) = params { bodies.push(p); }
@@ -2233,6 +2241,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_body(&mut self, n: &PNode, locals: &[u32], body: Option<&PNode>, kind: IseqKind, label: String, line: u32) -> &'static Iseq {
+        let yields = std::mem::take(&mut self.yields);
         let saved = std::mem::take(&mut self.scopes);
         let bodies: Vec<&PNode> = body.into_iter().collect();
         self.analyze(n, &bodies);
@@ -2242,10 +2251,18 @@ impl<'a> Compiler<'a> {
         CLASS_LABEL.with(|m| m.borrow_mut().pop());
         let is = self.finish_iseq(b, Params::default(), kind, label, line, Sym(0));
         self.scopes = saved;
+        self.yields = yields;
         is
     }
 
+    /// A block's iseq; its uses_block (a yield in it or its inner blocks) also counts for the enclosing iseq.
     fn compile_block(&mut self, n: &PNode, locals: &[u32], params: Option<&PNode>, body: Option<&PNode>, kind: IseqKind, line: u32) -> &'static Iseq {
+        let outer = std::mem::take(&mut self.yields);
+        let is = self.compile_block_body(n, locals, params, body, kind, line);
+        self.yields |= outer;
+        is
+    }
+    fn compile_block_body(&mut self, n: &PNode, locals: &[u32], params: Option<&PNode>, body: Option<&PNode>, kind: IseqKind, line: u32) -> &'static Iseq {
         // the block's own node (its entry and frame line: error_highlight's block_node), not the call's
         let saved = if self.tag { node_tag_swap(n.id) } else { 0 };
         let sk = if kind == IseqKind::Lambda { SK::Lambda } else { SK::Block };

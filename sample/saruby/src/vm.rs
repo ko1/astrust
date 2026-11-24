@@ -2809,8 +2809,8 @@ pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &'static Iseq, base: Stk, argc
     let mut fr = Frame::empty(base);
     fr.prev = c.frame;
     fr.me = if bme.is_null() { b.me } else { bme };
-    // a bmethod too: yield / block_given? / super see the block of where it was defined; &b gets the call's
-    fr.blk = b.outer_blk;
+    // a bmethod's frame holds the call's block (break targets it); one that yields sees the defining scope's
+    fr.blk = if !bme.is_null() && !is.uses_block { blkarg } else { b.outer_blk };
     fr.cref = b.cref;
     fr.iseq = is;
     fr.kind = if lambda { FK_LAMBDA } else { FK_BLOCK };

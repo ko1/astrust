@@ -1213,7 +1213,8 @@ fn m_cvars(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     Ok(out)
 }
 fn m_freeze(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { k_freeze(c, slf, a, b) }
-fn m_module_new(c: &mut Ctx, slf: Value, _a: &[Value], b: Blk) -> RV {
+fn m_module_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
+    if c.class(slf).is_singleton { return c_new(c, slf, a, b); }
     let m = new_module(c);
     obj_set_klass(m, if slf == c.vm().c_module.get() { c.vm().c_module.get() } else { slf });
     if !b.is_null() { yield_with_self(c, b, &[m], m, m)?; }
@@ -1368,7 +1369,9 @@ pub fn c_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     funcall_kw(c, o, s::initialize, a, b, kw)?;
     Ok(o)
 }
-fn c_class_new(c: &mut Ctx, _slf: Value, a: &[Value], b: Blk) -> RV {
+fn c_class_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
+    // reached from a metaclass (its class is Class's metaclass): Class#new
+    if c.class(slf).is_singleton { return c_new(c, slf, a, b); }
     let sup = if a.is_empty() { c.vm().c_object.get() } else { a[0] };
     if !is_class_or_module(sup) || c.class(sup).is_module { return type_err(c, format!("superclass must be an instance of Class (given an instance of {})", class_name_for_err(c, sup))); }
     if c.class(sup).is_singleton { return type_err(c, "can't make subclass of singleton class"); }
