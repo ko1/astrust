@@ -66,10 +66,8 @@ fn pty_open(c: &mut Ctx, _s: Value, _a: &[Value], b: Blk) -> RV {
 /// The shell for a spawn without a command: $SHELL, the user's login shell, /bin/sh.
 fn default_shell() -> String {
     if let Ok(s) = std::env::var("SHELL") { return s; }
-    if let Ok(u) = std::env::var("USER") {
-        if let Ok(pw) = std::fs::read_to_string("/etc/passwd") {
-            if let Some(sh) = pw.lines().map(|l| l.split(':').collect::<Vec<_>>()).find(|f| f.len() >= 7 && f[0] == u).map(|f| f[6].to_string()) { return sh; }
-        }
+    if let Some(pw) = std::env::var("USER").ok().and_then(|u| std::ffi::CString::new(u).ok()).and_then(|u| sys::getpwnam(&u)) {
+        return String::from_utf8_lossy(&pw.shell).into_owned();
     }
     "/bin/sh".into()
 }

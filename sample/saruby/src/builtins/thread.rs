@@ -115,7 +115,8 @@ pub fn thread_state(c: &Ctx, t: Value) -> (bool, bool, bool) { let r = th(c, t);
 pub fn last_status(c: &Ctx) -> u64 { c.data::<RThread>(cur(c)).map_or(crate::builtins::process::NO_STATUS, |r| r.last_status) }
 pub fn set_last_status(c: &mut Ctx, w: u64) { let t = cur(c); if let Some(r) = c.data_mut::<RThread>(t) { r.last_status = w; } }
 #[inline]
-fn is_main(c: &Ctx) -> bool { CURRENT.get(c) == MAIN.get(c) }
+pub fn is_main(c: &Ctx) -> bool { CURRENT.get(c) == MAIN.get(c) }
+pub fn main_thread(c: &Ctx) -> Value { MAIN.get(c) }
 /// Other threads exist (or we are inside one), or some thread has a Fiber scheduler: blocking calls
 /// must go through the scheduler.  One load: COOP counts the live non-main threads and the threads
 /// with a Fiber scheduler (not #[inline]: the static then stays local, no GOT load).
@@ -1086,6 +1087,8 @@ fn lk(c: &Ctx, v: Value) -> RLock { *c.data::<RLock>(v).expect("a Mutex") }
 fn lk_mut(c: &mut Ctx, v: Value) -> &mut RLock { c.data_mut::<RLock>(v).expect("a Mutex") }
 #[inline]
 fn cur_fiber(c: &Ctx) -> Value { crate::fiber::current(c) }
+/// Mutex#dup / Monitor#dup: a fresh unlocked one.
+pub fn dup_lock(c: &mut Ctx, v: Value) -> Option<Value> { let monitor = c.data::<RLock>(v)?.monitor; let k = crate::vm::real_class_of(c, v); Some(c.alloc(k, Body::Data(Box::new(RLock { owner: NIL, count: 0, monitor })))) }
 pub fn alloc_lock(c: &mut Ctx, klass: Value) -> Option<Value> {
     let (km, kx) = (c.vm().c_monitor.get(), c.vm().c_mutex.get());
     let mon = km != NIL && crate::builtins::inherits(c, klass, km);

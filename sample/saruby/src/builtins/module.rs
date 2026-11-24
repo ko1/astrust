@@ -32,6 +32,11 @@ pub fn clone_class(c: &mut Ctx, k: Value) -> RV {
     nd.includes = includes;
     nd.prepends = prepends;
     nd.alloc = alloc;
+    if matches!(alloc, crate::array::AllocKind::None | crate::array::AllocKind::Proc) {
+        let key = crate::symbol::intern(b"__alloc_of");
+        let o = ivar_get(c, k, key);
+        ivar_set_raw(c, n, key, if o != NIL { o } else { k });
+    }
     // singleton methods (class methods)
     let sk = obj_klass(k);
     if c.class(sk).is_singleton {

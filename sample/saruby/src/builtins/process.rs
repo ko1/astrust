@@ -19,7 +19,7 @@ use crate::symbol::intern;
 use crate::value::*;
 use crate::vm::*;
 use std::ffi::CString;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 // $? is thread-local: (pid << 32) | raw status in the current Thread (thread.rs); pid -1: none yet
 pub const NO_STATUS: u64 = 0x8000_0000_0000_0000;
@@ -227,6 +227,12 @@ fn p_kill(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
                 let name = format!("SIG{}", signame(sig).unwrap());
                 let e = make_exception(c, if sig == 2 { c.vm().c_interrupt.get() } else { c.vm().c_signal_exception.get() }, if sig == 2 { "" } else { &name });
                 ivar_set_raw(c, e, intern(b"signo"), Value::fix(sig as i64));
+                if !crate::builtins::thread::is_main(c) {
+                    // the main thread gets it (rb_threadptr_raise on the main thread), not the sender
+                    let m = crate::builtins::thread::main_thread(c);
+                    funcall(c, m, intern(b"raise"), &[e], std::ptr::null())?;
+                    continue;
+                }
                 return Err(raise_exc(c, e));
             }
         }
@@ -238,7 +244,11 @@ fn p_kill(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
         // delivery is asynchronous: give a trapped signal a moment to arrive
         let h = c.ary_get(HANDLERS.get(c), sig as usize);
         if h != NIL && h != UNDEF && sig > 0 { let t0 = std::time::Instant::now(); while PENDING.load(Ordering::SeqCst) & (1 << sig) == 0 && t0.elapsed().as_millis() < 100 { std::thread::yield_now(); } }
-        run_pending_signals(c)?;
+        if crate::builtins::thread::is_main(c) { run_pending_signals(c)?; } else {
+            // trap handlers run in the main thread: let it take them
+            let t0 = std::time::Instant::now();
+            while sig > 0 && PENDING.load(Ordering::SeqCst) & (1 << sig) != 0 && t0.elapsed().as_millis() < 100 { crate::builtins::thread::pass(c)?; }
+        }
     }
     Ok(Value::fix(a.len() as i64 - 1))
 }
@@ -866,28 +876,78 @@ fn p_setrlimit(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
 
 // ---- user / group ids, priority -------------------------------------------------------------
 
-/// A line of /etc/passwd or /etc/group whose first field is `name`: its third field (the id).
-fn id_by_name(file: &str, name: &[u8]) -> Option<u32> {
-    let t = std::fs::read(file).ok()?;
-    t.split(|&b| b == b'\n').find_map(|l| {
-        let f: Vec<&[u8]> = l.split(|&b| b == b':').collect();
-        if f.len() > 2 && f[0] == name { std::str::from_utf8(f[2]).ok()?.parse().ok() } else { None }
-    })
+/// NUM2UIDT: rb_num2uint on rb_to_int (an id of 2**31 .. 2**32-1 is the negative `int` too).
+fn uid_num(c: &mut Ctx, v: Value) -> Result<u32, Esc> {
+    let v = crate::builtins::numeric_methods::rb_to_int(c, v)?;
+    let re = c.vm().c_range_error.get();
+    let i = if v.is_fixnum() { v.as_fix() } else {
+        let (i, neg, s) = { let b = c.big(v); (b.to_i64(), b.neg, b.abs().to_string_radix(10)) };
+        match i {
+            Some(i) => i,
+            None if neg => return err(c, re, "bignum out of range of unsigned long"),
+            None if s.parse::<u64>().is_ok() => return err(c, re, format!("integer {} too big to convert to 'unsigned int'", s)),
+            None => return err(c, re, "bignum too big to convert into 'unsigned long'"),
+        }
+    };
+    if i < i32::MIN as i64 { return err(c, re, format!("integer {} too small to convert to 'unsigned int'", i)); }
+    if i > u32::MAX as i64 { return err(c, re, format!("integer {} too big to convert to 'unsigned int'", i)); }
+    Ok(i as u32)
 }
-/// OBJ2UID / OBJ2GID: an Integer, or a user (group) name looked up in /etc/passwd (/etc/group).
+/// OBJ2UID / OBJ2GID: an Integer, or a user (group) name looked up through NSS (getpwnam_r / getgrnam_r).
 fn id_arg(c: &mut Ctx, v: Value, group: bool) -> Result<u32, Esc> {
-    if !is_string(v) && !(v.is_heap() && !is_integer(v) && respond_to(c, v, intern(b"to_str"), true)) { return Ok(num_to_long(c, v)? as u32); }
-    let s = expect_str(c, v)?;
-    let n = c.str_bytes(s).to_vec();
-    match id_by_name(if group { "/etc/group" } else { "/etc/passwd" }, &n) {
+    if !is_string(v) && !(v.is_heap() && !is_integer(v) && respond_to(c, v, intern(b"to_str"), true)) { return uid_num(c, v); }
+    let sv = expect_str(c, v)?;
+    if c.str_bytes(sv).contains(&0) { return arg_err(c, "string contains null byte"); }
+    let n = CString::new(c.str_bytes(sv)).unwrap();
+    let id = if group { sys::getgrnam(&n).map(|g| g.gid) } else { sys::getpwnam(&n).map(|p| p.uid) };
+    match id {
         Some(i) => Ok(i),
-        None => arg_err(c, format!("can't find {} for {}", if group { "group" } else { "user" }, String::from_utf8_lossy(&n))),
+        None => arg_err(c, format!("can't find {} for {}", if group { "group" } else { "user" }, n.to_string_lossy())),
+    }
+}
+/// Process.__nss(kind, key): [fields] of getpwnam (0) / getpwuid (1) / getgrnam (2) / getgrgid (3), nil if absent.
+fn p_nss(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
+    let kind = a[0].as_fix();
+    let strs = |c: &mut Ctx, l: &[&[u8]]| -> Vec<Value> { l.iter().map(|b| c.str_new(b)).collect() };
+    // the password field is BINARY, as etc.c's rb_str_new_cstr
+    let pass = |c: &mut Ctx, b: &[u8]| c.str_new_enc(b, ENC_BINARY);
+    let n = if kind % 2 == 0 {
+        let sv = expect_str(c, a[1])?;
+        if c.str_bytes(sv).contains(&0) { return arg_err(c, "string contains null byte"); }
+        Some(CString::new(c.str_bytes(sv)).unwrap())
+    } else { None };
+    let id = if kind % 2 == 1 { uid_num(c, a[1])? } else { 0 };
+    if kind < 2 {
+        let Some(p) = (match &n { Some(n) => sys::getpwnam(n), None => sys::getpwuid(id) }) else { return Ok(NIL) };
+        let mut v = strs(c, &[&p.name]);
+        v.push(pass(c, &p.passwd));
+        v.extend([Value::fix(p.uid as i64), Value::fix(p.gid as i64)]);
+        v.extend(strs(c, &[&p.gecos, &p.dir, &p.shell]));
+        Ok(c.ary_new_from(&v))
+    } else {
+        let Some(g) = (match &n { Some(n) => sys::getgrnam(n), None => sys::getgrgid(id) }) else { return Ok(NIL) };
+        let mut v = strs(c, &[&g.name]);
+        v.push(pass(c, &g.passwd));
+        v.push(Value::fix(g.gid as i64));
+        let m: Vec<&[u8]> = g.mem.iter().map(|m| &m[..]).collect();
+        let m = strs(c, &m);
+        v.push(c.ary_new_from(&m));
+        Ok(c.ary_new_from(&v))
     }
 }
 const KEEP: u32 = u32::MAX;
 fn cred_ok(c: &mut Ctx, r: i32) -> Result<(), Esc> { if r < 0 { Err(raise_errno(c, sys::errno(), "")) } else { Ok(()) } }
+// CRuby's SAVED_USER_ID / SAVED_GROUP_ID and under_uid_switch / under_gid_switch (index: 0 user, 1 group)
+static SAVED_ID: [AtomicU32; 2] = [AtomicU32::new(KEEP), AtomicU32::new(KEEP)];
+static UNDER_SWITCH: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
+fn check_switch(c: &mut Ctx, group: bool) -> Result<(), Esc> {
+    if !UNDER_SWITCH[group as usize].load(Ordering::Relaxed) { return Ok(()); }
+    let re = c.vm().c_runtime_error.get();
+    err(c, re, format!("can't handle {} while evaluating block given to Process::UID.switch method", if group { "GID" } else { "UID" }))
+}
 fn p_set_uid(c: &mut Ctx, a: Value, which: u8) -> RV {
     let group = which >= 2;
+    check_switch(c, group)?;
     let id = id_arg(c, a, group)?;
     let (r, e) = if which % 2 == 0 { (id, KEEP) } else { (KEEP, id) };
     let rc = if group { sys::setresgid(r, e, KEEP) } else { sys::setresuid(r, e, KEEP) };
@@ -940,9 +1000,23 @@ fn p_setpriority(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
 }
 /// Process::Sys.setresuid / setresgid (-1 keeps an id).
 fn sys_setres(c: &mut Ctx, a: &[Value], group: bool) -> RV {
+    check_switch(c, group)?;
     let mut ids = [KEEP; 3];
     for i in 0..3 { if !(a[i].is_fixnum() && a[i].as_fix() == -1) { ids[i] = id_arg(c, a[i], group)?; } }
     let rc = if group { sys::setresgid(ids[0], ids[1], ids[2]) } else { sys::setresuid(ids[0], ids[1], ids[2]) };
+    cred_ok(c, rc)?;
+    Ok(NIL)
+}
+/// Process.__setid(kind, a, b): libc setuid / setgid / setreuid / setregid (all threads; names resolved through NSS).
+fn p_setid(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
+    let kind = a[0].as_fix();
+    let group = kind % 2 == 1;
+    check_switch(c, group)?;
+    let x = id_arg(c, a[1], group)?;
+    let rc = match kind {
+        0 => sys::setuid(x), 1 => sys::setgid(x),
+        _ => { let y = id_arg(c, a[2], group)?; if group { sys::setregid(x, y) } else { sys::setreuid(x, y) } }
+    };
     cred_ok(c, rc)?;
     Ok(NIL)
 }
@@ -965,7 +1039,7 @@ fn p_daemon(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     Ok(Value::fix(0))
 }
 fn p_exit_bang(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
-    let st = match a.first() { None => 0, Some(&v) if v == TRUE => 0, Some(&v) if v == FALSE => 1, Some(&v) => num_to_long(c, v)? };
+    let st = match a.first() { None => 1, Some(&v) if v == TRUE => 0, Some(&v) if v == FALSE => 1, Some(&v) => num_to_long(c, v)? };
     out_flush();
     sys::_exit(st as i32)
 }
@@ -978,6 +1052,7 @@ pub fn init(c: &mut Ctx) {
     let vmr = c.vm();
     let p = define_module(c, "Process");
     vmr.m_process.set(p);
+    SAVED_ID[0].store(sys::geteuid(), Ordering::Relaxed); SAVED_ID[1].store(sys::getegid(), Ordering::Relaxed);
     let h = c.alloc(vmr.c_array.get(), Body::Array(crate::avec::AVec::new()));
     HANDLERS.set_vm(vmr, h);
     let mf = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_module_function(c, p, n, f, a);
@@ -1004,6 +1079,11 @@ pub fn init(c: &mut Ctx) {
     mf(c, "__detach_wait", p_detach_wait, 1);
     mf(c, "__setresid", |c, _s, a, _b| sys_setres(c, &a[1..4], a[0].truthy()), 4);
     mf(c, "__resid", |c, _s, a, _b| { let mut ids = [0u32; 3]; if if a[0].truthy() { sys::getresgid(&mut ids) } else { sys::getresuid(&mut ids) } < 0 { return Err(raise_errno(c, sys::errno(), "")); } Ok(ids_ary(c, &ids)) }, 1);
+    mf(c, "__setid", p_setid, 3); mf(c, "__nss", p_nss, 2);
+    mf(c, "__chk", |c, _s, a, _b| { check_switch(c, a[0].truthy())?; Ok(NIL) }, 1);
+    mf(c, "__saved", |_c, _s, a, _b| Ok(Value::fix(SAVED_ID[a[0].truthy() as usize].load(Ordering::Relaxed) as i64)), 1);
+    mf(c, "__set_saved", |_c, _s, a, _b| { SAVED_ID[a[0].truthy() as usize].store(a[1].as_fix() as u32, Ordering::Relaxed); Ok(NIL) }, 2);
+    mf(c, "__under", |_c, _s, a, _b| { UNDER_SWITCH[a[0].truthy() as usize].store(a[1].truthy(), Ordering::Relaxed); Ok(NIL) }, 2);
     mf(c, "__id_of", |c, _s, a, _b| Ok(Value::fix(id_arg(c, a[0], a[1].truthy())? as i64)), 2); mf(c, "__itimer", p_itimer, 1); mf(c, "setproctitle", |c, _s, a, _b| { let s = expect_str(c, a[0])?; set_proctitle(c, s); Ok(a[0]) }, 1); mf(c, "last_status", |c, _s, _a, _b| Ok(last_status(c)), 0);
     mf(c, "argv0", |c, _s, _a, _b| Ok(match ARGV0.get(c) { NIL => c.vm().dollar_zero.get(), v => v }), 0); mf(c, "warmup", |_c, _s, _a, _b| Ok(TRUE), 0);
     for (n, v) in [("CLOCK_REALTIME", 0), ("CLOCK_MONOTONIC", 1), ("CLOCK_PROCESS_CPUTIME_ID", 2), ("CLOCK_THREAD_CPUTIME_ID", 3), ("CLOCK_MONOTONIC_RAW", 4),

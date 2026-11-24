@@ -228,6 +228,7 @@ pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if let Some(r) = zlib::dup_data(c, v)? { return Ok(Some(r)); }
     if let Some(r) = json_generator::dup_data(c, v)? { return Ok(Some(r)); }
     if let Some(r) = io_buffer::dup_data(c, v)? { return Ok(Some(r)); }
+    if let Some(r) = thread::dup_lock(c, v) { return Ok(Some(r)); }
     Ok(None)
 }
 

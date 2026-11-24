@@ -1435,6 +1435,13 @@ pub fn alloc_instance(c: &mut Ctx, klass: Value) -> RV {
         AllocKind::Module => { let m = new_module(c); obj_set_klass(m, klass); m }
         AllocKind::Proc | AllocKind::None => {
             if let Some(v) = crate::builtins::alloc_data(c, klass)? { return Ok(v); }
+            // a Class#dup / #clone of a data class: its allocator is the original's
+            let (mut k, key) = (klass, intern(b"__alloc_of"));
+            while k != NIL {
+                let o = ivar_get(c, k, key);
+                if o != NIL { if let Some(v) = crate::builtins::alloc_data(c, o)? { obj_set_klass(v, klass); return Ok(v); } break; }
+                k = c.class(k).superclass;
+            }
             return type_err(c, format!("allocator undefined for {}", class_path(c, klass)));
         }
     })

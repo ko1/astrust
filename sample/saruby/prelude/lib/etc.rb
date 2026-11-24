@@ -93,22 +93,22 @@ module Etc
 
     def getpwuid(uid = Process.uid)
       uid = __int(uid)
-      __passwd.find { |e| e.uid == uid } or raise ArgumentError, "can't find user for #{uid}"
+      Passwd.new(*(Process.__nss(1, uid) or raise ArgumentError, "can't find user for #{uid >= 2**31 ? uid - 2**32 : uid}"))
     end
 
     def getpwnam(name)
       name = __str(name)
-      __passwd.find { |e| e.name == name } or raise ArgumentError, "can't find user for #{name}"
+      Passwd.new(*(Process.__nss(0, name) or raise ArgumentError, "can't find user for #{name}"))
     end
 
     def getgrgid(gid = Process.gid)
       gid = __int(gid)
-      __group.find { |e| e.gid == gid } or raise ArgumentError, "can't find group for #{gid}"
+      Group.new(*(Process.__nss(3, gid) or raise ArgumentError, "can't find group for #{gid >= 2**31 ? gid - 2**32 : gid}"))
     end
 
     def getgrnam(name)
       name = __str(name)
-      __group.find { |e| e.name == name } or raise ArgumentError, "can't find group for #{name}"
+      Group.new(*(Process.__nss(2, name) or raise ArgumentError, "can't find group for #{name}"))
     end
 
     def getlogin

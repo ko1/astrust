@@ -650,10 +650,11 @@ pub fn k_exit(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     Err(raise_exc(c, e))
 }
 
-fn k_exit_bang(_c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
-    let st = match args.first() { None => 0, Some(&v) if v == TRUE => 0, Some(&v) if v == FALSE => 1, Some(&v) => v.as_fix() };
+fn k_exit_bang(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
+    // exit!(status = false): the default is 1
+    let st = match args.first() { None => 1, Some(&v) if v == TRUE => 0, Some(&v) if v == FALSE => 1, Some(&v) => crate::builtins::numeric_methods::num_to_long(c, v)? };
     out_flush();
-    std::process::exit(st as i32);
+    crate::builtins::sys::_exit(st as i32)
 }
 
 pub fn k_abort(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {

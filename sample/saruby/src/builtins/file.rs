@@ -404,11 +404,9 @@ fn f_s_join(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
 }
 fn home_of(c: &mut Ctx, user: &str) -> Result<Vec<u8>, Esc> {
     // without HOME: the password entry of the real uid (rb_default_home_dir)
-    let me = sys::getuid().to_string();
     if user.is_empty() { if let Some(h) = std::env::var_os("HOME") { return Ok(h.into_vec()); } }
-    if let Ok(pw) = std::fs::read_to_string("/etc/passwd") {
-        for l in pw.lines() { let f: Vec<&str> = l.split(':').collect(); if f.len() > 5 && (if user.is_empty() { f[2] == me } else { f[0] == user }) { return Ok(f[5].as_bytes().to_vec()); } }
-    }
+    let pw = if user.is_empty() { sys::getpwuid(sys::getuid()) } else { std::ffi::CString::new(user).ok().and_then(|u| sys::getpwnam(&u)) };
+    if let Some(pw) = pw { return Ok(pw.dir); }
     if user.is_empty() { return arg_err(c, "couldn't find HOME environment -- expanding '~'"); }
     arg_err(c, format!("user {} doesn't exist", user))
 }

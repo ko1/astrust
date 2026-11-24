@@ -210,6 +210,10 @@ mod ffi_cred {
         pub fn setresgid(r: u32, e: u32, s: u32) -> i32;
         pub fn setgroups(n: usize, list: *const u32) -> i32;
         pub fn initgroups(user: *const i8, g: u32) -> i32;
+        pub fn setuid(u: u32) -> i32;
+        pub fn setgid(g: u32) -> i32;
+        pub fn setreuid(r: u32, e: u32) -> i32;
+        pub fn setregid(r: u32, e: u32) -> i32;
     }
 }
 #[cfg(target_arch = "x86_64")]
@@ -221,6 +225,51 @@ pub fn setresuid(r: u32, e: u32, s: u32) -> c_int { unsafe { ffi_cred::setresuid
 pub fn setresgid(r: u32, e: u32, s: u32) -> c_int { unsafe { ffi_cred::setresgid(r, e, s) } }
 pub fn setgroups(list: &[u32]) -> c_int { unsafe { ffi_cred::setgroups(list.len(), list.as_ptr()) } }
 pub fn initgroups(user: &CStr, g: u32) -> c_int { unsafe { ffi_cred::initgroups(user.as_ptr(), g) } }
+pub fn setuid(u: u32) -> c_int { unsafe { ffi_cred::setuid(u) } }
+pub fn setgid(g: u32) -> c_int { unsafe { ffi_cred::setgid(g) } }
+pub fn setreuid(r: u32, e: u32) -> c_int { unsafe { ffi_cred::setreuid(r, e) } }
+pub fn setregid(r: u32, e: u32) -> c_int { unsafe { ffi_cred::setregid(r, e) } }
+
+// ---- NSS lookups: getpwnam_r etc. read /etc/passwd, /etc/group and whatever nsswitch.conf names -------
+#[repr(C)] struct PwRaw { name: *const i8, passwd: *const i8, uid: u32, gid: u32, gecos: *const i8, dir: *const i8, shell: *const i8 }
+#[repr(C)] struct GrRaw { name: *const i8, passwd: *const i8, gid: u32, mem: *const *const i8 }
+mod ffi_nss {
+    use super::*;
+    extern "C" {
+        pub fn getpwnam_r(name: *const i8, pw: *mut PwRaw, buf: *mut u8, n: usize, res: *mut *mut PwRaw) -> i32;
+        pub fn getpwuid_r(uid: u32, pw: *mut PwRaw, buf: *mut u8, n: usize, res: *mut *mut PwRaw) -> i32;
+        pub fn getgrnam_r(name: *const i8, gr: *mut GrRaw, buf: *mut u8, n: usize, res: *mut *mut GrRaw) -> i32;
+        pub fn getgrgid_r(gid: u32, gr: *mut GrRaw, buf: *mut u8, n: usize, res: *mut *mut GrRaw) -> i32;
+    }
+}
+pub struct Pw { pub name: Vec<u8>, pub passwd: Vec<u8>, pub uid: u32, pub gid: u32, pub gecos: Vec<u8>, pub dir: Vec<u8>, pub shell: Vec<u8> }
+pub struct Gr { pub name: Vec<u8>, pub passwd: Vec<u8>, pub gid: u32, pub mem: Vec<Vec<u8>> }
+// SAFETY: `p` is null or a NUL-terminated string inside the lookup buffer, which is alive (copied out at once)
+fn cs(p: *const i8) -> Vec<u8> { if p.is_null() { vec![] } else { unsafe { CStr::from_ptr(p) }.to_bytes().to_vec() } }
+/// The *_r call with a buffer grown on ERANGE; None when the entry is absent (or any other error, as POSIX lets absence be reported).
+fn nss<R, T>(mut raw: R, call: impl Fn(&mut R, &mut [u8], &mut *mut R) -> c_int, conv: impl Fn(&R) -> T) -> Option<T> {
+    let mut buf = vec![0u8; 1024];
+    loop {
+        let mut res: *mut R = std::ptr::null_mut();
+        let rc = call(&mut raw, &mut buf, &mut res);
+        if rc == 34 && buf.len() < (1 << 22) { let n = buf.len() * 2; buf.resize(n, 0); continue; }
+        return if rc != 0 || res.is_null() { None } else { Some(conv(&raw)) };
+    }
+}
+fn pw_new() -> PwRaw { let n = std::ptr::null(); PwRaw { name: n, passwd: n, uid: 0, gid: 0, gecos: n, dir: n, shell: n } }
+fn gr_new() -> GrRaw { GrRaw { name: std::ptr::null(), passwd: std::ptr::null(), gid: 0, mem: std::ptr::null() } }
+fn pw_conv(p: &PwRaw) -> Pw { Pw { name: cs(p.name), passwd: cs(p.passwd), uid: p.uid, gid: p.gid, gecos: cs(p.gecos), dir: cs(p.dir), shell: cs(p.shell) } }
+fn gr_conv(g: &GrRaw) -> Gr {
+    let mut mem = vec![];
+    // SAFETY: `mem` is a null-terminated array of C strings inside the lookup buffer (or null)
+    if !g.mem.is_null() { let mut i = 0; while let Some(&m) = unsafe { g.mem.add(i).as_ref() } { if m.is_null() { break; } mem.push(cs(m)); i += 1; } }
+    Gr { name: cs(g.name), passwd: cs(g.passwd), gid: g.gid, mem }
+}
+// SAFETY (each): a C string, a live struct and buffer with its length, a live out pointer
+pub fn getpwnam(n: &CStr) -> Option<Pw> { nss(pw_new(), |p, b, r| unsafe { ffi_nss::getpwnam_r(n.as_ptr(), p, b.as_mut_ptr(), b.len(), r) }, pw_conv) }
+pub fn getpwuid(u: u32) -> Option<Pw> { nss(pw_new(), |p, b, r| unsafe { ffi_nss::getpwuid_r(u, p, b.as_mut_ptr(), b.len(), r) }, pw_conv) }
+pub fn getgrnam(n: &CStr) -> Option<Gr> { nss(gr_new(), |g, b, r| unsafe { ffi_nss::getgrnam_r(n.as_ptr(), g, b.as_mut_ptr(), b.len(), r) }, gr_conv) }
+pub fn getgrgid(u: u32) -> Option<Gr> { nss(gr_new(), |g, b, r| unsafe { ffi_nss::getgrgid_r(u, g, b.as_mut_ptr(), b.len(), r) }, gr_conv) }
 /// getgroups(2) into `list` (empty: the count only).
 pub fn getgroups(list: &mut [u32]) -> c_int { unsafe { ffi::syscall(nr_cred::GETGROUPS, list.len() as i64, list.as_mut_ptr()) as c_int } }
 pub fn getresuid(ids: &mut [u32; 3]) -> c_int { let p = ids.as_mut_ptr(); unsafe { ffi::syscall(nr_cred::GETRESUID, p, p.add(1), p.add(2)) as c_int } }
