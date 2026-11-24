@@ -307,9 +307,15 @@ pub fn unblocks_pending() -> bool { UNBLOCKS.load(Relaxed) }
 pub fn take_unblocks(c: &mut Ctx) -> Vec<Id> { UNBLOCKS.store(false, Relaxed); with(c, |b| std::mem::take(&mut b.unblocks)) }
 // After a notify: completed fiber ops wait for their unblock (set_ints: the next check point calls it).
 #[cold]
-fn queue_unblocks(b: &mut Blop, done: &[Id]) {
+fn queue_unblocks(b: &mut Blop, done: &[Id]) -> bool {
     for id in done { if b.fibers.contains(id) { b.unblocks.push(*id); } }
-    if !b.unblocks.is_empty() { UNBLOCKS.store(true, Relaxed); crate::vm::set_ints(); }
+    if b.unblocks.is_empty() { return false; }
+    UNBLOCKS.store(true, Relaxed); crate::vm::set_ints();
+    true
+}
+/// The key of a pending Wake op (the deadlock report).
+pub fn wake_key(c: &Ctx, id: Id) -> Option<u64> {
+    c.vm().blop.borrow().as_ref().and_then(|b| match b.slab.get(id) { Some(Slot::Pending(p)) => match p.op { Op::Wake(k) => Some(k), _ => None }, _ => None })
 }
 pub fn is_done(c: &Ctx, id: Id) -> bool { c.vm().blop.borrow().as_ref().is_some_and(|b| matches!(b.slab.get(id), Some(Slot::Done(..)))) }
 /// Take the op back: its result, or Err(ECANCELED) if it had not completed (it is withdrawn).
@@ -335,33 +341,31 @@ pub fn take(c: &mut Ctx, id: Id) -> (Option<Op>, Res) {
 pub fn interrupt(c: &mut Ctx, id: Id, errno: i64) { with(c, |b| b.slab.complete(id, Err(errno))) }
 /// Complete every Wake(key) op.
 #[inline]
-pub fn notify(c: &mut Ctx, key: u64) {
+/// true: a fiber blocked through its scheduler is to be unblocked (thread::run_unblocks).
+pub fn notify(c: &mut Ctx, key: u64) -> bool {
     let mut g = c.vm().blop.borrow_mut();
-    let Some(b) = g.as_mut() else { return };
-    {
-        if b.waiters.is_empty() { return; }
-        let slab = &mut b.slab;
-        if b.fibers.is_empty() {
-            b.waiters.retain(|&(k, id)| { if k == key { slab.complete(id, Ok(0)); } k != key });
-        } else {
-            let mut done = vec![];
-            b.waiters.retain(|&(k, id)| { if k == key { slab.complete(id, Ok(0)); done.push(id); } k != key });
-            queue_unblocks(b, &done);
-        }
+    let Some(b) = g.as_mut() else { return false };
+    if b.waiters.is_empty() { return false; }
+    let slab = &mut b.slab;
+    if b.fibers.is_empty() {
+        b.waiters.retain(|&(k, id)| { if k == key { slab.complete(id, Ok(0)); } k != key });
+        false
+    } else {
+        let mut done = vec![];
+        b.waiters.retain(|&(k, id)| { if k == key { slab.complete(id, Ok(0)); done.push(id); } k != key });
+        queue_unblocks(b, &done)
     }
 }
 /// Complete the oldest pending Wake(key) op (one item / one slot / an unlocked Mutex: one waiter
 /// re-checks, not all). A woken waiter that leaves without taking it passes it on (`thread::wait`).
 #[inline]
-pub fn notify_one(c: &mut Ctx, key: u64) {
+pub fn notify_one(c: &mut Ctx, key: u64) -> bool {
     let mut g = c.vm().blop.borrow_mut();
-    let Some(b) = g.as_mut() else { return };
-    {
-        let Some(i) = b.waiters.iter().position(|w| w.0 == key && matches!(b.slab.get(w.1), Some(Slot::Pending(_)))) else { return };
-        let (_, id) = b.waiters.remove(i);
-        b.slab.complete(id, Ok(0));
-        if !b.fibers.is_empty() { queue_unblocks(b, &[id]); }
-    }
+    let Some(b) = g.as_mut() else { return false };
+    let Some(i) = b.waiters.iter().position(|w| w.0 == key && matches!(b.slab.get(w.1), Some(Slot::Pending(_)))) else { return false };
+    let (_, id) = b.waiters.remove(i);
+    b.slab.complete(id, Ok(0));
+    !b.fibers.is_empty() && queue_unblocks(b, &[id])
 }
 /// IO#close: every op on `fd` completes with Err(EBADF) (before the fd number can be reused).
 pub fn cancel_fd(c: &mut Ctx, fd: i32) {

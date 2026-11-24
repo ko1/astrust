@@ -39,11 +39,11 @@ pub struct RThread {
     inited: bool,   // Thread#initialize ran
     aborting: bool,   // being killed (status "aborting")
     nointr: bool,   // re-locking after Mutex#sleep: interrupts wait
-    joining: Value, locking: Value,   // the Thread it joins / the Mutex it waits for (the deadlock report)
+    locking: Value,   // the Mutex it waits for (the deadlock report)
     serial: u64,   // creation order (main: 1), the report's mutex owner
 }
 impl RData for RThread {
-    fn visit(&mut self, m: &mut crate::gc::Visitor) { for v in [&mut self.fiber, &mut self.inner, &mut self.value, &mut self.exc, &mut self.locals, &mut self.tvars, &mut self.name, &mut self.pending, &mut self.masks, &mut self.report, &mut self.start, &mut self.ractor, &mut self.scheduler, &mut self.group, &mut self.joining, &mut self.locking] { m.visit(v); } }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) { for v in [&mut self.fiber, &mut self.inner, &mut self.value, &mut self.exc, &mut self.locals, &mut self.tvars, &mut self.name, &mut self.pending, &mut self.masks, &mut self.report, &mut self.start, &mut self.ractor, &mut self.scheduler, &mut self.group, &mut self.locking] { m.visit(v); } }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
@@ -51,7 +51,7 @@ impl RThread {
     fn blank(locals: Value, tvars: Value) -> RThread {
         RThread { fiber: NIL, inner: NIL, started: false, dead: false, value: NIL, exc: NIL, locals, tvars, name: NIL,
             blop: None, waiting: false, wake: false, pending: NIL, masks: NIL, priority: 0, report: UNDEF, abort: false, loc: String::new(), start: NIL,
-            last_status: crate::builtins::process::NO_STATUS, ractor: NIL, scheduler: NIL, group: NIL, inited: false, aborting: false, nointr: false, joining: NIL, locking: NIL, serial: 1 }
+            last_status: crate::builtins::process::NO_STATUS, ractor: NIL, scheduler: NIL, group: NIL, inited: false, aborting: false, nointr: false, locking: NIL, serial: 1 }
     }
     /// An interrupt a blocking call would deliver is queued.
     fn interrupted(&self, c: &Ctx) -> bool { self.pending != NIL && self.deliverable(c, true).is_some() }
@@ -286,7 +286,7 @@ fn schedule(c: &mut Ctx, me: Value, id: Id) -> Result<(), Esc> {
             if blop::is_done(c, id) || th(c, me).interrupted(c) { return Ok(()); }
         }
         if run_pass(c)? { blop::pump(c, false); continue; }
-        if !blop::can_finish_alone(c) && !IGNORE_DEADLOCK.load(Relaxed) { let m = deadlock_message(c); return err(c, C_FATAL.get(c), m); }
+        if !blop::can_finish_alone(c) && !IGNORE_DEADLOCK.load(Relaxed) { let m = deadlock_message(c, id); return err(c, C_FATAL.get(c), m); }
         // idle: no time slice to measure
         timer_run(false);
         blop::pump(c, true);
@@ -296,7 +296,7 @@ fn schedule(c: &mut Ctx, me: Value, id: Id) -> Result<(), Esc> {
 /// rb_check_deadlock's message with debug_deadlock_check's dump. Addresses are of the Thread
 /// objects (no rb_thread_t; green threads have no native thread of their own).
 #[cold]
-fn deadlock_message(c: &mut Ctx) -> String {
+fn deadlock_message(c: &mut Ctx, main_op: Id) -> String {
     let main = MAIN.get(c);
     let mut ts = vec![main];
     ts.extend(c.ary(LIST.get(c)).iter().copied().filter(|&t| !th(c, t).dead && th(c, t).ractor == NIL));
@@ -311,7 +311,7 @@ fn deadlock_message(c: &mut Ctx) -> String {
             m.push_str(&format!(" mutex:{} cond:{}", owner, waiting));
         }
         // join_list: the latest joiner first
-        for &u in ts.iter().rev() { if th(c, u).joining == t { m.push_str(&format!("\n    depended by: tb_thread_id:0x{:016x}", u.raw())); } }
+        for &u in ts.iter().rev() { if wait_key(c, u, main_op) == Some(t.raw()) { m.push_str(&format!("\n    depended by: tb_thread_id:0x{:016x}", u.raw())); } }
         let lines = if t == cur(c) { backtrace_locs_n(c, 0, None) } else {
             let r = th(c, t);
             let f = if r.inner != NIL { r.inner } else { r.fiber };
@@ -323,6 +323,11 @@ fn deadlock_message(c: &mut Ctx) -> String {
         m.push('\n');
     }
     m
+}
+/// The key of the Wake op a parked thread waits on (Thread#join's is the joined Thread's address).
+fn wait_key(c: &Ctx, t: Value, main_op: Id) -> Option<u64> {
+    let id = if t == MAIN.get(c) { Some(main_op) } else { th(c, t).blop };
+    id.and_then(|id| blop::wake_key(c, id))
 }
 fn thread_root(c: &Ctx, t: Value) -> Value { if t == MAIN.get(c) { crate::fiber::thread_root_of(c, crate::fiber::main_thread_fiber(c)) } else { th(c, t).fiber } }
 /// Block the current thread until cond holds (Ok(true)) or the deadline passes (Ok(false)).
@@ -751,10 +756,10 @@ fn sched_unblock(c: &mut Ctx, id: blop::Id) -> Result<(), Esc> {
 }
 /// Wake the oldest waiter on `key`; a fiber blocked through its scheduler is unblocked now, in the waker (as CRuby).
 #[inline(always)]
-fn wake_one(c: &mut Ctx, key: u64) -> Result<(), Esc> { blop::notify_one(c, key); run_unblocks(c) }
+fn wake_one(c: &mut Ctx, key: u64) -> Result<(), Esc> { if blop::notify_one(c, key) { run_unblocks_now(c)?; } Ok(()) }
 /// Wake every waiter on `key`.
 #[inline(always)]
-fn wake_all(c: &mut Ctx, key: u64) -> Result<(), Esc> { blop::notify(c, key); run_unblocks(c) }
+fn wake_all(c: &mut Ctx, key: u64) -> Result<(), Esc> { if blop::notify(c, key) { run_unblocks_now(c)?; } Ok(()) }
 /// Hand a wake-up on `key` to the next waiter while an exception is on its way out.
 fn pass_on(c: &mut Ctx, key: u64) {
     let (ek, ev) = (c.esc, c.esc_val);
@@ -786,8 +791,11 @@ fn inspect_thread(c: &Ctx, t: Value, status: &str) -> String {
 /// Thread.new: allocate, then #initialize (a subclass's must call super with the block).
 fn th_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let t = new_thread(c, slf);
-    let kw = kw_arg(c, a).is_some();
-    funcall_kw(c, t, intern(b"initialize"), a, b, kw)?;
+    let me = lookup_method(c, slf, crate::symbol::s::initialize);
+    if me as usize == TH_INIT.load(Relaxed) { thread_setup_checked(c, t, a, b)?; } else {
+        let kw = kw_arg(c, a).is_some();
+        funcall_kw(c, t, crate::symbol::s::initialize, a, b, kw)?;
+    }
     if !th(c, t).inited {
         let k = class_path(c, slf);
         return err(c, c.vm().c_thread_error.get(), format!("uninitialized thread - check '{}#initialize'", k));
@@ -801,18 +809,20 @@ fn th_s_start(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     thread_setup(c, t, a, b)?;
     Ok(t)
 }
-fn th_initialize(c: &mut Ctx, t: Value, a: &[Value], b: Blk) -> RV {
+/// Thread#initialize's entry (Thread.new skips the call when a class keeps it)
+static TH_INIT: AtomicUsize = AtomicUsize::new(0);
+fn th_initialize(c: &mut Ctx, t: Value, a: &[Value], b: Blk) -> RV { thread_setup_checked(c, t, a, b)?; Ok(NIL) }
+fn thread_setup_checked(c: &mut Ctx, t: Value, a: &[Value], b: Blk) -> Result<(), Esc> {
     if b.is_null() { return err(c, c.vm().c_thread_error.get(), "must be called with a block"); }
     if th(c, t).inited {
         let loc = th(c, t).loc.clone();
         return err(c, c.vm().c_thread_error.get(), format!("already initialized thread - {}", loc));
     }
-    thread_setup(c, t, a, b)?;
-    Ok(NIL)
+    thread_setup(c, t, a, b)
 }
 fn thread_setup(c: &mut Ctx, t: Value, a: &[Value], b: Blk) -> Result<(), Esc> {
-    let g = th(c, cur(c)).group;
-    if g != NIL && is_frozen(g) { return err(c, c.vm().c_thread_error.get(), "can't start a new thread (frozen ThreadGroup)"); }
+    let (pri, ractor, group) = { let m = th(c, cur(c)); (m.priority, m.ractor, m.group) };
+    if group != NIL && is_frozen(group) { return err(c, c.vm().c_thread_error.get(), "can't start a new thread (frozen ThreadGroup)"); }
     let p = block_to_proc(c, b)?;
     let args = crate::fiber::start_args(c, a);
     // the new thread gets a copy of the creating fiber's storage (rb_fiber_inherit_storage)
@@ -820,7 +830,6 @@ fn thread_setup(c: &mut Ctx, t: Value, a: &[Value], b: Blk) -> Result<(), Esc> {
     let start = c.ary_new_from(&[p, args, storage]);
     // rb_thread_to_s shows the block's location
     let loc = crate::builtins::proc::proc_location(c, p).map(|(f, l)| format!("{}:{}", f, l)).unwrap_or_default();
-    let (pri, ractor, group) = { let m = th(c, cur(c)); (m.priority, m.ractor, m.group) };
     let r = th_mut(c, t);
     r.start = start; r.loc = loc; r.priority = pri; r.ractor = ractor; r.group = group; r.inited = true;
     r.serial = SERIAL.fetch_add(1, Relaxed);
@@ -850,11 +859,7 @@ fn th_join(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if slf == MAIN.get(c) { return err(c, c.vm().c_thread_error.get(), "Target thread must not be main thread"); }
     check_argc(c, a, 0, 1)?;
     let deadline = match a.first() { Some(&t) if t != NIL => { let f = crate::builtins::numeric_methods::num2dbl(c, t)?; Some(Instant::now() + secs(f)) } _ => None };
-    let me = cur(c);
-    th_mut(c, me).joining = slf;
-    let r = block_on_by(c, Hook::Join(slf), NIL, |c| Ok(th(c, slf).dead), Some(slf.raw()), deadline, true);
-    th_mut(c, me).joining = NIL;
-    if !r? { return Ok(NIL); }
+    if !block_on_by(c, Hook::Join(slf), NIL, |c| Ok(th(c, slf).dead), Some(slf.raw()), deadline, true)? { return Ok(NIL); }
     let e = th(c, slf).exc;
     if e != NIL { return Err(raise_exc(c, e)); }
     Ok(slf)
@@ -1167,7 +1172,8 @@ fn mon_sync(c: &mut Ctx, s: Value, _a: &[Value], b: Blk) -> RV {
     r
 }
 fn mx_sleep(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 0, 1)?; mutex_sleep(c, s, a.first().copied().unwrap_or(NIL), NIL) }
-fn unix_secs() -> i64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64) }
+/// time(2): CLOCK_REALTIME_COARSE's seconds (vDSO; SystemTime's conversion costs ~150 instructions a call)
+fn unix_secs() -> i64 { let mut t = sys::Timespec { sec: 0, nsec: 0 }; sys::clock_gettime(5, &mut t); t.sec }
 /// rb_mutex_sleep: whole seconds slept (by the clock), nil when the timeout passed. `token`: the
 /// ConditionVariable waiter whose signal also ends the sleep (nil: none).
 fn mutex_sleep(c: &mut Ctx, m: Value, t: Value, token: Value) -> RV {
@@ -1176,20 +1182,21 @@ fn mutex_sleep(c: &mut Ctx, m: Value, t: Value, token: Value) -> RV {
     release(c, m)?;
     let r = sleep_wait(c, token, t, dur, m);
     let (ek, ev) = (c.esc, c.esc_val);
-    relock(c, m)?;
+    let waited = relock(c, m)?;
     if r.is_err() { c.esc = ek; c.esc_val = ev; }
     if !r? { return Ok(NIL); }
-    let me = cur(c);
-    check_interrupt(c, me)?;
+    // what arrived while re-locking (the sleep's own wait delivered the earlier ones)
+    if waited { let me = cur(c); check_interrupt(c, me)?; }
     Ok(Value::fix(unix_secs() - beg))
 }
-/// mutex_lock_uninterruptible: interrupts wait until the lock is held again.
-fn relock(c: &mut Ctx, m: Value) -> Result<(), Esc> {
+/// mutex_lock_uninterruptible: interrupts wait until the lock is held again. true: it waited.
+fn relock(c: &mut Ctx, m: Value) -> Result<bool, Esc> {
+    if lk(c, m).owner == NIL { acquire(c, m)?; return Ok(false); }
     let me = cur(c);
     let was = std::mem::replace(&mut th_mut(c, me).nointr, true);
     let r = acquire(c, m);
     th_mut(c, me).nointr = was;
-    r
+    r.map(|_| true)
 }
 /// Mutex#sleep's wait with the lock released: until `token` is signalled, Thread#wakeup / #run, or
 /// the deadline (Ok(false)).  With a scheduler: its kernel_sleep (a signal calls its unblock).
@@ -1216,8 +1223,9 @@ fn mon_wait_for_cond(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     wake_one(c, s.raw())?;
     let r = cv_wait_raw(c, a[0], a[1], s);
     let (ek, ev) = (c.esc, c.esc_val);
-    relock(c, s)?;
+    let waited = relock(c, s)?;
     lk_mut(c, s).count = count;
+    if waited && r.is_ok() { let me = cur(c); check_interrupt(c, me)?; }
     if r.is_err() { c.esc = ek; c.esc_val = ev; }
     r?;
     Ok(TRUE)
@@ -1233,20 +1241,20 @@ fn cv_waiters(c: &mut Ctx, cv: Value) -> Value {
     w
 }
 /// A waiter: [signalled, thread, sleeps natively] (a Mutex; else the object's #sleep, which a signal ends by Thread#wakeup).
-fn cv_token(c: &mut Ctx, cv: Value, native: bool) -> Value {
+fn cv_token(c: &mut Ctx, w: Value, native: bool) -> Value {
     let me = cur(c);
     let token = c.ary_new_from(&[FALSE, me, Value::bool(native)]);
-    let w = cv_waiters(c, cv);
     c.ary_push(w, token);
     token
 }
-fn cv_untoken(c: &mut Ctx, cv: Value, token: Value) { let w = cv_waiters(c, cv); c.ary_mut(w).retain(|&x| x != token); }
+fn cv_untoken(c: &mut Ctx, w: Value, token: Value) { c.ary_mut(w).retain(|&x| x != token); }
 /// Monitor#wait_for_cond's wait (the monitor already released).
 fn cv_wait_raw(c: &mut Ctx, cv: Value, timeout: Value, mutex: Value) -> Result<bool, Esc> {
     let dur = if timeout == NIL { None } else { Some(crate::builtins::process::time_interval(c, timeout)?) };
-    let token = cv_token(c, cv, true);
+    let w = cv_waiters(c, cv);
+    let token = cv_token(c, w, true);
     let r = sleep_wait(c, token, timeout, dur, mutex);
-    cv_untoken(c, cv, token);
+    cv_untoken(c, w, token);
     r
 }
 /// rb_condvar_wait: mutex.sleep(timeout) while queued as a waiter.
@@ -1254,9 +1262,10 @@ fn cv_wait(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let (m, t) = (a[0], a.get(1).copied().unwrap_or(NIL));
     let native = c.data::<RLock>(m).is_some_and(|l| !l.monitor);
-    let token = cv_token(c, s, native);
+    let w = cv_waiters(c, s);
+    let token = cv_token(c, w, native);
     let r = if native { mutex_sleep(c, m, t, token) } else { funcall(c, m, intern(b"sleep"), &[t], std::ptr::null()) };
-    cv_untoken(c, s, token);
+    cv_untoken(c, w, token);
     r
 }
 /// Wake a waiter (sync_wakeup): its token, and the thread itself when it sleeps in another object's #sleep.
@@ -1335,8 +1344,11 @@ fn q_closed_err<T>(c: &mut Ctx) -> Result<T, Esc> { err(c, c.vm().c_closed_queue
 fn q_push(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() { let mx = if qu(c, s).max == 0 { 1 } else { 2 }; return argc_err(c, 0, 1, mx); }
     let q = qu(c, s);
-    if q.max == 0 && a.len() > 1 { return argc_err(c, a.len(), 1, 1); }
-    let (nb, deadline) = if a.len() > 1 { q_opts(c, &a[1..])? } else { (false, None) };
+    let (mut nb, mut deadline) = (false, None);
+    if a.len() > 1 {
+        if q.max == 0 { return argc_err(c, a.len(), 1, 1); }
+        (nb, deadline) = q_opts(c, &a[1..])?;
+    }
     if q.closed { return q_closed_err(c); }
     if q.max > 0 && q_len(c, s) >= q.max {
         if nb { return err(c, c.vm().c_thread_error.get(), "queue full"); }
@@ -1418,6 +1430,7 @@ pub fn init(c: &mut Ctx) {
     ds(c, "pending_interrupt?", |c, _s, a, _b| { let t = cur(c); pending_interrupt_p(c, t, a) }, -1);
     let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, th, n, f, a);
     define_private_cfunc(c, th, "initialize", th_initialize, -1);
+    TH_INIT.store(lookup_method(c, th, crate::symbol::s::initialize) as usize, Relaxed);
     d(c, "join", th_join, -1); d(c, "value", th_value, 0); d(c, "[]", th_aref, 1); d(c, "[]=", th_aset, 2); d(c, "key?", th_key_p, 1); d(c, "keys", th_keys, 0);
     d(c, "thread_variable_get", th_tv_get, 1); d(c, "thread_variable_set", th_tv_set, 2); d(c, "thread_variable?", th_tv_p, 1); d(c, "thread_variables", th_tvs, 0);
     d(c, "alive?", th_alive, 0); d(c, "stop?", th_stop_p, 0); d(c, "status", th_status, 0); d(c, "inspect", th_inspect, 0); d(c, "to_s", th_inspect, 0);
