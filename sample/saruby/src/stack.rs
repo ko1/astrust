@@ -25,6 +25,8 @@ pub const NO_SP: Sp = 0;
 pub const NO_STACK: StackRef = &[];
 
 pub fn stack_new(n: usize) -> Stack { slots_new(n) }
+/// A stack of about n slots whose first one is at the page offset of `at`.
+pub fn stack_new_at(n: usize, at: usize) -> Stack { slots_at(slots_new(n), at) }
 pub fn stack_release(s: Stack) { slots_release(s) }
 
 #[cold]
