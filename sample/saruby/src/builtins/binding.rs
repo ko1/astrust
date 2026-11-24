@@ -143,7 +143,9 @@ pub fn eval_in_binding(c: &mut Ctx, bind: Value, src: &[u8], enc: u8, file: &'st
     let b = rbind(c, bind);
     let outer = vec![env_names(&b.names)];
     let (slf, env, cref, me, dc, svar, blk, visi) = (b.self_, b.env, b.cref, b.me, b.dc, (b.svar, b.ret), b.blk, b.visi);
-    let is = match crate::compile::compile_source_enc(src, enc, file, line, IseqKind::Eval, outer) {
+    let is = crate::compile::compile_source_enc(src, enc, file, line, IseqKind::Eval, outer);
+    crate::compile::flush_parse_warnings(c)?;
+    let is = match is {
         Ok(is) => is,
         Err(m) => return err(c, c.vm().c_syntax_error.get(), m),
     };
@@ -199,7 +201,9 @@ fn eval_under(c: &mut Ctx, slf: Value, k: Value, src: &[u8], enc: u8, file: &'st
     let b = rbind(c, bind);
     let outer = vec![env_names(&b.names)];
     let env = b.env;
-    let is = match crate::compile::compile_source_enc(src, enc, file, line, IseqKind::Eval, outer) { Ok(is) => is, Err(m) => return err(c, c.vm().c_syntax_error.get(), m) };
+    let is = crate::compile::compile_source_enc(src, enc, file, line, IseqKind::Eval, outer);
+    crate::compile::flush_parse_warnings(c)?;
+    let is = match is { Ok(is) => is, Err(m) => return err(c, c.vm().c_syntax_error.get(), m) };
     crate::builtins::tracepoint::trace_script_compiled(c, src)?;
     let cur = c.cur_frame().map_or(std::ptr::null(), |f| f.cref());
     let cref = new_cref(k, cur);

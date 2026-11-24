@@ -1354,7 +1354,9 @@ pub fn load_file(c: &mut Ctx, path: &str) -> RV {
 
 /// Compile and run a source at top level (self = main).
 pub fn run_source(c: &mut Ctx, src: &[u8], file: &'static str, line: i32) -> RV {
-    let is = match crate::compile::compile_source(src, file, line, IseqKind::Top, vec![]) {
+    let is = crate::compile::compile_source(src, file, line, IseqKind::Top, vec![]);
+    crate::compile::flush_parse_warnings(c)?;
+    let is = match is {
         Ok(is) => is,
         Err(msg) => { return err(c, c.vm().c_syntax_error.get(), msg); }
     };
@@ -1400,7 +1402,9 @@ fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
             Err(_) => { let e = make_exception(c, c.vm().c_load_error.get(), &format!("cannot load such file -- {}", p)); return Err(raise_exc(c, e)); }
         };
         let file: &'static str = Box::leak(p.into_boxed_str());
-        let is = match crate::compile::compile_source(&src, file, 1, IseqKind::Top, vec![]) { Ok(is) => is, Err(msg) => return err(c, c.vm().c_syntax_error.get(), msg) };
+        let is = crate::compile::compile_source(&src, file, 1, IseqKind::Top, vec![]);
+        crate::compile::flush_parse_warnings(c)?;
+        let is = match is { Ok(is) => is, Err(msg) => return err(c, c.vm().c_syntax_error.get(), msg) };
         let cref = new_cref(m, c.vm().top_cref.get());
         crate::run_top_iseq_cref(c, is, slf, cref)?;
         return Ok(TRUE);

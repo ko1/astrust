@@ -806,7 +806,7 @@ impl<'a> Compiler<'a> {
                 let (pre, rd, w) = self.cpath_op_parts(target, line);
                 let v = self.c(value);
                 let w = w(v);
-                let (p, nm) = match pre.1 { Some(sl) => (ALLOC_node_lvar(sl), pre.2), None => self.cpath_parts(target) };
+                let (p, nm) = match pre.1 { Some(sl) => (ALLOC_node_lvar(sl), pre.2), None => (ALLOC_node_top_const(intern(b"Object"), line), pre.2) };
                 let d = ALLOC_node_defined(DEF_CPATH, nm, p);
                 let e = ALLOC_node_or(ALLOC_node_if(d, rd, ALLOC_node_nil()), w);
                 match pre.0 { Some(set) => self.seq(vec![set, e]), None => e }
@@ -1996,7 +1996,11 @@ impl<'a> Compiler<'a> {
             Kind::GlobalVariableReadNode { name } => ALLOC_node_defined(DEF_GVAR, self.cst(*name), nil()),
             Kind::ClassVariableReadNode { name } => ALLOC_node_defined(DEF_CVAR, self.cst(*name), nil()),
             Kind::ConstantReadNode { name } => ALLOC_node_defined(DEF_CONST, self.cst(*name), nil()),
-            Kind::ConstantPathNode { .. } => { let (p, nm) = self.cpath_parts(v); ALLOC_node_defined(DEF_CPATH, nm, p) }
+            Kind::ConstantPathNode { parent, name } => {
+                // an undefined scope makes it undefined (no const_missing)
+                let p = match parent { Some(p) => self.defined_guard(p), None => ALLOC_node_top_const(intern(b"Object"), self.line(v.loc)) };
+                ALLOC_node_defined(DEF_CPATH, self.cst(name.unwrap_or(0)), p)
+            }
             Kind::CallNode { block: Some(b), .. } if matches!(b.kind, Kind::BlockNode { .. }) => self.dconst(DEF_EXPR),
             Kind::CallNode { receiver, name, arguments, block, .. } => {
                 let nm = self.cst(*name);
@@ -2067,7 +2071,8 @@ impl<'a> Compiler<'a> {
     /// For `defined?(a.b)`: the receiver must itself be defined; evaluates to the receiver or UNDEF.
     fn defined_guard(&mut self, r: &PNode) -> NodePtr {
         match &r.kind {
-            Kind::CallNode { receiver: _, .. } | Kind::ConstantReadNode { .. } | Kind::ConstantPathNode { .. } | Kind::InstanceVariableReadNode { .. } => {
+            Kind::CallNode { receiver: _, .. } | Kind::ConstantReadNode { .. } | Kind::ConstantPathNode { .. } | Kind::InstanceVariableReadNode { .. }
+            | Kind::GlobalVariableReadNode { .. } | Kind::ClassVariableReadNode { .. } => {
                 let d = self.defined(r);
                 let val = self.c(r);
                 // rescue errors in evaluating the receiver: defined?(a.b) where a raises → nil
@@ -2482,6 +2487,21 @@ pub fn regex_opts(flags: u32, src_enc: u32) -> u32 {
     o | ((enc + 1) << crate::regexp::RE_LIT_ENC_SHIFT)
 }
 
+thread_local! {
+    /// The last parse's warnings (message, verbose-only), shown by flush_parse_warnings.
+    static PARSE_WARNINGS: std::cell::RefCell<Vec<(String, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+/// pm_warning_emit_callback: default-level warnings unless $VERBOSE is nil, verbose-level ones under $VERBOSE = true.
+pub fn flush_parse_warnings(c: &mut Ctx) -> Result<(), Esc> {
+    let ws = PARSE_WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()));
+    for (m, verbose_only) in ws {
+        let v = c.vm().verbose.get();
+        if v == NIL || (verbose_only && v != TRUE) { continue; }
+        crate::builtins::kernel::warning_write(c, m.as_bytes())?;
+    }
+    Ok(())
+}
+
 /// Parse and compile a source file into a top-level iseq.  Err = SyntaxError message.
 pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, String> {
     compile_source_enc(src, crate::object::ENC_UTF8, file, line, kind, outer)
@@ -2491,13 +2511,20 @@ pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind,
 pub fn compile_source_enc(src: &[u8], enc: u8, file: &'static str, line: i32, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, String> {
     let ename = if enc == crate::object::ENC_UTF8 { "" } else { crate::builtins::encoding::enc_name(enc) };
     let mut scopes: Vec<Vec<Vec<u8>>> = outer.iter().rev().map(|sc| sc.iter().map(|(n, _, _)| crate::symbol::sym_bytes(*n).to_vec()).collect()).collect();
-    if !scopes.is_empty() { scopes.push(vec![]); }
+    // an eval always parses with an outer scope (prism's parsing_eval: no top-level unused-variable warnings)
+    if !scopes.is_empty() || kind == IseqKind::Eval { scopes.push(vec![]); }
     let pr = prism::parse(src, &prism::ParseOpts { filepath: file.as_bytes(), line, scopes, main_script: kind == IseqKind::Main, frozen_string_literal: 0, encoding: ename.as_bytes() });
     compile_parsed(&pr, src, file, kind, outer)
 }
 
 /// compile_source of a parse already made (the prelude's is made at build time).
 pub fn compile_parsed(pr: &ParseResult, src: &[u8], file: &'static str, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, String> {
+    if file != "<internal:prelude>" && !pr.warnings.is_empty() {
+        PARSE_WARNINGS.with(|w| {
+            let mut w = w.borrow_mut();
+            for d in &pr.warnings { w.push((format!("{}:{}: warning: {}\n", file, pr.line_of(d.loc.start), d.msg), d.level != 0)); }
+        });
+    }
     if !pr.errors.is_empty() {
         let mut msg = String::new();
         for e in &pr.errors {
