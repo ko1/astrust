@@ -234,6 +234,12 @@ pub fn fchdir(fd: c_int) -> c_int { unsafe { ffi::syscall(nr_cred::FCHDIR, fd as
 #[cfg(target_arch = "aarch64")] const NR_FADVISE64: i64 = 223;
 /// posix_fadvise(2) (IO#advise); -1 and errno on failure.
 pub fn fadvise(fd: c_int, off: i64, len: i64, advice: c_int) -> c_int { unsafe { ffi::syscall(NR_FADVISE64, fd as i64, off, len, advice as i64) as c_int } }   // SAFETY: integers
+#[cfg(target_arch = "x86_64")] const NR_IOCTL: i64 = 16;
+#[cfg(target_arch = "aarch64")] const NR_IOCTL: i64 = 29;
+/// ioctl(2) with an integer argument (IO#ioctl); a request that takes it as an address is the caller's, as in CRuby.
+pub fn ioctl_int(fd: c_int, req: u64, arg: i64) -> c_int { unsafe { ffi::syscall(NR_IOCTL, fd as i64, req as i64, arg) as c_int } }   // SAFETY: integers (see above)
+/// ioctl(2) on a buffer sized as rb_io_ctl does (the request's _IOC_SIZE, at least 256 bytes).
+pub fn ioctl_buf(fd: c_int, req: u64, buf: &mut [u8]) -> c_int { unsafe { ffi::syscall(NR_IOCTL, fd as i64, req as i64, buf.as_mut_ptr()) as c_int } }   // SAFETY: a live buffer of the size the request encodes
 
 // ---- signals and time -----------------------------------------------------------------------
 /// Disposition for `signal`.

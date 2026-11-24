@@ -145,6 +145,7 @@ struct Opts {
     incdirs: Vec<String>,
     check_syntax: bool,
     cmdline: u8,   // prism's -a -l -n -p bits
+    inplace: Option<String>,   // -i[ext]: $-i
 }
 
 fn usage() -> ! {
@@ -170,7 +171,7 @@ fn parse_args() -> Opts {
     let raw: Vec<Vec<u8>> = std::env::args_os().map(|a| std::os::unix::ffi::OsStrExt::as_bytes(a.as_os_str()).to_vec()).collect();
     let argv: Vec<String> = raw.iter().map(|a| String::from_utf8_lossy(a).into_owned()).collect();
     let mut o = Opts { e: vec![], script: None, args: vec![], plain: false, aot: false, dump_ast: false, quiet: false,
-        verbose_astro: false, warn: false, nowarn: false, store: "code_store".into(), compiled_only: false, requires: vec![], incdirs: vec![], check_syntax: false, cmdline: 0 };
+        verbose_astro: false, warn: false, nowarn: false, store: "code_store".into(), compiled_only: false, requires: vec![], incdirs: vec![], check_syntax: false, cmdline: 0, inplace: None };
     let mut i = 1;
     while i < argv.len() {
         let a = &argv[i];
@@ -200,6 +201,7 @@ fn parse_args() -> Opts {
             "--enable-frozen-string-literal" | "--yjit" => {}
             s if s.starts_with("--disable-") || s.starts_with("--disable=") => disable_features(&s[10..]),
             s if s.starts_with("-I") => { if s.len() > 2 { o.incdirs.push(s[2..].into()); } else { i += 1; o.incdirs.push(argv.get(i).cloned().unwrap_or_else(|| usage())); } }
+            s if s.starts_with("-i") => o.inplace = Some(s[2..].into()),
             s if s.starts_with("-r") => { if s.len() > 2 { o.requires.push(s[2..].into()); } else { i += 1; o.requires.push(argv.get(i).cloned().unwrap_or_else(|| usage())); } }
             s if s.starts_with("--disable") || s.starts_with("--enable") => {}
             s if s.starts_with('-') && s.len() > 1 => { eprintln!("saruby: invalid option {}  (-h will show valid options)", s); std::process::exit(2); }
@@ -252,6 +254,7 @@ fn run_main(o: Opts) -> i32 {
         if o.cmdline & 0x18 != 0 { builtins::kernel::define_dash_n(&mut c); }
     }
     if o.warn { builtins::misc::warning_enable_deprecated(); }
+    if let Some(x) = &o.inplace { let s = c.str_new(x.as_bytes()); vm.globals.borrow_mut().insert(crate::symbol::intern(b"$-i"), s); }
     for d in &o.incdirs { let s = c.str_new(d.as_bytes()); c.ary_push(vm.load_path.get(), s); }
     builtins::prelude::setup_load_path(&mut c);
     builtins::did_you_mean::snapshot_load_path(&mut c);

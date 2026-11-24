@@ -952,7 +952,8 @@ pub fn srb_super(c: &mut Ctx, base: Stk, tmp: Value, kw: Value, blkv: Value, ci:
     let me = unsafe { &*f.me };
     let slf = fp[0].get();
     let klass = class_of(slf);
-    let owner = if f.defined_class() != NIL { f.defined_class() } else { me.owner };
+    // a define_method body searches from its own owner, not the class its block was made under
+    let owner = if f.defined_class() != NIL && !matches!(me.kind, MKind::Bmethod(_)) { f.defined_class() } else { me.owner };
     let sm = super_method(c, klass, owner, me.name);
     let fblk = f.blk;
     let n = c.ary(tmp).len();

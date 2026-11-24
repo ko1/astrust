@@ -421,6 +421,8 @@ fn child_setup(sp: &Spec) -> Result<(), Stage> {
 }
 /// exec the PATH search result; a name not found there is ENOENT (a non-executable match is skipped, as dln_find_exe_r does).
 fn do_exec(sp: &Spec) {
+    // stdfd_clear_nonblock: many programs cannot deal with non-blocking standard streams (IO.pipe's are)
+    for fd in 0..3 { let fl = sys::fcntl(fd, sys::F_GETFL, 0); if fl >= 0 && fl & sys::O_NONBLOCK != 0 { sys::fcntl(fd, sys::F_SETFL, fl & !sys::O_NONBLOCK); } }
     if sp.prog.as_bytes().contains(&b'/') { sys::execvp(&sp.prog, &sp.argv); return; }
     match &sp.path { Some(p) => { sys::execvp(p, &sp.argv); } None => sys::set_errno(2) }
 }
