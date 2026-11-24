@@ -294,12 +294,15 @@ cfn!(r_hash, |c, slf, a, blk| {
     let h = crate::astrust::hash_merge(crate::astrust::hash_merge(crate::hash::key_hash(c, b)?, crate::hash::key_hash(c, e)?), (x as u64) << 24);
     Ok(Value::fix((h >> 2) as i64))
 });
+/// range_to_s / inspect_range: the encodings follow the parts (rb_str_dup + rb_str_append).
 fn range_to_s(c: &mut Ctx, slf: Value, insp: bool) -> RV {
     let (b, e, x) = c.range_parts(slf);
-    let f = |c: &mut Ctx, v: Value| -> Result<String, Esc> { if insp { if v == NIL { Ok(String::new()) } else { inspect_str(c, v) } } else { to_rstring(c, v) } };
-    if insp && b == NIL && e == NIL { return Ok(c.str_new(if x { b"nil...nil" as &[u8] } else { b"nil..nil" })); }
-    let bs = f(c, b)?; let es = f(c, e)?;
-    Ok(c.str_new(format!("{}{}{}", bs, if x { "..." } else { ".." }, es).as_bytes()))
+    let f = |c: &mut Ctx, v: Value| -> RV { if insp { crate::builtins::kernel::inspect_value(c, v) } else { crate::rt::srb_tostr(c, v) } };
+    let acc = if !insp || b != NIL || e == NIL { let s = f(c, b)?; c.str_dup(s) } else { c.str_new_enc(b"", ENC_BINARY) };
+    obj_set_klass(acc, c.vm().c_string.get());
+    c.rstring_mut(acc).b.extend_from_slice(if x { b"..." } else { b".." });
+    if !insp || b == NIL || e != NIL { let s = f(c, e)?; crate::string::str_append_str(c, acc, s)?; }
+    Ok(acc)
 }
 cfn!(r_to_s, |c, slf, a, blk| range_to_s(c, slf, false));
 cfn!(r_inspect, |c, slf, a, blk| range_to_s(c, slf, true));

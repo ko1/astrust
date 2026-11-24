@@ -410,7 +410,7 @@ cfn!(s_inspect, |c, slf, a, b_| {
     // rb_str_inspect: in the result encoding, US-ASCII when that is not ASCII-compatible
     let r = crate::string::inspect_resenc();
     let e = if crate::builtins::encoding::ascii_compat(r) { r } else { ENC_ASCII };
-    Ok(c.str_new_enc(inspect_bytes(c.str_bytes(slf), c.str_enc(slf)).as_bytes(), e))
+    Ok(c.str_new_enc(&crate::string::inspect_vec(c.str_bytes(slf), c.str_enc(slf)), e))
 });
 cfn!(s_dump, |c, slf, a, b_| {
     use crate::builtins::encoding as en;

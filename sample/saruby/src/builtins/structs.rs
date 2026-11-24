@@ -215,27 +215,34 @@ fn st_each_pair(c: &mut Ctx, slf: Value, _a: &[Value], blk: Blk) -> RV {
 fn st_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let k = real_class_of(c, slf);
     let mem = members_of(c, k);
-    let mut out = String::from("#<struct ");
+    // rb_str_buf_new2("#<struct ") + appends: the encodings follow the parts
+    let out = c.str_new_enc(b"#<struct ", crate::object::ENC_BINARY);
+    let lit = |c: &mut Ctx, b: &[u8]| c.rstring_mut(out).b.extend_from_slice(b);
     // rb_struct_inspect: the class path unless anonymous (or under an anonymous module)
     let named = c.class(k).name.is_some() && !class_path(c, k).starts_with('#');
-    if named { out.push_str(&class_path(c, k)); }
-    if !rec_enter(c, slf, s::inspect)? { out.push_str(":...>"); return Ok(c.str_new(out.as_bytes())); }
-    if named { out.push(' '); }
-    for i in 0..c.ary_len(mem) {
-        if i > 0 { out.push_str(", "); }
-        let mv = c.ary_get(mem, i);
-        let n = mv.as_sym();
-        let nb = sym_bytes(n);
-        // rb_is_local_id || rb_is_const_id: the bare name, else the Symbol's inspect
-        let word = |x: u8| x.is_ascii_alphanumeric() || x == b'_' || x >= 0x80;
-        if nb.first().is_some_and(|&x| !x.is_ascii_digit() && word(x)) && nb.iter().all(|&x| word(x)) { out.push_str(&sym_str(n)); }
-        else { match inspect_str(c, mv) { Ok(s2) => out.push_str(&s2), Err(e) => { rec_leave(c, slf, s::inspect); return Err(e); } } }
-        out.push('=');
-        match inspect_str(c, ivar_get(c, slf, n)) { Ok(s2) => out.push_str(&s2), Err(e) => { rec_leave(c, slf, s::inspect); return Err(e); } }
-    }
+    if named { let p = class_path(c, k); let ps = c.str_new_enc(p.as_bytes(), if p.is_ascii() { crate::object::ENC_ASCII } else { crate::object::ENC_UTF8 }); crate::string::str_append_str(c, out, ps)?; }
+    if !rec_enter(c, slf, s::inspect)? { lit(c, b":...>"); return Ok(out); }
+    if named { lit(c, b" "); }
+    let r = (|| -> Result<(), Esc> {
+        for i in 0..c.ary_len(mem) {
+            if i > 0 { lit(c, b", "); }
+            let mv = c.ary_get(mem, i);
+            let n = mv.as_sym();
+            let nb = sym_bytes(n);
+            // rb_is_local_id || rb_is_const_id: the bare name, else the Symbol's inspect
+            let word = |x: u8| x.is_ascii_alphanumeric() || x == b'_' || x >= 0x80;
+            let ns = if nb.first().is_some_and(|&x| !x.is_ascii_digit() && word(x)) && nb.iter().all(|&x| word(x)) { crate::builtins::symbol_methods::sym_str_v(c, mv) } else { inspect_value(c, mv)? };
+            crate::string::str_append_str(c, out, ns)?;
+            lit(c, b"=");
+            let vs = inspect_value(c, ivar_get(c, slf, n))?;
+            crate::string::str_append_str(c, out, vs)?;
+        }
+        Ok(())
+    })();
     rec_leave(c, slf, s::inspect);
-    out.push('>');
-    Ok(c.str_new(out.as_bytes()))
+    r?;
+    lit(c, b">");
+    Ok(out)
 }
 fn st_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let m = members_of(c, real_class_of(c, slf)); Ok(Value::fix(c.ary_len(m) as i64)) }
 fn st_dig(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {

@@ -16,7 +16,7 @@ pub fn sym_encoding(s: crate::value::Sym) -> u8 {
     if let Some(e) = crate::symbol::sym_enc(s) { return e; }
     if is_ascii(sym_bytes(s)) { ENC_ASCII } else { ENC_UTF8 }
 }
-fn sym_str_v(c: &mut Ctx, v: Value) -> Value { let s = v.as_sym(); c.str_new_enc(sym_bytes(s), sym_encoding(s)) }
+pub fn sym_str_v(c: &mut Ctx, v: Value) -> Value { let s = v.as_sym(); c.str_new_enc(sym_bytes(s), sym_encoding(s)) }
 
 fn sym_to_s(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let k = s.as_sym(); Ok(c.str_new_chilled(sym_bytes(k), sym_encoding(k), crate::object::FL_CHILLED_SYM)) }
 fn sym_name(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
@@ -27,15 +27,9 @@ fn sym_name(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     Ok(v)
 }
 fn sym_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
-    // a symbol with an encoding of its own is never a plain name: ":" + String#inspect (rb_str_symname_p)
-    if crate::symbol::sym_enc(s.as_sym()).is_some() {
-        let st = sym_str_v(c, s);
-        let i = inspect_value(c, st)?;
-        let mut out = b":".to_vec(); out.extend_from_slice(c.str_bytes(i));
-        return Ok(c.str_new(&out));
-    }
-    let r = crate::string::sym_inspect(sym_bytes(s.as_sym()));
-    Ok(c.str_new_enc(r.as_bytes(), if r.is_ascii() { ENC_ASCII } else { ENC_UTF8 }))
+    let e = crate::symbol::sym_enc(s.as_sym()).unwrap_or(ENC_UTF8);
+    let (r, re) = crate::string::sym_inspect(sym_bytes(s.as_sym()), e);
+    Ok(c.str_new_enc(&r, re))
 }
 fn sym_to_proc(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { crate::builtins::proc::sym_to_proc(c, s) }
 fn sym_eq(_c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { Ok(Value::bool(s == a[0])) }

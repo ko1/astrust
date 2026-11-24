@@ -280,9 +280,9 @@ pub fn srb_tostr(c: &mut Ctx, v: Value) -> RV {
         if let Some(r) = funcall_refined(c, std::ptr::null(), v, s::to_s, &[], std::ptr::null(), CF_FCALL) { let r = r?; if is_string(r) { return Ok(r); } }
     }
     if !redef(R_IMM_TO_S) {
-        if v.is_fixnum() { return Ok(c.str_new(v.as_fix().to_string().as_bytes())); }
-        if v.is_sym() { return Ok(c.str_new(crate::symbol::sym_bytes(v.as_sym()))); }
-        if v == NIL { return Ok(c.str_new(b"")); }
+        if v.is_fixnum() { return Ok(c.str_new_enc(v.as_fix().to_string().as_bytes(), crate::object::ENC_ASCII)); }
+        if v.is_sym() { return Ok(c.str_new_enc(crate::symbol::sym_bytes(v.as_sym()), crate::builtins::symbol_methods::sym_encoding(v.as_sym()))); }
+        if v == NIL { return Ok(c.str_new_enc(b"", crate::object::ENC_ASCII)); }
     }
     let r = funcall(c, v, s::to_s, &[], std::ptr::null())?;
     if is_string(r) { return Ok(r); }

@@ -196,6 +196,17 @@ fn single_table(enc: u8) -> Option<&'static [u16; 128]> {
     if i == 255 { None } else { Some(&tb::SINGLE[i as usize]) }
 }
 
+/// rb_enc_isprint of the single byte `b` (>= 0x80) in `enc` (Onigmo's ctype table, generated from CRuby).
+pub fn hi_byte_print(enc: u8, b: u8) -> bool {
+    static IDX: OnceLock<[u8; NENC]> = OnceLock::new();
+    let idx = IDX.get_or_init(|| {
+        let mut t = [255u8; NENC];
+        for (i, d) in ENCS.iter().enumerate() { if let Some(p) = tb::PRINT_HI.iter().position(|x| x.0 == d.name) { t[i] = p as u8; } }
+        t
+    });
+    match idx.get(enc as usize) { Some(&i) if i != 255 && b >= 0x80 => tb::PRINT_HI[i as usize].1[((b - 0x80) >> 3) as usize] & (1 << (b & 7)) != 0, _ => false }
+}
+
 /// Length of a valid character at b[i..], or None if invalid/truncated.
 pub fn precise_len(enc: u8, b: &[u8], i: usize) -> Option<usize> {
     let r = &b[i..];

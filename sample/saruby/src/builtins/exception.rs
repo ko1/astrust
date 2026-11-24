@@ -333,10 +333,21 @@ fn exc_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let cls = class_path(c, real_class_of(c, slf));
     // rb_obj_as_string(exc): #to_s, not #message
     let sv = to_s_value(c, slf)?;
-    let m = String::from_utf8_lossy(c.str_bytes(sv)).into_owned();
-    if m.is_empty() { return Ok(c.str_new(cls.as_bytes())); }
-    if m.contains('\n') { return Ok(c.str_new(format!("#<{}:{}>", cls, inspect_bytes(m.as_bytes(), ENC_UTF8)).as_bytes())); }
-    Ok(c.str_new(format!("#<{}: {}>", cls, m).as_bytes()))
+    if c.str_bytes(sv).is_empty() { return Ok(c.str_new_enc(cls.as_bytes(), if cls.is_ascii() { crate::object::ENC_ASCII } else { ENC_UTF8 })); }
+    // rb_str_buf_new2("#<") + appends: the encodings follow the parts
+    let acc = c.str_new_enc(b"#<", ENC_BINARY);
+    let cs = c.str_new_enc(cls.as_bytes(), if cls.is_ascii() { crate::object::ENC_ASCII } else { ENC_UTF8 });
+    crate::string::str_append_str(c, acc, cs)?;
+    let part = if c.str_bytes(sv).contains(&b'\n') {
+        c.rstring_mut(acc).b.push(b':');
+        let r = crate::string::inspect_resenc();
+        let r = if crate::builtins::encoding::ascii_compat(r) { r } else { crate::object::ENC_ASCII };
+        let v = crate::string::inspect_vec(c.str_bytes(sv), c.str_enc(sv));
+        c.str_new_enc(&v, r)
+    } else { c.rstring_mut(acc).b.extend_from_slice(b": "); sv };
+    crate::string::str_append_str(c, acc, part)?;
+    c.rstring_mut(acc).b.push(b'>');
+    Ok(acc)
 }
 fn exc_backtrace(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(exc_bt(c, slf)) }
 pub fn exc_set_backtrace(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
