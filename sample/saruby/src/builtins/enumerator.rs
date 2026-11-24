@@ -316,7 +316,7 @@ fn e_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
             if let (Some(bf), Some(ef), Some(sf)) = (c.num_to_f64(b), c.num_to_f64(e), c.num_to_f64(st)) {
                 let n = float_step_size(bf, ef, sf, x);
                 if n.is_infinite() { return Ok(c.float_new(n)); }
-                return Ok(Value::fix(n as i64));
+                return Ok(crate::builtins::numeric_methods::f64_to_int(c, n));
             }
         }
         let a = collect_all(c, slf)?; return Ok(Value::fix(c.ary_len(a) as i64));

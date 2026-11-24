@@ -1189,7 +1189,7 @@ fn d_each_child(c: &mut Ctx, s: Value, a: &[Value], blk: Blk) -> RV {
 }
 fn d_rewind(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { d_check(c, s)?; ivar_set_raw(c, s, iv("@pos"), Value::fix(0)); Ok(s) }
 fn d_tell(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let (_, p) = d_check(c, s)?; Ok(Value::fix(p as i64)) }
-fn d_seek(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { d_check(c, s)?; let n = num_to_long(c, a[0])?; ivar_set_raw(c, s, iv("@pos"), Value::fix(n.max(0))); Ok(s) }
+fn d_seek(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { d_check(c, s)?; let n = num_to_long(c, a[0])?; let pv = c.int_from_i64(n.max(0)); ivar_set_raw(c, s, iv("@pos"), pv); Ok(s) }
 fn d_set_pos(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV { d_seek(c, s, a, b)?; Ok(a[0]) }
 fn d_close(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     if ivar_get(c, s, iv("@closed")).truthy() { return Ok(NIL); }
