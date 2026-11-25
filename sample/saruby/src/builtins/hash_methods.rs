@@ -42,6 +42,13 @@ fn copy_entries(c: &mut Ctx, dst: Value, src: Value, dup_keys: bool) -> Result<(
     }
     Ok(())
 }
+/// rb_lambda_call (Enumerable#map): a Method proc needing 2+ arguments is yielded k, v.
+#[cold]
+fn method_wants_two(c: &Ctx, blk: Blk) -> bool {
+    let Some(m) = c.block_method(blk) else { return false };
+    let a = crate::builtins::proc::method_arity(c, c.method_obj(m).me);
+    (if a >= 0 { a } else { -a - 1 }) >= 2
+}
 /// |k, v| blocks receive two args; |pair| receives [k, v]
 fn wants_two(c: &Ctx, blk: Blk) -> bool {
     matches!(c.block_params(blk), Some(p) if p.lead.len() + p.post.len() + p.opt.len() >= 2 || p.rest.is_some() && p.lead.len() >= 1)
@@ -158,7 +165,7 @@ cfn!(h_each_with_index, |c, slf, a, blk| if crate::builtins::enum_native::each_o
     let mut i = 0;
     each_entry(c, slf, |c, k, v| { let p = c.ary_new_from(&[k, v]); yield_block(c, blk, &[p, Value::fix(i)])?; i += 1; Ok(true) })?; Ok(slf)
 }) });
-cfn!(h_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(c, slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "map", a, blk) } else { enum_or(c, slf, "map", a, blk, |c| { let out = c.ary_new(); let two = wants_two(c, blk); each_entry(c, slf, |c, k, v| { let r = yield_kv(c, blk, two, k, v)?; c.ary_push(out, r); Ok(true) })?; Ok(out) }) });
+cfn!(h_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(c, slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "map", a, blk) } else { enum_or(c, slf, "map", a, blk, |c| { let out = c.ary_new(); let two = wants_two(c, blk) || method_wants_two(c, blk); each_entry(c, slf, |c, k, v| { let r = yield_kv(c, blk, two, k, v)?; c.ary_push(out, r); Ok(true) })?; Ok(out) }) });
 cfn!(h_flat_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(c, slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "flat_map", a, blk) } else { enum_or(c, slf, "flat_map", a, blk, |c| { let out = c.ary_new(); each_entry(c, slf, |c, k, v| { let r = yield_pair(c, blk, k, v)?; if is_array(r) { c.ary_concat(out, r); } else { c.ary_push(out, r); } Ok(true) })?; Ok(out) }) });
 /// rb_hash_select / reject: the copy is iterated (and pruned), so the receiver may change meanwhile.
 fn sel(c: &mut Ctx, slf: Value, blk: Blk, want: bool) -> RV {

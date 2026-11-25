@@ -3008,7 +3008,7 @@ pub fn invoke_block_full_raw(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *co
         BlockKind::Sym(mid) => {
             if args.is_empty() { return arg_err(c, "no receiver given"); }
             let recv = args[0];
-            let fl = if kw && args.len() > 1 { CF_KW } else { 0 };   // :m.to_proc.(recv, k: v) passes keywords on
+            let fl = CF_PUBLIC_SEND | if kw && args.len() > 1 { CF_KW } else { 0 };   // :m.to_proc.(recv, k: v) passes keywords on
             if refinements_on() {
                 if let Some(r) = funcall_refined(c, b.cref, recv, mid, &args[1..], blkarg, fl) { return r; }
             }

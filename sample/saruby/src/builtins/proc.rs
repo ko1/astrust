@@ -17,7 +17,7 @@ use crate::vm::*;
 fn sym_proc_call(c: &mut Ctx, data: Value, args: &[Value], blk: Blk, _o: Blk) -> RV {
     if args.is_empty() { return arg_err(c, "no receiver given"); }
     let mid = data.as_sym();
-    funcall_public(c, args[0], mid, &args[1..], blk)
+    funcall_flags(c, args[0], mid, &args[1..], blk, CF_PUBLIC_SEND)
 }
 
 /// A Proc of class `klass` running block `b`; `b` stays on the stack (rooted) until the slot holds it.

@@ -230,6 +230,18 @@ impl Ctx {
         // SAFETY: iseqs are never freed
         match b.kind { BlockKind::Iseq(is) => unsafe { is.as_ref() }.map(|is| &is.params), _ => None }
     }
+    /// The Method object a block runs (through Proc wrappers), if it is a Method proc.
+    pub fn block_method(&self, blk: impl crate::vm::BlkArg) -> Option<Value> {
+        // SAFETY: as block_params
+        let mut b = unsafe { blk.ptr().as_ref() }?;
+        loop {
+            match b.kind {
+                BlockKind::Method(m) => return Some(m),
+                BlockKind::Proc(p) => b = &self.proc_data(p).blk,
+                _ => return None,
+            }
+        }
+    }
 }
 impl<'a> Others<'a> {
     #[inline(always)]

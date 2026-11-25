@@ -934,6 +934,12 @@ pub fn gvar_warn(c: &mut Ctx, msg: &str, deprecated: bool) -> Result<(), Esc> {
     if deprecated { warning_write_cat(c, m.as_bytes(), sym_value("deprecated")) } else { warning_write(c, m.as_bytes()) }
 }
 
+/// A deprecated-category warning attributed to file:line (rb_category_compile_warn).
+pub fn warn_deprecated_at(c: &mut Ctx, file: &str, line: u32, msg: &str) -> Result<(), Esc> {
+    // CRuby's rb_category_compile_warn does not check the category switch
+    if c.vm().verbose.get() == NIL { return Ok(()); }
+    warning_write_cat(c, format!("{}:{}: warning: {}\n", file, line, msg).as_bytes(), sym_value("deprecated"))
+}
 pub fn warn_deprecated(c: &mut Ctx, msg: &str) -> Result<(), Esc> { gvar_warn(c, msg, true) }
 /// gvar_warn with more lines in the same Warning.warn message.
 pub fn warn_with_tail(c: &mut Ctx, msg: &str, tail: &str) -> Result<(), Esc> {

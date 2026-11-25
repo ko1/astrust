@@ -863,8 +863,11 @@ pub fn srb_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, name: S
             if me.is_null() {
                 // respond_to_missing?
                 let rm = lookup_method(c, class_of(r), s::respond_to_missing_p);
-                if !rm.is_null() && unsafe { (*rm).owner } != vm().c_object.get() && unsafe { (*rm).owner } != vm().m_kernel.get()
-                    && check_respond_basic(c, r, s::respond_to_missing_p)? {
+                // defined? answers nil for an exception raised while asking respond_to?
+                let asked = if rm.is_null() { Ok(false) } else { check_respond_basic(c, r, s::respond_to_missing_p) };
+                let asked = match asked { Ok(b) => b, Err(e) => { if c.esc != EscKind::Raise { return Err(e); } c.esc = EscKind::None; return Ok(NIL); } };
+                if asked
+                    && unsafe { (*rm).owner } != vm().c_object.get() && unsafe { (*rm).owner } != vm().m_kernel.get() {
                     let t = funcall(c, r, s::respond_to_missing_p, &[Value::sym(name), FALSE], std::ptr::null())?;
                     if t.truthy() { return yes(c, b"method"); }
                 }
@@ -1468,9 +1471,27 @@ pub fn check_respond(c: &mut Ctx, v: Value, mid: Sym) -> Result<bool, Esc> {
 }
 
 /// The respond_to? half of rb_check_funcall: a redefined respond_to? must say yes to `mid`.
+/// vm_respond_to: a one-parameter respond_to? is deprecated.
+#[cold]
+fn respond_to_arity1_warn(c: &mut Ctx, v: Value, rt: *const MethodEntry, mid: Sym) -> Result<(), Esc> {
+    if c.vm().verbose.get() == NIL { return Ok(()); }
+    let k = class_of(v);
+    let (recv, sep) = if c.class(k).is_singleton { (crate::builtins::kernel::inspect_str(c, v)?, '.') } else { (class_path(c, k), '#') };
+    let q = crate::builtins::kernel::inspect_str(c, Value::sym(mid))?;
+    let loc = match c.me_ref(rt).map(|m| m.kind) { Some(MKind::Iseq(is)) => c.iseq_ref(is).map(|is| (is.info.file.to_string(), is.info.line)), _ => None };
+    if crate::builtins::misc::warning_category_enabled(0) { crate::builtins::kernel::warn_deprecated(c, &format!("{}{}respond_to?({}) uses the deprecated method signature, which takes one parameter", recv, sep, q))?; }
+    if let Some((f, l)) = loc { crate::builtins::kernel::warn_deprecated_at(c, &f, l as u32, "respond_to? is defined here")?; }
+    Ok(())
+}
 fn check_respond_basic(c: &mut Ctx, v: Value, mid: Sym) -> Result<bool, Esc> {
     let rt = lookup_method(c, class_of(v), s::respond_to_p);
     if !rt.is_null() && rt != search_method(c, vm().m_kernel.get(), s::respond_to_p) {
+        let ar = crate::builtins::proc::method_arity(c, rt);
+        if ar > 2 { return arg_err(c, format!("respond_to? must accept 1 or 2 arguments (requires {})", ar)); }
+        if ar == 1 {
+            respond_to_arity1_warn(c, v, rt, mid)?;
+            return Ok(funcall(c, v, s::respond_to_p, &[Value::sym(mid)], std::ptr::null())?.truthy());
+        }
         return Ok(funcall(c, v, s::respond_to_p, &[Value::sym(mid), TRUE], std::ptr::null())?.truthy());
     }
     Ok(true)
