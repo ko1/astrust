@@ -1,4 +1,4 @@
-# saruby — Sort of A Ruby
+# saruby — Sort of A Ruby (and a SAfe one, as far as Rust allows)
 
 A Ruby implementation built on **ASTrust**, the Rust version of the ASTro framework (an AST
 interpreter made fast by partial evaluation). It is a rewrite in Rust of
