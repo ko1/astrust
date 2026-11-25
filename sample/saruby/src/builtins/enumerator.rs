@@ -548,6 +548,7 @@ fn arith_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     funcall(c, a, intern(b"hash"), &[], std::ptr::null())
 }
 fn arith_last(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { check_argc(c, a, 0, 1)?;
+    if renum(c, slf).arith.is_some_and(|(_, e, _, _)| e == NIL) { return err(c, c.vm().c_range_error.get(), "cannot get the last element of endless arithmetic sequence"); }
     // all-Integer: counted back from the end, not enumerated
     if let Some((bg, e, st, x)) = renum(c, slf).arith {
         if e != NIL && is_integer(bg) && is_integer(e) && is_integer(st) && a.len() <= 1 {

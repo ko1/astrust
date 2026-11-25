@@ -499,9 +499,11 @@ fn read_num(b: &[u8], i: &mut usize) -> Option<(BigInt, i128)> {
         let save = *i;
         *i += 1;
         let mut neg = false;
-        if b[*i] == b'-' || b[*i] == b'+' { neg = b[*i] == b'-'; *i += 1; }
+        let signed = b[*i] == b'-' || b[*i] == b'+';
+        if signed { neg = b[*i] == b'-'; *i += 1; }
         match read_digits(b, i) {
-            None => { *i = save; return Some((n, nexp)); }
+            // CRuby keeps a consumed "e+" / "e-" even without digits (Rational("1e+") is 1)
+            None => { if !signed { *i = save; } return Some((n, nexp)); }
             Some((e, _)) => {
                 let e: i128 = e.to_i64().map(|x| x as i128).unwrap_or(1i128 << 100);
                 nexp += if neg { -e } else { e };
@@ -517,7 +519,7 @@ fn pow10(c: &mut Ctx, e: i128) -> Result<BigInt, Esc> {
     Ok(BigInt::from_i64(10).pow(e as u64))
 }
 /// Ok(None) = parse failure.  The value may be a Float (+-0.0 / Infinity) for out-of-range exponents.
-pub fn parse_rational(c: &mut Ctx, b: &[u8], strict: bool) -> Result<Option<Value>, Esc> {
+pub fn parse_rational(c: &mut Ctx, b: &[u8], strict: bool, raise: bool) -> Result<Option<Value>, Esc> {
     let mut i = skip_ws(b, 0);
     let mut neg = false;
     if i < b.len() && (b[i] == b'-' || b[i] == b'+') { neg = b[i] == b'-'; i += 1; }
@@ -525,10 +527,15 @@ pub fn parse_rational(c: &mut Ctx, b: &[u8], strict: bool) -> Result<Option<Valu
     let mut den = BigInt::from_i64(1);
     if i < b.len() && b[i] == b'/' {
         i += 1;
-        let Some((dn, de)) = read_num(b, &mut i) else { return Ok(None) };
-        if dn.is_zero() { return zerodiv(c); }
-        if strict && skip_ws(b, i) != b.len() { return Ok(None); }
-        den = dn; e -= de;
+        match read_num(b, &mut i) {
+            None if strict => return Ok(None),
+            None => {} // to_r: "3/" and "1/-2" keep the numerator alone
+            Some((dn, de)) => {
+                if dn.is_zero() { if !raise { return Ok(None); } return zerodiv(c); }
+                if strict && skip_ws(b, i) != b.len() { return Ok(None); }
+                den = dn; e -= de;
+            }
+        }
     } else if strict && skip_ws(b, i) != b.len() { return Ok(None); }
     if e > 0 {
         if e > FIXNUM_LIM { return Ok(Some(c.float_new(if neg { f64::NEG_INFINITY } else { f64::INFINITY }))); }
@@ -543,7 +550,7 @@ pub fn parse_rational(c: &mut Ctx, b: &[u8], strict: bool) -> Result<Option<Valu
 }
 fn str_to_r(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     let b = c.str_bytes(s).to_vec();
-    match parse_rational(c, &b, false)? {
+    match parse_rational(c, &b, false, true)? {
         None => Ok(rat_raw(c, Value::fix(0), Value::fix(1))),
         Some(v) if is_float(v) => { if float_val(v).is_infinite() { return err(c, c.vm().c_float_domain_error.get(), "Infinity"); } Ok(v) }
         Some(v) => Ok(v),
@@ -561,8 +568,7 @@ fn conv_arg(c: &mut Ctx, v: Value, raise: bool) -> Result<Option<Value>, Esc> {
     if is_float(v) { return Ok(Some(float_to_r(c, float_val(v))?)); }
     if is_string(v) {
         let b = c.str_bytes(v).to_vec();
-        if b.contains(&0) { if raise { return arg_err(c, "string contains null byte"); } return Ok(None); }
-        return match parse_rational(c, &b, true)? {
+        return match parse_rational(c, &b, true, raise)? {
             Some(r) if is_float(r) => {
                 if float_val(r) == 0.0 { return Ok(Some(rat_raw(c, Value::fix(0), Value::fix(1)))); }
                 if !raise { return Ok(None); }

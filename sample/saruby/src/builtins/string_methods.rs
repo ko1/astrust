@@ -723,12 +723,19 @@ fn lines_of(v: &[u8], enc: u8, ls: &LineSep, chomp: bool) -> Vec<Vec<u8>> {
     out
 }
 /// The separator of lines / each_line: None for a nil one (the whole string is one line).
+/// ArgumentError for any keyword other than chomp:
+fn only_chomp_kw(c: &mut Ctx, h: Value) -> Result<(), Esc> {
+    let mut bad = vec![];
+    for (k, _) in c.hash_pairs(h) { if k != sym_value("chomp") { bad.push(inspect_str(c, k)?); } }
+    if bad.is_empty() { return Ok(()); }
+    arg_err(c, format!("unknown keyword{}: {}", if bad.len() > 1 { "s" } else { "" }, bad.join(", ")))
+}
 fn lines_args(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<(Option<LineSep>, bool), Esc> {
     use crate::builtins::encoding as en;
     let mut chomp = false;
     let (pos, kw) = kw_split(c, a);
     check_argc(c, pos, 0, 1)?;
-    if let Some(h) = kw { if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("chomp"))? { chomp = v.truthy(); } }
+    if let Some(h) = kw { only_chomp_kw(c, h)?; if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("chomp"))? { chomp = v.truthy(); } }
     let rsv = match pos.first() { Some(&x) => x, None => gvar_get(c, intern(b"$/"))? };
     if rsv == NIL { return Ok((None, chomp)); }
     let enc = c.str_enc(slf);
@@ -1271,7 +1278,7 @@ cfn!(s_upto, |c, slf, a, blk| { check_argc(c, a, 1, 2)?;
         return Ok(slf);
     }
     let mut cur = c.str_bytes(slf).to_vec();
-    if cur.len() > lb.len() { return Ok(slf); }
+    if cur.len() > lb.len() || cur > lb { return Ok(slf); }
     loop {
         if excl && cur == lb { break; }
         let s2 = c.str_new_like(slf, cur.clone());
@@ -2045,6 +2052,7 @@ fn w_center(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { w_justify(c, s
 fn w_lines(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if !wide(c, slf) { return s_lines(c, slf, a, blk); }
     let kw = kw_arg(c, a);
+    if let Some(h) = kw { only_chomp_kw(c, h)?; }
     let chomp = match kw { Some(h) => crate::hash::hash_get_opt(c, h, sym_value("chomp"))?.is_some_and(|v| v.truthy()), None => false };
     let pos: Vec<Value> = if kw.is_some() { a[..a.len() - 1].to_vec() } else { a.to_vec() };
     let sep = match pos.first() { Some(&x) if is_string(x) => Some(c.str_bytes(x).to_vec()), Some(_) => None, None => crate::builtins::encoding::code_to_bytes(c.str_enc(slf), 10) };
