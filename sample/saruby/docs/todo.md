@@ -43,7 +43,9 @@ user 2026-11-25「full moving 頑張ってほしい」「クラスなどを non-
 - [x] phase 1a: `make FEATURES=gc_check`（marksweep の死んだ slot を隔離・毒入れ）、precise zone、`c.park`、`GC.__check_rooting` の自己検査。変換: Array#select! 系・uniq 系、Fiber / Thread#backtrace と SyntaxSuggest の `map(str_new).collect()`（今の marksweep でも Vec だけが持つ String が回収されうる潜在バグ）。interpreter スレッドの panic が終了コード 0 だったのを abort に
 - [ ] phase 1b: 実行時コスト 0 の root（thread_local / static の Value、json_parser の `Resumable.st.cache`、置き換えられた MethodEntry、`Vm.enc_objs`）、frame 鎖の走査、MethodEntry / Cref の Cell 化（一覧は trial README「Inventory」）
 - [ ] phase 1c: cfunc ABI を `Args { base, argc }` に（with_args の複製が消える）
-- [ ] phase 1d: builtins を 1 ファイルずつ precise へ（Rust バッファの Value 約 30 + 115 か所: `setup_params` の args、`take_cause` の Hash、sort の block 版 ...）
+- [ ] phase 1d: builtins を 1 ファイルずつ precise へ（Rust バッファの Value 約 30 + 115 か所: `setup_params` の args、`take_cause` の Hash、sort の block 版 ...）。2026-11-25 session 3 で変換: `sort_values`（park した Array 上で merge sort）、`Array#sort!`、`sort_by`、`product`（odometer で 1 行ずつ）、`Hash#transform_keys!`、rt.rs の pattern-match メッセージ
+- [x] GC stress で見つかった missed root（2026-11-25 session 3 の CHECK + stress 掃引）: `rt.rs block_from_value` で `#to_proc` が返した Proc を誰も参照していなかった（block は Proc の payload を指す。t/hand refinement_misc_1124r / splat_blockarg_view）、`Array#transpose` が `#to_ary` の結果を Vec だけに持っていた（to_ary_string_subclass_1024）
+- [ ] `Array#sort_by` でブロックが receiver を縮めたとき: CRuby は `a.sort_by { a.clear; x }` → `["s0"]`、saruby は `[]`（keys と receiver の短い方で切る。master 19faa10 でも同じ）
 - [ ] phase 1e: value stack の exact 化、node `@child` を slot へ（`saruby_gen.rb`、費用を測ってから）
 - [ ] phase 2: `copy`（Cheney、クラス・リテラルは non-moving 空間、identity hash は object_id から）、PURGE
 - [ ] phase 3: `copy_gen`（write barrier、`Member` 型で store 漏れを compile error に）

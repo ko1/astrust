@@ -416,23 +416,33 @@ cfn!(h_transform_keys, |c, slf, a, blk| {
 cfn!(h_transform_keys_b, |c, slf, a, blk| {
     check_argc(c, a, 0, 1)?;
     if a.is_empty() && blk.is_null() { return crate::builtins::enumerator::enum_for_sized(c, slf, intern(b"transform_keys!"), a); }
-    let map = if a.is_empty() { None } else { Some(to_hash_conv(c, a[0])?) };
-    modify(c, slf)?;
-    // rb_hash_transform_keys_bang: over a snapshot of the pairs; a key is dropped unless it is already a new key
-    let pairs: Vec<(Value, Value)> = c.hash_pairs(slf);
-    let keep = c.ary_from_vec(pairs.iter().flat_map(|&(k, v)| [k, v]).collect());
-    let new_keys = c.hash_new();
-    for (k, v) in pairs {
-        let nk = match map {
-            Some(m) => match hash_get_opt(c, m, k)? { Some(x) => x, None => if blk.is_null() { k } else { yield1(c, blk, k)? } },
-            None => yield1(c, blk, k)?,
-        };
-        if hash_get_opt(c, new_keys, k)?.is_none() { hash_delete(c, slf, k)?; }
-        hash_aset(c, slf, nk, v)?;
-        hash_aset(c, new_keys, nk, NIL)?;
-    }
-    std::hint::black_box(keep);
-    Ok(slf)
+    let has_map = !a.is_empty();
+    // Precise: p0 self, p1 the map, p2 the pairs' snapshot [k0, v0, ...], p3 new keys, p4 the new key
+    c.precise_cfunc(slf, &[a.first().copied().unwrap_or(NIL), NIL, NIL, NIL], |c, p| {
+        use crate::gc::conservative as cons;
+        if has_map { let m = cons(c, |c| to_hash_conv(c, p.get(1)))?; p.set(1, m); }
+        modify(c, p.get(0))?;
+        // rb_hash_transform_keys_bang: over a snapshot of the pairs; a key is dropped unless it is already a new key
+        let pairs = c.hash_pairs(p.get(0));
+        let n = pairs.len();
+        let snap = c.ary_from_vec(pairs.iter().flat_map(|&(k, v)| [k, v]).collect());
+        p.set(2, snap);
+        let new_keys = c.hash_new();
+        p.set(3, new_keys);
+        let key = |c: &Ctx, i: usize| c.ary_get(p.get(2), 2 * i);
+        for i in 0..n {
+            let nk = cons(c, |c| {
+                let k = key(c, i);
+                if !has_map { return yield1(c, blk, k); }
+                match hash_get_opt(c, p.get(1), k)? { Some(x) => Ok(x), None => if blk.is_null() { Ok(key(c, i)) } else { let k = key(c, i); yield1(c, blk, k) } }
+            })?;
+            p.set(4, nk);
+            if cons(c, |c| hash_get_opt(c, p.get(3), key(c, i)))?.is_none() { cons(c, |c| hash_delete(c, p.get(0), key(c, i)))?; }
+            cons(c, |c| hash_aset(c, p.get(0), p.get(4), c.ary_get(p.get(2), 2 * i + 1)))?;
+            cons(c, |c| hash_aset(c, p.get(3), p.get(4), NIL))?;
+        }
+        Ok(p.get(0))
+    })
 });
 cfn!(h_sort_by_fallback, |c, slf, a, blk| Ok(NIL));
 cfn!(h_min_by_fallback, |c, slf, a, blk| Ok(NIL));
