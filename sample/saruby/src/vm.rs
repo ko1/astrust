@@ -1754,7 +1754,7 @@ pub fn raw_bt_ruby_iseq(c: &Ctx, v: Value) -> *const Iseq {
 pub fn exc_bt(c: &mut Ctx, e: Value) -> Value {
     let v = ivar_get(c, e, s::bt);
     let Some(raw) = c.data::<RawBt>(v) else { return v };
-    let lines = format_frames_n(c, &raw.frames, raw.skip, usize::MAX).unwrap_or_default();
+    let lines = format_frames_n(c, &raw.frames, raw.skip, usize::MAX, false).unwrap_or_default();
     let a = c.ary_new_capa(lines.len());
     let ns = c.ary_new_capa(lines.len());
     for l in &lines { let s = c.str_new(l.to_string().as_bytes()); c.ary_push(a, s); c.ary_push(ns, nid_value(l.nid)); }
@@ -1805,10 +1805,11 @@ impl std::fmt::Display for BtLine {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { write!(f, "{}:{}:in '{}'", self.file, self.line as i32, self.label) }
 }
 
-fn format_frames(c: &Ctx, frames: &[RawFrame], skip: usize) -> Vec<String> { format_frames_n(c, frames, skip, usize::MAX).unwrap_or_default().iter().map(|l| l.to_string()).collect() }
+fn format_frames(c: &Ctx, frames: &[RawFrame], skip: usize) -> Vec<String> { format_frames_n(c, frames, skip, usize::MAX, false).unwrap_or_default().iter().map(|l| l.to_string()).collect() }
 /// Lines skip..skip+n only: the others are not formatted (caller(0, 1) deep in a stack).
 /// None: fewer than `skip` frames (caller's nil).
-fn format_frames_n(c: &Ctx, frames: &[RawFrame], skip: usize, n: usize) -> Option<Vec<BtLine>> {
+/// `no_internal_eval`: frames of eval'd source named "<internal:...>" do not count (warn's uplevel).
+fn format_frames_n(c: &Ctx, frames: &[RawFrame], skip: usize, n: usize, no_internal_eval: bool) -> Option<Vec<BtLine>> {
     let mut out = vec![];
     let mut seen = 0usize;
     unsafe {
@@ -1819,6 +1820,12 @@ fn format_frames_n(c: &Ctx, frames: &[RawFrame], skip: usize, n: usize) -> Optio
             if fr.kind == FK_CFUNC && (fr.me.is_null() == false && ((*fr.me).name == s::send || (*fr.me).name == s::__send__)) { continue; }
             if fr.kind == FK_CFUNC && fr.me == vm().ids.c_new.get() { continue; }   // CRuby 4.0 has no Class#new frame
             if fr.kind == FK_CFUNC && !fr.me.is_null() && (*fr.me).owner == vm().c_proc.get() && matches!(sym_str((*fr.me).name).as_ref(), "call" | "yield" | "===" | "[]") { continue; }
+            // a cfunc frame takes its caller's file; only eval'd source counts as internal here, not saruby's own prelude
+            if no_internal_eval && fr.file.starts_with("<internal:") && {
+                let mut is = if fr.at.is_null() { fr.iseq } else { fr.at };
+                while !is.is_null() && (*is).kind != IseqKind::Eval { is = (*is).parent.get(); }
+                !is.is_null()
+            } { continue; }
             seen += 1;
             if seen <= skip { continue; }
             let (line, nid) = line_nid(fr.pos, fr.at.as_ref().map(|i| &i.info));
@@ -1838,7 +1845,11 @@ pub fn backtrace_lines_n(c: &Ctx, skip: usize, n: Option<usize>) -> Option<Vec<S
 /// backtrace_lines_n as its parts (with each line's prism node id).
 pub fn backtrace_locs_n(c: &Ctx, skip: usize, n: Option<usize>) -> Option<Vec<BtLine>> {
     if n == Some(0) { return Some(vec![]); }   // CRuby: [] before the range is checked
-    format_frames_n(c, &capture_frames(c), skip, n.unwrap_or(usize::MAX))
+    format_frames_n(c, &capture_frames(c), skip, n.unwrap_or(usize::MAX), false)
+}
+/// backtrace_locs_n for warn's uplevel (internal eval frames skipped).
+pub fn backtrace_locs_uplevel(c: &Ctx, skip: usize) -> Option<Vec<BtLine>> {
+    format_frames_n(c, &capture_frames(c), skip, 1, true)
 }
 
 // ---- calls -----------------------------------------------------------------------------------

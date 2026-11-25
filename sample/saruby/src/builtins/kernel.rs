@@ -329,7 +329,8 @@ fn k_p(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     if so != c.vm().stdout.get() || stdout_slow() { return p_dyn(c, args); }
     let mut out = vec![];
     for &a in args { let s = inspect_value(c, a)?; out.extend_from_slice(&c.str_bytes(s)); out.push(b'\n'); }
-    out_write(&out); out_check(c)?;
+    // rb_p_result flushes $stdout (a SIGPIPE kill must not lose it)
+    out_write(&out); out_flush(); out_check(c)?;
     Ok(match args.len() { 0 => NIL, 1 => args[0], _ => c.ary_new_from(args) })
 }
 
@@ -406,7 +407,7 @@ fn k_warn(c: &mut Ctx, slf: Value, args: &[Value], _b: Blk) -> RV {
     if uplevel != NIL {
         let lev = crate::builtins::numeric_methods::num_to_long(c, uplevel)?;
         if lev < 0 { return arg_err(c, format!("negative level ({})", lev)); }
-        loc = Some(backtrace_locs_n(c, 1 + lev as usize, Some(1)).and_then(|v| v.into_iter().next()));
+        loc = Some(crate::vm::backtrace_locs_uplevel(c, 1 + lev as usize).and_then(|v| v.into_iter().next()));
     }
     let single = args.len() == 1 && uplevel == NIL && is_string(args[0]) && c.str_bytes(args[0]).last() == Some(&b'\n');
     let out = if single { c.str_bytes(args[0]).to_vec() } else {

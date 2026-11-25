@@ -399,6 +399,12 @@ fn meth_source_location(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     match c.me_ref(me).map(|m| m.kind) {
         Some(MKind::Iseq(is)) => iseq_location(c, is),
         Some(MKind::Bmethod(p)) => proc_source_location(c, p, a, b),
+        // natively-defined Kernel methods that CRuby 4.0 writes in kernel.rb
+        Some(MKind::Cfunc(..)) if me_owner(c, c.method_obj(slf).me) == c.vm().m_kernel.get() => {
+            let line = match sym_str(c.method_obj(slf).name).as_str() { "tap" => 89, "then" | "yield_self" => 121, _ => return Ok(NIL) };
+            let f = c.str_new(b"<internal:kernel>");
+            Ok(c.ary_new_from(&[f, Value::fix(line)]))
+        }
         _ => Ok(NIL),
     }
 }
