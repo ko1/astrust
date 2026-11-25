@@ -606,6 +606,7 @@ struct Parser<'a> {
     group_names: Vec<Option<String>>, // by parse-order group number - 1
     pending_u_list: bool,             // \u{61 62}: more code points follow
     u_list_prefix: Vec<Ast>,         // leading code points of a \u{...} list, emitted before the atom
+    opt_group: bool,                 // the atom is a (?i:..) group: Onigmo wraps it, so repeating it is not a nested repeat
     enc: Enc,
     ascii: u8, // 1: (?a), POSIX brackets match ASCII only; 2: (?u), \w \d \s are Unicode; 0: (?d)
 }
@@ -746,6 +747,7 @@ impl<'a> Parser<'a> {
                         self.ext = ex;
                         self.ml = ml;
                         self.ascii = asc;
+                        self.opt_group = true;
                         inner
                     } else {
                         self.parse_group()?
@@ -947,6 +949,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_quant(&mut self, mut atom: Ast) -> Result<Ast, String> {
+        let mut opaque = std::mem::take(&mut self.opt_group);
         loop {
             self.skip_ext();
             if self.skip_comment()? {
@@ -988,6 +991,11 @@ impl<'a> Parser<'a> {
                 }
                 _ => {}
             }
+            if let (false, Ast::Repeat(_, imin, imax, ik)) = (opaque, &atom) {
+                let (imin, imax, ik) = (*imin, *imax, *ik);
+                if let Some(w) = nested_repeat_warning(imin, imax, ik, min, max, kind, self.p) { WARNINGS.with(|v| v.borrow_mut().push(w)); }
+            }
+            opaque = false;
             atom = reduce_repeat(atom, min, max, kind);
         }
         Ok(atom)
@@ -1626,6 +1634,39 @@ fn fold_ss(items: Vec<Ast>) -> Vec<Ast> {
     out
 }
 
+thread_local! { static WARNINGS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) }; }
+/// Parse-time warnings (Onigmo's onig_syntax_warn) of the last `Vm::new` on this thread.
+pub fn take_warnings() -> Vec<String> { WARNINGS.with(|v| std::mem::take(&mut *v.borrow_mut())) }
+
+/// The warnings parsing `pat` gives, without compiling it (a literal's parse-time warnings).
+pub fn parse_warnings(pat: &[u8], opts: u32, enc: Enc) -> Vec<String> {
+    let mut ps = Parser::new(pat, opts, enc);
+    WARNINGS.with(|v| v.borrow_mut().clear());
+    let _ = ps.parse_alt();
+    take_warnings()
+}
+
+/// Onigmo's popular_quantifier_num: ?, *, +, ??, *?, +? (greedy 0..2, lazy 3..5).
+fn popular_q(min: u32, max: u32, kind: Kind) -> Option<usize> {
+    let n = match (min, max) { (0, 1) => 0, (0, INF) => 1, (1, INF) => 2, _ => return None };
+    match kind { Kind::Greedy => Some(n), Kind::Lazy => Some(n + 3), Kind::Possessive => None }
+}
+
+/// Onigmo's ReduceTypeTable[inner][outer] warning for a repeat applied to a repeat (measured on CRuby 4.0.10).
+fn nested_repeat_warning(imin: u32, imax: u32, ik: Kind, min: u32, max: u32, kind: Kind, pat: &[u8]) -> Option<String> {
+    const Q: [&str; 6] = ["?", "*", "+", "??", "*?", "+?"];
+    // 0 none, 1 redundant, 2.. replaced with "*", "??", "*?", "+ and ??"
+    const T: [[u8; 6]; 6] = [[1, 2, 2, 3, 4, 0], [1, 1, 1, 5, 5, 1], [2, 2, 1, 0, 5, 1], [1, 4, 4, 1, 4, 4], [1, 1, 1, 1, 1, 1], [0, 0, 0, 4, 4, 1]];
+    let (i, o) = (popular_q(imin, imax, ik)?, popular_q(min, max, kind)?);
+    let src = String::from_utf8_lossy(pat);
+    match T[i][o] {
+        0 => None,
+        1 => Some(format!("regular expression has redundant nested repeat operator '{}': /{}/", Q[i], src)),
+        r => Some(format!("nested repeat operator '{}' and '{}' was replaced with '{}' in regular expression: /{}/", Q[i], Q[o],
+                          ["", "", "*", "??", "*?", "+ and ??"][r as usize], src)),
+    }
+}
+
 /// Onigmo-style reduction of nested simple quantifiers (e.g. (?:a?)* -> a*).
 fn reduce_repeat(atom: Ast, min: u32, max: u32, kind: Kind) -> Ast {
     if let Ast::Repeat(ref b, imin, imax, ik) = atom {
@@ -1656,6 +1697,7 @@ impl<'a> Parser<'a> {
             group_names: Vec::new(),
             pending_u_list: false,
             u_list_prefix: Vec::new(),
+            opt_group: false,
         }
     }
 }
@@ -2906,6 +2948,7 @@ fn grapheme(e: Enc, s: &[u8], pos: usize) -> Option<usize> {
 impl Vm {
     pub fn new(pat: &[u8], opts: u32, enc: Enc) -> Result<Vm, String> {
         let mut ps = Parser::new(pat, opts, enc);
+        WARNINGS.with(|v| v.borrow_mut().clear());
         let ast = ps.parse_alt()?;
         if ps.i < pat.len() {
             // Only an unmatched ')' can stop the top-level parse early.

@@ -106,12 +106,26 @@ pub fn note_literal(src: &'static [u8], file: &'static str, line: u32) {
     if let Ok(mut m) = LIT_LINES.lock() { m.get_or_insert_with(Default::default).insert(src.as_ptr() as usize, (file, line)); }
 }
 
+/// A literal's parse-time warnings (CRuby warns when it parses, not when it runs).  A repeat
+/// operator right after another (possibly past `)`) is the only thing worth the extra parse.
+pub fn literal_warnings(src: &[u8], opts: u32) -> Vec<String> {
+    let q = |b: u8| matches!(b, b'*' | b'+' | b'?' | b'{');
+    let maybe = (0..src.len()).any(|i| matches!(src[i], b'*' | b'+' | b'?' | b'}') && src[i + 1..].iter().find(|&&b| b != b')').is_some_and(|&b| q(b)));
+    if !maybe { return Vec::new(); }
+    let e = (opts >> RE_LIT_ENC_SHIFT) & 0xff;
+    let enc = if e == 0 { ENC_UTF8 } else { (e - 1) as u8 };
+    match regexp_prep(src, enc, opts & RE_OPT_MASK) {
+        Ok((unesc, o, _, mode)) => crate::regex_engine::parse_warnings(&unesc, o & 7, mode),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// A regexp literal: CRuby rejects an invalid one at parse time, so it is a SyntaxError here.
 pub fn regexp_new_lit(c: &mut Ctx, src: &[u8], opts: u32) -> RV {
     let e = (opts >> RE_LIT_ENC_SHIFT) & 0xff;
     let enc = if e == 0 { ENC_UTF8 } else { (e - 1) as u8 };
     match regexp_build(src, enc, opts & RE_OPT_MASK) {
-        Ok(x) => Ok(regexp_alloc(c, x)),
+        Ok(x) => { let _ = crate::regex_engine::take_warnings(); Ok(regexp_alloc(c, x)) }  // warned at parse (literal_warnings)
         Err(m) => {
             let at = LIT_LINES.lock().ok().and_then(|t| t.as_ref().and_then(|t| t.get(&(src.as_ptr() as usize)).copied()));
             let loc = match at { Some((f, l)) => format!("{}:{}", f, l), None => backtrace_lines(c, 0).first().map(|l| l.split(":in ").next().unwrap_or("").to_string()).unwrap_or_default() };
@@ -123,7 +137,7 @@ pub fn regexp_new_lit(c: &mut Ctx, src: &[u8], opts: u32) -> RV {
 /// rb_reg_initialize_str: `src` is a String of encoding `enc`.
 pub fn regexp_new_enc(c: &mut Ctx, src: &[u8], enc: u8, opts: u32) -> RV {
     match regexp_build(src, enc, opts) {
-        Ok(x) => Ok(regexp_alloc(c, x)),
+        Ok(x) => { emit_parse_warnings(c)?; Ok(regexp_alloc(c, x)) }
         Err(m) => Err(regexp_error(c, &m, enc)),
     }
 }
@@ -686,6 +700,12 @@ pub fn reg_warn(c: &mut Ctx, msg: &str) -> Result<(), Esc> {
     if c.vm().verbose.get() == NIL { return Ok(()); }
     let loc = backtrace_lines(c, 0).first().map(|l| l.split(":in ").next().unwrap_or("").to_string()).unwrap_or_default();
     crate::builtins::kernel::warning_write(c, format!("{}: warning: {}\n", loc, msg).as_bytes())
+}
+
+/// The engine's parse-time warnings of the compile just done (nested repeat operators).
+pub fn emit_parse_warnings(c: &mut Ctx) -> Result<(), Esc> {
+    for w in crate::regex_engine::take_warnings() { reg_warn(c, &w)?; }
+    Ok(())
 }
 
 /// Regexp.timeout (f64 bits; NO_TIMEOUT = unset).  Enforced by search / match? (not by the
