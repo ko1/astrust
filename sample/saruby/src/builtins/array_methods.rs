@@ -268,6 +268,7 @@ cfn!(a_fetch, |c, slf, a, blk| {
 });
 cfn!(#[inline] a_first, |c, slf, a, blk| {
     if a.is_empty() { return Ok(c.ary_get(slf, 0)); }
+    check_argc(c, a, 0, 1)?;
     let n = num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, "negative array size"); }
     Ok(c.ary_from_vec(c.ary(slf).iter().take(n as usize).copied().collect()))
@@ -275,6 +276,7 @@ cfn!(#[inline] a_first, |c, slf, a, blk| {
 cfn!(#[inline] a_last, |c, slf, a, blk| {
     let l = c.ary_len(slf);
     if a.is_empty() { return Ok(if l == 0 { NIL } else { c.ary_get(slf, l - 1) }); }
+    check_argc(c, a, 0, 1)?;
     let n = num_to_long(c, a[0])?;
     if n < 0 { return arg_err(c, "negative array size"); }
     let n = (n as usize).min(l);
@@ -896,6 +898,7 @@ pub fn minmax_impl(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk, want_max: boo
     let cmpf = |c: &mut Ctx, x: Value, y: Value| -> Result<std::cmp::Ordering, Esc> {
         if blk.is_null() { rb_cmp(c, x, y) } else { let r = yield_block(c, blk, &[x, y])?; cmp_result(c, r, x, y).map(|v| v.cmp(&0)) }
     };
+    check_argc(c, a, 0, 1)?;
     if !a.is_empty() && a[0] != NIL {
         let Some(mut d) = Nmin::new(c, a[0], false, want_max, blk)? else { return Ok(c.ary_new()); };
         let mut i = 0;

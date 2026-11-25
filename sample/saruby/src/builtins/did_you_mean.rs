@@ -59,7 +59,14 @@ fn initial_load_path(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 fn load(c: &mut Ctx) -> Result<bool, Esc> {
     if STATE.load(Relaxed) == 0 {
         STATE.store(3, Relaxed);
-        if let Some(m) = module(c) { let sk = singleton_class(c, m); define_private_cfunc(c, sk, "__initial_load_path", initial_load_path, 0); }
+        if let Some(m) = module(c) {
+            let sk = singleton_class(c, m); define_private_cfunc(c, sk, "__initial_load_path", initial_load_path, 0);
+            // the library defines these itself; a pending autoload would find its own feature "not defining" them
+            for n in CONSTS {
+                let nm = intern(n.as_bytes());
+                if c.class_mut(m).autoload.remove(&nm).is_some() { if let Some(x) = c.class_mut(m).cx.as_mut() { x.const_loc.remove(&nm); } }
+            }
+        }
         if let Err(e) = crate::builtins::prelude::load_feature(c, "did_you_mean") { STATE.store(0, Relaxed); return Err(e); }
         STATE.store(1, Relaxed);
     }
