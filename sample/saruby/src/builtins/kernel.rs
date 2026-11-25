@@ -451,15 +451,16 @@ pub fn make_exception_from_args(c: &mut Ctx, args: &[Value]) -> RV {
 }
 
 /// extract_raise_opts: `cause:` taken out of a trailing keyword Hash (UNDEF: not given).
-fn take_cause(c: &mut Ctx, args: &[Value]) -> Result<(Vec<Value>, Value), Esc> {
-    let mut a = args.to_vec();
+/// The arguments come back as an Array: the Hash made here would be referenced only by a Vec.
+fn take_cause(c: &mut Ctx, args: &[Value]) -> Result<(Value, Value), Esc> {
+    let a = c.ary_new_from(args);
     let mut cause = UNDEF;
     if let Some(h) = kw_arg(c, args) {
         let k = crate::vm::sym_value("cause");
         if let Some(v) = hash_get_opt(c, h, k)? {
             cause = v;
-            a.pop();
-            if c.hash_len(h) > 1 { let o = c.hash_dup(h); hash_delete(c, o, k)?; a.push(o); }
+            c.ary_mut(a).pop();
+            if c.hash_len(h) > 1 { let o = c.hash_dup(h); c.ary_push(a, o); hash_delete(c, o, k)?; }
         }
     }
     Ok((a, cause))
@@ -523,12 +524,14 @@ pub fn exception_setup(c: &mut Ctx, args: &[Value]) -> RV {
 }
 
 fn k_raise(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
-    let (mut a, cause) = take_cause(c, args)?;
-    if a.is_empty() {
+    let (arr, cause) = take_cause(c, args)?;
+    if c.ary_len(arr) == 0 {
         if cause != UNDEF { return arg_err(c, "only cause is given with no arguments"); }
-        if c.errinfo != NIL { a.push(c.errinfo); }
+        if c.errinfo != NIL { let e = c.errinfo; c.ary_push(arr, e); }
     }
+    let a = c.ary(arr).to_vec();   // the values stay in arr
     let e = if a.is_empty() { let k = c.vm().c_runtime_error.get(); make_exception(c, k, "") } else { make_exception_from_args(c, &a)? };
+    std::hint::black_box(arr);
     setup_cause(c, e, cause)?;
     // the backtrace starts at the caller of raise
     if ivar_get(c, e, s::bt) == NIL {

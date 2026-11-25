@@ -630,15 +630,18 @@ fn ec_s_search_convpath(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (sn, dn, _, _, f, _) = econv_args(c, a)?;
     let Some(path) = ev::search_path(&sn, &dn) else { return Err(open_exc(c, &sn, &dn, f)) };
     let Some(decos) = ev::decorator_names(f) else { return Err(open_exc(c, &sn, &dn, f)) };
-    let mut items: Vec<Value> = vec![];
-    for tr in &path { let (x, y) = (encobj(c, tr.src), encobj(c, tr.dst)); let p = c.ary_from_vec(vec![x, y]); items.push(p); }
-    // decorate_convpath: decorators go before a last ASCII-incompatible encoder
-    let mut n = items.len();
-    let last = if !decos.is_empty() && path.last().is_some_and(|t| t.asciicompat == 2) { n -= 1; items.pop() } else { None };
-    let _ = n;
-    for d in decos { let s = c.str_new_enc(d.as_bytes(), ENC_BINARY); items.push(s); }
-    if let Some(l) = last { items.push(l); }
-    Ok(c.ary_from_vec(items))
+    // new Arrays / Strings go into the parked result, not a Vec (docs/gc_moving.md 2.4); p1: the held-back last pair
+    c.park(2, |c, p| {
+        let out = c.ary_new();
+        p.set(0, out);
+        for tr in &path { let (x, y) = (encobj(c, tr.src), encobj(c, tr.dst)); let e = c.ary_new_from(&[x, y]); c.ary_push(p.get(0), e); }
+        // decorate_convpath: decorators go before a last ASCII-incompatible encoder
+        let hold = !decos.is_empty() && path.last().is_some_and(|t| t.asciicompat == 2);
+        if hold { let l = c.ary_mut(p.get(0)).pop().unwrap_or(NIL); p.set(1, l); }
+        for d in decos { let s = c.str_new_enc(d.as_bytes(), ENC_BINARY); c.ary_push(p.get(0), s); }
+        if hold { c.ary_push(p.get(0), p.get(1)); }
+        Ok(p.get(0))
+    })
 }
 
 /// Encoding::Converter, defined on its first reference ("saruby/econv", builtins/prelude.rs).

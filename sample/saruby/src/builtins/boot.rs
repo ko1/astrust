@@ -50,7 +50,7 @@ fn blank_vm() -> Box<Vm> {
         aot_entries: vec![], aot_collect: false, code_store: None, sd_hits: 0,
         frozen_lits: HashMap::default(), symproc_cache: HashMap::default(), sym_names: HashMap::default(),
         alias_names: HashMap::default(),
-        data_free_hooks: vec![], pinned: vec![], enc_objs: vec![], recursive_guard: vec![],
+        data_free_hooks: vec![], pinned: vec![], enc_objs: vec![], recursive_guard: vec![], pending_vals: vec![],
         warn_disabled: false, exit_status: 0, main_file: String::new(),
         rand_state: 0x2545F4914F6CDD1D,
         fiber_roots: vec![],
