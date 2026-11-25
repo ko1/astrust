@@ -277,6 +277,12 @@ fn re_s_linear_time(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
 }
 
 // MatchData
+/// NUM2INT with the fixnum-in-int case inline (MatchData#[] is hot)
+#[inline(always)]
+fn md_int(c: &mut Ctx, k: Value) -> Result<i64, Esc> {
+    if k.is_fixnum() { let v = k.as_fix(); if v as i32 as i64 == v { return Ok(v); } }
+    crate::builtins::numeric_methods::num_to_int32(c, k)
+}
 pub(crate) fn group_index(c: &mut Ctx, m: Value, k: Value) -> Result<Option<usize>, Esc> {
     if k.is_sym() || is_string(k) {
         let nm = if k.is_sym() { crate::symbol::sym_str(k.as_sym()) } else { String::from_utf8_lossy(c.str_bytes(k)).into_owned() };
@@ -286,7 +292,7 @@ pub(crate) fn group_index(c: &mut Ctx, m: Value, k: Value) -> Result<Option<usiz
         for &i in idx.iter().rev() { if md(c, m).groups.get(i).map(|g| g.is_some()).unwrap_or(false) { return Ok(Some(i)); } }
         return Ok(Some(*idx.last().unwrap()));
     }
-    let i = crate::builtins::numeric_methods::num_to_int32(c, k)?;
+    let i = md_int(c, k)?;
     let n = md(c, m).groups.len() as i64;
     // like rb_reg_nth_match, a negative index never reaches group 0
     let i = if i < 0 { if i + n <= 0 { return Ok(None); } i + n } else { i };
@@ -296,7 +302,7 @@ pub(crate) fn group_index(c: &mut Ctx, m: Value, k: Value) -> Result<Option<usiz
 /// match_backref_number + bounds check (begin/end/offset/byte*): no negative indices.
 fn group_index_strict(c: &mut Ctx, m: Value, k: Value) -> Result<usize, Esc> {
     if k.is_sym() || is_string(k) { return Ok(group_index(c, m, k)?.unwrap_or(0)); }
-    let i = crate::builtins::numeric_methods::num_to_int32(c, k)?;
+    let i = md_int(c, k)?;
     if i < 0 || i >= md(c, m).groups.len() as i64 { return err(c, c.vm().c_index_error.get(), format!("index {} out of matches", i)); }
     Ok(i as usize)
 }
