@@ -542,6 +542,8 @@ fn str_to_c(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
     Ok(parse_complex(c, &b)?.0)
 }
 fn str_to_c_strict(c: &mut Ctx, v: Value, raise: bool) -> RV {
+    let e = c.str_enc(v);
+    if !crate::builtins::encoding::ascii_compat(e) { return err(c, c.vm().c_compat_error.get(), format!("ASCII incompatible encoding: {}", crate::builtins::encoding::enc_name(e))); }
     let b = c.str_bytes(v).to_vec();
     if b.contains(&0) { if raise { return arg_err(c, "string contains null byte"); } return Ok(NIL); }
     let (r, ok) = parse_complex(c, &b)?;
@@ -580,12 +582,10 @@ fn convert(c: &mut Ctx, a1: Value, a2: Option<Value>, raise: bool) -> RV {
             }
         }
     }
-    let r: RV = (|| {
-        let re = real_check(c, a1)?;
-        let im = match a2 { Some(x) => real_check(c, x)?, None => Value::fix(0) };
-        canonicalize(c, re, im)
-    })();
-    match r { Err(e) => { if !raise && c.esc == EscKind::Raise { c.esc = EscKind::None; return Ok(NIL); } Err(e) } ok => ok }
+    if let Some(x) = a2 { if !raise && !is_integer(x) && !is_float(x) && !is_rational(c, x) { return Ok(NIL); } }
+    let re = real_check(c, a1)?;
+    let im = match a2 { Some(x) => real_check(c, x)?, None => Value::fix(0) };
+    canonicalize(c, re, im)
 }
 fn k_complex(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (n, raise) = kw_exception(c, a)?;

@@ -2160,7 +2160,7 @@ impl<'a> Compiler<'a> {
                     None => ALLOC_node_defined(DEF_FCALL, nm, nil()),
                     Some(r) => {
                         let rv = self.defined_guard(r);
-                        ALLOC_node_defined(DEF_METHOD, nm, rv)
+                        ALLOC_node_line(self.line(v.loc), ALLOC_node_defined(DEF_METHOD, nm, rv))   // the line of a respond_to? warning
                     }
                 };
                 // every argument must be defined too

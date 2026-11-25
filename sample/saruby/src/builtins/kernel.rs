@@ -889,8 +889,7 @@ pub fn k_array(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     if is_array(v) { return Ok(v); }
     if v == NIL && !crate::rt::redef(crate::rt::R_IMM_CONV) { return Ok(c.ary_new()); }
     if let Some(a) = check_array(c, v)? { return Ok(a); }
-    if respond_to(c, v, s::to_a, true) {
-        let r = funcall(c, v, s::to_a, &[], std::ptr::null())?;
+    if let Some(r) = crate::string::check_funcall(c, v, s::to_a)? {
         if is_array(r) { return Ok(r); }
         if r != NIL { return type_err(c, format!("can't convert {} to Array ({}#to_a gives {})", class_name_for_err(c, v), class_name_for_err(c, v), class_name_for_err(c, r))); }
     }
@@ -935,6 +934,12 @@ pub fn gvar_warn(c: &mut Ctx, msg: &str, deprecated: bool) -> Result<(), Esc> {
     if deprecated { warning_write_cat(c, m.as_bytes(), sym_value("deprecated")) } else { warning_write(c, m.as_bytes()) }
 }
 
+/// A deprecated-category warning attributed to file:line (rb_category_compile_warn).
+pub fn warn_deprecated_at(c: &mut Ctx, file: &str, line: u32, msg: &str) -> Result<(), Esc> {
+    // CRuby's rb_category_compile_warn does not check the category switch
+    if c.vm().verbose.get() == NIL { return Ok(()); }
+    warning_write_cat(c, format!("{}:{}: warning: {}\n", file, line, msg).as_bytes(), sym_value("deprecated"))
+}
 pub fn warn_deprecated(c: &mut Ctx, msg: &str) -> Result<(), Esc> { gvar_warn(c, msg, true) }
 /// gvar_warn with more lines in the same Warning.warn message.
 pub fn warn_with_tail(c: &mut Ctx, msg: &str, tail: &str) -> Result<(), Esc> {

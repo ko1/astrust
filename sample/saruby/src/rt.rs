@@ -863,8 +863,11 @@ pub fn srb_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, name: S
             if me.is_null() {
                 // respond_to_missing?
                 let rm = lookup_method(c, class_of(r), s::respond_to_missing_p);
-                if !rm.is_null() && unsafe { (*rm).owner } != vm().c_object.get() && unsafe { (*rm).owner } != vm().m_kernel.get()
-                    && check_respond_basic(c, r, s::respond_to_missing_p)? {
+                // defined? answers nil for an exception raised while asking respond_to?
+                let asked = if rm.is_null() { Ok(false) } else if !crate::string::mm_redef() { Ok(true) } else { check_respond_basic(c, r, s::respond_to_missing_p) };
+                let asked = match asked { Ok(b) => b, Err(e) => { if c.esc != EscKind::Raise { return Err(e); } c.esc = EscKind::None; return Ok(NIL); } };
+                if asked
+                    && unsafe { (*rm).owner } != vm().c_object.get() && unsafe { (*rm).owner } != vm().m_kernel.get() {
                     let t = funcall(c, r, s::respond_to_missing_p, &[Value::sym(name), FALSE], std::ptr::null())?;
                     if t.truthy() { return yes(c, b"method"); }
                 }
@@ -1455,9 +1458,7 @@ pub fn srb_undef(c: &mut Ctx, v: Value) -> Result<(), Esc> {
 /// rb_check_funcall's test: a redefined respond_to? is asked (mid, true); else the method table.
 pub fn check_respond(c: &mut Ctx, v: Value, mid: Sym) -> Result<bool, Esc> {
     let rt = lookup_method(c, class_of(v), s::respond_to_p);
-    if !rt.is_null() && rt != search_method(c, vm().m_kernel.get(), s::respond_to_p) {
-        return Ok(funcall(c, v, s::respond_to_p, &[Value::sym(mid), TRUE], std::ptr::null())?.truthy());
-    }
+    if !rt.is_null() && rt != search_method(c, vm().m_kernel.get(), s::respond_to_p) { return crate::string::ask_respond_to(c, v, rt, mid); }
     if respond_to(c, v, mid, true) { return Ok(true); }
     // check_funcall_missing: a redefined respond_to_missing? may answer for method_missing
     let rm = lookup_method(c, class_of(v), s::respond_to_missing_p);
@@ -1470,9 +1471,7 @@ pub fn check_respond(c: &mut Ctx, v: Value, mid: Sym) -> Result<bool, Esc> {
 /// The respond_to? half of rb_check_funcall: a redefined respond_to? must say yes to `mid`.
 fn check_respond_basic(c: &mut Ctx, v: Value, mid: Sym) -> Result<bool, Esc> {
     let rt = lookup_method(c, class_of(v), s::respond_to_p);
-    if !rt.is_null() && rt != search_method(c, vm().m_kernel.get(), s::respond_to_p) {
-        return Ok(funcall(c, v, s::respond_to_p, &[Value::sym(mid), TRUE], std::ptr::null())?.truthy());
-    }
+    if !rt.is_null() && rt != search_method(c, vm().m_kernel.get(), s::respond_to_p) { return crate::string::ask_respond_to(c, v, rt, mid); }
     Ok(true)
 }
 

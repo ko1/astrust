@@ -224,11 +224,25 @@ impl Ctx {
         unsafe { crate::vm::lookup_method(self, klass, mid).as_ref() }
     }
     /// Parameters of the literal block a builtin was given; None for no block or a non-iseq one.
-    pub fn block_params(&self, blk: impl crate::vm::BlkArg) -> Option<&Params> {
+    fn blk_ref(&self, blk: impl crate::vm::BlkArg) -> Option<&Block> {
         // SAFETY: a builtin's `blk` is null or its caller's Block, alive for the call (as `yield_block` assumes)
-        let b = unsafe { blk.ptr().as_ref() }?;
+        unsafe { blk.ptr().as_ref() }
+    }
+    pub fn block_params(&self, blk: impl crate::vm::BlkArg) -> Option<&Params> {
+        let b = self.blk_ref(blk)?;
         // SAFETY: iseqs are never freed
         match b.kind { BlockKind::Iseq(is) => unsafe { is.as_ref() }.map(|is| &is.params), _ => None }
+    }
+    /// The Method object a block runs (through Proc wrappers), if it is a Method proc.
+    pub fn block_method(&self, blk: impl crate::vm::BlkArg) -> Option<Value> {
+        let mut b = self.blk_ref(blk)?;
+        loop {
+            match b.kind {
+                BlockKind::Method(m) => return Some(m),
+                BlockKind::Proc(p) => b = &self.proc_data(p).blk,
+                _ => return None,
+            }
+        }
     }
 }
 impl<'a> Others<'a> {

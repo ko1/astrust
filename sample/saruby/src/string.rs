@@ -437,6 +437,29 @@ pub fn note_mm_redef() { MM_REDEF.store(true, std::sync::atomic::Ordering::Relax
 /// rb_check_funcall without arguments: None when `v` does not respond to `mid`.  A respond_to? of its
 /// own is asked first; a method_missing of its own is tried when there is no method (NoMethodError: None).
 pub fn check_funcall(c: &mut Ctx, v: Value, mid: Sym) -> Result<Option<Value>, Esc> { check_funcall_args(c, v, mid, &[]) }
+/// vm_respond_to: asks a user respond_to? (mid, true); a one-parameter one is deprecated (warned) and gets only mid.
+pub fn ask_respond_to(c: &mut Ctx, v: Value, rt: *const MethodEntry, mid: Sym) -> Result<bool, Esc> {
+    let ar = crate::builtins::proc::method_arity(c, rt);
+    if ar > 2 { return arg_err(c, format!("respond_to? must accept 1 or 2 arguments (requires {})", ar)); }
+    if ar == 1 {
+        respond_to_arity1_warn(c, v, rt, mid)?;
+        return Ok(funcall(c, v, s::respond_to_p, &[Value::sym(mid)], std::ptr::null())?.truthy());
+    }
+    Ok(funcall(c, v, s::respond_to_p, &[Value::sym(mid), TRUE], std::ptr::null())?.truthy())
+}
+#[cold]
+fn respond_to_arity1_warn(c: &mut Ctx, v: Value, rt: *const MethodEntry, mid: Sym) -> Result<(), Esc> {
+    if c.vm().verbose.get() == NIL { return Ok(()); }
+    if crate::builtins::misc::warning_category_enabled(0) {
+        let k = class_of(v);
+        let (recv, sep) = if c.class(k).is_singleton { (to_rstring(c, v)?, '.') } else { (class_path(c, k), '#') };
+        let q = crate::builtins::kernel::inspect_str(c, Value::sym(mid))?;
+        crate::builtins::kernel::warn_deprecated(c, &format!("{}{}respond_to?({}) uses the deprecated method signature, which takes one parameter", recv, sep, q))?;
+    }
+    let loc = match c.me_ref(rt).map(|m| m.kind) { Some(MKind::Iseq(is)) => c.iseq_ref(is).map(|is| (is.info.file.to_string(), is.info.line)), _ => None };
+    if let Some((f, l)) = loc { crate::builtins::kernel::warn_deprecated_at(c, &f, l as u32, "respond_to? is defined here")?; }
+    Ok(())
+}
 /// rb_check_funcall with arguments.
 pub fn check_funcall_args(c: &mut Ctx, v: Value, mid: Sym, args: &[Value]) -> Result<Option<Value>, Esc> {
     let k = class_of(v);
@@ -444,10 +467,7 @@ pub fn check_funcall_args(c: &mut Ctx, v: Value, mid: Sym, args: &[Value]) -> Re
     // a NoMethodError from method_missing is raised when respond_to? / respond_to_missing? said yes
     let mut said_yes = false;
     if c.me_ref(rt).is_some_and(|m| m.owner != c.vm().m_kernel.get()) {
-        let ar = crate::builtins::proc::method_arity(c, rt);
-        let r = if ar == 1 { funcall(c, v, s::respond_to_p, &[Value::sym(mid)], std::ptr::null())? }
-            else { funcall(c, v, s::respond_to_p, &[Value::sym(mid), TRUE], std::ptr::null())? };
-        if !r.truthy() { return Ok(None); }
+        if !ask_respond_to(c, v, rt, mid)? { return Ok(None); }
         said_yes = true;
     }
     if respond_to(c, v, mid, true) { return funcall(c, v, mid, args, std::ptr::null()).map(Some); }
