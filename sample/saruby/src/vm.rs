@@ -1900,8 +1900,11 @@ fn collapse_internal<'a>(c: &Ctx, v: &'a [RawFrame]) -> std::borrow::Cow<'a, [Ra
             let last = run.len() - 1;
             for (k, f) in run.iter().enumerate() {
                 let c_like = is_define_method_body(c, f);
+                // an Enumerable method's own #each call has a frame in CRuby (a cfunc here, or a prelude Method)
+                let named = |n| c.me_ref(f.me).is_some_and(|m| m.name == n);
                 let keep = c_like || (k == last && kind_of(f) == Some(IseqKind::Method))
-                    || (kind_of(f) == Some(IseqKind::Method) && c.me_ref(f.me).is_some_and(|m| m.name == s::initialize));
+                    || (kind_of(f) == Some(IseqKind::Method) && named(s::initialize))
+                    || (k != last && named(s::each) && (f.kind == FK_CFUNC || kind_of(f) == Some(IseqKind::Method)));
                 if keep { out.push(RawFrame { file: caller.file, pos: caller.pos, at: caller.at, kind: if c_like { FK_CFUNC } else { f.kind }, ..*f }); }
             }
         }
@@ -2706,7 +2709,7 @@ pub fn invoke_cfunc(c: &mut Ctx, me: *const MethodEntry, f: CFunc, arity: i32, r
 /// A fixed-arity cfunc's ArgumentError: raised inside its own frame, as CRuby's.
 #[cold]
 #[inline(never)]
-fn cfunc_arity_err(c: &mut Ctx, me: *const MethodEntry, blk: *const Block, argc: usize, arity: i32) -> RV {
+pub fn cfunc_arity_err(c: &mut Ctx, me: *const MethodEntry, blk: *const Block, argc: usize, arity: i32) -> RV {
     let pf = c.frame;
     let mut fr = Frame::cfunc(pf, me, blk);
     c.frame = &mut fr;

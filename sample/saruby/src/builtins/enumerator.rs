@@ -194,6 +194,7 @@ fn arith_each_calls(c: &mut Ctx, b: Value, e: Value, st: Value, x: bool, blk: Bl
 }
 
 fn e_each(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+    if !a.is_empty() && is_arith_seq(c, slf) { return argc_err(c, a.len(), 0, 0); }   // arith_seq_each takes none
     if !a.is_empty() && crate::builtins::lazy::is_lazy(c, slf) {
         // enumerator_each: a dup with the arguments appended, then that is iterated
         let d = crate::builtins::lazy::dup_with_args(c, slf, a)?;

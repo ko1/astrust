@@ -266,7 +266,7 @@ cfn!(s_match_op, |c, slf, a, b_| {
     funcall(c, a[0], s::match_op, &[slf], std::ptr::null())
 });
 cfn!(s_match, |c, slf, a, blk| {
-    if a.is_empty() || a.len() > 2 { return argc_err(c, a.len(), 1, 2); }
+    if a.is_empty() { return argc_err(c, 0, 1, 2); }   // more than 2: Regexp#match's check, after get_pat
     // rb_str_match_m: pat.match(self, ...), the String pattern not escaped
     let p = get_pat(c, a[0])?;
     let re = if is_string(p) { regexp::regcomp(c, p)? } else { p };

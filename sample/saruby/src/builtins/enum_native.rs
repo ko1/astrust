@@ -757,6 +757,7 @@ pub fn init(c: &mut Ctx, m: Value) {
     define_singleton_cfunc(c, m, "__argc", e_argc, 3);
     define_singleton_cfunc(c, m, "__kw", e_kw, -1);
     define_singleton_cfunc(c, m, "__to_a", e_to_a, 1);
+    define_singleton_cfunc(c, m, "__to_a_n", |c, _s, a, b| en_to_a_gen(c, a[0], &a[1..], b), -1);
     define_singleton_cfunc(c, m, "__range_sum", |c, _s, a, b| crate::builtins::range_methods::r_sum(c, a[0], &a[1..], b), 2);
     define_singleton_cfunc(c, m, "__ivget", e_ivget, 2);
     define_singleton_cfunc(c, m, "__ivinit", e_ivinit, 3);

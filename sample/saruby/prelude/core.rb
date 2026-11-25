@@ -239,7 +239,7 @@ module Enumerable
   end
   def reverse_each(*args, &b)
     return enum_for(:reverse_each, *args) { __saruby__.__size(self) } unless b
-    to_a(*args).reverse_each(&b)
+    __saruby__.__to_a_n(self, *args).reverse_each(&b)   # enum_to_a: #each directly, not a #to_a override
     self
   end
   def cycle(*args)
@@ -469,7 +469,11 @@ class Set
     self
   end
   def to_a = @__h.keys
-  def to_set(*a, &b) = (a.empty? && !b && instance_of?(Set) ? self : Set.new(self, *a, &b))
+  def to_set(*a, &b)
+    k = a.empty? ? Set : a.shift
+    return self if instance_of?(Set) && k == Set && a.empty? && !b
+    k.new(self, *a, &b)
+  end
   def |(o) = (s = dup; s.merge(__saruby__.set_enum(o)); s)
   alias union |
   alias + |

@@ -195,8 +195,7 @@ cfn!(r_count, |c, slf, a, blk| {
         if e == NIL || (b == NIL && e != NIL) { return Ok(c.float_new(f64::INFINITY)); }
         if is_integer(b) { return r_size(c, slf, a, blk); }
     }
-    let arr = r_to_a(c, slf, &[], Blk::NONE)?;
-    funcall(c, arr, intern(b"count"), a, blk)
+    crate::builtins::enum_native::call_enumerable(c, slf, "count", a, blk)   // range_count: rb_call_super
 });
 /// range.c r_less: <=> as -1/0/1, or i64::MAX when incomparable (nil).
 fn r_less(c: &mut Ctx, a: Value, b: Value) -> Result<i64, Esc> {
@@ -352,6 +351,7 @@ cfn!(r_min, |c, slf, a, blk| {
     let (b, e, x) = c.range_parts(slf);
     if b == NIL { return err(c, c.vm().c_range_error.get(), "cannot get the minimum of beginless range"); }
     if !blk.is_null() || !a.is_empty() {
+        if a.len() > 1 && !blk.is_null() { return crate::builtins::enum_native::call_enumerable(c, slf, "min", a, blk); }   // rb_call_super
         check_argc(c, a, 0, 1)?;
         if let Some(&n) = a.first() { if n != NIL { let nn = crate::builtins::numeric_methods::num_to_long(c, n)?; if nn < 0 { return arg_err(c, "negative array size (or size too big)"); } if nn >= 1 << 60 { return arg_err(c, "array size too big"); } } }
         if blk.is_null() { return r_first(c, slf, a, blk); }
@@ -367,6 +367,7 @@ cfn!(r_max, |c, slf, a, blk| {
     let (b, e, x) = c.range_parts(slf);
     if e == NIL { return err(c, c.vm().c_range_error.get(), "cannot get the maximum of endless range"); }
     if !blk.is_null() || !a.is_empty() {
+        if a.len() > 1 && !blk.is_null() { return crate::builtins::enum_native::call_enumerable(c, slf, "max", a, blk); }   // rb_call_super
         check_argc(c, a, 0, 1)?;
         if let Some(&n) = a.first() { if n != NIL { let nn = crate::builtins::numeric_methods::num_to_long(c, n)?; if nn < 0 { return arg_err(c, "negative array size (or size too big)"); } if nn >= 1 << 60 { return arg_err(c, "array size too big"); } } }
         if blk.is_null() && e.is_fixnum() && (b == NIL || b.is_fixnum()) {
@@ -646,10 +647,7 @@ cfn!(r_overlap, |c, slf, a, blk| {
 // range.c: an endless range has no set; Enumerable#to_set(klass, *args) of 4.0 warns
 cfn!(r_to_set, |c, slf, a, blk| {
     if c.range_parts(slf).1 == NIL { return err(c, c.vm().c_range_error.get(), "cannot convert endless range to a set"); }
-    if a.is_empty() || (a.len() == 1 && kw_arg(c, a).is_some()) { return crate::builtins::enum_native::call_enumerable(c, slf, "to_set", a, blk); }
-    crate::builtins::kernel::gvar_warn(c, "passing arguments to Enumerable#to_set is deprecated", false)?;
-    let mut args = vec![slf]; args.extend_from_slice(&a[1..]);
-    funcall(c, a[0], s::new, &args, blk)
+    crate::builtins::enum_native::call_enumerable(c, slf, "to_set", a, blk)
 });
 /// Defines the methods of Range `k`; the entry of Range#each, for `vm.ids`.
 pub fn init(c: &mut Ctx, k: Value) -> *const MethodEntry {

@@ -1523,6 +1523,10 @@ pub fn init_sync(c: &mut Ctx) {
     let sq = define_class_under(c, th, "SizedQueue", q);
     const_set(c, ob, intern(b"SizedQueue"), sq);
     define_private_cfunc(c, sq, "initialize", sq_init, 1);
+    // own entries in CRuby (and frames labelled SizedQueue)
+    define_cfunc(c, sq, "push", q_push, -1); define_cfunc(c, sq, "pop", q_pop, -1);
+    for (n, o) in [("<<", "push"), ("enq", "push"), ("shift", "pop"), ("deq", "pop")] { crate::builtins::object::alias_builtin(c, sq, n, o); }
+    define_cfunc(c, sq, "clear", q_clear, 0); define_cfunc(c, sq, "close", q_close, 0); define_cfunc(c, sq, "num_waiting", q_num_waiting, 0);
     define_cfunc(c, sq, "max", sq_max, 0); define_cfunc(c, sq, "max=", sq_set_max, 1);
     let cv = define_class_under(c, th, "ConditionVariable", ob);
     const_set(c, ob, intern(b"ConditionVariable"), cv);
