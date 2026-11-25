@@ -722,19 +722,6 @@ fn io_printf(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if out_redef() && dyn_write_slow(c, slf) { write_dyn(c, slf, s2)?; return Ok(NIL); }
     io_write_str(c, slf, s2)?; Ok(NIL)
 }
-fn io_p(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
-    if out_redef() && dyn_write_slow(c, slf) {
-        for &x in a { let s2 = inspect_value(c, x)?; let rs = c.str_new_enc(b"\n", ENC_ASCII); writev_dyn(c, slf, &[s2, rs])?; }
-        return Ok(NIL);
-    }
-    if rio(c, slf).is_some_and(wconv) {
-        for &x in a { let s2 = inspect_value(c, x)?; io_write_str(c, slf, s2)?; let rs = c.str_new_enc(b"\n", ENC_ASCII); io_write_str(c, slf, rs)?; }
-        return Ok(NIL);
-    }
-    let mut out = vec![];
-    for &x in a { let s2 = inspect_value(c, x)?; out.extend_from_slice(c.str_bytes(s2)); out.push(b'\n'); }
-    io_write_bytes(c, slf, &out)?; Ok(NIL)
-}
 fn io_putc(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let ch = if is_string(a[0]) {
         let (sb, e) = (c.str_bytes(a[0]), c.str_enc(a[0]));
@@ -2443,7 +2430,7 @@ pub fn init(c: &mut Ctx) {
     let d = |c: &mut Ctx, n: &str, fun: CFunc, a: i32| define_cfunc(c, io, n, fun, a);
     d(c, "write", io_write, -1);
     vmr.ids.io_write.set(lookup_method(c, io, intern(b"write")));
-    d(c, "puts", io_puts, -1); d(c, "print", io_print, -1); d(c, "<<", io_ltlt, 1); d(c, "printf", io_printf, -1); d(c, "p", io_p, -1); d(c, "putc", io_putc, 1);
+    d(c, "puts", io_puts, -1); d(c, "print", io_print, -1); d(c, "<<", io_ltlt, 1); d(c, "printf", io_printf, -1); d(c, "putc", io_putc, 1);
     d(c, "flush", io_flush, 0); d(c, "fsync", io_fsync, 0); d(c, "fdatasync", io_fsync, 0); d(c, "sync", io_sync, 0); d(c, "sync=", io_set_sync, 1); d(c, "gets", io_gets, -1); d(c, "readline", io_readline, -1);
     d(c, "each_line", io_each_line, -1); d(c, "each", io_each_line, -1); d(c, "readlines", io_readlines, -1); d(c, "read", io_read, -1); d(c, "getc", io_getc, 0);
     d(c, "readchar", io_readchar, 0); d(c, "getbyte", io_getbyte, 0); d(c, "readbyte", io_readbyte, 0); d(c, "each_byte", io_each_byte, 0); d(c, "each_char", io_each_char, 0);

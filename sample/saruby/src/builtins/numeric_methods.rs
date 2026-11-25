@@ -1200,11 +1200,13 @@ pub fn init(c: &mut Ctx, n: Value, k: Value, f: Value) {
     define_cfunc(c, n, "to_int", num_to_int, 0);
     define_cfunc(c, n, "numerator", num_numerator, 0);
     define_cfunc(c, n, "denominator", num_denominator, 0);
-    define_private_cfunc(c, n, "singleton_method_added", num_sadded, 1);
+    define_cfunc(c, n, "singleton_method_added", num_sadded, 1);
     define_cfunc(c, n, "real?", num_real_p, 0);
     define_cfunc(c, n, "finite?", num_finite_p, 0);
     define_cfunc(c, n, "infinite?", num_infinite_p, 0);
     define_cfunc(c, n, "eql?", num_eql, 1);
+    // num_cmp: 0 for the same object, else nil
+    define_cfunc(c, n, "<=>", |_c, s, a, _b| Ok(if s == a[0] { Value::fix(0) } else { NIL }), 1);
     define_cfunc(c, n, "i", num_i, 0);
     define_cfunc(c, n, "to_c", num_to_c, 0);
     define_cfunc(c, n, "real", num_real, 0);

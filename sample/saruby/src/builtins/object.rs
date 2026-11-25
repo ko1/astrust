@@ -310,8 +310,8 @@ fn finish_dup(c: &mut Ctx, slf: Value, n: Value, clone: bool, freeze: Option<boo
     Ok(n)
 }
 
-fn k_dup(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { obj_dup(c, slf, false, None) }
-fn k_clone(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+pub(crate) fn k_dup(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { obj_dup(c, slf, false, None) }
+pub(crate) fn k_clone(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let mut fz = None;
     if let Some(h) = kw_arg(c, a) {
         if let Some(v) = hash_get_opt(c, h, sym_value("freeze"))? {
@@ -1273,26 +1273,14 @@ fn m_cvars(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     Ok(out)
 }
 fn m_freeze(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { k_freeze(c, slf, a, b) }
-fn m_module_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
-    if c.class(slf).is_singleton { return c_new(c, slf, a, b); }
-    let m = new_module(c);
-    if slf == c.vm().c_module.get() {
-        obj_set_klass(m, slf);
-        if !b.is_null() { yield_with_self(c, b, &[m], m, m)?; }
-        return Ok(m);
-    }
-    // a subclass of Module: its #initialize runs (rb_class_new_instance)
-    obj_set_klass(m, slf);
-    funcall(c, m, s::initialize, a, b)?;
-    Ok(m)
-}
 /// Module#initialize: the block runs as module_eval.
-fn m_initialize(c: &mut Ctx, slf: Value, _a: &[Value], b: Blk) -> RV {
+fn m_initialize(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
+    // checked in its frame: the ArgumentError is Module#initialize's
+    check_argc(c, a, 0, 0)?;
     if !b.is_null() { yield_with_self(c, b, &[slf], slf, slf)?; }
     Ok(NIL)
 }
 fn m_singleton_class_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(c.class(slf).is_singleton)) }
-fn m_hash(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix((crate::astrust::hash_u64(slf.raw()) >> 2) as i64)) }
 fn refinements_of(c: &mut Ctx, m: Value) -> Value {
     let key = intern(b"__refinements");
     let l = ivar_get(c, m, key);
@@ -1484,18 +1472,6 @@ pub fn c_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     funcall_kw(c, o, s::initialize, a, b, kw)?;
     Ok(o)
 }
-fn c_class_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
-    // reached from a metaclass (its class is Class's metaclass): Class#new
-    if c.class(slf).is_singleton { return c_new(c, slf, a, b); }
-    let sup = if a.is_empty() { c.vm().c_object.get() } else { a[0] };
-    if !is_class_or_module(sup) || c.class(sup).is_module { return type_err(c, format!("superclass must be an instance of Class (given an instance of {})", class_name_for_err(c, sup))); }
-    if c.class(sup).is_singleton { return type_err(c, "can't make subclass of singleton class"); }
-    if sup == c.vm().c_class.get() { return type_err(c, "can't make subclass of Class"); }
-    let k = new_class(c, sup);
-    call_inherited(c, sup, k)?;
-    if !b.is_null() { yield_with_self(c, b, &[k], k, k)?; }
-    Ok(k)
-}
 /// A class from Class.allocate (no superclass yet).
 fn uninit_class(c: &Ctx, k: Value) -> bool { let cd = c.class(k); cd.superclass == NIL && !cd.is_module && !cd.is_singleton && k != c.vm().c_basic_object.get() }
 fn c_superclass(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
@@ -1510,9 +1486,18 @@ fn c_subclasses(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 }
 fn c_inherited(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(NIL) }
 /// Class#initialize: every class saruby has is made initialized (Class.new does not call this).
-fn c_initialize(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
-    if a.first() == Some(&c.vm().c_class.get()) { return type_err(c, "can't make subclass of Class"); }
-    type_err(c, "already initialized class")
+/// rb_class_initialize: an allocated class gets its superclass (Object by default), then inherited and the block.
+fn c_initialize(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
+    check_argc(c, a, 0, 1)?;
+    if !uninit_class(c, slf) { return type_err(c, "already initialized class"); }
+    let sup = if a.is_empty() { c.vm().c_object.get() } else { a[0] };
+    if !is_class_or_module(sup) || c.class(sup).is_module { return type_err(c, format!("superclass must be an instance of Class (given an instance of {})", class_name_for_err(c, sup))); }
+    if c.class(sup).is_singleton { return type_err(c, "can't make subclass of singleton class"); }
+    if sup == c.vm().c_class.get() { return type_err(c, "can't make subclass of Class"); }
+    init_class(c, slf, sup);
+    call_inherited(c, sup, slf)?;
+    if !b.is_null() { yield_with_self(c, b, &[slf], slf, slf)?; }
+    Ok(NIL)
 }
 
 /// Method identities object::init records (Vm.ids).
@@ -1660,7 +1645,7 @@ pub fn init(c: &mut Ctx) -> InitIds {
     d(c, "class_variable_defined?", m_cvar_defined, 1);
     d(c, "class_variables", m_cvars, -1);
     d(c, "freeze", m_freeze, 0);
-    d(c, "hash", m_hash, 0);
+    d(c, "==", bo_eq, 1);
     d(c, "singleton_class?", m_singleton_class_p, 0);
     define_private_cfunc(c, m, "refine", m_refine, 1);
     define_private_cfunc(c, m, "using", m_using, 1);
@@ -1671,7 +1656,6 @@ pub fn init(c: &mut Ctx) -> InitIds {
     for n in ["extend_object", "append_features", "prepend_features"] { undef_method(c, rf, intern(n.as_bytes())).expect("Module's method"); }
     define_singleton_cfunc(c, m, "used_refinements", m_s_used_refinements, 0);
     define_cfunc(c, vmr.c_class.get(), "attached_object", m_attached_object, 0);
-    define_singleton_cfunc(c, m, "new", m_module_new, -1);
     define_singleton_cfunc(c, m, "constants", m_s_constants, -1);
 
     let kc = vmr.c_class.get();
@@ -1683,8 +1667,9 @@ pub fn init(c: &mut Ctx) -> InitIds {
     define_cfunc(c, kc, "subclasses", c_subclasses, 0);
     define_private_cfunc(c, kc, "inherited", c_inherited, 1);
     define_private_cfunc(c, kc, "initialize", c_initialize, -1);
-    define_private_cfunc(c, vmr.c_module.get(), "initialize", m_initialize, 0);
-    define_singleton_cfunc(c, kc, "new", c_class_new, -1);
+    define_private_cfunc(c, vmr.c_module.get(), "initialize", m_initialize, -1);
+    // Class.new / Module.new are Class#new: allocate, then #initialize (rb_class_initialize / rb_mod_initialize)
+    define_singleton_cfunc(c, kc, "allocate", c_allocate, 0);
 
     let main = vmr.main_obj.get();
     define_singleton_cfunc(c, main, "to_s", |c, _s, _a, _b| Ok(c.str_new(b"main")), 0);

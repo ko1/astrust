@@ -331,6 +331,7 @@ class NilClass
   def to_i = 0
   def to_f = 0.0
   def =~(o) = nil
+  def ===(o) = equal?(o)
 end
 class TrueClass
   alias inspect to_s

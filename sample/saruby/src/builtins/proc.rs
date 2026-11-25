@@ -530,7 +530,6 @@ pub fn init(c: &mut Ctx) {
     let vmr = c.vm();
     let p = vmr.c_proc.get();
     define_cfunc(c, p, "call", proc_call, -1);
-    define_cfunc(c, p, "()", proc_call, -1);
     define_cfunc(c, p, "[]", proc_call, -1);
     define_cfunc(c, p, "===", proc_call, -1);
     define_cfunc(c, p, "yield", proc_call, -1);
@@ -550,6 +549,11 @@ pub fn init(c: &mut Ctx) {
     define_cfunc(c, p, "binding", proc_binding, 0);
     define_cfunc(c, p, "ruby2_keywords", proc_ruby2kw, 0);
     define_singleton_cfunc(c, p, "new", proc_s_new, -1);
+    // CRuby defines these on the classes (same bodies as Kernel's)
+    for k in [p, vmr.c_method.get(), vmr.c_unbound_method.get(), vmr.c_binding.get()] {
+        define_cfunc(c, k, "clone", crate::builtins::object::k_clone, -1);
+        define_cfunc(c, k, "dup", crate::builtins::object::k_dup, 0);
+    }
 
     for k in [vmr.c_method.get(), vmr.c_unbound_method.get()] {
         define_cfunc(c, k, "arity", meth_arity, 0);
@@ -569,7 +573,6 @@ pub fn init(c: &mut Ctx) {
     define_cfunc(c, m, "call", meth_call, -1);
     define_cfunc(c, m, ">>", proc_compose_right, 1);
     define_cfunc(c, m, "<<", proc_compose_left, 1);
-    define_cfunc(c, m, "()", meth_call, -1);
     define_cfunc(c, m, "[]", meth_call, -1);
     define_cfunc(c, m, "===", meth_call, -1);
     define_cfunc(c, m, "to_proc", meth_to_proc, 0);

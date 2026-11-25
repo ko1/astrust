@@ -553,11 +553,6 @@ cfn!(h_to_proc, |c, slf, a, blk| {
     Ok(p)
 });
 cfn!(h_s_try_convert, |c, slf, a, blk| Ok(check_hash(c, a[0])?.unwrap_or(NIL)));
-cfn!(h_s_new, |c, slf, a, blk| {
-    let h = c.hash_new(); obj_set_klass(h, slf);
-    funcall_kw(c, h, s::initialize, a, blk, kw_arg(c, a).is_some())?;
-    Ok(h)
-});
 cfn!(h_initialize_copy, |c, slf, a, blk| h_replace(c, slf, a, blk));
 
 cfn!(h_deconstruct_keys, |c, slf, a, blk| Ok(slf));
@@ -580,7 +575,6 @@ pub fn init(c: &mut Ctx, k: Value) {
     define_private_cfunc(c, k, "initialize_copy", h_initialize_copy, 1);
     define_singleton_cfunc(c, k, "[]", h_s_aref, -1);
     define_singleton_cfunc(c, k, "try_convert", h_s_try_convert, 1);
-    define_singleton_cfunc(c, k, "new", h_s_new, -1);
     d(c, "[]", h_aref, 1); d(c, "[]=", h_aset, 2);  d(c, "fetch", h_fetch, -1); d(c, "key?", h_key_p, 1); d(c, "has_key?", h_key_p, 1);
     d(c, "include?", h_key_p, 1); d(c, "member?", h_key_p, 1); d(c, "value?", h_value_p, 1); d(c, "has_value?", h_value_p, 1); d(c, "key", h_key, 1);
     d(c, "delete", h_delete, 1); d(c, "size", h_size, 0); d(c, "length", h_size, 0); d(c, "empty?", h_empty, 0); d(c, "keys", h_keys, 0);

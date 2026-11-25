@@ -1409,6 +1409,18 @@ cfn!(a_all, |c, slf, a, blk| {
     Ok(TRUE)
 });
 cfn!(a_none, |c, slf, a, blk| { let r = a_any(c, slf, a, blk)?; Ok(Value::bool(r == FALSE)) });
+// rb_ary_one_p: false as soon as a second element matches
+cfn!(a_one, |c, slf, a, blk| {
+    check_argc(c, a, 0, 1)?;
+    warn_unused_block(c, a, blk)?;
+    let (mut n, mut i) = (0, 0);
+    while let Some(&x) = c.ary(slf).get(i) {
+        let t = if !a.is_empty() { crate::rt::srb_eqq(c, a[0], x, &mut CallCache::default())? } else if blk.is_null() { x.truthy() } else { yield1(c, blk, x)?.truthy() };
+        if t { n += 1; if n > 1 { return Ok(FALSE); } }
+        i += 1;
+    }
+    Ok(Value::bool(n == 1))
+});
 cfn!(a_find, |c, slf, a, blk| {
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"find"), a, NIL); }
     check_argc(c, a, 0, 1)?;
@@ -1575,9 +1587,11 @@ pub fn init(c: &mut Ctx, k: Value) {
     d(c, "permutation", a_permutation, -1); d(c, "repeated_combination", a_repeated_combination, 1); d(c, "repeated_permutation", a_repeated_permutation, 1);
     d(c, "transpose", a_transpose, 0); d(c, "assoc", a_assoc, 1); d(c, "rassoc", a_rassoc, 1); d(c, "values_at", a_values_at, -1); d(c, "dig", a_dig, -1);
     d(c, "sample", a_sample, -1); d(c, "shuffle", a_shuffle, -1); d(c, "shuffle!", a_shuffle_b, -1); d(c, "cycle", a_cycle, -1); d(c, "bsearch", a_bsearch, 0);
-    d(c, "pack", a_pack, -1); d(c, "any?", a_any, -1); d(c, "all?", a_all, -1); d(c, "none?", a_none, -1);
+    d(c, "pack", a_pack, -1); d(c, "any?", a_any, -1); d(c, "all?", a_all, -1); d(c, "none?", a_none, -1); d(c, "one?", a_one, -1);
     d(c, "find", a_find, -1); d(c, "detect", a_find, -1);
     d(c, "minmax", a_minmax, 0); d(c, "freeze", a_freeze, 0);
     d(c, "fetch_values", a_fetch_values, -1); d(c, "rfind", a_rfind, -1); d(c, "bsearch_index", a_bsearch_index, 0); d(c, "deconstruct", a_to_ary, 0);
-    let _ = (a_frozen_dup, a_first_n_compat, a_s_new);
+    // rb_ary_s_new: Array's own (a frame of its own in backtraces), then #initialize
+    define_singleton_cfunc(c, k, "new", a_s_new, -1);
+    let _ = (a_frozen_dup, a_first_n_compat);
 }

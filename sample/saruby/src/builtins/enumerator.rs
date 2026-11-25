@@ -605,7 +605,6 @@ pub fn init(c: &mut Ctx, e: Value, object: Value, enumerable: Value) -> Classes 
     include_module(c, e, enumerable);
     let k = Classes { enumerator: e, yielder: define_class_under(c, e, "Yielder", object), generator: define_class_under(c, e, "Generator", object),
                       lazy: define_class_under(c, e, "Lazy", e), chain: define_class_under(c, e, "Chain", e), arith_seq: define_class_under(c, e, "ArithmeticSequence", e) };
-    define_singleton_cfunc(c, e, "new", crate::builtins::object::c_new, -1);
     define_private_cfunc(c, e, "initialize", e_initialize, -1);
     define_cfunc(c, e, "each", e_each, -1);
     define_cfunc(c, e, "with_index", e_with_index, -1);
