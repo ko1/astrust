@@ -53,12 +53,48 @@ fn method_wants_two(c: &Ctx, blk: Blk) -> bool {
 fn wants_two(c: &Ctx, blk: Blk) -> bool {
     matches!(c.block_params(blk), Some(p) if p.lead.len() + p.post.len() + p.opt.len() >= 2 || p.rest.is_some() && p.lead.len() >= 1)
 }
-/// wants_two, and for a non-iseq block a Method proc of 2+ arguments (Enumerable#map's rb_lambda_call)
+/// Enumerable#map's rb_lambda_call: the block's min arity (2+) makes #each yield two values; a lambda's optional/rest do not count.
 fn map_wants_two(c: &Ctx, blk: Blk) -> bool {
     match c.block_params(blk) {
+        Some(p) if is_lambda_block(c, blk) => p.lead.len() + p.post.len() >= 2,
         Some(p) => p.lead.len() + p.post.len() + p.opt.len() >= 2 || p.rest.is_some() && p.lead.len() >= 1,
         None => method_wants_two(c, blk),
     }
+}
+/// A lambda is never given the pair as two values (the packed rb_assoc_new); `wants_two` for the rest.
+fn pair_two(c: &Ctx, blk: Blk) -> bool { wants_two(c, blk) && !is_lambda_block(c, blk) }
+/// rb_yield_force_blockarg(ary): a lambda iseq takes the elements with block-argument setup, other blocks the array.
+pub fn yield_forced(c: &mut Ctx, blk: Blk, ary: Value) -> RV {
+    let args: Vec<Value> = match c.block_params(blk) {
+        Some(p) if is_lambda_block(c, blk) => {
+            let min = p.lead.len() + p.post.len();
+            let max = if p.rest.is_some() { usize::MAX } else { min + p.opt.len() };
+            let has_kw = !p.kw.is_empty() || p.kwrest.is_some();
+            let ambiguous = min == 1 && max == 1 && !has_kw;
+            let splat = (min > 0 || !p.opt.is_empty() || has_kw) && !ambiguous && !(has_kw && max == 1);
+            let mut a = if splat { c.ary(ary).to_vec() } else { vec![ary] };
+            a.truncate(max);
+            while a.len() < min { a.push(NIL); }
+            a
+        }
+        _ => vec![ary],
+    };
+    yield_block(c, blk, &args)
+}
+/// Enumerable#find on a Hash with a lambda block (enum.c find_i); None for any other block or receiver.
+pub fn find_lambda(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> Option<RV> {
+    if !is_hash(slf) || blk.is_null() || !is_lambda_block(c, blk) || c.block_params(blk).is_none() || crate::builtins::enum_native::each_overridden(c, slf, h_each) { return None; }
+    let mut res = None;
+    let r = each_entry(c, slf, |c, k, v| {
+        let pr = c.ary_new_from(&[k, v]);
+        if yield_forced(c, blk, pr)?.truthy() { res = Some(pr); return Ok(false); }
+        Ok(true)
+    });
+    Some(match (r, res) {
+        (Err(e), _) => Err(e),
+        (Ok(()), Some(p)) => Ok(p),
+        (Ok(()), None) => match a.first() { Some(&f) if f != NIL => funcall(c, f, s::call, &[], std::ptr::null()), _ => Ok(NIL) },
+    })
 }
 /// hash_dup_with_compare_by_id: a Hash with the entries and the identity flag, no defaults.
 fn dup_with_identity(c: &mut Ctx, h: Value) -> Value {
@@ -78,6 +114,7 @@ fn new_like(c: &mut Ctx, h: Value) -> Value {
 fn to_hash_conv(c: &mut Ctx, v: Value) -> RV {
     match check_hash(c, v)? { Some(h) => Ok(h), None => type_err(c, format!("no implicit conversion of {} into Hash", class_name_for_err(c, v))) }
 }
+#[inline]
 fn yield_pair(c: &mut Ctx, blk: Blk, k: Value, v: Value) -> RV { let two = wants_two(c, blk); yield_kv(c, blk, two, k, v) }
 #[inline]
 fn yield_kv(c: &mut Ctx, blk: Blk, two: bool, k: Value, v: Value) -> RV {
@@ -173,7 +210,7 @@ cfn!(h_each_with_index, |c, slf, a, blk| if crate::builtins::enum_native::each_o
     each_entry(c, slf, |c, k, v| { let p = c.ary_new_from(&[k, v]); yield_block(c, blk, &[p, Value::fix(i)])?; i += 1; Ok(true) })?; Ok(slf)
 }) });
 cfn!(h_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(c, slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "map", a, blk) } else { enum_or(c, slf, "map", a, blk, |c| { let out = c.ary_new(); let two = map_wants_two(c, blk); each_entry(c, slf, |c, k, v| { let r = yield_kv(c, blk, two, k, v)?; c.ary_push(out, r); Ok(true) })?; Ok(out) }) });
-cfn!(h_flat_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(c, slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "flat_map", a, blk) } else { enum_or(c, slf, "flat_map", a, blk, |c| { let out = c.ary_new(); each_entry(c, slf, |c, k, v| { let r = yield_pair(c, blk, k, v)?; if is_array(r) { c.ary_concat(out, r); } else { c.ary_push(out, r); } Ok(true) })?; Ok(out) }) });
+cfn!(h_flat_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(c, slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "flat_map", a, blk) } else { enum_or(c, slf, "flat_map", a, blk, |c| { let out = c.ary_new(); let two = pair_two(c, blk); each_entry(c, slf, |c, k, v| { let r = yield_kv(c, blk, two, k, v)?; if is_array(r) { c.ary_concat(out, r); } else { c.ary_push(out, r); } Ok(true) })?; Ok(out) }) });
 /// rb_hash_select / reject: the copy is iterated (and pruned), so the receiver may change meanwhile.
 fn sel(c: &mut Ctx, slf: Value, blk: Blk, want: bool) -> RV {
     let out = dup_with_identity(c, slf);
@@ -207,14 +244,15 @@ cfn!(h_select_b, |c, slf, a, blk| enum_or(c, slf, "select!", a, blk, |c| Ok(if s
 cfn!(h_keep_if, |c, slf, a, blk| enum_or(c, slf, "keep_if", a, blk, |c| { sel_b(c, slf, blk, true)?; Ok(slf) }));
 cfn!(h_reject_b, |c, slf, a, blk| enum_or(c, slf, "reject!", a, blk, |c| Ok(if sel_b(c, slf, blk, false)? { slf } else { NIL })));
 cfn!(h_delete_if, |c, slf, a, blk| enum_or(c, slf, "delete_if", a, blk, |c| { sel_b(c, slf, blk, false)?; Ok(slf) }));
-cfn!(h_filter_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(c, slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "filter_map", a, blk) } else { enum_or(c, slf, "filter_map", a, blk, |c| { let out = c.ary_new(); each_entry(c, slf, |c, k, v| { let r = yield_pair(c, blk, k, v)?; if r.truthy() { c.ary_push(out, r); } Ok(true) })?; Ok(out) }) });
+cfn!(h_filter_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(c, slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "filter_map", a, blk) } else { enum_or(c, slf, "filter_map", a, blk, |c| { let out = c.ary_new(); let two = pair_two(c, blk); each_entry(c, slf, |c, k, v| { let r = yield_kv(c, blk, two, k, v)?; if r.truthy() { c.ary_push(out, r); } Ok(true) })?; Ok(out) }) });
 cfn!(h_find, |c, slf, a, blk| enum_or(c, slf, "find", a, blk, |c| { let mut res = NIL; each_entry(c, slf, |c, k, v| { if yield_pair(c, blk, k, v)?.truthy() { res = c.ary_new_from(&[k, v]); return Ok(false); } Ok(true) })?; Ok(res) }));
 cfn!(h_any, |c, slf, a, blk| {
     check_argc(c, a, 0, 1)?;
     if !a.is_empty() && !blk.is_null() { gvar_warn(c, "given block not used", false)?; }
     if blk.is_null() && a.is_empty() { return Ok(Value::bool(c.hash_len(slf) > 0)); }
     let mut res = false;
-    each_entry(c, slf, |c, k, v| { let t = if !a.is_empty() { let p = c.ary_new_from(&[k, v]); crate::rt::srb_eqq(c, a[0], p, &mut CallCache::default())? } else { yield_pair(c, blk, k, v)?.truthy() }; if t { res = true; return Ok(false); } Ok(true) })?;
+    let two = pair_two(c, blk);
+    each_entry(c, slf, |c, k, v| { let t = if !a.is_empty() { let p = c.ary_new_from(&[k, v]); crate::rt::srb_eqq(c, a[0], p, &mut CallCache::default())? } else { yield_kv(c, blk, two, k, v)?.truthy() }; if t { res = true; return Ok(false); } Ok(true) })?;
     Ok(Value::bool(res))
 });
 cfn!(h_all, |c, slf, a, blk| {
