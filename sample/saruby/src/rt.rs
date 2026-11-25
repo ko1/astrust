@@ -757,7 +757,7 @@ pub fn srb_rescue_match(c: &mut Ctx, k: Value, exc: Value, splat: bool) -> Resul
     }
     if is_class_or_module(k) {
         let me = lookup_method(c, class_of(k), s::eqq);
-        if !me.is_null() && matches!(unsafe { (*me).kind }, MKind::Cfunc(..)) { return Ok(is_kind_of(c, exc, k)); }
+        if me == c.vm().ids.m_eqq.get() { return Ok(is_kind_of(c, exc, k)); }
         let r = funcall(c, k, s::eqq, &[exc], std::ptr::null())?;
         return Ok(r.truthy());
     }

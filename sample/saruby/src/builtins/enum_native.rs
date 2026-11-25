@@ -70,16 +70,17 @@ fn cmp_clamp(c: &mut Ctx, x: Value, a: &[Value], _b: Blk) -> RV {
     if max != NIL && cmpint(c, x, max)? > 0 { return Ok(max); }
     Ok(x)
 }
-// Enumerable.__sort_by(obj) { |x| key }: obj's #each collected, then ordered by the keys (enum_sort_by)
 // Enumerable.__to_a(obj): obj's #each collected (enum_to_a), for the Enumerable methods that sort
 fn e_to_a(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let acc = c.ary_new();
     run_each(c, a[0], |c, d, args, _, _o| { let v = pack(c, args); c.ary_push(d, v); Ok(NIL) }, acc, &[], Blk::NONE)?;
     Ok(acc)
 }
-fn e_sort_by(c: &mut Ctx, _s: Value, a: &[Value], blk: Blk) -> RV {
+#[inline(never)]
+fn en_sort_by_gen(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+    if blk.is_null() { return crate::builtins::enumerator::enum_for_sized(c, slf, crate::symbol::intern(b"sort_by"), a); }
     let acc = c.ary_new();
-    run_each(c, a[0], |c, d, args, _, _o| { let v = pack(c, args); c.ary_push(d, v); Ok(NIL) }, acc, &[], Blk::NONE)?;
+    run_each(c, slf, |c, d, args, _, _o| { let v = pack(c, args); c.ary_push(d, v); Ok(NIL) }, acc, &[], Blk::NONE)?;
     crate::builtins::array_methods::sort_by_body(c, acc, blk)
 }
 pub fn init_comparable(c: &mut Ctx, m: Value) {
@@ -112,6 +113,10 @@ pub fn call_enumerable(c: &mut Ctx, recv: Value, mid: &str, args: &[Value], blk:
 /// Call `klass`'s implementation of mid (found from klass up) on recv, as rb_call_super does.
 pub fn call_method_of(c: &mut Ctx, klass: Value, recv: Value, mid: Sym, args: &[Value], blk: Blk) -> RV {
     let me = lookup_method(c, klass, mid);
+    call_me(c, me, recv, mid, args, blk)
+}
+/// Call method entry `me` (found for mid; null: a plain call of mid) on recv as an fcall.
+pub fn call_me(c: &mut Ctx, me: *const MethodEntry, recv: Value, mid: Sym, args: &[Value], blk: Blk) -> RV {
     // the forwarding cfunc's own arguments: its keywords go on
     let kw = kw_arg(c, args).is_some();
     if me.is_null() || !c.has_room(args.len() + 2) { return funcall_kw(c, recv, mid, args, blk, kw); }
@@ -207,6 +212,13 @@ pub fn take_items(c: &mut Ctx, obj: Value, n: usize) -> Result<Option<Value>, Es
     Ok(Some(out))
 }
 
+// CRuby owns these on Enumerable; a plain Array / Hash (its #each the builtin) is read directly
+use crate::builtins::{array_methods as am, hash_methods as hm};
+#[inline(always)]
+fn ary_direct(c: &Ctx, s: Value) -> bool { is_array(s) && !am::ary_each_redef(c, s) }
+#[inline(always)]
+fn hash_direct(c: &Ctx, s: Value) -> bool { is_hash(s) && !each_overridden(c, s, hm::h_each) }
+
 fn no_blk(c: &mut Ctx, slf: Value, mid: &str, a: &[Value]) -> RV {
     crate::builtins::enumerator::enum_for_sized(c, slf, crate::symbol::intern(mid.as_bytes()), a)
 }
@@ -222,7 +234,8 @@ pub fn en_map_range_loop(c: &mut Ctx, slf: Value, y: &mut impl FnMut(&mut Ctx, &
     while i <= hi { match y(c, &[Value::fix(i)]) { Ok(r) => c.ary_push(out, r), Err(e) => return Some(Err(e)) } i += 1; }
     Some(Ok(out))
 }
-fn en_map(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+#[inline(never)]
+fn en_map_gen(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return no_blk(c, slf, "map", a); }
     if let Some(r) = en_map_range_loop(c, slf, &mut |c, a| yield_block(c, blk, a)) { return r; }
     let d = c.ary_new();
@@ -231,7 +244,8 @@ fn en_map(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
 }
 /// Enumerable#map's #each block; Proc#arity of it is the outer block's (rb_lambda_call).
 pub fn map_blk(c: &mut Ctx, d: Value, args: &[Value], _: Blk, o: Blk) -> RV { let r = yield_block(c, o, args)?; c.ary_push(d, r); Ok(NIL) }
-fn en_flat_map(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+#[inline(never)]
+fn en_flat_map_gen(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return no_blk(c, slf, "flat_map", a); }
     let d = c.ary_new();
     run_each(c, slf, |c, out, args, _, o| {
@@ -241,7 +255,8 @@ fn en_flat_map(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     }, d, &[], blk)?;
     Ok(d)
 }
-fn en_filter_map(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+#[inline(never)]
+fn en_filter_map_gen(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return no_blk(c, slf, "filter_map", a); }
     let d = c.ary_new();
     run_each(c, slf, |c, d, args, _, o| { let r = yield_block(c, o, args)?; if r.truthy() { c.ary_push(d, r); } Ok(NIL) }, d, &[], blk)?;
@@ -265,13 +280,15 @@ fn en_reject(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return no_blk(c, slf, "reject", a); }
     select_impl(c, slf, blk, false)
 }
-fn en_to_a(c: &mut Ctx, slf: Value, a: &[Value], _blk: Blk) -> RV {
+#[inline(never)]
+fn en_to_a_gen(c: &mut Ctx, slf: Value, a: &[Value], _blk: Blk) -> RV {
     let acc0 = c.ary_new();
     let d = c.ary_new_from(&[acc0]);
     run_each(c, slf, |c, d, args, _, _o| { let v = pack(c, args); c.ary_push(c.ary_get(d, 0), v); Ok(NIL) }, d, a, Blk::NONE)?;
     Ok(c.ary_get(d, 0))
 }
-fn en_each_with_index(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+#[inline(never)]
+fn en_each_with_index_gen(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return no_blk(c, slf, "each_with_index", a); }
     let d = c.ary_new_from(&[Value::fix(0)]);
     run_each(c, slf, |c, d, args, _, o| {
@@ -287,7 +304,8 @@ fn en_each_with_object(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     run_each(c, slf, |c, m, args, _, o| { let v = pack(c, args); yield_block(c, o, &[v, m]) }, a[0], &[], blk)?;
     Ok(a[0])
 }
-fn en_include(c: &mut Ctx, slf: Value, a: &[Value], _blk: Blk) -> RV {
+#[inline(never)]
+fn en_include_gen(c: &mut Ctx, slf: Value, a: &[Value], _blk: Blk) -> RV {
     let d = c.ary_new_from(&[a[0]]);
     let hit = run_each_stop(c, slf, |c, d, args, _, _o| {
         let v = pack(c, args);
@@ -437,7 +455,8 @@ fn en_group_by(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     }, acc0, &[], blk)?;
     Ok(acc0)
 }
-fn en_inject(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+#[inline(never)]
+fn en_inject_gen(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { check_argc(c, a, 1, 2)?; } else { check_argc(c, a, 0, 2)?; if a.len() == 2 && c.vm().verbose.get() == TRUE { crate::builtins::kernel::gvar_warn(c, "given block not used", false)?; } }
     // d = [acc (UNDEF = first element pending), op (nil = block)]
     let (acc, op) = match (a.len(), blk.is_null()) {
@@ -495,8 +514,67 @@ fn slice_cons(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk, cons: bool) -> RV 
     if !cons && c.ary_len(buf) > 0 { yield1(c, blk, buf)?; }
     Ok(slf)
 }
-fn en_each_slice(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV { slice_cons(c, slf, a, blk, false) }
-fn en_each_cons(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV { slice_cons(c, slf, a, blk, true) }
+#[inline(never)]
+fn en_each_slice_gen(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV { slice_cons(c, slf, a, blk, false) }
+#[inline(never)]
+fn en_each_cons_gen(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV { slice_cons(c, slf, a, blk, true) }
+
+// Enumerable's own entries of the methods Array / Hash answer natively: a thin test, then a tail call
+// to the Array / Hash body or the generic one (so the call costs what the Array / Hash method did)
+fn en_map(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+    if hash_direct(c, slf) { hm::h_map(c, slf, a, blk) } else { en_map_gen(c, slf, a, blk) }
+}
+fn en_flat_map(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+    if ary_direct(c, slf) { am::a_flat_map(c, slf, a, blk) } else if hash_direct(c, slf) { hm::h_flat_map(c, slf, a, blk) } else { en_flat_map_gen(c, slf, a, blk) }
+}
+fn en_filter_map(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+    if ary_direct(c, slf) { am::a_filter_map(c, slf, a, blk) } else if hash_direct(c, slf) { hm::h_filter_map(c, slf, a, blk) } else { en_filter_map_gen(c, slf, a, blk) }
+}
+fn en_to_a(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+    if a.is_empty() && ary_direct(c, slf) { am::a_entries(c, slf, a, blk) } else { en_to_a_gen(c, slf, a, blk) }
+}
+fn en_each_with_index(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+    if a.is_empty() && ary_direct(c, slf) { am::a_each_with_index(c, slf, a, blk) }
+    else if a.is_empty() && hash_direct(c, slf) { hm::h_each_with_index(c, slf, a, blk) } else { en_each_with_index_gen(c, slf, a, blk) }
+}
+fn en_include(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+    if ary_direct(c, slf) { am::a_include(c, slf, a, blk) } else { en_include_gen(c, slf, a, blk) }
+}
+fn en_inject(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+    if ary_direct(c, slf) { am::a_inject(c, slf, a, blk) } else { en_inject_gen(c, slf, a, blk) }
+}
+fn en_sort_by(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+    if ary_direct(c, slf) { am::a_sort_by(c, slf, a, blk) } else { en_sort_by_gen(c, slf, a, blk) }
+}
+fn en_each_slice(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+    if ary_direct(c, slf) { am::a_each_slice(c, slf, a, blk) } else { en_each_slice_gen(c, slf, a, blk) }
+}
+fn en_each_cons(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+    if ary_direct(c, slf) { am::a_each_cons(c, slf, a, blk) } else { en_each_cons_gen(c, slf, a, blk) }
+}
+
+/// (Enumerable's entry, of Hash?, the body, its arity): what fill_cc caches for an Array / Hash site (direct_body)
+static DIRECT: std::sync::OnceLock<Vec<(usize, bool, CFunc, i32)>> = std::sync::OnceLock::new();
+fn init_direct(c: &Ctx, m: Value) {
+    let ary: [(&str, CFunc, i32); 11] = [("each_slice", am::a_each_slice, 1), ("each_cons", am::a_each_cons, 1), ("inject", am::a_inject, -1),
+        ("reduce", am::a_inject, -1), ("each_with_index", am::a_each_with_index, 0), ("sort_by", am::a_sort_by, 0), ("flat_map", am::a_flat_map, 0),
+        ("collect_concat", am::a_flat_map, 0), ("filter_map", am::a_filter_map, 0), ("member?", am::a_include, 1), ("entries", am::a_entries, 0)];
+    let hash: [(&str, CFunc, i32); 6] = [("map", hm::h_map, 0), ("collect", hm::h_map, 0), ("flat_map", hm::h_flat_map, 0),
+        ("collect_concat", hm::h_flat_map, 0), ("filter_map", hm::h_filter_map, 0), ("each_with_index", hm::h_each_with_index, 0)];
+    let me = |n: &str| c.method_entry(m, crate::symbol::intern(n.as_bytes())).map_or(0, |e| e as *const MethodEntry as usize);
+    let t = ary.iter().map(|&(n, f, a)| (me(n), false, f, a)).chain(hash.iter().map(|&(n, f, a)| (me(n), true, f, a))).collect();
+    let _ = DIRECT.set(t);
+}
+/// fill_cc of a site whose cache gets Enumerable's entry `me` for an Array / Hash receiver (klass exactly the class,
+/// its #each the builtin; a redefinition refills every cache): the body that entry's cfunc would call, with the
+/// arity it takes (a site passing other arguments calls the entry).
+pub fn direct_body(c: &Ctx, me: *const MethodEntry, klass: Value) -> Option<(CFunc, i32)> {
+    let v = c.vm();
+    let hash = if klass == v.c_array.get() { if crate::rt::redef(crate::rt::R_ARY_EACH) { return None; } false }
+        else if klass == v.c_hash.get() { if !matches!(c.method_entry(klass, s::each), Some(e) if matches!(e.kind, MKind::Cfunc(f, _) if f as *const () as usize == hm::h_each as *const () as usize)) { return None; } true }
+        else { return None };
+    DIRECT.get()?.iter().find(|&&(m, h, _, _)| m == me as usize && h == hash).map(|&(_, _, f, a)| (f, a))
+}
 
 // enum.c partition_i / tally_i (no Ruby-level packing: ENUM_WANT_SVALUE is `pack`)
 fn en_partition(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
@@ -520,6 +598,51 @@ fn en_tally(c: &mut Ctx, slf: Value, a: &[Value], _blk: Blk) -> RV {
     };
     run_each(c, slf, |c, h, args, _, _o| { let v = pack(c, args); crate::hash::hash_tally_up(c, h, v)?; Ok(NIL) }, h, &[], Blk::NONE)?;
     Ok(h)
+}
+
+// enum.c first_i / take_i: the value kept, then rb_iter_break; from another thread / fiber the break is a
+// LocalJumpError there, and a kept block called after #first returned is "unexpected break"
+fn en_take(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    let n = num_to_long(c, a[0])?;
+    if n < 0 { return arg_err(c, "attempt to take negative size"); }
+    if n >= 1 << 60 { return arg_err(c, "array size too big"); }
+    let out = c.ary_new();
+    if n == 0 { return Ok(out); }
+    let fib = crate::fiber::current(c);
+    let d = c.ary_new_from(&[out, Value::fix(n), fib]);
+    run_each(c, slf, |c, d, args, _, _o| {
+        let v = pack(c, args);
+        let out = c.ary_get(d, 0);
+        c.ary_push(out, v);
+        let left = c.ary_get(d, 1).as_fix() - 1;
+        c.ary_mut(d)[1] = Value::fix(left);
+        if left == 0 {
+            let f = c.ary_get(d, 2);
+            if f == NIL { return Err(crate::rt::raise_local_jump(c, "unexpected break", "break", NIL)); }
+            if crate::fiber::current(c) != f { return Err(crate::rt::raise_local_jump(c, "break from proc-closure", "break", NIL)); }
+            c.esc = EscKind::Throw; c.esc_tag_v = d; c.esc_val = NIL; return Err(Esc);
+        }
+        Ok(NIL)
+    }, d, &[], Blk::NONE)?;
+    c.ary_mut(d)[2] = NIL;
+    Ok(out)
+}
+fn en_first(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
+    check_argc(c, a, 0, 1)?;
+    if !a.is_empty() { return en_take(c, slf, a, b); }
+    let fib = crate::fiber::current(c);
+    let d = c.ary_new_from(&[NIL, fib]);
+    let r = run_each(c, slf, |c, d, args, _, _o| {
+        let v = pack(c, args);
+        c.ary_mut(d)[0] = v;
+        let f = c.ary_get(d, 1);
+        if f == NIL { return Err(crate::rt::raise_local_jump(c, "unexpected break", "break", NIL)); }
+        if crate::fiber::current(c) != f { return Err(crate::rt::raise_local_jump(c, "break from proc-closure", "break", NIL)); }
+        c.esc = EscKind::Throw; c.esc_tag_v = d; c.esc_val = NIL; Err(Esc)
+    }, d, &[], Blk::NONE);
+    c.ary_mut(d)[1] = NIL;
+    r?;
+    Ok(c.ary_get(d, 0))
 }
 
 // Enumerable.__each(obj, *args) { |v| }: obj.each(*args) with each yield packed (ENUM_WANT_SVALUE)
@@ -615,16 +738,20 @@ fn define_enumerable_natives(c: &mut Ctx, m: Value) {
     define_cfunc(c, m, "min_by", en_min_by, -1);
     define_cfunc(c, m, "min", en_min, -1); define_cfunc(c, m, "max", en_max, -1); define_cfunc(c, m, "minmax", en_minmax, 0); define_cfunc(c, m, "max_by", en_max_by, -1);
     define_cfunc(c, m, "inject", en_inject, -1); define_cfunc(c, m, "reduce", en_inject, -1);
+    define_cfunc(c, m, "sort_by", en_sort_by, 0);
+    define_cfunc(c, m, "first", en_first, -1); define_cfunc(c, m, "take", en_take, 1);
+    init_direct(c, m);
 }
 
 /// Defines the native methods of Enumerable `m`.
 pub fn init(c: &mut Ctx, m: Value) {
     define_enumerable_natives(c, m);
+    // the prelude's helpers (`__saruby__.__each(..)`): on the internal module, not on Enumerable
+    let m = c.vm().m_internal.get();
     define_singleton_cfunc(c, m, "__int", e_int, 1);
     define_singleton_cfunc(c, m, "__hash", e_hash, 1);
     define_singleton_cfunc(c, m, "__argc", e_argc, 3);
     define_singleton_cfunc(c, m, "__kw", e_kw, -1);
-    define_singleton_cfunc(c, m, "__sort_by", e_sort_by, 1);
     define_singleton_cfunc(c, m, "__to_a", e_to_a, 1);
     define_singleton_cfunc(c, m, "__range_sum", |c, _s, a, b| crate::builtins::range_methods::r_sum(c, a[0], &a[1..], b), 2);
     define_singleton_cfunc(c, m, "__ivget", e_ivget, 2);

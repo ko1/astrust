@@ -569,6 +569,8 @@ pub struct Vm {
     pub c_location: Cell<Value>,
     /// Random::DEFAULT (the generator of Kernel#rand); a class-field root like the ones above.
     pub default_random: Cell<Value>,
+    /// The prelude's helper module: no constant names it; prelude code reaches it as `__saruby__` (node_internal).
+    pub m_internal: Cell<Value>,
     pub main_obj: Cell<Value>,
     pub stdout: Cell<Value>, pub stderr: Cell<Value>, pub stdin: Cell<Value>,
     pub globals: RefCell<HashMap<Sym, Value>>,
@@ -676,6 +678,20 @@ pub fn new_class(c: &mut Ctx, superclass: Value) -> Value {
         obj_set_klass(k, meta);
     }
     k
+}
+
+/// A class allocated without a superclass (Class.allocate) gets `superclass` and its metaclass, as new_class makes them.
+pub fn init_class(c: &mut Ctx, k: Value, superclass: Value) {
+    let alloc = c.class(superclass).alloc;
+    { let cd = c.class_mut(k); cd.superclass = superclass; cd.alloc = alloc; *cd.ancestors.borrow_mut() = None; }
+    c.class_mut(superclass).subclasses.push(k);
+    let sm = singleton_class(c, superclass);
+    let cm = singleton_class(c, c.vm().c_class.get());
+    let meta = alloc_class(c, cm, sm, false, AllocKind::Class);
+    let md = c.class_mut(meta);
+    md.is_singleton = true;
+    md.attached = k;
+    obj_set_klass(k, meta);
 }
 
 pub fn new_module(c: &mut Ctx) -> Value { alloc_class(c, vm().c_module.get(), NIL, true, AllocKind::None) }
@@ -1767,11 +1783,14 @@ pub fn exc_bt(c: &mut Ctx, e: Value) -> Value {
 fn capture_frames(c: &Ctx) -> Vec<RawFrame> {
     let mut frames: Vec<RawFrame> = Vec::with_capacity(16);
     let mut f = c.frame;
+    // the prelude's helpers (the internal module's methods) are not frames of Ruby's, as CRuby's C helpers
+    let im = obj_klass(c.vm().m_internal.get());
+    let im = if c.class(im).is_singleton { im } else { NIL };
     unsafe {
         while !f.is_null() {
             let fr = &*f;
             let iseq = fr.iseq();
-            frames.push(RawFrame { kind: fr.kind, me: fr.me, iseq, file: frame_file(fr), pos: fr.pos, at: iseq });
+            if fr.me.is_null() || (*fr.me).owner != im { frames.push(RawFrame { kind: fr.kind, me: fr.me, iseq, file: frame_file(fr), pos: fr.pos, at: iseq }); }
             f = fr.prev;
         }
     }
@@ -2403,7 +2422,13 @@ fn fill_cc(c: &mut Ctx, cc: &CallCache, recv: Value, klass: Value, me: *const Me
                 }
             }
         }
-        MKind::Cfunc(f, arity) => { cc.cfunc.set(Some(f)); cc.arity.set(arity); cc.bi.set(crate::inline_builtin::cache_key(c, me, klass)); }
+        MKind::Cfunc(f, arity) => {
+            // Enumerable's entry on a plain Array / Hash: the body its cfunc would call (enum_native::direct_body)
+            // and Kernel#hash on an Integer: Integer's hash (what obj_hash would call)
+            let (f, arity) = if me == c.vm().ids.kernel_hash.get() && klass == c.vm().c_integer.get() { (crate::builtins::numeric_methods::int_hash as CFunc, 0) }
+                else { crate::builtins::enum_native::direct_body(c, me, klass).unwrap_or((f, arity)) };
+            cc.cfunc.set(Some(f)); cc.arity.set(arity); cc.bi.set(crate::inline_builtin::cache_key(c, me, klass));
+        }
         MKind::AttrReader(name) | MKind::AttrWriter(name) => {
             let cd = c.class(klass);
             if !cd.is_singleton && cd.alloc == AllocKind::Object {

@@ -247,7 +247,6 @@ fn re_s_last_match(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     }
     Ok(crate::builtins::svar::last_match(c))
 }
-fn re_freeze(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { obj_set_flags(slf, FL_FROZEN); Ok(slf) }
 fn re_timeout(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let t = rx(c, slf).timeout; Ok(t.map_or(NIL, |f| c.float_new(f))) }
 fn re_s_timeout(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     let t = crate::regexp::TIMEOUT.load(std::sync::atomic::Ordering::Relaxed);
@@ -403,6 +402,13 @@ fn md_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if m.groups != o.groups || !c.str_eq(m.str, o.str) || c.str_enc(m.str) != c.str_enc(o.str) { return Ok(FALSE); }
     Ok(Value::bool(reg_equal(c, r1, r2)?))
 }
+/// match_hash: the regexp's, the string's and the offsets
+fn md_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
+    let (r, st, g) = { let m = md(c, slf); (m.regexp, m.str, m.groups.clone()) };
+    let mut h = crate::astrust::hash_merge(re_hash(c, r, &[], Blk::NONE)?.as_fix() as u64, c.str_hash(st));
+    for x in g { h = crate::astrust::hash_merge(h, x.map_or(u64::MAX, |(b, e)| (b as u64) << 32 ^ e as u64)); }
+    Ok(Value::fix((h >> 2) as i64))
+}
 fn md_deconstruct_keys(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let keys = a[0];
     if keys == NIL {
@@ -467,7 +473,7 @@ pub fn init(c: &mut Ctx) -> (Value, Value) {
     let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, r, n, f, a);
     d(c, "match", re_match, -1); d(c, "match?", re_match_p, -1); d(c, "=~", re_match_op, 1); d(c, "===", re_eqq, 1); d(c, "~", re_tilde, 0); d(c, "source", re_source, 0); d(c, "encoding", re_encoding, 0); d(c, "fixed_encoding?", re_fixed_encoding, 0);
     d(c, "inspect", re_inspect, 0); d(c, "to_s", re_to_s, 0); d(c, "options", re_options, 0); d(c, "casefold?", re_casefold, 0); d(c, "==", re_eq, 1);
-    d(c, "eql?", re_eq, 1); d(c, "hash", re_hash, 0); d(c, "names", re_names, 0); d(c, "named_captures", re_named_captures, 0); d(c, "freeze", re_freeze, 0); d(c, "timeout", re_timeout, 0);
+    d(c, "eql?", re_eq, 1); d(c, "hash", re_hash, 0); d(c, "names", re_names, 0); d(c, "named_captures", re_named_captures, 0); d(c, "timeout", re_timeout, 0);
     let m = define_class(c, "MatchData", vmr.c_object.get());
     class_set_alloc(c, m, AllocKind::None);
     let ms = singleton_class(c, m);
@@ -477,6 +483,6 @@ pub fn init(c: &mut Ctx) -> (Value, Value) {
     d(c, "names", md_names, 0); d(c, "begin", md_begin, 1); d(c, "end", md_end, 1); d(c, "offset", md_offset, 1); d(c, "byteoffset", md_byteoffset, 1); d(c, "bytebegin", md_bytebegin, 1); d(c, "byteend", md_byteend, 1);
     d(c, "pre_match", md_pre, 0); d(c, "post_match", md_post, 0); d(c, "to_s", md_to_s, 0); d(c, "size", md_size, 0); d(c, "length", md_size, 0);
     d(c, "string", md_string, 0); d(c, "regexp", md_regexp, 0); d(c, "values_at", md_values_at, -1); d(c, "inspect", md_inspect, 0); d(c, "==", md_eq, 1);
-    d(c, "eql?", md_eq, 1); d(c, "deconstruct_keys", md_deconstruct_keys, 1); d(c, "match", md_match, 1); d(c, "match_length", md_match_length, 1);
+    d(c, "eql?", md_eq, 1); d(c, "hash", md_hash, 0); d(c, "deconstruct_keys", md_deconstruct_keys, 1); d(c, "match", md_match, 1); d(c, "match_length", md_match_length, 1);
     (r, m)
 }

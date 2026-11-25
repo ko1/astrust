@@ -87,6 +87,35 @@ fn SPECIALIZE_node_false(sc: &mut SpecCtx, n: NodePtr) -> String {
 }
 
 #[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
+fn SPECIALIZE_node_internal(sc: &mut SpecCtx, n: NodePtr) -> String {
+    let own_hash = hash_node(n);
+    let was_open = !sc.open.insert(own_hash);
+    let u = node_u::<node_internal_struct>(n);
+
+    let mut a: Vec<String> = vec!["c".to_string(), "n".to_string(), "fp".to_string()];
+
+    if !was_open { sc.open.remove(&own_hash); }
+    // named by its code (children's names, baked operands, bound holes are in it): equal code is
+    // one item, whichever entry or position it was reached from
+    let mut body = String::new();
+    body.push_str(&format!("impl Disp for @SELF@ {{\n    #[inline(always)]\n    fn call(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {{\n"));
+    body.push_str(&format!("        let u = node_u::<node_internal_struct>({});\n", "n"));
+
+    body.push_str(&format!("        EVAL_node_internal{}({})\n    }}\n", "", a.join(", ")));
+
+
+    body.push_str("}
+");
+    let name = format!("T_{:016x}", hash_str(&body));
+    if sc.emitted.insert(name.clone()) {
+        sc.out.push_str(&format!("pub struct {};\n", name));
+        if sc.comments { sc.out.push_str("// "); dump_node(&mut sc.out, n); sc.out.push('\n'); }
+        sc.out.push_str(&body.replace("@SELF@", &name));
+    }
+    name
+}
+
+#[allow(non_snake_case, unused_mut, unused_unsafe, unused_variables)]
 fn SPECIALIZE_node_self(sc: &mut SpecCtx, n: NodePtr) -> String {
     let own_hash = hash_node(n);
     let was_open = !sc.open.insert(own_hash);

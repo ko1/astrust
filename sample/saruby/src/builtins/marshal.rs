@@ -1067,8 +1067,9 @@ fn time_load(c: &mut Ctx, k: Value, a: &[Value], _b: Blk) -> RV {
 pub fn init(c: &mut Ctx) -> Value {
     let m = define_module(c, "Marshal");
     define_module_function(c, m, "dump", m_dump, -1);
-    define_module_function(c, m, "load", m_load, -1);
-    define_module_function(c, m, "restore", m_load, -1);
+    // marshal.rb: singleton methods only
+    define_singleton_cfunc(c, m, "load", m_load, -1);
+    define_singleton_cfunc(c, m, "restore", m_load, -1);
     const_set(c, m, intern(b"MAJOR_VERSION"), Value::fix(4));
     const_set(c, m, intern(b"MINOR_VERSION"), Value::fix(8));
     m

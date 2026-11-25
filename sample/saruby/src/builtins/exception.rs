@@ -772,6 +772,16 @@ fn sysexit_status(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let v 
 fn sysexit_success(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let v = ivar_get(c, slf, s::status); Ok(Value::bool(v == NIL || v == Value::fix(0))) }
 fn uncaught_tag(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, slf, intern(b"tag"))) }
 fn uncaught_value(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, slf, intern(b"value"))) }
+/// syserr_eqq: a SystemCallError (or anything with #errno) whose errno is the class's Errno
+fn syserr_eqq(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    let (exc, sce) = (a[0], c.vm().c_system_call_error.get());
+    if !is_kind_of(c, exc, sce) {
+        if !respond_to(c, exc, intern(b"errno"), false) { return Ok(FALSE); }
+    } else if slf == sce { return Ok(TRUE); }
+    let num = funcall(c, exc, intern(b"errno"), &[], std::ptr::null())?;
+    let e = funcall(c, slf, intern(b"const_get"), &[Value::sym(intern(b"Errno"))], std::ptr::null())?;
+    Ok(Value::bool(if num.is_fixnum() { num == e } else { crate::builtins::array_methods::rb_eq(c, num, e)? }))
+}
 fn syscallerr_init(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     // syserr_initialize
     let k = real_class_of(c, slf);
@@ -821,6 +831,10 @@ pub fn init(c: &mut Ctx) {
     define_cfunc(c, e, "exception", exc_exception, -1);
     define_cfunc(c, e, "to_s", exc_to_s, 0);
     define_cfunc(c, e, "message", exc_message, 0);
+    // CRuby defines these on Exception itself (same bodies as Kernel / BasicObject)
+    define_cfunc(c, e, "respond_to?", crate::builtins::object::k_respond_to, -1);
+    define_private_cfunc(c, e, "method_missing", crate::builtins::object::bo_method_missing, -1);
+    define_private_cfunc(c, e, "respond_to_missing?", crate::builtins::object::k_respond_to_missing, 2);
     define_cfunc(c, e, "detailed_message", exc_detailed_message, -1);
     let se = vmr.c_syntax_error.get();
     define_private_cfunc(c, se, "initialize", syntax_err_init, -1);
@@ -841,6 +855,9 @@ pub fn init(c: &mut Ctx) {
     define_cfunc(c, ne, "receiver", name_err_receiver, 0);
     define_cfunc(c, ne, "local_variables", name_err_local_variables, 0);
     define_cfunc(c, vmr.c_no_method_error.get(), "args", nm_err_args, 0);
+    define_private_cfunc(c, vmr.c_no_method_error.get(), "initialize", name_err_init, -1);
+    define_cfunc(c, vmr.c_load_error.get(), "message", exc_message, 0);
+    define_cfunc(c, vmr.c_uncaught_throw_error.get(), "to_s", exc_to_s, 0);
     define_private_cfunc(c, vmr.c_key_error.get(), "initialize", key_err_init, -1);
     define_cfunc(c, vmr.c_key_error.get(), "key", key_err_key, 0);
     define_cfunc(c, vmr.c_key_error.get(), "receiver", name_err_receiver, 0);
@@ -856,6 +873,7 @@ pub fn init(c: &mut Ctx) {
     define_cfunc(c, vmr.c_uncaught_throw_error.get(), "tag", uncaught_tag, 0);
     define_cfunc(c, vmr.c_uncaught_throw_error.get(), "value", uncaught_value, 0);
     define_private_cfunc(c, vmr.c_system_call_error.get(), "initialize", syscallerr_init, -1);
+    define_singleton_cfunc(c, vmr.c_system_call_error.get(), "===", syserr_eqq, 1);
     define_cfunc(c, vmr.c_system_call_error.get(), "errno", syscallerr_errno, 0);
     define_cfunc(c, vmr.c_local_jump_error.get(), "reason", |c, s, _a, _b| { let r = ivar_get(c, s, intern(b"__reason")); Ok(if r == NIL { sym_value("noreason") } else { r }) }, 0);
     define_cfunc(c, vmr.c_local_jump_error.get(), "exit_value", |c, s, _a, _b| Ok(ivar_get(c, s, intern(b"__exit_value"))), 0);

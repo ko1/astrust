@@ -37,7 +37,7 @@ fn blank_vm() -> Box<Vm> {
         c_io c_file c_enumerator c_lazy c_yielder c_generator c_random c_encoding c_rational c_complex c_binding
         c_data c_set c_fiber c_thread c_mutex c_queue c_arith_seq c_chain c_object_space_weak_map c_string_io c_dir
         c_stat c_monitor m_errno m_math m_process m_gc m_object_space m_marshal m_signal m_warning m_file_test
-        c_string_scanner c_string_scanner_error c_econv c_tracepoint trace_list c_location default_random
+        c_string_scanner c_string_scanner_error c_econv c_tracepoint trace_list c_location default_random m_internal
         main_obj stdout stderr stdin loaded_features load_path at_exit argv dollar_zero;
         verbose: FALSE,
         globals: HashMap::default(), global_aliases: HashMap::default(),
@@ -98,6 +98,7 @@ fn boot_classes(c: &mut Ctx) {
     include_module(c, ob, vmr.m_kernel.get());
     vmr.m_comparable.set(define_module(c, "Comparable"));
     vmr.m_enumerable.set(define_module(c, "Enumerable"));
+    vmr.m_internal.set(new_module(c));
     let num = define_class(c, "Numeric", ob);
     include_module(c, num, vmr.m_comparable.get());
     vmr.c_numeric.set(num);

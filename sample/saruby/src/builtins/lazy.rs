@@ -523,7 +523,7 @@ fn en_chain(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
 
 pub fn init(c: &mut Ctx, k: Value, enumerable: Value) {
     define_cfunc(c, enumerable, "lazy", en_lazy, 0);
-    define_singleton_cfunc(c, enumerable, "__chain", en_chain, 1);
+    define_singleton_cfunc(c, c.vm().m_internal.get(), "__chain", en_chain, 1);
     macro_rules! enumerable_alias {
         ($($n:literal),*) => { $( define_private_cfunc(c, k, concat!("_enumerable_", $n), |c, s, a, b| { let m = c.vm().m_enumerable.get(); call_method_of(c, m, s, intern($n.as_bytes()), a, b) }, -1); )* };
     }

@@ -187,7 +187,8 @@ pub fn init(c: &mut Ctx) {
     let k = vmr.m_kernel.get();
     define_module_function(c, k, "global_variables", k_global_variables, 0);
     define_module_function(c, k, "test", k_test, -1);
-    define_module_function(c, k, "gem", |_c, _s, _a, _b| Ok(TRUE), -1);
+    // rubygems: a private instance method only
+    define_private_cfunc(c, k, "gem", |_c, _s, _a, _b| Ok(TRUE), -1);
     define_cfunc(c, vmr.c_io.get(), "wait", io_wait, -1);
     define_cfunc(c, vmr.c_io.get(), "each_codepoint", io_each_codepoint, 0);
     let p = vmr.m_process.get();

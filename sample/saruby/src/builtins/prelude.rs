@@ -16,7 +16,7 @@ const CORE_AST: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/core.prism"));
 
 pub fn load_prelude(c: &mut Ctx) -> RV {
     let pr = crate::prism::read_serialized(CORE_AST);
-    let is = match crate::compile::compile_parsed(&pr, CORE.as_bytes(), "<internal:prelude>", IseqKind::Top, vec![]) {
+    let is = match crate::compile::with_internal(|| crate::compile::compile_parsed(&pr, CORE.as_bytes(), "<internal:prelude>", IseqKind::Top, vec![])) {
         Ok(is) => is,
         Err(m) => return err(c, c.vm().c_syntax_error.get(), m.text()),
     };
@@ -55,7 +55,7 @@ pub fn load_feature(c: &mut Ctx, name: &str) -> RV {
     if name == "pp" { crate::builtins::kernel::REC_PP.store(true, std::sync::atomic::Ordering::Relaxed); }
     if let Some(l) = LIBS.iter().find(|l| l.0 == name) {
         let file: &'static str = Box::leak(format!("<internal:{}>", name).into_boxed_str());
-        return crate::builtins::kernel::run_source(c, l.1.as_bytes(), file, 1);
+        return crate::builtins::kernel::run_internal_source(c, l.1.as_bytes(), file);
     }
     // native libraries whose classes are only built on first require
     if name == "strscan" || name == "strscan.so" { crate::builtins::strscan::init(c); }

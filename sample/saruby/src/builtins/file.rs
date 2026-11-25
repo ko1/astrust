@@ -586,7 +586,6 @@ fn realpath_impl(c: &mut Ctx, a: &[Value], strict: bool) -> RV {
 fn f_s_realpath(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV { realpath_impl(c, a, true) }
 fn f_s_realdirpath(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV { realpath_impl(c, a, false) }
 fn f_s_path(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV { let sv = path_str(c, a[0])?; Ok(c.str_dup(sv)) }
-fn f_s_open(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV { crate::builtins::io::open_with_block(c, slf, a, blk) }
 
 // ---- File instance methods --------------------------------------------------------------------
 
@@ -1287,7 +1286,7 @@ pub fn init(c: &mut Ctx) {
     crate::builtins::prelude::lazy_const(c, vmr.c_object.get(), "FileTest", "saruby/filetest");
     for &(n, fun, ar) in TESTS { define_singleton_cfunc(c, f, n, fun, ar); }
     let df = |c: &mut Ctx, n: &str, fun: CFunc, a: i32| define_singleton_cfunc(c, f, n, fun, a);
-    df(c, "open", f_s_open, -1); df(c, "stat", f_s_stat, 1); df(c, "lstat", f_s_lstat, 1); df(c, "mtime", f_s_mtime, 1); df(c, "atime", f_s_atime, 1); df(c, "ctime", f_s_ctime, 1);
+    df(c, "stat", f_s_stat, 1); df(c, "lstat", f_s_lstat, 1); df(c, "mtime", f_s_mtime, 1); df(c, "atime", f_s_atime, 1); df(c, "ctime", f_s_ctime, 1);
     df(c, "birthtime", f_s_birthtime, 1); df(c, "ftype", f_s_ftype, 1); df(c, "delete", f_s_delete, -1); df(c, "unlink", f_s_delete, -1); df(c, "rename", f_s_rename, 2);
     df(c, "symlink", f_s_symlink, 2); df(c, "link", f_s_link, 2); df(c, "readlink", f_s_readlink, 1); df(c, "chmod", f_s_chmod, -1); df(c, "chown", f_s_chown, -1);
     df(c, "lchown", f_s_lchown, -1); df(c, "lchmod", f_s_lchmod, -1); df(c, "truncate", f_s_truncate, 2); df(c, "umask", f_s_umask, -1); df(c, "mkfifo", f_s_mkfifo, -1);

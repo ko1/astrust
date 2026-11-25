@@ -254,7 +254,7 @@ fn os_each_object(c: &mut Ctx, s2: Value, a: &[Value], blk: Blk) -> RV {
     let mut vs = vec![];
     crate::gc::each_object(|v| vs.push(v));
     vs.retain(|&v| {
-        if matches!(c.body_of(v), Body::Env(..)) || obj_klass(v) == NIL { return false; }
+        if matches!(c.body_of(v), Body::Env(..)) || obj_klass(v) == NIL || v == c.vm().m_internal.get() { return false; }
         if is_class_or_module(v) && crate::builtins::objspace::singleton_internal(c, v) { return false; }
         match k { Some(k) => is_class_or_module(obj_klass(v)) && is_kind_of(c, v, k), None => true }
     });
@@ -513,8 +513,7 @@ pub fn init(c: &mut Ctx) {
     let gc = define_module(c, "GC");
     vmr.m_gc.set(gc);
     define_singleton_cfunc(c, gc, "start", gc_start, -1);
-    let gsk = singleton_class(c, gc);
-    define_private_cfunc(c, gsk, "__start", gc_start_full, 1);
+    define_singleton_cfunc(c, vmr.m_internal.get(), "__gc_start", gc_start_full, 1);
     define_singleton_cfunc(c, gc, "count", gc_count, 0);
     define_singleton_cfunc(c, gc, "disable", gc_disable, 0);
     define_singleton_cfunc(c, gc, "enable", gc_enable, 0);

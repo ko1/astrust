@@ -24,21 +24,21 @@ module Timeout
 
   @stack = []
 
-  def self.__now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  def __saruby__.timeout_now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-  def self.__arm
-    if @stack.empty?
-      Process.__itimer(0)
+  def __saruby__.timeout_arm(stack)
+    if stack.empty?
+      __itimer(0)
     else
-      d = @stack.map(&:first).min - __now
-      Process.__itimer(d <= 0 ? 0.000001 : d)
+      d = stack.map(&:first).min - timeout_now
+      __itimer(d <= 0 ? 0.000001 : d)
     end
   end
 
-  def self.__fire
-    now = __now
-    ent = @stack.find { |e| e[0] <= now && !e[3] }
-    return __arm unless ent
+  def __saruby__.timeout_fire(stack)
+    now = timeout_now
+    ent = stack.find { |e| e[0] <= now && !e[3] }
+    return timeout_arm(stack) unless ent
     ent[3] = true
     raise ent[1], ent[2]
   end
@@ -52,15 +52,16 @@ module Timeout
       perform = Proc.new { |exc| scheduler.timeout_after(sec, exc, message, &block) }
       return klass ? perform.call(klass) : Error.handle_timeout(message, &perform)
     end
-    ent =[__now + sec, klass || Error, message, false]
+    ent =[__saruby__.timeout_now + sec, klass || Error, message, false]
     @stack << ent
-    trap("ALRM") { Timeout.__fire }
-    __arm
+    stack = @stack
+    trap("ALRM") { __saruby__.timeout_fire(stack) }
+    __saruby__.timeout_arm(stack)
     begin
       yield(sec)
     ensure
       @stack.delete_if { |e| e.equal?(ent) }
-      __arm
+      __saruby__.timeout_arm(@stack)
     end
   end
 

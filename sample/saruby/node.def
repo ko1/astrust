@@ -42,6 +42,12 @@ node_false(c: &mut Ctx, n: NodePtr, fp: Fp)
 }
 
 NODE_DEF
+node_internal(c: &mut Ctx, n: NodePtr, fp: Fp)
+{
+    Ok(c.vm().m_internal.get())
+}
+
+NODE_DEF
 node_self(c: &mut Ctx, n: NodePtr, fp: Fp)
 {
     Ok(fp[0].get())

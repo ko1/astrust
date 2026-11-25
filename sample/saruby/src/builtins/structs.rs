@@ -206,6 +206,16 @@ fn st_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     Ok(Value::fix((h >> 2) as i64))
 }
 fn st_members(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let m = members_of(c, real_class_of(c, slf)); Ok(c.ary_from_vec(c.ary(m).to_vec())) }
+/// rb_struct_select
+fn st_select(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
+    check_argc(c, a, 0, 0)?;
+    if blk.is_null() { return crate::builtins::enumerator::enum_for_sized(c, slf, intern(b"select"), &[]); }
+    let v = st_to_a(c, slf, &[], Blk::NONE)?;
+    let out = c.ary_new();
+    let mut i = 0;
+    while let Some(&x) = c.ary(v).get(i) { if yield1(c, blk, x)?.truthy() { c.ary_push(out, x); } i += 1; }
+    Ok(out)
+}
 fn st_each(c: &mut Ctx, slf: Value, _a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return crate::builtins::enumerator::enum_for_sized(c, slf, s::each, &[]); }
     let v = st_to_a(c, slf, &[], Blk::NONE)?;
@@ -322,6 +332,7 @@ pub fn init(c: &mut Ctx, object: Value, enumerable: Value) -> Value {
     define_private_cfunc(c, st, "initialize", st_initialize, -1);
     define_private_cfunc(c, st, "initialize_copy", st_init_copy, 1);
     let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, st, n, f, a);
+    d(c, "select", st_select, -1); d(c, "filter", st_select, -1);
     d(c, "to_a", st_to_a, 0); d(c, "deconstruct", st_to_a, 0); d(c, "values", st_to_a, 0); d(c, "to_h", st_to_h, 0); d(c, "[]", st_aref, 1); d(c, "[]=", st_aset, 2);
     d(c, "==", st_eq, 1); d(c, "eql?", st_eql, 1); d(c, "hash", st_hash, 0); d(c, "members", st_members, 0); d(c, "each", st_each, 0); d(c, "each_pair", st_each_pair, 0);
     d(c, "inspect", st_inspect, 0); d(c, "to_s", st_inspect, 0); d(c, "size", st_size, 0); d(c, "length", st_size, 0); d(c, "dig", st_dig, -1);

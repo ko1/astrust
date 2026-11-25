@@ -48,6 +48,22 @@ fn PROF_node_false(pc: &mut ProfCtx, n: NodePtr) -> u64 {
 
 
 #[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
+fn HASH_node_internal(n: NodePtr) -> u64 {
+    let u = node_u::<node_internal_struct>(n);
+    let mut h = hash_str("node_internal");
+
+    h
+}
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut, unused_braces, unused_parens)]
+fn PROF_node_internal(pc: &mut ProfCtx, n: NodePtr) -> u64 {
+    let u = node_u::<node_internal_struct>(n);
+    let mut h = hash_str("node_internal");
+
+    h
+}
+
+
+#[allow(non_snake_case, unused_unsafe, unused_variables, unused_mut)]
 fn HASH_node_self(n: NodePtr) -> u64 {
     let u = node_u::<node_self_struct>(n);
     let mut h = hash_str("node_self");

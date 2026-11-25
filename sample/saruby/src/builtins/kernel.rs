@@ -908,6 +908,7 @@ fn k_hash_conv(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
 // ---- object identity / hash ----------------------------------------------------------------
 
 pub fn obj_hash(_c: &mut Ctx, slf: Value, _args: &[Value], _b: Blk) -> RV {
+    if is_integer(slf) { return crate::builtins::numeric_methods::int_hash(_c, slf, _args, _b); }
     let h = crate::astrust::hash_u64(slf.raw());
     Ok(Value::fix((h >> 2) as i64))
 }
@@ -1472,8 +1473,12 @@ pub fn load_file(c: &mut Ctx, path: &str) -> RV {
 }
 
 /// Compile and run a source at top level (self = main).
-pub fn run_source(c: &mut Ctx, src: &[u8], file: &'static str, line: i32) -> RV {
-    let is = crate::compile::compile_source(src, file, line, IseqKind::Top, vec![]);
+pub fn run_source(c: &mut Ctx, src: &[u8], file: &'static str, line: i32) -> RV { run_source_as(c, src, file, line, false) }
+/// run_source of saruby's own prelude code (compile::with_internal)
+pub fn run_internal_source(c: &mut Ctx, src: &[u8], file: &'static str) -> RV { run_source_as(c, src, file, 1, true) }
+fn run_source_as(c: &mut Ctx, src: &[u8], file: &'static str, line: i32, internal: bool) -> RV {
+    let comp = || crate::compile::compile_source(src, file, line, IseqKind::Top, vec![]);
+    let is = if internal { crate::compile::with_internal(comp) } else { comp() };
     crate::compile::flush_parse_warnings(c)?;
     let is = match is {
         Ok(is) => is,

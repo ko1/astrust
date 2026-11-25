@@ -24,6 +24,14 @@ pub fn DISPATCH_node_false(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
 }
 
 #[allow(non_snake_case, unused_variables)]
+pub fn DISPATCH_node_internal(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
+    #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_internal");
+    let u = node_u::<node_internal_struct>(n);
+
+    EVAL_node_internal(c, n, fp)
+}
+
+#[allow(non_snake_case, unused_variables)]
 pub fn DISPATCH_node_self(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     #[cfg(feature = "nodeprof")] crate::nodeprof::hit("node_self");
     let u = node_u::<node_self_struct>(n);

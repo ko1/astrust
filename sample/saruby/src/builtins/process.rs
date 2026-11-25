@@ -753,8 +753,9 @@ fn lazy_class(c: &mut Ctx, name: &[u8]) -> RV {
 /// Process.detach: a Process::Waiter thread (lib saruby/process) that reaps `pid`.
 fn p_detach(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let pid = num_to_long(c, a[0])? as i32;
-    let k = lazy_class(c, b"Waiter")?;
-    funcall(c, k, intern(b"__start"), &[Value::fix(pid as i64)], std::ptr::null())
+    lazy_class(c, b"Waiter")?;
+    let im = c.vm().m_internal.get();
+    funcall(c, im, intern(b"__waiter_start"), &[Value::fix(pid as i64)], std::ptr::null())
 }
 /// The detach thread's body: wait for `pid`; its status, or nil when it is not a child.
 fn p_detach_wait(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
@@ -1082,6 +1083,10 @@ pub fn init(c: &mut Ctx) {
     let h = c.alloc(vmr.c_array.get(), Body::Array(crate::avec::AVec::new()));
     HANDLERS.set_vm(vmr, h);
     let mf = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_module_function(c, p, n, f, a);
+    // CRuby: singleton only (Kernel has the instance methods); the "__" ones are the prelude's helpers
+    let sf = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_singleton_cfunc(c, p, n, f, a);
+    let im = c.vm().m_internal.get();
+    let hf = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_singleton_cfunc(c, im, n, f, a);
     mf(c, "clock_gettime", clock_gettime, -1); mf(c, "clock_getres", clock_getres, -1); mf(c, "times", p_times, 0);
     mf(c, "pid", |_c, _s, _a, _b| Ok(Value::fix(sys::getpid() as i64)), 0);
     mf(c, "ppid", |_c, _s, _a, _b| Ok(Value::fix(sys::getppid() as i64)), 0);
@@ -1094,23 +1099,23 @@ pub fn init(c: &mut Ctx) {
     mf(c, "setpgid", |c, _s, a, _b| { let (p, g) = (num_to_long(c, a[0])? as i32, num_to_long(c, a[1])? as i32); if sys::setpgid(p, g) < 0 { return Err(raise_errno(c, sys::errno(), "")); } Ok(Value::fix(0)) }, 2);
     mf(c, "setsid", |c, _s, _a, _b| { let r = sys::setsid(); if r < 0 { return Err(raise_errno(c, sys::errno(), "")); } Ok(Value::fix(r as i64)) }, 0);
     mf(c, "kill", p_kill, -1); mf(c, "wait", p_wait, -1); mf(c, "waitpid", p_wait, -1); mf(c, "wait2", p_wait2, -1); mf(c, "waitpid2", p_wait2, -1); mf(c, "waitall", p_waitall, 0);
-    mf(c, "detach", p_detach, 1); mf(c, "fork", k_fork, 0); mf(c, "spawn", k_spawn, -1); mf(c, "exec", k_exec, -1); mf(c, "exit!", p_exit_bang, -1); mf(c, "exit", k_exit, -1);
-    mf(c, "abort", k_abort, -1);
-    mf(c, "getrlimit", p_getrlimit, 1); mf(c, "setrlimit", p_setrlimit, -1); mf(c, "_fork", p_underscore_fork, 0);
+    mf(c, "detach", p_detach, 1); sf(c, "fork", k_fork, 0); sf(c, "spawn", k_spawn, -1); sf(c, "exec", k_exec, -1); sf(c, "exit!", p_exit_bang, -1); sf(c, "exit", k_exit, -1);
+    sf(c, "abort", k_abort, -1);
+    mf(c, "getrlimit", p_getrlimit, 1); mf(c, "setrlimit", p_setrlimit, -1); sf(c, "_fork", p_underscore_fork, 0);
     mf(c, "uid=", |c, _s, a, _b| p_set_uid(c, a[0], 0), 1); mf(c, "euid=", |c, _s, a, _b| p_set_uid(c, a[0], 1), 1);
     mf(c, "gid=", |c, _s, a, _b| p_set_uid(c, a[0], 2), 1); mf(c, "egid=", |c, _s, a, _b| p_set_uid(c, a[0], 3), 1);
     mf(c, "groups", p_groups, 0); mf(c, "groups=", p_set_groups, 1); mf(c, "initgroups", p_initgroups, 2);
     mf(c, "maxgroups", |_c, _s, _a, _b| Ok(Value::fix(MAXGROUPS.load(Ordering::Relaxed) as i64)), 0); mf(c, "maxgroups=", p_set_maxgroups, 1);
     mf(c, "getpriority", p_getpriority, 2); mf(c, "setpriority", p_setpriority, 3); mf(c, "daemon", p_daemon, -1);
-    mf(c, "__detach_wait", p_detach_wait, 1);
-    mf(c, "__setresid", |c, _s, a, _b| sys_setres(c, &a[1..4], a[0].truthy()), 4);
-    mf(c, "__resid", |c, _s, a, _b| { let mut ids = [0u32; 3]; if if a[0].truthy() { sys::getresgid(&mut ids) } else { sys::getresuid(&mut ids) } < 0 { return Err(raise_errno(c, sys::errno(), "")); } Ok(ids_ary(c, &ids)) }, 1);
-    mf(c, "__setid", p_setid, 3); mf(c, "__nss", p_nss, 2);
-    mf(c, "__chk", |c, _s, a, _b| { check_switch(c, a[0].truthy())?; Ok(NIL) }, 1);
-    mf(c, "__saved", |_c, _s, a, _b| Ok(Value::fix(SAVED_ID[a[0].truthy() as usize].load(Ordering::Relaxed) as i64)), 1);
-    mf(c, "__set_saved", |_c, _s, a, _b| { SAVED_ID[a[0].truthy() as usize].store(a[1].as_fix() as u32, Ordering::Relaxed); Ok(NIL) }, 2);
-    mf(c, "__under", |_c, _s, a, _b| { UNDER_SWITCH[a[0].truthy() as usize].store(a[1].truthy(), Ordering::Relaxed); Ok(NIL) }, 2);
-    mf(c, "__id_of", |c, _s, a, _b| Ok(Value::fix(id_arg(c, a[0], a[1].truthy())? as i64)), 2); mf(c, "__itimer", p_itimer, 1); mf(c, "setproctitle", |c, _s, a, _b| { let s = expect_str(c, a[0])?; set_proctitle(c, s)?; Ok(s) }, 1); mf(c, "last_status", |c, _s, _a, _b| Ok(last_status(c)), 0);
+    hf(c, "__detach_wait", p_detach_wait, 1);
+    hf(c, "__setresid", |c, _s, a, _b| sys_setres(c, &a[1..4], a[0].truthy()), 4);
+    hf(c, "__resid", |c, _s, a, _b| { let mut ids = [0u32; 3]; if if a[0].truthy() { sys::getresgid(&mut ids) } else { sys::getresuid(&mut ids) } < 0 { return Err(raise_errno(c, sys::errno(), "")); } Ok(ids_ary(c, &ids)) }, 1);
+    hf(c, "__setid", p_setid, 3); hf(c, "__nss", p_nss, 2);
+    hf(c, "__chk", |c, _s, a, _b| { check_switch(c, a[0].truthy())?; Ok(NIL) }, 1);
+    hf(c, "__saved", |_c, _s, a, _b| Ok(Value::fix(SAVED_ID[a[0].truthy() as usize].load(Ordering::Relaxed) as i64)), 1);
+    hf(c, "__set_saved", |_c, _s, a, _b| { SAVED_ID[a[0].truthy() as usize].store(a[1].as_fix() as u32, Ordering::Relaxed); Ok(NIL) }, 2);
+    hf(c, "__under", |_c, _s, a, _b| { UNDER_SWITCH[a[0].truthy() as usize].store(a[1].truthy(), Ordering::Relaxed); Ok(NIL) }, 2);
+    hf(c, "__id_of", |c, _s, a, _b| Ok(Value::fix(id_arg(c, a[0], a[1].truthy())? as i64)), 2); hf(c, "__itimer", p_itimer, 1); mf(c, "setproctitle", |c, _s, a, _b| { let s = expect_str(c, a[0])?; set_proctitle(c, s)?; Ok(s) }, 1); sf(c, "last_status", |c, _s, _a, _b| Ok(last_status(c)), 0);
     mf(c, "argv0", |c, _s, _a, _b| Ok(match ARGV0.get(c) { NIL => c.vm().dollar_zero.get(), v => v }), 0); mf(c, "warmup", |_c, _s, _a, _b| Ok(TRUE), 0);
     for (n, v) in [("CLOCK_REALTIME", 0), ("CLOCK_MONOTONIC", 1), ("CLOCK_PROCESS_CPUTIME_ID", 2), ("CLOCK_THREAD_CPUTIME_ID", 3), ("CLOCK_MONOTONIC_RAW", 4),
                    ("CLOCK_REALTIME_COARSE", 5), ("CLOCK_MONOTONIC_COARSE", 6), ("CLOCK_BOOTTIME", 7), ("CLOCK_REALTIME_ALARM", 8), ("CLOCK_BOOTTIME_ALARM", 9), ("CLOCK_TAI", 11),

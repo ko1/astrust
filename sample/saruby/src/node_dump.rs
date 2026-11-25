@@ -24,6 +24,14 @@ fn DUMP_node_false(out: &mut String, n: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_unsafe, unused_variables)]
+fn DUMP_node_internal(out: &mut String, n: NodePtr) {
+    let u = node_u::<node_internal_struct>(n);
+    out.push_str("(node_internal");
+
+    out.push(')');
+}
+
+#[allow(non_snake_case, unused_unsafe, unused_variables)]
 fn DUMP_node_self(out: &mut String, n: NodePtr) {
     let u = node_u::<node_self_struct>(n);
     out.push_str("(node_self");
