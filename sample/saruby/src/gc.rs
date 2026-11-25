@@ -22,8 +22,11 @@ use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 /// context through the caller's borrow.
 pub type Saruby = Ctx;
 
-#[cfg(not(feature = "gc-bitmap"))]
+#[cfg(all(not(feature = "gc-bitmap"), not(feature = "gc_check")))]
 pub type Backend = rt::mark_sweep::MarkSweep<Saruby>;
+// make FEATURES=gc_check: quarantine + poison, and precise zones (docs/gc_moving.md 2.5, 11)
+#[cfg(all(not(feature = "gc-bitmap"), feature = "gc_check"))]
+pub type Backend = rt::mark_sweep::MarkSweep<Saruby, true>;
 #[cfg(feature = "gc-bitmap")]
 pub type Backend = rt::mark_bitmap::MarkBitmap<Saruby>;
 
@@ -307,7 +310,8 @@ unsafe impl GcLang for Saruby {
 
     fn visit_roots<V: RootVisitor<Self>>(&mut self, v: &mut V) {
         // SAFETY: current_stack_top() is the end of the stack this code runs on
-        unsafe { rt::stack::with_current_stack(crate::fiber::current_stack_top(), |w| v.visit_ambiguous(w)); }
+        let top = crate::fiber::current_stack_top();
+        unsafe { rt::stack::with_current_stack(top, |w| scan_running_stack(v, w, top)); }
         crate::vm::visit_roots(v, self);
     }
 
@@ -343,5 +347,139 @@ unsafe impl GcLang for Saruby {
             // poison: a stale reference finds a Free body, not a dropped payload
             std::ptr::write(&mut (*p).body, Body::Free(std::ptr::null_mut()));
         }
+    }
+
+    #[cfg(feature = "gc_check")]
+    unsafe fn poison(&mut self, obj: NonNull<RObj>) {
+        // SAFETY: a dead slot the backend keeps off the free list; its klass is ours to overwrite
+        unsafe { (*obj.as_ptr()).klass = poison_klass(); }
+    }
+}
+
+// A class word that faults when used: one PROT_NONE page (gc_check builds only).
+#[cfg(feature = "gc_check")]
+fn poison_klass() -> Value {
+    static P: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    extern "C" { fn mmap(a: *mut u8, l: usize, p: i32, f: i32, fd: i32, o: i64) -> *mut u8; }
+    // SAFETY: an anonymous PROT_NONE mapping, never unmapped; its address is only compared or faulted on
+    let p = *P.get_or_init(|| unsafe { mmap(std::ptr::null_mut(), 65536, 0, 0x22, -1, 0) } as usize);
+    // SAFETY: page-aligned, so it has a heap Value's tag; dereferencing it faults, which is the point
+    unsafe { Value::from_ptr(p as *mut RObj) }
+}
+
+/// GC.__check_rooting(mode), gc_check builds: the harness self-test (docs/gc_moving.md 2.5).
+/// 0: a String parked across allocations (survives); 1: held in a Rust local inside a precise zone
+/// (must fault under SARUBY_GC_STRESS=1); 2: in a local outside any zone (the stack scan keeps it).
+#[cfg(feature = "gc_check")]
+pub fn check_rooting(c: &mut Ctx, _s: Value, a: &[Value], _b: crate::vm::Blk) -> crate::vm::RV {
+    fn churn(c: &mut Ctx) { for _ in 0..64 { std::hint::black_box(c.str_new(b"churn churn churn churn churn churn")); } }
+    fn reread(c: &mut Ctx, s: Value) -> Value { let b = c.str_bytes(s).to_vec(); c.str_new(&b) }
+    let mode = a.first().map_or(0, |v| v.as_fix());
+    match mode {
+        0 => c.park(1, |c, p| precise(c, |c| { let s = c.str_new(b"parked"); p.set(0, s); churn(c); Ok(reread(c, p.get(0))) })),
+        1 => precise(c, |c| { let s = c.str_new(b"local"); churn(c); Ok(reread(c, std::hint::black_box(s))) }),
+        _ => { let s = c.str_new(b"conservative"); churn(c); Ok(reread(c, std::hint::black_box(s))) }
+    }
+}
+
+// ---- precise zones (docs/gc_moving.md section 11) ---------------------------------------------
+// The running stack is scanned conservatively only outside precise zones: converted code keeps no
+// root in Rust locals, so its frames (and those it calls, until a `conservative` zone) are skipped.
+
+#[cfg(feature = "gc_check")]
+thread_local! {
+    // (stack top, fence, precise), in entry order: on one stack the fences descend
+    static ZONES: std::cell::RefCell<Vec<(usize, usize, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run `f` as a precise zone: values it keeps in Rust locals across a GC point are not roots.
+/// Without `gc_check` this is `f(c)`.
+#[inline(always)]
+pub fn precise<R>(c: &mut Ctx, f: impl FnOnce(&mut Ctx) -> R) -> R {
+    #[cfg(feature = "gc_check")] { zone(c, true, f) }
+    #[cfg(not(feature = "gc_check"))] { f(c) }
+}
+
+/// Inside a precise zone, run code that is not converted (its frames are scanned again).
+#[inline(always)]
+pub fn conservative<R>(c: &mut Ctx, f: impl FnOnce(&mut Ctx) -> R) -> R {
+    #[cfg(feature = "gc_check")] { zone(c, false, f) }
+    #[cfg(not(feature = "gc_check"))] { f(c) }
+}
+
+#[cfg(feature = "gc_check")]
+fn zone<R>(c: &mut Ctx, precise: bool, f: impl FnOnce(&mut Ctx) -> R) -> R {
+    // removes its own entry: fibers interleave entries of different stacks
+    struct Guard(usize, usize);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            ZONES.with_borrow_mut(|z| if let Some(i) = z.iter().rposition(|e| e.0 == self.0 && e.1 == self.1) { z.remove(i); });
+        }
+    }
+    rt::stack::with_fence(move |fence| {
+        let top = crate::fiber::current_stack_top();
+        ZONES.with_borrow_mut(|z| z.push((top, fence, precise)));
+        let _g = Guard(top, fence);
+        f(c)
+    })
+}
+
+// The ambiguous words of the running stack (`w` runs from the collector's frame up to `top`).
+#[inline(always)]
+fn scan_running_stack<V: RootVisitor<Saruby>>(v: &mut V, w: &[usize], top: usize) {
+    #[cfg(not(feature = "gc_check"))] { let _ = top; v.visit_ambiguous(w); }
+    #[cfg(feature = "gc_check")] {
+        let lo = w.as_ptr() as usize;
+        let part = |a: usize, b: usize| &w[((a - lo) / 8).min(w.len())..((b.max(a) - lo) / 8).min(w.len())];
+        ZONES.with_borrow(|z| {
+            let (mut hi, mut cons) = (top, true);
+            for &(_, fence, prec) in z.iter().filter(|e| e.0 == top) {
+                if fence < lo || fence >= hi { continue; }
+                if cons && prec { v.visit_ambiguous(part(fence, hi)); cons = false; }
+                else if !cons && !prec { hi = fence; cons = true; }
+            }
+            if cons { v.visit_ambiguous(part(lo, hi)); }
+        });
+    }
+}
+
+/// Value-stack slots reserved for one scope (docs/gc_moving.md 2.2, idiom C): roots while the
+/// scope runs.  The brand keeps a `Park` from outliving it.
+pub struct Park<'s> { st: crate::stack::Stk, _brand: std::marker::PhantomData<fn(&'s ()) -> &'s ()> }
+impl<'s> Park<'s> {
+    #[inline(always)] pub fn get(&self, i: usize) -> Value { self.st[i].get() }
+    #[inline(always)] pub fn set(&self, i: usize, v: Value) { self.st[i].set(v) }
+}
+
+impl Ctx {
+    /// Reserve `n` nil slots above sp for `f`; sp is restored when `f` returns.
+    pub fn park<R>(&mut self, n: usize, f: impl for<'s> FnOnce(&mut Ctx, Park<'s>) -> Result<R, crate::vm::Esc>) -> Result<R, crate::vm::Esc> {
+        let m = self.sp_mark();
+        let st = crate::stack::stage(self, n)?;
+        for i in 0..n { st[i].set(NIL); }
+        let r = f(self, Park { st, _brand: std::marker::PhantomData });
+        self.sp_reset(m);
+        r
+    }
+
+    /// An Array of new Strings: each is in the parked Array before the next allocation (a Vec of
+    /// them is no root: docs/gc_moving.md 2.4).
+    pub fn ary_of_new_strs<B: AsRef<[u8]>>(&mut self, items: impl IntoIterator<Item = B>) -> crate::vm::RV {
+        self.park(1, |c, p| {
+            let a = c.ary_new();
+            p.set(0, a);
+            for b in items { let s = c.str_new(b.as_ref()); c.ary_push(p.get(0), s); }
+            Ok(p.get(0))
+        })
+    }
+
+    /// A converted cfunc's entry (docs/gc_moving.md 11): recv and args parked in slots 0..=argc,
+    /// the body run as a precise zone.  The body re-reads them from the park after each GC point.
+    pub fn precise_cfunc<R>(&mut self, recv: Value, args: &[Value], f: impl for<'s> FnOnce(&mut Ctx, Park<'s>) -> Result<R, crate::vm::Esc>) -> Result<R, crate::vm::Esc> {
+        self.park(1 + args.len(), |c, p| {
+            p.set(0, recv);
+            for (i, &a) in args.iter().enumerate() { p.set(1 + i, a); }
+            precise(c, |c| f(c, p))
+        })
     }
 }

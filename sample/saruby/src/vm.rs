@@ -607,6 +607,8 @@ pub struct Vm {
     /// Encoding objects by encoding id (kept alive by `pinned`).
     pub enc_objs: RefCell<Vec<Value>>,
     pub recursive_guard: RefCell<Vec<(u64, Sym)>>,
+    /// A Vec whose Values become an Array: a root while the Array is allocated (array.rs ary_from_vec).
+    pub pending_vals: RefCell<Vec<Value>>,
     pub argv: Cell<Value>,
     pub warn_disabled: Cell<bool>,
     pub exit_status: Cell<i32>,
@@ -824,8 +826,9 @@ pub fn prepend_module(c: &mut Ctx, klass: Value, m: Value) {
 /// A class dies (GC finalize): its slot may next hold another class, so no cache keyed by its address
 /// may hit again.  CRuby clears cc->klass, a weak reference; here the serial every inline cache compares.
 pub fn class_freed(cd: &ClassData) {
-    // IvarCache keys by class without a serial: it holds only real classes, which subclasses keeps alive
-    assert!(cd.is_singleton || cd.is_module, "a real class died");
+    // IvarCache keys by class without a serial: it holds only real classes, which subclasses keeps alive.
+    // An uninitialized class (Class.allocate, a Class.new that raised) is in no subclasses list and has no instances.
+    assert!(cd.is_singleton || cd.is_module || cd.superclass == NIL, "a real class died");
     bump_method_serial();
     let mut m = vm().mcache.borrow_mut();
     if !m.is_empty() { m.clear(); }
@@ -3231,6 +3234,7 @@ pub fn visit_roots<V: RootVisitor<Saruby>>(m: &mut V, cur: &mut Ctx) {
     for v in vm.frozen_lits.borrow_mut().values_mut() { m.visit(v); }
     for v in vm.symproc_cache.borrow_mut().values_mut() { m.visit(v); }
     for v in vm.sym_names.borrow_mut().values_mut() { m.visit(v); }
+    for v in vm.pending_vals.borrow_mut().iter_mut() { m.visit(v); }
     for &cr in vm.crefs.borrow().iter() { let cr = unsafe { &mut *(cr as *mut Cref) }; m.visit(&mut cr.klass); m.visit(&mut cr.refinements); m.visit(&mut cr.def_target); }
     // every builtin class field (nil until boot fills it in)
     let nclass_fields = (std::mem::offset_of!(Vm, main_obj)) / 8;

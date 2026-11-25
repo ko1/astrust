@@ -935,7 +935,6 @@ fn id_arg(c: &mut Ctx, v: Value, group: bool) -> Result<u32, Esc> {
 /// Process.__nss(kind, key): [fields] of getpwnam (0) / getpwuid (1) / getgrnam (2) / getgrgid (3), nil if absent.
 fn p_nss(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let kind = a[0].as_fix();
-    let strs = |c: &mut Ctx, l: &[&[u8]]| -> Vec<Value> { l.iter().map(|b| c.str_new(b)).collect() };
     // the password field is BINARY, as etc.c's rb_str_new_cstr
     let pass = |c: &mut Ctx, b: &[u8]| c.str_new_enc(b, ENC_BINARY);
     let n = if kind % 2 == 0 {
@@ -946,20 +945,28 @@ fn p_nss(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let id = if kind % 2 == 1 { uid_num(c, a[1])? } else { 0 };
     if kind < 2 {
         let Some(p) = (match &n { Some(n) => sys::getpwnam(n), None => sys::getpwuid(id) }) else { return Ok(NIL) };
-        let mut v = strs(c, &[&p.name]);
-        v.push(pass(c, &p.passwd));
-        v.extend([Value::fix(p.uid as i64), Value::fix(p.gid as i64)]);
-        v.extend(strs(c, &[&p.gecos, &p.dir, &p.shell]));
-        Ok(c.ary_new_from(&v))
+        // each new String goes into the parked result before the next allocation (a Vec of them is no root)
+        c.park(1, |c, k| {
+            let r = c.ary_new_capa(7);
+            k.set(0, r);
+            let s = c.str_new(&p.name); c.ary_push(k.get(0), s);
+            let s = pass(c, &p.passwd); c.ary_push(k.get(0), s);
+            c.ary_push(k.get(0), Value::fix(p.uid as i64)); c.ary_push(k.get(0), Value::fix(p.gid as i64));
+            for b in [&p.gecos, &p.dir, &p.shell] { let s = c.str_new(b); c.ary_push(k.get(0), s); }
+            Ok(k.get(0))
+        })
     } else {
         let Some(g) = (match &n { Some(n) => sys::getgrnam(n), None => sys::getgrgid(id) }) else { return Ok(NIL) };
-        let mut v = strs(c, &[&g.name]);
-        v.push(pass(c, &g.passwd));
-        v.push(Value::fix(g.gid as i64));
-        let m: Vec<&[u8]> = g.mem.iter().map(|m| &m[..]).collect();
-        let m = strs(c, &m);
-        v.push(c.ary_new_from(&m));
-        Ok(c.ary_new_from(&v))
+        c.park(1, |c, k| {
+            let r = c.ary_new_capa(4);
+            k.set(0, r);
+            let s = c.str_new(&g.name); c.ary_push(k.get(0), s);
+            let s = pass(c, &g.passwd); c.ary_push(k.get(0), s);
+            c.ary_push(k.get(0), Value::fix(g.gid as i64));
+            let m = c.ary_of_new_strs(g.mem.iter().map(|m| &m[..]))?;
+            c.ary_push(k.get(0), m);
+            Ok(k.get(0))
+        })
     }
 }
 const KEEP: u32 = u32::MAX;

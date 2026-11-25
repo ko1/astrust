@@ -50,8 +50,7 @@ fn ss_lex(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
 fn ss_errors(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let src = crate::string::expect_str(c, a[0])?;
     let bytes = c.str_bytes(src).to_vec();
-    let ms: Vec<Value> = crate::prism::error_messages(&bytes, &opts(1)).into_iter().map(|m| c.str_new(m.as_bytes())).collect();
-    Ok(c.ary_from_vec(ms))
+    c.ary_of_new_strs(crate::prism::error_messages(&bytes, &opts(1)))
 }
 
 pub fn init(c: &mut Ctx) {

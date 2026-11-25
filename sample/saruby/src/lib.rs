@@ -524,5 +524,6 @@ pub fn main_entry() {
         std::process::exit(st);
     }).unwrap();
     builtins::process::block_signals_in_this_thread();
-    let _ = child.join();
+    // a panic of the interpreter thread is a crash, not exit status 0
+    if child.join().is_err() { std::process::abort(); }
 }

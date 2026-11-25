@@ -1477,8 +1477,7 @@ fn th_backtrace(c: &mut Ctx, t: Value, a: &[Value], locs: bool) -> RV {
     };
     let Some(lines) = lines else { return Ok(NIL) };
     if locs { return Ok(crate::builtins::exception::locations_from_locs(c, lines)); }
-    let v: Vec<Value> = lines.into_iter().map(|l| c.str_new(l.to_string().as_bytes())).collect();
-    Ok(c.ary_from_vec(v))
+    c.ary_of_new_strs(lines.into_iter().map(|l| l.to_string()))
 }
 /// ThreadGroup, Mutex, Monitor, Queue, SizedQueue, ConditionVariable (the "saruby/sync" feature).
 pub fn init_sync(c: &mut Ctx) {

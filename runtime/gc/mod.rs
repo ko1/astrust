@@ -62,6 +62,12 @@ pub unsafe trait GcLang: Sized {
     /// # Safety
     /// `obj` is an initialized object that no visited slot referred to; it is not used again.
     unsafe fn finalize(&mut self, obj: NonNull<Self::Obj>);
+    /// A checking backend's dead slot, after `finalize`: make a later use of a stale reference fault.
+    ///
+    /// # Safety
+    /// As `finalize`; the slot is not reused while it stays poisoned.
+    #[inline(always)]
+    unsafe fn poison(&mut self, _obj: NonNull<Self::Obj>) {}
     /// After marking, before any object is finalized: clear the weak references to objects that
     /// died (`w.alive(slot)`).  Must not allocate from the heap.
     #[inline(always)]

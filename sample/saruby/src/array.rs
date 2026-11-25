@@ -51,8 +51,12 @@ impl Ctx {
         let k = self.vm().c_array.get();
         if v.len() <= crate::avec::INLINE { return self.alloc_with(k, || Body::Array(AVec::from_slice(&v))); }
         // empty first, then the Vec stored field by field: moving a ready Body::Array into the slot
-        // is compiled as an unaligned copy from the stack that stalls on its own stores
+        // is compiled as an unaligned copy from the stack that stalls on its own stores.  Meanwhile
+        // the Vec waits in a root (it was unrooted: t/hand matchdata_index_range_1125 under stress).
+        let pending = &self.vm().pending_vals;
+        let prev = std::mem::replace(&mut *pending.borrow_mut(), v);
         let a = self.alloc_with(k, || Body::Array(AVec::new()));
+        let v = std::mem::replace(&mut *pending.borrow_mut(), prev);
         std::mem::forget(std::mem::replace(self.ary_mut(a), AVec::Heap(v)));
         a
     }

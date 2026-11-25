@@ -390,16 +390,28 @@ cfn!(a_map_b, |c, slf, a, blk| enum_or(c, slf, "map!", a, blk, |c| {
 }));
 cfn!(a_select, |c, slf, a, blk| enum_or(c, slf, "select", a, blk, |c| a_select_loop(c, slf, true, &mut |c, a| yield1(c, blk, a[0]))));
 cfn!(a_reject, |c, slf, a, blk| enum_or(c, slf, "reject", a, blk, |c| a_select_loop(c, slf, false, &mut |c, a| yield1(c, blk, a[0]))));
+// Precise (docs/gc_moving.md 2.2): park p0 = self; q0 = the kept elements (an Array, not a Vec), q1 = the one tested.
 fn filter_in_place(c: &mut Ctx, slf: Value, blk: Blk, keep_truthy: bool) -> Result<bool, Esc> {
     c.ary_modify(slf)?;
-    let mut keep = vec![]; let mut i = 0; let mut changed = false;
-    let r: Result<(), Esc> = (|| {
-        while let Some(&x) = c.ary(slf).get(i) { let t = yield1(c, blk, x)?.truthy(); if t == keep_truthy { keep.push(x); } else { changed = true; } i += 1; }
-        Ok(())
-    })();
-    if r.is_err() { let rest: Vec<Value> = c.ary(slf)[i.min(c.ary_len(slf))..].to_vec(); keep.extend(rest); *c.ary_mut(slf) = keep.into(); return r.map(|_| false); }
-    *c.ary_mut(slf) = keep.into();
-    Ok(changed)
+    c.precise_cfunc(slf, &[], |c, p| c.park(2, |c, q| {
+        let keep = c.ary_new();
+        q.set(0, keep);
+        let (mut i, mut changed) = (0, false);
+        let r: Result<(), Esc> = (|| {
+            while let Some(&x) = c.ary(p.get(0)).get(i) {
+                q.set(1, x);
+                let t = crate::gc::conservative(c, |c| yield1(c, blk, x))?.truthy();
+                if t == keep_truthy { c.ary_push(q.get(0), q.get(1)); } else { changed = true; }
+                i += 1;
+            }
+            Ok(())
+        })();
+        let (slf, keep) = (p.get(0), q.get(0));
+        if r.is_err() { let n = c.ary_len(slf); for j in i.min(n)..n { let x = c.ary_get(slf, j); c.ary_push(keep, x); } }
+        let v = c.ary(keep).to_vec();
+        *c.ary_mut(slf) = v.into();
+        r.map(|_| changed)
+    }))
 }
 cfn!(a_select_b, |c, slf, a, blk| enum_or(c, slf, "select!", a, blk, |c| { let ch = filter_in_place(c, slf, blk, true)?; Ok(if ch { slf } else { NIL }) }));
 cfn!(a_keep_if, |c, slf, a, blk| enum_or(c, slf, "keep_if", a, blk, |c| { filter_in_place(c, slf, blk, true)?; Ok(slf) }));
@@ -500,21 +512,25 @@ cfn!(a_flatten_b, |c, slf, a, blk| { check_argc(c, a, 0, 1)?;
     *c.ary_mut(slf) = c.ary(out).to_vec().into();
     Ok(if ch { slf } else { NIL })
 });
-fn uniq_vec(c: &mut Ctx, slf: Value, blk: Blk) -> Result<Vec<Value>, Esc> {
-    let seen = c.hash_new();
-    let mut out = vec![];
-    let keep = c.ary_new();
-    let mut i = 0;
-    while let Some(&x) = c.ary(slf).get(i) {
-        let k = if blk.is_null() { x } else { yield1(c, blk, x)? };
-        c.ary_push(keep, k);
-        if hash_add_new(c, seen, k, TRUE)? { out.push(x); }
-        i += 1;
-    }
-    Ok(out)
+// Precise: park p0 = self; q0 = the seen Hash, q1 = the result Array, q2 = the element.
+fn uniq_ary(c: &mut Ctx, slf: Value, blk: Blk) -> RV {
+    c.precise_cfunc(slf, &[], |c, p| c.park(3, |c, q| {
+        let seen = c.hash_new();
+        q.set(0, seen);
+        let out = c.ary_new();
+        q.set(1, out);
+        let mut i = 0;
+        while let Some(&x) = c.ary(p.get(0)).get(i) {
+            q.set(2, x);
+            let k = if blk.is_null() { x } else { crate::gc::conservative(c, |c| yield1(c, blk, x))? };
+            if crate::gc::conservative(c, |c| hash_add_new(c, q.get(0), k, TRUE))? { c.ary_push(q.get(1), q.get(2)); }
+            i += 1;
+        }
+        Ok(q.get(1))
+    }))
 }
-cfn!(a_uniq, |c, slf, a, blk| { let v = uniq_vec(c, slf, blk)?; Ok(c.ary_from_vec(v)) });
-cfn!(a_uniq_b, |c, slf, a, blk| { c.ary_modify(slf)?; let v = uniq_vec(c, slf, blk)?; let ch = v.len() != c.ary_len(slf); *c.ary_mut(slf) = v.into(); Ok(if ch { slf } else { NIL }) });
+cfn!(a_uniq, |c, slf, a, blk| uniq_ary(c, slf, blk));
+cfn!(a_uniq_b, |c, slf, a, blk| { c.ary_modify(slf)?; let r = uniq_ary(c, slf, blk)?; let v = c.ary(r).to_vec(); let ch = v.len() != c.ary_len(slf); *c.ary_mut(slf) = v.into(); Ok(if ch { slf } else { NIL }) });
 cfn!(a_sort, |c, slf, a, blk| { let mut v = c.ary(slf).to_vec(); let keep = c.ary_from_vec(v.clone()); sort_array(c, &mut v, blk)?; std::hint::black_box(keep); Ok(c.ary_from_vec(v)) });
 cfn!(a_sort_b, |c, slf, a, blk| { c.ary_modify(slf)?; let mut v = c.ary(slf).to_vec(); let keep = c.ary_new_from(&v); sort_array(c, &mut v, blk)?; std::hint::black_box(keep); *c.ary_modify(slf)? = v.into(); Ok(slf) });
 cfn!(a_sort_by_b, |c, slf, a, blk| enum_or(c, slf, "sort_by!", a, blk, |c| {
