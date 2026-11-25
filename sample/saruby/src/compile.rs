@@ -1203,7 +1203,7 @@ impl<'a> Compiler<'a> {
         // short results start inside the object slot (spilling copies at most 23 bytes)
         let cap = if cap <= 48 { 0 } else { cap.min(4096) };
         // rb_str_concat_literals: a result of 2+ parts starting with an interpolation takes the first part's encoding (flag 0x100)
-        let lead = v.len() >= 2 && !unsafe { std::ptr::eq((*v[0]).head.kind, &KIND_node_fstr) };
+        let lead = v.len() >= 2 && !std::ptr::eq(crate::node::node_kind(v[0]), &KIND_node_fstr);
         ALLOC_node_dstr(leak(v), self.src_enc | if lead { 0x100 } else { 0 }, cap as u32)
     }
     /// Bytes of an all-literal string concatenation whose parts share one encoding.

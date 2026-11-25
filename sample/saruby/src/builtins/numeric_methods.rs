@@ -271,7 +271,9 @@ fn int_shift(c: &mut Ctx, a: Value, n: i64) -> RV {
             return Ok(c.int_from_i128(x << n));
         }
         if a == Value::fix(0) { return Ok(a); }
-        if n > 1 << 30 { return err(c, c.vm().c_no_memory_error.get(), "failed to allocate memory"); }
+        // CRuby allocates the result; only a size malloc refuses is NoMemoryError (no fixed cap)
+        let words = (n as u64 / 32 + 4) as usize;
+        if Vec::<u32>::new().try_reserve_exact(words).is_err() { return err(c, c.vm().c_no_memory_error.get(), "failed to allocate memory"); }
         Ok(c.big_to_value(c.to_big(a).shl(n as usize)))
     } else {
         let m = (-n) as u64;
