@@ -48,27 +48,29 @@ fn sub_mag(a: &[u32], b: &[u32]) -> Vec<u32> {
     trim(&mut r);
     r
 }
+#[inline(never)]
+fn mul_big(a: &[u32], b: &[u32]) -> Vec<u32> {
+    let (a, b) = if a.len() >= b.len() { (a, b) } else { (b, a) };
+    if a.len() < 2 * b.len() { return karatsuba(a, b); }
+    // unbalanced: balanced pieces of the longer operand
+    let mut r = vec![0u32; a.len() + b.len() + 1];
+    for (i, ch) in a.chunks(b.len()).enumerate() {
+        let mut ch = ch.to_vec(); trim(&mut ch);
+        let p = mul_mag(&ch, b);
+        let mut carry = 0u64;
+        let mut k = i * b.len();
+        let mut j = 0;
+        while j < p.len() || carry > 0 {
+            let t = r[k] as u64 + *p.get(j).unwrap_or(&0) as u64 + carry;
+            r[k] = t as u32; carry = t >> 32; k += 1; j += 1;
+        }
+    }
+    trim(&mut r);
+    r
+}
 fn mul_mag(a: &[u32], b: &[u32]) -> Vec<u32> {
     if a.is_empty() || b.is_empty() { return vec![]; }
-    if a.len() > 48 && b.len() > 48 {
-        let (a, b) = if a.len() >= b.len() { (a, b) } else { (b, a) };
-        if a.len() < 2 * b.len() { return karatsuba(a, b); }
-        // unbalanced: balanced pieces of the longer operand
-        let mut r = vec![0u32; a.len() + b.len() + 1];
-        for (i, ch) in a.chunks(b.len()).enumerate() {
-            let mut ch = ch.to_vec(); trim(&mut ch);
-            let p = mul_mag(&ch, b);
-            let mut carry = 0u64;
-            let mut k = i * b.len();
-            let mut j = 0;
-            while j < p.len() || carry > 0 {
-                let t = r[k] as u64 + *p.get(j).unwrap_or(&0) as u64 + carry;
-                r[k] = t as u32; carry = t >> 32; k += 1; j += 1;
-            }
-        }
-        trim(&mut r);
-        return r;
-    }
+    if a.len() > 48 && b.len() > 48 { return mul_big(a, b); }
     let mut r = vec![0u32; a.len() + b.len()];
     let bl = b.len();
     for (i, &x) in a.iter().enumerate() {
@@ -151,6 +153,7 @@ fn dc_str(x: &[u32], l: usize, pw: &[Vec<u32>], radix: u32, chunk: u32, per: usi
 }
 
 // digits of a magnitude of RADIX_DC_LIMBS+ limbs, most significant first
+#[inline(never)]
 fn mag_to_digits(mag: &[u32], radix: u32, out: &mut Vec<u8>) {
     if radix.is_power_of_two() {
         let b = radix.trailing_zeros() as usize;
@@ -194,6 +197,13 @@ fn dc_parse(c: &[u32], l: usize, pw: &[Vec<u32>], chunk: u32) -> Vec<u32> {
 }
 
 // digit values (big-endian, each < radix) -> magnitude
+#[inline(never)]
+fn parse_big(neg: bool, body: &str, radix: u32) -> Option<BigInt> {
+    let mut d: Vec<u8> = Vec::with_capacity(body.len());
+    for ch in body.chars() { if ch != '_' { d.push(ch.to_digit(radix)? as u8); } }
+    Some(BigInt { neg, mag: digits_to_mag(&d, radix) }.norm())
+}
+#[inline(never)]
 fn digits_to_mag(d: &[u8], radix: u32) -> Vec<u32> {
     if d.is_empty() { return vec![]; }
     if radix.is_power_of_two() {
@@ -268,6 +278,7 @@ fn bz_3n_2n(a: &[u32], b: &[u32], h: usize, lvl: usize) -> (Vec<u32>, Vec<u32>) 
     while cmp_mag(&r, &d) == Ordering::Less { r = add_mag(&r, b); q = sub_mag(&q, &[1]); }
     (q, sub_mag(&r, &d))
 }
+#[inline(never)]
 fn div_bz(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
     let s = b[b.len() - 1].leading_zeros() as usize;
     let b1 = shl_mag(b, s);
@@ -619,11 +630,7 @@ impl BigInt {
         let s = s.trim();
         let (neg, body) = if let Some(r) = s.strip_prefix('-') { (true, r) } else if let Some(r) = s.strip_prefix('+') { (false, r) } else { (false, s) };
         if body.is_empty() { return None; }
-        if body.len() >= RADIX_DC_DIGITS {
-            let mut d: Vec<u8> = Vec::with_capacity(body.len());
-            for ch in body.chars() { if ch != '_' { d.push(ch.to_digit(radix)? as u8); } }
-            return Some(BigInt { neg, mag: digits_to_mag(&d, radix) }.norm());
-        }
+        if body.len() >= RADIX_DC_DIGITS { return parse_big(neg, body, radix); }
         let mut mag: Vec<u32> = vec![];
         for ch in body.chars() {
             if ch == '_' { continue; }
