@@ -1,11 +1,11 @@
-# saruby — Sort of A Ruby (and a SAfe one, as far as Rust allows)
+# saruby — Sort of A Ruby
 
 A Ruby implementation built on **ASTrust**, the Rust version of the ASTro framework (an AST
 interpreter made fast by partial evaluation). It is a rewrite in Rust of
 [astro/sample/koruby_precise](https://github.com/ko1/astro), which is written in C. It has two goals:
 
 - to be a **drop-in replacement for CRuby**, and
-- to find out **how close safe Rust can get to the C implementation**. `unsafe` is to be confined
+- to find out **how close safe Rust can get to the C implementation** (the "sa" could as well be SAfe). `unsafe` is to be confined
   to external interfaces and a small, auditable core (a "Trusted Ruby").
 
 > Experimental. Much of Ruby does not work yet, and the internals change often.
