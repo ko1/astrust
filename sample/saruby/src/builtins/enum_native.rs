@@ -113,6 +113,10 @@ pub fn call_enumerable(c: &mut Ctx, recv: Value, mid: &str, args: &[Value], blk:
 /// Call `klass`'s implementation of mid (found from klass up) on recv, as rb_call_super does.
 pub fn call_method_of(c: &mut Ctx, klass: Value, recv: Value, mid: Sym, args: &[Value], blk: Blk) -> RV {
     let me = lookup_method(c, klass, mid);
+    call_me(c, me, recv, mid, args, blk)
+}
+/// Call method entry `me` (found for mid; null: a plain call of mid) on recv as an fcall.
+pub fn call_me(c: &mut Ctx, me: *const MethodEntry, recv: Value, mid: Sym, args: &[Value], blk: Blk) -> RV {
     // the forwarding cfunc's own arguments: its keywords go on
     let kw = kw_arg(c, args).is_some();
     if me.is_null() || !c.has_room(args.len() + 2) { return funcall_kw(c, recv, mid, args, blk, kw); }

@@ -1450,12 +1450,12 @@ pub fn c_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let kw = kw_arg(c, a).is_some();
     let me = lookup_method(c, class_of(o), s::initialize);
     match me_kind(c, me) {
-        Some(MKind::Cfunc(..)) => if me == c.vm().ids.bo_init.get() {
+        Some(MKind::Cfunc(..)) if me == c.vm().ids.bo_init.get() => {
             if !a.is_empty() && c.class(slf).alloc == AllocKind::Object && me_owner(c, me) == c.vm().c_basic_object.get() {
                 return argc_err(c, a.len(), 0, 0);
             }
             return Ok(o);
-        },
+        }
         Some(MKind::Iseq(is)) if !kw && trace_mask() & EV_CALLS == 0 => {
             let done = c.with_iseq(is, |c, is| -> Result<bool, Esc> {
                 let Some(is) = is else { return Ok(false) };
@@ -1472,6 +1472,8 @@ pub fn c_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
             })?;
             if done { return Ok(o); }
         }
+        // a builtin initialize (Hash's, Class's, ...): the entry found here, without a second lookup
+        Some(MKind::Cfunc(..)) => { crate::builtins::enum_native::call_me(c, me, o, s::initialize, a, b)?; return Ok(o); }
         _ => {}
     }
     funcall_kw(c, o, s::initialize, a, b, kw)?;
