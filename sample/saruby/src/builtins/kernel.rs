@@ -888,8 +888,7 @@ pub fn k_array(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     if is_array(v) { return Ok(v); }
     if v == NIL && !crate::rt::redef(crate::rt::R_IMM_CONV) { return Ok(c.ary_new()); }
     if let Some(a) = check_array(c, v)? { return Ok(a); }
-    if respond_to(c, v, s::to_a, true) {
-        let r = funcall(c, v, s::to_a, &[], std::ptr::null())?;
+    if let Some(r) = crate::string::check_funcall(c, v, s::to_a)? {
         if is_array(r) { return Ok(r); }
         if r != NIL { return type_err(c, format!("can't convert {} to Array ({}#to_a gives {})", class_name_for_err(c, v), class_name_for_err(c, v), class_name_for_err(c, r))); }
     }
