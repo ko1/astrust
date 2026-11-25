@@ -16,7 +16,7 @@ module SyntaxSuggest
       def failure? = !success?
     end
 
-    def self.parse(source, **) = ParseResult.new(__errors(source).map { ParseError.new(it) })
+    def self.parse(source, **) = ParseResult.new(__saruby__.ss_errors(source).map { ParseError.new(it) })
 
     class Result
       attr_reader :comments, :magic_comments, :data_loc, :errors, :warnings, :source
@@ -52,7 +52,7 @@ module SyntaxSuggest
 
     # Prism.lex: [[token, lex state], ...]
     def self.lex(source, line: 1, **)
-      toks = __lex(source, line).map do |type, value, l, col, st, en, state|
+      toks = __saruby__.ss_lex(source, line).map do |type, value, l, col, st, en, state|
         [Token.new(type, value, Location.new(l, col, st, en)), state]
       end
       LexResult.new(toks, [], [], nil, [], [], source)
@@ -103,7 +103,7 @@ module SyntaxSuggest
   module_eval(File.read(path), path)
 
   # core_ext.rb's SyntaxError#detailed_message, after its `super` (builtins/exception.rs)
-  def self.__saruby_annotate(path, highlight, message)
+  def __saruby__.ss_annotate(path, highlight, message)
     require "syntax_suggest/api" unless defined?(SyntaxSuggest::DEFAULT_VALUE)
 
     file = Pathname.new(path)
