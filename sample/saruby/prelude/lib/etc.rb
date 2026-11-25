@@ -28,6 +28,11 @@ module Etc
     SC_XOPEN_STREAMS: 246, SC_XOPEN_UNIX: 91, SC_XOPEN_VERSION: 89 }.each { |k, v| const_set(k, v) }
 
 
+  def __saruby__.etc_int(v)
+    return v if Integer === v
+    return v.to_int if !(nil == v || true == v || false == v) && v.respond_to?(:to_int)
+    raise TypeError, "no implicit conversion of #{v.nil? ? "nil" : v == true ? "true" : v == false ? "false" : v.class} into Integer"
+  end
   def __saruby__.etc_str(v)
     String.try_convert(v) or raise TypeError, "no implicit conversion of #{v.nil? ? "nil" : v == true ? "true" : v == false ? "false" : v.class} into String"
   end
@@ -87,7 +92,7 @@ module Etc
     def endgrent = (@gri = 0; nil)
 
     def getpwuid(uid = Process.uid)
-      uid = __saruby__.__int(uid)
+      uid = __saruby__.etc_int(uid)
       Passwd.new(*(__saruby__.__nss(1, uid) or raise ArgumentError, "can't find user for #{uid >= 2**31 ? uid - 2**32 : uid}"))
     end
 
@@ -97,7 +102,7 @@ module Etc
     end
 
     def getgrgid(gid = Process.gid)
-      gid = __saruby__.__int(gid)
+      gid = __saruby__.etc_int(gid)
       Group.new(*(__saruby__.__nss(3, gid) or raise ArgumentError, "can't find group for #{gid >= 2**31 ? gid - 2**32 : gid}"))
     end
 

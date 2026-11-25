@@ -3,6 +3,7 @@ class Enumerator
   class Product < Enumerator
     undef_method :feed, :next, :next_values, :peek, :peek_values
     def initialize(*enums, **kw)
+      raise FrozenError.new("can't modify frozen #{self.class}: #{inspect}", receiver: self) if frozen?
       unless kw.empty?
         ks = kw.keys.map(&:inspect).join(", ")
         raise ArgumentError, "unknown keyword#{kw.size > 1 ? 's' : ''}: #{ks}"
@@ -15,6 +16,7 @@ class Enumerator
       raise TypeError, "initialize_copy should take same class object" unless o.class == self.class
       oe = __saruby__.__ivget(o, :__enums)
       raise ArgumentError, "uninitialized product" unless oe
+      raise FrozenError.new("can't modify frozen #{self.class}: #{inspect}", receiver: self) if frozen?
       __saruby__.__ivset(self, :__enums, oe)
       self
     end

@@ -362,6 +362,7 @@ class Enumerator
 
   class Generator
     def initialize(*args, &b)
+      raise FrozenError.new("can't modify frozen #{self.class}: #{inspect}", receiver: self) if frozen?
       __saruby__.__argc(args.size, 0, 1) if args.size > 1
       unless args.empty?
         raise TypeError, "wrong argument type #{args[0].class} (expected Proc)" unless args[0].is_a?(Proc)
@@ -376,6 +377,7 @@ class Enumerator
   class Chain < Enumerator
     undef_method :feed, :next, :next_values, :peek, :peek_values
     def initialize(*enums)
+      raise FrozenError.new("can't modify frozen #{self.class}: #{inspect}", receiver: self) if frozen?
       __saruby__.__ivset(self, :__enums, enums.freeze)
       __saruby__.__ivset(self, :__pos, -1)
       self
