@@ -52,8 +52,18 @@ pub fn proc_arity(c: &Ctx, p: Value) -> i64 {
         BlockKind::Iseq(is) => c.iseq_ref(is).map_or(-1, |is| iseq_arity(is, pd.is_lambda)),
         BlockKind::Sym(_) => -2,
         BlockKind::Method(m) => method_arity(c, c.method_obj(m).me),
+        BlockKind::Cfunc(f, _) if f as *const () as usize == crate::builtins::enum_native::map_blk as *const () as usize && is_proc(pd.from_method) => outer_arity(c, pd.from_method),
         BlockKind::Cfunc(f, _) => if f as *const () as usize == crate::builtins::hash_methods::hash_proc_call as *const () as usize { 1 } else { -1 },
         BlockKind::Proc(q) => proc_arity(c, q),
+    }
+}
+
+/// The arity of a block as an rb_lambda_call ifunc reports it: min, or -min-1 with a rest.
+fn outer_arity(c: &Ctx, p: Value) -> i64 {
+    match c.proc_data(p).blk.kind {
+        BlockKind::Iseq(is) => c.iseq_ref(is).map_or(-1, |is| iseq_arity(is, false)),
+        BlockKind::Proc(q) => outer_arity(c, q),
+        _ => proc_arity(c, p),
     }
 }
 

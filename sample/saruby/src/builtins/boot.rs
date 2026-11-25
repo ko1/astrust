@@ -190,7 +190,7 @@ fn boot_classes(c: &mut Ctx) {
     encoding::init(c);
     lazy_const(c, vmr.c_encoding.get(), "Converter", "saruby/econv");
     tracepoint::init(c);
-    // CRuby's gem_prelude requires syntax_suggest/core_ext; StringIO is built on first reference (const_missing)
+    // CRuby's gem_prelude requires syntax_suggest/core_ext
     define_module(c, "SyntaxSuggest");
     let (r, m) = regexp_methods::init(c);
     vmr.c_regexp.set(r); vmr.c_match_data.set(m);

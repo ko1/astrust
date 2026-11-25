@@ -872,10 +872,9 @@ pub fn init_console(c: &mut Ctx) {
     define_cfunc(c, gr, "getpass", gr_getpass, -1);
 }
 
-/// The StringIO constant is built on first reference (CRuby: not loaded until required); `require "stringio"` shares it.
+/// StringIO is built by `require "stringio"` (CRuby: not preloaded).
 pub fn init_once(c: &mut Ctx) { if !DONE.swap(true, std::sync::atomic::Ordering::Relaxed) { init(c); } }
 static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-pub fn loaded() -> bool { DONE.load(std::sync::atomic::Ordering::Relaxed) }
 
 fn init(c: &mut Ctx) {
     let vmr = c.vm();

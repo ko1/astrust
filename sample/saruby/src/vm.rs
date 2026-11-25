@@ -1376,10 +1376,6 @@ pub fn const_lookup(c: &mut Ctx, cref: *const Cref, name: Sym) -> RV {
 }
 
 pub fn const_missing(c: &mut Ctx, klass: Value, name: Sym) -> RV {
-    if &*sym_str(name) == "StringIO" && !crate::builtins::stringio::loaded() {
-        crate::builtins::stringio::init_once(c);
-        if let Some(v) = const_get_at(c, vm().c_object.get(), name) { return Ok(v); }
-    }
     let me = lookup_method(c, class_of(klass), s::const_missing);
     if !me.is_null() && !matches!(unsafe { (*me).kind }, MKind::Cfunc(..)) {
         return funcall(c, klass, s::const_missing, &[Value::sym(name)], std::ptr::null());
@@ -2866,11 +2862,13 @@ pub fn block_to_proc_raw(c: &mut Ctx, blk: *const Block) -> RV {
     let b = unsafe { &*blk };
     if b.proc_val != UNDEF { return Ok(b.proc_val); }
     if let BlockKind::Proc(p) = b.kind { return Ok(p); }
-    let outer = if b.outer_blk.is_null() { std::ptr::null() } else { let op = block_to_proc(c, b.outer_blk)?; proc_block(c, op) };
+    let (outer, outer_p) = if b.outer_blk.is_null() { (std::ptr::null(), NIL) } else { let op = block_to_proc(c, b.outer_blk)?; (proc_block(c, op), op) };
     let is_lambda = matches!(b.kind, BlockKind::Iseq(is) if unsafe { (*is).kind } == IseqKind::Lambda) || matches!(b.kind, BlockKind::Method(_));
     // copied from *b into the box, then patched there: a Block patched on the stack first was
     // read back with wide loads straddling the patch (a store-forwarding stall per Proc)
-    let mut pd = Box::new(ProcData { blk: *b, is_lambda, from_method: NIL });
+    // a Cfunc block keeps its outer proc in from_method (Enumerable#map's Proc#arity reads it)
+    let from_method = if matches!(b.kind, BlockKind::Cfunc(..)) { outer_p } else { NIL };
+    let mut pd = Box::new(ProcData { blk: *b, is_lambda, from_method });
     pd.blk.outer_blk = outer;
     let p = c.alloc_with(vm().c_proc.get(), move || Body::Proc(pd));
     c.proc_data_mut(p).blk.proc_val = p;
