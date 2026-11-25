@@ -174,6 +174,7 @@ predefined_syms! {
     instance_variable_get = "instance_variable_get", __recursive_key__ = "__recursive_key__",
     ary_flatten_recursive = "__flatten_rec__", sort_by = "sort_by", each_pair = "each_pair",
     mid_initialize_dup = "initialize_dup", mid_initialize_clone = "initialize_clone",
+    ary_cycle_size = "__ary_cycle_size", ary_comb_size = "__ary_comb_size", ary_perm_size = "__ary_perm_size", ary_rcomb_size = "__ary_rcomb_size", ary_rperm_size = "__ary_rperm_size",
 }
 
 /// Build the table (the first intern does it too).

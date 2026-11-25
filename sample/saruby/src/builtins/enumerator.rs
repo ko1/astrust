@@ -332,8 +332,9 @@ fn e_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     }
     // rb_check_funcall_kw(e->size, :call, *args)
     if is_proc(en.size) { let p = en.size; let args = c.ary(en.args).to_vec(); return call_proc(c, p, &args, std::ptr::null()); }
-    if en.size.is_sym() && crate::symbol::sym_bytes(en.size.as_sym()) == crate::builtins::array_methods::ARY_CYCLE_SIZE {
-        return crate::builtins::array_methods::ary_cycle_size(c, en.recv, en.args);
+    if en.size.is_sym() {
+        if let Some(r) = crate::builtins::array_methods::ary_gen_size(c, en.size.as_sym(), en.recv, en.args) { return r; }
+        if en.size.as_sym() == s::ary_cycle_size { return crate::builtins::array_methods::ary_cycle_size(c, en.recv, en.args); }
     }
     if is_integer(en.size) || is_float(en.size) { return Ok(en.size); }
     if en.size != NIL && !en.size.is_sym() {
@@ -455,10 +456,10 @@ fn e_initialize(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     if blk.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
     let g = block_to_proc(c, blk)?;
-    let size = a.first().copied().unwrap_or(NIL);
-    if size != NIL && !size.is_fixnum() && !is_float(size) && !is_bignum(size) && !is_proc(size) && !respond_to(c, size, s::call, true) {
-        crate::builtins::numeric_methods::num_to_long(c, size)?;
-    }
+    let mut size = a.first().copied().unwrap_or(NIL);
+    // rb_to_int unless nil / callable / Infinity
+    let keep = size == NIL || is_integer(size) || is_proc(size) || (is_float(size) && c.num_to_f64(size) == Some(f64::INFINITY)) || respond_to(c, size, s::call, true);
+    if !keep { let n = crate::builtins::numeric_methods::num_to_long(c, size)?; size = c.int_from_i64(n); }
     if obj_flags(slf) & FL_FROZEN != 0 { return Err(raise_frozen(c, slf)); }
     let Some(en) = c.data_mut::<REnum>(slf) else { return type_err(c, "wrong argument type (expected Enumerator)") };
     en.gen = g; en.size = size; en.recv = NIL; en.mid = s::each; en.buf = NIL; en.pos = 0; en.lz = 0; en.procs = NIL; en.init = true;
