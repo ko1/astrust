@@ -2658,16 +2658,16 @@ thread_local! {
 }
 
 impl<'a> Compiler<'a> {
-    /// A regexp literal (out of line: `c` is large).  An invalid one raises SyntaxError when run.
+    /// A regexp literal (out of line: `c` is large).  An invalid one is a compile error (parse-only check, nothing kept).
     #[inline(never)]
     fn regex_lit(&mut self, src: &[u8], flags: u32, line: u32) -> NodePtr {
         let s = lstr(src);
         let opts = regex_opts(flags, self.src_enc);
-        if self.file != "<internal:prelude>" {
+        if !self.file.starts_with("<internal:") {
             crate::regexp::note_literal(s, self.file, line);
             // ruby -c only parses: no regexp error or warning
             if !CHECK_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
-                let (e, ws) = crate::regexp::prebuild_literal(s, opts);
+                let (e, ws) = crate::regexp::check_literal(s, opts);
                 for m in ws { PARSE_WARNINGS.with(|w| w.borrow_mut().push((format!("{}:{}: warning: {}\n", self.file, line, m), false))); }
                 if let Some(m) = e { self.errors.push(format!("{}:{}: {}", self.file, line, m)); self.rx_error = true; }
             }
