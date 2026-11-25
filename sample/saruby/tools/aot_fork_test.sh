@@ -5,6 +5,7 @@
 # ic_reentry_spec_klass_1123.rb: a recursive site's stale spec_klass (`&mut` cache under re-entry).
 # spec_klass_refill_1124.rb: a refill kept spec_klass; the refilled entry re-entered the site (baked callee over another entry).
 # class_reuse_cache_1124.rb: a dead singleton / module's slot reused by a new class; no cache keyed by its address may hit.
+# class_reuse_stress_1125.rb: the same under GC.stress (a class's inspect was Kernel's), and via send / public_send / when.
 K=$(realpath "${1:-$(dirname "$0")/../saruby}"); N=${2:-5}; D=$(cd "$(dirname "$0")/aot" && pwd)
 w=$(mktemp -d); trap 'rm -rf "$w"' EXIT
 cp "$D"/*.rb "$w"/; cd "$w" || exit 1
