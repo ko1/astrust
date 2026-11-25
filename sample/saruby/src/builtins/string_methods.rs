@@ -1909,24 +1909,38 @@ fn wide(c: &Ctx, v: Value) -> bool {
     (en::min_len(r.enc) > 1 || en::kind(r.enc) == en::EK::Cesu8 && !r.b.is_ascii()) && en::is_valid(r.enc, &r.b)
 }
 fn to_u8(c: &mut Ctx, v: Value) -> Value { let r = c.rstring(v); let u = regexp::to_utf8_form(&r.b, r.enc); c.str_new_enc(&u, ENC_UTF8) }
-fn from_u8(c: &mut Ctx, v: Value, enc: u8) -> Value {
-    if is_string(v) { let w = regexp::utf8_to_wide(c.str_bytes(v), enc); return c.str_new_enc(&w, enc); }
-    if is_array(v) { let xs: Vec<Value> = c.ary(v).to_vec(); let ys: Vec<Value> = xs.into_iter().map(|x| from_u8(c, x, enc)).collect(); return c.ary_from_vec(ys); }
-    v
+// New Strings go into parked Arrays, never only into a Vec (docs/gc_moving.md 2.4).
+fn from_u8(c: &mut Ctx, v: Value, enc: u8) -> RV {
+    if is_string(v) { let w = regexp::utf8_to_wide(c.str_bytes(v), enc); return Ok(c.str_new_enc(&w, enc)); }
+    if !is_array(v) { return Ok(v); }
+    c.park(2, |c, p| {
+        p.set(0, v);
+        let out = c.ary_new();
+        p.set(1, out);
+        let mut i = 0;
+        while i < c.ary_len(p.get(0)) { let x = c.ary_get(p.get(0), i); let y = from_u8(c, x, enc)?; c.ary_push(p.get(1), y); i += 1; }
+        Ok(p.get(1))
+    })
 }
-fn wide_args(c: &mut Ctx, slf: Value, a: &[Value], chomp: bool) -> Result<Vec<Value>, Esc> {
+/// The arguments in UTF-8 form, as an Array.
+fn wide_args(c: &mut Ctx, slf: Value, a: &[Value], chomp: bool) -> RV {
     let enc = c.str_enc(slf);
-    let mut out = Vec::with_capacity(a.len());
-    for &x in a {
-        if !is_string(x) { out.push(x); continue; }
-        let (xe, xb) = { let r = c.rstring(x); (r.enc, r.b.to_vec()) };
-        if xe == enc { out.push(to_u8(c, x)); }
-        else if xb.is_empty() { out.push(c.str_new(b"")); }
-        else if crate::builtins::encoding::ascii_compat(enc) && crate::builtins::encoding::ascii_compat(xe) && xb.is_ascii() { out.push(c.str_new(&xb)); }
-        else if chomp && is_newline(c, x) { out.push(c.str_new(b"\n")); }
-        else { return err(c, c.vm().c_compat_error.get(), format!("incompatible character encodings: {} and {}", crate::builtins::encoding::enc_name_msg(enc), crate::builtins::encoding::enc_name_msg(xe))); }
-    }
-    Ok(out)
+    c.park(1, |c, p| {
+        let out = c.ary_new_capa(a.len());
+        p.set(0, out);
+        for &x in a {
+            let y = if !is_string(x) { x } else {
+                let (xe, xb) = { let r = c.rstring(x); (r.enc, r.b.to_vec()) };
+                if xe == enc { to_u8(c, x) }
+                else if xb.is_empty() { c.str_new(b"") }
+                else if crate::builtins::encoding::ascii_compat(enc) && crate::builtins::encoding::ascii_compat(xe) && xb.is_ascii() { c.str_new(&xb) }
+                else if chomp && is_newline(c, x) { c.str_new(b"\n") }
+                else { return err(c, c.vm().c_compat_error.get(), format!("incompatible character encodings: {} and {}", crate::builtins::encoding::enc_name_msg(enc), crate::builtins::encoding::enc_name_msg(xe))); }
+            };
+            c.ary_push(p.get(0), y);
+        }
+        Ok(p.get(0))
+    })
 }
 /// `f` on the UTF-8 form; `bang`: `f` changes it in place and self takes the result.
 fn via_u8(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk, f: CFunc, bang: bool, chomp: bool) -> RV {
@@ -1934,14 +1948,16 @@ fn via_u8(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk, f: CFunc, bang: bool, 
     let a8 = wide_args(c, slf, a, chomp)?;
     if bang { check_frozen(c, slf)?; }
     let s8 = to_u8(c, slf);
-    let r = f(c, s8, &a8, Blk::NONE)?;
+    let args = c.ary(a8).to_vec();   // the Strings stay in a8
+    let r = f(c, s8, &args, Blk::NONE)?;
+    std::hint::black_box(a8);
     if bang {
         if r == NIL { return Ok(NIL); }
         let w = regexp::utf8_to_wide(c.str_bytes(s8), enc);
         c.str_modify(slf)?.b = w.into();
         return Ok(slf);
     }
-    let r = if r == s8 { slf } else { from_u8(c, r, enc) };
+    let r = if r == s8 { slf } else { from_u8(c, r, enc)? };
     if !blk.is_null() && is_array(r) {
         let n = c.ary_len(r);
         for i in 0..n { let x = c.ary_get(r, i); yield1(c, blk, x)?; }
