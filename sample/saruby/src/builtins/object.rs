@@ -99,6 +99,11 @@ fn k_freeze(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
         // rb_freeze_singleton_class (not on to a metaclass's metaclass)
         let k = crate::heap::obj_klass(slf);
         if c.class(k).is_singleton && c.class(k).attached == slf && !(is_class_or_module(slf) && c.class(slf).is_singleton) { obj_set_flags(k, FL_FROZEN); }
+        // a Set is one object in CRuby: its table (prelude's hidden __h) freezes with it
+        if crate::object::is_object(slf) {
+            let h = ivar_get(c, slf, intern(b"__h"));
+            if is_hash(h) && const_get_at(c, c.vm().c_object.get(), intern(b"Set")).is_some_and(|k| is_kind_of(c, slf, k)) { obj_set_flags(h, FL_FROZEN); }
+        }
     }
     Ok(slf)
 }

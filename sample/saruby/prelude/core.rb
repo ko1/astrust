@@ -69,29 +69,6 @@ module Enumerable
     end
     a.sum(init)
   end
-  def first(*args)
-    if args.empty?
-      __saruby__.__each(self) { |v| return v }
-      return nil
-    end
-    __saruby__.__argc(args.size, 0, 1) if args.size > 1
-    n = __saruby__.__int(args[0])
-    raise ArgumentError, "attempt to take negative size" if n < 0
-    raise ArgumentError, "array size too big" if n >= 1 << 60
-    a = []
-    return a if n == 0
-    __saruby__.__each(self) { |v| a << v; break if a.size == n }
-    a
-  end
-  def take(n)
-    n = __saruby__.__int(n)
-    raise ArgumentError, "attempt to take negative size" if n < 0
-    raise ArgumentError, "array size too big" if n >= 1 << 60
-    a = []
-    return a if n == 0
-    __saruby__.__each(self) { |v| a << v; break if a.size == n }
-    a
-  end
   def take_while
     return enum_for(:take_while) unless block_given?
     a = []

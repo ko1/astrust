@@ -44,7 +44,7 @@ node_false(c: &mut Ctx, n: NodePtr, fp: Fp)
 NODE_DEF
 node_internal(c: &mut Ctx, n: NodePtr, fp: Fp)
 {
-    Ok(crate::vm::vm().m_internal.get())
+    Ok(c.vm().m_internal.get())
 }
 
 NODE_DEF

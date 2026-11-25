@@ -596,6 +596,51 @@ fn en_tally(c: &mut Ctx, slf: Value, a: &[Value], _blk: Blk) -> RV {
     Ok(h)
 }
 
+// enum.c first_i / take_i: the value kept, then rb_iter_break; from another thread / fiber the break is a
+// LocalJumpError there, and a kept block called after #first returned is "unexpected break"
+fn en_take(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    let n = num_to_long(c, a[0])?;
+    if n < 0 { return arg_err(c, "attempt to take negative size"); }
+    if n >= 1 << 60 { return arg_err(c, "array size too big"); }
+    let out = c.ary_new();
+    if n == 0 { return Ok(out); }
+    let fib = crate::fiber::current(c);
+    let d = c.ary_new_from(&[out, Value::fix(n), fib]);
+    run_each(c, slf, |c, d, args, _, _o| {
+        let v = pack(c, args);
+        let out = c.ary_get(d, 0);
+        c.ary_push(out, v);
+        let left = c.ary_get(d, 1).as_fix() - 1;
+        c.ary_mut(d)[1] = Value::fix(left);
+        if left == 0 {
+            let f = c.ary_get(d, 2);
+            if f == NIL { return Err(crate::rt::raise_local_jump(c, "unexpected break", "break", NIL)); }
+            if crate::fiber::current(c) != f { return Err(crate::rt::raise_local_jump(c, "break from proc-closure", "break", NIL)); }
+            c.esc = EscKind::Throw; c.esc_tag_v = d; c.esc_val = NIL; return Err(Esc);
+        }
+        Ok(NIL)
+    }, d, &[], Blk::NONE)?;
+    c.ary_mut(d)[2] = NIL;
+    Ok(out)
+}
+fn en_first(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
+    check_argc(c, a, 0, 1)?;
+    if !a.is_empty() { return en_take(c, slf, a, b); }
+    let fib = crate::fiber::current(c);
+    let d = c.ary_new_from(&[NIL, fib]);
+    let r = run_each(c, slf, |c, d, args, _, _o| {
+        let v = pack(c, args);
+        c.ary_mut(d)[0] = v;
+        let f = c.ary_get(d, 1);
+        if f == NIL { return Err(crate::rt::raise_local_jump(c, "unexpected break", "break", NIL)); }
+        if crate::fiber::current(c) != f { return Err(crate::rt::raise_local_jump(c, "break from proc-closure", "break", NIL)); }
+        c.esc = EscKind::Throw; c.esc_tag_v = d; c.esc_val = NIL; Err(Esc)
+    }, d, &[], Blk::NONE);
+    c.ary_mut(d)[1] = NIL;
+    r?;
+    Ok(c.ary_get(d, 0))
+}
+
 // Enumerable.__each(obj, *args) { |v| }: obj.each(*args) with each yield packed (ENUM_WANT_SVALUE)
 fn e_each(c: &mut Ctx, _s: Value, a: &[Value], blk: Blk) -> RV {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
@@ -690,6 +735,7 @@ fn define_enumerable_natives(c: &mut Ctx, m: Value) {
     define_cfunc(c, m, "min", en_min, -1); define_cfunc(c, m, "max", en_max, -1); define_cfunc(c, m, "minmax", en_minmax, 0); define_cfunc(c, m, "max_by", en_max_by, -1);
     define_cfunc(c, m, "inject", en_inject, -1); define_cfunc(c, m, "reduce", en_inject, -1);
     define_cfunc(c, m, "sort_by", en_sort_by, 0);
+    define_cfunc(c, m, "first", en_first, -1); define_cfunc(c, m, "take", en_take, 1);
     init_direct(c, m);
 }
 

@@ -208,7 +208,7 @@ pub fn EVAL_node_false(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
 #[inline(always)]
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_internal(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
-    Ok(crate::vm::vm().m_internal.get())
+    Ok(c.vm().m_internal.get())
 }
 
 
