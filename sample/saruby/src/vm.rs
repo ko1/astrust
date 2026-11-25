@@ -901,6 +901,12 @@ pub fn define_method_me(c: &mut Ctx, klass: Value, name: Sym, me: *const MethodE
     bump_method_serial();
     vm.mcache.borrow_mut().clear();
 }
+/// define_method_me for several entries with one cache clear (a boot-time definition run after the cache has grown).
+pub fn define_methods_me(c: &mut Ctx, klass: Value, ents: &[(Sym, *const MethodEntry)]) {
+    for &(name, me) in ents { c.class_mut(klass).mtbl.insert(name, me); }
+    bump_method_serial();
+    vm().mcache.borrow_mut().clear();
+}
 /// define_method_me for a definition made by Ruby code (def, alias, attr_*, define_method, module_function,
 /// import_methods): the redefinition warning and Coverage's method entries (boot definitions skip both).
 pub fn define_user_method(c: &mut Ctx, klass: Value, name: Sym, me: *const MethodEntry) {
