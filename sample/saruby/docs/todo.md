@@ -164,7 +164,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
   - [ ] 後から呼ばれた保存ブロックの戻り値・例外が CRuby と違うもの（prelude の Ruby 実装: first / sort_by / sum / each_entry / zip / sort / uniq / chunk_while、cfunc Proc の arity が -1（CRuby の ifunc は 1））。メモリ安全性の問題ではない（trial の t/kept_prelude_1123b.rb）
   - [ ] `eval("class K2; eval('yield'); end")` が CRuby ではコンパイル時の SyntaxError（クラス本体の yield）、saruby は実行時の LocalJumpError（t/hand gem_w19_eval_yield_1027.rb の最後、compile.rs 側）
   - [ ] block_to_proc が呼び出し元の Block に *const 経由で proc_val を書く（共有参照由来のポインタへの書き込み）。Block が Copy なので Cell にできない
-  - [ ] Kernel#inspect が CRuby 4.0 の instance_variables_to_inspect を見ない（pp.rb の pretty_print_instance_variables は見る）
+  - [x] Kernel#inspect が CRuby 4.0 の instance_variables_to_inspect を見ない（pp.rb の pretty_print_instance_variables は見る）（2026-11-25 確認: 既に CRuby と同じ。p / inspect とも instance_variables_to_inspect に従う）
 - [x] 再帰的な正規表現サブ式呼び出し `(?<a>a\g<a>?)`・`\g<0>`・レベル付き後方参照 `\k<a+0>`・absent 演算子 `(?~x)`（2026-11-23-saruby-regexp）
 - [x] blop 層（docs/io_design.md）: 待ちを 1 か所に、slab + Id + 所有権ごと渡すバッファ、engine trait（poll 既定・epoll）。待機中の CPU ほぼ 0、外部 cat との往復 1k → 45k/s。rubyspec file/flock・file/open・io-wait/wait・process/status/wait のタイムアウト解消
 - [ ] blop の残り: Mutex/CV/Queue の受け渡しが重い（vm_thread_condvar2 +59%、condvar1 +28%、sized_queue4 +26% 命令）、epoll の登録キャッシュ、io_uring engine、worker thread（flock・FIFO open・Process.wait(-1) は back-off の仮実装）
