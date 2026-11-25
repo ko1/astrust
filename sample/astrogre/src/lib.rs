@@ -5,6 +5,7 @@
 #[path = "../../../runtime/astrust.rs"]
 pub mod astrust;
 pub mod re;
+pub mod uniprops;
 
 pub use astrust::*;
 pub use re::cps::*;
