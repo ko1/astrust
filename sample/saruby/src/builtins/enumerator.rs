@@ -85,6 +85,10 @@ pub fn arith_seq_from(c: &mut Ctx, range: Value, b: Value, e: Value, st: Value, 
     renum_mut(c, v).arith = Some((b, e, st, excl));
     Ok(v)
 }
+/// Enumerable#to_a of an ArithmeticSequence whose #each is the builtin: collected without the generic each protocol.
+pub fn arith_to_a_direct(c: &mut Ctx, slf: Value) -> Option<RV> {
+    if is_arith_seq(c, slf) && !crate::builtins::enum_native::each_overridden(c, slf, e_each) { Some(collect_all(c, slf)) } else { None }
+}
 pub fn is_arith_seq(c: &Ctx, v: Value) -> bool { c.data::<REnum>(v).map(|e| e.arith.is_some()).unwrap_or(false) }
 pub fn arith_seq_slice(c: &mut Ctx, seq: Value, ary: Value) -> RV {
     use crate::builtins::numeric_methods::num_to_long;

@@ -368,24 +368,24 @@ class Enumerator
         b = args[0]
       end
       raise LocalJumpError, "no block given" unless b
-      __saruby__.__ivinit(self, :__b, b)
+      @__b = b
     end
-    def each(*args, &blk) = __saruby__.__ivget(self, :__b).call(Enumerator::Yielder.new(&blk), *args)
+    def each(*args, &blk) = @__b.call(Enumerator::Yielder.new(&blk), *args)
   end
 
   class Chain < Enumerator
     undef_method :feed, :next, :next_values, :peek, :peek_values
     def initialize(*enums)
-      __saruby__.__ivinit(self, :__e, enums.freeze)
+      @__e = enums.freeze
       self
     end
     def each(*args, &b)
       return self unless b
-      __saruby__.__ivget(self, :__e).each_with_index { |e, i| __saruby__.__ivset(self, :__p, i); e.each(*args, &b) }
+      @__e.each_with_index { |e, i| __saruby__.__ivset(self, :__p, i); e.each(*args, &b) }
       self
     end
     def size
-      __saruby__.__ivget(self, :__e).inject(0) do |t, e|
+      @__e.inject(0) do |t, e|
         s = e.size
         return s if s.nil? || (s.is_a?(Float) && s.infinite?)
         t + s
@@ -393,8 +393,8 @@ class Enumerator
     end
     # enum_chain_rewind: the ones iterated so far, last first
     def rewind
-      i = __saruby__.__ivget(self, :__p) || -1
-      en = __saruby__.__ivget(self, :__e)
+      i = @__p || -1
+      en = @__e
       while i >= 0 && i < en.size
         en[i].rewind if en[i].respond_to?(:rewind)
         __saruby__.__ivset(self, :__p, (i -= 1))
@@ -402,7 +402,7 @@ class Enumerator
       self
     end
     def inspect
-      en = __saruby__.__ivget(self, :__e) or return "#<#{self.class}: uninitialized>"
+      en = @__e or return "#<#{self.class}: uninitialized>"
       seen = (__saruby__.__ivget(Enumerator::Chain, :__insp) || __saruby__.__ivset(Enumerator::Chain, :__insp, {}))
       return "#<#{self.class}: ...>" if seen.key?(object_id)
       seen[object_id] = true
@@ -422,7 +422,7 @@ class Set
     __saruby__.__ivset(self, :__h, {})
     return if enum.nil?
     raise ArgumentError, "value must be enumerable" unless enum.respond_to?(:each_entry) || enum.respond_to?(:each)
-    __saruby__.__set_init(__saruby__.__ivget(self, :__h), enum, &b)
+    __saruby__.__set_init(@__h, enum, &b)
   end
   def initialize_copy(o)
     super
@@ -430,45 +430,45 @@ class Set
   end
   def compare_by_identity
     __saruby__.set_frozen!(self)
-    __saruby__.__ivget(self, :__h).compare_by_identity
+    @__h.compare_by_identity
     self
   end
-  def compare_by_identity? = __saruby__.__ivget(self, :__h).compare_by_identity?
+  def compare_by_identity? = @__h.compare_by_identity?
   def add(x)
     __saruby__.set_frozen!(self)
-    h = __saruby__.__ivget(self, :__h)
-    if __saruby__.__ivget(self, :__it) && !h.key?(x)
+    h = @__h
+    if @__it && !h.key?(x)
       raise RuntimeError, "can't add a new item into set during iteration"
     end
     h[x] = true
     self
   end
   alias << add
-  def add?(x) = (__saruby__.__ivget(self, :__h).key?(x) ? nil : add(x))
+  def add?(x) = (@__h.key?(x) ? nil : add(x))
   def delete(x)
     __saruby__.set_frozen!(self)
-    __saruby__.__ivget(self, :__h).delete(x)
+    @__h.delete(x)
     self
   end
-  def delete?(x) = (__saruby__.__ivget(self, :__h).key?(x) ? delete(x) : nil)
-  def include?(x) = __saruby__.__ivget(self, :__h).key?(x)
+  def delete?(x) = (@__h.key?(x) ? delete(x) : nil)
+  def include?(x) = @__h.key?(x)
   alias member? include?
   alias === include?
-  def size = __saruby__.__ivget(self, :__h).size
+  def size = @__h.size
   alias length size
-  def empty? = __saruby__.__ivget(self, :__h).empty?
+  def empty? = @__h.empty?
   def each(&b)
     return enum_for(:each) { size } unless b
-    it = __saruby__.__ivget(self, :__it)
+    it = @__it
     __saruby__.__ivset(self, :__it, true)
     begin
-      __saruby__.__ivget(self, :__h).each_key(&b)
+      @__h.each_key(&b)
     ensure
       __saruby__.__ivset(self, :__it, it)
     end
     self
   end
-  def to_a = __saruby__.__ivget(self, :__h).keys
+  def to_a = @__h.keys
   def to_set(*a, &b) = (a.empty? && !b && instance_of?(Set) ? self : Set.new(self, *a, &b))
   def |(o) = (s = dup; s.merge(__saruby__.set_enum(o)); s)
   alias union |
@@ -515,37 +515,37 @@ class Set
     end
   end
   def merge(*es)
-    raise RuntimeError, "cannot add to set during iteration" if __saruby__.__ivget(self, :__it)
+    raise RuntimeError, "cannot add to set during iteration" if @__it
     __saruby__.set_frozen!(self)
-    __saruby__.__set_merge(__saruby__.__ivget(self, :__h), es)
+    __saruby__.__set_merge(@__h, es)
     self
   end
   def subtract(e) = (__saruby__.set_enum(e).each { |x| delete(x) }; self)
   def replace(e)
     e = __saruby__.set_enum(e)
     __saruby__.set_frozen!(self)
-    raise RuntimeError, "cannot replace set during iteration" if __saruby__.__ivget(self, :__it)
+    raise RuntimeError, "cannot replace set during iteration" if @__it
     # a Set is copied with its compare_by_identity (set_i_initialize_copy)
     return (__saruby__.__ivset(self, :__h, __saruby__.__ivget(e, :__h).dup); self) if e.is_a?(Set)
     a = e.to_a
-    __saruby__.__ivget(self, :__h).clear
+    @__h.clear
     a.each { |x| add(x) }
     self
   end
   def ==(o)
     return true if equal?(o)
     return false unless o.is_a?(Set)
-    __saruby__.__set_eq(__saruby__.__ivget(self, :__h), __saruby__.__ivget(o, :__h))
+    __saruby__.__set_eq(@__h, __saruby__.__ivget(o, :__h))
   end
   def hash = to_a.map(&:hash).sort.hash
   alias eql? ==
-  def clear = (__saruby__.set_frozen!(self); __saruby__.__ivget(self, :__h).clear; self)
-  def reset = (__saruby__.set_frozen!(self); __saruby__.__ivget(self, :__h).rehash; self)
+  def clear = (__saruby__.set_frozen!(self); @__h.clear; self)
+  def reset = (__saruby__.set_frozen!(self); @__h.rehash; self)
   def map!(&b)
     return enum_for(:map!) { size } unless b
     a = to_a.map(&b)
     __saruby__.set_frozen!(self)
-    __saruby__.__ivget(self, :__h).clear
+    @__h.clear
     a.each { |x| add(x) }
     self
   end
@@ -553,13 +553,13 @@ class Set
   def select!(&b)
     return enum_for(:select!) { size } unless b
     __saruby__.set_frozen!(self)
-    n = size; __saruby__.__ivget(self, :__h).select! { |k, _| b.call(k) }; n == size ? nil : self
+    n = size; @__h.select! { |k, _| b.call(k) }; n == size ? nil : self
   end
   alias filter! select!
   def reject!(&b)
     return enum_for(:reject!) { size } unless b
     __saruby__.set_frozen!(self)
-    n = size; __saruby__.__ivget(self, :__h).reject! { |k, _| b.call(k) }; n == size ? nil : self
+    n = size; @__h.reject! { |k, _| b.call(k) }; n == size ? nil : self
   end
   def delete_if(&b) = (return enum_for(:delete_if) { size } unless b; reject!(&b); self)
   def keep_if(&b) = (return enum_for(:keep_if) { size } unless b; select!(&b); self)
