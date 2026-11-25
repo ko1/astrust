@@ -863,8 +863,9 @@ pub fn srb_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, name: S
             if me.is_null() {
                 // respond_to_missing?
                 let rm = lookup_method(c, class_of(r), s::respond_to_missing_p);
-                if !rm.is_null() && unsafe { (*rm).owner } != vm().c_object.get() && unsafe { (*rm).owner } != vm().m_kernel.get() {
-                    let t = funcall(c, r, s::respond_to_missing_p, &[Value::sym(name), TRUE], std::ptr::null())?;
+                if !rm.is_null() && unsafe { (*rm).owner } != vm().c_object.get() && unsafe { (*rm).owner } != vm().m_kernel.get()
+                    && check_respond_basic(c, r, s::respond_to_missing_p)? {
+                    let t = funcall(c, r, s::respond_to_missing_p, &[Value::sym(name), FALSE], std::ptr::null())?;
                     if t.truthy() { return yes(c, b"method"); }
                 }
                 return Ok(NIL);
@@ -1464,6 +1465,15 @@ pub fn check_respond(c: &mut Ctx, v: Value, mid: Sym) -> Result<bool, Esc> {
         return Ok(funcall(c, v, s::respond_to_missing_p, &[Value::sym(mid), TRUE], std::ptr::null())?.truthy());
     }
     Ok(false)
+}
+
+/// The respond_to? half of rb_check_funcall: a redefined respond_to? must say yes to `mid`.
+fn check_respond_basic(c: &mut Ctx, v: Value, mid: Sym) -> Result<bool, Esc> {
+    let rt = lookup_method(c, class_of(v), s::respond_to_p);
+    if !rt.is_null() && rt != search_method(c, vm().m_kernel.get(), s::respond_to_p) {
+        return Ok(funcall(c, v, s::respond_to_p, &[Value::sym(mid), TRUE], std::ptr::null())?.truthy());
+    }
+    Ok(true)
 }
 
 pub fn srb_masgn_array(c: &mut Ctx, rhs: Value, _splat: bool) -> RV {

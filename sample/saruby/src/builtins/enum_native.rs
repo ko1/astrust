@@ -216,9 +216,11 @@ fn en_map(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return no_blk(c, slf, "map", a); }
     if let Some(r) = en_map_range_loop(c, slf, &mut |c, a| yield_block(c, blk, a)) { return r; }
     let d = c.ary_new();
-    run_each(c, slf, |c, d, args, _, o| { let r = yield_block(c, o, args)?; c.ary_push(d, r); Ok(NIL) }, d, &[], blk)?;
+    run_each(c, slf, map_blk, d, &[], blk)?;
     Ok(d)
 }
+/// Enumerable#map's #each block; Proc#arity of it is the outer block's (rb_lambda_call).
+pub fn map_blk(c: &mut Ctx, d: Value, args: &[Value], _: Blk, o: Blk) -> RV { let r = yield_block(c, o, args)?; c.ary_push(d, r); Ok(NIL) }
 fn en_flat_map(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return no_blk(c, slf, "flat_map", a); }
     let d = c.ary_new();

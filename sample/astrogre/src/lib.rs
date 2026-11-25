@@ -10,4 +10,4 @@ pub use astrust::*;
 pub use re::cps::*;
 pub use re::eval::*;
 pub use re::node::*;
-pub use re::{Enc, OPT_I, OPT_M, OPT_X};
+pub use re::{parse_warnings, take_warnings, Enc, OPT_I, OPT_M, OPT_X};

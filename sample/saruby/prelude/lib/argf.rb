@@ -118,12 +118,18 @@ ARGF = Class.new(Object) {
     end
   end
 
+  # ARGF_GENERIC_INPUT_P: the current stream is a $stdin that is not an IO (argf_forward sends it the call)
+  def __generic = @io.equal?($stdin) && !@io.is_a?(IO)
+
   def readline(*args, **kw)
+    raise EOFError, "end of file reached" unless __next
+    return @io.public_send(:readline, *args, **kw) if __generic
     gets(*args, **kw) or raise EOFError, "end of file reached"
   end
 
-  def each_line(*args, **kw)
-    return to_enum(:each_line, *args, **kw) unless block_given?
+  def each_line(*args, **kw, &blk)
+    return to_enum(:each_line, *args, **kw) unless blk
+    return @io.public_send(:each_line, *args, **kw, &blk) if __next && __generic
     while (line = gets(*args, **kw))
       yield line
     end
@@ -132,6 +138,7 @@ ARGF = Class.new(Object) {
   alias each each_line
 
   def readlines(*args, **kw)
+    return @io.public_send(:readlines, *args, **kw) if __next && __generic
     lines = []
     while (line = gets(*args, **kw))
       lines << line

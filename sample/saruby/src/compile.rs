@@ -2659,7 +2659,11 @@ impl<'a> Compiler<'a> {
     fn regex_lit(&mut self, src: &[u8], flags: u32, line: u32) -> NodePtr {
         let s = lstr(src);
         if self.file != "<internal:prelude>" { crate::regexp::note_literal(s, self.file, line); }
-        ALLOC_node_regex(s, regex_opts(flags, self.src_enc))
+        let opts = regex_opts(flags, self.src_enc);
+        if self.file != "<internal:prelude>" {
+            for m in crate::regexp::literal_warnings(s, opts) { PARSE_WARNINGS.with(|w| w.borrow_mut().push((format!("{}:{}: warning: {}\n", self.file, line, m), false))); }
+        }
+        ALLOC_node_regex(s, opts)
     }
 }
 
