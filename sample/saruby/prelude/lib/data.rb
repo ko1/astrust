@@ -17,11 +17,11 @@ class Data
       end
       k = Class.new(self)
       k.singleton_class.send(:undef_method, :define)
-      Enumerable.__ivset(k, :__members__, syms.freeze)
-      syms.each { |m| k.define_method(m) { Enumerable.__ivget(self, m) } }
+      __saruby__.__ivset(k, :__members__, syms.freeze)
+      syms.each { |m| k.define_method(m) { __saruby__.__ivget(self, m) } }
       class << k
         define_method(:new) do |*args, **kw, &blk|
-          mem = __members
+          mem = __saruby__.data_members(self)
           if !args.empty?
             raise ArgumentError, "wrong number of arguments (given #{args.size + 1}, expected 0)" unless kw.empty?
             if args.size > mem.size
@@ -34,19 +34,18 @@ class Data
           o
         end
         alias_method :[], :new
-        def __members
-          k = self
-          k = k.superclass while Enumerable.__ivget(k, :__members__).nil?
-          Enumerable.__ivget(k, :__members__)
-        end
-        def members = __members.dup
+        def members = __saruby__.data_members(self).dup
       end
       k.class_eval(&blk) if blk
       k
     end
   end
+  def __saruby__.data_members(k)
+    k = k.superclass while __ivget(k, :__members__).nil?
+    __ivget(k, :__members__)
+  end
   # rb_struct_pos(name_only = true): a Symbol, a String or a #to_str names a member; [index or nil, the key]
-  def self.__pos(mem, k)
+  def __saruby__.data_pos(mem, k)
     unless k.is_a?(Symbol) || k.is_a?(String)
       s = String.try_convert(k)
       raise TypeError, "#{k.inspect} is not a symbol nor a string" unless s
@@ -56,14 +55,14 @@ class Data
   end
   # rb_data_initialize_m: every key is looked at, then missing before unknown
   def initialize(**kw)
-    mem = self.class.__members
+    mem = __saruby__.data_members(self.class)
     missing = mem.dup
     left = mem.size
     unknown = nil
     kw.each do |k, v|
-      i, key = Data.__pos(mem, k)
+      i, key = __saruby__.data_pos(mem, k)
       if i
-        Enumerable.__ivset(self, mem[i], v)
+        __saruby__.__ivset(self, mem[i], v)
         if missing[i] then missing[i] = nil; left -= 1 end
       else
         (unknown ||= []) << key
@@ -80,7 +79,7 @@ class Data
   end
   private :initialize
   def initialize_copy(o)
-    o.class.members.each { |m| Enumerable.__ivset(self, m, Enumerable.__ivget(o, m)) }
+    o.class.members.each { |m| __saruby__.__ivset(self, m, __saruby__.__ivget(o, m)) }
     freeze
   end
   private :initialize_copy
@@ -88,7 +87,7 @@ class Data
   def to_h(&b)
     h = {}
     members.each do |m|
-      v = Enumerable.__ivget(self, m)
+      v = __saruby__.__ivget(self, m)
       if b
         pr = b.call(m, v)
         ar = Array.try_convert(pr)
@@ -101,7 +100,7 @@ class Data
     end
     h
   end
-  def deconstruct = members.map { |m| Enumerable.__ivget(self, m) }
+  def deconstruct = members.map { |m| __saruby__.__ivget(self, m) }
   def deconstruct_keys(keys)
     return to_h if keys.nil?
     raise TypeError, "wrong argument type #{keys.class} (expected Array or nil)" unless keys.is_a?(Array)
@@ -109,9 +108,9 @@ class Data
     mem = members
     return h if keys.size > mem.size
     keys.each do |k|
-      i, k = Data.__pos(mem, k)
+      i, k = __saruby__.data_pos(mem, k)
       break unless i
-      h[k] = Enumerable.__ivget(self, mem[i])
+      h[k] = __saruby__.__ivget(self, mem[i])
     end
     h
   end
@@ -124,9 +123,9 @@ class Data
     o
   end
   # rb_exec_recursive_paired: a pair met again compares equal
-  def __paired(o, tag)
-    seen = (Enumerable.__ivget(Data, tag) || Enumerable.__ivset(Data, tag, {}))
-    key = [object_id, o.object_id]
+  def __saruby__.data_paired(s, o, tag)
+    seen = (__ivget(Data, tag) || __ivset(Data, tag, {}))
+    key = [s.object_id, o.object_id]
     return true if seen.key?(key)
     seen[key] = true
     begin
@@ -135,29 +134,28 @@ class Data
       seen.delete(key)
     end
   end
-  private :__paired
   def ==(o)
     return true if equal?(o)
     return false unless o.class == self.class
-    __paired(o, :__eq) { members.all? { |m| Enumerable.__ivget(self, m) == Enumerable.__ivget(o, m) } }
+    __saruby__.data_paired(self, o, :__eq) { members.all? { |m| __saruby__.__ivget(self, m) == __saruby__.__ivget(o, m) } }
   end
   def eql?(o)
     return true if equal?(o)
     return false unless o.class == self.class
-    __paired(o, :__eql) { members.all? { |m| Enumerable.__ivget(self, m).eql?(Enumerable.__ivget(o, m)) } }
+    __saruby__.data_paired(self, o, :__eql) { members.all? { |m| __saruby__.__ivget(self, m).eql?(__saruby__.__ivget(o, m)) } }
   end
   def hash = [self.class, *deconstruct].hash
   def inspect
     # rb_class_path, not #name; a path under an anonymous module is left out
     name = Module.instance_method(:name).bind_call(self.class)
     name = nil if name&.start_with?("#")
-    seen = (Enumerable.__ivget(Data, :__insp) || Enumerable.__ivset(Data, :__insp, {}))
+    seen = (__saruby__.__ivget(Data, :__insp) || __saruby__.__ivset(Data, :__insp, {}))
     return "#<data #{name || Module.instance_method(:to_s).bind_call(self.class)}:...>" if seen.key?(object_id)
     seen[object_id] = true
     begin
       # rb_data_inspect: a member that is not a local / constant name shows as a Symbol
       parts = members.map do |m|
-        v = Enumerable.__ivget(self, m)
+        v = __saruby__.__ivget(self, m)
         "#{m.match?(/\A(?:[A-Za-z_]|[^\x00-\x7F])(?:\w|[^\x00-\x7F])*\z/) ? m : m.inspect}=#{v.inspect}"
       end
       s = "#<data "

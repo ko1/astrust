@@ -1758,5 +1758,5 @@ pub fn init(c: &mut Ctx) {
     define_singleton_cfunc(c, m, "gunzip", z_gunzip, 1);
     for (n, v) in [("OS_CODE", 3), ("OS_MSDOS", 0), ("OS_AMIGA", 1), ("OS_VMS", 2), ("OS_UNIX", 3), ("OS_ATARI", 5), ("OS_OS2", 6), ("OS_MACOS", 7),
         ("OS_TOPS20", 10), ("OS_WIN32", 11), ("OS_VMCMS", 4), ("OS_ZSYSTEM", 8), ("OS_CPM", 9), ("OS_QDOS", 12), ("OS_RISCOS", 13), ("OS_UNKNOWN", 255)] { ci(c, n, v); }
-    let _ = run_source(c, RUBY_PART.as_bytes(), "<internal:zlib>", 1);
+    let _ = crate::builtins::kernel::run_internal_source(c, RUBY_PART.as_bytes(), "<internal:zlib>");
 }

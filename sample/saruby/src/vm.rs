@@ -569,6 +569,8 @@ pub struct Vm {
     pub c_location: Cell<Value>,
     /// Random::DEFAULT (the generator of Kernel#rand); a class-field root like the ones above.
     pub default_random: Cell<Value>,
+    /// The prelude's helper module: no constant names it; prelude code reaches it as `__saruby__` (node_internal).
+    pub m_internal: Cell<Value>,
     pub main_obj: Cell<Value>,
     pub stdout: Cell<Value>, pub stderr: Cell<Value>, pub stdin: Cell<Value>,
     pub globals: RefCell<HashMap<Sym, Value>>,
@@ -1767,11 +1769,14 @@ pub fn exc_bt(c: &mut Ctx, e: Value) -> Value {
 fn capture_frames(c: &Ctx) -> Vec<RawFrame> {
     let mut frames: Vec<RawFrame> = Vec::with_capacity(16);
     let mut f = c.frame;
+    // the prelude's helpers (the internal module's methods) are not frames of Ruby's, as CRuby's C helpers
+    let im = obj_klass(vm().m_internal.get());
+    let im = if c.class(im).is_singleton { im } else { NIL };
     unsafe {
         while !f.is_null() {
             let fr = &*f;
             let iseq = fr.iseq();
-            frames.push(RawFrame { kind: fr.kind, me: fr.me, iseq, file: frame_file(fr), pos: fr.pos, at: iseq });
+            if fr.me.is_null() || (*fr.me).owner != im { frames.push(RawFrame { kind: fr.kind, me: fr.me, iseq, file: frame_file(fr), pos: fr.pos, at: iseq }); }
             f = fr.prev;
         }
     }

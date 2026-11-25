@@ -31,6 +31,7 @@ use crate::symbol::s;
 
 
 
+
 // a string literal without a frozen_string_literal comment: chilled (4.0)
 
 
@@ -201,6 +202,13 @@ pub fn EVAL_node_true(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
 #[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
 pub fn EVAL_node_false(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
     Ok(FALSE)
+}
+
+
+#[inline(always)]
+#[allow(unused_variables, unused_mut, non_snake_case, unused_unsafe)]
+pub fn EVAL_node_internal(c: &mut Ctx, n: NodePtr, fp: Fp) -> RV {
+    Ok(crate::vm::vm().m_internal.get())
 }
 
 

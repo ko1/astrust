@@ -21,17 +21,9 @@ class Enumerator
     private :initialize_copy
     def each(&b)
       return self unless b
-      __each_rec(0, [], &b)
+      __saruby__.product_rec(@__enums, 0, [], &b)
       self
     end
-    def __each_rec(i, acc, &b)
-      if i == @__enums.size
-        b.call(acc.dup)
-      else
-        @__enums[i].each_entry { |v| acc.push(v); __each_rec(i + 1, acc, &b); acc.pop }
-      end
-    end
-    private :__each_rec
     # enum_product_total_size
     def size
       sizes = @__enums.map { |e| s = e.respond_to?(:size) ? e.size : nil; return s if s == 0; s }
@@ -44,7 +36,7 @@ class Enumerator
     def rewind = (@__enums.each { |e| e.rewind if e.respond_to?(:rewind) }; self)
     def inspect
       return "#<#{self.class}: uninitialized>" unless @__enums
-      seen = (Enumerable.__ivget(Enumerator::Product, :__insp) || Enumerable.__ivset(Enumerator::Product, :__insp, {}))
+      seen = (__saruby__.__ivget(Enumerator::Product, :__insp) || __saruby__.__ivset(Enumerator::Product, :__insp, {}))
       return "#<#{self.class}: ...>" if seen.key?(object_id)
       seen[object_id] = true
       begin
@@ -54,5 +46,13 @@ class Enumerator
       end
     end
     alias to_s inspect
+  end
+end
+
+def __saruby__.product_rec(es, i, acc, &b)
+  if i == es.size
+    b.call(acc.dup)
+  else
+    es[i].each_entry { |v| acc.push(v); product_rec(es, i + 1, acc, &b); acc.pop }
   end
 end

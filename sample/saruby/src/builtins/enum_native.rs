@@ -696,6 +696,8 @@ fn define_enumerable_natives(c: &mut Ctx, m: Value) {
 /// Defines the native methods of Enumerable `m`.
 pub fn init(c: &mut Ctx, m: Value) {
     define_enumerable_natives(c, m);
+    // the prelude's helpers (`__saruby__.__each(..)`): on the internal module, not on Enumerable
+    let m = c.vm().m_internal.get();
     define_singleton_cfunc(c, m, "__int", e_int, 1);
     define_singleton_cfunc(c, m, "__hash", e_hash, 1);
     define_singleton_cfunc(c, m, "__argc", e_argc, 3);

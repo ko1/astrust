@@ -18,6 +18,12 @@ fn REPLACE_node_false(n: NodePtr, old: NodePtr, new: NodePtr) {
 }
 
 #[allow(non_snake_case, unused_variables)]
+fn REPLACE_node_internal(n: NodePtr, old: NodePtr, new: NodePtr) {
+    let u = node_u_mut::<node_internal_struct>(n);
+
+}
+
+#[allow(non_snake_case, unused_variables)]
 fn REPLACE_node_self(n: NodePtr, old: NodePtr, new: NodePtr) {
     let u = node_u_mut::<node_self_struct>(n);
 

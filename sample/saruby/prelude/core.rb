@@ -2,7 +2,7 @@
 module Comparable
   def ==(o)
     return true if equal?(o)
-    seen = Enumerable.__ivget(Comparable, :__eqrec) || Enumerable.__ivset(Comparable, :__eqrec, {})
+    seen = __saruby__.__ivget(Comparable, :__eqrec) || __saruby__.__ivset(Comparable, :__eqrec, {})
     key = [__id__, o.__id__]
     return false if seen.key?(key)
     seen[key] = true
@@ -11,23 +11,21 @@ module Comparable
     ensure
       seen.delete(key)
     end
-    r.nil? ? false : Comparable.__cmpint(r) == 0
+    r.nil? ? false : __saruby__.__cmpint(r) == 0
   end
 end
 
 module Enumerable
-  # Enumerable.__each(self) { |v| } packs a multi-value yield into one element (CRuby's ENUM_WANT_SVALUE)
+  # __saruby__.__each(self) { |v| } packs a multi-value yield into one element (CRuby's ENUM_WANT_SVALUE)
   # without Ruby-level calls; methods that hand raw values to the block use each { |*x| yield(*x) }.
-  def __size = (respond_to?(:size) ? size : nil)
-  private :__size
   def grep(pat)
     a = []
     if block_given?
-      Enumerable.__each(self) { |v| a << yield(v) if pat === v }
+      __saruby__.__each(self) { |v| a << yield(v) if pat === v }
     else
       # without a block the caller's $~ stays (CRuby's rb_reg_match_p); this frame shares it (svar.rs)
       lm = $~
-      Enumerable.__each(self) { |v| a << v if pat === v }
+      __saruby__.__each(self) { |v| a << v if pat === v }
       $~ = lm
     end
     a
@@ -35,16 +33,16 @@ module Enumerable
   def grep_v(pat)
     a = []
     if block_given?
-      Enumerable.__each(self) { |v| a << yield(v) unless pat === v }
+      __saruby__.__each(self) { |v| a << yield(v) unless pat === v }
     else
       lm = $~
-      Enumerable.__each(self) { |v| a << v unless pat === v }
+      __saruby__.__each(self) { |v| a << v unless pat === v }
       $~ = lm
     end
     a
   end
   def find_index(*args)
-    Enumerable.__argc(args.size, 1, 1) if args.size > 1
+    __saruby__.__argc(args.size, 1, 1) if args.size > 1
     if args.empty?
       return enum_for(:find_index) unless block_given?
       i = 0
@@ -52,46 +50,46 @@ module Enumerable
     else
       warn("given block not used", uplevel: 1) if block_given?
       i = 0
-      Enumerable.__each(self) { |v| return i if v == args[0]; i += 1 }
+      __saruby__.__each(self) { |v| return i if v == args[0]; i += 1 }
     end
     nil
   end
   def each_entry(*args)
-    return enum_for(:each_entry, *args) { __size } unless block_given?
-    Enumerable.__each(self, *args) { |v| yield v }
+    return enum_for(:each_entry, *args) { __saruby__.__size(self) } unless block_given?
+    __saruby__.__each(self, *args) { |v| yield v }
     self
   end
   def sum(init = 0, &b)
-    return Enumerable.__range_sum(self, init) if !b && Range === self
+    return __saruby__.__range_sum(self, init) if !b && Range === self
     a = []
     if b
-      Enumerable.__each(self) { |v| a << b.call(v) }
+      __saruby__.__each(self) { |v| a << b.call(v) }
     else
-      Enumerable.__each(self) { |v| a << v }
+      __saruby__.__each(self) { |v| a << v }
     end
     a.sum(init)
   end
   def first(*args)
     if args.empty?
-      Enumerable.__each(self) { |v| return v }
+      __saruby__.__each(self) { |v| return v }
       return nil
     end
-    Enumerable.__argc(args.size, 0, 1) if args.size > 1
-    n = Enumerable.__int(args[0])
+    __saruby__.__argc(args.size, 0, 1) if args.size > 1
+    n = __saruby__.__int(args[0])
     raise ArgumentError, "attempt to take negative size" if n < 0
     raise ArgumentError, "array size too big" if n >= 1 << 60
     a = []
     return a if n == 0
-    Enumerable.__each(self) { |v| a << v; break if a.size == n }
+    __saruby__.__each(self) { |v| a << v; break if a.size == n }
     a
   end
   def take(n)
-    n = Enumerable.__int(n)
+    n = __saruby__.__int(n)
     raise ArgumentError, "attempt to take negative size" if n < 0
     raise ArgumentError, "array size too big" if n >= 1 << 60
     a = []
     return a if n == 0
-    Enumerable.__each(self) { |v| a << v; break if a.size == n }
+    __saruby__.__each(self) { |v| a << v; break if a.size == n }
     a
   end
   def take_while
@@ -101,25 +99,25 @@ module Enumerable
     a
   end
   def drop(n)
-    n = Enumerable.__int(n)
+    n = __saruby__.__int(n)
     raise ArgumentError, "attempt to drop negative size" if n < 0
     a = []; i = 0
-    Enumerable.__each(self) { |v| a << v if i >= n; i += 1 }
+    __saruby__.__each(self) { |v| a << v if i >= n; i += 1 }
     a
   end
   def drop_while
     return enum_for(:drop_while) unless block_given?
     a = []; dropping = true
-    Enumerable.__each(self) { |v| dropping = false if dropping && !yield(v); a << v unless dropping }
+    __saruby__.__each(self) { |v| dropping = false if dropping && !yield(v); a << v unless dropping }
     a
   end
-  def sort(&b) = Enumerable.__to_a(self).sort(&b)
+  def sort(&b) = __saruby__.__to_a(self).sort(&b)
   def chunk_while(&b)
     raise ArgumentError, "tried to create Proc object without a block" unless b
     src = self
     Enumerator.new do |y|
       cur = nil
-      Enumerable.__each(src) do |v|
+      __saruby__.__each(src) do |v|
         if cur.nil? then cur = [v]
         elsif b.call(cur.last, v) then cur << v
         else y << cur; cur = [v] end
@@ -132,11 +130,11 @@ module Enumerable
     chunk_while { |a, c| !b.call(a, c) }
   end
   def chunk(&b)
-    return enum_for(:chunk) { __size } unless b
+    return enum_for(:chunk) { __saruby__.__size(self) } unless b
     src = self
     Enumerator.new do |y|
       ck = nil; cur = nil
-      Enumerable.__each(src) do |v|
+      __saruby__.__each(src) do |v|
         k = b.call(v)
         if k.nil? || k == :_separator
           y << [ck, cur] if cur
@@ -161,13 +159,13 @@ module Enumerable
     if b
       raise ArgumentError, "both pattern and block are given" unless pat.empty?
     else
-      Enumerable.__argc(pat.size, 1, 1) if pat.size != 1
+      __saruby__.__argc(pat.size, 1, 1) if pat.size != 1
     end
     pat = pat[0]
     src = self
     Enumerator.new do |y|
       cur = nil
-      Enumerable.__each(src) do |v|
+      __saruby__.__each(src) do |v|
         hit = b ? b.call(v) : (pat === v)
         if cur && hit then y << cur; cur = nil end
         (cur ||= []) << v
@@ -179,13 +177,13 @@ module Enumerable
     if b
       raise ArgumentError, "both pattern and block are given" unless pat.empty?
     else
-      Enumerable.__argc(pat.size, 1, 1) if pat.size != 1
+      __saruby__.__argc(pat.size, 1, 1) if pat.size != 1
     end
     pat = pat[0]
     src = self
     Enumerator.new do |y|
       cur = nil
-      Enumerable.__each(src) do |v|
+      __saruby__.__each(src) do |v|
         (cur ||= []) << v
         if b ? b.call(v) : (pat === v) then y << cur; cur = nil end
       end
@@ -193,36 +191,36 @@ module Enumerable
     end
   end
   def all?(*pat)
-    Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
+    __saruby__.__argc(pat.size, 0, 1) if pat.size > 1
     warn("given block not used", uplevel: 1) if !pat.empty? && block_given?
-    if !pat.empty? then Enumerable.__each(self) { |v| return false unless pat[0] === v }
+    if !pat.empty? then __saruby__.__each(self) { |v| return false unless pat[0] === v }
     elsif block_given? then each { |*x| return false unless yield(*x) }
-    else Enumerable.__each(self) { |v| return false unless v } end
+    else __saruby__.__each(self) { |v| return false unless v } end
     true
   end
   def any?(*pat)
-    Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
+    __saruby__.__argc(pat.size, 0, 1) if pat.size > 1
     warn("given block not used", uplevel: 1) if !pat.empty? && block_given?
-    if !pat.empty? then Enumerable.__each(self) { |v| return true if pat[0] === v }
+    if !pat.empty? then __saruby__.__each(self) { |v| return true if pat[0] === v }
     elsif block_given? then each { |*x| return true if yield(*x) }
-    else Enumerable.__each(self) { |v| return true if v } end
+    else __saruby__.__each(self) { |v| return true if v } end
     false
   end
   def none?(*pat)
-    Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
+    __saruby__.__argc(pat.size, 0, 1) if pat.size > 1
     warn("given block not used", uplevel: 1) if !pat.empty? && block_given?
-    if !pat.empty? then Enumerable.__each(self) { |v| return false if pat[0] === v }
+    if !pat.empty? then __saruby__.__each(self) { |v| return false if pat[0] === v }
     elsif block_given? then each { |*x| return false if yield(*x) }
-    else Enumerable.__each(self) { |v| return false if v } end
+    else __saruby__.__each(self) { |v| return false if v } end
     true
   end
   def one?(*pat)
-    Enumerable.__argc(pat.size, 0, 1) if pat.size > 1
+    __saruby__.__argc(pat.size, 0, 1) if pat.size > 1
     warn("given block not used", uplevel: 1) if !pat.empty? && block_given?
     n = 0
-    if !pat.empty? then Enumerable.__each(self) { |v| n += 1 if pat[0] === v; return false if n > 1 }
+    if !pat.empty? then __saruby__.__each(self) { |v| n += 1 if pat[0] === v; return false if n > 1 }
     elsif block_given? then each { |*x| n += 1 if yield(*x); return false if n > 1 }
-    else Enumerable.__each(self) { |v| n += 1 if v; return false if n > 1 } end
+    else __saruby__.__each(self) { |v| n += 1 if v; return false if n > 1 } end
     n == 1
   end
   def zip(*others, &b)
@@ -240,7 +238,7 @@ module Enumerable
     if block_given?
       each { |*x| k = yield(*x); h[k] = (x.size <= 1 ? x[0] : x) unless h.key?(k) }
     else
-      Enumerable.__each(self) { |v| h[v] = v unless h.key?(v) }
+      __saruby__.__each(self) { |v| h[v] = v unless h.key?(v) }
     end
     h.values
   end
@@ -263,25 +261,25 @@ module Enumerable
     klass.new(self, *args, &b)
   end
   def reverse_each(*args, &b)
-    return enum_for(:reverse_each, *args) { __size } unless b
+    return enum_for(:reverse_each, *args) { __saruby__.__size(self) } unless b
     to_a(*args).reverse_each(&b)
     self
   end
   def cycle(*args)
-    Enumerable.__argc(args.size, 0, 1) if args.size > 1
+    __saruby__.__argc(args.size, 0, 1) if args.size > 1
     n = args[0]
     unless block_given?
       return enum_for(:cycle, *args) do
-        if n.nil? then (s = __size).nil? ? nil : s == 0 ? 0 : Float::INFINITY
-        else s = __size; k = Enumerable.__int(n); s && (k < 0 ? 0 : s * k) end
+        if n.nil? then (s = __saruby__.__size(self)).nil? ? nil : s == 0 ? 0 : Float::INFINITY
+        else s = __saruby__.__size(self); k = __saruby__.__int(n); s && (k < 0 ? 0 : s * k) end
       end
     end
     unless n.nil?
-      n = Enumerable.__int(n)
+      n = __saruby__.__int(n)
       return nil if n <= 0
     end
     saved = []
-    Enumerable.__each(self) { |v| saved << v; yield v }
+    __saruby__.__each(self) { |v| saved << v; yield v }
     return nil if saved.empty?
     if n.nil?
       loop { saved.each { |v| yield v } }
@@ -290,10 +288,10 @@ module Enumerable
     end
     nil
   end
-  def chain(*enums) = Enumerable.__chain([self, *enums])
+  def chain(*enums) = __saruby__.__chain([self, *enums])
   def compact
     a = []
-    Enumerable.__each(self) { |v| a << v unless v.nil? }
+    __saruby__.__each(self) { |v| a << v unless v.nil? }
     a
   end
 end
@@ -301,7 +299,7 @@ end
 
 module GC
   # CRuby's gc.rb signature: keywords, no Hash allocated per call
-  def self.start(full_mark: true, immediate_mark: true, immediate_sweep: true) = __start(full_mark)
+  def self.start(full_mark: true, immediate_mark: true, immediate_sweep: true) = __saruby__.__gc_start(full_mark)
 end
 
 module Kernel
@@ -358,13 +356,13 @@ class Struct
 end
 
 class Enumerator
-  def +(other) = Enumerable.__chain([self, other])
+  def +(other) = __saruby__.__chain([self, other])
   def self.produce(*args, **kw, &b)
     raise ArgumentError, "no block given" unless b
     # RB_SCAN_ARGS_LAST_HASH_KEYWORDS: a trailing Hash is the keywords
     kw = args.pop if kw.empty? && Hash === args.last
-    Enumerable.__argc(args.size, 0, 1) if args.size > 1
-    Enumerable.__kw(kw, :size) unless kw.empty?
+    __saruby__.__argc(args.size, 0, 1) if args.size > 1
+    __saruby__.__kw(kw, :size) unless kw.empty?
     Enumerator.new(kw.fetch(:size, Float::INFINITY)) do |y|
       v = args.empty? ? b.call(nil) : args[0]
       begin
@@ -386,7 +384,7 @@ class Enumerator
 
   class Generator
     def initialize(*args, &b)
-      Enumerable.__argc(args.size, 0, 1) if args.size > 1
+      __saruby__.__argc(args.size, 0, 1) if args.size > 1
       unless args.empty?
         raise TypeError, "wrong argument type #{args[0].class} (expected Proc)" unless args[0].is_a?(Proc)
         b = args[0]
@@ -428,7 +426,7 @@ class Enumerator
     end
     def inspect
       return "#<#{self.class}: uninitialized>" unless @__enums
-      seen = (Enumerable.__ivget(Enumerator::Chain, :__insp) || Enumerable.__ivset(Enumerator::Chain, :__insp, {}))
+      seen = (__saruby__.__ivget(Enumerator::Chain, :__insp) || __saruby__.__ivset(Enumerator::Chain, :__insp, {}))
       return "#<#{self.class}: ...>" if seen.key?(object_id)
       seen[object_id] = true
       begin
@@ -444,101 +442,85 @@ class Set
   include Enumerable
   def self.[](*a) = new(a)
   def initialize(enum = nil, &b)
-    Enumerable.__ivset(self, :__h, {})
+    __saruby__.__ivset(self, :__h, {})
     return if enum.nil?
     raise ArgumentError, "value must be enumerable" unless enum.respond_to?(:each_entry) || enum.respond_to?(:each)
-    Enumerable.__set_init(__hash, enum, &b)
+    __saruby__.__set_init(__saruby__.__ivget(self, :__h), enum, &b)
   end
   def initialize_copy(o)
     super
-    Enumerable.__ivset(self, :__h, o.__hash.dup)
+    __saruby__.__ivset(self, :__h, __saruby__.__ivget(o, :__h).dup)
   end
-  def __enum(o)
-    return o if o.is_a?(Set)
-    raise ArgumentError, "value must be enumerable" unless o.respond_to?(:each_entry) || o.respond_to?(:each)
-    o
-  end
-  def __set(o)
-    raise ArgumentError, "value must be a set" unless o.is_a?(Set)
-    o
-  end
-  def __new_like = Enumerable.__set_like(self)
-  def __frozen! = (raise FrozenError.new("can't modify frozen #{self.class}: #{inspect}", receiver: self) if frozen?)
-  # nil, or true while #each runs (restored on exit: no Integer arithmetic)
-  def __iterating? = Enumerable.__ivget(self, :__it)
-  private :__enum, :__set, :__new_like, :__frozen!, :__iterating?
   def compare_by_identity
-    __frozen!
-    __hash.compare_by_identity
+    __saruby__.set_frozen!(self)
+    __saruby__.__ivget(self, :__h).compare_by_identity
     self
   end
-  def compare_by_identity? = __hash.compare_by_identity?
-  def __hash = Enumerable.__ivget(self, :__h)
+  def compare_by_identity? = __saruby__.__ivget(self, :__h).compare_by_identity?
   def add(x)
-    __frozen!
-    h = __hash
-    if __iterating? && !h.key?(x)
+    __saruby__.set_frozen!(self)
+    h = __saruby__.__ivget(self, :__h)
+    if __saruby__.__ivget(self, :__it) && !h.key?(x)
       raise RuntimeError, "can't add a new item into set during iteration"
     end
     h[x] = true
     self
   end
   alias << add
-  def add?(x) = (__hash.key?(x) ? nil : add(x))
+  def add?(x) = (__saruby__.__ivget(self, :__h).key?(x) ? nil : add(x))
   def delete(x)
-    __frozen!
-    __hash.delete(x)
+    __saruby__.set_frozen!(self)
+    __saruby__.__ivget(self, :__h).delete(x)
     self
   end
-  def delete?(x) = (__hash.key?(x) ? delete(x) : nil)
-  def include?(x) = __hash.key?(x)
+  def delete?(x) = (__saruby__.__ivget(self, :__h).key?(x) ? delete(x) : nil)
+  def include?(x) = __saruby__.__ivget(self, :__h).key?(x)
   alias member? include?
   alias === include?
-  def size = __hash.size
+  def size = __saruby__.__ivget(self, :__h).size
   alias length size
-  def empty? = __hash.empty?
+  def empty? = __saruby__.__ivget(self, :__h).empty?
   def each(&b)
     return enum_for(:each) { size } unless b
-    it = Enumerable.__ivget(self, :__it)
-    Enumerable.__ivset(self, :__it, true)
+    it = __saruby__.__ivget(self, :__it)
+    __saruby__.__ivset(self, :__it, true)
     begin
-      __hash.each_key(&b)
+      __saruby__.__ivget(self, :__h).each_key(&b)
     ensure
-      Enumerable.__ivset(self, :__it, it)
+      __saruby__.__ivset(self, :__it, it)
     end
     self
   end
-  def to_a = __hash.keys
+  def to_a = __saruby__.__ivget(self, :__h).keys
   def to_set(*a, &b) = (a.empty? && !b && instance_of?(Set) ? self : Set.new(self, *a, &b))
-  def freeze = (__hash.freeze; super)
-  def |(o) = (s = dup; s.merge(__enum(o)); s)
+  def |(o) = (s = dup; s.merge(__saruby__.set_enum(o)); s)
   alias union |
   alias + |
-  def -(o) = (s = dup; s.subtract(__enum(o)); s)
+  def -(o) = (s = dup; s.subtract(__saruby__.set_enum(o)); s)
   alias difference -
   def &(o)
-    s = __new_like
-    __enum(o).each { |x| s.add(x) if include?(x) }
+    s = __saruby__.__set_like(self)
+    __saruby__.set_enum(o).each { |x| s.add(x) if include?(x) }
     s
   end
   alias intersection &
   def ^(o)
     s = dup
     unless o.is_a?(Set)
-      t = __new_like
-      Enumerable.__set_init(t.__hash, __enum(o))
+      t = __saruby__.__set_like(self)
+      __saruby__.__set_init(__saruby__.__ivget(t, :__h), __saruby__.set_enum(o))
       o = t
     end
     o.each { |x| s.add(x) unless s.delete?(x) }
     s
   end
-  def subset?(o) = (__set(o); size <= o.size && all? { |x| o.include?(x) })
+  def subset?(o) = (__saruby__.set_set(o); size <= o.size && all? { |x| o.include?(x) })
   alias <= subset?
-  def superset?(o) = (__set(o); size >= o.size && o.all? { |x| include?(x) })
+  def superset?(o) = (__saruby__.set_set(o); size >= o.size && o.all? { |x| include?(x) })
   alias >= superset?
-  def proper_subset?(o) = (__set(o); size < o.size && all? { |x| o.include?(x) })
+  def proper_subset?(o) = (__saruby__.set_set(o); size < o.size && all? { |x| o.include?(x) })
   alias < proper_subset?
-  def proper_superset?(o) = (__set(o); size > o.size && o.all? { |x| include?(x) })
+  def proper_superset?(o) = (__saruby__.set_set(o); size > o.size && o.all? { |x| include?(x) })
   alias > proper_superset?
   def <=>(o)
     return nil unless o.is_a?(Set)
@@ -549,63 +531,65 @@ class Set
   end
   def disjoint?(o) = !intersect?(o)
   def intersect?(o)
-    o = __enum(o)
+    o = __saruby__.set_enum(o)
     if o.is_a?(Set) && o.size < size then o.any? { |x| include?(x) }
     elsif o.is_a?(Set) then any? { |x| o.include?(x) }
     else o.any? { |x| include?(x) }
     end
   end
   def merge(*es)
-    raise RuntimeError, "cannot add to set during iteration" if __iterating?
-    __frozen!
-    Enumerable.__set_merge(__hash, es)
+    raise RuntimeError, "cannot add to set during iteration" if __saruby__.__ivget(self, :__it)
+    __saruby__.set_frozen!(self)
+    __saruby__.__set_merge(__saruby__.__ivget(self, :__h), es)
     self
   end
-  def subtract(e) = (__enum(e).each { |x| delete(x) }; self)
+  def subtract(e) = (__saruby__.set_enum(e).each { |x| delete(x) }; self)
   def replace(e)
-    e = __enum(e)
-    __frozen!
-    raise RuntimeError, "cannot replace set during iteration" if __iterating?
+    e = __saruby__.set_enum(e)
+    __saruby__.set_frozen!(self)
+    raise RuntimeError, "cannot replace set during iteration" if __saruby__.__ivget(self, :__it)
     # a Set is copied with its compare_by_identity (set_i_initialize_copy)
-    return (Enumerable.__ivset(self, :__h, e.__hash.dup); self) if e.is_a?(Set)
+    return (__saruby__.__ivset(self, :__h, __saruby__.__ivget(e, :__h).dup); self) if e.is_a?(Set)
     a = e.to_a
-    __hash.clear
+    __saruby__.__ivget(self, :__h).clear
     a.each { |x| add(x) }
     self
   end
   def ==(o)
     return true if equal?(o)
     return false unless o.is_a?(Set)
-    Enumerable.__set_eq(__hash, o.__hash)
+    __saruby__.__set_eq(__saruby__.__ivget(self, :__h), __saruby__.__ivget(o, :__h))
   end
   def hash = to_a.map(&:hash).sort.hash
   alias eql? ==
-  def clear = (__frozen!; __hash.clear; self)
-  def reset = (__frozen!; __hash.rehash; self)
+  def clear = (__saruby__.set_frozen!(self); __saruby__.__ivget(self, :__h).clear; self)
+  def reset = (__saruby__.set_frozen!(self); __saruby__.__ivget(self, :__h).rehash; self)
   def map!(&b)
     return enum_for(:map!) { size } unless b
     a = to_a.map(&b)
-    __frozen!
-    __hash.clear
+    __saruby__.set_frozen!(self)
+    __saruby__.__ivget(self, :__h).clear
     a.each { |x| add(x) }
     self
   end
   alias collect! map!
   def select!(&b)
     return enum_for(:select!) { size } unless b
-    n = size; __hash.select! { |k, _| b.call(k) }; n == size ? nil : self
+    __saruby__.set_frozen!(self)
+    n = size; __saruby__.__ivget(self, :__h).select! { |k, _| b.call(k) }; n == size ? nil : self
   end
   alias filter! select!
   def reject!(&b)
     return enum_for(:reject!) { size } unless b
-    n = size; __hash.reject! { |k, _| b.call(k) }; n == size ? nil : self
+    __saruby__.set_frozen!(self)
+    n = size; __saruby__.__ivget(self, :__h).reject! { |k, _| b.call(k) }; n == size ? nil : self
   end
   def delete_if(&b) = (return enum_for(:delete_if) { size } unless b; reject!(&b); self)
   def keep_if(&b) = (return enum_for(:keep_if) { size } unless b; select!(&b); self)
   def classify
     return enum_for(:classify) { size } unless block_given?
     h = {}
-    each { |x| (h[yield(x)] ||= __new_like).add(x) }
+    each { |x| (h[yield(x)] ||= __saruby__.__set_like(self)).add(x) }
     h
   end
   def divide(&b)
@@ -617,33 +601,20 @@ class Set
       items.each { |x| parent[x] = x }
       items.each_with_index { |a, i| items[(i + 1)..].each { |c| parent[find.(a)] = find.(c) if b.call(a, c) && b.call(c, a) && find.(a) != find.(c) } }
       groups = {}
-      items.each { |x| (groups[find.(x)] ||= __new_like).add(x) }
+      items.each { |x| (groups[find.(x)] ||= __saruby__.__set_like(self)).add(x) }
       s = Set.new; groups.each_value { |g| s.add(g) }; s
     else
       s = Set.new; classify(&b).each_value { |g| s.add(g) }; s
     end
   end
-  def __flatten_into(out, seen)
-    each do |x|
-      if x.is_a?(Set)
-        raise ArgumentError, "tried to flatten recursive Set" if seen[x.object_id]
-        seen[x.object_id] = true
-        x.__flatten_into(out, seen)
-        seen.delete(x.object_id)
-      else
-        out.add(x)
-      end
-    end
-    out
-  end
-  def flatten = __flatten_into(__new_like, { object_id => true })
+  def flatten = __saruby__.set_flatten_into(self, __saruby__.__set_like(self), { object_id => true })
   def flatten!
     return nil unless any? { |x| x.is_a?(Set) }
     replace(flatten)
   end
   def join(sep = nil) = to_a.join(sep)
   def inspect
-    seen = (Enumerable.__ivget(Set, :__insp) || Enumerable.__ivset(Set, :__insp, {}))
+    seen = (__saruby__.__ivget(Set, :__insp) || __saruby__.__ivset(Set, :__insp, {}))
     sub = !instance_of?(Set)
     if seen.key?(object_id)
       return sub ? "#<#{self.class}: {...}>" : "#{self.class}[...]"
@@ -659,3 +630,29 @@ class Set
   alias to_s inspect
 end
 
+
+# the prelude's own helpers, on the internal module (no constant names it)
+def __saruby__.__size(o) = (o.respond_to?(:size) ? o.size : nil)
+def __saruby__.set_enum(o)
+  return o if o.is_a?(Set)
+  raise ArgumentError, "value must be enumerable" unless o.respond_to?(:each_entry) || o.respond_to?(:each)
+  o
+end
+def __saruby__.set_set(o)
+  raise ArgumentError, "value must be a set" unless o.is_a?(Set)
+  o
+end
+def __saruby__.set_frozen!(s) = (raise FrozenError.new("can't modify frozen #{s.class}: #{s.inspect}", receiver: s) if s.frozen?)
+def __saruby__.set_flatten_into(s, out, seen)
+  s.each do |x|
+    if x.is_a?(Set)
+      raise ArgumentError, "tried to flatten recursive Set" if seen[x.object_id]
+      seen[x.object_id] = true
+      set_flatten_into(x, out, seen)
+      seen.delete(x.object_id)
+    else
+      out.add(x)
+    end
+  end
+  out
+end

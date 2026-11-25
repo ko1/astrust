@@ -153,6 +153,7 @@ pub struct Compiler<'a> {
     tag: bool,                    // tag nodes with prism node ids: not saruby's own <internal:..> code (no path to
                                   // re-read), nor a parse whose ids overflow the tag (the root's id is the largest)
     pub errors: Vec<String>,
+    internal: bool,               // saruby's own prelude source: `__saruby__` is the VM's internal module (with_internal)
     csyms: Vec<std::cell::Cell<Sym>>,   // pr.constants interned, on first use (NOSYM: not yet)
     src_enc: u32,                       // the source encoding (magic comment)
 }
@@ -180,7 +181,7 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), outer: HashMap::default(), pending_outer: vec![], ractor_src: std::cell::OnceCell::new(), eval_outer: vec![], in_def: 0, pm_err: None, yields: false, pm_dcache: None, tl_binding: false, required: false, cov: None, cov_popped: false, trace: false, flat_stmts: false, tag: !file.starts_with("<internal:") && pr.root.id < 1 << (32 - NF_TAG_SHIFT), errors: vec![],
+        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), outer: HashMap::default(), pending_outer: vec![], ractor_src: std::cell::OnceCell::new(), eval_outer: vec![], in_def: 0, pm_err: None, yields: false, pm_dcache: None, tl_binding: false, required: false, cov: None, cov_popped: false, trace: false, flat_stmts: false, tag: !file.starts_with("<internal:") && pr.root.id < 1 << (32 - NF_TAG_SHIFT), errors: vec![], internal: INTERNAL.with(|i| i.get()),
                    csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()],
                    src_enc: crate::builtins::encoding::find_enc(pr.encoding.as_bytes()).unwrap_or(crate::object::ENC_UTF8) as u32 };
         // identifiers of a non-UTF-8 source are symbols in its encoding (as its symbol literals)
@@ -1005,6 +1006,8 @@ impl<'a> Compiler<'a> {
                 ALLOC_node_if(st, on_state, off_state)
             }
             // calls
+            Kind::CallNode { receiver: None, name, arguments: None, block: None, .. }
+                if self.internal && n.flags & pa::CALL_NODE_FLAGS_VARIABLE_CALL != 0 && self.pr.constants[*name as usize] == b"__saruby__" => ALLOC_node_internal(),
             Kind::CallNode { receiver, name, arguments, block, message_start } => {
                 let nm = self.cst(*name);
                 // a call is at its message's line (CRuby: `x\n  .foo` raises at line 2)
@@ -2718,6 +2721,14 @@ impl CompileError {
     pub fn text(&self) -> String { String::from_utf8_lossy(&self.msg).into_owned() }
 }
 
+thread_local! { static INTERNAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+/// f's compiles are of saruby's own prelude sources (never a name: eval or load cannot ask for it).
+pub fn with_internal<R>(f: impl FnOnce() -> R) -> R {
+    INTERNAL.with(|i| i.set(true));
+    let r = f();
+    INTERNAL.with(|i| i.set(false));
+    r
+}
 /// Parse and compile a source file into a top-level iseq.
 pub fn compile_source(src: &[u8], file: &'static str, line: i32, kind: IseqKind, outer: Vec<Vec<(Sym, u32, u32)>>) -> Result<&'static Iseq, CompileError> {
     compile_source_enc(src, crate::object::ENC_UTF8, file, line, kind, outer)

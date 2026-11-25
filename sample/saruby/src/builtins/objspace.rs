@@ -175,7 +175,7 @@ fn all_objects() -> Vec<Value> {
 }
 /// What ObjectSpace.each_object shows.
 fn visible(c: &Ctx, v: Value) -> bool {
-    obj_klass(v) != NIL && !matches!(c.body_of(v), Body::Env(..) | Body::Free(_)) && !(is_class_or_module(v) && singleton_internal(c, v))
+    obj_klass(v) != NIL && v != c.vm().m_internal.get() && !matches!(c.body_of(v), Body::Env(..) | Body::Free(_)) && !(is_class_or_module(v) && singleton_internal(c, v))
 }
 /// rb_singleton_class_internal_p: a class's metaclass that has no metaclass of its own (never exposed).
 pub fn singleton_internal(c: &Ctx, v: Value) -> bool {

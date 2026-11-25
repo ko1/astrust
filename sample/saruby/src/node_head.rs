@@ -299,6 +299,12 @@ pub struct node_false_struct {
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
+pub struct node_internal_struct {
+
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
 pub struct node_self_struct {
 
 }
@@ -1126,6 +1132,11 @@ pub fn ALLOC_node_false() -> NodePtr {
 }
 
 #[allow(non_snake_case)]
+pub fn ALLOC_node_internal() -> NodePtr {
+    node_allocate_with(&KIND_node_internal, node_internal_struct {  }, |_| { })
+}
+
+#[allow(non_snake_case)]
 pub fn ALLOC_node_self() -> NodePtr {
     node_allocate_with(&KIND_node_self, node_self_struct {  }, |_| { })
 }
@@ -1670,6 +1681,12 @@ fn CHILDREN_node_true(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
 #[allow(non_snake_case, unused_variables)]
 fn CHILDREN_node_false(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
     let u = node_u_mut::<node_false_struct>(n);
+
+}
+
+#[allow(non_snake_case, unused_variables)]
+fn CHILDREN_node_internal(n: NodePtr, own: bool, f: &mut dyn FnMut(&mut NodePtr)) {
+    let u = node_u_mut::<node_internal_struct>(n);
 
 }
 
@@ -2399,6 +2416,22 @@ pub static KIND_node_false: NodeKind = NodeKind {
 };
 const _: () = assert!(std::mem::size_of::<NodeOf<node_false_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_false_struct>>() <= 8);
 impl NodeStruct for node_false_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_false } }
+
+#[allow(non_upper_case_globals)]
+pub static KIND_node_internal: NodeKind = NodeKind {
+    name: "node_internal",
+    default_dispatcher: DISPATCH_node_internal,
+    hash_func: HASH_node_internal,
+    profile: PROF_node_internal,
+    specializer: SPECIALIZE_node_internal,
+    dumper: DUMP_node_internal,
+    replacer: REPLACE_node_internal,
+    no_inline: false,
+    size: std::mem::size_of::<NodeOf<node_internal_struct>>(),
+    children: CHILDREN_node_internal,
+};
+const _: () = assert!(std::mem::size_of::<NodeOf<node_internal_struct>>() % 8 == 0 && std::mem::align_of::<NodeOf<node_internal_struct>>() <= 8);
+impl NodeStruct for node_internal_struct { #[inline(always)] fn kind() -> &'static NodeKind { &KIND_node_internal } }
 
 #[allow(non_upper_case_globals)]
 pub static KIND_node_self: NodeKind = NodeKind {
