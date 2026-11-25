@@ -6,6 +6,8 @@ preload_store/
 /sample/saruby/saruby
 /sample/saruby/libsaruby.so
 /sample/saruby/work/
+/sample/saruby/target-cov/
+/sample/saruby/cov/
 /sample/saruby/test/regex/target/
 /sample/saruby/.features
 /.claude/
