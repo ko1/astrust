@@ -318,7 +318,6 @@ pub fn inspect_vec(b: &[u8], enc: u8) -> Vec<u8> {
     let same = enc == inspect_resenc();
     let same_u8 = same && en::kind(enc) == en::EK::Utf8;
     let code_at = |i: usize| -> Option<u32> { en::precise_len(enc, b, i).map(|l| en::char_code(enc, &b[i..i + l])) };
-    let mut run = (1u32, 0u32); // last Print range hit: runs of one script skip the search
     let mut i = 0;
     while i < b.len() {
         let Some(l) = en::precise_len(enc, b, i) else {
@@ -351,7 +350,7 @@ pub fn inspect_vec(b: &[u8], enc: u8) -> Vec<u8> {
                 x => if uni { push_fmt(&mut out, format_args!("\\u{:04X}", x)) } else { push_fmt(&mut out, format_args!("\\x{:02X}", x)) },
             }
         } else if uni {
-            if same_u8 && (cp >= run.0 && cp <= run.1 || astrogre::re::uni_print_range(cp).is_some_and(|r| { run = r; true })) { out.extend_from_slice(&b[i..i + l]); }
+            if same_u8 && uni_printable(cp) { out.extend_from_slice(&b[i..i + l]); }
             else if cp > 0xffff { push_fmt(&mut out, format_args!("\\u{{{:X}}}", cp)); }
             else { push_fmt(&mut out, format_args!("\\u{:04X}", cp)); }
         } else if same && (l > 1 || en::hi_byte_print(enc, b[i])) {

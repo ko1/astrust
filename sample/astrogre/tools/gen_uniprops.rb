@@ -72,6 +72,12 @@ puts arr("UP_NAME_OFF", "u32", noff, 16)
 puts arr("UP_NAME_ID", "u16", ids, 24)
 puts arr("UP_OFF", "u32", offs, 16)
 puts arr("UP_RANGES", "u32", flat, 8, "0x%x")
+# BMP bitmap of Print (bit c of word c/64), for String#inspect's per-character test
+print_r = uniq.keys[std[%w[NEWLINE ALPHA BLANK CNTRL DIGIT GRAPH LOWER PRINT].index("PRINT")]]
+bm = Array.new(1024, 0)
+print_r.each_slice(2) { |lo, hi| (lo..[hi, 0xffff].min).each { |c| bm[c >> 6] |= 1 << (c & 63) } if lo <= 0xffff }
+puts "// Print for c < 0x10000: bit (c & 63) of UP_PRINT_BMP[c >> 6]."
+puts arr("UP_PRINT_BMP", "u64", bm, 4, "0x%x")
 File.write(ENV["NAMES_OUT"], sorted.join("\n") + "\n") if ENV["NAMES_OUT"]
 
 # Simple (1 code point) case-equivalence classes from casefold.h: CaseFold_11 (x -> fold) and
