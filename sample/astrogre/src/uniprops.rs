@@ -18,7 +18,23 @@ pub const UP_WORD: u16 = 659;
 pub const UP_ALNUM: u16 = 32;
 pub const UP_ASCII: u16 = 39;
 pub const UP_PUNCT: u16 = 596;
-pub const UP_MARK: u16 = 76;
+pub const UP_GCB_CONTROL: u16 = 119;
+pub const UP_GCB_CR: u16 = 120;
+pub const UP_GCB_EXTEND: u16 = 121;
+pub const UP_GCB_L: u16 = 122;
+pub const UP_GCB_LF: u16 = 123;
+pub const UP_GCB_LV: u16 = 124;
+pub const UP_GCB_LVT: u16 = 125;
+pub const UP_GCB_PREPEND: u16 = 126;
+pub const UP_GCB_REGIONALINDICATOR: u16 = 127;
+pub const UP_GCB_SPACINGMARK: u16 = 128;
+pub const UP_GCB_T: u16 = 129;
+pub const UP_GCB_V: u16 = 130;
+pub const UP_GCB_ZWJ: u16 = 131;
+pub const UP_INCB_CONSONANT: u16 = 196;
+pub const UP_INCB_EXTEND: u16 = 197;
+pub const UP_INCB_LINKER: u16 = 198;
+pub const UP_EXTPICT: u16 = 108;
 pub static UP_NAME_BLOB: [u8; 10167] = [
     97, 100, 108, 97, 109, 97, 100, 108, 109, 97, 103, 101, 61, 49, 46, 49, 97, 103, 101, 61, 49, 48, 46, 48,
     97, 103, 101, 61, 49, 49, 46, 48, 97, 103, 101, 61, 49, 50, 46, 48, 97, 103, 101, 61, 49, 50, 46, 49,

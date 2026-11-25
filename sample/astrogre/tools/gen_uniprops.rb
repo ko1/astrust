@@ -42,7 +42,7 @@ uniq = {} # content => id
 ids = []
 names.keys.sort.each { |n| ids << (uniq[arrays.fetch(names[n])] ||= uniq.size) }
 std = code_ranges.first(16).map { |c| uniq[arrays.fetch(c)] ||= uniq.size }
-mark = uniq[arrays.fetch(names.fetch("m"))]
+named = ->(n) { uniq[arrays.fetch(names.fetch(n))] }
 flat = []
 offs = [0]
 uniq.keys.each { |v| flat.concat(v); offs << flat.size / 2 }
@@ -64,7 +64,9 @@ puts "pub const UP_COUNT: usize = #{uniq.size};"
 %w[NEWLINE ALPHA BLANK CNTRL DIGIT GRAPH LOWER PRINT XPUNCT SPACE UPPER XDIGIT WORD ALNUM ASCII PUNCT].each_with_index do |n, i|
   puts "pub const UP_#{n}: u16 = #{std[i]};"
 end
-puts "pub const UP_MARK: u16 = #{mark};"
+%w[control cr extend l lf lv lvt prepend regionalindicator spacingmark t v zwj].each { |n| puts "pub const UP_GCB_#{n.upcase}: u16 = #{named.("graphemeclusterbreak=#{n}")};" }
+%w[consonant extend linker].each { |n| puts "pub const UP_INCB_#{n.upcase}: u16 = #{named.("incb=#{n}")};" }
+puts "pub const UP_EXTPICT: u16 = #{named.("extendedpictographic")};"
 puts arr("UP_NAME_BLOB", "u8", blob.bytes, 24)
 puts arr("UP_NAME_OFF", "u32", noff, 16)
 puts arr("UP_NAME_ID", "u16", ids, 24)

@@ -299,10 +299,6 @@ fn is_uword(c: u32) -> bool {
     uni_has(UP_WORD, c) || latin1_word_extra(c)
 }
 
-fn is_mark(c: u32) -> bool {
-    c >= 0x300 && uni_has(UP_MARK, c)
-}
-
 fn prop_match(p: Prop, c: u32) -> bool {
     match p {
         Prop::Any => true,
@@ -2805,10 +2801,52 @@ fn is_bword(c: u32) -> bool {
     is_uword(c) || c >= MB
 }
 
-fn is_extender(c: u32) -> bool {
-    is_mark(c) || c == 0x200C || (0x1F3FB..=0x1F3FF).contains(&c) || (0xE0020..=0xE007F).contains(&c)
+/// Grapheme_Cluster_Break classes (UAX #29).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Gcb {
+    Other,
+    Cr,
+    Lf,
+    Control,
+    Extend,
+    Zwj,
+    Ri,
+    Prepend,
+    SpacingMark,
+    L,
+    V,
+    T,
+    Lv,
+    Lvt,
 }
 
+fn gcb(c: u32) -> Gcb {
+    if (0x20..0x7f).contains(&c) {
+        return Gcb::Other;
+    }
+    for (id, k) in [
+        (UP_GCB_CR, Gcb::Cr),
+        (UP_GCB_LF, Gcb::Lf),
+        (UP_GCB_CONTROL, Gcb::Control),
+        (UP_GCB_EXTEND, Gcb::Extend),
+        (UP_GCB_ZWJ, Gcb::Zwj),
+        (UP_GCB_REGIONALINDICATOR, Gcb::Ri),
+        (UP_GCB_PREPEND, Gcb::Prepend),
+        (UP_GCB_SPACINGMARK, Gcb::SpacingMark),
+        (UP_GCB_L, Gcb::L),
+        (UP_GCB_V, Gcb::V),
+        (UP_GCB_T, Gcb::T),
+        (UP_GCB_LV, Gcb::Lv),
+        (UP_GCB_LVT, Gcb::Lvt),
+    ] {
+        if uni_has(id, c) {
+            return k;
+        }
+    }
+    Gcb::Other
+}
+
+/// End of the extended grapheme cluster at `pos` (UAX #29 GB3-GB13, with GB9c conjuncts).
 fn grapheme(e: Enc, s: &[u8], pos: usize) -> Option<usize> {
     let len = s.len();
     if pos >= len {
@@ -2817,29 +2855,54 @@ fn grapheme(e: Enc, s: &[u8], pos: usize) -> Option<usize> {
     if e != Enc::UTF8 {
         return Some(pos + char_len_e(e, s, pos));
     }
-    if s[pos] == b'\r' {
-        return Some(if pos + 1 < len && s[pos + 1] == b'\n' { pos + 2 } else { pos + 1 });
-    }
     let (c0, l) = decode(s, pos);
     let mut p = pos + l;
-    if (0x1F1E6..=0x1F1FF).contains(&c0) && p < len {
-        let (c1, l1) = decode(s, p);
-        if (0x1F1E6..=0x1F1FF).contains(&c1) {
-            p += l1;
-        }
+    let mut prev = gcb(c0);
+    match prev {
+        Gcb::Cr => return Some(if p < len && s[p] == b'\n' { p + 1 } else { p }),
+        Gcb::Lf | Gcb::Control => return Some(p),
+        _ => {}
     }
+    let mut ri = (prev == Gcb::Ri) as u32; // length of the regional-indicator run so far
+    let mut pict = uni_has(UP_EXTPICT, c0) as u8; // 1: ExtPict Extend*, 2: ... ZWJ just seen
+    let mut incb = uni_has(UP_INCB_CONSONANT, c0) as u8; // 1: Consonant [Extend Linker]*, 2: with a Linker
     while p < len {
         let (c, l) = decode(s, p);
-        if is_extender(c) {
-            p += l;
-        } else if c == 0x200D {
-            p += l;
-            if p < len {
-                p += decode(s, p).1;
+        let k = gcb(c);
+        let join = match k {
+            Gcb::Cr | Gcb::Lf | Gcb::Control => false,
+            _ if prev == Gcb::Prepend => true,
+            Gcb::L => prev == Gcb::L,
+            Gcb::V => matches!(prev, Gcb::L | Gcb::Lv | Gcb::V),
+            Gcb::Lv => prev == Gcb::L,
+            Gcb::Lvt => prev == Gcb::L,
+            Gcb::T => matches!(prev, Gcb::Lv | Gcb::V | Gcb::Lvt | Gcb::T),
+            Gcb::Extend | Gcb::Zwj | Gcb::SpacingMark => true,
+            Gcb::Ri => prev == Gcb::Ri && ri % 2 == 1,
+            Gcb::Prepend | Gcb::Other => {
+                (prev == Gcb::Zwj && pict == 2 && uni_has(UP_EXTPICT, c)) || (incb == 2 && uni_has(UP_INCB_CONSONANT, c))
             }
-        } else {
+        };
+        if !join {
             break;
         }
+        pict = match (k, pict) {
+            (Gcb::Extend, 1) => 1,
+            (Gcb::Zwj, 1) => 2,
+            _ => uni_has(UP_EXTPICT, c) as u8,
+        };
+        incb = if uni_has(UP_INCB_CONSONANT, c) {
+            1
+        } else if incb > 0 && uni_has(UP_INCB_LINKER, c) {
+            2
+        } else if incb > 0 && uni_has(UP_INCB_EXTEND, c) {
+            incb
+        } else {
+            0
+        };
+        ri = if k == Gcb::Ri { ri + 1 } else { 0 };
+        prev = k;
+        p += l;
     }
     Some(p)
 }
