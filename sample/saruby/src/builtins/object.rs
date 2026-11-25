@@ -1446,9 +1446,11 @@ pub fn alloc_instance(c: &mut Ctx, klass: Value) -> RV {
 fn c_allocate(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { alloc_instance(c, slf) }
 pub fn c_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if uninit_class(c, slf) { return type_err(c, "can't instantiate uninitialized class"); }
+    // looked up before allocating: allocating a class (Class.new) moves the hierarchy serial, which a lookup after pays for
+    let me = lookup_method(c, slf, s::initialize);
     let o = alloc_instance(c, slf)?;
+    debug_assert!(class_of(o) == slf);
     let kw = kw_arg(c, a).is_some();
-    let me = lookup_method(c, class_of(o), s::initialize);
     match me_kind(c, me) {
         Some(MKind::Cfunc(..)) if me == c.vm().ids.bo_init.get() => {
             if !a.is_empty() && c.class(slf).alloc == AllocKind::Object && me_owner(c, me) == c.vm().c_basic_object.get() {
