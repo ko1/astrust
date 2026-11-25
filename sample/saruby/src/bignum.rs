@@ -536,7 +536,7 @@ impl BigInt {
     pub fn mul(&self, o: &BigInt) -> BigInt { BigInt { neg: self.neg != o.neg, mag: mul_mag(&self.mag, &o.mag) }.norm() }
     /// Truncating division
     pub fn divrem_trunc(&self, o: &BigInt) -> (BigInt, BigInt) {
-        let (q, r) = divmod_mag(&self.mag, &o.mag);
+        let (q, r) = if o.mag.len() >= BZ_DIV && self.mag.len() >= o.mag.len() + BZ_DIV / 2 { div_bz(&self.mag, &o.mag) } else { divmod_knuth(&self.mag, &o.mag) };
         (BigInt { neg: self.neg != o.neg, mag: q }.norm(), BigInt { neg: self.neg, mag: r }.norm())
     }
     /// Floored division (Ruby semantics)
