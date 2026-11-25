@@ -227,6 +227,8 @@ cfn!(int_pow_m, |c, s, a| {
         if e.neg { return err(c, c.vm().c_range_error.get(), "Integer#pow() 1st argument cannot be negative when 2nd argument specified"); }
         if !is_integer(a[1]) { return type_err(c, "Integer#pow() 2nd argument not allowed unless all arguments are integers"); }
         let m = c.to_big(a[1]);
+        // bignum.c: 0**x is 0 (x != 0) before the modulus is looked at
+        if s == Value::fix(0) && !e.is_zero() { return Ok(Value::fix(0)); }
         if m.is_zero() { return err(c, c.vm().c_zero_div_error.get(), "divided by 0"); }
         let mut base = c.to_big(s).divmod(&m).1;
         let mut r = BigInt::from_i64(1).divmod(&m).1;
@@ -269,7 +271,7 @@ fn int_shift(c: &mut Ctx, a: Value, n: i64) -> RV {
             return Ok(c.int_from_i128(x << n));
         }
         if a == Value::fix(0) { return Ok(a); }
-        if n > 1 << 26 { return err(c, c.vm().c_range_error.get(), "shift width too big"); }
+        if n > 1 << 32 { return err(c, c.vm().c_no_memory_error.get(), "failed to allocate memory"); }
         Ok(c.big_to_value(c.to_big(a).shl(n as usize)))
     } else {
         let m = (-n) as u64;
@@ -283,7 +285,12 @@ fn int_shift_big(c: &mut Ctx, a: Value, w: Value, left: bool) -> RV {
     let neg = if a.is_fixnum() { a.as_fix() < 0 } else { c.to_big(a).neg };
     if right { return Ok(Value::fix(if neg { -1 } else { 0 })); }
     if a == Value::fix(0) { return Ok(a); }
-    err(c, c.vm().c_range_error.get(), "shift width too big")
+    // bignum.c big_shift2/3: RangeError only when the 64-bit digit count overflows; otherwise the allocation fails
+    let bits = c.big(w).bit_length();
+    let xn = if a.is_fixnum() { 1 } else { (c.big(a).bit_length() as u128 + 63) / 64 };
+    let y = c.big(w).mag.iter().take(4).rev().fold(0u128, |acc, &d| (acc << 32) | d as u128);
+    if bits >= 68 || (y >> 6) + xn >= 1u128 << 60 { return err(c, c.vm().c_range_error.get(), "shift width too big"); }
+    err(c, c.vm().c_no_memory_error.get(), "failed to allocate memory")
 }
 fn shift_by(c: &mut Ctx, s: Value, w: Value, left: bool) -> RV {
     let w = if w.is_fixnum() { w } else { rb_to_int(c, w)? };
@@ -302,8 +309,9 @@ fn int_aref2(c: &mut Ctx, num: Value, beg: Value, len: Value) -> RV {
         return int_bitop(c, sh, m, b'&');
     }
     let (bv, lv) = (rb_to_int(c, beg)?, rb_to_int(c, len)?);
+    for v in [bv, lv] { if is_bignum(v) && c.big(v).to_i64().is_none() { return err(c, c.vm().c_range_error.get(), "bignum too big to convert into 'long long'"); } }
     let (b, l) = (num_to_long(c, bv)?, num_to_long(c, lv)?);
-    let Some(end) = b.checked_add(l) else { return err(c, c.vm().c_range_error.get(), "bignum too big to convert into 'long'") };
+    let Some(end) = b.checked_add(l) else { return err(c, c.vm().c_range_error.get(), "bignum too big to convert into 'long long'") };
     if l < 0 { return shift_by(c, num, bv, false); }
     if l == 0 || end <= 0 { return Ok(Value::fix(0)); }
     let sh = shift_by(c, num, bv, false)?;

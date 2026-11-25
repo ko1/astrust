@@ -417,6 +417,7 @@ fn bytes_of(c: &mut Ctx, r: Value, n: Value) -> RV {
     let n = crate::builtins::numeric_methods::num_to_long(c, n)?;
     if n < 0 { return arg_err(c, format!("negative string size (or size too big)")); }
     let mut out = Vec::new();
+    if n == i64::MAX { return err(c, c.vm().c_no_memory_error.get(), "too large allocation size"); }
     if out.try_reserve_exact(n as usize).is_err() { return err(c, c.vm().c_no_memory_error.get(), "failed to allocate memory"); }
     let mt = &mut rr(c, r).mt;
     let mut left = n as usize;

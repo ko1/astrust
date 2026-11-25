@@ -756,6 +756,9 @@ fn strftime_into(c: &mut Ctx, out: &mut Out, t: &RTime, v: &Vtm, fmt: &[u8]) -> 
                 out.b.extend_from_slice(&sbuf); break;
             }} }
             let flag_ok = precision <= 0;
+            // strftime_size_limit: the buffer may not grow past it (ERANGE); '-' pads nothing (except %N %L %z and the composites)
+            if precision > 0 && b"aAbBhcdHIjmMpPsSUwWxDXTyYzZn%tekrRlvCVuGgLNF".contains(&ch) && (!left || b"NLzcxDXTrRvF".contains(&ch))
+                && precision as u64 >= (out.max - out.b.len().min(out.max)) as u64 { return Err(strf_range(c, fmt)); }
             match ch {
                 b'%' => { tp = Some(b"%".to_vec()); break; }
                 b'a' => { if chcase { upper = true; } tp = Some(DAYS[v.wday as usize].as_bytes()[..3].to_vec()); break; }
@@ -860,10 +863,11 @@ fn strftime_into(c: &mut Ctx, out: &mut Out, t: &RTime, v: &Vtm, fmt: &[u8]) -> 
                 b'0'..=b'9' => {
                     if ch == b'0' { padding = b'0'; }
                     let st = i; while i < fmt.len() && fmt[i].is_ascii_digit() { i += 1; }
-                    precision = String::from_utf8_lossy(&fmt[st..i]).parse().unwrap_or(i64::MAX);
-                    i -= 1;
-                    // strftime_size_limit: the buffer may not grow past it (ERANGE)
-                    if precision as u64 >= (out.max - out.b.len().min(out.max)) as u64 { return Err(strf_range(c, fmt)); }
+                    match String::from_utf8_lossy(&fmt[st..i]).parse::<i64>() {
+                        Ok(w) if w <= i32::MAX as i64 => { precision = w; i -= 1; }
+                        // strftime.c: a width over INT_MAX is not a width; the spec is copied up to its first digit
+                        _ => { i = st; tp = Some(fmt[sp..=st].to_vec()); precision = -1; padding = 0; left = false; upper = false; lower = false; break; }
+                    }
                 }
                 _ => { tp = Some(fmt[sp..=i].to_vec()); precision = -1; padding = 0; left = false; upper = false; lower = false; break; }
             }

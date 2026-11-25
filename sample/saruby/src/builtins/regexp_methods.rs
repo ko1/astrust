@@ -286,7 +286,7 @@ pub(crate) fn group_index(c: &mut Ctx, m: Value, k: Value) -> Result<Option<usiz
         for &i in idx.iter().rev() { if md(c, m).groups.get(i).map(|g| g.is_some()).unwrap_or(false) { return Ok(Some(i)); } }
         return Ok(Some(*idx.last().unwrap()));
     }
-    let i = crate::builtins::numeric_methods::num_to_long(c, k)?;
+    let i = crate::builtins::numeric_methods::num_to_int32(c, k)?;
     let n = md(c, m).groups.len() as i64;
     // like rb_reg_nth_match, a negative index never reaches group 0
     let i = if i < 0 { if i + n <= 0 { return Ok(None); } i + n } else { i };
@@ -296,7 +296,7 @@ pub(crate) fn group_index(c: &mut Ctx, m: Value, k: Value) -> Result<Option<usiz
 /// match_backref_number + bounds check (begin/end/offset/byte*): no negative indices.
 fn group_index_strict(c: &mut Ctx, m: Value, k: Value) -> Result<usize, Esc> {
     if k.is_sym() || is_string(k) { return Ok(group_index(c, m, k)?.unwrap_or(0)); }
-    let i = crate::builtins::numeric_methods::num_to_long(c, k)?;
+    let i = crate::builtins::numeric_methods::num_to_int32(c, k)?;
     if i < 0 || i >= md(c, m).groups.len() as i64 { return err(c, c.vm().c_index_error.get(), format!("index {} out of matches", i)); }
     Ok(i as usize)
 }
@@ -362,10 +362,13 @@ fn md_values_at(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
             let i = group_index(c, slf, k)?.unwrap_or(0);
             let v = nth_match(c, slf, i as i64);
             c.ary_push(out, v);
-        } else {
+        } else if is_range(k) {
             let part = crate::builtins::array_methods::a_values_at(c, all, &[k], b)?;
             let items = c.ary(part).to_vec();
             for v in items { c.ary_push(out, v); }
+        } else {
+            let v = match group_index(c, slf, k)? { Some(i) => nth_match(c, slf, i as i64), None => NIL };
+            c.ary_push(out, v);
         }
     }
     Ok(out)

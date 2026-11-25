@@ -158,10 +158,17 @@ fn idx_of(c: &mut Ctx, slf: Value, k: Value) -> Result<Sym, Esc> {
     let len = c.ary_len(mem) as i64;
     let j = if i < 0 { i + len } else { i };
     if j < 0 || j >= len {
-        let msg = if i < 0 { format!("offset {} too small for struct(size:{})", i, len) } else { format!("offset {} too large for struct(size:{})", i, len) };
-        return err(c, c.vm().c_index_error.get(), msg);
+        return bad_offset(c, i, len);
     }
     Ok(c.ary_get(mem, j as usize).as_sym())
+}
+/// struct.c: the offset is reported through LONG2FIX (wraps at 2**62) and FIX2INT (int range)
+#[cold]
+fn bad_offset(c: &mut Ctx, i: i64, len: i64) -> Result<Sym, Esc> {
+    let f = (i << 1) >> 1;
+    if f != f as i32 as i64 { return err(c, c.vm().c_range_error.get(), format!("integer {} too {} to convert to 'int'", f, if f < 0 { "small" } else { "big" })); }
+    let msg = if f < 0 { format!("offset {} too small for struct(size:{})", f, len) } else { format!("offset {} too large for struct(size:{})", f, len) };
+    err(c, c.vm().c_index_error.get(), msg)
 }
 fn st_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let n = idx_of(c, slf, a[0])?; Ok(ivar_get(c, slf, n)) }
 fn st_aset(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let n = idx_of(c, slf, a[0])?; check_frozen(c, slf)?; ivar_set_raw(c, slf, n, a[1]); Ok(a[1]) }
@@ -267,8 +274,7 @@ fn st_values_at(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     for &x in a {
         if is_range(x) { continue; }
         let i = crate::builtins::numeric_methods::num_to_long(c, x)?;
-        if i < -len { return err(c, c.vm().c_index_error.get(), format!("offset {} too small for struct(size:{})", i, len)); }
-        if i >= len { return err(c, c.vm().c_index_error.get(), format!("offset {} too large for struct(size:{})", i, len)); }
+        if i < -len || i >= len { return bad_offset(c, i, len).map(|_| NIL); }
     }
     crate::builtins::array_methods::a_values_at(c, arr, a, b)
 }

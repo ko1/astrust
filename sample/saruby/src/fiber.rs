@@ -428,9 +428,11 @@ fn raise_in(c: &mut Ctx, f: Value, e: Value) -> RV {
 /// a terminated one; a suspended fiber's frames are not walked: [] too).
 fn f_backtrace_any(c: &mut Ctx, slf: Value, a: &[Value], locs: bool) -> RV {
     if slf != CUR.get(c) { return Ok(c.ary_new()); }
-    let (start, len, drop) = if a.is_empty() { (0, None, 0) } else { crate::builtins::exception::caller_range(c, a)? };
+    let (start, len) = if a.is_empty() { (0, None) } else {
+        let Some(r) = crate::builtins::exception::caller_range(c, a, |c| backtrace_lines_n(c, 0, None).map_or(0, |v| v.len()))? else { return Ok(NIL) };
+        r
+    };
     let Some(lines) = backtrace_lines_n(c, start, len) else { return Ok(NIL) };
-    let lines = crate::builtins::exception::drop_last(lines, drop);
     if locs { return Ok(crate::builtins::exception::locations_from_lines(c, lines)); }
     let v: Vec<Value> = lines.into_iter().map(|l| c.str_new(l.as_bytes())).collect();
     Ok(c.ary_from_vec(v))

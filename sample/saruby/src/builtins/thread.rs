@@ -1457,7 +1457,17 @@ pub fn init(c: &mut Ctx) {
 /// Thread#backtrace / #backtrace_locations: the current thread's, or a parked thread's own frames.
 fn th_backtrace(c: &mut Ctx, t: Value, a: &[Value], locs: bool) -> RV {
     thr(c, t)?;
-    let (start, len, drop) = if a.is_empty() { (0, None, 0) } else { crate::builtins::exception::caller_range(c, a)? };
+    let (start, len) = if a.is_empty() { (0, None) } else {
+        let size = |c: &mut Ctx| {
+            if t == cur(c) { return backtrace_locs_n(c, 0, None).map_or(0, |v| v.len()); }
+            let r = th(c, t);
+            let f = if r.inner != NIL { r.inner } else { r.fiber };
+            if f == NIL { return 0; }
+            crate::fiber::suspended_backtrace(c, f, 0, None).flatten().map_or(0, |v| v.len())
+        };
+        let Some(r) = crate::builtins::exception::caller_range(c, a, size)? else { return Ok(NIL) };
+        r
+    };
     let r = th(c, t);
     if r.dead { return Ok(NIL); }
     let lines = if t == cur(c) { backtrace_locs_n(c, start, len) } else {
@@ -1466,7 +1476,6 @@ fn th_backtrace(c: &mut Ctx, t: Value, a: &[Value], locs: bool) -> RV {
         match crate::fiber::suspended_backtrace(c, f, start, len) { Some(l) => l, None => return Ok(c.ary_new()) }
     };
     let Some(lines) = lines else { return Ok(NIL) };
-    let lines = crate::builtins::exception::drop_last(lines, drop);
     if locs { return Ok(crate::builtins::exception::locations_from_locs(c, lines)); }
     let v: Vec<Value> = lines.into_iter().map(|l| c.str_new(l.to_string().as_bytes())).collect();
     Ok(c.ary_from_vec(v))

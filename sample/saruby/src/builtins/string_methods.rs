@@ -185,7 +185,7 @@ cfn!(s_initialize, |c, slf, a, _b| {
     }
     if let Some(h) = kw {
         if let Some(e) = crate::hash::hash_get_opt(c, h, sym_value("encoding"))? { let e = crate::builtins::encoding::to_enc(c, e)?; c.str_modify(slf)?.enc = e; }
-        if let Some(cap) = crate::hash::hash_get_opt(c, h, sym_value("capacity"))? { let n = num_to_long(c, cap)?; if n > 1 << 40 { return err(c, c.vm().c_no_memory_error.get(), "failed to allocate memory"); } }
+        if let Some(cap) = crate::hash::hash_get_opt(c, h, sym_value("capacity"))? { let n = num_to_long(c, cap)?; if n == i64::MAX { return err(c, c.vm().c_no_memory_error.get(), "too large allocation size"); } if n > 1 << 40 { return err(c, c.vm().c_no_memory_error.get(), "failed to allocate memory"); } }
     }
     Ok(slf)
 });
@@ -1197,6 +1197,8 @@ cfn!(s_squeeze_b, |c, slf, a, b_| { let v = squeeze_impl(c, slf, a)?; check_froz
 /// A Vec with room for `n` bytes, or NoMemoryError (CRuby's failed malloc).
 fn reserve_bytes(c: &mut Ctx, n: usize) -> Result<Vec<u8>, Esc> {
     let mut v = Vec::new();
+    // ruby_xmalloc: a size (with the terminator) that is negative as ssize_t
+    if n as u64 >= i64::MAX as u64 { return err(c, c.vm().c_no_memory_error.get(), "too large allocation size"); }
     if v.try_reserve_exact(n).is_err() { return err(c, c.vm().c_no_memory_error.get(), "failed to allocate memory"); }
     Ok(v)
 }
