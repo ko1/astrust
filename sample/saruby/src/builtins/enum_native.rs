@@ -540,14 +540,36 @@ fn en_inject(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     if ary_direct(c, slf) { am::a_inject(c, slf, a, blk) } else { en_inject_gen(c, slf, a, blk) }
 }
 fn en_sort_by(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
-    if !blk.is_null() && ary_direct(c, slf) { am::sort_by_body(c, slf, blk) } else { en_sort_by_gen(c, slf, a, blk) }
+    if ary_direct(c, slf) { am::a_sort_by(c, slf, a, blk) } else { en_sort_by_gen(c, slf, a, blk) }
 }
-// without a block the generic one: it checks the size before making the Enumerator
 fn en_each_slice(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
-    if !blk.is_null() && ary_direct(c, slf) { am::a_each_slice(c, slf, a, blk) } else { en_each_slice_gen(c, slf, a, blk) }
+    if ary_direct(c, slf) { am::a_each_slice(c, slf, a, blk) } else { en_each_slice_gen(c, slf, a, blk) }
 }
 fn en_each_cons(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
-    if !blk.is_null() && ary_direct(c, slf) { am::a_each_cons(c, slf, a, blk) } else { en_each_cons_gen(c, slf, a, blk) }
+    if ary_direct(c, slf) { am::a_each_cons(c, slf, a, blk) } else { en_each_cons_gen(c, slf, a, blk) }
+}
+
+/// (Enumerable's entry, of Hash?, the body, its arity): what fill_cc caches for an Array / Hash site (direct_body)
+static DIRECT: std::sync::OnceLock<Vec<(usize, bool, CFunc, i32)>> = std::sync::OnceLock::new();
+fn init_direct(c: &Ctx, m: Value) {
+    let ary: [(&str, CFunc, i32); 11] = [("each_slice", am::a_each_slice, 1), ("each_cons", am::a_each_cons, 1), ("inject", am::a_inject, -1),
+        ("reduce", am::a_inject, -1), ("each_with_index", am::a_each_with_index, 0), ("sort_by", am::a_sort_by, 0), ("flat_map", am::a_flat_map, 0),
+        ("collect_concat", am::a_flat_map, 0), ("filter_map", am::a_filter_map, 0), ("member?", am::a_include, 1), ("entries", am::a_entries, 0)];
+    let hash: [(&str, CFunc, i32); 6] = [("map", hm::h_map, 0), ("collect", hm::h_map, 0), ("flat_map", hm::h_flat_map, 0),
+        ("collect_concat", hm::h_flat_map, 0), ("filter_map", hm::h_filter_map, 0), ("each_with_index", hm::h_each_with_index, 0)];
+    let me = |n: &str| c.method_entry(m, crate::symbol::intern(n.as_bytes())).map_or(0, |e| e as *const MethodEntry as usize);
+    let t = ary.iter().map(|&(n, f, a)| (me(n), false, f, a)).chain(hash.iter().map(|&(n, f, a)| (me(n), true, f, a))).collect();
+    let _ = DIRECT.set(t);
+}
+/// fill_cc of a site whose cache gets Enumerable's entry `me` for an Array / Hash receiver (klass exactly the class,
+/// its #each the builtin; a redefinition refills every cache): the body that entry's cfunc would call, with the
+/// arity it takes (a site passing other arguments calls the entry).
+pub fn direct_body(c: &Ctx, me: *const MethodEntry, klass: Value) -> Option<(CFunc, i32)> {
+    let v = c.vm();
+    let hash = if klass == v.c_array.get() { if crate::rt::redef(crate::rt::R_ARY_EACH) { return None; } false }
+        else if klass == v.c_hash.get() { if !matches!(c.method_entry(klass, s::each), Some(e) if matches!(e.kind, MKind::Cfunc(f, _) if f as *const () as usize == hm::h_each as *const () as usize)) { return None; } true }
+        else { return None };
+    DIRECT.get()?.iter().find(|&&(m, h, _, _)| m == me as usize && h == hash).map(|&(_, _, f, a)| (f, a))
 }
 
 // enum.c partition_i / tally_i (no Ruby-level packing: ENUM_WANT_SVALUE is `pack`)
@@ -668,6 +690,7 @@ fn define_enumerable_natives(c: &mut Ctx, m: Value) {
     define_cfunc(c, m, "min", en_min, -1); define_cfunc(c, m, "max", en_max, -1); define_cfunc(c, m, "minmax", en_minmax, 0); define_cfunc(c, m, "max_by", en_max_by, -1);
     define_cfunc(c, m, "inject", en_inject, -1); define_cfunc(c, m, "reduce", en_inject, -1);
     define_cfunc(c, m, "sort_by", en_sort_by, 0);
+    init_direct(c, m);
 }
 
 /// Defines the native methods of Enumerable `m`.

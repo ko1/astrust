@@ -1422,14 +1422,16 @@ fn ary_size_call(c: &mut Ctx, slf: Value) -> Result<Option<Value>, Esc> {
     if !respond_to(c, slf, s::size, true) { return Ok(None); }
     Ok(Some(funcall(c, slf, s::size, &[], std::ptr::null())?))
 }
-cfn!(a_each_slice, |c, slf, a, blk| if blk.is_null() { crate::builtins::enumerator::enum_for(c, slf, intern(b"each_slice"), a, NIL) } else { enum_or(c, slf, "each_slice", a, blk, |c| {
+// each_slice / each_cons: the size is checked before an Enumerator is made (enum_each_slice)
+cfn!(a_each_slice, |c, slf, a, blk| {
     let n = num_to_long(c, a[0])?;
     if n <= 0 { return arg_err(c, "invalid slice size"); }
+    if blk.is_null() { let nv = c.int_from_i64(n); return crate::builtins::enumerator::enum_for(c, slf, intern(b"each_slice"), &[nv], NIL); }
     ary_size_call(c, slf)?;
     let mut i = 0;
     while i < c.ary_len(slf) { let e = i.saturating_add(n as usize).min(c.ary_len(slf)); let sl = c.ary_from_vec(c.ary(slf)[i..e].to_vec()); yield1(c, blk, sl)?; i = e; }
     Ok(slf)
-}) });
+});
 cfn!(a_inject, |c, slf, a, blk| {
     if blk.is_null() { check_argc(c, a, 1, 2)?; } else { check_argc(c, a, 0, 2)?; if a.len() == 2 && c.vm().verbose.get() == TRUE { gvar_warn(c, "given block not used", false)?; } }
     if !blk.is_null() { if let Some(r) = a_inject_loop(c, slf, a, &mut |c, a| yield_block(c, blk, a)) { return r; } }
@@ -1448,6 +1450,7 @@ cfn!(a_inject, |c, slf, a, blk| {
     }
     Ok(acc)
 });
+cfn!(a_sort_by, |c, slf, a, blk| enum_or(c, slf, "sort_by", a, blk, |c| sort_by_body(c, slf, blk)));
 /// The elements of slf ordered by the block's keys (sort_by_cmp: OPTIMIZED_CMP on the keys).
 pub fn sort_by_body(c: &mut Ctx, slf: Value, blk: Blk) -> RV {
     let n = c.ary_len(slf);
@@ -1460,15 +1463,16 @@ pub fn sort_by_body(c: &mut Ctx, slf: Value, blk: Blk) -> RV {
     else { sort_values(c, &mut idx, &mut |c, x, y| rb_cmp(c, c.ary_get(keys, x.as_fix() as usize), c.ary_get(keys, y.as_fix() as usize)))?; }
     Ok(c.ary_from_vec(idx.iter().map(|i| c.ary_get(src, i.as_fix() as usize)).collect()))
 }
-cfn!(a_each_cons, |c, slf, a, blk| if blk.is_null() { crate::builtins::enumerator::enum_for(c, slf, intern(b"each_cons"), a, NIL) } else { enum_or(c, slf, "each_cons", a, blk, |c| {
+cfn!(a_each_cons, |c, slf, a, blk| {
     let n = num_to_long(c, a[0])?;
     if n <= 0 { return arg_err(c, "invalid size"); }
+    if blk.is_null() { let nv = c.int_from_i64(n); return crate::builtins::enumerator::enum_for(c, slf, intern(b"each_cons"), &[nv], NIL); }
     let n = n as usize;
     if let Some(sz) = ary_size_call(c, slf)? { if sz.is_fixnum() && n as u64 > sz.as_fix() as u64 { return Ok(slf); } }
     let mut i: usize = 0;
     while i.saturating_add(n) <= c.ary_len(slf) { let sl = c.ary_from_vec(c.ary(slf)[i..i + n].to_vec()); yield1(c, blk, sl)?; i += 1; }
     Ok(slf)
-}) });
+});
 cfn!(a_filter_map, |c, slf, a, blk| enum_or(c, slf, "filter_map", a, blk, |c| { let out = c.ary_new(); let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { let y = yield1(c, blk, x)?; if y.truthy() { c.ary_push(out, y); } i += 1; } Ok(out) }));
 // Without a block rb_ary_minmax is [min, max]; with one, CRuby's pairwise minmax (enum.c minmax_ii).
 cfn!(a_minmax, |c, slf, a, blk| {

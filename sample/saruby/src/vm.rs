@@ -2403,7 +2403,11 @@ fn fill_cc(c: &mut Ctx, cc: &CallCache, recv: Value, klass: Value, me: *const Me
                 }
             }
         }
-        MKind::Cfunc(f, arity) => { cc.cfunc.set(Some(f)); cc.arity.set(arity); cc.bi.set(crate::inline_builtin::cache_key(c, me, klass)); }
+        MKind::Cfunc(f, arity) => {
+            // Enumerable's entry on a plain Array / Hash: the body its cfunc would call (enum_native::direct_body)
+            let (f, arity) = crate::builtins::enum_native::direct_body(c, me, klass).unwrap_or((f, arity));
+            cc.cfunc.set(Some(f)); cc.arity.set(arity); cc.bi.set(crate::inline_builtin::cache_key(c, me, klass));
+        }
         MKind::AttrReader(name) | MKind::AttrWriter(name) => {
             let cd = c.class(klass);
             if !cd.is_singleton && cd.alloc == AllocKind::Object {
