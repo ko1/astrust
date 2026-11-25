@@ -301,11 +301,15 @@ fn div_bz(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
     let mut rem = shr_mag(&limbs(&r, sigma, r.len()), s); trim(&mut rem);
     (q, rem)
 }
-// Knuth algorithm D: magnitude division
 fn divmod_mag(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
+    if b.len() >= BZ_DIV && a.len() >= b.len() + BZ_DIV / 2 { return div_bz(a, b); }
+    divmod_knuth(a, b)
+}
+// Knuth algorithm D: magnitude division
+#[inline(always)]
+fn divmod_knuth(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
     if cmp_mag(a, b) == Ordering::Less { return (vec![], a.to_vec()); }
     if b.len() == 1 { let (q, r) = divmod_small(a, b[0]); return (q, if r == 0 { vec![] } else { vec![r] }); }
-    if b.len() >= BZ_DIV && a.len() - b.len() >= BZ_DIV / 2 { return div_bz(a, b); }
     let s = b[b.len() - 1].leading_zeros();
     let b = shl_mag(b, s as usize);
     let mut a = shl_mag(a, s as usize);
