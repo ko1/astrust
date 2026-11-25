@@ -255,9 +255,9 @@ read only on paths that are slow anyway.  Measurements: `~/ruby/src/trials/2026-
   and sleeps as Mutex#sleep does (a signal or Thread#wakeup ends it; the re-lock defers interrupts).
 
 ## Testing
-Differential tests against CRuby (oracle): `../../../astro/sample/rubyharness`.
+Differential tests against CRuby (oracle): `~/ruby/rubyharness` (its own repository; was astro/sample/rubyharness).
 ```
-H=../../../astro/sample/rubyharness
+H=~/ruby/rubyharness
 ruby $H/tools/run_specs.rb --jobs 8 --timeout 15 --pattern 'string*.rb' --interp ./saruby --diff ruby --dir $H/t/hand
 ```
 (`t/hand`, `t/method`, `t/syntax`, `t/spec`).  Single file: `diff <(./saruby f.rb 2>&1) <(ruby f.rb 2>&1)`.

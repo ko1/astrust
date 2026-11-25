@@ -89,8 +89,8 @@ The rule is: safe everywhere except external interfaces and an audited core. Thi
 
 ## Compatibility and speed (as of 2026-11-21)
 
-CRuby is the reference. Tests come from astro's `sample/rubyharness`, which compares output with
-CRuby's line by line.
+CRuby is the reference. Tests come from rubyharness (`~/ruby/rubyharness`, shared with ASTro's Ruby
+samples; `make RUBYHARNESS=<dir>`), which compares output with CRuby's line by line.
 
 - **t/hand** (about 1,700 files): 23,069 lines match, 10,419 do not.
 - **optcarrot** (Lan_Master.nes, 180 frames): runs, and the checksum equals CRuby's.

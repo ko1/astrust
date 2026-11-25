@@ -32,8 +32,9 @@ target/.gc-$(GC):
 	mkdir -p target && rm -f target/.gc-* && touch $@
 
 INTERP ?= ./saruby
-ASTRO ?= $(HOME)/ruby/astro
-include $(ASTRO)/sample/rubyharness/harness.mk
+# the shared Ruby test/bench harness (its own repository since 2026-11-25; was astro/sample/rubyharness)
+RUBYHARNESS ?= $(HOME)/ruby/rubyharness
+include $(RUBYHARNESS)/harness.mk
 test bench: saruby
 
 .PHONY: all FORCE
