@@ -274,10 +274,14 @@ fn latin1_word_extra(c: u32) -> bool {
 }
 
 /// Onigmo's Print ctype (Graph + Space) for a Unicode code point; String#inspect's printable test.
-pub fn uni_is_print(c: u32) -> bool { uni_has(UP_PRINT, c) }
+pub fn uni_is_print(c: u32) -> bool { uni_print_range(c).is_some() }
+/// The Print range containing `c`; callers cache it to skip the search for runs of one script.
+pub fn uni_print_range(c: u32) -> Option<(u32, u32)> { uni_range(UP_PRINT, c) }
 
 /// Membership of `c` in property `id` (binary search over its range pairs).
-fn uni_has(id: u16, c: u32) -> bool {
+fn uni_has(id: u16, c: u32) -> bool { uni_range(id, c).is_some() }
+
+fn uni_range(id: u16, c: u32) -> Option<(u32, u32)> {
     let id = id as usize;
     let r = &UP_RANGES[UP_OFF[id] as usize * 2..UP_OFF[id + 1] as usize * 2];
     let (mut lo, mut hi) = (0, r.len() / 2);
@@ -288,10 +292,10 @@ fn uni_has(id: u16, c: u32) -> bool {
         } else if c < r[2 * m] {
             hi = m;
         } else {
-            return true;
+            return Some((r[2 * m], r[2 * m + 1]));
         }
     }
-    false
+    None
 }
 
 fn is_uword(c: u32) -> bool {
