@@ -169,9 +169,15 @@ fn usage() -> ! {
     std::process::exit(2);
 }
 
+/// The command line as the process started, raw bytes (-e code and ARGV need not be UTF-8). Use this, never
+/// std::env::args: std reads the argv strings lazily, and `$0 =` / Process.setproctitle overwrite them.
+pub fn program_args() -> &'static [Vec<u8>] {
+    static ARGS: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
+    ARGS.get_or_init(|| std::env::args_os().map(std::os::unix::ffi::OsStringExt::into_vec).collect())
+}
+
 fn parse_args() -> Opts {
-    // raw bytes: -e code and ARGV need not be UTF-8
-    let raw: Vec<Vec<u8>> = std::env::args_os().map(|a| std::os::unix::ffi::OsStrExt::as_bytes(a.as_os_str()).to_vec()).collect();
+    let raw = program_args();
     let argv: Vec<String> = raw.iter().map(|a| String::from_utf8_lossy(a).into_owned()).collect();
     let mut o = Opts { e: vec![], script: None, args: vec![], plain: false, aot: false, dump_ast: false, quiet: false,
         verbose_astro: false, warn: false, nowarn: false, store: "code_store".into(), compiled_only: false, requires: vec![], incdirs: vec![], check_syntax: false, cmdline: 0, inplace: None, enc_ext: None, enc_int: None, uflag: false };
@@ -362,7 +368,7 @@ fn run_main(o: Opts) -> i32 {
             }
             let e = vm::compile_error_exc(&mut c, msg, file);
             // -c reports at the program's name (the error is raised before ruby_set_script_name)
-            if o.check_syntax { *vm.main_file.borrow_mut() = std::env::args().next().unwrap_or_default(); builtins::syntax_suggest::disable(); }
+            if o.check_syntax { *vm.main_file.borrow_mut() = program_args().first().map(|a| String::from_utf8_lossy(a).into_owned()).unwrap_or_default(); builtins::syntax_suggest::disable(); }
             report_exception(&mut c, e);
             if !o.requires.is_empty() { finish(&mut c, false); }
             return 1;
