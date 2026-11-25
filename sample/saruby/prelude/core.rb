@@ -114,10 +114,6 @@ module Enumerable
     a
   end
   def sort(&b) = Enumerable.__to_a(self).sort(&b)
-  def sort_by(&b)
-    return enum_for(:sort_by) { __size } unless b
-    Enumerable.__sort_by(self, &b)
-  end
   def chunk_while(&b)
     raise ArgumentError, "tried to create Proc object without a block" unless b
     src = self

@@ -20,7 +20,7 @@ macro_rules! cfn { ($(#[$m:meta])* $name:ident, |$c:ident, $s:ident, $a:ident, $
 
 /// Must an Enumerable method of slf go through its #each (a subclass's or a redefined Array#each)?
 #[inline]
-fn ary_each_redef(c: &Ctx, slf: Value) -> bool {
+pub(crate) fn ary_each_redef(c: &Ctx, slf: Value) -> bool {
     (obj_klass(slf) != c.vm().c_array.get() || crate::rt::redef(crate::rt::R_ARY_EACH)) && crate::builtins::enum_native::each_overridden(c, slf, a_each)
 }
 /// rb_warn("given block not used") for a method given both an argument and a block.
@@ -379,7 +379,7 @@ cfn!(a_each, |c, slf, a, blk| {
     a_each_loop(c, slf, &mut |c, a| yield1(c, blk, a[0]))
 });
 cfn!(a_each_index, |c, slf, a, blk| enum_or(c, slf, "each_index", a, blk, |c| { let mut i = 0; while i < c.ary_len(slf) { yield1(c, blk, Value::fix(i as i64))?; i += 1; } Ok(slf) }));
-cfn!(a_each_with_index, |c, slf, a, blk| if ary_each_redef(c, slf) { crate::builtins::enum_native::call_enumerable(c, slf, "each_with_index", a, blk) } else { enum_or(c, slf, "each_with_index", a, blk, |c| a_each_wi_loop(c, slf, &mut |c, a| yield_block(c, blk, a))) });
+cfn!(a_each_with_index, |c, slf, a, blk| enum_or(c, slf, "each_with_index", a, blk, |c| a_each_wi_loop(c, slf, &mut |c, a| yield_block(c, blk, a))));
 cfn!(a_reverse_each, |c, slf, a, blk| enum_or(c, slf, "reverse_each", a, blk, |c| { let mut i = c.ary_len(slf); while i > 0 { i -= 1; if i >= c.ary_len(slf) { i = c.ary_len(slf); continue; } let x = c.ary_get(slf, i); yield1(c, blk, x)?; } Ok(slf) }));
 cfn!(a_map, |c, slf, a, blk| enum_or(c, slf, "map", a, blk, |c| a_map_loop(c, slf, &mut |c, a| yield1(c, blk, a[0]))));
 cfn!(a_map_b, |c, slf, a, blk| enum_or(c, slf, "map!", a, blk, |c| {
@@ -1381,11 +1381,11 @@ cfn!(a_bsearch, |c, slf, a, blk| enum_unsized(c, slf, "bsearch", a, blk, |c| {
 }));
 cfn!(a_pack, |c, slf, a, blk| crate::builtins::pack::pack(c, slf, a));
 cfn!(a_frozen_dup, |c, slf, a, blk| Ok(slf));
-cfn!(a_flat_map, |c, slf, a, blk| if ary_each_redef(c, slf) { crate::builtins::enum_native::call_enumerable(c, slf, "flat_map", a, blk) } else { enum_or(c, slf, "flat_map", a, blk, |c| {
+cfn!(a_flat_map, |c, slf, a, blk| enum_or(c, slf, "flat_map", a, blk, |c| {
     let out = c.ary_new(); let mut i = 0;
     while let Some(&x) = c.ary(slf).get(i) { let y = yield1(c, blk, x)?; if is_array(y) { c.ary_concat(out, y); } else if let Some(arr) = check_array(c, y)? { c.ary_concat(out, arr); } else { c.ary_push(out, y); } i += 1; }
     Ok(out)
-}) });
+}));
 cfn!(a_any, |c, slf, a, blk| {
     check_argc(c, a, 0, 1)?;
     warn_unused_block(c, a, blk)?;
@@ -1422,16 +1422,15 @@ fn ary_size_call(c: &mut Ctx, slf: Value) -> Result<Option<Value>, Esc> {
     if !respond_to(c, slf, s::size, true) { return Ok(None); }
     Ok(Some(funcall(c, slf, s::size, &[], std::ptr::null())?))
 }
-cfn!(a_each_slice, |c, slf, a, blk| if ary_each_redef(c, slf) { crate::builtins::enum_native::call_enumerable(c, slf, "each_slice", a, blk) } else { if blk.is_null() { crate::builtins::enumerator::enum_for(c, slf, intern(b"each_slice"), a, NIL) } else { enum_or(c, slf, "each_slice", a, blk, |c| {
+cfn!(a_each_slice, |c, slf, a, blk| if blk.is_null() { crate::builtins::enumerator::enum_for(c, slf, intern(b"each_slice"), a, NIL) } else { enum_or(c, slf, "each_slice", a, blk, |c| {
     let n = num_to_long(c, a[0])?;
     if n <= 0 { return arg_err(c, "invalid slice size"); }
     ary_size_call(c, slf)?;
     let mut i = 0;
     while i < c.ary_len(slf) { let e = i.saturating_add(n as usize).min(c.ary_len(slf)); let sl = c.ary_from_vec(c.ary(slf)[i..e].to_vec()); yield1(c, blk, sl)?; i = e; }
     Ok(slf)
-}) } });
+}) });
 cfn!(a_inject, |c, slf, a, blk| {
-    if ary_each_redef(c, slf) { return crate::builtins::enum_native::call_enumerable(c, slf, "inject", a, blk); }
     if blk.is_null() { check_argc(c, a, 1, 2)?; } else { check_argc(c, a, 0, 2)?; if a.len() == 2 && c.vm().verbose.get() == TRUE { gvar_warn(c, "given block not used", false)?; } }
     if !blk.is_null() { if let Some(r) = a_inject_loop(c, slf, a, &mut |c, a| yield_block(c, blk, a)) { return r; } }
     let (mut acc, mut i, op) = match (a.len(), blk.is_null()) {
@@ -1449,7 +1448,6 @@ cfn!(a_inject, |c, slf, a, blk| {
     }
     Ok(acc)
 });
-cfn!(a_sort_by_native, |c, slf, a, blk| if ary_each_redef(c, slf) { crate::builtins::enum_native::call_enumerable(c, slf, "sort_by", a, blk) } else { enum_or(c, slf, "sort_by", a, blk, |c| sort_by_body(c, slf, blk)) });
 /// The elements of slf ordered by the block's keys (sort_by_cmp: OPTIMIZED_CMP on the keys).
 pub fn sort_by_body(c: &mut Ctx, slf: Value, blk: Blk) -> RV {
     let n = c.ary_len(slf);
@@ -1462,7 +1460,7 @@ pub fn sort_by_body(c: &mut Ctx, slf: Value, blk: Blk) -> RV {
     else { sort_values(c, &mut idx, &mut |c, x, y| rb_cmp(c, c.ary_get(keys, x.as_fix() as usize), c.ary_get(keys, y.as_fix() as usize)))?; }
     Ok(c.ary_from_vec(idx.iter().map(|i| c.ary_get(src, i.as_fix() as usize)).collect()))
 }
-cfn!(a_each_cons, |c, slf, a, blk| if ary_each_redef(c, slf) { crate::builtins::enum_native::call_enumerable(c, slf, "each_cons", a, blk) } else { if blk.is_null() { crate::builtins::enumerator::enum_for(c, slf, intern(b"each_cons"), a, NIL) } else { enum_or(c, slf, "each_cons", a, blk, |c| {
+cfn!(a_each_cons, |c, slf, a, blk| if blk.is_null() { crate::builtins::enumerator::enum_for(c, slf, intern(b"each_cons"), a, NIL) } else { enum_or(c, slf, "each_cons", a, blk, |c| {
     let n = num_to_long(c, a[0])?;
     if n <= 0 { return arg_err(c, "invalid size"); }
     let n = n as usize;
@@ -1470,8 +1468,8 @@ cfn!(a_each_cons, |c, slf, a, blk| if ary_each_redef(c, slf) { crate::builtins::
     let mut i: usize = 0;
     while i.saturating_add(n) <= c.ary_len(slf) { let sl = c.ary_from_vec(c.ary(slf)[i..i + n].to_vec()); yield1(c, blk, sl)?; i += 1; }
     Ok(slf)
-}) } });
-cfn!(a_filter_map, |c, slf, a, blk| if ary_each_redef(c, slf) { crate::builtins::enum_native::call_enumerable(c, slf, "filter_map", a, blk) } else { enum_or(c, slf, "filter_map", a, blk, |c| { let out = c.ary_new(); let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { let y = yield1(c, blk, x)?; if y.truthy() { c.ary_push(out, y); } i += 1; } Ok(out) }) });
+}) });
+cfn!(a_filter_map, |c, slf, a, blk| enum_or(c, slf, "filter_map", a, blk, |c| { let out = c.ary_new(); let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { let y = yield1(c, blk, x)?; if y.truthy() { c.ary_push(out, y); } i += 1; } Ok(out) }));
 // Without a block rb_ary_minmax is [min, max]; with one, CRuby's pairwise minmax (enum.c minmax_ii).
 cfn!(a_minmax, |c, slf, a, blk| {
     if blk.is_null() {
@@ -1557,25 +1555,25 @@ pub fn init(c: &mut Ctx, k: Value) {
     d(c, "[]", a_aref, -1); d(c, "slice", a_aref, -1); d(c, "[]=", a_aset, -1); d(c, "at", a_at, 1); d(c, "fetch", a_fetch, -1); d(c, "first", a_first, -1); d(c, "last", a_last, -1);
     d(c, "push", a_push, -1); d(c, "append", a_push, -1); d(c, "<<", a_ltlt, 1); d(c, "pop", a_pop, -1); d(c, "shift", a_shift, -1); d(c, "unshift", a_unshift, -1);
     d(c, "prepend", a_unshift, -1); d(c, "insert", a_insert, -1); d(c, "length", a_length, 0); d(c, "size", a_length, 0); d(c, "empty?", a_empty, 0);
-    d(c, "each", a_each, 0); d(c, "each_index", a_each_index, 0); d(c, "each_with_index", a_each_with_index, 0); d(c, "reverse_each", a_reverse_each, 0);
+    d(c, "each", a_each, 0); d(c, "each_index", a_each_index, 0); d(c, "reverse_each", a_reverse_each, 0);
     d(c, "map", a_map, 0); d(c, "collect", a_map, 0); d(c, "map!", a_map_b, 0); d(c, "collect!", a_map_b, 0); d(c, "select", a_select, 0); d(c, "filter", a_select, 0);
     d(c, "reject", a_reject, 0); d(c, "select!", a_select_b, 0); d(c, "filter!", a_select_b, 0); d(c, "keep_if", a_keep_if, 0); d(c, "reject!", a_reject_b, 0);
     d(c, "delete_if", a_delete_if, 0); d(c, "index", a_index, -1); d(c, "find_index", a_index, -1); d(c, "rindex", a_rindex, -1); d(c, "include?", a_include, 1);
-    d(c, "member?", a_include, 1); d(c, "delete", a_delete, 1); d(c, "delete_at", a_delete_at, 1); d(c, "compact", a_compact, 0); d(c, "compact!", a_compact_b, 0);
+    d(c, "delete", a_delete, 1); d(c, "delete_at", a_delete_at, 1); d(c, "compact", a_compact, 0); d(c, "compact!", a_compact_b, 0);
     d(c, "flatten", a_flatten, -1); d(c, "flatten!", a_flatten_b, -1); d(c, "uniq", a_uniq, 0); d(c, "uniq!", a_uniq_b, 0); d(c, "sort", a_sort, 0); d(c, "sort!", a_sort_b, 0);
     d(c, "sort_by!", a_sort_by_b, 0); d(c, "reverse", a_reverse, 0); d(c, "reverse!", a_reverse_b, 0); d(c, "rotate", a_rotate, -1); d(c, "rotate!", a_rotate_b, -1);
-    d(c, "join", a_join, -1); d(c, "to_a", a_to_a, 0); d(c, "entries", a_entries, 0); d(c, "to_ary", a_to_ary, 0); d(c, "to_h", a_to_h, 0); d(c, "inspect", a_inspect, 0); d(c, "to_s", a_inspect, 0);
+    d(c, "join", a_join, -1); d(c, "to_a", a_to_a, 0); d(c, "to_ary", a_to_ary, 0); d(c, "to_h", a_to_h, 0); d(c, "inspect", a_inspect, 0); d(c, "to_s", a_inspect, 0);
     d(c, "==", a_eq, 1); d(c, "eql?", a_eql, 1); d(c, "hash", a_hash, 0); d(c, "<=>", a_cmp, 1); d(c, "+", a_plus, 1); d(c, "-", a_minus, 1); d(c, "difference", a_difference, -1);
     d(c, "*", a_mul, 1); d(c, "&", a_and, 1); d(c, "intersection", a_intersection, -1); d(c, "intersect?", a_intersect_p, 1); d(c, "|", a_or, 1); d(c, "union", a_union, -1);
-    d(c, "concat", a_concat, -1); d(c, "clear", a_clear, 0); d(c, "replace", a_replace, 1); d(c, "initialize_copy", a_replace, 1); d(c, "fill", a_fill, -1); d(c, "slice!", a_slice_b, -1);
+    d(c, "concat", a_concat, -1); d(c, "clear", a_clear, 0); d(c, "replace", a_replace, 1); define_private_cfunc(c, k, "initialize_copy", a_replace, 1); d(c, "fill", a_fill, -1); d(c, "slice!", a_slice_b, -1);
     d(c, "min", a_min, -1); d(c, "max", a_max, -1); d(c, "sum", a_sum, -1); d(c, "count", a_count, -1); d(c, "take", a_take, 1); d(c, "drop", a_drop, 1);
     d(c, "take_while", a_take_while, 0); d(c, "drop_while", a_drop_while, 0); d(c, "zip", a_zip, -1); d(c, "product", a_product, -1); d(c, "combination", a_combination, 1);
     d(c, "permutation", a_permutation, -1); d(c, "repeated_combination", a_repeated_combination, 1); d(c, "repeated_permutation", a_repeated_permutation, 1);
     d(c, "transpose", a_transpose, 0); d(c, "assoc", a_assoc, 1); d(c, "rassoc", a_rassoc, 1); d(c, "values_at", a_values_at, -1); d(c, "dig", a_dig, -1);
     d(c, "sample", a_sample, -1); d(c, "shuffle", a_shuffle, -1); d(c, "shuffle!", a_shuffle_b, -1); d(c, "cycle", a_cycle, -1); d(c, "bsearch", a_bsearch, 0);
-    d(c, "pack", a_pack, -1); d(c, "flat_map", a_flat_map, 0); d(c, "collect_concat", a_flat_map, 0); d(c, "any?", a_any, -1); d(c, "all?", a_all, -1); d(c, "none?", a_none, -1);
-    d(c, "find", a_find, -1); d(c, "detect", a_find, -1); d(c, "each_slice", a_each_slice, 1); d(c, "inject", a_inject, -1); d(c, "reduce", a_inject, -1);
-    d(c, "sort_by", a_sort_by_native, 0); d(c, "each_cons", a_each_cons, 1); d(c, "filter_map", a_filter_map, 0); d(c, "minmax", a_minmax, 0); d(c, "freeze", a_freeze, 0);
+    d(c, "pack", a_pack, -1); d(c, "any?", a_any, -1); d(c, "all?", a_all, -1); d(c, "none?", a_none, -1);
+    d(c, "find", a_find, -1); d(c, "detect", a_find, -1);
+    d(c, "minmax", a_minmax, 0); d(c, "freeze", a_freeze, 0);
     d(c, "fetch_values", a_fetch_values, -1); d(c, "rfind", a_rfind, -1); d(c, "bsearch_index", a_bsearch_index, 0); d(c, "deconstruct", a_to_ary, 0);
     let _ = (a_frozen_dup, a_first_n_compat, a_s_new);
 }

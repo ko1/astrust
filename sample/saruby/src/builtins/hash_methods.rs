@@ -205,12 +205,12 @@ pub fn h_each_loop(c: &mut Ctx, slf: Value, y: &mut impl FnMut(&mut Ctx, &[Value
 cfn!(h_each, |c, slf, a, blk| enum_or(c, slf, "each", a, blk, |c| { let two = wants_two(c, blk) && !is_lambda_block(c, blk); h_each_loop(c, slf, &mut |c, a| yield_kv(c, blk, two, a[0], a[1])) }));
 cfn!(h_each_key, |c, slf, a, blk| enum_or(c, slf, "each_key", a, blk, |c| { each_entry(c, slf, |c, k, _v| { yield1(c, blk, k)?; Ok(true) })?; Ok(slf) }));
 cfn!(h_each_value, |c, slf, a, blk| enum_or(c, slf, "each_value", a, blk, |c| { each_entry(c, slf, |c, _k, v| { yield1(c, blk, v)?; Ok(true) })?; Ok(slf) }));
-cfn!(h_each_with_index, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(c, slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "each_with_index", a, blk) } else { enum_or(c, slf, "each_with_index", a, blk, |c| {
+cfn!(h_each_with_index, |c, slf, a, blk| enum_or(c, slf, "each_with_index", a, blk, |c| {
     let mut i = 0;
     each_entry(c, slf, |c, k, v| { let p = c.ary_new_from(&[k, v]); yield_block(c, blk, &[p, Value::fix(i)])?; i += 1; Ok(true) })?; Ok(slf)
-}) });
-cfn!(h_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(c, slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "map", a, blk) } else { enum_or(c, slf, "map", a, blk, |c| { let out = c.ary_new(); let two = map_wants_two(c, blk); each_entry(c, slf, |c, k, v| { let r = yield_kv(c, blk, two, k, v)?; c.ary_push(out, r); Ok(true) })?; Ok(out) }) });
-cfn!(h_flat_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(c, slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "flat_map", a, blk) } else { enum_or(c, slf, "flat_map", a, blk, |c| { let out = c.ary_new(); let two = pair_two(c, blk); each_entry(c, slf, |c, k, v| { let r = yield_kv(c, blk, two, k, v)?; if is_array(r) { c.ary_concat(out, r); } else { c.ary_push(out, r); } Ok(true) })?; Ok(out) }) });
+}));
+cfn!(h_map, |c, slf, a, blk| enum_or(c, slf, "map", a, blk, |c| { let out = c.ary_new(); let two = map_wants_two(c, blk); each_entry(c, slf, |c, k, v| { let r = yield_kv(c, blk, two, k, v)?; c.ary_push(out, r); Ok(true) })?; Ok(out) }));
+cfn!(h_flat_map, |c, slf, a, blk| enum_or(c, slf, "flat_map", a, blk, |c| { let out = c.ary_new(); let two = pair_two(c, blk); each_entry(c, slf, |c, k, v| { let r = yield_kv(c, blk, two, k, v)?; if is_array(r) { c.ary_concat(out, r) } else { match check_array(c, r)? { Some(ra) => c.ary_concat(out, ra), None => c.ary_push(out, r) } } Ok(true) })?; Ok(out) }));
 /// rb_hash_select / reject: the copy is iterated (and pruned), so the receiver may change meanwhile.
 fn sel(c: &mut Ctx, slf: Value, blk: Blk, want: bool) -> RV {
     let out = dup_with_identity(c, slf);
@@ -244,7 +244,7 @@ cfn!(h_select_b, |c, slf, a, blk| enum_or(c, slf, "select!", a, blk, |c| Ok(if s
 cfn!(h_keep_if, |c, slf, a, blk| enum_or(c, slf, "keep_if", a, blk, |c| { sel_b(c, slf, blk, true)?; Ok(slf) }));
 cfn!(h_reject_b, |c, slf, a, blk| enum_or(c, slf, "reject!", a, blk, |c| Ok(if sel_b(c, slf, blk, false)? { slf } else { NIL })));
 cfn!(h_delete_if, |c, slf, a, blk| enum_or(c, slf, "delete_if", a, blk, |c| { sel_b(c, slf, blk, false)?; Ok(slf) }));
-cfn!(h_filter_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(c, slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "filter_map", a, blk) } else { enum_or(c, slf, "filter_map", a, blk, |c| { let out = c.ary_new(); let two = pair_two(c, blk); each_entry(c, slf, |c, k, v| { let r = yield_kv(c, blk, two, k, v)?; if r.truthy() { c.ary_push(out, r); } Ok(true) })?; Ok(out) }) });
+cfn!(h_filter_map, |c, slf, a, blk| enum_or(c, slf, "filter_map", a, blk, |c| { let out = c.ary_new(); let two = pair_two(c, blk); each_entry(c, slf, |c, k, v| { let r = yield_kv(c, blk, two, k, v)?; if r.truthy() { c.ary_push(out, r); } Ok(true) })?; Ok(out) }));
 cfn!(h_find, |c, slf, a, blk| enum_or(c, slf, "find", a, blk, |c| { let mut res = NIL; each_entry(c, slf, |c, k, v| { if yield_pair(c, blk, k, v)?.truthy() { res = c.ary_new_from(&[k, v]); return Ok(false); } Ok(true) })?; Ok(res) }));
 cfn!(h_any, |c, slf, a, blk| {
     check_argc(c, a, 0, 1)?;
@@ -585,9 +585,9 @@ pub fn init(c: &mut Ctx, k: Value) {
     d(c, "include?", h_key_p, 1); d(c, "member?", h_key_p, 1); d(c, "value?", h_value_p, 1); d(c, "has_value?", h_value_p, 1); d(c, "key", h_key, 1);
     d(c, "delete", h_delete, 1); d(c, "size", h_size, 0); d(c, "length", h_size, 0); d(c, "empty?", h_empty, 0); d(c, "keys", h_keys, 0);
     d(c, "values", h_values, 0); d(c, "values_at", h_values_at, -1); d(c, "fetch_values", h_fetch_values, -1); d(c, "each", h_each, 0); d(c, "each_pair", h_each, 0);
-    d(c, "each_key", h_each_key, 0); d(c, "each_value", h_each_value, 0); d(c, "each_with_index", h_each_with_index, 0); d(c, "map", h_map, 0); d(c, "collect", h_map, 0);
-    d(c, "flat_map", h_flat_map, 0); d(c, "select", h_select, 0); d(c, "filter", h_select, 0); d(c, "reject", h_reject, 0); d(c, "select!", h_select_b, 0);
-    d(c, "filter!", h_select_b, 0); d(c, "keep_if", h_keep_if, 0); d(c, "reject!", h_reject_b, 0); d(c, "delete_if", h_delete_if, 0); d(c, "filter_map", h_filter_map, 0);
+    d(c, "each_key", h_each_key, 0); d(c, "each_value", h_each_value, 0);
+    d(c, "select", h_select, 0); d(c, "filter", h_select, 0); d(c, "reject", h_reject, 0); d(c, "select!", h_select_b, 0);
+    d(c, "filter!", h_select_b, 0); d(c, "keep_if", h_keep_if, 0); d(c, "reject!", h_reject_b, 0); d(c, "delete_if", h_delete_if, 0);
     d(c, "any?", h_any, -1); d(c, "to_a", h_to_a, 0); d(c, "to_h", h_to_h, 0);
     d(c, "to_hash", h_to_hash, 0); d(c, "inspect", h_inspect, 0); d(c, "to_s", h_inspect, 0); d(c, "==", h_eq, 1); d(c, "eql?", h_eql, 1); d(c, "hash", h_hash, 0);
     d(c, "merge", h_merge, -1); d(c, "update", h_update, -1); d(c, "merge!", h_update, -1); d(c, "clear", h_clear, 0); d(c, "replace", h_replace, 1);
