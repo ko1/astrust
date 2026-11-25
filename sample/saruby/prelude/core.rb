@@ -303,7 +303,7 @@ class NilClass
   def to_h = {}
   def &(o) = false
   def |(o) = !!o
-  def ^(o) = !!o
+  alias ^ |
   def nil? = true
   def to_i = 0
   def to_f = 0.0
@@ -321,7 +321,7 @@ class FalseClass
   alias inspect to_s
   def &(o) = false
   def |(o) = !!o
-  def ^(o) = !!o
+  alias ^ |
   def ===(o) = equal?(o)
 end
 
