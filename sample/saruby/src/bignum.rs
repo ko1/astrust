@@ -259,7 +259,7 @@ fn join_limbs(hi: &[u32], lo: &[u32], h: usize) -> Vec<u32> {
 }
 // a < b * B^n, b has n limbs with the top bit set, lvl halvings left
 fn bz_2n_1n(a: &[u32], b: &[u32], n: usize, lvl: usize) -> (Vec<u32>, Vec<u32>) {
-    if lvl == 0 { return divmod_mag(a, b); }
+    if lvl == 0 { return divmod_leaf(a, b); }
     let h = n / 2;
     let (q1, r) = bz_3n_2n(&limbs(a, h, 4 * h), b, h, lvl - 1);
     let (q2, r) = bz_3n_2n(&join_limbs(&r, &limbs(a, 0, h), h), b, h, lvl - 1);
@@ -302,15 +302,17 @@ fn div_bz(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
     let mut rem = shr_mag(&limbs(&r, sigma, r.len()), s); trim(&mut rem);
     (q, rem)
 }
-fn divmod_mag(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
-    if b.len() >= BZ_DIV && a.len() >= b.len() + BZ_DIV / 2 { return div_bz(a, b); }
-    divmod_knuth(a, b)
-}
-// Knuth algorithm D: magnitude division
+// out-of-line copies for the radix D&C and the BZ leaves; divrem_trunc inlines its own
+#[inline(never)]
+fn divmod_mag(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) { divmod_impl::<true>(a, b) }
+#[inline(never)]
+fn divmod_leaf(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) { divmod_impl::<false>(a, b) }
+// Knuth algorithm D: magnitude division; BZ for large divisors (checked after the small early-outs)
 #[inline(always)]
-fn divmod_knuth(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
+fn divmod_impl<const BZ: bool>(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
     if cmp_mag(a, b) == Ordering::Less { return (vec![], a.to_vec()); }
     if b.len() == 1 { let (q, r) = divmod_small(a, b[0]); return (q, if r == 0 { vec![] } else { vec![r] }); }
+    if BZ && b.len() >= BZ_DIV && a.len() >= b.len() + BZ_DIV / 2 { return div_bz(a, b); }
     let s = b[b.len() - 1].leading_zeros();
     let b = shl_mag(b, s as usize);
     let mut a = shl_mag(a, s as usize);
@@ -537,7 +539,12 @@ impl BigInt {
     pub fn mul(&self, o: &BigInt) -> BigInt { BigInt { neg: self.neg != o.neg, mag: mul_mag(&self.mag, &o.mag) }.norm() }
     /// Truncating division
     pub fn divrem_trunc(&self, o: &BigInt) -> (BigInt, BigInt) {
-        let (q, r) = if o.mag.len() >= BZ_DIV && self.mag.len() >= o.mag.len() + BZ_DIV / 2 { div_bz(&self.mag, &o.mag) } else { divmod_knuth(&self.mag, &o.mag) };
+        // |a| < |b| on its own return; the len bound (a slice param's in the old code) drops to_vec's overflow check
+        if cmp_mag(&self.mag, &o.mag) == Ordering::Less {
+            if self.mag.len() > isize::MAX as usize / 4 { unreachable!() }
+            return (BigInt { neg: false, mag: vec![] }, BigInt { neg: self.neg, mag: self.mag.to_vec() }.norm());
+        }
+        let (q, r) = divmod_impl::<true>(&self.mag, &o.mag);
         (BigInt { neg: self.neg != o.neg, mag: q }.norm(), BigInt { neg: self.neg, mag: r }.norm())
     }
     /// Floored division (Ruby semantics)
