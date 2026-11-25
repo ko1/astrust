@@ -20,7 +20,7 @@ class Data
       __saruby__.__ivset(k, :__members__, syms.freeze)
       syms.each { |m| k.define_method(m) { __saruby__.__ivget(self, m) } }
       class << k
-        define_method(:new) do |*args, **kw, &blk|
+        mk = proc do |*args, **kw, &blk|
           mem = __saruby__.data_members(self)
           if !args.empty?
             raise ArgumentError, "wrong number of arguments (given #{args.size + 1}, expected 0)" unless kw.empty?
@@ -33,7 +33,9 @@ class Data
           o.__send__(:initialize, **kw, &blk)
           o
         end
-        alias_method :[], :new
+        # two methods, not an alias: CRuby labels D.[] by the called name
+        define_method(:new, &mk)
+        define_method(:[], &mk)
         def members = __saruby__.data_members(self).dup
       end
       k.class_eval(&blk) if blk
@@ -55,6 +57,7 @@ class Data
   end
   # rb_data_initialize_m: every key is looked at, then missing before unknown
   def initialize(**kw)
+    raise FrozenError.new("can't modify frozen #{self.class}: #{inspect}", receiver: self) if frozen?
     mem = __saruby__.data_members(self.class)
     missing = mem.dup
     left = mem.size
@@ -79,6 +82,9 @@ class Data
   end
   private :initialize
   def initialize_copy(o)
+    return self if equal?(o)
+    raise FrozenError.new("can't modify frozen #{self.class}: #{inspect}", receiver: self) if frozen?
+    raise TypeError, "initialize_copy should take same class object" unless o.class == self.class
     o.class.members.each { |m| __saruby__.__ivset(self, m, __saruby__.__ivget(o, m)) }
     freeze
   end

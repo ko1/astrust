@@ -484,14 +484,14 @@ fn flatten_into(c: &mut Ctx, v: Value, depth: i64, out: Value, stack: &mut Vec<V
     }
     Ok(changed)
 }
-cfn!(a_flatten, |c, slf, a, blk| {
+cfn!(a_flatten, |c, slf, a, blk| { check_argc(c, a, 0, 1)?;
     let depth = if a.is_empty() || a[0] == NIL { -1 } else { num_to_int32(c, a[0])? };
     let out = c.ary_new();
     let mut st = vec![slf];
     flatten_into(c, slf, depth, out, &mut st)?;
     Ok(out)
 });
-cfn!(a_flatten_b, |c, slf, a, blk| {
+cfn!(a_flatten_b, |c, slf, a, blk| { check_argc(c, a, 0, 1)?;
     c.ary_modify(slf)?;
     let depth = if a.is_empty() || a[0] == NIL { -1 } else { num_to_int32(c, a[0])? };
     let out = c.ary_new();
@@ -525,13 +525,13 @@ cfn!(a_sort_by_b, |c, slf, a, blk| enum_or(c, slf, "sort_by!", a, blk, |c| {
 }));
 cfn!(a_reverse, |c, slf, a, blk| { let mut v = c.ary(slf).to_vec(); v.reverse(); Ok(c.ary_from_vec(v)) });
 cfn!(a_reverse_b, |c, slf, a, blk| { c.ary_modify(slf)?.reverse(); Ok(slf) });
-cfn!(a_rotate, |c, slf, a, blk| {
+cfn!(a_rotate, |c, slf, a, blk| { check_argc(c, a, 0, 1)?;
     let k = if a.is_empty() { 1 } else { num_to_long(c, a[0])? };
     let mut v = c.ary(slf).to_vec();
     if !v.is_empty() { let n = v.len() as i64; let r = ((k % n) + n) % n; v.rotate_left(r as usize); }
     Ok(c.ary_from_vec(v))
 });
-cfn!(a_rotate_b, |c, slf, a, blk| {
+cfn!(a_rotate_b, |c, slf, a, blk| { check_argc(c, a, 0, 1)?;
     let k = if a.is_empty() { 1 } else { num_to_long(c, a[0])? };
     let v = c.ary_modify(slf)?;
     if !v.is_empty() { let n = v.len() as i64; let r = ((k % n) + n) % n; v.rotate_left(r as usize); }
@@ -874,7 +874,7 @@ cfn!(a_fill, |c, slf, a, blk| {
     }
     Ok(slf)
 });
-cfn!(a_slice_b, |c, slf, a, blk| {
+cfn!(a_slice_b, |c, slf, a, blk| { check_argc(c, a, 1, 2)?;
     c.ary_modify(slf)?;
     let n = c.ary_len(slf);
     if a.len() == 2 {
@@ -1022,7 +1022,7 @@ impl<'a> Nmin<'a> {
 }
 cfn!(a_min, |c, slf, a, blk| minmax_impl(c, slf, a, blk, false));
 cfn!(a_max, |c, slf, a, blk| minmax_impl(c, slf, a, blk, true));
-cfn!(a_sum, |c, slf, a, blk| {
+cfn!(a_sum, |c, slf, a, blk| { check_argc(c, a, 0, 1)?;
     let mut acc = if a.is_empty() { Value::fix(0) } else { a[0] };
     let mut fsum: Option<(f64, f64)> = None; // Kahan-Babuska for floats
     let mut i = 0;
@@ -1188,7 +1188,7 @@ fn emit_gen(c: &mut Ctx, slf: Value, g: Gen, k: i64, blk: Blk, mid: &str, a: &[V
     Ok(slf)
 }
 cfn!(a_combination, |c, slf, a, blk| { let k = num_to_long(c, a[0])?; emit_gen(c, slf, Gen::Comb, k, blk, "combination", a) });
-cfn!(a_permutation, |c, slf, a, blk| { let k = if a.is_empty() || a[0] == NIL { c.ary_len(slf) as i64 } else { num_to_long(c, a[0])? }; emit_gen(c, slf, Gen::Perm, k, blk, "permutation", a) });
+cfn!(a_permutation, |c, slf, a, blk| { check_argc(c, a, 0, 1)?; let k = if a.is_empty() || a[0] == NIL { c.ary_len(slf) as i64 } else { num_to_long(c, a[0])? }; emit_gen(c, slf, Gen::Perm, k, blk, "permutation", a) });
 cfn!(a_repeated_combination, |c, slf, a, blk| { let k = num_to_long(c, a[0])?; emit_gen(c, slf, Gen::RComb, k, blk, "repeated_combination", a) });
 cfn!(a_repeated_permutation, |c, slf, a, blk| { let k = num_to_long(c, a[0])?; emit_gen(c, slf, Gen::RPerm, k, blk, "repeated_permutation", a) });
 cfn!(a_transpose, |c, slf, a, blk| {
@@ -1569,8 +1569,8 @@ pub fn init(c: &mut Ctx, k: Value) {
     define_singleton_cfunc(c, k, "[]", a_s_aref, -1);
     define_singleton_cfunc(c, k, "try_convert", a_s_try_convert, 1);
     d(c, "[]", a_aref, -1); d(c, "slice", a_aref, -1); d(c, "[]=", a_aset, -1); d(c, "at", a_at, 1); d(c, "fetch", a_fetch, -1); d(c, "first", a_first, -1); d(c, "last", a_last, -1);
-    d(c, "push", a_push, -1); d(c, "append", a_push, -1); d(c, "<<", a_ltlt, 1); d(c, "pop", a_pop, -1); d(c, "shift", a_shift, -1); d(c, "unshift", a_unshift, -1);
-    d(c, "prepend", a_unshift, -1); d(c, "insert", a_insert, -1); d(c, "length", a_length, 0); d(c, "size", a_length, 0); d(c, "empty?", a_empty, 0);
+    d(c, "push", a_push, -1); crate::builtins::object::alias_builtin(c, k, "append", "push"); d(c, "<<", a_ltlt, 1); d(c, "pop", a_pop, -1); d(c, "shift", a_shift, -1); d(c, "unshift", a_unshift, -1);
+    crate::builtins::object::alias_builtin(c, k, "prepend", "unshift"); d(c, "insert", a_insert, -1); d(c, "length", a_length, 0); d(c, "size", a_length, 0); d(c, "empty?", a_empty, 0);
     d(c, "each", a_each, 0); d(c, "each_index", a_each_index, 0); d(c, "reverse_each", a_reverse_each, 0);
     d(c, "map", a_map, 0); d(c, "collect", a_map, 0); d(c, "map!", a_map_b, 0); d(c, "collect!", a_map_b, 0); d(c, "select", a_select, 0); d(c, "filter", a_select, 0);
     d(c, "reject", a_reject, 0); d(c, "select!", a_select_b, 0); d(c, "filter!", a_select_b, 0); d(c, "keep_if", a_keep_if, 0); d(c, "reject!", a_reject_b, 0);
@@ -1578,7 +1578,7 @@ pub fn init(c: &mut Ctx, k: Value) {
     d(c, "delete", a_delete, 1); d(c, "delete_at", a_delete_at, 1); d(c, "compact", a_compact, 0); d(c, "compact!", a_compact_b, 0);
     d(c, "flatten", a_flatten, -1); d(c, "flatten!", a_flatten_b, -1); d(c, "uniq", a_uniq, 0); d(c, "uniq!", a_uniq_b, 0); d(c, "sort", a_sort, 0); d(c, "sort!", a_sort_b, 0);
     d(c, "sort_by!", a_sort_by_b, 0); d(c, "reverse", a_reverse, 0); d(c, "reverse!", a_reverse_b, 0); d(c, "rotate", a_rotate, -1); d(c, "rotate!", a_rotate_b, -1);
-    d(c, "join", a_join, -1); d(c, "to_a", a_to_a, 0); d(c, "to_ary", a_to_ary, 0); d(c, "to_h", a_to_h, 0); d(c, "inspect", a_inspect, 0); d(c, "to_s", a_inspect, 0);
+    d(c, "join", a_join, -1); d(c, "to_a", a_to_a, 0); d(c, "to_ary", a_to_ary, 0); d(c, "to_h", a_to_h, 0); d(c, "inspect", a_inspect, 0); crate::builtins::object::alias_builtin(c, k, "to_s", "inspect");
     d(c, "==", a_eq, 1); d(c, "eql?", a_eql, 1); d(c, "hash", a_hash, 0); d(c, "<=>", a_cmp, 1); d(c, "+", a_plus, 1); d(c, "-", a_minus, 1); d(c, "difference", a_difference, -1);
     d(c, "*", a_mul, 1); d(c, "&", a_and, 1); d(c, "intersection", a_intersection, -1); d(c, "intersect?", a_intersect_p, 1); d(c, "|", a_or, 1); d(c, "union", a_union, -1);
     d(c, "concat", a_concat, -1); d(c, "clear", a_clear, 0); d(c, "replace", a_replace, 1); define_private_cfunc(c, k, "initialize_copy", a_replace, 1); d(c, "fill", a_fill, -1); d(c, "slice!", a_slice_b, -1);

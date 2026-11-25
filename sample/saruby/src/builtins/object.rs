@@ -540,6 +540,10 @@ pub fn boot_alias(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) {
     c.vm().alias_names.borrow_mut().insert(n as usize, newname);
     define_method_me(c, klass, newname, n);
 }
+/// rb_define_alias at boot: Method#original_name and backtrace labels show `old`, as CRuby's.
+pub fn alias_builtin(c: &mut Ctx, klass: Value, new: &str, old: &str) {
+    alias_method(c, klass, intern(new.as_bytes()), intern(old.as_bytes())).unwrap_or_else(|_| panic!("alias {}", new));
+}
 pub fn alias_method(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) -> Result<(), Esc> {
     check_frozen(c, klass)?;
     let mut me = search_method(c, klass, oldname);
@@ -825,7 +829,7 @@ fn m_public_instance_method(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV
     let mid = to_sym_arg(c, a[0])?;
     crate::builtins::proc::unbound_method_object(c, slf, mid, true)
 }
-fn method_defined_impl(c: &mut Ctx, slf: Value, a: &[Value], f: impl Fn(u8) -> bool) -> RV {
+fn method_defined_impl(c: &mut Ctx, slf: Value, a: &[Value], f: impl Fn(u8) -> bool) -> RV { check_argc(c, a, 1, 2)?;
     let mid = to_sym_arg(c, a[0])?;
     let inherit = a.len() < 2 || a[1].truthy();
     let me = if inherit { search_method(c, slf, mid) } else { c.class(slf).mtbl.get(&mid).copied().unwrap_or(std::ptr::null()) };
@@ -836,19 +840,19 @@ fn m_method_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { metho
 fn m_public_method_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { method_defined_impl(c, slf, a, |v| v == VISI_PUBLIC) }
 fn m_private_method_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { method_defined_impl(c, slf, a, |v| v == VISI_PRIVATE) }
 fn m_protected_method_defined(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { method_defined_impl(c, slf, a, |v| v == VISI_PROTECTED) }
-fn m_instance_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+fn m_instance_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 0, 1)?;
     let inherit = a.first().map(|v| v.truthy()).unwrap_or(true);
     Ok(method_list(c, slf, |v| v != VISI_PRIVATE, inherit))
 }
-fn m_public_instance_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+fn m_public_instance_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 0, 1)?;
     let inherit = a.first().map(|v| v.truthy()).unwrap_or(true);
     Ok(method_list(c, slf, |v| v == VISI_PUBLIC, inherit))
 }
-fn m_private_instance_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+fn m_private_instance_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 0, 1)?;
     let inherit = a.first().map(|v| v.truthy()).unwrap_or(true);
     Ok(method_list(c, slf, |v| v == VISI_PRIVATE, inherit))
 }
-fn m_protected_instance_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+fn m_protected_instance_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 0, 1)?;
     let inherit = a.first().map(|v| v.truthy()).unwrap_or(true);
     Ok(method_list(c, slf, |v| v == VISI_PROTECTED, inherit))
 }
@@ -1136,7 +1140,7 @@ fn m_const_set(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     const_set_here(c, slf, n, a[1])?;
     Ok(a[1])
 }
-fn m_constants(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+fn m_constants(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 0, 1)?;
     let inherit = a.first().map(|v| v.truthy()).unwrap_or(true);
     let out = c.ary_new();
     let mut seen = std::collections::HashSet::new();
@@ -1558,7 +1562,7 @@ pub fn init(c: &mut Ctx) -> InitIds {
     d(c, "remove_instance_variable", k_remove_ivar, 1);
     d(c, "tap", k_tap, 0);
     d(c, "then", k_then, 0);
-    d(c, "yield_self", k_then, 0);
+    alias_builtin(c, k, "yield_self", "then");
     d(c, "itself", k_itself, 0);
     d(c, "dup", k_dup, 0);
     d(c, "clone", k_clone, -1);
@@ -1613,7 +1617,7 @@ pub fn init(c: &mut Ctx) -> InitIds {
     d(c, "name", m_name, 0);
     d(c, "set_temporary_name", m_set_temporary_name, 1);
     d(c, "to_s", m_to_s, 0);
-    d(c, "inspect", m_to_s, 0);
+    alias_builtin(c, m, "inspect", "to_s");
     d(c, "===", m_eqq, 1);
     let id_m_eqq = search_method(c, m, s::eqq);
     d(c, "<", m_lt, 1);

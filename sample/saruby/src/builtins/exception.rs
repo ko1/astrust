@@ -205,7 +205,7 @@ fn exc_initialize(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     Ok(NIL)
 }
 fn exc_s_exception(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { crate::builtins::object::c_new(c, slf, a, b) }
-fn exc_exception(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+fn exc_exception(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 0, 1)?;
     if a.is_empty() || a[0] == slf { return Ok(slf); }
     let e = crate::builtins::object::obj_dup(c, slf, true, None)?;
     ivar_set_raw(c, e, s::mesg, a[0]);
@@ -276,7 +276,7 @@ fn decorate_message(c: &mut Ctx, e: Value, emesg: Value, highlight: bool) -> Vec
     }
     o
 }
-pub fn exc_detailed_message(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+pub fn exc_detailed_message(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { { let n = a.len() - kw_arg(c, a).is_some() as usize; if n > 0 { return argc_err(c, n, 0, 0); } }
     let highlight = highlight_kw(c, kw_arg(c, a))?.truthy();
     let m = funcall(c, slf, s::message, &[], std::ptr::null())?;
     let m = check_str(c, m)?;
@@ -646,7 +646,7 @@ pub fn full_message(c: &mut Ctx, e: Value) -> Result<String, Esc> {
     let o = error_write(c, e, opt, hl, false, true)?;
     Ok(String::from_utf8_lossy(&o).into_owned())
 }
-fn exc_full_message(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+fn exc_full_message(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { { let n = a.len() - kw_arg(c, a).is_some() as usize; if n > 0 { return argc_err(c, n, 0, 0); } }
     let kw = kw_arg(c, a);
     let mut hl = highlight_kw(c, kw)?;
     if hl == NIL { hl = Value::bool(stderr_tty()); }

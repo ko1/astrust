@@ -57,7 +57,7 @@ fn sym_start_with(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV { via_str(c,
 fn sym_end_with(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV { via_str(c, s, crate::builtins::string_methods::s_end_with, a, b) }
 fn sym_match(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV { via_str(c, s, crate::builtins::string_methods::s_match_op, a, b) }
 fn sym_match_m(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV { via_str(c, s, crate::builtins::string_methods::s_match, a, b) }
-fn sym_match_p(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV { via_str(c, s, crate::builtins::string_methods::s_match_p, a, b) }
+fn sym_match_p(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV { check_argc(c, a, 1, 2)?; via_str(c, s, crate::builtins::string_methods::s_match_p, a, b) }
 fn sym_empty(_c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(sym_bytes(s.as_sym()).is_empty())) }
 fn sym_casecmp(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV { if !a[0].is_sym() { return Ok(NIL); } let o = sym_str_v(c, a[0]); via_str(c, s, crate::builtins::string_methods::s_casecmp, &[o], b) }
 fn sym_casecmp_p(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV { if !a[0].is_sym() { return Ok(NIL); } let o = sym_str_v(c, a[0]); via_str(c, s, crate::builtins::string_methods::s_casecmp_p, &[o], b) }
@@ -82,13 +82,13 @@ pub fn init(c: &mut Ctx, k: Value) {
     let vmr = c.vm();
     for kk in [k, vmr.c_nil.get(), vmr.c_true.get(), vmr.c_false.get()] { let sk = singleton_class(c, kk); define_method_me(c, sk, crate::symbol::s::new, new_me(crate::symbol::s::new, sk, VISI_PUBLIC, MKind::Undef)); }
     let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, k, n, f, a);
-    d(c, "to_s", sym_to_s, 0); d(c, "id2name", sym_to_s, 0); d(c, "name", sym_name, 0); d(c, "inspect", sym_inspect, 0);
+    d(c, "to_s", sym_to_s, 0); crate::builtins::object::alias_builtin(c, k, "id2name", "to_s"); d(c, "name", sym_name, 0); d(c, "inspect", sym_inspect, 0);
     d(c, "to_proc", sym_to_proc, 0); d(c, "to_sym", sym_to_sym, 0); d(c, "length", sym_length, 0); d(c, "size", sym_length, 0);
     d(c, "<=>", sym_cmp, 1); d(c, "upcase", sym_upcase, -1); d(c, "downcase", sym_downcase, -1); d(c, "capitalize", sym_capitalize, -1);
     d(c, "swapcase", sym_swapcase, -1); d(c, "succ", sym_succ, 0); d(c, "next", sym_succ, 0); d(c, "[]", sym_aref, -1); d(c, "slice", sym_aref, -1);
     d(c, "start_with?", sym_start_with, -1); d(c, "end_with?", sym_end_with, -1); d(c, "=~", sym_match, 1); d(c, "match", sym_match_m, -1);
     d(c, "match?", sym_match_p, -1); d(c, "empty?", sym_empty, 0); d(c, "casecmp", sym_casecmp, 1); d(c, "casecmp?", sym_casecmp_p, 1);
-    d(c, "encoding", sym_encoding_m, 0); d(c, "==", sym_eq, 1); d(c, "===", sym_eq, 1); d(c, "intern", sym_to_sym, 0);
+    d(c, "encoding", sym_encoding_m, 0); d(c, "==", sym_eq, 1); d(c, "===", sym_eq, 1); crate::builtins::object::alias_builtin(c, k, "intern", "to_sym");
     define_singleton_cfunc(c, k, "all_symbols", sym_all, 0);
     let _ = inspect_str;
 }

@@ -557,7 +557,7 @@ pub fn init_weak(c: &mut Ctx) {
     define_cfunc(c, wm, "values", wm_values, 0);
     for n in ["each", "each_pair", "each_key", "each_value"] { define_cfunc(c, wm, n, wm_each, 0); }
     define_cfunc(c, wm, "inspect", wm_inspect, 0);
-    crate::builtins::object::boot_alias(c, wm, intern(b"member?"), intern(b"include?"));
+    define_cfunc(c, wm, "member?", wm_key, 1);
     let wk = define_class_under(c, os, "WeakKeyMap", vmr.c_object.get());
     define_private_cfunc(c, wk, "initialize", wm_init, 0);
     define_cfunc(c, wk, "[]", wm_aref, 1);

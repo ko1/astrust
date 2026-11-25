@@ -1440,7 +1440,7 @@ pub fn init(c: &mut Ctx) {
     TH_INIT.store(lookup_method(c, th, crate::symbol::s::initialize) as usize, Relaxed);
     d(c, "join", th_join, -1); d(c, "value", th_value, 0); d(c, "[]", th_aref, 1); d(c, "[]=", th_aset, 2); d(c, "key?", th_key_p, 1); d(c, "keys", th_keys, 0);
     d(c, "thread_variable_get", th_tv_get, 1); d(c, "thread_variable_set", th_tv_set, 2); d(c, "thread_variable?", th_tv_p, 1); d(c, "thread_variables", th_tvs, 0);
-    d(c, "alive?", th_alive, 0); d(c, "stop?", th_stop_p, 0); d(c, "status", th_status, 0); d(c, "inspect", th_inspect, 0); d(c, "to_s", th_inspect, 0);
+    d(c, "alive?", th_alive, 0); d(c, "stop?", th_stop_p, 0); d(c, "status", th_status, 0); d(c, "to_s", th_inspect, 0); crate::builtins::object::alias_builtin(c, th, "inspect", "to_s");
     d(c, "name", th_name, 0); d(c, "name=", th_set_name, 1); d(c, "kill", th_kill, 0); d(c, "terminate", th_kill, 0); d(c, "exit", th_kill, 0); d(c, "raise", th_raise, -1);
     d(c, "wakeup", th_wakeup, 0); d(c, "run", th_run, 0); d(c, "report_on_exception", th_report, 0); d(c, "report_on_exception=", th_set_report, 1);
     d(c, "abort_on_exception", th_abort, 0); d(c, "abort_on_exception=", th_set_abort, 1); d(c, "group", th_group, 0);
@@ -1516,9 +1516,8 @@ pub fn init_sync(c: &mut Ctx) {
     const_set(c, ob, intern(b"Queue"), q);
     c.vm().c_queue.set(q);
     define_private_cfunc(c, q, "initialize", q_init, -1);
-    for n in ["push", "<<", "enq"] { define_cfunc(c, q, n, q_push, -1); }
-    for n in ["pop", "shift", "deq"] { define_cfunc(c, q, n, q_pop, -1); }
-    for n in ["size", "length"] { define_cfunc(c, q, n, q_size, 0); }
+    define_cfunc(c, q, "push", q_push, -1); define_cfunc(c, q, "pop", q_pop, -1); define_cfunc(c, q, "length", q_size, 0);
+    for (n, o) in [("<<", "push"), ("enq", "push"), ("shift", "pop"), ("deq", "pop"), ("size", "length")] { crate::builtins::object::alias_builtin(c, q, n, o); }
     define_cfunc(c, q, "empty?", q_empty, 0); define_cfunc(c, q, "clear", q_clear, 0); define_cfunc(c, q, "close", q_close, 0); define_cfunc(c, q, "closed?", q_closed, 0);
     define_cfunc(c, q, "num_waiting", q_num_waiting, 0); define_cfunc(c, q, "freeze", q_freeze, 0);
     define_cfunc(c, q, "marshal_dump", cant_dump, 0);

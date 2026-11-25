@@ -381,7 +381,7 @@ cfn!(h_replace, |c, slf, a, blk| {
     copy_entries(c, slf, o, false)?;
     Ok(slf)
 });
-cfn!(h_default, |c, slf, a, blk| {
+cfn!(h_default, |c, slf, a, blk| { check_argc(c, a, 0, 1)?;
     let p = c.hash(slf).default_proc;
     if !a.is_empty() && p != NIL { return call_proc(c, p, &[slf, a[0]], std::ptr::null()); }
     Ok(c.hash(slf).default)
@@ -583,7 +583,7 @@ pub fn init(c: &mut Ctx, k: Value) {
     d(c, "select", h_select, 0); d(c, "filter", h_select, 0); d(c, "reject", h_reject, 0); d(c, "select!", h_select_b, 0);
     d(c, "filter!", h_select_b, 0); d(c, "keep_if", h_keep_if, 0); d(c, "reject!", h_reject_b, 0); d(c, "delete_if", h_delete_if, 0);
     d(c, "any?", h_any, -1); d(c, "to_a", h_to_a, 0); d(c, "to_h", h_to_h, 0);
-    d(c, "to_hash", h_to_hash, 0); d(c, "inspect", h_inspect, 0); d(c, "to_s", h_inspect, 0); d(c, "==", h_eq, 1); d(c, "eql?", h_eql, 1); d(c, "hash", h_hash, 0);
+    d(c, "to_hash", h_to_hash, 0); d(c, "inspect", h_inspect, 0); crate::builtins::object::alias_builtin(c, k, "to_s", "inspect"); d(c, "==", h_eq, 1); d(c, "eql?", h_eql, 1); d(c, "hash", h_hash, 0);
     d(c, "merge", h_merge, -1); d(c, "update", h_update, -1); d(c, "merge!", h_update, -1); d(c, "clear", h_clear, 0); d(c, "replace", h_replace, 1);
     d(c, "default", h_default, -1); d(c, "default=", h_set_default, 1); d(c, "default_proc", h_default_proc, 0); d(c, "default_proc=", h_set_default_proc, 1);
     d(c, "invert", h_invert, 0); d(c, "transform_values", h_transform_values, 0); d(c, "transform_values!", h_transform_values_b, 0);
@@ -592,7 +592,7 @@ pub fn init(c: &mut Ctx, k: Value) {
     d(c, "shift", h_shift, 0); d(c, "compare_by_identity", h_compare_by_identity, 0); d(c, "compare_by_identity?", h_compare_by_identity_p, 0);
     d(c, "rehash", h_rehash, 0); d(c, "compact", h_compact, 0); d(c, "compact!", h_compact_b, 0); d(c, "assoc", h_assoc, 1); d(c, "rassoc", h_rassoc, 1);
     d(c, "<=", h_le, 1); d(c, "<", h_lt, 1); d(c, ">=", h_ge, 1); d(c, ">", h_gt, 1); d(c, "freeze", h_freeze, 0); d(c, "to_proc", h_to_proc, 0);
-    crate::builtins::object::alias_method(c, k, intern(b"store"), intern(b"[]=")).expect("Hash#store");
+    d(c, "store", h_aset, 2);
     d(c, "deconstruct_keys", h_deconstruct_keys, 1); d(c, "flatten", h_flatten, -1);
     let _ = (h_sort_by_fallback, h_min_by_fallback, h_find, h_all, h_count, h_group_by, h_partition, h_sum, h_min_by, h_sort_by, h_first);
 }

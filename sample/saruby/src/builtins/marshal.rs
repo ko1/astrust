@@ -1069,7 +1069,8 @@ pub fn init(c: &mut Ctx) -> Value {
     define_module_function(c, m, "dump", m_dump, -1);
     // marshal.rb: singleton methods only
     define_singleton_cfunc(c, m, "load", m_load, -1);
-    define_singleton_cfunc(c, m, "restore", m_load, -1);
+    let ms = singleton_class(c, m);
+    crate::builtins::object::alias_builtin(c, ms, "restore", "load");
     const_set(c, m, intern(b"MAJOR_VERSION"), Value::fix(4));
     const_set(c, m, intern(b"MINOR_VERSION"), Value::fix(8));
     m

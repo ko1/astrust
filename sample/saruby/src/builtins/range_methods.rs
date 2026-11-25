@@ -306,7 +306,7 @@ fn range_to_s(c: &mut Ctx, slf: Value, insp: bool) -> RV {
 }
 cfn!(r_to_s, |c, slf, a, blk| range_to_s(c, slf, false));
 cfn!(r_inspect, |c, slf, a, blk| range_to_s(c, slf, true));
-cfn!(r_first, |c, slf, a, blk| {
+cfn!(r_first, |c, slf, a, blk| { if a.len() > 1 { return argc_err(c, a.len(), 1, 1); }
     let (b, _, _) = c.range_parts(slf);
     if a.is_empty() { if b == NIL { return err(c, c.vm().c_range_error.get(), "cannot get the first element of beginless range"); } return Ok(b); }
     let n = crate::builtins::numeric_methods::num_to_long(c, a[0])?;
@@ -317,7 +317,7 @@ cfn!(r_first, |c, slf, a, blk| {
     range_each(c, slf, |c, v| { c.ary_push(out, v); Ok((c.ary_len(out) as i64) < n) })?;
     Ok(out)
 });
-cfn!(r_last, |c, slf, a, blk| {
+cfn!(r_last, |c, slf, a, blk| { check_argc(c, a, 0, 1)?;
     let (b, e, x) = c.range_parts(slf);
     if e == NIL { return err(c, c.vm().c_range_error.get(), "cannot get the last element of endless range"); }
     if a.is_empty() {

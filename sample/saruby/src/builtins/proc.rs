@@ -159,7 +159,7 @@ fn proc_call(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
 fn proc_arity_m(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(proc_arity(c, slf))) }
 fn proc_lambda_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(c.proc_data(slf).is_lambda)) }
 fn proc_to_proc(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(slf) }
-fn proc_parameters(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+fn proc_parameters(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { { let n = a.len() - kw_arg(c, a).is_some() as usize; if n > 0 { return argc_err(c, n, 0, 0); } }
     let (mut lambda, kind) = { let pd = c.proc_data(slf); (pd.is_lambda, pd.blk.kind) };
     if let Some(h) = kw_arg(c, a) { if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("lambda"))? { if v != NIL { lambda = v.truthy(); } } }
     match kind {
@@ -169,7 +169,7 @@ fn proc_parameters(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
         _ => Ok(rows_to_ary(c, vec![vec![sym_value("rest")]])),
     }
 }
-fn proc_curry(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+fn proc_curry(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 0, 1)?;
     let arity = if !a.is_empty() { a[0].as_fix() } else { let ar = proc_arity(c, slf); if ar < 0 { -ar - 1 } else { ar } };
     if c.proc_data(slf).is_lambda && !a.is_empty() {
         // rb_check_arity(sarity, min, max)
@@ -538,8 +538,8 @@ pub fn init(c: &mut Ctx) {
     define_cfunc(c, p, "to_proc", proc_to_proc, 0);
     define_cfunc(c, p, "parameters", proc_parameters, -1);
     define_cfunc(c, p, "curry", proc_curry, -1);
-    define_cfunc(c, p, "inspect", proc_inspect, 0);
     define_cfunc(c, p, "to_s", proc_inspect, 0);
+    crate::builtins::object::alias_builtin(c, p, "inspect", "to_s");
     define_cfunc(c, p, ">>", proc_compose_right, 1);
     define_cfunc(c, p, "<<", proc_compose_left, 1);
     define_cfunc(c, p, "==", proc_eq, 1);

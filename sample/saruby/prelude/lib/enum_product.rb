@@ -45,7 +45,6 @@ class Enumerator
         seen.delete(object_id)
       end
     end
-    alias to_s inspect
   end
 end
 

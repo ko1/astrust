@@ -1867,6 +1867,14 @@ fn is_internal_frame(c: &Ctx, fr: &RawFrame) -> bool {
     fr.file.starts_with("<internal:") && !in_eval(c, if fr.at.is_null() { fr.iseq } else { fr.at })
 }
 
+/// The frame of a singleton define_method body itself (Data.define's `new`; not an accessor or a block inside it).
+fn is_define_method_body(c: &Ctx, f: &RawFrame) -> bool {
+    if f.kind == FK_CFUNC || f.me.is_null() { return false; }
+    let MKind::Bmethod(p) = (unsafe { &(*f.me).kind }) else { return false };
+    if !c.class(unsafe { (*f.me).owner }).is_singleton { return false; }
+    matches!(c.proc_data(*p).blk.kind, BlockKind::Iseq(is) if std::ptr::eq(is, f.iseq))
+}
+
 /// The prelude's methods are C functions in CRuby: a call from user code is one frame at the caller's file and
 /// line, and what the method itself calls (blocks, helpers) has none.  A run holding a top / class body (a lib
 /// being loaded) or without a caller is kept as it is.
@@ -1882,8 +1890,16 @@ fn collapse_internal<'a>(c: &Ctx, v: &'a [RawFrame]) -> std::borrow::Cow<'a, [Ra
         let run = &v[i..j];
         let body = run.iter().any(|f| matches!(kind_of(f), Some(k) if !matches!(k, IseqKind::Method | IseqKind::Block | IseqKind::Lambda)));
         if body || j == v.len() { out.extend_from_slice(run); }
-        else if let (Some(IseqKind::Method), caller) = (kind_of(&run[run.len() - 1]), &v[j]) {
-            out.push(RawFrame { file: caller.file, pos: caller.pos, at: caller.at, ..run[run.len() - 1] });
+        else {
+            // the outermost Method, plus what CRuby has a C function (own frame) for: `initialize`, a define_method body
+            let caller = &v[j];
+            let last = run.len() - 1;
+            for (k, f) in run.iter().enumerate() {
+                let c_like = is_define_method_body(c, f);
+                let keep = c_like || (k == last && kind_of(f) == Some(IseqKind::Method))
+                    || (kind_of(f) == Some(IseqKind::Method) && !f.me.is_null() && unsafe { (*f.me).name } == s::initialize);
+                if keep { out.push(RawFrame { file: caller.file, pos: caller.pos, at: caller.at, kind: if c_like { FK_CFUNC } else { f.kind }, ..*f }); }
+            }
         }
         i = j;
     }

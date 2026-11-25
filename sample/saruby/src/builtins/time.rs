@@ -1046,9 +1046,10 @@ pub fn init(c: &mut Ctx) -> Value {
     define_singleton_cfunc(c, k, "now", t_now, -1);
     define_singleton_cfunc(c, k, "at", t_at, -1);
     define_singleton_cfunc(c, k, "local", t_local, -1);
-    define_singleton_cfunc(c, k, "mktime", t_local, -1);
     define_singleton_cfunc(c, k, "utc", t_utc_s, -1);
-    define_singleton_cfunc(c, k, "gm", t_utc_s, -1);
+    let ks = singleton_class(c, k);
+    crate::builtins::object::alias_builtin(c, ks, "mktime", "local");
+    crate::builtins::object::alias_builtin(c, ks, "gm", "utc");
     define_private_cfunc(c, k, "initialize", t_initialize, -1);
     define_private_cfunc(c, k, "initialize_copy", t_init_copy, 1);
     let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, k, n, f, a);
@@ -1061,7 +1062,7 @@ pub fn init(c: &mut Ctx) -> Value {
     d(c, "getutc", t_getutc, 0); d(c, "getgm", t_getutc, 0); d(c, "localtime", t_localtime, -1); d(c, "getlocal", t_getlocal, -1);
     d(c, "utc?", t_utc_p, 0); d(c, "gmt?", t_utc_p, 0); d(c, "strftime", t_strftime, 1); d(c, "to_s", t_to_s, 0); d(c, "inspect", t_inspect, 0);
     d(c, "ctime", t_ctime, 0); d(c, "asctime", t_ctime, 0); d(c, "to_a", t_to_a, 0); d(c, "deconstruct_keys", t_deconstruct_keys, 1);
-    d(c, "round", t_round, -1); d(c, "floor", t_floor, -1); d(c, "ceil", t_ceil, -1); d(c, "xmlschema", t_xmlschema, -1); d(c, "iso8601", t_xmlschema, -1);
+    d(c, "round", t_round, -1); d(c, "floor", t_floor, -1); d(c, "ceil", t_ceil, -1); d(c, "xmlschema", t_xmlschema, -1); crate::builtins::object::alias_builtin(c, k, "iso8601", "xmlschema");
     d(c, "sunday?", t_sunday, 0); d(c, "monday?", t_monday, 0); d(c, "tuesday?", t_tuesday, 0); d(c, "wednesday?", t_wednesday, 0);
     d(c, "thursday?", t_thursday, 0); d(c, "friday?", t_friday, 0); d(c, "saturday?", t_saturday, 0);
     k

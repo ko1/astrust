@@ -335,7 +335,7 @@ pub fn init(c: &mut Ctx, object: Value, enumerable: Value) -> Value {
     d(c, "select", st_select, -1); d(c, "filter", st_select, -1);
     d(c, "to_a", st_to_a, 0); d(c, "deconstruct", st_to_a, 0); d(c, "values", st_to_a, 0); d(c, "to_h", st_to_h, 0); d(c, "[]", st_aref, 1); d(c, "[]=", st_aset, 2);
     d(c, "==", st_eq, 1); d(c, "eql?", st_eql, 1); d(c, "hash", st_hash, 0); d(c, "members", st_members, 0); d(c, "each", st_each, 0); d(c, "each_pair", st_each_pair, 0);
-    d(c, "inspect", st_inspect, 0); d(c, "to_s", st_inspect, 0); d(c, "size", st_size, 0); d(c, "length", st_size, 0); d(c, "dig", st_dig, -1);
+    d(c, "inspect", st_inspect, 0); crate::builtins::object::alias_builtin(c, st, "to_s", "inspect"); d(c, "size", st_size, 0); d(c, "length", st_size, 0); d(c, "dig", st_dig, -1);
     d(c, "values_at", st_values_at, -1); d(c, "deconstruct_keys", st_deconstruct_keys, 1);
     st
 }

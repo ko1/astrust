@@ -71,7 +71,6 @@ fn interrupt_init(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     sig_initialize(c, s, &[Value::fix(2), m], b)
 }
 fn sig_signo(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, s, intern(b"signo"))) }
-fn sig_signm(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { funcall(c, s, intern(b"message"), &[], std::ptr::null()) }
 use crate::builtins::math::{num_to_dbl, domain_err};
 fn m_expm1(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV { let f = num_to_dbl(c, a[0])?; Ok(c.float_new(f.exp_m1())) }
 fn m_gamma(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
@@ -177,7 +176,7 @@ pub fn init(c: &mut Ctx) {
     define_cfunc(c, vmr.c_no_method_error.get(), "private_call?", nme_private_call, 0);
     let se = vmr.c_signal_exception.get();
     define_private_cfunc(c, se, "initialize", sig_initialize, -1);
-    define_cfunc(c, se, "signo", sig_signo, 0); define_cfunc(c, se, "signm", sig_signm, 0);
+    define_cfunc(c, se, "signo", sig_signo, 0); crate::builtins::object::alias_builtin(c, se, "signm", "message");
     define_private_cfunc(c, vmr.c_interrupt.get(), "initialize", interrupt_init, -1);
     define_module_function(c, vmr.m_math.get(), "expm1", m_expm1, 1);
     for (n, f) in [("erf", m_erf as CFunc), ("erfc", m_erfc), ("cbrt", m_cbrt), ("gamma", m_gamma), ("lgamma", m_lgamma)] { define_module_function(c, vmr.m_math.get(), n, f, 1); }

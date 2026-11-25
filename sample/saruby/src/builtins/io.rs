@@ -2437,7 +2437,7 @@ pub fn init(c: &mut Ctx) {
     d(c, "ungetc", io_ungetc, 1); d(c, "ungetbyte", io_ungetbyte, 1); d(c, "readpartial", io_readpartial, -1); d(c, "read_nonblock", io_read_nonblock, -1);
     d(c, "write_nonblock", io_write_nonblock, -1); d(c, "sysread", io_sysread, -1); d(c, "syswrite", io_syswrite, 1); d(c, "pread", io_pread, -1); d(c, "pwrite", io_pwrite, 2);
     d(c, "eof?", io_eof, 0); d(c, "eof", io_eof, 0); d(c, "close", io_close, 0); d(c, "close_read", io_close_read, 0); d(c, "close_write", io_close_write, 0);
-    d(c, "closed?", io_closed, 0); d(c, "fileno", io_fileno, 0); d(c, "to_i", io_fileno, 0);
+    d(c, "closed?", io_closed, 0); d(c, "fileno", io_fileno, 0); crate::builtins::object::alias_builtin(c, io, "to_i", "fileno");
     d(c, "tty?", io_tty, 0); d(c, "isatty", io_tty, 0); d(c, "path", io_path, 0); d(c, "to_path", io_path, 0); d(c, "binmode", io_binmode, 0); d(c, "binmode?", io_binmode_p, 0); d(c, "inspect", io_inspect, 0);
     d(c, "lineno", io_lineno, 0); d(c, "lineno=", io_set_lineno, 1); d(c, "advise", io_advise, -1); d(c, "rewind", io_rewind, 0); d(c, "seek", io_seek, -1); d(c, "sysseek", io_sysseek, -1);
     d(c, "pos", io_pos, 0); d(c, "tell", io_pos, 0); d(c, "pos=", io_set_pos, 1); d(c, "pid", io_pid, 0); d(c, "to_io", io_to_io, 0);

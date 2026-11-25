@@ -306,7 +306,7 @@ fn group_index_strict(c: &mut Ctx, m: Value, k: Value) -> Result<usize, Esc> {
     if i < 0 || i >= md(c, m).groups.len() as i64 { return err(c, c.vm().c_index_error.get(), format!("index {} out of matches", i)); }
     Ok(i as usize)
 }
-fn md_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+fn md_aref(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { check_argc(c, a, 1, 2)?;
     if a.len() == 2 || is_range(a[0]) { let all = md_to_a(c, slf, &[], Blk::NONE)?; return crate::builtins::array_methods::ary_aref(c, all, a); }
     match group_index(c, slf, a[0])? { Some(i) => Ok(nth_match(c, slf, i as i64)), None => Ok(NIL) }
 }
@@ -323,7 +323,7 @@ fn md_to_a(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     Ok(out)
 }
 fn md_captures(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(match_groups_array(c, slf)) }
-fn md_named_captures(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+fn md_named_captures(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { { let n = a.len() - kw_arg(c, a).is_some() as usize; if n > 0 { return argc_err(c, n, 0, 0); } }
     let h = c.hash_new();
     let symk = match kw_arg(c, a) { Some(hh) => crate::hash::hash_get_opt(c, hh, sym_value("symbolize_names"))?.map(|v| v.truthy()).unwrap_or(false), None => false };
     let names = rregexp(c, md(c, slf).regexp).and_then(|r| r.re.as_ref()).map(|r| r.names()).unwrap_or_default();
@@ -481,7 +481,7 @@ pub fn init(c: &mut Ctx) -> (Value, Value) {
     let ms = singleton_class(c, m);
     define_method_me(c, ms, intern(b"allocate"), new_me(intern(b"allocate"), ms, VISI_PUBLIC, MKind::Undef));
     let d = |c: &mut Ctx, n: &str, f: CFunc, a: i32| define_cfunc(c, m, n, f, a);
-    d(c, "[]", md_aref, -1); d(c, "to_a", md_to_a, 0); d(c, "captures", md_captures, 0); d(c, "deconstruct", md_captures, 0); d(c, "named_captures", md_named_captures, -1);
+    d(c, "[]", md_aref, -1); d(c, "to_a", md_to_a, 0); d(c, "captures", md_captures, 0); crate::builtins::object::alias_builtin(c, m, "deconstruct", "captures"); d(c, "named_captures", md_named_captures, -1);
     d(c, "names", md_names, 0); d(c, "begin", md_begin, 1); d(c, "end", md_end, 1); d(c, "offset", md_offset, 1); d(c, "byteoffset", md_byteoffset, 1); d(c, "bytebegin", md_bytebegin, 1); d(c, "byteend", md_byteend, 1);
     d(c, "pre_match", md_pre, 0); d(c, "post_match", md_post, 0); d(c, "to_s", md_to_s, 0); d(c, "size", md_size, 0); d(c, "length", md_size, 0);
     d(c, "string", md_string, 0); d(c, "regexp", md_regexp, 0); d(c, "values_at", md_values_at, -1); d(c, "inspect", md_inspect, 0); d(c, "==", md_eq, 1);

@@ -276,7 +276,7 @@ cfn!(s_match, |c, slf, a, blk| {
     if m != NIL && !blk.is_null() { return yield1(c, blk, m); }
     Ok(m)
 });
-cfn!(s_match_p, |c, slf, a, b_| {
+cfn!(s_match_p, |c, slf, a, b_| { check_argc(c, a, 1, 2)?;
     let p = get_pat(c, a[0])?;
     let re = if is_string(p) { regexp::regcomp(c, p)? } else { p };
     let md = regexp::prepare(c, re, slf)?;
@@ -410,7 +410,7 @@ fn sym_enc_err(c: &mut Ctx, s: Value) -> RV {
     let m = format!("invalid symbol in encoding {} :{}", crate::builtins::encoding::enc_name(c.str_enc(s)), i);
     err(c, c.vm().c_encoding_error.get(), m)
 }
-cfn!(s_to_i, |c, slf, a, b_| {
+cfn!(s_to_i, |c, slf, a, b_| { check_argc(c, a, 0, 1)?;
     need_ascii_compat(c, slf)?;
     let base = if a.is_empty() { 10 } else { num_to_int32(c, a[0])? };
     if base == 1 || base > 36 || base < 0 { return arg_err(c, format!("invalid radix {}", base)); }
@@ -513,7 +513,7 @@ cfn!(s_start_with, |c, slf, a, b_| {
     Ok(FALSE)
 });
 cfn!(s_end_with, |c, slf, a, b_| { for &x in a { let o = expect_str(c, x)?; compat(c, slf, o)?; if c.str_bytes(slf).ends_with(c.str_bytes(o)) && c.char_offsets(slf).binary_search(&(c.str_bytes(slf).len() - c.str_bytes(o).len())).is_ok() { return Ok(TRUE); } } Ok(FALSE) });
-cfn!(s_index, |c, slf, a, b_| {
+cfn!(s_index, |c, slf, a, b_| { check_argc(c, a, 1, 2)?;
     let mut st = if a.len() > 1 { num_to_long(c, a[1])? } else { 0 };
     if st != 0 {
         let n = c.str_char_len(slf) as i64;
@@ -1245,10 +1245,10 @@ cfn!(s_ord, |c, slf, a, b_| {
         None => arg_err(c, format!("invalid byte sequence in {}", crate::builtins::encoding::enc_name(enc))),
     }
 });
-cfn!(s_sum, |c, slf, a, b_| { let bits = if a.is_empty() { 16 } else { num_to_int32(c, a[0])? }; let s2: u64 = c.str_bytes(slf).iter().map(|&x| x as u64).sum(); Ok(Value::fix(if bits > 0 && bits < 63 { (s2 & ((1 << bits) - 1)) as i64 } else { s2 as i64 })) });
+cfn!(s_sum, |c, slf, a, b_| { check_argc(c, a, 0, 1)?; let bits = if a.is_empty() { 16 } else { num_to_int32(c, a[0])? }; let s2: u64 = c.str_bytes(slf).iter().map(|&x| x as u64).sum(); Ok(Value::fix(if bits > 0 && bits < 63 { (s2 & ((1 << bits) - 1)) as i64 } else { s2 as i64 })) });
 cfn!(s_succ, |c, slf, a, b_| Ok(c.str_new_like(slf, succ_enc(c.str_bytes(slf), c.str_enc(slf)))));
 cfn!(s_succ_b, |c, slf, a, b_| { let v = succ_enc(c.str_bytes(slf), c.str_enc(slf)); c.str_modify(slf)?.b = v.into(); Ok(slf) });
-cfn!(s_upto, |c, slf, a, blk| {
+cfn!(s_upto, |c, slf, a, blk| { check_argc(c, a, 1, 2)?;
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, s::upto, a, NIL); }
     let last = expect_str(c, a[0])?;
     compat(c, slf, last)?;
@@ -2077,7 +2077,7 @@ pub fn init(c: &mut Ctx, k: Value) {
     d(c, "ljust", w_ljust, -1); d(c, "rjust", w_rjust, -1); d(c, "center", w_center, -1); d(c, "empty?", s_empty, 0); d(c, "replace", s_replace, 1);
     define_private_cfunc(c, k, "initialize_copy", s_replace, 1); d(c, "clear", s_clear, 0); d(c, "insert", s_insert, 2); d(c, "prepend", s_prepend, -1); d(c, "ord", s_ord, 0); d(c, "sum", s_sum, -1);
     d(c, "succ", s_succ, 0); d(c, "next", s_succ, 0); d(c, "succ!", s_succ_b, 0); d(c, "next!", s_succ_b, 0); d(c, "upto", s_upto, -1); d(c, "hex", s_hex, 0); d(c, "oct", s_oct, 0);
-    d(c, "freeze", s_freeze, 0); d(c, "+@", s_uplus, 0); d(c, "-@", s_uminus, 0); d(c, "dedup", s_uminus, 0); d(c, "encoding", s_encoding, 0);
+    d(c, "freeze", s_freeze, 0); d(c, "+@", s_uplus, 0); d(c, "-@", s_uminus, 0); crate::builtins::object::alias_builtin(c, k, "dedup", "-@"); d(c, "encoding", s_encoding, 0);
     d(c, "force_encoding", s_force_encoding, 1); d(c, "b", s_b, 0); d(c, "valid_encoding?", s_valid_encoding, 0); d(c, "ascii_only?", s_ascii_only, 0);
     d(c, "unicode_normalize", s_unicode_normalize, -1); d(c, "encode", crate::builtins::transcode::s_encode, -1); d(c, "scrub", s_scrub, -1); d(c, "casecmp", s_casecmp, 1); d(c, "casecmp?", s_casecmp_p, 1);
     d(c, "partition", w_partition, 1); d(c, "rpartition", w_rpartition, 1); d(c, "delete_prefix", s_delete_prefix, 1); d(c, "delete_suffix", s_delete_suffix, 1);

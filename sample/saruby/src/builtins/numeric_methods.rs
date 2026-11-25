@@ -219,7 +219,7 @@ cfn!(int_minus, |c, s, a| int_arith(c, s, a[0], Op::Sub));
 cfn!(int_mul, |c, s, a| int_arith(c, s, a[0], Op::Mul));
 cfn!(int_div, |c, s, a| int_arith(c, s, a[0], Op::Div));
 cfn!(int_mod, |c, s, a| int_arith(c, s, a[0], Op::Mod));
-cfn!(int_pow_m, |c, s, a| {
+cfn!(int_pow_m, |c, s, a| { check_argc(c, a, 1, 2)?;
     if a.len() == 2 {
         // modular exponentiation
         if !is_integer(a[0]) { return type_err(c, "Integer#pow() 2nd argument not allowed unless a 1st argument is integer"); }
@@ -396,7 +396,7 @@ cfn!(int_le, |c, s, a| int_rel(c, s, a[0], |o| o.is_le(), s::le));
 cfn!(int_gt, |c, s, a| int_rel(c, s, a[0], |o| o.is_gt(), s::gt));
 cfn!(int_ge, |c, s, a| int_rel(c, s, a[0], |o| o.is_ge(), s::ge));
 cfn!(#[inline] int_abs, |c, s, _a| Ok(if s.is_fixnum() { c.int_from_i64(s.as_fix().abs()) } else { c.big_to_value(c.big(s).abs()) }));
-cfn!(int_to_s, |c, s, a| {
+cfn!(int_to_s, |c, s, a| { check_argc(c, a, 0, 1)?;
     let base = if a.is_empty() { 10 } else { num_to_int32(c, a[0])? };
     if !(2..=36).contains(&base) { return arg_err(c, format!("invalid radix {}", base)); }
     let st = if s.is_fixnum() && base == 10 { s.as_fix().to_string() } else { c.to_big(s).to_string_radix(base as u32) };
@@ -662,7 +662,7 @@ cfn!(int_round, |c, s, a| round_int(c, s, a, b'r'));
 cfn!(int_floor, |c, s, a| round_int(c, s, a, b'f'));
 cfn!(int_ceil, |c, s, a| round_int(c, s, a, b'c'));
 cfn!(int_truncate, |c, s, a| round_int(c, s, a, b't'));
-cfn!(int_digits, |c, s, a| {
+cfn!(int_digits, |c, s, a| { check_argc(c, a, 0, 1)?;
     // rb_num_negative_int_p (`self < 0` once Integer#< is redefined) before the base
     let neg = if crate::rt::redef(crate::rt::R_INT_LT) { funcall(c, s, s::lt, &[Value::fix(0)], std::ptr::null())?.truthy() } else { c.to_big(s).neg };
     if neg { return err(c, c.vm().c_math_domain_error.get(), "out of domain"); }
@@ -1211,9 +1211,9 @@ pub fn init(c: &mut Ctx, n: Value, k: Value, f: Value) {
     define_cfunc(c, n, "to_c", num_to_c, 0);
     define_cfunc(c, n, "real", num_real, 0);
     define_cfunc(c, n, "imaginary", num_imag, 0);
-    define_cfunc(c, n, "imag", num_imag, 0);
-    define_cfunc(c, n, "conj", num_conj, 0);
     define_cfunc(c, n, "conjugate", num_conj, 0);
+    crate::builtins::object::alias_builtin(c, n, "imag", "imaginary");
+    crate::builtins::object::alias_builtin(c, n, "conj", "conjugate");
     define_cfunc(c, n, "rectangular", num_rect, 0);
     define_cfunc(c, n, "rect", num_rect, 0);
     define_cfunc(c, n, "arg", num_arg, 0);
@@ -1222,11 +1222,11 @@ pub fn init(c: &mut Ctx, n: Value, k: Value, f: Value) {
 
     let d = |c: &mut Ctx, nm: &str, f: CFunc, a: i32| define_cfunc(c, k, nm, f, a);
     d(c, "+", int_plus, 1); d(c, "-", int_minus, 1); d(c, "*", int_mul, 1); d(c, "/", int_div, 1); d(c, "%", int_mod, 1);
-    d(c, "modulo", int_mod, 1); d(c, "**", int_pow_m, -1); d(c, "pow", int_pow_m, -1); d(c, "-@", int_uminus, 0);
+    d(c, "modulo", int_mod, 1); d(c, "**", int_pow_m, 1); d(c, "pow", int_pow_m, -1); d(c, "-@", int_uminus, 0);
     d(c, "~", int_not, 0); d(c, "&", int_and, 1); d(c, "|", int_or, 1); d(c, "^", int_xor, 1); d(c, "<<", int_lshift, 1); d(c, ">>", int_rshift, 1);
     d(c, "[]", int_aref, -1); d(c, "==", int_eq, 1); d(c, "===", int_eq, 1); d(c, "<=>", int_cmp, 1);
-    d(c, "<", int_lt, 1); d(c, "<=", int_le, 1); d(c, ">", int_gt, 1); d(c, ">=", int_ge, 1); d(c, "abs", int_abs, 0); d(c, "magnitude", int_abs, 0);
-    d(c, "to_s", int_to_s, -1); d(c, "inspect", int_to_s, -1); d(c, "to_f", int_to_f, 0); d(c, "to_i", int_to_i, 0); d(c, "to_int", int_to_i, 0);
+    d(c, "<", int_lt, 1); d(c, "<=", int_le, 1); d(c, ">", int_gt, 1); d(c, ">=", int_ge, 1); d(c, "abs", int_abs, 0); crate::builtins::object::alias_builtin(c, k, "magnitude", "abs");
+    d(c, "to_s", int_to_s, -1); crate::builtins::object::alias_builtin(c, k, "inspect", "to_s"); d(c, "to_f", int_to_f, 0); d(c, "to_i", int_to_i, 0); d(c, "to_int", int_to_i, 0);
     d(c, "chr", int_chr, -1); d(c, "ord", int_ord, 0); d(c, "times", int_times, 0); d(c, "upto", int_upto, 1); d(c, "downto", int_downto, 1);
     d(c, "succ", int_succ, 0); d(c, "next", int_succ, 0); d(c, "pred", int_pred, 0); d(c, "zero?", int_zero, 0); d(c, "even?", int_even, 0);
     d(c, "odd?", int_odd, 0); d(c, "divmod", int_divmod, 1);
@@ -1247,8 +1247,8 @@ pub fn init(c: &mut Ctx, n: Value, k: Value, f: Value) {
     d(c, "+", flo_plus, 1); d(c, "-", flo_minus, 1); d(c, "*", flo_mul, 1); d(c, "/", flo_div, 1); d(c, "%", flo_mod, 1); d(c, "modulo", flo_mod, 1);
     d(c, "**", flo_pow, 1); d(c, "-@", flo_uminus, 0); d(c, "==", flo_eq, 1); d(c, "===", flo_eq, 1); d(c, "eql?", flo_eql, 1);
     d(c, "<=>", flo_cmp, 1); d(c, "<", flo_lt, 1); d(c, "<=", flo_le, 1); d(c, ">", flo_gt, 1); d(c, ">=", flo_ge, 1);
-    d(c, "to_s", flo_to_s, 0); d(c, "inspect", flo_to_s, 0); d(c, "to_i", flo_to_i, 0); d(c, "to_int", flo_to_i, 0);
-    d(c, "abs", flo_abs, 0); d(c, "magnitude", flo_abs, 0); d(c, "nan?", flo_nan, 0); d(c, "infinite?", flo_infinite, 0); d(c, "finite?", flo_finite, 0);
+    d(c, "to_s", flo_to_s, 0); crate::builtins::object::alias_builtin(c, f, "inspect", "to_s"); d(c, "to_i", flo_to_i, 0); d(c, "to_int", flo_to_i, 0);
+    d(c, "abs", flo_abs, 0); crate::builtins::object::alias_builtin(c, f, "magnitude", "abs"); d(c, "nan?", flo_nan, 0); d(c, "infinite?", flo_infinite, 0); d(c, "finite?", flo_finite, 0);
     d(c, "zero?", flo_zero, 0); d(c, "positive?", flo_positive, 0); d(c, "negative?", flo_negative, 0); d(c, "divmod", flo_divmod, 1);
     d(c, "coerce", flo_coerce, 1); d(c, "hash", flo_hash, 0); d(c, "round", flo_round, -1); d(c, "floor", flo_floor, -1);
     d(c, "ceil", flo_ceil, -1); d(c, "truncate", flo_truncate, -1); d(c, "next_float", flo_next_float, 0); d(c, "prev_float", flo_prev_float, 0);

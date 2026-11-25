@@ -150,6 +150,6 @@ pub fn init(c: &mut Ctx) {
     define_cfunc(c, k, "storage", f_storage, 0);
     define_cfunc(c, k, "storage=", f_storage_set, 1);
     define_cfunc(c, k, "blocking?", f_blocking_p, 0);
-    define_cfunc(c, k, "inspect", f_inspect, 0);
     define_cfunc(c, k, "to_s", f_inspect, 0);
+    crate::builtins::object::alias_builtin(c, k, "inspect", "to_s");
 }

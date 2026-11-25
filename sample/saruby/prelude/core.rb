@@ -303,7 +303,7 @@ class NilClass
   def to_h = {}
   def &(o) = false
   def |(o) = !!o
-  alias ^ |
+  def ^(o) = !!o
   def nil? = true
   def to_i = 0
   def to_f = 0.0
@@ -321,7 +321,7 @@ class FalseClass
   alias inspect to_s
   def &(o) = false
   def |(o) = !!o
-  alias ^ |
+  def ^(o) = !!o
   def ===(o) = equal?(o)
 end
 
@@ -541,15 +541,15 @@ class Set
   alias eql? ==
   def clear = (__saruby__.set_frozen!(self); @__h.clear; self)
   def reset = (__saruby__.set_frozen!(self); @__h.rehash; self)
-  def map!(&b)
-    return enum_for(:map!) { size } unless b
+  def collect!(&b)
+    return enum_for(:collect!) { size } unless b
     a = to_a.map(&b)
     __saruby__.set_frozen!(self)
     @__h.clear
     a.each { |x| add(x) }
     self
   end
-  alias collect! map!
+  alias map! collect!
   def select!(&b)
     return enum_for(:select!) { size } unless b
     __saruby__.set_frozen!(self)

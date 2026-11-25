@@ -546,7 +546,7 @@ fn arith_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let a = c.ary_new_from(&[Value::bool(x), b, e, st]);
     funcall(c, a, intern(b"hash"), &[], std::ptr::null())
 }
-fn arith_last(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
+fn arith_last(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { check_argc(c, a, 0, 1)?;
     // all-Integer: counted back from the end, not enumerated
     if let Some((bg, e, st, x)) = renum(c, slf).arith {
         if e != NIL && is_integer(bg) && is_integer(e) && is_integer(st) && a.len() <= 1 {
@@ -578,7 +578,7 @@ fn arith_last(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let all = collect_all(c, slf)?;
     funcall(c, all, intern(b"last"), a, b)
 }
-fn arith_first(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { e_first(c, slf, a, b) }
+fn arith_first(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { check_argc(c, a, 0, 1)?; e_first(c, slf, a, b) }
 
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if let Some(&e) = c.data::<REnum>(v) {
