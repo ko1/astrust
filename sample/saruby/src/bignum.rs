@@ -278,6 +278,7 @@ fn bz_3n_2n(a: &[u32], b: &[u32], h: usize, lvl: usize) -> (Vec<u32>, Vec<u32>) 
     while cmp_mag(&r, &d) == Ordering::Less { r = add_mag(&r, b); q = sub_mag(&q, &[1]); }
     (q, sub_mag(&r, &d))
 }
+#[cold]
 #[inline(never)]
 fn div_bz(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
     let s = b[b.len() - 1].leading_zeros() as usize;
