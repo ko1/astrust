@@ -1291,7 +1291,6 @@ fn m_initialize(c: &mut Ctx, slf: Value, _a: &[Value], b: Blk) -> RV {
     if !b.is_null() { yield_with_self(c, b, &[slf], slf, slf)?; }
     Ok(NIL)
 }
-fn m_instance_variable_names(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.ary_new()) }
 fn m_singleton_class_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(c.class(slf).is_singleton)) }
 fn m_hash(_c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix((crate::astrust::hash_u64(slf.raw()) >> 2) as i64)) }
 fn refinements_of(c: &mut Ctx, m: Value) -> Value {
@@ -1672,7 +1671,6 @@ pub fn init(c: &mut Ctx) -> InitIds {
     for n in ["extend_object", "append_features", "prepend_features"] { undef_method(c, rf, intern(n.as_bytes())).expect("Module's method"); }
     define_singleton_cfunc(c, m, "used_refinements", m_s_used_refinements, 0);
     define_cfunc(c, vmr.c_class.get(), "attached_object", m_attached_object, 0);
-    d(c, "instance_variable_names", m_instance_variable_names, 0);
     define_singleton_cfunc(c, m, "new", m_module_new, -1);
     define_singleton_cfunc(c, m, "constants", m_s_constants, -1);
 
