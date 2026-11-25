@@ -1430,8 +1430,24 @@ fn lp_resolve_feature_path(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let name = String::from_utf8_lossy(c.str_bytes(sv)).into_owned();
     let lp = expanded_load_path(c, true)?;
     let (kind, path) = match locate_feature(&name, &lp, false) {
+        // a newer installed gem is what require loads; resolve_feature_path (no activation) sees the default one in rubylibdir
+        Feature::File(f) if f.contains("/gems/") => match crate::builtins::prelude::stdlib_lp_dirs().first() {
+            Some(lib) if std::path::Path::new(&format!("{}/{}.rb", lib, name.trim_end_matches(".rb"))).is_file() => ("rb", format!("{}/{}.rb", lib, name.trim_end_matches(".rb"))),
+            _ => return Ok(NIL),
+        },
         Feature::File(f) => ("rb", f),
-        Feature::Native(base) => ("so", format!("{}.so", base)),
+        // builtin in CRuby (no file)
+        Feature::Native(base) if matches!(base.as_str(), "set" | "thread" | "fiber" | "enumerator" | "rational" | "complex") => return Ok(NIL),
+        Feature::Native(base) => {
+            // a feature CRuby has as a .rb in rubylibdir is that file; an extension is .so in archdir
+            let base = base.strip_suffix(".so").unwrap_or(&base).to_string();
+            match crate::builtins::prelude::stdlib_lp_dirs() {
+                [lib, ..] if std::path::Path::new(&format!("{}/{}.rb", lib, base)).is_file() => ("rb", format!("{}/{}.rb", lib, base)),
+                [_, arch, ..] if std::path::Path::new(&format!("{}/{}.rb", arch, base)).is_file() => ("rb", format!("{}/{}.rb", arch, base)),
+                [_, arch, ..] => ("so", format!("{}/{}.so", arch, base)),
+                _ => ("so", format!("{}.so", base)),
+            }
+        }
         Feature::Missing | Feature::SoOnly => return Ok(NIL),
     };
     let ps = c.str_new(path.as_bytes());

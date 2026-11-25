@@ -191,7 +191,7 @@ fn finish_thread(c: &mut Ctx, t: Value) -> Result<(), Esc> {
     if FORKED.load(Relaxed) && t == MAIN.get(c) { forked_main_exit(c, is_err, v); }
     if !is_err { th_mut(c, t).value = v; return Ok(()); }
     if is_kind_of(c, v, C_KILL.get(c)) { return Ok(()); }
-    if is_kind_of(c, v, c.vm().c_system_exit.get()) { return Err(raise_exc(c, v)); }
+    if is_kind_of(c, v, c.vm().c_system_exit.get()) { th_mut(c, t).exc = v; return Err(raise_exc(c, v)); }
     let r = th_mut(c, t);
     r.exc = v;
     let report = if r.report == UNDEF { REPORT_ALL.load(Relaxed) } else { r.report.truthy() };

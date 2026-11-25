@@ -380,7 +380,7 @@ pub fn spawn_spec(c: &mut Ctx, env: Option<Value>, args: &[Value], opts: Option<
                     continue;
                 }
                 "new_pgroup" => { continue; }
-                "umask" => { sp.umask = Some(num_to_long(c, v)? as u32); continue; }
+                "umask" => { sp.umask = Some(mode_num(c, v)?); continue; }
                 "unsetenv_others" => { sp.clear_env = bool_opt(c, v, "unsetenv_others")?; continue; }
                 "close_others" => {
                     if bool_opt(c, v, "close_others")? {
@@ -554,7 +554,7 @@ fn waitpid_q(c: &mut Ctx, pid: i32, flags: i32, quiet: bool) -> Result<(i32, i32
         let s = crate::builtins::thread::scheduler_current(c);
         if s != NIL {
             if let Some(st) = crate::builtins::thread::sched_hook(c, s, "process_wait", &[Value::fix(pid as i64), Value::fix(flags as i64)])? {
-                if st == NIL { return Ok((0, 0)); }
+                if st == NIL && !quiet { return Ok((0, 0)); }   // Process.wait gives nil; system checks the status
                 let k = const_get_at(c, c.vm().m_process.get(), intern(b"Status")).unwrap_or(NIL);
                 if !is_kind_of(c, st, k) { return type_err(c, format!("wrong argument type {} (expected Process::Status)", class_name_for_err(c, st))); }
                 return Ok((st_pid_of(c, st) as i32, st_raw(c, st)));
@@ -732,9 +732,9 @@ fn p_wait2(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
 fn p_waitall(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV {
     let out = c.ary_new();
     loop {
-        let mut st = 0;
-        let r = sys::waitpid(-1, &mut st, 0);
-        if r < 0 { if sys::errno() == sys::EINTR { run_pending_signals(c)?; continue; } break; }
+        // each wait goes through the Fiber scheduler's process_wait; no child left is pid -1
+        let (r, st) = waitpid_q(c, -1, 0, true)?;
+        if r < 0 { break; }
         set_last_status(c, r, st);
         let s = new_status(c, r, st);
         let pair = c.ary_new_from(&[Value::fix(r as i64), s]);
@@ -892,6 +892,28 @@ fn uid_num(c: &mut Ctx, v: Value) -> Result<u32, Esc> {
     if i < i32::MIN as i64 { return err(c, re, format!("integer {} too small to convert to 'unsigned int'", i)); }
     if i > u32::MAX as i64 { return err(c, re, format!("integer {} too big to convert to 'unsigned int'", i)); }
     Ok(i as u32)
+}
+/// NUM2MODET (rb_num2uint): a Float is range-checked as a long (NaN too), a bignum is too big for 'unsigned long'.
+fn mode_num(c: &mut Ctx, v: Value) -> Result<u32, Esc> {
+    let re = c.vm().c_range_error.get();
+    if is_float(v) {
+        let f = float_val(v);
+        if !(f >= -9223372036854775808.0 && f < 9223372036854775808.0) {
+            let s = if f.is_nan() { "NaN".to_string() } else if f.is_infinite() { if f < 0.0 { "-Inf".into() } else { "Inf".into() } } else { crate::builtins::sprintf::fmt_g10(f) };
+            return err(c, re, format!("float {} out of range of integer", s));
+        }
+        let i = f as i64;
+        if i < i32::MIN as i64 { return err(c, re, format!("integer {} too small to convert to 'unsigned int'", i)); }
+        if i > u32::MAX as i64 { return err(c, re, format!("integer {} too big to convert to 'unsigned int'", i)); }
+        return Ok(i as u32);
+    }
+    if is_bignum(v) && c.big(v).to_i64().is_none() {
+        let (neg, s) = { let b = c.big(v); (b.neg, b.abs().to_string_radix(10)) };
+        if s.parse::<u64>().is_err() { return err(c, re, "bignum too big to convert into 'unsigned long'"); }
+        if neg { return err(c, re, "bignum out of range of unsigned long"); }
+        return err(c, re, format!("integer {} too big to convert to 'unsigned int'", s));
+    }
+    uid_num(c, v)
 }
 /// OBJ2UID / OBJ2GID: an Integer, or a user (group) name looked up through NSS (getpwnam_r / getgrnam_r).
 fn id_arg(c: &mut Ctx, v: Value, group: bool) -> Result<u32, Esc> {
