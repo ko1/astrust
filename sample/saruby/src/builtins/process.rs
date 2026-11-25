@@ -33,16 +33,20 @@ fn new_status(c: &mut Ctx, pid: i32, raw: i32) -> Value {
 }
 /// Process.argv0: $0 before the first `$0 =`.
 static ARGV0: Global = Global::new();
-/// `$0 =` / Process.setproctitle: CRuby rewrites the argv area (ps's command line) and leaves comm alone; not done here (todo.md).
-pub fn set_proctitle(_c: &mut Ctx, _title: Value) {}
+/// `$0 =` / Process.setproctitle: the argv area (ps's command line, /proc/PID/cmdline); comm stays.
+pub fn set_proctitle(c: &mut Ctx, title: Value) -> Result<(), Esc> {
+    if c.str_bytes(title).contains(&0) { return arg_err(c, "string contains null byte"); }
+    crate::builtins::sys::setproctitle(c.str_bytes(title));
+    Ok(())
+}
 /// `$0 = v`: a frozen String, and the process title.
 pub fn set_dollar_zero(c: &mut Ctx, v: Value) -> RV {
     let s = expect_str(c, v)?;
+    set_proctitle(c, s)?;
     if ARGV0.get(c) == NIL { let o = c.vm().dollar_zero.get(); ARGV0.set(c, o); }
     let s = c.str_copy(s);
     crate::heap::obj_set_flags(s, crate::object::FL_FROZEN);
     c.vm().dollar_zero.set(s);
-    set_proctitle(c, s);
     Ok(s)
 }
 /// [packed status, Process::Status] of the last `$?` read: the same object until the status changes.
@@ -1084,7 +1088,7 @@ pub fn init(c: &mut Ctx) {
     mf(c, "__saved", |_c, _s, a, _b| Ok(Value::fix(SAVED_ID[a[0].truthy() as usize].load(Ordering::Relaxed) as i64)), 1);
     mf(c, "__set_saved", |_c, _s, a, _b| { SAVED_ID[a[0].truthy() as usize].store(a[1].as_fix() as u32, Ordering::Relaxed); Ok(NIL) }, 2);
     mf(c, "__under", |_c, _s, a, _b| { UNDER_SWITCH[a[0].truthy() as usize].store(a[1].truthy(), Ordering::Relaxed); Ok(NIL) }, 2);
-    mf(c, "__id_of", |c, _s, a, _b| Ok(Value::fix(id_arg(c, a[0], a[1].truthy())? as i64)), 2); mf(c, "__itimer", p_itimer, 1); mf(c, "setproctitle", |c, _s, a, _b| { let s = expect_str(c, a[0])?; set_proctitle(c, s); Ok(a[0]) }, 1); mf(c, "last_status", |c, _s, _a, _b| Ok(last_status(c)), 0);
+    mf(c, "__id_of", |c, _s, a, _b| Ok(Value::fix(id_arg(c, a[0], a[1].truthy())? as i64)), 2); mf(c, "__itimer", p_itimer, 1); mf(c, "setproctitle", |c, _s, a, _b| { let s = expect_str(c, a[0])?; set_proctitle(c, s)?; Ok(s) }, 1); mf(c, "last_status", |c, _s, _a, _b| Ok(last_status(c)), 0);
     mf(c, "argv0", |c, _s, _a, _b| Ok(match ARGV0.get(c) { NIL => c.vm().dollar_zero.get(), v => v }), 0); mf(c, "warmup", |_c, _s, _a, _b| Ok(TRUE), 0);
     for (n, v) in [("CLOCK_REALTIME", 0), ("CLOCK_MONOTONIC", 1), ("CLOCK_PROCESS_CPUTIME_ID", 2), ("CLOCK_THREAD_CPUTIME_ID", 3), ("CLOCK_MONOTONIC_RAW", 4),
                    ("CLOCK_REALTIME_COARSE", 5), ("CLOCK_MONOTONIC_COARSE", 6), ("CLOCK_BOOTTIME", 7), ("CLOCK_REALTIME_ALARM", 8), ("CLOCK_BOOTTIME_ALARM", 9), ("CLOCK_TAI", 11),

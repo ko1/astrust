@@ -323,6 +323,47 @@ pub fn setenv(k: &CStr, v: &CStr) -> c_int { unsafe { ffi::setenv(k.as_ptr(), v.
 pub fn unsetenv(k: &CStr) -> c_int { unsafe { ffi::unsetenv(k.as_ptr()) } }
 pub fn clearenv() -> c_int { unsafe { ffi::clearenv() } }
 
+// ---- process title: the kernel's argv + environ string area (CRuby missing/setproctitle.c) -----
+/// [start, start + total) holds argv's strings, then environ's; argv's end at start + argv. Lengths
+/// exclude the last NUL, as CRuby's argv_len / argv_env_len.
+struct ArgArea { start: usize, argv: usize, total: usize }
+/// arg_start, arg_end, env_start, env_end of /proc/self/stat (fields 48-51): no startup hook needed.
+fn arg_area() -> Option<ArgArea> {
+    let s = std::fs::read("/proc/self/stat").ok()?;
+    let rest = &s[s.iter().rposition(|&b| b == b')')? + 1..];
+    let f: Vec<usize> = std::str::from_utf8(rest).ok()?.split_ascii_whitespace().skip(45).take(4).map(|x| x.parse().ok()).collect::<Option<_>>()?;
+    let [a0, a1, e0, e1] = f[..] else { return None };
+    if a0 == 0 || a1 <= a0 { return None; }
+    let argv = a1 - 1 - a0;
+    Some(ArgArea { start: a0, argv, total: if e0 == a1 && e1 > e0 { e1 - 1 - a0 } else { argv } })
+}
+/// environ to fresh copies (compat_init_setproctitle), so ENV survives the area being overwritten. A
+/// duplicated name keeps its first value (getenv's); entries setenv refuses (no '=', a name starting with '=') are dropped.
+fn move_environ() {
+    let vars: Vec<_> = std::env::vars_os().collect();
+    clearenv();
+    let mut seen = std::collections::HashSet::new();
+    for (k, v) in vars { if seen.insert(k.clone()) { setenv(&cstr(k.as_encoded_bytes()), &cstr(v.as_encoded_bytes())); } }
+}
+/// setproctitle("%.*s", title) as CRuby's: cut to 1023 bytes and to the area, NUL padded to argv's end, or to
+/// the area's end when longer than argv's strings. A no-op without the area (no /proc, argc 0).
+pub fn setproctitle(title: &[u8]) {
+    static AREA: std::sync::Mutex<Option<Option<ArgArea>>> = std::sync::Mutex::new(None);
+    let mut g = AREA.lock().unwrap_or_else(|e| e.into_inner());
+    // before the first write: std's argv read into the snapshot, environ off the area
+    let area = g.get_or_insert_with(|| { crate::program_args(); move_environ(); arg_area() });
+    let Some(a) = area else { return };
+    if a.total == 0 { return; }
+    let t = &title[..title.len().min(1023)];
+    let n = t.len().min(a.total - 1);
+    let mut buf = t[..n].to_vec();
+    buf.resize((n + 1).max(if t.len() > a.argv { a.total } else { a.argv }), 0);
+    // SAFETY: buf.len() <= a.total, so this stays in the kernel's argv/environ strings (mapped, writable,
+    // owned by no Rust object). Their readers are gone: std's argv was copied by program_args (nothing else
+    // calls std::env::args), environ points to the copies; the lock serialises writers.
+    unsafe { std::ptr::copy_nonoverlapping(buf.as_ptr(), a.start as *mut u8, buf.len()) }
+}
+
 // ---- libm: pure functions of a double -------------------------------------------------------
 // SAFETY (each): no pointers but the live `sign`.
 pub fn erf(x: f64) -> f64 { unsafe { ffi::erf(x) } }
