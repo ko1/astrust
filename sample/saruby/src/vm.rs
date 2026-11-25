@@ -1838,52 +1838,48 @@ fn format_frames_n(c: &Ctx, frames: &[RawFrame], skip: usize, n: usize, no_inter
             if fr.kind == FK_CFUNC && fr.me == vm().ids.c_new.get() { continue; }   // CRuby 4.0 has no Class#new frame
             if fr.kind == FK_CFUNC && !fr.me.is_null() && (*fr.me).owner == vm().c_proc.get() && matches!(sym_str((*fr.me).name).as_ref(), "call" | "yield" | "===" | "[]") { continue; }
             // a cfunc frame takes its caller's file; only eval'd source counts as internal here, not saruby's own prelude
-            if no_internal_eval && fr.file.starts_with("<internal:") && {
-                let mut is = if fr.at.is_null() { fr.iseq } else { fr.at };
-                while !is.is_null() && (*is).kind != IseqKind::Eval { is = (*is).parent.get(); }
-                !is.is_null()
-            } { continue; }
+            if no_internal_eval && fr.file.starts_with("<internal:") && in_eval(c, if fr.at.is_null() { fr.iseq } else { fr.at }) { continue; }
             vis.push(*fr);
         }
     }
     if vis.len() < skip { return None; }
-    let vis = collapse_internal(&vis[skip..]);
+    let vis = collapse_internal(c, &vis[skip..]);
     let mut out = vec![];
-    unsafe {
-        for fr in vis.iter().take(n) {
-            let (line, nid) = line_nid(fr.pos, fr.at.as_ref().map(|i| &i.info));
-            // code from eval has no absolute path (CRuby: realpath nil), so no node to look up either
-            let mut is = fr.iseq;
-            while !is.is_null() && (*is).kind != IseqKind::Eval { is = (*is).parent.get(); }
-            out.push(BtLine { file: fr.file, line, label: frame_label_of(c, fr.kind, fr.me, fr.iseq), nid: if is.is_null() { nid } else { NID_EVAL } });
-        }
+    for fr in vis.iter().take(n) {
+        let (line, nid) = line_nid(fr.pos, c.iseq_ref(fr.at).map(|i| &i.info));
+        // code from eval has no absolute path (CRuby: realpath nil), so no node to look up either
+        out.push(BtLine { file: fr.file, line, label: frame_label_of(c, fr.kind, fr.me, fr.iseq), nid: if in_eval(c, fr.iseq) { NID_EVAL } else { nid } });
     }
     Some(out)
 }
 
-/// A frame of the prelude's / lib's own Ruby code (not eval'd source that names itself "<internal:...>").
-fn is_internal_frame(fr: &RawFrame) -> bool {
-    if !fr.file.starts_with("<internal:") { return false; }
-    unsafe {
-        let mut is = if fr.at.is_null() { fr.iseq } else { fr.at };
-        while !is.is_null() && (*is).kind != IseqKind::Eval { is = (*is).parent.get(); }
-        is.is_null()
+/// Is `is` (or one of its parents) the iseq of eval'd source?
+fn in_eval(c: &Ctx, mut is: *const Iseq) -> bool {
+    while let Some(i) = c.iseq_ref(is) {
+        if i.kind == IseqKind::Eval { return true; }
+        is = i.parent.get();
     }
+    false
+}
+
+/// A frame of the prelude's / lib's own Ruby code (not eval'd source that names itself "<internal:...>").
+fn is_internal_frame(c: &Ctx, fr: &RawFrame) -> bool {
+    fr.file.starts_with("<internal:") && !in_eval(c, if fr.at.is_null() { fr.iseq } else { fr.at })
 }
 
 /// The prelude's methods are C functions in CRuby: a call from user code is one frame at the caller's file and
 /// line, and what the method itself calls (blocks, helpers) has none.  A run holding a top / class body (a lib
 /// being loaded) or without a caller is kept as it is.
-fn collapse_internal(v: &[RawFrame]) -> std::borrow::Cow<'_, [RawFrame]> {
-    if !v.iter().any(is_internal_frame) { return std::borrow::Cow::Borrowed(v); }
+fn collapse_internal<'a>(c: &Ctx, v: &'a [RawFrame]) -> std::borrow::Cow<'a, [RawFrame]> {
+    if !v.iter().any(|f| is_internal_frame(c, f)) { return std::borrow::Cow::Borrowed(v); }
     let mut out: Vec<RawFrame> = Vec::with_capacity(v.len());
+    let kind_of = |f: &RawFrame| if f.kind == FK_CFUNC { None } else { c.iseq_ref(f.iseq).map(|i| i.kind) };
     let mut i = 0;
     while i < v.len() {
-        if !is_internal_frame(&v[i]) { out.push(v[i]); i += 1; continue; }
+        if !is_internal_frame(c, &v[i]) { out.push(v[i]); i += 1; continue; }
         let mut j = i;
-        while j < v.len() && is_internal_frame(&v[j]) { j += 1; }
+        while j < v.len() && is_internal_frame(c, &v[j]) { j += 1; }
         let run = &v[i..j];
-        let kind_of = |f: &RawFrame| if f.kind == FK_CFUNC || f.iseq.is_null() { None } else { Some(unsafe { (*f.iseq).kind }) };
         let body = run.iter().any(|f| matches!(kind_of(f), Some(k) if !matches!(k, IseqKind::Method | IseqKind::Block | IseqKind::Lambda)));
         if body || j == v.len() { out.extend_from_slice(run); }
         else if let (Some(IseqKind::Method), caller) = (kind_of(&run[run.len() - 1]), &v[j]) {
