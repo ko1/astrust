@@ -368,17 +368,8 @@ pub fn inspect_vec(b: &[u8], enc: u8) -> Vec<u8> {
 }
 fn push_fmt(out: &mut Vec<u8>, a: std::fmt::Arguments) { use std::io::Write; let _ = out.write_fmt(a); }
 
-/// Is Unicode scalar `cp` printable (Onigmo print class; approximates "not Cc/Cn/Zl/Zp/Cs")?
-pub fn uni_printable(cp: u32) -> bool {
-    match cp {
-        0..=0x1f | 0x7f..=0x9f | 0x2028 | 0x2029 | 0xd800..=0xdfff | 0xfdd0..=0xfdef => false,
-        _ if cp & 0xfffe == 0xfffe => false,
-        0x0378 | 0x0379 | 0x0380..=0x0383 | 0x038b | 0x038d | 0x03a2 => false,
-        0x323b0..=0xdffff => false,
-        0xe0000 | 0xe0002..=0xe001f | 0xe0080..=0xe00ff | 0xe01f0..=0xeffff => false,
-        _ => cp <= 0x10ffff,
-    }
-}
+/// Onigmo's print class (Unicode 17 tables shared with astrogre).
+pub fn uni_printable(cp: u32) -> bool { astrogre::re::uni_is_print(cp) }
 
 /// rb_str_inspect's resenc.
 pub fn inspect_resenc() -> u8 { crate::builtins::encoding::default_internal().unwrap_or_else(crate::builtins::encoding::default_external) }
@@ -405,6 +396,8 @@ pub fn sym_is_simple(n: &[u8]) -> bool {
         b"!", b"~", b"+@", b"-@", b"[]", b"[]=", b"=~", b"!~", b"&", b"|", b"^", b"`"];
     if ops.contains(&n) { return true; }
     let s = match std::str::from_utf8(n) { Ok(s) => s, Err(_) => return false };
+    // rb_str_symname_p's sym_printable (U+0085 passes rb_enc_isprint)
+    if !s.is_ascii() && !s.chars().all(|c| (c as u32) < 0x80 || c as u32 == 0x85 || uni_printable(c as u32)) { return false; }
     let body = if let Some(r) = s.strip_prefix("@@") { r } else if let Some(r) = s.strip_prefix('@') { r } else if let Some(r) = s.strip_prefix('$') {
         if r.len() == 1 && "~*$?!@/\\;,.=:<>\"&`'+0123456789_".contains(r) { return true; }
         if r.len() == 2 && r.starts_with('-') && r[1..].chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') { return true; }
