@@ -159,11 +159,12 @@ fn find_on_boundary(c: &Ctx, slf: Value, o: Value, from: usize) -> Option<usize>
     let valid = en::is_valid(oe, n);
     if !valid { return None; }
     if en::kind(r.enc) == en::EK::Utf8 && (oe == r.enc || en::is_valid(r.enc, n)) { return find_bytes(&r.b, n, from); }
-    let off = char_offsets_of(&r.b, r.enc);
+    let cesu = en::kind(r.enc) == en::EK::Cesu8;   // its heads are the UTF-8 lead bytes (as in check_char_boundary)
+    let off = if cesu { vec![] } else { char_offsets_of(&r.b, r.enc) };
     let mut i = from;
     loop {
         let p = find_bytes(&r.b, n, i)?;
-        if off.binary_search(&p).is_ok() { return Some(p); }
+        if if cesu { p >= r.b.len() || (r.b[p] & 0xc0) != 0x80 } else { off.binary_search(&p).is_ok() } { return Some(p); }
         i = p + 1;
     }
 }
@@ -1809,6 +1810,8 @@ cfn!(s_append_as_bytes, |c, slf, a, b_| {
 fn check_char_boundary(c: &mut Ctx, slf: Value, off: usize, what: &str) -> Result<(), Esc> {
     let r = c.rstring(slf);
     if off >= r.b.len() || enc_single(&r.b, r.enc) { return Ok(()); }
+    // CESU-8's left_adjust_char_head is the UTF-8 lead-byte rule: the middle of a surrogate pair is a head
+    if crate::builtins::encoding::kind(r.enc) == crate::builtins::encoding::EK::Cesu8 && (r.b[off] & 0xc0) != 0x80 { return Ok(()); }
     if char_offsets_of(&r.b, r.enc).binary_search(&off).is_err() { return err(c, c.vm().c_index_error.get(), format!("{} {} does not land on character boundary", what, off)); }
     Ok(())
 }

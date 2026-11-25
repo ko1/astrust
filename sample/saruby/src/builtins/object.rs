@@ -572,6 +572,7 @@ pub fn undef_method(c: &mut Ctx, klass: Value, mid: Sym) -> Result<(), Esc> {
         let e = make_name_error(c, c.vm().c_name_error.get(), &msg, Value::sym(mid), klass)?;
         return Err(raise_exc(c, e));
     }
+    if crate::builtins::misc::warning_category_enabled(2) { warn_opt_redefinition(c, klass, mid, std::ptr::null())?; }
     define_method_me(c, klass, mid, new_me(mid, klass, VISI_PUBLIC, MKind::Undef));
     crate::rt::note_redefinition(c, klass, mid);
     if crate::rt::booted() { call_method_hook(c, klass, mid, intern(b"method_undefined"), intern(b"singleton_method_undefined"))?; }
@@ -592,6 +593,7 @@ fn m_remove_method(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     for &x in a {
         let m = to_sym_arg(c, x)?;
         check_frozen(c, slf)?;
+        if crate::builtins::misc::warning_category_enabled(2) { warn_opt_redefinition(c, slf, m, std::ptr::null())?; }
         if c.class_mut(slf).mtbl.remove(&m).is_none() {
             let msg = format!("method '{}' not defined in {}", sym_str(m), class_path(c, slf));
             let e = make_name_error(c, c.vm().c_name_error.get(), &msg, Value::sym(m), slf)?;
