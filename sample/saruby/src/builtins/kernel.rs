@@ -588,8 +588,7 @@ fn k_throw(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
     let th = crate::builtins::thread::current_thread(c);
     let found = CATCH_TAGS.with(|t| t.borrow().iter().any(|&x| x == (th, tag)));
     if !found {
-        let ins = inspect_str(c, tag)?;
-        let e = make_exception_rb(c, c.vm().c_uncaught_throw_error.get(), &format!("uncaught throw {}", ins));
+        let e = make_exception_rb(c, c.vm().c_uncaught_throw_error.get(), "uncaught throw %p");
         ivar_set_raw(c, e, intern(b"tag"), tag);
         ivar_set_raw(c, e, intern(b"value"), val);
         return Err(raise_exc(c, e));

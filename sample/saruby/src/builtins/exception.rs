@@ -770,6 +770,21 @@ fn sysexit_init(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
 }
 fn sysexit_status(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let v = ivar_get(c, slf, s::status); Ok(if v == NIL { Value::fix(0) } else { v }) }
 fn sysexit_success(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { let v = ivar_get(c, slf, s::status); Ok(Value::bool(v == NIL || v == Value::fix(0))) }
+/// uncaught_throw_init: (tag, value, *exception's arguments)
+fn uncaught_init(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
+    check_argc(c, a, 2, usize::MAX)?;
+    exc_initialize(c, slf, &a[2..], b)?;
+    ivar_set_raw(c, slf, intern(b"tag"), a[0]);
+    ivar_set_raw(c, slf, intern(b"value"), a[1]);
+    Ok(NIL)
+}
+/// uncaught_throw_to_s: the message is a format string given the tag
+fn uncaught_to_s(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
+    let m = ivar_get(c, slf, s::mesg);
+    if m == NIL { return exc_to_s(c, slf, a, b); }
+    let tag = ivar_get(c, slf, intern(b"tag"));
+    funcall(c, slf, intern(b"format"), &[m, tag], std::ptr::null())
+}
 fn uncaught_tag(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, slf, intern(b"tag"))) }
 fn uncaught_value(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(ivar_get(c, slf, intern(b"value"))) }
 /// syserr_eqq: a SystemCallError (or anything with #errno) whose errno is the class's Errno
@@ -857,7 +872,8 @@ pub fn init(c: &mut Ctx) {
     define_cfunc(c, vmr.c_no_method_error.get(), "args", nm_err_args, 0);
     define_private_cfunc(c, vmr.c_no_method_error.get(), "initialize", name_err_init, -1);
     define_cfunc(c, vmr.c_load_error.get(), "message", exc_message, 0);
-    define_cfunc(c, vmr.c_uncaught_throw_error.get(), "to_s", exc_to_s, 0);
+    define_cfunc(c, vmr.c_uncaught_throw_error.get(), "to_s", uncaught_to_s, 0);
+    define_private_cfunc(c, vmr.c_uncaught_throw_error.get(), "initialize", uncaught_init, -1);
     define_private_cfunc(c, vmr.c_key_error.get(), "initialize", key_err_init, -1);
     define_cfunc(c, vmr.c_key_error.get(), "key", key_err_key, 0);
     define_cfunc(c, vmr.c_key_error.get(), "receiver", name_err_receiver, 0);
