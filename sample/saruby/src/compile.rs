@@ -203,6 +203,13 @@ impl<'a> Compiler<'a> {
         if enc == crate::object::ENC_UTF8 || flags & pa::SYMBOL_FLAGS_FORCED_UTF8_ENCODING != 0 || b.is_ascii() { intern(b) } else { crate::symbol::intern_enc(b, enc) }
     }
 
+    /// Ivar name; `@__x` in saruby's own source is the hidden slot `__x` (no `@`: not an instance variable to Ruby).
+    fn ivname(&self, c: u32) -> Sym {
+        if self.internal {
+            if let Some(h) = self.pr.constants[c as usize].strip_prefix(b"@__") { return intern(&[b"__", h].concat()); }
+        }
+        self.cst(c)
+    }
     fn cst(&self, c: u32) -> Sym {
         let s = self.csyms[c as usize].get();
         if s != NOSYM { return s; }
@@ -789,8 +796,8 @@ impl<'a> Compiler<'a> {
                 let w = self.var_write(nm, *depth, v);
                 ALLOC_node_and(r, w)
             }
-            Kind::InstanceVariableReadNode { name } => ALLOC_node_ivar(self.cst(*name)),
-            Kind::InstanceVariableWriteNode { name, value } => { let v = self.c(value); ALLOC_node_iasgn(self.cst(*name), v) }
+            Kind::InstanceVariableReadNode { name } => ALLOC_node_ivar(self.ivname(*name)),
+            Kind::InstanceVariableWriteNode { name, value } => { let v = self.c(value); ALLOC_node_iasgn(self.ivname(*name), v) }
             Kind::InstanceVariableOperatorWriteNode { name, value, binary_operator } => {
                 let nm = self.cst(*name);
                 let op = self.cst(*binary_operator);

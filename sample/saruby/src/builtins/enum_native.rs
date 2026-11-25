@@ -285,6 +285,7 @@ fn en_reject(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
 }
 #[inline(never)]
 fn en_to_a_gen(c: &mut Ctx, slf: Value, a: &[Value], _blk: Blk) -> RV {
+    if a.is_empty() { if let Some(r) = crate::builtins::enumerator::arith_to_a_direct(c, slf) { return r; } }
     let acc0 = c.ary_new();
     let d = c.ary_new_from(&[acc0]);
     run_each(c, slf, |c, d, args, _, _o| { let v = pack(c, args); c.ary_push(c.ary_get(d, 0), v); Ok(NIL) }, d, a, Blk::NONE)?;
