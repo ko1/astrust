@@ -153,6 +153,7 @@ pub struct Compiler<'a> {
     tag: bool,                    // tag nodes with prism node ids: not saruby's own <internal:..> code (no path to
                                   // re-read), nor a parse whose ids overflow the tag (the root's id is the largest)
     pub errors: Vec<String>,
+    pub rx_error: bool,
     internal: bool,               // saruby's own prelude source: `__saruby__` is the VM's internal module (with_internal)
     csyms: Vec<std::cell::Cell<Sym>>,   // pr.constants interned, on first use (NOSYM: not yet)
     src_enc: u32,                       // the source encoding (magic comment)
@@ -181,7 +182,7 @@ pub const DEF_BACKREF: u32 = 16;
 
 impl<'a> Compiler<'a> {
     pub fn new(pr: &'a ParseResult, file: &'static str) -> Self {
-        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), outer: HashMap::default(), pending_outer: vec![], ractor_src: std::cell::OnceCell::new(), eval_outer: vec![], in_def: 0, pm_err: None, yields: false, pm_dcache: None, tl_binding: false, required: false, cov: None, cov_popped: false, trace: false, flat_stmts: false, tag: !file.starts_with("<internal:") && pr.root.id < 1 << (32 - NF_TAG_SHIFT), errors: vec![], internal: INTERNAL.with(|i| i.get()),
+        let c = Compiler { pr, file, src: &[], src_key: std::cell::OnceCell::new(), scopes: vec![], captures: HashMap::default(), outer: HashMap::default(), pending_outer: vec![], ractor_src: std::cell::OnceCell::new(), eval_outer: vec![], in_def: 0, pm_err: None, yields: false, pm_dcache: None, tl_binding: false, required: false, cov: None, cov_popped: false, trace: false, flat_stmts: false, tag: !file.starts_with("<internal:") && pr.root.id < 1 << (32 - NF_TAG_SHIFT), errors: vec![], rx_error: false, internal: INTERNAL.with(|i| i.get()),
                    csyms: vec![std::cell::Cell::new(NOSYM); pr.constants.len()],
                    src_enc: crate::builtins::encoding::find_enc(pr.encoding.as_bytes()).unwrap_or(crate::object::ENC_UTF8) as u32 };
         // identifiers of a non-UTF-8 source are symbols in its encoding (as its symbol literals)
@@ -2661,10 +2662,15 @@ impl<'a> Compiler<'a> {
     #[inline(never)]
     fn regex_lit(&mut self, src: &[u8], flags: u32, line: u32) -> NodePtr {
         let s = lstr(src);
-        if self.file != "<internal:prelude>" { crate::regexp::note_literal(s, self.file, line); }
         let opts = regex_opts(flags, self.src_enc);
         if self.file != "<internal:prelude>" {
-            for m in crate::regexp::literal_warnings(s, opts) { PARSE_WARNINGS.with(|w| w.borrow_mut().push((format!("{}:{}: warning: {}\n", self.file, line, m), false))); }
+            crate::regexp::note_literal(s, self.file, line);
+            // ruby -c only parses: no regexp error or warning
+            if !CHECK_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
+                let (e, ws) = crate::regexp::prebuild_literal(s, opts);
+                for m in ws { PARSE_WARNINGS.with(|w| w.borrow_mut().push((format!("{}:{}: warning: {}\n", self.file, line, m), false))); }
+                if let Some(m) = e { self.errors.push(format!("{}:{}: {}", self.file, line, m)); self.rx_error = true; }
+            }
         }
         ALLOC_node_regex(s, opts)
     }
@@ -2701,6 +2707,8 @@ thread_local! {
     /// The last parse's warnings (message, verbose-only), shown by flush_parse_warnings.
     static PARSE_WARNINGS: std::cell::RefCell<Vec<(String, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
+/// Set for `ruby -c`: the main script is only parsed (regexp literals are not built).
+pub static CHECK_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// pm_warning_emit_callback: default-level warnings unless $VERBOSE is nil, verbose-level ones under $VERBOSE = true.
 pub fn flush_parse_warnings(c: &mut Ctx) -> Result<(), Esc> {
     let ws = PARSE_WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()));
@@ -2780,7 +2788,8 @@ pub fn compile_parsed(pr: &ParseResult, src: &[u8], file: &'static str, kind: Is
         cm.captures.entry(key(&pr.root)).or_default().insert(Sym(u32::MAX));
     }
     let is = cm.compile_program(&pr.root, kind);
-    if cm.errors.is_empty() { Ok(is) } else { Err(CompileError { compile: true, ..CompileError::syntax(cm.errors.join("\n")) }) }
+    // a regexp literal's error has the requirer's frame in its backtrace (the compiler's others the path alone)
+    if cm.errors.is_empty() { Ok(is) } else { Err(CompileError { compile: !cm.rx_error, ..CompileError::syntax(cm.errors.join("\n")) }) }
 }
 
 /// The value of a single non-splat `when` pattern that is an immediate literal.

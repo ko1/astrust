@@ -106,17 +106,19 @@ pub fn note_literal(src: &'static [u8], file: &'static str, line: u32) {
     if let Ok(mut m) = LIT_LINES.lock() { m.get_or_insert_with(Default::default).insert(src.as_ptr() as usize, (file, line)); }
 }
 
-/// A literal's parse-time warnings (CRuby warns when it parses, not when it runs).  A repeat
-/// operator right after another (possibly past `)`) is the only thing worth the extra parse.
-pub fn literal_warnings(src: &[u8], opts: u32) -> Vec<String> {
-    let q = |b: u8| matches!(b, b'*' | b'+' | b'?' | b'{');
-    let maybe = (0..src.len()).any(|i| matches!(src[i], b'*' | b'+' | b'?' | b'}') && src[i + 1..].iter().find(|&&b| b != b')').is_some_and(|&b| q(b)));
-    if !maybe { return Vec::new(); }
+thread_local! { static PREBUILT: std::cell::RefCell<std::collections::HashMap<(usize, u32), (Vec<u8>, u32, u8, Regex)>> = std::cell::RefCell::new(Default::default()); }
+
+/// Compile-time check of a literal (CRuby builds it while compiling): the built regexp waits here
+/// for its first run, so a valid one is built once.  Returns the error message and the parse-time warnings.
+pub fn prebuild_literal(src: &'static [u8], opts: u32) -> (Option<String>, Vec<String>) {
     let e = (opts >> RE_LIT_ENC_SHIFT) & 0xff;
     let enc = if e == 0 { ENC_UTF8 } else { (e - 1) as u8 };
-    match regexp_prep(src, enc, opts & RE_OPT_MASK) {
-        Ok((unesc, o, _, mode)) => crate::regex_engine::parse_warnings(&unesc, o & 7, mode),
-        Err(_) => Vec::new(),
+    let _ = crate::regex_engine::take_warnings();
+    let r = regexp_build(src, enc, opts & RE_OPT_MASK);
+    let ws = crate::regex_engine::take_warnings();
+    match r {
+        Ok(x) => { PREBUILT.with(|p| p.borrow_mut().insert((src.as_ptr() as usize, opts), x)); (None, ws) }
+        Err(m) => (Some(m), ws),
     }
 }
 
@@ -124,8 +126,9 @@ pub fn literal_warnings(src: &[u8], opts: u32) -> Vec<String> {
 pub fn regexp_new_lit(c: &mut Ctx, src: &[u8], opts: u32) -> RV {
     let e = (opts >> RE_LIT_ENC_SHIFT) & 0xff;
     let enc = if e == 0 { ENC_UTF8 } else { (e - 1) as u8 };
+    if let Some(x) = PREBUILT.with(|p| p.borrow_mut().remove(&(src.as_ptr() as usize, opts))) { return Ok(regexp_alloc(c, x)); }
     match regexp_build(src, enc, opts & RE_OPT_MASK) {
-        Ok(x) => { let _ = crate::regex_engine::take_warnings(); Ok(regexp_alloc(c, x)) }  // warned at parse (literal_warnings)
+        Ok(x) => { let _ = crate::regex_engine::take_warnings(); Ok(regexp_alloc(c, x)) }
         Err(m) => {
             let at = LIT_LINES.lock().ok().and_then(|t| t.as_ref().and_then(|t| t.get(&(src.as_ptr() as usize)).copied()));
             let loc = match at { Some((f, l)) => format!("{}:{}", f, l), None => backtrace_lines(c, 0).first().map(|l| l.split(":in ").next().unwrap_or("").to_string()).unwrap_or_default() };

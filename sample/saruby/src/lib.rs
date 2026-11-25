@@ -356,7 +356,9 @@ fn run_main(o: Opts) -> i32 {
     // DATA / __END__
     // -e is read in the locale encoding (a script file in UTF-8 unless its magic comment says otherwise)
     let src_enc = if o.e.is_empty() { object::ENC_UTF8 } else { builtins::encoding::locale_enc() };
+    compile::CHECK_ONLY.store(o.check_syntax, std::sync::atomic::Ordering::Relaxed);
     let is = compile::compile_source_enc(&src, src_enc, file, 1, IseqKind::Main, vec![]);
+    compile::CHECK_ONLY.store(false, std::sync::atomic::Ordering::Relaxed);
     let _ = compile::flush_parse_warnings(&mut c);
     let is = match is {
         Ok(is) => is,
