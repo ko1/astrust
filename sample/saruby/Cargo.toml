@@ -21,6 +21,9 @@ nodeprof = []
 # GC backend (runtime/gc): default is "marksweep"; `make GC=bitmap`
 gc-marksweep = []
 gc-bitmap = []
+# rooting checks for the moving-GC migration (docs/gc_moving.md 2.5, 11): quarantined + poisoned
+# dead slots (marksweep only) and precise zones in the machine-stack scan.  make FEATURES=gc_check
+gc_check = []
 
 [[bin]]
 name = "saruby"

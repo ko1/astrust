@@ -44,6 +44,19 @@ fn dump_regs(r: &mut [usize; NREGS]) {
     }
 }
 
+/// Call `f` with the address of a dump of the callee-saved registers in this frame: a stack
+/// position below the caller's frames whose words above it hold everything the callers keep.
+/// The fence of a precise zone (docs/gc_moving.md section 11).
+#[inline(never)]
+pub fn with_fence<R>(f: impl FnOnce(usize) -> R) -> R {
+    let mut regs = [0usize; NREGS];
+    dump_regs(&mut regs);
+    std::hint::black_box(&regs);
+    let r = f(regs.as_ptr() as usize);
+    std::hint::black_box(&regs);
+    r
+}
+
 /// Call `f` with the words of the running stack from this frame up to `top`,
 /// callee-saved registers included (they are spilled into this frame first).
 ///

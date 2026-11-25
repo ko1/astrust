@@ -218,6 +218,8 @@ fn init_gc_extras(c: &mut Ctx, gc: Value) {
     define_singleton_cfunc(c, gc, "measure_total_time=", |_c, _s, a, _b| { MEASURE_TIME.store(a[0].truthy(), Relaxed); Ok(a[0]) }, 1);
     define_singleton_cfunc(c, gc, "stress", |c, _s, _a, _b| { let v = STRESS_V.get(c); Ok(if v == NIL { FALSE } else if v == UNDEF { NIL } else { v }) }, 0);
     define_singleton_cfunc(c, gc, "stress=", gc_set_stress, 1);
+    #[cfg(feature = "gc_check")]
+    define_singleton_cfunc(c, gc, "__check_rooting", crate::gc::check_rooting, -1);
     define_singleton_cfunc(c, gc, "compact", |c, _s, _a, _b| { explicit_gc(c, true); compact_info(c) }, 0);
     define_singleton_cfunc(c, gc, "latest_compact_info", |c, _s, _a, _b| compact_info(c), 0);
     define_singleton_cfunc(c, gc, "verify_compaction_references", |c, _s, _a, _b| { explicit_gc(c, true); compact_info(c) }, -1);

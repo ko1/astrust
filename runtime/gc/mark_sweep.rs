@@ -7,15 +7,21 @@
 // grow so that the heap stays at least three times the live set.  Pages the policy
 // grants are added only when the free list runs dry (`reserve`), so a short run
 // touches only what it uses; collections come at the same allocation counts.
+//
+// `MarkSweep<L, true>` is the checking variant (docs/gc_moving.md 2.5): dead slots are poisoned
+// (`GcLang::poison`) and kept off the free list for the last QUARANTINE deaths, so a stale
+// reference finds a poisoned slot instead of a new object.  `false` compiles the checks out.
 use super::pages::Pages;
 use super::{header, Control, EdgeVisitor, GcBackend, GcHeader, GcLang, HeapStats, RootVisitor, WeakVisitor};
 use std::ptr::NonNull;
 
 const MARK: u32 = 1;
 const FREE: u32 = 2;
+const QUAR: u32 = 4;                 // CHECK: free and poisoned, not on the free list yet
+const QUARANTINE: usize = 1 << 18;
 const INITIAL_PAGES: usize = 32;
 
-pub struct MarkSweep<L: GcLang> {
+pub struct MarkSweep<L: GcLang, const CHECK: bool = false> {
     free: *mut L::Obj,
     free_count: usize,
     total: usize,              // slots of the pages added
@@ -27,9 +33,10 @@ pub struct MarkSweep<L: GcLang> {
     total_allocated: u64,
     total_freed: u64,
     pages: Pages<L::Obj, 0>,
+    quarantine: std::collections::VecDeque<*mut L::Obj>,
 }
 
-impl<L: GcLang> MarkSweep<L> {
+impl<L: GcLang, const CHECK: bool> MarkSweep<L, CHECK> {
     const PER_PAGE: usize = Pages::<L::Obj, 0>::PER_PAGE;
     // the free-list link is the first word of a slot that does not overlap the header
     const LINK: usize = if L::HEADER_OFFSET >= 8 { 0 } else { 8 };
@@ -81,6 +88,7 @@ impl<L: GcLang> MarkSweep<L> {
     fn sweep(&mut self, lang: &mut L) {
         let mut free: *mut L::Obj = std::ptr::null_mut();
         let mut nfree = 0;
+        let mut died = 0u64;
         for &base in self.pages.bases() {
             for i in (0..Self::PER_PAGE).rev() {
                 let p = Pages::<L::Obj, 0>::slot(base, i);
@@ -88,12 +96,19 @@ impl<L: GcLang> MarkSweep<L> {
                 let h = unsafe { header::<L>(p) };
                 let f = h.get();
                 if f & FREE != 0 {
+                    if CHECK && f & QUAR != 0 { continue; }
                     // SAFETY: the slot is free; its link word is ours
                     unsafe { Self::link(p).write(free); }
                     free = p;
                     nfree += 1;
                 } else if f & MARK != 0 {
                     h.set(f & !MARK);
+                } else if CHECK {
+                    // SAFETY: as below; the slot then stays off the free list for a while
+                    unsafe { lang.finalize(NonNull::new_unchecked(p)); lang.poison(NonNull::new_unchecked(p)); }
+                    h.set(FREE | QUAR);
+                    self.quarantine.push_back(p);
+                    died += 1;
                 } else {
                     // SAFETY: allocated and unmarked: an initialized object nothing refers to; then the slot is ours
                     unsafe {
@@ -106,8 +121,19 @@ impl<L: GcLang> MarkSweep<L> {
                 }
             }
         }
-        // every slot that was free before is on the old list, so the rest of `nfree` died now
-        self.total_freed += (nfree - self.free_count) as u64;
+        if CHECK {
+            while self.quarantine.len() > QUARANTINE {
+                let p = self.quarantine.pop_front().unwrap();
+                // SAFETY: a quarantined slot of our pages: free, its link word is ours
+                unsafe { header::<L>(p).set(FREE); Self::link(p).write(free); }
+                free = p;
+                nfree += 1;
+            }
+            self.total_freed += died;
+        } else {
+            // every slot that was free before is on the old list, so the rest of `nfree` died now
+            self.total_freed += (nfree - self.free_count) as u64;
+        }
         self.free = free;
         self.free_count = nfree;
         self.live_after_gc = self.total - nfree;
@@ -172,7 +198,7 @@ impl<L: GcLang> WeakVisitor<L> for Survivors {
     }
 }
 
-impl<L: GcLang> MarkSweep<L> {
+impl<L: GcLang, const CHECK: bool> MarkSweep<L, CHECK> {
     #[cold]
     #[inline(never)]
     fn alloc_cold(&mut self, lang: &mut L, ctl: &mut Control, obj: L::Obj) -> NonNull<L::Obj> {
@@ -196,8 +222,8 @@ impl<L: GcLang> MarkSweep<L> {
     }
 }
 
-impl<L: GcLang> GcBackend<L> for MarkSweep<L> {
-    const NAME: &'static str = "marksweep";
+impl<L: GcLang, const CHECK: bool> GcBackend<L> for MarkSweep<L, CHECK> {
+    const NAME: &'static str = if CHECK { "marksweep-check" } else { "marksweep" };
     const MOVING: bool = false;
     const AMBIGUOUS_ROOTS: bool = true;
 
@@ -205,6 +231,7 @@ impl<L: GcLang> GcBackend<L> for MarkSweep<L> {
         MarkSweep {
             free: std::ptr::null_mut(), free_count: 0, total: 0, reserve: INITIAL_PAGES, live_after_gc: 0, allocs_since_gc: 0,
             external_since_gc: 0, external_limit: 64 << 20, total_allocated: 0, total_freed: 0, pages: Pages::new(),
+            quarantine: Default::default(),
         }
     }
 

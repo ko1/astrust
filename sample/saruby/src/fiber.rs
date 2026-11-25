@@ -434,8 +434,7 @@ fn f_backtrace_any(c: &mut Ctx, slf: Value, a: &[Value], locs: bool) -> RV {
     };
     let Some(lines) = backtrace_lines_n(c, start, len) else { return Ok(NIL) };
     if locs { return Ok(crate::builtins::exception::locations_from_lines(c, lines)); }
-    let v: Vec<Value> = lines.into_iter().map(|l| c.str_new(l.as_bytes())).collect();
-    Ok(c.ary_from_vec(v))
+    c.ary_of_new_strs(lines)
 }
 /// The frames of suspended fiber `f`, read through its own context (None: it has none, e.g. the main root).
 pub fn suspended_backtrace(c: &mut Ctx, f: Value, skip: usize, n: Option<usize>) -> Option<Option<Vec<BtLine>>> {

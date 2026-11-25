@@ -238,7 +238,12 @@ backend has not been determined.
 ### What still blocks precise roots or a moving backend
 
 Each item is an assumption in saruby's code, not in the framework (see also
-`sample/saruby/docs/roadmap.md` section 4).
+`sample/saruby/docs/roadmap.md` section 4).  How each is resolved, the rooting discipline, the
+`copy` / `copy_gen` designs and the migration order: `docs/gc_moving.md`.  Tools for the migration
+(2026-11-25): `make FEATURES=gc_check` (marksweep with quarantined, poisoned dead slots:
+`MarkSweep<L, true>`, `GcLang::poison`), precise zones (`gc::precise` / `gc::conservative`: the
+running stack's ambiguous scan skips converted code), parks (`c.park`), and the self-test
+`GC.__check_rooting(mode)`.
 
 Blocking precise roots (dropping the ambiguous machine-stack scan):
 

@@ -36,6 +36,18 @@
   - [x] `<<` `[]` `[]=` → builtin 自身の関数。凍結時のバックトレースが CRuby と一致。演算子ノードの型による近道は原則違反ではない（user 2026-11-22）: String#<< の同エンコーディング・非凍結は安全なアクセサで node に残した（str AOT 2831M → 2591M、round 3 前 2566M）。Hash#[]= の行の保存で hash +2%、Array#<< で ary +3% は残る
 - [x] `yield_block` を 1 コピーに（interp hashiter +7.9% / mapreduce +2.1%、AOT は同じ）。lookup_method / new_object / invoke / raise_exc は 1 コピーにすると nesteddata +9% なので残す
 
+## 1.5 moving GC（copy / copy_gen、precise roots。設計 `../../docs/gc_moving.md`、~/ruby/src/trials/2026-11-25-astrust-moving-gc/）
+
+user 2026-11-25「full moving 頑張ってほしい」「クラスなどを non-moving 領域に、はアリ」。
+- [x] phase 0: 設計（rooting 規律は koruby_precise の threaded value stack + 再読 + park、STRESS+PURGE が関門、Rust では本体参照と park の brand を借用エラーに）
+- [x] phase 1a: `make FEATURES=gc_check`（marksweep の死んだ slot を隔離・毒入れ）、precise zone、`c.park`、`GC.__check_rooting` の自己検査。変換: Array#select! 系・uniq 系、Fiber / Thread#backtrace と SyntaxSuggest の `map(str_new).collect()`（今の marksweep でも Vec だけが持つ String が回収されうる潜在バグ）。interpreter スレッドの panic が終了コード 0 だったのを abort に
+- [ ] phase 1b: 実行時コスト 0 の root（thread_local / static の Value、json_parser の `Resumable.st.cache`、置き換えられた MethodEntry、`Vm.enc_objs`）、frame 鎖の走査、MethodEntry / Cref の Cell 化（一覧は trial README「Inventory」）
+- [ ] phase 1c: cfunc ABI を `Args { base, argc }` に（with_args の複製が消える）
+- [ ] phase 1d: builtins を 1 ファイルずつ precise へ（Rust バッファの Value 約 30 + 115 か所: `setup_params` の args、`take_cause` の Hash、sort の block 版 ...）
+- [ ] phase 1e: value stack の exact 化、node `@child` を slot へ（`saruby_gen.rb`、費用を測ってから）
+- [ ] phase 2: `copy`（Cheney、クラス・リテラルは non-moving 空間、identity hash は object_id から）、PURGE
+- [ ] phase 3: `copy_gen`（write barrier、`Member` 型で store 漏れを compile error に）
+
 ## 2. unsafe
 
 「メソッド実装で使っていなければだいぶいい」「unsafe 外しは性能と見合い」（user）。外す前にコストを測り、遅くなる所は数字を添えて残す。src/builtins/ は sys.rs（OS インターフェース）以外 `forbid(unsafe_code)` 済み。
