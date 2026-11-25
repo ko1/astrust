@@ -309,15 +309,6 @@ module GC
 end
 
 module Kernel
-  def frozen_string? = false
-  def then_if = self
-  def respond_to_all?(*ms) = ms.all? { |m| respond_to?(m) }
-  def pp_inspect = inspect
-  def instance_variable_names = instance_variables.map(&:to_s)
-  def require_optional(f) = (require f rescue nil)
-end
-
-module Kernel
   # CRuby's prelude.rb: lib/pp.rb (prelude/lib/pp.rb) loads on the first call and redefines pp
   def pp(*objs)
     require 'pp'
