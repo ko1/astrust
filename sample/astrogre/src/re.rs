@@ -2806,7 +2806,7 @@ fn is_bword(c: u32) -> bool {
 }
 
 fn is_extender(c: u32) -> bool {
-    is_mark(c) || c == 0x200C || (0xE0020..=0xE007F).contains(&c)
+    is_mark(c) || c == 0x200C || (0x1F3FB..=0x1F3FF).contains(&c) || (0xE0020..=0xE007F).contains(&c)
 }
 
 fn grapheme(e: Enc, s: &[u8], pos: usize) -> Option<usize> {
