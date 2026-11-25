@@ -908,6 +908,7 @@ fn k_hash_conv(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
 // ---- object identity / hash ----------------------------------------------------------------
 
 pub fn obj_hash(_c: &mut Ctx, slf: Value, _args: &[Value], _b: Blk) -> RV {
+    if is_integer(slf) { return crate::builtins::numeric_methods::int_hash(_c, slf, _args, _b); }
     let h = crate::astrust::hash_u64(slf.raw());
     Ok(Value::fix((h >> 2) as i64))
 }

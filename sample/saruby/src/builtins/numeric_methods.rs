@@ -242,7 +242,6 @@ cfn!(int_pow_m, |c, s, a| {
     int_arith(c, s, a[0], Op::Pow)
 });
 cfn!(#[inline] int_uminus, |c, s, _a| Ok(if s.is_fixnum() { c.int_from_i128(-(s.as_fix() as i128)) } else { c.big_to_value(c.big(s).neg()) }));
-cfn!(int_uplus, |c, s, _a| Ok(s));
 cfn!(int_not, |c, s, _a| Ok(if s.is_fixnum() { Value::fix(!s.as_fix()) } else { c.big_to_value(c.big(s).not()) }));
 fn int_bitop(c: &mut Ctx, a: Value, b: Value, op: u8) -> RV {
     if a.is_fixnum() && b.is_fixnum() {
@@ -820,12 +819,6 @@ fn flodivmod(c: &mut Ctx, x: f64, y: f64) -> Result<(f64, f64), Esc> {
     if y * m < 0.0 { m += y; d -= 1.0; }
     Ok((d, m))
 }
-cfn!(flo_idiv, |c, s, a| {
-    let x = float_val(s); let y = to_f(c, a[0])?;
-    if y == 0.0 { return err(c, c.vm().c_zero_div_error.get(), "divided by 0"); }
-    let q = (x / y).floor(); check_finite(c, q)?;
-    Ok(f64_to_int(c, q))
-});
 cfn!(flo_coerce, |c, s, a| { let y = rb_float(c, a[0])?; let y = c.float_new(y); Ok(c.ary_new_from(&[y, s])) });
 cfn!(flo_hash, |c, s, _a| { let f = float_val(s); let b = if f == 0.0 { 0 } else { f.to_bits() }; Ok(Value::fix((crate::astrust::hash_u64(b) >> 2) as i64)) });
 
@@ -948,7 +941,6 @@ fn next_after(f: f64, dir: f64) -> f64 {
     let nb = if (dir > f) == (f > 0.0) { b + 1 } else { b - 1 };
     f64::from_bits(nb)
 }
-cfn!(flo_integer_p, |_c, _s, _a| Ok(FALSE));
 
 // ---- Numeric (generic) -----------------------------------------------------------------------
 
@@ -1065,8 +1057,8 @@ fn num_step_generic(c: &mut Ctx, s: Value, from: Value, lim: Value, st: Value, b
 cfn!(num_integer_p, |_c, _s, _a| Ok(FALSE));
 cfn!(num_zero_p, |c, s, _a| { let r = funcall(c, s, s::eq, &[Value::fix(0)], std::ptr::null())?; Ok(Value::bool(r.truthy())) });
 cfn!(num_nonzero_p, |c, s, _a| { let r = funcall(c, s, s::zero_p, &[], std::ptr::null())?; Ok(if r.truthy() { NIL } else { s }) });
-cfn!(num_positive_p, |c, s, _a| funcall(c, s, s::gt, &[Value::fix(0)], std::ptr::null()));
-cfn!(num_negative_p, |c, s, _a| funcall(c, s, s::lt, &[Value::fix(0)], std::ptr::null()));
+cfn!(num_positive_p, |c, s, a| if is_integer(s) { int_positive(c, s, a, Blk::NONE) } else { funcall(c, s, s::gt, &[Value::fix(0)], std::ptr::null()) });
+cfn!(num_negative_p, |c, s, a| if is_integer(s) { int_negative(c, s, a, Blk::NONE) } else { funcall(c, s, s::lt, &[Value::fix(0)], std::ptr::null()) });
 cfn!(num_abs, |c, s, _a| { let neg = funcall(c, s, s::lt, &[Value::fix(0)], std::ptr::null())?; if neg.truthy() { funcall(c, s, s::uminus, &[], std::ptr::null()) } else { Ok(s) } });
 cfn!(num_uplus, |c, s, _a| Ok(s));
 // num_clone: Numerics are immutable; freeze: false cannot be honoured
@@ -1165,6 +1157,7 @@ cfn!(num_real_p, |_c, _s, _a| Ok(TRUE));
 cfn!(num_finite_p, |_c, _s, _a| Ok(TRUE));
 cfn!(num_infinite_p, |_c, _s, _a| Ok(NIL));
 cfn!(num_eql, |c, s, a| {
+    if is_integer(s) { return int_eql(c, s, a, Blk::NONE); }
     if real_class_of(c, s) != real_class_of(c, a[0]) { return Ok(FALSE); }
     funcall(c, s, s::eq, &[a[0]], std::ptr::null())
 });
@@ -1227,17 +1220,17 @@ pub fn init(c: &mut Ctx, n: Value, k: Value, f: Value) {
 
     let d = |c: &mut Ctx, nm: &str, f: CFunc, a: i32| define_cfunc(c, k, nm, f, a);
     d(c, "+", int_plus, 1); d(c, "-", int_minus, 1); d(c, "*", int_mul, 1); d(c, "/", int_div, 1); d(c, "%", int_mod, 1);
-    d(c, "modulo", int_mod, 1); d(c, "**", int_pow_m, -1); d(c, "pow", int_pow_m, -1); d(c, "-@", int_uminus, 0); d(c, "+@", int_uplus, 0);
+    d(c, "modulo", int_mod, 1); d(c, "**", int_pow_m, -1); d(c, "pow", int_pow_m, -1); d(c, "-@", int_uminus, 0);
     d(c, "~", int_not, 0); d(c, "&", int_and, 1); d(c, "|", int_or, 1); d(c, "^", int_xor, 1); d(c, "<<", int_lshift, 1); d(c, ">>", int_rshift, 1);
-    d(c, "[]", int_aref, -1); d(c, "==", int_eq, 1); d(c, "===", int_eq, 1); d(c, "eql?", int_eql, 1); d(c, "<=>", int_cmp, 1);
+    d(c, "[]", int_aref, -1); d(c, "==", int_eq, 1); d(c, "===", int_eq, 1); d(c, "<=>", int_cmp, 1);
     d(c, "<", int_lt, 1); d(c, "<=", int_le, 1); d(c, ">", int_gt, 1); d(c, ">=", int_ge, 1); d(c, "abs", int_abs, 0); d(c, "magnitude", int_abs, 0);
     d(c, "to_s", int_to_s, -1); d(c, "inspect", int_to_s, -1); d(c, "to_f", int_to_f, 0); d(c, "to_i", int_to_i, 0); d(c, "to_int", int_to_i, 0);
     d(c, "chr", int_chr, -1); d(c, "ord", int_ord, 0); d(c, "times", int_times, 0); d(c, "upto", int_upto, 1); d(c, "downto", int_downto, 1);
     d(c, "succ", int_succ, 0); d(c, "next", int_succ, 0); d(c, "pred", int_pred, 0); d(c, "zero?", int_zero, 0); d(c, "even?", int_even, 0);
-    d(c, "odd?", int_odd, 0); d(c, "positive?", int_positive, 0); d(c, "negative?", int_negative, 0); d(c, "divmod", int_divmod, 1);
+    d(c, "odd?", int_odd, 0); d(c, "divmod", int_divmod, 1);
     d(c, "div", int_idiv, 1); d(c, "fdiv", int_fdiv, 1); d(c, "remainder", int_remainder, 1); d(c, "gcd", int_gcd, 1); d(c, "lcm", int_lcm, 1);
     d(c, "round", int_round, -1); d(c, "floor", int_floor, -1); d(c, "ceil", int_ceil, -1); d(c, "truncate", int_truncate, -1);
-    d(c, "digits", int_digits, -1); d(c, "bit_length", int_bit_length, 0); d(c, "size", int_size, 0); d(c, "hash", int_hash, 0);
+    d(c, "digits", int_digits, -1); d(c, "bit_length", int_bit_length, 0); d(c, "size", int_size, 0);
     d(c, "coerce", int_coerce, 1); d(c, "allbits?", int_allbits, 1); d(c, "anybits?", int_anybits, 1); d(c, "nobits?", int_nobits, 1);
     d(c, "integer?", int_integer_p, 0); d(c, "ceildiv", int_ceildiv, 1); d(c, "gcdlcm", int_gcdlcm, 1);
     define_singleton_cfunc(c, k, "sqrt", int_s_sqrt, 1);
@@ -1250,14 +1243,14 @@ pub fn init(c: &mut Ctx, n: Value, k: Value, f: Value) {
 
     let d = |c: &mut Ctx, nm: &str, fun: CFunc, a: i32| define_cfunc(c, f, nm, fun, a);
     d(c, "+", flo_plus, 1); d(c, "-", flo_minus, 1); d(c, "*", flo_mul, 1); d(c, "/", flo_div, 1); d(c, "%", flo_mod, 1); d(c, "modulo", flo_mod, 1);
-    d(c, "**", flo_pow, 1); d(c, "pow", flo_pow, 1); d(c, "-@", flo_uminus, 0); d(c, "==", flo_eq, 1); d(c, "===", flo_eq, 1); d(c, "eql?", flo_eql, 1);
+    d(c, "**", flo_pow, 1); d(c, "-@", flo_uminus, 0); d(c, "==", flo_eq, 1); d(c, "===", flo_eq, 1); d(c, "eql?", flo_eql, 1);
     d(c, "<=>", flo_cmp, 1); d(c, "<", flo_lt, 1); d(c, "<=", flo_le, 1); d(c, ">", flo_gt, 1); d(c, ">=", flo_ge, 1);
     d(c, "to_s", flo_to_s, 0); d(c, "inspect", flo_to_s, 0); d(c, "to_i", flo_to_i, 0); d(c, "to_int", flo_to_i, 0);
     d(c, "abs", flo_abs, 0); d(c, "magnitude", flo_abs, 0); d(c, "nan?", flo_nan, 0); d(c, "infinite?", flo_infinite, 0); d(c, "finite?", flo_finite, 0);
     d(c, "zero?", flo_zero, 0); d(c, "positive?", flo_positive, 0); d(c, "negative?", flo_negative, 0); d(c, "divmod", flo_divmod, 1);
-    d(c, "div", flo_idiv, 1); d(c, "coerce", flo_coerce, 1); d(c, "hash", flo_hash, 0); d(c, "round", flo_round, -1); d(c, "floor", flo_floor, -1);
+    d(c, "coerce", flo_coerce, 1); d(c, "hash", flo_hash, 0); d(c, "round", flo_round, -1); d(c, "floor", flo_floor, -1);
     d(c, "ceil", flo_ceil, -1); d(c, "truncate", flo_truncate, -1); d(c, "next_float", flo_next_float, 0); d(c, "prev_float", flo_prev_float, 0);
-    d(c, "to_f", |_c, s, _a, _b| Ok(s), 0); d(c, "integer?", flo_integer_p, 0);
+    d(c, "to_f", |_c, s, _a, _b| Ok(s), 0);
     d(c, "fdiv", flo_div, 1);
     d(c, "quo", flo_div, 1);
     for (nm, v) in [("DIG", 15), ("MANT_DIG", 53), ("MAX_EXP", 1024), ("MIN_EXP", -1021), ("MAX_10_EXP", 308), ("MIN_10_EXP", -307), ("RADIX", 2)] {

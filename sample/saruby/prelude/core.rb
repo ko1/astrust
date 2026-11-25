@@ -361,10 +361,6 @@ end
 class Struct
 end
 
-class Exception
-  def ===(o) = super
-end
-
 class Enumerator
   def +(other) = Enumerable.__chain([self, other])
   def self.produce(*args, **kw, &b)
@@ -445,7 +441,6 @@ class Enumerator
         seen.delete(object_id)
       end
     end
-    alias to_s inspect
   end
 end
 

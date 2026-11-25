@@ -76,7 +76,7 @@ fn bo_instance_exec(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let kw = kw_given(c);
     yield_with_self_kw(c, b, a, slf, dc, kw)
 }
-fn bo_method_missing(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+pub(crate) fn bo_method_missing(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if a.is_empty() { return arg_err(c, "no method name given"); }
     if !a[0].is_sym() { return arg_err(c, format!("method name must be a Symbol but {} is given", class_name_for_err(c, a[0]))); }
     if let Some(v) = crate::vm::mm_reason_take() { return crate::vm::visibility_raise(c, v, a[0].as_sym(), slf); }
@@ -161,7 +161,7 @@ fn k_instance_of(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if !is_class_or_module(a[0]) { return type_err(c, "class or module required"); }
     Ok(Value::bool(real_class_of(c, slf) == a[0]))
 }
-fn k_respond_to(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+pub(crate) fn k_respond_to(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     check_argc(c, a, 1, 2)?;
     let mid = to_sym_arg(c, a[0])?;
     let priv_ = a.len() > 1 && a[1].truthy();
@@ -177,7 +177,7 @@ fn k_respond_to(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     }
     Ok(FALSE)
 }
-fn k_respond_to_missing(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(FALSE) }
+pub(crate) fn k_respond_to_missing(_c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(FALSE) }
 fn k_ivar_get(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = to_sym_arg(c, a[0])?;
     check_ivar_name(c, n, slf, a[0])?;

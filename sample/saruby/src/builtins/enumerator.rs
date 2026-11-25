@@ -620,9 +620,6 @@ pub fn init(c: &mut Ctx, e: Value, object: Value, enumerable: Value) -> Classes 
     define_cfunc(c, e, "rewind", e_rewind, 0);
     define_cfunc(c, e, "size", e_size, 0);
     define_cfunc(c, e, "inspect", e_inspect, 0);
-    define_cfunc(c, e, "to_s", e_inspect, 0);
-    define_cfunc(c, e, "take", e_take, 1);
-    define_cfunc(c, e, "first", e_first, -1);
     let y = k.yielder;
     define_singleton_cfunc(c, y, "new", y_s_new, 0);
     define_cfunc(c, y, "yield", y_yield, -1);

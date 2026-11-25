@@ -264,18 +264,6 @@ pub fn rat_cmp_v(c: &mut Ctx, s: Value, o: Value) -> RV {
     Ok(NIL)
 }
 fn rat_cmp(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { rat_cmp_v(c, s, a[0]) }
-fn rat_rel(c: &mut Ctx, s: Value, o: Value, op: Sym, f: fn(Ordering) -> bool) -> RV {
-    if exact_parts(c, o).is_some() || is_float(o) {
-        let r = rat_cmp_v(c, s, o)?;
-        if r == NIL { return Ok(FALSE); }
-        return Ok(Value::bool(f(r.as_fix().cmp(&0))));
-    }
-    coerce_bin(c, s, o, op, true)
-}
-fn rat_lt(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { rat_rel(c, s, a[0], s::lt, |o| o.is_lt()) }
-fn rat_le(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { rat_rel(c, s, a[0], s::le, |o| o.is_le()) }
-fn rat_gt(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { rat_rel(c, s, a[0], s::gt, |o| o.is_gt()) }
-fn rat_ge(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { rat_rel(c, s, a[0], s::ge, |o| o.is_ge()) }
 fn rat_eq(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let o = a[0];
     let (n, d) = rat_parts(c, s);
@@ -373,7 +361,6 @@ fn rat_to_i(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let (n, d) = r
 fn rat_to_r(_c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(s) }
 fn rat_num(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(rat_parts(c, s).0) }
 fn rat_den(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(rat_parts(c, s).1) }
-fn rat_zero_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(iszero(rat_parts(c, s).0))) }
 fn rat_pos_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let n = rat_parts(c, s).0; Ok(Value::bool(!isneg(c, n) && !iszero(n))) }
 fn rat_neg_p(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::bool(isneg(c, rat_parts(c, s).0))) }
 fn rat_hash(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
@@ -675,11 +662,11 @@ pub fn init(c: &mut Ctx) -> Value {
     let d = |c: &mut Ctx, nm: &str, f: CFunc, ar: i32| define_cfunc(c, k, nm, f, ar);
     d(c, "+", rat_plus, 1); d(c, "-", rat_minus, 1); d(c, "*", rat_mul, 1); d(c, "/", rat_div, 1); d(c, "quo", rat_div, 1);
     d(c, "fdiv", rat_fdiv, 1); d(c, "**", rat_pow, 1); d(c, "-@", rat_uminus, 0); d(c, "abs", rat_abs, 0); d(c, "magnitude", rat_abs, 0);
-    d(c, "<=>", rat_cmp, 1); d(c, "==", rat_eq, 1); d(c, "<", rat_lt, 1); d(c, "<=", rat_le, 1); d(c, ">", rat_gt, 1); d(c, ">=", rat_ge, 1);
+    d(c, "<=>", rat_cmp, 1); d(c, "==", rat_eq, 1);
     d(c, "coerce", rat_coerce, 1);
     d(c, "floor", rat_floor, -1); d(c, "ceil", rat_ceil, -1); d(c, "truncate", rat_truncate, -1); d(c, "round", rat_round, -1);
     d(c, "to_s", rat_to_s, 0); d(c, "inspect", rat_inspect, 0); d(c, "to_f", rat_to_f_m, 0); d(c, "to_i", rat_to_i, 0); d(c, "to_r", rat_to_r, 0);
-    d(c, "numerator", rat_num, 0); d(c, "denominator", rat_den, 0); d(c, "zero?", rat_zero_p, 0); d(c, "positive?", rat_pos_p, 0);
+    d(c, "numerator", rat_num, 0); d(c, "denominator", rat_den, 0); d(c, "positive?", rat_pos_p, 0);
     d(c, "negative?", rat_neg_p, 0); d(c, "hash", rat_hash, 0); d(c, "rationalize", rat_rationalize, -1);
     define_private_cfunc(c, k, "marshal_dump", |c, s, _a, _b| { let (n, d) = rat_parts(c, s); Ok(c.ary_new_from(&[n, d])) }, 0);
     define_cfunc(c, vmr.c_float.get(), "to_r", flo_to_r, 0);
