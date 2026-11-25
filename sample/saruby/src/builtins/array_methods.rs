@@ -1170,16 +1170,16 @@ fn gen_size(c: &mut Ctx, g: Gen, n: i64, k: i64) -> RV {
     }
 }
 /// Enumerator#size markers of the generators: the size is computed at each #size (rb_ary_*_size).
-pub const ARY_GEN_SIZE: [&[u8]; 4] = [b"__ary_comb_size", b"__ary_perm_size", b"__ary_rcomb_size", b"__ary_rperm_size"];
-fn gen_index(g: Gen) -> usize { match g { Gen::Comb => 0, Gen::Perm => 1, Gen::RComb => 2, Gen::RPerm => 3 } }
+fn gen_marker(g: Gen) -> Sym { match g { Gen::Comb => s::ary_comb_size, Gen::Perm => s::ary_perm_size, Gen::RComb => s::ary_rcomb_size, Gen::RPerm => s::ary_rperm_size } }
 /// The size of a generator's enumerator now: the receiver's current length and the argument converted here.
-pub fn ary_gen_size(c: &mut Ctx, marker: &[u8], ary: Value, args: Value) -> Option<RV> {
-    let g = match ARY_GEN_SIZE.iter().position(|m| *m == marker)? { 0 => Gen::Comb, 1 => Gen::Perm, 2 => Gen::RComb, _ => Gen::RPerm };
+pub fn ary_gen_size(c: &mut Ctx, marker: Sym, ary: Value, args: Value) -> Option<RV> {
+    let g = if marker == s::ary_comb_size { Gen::Comb } else if marker == s::ary_perm_size { Gen::Perm } else if marker == s::ary_rcomb_size { Gen::RComb } else if marker == s::ary_rperm_size { Gen::RPerm } else { return None };
     let n = c.ary_len(ary) as i64;
     let arg = if c.ary_len(args) > 0 { c.ary_get(args, 0) } else { NIL };
     let k = if g == Gen::Perm && arg == NIL { n } else { match num_to_long(c, arg) { Ok(k) => k, Err(e) => return Some(Err(e)) } };
     Some(gen_size(c, g, n, k))
 }
+#[inline(always)]
 fn emit_gen(c: &mut Ctx, slf: Value, g: Gen, a: &[Value], blk: Blk, mid: &str) -> RV {
     // combination / repeated_combination convert the count first; permutation checks arity only with a block
     let k = match g {
@@ -1188,7 +1188,7 @@ fn emit_gen(c: &mut Ctx, slf: Value, g: Gen, a: &[Value], blk: Blk, mid: &str) -
         Gen::Perm => { check_argc(c, a, 0, 1)?; if a.is_empty() || a[0] == NIL { c.ary_len(slf) as i64 } else { num_to_long(c, a[0])? } }
         Gen::RPerm => num_to_long(c, a[0])?,
     };
-    if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(mid.as_bytes()), a, Value::sym(intern(ARY_GEN_SIZE[gen_index(g)]))); }
+    if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(mid.as_bytes()), a, Value::sym(gen_marker(g))); }
     let n = c.ary_len(slf);
     let none = k < 0 || (matches!(g, Gen::Comb | Gen::Perm) && k as usize > n) || (matches!(g, Gen::RComb | Gen::RPerm) && n == 0 && k > 0);
     if none { return Ok(slf); }
@@ -1359,8 +1359,6 @@ cfn!(a_shuffle, |c, slf, a, blk| {
     Ok(out)
 });
 cfn!(a_shuffle_b, |c, slf, a, blk| { let r = a_shuffle(c, slf, a, blk)?; *c.ary_modify(slf)? = c.ary(r).to_vec().into(); Ok(slf) });
-/// Enumerator#size marker of Array#cycle's enumerators.
-pub const ARY_CYCLE_SIZE: &[u8] = b"__ary_cycle_size";
 /// rb_ary_cycle_size.
 pub fn ary_cycle_size(c: &mut Ctx, ary: Value, args: Value) -> RV {
     let l = c.ary_len(ary);
@@ -1373,7 +1371,7 @@ pub fn ary_cycle_size(c: &mut Ctx, ary: Value, args: Value) -> RV {
 cfn!(a_cycle, |c, slf, a, blk| {
     check_argc(c, a, 0, 1)?;
     // the size is computed when asked (rb_ary_cycle_size): a count that is no long fails only then
-    if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"cycle"), a, Value::sym(intern(ARY_CYCLE_SIZE))); }
+    if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"cycle"), a, Value::sym(s::ary_cycle_size)); }
     enum_or(c, slf, "cycle", a, blk, |c| {
     let n = if a.is_empty() || a[0] == NIL { -1 } else { num_to_long(c, a[0])? };
     let mut k = 0;

@@ -333,9 +333,8 @@ fn e_size(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     // rb_check_funcall_kw(e->size, :call, *args)
     if is_proc(en.size) { let p = en.size; let args = c.ary(en.args).to_vec(); return call_proc(c, p, &args, std::ptr::null()); }
     if en.size.is_sym() {
-        let m = crate::symbol::sym_bytes(en.size.as_sym());
-        if m == crate::builtins::array_methods::ARY_CYCLE_SIZE { return crate::builtins::array_methods::ary_cycle_size(c, en.recv, en.args); }
-        if let Some(r) = crate::builtins::array_methods::ary_gen_size(c, m, en.recv, en.args) { return r; }
+        if let Some(r) = crate::builtins::array_methods::ary_gen_size(c, en.size.as_sym(), en.recv, en.args) { return r; }
+        if en.size.as_sym() == s::ary_cycle_size { return crate::builtins::array_methods::ary_cycle_size(c, en.recv, en.args); }
     }
     if is_integer(en.size) || is_float(en.size) { return Ok(en.size); }
     if en.size != NIL && !en.size.is_sym() {
