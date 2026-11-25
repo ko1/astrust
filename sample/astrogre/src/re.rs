@@ -5,6 +5,8 @@
 //     runs out, so subject length never drives native recursion.
 // Both implement exactly the same semantics.
 
+use crate::uniprops::*;
+
 pub const OPT_I: u32 = 1;
 pub const OPT_X: u32 = 2;
 pub const OPT_M: u32 = 4;
@@ -234,6 +236,17 @@ fn fold(c: u32) -> u32 {
     lower1(upper1(c))
 }
 
+/// Code points case-equivalent to `c` (Onigmo's single-char folds), including `c`; empty if none.
+fn case_class(c: u32) -> &'static [u32] {
+    match CF_CODE.binary_search(&c) {
+        Ok(i) => {
+            let k = CF_CLS[i] as usize;
+            &CF_MEMBERS[CF_OFF[k] as usize..CF_OFF[k + 1] as usize]
+        }
+        Err(_) => &[],
+    }
+}
+
 fn has_case(c: u32) -> bool {
     fold(c) != c || upper1(c) != c || lower1(c) != c || c == 0xDF
 }
@@ -249,77 +262,33 @@ enum Prop {
     Word,  // ASCII \w
     Space, // ASCII \s
     Hex,   // \h
-    Alpha,
-    UDigit,
-    USpace,
-    Upper,
-    Lower,
-    Alnum,
-    UWord,
-    Punct,
-    Cntrl,
-    Graph,
-    Print,
-    Blank,
     Ascii,
     Any,
-    Letter,
-    Mark,
-    Number,
-    Hiragana,
-    Katakana,
-    Han,
-    Latin,
-    Greek,
-    Cyrillic,
-    Hangul,
-    Arabic,
-    Hebrew,
-    Thai,
-    Emoji,
+    Uni(u16), // Onigmo's Unicode property table (uniprops.rs)
+    UWordL,   // (?u)\w outside a class: Word plus Onigmo's Latin-1 ctype table extras
 }
 
-const ND_STARTS: &[u32] = &[
-    0x30, 0x660, 0x6F0, 0x7C0, 0x966, 0x9E6, 0xA66, 0xAE6, 0xB66, 0xBE6, 0xC66, 0xCE6, 0xD66,
-    0xDE6, 0xE50, 0xED0, 0xF20, 0x1040, 0x1090, 0x17E0, 0x1810, 0x1946, 0x19D0, 0x1A80, 0x1A90,
-    0x1B50, 0x1BB0, 0x1C40, 0x1C50, 0xA620, 0xA8D0, 0xA900, 0xA9D0, 0xA9F0, 0xAA50, 0xABF0,
-    0xFF10, 0x104A0, 0x10D30, 0x11066, 0x110F0, 0x11136, 0x111D0, 0x112F0, 0x11450, 0x114D0,
-    0x11650, 0x116C0, 0x11730, 0x118E0, 0x11950, 0x11C50, 0x11D50, 0x11DA0, 0x16A60, 0x16B50,
-    0x1E140, 0x1E2F0, 0x1E950, 0x1FBF0,
-];
+/// Other_Number code points that Onigmo's Latin-1 ctype table counts as word characters.
+fn latin1_word_extra(c: u32) -> bool {
+    matches!(c, 0xB2 | 0xB3 | 0xB9 | 0xBC..=0xBE)
+}
 
-fn is_nd(c: u32) -> bool {
-    if c < 128 {
-        return (b'0' as u32..=b'9' as u32).contains(&c);
+/// Membership of `c` in property `id` (binary search over its range pairs).
+fn uni_has(id: u16, c: u32) -> bool {
+    let id = id as usize;
+    let r = &UP_RANGES[UP_OFF[id] as usize * 2..UP_OFF[id + 1] as usize * 2];
+    let (mut lo, mut hi) = (0, r.len() / 2);
+    while lo < hi {
+        let m = (lo + hi) / 2;
+        if c > r[2 * m + 1] {
+            lo = m + 1;
+        } else if c < r[2 * m] {
+            hi = m;
+        } else {
+            return true;
+        }
     }
-    if (0x1D7CE..=0x1D7FF).contains(&c) {
-        return true;
-    }
-    ND_STARTS.iter().any(|&s| c >= s && c < s + 10)
-}
-
-const MARK_RANGES: &[(u32, u32)] = &[
-    (0x300, 0x36F), (0x483, 0x489), (0x591, 0x5BD), (0x5BF, 0x5BF), (0x5C1, 0x5C2), (0x5C4, 0x5C5),
-    (0x5C7, 0x5C7), (0x610, 0x61A), (0x64B, 0x65F), (0x670, 0x670), (0x6D6, 0x6DC), (0x6DF, 0x6E4),
-    (0x6E7, 0x6E8), (0x6EA, 0x6ED), (0x711, 0x711), (0x730, 0x74A), (0x7A6, 0x7B0), (0x7EB, 0x7F3),
-    (0x816, 0x82D), (0x859, 0x85B), (0x8D3, 0x903), (0x93A, 0x93C), (0x93E, 0x94F), (0x951, 0x957),
-    (0x962, 0x963), (0x981, 0x983), (0x9BC, 0x9BC), (0x9BE, 0x9CD), (0x9D7, 0x9D7), (0xA01, 0xA03),
-    (0xA3C, 0xA51), (0xA70, 0xA71), (0xA81, 0xA83), (0xABC, 0xABC), (0xABE, 0xACD), (0xB01, 0xB03),
-    (0xB3C, 0xB3C), (0xB3E, 0xB57), (0xB82, 0xB82), (0xBBE, 0xBCD), (0xBD7, 0xBD7), (0xC00, 0xC04),
-    (0xC3E, 0xC56), (0xC81, 0xC83), (0xCBC, 0xCBC), (0xCBE, 0xCD6), (0xD00, 0xD03), (0xD3E, 0xD4D),
-    (0xD57, 0xD57), (0xE31, 0xE31), (0xE34, 0xE3A), (0xE47, 0xE4E), (0xEB1, 0xEB1), (0xEB4, 0xEBC),
-    (0xEC8, 0xECD), (0xF18, 0xF19), (0xF35, 0xF35), (0xF37, 0xF37), (0xF39, 0xF39), (0xF3E, 0xF3F),
-    (0xF71, 0xF84), (0x102B, 0x103E), (0x1AB0, 0x1AFF), (0x1DC0, 0x1DFF), (0x20D0, 0x20F0),
-    (0x302A, 0x302F), (0x3099, 0x309A), (0xFE00, 0xFE0F), (0xFE20, 0xFE2F), (0x1F3FB, 0x1F3FF),
-    (0xE0100, 0xE01EF),
-];
-
-fn is_mark(c: u32) -> bool {
-    c >= 0x300 && MARK_RANGES.iter().any(|&(a, b)| c >= a && c <= b)
-}
-
-fn is_zs(c: u32) -> bool {
-    matches!(c, 0x20 | 0xA0 | 0x1680 | 0x2000..=0x200A | 0x202F | 0x205F | 0x3000)
+    false
 }
 
 fn is_uword(c: u32) -> bool {
@@ -327,139 +296,65 @@ fn is_uword(c: u32) -> bool {
         let b = c as u8;
         return b.is_ascii_alphanumeric() || b == b'_';
     }
-    match char::from_u32(c) {
-        // Onigmo's Word: Alphabetic, Mark, Nd, Pc and Join_Control (not No)
-        Some(ch) => ch.is_alphabetic() || is_nd(c) || is_mark(c) || matches!(c, 0x200C | 0x200D | 0x203F | 0x2040 | 0x2054 | 0xFE33 | 0xFE34 | 0xFE4D..=0xFE4F | 0xFF3F),
-        None => false,
-    }
+    uni_has(UP_WORD, c) || latin1_word_extra(c)
 }
 
-fn is_upunct(c: u32) -> bool {
-    if c < 128 {
-        return (c as u8).is_ascii_punctuation();
-    }
-    matches!(c,
-        0xA1 | 0xA7 | 0xAB | 0xB6 | 0xB7 | 0xBB | 0xBF | 0x37E | 0x387 | 0x55A..=0x55F | 0x589 | 0x58A
-        | 0x5BE | 0x5C0 | 0x5C3 | 0x5C6 | 0x5F3 | 0x5F4 | 0x609 | 0x60A | 0x60C | 0x60D | 0x61B
-        | 0x61E | 0x61F | 0x66A..=0x66D | 0x6D4 | 0x964 | 0x965 | 0x970 | 0xE4F | 0xE5A | 0xE5B
-        | 0xF04..=0xF12 | 0xF14 | 0xF3A..=0xF3D | 0xF85 | 0xFD0..=0xFD4 | 0xFD9 | 0xFDA
-        | 0x2010..=0x2027 | 0x2030..=0x2043 | 0x2045..=0x2051 | 0x2053..=0x205E | 0x207D | 0x207E
-        | 0x208D | 0x208E | 0x2308..=0x230B | 0x2329 | 0x232A | 0x2768..=0x2775 | 0x27C5 | 0x27C6
-        | 0x27E6..=0x27EF | 0x2983..=0x2998 | 0x29D8..=0x29DB | 0x29FC | 0x29FD | 0x2E00..=0x2E4F
-        | 0x3001..=0x3003 | 0x3008..=0x3011 | 0x3014..=0x301F | 0x3030 | 0x303D | 0x30A0 | 0x30FB
-        | 0xFE10..=0xFE19 | 0xFE30..=0xFE52 | 0xFE54..=0xFE61 | 0xFE63 | 0xFE68 | 0xFE6A | 0xFE6B
-        | 0xFF01..=0xFF03 | 0xFF05..=0xFF0A | 0xFF0C..=0xFF0F | 0xFF1A | 0xFF1B | 0xFF1F | 0xFF20
-        | 0xFF3B..=0xFF3D | 0xFF3F | 0xFF5B | 0xFF5D | 0xFF5F..=0xFF65)
+fn is_mark(c: u32) -> bool {
+    c >= 0x300 && uni_has(UP_MARK, c)
 }
 
 fn prop_match(p: Prop, c: u32) -> bool {
-    if c >= BAD {
-        return matches!(p, Prop::Any);
-    }
-    let ch = match char::from_u32(c) {
-        Some(ch) => ch,
-        None => return false,
-    };
     match p {
-        Prop::Digit => ch.is_ascii_digit(),
-        Prop::Word => ch.is_ascii_alphanumeric() || ch == '_',
-        Prop::Space => matches!(c, 0x20 | 0x09..=0x0D),
-        Prop::Hex => ch.is_ascii_hexdigit(),
-        Prop::Alpha => ch.is_alphabetic(),
-        Prop::UDigit => is_nd(c),
-        Prop::USpace => ch.is_whitespace(),
-        Prop::Upper => ch.is_uppercase(),
-        Prop::Lower => ch.is_lowercase(),
-        Prop::Alnum => ch.is_alphabetic() || is_nd(c),
-        Prop::UWord => is_uword(c),
-        Prop::Punct => is_upunct(c),
-        Prop::Cntrl => ch.is_control(),
-        Prop::Graph => !ch.is_whitespace() && !ch.is_control() && !(0xD800..=0xDFFF).contains(&c),
-        Prop::Print => (!ch.is_whitespace() && !ch.is_control()) || is_zs(c),
-        Prop::Blank => c == 9 || is_zs(c),
-        Prop::Ascii => c < 128,
         Prop::Any => true,
-        Prop::Letter => ch.is_alphabetic() && !is_mark(c) && !(0x2160..=0x2188).contains(&c) && !(0x24B6..=0x24E9).contains(&c),
-        Prop::Mark => is_mark(c),
-        Prop::Number => ch.is_numeric(),
-        Prop::Hiragana => (0x3041..=0x3096).contains(&c) || (0x309D..=0x309F).contains(&c) || c == 0x1B001 || c == 0x1F200,
-        Prop::Katakana => (0x30A1..=0x30FA).contains(&c) || (0x30FD..=0x30FF).contains(&c) || (0x31F0..=0x31FF).contains(&c)
-            || (0x32D0..=0x32FE).contains(&c) || (0x3300..=0x3357).contains(&c) || (0xFF66..=0xFF6F).contains(&c)
-            || (0xFF71..=0xFF9D).contains(&c) || c == 0x1B000,
-        Prop::Han => matches!(c, 0x2E80..=0x2E99 | 0x2E9B..=0x2EF3 | 0x2F00..=0x2FD5 | 0x3005 | 0x3007
-            | 0x3021..=0x3029 | 0x3038..=0x303B | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFA6D
-            | 0xFA70..=0xFAD9 | 0x20000..=0x3134A),
-        Prop::Latin => (ch.is_ascii_alphabetic()) || matches!(c, 0xAA | 0xBA | 0xC0..=0xD6 | 0xD8..=0xF6
-            | 0xF8..=0x2B8 | 0x2E0..=0x2E4 | 0x1D00..=0x1D25 | 0x1E00..=0x1EFF | 0x2C60..=0x2C7F
-            | 0xA722..=0xA7FF | 0xFB00..=0xFB06 | 0xFF21..=0xFF3A | 0xFF41..=0xFF5A),
-        Prop::Greek => matches!(c, 0x370..=0x373 | 0x375..=0x377 | 0x37A..=0x37D | 0x37F | 0x384 | 0x386
-            | 0x388..=0x3E1 | 0x3F0..=0x3FF | 0x1D26..=0x1D2A | 0x1F00..=0x1FFE | 0x2126),
-        Prop::Cyrillic => matches!(c, 0x400..=0x52F | 0x1C80..=0x1C88 | 0x2DE0..=0x2DFF | 0xA640..=0xA69F),
-        Prop::Hangul => matches!(c, 0x1100..=0x11FF | 0x3131..=0x318E | 0xA960..=0xA97C | 0xAC00..=0xD7A3 | 0xD7B0..=0xD7FB | 0xFFA0..=0xFFDC),
-        Prop::Arabic => matches!(c, 0x600..=0x604 | 0x606..=0x60B | 0x60D..=0x61A | 0x61E | 0x620..=0x63F | 0x641..=0x64A
-            | 0x656..=0x66F | 0x671..=0x6DC | 0x6DE..=0x6FF | 0x750..=0x77F | 0x8A0..=0x8FF | 0xFB50..=0xFDFF | 0xFE70..=0xFEFC),
-        Prop::Hebrew => matches!(c, 0x591..=0x5C7 | 0x5D0..=0x5EA | 0x5EF..=0x5F4 | 0xFB1D..=0xFB4F),
-        Prop::Thai => matches!(c, 0xE01..=0xE3A | 0xE40..=0xE5B),
-        Prop::Emoji => matches!(c, 0x23 | 0x2A | 0x30..=0x39 | 0xA9 | 0xAE | 0x203C | 0x2049 | 0x2122 | 0x2139
-            | 0x2194..=0x2199 | 0x21A9 | 0x21AA | 0x231A | 0x231B | 0x2328 | 0x23CF | 0x23E9..=0x23F3
-            | 0x23F8..=0x23FA | 0x24C2 | 0x25AA | 0x25AB | 0x25B6 | 0x25C0 | 0x25FB..=0x25FE
-            | 0x2600..=0x27BF | 0x2934 | 0x2935 | 0x2B05..=0x2B07 | 0x2B1B | 0x2B1C | 0x2B50 | 0x2B55
-            | 0x3030 | 0x303D | 0x3297 | 0x3299 | 0x1F000..=0x1FAFF),
+        _ if c >= BAD => false,
+        Prop::Digit => (b'0' as u32..=b'9' as u32).contains(&c),
+        Prop::Word => c < 128 && ((c as u8).is_ascii_alphanumeric() || c == b'_' as u32),
+        Prop::Space => matches!(c, 0x20 | 0x09..=0x0D),
+        Prop::Hex => c < 128 && (c as u8).is_ascii_hexdigit(),
+        Prop::Ascii => c < 128,
+        Prop::Uni(id) => uni_has(id, c),
+        Prop::UWordL => is_uword(c),
     }
 }
 
+/// Onigmo's name normalisation: ASCII case, ' ', '-' and '_' are ignored.
 fn prop_by_name(name: &str) -> Option<Prop> {
-    let n: String = name.chars().filter(|c| !matches!(c, ' ' | '_' | '-')).collect::<String>().to_ascii_lowercase();
-    Some(match n.as_str() {
-        "alpha" | "alphabetic" => Prop::Alpha,
-        "digit" | "nd" | "decimalnumber" => Prop::UDigit,
-        "space" | "whitespace" => Prop::USpace,
-        "upper" | "uppercase" | "lu" | "uppercaseletter" => Prop::Upper,
-        "lower" | "lowercase" | "ll" | "lowercaseletter" => Prop::Lower,
-        "alnum" => Prop::Alnum,
-        "word" => Prop::UWord,
-        "punct" | "p" | "punctuation" => Prop::Punct,
-        "cntrl" | "cc" | "control" => Prop::Cntrl,
-        "graph" => Prop::Graph,
-        "print" => Prop::Print,
-        "xdigit" | "asciihexdigit" => Prop::Hex,
-        "blank" => Prop::Blank,
-        "ascii" => Prop::Ascii,
-        "any" => Prop::Any,
-        "l" | "letter" => Prop::Letter,
-        "m" | "mark" | "combiningmark" | "mn" => Prop::Mark,
-        "n" | "number" => Prop::Number,
-        "hiragana" | "hira" => Prop::Hiragana,
-        "katakana" | "kana" => Prop::Katakana,
-        "han" | "hani" => Prop::Han,
-        "latin" | "latn" => Prop::Latin,
-        "greek" | "grek" => Prop::Greek,
-        "cyrillic" | "cyrl" => Prop::Cyrillic,
-        "hangul" | "hang" => Prop::Hangul,
-        "arabic" | "arab" => Prop::Arabic,
-        "hebrew" | "hebr" => Prop::Hebrew,
-        "thai" => Prop::Thai,
-        "emoji" => Prop::Emoji,
-        _ => return None,
-    })
+    let n: Vec<u8> = name.bytes().filter(|c| !matches!(c, b' ' | b'-' | b'_')).map(|c| c.to_ascii_lowercase()).collect();
+    if n == b"any" {
+        return Some(Prop::Any);
+    }
+    if n == b"ascii" {
+        return Some(Prop::Ascii); // takes no case-fold additions, unlike In_Basic_Latin
+    }
+    let (mut lo, mut hi) = (0, UP_NAME_ID.len());
+    while lo < hi {
+        let m = (lo + hi) / 2;
+        let k = &UP_NAME_BLOB[UP_NAME_OFF[m] as usize..UP_NAME_OFF[m + 1] as usize];
+        match k.cmp(&n[..]) {
+            std::cmp::Ordering::Less => lo = m + 1,
+            std::cmp::Ordering::Greater => hi = m,
+            std::cmp::Ordering::Equal => return Some(Prop::Uni(UP_NAME_ID[m])),
+        }
+    }
+    None
 }
 
 fn posix_by_name(n: &str) -> Option<Prop> {
     Some(match n {
-        "alnum" => Prop::Alnum,
-        "alpha" => Prop::Alpha,
+        "alnum" => Prop::Uni(UP_ALNUM),
+        "alpha" => Prop::Uni(UP_ALPHA),
         "ascii" => Prop::Ascii,
-        "blank" => Prop::Blank,
-        "cntrl" => Prop::Cntrl,
-        "digit" => Prop::UDigit,
-        "graph" => Prop::Graph,
-        "lower" => Prop::Lower,
-        "print" => Prop::Print,
-        "punct" => Prop::Punct,
-        "space" => Prop::USpace,
-        "upper" => Prop::Upper,
+        "blank" => Prop::Uni(UP_BLANK),
+        "cntrl" => Prop::Uni(UP_CNTRL),
+        "digit" => Prop::Uni(UP_DIGIT),
+        "graph" => Prop::Uni(UP_GRAPH),
+        "lower" => Prop::Uni(UP_LOWER),
+        "print" => Prop::Uni(UP_PRINT),
+        "punct" => Prop::Uni(UP_XPUNCT),
+        "space" => Prop::Uni(UP_SPACE),
+        "upper" => Prop::Uni(UP_UPPER),
         "xdigit" => Prop::Hex,
-        "word" => Prop::UWord,
+        "word" => Prop::Uni(UP_WORD),
         _ => return None,
     })
 }
@@ -483,13 +378,15 @@ pub(crate) struct CClass {
 }
 
 impl CClass {
-    fn raw(&self, c: u32) -> bool {
+    /// `fold`: testing a case variant; Onigmo's ASCII ctype takes no case-fold additions.
+    fn raw(&self, c: u32, fold: bool) -> bool {
         for part in &self.parts {
             if part.is_empty() {
                 continue;
             }
             let hit = part.iter().any(|it| match it {
                 CItem::Range(a, b) => c >= *a && c <= *b,
+                CItem::Prop(Prop::Ascii, _) if fold => false,
                 CItem::Prop(p, n) => prop_match(*p, c) != *n,
                 CItem::Class(k) => k.test(c),
             });
@@ -501,14 +398,9 @@ impl CClass {
     }
 
     fn test_slow(&self, c: u32) -> bool {
-        let mut h = self.raw(c);
+        let mut h = self.raw(c, false);
         if !h && self.icase && c < BAD {
-            for v in [fold(c), lower1(c), upper1(c)] {
-                if v != c && self.raw(v) {
-                    h = true;
-                    break;
-                }
-            }
+            h = case_class(c).iter().any(|&v| v != c && self.raw(v, true));
         }
         h != self.neg
     }
@@ -1246,12 +1138,12 @@ impl<'a> Parser<'a> {
             b'v' => 11,
             b'a' => 7,
             b'e' => 0x1b,
-            b'd' => return Ok(Lit::Item(CItem::Prop(if self.ascii == 2 { Prop::UDigit } else { Prop::Digit }, false))),
-            b'D' => return Ok(Lit::Item(CItem::Prop(if self.ascii == 2 { Prop::UDigit } else { Prop::Digit }, true))),
-            b'w' => return Ok(Lit::Item(CItem::Prop(if self.ascii == 2 { Prop::UWord } else { Prop::Word }, false))),
-            b'W' => return Ok(Lit::Item(CItem::Prop(if self.ascii == 2 { Prop::UWord } else { Prop::Word }, true))),
-            b's' => return Ok(Lit::Item(CItem::Prop(if self.ascii == 2 { Prop::USpace } else { Prop::Space }, false))),
-            b'S' => return Ok(Lit::Item(CItem::Prop(if self.ascii == 2 { Prop::USpace } else { Prop::Space }, true))),
+            b'd' => return Ok(Lit::Item(CItem::Prop(if self.ascii == 2 { Prop::Uni(UP_DIGIT) } else { Prop::Digit }, false))),
+            b'D' => return Ok(Lit::Item(CItem::Prop(if self.ascii == 2 { Prop::Uni(UP_DIGIT) } else { Prop::Digit }, true))),
+            b'w' => return Ok(Lit::Item(CItem::Prop(if self.ascii == 2 { if in_class { Prop::Uni(UP_WORD) } else { Prop::UWordL } } else { Prop::Word }, false))),
+            b'W' => return Ok(Lit::Item(CItem::Prop(if self.ascii == 2 { if in_class { Prop::Uni(UP_WORD) } else { Prop::UWordL } } else { Prop::Word }, true))),
+            b's' => return Ok(Lit::Item(CItem::Prop(if self.ascii == 2 { Prop::Uni(UP_SPACE) } else { Prop::Space }, false))),
+            b'S' => return Ok(Lit::Item(CItem::Prop(if self.ascii == 2 { Prop::Uni(UP_SPACE) } else { Prop::Space }, true))),
             b'h' => return Ok(Lit::Item(CItem::Prop(Prop::Hex, false))),
             b'H' => return Ok(Lit::Item(CItem::Prop(Prop::Hex, true))),
             b'p' | b'P' => {
@@ -1266,7 +1158,7 @@ impl<'a> Parser<'a> {
                     }
                     let st = self.i;
                     while let Some(ch) = self.peek() {
-                        if ch == b'}' {
+                        if matches!(ch, b'}' | b'(' | b')' | b'{' | b'|') {
                             break;
                         }
                         self.i += 1;
@@ -1461,8 +1353,15 @@ impl<'a> Parser<'a> {
                     }
                 }
                 Lit::Item(it) => {
-                    let mut cc = CClass { neg: false, icase: false, parts: vec![vec![it]], bits: [0; 2] };
-                    cc.finalize(self.icase);
+                    // Onigmo: a bare \P{..} is a negated class (fold, then negate), unlike [\P{..}].
+                    // \w \d \s \h are ctype nodes that never fold.
+                    let (it, neg, fold) = match it {
+                        CItem::Prop(p @ Prop::Uni(_), true) => (CItem::Prop(p, false), true, self.icase),
+                        CItem::Prop(Prop::Uni(_), false) => (it, false, self.icase),
+                        it => (it, false, false),
+                    };
+                    let mut cc = CClass { neg, icase: false, parts: vec![vec![it]], bits: [0; 2] };
+                    cc.finalize(fold);
                     Ast::Class(Box::new(cc))
                 }
             },
