@@ -864,7 +864,7 @@ pub fn srb_defined<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, name: S
                 // respond_to_missing?
                 let rm = lookup_method(c, class_of(r), s::respond_to_missing_p);
                 // defined? answers nil for an exception raised while asking respond_to?
-                let asked = if rm.is_null() { Ok(false) } else { check_respond_basic(c, r, s::respond_to_missing_p) };
+                let asked = if rm.is_null() { Ok(false) } else if !crate::string::mm_redef() { Ok(true) } else { check_respond_basic(c, r, s::respond_to_missing_p) };
                 let asked = match asked { Ok(b) => b, Err(e) => { if c.esc != EscKind::Raise { return Err(e); } c.esc = EscKind::None; return Ok(NIL); } };
                 if asked
                     && unsafe { (*rm).owner } != vm().c_object.get() && unsafe { (*rm).owner } != vm().m_kernel.get() {

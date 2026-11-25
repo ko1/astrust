@@ -53,6 +53,13 @@ fn method_wants_two(c: &Ctx, blk: Blk) -> bool {
 fn wants_two(c: &Ctx, blk: Blk) -> bool {
     matches!(c.block_params(blk), Some(p) if p.lead.len() + p.post.len() + p.opt.len() >= 2 || p.rest.is_some() && p.lead.len() >= 1)
 }
+/// wants_two, and for a non-iseq block a Method proc of 2+ arguments (Enumerable#map's rb_lambda_call)
+fn map_wants_two(c: &Ctx, blk: Blk) -> bool {
+    match c.block_params(blk) {
+        Some(p) => p.lead.len() + p.post.len() + p.opt.len() >= 2 || p.rest.is_some() && p.lead.len() >= 1,
+        None => method_wants_two(c, blk),
+    }
+}
 /// hash_dup_with_compare_by_id: a Hash with the entries and the identity flag, no defaults.
 fn dup_with_identity(c: &mut Ctx, h: Value) -> Value {
     let mut d = c.hash(h).dup();
@@ -165,7 +172,7 @@ cfn!(h_each_with_index, |c, slf, a, blk| if crate::builtins::enum_native::each_o
     let mut i = 0;
     each_entry(c, slf, |c, k, v| { let p = c.ary_new_from(&[k, v]); yield_block(c, blk, &[p, Value::fix(i)])?; i += 1; Ok(true) })?; Ok(slf)
 }) });
-cfn!(h_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(c, slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "map", a, blk) } else { enum_or(c, slf, "map", a, blk, |c| { let out = c.ary_new(); let two = wants_two(c, blk) || method_wants_two(c, blk); each_entry(c, slf, |c, k, v| { let r = yield_kv(c, blk, two, k, v)?; c.ary_push(out, r); Ok(true) })?; Ok(out) }) });
+cfn!(h_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(c, slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "map", a, blk) } else { enum_or(c, slf, "map", a, blk, |c| { let out = c.ary_new(); let two = map_wants_two(c, blk); each_entry(c, slf, |c, k, v| { let r = yield_kv(c, blk, two, k, v)?; c.ary_push(out, r); Ok(true) })?; Ok(out) }) });
 cfn!(h_flat_map, |c, slf, a, blk| if crate::builtins::enum_native::each_overridden(c, slf, h_each) { crate::builtins::enum_native::call_enumerable(c, slf, "flat_map", a, blk) } else { enum_or(c, slf, "flat_map", a, blk, |c| { let out = c.ary_new(); each_entry(c, slf, |c, k, v| { let r = yield_pair(c, blk, k, v)?; if is_array(r) { c.ary_concat(out, r); } else { c.ary_push(out, r); } Ok(true) })?; Ok(out) }) });
 /// rb_hash_select / reject: the copy is iterated (and pruned), so the receiver may change meanwhile.
 fn sel(c: &mut Ctx, slf: Value, blk: Blk, want: bool) -> RV {
