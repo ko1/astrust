@@ -18,9 +18,9 @@
 | 区分 | 項目 |
 |---|---|
 | A. Rust ではできない（Rust の外に出る必要がある） | A1 callcc / Continuation、A2 CRuby 互換の C 拡張 API（可変長引数の `rb_*` と `rb_raise` の longjmp）、A3 setjmp/longjmp による非局所脱出全般、A4 ガードページの SIGSEGV から SystemStackError に戻る |
-| B. 取り除けない `unsafe` が要る | B1 Fiber のスタック切り替え、B2 GC（保守的スタック走査・ヒープの土台・`Value` を語から作る）、B3 コンテキストは同時に 1 つ（`Token::mint`）、B4 独自アロケータ、B5 libc / OS インターフェース（fork・signal・setenv）、B6 mmap（IO::Buffer）、B7 焼いたコードの読み込みと patch 束縛（memfd RW/RX・dlsym・穴の `asm!`）、B8 `$0 =`（argv 領域の書き換え）、B9 Kernel#syscall |
+| B. 取り除けない `unsafe` が要る | B1 Fiber のスタック切り替え、B2 GC（保守的スタック走査・ヒープの土台・`Value` を語から作る）、B3 コンテキストは同時に 1 つ（`Token::mint`）、B4 独自アロケータ、B5 libc / OS インターフェース（fork・signal・setenv）、B6 mmap（IO::Buffer）、B7 焼いたコードの読み込みと patch 束縛（memfd RW/RX・dlsym・穴の `asm!`）、B8 `$0 =`（argv 領域の書き換え、実装済み）、B9 Kernel#syscall |
 | C. safe にできるが測れる代償がある | C1 値スタック、C2 `Value::fix` など、C3 `ConstCache` の Option、C4 `L_::nth` の `unreachable_unchecked`、C5 Env の検査、C6 ivar の種類検査、C7 VM 大域の `unwrap`、C8 オブジェクトごとの RefCell、C9 VM の表の RefCell、C10 `with_heap` クロージャ、C11 rclass 除去・NO_CTX（`c` の引き回し）、C12 cdylib の thread-local、C13 placement new が無い、C14 小さい文字列バッファ SBuf、C15 シンボル表の Mutex、C16 `Block` が `Copy` なので `Cell` にできない、C17 フレーム連鎖・ノードグラフ（未計測）、C18 安定 ABI が無い・rustc の焼き時間 |
-| D. Rust のせいで残した CRuby との違い / Rust で楽になったこと | 違い: `$0 =` が ps に出ない、Continuation 無し、C 拡張無し、IO::Buffer で CRuby が解放済みメモリを触る所は例外。楽になった: 借用検査が chomp/split の不具合を拒否、`Blk<'call>` でブロックの逃がしがコンパイルエラー、`Send + 'static` がワーカの規約を検査、io_uring のバッファを所有権で表す（設計のみ）、ニッチ最適化で 0 コストの unsafe 除去、`MaybeUninit` を構造体リテラルに。両面: `&mut` の noalias がインラインキャッシュの設計の穴を実際の誤コンパイルにした、`str` の UTF-8 不変条件 |
+| D. Rust のせいで残した CRuby との違い / Rust で楽になったこと | 違い: Continuation 無し、C 拡張無し、IO::Buffer で CRuby が解放済みメモリを触る所は例外。楽になった: 借用検査が chomp/split の不具合を拒否、`Blk<'call>` でブロックの逃がしがコンパイルエラー、`Send + 'static` がワーカの規約を検査、io_uring のバッファを所有権で表す（設計のみ）、ニッチ最適化で 0 コストの unsafe 除去、`MaybeUninit` を構造体リテラルに。両面: `&mut` の noalias がインラインキャッシュの設計の穴を実際の誤コンパイルにした、`str` の UTF-8 不変条件 |
 | Rust 固有ではないもの | CRuby がビルドした `.so` をそのまま読む、Fiddle（libffi）、Ractor の並列実行、ネイティブスレッド |
 
 ## A. Rust ではできない（Rust の外に出る必要がある）
@@ -93,7 +93,7 @@
 | B5 | libc / OS インターフェース | FFI 呼び出しは `unsafe`。ラッパーで義務を消せないものが残る: `fork`（子は直ちに exec か単独で動く）、`setenv`（他スレッドの `getenv` と競合。Rust 2024 では `std::env::set_var` 自体が `unsafe`）、`signal` のハンドラ契約、`_exit` | `builtins/sys.rs`（114、1 ラッパー 1 個、`SAFETY` 付き） | [実測] fork 後の不具合 1 件: patch ローダの Arena が MAP_SHARED の memfd を `&'static mut [u8]` として持ち、fork 後に親子が同じ `&mut` で書いた（knucleotide が SIGSEGV、`T:2026-11-22-saruby-knucleotide-segv`、UC 2.4「found later」）。論理的な誤りは C でも同じ | 同じ FFI を書く |
 | B6 | mmap（IO::Buffer） | 写像したメモリをスライスとして見せるのは `unsafe`。MAP_SHARED のファイルを他プロセスが書く・切り詰めると SIGBUS で、Rust の参照の前提を外から破れる | `sys::Mapping`（`sys.rs:473`）の 5 個。`io_buffer.rs` 本体は `forbid`、アドレスは比較だけで参照外ししない（io_design.md「IO::Buffer」） | rubyspec core/io/buffer 198 / 198 | CRuby・memmap2 も同じ義務 |
 | B7 | 焼いたコードの読み込み、patch 束縛 | 機械語を書いて実行する。`dlsym` のアドレスを関数ポインタへ `transmute`。穴（行番号）を即値の再配置にする命令は `asm!`（`sym` オペランド）でしか書けない | `runtime/astrust.rs`（dlopen / dlsym 5）、`runtime/astrust_loader.rs`（memfd RW/RX 10、`:282`）、`aot.rs`、生成される hole item の `asm!` | [実測] optcarrot −0.83 % 命令/フレーム、tak −6.3 %、RSS +9 MB（`T:2026-11-21-astrust-patch-binding`）。rustc の PIC は全部 GOTPCREL を出し、`-C relocation-model=static` は libsaruby のデータまで 32 bit 即値にするので使えない（同 README） | ASTro も穴を asm で書く（`~/ruby/astro/runtime/loader/arch_x86_64.h:54`「The asm is not decoration」）。Rust 固有なのは relocation model をシンボル単位で選べない点 |
-| B8 | `$0 =` / setproctitle（argv 領域の書き換え） | std は argv を所有せず、取る API も無い。`.init_array` に関数を置けば glibc から argv を受け取れ、その領域は書ける（`unsafe`）。ただし std の `env::args()` は glibc 上で argv を遅延して読むので、書き換え後の `env::args()` は書き換えた内容を返す（std が不変と仮定している領域を書く） | 何もしない（`builtins/process.rs:37` の `set_proctitle` は空）。一時 `/proc/self/comm` を書いたが CRuby と逆の振る舞いなので外した（15ad997） | [実験 3] で書き換えと `/proc/self/cmdline` への反映を確認。todo.md の「Rust が持たないメモリへの書き込みが要る」は「`unsafe` と std の前提との衝突」と読むのが正確。environ 領域まで広げる CRuby の処理は [未検証] | C では `main(argc, argv)` から普通に書ける |
+| B8 | `$0 =` / setproctitle（argv 領域の書き換え） | std は argv を所有せず、その領域を書く safe な API も無い（`prctl(PR_SET_MM_ARG_START)` で領域ごと差し替えるには CAP_SYS_RESOURCE が要る。`/proc/self/mem` への write なら `unsafe` と書かずに済むが、Rust がメモリモデルの外とする抜け道で unsafe を隠すだけなので採らない）。書き込みは生ポインタへのコピーで `unsafe`。さらに std の `env::args()` は glibc 上で argv の文字列を遅延して読む **[実験 3]** ので、書き換えた後に呼ぶと書き換えた内容を返す（std が不変と仮定している領域を書く）。これがスナップショットを強制した | 実装済み（2026-11-25）。`sys::setproctitle` の `unsafe` 1 個（argv + environ の文字列領域への `copy_nonoverlapping`）。領域は `/proc/self/stat` の arg_start / arg_end / env_start / env_end から得るので、`.init_array` のフックも起動時の仕事も無い。最初の書き換えの前に (1) `crate::program_args()`（std の argv の OnceLock スナップショット。crate 内の `env::args` / `args_os` は全部これ経由、lib.rs）を確定させ、(2) environ を新しいコピーへ移す（`clearenv` + `setenv`、CRuby の compat_init_setproctitle の strdup に当たる）。長さの規則は CRuby と同じ（1023 バイトで切る、領域で切る、argv 長まで / argv + environ 長まで NUL で詰める）。comm は触らない | `T:2026-11-25-saruby-proctitle` で CRuby 4.0.10 と出力が一致（`/proc/PID/cmdline`・`ps -o args`・comm・`/proc/PID/environ`・ENV・子の環境、t/hand `proctitle_area_1125t.rb` / `proctitle_env_1125t.rb`）。書き換え後の `std::env::args()` は（同時に書かない限り）未定義動作ではなく別の値を返すだけなので、「呼ばない」は lib.rs の doc の規約で、型では強制していない。environ の移動では、同じ名前の 2 個目以降と setenv が拒む項目（`=` が無い、名前が `=` で始まる）が落ちる（CRuby は生の項目を strdup するので残る。生の項目を読むには `environ` の参照外しが要る） | C では `main(argc, argv)` から普通に書ける |
 | B9 | Kernel#syscall | 整数を任意のポインタとして渡すので本質的に unsound。Rust は可変長の `syscall(2)` を呼べる（`sys.rs:68` で宣言済み） | 実装していない | [未検証] | C でも同じく unsound |
 
 ## C. safe にできるが、測れる代償がある
@@ -131,7 +131,7 @@
 
 | 違い | 理由 | 出典 |
 |---|---|---|
-| `$0 =` が ps のコマンド行に出ない（`$0` の値は変わる） | B8。作れるが std の前提との衝突を引き受けていない | `process.rs:36-37`、todo.md |
+| ~~`$0 =` が ps のコマンド行に出ない（`$0` の値は変わる）~~ 2026-11-25 解消 | B8: `unsafe` 1 個と argv のスナップショットで CRuby と同じに書き換える | `sys.rs` `setproctitle`、`T:2026-11-25-saruby-proctitle` |
 | `Continuation` / `callcc` が無い | A1 | — |
 | C 拡張を require できない（openssl 173 件、ractor-conservative-stack） | A2。主要な ext は Rust に移植 | todo.md |
 | IO::Buffer で CRuby 4.0.2 が解放済み・範囲外のメモリを触る 6 ケースは例外を出す（`to_int` が解放する、`each` のブロックが解放する、`and!` の不正なマスクなど） | `io_buffer.rs` は `forbid(unsafe_code)` で、アドレスを参照外しせず、境界検査つきで今のメモリから取るため。安全側を選んだ | io_design.md「IO::Buffer」、`T:2026-11-23-saruby-io-buffer`（deviations.rb） |
@@ -184,3 +184,5 @@ rustc 1.97.1（stable、リポジトリと同じ）、gcc 15.2。scratch で行�
 3. `$0 =`: `#[link_section = ".init_array"]` の関数で glibc から argv を受け取り、`unsafe` で argv 領域を
    `"saruby: renamed"` に書き換えた。`/proc/self/cmdline` は書き換え後の内容になり、`std::env::args()` も
    `["saruby: renamed", " renamed", ""]` を返した（std が argv をコピーせず遅延して読むため）。
+   実装（2026-11-25）は `.init_array` を使わず `/proc/self/stat` の arg_start..env_end を書く。その前に
+   argv をスナップショットし environ を移すので、この現象は saruby の中では起きない（B8）。
