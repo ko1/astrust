@@ -885,12 +885,45 @@ pub fn define_method_me(c: &mut Ctx, klass: Value, name: Sym, me: *const MethodE
 /// define_method_me for a definition made by Ruby code (def, alias, attr_*, define_method, module_function,
 /// import_methods): the redefinition warning and Coverage's method entries (boot definitions skip both).
 pub fn define_user_method(c: &mut Ctx, klass: Value, name: Sym, me: *const MethodEntry) {
+    if crate::builtins::misc::warning_category_enabled(2) { let _ = warn_opt_redefinition(c, klass, name, me); }
     let old = c.class_mut(klass).mtbl.insert(name, me);
     if let Some(old) = old { if vm().verbose.get() == TRUE { warn_redefined(c, klass, name, old, me); } }
     if crate::builtins::coverage::setup() { crate::builtins::coverage::on_me(c, me); }
     let vm = vm();
     bump_method_serial();
     vm.mcache.borrow_mut().clear();
+}
+
+/// CRuby's vm_opt_method_def_table (4.0.10, probed by `def`): [class, its operators that warn on redefinition].
+const OPT_METHODS: &[(&str, &[&str])] = &[
+    ("Integer", &["-@", "<=>", "<=", "===", ">=", "==", "<<", ">>", "[]", "%", "&", "*", "+", "-", "/", "<", ">", "size", "succ", "|"]),
+    ("Float", &["-@", "<=>", "<=", ">=", "==", "===", "%", "*", "+", "-", "hash", "/", "<", ">"]),
+    ("String", &["%", "*", "+", "-@", "<=>", "<<", "==", "===", "=~", "[]", "[]=", "empty?", "hash", "freeze", "length", "size", "succ"]),
+    ("Array", &["&", "*", "+", "-", "|", "<=>", "<<", "==", "[]", "[]=", "include?", "empty?", "max", "hash", "freeze", "min", "length", "size", "pack"]),
+    ("Hash", &["==", "[]", "[]=", "<=", ">=", "empty?", "hash", "freeze", "<", "length", "size", ">", "default"]),
+    ("Symbol", &["succ", "size", "<=>", "==", "===", "=~", "[]", "empty?", "length"]),
+    ("Regexp", &["==", "===", "hash", "=~"]),
+    ("NilClass", &["&", "===", "=~", "nil?", "|"]),
+    ("TrueClass", &["|", "===", "&"]),
+    ("FalseClass", &["|", "===", "&"]),
+    ("Proc", &["<<", "===", "hash", "==", "[]", "call"]),
+];
+/// rb_vm_check_redefinition_opt_method's performance warning, before klass's own entry for `name` (the one that
+/// came with the class, a cfunc or a prelude stub) is replaced, undefined or removed.  Cold: def-time only.
+pub fn warn_opt_redefinition(c: &mut Ctx, klass: Value, name: Sym, new: *const MethodEntry) -> Result<(), Esc> {
+    if !crate::rt::booted() { return Ok(()); }
+    let vm = vm();
+    let kinds = [vm.c_integer.get(), vm.c_float.get(), vm.c_string.get(), vm.c_array.get(), vm.c_hash.get(), vm.c_symbol.get(), vm.c_regexp.get(),
+        vm.c_nil.get(), vm.c_true.get(), vm.c_false.get(), vm.c_proc.get()];
+    let Some(i) = kinds.iter().position(|&k| k == klass) else { return Ok(()) };
+    if !OPT_METHODS[i].1.iter().any(|m| m.as_bytes() == crate::symbol::sym_bytes(name)) { return Ok(()); }
+    let Some(&old) = c.class(klass).mtbl.get(&name) else { return Ok(()) };
+    let Some(o) = c.me_ref(old) else { return Ok(()) };
+    let orig = match o.kind { MKind::Cfunc(..) => true, MKind::Iseq(is) => c.iseq_ref(is).is_some_and(|i| i.info.file.starts_with("<internal:")), _ => false };
+    // the same cfunc under both names is one def (rb_define_alias): nothing is redefined
+    if let (MKind::Cfunc(f, _), Some(n)) = (o.kind, c.me_ref(new)) { if matches!(n.kind, MKind::Cfunc(g, _) if g as usize == f as usize) { return Ok(()); } }
+    if !orig { return Ok(()); }
+    crate::builtins::kernel::category_warn(c, &format!("Redefining '{}#{}' disables interpreter and JIT optimizations", OPT_METHODS[i].0, sym_str(name)), 2, "performance")
 }
 
 /// rb_method_entry_make's "method redefined" warning: not for an alias, an aliased body, undef / ZSuper.

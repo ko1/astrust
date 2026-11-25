@@ -13,6 +13,8 @@ pub type c_int = i32;
 #[derive(Clone, Copy)]
 pub struct EpollEvent { pub events: u32, pub data: u64 }
 #[repr(C)] pub struct Rlimit { pub cur: u64, pub max: u64 }
+/// glibc's struct sigaction (x86_64 / aarch64 Linux): handler, 128-byte mask, flags, restorer.
+#[repr(C)] #[derive(Clone, Copy)] pub struct SigActionRaw { h: usize, mask: [u64; 16], flags: c_int, restorer: usize }
 #[repr(C)] pub struct Tms { pub utime: i64, pub stime: i64, pub cutime: i64, pub cstime: i64 }
 
 mod ffi {
@@ -59,6 +61,7 @@ mod ffi {
         pub fn setsid() -> c_int;
         pub fn getsid(pid: c_int) -> c_int;
         pub fn signal(sig: c_int, h: usize) -> usize;
+        pub fn sigaction(sig: c_int, act: *const SigActionRaw, old: *mut SigActionRaw) -> c_int;
         pub fn poll(fds: *mut PollFd, n: u64, timeout: c_int) -> c_int;
         pub fn ppoll(fds: *mut PollFd, n: u64, ts: *const Timespec, sigmask: *const u8) -> c_int;
         pub fn epoll_create1(flags: c_int) -> c_int;
@@ -299,6 +302,42 @@ pub enum SigAction { Default, Ignore, Catch(extern "C" fn(c_int)) }
 pub fn signal(sig: c_int, a: SigAction) -> usize {
     let h = match a { SigAction::Default => 0, SigAction::Ignore => 1, SigAction::Catch(f) => f as usize };
     unsafe { ffi::signal(sig, h) }
+}
+/// Rust std's handlers (stack guard), saved for faults that are not ours.
+static PREV_H: [std::sync::atomic::AtomicUsize; 32] = [const { std::sync::atomic::AtomicUsize::new(0) }; 32];
+static PREV_F: [std::sync::atomic::AtomicI32; 32] = [const { std::sync::atomic::AtomicI32::new(0) }; 32];
+const SA_SIGINFO: c_int = 4;
+const SA_ONSTACK: c_int = 0x0800_0000;
+extern "C" fn fatal_handler(sig: c_int, info: *const u8, ctx: *const u8) {
+    // SAFETY: the kernel passes a live siginfo_t; si_code is the i32 at offset 8
+    let code = unsafe { std::ptr::read_unaligned(info.add(8) as *const i32) };
+    let (h, fl) = (PREV_H[sig as usize].load(std::sync::atomic::Ordering::Relaxed), PREV_F[sig as usize].load(std::sync::atomic::Ordering::Relaxed));
+    if code <= 0 {
+        // sent by kill / tgkill / sigqueue: die by the signal as CRuby does (its [BUG] line, then the default action)
+        let name: &[u8] = match sig { 11 => b"[BUG] Segmentation fault\n", 7 => b"[BUG] Bus Error\n", 4 => b"[BUG] Illegal instruction\n", _ => b"" };   // CRuby prints nothing for SIGFPE
+        write(2, name);
+        signal(sig, SigAction::Default);
+        kill(getpid(), sig);   // blocked inside the handler: delivered on return, with the default action
+    } else if h > 1 {
+        // a real fault: Rust's handler (stack overflow detection), which re-faults under SIG_DFL when not a guard hit
+        // SAFETY: h is the handler address sigaction returned, called with the arguments the kernel gave us
+        unsafe { if fl & SA_SIGINFO != 0 { std::mem::transmute::<usize, extern "C" fn(c_int, *const u8, *const u8)>(h)(sig, info, ctx) } else { std::mem::transmute::<usize, extern "C" fn(c_int)>(h)(sig) } }
+    } else { signal(sig, SigAction::Default); }
+}
+/// Make a SEGV / BUS / ILL / FPE sent by kill(2) end the process (Rust's handler returns for a non-guard
+/// fault, so a sent signal was swallowed); real faults still go to the previous handler.
+pub fn install_fatal_signals() {
+    for sig in [4, 7, 8, 11] {
+        let mut old = SigActionRaw { h: 0, mask: [0; 16], flags: 0, restorer: 0 };
+        let new = SigActionRaw { h: fatal_handler as extern "C" fn(c_int, *const u8, *const u8) as usize, mask: [0; 16], flags: SA_SIGINFO | SA_ONSTACK, restorer: 0 };
+        // SAFETY: both are live structs of glibc's sigaction layout; the handler is an `extern "C" fn` of the SA_SIGINFO shape
+        unsafe {
+            if ffi::sigaction(sig, std::ptr::null(), &mut old) != 0 { continue; }
+            PREV_H[sig as usize].store(old.h, std::sync::atomic::Ordering::Relaxed);
+            PREV_F[sig as usize].store(old.flags, std::sync::atomic::Ordering::Relaxed);
+            ffi::sigaction(sig, &new, std::ptr::null_mut());
+        }
+    }
 }
 /// Block every signal in the calling thread.
 pub fn block_all_signals() {

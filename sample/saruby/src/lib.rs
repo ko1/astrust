@@ -505,6 +505,7 @@ fn fill_standard_fds() {
 
 pub fn main_entry() {
     kalloc::pad_system();
+    builtins::sys::install_fatal_signals();
     let o = parse_args();
     fill_standard_fds();
     // CRuby's main: setlocale(LC_CTYPE, "") before any thread starts
