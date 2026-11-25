@@ -121,6 +121,7 @@ fn boot_classes(c: &mut Ctx) {
     include_module(c, vmr.c_hash.get(), vmr.m_enumerable.get());
     vmr.c_range.set(define_class(c, "Range", ob));
     class_set_alloc(c, vmr.c_range.get(), AllocKind::Range);
+    define_private_cfunc(c, vmr.c_range.get(), "initialize_copy", crate::builtins::object::k_init_copy, 1);
     include_module(c, vmr.c_range.get(), vmr.m_enumerable.get());
     vmr.c_nil.set(define_class(c, "NilClass", ob));
     vmr.c_true.set(define_class(c, "TrueClass", ob));

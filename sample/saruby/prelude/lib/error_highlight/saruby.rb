@@ -6,7 +6,7 @@ require "saruby/error_highlight"
 
 module ErrorHighlight
   # the boot stub of CoreExt#detailed_message (builtins/error_highlight.rs), once this file is loaded: the real one
-  def self.__detailed_message(exc, opts)
+  def __saruby__.eh_detailed_message(exc, opts)
     CoreExt.instance_method(:detailed_message).bind_call(exc, **opts)
   end
 
@@ -20,7 +20,7 @@ module ErrorHighlight
       end
 
       def self.node_id_for_backtrace_location(location)
-        ErrorHighlight.__node_id(location)
+        __saruby__.eh_node_id(location)
       end
     end
   end
@@ -136,7 +136,7 @@ module ErrorHighlight
 
     # The node with prism node id `node_id` in a parse of the file `path` (nil: none).
     def self.find(path, node_id)
-      src, offsets, raw = ErrorHighlight.__find(path, node_id)
+      src, offsets, raw = __saruby__.eh_find(path, node_id)
       raw && build(Source.new(src, offsets), raw)
     end
   end

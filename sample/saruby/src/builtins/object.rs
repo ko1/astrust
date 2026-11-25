@@ -330,7 +330,7 @@ pub(crate) fn k_clone(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     }
     obj_dup(c, slf, true, fz)
 }
-fn k_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+pub fn k_init_copy(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if slf == a[0] { return Ok(slf); }
     check_frozen(c, slf)?;
     if real_class_of(c, slf) != real_class_of(c, a[0]) { return type_err(c, "initialize_copy should take same class object"); }

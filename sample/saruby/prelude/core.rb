@@ -368,25 +368,24 @@ class Enumerator
         b = args[0]
       end
       raise LocalJumpError, "no block given" unless b
-      @__b = b
+      __saruby__.__ivinit(self, :__b, b)
     end
-    def each(*args, &blk) = @__b.call(Enumerator::Yielder.new(&blk), *args)
+    def each(*args, &blk) = __saruby__.__ivget(self, :__b).call(Enumerator::Yielder.new(&blk), *args)
   end
 
   class Chain < Enumerator
     undef_method :feed, :next, :next_values, :peek, :peek_values
     def initialize(*enums)
-      @__enums = enums.freeze
-      @__pos = -1
+      __saruby__.__ivinit(self, :__e, enums.freeze)
       self
     end
     def each(*args, &b)
       return self unless b
-      @__enums.each_with_index { |e, i| @__pos = i; e.each(*args, &b) }
+      __saruby__.__ivget(self, :__e).each_with_index { |e, i| __saruby__.__ivset(self, :__p, i); e.each(*args, &b) }
       self
     end
     def size
-      @__enums.inject(0) do |t, e|
+      __saruby__.__ivget(self, :__e).inject(0) do |t, e|
         s = e.size
         return s if s.nil? || (s.is_a?(Float) && s.infinite?)
         t + s
@@ -394,21 +393,21 @@ class Enumerator
     end
     # enum_chain_rewind: the ones iterated so far, last first
     def rewind
-      i = @__pos || -1
-      while i >= 0 && i < @__enums.size
-        e = @__enums[i]
-        e.rewind if e.respond_to?(:rewind)
-        @__pos = (i -= 1)
+      i = __saruby__.__ivget(self, :__p) || -1
+      en = __saruby__.__ivget(self, :__e)
+      while i >= 0 && i < en.size
+        en[i].rewind if en[i].respond_to?(:rewind)
+        __saruby__.__ivset(self, :__p, (i -= 1))
       end
       self
     end
     def inspect
-      return "#<#{self.class}: uninitialized>" unless @__enums
+      en = __saruby__.__ivget(self, :__e) or return "#<#{self.class}: uninitialized>"
       seen = (__saruby__.__ivget(Enumerator::Chain, :__insp) || __saruby__.__ivset(Enumerator::Chain, :__insp, {}))
       return "#<#{self.class}: ...>" if seen.key?(object_id)
       seen[object_id] = true
       begin
-        "#<#{self.class}: #{@__enums.inspect}>"
+        "#<#{self.class}: #{en.inspect}>"
       ensure
         seen.delete(object_id)
       end

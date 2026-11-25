@@ -28,48 +28,48 @@ module Etc
     SC_XOPEN_STREAMS: 246, SC_XOPEN_UNIX: 91, SC_XOPEN_VERSION: 89 }.each { |k, v| const_set(k, v) }
 
 
+  def __saruby__.etc_int(v)
+    return v if Integer === v
+    return v.to_int if !(nil == v || true == v || false == v) && v.respond_to?(:to_int)
+    raise TypeError, "no implicit conversion of #{v.nil? ? "nil" : v == true ? "true" : v == false ? "false" : v.class} into Integer"
+  end
+  def __saruby__.etc_str(v)
+    String.try_convert(v) or raise TypeError, "no implicit conversion of #{v.nil? ? "nil" : v == true ? "true" : v == false ? "false" : v.class} into String"
+  end
+  def __saruby__.etc_each(kind, list)
+    raise RuntimeError, "parallel #{kind} iteration" if Thread.current[:"__etc_#{kind}"]
+    Thread.current[:"__etc_#{kind}"] = true
+    begin
+      list.each { |e| yield e }
+    ensure
+      Thread.current[:"__etc_#{kind}"] = nil
+    end
+  end
+
+  def __saruby__.etc_passwd
+    File.readlines("/etc/passwd", chomp: true).filter_map do |l|
+      f = l.split(":", -1)
+      next if f.size < 7 || l.start_with?("#")
+      Passwd.new(f[0], f[1], f[2].to_i, f[3].to_i, f[4], f[5], f[6])
+    end
+  rescue SystemCallError
+    []
+  end
+
+  def __saruby__.etc_group
+    File.readlines("/etc/group", chomp: true).filter_map do |l|
+      f = l.split(":", -1)
+      next if f.size < 4 || l.start_with?("#")
+      Group.new(f[0], f[1], f[2].to_i, f[3].split(","))
+    end
+  rescue SystemCallError
+    []
+  end
+
   class << self
-    def __int(v)
-      return v if Integer === v
-      return v.to_int if !(nil == v || true == v || false == v) && v.respond_to?(:to_int)
-      raise TypeError, "no implicit conversion of #{v.nil? ? "nil" : v == true ? "true" : v == false ? "false" : v.class} into Integer"
-    end
-    def __str(v)
-      String.try_convert(v) or raise TypeError, "no implicit conversion of #{v.nil? ? "nil" : v == true ? "true" : v == false ? "false" : v.class} into String"
-    end
-    def __each(kind, list)
-      raise RuntimeError, "parallel #{kind} iteration" if Thread.current[:"__etc_#{kind}"]
-      Thread.current[:"__etc_#{kind}"] = true
-      begin
-        list.each { |e| yield e }
-      ensure
-        Thread.current[:"__etc_#{kind}"] = nil
-      end
-    end
-
-    def __passwd
-      File.readlines("/etc/passwd", chomp: true).filter_map do |l|
-        f = l.split(":", -1)
-        next if f.size < 7 || l.start_with?("#")
-        Passwd.new(f[0], f[1], f[2].to_i, f[3].to_i, f[4], f[5], f[6])
-      end
-    rescue SystemCallError
-      []
-    end
-
-    def __group
-      File.readlines("/etc/group", chomp: true).filter_map do |l|
-        f = l.split(":", -1)
-        next if f.size < 4 || l.start_with?("#")
-        Group.new(f[0], f[1], f[2].to_i, f[3].split(","))
-      end
-    rescue SystemCallError
-      []
-    end
-
     def passwd
-      list = __passwd
-      return __each("passwd", list) { |e| yield e } if block_given?
+      list = __saruby__.etc_passwd
+      return __saruby__.etc_each("passwd", list) { |e| yield e } if block_given?
       @pwi = (@pwi || 0)
       e = list[@pwi]
       @pwi += 1 if e
@@ -80,8 +80,8 @@ module Etc
     def endpwent = (@pwi = 0; nil)
 
     def group
-      list = __group
-      return __each("group", list) { |e| yield e } if block_given?
+      list = __saruby__.etc_group
+      return __saruby__.etc_each("group", list) { |e| yield e } if block_given?
       @gri = (@gri || 0)
       e = list[@gri]
       @gri += 1 if e
@@ -92,22 +92,22 @@ module Etc
     def endgrent = (@gri = 0; nil)
 
     def getpwuid(uid = Process.uid)
-      uid = __int(uid)
+      uid = __saruby__.etc_int(uid)
       Passwd.new(*(__saruby__.__nss(1, uid) or raise ArgumentError, "can't find user for #{uid >= 2**31 ? uid - 2**32 : uid}"))
     end
 
     def getpwnam(name)
-      name = __str(name)
+      name = __saruby__.etc_str(name)
       Passwd.new(*(__saruby__.__nss(0, name) or raise ArgumentError, "can't find user for #{name}"))
     end
 
     def getgrgid(gid = Process.gid)
-      gid = __int(gid)
+      gid = __saruby__.etc_int(gid)
       Group.new(*(__saruby__.__nss(3, gid) or raise ArgumentError, "can't find group for #{gid >= 2**31 ? gid - 2**32 : gid}"))
     end
 
     def getgrnam(name)
-      name = __str(name)
+      name = __saruby__.etc_str(name)
       Group.new(*(__saruby__.__nss(2, name) or raise ArgumentError, "can't find group for #{name}"))
     end
 

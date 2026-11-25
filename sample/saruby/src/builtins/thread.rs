@@ -1497,6 +1497,7 @@ pub fn init_sync(c: &mut Ctx) {
     class_set_alloc(c, mx, AllocKind::None);
     const_set(c, ob, intern(b"Mutex"), mx);
     c.vm().c_mutex.set(mx);
+    define_private_cfunc(c, mx, "initialize", |_c, _s, _a, _b| Ok(NIL), 0);
     let mon = define_class(c, "Monitor", ob);
     class_set_alloc(c, mon, AllocKind::None);
     c.vm().c_monitor.set(mon);
@@ -1529,5 +1530,6 @@ pub fn init_sync(c: &mut Ctx) {
     const_set(c, ob, intern(b"ConditionVariable"), cv);
     define_cfunc(c, cv, "wait", cv_wait, -1); define_cfunc(c, cv, "signal", cv_signal, 0); define_cfunc(c, cv, "broadcast", cv_broadcast, 0);
     define_cfunc(c, cv, "marshal_dump", cant_dump, 0);
+    define_private_cfunc(c, cv, "initialize", |_c, _s, _a, _b| Ok(NIL), 0);
 }
 fn cant_dump(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV { let k = class_path(c, real_class_of(c, s)); type_err(c, format!("can't dump {}", k)) }

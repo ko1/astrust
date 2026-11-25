@@ -575,7 +575,6 @@ fn arith_last(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     funcall(c, all, intern(b"last"), a, b)
 }
 fn arith_first(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { e_first(c, slf, a, b) }
-fn arith_to_a(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { collect_all(c, slf) }
 
 pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if let Some(&e) = c.data::<REnum>(v) {
@@ -606,6 +605,7 @@ pub fn init(c: &mut Ctx, e: Value, object: Value, enumerable: Value) -> Classes 
     let k = Classes { enumerator: e, yielder: define_class_under(c, e, "Yielder", object), generator: define_class_under(c, e, "Generator", object),
                       lazy: define_class_under(c, e, "Lazy", e), chain: define_class_under(c, e, "Chain", e), arith_seq: define_class_under(c, e, "ArithmeticSequence", e) };
     define_private_cfunc(c, e, "initialize", e_initialize, -1);
+    for k in [e, k.generator, k.chain] { define_private_cfunc(c, k, "initialize_copy", crate::builtins::object::k_init_copy, 1); }
     define_cfunc(c, e, "each", e_each, -1);
     define_cfunc(c, e, "with_index", e_with_index, -1);
     define_cfunc(c, e, "each_with_index", e_each_with_index, 0);
@@ -635,8 +635,10 @@ pub fn init(c: &mut Ctx, e: Value, object: Value, enumerable: Value) -> Classes 
     define_cfunc(c, a, "hash", arith_hash, 0);
     define_cfunc(c, a, "last", arith_last, -1);
     define_cfunc(c, a, "first", arith_first, -1);
-    define_cfunc(c, a, "to_a", arith_to_a, 0);
-    define_cfunc(c, a, "entries", arith_to_a, 0);
+    // CRuby: each / inspect / size are ArithmeticSequence's own; to_a / entries are Enumerable's
+    define_cfunc(c, a, "each", e_each, -1);
+    define_cfunc(c, a, "inspect", e_inspect, 0);
+    define_cfunc(c, a, "size", e_size, 0);
     let sa = singleton_class(c, a);
     crate::builtins::object::undef_method(c, sa, intern(b"new")).expect("ArithmeticSequence.new");
     k

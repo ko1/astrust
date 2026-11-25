@@ -28,7 +28,7 @@ fn node_value(c: &mut Ctx, n: &GNode, consts: &[Vec<u8>]) -> RV {
     Ok(c.ary_new_from(&[Value::sym(intern(n.ty.as_bytes())), Value::fix(n.id as i64), Value::fix(n.loc.start as i64), Value::fix(n.loc.len as i64), h]))
 }
 
-/// ErrorHighlight.__find(path, node_id): [source, line offsets, node] or nil (no such file or node)
+/// __saruby__.eh_find(path, node_id): [source, line offsets, node] or nil (no such file or node)
 fn eh_find(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let p = crate::string::expect_str(c, a[0])?;
     let path = c.str_bytes(p).to_vec();
@@ -44,7 +44,7 @@ fn eh_find(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     Ok(c.ary_new_from(&[s, o, node]))
 }
 
-/// ErrorHighlight.__node_id(location): its prism node id (RubyVM::AbstractSyntaxTree.node_id_for_backtrace_location), or nil
+/// __saruby__.eh_node_id(location): its prism node id (RubyVM::AbstractSyntaxTree.node_id_for_backtrace_location), or nil
 fn eh_node_id(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     if !a[0].is_heap() { return Ok(NIL); }
     let n = ivar_get(c, a[0], intern(b"__nid"));
@@ -85,10 +85,9 @@ fn load(c: &mut Ctx) -> Result<bool, Esc> {
 /// (its super is then what is behind CoreExt, as for this call).
 fn stub_detailed_message(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if !load(c)? { return crate::builtins::exception::exc_detailed_message(c, slf, a, b); }
-    let m = c.vm().c_object.get();
-    let Some(m) = const_get_inherit(c, m, intern(b"ErrorHighlight"))? else { return crate::builtins::exception::exc_detailed_message(c, slf, a, b) };
+    let m = c.vm().m_internal.get();
     let kw = match kw_arg(c, a) { Some(h) => h, None => c.hash_new() };
-    funcall(c, m, intern(b"__detailed_message"), &[slf, kw], std::ptr::null())
+    funcall(c, m, intern(b"eh_detailed_message"), &[slf, kw], std::ptr::null())
 }
 
 /// ErrorHighlight.spot / .formatter / .formatter= before the library is loaded: the library's, which replaced this.
@@ -103,8 +102,7 @@ fn stub_call(c: &mut Ctx, slf: Value, a: &[Value], b: Blk, name: &[u8]) -> RV {
 /// The library's native part (required by error_highlight/saruby.rb).
 pub fn init(c: &mut Ctx) {
     STATE.store(1, Relaxed);
-    let o = c.vm().c_object.get();
-    let m = match const_get_at(c, o, intern(b"ErrorHighlight")) { Some(m) if crate::array::is_class_or_module(m) => m, _ => define_module(c, "ErrorHighlight") };
-    define_singleton_cfunc(c, m, "__find", eh_find, 2);
-    define_singleton_cfunc(c, m, "__node_id", eh_node_id, 1);
+    let m = c.vm().m_internal.get();
+    define_singleton_cfunc(c, m, "eh_find", eh_find, 2);
+    define_singleton_cfunc(c, m, "eh_node_id", eh_node_id, 1);
 }

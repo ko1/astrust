@@ -1829,32 +1829,65 @@ fn format_frames(c: &Ctx, frames: &[RawFrame], skip: usize) -> Vec<String> { for
 /// None: fewer than `skip` frames (caller's nil).
 /// `no_internal_eval`: frames of eval'd source named "<internal:...>" do not count (warn's uplevel).
 fn format_frames_n(c: &Ctx, frames: &[RawFrame], skip: usize, n: usize, no_internal_eval: bool) -> Option<Vec<BtLine>> {
-    let mut out = vec![];
-    let mut seen = 0usize;
+    let mut vis: Vec<RawFrame> = Vec::with_capacity(frames.len());
     unsafe {
         for fr in frames {
-            if seen >= skip && out.len() >= n { break; }
             if fr.kind != FK_CFUNC && fr.iseq.is_null() { continue; }
             // CRuby's send/__send__ and Proc#call/yield/===/[] do not push a frame
             if fr.kind == FK_CFUNC && (fr.me.is_null() == false && ((*fr.me).name == s::send || (*fr.me).name == s::__send__)) { continue; }
             if fr.kind == FK_CFUNC && fr.me == vm().ids.c_new.get() { continue; }   // CRuby 4.0 has no Class#new frame
             if fr.kind == FK_CFUNC && !fr.me.is_null() && (*fr.me).owner == vm().c_proc.get() && matches!(sym_str((*fr.me).name).as_ref(), "call" | "yield" | "===" | "[]") { continue; }
             // a cfunc frame takes its caller's file; only eval'd source counts as internal here, not saruby's own prelude
-            if no_internal_eval && fr.file.starts_with("<internal:") && {
-                let mut is = if fr.at.is_null() { fr.iseq } else { fr.at };
-                while !is.is_null() && (*is).kind != IseqKind::Eval { is = (*is).parent.get(); }
-                !is.is_null()
-            } { continue; }
-            seen += 1;
-            if seen <= skip { continue; }
-            let (line, nid) = line_nid(fr.pos, fr.at.as_ref().map(|i| &i.info));
-            // code from eval has no absolute path (CRuby: realpath nil), so no node to look up either
-            let mut is = fr.iseq;
-            while !is.is_null() && (*is).kind != IseqKind::Eval { is = (*is).parent.get(); }
-            out.push(BtLine { file: fr.file, line, label: frame_label_of(c, fr.kind, fr.me, fr.iseq), nid: if is.is_null() { nid } else { NID_EVAL } });
+            if no_internal_eval && fr.file.starts_with("<internal:") && in_eval(c, if fr.at.is_null() { fr.iseq } else { fr.at }) { continue; }
+            vis.push(*fr);
         }
     }
-    if seen < skip { None } else { Some(out) }
+    if vis.len() < skip { return None; }
+    let vis = collapse_internal(c, &vis[skip..]);
+    let mut out = vec![];
+    for fr in vis.iter().take(n) {
+        let (line, nid) = line_nid(fr.pos, c.iseq_ref(fr.at).map(|i| &i.info));
+        // code from eval has no absolute path (CRuby: realpath nil), so no node to look up either
+        out.push(BtLine { file: fr.file, line, label: frame_label_of(c, fr.kind, fr.me, fr.iseq), nid: if in_eval(c, fr.iseq) { NID_EVAL } else { nid } });
+    }
+    Some(out)
+}
+
+/// Is `is` (or one of its parents) the iseq of eval'd source?
+fn in_eval(c: &Ctx, mut is: *const Iseq) -> bool {
+    while let Some(i) = c.iseq_ref(is) {
+        if i.kind == IseqKind::Eval { return true; }
+        is = i.parent.get();
+    }
+    false
+}
+
+/// A frame of the prelude's / lib's own Ruby code (not eval'd source that names itself "<internal:...>").
+fn is_internal_frame(c: &Ctx, fr: &RawFrame) -> bool {
+    fr.file.starts_with("<internal:") && !in_eval(c, if fr.at.is_null() { fr.iseq } else { fr.at })
+}
+
+/// The prelude's methods are C functions in CRuby: a call from user code is one frame at the caller's file and
+/// line, and what the method itself calls (blocks, helpers) has none.  A run holding a top / class body (a lib
+/// being loaded) or without a caller is kept as it is.
+fn collapse_internal<'a>(c: &Ctx, v: &'a [RawFrame]) -> std::borrow::Cow<'a, [RawFrame]> {
+    if !v.iter().any(|f| is_internal_frame(c, f)) { return std::borrow::Cow::Borrowed(v); }
+    let mut out: Vec<RawFrame> = Vec::with_capacity(v.len());
+    let kind_of = |f: &RawFrame| if f.kind == FK_CFUNC { None } else { c.iseq_ref(f.iseq).map(|i| i.kind) };
+    let mut i = 0;
+    while i < v.len() {
+        if !is_internal_frame(c, &v[i]) { out.push(v[i]); i += 1; continue; }
+        let mut j = i;
+        while j < v.len() && is_internal_frame(c, &v[j]) { j += 1; }
+        let run = &v[i..j];
+        let body = run.iter().any(|f| matches!(kind_of(f), Some(k) if !matches!(k, IseqKind::Method | IseqKind::Block | IseqKind::Lambda)));
+        if body || j == v.len() { out.extend_from_slice(run); }
+        else if let (Some(IseqKind::Method), caller) = (kind_of(&run[run.len() - 1]), &v[j]) {
+            out.push(RawFrame { file: caller.file, pos: caller.pos, at: caller.at, ..run[run.len() - 1] });
+        }
+        i = j;
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 pub fn backtrace_lines(c: &Ctx, skip: usize) -> Vec<String> { format_frames(c, &capture_frames(c), skip) }
@@ -2640,12 +2673,24 @@ pub fn invoke_cfunc(c: &mut Ctx, me: *const MethodEntry, f: CFunc, arity: i32, r
         if flags & CF_KW_SPLAT != 0 && is_hash(last) && c.hash(last).live == 0 { argc -= 1; }
         else if is_hash(last) { kwf = FR_KW; }
     }
-    if arity >= 0 && argc as i32 != arity { return argc_err(c, argc as usize, arity, arity); }
+    if arity >= 0 && argc as i32 != arity { return cfunc_arity_err(c, me, blk, argc as usize, arity); }
     let pf = c.frame;
     let mut fr = Frame::cfunc(pf, me, blk);
     fr.pad.set(kwf);
     c.frame = &mut fr;
     let r = with_args(base, argc as usize, |a| f(c, recv, a, vm_blk(blk)));
+    c.frame = pf;
+    r
+}
+
+/// A fixed-arity cfunc's ArgumentError: raised inside its own frame, as CRuby's.
+#[cold]
+#[inline(never)]
+fn cfunc_arity_err(c: &mut Ctx, me: *const MethodEntry, blk: *const Block, argc: usize, arity: i32) -> RV {
+    let pf = c.frame;
+    let mut fr = Frame::cfunc(pf, me, blk);
+    c.frame = &mut fr;
+    let r = argc_err(c, argc, arity, arity);
     c.frame = pf;
     r
 }

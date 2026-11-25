@@ -453,6 +453,7 @@ pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
 pub fn init(c: &mut Ctx) -> (Value, Value) {
     let vmr = c.vm();
     let r = define_class(c, "Regexp", vmr.c_object.get());
+    define_private_cfunc(c, r, "initialize_copy", crate::builtins::object::k_init_copy, 1);
     class_set_alloc(c, r, AllocKind::None);
     const_set(c, r, intern(b"IGNORECASE"), Value::fix(1));
     const_set(c, r, intern(b"EXTENDED"), Value::fix(2));
@@ -475,6 +476,7 @@ pub fn init(c: &mut Ctx) -> (Value, Value) {
     d(c, "inspect", re_inspect, 0); d(c, "to_s", re_to_s, 0); d(c, "options", re_options, 0); d(c, "casefold?", re_casefold, 0); d(c, "==", re_eq, 1);
     d(c, "eql?", re_eq, 1); d(c, "hash", re_hash, 0); d(c, "names", re_names, 0); d(c, "named_captures", re_named_captures, 0); d(c, "timeout", re_timeout, 0);
     let m = define_class(c, "MatchData", vmr.c_object.get());
+    define_private_cfunc(c, m, "initialize_copy", crate::builtins::object::k_init_copy, 1);
     class_set_alloc(c, m, AllocKind::None);
     let ms = singleton_class(c, m);
     define_method_me(c, ms, intern(b"allocate"), new_me(intern(b"allocate"), ms, VISI_PUBLIC, MKind::Undef));

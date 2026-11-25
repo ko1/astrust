@@ -16,7 +16,7 @@ fn opts(line: i32) -> crate::prism::ParseOpts<'static> {
     crate::prism::ParseOpts { filepath: b"", line, scopes: vec![], main_script: false, frozen_string_literal: 0, encoding: b"" }
 }
 
-/// __lex(source, line): [[type, value, start_line, start_column, start_offset, end_offset, lex_state], ...] in lexing order.
+/// __saruby__.ss_lex(source, line): [[type, value, start_line, start_column, start_offset, end_offset, lex_state], ...] in lexing order.
 /// Token types are named as prism 1.8 (the default gem's LexCompat) names them.
 fn ss_lex(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let src = crate::string::expect_str(c, a[0])?;
@@ -46,7 +46,7 @@ fn ss_lex(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     }
     Ok(out)
 }
-/// __errors(source): the messages of prism's errors for the source.
+/// __saruby__.ss_errors(source): the messages of prism's errors for the source.
 fn ss_errors(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let src = crate::string::expect_str(c, a[0])?;
     let bytes = c.str_bytes(src).to_vec();
@@ -57,9 +57,10 @@ fn ss_errors(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
 pub fn init(c: &mut Ctx) {
     let o = c.vm().c_object.get();
     let m = match const_get_at(c, o, intern(b"SyntaxSuggest")) { Some(m) if crate::array::is_class_or_module(m) => m, _ => define_module(c, "SyntaxSuggest") };
-    let p = define_module_under(c, m, "Prism");
-    define_singleton_cfunc(c, p, "__lex", ss_lex, 2);
-    define_singleton_cfunc(c, p, "__errors", ss_errors, 1);
+    let _ = define_module_under(c, m, "Prism");
+    let im = c.vm().m_internal.get();
+    define_singleton_cfunc(c, im, "ss_lex", ss_lex, 2);
+    define_singleton_cfunc(c, im, "ss_errors", ss_errors, 1);
 }
 
 /// syntax_suggest's annotation of the file at `path` before `msg` (core_ext.rb's detailed_message); `msg` when the
@@ -69,8 +70,8 @@ pub fn annotate(c: &mut Ctx, path: Value, highlight: bool, msg: Value) -> RV {
     let r = (|| {
         let f = c.str_new(b"syntax_suggest/saruby");
         crate::builtins::kernel::require_feature(c, f, false)?;
-        let m = const_get_at(c, c.vm().c_object.get(), intern(b"SyntaxSuggest")).unwrap_or(NIL);
-        funcall(c, m, intern(b"__saruby_annotate"), &[path, Value::bool(highlight), msg], std::ptr::null())
+        let m = c.vm().m_internal.get();
+        funcall(c, m, intern(b"ss_annotate"), &[path, Value::bool(highlight), msg], std::ptr::null())
     })();
     match r {
         Ok(v) if crate::object::is_string(v) => { c.errinfo = saved.4; Ok(v) }
