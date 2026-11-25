@@ -1898,13 +1898,14 @@ fn collapse_internal<'a>(c: &Ctx, v: &'a [RawFrame]) -> std::borrow::Cow<'a, [Ra
             // the outermost Method, plus what CRuby has a C function (own frame) for: `initialize`, a define_method body
             let caller = &v[j];
             let last = run.len() - 1;
+            // under an Enumerable method (C in CRuby) its own #each call has a frame of its own (a cfunc here, or a prelude Method)
+            let enum_outer = c.me_ref(run[last].me).is_some_and(|m| m.owner == c.vm().m_enumerable.get() || (m.name == s::each && class_path(c, m.owner) == "Enumerator::Chain"));
             for (k, f) in run.iter().enumerate() {
                 let c_like = is_define_method_body(c, f);
-                // an Enumerable method's own #each call has a frame in CRuby (a cfunc here, or a prelude Method)
                 let named = |n| c.me_ref(f.me).is_some_and(|m| m.name == n);
                 let keep = c_like || (k == last && kind_of(f) == Some(IseqKind::Method))
                     || (kind_of(f) == Some(IseqKind::Method) && named(s::initialize))
-                    || (k != last && named(s::each) && (f.kind == FK_CFUNC || kind_of(f) == Some(IseqKind::Method)));
+                    || (enum_outer && k != last && named(s::each) && (f.kind == FK_CFUNC || kind_of(f) == Some(IseqKind::Method)));
                 if keep { out.push(RawFrame { file: caller.file, pos: caller.pos, at: caller.at, kind: if c_like { FK_CFUNC } else { f.kind }, ..*f }); }
             }
         }
