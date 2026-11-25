@@ -368,3 +368,10 @@ step only; the goal stays full moving with no stack-driven pinning.
   `PROT_NONE` page; the body is `Free`).  The `false` instantiation (every other build) compiles the
   checks out.
 * The converted group and its results: the trial README.
+* Cost trap found while adding GC-time-only roots (session 3): `gc::alloc_with_by`'s `move || RObj {..}` closure is
+  called on both branches of the allocation fast path.  When LLVM outlines it on the cold branch, the closure's captures
+  must be in memory, and their stores get hoisted above the free-list test (5 stores per String literal: str +1.4 %),
+  although the visitors that tipped the decision never run on that path.  The fix that goes with the root work: `#[inline(always)]` on that closure.
+  Calling `make()` once before the branch (as MarkBitmap does) or passing the closure to a cold shim are both far worse
+  (store-forwarding stalls; up to +28 %).  A change that only adds GC-time work can still move instruction counts by
+  ±0.5 % through register allocation (closures, `make_env`): measure every root addition against the 21 benches.
