@@ -97,6 +97,9 @@ fn e_ivset(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     Ok(a[2])
 }
 
+// __ivinit: __ivset for an initialize (a frozen receiver is a FrozenError).
+fn e_ivinit(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV { check_frozen(c, a[0])?; e_ivset(c, s, a, b) }
+
 /// Does recv's #each differ from `native` (a subclass or singleton overrode it)?
 pub fn each_overridden(c: &Ctx, recv: Value, native: CFunc) -> bool {
     match c.method_entry(class_of(recv), crate::symbol::s::each) {
@@ -755,6 +758,7 @@ pub fn init(c: &mut Ctx, m: Value) {
     define_singleton_cfunc(c, m, "__to_a", e_to_a, 1);
     define_singleton_cfunc(c, m, "__range_sum", |c, _s, a, b| crate::builtins::range_methods::r_sum(c, a[0], &a[1..], b), 2);
     define_singleton_cfunc(c, m, "__ivget", e_ivget, 2);
+    define_singleton_cfunc(c, m, "__ivinit", e_ivinit, 3);
     define_singleton_cfunc(c, m, "__set_init", e_set_init, 2);
     define_singleton_cfunc(c, m, "__each", e_each, -1);
     define_singleton_cfunc(c, m, "__set_eq", e_set_eq, 2);

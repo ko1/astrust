@@ -362,14 +362,13 @@ class Enumerator
 
   class Generator
     def initialize(*args, &b)
-      raise FrozenError.new("can't modify frozen #{self.class}: #{inspect}", receiver: self) if frozen?
       __saruby__.__argc(args.size, 0, 1) if args.size > 1
       unless args.empty?
         raise TypeError, "wrong argument type #{args[0].class} (expected Proc)" unless args[0].is_a?(Proc)
         b = args[0]
       end
       raise LocalJumpError, "no block given" unless b
-      __saruby__.__ivset(self, :__b, b)
+      __saruby__.__ivinit(self, :__b, b)
     end
     def each(*args, &blk) = __saruby__.__ivget(self, :__b).call(Enumerator::Yielder.new(&blk), *args)
   end
@@ -377,18 +376,16 @@ class Enumerator
   class Chain < Enumerator
     undef_method :feed, :next, :next_values, :peek, :peek_values
     def initialize(*enums)
-      raise FrozenError.new("can't modify frozen #{self.class}: #{inspect}", receiver: self) if frozen?
-      __saruby__.__ivset(self, :__enums, enums.freeze)
-      __saruby__.__ivset(self, :__pos, -1)
+      __saruby__.__ivinit(self, :__e, enums.freeze)
       self
     end
     def each(*args, &b)
       return self unless b
-      __saruby__.__ivget(self, :__enums).each_with_index { |e, i| __saruby__.__ivset(self, :__pos, i); e.each(*args, &b) }
+      __saruby__.__ivget(self, :__e).each_with_index { |e, i| __saruby__.__ivset(self, :__p, i); e.each(*args, &b) }
       self
     end
     def size
-      __saruby__.__ivget(self, :__enums).inject(0) do |t, e|
+      __saruby__.__ivget(self, :__e).inject(0) do |t, e|
         s = e.size
         return s if s.nil? || (s.is_a?(Float) && s.infinite?)
         t + s
@@ -396,21 +393,21 @@ class Enumerator
     end
     # enum_chain_rewind: the ones iterated so far, last first
     def rewind
-      i = __saruby__.__ivget(self, :__pos) || -1
-      while i >= 0 && i < __saruby__.__ivget(self, :__enums).size
-        e = __saruby__.__ivget(self, :__enums)[i]
-        e.rewind if e.respond_to?(:rewind)
-        __saruby__.__ivset(self, :__pos, (i -= 1))
+      i = __saruby__.__ivget(self, :__p) || -1
+      en = __saruby__.__ivget(self, :__e)
+      while i >= 0 && i < en.size
+        en[i].rewind if en[i].respond_to?(:rewind)
+        __saruby__.__ivset(self, :__p, (i -= 1))
       end
       self
     end
     def inspect
-      return "#<#{self.class}: uninitialized>" unless __saruby__.__ivget(self, :__enums)
+      en = __saruby__.__ivget(self, :__e) or return "#<#{self.class}: uninitialized>"
       seen = (__saruby__.__ivget(Enumerator::Chain, :__insp) || __saruby__.__ivset(Enumerator::Chain, :__insp, {}))
       return "#<#{self.class}: ...>" if seen.key?(object_id)
       seen[object_id] = true
       begin
-        "#<#{self.class}: #{__saruby__.__ivget(self, :__enums).inspect}>"
+        "#<#{self.class}: #{en.inspect}>"
       ensure
         seen.delete(object_id)
       end
