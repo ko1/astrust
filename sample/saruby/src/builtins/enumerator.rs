@@ -456,10 +456,10 @@ fn e_initialize(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     if blk.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
     let g = block_to_proc(c, blk)?;
-    let size = a.first().copied().unwrap_or(NIL);
-    if size != NIL && !size.is_fixnum() && !is_float(size) && !is_bignum(size) && !is_proc(size) && !respond_to(c, size, s::call, true) {
-        crate::builtins::numeric_methods::num_to_long(c, size)?;
-    }
+    let mut size = a.first().copied().unwrap_or(NIL);
+    // rb_to_int unless nil / callable / Infinity
+    let keep = size == NIL || is_integer(size) || is_proc(size) || (is_float(size) && c.num_to_f64(size) == Some(f64::INFINITY)) || respond_to(c, size, s::call, true);
+    if !keep { let n = crate::builtins::numeric_methods::num_to_long(c, size)?; size = c.int_from_i64(n); }
     if obj_flags(slf) & FL_FROZEN != 0 { return Err(raise_frozen(c, slf)); }
     let Some(en) = c.data_mut::<REnum>(slf) else { return type_err(c, "wrong argument type (expected Enumerator)") };
     en.gen = g; en.size = size; en.recv = NIL; en.mid = s::each; en.buf = NIL; en.pos = 0; en.lz = 0; en.procs = NIL; en.init = true;
