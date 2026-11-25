@@ -1869,9 +1869,10 @@ fn is_internal_frame(c: &Ctx, fr: &RawFrame) -> bool {
 
 /// The frame of a singleton define_method body itself (Data.define's `new`; not an accessor or a block inside it).
 fn is_define_method_body(c: &Ctx, f: &RawFrame) -> bool {
-    if f.kind == FK_CFUNC || f.me.is_null() { return false; }
-    let MKind::Bmethod(p) = (unsafe { &(*f.me).kind }) else { return false };
-    if !c.class(unsafe { (*f.me).owner }).is_singleton { return false; }
+    if f.kind == FK_CFUNC { return false; }
+    let Some(me) = c.me_ref(f.me) else { return false };
+    let MKind::Bmethod(p) = &me.kind else { return false };
+    if !c.class(me.owner).is_singleton { return false; }
     matches!(c.proc_data(*p).blk.kind, BlockKind::Iseq(is) if std::ptr::eq(is, f.iseq))
 }
 
@@ -1897,7 +1898,7 @@ fn collapse_internal<'a>(c: &Ctx, v: &'a [RawFrame]) -> std::borrow::Cow<'a, [Ra
             for (k, f) in run.iter().enumerate() {
                 let c_like = is_define_method_body(c, f);
                 let keep = c_like || (k == last && kind_of(f) == Some(IseqKind::Method))
-                    || (kind_of(f) == Some(IseqKind::Method) && !f.me.is_null() && unsafe { (*f.me).name } == s::initialize);
+                    || (kind_of(f) == Some(IseqKind::Method) && c.me_ref(f.me).is_some_and(|m| m.name == s::initialize));
                 if keep { out.push(RawFrame { file: caller.file, pos: caller.pos, at: caller.at, kind: if c_like { FK_CFUNC } else { f.kind }, ..*f }); }
             }
         }
