@@ -132,9 +132,14 @@ use crate::array::*;
 use crate::symbol::s;
 
 /// enum.c enum_yield: one packed element; from a multi-value #each a lambda block gets it as rb_yield_force_blockarg.
-#[inline]
+#[inline(always)]
 fn enum_yield(c: &mut Ctx, o: Blk, argc: usize, v: Value) -> RV {
-    if argc > 1 { crate::builtins::hash_methods::yield_forced(c, o, v) } else if argc == 1 { yield1(c, o, v) } else { yield_block(c, o, &[]) }
+    if argc == 1 { yield1(c, o, v) } else { enum_yield_n(c, o, argc, v) }
+}
+#[cold]
+#[inline(never)]
+fn enum_yield_n(c: &mut Ctx, o: Blk, argc: usize, v: Value) -> RV {
+    if argc > 1 { crate::builtins::hash_methods::yield_forced(c, o, v) } else { yield_block(c, o, &[]) }
 }
 #[inline]
 fn pack(c: &mut Ctx, args: &[Value]) -> Value { match args.len() { 0 => NIL, 1 => args[0], _ => c.ary_new_from(args) } }
@@ -291,15 +296,24 @@ fn en_include(c: &mut Ctx, slf: Value, a: &[Value], _blk: Blk) -> RV {
     }, d, Blk::NONE)?;
     Ok(Value::bool(hit))
 }
+#[cold]
+#[inline(never)]
+fn find_multi(c: &mut Ctx, d: Value, args: &[Value], o: Blk) -> RV {
+    let v = pack(c, args);
+    if enum_yield_n(c, o, args.len(), v)?.truthy() { c.ary_mut(d)[0] = v; return enum_stop(c, d); }
+    Ok(NIL)
+}
 fn en_find(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, crate::symbol::intern(b"find"), a, NIL); }
     if let Some(r) = crate::builtins::hash_methods::find_lambda(c, slf, a, blk) { return r; }
     let d = c.ary_new_from(&[NIL]);
     let hit = run_each_stop(c, slf, |c, d, args, _, o| {
-        let v = pack(c, args);
-        if enum_yield(c, o, args.len(), v)?.truthy() { c.ary_mut(d)[0] = v; return enum_stop(c, d); }
-        Ok(NIL)
+        if let &[v] = args {
+            if yield1(c, o, v)?.truthy() { c.ary_mut(d)[0] = v; return enum_stop(c, d); }
+            return Ok(NIL);
+        }
+        find_multi(c, d, args, o)
     }, d, blk)?;
     if hit { return Ok(c.ary_get(d, 0)); }
     match a.first() { Some(&ifnone) if ifnone != NIL => funcall(c, ifnone, s::call, &[], std::ptr::null()), _ => Ok(NIL) }
