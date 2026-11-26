@@ -72,7 +72,7 @@ pub fn num2dbl(c: &mut Ctx, v: Value) -> Result<f64, Esc> {
     if is_float(v) { return Ok(float_val(v)); }
     if is_bignum(v) { return Ok(c.big(v).to_f64()); }
     if v == NIL || v == TRUE || v == FALSE { return type_err(c, format!("no implicit conversion to float from {}", class_name_for_err(c, v))); }
-    if is_string(v) { return type_err(c, "no implicit conversion to float from string"); }
+    if is_string(v) { return type_err(c, "no implicit conversion of String into Float"); }   // master (4.0: "... to float from string")
     if respond_to(c, v, s::to_f, true) {
         let r = funcall(c, v, s::to_f, &[], std::ptr::null())?;
         if is_float(r) { return Ok(float_val(r)); }

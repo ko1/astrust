@@ -135,11 +135,18 @@ fn st_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
 }
 fn st_initialize(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
     let p = path_arg(c, a[0])?;
-    match std::fs::metadata(&p) { Ok(m) => { if let Some(st) = c.data_mut::<RStat>(s) { st.md = Some(m); } Ok(NIL) } Err(e) => Err(os_err_at(c, &e, "rb_file_s_stat - ", &p)) }
+    match std::fs::metadata(&p) { Ok(m) => { if let Some(st) = c.data_mut::<RStat>(s) { st.md = Some(m); } Ok(NIL) } Err(e) => Err(os_err_at(c, &e, "rb_stat_init - ", &p)) }
 }
 fn st_init_copy(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
-    if let Some(md) = c.data::<RStat>(a[0]).map(|o| o.md.clone()) { if let Some(st) = c.data_mut::<RStat>(s) { st.md = md; } }
+    let Some(md) = c.data::<RStat>(a[0]).map(|o| o.md.clone()) else { return type_err(c, "initialize_copy should take same class object") };
+    if let Some(st) = c.data_mut::<RStat>(s) { st.md = md; }
     Ok(s)
+}
+/// File::Stat#dup / #clone: an empty Stat of the same class; initialize_copy fills it.
+pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
+    if c.data::<RStat>(v).is_none() { return Ok(None); }
+    let k = real_class_of(c, v);
+    alloc_data(c, k)
 }
 pub fn alloc_data(c: &mut Ctx, klass: Value) -> Result<Option<Value>, Esc> {
     let st = c.vm().c_stat.get();

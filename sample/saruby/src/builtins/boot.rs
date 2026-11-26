@@ -224,6 +224,7 @@ pub fn dup_data(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     if let Some(r) = random::dup_data(c, v)? { return Ok(Some(r)); }
     if let Some(r) = enumerator::dup_data(c, v)? { return Ok(Some(r)); }
     if let Some(r) = io::dup_data(c, v)? { return Ok(Some(r)); }
+    if let Some(r) = file::dup_data(c, v)? { return Ok(Some(r)); }
     if let Some(r) = binding::dup_data(c, v)? { return Ok(Some(r)); }
     if let Some(r) = digest::dup_data(c, v)? { return Ok(Some(r)); }
     if let Some(r) = stringio::dup_data(c, v)? { return Ok(Some(r)); }

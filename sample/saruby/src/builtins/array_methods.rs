@@ -1351,7 +1351,7 @@ cfn!(a_sample, |c, slf, a, blk| {
     let kw = kw_arg(c, a);
     let pos = if kw.is_some() { &a[..a.len() - 1] } else { a };
     check_argc(c, pos, 0, 1)?;
-    let gen = match kw { Some(h) => hash_get_opt(c, h, sym_value("random"))?.unwrap_or(c.vm().c_random.get()), None => c.vm().c_random.get() };
+    let gen = random_kw_n(c, a, 1)?;
     let upto = |c: &mut Ctx, m: usize| -> Result<usize, Esc> { Ok(crate::builtins::random::ulong_limited(c, gen, m as u64 - 1)? as usize) };
     let mut len = c.ary_len(slf);
     if pos.is_empty() {
@@ -1424,10 +1424,11 @@ cfn!(a_sample, |c, slf, a, blk| {
     Ok(c.ary_from_vec(v))
 });
 /// The `random:` keyword (the Random class when absent); no positional arguments.
-fn random_kw(c: &mut Ctx, a: &[Value]) -> RV {
+fn random_kw(c: &mut Ctx, a: &[Value]) -> RV { random_kw_n(c, a, 0) }
+fn random_kw_n(c: &mut Ctx, a: &[Value], maxpos: usize) -> RV {
     let kw = kw_arg(c, a);
     let npos = a.len() - kw.is_some() as usize;
-    if npos != 0 { return argc_err(c, npos, 0, 0); }
+    if npos > maxpos { return argc_err(c, npos, 0, maxpos as i32); }
     let Some(h) = kw else { return Ok(c.vm().c_random.get()) };
     let key = Value::sym(intern(b"random"));
     let mut gen = c.vm().c_random.get();
@@ -1454,7 +1455,20 @@ cfn!(a_shuffle, |c, slf, a, blk| {
     }
     Ok(out)
 });
-cfn!(a_shuffle_b, |c, slf, a, blk| { let r = a_shuffle(c, slf, a, blk)?; *c.ary_modify(slf)? = c.ary(r).to_vec().into(); Ok(slf) });
+// in place as CRuby's: a #rand that changes the Array's length is an error
+cfn!(a_shuffle_b, |c, slf, a, blk| {
+    let gen = random_kw(c, a)?;
+    c.ary_modify(slf)?;
+    let len = c.ary_len(slf);
+    let mut i = len;
+    while i > 1 {
+        let j = crate::builtins::random::ulong_limited(c, gen, i as u64 - 1)? as usize;
+        if c.ary_len(slf) != len { return err(c, c.vm().c_runtime_error.get(), "modified during shuffle"); }
+        i -= 1;
+        c.ary_mut(slf).swap(i, j);
+    }
+    Ok(slf)
+});
 /// rb_ary_cycle_size.
 pub fn ary_cycle_size(c: &mut Ctx, ary: Value, args: Value) -> RV {
     let l = c.ary_len(ary);

@@ -1335,13 +1335,6 @@ fn unicode_normalize_common(c: &mut Ctx, slf: Value, a: &[Value], id: &[u8]) -> 
 cfn!(s_unicode_normalize, |c, slf, a, b_| unicode_normalize_common(c, slf, a, b"normalize"));
 cfn!(s_unicode_normalize_b, |c, slf, a, b_| { let r = unicode_normalize_common(c, slf, a, b"normalize")?; s_replace(c, slf, &[r], b_) });
 cfn!(s_unicode_normalized_p, |c, slf, a, b_| unicode_normalize_common(c, slf, a, b"normalized?"));
-fn unicode_check(c: &mut Ctx, slf: Value) -> Result<(), Esc> {
-    let e = c.str_enc(slf);
-    if !crate::builtins::encoding::is_unicode(e) && !(e == ENC_ASCII || is_ascii(c.str_bytes(slf)) && crate::builtins::encoding::ascii_compat(e)) {
-        return err(c, c.vm().c_compat_error.get(), format!("Unicode Normalization not appropriate for {}", crate::builtins::encoding::enc_name_msg(e)));
-    }
-    Ok(())
-}
 /// String#scrub with `rep` (nil: the default replacement); None if valid.
 pub fn scrub_bytes(c: &mut Ctx, s: Value, rep: Value) -> Result<Option<Vec<u8>>, Esc> { scrub_impl(c, s, &[rep], Blk::NONE) }
 /// scrub core: None if the string is valid.
@@ -1409,11 +1402,6 @@ cfn!(s_casecmp_p, |c, slf, a, b_| {
     let f = |c: &Ctx, v: Value| { let r = c.rstring(v); if r.enc != ENC_UTF8 && crate::builtins::encoding::is_unicode(r.enc) && crate::builtins::encoding::is_valid(r.enc, &r.b) { fold_case(&regexp::to_utf8_form(&r.b, r.enc), ENC_UTF8) } else { fold_case(&r.b, r.enc) } };
     Ok(Value::bool(f(c, slf) == f(c, o)))
 });
-/// [v[..ms], v[ms..me], v[me..]] as Strings of slf's encoding.
-fn split3(c: &mut Ctx, slf: Value, v: &[u8], ms: usize, me: usize) -> Value {
-    let (x, y, z) = (c.str_new_like(slf, v[..ms].to_vec()), c.str_new_like(slf, v[ms..me].to_vec()), c.str_new_like(slf, v[me..].to_vec()));
-    c.ary_from_vec(vec![x, y, z])
-}
 fn part3(c: &mut Ctx, slf: Value, ms: usize, me: usize, sep: Value) -> Value {
     let (x, z) = (c.str_sub(slf, 0..ms), c.str_sub(slf, me..c.str_len(slf)));
     let y = if sep == NIL { c.str_sub(slf, ms..me) } else { sep };

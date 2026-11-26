@@ -237,16 +237,11 @@ pub fn ulong_limited(c: &mut Ctx, ob: Value, limit: u64) -> Result<u64, Esc> {
     if limit == 0 { return Ok(0); }
     let lim = c.int_from_i128(limit as i128 + 1);
     let v = funcall_public(c, ob, intern(b"rand"), &[lim], std::ptr::null())?;
+    if is_bignum(v) && c.big(v).to_i64().is_none() { return err(c, c.vm().c_range_error.get(), "bignum too big to convert into 'unsigned long'"); }
     let r = crate::builtins::numeric_methods::num_to_long(c, v)?;
     if r < 0 { return err(c, c.vm().c_range_error.get(), format!("random number too small {}", r)); }
     if r as u64 > limit { return err(c, c.vm().c_range_error.get(), format!("random number too big {}", r)); }
     Ok(r as u64)
-}
-/// [0, n) for the default generator (Array#shuffle / #sample).
-pub fn rand_below(c: &mut Ctx, n: u64) -> u64 {
-    if n == 0 { return 0; }
-    let d = default_rnd(c);
-    limited_rand_mt(&mut rr(c, d).mt, n - 1)
 }
 
 fn rand_int(c: &mut Ctx, ob: Value, rnd: Option<Value>, vmax: Value, restrictive: bool) -> Result<Option<Value>, Esc> {
@@ -410,8 +405,6 @@ fn k_srand(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     rr(c, d).seed = seed;
     Ok(old)
 }
-/// srand with a plain integer (internal use)
-pub fn seed(c: &mut Ctx, s: u64) { let d = default_rnd(c); let v = c.int_from_i128(s as i128); rand_init(c, d, v); rr(c, d).seed = v; }
 
 fn bytes_of(c: &mut Ctx, r: Value, n: Value) -> RV {
     let n = crate::builtins::numeric_methods::num_to_long(c, n)?;

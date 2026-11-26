@@ -84,7 +84,7 @@ pub fn range_each(c: &mut Ctx, slf: Value, mut f: impl FnMut(&mut Ctx, Value) ->
         if bb.len() == 1 && eb.len() == 1 && bb[0] < 0x80 && eb[0] < 0x80 {
             let (lo, hi) = (bb[0] as i32, if excl { eb[0] as i32 - 1 } else { eb[0] as i32 });
             let mut ch = lo;
-            while ch <= hi { let s1 = c.str_new(&[ch as u8]); if !f(c, s1)? { break; } ch += 1; }
+            while ch <= hi { let s1 = c.str_new_like(b, vec![ch as u8]); if !f(c, s1)? { break; } ch += 1; }
             return Ok(());
         }
         let blk_data = c.ary_new();
