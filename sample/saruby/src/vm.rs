@@ -621,7 +621,7 @@ pub struct Vm {
     pub pinned: RefCell<Vec<Value>>,
     /// Encoding objects by encoding id (kept alive by `pinned`).
     pub enc_objs: RefCell<Vec<Value>>,
-    pub recursive_guard: RefCell<Vec<(u64, Sym)>>,
+    pub recursive_guard: RefCell<Vec<(Value, Value, Sym)>>,   // (v, UNDEF) or a pair; visited as roots
     /// A Vec whose Values become an Array: a root while the Array is allocated (array.rs ary_from_vec).
     pub pending_vals: RefCell<Vec<Value>>,
     pub argv: Cell<Value>,
@@ -3284,6 +3284,7 @@ pub fn visit_roots<V: RootVisitor<Saruby>>(m: &mut V, cur: &mut Ctx) {
     for v in vm.symproc_cache.borrow_mut().values_mut() { m.visit(v); }
     for v in vm.sym_names.borrow_mut().values_mut() { m.visit(v); }
     for v in vm.pending_vals.borrow_mut().iter_mut() { m.visit(v); }
+    for (x, y, _) in vm.recursive_guard.borrow_mut().iter_mut() { m.visit(x); m.visit(y); }
     crate::gc::visit_tls_roots(m);
     for &cr in vm.crefs.borrow().iter() { if let Some(cr) = cur.cref_ref(cr) { for f in [&cr.klass, &cr.refinements, &cr.def_target] { let mut v = f.get(); m.visit(&mut v); f.set(v); } } }
     // every builtin class field (nil until boot fills it in)

@@ -19,7 +19,8 @@ const EMPTY: u32 = u32::MAX;
 fn imm_key(k: Value) -> bool { k.is_fixnum() || (k.is_special() && k != UNDEF) }
 
 fn mix(h: u64) -> u64 { crate::astrust::hash_u64(h) }
-fn identity_hash(k: Value) -> u64 { mix(k.raw()) }
+// an object's from its id, which a move keeps (CRuby's rb_objid_hash)
+fn identity_hash(k: Value) -> u64 { if k.is_heap() { mix(crate::vm::object_id(k)) } else { mix(k.raw()) } }
 
 /// What one scan of the table under a shared borrow ends with.
 enum Probe { Found(usize), Miss, Ask(usize, Value) }
@@ -215,7 +216,7 @@ fn hash_of_obj(c: &mut Ctx, k: Value) -> Result<Hv, Esc> {
             matches!(me.kind, MKind::Cfunc(f, _) if f as *const () as usize == crate::builtins::array_methods::a_hash as *const () as usize)),
         None => (false, false),
     };
-    if kernel { return Ok(Hv::Raw(mix(k.raw()))); }
+    if kernel { return Ok(Hv::Raw(identity_hash(k))); }
     if is_array(k) && array { return Ok(Hv::Raw(ary_hash(c, k)?)); }
     let r = funcall(c, k, s::hash, &[], std::ptr::null())?;
     if r.is_fixnum() { return Ok(Hv::Ruby(r.as_fix() as u64)); }
