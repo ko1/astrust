@@ -225,25 +225,35 @@ impl Dumper {
         if real != base { self.out.push(b'C'); let (p, e) = class2path(c, real)?; self.unique(c, &p, e)?; }
         Ok(())
     }
-    /// has_ivars: (count incl. the encoding, the ivars).
-    fn has_ivars(&mut self, c: &mut Ctx, v: Value, en: EncName, generic: bool) -> (usize, Vec<(Sym, Value)>) {
-        let mut ivs = if generic { dump_ivars(c, v) } else { vec![] };
-        for &(_, x) in &ivs { if x.is_heap() { c.ary_push(self.keep, x); } }
-        let mut n = (en != EncName::None) as usize + ivs.len();
-        if generic && is_hash(v) && obj_flags(v) & crate::object::FL_KWHASH != 0 { n += 1; ivs.insert(0, (s::ruby2_keywords_flag, UNDEF)); }
-        (n, ivs)
+    /// The ivars' values pushed to `keep` (read back by index: dumping calls out); their names and first index.
+    fn keep_ivars(&mut self, c: &mut Ctx, ivs: Vec<(Sym, Value)>) -> (Vec<Sym>, usize) {
+        let base = c.ary_len(self.keep);
+        for &(_, x) in &ivs { c.ary_push(self.keep, x); }
+        (ivs.into_iter().map(|(n, _)| n).collect(), base)
     }
-    fn w_ivar(&mut self, c: &mut Ctx, num: usize, en: EncName, ivs: &[(Sym, Value)], limit: i64) -> Result<(), Esc> {
+    /// has_ivars: (count incl. the encoding, the ivar names, the index of their values in `keep`).
+    fn has_ivars(&mut self, c: &mut Ctx, v: Value, en: EncName, generic: bool) -> (usize, Vec<Sym>, usize) {
+        let ivs = if generic { dump_ivars(c, v) } else { vec![] };
+        let (mut names, base) = self.keep_ivars(c, ivs);
+        let mut n = (en != EncName::None) as usize + names.len();
+        if generic && is_hash(v) && obj_flags(v) & crate::object::FL_KWHASH != 0 { n += 1; names.insert(0, s::ruby2_keywords_flag); }
+        (n, names, base)
+    }
+    fn w_ivar(&mut self, c: &mut Ctx, num: usize, en: EncName, names: &[Sym], base: usize, limit: i64) -> Result<(), Esc> {
         w_long(&mut self.out, num as i64);
         self.w_encoding(c, en, limit)?;
-        for &(n, x) in ivs {
+        let mut j = base;
+        for &n in names {
             if n == s::ruby2_keywords_flag {
                 self.sym(c, intern(b"K"))?;
                 let l = if limit >= 0 { limit + 1 } else { limit };
                 self.obj(c, TRUE, l)?;
                 continue;
             }
-            self.sym(c, n)?; self.obj(c, x, limit)?;
+            self.sym(c, n)?;
+            let x = c.ary_get(self.keep, j);
+            j += 1;
+            self.obj(c, x, limit)?;
         }
         Ok(())
     }
@@ -286,7 +296,7 @@ impl Dumper {
             w_bytes(&mut self.out, c.str_bytes(d));
             if iv.0 != 0 {
                 self.userdefs.push(v.raw());
-                let r = self.w_ivar(c, iv.0, en, &iv.1, limit);
+                let r = self.w_ivar(c, iv.0, en, &iv.1, iv.2, limit);
                 self.userdefs.retain(|&x| x != v.raw());
                 r?;
             }
@@ -304,7 +314,7 @@ impl Dumper {
             Body::Object(_) => K::Obj, _ => if crate::regexp::is_regexp(c, v) { K::Re } else { K::Data },
         };
         let kind = if matches!(kind, K::Obj) && is_struct_class(c, real_class_of(c, v)) { K::Struct } else if matches!(kind, K::Obj) && is_dir(c, v) { K::Data } else { kind };
-        let (hasiv, ivs) = match kind { K::Obj | K::Class(..) | K::Range(..) => (0, vec![]), _ => self.has_ivars(c, v, en, true) };
+        let (hasiv, ivs, ivb) = match kind { K::Obj | K::Class(..) | K::Range(..) => (0, vec![], 0), _ => self.has_ivars(c, v, en, true) };
         if hasiv != 0 { self.out.push(b'I'); }
         match kind {
             K::Class(singleton, m) => {
@@ -355,9 +365,9 @@ impl Dumper {
                 // range_dumper: an Object with the ivars, then excl / begin / end
                 self.w_class(c, b'o', v, true)?;
                 let ivs = dump_ivars(c, v);
-                for &(_, x) in &ivs { if x.is_heap() { c.ary_push(self.keep, x); } }
-                w_long(&mut self.out, ivs.len() as i64 + 3);
-                for &(n, x) in &ivs { self.sym(c, n)?; self.obj(c, x, limit)?; }
+                let (names, base) = self.keep_ivars(c, ivs);
+                w_long(&mut self.out, names.len() as i64 + 3);
+                for (i, &n) in names.iter().enumerate() { self.sym(c, n)?; let x = c.ary_get(self.keep, base + i); self.obj(c, x, limit)?; }
                 self.sym(c, intern(b"excl"))?; self.obj(c, Value::bool(excl), limit)?;
                 self.sym(c, intern(b"begin"))?; self.obj(c, b, limit)?;
                 self.sym(c, intern(b"end"))?; self.obj(c, e, limit)?;
@@ -380,9 +390,9 @@ impl Dumper {
             K::Obj => {
                 self.w_class(c, b'o', v, true)?;
                 let ivs = dump_ivars(c, v);
-                for &(_, x) in &ivs { if x.is_heap() { c.ary_push(self.keep, x); } }
-                w_long(&mut self.out, ivs.len() as i64);
-                for &(n, x) in &ivs { self.sym(c, n)?; self.obj(c, x, limit)?; }
+                let (names, base) = self.keep_ivars(c, ivs);
+                w_long(&mut self.out, names.len() as i64);
+                for (i, &n) in names.iter().enumerate() { self.sym(c, n)?; let x = c.ary_get(self.keep, base + i); self.obj(c, x, limit)?; }
             }
             K::Data => {
                 let k = real_class_of(c, v);
@@ -403,7 +413,7 @@ impl Dumper {
                 }
             }
         }
-        if hasiv != 0 { self.w_ivar(c, hasiv, en, &ivs, limit)?; }
+        if hasiv != 0 { self.w_ivar(c, hasiv, en, &ivs, ivb, limit)?; }
         Ok(())
     }
 }

@@ -2192,8 +2192,10 @@ fn io_s_binread(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { io_s_read
 /// (path, sep/limit args) plus the chomp: option as a Hash, for readlines / foreach.
 fn line_opts(c: &mut Ctx, pos: &[Value], opts: Option<Value>) -> Result<Vec<Value>, Esc> {
     let chomp = match opts { Some(h) => crate::hash::hash_get_opt(c, h, sym_value("chomp"))?, None => None };
+    // the args copied after hash_new (an allocation)
+    let h = match chomp { Some(v) => { let h = c.hash_new(); crate::hash::hash_set(c, h, sym_value("chomp"), v)?; Some(h) } None => None };
     let mut la: Vec<Value> = pos[1..].to_vec();
-    if let Some(v) = chomp { let h = c.hash_new(); crate::hash::hash_set(c, h, sym_value("chomp"), v)?; la.push(h); }
+    la.extend(h);
     Ok(la)
 }
 fn io_s_readlines(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
@@ -2201,8 +2203,9 @@ fn io_s_readlines(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if pos.is_empty() { return argc_err(c, 0, 1, 3); }
     let om = read_mode(c, opts, false)?;
     let la = line_opts(c, pos, opts)?;
-    let keep = c.ary_new_from(&la);   // the chomp Hash lives only in `la` while the file is opened
-    let r = with_file(c, slf, pos[0], om, |c, io| io_readlines(c, io, &la, Blk::NONE));
+    // `keep` roots the chomp Hash while the file is opened; the args are re-read from it (opening allocates)
+    let keep = c.ary_new_from(&la);
+    let r = with_file(c, slf, pos[0], om, |c, io| { let la = c.ary(keep).to_vec(); io_readlines(c, io, &la, Blk::NONE) });
     std::hint::black_box(keep);
     r
 }
@@ -2213,7 +2216,7 @@ fn io_s_foreach(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
     let om = read_mode(c, opts, false)?;
     let la = line_opts(c, pos, opts)?;
     let keep = c.ary_new_from(&la);
-    let r = with_file(c, slf, pos[0], om, |c, io| each_line_impl(c, io, &la, blk, true));
+    let r = with_file(c, slf, pos[0], om, |c, io| { let la = c.ary(keep).to_vec(); each_line_impl(c, io, &la, blk, true) });
     std::hint::black_box(keep);
     r?;
     Ok(NIL)
