@@ -54,6 +54,13 @@ user 2026-11-25「full moving 頑張ってほしい」「クラスなどを non-
 - [ ] Ctx.sp をレジスタに: 値スタックの先頭の正本が `Ctx.sp`（メモリ上の 1 つ）なので、`&mut Ctx` を渡す呼び出しのたびに書き戻し / 読み直しが入る（koruby_precise は sp を引数で引き回し、`c->sp_top` は korb_alloc だけが書く）。まず呼び出し経路（メソッド呼び出し・yield・stage）の Ctx.sp の load/store を機械語と perf で数える → 一部経路で sp を値として引き回す試作。正本が 2 つになる危険は型で縛る（確保関数だけが sp を受け取って Ctx に書ける、他は書けない＝「sp_top を書くのは korb_alloc だけ」をコンパイラで守らせる）。phase 1e と合わせて設計（user 2026-11-26「ctx の参照がふえちゃうとレジスタにのらないんじゃないの？」）
 - [ ] phase 2: `copy`（Cheney、クラス・リテラルは non-moving 空間、identity hash は object_id から）、PURGE
 - [ ] phase 3: `copy_gen`（write barrier、`Member` 型で store 漏れを compile error に）
+- [ ] phase 2 / 3 の方針を koruby_precise に揃える（user 2026-11-26「細かい拡張戦略とか、Astro Koruby に揃えられると比較しやすいね」）。値は ~/ruby/astro/runtime/precise_gc/gc_copy.c と gc_copy_gen.c から取る。
+  - copy: `GC_THRESHOLD_MIN` 16 MB、`GC_THRESHOLD_FACTOR` 2、large object は 4096 バイトから。
+  - copy_gen: `PROMOTE_AGE` 3、適応年齢（生存率 0.6 / 0.4）、`MAJOR_THRESHOLD_MIN` 16 MB × 2、young の大きさ。
+  - 環境変数（ASTRO_GC_THRESHOLD_MIN / ARO_GC_YOUNG_INIT_MB / ARO_GC_MAJOR_EVERY ほか）も同じ名前と意味で受ける。
+  - 今の marksweep の方針（ヒープを生存量の 3 倍以上、1/4 割り当てで collect）は koruby の mark とも違う。合わせるかは比較の要否を見て決める。
+  - 比較は GC 回数と GC 時間をベンチ毎に並べる（平均は出さない）。
+- [ ] moving で壊れる番地キーの表: `Ractor.make_shareable` / `shareable` の `seen: HashSet<u64>`（ractor.rs:153 / 173）は `#freeze` で GC が走り番地が変わると重複・取りこぼしになる。phase 2 の前に、番地を表のキーにしている所（再帰検査 rec_enter、Marshal の object 表、identity Hash など）を洗い、object_id か GC が更新する表にする
 
 ## 2. unsafe
 
