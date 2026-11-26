@@ -980,7 +980,8 @@ fn block_from_value(c: &mut Ctx, blkv: Value, holder: &mut Block) -> Result<*con
     let refined = if crate::vm::refinements_on() { funcall_refined(c, c.cur_frame().map_or(std::ptr::null(), |f| f.cref()), blkv, s::to_proc, &[], std::ptr::null(), CF_FCALL) } else { None };
     if refined.is_some() || respond_to(c, blkv, s::to_proc, true) {
         let p = match refined { Some(r) => r?, None => funcall(c, blkv, s::to_proc, &[], std::ptr::null())? };
-        if is_proc(p) { return Ok(proc_block(c, p)); }
+        // the block points into p, referenced by nothing else: the caller keeps `holder` across the call
+        if is_proc(p) { holder.proc_val = p; return Ok(proc_block(c, p)); }
         let cls = class_path(c, real_class_of(c, blkv));
         return type_err(c, format!("can't convert {} to Proc ({}#to_proc gives {})", cls, cls, class_path(c, real_class_of(c, p))));
     }
@@ -1080,7 +1081,7 @@ pub fn srb_super(c: &mut Ctx, base: Stk, tmp: Value, kw: Value, blkv: Value, ci:
         invoke(c, sm, slf, base, total as u32, blk, fl)
     };
     c.set_sp(base, 0);
-    std::hint::black_box((&tmp, &kw, &blkv));
+    std::hint::black_box((&tmp, &kw, &blkv, &holder));
     match r {
         Err(e) if ci.blk.is_some() && c.esc == EscKind::Break && c.esc_tag == unsafe { (*blk).tag } => { let _ = e; c.esc = EscKind::None; Ok(c.esc_val) }
         r => r,
@@ -1546,29 +1547,29 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
             }
             err(c, vm().c_no_method_error.get(), "super called outside of method")
         }
-        SP_PM_MSG => {
-            // elements stay in `v` (GC-visible) while inspect allocates
-            let av = c.ary(v).to_vec();
-            let a = |i: usize| av[i];
-            let insp = crate::builtins::kernel::inspect_str;
-            let msg = match a(0).as_fix() {
-                PM_EQQ => format!("{} === {} does not return true", insp(c, a(1))?, insp(c, a(2))?),
+        SP_PM_MSG => c.park(1, |c, p| {
+            // v parked: its elements are read again after each inspect (a GC point)
+            p.set(0, v);
+            let a = |c: &Ctx, i: usize| c.ary_get(p.get(0), i);
+            let insp = |c: &mut Ctx, i: usize| { let x = a(c, i); crate::gc::conservative(c, |c| crate::builtins::kernel::inspect_str(c, x)) };
+            let msg = match a(c, 0).as_fix() {
+                PM_EQQ => { let l = insp(c, 1)?; format!("{} === {} does not return true", l, insp(c, 2)?) }
                 PM_GUARD => "guard clause does not return true".to_string(),
-                PM_ARY if a(2) == NIL => format!("{} does not respond to #deconstruct", insp(c, a(1))?),
-                PM_ARY => format!("{} length mismatch (given {}, expected {}{})", insp(c, a(2))?, c.ary(a(2)).len(), a(3).as_fix(), if a(4) == TRUE { "" } else { "+" }),
-                PM_DECON => format!("{} does not respond to #deconstruct", insp(c, a(1))?),
-                PM_FIND => format!("{} does not match to find pattern", insp(c, a(1))?),
-                PM_DECONK => format!("{} does not respond to #deconstruct_keys", insp(c, a(1))?),
+                PM_ARY if a(c, 2) == NIL => format!("{} does not respond to #deconstruct", insp(c, 1)?),
+                PM_ARY => { let s = insp(c, 2)?; format!("{} length mismatch (given {}, expected {}{})", s, c.ary(a(c, 2)).len(), a(c, 3).as_fix(), if a(c, 4) == TRUE { "" } else { "+" }) }
+                PM_DECON => format!("{} does not respond to #deconstruct", insp(c, 1)?),
+                PM_FIND => format!("{} does not match to find pattern", insp(c, 1)?),
+                PM_DECONK => format!("{} does not respond to #deconstruct_keys", insp(c, 1)?),
                 PM_KEY => {
-                    let t = format!("key not found: {}", insp(c, a(2))?);
+                    let t = format!("key not found: {}", insp(c, 2)?);
                     let m = c.str_new(t.as_bytes());
-                    return Ok(c.ary_new_from(&[m, a(1), a(2)]));
+                    return Ok(c.ary_new_from(&[m, a(c, 1), a(c, 2)]));
                 }
-                PM_REST => format!("rest of {} is not empty", insp(c, a(1))?),
-                _ => format!("{} is not empty", insp(c, a(1))?),
+                PM_REST => format!("rest of {} is not empty", insp(c, 1)?),
+                _ => format!("{} is not empty", insp(c, 1)?),
             };
             Ok(c.str_new(msg.as_bytes()))
-        }
+        }),
         SP_NAMED_CAPTURE => {
             let m = crate::builtins::svar::last_match(c);
             if m == NIL { return Ok(NIL); }

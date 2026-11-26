@@ -80,29 +80,41 @@ pub fn cmp_result(c: &mut Ctx, r: Value, a: Value, b: Value) -> Result<i64, Esc>
 /// glibc msort (CRuby sorts through qsort_r): top-down merge, left wins unless cmp(l, r) > 0,
 /// so inconsistent comparators see the same call sequence as CRuby.
 pub fn sort_values(c: &mut Ctx, v: &mut Vec<Value>, cmp: &mut dyn FnMut(&mut Ctx, Value, Value) -> Result<std::cmp::Ordering, Esc>) -> Result<(), Esc> {
-    fn msort(c: &mut Ctx, v: &mut [Value], tmp: &mut [Value], cmp: &mut dyn FnMut(&mut Ctx, Value, Value) -> Result<std::cmp::Ordering, Esc>) -> Result<(), Esc> {
-        let n = v.len();
+    type Cmp<'a> = &'a mut dyn FnMut(&mut Ctx, Value, Value) -> Result<std::cmp::Ordering, Esc>;
+    // elements in buf[lo..hi), scratch at buf[t + lo..]; buf is re-read after every comparison (a GC point)
+    fn msort(c: &mut Ctx, p: &crate::gc::Park<'_>, lo: usize, hi: usize, t: usize, cmp: Cmp<'_>) -> Result<(), Esc> {
+        let n = hi - lo;
         if n <= 1 { return Ok(()); }
-        let n1 = n / 2;
-        {
-            let (l, r) = v.split_at_mut(n1);
-            let (tl, tr) = tmp.split_at_mut(n1);
-            msort(c, l, tl, cmp)?;
-            msort(c, r, tr, cmp)?;
-        }
-        let (mut i, mut j, mut k) = (0, n1, 0);
-        while i < n1 && j < n {
-            if cmp(c, v[i], v[j])? != std::cmp::Ordering::Greater { tmp[k] = v[i]; i += 1; } else { tmp[k] = v[j]; j += 1; }
+        let mid = lo + n / 2;
+        msort(c, p, lo, mid, t, cmp)?;
+        msort(c, p, mid, hi, t, cmp)?;
+        let (mut i, mut j, mut k) = (lo, mid, t + lo);
+        while i < mid && j < hi {
+            let (x, y) = { let b = c.ary(p.get(0)); (b[i], b[j]) };
+            let le = crate::gc::conservative(c, |c| cmp(c, x, y))? != std::cmp::Ordering::Greater;
+            let b = c.ary_mut(p.get(0));
+            if le { b[k] = b[i]; i += 1; } else { b[k] = b[j]; j += 1; }
             k += 1;
         }
-        while i < n1 { tmp[k] = v[i]; i += 1; k += 1; }
+        let b = c.ary_mut(p.get(0));
+        while i < mid { b[k] = b[i]; i += 1; k += 1; }
         // the rest of the right run is already in place
-        v[..k].copy_from_slice(&tmp[..k]);
+        b.copy_within(t + lo..k, lo);
         Ok(())
     }
-    if v.len() < 2 { return Ok(()); }
-    let mut tmp = v.clone();
-    msort(c, v, &mut tmp, cmp)
+    let n = v.len();
+    if n < 2 { return Ok(()); }
+    // the values sit in a parked Array, not in `v`: a Vec is no root (docs/gc_moving.md 2.4)
+    c.park(1, |c, p| {
+        let mut buf = Vec::with_capacity(2 * n);
+        buf.extend_from_slice(v);
+        buf.extend_from_slice(v);
+        let a = c.ary_from_vec(buf);
+        p.set(0, a);
+        crate::gc::precise(c, |c| msort(c, &p, 0, n, n, cmp))?;
+        v.copy_from_slice(&c.ary(p.get(0))[..n]);
+        Ok(())
+    })
 }
 
 pub fn sort_array(c: &mut Ctx, v: &mut Vec<Value>, blk: Blk) -> Result<(), Esc> {
@@ -531,8 +543,15 @@ fn uniq_ary(c: &mut Ctx, slf: Value, blk: Blk) -> RV {
 }
 cfn!(a_uniq, |c, slf, a, blk| uniq_ary(c, slf, blk));
 cfn!(a_uniq_b, |c, slf, a, blk| { c.ary_modify(slf)?; let r = uniq_ary(c, slf, blk)?; let v = c.ary(r).to_vec(); let ch = v.len() != c.ary_len(slf); *c.ary_mut(slf) = v.into(); Ok(if ch { slf } else { NIL }) });
-cfn!(a_sort, |c, slf, a, blk| { let mut v = c.ary(slf).to_vec(); let keep = c.ary_from_vec(v.clone()); sort_array(c, &mut v, blk)?; std::hint::black_box(keep); Ok(c.ary_from_vec(v)) });
-cfn!(a_sort_b, |c, slf, a, blk| { c.ary_modify(slf)?; let mut v = c.ary(slf).to_vec(); let keep = c.ary_new_from(&v); sort_array(c, &mut v, blk)?; std::hint::black_box(keep); *c.ary_modify(slf)? = v.into(); Ok(slf) });
+// sort_values roots the values while comparators run; `v` is written back after the last GC point
+cfn!(a_sort, |c, slf, a, blk| { let mut v = c.ary(slf).to_vec(); sort_array(c, &mut v, blk)?; Ok(c.ary_from_vec(v)) });
+cfn!(a_sort_b, |c, slf, a, blk| c.precise_cfunc(slf, &[], |c, p| {
+    c.ary_modify(p.get(0))?;
+    let mut v = c.ary(p.get(0)).to_vec();
+    sort_array(c, &mut v, blk)?;
+    *c.ary_modify(p.get(0))? = v.into();
+    Ok(p.get(0))
+}));
 cfn!(a_sort_by_b, |c, slf, a, blk| enum_or(c, slf, "sort_by!", a, blk, |c| {
     c.ary_modify(slf)?;
     let r = funcall(c, slf, s::sort_by, &[], blk)?;
@@ -1110,20 +1129,34 @@ cfn!(a_zip, |c, slf, a, blk| {
     std::hint::black_box(keep);
     Ok(if blk.is_null() { out } else { NIL })
 });
-cfn!(a_product, |c, slf, a, blk| {
-    let mut lists = vec![slf];
-    for &x in a { lists.push(expect_array(c, x)?); }
-    let keep = c.ary_from_vec(lists.clone());
+// Precise: p = self and the arguments; q0 = the lists (copies when a block runs, as rb_ary_product's
+// shared copies), q1 = the result.  Rows are made one at a time by an index odometer, last list fastest.
+cfn!(a_product, |c, slf, a, blk| c.precise_cfunc(slf, a, |c, p| c.park(2, |c, q| {
+    let n = 1 + a.len();
+    for i in 1..n { let l = crate::gc::conservative(c, |c| expect_array(c, p.get(i)))?; p.set(i, l); }
     let mut total: i64 = 1;
-    for l in &lists { total = match total.checked_mul(c.ary_len(*l) as i64) { Some(t) => t, None => return err(c, c.vm().c_range_error.get(), "too big to product length") }; }
+    for i in 0..n { total = match total.checked_mul(c.ary_len(p.get(i)) as i64) { Some(t) => t, None => return err(c, c.vm().c_range_error.get(), "too big to product length") }; }
     if blk.is_null() { alloc_check(c, total)?; }
-    let mut res: Vec<Vec<Value>> = vec![vec![]];
-    for l in &lists { let mut nr = vec![]; for r in &res { for &x in c.ary(*l).iter() { let mut t = r.clone(); t.push(x); nr.push(t); } } res = nr; }
-    let out = c.ary_new();
-    for r in res { let row = c.ary_from_vec(r); if blk.is_null() { c.ary_push(out, row); } else { yield1(c, blk, row)?; } }
-    std::hint::black_box(keep);
-    Ok(if blk.is_null() { out } else { slf })
-});
+    let lists = c.ary_new_capa(n);
+    q.set(0, lists);
+    for i in 0..n {
+        let l = if blk.is_null() { p.get(i) } else { let v = c.ary(p.get(i)).to_vec(); c.ary_from_vec(v) };
+        c.ary_push(q.get(0), l);
+    }
+    if blk.is_null() { let out = c.ary_new(); q.set(1, out); }
+    let mut idx = vec![0usize; n];
+    for _ in 0..total {
+        let row: Vec<Value> = (0..n).map(|i| c.ary_get(c.ary_get(q.get(0), i), idx[i])).collect();
+        let r = c.ary_from_vec(row);
+        if blk.is_null() { c.ary_push(q.get(1), r); } else { crate::gc::conservative(c, |c| yield1(c, blk, r))?; }
+        for i in (0..n).rev() {
+            idx[i] += 1;
+            if idx[i] < c.ary_len(c.ary_get(q.get(0), i)) { break; }
+            idx[i] = 0;
+        }
+    }
+    Ok(if blk.is_null() { q.get(1) } else { p.get(0) })
+})));
 #[derive(Clone, Copy, PartialEq)]
 enum Gen { Comb, Perm, RComb, RPerm }
 /// Next index list in order (idx starts as the first one); false at the end.
@@ -1225,17 +1258,21 @@ cfn!(a_combination, |c, slf, a, blk| emit_gen(c, slf, Gen::Comb, a, blk, "combin
 cfn!(a_permutation, |c, slf, a, blk| emit_gen(c, slf, Gen::Perm, a, blk, "permutation"));
 cfn!(a_repeated_combination, |c, slf, a, blk| emit_gen(c, slf, Gen::RComb, a, blk, "repeated_combination"));
 cfn!(a_repeated_permutation, |c, slf, a, blk| emit_gen(c, slf, Gen::RPerm, a, blk, "repeated_permutation"));
-cfn!(a_transpose, |c, slf, a, blk| {
-    let n = c.ary_len(slf);
+// Precise: p0 self; q0 the rows (#to_ary results may be new Arrays: a Vec of them was no root), q1 the result
+cfn!(a_transpose, |c, slf, a, blk| c.precise_cfunc(slf, &[], |c, p| c.park(2, |c, q| {
+    let n = c.ary_len(p.get(0));
     if n == 0 { return Ok(c.ary_new()); }
-    let mut rows = vec![];
-    for i in 0..n { rows.push(expect_array(c, c.ary_get(slf, i))?); }
-    let w = c.ary_len(rows[0]);
-    for (i, r) in rows.iter().enumerate() { if c.ary_len(*r) != w { return err(c, c.vm().c_index_error.get(), format!("element size differs ({} should be {})", c.ary_len(*r), w)); } let _ = i; }
+    let rows = c.ary_new_capa(n);
+    q.set(0, rows);
+    for i in 0..n { let x = c.ary_get(p.get(0), i); let r = crate::gc::conservative(c, |c| expect_array(c, x))?; c.ary_push(q.get(0), r); }
+    let row = |c: &Ctx, i: usize| c.ary_get(q.get(0), i);
+    let w = c.ary_len(row(c, 0));
+    for i in 0..n { let l = c.ary_len(row(c, i)); if l != w { return err(c, c.vm().c_index_error.get(), format!("element size differs ({} should be {})", l, w)); } }
     let out = c.ary_new();
-    for j in 0..w { let col = c.ary_from_vec(rows.iter().map(|r| c.ary_get(*r, j)).collect()); c.ary_push(out, col); }
-    Ok(out)
-});
+    q.set(1, out);
+    for j in 0..w { let col: Vec<Value> = (0..n).map(|i| c.ary_get(row(c, i), j)).collect(); let col = c.ary_from_vec(col); c.ary_push(q.get(1), col); }
+    Ok(q.get(1))
+})));
 cfn!(a_assoc, |c, slf, a, blk| { let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { if let Some(x) = check_array(c, x)? { if c.ary_len(x) > 0 && rb_eq(c, c.ary_get(x, 0), a[0])? { return Ok(x); } } i += 1; } Ok(NIL) });
 cfn!(a_rassoc, |c, slf, a, blk| { let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { if let Some(x) = check_array(c, x)? { if c.ary_len(x) > 1 && rb_eq(c, c.ary_get(x, 1), a[0])? { return Ok(x); } } i += 1; } Ok(NIL) });
 cfn!(a_values_at, |c, slf, a, blk| {
@@ -1497,15 +1534,20 @@ cfn!(a_inject, |c, slf, a, blk| {
 cfn!(a_sort_by, |c, slf, a, blk| enum_or(c, slf, "sort_by", a, blk, |c| sort_by_body(c, slf, blk)));
 /// The elements of slf ordered by the block's keys (sort_by_cmp: OPTIMIZED_CMP on the keys).
 pub fn sort_by_body(c: &mut Ctx, slf: Value, blk: Blk) -> RV {
-    let n = c.ary_len(slf);
-    let keys = c.ary_new_capa(n);
-    let mut i = 0;
-    while let Some(&x) = c.ary(slf).get(i) { let k = yield1(c, blk, x)?; c.ary_push(keys, k); i += 1; }
-    let mut idx: Vec<Value> = (0..c.ary_len(keys).min(c.ary_len(slf))).map(|i| Value::fix(i as i64)).collect();
-    let src = c.ary_from_vec(c.ary(slf).to_vec());
-    if !crate::rt::redef(crate::rt::R_INT_CMP) && c.ary(keys).iter().all(|k| k.is_fixnum()) { let ks = c.ary(keys); idx.sort_by_key(|i| ks[i.as_fix() as usize].as_fix()); }
-    else { sort_values(c, &mut idx, &mut |c, x, y| rb_cmp(c, c.ary_get(keys, x.as_fix() as usize), c.ary_get(keys, y.as_fix() as usize)))?; }
-    Ok(c.ary_from_vec(idx.iter().map(|i| c.ary_get(src, i.as_fix() as usize)).collect()))
+    // park: 0 slf, 1 keys, 2 the elements as they were after the last key was computed
+    c.precise_cfunc(slf, &[NIL, NIL], |c, p| {
+        let keys = c.ary_new_capa(c.ary_len(p.get(0)));
+        p.set(1, keys);
+        let mut i = 0;
+        while let Some(&x) = c.ary(p.get(0)).get(i) { let k = crate::gc::conservative(c, |c| yield1(c, blk, x))?; c.ary_push(p.get(1), k); i += 1; }
+        let mut idx: Vec<Value> = (0..c.ary_len(p.get(1)).min(c.ary_len(p.get(0)))).map(|i| Value::fix(i as i64)).collect();
+        let src = c.ary_from_vec(c.ary(p.get(0)).to_vec());
+        p.set(2, src);
+        if !crate::rt::redef(crate::rt::R_INT_CMP) && c.ary(p.get(1)).iter().all(|k| k.is_fixnum()) { let ks = c.ary(p.get(1)); idx.sort_by_key(|i| ks[i.as_fix() as usize].as_fix()); }
+        else { sort_values(c, &mut idx, &mut |c, x, y| rb_cmp(c, c.ary_get(p.get(1), x.as_fix() as usize), c.ary_get(p.get(1), y.as_fix() as usize)))?; }
+        let out: Vec<Value> = idx.iter().map(|i| c.ary_get(p.get(2), i.as_fix() as usize)).collect();
+        Ok(c.ary_from_vec(out))
+    })
 }
 cfn!(a_each_cons, |c, slf, a, blk| {
     let n = num_to_long(c, a[0])?;
