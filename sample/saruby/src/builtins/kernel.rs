@@ -1067,14 +1067,20 @@ fn run_traces(c: &mut Ctx, name: Sym, v: Value) -> Result<(), Esc> {
     let cmds: Vec<Value> = c.ary(l).iter().rev().copied().collect();
     let keep = c.ary_new_from(&cmds);
     RUNNING.with(|r| r.borrow_mut().push(name));
-    let mut r = Ok(());
-    for cmd in cmds {
-        r = if is_string(cmd) { let m = c.vm().main_obj.get(); funcall(c, m, intern(b"eval"), &[cmd], std::ptr::null()).map(drop) }
-            else { funcall(c, cmd, intern(b"call"), &[v], std::ptr::null()).map(drop) };
-        if r.is_err() { break; }
-    }
+    // the commands parked and re-read by index (the Vec copy is no root); v parked too
+    let r = c.park(2, |c, q| {
+        q.set(0, keep);
+        q.set(1, v);
+        let mut r = Ok(());
+        for i in 0..c.ary_len(q.get(0)) {
+            let (cmd, v) = (c.ary_get(q.get(0), i), q.get(1));
+            r = if is_string(cmd) { let m = c.vm().main_obj.get(); funcall(c, m, intern(b"eval"), &[cmd], std::ptr::null()).map(drop) }
+                else { funcall(c, cmd, intern(b"call"), &[v], std::ptr::null()).map(drop) };
+            if r.is_err() { break; }
+        }
+        r
+    });
     RUNNING.with(|r| { let mut r = r.borrow_mut(); if let Some(i) = r.iter().rposition(|&x| x == name) { r.remove(i); } });
-    std::hint::black_box(keep);
     r
 }
 /// Kernel#trace_var(name, cmd = block): cmd (a Proc or a String to eval) runs at each assignment.
