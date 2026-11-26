@@ -631,10 +631,19 @@ pub fn terminate_all(c: &mut Ctx) {
     let ts: Vec<Value> = c.ary(LIST.get(c)).iter().copied().filter(|&t| !th(c, t).dead && th(c, t).ractor == NIL).collect();
     if ts.is_empty() { return; }
     TERMINATING.store(true, Relaxed);
-    for &t in &ts { if kill_thread(c, t).is_err() { c.esc = EscKind::None; } }
-    for &t in &ts {
-        if block_on_by(c, Hook::Join(t), NIL, |c| Ok(th(c, t).dead), Some(t.raw()), None, true).is_err() { c.esc = EscKind::None; }
-    }
+    // in a parked Array: a thread that ends leaves LIST, and the Vec is no root
+    let r = c.park(1, |c, q| {
+        let l = c.ary_from_vec(ts);
+        q.set(0, l);
+        let n = c.ary_len(q.get(0));
+        for i in 0..n { let t = c.ary_get(q.get(0), i); if kill_thread(c, t).is_err() { c.esc = EscKind::None; } }
+        for i in 0..n {
+            let t = c.ary_get(q.get(0), i);
+            if block_on_by(c, Hook::Join(t), NIL, |c| Ok(th(c, c.ary_get(q.get(0), i)).dead), Some(t.raw()), None, true).is_err() { c.esc = EscKind::None; }
+        }
+        Ok(())
+    });
+    if r.is_err() { c.esc = EscKind::None; }
 }
 pub fn scheduler_finalize(c: &mut Ctx) -> Result<(), Esc> {
     if thread_scheduler(c) == NIL { return Ok(()); }

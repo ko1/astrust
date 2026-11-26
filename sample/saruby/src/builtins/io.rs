@@ -2095,34 +2095,43 @@ fn io_s_select(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     let s = crate::builtins::thread::scheduler_current(c);
     if s != NIL { if let Some(r) = crate::builtins::thread::sched_hook(c, s, "io_select", a)? { return Ok(r); } }
     let ms = select_timeout(c, a.get(3))?;
-    let mut pfds: Vec<sys::PollFd> = vec![];
-    let mut who: Vec<(usize, Value)> = vec![];
-    let out = [c.ary_new(), c.ary_new(), c.ary_new()];
-    let res = c.ary_new_from(&out);
-    let mut ready_now = false;
-    for k in 0..3 {
-        let Some(&l) = a.get(k) else { continue };
-        if l == NIL { continue; }
-        if !is_array(l) { let cn = class_name_for_err(c, l); return type_err(c, format!("wrong argument type {} (expected Array)", cn)); }
-        let mut i = 0;
-        while i < c.ary_len(l) {
-            let v = c.ary_get(l, i); i += 1;
-            let iov = match check_io(c, v)? { Some(x) => x, None => { let k = class_name_for_err(c, v); return type_err(c, format!("no implicit conversion of {} into IO", k)); } };
-            let io = get_io(c, iov)?;
-            if k == 0 && io.rpos < io.rbuf.len() { c.ary_push(out[0], v); ready_now = true; continue; }
-            pfds.push(sys::PollFd { fd: if k == 1 { out_fd(io) } else { io.fd }, events: [sys::POLLIN, sys::POLLOUT, 2][k], revents: 0 });
-            who.push((k, v));
+    // q0 = the result [r, w, e]; q1 = the three lists; `who` keeps (list, index), re-read after the wait as
+    // select_internal does (the IOs were in a Vec across to_io and the wait)
+    c.park(2, |c, q| {
+        let res = c.ary_new_from(&[NIL, NIL, NIL]);
+        q.set(0, res);
+        for k in 0..3 { let o = c.ary_new(); c.ary_mut(q.get(0))[k] = o; }
+        let lists = c.ary_new_from(&[NIL, NIL, NIL]);
+        q.set(1, lists);
+        let item = |c: &Ctx, k: usize, i: usize| c.ary_get(c.ary_get(q.get(1), k), i);
+        let mut pfds: Vec<sys::PollFd> = vec![];
+        let mut who: Vec<(usize, usize)> = vec![];
+        let mut ready_now = false;
+        for k in 0..3 {
+            let Some(&l) = a.get(k) else { continue };
+            if l == NIL { continue; }
+            if !is_array(l) { let cn = class_name_for_err(c, l); return type_err(c, format!("wrong argument type {} (expected Array)", cn)); }
+            c.ary_mut(q.get(1))[k] = l;
+            let mut i = 0;
+            while i < c.ary_len(c.ary_get(q.get(1), k)) {
+                let v = item(c, k, i); i += 1;
+                let iov = match check_io(c, v)? { Some(x) => x, None => { let k = class_name_for_err(c, item(c, k, i - 1)); return type_err(c, format!("no implicit conversion of {} into IO", k)); } };
+                let io = get_io(c, iov)?;
+                if k == 0 && io.rpos < io.rbuf.len() { let (o, v) = (c.ary_get(q.get(0), 0), item(c, k, i - 1)); c.ary_push(o, v); ready_now = true; continue; }
+                pfds.push(sys::PollFd { fd: if k == 1 { out_fd(io) } else { io.fd }, events: [sys::POLLIN, sys::POLLOUT, 2][k], revents: 0 });
+                who.push((k, i - 1));
+            }
         }
-    }
-    out_flush();
-    if ready_now { sys::poll(&mut pfds, 0); }
-    else {
-        // a POLL blop: other threads run and trap handlers fire while this one waits
-        let deadline = if ms < 0 { None } else { Some(std::time::Instant::now() + std::time::Duration::from_millis(ms as u64)) };
-        match crate::builtins::thread::poll_wait(c, pfds, deadline)? { Some(p) => pfds = p, None => return Ok(NIL) }
-    }
-    for (p, (k, v)) in pfds.iter().zip(who.iter()) { if p.revents != 0 { c.ary_push(out[*k], *v); } }
-    Ok(res)
+        out_flush();
+        if ready_now { sys::poll(&mut pfds, 0); }
+        else {
+            // a POLL blop: other threads run and trap handlers fire while this one waits
+            let deadline = if ms < 0 { None } else { Some(std::time::Instant::now() + std::time::Duration::from_millis(ms as u64)) };
+            match crate::builtins::thread::poll_wait(c, pfds, deadline)? { Some(p) => pfds = p, None => return Ok(NIL) }
+        }
+        for (p, &(k, i)) in pfds.iter().zip(who.iter()) { if p.revents != 0 { let (o, v) = (c.ary_get(q.get(0), k), item(c, k, i)); c.ary_push(o, v); } }
+        Ok(q.get(0))
+    })
 }
 /// IO.read-style helpers: open path, run f, close.
 fn with_file<R>(c: &mut Ctx, klass: Value, path: Value, om: OpenMode, f: impl FnOnce(&mut Ctx, Value) -> Result<R, Esc>) -> Result<R, Esc> {

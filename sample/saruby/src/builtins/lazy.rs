@@ -515,9 +515,11 @@ fn en_lazy(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(enumerable
 /// Enumerable.__chain(enums): new_enum_chain, lazy when one of them is.
 fn en_chain(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let enums = c.ary(a[0]).to_vec();
+    // decided before the call: the Vec copy is stale after it (docs/gc_moving.md 2.4)
+    let lazy = enums.iter().any(|&e| is_lazy(c, e));
     let k = c.vm().c_chain.get();
     let ch = funcall(c, k, s::new, &enums, Blk::NONE)?;
-    if enums.iter().any(|&e| is_lazy(c, e)) { return Ok(enumerable_lazy(c, ch)); }
+    if lazy { return Ok(enumerable_lazy(c, ch)); }
     Ok(ch)
 }
 

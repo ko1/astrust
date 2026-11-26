@@ -397,17 +397,22 @@ fn minmax_by_one(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk, mx: bool) -> RV
     let name = if mx { "max_by" } else { "min_by" };
     if blk.is_null() { return no_blk(c, slf, name, a); }
     if let Some(&n) = a.first().filter(|n| **n != NIL) {
-        let Some(nm) = Nmin::new(c, n, true, mx, blk)? else { return Ok(c.ary_new()); };
-        let d = nm.save(c);
-        run_each(c, slf, |c, d, args, _, o| {
-            let mut nm = Nmin::load(c, d, o);
-            let v = pack(c, args);
-            let k = enum_yield(c, o, args.len(), v)?;
-            nm.add(c, v, k)?;
-            nm.store(c, d);
-            Ok(NIL)
-        }, d, &[], blk)?;
-        return Nmin::load(c, d, blk).finish(c);
+        let n = Nmin::size(c, n, true)?;
+        if n == 0 { return Ok(c.ary_new()); }
+        let d = Nmin::state(c, n, true, mx);
+        // the state and each value parked across the calls (docs/gc_moving.md 2.2)
+        return c.park(1, |c, q| {
+            q.set(0, d);
+            run_each(c, slf, |c, d, args, _, o| c.park(2, |c, r| {
+                r.set(0, d);
+                let v = pack(c, args);
+                r.set(1, v);
+                let k = enum_yield(c, o, args.len(), v)?;
+                Nmin::on(c, r.slot(0), o).add(c, r.get(1), k)?;
+                Ok(NIL)
+            }), q.get(0), &[], blk)?;
+            Nmin::on(c, q.slot(0), blk).finish(c)
+        });
     }
     // d: [unused, best, best key, set?, max?]
     let d = c.ary_new_from(&[NIL, NIL, NIL, FALSE, Value::bool(mx)]);

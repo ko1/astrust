@@ -866,12 +866,21 @@ cfn!(a_union, |c, slf, a, blk| {
     std::hint::black_box(keep);
     Ok(r)
 });
+// Precise: p = self and the arguments.  Two or more are converted into a hidden Array first
+// (rb_ary_concat_multi): a #to_ary result is referenced only by it while the next one runs.
 cfn!(a_concat, |c, slf, a, blk| {
     c.ary_modify(slf)?;
-    let mut add = vec![];
-    for &x in a { let o = expect_array(c, x)?; add.extend_from_slice(c.ary(o)); }
-    c.ary_mut(slf).extend(add);
-    Ok(slf)
+    c.precise_cfunc(slf, a, |c, p| match a.len() {
+        0 => Ok(p.get(0)),
+        1 => { let o = crate::gc::conservative(c, |c| expect_array(c, p.get(1)))?; c.ary_concat(p.get(0), o); Ok(p.get(0)) }
+        n => c.park(1, |c, q| {
+            let add = c.ary_new();
+            q.set(0, add);
+            for j in 1..=n { let o = crate::gc::conservative(c, |c| expect_array(c, p.get(j)))?; c.ary_concat(q.get(0), o); }
+            c.ary_concat(p.get(0), q.get(0));
+            Ok(p.get(0))
+        }),
+    })
 });
 cfn!(a_clear, |c, slf, a, blk| { c.ary_modify(slf)?.clear(); Ok(slf) });
 cfn!(a_replace, |c, slf, a, blk| {
@@ -935,10 +944,17 @@ pub fn minmax_impl(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk, want_max: boo
     };
     check_argc(c, a, 0, 1)?;
     if !a.is_empty() && a[0] != NIL {
-        let Some(mut d) = Nmin::new(c, a[0], false, want_max, blk)? else { return Ok(c.ary_new()); };
-        let mut i = 0;
-        while let Some(&x) = c.ary(slf).get(i) { d.add(c, x, NIL)?; i += 1; }
-        return d.finish(c);
+        let n = Nmin::size(c, a[0], false)?;
+        if n == 0 { return Ok(c.ary_new()); }
+        // slot 0 the receiver, slot 1 the Nmin state
+        return c.precise_cfunc(slf, &[NIL], |c, p| {
+            let d = Nmin::state(c, n, false, want_max);
+            p.set(1, d);
+            let nm = Nmin::on(c, p.slot(1), blk);
+            let mut i = 0;
+            while let Some(&x) = c.ary(p.get(0)).get(i) { nm.add(c, x, NIL)?; i += 1; }
+            nm.finish(c)
+        });
     }
     let mut best = NIL; let mut first = true;
     let mut i = 0;
@@ -964,57 +980,66 @@ pub fn minmax_impl(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk, want_max: boo
 }
 /// rb_nmin_run (enum.c): the n smallest (rev: largest) of the values given to `add`, compared in
 /// CRuby's order (a quickselect over a buffer of 4n, then a sort).  by: the values come with keys.
-pub struct Nmin<'a> { n: usize, bufmax: usize, buf: Value, curlen: usize, limit: Option<Value>, rev: bool, by: bool, blk: Blk<'a> }
-impl<'a> Nmin<'a> {
-    /// None when n is 0 (nothing to collect, as CRuby returns before iterating).
-    pub fn new(c: &mut Ctx, num: Value, by: bool, rev: bool, blk: Blk<'a>) -> Result<Option<Nmin<'a>>, Esc> {
+/// The Values live in a state Array held by a slot, re-read after every comparison (a GC point):
+/// [buf, limit, flags (1 limit set, 2 rev, 4 by), n].
+pub struct Nmin<'a, 'p> { st: &'p crate::slots::Slot, n: usize, rev: bool, by: bool, blk: Blk<'a> }
+impl<'a, 'p> Nmin<'a, 'p> {
+    /// n, checked (0: nothing to collect, as CRuby returns before iterating).
+    pub fn size(c: &mut Ctx, num: Value, by: bool) -> Result<usize, Esc> {
         let n = num_to_long(c, num)?;
         if n < 0 { return arg_err(c, format!("negative size ({})", n)); }
-        if n == 0 { return Ok(None); }
-        if i64::MAX / 4 / (if by { 2 } else { 1 }) < n { return arg_err(c, "too big size"); }
+        if n != 0 && i64::MAX / 4 / (if by { 2 } else { 1 }) < n { return arg_err(c, "too big size"); }
+        Ok(n as usize)
+    }
+    /// A new state Array for n > 0.
+    pub fn state(c: &mut Ctx, n: usize, by: bool, rev: bool) -> Value {
         let buf = c.ary_new();
-        Ok(Some(Nmin { n: n as usize, bufmax: n as usize * 4, buf, curlen: 0, limit: None, rev, by, blk }))
+        c.ary_new_from(&[buf, NIL, Value::fix((rev as i64) << 1 | (by as i64) << 2), Value::fix(n as i64)])
     }
-    /// The state as a Ruby Array, for a block function that gets only a Value (enum_native.rs);
-    /// the block is not in it: `load` takes the Cfunc block's outer block.
-    pub fn save(&self, c: &mut Ctx) -> Value {
-        let l = self.limit.unwrap_or(NIL);
-        let fl = (self.limit.is_some() as i64) | (self.rev as i64) << 1 | (self.by as i64) << 2;
-        c.ary_new_from(&[self.buf, Value::fix(self.n as i64), Value::fix(self.curlen as i64), l, Value::fix(fl)])
+    /// The collector over the state in `st`; the block is not in the state (a Cfunc block passes its outer block).
+    pub fn on(c: &Ctx, st: &'p crate::slots::Slot, blk: Blk<'a>) -> Self {
+        let d = st.get();
+        let fl = c.ary_get(d, 2).as_fix();
+        Nmin { st, n: c.ary_get(d, 3).as_fix() as usize, rev: fl & 2 != 0, by: fl & 4 != 0, blk }
     }
-    pub fn load(c: &Ctx, d: Value, blk: Blk<'a>) -> Nmin<'a> {
-        let n = c.ary_get(d, 1).as_fix() as usize;
-        let fl = c.ary_get(d, 4).as_fix();
-        Nmin { n, bufmax: n * 4, buf: c.ary_get(d, 0), curlen: c.ary_get(d, 2).as_fix() as usize,
-               limit: if fl & 1 != 0 { Some(c.ary_get(d, 3)) } else { None }, rev: fl & 2 != 0, by: fl & 4 != 0, blk }
+    fn w(&self) -> usize { if self.by { 2 } else { 1 } }
+    fn buf(&self, c: &Ctx) -> Value { c.ary_get(self.st.get(), 0) }
+    fn limit(&self, c: &Ctx) -> Option<Value> {
+        let d = self.st.get();
+        (c.ary_get(d, 2).as_fix() & 1 != 0).then(|| c.ary_get(d, 1))
     }
-    pub fn store(&self, c: &mut Ctx, d: Value) {
-        let fl = (self.limit.is_some() as i64) | (self.rev as i64) << 1 | (self.by as i64) << 2;
-        let a = c.ary_mut(d);
-        a[2] = Value::fix(self.curlen as i64); a[3] = self.limit.unwrap_or(NIL); a[4] = Value::fix(fl);
-    }
-    pub fn blk(&self) -> Blk<'a> { self.blk }
     fn cmp(&self, c: &mut Ctx, a: Value, b: Value) -> Result<i64, Esc> {
-        if !self.by && !self.blk.is_null() { let r = yield_block(c, self.blk, &[a, b])?; return cmp_result(c, r, a, b); }
-        Ok(rb_cmp(c, a, b)? as i64)
+        let (by, blk) = (self.by, self.blk);
+        crate::gc::conservative(c, |c| {
+            if !by && !blk.is_null() { let r = yield_block(c, blk, &[a, b])?; return cmp_result(c, r, a, b); }
+            Ok(rb_cmp(c, a, b)? as i64)
+        })
     }
-    pub fn add(&mut self, c: &mut Ctx, v: Value, key: Value) -> Result<(), Esc> {
-        let cv = if self.by { key } else { v };
-        if let Some(l) = self.limit {
+    pub fn add(&self, c: &mut Ctx, v: Value, key: Value) -> Result<(), Esc> {
+        let w = self.w();
+        // into buf before the comparison with the limit, dropped again if it does not qualify
+        let buf = self.buf(c);
+        if self.by { c.ary_push(buf, key); }
+        c.ary_push(buf, v);
+        if let Some(l) = self.limit(c) {
+            let cv = c.ary_get(buf, c.ary_len(buf) - w);
             let k = self.cmp(c, cv, l)?;
-            if (if self.rev { -k } else { k }) >= 0 { return Ok(()); }
+            if (if self.rev { -k } else { k }) >= 0 {
+                let buf = self.buf(c);
+                let len = c.ary_len(buf);
+                c.ary_mut(buf).truncate(len - w);
+                return Ok(());
+            }
         }
-        if self.by { c.ary_push(self.buf, key); }
-        c.ary_push(self.buf, v);
-        self.curlen += 1;
-        if self.curlen == self.bufmax { self.filter(c)?; }
+        if c.ary_len(self.buf(c)) == self.n * 4 * w { self.filter(c)?; }
         Ok(())
     }
-    fn filter(&mut self, c: &mut Ctx) -> Result<(), Esc> {
-        if self.curlen <= self.n { return Ok(()); }
-        let (n, w, buf) = (self.n, if self.by { 2 } else { 1 }, self.buf);
-        let swap = |c: &mut Ctx, i: usize, j: usize| { let b = c.ary_mut(buf); for k in 0..w { b.swap(i * w + k, j * w + k); } };
-        let (mut left, mut right) = (0usize, self.curlen - 1);
+    fn filter(&self, c: &mut Ctx) -> Result<(), Esc> {
+        let (n, w, st) = (self.n, self.w(), self.st);
+        let curlen = c.ary_len(self.buf(c)) / w;
+        if curlen <= n { return Ok(()); }
+        let swap = |c: &mut Ctx, i: usize, j: usize| { let buf = c.ary_get(st.get(), 0); let b = c.ary_mut(buf); for k in 0..w { b.swap(i * w + k, j * w + k); } };
+        let (mut left, mut right) = (0usize, curlen - 1);
         let store_index;
         loop {
             let mut pivot = left + (right - left) / 2;
@@ -1024,7 +1049,7 @@ impl<'a> Nmin<'a> {
             let mut store = left;
             let mut i = left;
             while i + pivots <= right {
-                let (x, y) = (c.ary_get(buf, i * w), c.ary_get(buf, pivot * w));
+                let (x, y) = { let buf = self.buf(c); (c.ary_get(buf, i * w), c.ary_get(buf, pivot * w)) };
                 let k = self.cmp(c, x, y)?;
                 let k = if self.rev { -k } else { k };
                 if k == 0 { swap(c, i, right - pivots); pivots += 1; continue; }
@@ -1037,19 +1062,24 @@ impl<'a> Nmin<'a> {
             if store <= n && n <= store + pivots { store_index = store; break; }
             if n < store { right = store - 1; } else { left = store + pivots; }
         }
-        self.limit = Some(c.ary_get(buf, store_index * w));
-        self.curlen = n;
+        let buf = self.buf(c);
+        let l = c.ary_get(buf, store_index * w);
         c.ary_mut(buf).truncate(n * w);
+        let d = st.get();
+        let a = c.ary_mut(d);
+        a[1] = l; a[2] = Value::fix(a[2].as_fix() | 1);
         Ok(())
     }
-    pub fn finish(mut self, c: &mut Ctx) -> RV {
+    pub fn finish(&self, c: &mut Ctx) -> RV {
         self.filter(c)?;
-        let (buf, w) = (self.buf, if self.by { 2 } else { 1 });
-        let mut idx: Vec<Value> = (0..c.ary_len(buf) / w).map(|i| Value::fix(i as i64)).collect();
+        let (w, st) = (self.w(), self.st);
+        let mut idx: Vec<Value> = (0..c.ary_len(self.buf(c)) / w).map(|i| Value::fix(i as i64)).collect();
         sort_values(c, &mut idx, &mut |c, x, y| {
+            let buf = c.ary_get(st.get(), 0);
             let (a, b) = (c.ary_get(buf, x.as_fix() as usize * w), c.ary_get(buf, y.as_fix() as usize * w));
             Ok(self.cmp(c, a, b)?.cmp(&0))
         })?;
+        let buf = self.buf(c);
         let mut out: Vec<Value> = idx.iter().map(|i| c.ary_get(buf, i.as_fix() as usize * w + w - 1)).collect();
         if self.rev { out.reverse(); }
         Ok(c.ary_from_vec(out))
@@ -1109,25 +1139,31 @@ cfn!(a_take, |c, slf, a, blk| { let n = num_to_long(c, a[0])?; if n < 0 { return
 cfn!(a_drop, |c, slf, a, blk| { let n = num_to_long(c, a[0])?; if n < 0 { return arg_err(c, "attempt to drop negative size"); } Ok(c.ary_from_vec(c.ary(slf).iter().skip(n as usize).copied().collect())) });
 cfn!(a_take_while, |c, slf, a, blk| enum_unsized(c, slf, "take_while", a, blk, |c| { let out = c.ary_new(); let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { if !yield1(c, blk, x)?.truthy() { break; } c.ary_push(out, x); i += 1; } Ok(out) }));
 cfn!(a_drop_while, |c, slf, a, blk| enum_unsized(c, slf, "drop_while", a, blk, |c| { let mut i = 0; while let Some(&x) = c.ary(slf).get(i) { if !yield1(c, blk, x)?.truthy() { break; } i += 1; } Ok(c.ary_from_vec(c.ary(slf)[i.min(c.ary_len(slf))..].to_vec())) }));
+// Precise: p = self and the arguments, each replaced by its converted Array (a fresh #to_ary or
+// take_items result is referenced by nothing else); q0 = the result.
 cfn!(a_zip, |c, slf, a, blk| {
     if c.ary_len(slf) == 0 { return Ok(if blk.is_null() { c.ary_new() } else { NIL }); }
-    let mut others = vec![];
-    for &x in a {
-        let n = c.ary_len(slf);
-        let arr = if is_array(x) { x } else if let Some(arr) = check_array(c, x)? { arr }
-            else if let Some(arr) = crate::builtins::enum_native::take_items(c, x, n)? { arr }
-            else { let k = class_path(c, real_class_of(c, x)); return type_err(c, format!("wrong argument type {} (must respond to :each)", k)); };
-        others.push(arr);
-    }
-    let keep = c.ary_from_vec(others.clone());
-    let out = c.ary_new();
-    for i in 0..c.ary_len(slf) {
-        let row = c.ary_new_from(&[c.ary_get(slf, i)]);
-        for &o in &others { c.ary_push(row, c.ary_get(o, i)); }
-        if blk.is_null() { c.ary_push(out, row); } else { yield1(c, blk, row)?; }
-    }
-    std::hint::black_box(keep);
-    Ok(if blk.is_null() { out } else { NIL })
+    c.precise_cfunc(slf, a, |c, p| c.park(1, |c, q| {
+        let m = a.len();
+        for j in 1..=m {
+            let n = c.ary_len(p.get(0));
+            let arr = crate::gc::conservative(c, |c| {
+                let x = p.get(j);
+                if is_array(x) { Ok(x) } else if let Some(arr) = check_array(c, x)? { Ok(arr) }
+                else if let Some(arr) = crate::builtins::enum_native::take_items(c, x, n)? { Ok(arr) }
+                else { let k = class_path(c, real_class_of(c, x)); type_err(c, format!("wrong argument type {} (must respond to :each)", k)) }
+            })?;
+            p.set(j, arr);
+        }
+        let out = c.ary_new();
+        q.set(0, out);
+        for i in 0..c.ary_len(p.get(0)) {
+            let row = c.ary_new_from(&[c.ary_get(p.get(0), i)]);
+            for j in 1..=m { let o = p.get(j); c.ary_push(row, c.ary_get(o, i)); }
+            if blk.is_null() { c.ary_push(q.get(0), row); } else { crate::gc::conservative(c, |c| yield1(c, blk, row))?; }
+        }
+        Ok(if blk.is_null() { q.get(0) } else { NIL })
+    }))
 });
 // Precise: p = self and the arguments; q0 = the lists (copies when a block runs, as rb_ary_product's
 // shared copies), q1 = the result.  Rows are made one at a time by an index odometer, last list fastest.
