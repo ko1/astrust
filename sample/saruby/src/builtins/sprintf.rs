@@ -282,7 +282,7 @@ fn int_arg(c: &mut Ctx, v: Value) -> RV {
         let r = funcall(c, v, intern(b"to_i"), &[], std::ptr::null())?;
         if is_integer(r) { return Ok(r); }
         let k = class_name_for_err(c, v);
-        return type_err(c, format!("can't convert {} to Integer ({}#to_i gives {})", k, k, class_name_for_err(c, r)));
+        return type_err(c, format!("can't convert {} into Integer ({}#to_i gives {})", k, k, class_name_for_err(c, r)));
     }
     type_err(c, format!("can't convert {} into Integer", class_name_for_err(c, v)))
 }
@@ -522,8 +522,6 @@ pub fn format_ary(c: &mut Ctx, fmtv: Value, args: &[Value], ary: Value) -> RV {
     }
     st.check(c)?;
     if st.posarg >= 0 && st.next < args.len() && !(args.len() == 1 && is_hash(args[0])) {
-        let dbg = gvar_get(c, intern(b"$DEBUG"))?;
-        if dbg.truthy() { return arg_err(c, "too many arguments for format string"); }
         if c.vm().verbose.get() == TRUE {
             let loc = backtrace_lines(c, 0).first().map(|l| l.split(":in ").next().unwrap_or("").to_string()).unwrap_or_default();
             let m = c.str_new(format!("{}: warning: too many arguments for format string\n", loc).as_bytes());

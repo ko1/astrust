@@ -287,7 +287,8 @@ fn rat_coerce(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
         let x = cpx_raw(c, s, Value::fix(0));
         return Ok(c.ary_new_from(&[o, x]));
     }
-    type_err(c, format!("{} can't be coerced into Rational", class_name_for_err(c, o)))
+    let cn = crate::vm::class_path(c, real_class_of(c, o));
+    type_err(c, format!("{} can't be coerced into Rational", cn))
 }
 
 // ---- rounding -------------------------------------------------------------------------------

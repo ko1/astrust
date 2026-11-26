@@ -1416,7 +1416,7 @@ fn coerce_relop(c: &mut Ctx, x: Value, y: Value, op: &str) -> RV {
         if r != NIL { return Ok(r); }
     }
     let s = if !y.is_heap() || is_float(y) { inspect_str(c, y)? } else { class_path(c, real_class_of(c, y)) };
-    arg_err(c, format!("comparison of BigDecimal with {} failed", s))
+    arg_err(c, format!("comparison of BigDecimal with {} failed: coercion was not possible", s))
 }
 
 // ---- arithmetic ------------------------------------------------------------------------------

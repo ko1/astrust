@@ -494,8 +494,8 @@ fn read_real(c: &mut Ctx, b: &[u8], i: &mut usize) -> Result<Option<Value>, Esc>
         false
     };
     if exp(b, &mut j) { flo = true; }
-    if !flo && j < b.len() && b[j] == b'/' && j + 1 < b.len() && b[j + 1].is_ascii_digit() {
-        j += 1; digits(b, &mut j); rat = true;
+    if j < b.len() && b[j] == b'/' && j + 1 < b.len() && b[j + 1].is_ascii_digit() {
+        j += 1; digits(b, &mut j); rat = true; flo = false;   // "1.5/2" is Rational(3, 4)
     }
     let _ = body;
     let txt: String = b[st..j].iter().filter(|&&ch| ch != b'_').map(|&ch| ch as char).collect();

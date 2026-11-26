@@ -295,7 +295,7 @@ fn to_int(c: &mut Ctx, v: Value) -> RV {
 /// rb_num2long.
 fn num2long(c: &mut Ctx, mut v: Value) -> Result<i64, Esc> {
     loop {
-        if v == NIL { return type_err(c, "no implicit conversion from nil to integer"); }
+        if v == NIL { return type_err(c, "no implicit conversion of nil into Integer"); }
         if v.is_fixnum() { return Ok(v.as_fix()); }
         if is_float(v) {
             let f = float_val(v);

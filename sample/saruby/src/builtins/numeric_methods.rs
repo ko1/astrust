@@ -28,7 +28,7 @@ pub fn num_to_long(c: &mut Ctx, v: Value) -> Result<i64, Esc> {
         if !(f >= -9223372036854775808.0 && f < 9223372036854775808.0) { return err(c, c.vm().c_range_error.get(), format!("float {} out of range of integer", crate::builtins::sprintf::fmt_g10(f))); }
         return Ok(f as i64);
     }
-    if v == NIL { return type_err(c, "no implicit conversion from nil to integer"); }
+    if v == NIL { return type_err(c, "no implicit conversion of nil into Integer"); }
     if let Some(r) = if v.is_heap() { crate::string::check_funcall(c, v, s::to_int)? } else { None } {
         if r.is_fixnum() { return Ok(r.as_fix()); }
         if is_bignum(r) { return num_to_long(c, r); }
@@ -94,7 +94,7 @@ pub fn to_f(c: &mut Ctx, v: Value) -> Result<f64, Esc> {
 fn coerce_fail<T>(c: &mut Ctx, a: Value, b: Value, cmp: bool) -> Result<T, Esc> {
     let bdesc = if b == NIL || b == TRUE || b == FALSE { class_name_for_err(c, b) } else if is_float(b) || b.is_fixnum() || b.is_sym() { inspect_str(c, b)? } else { class_path(c, real_class_of(c, b)) };
     // rb_cmperr: special constants and Floats by inspect, others by class
-    if cmp { let bs = if !b.is_heap() || is_float(b) { inspect_str(c, b).unwrap_or(bdesc) } else { class_path(c, real_class_of(c, b)) }; return arg_err(c, format!("comparison of {} with {} failed", class_path(c, real_class_of(c, a)), bs)); }
+    if cmp { let bs = if !b.is_heap() || is_float(b) { inspect_str(c, b).unwrap_or(bdesc) } else { class_path(c, real_class_of(c, b)) }; return arg_err(c, format!("comparison of {} with {} failed: coercion was not possible", class_path(c, real_class_of(c, a)), bs)); }
     type_err(c, format!("{} can't be coerced into {}", bdesc, class_path(c, real_class_of(c, a))))
 }
 
