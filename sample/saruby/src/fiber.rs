@@ -71,6 +71,7 @@ impl RData for FiberData {
             }
         }
         if self.running || self.sp == 0 { return; }
+        #[cfg(feature = "gc_check")] if crate::gc::precise_all() { return; }
         match &self.stack {
             Some(s) => m.visit_ambiguous(s.words(self.sp)),
             None if self.main => m.visit_ambiguous(os::main_stack_words(self.sp, crate::gc::stack_base(), crate::STACK_BYTES)),

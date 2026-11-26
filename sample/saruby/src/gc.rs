@@ -373,6 +373,14 @@ unsafe impl GcLang for Saruby {
     }
 }
 
+/// gc_check, SARUBY_GC_PRECISE_ALL=1: no machine stack is scanned (running or suspended), as a moving collector
+/// would have it; with SARUBY_GC_STRESS what breaks is what still relies on that scan (docs/gc_moving.md 12.6).
+#[cfg(feature = "gc_check")]
+pub fn precise_all() -> bool {
+    static P: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *P.get_or_init(|| std::env::var_os("SARUBY_GC_PRECISE_ALL").is_some_and(|v| v == "1"))
+}
+
 // ---- value stacks (docs/gc_moving.md 12.2) ----------------------------------------------------
 
 thread_local! { static COLLECTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
@@ -474,6 +482,7 @@ fn zone<R>(c: &mut Ctx, precise: bool, f: impl FnOnce(&mut Ctx) -> R) -> R {
 fn scan_running_stack<V: RootVisitor<Saruby>>(v: &mut V, w: &[usize], top: usize) {
     #[cfg(not(feature = "gc_check"))] { let _ = top; v.visit_ambiguous(w); }
     #[cfg(feature = "gc_check")] {
+        if precise_all() { return; }
         let lo = w.as_ptr() as usize;
         let part = |a: usize, b: usize| &w[((a - lo) / 8).min(w.len())..((b.max(a) - lo) / 8).min(w.len())];
         ZONES.with_borrow(|z| {
