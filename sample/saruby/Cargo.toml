@@ -32,7 +32,9 @@ path = "src/main.rs"
 [profile.release]
 opt-level = 3
 debug = 1
-codegen-units = 16
+# 1, not 16: with 16 units, which functions share kalloc.rs's unit (allocator inlining) moved benches up to 4 % on
+# no-op changes (trials/2026-11-26-saruby-codegen-units). LTO is not possible here (dylib + prefer-dynamic).
+codegen-units = 1
 incremental = false
 
 [profile.dev]
