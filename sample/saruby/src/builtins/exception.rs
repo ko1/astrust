@@ -598,10 +598,11 @@ fn get_detailed_message(c: &mut Ctx, e: Value, opt: Value) -> RV {
     check_str(c, m)
 }
 /// show_cause
-fn show_cause(c: &mut Ctx, o: &mut Vec<u8>, e: Value, opt: Value, highlight: bool, reverse: bool, shown: &mut Vec<Value>) -> Result<(), Esc> {
+/// `shown`: slot 0 of a park holds the Array of the exceptions printed so far (compared by identity).
+fn show_cause(c: &mut Ctx, o: &mut Vec<u8>, e: Value, opt: Value, highlight: bool, reverse: bool, shown: &crate::gc::Park<'_>) -> Result<(), Esc> {
     let cause = ivar_get(c, e, s::cause);
-    if cause == NIL || !is_exception(c, cause) || shown.contains(&cause) { return Ok(()); }
-    shown.push(cause);
+    if cause == NIL || !is_exception(c, cause) || c.ary(shown.get(0)).contains(&cause) { return Ok(()); }
+    c.ary_push(shown.get(0), cause);
     let bt = bt_lines(c, cause)?;
     let m = get_detailed_message(c, cause, opt)?;
     if reverse {
@@ -625,18 +626,22 @@ fn error_write(c: &mut Ctx, e: Value, opt: Value, highlight: bool, reverse: bool
         r => r?,
     };
     let mut o = vec![];
-    let mut shown = vec![e];
-    if reverse {
-        if highlight { o.extend_from_slice(BOLD); o.extend_from_slice(b"Traceback"); o.extend_from_slice(RESET); } else { o.extend_from_slice(b"Traceback"); }
-        o.extend_from_slice(b" (most recent call last):\n");
-        show_cause(c, &mut o, e, opt, highlight, reverse, &mut shown)?;
-        print_backtrace(c, &mut o, e, &bt, true);
-        print_errinfo(c, &mut o, e, &bt, m, highlight);
-    } else {
-        print_errinfo(c, &mut o, e, &bt, m, highlight);
-        print_backtrace(c, &mut o, e, &bt, false);
-        show_cause(c, &mut o, e, opt, highlight, reverse, &mut shown)?;
-    }
+    c.park(1, |c, shown| {
+        let l = c.ary_new_from(&[e]);
+        shown.set(0, l);
+        if reverse {
+            if highlight { o.extend_from_slice(BOLD); o.extend_from_slice(b"Traceback"); o.extend_from_slice(RESET); } else { o.extend_from_slice(b"Traceback"); }
+            o.extend_from_slice(b" (most recent call last):\n");
+            show_cause(c, &mut o, e, opt, highlight, reverse, &shown)?;
+            print_backtrace(c, &mut o, e, &bt, true);
+            print_errinfo(c, &mut o, e, &bt, m, highlight);
+        } else {
+            print_errinfo(c, &mut o, e, &bt, m, highlight);
+            print_backtrace(c, &mut o, e, &bt, false);
+            show_cause(c, &mut o, e, opt, highlight, reverse, &shown)?;
+        }
+        Ok(())
+    })?;
     Ok(o)
 }
 /// The report of an uncaught exception (rb_ec_error_print): highlighted when stderr is a tty.
