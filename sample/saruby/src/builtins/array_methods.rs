@@ -473,15 +473,22 @@ cfn!(a_include, |c, slf, a, blk| {
     }
     Ok(FALSE)
 });
-cfn!(a_delete, |c, slf, a, blk| {
-    let mut found = NIL; let mut keep = vec![]; let mut i = 0;
-    while let Some(&x) = c.ary(slf).get(i) { if rb_eq(c, x, a[0])? { found = x; } else { keep.push(x); } i += 1; }
-    if found == NIL && !keep.len() == c.ary_len(slf) { }
-    if keep.len() == c.ary_len(slf) { return if blk.is_null() { Ok(NIL) } else { yield1(c, blk, a[0]) }; }
-    c.ary_modify(slf)?;
-    *c.ary_mut(slf) = keep.into();
-    Ok(if found == NIL { a[0] } else { found })
-});
+// rb_ary_delete: the kept elements are compacted inside the receiver (a Vec of them was no root).
+// Precise: p = self and the item; q0 = the last deleted element, q1 = the element being compared.
+cfn!(a_delete, |c, slf, a, blk| c.precise_cfunc(slf, &a[..1], |c, p| c.park(2, |c, q| {
+    q.set(0, UNDEF);
+    let (mut i1, mut i2) = (0, 0);
+    while let Some(&e) = c.ary(p.get(0)).get(i1) {
+        q.set(1, e);
+        i1 += 1;
+        if crate::gc::conservative(c, |c| rb_eq(c, e, p.get(1)))? { q.set(0, q.get(1)); continue; }
+        if i1 - 1 != i2 { c.ary_modify(p.get(0))?[i2] = q.get(1); }
+        i2 += 1;
+    }
+    if c.ary_len(p.get(0)) == i2 { return if blk.is_null() { Ok(NIL) } else { crate::gc::conservative(c, |c| yield1(c, blk, p.get(1))) }; }
+    c.ary_modify(p.get(0))?.truncate(i2);
+    Ok(q.get(0))
+})));
 cfn!(a_delete_at, |c, slf, a, blk| {
     let i = num_to_long(c, a[0])?;
     let v = c.ary_modify(slf)?;
@@ -775,28 +782,31 @@ cfn!(a_minus, |c, slf, a, blk| {
     Ok(out)
 });
 // rb_ary_difference_multi
-cfn!(a_difference, |c, slf, a, blk| {
-    let len = c.ary_len(slf);
-    let mut others = Vec::with_capacity(a.len());
-    let keep = c.ary_new();   // roots the hashes
-    for &x in a {
-        let o = expect_array(c, x)?;
-        let e = if len > SMALL_ARRAY_LEN && c.ary_len(o) > SMALL_ARRAY_LEN { (ary_set_hash(c, o)?, true) } else { (o, false) };
-        c.ary_push(keep, e.0);
-        others.push(e);
+// Precise: p = self and the arguments, each replaced by its Array or its Hash; q0 = the result, q1 = the element.
+cfn!(a_difference, |c, slf, a, blk| c.precise_cfunc(slf, a, |c, p| c.park(2, |c, q| {
+    let len = c.ary_len(p.get(0));
+    let mut hashed = Vec::with_capacity(a.len());
+    for j in 1..=a.len() {
+        let o = crate::gc::conservative(c, |c| expect_array(c, p.get(j)))?;
+        p.set(j, o);
+        let h = len > SMALL_ARRAY_LEN && c.ary_len(o) > SMALL_ARRAY_LEN;
+        if h { let s = crate::gc::conservative(c, |c| ary_set_hash(c, p.get(j)))?; p.set(j, s); }
+        hashed.push(h);
     }
     let out = c.ary_new();
+    q.set(0, out);
     let mut i = 0;
-    'el: while let Some(&x) = c.ary(slf).get(i) {
+    'el: while let Some(&x) = c.ary(p.get(0)).get(i) {
         i += 1;
-        for &(o, hashed) in &others {
-            if if hashed { hash_lookup(c, o, x)?.is_some() } else { includes_by_eql(c, o, x)? } { continue 'el; }
+        q.set(1, x);
+        for (j, &h) in hashed.iter().enumerate() {
+            let (o, x) = (p.get(j + 1), q.get(1));
+            if crate::gc::conservative(c, |c| if h { Ok(hash_lookup(c, o, x)?.is_some()) } else { includes_by_eql(c, o, x) })? { continue 'el; }
         }
-        c.ary_push(out, x);
+        c.ary_push(q.get(0), q.get(1));
     }
-    std::hint::black_box(keep);
-    Ok(out)
-});
+    Ok(q.get(0))
+})));
 cfn!(a_mul, |c, slf, a, blk| {
     if is_string(a[0]) { return a_join(c, slf, a, blk); }
     if a[0].is_heap() && !a[0].is_fixnum() { if let Some(sv) = check_string_type(c, a[0])? { return ary_join_value(c, slf, sv); } }
@@ -847,25 +857,22 @@ fn union_scan(c: &mut Ctx, out: Value, ary: Value) -> Result<(), Esc> {
     Ok(())
 }
 cfn!(a_or, |c, slf, a, blk| a_union(c, slf, &a[..1], blk));
-cfn!(a_union, |c, slf, a, blk| {
-    let mut os = Vec::with_capacity(a.len());
-    let mut sum = c.ary_len(slf);
-    let keep = c.ary_new();   // roots converted arguments
-    for &x in a { let o = expect_array(c, x)?; sum += c.ary_len(o); c.ary_push(keep, o); os.push(o); }
-    let r = if sum <= SMALL_ARRAY_LEN {
+// Precise: p = self and the arguments, each replaced by its Array; q0 = the result.
+cfn!(a_union, |c, slf, a, blk| c.precise_cfunc(slf, a, |c, p| c.park(1, |c, q| {
+    let mut sum = c.ary_len(p.get(0));
+    for j in 1..=a.len() { let o = crate::gc::conservative(c, |c| expect_array(c, p.get(j)))?; p.set(j, o); sum += c.ary_len(o); }
+    if sum <= SMALL_ARRAY_LEN {
         let out = c.ary_new();
-        union_scan(c, out, slf)?;
-        for &o in &os { union_scan(c, out, o)?; }
-        out
-    } else {
-        let mut v = c.ary(slf).to_vec();
-        for &o in &os { v.extend_from_slice(c.ary(o)); }
-        let all = c.ary_from_vec(v);
-        a_uniq(c, all, &[], Blk::NONE)?
-    };
-    std::hint::black_box(keep);
-    Ok(r)
-});
+        q.set(0, out);
+        for j in 0..=a.len() { crate::gc::conservative(c, |c| union_scan(c, q.get(0), p.get(j)))?; }
+        return Ok(q.get(0));
+    }
+    // no GC point between the copies and the allocation (ary_from_vec roots its Vec)
+    let mut v = c.ary(p.get(0)).to_vec();
+    for j in 1..=a.len() { v.extend_from_slice(c.ary(p.get(j))); }
+    let all = c.ary_from_vec(v);
+    crate::gc::conservative(c, |c| a_uniq(c, all, &[], Blk::NONE))
+})));
 // Precise: p = self and the arguments.  Two or more are converted into a hidden Array first
 // (rb_ary_concat_multi): a #to_ary result is referenced only by it while the next one runs.
 cfn!(a_concat, |c, slf, a, blk| {
