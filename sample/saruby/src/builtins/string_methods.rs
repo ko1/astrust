@@ -1635,90 +1635,6 @@ cfn!(s_codepoints, |c, slf, a, blk| {
     Ok(out)
 });
 cfn!(s_squish, |c, slf, a, b_| Ok(slf));
-/// Digits with single underscores between them; returns (digits, end).
-fn scan_digits(v: &[u8], mut i: usize) -> (String, usize) {
-    let mut d = String::new();
-    while i < v.len() {
-        if v[i].is_ascii_digit() { d.push(v[i] as char); i += 1; }
-        else if v[i] == b'_' && !d.is_empty() && i + 1 < v.len() && v[i + 1].is_ascii_digit() { i += 1; }
-        else { break; }
-    }
-    (d, i)
-}
-/// Unsigned decimal number [digits][.digits][e[+-]digits] as exact (num, den); None if no digits.
-fn scan_decimal(v: &[u8], i: usize) -> Option<(crate::bignum::BigInt, crate::bignum::BigInt, usize, bool)> {
-    use crate::bignum::BigInt;
-    let (ip, mut j) = scan_digits(v, i);
-    let mut frac = String::new();
-    let mut is_float = false;
-    if j < v.len() && v[j] == b'.' && j + 1 < v.len() && v[j + 1].is_ascii_digit() { let (f, k) = scan_digits(v, j + 1); frac = f; j = k; is_float = true; }
-    if ip.is_empty() && frac.is_empty() { return None; }
-    let mut exp: i64 = 0;
-    if j < v.len() && (v[j] == b'e' || v[j] == b'E') {
-        let mut k = j + 1; let mut neg = false;
-        if k < v.len() && (v[k] == b'+' || v[k] == b'-') { neg = v[k] == b'-'; k += 1; }
-        let (e, k2) = scan_digits(v, k);
-        if !e.is_empty() { exp = e.parse::<i64>().unwrap_or(i64::MAX / 4).min(100000); if neg { exp = -exp; } j = k2; is_float = true; }
-    }
-    let digits = format!("{}{}", ip, frac);
-    let mut num = BigInt::parse(if digits.is_empty() { "0" } else { &digits }, 10)?;
-    let mut den = BigInt::from_i64(10).pow(frac.len() as u64);
-    if exp > 0 { num = num.mul(&BigInt::from_i64(10).pow(exp as u64)); } else if exp < 0 { den = den.mul(&BigInt::from_i64(10).pow((-exp) as u64)); }
-    Some((num, den, j, is_float))
-}
-fn kernel_call(c: &mut Ctx, name: &str, args: &[Value]) -> RV { let m = c.vm().main_obj.get(); funcall(c, m, intern(name.as_bytes()), args, std::ptr::null()) }
-/// [sign] decimal [/ decimal] as a Rational; (value, end, kind 0=int 1=float 2=rational).
-fn scan_rational(c: &mut Ctx, v: &[u8], i: usize) -> Result<Option<(Value, usize, u8)>, Esc> {
-    let mut j = i; let mut neg = false;
-    if j < v.len() && (v[j] == b'+' || v[j] == b'-') { neg = v[j] == b'-'; j += 1; }
-    let Some((mut n, mut d, k, fl)) = scan_decimal(v, j) else { return Ok(None) };
-    j = k;
-    let mut kind = if fl { 1 } else { 0 };
-    if j < v.len() && v[j] == b'/' {
-        if let Some((n2, d2, k2, _)) = scan_decimal(v, j + 1) { n = n.mul(&d2); d = d.mul(&n2); j = k2; kind = 2; }
-    }
-    if neg { n = n.neg(); }
-    let (n, d) = (c.big_to_value(n), c.big_to_value(d));
-    let r = kernel_call(c, "Rational", &[n, d])?;
-    Ok(Some((r, j, kind)))
-}
-cfn!(s_to_r, |c, slf, a, b_| {
-    let v = c.str_bytes(slf).to_vec();
-    let mut i = 0; while i < v.len() && is_ws(v[i]) { i += 1; }
-    match scan_rational(c, &v, i)? { Some((r, _, _)) => Ok(r), None => kernel_call(c, "Rational", &[Value::fix(0), Value::fix(1)]) }
-});
-/// A to_c component in its natural class (Integer, Float or Rational).
-fn natural(c: &mut Ctx, r: Value, kind: u8) -> RV {
-    match kind { 0 => funcall(c, r, intern(b"to_i"), &[], std::ptr::null()), 1 => funcall(c, r, intern(b"to_f"), &[], std::ptr::null()), _ => Ok(r) }
-}
-cfn!(s_to_c, |c, slf, a, b_| {
-    need_ascii_compat(c, slf)?;
-    let v = c.str_bytes(slf).to_vec();
-    let mut i = 0; while i < v.len() && is_ws(v[i]) { i += 1; }
-    let zero = Value::fix(0);
-    let is_i = |k: usize| k < v.len() && (v[k] == b'i' || v[k] == b'j' || v[k] == b'I' || v[k] == b'J');
-    // bare "i" / "+i" / "-i"
-    let sign_only = |k: usize| -> Option<(i64, usize)> {
-        let mut k = k; let mut s = 1;
-        if k < v.len() && (v[k] == b'+' || v[k] == b'-') { if v[k] == b'-' { s = -1; } k += 1; }
-        if is_i(k) { Some((s, k + 1)) } else { None }
-    };
-    if let Some((s, _)) = sign_only(i) { return kernel_call(c, "Complex", &[zero, Value::fix(s)]); }
-    let Some((r1, j, k1)) = scan_rational(c, &v, i)? else { return kernel_call(c, "Complex", &[zero, zero]) };
-    let x = natural(c, r1, k1)?;
-    if is_i(j) { return kernel_call(c, "Complex", &[zero, x]); }
-    if j < v.len() && v[j] == b'@' {
-        if let Some((r2, _, k2)) = scan_rational(c, &v, j + 1)? { let y = natural(c, r2, k2)?; let cx = const_get_at(c, c.vm().c_object.get(), intern(b"Complex")).unwrap_or(NIL); return funcall(c, cx, intern(b"polar"), &[x, y], std::ptr::null()); }
-        return kernel_call(c, "Complex", &[x, zero]);
-    }
-    if j < v.len() && (v[j] == b'+' || v[j] == b'-') {
-        if let Some((s, _)) = sign_only(j) { return kernel_call(c, "Complex", &[x, Value::fix(s)]); }
-        if let Some((r2, k, k2)) = scan_rational(c, &v, j)? {
-            if is_i(k) { let y = natural(c, r2, k2)?; return kernel_call(c, "Complex", &[x, y]); }
-        }
-    }
-    kernel_call(c, "Complex", &[x, zero])
-});
 // String#undump.
 // str_undump, transcribed from string.c.
 cfn!(s_undump, |c, slf, a, b_| {
@@ -2107,7 +2023,7 @@ pub fn init(c: &mut Ctx, k: Value) {
     d(c, "partition", w_partition, 1); d(c, "rpartition", w_rpartition, 1); d(c, "delete_prefix", s_delete_prefix, 1); d(c, "delete_suffix", s_delete_suffix, 1);
     d(c, "delete_prefix!", s_delete_prefix_b, 1); d(c, "delete_suffix!", s_delete_suffix_b, 1); d(c, "slice!", s_slice_b, -1); d(c, "getbyte", s_getbyte, 1); d(c, "setbyte", s_setbyte, 2);
     d(c, "byteslice", s_byteslice, -1); d(c, "unpack", s_unpack, -1); d(c, "unpack1", s_unpack1, -1); d(c, "crypt", s_crypt, 1); d(c, "each_grapheme_cluster", s_each_grapheme, 0);
-    d(c, "grapheme_clusters", s_grapheme_clusters, 0); d(c, "codepoints", s_codepoints, 0); d(c, "each_codepoint", s_each_codepoint, 0); d(c, "dup", s_dup, 0); d(c, "undump", s_undump, 0); d(c, "to_r", s_to_r, 0); d(c, "to_c", s_to_c, 0);
+    d(c, "grapheme_clusters", s_grapheme_clusters, 0); d(c, "codepoints", s_codepoints, 0); d(c, "each_codepoint", s_each_codepoint, 0); d(c, "dup", s_dup, 0); d(c, "undump", s_undump, 0);
     define_singleton_cfunc(c, k, "try_convert", s_s_try_convert, 1);
     let _ = (s_squish, s_intern_frozen_p, s_between, s_each_line);
     define_singleton_cfunc(c, k, "new", s_s_new, -1);
