@@ -70,7 +70,8 @@ user 2026-11-25「full moving 頑張ってほしい」「クラスなどを non-
   - 次の手順: fib の費用が `stage_park` から来ているかを切り分ける。b108507（wip）はビルドしていない。
   - inventory: master の t/hand は 2119 / 2240 本が落ちる。最初の 456 本の backtrace から 67 か所を特定した。
 - [ ] 番地キーの表: 2026-11-27 checkpoint（branch moving-gc-s5-c1 61b3a8b → c2 79444f3 → c3 c99655a、master 0eed29e の上に積んである。trial README「Session 5, part 4」）。
-  - C1（再帰検査を GC が訪れる Value に、identity hash / Kernel#hash を object id から）: 関門は全部済み。マージ候補
+  - [x] C1（再帰検査を GC が訪れる Value に、identity hash / Kernel#hash を object id から）: 2026-11-27 master に merge（6ed246e）。lead がマージ後に確かめたこと: 4 構成とも警告 0、heap_audit 396、t/hand 2241 本はマージ前の master と同じ（番地・pid・一時ディレクトリを均すと残る差は乱数の sample_nil と、両方で 60 s を超える gem_w19_core_fixes_1027 だけ）、gc_check + stress で t/s5_c1.rb が通常実行と同じ、AOT 281 本、reuse / aot_fork PASS、t/cov はマージ前と同じ（31 pass / 7 fail）
+  - [ ] C1 の後に測ること: 既定の `#hash`（Kernel#hash）のオブジェクトを Hash のキーにすると、hash のたびに `vm::object_id` の HashMap を引く（初回は挿入）。sp4 の 42 行は ±0.004 % だったが、この経路を通るベンチがあるかは未確認。オブジェクトをキーにする小ベンチで命令数を master 39d4b2c と比べる
   - C2（`src/addrtab.rs`。Marshal.dump の表、Ractor の seen）: C3 の AOT が済めばマージ候補。AOT は 2400 s で時間切れになり、reuse_test / aot_fork_test は未実行
   - C3（Thread / Mutex / Queue / IO / Ractor の待ちキーと Method#hash を object id に）: AOT と gc_check + stress の掃引が未実行
   - 次: C3 の AOT を長めの時間制限で回す、Ractor の deep copy / move の表を作り直す、pack `p` / `P`（番地を書く）を直す、copy backend に `GcLang::moved`（gen_ivars / object_ids / objspace の表を付け替える）の仕様を渡す
@@ -314,6 +315,7 @@ rubyspec は 3763 ファイル（32717 例）、失敗 26 + エラー 185 は 67
 - [ ] （直す）`system` / `spawn` / `IO.popen` のコマンド語が #to_path を受け付ける（process.rs cstring）: CRuby 4.0.10 / master は to_str だけで `system("echo", obj_with_to_path)` は TypeError (no implicit conversion of P into String)。redirect のパスは to_path で正しい（trials/2026-11-25-astrust-moving-gc/t/s5_b8.rb の system to_path word、2026-11-26 で確認）
 - [ ] （直す）死んだコード（この弾で呼び出し元の無い builtins の関数 7 つと kernel の rand / srand（random.rs が後から上書き）を削除。残り、hot path 側は触らなかった）: vm.rs の `site_fast`（45 行）・`spec_callee`（35 行）・`site_kind`、rt.rs の `srb_yield_miss`・`srb_call_kw_spec`・`srb_unsupported`、hash_methods.rs の `h_group_by` ほか `let _ = (...)` で警告を黙らせている fallback 群、math.rs の cbrt（extras.rs が上書き）、`Vm::rand_state`（読む所が無くなった）。AOT 経路でだけ使うものがあるか確認してから削る
 
+- [ ] AOT: t/hand io_fd_numbers_1121 が 4 並列の AOT 比較（焼いた直後の実行、patch 束縛あり）で fd 番号が 1 つずれた（plain は 5 / [6, 7]、AOT は 6 / [7, 8]。`SARUBY_PATCH=0` の実行は一致）。単独で流すと master 39d4b2c でも 6ed246e でも一致するので再現条件は未特定（2026-11-27、C1 のマージ後の関門で lead が観測）
 ## 性能（上 3 つの後。新規には起こさない）
 
 - [ ] codegen-units=1 への再ベースラインで悪くなった行（16 の分割の運だった可能性）: str plain +8.65 %、nesteddata plain +3.24 %、gen_gc plain +2.32 %、closures +2.13 / AOT +3.96 %。`#[inline]` の明示（kalloc / 文字列確保）で決定的に取り戻せるか（~/ruby/src/trials/2026-11-26-saruby-codegen-units）
