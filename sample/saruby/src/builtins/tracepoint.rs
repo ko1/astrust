@@ -249,14 +249,14 @@ pub fn run_traced_body(c: &mut Ctx, is: &'static Iseq, base: Stk, call_ev: u32, 
 #[inline(never)]
 pub fn invoke_traced(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk, argc: u32, blk: Blk, flags: u32) -> RV {
     let Some(m) = c.me_ref(me) else { return invoke_untraced(c, me, recv, base, argc, blk, flags) };
-    let (kind, name, owner) = (m.kind, m.name, m.owner);
+    let (kind, name, owner, body) = (m.kind, m.name, m.owner, m.body.get());
     let (call_ev, ret_ev) = match kind {
         MKind::Iseq(is) => match c.iseq_ref(is) {
             Some(i) if i.traced => return invoke_untraced(c, me, recv, base, argc, blk, flags),
             Some(i) if i.info.file == PRELUDE_FILE => (EV_C_CALL, EV_C_RETURN),
             _ => (EV_CALL, EV_RETURN),
         },
-        MKind::Bmethod(_) => (EV_CALL, EV_RETURN),
+        MKind::Bmethod => (EV_CALL, EV_RETURN),
         MKind::Cfunc(..) | MKind::AttrReader(_) | MKind::AttrWriter(_) => {
             // Proc#call and friends are not reported (CRuby's opt_call)
             if owner == c.vm().c_proc.get() && matches!(sym_str(name).as_str(), "call" | "()" | "yield" | "===" | "[]") { return invoke_untraced(c, me, recv, base, argc, blk, flags); }
@@ -289,7 +289,7 @@ pub fn invoke_traced(c: &mut Ctx, me: *const MethodEntry, recv: Value, base: Stk
     let mut end_line = 0;
     if call_ev == EV_CALL {
         // a method's lines are its code's (define_method: its block's)
-        let is = match kind { MKind::Iseq(is) => is, MKind::Bmethod(p) => match c.proc_data(p).blk.kind { BlockKind::Iseq(is) => is, _ => std::ptr::null() }, _ => std::ptr::null() };
+        let is = match kind { MKind::Iseq(is) => is, MKind::Bmethod => match c.proc_data(body).blk.kind { BlockKind::Iseq(is) => is, _ => std::ptr::null() }, _ => std::ptr::null() };
         if let Some(i) = c.iseq_ref(is) { a.path = i.info.file; a.line = i.info.line; end_line = i.info.end_line; }
         a.frame = 0; a.iseq = is as usize;
     }
@@ -436,7 +436,7 @@ fn target_iseq(c: &mut Ctx, v: Value) -> Result<usize, Esc> {
         let me = c.method_obj(v).me;
         match c.me_ref(me).map(|m| m.kind) {
             Some(MKind::Iseq(is)) => Some(is),
-            Some(MKind::Bmethod(p)) => match c.proc_data(p).blk.kind { BlockKind::Iseq(is) => Some(is), _ => None },
+            Some(MKind::Bmethod) => match c.proc_data(c.me_ref(me).map_or(NIL, |m| m.body.get())).blk.kind { BlockKind::Iseq(is) => Some(is), _ => None },
             _ => None,
         }
     } else if is_proc(v) {

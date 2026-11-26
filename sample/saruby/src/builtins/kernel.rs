@@ -1620,11 +1620,11 @@ fn m_ruby2_keywords(c: &mut Ctx, slf: Value, args: &[Value], _b: Blk) -> RV {
         // a define_method body is flagged on its block's iseq, as in CRuby
         let target = match me.kind {
             MKind::Iseq(is) => Some(is),
-            MKind::Bmethod(pv) => match c.proc_data(pv).blk.kind { BlockKind::Iseq(is) => Some(is), _ => None },
+            MKind::Bmethod => match c.proc_data(me.body.get()).blk.kind { BlockKind::Iseq(is) => Some(is), _ => None },
             _ => None,
         };
         let ok = match me.kind {
-            MKind::Iseq(_) | MKind::Bmethod(_) if target.is_some() => {
+            MKind::Iseq(_) | MKind::Bmethod if target.is_some() => {
                 let Some(is) = c.iseq_ref(target.unwrap()) else { continue };
                 let p = &is.params;
                 let ok = p.rest.is_some() && p.post.is_empty() && p.kw.is_empty() && p.kwrest.is_none() && !p.no_kw;

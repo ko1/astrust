@@ -156,15 +156,29 @@ pub const VISI_PROTECTED: u8 = 2;
 pub const VISI_MODFUNC: u8 = 3;
 
 #[derive(Clone, Copy)]
-pub enum MKind { Iseq(*const Iseq), Cfunc(CFunc, i32), AttrReader(Sym), AttrWriter(Sym), Bmethod(Value), Undef, ZSuper }
+pub enum MKind { Iseq(*const Iseq), Cfunc(CFunc, i32), AttrReader(Sym), AttrWriter(Sym), Bmethod, Undef, ZSuper }
 
-pub struct MethodEntry { pub name: Sym, pub owner: Value, pub visi: u8, pub kind: MKind, pub orig_owner: Value, pub cref: *const Cref }
+/// `body`: a Bmethod's Proc (NIL otherwise), a Cell so the collector updates it through a shared reference.
+/// `owner` / `orig_owner` are classes, which do not move.
+pub struct MethodEntry { pub name: Sym, pub owner: Value, pub visi: u8, pub kind: MKind, pub orig_owner: Value, pub cref: *const Cref, pub body: Cell<Value> }
+impl MethodEntry {
+    /// A copy for another owner (alias, visibility change, class dup ...): kind, cref and body carried over.
+    pub fn derive(&self, owner: Value, visi: u8, orig_owner: Value) -> MethodEntry {
+        MethodEntry { name: self.name, owner, visi, kind: self.kind, orig_owner, cref: self.cref, body: Cell::new(self.body.get()) }
+    }
+    /// The Proc of a Bmethod entry.
+    #[inline] pub fn bmethod(&self) -> Option<Value> { matches!(self.kind, MKind::Bmethod).then(|| self.body.get()) }
+}
 
 pub fn new_me(name: Sym, owner: Value, visi: u8, kind: MKind) -> *const MethodEntry {
-    Box::into_raw(Box::new(MethodEntry { name, owner, visi, kind, orig_owner: owner, cref: std::ptr::null() }))
+    Box::into_raw(Box::new(MethodEntry { name, owner, visi, kind, orig_owner: owner, cref: std::ptr::null(), body: Cell::new(NIL) }))
 }
 pub fn new_me_cref(name: Sym, owner: Value, visi: u8, kind: MKind, cref: *const Cref) -> *const MethodEntry {
-    Box::into_raw(Box::new(MethodEntry { name, owner, visi, kind, orig_owner: owner, cref }))
+    Box::into_raw(Box::new(MethodEntry { name, owner, visi, kind, orig_owner: owner, cref, body: Cell::new(NIL) }))
+}
+/// A define_method entry whose body is Proc `p`.
+pub fn new_bmethod_me(name: Sym, owner: Value, visi: u8, p: Value) -> *const MethodEntry {
+    Box::into_raw(Box::new(MethodEntry { name, owner, visi, kind: MKind::Bmethod, orig_owner: owner, cref: std::ptr::null(), body: Cell::new(p) }))
 }
 
 // ---- lexical scope -------------------------------------------------------------------------
@@ -957,12 +971,12 @@ pub fn warn_opt_redefinition(c: &mut Ctx, klass: Value, name: Sym, new: *const M
 fn warn_redefined(c: &mut Ctx, klass: Value, name: Sym, old: *const MethodEntry, new: *const MethodEntry) {
     let (Some(o), Some(n)) = (c.me_ref(old), c.me_ref(new)) else { return };
     if matches!(n.kind, MKind::Undef) || matches!(o.kind, MKind::Undef | MKind::ZSuper) || vm().alias_names.borrow().contains_key(&(old as usize)) { return; }
-    let ok = o.kind;
-    let shared = |k: MKind| match (k, ok) { (MKind::Iseq(a), MKind::Iseq(b)) => std::ptr::eq(a, b), (MKind::Bmethod(a), MKind::Bmethod(b)) => a == b, _ => false };
-    if c.class(klass).mtbl.iter().any(|(&m, &e)| m != name && c.me_ref(e).is_some_and(|x| shared(x.kind))) { return; }
+    let (ok, obody) = (o.kind, o.body.get());
+    let shared = |x: &MethodEntry| match (x.kind, ok) { (MKind::Iseq(a), MKind::Iseq(b)) => std::ptr::eq(a, b), (MKind::Bmethod, MKind::Bmethod) => x.body.get() == obody, _ => false };
+    if c.class(klass).mtbl.iter().any(|(&m, &e)| m != name && c.me_ref(e).is_some_and(|x| shared(x))) { return; }
     let prev = match ok {
         MKind::Iseq(is) => c.iseq_ref(is).map(|i| (i.info.file, i.info.line)),
-        MKind::Bmethod(p) => match c.proc_data(p).blk.kind { BlockKind::Iseq(is) => c.iseq_ref(is).map(|i| (i.info.file, i.info.line)), _ => None },
+        MKind::Bmethod => match c.proc_data(obody).blk.kind { BlockKind::Iseq(is) => c.iseq_ref(is).map(|i| (i.info.file, i.info.line)), _ => None },
         _ => None,
     };
     // saruby's own lazy stubs replacing themselves
@@ -1024,7 +1038,7 @@ fn zsuper_me(c: &Ctx, zs: *const MethodEntry, me: *const MethodEntry) -> *const 
     let (Some(z), Some(m)) = (c.me_ref(zs), c.me_ref(me)) else { return me };
     let key = (zs as usize, me as usize, z.visi);   // visibility: the ZSuper entry may change in place
     if let Some(p) = ZSUPER_MES.with(|t| t.borrow().get(&key).copied()) { return p as *const MethodEntry; }
-    let p = Box::into_raw(Box::new(MethodEntry { name: m.name, owner: m.owner, visi: z.visi, kind: m.kind, orig_owner: m.orig_owner, cref: m.cref })) as *const MethodEntry;
+    let p = Box::into_raw(Box::new(m.derive(m.owner, z.visi, m.orig_owner))) as *const MethodEntry;
     ZSUPER_MES.with(|t| t.borrow_mut().insert(key, p as usize));
     ZSUPER_OWNER.with(|t| t.borrow_mut().insert(p as usize, z.owner));
     p
@@ -1887,9 +1901,9 @@ fn is_internal_frame(c: &Ctx, fr: &RawFrame) -> bool {
 fn is_define_method_body(c: &Ctx, f: &RawFrame) -> bool {
     if f.kind == FK_CFUNC { return false; }
     let Some(me) = c.me_ref(f.me) else { return false };
-    let MKind::Bmethod(p) = &me.kind else { return false };
+    let Some(p) = me.bmethod() else { return false };
     if !c.class(me.owner).is_singleton { return false; }
-    matches!(c.proc_data(*p).blk.kind, BlockKind::Iseq(is) if std::ptr::eq(is, f.iseq))
+    matches!(c.proc_data(p).blk.kind, BlockKind::Iseq(is) if std::ptr::eq(is, f.iseq))
 }
 
 /// The prelude's methods are C functions in CRuby: a call from user code is one frame at the caller's file and
@@ -2686,7 +2700,7 @@ pub fn invoke_untraced_raw(c: &mut Ctx, me: *const MethodEntry, recv: Value, bas
             let v = base[2].get();
             crate::builtins::ractor::attr_set(c, recv, id, v)
         }
-        MKind::Bmethod(p) => invoke_bmethod(c, me, p, recv, base, argc, blk, flags),
+        MKind::Bmethod => invoke_bmethod(c, me, mer.body.get(), recv, base, argc, blk, flags),
         MKind::Undef | MKind::ZSuper => no_method_error(c, recv, mer.name, flags),
     }
 }
@@ -3335,10 +3349,12 @@ pub fn visit_class<V: EdgeVisitor<Saruby> + ?Sized>(m: &mut V, cd: &mut ClassDat
 
 pub fn visit_me<V: EdgeVisitor<Saruby> + ?Sized>(m: &mut V, me: *const MethodEntry) {
     if me.is_null() { return; }
-    let me = unsafe { &mut *(me as *mut MethodEntry) };
-    m.visit(&mut me.owner);
-    m.visit(&mut me.orig_owner);
-    if let MKind::Bmethod(p) = &mut me.kind { m.visit(p); }
+    // SAFETY: entries are leaked Boxes nothing frees; only the Cell is written through the shared reference
+    let me = unsafe { &*me };
+    // classes do not move (docs/gc_moving.md 4): marked through copies
+    for o in [me.owner, me.orig_owner] { let mut v = o; m.visit(&mut v); debug_assert!(v == o, "a class moved"); }
+    let mut p = me.body.get();
+    if p != NIL { m.visit(&mut p); me.body.set(p); }
 }
 
 pub fn visit_block<V: EdgeVisitor<Saruby> + ?Sized>(m: &mut V, b: &mut Block) {

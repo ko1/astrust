@@ -281,8 +281,7 @@ fn finish_dup(c: &mut Ctx, slf: Value, n: Value, clone: bool, freeze: Option<boo
         if c.class(k).is_singleton && !is_class_or_module(slf) {
             let sk = singleton_class(c, n);
             // entries owned by the copy (rb_singleton_class_clone: Method#owner is the new singleton class)
-            let mt: Vec<(Sym, MethodEntry)> = c.class(k).mtbl.iter().filter_map(|(a, b)| c.me_ref(*b).map(|o| (*a, MethodEntry {
-                name: o.name, owner: sk, visi: o.visi, kind: o.kind, orig_owner: if o.orig_owner == k { sk } else { o.orig_owner }, cref: o.cref }))).collect();
+            let mt: Vec<(Sym, MethodEntry)> = c.class(k).mtbl.iter().filter_map(|(a, b)| c.me_ref(*b).map(|o| (*a, o.derive(sk, o.visi, if o.orig_owner == k { sk } else { o.orig_owner })))).collect();
             let nt = &mut c.class_mut(sk).mtbl;
             for (m, e) in mt { nt.insert(m, Box::into_raw(Box::new(e))); }
             let inc = c.class(k).includes.clone();
@@ -377,7 +376,7 @@ fn me_owner(c: &Ctx, me: *const MethodEntry) -> Value { c.me_ref(me).map_or(NIL,
 fn me_visi(c: &Ctx, me: *const MethodEntry) -> u8 { c.me_ref(me).map_or(VISI_PUBLIC, |m| m.visi) }
 /// A copy of an entry, to define under another owner / name.
 fn me_copy(c: &Ctx, me: *const MethodEntry) -> Option<MethodEntry> {
-    c.me_ref(me).map(|o| MethodEntry { name: o.name, owner: o.owner, visi: o.visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref })
+    c.me_ref(me).map(|o| o.derive(o.owner, o.visi, o.orig_owner))
 }
 /// The lexical scope the running builtin was called under.
 fn cur_cref(c: &Ctx) -> *const Cref { c.cur_frame().map_or(std::ptr::null(), |f| f.cref()) }
@@ -700,11 +699,11 @@ fn set_visibility(c: &mut Ctx, slf: Value, a: &[Value], visi: u8) -> RV {
         // a private Integer#+ leaves the fast path too (CRuby raises NoMethodError)
         crate::rt::note_redefinition(c, slf, m);
         if visi == VISI_MODFUNC {
-            let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi: VISI_PRIVATE, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
+            let n = Box::into_raw(Box::new(o.derive(slf, VISI_PRIVATE, o.orig_owner)));
             keep_alias_name(c, me, n);
             define_method_me(c, slf, m, n);   // its own entry turns private in place: no redefinition
             let sk = singleton_class(c, slf);
-            let n2 = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: sk, visi: VISI_PUBLIC, kind: o.kind, orig_owner: sk, cref: o.cref }));
+            let n2 = Box::into_raw(Box::new(o.derive(sk, VISI_PUBLIC, sk)));
             keep_alias_name(c, me, n2);
             define_user_method(c, sk, m, n2);
             call_method_added(c, sk, m)?;
@@ -715,7 +714,7 @@ fn set_visibility(c: &mut Ctx, slf: Value, a: &[Value], visi: u8) -> RV {
         else if o.visi == visi { continue; }   // an inherited one already so is left alone
         else if c.class(slf).refined {
             // in a refinement: a copy with the new visibility (refined lookups do not follow ZSuper entries)
-            let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi, kind: o.kind, orig_owner: o.orig_owner, cref: o.cref }));
+            let n = Box::into_raw(Box::new(o.derive(slf, visi, o.orig_owner)));
             keep_alias_name(c, me, n);
             define_method_me(c, slf, m, n);
         } else {
@@ -777,7 +776,7 @@ pub fn m_define_method(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let me = if a.len() == 2 {
         let body = a[1];
         if is_proc(body) {
-            new_me(mid, slf, visi, MKind::Bmethod(body))
+            new_bmethod_me(mid, slf, visi, body)
         } else if is_method_obj(body) {
             let Some(o) = me_copy(c, c.method_obj(body).me) else { return type_err(c, "bad method object") };
             if !c.class(o.owner).is_module && !is_kind_of_class(c, slf, o.owner) {
@@ -785,7 +784,7 @@ pub fn m_define_method(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
                 return type_err(c, format!("bind argument must be a subclass of {}", class_path(c, o.owner)));
             }
             // like an alias: __method__ stays the original name, __callee__ is the new one
-            let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: slf, visi, kind: o.kind, orig_owner: slf, cref: o.cref }));
+            let n = Box::into_raw(Box::new(o.derive(slf, visi, slf)));
             if mid != o.name { c.vm().alias_names.borrow_mut().insert(n as usize, mid); }
             n as *const MethodEntry
         } else {
@@ -797,14 +796,14 @@ pub fn m_define_method(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
         // define_method's block body runs with lambda semantics
         let np = obj_dup(c, p, false, None)?;
         c.proc_data_mut(np).is_lambda = true;
-        new_me(mid, slf, visi, MKind::Bmethod(np))
+        new_bmethod_me(mid, slf, visi, np)
     };
     crate::rt::note_redefinition(c, slf, mid);
     define_user_method(c, slf, mid, me);
     if modfunc {
         let Some(o) = me_copy(c, me) else { return Ok(Value::sym(mid)) };
         let sk = singleton_class(c, slf);
-        let n = Box::into_raw(Box::new(MethodEntry { name: o.name, owner: sk, visi: VISI_PUBLIC, kind: o.kind, orig_owner: sk, cref: o.cref }));
+        let n = Box::into_raw(Box::new(o.derive(sk, VISI_PUBLIC, sk)));
         keep_alias_name(c, me, n);
         crate::rt::note_redefinition(c, sk, mid);
         define_user_method(c, sk, mid, n);
@@ -1395,10 +1394,11 @@ fn refinement_import_methods(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> R
         for (name, me) in mt {
             let Some(me) = me_copy(c, me) else { continue };
             match me.kind {
-                MKind::Iseq(_) | MKind::Bmethod(_) | MKind::AttrReader(_) | MKind::AttrWriter(_) => {
+                MKind::Iseq(_) | MKind::Bmethod | MKind::AttrReader(_) | MKind::AttrWriter(_) => {
                     // the copies run under the refine block's scope (its refinements are active)
                     let cref = if c.caller_frame().is_none() { me.cref } else { caller_cref(c) };
                     let n = new_me_cref(name, slf, me.visi, me.kind, cref);
+                    if let Some(e) = c.me_ref(n) { e.body.set(me.body.get()); }
                     crate::rt::note_redefinition(c, slf, name);
                     define_user_method(c, slf, name, n);
                 }
