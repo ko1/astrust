@@ -676,54 +676,59 @@ fn set_visibility(c: &mut Ctx, slf: Value, a: &[Value], visi: u8) -> RV {
         return Ok(NIL);
     }
     let list: Vec<Value> = if a.len() == 1 && is_array(a[0]) { c.ary(a[0]).to_vec() } else { a.to_vec() };
-    let keep = c.ary_new_from(&list);   // to_sym_arg may run Ruby code; list is not scanned
-    for &x in &list {
-        let m = to_sym_arg(c, x)?;
-        // from the origin: a prepended module's method is not the one changed
-        let anc = ancestors(c, slf);
-        let first = anc[anc.iter().position(|&k| k == slf).unwrap_or(0)..].iter().find_map(|&k| c.class(k).mtbl.get(&m).copied());
-        let me = match first {
-            Some(f) if matches!(me_kind(c, f), Some(MKind::ZSuper)) => if me_owner(c, f) == slf { f } else { search_method(c, slf, m) },
-            Some(f) => f,
-            None => search_method(c, slf, m),
-        };
-        // a refinement changes the visibility of the refined class's method
-        let me = if me.is_null() && c.class(slf).refined { search_method(c, c.class(slf).attached, m) } else { me };
-        let me = if me.is_null() && c.class(slf).is_module { search_method(c, c.vm().c_object.get(), m) } else { me };
-        if me.is_null() || matches!(me_kind(c, me), Some(MKind::Undef)) {
-            let msg = format!("undefined method '{}' for {} '{}'", sym_str(m), if c.class(slf).is_module { "module" } else { "class" }, class_path(c, slf));
-            let e = make_name_error(c, c.vm().c_name_error.get(), &msg, Value::sym(m), slf)?;
-            return Err(raise_exc(c, e));
+    let keep = c.ary_new_from(&list);
+    // parked, each name re-read by index (to_sym_arg may run Ruby code; the Vec copy is no root)
+    c.park(1, |c, q| {
+        q.set(0, keep);
+        for i in 0..c.ary_len(q.get(0)) {
+            let x = c.ary_get(q.get(0), i);
+            let m = to_sym_arg(c, x)?;
+            // from the origin: a prepended module's method is not the one changed
+            let anc = ancestors(c, slf);
+            let first = anc[anc.iter().position(|&k| k == slf).unwrap_or(0)..].iter().find_map(|&k| c.class(k).mtbl.get(&m).copied());
+            let me = match first {
+                Some(f) if matches!(me_kind(c, f), Some(MKind::ZSuper)) => if me_owner(c, f) == slf { f } else { search_method(c, slf, m) },
+                Some(f) => f,
+                None => search_method(c, slf, m),
+            };
+            // a refinement changes the visibility of the refined class's method
+            let me = if me.is_null() && c.class(slf).refined { search_method(c, c.class(slf).attached, m) } else { me };
+            let me = if me.is_null() && c.class(slf).is_module { search_method(c, c.vm().c_object.get(), m) } else { me };
+            if me.is_null() || matches!(me_kind(c, me), Some(MKind::Undef)) {
+                let msg = format!("undefined method '{}' for {} '{}'", sym_str(m), if c.class(slf).is_module { "module" } else { "class" }, class_path(c, slf));
+                let e = make_name_error(c, c.vm().c_name_error.get(), &msg, Value::sym(m), slf)?;
+                return Err(raise_exc(c, e));
+            }
+            let Some(o) = me_copy(c, me) else { continue };
+            // a private Integer#+ leaves the fast path too (CRuby raises NoMethodError)
+            crate::rt::note_redefinition(c, slf, m);
+            if visi == VISI_MODFUNC {
+                let n = Box::into_raw(Box::new(o.derive(slf, VISI_PRIVATE, o.orig_owner)));
+                keep_alias_name(c, me, n);
+                define_method_me(c, slf, m, n);   // its own entry turns private in place: no redefinition
+                let sk = singleton_class(c, slf);
+                let n2 = Box::into_raw(Box::new(o.derive(sk, VISI_PUBLIC, sk)));
+                keep_alias_name(c, me, n2);
+                define_user_method(c, sk, m, n2);
+                call_method_added(c, sk, m)?;
+                continue;
+            }
+            // rb_export_method: the entry found first (a ZSuper one included) changes in place when it is slf's own
+            if o.owner == slf { c.me_set_visi(me, visi); bump_method_serial(); c.vm().mcache.borrow_mut().clear(); }
+            else if o.visi == visi { continue; }   // an inherited one already so is left alone
+            else if c.class(slf).refined {
+                // in a refinement: a copy with the new visibility (refined lookups do not follow ZSuper entries)
+                let n = Box::into_raw(Box::new(o.derive(slf, visi, o.orig_owner)));
+                keep_alias_name(c, me, n);
+                define_method_me(c, slf, m, n);
+            } else {
+                // a ZSuper entry: calls reach the method above (a later redefinition there too)
+                define_method_me(c, slf, m, new_me(m, slf, visi, MKind::ZSuper));
+                crate::builtins::object::call_method_added(c, slf, m)?;
+            }
         }
-        let Some(o) = me_copy(c, me) else { continue };
-        // a private Integer#+ leaves the fast path too (CRuby raises NoMethodError)
-        crate::rt::note_redefinition(c, slf, m);
-        if visi == VISI_MODFUNC {
-            let n = Box::into_raw(Box::new(o.derive(slf, VISI_PRIVATE, o.orig_owner)));
-            keep_alias_name(c, me, n);
-            define_method_me(c, slf, m, n);   // its own entry turns private in place: no redefinition
-            let sk = singleton_class(c, slf);
-            let n2 = Box::into_raw(Box::new(o.derive(sk, VISI_PUBLIC, sk)));
-            keep_alias_name(c, me, n2);
-            define_user_method(c, sk, m, n2);
-            call_method_added(c, sk, m)?;
-            continue;
-        }
-        // rb_export_method: the entry found first (a ZSuper one included) changes in place when it is slf's own
-        if o.owner == slf { c.me_set_visi(me, visi); bump_method_serial(); c.vm().mcache.borrow_mut().clear(); }
-        else if o.visi == visi { continue; }   // an inherited one already so is left alone
-        else if c.class(slf).refined {
-            // in a refinement: a copy with the new visibility (refined lookups do not follow ZSuper entries)
-            let n = Box::into_raw(Box::new(o.derive(slf, visi, o.orig_owner)));
-            keep_alias_name(c, me, n);
-            define_method_me(c, slf, m, n);
-        } else {
-            // a ZSuper entry: calls reach the method above (a later redefinition there too)
-            define_method_me(c, slf, m, new_me(m, slf, visi, MKind::ZSuper));
-            crate::builtins::object::call_method_added(c, slf, m)?;
-        }
-    }
-    std::hint::black_box(keep);
+        Ok(())
+    })?;
     Ok(if a.len() == 1 { a[0] } else { c.ary_new_from(a) })
 }
 fn m_private(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { set_visibility(c, slf, a, VISI_PRIVATE) }
