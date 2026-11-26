@@ -714,16 +714,6 @@ fn k_readlines(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
 /// Print a warning line unless $VERBOSE is nil.
 pub fn warn_str(c: &mut Ctx, msg: &str) { if c.vm().verbose.get() != NIL { err_write(msg.as_bytes()); } }
 
-fn k_rand(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
-    crate::builtins::random::rand_value(c, args.first().copied().unwrap_or(NIL))
-}
-fn k_srand(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
-    let old = c.vm().rand_state.get();
-    let seed = match args.first() { Some(&v) => crate::builtins::numeric_methods::num_to_long(c, v)? as u64, None => 0x2545F4914F6CDD1D };
-    crate::builtins::random::seed(c, seed);
-    Ok(c.int_from_i128(old as i128))
-}
-
 // ---- conversion functions ----------------------------------------------------------------
 
 use crate::builtins::rational::kw_exception;
@@ -1750,8 +1740,6 @@ pub fn init(c: &mut Ctx) {
     mf(c, "gets", k_gets, -1);
     mf(c, "readline", k_readline, -1);
     mf(c, "readlines", k_readlines, -1);
-    mf(c, "rand", k_rand, -1);
-    mf(c, "srand", k_srand, -1);
     mf(c, "Integer", k_integer, -1);
     mf(c, "Float", k_float, -1);
     mf(c, "String", k_string, -1);

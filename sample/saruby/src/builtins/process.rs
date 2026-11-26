@@ -306,7 +306,8 @@ fn needs_shell(s: &str) -> bool {
     let t = s.trim_start();
     let first = t.split(|ch: char| ch.is_ascii_whitespace()).next().unwrap_or("");
     s.bytes().any(|b| b"*?{}[]<>()~&|\\$;'`\"\n#".contains(&b)) || first.contains('=')
-        || matches!(first, "exit" | "cd" | "export" | "exec" | "set" | "unset" | "." | ":" | "eval" | "source" | "trap" | "ulimit" | "umask" | "wait" | "alias" | "command" | "type" | "read" | "if" | "for" | "while" | "case" | "!")
+        // process.c posix_sh_cmds: other builtins (cd, umask, ulimit ...) are exec'ed directly, as CRuby does
+        || matches!(first, "!" | "." | ":" | "break" | "case" | "continue" | "do" | "done" | "elif" | "else" | "esac" | "eval" | "exec" | "exit" | "export" | "fi" | "for" | "if" | "in" | "readonly" | "return" | "set" | "shift" | "then" | "times" | "trap" | "unset" | "until" | "while")
 }
 fn cstring(c: &mut Ctx, v: Value) -> Result<CString, Esc> {
     let sv = if is_string(v) { v } else if respond_to(c, v, intern(b"to_path"), true) && !v.is_sym() { funcall(c, v, intern(b"to_path"), &[], std::ptr::null())? } else { expect_str(c, v)? };
@@ -383,7 +384,6 @@ pub fn spawn_spec(c: &mut Ctx, env: Option<Value>, args: &[Value], opts: Option<
                     };
                     continue;
                 }
-                "new_pgroup" => { continue; }
                 "umask" => { sp.umask = Some(mode_num(c, v)?); continue; }
                 "unsetenv_others" => { sp.clear_env = bool_opt(c, v, "unsetenv_others")?; continue; }
                 "close_others" => {
@@ -412,7 +412,8 @@ pub fn spawn_spec(c: &mut Ctx, env: Option<Value>, args: &[Value], opts: Option<
         let keys = if is_array(k) { c.ary(k).to_vec() } else { vec![k] };
         for &x in &keys { c.ary_push(keep, x); }
         let mut dsts = vec![];
-        for kk in keys { match fd_of(c, kk)? { Some(fd) => dsts.push(fd), None => return arg_err(c, "wrong exec redirect action") } }
+        let single = !is_array(k);
+        for kk in keys { match fd_of(c, kk)? { Some(fd) => dsts.push(fd), None => return if single { let kn = class_path(c, real_class_of(c, kk)); arg_err(c, format!("wrong exec option: {}", kn)) } else { arg_err(c, "wrong exec redirect action") } } }
         let reading = dsts.iter().all(|&d| d == 0);
         if v.is_sym() && v == sym_value("close") { sp.close.extend(dsts); continue; }
         let src = if is_string(v) || (is_array(v) && c.ary_len(v) >= 1 && is_string(c.ary_get(v, 0))) {
@@ -421,7 +422,17 @@ pub fn spawn_spec(c: &mut Ctx, env: Option<Value>, args: &[Value], opts: Option<
             let p = crate::builtins::io::path_arg(c, path)?;
             let mut om = crate::builtins::io::parse_mode(c, &rest, None)?;
             if rest.is_empty() { om.flags = if reading { 0 } else { sys::O_WRONLY | sys::O_CREAT | sys::O_TRUNC }; om.perm = 0o644; }
-            let fd = crate::builtins::io::sysopen(c, &p, &om)?;
+            let fifo = { use std::os::unix::fs::FileTypeExt; std::fs::metadata(p.path()).is_ok_and(|m| m.file_type().is_fifo()) };
+            let fd = if fifo { crate::builtins::io::sysopen(c, &p, &om)? } else {
+                // CRuby words a failed redirect open "strerror - path", not "@ rb_sysopen - path"
+                let cp = p.cstr();
+                loop {
+                    let fd = sys::open(&cp, om.flags | sys::O_CLOEXEC, om.perm);
+                    if fd >= 0 { break fd; }
+                    let e = sys::errno();
+                    if e != sys::EINTR { return Err(raise_errno_plain(c, e as i64, &String::from_utf8_lossy(p.as_bytes()))); }
+                }
+            };
             sp.opened.push(fd);
             fd
         } else if is_array(v) && c.ary_len(v) == 2 && c.ary_get(v, 0) == sym_value("child") {

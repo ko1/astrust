@@ -1673,6 +1673,7 @@ fn io_nonblock_p(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 fn io_set_nonblock(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let io = get_io(c, slf)?; set_nonblock(out_fd(io), a[0].truthy()); Ok(a[0]) }
 fn io_nonblock(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     check_argc(c, a, 0, 1)?;
+    if b.is_null() { return err(c, c.vm().c_local_jump_error.get(), "no block given"); }
     let on = a.first().map(|v| v.truthy()).unwrap_or(true);
     let fd = out_fd(get_io(c, slf)?);
     let was = set_nonblock(fd, on);
@@ -1713,6 +1714,13 @@ fn io_wait_readable(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     if io.rpos < io.rbuf.len() { return Ok(slf); }
     let fd = io.fd;
     let r = wait_one(c, slf, fd, sys::POLLIN, dl, a.first().copied().unwrap_or(NIL))?;
+    check_open(c, slf, false)?;
+    Ok(if r.is_some() { slf } else { NIL })
+}
+fn io_wait_priority(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    let dl = wait_deadline(c, a.first())?;
+    let fd = readable_nowait(c, slf)?.fd;
+    let r = wait_one(c, slf, fd, sys::POLLPRI, dl, a.first().copied().unwrap_or(NIL))?;
     check_open(c, slf, false)?;
     Ok(if r.is_some() { slf } else { NIL })
 }
@@ -2444,7 +2452,7 @@ pub fn init(c: &mut Ctx) {
     d(c, "external_encoding", io_ext_enc, 0); d(c, "internal_encoding", io_int_enc, 0); d(c, "set_encoding", io_set_encoding, -1);
     d(c, "set_encoding_by_bom", io_set_encoding_by_bom, 0);
     d(c, "autoclose?", io_autoclose_p, 0); d(c, "autoclose=", io_set_autoclose, 1); d(c, "close_on_exec?", io_cloexec_p, 0); d(c, "close_on_exec=", io_set_cloexec, 1);
-    d(c, "fcntl", io_fcntl, -1); d(c, "ioctl", io_ioctl, -1); d(c, "reopen", io_reopen, -1); d(c, "wait_readable", io_wait_readable, -1); d(c, "wait_writable", io_wait_writable, -1);
+    d(c, "fcntl", io_fcntl, -1); d(c, "ioctl", io_ioctl, -1); d(c, "reopen", io_reopen, -1); d(c, "wait_readable", io_wait_readable, -1); d(c, "wait_writable", io_wait_writable, -1); d(c, "wait_priority", io_wait_priority, -1);
     d(c, "timeout", io_get_timeout, 0); d(c, "timeout=", io_set_timeout, 1);
     define_private_cfunc(c, io, "initialize", io_initialize, -1);
     define_private_cfunc(c, io, "initialize_copy", io_init_copy, 1);

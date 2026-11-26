@@ -442,12 +442,6 @@ impl BigInt {
     fn bit_length_mag(&self) -> usize {
         match self.mag.last() { None => 0, Some(&top) => (self.mag.len() - 1) * 32 + (32 - top.leading_zeros() as usize) }
     }
-    fn low_bits_nonzero(&self, n: usize) -> bool {
-        let w = n / 32;
-        if self.mag[..w.min(self.mag.len())].iter().any(|&x| x != 0) { return true; }
-        let b = n % 32;
-        b > 0 && w < self.mag.len() && self.mag[w] & ((1u32 << b) - 1) != 0
-    }
     pub fn trailing_zeros(&self) -> usize {
         let mut n = 0;
         for &w in &self.mag { if w == 0 { n += 32; } else { return n + w.trailing_zeros() as usize; } }

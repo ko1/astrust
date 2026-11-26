@@ -362,7 +362,9 @@ fn m_extend_object(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     c.class_mut(slf).extended_by.push(a[0]);
     Ok(a[0])
 }
-fn k_display(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
+fn k_display(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
+    check_argc(c, a, 0, 1)?;
+    if let Some(&port) = a.first() { funcall(c, port, intern(b"write"), &[slf], Blk::NONE)?; return Ok(NIL); }
     let s = to_s_value(c, slf)?;
     let b = c.str_bytes(s).to_vec();
     stdout_write(c, &b)?;
@@ -370,10 +372,6 @@ fn k_display(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 }
 fn k_hash(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV { obj_hash(c, slf, a, b) }
 
-/// (name, visibility) of the defined (not undef'ed) entries of class `k`.
-fn mtbl_entries(c: &Ctx, k: Value) -> Vec<(Sym, u8)> {
-    c.class(k).mtbl.iter().filter_map(|(n, me)| c.me_ref(*me).filter(|m| !matches!(m.kind, MKind::Undef)).map(|m| (*n, m.visi))).collect()
-}
 fn me_kind(c: &Ctx, me: *const MethodEntry) -> Option<MKind> { c.me_ref(me).map(|m| m.kind) }
 fn me_owner(c: &Ctx, me: *const MethodEntry) -> Value { c.me_ref(me).map_or(NIL, |m| m.owner) }
 fn me_visi(c: &Ctx, me: *const MethodEntry) -> u8 { c.me_ref(me).map_or(VISI_PUBLIC, |m| m.visi) }
@@ -532,14 +530,6 @@ fn keep_alias_name(c: &Ctx, from: *const MethodEntry, to: *const MethodEntry) {
     if let Some(n) = n { c.vm().alias_names.borrow_mut().insert(to as usize, n); }
 }
 
-/// An alias made at boot: the entry is `klass`'s own, nobody listens to method_added yet.
-pub fn boot_alias(c: &mut Ctx, klass: Value, newname: Sym, oldname: Sym) {
-    let Some(&me) = c.class(klass).mtbl.get(&oldname) else { return };
-    let Some(o) = me_copy(c, me) else { return };
-    let n = Box::into_raw(Box::new(o)) as *const MethodEntry;
-    c.vm().alias_names.borrow_mut().insert(n as usize, newname);
-    define_method_me(c, klass, newname, n);
-}
 /// rb_define_alias at boot: Method#original_name and backtrace labels show `old`, as CRuby's.
 pub fn alias_builtin(c: &mut Ctx, klass: Value, new: &str, old: &str) {
     alias_method(c, klass, intern(new.as_bytes()), intern(old.as_bytes())).unwrap_or_else(|_| panic!("alias {}", new));

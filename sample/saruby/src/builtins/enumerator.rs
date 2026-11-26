@@ -63,15 +63,6 @@ pub fn enum_for_sized(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value]) -> RV 
     let k = enum_class_for(c, recv);
     Ok(new_enum(c, k, recv, mid, args, TRUE))
 }
-pub fn enum_from_array(c: &mut Ctx, recv: Value, mid: Sym, args: &[Value], arr: Value) -> RV {
-    let k = c.vm().c_enumerator.get();
-    let e = new_enum(c, k, recv, mid, args, NIL);
-    let none = c.ary_new();
-    let en = renum_mut(c, e);
-    en.buf = arr; en.recv = arr; en.mid = s::each; en.args = none;
-    Ok(e)
-}
-
 pub fn arith_seq(c: &mut Ctx, b: Value, e: Value, st: Value, excl: bool, mid: Sym) -> RV {
     let k = c.vm().c_arith_seq.get();
     let v = new_enum(c, k, b, mid, &[], NIL);

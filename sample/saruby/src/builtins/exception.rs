@@ -492,9 +492,10 @@ fn th_each_caller_location(c: &mut Ctx, _s: Value, args: &[Value], b: Blk) -> RV
 /// caller / caller_locations arguments: (start = 1, length = nil) or (range, resolved against `size()` frames
 /// like rb_range_beg_len); None: the range starts past the frames.
 pub fn caller_range(c: &mut Ctx, args: &[Value], size: impl FnOnce(&mut Ctx) -> usize) -> Result<Option<(usize, Option<usize>)>, Esc> {
+    check_argc(c, args, 0, 2)?;
     if args.is_empty() { return Ok(Some((1, None))); }
     let a = args[0];
-    let long = crate::builtins::numeric_methods::num_to_long;
+    let long =crate::builtins::numeric_methods::num_to_long;
     if args.len() == 1 && is_kind_of(c, a, c.vm().c_range.get()) {
         let n = size(c) as i64;
         return Ok(crate::range::range_beg_len(c, a, n, 0)?.map(|(b, l)| (b as usize, Some(l as usize))));

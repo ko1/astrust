@@ -100,7 +100,7 @@ pub const O_CREAT: c_int = 0o100; pub const O_EXCL: c_int = 0o200; pub const O_N
 pub const O_APPEND: c_int = 0o2000; pub const O_NONBLOCK: c_int = 0o4000; pub const O_CLOEXEC: c_int = 0o2000000;
 pub const F_GETFD: c_int = 1; pub const F_SETFD: c_int = 2; pub const F_GETFL: c_int = 3; pub const F_SETFL: c_int = 4; pub const FD_CLOEXEC: c_int = 1;
 pub const EINTR: i64 = 4; pub const EAGAIN: i64 = 11;
-pub const POLLIN: i16 = 1; pub const POLLOUT: i16 = 4; pub const POLLERR: i16 = 8; pub const POLLHUP: i16 = 16;
+pub const POLLIN: i16 = 1; pub const POLLPRI: i16 = 2; pub const POLLOUT: i16 = 4; pub const POLLERR: i16 = 8; pub const POLLHUP: i16 = 16;
 
 // ---- file descriptors: integers to the kernel; a bad fd is EBADF, not memory unsafety --------
 // SAFETY (each `unsafe` in this block): the buffer, when there is one, is a live Rust slice
