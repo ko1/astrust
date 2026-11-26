@@ -68,7 +68,7 @@ pub fn cmp_result(c: &mut Ctx, r: Value, a: Value, b: Value) -> Result<i64, Esc>
     if r == NIL {
         let an = class_path(c, real_class_of(c, a));
         let bn = if b.is_heap() && !is_float(b) { class_path(c, real_class_of(c, b)) } else { inspect_str(c, b)? };
-        return arg_err(c, format!("comparison of {} with {} failed", an, bn));
+        return arg_err(c, format!("comparison of {} with {} failed: comparator returned nil", an, bn));
     }
     if is_bignum(r) { return Ok(if c.big(r).neg { -1 } else { 1 }); }
     let z = funcall(c, r, s::gt, &[Value::fix(0)], std::ptr::null())?;

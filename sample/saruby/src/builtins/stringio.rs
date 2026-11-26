@@ -842,7 +842,7 @@ fn sio_set_encoding(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
         }
     };
     st_mut(c, slf).enc = enc;
-    if let Some(e) = enc { if p.string != NIL && mode_set(c, slf, FM_W) && !is_frozen(p.string) { c.rstring_mut(p.string).enc = e; } }
+    if let Some(e) = enc { if p.string != NIL && mode_set(c, slf, FM_W) && !is_frozen(p.string) && crate::heap::obj_flags(p.string) & crate::object::FL_CHILLED_ANY == 0 { c.rstring_mut(p.string).enc = e; } }
     Ok(slf)
 }
 fn sio_set_encoding_by_bom(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {

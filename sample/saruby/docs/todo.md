@@ -237,7 +237,11 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 `make COVERAGE=1` + `tools/coverage.sh`。baseline は README。穴を埋めるテストは rubyharness の `t/cov/*_1125c.rb`（.out は CRuby 4.0.10）。
 
 - [ ] t/hand で行カバレッジが低い（%、ベースライン）: json.rs 0（gem の Ruby が見つかれば使われない fallback）、inline_iter.rs 0、aot.rs 35、inline_builtin.rs 55、opt.rs 78、json_generator 74、blop 78、zlib_deflate 80、json_parser 82、zlib_inflate 83、strscan 84（t/cov で追加）、io_console 84、encoding 85、pty 85。全ファイルの表は trials README
-- [ ] 死んだコード（削除は未）: `string_methods.rs` の s_to_r / s_to_c / scan_rational / scan_decimal / natural（rational.rs・complex.rs が後から登録し直すので到達しない、約 110 行）
+- [x] 死んだコード削除済み（2026-11-26）: `string_methods.rs` の s_to_r / s_to_c / scan_rational / scan_decimal / natural / kernel_call / scan_digits と to_r / to_c の登録（boot.rs で rational.rs・complex.rs が後から登録し直すので到達しなかった、約 85 行）
+- [ ] Timeout.timeout の中でブロックする pipe 読み（read / gets / readpartial / sysread）が戻らない（2026-11-26 t/cov io_wait_pipe で発見、master 版 ruby は Timeout::Error）。`require "timeout"; r, w = IO.pipe; Timeout.timeout(0.05) { r.read }` が止まる。`IO#timeout=` 経由の読み、`Timeout.timeout { IO.select([r]) }`、`Timeout.timeout { sleep }` は動く（別スレッドからの Thread#raise で pipe 読み中の別スレッドを起こすのも動く）ので、メインスレッドが blop で pipe 読み中のとき timeout スレッドの raise が届かない経路。スケジューラ側の設計の話なのでテスト（io_wait_pipe_1126c）からは外してある
+- [ ] `IO#timeout=` を付けた pipe への書き込みが満杯で詰まると戻らない（`r, w = IO.pipe; w.timeout = 0.02; w.write("x" * 1_000_000)`、master は IO::TimeoutError）。読みの timeout は効く
+- [ ] RbConfig::MAKEFILE_CONFIG が CONFIG と同じ Hash（CRuby は `$(prefix)/bin` のような未展開の値）
+- [ ] master（4.1.0dev）との差で REF_RUBY（4.0.10 の stdlib / gem / ext）に結び付くもの（t/cov の `.out` が master、`.out.4.0` が 4.0.10、saruby は 4.0.10 側）: json の `script_safe: true`（master は `</script>` + U+2028 U+2029 + `/`、4.0.10 は `<\/script>  \/`）、`StringScanner::Id`（4.0.10 にあり master に無い）、`Socket.gethostbyname` / `Socket.gethostbyaddr` / `TCPSocket.gethostbyname`（master は NoMethodError）、`Addrinfo.getaddrinfo` / `TCPSocket.new` の名前解決失敗の文言（master は `"host"` を後ろに付ける）、`Zlib::Deflate#flush(SYNC_FLUSH)` を入力無しで 2 回（4.0.10 / saruby は Zlib::BufError、master は 1 回目に 7 byte、2 回目に空を返す）、RbConfig の MAJOR.MINOR.TEENY / PATCHLEVEL / ruby_version（master は 4.1.0 / -1 / 4.1.0+N）
 - [x] 1 回目: math / sprintf float・整数・文字列 / Rational 文字列 parse・round / gsub 置換 / lines / pack / Range / Struct / Hash / 数値 round・coerce（`t/cov/*_1125c.rb` 11 本）。見つけたバグ 18 件は修正済み（README）
 - [ ] CRuby 4.0.10 の癖として再現させた: `Rational("1e+")` は 1（指数部が符号まで消費され数字が無くても通る）。master でも同じ。仕様かバグかは未確認
 

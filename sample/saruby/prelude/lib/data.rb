@@ -164,9 +164,10 @@ class Data
         v = __saruby__.__ivget(self, m)
         "#{m.match?(/\A(?:[A-Za-z_]|[^\x00-\x7F])(?:\w|[^\x00-\x7F])*\z/) ? m : m.inspect}=#{v.inspect}"
       end
-      s = "#<data "
-      s << name << (parts.empty? ? "" : " ") if name
-      s << parts.join(", ") << ">"
+      s = +"#<data"
+      s << " " << name if name
+      s << " " << parts.join(", ") unless parts.empty?
+      s << ">"
     ensure
       seen.delete(object_id)
     end

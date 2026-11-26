@@ -2103,7 +2103,7 @@ fn io_s_select(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     for k in 0..3 {
         let Some(&l) = a.get(k) else { continue };
         if l == NIL { continue; }
-        let l = expect_array(c, l)?;
+        if !is_array(l) { let cn = class_name_for_err(c, l); return type_err(c, format!("wrong argument type {} (expected Array)", cn)); }
         let mut i = 0;
         while i < c.ary_len(l) {
             let v = c.ary_get(l, i); i += 1;
