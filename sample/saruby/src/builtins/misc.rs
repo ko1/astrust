@@ -270,10 +270,11 @@ fn os_garbage_collect(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let mut full = true;
     if let Some(h) = kw_arg(c, a) {
         let mut unknown = vec![];
-        for (k, v) in c.hash_pairs(h) {
+        crate::hash::hash_each(c, h, |c, k, v| {
             if k == sym_value("full_mark") { full = v.truthy(); }
             else if k != sym_value("immediate_mark") && k != sym_value("immediate_sweep") { unknown.push(inspect_str(c, k)?); }
-        }
+            Ok(())
+        })?;
         if !unknown.is_empty() { return arg_err(c, format!("unknown keyword{}: {}", if unknown.len() > 1 { "s" } else { "" }, unknown.join(", "))); }
     }
     if full { crate::gc::collect(c) } else { crate::gc::collect_minor(c) }

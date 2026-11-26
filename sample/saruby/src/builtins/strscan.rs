@@ -268,7 +268,7 @@ fn ss_scan_integer(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let npos = a.len() - kw.is_some() as usize;
     if npos > 0 { return argc_err(c, npos, 0, 0); }
     let base = match kw { Some(h) => {
-        for (k, _) in c.hash_pairs(h) { if k != sym_value("base") { let ks = crate::builtins::kernel::inspect_str(c, k)?; return arg_err(c, format!("unknown keyword: {}", ks)); } }
+        crate::hash::hash_each(c, h, |c, k, _| { if k != sym_value("base") { let ks = crate::builtins::kernel::inspect_str(c, k)?; return arg_err(c, format!("unknown keyword: {}", ks)); } Ok(()) })?;
         crate::hash::hash_get_opt(c, h, sym_value("base"))?.unwrap_or(Value::fix(10))
     } None => Value::fix(10) };
     let base = if base == Value::fix(10) { 10 } else if base == Value::fix(16) { 16 } else {

@@ -1492,12 +1492,13 @@ fn z_gzip(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (pos, opts) = match a.last() { Some(&h) if is_hash(h) => (&a[..a.len() - 1], Some(h)), _ => (a, None) };
     let (mut level, mut strategy) = (NIL, NIL);
     if let Some(h) = opts {
-        for (k, _) in c.hash_pairs(h) {
+        crate::hash::hash_each(c, h, |c, k, _| {
             if k != sym_value("level") && k != sym_value("strategy") {
                 let ks = inspect_str(c, k)?;
                 return arg_err(c, format!("unknown keyword: {}", ks));
             }
-        }
+            Ok(())
+        })?;
         if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("level"))? { level = v; }
         if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("strategy"))? { strategy = v; }
     }

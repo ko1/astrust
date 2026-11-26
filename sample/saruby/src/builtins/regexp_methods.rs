@@ -413,9 +413,12 @@ fn md_deconstruct_keys(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let keys = a[0];
     if keys == NIL {
         let h = md_named_captures(c, slf, &[], b)?;
-        let out = c.hash_new();
-        for (k, v) in c.hash_pairs(h) { let ks = c.str_to_sym(k); crate::hash::hash_set(c, out, ks, v)?; }
-        return Ok(out);
+        return c.park(1, |c, q| {
+            let out = c.hash_new();
+            q.set(0, out);
+            crate::hash::hash_each(c, h, |c, k, v| { let ks = c.str_to_sym(k); crate::hash::hash_set(c, q.get(0), ks, v) })?;
+            Ok(q.get(0))
+        });
     }
     if !is_array(keys) { let t = class_path(c, real_class_of(c, keys)); return type_err(c, format!("wrong argument type {} (expected Array)", t)); }
     let out = c.hash_new();
