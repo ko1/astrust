@@ -130,31 +130,39 @@ fn k_to_s(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 }
 pub fn k_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     if slf == c.vm().main_obj.get() { return Ok(c.str_new(b"main")); }
-    let ivs = ivar_list(c, slf);
-    let mut ivs: Vec<(Sym, Value)> = ivs.into_iter().filter(|(n, _)| sym_bytes(*n).first() == Some(&b'@')).collect();
-    // 4.0: a (private) #instance_variables_to_inspect picks the ivars, in its order
+    let is_ivar = |n: &Sym| sym_bytes(*n).first() == Some(&b'@');
+    // 4.0: a (private) #instance_variables_to_inspect picks the ivars (shown in the object's order, as CRuby)
+    let mut want: Option<Vec<Sym>> = None;
     let vti = intern(b"instance_variables_to_inspect");
-    if !ivs.is_empty() && !lookup_method(c, class_of(slf), vti).is_null() {
+    if ivar_list(c, slf).iter().any(|(n, _)| is_ivar(n)) && !lookup_method(c, class_of(slf), vti).is_null() {
         let r = funcall(c, slf, vti, &[], std::ptr::null())?;
         if r != NIL {
             if !crate::array::is_array(r) { return type_err(c, format!("Expected #instance_variables_to_inspect to return an Array or nil, but it returned {}", class_name_for_err(c, r))); }
-            let names = c.ary(r).to_vec();
-            ivs = names.iter().filter_map(|&n| if n.is_sym() { ivs.iter().find(|x| x.0 == n.as_sym()).copied() } else { None }).collect();
+            want = Some(c.ary(r).iter().filter(|n| n.is_sym()).map(|n| n.as_sym()).collect());
         }
     }
+    let ivs: Vec<(Sym, Value)> = ivar_list(c, slf).into_iter().filter(|(n, _)| is_ivar(n) && want.as_ref().is_none_or(|w| w.contains(n))).collect();
     let k = real_class_of(c, slf);
     if ivs.is_empty() { return Ok(str_new_rb(c, &format!("#<{}:{:#018x}>", class_path(c, k), slf.raw()))); }
     if !rec_enter(c, slf, s::inspect)? { return Ok(str_new_rb(c, &format!("#<{}:{:#018x} ...>", class_path(c, k), slf.raw()))); }
     let mut out = format!("#<{}:{:#018x}", class_path(c, k), slf.raw());
-    let keep = c.ary_new();
-    for (i, (n, v)) in ivs.iter().enumerate() {
-        c.ary_push(keep, *v);
-        let r = inspect_str(c, *v);
-        let r = match r { Ok(r) => r, Err(e) => { rec_leave(c, slf, s::inspect); return Err(e); } };
-        out.push_str(if i == 0 { " " } else { ", " });
-        out.push_str(&sym_str(*n)); out.push('='); out.push_str(&r);
-    }
+    // the values as they are before the first #inspect (rb_ivar_foreach), in a parked Array: one an earlier
+    // #inspect replaces was held only by a Vec copy, and freed under stress
+    let names: Vec<Sym> = ivs.iter().map(|x| x.0).collect();
+    let vals: Vec<Value> = ivar_list(c, slf).into_iter().filter(|(n, _)| names.contains(n)).map(|(_, v)| v).collect();
+    let r = c.park(1, |c, q| {
+        let a = c.ary_from_vec(vals);
+        q.set(0, a);
+        for (i, n) in names.iter().enumerate() {
+            let v = c.ary_get(q.get(0), i);
+            let r = inspect_str(c, v)?;
+            out.push_str(if i == 0 { " " } else { ", " });
+            out.push_str(&sym_str(*n)); out.push('='); out.push_str(&r);
+        }
+        Ok(())
+    });
     rec_leave(c, slf, s::inspect);
+    r?;
     out.push('>');
     Ok(str_new_rb(c, &out))
 }

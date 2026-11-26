@@ -193,10 +193,10 @@ pub(crate) fn fiber_main(c: &mut Ctx, args: Value, exc: bool) -> ! {
     let p = fd(c, f).proc_;
     let thread = f == THREAD_ROOT.get(c);
     let r = if exc { received(c, (args, true)) } else {
-        let argv: Vec<Value> = if is_array(args) { c.ary(args).to_vec() } else { vec![args] };
         let tb = if thread && trace_mask() & EV_THREAD_BEGIN != 0 { crate::builtins::tracepoint::trace_thread(c, EV_THREAD_BEGIN) } else { Ok(()) };
         let kw = is_array(args) && crate::heap::obj_flags(args) & crate::object::FL_KWHASH != 0;
-        tb.and_then(|_| call_proc_kw(c, p, &argv, std::ptr::null(), kw))
+        // copied after trace_thread (a GC point), right before the call stages them
+        tb.and_then(|_| { let argv: Vec<Value> = if is_array(args) { c.ary(args).to_vec() } else { vec![args] }; call_proc_kw(c, p, &argv, std::ptr::null(), kw) })
     };
     std::hint::black_box(args);   // keeps argv's values on this stack
     // a thread's scheduler is closed at its end, before thread_end (thread_start_func_2); its error wins
