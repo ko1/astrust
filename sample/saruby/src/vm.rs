@@ -1584,9 +1584,9 @@ pub fn make_name_error(c: &mut Ctx, klass: Value, msg: &str, name: Value, recv: 
     Ok(e)
 }
 
+/// A conservative zone (gc_check): a caller in a precise zone does not root the new exception.
 pub fn raise_msg(c: &mut Ctx, klass: Value, msg: &str) -> Esc {
-    let e = make_exception_rb(c, klass, msg);
-    raise_exc(c, e)
+    crate::gc::conservative(c, |c| { let e = make_exception_rb(c, klass, msg); raise_exc(c, e) })
 }
 
 pub fn err<T>(c: &mut Ctx, klass: Value, msg: impl AsRef<str>) -> Result<T, Esc> { Err(raise_msg(c, klass, msg.as_ref())) }
@@ -1625,7 +1625,9 @@ pub fn check_argc(c: &mut Ctx, args: &[Value], min: usize, max: usize) -> Result
     Ok(())
 }
 
-pub fn raise_frozen(c: &mut Ctx, v: Value) -> Esc {
+/// A conservative zone (gc_check), as raise_msg: inspect's strings are its locals.
+pub fn raise_frozen(c: &mut Ctx, v: Value) -> Esc { crate::gc::conservative(c, |c| raise_frozen_body(c, v)) }
+fn raise_frozen_body(c: &mut Ctx, v: Value) -> Esc {
     // rb_error_frozen_object: an #inspect that modifies the object gives " ..." (rb_exec_recursive)
     let tag = crate::symbol::intern(b"__frozen_inspect__");
     let insp = if crate::legacy::recursion_enter(v, tag) {
@@ -1665,8 +1667,7 @@ pub fn unchill(c: &mut Ctx, v: Value) -> Result<(), Esc> {
 #[cold]
 pub fn raise_frozen_or_locked(c: &mut Ctx, v: Value) -> Esc {
     if is_frozen(v) { return raise_frozen(c, v); }
-    let e = make_exception(c, vm().c_runtime_error.get(), "can't modify string; temporarily locked");
-    raise_exc(c, e)
+    crate::gc::conservative(c, |c| { let e = make_exception(c, vm().c_runtime_error.get(), "can't modify string; temporarily locked"); raise_exc(c, e) })
 }
 
 pub fn frame_label(c: &Ctx, f: &Frame) -> String { frame_label_of(c, f.kind, f.me, f.iseq()) }
