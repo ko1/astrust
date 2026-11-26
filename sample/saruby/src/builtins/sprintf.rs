@@ -281,6 +281,8 @@ fn int_arg(c: &mut Ctx, v: Value) -> RV {
     if v.is_heap() && respond_to(c, v, intern(b"to_i"), true) {
         let r = funcall(c, v, intern(b"to_i"), &[], std::ptr::null())?;
         if is_integer(r) { return Ok(r); }
+        let k = class_name_for_err(c, v);
+        return type_err(c, format!("can't convert {} to Integer ({}#to_i gives {})", k, k, class_name_for_err(c, r)));
     }
     type_err(c, format!("can't convert {} into Integer", class_name_for_err(c, v)))
 }
@@ -328,7 +330,8 @@ pub fn format_ary(c: &mut Ctx, fmtv: Value, args: &[Value], ary: Value) -> RV {
                 b'1'..=b'9' => {
                     let s0 = i; while i < fmt.len() && fmt[i].is_ascii_digit() { i += 1; }
                     let n: i64 = std::str::from_utf8(&fmt[s0..i]).unwrap().parse().unwrap_or(i64::MAX);
-                    if i < fmt.len() && fmt[i] == b'$' {
+                    if i >= fmt.len() { return arg_err(c, "malformed format string - %*[0-9]"); }
+                    if fmt[i] == b'$' {
                         if n > i32::MAX as i64 { return arg_err(c, "width too big"); }
                         if val.is_some() { return arg_err(c, format!("value given twice - {}$", n)); }
                         val = Some(st.pos_arg(c, n)?); i += 1;
@@ -387,6 +390,7 @@ pub fn format_ary(c: &mut Ctx, fmtv: Value, args: &[Value], ary: Value) -> RV {
                         if p < 0 { flags &= !FPREC; } else { prec = p; }
                     } else {
                         let s0 = i; while i < fmt.len() && fmt[i].is_ascii_digit() { i += 1; }
+                        if i >= fmt.len() { return arg_err(c, "malformed format string - %*[0-9]"); }
                         let n: i64 = if i == s0 { 0 } else { std::str::from_utf8(&fmt[s0..i]).unwrap().parse().unwrap_or(i64::MAX) };
                         if n > i32::MAX as i64 { return arg_err(c, "precision too big"); }
                         prec = n;
