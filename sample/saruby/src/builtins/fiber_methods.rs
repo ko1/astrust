@@ -24,10 +24,10 @@ fn validate(c: &mut Ctx, v: Value) -> Result<(), Esc> {
     if v == NIL { return Ok(()); }
     if !is_hash(v) { return type_err(c, "storage must be a hash"); }
     if is_frozen(v) { let k = c.vm().c_frozen_error.get(); return err(c, k, "storage must not be frozen"); }
-    for (k, _) in c.hash_pairs(v) {
+    crate::hash::hash_each(c, v, |c, k, _| {
         if !k.is_sym() { return type_err(c, format!("wrong argument type {} (expected Symbol)", class_name_for_err(c, k))); }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// A copy of the running fiber's storage, for a new fiber or thread.
@@ -39,9 +39,10 @@ fn f_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if let Some(h) = kw_arg(c, a) {
         let (kb, kp, ks) = (sym_value("blocking"), sym_value("pool"), sym_value("storage"));
         let mut unknown = vec![];
-        for (k, v) in c.hash_pairs(h) {
+        crate::hash::hash_each(c, h, |c, k, v| {
             if k == kb { blocking = v.truthy(); } else if k == ks { st = v; } else if k != kp { unknown.push(inspect_str(c, k)?); }
-        }
+            Ok(())
+        })?;
         if !unknown.is_empty() { return arg_err(c, format!("unknown keyword{}: {}", if unknown.len() > 1 { "s" } else { "" }, unknown.join(", "))); }
     }
     if b.is_null() { return arg_err(c, "tried to create Proc object without a block"); }

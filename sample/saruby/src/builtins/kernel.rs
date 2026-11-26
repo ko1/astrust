@@ -387,11 +387,12 @@ fn k_warn(c: &mut Ctx, slf: Value, args: &[Value], _b: Blk) -> RV {
     let (args, kw) = match kw_arg(c, args) { Some(h) => (&args[..args.len() - 1], Some(h)), None => (args, None) };
     let (mut uplevel, mut cat) = (NIL, NIL);
     if let Some(h) = kw {
-        for (k, v) in c.hash_pairs(h) {
+        crate::hash::hash_each(c, h, |c, k, v| {
             if k == sym_value("uplevel") { uplevel = v; }
             else if k == sym_value("category") { cat = v; }
             else { let ks = inspect_str(c, k)?; return arg_err(c, format!("unknown keyword: {}", ks)); }
-        }
+            Ok(())
+        })?;
     }
     if cat != NIL {
         cat = if cat.is_sym() { cat } else if is_string(cat) { c.str_to_sym(cat) } else if cat.is_heap() && respond_to(c, cat, intern(b"to_sym"), true) {

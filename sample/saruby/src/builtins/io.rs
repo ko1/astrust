@@ -2074,12 +2074,15 @@ fn io_s_popen(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
 fn exec_opts(c: &mut Ctx, h: Value) -> RV {
     const IO_KEYS: &[&str] = &["mode", "flags", "perm", "textmode", "binmode", "autoclose", "encoding", "external_encoding", "internal_encoding",
         "invalid", "undef", "replace", "fallback", "xml", "newline", "universal_newline", "crlf_newline", "cr_newline", "lf_newline"];
-    let out = c.hash_new();
-    for (k, v) in c.hash_pairs(h) {
-        if k.is_sym() && IO_KEYS.iter().any(|n| crate::symbol::sym_str(k.as_sym()) == *n) { continue; }
-        crate::hash::hash_set(c, out, k, v)?;
-    }
-    Ok(out)
+    c.park(1, |c, q| {
+        let out = c.hash_new();
+        q.set(0, out);
+        crate::hash::hash_each(c, h, |c, k, v| {
+            if k.is_sym() && IO_KEYS.iter().any(|n| crate::symbol::sym_str(k.as_sym()) == *n) { return Ok(()); }
+            crate::hash::hash_set(c, q.get(0), k, v)
+        })?;
+        Ok(q.get(0))
+    })
 }
 /// rb_time_interval for IO.select: milliseconds, -1 for none (nil) or an infinite one.
 fn select_timeout(c: &mut Ctx, v: Option<&Value>) -> Result<i32, Esc> {

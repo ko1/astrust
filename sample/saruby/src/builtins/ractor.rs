@@ -412,9 +412,10 @@ fn p_inspect(c: &mut Ctx, s: Value, _a: &[Value], _b: Blk) -> RV {
 fn move_kw<'a>(c: &mut Ctx, a: &'a [Value]) -> Result<(&'a [Value], bool), Esc> {
     let Some(h) = kw_arg(c, a) else { return Ok((a, false)) };
     let mut mv = false;
-    for (k, v) in c.hash_pairs(h) {
+    crate::hash::hash_each(c, h, |c, k, v| {
         if k == sym_value("move") { mv = v.truthy(); } else { let s = inspect_str(c, k)?; return arg_err(c, format!("unknown keyword: {}", s)); }
-    }
+        Ok(())
+    })?;
     Ok((&a[..a.len() - 1], mv))
 }
 
@@ -437,9 +438,10 @@ fn r_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let (args, kw) = match kw_arg(c, a) { Some(h) => (&a[..a.len() - 1], Some(h)), None => (a, None) };
     let mut name = NIL;
     if let Some(h) = kw {
-        for (k, v) in c.hash_pairs(h) {
+        crate::hash::hash_each(c, h, |c, k, v| {
             if k == sym_value("name") { name = v; } else { let s = inspect_str(c, k)?; return arg_err(c, format!("unknown keyword: {}", s)); }
-        }
+            Ok(())
+        })?;
     }
     if b.is_null() { return arg_err(c, "must be called with a block"); }
     if !STARTED.swap(true, Relaxed) {
@@ -648,7 +650,7 @@ fn r_s_make_shareable(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (pos, copy) = match kw_arg(c, a) {
         Some(h) => {
             let mut cp = false;
-            for (k, v) in c.hash_pairs(h) { if k == sym_value("copy") { cp = v.truthy(); } else { let s = inspect_str(c, k)?; return arg_err(c, format!("unknown keyword: {}", s)); } }
+            crate::hash::hash_each(c, h, |c, k, v| { if k == sym_value("copy") { cp = v.truthy(); } else { let s = inspect_str(c, k)?; return arg_err(c, format!("unknown keyword: {}", s)); } Ok(()) })?;
             (&a[..a.len() - 1], cp)
         }
         None => (a, false),

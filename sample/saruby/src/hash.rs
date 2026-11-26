@@ -136,6 +136,21 @@ impl RHash {
     }
 }
 
+/// Each live (key, value) of Hash `h` by entry index, `h` parked and each pair re-read after `f` (a GC
+/// point): a Vec snapshot of the pairs is no root (docs/gc_moving.md 2.4).  Entries `f` adds are visited too.
+pub fn hash_each(c: &mut Ctx, h: Value, mut f: impl FnMut(&mut Ctx, Value, Value) -> Result<(), Esc>) -> Result<(), Esc> {
+    c.park(1, |c, q| {
+        q.set(0, h);
+        let mut i = 0;
+        while let Some((k, v)) = c.hash_entry_at(q.get(0), i) {
+            i += 1;
+            if k == UNDEF { continue; }
+            f(c, k, v)?;
+        }
+        Ok(())
+    })
+}
+
 impl Ctx {
     pub fn hash_new(&mut self) -> Value { self.hash_new_capa(0) }
     pub fn hash_new_capa(&mut self, n: usize) -> Value {

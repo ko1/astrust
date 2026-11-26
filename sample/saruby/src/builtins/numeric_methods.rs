@@ -980,7 +980,7 @@ fn num_step(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     let mut st = pos.get(1).copied().unwrap_or(NIL);
     if let Some(h) = kw {
         let mut unknown = vec![];
-        for (k, _) in c.hash_pairs(h) { if k != sym_value("to") && k != sym_value("by") { unknown.push(inspect_str(c, k)?); } }
+        crate::hash::hash_each(c, h, |c, k, _| { if k != sym_value("to") && k != sym_value("by") { unknown.push(inspect_str(c, k)?); } Ok(()) })?;
         if !unknown.is_empty() { return arg_err(c, format!("unknown keyword{}: {}", if unknown.len() > 1 { "s" } else { "" }, unknown.join(", "))); }
         if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("to"))? { if !pos.is_empty() { return arg_err(c, "to is given twice"); } lim = v; }
         if let Some(v) = crate::hash::hash_get_opt(c, h, sym_value("by"))? { if pos.len() > 1 { return arg_err(c, "step is given twice"); } st = v; }

@@ -297,7 +297,7 @@ fn syntax_err_detailed_message(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> 
     if crate::builtins::syntax_suggest::disabled() { return super_from_ss(c, slf, a, b, kw.is_some()); }
     // `super` passes highlight:, syntax_suggest: and the rest as keywords
     let h = c.hash_new();
-    if let Some(k) = kw { for (x, v) in c.hash_pairs(k) { crate::hash::hash_set(c, h, x, v)?; } }
+    if let Some(k) = kw { crate::hash::hash_each(c, k, |c, x, v| crate::hash::hash_set(c, h, x, v))?; }
     let highlight = match crate::hash::hash_get_opt(c, h, sym_value("highlight"))? { Some(v) => v, None => { crate::hash::hash_set(c, h, sym_value("highlight"), TRUE)?; TRUE } };
     let ss = match crate::hash::hash_get_opt(c, h, sym_value("syntax_suggest"))? { Some(v) => v, None => { crate::hash::hash_set(c, h, sym_value("syntax_suggest"), TRUE)?; TRUE } };
     let saved = (c.errinfo, c.esc_tag, c.esc_tag_v);
@@ -660,7 +660,7 @@ fn exc_full_message(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { { let
         }
     }
     let opt = c.hash_new();
-    if let Some(h) = kw { for (k, v) in c.hash_pairs(h) { crate::hash::hash_set(c, opt, k, v)?; } }
+    if let Some(h) = kw { crate::hash::hash_each(c, h, |c, k, v| crate::hash::hash_set(c, opt, k, v))?; }
     crate::hash::hash_set(c, opt, sym_value("highlight"), hl)?;
     let o = error_write(c, slf, opt, hl.truthy(), reverse, false)?;
     Ok(c.str_new(&o))

@@ -726,7 +726,7 @@ fn lines_of(v: &[u8], enc: u8, ls: &LineSep, chomp: bool) -> Vec<Vec<u8>> {
 /// ArgumentError for any keyword other than chomp:
 fn only_chomp_kw(c: &mut Ctx, h: Value) -> Result<(), Esc> {
     let mut bad = vec![];
-    for (k, _) in c.hash_pairs(h) { if k != sym_value("chomp") { bad.push(inspect_str(c, k)?); } }
+    crate::hash::hash_each(c, h, |c, k, _| { if k != sym_value("chomp") { bad.push(inspect_str(c, k)?); } Ok(()) })?;
     if bad.is_empty() { return Ok(()); }
     arg_err(c, format!("unknown keyword{}: {}", if bad.len() > 1 { "s" } else { "" }, bad.join(", ")))
 }
