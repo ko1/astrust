@@ -901,6 +901,12 @@ pub fn define_method_me(c: &mut Ctx, klass: Value, name: Sym, me: *const MethodE
     bump_method_serial();
     vm.mcache.borrow_mut().clear();
 }
+/// define_method_me for several entries with one cache clear (a boot-time definition run after the cache has grown).
+pub fn define_methods_me(c: &mut Ctx, klass: Value, ents: &[(Sym, *const MethodEntry)]) {
+    for &(name, me) in ents { c.class_mut(klass).mtbl.insert(name, me); }
+    bump_method_serial();
+    vm().mcache.borrow_mut().clear();
+}
 /// define_method_me for a definition made by Ruby code (def, alias, attr_*, define_method, module_function,
 /// import_methods): the redefinition warning and Coverage's method entries (boot definitions skip both).
 pub fn define_user_method(c: &mut Ctx, klass: Value, name: Sym, me: *const MethodEntry) {
@@ -1898,10 +1904,14 @@ fn collapse_internal<'a>(c: &Ctx, v: &'a [RawFrame]) -> std::borrow::Cow<'a, [Ra
             // the outermost Method, plus what CRuby has a C function (own frame) for: `initialize`, a define_method body
             let caller = &v[j];
             let last = run.len() - 1;
+            // under an Enumerable method (C in CRuby) its own #each call has a frame of its own (a cfunc here, or a prelude Method)
+            let enum_outer = c.me_ref(run[last].me).is_some_and(|m| m.owner == c.vm().m_enumerable.get() || (m.name == s::each && class_path(c, m.owner) == "Enumerator::Chain"));
             for (k, f) in run.iter().enumerate() {
                 let c_like = is_define_method_body(c, f);
+                let named = |n| c.me_ref(f.me).is_some_and(|m| m.name == n);
                 let keep = c_like || (k == last && kind_of(f) == Some(IseqKind::Method))
-                    || (kind_of(f) == Some(IseqKind::Method) && c.me_ref(f.me).is_some_and(|m| m.name == s::initialize));
+                    || (kind_of(f) == Some(IseqKind::Method) && named(s::initialize))
+                    || (enum_outer && k != last && named(s::each) && (f.kind == FK_CFUNC || kind_of(f) == Some(IseqKind::Method)));
                 if keep { out.push(RawFrame { file: caller.file, pos: caller.pos, at: caller.at, kind: if c_like { FK_CFUNC } else { f.kind }, ..*f }); }
             }
         }
@@ -2706,7 +2716,7 @@ pub fn invoke_cfunc(c: &mut Ctx, me: *const MethodEntry, f: CFunc, arity: i32, r
 /// A fixed-arity cfunc's ArgumentError: raised inside its own frame, as CRuby's.
 #[cold]
 #[inline(never)]
-fn cfunc_arity_err(c: &mut Ctx, me: *const MethodEntry, blk: *const Block, argc: usize, arity: i32) -> RV {
+pub fn cfunc_arity_err(c: &mut Ctx, me: *const MethodEntry, blk: *const Block, argc: usize, arity: i32) -> RV {
     let pf = c.frame;
     let mut fr = Frame::cfunc(pf, me, blk);
     c.frame = &mut fr;

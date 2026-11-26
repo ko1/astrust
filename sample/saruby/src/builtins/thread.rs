@@ -1523,7 +1523,18 @@ pub fn init_sync(c: &mut Ctx) {
     let sq = define_class_under(c, th, "SizedQueue", q);
     const_set(c, ob, intern(b"SizedQueue"), sq);
     define_private_cfunc(c, sq, "initialize", sq_init, 1);
-    define_cfunc(c, sq, "max", sq_max, 0); define_cfunc(c, sq, "max=", sq_set_max, 1);
+    // own entries in CRuby (and frames labelled SizedQueue)
+    // one cache clear for all: a define after boot costs a full clear
+    let mut ents: Vec<(Sym, *const MethodEntry)> = vec![];
+    for (n, f, ar, als) in [("push", q_push as CFunc, -1, &["<<", "enq"][..]), ("pop", q_pop as CFunc, -1, &["shift", "deq"][..]),
+                            ("clear", q_clear as CFunc, 0, &[][..]), ("close", q_close as CFunc, 0, &[][..]), ("num_waiting", q_num_waiting as CFunc, 0, &[][..]),
+                            ("max", sq_max as CFunc, 0, &[][..]), ("max=", sq_set_max as CFunc, 1, &[][..])] {
+        let s = intern(n.as_bytes());
+        ents.push((s, new_me(s, sq, VISI_PUBLIC, MKind::Cfunc(f, ar))));
+        // an alias keeps the original name (CRuby's frame label) and records its own
+        for a in als { let a = intern(a.as_bytes()); let me = new_me(s, sq, VISI_PUBLIC, MKind::Cfunc(f, ar)); c.vm().alias_names.borrow_mut().insert(me as usize, a); ents.push((a, me)); }
+    }
+    define_methods_me(c, sq, &ents);
     let cv = define_class_under(c, th, "ConditionVariable", ob);
     const_set(c, ob, intern(b"ConditionVariable"), cv);
     define_cfunc(c, cv, "wait", cv_wait, -1); define_cfunc(c, cv, "signal", cv_signal, 0); define_cfunc(c, cv, "broadcast", cv_broadcast, 0);

@@ -578,6 +578,7 @@ pub fn init(c: &mut Ctx) {
     define_cfunc(c, m, "to_proc", meth_to_proc, 0);
     define_cfunc(c, m, "receiver", meth_receiver, 0);
     define_cfunc(c, m, "unbind", meth_unbind, 0);
+    define_cfunc(c, m, "box", |_c, _s, _a, _b| Ok(NIL), 0);   // no Ruby::Box here
     define_cfunc(c, m, "curry", meth_curry, -1);
     let u = vmr.c_unbound_method.get();
     define_cfunc(c, u, "bind", um_bind, 1);

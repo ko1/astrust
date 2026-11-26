@@ -1458,7 +1458,7 @@ pub fn c_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     match me_kind(c, me) {
         Some(MKind::Cfunc(..)) if me == c.vm().ids.bo_init.get() => {
             if !a.is_empty() && c.class(slf).alloc == AllocKind::Object && me_owner(c, me) == c.vm().c_basic_object.get() {
-                return argc_err(c, a.len(), 0, 0);
+                return crate::vm::cfunc_arity_err(c, me, std::ptr::null(), a.len(), 0);   // inside BasicObject#initialize's frame
             }
             return Ok(o);
         }
