@@ -260,3 +260,28 @@ pub fn nil_slots_reset(s: &'static [Slot]) -> bool {
     unsafe { madvise((base + WARM) as *mut u8, len - WARM, MADV_DONTNEED); }
     true
 }
+
+/// Slots cleared by stores above `from` before the pages beyond are given back (docs/gc_moving.md 12.2).
+const NEAR: usize = WARM / std::mem::size_of::<Slot>();
+
+/// Make `s[from..]` read as nil: the first NEAR slots by storing `fill` (nil, or gc_check's poison), the whole
+/// pages after them, in a nil_slots mapping, by giving them back.
+pub fn slots_clear(s: &'static [Slot], from: usize, fill: Value) {
+    let from = from.min(s.len());
+    let near = s.len().min(from + NEAR);
+    for x in &s[from..near] { x.set(fill); }
+    let rest = &s[near..];
+    if rest.is_empty() { return; }
+    let r0 = rest.as_ptr() as usize;
+    let (lo, hi) = (r0.next_multiple_of(PAGE), rest.as_ptr_range().end as usize & !(PAGE - 1));
+    // a stack made by nil_slots starts in the mapping's first page (slots_at)
+    if hi <= lo || !MAPPED.with(|m| m.borrow().contains(&(s.as_ptr() as usize & !(PAGE - 1)))) {
+        for x in rest { x.set(NIL); }
+        return;
+    }
+    let sz = std::mem::size_of::<Slot>();
+    for x in &rest[..(lo - r0) / sz] { x.set(NIL); }
+    for x in &rest[(hi - r0) / sz..] { x.set(NIL); }
+    // SAFETY: whole pages of a private view of the nil file (MAPPED): they read as nil again; Slots are Cells
+    unsafe { madvise(lo as *mut u8, hi - lo, MADV_DONTNEED); }
+}

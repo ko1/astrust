@@ -380,3 +380,64 @@ step only; the goal stays full moving with no stack-driven pinning.
   Calling `make()` once before the branch (as MarkBitmap does) or passing the closure to a cold shim are both far worse
   (store-forwarding stalls; up to +28 %).  A change that only adds GC-time work can still move instruction counts by
   ±0.5 % through register allocation (closures, `make_env`): measure every root addition against the 21 benches.
+
+## 12. Phase 1e: the value stacks exact, parks checked, Frame.blk, `sp` in a register
+
+2026-11-26.  Design before implementation; numbers in the trial README, "Phase 1e".
+
+### 12.1 Where a slot below `sp` can be stale
+
+Every slot is a `Cell<Value>` and stacks start as NIL (`slots_new`, `nil_slots`), so a slot never holds a
+word that is not a Value.  What makes the old scan ambiguous is staleness: a slot below `sp` that no one
+wrote since it was last above `sp` holds a Value left by a popped frame, whose object may have been freed
+(or, with a moving collector, moved) since.  Where `sp` covers slots before they are written:
+
+* call staging: `stage(c, 2 + k)` then the receiver and the arguments are evaluated (GC points) and written
+  one by one; `base[1]` (the callee's env slot) is written only by an entry node, never for a cfunc;
+* `invoke_block_full` / `yield*`: `set_sp(base, 2 + argc)` after `put`, `base[1]` written by the entry;
+* method / block entry: `enter` then nil-fill of `[2 + nparams, nlocals)` with no GC point in between (not stale).
+
+Nil-filling staged areas at `stage` would cost 2 + k stores per call (fib: 3), which is over budget.
+
+### 12.2 The invariant instead: every slot above `sp` is NIL after each collection
+
+At the end of every collection's root scan, each context's slots above `sp` are reset to NIL.  Then at any
+GC point every slot of a stack holds either NIL / an immediate, a Value that was below `sp` at the last
+collection (so it was a root and is alive, or was updated), or a Value written since (an object allocated or
+reachable since the last collection, which nothing could free meanwhile).  So `[0, sp)` is scanned with
+`visit`, exactly: a stale slot only retains its object until the next collection, as the conservative scan did,
+and a moving collector may update it (it is a valid Value).  Nothing on the hot path changes.
+
+Cost, GC time only: per collection, the running and main contexts and each fiber that ran since the last
+collection (a flag set on resume) clear their free part: stores for the first 8192 slots above `sp`, then
+`madvise(MADV_DONTNEED)` over the rest of a `nil_slots` mapping (its pages read as NIL again: the mapping is a
+private view of a NIL file, `fiber_os.rs`).  A stack not made by `nil_slots` (the fallback when the NIL file
+cannot be made) is cleared by stores.  A stack taken back from the pool after a collection is cleared before
+reuse (its first `WARM` bytes kept their old contents; `nil_slots_reset` gave back the rest).
+
+What the clear also checks: R3 of stack_raw.rs ("sp is at or above every live slot").  Code that writes a slot
+above `sp` and reads it after a GC point now reads NIL (under `gc_check`: a poison Value that faults when used;
+the exact scan skips it).  `SARUBY_GC_STRESS` + `gc_check` over t/hand is the gate that finds such code.
+
+### 12.3 Parks and yields (koruby's P1)
+
+Audit (2026-11-26, master 0f77f68): every yield from Rust (`yield_block_raw`, `yield1_raw`, `call_proc_kw_raw`,
+`invoke_block_full_raw`) puts the block's frame at `c.top()` and restores `sp` to that base, so it runs above
+any park the caller opened; `node_yield` stages at `sp` too.  The one path that places a block frame at a base
+taken before the builtin ran is the inline iterator of `node_call_blk` (`inline_iter.rs`): `bb = c.top()` at
+the site, then `put_args` resets `sp` to `bb` at every step.  The `*_loop` functions it runs park nothing today
+(their state is in Rust locals), so P1 does not happen; a loop converted to park its state would have its park
+overwritten by the block's frame.  Check, `gc_check` builds: `park` records its slots' end per stack, and every
+move of `sp` downward (`set_sp`, `sp_reset`, `at_entry`) asserts that it stays at or above the innermost live
+park of that stack.  This is deterministic (no stress needed) and fires on the koruby P1 pattern.
+
+### 12.4 Frame.blk and Block values (from phase 1b)
+
+Not started; designed with the above and measured on its own sp4 batch (the yield path).  Today a Block a
+frame points at is either a Proc payload (visited through the Proc) or a Rust-stack temporary of its caller,
+whose Values (`self_`, `env`, `proc_val`, `defined_class`, BlockKind's) are found by the machine-stack scan.
+
+### 12.5 `Ctx.sp` in a register
+
+Measured before deciding (user 2026-11-26: thread `sp` only if it shows a clear per-benchmark gain on the
+call-heavy benches at codegen-units = 1 on sp4); the decision and the numbers go here.

@@ -3270,6 +3270,8 @@ pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &'static Iseq, base: Stk, argc
 pub fn visit_roots<V: RootVisitor<Saruby>>(m: &mut V, cur: &mut Ctx) {
     let vm = vm();
     visit_ctx(m, cur);
+    // gc_moving.md 12.2: what is above sp is nil after a collection (suspended fibers: FiberData::visit)
+    if crate::gc::collecting() { cur.clear_free(crate::gc::stack_fill()); }
     let p: *mut Ctx = cur;
     SCAN_CTX.store(p, std::sync::atomic::Ordering::Relaxed);
     if vm.main_ctx.get() != p { visit_main_ctx(m); }
@@ -3306,8 +3308,9 @@ fn visit_main_ctx<V: RootVisitor<Saruby>>(m: &mut V) {
     if p.is_null() { return; }   // boot: no context yet
     // SAFETY: run_main's context, which outlives every collection
     unsafe {
-        let live = (*p).live();
-        m.visit_ambiguous(std::slice::from_raw_parts(live.as_ptr() as *const usize, live.len()));
+        crate::gc::visit_slots(m, (*p).live());
+        // gc_moving.md 12.2: what is above sp is nil after a collection (only Cell slots are written)
+        if crate::gc::collecting() { (*p).clear_free(crate::gc::stack_fill()); }
         for f in [&raw mut (*p).esc_val, &raw mut (*p).errinfo, &raw mut (*p).last_match, &raw mut (*p).esc_tag_v] {
             let mut v = f.read();
             m.visit(&mut v);
@@ -3320,10 +3323,8 @@ fn visit_main_ctx<V: RootVisitor<Saruby>>(m: &mut V) {
 
 /// One execution context: its value stack and the values it holds.
 pub fn visit_ctx<V: RootVisitor<Saruby> + ?Sized>(m: &mut V, c: &mut Ctx) {
-    // ambiguous, as before the framework: slots below sp that no frame wrote yet hold stale Values
-    let live = c.live();
-    // SAFETY: a Slot is one Value word
-    unsafe { m.visit_ambiguous(std::slice::from_raw_parts(live.as_ptr() as *const usize, live.len())); }
+    // exact: a slot no frame wrote yet holds nil or a Value alive at the last collection (gc_moving.md 12.2)
+    crate::gc::visit_slots(m, c.live());
     m.visit(&mut c.esc_val); m.visit(&mut c.errinfo); m.visit(&mut c.last_match); m.visit(&mut c.esc_tag_v);
     // running frames' entries: one replaced in its class while it runs is in no class table
     let mut f = c.cur_frame();

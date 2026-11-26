@@ -43,16 +43,18 @@ pub struct FiberData {
     owner: Value,                   // root fiber of the thread the fiber belongs to
     blocking: bool,
     killed: bool,                   // Fiber#kill was called (a second call returns false)
+    vdirty: bool,                   // ran since the last collection cleared its value stack above sp
 }
 impl FiberData {
     fn new(proc_: Value) -> FiberData {
         FiberData { ctx: None, stack: None, vstack: None, sp: 0, running: false, main: false, started: false, done: false, yielding: false,
                     prev: NIL, resuming: NIL, proc_, xfer: NIL, exc: false,
-                    storage: NIL, locals: NIL, owner: NIL, blocking: false, killed: false }
+                    storage: NIL, locals: NIL, owner: NIL, blocking: false, killed: false, vdirty: true }
     }
     /// Becoming the running fiber: (saved stack pointer, stack top).
     fn enter(&mut self) -> (usize, usize) {
         self.running = true;
+        self.vdirty = true;
         (std::mem::take(&mut self.sp), self.stack.as_ref().map_or(0, |s| s.top()))
     }
     /// Being switched out: where the switch saves the stack pointer.
@@ -61,7 +63,13 @@ impl FiberData {
 impl RData for FiberData {
     fn visit(&mut self, m: &mut crate::gc::Visitor) {
         for v in [&mut self.proc_, &mut self.xfer, &mut self.prev, &mut self.resuming, &mut self.storage, &mut self.locals, &mut self.owner] { m.visit(v); }
-        if let Some(c) = &mut self.ctx { if c.ptr() != crate::vm::scan_ctx() { visit_ctx(m, c.get()); } }
+        if let Some(c) = &mut self.ctx {
+            if c.ptr() != crate::vm::scan_ctx() {
+                visit_ctx(m, c.get());
+                // docs/gc_moving.md 12.2 (the running context is cleared by vm::visit_roots)
+                if self.vdirty && crate::gc::collecting() { c.get().clear_free(crate::gc::stack_fill()); self.vdirty = false; }
+            }
+        }
         if self.running || self.sp == 0 { return; }
         match &self.stack {
             Some(s) => m.visit_ambiguous(s.words(self.sp)),

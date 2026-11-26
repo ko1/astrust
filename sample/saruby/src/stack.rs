@@ -63,16 +63,30 @@ impl Ctx {
 
     /// Move sp to n slots above the base of `st`.
     #[inline(always)]
-    pub fn set_sp(&mut self, st: Stk, n: usize) { self.sp = st.len().saturating_sub(n); }
+    pub fn set_sp(&mut self, st: Stk, n: usize) {
+        self.sp = st.len().saturating_sub(n);
+        #[cfg(feature = "gc_check")] crate::gc::check_park(self);
+    }
+
+    #[cfg(feature = "gc_check")]
+    pub fn stack_id(&self) -> usize { self.stk.as_ptr() as usize }
+    #[cfg(feature = "gc_check")]
+    pub fn top_addr(&self) -> usize { self.top().as_ptr() as usize }
 
     /// Are n slots (and a frame) free above sp?
     #[inline(always)]
     pub fn has_room(&self, n: usize) -> bool { self.sp >= n + FRAME }
 
+    /// Reset the slots above sp to `fill` / nil (at a collection: docs/gc_moving.md 12.2).
+    pub fn clear_free(&self, fill: Value) { crate::fiber_os::slots_clear(self.stk, self.stk.len().saturating_sub(self.sp), fill) }
+
     #[inline(always)]
     pub fn sp_mark(&self) -> Sp { self.sp }
     #[inline(always)]
-    pub fn sp_reset(&mut self, m: Sp) { self.sp = m; }
+    pub fn sp_reset(&mut self, m: Sp) {
+        self.sp = m;
+        #[cfg(feature = "gc_check")] crate::gc::check_park(self);
+    }
 }
 
 /// Reserve n slots at sp, for a call being staged ([recv, -, args...]) or for temporaries.
@@ -88,7 +102,10 @@ pub fn stage(c: &mut Ctx, n: usize) -> Result<Stk, Esc> {
 /// Before running a method entry node on the frame at `st`: it expects sp just above the
 /// argc staged arguments, where stage() left it (so a baked call that just staged skips this).
 #[inline(always)]
-pub fn at_entry(c: &mut Ctx, st: Stk, argc: usize) { c.sp = st.len().wrapping_sub(2 + argc); }
+pub fn at_entry(c: &mut Ctx, st: Stk, argc: usize) {
+    c.sp = st.len().wrapping_sub(2 + argc);
+    #[cfg(feature = "gc_check")] crate::gc::check_park(c);
+}
 
 /// Method entry: sp goes from above the params to above the frame's n slots (frame() made sure they exist).
 #[inline(always)]

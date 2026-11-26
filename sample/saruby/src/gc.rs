@@ -2,9 +2,9 @@
 // instance, the backend choice, and what the collector asks of the language —
 // roots (vm.rs, fiber.rs), the edges of an object, finalization.
 //
-// Roots today: heap objects are traced exactly; the machine stacks (with the
-// callee-saved registers) and the VM value stacks are ambiguous roots, so nothing
-// they point at can move.
+// Roots today: heap objects and the VM value stacks (docs/gc_moving.md 12.2) are
+// traced exactly; the machine stacks (with the callee-saved registers) are
+// ambiguous roots, so nothing they point at can move.
 //
 // Rule for Rust code: a Value may live in locals/registers freely, but never only
 // in a Rust heap buffer (Vec<Value> etc.) across an allocation — use a Ruby Array.
@@ -323,6 +323,8 @@ unsafe impl GcLang for Saruby {
     fn from_object(p: NonNull<RObj>) -> Value { unsafe { Value::from_ptr(p.as_ptr()) } }   // SAFETY: an object of this heap (GcLang contract)
 
     fn visit_roots<V: RootVisitor<Self>>(&mut self, v: &mut V) {
+        COLLECTING.set(true);
+        crate::slots::slots_epoch_bump();
         // SAFETY: current_stack_top() is the end of the stack this code runs on
         let top = crate::fiber::current_stack_top();
         unsafe { rt::stack::with_current_stack(top, |w| scan_running_stack(v, w, top)); }
@@ -338,6 +340,7 @@ unsafe impl GcLang for Saruby {
 
     /// Weak tables (WeakMap, WeakKeyMap) lose the entries whose weak key or value died.
     fn sweep_weak<W: WeakVisitor<Self>>(&mut self, w: &mut W) {
+        COLLECTING.set(false);
         let seen = WEAK_SEEN.take();
         for t in seen {
             if t == crate::builtins::misc::fin_table_value(self) { sweep_finalizers(self, t, w); continue; }
@@ -370,6 +373,31 @@ unsafe impl GcLang for Saruby {
     }
 }
 
+// ---- value stacks (docs/gc_moving.md 12.2) ----------------------------------------------------
+
+thread_local! { static COLLECTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+/// A collection is marking (not an ObjectSpace walk of the roots): RData visits may clear stacks.
+pub fn collecting() -> bool { COLLECTING.get() }
+
+/// What a collection leaves in the slots above sp: nil, or under gc_check a Value that faults when used.
+pub fn stack_fill() -> Value {
+    #[cfg(feature = "gc_check")] { poison_klass() }
+    #[cfg(not(feature = "gc_check"))] { NIL }
+}
+
+/// The slots below a context's sp, exactly: each holds a valid Value (12.2), the gc_check fill excepted.
+pub fn visit_slots<V: RootVisitor<Saruby> + ?Sized>(m: &mut V, live: &[crate::slots::Slot]) {
+    for s in live {
+        let v = s.get();
+        if !v.is_heap() { continue; }
+        #[cfg(feature = "gc_check")] if v == poison_klass() { continue; }
+        let mut w = v;
+        m.visit(&mut w);
+        if w != v { s.set(w); }
+    }
+}
+
 // A class word that faults when used: one PROT_NONE page (gc_check builds only).
 #[cfg(feature = "gc_check")]
 fn poison_klass() -> Value {
@@ -383,7 +411,8 @@ fn poison_klass() -> Value {
 
 /// GC.__check_rooting(mode), gc_check builds: the harness self-test (docs/gc_moving.md 2.5).
 /// 0: a String parked across allocations (survives); 1: held in a Rust local inside a precise zone
-/// (must fault under SARUBY_GC_STRESS=1); 2: in a local outside any zone (the stack scan keeps it).
+/// (must fault under SARUBY_GC_STRESS=1); 2: in a local outside any zone (the stack scan keeps it);
+/// 3: sp moved below a live park (must abort, docs/gc_moving.md 12.3).
 #[cfg(feature = "gc_check")]
 pub fn check_rooting(c: &mut Ctx, _s: Value, a: &[Value], _b: crate::vm::Blk) -> crate::vm::RV {
     fn churn(c: &mut Ctx) { for _ in 0..64 { std::hint::black_box(c.str_new(b"churn churn churn churn churn churn")); } }
@@ -392,6 +421,8 @@ pub fn check_rooting(c: &mut Ctx, _s: Value, a: &[Value], _b: crate::vm::Blk) ->
     match mode {
         0 => c.park(1, |c, p| precise(c, |c| { let s = c.str_new(b"parked"); p.set(0, s); churn(c); Ok(reread(c, p.get(0))) })),
         1 => precise(c, |c| { let s = c.str_new(b"local"); churn(c); Ok(reread(c, std::hint::black_box(s))) }),
+        // koruby's P1: sp reset to a mark taken before a live park (must abort: check_park)
+        3 => { let m = c.sp_mark(); c.park(1, |c, _p| { c.sp_reset(m); Ok(NIL) }) }
         _ => { let s = c.str_new(b"conservative"); churn(c); Ok(reread(c, std::hint::black_box(s))) }
     }
 }
@@ -457,6 +488,23 @@ fn scan_running_stack<V: RootVisitor<Saruby>>(v: &mut V, w: &[usize], top: usize
     }
 }
 
+// gc_check: (stack, end of the park's slots) of each live park, innermost last (docs/gc_moving.md 12.3)
+#[cfg(feature = "gc_check")]
+thread_local! { static PARKS: std::cell::RefCell<Vec<(usize, usize)>> = const { std::cell::RefCell::new(Vec::new()) }; }
+
+/// gc_check: sp may not move below a live park of its stack (koruby's P1: a yield that drops a park).
+#[cfg(feature = "gc_check")]
+pub fn check_park(c: &Ctx) {
+    let (id, top) = (c.stack_id(), c.top_addr());
+    PARKS.with_borrow(|p| if let Some(&(_, end)) = p.iter().rev().find(|e| e.0 == id) {
+        assert!(top >= end, "gc_check: sp moved below a live park (docs/gc_moving.md 12.3)");
+    });
+}
+
+/// gc_check: a released stack's parks (an abandoned fiber's) are gone.
+#[cfg(feature = "gc_check")]
+pub fn parks_forget(stack: usize) { PARKS.with_borrow_mut(|p| p.retain(|e| e.0 != stack)); }
+
 /// Value-stack slots reserved for one scope (docs/gc_moving.md 2.2, idiom C): roots while the
 /// scope runs.  The brand keeps a `Park` from outliving it.
 pub struct Park<'s> { st: crate::stack::Stk, _brand: std::marker::PhantomData<fn(&'s ()) -> &'s ()> }
@@ -473,7 +521,9 @@ impl Ctx {
         let m = self.sp_mark();
         let st = crate::stack::stage(self, n)?;
         for i in 0..n { st[i].set(NIL); }
+        #[cfg(feature = "gc_check")] PARKS.with_borrow_mut(|p| p.push((self.stack_id(), self.top_addr())));
         let r = f(self, Park { st, _brand: std::marker::PhantomData });
+        #[cfg(feature = "gc_check")] PARKS.with_borrow_mut(|p| p.pop());
         self.sp_reset(m);
         r
     }

@@ -27,9 +27,9 @@ pub struct Stack(&'static [Slot]);
 pub type Sp = *const Slot;
 /// Ctx.stk: the stack's bounds; `end` is SLACK slots below the real end.
 #[derive(Clone, Copy)]
-pub struct StackRef { end: *const Slot, base: *const Slot }
+pub struct StackRef { end: *const Slot, base: *const Slot, all: &'static [Slot] }
 pub const NO_SP: Sp = std::ptr::null();
-pub const NO_STACK: StackRef = StackRef { end: std::ptr::null(), base: std::ptr::null() };
+pub const NO_STACK: StackRef = StackRef { end: std::ptr::null(), base: std::ptr::null(), all: &[] };
 
 /// Staging is not checked; frame entries are, and leave this much room for it.
 const SLACK: usize = 64;
@@ -64,23 +64,34 @@ impl Ctx {
     pub fn attach_stack(&mut self, s: Stack) {
         let base = s.0.as_ptr();
         self.sp = base;
-        self.stk = StackRef { end: base.wrapping_add(s.0.len().saturating_sub(SLACK)), base };
+        self.stk = StackRef { end: base.wrapping_add(s.0.len().saturating_sub(SLACK)), base, all: s.0 };
     }
     pub fn bottom(&self) -> Stk { Stk(self.stk.base) }
     #[inline(always)]
     pub fn top(&self) -> Stk { Stk(self.sp) }
-    pub fn live(&self) -> &'static [Slot] {
-        if self.stk.base.is_null() { return &[]; }
-        unsafe { std::slice::from_raw_parts(self.stk.base, self.sp.offset_from(self.stk.base) as usize) }
-    }
+    /// The number of slots below sp.
+    fn used(&self) -> usize { (self.sp as usize).wrapping_sub(self.stk.base as usize) / std::mem::size_of::<Slot>() }
+    pub fn live(&self) -> &'static [Slot] { &self.stk.all[..self.used().min(self.stk.all.len())] }
+    /// Reset the slots above sp to `fill` / nil (at a collection: docs/gc_moving.md 12.2).
+    pub fn clear_free(&self, fill: Value) { crate::fiber_os::slots_clear(self.stk.all, self.used(), fill) }
     #[inline(always)]
-    pub fn set_sp(&mut self, st: Stk, n: usize) { self.sp = st.0.wrapping_add(n); }
+    pub fn set_sp(&mut self, st: Stk, n: usize) {
+        self.sp = st.0.wrapping_add(n);
+        #[cfg(feature = "gc_check")] crate::gc::check_park(self);
+    }
+    #[cfg(feature = "gc_check")]
+    pub fn stack_id(&self) -> usize { self.stk.base as usize }
+    #[cfg(feature = "gc_check")]
+    pub fn top_addr(&self) -> usize { self.sp as usize }
     #[inline(always)]
     pub fn has_room(&self, n: usize) -> bool { self.sp.wrapping_add(n) < self.stk.end }
     #[inline(always)]
     pub fn sp_mark(&self) -> Sp { self.sp }
     #[inline(always)]
-    pub fn sp_reset(&mut self, m: Sp) { self.sp = m; }
+    pub fn sp_reset(&mut self, m: Sp) {
+        self.sp = m;
+        #[cfg(feature = "gc_check")] crate::gc::check_park(self);
+    }
 }
 
 #[inline(always)]
