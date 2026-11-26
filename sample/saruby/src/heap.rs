@@ -335,7 +335,7 @@ impl Ctx {
     /// Set the refinements of a cref (one just made by vm::new_cref): a place write.
     #[inline(always)]
     pub fn cref_set_refinements(&mut self, cr: *const Cref, refs: Value) {
-        if !cr.is_null() { unsafe { (*(cr as *mut Cref)).refinements = refs; } }   // SAFETY: crefs are never freed
+        if let Some(r) = self.cref_ref(cr) { r.refinements.set(refs); }
     }
 }
 

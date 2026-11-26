@@ -170,7 +170,8 @@ pub fn new_me_cref(name: Sym, owner: Value, visi: u8, kind: MKind, cref: *const 
 // ---- lexical scope -------------------------------------------------------------------------
 
 /// def_target: where a `def` in this scope defines (instance_eval / class_exec's target; NIL: klass).
-pub struct Cref { pub klass: Value, pub prev: *const Cref, pub refinements: Value, pub def_target: Value }
+/// Value fields are Cells: written in place (refinements) and by the GC through shared references.
+pub struct Cref { pub klass: Cell<Value>, pub prev: *const Cref, pub refinements: Cell<Value>, pub def_target: Cell<Value> }
 
 pub fn new_cref(klass: Value, prev: *const Cref) -> *const Cref { new_cref_target(klass, prev, NIL) }
 /// instance_eval(String) on an object that had no singleton class pushes its class, with the object as
@@ -178,24 +179,24 @@ pub fn new_cref(klass: Value, prev: *const Cref) -> *const Cref { new_cref_targe
 #[inline] pub fn lazy_target(t: Value) -> bool { t.is_heap() && !is_class_or_module(t) }
 /// The class of a lexical scope for constants: a lazy cref's singleton class counts once it exists.
 pub fn cref_klass(c: &Ctx, cr: &Cref) -> Value {
-    let o = cr.def_target;
-    if !lazy_target(o) { return cr.klass; }
+    let o = cr.def_target.get();
+    if !lazy_target(o) { return cr.klass.get(); }
     let k = class_of(o);
-    if c.class(k).is_singleton && c.class(k).attached == o { k } else { cr.klass }
+    if c.class(k).is_singleton && c.class(k).attached == o { k } else { cr.klass.get() }
 }
 pub fn new_cref_target(klass: Value, prev: *const Cref, def_target: Value) -> *const Cref {
-    let p = Box::into_raw(Box::new(Cref { klass, prev, refinements: NIL, def_target })) as *const Cref;
+    let p = Box::into_raw(Box::new(Cref { klass: Cell::new(klass), prev, refinements: Cell::new(NIL), def_target: Cell::new(def_target) })) as *const Cref;
     vm().crefs.borrow_mut().push(p);
     p
 }
 /// `cur` with `def` going to `t` (a method defined in instance_eval / class_exec keeps it for nested defs);
 /// constants still resolve through cur's chain.
 pub fn cref_with_def_target(c: &Ctx, cur: *const Cref, t: Value) -> *const Cref {
-    let (klass, prev, refinements) = c.cref_ref(cur).map_or((vm().c_object.get(), std::ptr::null(), NIL), |x| (x.klass, x.prev, x.refinements));
+    let (klass, prev, refinements) = c.cref_ref(cur).map_or((vm().c_object.get(), std::ptr::null(), NIL), |x| (x.klass.get(), x.prev, x.refinements.get()));
     let found = vm().crefs.borrow().iter().rev().copied().find(|&p| c.cref_ref(p).is_some_and(|x|
-        x.def_target == t && x.klass == klass && std::ptr::eq(x.prev, prev) && x.refinements == refinements));
+        x.def_target.get() == t && x.klass.get() == klass && std::ptr::eq(x.prev, prev) && x.refinements.get() == refinements));
     if let Some(p) = found { return p; }
-    let p = Box::into_raw(Box::new(Cref { klass, prev, refinements, def_target: t })) as *const Cref;
+    let p = Box::into_raw(Box::new(Cref { klass: Cell::new(klass), prev, refinements: Cell::new(refinements), def_target: Cell::new(t) })) as *const Cref;
     vm().crefs.borrow_mut().push(p);
     p
 }
@@ -1052,7 +1053,7 @@ pub static REFINEMENTS_ON: std::sync::atomic::AtomicBool = std::sync::atomic::At
 pub fn cref_refinements(mut cr: *const Cref) -> Value {
     unsafe {
         while !cr.is_null() {
-            if (*cr).refinements != NIL { return (*cr).refinements; }
+            if (*cr).refinements.get() != NIL { return (*cr).refinements.get(); }
             cr = (*cr).prev;
         }
     }
@@ -3269,7 +3270,7 @@ pub fn visit_roots<V: RootVisitor<Saruby>>(m: &mut V, cur: &mut Ctx) {
     for v in vm.sym_names.borrow_mut().values_mut() { m.visit(v); }
     for v in vm.pending_vals.borrow_mut().iter_mut() { m.visit(v); }
     crate::gc::visit_tls_roots(m);
-    for &cr in vm.crefs.borrow().iter() { let cr = unsafe { &mut *(cr as *mut Cref) }; m.visit(&mut cr.klass); m.visit(&mut cr.refinements); m.visit(&mut cr.def_target); }
+    for &cr in vm.crefs.borrow().iter() { if let Some(cr) = cur.cref_ref(cr) { for f in [&cr.klass, &cr.refinements, &cr.def_target] { let mut v = f.get(); m.visit(&mut v); f.set(v); } } }
     // every builtin class field (nil until boot fills it in)
     let nclass_fields = (std::mem::offset_of!(Vm, main_obj)) / 8;
     // SAFETY: Vm is repr(C) and starts with nclass_fields Cell<Value> fields
@@ -3297,6 +3298,8 @@ fn visit_main_ctx<V: RootVisitor<Saruby>>(m: &mut V) {
             m.visit(&mut v);
             if v != f.read() { f.write(v); }   // only a moving collector writes
         }
+        let mut f = (*p).frame;
+        while !f.is_null() { visit_me(m, (*f).me); f = (*f).prev; }
     }
 }
 
@@ -3307,6 +3310,9 @@ pub fn visit_ctx<V: RootVisitor<Saruby> + ?Sized>(m: &mut V, c: &mut Ctx) {
     // SAFETY: a Slot is one Value word
     unsafe { m.visit_ambiguous(std::slice::from_raw_parts(live.as_ptr() as *const usize, live.len())); }
     m.visit(&mut c.esc_val); m.visit(&mut c.errinfo); m.visit(&mut c.last_match); m.visit(&mut c.esc_tag_v);
+    // running frames' entries: one replaced in its class while it runs is in no class table
+    let mut f = c.cur_frame();
+    while let Some(fr) = f { visit_me(m, fr.me); f = c.prev_frame(fr); }
 }
 
 pub fn visit_class<V: EdgeVisitor<Saruby> + ?Sized>(m: &mut V, cd: &mut ClassData) {

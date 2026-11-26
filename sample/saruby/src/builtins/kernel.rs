@@ -1577,9 +1577,9 @@ pub fn define_dash_n(c: &mut Ctx) {
 fn autoload_cbase(c: &Ctx) -> Value {
     let Some(f) = c.caller_frame() else { return c.vm().c_object.get() };
     // the class a `def` there would define on (rt::srb_def): instance_eval's singleton included
-    let mut k = c.cref_ref(f.cref()).map_or(c.vm().c_object.get(), |r| r.klass);
+    let mut k = c.cref_ref(f.cref()).map_or(c.vm().c_object.get(), |r| r.klass.get());
     // a method defined in Class.new / class_exec: the cref's def target is its class
-    if let Some(t) = c.cref_ref(f.cref()).map(|r| r.def_target).filter(|&t| is_class_or_module(t)) { k = t; }
+    if let Some(t) = c.cref_ref(f.cref()).map(|r| r.def_target.get()).filter(|&t| is_class_or_module(t)) { k = t; }
     if f.defined_class().is_heap() && f.kind != FK_CLASS { k = f.defined_class(); }
     while c.class(k).is_singleton { k = c.class(k).superclass; }
     k

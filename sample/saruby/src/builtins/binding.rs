@@ -22,7 +22,7 @@ pub struct RBinding { pub self_: Value, pub env: Value, pub names: Vec<Vec<(Sym,
     pub blk: Value,   // its frame's block as a Proc (rb_vm_make_binding escapes it), or nil
     pub visi: u8 }    // its scope's default visibility (CRuby keeps it in the cref)
 impl RData for RBinding {
-    fn visit(&mut self, m: &mut crate::gc::Visitor) { m.visit(&mut self.self_); m.visit(&mut self.env); m.visit(&mut self.dc); m.visit(&mut self.blk); }
+    fn visit(&mut self, m: &mut crate::gc::Visitor) { m.visit(&mut self.self_); m.visit(&mut self.env); m.visit(&mut self.dc); m.visit(&mut self.blk); crate::vm::visit_me(m, self.me); }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }

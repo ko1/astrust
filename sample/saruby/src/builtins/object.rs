@@ -760,7 +760,7 @@ pub fn visit_roots<V: crate::gc::EdgeVisitor<crate::gc::Saruby> + ?Sized>(m: &mu
 fn scope_visi(c: &Ctx, m: Value) -> u8 {
     let Some(p) = c.caller_frame() else { return VISI_PUBLIC };
     if p.fp[0].get() != m { return VISI_PUBLIC; }
-    let in_m = if p.kind == FK_BLOCK { p.defined_class() == m } else { c.cref_ref(p.cref()).map_or(c.vm().c_object.get(), |r| r.klass) == m };
+    let in_m = if p.kind == FK_BLOCK { p.defined_class() == m } else { c.cref_ref(p.cref()).map_or(c.vm().c_object.get(), |r| r.klass.get()) == m };
     if !in_m { return VISI_PUBLIC; }
     if p.kind != FK_BLOCK || p.visi != VISI_PUBLIC { return p.visi; }
     // a block inside the scope shares its visibility (CRuby keeps it in the cref): the enclosing blocks' setting
@@ -1163,7 +1163,7 @@ fn m_s_constants(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     if !a.is_empty() || slf != c.vm().c_module.get() { return m_constants(c, slf, a, b); }
     let mut scopes = vec![];
     let mut cr = c.caller_frame().map_or(std::ptr::null(), |f| f.cref());
-    while let Some(r) = c.cref_ref(cr) { if !r.prev.is_null() { scopes.push(r.klass); } cr = r.prev; }
+    while let Some(r) = c.cref_ref(cr) { if !r.prev.is_null() { scopes.push(r.klass.get()); } cr = r.prev; }
     let out = c.ary_new();
     let o = c.vm().c_object.get();
     for k in scopes {
@@ -1370,7 +1370,7 @@ fn m_using(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
         for &x in c.ary(l) { v.retain(|&y| y != x); v.push(x); }
     }
     let active = c.ary_from_vec(v);
-    let (klass, prev) = match c.cref_ref(old) { None => (c.vm().c_object.get(), std::ptr::null()), Some(o) => (o.klass, o.prev) };
+    let (klass, prev) = match c.cref_ref(old) { None => (c.vm().c_object.get(), std::ptr::null()), Some(o) => (o.klass.get(), o.prev) };
     let cr = new_cref(klass, prev);
     c.cref_set_refinements(cr, active);
     c.set_caller_cref(cr);
