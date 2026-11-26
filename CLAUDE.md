@@ -18,7 +18,8 @@
 - 安全性の指標: `ruby tools/heap_audit.rb | tail -n 1` の総数（2026-11-26 時点 396）。増やすときは SAFETY コメントと一覧
 - 計測機と排他: sp4（計測対象、専用）/ sp3（比較・負荷生成）。必ず `~/.local/bin/bench-lease claim / check / release`（sandbox の外で）。継続して追う数字は sp4
 - 重いジョブのラッパー: `~/.local/bin/saruby-heavy`（空きメモリ ≥10GB で入場、本数の上限なし）。lease を待つコマンドは包まない
-- todo: `sample/saruby/docs/todo.md`（テストで出た問題は §3.5）。済みの記録は `sample/saruby/docs/done.md`（todo の整理で移す）
+- todo: `sample/saruby/docs/todo.md`（テストで出た問題は §3.5）
+- 済みの記録（done）: `sample/saruby/docs/done.md`（todo の整理で、済みの項目を元の節見出しの下に新しい順で移す。まだ無ければ作る）
 - 実験と台帳: `~/ruby/src/trials/yyyy-mm-dd-saruby-…/`、`~/ruby/src/ideas/`（`ruby index.rb > README.md` で索引を作り直して commit）
 - 上流の不具合の記録: `~/ruby/src/trials/2026-11-24-cruby-oddities/`（artifact あり）
 - 未マージの記録: `~/ruby/src/unmerged/astrust/yyyy-mm-dd-<slug>/`（git 管理。`~/ruby/src/agent-process/bin/wt-archive` で作る）。tag は ASTrust repo の `unmerged/<slug>`
