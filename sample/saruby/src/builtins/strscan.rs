@@ -83,7 +83,7 @@ fn do_scan_e(c: &mut Ctx, slf: Value, pat: Value, advance: bool, want_str: bool,
     let bytes: &[u8] = &src.b;
     // the string stays borrowed while matching: nothing below takes the context until `found` is known
     let (found, base): (Option<Vec<Option<(usize, usize)>>>, usize) = if let Some(r) = crate::regexp::rregexp(c, pat) {
-        let md = match md { Some(e) => e, None => match crate::regexp::prep_r(r, src.enc, bytes) {
+        let md = match md { Some(e) => e, None => match crate::regexp::prep_r(r, src.enc(), bytes) {
             Ok(e) => e,
             Err(p) => { let e = crate::regexp::prep_fail(c, p)?; return do_scan_e(c, slf, pat, advance, want_str, head, Some(e)); }
         } };
@@ -126,7 +126,7 @@ fn ss_getch(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let s = sc(c, slf)?;
     let src = c.rstring(s.str);
     if s.pos >= src.b.len() { sc_mut(c, slf).groups = None; return Ok(NIL); }
-    let l = enc_char_len(&src.b, s.pos, src.enc).clamp(1, src.b.len() - s.pos);
+    let l = enc_char_len(&src.b, s.pos, src.enc()).clamp(1, src.b.len() - s.pos);
     set_match1(c, slf, s.pos, s.pos + l);
     Ok(sub(c, s.str, s.pos, s.pos + l))
 }
@@ -174,7 +174,7 @@ fn ss_pos(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(
 fn ss_charpos(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let s = sc(c, slf)?;
     let src = c.rstring(s.str);
-    Ok(Value::fix(enc_strlen(&src.b[..s.pos.min(src.b.len())], src.enc) as i64))
+    Ok(Value::fix(enc_strlen(&src.b[..s.pos.min(src.b.len())], src.enc()) as i64))
 }
 fn ss_set_pos(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let n = num_to_long(c, a[0])?;

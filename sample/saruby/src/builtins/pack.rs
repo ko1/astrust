@@ -322,8 +322,8 @@ pub fn pack(c: &mut Ctx, ary: Value, a: &[Value]) -> RV {
     let out = match buffer {
         Some(b) => {
             let r = c.str_modify(b)?;
-            r.b = crate::sbuf::SBuf::from_vec(res);
-            match enc_info { 1 => r.enc = crate::object::ENC_ASCII, 2 => r.enc = crate::object::ENC_UTF8, _ => {} }
+            r.set_bytes(crate::sbuf::SBuf::from_vec(res));
+            match enc_info { 1 => r.set_enc(crate::object::ENC_ASCII), 2 => r.set_enc(crate::object::ENC_UTF8), _ => {} }
             b
         }
         None => c.str_from_vec_enc(res, match enc_info { 1 => crate::object::ENC_ASCII, 2 => crate::object::ENC_UTF8, _ => crate::object::ENC_BINARY }),

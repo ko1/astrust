@@ -149,7 +149,7 @@ fn unescape(c: &mut Ctx, s: Value, encv: Value, plus: bool) -> RV {
     let r = match dest { Some(mut d) => { d.extend_from_slice(&b[beg..]); like(c, s, d, false) } None => like(c, s, b, true) };
     if orig != enc {
         let valid = en::is_valid(enc, c.str_bytes(r));
-        c.rstring_mut(r).enc = if valid { enc } else { orig };
+        c.rstring_mut(r).set_enc(if valid { enc } else { orig });
     }
     Ok(r)
 }

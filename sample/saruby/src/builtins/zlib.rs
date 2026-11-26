@@ -292,7 +292,7 @@ fn expand_buffer(c: &mut Ctx, z: &mut ZStream, blk: Blk, reuse: Value) -> Result
 fn detach_value(c: &mut Ctx, z: &ZStream, data: Vec<u8>, reuse: Value) -> RV {
     if z.flags & FLAG_REUSE_BUFFER != 0 && reuse != NIL {
         let s = c.str_modify(reuse)?;
-        s.b = crate::sbuf::SBuf::from_vec(data);
+        s.set_bytes(crate::sbuf::SBuf::from_vec(data));
         return Ok(reuse);
     }
     Ok(bin(c, data))
@@ -926,7 +926,7 @@ fn fill(c: &mut Ctx, g: &mut GzCore, io: Value, len: i64, outbuf: Value) -> Resu
 /// Set outbuf's bytes (rb_str_resize + memcpy).
 fn set_outbuf(c: &mut Ctx, outbuf: Value, b: &[u8]) -> Result<(), Esc> {
     let s = c.str_modify(outbuf)?;
-    s.b = crate::sbuf::SBuf::from_slice(b);
+    s.set_bytes(crate::sbuf::SBuf::from_slice(b));
     Ok(())
 }
 fn shift_to(c: &mut Ctx, g: &mut GzCore, len: usize, outbuf: Value) -> RV {

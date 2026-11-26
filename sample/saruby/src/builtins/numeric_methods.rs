@@ -401,7 +401,7 @@ cfn!(int_to_s, |c, s, a| { check_argc(c, a, 0, 1)?;
     if !(2..=36).contains(&base) { return arg_err(c, format!("invalid radix {}", base)); }
     let st = if s.is_fixnum() && base == 10 { s.as_fix().to_string() } else { c.to_big(s).to_string_radix(base as u32) };
     let v = c.str_new(st.as_bytes());
-    c.rstring_mut(v).enc = ENC_ASCII;
+    c.rstring_mut(v).set_enc(ENC_ASCII);
     Ok(v)
 });
 cfn!(#[inline] int_to_f, |c, s, _a| Ok(c.float_new(c.num_to_f64(s).unwrap())));
@@ -789,7 +789,7 @@ cfn!(flo_lt, |c, s, a| flo_rel(c, s, a[0], |o| o.is_lt(), s::lt));
 cfn!(flo_le, |c, s, a| flo_rel(c, s, a[0], |o| o.is_le(), s::le));
 cfn!(flo_gt, |c, s, a| flo_rel(c, s, a[0], |o| o.is_gt(), s::gt));
 cfn!(flo_ge, |c, s, a| flo_rel(c, s, a[0], |o| o.is_ge(), s::ge));
-cfn!(flo_to_s, |c, s, _a| { let v = c.str_new(float_to_s(float_val(s)).as_bytes()); c.rstring_mut(v).enc = ENC_ASCII; Ok(v) });
+cfn!(flo_to_s, |c, s, _a| { let v = c.str_new(float_to_s(float_val(s)).as_bytes()); c.rstring_mut(v).set_enc(ENC_ASCII); Ok(v) });
 fn check_finite(c: &mut Ctx, f: f64) -> Result<(), Esc> {
     if f.is_nan() || f.is_infinite() { return err(c, c.vm().c_float_domain_error.get(), float_to_s(f)); }
     Ok(())

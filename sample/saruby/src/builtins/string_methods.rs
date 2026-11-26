@@ -23,15 +23,15 @@ macro_rules! cfn { ($(#[$m:meta])* $name:ident, |$c:ident, $s:ident, $a:ident, $
 /// Character index → byte offset (None if out of range); `i` may equal the length.
 fn char_to_byte(c: &Ctx, v: Value, i: usize) -> Option<usize> {
     let r = c.rstring(v);
-    if enc_single(&r.b, r.enc) { return if i <= r.b.len() { Some(i) } else { None }; }
+    if enc_single(&r.b, r.enc()) { return if i <= r.b.len() { Some(i) } else { None }; }
     let mut pos = 0; let mut n = 0;
-    while n < i { if pos >= r.b.len() { return None; } pos += enc_char_len(&r.b, pos, r.enc); n += 1; }
+    while n < i { if pos >= r.b.len() { return None; } pos += enc_char_len(&r.b, pos, r.enc()); n += 1; }
     Some(pos)
 }
 fn byte_to_char(c: &Ctx, v: Value, off: usize) -> usize {
     let r = c.rstring(v);
-    if enc_single(&r.b, r.enc) { return off; }
-    enc_strlen(&r.b[..off], r.enc)
+    if enc_single(&r.b, r.enc()) { return off; }
+    enc_strlen(&r.b[..off], r.enc())
 }
 fn need_ascii_compat(c: &mut Ctx, v: Value) -> Result<(), Esc> {
     let e = c.str_enc(v);
@@ -43,13 +43,15 @@ fn compat(c: &mut Ctx, a: Value, x: Value) -> Result<u8, Esc> { crate::builtins:
 /// Decode a string into (code, byte range) per character.
 fn codes_of(c: &Ctx, v: Value) -> Vec<(u32, usize, usize)> {
     let r = c.rstring(v);
-    let off = char_offsets_of(&r.b, r.enc);
-    (0..off.len() - 1).map(|k| (crate::builtins::encoding::char_code(r.enc, &r.b[off[k]..off[k + 1]]), off[k], off[k + 1])).collect()
+    // hoisted: the buffer's deref and the encoding, once instead of per character
+    let (b, enc) = (&r.b[..], r.enc());
+    let off = char_offsets_of(b, enc);
+    (0..off.len() - 1).map(|k| (crate::builtins::encoding::char_code(enc, &b[off[k]..off[k + 1]]), off[k], off[k + 1])).collect()
 }
 /// Raise ArgumentError for a broken string (tr/delete/count/squeeze etc.).
 fn check_valid(c: &mut Ctx, v: Value) -> Result<(), Esc> {
     let r = c.rstring(v);
-    let enc = r.enc;
+    let enc = r.enc();
     if !crate::builtins::encoding::is_valid(enc, &r.b) { return arg_err(c, format!("invalid byte sequence in {}", crate::builtins::encoding::enc_name(enc))); }
     Ok(())
 }
@@ -153,14 +155,14 @@ fn find_on_boundary(c: &Ctx, slf: Value, o: Value, from: usize) -> Option<usize>
     use crate::builtins::encoding as en;
     let r = c.rstring(slf);
     let n = c.str_bytes(o);
-    if enc_single(&r.b, r.enc) { return find_bytes(&r.b, n, from); }
+    if enc_single(&r.b, r.enc()) { return find_bytes(&r.b, n, from); }
     // rb_strseq_index: a broken needle never matches
     let oe = c.str_enc(o);
     let valid = en::is_valid(oe, n);
     if !valid { return None; }
-    if en::kind(r.enc) == en::EK::Utf8 && (oe == r.enc || en::is_valid(r.enc, n)) { return find_bytes(&r.b, n, from); }
-    let cesu = en::kind(r.enc) == en::EK::Cesu8;   // its heads are the UTF-8 lead bytes (as in check_char_boundary)
-    let off = if cesu { vec![] } else { char_offsets_of(&r.b, r.enc) };
+    if en::kind(r.enc()) == en::EK::Utf8 && (oe == r.enc() || en::is_valid(r.enc(), n)) { return find_bytes(&r.b, n, from); }
+    let cesu = en::kind(r.enc()) == en::EK::Cesu8;   // its heads are the UTF-8 lead bytes (as in check_char_boundary)
+    let off = if cesu { vec![] } else { char_offsets_of(&r.b, r.enc()) };
     let mut i = from;
     loop {
         let p = find_bytes(&r.b, n, i)?;
@@ -182,17 +184,17 @@ cfn!(s_initialize, |c, slf, a, _b| {
     if let Some(&v) = pos.first() {
         let sv = expect_str(c, v)?;
         if sv == slf { check_frozen(c, slf)?; }
-        if sv != slf { let nb = c.str_bytes(sv).to_vec(); let e = c.str_enc(sv); let r = c.str_modify(slf)?; r.b = nb.into(); r.enc = e; }
+        if sv != slf { let nb = c.str_bytes(sv).to_vec(); let e = c.str_enc(sv); let r = c.str_modify(slf)?; r.set_bytes(nb.into()); r.set_enc(e); }
     }
     if let Some(h) = kw {
-        if let Some(e) = crate::hash::hash_get_opt(c, h, sym_value("encoding"))? { let e = crate::builtins::encoding::to_enc(c, e)?; c.str_modify(slf)?.enc = e; }
+        if let Some(e) = crate::hash::hash_get_opt(c, h, sym_value("encoding"))? { let e = crate::builtins::encoding::to_enc(c, e)?; c.str_modify(slf)?.set_enc(e); }
         if let Some(cap) = crate::hash::hash_get_opt(c, h, sym_value("capacity"))? { let n = num_to_long(c, cap)?; if n == i64::MAX { return err(c, c.vm().c_no_memory_error.get(), "too large allocation size"); } if n > 1 << 40 { return err(c, c.vm().c_no_memory_error.get(), "failed to allocate memory"); } }
     }
     Ok(slf)
 });
 cfn!(s_s_new, |c, slf, a, blk| {
     let o = crate::builtins::object::alloc_instance(c, slf)?;
-    if is_string(o) { c.rstring_mut(o).enc = ENC_BINARY; }
+    if is_string(o) { c.rstring_mut(o).set_enc(ENC_BINARY); }
     funcall_kw(c, o, s::initialize, a, blk, kw_arg(c, a).is_some())?;
     Ok(o)
 });
@@ -300,7 +302,7 @@ fn splice_enc(c: &mut Ctx, slf: Value, bs: usize, be: usize, val: Value, enc: u8
     let vb = c.str_bytes(val).to_vec();
     let r = c.str_modify(slf)?;
     r.b.splice(bs..be, vb);
-    r.enc = enc;
+    r.set_enc(enc);
     Ok(())
 }
 cfn!(s_aset, |c, slf, a, b_| {
@@ -369,7 +371,7 @@ fn int_to_char_str(c: &mut Ctx, slf: Value, x: Value) -> RV {
     let i = x.as_fix();
     if enc == ENC_BINARY || enc == ENC_ASCII {
         if i > 255 { return err(c, c.vm().c_range_error.get(), format!("{} out of char range", i)); }
-        if enc == ENC_ASCII && i > 127 { c.rstring_mut(slf).enc = ENC_BINARY; }
+        if enc == ENC_ASCII && i > 127 { c.rstring_mut(slf).set_enc(ENC_BINARY); }
         return Ok(c.str_new_enc(&[i as u8], c.str_enc(slf)));
     }
     match crate::builtins::numeric_methods::enc_chr(enc, i as u64) {
@@ -488,8 +490,8 @@ fn case_apply(b: &[u8], enc: u8, which: u8, o: (bool, bool, bool)) -> Vec<u8> {
     match which { b'u' => upcase(b, enc), b'd' => downcase(b, enc), b's' => swapcase(b, enc), _ => capitalize(b, enc) }
 }
 macro_rules! case_m { ($name:ident, $bang:ident, $w:expr) => {
-    cfn!($name, |c, slf, a, b_| { let o = case_opts(c, a, $w == b'd')?; let r = c.rstring(slf); let nv = case_apply(&r.b, r.enc, $w, o); Ok(c.str_new_like(slf, nv)) });
-    cfn!($bang, |c, slf, a, b_| { let o = case_opts(c, a, $w == b'd')?; check_frozen(c, slf)?; let r = c.rstring(slf); let nv = case_apply(&r.b, r.enc, $w, o); if nv == r.b { return Ok(NIL); } c.str_modify(slf)?.b = nv.into(); Ok(slf) });
+    cfn!($name, |c, slf, a, b_| { let o = case_opts(c, a, $w == b'd')?; let r = c.rstring(slf); let nv = case_apply(&r.b, r.enc(), $w, o); Ok(c.str_new_like(slf, nv)) });
+    cfn!($bang, |c, slf, a, b_| { let o = case_opts(c, a, $w == b'd')?; check_frozen(c, slf)?; let r = c.rstring(slf); let nv = case_apply(&r.b, r.enc(), $w, o); if nv[..] == r.b[..] { return Ok(NIL); } c.str_modify(slf)?.set_bytes(nv.into()); Ok(slf) });
 }; }
 case_m!(s_upcase, s_upcase_b, b'u');
 case_m!(s_downcase, s_downcase_b, b'd');
@@ -502,8 +504,8 @@ fn reverse_bytes(bv: &[u8], enc: u8) -> Vec<u8> {
     for k in (0..off.len() - 1).rev() { out.extend_from_slice(&bv[off[k]..off[k + 1]]); }
     out
 }
-cfn!(s_reverse, |c, slf, a, b_| { let r = c.rstring(slf); let nv = reverse_bytes(&r.b, r.enc); Ok(c.str_new_like(slf, nv)) });
-cfn!(s_reverse_b, |c, slf, a, b_| { let r = c.str_modify(slf)?; let nv = reverse_bytes(&r.b, r.enc); r.b = nv.into(); Ok(slf) });
+cfn!(s_reverse, |c, slf, a, b_| { let r = c.rstring(slf); let nv = reverse_bytes(&r.b, r.enc()); Ok(c.str_new_like(slf, nv)) });
+cfn!(s_reverse_b, |c, slf, a, b_| { let r = c.str_modify(slf)?; let nv = reverse_bytes(&r.b, r.enc()); r.set_bytes(nv.into()); Ok(slf) });
 cfn!(s_include, |c, slf, a, b_| { let o = expect_str(c, a[0])?; compat(c, slf, o)?; Ok(Value::bool(find_on_boundary(c, slf, o, 0).is_some())) });
 cfn!(s_start_with, |c, slf, a, b_| {
     for &x in a {
@@ -551,7 +553,7 @@ fn rindex_bytes(c: &Ctx, slf: Value, o: Value, upto: usize) -> Option<usize> {
     loop {
         let p = rfind_bytes(c.str_bytes(slf), c.str_bytes(o), upto)?;
         let r = c.rstring(slf);
-        if enc_single(&r.b, r.enc) || { let mut i = 0; while i < p { i += enc_char_len(&r.b, i, r.enc); } i == p } { return Some(p); }
+        if enc_single(&r.b, r.enc()) || { let mut i = 0; while i < p { i += enc_char_len(&r.b, i, r.enc()); } i == p } { return Some(p); }
         if p == 0 { return None; }
         upto = p - 1;
     }
@@ -583,8 +585,8 @@ fn strip_range(c: &Ctx, v: Value, sel: &[(bool, Vec<u32>)], l: bool, r: bool) ->
         if r { while e > s && is_ws(bv[e - 1]) { e -= 1; } }
         return (s, e);
     }
-    let off = char_offsets_of(bv, x.enc);
-    let cp = |k: usize| crate::builtins::encoding::char_code(x.enc, &bv[off[k]..off[k + 1]]);
+    let off = char_offsets_of(bv, x.enc());
+    let cp = |k: usize| crate::builtins::encoding::char_code(x.enc(), &bv[off[k]..off[k + 1]]);
     let (mut i, mut j) = (0, off.len() - 1);
     if l { while i < j && in_sets(cp(i), sel) { i += 1; } }
     if r { while j > i && in_sets(cp(j - 1), sel) { j -= 1; } }
@@ -608,7 +610,7 @@ strip_m!(s_rstrip, s_rstrip_b, false, true);
 /// "\n" in its own encoding (chomp's smart newline, in any encoding as CRuby)
 fn is_newline(c: &Ctx, v: Value) -> bool {
     let r = c.rstring(v);
-    &r.b[..] == b"\n" || (crate::builtins::encoding::min_len(r.enc) > 1 && crate::builtins::encoding::code_to_bytes(r.enc, 10).is_some_and(|nl| r.b[..] == nl[..]))
+    &r.b[..] == b"\n" || (crate::builtins::encoding::min_len(r.enc()) > 1 && crate::builtins::encoding::code_to_bytes(r.enc(), 10).is_some_and(|nl| r.b[..] == nl[..]))
 }
 fn chomp_impl(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<Vec<u8>, Esc> {
     check_argc(c, a, 0, 1)?;
@@ -634,7 +636,7 @@ fn chomp_impl(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<Vec<u8>, Esc> {
     Ok(c.str_bytes(slf)[..keep].to_vec())
 }
 cfn!(s_chomp, |c, slf, a, b_| { let v = chomp_impl(c, slf, a)?; Ok(c.str_new_like(slf, v)) });
-cfn!(s_chomp_b, |c, slf, a, b_| { check_frozen(c, slf)?; let v = chomp_impl(c, slf, a)?; if v.len() == c.str_bytes(slf).len() { return Ok(NIL); } c.str_modify(slf)?.b = v.into(); Ok(slf) });
+cfn!(s_chomp_b, |c, slf, a, b_| { check_frozen(c, slf)?; let v = chomp_impl(c, slf, a)?; if v.len() == c.str_bytes(slf).len() { return Ok(NIL); } c.str_modify(slf)?.set_bytes(v.into()); Ok(slf) });
 fn chop_impl(v: &[u8], enc: u8) -> Vec<u8> {
     if v.is_empty() { return vec![]; }
     if v.ends_with(b"\r\n") { return v[..v.len() - 2].to_vec(); }
@@ -642,7 +644,7 @@ fn chop_impl(v: &[u8], enc: u8) -> Vec<u8> {
     v[..off[off.len() - 2]].to_vec()
 }
 cfn!(s_chop, |c, slf, a, b_| Ok(c.str_new_like(slf, chop_impl(c.str_bytes(slf), c.str_enc(slf)))));
-cfn!(s_chop_b, |c, slf, a, b_| { check_frozen(c, slf)?; if c.str_bytes(slf).is_empty() { return Ok(NIL); } let v = chop_impl(c.str_bytes(slf), c.str_enc(slf)); c.str_modify(slf)?.b = v.into(); Ok(slf) });
+cfn!(s_chop_b, |c, slf, a, b_| { check_frozen(c, slf)?; if c.str_bytes(slf).is_empty() { return Ok(NIL); } let v = chop_impl(c.str_bytes(slf), c.str_enc(slf)); c.str_modify(slf)?.set_bytes(v.into()); Ok(slf) });
 cfn!(s_chr, |c, slf, a, b_| { let v = c.str_bytes(slf); if v.is_empty() { return Ok(c.str_new_like(slf, vec![])); } let l = enc_char_len(v, 0, c.str_enc(slf)); Ok(c.str_new_like(slf, v[..l].to_vec())) });
 cfn!(s_chars, |c, slf, a, blk| {
     let parts = c.chars_of(slf);
@@ -1062,8 +1064,8 @@ cfn!(s_gsub, |c, slf, a, blk| {
     if a.len() == 1 && blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"gsub"), a, NIL); }
     let r = subst(c, slf, a, blk, true, false)?; Ok(sub_result(c, slf, r))
 });
-cfn!(s_sub_b, |c, slf, a, blk| { check_frozen(c, slf)?; if a.len() == 1 && blk.is_null() { return argc_err(c, 1, 2, 2); } match subst(c, slf, a, blk, false, true)? { Some((v, e)) => { let r = c.str_modify(slf)?; r.b = v.into(); r.enc = e; Ok(slf) } None => Ok(NIL) } });
-cfn!(s_gsub_b, |c, slf, a, blk| { if a.len() == 1 && blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"gsub!"), a, NIL); } check_frozen(c, slf)?; match subst(c, slf, a, blk, true, true)? { Some((v, e)) => { let r = c.str_modify(slf)?; r.b = v.into(); r.enc = e; Ok(slf) } None => Ok(NIL) } });
+cfn!(s_sub_b, |c, slf, a, blk| { check_frozen(c, slf)?; if a.len() == 1 && blk.is_null() { return argc_err(c, 1, 2, 2); } match subst(c, slf, a, blk, false, true)? { Some((v, e)) => { let r = c.str_modify(slf)?; r.set_bytes(v.into()); r.set_enc(e); Ok(slf) } None => Ok(NIL) } });
+cfn!(s_gsub_b, |c, slf, a, blk| { if a.len() == 1 && blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, intern(b"gsub!"), a, NIL); } check_frozen(c, slf)?; match subst(c, slf, a, blk, true, true)? { Some((v, e)) => { let r = c.str_modify(slf)?; r.set_bytes(v.into()); r.set_enc(e); Ok(slf) } None => Ok(NIL) } });
 cfn!(s_scan, |c, slf, a, blk| {
     let p = a[0];
     if !regexp::is_regexp(c, p) && !is_string(p) && !(p.is_heap() && respond_to(c, p, s::to_str, true)) {
@@ -1149,9 +1151,9 @@ fn tr_impl(c: &mut Ctx, slf: Value, from: Value, to: Value, squeeze: bool) -> Re
     Ok(out)
 }
 cfn!(s_tr, |c, slf, a, b_| { let v = tr_impl(c, slf, a[0], a[1], false)?; Ok(c.str_new_like(slf, v)) });
-cfn!(s_tr_b, |c, slf, a, b_| { let v = tr_impl(c, slf, a[0], a[1], false)?; check_frozen(c, slf)?; if v == c.str_bytes(slf) { return Ok(NIL); } c.str_modify(slf)?.b = v.into(); Ok(slf) });
+cfn!(s_tr_b, |c, slf, a, b_| { let v = tr_impl(c, slf, a[0], a[1], false)?; check_frozen(c, slf)?; if v == c.str_bytes(slf) { return Ok(NIL); } c.str_modify(slf)?.set_bytes(v.into()); Ok(slf) });
 cfn!(s_tr_s, |c, slf, a, b_| { let v = tr_impl(c, slf, a[0], a[1], true)?; Ok(c.str_new_like(slf, v)) });
-cfn!(s_tr_s_b, |c, slf, a, b_| { let v = tr_impl(c, slf, a[0], a[1], true)?; check_frozen(c, slf)?; if v == c.str_bytes(slf) { return Ok(NIL); } c.str_modify(slf)?.b = v.into(); Ok(slf) });
+cfn!(s_tr_s_b, |c, slf, a, b_| { let v = tr_impl(c, slf, a[0], a[1], true)?; check_frozen(c, slf)?; if v == c.str_bytes(slf) { return Ok(NIL); } c.str_modify(slf)?.set_bytes(v.into()); Ok(slf) });
 fn in_sets(ch: u32, sets: &[TrSet]) -> bool { sets.iter().all(|(neg, s)| s.contains(&ch) != *neg) }
 fn sets_of(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<Vec<TrSet>, Esc> {
     let mut v = vec![];
@@ -1180,7 +1182,7 @@ cfn!(s_delete_b, |c, slf, a, b_| {
     check_frozen(c, slf)?;
     let v = filter_chars(c, slf, &sets)?;
     if v.len() == c.str_bytes(slf).len() { return Ok(NIL); }
-    c.str_modify(slf)?.b = v.into(); Ok(slf)
+    c.str_modify(slf)?.set_bytes(v.into()); Ok(slf)
 });
 cfn!(s_count, |c, slf, a, b_| {
     if a.is_empty() { return argc_err(c, 0, 1, -1); }
@@ -1201,7 +1203,7 @@ fn squeeze_impl(c: &mut Ctx, slf: Value, a: &[Value]) -> Result<Vec<u8>, Esc> {
     Ok(out)
 }
 cfn!(s_squeeze, |c, slf, a, b_| { let v = squeeze_impl(c, slf, a)?; Ok(c.str_new_like(slf, v)) });
-cfn!(s_squeeze_b, |c, slf, a, b_| { let v = squeeze_impl(c, slf, a)?; check_frozen(c, slf)?; if v.len() == c.str_bytes(slf).len() { return Ok(NIL); } c.str_modify(slf)?.b = v.into(); Ok(slf) });
+cfn!(s_squeeze_b, |c, slf, a, b_| { let v = squeeze_impl(c, slf, a)?; check_frozen(c, slf)?; if v.len() == c.str_bytes(slf).len() { return Ok(NIL); } c.str_modify(slf)?.set_bytes(v.into()); Ok(slf) });
 /// A Vec with room for `n` bytes, or NoMemoryError (CRuby's failed malloc).
 fn reserve_bytes(c: &mut Ctx, n: usize) -> Result<Vec<u8>, Esc> {
     let mut v = Vec::new();
@@ -1234,7 +1236,7 @@ cfn!(s_ljust, |c, slf, a, b_| justify(c, slf, a, b'l'));
 cfn!(s_rjust, |c, slf, a, b_| justify(c, slf, a, b'r'));
 cfn!(s_center, |c, slf, a, b_| justify(c, slf, a, b'c'));
 cfn!(#[inline] s_empty, |c, slf, a, b_| Ok(Value::bool(c.str_bytes(slf).is_empty())));
-cfn!(s_replace, |c, slf, a, b_| { let o = expect_str(c, a[0])?; let nb = c.str_bytes(o).to_vec(); let e = c.str_enc(o); let r = c.str_modify(slf)?; r.b = nb.into(); r.enc = e; Ok(slf) });
+cfn!(s_replace, |c, slf, a, b_| { let o = expect_str(c, a[0])?; let nb = c.str_bytes(o).to_vec(); let e = c.str_enc(o); let r = c.str_modify(slf)?; r.set_bytes(nb.into()); r.set_enc(e); Ok(slf) });
 cfn!(s_clear, |c, slf, a, b_| { c.str_modify(slf)?.b.clear(); Ok(slf) });
 cfn!(s_insert, |c, slf, a, b_| {
     let pos = num_to_long(c, a[0])?;
@@ -1254,7 +1256,7 @@ cfn!(s_ord, |c, slf, a, b_| {
 });
 cfn!(s_sum, |c, slf, a, b_| { check_argc(c, a, 0, 1)?; let bits = if a.is_empty() { 16 } else { num_to_int32(c, a[0])? }; let s2: u64 = c.str_bytes(slf).iter().map(|&x| x as u64).sum(); Ok(Value::fix(if bits > 0 && bits < 63 { (s2 & ((1 << bits) - 1)) as i64 } else { s2 as i64 })) });
 cfn!(s_succ, |c, slf, a, b_| Ok(c.str_new_like(slf, succ_enc(c.str_bytes(slf), c.str_enc(slf)))));
-cfn!(s_succ_b, |c, slf, a, b_| { let v = succ_enc(c.str_bytes(slf), c.str_enc(slf)); c.str_modify(slf)?.b = v.into(); Ok(slf) });
+cfn!(s_succ_b, |c, slf, a, b_| { let v = succ_enc(c.str_bytes(slf), c.str_enc(slf)); c.str_modify(slf)?.set_bytes(v.into()); Ok(slf) });
 cfn!(s_upto, |c, slf, a, blk| { check_argc(c, a, 1, 2)?;
     if blk.is_null() { return crate::builtins::enumerator::enum_for(c, slf, s::upto, a, NIL); }
     let last = expect_str(c, a[0])?;
@@ -1319,7 +1321,7 @@ cfn!(s_uminus, |c, slf, a, b_| {
     Ok(v)
 });
 cfn!(s_encoding, |c, slf, a, b_| crate::builtins::misc::encoding_value(c, c.str_enc(slf)));
-cfn!(s_force_encoding, |c, slf, a, b_| { let e = crate::builtins::encoding::to_enc(c, a[0])?; check_frozen(c, slf)?; c.rstring_mut(slf).enc = e; Ok(slf) });
+cfn!(s_force_encoding, |c, slf, a, b_| { let e = crate::builtins::encoding::to_enc(c, a[0])?; check_frozen(c, slf)?; c.rstring_mut(slf).set_enc(e); Ok(slf) });
 cfn!(s_b, |c, slf, a, b_| Ok(c.str_copy_enc(slf, ENC_BINARY)));
 cfn!(s_valid_encoding, |c, slf, a, b_| Ok(Value::bool(crate::builtins::encoding::is_valid(c.str_enc(slf), c.str_bytes(slf)))));
 cfn!(s_ascii_only, |c, slf, a, b_| Ok(Value::bool(crate::builtins::encoding::ascii_compat(c.str_enc(slf)) && is_ascii(c.str_bytes(slf)))));
@@ -1371,7 +1373,7 @@ fn scrub_impl(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> Result<Option<V
     Ok(Some(out))
 }
 cfn!(s_scrub, |c, slf, a, blk| { let v = scrub_impl(c, slf, a, blk)?; Ok(c.str_new_like(slf, v.unwrap_or_else(|| c.str_bytes(slf).to_vec()))) });
-cfn!(s_scrub_b, |c, slf, a, blk| { if let Some(v) = scrub_impl(c, slf, a, blk)? { c.str_modify(slf)?.b = v.into(); } Ok(slf) });
+cfn!(s_scrub_b, |c, slf, a, blk| { if let Some(v) = scrub_impl(c, slf, a, blk)? { c.str_modify(slf)?.set_bytes(v.into()); } Ok(slf) });
 /// to_str-convertible other string for casecmp, or None.
 fn casecmp_other(c: &mut Ctx, slf: Value, o: Value) -> Result<Option<Value>, Esc> {
     let o = if is_string(o) { o } else if o.is_heap() && respond_to(c, o, s::to_str, true) { expect_str(c, o)? } else { return type_err(c, format!("no implicit conversion of {} into String", class_name_for_err(c, o))) };
@@ -1381,10 +1383,10 @@ fn casecmp_other(c: &mut Ctx, slf: Value, o: Value) -> Result<Option<Value>, Esc
 /// ASCII case folding for casecmp.
 fn casefold_ascii(c: &Ctx, v: Value) -> Vec<u8> {
     let r = c.rstring(v);
-    if crate::builtins::encoding::ascii_compat(r.enc) { return r.b.iter().map(|c| c.to_ascii_lowercase()).collect(); }
+    if crate::builtins::encoding::ascii_compat(r.enc()) { return r.b.iter().map(|c| c.to_ascii_lowercase()).collect(); }
     let mut out = vec![];
     for (cp, s0, e0) in codes_of(c, v) {
-        if cp < 128 { out.extend(crate::builtins::encoding::code_to_bytes(r.enc, (cp as u8).to_ascii_lowercase() as u32).unwrap_or_default()); }
+        if cp < 128 { out.extend(crate::builtins::encoding::code_to_bytes(r.enc(), (cp as u8).to_ascii_lowercase() as u32).unwrap_or_default()); }
         else { out.extend_from_slice(&r.b[s0..e0]); }
     }
     out
@@ -1399,7 +1401,7 @@ cfn!(s_casecmp_p, |c, slf, a, b_| {
     if !is_string(a[0]) && !(a[0].is_heap() && respond_to(c, a[0], s::to_str, true)) { return Ok(NIL); }
     let Some(o) = casecmp_other(c, slf, a[0])? else { return Ok(NIL) };
     // a Unicode encoding other than UTF-8 folds by its characters too
-    let f = |c: &Ctx, v: Value| { let r = c.rstring(v); if r.enc != ENC_UTF8 && crate::builtins::encoding::is_unicode(r.enc) && crate::builtins::encoding::is_valid(r.enc, &r.b) { fold_case(&regexp::to_utf8_form(&r.b, r.enc), ENC_UTF8) } else { fold_case(&r.b, r.enc) } };
+    let f = |c: &Ctx, v: Value| { let r = c.rstring(v); if r.enc() != ENC_UTF8 && crate::builtins::encoding::is_unicode(r.enc()) && crate::builtins::encoding::is_valid(r.enc(), &r.b) { fold_case(&regexp::to_utf8_form(&r.b, r.enc()), ENC_UTF8) } else { fold_case(&r.b, r.enc()) } };
     Ok(Value::bool(f(c, slf) == f(c, o)))
 });
 fn part3(c: &mut Ctx, slf: Value, ms: usize, me: usize, sep: Value) -> Value {
@@ -1446,7 +1448,7 @@ fn deleted_affix_len(c: &mut Ctx, slf: Value, x: Value, suffix: bool) -> Result<
     let at = if suffix { v.len() - n } else { n };
     if (if suffix { &v[at..] } else { &v[..n] }) != pb { return Ok(0); }
     let r = c.rstring(slf);
-    if !enc_single(&r.b, r.enc) { let mut i = 0; while i < at { i += enc_char_len(&r.b, i, r.enc); } if i != at { return Ok(0); } }
+    if !enc_single(&r.b, r.enc()) { let mut i = 0; while i < at { i += enc_char_len(&r.b, i, r.enc()); } if i != at { return Ok(0); } }
     Ok(n)
 }
 cfn!(s_delete_prefix, |c, slf, a, b_| { let n = deleted_affix_len(c, slf, a[0], false)?; let l = c.str_len(slf); Ok(c.str_sub(slf, n..l)) });
@@ -1541,10 +1543,10 @@ cfn!(s_crypt, |c, slf, a, b_| {
 /// sequences, variation selectors, emoji modifiers, regional-indicator pairs, Hangul).
 fn graphemes(c: &Ctx, v: Value) -> Vec<(usize, usize)> {
     let r = c.rstring(v);
-    let off = char_offsets_of(&r.b, r.enc);
+    let off = char_offsets_of(&r.b, r.enc());
     let n = off.len() - 1;
-    let uni = crate::builtins::encoding::is_unicode(r.enc);
-    let cp = |k: usize| if uni && crate::builtins::encoding::precise_len(r.enc, &r.b, off[k]) == Some(off[k + 1] - off[k]) { Some(crate::builtins::encoding::char_code(r.enc, &r.b[off[k]..off[k + 1]])) } else { None };
+    let uni = crate::builtins::encoding::is_unicode(r.enc());
+    let cp = |k: usize| if uni && crate::builtins::encoding::precise_len(r.enc(), &r.b, off[k]) == Some(off[k + 1] - off[k]) { Some(crate::builtins::encoding::char_code(r.enc(), &r.b[off[k]..off[k + 1]])) } else { None };
     let extend = |u: u32| matches!(u, 0x300..=0x36f | 0x483..=0x489 | 0x591..=0x5bd | 0x610..=0x61a | 0x64b..=0x65f | 0x900..=0x903 | 0x93a..=0x94f
         | 0x1ab0..=0x1aff | 0x1dc0..=0x1dff | 0x200c | 0x20d0..=0x20ff | 0x302a..=0x302f | 0x3099 | 0x309a | 0xfe00..=0xfe0f | 0xfe20..=0xfe2f
         | 0x1f3fb..=0x1f3ff | 0xe0020..=0xe007f | 0xe0100..=0xe01ef);
@@ -1611,8 +1613,8 @@ cfn!(s_codepoints, |c, slf, a, blk| {
         loop {
             let r = c.rstring(slf);
             if i >= r.b.len() { break; }
-            let l = enc_char_len(&r.b, i, r.enc).min(r.b.len() - i);
-            let cp = crate::builtins::encoding::char_code(r.enc, &r.b[i..i + l]);
+            let l = enc_char_len(&r.b, i, r.enc()).min(r.b.len() - i);
+            let cp = crate::builtins::encoding::char_code(r.enc(), &r.b[i..i + l]);
             yield1(c, blk, Value::fix(cp as i64))?;
             i += l;
         }
@@ -1720,10 +1722,10 @@ cfn!(s_append_as_bytes, |c, slf, a, b_| {
 /// Byte offset argument check for byteindex/byterindex/bytesplice.
 fn check_char_boundary(c: &mut Ctx, slf: Value, off: usize, what: &str) -> Result<(), Esc> {
     let r = c.rstring(slf);
-    if off >= r.b.len() || enc_single(&r.b, r.enc) { return Ok(()); }
+    if off >= r.b.len() || enc_single(&r.b, r.enc()) { return Ok(()); }
     // CESU-8's left_adjust_char_head is the UTF-8 lead-byte rule: the middle of a surrogate pair is a head
-    if crate::builtins::encoding::kind(r.enc) == crate::builtins::encoding::EK::Cesu8 && (r.b[off] & 0xc0) != 0x80 { return Ok(()); }
-    if char_offsets_of(&r.b, r.enc).binary_search(&off).is_err() { return err(c, c.vm().c_index_error.get(), format!("{} {} does not land on character boundary", what, off)); }
+    if crate::builtins::encoding::kind(r.enc()) == crate::builtins::encoding::EK::Cesu8 && (r.b[off] & 0xc0) != 0x80 { return Ok(()); }
+    if char_offsets_of(&r.b, r.enc()).binary_search(&off).is_err() { return err(c, c.vm().c_index_error.get(), format!("{} {} does not land on character boundary", what, off)); }
     Ok(())
 }
 cfn!(s_byteindex, |c, slf, a, b_| {
@@ -1794,7 +1796,7 @@ cfn!(s_bytesplice, |c, slf, a, b_| {
     if ds + dl > c.str_len(slf) { return err(c, c.vm().c_index_error.get(), format!("index {} out of string", ds)); }
     let r = c.rstring_mut(slf);
     r.b.splice(ds..ds + dl, piece);
-    r.enc = enc;
+    r.set_enc(enc);
     Ok(slf)
 });
 cfn!(s_between, |c, slf, a, b_| Ok(Value::bool(c.str_bytes(slf) >= c.str_bytes(a[0]) && c.str_bytes(slf) <= c.str_bytes(a[1]))));
@@ -1817,9 +1819,9 @@ cfn!(s_s_try_convert, |c, slf, a, b_| {
 fn wide(c: &Ctx, v: Value) -> bool {
     use crate::builtins::encoding as en;
     let r = c.rstring(v);
-    (en::min_len(r.enc) > 1 || en::kind(r.enc) == en::EK::Cesu8 && !r.b.is_ascii()) && en::is_valid(r.enc, &r.b)
+    (en::min_len(r.enc()) > 1 || en::kind(r.enc()) == en::EK::Cesu8 && !r.b.is_ascii()) && en::is_valid(r.enc(), &r.b)
 }
-fn to_u8(c: &mut Ctx, v: Value) -> Value { let r = c.rstring(v); let u = regexp::to_utf8_form(&r.b, r.enc); c.str_new_enc(&u, ENC_UTF8) }
+fn to_u8(c: &mut Ctx, v: Value) -> Value { let r = c.rstring(v); let u = regexp::to_utf8_form(&r.b, r.enc()); c.str_new_enc(&u, ENC_UTF8) }
 // New Strings go into parked Arrays, never only into a Vec (docs/gc_moving.md 2.4).
 fn from_u8(c: &mut Ctx, v: Value, enc: u8) -> RV {
     if is_string(v) { let w = regexp::utf8_to_wide(c.str_bytes(v), enc); return Ok(c.str_new_enc(&w, enc)); }
@@ -1841,7 +1843,7 @@ fn wide_args(c: &mut Ctx, slf: Value, a: &[Value], chomp: bool) -> RV {
         p.set(0, out);
         for &x in a {
             let y = if !is_string(x) { x } else {
-                let (xe, xb) = { let r = c.rstring(x); (r.enc, r.b.to_vec()) };
+                let (xe, xb) = { let r = c.rstring(x); (r.enc(), r.b.to_vec()) };
                 if xe == enc { to_u8(c, x) }
                 else if xb.is_empty() { c.str_new(b"") }
                 else if crate::builtins::encoding::ascii_compat(enc) && crate::builtins::encoding::ascii_compat(xe) && xb.is_ascii() { c.str_new(&xb) }
@@ -1865,7 +1867,7 @@ fn via_u8(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk, f: CFunc, bang: bool, 
     if bang {
         if r == NIL { return Ok(NIL); }
         let w = regexp::utf8_to_wide(c.str_bytes(s8), enc);
-        c.str_modify(slf)?.b = w.into();
+        c.str_modify(slf)?.set_bytes(w.into());
         return Ok(slf);
     }
     let r = if r == s8 { slf } else { from_u8(c, r, enc)? };
@@ -1888,18 +1890,18 @@ wide_m!(w_chop, s_chop, false, false); wide_m!(w_chop_b, s_chop_b, true, false);
 fn broken_strip(c: &mut Ctx, slf: Value, l: bool, r: bool) -> Result<Option<usize>, Esc> {
     use crate::builtins::encoding as en;
     let x = c.rstring(slf);
-    if !r && en::min_len(x.enc) == 1 {
+    if !r && en::min_len(x.enc()) == 1 {
         // lstrip alone looks at its first non-space character only
         let i = x.b.iter().position(|&b| !is_ws(b)).unwrap_or(x.b.len());
-        if i == x.b.len() || x.b[i] < 0x80 || en::is_single_byte(x.enc) || en::precise_len(x.enc, &x.b, i).is_some() { return Ok(None); }
-    } else if en::min_len(x.enc) == 1 && x.b.is_ascii() || en::is_valid(x.enc, &x.b) { return Ok(None); }
-    broken_strip_err(c, slf, l && !en::is_single_byte(x.enc), r)
+        if i == x.b.len() || x.b[i] < 0x80 || en::is_single_byte(x.enc()) || en::precise_len(x.enc(), &x.b, i).is_some() { return Ok(None); }
+    } else if en::min_len(x.enc()) == 1 && x.b.is_ascii() || en::is_valid(x.enc(), &x.b) { return Ok(None); }
+    broken_strip_err(c, slf, l && !en::is_single_byte(x.enc()), r)
 }
 #[cold]
 #[inline(never)]
 fn broken_strip_err(c: &mut Ctx, slf: Value, l: bool, r: bool) -> Result<Option<usize>, Esc> {
     use crate::builtins::encoding as en;
-    let (enc, b) = { let x = c.rstring(slf); (x.enc, x.b.to_vec()) };
+    let (enc, b) = { let x = c.rstring(slf); (x.enc(), x.b.to_vec()) };
     let msg = format!("invalid byte sequence in {}", en::enc_name(enc));
     let mut i = 0;
     if l {

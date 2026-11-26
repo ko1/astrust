@@ -504,7 +504,7 @@ pub fn alloc_data(_c: &mut Ctx, _klass: Value) -> Result<Option<Value>, Esc> { O
 /// A frozen constant String.
 fn boot_str(c: &mut Ctx, b: &[u8]) -> Value {
     let k = c.vm().c_string.get();
-    let s = c.alloc(k, Body::String(RString { b: crate::sbuf::SBuf::from_slice(b), enc: ENC_UTF8 }));
+    let s = c.alloc(k, Body::String(RString::new(crate::sbuf::SBuf::from_slice(b), ENC_UTF8)));
     obj_set_flags(s, FL_FROZEN);
     s
 }

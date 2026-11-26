@@ -624,7 +624,7 @@ pub fn to_enc_opt(c: &mut Ctx, v: Value) -> Result<Result<u8, String>, Esc> {
 /// rb_enc_compatible for two strings; None if incompatible.
 pub fn compatible(c: &Ctx, a: Value, b: Value) -> Option<u8> {
     let (ra, rb) = (c.rstring(a), c.rstring(b));
-    let (ea, eb) = (ra.enc, rb.enc);
+    let (ea, eb) = (ra.enc(), rb.enc());
     if ea == eb { return Some(ea); }
     if rb.b.is_empty() { return Some(ea); }
     if ra.b.is_empty() { return Some(if ascii_compat(ea) && ascii_compat(eb) && is_ascii(&rb.b) { ea } else { eb }); }
