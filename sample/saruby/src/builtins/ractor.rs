@@ -716,10 +716,10 @@ pub fn const_found_in(c: &mut Ctx, cref: *const Cref, name: Sym) -> (Value, bool
     let mut cr = c.cref_ref(cref);
     while let Some(x) = cr {
         if c.cref_ref(x.prev).is_none() { break; }   // the top-level scope is not searched lexically
-        if c.class(x.klass).consts.contains_key(&name) { return (x.klass, true); }
+        if c.class(x.klass.get()).consts.contains_key(&name) { return (x.klass.get(), true); }
         cr = c.cref_ref(x.prev);
     }
-    let k = c.cref_ref(cref).map_or(c.vm().c_object.get(), |x| x.klass);
+    let k = c.cref_ref(cref).map_or(c.vm().c_object.get(), |x| x.klass.get());
     (k, false)
 }
 #[cold]

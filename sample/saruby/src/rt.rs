@@ -467,8 +467,8 @@ fn cvar_base(c: &Ctx) -> Value {
     let mut cr = unsafe { (*c.frame).cref() };
     unsafe {
         while !cr.is_null() {
-            let k = (*cr).klass;
-            if (!c.class(k).is_singleton && !lazy_target((*cr).def_target)) || (*cr).prev.is_null() {
+            let k = (*cr).klass.get();
+            if (!c.class(k).is_singleton && !lazy_target((*cr).def_target.get())) || (*cr).prev.is_null() {
                 if c.class(k).is_singleton { let a = c.class(k).attached; if is_class_or_module(a) { return a; } }
                 return k;
             }
@@ -573,7 +573,7 @@ pub fn srb_cdecl_path(c: &mut Ctx, parent: Value, name: Sym, v: Value) -> RV {
 
 /// vm_get_cbase: where `X = ...` / `class X` define; instance_eval(String)'s lazy cref makes the singleton class now.
 fn cbase(c: &mut Ctx) -> Value {
-    let Some((k, t)) = c.cref_ref(c.frame().cref()).map(|r| (r.klass, r.def_target)) else { return vm().c_object.get() };
+    let Some((k, t)) = c.cref_ref(c.frame().cref()).map(|r| (r.klass.get(), r.def_target.get())) else { return vm().c_object.get() };
     if lazy_target(t) { return singleton_class(c, t); }
     k
 }
@@ -1197,7 +1197,7 @@ pub fn srb_aset(c: &mut Ctx, a: Value, b: Value, v: Value, line: Pos, cc: &OpCc)
 
 fn cref_class(c: &Ctx) -> Value {
     let cr = unsafe { (*c.frame).cref() };
-    if cr.is_null() { vm().c_object.get() } else { unsafe { (*cr).klass } }
+    if cr.is_null() { vm().c_object.get() } else { unsafe { (*cr).klass.get() } }
 }
 
 pub fn define_iseq_method(c: &mut Ctx, klass: Value, mid: Sym, is: &'static Iseq, visi: u8) {
@@ -1259,7 +1259,7 @@ fn def_class(c: &mut Ctx) -> Result<Value, Esc> {
         if f.defined_class() == NO_DEFINEE { return type_err(c, "can't define singleton"); }
         return Ok(f.defined_class());
     }
-    let t = c.cref_ref(f.cref()).map_or(NIL, |x| x.def_target);
+    let t = c.cref_ref(f.cref()).map_or(NIL, |x| x.def_target.get());
     if t == NIL { return Ok(cref_class(c)); }
     // instance_eval with a String on an object without a singleton class yet (cref: its class)
     if lazy_target(t) { return Ok(singleton_class(c, t)); }
