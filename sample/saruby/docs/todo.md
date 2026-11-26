@@ -234,7 +234,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 
 - [ ] t/hand が 0% のもの: json / json_generator / json_parser / json_fpconv / yaml_emitter / zlib_deflate / zlib_inflate / zlib_check / crypt / etc / syslog / digest / io_buffer（`require` 経由のテストが t/hand に無い。t/cov に require 系を足す）
 - [ ] 低いもの: sprintf（float 以外: %c %s %p %b/%o/%x の負数・幅・`*`）、socket、stringio、strscan、file、io、process、thread、objspace、io_console
-- [x] 1 回目: math / sprintf float・整数・文字列 / Rational 文字列 parse・round / gsub 置換 / lines / pack / Range / Struct / Hash / 数値 round・coerce（`t/cov/*_1125c.rb` 8 本）。見つけたバグ 16 件は修正済み（README）
+- [x] 1 回目: math / sprintf float・整数・文字列 / Rational 文字列 parse・round / gsub 置換 / lines / pack / Range / Struct / Hash / 数値 round・coerce（`t/cov/*_1125c.rb` 11 本）。見つけたバグ 18 件は修正済み（README）
 - [ ] CRuby 4.0.10 の癖として再現させた: `Rational("1e+")` は 1（指数部が符号まで消費され数字が無くても通る）。master でも同じ。仕様かバグかは未確認
 
 ## 性能（上 3 つの後。新規には起こさない）

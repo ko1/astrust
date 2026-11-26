@@ -3,7 +3,6 @@
 // reference into it or into the scanned String lives across a call that takes the context.
 #![forbid(unsafe_code)]
 use crate::array::*;
-use crate::builtins::kernel::*;
 use crate::builtins::numeric_methods::num_to_long;
 #[allow(unused_imports)]
 use crate::heap::no_legacy::*;   // the old accessors cannot be named here
@@ -76,6 +75,7 @@ fn do_scan(c: &mut Ctx, slf: Value, pat: Value, advance: bool, want_str: bool, h
 fn do_scan_e(c: &mut Ctx, slf: Value, pat: Value, advance: bool, want_str: bool, head: bool, md: Option<crate::regex_engine::Enc>) -> RV {
     let pat = if crate::regexp::is_regexp(c, pat) { pat } else { expect_str(c, pat)? };
     let mut s = sc(c, slf)?;
+    if is_string(pat) { crate::builtins::encoding::check_compatible(c, s.str, pat)?; }
     let len = c.str_len(s.str);
     if s.pos > len { s.pos = len; sc_mut(c, slf).pos = len; }
     let is_re = crate::regexp::is_regexp(c, pat);
@@ -111,11 +111,7 @@ fn do_scan_e(c: &mut Ctx, slf: Value, pat: Value, advance: bool, want_str: bool,
     if advance { st.pos = e; }
     if want_str { Ok(sub(c, s.str, start, e)) } else { Ok(Value::fix((e - start) as i64)) }
 }
-fn check_pat(c: &mut Ctx, v: Value) -> Result<(), Esc> {
-    if crate::regexp::is_regexp(c, v) || is_string(v) || respond_to(c, v, intern(b"to_str"), true) { return Ok(()); }
-    type_err(c, format!("wrong argument type {} (expected Regexp)", class_name_for_err(c, v)))
-}
-macro_rules! scan_fn { ($name:ident, $adv:expr, $str:expr, $head:expr) => { fn $name(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { check_pat(c, a[0])?; do_scan(c, s, a[0], $adv, $str, $head) } }; }
+macro_rules! scan_fn { ($name:ident, $adv:expr, $str:expr, $head:expr) => { fn $name(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { do_scan(c, s, a[0], $adv, $str, $head) } }; }
 scan_fn!(ss_scan, true, true, true);
 scan_fn!(ss_match_p, false, false, true);
 scan_fn!(ss_skip, true, false, true);
@@ -124,8 +120,8 @@ scan_fn!(ss_scan_until, true, true, false);
 scan_fn!(ss_skip_until, true, false, false);
 scan_fn!(ss_exist_p, false, false, false);
 scan_fn!(ss_check_until, false, true, false);
-fn ss_scan_full(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { check_pat(c, a[0])?; do_scan(c, s, a[0], a[1].truthy(), a[2].truthy(), true) }
-fn ss_search_full(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { check_pat(c, a[0])?; do_scan(c, s, a[0], a[1].truthy(), a[2].truthy(), false) }
+fn ss_scan_full(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { do_scan(c, s, a[0], a[1].truthy(), a[2].truthy(), true) }
+fn ss_search_full(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV { do_scan(c, s, a[0], a[1].truthy(), a[2].truthy(), false) }
 fn ss_getch(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let s = sc(c, slf)?;
     let src = c.rstring(s.str);
