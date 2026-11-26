@@ -4,9 +4,8 @@
 
 ## プロジェクト profile
 
-- 優先順位: ASTro の原則 > unsafe を減らす > CRuby 互換 > 性能（user 2026-11-21）
-- いまの最優先: moving GC（copy / copy_gen、正確な root だけ。クラスなどを動かない領域に置くのは可）。設計 `docs/gc_moving.md`、状況 `sample/saruby/docs/todo.md` §1.5、記録 `~/ruby/src/trials/2026-11-25-astrust-moving-gc/`
-- 常時の agent 数: 2 本以上（GC 優先。カバレッジ拡充は低い優先度で 1 本）
+- 目標と優先度: `docs/current_goals.md`（作業は todo から、この優先度で選ぶ）
+- 常時の agent 数: 2 本以上
 - 照合先（oracle）: CRuby master `~/ruby/install/master/bin/ruby`（koruby と同じ。nightly `~/.local/bin/ruby-master-nightly` が毎朝ビルドし、sp3 / sp4 にも配る）。二番目の確認は 4.0.10
 - ビルド構成: `make`（default）/ `make FEATURES=gc_check` / `make GC=bitmap` / `make FEATURES=raw_stack`（sample/saruby で）。release は codegen-units = 1
 - 関門（コマンド）:
