@@ -40,7 +40,8 @@ target/.gc-$(GC):
 INTERP ?= ./saruby
 # the shared Ruby test/bench harness (its own repository since 2026-11-25; was astro/sample/rubyharness)
 RUBYHARNESS ?= $(HOME)/ruby/rubyharness
-include $(RUBYHARNESS)/harness.mk
+# optional: build-only hosts (sp3 / sp4) have no harness checkout
+-include $(RUBYHARNESS)/harness.mk
 test bench: saruby
 
 .PHONY: all FORCE
