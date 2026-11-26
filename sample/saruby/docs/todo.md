@@ -275,6 +275,7 @@ rubyspec は 3763 ファイル（32717 例）、失敗 26 + エラー 185 は 67
 - [ ] （直さない: master 専用）test_set.rb は `Set::CoreSet`（master の core Set）、test_method.rb は 4.1 の構文 `def m(&nil)`（4.0.10 の parser は通さない）、test_array.rb は `RbConfig::SIZEOF["rb_len_t"]`（この弾で追加した）
 - [ ] （直さない: 2 GiB 上限による abort。上限なしで再確認する）test_class / test_marshal / test_argf の `memory allocation of N bytes failed`（それぞれ 408 バイト・1 MiB・32 MiB の確保で落ちる = 上限を使い切った後。saruby の確保量が多いかは別途）
 - [ ] （直す）t/cov/*_1126d.rb が見つけて直していない差（tests は saruby でこの行だけ失敗）: `Kid.new.public_methods(false)` が prepend したモジュールのメソッドを含む（module_const_visibility_1126d の public_methods_false: master は `[:k]`、saruby は `[:k, :m2]`）。`("a".."c")` でなく begin が #to_str を持つ非 String の Range#each（range_each_clamp_1126d の each_to_str: master は ["a","b","c"]、saruby は TypeError）
+- [ ] （直す）Kernel の private メソッド `instance_variables_to_inspect`（arity 0、nil を返す。CRuby 4.0.10 / master とも）が無い: `Object.new.respond_to?(:instance_variables_to_inspect, true)` が CRuby は true、saruby は false（t/hand inspect_ivars_hook の respond 行、Kernel#inspect が呼ぶ hook 自体はユーザ定義なら効く。2026-11-26 moving-gc session 5 で確認）
 - [ ] （直す）死んだコード（この弾で呼び出し元の無い builtins の関数 7 つと kernel の rand / srand（random.rs が後から上書き）を削除。残り、hot path 側は触らなかった）: vm.rs の `site_fast`（45 行）・`spec_callee`（35 行）・`site_kind`、rt.rs の `srb_yield_miss`・`srb_call_kw_spec`・`srb_unsupported`、hash_methods.rs の `h_group_by` ほか `let _ = (...)` で警告を黙らせている fallback 群、math.rs の cbrt（extras.rs が上書き）、`Vm::rand_state`（読む所が無くなった）。AOT 経路でだけ使うものがあるか確認してから削る
 
 ## 性能（上 3 つの後。新規には起こさない）
