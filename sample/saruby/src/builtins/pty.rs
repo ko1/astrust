@@ -75,7 +75,7 @@ fn pty_spawn(c: &mut Ctx, _s: Value, a: &[Value], b: Blk) -> RV {
     let shell;
     let a = if a.is_empty() { shell = [c.str_new(default_shell().as_bytes())]; &shell[..] } else { a };
     let (env, cmd, opts) = process::split_args(c, a)?;
-    let mut sp = process::spawn_spec(c, env, &cmd, opts)?;
+    let mut sp = process::spawn_spec(c, env, &a[cmd], opts)?;
     let (m, s, name) = device(c, false)?;
     sp.pty = Some((m, s));
     let pid = process::spawn_exec(c, &mut sp);

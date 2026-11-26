@@ -171,36 +171,43 @@ pub fn shareable(c: &mut Ctx, v: Value) -> bool {
 /// rb_ractor_make_shareable: freeze everything reachable (calling #freeze), procs isolated.
 pub fn make_shareable(c: &mut Ctx, v: Value) -> Result<(), Esc> {
     let mut seen: HashSet<u64> = HashSet::default();
-    let mut order = vec![];
-    let mut work = vec![v];
     let mut ks = vec![];
-    while let Some(x) = work.pop() {
-        if !x.is_heap() || obj_flags(x) & FL_SHAREABLE != 0 { continue; }
-        if !seen.insert(x.raw()) || internal(c, x) { continue; }
-        if shareable(c, x) { continue; }
-        if !frozen_shareable_kind(c, x) {
-            match c.body_of(x) {
-                Body::Proc(_) => { proc_make_shareable(c, x)?; order.push(x); continue; }
-                Body::Method(m) => {
-                    let recv = m.recv;
-                    if shareable(c, recv) { obj_set_flags(x, FL_FROZEN); order.push(x); continue; }
-                    let s = inspect_str(c, x)?;
-                    return error(c, &E_ERROR, format!("can not make shareable object for {} because it refers unshareable objects", s));
+    // q0: the work stack, q1: the objects to flag, q2: the current one (#freeze runs Ruby code)
+    c.park(3, |c, q| {
+        let w = c.ary_new_from(&[v]);
+        q.set(0, w);
+        let o = c.ary_new();
+        q.set(1, o);
+        while let Some(x) = c.ary_mut(q.get(0)).pop() {
+            if !x.is_heap() || obj_flags(x) & FL_SHAREABLE != 0 { continue; }
+            if !seen.insert(x.raw()) || internal(c, x) { continue; }
+            if shareable(c, x) { continue; }
+            q.set(2, x);
+            if !frozen_shareable_kind(c, x) {
+                match c.body_of(x) {
+                    Body::Proc(_) => { proc_make_shareable(c, x)?; c.ary_push(q.get(1), q.get(2)); continue; }
+                    Body::Method(m) => {
+                        let recv = m.recv;
+                        if shareable(c, recv) { obj_set_flags(x, FL_FROZEN); c.ary_push(q.get(1), x); continue; }
+                        let s = inspect_str(c, x)?;
+                        return error(c, &E_ERROR, format!("can not make shareable object for {} because it refers unshareable objects", s));
+                    }
+                    _ => { let s = inspect_str(c, x)?; return error(c, &E_ERROR, format!("can not make shareable object for {}", s)); }
                 }
-                _ => { let s = inspect_str(c, x)?; return error(c, &E_ERROR, format!("can not make shareable object for {}", s)); }
             }
+            if !frozen(c, x) {
+                funcall(c, x, s::freeze, &[], std::ptr::null())?;
+                if !is_frozen(q.get(2)) { return error(c, &E_ERROR, "#freeze does not freeze object correctly"); }
+            }
+            let x = q.get(2);
+            c.ary_push(q.get(1), x);
+            ks.clear();
+            kids(c, x, &mut ks);
+            for &k in ks.iter().rev() { c.ary_push(q.get(0), k); }   // depth first, in order
         }
-        if !frozen(c, x) {
-            funcall(c, x, s::freeze, &[], std::ptr::null())?;
-            if !is_frozen(x) { return error(c, &E_ERROR, "#freeze does not freeze object correctly"); }
-        }
-        order.push(x);
-        ks.clear();
-        kids(c, x, &mut ks);
-        work.extend(ks.iter().rev());   // depth first, in order
-    }
-    for x in order { obj_set_flags(x, FL_SHAREABLE); }
-    Ok(())
+        for i in 0..c.ary_len(q.get(1)) { obj_set_flags(c.ary_get(q.get(1), i), FL_SHAREABLE); }
+        Ok(())
+    })
 }
 
 /// rb_proc_ractor_make_shareable: self and the outer variables it reads must be shareable.
@@ -526,10 +533,12 @@ fn finish(c: &mut Ctx, r: Value, v: Value, aborted: bool) {
     if x.done { return; }
     x.done = true; x.aborted = aborted; x.value = v;
     for p in &mut x.ports { p.closed = true; p.q.clear(); }
-    let mons = std::mem::take(&mut x.monitors);
     LIVE.fetch_sub(1, Relaxed);
     let tok = sym_value(if aborted { "aborted" } else { "exited" });
-    for m in mons { let (o, id) = port(c, m); let _ = deliver(c, o, id, tok); }
+    // read from the Ractor, which keeps them visited, while deliver allocates
+    let mut i = 0;
+    while let Some(&m) = rr(c, r).monitors.get(i) { let (o, id) = port(c, m); let _ = deliver(c, o, id, tok); i += 1; }
+    rr_mut(c, r).monitors.clear();
     let k = evt(c);
     crate::builtins::blop::notify(c, k);
 }

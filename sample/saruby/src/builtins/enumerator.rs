@@ -384,19 +384,36 @@ fn e_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
         let _ = r;
         if is_range(en.recv) {
             let rs = inspect_str(c, en.recv)?;
-            let args = c.ary(en.args).to_vec();
+            let n = c.ary_len(en.args);
             let mut a = String::new();
-            if !args.is_empty() { a.push('('); for (i, x) in args.iter().enumerate() { if i > 0 { a.push_str(", "); } a.push_str(&inspect_str(c, *x)?); } a.push(')'); }
+            if n > 0 {
+                a.push('(');
+                c.park(1, |c, q| {
+                    q.set(0, en.args);
+                    for i in 0..n { if i > 0 { a.push_str(", "); } a.push_str(&inspect_str(c, c.ary_get(q.get(0), i))?); }
+                    Ok(())
+                })?;
+                a.push(')');
+            }
             return Ok(c.str_new(format!("(({}).{}{})", rs, sym_str(en.mid), a).as_bytes()));
         }
         let bs = inspect_str(c, b)?; let es = if e == NIL { String::new() } else { inspect_str(c, e)? }; let ss = inspect_str(c, st)?;
         if en.mid == s::step && !en.recv.is_heap() && en.recv == b && crate::numeric::is_numeric(b) && is_range_origin(slf) == false {
             // Numeric#step's own arguments, keywords as `k: v`
-            let args = c.ary(en.args).to_vec();
-            let kw = if en.kw { args.last().copied().filter(|&h| crate::object::is_hash(h)) } else { None };
+            let len = c.ary_len(en.args);
+            let kw = if en.kw && len > 0 { Some(c.ary_get(en.args, len - 1)).filter(|&h| crate::object::is_hash(h)) } else { None };
+            let n = len - kw.is_some() as usize;
             let mut parts = vec![];
-            for &v in &args[..args.len() - kw.is_some() as usize] { parts.push(inspect_str(c, v)?); }
-            if let Some(h) = kw { for (k, v) in c.hash_pairs(h) { let vs = inspect_str(c, v)?; parts.push(format!("{}: {}", sym_str(k.as_sym()), vs)); } }
+            // q0: the arguments, q1: the keywords, read by index (#inspect may move them)
+            c.park(2, |c, q| {
+                q.set(0, en.args);
+                if let Some(h) = kw { q.set(1, h); }
+                for i in 0..n { parts.push(inspect_str(c, c.ary_get(q.get(0), i))?); }
+                if kw.is_some() {
+                    crate::hash::hash_each(c, q.get(1), |c, k, v| { let vs = inspect_str(c, v)?; parts.push(format!("{}: {}", sym_str(k.as_sym()), vs)); Ok(()) })?;
+                }
+                Ok(())
+            })?;
             let a = if parts.is_empty() { String::new() } else { format!("({})", parts.join(", ")) };
             return Ok(c.str_new(format!("({}.step{})", bs, a).as_bytes()));
         }
@@ -423,23 +440,34 @@ fn e_inspect(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
 fn is_range_origin(_v: Value) -> bool { false }
 /// append_method's argument list: "(a, b, k: v)"; a last non-empty Hash of Symbol keys prints as keywords.
 pub(crate) fn append_args(c: &mut Ctx, out: &mut Vec<u8>, args: Value) -> Result<(), Esc> {
-    let mut argv = c.ary(args).to_vec();
-    if argv.is_empty() { return Ok(()); }
-    let mut kw = NIL;
-    if let Some(&h) = argv.last() {
-        if is_hash(h) && c.hash_len(h) > 0 && c.hash_pairs(h).iter().all(|(k, _)| k.is_sym()) { kw = h; argv.pop(); }
-    }
+    let mut n = c.ary_len(args);
+    if n == 0 { return Ok(()); }
+    let h = c.ary_get(args, n - 1);
+    let kw = is_hash(h) && c.hash_len(h) > 0 && c.hash_pairs(h).iter().all(|(k, _)| k.is_sym());
+    if kw { n -= 1; }
     out.push(b'(');
-    for x in argv { let r = inspect_value(c, x)?; out.extend_from_slice(c.str_bytes(r)); out.extend_from_slice(b", "); }
-    if kw != NIL {
-        for (k, v) in c.hash_pairs(kw) {
-            out.extend_from_slice(sym_str(k.as_sym()).as_bytes());
-            out.extend_from_slice(b": ");
-            let r = to_s_value(c, v)?;
+    // q0: the arguments, q1: the keywords, read by index (#inspect may move them)
+    c.park(2, |c, q| {
+        q.set(0, args);
+        if kw { q.set(1, h); }
+        for i in 0..n {
+            let r = inspect_value(c, c.ary_get(q.get(0), i))?;
             out.extend_from_slice(c.str_bytes(r));
             out.extend_from_slice(b", ");
         }
-    }
+        if kw {
+            crate::hash::hash_each(c, q.get(1), |c, k, v| {
+                if !k.is_sym() { return Ok(()); }
+                out.extend_from_slice(sym_str(k.as_sym()).as_bytes());
+                out.extend_from_slice(b": ");
+                let r = to_s_value(c, v)?;
+                out.extend_from_slice(c.str_bytes(r));
+                out.extend_from_slice(b", ");
+                Ok(())
+            })?;
+        }
+        Ok(())
+    })?;
     out.truncate(out.len() - 2);
     out.push(b')');
     Ok(())

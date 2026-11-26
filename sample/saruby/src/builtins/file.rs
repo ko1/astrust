@@ -381,32 +381,39 @@ fn f_s_split(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
 }
 /// rb_file_join: arrays join recursively; one separator between parts (a part's leading
 /// separator replaces the trailing ones before it); the first part's encoding.
-fn join_parts(c: &mut Ctx, a: &[Value], depth: usize, enc: &mut Option<u8>) -> Result<Vec<u8>, Esc> {
+// rb_file_join: `arr` parked and read live by index (to_path / to_str may run Ruby code and move it)
+fn join_parts(c: &mut Ctx, arr: Value, depth: usize, enc: &mut Option<u8>) -> Result<Vec<u8>, Esc> {
     if depth > 1000 { return arg_err(c, "recursive array"); }
-    let mut out: Vec<u8> = vec![];
-    for (i, &x) in a.iter().enumerate() {
-        let part = if is_array(x) {
-            let items = c.ary(x).to_vec();
-            if items.contains(&x) { return arg_err(c, "recursive array"); }
-            join_parts(c, &items, depth + 1, enc)?
-        } else {
-            let sv = path_str_nul_ok(c, x)?;
-            if enc.is_none() { *enc = Some(c.str_enc(sv)); }
-            let b = c.str_bytes(sv).to_vec();
-            if b.contains(&0) { return arg_err(c, "string contains null byte"); }
-            b
-        };
-        if i > 0 {
-            if part.first() == Some(&b'/') { while out.last() == Some(&b'/') { out.pop(); } }
-            else if out.last() != Some(&b'/') { out.push(b'/'); }
+    c.park(1, |c, q| {
+        q.set(0, arr);
+        let mut out: Vec<u8> = vec![];
+        let mut i = 0;
+        while i < c.ary_len(q.get(0)) {
+            let x = c.ary_get(q.get(0), i);
+            let part = if is_array(x) {
+                if x == q.get(0) { return arg_err(c, "recursive array"); }
+                join_parts(c, x, depth + 1, enc)?
+            } else {
+                let sv = path_str_nul_ok(c, x)?;
+                if enc.is_none() { *enc = Some(c.str_enc(sv)); }
+                let b = c.str_bytes(sv).to_vec();
+                if b.contains(&0) { return arg_err(c, "string contains null byte"); }
+                b
+            };
+            if i > 0 {
+                if part.first() == Some(&b'/') { while out.last() == Some(&b'/') { out.pop(); } }
+                else if out.last() != Some(&b'/') { out.push(b'/'); }
+            }
+            out.extend_from_slice(&part);
+            i += 1;
         }
-        out.extend_from_slice(&part);
-    }
-    Ok(out)
+        Ok(out)
+    })
 }
 fn f_s_join(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     let mut enc = None;
-    let out = join_parts(c, a, 0, &mut enc)?;
+    let args = c.ary_new_from(a);
+    let out = join_parts(c, args, 0, &mut enc)?;
     Ok(c.str_new_enc(&out, enc.unwrap_or(ENC_BINARY)))
 }
 fn home_of(c: &mut Ctx, user: &str) -> Result<Vec<u8>, Esc> {
