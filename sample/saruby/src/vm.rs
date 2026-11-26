@@ -1009,6 +1009,11 @@ thread_local! {
     static ZSUPER_MES: RefCell<HashMap<(usize, usize, u8), usize>> = RefCell::new(HashMap::default());
     static ZSUPER_OWNER: RefCell<HashMap<usize, Value>> = RefCell::new(HashMap::default());
 }
+/// GC roots: the entries zsuper_me made (in no class table) and their owners.
+pub(crate) fn visit_zsuper<V: EdgeVisitor<Saruby> + ?Sized>(m: &mut V) {
+    ZSUPER_MES.with_borrow(|t| for &p in t.values() { visit_me(m, p as *const MethodEntry); });
+    ZSUPER_OWNER.with_borrow_mut(|t| for v in t.values_mut() { m.visit(v); });
+}
 /// Method#owner of an entry reached through a ZSuper one: the class of the ZSuper entry (CRuby 4.0).
 pub fn zsuper_owner(me: *const MethodEntry) -> Option<Value> { ZSUPER_OWNER.with(|t| t.borrow().get(&(me as usize)).copied()) }
 /// A method reached through a ZSuper entry (visibility changed in a subclass): the method found above it
@@ -3245,6 +3250,7 @@ pub fn visit_roots<V: RootVisitor<Saruby>>(m: &mut V, cur: &mut Ctx) {
     for v in vm.symproc_cache.borrow_mut().values_mut() { m.visit(v); }
     for v in vm.sym_names.borrow_mut().values_mut() { m.visit(v); }
     for v in vm.pending_vals.borrow_mut().iter_mut() { m.visit(v); }
+    crate::gc::visit_tls_roots(m);
     for &cr in vm.crefs.borrow().iter() { let cr = unsafe { &mut *(cr as *mut Cref) }; m.visit(&mut cr.klass); m.visit(&mut cr.refinements); m.visit(&mut cr.def_target); }
     // every builtin class field (nil until boot fills it in)
     let nclass_fields = (std::mem::offset_of!(Vm, main_obj)) / 8;

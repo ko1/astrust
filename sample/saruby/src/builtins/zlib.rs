@@ -42,6 +42,15 @@ struct Zk {
 }
 thread_local! { static ZK: std::cell::Cell<Option<Zk>> = const { std::cell::Cell::new(None) }; }
 fn zk() -> Zk { ZK.with(|z| z.get()).expect("zlib loaded") }
+/// GC roots: the Zlib classes ZK caches.
+pub fn visit_roots<V: crate::gc::EdgeVisitor<crate::gc::Saruby> + ?Sized>(m: &mut V) {
+    ZK.with(|z| if let Some(mut k) = z.get() {
+        for v in [&mut k.m, &mut k.error, &mut k.stream_end, &mut k.need_dict, &mut k.data_error, &mut k.stream_error, &mut k.mem_error,
+                  &mut k.buf_error, &mut k.version_error, &mut k.in_progress, &mut k.deflate, &mut k.inflate, &mut k.gz_error,
+                  &mut k.no_footer, &mut k.crc_error, &mut k.length_error, &mut k.gzwriter, &mut k.gzreader] { m.visit(v); }
+        z.set(Some(k));
+    });
+}
 
 enum Eng { None, Def(Box<Deflate>), Inf(Box<Inflate>) }
 impl Clone for Eng {

@@ -174,6 +174,11 @@ statically at the call site, so the fast path of ordinary allocation is unchange
   objects — for those the cache is reset on move instead (section 5), because a constant can hold any
   object.  Literals are allocated by the node's first execution (`srb_*_lit`), so the site knows.
 * **Dynamic Symbols' backing strings** (`sym_names`): read from nodes by `Symbol#name` caching.
+* **Encoding objects** (`Vm.enc_objs`, indexed by encoding id; rooted through `pinned`): a fixed, small
+  set read by index on hot paths.  The tables that copy class or Encoding addresses (`enc_objs`,
+  `inline_builtin` `BI_ME`, thousands of entries) are not visited as roots: they hold classes and Encodings
+  rooted elsewhere, and with both non-moving the copies stay valid.  (An earlier note here blamed BI_ME's
+  visit for a str +2.3 % instruction rise; removing it changed nothing, so that was wrong; see the trial README.)
 * Possibly later: large payload owners if a size class is added; Data objects whose payload is
   shared with the OS (none moves today: payloads are Boxes, only the slot moves).
 

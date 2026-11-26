@@ -408,6 +408,8 @@ thread_local! {
     /// The error that ended the main script while the exit handlers run, and whether a handler error showed it as its cause.
     static ORIG_ERR: std::cell::Cell<(Value, bool)> = const { std::cell::Cell::new((NIL, false)) };
 }
+/// GC root: ORIG_ERR's error.
+pub fn visit_orig_err<V: gc::EdgeVisitor<gc::Saruby> + ?Sized>(m: &mut V) { ORIG_ERR.with(|e| { let (mut v, b) = e.get(); m.visit(&mut v); e.set((v, b)); }); }
 /// rb_ec_cleanup: the EXIT trap, at_exit procs (LIFO; each error reported as it happens), the trap's error,
 /// then the main error (`errored`: c.esc holds it) last, unless a handler error showed it as its cause;
 /// a later error's status wins.
