@@ -327,127 +327,156 @@ fn fd_of(c: &mut Ctx, v: Value) -> Result<Option<i32>, Esc> {
     Ok(None)
 }
 /// Pairs of Hash `h`, each also pushed to `keep` (a Vec is not scanned by the collector).
-fn pairs_kept(c: &mut Ctx, h: Value, keep: Value) -> Vec<(Value, Value)> {
+/// Push h's pairs to `keep` (callbacks may empty the Hash); the pair count.
+fn pairs_kept(c: &mut Ctx, h: Value, keep: Value) -> usize {
     let ps = c.hash_pairs(h);
     for &(k, v) in &ps { c.ary_push(keep, k); c.ary_push(keep, v); }
-    ps
+    ps.len()
 }
 /// Build the child description from (env, cmd..., opts) as Kernel#spawn takes them.
 pub fn spawn_spec(c: &mut Ctx, env: Option<Value>, args: &[Value], opts: Option<Value>) -> Result<Spec, Esc> {
     let mut sp = Spec { argv: vec![], prog: CString::new("").unwrap(), env: vec![], clear_env: false, chdir: None, redirect: vec![], close: vec![], opened: vec![], pgroup: None, umask: None, close_others: vec![], rlimits: vec![], path: None, pty: None };
     if args.is_empty() { return argc_err(c, 0, 1, -1); }
-    // rb_check_argv: a first argument with to_ary is [prog, argv0]
-    let mut args = args.to_vec();
-    if !is_array(args[0]) && !is_string(args[0]) && args[0].is_heap() && respond_to(c, args[0], intern(b"to_ary"), true) {
-        let a0 = funcall(c, args[0], intern(b"to_ary"), &[], std::ptr::null())?;
-        if a0 != NIL { if !is_array(a0) { return type_err(c, format!("can't convert {} to Array", class_name_for_err(c, args[0]))); } args[0] = a0; }
-    }
-    let args = &args[..];
-    if args.len() == 1 && !is_array(args[0]) {
-        let cmd = cstring(c, args[0])?;
-        let s = cmd.to_string_lossy().into_owned();
-        if needs_shell(&s) { sp.prog = CString::new("/bin/sh").unwrap(); sp.argv = vec![CString::new("sh").unwrap(), CString::new("-c").unwrap(), cmd]; }
-        else {
-            sp.argv = s.split_ascii_whitespace().map(|w| CString::new(w).unwrap()).collect();
-            if sp.argv.is_empty() { return Err(raise_errno_plain(c, 2, &s)); }
-            sp.prog = sp.argv[0].clone();
+    // q0: the words, q1: what was read from the Hashes, q2 / q3: env / opts; read by index after each
+    // callback (to_str, to_path, to_io, to_int may move them, or empty the Hashes)
+    c.park(4, |c, q| {
+        q.set(2, env.unwrap_or(UNDEF));
+        q.set(3, opts.unwrap_or(UNDEF));
+        let w = c.ary_new_from(args);
+        q.set(0, w);
+        let k = c.ary_new();
+        q.set(1, k);
+        let n = args.len();
+        let arg = |c: &Ctx, i: usize| c.ary_get(q.get(0), i);
+        // rb_check_argv: a first argument with to_ary is [prog, argv0]
+        let a0 = arg(c, 0);
+        if !is_array(a0) && !is_string(a0) && a0.is_heap() && respond_to(c, a0, intern(b"to_ary"), true) {
+            let r = funcall(c, arg(c, 0), intern(b"to_ary"), &[], std::ptr::null())?;
+            if r != NIL { if !is_array(r) { return type_err(c, format!("can't convert {} to Array", class_name_for_err(c, arg(c, 0)))); } c.ary_mut(q.get(0))[0] = r; }
         }
-    } else {
-        if is_array(args[0]) {
-            if c.ary_len(args[0]) != 2 { return arg_err(c, "wrong first argument"); }
-            let (p0, a0) = (c.ary_get(args[0], 0), c.ary_get(args[0], 1));
-            sp.prog = cstring(c, p0)?; sp.argv.push(cstring(c, a0)?);
-        } else { sp.prog = cstring(c, args[0])?; sp.argv.push(sp.prog.clone()); }
-        for &x in &args[1..] { sp.argv.push(cstring(c, x)?); }
-    }
-    // callbacks (to_str, to_path, to_io) may empty the Hashes: keep what was read from them
-    let keep = c.ary_new();
-    if let Some(e) = env {
-        for (k, v) in pairs_kept(c, e, keep) {
-            let k = cstring(c, k)?;
-            if k.as_bytes().contains(&b'=') { return arg_err(c, format!("environment name contains a equal : {}", k.to_string_lossy())); }
-            let v = if v == NIL { None } else { Some(cstring(c, v)?) };
-            sp.env.push((k, v));
+        if n == 1 && !is_array(arg(c, 0)) {
+            let cmd = cstring(c, arg(c, 0))?;
+            let s = cmd.to_string_lossy().into_owned();
+            if needs_shell(&s) { sp.prog = CString::new("/bin/sh").unwrap(); sp.argv = vec![CString::new("sh").unwrap(), CString::new("-c").unwrap(), cmd]; }
+            else {
+                sp.argv = s.split_ascii_whitespace().map(|w| CString::new(w).unwrap()).collect();
+                if sp.argv.is_empty() { return Err(raise_errno_plain(c, 2, &s)); }
+                sp.prog = sp.argv[0].clone();
+            }
+        } else {
+            if is_array(arg(c, 0)) {
+                if c.ary_len(arg(c, 0)) != 2 { return arg_err(c, "wrong first argument"); }
+                sp.prog = cstring(c, c.ary_get(arg(c, 0), 0))?;
+                let a1 = c.ary_get(arg(c, 0), 1);
+                sp.argv.push(cstring(c, a1)?);
+            } else { sp.prog = cstring(c, arg(c, 0))?; sp.argv.push(sp.prog.clone()); }
+            for i in 1..n { sp.argv.push(cstring(c, arg(c, i))?); }
         }
-    }
-    let Some(h) = opts else { return Ok(sp) };
-    let mut child_refs = vec![];
-    for (k, v) in pairs_kept(c, h, keep) {
-        if k.is_sym() {
-            match crate::symbol::sym_str(k.as_sym()).as_str() {
-                "chdir" => { sp.chdir = Some(cstring(c, v)?); continue; }
-                "pgroup" => {
-                    sp.pgroup = if v == TRUE { Some(0) } else if v == NIL || v == FALSE { None } else {
-                        let g = num_to_long(c, v)?;
-                        if g < 0 { return arg_err(c, format!("negative process group ID : {}", g)); }
-                        Some(g as i32)
-                    };
-                    continue;
-                }
-                "umask" => { sp.umask = Some(mode_num(c, v)?); continue; }
-                "unsetenv_others" => { sp.clear_env = bool_opt(c, v, "unsetenv_others")?; continue; }
-                "close_others" => {
-                    if bool_opt(c, v, "close_others")? {
-                        // the fds open now (listed before fork: the child must not allocate)
-                        if let Ok(d) = std::fs::read_dir("/proc/self/fd") {
-                            sp.close_others = d.filter_map(|e| e.ok()?.file_name().to_str()?.parse::<i32>().ok()).filter(|&fd| fd >= 3).collect();
-                        }
-                    } else { sp.close_others.clear(); }
-                    continue;
-                }
-                "exception" => { continue; }
-                "in" | "out" | "err" => {}
-                o => {
-                    let r = o.strip_prefix("rlimit_").filter(|n| !n.bytes().any(|b| b.is_ascii_uppercase())).and_then(|n| RLIMITS.iter().find(|r| r.0.eq_ignore_ascii_case(n)));
-                    let Some(&(_, res)) = r else { return arg_err(c, format!("wrong exec option symbol: {}", o)); };
-                    let (cur, max) = if is_array(v) && (1..=2).contains(&c.ary_len(v)) {
-                        let (a, b) = (c.ary_get(v, 0), c.ary_get(v, c.ary_len(v) - 1));
-                        (rlim_num(c, a)?, rlim_num(c, b)?)
-                    } else if is_array(v) { return arg_err(c, "wrong exec rlimit option"); } else { let n = rlim_num(c, v)?; (n, n) };
-                    sp.rlimits.push((res, sys::Rlimit { cur, max }));
-                    continue;
-                }
+        let kept = |c: &Ctx, i: usize| c.ary_get(q.get(1), i);
+        if q.get(2) != UNDEF {
+            let np = pairs_kept(c, q.get(2), q.get(1));
+            for j in 0..np {
+                let k = cstring(c, kept(c, 2 * j))?;
+                if k.as_bytes().contains(&b'=') { return arg_err(c, format!("environment name contains a equal : {}", k.to_string_lossy())); }
+                let v = kept(c, 2 * j + 1);
+                let v = if v == NIL { None } else { Some(cstring(c, v)?) };
+                sp.env.push((k, v));
             }
         }
-        let keys = if is_array(k) { c.ary(k).to_vec() } else { vec![k] };
-        for &x in &keys { c.ary_push(keep, x); }
-        let mut dsts = vec![];
-        let single = !is_array(k);
-        for kk in keys { match fd_of(c, kk)? { Some(fd) => dsts.push(fd), None => return if single { let kn = class_path(c, real_class_of(c, kk)); arg_err(c, format!("wrong exec option: {}", kn)) } else { arg_err(c, "wrong exec redirect action") } } }
-        let reading = dsts.iter().all(|&d| d == 0);
-        if v.is_sym() && v == sym_value("close") { sp.close.extend(dsts); continue; }
-        let src = if is_string(v) || (is_array(v) && c.ary_len(v) >= 1 && is_string(c.ary_get(v, 0))) {
-            let (path, rest): (Value, Vec<Value>) = if is_string(v) { (v, vec![]) } else { (c.ary_get(v, 0), c.ary(v)[1..].to_vec()) };
-            for &x in &rest { c.ary_push(keep, x); }
-            let p = crate::builtins::io::path_arg(c, path)?;
-            let mut om = crate::builtins::io::parse_mode(c, &rest, None)?;
-            if rest.is_empty() { om.flags = if reading { 0 } else { sys::O_WRONLY | sys::O_CREAT | sys::O_TRUNC }; om.perm = 0o644; }
-            let fifo = { use std::os::unix::fs::FileTypeExt; std::fs::metadata(p.path()).is_ok_and(|m| m.file_type().is_fifo()) };
-            let fd = if fifo { crate::builtins::io::sysopen(c, &p, &om)? } else {
-                // CRuby words a failed redirect open "strerror - path", not "@ rb_sysopen - path"
-                let cp = p.cstr();
-                loop {
-                    let fd = sys::open(&cp, om.flags | sys::O_CLOEXEC, om.perm);
-                    if fd >= 0 { break fd; }
-                    let e = sys::errno();
-                    if e != sys::EINTR { return Err(raise_errno_plain(c, e as i64, &String::from_utf8_lossy(p.as_bytes()))); }
+        if q.get(3) == UNDEF { return Ok(sp) }
+        let mut child_refs = vec![];
+        let b = c.ary_len(q.get(1));
+        let np = pairs_kept(c, q.get(3), q.get(1));
+        for j in 0..np {
+            let (ki, vi) = (b + 2 * j, b + 2 * j + 1);
+            let k = kept(c, ki);
+            if k.is_sym() {
+                match crate::symbol::sym_str(k.as_sym()).as_str() {
+                    "chdir" => { sp.chdir = Some(cstring(c, kept(c, vi))?); continue; }
+                    "pgroup" => {
+                        let v = kept(c, vi);
+                        sp.pgroup = if v == TRUE { Some(0) } else if v == NIL || v == FALSE { None } else {
+                            let g = num_to_long(c, v)?;
+                            if g < 0 { return arg_err(c, format!("negative process group ID : {}", g)); }
+                            Some(g as i32)
+                        };
+                        continue;
+                    }
+                    "umask" => { sp.umask = Some(mode_num(c, kept(c, vi))?); continue; }
+                    "unsetenv_others" => { sp.clear_env = bool_opt(c, kept(c, vi), "unsetenv_others")?; continue; }
+                    "close_others" => {
+                        if bool_opt(c, kept(c, vi), "close_others")? {
+                            // the fds open now (listed before fork: the child must not allocate)
+                            if let Ok(d) = std::fs::read_dir("/proc/self/fd") {
+                                sp.close_others = d.filter_map(|e| e.ok()?.file_name().to_str()?.parse::<i32>().ok()).filter(|&fd| fd >= 3).collect();
+                            }
+                        } else { sp.close_others.clear(); }
+                        continue;
+                    }
+                    "exception" => { continue; }
+                    "in" | "out" | "err" => {}
+                    o => {
+                        let r = o.strip_prefix("rlimit_").filter(|n| !n.bytes().any(|b| b.is_ascii_uppercase())).and_then(|n| RLIMITS.iter().find(|r| r.0.eq_ignore_ascii_case(n)));
+                        let Some(&(_, res)) = r else { return arg_err(c, format!("wrong exec option symbol: {}", o)); };
+                        let v = kept(c, vi);
+                        let (cur, max) = if is_array(v) && (1..=2).contains(&c.ary_len(v)) {
+                            let cur = rlim_num(c, c.ary_get(v, 0))?;
+                            let v = kept(c, vi);
+                            let last = c.ary_get(v, c.ary_len(v).saturating_sub(1));
+                            (cur, rlim_num(c, last)?)
+                        } else if is_array(v) { return arg_err(c, "wrong exec rlimit option"); } else { let n = rlim_num(c, v)?; (n, n) };
+                        sp.rlimits.push((res, sys::Rlimit { cur, max }));
+                        continue;
+                    }
                 }
+            }
+            // the redirect's fds (k: one or an Array of them) kept at ks..ks + nk
+            let single = !is_array(k);
+            let ks = c.ary_len(q.get(1));
+            if single { c.ary_push(q.get(1), k); } else { let n = c.ary_len(k); for i in 0..n { let x = c.ary_get(kept(c, ki), i); c.ary_push(q.get(1), x); } }
+            let nk = c.ary_len(q.get(1)) - ks;
+            let mut dsts = vec![];
+            for i in ks..ks + nk {
+                match fd_of(c, kept(c, i))? { Some(fd) => dsts.push(fd), None => return if single { let kn = class_path(c, real_class_of(c, kept(c, i))); arg_err(c, format!("wrong exec option: {}", kn)) } else { arg_err(c, "wrong exec redirect action") } }
+            }
+            let reading = dsts.iter().all(|&d| d == 0);
+            let v = kept(c, vi);
+            if v.is_sym() && v == sym_value("close") { sp.close.extend(dsts); continue; }
+            let src = if is_string(v) || (is_array(v) && c.ary_len(v) >= 1 && is_string(c.ary_get(v, 0))) {
+                // [path, mode, perm]: the rest kept at rs..rs + nr
+                let rs = c.ary_len(q.get(1));
+                let path = if is_string(v) { v } else { let n = c.ary_len(v); for i in 1..n { let x = c.ary_get(kept(c, vi), i); c.ary_push(q.get(1), x); } c.ary_get(kept(c, vi), 0) };
+                let nr = c.ary_len(q.get(1)) - rs;
+                let p = crate::builtins::io::path_arg(c, path)?;
+                let rest: Vec<Value> = (rs..rs + nr).map(|i| kept(c, i)).collect();
+                let mut om = crate::builtins::io::parse_mode(c, &rest, None)?;
+                if nr == 0 { om.flags = if reading { 0 } else { sys::O_WRONLY | sys::O_CREAT | sys::O_TRUNC }; om.perm = 0o644; }
+                let fifo = { use std::os::unix::fs::FileTypeExt; std::fs::metadata(p.path()).is_ok_and(|m| m.file_type().is_fifo()) };
+                let fd = if fifo { crate::builtins::io::sysopen(c, &p, &om)? } else {
+                    // CRuby words a failed redirect open "strerror - path", not "@ rb_sysopen - path"
+                    let cp = p.cstr();
+                    loop {
+                        let fd = sys::open(&cp, om.flags | sys::O_CLOEXEC, om.perm);
+                        if fd >= 0 { break fd; }
+                        let e = sys::errno();
+                        if e != sys::EINTR { return Err(raise_errno_plain(c, e as i64, &String::from_utf8_lossy(p.as_bytes()))); }
+                    }
+                };
+                sp.opened.push(fd);
+                fd
+            } else if is_array(v) && c.ary_len(v) == 2 && c.ary_get(v, 0) == sym_value("child") {
+                let v1 = c.ary_get(v, 1);
+                let Some(s) = fd_of(c, v1)? else { return arg_err(c, "wrong exec redirect action") };
+                for d in dsts { child_refs.push((d, s)); }
+                continue;
+            } else {
+                match fd_of(c, v)? { Some(fd) => fd, None => return arg_err(c, "wrong exec redirect action") }
             };
-            sp.opened.push(fd);
-            fd
-        } else if is_array(v) && c.ary_len(v) == 2 && c.ary_get(v, 0) == sym_value("child") {
-            let v1 = c.ary_get(v, 1);
-            let Some(s) = fd_of(c, v1)? else { return arg_err(c, "wrong exec redirect action") };
-            for d in dsts { child_refs.push((d, s)); }
-            continue;
-        } else {
-            match fd_of(c, v)? { Some(fd) => fd, None => return arg_err(c, "wrong exec redirect action") }
-        };
-        for d in dsts { sp.redirect.push((d, src)); }
-    }
-    sp.redirect.extend(child_refs);
-    std::hint::black_box(keep);
-    Ok(sp)
+            for d in dsts { sp.redirect.push((d, src)); }
+        }
+        sp.redirect.extend(child_refs);
+        Ok(sp)
+    })
 }
 /// Where a child's setup failed (the Errno's message).
 #[derive(Clone, Copy)]
@@ -552,13 +581,13 @@ fn check_hash(c: &mut Ctx, v: Value) -> Result<Option<Value>, Esc> {
     Ok(Some(h))
 }
 /// Split spawn-style arguments into (env, command words, options) as rb_exec_getargs: the options first.
-pub fn split_args(c: &mut Ctx, a: &[Value]) -> Result<(Option<Value>, Vec<Value>, Option<Value>), Esc> {
-    let mut rest = a.to_vec();
-    let opts = match rest.last() { Some(&l) => check_hash(c, l)?, None => None };
-    if opts.is_some() { rest.pop(); }
-    let env = match rest.first() { Some(&e) => check_hash(c, e)?, None => None };
-    if env.is_some() { rest.remove(0); }
-    Ok((env, rest, opts))
+/// The words are `a[lo..hi]` (re-read from the args: to_hash may move them).
+pub fn split_args(c: &mut Ctx, a: &[Value]) -> Result<(Option<Value>, std::ops::Range<usize>, Option<Value>), Esc> {
+    let mut hi = a.len();
+    let opts = match a.last() { Some(&l) => check_hash(c, l)?, None => None };
+    if opts.is_some() { hi -= 1; }
+    let env = if hi > 0 { check_hash(c, a[0])? } else { None };
+    Ok((env, env.is_some() as usize..hi, opts))
 }
 const ECHILD: i64 = 10;
 fn waitpid_retry(c: &mut Ctx, pid: i32, flags: i32) -> Result<(i32, i32), Esc> { waitpid_q(c, pid, flags, false) }
@@ -621,13 +650,13 @@ pub fn wait_child(c: &mut Ctx, pid: i32) {
 }
 fn k_spawn(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (env, cmd, opts) = split_args(c, a)?;
-    let mut sp = spawn_spec(c, env, &cmd, opts)?;
+    let mut sp = spawn_spec(c, env, &a[cmd], opts)?;
     Ok(Value::fix(spawn_exec(c, &mut sp)? as i64))
 }
 fn k_system(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (env, cmd, opts) = split_args(c, a)?;
     let exc = match opts { Some(h) => match crate::hash::hash_get_opt(c, h, sym_value("exception"))? { Some(v) => bool_opt(c, v, "exception")?, None => false }, None => false };
-    let mut sp = spawn_spec(c, env, &cmd, opts)?;
+    let mut sp = spawn_spec(c, env, &a[cmd], opts)?;
     let pid = match spawn_exec(c, &mut sp) {
         Ok(p) => p,
         Err(e) => { if exc { return Err(e); } c.esc = EscKind::None; return Ok(NIL); }
@@ -670,7 +699,7 @@ fn k_backtick(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
 }
 fn k_exec(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (env, cmd, opts) = split_args(c, a)?;
-    let mut sp = spawn_spec(c, env, &cmd, opts)?;
+    let mut sp = spawn_spec(c, env, &a[cmd], opts)?;
     if !sp.prog.as_bytes().contains(&b'/') { sp.path = find_exe(&sp); }
     crate::builtins::io::flush_all(c);
     let stage = match child_setup(&sp) { Ok(()) => { do_exec(&sp); Stage::Exec } Err(s) => s };

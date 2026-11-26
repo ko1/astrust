@@ -2045,13 +2045,15 @@ fn io_s_popen(c: &mut Ctx, slf: Value, a: &[Value], blk: Blk) -> RV {
         }
         pid
     } else {
-        let (env, words, opts) = if is_array(cmd) {
-            let mut w = c.ary(cmd).to_vec();
-            let e2 = if !w.is_empty() && is_hash(w[0]) { Some(w.remove(0)) } else { env };
-            let o2 = if w.len() > 1 && is_hash(w[w.len() - 1]) { w.pop() } else { opts };
-            (e2, w, o2)
-        } else { (env, vec![cmd], opts) };
+        // [env, words..., opts]: the words copied after exec_opts (a callback may move them)
+        let (env, lo, hi, opts) = if is_array(cmd) {
+            let n = c.ary_len(cmd);
+            let lo = (n > 0 && is_hash(c.ary_get(cmd, 0))) as usize;
+            let o = n - lo > 1 && is_hash(c.ary_get(cmd, n - 1));
+            (if lo > 0 { Some(c.ary_get(cmd, 0)) } else { env }, lo, n - o as usize, if o { Some(c.ary_get(cmd, n - 1)) } else { opts })
+        } else { (env, 0, 1, opts) };
         let opts = match opts { Some(h) => Some(exec_opts(c, h)?), None => None };
+        let words: Vec<Value> = if is_array(cmd) { c.ary(cmd).get(lo..hi).unwrap_or(&[]).to_vec() } else { vec![cmd] };
         let mut spec = crate::builtins::process::spawn_spec(c, env, &words, opts)?;
         // the pipe goes first so err: [:child, :out] refers to it
         if rd { spec.redirect.insert(0, (1, pr[1])); }
