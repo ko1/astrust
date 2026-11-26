@@ -2843,38 +2843,48 @@ pub fn run_entry(c: &mut Ctx, entry: NodePtr, base: Stk, argc: u32) -> RV {
     run_body(c, entry, base)
 }
 
+/// The rest parameter's Array, through ary_from_vec: a second caller of ary_from_slots stops it being
+/// inlined into the array literal node, whose hot path then compiles worse (gcchurn +0.8 %, trial
+/// 2026-11-25-astrust-moving-gc session 4).  No GC point between reading the slots and the allocation.
+fn rest_ary(c: &mut Ctx, s: &[crate::slots::Slot]) -> Value { c.ary_from_vec(s.iter().map(|x| x.get()).collect()) }
+
 /// Place arguments into parameter slots.  For blocks (`is_block`), non-lambda
 /// semantics apply: missing args are nil, extra args dropped, a lone Array is splatted.
 pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Block, flags: u32, is_block: bool, outer_env: Value) -> Result<(), Esc> {
     let p = &is.params;
     let n = is.nlocals as usize;
     let lambda = !is_block;
-    // copy args out (they overlap the local area)
-    let mut args = to_vec(&base[2..2 + argc as usize]);
-    // keep the args reachable while we allocate; made while they are still on the VM stack
-    let tmp = c.ary_new_from(&args);
+    // the args overlap the local area: they move above it, to slots that stay roots while the parameters are
+    // bound ([m] the keyword hash, [m+1] outer_env, then the args, m = max(n, 2); no Vec copy: docs/gc_moving.md 2.4)
+    let (kws, envs, a0) = (n.max(2), n.max(2) + 1, n.max(2) + 2);
+    let mut argc = argc as usize;
+    stack_check(c, a0 + argc)?;
+    for i in (0..argc).rev() { base[a0 + i].set(base[2 + i].get()); }
+    base[kws].set(NIL);
+    base[envs].set(outer_env);
     nil_fill(base, 1, n);
-    c.set_sp(base, n.max(2));
+    c.set_sp(base, a0 + argc);
+    let arg = |i: usize| base[a0 + i].get();
     // keywords
-    let mut kwh: Value = NIL;
     let accepts_kw = !p.kw.is_empty() || p.kwrest.is_some() || p.forwarding;
-    if flags & CF_KW != 0 && !args.is_empty() {
-        let h = *args.last().unwrap();
+    if flags & CF_KW != 0 && argc > 0 {
+        let h = arg(argc - 1);
         if accepts_kw && !p.forwarding {
-            kwh = h; args.pop();
+            base[kws].set(h); argc -= 1;
         } else if (flags & CF_KW_SPLAT != 0 || is_block) && is_hash(h) && c.hash(h).live == 0 {
-            args.pop();
+            argc -= 1;
         } else if is.ruby2_keywords.get() && p.rest.is_some() && is_hash(h) {
             let d = c.hash_new();
-            c.ary_push(tmp, d);
-            crate::hash::hash_copy_entries(c, d, h)?;
-            obj_set_flags(d, FL_KWHASH);
-            *args.last_mut().unwrap() = d;
+            base[a0 + argc - 1].set(d);
+            base[kws].set(h);
+            crate::hash::hash_copy_entries(c, base[a0 + argc - 1].get(), base[kws].get())?;
+            base[kws].set(NIL);
+            obj_set_flags(base[a0 + argc - 1].get(), FL_KWHASH);
         } else if p.forwarding {
             // keep as positional for forwarding; remember it's keywords
         }
     }
-    if p.no_kw && flags & CF_KW != 0 && args.last().is_some_and(|&h| is_hash(h) && c.hash(h).live > 0) {
+    if p.no_kw && flags & CF_KW != 0 && argc > 0 && { let h = arg(argc - 1); is_hash(h) && c.hash(h).live > 0 } {
         return arg_err(c, "no keywords accepted");
     }
     let lead = p.lead.len();
@@ -2883,23 +2893,30 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
     // block auto-splat
     // a non-simple block given keywords (even an empty **h) does not auto-splat
     let simple_block = opt == 0 && !p.no_kw && p.rest.is_none() && post == 0 && !accepts_kw && p.block.is_none() && p.destructure.is_empty();
-    if is_block && args.len() == 1 && (flags & CF_KW == 0 || simple_block) && (lead + post + opt > 1 || (p.rest.is_some() && lead + post + opt > 0) || p.has_trailing_comma || (lead == 1 && p.rest.is_some()))
+    if is_block && argc == 1 && (flags & CF_KW == 0 || simple_block) && (lead + post + opt > 1 || (p.rest.is_some() && lead + post + opt > 0) || p.has_trailing_comma || (lead == 1 && p.rest.is_some()))
         && !p.forwarding {
-        let a = args[0];
+        let a = arg(0);
         let arr = if is_array(a) { Some(a) } else if crate::rt::conv_target(a) && !is_hash(a) && crate::rt::check_respond(c, a, s::to_ary)? {
-            let r = funcall(c, a, s::to_ary, &[], std::ptr::null())?;
+            let r = funcall(c, arg(0), s::to_ary, &[], std::ptr::null())?;
             if is_array(r) { Some(r) } else if r == NIL { None } else {
+                let a = arg(0);
                 return type_err(c, format!("can't convert {} to Array ({}#to_ary gives {})", class_path(c, real_class_of(c, a)), class_path(c, real_class_of(c, a)), class_path(c, real_class_of(c, r))));
             }
         } else { None };
-        if let Some(arr) = arr { args = c.ary(arr).to_vec(); }
+        if let Some(arr) = arr {
+            let m = c.ary_len(arr);
+            stack_check(c, a0 + m)?;
+            c.set_sp(base, a0 + m);
+            for i in 0..m { base[a0 + i].set(c.ary(arr)[i]); }
+            argc = m;
+        }
     }
-    let given = args.len();
+    let given = argc;
     let required = lead + post;
     if lambda {
         let maxp = if p.rest.is_some() || p.forwarding { usize::MAX } else { required + opt };
         if given < required || given > maxp {
-            if !(accepts_kw && kwh == NIL && given == required + opt + 1 && false) {
+            if !(accepts_kw && base[kws].get() == NIL && given == required + opt + 1 && false) {
                 let exp = if maxp == usize::MAX { format!("{}+", required) } else if required == maxp { format!("{}", required) } else { format!("{}..{}", required, maxp) };
                 // missing required keywords are reported along with the arity
                 let missing: Vec<String> = p.kw.iter().filter(|k| k.required).map(|k| sym_str(k.name).to_string()).collect();
@@ -2909,33 +2926,33 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
         }
     }
     let mut ai = 0;
-    for &sl in p.lead.iter() { base[sl as usize].set(if ai < given { args[ai] } else { NIL }); ai += 1; }
+    for &sl in p.lead.iter() { base[sl as usize].set(if ai < given { arg(ai) } else { NIL }); ai += 1; }
     let avail_for_opt = given.saturating_sub(required);
     let nopt_given = avail_for_opt.min(opt);
     for (k, (sl, _)) in p.opt.iter().enumerate() {
-        if k < nopt_given { base[*sl as usize].set(args[ai]); ai += 1; }
+        if k < nopt_given { base[*sl as usize].set(arg(ai)); ai += 1; }
     }
     if let Some(rs) = p.rest {
         let nrest = given.saturating_sub(ai + post);
-        let r = c.ary_new_from(if nrest > 0 { &args[ai..ai + nrest] } else { &[] });
+        let r = rest_ary(c, &base[a0 + ai..a0 + ai + nrest]);
         base[rs as usize].set(r);
         ai += nrest;
     } else if p.forwarding {
         let nrest = given.saturating_sub(ai + post);
-        let r = c.ary_new_from(if nrest > 0 { &args[ai..ai + nrest] } else { &[] });
+        let r = rest_ary(c, &base[a0 + ai..a0 + ai + nrest]);
         ai += nrest;
         // forwarding stores rest at the hidden slot recorded in kwrest position
         if let Some(fs) = p.kwrest { base[fs as usize].set(r); }
         if flags & CF_KW != 0 { obj_set_flags(r, FL_KWHASH); }
     }
-    for &sl in p.post.iter() { base[sl as usize].set(if ai < given { args[ai] } else { NIL }); ai += 1; }
+    for &sl in p.post.iter() { base[sl as usize].set(if ai < given { arg(ai) } else { NIL }); ai += 1; }
     // keywords; kw_unset: not passed (their slots stay nil until their defaults run)
     let mut kw_unset: Vec<bool> = vec![];
     if !p.kw.is_empty() || (p.kwrest.is_some() && !p.forwarding) {
         let mut seen = 0;
-        if kwh != NIL && !is_hash(kwh) { kwh = NIL; }
+        if base[kws].get() != NIL && !is_hash(base[kws].get()) { base[kws].set(NIL); }
         for k in p.kw.iter() {
-            let v = if kwh != NIL { crate::hash::hash_get_opt(c, kwh, Value::sym(k.name))? } else { None };
+            let v = if base[kws].get() != NIL { crate::hash::hash_get_opt(c, base[kws].get(), Value::sym(k.name))? } else { None };
             match v {
                 Some(v) => { base[k.slot as usize].set(v); seen += 1; kw_unset.push(false); }
                 None => { base[k.slot as usize].set(NIL); kw_unset.push(true); }
@@ -2948,19 +2965,19 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
         }
         if let Some(kr) = p.kwrest {
             let h = c.hash_new();
-            if kwh != NIL {
+            base[kr as usize].set(h);
+            if base[kws].get() != NIL {
                 let mut i = 0;
-                while let Some(e) = c.hash_entry_at(kwh, i) {
+                while let Some(e) = c.hash_entry_at(base[kws].get(), i) {
                     i += 1;
                     if e.0 == UNDEF || e.0.is_sym() && p.kw.iter().any(|k| k.name == e.0.as_sym()) { continue; }
-                    crate::hash::hash_set(c, h, e.0, e.1)?;
+                    crate::hash::hash_set(c, base[kr as usize].get(), e.0, e.1)?;
                 }
             }
-            base[kr as usize].set(h);
-        } else if kwh != NIL && seen < c.hash(kwh).live {
+        } else if base[kws].get() != NIL && seen < c.hash(base[kws].get()).live {
             let mut unknown: Vec<String> = vec![];
             let mut i = 0;
-            while let Some(e) = c.hash_entry_at(kwh, i) {
+            while let Some(e) = c.hash_entry_at(base[kws].get(), i) {
                 i += 1;
                 if e.0 == UNDEF || e.0.is_sym() && p.kw.iter().any(|k| k.name == e.0.as_sym()) { continue; }
                 unknown.push(crate::builtins::kernel::inspect_str(c, e.0).unwrap_or_default());
@@ -2969,7 +2986,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
                 return arg_err(c, format!("unknown keyword{}: {}", if unknown.len() > 1 { "s" } else { "" }, unknown.join(", ")));
             }
         }
-    } else if kwh != NIL && is_hash(kwh) && c.hash(kwh).live > 0 && p.no_kw {
+    } else if { let h = base[kws].get(); h != NIL && is_hash(h) && c.hash(h).live > 0 } && p.no_kw {
 
         return arg_err(c, "no keywords accepted");
     }
@@ -2978,6 +2995,7 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
     }
     // env
     if is.env_size > 0 {
+        let outer_env = base[envs].get();
         let env = c.alloc_with(vm().c_env.get(), move || Body::Env(crate::envvals::EnvVals::new(is.env_size as usize), outer_env));
         base[1].set(env);
         for &(sl, ei) in is.env_params.iter() {
@@ -2985,9 +3003,9 @@ pub fn setup_params(c: &mut Ctx, is: &Iseq, base: Stk, argc: u32, blk: *const Bl
 
         }
     } else {
-        base[1].set(outer_env);
+        base[1].set(base[envs].get());
     }
-    std::hint::black_box(tmp);
+    c.set_sp(base, n.max(2));
     // defaults (run in the callee frame): static keyword defaults are in place before any other runs (CRuby)
     for (k, u) in p.kw.iter().zip(&kw_unset) {
         if *u && k.static_default { if let Some(d) = k.default { run_body(c, d, base)?; } }
