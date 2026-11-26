@@ -59,6 +59,17 @@ user 2026-11-25「full moving 頑張ってほしい」「クラスなどを non-
 - [ ] Ctx.sp をレジスタに: 値スタックの先頭の正本が `Ctx.sp`（メモリ上の 1 つ）なので、`&mut Ctx` を渡す呼び出しのたびに書き戻し / 読み直しが入る（koruby_precise は sp を引数で引き回し、`c->sp_top` は korb_alloc だけが書く）。まず呼び出し経路（メソッド呼び出し・yield・stage）の Ctx.sp の load/store を機械語と perf で数える → 一部経路で sp を値として引き回す試作。正本が 2 つになる危険は型で縛る（確保関数だけが sp を受け取って Ctx に書ける、他は書けない＝「sp_top を書くのは korb_alloc だけ」をコンパイラで守らせる）。phase 1e と合わせて設計（user 2026-11-26「ctx の参照がふえちゃうとレジスタにのらないんじゃないの？」）
   - 2026-11-26 計測（sp4、master 0f77f68、`docs/gc_moving.md` 12.5）: 焼き版 method_call の loop は 1 呼び出し約 53 命令のうち Ctx.sp の load / store が 3（stage の load と store、set_sp の store。間に呼び出しも GC 点も無い）、引き回せば上限 約 5.7 %。インタプリタは 1 呼び出し約 4 命令（命令サンプルで fib 1.00 %、method_call 1.40 %、tak 1.58 %、binary_trees 1.81 %）。store を遅い経路へ移すには全 EVAL と out-of-line 呼び出しが sp を持つ生成器の ABI 変更が要る。試作は未着手、決定は試作の sp4 の数字で（user「sp 引き回すかは性能を見て判断して」）。それまで Ctx.sp のまま
 - [ ] phase 2: `copy`（Cheney、クラス・リテラルは non-moving 空間、identity hash は object_id から）、PURGE
+  - 2026-11-27 checkpoint（branch `worktree-agent-ad6baa31169120e8b`、trial README「Phase 2 (copy)」の Checkpoint に次の手順）:
+    - マージ候補は f3b1121 + 9db301c。中身は copy.rs、`make GC=copy`、gc_test 17/17。default build は sp4 で 42 行すべて ±0.006 % 以内。
+    - 36e8752（wip、fiber の abort 対策）はビルドも試験もしていないので、マージしない。
+    - マージ時に見ること: stack.rs `with_args` の gc-copy 専用の変更、fiber.rs の機械スタック visit、`gc::identity_key`（番地キーの表の C1 が入ったら外す仮のもの）。
+    - stress + PURGE の全件実行は 894 / 2241 本で止めた。stale abort が 5 本出ていて、4 本は `vm.rs method_missing_why` の `Vec<Value>`、1 本は fiber_gc_suspended_1121。
+  - [ ] 要判断: copy の閾値。gc_copy.c の既定は 16 MiB、koruby_precise の Makefile は 4 MiB で build している。koruby に揃えるなら、実際に動いている 4 MiB。nesteddata は 4 MiB で 49.6 ms、16 MiB で 63–65 ms（marksweep は 47.3 ms）。
+- [ ] phase 1f（PRECISE_ALL）: 2026-11-27 checkpoint（branch `worktree-agent-a2fb21fbeb8f38cea`、trial README「Phase 1f (precise-all)」）。
+  - 状況: F-1 / F-1b / F-2 で 24 本すべてが PRECISE_ALL で通る。ただし F-1 は性能の予算超え（mapreduce AOT +3.8 %、fib plain 約 +0.7 %）で、まだマージできない。
+  - 次の手順: fib の費用が `stage_park` から来ているかを切り分ける。b108507（wip）はビルドしていない。
+  - inventory: master の t/hand は 2119 / 2240 本が落ちる。最初の 456 本の backtrace から 67 か所を特定した。
+- [ ] `while` の中で、Hash リテラルや呼び出し引数の中の `next` が、1 回ごとに値スタックの slot を 1 つ漏らす（`node_while` が sp を戻さない）。長いループは SystemStackError になる。hot loop なので、性能を測ってから直す（phase 1f agent が見つけた、2026-11-27）
 - [ ] phase 3: `copy_gen`（write barrier、`Member` 型で store 漏れを compile error に）
 - [ ] phase 2 / 3 の方針を koruby_precise に揃える（user 2026-11-26「細かい拡張戦略とか、Astro Koruby に揃えられると比較しやすいね」）。値は ~/ruby/astro/runtime/precise_gc/gc_copy.c と gc_copy_gen.c から取る。
   - copy: `GC_THRESHOLD_MIN` 16 MB、`GC_THRESHOLD_FACTOR` 2、large object は 4096 バイトから。
