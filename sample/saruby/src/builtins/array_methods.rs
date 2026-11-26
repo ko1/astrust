@@ -496,40 +496,53 @@ cfn!(a_delete_at, |c, slf, a, blk| {
 });
 cfn!(a_compact, |c, slf, a, blk| Ok(c.ary_from_vec(c.ary(slf).iter().copied().filter(|x| *x != NIL).collect())));
 cfn!(a_compact_b, |c, slf, a, blk| { let v = c.ary_modify(slf)?; let n = v.len(); v.retain(|x| *x != NIL); Ok(if v.len() == n { NIL } else { slf }) });
-fn flatten_into(c: &mut Ctx, v: Value, depth: i64, out: Value, stack: &mut Vec<Value>) -> Result<bool, Esc> {
+/// q0: the path, a Ruby Array [self, ..., the Array being flattened] (the recursion check compares identities,
+/// which a move keeps); q1: the result; q2: the element across #to_ary.  A fresh #to_ary result is on the path.
+fn flatten_into(c: &mut Ctx, depth: i64, q: &crate::gc::Park<'_>) -> Result<bool, Esc> {
     let mut changed = false;
-    let n = c.ary_len(v);
+    let lvl = c.ary_len(q.get(0)) - 1;
+    let n = c.ary_len(c.ary_get(q.get(0), lvl));
     for i in 0..n {
-        let x = c.ary_get(v, i);
-        let sub = if depth != 0 { if is_array(x) { Some(x) } else if crate::rt::conv_target(x) && !is_hash(x) && !is_string(x) { check_array(c, x)? } else { None } } else { None };
+        let x = c.ary_get(c.ary_get(q.get(0), lvl), i);
+        q.set(2, x);
+        let sub = if depth != 0 { if is_array(x) { Some(x) } else if crate::rt::conv_target(x) && !is_hash(x) && !is_string(x) { crate::gc::conservative(c, |c| check_array(c, x))? } else { None } } else { None };
         match sub {
             Some(arr) => {
-                if depth < 0 && stack.contains(&arr) { return arg_err(c, "tried to flatten recursive array"); }
-                stack.push(arr);
-                flatten_into(c, arr, depth - 1, out, stack)?;
-                stack.pop();
+                if depth < 0 && c.ary(q.get(0)).contains(&arr) { return arg_err(c, "tried to flatten recursive array"); }
+                c.ary_push(q.get(0), arr);
+                flatten_into(c, depth - 1, q)?;
+                let p = q.get(0);
+                let l = c.ary_len(p);
+                c.ary_mut(p).truncate(l - 1);
                 changed = true;
             }
-            None => c.ary_push(out, x),
+            None => c.ary_push(q.get(1), q.get(2)),
         }
     }
     Ok(changed)
 }
+/// Flatten self (re-read from the path's root after the flattening runs #to_ary).
+fn flatten_run(c: &mut Ctx, slf: Value, depth: i64, bang: bool) -> RV {
+    c.park(3, |c, q| {
+        let path = c.ary_new_from(&[slf]);
+        q.set(0, path);
+        let out = c.ary_new();
+        q.set(1, out);
+        let ch = flatten_into(c, depth, &q)?;
+        if !bang { return Ok(q.get(1)); }
+        let s = c.ary_get(q.get(0), 0);
+        *c.ary_mut(s) = c.ary(q.get(1)).to_vec().into();
+        Ok(if ch { s } else { NIL })
+    })
+}
 cfn!(a_flatten, |c, slf, a, blk| { check_argc(c, a, 0, 1)?;
     let depth = if a.is_empty() || a[0] == NIL { -1 } else { num_to_int32(c, a[0])? };
-    let out = c.ary_new();
-    let mut st = vec![slf];
-    flatten_into(c, slf, depth, out, &mut st)?;
-    Ok(out)
+    flatten_run(c, slf, depth as i64, false)
 });
 cfn!(a_flatten_b, |c, slf, a, blk| { check_argc(c, a, 0, 1)?;
     c.ary_modify(slf)?;
     let depth = if a.is_empty() || a[0] == NIL { -1 } else { num_to_int32(c, a[0])? };
-    let out = c.ary_new();
-    let mut st = vec![slf];
-    let ch = flatten_into(c, slf, depth, out, &mut st)?;
-    *c.ary_mut(slf) = c.ary(out).to_vec().into();
-    Ok(if ch { slf } else { NIL })
+    flatten_run(c, slf, depth as i64, true)
 });
 // Precise: park p0 = self; q0 = the seen Hash, q1 = the result Array, q2 = the element.
 fn uniq_ary(c: &mut Ctx, slf: Value, blk: Blk) -> RV {
@@ -1418,10 +1431,15 @@ cfn!(a_sample, |c, slf, a, blk| {
         }
         return Ok(c.ary_from_vec(out));
     }
-    let mut v = c.ary(slf).to_vec();
-    for i in 0..n { let j = upto(c, len - i)? + i; v.swap(i, j); }
-    v.truncate(n);
-    Ok(c.ary_from_vec(v))
+    // a parked copy, as rb_ary_sample's rb_ary_dup (the Random's #rand may run Ruby code: a Vec copy is no root)
+    let v = c.ary(slf).to_vec();
+    c.park(1, |c, q| {
+        let r = c.ary_from_vec(v);
+        q.set(0, r);
+        for i in 0..n { let j = upto(c, len - i)? + i; c.ary_mut(q.get(0)).swap(i, j); }
+        c.ary_mut(q.get(0)).truncate(n);
+        Ok(q.get(0))
+    })
 });
 /// The `random:` keyword (the Random class when absent); no positional arguments.
 fn random_kw(c: &mut Ctx, a: &[Value]) -> RV { random_kw_n(c, a, 0) }
