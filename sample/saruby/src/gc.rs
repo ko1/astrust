@@ -265,15 +265,16 @@ fn scan_body<V: RootVisitor<Saruby>>(b: &mut Body, v: &mut V) {
 }
 
 // The kinds that die most often own nothing when small; drop_in_place would dispatch through a jump table.
+// Guards that branch to `drop`: a bool merged from the arms was materialized (sete) and tested again.
 #[inline(always)]
-fn owns_nothing(b: &Body) -> bool {
+fn drop_unless_small(b: &Body, drop: impl FnOnce()) {
     match b {
-        Body::Array(a) => !a.is_heap(),
-        Body::String(s) => !s.b.is_heap(),
-        Body::Object(iv) => iv.is_inline(),
-        Body::Env(e, _) => !e.is_heap(),
-        Body::Float(_) | Body::Range(..) | Body::Free(_) => true,
-        _ => false,
+        Body::Array(a) if !a.is_heap() => {}
+        Body::String(s) if !s.b.is_heap() => {}
+        Body::Object(iv) if iv.is_inline() => {}
+        Body::Env(e, _) if !e.is_heap() => {}
+        Body::Float(_) | Body::Range(..) | Body::Free(_) => {}
+        _ => drop(),
     }
 }
 
@@ -356,7 +357,7 @@ unsafe impl GcLang for Saruby {
         // SAFETY: the collector hands us a dead, initialized object exactly once
         unsafe {
             if (*p).flags & (FL_EXIVAR | FL_TRACED | FL_HAS_ID) != 0 { forget(obj); }
-            if !owns_nothing(&(*p).body) { drop_body(p); }
+            drop_unless_small(&(*p).body, || drop_body(p));
             // poison: a stale reference finds a Free body, not a dropped payload
             std::ptr::write(&mut (*p).body, Body::Free(std::ptr::null_mut()));
         }
