@@ -61,10 +61,8 @@ fn dtoa(d0: f64, mode: u8, ndigits: i32) -> (Vec<u8>, i32) {
     }
     let ilim = if mode == 2 { ilim } else { kx + 1 + ndigits };
     if ilim <= 0 && mode == 3 {
-        // at most a single rounding digit
+        // ilim == 0: one rounding digit, decided exactly below; ilim < 0: rounds to zero
         if ilim < 0 { return (vec![], -ndigits); }
-        let half = 0.5 * 10f64.powi(kx + 1);
-        return if d0 > half { (vec![b'1'], kx + 2) } else { (vec![], -ndigits) };
     }
     exact_digits(d0, mode, ndigits)
 }
@@ -206,7 +204,7 @@ fn fmt_hex_float(f: f64, prec: Option<usize>, upper: bool, alt: bool) -> String 
             while mant & (1u64 << 52) == 0 { mant <<= 1; exp -= 1; }
             mant &= (1u64 << 52) - 1; exp += 1;
         }
-        let e = exp - 1023;
+        let mut e = exp - 1023;
         let mut lead = 1u64;
         let mut hex = format!("{:013x}", mant);
         if let Some(p) = prec {
@@ -218,6 +216,7 @@ fn fmt_hex_float(f: f64, prec: Option<usize>, upper: bool, alt: bool) -> String 
                 let half = 1u64 << (shift - 1);
                 if rem > half || (rem == half && q & 1 == 1) { q += 1; }
                 lead = q >> (p * 4);
+                if lead == 2 { lead = 1; e += 1; } // carry out of the leading digit renormalizes
                 hex = if p > 0 { format!("{:0w$x}", q & ((1u64 << (p * 4)) - 1), w = p) } else { String::new() };
             } else { hex.push_str(&"0".repeat(p - 13)); }
         } else { hex = hex.trim_end_matches('0').to_string(); }
@@ -282,6 +281,8 @@ fn int_arg(c: &mut Ctx, v: Value) -> RV {
     if v.is_heap() && respond_to(c, v, intern(b"to_i"), true) {
         let r = funcall(c, v, intern(b"to_i"), &[], std::ptr::null())?;
         if is_integer(r) { return Ok(r); }
+        let k = class_name_for_err(c, v);
+        return type_err(c, format!("can't convert {} to Integer ({}#to_i gives {})", k, k, class_name_for_err(c, r)));
     }
     type_err(c, format!("can't convert {} into Integer", class_name_for_err(c, v)))
 }
@@ -329,7 +330,8 @@ pub fn format_ary(c: &mut Ctx, fmtv: Value, args: &[Value], ary: Value) -> RV {
                 b'1'..=b'9' => {
                     let s0 = i; while i < fmt.len() && fmt[i].is_ascii_digit() { i += 1; }
                     let n: i64 = std::str::from_utf8(&fmt[s0..i]).unwrap().parse().unwrap_or(i64::MAX);
-                    if i < fmt.len() && fmt[i] == b'$' {
+                    if i >= fmt.len() { return arg_err(c, "malformed format string - %*[0-9]"); }
+                    if fmt[i] == b'$' {
                         if n > i32::MAX as i64 { return arg_err(c, "width too big"); }
                         if val.is_some() { return arg_err(c, format!("value given twice - {}$", n)); }
                         val = Some(st.pos_arg(c, n)?); i += 1;
@@ -388,6 +390,7 @@ pub fn format_ary(c: &mut Ctx, fmtv: Value, args: &[Value], ary: Value) -> RV {
                         if p < 0 { flags &= !FPREC; } else { prec = p; }
                     } else {
                         let s0 = i; while i < fmt.len() && fmt[i].is_ascii_digit() { i += 1; }
+                        if i >= fmt.len() { return arg_err(c, "malformed format string - %*[0-9]"); }
                         let n: i64 = if i == s0 { 0 } else { std::str::from_utf8(&fmt[s0..i]).unwrap().parse().unwrap_or(i64::MAX) };
                         if n > i32::MAX as i64 { return arg_err(c, "precision too big"); }
                         prec = n;

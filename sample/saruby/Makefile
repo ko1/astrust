@@ -5,7 +5,7 @@ PROFILE ?= release
 GC ?= marksweep
 SHELL = /bin/bash
 
-all: saruby
+all: $(if $(COVERAGE),cov/saruby,saruby)
 
 $(GEN): node.def saruby_gen.rb ../../lib/astrustgen.rb
 	ruby saruby_gen.rb --input=node.def --output-dir=src
@@ -26,6 +26,12 @@ FORCE:
 saruby: $(GEN) src/prism_ast.rs build.rs tools/prism_serialize.c $(shell find src ../astrogre/src -name '*.rs') ../astrogre/node.def prelude/core.rb $(wildcard prelude/lib/*.rb prelude/lib/*/*.rb prelude/lib/*/*/*.rb prelude/lib/*/*/*/*.rb) $(wildcard ../../runtime/*.rs) $(wildcard ../../runtime/gc/*.rs) target/.gc-$(GC) .features
 	cargo build --$(PROFILE) --features "gc-$(GC) $(FEATURES)"
 	cp target/$(PROFILE)/saruby target/$(PROFILE)/libsaruby.so .
+
+# make COVERAGE=1: source-coverage build (tools/coverage.sh).  Own target dir and output dir, so
+# ./saruby and target/ are never touched.  RUSTFLAGS replaces .cargo/config.toml's, so repeat it.
+cov/saruby: $(GEN) src/prism_ast.rs build.rs tools/prism_serialize.c $(shell find src ../astrogre/src -name '*.rs') ../astrogre/node.def prelude/core.rb $(wildcard prelude/lib/*.rb prelude/lib/*/*.rb prelude/lib/*/*/*.rb prelude/lib/*/*/*/*.rb) $(wildcard ../../runtime/*.rs) $(wildcard ../../runtime/gc/*.rs) .features
+	CARGO_TARGET_DIR=target-cov RUSTFLAGS="-C prefer-dynamic -C target-cpu=native -C instrument-coverage" cargo build --$(PROFILE) --features "gc-$(GC) $(FEATURES)"
+	mkdir -p cov && cp target-cov/$(PROFILE)/saruby target-cov/$(PROFILE)/libsaruby.so cov/
 
 # remade when GC= changes, so the binary is rebuilt with the other backend
 target/.gc-$(GC):

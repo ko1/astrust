@@ -80,8 +80,6 @@ pub fn range_each(c: &mut Ctx, slf: Value, mut f: impl FnMut(&mut Ctx, Value) ->
             let mut cur = c.str_bytes(b).to_vec();
             loop { let s2 = c.str_new(&cur); if !f(c, s2)? { return Ok(()); } cur = succ_bytes(&cur); }
         }
-        let o = c.str_bytes(b).cmp(c.str_bytes(e));
-        if o == std::cmp::Ordering::Greater || (excl && o == std::cmp::Ordering::Equal) { return Ok(()); }
         let (bb, eb) = (c.str_bytes(b).to_vec(), c.str_bytes(e).to_vec());
         if bb.len() == 1 && eb.len() == 1 && bb[0] < 0x80 && eb[0] < 0x80 {
             let (lo, hi) = (bb[0] as i32, if excl { eb[0] as i32 - 1 } else { eb[0] as i32 });
@@ -161,6 +159,21 @@ cfn!(r_reverse_each, |c, slf, a, blk| {
         return Ok(slf);
     }
     if e == NIL { return type_err(c, format!("can't iterate from {}", class_path(c, real_class_of(c, e)))); }
+    if is_integer(e) && (is_integer(b) || b == NIL) {
+        // bignum bounds: count down as range.c does, without building the array
+        use crate::bignum::BigInt;
+        let one = BigInt::from_i64(1);
+        let mut cur = c.to_big(e);
+        if excl { cur = cur.sub(&one); }
+        let lo = if b == NIL { None } else { Some(c.to_big(b)) };
+        loop {
+            if let Some(l) = &lo { if cur.cmp(l) == std::cmp::Ordering::Less { break; } }
+            let v = c.big_to_value(cur.clone());
+            yield1(c, blk, v)?;
+            cur = cur.sub(&one);
+        }
+        return Ok(slf);
+    }
     let arr = r_to_a(c, slf, &[], Blk::NONE)?;
     let n = c.ary_len(arr);
     for i in (0..n).rev() { let v = c.ary_get(arr, i); yield1(c, blk, v)?; }
@@ -430,6 +443,18 @@ cfn!(r_sum, |c, slf, a, blk| {
         let s2 = (lo + hi) * (hi - lo + 1) / 2;
         let n = c.int_from_i128(s2);
         // int_range_sum: rb_int_plus, no call of a redefined Integer#+
+        if is_integer(init) { return crate::builtins::numeric_methods::int_plus(c, init, &[n], Blk::NONE); }
+        return funcall(c, init, s::plus, &[n], std::ptr::null());
+    }
+    if blk.is_null() && is_integer(b) && is_integer(e) {
+        // int_range_sum with a bignum end: (hi - lo + 1) * (hi + lo) / 2
+        use crate::bignum::BigInt;
+        let (lo, mut hi) = (c.to_big(b), c.to_big(e));
+        if x { hi = hi.sub(&BigInt::from_i64(1)); }
+        let init = if a.is_empty() { Value::fix(0) } else { a[0] };
+        if hi.cmp(&lo) == std::cmp::Ordering::Less { return Ok(init); }
+        let s2 = hi.sub(&lo).add(&BigInt::from_i64(1)).mul(&hi.add(&lo)).divmod(&BigInt::from_i64(2)).0;
+        let n = c.big_to_value(s2);
         if is_integer(init) { return crate::builtins::numeric_methods::int_plus(c, init, &[n], Blk::NONE); }
         return funcall(c, init, s::plus, &[n], std::ptr::null());
     }

@@ -501,7 +501,7 @@ fn read_real(c: &mut Ctx, b: &[u8], i: &mut usize) -> Result<Option<Value>, Esc>
     let txt: String = b[st..j].iter().filter(|&&ch| ch != b'_').map(|&ch| ch as char).collect();
     *i = j;
     let v = if flo { c.float_new(txt.parse::<f64>().unwrap_or(0.0)) }
-        else if rat { match parse_rational(c, txt.as_bytes(), true)? { Some(r) => r, None => return Ok(None) } }
+        else if rat { match parse_rational(c, txt.as_bytes(), true, true)? { Some(r) => r, None => return Ok(None) } }
         else { big_to_int(c, &txt) };
     Ok(Some(v))
 }

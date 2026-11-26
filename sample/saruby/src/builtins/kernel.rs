@@ -378,7 +378,7 @@ fn k_printf(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
 }
 
 fn k_sprintf(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {
-    if args.is_empty() { return argc_err(c, 0, 1, -1); }
+    if args.is_empty() { return arg_err(c, "too few arguments"); }
     crate::builtins::sprintf::format(c, args[0], &args[1..])
 }
 
