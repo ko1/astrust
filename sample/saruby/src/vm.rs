@@ -115,28 +115,38 @@ impl BlkArg for *const Block { #[inline(always)] fn ptr(self) -> *const Block { 
 impl BlkArg for Blk<'_> { #[inline(always)] fn ptr(self) -> *const Block { self.0 } }
 impl BlkArg for &Block { #[inline(always)] fn ptr(self) -> *const Block { self } }
 
+/// Method / Cfunc / Proc keep their Value in `Block.data`.
 #[derive(Clone, Copy)]
-pub enum BlockKind { Iseq(*const Iseq), Sym(Sym), Method(Value), Cfunc(CBlockFn, Value), Proc(Value) }
+pub enum BlockKind { Iseq(*const Iseq), Sym(Sym), Method, Cfunc(CBlockFn), Proc }
 
-#[derive(Clone, Copy)]
+/// Value fields are Cells: the collector updates them through the shared pointers frames hold (Frame.blk).
 pub struct Block {
     pub kind: BlockKind,
-    pub self_: Value,
-    pub env: Value,
+    pub data: Cell<Value>,   // Method: the Method object; Cfunc: its data; Proc: the Proc (NIL otherwise)
+    pub self_: Cell<Value>,
+    pub env: Cell<Value>,
     pub me: *const MethodEntry,
     pub outer_blk: *const Block,
     pub cref: *const Cref,
     pub home_id: u64,
     pub tag: u64,
-    pub proc_val: Value,
-    pub defined_class: Value,
+    pub proc_val: Cell<Value>,
+    pub defined_class: Cell<Value>,
+}
+impl Clone for Block {
+    /// A bitwise copy, as when Block was Copy: field by field, LLVM no longer copies it with wide moves (closures +2-4 %).
+    #[inline(always)]
+    fn clone(&self) -> Block {
+        // SAFETY: no drop glue; every field is plain data or a Cell of a Copy Value (what Cell::get reads); single-threaded
+        unsafe { std::ptr::read(self) }
+    }
 }
 
 impl Block {
     pub fn cfunc(c: &mut Ctx, f: CBlockFn, data: Value) -> Block {
         let tag = c.next_serial();
-        Block { kind: BlockKind::Cfunc(f, data), self_: NIL, env: NIL, me: std::ptr::null(), outer_blk: std::ptr::null(),
-                cref: std::ptr::null(), home_id: 0, tag, proc_val: UNDEF, defined_class: NIL }
+        Block { kind: BlockKind::Cfunc(f), data: Cell::new(data), self_: Cell::new(NIL), env: Cell::new(NIL), me: std::ptr::null(), outer_blk: std::ptr::null(),
+                cref: std::ptr::null(), home_id: 0, tag, proc_val: Cell::new(UNDEF), defined_class: Cell::new(NIL) }
     }
     /// A Cfunc block that runs `outer` (the builtin's own block): `f` gets it as its last argument.
     pub fn cfunc_for(c: &mut Ctx, f: CBlockFn, data: Value, outer: impl BlkArg) -> Block {
@@ -2708,8 +2718,8 @@ pub fn invoke_untraced_raw(c: &mut Ctx, me: *const MethodEntry, recv: Value, bas
 // out of line: inlined into invoke_untraced's callers it changed call_slow's register allocation (+2 instructions per call)
 #[inline(never)]
 fn invoke_bmethod(c: &mut Ctx, me: *const MethodEntry, p: Value, recv: Value, base: Stk, argc: u32, blk: *const Block, flags: u32) -> RV {
-    let mut fr_blk = c.proc_data(p).blk;
-    fr_blk.self_ = recv;
+    let fr_blk = c.proc_data(p).blk.clone();
+    fr_blk.self_.set(recv);
     let args = to_vec(&base[2..2 + argc as usize]);
     invoke_block_full(c, &fr_blk, &args, blk, recv, true, me, flags & CF_KW != 0)
 }
@@ -3043,19 +3053,19 @@ pub fn block_to_proc(c: &mut Ctx, blk: impl BlkArg) -> RV { block_to_proc_raw(c,
 pub fn block_to_proc_raw(c: &mut Ctx, blk: *const Block) -> RV {
     if blk.is_null() { return Ok(NIL); }
     let b = unsafe { &*blk };
-    if b.proc_val != UNDEF { return Ok(b.proc_val); }
-    if let BlockKind::Proc(p) = b.kind { return Ok(p); }
+    if b.proc_val.get() != UNDEF { return Ok(b.proc_val.get()); }
+    if let BlockKind::Proc = b.kind { return Ok(b.data.get()); }
     let (outer, outer_p) = if b.outer_blk.is_null() { (std::ptr::null(), NIL) } else { let op = block_to_proc(c, b.outer_blk)?; (proc_block(c, op), op) };
-    let is_lambda = matches!(b.kind, BlockKind::Iseq(is) if unsafe { (*is).kind } == IseqKind::Lambda) || matches!(b.kind, BlockKind::Method(_));
+    let is_lambda = matches!(b.kind, BlockKind::Iseq(is) if unsafe { (*is).kind } == IseqKind::Lambda) || matches!(b.kind, BlockKind::Method);
     // copied from *b into the box, then patched there: a Block patched on the stack first was
     // read back with wide loads straddling the patch (a store-forwarding stall per Proc)
     // a Cfunc block keeps its outer proc in from_method (Enumerable#map's Proc#arity reads it)
     let from_method = if matches!(b.kind, BlockKind::Cfunc(..)) { outer_p } else { NIL };
-    let mut pd = Box::new(ProcData { blk: *b, is_lambda, from_method });
+    let mut pd = Box::new(ProcData { blk: b.clone(), is_lambda, from_method });
     pd.blk.outer_blk = outer;
     let p = c.alloc_with(vm().c_proc.get(), move || Body::Proc(pd));
-    c.proc_data_mut(p).blk.proc_val = p;
-    unsafe { (*(blk as *mut Block)).proc_val = p; }
+    c.proc_data_mut(p).blk.proc_val.set(p);
+    b.proc_val.set(p);
     Ok(p)
 }
 
@@ -3066,7 +3076,7 @@ pub fn proc_block(c: &Ctx, p: Value) -> *const Block { &c.proc_data(p).blk }
 pub fn is_lambda_block(c: &Ctx, b: impl BlkArg) -> bool { is_lambda_block_raw(c, b.ptr()) }
 pub fn is_lambda_block_raw(c: &Ctx, b: *const Block) -> bool {
     let b = unsafe { &*b };
-    if b.proc_val != UNDEF && is_proc(b.proc_val) { return c.proc_data(b.proc_val).is_lambda; }
+    if b.proc_val.get() != UNDEF && is_proc(b.proc_val.get()) { return c.proc_data(b.proc_val.get()).is_lambda; }
     matches!(b.kind, BlockKind::Iseq(is) if unsafe { (*is).kind } == IseqKind::Lambda)
 }
 
@@ -3087,7 +3097,7 @@ pub fn yield_block_raw(c: &mut Ctx, blk: *const Block, args: &[Value]) -> RV {
         c.set_sp(base, 0);
         return r;
     }
-    invoke_block_full(c, b, args, std::ptr::null(), b.self_, false, std::ptr::null(), false)
+    invoke_block_full(c, b, args, std::ptr::null(), b.self_.get(), false, std::ptr::null(), false)
 }
 
 /// The iseq of a non-lambda block with only required params that `argc` args bind to without spreading.
@@ -3098,7 +3108,7 @@ pub fn block_fast(c: &Ctx, b: &Block, argc: usize) -> Option<&'static Iseq> {
         // extra args are dropped and missing ones are nil; one arg for 2+ params may be an Array to spread
         // a `->` block entry is only reached as a lambda proc, which the last test excludes
         if !is.bentry.is_null() && !(argc == 1 && is.params.lead.len() >= 2)
-            && (b.proc_val == UNDEF || !c.proc_data(b.proc_val).is_lambda) { return Some(is); }
+            && (b.proc_val.get() == UNDEF || !c.proc_data(b.proc_val.get()).is_lambda) { return Some(is); }
     }
     None
 }
@@ -3142,9 +3152,9 @@ pub fn yield_with_self_raw(c: &mut Ctx, blk: *const Block, args: &[Value], self_
 /// yield_with_self passing `kw` on (instance_exec / class_exec: the running cfunc's kw_given).
 pub fn yield_with_self_kw(c: &mut Ctx, blk: impl BlkArg, args: &[Value], self_: Value, defined_class: Value, kw: bool) -> RV {
     let b = unsafe { &*blk.ptr() };
-    let mut b2 = *b;
-    b2.self_ = self_;
-    if defined_class != NIL { b2.defined_class = defined_class; }
+    let b2 = b.clone();
+    b2.self_.set(self_);
+    if defined_class != NIL { b2.defined_class.set(defined_class); }
     invoke_block_full(c, &b2, args, std::ptr::null(), self_, false, std::ptr::null(), kw)
 }
 
@@ -3155,7 +3165,7 @@ pub fn call_proc_raw(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block) -
 #[inline(always)]
 pub fn call_proc_kw(c: &mut Ctx, p: Value, args: &[Value], blk: impl BlkArg, kw: bool) -> RV { call_proc_kw_raw(c, p, args, blk.ptr(), kw) }
 pub fn call_proc_kw_raw(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block, kw: bool) -> RV {
-    let (b, p_lambda) = { let pd = c.proc_data(p); (pd.blk, pd.is_lambda) };
+    let (b, p_lambda) = { let pd = c.proc_data(p); (pd.blk.clone(), pd.is_lambda) };
     // a `->` lambda called with its exact arity: its block entry (lambda frame, sizes baked)
     if let BlockKind::Iseq(is) = b.kind {
         let is = unsafe { &*is };
@@ -3169,7 +3179,7 @@ pub fn call_proc_kw_raw(c: &mut Ctx, p: Value, args: &[Value], blk: *const Block
             return r;
         }
     }
-    invoke_block_full(c, &b, args, blk, b.self_, p_lambda, std::ptr::null(), kw)
+    invoke_block_full(c, &b, args, blk, b.self_.get(), p_lambda, std::ptr::null(), kw)
 }
 
 /// Run a block.  `lambda_call`: strict arity / own return target (lambda procs, bmethods).
@@ -3197,7 +3207,8 @@ pub fn invoke_block_full_raw(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *co
             }
             funcall_flags(c, recv, mid, &args[1..], blkarg, fl)
         }
-        BlockKind::Method(m) => {
+        BlockKind::Method => {
+            let m = b.data.get();
             let (recv, me) = { let mo = c.method_obj(m); (mo.recv, mo.me) };
             let base = stage(c, 2 + args.len())?;
             base[0].set(recv); base[1].set(NIL);
@@ -3206,10 +3217,11 @@ pub fn invoke_block_full_raw(c: &mut Ctx, b: &Block, args: &[Value], blkarg: *co
             c.set_sp(base, 0);
             r
         }
-        BlockKind::Cfunc(f, data) => { c.cblk_kw = kw; f(c, data, args, vm_blk(blkarg), vm_blk(b.outer_blk)) }
-        BlockKind::Proc(p) => {
-            let (inner, p_lambda) = { let pd = c.proc_data(p); (pd.blk, pd.is_lambda) };
-            invoke_block_full(c, &inner, args, blkarg, if self_ == b.self_ { inner.self_ } else { self_ }, p_lambda || lambda_call, bme, kw)
+        BlockKind::Cfunc(f) => { c.cblk_kw = kw; f(c, b.data.get(), args, vm_blk(blkarg), vm_blk(b.outer_blk)) }
+        BlockKind::Proc => {
+            let p = b.data.get();
+            let (inner, p_lambda) = { let pd = c.proc_data(p); (pd.blk.clone(), pd.is_lambda) };
+            invoke_block_full(c, &inner, args, blkarg, if self_ == b.self_.get() { inner.self_.get() } else { self_ }, p_lambda || lambda_call, bme, kw)
 
         }
     }
@@ -3230,18 +3242,18 @@ pub fn run_block_iseq(c: &mut Ctx, b: &Block, is: &'static Iseq, base: Stk, argc
     fr.id = if lambda { c.next_serial() } else { b.home_id };
     fr.self_blk = b;
     fr.pos = Pos::info(&is.info.line);
-    fr.defined_class = b.defined_class;
+    fr.defined_class = b.defined_class.get();
     c.frame = &mut fr.h;
     let fast = is.lead_only && is.env_size == 0 && argc as usize == is.params.lead.len() && (argc != 1 || is.params.lead.len() == 1) && !kw;
     let r = if fast {
-        base[1].set(b.env);
+        base[1].set(b.env.get());
         let n = is.nlocals as usize;
         nil_fill(base, 2 + argc as usize, n);
         c.set_sp(base, n);
         run_iseq_body(c, is, base, EV_B_CALL, EV_B_RETURN)
     } else {
         let flags = if kw { CF_KW } else { 0 };
-        match setup_params(c, is, base, argc, blkarg, flags, !lambda, b.env) {
+        match setup_params(c, is, base, argc, blkarg, flags, !lambda, b.env.get()) {
             Ok(()) => run_iseq_body(c, is, base, EV_B_CALL, EV_B_RETURN),
             Err(e) => Err(e),
         }
@@ -3317,7 +3329,11 @@ fn visit_main_ctx<V: RootVisitor<Saruby>>(m: &mut V) {
             if v != f.read() { f.write(v); }   // only a moving collector writes
         }
         let mut f = (*p).frame;
-        while !f.is_null() { visit_me(m, (*f).me); f = (*f).prev; }
+        while !f.is_null() {
+            visit_me(m, (*f).me);
+            for b in [(*f).blk, (*f).self_blk()] { if let Some(b) = b.as_ref() { visit_block(m, b); } }
+            f = (*f).prev;
+        }
     }
 }
 
@@ -3326,9 +3342,14 @@ pub fn visit_ctx<V: RootVisitor<Saruby> + ?Sized>(m: &mut V, c: &mut Ctx) {
     // exact: a slot no frame wrote yet holds nil or a Value alive at the last collection (gc_moving.md 12.2)
     crate::gc::visit_slots(m, c.live());
     m.visit(&mut c.esc_val); m.visit(&mut c.errinfo); m.visit(&mut c.last_match); m.visit(&mut c.esc_tag_v);
-    // running frames' entries: one replaced in its class while it runs is in no class table
+    // running frames' entries (one replaced in its class while it runs is in no class table) and blocks
+    // (a caller's stack Block: gc_moving.md 12.4)
     let mut f = c.cur_frame();
-    while let Some(fr) = f { visit_me(m, fr.me); f = c.prev_frame(fr); }
+    while let Some(fr) = f {
+        visit_me(m, fr.me);
+        for b in [fr.blk, fr.self_blk()] { if let Some(b) = c.block_ref(b) { visit_block(m, b); } }
+        f = c.prev_frame(fr);
+    }
 }
 
 pub fn visit_class<V: EdgeVisitor<Saruby> + ?Sized>(m: &mut V, cd: &mut ClassData) {
@@ -3358,13 +3379,11 @@ pub fn visit_me<V: EdgeVisitor<Saruby> + ?Sized>(m: &mut V, me: *const MethodEnt
     if p != NIL { m.visit(&mut p); me.body.set(p); }
 }
 
-pub fn visit_block<V: EdgeVisitor<Saruby> + ?Sized>(m: &mut V, b: &mut Block) {
-    m.visit(&mut b.self_); m.visit(&mut b.env); m.visit(&mut b.proc_val); m.visit(&mut b.defined_class);
-    match &mut b.kind { BlockKind::Method(v) | BlockKind::Cfunc(_, v) | BlockKind::Proc(v) => m.visit(v), _ => {} }
-    if !b.outer_blk.is_null() {
-        let ob = unsafe { &mut *(b.outer_blk as *mut Block) };
-        if ob.proc_val != UNDEF { m.visit(&mut ob.proc_val); }
-    }
+/// Through a shared reference: the Value fields are Cells (a frame's block is borrowed by its caller meanwhile).
+pub fn visit_block<V: EdgeVisitor<Saruby> + ?Sized>(m: &mut V, b: &Block) {
+    for f in [&b.self_, &b.env, &b.proc_val, &b.defined_class, &b.data] { let mut v = f.get(); m.visit(&mut v); f.set(v); }
+    // SAFETY: a frame's or a Proc's block points at its outer block while it can run (H4)
+    if let Some(ob) = unsafe { b.outer_blk.as_ref() } { let mut v = ob.proc_val.get(); if v != UNDEF { m.visit(&mut v); ob.proc_val.set(v); } }
     if !b.me.is_null() { visit_me(m, b.me); }
 }
 

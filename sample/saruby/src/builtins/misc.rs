@@ -341,7 +341,7 @@ fn os_define_finalizer(c: &mut Ctx, _s: Value, a: &[Value], blk: Blk) -> RV {
     let p = if a.len() > 1 { a[1] } else if !blk.is_null() { block_to_proc(c, blk)? } else { return arg_err(c, "tried to create Proc object without a block"); };
     if !respond_to(c, p, intern(b"call"), true) { let d = inspect_str(c, p)?; return arg_err(c, format!("wrong type argument {} (should be callable)", d)); }
     // the callable keeps the object alive: CRuby warns (it then runs only at exit)
-    let recv = if is_proc(p) { c.proc_data(p).blk.self_ } else if is_method_obj(p) { c.method_obj(p).recv } else { NIL };
+    let recv = if is_proc(p) { c.proc_data(p).blk.self_.get() } else if is_method_obj(p) { c.method_obj(p).recv } else { NIL };
     if recv == o { gvar_warn(c, "finalizer references object to be finalized", false)?; }
     let t = fin_table(c);
     let p = match hash_get_opt(c, t, o)? {

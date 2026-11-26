@@ -496,7 +496,7 @@ fn enum_fiber(c: &mut Ctx, e: Value) -> Value {
     let blk = Block::cfunc(c, enum_body, e);
     let pk = c.vm().c_proc.get();
     let p = c.alloc(pk, Body::Proc(Box::new(ProcData { blk, is_lambda: false, from_method: NIL })));
-    c.proc_data_mut(p).blk.proc_val = p;
+    c.proc_data_mut(p).blk.proc_val.set(p);
     let fk = c.vm().c_fiber.get();
     let f = new_fiber(c, fk, p);
     // a copy of the storage of the fiber that calls next (as Fiber.new)

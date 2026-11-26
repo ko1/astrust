@@ -611,7 +611,7 @@ fn k_block_given(c: &mut Ctx, _s: Value, _args: &[Value], _b: Blk) -> RV {
 /// Kernel#lambda called as a method (send, a block-pass): a literal block becomes a lambda; a Proc must be one.
 fn k_lambda(c: &mut Ctx, _s: Value, _args: &[Value], blk: Blk) -> RV {
     if blk.is_null() { return arg_err(c, "tried to create Proc object without a block"); }
-    let literal = c.block_copy(blk).is_some_and(|b| b.proc_val == UNDEF && matches!(b.kind, BlockKind::Iseq(_)));
+    let literal = c.block_copy(blk).is_some_and(|b| b.proc_val.get() == UNDEF && matches!(b.kind, BlockKind::Iseq(_)));
     let p = block_to_proc(c, blk)?;
     if literal { c.proc_data_mut(p).is_lambda = true; }
     else if !c.proc_data(p).is_lambda { return arg_err(c, "the lambda method requires a literal block"); }

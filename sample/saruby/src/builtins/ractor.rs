@@ -212,10 +212,10 @@ pub fn make_shareable(c: &mut Ctx, v: Value) -> Result<(), Esc> {
 
 /// rb_proc_ractor_make_shareable: self and the outer variables it reads must be shareable.
 fn proc_make_shareable(c: &mut Ctx, p: Value) -> Result<(), Esc> {
-    let b = c.proc_data(p).blk;
+    let b = c.proc_data(p).blk.clone();
     // Method#to_proc, Hash#to_proc, ... (CRuby: block_type is not iseq / symbol)
-    if matches!(b.kind, BlockKind::Method(_) | BlockKind::Cfunc(..) | BlockKind::Proc(_)) { return err(c, c.vm().c_runtime_error.get(), "not supported yet"); }
-    if !shareable(c, b.self_) {
+    if matches!(b.kind, BlockKind::Method | BlockKind::Cfunc(..) | BlockKind::Proc) { return err(c, c.vm().c_runtime_error.get(), "not supported yet"); }
+    if !shareable(c, b.self_.get()) {
         let s = inspect_str(c, p)?;
         return isolation(c, format!("Proc's self is not shareable: {}", s));
     }
@@ -467,7 +467,7 @@ fn r_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let p = block_to_proc(c, b)?;
     let p = isolate(c, p)?;
     let r = alloc_ractor(c, slf, id, name, loc);
-    c.proc_data_mut(p).blk.self_ = r;
+    c.proc_data_mut(p).blk.self_.set(r);
     // the arguments travel as messages do (rb_ractor_send_parameters)
     let mut av = Vec::with_capacity(args.len());
     let keep = c.ary_new_from(&[r]);
@@ -492,7 +492,7 @@ fn r_s_new(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
 /// rb_proc_isolate_bang: the block may not use outer variables or `yield`; a copy runs.
 fn isolate(c: &mut Ctx, p: Value) -> RV {
     let pd = c.proc_data(p);
-    let (blk, is_lambda) = (pd.blk, pd.is_lambda);
+    let (blk, is_lambda) = (pd.blk.clone(), pd.is_lambda);
     if let BlockKind::Iseq(is) = blk.kind {
         let ov: Vec<Sym> = c.iseq_ref(is).map(|i| i.outer_vars.clone()).unwrap_or_default();
         let y = ov.contains(&s::yield_);
@@ -504,7 +504,7 @@ fn isolate(c: &mut Ctx, p: Value) -> RV {
     }
     let k = c.vm().c_proc.get();
     let n = c.alloc_with(k, move || Body::Proc(Box::new(ProcData { blk, is_lambda, from_method: NIL })));
-    c.proc_data_mut(n).blk.proc_val = n;
+    c.proc_data_mut(n).blk.proc_val.set(n);
     obj_set_flags(n, FL_SHAREABLE);
     Ok(n)
 }
@@ -676,11 +676,11 @@ fn shareable_proc(c: &mut Ctx, a: &[Value], b: Blk, lambda: bool) -> RV {
     if let Some(h) = kw_arg(c, a) { if let Some(v) = hash_get_opt(c, h, sym_value("self"))? { slf = v; } }
     if !shareable(c, slf) { let s = inspect_str(c, slf)?; return isolation(c, format!("self should be shareable: {}", s)); }
     let p = block_to_proc(c, b)?;
-    let blk = c.proc_data(p).blk;
+    let blk = c.proc_data(p).blk.clone();
     let k = c.vm().c_proc.get();
     let n = c.alloc_with(k, move || Body::Proc(Box::new(ProcData { blk, is_lambda: lambda, from_method: NIL })));
     let pd = c.proc_data_mut(n);
-    pd.blk.proc_val = n; pd.blk.self_ = slf;
+    pd.blk.proc_val.set(n); pd.blk.self_.set(slf);
     proc_make_shareable(c, n)?;
     obj_set_flags(n, FL_SHAREABLE);
     Ok(n)

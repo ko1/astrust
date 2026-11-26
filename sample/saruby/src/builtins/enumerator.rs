@@ -133,7 +133,7 @@ pub fn enum_each_with(c: &mut Ctx, e: Value, blk: Blk) -> RV {
         }
         let r = c.range_new(b, en_, excl);
         let bp = block_to_proc(c, blk)?;
-        let fwd = Block::cfunc(c, |c, d, args, _b, _o| { let bb = c.proc_data(d).blk; invoke_block_full(c, &bb, args, std::ptr::null(), bb.self_, false, std::ptr::null(), false) }, bp);
+        let fwd = Block::cfunc(c, |c, d, args, _b, _o| { let bb = c.proc_data(d).blk.clone(); invoke_block_full(c, &bb, args, std::ptr::null(), bb.self_.get(), false, std::ptr::null(), false) }, bp);
         if en.mid == s::step && !en.recv.is_heap() || (en.mid == s::step && crate::numeric::is_numeric(en.recv)) {
             return funcall(c, b, s::step, &[en_, st], &fwd);
         }
@@ -493,15 +493,15 @@ fn y_s_new(c: &mut Ctx, slf: Value, _a: &[Value], blk: Blk) -> RV {
 fn y_yield(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { let kw = kw_given(c); y_yield_kw(c, slf, a, kw) }
 fn y_yield_kw(c: &mut Ctx, slf: Value, a: &[Value], kw: bool) -> RV {
     let p = c.data::<RYielder>(slf).expect("a Yielder").blk;
-    let bb = c.proc_data(p).blk;
-    invoke_block_full(c, &bb, a, std::ptr::null(), bb.self_, false, std::ptr::null(), kw)
+    let bb = c.proc_data(p).blk.clone();
+    invoke_block_full(c, &bb, a, std::ptr::null(), bb.self_.get(), false, std::ptr::null(), kw)
 }
 fn y_ltlt(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { y_yield_kw(c, slf, a, false)?; Ok(slf) }
 fn y_to_proc(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let b = Block::cfunc(c, |c, d, args, _b, _o| y_yield_kw(c, d, args, false), slf);
     let k = c.vm().c_proc.get();
     let p = c.alloc(k, Body::Proc(Box::new(ProcData { blk: b, is_lambda: true, from_method: NIL })));
-    c.proc_data_mut(p).blk.proc_val = p;
+    c.proc_data_mut(p).blk.proc_val.set(p);
     Ok(p)
 }
 fn e_take(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {

@@ -261,7 +261,7 @@ pub fn obj_dup(c: &mut Ctx, slf: Value, clone: bool, freeze: Option<bool>) -> RV
         Body::Float(f) => Body::Float(*f),
         Body::Bignum(b) => Body::Bignum(b.clone()),
         Body::Range(a, b, x) => Body::Range(*a, *b, *x),
-        Body::Proc(p) => Body::Proc(Box::new(ProcData { blk: p.blk, is_lambda: p.is_lambda, from_method: p.from_method })),
+        Body::Proc(p) => Body::Proc(Box::new(ProcData { blk: p.blk.clone(), is_lambda: p.is_lambda, from_method: p.from_method })),
         Body::Method(m) => Body::Method(Box::new(MethodObj { recv: m.recv, me: m.me, name: m.name, unbound: m.unbound, owner: m.owner })),
         Body::Class(_) => {
             let n = crate::builtins::module::clone_class(c, slf)?;
@@ -275,7 +275,7 @@ pub fn obj_dup(c: &mut Ctx, slf: Value, clone: bool, freeze: Option<bool>) -> RV
         Body::Free(_) => unreachable!(),
     };
     let n = c.alloc(real_class_of(c, slf), body);
-    if is_proc(n) { c.proc_data_mut(n).blk.proc_val = n; }
+    if is_proc(n) { c.proc_data_mut(n).blk.proc_val.set(n); }
     finish_dup(c, slf, n, clone, freeze)
 }
 

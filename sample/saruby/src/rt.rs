@@ -669,7 +669,7 @@ fn break_target_alive(c: &Ctx, tag: u64) -> bool {
         let b = unsafe { (*g).blk };
         if !b.is_null() {
             let bb = unsafe { &*b };
-            if bb.tag == tag && (bb.proc_val == UNDEF || !is_proc(bb.proc_val) || b != proc_block(c, bb.proc_val)) { return true; }
+            if bb.tag == tag && (bb.proc_val.get() == UNDEF || !is_proc(bb.proc_val.get()) || b != proc_block(c, bb.proc_val.get())) { return true; }
         }
         g = unsafe { (*g).prev };
     }
@@ -912,8 +912,8 @@ pub fn make_block(c: &mut Ctx, is: &'static Iseq, fp: Fp) -> Block {
     let f = unsafe { &*c.frame };
     let tag = c.next_serial();
     Block {
-        kind: BlockKind::Iseq(is), self_: fp[0].get(), env: fp[1].get(), me: f.me, outer_blk: f.blk,
-        cref: f.cref(), home_id: f.id, tag, proc_val: UNDEF, defined_class: f.defined_class(),
+        kind: BlockKind::Iseq(is), data: std::cell::Cell::new(NIL), self_: std::cell::Cell::new(fp[0].get()), env: std::cell::Cell::new(fp[1].get()), me: f.me, outer_blk: f.blk,
+        cref: f.cref(), home_id: f.id, tag, proc_val: std::cell::Cell::new(UNDEF), defined_class: std::cell::Cell::new(f.defined_class()),
     }
 }
 
@@ -973,7 +973,8 @@ fn block_from_value(c: &mut Ctx, blkv: Value, holder: &mut Block) -> Result<*con
     }
     if is_method_obj(blkv) {
         *holder = Block::cfunc(c, |_c, _d, _a, _b, _o| Ok(NIL), NIL);
-        holder.kind = BlockKind::Method(blkv);
+        holder.kind = BlockKind::Method;
+        holder.data.set(blkv);
         return Ok(holder as *const Block);
     }
     // a refined #to_proc in scope
@@ -981,7 +982,7 @@ fn block_from_value(c: &mut Ctx, blkv: Value, holder: &mut Block) -> Result<*con
     if refined.is_some() || respond_to(c, blkv, s::to_proc, true) {
         let p = match refined { Some(r) => r?, None => funcall(c, blkv, s::to_proc, &[], std::ptr::null())? };
         // the block points into p, referenced by nothing else: the caller keeps `holder` across the call
-        if is_proc(p) { holder.proc_val = p; return Ok(proc_block(c, p)); }
+        if is_proc(p) { holder.proc_val.set(p); return Ok(proc_block(c, p)); }
         let cls = class_path(c, real_class_of(c, blkv));
         return type_err(c, format!("can't convert {} to Proc ({}#to_proc gives {})", cls, cls, class_path(c, real_class_of(c, p))));
     }
@@ -1121,14 +1122,14 @@ pub fn srb_yield_staged(c: &mut Ctx, blk: *const Block, base: Stk, k: u32) -> RV
     }
     if let BlockKind::Iseq(is) = b.kind {
         let is = unsafe { &*is };
-        base[0].set(b.self_);
+        base[0].set(b.self_.get());
         let lam = is_lambda_block(c, blk);
         let r = run_block_iseq(c, b, is, base, k, std::ptr::null(), lam, std::ptr::null(), false);
         c.set_sp(base, 0);
         return r;
     }
     let args = to_vec(&base[2..2 + k as usize]);
-    let r = invoke_block_full(c, b, &args, std::ptr::null(), b.self_, false, std::ptr::null(), false);
+    let r = invoke_block_full(c, b, &args, std::ptr::null(), b.self_.get(), false, std::ptr::null(), false);
     c.set_sp(base, 0);
     r
 }
@@ -1141,7 +1142,7 @@ pub fn srb_yield_x(c: &mut Ctx, tmp: Value, kw: Value) -> RV {
     let has_kw = kw != NIL && (c.hash(kw).live > 0 || matches!(unsafe { (*blk).kind }, BlockKind::Iseq(_)) && !is_lambda_block(c, blk));
     if has_kw { args.push(kw); }
     let b = unsafe { &*blk };
-    invoke_block_full(c, b, &args, std::ptr::null(), b.self_, false, std::ptr::null(), has_kw)
+    invoke_block_full(c, b, &args, std::ptr::null(), b.self_.get(), false, std::ptr::null(), has_kw)
 }
 
 /// `lambda` was defined somewhere after boot: a literal `lambda { }` asks which method it calls.

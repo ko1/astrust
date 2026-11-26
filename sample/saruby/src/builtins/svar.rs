@@ -58,7 +58,7 @@ fn builtin_code(x: &Frame) -> bool {
 /// The home id of a block frame; None for a define_method body (its own home).
 fn block_home(c: &Ctx, x: &Frame) -> Option<u64> {
     let b = c.block_copy(x.self_blk());
-    if b.is_some_and(|b| b.me != x.me) { return None; }
+    if b.as_ref().is_some_and(|b| b.me != x.me) { return None; }
     Some(b.map_or(x.id, |b| b.home_id))
 }
 /// The svar home id a Binding of frame `f` keeps (binding.rs).

@@ -1138,7 +1138,7 @@ pub fn EVAL_node_yield<D_args: DispList, D_callee: Disp>(c: &mut Ctx, n: NodePtr
     // baked, one block seen: its entry compiled in, guarded by the iseq (yc.fast is set once its hash matched)
     let b = unsafe { &*blk };
     if let BlockKind::Iseq(is) = b.kind {
-        if is as usize == yc.fast.get() && (b.proc_val == UNDEF || !c.proc_data(b.proc_val).is_lambda) {
+        if is as usize == yc.fast.get() && (b.proc_val.get() == UNDEF || !c.proc_data(b.proc_val.get()).is_lambda) {
 
             // np = 1 + the block's lead parameter count: missing arguments are nil
             if (k as u32) + 1 < np { nil_fill(base, 2 + k, 1 + np as usize); }
@@ -1530,16 +1530,16 @@ pub fn EVAL_node_block_entry<H_line: crate::vm::LineHole, D_body: Disp>(c: &mut 
     // iseq null: Frame::iseq() takes it from self_blk when asked
     let mut fr = FrameFull {
         h: Frame { prev: c.frame, fp: head(fp), me: b.me, blk: b.outer_blk, id, pos: line.pos(), kind: if lambda { FK_LAMBDA } else { FK_BLOCK }, visi: VISI_PUBLIC, lite: false, pad: std::cell::Cell::new(0) },
-        cref: b.cref, iseq: std::ptr::null(), self_blk: b, defined_class: b.defined_class,
+        cref: b.cref, iseq: std::ptr::null(), self_blk: b, defined_class: b.defined_class.get(),
     };
     if !shared {
-        fp[0].set(b.self_);
-        fp[1].set(b.env);
+        fp[0].set(b.self_.get());
+        fp[1].set(b.env.get());
     }
     let mut i = 2 + nparams;
     while i < nlocals { slot(fp, i).set(NIL); i += 1; }
     enter_base(c, fp, nlocals)?;
-    if flags & ME_ENV != 0 { make_env(c, unsafe { &*fr.h.iseq() }, fp, b.env); }
+    if flags & ME_ENV != 0 { make_env(c, unsafe { &*fr.h.iseq() }, fp, b.env.get()); }
     if !shared { c.frame = &mut fr.h; }
     let mut r = <D_body as Disp>::call(c, body, fp);
     // redo runs the body again out of line (a second inline copy would double the block's code)
