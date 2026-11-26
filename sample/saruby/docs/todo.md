@@ -69,6 +69,11 @@ user 2026-11-25「full moving 頑張ってほしい」「クラスなどを non-
   - 状況: F-1 / F-1b / F-2 で 24 本すべてが PRECISE_ALL で通る。ただし F-1 は性能の予算超え（mapreduce AOT +3.8 %、fib plain 約 +0.7 %）で、まだマージできない。
   - 次の手順: fib の費用が `stage_park` から来ているかを切り分ける。b108507（wip）はビルドしていない。
   - inventory: master の t/hand は 2119 / 2240 本が落ちる。最初の 456 本の backtrace から 67 か所を特定した。
+- [ ] 番地キーの表: 2026-11-27 checkpoint（branch moving-gc-s5-c1 61b3a8b → c2 79444f3 → c3 c99655a、master 0eed29e の上に積んである。trial README「Session 5, part 4」）。
+  - C1（再帰検査を GC が訪れる Value に、identity hash / Kernel#hash を object id から）: 関門は全部済み。マージ候補
+  - C2（`src/addrtab.rs`。Marshal.dump の表、Ractor の seen）: C3 の AOT が済めばマージ候補。AOT は 2400 s で時間切れになり、reuse_test / aot_fork_test は未実行
+  - C3（Thread / Mutex / Queue / IO / Ractor の待ちキーと Method#hash を object id に）: AOT と gc_check + stress の掃引が未実行
+  - 次: C3 の AOT を長めの時間制限で回す、Ractor の deep copy / move の表を作り直す、pack `p` / `P`（番地を書く）を直す、copy backend に `GcLang::moved`（gen_ivars / object_ids / objspace の表を付け替える）の仕様を渡す
 - [ ] CodeQL（Rust）の rooting 検査（user 依頼 2026-11-26「そうだね、試してもらえますか」）。2026-11-27 checkpoint: branch `worktree-agent-a9ac85aa025addbf9`（e714e56、wip）、~/ruby/src/trials/2026-11-26-saruby-codeql-rust/（再開の手順は README の末尾）、ideas measuring/saruby-codeql-rust-rooting.md。
   - DB は約 1m44s・105MB で作れる。呼び出しの 68 % が解決される。std のマクロ（`format!`、`vec!` など）は展開されないので、その引数の中の GC 呼び出しは見えない。
   - Vec の検査: 修正前の木では、手で直した 40 か所のうち 15 か所を正確な位置で拾う。master では 19 行が出て、うち 11 が本物。
