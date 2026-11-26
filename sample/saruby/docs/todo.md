@@ -232,8 +232,8 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 
 `make COVERAGE=1` + `tools/coverage.sh`。baseline は README。穴を埋めるテストは rubyharness の `t/cov/*_1125c.rb`（.out は CRuby 4.0.10）。
 
-- [ ] t/hand が 0% のもの: json / json_generator / json_parser / json_fpconv / yaml_emitter / zlib_deflate / zlib_inflate / zlib_check / crypt / etc / syslog / digest / io_buffer（`require` 経由のテストが t/hand に無い。t/cov に require 系を足す）
-- [ ] 低いもの: sprintf（float 以外: %c %s %p %b/%o/%x の負数・幅・`*`）、socket、stringio、strscan、file、io、process、thread、objspace、io_console
+- [ ] t/hand で行カバレッジが低い（%、ベースライン）: json.rs 0（gem の Ruby が見つかれば使われない fallback）、inline_iter.rs 0、aot.rs 35、inline_builtin.rs 55、opt.rs 78、json_generator 74、blop 78、zlib_deflate 80、json_parser 82、zlib_inflate 83、strscan 84（t/cov で追加）、io_console 84、encoding 85、pty 85。全ファイルの表は trials README
+- [ ] 死んだコード（削除は未）: `string_methods.rs` の s_to_r / s_to_c / scan_rational / scan_decimal / natural（rational.rs・complex.rs が後から登録し直すので到達しない、約 110 行）
 - [x] 1 回目: math / sprintf float・整数・文字列 / Rational 文字列 parse・round / gsub 置換 / lines / pack / Range / Struct / Hash / 数値 round・coerce（`t/cov/*_1125c.rb` 11 本）。見つけたバグ 18 件は修正済み（README）
 - [ ] CRuby 4.0.10 の癖として再現させた: `Rational("1e+")` は 1（指数部が符号まで消費され数字が無くても通る）。master でも同じ。仕様かバグかは未確認
 
