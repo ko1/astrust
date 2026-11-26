@@ -1049,7 +1049,7 @@ pub fn srb_super(c: &mut Ctx, base: Stk, tmp: Value, kw: Value, blkv: Value, ci:
     let slf = fp[0].get();
     let klass = class_of(slf);
     // a define_method body searches from its own owner, not the class its block was made under
-    let owner = if f.defined_class().is_heap() && !matches!(me.kind, MKind::Bmethod(_)) { f.defined_class() } else { me.orig_owner };
+    let owner = if f.defined_class().is_heap() && !matches!(me.kind, MKind::Bmethod) { f.defined_class() } else { me.orig_owner };
     let sm = super_method(c, klass, owner, me.name);
     let fblk = f.blk;
     let n = c.ary(tmp).len();
@@ -1270,8 +1270,8 @@ fn def_class(c: &mut Ctx) -> Result<Value, Esc> {
 /// block_given? asks about the defining scope's block, as yield does.
 pub fn frame_block_given(c: &Ctx, f: &Frame) -> bool {
     // the body and the blocks in it run with the define_method entry as their me
-    match c.me_ref(f.me).map(|m| m.kind) {
-        Some(MKind::Bmethod(p)) => !c.proc_data(p).blk.outer_blk.is_null(),
+    match c.me_ref(f.me).and_then(|m| m.bmethod()) {
+        Some(p) => !c.proc_data(p).blk.outer_blk.is_null(),
         _ => !f.blk.is_null(),
     }
 }
@@ -1542,7 +1542,7 @@ pub fn srb_special<D: Disp>(c: &mut Ctx, _n: NodePtr, fp: Fp, kind: u32, arg: No
             Ok(Value::bool(c.ary(a).iter().any(|x| x.truthy())))
         }
         SP_ZSUPER_NO_METHOD => {
-            if c.me_ref(c.frame().me).is_some_and(|m| matches!(m.kind, MKind::Bmethod(_))) {
+            if c.me_ref(c.frame().me).is_some_and(|m| matches!(m.kind, MKind::Bmethod)) {
                 return err(c, vm().c_runtime_error.get(), "implicit argument passing of super from method defined by define_method() is not supported. Specify all arguments explicitly.");
             }
             err(c, vm().c_no_method_error.get(), "super called outside of method")

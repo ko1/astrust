@@ -89,9 +89,9 @@ fn iseq_min_max(is: &Iseq) -> (i64, Option<i64>) {
 fn proc_min_max(c: &Ctx, p: Value) -> (i64, Option<i64>) {
     let is = match c.proc_data(p).blk.kind {
         BlockKind::Iseq(is) => Some(is),
-        BlockKind::Method(m) => match c.me_ref(c.method_obj(m).me).map(|e| e.kind) {
-            Some(MKind::Iseq(is)) => Some(is),
-            Some(MKind::Bmethod(q)) => return proc_min_max(c, q),
+        BlockKind::Method(m) => match c.me_ref(c.method_obj(m).me).map(|e| (e.kind, e.body.get())) {
+            Some((MKind::Iseq(is), _)) => Some(is),
+            Some((MKind::Bmethod, q)) => return proc_min_max(c, q),
             _ => None,
         },
         _ => None,
@@ -108,7 +108,7 @@ pub fn method_arity(c: &Ctx, me: *const MethodEntry) -> i64 {
         MKind::Cfunc(_, a) => a as i64,
         MKind::AttrReader(_) => 0,
         MKind::AttrWriter(_) => 1,
-        MKind::Bmethod(p) => match c.proc_data(p).blk.kind { BlockKind::Iseq(is) => c.iseq_ref(is).map_or(-1, |is| iseq_arity(is, true)), _ => proc_arity(c, p) },
+        MKind::Bmethod => { let p = me.body.get(); match c.proc_data(p).blk.kind { BlockKind::Iseq(is) => c.iseq_ref(is).map_or(-1, |is| iseq_arity(is, true)), _ => proc_arity(c, p) } }
         _ => -1,
     }
 }
@@ -373,7 +373,7 @@ enum Sig { Iseq(*const Iseq), Arity(i32), Other }
 fn me_sig(c: &Ctx, me: *const MethodEntry) -> Sig {
     match c.me_ref(me).map(|m| m.kind) {
         Some(MKind::Iseq(is)) => Sig::Iseq(is),
-        Some(MKind::Bmethod(p)) => match c.proc_data(p).blk.kind { BlockKind::Iseq(is) => Sig::Iseq(is), _ => Sig::Arity(-1) },
+        Some(MKind::Bmethod) => match c.proc_data(c.me_ref(me).map_or(NIL, |m| m.body.get())).blk.kind { BlockKind::Iseq(is) => Sig::Iseq(is), _ => Sig::Arity(-1) },
         Some(MKind::Cfunc(_, a)) => Sig::Arity(a),
         Some(MKind::AttrReader(_)) => Sig::Arity(0),
         Some(MKind::AttrWriter(_)) => Sig::Arity(1),
@@ -382,7 +382,7 @@ fn me_sig(c: &Ctx, me: *const MethodEntry) -> Sig {
 }
 pub fn method_parameters(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let me = c.method_obj(slf).me;
-    let bmethod_noiseq = matches!(c.me_ref(me).map(|m| m.kind), Some(MKind::Bmethod(_)));
+    let bmethod_noiseq = matches!(c.me_ref(me).map(|m| m.kind), Some(MKind::Bmethod));
     match me_sig(c, me) {
         Sig::Iseq(is) => Ok(params_list(c, is, true)),
         Sig::Arity(_) if bmethod_noiseq => Ok(c.ary_new()),
@@ -398,7 +398,7 @@ fn meth_source_location(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
     let me = c.method_obj(slf).me;
     match c.me_ref(me).map(|m| m.kind) {
         Some(MKind::Iseq(is)) => iseq_location(c, is),
-        Some(MKind::Bmethod(p)) => proc_source_location(c, p, a, b),
+        Some(MKind::Bmethod) => { let p = c.me_ref(me).map_or(NIL, |m| m.body.get()); proc_source_location(c, p, a, b) }
         // natively-defined Kernel methods that CRuby 4.0 writes in kernel.rb
         Some(MKind::Cfunc(..)) if me_owner(c, c.method_obj(slf).me) == c.vm().m_kernel.get() => {
             let line = match sym_str(c.method_obj(slf).name).as_str() { "tap" => 89, "then" | "yield_self" => 121, _ => return Ok(NIL) };
@@ -473,7 +473,7 @@ fn def_key(c: &Ctx, me: *const MethodEntry) -> u64 {
         // a respond_to_missing? method is its name
         Some(MKind::Cfunc(f, _)) if f as *const () as usize == mm_forward as *const () as usize => c.me_ref(me).map_or(0, |m| (m.name.0 as u64) << 3 | 4),
         Some(MKind::Cfunc(f, _)) => f as usize as u64,
-        Some(MKind::Bmethod(p)) => p.raw(),
+        Some(MKind::Bmethod) => c.me_ref(me).map_or(0, |m| m.body.get().raw()),
         Some(MKind::AttrReader(s)) => (s.0 as u64) << 3 | 1,
         Some(MKind::AttrWriter(s)) => (s.0 as u64) << 3 | 2,
         _ => me as u64,
