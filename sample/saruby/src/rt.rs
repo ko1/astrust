@@ -266,7 +266,7 @@ pub fn srb_dstr_append(c: &mut Ctx, acc: Value, v: Value) -> Result<(), Esc> {
     if is_string(v) {
         let (a, others) = c.str_mut_and(acc);
         let n = match others.rstring(v) {
-            Some(b) if a.enc == b.enc => { a.b.extend_from_slice(&b.b); b.b.len() }
+            Some(b) if a.enc() == b.enc() => { a.b.extend_from_slice(&b.b); b.b.len() }
             _ => return dstr_append_slow(c, acc, v),
         };
         c.malloc_increase(n);
@@ -275,7 +275,7 @@ pub fn srb_dstr_append(c: &mut Ctx, acc: Value, v: Value) -> Result<(), Esc> {
     if v.is_fixnum() && !redef(R_IMM_TO_S) {
         // an empty acc would take the Integer string's US-ASCII encoding: left to the slow path
         let a = c.rstring_mut(acc);
-        if !a.b.is_empty() && a.enc <= ENC_ASCII {
+        if !a.b.is_empty() && a.enc() <= ENC_ASCII {
             let mut buf = [0u8; 20];
             let i = v.as_fix();
             let mut u = i.unsigned_abs();
@@ -303,7 +303,7 @@ pub fn srb_dstr_lead(c: &mut Ctx, acc: Value, v: Value) -> Result<(), Esc> {
 fn dstr_append_slow(c: &mut Ctx, acc: Value, s: Value) -> Result<(), Esc> {
     str_append_str(c, acc, s)?;
     let e = c.str_enc(s);
-    if e != ENC_ASCII && c.str_enc(acc) == ENC_ASCII { c.rstring_mut(acc).enc = e; }
+    if e != ENC_ASCII && c.str_enc(acc) == ENC_ASCII { c.rstring_mut(acc).set_enc(e); }
     Ok(())
 }
 

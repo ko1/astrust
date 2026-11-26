@@ -270,7 +270,7 @@ fn puts_one(c: &mut Ctx, v: Value, out: &mut Vec<u8>) -> Result<(), Esc> {
     if is_string(v) {
         let r = c.rstring(v);
         out.extend_from_slice(&r.b);
-        if !ends_with_newline(&r.b, r.enc) { out.push(b'\n'); }
+        if !ends_with_newline(&r.b, r.enc()) { out.push(b'\n'); }
         return Ok(());
     }
     if is_array(v) {

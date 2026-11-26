@@ -1,125 +1,141 @@
-// String byte buffer with the Vec<u8> operations String needs; up to 23 bytes live
-// inside the object slot (no malloc), longer ones in a Vec-compatible heap block.
-//
-// Three words, little-endian:  heap   = [ptr, len, cap | HEAP]
-//                              inline = 23 data bytes, then the length byte (< 0x80)
-use std::mem::ManuallyDrop;
+// String byte buffer with the Vec<u8> operations String needs, and one spare byte (`aux`: the
+// String's encoding) kept by every operation.  Up to INLINE bytes live in the object slot (no
+// malloc), longer ones in a Vec.  repr(u8): a tag byte, then `aux` at offset 1 in both variants (aux() is
+// one load, no match); 4 words with the encoding inside, so Body stays 40 bytes.
+#![forbid(unsafe_code)]
 use std::ops::{Bound, Deref, DerefMut, RangeBounds};
 
-#[cfg(not(target_endian = "little"))]
-compile_error!("SBuf keeps its tag in the last byte of a little-endian word");
+pub const INLINE: usize = 29;
 
-pub const INLINE: usize = 23;
-const HEAP: usize = 1 << 63;
-
-#[repr(C)]
-pub struct SBuf { w: [usize; 3] }
-
-// one-byte strings ("x", " ", "\n") are common enough to skip the memcpy call
-#[inline(always)]
-unsafe fn copy(src: &[u8], dst: *mut u8) {
-    if src.len() == 1 { *dst = *src.as_ptr(); } else { std::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len()); }
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Len { L0, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23, L24, L25, L26, L27, L28, L29 }
+use Len::*;
+const LENS: [Len; INLINE + 1] = [L0, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23, L24, L25, L26, L27, L28, L29];
+impl Len {
+    // a table load: a match compiles to a jump table
+    #[inline(always)]
+    fn of(n: usize) -> Len { LENS[n] }
 }
+const _: () = assert!(Len::L29 as usize == INLINE);
+
+#[repr(u8)]
+// Heap = 0: `!is_heap()` is then `tag != 0`, which keeps the GC sweep's other arms a plain cmp + branch
+pub enum SBuf { Heap { aux: u8, v: Vec<u8> }, Inline { aux: u8, len: Len, b: [u8; INLINE] } }
+
+const _: () = assert!(std::mem::size_of::<SBuf>() == 32);
 
 impl SBuf {
     #[inline(always)]
-    pub const fn new() -> SBuf { SBuf { w: [0; 3] } }
+    pub const fn new() -> SBuf { SBuf::Inline { len: Len::L0, aux: 0, b: [0; INLINE] } }
     #[inline(always)]
-    pub fn is_heap(&self) -> bool { self.w[2] & HEAP != 0 }
+    pub fn is_heap(&self) -> bool { matches!(self, SBuf::Heap { .. }) }
     #[inline(always)]
-    fn set_inline_len(&mut self, n: usize) { self.w[2] = (self.w[2] & !(0xff << 56)) | (n << 56); }
+    pub fn aux(&self) -> u8 { match self { SBuf::Inline { aux, .. } | SBuf::Heap { aux, .. } => *aux } }
     #[inline(always)]
-    fn inline_ptr(&mut self) -> *mut u8 { self.w.as_mut_ptr() as *mut u8 }
+    pub fn set_aux(&mut self, x: u8) { match self { SBuf::Inline { aux, .. } | SBuf::Heap { aux, .. } => *aux = x } }
+    /// Replace the bytes, keep `aux`.
+    #[inline]
+    pub fn set_bytes(&mut self, mut b: SBuf) { b.set_aux(self.aux()); *self = b; }
 
-    #[inline]
-    pub fn from_slice(s: &[u8]) -> SBuf {
-        if s.len() <= INLINE {
-            let mut b = SBuf::new();
-            unsafe { copy(s, b.inline_ptr()); }
-            b.set_inline_len(s.len());
-            b
-        } else { SBuf::adopt(s.to_vec()) }
-    }
-    /// Takes over the Vec's block: copying a short one inline would cost a memcpy and a free now.
-    #[inline]
-    pub fn from_vec(v: Vec<u8>) -> SBuf {
-        if v.capacity() == 0 { SBuf::new() } else { SBuf::adopt(v) }
-    }
-    #[inline]
-    pub fn with_capacity(n: usize) -> SBuf {
-        if n <= INLINE { SBuf::new() } else { SBuf::adopt(Vec::with_capacity(n)) }
-    }
-    // take over a Vec's block
-    #[inline]
-    fn adopt(v: Vec<u8>) -> SBuf {
-        let mut v = ManuallyDrop::new(v);
-        SBuf { w: [v.as_mut_ptr() as usize, v.len(), v.capacity() | HEAP] }
-    }
-    // run f on the heap block as a Vec
-    #[inline]
-    fn with_vec<R>(&mut self, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
-        debug_assert!(self.is_heap());
-        let mut v = ManuallyDrop::new(unsafe { Vec::from_raw_parts(self.w[0] as *mut u8, self.w[1], self.w[2] & !HEAP) });
-        let r = f(&mut v);
-        self.w = [v.as_mut_ptr() as usize, v.len(), v.capacity() | HEAP];
+    // built in place: a separate [u8; 29] would be copied into the enum piecewise (unaligned reloads)
+    #[inline(always)]
+    pub fn from_slice(s: &[u8]) -> SBuf { if s.len() <= INLINE { SBuf::inline_from(s) } else { SBuf::heap_from(s) } }
+    /// `s` (at most INLINE bytes) as an Inline buffer.
+    #[inline(always)]
+    pub fn inline_from(s: &[u8]) -> SBuf {
+        let mut r = SBuf::Inline { len: Len::of(s.len()), aux: 0, b: [0; INLINE] };
+        if let SBuf::Inline { b, .. } = &mut r { if s.len() == 1 { b[0] = s[0]; } else { b[..s.len()].copy_from_slice(s); } }
         r
     }
-    // inline -> heap with room for `cap` bytes
+    // out of line (not cold: long Strings dup often), so clone stays small enough to inline
+    #[inline(never)]
+    fn heap_clone(aux: u8, v: &[u8]) -> SBuf { SBuf::Heap { aux, v: v.to_vec() } }
+    /// `s` (longer than INLINE) on the heap.
+    #[inline]
+    pub fn heap_copy(s: &[u8]) -> SBuf { SBuf::Heap { aux: 0, v: s.to_vec() } }
+    // out of line, so the inline path stays small enough to inline into the allocation closure
     #[cold]
-    fn spill(&mut self, cap: usize) {
-        let mut v = Vec::with_capacity(cap.max(64));
-        v.extend_from_slice(self);
-        *self = SBuf::adopt(v);
+    #[inline(never)]
+    fn heap_from(s: &[u8]) -> SBuf { SBuf::Heap { aux: 0, v: s.to_vec() } }
+    /// Copy `s` (at most INLINE bytes) into an empty inline buffer, in place.
+    #[inline(always)]
+    pub fn fill_inline(&mut self, s: &[u8]) {
+        if let SBuf::Inline { len, b, .. } = self {
+            if s.len() == 1 { b[0] = s[0]; } else { b[..s.len()].copy_from_slice(s); }
+            *len = Len::of(s.len());
+        }
     }
-
+    /// Takes over the Vec's block: copying a short one inline would cost a memcpy and a free now.
+    // Always Heap (an empty Vec allocates nothing): an Inline arm made both arms copy the enum's padding bytes.
     #[inline]
-    pub fn capacity(&self) -> usize { if self.is_heap() { self.w[2] & !HEAP } else { INLINE } }
-
+    pub fn from_vec(v: Vec<u8>) -> SBuf { SBuf::Heap { aux: 0, v } }
     #[inline]
-    pub fn extend_from_slice(&mut self, s: &[u8]) {
-        if !self.is_heap() {
-            let n = self.w[2] >> 56;
-            let m = n + s.len();
-            if m <= INLINE {
-                unsafe { copy(s, self.inline_ptr().add(n)); }
-                self.set_inline_len(m);
-                return;
-            }
-            self.spill(m);
-        }
-        let (len, cap) = (self.w[1], self.w[2] & !HEAP);
-        if len + s.len() <= cap {
-            unsafe { copy(s, (self.w[0] as *mut u8).add(len)); }
-            self.w[1] = len + s.len();
-            return;
-        }
-        self.grow(s);
+    pub fn with_capacity(n: usize) -> SBuf {
+        if n <= INLINE { SBuf::new() } else { SBuf::Heap { aux: 0, v: Vec::with_capacity(n) } }
+    }
+    #[inline]
+    fn vec(&mut self, cap: usize) -> &mut Vec<u8> {
+        if let SBuf::Inline { .. } = self { self.spill(cap); }
+        match self { SBuf::Heap { v, .. } => v, SBuf::Inline { .. } => unreachable!() }
     }
     #[cold]
     #[inline(never)]
-    fn grow(&mut self, s: &[u8]) { self.with_vec(|v| v.extend_from_slice(s)); }
+    fn spill(&mut self, cap: usize) {
+        let mut v = Vec::with_capacity(cap.max(64));
+        v.extend_from_slice(self);
+        *self = SBuf::Heap { aux: self.aux(), v };
+    }
+
+    #[inline]
+    pub fn capacity(&self) -> usize { match self { SBuf::Inline { .. } => INLINE, SBuf::Heap { v, .. } => v.capacity() } }
+
+    #[inline(always)]
+    pub fn extend_from_slice(&mut self, s: &[u8]) {
+        match self {
+            SBuf::Inline { len, b, .. } => {
+                let k = *len as usize;
+                let m = k + s.len();
+                if m <= INLINE {
+                    // split_at_mut: both bounds checks fold against k <= INLINE and m <= INLINE
+                    let t = b.split_at_mut(k).1;
+                    if s.len() == 1 { t[0] = s[0]; } else { t[..s.len()].copy_from_slice(s); }
+                    *len = Len::of(m);
+                    return;
+                }
+                self.spill_extend(s);
+            }
+            // one byte without the memcpy call; Vec's own capacity check, its growth is out of line
+            SBuf::Heap { v, .. } => if s.len() == 1 { v.push(s[0]); } else { v.extend_from_slice(s); },
+        }
+    }
+    #[cold]
+    #[inline(never)]
+    fn spill_extend(&mut self, s: &[u8]) {
+        let mut v = Vec::with_capacity((self.len() + s.len()).max(64));
+        v.extend_from_slice(self);
+        v.extend_from_slice(s);
+        *self = SBuf::Heap { aux: self.aux(), v };
+    }
     #[inline]
     pub fn push(&mut self, b: u8) { self.extend_from_slice(&[b]); }
     pub fn extend<I: IntoIterator<Item = u8>>(&mut self, it: I) { for b in it { self.push(b); } }
     #[inline]
     pub fn clear(&mut self) { self.truncate(0); }
     #[inline]
-    pub fn truncate(&mut self, n: usize) {
-        if n >= self.len() { return; }
-        if self.is_heap() { self.w[1] = n; } else { self.set_inline_len(n); }
-    }
-    pub fn resize(&mut self, n: usize, val: u8) {
-        let len = self.len();
-        if n <= len { self.truncate(n); return; }
-        if !self.is_heap() {
-            if n <= INLINE {
-                unsafe { std::ptr::write_bytes(self.inline_ptr().add(len), val, n - len); }
-                self.set_inline_len(n);
-                return;
-            }
-            self.spill(n);
+    pub fn truncate(&mut self, k: usize) {
+        match self {
+            SBuf::Inline { len, .. } => if k < *len as usize { *len = Len::of(k); },
+            SBuf::Heap { v, .. } => v.truncate(k),
         }
-        self.with_vec(|v| v.resize(n, val));
+    }
+    pub fn resize(&mut self, k: usize, val: u8) {
+        let n = self.len();
+        if k <= n { self.truncate(k); return; }
+        if let SBuf::Inline { len, b, .. } = self {
+            if k <= INLINE { b[n..k].fill(val); *len = Len::of(k); return; }
+        }
+        self.vec(k).resize(k, val);
     }
     /// Remove the first n bytes (Vec::drain(..n)).
     pub fn remove_front(&mut self, n: usize) {
@@ -134,44 +150,34 @@ impl SBuf {
         let hi = match range.end_bound() { Bound::Included(&x) => x + 1, Bound::Excluded(&x) => x, Bound::Unbounded => self.len() };
         let mut v = self.to_vec();
         v.splice(lo..hi, with);
-        *self = SBuf::from_vec(v);
+        self.set_bytes(SBuf::from_vec(v));
     }
     pub fn into_vec(self) -> Vec<u8> {
-        if self.is_heap() {
-            let me = ManuallyDrop::new(self);
-            unsafe { Vec::from_raw_parts(me.w[0] as *mut u8, me.w[1], me.w[2] & !HEAP) }
-        } else { self.to_vec() }
+        match self { SBuf::Heap { v, .. } => v, SBuf::Inline { .. } => self.to_vec() }
     }
 }
+
 
 impl Deref for SBuf {
     type Target = [u8];
     #[inline(always)]
-    fn deref(&self) -> &[u8] {
-        unsafe {
-            if self.is_heap() { std::slice::from_raw_parts(self.w[0] as *const u8, self.w[1]) }
-            else { std::slice::from_raw_parts(self.w.as_ptr() as *const u8, self.w[2] >> 56) }
-        }
-    }
+    fn deref(&self) -> &[u8] { match self { SBuf::Inline { len, b, .. } => &b[..*len as usize], SBuf::Heap { v, .. } => v } }
 }
 impl DerefMut for SBuf {
     #[inline(always)]
-    fn deref_mut(&mut self) -> &mut [u8] {
-        unsafe {
-            if self.is_heap() { std::slice::from_raw_parts_mut(self.w[0] as *mut u8, self.w[1]) }
-            else { std::slice::from_raw_parts_mut(self.w.as_mut_ptr() as *mut u8, self.w[2] >> 56) }
-        }
-    }
-}
-impl Drop for SBuf {
-    #[inline]
-    fn drop(&mut self) {
-        if self.is_heap() { unsafe { drop(Vec::from_raw_parts(self.w[0] as *mut u8, self.w[1], self.w[2] & !HEAP)); } }
-    }
+    fn deref_mut(&mut self) -> &mut [u8] { match self { SBuf::Inline { len, b, .. } => &mut b[..*len as usize], SBuf::Heap { v, .. } => v } }
 }
 impl Clone for SBuf {
+    /// The bytes and `aux`.
     #[inline]
-    fn clone(&self) -> SBuf { SBuf::from_slice(self) }
+    fn clone(&self) -> SBuf {
+        match self {
+            // a fixed-size copy: from_slice's copy of `len` bytes into the array is moved piecewise
+            SBuf::Inline { aux, len, b } => SBuf::Inline { aux: *aux, len: *len, b: *b },
+            SBuf::Heap { aux, v } if v.len() > INLINE => SBuf::heap_clone(*aux, v),
+            SBuf::Heap { aux, v } => { let mut b = SBuf::inline_from(v); b.set_aux(*aux); b }
+        }
+    }
 }
 impl Default for SBuf { fn default() -> SBuf { SBuf::new() } }
 impl From<Vec<u8>> for SBuf { #[inline] fn from(v: Vec<u8>) -> SBuf { SBuf::from_vec(v) } }

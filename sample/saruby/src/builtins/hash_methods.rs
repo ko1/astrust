@@ -306,11 +306,11 @@ pub fn hash_inspect(c: &mut Ctx, slf: Value) -> RV {
             c.str_new_enc(&b, e)
         } else {
             let ks = inspect_value(c, k)?;
-            if first { let e = c.str_enc(ks); c.rstring_mut(out).enc = e; }
+            if first { let e = c.str_enc(ks); c.rstring_mut(out).set_enc(e); }
             crate::string::str_append_str(c, out, ks)?;
             c.str_new_enc(b" => ", ENC_ASCII)
         };
-        if first && k.is_sym() { let e = c.str_enc(ks); c.rstring_mut(out).enc = e; }
+        if first && k.is_sym() { let e = c.str_enc(ks); c.rstring_mut(out).set_enc(e); }
         first = false;
         crate::string::str_append_str(c, out, ks)?;
         let vs = inspect_value(c, v)?;

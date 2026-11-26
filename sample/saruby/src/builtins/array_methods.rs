@@ -595,7 +595,7 @@ fn check_string_type(c: &mut Ctx, x: Value) -> Result<Option<Value>, Esc> {
 /// ary_join_1_str: append, the first String also gives its encoding.
 fn join_str(c: &mut Ctx, out: Value, x: Value, first: &mut bool) -> Result<(), Esc> {
     crate::string::str_append_str(c, out, x)?;
-    if *first { let e = c.str_enc(x); c.rstring_mut(out).enc = e; *first = false; }
+    if *first { let e = c.str_enc(x); c.rstring_mut(out).set_enc(e); *first = false; }
     Ok(())
 }
 fn join_ary(c: &mut Ctx, obj: Value, ary: Value, sep: Value, out: Value, val: Value, first: &mut bool) -> Result<(), Esc> {
@@ -633,7 +633,7 @@ pub fn ary_join_value(c: &mut Ctx, ary: Value, sep: Value) -> RV {
     }
     let max = i.min(c.ary_len(ary));
     // ary_join_0
-    if max > 0 { let e = c.str_enc(c.ary_get(ary, 0)); c.rstring_mut(out).enc = e; }
+    if max > 0 { let e = c.str_enc(c.ary_get(ary, 0)); c.rstring_mut(out).set_enc(e); }
     let mut j = 0;
     while j < max {
         let x = c.ary_get(ary, j);
@@ -678,7 +678,7 @@ pub fn ary_inspect(c: &mut Ctx, slf: Value) -> RV {
         while i < c.ary_len(slf) {
             let s2 = inspect_value(c, c.ary_get(slf, i))?;
             if i > 0 { c.rstring_mut(out).b.extend_from_slice(b", "); }
-            else { let e = c.str_enc(s2); c.rstring_mut(out).enc = e; }
+            else { let e = c.str_enc(s2); c.rstring_mut(out).set_enc(e); }
             crate::string::str_append_str(c, out, s2)?;
             i += 1;
         }

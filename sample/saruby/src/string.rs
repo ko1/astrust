@@ -24,7 +24,7 @@ impl Ctx {
     pub fn str_from_sbuf(&mut self, b: SBuf, enc: u8) -> Value {
         self.str_account(b.len());
         let k = self.vm().c_string.get();
-        self.alloc_with(k, move || Body::String(RString { b, enc }))
+        self.alloc_with(k, move || Body::String(RString::new(b, enc)))
     }
     #[inline]
     pub fn str_new(&mut self, b: &[u8]) -> Value { self.str_new_enc(b, ENC_UTF8) }
@@ -33,20 +33,31 @@ impl Ctx {
     pub fn str_new_enc(&mut self, b: &[u8], enc: u8) -> Value {
         self.str_account(b.len());
         let k = self.vm().c_string.get();
-        self.alloc_with(k, move || Body::String(RString { b: SBuf::from_slice(b), enc }))
+        self.str_new_in_slot(k, 0, b, enc)
+    }
+    // short ones are copied into the slot: a 29-byte array built first and moved is copied piecewise
+    #[inline(always)]
+    fn str_new_in_slot(&mut self, k: Value, fl: u32, b: &[u8], enc: u8) -> Value {
+        if b.len() <= crate::sbuf::INLINE {
+            let v = self.alloc_with_flags(k, fl, move || Body::String(RString::new(SBuf::new(), enc)));
+            self.rstring_mut(v).b.fill_inline(b);
+            v
+        } else { self.alloc_with_flags(k, fl, move || Body::String(RString::new(SBuf::from_slice(b), enc))) }
     }
     /// A chilled string literal (FL_CHILLED / FL_CHILLED_SYM).
     #[inline]
     pub fn str_new_chilled(&mut self, b: &[u8], enc: u8, fl: u32) -> Value {
         self.str_account(b.len());
         let k = self.vm().c_string.get();
-        self.alloc_with_flags(k, fl, move || Body::String(RString { b: SBuf::from_slice(b), enc }))
+        self.str_new_in_slot(k, fl, b, enc)
     }
     #[inline]
     pub fn str_with_capa(&mut self, n: usize, enc: u8) -> Value {
         self.str_account(n);
         let k = self.vm().c_string.get();
-        self.alloc_with(k, move || Body::String(RString { b: SBuf::with_capacity(n), enc }))
+        // the variant is picked here: one closure per variant
+        if n <= crate::sbuf::INLINE { return self.alloc_with(k, move || Body::String(RString::new(SBuf::new(), enc))); }
+        self.alloc_with(k, move || Body::String(RString::new(SBuf::with_capacity(n), enc)))
     }
     #[inline]
     pub fn str_from_vec(&mut self, b: Vec<u8>) -> Value { self.str_from_sbuf(SBuf::from_vec(b), ENC_UTF8) }
@@ -59,7 +70,7 @@ impl Ctx {
     }
     pub fn str_from(&mut self, s: &str) -> Value { self.str_new(s.as_bytes()) }
     /// Encoding of `like`, new contents (class String).
-    #[inline]
+    #[inline(always)]
     pub fn str_new_like(&mut self, like: Value, b: Vec<u8>) -> Value {
         let enc = self.str_enc(like);
         self.str_from_vec_enc(b, enc)
@@ -68,55 +79,58 @@ impl Ctx {
     #[inline]
     pub fn str_copy(&mut self, v: Value) -> Value {
         let r = self.rstring(v);
-        let (b, enc) = (SBuf::from_slice(&r.b), r.enc);
+        let (b, enc) = ((*r.b).clone(), r.enc());
         self.str_from_sbuf(b, enc)
     }
     /// A String with the bytes of `v` and encoding `enc`.
     #[inline]
-    pub fn str_copy_enc(&mut self, v: Value, enc: u8) -> Value { self.str_from_sbuf(SBuf::from_slice(self.str_bytes(v)), enc) }
+    pub fn str_copy_enc(&mut self, v: Value, enc: u8) -> Value { self.str_from_sbuf((*self.rstring(v).b).clone(), enc) }
     /// Bytes `r` of `v` as a String of v's encoding.
     #[inline]
     pub fn str_sub(&mut self, v: Value, r: std::ops::Range<usize>) -> Value {
         let x = self.rstring(v);
-        let (b, enc) = (SBuf::from_slice(&x.b[r]), x.enc);
+        let enc = x.enc();
+        // the variant is picked here: one closure per variant
+        if r.len() <= crate::sbuf::INLINE { let b = SBuf::inline_from(&x.b[r]); return self.str_from_sbuf(b, enc); }
+        let b = SBuf::heap_copy(&x.b[r]);
         self.str_from_sbuf(b, enc)
     }
 
     #[inline(always)]
-    pub fn str_enc(&self, v: Value) -> u8 { self.rstring(v).enc }
+    pub fn str_enc(&self, v: Value) -> u8 { self.rstring(v).enc() }
     #[inline(always)]
     pub fn str_len(&self, v: Value) -> usize { self.rstring(v).b.len() }
     #[inline(always)]
     pub fn str_eq(&self, a: Value, b: Value) -> bool {
         // the encodings first: nothing stays live across the byte compare
         let (x, y) = (self.rstring(a), self.rstring(b));
-        if x.enc == y.enc { x.b == y.b } else { str_eq_enc(&x.b, &y.b, x.enc, y.enc) }
+        if x.enc() == y.enc() { x.b[..] == y.b[..] } else { str_eq_enc(&x.b, &y.b, x.enc(), y.enc()) }
     }
     #[inline(always)]
     pub fn str_hash(&self, v: Value) -> u64 {
         let r = self.rstring(v);
         let h = crate::astrust::hash_bytes(&r.b);
-        if r.enc == ENC_UTF8 { h } else { str_hash_enc(h, &r.b, r.enc) }
+        if r.enc() == ENC_UTF8 { h } else { str_hash_enc(h, &r.b, r.enc()) }
     }
     /// String#to_sym: symbol::BAD_SYM for a broken String of an ASCII-compatible encoding other than UTF-8
     /// (sym_check_asciionly)
     #[inline(always)]
     pub fn str_intern(&self, v: Value) -> Sym {
         let r = self.rstring(v);
-        if r.enc != ENC_UTF8 { return str_intern_enc(&r.b, r.enc); }
+        if r.enc() != ENC_UTF8 { return str_intern_enc(&r.b, r.enc()); }
         intern(&r.b)
     }
     #[inline(always)]
     pub fn str_to_sym(&self, v: Value) -> Value {
         let r = self.rstring(v);
-        if r.enc != ENC_UTF8 && r.enc != ENC_ASCII { return str_to_sym_enc(&r.b, r.enc); }
+        if r.enc() != ENC_UTF8 && r.enc() != ENC_ASCII { return str_to_sym_enc(&r.b, r.enc()); }
         Value::sym(intern(&r.b))
     }
     #[inline(always)]
     pub fn str_cmp(&self, a: Value, b: Value) -> std::cmp::Ordering {
         let (x, y) = (self.rstring(a), self.rstring(b));
         let o = x.b.cmp(&y.b);
-        if o != std::cmp::Ordering::Equal || x.enc == y.enc { o } else { str_cmp_tie(&x.b, x.enc, y.enc) }
+        if o != std::cmp::Ordering::Equal || x.enc() == y.enc() { o } else { str_cmp_tie(&x.b, x.enc(), y.enc()) }
     }
 
     /// String `v` for writing; FrozenError when frozen.
@@ -130,7 +144,7 @@ impl Ctx {
     pub fn str_append_enc(&mut self, acc: Value, s: Value, enc: u8) {
         let (a, others) = self.str_mut_and(acc);
         let n = match others.str_bytes(s) {
-            Some(b) => { a.enc = enc; a.b.extend_from_slice(b); b.len() }
+            Some(b) => { a.set_enc(enc); a.b.extend_from_slice(b); b.len() }
             None => { let b = a.b.to_vec(); a.b.extend_from_slice(&b); 0 }
         };
         if n != 0 { self.malloc_increase(n); }
@@ -140,20 +154,20 @@ impl Ctx {
     pub fn str_append_same_enc(&mut self, acc: Value, s: Value) { let enc = self.str_enc(acc); self.str_append_enc(acc, s, enc); }
 
     /// Char boundaries (byte offsets) for a string, honoring its encoding.
-    pub fn char_offsets(&self, v: Value) -> Vec<usize> { let r = self.rstring(v); char_offsets_of(&r.b, r.enc) }
+    pub fn char_offsets(&self, v: Value) -> Vec<usize> { let r = self.rstring(v); char_offsets_of(&r.b, r.enc()) }
     #[inline]
-    pub fn str_char_len(&self, v: Value) -> usize { let r = self.rstring(v); enc_strlen(&r.b, r.enc) }
+    pub fn str_char_len(&self, v: Value) -> usize { let r = self.rstring(v); enc_strlen(&r.b, r.enc()) }
     /// Code of the character at b[s..e] of string v (Unicode scalar for Unicode encodings).
-    pub fn str_char_code(&self, v: Value, s: usize, e: usize) -> u32 { let r = self.rstring(v); crate::builtins::encoding::char_code(r.enc, &r.b[s..e]) }
+    pub fn str_char_code(&self, v: Value, s: usize, e: usize) -> u32 { let r = self.rstring(v); crate::builtins::encoding::char_code(r.enc(), &r.b[s..e]) }
     pub fn chars_of(&self, v: Value) -> Vec<Vec<u8>> {
         let r = self.rstring(v);
-        let off = char_offsets_of(&r.b, r.enc);
+        let off = char_offsets_of(&r.b, r.enc());
         (0..off.len() - 1).map(|i| r.b[off[i]..off[i + 1]].to_vec()).collect()
     }
     /// A copy with the class of `v`.
     pub fn str_dup(&mut self, v: Value) -> Value {
         let r = self.rstring(v);
-        let (b, enc) = (r.b.to_vec(), r.enc);
+        let (b, enc) = (r.b.to_vec(), r.enc());
         let n = self.str_from_vec_enc(b, enc);
         obj_set_klass(n, obj_klass(v));
         n

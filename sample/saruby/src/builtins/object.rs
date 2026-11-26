@@ -243,7 +243,7 @@ pub fn obj_dup(c: &mut Ctx, slf: Value, clone: bool, freeze: Option<bool>) -> RV
     // the copied payload is built before the allocation; slf (a local) keeps its Values alive
     let body = match c.body_of(slf) {
         Body::Object(iv) => Body::Object(iv.clone()),
-        Body::String(s) => Body::String(RString { b: s.b.clone(), enc: s.enc }),
+        Body::String(s) => Body::String(s.clone()),
         Body::Array(a) => Body::Array(a.clone()),
         Body::Hash(_) => {
             let n = c.hash_dup(slf);
@@ -1425,7 +1425,7 @@ pub fn alloc_instance(c: &mut Ctx, klass: Value) -> RV {
     if cd.is_singleton { return type_err(c, "can't create instance of singleton class"); }
     Ok(match cd.alloc {
         AllocKind::Object | AllocKind::Exception => new_object(c, klass),
-        AllocKind::String => c.alloc(klass, Body::String(RString { b: crate::sbuf::SBuf::new(), enc: ENC_BINARY })),
+        AllocKind::String => c.alloc(klass, Body::String(RString::new(crate::sbuf::SBuf::new(), ENC_BINARY))),
         AllocKind::Array => c.alloc(klass, Body::Array(crate::avec::AVec::new())),
         AllocKind::Hash => { let h = c.hash_new(); obj_set_klass(h, klass); h }
         AllocKind::Range => c.alloc(klass, Body::Range(NIL, NIL, false)),

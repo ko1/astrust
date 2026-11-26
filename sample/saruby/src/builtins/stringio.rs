@@ -126,7 +126,7 @@ fn cat_enc(c: &mut Ctx, target: Value, data: &[u8], denc: u8) -> Result<(), Esc>
     }
     let r = c.str_modify(target)?;
     r.b.extend_from_slice(data);
-    r.enc = res;
+    r.set_enc(res);
     Ok(())
 }
 
@@ -173,7 +173,7 @@ fn set_encoding_by_bom(c: &mut Ctx, slf: Value) -> Option<u8> {
     let found = if p.string == NIL { None } else { detect_bom(c.str_bytes(p.string)) };
     if let Some((e, l)) = found {
         st_mut(c, slf).pos = l;
-        if p.flags & FM_W != 0 { c.rstring_mut(p.string).enc = e; }
+        if p.flags & FM_W != 0 { c.rstring_mut(p.string).set_enc(e); }
     }
     st_mut(c, slf).enc = found.map(|x| x.0);
     found.map(|x| x.0)
@@ -290,7 +290,7 @@ fn sio_set_lineno(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { strio(c
 fn sio_binmode(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let p = strio(c, slf)?;
     st_mut(c, slf).enc = Some(ENC_BINARY);
-    if mode_set(c, slf, FM_W) && p.string != NIL { c.rstring_mut(p.string).enc = ENC_BINARY; }
+    if mode_set(c, slf, FM_W) && p.string != NIL { c.rstring_mut(p.string).set_enc(ENC_BINARY); }
     Ok(slf)
 }
 fn sio_reopen(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
@@ -361,7 +361,7 @@ fn unget_bytes(c: &mut Ctx, slf: Value, cp: Option<&[u8]>, cl: usize) -> RV {
         let mut nb2 = r.b[..cl.min(len)].to_vec();
         nb2.resize(cl, 0);
         if pos < len { nb2.extend_from_slice(&r.b[pos..]); }
-        r.b = nb2.into();
+        r.set_bytes(nb2.into());
         npos = 0;
     } else {
         if pos > len { r.b.resize(pos, 0); }
@@ -623,7 +623,7 @@ fn read_impl(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
         if total <= p.pos {
             let enc = get_enc(c, &p);
             let r = if buf == NIL { c.str_new_enc(b"", ENC_BINARY) } else { c.rstring_mut(buf).b.clear(); buf };
-            if let Some(e) = enc { c.rstring_mut(r).enc = e; }
+            if let Some(e) = enc { c.rstring_mut(r).set_enc(e); }
             return Ok(r);
         }
         len = total - p.pos;
@@ -638,8 +638,8 @@ fn read_impl(c: &mut Ctx, slf: Value, a: &[Value]) -> RV {
         let data = c.str_bytes(p.string)[p.pos as usize..p.pos as usize + l].to_vec();
         let se = c.str_enc(p.string);
         let r = c.rstring_mut(buf);
-        r.b = data.into();
-        if !binary { r.enc = se; }
+        r.set_bytes(data.into());
+        if !binary { r.set_enc(se); }
         buf
     };
     let n = c.str_bytes(r).len() as i64;
@@ -662,7 +662,7 @@ fn sio_pread(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let l = len.min(slen(c, &p) - off) as usize;
     let data = c.str_bytes(p.string)[off as usize..off as usize + l].to_vec();
     let r = c.str_modify(buf)?;
-    r.b = data.into(); r.enc = ENC_BINARY;
+    r.set_bytes(data.into()); r.set_enc(ENC_BINARY);
     Ok(buf)
 }
 fn sio_sysread(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
@@ -842,7 +842,7 @@ fn sio_set_encoding(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
         }
     };
     st_mut(c, slf).enc = enc;
-    if let Some(e) = enc { if p.string != NIL && mode_set(c, slf, FM_W) && !is_frozen(p.string) && crate::heap::obj_flags(p.string) & crate::object::FL_CHILLED_ANY == 0 { c.rstring_mut(p.string).enc = e; } }
+    if let Some(e) = enc { if p.string != NIL && mode_set(c, slf, FM_W) && !is_frozen(p.string) && crate::heap::obj_flags(p.string) & crate::object::FL_CHILLED_ANY == 0 { c.rstring_mut(p.string).set_enc(e); } }
     Ok(slf)
 }
 fn sio_set_encoding_by_bom(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
@@ -886,7 +886,7 @@ fn init(c: &mut Ctx) {
         if const_get_at(c, io, intern(n.as_bytes())).is_none() { const_set(c, io, intern(n.as_bytes()), Value::fix(v)); }
     }
     include_module(c, k, vmr.m_enumerable.get());
-    let v = c.alloc(vmr.c_string.get(), Body::String(RString { b: crate::sbuf::SBuf::from_slice(b"3.2.0"), enc: ENC_UTF8 }));
+    let v = c.alloc(vmr.c_string.get(), Body::String(RString::new(crate::sbuf::SBuf::from_slice(b"3.2.0"), ENC_UTF8)));
     const_set(c, k, intern(b"VERSION"), v);
     const_set(c, k, intern(b"MAX_LENGTH"), Value::fix(i64::MAX >> 1));
     define_singleton_cfunc(c, k, "new", sio_s_new, -1);

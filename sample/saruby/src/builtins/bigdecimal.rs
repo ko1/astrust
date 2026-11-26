@@ -1752,7 +1752,7 @@ fn convert(c: &mut Ctx, val: Value, digs: Option<usize>, raise: bool) -> RV {
         if raise { return type_err(c, format!("can't convert {} into BigDecimal", class_path(c, real_class_of(c, val)))); }
         return Ok(NIL);
     };
-    let enc = c.rstring(s).enc;
+    let enc = c.rstring(s).enc();
     if !crate::builtins::encoding::ascii_compat(enc) {
         let n = crate::builtins::encoding::enc_name(enc);
         return err(c, c.vm().c_encoding_error.get(), format!("ASCII incompatible encoding: {}", n));

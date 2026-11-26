@@ -56,7 +56,28 @@ pub const ENC_UTF8: u8 = 0;
 pub const ENC_BINARY: u8 = 1;
 pub const ENC_ASCII: u8 = 2;
 
-pub struct RString { pub b: crate::sbuf::SBuf, pub enc: u8 }
+/// The bytes and the encoding, which sits in the buffer's spare byte.
+pub struct RString { pub b: StrBytes }
+/// A String's SBuf; not constructible outside, so `r.b = ..` (which would drop the encoding) does not compile.
+pub struct StrBytes(crate::sbuf::SBuf);
+impl std::ops::Deref for StrBytes { type Target = crate::sbuf::SBuf; #[inline(always)] fn deref(&self) -> &crate::sbuf::SBuf { &self.0 } }
+impl std::ops::DerefMut for StrBytes { #[inline(always)] fn deref_mut(&mut self) -> &mut crate::sbuf::SBuf { &mut self.0 } }
+impl RString {
+    #[inline(always)]
+    pub fn new(mut b: crate::sbuf::SBuf, enc: u8) -> RString { b.set_aux(enc); RString { b: StrBytes(b) } }
+    #[inline(always)]
+    pub fn enc(&self) -> u8 { self.b.0.aux() }
+    #[inline(always)]
+    pub fn set_enc(&mut self, e: u8) { self.b.0.set_aux(e) }
+    /// Replace the bytes, keep the encoding.
+    #[inline(always)]
+    pub fn set_bytes(&mut self, b: crate::sbuf::SBuf) { self.b.0.set_bytes(b) }
+}
+impl Clone for RString {
+    /// The bytes and the encoding (the buffer's clone carries it).
+    #[inline(always)]
+    fn clone(&self) -> RString { RString { b: StrBytes(self.b.0.clone()) } }
+}
 
 #[derive(Clone, Copy)]
 pub struct HEntry { pub key: Value, pub val: Value, pub hash: u64 }

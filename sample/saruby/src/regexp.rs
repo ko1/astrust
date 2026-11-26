@@ -673,13 +673,13 @@ fn prep_slow(c: &mut Ctx, p: Prep) -> Result<Enc, Esc> {
 
 /// rb_reg_prepare_enc: how to read `s` when matching `re` against it, or the error CRuby raises.
 pub fn prepare(c: &mut Ctx, re: Value, s: Value) -> Result<Enc, Esc> {
-    let p = match rregexp(c, re) { Some(r) => { let st = c.rstring(s); prep(r, st.enc, &st.b, false) } None => Prep::Ok(Enc::UTF8) };
+    let p = match rregexp(c, re) { Some(r) => { let st = c.rstring(s); prep(r, st.enc(), &st.b, false) } None => Prep::Ok(Enc::UTF8) };
     prep_raise(c, p)
 }
 
 /// prepare for a string the caller has already checked for a broken encoding.
 pub fn prepare_valid(c: &mut Ctx, re: Value, s: Value) -> Result<Enc, Esc> {
-    let p = match rregexp(c, re) { Some(r) => { let st = c.rstring(s); prep(r, st.enc, &st.b, true) } None => Prep::Ok(Enc::UTF8) };
+    let p = match rregexp(c, re) { Some(r) => { let st = c.rstring(s); prep(r, st.enc(), &st.b, true) } None => Prep::Ok(Enc::UTF8) };
     prep_raise(c, p)
 }
 
@@ -723,7 +723,7 @@ fn deadline(r: &RRegexp) -> Option<std::time::Instant> {
 /// prepare + search under the regexp's timeout (Regexp::TimeoutError when it passes).
 pub fn search_timed(c: &mut Ctx, re: Value, s: Value, start: usize) -> Result<Option<Vec<Option<(usize, usize)>>>, Esc> {
     let st = c.rstring(s);
-    let (senc, bytes) = (st.enc, &st.b[..]);
+    let (senc, bytes) = (st.enc(), &st.b[..]);
     let Some(r) = rregexp(c, re) else { return Ok(None) };
     let r = match prep(r, senc, bytes, false) {
         Prep::Ok(e) => {

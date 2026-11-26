@@ -580,7 +580,7 @@ impl Loader {
     /// r_ivar_encoding: an E / encoding pair sets v's encoding.
     fn ivar_encoding(&mut self, c: &mut Ctx, v: Value, k: Sym, val: Value) -> Result<bool, Esc> {
         let Some(e) = sym2enc(c, k, val)? else { return Ok(false) };
-        if is_string(v) { if c.str_enc(v) != e { c.rstring_mut(v).enc = e; } }
+        if is_string(v) { if c.str_enc(v) != e { c.rstring_mut(v).set_enc(e); } }
         else if !crate::regexp::is_regexp(c, v) { let sv = crate::builtins::kernel::to_s_value(c, v)?; let sv = ps(c.str_bytes(sv)); return arg_err(c, format!("{} is not enc_capable", sv)); }
         Ok(true)
     }

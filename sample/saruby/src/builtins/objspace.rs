@@ -331,7 +331,7 @@ fn dump_obj(c: &mut Ctx, v: Value) -> String {
     if obj_flags(v) & FL_FROZEN != 0 { s.push_str(", \"frozen\":true"); }
     match c.body_of(v) {
         Body::String(r) => {
-            let (heap, enc, b) = (r.b.is_heap(), r.enc, c.str_bytes(v));
+            let (heap, enc, b) = (r.b.is_heap(), r.enc(), c.str_bytes(v));
             if !heap { s.push_str(", \"embedded\":true"); }
             if obj_flags(v) & FL_CHILLED != 0 { s.push_str(", \"chilled\":true"); }
             s.push_str(&format!(", \"bytesize\":{}", b.len()));

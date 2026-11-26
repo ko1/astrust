@@ -909,7 +909,7 @@ fn clear_outbuf(c: &mut Ctx, buf: Option<Value>) -> Result<(), Esc> {
 }
 pub fn into_outbuf(c: &mut Ctx, buf: Option<Value>, v: Vec<u8>, enc: u8) -> RV {
     match buf {
-        Some(b) if b != NIL => { let b = expect_str(c, b)?; check_frozen(c, b)?; c.rstring_mut(b).b = v.into(); Ok(b) }
+        Some(b) if b != NIL => { let b = expect_str(c, b)?; check_frozen(c, b)?; c.rstring_mut(b).set_bytes(v.into()); Ok(b) }
         _ => Ok(c.str_from_vec_enc(v, enc)),
     }
 }
@@ -954,7 +954,7 @@ fn io_read(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let enc = enc_of(io);
     let sv = c.str_from_vec_enc(v, enc);
     match a.get(1) {
-        Some(&b) if b != NIL => { let b = expect_str(c, b)?; check_frozen(c, b)?; let (nb, ne) = (c.str_bytes(sv).to_vec(), c.str_enc(sv)); let r = c.rstring_mut(b); r.b = nb.into(); r.enc = ne; Ok(b) }
+        Some(&b) if b != NIL => { let b = expect_str(c, b)?; check_frozen(c, b)?; let (nb, ne) = (c.str_bytes(sv).to_vec(), c.str_enc(sv)); let r = c.rstring_mut(b); r.set_bytes(nb.into()); r.set_enc(ne); Ok(b) }
         _ => Ok(sv),
     }
 }
@@ -965,7 +965,7 @@ fn read_all_conv(c: &mut Ctx, slf: Value, buf: Option<Value>) -> RV {
     let (v, e) = match r { Ok(v) => (v, None), Err(CErr::Exc(v)) => (v, Some(CErr::Exc(vec![]))), Err(e) => (vec![], Some(e)) };
     if rio(c, slf).is_some_and(|io| io.rerr != 0) { let io = io_mut(c, slf); let e = std::mem::take(&mut io.rerr); let p = io.path.clone(); return Err(raise_errno_at(c, e, "io_fread - ", &p)); }
     let out = match buf {
-        Some(b) if b != NIL => { let b = expect_str(c, b)?; check_frozen(c, b)?; let r = c.rstring_mut(b); r.b = v.into(); r.enc = enc; b }
+        Some(b) if b != NIL => { let b = expect_str(c, b)?; check_frozen(c, b)?; let r = c.rstring_mut(b); r.set_bytes(v.into()); r.set_enc(enc); b }
         _ => c.str_from_vec_enc(v, enc),
     };
     match e { None => Ok(out), Some(e) => Err(conv_err(c, slf, e, false)) }
@@ -1653,7 +1653,7 @@ fn io_ioctl(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
         let n = b.len();
         if b[n - 1] != 17 { return arg_err(c, "return value overflowed string"); }
         b[n - 1] = 0;
-        c.rstring_mut(s).b = b.into();
+        c.rstring_mut(s).set_bytes(b.into());
     }
     Ok(Value::fix(r as i64))
 }
@@ -2302,7 +2302,7 @@ fn copy_stream_body(c: &mut Ctx, src: Value, dst: Value, mut len: i64, mut off: 
                 if k < 0 { let (e, p) = (sys::errno(), spath_of(c, s)); return Err(raise_errno_at(c, e, "", &p)); }
                 if k == 0 { break; }
                 v.truncate(k as usize); off += k as i64;
-                c.rstring_mut(buf).b = v.into();
+                c.rstring_mut(buf).set_bytes(v.into());
                 Ok(buf)
             }
             Some(s) => io_readpartial(c, s, &[Value::fix(l), buf], Blk::NONE),

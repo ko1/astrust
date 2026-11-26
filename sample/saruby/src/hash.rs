@@ -348,7 +348,7 @@ fn hash_aset_rest(c: &mut Ctx, h: Value, k: Value, v: Value) -> Result<(), Esc> 
 fn str_key(c: &mut Ctx, h: Value, k: Value) -> Value {
     if obj_flags(k) & FL_FROZEN != 0 || c.hash(h).identity { return k; }
     let r = c.rstring(k);
-    let (b, enc) = (r.b.to_vec(), r.enc);
+    let (b, enc) = (r.b.to_vec(), r.enc());
     let d = c.str_from_vec_enc(b, enc);
     obj_set_flags(d, FL_FROZEN);
     d

@@ -296,7 +296,7 @@ pub fn format(c: &mut Ctx, fmtv: Value, args: &[Value]) -> RV { format_ary(c, fm
 pub fn format_ary(c: &mut Ctx, fmtv: Value, args: &[Value], ary: Value) -> RV {
     use crate::builtins::encoding as en;
     let fmts = expect_str(c, fmtv)?;
-    let (fenc, fmt) = { let r = c.rstring(fmts); (r.enc, r.b.to_vec()) };
+    let (fenc, fmt) = { let r = c.rstring(fmts); (r.enc(), r.b.to_vec()) };
     if !en::ascii_compat(fenc) { return err(c, c.vm().c_compat_error.get(), format!("ASCII incompatible encoding: {}", en::enc_name(fenc))); }
     let mut out: Vec<u8> = Vec::with_capacity(fmt.len() + 16);
     let mut renc = fenc;
@@ -444,7 +444,7 @@ pub fn format_ary(c: &mut Ctx, fmtv: Value, args: &[Value], ary: Value) -> RV {
                     }
                 };
                 // result encoding negotiation
-                let (senc, mut bb) = { let r = c.rstring(sv); (r.enc, r.b.to_vec()) };
+                let (senc, mut bb) = { let r = c.rstring(sv); (r.enc(), r.b.to_vec()) };
                 // rb_enc_check(result, str): an ASCII-incompatible one is compatible only with nothing
                 if senc != renc && !bb.is_empty() && (!en::ascii_compat(senc) || !en::ascii_compat(renc)) {
                     if !out.is_empty() { return err(c, c.vm().c_compat_error.get(), format!("incompatible character encodings: {} and {}", en::enc_name_msg(renc), en::enc_name_msg(senc))); }

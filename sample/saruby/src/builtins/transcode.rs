@@ -351,8 +351,8 @@ pub fn s_encode_bang(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
     let (pos, f, o) = encode_args(c, a)?;
     match str_transcode0(c, slf, pos, f, &o)? {
         None => {}
-        Some((None, e)) => c.rstring_mut(slf).enc = e,
-        Some((Some(b), e)) => { let r = c.rstring_mut(slf); r.b = b.into(); r.enc = e; }
+        Some((None, e)) => c.rstring_mut(slf).set_enc(e),
+        Some((Some(b), e)) => { let r = c.rstring_mut(slf); r.set_bytes(b.into()); r.set_enc(e); }
     }
     Ok(slf)
 }
@@ -536,12 +536,12 @@ fn ec_primitive_convert(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
         let stop = off as usize + size as usize;
         let mut ip = 0;
         let res = ec_of(c, slf)?.convert(&src, &mut ip, &mut out, stop, flags);
-        c.rstring_mut(output).b = out.into();
+        c.rstring_mut(output).set_bytes(out.into());
         if let Some(i) = input { if ip > 0 { c.str_modify(i)?.b.remove_front(ip); } }
         if size_v == NIL && res == Res::DestinationBufferFull { size = size.saturating_mul(2); off_nil = true; continue; }
         break res;
     };
-    if let Some(d) = ecm(c, slf)?.denc { c.rstring_mut(output).enc = d; }
+    if let Some(d) = ecm(c, slf)?.denc { c.rstring_mut(output).set_enc(d); }
     Ok(res_sym(res))
 }
 
