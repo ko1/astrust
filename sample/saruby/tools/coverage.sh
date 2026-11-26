@@ -6,7 +6,7 @@
 #   tools/coverage.sh report NAME            report from $COV_WORK/NAME.profdata (summary + per-function)
 #   tools/coverage.sh merge OUT IN...        merge named profdata into OUT.profdata
 # env: COV_WORK (scratch, default $TMPDIR/saruby-cov), COV_OUT (report dir, default ./coverage-report),
-#      COV_DIR (dir of the cov build, default ./cov), COV_JOBS (4), COV_TIMEOUT (per file, s; 120), COV_CHUNK (files per merge, 100), SWEEP (sweep.rb path)
+#      COV_DIR (dir of the cov build, default ./cov), COV_MEM (bytes per process, 2 GiB), COV_SKIP (regexp of file names to skip), COV_RESUME (chunks already merged), COV_JOBS (4), COV_TIMEOUT (per file, s; 120), COV_CHUNK (files per merge, 100), SWEEP (sweep.rb path)
 # Profiles are written one per process (%p) and merged + deleted per chunk, so disk stays small.
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -16,6 +16,8 @@ OUT=${COV_OUT:-$here/coverage-report}
 JOBS=${COV_JOBS:-4}
 TMO=${COV_TIMEOUT:-120}
 CHUNK=${COV_CHUNK:-100}
+MEM=${COV_MEM:-2147483648}                  # address-space cap per corpus process (the box is shared)
+SKIP=${COV_SKIP:-range_huge_|_nmin_stream}  # files known to need > 2 GB
 SWEEP=${SWEEP:-$HOME/ruby/src/trials/2026-11-22-saruby-rubyspec/bin/sweep.rb}
 HAND=${HAND_DIR:-$HOME/ruby/rubyharness/t/hand}
 COVDIR=${COV_DIR:-$here/cov}   # where saruby + libsaruby.so of the profiled build live (keep a copy to report an older build)
@@ -24,12 +26,19 @@ SO=$COVDIR/libsaruby.so
 mkdir -p "$WORK" "$OUT"
 
 merge_raw() { # merge_raw DIR OUT.profdata : fold DIR/*.profraw (and an existing OUT) into OUT, delete the raws
-  local d=$1 o=$2 in=()
-  [ -f "$o" ] && in+=("$o")
+  local d=$1 o=$2 cur="$2.new" f
   compgen -G "$d/*.profraw" >/dev/null || return 0
-  "$LLVM/llvm-profdata" merge -sparse "${in[@]}" "$d"/*.profraw -o "$o.new"
-  mv "$o.new" "$o"
-  rm -f "$d"/*.profraw
+  local base=(); [ -f "$o" ] && base=("$o")
+  if ! "$LLVM/llvm-profdata" merge -sparse "${base[@]}" "$d"/*.profraw -o "$cur" 2>/dev/null; then
+    # a truncated profile (process killed while writing) crashes llvm-profdata: fold file by file, drop the bad ones
+    rm -f "$cur"; [ -f "$o" ] && cp "$o" "$cur"
+    for f in "$d"/*.profraw; do
+      local in=("$f"); [ -f "$cur" ] && in=("$cur" "$f")
+      if "$LLVM/llvm-profdata" merge -sparse "${in[@]}" -o "$cur.tmp" 2>/dev/null; then mv "$cur.tmp" "$cur"; else echo "dropped bad profile $f" >&2; fi
+    done
+  fi
+  [ -f "$cur" ] && mv "$cur" "$o"
+  rm -f "$d"/*.profraw "$cur.tmp"
 }
 
 case ${1:-} in
@@ -38,10 +47,12 @@ build)
 hand)
   dir=${2:-$HAND}; name=$(basename "${3:-hand}")
   raw=$WORK/raw-$name; mkdir -p "$raw"; rm -f "$raw"/*.profraw
-  ls "$dir"/*.rb > "$WORK/$name.list"
+  ls "$dir"/*.rb | grep -Ev "$SKIP" > "$WORK/$name.list"
   split -l "$CHUNK" "$WORK/$name.list" "$WORK/$name.chunk."
+  n=0
   for c in "$WORK/$name.chunk."*; do
-    xargs -a "$c" -P "$JOBS" -I{} bash -c 'cd "$(dirname {})" && LLVM_PROFILE_FILE="$0/%p-%m.profraw" timeout -s KILL "$1" "$2" "$(basename {})" </dev/null >/dev/null 2>&1 || true' "$raw" "$TMO" "$BIN"
+    n=$((n+1)); if [ "$n" -le "${COV_RESUME:-0}" ]; then rm -f "$c"; continue; fi
+    xargs -a "$c" -P "$JOBS" -I{} bash -c 'cd "$(dirname {})" && LLVM_PROFILE_FILE="$0/%p-%m.profraw" prlimit --as="$3" timeout -s KILL "$1" "$2" "$(basename {})" </dev/null >/dev/null 2>&1 || true' "$raw" "$TMO" "$BIN" "$MEM"
     merge_raw "$raw" "$WORK/$name.profdata"
     echo "hand chunk $(basename "$c") done"
     rm -f "$c"

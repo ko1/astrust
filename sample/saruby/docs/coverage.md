@@ -14,7 +14,10 @@ build are untouched.  The Makefile rule only exists next to the normal one; with
     COV_WORK=/scratch COV_OUT=report tools/coverage.sh report all  # summary.txt / summary.json / functions.txt / full.json
 
 Each process writes `%p-%m.profraw` (one for the binary, one for the dylib, about 1.5 MB each); the script merges and
-deletes them every `COV_CHUNK` files, so the scratch dir stays small.  AOT-baked code and prelude Ruby are not covered.
+deletes them every `COV_CHUNK` files, so the scratch dir stays small.
+Each corpus process runs under `prlimit --as=$COV_MEM` (2 GiB) and `COV_SKIP` (default `range_huge_|_nmin_stream`) drops the files
+that need more; the coverage binary of those two ranges used about 7 GB each.  Children started with a cleared environment write
+`default_*.profraw` into their cwd; delete them from the test dir afterwards.  AOT-baked code and prelude Ruby are not covered.
 
 The trial `~/ruby/src/trials/2026-11-25-saruby-coverage/` has `bin/analyze.rb` (per-file table) and `bin/uncovered.rb`
 (largest uncovered line runs) over the llvm-cov export, and the baseline numbers.
