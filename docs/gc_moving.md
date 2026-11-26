@@ -433,11 +433,48 @@ park of that stack.  This is deterministic (no stress needed) and fires on the k
 
 ### 12.4 Frame.blk and Block values (from phase 1b)
 
-Not started; designed with the above and measured on its own sp4 batch (the yield path).  Today a Block a
-frame points at is either a Proc payload (visited through the Proc) or a Rust-stack temporary of its caller,
-whose Values (`self_`, `env`, `proc_val`, `defined_class`, BlockKind's) are found by the machine-stack scan.
+Implemented on its own branch (`moving-gc-e1-blk`, independent of 12.2).  A Block a frame points at is either a
+Proc payload (visited through the Proc) or a Rust-stack temporary of its caller.  Both are now also visited through
+the frame chain of every context (`Frame.blk`, `FrameFull.self_blk`; `visit_ctx`, `visit_main_ctx`).  A moving
+collector updates them through the shared pointers frames and callers hold, so Block's Value fields (`self_`,
+`env`, `proc_val`, `defined_class`) are `Cell<Value>` and BlockKind's Values (Method, Cfunc data, Proc) moved into
+one `data` Cell, as MethodEntry's Bmethod Proc did (f203599).  Block is Clone, not Copy; its clone is a bitwise copy
+(one `unsafe`): field by field, LLVM copied the 88 bytes with a dozen narrow moves and closures rose 2.3 % / 4.0 %
+instructions.  `block_to_proc`'s write of `proc_val` through a `*const Block` cast to `*mut` became a Cell set.
 
-### 12.5 `Ctx.sp` in a register
+### 12.5 `Ctx.sp` in a register: measured, not threaded yet
 
-Measured before deciding (user 2026-11-26: thread `sp` only if it shows a clear per-benchmark gain on the
-call-heavy benches at codegen-units = 1 on sp4); the decision and the numbers go here.
+The user's rule (2026-11-26): thread `sp` only for a clear per-benchmark gain on the call-heavy benches at
+codegen-units = 1 on sp4; otherwise keep `Ctx.sp`.  Measured on master 0f77f68, sp4 (trial README "Phase 1e"):
+
+* Interpreter (`--plain`): per call, node_call loads `sp` once and stores it at `stage` and at `set_sp`; the method
+  entry does one read-modify-write (`sub %r, (ctx)`).  Instruction samples on those instructions: fib 1.00 %,
+  method_call 1.40 %, tak 1.58 %, binary_trees 1.81 %, closures 0.17 %, iterators 0.09 % (skid puts up to 5 % more on
+  the next instruction).
+* Baked code: method_call's loop (about 53 instructions per call, callee compiled in) does 3 `Ctx.sp` accesses per
+  call (load at the stage, store at the stage, store at `set_sp`), with no call or GC point between them on the fast
+  path.  Samples: method_call 2.65 %, tak 2.44 %, iterators 2.01 %, binary_trees 1.55 %, closures 0.92 %, fib 0.32 %
+  (+0.8 - 6 % on the next instruction).
+* So threading could remove at most about 3 instructions per call on the baked fast path (about 5.7 % of
+  method_call's), and about 1 - 2 % of the interpreter's.  Getting there is not local: the stores can only move to the
+  slow paths if every EVAL and every out-of-line call of the generated code carries `sp`, and only the allocation /
+  GC-point entries write it into `Ctx` (koruby's "only korb_alloc writes sp_top", enforced by a type: an `Sp` token the
+  callee consumes).  That is an ABI change of the generator (`saruby_gen.rb`, every node), not a patch of one path.
+
+Decision for now: `Ctx.sp` stays.  The prototype was not built in this session; the bound above says it is worth
+building as its own item (todo 1.5), and the decision is to be made from its sp4 numbers per benchmark.
+
+### 12.6 What still relies on the machine-stack scan
+
+With the value stacks exact, the remaining conservative roots are the machine stacks (the running one and suspended
+fibers').  `make FEATURES=gc_check` + `SARUBY_GC_PRECISE_ALL=1` scans neither; with `SARUBY_GC_STRESS=1` what breaks
+is what still keeps a Value only in a Rust local: generated node code's `@child` values (phase 1e, 12.7), cfuncs on
+the old ABI (phase 1c / 1d), and helpers in rt.rs / vm.rs.  The default build keeps the scan.
+
+### 12.7 `@child` values in slots: cost estimated, under feature `precise` only
+
+`a + b` keeps `a` in a register while `b` (a call) runs; a moving collector needs `a` in a slot.  Storing every
+earlier child of a multi-child node in a frame or value-stack slot costs a store and a load per such child: in
+fib's `fib(n - 1) + fib(n - 2)` and `n < 2` alone that is about 10 of the ~84 instructions per call of the baked
+code (an estimate from the node shapes, not measured), far over 0.3 %.  So it goes under cargo feature `precise` (with `GC=copy`), as section 9 planned; a test that
+skips the store for immediates (`if a.is_heap()`) still costs a test and a branch per child.  Not implemented yet.

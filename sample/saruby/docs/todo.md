@@ -50,8 +50,14 @@ user 2026-11-25「full moving 頑張ってほしい」「クラスなどを non-
 - [x] GC stress で見つかった missed root（2026-11-25 session 3 の CHECK + stress 掃引）: `rt.rs block_from_value` で `#to_proc` が返した Proc を誰も参照していなかった（block は Proc の payload を指す。t/hand refinement_misc_1124r / splat_blockarg_view）、`Array#transpose` が `#to_ary` の結果を Vec だけに持っていた（to_ary_string_subclass_1024）
 - [x] gc_check: precise zone の中で raise すると例外オブジェクトや inspect の文字列が root にならない（t/hand sort_nested_objects_sortbang が CHECK + stress で panic、`Array#sort!` の frozen 検査から）。raise の helper を conservative zone に（2026-11-26 session 4、branch moving-gc-s4-errzone）
 - [ ] `Array#sort_by` でブロックが receiver を縮めたとき: CRuby は `a.sort_by { a.clear; x }` → `["s0"]`、saruby は `[]`（keys と receiver の短い方で切る。master 19faa10 でも同じ）
-- [ ] phase 1e: value stack の exact 化、node `@child` を slot へ（`saruby_gen.rb`、費用を測ってから）
+- [ ] phase 1e: value stack の exact 化、node `@child` を slot へ（`saruby_gen.rb`、費用を測ってから）。設計 `docs/gc_moving.md` 12、記録 trial README「Phase 1e」
+  - [x] value stack を exact に（2026-11-26、branch moving-gc-e1-vstack）: 各 collection で全 context の sp より上を nil に戻す（stage の nil-fill は 1 呼び出し 2+k store なので使わない）。gc_check では毒値＋park の下に sp を下げたら abort（koruby P1 の検査、`GC.__check_rooting(3)`）。sp4 全行 ≤ +0.047 %
+  - [x] koruby P1（yield が park を落とす）: 監査では無し。Rust からの yield はすべて `c.top()` に block の frame を置く。危ういのは node_call_blk の inline iterator だけ（`bb` を先に取り、各 step で sp を bb に戻す）: `*_loop` が park すると block の frame が park を上書きする。gc_check の検査で検出できる
+  - [x] Frame.blk: Block の Value を Cell、BlockKind の Value を `Block.data` へ、frame 鎖から visit（branch moving-gc-e1-blk、sp4 全行 ≤ +0.159 %）
+  - [ ] `@child` を slot へ: 費用見積りで fib の焼き版 1 呼び出し約 84 命令中 約 10（見積り）、feature `precise` の中でだけ。未着手
+  - [ ] `SARUBY_GC_PRECISE_ALL=1`（gc_check、機械スタックを一切走査しない）＋ stress で、まだ機械スタック走査に頼る箇所の一覧を取る
 - [ ] Ctx.sp をレジスタに: 値スタックの先頭の正本が `Ctx.sp`（メモリ上の 1 つ）なので、`&mut Ctx` を渡す呼び出しのたびに書き戻し / 読み直しが入る（koruby_precise は sp を引数で引き回し、`c->sp_top` は korb_alloc だけが書く）。まず呼び出し経路（メソッド呼び出し・yield・stage）の Ctx.sp の load/store を機械語と perf で数える → 一部経路で sp を値として引き回す試作。正本が 2 つになる危険は型で縛る（確保関数だけが sp を受け取って Ctx に書ける、他は書けない＝「sp_top を書くのは korb_alloc だけ」をコンパイラで守らせる）。phase 1e と合わせて設計（user 2026-11-26「ctx の参照がふえちゃうとレジスタにのらないんじゃないの？」）
+  - 2026-11-26 計測（sp4、master 0f77f68、`docs/gc_moving.md` 12.5）: 焼き版 method_call の loop は 1 呼び出し約 53 命令のうち Ctx.sp の load / store が 3（stage の load と store、set_sp の store。間に呼び出しも GC 点も無い）、引き回せば上限 約 5.7 %。インタプリタは 1 呼び出し約 4 命令（命令サンプルで fib 1.00 %、method_call 1.40 %、tak 1.58 %、binary_trees 1.81 %）。store を遅い経路へ移すには全 EVAL と out-of-line 呼び出しが sp を持つ生成器の ABI 変更が要る。試作は未着手、決定は試作の sp4 の数字で（user「sp 引き回すかは性能を見て判断して」）。それまで Ctx.sp のまま
 - [ ] phase 2: `copy`（Cheney、クラス・リテラルは non-moving 空間、identity hash は object_id から）、PURGE
 - [ ] phase 3: `copy_gen`（write barrier、`Member` 型で store 漏れを compile error に）
 - [ ] phase 2 / 3 の方針を koruby_precise に揃える（user 2026-11-26「細かい拡張戦略とか、Astro Koruby に揃えられると比較しやすいね」）。値は ~/ruby/astro/runtime/precise_gc/gc_copy.c と gc_copy_gen.c から取る。
@@ -88,6 +94,7 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 
 ## 3. CRuby 互換性
 
+- [ ] `"".upto("a").to_a` が止まらずメモリを食い尽くす（16 GB で kill。CRuby は `[""]`）。master 0f77f68 で再現、t/hand gem_w19_core_fixes_1027 が timeout する原因（2026-11-26 phase 1e で発見）
 - [ ] AOT の焼きで原因不明の segfault 2 件（2026-11-25 msg-encodings の AOT vs --plain 1 回目、ファイル特定できず、2 回目・単独では再現せず）。次に出たら core を残して特定する
 - [x] StringIO は `require "stringio"` でだけ作る（2026-11-25 済: const_missing の初回参照フックを削除。CRuby 同様 `defined?(StringIO)` は nil、参照は NameError）
 - [x] panic: 範囲の終端が LONG_MAX（2**63-1）のとき String のスライス（src/string.rs:81、byteslice / [] 系）で `range end index ... out of range`（2026-11-25 済: substr / subpos / byteslice / bytesplice の `st + len` を飽和に、arith seq の end+1、他に insert / fill / pack x@ / unpack count / sprintf `*` / ljust / combination 系 / Range#last / ArithmeticSequence#size,last の溢れ・巨大確保を CRuby に合わせた。一覧: ~/ruby/src/trials/2026-11-25-saruby-overflow-panics/README.md）。残り（compat のみ）は下の overflow-compat で処理
