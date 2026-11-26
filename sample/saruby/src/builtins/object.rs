@@ -751,6 +751,10 @@ fn m_public_class_method(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { 
 
 // a private constant referenced with a scope: (receiver, name) for the const_missing it calls
 thread_local! { pub static PRIVATE_REF: std::cell::Cell<Option<(Value, Sym)>> = const { std::cell::Cell::new(None) }; }
+/// GC root: PRIVATE_REF's receiver.
+pub fn visit_roots<V: crate::gc::EdgeVisitor<crate::gc::Saruby> + ?Sized>(m: &mut V) {
+    PRIVATE_REF.with(|r| if let Some((mut v, s)) = r.get() { m.visit(&mut v); r.set(Some((v, s))); });
+}
 /// The scope visibility define_method uses (rb_vm_cref_in_context(mod, mod)): the caller's default when it
 /// runs in `m` itself (class body, class_exec block), public otherwise.
 fn scope_visi(c: &Ctx, m: Value) -> u8 {

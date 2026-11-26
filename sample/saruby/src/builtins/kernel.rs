@@ -1495,6 +1495,12 @@ fn run_source_as(c: &mut Ctx, src: &[u8], file: &'static str, line: i32, interna
 fn k_require(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV { check_argc(c, args, 1, 1)?; require_feature(c, args[0], false) }
 fn k_require_relative(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV { check_argc(c, args, 1, 1)?; require_feature(c, args[0], true) }
 thread_local! { static TOP_WRAPPER: std::cell::Cell<Value> = const { std::cell::Cell::new(NIL) }; }
+/// GC roots of this file's thread_locals (catch tags, the loading table, the load wrapper).
+pub fn visit_roots<V: crate::gc::EdgeVisitor<crate::gc::Saruby> + ?Sized>(m: &mut V) {
+    CATCH_TAGS.with_borrow_mut(|t| for (a, b) in t.iter_mut() { m.visit(a); m.visit(b); });
+    LOADING.with_borrow_mut(|t| for (_, v) in t.iter_mut() { m.visit(v); });
+    TOP_WRAPPER.with(|w| { let mut v = w.get(); m.visit(&mut v); w.set(v); });
+}
 /// th->top_wrapper: the module of the wrapped load running (NIL outside one; rooted by its cref).
 pub fn top_wrapper() -> Value { TOP_WRAPPER.with(|w| w.get()) }
 fn k_load(c: &mut Ctx, _s: Value, args: &[Value], _b: Blk) -> RV {

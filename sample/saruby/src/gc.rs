@@ -94,9 +94,11 @@ fn alloc_by(c: &mut Ctx, klass: Value, body: Body) -> Value {
 
 /// alloc, with the body built by `make` once the slot is known: a body built first and passed
 /// in sits on the stack and is copied with wide loads its narrow stores cannot forward to.
+/// The closure is inlined on the cold path too: called out of line there, its captures were stored
+/// to the stack ahead of the free-list test on the hot path (str +1.4 %, trial 2026-11-25 session 3).
 #[inline(always)]
 fn alloc_with_by(c: &mut Ctx, klass: Value, flags: u32, make: impl FnOnce() -> Body) -> Value {
-    let p = heap(&mut Scope).alloc(c, move || RObj { klass, flags, gc: GcHeader::new(), body: make() });
+    let p = heap(&mut Scope).alloc(c, #[inline(always)] move || RObj { klass, flags, gc: GcHeader::new(), body: make() });
     // SAFETY: the object just allocated
     unsafe { Value::from_ptr(p.as_ptr()) }
 }
@@ -179,6 +181,17 @@ pub fn reachable_from(c: &mut Ctx, v: Value) -> Vec<Value> {
 pub fn each_object(mut f: impl FnMut(Value)) {
     // SAFETY: the backend enumerates allocated objects
     heap(&mut Scope).each_object(|p| f(unsafe { Value::from_ptr(p.as_ptr()) }));
+}
+
+/// Values held by thread_locals (docs/gc_moving.md 3).  Out of line and in this file, not vm.rs: placed
+/// there, it changed register allocation in vm.rs's `make_env` (closures +0.47 %, trial session 3).
+#[inline(never)]
+pub(crate) fn visit_tls_roots(m: &mut Visitor) {
+    crate::vm::visit_zsuper(m);
+    crate::visit_orig_err(m);
+    crate::builtins::kernel::visit_roots(m);
+    crate::builtins::object::visit_roots(m);
+    crate::builtins::zlib::visit_roots(m);
 }
 
 // Generic ivars (objects without an ivar table of their own) live in a side table keyed by

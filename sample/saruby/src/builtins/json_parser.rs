@@ -1011,7 +1011,7 @@ pub struct Resumable {
 impl RData for Resumable {
     fn visit(&mut self, m: &mut crate::gc::Visitor) {
         m.visit(&mut self.cfg.on_load); m.visit(&mut self.cfg.decimal_class);
-        if let Some(st) = self.st.as_mut() { m.visit(&mut st.stack); m.visit(&mut st.cache_root); }
+        if let Some(st) = self.st.as_mut() { m.visit(&mut st.stack); m.visit(&mut st.cache_root); for v in st.cache.iter_mut() { m.visit(v); } }
     }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
