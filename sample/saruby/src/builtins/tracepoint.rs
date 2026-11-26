@@ -566,9 +566,8 @@ fn tp_s_stat(c: &mut Ctx, _s: Value, _a: &[Value], _b: Blk) -> RV { Ok(c.hash_ne
 
 /// Kernel#set_trace_func(proc or nil)
 fn k_set_trace_func(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
-    let l = list(c);
-    let old: Vec<Value> = c.ary(l).iter().copied().filter(|&x| rt(c, x).is_some_and(|d| d.stf)).collect();
-    for t in old { disable(c, t); }
+    // re-found in the current list each time (disable replaces it): no Vec copy across its allocation
+    while let Some(t) = { let l = list(c); c.ary(l).iter().copied().find(|&x| rt(c, x).is_some_and(|d| d.stf)) } { disable(c, t); }
     if a[0] == NIL { return Ok(NIL); }
     if !is_proc(a[0]) { return type_err(c, "trace_func needs to be Proc"); }
     let before = trace_mask();

@@ -117,34 +117,40 @@ fn re_s_union(c: &mut Ctx, _s: Value, a: &[Value], _b: Blk) -> RV {
     let (mut asciionly, mut fixed, mut incompat): (bool, Option<u8>, Option<u8>) = (false, None, None);
     let mut src: Vec<u8> = vec![];
     let mismatch = |c: &mut Ctx, x: u8, y: u8| -> Esc { raise_msg(c, c.vm().c_argument_error.get(), &format!("incompatible encodings: {} and {}", en::enc_name(x), en::enc_name(y))) };
-    for (i, &x) in list.iter().enumerate() {
-        let r = check_regexp_type(c, x)?;
-        let (part, e, kind) = if r != NIL {
-            let rr = rxc(c, r)?;
-            let e = rr.enc;
-            let kind = if !en::ascii_compat(e) { 2 } else if rr.fixed() { 1 } else { 0 };
-            (regexp_to_s(rr), e, kind)
-        } else {
-            let sv = expect_str(c, x)?;
-            let e = c.str_enc(sv);
-            let kind = if !en::ascii_compat(e) { 2 } else if is_ascii(c.str_bytes(sv)) { 0 } else { 1 };
-            let q = re_s_escape(c, NIL, &[sv], Blk::NONE)?;
-            (c.str_bytes(q).to_vec(), e, kind)
-        };
-        match kind {
-            2 => match incompat { None => incompat = Some(e), Some(p) if p != e => return Err(mismatch(c, p, e)), _ => {} },
-            1 => match fixed { None => fixed = Some(e), Some(p) if p != e => return Err(mismatch(c, p, e)), _ => {} },
-            _ => asciionly = true,
+    // the patterns re-read by index from the parked keep Array (to_str / to_regexp may run Ruby code)
+    let n = list.len();
+    c.park(1, |c, q| {
+        q.set(0, keep);
+        for i in 0..n {
+            let x = c.ary_get(q.get(0), i);
+            let r = check_regexp_type(c, x)?;
+            let (part, e, kind) = if r != NIL {
+                let rr = rxc(c, r)?;
+                let e = rr.enc;
+                let kind = if !en::ascii_compat(e) { 2 } else if rr.fixed() { 1 } else { 0 };
+                (regexp_to_s(rr), e, kind)
+            } else {
+                let sv = expect_str(c, x)?;
+                let e = c.str_enc(sv);
+                let kind = if !en::ascii_compat(e) { 2 } else if is_ascii(c.str_bytes(sv)) { 0 } else { 1 };
+                let q = re_s_escape(c, NIL, &[sv], Blk::NONE)?;
+                (c.str_bytes(q).to_vec(), e, kind)
+            };
+            match kind {
+                2 => match incompat { None => incompat = Some(e), Some(p) if p != e => return Err(mismatch(c, p, e)), _ => {} },
+                1 => match fixed { None => fixed = Some(e), Some(p) if p != e => return Err(mismatch(c, p, e)), _ => {} },
+                _ => asciionly = true,
+            }
+            if let Some(w) = incompat {
+                if asciionly { return arg_err(c, format!("ASCII incompatible encoding: {}", en::enc_name(w))); }
+                if let Some(f) = fixed { return Err(mismatch(c, w, f)); }
+            }
+            if i > 0 { src.push(b'|'); }
+            // joined in UTF-8 when the result is ASCII-incompatible (CRuby appends "|" in its encoding)
+            if incompat.is_some() { src.extend_from_slice(&to_utf8_form(&part, e)); } else { src.extend_from_slice(&part); }
         }
-        if let Some(w) = incompat {
-            if asciionly { return arg_err(c, format!("ASCII incompatible encoding: {}", en::enc_name(w))); }
-            if let Some(f) = fixed { return Err(mismatch(c, w, f)); }
-        }
-        if i > 0 { src.push(b'|'); }
-        // joined in UTF-8 when the result is ASCII-incompatible (CRuby appends "|" in its encoding)
-        if incompat.is_some() { src.extend_from_slice(&to_utf8_form(&part, e)); } else { src.extend_from_slice(&part); }
-    }
-    std::hint::black_box(keep);
+        Ok(())
+    })?;
     let enc = incompat.or(fixed).unwrap_or(ENC_BINARY);
     if incompat.is_some() { src = utf8_to_wide(&src, enc); }
     let s = c.str_from_vec_enc(src, enc);
