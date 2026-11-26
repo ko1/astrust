@@ -246,6 +246,32 @@ crate 全体 364（2026-11-21 d3400bc）。分類と経緯は `docs/safe_heap.md
 - [x] 1 回目: math / sprintf float・整数・文字列 / Rational 文字列 parse・round / gsub 置換 / lines / pack / Range / Struct / Hash / 数値 round・coerce（`t/cov/*_1125c.rb` 11 本）。見つけたバグ 18 件は修正済み（README）
 - [ ] CRuby 4.0.10 の癖として再現させた: `Rational("1e+")` は 1（指数部が符号まで消費され数字が無くても通る）。master でも同じ。仕様かバグかは未確認
 
+## 3.5 coverage / test-suite findings（2026-11-26 第 3 弾、~/ruby/src/trials/2026-11-26-saruby-coverage-3/）
+
+コーパス = rubyspec（language / core / library、wt-master-1123）+ CRuby master の test/ruby（`-Itool/lib -Itest/lib test/ruby/test_X.rb`、143 ファイル）+ t/hand + t/cov。2 GiB 上限・4 並列・1 ファイル 90 s。
+test/ruby 143 ファイルのうち、全部通る 30（0 tests の 3 ファイルを含む）、一部失敗 78、サマリなし（読込時に落ちる・abort・時間切れ）35（下に原因別）。集計 7219 tests / 767179 assertions / failures 1087 / errors 3007（test_ast の 2815 が RubyVM::AbstractSyntaxTree 由来）。
+rubyspec は 3763 ファイル（32717 例）、失敗 26 + エラー 185 は 67 ファイル、TIMEOUT 2（left_shift / right_shift、既出）。**67 ファイルは全て下のどれかか既存の項目**。各項目は「直す」か「直さない（理由）」を付けた。
+
+- [ ] （直す）rubyspec の差のうち既出でないもの: `Module#private` / `protected` を引数なしでクロージャ内（`Class.new { ... }` 外で呼ぶ）に書いたときの可視性が外へ効かない（core/module/private_spec・protected_spec の "within a closure" 各 1 件、spec/ruby/core/module/shared/set_visibility.rb:180）。`String#%` の `$DEBUG` + 余った引数（core/string/modulo_spec 1 件: master と 4.0.10 で挙動が違うため saruby は master に合わせ済み、spec は 4.0.10 側で「直さない: spec が master と食い違う」）
+- [x] rubyspec core/queue/pop・sizedqueue/pop・sizedqueue/append の 5 件（timeout に String: `no implicit conversion of String into Float`）は num2dbl の文言を master に（この弾で直した）
+- [ ] （直す）Struct のユーザ定義 #hash が `[x, ""].hash` で相互参照するとき再帰を検出せず終わらない（CRuby は返る）。test/ruby/test_hash.rb TestHash::TestSubHash#test_recursive_hash_value_struct（ファイル全体が TIMEOUT）。repro: `s = Struct.new(:x) { def hash; [x, ""].hash; end }; a = s.new; b = s.new; a.x = b; b.x = a; a.hash`（ruby: Integer、saruby: 終わらない）。bin/repro_hangs.rb hash
+- [ ] （直す）`StringIO#puts(obj)` で obj.to_ary が自分を含む配列を返すと終わらない（CRuby は "[...]\n"）。test_io.rb TestIO#test_puts_recursive_ary（ファイル全体が TIMEOUT）。repro: bin/repro_hangs.rb sio（stringio.rs。IO#puts 側は通る）
+- [ ] （直す）`"\xE1\r\xC3".force_encoding("UTF-8").encode("UTF-16LE", invalid: :replace, universal_newline: true)` が終わらない（不正バイト・\r・不正バイトの並び。invalid なしだと `"\xE1" followed by "\n"` と \r が \n に変わった後の文言になる点も CRuby と違う）。test_transcode.rb test_newline_option_with_invalid_replace（ファイル全体が TIMEOUT）。bin/repro_hangs2.rb trans
+- [ ] （直す）heap.rs:25 の panic（`saruby: nil is not a heap object` / `7 is not a heap object`）: test_rational.rb Rational_Test#test_marshal、test_enumerator.rb TestEnumerator#test_fiber_yield_in_external_iteration（ファイルが abort）。GC / 根の担当へ（このブランチでは触らない）
+- [ ] （直す）`sprintf "%*c", RbConfig::LIMITS["INT_MAX"], 0x80` は CRuby が ArgumentError（width too big）、saruby は 2 GiB 確保して abort（test_sprintf.rb test_width_underflow）。test_integer_comb.rb TestIntegerComb#test_rshift も `memory allocation of 576460752303423492 bytes failed`（巨大な右シフト幅の確保。CRuby は 0 / -1 を返すか RangeError）。2 GiB 上限下での abort なので上限なしで再確認が要る
+- [ ] （直す）正規表現リテラルが読み込めずファイル全体が落ちる（test_regexp.rb:348 `/(?<@bar>.)\g<@bar>\k<@bar>/` = グループ名に @、test_string.rb:1844 `/(?<=\Ka)a/` = 後読みの中の \K。CRuby 4.0.10 / master とも通る）。astrogre 側。この 2 ファイルは大きく（test_string / test_regexp）、直すとカバレッジが大きく増える
+- [ ] （直す）`Module.used_modules` が無く test_refinement.rb がクラス本体で落ちる（3914 行）。`Module.used_refinements` も合わせて
+- [ ] （直す）test/ruby の読み込み前提: test_default_gems / test_io_timeout / test_compile_prism は `require "test/unit"` を書かず runner.rb 経由前提（`-rtest/unit` を付ければ読める。今回のドライバの不備で saruby の問題ではない。次回はドライバに `-rtest/unit` を付ける）
+- [ ] （直す）test_alias.rb TestAlias#test_alias_memory_leak（assert_no_memory_leak が子プロセスの saruby を起こして終わらない: ファイル全体が TIMEOUT）。test_gc.rb TestGc#test_interrupt_in_finalizer（ファイル全体が TIMEOUT）。test_range.rb（TestRange の 4 つ目 `test_reverse_each_for_beginless_range` の前後で TIMEOUT、単体では終わる: 要再現）。test_process.rb TestProcess#test_execopts_redirect_pipe（単体の簡約 repro では終わる: 要再現）。test_readpartial.rb TestReadPartial#test_with_stdio は既出の「パイプの read を Timeout で囲むと返らない」
+- [ ] （直す）`Thread` / `Process` 周りの test/ruby の失敗約 40 ファイル（test_thread 19F 3E、test_process 時間切れ、test_signal 4F、test_io_m17n 7F、test_m17n / test_m17n_comb 17F、test_pack 11F 13E、test_proc 30F 36E、test_module 28F 6E、test_object 14F、test_exception 28F、test_syntax 25F、test_parse 19F、test_enum 13F 8E、test_struct 8F、test_symbol 12F、test_super 9F ほか）はまだ仕分けていない。ログ（/tmp/cov3-ab819/ctest-logs は消えるので `bin/cov_ctest.sh` で再生成）から原因別に次の弾で仕分ける
+- [ ] （直さない: Ruby::Box は実験機能で saruby は未実装）test_box.rb 54F 32E。（直さない: Ractor の隔離意味論は saruby の Ractor が別設計）test_ractor.rb 101F
+- [ ] （直さない: CRuby の VM / JIT 内部 API に依存）test_iseq（RubyVM::InstructionSequence）、test_proc_syntax_tree、test_rubyvm、test_ast（RubyVM::AbstractSyntaxTree、2815 errors）、test_yjit / test_yjit_exit_locations / test_zjit_cli（YJIT / ZJIT）、test_gc_compact（GC.compact の内部）、test_compile_prism
+- [ ] （直さない: CRuby の C 製テスト拡張 `-test-/*` が要る）test_call（-test-/iter）、test_dir_m17n・test_file・test_file_exhaustive（-test-/file）、test_io_buffer（-test-/io_buffer）、test_keyword（-test-/rb_call_super_kw）、test_memory_view
+- [ ] （直さない: master 専用）test_set.rb は `Set::CoreSet`（master の core Set）、test_method.rb は 4.1 の構文 `def m(&nil)`（4.0.10 の parser は通さない）、test_array.rb は `RbConfig::SIZEOF["rb_len_t"]`（この弾で追加した）
+- [ ] （直さない: 2 GiB 上限による abort。上限なしで再確認する）test_class / test_marshal / test_argf の `memory allocation of N bytes failed`（それぞれ 408 バイト・1 MiB・32 MiB の確保で落ちる = 上限を使い切った後。saruby の確保量が多いかは別途）
+- [ ] （直す）t/cov/*_1126d.rb が見つけて直していない差（tests は saruby でこの行だけ失敗）: `Kid.new.public_methods(false)` が prepend したモジュールのメソッドを含む（module_const_visibility_1126d の public_methods_false: master は `[:k]`、saruby は `[:k, :m2]`）。`("a".."c")` でなく begin が #to_str を持つ非 String の Range#each（range_each_clamp_1126d の each_to_str: master は ["a","b","c"]、saruby は TypeError）
+- [ ] （直す）死んだコード（この弾で呼び出し元の無い builtins の関数 7 つと kernel の rand / srand（random.rs が後から上書き）を削除。残り、hot path 側は触らなかった）: vm.rs の `site_fast`（45 行）・`spec_callee`（35 行）・`site_kind`、rt.rs の `srb_yield_miss`・`srb_call_kw_spec`・`srb_unsupported`、hash_methods.rs の `h_group_by` ほか `let _ = (...)` で警告を黙らせている fallback 群、math.rs の cbrt（extras.rs が上書き）、`Vm::rand_state`（読む所が無くなった）。AOT 経路でだけ使うものがあるか確認してから削る
+
 ## 性能（上 3 つの後。新規には起こさない）
 
 - [ ] codegen-units=1 への再ベースラインで悪くなった行（16 の分割の運だった可能性）: str plain +8.65 %、nesteddata plain +3.24 %、gen_gc plain +2.32 %、closures +2.13 / AOT +3.96 %。`#[inline]` の明示（kalloc / 文字列確保）で決定的に取り戻せるか（~/ruby/src/trials/2026-11-26-saruby-codegen-units）
