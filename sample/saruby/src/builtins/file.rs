@@ -985,24 +985,29 @@ fn glob_impl(c: &mut Ctx, pats_v: Value, flags_v: Option<Value>, opts: Option<Va
     let flags = match kwflags.or(flags_v) { Some(f) if f != NIL => num_to_long(c, f)?, _ => 0 };
     let items: Vec<Value> = if is_array(pats_v) { c.ary(pats_v).to_vec() } else { vec![pats_v] };
     let keep = c.ary_new_from(&items);
-    let out = c.ary_new();
-    for i in 0..c.ary_len(keep) {
-        let x = c.ary_get(keep, i);
-        let s = if is_string(x) { x } else { let p = path_arg(c, x)?; c.str_new(p.as_bytes()) };
-        let enc = c.str_enc(s);
-        if !crate::builtins::encoding::ascii_compat(enc) {
-            return err(c, c.vm().c_compat_error.get(), format!("incompatible character encodings: {} and US-ASCII", crate::builtins::encoding::enc_name(enc)));
+    // q0: the patterns, q1: the result (path_arg / external_str allocate)
+    c.park(2, |c, q| {
+        q.set(0, keep);
+        let out = c.ary_new();
+        q.set(1, out);
+        for i in 0..c.ary_len(q.get(0)) {
+            let x = c.ary_get(q.get(0), i);
+            let s = if is_string(x) { x } else { let p = path_arg(c, x)?; c.str_new(p.as_bytes()) };
+            let enc = c.str_enc(s);
+            if !crate::builtins::encoding::ascii_compat(enc) {
+                return err(c, c.vm().c_compat_error.get(), format!("incompatible character encodings: {} and US-ASCII", crate::builtins::encoding::enc_name(enc)));
+            }
+            let pb = c.str_bytes(s).to_vec();
+            if pb.contains(&0) { return arg_err(c, "nul-separated glob pattern is deprecated"); }
+            let renc = if enc == crate::object::ENC_ASCII { crate::builtins::encoding::default_external() } else { enc };
+            let mut found = vec![];
+            glob_one(&pb, flags, base.as_deref(), sort, &mut found);
+            for f in found { let v = crate::builtins::encoding::external_str(c, f, renc); c.ary_push(q.get(1), v); }
         }
-        let pb = c.str_bytes(s).to_vec();
-        if pb.contains(&0) { return arg_err(c, "nul-separated glob pattern is deprecated"); }
-        let renc = if enc == crate::object::ENC_ASCII { crate::builtins::encoding::default_external() } else { enc };
-        let mut found = vec![];
-        glob_one(&pb, flags, base.as_deref(), sort, &mut found);
-        for f in found { let v = crate::builtins::encoding::external_str(c, f, renc); c.ary_push(out, v); }
-    }
-    if blk.is_null() { return Ok(out); }
-    each_elem(c, out, blk)?;
-    Ok(NIL)
+        if blk.is_null() { return Ok(q.get(1)); }
+        each_elem(c, q.get(1), blk)?;
+        Ok(NIL)
+    })
 }
 fn d_s_aref(c: &mut Ctx, _slf: Value, a: &[Value], _b: Blk) -> RV {
     let (pos, opts) = kw_split(c, a);
