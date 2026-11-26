@@ -189,10 +189,10 @@ Gc<Saruby, Backend>`, `gc::alloc(c, klass, body)` (through `Ctx::alloc`), `gc::c
 * Roots (`vm::visit_roots`, `vm::visit_ctx`): exact — the `Vm` fields (builtin classes,
   globals, `node_values`, `pinned` (the current fiber among them), `frozen_lits`,
   `symproc_cache`, crefs), the main `Ctx`'s `esc_val` / `errinfo` / `last_match` /
-  `esc_tag_v`; ambiguous — the running machine stack with callee-saved registers and the main
-  value stack.
+  `esc_tag_v`, every context's value stack below `sp` (cleared above `sp` at each collection:
+  `docs/gc_moving.md` 12.2); ambiguous — the running machine stack with callee-saved registers.
 * A Fiber is an ordinary object: `FiberData::visit` (fiber.rs) traces its `Ctx` (value stack,
-  ambiguous) and, while it is switched out, its machine stack from the saved stack pointer
+  exact) and, while it is switched out, its machine stack from the saved stack pointer
   (ambiguous; the main thread's root fiber owns the main stack).  A suspended fiber nothing
   refers to is collected; its stacks go back to pools (fiber_os.rs).
 * Edges (`GcLang::scan_edges`): the match over `Body`, `vm::visit_class` / `visit_me` /
@@ -255,9 +255,9 @@ Blocking precise roots (dropping the ambiguous machine-stack scan):
 * `Block` and `Frame` structs live on the machine stack and hold Values (`self_`, `env`,
   `proc_val`, `defined_class`: `src/vm.rs` `struct Block`); they are reached only by the
   ambiguous scan, and `Block.outer_blk` points at such a stack copy (`vm::visit_block`).
-* The VM value stacks are scanned as ambiguous words (`vm::visit_ctx`): slots below `sp` that
-  no frame wrote yet hold stale Values.  They hold only Values, so this one can become exact
-  once frames clear or bound their slots.
+* (Resolved 2026-11-26, phase 1e: the VM value stacks are scanned exactly.  Each collection resets
+  the slots above every context's `sp` to nil, so a slot below `sp` no frame wrote yet holds nil or
+  a Value alive at the last collection; `docs/gc_moving.md` 12.2.)
 * Values copied into Rust heap buffers across calls (`args.to_vec()` in `src/vm.rs`; in
   `src/fiber.rs` `fiber_main` the Array they came from is kept on the stack), which no scan sees.
 

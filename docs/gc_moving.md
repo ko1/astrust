@@ -380,3 +380,101 @@ step only; the goal stays full moving with no stack-driven pinning.
   Calling `make()` once before the branch (as MarkBitmap does) or passing the closure to a cold shim are both far worse
   (store-forwarding stalls; up to +28 %).  A change that only adds GC-time work can still move instruction counts by
   ±0.5 % through register allocation (closures, `make_env`): measure every root addition against the 21 benches.
+
+## 12. Phase 1e: the value stacks exact, parks checked, Frame.blk, `sp` in a register
+
+2026-11-26.  Design before implementation; numbers in the trial README, "Phase 1e".
+
+### 12.1 Where a slot below `sp` can be stale
+
+Every slot is a `Cell<Value>` and stacks start as NIL (`slots_new`, `nil_slots`), so a slot never holds a
+word that is not a Value.  What makes the old scan ambiguous is staleness: a slot below `sp` that no one
+wrote since it was last above `sp` holds a Value left by a popped frame, whose object may have been freed
+(or, with a moving collector, moved) since.  Where `sp` covers slots before they are written:
+
+* call staging: `stage(c, 2 + k)` then the receiver and the arguments are evaluated (GC points) and written
+  one by one; `base[1]` (the callee's env slot) is written only by an entry node, never for a cfunc;
+* `invoke_block_full` / `yield*`: `set_sp(base, 2 + argc)` after `put`, `base[1]` written by the entry;
+* method / block entry: `enter` then nil-fill of `[2 + nparams, nlocals)` with no GC point in between (not stale).
+
+Nil-filling staged areas at `stage` would cost 2 + k stores per call (fib: 3), which is over budget.
+
+### 12.2 The invariant instead: every slot above `sp` is NIL after each collection
+
+At the end of every collection's root scan, each context's slots above `sp` are reset to NIL.  Then at any
+GC point every slot of a stack holds either NIL / an immediate, a Value that was below `sp` at the last
+collection (so it was a root and is alive, or was updated), or a Value written since (an object allocated or
+reachable since the last collection, which nothing could free meanwhile).  So `[0, sp)` is scanned with
+`visit`, exactly: a stale slot only retains its object until the next collection, as the conservative scan did,
+and a moving collector may update it (it is a valid Value).  Nothing on the hot path changes.
+
+Cost, GC time only: per collection, the running and main contexts and each fiber that ran since the last
+collection (a flag set on resume) clear their free part: stores for the first 8192 slots above `sp`, then
+`madvise(MADV_DONTNEED)` over the rest of a `nil_slots` mapping (its pages read as NIL again: the mapping is a
+private view of a NIL file, `fiber_os.rs`).  A stack not made by `nil_slots` (the fallback when the NIL file
+cannot be made) is cleared by stores.  A stack taken back from the pool after a collection is cleared before
+reuse (its first `WARM` bytes kept their old contents; `nil_slots_reset` gave back the rest).
+
+What the clear also checks: R3 of stack_raw.rs ("sp is at or above every live slot").  Code that writes a slot
+above `sp` and reads it after a GC point now reads NIL (under `gc_check`: a poison Value that faults when used;
+the exact scan skips it).  `SARUBY_GC_STRESS` + `gc_check` over t/hand is the gate that finds such code.
+
+### 12.3 Parks and yields (koruby's P1)
+
+Audit (2026-11-26, master 0f77f68): every yield from Rust (`yield_block_raw`, `yield1_raw`, `call_proc_kw_raw`,
+`invoke_block_full_raw`) puts the block's frame at `c.top()` and restores `sp` to that base, so it runs above
+any park the caller opened; `node_yield` stages at `sp` too.  The one path that places a block frame at a base
+taken before the builtin ran is the inline iterator of `node_call_blk` (`inline_iter.rs`): `bb = c.top()` at
+the site, then `put_args` resets `sp` to `bb` at every step.  The `*_loop` functions it runs park nothing today
+(their state is in Rust locals), so P1 does not happen; a loop converted to park its state would have its park
+overwritten by the block's frame.  Check, `gc_check` builds: `park` records its slots' end per stack, and every
+move of `sp` downward (`set_sp`, `sp_reset`, `at_entry`) asserts that it stays at or above the innermost live
+park of that stack.  This is deterministic (no stress needed) and fires on the koruby P1 pattern.
+
+### 12.4 Frame.blk and Block values (from phase 1b)
+
+Implemented on its own branch (`moving-gc-e1-blk`, independent of 12.2).  A Block a frame points at is either a
+Proc payload (visited through the Proc) or a Rust-stack temporary of its caller.  Both are now also visited through
+the frame chain of every context (`Frame.blk`, `FrameFull.self_blk`; `visit_ctx`, `visit_main_ctx`).  A moving
+collector updates them through the shared pointers frames and callers hold, so Block's Value fields (`self_`,
+`env`, `proc_val`, `defined_class`) are `Cell<Value>` and BlockKind's Values (Method, Cfunc data, Proc) moved into
+one `data` Cell, as MethodEntry's Bmethod Proc did (f203599).  Block is Clone, not Copy; its clone is a bitwise copy
+(one `unsafe`): field by field, LLVM copied the 88 bytes with a dozen narrow moves and closures rose 2.3 % / 4.0 %
+instructions.  `block_to_proc`'s write of `proc_val` through a `*const Block` cast to `*mut` became a Cell set.
+
+### 12.5 `Ctx.sp` in a register: measured, not threaded yet
+
+The user's rule (2026-11-26): thread `sp` only for a clear per-benchmark gain on the call-heavy benches at
+codegen-units = 1 on sp4; otherwise keep `Ctx.sp`.  Measured on master 0f77f68, sp4 (trial README "Phase 1e"):
+
+* Interpreter (`--plain`): per call, node_call loads `sp` once and stores it at `stage` and at `set_sp`; the method
+  entry does one read-modify-write (`sub %r, (ctx)`).  Instruction samples on those instructions: fib 1.00 %,
+  method_call 1.40 %, tak 1.58 %, binary_trees 1.81 %, closures 0.17 %, iterators 0.09 % (skid puts up to 5 % more on
+  the next instruction).
+* Baked code: method_call's loop (about 53 instructions per call, callee compiled in) does 3 `Ctx.sp` accesses per
+  call (load at the stage, store at the stage, store at `set_sp`), with no call or GC point between them on the fast
+  path.  Samples: method_call 2.65 %, tak 2.44 %, iterators 2.01 %, binary_trees 1.55 %, closures 0.92 %, fib 0.32 %
+  (+0.8 - 6 % on the next instruction).
+* So threading could remove at most about 3 instructions per call on the baked fast path (about 5.7 % of
+  method_call's), and about 1 - 2 % of the interpreter's.  Getting there is not local: the stores can only move to the
+  slow paths if every EVAL and every out-of-line call of the generated code carries `sp`, and only the allocation /
+  GC-point entries write it into `Ctx` (koruby's "only korb_alloc writes sp_top", enforced by a type: an `Sp` token the
+  callee consumes).  That is an ABI change of the generator (`saruby_gen.rb`, every node), not a patch of one path.
+
+Decision for now: `Ctx.sp` stays.  The prototype was not built in this session; the bound above says it is worth
+building as its own item (todo 1.5), and the decision is to be made from its sp4 numbers per benchmark.
+
+### 12.6 What still relies on the machine-stack scan
+
+With the value stacks exact, the remaining conservative roots are the machine stacks (the running one and suspended
+fibers').  `make FEATURES=gc_check` + `SARUBY_GC_PRECISE_ALL=1` scans neither; with `SARUBY_GC_STRESS=1` what breaks
+is what still keeps a Value only in a Rust local: generated node code's `@child` values (phase 1e, 12.7), cfuncs on
+the old ABI (phase 1c / 1d), and helpers in rt.rs / vm.rs.  The default build keeps the scan.
+
+### 12.7 `@child` values in slots: cost estimated, under feature `precise` only
+
+`a + b` keeps `a` in a register while `b` (a call) runs; a moving collector needs `a` in a slot.  Storing every
+earlier child of a multi-child node in a frame or value-stack slot costs a store and a load per such child: in
+fib's `fib(n - 1) + fib(n - 2)` and `n < 2` alone that is about 10 of the ~84 instructions per call of the baked
+code (an estimate from the node shapes, not measured), far over 0.3 %.  So it goes under cargo feature `precise` (with `GC=copy`), as section 9 planned; a test that
+skips the store for immediates (`if a.is_heap()`) still costs a test and a branch per child.  Not implemented yet.
