@@ -51,6 +51,7 @@ user 2026-11-25「full moving 頑張ってほしい」「クラスなどを non-
 - [x] gc_check: precise zone の中で raise すると例外オブジェクトや inspect の文字列が root にならない（t/hand sort_nested_objects_sortbang が CHECK + stress で panic、`Array#sort!` の frozen 検査から）。raise の helper を conservative zone に（2026-11-26 session 4、branch moving-gc-s4-errzone）
 - [ ] `Array#sort_by` でブロックが receiver を縮めたとき: CRuby は `a.sort_by { a.clear; x }` → `["s0"]`、saruby は `[]`（keys と receiver の短い方で切る。master 19faa10 でも同じ）
 - [ ] phase 1e: value stack の exact 化、node `@child` を slot へ（`saruby_gen.rb`、費用を測ってから）
+- [ ] Ctx.sp をレジスタに: 値スタックの先頭の正本が `Ctx.sp`（メモリ上の 1 つ）なので、`&mut Ctx` を渡す呼び出しのたびに書き戻し / 読み直しが入る（koruby_precise は sp を引数で引き回し、`c->sp_top` は korb_alloc だけが書く）。まず呼び出し経路（メソッド呼び出し・yield・stage）の Ctx.sp の load/store を機械語と perf で数える → 一部経路で sp を値として引き回す試作。正本が 2 つになる危険は型で縛る（確保関数だけが sp を受け取って Ctx に書ける、他は書けない＝「sp_top を書くのは korb_alloc だけ」をコンパイラで守らせる）。phase 1e と合わせて設計（user 2026-11-26「ctx の参照がふえちゃうとレジスタにのらないんじゃないの？」）
 - [ ] phase 2: `copy`（Cheney、クラス・リテラルは non-moving 空間、identity hash は object_id から）、PURGE
 - [ ] phase 3: `copy_gen`（write barrier、`Member` 型で store 漏れを compile error に）
 
