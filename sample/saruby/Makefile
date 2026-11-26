@@ -38,6 +38,8 @@ target/.gc-$(GC):
 	mkdir -p target && rm -f target/.gc-* && touch $@
 
 INTERP ?= ./saruby
+# the oracle for make test / bench: installed CRuby master, the same binary koruby uses (user 2026-11-26)
+RUBY ?= $(firstword $(wildcard $(HOME)/ruby/install/master/bin/ruby) ruby)
 # the shared Ruby test/bench harness (its own repository since 2026-11-25; was astro/sample/rubyharness)
 RUBYHARNESS ?= $(HOME)/ruby/rubyharness
 # optional: build-only hosts (sp3 / sp4) have no harness checkout
