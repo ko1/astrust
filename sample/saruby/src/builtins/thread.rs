@@ -298,11 +298,21 @@ fn schedule(c: &mut Ctx, me: Value, id: Id) -> Result<(), Esc> {
 /// objects (no rb_thread_t; green threads have no native thread of their own).
 #[cold]
 fn deadlock_message(c: &mut Ctx, main_op: Id) -> String {
-    let main = MAIN.get(c);
-    let mut ts = vec![main];
-    ts.extend(c.ary(LIST.get(c)).iter().copied().filter(|&t| !th(c, t).dead && th(c, t).ractor == NIL));
-    let mut m = format!("No live threads left. Deadlock?\n{} threads, {} sleeps current:0x{:016x} main thread:0x{:016x}\n", ts.len(), ts.len(), cur(c).raw(), main.raw());
-    for &t in &ts {
+    // the threads in a parked Array, re-read by index after each backtrace (an allocation)
+    c.park(1, |c, q| {
+        let l = c.ary_new_from(&[MAIN.get(c)]);
+        q.set(0, l);
+        let mut i = 0;
+        while let Some(&t) = c.ary(LIST.get(c)).get(i) { i += 1; if !th(c, t).dead && th(c, t).ractor == NIL { c.ary_push(q.get(0), t); } }
+        Ok(deadlock_message_of(c, main_op, &q))
+    }).unwrap_or_default()
+}
+fn deadlock_message_of(c: &mut Ctx, main_op: Id, q: &crate::gc::Park<'_>) -> String {
+    let n = c.ary_len(q.get(0));
+    let mut m = format!("No live threads left. Deadlock?\n{} threads, {} sleeps current:0x{:016x} main thread:0x{:016x}\n", n, n, cur(c).raw(), MAIN.get(c).raw());
+    for ti in 0..n {
+        let t = c.ary_get(q.get(0), ti);
+        let ts = c.ary(q.get(0));
         m.push_str(&format!("* {}\n   rb_thread_t:0x{:016x} native:0x{:016x} int:0", inspect_thread(c, t, "sleep_forever"), t.raw(), t.raw()));
         let lm = th(c, t).locking;
         if lm != NIL {
@@ -312,7 +322,9 @@ fn deadlock_message(c: &mut Ctx, main_op: Id) -> String {
             m.push_str(&format!(" mutex:{} cond:{}", owner, waiting));
         }
         // join_list: the latest joiner first
-        for &u in ts.iter().rev() { if wait_key(c, u, main_op) == Some(t.raw()) { m.push_str(&format!("\n    depended by: tb_thread_id:0x{:016x}", u.raw())); } }
+        let us: Vec<Value> = c.ary(q.get(0)).to_vec();
+        for &u in us.iter().rev() { if wait_key(c, u, main_op) == Some(t.raw()) { m.push_str(&format!("\n    depended by: tb_thread_id:0x{:016x}", u.raw())); } }
+        let t = c.ary_get(q.get(0), ti);
         let lines = if t == cur(c) { backtrace_locs_n(c, 0, None) } else {
             let r = th(c, t);
             let f = if r.inner != NIL { r.inner } else { r.fiber };
@@ -1061,10 +1073,17 @@ fn group_of(c: &mut Ctx, t: Value) -> Value {
 fn tg_enclosed(c: &mut Ctx, g: Value) -> bool { ivar_get(c, g, intern(b"__enclosed")).truthy() }
 fn tg_list(c: &mut Ctx, s: Value, a: &[Value], b: Blk) -> RV {
     let all = th_list(c, NIL, a, b)?;
-    let v: Vec<Value> = c.ary(all).to_vec();
-    let mut out = vec![];
-    for t in v { if group_of(c, t) == s { out.push(t); } }
-    Ok(c.ary_from_vec(out))
+    // p: [group, all, out]; each thread re-read after group_of (init_sync allocates)
+    c.precise_cfunc(s, &[all, NIL], |c, p| {
+        let out = c.ary_new();
+        p.set(2, out);
+        let mut i = 0;
+        while let Some(&t) = c.ary(p.get(1)).get(i) {
+            i += 1;
+            if crate::gc::conservative(c, |c| group_of(c, t)) == p.get(0) { let t = c.ary_get(p.get(1), i - 1); c.ary_push(p.get(2), t); }
+        }
+        Ok(p.get(2))
+    })
 }
 /// thgroup_add
 fn tg_add(c: &mut Ctx, s: Value, a: &[Value], _b: Blk) -> RV {
