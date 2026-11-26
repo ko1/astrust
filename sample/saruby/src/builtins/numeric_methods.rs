@@ -489,7 +489,7 @@ pub fn size_proc(c: &mut Ctx, f: CBlockFn, data: Value) -> Value {
     let b = Block::cfunc(c, f, data);
     let k = c.vm().c_proc.get();
     let p = c.alloc(k, Body::Proc(Box::new(ProcData { blk: b, is_lambda: true, from_method: NIL })));
-    c.proc_data_mut(p).blk.proc_val = p;
+    c.proc_data_mut(p).blk.proc_val.set(p);
     p
 }
 /// ruby_num_interval_step_size

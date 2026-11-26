@@ -567,7 +567,7 @@ cfn!(h_to_proc, |c, slf, a, blk| {
     let b = Block::cfunc(c, hash_proc_call, slf);
     let k = c.vm().c_proc.get();
     let p = c.alloc(k, Body::Proc(Box::new(ProcData { blk: b, is_lambda: true, from_method: NIL })));
-    c.proc_data_mut(p).blk.proc_val = p;
+    c.proc_data_mut(p).blk.proc_val.set(p);
     Ok(p)
 });
 cfn!(h_s_try_convert, |c, slf, a, blk| Ok(check_hash(c, a[0])?.unwrap_or(NIL)));

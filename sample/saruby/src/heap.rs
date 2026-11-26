@@ -238,8 +238,8 @@ impl Ctx {
         let mut b = self.blk_ref(blk)?;
         loop {
             match b.kind {
-                BlockKind::Method(m) => return Some(m),
-                BlockKind::Proc(p) => b = &self.proc_data(p).blk,
+                BlockKind::Method => return Some(b.data.get()),
+                BlockKind::Proc => b = &self.proc_data(b.data.get()).blk,
                 _ => return None,
             }
         }
@@ -313,7 +313,8 @@ impl Ctx {
     }
     /// The Block a builtin received, by value (H4).
     #[inline(always)]
-    pub fn block_copy(&self, blk: impl crate::vm::BlkArg) -> Option<Block> { unsafe { blk.ptr().as_ref().copied() } }   // SAFETY: H4
+    pub fn block_copy(&self, blk: impl crate::vm::BlkArg) -> Option<Block> { self.block_ref(blk).cloned() }
+    pub fn block_ref(&self, blk: impl crate::vm::BlkArg) -> Option<&Block> { unsafe { blk.ptr().as_ref() } }   // SAFETY: H4
     /// Change a method entry's visibility in place (Module#private on an owned method). A place
     /// write: no reference is made; `me_ref` borrows are excluded by `&mut self`.
     #[inline(always)]

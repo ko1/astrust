@@ -160,14 +160,14 @@ pub fn binding_of_frame_at(c: &mut Ctx, addr: usize) -> RV {
     Ok(NIL)
 }
 pub fn binding_of_proc(c: &mut Ctx, p: Value) -> RV {
-    let b = c.proc_data(p).blk;
+    let b = c.proc_data(p).blk.clone();
     let (names, file, line) = match b.kind {
         BlockKind::Iseq(is) => match c.iseq_ref(is) { Some(i) => (iseq_names(c, is, false), i.info.file, i.info.line), None => (vec![], "(binding)", 0) },
         _ => (vec![], "(binding)", 0),
     };
     // a Proc's outer block was promoted with it
     let blk = block_to_proc(c, b.outer_blk)?;
-    Ok(new_binding(c, RBinding { self_: b.self_, env: b.env, names: vec![names], cref: b.cref, me: b.me, file, line, dc: b.defined_class, svar: b.home_id, ret: b.home_id, blk, visi: VISI_PUBLIC, implicit: vec![], fkind: (FK_TOP, std::ptr::null()) }))
+    Ok(new_binding(c, RBinding { self_: b.self_.get(), env: b.env.get(), names: vec![names], cref: b.cref, me: b.me, file, line, dc: b.defined_class.get(), svar: b.home_id, ret: b.home_id, blk, visi: VISI_PUBLIC, implicit: vec![], fkind: (FK_TOP, std::ptr::null()) }))
 }
 
 fn env_names(names: &[Vec<(Sym, u32, u32)>]) -> Vec<(Sym, u32, u32)> {

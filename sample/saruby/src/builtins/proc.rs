@@ -23,7 +23,7 @@ fn sym_proc_call(c: &mut Ctx, data: Value, args: &[Value], blk: Blk, _o: Blk) ->
 /// A Proc of class `klass` running block `b`; `b` stays on the stack (rooted) until the slot holds it.
 fn new_proc(c: &mut Ctx, klass: Value, b: Block, is_lambda: bool, from_method: Value) -> Value {
     let p = c.alloc_with(klass, move || Body::Proc(Box::new(ProcData { blk: b, is_lambda, from_method })));
-    c.proc_data_mut(p).blk.proc_val = p;
+    c.proc_data_mut(p).blk.proc_val.set(p);
     p
 }
 fn new_method_obj(c: &mut Ctx, klass: Value, m: MethodObj) -> Value {
@@ -51,10 +51,10 @@ pub fn proc_arity(c: &Ctx, p: Value) -> i64 {
     match pd.blk.kind {
         BlockKind::Iseq(is) => c.iseq_ref(is).map_or(-1, |is| iseq_arity(is, pd.is_lambda)),
         BlockKind::Sym(_) => -2,
-        BlockKind::Method(m) => method_arity(c, c.method_obj(m).me),
-        BlockKind::Cfunc(f, _) if f as *const () as usize == crate::builtins::enum_native::map_blk as *const () as usize && is_proc(pd.from_method) => outer_arity(c, pd.from_method),
-        BlockKind::Cfunc(f, _) => if f as *const () as usize == crate::builtins::hash_methods::hash_proc_call as *const () as usize { 1 } else { -1 },
-        BlockKind::Proc(q) => proc_arity(c, q),
+        BlockKind::Method => method_arity(c, c.method_obj(pd.blk.data.get()).me),
+        BlockKind::Cfunc(f) if f as *const () as usize == crate::builtins::enum_native::map_blk as *const () as usize && is_proc(pd.from_method) => outer_arity(c, pd.from_method),
+        BlockKind::Cfunc(f) => if f as *const () as usize == crate::builtins::hash_methods::hash_proc_call as *const () as usize { 1 } else { -1 },
+        BlockKind::Proc => proc_arity(c, pd.blk.data.get()),
     }
 }
 
@@ -62,7 +62,7 @@ pub fn proc_arity(c: &Ctx, p: Value) -> i64 {
 fn outer_arity(c: &Ctx, p: Value) -> i64 {
     match c.proc_data(p).blk.kind {
         BlockKind::Iseq(is) => c.iseq_ref(is).map_or(-1, |is| iseq_arity(is, false)),
-        BlockKind::Proc(q) => outer_arity(c, q),
+        BlockKind::Proc => outer_arity(c, c.proc_data(p).blk.data.get()),
         _ => proc_arity(c, p),
     }
 }
@@ -89,7 +89,7 @@ fn iseq_min_max(is: &Iseq) -> (i64, Option<i64>) {
 fn proc_min_max(c: &Ctx, p: Value) -> (i64, Option<i64>) {
     let is = match c.proc_data(p).blk.kind {
         BlockKind::Iseq(is) => Some(is),
-        BlockKind::Method(m) => match c.me_ref(c.method_obj(m).me).map(|e| (e.kind, e.body.get())) {
+        BlockKind::Method => match c.me_ref(c.method_obj(c.proc_data(p).blk.data.get()).me).map(|e| (e.kind, e.body.get())) {
             Some((MKind::Iseq(is), _)) => Some(is),
             Some((MKind::Bmethod, q)) => return proc_min_max(c, q),
             _ => None,
@@ -165,7 +165,7 @@ fn proc_parameters(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV { { let 
     match kind {
         BlockKind::Iseq(is) => Ok(params_list(c, is, lambda)),
         BlockKind::Sym(_) => Ok(rows_to_ary(c, vec![vec![sym_value("req")], vec![sym_value("rest")]])),
-        BlockKind::Method(m) => method_parameters(c, m, &[], Blk::NONE),
+        BlockKind::Method => method_parameters(c, c.proc_data(slf).blk.data.get(), &[], Blk::NONE),
         _ => Ok(rows_to_ary(c, vec![vec![sym_value("rest")]])),
     }
 }
@@ -256,7 +256,7 @@ fn proc_eq(c: &mut Ctx, slf: Value, a: &[Value], _b: Blk) -> RV {
 }
 fn proc_hash(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let x = c.proc_data(slf);
-    let h = match x.blk.kind { BlockKind::Iseq(p) => p as u64 ^ x.blk.env.raw(), _ => slf.raw() };
+    let h = match x.blk.kind { BlockKind::Iseq(p) => p as u64 ^ x.blk.env.get().raw(), _ => slf.raw() };
     Ok(Value::fix((crate::astrust::hash_u64(h) >> 2) as i64))
 }
 /// [file, line] of an iseq, or nil.
@@ -273,12 +273,12 @@ pub fn proc_location(c: &Ctx, p: Value) -> Option<(&'static str, u32)> {
 fn proc_source_location(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     match c.proc_data(slf).blk.kind {
         BlockKind::Iseq(is) => iseq_location(c, is),
-        BlockKind::Method(m) => meth_source_location(c, m, &[], Blk::NONE),
+        BlockKind::Method => meth_source_location(c, c.proc_data(slf).blk.data.get(), &[], Blk::NONE),
         _ => Ok(NIL),
     }
 }
 fn proc_binding(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
-    if !matches!(c.proc_data(slf).blk.kind, BlockKind::Iseq(_) | BlockKind::Method(_)) { return arg_err(c, "Can't create Binding from C level Proc"); }
+    if !matches!(c.proc_data(slf).blk.kind, BlockKind::Iseq(_) | BlockKind::Method) { return arg_err(c, "Can't create Binding from C level Proc"); }
     crate::builtins::binding::binding_of_proc(c, slf)
 }
 /// Proc#ruby2_keywords: flags the block's iseq (shared by dups), as rb_proc_ruby2_keywords.
@@ -353,8 +353,9 @@ fn meth_call(c: &mut Ctx, slf: Value, a: &[Value], b: Blk) -> RV {
 }
 fn meth_to_proc(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV {
     let mut b = Block::cfunc(c, |_c, _d, _a, _b, _o| Ok(NIL), NIL);
-    b.kind = BlockKind::Method(slf);
-    b.self_ = c.method_obj(slf).recv;
+    b.kind = BlockKind::Method;
+    b.data.set(slf);
+    b.self_.set(c.method_obj(slf).recv);
     Ok(new_proc(c, c.vm().c_proc.get(), b, true, slf))
 }
 fn meth_arity(c: &mut Ctx, slf: Value, _a: &[Value], _b: Blk) -> RV { Ok(Value::fix(method_arity(c, c.method_obj(slf).me))) }

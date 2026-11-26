@@ -74,11 +74,11 @@ pub const IT_SHARE: u32 = 1 << 16;
 /// what node_block_entry makes at every step.  The site resets `line` before each step.
 #[inline(always)]
 pub fn block_frame(b: &Block, bfp: Fp, prev: *mut Frame, is: &'static Iseq) -> FrameFull {
-    bfp[0].set(b.self_);
-    bfp[1].set(b.env);
+    bfp[0].set(b.self_.get());
+    bfp[1].set(b.env.get());
     FrameFull {
         h: Frame { prev, fp: head(bfp), me: b.me, blk: b.outer_blk, id: b.home_id, pos: crate::vm::Pos::info(&is.info.line), kind: FK_BLOCK, visi: VISI_PUBLIC, lite: false, pad: std::cell::Cell::new(0) },
-        cref: b.cref, iseq: std::ptr::null(), self_blk: b, defined_class: b.defined_class,
+        cref: b.cref, iseq: std::ptr::null(), self_blk: b, defined_class: b.defined_class.get(),
     }
 }
 
