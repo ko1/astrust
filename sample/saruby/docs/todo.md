@@ -69,6 +69,11 @@ user 2026-11-25「full moving 頑張ってほしい」「クラスなどを non-
   - 状況: F-1 / F-1b / F-2 で 24 本すべてが PRECISE_ALL で通る。ただし F-1 は性能の予算超え（mapreduce AOT +3.8 %、fib plain 約 +0.7 %）で、まだマージできない。
   - 次の手順: fib の費用が `stage_park` から来ているかを切り分ける。b108507（wip）はビルドしていない。
   - inventory: master の t/hand は 2119 / 2240 本が落ちる。最初の 456 本の backtrace から 67 か所を特定した。
+- [ ] CodeQL（Rust）の rooting 検査（user 依頼 2026-11-26「そうだね、試してもらえますか」）。2026-11-27 checkpoint: branch `worktree-agent-a9ac85aa025addbf9`（e714e56、wip）、~/ruby/src/trials/2026-11-26-saruby-codeql-rust/（再開の手順は README の末尾）、ideas measuring/saruby-codeql-rust-rooting.md。
+  - DB は約 1m44s・105MB で作れる。呼び出しの 68 % が解決される。std のマクロ（`format!`、`vec!` など）は展開されないので、その引数の中の GC 呼び出しは見えない。
+  - Vec の検査: 修正前の木では、手で直した 40 か所のうち 15 か所を正確な位置で拾う。master では 19 行が出て、うち 11 が本物。
+  - 値の検査（2013 行）と引数の検査（3747 行）は、まだ誤検出が多い。クラスと、エラーの経路でしか GC しない呼び出しを除く必要がある。
+  - 案: Vec の検査を 19 から増やさない ratchet にする。他の 2 つは絞り込みができてから
 - [ ] `while` の中で、Hash リテラルや呼び出し引数の中の `next` が、1 回ごとに値スタックの slot を 1 つ漏らす（`node_while` が sp を戻さない）。長いループは SystemStackError になる。hot loop なので、性能を測ってから直す（phase 1f agent が見つけた、2026-11-27）
 - [ ] phase 3: `copy_gen`（write barrier、`Member` 型で store 漏れを compile error に）
 - [ ] phase 2 / 3 の方針を koruby_precise に揃える（user 2026-11-26「細かい拡張戦略とか、Astro Koruby に揃えられると比較しやすいね」）。値は ~/ruby/astro/runtime/precise_gc/gc_copy.c と gc_copy_gen.c から取る。
