@@ -462,6 +462,8 @@ pub struct Park<'s> { st: crate::stack::Stk, _brand: std::marker::PhantomData<fn
 impl<'s> Park<'s> {
     #[inline(always)] pub fn get(&self, i: usize) -> Value { self.st[i].get() }
     #[inline(always)] pub fn set(&self, i: usize, v: Value) { self.st[i].set(v) }
+    /// Slot i, for a helper that re-reads it (idiom B).
+    #[inline(always)] pub fn slot(&self, i: usize) -> &crate::slots::Slot { &self.st[i] }
 }
 
 impl Ctx {
