@@ -5,7 +5,7 @@
 ## プロジェクト profile
 
 - 目標と優先度: `docs/current_goals.md`（作業は todo から、この優先度で選ぶ）
-- 常時の agent 数: 2 本以上
+- 常時の agent 数: 下限 2 本（下回ったら起動する）。上限は資源と、触るサブシステムが重ならないかで決める（根拠のない上限は付けない）
 - 照合先（oracle）: CRuby master `~/ruby/install/master/bin/ruby`（koruby と同じ。nightly `~/.local/bin/ruby-master-nightly` が毎朝ビルドし、sp3 / sp4 にも配る）。二番目の確認は 4.0.10
 - ビルド構成: `make`（default）/ `make FEATURES=gc_check` / `make GC=bitmap` / `make FEATURES=raw_stack`（sample/saruby で）。release は codegen-units = 1
 - 関門（コマンド）:
