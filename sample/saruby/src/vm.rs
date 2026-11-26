@@ -141,6 +141,8 @@ impl Clone for Block {
         unsafe { std::ptr::read(self) }
     }
 }
+// the bitwise clone above is sound only while Block has no drop glue
+const _: () = assert!(!std::mem::needs_drop::<Block>());
 
 impl Block {
     pub fn cfunc(c: &mut Ctx, f: CBlockFn, data: Value) -> Block {
